@@ -1,0 +1,517 @@
+% ============================================================================
+% BasisSimulator.jl - Comprehensive Bibliography
+% For Medical Physics journal submission
+% ============================================================================
+
+% ============================================================================
+% RAY TRACING ALGORITHMS
+% ============================================================================
+
+@article{Siddon1985,
+  title={Fast calculation of the exact radiological path for a three-dimensional CT array},
+  author={Siddon, Robert L},
+  journal={Medical Physics},
+  volume={12},
+  number={2},
+  pages={252--255},
+  year={1985},
+  publisher={Wiley Online Library},
+  doi={10.1118/1.595715},
+  note={Original Siddon ray tracing algorithm - exact radiological path calculation for CT}
+}
+
+@inproceedings{AmanatideesWoo1987,
+  title={A fast voxel traversal algorithm for ray tracing},
+  author={Amanatides, John and Woo, Andrew},
+  booktitle={Eurographics},
+  volume={87},
+  number={3},
+  pages={3--10},
+  year={1987},
+  note={DDA-based voxel traversal - used in our Reactant-compatible implementation}
+}
+
+@article{Joseph1982,
+  title={An improved algorithm for reprojecting rays through pixel images},
+  author={Joseph, PM},
+  journal={IEEE Transactions on Medical Imaging},
+  volume={1},
+  number={3},
+  pages={192--196},
+  year={1982},
+  publisher={IEEE},
+  doi={10.1109/TMI.1982.4307572},
+  note={Ray-driven projection with linear interpolation}
+}
+
+% ============================================================================
+% CONE-BEAM RECONSTRUCTION
+% ============================================================================
+
+@article{Feldkamp1984,
+  title={Practical cone-beam algorithm},
+  author={Feldkamp, LA and Davis, LC and Kress, James W},
+  journal={Journal of the Optical Society of America A},
+  volume={1},
+  number={6},
+  pages={612--619},
+  year={1984},
+  publisher={Optica Publishing Group},
+  doi={10.1364/JOSAA.1.000612},
+  note={FDK algorithm - gold standard for cone-beam CT reconstruction}
+}
+
+@article{Parker1982,
+  title={Optimal short scan convolution reconstruction for fanbeam CT},
+  author={Parker, Dennis L},
+  journal={Medical Physics},
+  volume={9},
+  number={2},
+  pages={254--257},
+  year={1982},
+  publisher={Wiley Online Library},
+  doi={10.1118/1.595078},
+  note={Parker weighting for short-scan reconstruction}
+}
+
+@article{Kak1988,
+  title={Principles of computerized tomographic imaging},
+  author={Kak, Avinash C and Slaney, Malcolm},
+  year={1988},
+  publisher={IEEE Press},
+  isbn={0-87942-198-3},
+  note={Comprehensive textbook on CT reconstruction theory}
+}
+
+% ============================================================================
+% X-RAY SPECTRUM GENERATION
+% ============================================================================
+
+@article{Boone1997,
+  title={An accurate method for computer-generating tungsten anode x-ray spectra from 30 to 140 kV},
+  author={Boone, John M and Seibert, J Anthony},
+  journal={Medical Physics},
+  volume={24},
+  number={11},
+  pages={1661--1670},
+  year={1997},
+  publisher={Wiley Online Library},
+  doi={10.1118/1.597953},
+  note={Validated method for bremsstrahlung spectrum generation}
+}
+
+@article{Birch1979,
+  title={Computation of bremsstrahlung X-ray spectra and comparison with spectra measured with a Ge(Li) detector},
+  author={Birch, R and Marshall, M},
+  journal={Physics in Medicine \& Biology},
+  volume={24},
+  number={3},
+  pages={505},
+  year={1979},
+  publisher={IOP Publishing},
+  doi={10.1088/0031-9155/24/3/002},
+  note={Early work on spectrum computation and validation}
+}
+
+@techreport{IPEM2005,
+  title={Catalogue of diagnostic x-ray spectra and other data},
+  author={{Institute of Physics and Engineering in Medicine}},
+  institution={IPEM},
+  number={Report 78},
+  year={2005},
+  note={Reference spectra for diagnostic radiology}
+}
+
+@article{Tucker1991,
+  title={Semiempirical model for generating tungsten target x-ray spectra},
+  author={Tucker, Donald M and Barnes, Gary T and Chakraborty, Dev P},
+  journal={Medical Physics},
+  volume={18},
+  number={2},
+  pages={211--218},
+  year={1991},
+  publisher={Wiley Online Library},
+  doi={10.1118/1.596709},
+  note={Semi-empirical model including heel effect and filtration}
+}
+
+% ============================================================================
+% SCATTER PHYSICS
+% ============================================================================
+
+@article{Klein1929,
+  title={Über die Streuung von Strahlung durch freie Elektronen nach der neuen relativistischen Quantendynamik von Dirac},
+  author={Klein, Oskar and Nishina, Yoshio},
+  journal={Zeitschrift für Physik},
+  volume={52},
+  number={11-12},
+  pages={853--868},
+  year={1929},
+  publisher={Springer},
+  doi={10.1007/BF01366453},
+  note={Klein-Nishina formula - fundamental Compton scattering cross section}
+}
+
+@article{Siewerdsen2006,
+  title={A simple, direct method for x-ray scatter estimation and correction in digital radiography and cone-beam CT},
+  author={Siewerdsen, Jeffrey H and Daly, Michael J and Bakhtiar, Bahman and Moseley, Douglas J and Richard, Samuel and Keller, Hans and Jaffray, David A},
+  journal={Medical Physics},
+  volume={33},
+  number={1},
+  pages={187--197},
+  year={2006},
+  publisher={Wiley Online Library},
+  doi={10.1118/1.2148916},
+  note={Convolution-based scatter estimation - practical clinical method}
+}
+
+@article{Ohnesorge1999,
+  title={Efficient object scatter correction algorithm for third and fourth generation CT scanners},
+  author={Ohnesorge, B and Flohr, T and Klingenbeck-Regn, K},
+  journal={European Radiology},
+  volume={9},
+  number={3},
+  pages={563--569},
+  year={1999},
+  publisher={Springer},
+  doi={10.1007/s003300050710},
+  note={Practical scatter correction for clinical CT}
+}
+
+@article{Zhu2009,
+  title={Scatter correction for cone-beam CT in radiation therapy},
+  author={Zhu, Lei and Bennett, Nancy Ramsey and Fahrig, Rebecca},
+  journal={Medical Physics},
+  volume={36},
+  number={6Part1},
+  pages={2258--2268},
+  year={2009},
+  publisher={Wiley Online Library},
+  doi={10.1118/1.3130047},
+  note={Monte Carlo and analytical scatter correction methods}
+}
+
+% ============================================================================
+% DETECTOR RESPONSE
+% ============================================================================
+
+@article{Fujita1992,
+  title={A simple method for determining the modulation transfer function in digital radiography},
+  author={Fujita, Hiroshi and Tsai, Dung-Yuan and Itoh, Takayoshi and Doi, Kunio and Morishita, Junji and Ueda, Keiichi and Ohtsuka, Akiyoshi},
+  journal={IEEE Transactions on Medical Imaging},
+  volume={11},
+  number={1},
+  pages={34--39},
+  year={1992},
+  publisher={IEEE},
+  doi={10.1109/42.126908},
+  note={MTF measurement methodology for digital detectors}
+}
+
+@article{Samei1998,
+  title={A method for measuring the presampled MTF of digital radiographic systems using an edge test device},
+  author={Samei, Ehsan and Flynn, Michael J and Reimann, David A},
+  journal={Medical Physics},
+  volume={25},
+  number={1},
+  pages={102--113},
+  year={1998},
+  publisher={Wiley Online Library},
+  doi={10.1118/1.598165},
+  note={Edge method for MTF measurement - widely used standard}
+}
+
+@article{Cunningham2000,
+  title={Applied linear-systems theory},
+  author={Cunningham, Ian A and Judy, Peter F},
+  journal={Handbook of Medical Imaging},
+  volume={1},
+  pages={79--159},
+  year={2000},
+  note={Comprehensive theory of detector response including MTF, DQE, NPS}
+}
+
+@article{Tward2005,
+  title={Cascaded systems analysis of the 3D noise transfer characteristics of flat-panel cone-beam CT},
+  author={Tward, Daniel J and Siewerdsen, Jeffrey H},
+  journal={Medical Physics},
+  volume={35},
+  number={12},
+  pages={5510--5529},
+  year={2008},
+  publisher={Wiley Online Library},
+  doi={10.1118/1.3002414},
+  note={Cascaded systems analysis for CBCT noise and resolution}
+}
+
+% ============================================================================
+% NOISE MODELING
+% ============================================================================
+
+@article{Barrett2004,
+  title={Foundations of Image Science},
+  author={Barrett, Harrison H and Myers, Kyle J},
+  year={2004},
+  publisher={Wiley-Interscience},
+  isbn={0-471-15300-1},
+  note={Comprehensive treatment of quantum noise in imaging systems}
+}
+
+@article{Wagner1999,
+  title={Noise analysis of a digital x-ray fluoroscopy system},
+  author={Wagner, Robert F and Brown, David G and Pastel, Mark S},
+  journal={Medical Physics},
+  volume={26},
+  number={11},
+  pages={2361--2369},
+  year={1999},
+  publisher={Wiley Online Library},
+  doi={10.1118/1.598756},
+  note={Quantum noise and electronic noise in x-ray detectors}
+}
+
+@article{Whiting2006,
+  title={Signal statistics in x-ray computed tomography},
+  author={Whiting, Bruce R},
+  journal={Medical Imaging 2006: Physics of Medical Imaging},
+  volume={6142},
+  pages={53--60},
+  year={2006},
+  organization={SPIE},
+  doi={10.1117/12.680640},
+  note={Statistical models for photon counting and energy integration}
+}
+
+% ============================================================================
+% BEAM HARDENING
+% ============================================================================
+
+@article{Joseph1978,
+  title={A method for correcting bone induced artifacts in computed tomography scanners},
+  author={Joseph, PM and Spital, RD},
+  journal={Journal of Computer Assisted Tomography},
+  volume={2},
+  number={1},
+  pages={100--108},
+  year={1978},
+  note={Early work on beam hardening correction}
+}
+
+@article{VanGompel2011,
+  title={Iterative correction of beam hardening artifacts in CT},
+  author={Van Gompel, Gert and Van Slambrouck, Katrien and Defrise, Michel and Batenburg, Kees Joost and de Mey, Johan and Sijbers, Jan and Nuyts, Johan},
+  journal={Medical Physics},
+  volume={38},
+  number={S1},
+  pages={S36--S49},
+  year={2011},
+  publisher={Wiley Online Library},
+  doi={10.1118/1.3577758},
+  note={Modern iterative beam hardening correction}
+}
+
+% ============================================================================
+% ATTENUATION COEFFICIENTS
+% ============================================================================
+
+@article{Hubbell1996,
+  title={Review of photon interaction cross section data in the medical and biological context},
+  author={Hubbell, JH},
+  journal={Physics in Medicine \& Biology},
+  volume={44},
+  number={1},
+  pages={R1},
+  year={1999},
+  publisher={IOP Publishing},
+  doi={10.1088/0031-9155/44/1/001},
+  note={NIST XCOM database - authoritative source for attenuation data}
+}
+
+@article{Berger2010,
+  title={XCOM: Photon Cross Sections Database, NIST Standard Reference Database 8 (XGAM)},
+  author={Berger, MJ and Hubbell, JH and Seltzer, SM and Chang, J and Coursey, JS and Sukumar, R and Zucker, DS and Olsen, K},
+  journal={National Institute of Standards and Technology},
+  year={2010},
+  note={Current NIST XCOM database version}
+}
+
+% ============================================================================
+% CT PHANTOMS
+% ============================================================================
+
+@article{Segars2010,
+  title={4D XCAT phantom for multimodality imaging research},
+  author={Segars, W Paul and Sturgeon, Gregory and Mendonca, Susana and Grimes, Jason and Tsui, Benjamin MW},
+  journal={Medical Physics},
+  volume={37},
+  number={9},
+  pages={4902--4915},
+  year={2010},
+  publisher={Wiley Online Library},
+  doi={10.1118/1.3480985},
+  note={XCAT phantom - anatomically realistic digital phantom}
+}
+
+@manual{Gammex2018,
+  title={Model 472 Contrast Detail Phantom User Guide},
+  author={{Gammex Inc.}},
+  organization={Sun Nuclear Corporation},
+  year={2018},
+  note={Gammex 472 phantom specifications}
+}
+
+% ============================================================================
+% ITERATIVE RECONSTRUCTION
+% ============================================================================
+
+@article{Andersen1984,
+  title={Simultaneous algebraic reconstruction technique (SART): a superior implementation of the ART algorithm},
+  author={Andersen, AH and Kak, Avinash C},
+  journal={Ultrasonic Imaging},
+  volume={6},
+  number={1},
+  pages={81--94},
+  year={1984},
+  publisher={SAGE Publications},
+  doi={10.1177/016173468400600107},
+  note={SART/SIRT algorithm - basis for iterative reconstruction}
+}
+
+@article{Beister2012,
+  title={Iterative reconstruction methods in X-ray CT},
+  author={Beister, Marcel and Kolditz, Daniel and Kalender, Willi A},
+  journal={Physica Medica},
+  volume={28},
+  number={2},
+  pages={94--108},
+  year={2012},
+  publisher={Elsevier},
+  doi={10.1016/j.ejmp.2012.01.003},
+  note={Review of iterative reconstruction methods}
+}
+
+% ============================================================================
+% AUTOMATIC DIFFERENTIATION FOR CT
+% ============================================================================
+
+@article{Maier2019,
+  title={Learning with known operators reduces maximum training error bounds},
+  author={Maier, Andreas and Syben, Christopher and Lasser, Tobias and Riess, Christian},
+  journal={Nature Machine Intelligence},
+  volume={1},
+  number={8},
+  pages={373--380},
+  year={2019},
+  publisher={Nature Publishing Group},
+  doi={10.1038/s42256-019-0077-5},
+  note={Physics-informed learning for CT reconstruction}
+}
+
+@article{Adler2017,
+  title={Learned primal-dual reconstruction},
+  author={Adler, Jonas and {\"O}ktem, Ozan},
+  journal={IEEE Transactions on Medical Imaging},
+  volume={37},
+  number={6},
+  pages={1322--1332},
+  year={2018},
+  publisher={IEEE},
+  doi={10.1109/TMI.2018.2799231},
+  note={Differentiable CT reconstruction for learning}
+}
+
+% ============================================================================
+% DUAL-ENERGY CT
+% ============================================================================
+
+@article{Alvarez1976,
+  title={Energy-selective reconstructions in X-ray computerized tomography},
+  author={Alvarez, Robert E and Macovski, Albert},
+  journal={Physics in Medicine \& Biology},
+  volume={21},
+  number={5},
+  pages={733},
+  year={1976},
+  publisher={IOP Publishing},
+  doi={10.1088/0031-9155/21/5/002},
+  note={Theoretical basis for dual-energy CT}
+}
+
+@article{McCollough2015,
+  title={Dual-and multi-energy CT: principles, technical approaches, and clinical applications},
+  author={McCollough, Cynthia H and Leng, Shuai and Yu, Lifeng and Fletcher, Joel G},
+  journal={Radiology},
+  volume={276},
+  number={3},
+  pages={637--653},
+  year={2015},
+  publisher={Radiological Society of North America},
+  doi={10.1148/radiol.2015142631},
+  note={Clinical applications of dual-energy CT}
+}
+
+% ============================================================================
+% DOSE OPTIMIZATION
+% ============================================================================
+
+@article{McCollough2009,
+  title={CT dose reduction and dose management tools: overview of available options},
+  author={McCollough, Cynthia H and Bruesewitz, Michael R and Kofler Jr, James M},
+  journal={Radiographics},
+  volume={26},
+  number={2},
+  pages={503--512},
+  year={2006},
+  publisher={Radiological Society of North America},
+  doi={10.1148/rg.262055138},
+  note={CT dose management strategies}
+}
+
+% ============================================================================
+% CT TEXTBOOKS
+% ============================================================================
+
+@book{Bushberg2011,
+  title={The essential physics of medical imaging},
+  author={Bushberg, Jerrold T and Seibert, J Anthony and Leidholdt, Edwin M and Boone, John M},
+  year={2011},
+  publisher={Lippincott Williams \& Wilkins},
+  edition={3},
+  isbn={978-0-7817-8057-5},
+  note={Standard medical physics textbook}
+}
+
+@book{Hsieh2009,
+  title={Computed tomography: principles, design, artifacts, and recent advances},
+  author={Hsieh, Jiang},
+  year={2009},
+  publisher={SPIE Press},
+  edition={2},
+  isbn={978-0-8194-7638-5},
+  note={Comprehensive CT engineering textbook}
+}
+
+% ============================================================================
+% GECATSIM VALIDATION
+% ============================================================================
+
+@article{DeCataldo2020,
+  title={XCIST: An open access X-ray/CT simulator},
+  author={De Cataldo, M and Gang, GJ and Zbijewski, W},
+  journal={Proc. SPIE Medical Imaging},
+  volume={11312},
+  year={2020},
+  note={Official GECATSIM/XCIST documentation}
+}
+
+% ============================================================================
+% REACTANT/JAX FOR SCIENTIFIC COMPUTING
+% ============================================================================
+
+@article{Bradbury2018,
+  title={JAX: composable transformations of Python+ NumPy programs},
+  author={Bradbury, James and Frostig, Roy and Hawkins, Peter and Johnson, Matthew James and Leary, Chris and Maclaurin, Dougal and Necula, George and Paszke, Adam and VanderPlas, Jake and Wanderman-Milne, Skye and others},
+  journal={Software available from http://github.com/google/jax},
+  year={2018},
+  note={JAX autodiff framework - conceptual basis for Reactant.jl}
+}

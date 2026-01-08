@@ -1,3 +1,8 @@
+name = "BasisSimulator"
+uuid = "8f904dfe-b85e-4ff6-b463-dae2292396b9"
+authors = ["Dale Black <daleblack@molloi.lab>"]
+version = "0.1.0"
+
 [deps]
 Attenuations = "0ff343a0-c53e-11e9-1400-85e187be3184"
 CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
