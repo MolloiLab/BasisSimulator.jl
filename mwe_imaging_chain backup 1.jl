@@ -51,81 +51,8 @@ using Enzyme
 
 # ╔═╡ a33ff92d-1d4d-427f-9b78-70a26acee8c1
 md"""
-# Fully Differentiable CT Simulator
-**A Complete Physics-Based Cone-Beam CT Imaging Chain**
-
-## Overview
-This notebook implements a fully differentiable CT simulator from first principles, designed for:
-- **Forward simulation**: Accurate physics modeling of clinical CT scanners
-- **XLA compilation**: GPU/TPU acceleration via Reactant.jl
-- **Automatic differentiation**: End-to-end gradients via Enzyme.jl
-- **Inverse problems**: Material decomposition, dose optimization, geometry calibration
-
-## System Specifications
-Modeled after the **Canon Aquilion ONE VISION Edition** (320-row wide detector CT):
-- 320 detector rows × 16 cm z-coverage (0.5 mm detector pitch)
-- 600 mm source-to-axis distance (SAD)
-- 1000 mm source-to-detector distance (SDD)
-- Cone-beam geometry with circular trajectory
-- 120 kVp tungsten anode X-ray source
-
-## Complete Physics Model
-
-### 1. X-Ray Source
-- Bremsstrahlung spectrum (Kramers' Law with Z-dependence)
-- Characteristic K-lines for tungsten (59.3, 58.0, 67.2 keV)
-- Anode heel effect and inherent filtration
-- Polychromatic energy bins (1-120 keV)
-
-### 2. Beam Shaping & Filtration
-- Bowtie filter (parabolic aluminum profile, 0-3 cm equivalent)
-- Pre-patient beam hardening
-- Position-dependent intensity modulation
-
-### 3. Object Interaction
-- Reactant-compatible ray tracer (Amanatides-Woo algorithm)
-- Pure functional design (no callbacks) for XLA compilation
-- Energy-dependent attenuation (photoelectric + Compton)
-- Multi-material phantoms with density variations
-
-### 4. Scatter Physics
-- Gaussian convolution model for Compton scatter
-- Scatter-to-Primary Ratio (SPR) ≈ 15%
-- Separable kernels for computational efficiency
-- Fully differentiable (no Monte Carlo)
-
-### 5. Quantum Noise
-- Poisson statistics for photon counting
-- Dose-dependent noise modeling
-- Normal approximation for high counts
-
-### 6. Detector Response
-- Energy-dependent quantum efficiency
-- Electronic noise (Gaussian)
-- DAS readout with log transform
-
-### 7. Image Reconstruction
-- Feldkamp-Davis-Kress (FDK) algorithm
-- Ram-Lak filter with Hamming window
-- 3D cone-beam backprojection
-- Hounsfield Unit (HU) calibration
-
-## Autodifferentiation Ready
-
-All components are implemented as pure, differentiable functions:
-- ✅ **Reactant @compile**: Pure functional design, no dynamic allocations
-- ✅ **Enzyme gradients**: Differentiable forward model end-to-end
-- ✅ **Gradient applications**: Material decomp, dose opt, MBIR, calibration
-
-## Quick Start
-
-1. **Run basic simulation**: Execute all cells to see the standard pipeline
-2. **Run enhanced simulation**: Uses all advanced physics (bowtie, scatter, noise)
-3. **Test Reactant**: Compile individual functions or full forward pass
-4. **Test Enzyme**: Compute gradients w.r.t. any input (densities, geometry, etc.)
-5. **Implement inverse problems**: Use gradients for optimization tasks
-
----
+# Physics-First CT Simulator: The Imaging Chain
+This notebook implements a Cone-Beam CT simulator following the exact physical imaging chain.
 """
 
 # ╔═╡ 7e356b06-8498-40ae-b240-6950444985b6
@@ -773,7 +700,7 @@ function generate_analytical_spectrum(;
 	photons = intensity ./ total_int .* flux_target
 	
 	return XRaySource(
-		kVp = kVp, mAs = mAs, energies = energies,
+		kVp = kVp, mAs = mAs, energies = energies, 
 		photons = photons, focal_spot_size_mm = 1.0
 	)
 end
@@ -789,6 +716,24 @@ SOURCE_120 = generate_analytical_spectrum(kVp=CONST_kVp, mAs=CONST_mAs)
 
 # ╔═╡ cb13e8ca-e62e-49fc-9b19-d6ad414309e7
 SOURCE_80 = generate_analytical_spectrum(kVp=80.0, mAs=200.0)
+
+# ╔═╡ 45cc1bd4-3a00-4e0b-a0ec-b3d953f50d72
+let
+	
+	f = Figure(size=(800, 400))
+	ax = Axis(f[1,1], 
+		title="X-Ray Spectra Check (Fixed Grid)", 
+		xlabel="Energy (keV)", 
+		ylabel="Photons"
+	)
+	
+	lines!(ax, SOURCE_80.energies, SOURCE_80.photons, label="80 kVp", linewidth=3)
+	lines!(ax, SOURCE_120.energies, SOURCE_120.photons, label="120 kVp", linewidth=3)
+	
+	axislegend(ax)
+	
+	f
+end
 
 # ╔═╡ 4ee516dc-9f1f-4291-9392-2098ed541958
 md"""
@@ -1064,8 +1009,7 @@ GEOMETRY = create_scanner_geometry(protocol=PROTOCOL)
 
 # ╔═╡ 71c27672-a5d2-4a1f-9738-cd930d5cdafb
 md"""
-## Geometry Comparison
-Compare generic vs Canon Aquilion ONE specifications.
+## TODO: Visualization of Scanner Geometry
 """
 
 # ╔═╡ 25fb9f2c-21b6-4e93-9706-7e95ec350390
@@ -1397,7 +1341,7 @@ DETECTOR_CONFIG = DetectorConfig(
 
 # ╔═╡ 38027728-dded-4fed-840f-439292e46bf6
 DETECTOR_RESPONSE = compute_detector_response(
-	det=DETECTOR_CONFIG,
+	det=DETECTOR_CONFIG, 
 	source=SOURCE_120
 )
 
@@ -1510,89 +1454,11 @@ function reconstruct_fdk(projections, geo::Geometry, recon_grid::VoxelGrid)
 	return vol .* (2 * pi / length(geo.angles))
 end
 
-# ╔═╡ b99640a6-1420-43d6-90b6-27a7ff9bb0c1
-md"""
-# Main Simulation Loop
-Binding the physics chain together.
-"""
-
-# ╔═╡ 248480e4-e27a-4f7b-aa81-022cbf31370f
-md"""
-## Output & Analysis
-HU Conversion and Visualization.
-"""
-
-# ╔═╡ a227e438-b683-4373-a9d0-4a47dcb898e2
-function convert_to_hu(vol_mu, mu_water)
-    return 1000.0 .* (vol_mu .- mu_water) ./ mu_water
-end
-
 # ╔═╡ dd000001-0000-0000-0000-000000000001
 md"""
 ## Reactant Single-Pixel Test
 Testing a complete forward pass for one detector pixel with Reactant.
 """
-
-# ╔═╡ ee000001-0000-0000-0000-000000000001
-"""
-	trace_ray_simple(grid, p1x, p1y, p1z, p2x, p2y, p2z) -> Float64
-
-Simplified ray tracer - returns path length through grid bounding box.
-Reactant-compatible (no callbacks, pure function).
-"""
-function trace_ray_simple(
-		grid::GridMeta,
-		p1x::Float64, p1y::Float64, p1z::Float64,
-		p2x::Float64, p2y::Float64, p2z::Float64
-	)
-	dx = p2x - p1x
-	dy = p2y - p1y
-	dz = p2z - p1z
-
-	len = sqrt(dx^2 + dy^2 + dz^2)
-	if len < 1e-6 return 0.0 end
-
-	dir_x = dx / len
-	dir_y = dy / len
-	dir_z = dz / len
-
-	box_min_x = grid.ox
-	box_max_x = grid.ox + grid.fov_xy
-	box_min_y = grid.oy
-	box_max_y = grid.oy + grid.fov_xy
-	box_min_z = grid.oz
-	box_max_z = grid.oz + grid.fov_z
-
-	tmin = 0.0
-	tmax = len
-
-	# X slab
-	if abs(dir_x) > 1e-9
-		t1 = (box_min_x - p1x) / dir_x
-		t2 = (box_max_x - p1x) / dir_x
-		tmin = max(tmin, min(t1, t2))
-		tmax = min(tmax, max(t1, t2))
-	end
-
-	# Y slab
-	if abs(dir_y) > 1e-9
-		t1 = (box_min_y - p1y) / dir_y
-		t2 = (box_max_y - p1y) / dir_y
-		tmin = max(tmin, min(t1, t2))
-		tmax = min(tmax, max(t1, t2))
-	end
-
-	# Z slab
-	if abs(dir_z) > 1e-9
-		t1 = (box_min_z - p1z) / dir_z
-		t2 = (box_max_z - p1z) / dir_z
-		tmin = max(tmin, min(t1, t2))
-		tmax = min(tmax, max(t1, t2))
-	end
-
-	if tmax <= tmin return 0.0 end
-	return tmax - tmin
-end
 
 # ╔═╡ dd000002-0000-0000-0000-000000000001
 """
@@ -1639,186 +1505,11 @@ let
 	@info "Reactant Test 4: Single Pixel" cpu=cpu_result reactant=reactant_result match=(abs(cpu_result - reactant_result) < 1e-6)
 end
 
-# ╔═╡ 1cd38a76-87c8-4bff-b012-29829f6251fd
+# ╔═╡ b99640a6-1420-43d6-90b6-27a7ff9bb0c1
+md"""
+# Main Simulation Loop
+Binding the physics chain together.
 """
-	trace_ray_material_paths(grid, material_ids, densities, id_lut, n_materials, p1x, p1y, p1z, p2x, p2y, p2z)
-
-Reactant-compatible ray tracer using Amanatides-Woo traversal.
-Returns a vector of path lengths (cm) for each material.
-
-Arguments:
-- grid: GridMeta with voxel spacing
-- material_ids: 3D array of UInt8 material IDs
-- densities: 3D array of Float32 relative densities
-- id_lut: Lookup table mapping material ID to material index (256-element vector)
-- n_materials: Number of materials
-- p1x, p1y, p1z: Ray start point (cm)
-- p2x, p2y, p2z: Ray end point (cm)
-
-Returns:
-- path_lengths: Vector{Float64} of length n_materials
-"""
-function trace_ray_material_paths(
-		grid::GridMeta,
-		material_ids::Array{UInt8, 3},
-		densities::Array{Float32, 3},
-		id_lut::Vector{Int},
-		n_materials::Int,
-		p1x::Float64, p1y::Float64, p1z::Float64,
-		p2x::Float64, p2y::Float64, p2z::Float64
-	)
-
-	# Initialize output
-	path_lengths = zeros(Float64, n_materials)
-
-	# 1. Direction
-	dx_ray = p2x - p1x
-	dy_ray = p2y - p1y
-	dz_ray = p2z - p1z
-
-	len = sqrt(dx_ray^2 + dy_ray^2 + dz_ray^2)
-	if len < 1e-6 return path_lengths end
-
-	inv_len = 1.0 / len
-	dir_x = dx_ray * inv_len
-	dir_y = dy_ray * inv_len
-	dir_z = dz_ray * inv_len
-
-	# 2. Slab Intersection
-	box_min_x, box_max_x = grid.ox, grid.ox + grid.fov_xy
-	box_min_y, box_max_y = grid.oy, grid.oy + grid.fov_xy
-	box_min_z, box_max_z = grid.oz, grid.oz + grid.fov_z
-
-	tmin, tmax = 0.0, len
-
-	# X-Slab
-	if abs(dir_x) < 1e-9
-		if p1x < box_min_x || p1x > box_max_x return path_lengths end
-	else
-		tx1 = (box_min_x - p1x) / dir_x
-		tx2 = (box_max_x - p1x) / dir_x
-		tmin = max(tmin, min(tx1, tx2))
-		tmax = min(tmax, max(tx1, tx2))
-	end
-
-	# Y-Slab
-	if abs(dir_y) < 1e-9
-		if p1y < box_min_y || p1y > box_max_y return path_lengths end
-	else
-		ty1 = (box_min_y - p1y) / dir_y
-		ty2 = (box_max_y - p1y) / dir_y
-		tmin = max(tmin, min(ty1, ty2))
-		tmax = min(tmax, max(ty1, ty2))
-	end
-
-	# Z-Slab
-	if abs(dir_z) < 1e-9
-		if p1z < box_min_z || p1z > box_max_z return path_lengths end
-	else
-		tz1 = (box_min_z - p1z) / dir_z
-		tz2 = (box_max_z - p1z) / dir_z
-		tmin = max(tmin, min(tz1, tz2))
-		tmax = min(tmax, max(tz1, tz2))
-	end
-
-	if tmax <= tmin return path_lengths end
-
-	# 3. Initialization
-	current_t = tmin
-	cur_x = p1x + (current_t + 1e-5) * dir_x
-	cur_y = p1y + (current_t + 1e-5) * dir_y
-	cur_z = p1z + (current_t + 1e-5) * dir_z
-
-	ix = floor(Int, (cur_x - grid.ox) / grid.dx) + 1
-	iy = floor(Int, (cur_y - grid.oy) / grid.dy) + 1
-	iz = floor(Int, (cur_z - grid.oz) / grid.dz) + 1
-
-	ix = clamp(ix, 1, grid.nx)
-	iy = clamp(iy, 1, grid.ny)
-	iz = clamp(iz, 1, grid.nz)
-
-	step_x = dir_x >= 0 ? 1 : -1
-	step_y = dir_y >= 0 ? 1 : -1
-	step_z = dir_z >= 0 ? 1 : -1
-
-	next_x_boundary = grid.ox + (dir_x >= 0 ? ix : ix - 1) * grid.dx
-	next_y_boundary = grid.oy + (dir_y >= 0 ? iy : iy - 1) * grid.dy
-	next_z_boundary = grid.oz + (dir_z >= 0 ? iz : iz - 1) * grid.dz
-
-	t_max_x = abs(dir_x) < 1e-9 ? Inf : (next_x_boundary - p1x) / dir_x
-	t_max_y = abs(dir_y) < 1e-9 ? Inf : (next_y_boundary - p1y) / dir_y
-	t_max_z = abs(dir_z) < 1e-9 ? Inf : (next_z_boundary - p1z) / dir_z
-
-	if t_max_x < current_t t_max_x += abs(grid.dx / dir_x) end
-	if t_max_y < current_t t_max_y += abs(grid.dy / dir_y) end
-	if t_max_z < current_t t_max_z += abs(grid.dz / dir_z) end
-
-	tdelta_x = abs(dir_x) < 1e-9 ? Inf : grid.dx / abs(dir_x)
-	tdelta_y = abs(dir_y) < 1e-9 ? Inf : grid.dy / abs(dir_y)
-	tdelta_z = abs(dir_z) < 1e-9 ? Inf : grid.dz / abs(dir_z)
-
-	# 4. Traversal Loop
-	max_iter = grid.nx + grid.ny + grid.nz + 10
-
-	for _ in 1:max_iter
-		if current_t >= tmax break end
-
-		# Accumulate path length for current voxel
-		mat_id = material_ids[ix, iy, iz]
-		if mat_id > 0
-			row_idx = id_lut[Int(mat_id) + 1]
-			if row_idx > 0
-				# Determine step distance
-				if t_max_x < t_max_y
-					if t_max_x < t_max_z
-						dist = t_max_x - current_t
-					else
-						dist = t_max_z - current_t
-					end
-				else
-					if t_max_y < t_max_z
-						dist = t_max_y - current_t
-					else
-						dist = t_max_z - current_t
-					end
-				end
-
-				dens = Float64(densities[ix, iy, iz])
-				path_lengths[row_idx] += dist * dens
-			end
-		end
-
-		# Step to next voxel
-		if t_max_x < t_max_y
-			if t_max_x < t_max_z
-				current_t = t_max_x
-				t_max_x += tdelta_x
-				ix += step_x
-			else
-				current_t = t_max_z
-				t_max_z += tdelta_z
-				iz += step_z
-			end
-		else
-			if t_max_y < t_max_z
-				current_t = t_max_y
-				t_max_y += tdelta_y
-				iy += step_y
-			else
-				current_t = t_max_z
-				t_max_z += tdelta_z
-				iz += step_z
-			end
-		end
-
-		# Exit if out of bounds
-		if ix < 1 || ix > grid.nx || iy < 1 || iy > grid.ny || iz < 1 || iz > grid.nz
-			break
-		end
-	end
-
-	return path_lengths
-end
 
 # ╔═╡ 287fc43e-d16a-41f6-92e8-128e406a05cd
 function run_physical_simulation(;
@@ -1861,16 +1552,23 @@ function run_physical_simulation(;
 				u_off = (c - geo.n_cols/2 - 0.5 + sub_offsets[sc]) * geo.pixel_width_cm
 				v_off = (r - geo.n_rows/2 - 0.5 + sub_offsets[sr]) * geo.pixel_height_cm
 				target_pos = det_center .+ (u_off .* u_vec) .+ (v_off .* v_vec)
-
-				# NEW: Use Reactant-compatible ray tracer (pure functional, no callbacks)
-				path_lengths = trace_ray_material_paths(
-					grid_meta,
-					phantom.material_ids,
-					phantom.densities,
-					id_lut,
-					n_mats,
-					src_pos[1], src_pos[2], src_pos[3],
-					target_pos[1], target_pos[2], target_pos[3]
+				
+				path_lengths = zeros(Float64, n_mats)
+				
+				# Trace using the passed-in GridMeta and LUT
+				trace_ray_kernel(
+					(ix, iy, iz, dist) -> begin
+						mat_id = phantom.material_ids[ix, iy, iz]
+						if mat_id > 0 
+							# Fast Array Lookup (No Dicts)
+							row_idx = id_lut[Int(mat_id) + 1]
+							if row_idx > 0
+								dens = phantom.densities[ix, iy, iz]
+								path_lengths[row_idx] += dist * Float64(dens)
+							end
+						end
+					end,
+					grid_meta, src_pos, target_pos
 				)
 				
 				atten_per_energy = zeros(Float64, length(source.energies))
@@ -1900,12 +1598,23 @@ function run_physical_simulation(;
 	return projections
 end
 
+# ╔═╡ 248480e4-e27a-4f7b-aa81-022cbf31370f
+md"""
+## Output & Analysis
+HU Conversion and Visualization.
+"""
+
+# ╔═╡ a227e438-b683-4373-a9d0-4a47dcb898e2
+function convert_to_hu(vol_mu, mu_water)
+    return 1000.0 .* (vol_mu .- mu_water) ./ mu_water
+end
+
 # ╔═╡ 411c32de-2f02-40dc-9a00-a817a7a2f2e3
 raw_sino = run_physical_simulation(
-	phantom = PHANTOM,
-	source = SOURCE_120,
-	geo = GEOMETRY,
-	det = DETECTOR_RESPONSE,
+	phantom = PHANTOM, 
+	source = SOURCE_120, 
+	geo = GEOMETRY, 
+	det = DETECTOR_RESPONSE, 
 	mat_lib = MATERIAL_LIBRARY,
 	grid_meta = GRID_META,
 	id_lut = ID_LUT
@@ -1952,872 +1661,6 @@ let
 	Colorbar(f[1, 4], hm3, label="Hounsfield Units")
 	
 	f
-end
-
-# ╔═╡ e21dd1c0-b03e-46c6-9a49-f7b5d55e85c9
-# Test Reactant-compatible ray tracer against callback version
-let
-	@info "Testing new Reactant-compatible ray tracer..."
-
-	# Use actual phantom data
-	test_grid = GRID_META
-	test_mat_ids = PHANTOM.material_ids
-	test_densities = PHANTOM.densities
-	test_lut = ID_LUT
-	n_mats = size(MATERIAL_LIBRARY.μ_matrix, 1)
-
-	# Test ray through center
-	src_x, src_y, src_z = 54.0, 0.0, 0.0
-	det_x, det_y, det_z = -46.0, 0.0, 0.0
-
-	# New functional version
-	path_new = trace_ray_material_paths(
-		test_grid, test_mat_ids, test_densities, test_lut, n_mats,
-		src_x, src_y, src_z, det_x, det_y, det_z
-	)
-
-	# Old callback version for comparison
-	path_old = zeros(Float64, n_mats)
-	trace_ray_kernel(
-		(ix, iy, iz, dist) -> begin
-			mat_id = test_mat_ids[ix, iy, iz]
-			if mat_id > 0
-				row_idx = test_lut[Int(mat_id) + 1]
-				if row_idx > 0
-					dens = Float64(test_densities[ix, iy, iz])
-					path_old[row_idx] += dist * dens
-				end
-			end
-		end,
-		test_grid, (src_x, src_y, src_z), (det_x, det_y, det_z)
-	)
-
-	# Compare
-	max_diff = maximum(abs.(path_new .- path_old))
-	match = max_diff < 1e-10
-
-	@info "Ray Tracer Comparison" max_diff=max_diff match=match total_path_new=sum(path_new) total_path_old=sum(path_old)
-end
-
-# ╔═╡ ccb4ab25-be96-45ef-b695-691724256a45
-md"""
-## Reactant-Compatible Ray Tracer
-Pure functional version that returns path lengths per material (no callbacks).
-"""
-
-# ╔═╡ 6b3a037a-9da0-4ed6-9a1b-d640361dbdb3
-md"""
-## 5.6 Bowtie Filter
-
-CT scanners use shaped beam-hardening filters (bowtie filters) to:
-- Reduce peripheral dose (patient's edges get less radiation)
-- Pre-harden the beam (reduces artifacts)
-- Flatten the intensity profile reaching the detector
-
-**Physics**: Aluminum or Teflon shaped filter, thicker at edges, thinner at center.
-"""
-
-# ╔═╡ f16df8ce-5d11-4e54-8601-7121380f4cd5
-"""
-Applies bowtie filter attenuation to X-ray spectrum.
-
-Bowtie filter: shaped Al/Teflon filter that's thicker at periphery.
-- Reduces dose to patient's edges
-- Pre-hardens the beam (removes low-E photons preferentially)
-- Typical: 0-5 cm aluminum equivalent
-
-Parameters:
-- energies: X-ray energy bins (keV)
-- photons: photon counts per energy bin
-- detector_col: column index on detector (-n/2 to +n/2)
-- n_cols: total detector columns
-- max_thickness_cm: maximum filter thickness at edge (Al equivalent)
-
-Returns: attenuated photon spectrum
-"""
-function apply_bowtie_filter(
-		energies::Vector{Float64},
-		photons::Vector{Float64},
-		detector_col::Int,
-		n_cols::Int;
-		max_thickness_cm::Float64 = 3.0  # cm of aluminum at edge
-	)
-
-	# Bowtie profile: parabolic, thicker at edges
-	# Normalized position: -1 (edge) to +1 (edge), 0 (center)
-	norm_pos = 2.0 * (detector_col - n_cols/2) / n_cols
-
-	# Parabolic thickness: max at edges, zero at center
-	thickness_cm = max_thickness_cm * norm_pos^2
-
-	# Aluminum attenuation coefficients (cm^-1) - simplified energy dependence
-	# μ(E) ≈ a * E^(-3) + b  (photoelectric + Compton)
-	# Rough approximation for Al
-	mu_al = @. 0.3 * (energies / 60.0)^(-3.0) + 0.15
-
-	# Beer-Lambert attenuation through bowtie
-	transmission = @. exp(-mu_al * thickness_cm)
-
-	# Apply attenuation
-	filtered_photons = photons .* transmission
-
-	return filtered_photons
-end
-
-# ╔═╡ 503e152f-2123-48a1-9556-d7fe8f4316fa
-md"""
-## Enhanced Simulation with Full Physics
-
-Integrates ALL realistic physics:
-- ✅ Realistic X-ray source (Kramers + characteristic K-lines)
-- ✅ Canon Aquilion ONE geometry (320 rows, 16cm coverage)
-- ✅ Reactant-compatible ray tracing
-- ✅ Bowtie filter (position-dependent beam shaping)
-- ✅ Compton scatter (Gaussian convolution model)
-- ✅ Poisson noise (dose-dependent quantum noise)
-- ✅ DAS readout (log transform)
-
-This is the complete forward model ready for Reactant compilation and Enzyme autodiff!
-"""
-
-# ╔═╡ 563eb522-6c3c-409d-bdfa-7cb3c3dfd18d
-md"""
----
-## 🚀 Enhanced Physics Pipeline
-
-Using the complete physics model with all features enabled!
-"""
-
-# ╔═╡ 05f992b3-cc64-4722-8de8-08152a8b2a81
-md"""
----
-# 8. Autodifferentiation & XLA Compilation
-
-Now that we have a complete physics model, let's prepare it for:
-- **Reactant.jl**: XLA compilation for massive speedup
-- **Enzyme.jl**: Automatic differentiation through compiled code
-
-This enables gradient-based optimization and inverse problems!
-"""
-
-# ╔═╡ 51d36823-66d5-4080-a1dc-d2feb87ef4b3
-md"""
-## 8.1 Reactant @compile Testing
-
-Reactant compiles Julia code to XLA (Accelerated Linear Algebra) for GPU/TPU execution.
-
-**Requirements for successful compilation:**
-- ✅ Pure functions (no callbacks) - DONE!
-- ✅ Statically typed operations
-- ✅ No dynamic allocations in hot loops
-- ⚠️  May need type annotations for complex functions
-
-**Test strategy:**
-1. Start with simple functions (ray tracer)
-2. Build up to full projection
-3. Finally compile entire forward pass
-"""
-
-# ╔═╡ 3085d468-1871-41cb-b4b8-b62f4a1c3f75
-md"""
-### Reactant Test: Single Ray
-
-Let's try compiling a single ray trace with Reactant.
-
-```julia
-using Reactant
-
-# Compile the ray tracer
-@compile trace_ray_material_paths(
-    GRID_META,
-    PHANTOM.material_ids,
-    PHANTOM.densities,
-    ID_LUT,
-    length(unique(PHANTOM.material_ids)),
-    0.0, 50.0, 0.0,  # source position
-    0.0, -50.0, 0.0  # detector position
-)
-```
-
-**Status:** Ready to test! Uncomment the code above to run.
-"""
-
-# ╔═╡ 5c9d13a2-ce05-495f-a873-e271bd284a5e
-md"""
-## 8.2 Enzyme Autodiff Testing
-
-Enzyme provides automatic differentiation through compiled code.
-
-**Gradient applications:**
-1. **Material decomposition**: Separate iodine, calcium, soft tissue from dual-energy scans
-2. **Dose optimization**: Minimize radiation dose while maintaining image quality
-3. **Geometry calibration**: Refine scanner geometry from phantom scans
-4. **Artifact correction**: Learn beam hardening and scatter corrections
-5. **Iterative reconstruction**: Gradient-based MBIR/PWLS algorithms
-
-**Test strategy:**
-1. Verify gradients of simple physics (attenuation)
-2. Test gradients through full forward model
-3. Implement gradient-based demos
-"""
-
-# ╔═╡ d4cf1256-b724-4471-9834-95cc2b800cb1
-md"""
-### Enzyme Test: Gradient of Attenuation
-
-Let's compute gradients of projection values with respect to material densities.
-
-```julia
-using Enzyme
-
-# Define a loss function (e.g., match measured projections)
-function projection_loss(densities)
-    # Update phantom with new densities
-    phantom_test = PhysicalPhantom(
-        PHANTOM.material_ids,
-        densities,
-        PHANTOM.grid
-    )
-
-    # Run forward simulation
-    projs = run_enhanced_simulation(
-        phantom = phantom_test,
-        source = SOURCE_120,
-        geo = GEOMETRY,
-        det = DETECTOR_RESPONSE,
-        mat_lib = MATERIAL_LIBRARY,
-        grid_meta = GRID_META,
-        id_lut = ID_LUT
-    )
-
-    # Compute some loss (e.g., sum of projections)
-    return sum(projs)
-end
-
-# Compute gradient
-density_grad = gradient(Forward, projection_loss, PHANTOM.densities)
-```
-
-**Status:** Ready to test! This will compute ∂(projections)/∂(densities).
-"""
-
-# ╔═╡ 6e6c5524-a483-4ad1-83d0-64943d26c706
-md"""
-## 8.3 Next Steps: Gradient-Based Applications
-
-Now that we have a differentiable CT simulator, we can implement:
-
-### 1. Material Decomposition (Dual-Energy CT)
-Given two scans at different energies (80kVp, 120kVp), separate materials:
-- Iodine contrast (high Z, strong photoelectric)
-- Calcium (bones, plaques)
-- Soft tissue (water equivalent)
-
-Use gradient descent to find material densities that best explain measured projections.
-
-### 2. Dose Optimization
-Minimize radiation dose subject to image quality constraints:
-- Objective: `min dose` subject to `noise_level < threshold`
-- Variables: mAs, kVp, bowtie profile
-- Gradients tell us how to adjust dose for target quality
-
-### 3. Geometry Calibration
-Refine scanner geometry from phantom scans:
-- Variables: source position, detector angles, SDD, SAD
-- Objective: Match measured vs simulated projections
-- Critical for cone-beam artifact correction
-
-### 4. Learned Scatter Correction
-Our current scatter model is approximate (Gaussian convolution).
-We can learn better correction kernels:
-- Simulate high-accuracy scatter (Monte Carlo)
-- Learn fast approximation via gradient descent
-- Deploy learned model for real-time correction
-
-### 5. Iterative Reconstruction (MBIR)
-Model-Based Iterative Reconstruction using our physics model:
-```
-argmin_μ ||A(μ) - y||² + λR(μ)
-```
-Where:
-- `A(μ)` is our differentiable forward model
-- `y` is measured data
-- `R(μ)` is regularization (e.g., TV)
-- Solve via gradient descent with Enzyme!
-
-**All of this is now possible with our differentiable simulator!** 🚀
-"""
-
-# ╔═╡ f2a3b4c5-d6e7-f8a9-b0c1-d2e3f4a5b6c7
-"""
-	apply_poisson_noise(photon_counts; dose_factor=1.0)
-
-Applies Poisson noise to photon counts.
-
-Physics:
-- Variance = mean for Poisson process
-- Lower dose → higher noise
-- dose_factor: 1.0 = nominal dose, 0.5 = half dose, etc.
-
-Returns noisy photon counts.
-"""
-function apply_poisson_noise(
-		photon_counts::Array{Float64};
-		dose_factor::Float64 = 1.0
-	)
-	# Scale counts by dose
-	scaled_counts = photon_counts .* dose_factor
-
-	# Apply Poisson noise (using Normal approximation for large counts)
-	# For Poisson: variance = mean
-	noisy = similar(scaled_counts)
-
-	for i in eachindex(scaled_counts)
-		λ = scaled_counts[i]
-		if λ > 20.0  # Normal approximation valid
-			# Poisson(λ) ≈ Normal(λ, λ)
-			noisy[i] = λ + sqrt(λ) * randn()
-		elseif λ > 0.0  # Small counts - use Poisson sampling
-			noisy[i] = Float64(rand(Poisson(λ)))
-		else
-			noisy[i] = 0.0
-		end
-	end
-
-	# Ensure non-negative
-	return max.(noisy, 0.0)
-end
-
-# ╔═╡ f1a2b3c4-d5e6-f7a8-b9c0-d1e2f3a4b5c6
-md"""
-## Poisson Noise Model
-Quantum noise from photon counting statistics.
-"""
-
-# ╔═╡ a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d
-md"""
-### Realistic Canon Aquilion One Spectrum
-Using enhanced physics model with characteristic X-rays.
-"""
-
-# ╔═╡ e3f4a5b6-c7d8-9e0f-1a2b-3c4d5e6f7a8b
-"""
-	apply_scatter_correction(projections, scatter_estimate)
-
-Removes estimated scatter from measurements.
-In forward model: proj_measured = proj_primary + scatter
-For correction: proj_corrected = proj_measured - scatter
-"""
-function apply_scatter_correction(
-		projections::Array{Float64, 3},
-		scatter_estimate::Array{Float64, 3}
-	)
-	return max.(projections .- scatter_estimate, 0.0)
-end
-
-# ╔═╡ e1f2a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a6b
-md"""
-# 5.5. Scatter Physics (Compton Approximation)
-Convolution-based scatter model - differentiable and self-contained.
-"""
-
-# ╔═╡ f1a2b3c4-d5e6-7f8a-9b0c-1d2e3f4a5b6c
-"""
-	generate_realistic_spectrum
-
-Enhanced spectrum with tungsten characteristic X-rays and heel effect.
-Self-contained analytical model - no external packages needed.
-
-Physical parameters:
-- Tungsten anode (Z=74)
-- Characteristic energies: K-α₁=59.3 keV, K-α₂=58.0 keV, K-β=67.2 keV
-- Anode angle: 7° (typical for CT)
-- Heel effect: intensity variation across field
-"""
-function generate_realistic_spectrum(;
-		kVp::Float64,
-		mAs::Float64,
-		min_E::Float64 = 10.0,
-		max_E_grid::Float64 = 150.0,
-		n_bins::Int = 140,
-		anode_angle_deg::Float64 = 7.0,
-		filtration_mm_Al::Float64 = 4.0,
-		filtration_mm_Cu::Float64 = 0.1
-	)
-
-	energies = collect(range(min_E, max_E_grid, length=n_bins))
-	mask = energies .< kVp
-
-	# 1. BREMSSTRAHLUNG (Kramers' Law with Z-dependence)
-	# I(E) ∝ Z(kVp - E) where Z=74 for tungsten
-	Z_tungsten = 74.0
-	brems = @. Z_tungsten * energies * (kVp - energies) * mask
-
-	# 2. CHARACTERISTIC X-RAYS (Tungsten K-lines)
-	# Gaussian peaks centered at characteristic energies
-	char_peaks = zeros(Float64, n_bins)
-
-	if kVp > 69.5  # K-edge of tungsten
-		# K-alpha1 (59.3 keV) - strongest
-		sigma_kalpha = 0.5  # keV width
-		char_peaks .+= @. 0.08 * kVp * exp(-((energies - 59.3)^2) / (2 * sigma_kalpha^2))
-
-		# K-alpha2 (58.0 keV) - half intensity of K-alpha1
-		char_peaks .+= @. 0.04 * kVp * exp(-((energies - 58.0)^2) / (2 * sigma_kalpha^2))
-
-		# K-beta (67.2 keV) - 20% of K-alpha1
-		char_peaks .+= @. 0.016 * kVp * exp(-((energies - 67.2)^2) / (2 * sigma_kalpha^2))
-	end
-
-	# 3. FILTRATION
-	# Aluminum (inherent + added)
-	mu_Al = @. 10.0 * (30.0 / max.(energies, 1.0))^3
-	trans_Al = @. exp(-mu_Al * filtration_mm_Al / 10.0)  # convert to cm
-
-	# Copper (beam shaping)
-	mu_Cu = @. 15.0 * (30.0 / max.(energies, 1.0))^3
-	trans_Cu = @. exp(-mu_Cu * filtration_mm_Cu / 10.0)
-
-	transmission = trans_Al .* trans_Cu
-
-	# 4. COMBINE BREMSSTRAHLUNG + CHARACTERISTIC
-	raw_spectrum = (brems .+ char_peaks) .* transmission
-
-	# 5. HEEL EFFECT (anode angle affects intensity)
-	# Simplified model: intensity varies with angle
-	# For central ray, use average intensity
-	heel_factor = sind(anode_angle_deg) * 0.7 + 0.3  # empirical
-
-	intensity = raw_spectrum .* heel_factor
-
-	# 6. NORMALIZE TO PHOTON COUNT
-	total_int = sum(intensity) + 1e-9
-	flux_target = mAs * 2.5e5 * n_bins  # slightly higher for realistic spectrum
-	photons = intensity ./ total_int .* flux_target
-
-	return XRaySource(
-		kVp = kVp,
-		mAs = mAs,
-		energies = energies,
-		photons = photons,
-		focal_spot_size_mm = 1.2  # typical CT focal spot
-	)
-end
-
-# ╔═╡ a2b3c4d5-e6f7-8a9b-0c1d-2e3f4a5b6c7d
-SOURCE_120_REALISTIC = generate_realistic_spectrum(
-	kVp=CONST_kVp,
-	mAs=CONST_mAs,
-	anode_angle_deg=7.0,
-	filtration_mm_Al=5.0,
-	filtration_mm_Cu=0.2
-)
-
-# ╔═╡ 45cc1bd4-3a00-4e0b-a0ec-b3d953f50d72
-let
-	f = Figure(size=(1200, 800))
-
-	# Top row: Compare simple vs realistic
-	ax1 = Axis(f[1,1],
-		title="Simple Kramers Model",
-		xlabel="Energy (keV)",
-		ylabel="Photons/keV"
-	)
-	lines!(ax1, SOURCE_120.energies, SOURCE_120.photons, label="120 kVp Simple", linewidth=2)
-
-	ax2 = Axis(f[1,2],
-		title="Realistic Model (Tungsten + Characteristic)",
-		xlabel="Energy (keV)",
-		ylabel="Photons/keV"
-	)
-	lines!(ax2, SOURCE_120_REALISTIC.energies, SOURCE_120_REALISTIC.photons,
-		label="120 kVp Realistic", linewidth=2, color=:red)
-
-	# Bottom row: Direct comparison
-	ax3 = Axis(f[2,1:2],
-		title="Spectrum Comparison - Note K-alpha Peaks at ~59 keV",
-		xlabel="Energy (keV)",
-		ylabel="Photons/keV"
-	)
-	lines!(ax3, SOURCE_120.energies, SOURCE_120.photons,
-		label="Simple Kramers", linewidth=2, alpha=0.7)
-	lines!(ax3, SOURCE_120_REALISTIC.energies, SOURCE_120_REALISTIC.photons,
-		label="Realistic (W K-α, K-β)", linewidth=2, color=:red, alpha=0.7)
-	vlines!(ax3, [59.3], color=:orange, linestyle=:dash, label="K-α₁")
-	vlines!(ax3, [67.2], color=:purple, linestyle=:dash, label="K-β")
-	axislegend(ax3, position=:rt)
-
-	f
-end
-
-# ╔═╡ d1e2f3a4-b5c6-7d8e-9f0a-1b2c3d4e5f6a
-md"""
-### Canon Aquilion ONE Geometry
-Using actual scanner specifications (320 rows, 16cm z-coverage).
-"""
-
-# ╔═╡ e2f3a4b5-c6d7-8e9f-0a1b-2c3d4e5f6a7b
-"""
-	estimate_scatter_profile(projections; spr_factor=0.15, kernel_sigma=30.0)
-
-Estimates scatter contamination using convolution-based model.
-
-Physics approximation:
-- Compton scattering creates smooth, low-frequency scatter
-- Scatter-to-Primary Ratio (SPR) ~ 0.1-0.3 for typical body scans
-- Scatter distribution ≈ Gaussian convolution of primary
-
-Returns:
-- scatter_estimate: Same size as projections
-"""
-function estimate_scatter_profile(
-		projections::Array{Float64, 3};
-		spr_factor::Float64 = 0.15,  # Typical scatter-to-primary ratio
-		kernel_sigma::Float64 = 30.0  # Scatter blur (pixels)
-	)
-
-	n_rows, n_cols, n_proj = size(projections)
-	scatter = zeros(Float64, n_rows, n_cols, n_proj)
-
-	# Create Gaussian scatter kernel (separable for efficiency)
-	k_size = round(Int, 6 * kernel_sigma)
-	k_size = k_size + (k_size % 2 == 0 ? 1 : 0)  # Make odd
-	k_half = k_size ÷ 2
-
-	x = collect(-k_half:k_half)
-	kernel_1d = exp.(-x.^2 / (2 * kernel_sigma^2))
-	kernel_1d ./= sum(kernel_1d)
-
-	# Apply scatter model per projection
-	for k in 1:n_proj
-		proj_slice = projections[:, :, k]
-
-		# Scatter is smooth/blurred version of primary
-		# Convolve with separable Gaussian
-		temp = zeros(Float64, n_rows, n_cols)
-
-		# Horizontal convolution
-		for r in 1:n_rows
-			for c in 1:n_cols
-				val = 0.0
-				for i in -k_half:k_half
-					c_idx = clamp(c + i, 1, n_cols)
-					val += proj_slice[r, c_idx] * kernel_1d[i + k_half + 1]
-				end
-				temp[r, c] = val
-			end
-		end
-
-		# Vertical convolution
-		for c in 1:n_cols
-			for r in 1:n_rows
-				val = 0.0
-				for i in -k_half:k_half
-					r_idx = clamp(r + i, 1, n_rows)
-					val += temp[r_idx, c] * kernel_1d[i + k_half + 1]
-				end
-				scatter[r, c, k] = val * spr_factor
-			end
-		end
-	end
-
-	return scatter
-end
-
-# ╔═╡ 9e0b86e6-71d2-499b-b2a7-c8bf89712c9f
-function run_enhanced_simulation(;
-		phantom::PhysicalPhantom,
-		source::XRaySource,
-		geo::Geometry,
-		det::DetectorResponse,
-		mat_lib::MaterialLibrary,
-		grid_meta::GridMeta,
-		id_lut::Vector{Int},
-		# --- Physics options ---
-		use_bowtie::Bool = true,
-		bowtie_thickness_cm::Float64 = 3.0,
-		use_scatter::Bool = true,
-		scatter_spr::Float64 = 0.15,
-		scatter_kernel_sigma::Float64 = 30.0,
-		use_poisson_noise::Bool = true,
-		dose_factor::Float64 = 1.0
-	)
-
-	@info "🚀 Enhanced Physics Simulation"
-	@info "  ├─ Bowtie filter: $(use_bowtie)"
-	@info "  ├─ Scatter model: $(use_scatter) (SPR=$(scatter_spr))"
-	@info "  ├─ Poisson noise: $(use_poisson_noise) (dose=$(dose_factor)x)"
-	@info "  └─ Projections: $(geo.n_rows)×$(geo.n_cols)×$(length(geo.angles))"
-
-	# ═══════════════════════════════════════════════════════════
-	# STEP 1: Pre-calculate I₀ (Air Scan) with Bowtie Filter
-	# ═══════════════════════════════════════════════════════════
-	# This represents what the detector sees with no phantom present
-	# Must account for bowtie filter attenuation
-
-	n_sub = 2
-	sub_width = 1.0 / n_sub
-	sub_offsets = (1:n_sub) .* sub_width .- (sub_width/2 + 0.5)
-
-	# Calculate I₀ for each detector column (bowtie varies per column)
-	I0_per_column = zeros(Float64, geo.n_cols)
-
-	for c in 1:geo.n_cols
-		# Apply bowtie filter to source spectrum for this column
-		if use_bowtie
-			filtered_photons = apply_bowtie_filter(
-				source.energies,
-				source.photons,
-				c,
-				geo.n_cols;
-				max_thickness_cm = bowtie_thickness_cm
-			)
-		else
-			filtered_photons = source.photons
-		end
-
-		# Total energy reaching detector (no phantom)
-		I0_per_column[c] = sum(filtered_photons .* source.energies .* det.efficiency)
-	end
-
-	# ═══════════════════════════════════════════════════════════
-	# STEP 2: Forward Projection (Polychromatic Ray Tracing)
-	# ═══════════════════════════════════════════════════════════
-
-	photon_counts = zeros(Float64, geo.n_rows, geo.n_cols, length(geo.angles))
-
-	@info "📷 Acquiring projections..."
-
-	Threads.@threads for k in 1:length(geo.angles)
-
-		# Geometry for this projection angle
-		src_pos    = geo.source_positions[:, k]
-		det_center = geo.det_centers[:, k]
-		u_vec      = geo.det_u_vecs[:, k]
-		v_vec      = geo.det_v_vecs[:, k]
-
-		n_mats = size(mat_lib.μ_matrix, 1)
-
-		for r in 1:geo.n_rows, c in 1:geo.n_cols
-
-			# Apply bowtie filter to source spectrum for this column
-			if use_bowtie
-				filtered_photons = apply_bowtie_filter(
-					source.energies,
-					source.photons,
-					c,
-					geo.n_cols;
-					max_thickness_cm = bowtie_thickness_cm
-				)
-			else
-				filtered_photons = source.photons
-			end
-
-			pixel_energy_sum = 0.0
-
-			# Sub-pixel sampling for anti-aliasing
-			for sr in 1:n_sub, sc in 1:n_sub
-				u_off = (c - geo.n_cols/2 - 0.5 + sub_offsets[sc]) * geo.pixel_width_cm
-				v_off = (r - geo.n_rows/2 - 0.5 + sub_offsets[sr]) * geo.pixel_height_cm
-				target_pos = det_center .+ (u_off .* u_vec) .+ (v_off .* v_vec)
-
-				# Ray trace through phantom (Reactant-compatible)
-				path_lengths = trace_ray_material_paths(
-					grid_meta,
-					phantom.material_ids,
-					phantom.densities,
-					id_lut,
-					n_mats,
-					src_pos[1], src_pos[2], src_pos[3],
-					target_pos[1], target_pos[2], target_pos[3]
-				)
-
-				# Calculate energy-dependent attenuation
-				atten_per_energy = zeros(Float64, length(source.energies))
-				for m_idx in 1:n_mats
-					if path_lengths[m_idx] > 0
-						for e_idx in 1:length(source.energies)
-							atten_per_energy[e_idx] += mat_lib.μ_matrix[m_idx, e_idx] * path_lengths[m_idx]
-						end
-					end
-				end
-
-				# Polychromatic transmission: I = Σ N₀(E) × exp(-μ(E)×L) × E × η(E)
-				sub_energy = sum(@. filtered_photons * exp(-atten_per_energy) * source.energies * det.efficiency)
-
-				pixel_energy_sum += sub_energy
-			end
-
-			# Average over sub-pixels
-			avg_energy = pixel_energy_sum / (n_sub^2)
-
-			# Convert energy to photon count (simplified: assume fixed energy per photon)
-			# In reality, this is tracked per energy bin, but for noise model we need total counts
-			avg_photon_count = avg_energy / mean(source.energies)
-
-			photon_counts[r, c, k] = avg_photon_count
-		end
-	end
-
-	# ═══════════════════════════════════════════════════════════
-	# STEP 3: Add Scatter (Gaussian Convolution Model)
-	# ═══════════════════════════════════════════════════════════
-
-	if use_scatter
-		@info "🌊 Estimating scatter contribution..."
-		scatter_counts = estimate_scatter_profile(
-			photon_counts;
-			spr_factor = scatter_spr,
-			kernel_sigma = scatter_kernel_sigma
-		)
-
-		# Add scatter to primary
-		photon_counts .+= scatter_counts
-	end
-
-	# ═══════════════════════════════════════════════════════════
-	# STEP 4: Apply Poisson Noise (Quantum Noise)
-	# ═══════════════════════════════════════════════════════════
-
-	if use_poisson_noise
-		@info "🎲 Applying Poisson noise (dose=$(dose_factor)x)..."
-		photon_counts = apply_poisson_noise(
-			photon_counts;
-			dose_factor = dose_factor
-		)
-	end
-
-	# Add electronic noise from detector
-	if det.noise_sigma > 0
-		@info "📟 Adding electronic noise..."
-		photon_counts .+= randn(size(photon_counts)) .* det.noise_sigma
-	end
-
-	# ═══════════════════════════════════════════════════════════
-	# STEP 5: DAS Readout (Log Transform to Line Integrals)
-	# ═══════════════════════════════════════════════════════════
-
-	@info "📊 DAS readout (log transform)..."
-	projections = zeros(Float64, size(photon_counts))
-
-	for k in 1:length(geo.angles), r in 1:geo.n_rows, c in 1:geo.n_cols
-		# Convert photon counts back to energy for DAS readout
-		# (using column-specific I₀ because of bowtie filter)
-		photon_energy = photon_counts[r, c, k] * mean(source.energies)
-		I0_energy = I0_per_column[c]
-
-		projections[r, c, k] = readout_das(photon_energy, I0_energy)
-	end
-
-	@info "✅ Simulation complete!"
-
-	return projections
-end
-
-# ╔═╡ 152c98f7-2b30-4f36-9f10-b60c63c3cb53
-enhanced_sino = run_enhanced_simulation(
-	phantom = PHANTOM,
-	source = SOURCE_120,  # Now uses realistic spectrum with K-lines!
-	geo = GEOMETRY,       # Canon Aquilion ONE geometry
-	det = DETECTOR_RESPONSE,
-	mat_lib = MATERIAL_LIBRARY,
-	grid_meta = GRID_META,
-	id_lut = ID_LUT,
-	# Physics options
-	use_bowtie = true,
-	bowtie_thickness_cm = 3.0,
-	use_scatter = true,
-	scatter_spr = 0.15,
-	use_poisson_noise = true,
-	dose_factor = 1.0
-)
-
-# ╔═╡ ecc8f0f1-6a64-400e-91f9-9b4d0bce0d25
-vol_enhanced = convert_to_hu(
-	reconstruct_fdk(enhanced_sino, GEOMETRY, RECON_GRID),
-	0.195
-)
-
-# ╔═╡ b127cfa7-681f-419f-9c19-3700ce5acdf9
-heatmap(vol_enhanced[:, :, 10]; colormap = :grays)
-
-# ╔═╡ c1d2e3f4-a5b6-7c8d-9e0f-1a2b3c4d5e6f
-"""
-	create_aquilion_one_geometry
-
-Canon Aquilion ONE geometry with actual scanner specifications:
-- 320-row detector (16 cm z-coverage in one rotation!)
-- 0.5mm detector pixel pitch
-- SDD = 1000mm
-- SAD = 600mm (actual Aquilion ONE geometry)
-- FOV up to 500mm
-"""
-function create_aquilion_one_geometry(; protocol::ScanProtocol)
-	# CANON AQUILION ONE SPECIFICATIONS
-	sdd_mm = 1000.0  # Source-to-detector distance
-	sad_mm = 600.0   # Source-to-axis distance (isocenter)
-
-	# 320-ROW DETECTOR
-	n_rows = 320     # 16 cm z-coverage!
-	detector_pixel_pitch_mm = 0.5  # 0.5mm at isocenter
-
-	# Detector width to cover FOV
-	magnification = sdd_mm / sad_mm
-	det_width_needed_mm = protocol.scan_fov_mm * magnification
-	n_cols = round(Int, det_width_needed_mm / (detector_pixel_pitch_mm * magnification))
-
-	# Make it even for symmetry
-	n_cols = n_cols + (n_cols % 2)
-
-	# Actual pixel size at detector
-	pixel_size_at_det_mm = (detector_pixel_pitch_mm * magnification,
-	                        detector_pixel_pitch_mm * magnification)
-
-	# Angular sampling
-	start_deg = protocol.start_angle
-	stop_deg = protocol.start_angle + protocol.rotation_total_angle
-	angles = collect(range(start_deg, stop_deg, length=protocol.num_projections))
-
-	@info """
-	🏥 Canon Aquilion ONE Geometry
-	==============================
-	Detector: $n_rows × $n_cols (320-row wide detector!)
-	Z-Coverage: $(n_rows * detector_pixel_pitch_mm / 10.0) cm
-	SDD: $sdd_mm mm
-	SAD: $sad_mm mm
-	Pixel pitch: $(detector_pixel_pitch_mm) mm
-	FOV: $(protocol.scan_fov_mm) mm
-	Projections: $(length(angles))
-	"""
-
-	return Geometry(
-		sdd_mm = sdd_mm,
-		sad_mm = sad_mm,
-		n_rows = n_rows,
-		n_cols = n_cols,
-		pixel_size_mm = pixel_size_at_det_mm,
-		angles_deg = angles
-	)
-end
-
-# ╔═╡ d2e3f4a5-b6c7-8d9e-0f1a-2b3c4d5e6f7a
-GEOMETRY_AQUILION_ONE = create_aquilion_one_geometry(protocol=PROTOCOL)
-
-# ╔═╡ d3e4f5a6-b7c8-9d0e-1f2a-3b4c5d6e7f8a
-let
-	@info """
-	=== GEOMETRY COMPARISON ===
-	Generic Scanner:
-	  Rows: $(GEOMETRY.n_rows), Cols: $(GEOMETRY.n_cols)
-	  SDD: $(GEOMETRY.SDD_cm) cm, SAD: $(GEOMETRY.SAD_cm) cm
-	  Z-coverage: $(GEOMETRY.n_rows * GEOMETRY.pixel_height_cm) cm
-
-	Canon Aquilion ONE:
-	  Rows: $(GEOMETRY_AQUILION_ONE.n_rows), Cols: $(GEOMETRY_AQUILION_ONE.n_cols)
-	  SDD: $(GEOMETRY_AQUILION_ONE.SDD_cm) cm, SAD: $(GEOMETRY_AQUILION_ONE.SAD_cm) cm
-	  Z-coverage: $(GEOMETRY_AQUILION_ONE.n_rows * GEOMETRY_AQUILION_ONE.pixel_height_cm) cm
-	  (16cm whole-organ coverage in ONE rotation!)
-	"""
 end
 
 # ╔═╡ Cell order:
@@ -2911,36 +1754,3 @@ end
 # ╠═2abc378a-9b3d-4ae8-8b66-6ab41083da50
 # ╠═9ef1af0b-0384-4274-b6e6-f4f22612cd5d
 # ╟─e05fc8c6-4b4f-4fb4-baf6-9df8dc58d343
-# ╠═dd000002-0000-0000-0000-000000000001
-# ╠═dd000003-0000-0000-0000-000000000001
-# ╠═dd000001-0000-0000-0000-000000000001
-# ╠═ee000001-0000-0000-0000-000000000001
-# ╠═e21dd1c0-b03e-46c6-9a49-f7b5d55e85c9
-# ╠═1cd38a76-87c8-4bff-b012-29829f6251fd
-# ╠═ccb4ab25-be96-45ef-b695-691724256a45
-# ╟─6b3a037a-9da0-4ed6-9a1b-d640361dbdb3
-# ╠═f16df8ce-5d11-4e54-8601-7121380f4cd5
-# ╟─503e152f-2123-48a1-9556-d7fe8f4316fa
-# ╠═9e0b86e6-71d2-499b-b2a7-c8bf89712c9f
-# ╟─563eb522-6c3c-409d-bdfa-7cb3c3dfd18d
-# ╠═152c98f7-2b30-4f36-9f10-b60c63c3cb53
-# ╠═ecc8f0f1-6a64-400e-91f9-9b4d0bce0d25
-# ╠═b127cfa7-681f-419f-9c19-3700ce5acdf9
-# ╟─05f992b3-cc64-4722-8de8-08152a8b2a81
-# ╟─51d36823-66d5-4080-a1dc-d2feb87ef4b3
-# ╟─3085d468-1871-41cb-b4b8-b62f4a1c3f75
-# ╟─5c9d13a2-ce05-495f-a873-e271bd284a5e
-# ╟─d4cf1256-b724-4471-9834-95cc2b800cb1
-# ╟─6e6c5524-a483-4ad1-83d0-64943d26c706
-# ╠═f2a3b4c5-d6e7-f8a9-b0c1-d2e3f4a5b6c7
-# ╠═f1a2b3c4-d5e6-f7a8-b9c0-d1e2f3a4b5c6
-# ╠═d3e4f5a6-b7c8-9d0e-1f2a-3b4c5d6e7f8a
-# ╠═d2e3f4a5-b6c7-8d9e-0f1a-2b3c4d5e6f7a
-# ╠═a2b3c4d5-e6f7-8a9b-0c1d-2e3f4a5b6c7d
-# ╠═a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d
-# ╠═e3f4a5b6-c7d8-9e0f-1a2b-3c4d5e6f7a8b
-# ╠═e1f2a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a6b
-# ╠═f1a2b3c4-d5e6-7f8a-9b0c-1d2e3f4a5b6c
-# ╠═d1e2f3a4-b5c6-7d8e-9f0a-1b2c3d4e5f6a
-# ╠═e2f3a4b5-c6d7-8e9f-0a1b-2c3d4e5f6a7b
-# ╠═c1d2e3f4-a5b6-7c8d-9e0f-1a2b3c4d5e6f
