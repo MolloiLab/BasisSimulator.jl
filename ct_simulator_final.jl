@@ -1812,269 +1812,6 @@ md"""
 Binding the complete physics chain together with all enhanced features.
 """
 
-# ╔═╡ 9e0b86e6-71d2-499b-b2a7-c8bf89712c9f
-function run_enhanced_simulation(;
-		phantom::PhysicalPhantom,
-		source::XRaySource,
-		geo::Geometry,
-		det::DetectorResponse,
-		mat_lib::MaterialLibrary,
-		grid_meta::GridMeta,
-		id_lut::Vector{Int},
-		# --- Physics options ---
-		use_bowtie::Bool = true,
-		bowtie_thickness_cm::Float64 = 3.0,
-		use_scatter::Bool = true,
-		scatter_spr::Float64 = 0.15,
-		scatter_kernel_sigma::Float64 = 30.0,
-		use_poisson_noise::Bool = true,
-		dose_factor::Float64 = 1.0,
-		use_compiled::Bool = false,  # Use Reactant-compiled ray tracer
-		compiled_tracer = nothing  # Pass compiled function if use_compiled=true
-	)
-
-	@info "🚀 Enhanced Physics Simulation"
-	@info "  ├─ Bowtie filter: $(use_bowtie)"
-	@info "  ├─ Scatter model: $(use_scatter) (SPR=$(scatter_spr))"
-	@info "  ├─ Poisson noise: $(use_poisson_noise) (dose=$(dose_factor)x)"
-	@info "  └─ Projections: $(geo.n_rows)×$(geo.n_cols)×$(length(geo.angles))"
-
-	# ═══════════════════════════════════════════════════════════
-	# STEP 1: Pre-calculate I₀ (Air Scan) with Bowtie Filter
-	# ═══════════════════════════════════════════════════════════
-	# This represents what the detector sees with no phantom present
-	# Must account for bowtie filter attenuation
-
-	n_sub = 2
-	sub_width = 1.0 / n_sub
-	sub_offsets = (1:n_sub) .* sub_width .- (sub_width/2 + 0.5)
-
-	# Calculate I₀ for each detector column (bowtie varies per column)
-	I0_per_column = zeros(Float64, geo.n_cols)
-
-	for c in 1:geo.n_cols
-		# Apply bowtie filter to source spectrum for this column
-		if use_bowtie
-			filtered_photons = apply_bowtie_filter(
-				source.energies,
-				source.photons,
-				c,
-				geo.n_cols;
-				max_thickness_cm = bowtie_thickness_cm
-			)
-		else
-			filtered_photons = source.photons
-		end
-
-		# Total energy reaching detector (no phantom)
-		I0_per_column[c] = sum(filtered_photons .* source.energies .* det.efficiency)
-	end
-
-	# ═══════════════════════════════════════════════════════════
-	# STEP 2: Forward Projection (Polychromatic Ray Tracing)
-	# ═══════════════════════════════════════════════════════════
-
-	energy_values = zeros(Float64, geo.n_rows, geo.n_cols, length(geo.angles))
-
-	@info "📷 Acquiring projections..."
-
-	Threads.@threads for k in 1:length(geo.angles)
-
-		# Geometry for this projection angle
-		src_pos    = geo.source_positions[:, k]
-		det_center = geo.det_centers[:, k]
-		u_vec      = geo.det_u_vecs[:, k]
-		v_vec      = geo.det_v_vecs[:, k]
-
-		n_mats = size(mat_lib.μ_matrix, 1)
-
-		for r in 1:geo.n_rows, c in 1:geo.n_cols
-
-			# Apply bowtie filter to source spectrum for this column
-			if use_bowtie
-				filtered_photons = apply_bowtie_filter(
-					source.energies,
-					source.photons,
-					c,
-					geo.n_cols;
-					max_thickness_cm = bowtie_thickness_cm
-				)
-			else
-				filtered_photons = source.photons
-			end
-
-			pixel_energy_sum = 0.0
-
-			# Sub-pixel sampling for anti-aliasing
-			for sr in 1:n_sub, sc in 1:n_sub
-				u_off = (c - geo.n_cols/2 - 0.5 + sub_offsets[sc]) * geo.pixel_width_cm
-				v_off = (r - geo.n_rows/2 - 0.5 + sub_offsets[sr]) * geo.pixel_height_cm
-				target_pos = det_center .+ (u_off .* u_vec) .+ (v_off .* v_vec)
-
-				# Ray trace through phantom (Reactant-compatible)
-				# Choose ray tracer (compiled or standard)
-				if use_compiled && compiled_tracer !== nothing
-					path_lengths = compiled_tracer(
-						grid_meta,
-						phantom.material_ids,
-						phantom.densities,
-						id_lut,
-						n_mats,
-						src_pos[1], src_pos[2], src_pos[3],
-						target_pos[1], target_pos[2], target_pos[3]
-					)
-				else
-					path_lengths = trace_ray_material_paths(
-						grid_meta,
-						phantom.material_ids,
-						phantom.densities,
-						id_lut,
-						n_mats,
-						src_pos[1], src_pos[2], src_pos[3],
-						target_pos[1], target_pos[2], target_pos[3]
-					)
-			end
-
-				# Calculate energy-dependent attenuation
-				atten_per_energy = zeros(Float64, length(source.energies))
-				for m_idx in 1:n_mats
-					if path_lengths[m_idx] > 0
-						for e_idx in 1:length(source.energies)
-							atten_per_energy[e_idx] += mat_lib.μ_matrix[m_idx, e_idx] * path_lengths[m_idx]
-						end
-					end
-				end
-
-				# Polychromatic transmission: I = Σ N₀(E) × exp(-μ(E)×L) × E × η(E)
-				sub_energy = sum(@. filtered_photons * exp(-atten_per_energy) * source.energies * det.efficiency)
-
-				pixel_energy_sum += sub_energy
-			end
-
-			# Average over sub-pixels
-			avg_energy = pixel_energy_sum / (n_sub^2)
-
-			# Work with energy directly (no conversion to photon counts!)
-			avg_energy_value = avg_energy
-
-			energy_values[r, c, k] = avg_energy_value
-		end
-	end
-
-	# ═══════════════════════════════════════════════════════════
-	# STEP 3: Add Scatter (Gaussian Convolution Model)
-	# ═══════════════════════════════════════════════════════════
-
-	if use_scatter
-		@info "🌊 Estimating scatter contribution..."
-		scatter_energy = estimate_scatter_profile(
-			energy_values;
-			spr_factor = scatter_spr,
-			kernel_sigma = scatter_kernel_sigma
-		)
-
-		# Add scatter to primary
-		photon_counts .+= scatter_counts
-	end
-
-	# ═══════════════════════════════════════════════════════════
-	# STEP 4: Apply Poisson Noise (Quantum Noise)
-	# ═══════════════════════════════════════════════════════════
-
-	if use_poisson_noise
-		@info "🎲 Applying Poisson noise (dose=$(dose_factor)x)..."
-		energy_values = apply_poisson_noise(
-			energy_values;
-			dose_factor = dose_factor
-		)
-	end
-
-	# # Add electronic noise from detector
-	# if det.noise_sigma > 0
-	# 	@info "📟 Adding electronic noise..."
-	# 	photon_counts .+= randn(size(photon_counts)) .* det.noise_sigma
-	# end
-
-	# ═══════════════════════════════════════════════════════════
-	# STEP 5: DAS Readout (Log Transform to Line Integrals)
-	# ═══════════════════════════════════════════════════════════
-
-	@info "📊 DAS readout (log transform)..."
-	projections = zeros(Float64, size(energy_values))
-
-	for k in 1:length(geo.angles), r in 1:geo.n_rows, c in 1:geo.n_cols
-		# Use energy values directly (no conversion needed)
-		# Energy values already in correct units
-		photon_energy = energy_values[r, c, k]
-		I0_energy = I0_per_column[c]
-
-		projections[r, c, k] = readout_das(photon_energy, I0_energy)
-	end
-
-	@info "✅ Simulation complete!"
-
-	return projections
-end
-
-# ╔═╡ 152c98f7-2b30-4f36-9f10-b60c63c3cb53
-enhanced_sino = run_enhanced_simulation(
-	phantom = PHANTOM,
-	source = SOURCE_120_REALISTIC,  # Now uses realistic spectrum with K-lines!
-	geo = GEOMETRY_AQUILION_ONE,       # Canon Aquilion ONE geometry
-	det = DETECTOR_RESPONSE,
-	mat_lib = MATERIAL_LIBRARY,
-	grid_meta = GRID_META,
-	id_lut = ID_LUT,
-	# Physics options
-	use_bowtie = false,  # Disabled by default (causing issues)
-	bowtie_thickness_cm = 0.5,  # Much thinner (not 3.0!)
-	use_scatter = false,  # Disabled by default
-	scatter_spr = 0.05,  # More conservative
-	use_poisson_noise = false,  # Disabled by default for debugging
-	dose_factor = 1.0
-)
-
-# ╔═╡ ecc8f0f1-6a64-400e-91f9-9b4d0bce0d25
-vol_enhanced = convert_to_hu(
-	reconstruct_fdk(enhanced_sino, GEOMETRY_AQUILION_ONE, RECON_GRID),
-	0.195
-)
-
-# ╔═╡ e05fc8c6-4b4f-4fb4-baf6-9df8dc58d343
-let
-	# --- Data Extraction ---
-	# 1. Ground Truth Slice (Uses Phantom Grid)
-	mid_z_p = PHANTOM.grid.nz ÷ 2
-	gt_slice = PHANTOM.material_ids[:, :, mid_z_p]
-
-	# 2. Sinogram (Central Row)
-	mid_row = size(enhanced_sino, 1) ÷ 2
-	sino_slice = enhanced_sino[mid_row, :, :]
-
-	# 3. Recon Slice (Uses Recon Grid)
-	mid_z_r = RECON_GRID.nz ÷ 2
-	recon_slice = vol_enhanced[:, :, mid_z_r]
-
-	# --- Visualization ---
-	f = Figure(size=(1200, 450))
-
-	# Plot 1: Ground Truth
-	ax1 = Axis(f[1, 1], title="Ground Truth (Material IDs)", aspect=DataAspect())
-	hm1 = heatmap!(ax1, PHANTOM.grid.x, PHANTOM.grid.y, gt_slice, colormap=:tab20)
-
-	# Plot 2: Sinogram
-	ax2 = Axis(f[1, 2], title="Sinogram", xlabel="Detector Pixel", ylabel="Angle")
-	hm2 = heatmap!(ax2, sino_slice, colormap=:grays)
-
-	# Plot 3: Reconstruction (HU)
-	# Window/Level: Soft Tissue (-200 to +400 covers air gaps to bone inserts)
-	ax3 = Axis(f[1, 3], title="Reconstruction (HU)", aspect=DataAspect())
-	hm3 = heatmap!(ax3, RECON_GRID.x, RECON_GRID.y, recon_slice, colormap=:grays, colorrange=(-200, 400))
-	Colorbar(f[1, 4], hm3, label="Hounsfield Units")
-
-	f
-end
-
 # ╔═╡ 05f992b3-cc64-4722-8de8-08152a8b2a81
 md"""
 ---
@@ -2208,6 +1945,254 @@ begin
 	@info "   Use 'use_compiled=true' in simulation to enable"
 	
 	trace_ray_compiled
+end
+
+# ╔═╡ 9e0b86e6-71d2-499b-b2a7-c8bf89712c9f
+function run_enhanced_simulation(;
+		phantom::PhysicalPhantom,
+		source::XRaySource,
+		geo::Geometry,
+		det::DetectorResponse,
+		mat_lib::MaterialLibrary,
+		grid_meta::GridMeta,
+		id_lut::Vector{Int},
+		# --- Physics options ---
+		use_bowtie::Bool = true,
+		bowtie_thickness_cm::Float64 = 3.0,
+		use_scatter::Bool = true,
+		scatter_spr::Float64 = 0.15,
+		scatter_kernel_sigma::Float64 = 30.0,
+		use_poisson_noise::Bool = true,
+		dose_factor::Float64 = 1.0
+	)
+
+	@info "🚀 Enhanced Physics Simulation (using Reactant-compiled ray tracer)"
+	@info "  ├─ Bowtie filter: $(use_bowtie)"
+	@info "  ├─ Scatter model: $(use_scatter) (SPR=$(scatter_spr))"
+	@info "  ├─ Poisson noise: $(use_poisson_noise) (dose=$(dose_factor)x)"
+	@info "  └─ Projections: $(geo.n_rows)×$(geo.n_cols)×$(length(geo.angles))"
+
+	# ═══════════════════════════════════════════════════════════
+	# STEP 1: Pre-calculate I₀ (Air Scan) with Bowtie Filter
+	# ═══════════════════════════════════════════════════════════
+	# This represents what the detector sees with no phantom present
+	# Must account for bowtie filter attenuation
+
+	n_sub = 2
+	sub_width = 1.0 / n_sub
+	sub_offsets = (1:n_sub) .* sub_width .- (sub_width/2 + 0.5)
+
+	# Calculate I₀ for each detector column (bowtie varies per column)
+	I0_per_column = zeros(Float64, geo.n_cols)
+
+	for c in 1:geo.n_cols
+		# Apply bowtie filter to source spectrum for this column
+		if use_bowtie
+			filtered_photons = apply_bowtie_filter(
+				source.energies,
+				source.photons,
+				c,
+				geo.n_cols;
+				max_thickness_cm = bowtie_thickness_cm
+			)
+		else
+			filtered_photons = source.photons
+		end
+
+		# Total energy reaching detector (no phantom)
+		I0_per_column[c] = sum(filtered_photons .* source.energies .* det.efficiency)
+	end
+
+	# ═══════════════════════════════════════════════════════════
+	# STEP 2: Forward Projection (Polychromatic Ray Tracing)
+	# ═══════════════════════════════════════════════════════════
+
+	energy_values = zeros(Float64, geo.n_rows, geo.n_cols, length(geo.angles))
+
+	@info "📷 Acquiring projections..."
+
+	Threads.@threads for k in 1:length(geo.angles)
+
+		# Geometry for this projection angle
+		src_pos    = geo.source_positions[:, k]
+		det_center = geo.det_centers[:, k]
+		u_vec      = geo.det_u_vecs[:, k]
+		v_vec      = geo.det_v_vecs[:, k]
+
+		n_mats = size(mat_lib.μ_matrix, 1)
+
+		for r in 1:geo.n_rows, c in 1:geo.n_cols
+
+			# Apply bowtie filter to source spectrum for this column
+			if use_bowtie
+				filtered_photons = apply_bowtie_filter(
+					source.energies,
+					source.photons,
+					c,
+					geo.n_cols;
+					max_thickness_cm = bowtie_thickness_cm
+				)
+			else
+				filtered_photons = source.photons
+			end
+
+			pixel_energy_sum = 0.0
+
+			# Sub-pixel sampling for anti-aliasing
+			for sr in 1:n_sub, sc in 1:n_sub
+				u_off = (c - geo.n_cols/2 - 0.5 + sub_offsets[sc]) * geo.pixel_width_cm
+				v_off = (r - geo.n_rows/2 - 0.5 + sub_offsets[sr]) * geo.pixel_height_cm
+				target_pos = det_center .+ (u_off .* u_vec) .+ (v_off .* v_vec)
+
+				# Ray trace through phantom using Reactant-compiled version
+				path_lengths = trace_ray_compiled(
+					grid_meta,
+					phantom.material_ids,
+					phantom.densities,
+					id_lut,
+					n_mats,
+					src_pos[1], src_pos[2], src_pos[3],
+					target_pos[1], target_pos[2], target_pos[3]
+				)
+
+				# Calculate energy-dependent attenuation
+				atten_per_energy = zeros(Float64, length(source.energies))
+				for m_idx in 1:n_mats
+					if path_lengths[m_idx] > 0
+						for e_idx in 1:length(source.energies)
+							atten_per_energy[e_idx] += mat_lib.μ_matrix[m_idx, e_idx] * path_lengths[m_idx]
+						end
+					end
+				end
+
+				# Polychromatic transmission: I = Σ N₀(E) × exp(-μ(E)×L) × E × η(E)
+				sub_energy = sum(@. filtered_photons * exp(-atten_per_energy) * source.energies * det.efficiency)
+
+				pixel_energy_sum += sub_energy
+			end
+
+			# Average over sub-pixels
+			avg_energy = pixel_energy_sum / (n_sub^2)
+
+			# Work with energy directly (no conversion to photon counts!)
+			avg_energy_value = avg_energy
+
+			energy_values[r, c, k] = avg_energy_value
+		end
+	end
+
+	# ═══════════════════════════════════════════════════════════
+	# STEP 3: Add Scatter (Gaussian Convolution Model)
+	# ═══════════════════════════════════════════════════════════
+
+	if use_scatter
+		@info "🌊 Estimating scatter contribution..."
+		scatter_energy = estimate_scatter_profile(
+			energy_values;
+			spr_factor = scatter_spr,
+			kernel_sigma = scatter_kernel_sigma
+		)
+
+		# Add scatter to primary
+		energy_values .+= scatter_energy
+	end
+
+	# ═══════════════════════════════════════════════════════════
+	# STEP 4: Apply Poisson Noise (Quantum Noise)
+	# ═══════════════════════════════════════════════════════════
+
+	if use_poisson_noise
+		@info "🎲 Applying Poisson noise (dose=$(dose_factor)x)..."
+		energy_values = apply_poisson_noise(
+			energy_values;
+			dose_factor = dose_factor
+		)
+	end
+
+	# Add electronic noise from detector (optional)
+	# if det.noise_sigma > 0
+	# 	@info "📟 Adding electronic noise..."
+	# 	energy_values .+= randn(size(energy_values)) .* det.noise_sigma
+	# end
+
+	# ═══════════════════════════════════════════════════════════
+	# STEP 5: DAS Readout (Log Transform to Line Integrals)
+	# ═══════════════════════════════════════════════════════════
+
+	@info "📊 DAS readout (log transform)..."
+	projections = zeros(Float64, size(energy_values))
+
+	for k in 1:length(geo.angles), r in 1:geo.n_rows, c in 1:geo.n_cols
+		# Use energy values directly (no conversion needed)
+		# Energy values already in correct units
+		photon_energy = energy_values[r, c, k]
+		I0_energy = I0_per_column[c]
+
+		projections[r, c, k] = readout_das(photon_energy, I0_energy)
+	end
+
+	@info "✅ Simulation complete!"
+
+	return projections
+end
+
+# ╔═╡ 152c98f7-2b30-4f36-9f10-b60c63c3cb53
+enhanced_sino = run_enhanced_simulation(
+	phantom = PHANTOM,
+	source = SOURCE_120_REALISTIC,  # Now uses realistic spectrum with K-lines!
+	geo = GEOMETRY_AQUILION_ONE,       # Canon Aquilion ONE geometry
+	det = DETECTOR_RESPONSE,
+	mat_lib = MATERIAL_LIBRARY,
+	grid_meta = GRID_META,
+	id_lut = ID_LUT,
+	# Physics options
+	use_bowtie = false,  # Disabled by default (causing issues)
+	bowtie_thickness_cm = 0.5,  # Much thinner (not 3.0!)
+	use_scatter = false,  # Disabled by default
+	scatter_spr = 0.05,  # More conservative
+	use_poisson_noise = false,  # Disabled by default for debugging
+	dose_factor = 1.0
+)
+
+# ╔═╡ ecc8f0f1-6a64-400e-91f9-9b4d0bce0d25
+vol_enhanced = convert_to_hu(
+	reconstruct_fdk(enhanced_sino, GEOMETRY_AQUILION_ONE, RECON_GRID),
+	0.195
+)
+
+# ╔═╡ e05fc8c6-4b4f-4fb4-baf6-9df8dc58d343
+let
+	# --- Data Extraction ---
+	# 1. Ground Truth Slice (Uses Phantom Grid)
+	mid_z_p = PHANTOM.grid.nz ÷ 2
+	gt_slice = PHANTOM.material_ids[:, :, mid_z_p]
+
+	# 2. Sinogram (Central Row)
+	mid_row = size(enhanced_sino, 1) ÷ 2
+	sino_slice = enhanced_sino[mid_row, :, :]
+
+	# 3. Recon Slice (Uses Recon Grid)
+	mid_z_r = RECON_GRID.nz ÷ 2
+	recon_slice = vol_enhanced[:, :, mid_z_r]
+
+	# --- Visualization ---
+	f = Figure(size=(1200, 450))
+
+	# Plot 1: Ground Truth
+	ax1 = Axis(f[1, 1], title="Ground Truth (Material IDs)", aspect=DataAspect())
+	hm1 = heatmap!(ax1, PHANTOM.grid.x, PHANTOM.grid.y, gt_slice, colormap=:tab20)
+
+	# Plot 2: Sinogram
+	ax2 = Axis(f[1, 2], title="Sinogram", xlabel="Detector Pixel", ylabel="Angle")
+	hm2 = heatmap!(ax2, sino_slice, colormap=:grays)
+
+	# Plot 3: Reconstruction (HU)
+	# Window/Level: Soft Tissue (-200 to +400 covers air gaps to bone inserts)
+	ax3 = Axis(f[1, 3], title="Reconstruction (HU)", aspect=DataAspect())
+	hm3 = heatmap!(ax3, RECON_GRID.x, RECON_GRID.y, recon_slice, colormap=:grays, colorrange=(-200, 400))
+	Colorbar(f[1, 4], hm3, label="Hounsfield Units")
+
+	f
 end
 
 # ╔═╡ Cell order:
