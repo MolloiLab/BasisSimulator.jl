@@ -258,27 +258,163 @@ end
 # ==============================================================================
 
 """
-    add_1_over_f_noise(signal::Array{Float64, 3})::Array{Float64, 3}
+    add_1_over_f_noise(
+        signal::Array{Float64, 3};
+        alpha::Float64 = 1.0,
+        amplitude::Float64 = 1000.0,
+        seed::Union{Int,Nothing} = nothing
+    )::Array{Float64, 3}
 
-Add 1/f (pink) noise to simulate low-frequency drift.
-
-**Status**: Placeholder for future implementation.
+Add 1/f (pink) noise to simulate low-frequency drift across projection angles.
 
 1/f noise is characterized by power spectral density:
 ```
 S(f) ∝ 1/f^α    (α ≈ 1)
 ```
 
-This causes slow drifts in detector response over time/projection angle.
+This causes slow drifts in detector response over time/projection angle, modeling:
+- Thermal drift in detector electronics
+- X-ray tube output variations
+- Mechanical vibrations
+
+# Algorithm
+
+1. Generate white noise in frequency domain
+2. Apply 1/f^α filter:
+   ```
+   H(f) = 1 / f^α    for f > 0
+   H(0) = 0          (no DC component)
+   ```
+3. Transform back to spatial domain
+4. Add to each detector pixel as function of projection angle
+
+# Arguments
+
+- `signal::Array{Float64, 3}` - Detector signal [rows, cols, angles]
+- `alpha::Float64 = 1.0` - Power law exponent (α=1 is pink noise)
+  - α = 0: white noise
+  - α = 1: pink noise (1/f)
+  - α = 2: brown noise (1/f²)
+- `amplitude::Float64 = 1000.0` - Noise amplitude scaling
+- `seed::Union{Int,Nothing} = nothing` - Random seed
+
+# Returns
+
+- `noisy_signal::Array{Float64, 3}` - Signal with 1/f noise added
+
+# Example
+
+```julia
+# Add pink noise (α=1) to detector signal
+noisy = add_1_over_f_noise(signal, alpha=1.0, amplitude=500.0)
+
+# Brown noise (slower drift, α=2)
+noisy = add_1_over_f_noise(signal, alpha=2.0, amplitude=200.0)
+```
+
+# Physical Interpretation
+
+**1/f noise** appears as slow variations across projection angles:
+- Low frequencies (f → 0): High power → slow drift
+- High frequencies: Low power → fast variations suppressed
+
+**Typical values**:
+- Amplitude: 100-1000 (energy units, ~0.1-1% of signal)
+- α: 0.8-1.2 (α=1 is canonical pink noise)
 
 # References
 
 - Press, W. H. (1978). Comm. Mod. Phys. C, 7(4), 103-119.
   "Flicker noises in astronomy and elsewhere"
+- Timmer, J., & Koenig, M. (1995). A&A, 300, 707.
+  "On generating power law noise"
 """
-function add_1_over_f_noise(signal::Array{Float64, 3})::Array{Float64, 3}
-    error("1/f noise not yet implemented - coming in Phase 3")
-    # Will model slow detector drift across projection angles
+function add_1_over_f_noise(
+        signal::Array{Float64, 3};
+        alpha::Float64 = 1.0,
+        amplitude::Float64 = 1000.0,
+        seed::Union{Int,Nothing} = nothing
+    )::Array{Float64, 3}
+
+    @assert alpha >= 0.0 "Alpha must be non-negative"
+    @assert amplitude >= 0.0 "Amplitude must be non-negative"
+
+    # Set random seed if provided
+    if seed !== nothing
+        Random.seed!(seed)
+    end
+
+    n_rows, n_cols, n_angles = size(signal)
+
+    # Generate 1/f noise for each detector pixel
+    # Noise varies across projection angles
+    noisy_signal = copy(signal)
+
+    for row in 1:n_rows
+        for col in 1:n_cols
+            # Generate 1/f noise sequence across angles
+            noise_1d = generate_1_over_f_sequence(n_angles, alpha)
+
+            # Scale to desired amplitude
+            noise_1d .*= amplitude
+
+            # Add to signal at this detector pixel
+            for angle_idx in 1:n_angles
+                noisy_signal[row, col, angle_idx] += noise_1d[angle_idx]
+            end
+        end
+    end
+
+    return noisy_signal
+end
+
+"""
+    generate_1_over_f_sequence(n::Int, alpha::Float64)::Vector{Float64}
+
+Generate 1D sequence with 1/f^α power spectral density.
+
+Uses the Timmer & Koenig (1995) algorithm:
+1. Create white noise in frequency domain
+2. Apply 1/f^α filter
+3. Inverse FFT to get time series
+
+# Arguments
+
+- `n::Int` - Length of sequence
+- `alpha::Float64` - Power law exponent
+
+# Returns
+
+- `Vector{Float64}` - Noise sequence with 1/f^α spectrum
+"""
+function generate_1_over_f_sequence(n::Int, alpha::Float64)::Vector{Float64}
+    # Create frequency array
+    freqs = fftfreq(n)
+
+    # Generate white noise in frequency domain
+    # Complex Gaussian (independent real and imaginary parts)
+    noise_fft = Complex{Float64}.(randn(n), randn(n))
+
+    # Apply 1/f^α filter
+    for i in 1:n
+        f = abs(freqs[i])
+
+        if f == 0.0
+            # No DC component (zero mean)
+            noise_fft[i] = 0.0
+        else
+            # Scale by 1/f^α
+            noise_fft[i] /= f^(alpha / 2)
+        end
+    end
+
+    # Inverse FFT to get time series
+    noise_time = real.(ifft(noise_fft))
+
+    # Normalize to unit variance
+    noise_time ./= std(noise_time)
+
+    return noise_time
 end
 
 # ==============================================================================
@@ -286,25 +422,180 @@ end
 # ==============================================================================
 
 """
-    compute_nps(image::Matrix{Float64})::Matrix{Float64}
+    compute_nps(
+        image::Matrix{Float64};
+        roi_size::Int = 64,
+        n_rois::Int = 100,
+        detrend::Bool = true
+    )::Matrix{Float64}
 
-Compute Noise Power Spectrum (NPS) for image quality assessment.
-
-**Status**: Placeholder for future implementation.
+Compute 2D Noise Power Spectrum (NPS) for image quality assessment.
 
 NPS quantifies the frequency content of noise:
 ```
-NPS(f) = |FFT(noise)|² / N
+NPS(fx, fy) = (Δx × Δy) / (Nx × Ny) × |FFT(noise)|²
+```
+
+Averaged over multiple regions of interest (ROIs) for statistical reliability.
+
+# Algorithm
+
+1. Extract multiple ROIs from image (typically 64×64 pixels)
+2. Detrend each ROI (remove linear trends)
+3. Compute 2D FFT of each ROI
+4. Calculate power spectrum: |FFT|²
+5. Average over all ROIs
+6. Normalize by ROI size and pixel spacing
+
+# Arguments
+
+- `image::Matrix{Float64}` - 2D image (typically reconstructed CT slice)
+- `roi_size::Int = 64` - Size of square ROI (pixels)
+- `n_rois::Int = 100` - Number of ROIs to average
+- `detrend::Bool = true` - Remove linear trends from ROIs
+
+# Returns
+
+- `nps::Matrix{Float64}` - 2D noise power spectrum [roi_size × roi_size]
+  - Units: [HU² × mm²] if image is in HU
+  - Center corresponds to DC (zero frequency)
+  - Use fftshift to center for visualization
+
+# Example
+
+```julia
+# Compute NPS from reconstructed slice
+slice = volume[:, :, div(end, 2)]  # Central slice
+nps = compute_nps(slice, roi_size=64, n_rois=100)
+
+# Radial profile for 1D visualization
+nps_radial = radial_profile(fftshift(nps))
+
+# Plot (requires Plots.jl)
+using Plots
+heatmap(log10.(fftshift(nps)), title="NPS (log scale)")
+```
+
+# Physical Interpretation
+
+**NPS shape** indicates noise characteristics:
+- Flat spectrum: White noise (Poisson-dominated)
+- 1/f² fall-off: Correlated noise (detector blur, reconstruction filter)
+- Peaks: Structured noise (aliasing, gridding artifacts)
+
+**Integrated NPS** → noise variance:
+```
+σ² = ∫∫ NPS(fx, fy) dfx dfy
+```
+
+# Quality Metrics
+
+**Noise Equivalent Quanta (NEQ)**:
+```
+NEQ = (SNR)² / NPS
+```
+
+**Detectability Index**:
+```
+d' = ∫∫ (MTF(f) × Contrast)² / NPS(f) df
 ```
 
 # References
 
-- Samei et al. (2006) Med Phys - Performance evaluation of CT systems
-- ICRU Report 87 (2012) - Radiation dose and image quality assessment in CT
+- Samei et al. (2006) Med Phys 33(10):3683-3693
+  "Performance evaluation of computed tomography systems"
+- ICRU Report 87 (2012)
+  "Radiation dose and image quality assessment in CT"
+- Richard et al. (2012) Med Phys 39(4):2091-2106
+  "Towards task-based assessment of CT performance"
 """
-function compute_nps(image::Matrix{Float64})::Matrix{Float64}
-    error("NPS computation not yet implemented - coming in Phase 3")
-    # Will be used for image quality metrics
+function compute_nps(
+        image::Matrix{Float64};
+        roi_size::Int = 64,
+        n_rois::Int = 100,
+        detrend::Bool = true
+    )::Matrix{Float64}
+
+    @assert roi_size > 0 "ROI size must be positive"
+    @assert n_rois > 0 "Number of ROIs must be positive"
+
+    m, n = size(image)
+    @assert m >= roi_size && n >= roi_size "Image must be larger than ROI size"
+
+    # Initialize NPS accumulator
+    nps_sum = zeros(Float64, roi_size, roi_size)
+    n_valid_rois = 0
+
+    # Extract ROIs and compute NPS
+    for _ in 1:n_rois
+        # Random ROI location
+        row_start = rand(1:(m - roi_size + 1))
+        col_start = rand(1:(n - roi_size + 1))
+
+        # Extract ROI
+        roi = image[row_start:(row_start + roi_size - 1),
+                    col_start:(col_start + roi_size - 1)]
+
+        # Detrend if requested (remove linear trends)
+        if detrend
+            roi = detrend_2d(roi)
+        end
+
+        # Compute 2D FFT
+        roi_fft = fft(roi)
+
+        # Power spectrum
+        power = abs2.(roi_fft)
+
+        # Accumulate
+        nps_sum .+= power
+        n_valid_rois += 1
+    end
+
+    # Average over ROIs
+    nps = nps_sum ./ n_valid_rois
+
+    # Normalize by ROI size
+    # Standard NPS normalization: (Δx × Δy) / (Nx × Ny)
+    # Assuming unit pixel spacing (can be scaled by voxel size if needed)
+    nps ./= (roi_size * roi_size)
+
+    return nps
+end
+
+"""
+    detrend_2d(image::Matrix{Float64})::Matrix{Float64}
+
+Remove linear trend from 2D image.
+
+Fits a plane: z = a + bx + cy and subtracts it.
+
+This removes low-frequency trends that can bias NPS computation.
+"""
+function detrend_2d(image::Matrix{Float64})::Matrix{Float64}
+    m, n = size(image)
+
+    # Create coordinate grids
+    x = repeat(1:n, 1, m)'
+    y = repeat(1:m, 1, n)
+
+    # Flatten
+    x_flat = vec(x)
+    y_flat = vec(y)
+    z_flat = vec(image)
+
+    # Fit plane: z = a + b*x + c*y
+    # Using least squares: [1 x y] * [a; b; c] = z
+    A = hcat(ones(length(x_flat)), x_flat, y_flat)
+    coeffs = A \ z_flat  # [a, b, c]
+
+    # Compute fitted plane
+    plane = coeffs[1] .+ coeffs[2] .* x .+ coeffs[3] .* y
+
+    # Subtract trend
+    detrended = image .- plane
+
+    return detrended
 end
 
 # ==============================================================================
@@ -313,5 +604,5 @@ end
 
 export apply_poisson_noise
 export add_electronic_noise
-export add_1_over_f_noise  # Placeholder
-export compute_nps  # Placeholder
+export add_1_over_f_noise
+export compute_nps
