@@ -67,7 +67,7 @@ const OUTPUT_FILE = joinpath(OUTPUT_DIR, "visual_comparison.png")
 
 # Simulation parameters (Gammex 472 phantom)
 const PHANTOM_PARAMS = (
-    height_mm = 40.0,
+    height_mm = 160.0,  # Match scanner Z coverage (16 cm)
     resolution_mm = 2.0  # 2mm voxels for faster simulation
 )
 

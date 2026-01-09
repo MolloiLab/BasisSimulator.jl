@@ -316,16 +316,87 @@ function trace_ray_material_paths(
     dirz = dz_ray / ray_length
 
     # ========================================================================
-    # STEP 3: Find starting voxel
+    # STEP 3: Ray-Box Intersection (find where ray enters/exits grid)
     # ========================================================================
+
+    # Grid bounding box
+    box_min_x = grid.x_min
+    box_max_x = grid.x_min + grid.fov_xy
+    box_min_y = grid.y_min
+    box_max_y = grid.y_min + grid.fov_xy
+    box_min_z = grid.z_min
+    box_max_z = grid.z_min + grid.fov_z
+
+    # Slab intersection test
+    tmin = 0.0
+    tmax = ray_length
+
+    # X-slab
+    if abs(dirx) > 1e-12
+        tx1 = (box_min_x - p1x) / dirx
+        tx2 = (box_max_x - p1x) / dirx
+        tmin = max(tmin, min(tx1, tx2))
+        tmax = min(tmax, max(tx1, tx2))
+    else
+        # Ray parallel to X planes - check if inside slab
+        if p1x < box_min_x || p1x > box_max_x
+            return path_lengths  # Ray misses box
+        end
+    end
+
+    # Y-slab
+    if abs(diry) > 1e-12
+        ty1 = (box_min_y - p1y) / diry
+        ty2 = (box_max_y - p1y) / diry
+        tmin = max(tmin, min(ty1, ty2))
+        tmax = min(tmax, max(ty1, ty2))
+    else
+        # Ray parallel to Y planes
+        if p1y < box_min_y || p1y > box_max_y
+            return path_lengths  # Ray misses box
+        end
+    end
+
+    # Z-slab
+    if abs(dirz) > 1e-12
+        tz1 = (box_min_z - p1z) / dirz
+        tz2 = (box_max_z - p1z) / dirz
+        tmin = max(tmin, min(tz1, tz2))
+        tmax = min(tmax, max(tz1, tz2))
+    else
+        # Ray parallel to Z planes
+        if p1z < box_min_z || p1z > box_max_z
+            return path_lengths  # Ray misses box
+        end
+    end
+
+    # Check if ray intersects box
+    if tmax <= tmin || tmax < 0
+        return path_lengths  # No intersection
+    end
+
+    # ========================================================================
+    # STEP 4: Find starting voxel (at entry point + epsilon)
+    # ========================================================================
+
+    # Entry point into grid (with small epsilon to ensure we're inside)
+    entry_t = tmin + 1e-6
+    start_x = p1x + entry_t * dirx
+    start_y = p1y + entry_t * diry
+    start_z = p1z + entry_t * dirz
 
     # Convert world coordinates to voxel indices
-    ix = floor(Int, (p1x - grid.x_min) / grid.dx) + 1
-    iy = floor(Int, (p1y - grid.y_min) / grid.dy) + 1
-    iz = floor(Int, (p1z - grid.z_min) / grid.dz) + 1
+    ix = floor(Int, (start_x - grid.x_min) / grid.dx) + 1
+    iy = floor(Int, (start_y - grid.y_min) / grid.dy) + 1
+    iz = floor(Int, (start_z - grid.z_min) / grid.dz) + 1
+
+    # Clamp to grid bounds (handles floating point errors at boundaries)
+    ix = clamp(ix, 1, grid.nx)
+    iy = clamp(iy, 1, grid.ny)
+    iz = clamp(iz, 1, grid.nz)
 
     # ========================================================================
-    # STEP 4: Setup stepping parameters (Amanatides-Woo)
+    # STEP 5: Setup stepping parameters (Amanatides-Woo)
     # ========================================================================
 
     # Step direction (+1 or -1) for each axis
@@ -339,37 +410,37 @@ function trace_ray_material_paths(
     dty = abs(grid.dy / (diry + 1e-20))
     dtz = abs(grid.dz / (dirz + 1e-20))
 
-    # Initialize t-parameters for first grid crossing
+    # Initialize t-parameters for first grid crossing FROM START POSITION
     # t_max_x = t-parameter to reach next x-plane
     if dirx >= 0
         next_x_plane = grid.x_min + ix * grid.dx
-        tmaxx = (next_x_plane - p1x) / (dirx + 1e-20)
+        tmaxx = (next_x_plane - start_x) / (dirx + 1e-20) + entry_t
     else
         next_x_plane = grid.x_min + (ix - 1) * grid.dx
-        tmaxx = (next_x_plane - p1x) / (dirx - 1e-20)
+        tmaxx = (next_x_plane - start_x) / (dirx - 1e-20) + entry_t
     end
 
     if diry >= 0
         next_y_plane = grid.y_min + iy * grid.dy
-        tmaxy = (next_y_plane - p1y) / (diry + 1e-20)
+        tmaxy = (next_y_plane - start_y) / (diry + 1e-20) + entry_t
     else
         next_y_plane = grid.y_min + (iy - 1) * grid.dy
-        tmaxy = (next_y_plane - p1y) / (diry - 1e-20)
+        tmaxy = (next_y_plane - start_y) / (diry - 1e-20) + entry_t
     end
 
     if dirz >= 0
         next_z_plane = grid.z_min + iz * grid.dz
-        tmaxz = (next_z_plane - p1z) / (dirz + 1e-20)
+        tmaxz = (next_z_plane - start_z) / (dirz + 1e-20) + entry_t
     else
         next_z_plane = grid.z_min + (iz - 1) * grid.dz
-        tmaxz = (next_z_plane - p1z) / (dirz - 1e-20)
+        tmaxz = (next_z_plane - start_z) / (dirz - 1e-20) + entry_t
     end
 
-    # Current t-parameter (starts at 0)
-    t_current = 0.0
+    # Current t-parameter (starts at entry point)
+    t_current = entry_t
 
-    # Maximum t-parameter (ray endpoint)
-    t_end = 1.0
+    # Maximum t-parameter (ray exit point from grid)
+    t_end = tmax
 
     # ========================================================================
     # STEP 5: Voxel traversal loop
