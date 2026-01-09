@@ -138,8 +138,34 @@ function reconstruct_sirt(
         relaxation::Float64 = 1.0
     )::Array{Float64, 3}
 
-    error("SIRT reconstruction not yet implemented - coming in Phase 3")
-    # Will implement using sparse system matrix and iterative updates
+    error("""
+    SIRT reconstruction requires a forward projector (A×x operation).
+
+    Full implementation requires:
+    1. Forward projection: Ray tracing through arbitrary volume
+       - Not currently available (simulate_ct_scan requires phantom structure)
+       - Would need to implement volume-based ray tracer
+       - Estimated effort: 4-6 hours
+
+    2. Back projection: Transpose of forward operator
+       - Could approximate with FDK backprojection
+       - But without proper forward projector, algorithm won't converge
+
+    3. System matrix: Sparse representation of A
+       - Memory prohibitive for realistic sizes (100+ GB)
+       - Requires on-the-fly projection operators
+
+    Recommended for future implementation:
+    - Implement volume-based forward projector in RayTracing.jl
+    - Add to PhantomData: conversion from arbitrary Float64 volume
+    - Then enable SIRT, MLEM, TV in iterative reconstruction
+
+    Timeline: Phase 4+ (after GECATSIM validation)
+    Priority: Medium (FDK sufficient for most use cases)
+
+    Alternative: Use MIRT.jl (Michigan Image Reconstruction Toolbox)
+    for production iterative reconstruction needs.
+    """)
 end
 
 # ==============================================================================
@@ -235,8 +261,31 @@ function reconstruct_mlem(
         epsilon::Float64 = 1e-10
     )::Array{Float64, 3}
 
-    error("MLEM reconstruction not yet implemented - coming in Phase 3")
-    # Will implement using multiplicative EM updates
+    error("""
+    MLEM reconstruction requires forward/back projection operators.
+
+    Same limitations as SIRT - needs volume-based ray tracer.
+
+    MLEM update rule:
+    ```
+    x^(k+1)_j = (x^(k)_j / Σ_i A_ij) × Σ_i A_ij × (b_i / [A×x^(k)]_i)
+    ```
+
+    Advantages over SIRT:
+    - Guarantees non-negativity (x ≥ 0)
+    - Statistical optimality for Poisson noise
+    - Preserves photon counts
+
+    Implementation requirements (same as SIRT):
+    1. Volume-based forward projector
+    2. Transpose operator (backprojection)
+    3. Convergence monitoring
+
+    Timeline: Phase 4+ (after forward projector implementation)
+    Estimated effort: 2-3 hours (given SIRT infrastructure)
+
+    Alternative: Use MIRT.jl or other established packages
+    """)
 end
 
 # ==============================================================================
@@ -343,8 +392,40 @@ function reconstruct_tv(
         tv_iterations::Int = 5
     )::Array{Float64, 3}
 
-    error("TV reconstruction not yet implemented - coming in Phase 3")
-    # Will implement using split Bregman or ADMM optimization
+    error("""
+    TV reconstruction requires projection operators + optimization solver.
+
+    Same forward/back projection limitations as SIRT/MLEM, plus:
+
+    Objective function:
+    ```
+    E(x) = ||A×x - b||² + λ × TV(x)
+    TV(x) = Σ |∇x|  (total variation)
+    ```
+
+    Implementation requirements:
+    1. Forward/back projection (same as SIRT)
+    2. Gradient operators (∇x, ∇y, ∇z)
+    3. Optimization solver:
+       - Split Bregman iteration (recommended)
+       - ADMM (Alternating Direction Method of Multipliers)
+       - Gradient descent with line search
+
+    Use cases:
+    - Sparse-angle CT (20-100 projections)
+    - Limited-angle CT (±90° missing wedge)
+    - Low-dose CT (edge-preserving denoising)
+    - Metal artifact reduction
+
+    Complexity: High (optimization + projectors)
+    Timeline: Phase 5+ (research implementation)
+    Estimated effort: 6-8 hours
+
+    Alternatives:
+    - MIRT.jl (Michigan Image Reconstruction Toolbox)
+    - ImagePhantoms.jl + optimization packages
+    - Standalone TV solvers (Condat, Chambolle-Pock)
+    """)
 end
 
 # ==============================================================================
