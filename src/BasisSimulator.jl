@@ -90,7 +90,7 @@ using Statistics
 using FFTW
 using Interpolations
 using Distributions
-using Attenuations
+import XrayAttenuation as XA
 using Unitful: cm, keV, g, mm, ustrip, @u_str
 using Reactant
 using Enzyme
@@ -102,9 +102,9 @@ using Enzyme
 # Physics models
 include("Physics/Spectrum.jl")
 include("Physics/Attenuation.jl")
-include("Physics/Scatter.jl")
-include("Physics/Detector.jl")
-include("Physics/Noise.jl")
+# TODO: include("Physics/Scatter.jl")
+# TODO: include("Physics/Detector.jl")
+# TODO: include("Physics/Noise.jl")
 
 # Geometry and ray tracing
 include("Geometry/ScannerGeometry.jl")
@@ -113,33 +113,42 @@ include("Geometry/Phantoms.jl")
 
 # Image reconstruction
 include("Reconstruction/FDK.jl")
-include("Reconstruction/Iterative.jl")
-include("Reconstruction/Corrections.jl")
+# TODO: include("Reconstruction/Iterative.jl")
+# TODO: include("Reconstruction/Corrections.jl")
 
 # High-level simulation
 include("Simulation.jl")
 
 # Validation utilities
-include("Validation/Metrics.jl")
-include("Validation/GECATSIM.jl")
-include("Validation/ReferenceData.jl")
+# TODO: include("Validation/Metrics.jl")
+# TODO: include("Validation/GECATSIM.jl")
+# TODO: include("Validation/ReferenceData.jl")
 
 # ============================================================================
 # Public API Exports
 # ============================================================================
 
 # Physics
-export generate_spectrum, XRaySpectrum
-export compute_attenuation, MaterialLibrary
-export estimate_scatter_klein_nishina, estimate_scatter_convolution
-export compute_detector_response, DetectorModel, MTFModel, PSFModel
-export apply_quantum_noise, apply_electronic_noise
+export generate_spectrum, XRaySpectrum, mean_energy, total_fluence, validate_spectrum
+export Materials, Elements, Compound, Mixture  # Re-exported from XrayAttenuation
+export get_mass_attenuation, get_linear_attenuation
+export compute_polychromatic_attenuation, compute_mixture_attenuation
+export compute_two_material_decomposition
+export create_custom_compound, create_custom_mixture
+export list_available_materials, list_available_elements
+# TODO: export estimate_scatter_klein_nishina, estimate_scatter_convolution
+# TODO: export compute_detector_response, DetectorModel, MTFModel, PSFModel
+# TODO: export apply_quantum_noise, apply_electronic_noise
 
 # Geometry
-export CTScanner, create_aquilion_one, create_custom_scanner
+export ScanProtocol, CTGeometry
+export create_aquilion_one, create_custom_scanner
+export get_magnification, get_detector_size, get_fov_diameter, validate_geometry
 export trace_ray_material_paths, GridMeta
-export PhantomData, create_gammex_472, create_xcat_phantom
-export VoxelGrid
+export PhantomData, VoxelGrid
+export create_gammex_472, create_water_cylinder
+export get_voxel_size, get_voxel_volume, get_memory_usage
+export get_material_at_voxel, count_materials
 
 # Reconstruction
 export reconstruct_fdk, ReconstructionFilter, ramlak, shepplogan, hann
@@ -149,7 +158,8 @@ export reconstruct_sirt, reconstruct_mlem
 export correct_beam_hardening, correct_scatter
 
 # Simulation
-export simulate_ct_scan, SimulationConfig, CTScanData
+export simulate_ct_scan
+export convert_to_attenuation, estimate_air_scan
 
 # Validation
 export compare_with_gecatsim, compute_rmse, compute_ssim, compute_psnr
