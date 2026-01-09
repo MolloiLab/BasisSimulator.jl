@@ -134,9 +134,15 @@ recon_gammex = reconstruct_fdk(
     filter_type=ramlak
 )
 
-# HU calibration fix: normalize by water reference at effective energy
+# HU calibration fix: Use water ROI to calibrate FDK scaling
 mu_water_ref = get_linear_attenuation(XA.Materials.water, mean_E)
-HU_gammex = @. 1000.0 * (recon_gammex - mu_water_ref) / mu_water_ref
+center_slice_temp = div(size(recon_gammex, 3), 2)
+cx_temp, cy_temp = div(size(recon_gammex, 1), 2), div(size(recon_gammex, 2), 2)
+water_roi_temp = recon_gammex[(cx_temp-10):(cx_temp+10), (cy_temp-10):(cy_temp+10), center_slice_temp]
+mu_water_measured = mean(water_roi_temp)
+calibration_factor = mu_water_ref / mu_water_measured
+recon_gammex_calibrated = recon_gammex .* calibration_factor
+HU_gammex = @. 1000.0 * (recon_gammex_calibrated - mu_water_ref) / mu_water_ref
 
 println("   HU range: [$(round(minimum(HU_gammex), digits=1)), $(round(maximum(HU_gammex), digits=1))]")
 
@@ -262,7 +268,7 @@ println("\n4.2 Creating before/after physics comparison...")
 
 fig2 = Figure(size=(1600, 800), fontsize=14)
 
-# Before physics (raw simulation)
+# Before physics (raw simulation) - with proper calibration
 I0_raw = maximum(sinogram_gammex)
 atten_raw = -log.(max.(sinogram_gammex, 1.0) ./ I0_raw)
 recon_raw = reconstruct_fdk(
@@ -270,7 +276,12 @@ recon_raw = reconstruct_fdk(
     geometry_gammex.pixel_width_cm, geometry_gammex.pixel_height_cm,
     angles_deg_gammex, recon_x, recon_y, recon_z, filter_type=ramlak
 )
-HU_raw = @. 1000.0 * (recon_raw - mu_water_ref) / mu_water_ref
+# Calibrate raw reconstruction using water ROI
+water_roi_raw = recon_raw[(cx_temp-10):(cx_temp+10), (cy_temp-10):(cy_temp+10), center_slice_temp]
+mu_water_raw = mean(water_roi_raw)
+calib_factor_raw = mu_water_ref / mu_water_raw
+recon_raw_calibrated = recon_raw .* calib_factor_raw
+HU_raw = @. 1000.0 * (recon_raw_calibrated - mu_water_ref) / mu_water_ref
 HU_raw_slice = HU_raw[:, :, center_slice]
 
 ax1_comp = Axis(fig2[1, 1], title="Without Advanced Physics", aspect=DataAspect())
