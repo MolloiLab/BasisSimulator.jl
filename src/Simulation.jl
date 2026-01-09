@@ -352,7 +352,8 @@ function simulate_ct_scan(;
                             # Beer-Lambert law: I(E) = I₀(E) · exp(-μ·L)
                             transmission = exp(-total_atten)
 
-                            # Energy deposited in detector
+                            # Energy-weighted transmission (detector response)
+                            # I(E) = N₀(E) × exp(-μL) × E
                             transmitted_energy += N0 * transmission * E
                         end
 
@@ -428,10 +429,11 @@ end
 
 Estimate incident intensity (I₀) assuming no phantom.
 
-This is the total energy that would reach the detector with no attenuation.
+This is the energy-weighted photon fluence that would reach the detector.
 """
 function estimate_air_scan(spectrum::XRaySpectrum)::Float64
-    # Sum of photon fluence × energy
+    # Sum of energy-weighted photon fluence
+    # I₀ = Σ [N₀(E) × E]
     return sum(spectrum.photons .* spectrum.energies)
 end
 

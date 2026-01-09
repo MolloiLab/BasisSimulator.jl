@@ -5,6 +5,7 @@ Quick Visualization - Fast simulation with image output
 using BasisSimulator
 import XrayAttenuation as XA
 using CairoMakie
+using Statistics
 
 println("="^70)
 println("Quick Visualization Test")
@@ -15,24 +16,34 @@ println("\n1. Creating small phantom...")
 phantom = create_gammex_472(resolution_mm=4.0, z_coverage_mm=40.0)  # Small for speed
 
 println("\n2. Setting up scanner...")
-protocol = ScanProtocol(kVp=120.0, mAs=200.0, scan_fov_mm=400.0, num_projections=60)  # Fewer projections
+protocol = ScanProtocol(kVp=120.0, mAs=200.0, scan_fov_mm=400.0, num_projections=360)  # Match old version
 geometry = create_aquilion_one(protocol=protocol)
 
 println("\n3. Generating spectrum...")
 spectrum = generate_spectrum(kVp=120.0, mAs=200.0)
 
 println("\n4. Running forward simulation...")
-sinogram = simulate_ct_scan(
+sinogram_raw = simulate_ct_scan(
     phantom = phantom,
     geometry = geometry,
     spectrum = spectrum,
     verbose = false
 )
 
-println("   Sinogram: $(size(sinogram))")
+println("   Raw sinogram (energy): $(size(sinogram_raw))")
+println("   Range: $(minimum(sinogram_raw)) to $(maximum(sinogram_raw))")
+
+println("\n5. Converting to attenuation line integrals...")
+# Estimate air scan (I0 = incident intensity with no phantom)
+I0 = estimate_air_scan(spectrum)
+println("   I0 (air scan): $I0")
+
+# Convert: -log(I/I0)
+sinogram = convert_to_attenuation(sinogram_raw, I0)
+println("   Attenuation sinogram: $(size(sinogram))")
 println("   Range: $(minimum(sinogram)) to $(maximum(sinogram))")
 
-println("\n5. Reconstructing...")
+println("\n6. Reconstructing...")
 # Manual reconstruction grid
 recon_fov_cm = 35.0  # 350 mm
 recon_size = 256
@@ -54,8 +65,15 @@ reconstruction = reconstruct_fdk(
     collect(z_coords)
 )
 
-# Convert to HU
+# Debug: Check reconstruction μ values BEFORE HU conversion
+println("   Reconstruction μ: $(size(reconstruction))")
+println("   μ range: $(minimum(reconstruction)) to $(maximum(reconstruction)) cm^-1")
+
+# Convert to HU using monochromatic μ_water at effective energy
+# For 120 kVp with Al+Cu filtration, effective energy ~ 60-70 keV
 μ_water = get_linear_attenuation(XA.Materials.water, 60.0)
+println("   μ_water (60 keV): $μ_water cm^-1")
+
 reconstruction_hu = convert_to_hounsfield_units(reconstruction, μ_water)
 
 println("   Reconstruction: $(size(reconstruction_hu))")

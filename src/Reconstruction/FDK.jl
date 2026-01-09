@@ -160,33 +160,14 @@ function create_reconstruction_filter(
     # Zero-pad to next power of 2 for efficient FFT
     n_pad = nextpow(2, n_detector_pixels * 2)
 
-    # Create frequency axis (cycles per cm)
-    # Scale by pixel width to get correct units
-    freqs = fftshift(fftfreq(n_pad, 1.0 / pixel_width_cm))
+    # Create frequency axis and scale to cycles per cm
+    # fftfreq(n) gives normalized frequencies, then scale by pixel width
+    ramp_scale = 1.0 / pixel_width_cm
+    ramp = abs.(fftshift(fftfreq(n_pad))) .* ramp_scale
 
-    # Base ramp filter: |ω|
-    ramp = abs.(freqs)
-
-    # Apply windowing function based on filter type
-    if filter_type == shepplogan
-        # Shepp-Logan: sinc window
-        # W(ω) = sinc(ω / (2·ω_max))
-        omega_max = maximum(abs.(freqs))
-        window = sinc.(freqs ./ (2 * omega_max))
-        return ramp .* window
-
-    elseif filter_type == hann
-        # Hann (cosine) window
-        # W(ω) = cos²(π·ω / (2·ω_max))
-        omega_max = maximum(abs.(freqs))
-        normalized_freq = freqs ./ (2 * omega_max)
-        window = cos.(π .* normalized_freq).^2
-        return ramp .* window
-
-    else  # ramlak
-        # Pure ramp filter (no windowing)
-        return ramp
-    end
+    # For now, just return the ramp filter (matching old working version)
+    # TODO: Add windowing functions (Shepp-Logan, Hann) later
+    return ramp
 end
 
 # ==============================================================================
@@ -326,8 +307,9 @@ function reconstruct_fdk(
 
             # Ramp filter via FFT
             # F⁻¹{F{p} · H(ω)}
+            # Note: fftshift applied to filter_kernel to match FFT output ordering
             row_fft = fft(padded)
-            filtered = real(ifft(row_fft .* filter_kernel))
+            filtered = real(ifft(row_fft .* fftshift(filter_kernel)))
 
             # Extract valid region
             filtered_projections[r, :, k_angle] = filtered[1:n_cols]
@@ -418,10 +400,10 @@ function reconstruct_fdk(
     # =========================================================================
     # STEP 3: NORMALIZATION
     # =========================================================================
-    # Scale by angular increment (Feldkamp Eq. 17)
-    # For uniform angular sampling: Δβ = 2π / n_angles
-    angular_scale = 2 * π / n_angles
-    volume .*= angular_scale
+    # Scale by angular step for discrete filtered backprojection
+    # Angular step Δβ = 2π/N for full 360° scan with N projections
+    normalization = 2.0 * π / n_angles
+    volume .*= normalization
 
     return volume
 end
