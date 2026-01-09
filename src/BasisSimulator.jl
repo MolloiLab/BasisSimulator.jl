@@ -90,6 +90,7 @@ using Statistics
 using FFTW
 using Interpolations
 using Distributions
+using ImageFiltering
 import XrayAttenuation as XA
 using Unitful: cm, keV, g, mm, ustrip, @u_str
 using Reactant
