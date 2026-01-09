@@ -470,7 +470,8 @@ function trace_ray_material_paths(
                     t_next = min(tmaxx, tmaxy, tmaxz, t_end)
 
                     # Step length in this voxel (in cm)
-                    step_length = (t_next - t_current) * ray_length
+                    # NOTE: t-parameter is in cm units (tmax = ray_length), so no multiplication needed
+                    step_length = t_next - t_current
 
                     # Accumulate path length (accounting for density)
                     # Effective radiological path = geometric path × relative density
@@ -480,18 +481,15 @@ function trace_ray_material_paths(
                     t_current = t_next
                 else
                     # Invalid material index - treat as air (skip)
-                    t_next = min(tmaxx, tmaxy, tmaxz, t_end)
-                    t_current = t_next
+                    t_current = min(tmaxx, tmaxy, tmaxz, t_end)
                 end
             else
                 # Air or invalid ID - skip this voxel
-                t_next = min(tmaxx, tmaxy, tmaxz, t_end)
-                t_current = t_next
+                t_current = min(tmaxx, tmaxy, tmaxz, t_end)
             end
         else
             # Outside grid - step to next voxel
-            t_next = min(tmaxx, tmaxy, tmaxz, t_end)
-            t_current = t_next
+            t_current = min(tmaxx, tmaxy, tmaxz, t_end)
         end
 
         # Exit if we've reached the ray endpoint
