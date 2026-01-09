@@ -39,6 +39,7 @@ the fan angle, reducing peripheral dose while maintaining central signal quality
 """
 
 import XrayAttenuation as XA
+using Unitful: keV, ustrip
 
 # ==============================================================================
 # Bowtie Filter Thickness Profile
@@ -284,9 +285,11 @@ function apply_bowtie_filter(
     # Apply Beer-Lambert law for each energy
     filtered_photons = similar(photons)
 
-    for (i, E) in enumerate(energies)
+    for (i, E_keV) in enumerate(energies)
         # Get aluminum attenuation coefficient at this energy
-        μ_cm = XA.get_linear_attenuation(material, E)
+        E = E_keV * keV
+        μ = XA.linear_attenuation_coeff(material, E)
+        μ_cm = ustrip(μ)  # Convert to cm^-1
 
         # Exponential attenuation
         attenuation_factor = exp(-μ_cm * thickness_cm)
