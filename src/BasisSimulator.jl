@@ -103,8 +103,8 @@ using Enzyme
 include("Physics/Spectrum.jl")
 include("Physics/Attenuation.jl")
 include("Physics/Materials.jl")
+include("Physics/Detector.jl")
 # TODO: include("Physics/Scatter.jl")
-# TODO: include("Physics/Detector.jl")
 # TODO: include("Physics/Noise.jl")
 
 # Geometry and ray tracing
@@ -142,8 +142,9 @@ export Ca_50, Ca_100, Ca_200, Ca_300, Ca_400, Ca_500, Ca_600
 export I_2_0, I_2_5, I_5_0, I_7_5, I_10_0, I_15_0, I_20_0
 export CUSTOM_MATERIALS, get_material
 export validate_material_hu, print_material_properties
+# Detector
+export compute_detector_efficiency
 # TODO: export estimate_scatter_klein_nishina, estimate_scatter_convolution
-# TODO: export compute_detector_response, DetectorModel, MTFModel, PSFModel
 # TODO: export apply_quantum_noise, apply_electronic_noise
 
 # Geometry

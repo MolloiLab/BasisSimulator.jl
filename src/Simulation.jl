@@ -263,8 +263,10 @@ function simulate_ct_scan(;
         end
 
         # Compute attenuation for all energies
+        # NOTE: Use MASS attenuation because ray tracer returns density-weighted paths
+        # path_lengths [g/cm²] × μ_mass [cm²/g] = dimensionless attenuation
         for (e_idx, E) in enumerate(spectrum.energies)
-            μ_matrix[idx, e_idx] = get_linear_attenuation(xa_material, E)
+            μ_matrix[idx, e_idx] = get_mass_attenuation(xa_material, E)
         end
     end
 
@@ -273,13 +275,35 @@ function simulate_ct_scan(;
     end
 
     # =========================================================================
-    # 4. Allocate Sinogram
+    # 4. Compute Detector Efficiency
+    # =========================================================================
+
+    if verbose
+        @info "🔬 Computing detector quantum efficiency..."
+    end
+
+    # Canon Aquilion ONE uses CsI scintillator, ~0.5mm thick
+    detector_material = XA.Materials.csi
+    detector_thickness_mm = 0.5
+
+    detector_efficiency = compute_detector_efficiency(
+        spectrum.energies,
+        detector_material,
+        detector_thickness_mm
+    )
+
+    if verbose
+        @info "✅ Detector efficiency: $(round(mean(detector_efficiency), digits=3)) (mean)"
+    end
+
+    # =========================================================================
+    # 5. Allocate Sinogram
     # =========================================================================
 
     sinogram = zeros(Float64, geometry.n_rows, geometry.n_cols, length(geometry.angles))
 
     # =========================================================================
-    # 5. Forward Projection Loop (Polychromatic Ray Tracing)
+    # 6. Forward Projection Loop (Polychromatic Ray Tracing)
     # =========================================================================
 
     if verbose
@@ -352,9 +376,10 @@ function simulate_ct_scan(;
                             # Beer-Lambert law: I(E) = I₀(E) · exp(-μ·L)
                             transmission = exp(-total_atten)
 
-                            # Energy-weighted transmission (detector response)
-                            # I(E) = N₀(E) × exp(-μL) × E
-                            transmitted_energy += N0 * transmission * E
+                            # Energy-weighted transmission with detector efficiency
+                            # I(E) = N₀(E) × exp(-μL) × E × η(E)
+                            # This matches the old working implementation
+                            transmitted_energy += N0 * transmission * E * detector_efficiency[e_idx]
                         end
 
                         pixel_energy_sum += transmitted_energy
@@ -429,12 +454,35 @@ end
 
 Estimate incident intensity (I₀) assuming no phantom.
 
-This is the energy-weighted photon fluence that would reach the detector.
+This is the energy-weighted photon fluence that would reach the detector,
+including detector quantum efficiency.
+
+# Arguments
+- `spectrum::XRaySpectrum` - X-ray source spectrum
+
+# Optional Arguments
+- `detector_material` - Scintillator material (default: CsI)
+- `detector_thickness_mm` - Detector thickness (default: 0.5 mm)
+
+# Returns
+- `Float64` - Reference intensity for air scan
 """
-function estimate_air_scan(spectrum::XRaySpectrum)::Float64
-    # Sum of energy-weighted photon fluence
-    # I₀ = Σ [N₀(E) × E]
-    return sum(spectrum.photons .* spectrum.energies)
+function estimate_air_scan(
+        spectrum::XRaySpectrum;
+        detector_material::XA.Material = XA.Materials.csi,
+        detector_thickness_mm::Float64 = 0.5
+    )::Float64
+
+    # Compute detector efficiency
+    efficiency = compute_detector_efficiency(
+        spectrum.energies,
+        detector_material,
+        detector_thickness_mm
+    )
+
+    # Sum of energy-weighted photon fluence with detector response
+    # I₀ = Σ [N₀(E) × E × η(E)]
+    return sum(spectrum.photons .* spectrum.energies .* efficiency)
 end
 
 # ==============================================================================
