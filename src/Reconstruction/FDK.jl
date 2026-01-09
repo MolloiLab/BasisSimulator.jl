@@ -160,13 +160,13 @@ function create_reconstruction_filter(
     # Zero-pad to next power of 2 for efficient FFT
     n_pad = nextpow(2, n_detector_pixels * 2)
 
-    # Create frequency axis and scale to cycles per cm
-    # fftfreq(n) gives normalized frequencies, then scale by pixel width
+    # Create ramp filter - EXACT match to old working version
+    # fftfreq(n) gives normalized frequencies [-0.5, 0.5)
+    # Scale by 1/pixel_width to get cycles per cm
     ramp_scale = 1.0 / pixel_width_cm
     ramp = abs.(fftshift(fftfreq(n_pad))) .* ramp_scale
 
-    # For now, just return the ramp filter (matching old working version)
-    # TODO: Add windowing functions (Shepp-Logan, Hann) later
+    # Return pure ramp filter (old version didn't use windowing)
     return ramp
 end
 
