@@ -104,8 +104,9 @@ include("Physics/Spectrum.jl")
 include("Physics/Attenuation.jl")
 include("Physics/Materials.jl")
 include("Physics/Detector.jl")
-# TODO: include("Physics/Scatter.jl")
-# TODO: include("Physics/Noise.jl")
+include("Physics/Scatter.jl")
+include("Physics/Noise.jl")
+include("Physics/BowtieFilter.jl")
 
 # Geometry and ray tracing
 include("Geometry/ScannerGeometry.jl")
@@ -114,7 +115,7 @@ include("Geometry/Phantoms.jl")
 
 # Image reconstruction
 include("Reconstruction/FDK.jl")
-# TODO: include("Reconstruction/Iterative.jl")
+include("Reconstruction/Iterative.jl")
 # TODO: include("Reconstruction/Corrections.jl")
 
 # High-level simulation
@@ -144,8 +145,12 @@ export CUSTOM_MATERIALS, get_material
 export validate_material_hu, print_material_properties
 # Detector
 export compute_detector_efficiency
-# TODO: export estimate_scatter_klein_nishina, estimate_scatter_convolution
-# TODO: export apply_quantum_noise, apply_electronic_noise
+# Scatter
+export estimate_scatter_convolution, klein_nishina_cross_section
+# Noise
+export apply_poisson_noise, add_electronic_noise, add_1_over_f_noise, compute_nps
+# Bowtie Filter
+export bowtie_thickness_profile, apply_bowtie_filter
 
 # Geometry
 export ScanProtocol, CTGeometry
@@ -161,8 +166,9 @@ export get_material_at_voxel, count_materials
 export reconstruct_fdk, ReconstructionFilter, ramlak, shepplogan, hann
 export convert_to_hounsfield_units, estimate_mu_water
 export create_reconstruction_filter, validate_fdk_inputs
-export reconstruct_sirt, reconstruct_mlem
-export correct_beam_hardening, correct_scatter
+# Iterative reconstruction
+export reconstruct_sirt, reconstruct_mlem, reconstruct_tv
+# TODO: export correct_beam_hardening, correct_scatter
 
 # Simulation
 export simulate_ct_scan
