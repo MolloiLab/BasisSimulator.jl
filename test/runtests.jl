@@ -6,11 +6,11 @@ Comprehensive tests for publication-grade CT simulator.
 # Test Organization
 
 - `test_spectrum.jl` - X-ray spectrum generation (Boone & Seibert 1997)
-- `test_ray_tracing.jl` - Ray tracing (Amanatides & Woo 1987)
 - `test_fdk.jl` - FDK reconstruction (Feldkamp et al. 1984)
-- `test_physics.jl` - All physics models
-- `test_gradients.jl` - Enzyme autodiff validation
-- `test_gecatsim.jl` - **CRITICAL** GECATSIM comparison
+- `test_physics_validation.jl` - **ACTIVE** Physics validation (NIST, HU, kVp)
+- `test_gecatsim_validation.jl` - **ACTIVE** GECATSIM comparison (optional)
+- `test_ray_tracing.jl` - Ray tracing (Amanatides & Woo 1987) [TODO]
+- `test_gradients.jl` - Enzyme autodiff validation [TODO]
 
 # Running Tests
 
@@ -116,13 +116,17 @@ test_start = time()
     # ------------------------------------------------------------------------
     # Validation Module Tests (CRITICAL FOR PUBLICATION)
     # ------------------------------------------------------------------------
-    # @testset "Validation" begin
-    #     println("\n✅ Testing Validation/Metrics.jl...")
-    #     include("test_metrics.jl")
-    #
-    #     println("\n🎯 Testing Validation/GECATSIM.jl (CRITICAL)...")
-    #     include("test_gecatsim.jl")
-    # end
+    @testset "Validation" begin
+        println("\n⚛️  Testing physics validation (NIST, HU, kVp effects)...")
+        include("test_physics_validation.jl")
+
+        println("\n🎯 Testing GECATSIM comparison (CRITICAL)...")
+        include("test_gecatsim_validation.jl")
+
+        # TODO: Uncomment as modules are implemented
+        # println("\n✅ Testing Validation/Metrics.jl...")
+        # include("test_metrics.jl")
+    end
 
     # ------------------------------------------------------------------------
     # Gradient/Autodiff Tests (CRITICAL FOR PUBLICATION)

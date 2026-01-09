@@ -877,6 +877,172 @@ $$
 - Adler & Öktem (2018) IEEE TMI 37:1322 - learned primal-dual
 - Maier et al. (2019) Nature MI 1:373 - physics-informed learning
 
+#### 2.12.4 Phantom Recovery from CT Scans (Inverse Validation)
+
+**[IMPLEMENTATION STATUS: ⏳ TO DO - Critical for GECATSIM validation]**
+
+A key test of differentiability is **inverting the forward model**: given measured CT projections, recover the underlying phantom composition. This validates:
+1. Gradient accuracy through full imaging chain
+2. Ability to perform material decomposition
+3. Readiness for clinical inverse problems
+
+**Problem Formulation:**
+
+Given:
+- Measured sinogram `y` (from real scanner or GECATSIM)
+- Scanner geometry `G` (known calibration)
+- Material library `M` = {water, bone, iodine, ...}
+
+Find:
+- Phantom representation `θ` that best explains measurements
+
+**Equation 38 - Inverse Problem as Optimization:**
+```
+θ* = arg min_θ ||F(θ, G, M) - y||² + R(θ)
+```
+
+where:
+- `F(θ, G, M)` is our differentiable forward model (spectrum → ray trace → detector)
+- `y` is the measured sinogram
+- `R(θ)` is regularization (e.g., total variation, sparsity)
+- `θ` parameterizes the phantom (material IDs + densities per voxel)
+
+**Parameterization Strategies:**
+
+1. **Discrete Materials (Categorical)**
+   ```julia
+   # Each voxel has material ID (1...N)
+   material_ids = rand(1:N, nx, ny, nz)  # Random initialization
+
+   # Optimize via softmax reparameterization
+   logits = randn(N, nx, ny, nz)
+   material_probs = softmax(logits)  # Differentiable
+
+   # Expected attenuation
+   μ_voxel = sum(material_probs[m] * μ[material[m]] for m in 1:N)
+   ```
+
+2. **Continuous Material Fractions**
+   ```julia
+   # Each voxel is mixture of basis materials
+   # θ = [α₁, α₂, ..., αₙ] where Σαᵢ = 1
+   fractions = softmax(logits)  # Ensures valid simplex
+
+   # Mixed attenuation (Equation from Attenuation.jl)
+   μ(E) = Σᵢ αᵢ · ρᵢ · (μ/ρ)ᵢ(E)
+   ```
+
+3. **Density Optimization**
+   ```julia
+   # Fixed material IDs, optimize densities
+   densities = softplus(unconstrained_ρ)  # Ensures ρ > 0
+   ```
+
+**Gradient Computation via Enzyme.jl:**
+
+```julia
+using Enzyme
+
+# Forward pass
+function loss_function(θ, measurements, geometry, materials)
+    # Unpack phantom from parameters
+    phantom = reconstruct_phantom(θ)
+
+    # Forward model (fully differentiable)
+    predicted_sinogram = simulate_ct_scan(phantom, geometry, materials)
+
+    # Data fidelity loss
+    L_data = sum((predicted_sinogram .- measurements).^2)
+
+    # Regularization
+    L_reg = tv_regularization(phantom)
+
+    return L_data + λ * L_reg
+end
+
+# Compute gradient via reverse-mode AD
+∇θ = gradient(Reverse, loss_function, θ, measurements, geometry, materials)
+
+# Update parameters
+θ ← θ - α * ∇θ  # Gradient descent
+```
+
+**Validation Protocol:**
+
+1. **Synthetic Ground Truth (GECATSIM)**
+   - Generate phantom with known materials (Gammex 472)
+   - Simulate sinogram with GECATSIM
+   - Initialize BasisSimulator with random phantom
+   - Optimize to recover ground truth
+   - **Success Metric:** Material classification accuracy >95%, density RMSE <5%
+
+2. **Multi-Material Phantoms**
+   - Test with water, bone, iodine mixtures
+   - Validate that optimizer separates materials correctly
+   - **Success Metric:** Composition error <5% for each material
+
+3. **Gradient Accuracy Check**
+   - Compare Enzyme.jl gradients to finite differences
+   - **Success Metric:** Relative error <1% for all parameters
+
+**Advantages Over Traditional Methods:**
+
+| Method | Gradients | Speed | Accuracy |
+|--------|-----------|-------|----------|
+| Grid Search | N/A | Days | Low resolution |
+| Finite Differences | O(n) evals | Hours | Noisy |
+| Manual Derivatives | Exact | Fast | Error-prone |
+| **Enzyme.jl (Ours)** | **Exact** | **Fast** | **Automatic** |
+
+**Experimental Design:**
+
+```julia
+# Experiment 1: Gammex 472 phantom recovery
+phantom_true = create_gammex_472()
+sinogram_gecatsim = run_gecatsim(phantom_true)
+
+# Random initialization
+θ₀ = randn(n_params)
+
+# Optimize
+θ_opt, loss_history = adam_optimizer(
+    loss_function, θ₀,
+    max_iterations=1000,
+    learning_rate=0.001
+)
+
+phantom_recovered = reconstruct_phantom(θ_opt)
+
+# Validate
+@test material_accuracy(phantom_recovered, phantom_true) > 0.95
+@test density_rmse(phantom_recovered, phantom_true) < 0.05
+```
+
+**Expected Results:**
+- [TBD: Material classification accuracy = X.XX%]
+- [TBD: Density RMSE = X.XX g/cm³]
+- [TBD: Convergence in X iterations]
+- [TBD: Gradient computation time = X.XX ms per iteration]
+
+**Implications:**
+
+Success in phantom recovery demonstrates:
+1. ✅ **Complete differentiability** - Gradients flow through entire pipeline
+2. ✅ **Numerical stability** - Optimization converges reliably
+3. ✅ **Clinical readiness** - Can perform real material decomposition
+4. ✅ **GECATSIM parity** - Forward model accuracy matches gold standard
+
+This capability enables:
+- **Automated QA** - Detect scanner miscalibration by inverting test scans
+- **Material decomposition** - Separate contrast agent from tissue
+- **Virtual biopsy** - Estimate tissue composition non-invasively
+- **Dose optimization** - Find minimal dose that preserves diagnostic info
+
+**Citation Support:**
+- Tilley et al. (2021) Med Phys 48:e73 - Deep learning material decomposition
+- Clark & Badea (2017) Phys Med Biol 62:R207 - Spectral CT review
+- Grönberg et al. (2020) Phys Med Biol 65:085003 - AI-based QA
+
 ---
 
 ## 3. RESULTS
