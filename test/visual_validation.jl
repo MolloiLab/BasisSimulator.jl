@@ -65,11 +65,10 @@ end
 const OUTPUT_DIR = joinpath(@__DIR__, "outputs")
 const OUTPUT_FILE = joinpath(OUTPUT_DIR, "visual_comparison.png")
 
-# Simulation parameters
+# Simulation parameters (Gammex 472 phantom)
 const PHANTOM_PARAMS = (
-    diameter_mm = 200.0,
     height_mm = 40.0,
-    resolution_mm = 2.0
+    resolution_mm = 2.0  # 2mm voxels for faster simulation
 )
 
 const SCAN_PARAMS = (
@@ -91,11 +90,10 @@ Run BasisSimulator.jl forward simulation and reconstruction.
 function run_basis_simulator()
     @info "Running BasisSimulator.jl simulation..."
 
-    # Create phantom
-    phantom = create_water_cylinder(
-        diameter_mm = PHANTOM_PARAMS.diameter_mm,
-        height_mm = PHANTOM_PARAMS.height_mm,
-        resolution_mm = PHANTOM_PARAMS.resolution_mm
+    # Create Gammex 472 calibration phantom with calcium and iodine inserts
+    phantom = create_gammex_472(
+        resolution_mm = PHANTOM_PARAMS.resolution_mm,
+        z_coverage_mm = PHANTOM_PARAMS.height_mm
     )
 
     # Define scanner
