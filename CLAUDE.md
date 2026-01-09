@@ -427,6 +427,73 @@ struct ValidationMetrics
 end
 ```
 
+### Visual Validation
+
+**Location**: `test/visual_validation.jl`
+
+**Purpose**: Generate publication-quality comparison figures for qualitative validation against GECATSIM.
+
+**Output**: Single PNG file with comprehensive 8-panel comparison:
+- Row 1: Sinogram comparisons (BasisSimulator, GECATSIM, Difference)
+- Row 2: Reconstruction comparisons (BasisSimulator, GECATSIM, Difference)
+- Row 3: Quantitative analysis (HU profiles, scatter plots, metrics)
+
+**Usage**:
+```bash
+julia --project=. test/visual_validation.jl
+```
+
+**Output Location**:
+```
+test/outputs/visual_comparison.png
+```
+
+**Features**:
+- Automatic detection of GECATSIM availability
+- Falls back to BasisSimulator-only validation if GECATSIM not installed
+- High-resolution output (2x pixel density for publication)
+- Quantitative metrics displayed (RMSE, MAE)
+- HU profile comparisons
+- Pixel-by-pixel correlation analysis
+
+**Requirements** (optional, auto-detected):
+- CairoMakie.jl (visualization)
+- PythonCall.jl (GECATSIM integration)
+- CondaPkg.jl (Python environment)
+
+**Validation Workflow**:
+1. Run BasisSimulator forward simulation
+2. If GECATSIM available, run equivalent simulation
+3. Generate multi-panel comparison figure
+4. Save to `test/outputs/`
+5. Inspect visually for agreement
+
+**What to Look For**:
+- **Sinogram agreement**: Should have similar structure and intensity distribution
+- **Reconstruction agreement**: HU values should match within ±10 HU for water
+- **Difference maps**: Should show random noise, not systematic patterns
+- **HU profiles**: Should overlap closely across phantom center
+- **Scatter plot**: Should cluster tightly around y=x identity line
+
+**Integration with CI/CD**:
+- Currently manual (requires visual inspection)
+- Future: Automated SSIM/RMSE checks with pass/fail thresholds
+- Figures can be archived as artifacts for peer review
+
+**Current Limitations**:
+- Uses water cylinder phantom only (simple validation baseline)
+- Gammex 472 custom materials (Ca_50, Ca_100, I_2_0, etc.) not yet defined
+  - Need to create XA.Compound or XA.Mixture definitions with proper elemental compositions
+  - Required for meaningful contrast in calibration phantom validation
+- Full GECATSIM Python interop not yet implemented (placeholder code in place)
+- Visual validation currently falls back to BasisSimulator-only mode
+
+**Next Steps**:
+1. Define custom Gammex materials in XrayAttenuation.jl format
+2. Implement full GECATSIM Python interop for run_gecatsim()
+3. Generate actual BasisSimulator vs GECATSIM comparison figures
+4. Document validation results with quantitative metrics
+
 ---
 
 ## Development Roadmap
