@@ -112,6 +112,20 @@ BasisSimulator.jl is validated against:
 
 **Test Coverage**: 790+ physics validation tests passing
 
+### Visual Validation
+
+Generate publication-quality comparison figures:
+```bash
+julia --project=. test/visual_validation.jl
+```
+
+Output: `test/outputs/visual_comparison.png` with 8-panel comparison showing:
+- Sinogram comparisons (BasisSimulator vs GECATSIM)
+- Reconstruction comparisons with difference maps
+- HU profile analysis and pixel-by-pixel correlation
+
+Automatically falls back to BasisSimulator-only visualization if GECATSIM not installed.
+
 ## Documentation
 
 - `CLAUDE.md` - Comprehensive planning and implementation status

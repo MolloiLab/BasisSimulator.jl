@@ -29,3 +29,6 @@ JuliaLocalPreferences.toml
 
 # Development scratch files
 scratch/
+
+# Test output figures
+test/outputs/
