@@ -1,10 +1,8 @@
 """
-Test Custom Gammex Materials
+Test Gammex 472 Materials
 
-Quick validation that custom materials:
-1. Are defined correctly (no errors)
-2. Have reasonable attenuation coefficients
-3. Produce expected HU values
+Validation that Gammex 472 materials are defined correctly with proper
+elemental compositions from manufacturer specifications.
 
 Run with:
     julia --project=. test/test_materials.jl
@@ -14,26 +12,25 @@ using Test
 using BasisSimulator
 import XrayAttenuation as XA
 
-@testset "Custom Gammex Materials" begin
+@testset "Gammex 472 Materials" begin
 
     @testset "Material Instantiation" begin
-        # Check that all materials can be instantiated
-        # Note: These are now custom types, not XA.Compound/Mixture
-        @test isdefined(BasisSimulator, :Ca_50)
-        @test isdefined(BasisSimulator, :Ca_100)
-        @test isdefined(BasisSimulator, :Ca_200)
-        @test isdefined(BasisSimulator, :Ca_300)
-        @test isdefined(BasisSimulator, :Ca_400)
-        @test isdefined(BasisSimulator, :Ca_500)
-        @test isdefined(BasisSimulator, :Ca_600)
+        # Check that all materials are defined as XA.Material
+        @test Ca_50 isa XA.Material
+        @test Ca_100 isa XA.Material
+        @test Ca_200 isa XA.Material
+        @test Ca_300 isa XA.Material
+        @test Ca_400 isa XA.Material
+        @test Ca_500 isa XA.Material
+        @test Ca_600 isa XA.Material
 
-        @test isdefined(BasisSimulator, :I_2_0)
-        @test isdefined(BasisSimulator, :I_2_5)
-        @test isdefined(BasisSimulator, :I_5_0)
-        @test isdefined(BasisSimulator, :I_7_5)
-        @test isdefined(BasisSimulator, :I_10_0)
-        @test isdefined(BasisSimulator, :I_15_0)
-        @test isdefined(BasisSimulator, :I_20_0)
+        @test I_2_0 isa XA.Material
+        @test I_2_5 isa XA.Material
+        @test I_5_0 isa XA.Material
+        @test I_7_5 isa XA.Material
+        @test I_10_0 isa XA.Material
+        @test I_15_0 isa XA.Material
+        @test I_20_0 isa XA.Material
     end
 
     @testset "Material Registry" begin
@@ -51,7 +48,7 @@ import XrayAttenuation as XA
     @testset "Attenuation Coefficients" begin
         E = 60.0  # keV (typical effective energy for CT)
 
-        # Water reference (using get_linear_attenuation from BasisSimulator)
+        # Water reference
         μ_water = get_linear_attenuation(XA.Materials.water, E)
         @test 0.1 < μ_water < 0.5  # cm⁻¹
 
@@ -64,7 +61,7 @@ import XrayAttenuation as XA
         @test μ_ca100 > μ_ca50
         @test μ_ca600 > μ_ca100
 
-        # Iodine inserts should have much higher attenuation (high Z)
+        # Iodine inserts should have higher attenuation (high Z)
         μ_i2 = get_linear_attenuation(I_2_0, E)
         μ_i20 = get_linear_attenuation(I_20_0, E)
 
@@ -92,12 +89,10 @@ import XrayAttenuation as XA
         @test hu_i2 > 0
         @test hu_i20 > hu_i2
 
-        # Sanity checks based on material properties
-        # Note: Actual values depend on density model and material assumptions
-        # These are wider ranges to accommodate model uncertainties
-        @test 200 < hu_ca50 < 800  # Calcium attenuates more than water
-        @test 5000 < hu_ca600 < 15000  # High concentration → high HU
-        @test 50 < hu_i20 < 1000  # Iodine high Z
+        # Sanity checks based on manufacturer-specified compositions
+        @test 100 < hu_ca50 < 600
+        @test 1000 < hu_ca600 < 3000
+        @test 0 < hu_i20 < 500
     end
 
     @testset "Energy Dependence" begin
@@ -112,21 +107,24 @@ import XrayAttenuation as XA
         @test μ_values_i[1] > μ_values_i[end]
     end
 
-    @testset "Density Calculations" begin
-        # Check that densities are reasonable
-        # Note: Ca_600 has high HA concentration → higher density
-        @test 1.0 < Ca_50.density < 1.5
-        @test 1.0 < Ca_600.density < 5.0  # High concentration → denser
-        @test 1.0 < I_2_0.density < 1.1
-        @test 1.0 < I_20_0.density < 1.2
+    @testset "Density Validation" begin
+        # Check manufacturer-specified densities
+        using Unitful: ustrip, @u_str
+
+        @test ustrip(u"g/cm^3", Ca_50.density) ≈ 1.17
+        @test ustrip(u"g/cm^3", Ca_100.density) ≈ 1.24
+        @test ustrip(u"g/cm^3", Ca_600.density) ≈ 2.01
+
+        @test ustrip(u"g/cm^3", I_2_0.density) ≈ 1.03
+        @test ustrip(u"g/cm^3", I_20_0.density) ≈ 1.04
     end
 
 end
 
 # Print material properties table
 println("\n" * "="^70)
-println("Material Properties Summary")
+println("Gammex 472 Material Properties (Manufacturer Specifications)")
 println("="^70)
 print_material_properties()
 
-println("\n✅ All material tests passed!")
+println("\n✅ All Gammex 472 material tests passed!")
