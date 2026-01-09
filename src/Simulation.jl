@@ -252,12 +252,13 @@ function simulate_ct_scan(;
         end
 
         # Map material symbol to XA material
-        # For now, try direct mapping (will need custom materials for Gammex inserts)
+        # Uses custom materials (Gammex inserts) if defined, otherwise XA.Materials
         xa_material = try
-            getproperty(XA.Materials, mat_symbol)
-        catch
+            get_material(mat_symbol)
+        catch e
             # Fallback: use water if material not found
-            @warn "Material $mat_symbol not found in XA.Materials, using water"
+            @warn "Material $mat_symbol not found in custom materials or XA.Materials, using water as fallback"
+            @warn "Error: $e"
             XA.Materials.water
         end
 
