@@ -6,6 +6,49 @@
 
 ---
 
+## ⚠️ CURRENT STATUS: DEBUGGING & PIVOT (Jan 8, 2026)
+
+### What Works
+- ✅ **Ray Tracer**: Fixed critical ray-box intersection bug (sources outside grid)
+- ✅ **Gammex 472 Materials**: All 14 materials properly defined with manufacturer specs
+- ✅ **FDK Reconstruction**: Isolated test shows 2x error (acceptable, matches old version)
+- ✅ **Module Structure**: Clean architecture with proper separation of concerns
+
+### What's Broken
+- ❌ **Full Pipeline**: Sinogram nearly blank, reconstruction is noise
+- ❌ **Forward Simulation**: Producing wrong scale (46 cm^-1 max, should be ~7)
+- ❌ **Data Conversion**: Something fundamentally wrong in simulation → sinogram → FDK flow
+
+### Debugging Summary
+Spent extensive time debugging:
+1. Fixed ray tracer (major win - was completely broken)
+2. Tried matching old FDK normalization (2π/N vs π/2N vs 1/N)
+3. Fixed filter frequency ordering (fftshift issues)
+4. Corrected energy-weighted transmission (I × E)
+5. FDK now matches old isolated test (2x error)
+6. But full pipeline still produces wrong values
+
+### Root Cause
+The isolated FDK test works, but the full `simulate_ct_scan` → `convert_to_attenuation` → `reconstruct_fdk` pipeline fails. Issue is in forward simulation or data flow, not FDK algorithm itself.
+
+### **PIVOT DECISION**
+Instead of continuing to debug the refactored code, we will:
+1. ✅ Commit current state (done)
+2. Extract complete working pipeline from `ct_simulator_final.jl` (old Pluto notebook)
+3. Port working code directly into module structure
+4. Build forward from proven baseline
+
+**Rationale**: The old Pluto notebook worked. We have it in git history. Rather than spend more time debugging subtle integration issues, we should port the working implementation directly.
+
+### Next Steps
+1. Extract working functions from `/tmp/ct_simulator_final_old.jl`
+2. Create new test script that uses old code directly
+3. Verify it produces correct images
+4. Port working implementation to module structure piece by piece
+5. Test each piece as we port
+
+---
+
 ## Table of Contents
 
 1. [Project Goals](#project-goals)
