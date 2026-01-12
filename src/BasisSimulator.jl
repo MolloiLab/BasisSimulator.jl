@@ -19,8 +19,16 @@ import XrayAttenuation as XA
 export XA
 
 # =============================================================================
-# Materials (Gammex 472)
+# Physics
 # =============================================================================
+
+# Materials (Gammex 472)
 include("Physics/Materials.jl")
+
+# Spectrum loading (from .dat files)
+include("Physics/Spectrum.jl")
+
+# Attenuation coefficient computation
+include("Physics/Attenuation.jl")
 
 end # module
