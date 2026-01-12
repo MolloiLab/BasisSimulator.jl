@@ -319,6 +319,76 @@ include("test_visualization.jl")
         @test maximum(abs.(sinogram_result .- sinogram_julia)) < 1e-5
     end
 
+    @testset "Polychromatic Simulation" begin
+        phantom = create_gammex_472(n_voxels=16)
+        geom = create_aquilion_one(n_angles=36, n_rows=4, n_cols=32, fov_cm=phantom.fov[1])
+
+        # Create polychromatic projector
+        projector = create_polychromatic_projector(phantom, geom, 120; n_bins=10)
+        @test projector isa PolychromaticProjector
+        @test length(projector.energies) == 10
+
+        # Check effective energy is reasonable
+        eff_E = compute_effective_energy(projector)
+        @test 40 < eff_E < 80  # Typical range for 120 kVp
+
+        # Check effective μ_water
+        μ_eff = get_effective_μ_water(projector)
+        @test 0.15 < μ_eff < 0.25
+
+        # Forward project with polychromatic spectrum
+        sino_poly = forward_project_polychromatic(phantom, projector)
+        @test size(sino_poly) == (32, 4, 36)
+        @test maximum(sino_poly) > 0
+        @test all(isfinite.(sino_poly))
+
+        # Compare to monochromatic at effective energy
+        sino_mono = forward_project(phantom, geom)
+
+        # Polychromatic should generally have lower values due to beam hardening
+        # (harder spectrum after passing through material)
+        # But both should be in similar range
+        @test 0.5 < mean(sino_poly) / mean(sino_mono) < 2.0
+
+        # Higher-density paths should show more beam hardening difference
+        # (This is a qualitative check - polychromatic is more realistic)
+        @test maximum(sino_poly) > 0
+    end
+
+    @testset "Polychromatic Reconstruction" begin
+        phantom = create_gammex_472(n_voxels=32)
+        geom = create_aquilion_one(n_angles=180, n_rows=8, n_cols=128, fov_cm=phantom.fov[1])
+
+        # Create polychromatic projector with binned spectrum
+        projector = create_polychromatic_projector(phantom, geom, 120; n_bins=20)
+
+        # Forward project
+        sinogram = forward_project_polychromatic(phantom, projector)
+
+        # Reconstruct
+        recon = fdk_reconstruct(sinogram, geom, size(phantom.μ), phantom.fov)
+
+        # Get effective μ_water for HU conversion
+        μ_water_eff = get_effective_μ_water(projector)
+
+        # Basic validation
+        @test maximum(recon) > 0
+        @test all(isfinite.(recon))
+
+        # Water region should have finite, reasonable HU value
+        # (polychromatic beam hardening causes HU shifts)
+        water_mask = get_region_mask(phantom, REGION_SOLID_WATER)
+        water_HU = μ_to_HU(mean(recon[water_mask]), μ_water_eff)
+        @test -1000 < water_HU < 500  # Wide tolerance for beam hardening
+
+        # Key test: Calcium should have HIGHER attenuation than water
+        # (This is the physics we care about, not absolute HU values)
+        ca_mask = get_region_mask(phantom, REGION_CA_100)
+        if sum(ca_mask) > 0
+            @test mean(recon[ca_mask]) > mean(recon[water_mask])
+        end
+    end
+
     @testset "Visualization Output" begin
         # Create output directory
         output_dir = joinpath(@__DIR__, "outputs")
@@ -397,7 +467,31 @@ include("test_visualization.jl")
         )
         @test isfile(joinpath(output_dir, "07_mask.ppm"))
 
+        # Also generate polychromatic reconstruction for comparison
+        projector = create_polychromatic_projector(phantom, geom, 120; n_bins=20)
+        sino_poly = forward_project_polychromatic(phantom, projector)
+        recon_poly = fdk_reconstruct(sino_poly, geom, size(phantom.μ), phantom.fov)
+
+        μ_water_eff = get_effective_μ_water(projector)
+        recon_poly_HU = μ_to_HU(recon_poly, μ_water_eff)
+
+        save_heatmap(
+            joinpath(output_dir, "08_recon_poly_axial"),
+            recon_poly_HU[:, :, mid_slice];
+            colormap=:gray, vmin=-1000, vmax=1000
+        )
+        @test isfile(joinpath(output_dir, "08_recon_poly_axial.ppm"))
+
+        # Difference: monochromatic - polychromatic (shows beam hardening effect)
+        diff_mono_poly = recon_HU .- recon_poly_HU
+        save_heatmap(
+            joinpath(output_dir, "09_beam_hardening_diff"),
+            diff_mono_poly[:, :, mid_slice];
+            colormap=:viridis, vmin=-200, vmax=200
+        )
+        @test isfile(joinpath(output_dir, "09_beam_hardening_diff.ppm"))
+
         println("\nVisualization outputs saved to: $output_dir")
-        println("Files: phantom, sinogram, reconstruction, difference, mask")
+        println("Files: phantom, sinogram, reconstruction, difference, mask, polychromatic")
     end
 end

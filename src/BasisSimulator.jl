@@ -45,8 +45,11 @@ include("Geometry/Scanner.jl")
 # Forward Projection
 # =============================================================================
 
-# Forward projector (ray-driven)
+# Forward projector (ray-driven, Siddon's method)
 include("Forward/Projector.jl")
+
+# Polychromatic simulation (energy-dependent attenuation)
+include("Forward/Polychromatic.jl")
 
 # =============================================================================
 # Reconstruction
