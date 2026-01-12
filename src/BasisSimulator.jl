@@ -60,6 +60,9 @@ include("Forward/DetectorNoise.jl")
 # Bowtie filter modeling
 include("Forward/BowtieFilter.jl")
 
+# Finite focal spot modeling
+include("Forward/FocalSpot.jl")
+
 # =============================================================================
 # Reconstruction
 # =============================================================================
