@@ -63,6 +63,9 @@ include("Forward/BowtieFilter.jl")
 # Finite focal spot modeling
 include("Forward/FocalSpot.jl")
 
+# Detector crosstalk modeling
+include("Forward/Crosstalk.jl")
+
 # =============================================================================
 # Reconstruction
 # =============================================================================
