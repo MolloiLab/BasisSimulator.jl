@@ -17,7 +17,7 @@ XrayAttenuation = "7811750c-a499-436e-8b04-55fc0593dd37"
 FFTW = "1"
 Reactant = "0.2"
 Unitful = "1"
-XrayAttenuation = "0.1"
+XrayAttenuation = "0.2"
 julia = "1.11"
 
 [extras]
