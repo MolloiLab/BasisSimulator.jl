@@ -38,4 +38,21 @@ include("Physics/Attenuation.jl")
 # Phantom generation with semantic masks
 include("Geometry/Phantom.jl")
 
+# CT scanner geometry
+include("Geometry/Scanner.jl")
+
+# =============================================================================
+# Forward Projection
+# =============================================================================
+
+# Forward projector (ray-driven)
+include("Forward/Projector.jl")
+
+# =============================================================================
+# Reconstruction
+# =============================================================================
+
+# FDK cone-beam reconstruction
+include("Reconstruction/FDK.jl")
+
 end # module
