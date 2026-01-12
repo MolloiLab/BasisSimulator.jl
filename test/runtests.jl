@@ -389,6 +389,144 @@ include("test_visualization.jl")
         end
     end
 
+    @testset "Scatter Simulation" begin
+        phantom = create_gammex_472(n_voxels=16)
+        geom = create_aquilion_one(n_angles=36, n_rows=4, n_cols=32, fov_cm=phantom.fov[1])
+
+        # Create clean sinogram
+        sinogram = forward_project(phantom, geom)
+
+        # Create scatter model
+        model = default_scatter_model(spr=0.15, kernel_fwhm=10.0)
+        @test model isa ScatterModel
+        @test model.spr == 0.15
+
+        # Add scatter
+        sino_scatter = add_scatter(sinogram, model)
+        @test size(sino_scatter) == size(sinogram)
+        @test all(isfinite.(sino_scatter))
+
+        # Scatter should reduce contrast (increase low-attenuation values)
+        # In attenuation space, scatter causes values to shift
+        @test sino_scatter != sinogram  # Should be different
+
+        # Estimate SPR from phantom
+        estimated_spr = estimate_spr(phantom, geom)
+        @test 0.01 < estimated_spr < 0.5
+
+        # Compute scatter artifact magnitude
+        artifact_mag = compute_scatter_artifact_magnitude(sinogram, sino_scatter)
+        @test artifact_mag > 0  # Should have some difference
+        @test artifact_mag < 1.0  # But not overwhelming
+
+        # In-place version
+        sino_copy = copy(sinogram)
+        add_scatter!(sino_copy, model)
+        @test sino_copy ≈ sino_scatter
+    end
+
+    @testset "Detector Blur" begin
+        phantom = create_gammex_472(n_voxels=16)
+        geom = create_aquilion_one(n_angles=8, n_rows=4, n_cols=32, fov_cm=phantom.fov[1])
+        sinogram = forward_project(phantom, geom)
+
+        # Create detector model with blur
+        model = default_detector_model(blur_fwhm=2.0, I0=1e6, electronic_noise_std=0.0, seed=42)
+        @test model isa DetectorModel
+
+        # Apply blur only
+        blurred = apply_detector_blur(sinogram, model)
+        @test size(blurred) == size(sinogram)
+        @test all(isfinite.(blurred))
+
+        # Blurred should be smoother (lower max gradient)
+        # Just check it's different
+        @test blurred != sinogram
+    end
+
+    @testset "Quantum Noise" begin
+        phantom = create_gammex_472(n_voxels=16)
+        geom = create_aquilion_one(n_angles=8, n_rows=4, n_cols=32, fov_cm=phantom.fov[1])
+        sinogram = forward_project(phantom, geom)
+
+        # High dose (low noise)
+        model_high = default_detector_model(blur_fwhm=0.0, I0=1e6, electronic_noise_std=0.0, seed=42)
+        noisy_high = add_quantum_noise(sinogram, model_high)
+
+        # Low dose (high noise)
+        model_low = default_detector_model(blur_fwhm=0.0, I0=1e3, electronic_noise_std=0.0, seed=42)
+        noisy_low = add_quantum_noise(sinogram, model_low)
+
+        @test all(isfinite.(noisy_high))
+        @test all(isfinite.(noisy_low))
+
+        # Lower dose should have more noise
+        noise_high = compute_noise_level(sinogram, noisy_high)
+        noise_low = compute_noise_level(sinogram, noisy_low)
+        @test noise_low.std_diff > noise_high.std_diff
+    end
+
+    @testset "Electronic Noise" begin
+        phantom = create_gammex_472(n_voxels=16)
+        geom = create_aquilion_one(n_angles=8, n_rows=4, n_cols=32, fov_cm=phantom.fov[1])
+        sinogram = forward_project(phantom, geom)
+
+        model = default_detector_model(blur_fwhm=0.0, I0=1e6, electronic_noise_std=50.0, seed=42)
+        noisy = add_electronic_noise(sinogram, model)
+
+        @test all(isfinite.(noisy))
+        @test noisy != sinogram
+
+        noise_stats = compute_noise_level(sinogram, noisy)
+        @test noise_stats.std_diff > 0
+    end
+
+    @testset "Full Detector Model" begin
+        phantom = create_gammex_472(n_voxels=16)
+        geom = create_aquilion_one(n_angles=36, n_rows=4, n_cols=32, fov_cm=phantom.fov[1])
+        sinogram = forward_project(phantom, geom)
+
+        # Apply full detector model
+        model = default_detector_model(blur_fwhm=1.5, I0=1e5, electronic_noise_std=20.0, seed=42)
+        degraded = apply_detector_model(sinogram, model)
+
+        @test size(degraded) == size(sinogram)
+        @test all(isfinite.(degraded))
+
+        # Should be different from clean
+        @test degraded != sinogram
+
+        # Noise stats
+        stats = compute_noise_level(sinogram, degraded)
+        @test stats.snr > 0
+        @test stats.std_diff > 0
+    end
+
+    @testset "Scatter Effects on Reconstruction" begin
+        phantom = create_gammex_472(n_voxels=32)
+        geom = create_aquilion_one(n_angles=180, n_rows=8, n_cols=128, fov_cm=phantom.fov[1])
+
+        # Clean forward projection
+        sinogram = forward_project(phantom, geom)
+
+        # Add scatter
+        model = default_scatter_model(spr=0.20)
+        sino_scatter = add_scatter(sinogram, model)
+
+        # Reconstruct both
+        recon_clean = fdk_reconstruct(sinogram, geom, size(phantom.μ), phantom.fov)
+        recon_scatter = fdk_reconstruct(sino_scatter, geom, size(phantom.μ), phantom.fov)
+
+        # Scatter causes cupping artifact (lower values in center)
+        water_mask = get_region_mask(phantom, REGION_SOLID_WATER)
+        μ_clean = mean(recon_clean[water_mask])
+        μ_scatter = mean(recon_scatter[water_mask])
+
+        # Scatter typically reduces reconstructed values
+        @test maximum(recon_scatter) > 0
+        @test all(isfinite.(recon_scatter))
+    end
+
     @testset "Visualization Output" begin
         # Create output directory
         output_dir = joinpath(@__DIR__, "outputs")
@@ -491,7 +629,56 @@ include("test_visualization.jl")
         )
         @test isfile(joinpath(output_dir, "09_beam_hardening_diff.ppm"))
 
+        # Add scatter simulation visualization
+        scatter_model = default_scatter_model(spr=0.20)
+        sino_scatter = add_scatter(sinogram, scatter_model)
+        recon_scatter = fdk_reconstruct(sino_scatter, geom, size(phantom.μ), phantom.fov)
+        recon_scatter_HU = μ_to_HU(recon_scatter, μ_water)
+
+        save_heatmap(
+            joinpath(output_dir, "10_recon_scatter_axial"),
+            recon_scatter_HU[:, :, mid_slice];
+            colormap=:gray, vmin=-1000, vmax=1000
+        )
+        @test isfile(joinpath(output_dir, "10_recon_scatter_axial.ppm"))
+
+        # Cupping artifact visualization (clean - scatter)
+        cupping = recon_HU .- recon_scatter_HU
+        save_heatmap(
+            joinpath(output_dir, "11_scatter_cupping"),
+            cupping[:, :, mid_slice];
+            colormap=:viridis, vmin=-100, vmax=100
+        )
+        @test isfile(joinpath(output_dir, "11_scatter_cupping.ppm"))
+
+        # Add noisy reconstruction visualization
+        detector_model = default_detector_model(blur_fwhm=1.0, I0=5e4, electronic_noise_std=10.0, seed=42)
+        sino_noisy = apply_detector_model(sinogram, detector_model)
+        recon_noisy = fdk_reconstruct(sino_noisy, geom, size(phantom.μ), phantom.fov)
+        recon_noisy_HU = μ_to_HU(recon_noisy, μ_water)
+
+        save_heatmap(
+            joinpath(output_dir, "12_recon_noisy_axial"),
+            recon_noisy_HU[:, :, mid_slice];
+            colormap=:gray, vmin=-1000, vmax=1000
+        )
+        @test isfile(joinpath(output_dir, "12_recon_noisy_axial.ppm"))
+
+        # Full realistic simulation: polychromatic + scatter + noise
+        sino_full = forward_project_polychromatic(phantom, projector)
+        sino_full = add_scatter(sino_full, scatter_model)
+        sino_full = apply_detector_model(sino_full, detector_model)
+        recon_full = fdk_reconstruct(sino_full, geom, size(phantom.μ), phantom.fov)
+        recon_full_HU = μ_to_HU(recon_full, get_effective_μ_water(projector))
+
+        save_heatmap(
+            joinpath(output_dir, "13_recon_full_realistic"),
+            recon_full_HU[:, :, mid_slice];
+            colormap=:gray, vmin=-1000, vmax=1000
+        )
+        @test isfile(joinpath(output_dir, "13_recon_full_realistic.ppm"))
+
         println("\nVisualization outputs saved to: $output_dir")
-        println("Files: phantom, sinogram, reconstruction, difference, mask, polychromatic")
+        println("Files: phantom, sinogram, mono/poly/scatter/noisy/full reconstructions")
     end
 end
