@@ -3,6 +3,9 @@ using BasisSimulator
 using Statistics
 using Reactant
 
+# Include visualization helpers (for generating inspection images)
+include("test_visualization.jl")
+
 @testset "BasisSimulator.jl" begin
     @testset "Materials" begin
         # Test that Gammex materials are properly aliased from XrayAttenuation.jl
@@ -314,5 +317,87 @@ using Reactant
 
         sinogram_julia = project_volume(phantom.μ, proj_geom)
         @test maximum(abs.(sinogram_result .- sinogram_julia)) < 1e-5
+    end
+
+    @testset "Visualization Output" begin
+        # Create output directory
+        output_dir = joinpath(@__DIR__, "outputs")
+        mkpath(output_dir)
+
+        # Generate phantom, sinogram, and reconstruction at higher resolution
+        phantom = create_gammex_472(n_voxels=64)
+        geom = create_aquilion_one(n_angles=360, n_rows=16, n_cols=256, fov_cm=phantom.fov[1])
+
+        # Forward project
+        sinogram = forward_project(phantom, geom)
+
+        # Reconstruct
+        recon = fdk_reconstruct(sinogram, geom, size(phantom.μ), phantom.fov)
+
+        # Convert to HU for visualization
+        μ_water = get_reference_μ_water(60.0)
+        phantom_HU = μ_to_HU(phantom.μ, μ_water)
+        recon_HU = μ_to_HU(recon, μ_water)
+
+        # Save phantom slices (ground truth)
+        mid_slice = size(phantom.μ, 3) ÷ 2
+        save_heatmap(
+            joinpath(output_dir, "01_phantom_axial"),
+            phantom_HU[:, :, mid_slice];
+            colormap=:gray, vmin=-1000, vmax=1000
+        )
+        @test isfile(joinpath(output_dir, "01_phantom_axial.ppm"))
+
+        # Save phantom montage
+        save_slice_montage(
+            joinpath(output_dir, "02_phantom_montage"),
+            phantom_HU;
+            colormap=:gray, vmin=-1000, vmax=1000
+        )
+        @test isfile(joinpath(output_dir, "02_phantom_montage.ppm"))
+
+        # Save sinogram
+        save_sinogram_view(
+            joinpath(output_dir, "03_sinogram"),
+            sinogram;
+            row=size(sinogram, 2) ÷ 2, colormap=:hot
+        )
+        @test isfile(joinpath(output_dir, "03_sinogram.ppm"))
+
+        # Save reconstruction slices
+        save_heatmap(
+            joinpath(output_dir, "04_recon_axial"),
+            recon_HU[:, :, mid_slice];
+            colormap=:gray, vmin=-1000, vmax=1000
+        )
+        @test isfile(joinpath(output_dir, "04_recon_axial.ppm"))
+
+        # Save reconstruction montage
+        save_slice_montage(
+            joinpath(output_dir, "05_recon_montage"),
+            recon_HU;
+            colormap=:gray, vmin=-1000, vmax=1000
+        )
+        @test isfile(joinpath(output_dir, "05_recon_montage.ppm"))
+
+        # Save difference (phantom - recon)
+        diff_HU = phantom_HU .- recon_HU
+        save_heatmap(
+            joinpath(output_dir, "06_difference"),
+            diff_HU[:, :, mid_slice];
+            colormap=:viridis, vmin=-500, vmax=500
+        )
+        @test isfile(joinpath(output_dir, "06_difference.ppm"))
+
+        # Save region mask
+        save_heatmap(
+            joinpath(output_dir, "07_mask"),
+            Float64.(phantom.mask[:, :, mid_slice]);
+            colormap=:viridis
+        )
+        @test isfile(joinpath(output_dir, "07_mask.ppm"))
+
+        println("\nVisualization outputs saved to: $output_dir")
+        println("Files: phantom, sinogram, reconstruction, difference, mask")
     end
 end
