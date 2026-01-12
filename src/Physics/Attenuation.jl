@@ -117,6 +117,73 @@ function compute_effective_μ(μ_matrix::Matrix{Float64}, weights::Vector{Float6
     return μ_eff
 end
 
+# =============================================================================
+# HU Conversion
+# =============================================================================
+
+"""
+    μ_to_HU(μ::Real, μ_water::Real)
+
+Convert linear attenuation coefficient to Hounsfield Units (HU).
+
+HU = 1000 × (μ - μ_water) / μ_water
+
+# Arguments
+- `μ`: Linear attenuation coefficient (cm⁻¹)
+- `μ_water`: Linear attenuation of water at the same energy (cm⁻¹)
+
+# Returns
+- `HU::Float64`: Hounsfield Units
+
+# Reference values
+- Air: HU ≈ -1000
+- Water: HU = 0
+- Bone: HU ≈ 400-1000
+- Soft tissue: HU ≈ 40-80
+"""
+function μ_to_HU(μ::Real, μ_water::Real)
+    return 1000.0 * (μ - μ_water) / μ_water
+end
+
+"""
+    μ_to_HU(μ::AbstractArray, μ_water::Real)
+
+Convert array of linear attenuation coefficients to HU.
+"""
+function μ_to_HU(μ::AbstractArray, μ_water::Real)
+    return 1000.0 .* (μ .- μ_water) ./ μ_water
+end
+
+"""
+    HU_to_μ(HU::Real, μ_water::Real)
+
+Convert Hounsfield Units back to linear attenuation coefficient.
+
+μ = μ_water × (1 + HU/1000)
+
+# Arguments
+- `HU`: Hounsfield Units
+- `μ_water`: Linear attenuation of water (cm⁻¹)
+
+# Returns
+- `μ::Float64`: Linear attenuation coefficient (cm⁻¹)
+"""
+function HU_to_μ(HU::Real, μ_water::Real)
+    return μ_water * (1.0 + HU / 1000.0)
+end
+
+"""
+    get_reference_μ_water(energy_keV::Float64=60.0)
+
+Get linear attenuation coefficient of water at specified energy.
+
+Default energy is 60 keV (typical effective energy for 120 kVp spectrum).
+"""
+function get_reference_μ_water(energy_keV::Float64=60.0)
+    return compute_μ_at_energy(XA.Materials.water, energy_keV)
+end
+
 # Exports
 export compute_μ_matrix, compute_μ_at_energy, compute_mass_μ_at_energy
 export get_density, compute_effective_μ
+export μ_to_HU, HU_to_μ, get_reference_μ_water
