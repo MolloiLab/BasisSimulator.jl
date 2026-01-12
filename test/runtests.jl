@@ -812,5 +812,65 @@ using Reactant
         @test !isapprox(intensity_ct, intensity, rtol=0.001)
     end
 
+    @testset "Detector Lag" begin
+        # Test model creation
+        lag_0 = lag_none()
+        lag_gos = lag_gadox(frame_time=0.5)
+        lag_cesium = lag_csi(frame_time=0.5)
+        lag_hi = lag_high(frame_time=0.5)
+
+        @test lag_0 isa LagModel
+        @test isempty(lag_0.amplitudes)
+        @test length(lag_gos.amplitudes) == 2
+        @test lag_gos.frame_time == 0.5
+
+        # Test custom lag
+        lag_cust = lag_custom([0.02, 0.01], [2.0, 15.0]; frame_time=1.0)
+        @test lag_cust.amplitudes == [0.02, 0.01]
+        @test lag_cust.time_constants == [2.0, 15.0]
+
+        # Test lag info
+        info = get_lag_info(lag_gos)
+        @test info.n_components == 2
+        @test info.total_lag_fraction ≈ sum(lag_gos.amplitudes)
+
+        # Test coefficient computation
+        coeffs = compute_lag_coefficients(lag_gos, 10)
+        @test length(coeffs) == 10
+        @test coeffs[1] ≈ 1.0 - sum(lag_gos.amplitudes)  # Primary
+        @test all(coeffs[2:end] .>= 0)  # Lag contributions non-negative
+        @test coeffs[2] > coeffs[end]  # Decay over time
+
+        # Test impulse response
+        ir = compute_lag_impulse_response(lag_gos, 20)
+        @test length(ir) == 20
+        # At t=0: primary (1-sum(a)) + lag (sum(a*exp(0))=sum(a)) = 1.0
+        @test ir[1] ≈ 1.0
+        @test ir[end] < ir[1]  # Decays
+
+        # Test application to sinogram
+        phantom = create_gammex_472(n_voxels=16)
+        geom = create_aquilion_one(n_angles=36, n_rows=4, n_cols=32, fov_cm=phantom.fov[1])
+        sinogram = forward_project(phantom, geom)
+
+        sino_lag = apply_lag(sinogram, lag_gos)
+        @test size(sino_lag) == size(sinogram)
+        @test all(isfinite.(sino_lag))
+
+        # No lag should return same sinogram
+        sino_none = apply_lag(sinogram, lag_0)
+        @test sino_none ≈ sinogram
+
+        # Lag should change values
+        @test !isapprox(sino_lag, sinogram, rtol=0.0001)
+
+        # Test recursive implementation gives similar results
+        sino_lag_rec = apply_lag_recursive(sinogram, lag_gos)
+        @test size(sino_lag_rec) == size(sinogram)
+        @test all(isfinite.(sino_lag_rec))
+        # Results should be similar (not identical due to different boundary handling)
+        @test isapprox(mean(sino_lag), mean(sino_lag_rec), rtol=0.05)
+    end
+
     # Visualization is in stuff/scripts/visualize.jl (run manually with CairoMakie)
 end

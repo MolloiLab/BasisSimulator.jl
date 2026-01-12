@@ -66,6 +66,9 @@ include("Forward/FocalSpot.jl")
 # Detector crosstalk modeling
 include("Forward/Crosstalk.jl")
 
+# Detector lag (afterglow) modeling
+include("Forward/DetectorLag.jl")
+
 # =============================================================================
 # Reconstruction
 # =============================================================================
