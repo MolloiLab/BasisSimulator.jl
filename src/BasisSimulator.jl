@@ -57,6 +57,9 @@ include("Forward/Scatter.jl")
 # Detector response and noise modeling
 include("Forward/DetectorNoise.jl")
 
+# Bowtie filter modeling
+include("Forward/BowtieFilter.jl")
+
 # =============================================================================
 # Reconstruction
 # =============================================================================
