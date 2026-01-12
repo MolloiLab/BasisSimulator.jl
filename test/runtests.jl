@@ -645,5 +645,61 @@ using Reactant
         @test result.loss_history[end] < result.loss_history[1]
     end
 
-    # Visualization is in scripts/visualize.jl (run manually with CairoMakie)
+    @testset "Bowtie Filter" begin
+        geom = create_aquilion_one(n_angles=36, n_rows=4, n_cols=64)
+
+        # Test filter creation
+        filter_large = bowtie_filter_large_body()
+        filter_medium = bowtie_filter_medium_body()
+        filter_small = bowtie_filter_small_body()
+        filter_head = bowtie_filter_head()
+        filter_none = bowtie_filter_none()
+
+        @test filter_large isa BowtieFilter
+        @test filter_large.name == "large_body"
+        @test filter_none.name == "none"
+
+        # Test thickness interpolation
+        t_center = get_bowtie_thickness(filter_large, 0.0)
+        t_edge = get_bowtie_thickness(filter_large, 25.0)
+        @test t_center > t_edge  # Thicker at center
+
+        # Test attenuation computation
+        transmission = compute_bowtie_attenuation(filter_large, geom)
+        @test size(transmission) == (64, 4)
+        @test all(0 .< transmission .<= 1)  # Valid transmission range
+
+        # Center should have lower transmission (more attenuation)
+        center_col = 32
+        edge_col = 1
+        @test transmission[center_col, 1] < transmission[edge_col, 1]
+
+        # Get profile for visualization
+        profile = get_bowtie_profile(filter_large, geom)
+        @test length(profile) == 64
+        @test profile[32] < profile[1]  # Center more attenuated
+
+        # Test application to sinogram
+        phantom = create_gammex_472(n_voxels=16)
+        geom_small = create_aquilion_one(n_angles=18, n_rows=4, n_cols=32, fov_cm=phantom.fov[1])
+        sinogram = forward_project(phantom, geom_small)
+
+        sino_bowtie = apply_bowtie_filter(sinogram, filter_medium, geom_small)
+        @test size(sino_bowtie) == size(sinogram)
+        @test all(isfinite.(sino_bowtie))
+
+        # Bowtie adds attenuation, so values should increase
+        @test mean(sino_bowtie) > mean(sinogram)
+
+        # No filter should return same values
+        sino_none = apply_bowtie_filter(sinogram, filter_none, geom_small)
+        @test sino_none ≈ sinogram
+
+        # Test intensity-domain application
+        intensity = exp.(-sinogram)
+        intensity_bowtie = apply_bowtie_to_intensity(intensity, filter_medium, geom_small)
+        @test all(intensity_bowtie .<= intensity)  # Bowtie reduces intensity
+    end
+
+    # Visualization is in stuff/scripts/visualize.jl (run manually with CairoMakie)
 end
