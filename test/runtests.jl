@@ -533,5 +533,117 @@ using Reactant
         @test all(isfinite.(recon_scatter))
     end
 
+    @testset "Loss Functions" begin
+        # Test MSE loss
+        pred = [1.0f0, 2.0f0, 3.0f0]
+        target = [1.0f0, 2.0f0, 3.0f0]
+        @test mse_loss(pred, target) ≈ 0.0f0
+
+        pred2 = [2.0f0, 3.0f0, 4.0f0]
+        @test mse_loss(pred2, target) ≈ 1.0f0
+
+        # Test MAE loss
+        @test mae_loss(pred, target) ≈ 0.0f0
+        @test mae_loss(pred2, target) ≈ 1.0f0
+
+        # Test Huber loss
+        @test huber_loss(pred, target) ≈ 0.0f0
+        @test huber_loss(pred2, target) > 0.0f0
+
+        # Test regularization terms
+        volume = ones(Float32, 4, 4, 4)
+        @test l2_regularization(volume) ≈ 64.0f0
+        @test l1_regularization(volume) ≈ 64.0f0
+
+        # TV should be small for constant volume (epsilon adds small baseline)
+        @test tv_regularization(volume) < 0.01
+
+        # Non-constant volume should have positive TV
+        volume_var = randn(Float32, 4, 4, 4)
+        @test tv_regularization(volume_var) > 0
+
+        # Non-negativity penalty
+        pos_volume = abs.(randn(Float32, 4, 4, 4))
+        neg_volume = -abs.(randn(Float32, 4, 4, 4))
+        @test non_negativity_penalty(pos_volume) ≈ 0.0f0
+        @test non_negativity_penalty(neg_volume) > 0.0f0
+    end
+
+    @testset "Backprojection" begin
+        phantom = create_gammex_472(n_voxels=8)
+        geom = create_aquilion_one(n_angles=18, n_rows=4, n_cols=16, fov_cm=phantom.fov[1])
+
+        # Pre-compute geometry
+        proj_geom = precompute_projection_geometry(
+            geom, phantom.fov, phantom.voxel_size, size(phantom.μ)
+        )
+
+        # Forward project
+        sinogram = project_volume(Float32.(phantom.μ), proj_geom)
+
+        # Backproject
+        bp = backproject_volume(sinogram, proj_geom, size(phantom.μ))
+
+        @test size(bp) == size(phantom.μ)
+        @test maximum(bp) > 0
+        @test all(isfinite.(bp))
+
+        # Backprojection should have higher values where phantom is denser
+        # (qualitative check)
+        @test sum(bp) > 0
+    end
+
+    @testset "Gradient Computation" begin
+        phantom = create_gammex_472(n_voxels=8)
+        geom = create_aquilion_one(n_angles=18, n_rows=4, n_cols=16, fov_cm=phantom.fov[1])
+
+        proj_geom = precompute_projection_geometry(
+            geom, phantom.fov, phantom.voxel_size, size(phantom.μ)
+        )
+
+        volume = Float32.(phantom.μ)
+        sinogram_target = project_volume(volume, proj_geom)
+
+        # Gradient at true solution should be near zero
+        grad = compute_gradient_data_term(volume, sinogram_target, proj_geom)
+        @test size(grad) == size(volume)
+        @test maximum(abs.(grad)) < 1e-3
+
+        # Perturbed volume should have non-zero gradient
+        perturbed = volume .+ 0.1f0
+        grad_perturbed = compute_gradient_data_term(perturbed, sinogram_target, proj_geom)
+        @test maximum(abs.(grad_perturbed)) > 1e-5
+    end
+
+    @testset "Iterative Reconstruction" begin
+        # Small problem for fast testing
+        phantom = create_gammex_472(n_voxels=8)
+        geom = create_aquilion_one(n_angles=36, n_rows=4, n_cols=16, fov_cm=phantom.fov[1])
+
+        proj_geom = precompute_projection_geometry(
+            geom, phantom.fov, phantom.voxel_size, size(phantom.μ)
+        )
+
+        # Generate target sinogram
+        sinogram_target = project_volume(Float32.(phantom.μ), proj_geom)
+
+        # Run gradient descent (few iterations for testing)
+        result = gradient_descent_reconstruction(
+            sinogram_target, proj_geom, size(phantom.μ);
+            n_iterations=20,
+            learning_rate=1f-3,
+            λ_l2=1f-5,
+            verbose=false
+        )
+
+        @test result isa GradientDescentResult
+        @test size(result.volume) == size(phantom.μ)
+        @test length(result.loss_history) > 0
+        @test all(isfinite.(result.volume))
+
+        # Loss should decrease
+        @test result.loss_history[end] < result.loss_history[1]
+    end
+
     # Visualization is in scripts/visualize.jl (run manually with CairoMakie)
 end

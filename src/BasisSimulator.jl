@@ -64,4 +64,14 @@ include("Forward/DetectorNoise.jl")
 # FDK cone-beam reconstruction
 include("Reconstruction/FDK.jl")
 
+# =============================================================================
+# Optimization (Gradients & Iterative Reconstruction)
+# =============================================================================
+
+# Loss functions
+include("Optimization/Loss.jl")
+
+# Gradient computation and optimization
+include("Optimization/Gradients.jl")
+
 end # module
