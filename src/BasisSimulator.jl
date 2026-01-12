@@ -41,6 +41,9 @@ include("Geometry/Phantom.jl")
 # CT scanner geometry
 include("Geometry/Scanner.jl")
 
+# Helical (spiral) scanning mode
+include("Geometry/Helical.jl")
+
 # =============================================================================
 # Forward Projection
 # =============================================================================
