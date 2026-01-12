@@ -205,14 +205,14 @@ using Reactant
         @test det_center[2] ≈ 40.0 atol=1.0  # Near detector center Y
     end
 
-    @testset "Forward Projection" begin
+    @testset "Forward Projection - Uniform" begin
         # Create small phantom and scanner for fast testing
         phantom = create_gammex_472(n_voxels=32)
         # Use fov_cm to ensure detector covers the phantom FOV
         geom = create_aquilion_one(n_angles=36, n_rows=8, n_cols=64, fov_cm=phantom.fov[1])
 
-        # Forward project
-        sinogram = forward_project(phantom, geom; n_steps=64)
+        # Forward project with uniform sampling
+        sinogram = forward_project(phantom, geom; method=:uniform, n_steps=64)
 
         # Test sinogram shape
         @test size(sinogram) == (64, 8, 36)
@@ -232,14 +232,48 @@ using Reactant
         @test all(t -> abs(t - mean_total) / mean_total < 0.5, totals)
     end
 
+    @testset "Forward Projection - Siddon" begin
+        # Create small phantom and scanner for fast testing
+        phantom = create_gammex_472(n_voxels=16)
+        geom = create_aquilion_one(n_angles=36, n_rows=4, n_cols=32, fov_cm=phantom.fov[1])
+
+        # Forward project with Siddon's exact method (default)
+        sinogram_siddon = forward_project(phantom, geom; method=:siddon)
+
+        # Test sinogram shape
+        @test size(sinogram_siddon) == (32, 4, 36)
+
+        # Sinogram should have non-zero values
+        @test maximum(sinogram_siddon) > 0
+
+        # Compare with uniform sampling - should give similar results
+        sinogram_uniform = forward_project(phantom, geom; method=:uniform, n_steps=64)
+
+        # Both methods should give similar total attenuation
+        total_siddon = sum(sinogram_siddon)
+        total_uniform = sum(sinogram_uniform)
+        @test abs(total_siddon - total_uniform) / total_uniform < 0.2  # Within 20%
+
+        # Test that ProjectionGeometry stores correct method
+        proj_geom_siddon = precompute_projection_geometry(
+            geom, phantom.fov, phantom.voxel_size, size(phantom.μ); method=:siddon
+        )
+        @test proj_geom_siddon.method == :siddon
+
+        proj_geom_uniform = precompute_projection_geometry(
+            geom, phantom.fov, phantom.voxel_size, size(phantom.μ); method=:uniform, n_steps=32
+        )
+        @test proj_geom_uniform.method == :uniform
+    end
+
     @testset "FDK Reconstruction" begin
         # Create very small phantom for fast testing
         phantom = create_gammex_472(n_voxels=16)
         # Use fov_cm to ensure detector covers phantom
         geom = create_aquilion_one(n_angles=72, n_rows=8, n_cols=64, fov_cm=phantom.fov[1])
 
-        # Forward project
-        sinogram = forward_project(phantom, geom; n_steps=64)
+        # Forward project using Siddon (more accurate)
+        sinogram = forward_project(phantom, geom; method=:siddon)
 
         # Reconstruct
         output_size = (16, 16, size(phantom.μ, 3))
@@ -256,61 +290,178 @@ using Reactant
         @test maximum(recon) < 2.0  # Sanity check
     end
 
-    @testset "End-to-End Validation" begin
+    @testset "HU Conversion" begin
+        # Get reference water μ at 60 keV
+        μ_water = get_reference_μ_water(60.0)
+        @test 0.18 < μ_water < 0.22  # ~0.2 cm⁻¹ for water at 60 keV
+
+        # Test μ to HU conversion
+        @test μ_to_HU(μ_water, μ_water) ≈ 0.0  # Water = 0 HU
+        @test μ_to_HU(0.0, μ_water) ≈ -1000.0  # Air/vacuum = -1000 HU
+        @test μ_to_HU(2 * μ_water, μ_water) ≈ 1000.0  # 2x water = 1000 HU
+
+        # Test HU to μ conversion (inverse)
+        @test HU_to_μ(0.0, μ_water) ≈ μ_water  # 0 HU = water
+        @test HU_to_μ(-1000.0, μ_water) ≈ 0.0  # -1000 HU = vacuum
+        @test HU_to_μ(1000.0, μ_water) ≈ 2 * μ_water  # 1000 HU = 2x water
+
+        # Test round-trip conversion
+        test_μ = 0.35  # Some arbitrary μ value
+        HU = μ_to_HU(test_μ, μ_water)
+        @test HU_to_μ(HU, μ_water) ≈ test_μ
+
+        # Test array conversion
+        μ_array = [0.0, μ_water, 2 * μ_water]
+        HU_array = μ_to_HU(μ_array, μ_water)
+        @test HU_array ≈ [-1000.0, 0.0, 1000.0]
+    end
+
+    @testset "Phantom HU Values" begin
+        # Test that phantom μ values correspond to expected HU ranges
+        phantom = create_gammex_472(n_voxels=32)
+        μ_water = get_reference_μ_water(60.0)
+
+        # Background (air) should be near HU = -1000
+        bg_mask = get_region_mask(phantom, REGION_BACKGROUND)
+        if sum(bg_mask) > 0
+            bg_μ = mean(phantom.μ[bg_mask])
+            bg_HU = μ_to_HU(bg_μ, μ_water)
+            @test bg_HU < -900  # Air should be near -1000 HU
+        end
+
+        # Solid water should be near HU = 0
+        water_mask = get_region_mask(phantom, REGION_SOLID_WATER)
+        water_μ = mean(phantom.μ[water_mask])
+        water_HU = μ_to_HU(water_μ, μ_water)
+        @test -100 < water_HU < 100  # Solid water should be near 0 HU
+
+        # Calcium inserts should have positive HU (higher than water)
+        ca_100_mask = get_region_mask(phantom, REGION_CA_100)
+        if sum(ca_100_mask) > 0
+            ca_100_μ = mean(phantom.μ[ca_100_mask])
+            ca_100_HU = μ_to_HU(ca_100_μ, μ_water)
+            @test ca_100_HU > 50  # Ca_100 should be denser than water
+            @test ca_100_HU < 500  # But not bone-dense
+        end
+
+        ca_200_mask = get_region_mask(phantom, REGION_CA_200)
+        if sum(ca_200_mask) > 0
+            ca_200_μ = mean(phantom.μ[ca_200_mask])
+            ca_200_HU = μ_to_HU(ca_200_μ, μ_water)
+            @test ca_200_HU > ca_100_HU  # Ca_200 > Ca_100
+        end
+
+        # Iodine inserts should have positive HU
+        i_10_mask = get_region_mask(phantom, REGION_I_10_0)
+        if sum(i_10_mask) > 0
+            i_10_μ = mean(phantom.μ[i_10_mask])
+            i_10_HU = μ_to_HU(i_10_μ, μ_water)
+            @test i_10_HU > 100  # I_10 should be clearly above water
+        end
+
+        # Ordering of calcium inserts should be correct
+        ca_masks = [
+            (REGION_CA_50, get_region_mask(phantom, REGION_CA_50)),
+            (REGION_CA_100, get_region_mask(phantom, REGION_CA_100)),
+            (REGION_CA_200, get_region_mask(phantom, REGION_CA_200)),
+        ]
+        ca_HUs = Float64[]
+        for (region, mask) in ca_masks
+            if sum(mask) > 0
+                push!(ca_HUs, μ_to_HU(mean(phantom.μ[mask]), μ_water))
+            end
+        end
+        if length(ca_HUs) >= 2
+            @test issorted(ca_HUs)  # HU should increase with concentration
+        end
+    end
+
+    @testset "End-to-End Validation with HU" begin
         # Create phantom with known regions
         phantom = create_gammex_472(n_voxels=32)
         # Use fov_cm to ensure detector covers phantom
         geom = create_aquilion_one(n_angles=180, n_rows=8, n_cols=128, fov_cm=phantom.fov[1])
 
-        # Forward project with more steps for accuracy
-        sinogram = forward_project(phantom, geom; n_steps=128)
+        # Forward project with Siddon for accuracy
+        sinogram = forward_project(phantom, geom; method=:siddon)
 
         # Reconstruct
         output_size = size(phantom.μ)
         recon = fdk_reconstruct(sinogram, geom, output_size, phantom.fov)
+
+        # Reference μ for HU conversion
+        μ_water_ref = get_reference_μ_water(60.0)
 
         # Get solid water region stats
         water_mask = get_region_mask(phantom, REGION_SOLID_WATER)
         expected_water_μ = mean(phantom.μ[water_mask])
         measured_water_μ = mean(recon[water_mask])
 
-        # Water reconstruction should be within 50% (loose tolerance for coarse recon)
-        # This is a smoke test - actual validation would need higher resolution
-        if expected_water_μ > 0
-            water_error_pct = abs(measured_water_μ - expected_water_μ) / expected_water_μ * 100
-            @test water_error_pct < 100  # Very loose for now
+        # Convert to HU for more interpretable validation
+        expected_water_HU = μ_to_HU(expected_water_μ, μ_water_ref)
+        measured_water_HU = μ_to_HU(measured_water_μ, μ_water_ref)
+
+        # Expected water HU should be near 0
+        @test -100 < expected_water_HU < 100
+
+        # Measured should be in a reasonable range (loose for coarse recon)
+        @test -500 < measured_water_HU < 500
+
+        # Check background region (air) - should reconstruct lower than water
+        bg_mask = phantom.mask .== UInt8(REGION_BACKGROUND)
+        if sum(bg_mask) > 0
+            bg_recon_μ = mean(recon[bg_mask])
+            bg_recon_HU = μ_to_HU(bg_recon_μ, μ_water_ref)
+            # Background should be lower than water region in reconstruction
+            @test bg_recon_HU < measured_water_HU
         end
 
-        # Check that high-attenuation inserts have higher values than background
+        # Check calcium insert - should reconstruct higher than water
         ca_mask = get_region_mask(phantom, REGION_CA_100)
         if sum(ca_mask) > 0
             expected_ca_μ = mean(phantom.μ[ca_mask])
             measured_ca_μ = mean(recon[ca_mask])
-            # CA insert should be higher than water in both expected and measured
-            @test expected_ca_μ > expected_water_μ
-            # At least check measured is positive
-            @test measured_ca_μ > 0
+            expected_ca_HU = μ_to_HU(expected_ca_μ, μ_water_ref)
+            measured_ca_HU = μ_to_HU(measured_ca_μ, μ_water_ref)
+
+            # Expected Ca should be denser than water
+            @test expected_ca_HU > expected_water_HU
+
+            # Measured Ca should show some contrast above water
+            # (even if absolute values aren't accurate)
+            @test measured_ca_μ > 0  # At least positive
         end
 
-        # The reconstruction should show contrast between regions
-        # (Even if absolute values aren't perfect)
-        water_vals = recon[water_mask]
-        background_vals = recon[phantom.mask .== UInt8(REGION_BACKGROUND)]
+        # Verify contrast is preserved in reconstruction
+        # Higher concentration inserts should still be brighter
+        regions_by_expected_HU = [
+            (REGION_BACKGROUND, bg_mask),
+            (REGION_SOLID_WATER, water_mask),
+            (REGION_CA_100, get_region_mask(phantom, REGION_CA_100)),
+        ]
 
-        if length(water_vals) > 0 && length(background_vals) > 0
-            # Water should have higher μ than air/background
-            @test mean(water_vals) > mean(background_vals)
+        prev_recon_mean = -Inf
+        for (region, mask) in regions_by_expected_HU
+            if sum(mask) > 10  # Need enough voxels
+                recon_mean = mean(recon[mask])
+                expected_mean = mean(phantom.μ[mask])
+                # Check that ordering is preserved (at least roughly)
+                if expected_mean > prev_recon_mean + 0.01
+                    @test recon_mean > prev_recon_mean - 0.1  # Allow some tolerance
+                end
+                prev_recon_mean = expected_mean
+            end
         end
     end
 
-    @testset "Reactant Compilation" begin
+    @testset "Reactant Compilation - Uniform" begin
         # NO allowscalar - must work without it
 
         # Create small phantom and geometry for fast compilation
         phantom = create_gammex_472(n_voxels=8)
         geom = create_aquilion_one(n_angles=4, n_rows=2, n_cols=8, fov_cm=phantom.fov[1])
 
-        # Pre-compute projection geometry (not traced)
+        # Pre-compute projection geometry with uniform sampling (not traced)
         proj_geom = precompute_projection_geometry(
             geom, phantom.fov, phantom.voxel_size, size(phantom.μ), 16
         )
@@ -319,6 +470,40 @@ using Reactant
         volume_ra = Reactant.to_rarray(phantom.μ)
 
         # Test that project_volume compiles (this is the traced function)
+        compiled_pv = @compile project_volume(volume_ra, proj_geom)
+        @test compiled_pv !== nothing
+
+        # Run compiled function
+        sinogram_ra = compiled_pv(volume_ra, proj_geom)
+        sinogram_result = Array(sinogram_ra)
+
+        # Verify output is non-zero
+        @test maximum(sinogram_result) > 0
+
+        # Compare with non-compiled version
+        sinogram_julia = project_volume(phantom.μ, proj_geom)
+
+        # Results should match
+        @test maximum(abs.(sinogram_result .- sinogram_julia)) < 1e-5
+    end
+
+    @testset "Reactant Compilation - Siddon" begin
+        # NO allowscalar - must work without it
+
+        # Create small phantom and geometry for fast compilation
+        phantom = create_gammex_472(n_voxels=8)
+        geom = create_aquilion_one(n_angles=4, n_rows=2, n_cols=8, fov_cm=phantom.fov[1])
+
+        # Pre-compute projection geometry with Siddon's method (not traced)
+        proj_geom = precompute_projection_geometry(
+            geom, phantom.fov, phantom.voxel_size, size(phantom.μ); method=:siddon
+        )
+        @test proj_geom.method == :siddon
+
+        # Convert volume to Reactant array
+        volume_ra = Reactant.to_rarray(phantom.μ)
+
+        # Test that project_volume compiles with Siddon geometry
         compiled_pv = @compile project_volume(volume_ra, proj_geom)
         @test compiled_pv !== nothing
 
