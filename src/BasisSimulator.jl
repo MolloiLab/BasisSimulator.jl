@@ -51,6 +51,12 @@ include("Forward/Projector.jl")
 # Polychromatic simulation (energy-dependent attenuation)
 include("Forward/Polychromatic.jl")
 
+# Scatter simulation (analytic kernel)
+include("Forward/Scatter.jl")
+
+# Detector response and noise modeling
+include("Forward/DetectorNoise.jl")
+
 # =============================================================================
 # Reconstruction
 # =============================================================================
