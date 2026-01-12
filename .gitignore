@@ -30,8 +30,8 @@ JuliaLocalPreferences.toml
 # Development scratch files
 scratch/
 
-# Test output figures
-test/outputs/
+# Test output figures (tracked for visual inspection)
+# test/outputs/ is NOT ignored - PPM files are tracked for human review
 
 # GECATSIM binary output files (large, regenerable)
 test/cfg_gecatsim/*.scan
