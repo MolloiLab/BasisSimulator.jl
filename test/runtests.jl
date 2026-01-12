@@ -701,5 +701,64 @@ using Reactant
         @test all(intensity_bowtie .<= intensity)  # Bowtie reduces intensity
     end
 
+    @testset "Focal Spot" begin
+        geom = create_aquilion_one(n_angles=36, n_rows=4, n_cols=64)
+
+        # Test focal spot creation
+        fs_small = focal_spot_small()
+        fs_medium = focal_spot_medium()
+        fs_large = focal_spot_large()
+        fs_point = focal_spot_point()
+
+        @test fs_small isa FocalSpot
+        @test fs_small.width == 0.5
+        @test fs_small.shape == :gaussian
+        @test fs_point.width == 0.0
+
+        # Test blur computation
+        blur_fwhm = compute_focal_spot_blur_fwhm(fs_medium, geom, geom.SAD)
+        @test blur_fwhm[1] > 0  # Has some blur
+        @test blur_fwhm[2] > 0
+
+        # Blur should be larger for objects closer to source
+        blur_near = compute_focal_spot_blur_fwhm(fs_medium, geom, geom.SAD * 0.7)
+        blur_far = compute_focal_spot_blur_fwhm(fs_medium, geom, geom.SAD * 1.3)
+        @test blur_near[1] > blur_far[1]
+
+        # Test focal spot info
+        info = get_focal_spot_info(fs_medium, geom)
+        @test info.size_mm == (0.8, 0.8)
+        @test info.shape == :gaussian
+
+        # Test sample generation
+        positions, weights = generate_focal_spot_samples(fs_medium)
+        @test length(positions) == fs_medium.n_samples^2
+        @test length(weights) == length(positions)
+        @test sum(weights) ≈ 1.0  # Normalized
+
+        # Point source should have single sample
+        pos_point, w_point = generate_focal_spot_samples(fs_point)
+        @test length(pos_point) == 1
+        @test pos_point[1] == (0.0, 0.0)
+
+        # Test blur application
+        phantom = create_gammex_472(n_voxels=16)
+        geom_small = create_aquilion_one(n_angles=18, n_rows=4, n_cols=32, fov_cm=phantom.fov[1])
+        sinogram = forward_project(phantom, geom_small)
+
+        # Use very large focal spot to ensure visible blur
+        fs_very_large = FocalSpot(5.0, 5.0, :gaussian, 5)  # 5mm focal spot
+        sino_blurred = apply_focal_spot_blur(sinogram, fs_very_large, geom_small)
+        @test size(sino_blurred) == size(sinogram)
+        @test all(isfinite.(sino_blurred))
+
+        # Point source should not change sinogram
+        sino_point = apply_focal_spot_blur(sinogram, fs_point, geom_small)
+        @test sino_point ≈ sinogram
+
+        # Large focal spot should produce visible blur
+        @test !isapprox(sino_blurred, sinogram, rtol=0.01)
+    end
+
     # Visualization is in stuff/scripts/visualize.jl (run manually with CairoMakie)
 end
