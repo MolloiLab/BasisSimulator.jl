@@ -1,0 +1,380 @@
+"""
+    Geometry/Phantom.jl
+
+Phantom generation with semantic masks for validation.
+
+Every phantom comes with a mask that identifies regions (air, water, inserts, etc.)
+for automated testing and validation.
+"""
+
+# =============================================================================
+# Region Labels
+# =============================================================================
+
+"""
+Region labels for phantom masks.
+
+Each voxel in the mask is assigned a label indicating its material type.
+Used for automated validation after reconstruction.
+
+All labels are prefixed with REGION_ to avoid conflicts with material exports.
+"""
+@enum RegionLabel::UInt8 begin
+    REGION_BACKGROUND = 0
+    REGION_AIR = 1
+    REGION_WATER = 2
+    REGION_SOLID_WATER = 3
+    # Calcium inserts (Gammex 472)
+    REGION_CA_50 = 10
+    REGION_CA_100 = 11
+    REGION_CA_200 = 12
+    REGION_CA_300 = 13
+    REGION_CA_400 = 14
+    REGION_CA_500 = 15
+    REGION_CA_600 = 16
+    # Iodine inserts (Gammex 472)
+    REGION_I_2_0 = 20
+    REGION_I_2_5 = 21
+    REGION_I_5_0 = 22
+    REGION_I_7_5 = 23
+    REGION_I_10_0 = 24
+    REGION_I_15_0 = 25
+    REGION_I_20_0 = 26
+end
+
+# Map from RegionLabel to material symbol
+const REGION_TO_MATERIAL = Dict{RegionLabel, Symbol}(
+    REGION_BACKGROUND => :air,
+    REGION_AIR => :air,
+    REGION_WATER => :water,
+    REGION_SOLID_WATER => :solid_water,
+    REGION_CA_50 => :Ca_50,
+    REGION_CA_100 => :Ca_100,
+    REGION_CA_200 => :Ca_200,
+    REGION_CA_300 => :Ca_300,
+    REGION_CA_400 => :Ca_400,
+    REGION_CA_500 => :Ca_500,
+    REGION_CA_600 => :Ca_600,
+    REGION_I_2_0 => :I_2_0,
+    REGION_I_2_5 => :I_2_5,
+    REGION_I_5_0 => :I_5_0,
+    REGION_I_7_5 => :I_7_5,
+    REGION_I_10_0 => :I_10_0,
+    REGION_I_15_0 => :I_15_0,
+    REGION_I_20_0 => :I_20_0,
+)
+
+# =============================================================================
+# Phantom Struct
+# =============================================================================
+
+"""
+    Phantom
+
+Digital phantom with semantic mask for validation.
+
+# Fields
+- `μ::Array{Float32,3}`: Linear attenuation coefficients (cm⁻¹) at effective energy
+- `mask::Array{UInt8,3}`: Region labels (see `RegionLabel` enum)
+- `voxel_size::NTuple{3,Float64}`: Voxel dimensions (cm) as (dx, dy, dz)
+- `origin::NTuple{3,Float64}`: Origin coordinates (cm) - center of first voxel
+- `fov::NTuple{3,Float64}`: Field of view (cm) as (x, y, z)
+
+# Coordinate System
+- X: left-right (increasing right)
+- Y: anterior-posterior (increasing posterior)
+- Z: inferior-superior (increasing superior)
+- Origin at isocenter (0, 0, 0)
+
+# Usage
+```julia
+phantom = create_gammex_472(; n_voxels=64)
+mean_μ = mean(phantom.μ[phantom.mask .== UInt8(REGION_CA_100)])
+```
+"""
+struct Phantom
+    μ::Array{Float32,3}
+    mask::Array{UInt8,3}
+    voxel_size::NTuple{3,Float64}
+    origin::NTuple{3,Float64}
+    fov::NTuple{3,Float64}
+end
+
+# =============================================================================
+# Gammex 472 Phantom
+# =============================================================================
+
+"""
+    create_gammex_472(; n_voxels=64, fov_cm=35.0, z_cm=4.0, μ_effective_energy_keV=60.0)
+
+Create a Gammex 472 calibration phantom with semantic mask.
+
+# Arguments
+- `n_voxels::Int`: Voxels per side in x/y (default 64 for fast iteration)
+- `fov_cm::Float64`: Field of view in x/y (cm), default 35.0
+- `z_cm::Float64`: Height in z (cm), default 4.0
+- `μ_effective_energy_keV::Float64`: Energy for μ values (keV), default 60.0
+
+# Returns
+`Phantom` with:
+- 330mm diameter solid water body
+- 7 calcium inserts (50-600 mg/ml) in inner ring (5cm radius)
+- 7 iodine inserts (2-20 mg/ml) in outer ring (10.5cm radius)
+- 28mm diameter rods
+- Semantic mask labeling each region
+
+# Gammex 472 Specifications
+- Body: 330mm diameter solid water cylinder
+- Insert rods: 28mm diameter
+- Inner ring radius: 50mm (calcium inserts)
+- Outer ring radius: 105mm (iodine inserts)
+- Insert spacing: ~51.4° (7 inserts per ring)
+"""
+function create_gammex_472(;
+    n_voxels::Int=64,
+    fov_cm::Float64=35.0,
+    z_cm::Float64=4.0,
+    μ_effective_energy_keV::Float64=60.0
+)
+    # Grid setup
+    n_z = max(1, round(Int, n_voxels * z_cm / fov_cm))
+    dx = fov_cm / n_voxels
+    dy = fov_cm / n_voxels
+    dz = z_cm / n_z
+
+    # Coordinate arrays (centered at isocenter)
+    x = range(-fov_cm/2 + dx/2, fov_cm/2 - dx/2, length=n_voxels)
+    y = range(-fov_cm/2 + dy/2, fov_cm/2 - dy/2, length=n_voxels)
+    z = range(-z_cm/2 + dz/2, z_cm/2 - dz/2, length=n_z)
+
+    # Initialize arrays
+    μ = zeros(Float32, n_voxels, n_voxels, n_z)
+    mask = zeros(UInt8, n_voxels, n_voxels, n_z)
+
+    # Gammex 472 dimensions (cm)
+    body_radius = 16.5    # 330mm diameter
+    rod_radius = 1.4      # 28mm diameter
+    inner_ring_radius = 5.0   # 50mm - calcium inserts
+    outer_ring_radius = 10.5  # 105mm - iodine inserts
+
+    # Get materials and compute μ values
+    solid_water = XA.Materials.water  # Approximate solid water as water
+    air_mat = XA.Materials.air
+
+    μ_solid_water = Float32(compute_μ_at_energy(solid_water, μ_effective_energy_keV))
+    μ_air = Float32(compute_μ_at_energy(air_mat, μ_effective_energy_keV))
+
+    # Calcium inserts (inner ring) - 7 inserts evenly spaced
+    ca_materials = [:Ca_50, :Ca_100, :Ca_200, :Ca_300, :Ca_400, :Ca_500, :Ca_600]
+    ca_labels = [REGION_CA_50, REGION_CA_100, REGION_CA_200, REGION_CA_300, REGION_CA_400, REGION_CA_500, REGION_CA_600]
+    ca_μ = [Float32(compute_μ_at_energy(get_material(m), μ_effective_energy_keV)) for m in ca_materials]
+
+    # Iodine inserts (outer ring) - 7 inserts evenly spaced
+    i_materials = [:I_2_0, :I_2_5, :I_5_0, :I_7_5, :I_10_0, :I_15_0, :I_20_0]
+    i_labels = [REGION_I_2_0, REGION_I_2_5, REGION_I_5_0, REGION_I_7_5, REGION_I_10_0, REGION_I_15_0, REGION_I_20_0]
+    i_μ = [Float32(compute_μ_at_energy(get_material(m), μ_effective_energy_keV)) for m in i_materials]
+
+    # Insert angular positions (evenly spaced, starting at 0°)
+    n_inserts = 7
+    angles_ca = [2π * i / n_inserts for i in 0:(n_inserts-1)]
+    angles_i = [2π * i / n_inserts + π/n_inserts for i in 0:(n_inserts-1)]  # Offset by half spacing
+
+    # Fill phantom voxel by voxel
+    for k in 1:n_z
+        for j in 1:n_voxels
+            for i in 1:n_voxels
+                xi = x[i]
+                yj = y[j]
+                r = sqrt(xi^2 + yj^2)
+
+                # Default: background (air)
+                μ[i, j, k] = μ_air
+                mask[i, j, k] = UInt8(REGION_BACKGROUND)
+
+                # Check if inside body cylinder
+                if r <= body_radius
+                    # Default body is solid water
+                    μ[i, j, k] = μ_solid_water
+                    mask[i, j, k] = UInt8(REGION_SOLID_WATER)
+
+                    # Check calcium inserts (inner ring)
+                    for (idx, angle) in enumerate(angles_ca)
+                        cx = inner_ring_radius * cos(angle)
+                        cy = inner_ring_radius * sin(angle)
+                        dist = sqrt((xi - cx)^2 + (yj - cy)^2)
+                        if dist <= rod_radius
+                            μ[i, j, k] = ca_μ[idx]
+                            mask[i, j, k] = UInt8(ca_labels[idx])
+                            break
+                        end
+                    end
+
+                    # Check iodine inserts (outer ring) - only if not already assigned
+                    if mask[i, j, k] == UInt8(REGION_SOLID_WATER)
+                        for (idx, angle) in enumerate(angles_i)
+                            cx = outer_ring_radius * cos(angle)
+                            cy = outer_ring_radius * sin(angle)
+                            dist = sqrt((xi - cx)^2 + (yj - cy)^2)
+                            if dist <= rod_radius
+                                μ[i, j, k] = i_μ[idx]
+                                mask[i, j, k] = UInt8(i_labels[idx])
+                                break
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return Phantom(
+        μ,
+        mask,
+        (dx, dy, dz),
+        (-fov_cm/2 + dx/2, -fov_cm/2 + dy/2, -z_cm/2 + dz/2),
+        (fov_cm, fov_cm, z_cm)
+    )
+end
+
+# =============================================================================
+# Validation Functions
+# =============================================================================
+
+"""
+    get_region_mask(phantom::Phantom, label::RegionLabel)
+
+Get a boolean mask for a specific region.
+
+# Returns
+`BitArray{3}` where `true` indicates voxels belonging to the region.
+"""
+function get_region_mask(phantom::Phantom, label::RegionLabel)
+    return phantom.mask .== UInt8(label)
+end
+
+"""
+    get_region_stats(phantom::Phantom, label::RegionLabel)
+
+Get statistics for a region in the phantom.
+
+# Returns
+Named tuple with:
+- `mean`: Mean μ value (cm⁻¹)
+- `std`: Standard deviation
+- `min`: Minimum μ value
+- `max`: Maximum μ value
+- `n_voxels`: Number of voxels in region
+"""
+function get_region_stats(phantom::Phantom, label::RegionLabel)
+    region_mask = get_region_mask(phantom, label)
+    values = phantom.μ[region_mask]
+
+    if isempty(values)
+        return (mean=NaN, std=NaN, min=NaN, max=NaN, n_voxels=0)
+    end
+
+    return (
+        mean = mean(values),
+        std = std(values),
+        min = minimum(values),
+        max = maximum(values),
+        n_voxels = length(values)
+    )
+end
+
+"""
+    validate_reconstruction(phantom::Phantom, recon::Array{<:Real,3}; tolerance_pct=10.0)
+
+Validate a reconstruction against the phantom ground truth using masks.
+
+# Arguments
+- `phantom::Phantom`: Original phantom with mask
+- `recon::Array`: Reconstructed μ volume (same size as phantom.μ)
+- `tolerance_pct::Float64`: Acceptable percent deviation from expected μ
+
+# Returns
+Named tuple with:
+- `passed::Bool`: Overall pass/fail
+- `results::Dict{RegionLabel, NamedTuple}`: Per-region validation results
+
+Each region result contains:
+- `expected_μ`: Expected mean μ from phantom
+- `measured_μ`: Measured mean μ from reconstruction
+- `error_pct`: Percent error
+- `passed`: Region passed tolerance check
+"""
+function validate_reconstruction(phantom::Phantom, recon::Array{<:Real,3}; tolerance_pct::Float64=10.0)
+    size(recon) == size(phantom.μ) || error("Reconstruction size must match phantom size")
+
+    results = Dict{RegionLabel, NamedTuple}()
+    all_passed = true
+
+    for label in instances(RegionLabel)
+        region_mask = get_region_mask(phantom, label)
+        n_voxels = sum(region_mask)
+
+        if n_voxels == 0
+            continue
+        end
+
+        expected_μ = mean(phantom.μ[region_mask])
+        measured_μ = mean(Float32.(recon[region_mask]))
+
+        if expected_μ > 0
+            error_pct = abs(measured_μ - expected_μ) / expected_μ * 100
+        else
+            error_pct = abs(measured_μ - expected_μ) * 100  # Absolute for near-zero
+        end
+
+        passed = error_pct <= tolerance_pct
+
+        results[label] = (
+            expected_μ = expected_μ,
+            measured_μ = measured_μ,
+            error_pct = error_pct,
+            passed = passed,
+            n_voxels = n_voxels
+        )
+
+        if !passed
+            all_passed = false
+        end
+    end
+
+    return (passed = all_passed, results = results)
+end
+
+"""
+    print_phantom_info(phantom::Phantom)
+
+Print summary information about a phantom.
+"""
+function print_phantom_info(phantom::Phantom)
+    println("Phantom Summary")
+    println("===============")
+    println("Size: $(size(phantom.μ))")
+    println("Voxel size: $(phantom.voxel_size) cm")
+    println("FOV: $(phantom.fov) cm")
+    println("Origin: $(phantom.origin) cm")
+    println()
+    println("Regions:")
+    for label in instances(RegionLabel)
+        stats = get_region_stats(phantom, label)
+        if stats.n_voxels > 0
+            println("  $(label): n=$(stats.n_voxels), μ=$(round(stats.mean, digits=4)) cm⁻¹")
+        end
+    end
+end
+
+# =============================================================================
+# Exports
+# =============================================================================
+
+export RegionLabel
+export REGION_BACKGROUND, REGION_AIR, REGION_WATER, REGION_SOLID_WATER
+export REGION_CA_50, REGION_CA_100, REGION_CA_200, REGION_CA_300, REGION_CA_400, REGION_CA_500, REGION_CA_600
+export REGION_I_2_0, REGION_I_2_5, REGION_I_5_0, REGION_I_7_5, REGION_I_10_0, REGION_I_15_0, REGION_I_20_0
+export REGION_TO_MATERIAL
+
+export Phantom, create_gammex_472
+export get_region_mask, get_region_stats, validate_reconstruction, print_phantom_info

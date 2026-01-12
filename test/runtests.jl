@@ -81,4 +81,68 @@ using BasisSimulator
         @test length(μ_eff) == 3
         @test all(μ_eff .> 0)
     end
+
+    @testset "Phantom" begin
+        # Create small phantom for fast testing
+        phantom = create_gammex_472(n_voxels=32)
+
+        # Test basic structure
+        @test phantom isa Phantom
+        @test size(phantom.μ) == size(phantom.mask)
+        @test size(phantom.μ, 1) == 32
+        @test size(phantom.μ, 2) == 32
+
+        # Test that we have expected regions
+        @test sum(phantom.mask .== UInt8(REGION_SOLID_WATER)) > 0
+        @test sum(phantom.mask .== UInt8(REGION_CA_100)) > 0
+        @test sum(phantom.mask .== UInt8(REGION_I_10_0)) > 0
+
+        # Test region stats
+        stats_water = get_region_stats(phantom, REGION_SOLID_WATER)
+        @test stats_water.n_voxels > 0
+        @test stats_water.mean > 0
+        @test isfinite(stats_water.std)
+
+        stats_ca = get_region_stats(phantom, REGION_CA_100)
+        @test stats_ca.n_voxels > 0
+        @test stats_ca.mean > stats_water.mean  # Ca should have higher μ
+
+        stats_i = get_region_stats(phantom, REGION_I_10_0)
+        @test stats_i.n_voxels > 0
+
+        # Test region mask extraction
+        water_mask = get_region_mask(phantom, REGION_SOLID_WATER)
+        @test water_mask isa BitArray{3}
+        @test sum(water_mask) == stats_water.n_voxels
+
+        # Test all 14 inserts are present (7 Ca + 7 I)
+        ca_labels = [REGION_CA_50, REGION_CA_100, REGION_CA_200, REGION_CA_300, REGION_CA_400, REGION_CA_500, REGION_CA_600]
+        i_labels = [REGION_I_2_0, REGION_I_2_5, REGION_I_5_0, REGION_I_7_5, REGION_I_10_0, REGION_I_15_0, REGION_I_20_0]
+
+        n_ca_types = sum([sum(phantom.mask .== UInt8(l)) > 0 for l in ca_labels])
+        n_i_types = sum([sum(phantom.mask .== UInt8(l)) > 0 for l in i_labels])
+        @test n_ca_types == 7  # All 7 calcium inserts
+        @test n_i_types == 7   # All 7 iodine inserts
+
+        # Test validation function (perfect reconstruction = phantom itself)
+        val_result = validate_reconstruction(phantom, phantom.μ)
+        @test val_result.passed == true
+        @test all(r -> r.passed, values(val_result.results))
+
+        # Test with slightly perturbed reconstruction
+        noisy_recon = phantom.μ .* 1.05f0  # 5% higher
+        val_noisy = validate_reconstruction(phantom, noisy_recon; tolerance_pct=10.0)
+        @test val_noisy.passed == true  # Should still pass with 10% tolerance
+
+        # Test with very perturbed reconstruction
+        bad_recon = phantom.μ .* 2.0f0  # 100% higher
+        val_bad = validate_reconstruction(phantom, bad_recon; tolerance_pct=10.0)
+        @test val_bad.passed == false  # Should fail
+
+        # Test metadata
+        @test phantom.voxel_size[1] > 0
+        @test phantom.voxel_size[2] > 0
+        @test phantom.voxel_size[3] > 0
+        @test phantom.fov[1] > 0
+    end
 end
