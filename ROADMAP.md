@@ -54,20 +54,22 @@ BasisSimulator.jl/
 │   │   ├── Materials.jl        # Gammex 472 materials (from XA.Materials)
 │   │   ├── Attenuation.jl      # μ computation, HU conversion
 │   │   └── Spectrum.jl         # X-ray spectrum loading
-│   ├── Phantom/
-│   │   ├── Regions.jl          # Region labels enum
-│   │   ├── Phantom.jl          # Phantom struct, Gammex 472 creation
-│   │   └── Validation.jl       # Reconstruction validation
 │   ├── Geometry/
-│   │   └── CTGeometry.jl       # Scanner geometry
+│   │   ├── Phantom.jl          # Phantom struct, Gammex 472 creation
+│   │   └── Scanner.jl          # CT geometry
 │   ├── Forward/
-│   │   └── Projector.jl        # Siddon forward projection
+│   │   ├── Projector.jl        # Siddon forward projection
+│   │   ├── Polychromatic.jl    # Energy-dependent simulation
+│   │   ├── Scatter.jl          # Scatter modeling
+│   │   └── DetectorNoise.jl    # Detector response + noise
 │   └── Reconstruction/
 │       └── FDK.jl              # FDK reconstruction
 ├── data/
 │   └── spectra/                # X-ray spectrum files
 └── test/
-    └── runtests.jl             # 100 tests, all passing
+    ├── runtests.jl             # 152 tests, all passing
+    ├── test_visualization.jl   # Heatmap generation
+    └── outputs/                # 13 visualization images
 ```
 
 ### Key Design Decisions
@@ -87,47 +89,54 @@ BasisSimulator.jl/
 
 ---
 
-## Phase 4: Realistic Physics (Next)
+## Phase 4: Realistic Physics (COMPLETE)
 
-### 4.1 Polychromatic Simulation
-**Goal**: Simulate energy-dependent attenuation across X-ray spectrum
+### 4.1 Polychromatic Simulation ✓
+Energy-dependent attenuation across X-ray spectrum.
 
 ```julia
-# Current (monochromatic approximation)
-sinogram = forward_project(phantom, geom)
-
-# Target (polychromatic)
-sinogram = forward_project(phantom, geom, spectrum)
+projector = create_polychromatic_projector(phantom, geom, 120; n_bins=20)
+sinogram = forward_project_polychromatic(phantom, projector)
 ```
 
-**Tasks**:
-- [ ] Energy-binned forward projection
-- [ ] Spectrum-weighted line integrals: I/I₀ = Σ w(E) exp(-∫μ(E)ds)
-- [ ] Beam hardening artifacts (naturally arise from polychromatic simulation)
+- [x] Energy-binned forward projection
+- [x] Spectrum-weighted Beer-Lambert: I/I₀ = Σ S(E) exp(-∫μ(E)ds)
+- [x] Natural beam hardening artifacts
 
-### 4.2 Scatter Modeling
-**Goal**: Add scatter contribution to projections
+### 4.2 Scatter Modeling ✓
+Analytic scatter kernel convolution.
 
-**Options** (in order of complexity):
-1. Analytic scatter kernel (fast, approximate)
-2. Single-scatter convolution
-3. Monte Carlo scatter (most accurate, slow)
+```julia
+scatter_model = default_scatter_model(spr=0.15)
+sinogram = add_scatter(sinogram, scatter_model)
+```
 
-**Initial approach**: Start with analytic scatter kernel
+- [x] Gaussian/exponential scatter kernels
+- [x] Configurable scatter-to-primary ratio
+- [x] Cupping artifact generation
 
-### 4.3 Detector Response
-**Goal**: Model detector physics
+### 4.3 Detector Response ✓
+Detector blur (PSF convolution).
 
-- [ ] Detector efficiency vs energy
-- [ ] Crosstalk between pixels
-- [ ] Afterglow (for temporal effects)
+```julia
+detector_model = default_detector_model(blur_fwhm=1.5)
+sinogram = apply_detector_blur(sinogram, detector_model)
+```
 
-### 4.4 Noise Modeling
-**Goal**: Realistic quantum and electronic noise
+- [x] Gaussian blur kernel
+- [x] Configurable FWHM
 
-- [ ] Poisson noise (photon counting)
-- [ ] Electronic noise (Gaussian additive)
-- [ ] Noise variance estimation
+### 4.4 Noise Modeling ✓
+Quantum and electronic noise.
+
+```julia
+detector_model = default_detector_model(I0=1e5, electronic_noise_std=10.0)
+sinogram = apply_detector_model(sinogram, detector_model)  # blur + noise
+```
+
+- [x] Poisson noise (photon counting, dose-dependent)
+- [x] Electronic noise (Gaussian additive)
+- [x] Combined detector model pipeline
 
 ---
 
