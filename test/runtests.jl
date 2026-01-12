@@ -1,6 +1,7 @@
 using Test
 using BasisSimulator
 using Statistics
+using Reactant
 
 @testset "BasisSimulator.jl" begin
     @testset "Materials" begin
@@ -300,5 +301,43 @@ using Statistics
             # Water should have higher μ than air/background
             @test mean(water_vals) > mean(background_vals)
         end
+    end
+
+    @testset "Reactant Compilation" begin
+        # Enable scalar indexing for this test
+        Reactant.allowscalar(true)
+
+        # Create small phantom and geometry for fast compilation
+        phantom = create_gammex_472(n_voxels=8)
+        geom = create_aquilion_one(n_angles=4, n_rows=2, n_cols=8, fov_cm=phantom.fov[1])
+
+        # Convert to Reactant arrays
+        volume_ra = Reactant.to_rarray(phantom.μ)
+        sinogram_ra = Reactant.to_rarray(zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles))
+
+        # Test that forward_project! compiles
+        compiled_fp = @compile forward_project!(
+            sinogram_ra,
+            volume_ra,
+            phantom.voxel_size,
+            phantom.fov,
+            geom,
+            16
+        )
+        @test compiled_fp !== nothing
+
+        # Run compiled function
+        result = compiled_fp(sinogram_ra, volume_ra, phantom.voxel_size, phantom.fov, geom, 16)
+        sinogram_result = Array(sinogram_ra)
+
+        # Verify output is non-zero
+        @test maximum(sinogram_result) > 0
+
+        # Compare with non-compiled version
+        sinogram_julia = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
+        forward_project!(sinogram_julia, phantom.μ, phantom.voxel_size, phantom.fov, geom, 16)
+
+        # Results should match exactly
+        @test maximum(abs.(sinogram_result .- sinogram_julia)) < 1e-5
     end
 end

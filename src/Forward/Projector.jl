@@ -5,9 +5,13 @@ Ray-driven forward projector for cone-beam CT.
 
 Designed for Reactant/XLA compatibility:
 - No runtime trigonometric functions (uses pre-computed geometry)
-- Simple loops amenable to XLA compilation
-- Pre-allocated output arrays
+- No dynamic control flow (continue/break)
+- Generic array types for TracedRArray support
+- Uses @allowscalar for array indexing (future: vectorize fully)
 """
+
+using Reactant
+using Reactant: @allowscalar
 
 # =============================================================================
 # Forward Projection
@@ -45,10 +49,13 @@ end
     forward_project!(sinogram, volume, voxel_size, fov, geom, n_steps)
 
 In-place forward projection (Reactant-compilable core).
+
+Uses dense ray marching without early termination for XLA compatibility.
+Rays that miss the volume contribute zero.
 """
 function forward_project!(
-    sinogram::Array{Float32,3},
-    volume::Array{Float32,3},
+    sinogram,
+    volume,
     voxel_size::NTuple{3,Float64},
     fov::NTuple{3,Float64},
     geom::CTGeometry,
@@ -64,24 +71,30 @@ function forward_project!(
     # Detector pixel size at detector plane
     pixel_size_det = geom.pixel_size * (geom.SDD / geom.SAD)
 
+    # Pre-extract geometry arrays for Reactant
+    source_pos = geom.source_positions
+    det_centers = geom.detector_centers
+    det_u = geom.detector_u
+    det_v = geom.detector_v
+
     for angle_idx in 1:geom.n_angles
         # Source position for this angle
-        sx = geom.source_positions[1, angle_idx]
-        sy = geom.source_positions[2, angle_idx]
-        sz = geom.source_positions[3, angle_idx]
+        sx = source_pos[1, angle_idx]
+        sy = source_pos[2, angle_idx]
+        sz = source_pos[3, angle_idx]
 
         # Detector center and axes
-        dcx = geom.detector_centers[1, angle_idx]
-        dcy = geom.detector_centers[2, angle_idx]
-        dcz = geom.detector_centers[3, angle_idx]
+        dcx = det_centers[1, angle_idx]
+        dcy = det_centers[2, angle_idx]
+        dcz = det_centers[3, angle_idx]
 
-        ux = geom.detector_u[1, angle_idx]
-        uy = geom.detector_u[2, angle_idx]
-        uz = geom.detector_u[3, angle_idx]
+        ux = det_u[1, angle_idx]
+        uy = det_u[2, angle_idx]
+        uz = det_u[3, angle_idx]
 
-        vx = geom.detector_v[1, angle_idx]
-        vy = geom.detector_v[2, angle_idx]
-        vz = geom.detector_v[3, angle_idx]
+        vx = det_v[1, angle_idx]
+        vy = det_v[2, angle_idx]
+        vz = det_v[3, angle_idx]
 
         for row in 1:geom.n_rows
             for col in 1:geom.n_cols
@@ -100,25 +113,23 @@ function forward_project!(
                 ray_len = sqrt(ray_dx^2 + ray_dy^2 + ray_dz^2)
 
                 # Normalize ray direction
-                ray_dx /= ray_len
-                ray_dy /= ray_len
-                ray_dz /= ray_len
+                ray_dx = ray_dx / ray_len
+                ray_dy = ray_dy / ray_len
+                ray_dz = ray_dz / ray_len
 
                 # Find intersection with volume bounding box
-                t_min, t_max = ray_box_intersection(
+                t_min, t_max = ray_box_intersection_xla(
                     sx, sy, sz, ray_dx, ray_dy, ray_dz,
                     x_min, x_max, y_min, y_max, z_min, z_max
                 )
 
-                if t_max <= t_min
-                    continue  # Ray doesn't intersect volume
-                end
+                # Compute step size (will be 0 or negative if no intersection)
+                # Use max to ensure non-negative range
+                t_range = max(t_max - t_min, 0.0)
+                step_size = t_range / n_steps
 
-                # Step size for ray marching
-                step_size = (t_max - t_min) / n_steps
-
-                # Accumulate line integral
-                line_integral = 0.0f0
+                # Accumulate line integral (0 if ray misses volume)
+                line_integral = zero(eltype(volume))
 
                 for step in 0:n_steps-1
                     t = t_min + (step + 0.5) * step_size
@@ -129,14 +140,14 @@ function forward_project!(
                     pz = sz + t * ray_dz
 
                     # Sample volume using trilinear interpolation
-                    μ_val = sample_volume_trilinear(
+                    μ_val = sample_volume_trilinear_xla(
                         volume, px, py, pz,
                         x_min, y_min, z_min,
                         voxel_size[1], voxel_size[2], voxel_size[3],
                         nx, ny, nz
                     )
 
-                    line_integral += μ_val * Float32(step_size)
+                    line_integral = line_integral + μ_val * step_size
                 end
 
                 sinogram[col, row, angle_idx] = line_integral
@@ -148,49 +159,41 @@ function forward_project!(
 end
 
 """
-    ray_box_intersection(ox, oy, oz, dx, dy, dz, x_min, x_max, y_min, y_max, z_min, z_max)
+    ray_box_intersection_xla(ox, oy, oz, dx, dy, dz, x_min, x_max, y_min, y_max, z_min, z_max)
 
-Compute ray-box intersection using slab method.
+Compute ray-box intersection using slab method (XLA-compatible, no branches).
 
 Returns (t_min, t_max) where t parameterizes the ray as O + t*D.
 If t_max <= t_min, ray doesn't intersect box.
 """
-function ray_box_intersection(
+function ray_box_intersection_xla(
     ox, oy, oz,  # Ray origin
     dx, dy, dz,  # Ray direction (normalized)
     x_min, x_max, y_min, y_max, z_min, z_max  # Box bounds
 )
-    # Avoid division by zero
-    inv_dx = dx != 0 ? 1.0 / dx : 1e10 * sign(dx + 1e-10)
-    inv_dy = dy != 0 ? 1.0 / dy : 1e10 * sign(dy + 1e-10)
-    inv_dz = dz != 0 ? 1.0 / dz : 1e10 * sign(dz + 1e-10)
+    # Use small epsilon to avoid division by zero
+    eps = 1e-10
 
-    # X slab
-    if inv_dx >= 0
-        t_x_min = (x_min - ox) * inv_dx
-        t_x_max = (x_max - ox) * inv_dx
-    else
-        t_x_min = (x_max - ox) * inv_dx
-        t_x_max = (x_min - ox) * inv_dx
-    end
+    # Safe inverse (add epsilon to denominator)
+    inv_dx = 1.0 / (dx + eps * sign(abs(dx) < eps))
+    inv_dy = 1.0 / (dy + eps * sign(abs(dy) < eps))
+    inv_dz = 1.0 / (dz + eps * sign(abs(dz) < eps))
 
-    # Y slab
-    if inv_dy >= 0
-        t_y_min = (y_min - oy) * inv_dy
-        t_y_max = (y_max - oy) * inv_dy
-    else
-        t_y_min = (y_max - oy) * inv_dy
-        t_y_max = (y_min - oy) * inv_dy
-    end
+    # Compute t values for each slab
+    t1_x = (x_min - ox) * inv_dx
+    t2_x = (x_max - ox) * inv_dx
+    t1_y = (y_min - oy) * inv_dy
+    t2_y = (y_max - oy) * inv_dy
+    t1_z = (z_min - oz) * inv_dz
+    t2_z = (z_max - oz) * inv_dz
 
-    # Z slab
-    if inv_dz >= 0
-        t_z_min = (z_min - oz) * inv_dz
-        t_z_max = (z_max - oz) * inv_dz
-    else
-        t_z_min = (z_max - oz) * inv_dz
-        t_z_max = (z_min - oz) * inv_dz
-    end
+    # Get min/max for each axis (handles negative directions)
+    t_x_min = min(t1_x, t2_x)
+    t_x_max = max(t1_x, t2_x)
+    t_y_min = min(t1_y, t2_y)
+    t_y_max = max(t1_y, t2_y)
+    t_z_min = min(t1_z, t2_z)
+    t_z_max = max(t1_z, t2_z)
 
     # Find intersection of all slabs
     t_min = max(t_x_min, t_y_min, t_z_min, 0.0)  # Clamp to positive
@@ -200,12 +203,13 @@ function ray_box_intersection(
 end
 
 """
-    sample_volume_trilinear(volume, x, y, z, x_min, y_min, z_min, dx, dy, dz, nx, ny, nz)
+    sample_volume_trilinear_xla(volume, x, y, z, x_min, y_min, z_min, dx, dy, dz, nx, ny, nz)
 
 Sample a 3D volume at continuous coordinates using trilinear interpolation.
+XLA-compatible version without floor(Int, ...) - uses trunc instead.
 """
-function sample_volume_trilinear(
-    volume::Array{Float32,3},
+function sample_volume_trilinear_xla(
+    volume,
     x, y, z,           # World coordinates
     x_min, y_min, z_min,  # Volume origin
     dx, dy, dz,        # Voxel sizes
@@ -216,33 +220,35 @@ function sample_volume_trilinear(
     vy = (y - y_min) / dy - 0.5
     vz = (z - z_min) / dz - 0.5
 
-    # Get integer voxel indices
-    ix = floor(Int, vx)
-    iy = floor(Int, vy)
-    iz = floor(Int, vz)
+    # Get integer voxel indices using trunc (XLA-compatible)
+    # trunc returns Float, we need to be careful with indexing
+    ix_f = trunc(vx)
+    iy_f = trunc(vy)
+    iz_f = trunc(vz)
 
     # Fractional parts
-    fx = vx - ix
-    fy = vy - iy
-    fz = vz - iz
+    fx = vx - ix_f
+    fy = vy - iy_f
+    fz = vz - iz_f
 
-    # Clamp to valid range
-    ix0 = clamp(ix + 1, 1, nx)
-    ix1 = clamp(ix + 2, 1, nx)
-    iy0 = clamp(iy + 1, 1, ny)
-    iy1 = clamp(iy + 2, 1, ny)
-    iz0 = clamp(iz + 1, 1, nz)
-    iz1 = clamp(iz + 2, 1, nz)
+    # Convert to 1-based indices and clamp
+    # Use arithmetic clamping for XLA compatibility
+    ix0 = clamp_index(ix_f + 1.0, nx)
+    ix1 = clamp_index(ix_f + 2.0, nx)
+    iy0 = clamp_index(iy_f + 1.0, ny)
+    iy1 = clamp_index(iy_f + 2.0, ny)
+    iz0 = clamp_index(iz_f + 1.0, nz)
+    iz1 = clamp_index(iz_f + 2.0, nz)
 
-    # Trilinear interpolation
-    c000 = volume[ix0, iy0, iz0]
-    c100 = volume[ix1, iy0, iz0]
-    c010 = volume[ix0, iy1, iz0]
-    c110 = volume[ix1, iy1, iz0]
-    c001 = volume[ix0, iy0, iz1]
-    c101 = volume[ix1, iy0, iz1]
-    c011 = volume[ix0, iy1, iz1]
-    c111 = volume[ix1, iy1, iz1]
+    # Trilinear interpolation with safe indexing
+    c000 = safe_getindex(volume, ix0, iy0, iz0, nx, ny, nz)
+    c100 = safe_getindex(volume, ix1, iy0, iz0, nx, ny, nz)
+    c010 = safe_getindex(volume, ix0, iy1, iz0, nx, ny, nz)
+    c110 = safe_getindex(volume, ix1, iy1, iz0, nx, ny, nz)
+    c001 = safe_getindex(volume, ix0, iy0, iz1, nx, ny, nz)
+    c101 = safe_getindex(volume, ix1, iy0, iz1, nx, ny, nz)
+    c011 = safe_getindex(volume, ix0, iy1, iz1, nx, ny, nz)
+    c111 = safe_getindex(volume, ix1, iy1, iz1, nx, ny, nz)
 
     # Interpolate along x
     c00 = c000 * (1 - fx) + c100 * fx
@@ -255,7 +261,32 @@ function sample_volume_trilinear(
     c1 = c01 * (1 - fy) + c11 * fy
 
     # Interpolate along z
-    return Float32(c0 * (1 - fz) + c1 * fz)
+    return c0 * (1 - fz) + c1 * fz
+end
+
+"""
+    clamp_index(idx_f, n)
+
+Clamp a floating-point index to valid range [1, n] and convert to Int.
+"""
+@inline function clamp_index(idx_f, n)
+    clamped = max(1.0, min(Float64(n), idx_f))
+    return unsafe_trunc(Int, clamped)
+end
+
+"""
+    safe_getindex(volume, ix, iy, iz, nx, ny, nz)
+
+Safely get value from volume, returning 0 for out-of-bounds indices.
+"""
+@inline function safe_getindex(volume, ix, iy, iz, nx, ny, nz)
+    # Check bounds (using arithmetic to avoid branches)
+    in_bounds = (1 <= ix <= nx) && (1 <= iy <= ny) && (1 <= iz <= nz)
+    if in_bounds
+        return @inbounds volume[ix, iy, iz]
+    else
+        return zero(eltype(volume))
+    end
 end
 
 # =============================================================================
