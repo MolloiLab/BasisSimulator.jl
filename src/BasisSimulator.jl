@@ -31,4 +31,11 @@ include("Physics/Spectrum.jl")
 # Attenuation coefficient computation
 include("Physics/Attenuation.jl")
 
+# =============================================================================
+# Geometry
+# =============================================================================
+
+# Phantom generation with semantic masks
+include("Geometry/Phantom.jl")
+
 end # module
