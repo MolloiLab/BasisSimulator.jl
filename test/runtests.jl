@@ -760,5 +760,57 @@ using Reactant
         @test !isapprox(sino_blurred, sinogram, rtol=0.01)
     end
 
+    @testset "Detector Crosstalk" begin
+        # Test model creation
+        ct_none = crosstalk_none()
+        ct_low = crosstalk_low()
+        ct_medium = crosstalk_medium()
+        ct_high = crosstalk_high()
+
+        @test ct_none isa CrosstalkModel
+        @test ct_none.primary_fraction == 1.0
+        @test ct_low.primary_fraction > ct_medium.primary_fraction > ct_high.primary_fraction
+
+        # Test custom crosstalk
+        ct_custom = crosstalk_custom(0.12)
+        @test ct_custom.primary_fraction ≈ 0.88
+        info = get_crosstalk_info(ct_custom)
+        @test info.total_crosstalk_fraction ≈ 0.12
+
+        # Test MTF degradation estimate
+        mtf_none = get_crosstalk_mtf_degradation(ct_none)
+        mtf_low = get_crosstalk_mtf_degradation(ct_low)
+        @test mtf_none ≈ 1.0
+        @test mtf_low < 1.0
+        @test mtf_low > 0.5
+
+        # Test kernel creation
+        kernel = BasisSimulator.create_crosstalk_kernel(ct_medium, 32, 4)
+        @test size(kernel) == (32, 4)
+        @test sum(kernel) ≈ 1.0  # Normalized
+
+        # Test application to sinogram
+        phantom = create_gammex_472(n_voxels=16)
+        geom = create_aquilion_one(n_angles=18, n_rows=4, n_cols=32, fov_cm=phantom.fov[1])
+        sinogram = forward_project(phantom, geom)
+
+        sino_ct = apply_crosstalk(sinogram, ct_medium)
+        @test size(sino_ct) == size(sinogram)
+        @test all(isfinite.(sino_ct))
+
+        # No crosstalk should return same sinogram
+        sino_none = apply_crosstalk(sinogram, ct_none)
+        @test sino_none ≈ sinogram
+
+        # Crosstalk should change values
+        @test !isapprox(sino_ct, sinogram, rtol=0.001)
+
+        # Test intensity-domain application
+        intensity = exp.(-sinogram)
+        intensity_ct = apply_crosstalk_intensity(intensity, ct_medium)
+        @test all(intensity_ct .>= 0)
+        @test !isapprox(intensity_ct, intensity, rtol=0.001)
+    end
+
     # Visualization is in stuff/scripts/visualize.jl (run manually with CairoMakie)
 end
