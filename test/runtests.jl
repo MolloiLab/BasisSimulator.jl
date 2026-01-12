@@ -872,5 +872,91 @@ using Reactant
         @test isapprox(mean(sino_lag), mean(sino_lag_rec), rtol=0.05)
     end
 
+    @testset "Helical Scanning" begin
+        # Test axial geometry creation via create_scan_geometry
+        geom_axial = create_scan_geometry(
+            mode=:axial,
+            n_angles=36,
+            n_rows=8,
+            n_cols=32
+        )
+        @test geom_axial.n_angles == 36
+        @test geom_axial.n_rows == 8
+        @test geom_axial.n_cols == 32
+        @test !is_helical(geom_axial)
+
+        # Test helical geometry creation
+        geom_helical = create_scan_geometry(
+            mode=:helical,
+            n_angles=36,  # angles per rotation
+            n_rows=8,
+            n_cols=32,
+            pitch=1.0,
+            n_rotations=3.0,
+            z_start=0.0
+        )
+
+        # Helical should have 3x the angles (3 rotations)
+        @test geom_helical.n_angles == 36 * 3
+        @test is_helical(geom_helical)
+
+        # Test helical parameter extraction
+        params = get_helical_parameters(geom_helical)
+        @test params !== nothing
+        @test params.pitch ≈ 1.0 atol=0.01
+        @test params.n_rotations ≈ 3.0
+        @test params.angles_per_rotation == 36
+
+        # Test Z positions increase with angle
+        z_first = geom_helical.source_positions[3, 1]
+        z_last = geom_helical.source_positions[3, end]
+        @test z_last > z_first  # Z increases
+
+        # Test different pitch values
+        geom_pitch_low = create_scan_geometry(
+            mode=:helical, n_angles=36, n_rows=8, n_cols=32,
+            pitch=0.5, n_rotations=2.0
+        )
+        geom_pitch_high = create_scan_geometry(
+            mode=:helical, n_angles=36, n_rows=8, n_cols=32,
+            pitch=1.5, n_rotations=2.0
+        )
+
+        # Higher pitch = more table travel
+        params_low = get_helical_parameters(geom_pitch_low)
+        params_high = get_helical_parameters(geom_pitch_high)
+        @test params_high.table_travel_cm > params_low.table_travel_cm
+
+        # Test coverage computation
+        coverage = compute_helical_z_coverage(geom_helical)
+        @test coverage > 0
+        @test coverage > params.table_travel_cm  # Coverage includes collimation
+
+        # Test scan time estimation
+        scan_time = estimate_helical_scan_time(geom_helical, 0.5)  # 0.5s per rotation
+        @test scan_time ≈ 1.5  # 3 rotations × 0.5s
+
+        # Test forward projection with helical geometry
+        phantom = create_gammex_472(n_voxels=16)
+        sinogram_helical = forward_project(phantom, geom_helical)
+
+        @test size(sinogram_helical, 1) == geom_helical.n_cols
+        @test size(sinogram_helical, 2) == geom_helical.n_rows
+        @test size(sinogram_helical, 3) == geom_helical.n_angles
+        @test all(isfinite.(sinogram_helical))
+
+        # Test interpolation to axial
+        z_target = params.z_start + params.table_travel_cm / 2  # Middle of scan
+        interp_axial = interpolate_helical_to_axial(sinogram_helical, geom_helical, z_target)
+
+        @test size(interp_axial, 1) == geom_helical.n_cols
+        @test size(interp_axial, 2) == geom_helical.n_rows
+        @test size(interp_axial, 3) == params.angles_per_rotation  # One rotation
+        @test all(isfinite.(interp_axial))
+
+        # Interpolation should give values similar to nearby helical data
+        @test mean(interp_axial) > 0
+    end
+
     # Visualization is in stuff/scripts/visualize.jl (run manually with CairoMakie)
 end
