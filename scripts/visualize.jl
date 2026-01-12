@@ -33,10 +33,17 @@ function save_slice(filename, data; title="", colormap=:grays, vmin=-1000, vmax=
     println("    Saved: $filename")
 end
 
-# 1. Phantom ground truth
+# 1. Phantom ground truth (categorical regions)
 println("  Phantom...")
-phantom_HU = μ_to_HU(phantom.μ, μ_water)
-save_slice("01_phantom.png", phantom_HU[:, :, mid_slice]; title="Phantom (Ground Truth)")
+phantom_mask_slice = Float64.(phantom.mask[:, :, mid_slice])
+fig = Figure(size=(650, 500))
+ax = Axis(fig[1, 1], aspect=DataAspect(), title="Phantom (Region Labels)")
+# Use categorical colormap - regions 0-26
+hm = heatmap!(ax, phantom_mask_slice'; colormap=:tab20, colorrange=(0, 26))
+Colorbar(fig[1, 2], hm, label="Region ID")
+hidedecorations!(ax, label=false, ticklabels=false, ticks=false)
+save(joinpath(output_dir, "01_phantom.png"), fig)
+println("    Saved: 01_phantom.png")
 
 # 2. Monochromatic forward + recon
 println("  Monochromatic simulation...")
@@ -85,18 +92,17 @@ recon_full = fdk_reconstruct(sino_full, geom, size(phantom.μ), phantom.fov)
 recon_full_HU = μ_to_HU(recon_full, get_effective_μ_water(projector))
 save_slice("07_recon_full.png", recon_full_HU[:, :, mid_slice]; title="Full Realistic")
 
-# 8. Comparison figure
+# 8. Comparison figure (reconstructions only)
 println("  Comparison figure...")
-fig = Figure(size=(1200, 800))
-titles = ["Ground Truth", "Mono Recon", "Polychromatic", "With Scatter", "With Noise", "Full Realistic"]
-data = [phantom_HU, recon_mono_HU, recon_poly_HU, recon_scatter_HU, recon_noisy_HU, recon_full_HU]
+fig = Figure(size=(1200, 500))
+titles = ["Ideal (Mono)", "Beam Hardening", "Scatter", "Noise", "Full Realistic"]
+data = [recon_mono_HU, recon_poly_HU, recon_scatter_HU, recon_noisy_HU, recon_full_HU]
 for (i, (t, d)) in enumerate(zip(titles, data))
-    row, col = (i-1) ÷ 3 + 1, (i-1) % 3 + 1
-    ax = Axis(fig[row, col], aspect=DataAspect(), title=t)
+    local ax = Axis(fig[1, i], aspect=DataAspect(), title=t)
     heatmap!(ax, d[:, :, mid_slice]'; colormap=:grays, colorrange=(-1000, 1000))
     hidedecorations!(ax)
 end
-Colorbar(fig[1:2, 4], limits=(-1000, 1000), colormap=:grays, label="HU")
+Colorbar(fig[1, 6], limits=(-1000, 1000), colormap=:grays, label="HU")
 save(joinpath(output_dir, "08_comparison.png"), fig)
 println("    Saved: 08_comparison.png")
 
