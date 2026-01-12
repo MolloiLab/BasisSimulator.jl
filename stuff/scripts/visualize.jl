@@ -1,5 +1,5 @@
-# scripts/visualize.jl
-# Run manually: julia --project scripts/visualize.jl
+# stuff/scripts/visualize.jl
+# Run manually: julia --project stuff/scripts/visualize.jl
 #
 # Generates PNG visualizations for inspection.
 # Requires CairoMakie: ] add CairoMakie
@@ -8,7 +8,7 @@ using BasisSimulator
 using Statistics
 using CairoMakie
 
-output_dir = joinpath(@__DIR__, "..", "test", "outputs")
+output_dir = joinpath(@__DIR__, "..", "..", "test", "outputs")
 mkpath(output_dir)
 
 println("Generating visualizations...")

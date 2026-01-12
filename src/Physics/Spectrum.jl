@@ -9,7 +9,7 @@ No spectrum generation - just load validated spectra from files.
 using DelimitedFiles
 
 # Path to spectrum data files
-const SPECTRUM_DIR = joinpath(@__DIR__, "..", "..", "spectrum")
+const SPECTRUM_DIR = joinpath(@__DIR__, "..", "..", "stuff", "spectrum")
 
 """
     load_spectrum(kVp::Int; target_angle::Float64=7.0, source::Symbol=:xspect)
