@@ -393,10 +393,11 @@ using Reactant
         # Create clean sinogram
         sinogram = forward_project(phantom, geom)
 
-        # Create scatter model
-        model = default_scatter_model(spr=0.15, kernel_fwhm=10.0)
+        # Create scatter model (XCIST-style)
+        model = default_scatter_model(scale_factor=1.0, kernel_fwhm=10.0)
         @test model isa ScatterModel
-        @test model.spr == 0.15
+        @test model.scale_factor == 1.0
+        @test model.scatter_coefficient ≈ 0.025
 
         # Add scatter
         sino_scatter = add_scatter(sinogram, model)
@@ -407,7 +408,11 @@ using Reactant
         # In attenuation space, scatter causes values to shift
         @test sino_scatter != sinogram  # Should be different
 
-        # Estimate SPR from phantom
+        # Estimate scale factor from phantom
+        estimated_scale = estimate_scale_factor(phantom, geom)
+        @test 0.1 < estimated_scale < 3.0
+
+        # Deprecated SPR estimate still works
         estimated_spr = estimate_spr(phantom, geom)
         @test 0.01 < estimated_spr < 0.5
 
@@ -420,6 +425,10 @@ using Reactant
         sino_copy = copy(sinogram)
         add_scatter!(sino_copy, model)
         @test sino_copy ≈ sino_scatter
+
+        # Test deprecated spr parameter conversion
+        model_deprecated = default_scatter_model(spr=0.15)
+        @test model_deprecated.scale_factor ≈ 1.0  # spr=0.15 maps to scale=1.0
     end
 
     @testset "Detector Blur" begin
@@ -506,8 +515,8 @@ using Reactant
         # Clean forward projection
         sinogram = forward_project(phantom, geom)
 
-        # Add scatter
-        model = default_scatter_model(spr=0.20)
+        # Add scatter using XCIST-style model
+        model = default_scatter_model(scale_factor=1.5)  # ~22% SPR
         sino_scatter = add_scatter(sinogram, model)
 
         # Reconstruct both

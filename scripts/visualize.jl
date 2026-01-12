@@ -60,9 +60,9 @@ recon_poly = fdk_reconstruct(sino_poly, geom, size(phantom.μ), phantom.fov)
 recon_poly_HU = μ_to_HU(recon_poly, get_effective_μ_water(projector))
 save_slice("04_recon_poly.png", recon_poly_HU[:, :, mid_slice]; title="Polychromatic (Beam Hardening)")
 
-# 5. Scatter
+# 5. Scatter (XCIST-style model)
 println("  Scatter simulation...")
-scatter_model = default_scatter_model(spr=0.20)
+scatter_model = default_scatter_model(scale_factor=1.0)  # ~15% SPR
 sino_scatter = add_scatter(sino_mono, scatter_model)
 recon_scatter = fdk_reconstruct(sino_scatter, geom, size(phantom.μ), phantom.fov)
 recon_scatter_HU = μ_to_HU(recon_scatter, μ_water)
