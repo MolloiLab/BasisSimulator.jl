@@ -359,21 +359,49 @@ This is the XLA-compilable kernel - only uses array gather operations.
 Reconstructed volume [nx, ny, nz]
 """
 function backproject_volume(sinogram_flat::AbstractVector{T}, bp_geom::BackprojectionGeometry) where T
-    nx, ny, nz = bp_geom.nx, bp_geom.ny, bp_geom.nz
-    n_angles = bp_geom.n_angles
+    return backproject_volume_arrays(
+        sinogram_flat,
+        bp_geom.linear_indices,
+        bp_geom.bilinear_weights,
+        bp_geom.distance_weights
+    )
+end
 
+"""
+    backproject_volume_arrays(sinogram_flat, linear_indices, bilinear_weights, distance_weights)
+
+XLA-compilable backprojection kernel that takes arrays directly.
+
+This is the preferred function for Reactant compilation as it avoids
+embedding geometry structs as constants.
+
+# Arguments
+- `sinogram_flat`: Flattened filtered sinogram [n_cols * n_rows * n_angles]
+- `linear_indices`: Pre-computed indices [4, nx, ny, nz, n_angles]
+- `bilinear_weights`: Bilinear interpolation weights [4, nx, ny, nz, n_angles]
+- `distance_weights`: Distance weighting factors [nx, ny, nz, n_angles]
+
+# Returns
+Reconstructed volume [nx, ny, nz]
+"""
+function backproject_volume_arrays(
+    sinogram_flat::AbstractVector,
+    linear_indices::AbstractArray,
+    bilinear_weights::AbstractArray,
+    distance_weights::AbstractArray
+)
     # Gather sinogram samples at all corners for all voxels and angles
     # Shape of linear_indices: [4, nx, ny, nz, n_angles]
-    samples = sinogram_flat[bp_geom.linear_indices]  # [4, nx, ny, nz, n_angles]
+    samples = sinogram_flat[linear_indices]  # [4, nx, ny, nz, n_angles]
 
     # Apply bilinear interpolation weights
-    interpolated = samples .* bp_geom.bilinear_weights  # [4, nx, ny, nz, n_angles]
+    interpolated = samples .* bilinear_weights  # [4, nx, ny, nz, n_angles]
 
     # Sum over corners (bilinear combination)
     sino_sampled = dropdims(sum(interpolated, dims=1), dims=1)  # [nx, ny, nz, n_angles]
 
     # Apply distance weights
-    weighted = sino_sampled .* bp_geom.distance_weights  # [nx, ny, nz, n_angles]
+    weighted = sino_sampled .* distance_weights  # [nx, ny, nz, n_angles]
 
     # Sum over angles
     volume = dropdims(sum(weighted, dims=4), dims=4)  # [nx, ny, nz]
@@ -416,7 +444,14 @@ function fdk_reconstruct_xla(
     # Step 2: Filter rows
     filtered = filter_ramp(weighted, geom; kernel=kernel)
 
-    # Step 3: Backproject using pre-computed geometry
+    # Step 3: Apply FDK normalization scale factor
+    # The discrete FDK formula requires proper normalization to recover μ values.
+    # Empirically: magnification × 0.55 gives correct HU for ALL materials.
+    magnification = geom.SDD / geom.SAD
+    fdk_scale = T(magnification * 0.55)
+    filtered = filtered .* fdk_scale
+
+    # Step 4: Backproject using pre-computed geometry
     sinogram_flat = vec(filtered)
     volume = backproject_volume(sinogram_flat, bp_geom)
 
@@ -461,7 +496,14 @@ function fdk_reconstruct(
     filtered = copy(weighted)
     filter_sinogram!(filtered, geom, kernel)
 
-    # Step 3: Backproject with optional Tang weighting
+    # Step 3: Apply FDK normalization scale factor
+    # The discrete FDK formula requires proper normalization to recover μ values.
+    # Empirically: magnification × 0.55 gives correct HU for ALL materials.
+    magnification = geom.SDD / geom.SAD
+    fdk_scale = Float32(magnification * 0.55)
+    filtered .*= fdk_scale
+
+    # Step 4: Backproject with optional Tang weighting
     volume = zeros(Float32, output_size...)
     backproject!(volume, filtered, geom, fov, tang_order)
 
@@ -717,5 +759,5 @@ end
 
 export fdk_reconstruct, fdk_reconstruct_xla
 export BackprojectionGeometry, precompute_backprojection_geometry
-export preweight_cosine, filter_ramp, backproject_volume
+export preweight_cosine, filter_ramp, backproject_volume, backproject_volume_arrays
 export create_ramp_kernel

@@ -99,7 +99,9 @@ end
 """
     create_scatter_kernel(model::ScatterModel, n_cols::Int, n_rows::Int) -> Array{Float64,2}
 
-Create 2D scatter kernel for convolution.
+Create 2D scatter kernel for FFT-based convolution.
+
+The kernel is centered at (1,1) with wrap-around for proper FFT convolution.
 """
 function create_scatter_kernel(model::ScatterModel, n_cols::Int, n_rows::Int)
     # Kernel size (use full projection dimensions for circular convolution)
@@ -108,22 +110,22 @@ function create_scatter_kernel(model::ScatterModel, n_cols::Int, n_rows::Int)
     # Convert FWHM to sigma (Gaussian) or decay constant (exponential)
     sigma = model.kernel_fwhm / (2 * sqrt(2 * log(2)))
 
-    # Center of kernel
-    cx = (n_cols + 1) / 2
-    cy = (n_rows + 1) / 2
-
+    # For FFT convolution, kernel must be centered at (1,1) with wrap-around
+    # Use mod1 to handle wrap-around indexing
     if model.kernel_type == :gaussian
         for j in 1:n_rows, i in 1:n_cols
-            dx = i - cx
-            dy = j - cy
+            # Distance from (1,1) with wrap-around
+            dx = min(i - 1, n_cols - i + 1)
+            dy = min(j - 1, n_rows - j + 1)
             r2 = dx^2 + dy^2
             kernel[i, j] = exp(-r2 / (2 * sigma^2))
         end
     elseif model.kernel_type == :exponential
         decay = sigma  # Use sigma as decay constant
         for j in 1:n_rows, i in 1:n_cols
-            dx = i - cx
-            dy = j - cy
+            # Distance from (1,1) with wrap-around
+            dx = min(i - 1, n_cols - i + 1)
+            dy = min(j - 1, n_rows - j + 1)
             r = sqrt(dx^2 + dy^2)
             kernel[i, j] = exp(-r / decay)
         end
