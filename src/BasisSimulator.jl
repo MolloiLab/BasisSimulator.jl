@@ -72,11 +72,17 @@ include("Forward/FlatFilter.jl")
 # Finite focal spot modeling
 include("Forward/FocalSpot.jl")
 
-# Detector crosstalk modeling
+# Detector crosstalk modeling (electronic and optical)
 include("Forward/Crosstalk.jl")
 
 # Detector lag (afterglow) modeling
 include("Forward/DetectorLag.jl")
+
+# Detector fill factor modeling
+include("Forward/FillFactor.jl")
+
+# Flying focal spot modeling
+include("Forward/FlyingFocalSpot.jl")
 
 # =============================================================================
 # Reconstruction

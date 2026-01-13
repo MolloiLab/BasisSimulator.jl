@@ -18,7 +18,7 @@ using FFTW
 # =============================================================================
 
 """
-    fdk_reconstruct(sinogram::Array{Float32,3}, geom::CTGeometry, output_size::NTuple{3,Int}, fov::NTuple{3,Float64}; kernel=RampKernel())
+    fdk_reconstruct(sinogram::Array{Float32,3}, geom::CTGeometry, output_size::NTuple{3,Int}, fov::NTuple{3,Float64}; kernel=RampKernel(), tang_order=0)
 
 Reconstruct a 3D volume from cone-beam projections using FDK.
 
@@ -33,6 +33,10 @@ Reconstruct a 3D volume from cone-beam projections using FDK.
   - `kernel_soft()`: Smooth, low noise (body imaging)
   - `kernel_standard()`: Balanced (general purpose)
   - `kernel_bone()`: Sharp, high noise (bone/lung)
+- `tang_order::Int`: Tang 3D weighting order (default: 0 = disabled)
+  - 0: No cone-beam weighting (standard FDK)
+  - 3-5: Recommended for wide cone-beam (64+ rows)
+  - Higher values = more aggressive artifact suppression
 
 # Returns
 `Array{Float32,3}`: Reconstructed μ values (cm⁻¹)
@@ -40,14 +44,20 @@ Reconstruct a 3D volume from cone-beam projections using FDK.
 # Algorithm
 1. Cosine-weight projections for cone-beam geometry
 2. Apply reconstruction filter via FFT
-3. Backproject with distance weighting
+3. Backproject with distance weighting and optional Tang 3D weighting
+
+# Tang 3D Weighting (PMB 2006)
+For wide cone-beam geometries, rays at large cone angles cause artifacts.
+Tang weighting applies: w(κ) = cos^k(κ) where κ is the cone angle.
+This down-weights off-axis rays, reducing cone-beam artifacts.
 """
 function fdk_reconstruct(
     sinogram::Array{Float32,3},
     geom::CTGeometry,
     output_size::NTuple{3,Int},
     fov::NTuple{3,Float64};
-    kernel::ReconKernel=RampKernel()
+    kernel::ReconKernel=RampKernel(),
+    tang_order::Int=0
 )
     n_cols, n_rows, n_angles = size(sinogram)
 
@@ -59,9 +69,9 @@ function fdk_reconstruct(
     filtered = copy(weighted)
     filter_sinogram!(filtered, geom, kernel)
 
-    # Step 3: Backproject
+    # Step 3: Backproject with optional Tang weighting
     volume = zeros(Float32, output_size...)
-    backproject!(volume, filtered, geom, fov)
+    backproject!(volume, filtered, geom, fov, tang_order)
 
     return volume
 end
@@ -137,15 +147,20 @@ function filter_sinogram!(sinogram::Array{Float32,3}, geom::CTGeometry,
 end
 
 """
-    backproject!(volume, sinogram, geom, fov)
+    backproject!(volume, sinogram, geom, fov, tang_order=0)
 
-Backproject filtered projections into volume.
+Backproject filtered projections into volume with optional Tang 3D weighting.
+
+# Tang Weighting
+When tang_order > 0, applies cos^k(κ) weighting where κ is the cone angle.
+This reduces cone-beam artifacts for wide detector arrays.
 """
 function backproject!(
     volume::Array{Float32,3},
     sinogram::Array{Float32,3},
     geom::CTGeometry,
-    fov::NTuple{3,Float64}
+    fov::NTuple{3,Float64},
+    tang_order::Int=0
 )
     nx, ny, nz = size(volume)
     n_cols, n_rows, n_angles = size(sinogram)
@@ -242,6 +257,15 @@ function backproject!(
                         # Distance weighting for cone beam
                         weight = Float32((geom.SAD / t)^2 * delta_angle)
 
+                        # Tang 3D weighting for cone-beam artifact reduction
+                        # κ = cone angle, weight = cos^k(κ)
+                        # cos(κ) = SDD / sqrt(SDD² + v²)
+                        if tang_order > 0
+                            cos_kappa = geom.SDD / sqrt(geom.SDD^2 + v^2)
+                            tang_weight = Float32(cos_kappa^tang_order)
+                            weight *= tang_weight
+                        end
+
                         # Sample sinogram with bilinear interpolation
                         sample = sample_sinogram_bilinear(sinogram, col_f, row_f, angle_idx)
 
@@ -299,7 +323,7 @@ end
 # =============================================================================
 
 """
-    fdk_reconstruct(sinogram, geom; n_voxels=128, kernel=RampKernel())
+    fdk_reconstruct(sinogram, geom; n_voxels=128, kernel=RampKernel(), tang_order=0)
 
 Convenience version with automatic FOV calculation.
 
@@ -309,7 +333,8 @@ function fdk_reconstruct(
     sinogram::AbstractArray{T,3},
     geom::CTGeometry;
     n_voxels::Int=128,
-    kernel::ReconKernel=RampKernel()
+    kernel::ReconKernel=RampKernel(),
+    tang_order::Int=0
 ) where T
     # Convert to Float32 if necessary
     sino32 = T == Float32 ? sinogram : Array{Float32}(sinogram)
@@ -323,11 +348,11 @@ function fdk_reconstruct(
     output_size = (n_voxels, n_voxels, n_voxels)
     fov = (fov_xy, fov_xy, fov_z)
 
-    return fdk_reconstruct(sino32, geom, output_size, fov; kernel=kernel)
+    return fdk_reconstruct(sino32, geom, output_size, fov; kernel=kernel, tang_order=tang_order)
 end
 
 """
-    fdk_reconstruct(sinogram, geom, output_size; fov=nothing, kernel=RampKernel())
+    fdk_reconstruct(sinogram, geom, output_size; fov=nothing, kernel=RampKernel(), tang_order=0)
 
 Version with output_size tuple and optional FOV.
 """
@@ -336,7 +361,8 @@ function fdk_reconstruct(
     geom::CTGeometry,
     output_size::NTuple{3,Int};
     fov::Union{NTuple{3,Float64},Nothing}=nothing,
-    kernel::ReconKernel=RampKernel()
+    kernel::ReconKernel=RampKernel(),
+    tang_order::Int=0
 ) where T
     # Convert to Float32 if necessary
     sino32 = T == Float32 ? sinogram : Array{Float32}(sinogram)
@@ -346,7 +372,7 @@ function fdk_reconstruct(
         fov_z = geom.n_rows * geom.pixel_size * 1.1
         fov = (fov_xy, fov_xy, fov_z)
     end
-    return fdk_reconstruct(sino32, geom, output_size, fov; kernel=kernel)
+    return fdk_reconstruct(sino32, geom, output_size, fov; kernel=kernel, tang_order=tang_order)
 end
 
 # =============================================================================

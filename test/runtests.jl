@@ -391,6 +391,183 @@ using Reactant
         @test all(isfinite.(sino_poly_corrected))
     end
 
+    @testset "Tang 3D Cone-Beam Weighting" begin
+        phantom = create_gammex_472(n_voxels=16)
+        geom = create_aquilion_one(n_angles=36, n_rows=8, n_cols=32, fov_cm=phantom.fov[1])
+        sinogram = forward_project(phantom, geom)
+
+        output_size = (16, 16, 8)
+        fov = phantom.fov
+
+        # Test without Tang weighting (default)
+        recon_no_tang = fdk_reconstruct(sinogram, geom, output_size, fov)
+        @test all(isfinite.(recon_no_tang))
+        @test maximum(recon_no_tang) > 0
+
+        # Test with Tang weighting (order 5, CatSim default)
+        recon_tang5 = fdk_reconstruct(sinogram, geom, output_size, fov; tang_order=5)
+        @test all(isfinite.(recon_tang5))
+        @test maximum(recon_tang5) > 0
+
+        # Results should be different due to weighting
+        @test recon_no_tang != recon_tang5
+
+        # Test with other tang orders
+        recon_tang3 = fdk_reconstruct(sinogram, geom, output_size, fov; tang_order=3)
+        @test all(isfinite.(recon_tang3))
+
+        # Convenience method should also work with tang_order
+        recon_conv = fdk_reconstruct(sinogram, geom; n_voxels=16, tang_order=5)
+        @test all(isfinite.(recon_conv))
+    end
+
+    @testset "Optical Crosstalk" begin
+        # Test model creation
+        model_none = optical_crosstalk_none()
+        model_typical = optical_crosstalk_typical()
+        model_low = optical_crosstalk_low()
+        model_high = optical_crosstalk_high()
+
+        @test model_none.row_coeff ≈ 0.0
+        @test model_typical.row_coeff ≈ 0.045
+        @test model_typical.col_coeff ≈ 0.040
+        @test model_low.row_coeff < model_typical.row_coeff
+        @test model_high.row_coeff > model_typical.row_coeff
+
+        # Test kernel creation
+        kernel = create_optical_crosstalk_kernel(model_typical)
+        @test size(kernel) == (3, 3)
+        @test sum(kernel) ≈ 1.0  # Should sum to 1
+
+        # Center should have most weight
+        @test kernel[2, 2] > kernel[1, 1]
+        @test kernel[2, 2] > kernel[2, 1]
+
+        # Test application
+        phantom = create_gammex_472(n_voxels=16)
+        geom = create_aquilion_one(n_angles=36, n_rows=8, n_cols=32, fov_cm=phantom.fov[1])
+        sinogram = forward_project(phantom, geom)
+
+        sino_xt = apply_optical_crosstalk(sinogram, model_typical)
+        @test size(sino_xt) == size(sinogram)
+        @test all(isfinite.(sino_xt))
+
+        # Should be different from original
+        @test sino_xt != sinogram
+
+        # No crosstalk should return unchanged
+        sino_none = apply_optical_crosstalk(sinogram, model_none)
+        @test sino_none ≈ sinogram
+
+        # Test intensity domain application
+        intensity = exp.(-sinogram)
+        intensity_xt = apply_optical_crosstalk_intensity(intensity, model_typical)
+        @test size(intensity_xt) == size(intensity)
+        @test all(isfinite.(intensity_xt))
+    end
+
+    @testset "Fill Factor" begin
+        # Test model creation
+        ff_ideal = fill_factor_ideal()
+        ff_std = fill_factor_standard()
+        ff_high = fill_factor_high()
+        ff_low = fill_factor_low()
+        ff_pc = fill_factor_photon_counting()
+
+        @test effective_fill_factor(ff_ideal) ≈ 1.0
+        @test 0.89 < effective_fill_factor(ff_std) < 0.91
+        @test effective_fill_factor(ff_high) > effective_fill_factor(ff_std)
+        @test effective_fill_factor(ff_low) < effective_fill_factor(ff_std)
+        @test effective_fill_factor(ff_pc) < effective_fill_factor(ff_low)
+
+        # Custom fill factor
+        ff_custom = fill_factor_custom(0.9, 0.95)
+        @test ff_custom.row_fill ≈ 0.9
+        @test ff_custom.col_fill ≈ 0.95
+        @test effective_fill_factor(ff_custom) ≈ 0.9 * 0.95
+
+        # Test application
+        phantom = create_gammex_472(n_voxels=16)
+        geom = create_aquilion_one(n_angles=36, n_rows=8, n_cols=32, fov_cm=phantom.fov[1])
+        sinogram = forward_project(phantom, geom)
+
+        sino_ff = apply_fill_factor(sinogram, ff_std)
+        @test size(sino_ff) == size(sinogram)
+        @test all(isfinite.(sino_ff))
+
+        # Fill factor < 1 means fewer photons detected = higher projection values
+        @test mean(sino_ff) > mean(sinogram)
+
+        # Ideal fill factor should not change anything
+        sino_ideal = apply_fill_factor(sinogram, ff_ideal)
+        @test sino_ideal ≈ sinogram
+
+        # Test info
+        info = get_fill_factor_info(ff_std)
+        @test info.effective_fill_factor ≈ effective_fill_factor(ff_std)
+        @test info.signal_loss_percent > 0
+
+        # Test intensity domain
+        intensity = exp.(-sinogram)
+        intensity_ff = apply_fill_factor_intensity(intensity, ff_std)
+        @test all(intensity_ff .< intensity)  # Reduced signal
+    end
+
+    @testset "Flying Focal Spot" begin
+        # Test model creation
+        ffs_off = ffs_none()
+        ffs_ip = ffs_in_plane()
+        ffs_z = ffs_z_axis()
+        ffs_comb = ffs_combined()
+
+        @test !ffs_off.enabled
+        @test ffs_ip.enabled
+        @test ffs_ip.pattern == :in_plane
+        @test ffs_ip.n_positions == 2
+        @test ffs_z.pattern == :z_axis
+        @test ffs_comb.pattern == :combined
+        @test ffs_comb.n_positions == 4
+
+        # Test custom
+        ffs_custom_model = ffs_custom(0.05, 0.02, 4)
+        @test ffs_custom_model.deflection_u ≈ 0.05
+        @test ffs_custom_model.deflection_z ≈ 0.02
+        @test ffs_custom_model.n_positions == 4
+
+        # Test offset calculation
+        u1, z1 = get_ffs_offset(ffs_ip, 1)
+        u2, z2 = get_ffs_offset(ffs_ip, 2)
+        @test u1 ≈ ffs_ip.deflection_u
+        @test u2 ≈ -ffs_ip.deflection_u
+        @test z1 ≈ 0.0
+        @test z2 ≈ 0.0
+
+        # Get all offsets
+        u_offs, z_offs = get_ffs_offsets(ffs_ip, 10)
+        @test length(u_offs) == 10
+        @test length(z_offs) == 10
+        # Should alternate
+        @test u_offs[1] ≈ -u_offs[2]
+
+        # Test geometry modification
+        geom = create_aquilion_one(n_angles=36, n_rows=8, n_cols=32)
+        original_pos = copy(geom.source_positions)
+
+        geom_ffs = create_geometry_with_ffs(geom, ffs_ip)
+        @test geom_ffs.n_angles == geom.n_angles
+        # Positions should be different
+        @test geom_ffs.source_positions != original_pos
+
+        # No FFS should return same geometry
+        geom_no_ffs = create_geometry_with_ffs(geom, ffs_off)
+        @test geom_no_ffs.source_positions == original_pos
+
+        # Test info
+        info = get_ffs_info(ffs_ip)
+        @test info.enabled == true
+        @test info.sampling_improvement == 2
+    end
+
     @testset "End-to-End Validation" begin
         phantom = create_gammex_472(n_voxels=32)
         geom = create_aquilion_one(n_angles=180, n_rows=8, n_cols=128, fov_cm=phantom.fov[1])
