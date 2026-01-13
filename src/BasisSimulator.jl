@@ -82,6 +82,9 @@ include("Forward/DetectorLag.jl")
 # Reconstruction
 # =============================================================================
 
+# Reconstruction kernels (filters)
+include("Reconstruction/Kernels.jl")
+
 # FDK cone-beam reconstruction
 include("Reconstruction/FDK.jl")
 
