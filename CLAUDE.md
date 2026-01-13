@@ -215,10 +215,119 @@ src/Scanners/
 - [ ] Validation against DukeSim outputs
 
 ### Phase 4: Documentation & Validation
-- [ ] Pluto notebook demonstrating CatSim++ parity
+- [x] Pluto notebook demonstrating realistic CT simulation
 - [ ] DICOM output support
 - [ ] Comprehensive documentation
 - [ ] Validation against clinical data
+
+---
+
+## Pluto Notebook: Realistic CT Simulation
+
+### Overview
+A clean, comprehensive Pluto notebook demonstrating physically realistic CT simulation
+using high-resolution phantoms, clinical scanner configurations, and multiple reconstruction
+methods with Reactant/XLA compilation for performance.
+
+### Design Philosophy
+1. **High-resolution phantom**: Physical objects have atoms at much higher resolution than CT voxels
+2. **Clinical realism**: Use GE Revolution Apex Elite scanner with real FDA 510(k) parameters
+3. **Multiple protocols**: Compare different kVp/mAs settings (dose levels)
+4. **Multiple reconstructions**: FDK (fast), SIRT (robust), CGLS (optimal)
+5. **Compiled execution**: Use `@compile` throughout for performance
+
+### Notebook Structure
+
+#### 1. Setup & Configuration
+- Load BasisSimulator, Reactant, CairoMakie
+- Define output resolution: 512x512x20 (clinical-like slab)
+- Configure Reactant compilation
+
+#### 2. High-Resolution Phantom Creation
+- Create Gammex 472 at 1024x1024x40 (4x oversampling in-plane, 2x in z)
+- This represents the "true" physical object
+- Display phantom slices with material labels
+
+#### 3. Scanner Configuration
+- Use `GERevolutionApexElite()` scanner spec
+- Create geometry with clinical parameters:
+  - 984 angles per rotation (clinical standard)
+  - 64 detector rows (typical acquisition)
+  - 512 detector columns
+  - SAD/SDD from FDA 510(k): 626mm / 1097mm
+
+#### 4. Acquisition Protocols
+Three protocols to compare:
+| Protocol | kVp | mAs | Use Case |
+|----------|-----|-----|----------|
+| Low Dose | 80 | 100 | Pediatric/screening |
+| Standard | 120 | 200 | Routine diagnostic |
+| High Dose | 140 | 400 | Obese/high contrast |
+
+#### 5. Physical Effects Pipeline
+For each protocol, apply full physics chain:
+```
+Phantom → Forward Project (polychromatic) → Flat Filter → Bowtie Filter
+       → Detector Efficiency → Scatter → Quantum Noise → Sinogram
+```
+
+Effects included:
+- **Polychromatic X-ray**: Energy-dependent μ, beam hardening
+- **Flat filter**: 2.5mm Al + 0.1mm Cu (typical filtration)
+- **Bowtie filter**: Medium body filter
+- **Detector efficiency**: GOS scintillator model
+- **Scatter**: Convolution-based SPR model
+- **Quantum noise**: Poisson noise based on I0 (mAs-dependent)
+
+#### 6. Reconstruction Methods
+For each protocol, reconstruct with three methods:
+
+| Method | Iterations | Characteristics |
+|--------|------------|-----------------|
+| FDK | N/A | Fast, analytical, some artifacts |
+| SIRT | 30 | Robust to noise, slower convergence |
+| CGLS | 15 | Fastest convergence, may amplify noise |
+
+Output: 512x512x20 volume (downsampled from high-res phantom)
+
+#### 7. Compilation Strategy
+Pre-compile all compute-intensive operations:
+```julia
+# Geometry pre-computation (done once)
+proj_geom = precompute_projection_geometry(...)
+bp_geom = precompute_backprojection_geometry(...)
+
+# Compile forward projection
+compiled_project = @compile project_volume(volume_ra, proj_geom)
+
+# Compile backprojection (for iterative methods)
+compiled_backproject = @compile backproject_volume(sino_ra, bp_geom)
+```
+
+#### 8. Visualization
+- Side-by-side comparison of protocols (80/120/140 kVp)
+- Reconstruction method comparison (FDK/SIRT/CGLS)
+- HU accuracy in ROIs (water, bone, iodine)
+- Noise measurements in uniform regions
+- Difference images showing reconstruction artifacts
+
+#### 9. Quantitative Analysis
+- Mean HU in each Gammex insert
+- Noise (std dev) in water region
+- CNR for calcium/iodine inserts
+- Comparison table across protocols and methods
+
+### Expected Output
+- 9 reconstructed volumes (3 protocols × 3 methods)
+- Comparison figures showing image quality trade-offs
+- Quantitative metrics demonstrating physical realism
+
+### Performance Notes
+- High-res phantom creation: ~30 seconds
+- Forward projection per protocol: ~2-5 minutes (compiled)
+- FDK reconstruction: ~30 seconds (compiled)
+- SIRT/CGLS reconstruction: ~2-5 minutes per protocol (compiled)
+- Total notebook runtime: ~30-60 minutes (first run with compilation)
 
 ---
 
@@ -363,7 +472,7 @@ dqe = compute_dqe(det, 60.0)
 1. ✅ Finish CatSim parity of BasisSimulator.jl (COMPLETE)
 2. ✅ Add iterative reconstruction (SIRT, CGLS)
 3. ✅ Add perfectly documented GE Revolution Apex scanner config
-4. ⏳ Build out Pluto notebook showing the CatSim++ parity
+4. ✅ Build out Pluto notebook showing realistic CT simulation
 5. ⏳ Begin building out DukeSim parity
 
 ---
