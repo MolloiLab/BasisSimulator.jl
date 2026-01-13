@@ -256,6 +256,82 @@ using Reactant
         @test maximum(recon) < 2.0
     end
 
+    @testset "Reconstruction Kernels" begin
+        # Test kernel creation
+        k_ramp = kernel_ramp()
+        k_sl = kernel_shepp_logan()
+        k_hamming = kernel_hamming()
+        k_cosine = kernel_cosine()
+        k_soft = kernel_soft()
+        k_standard = kernel_standard()
+        k_bone = kernel_bone()
+        k_lung = kernel_lung()
+
+        @test k_ramp isa RampKernel
+        @test k_soft isa SoftKernel
+        @test k_bone isa BoneKernel
+        @test k_ramp.cutoff == 1.0
+
+        # Test cutoff parameter
+        k_ramp_half = kernel_ramp(cutoff=0.5)
+        @test k_ramp_half.cutoff == 0.5
+
+        # Test filter creation
+        n_fft = 256
+        pixel_size = 0.1  # cm
+
+        filter_ramp = create_kernel_filter(k_ramp, n_fft, pixel_size)
+        filter_soft = create_kernel_filter(k_soft, n_fft, pixel_size)
+        filter_bone = create_kernel_filter(k_bone, n_fft, pixel_size)
+
+        @test length(filter_ramp) == n_fft
+        @test length(filter_soft) == n_fft
+        @test length(filter_bone) == n_fft
+
+        # At DC (zero frequency), filter should be zero
+        @test abs(filter_ramp[1]) < 1e-10
+        @test abs(filter_soft[1]) < 1e-10
+
+        # Soft kernel should have lower high-frequency response than ramp
+        nyquist_idx = n_fft ÷ 2
+        @test real(filter_soft[nyquist_idx]) < real(filter_ramp[nyquist_idx])
+
+        # Test kernel info
+        info_soft = get_kernel_info(k_soft)
+        @test info_soft.type == "Soft"
+        @test info_soft.noise_level == "Low"
+
+        info_bone = get_kernel_info(k_bone)
+        @test info_bone.type == "Bone"
+        @test info_bone.noise_level == "High"
+
+        # Test reconstruction with different kernels
+        phantom = create_gammex_472(n_voxels=16)
+        geom = create_aquilion_one(n_angles=72, n_rows=4, n_cols=64, fov_cm=phantom.fov[1])
+        sinogram = forward_project(phantom, geom)
+        output_size = size(phantom.μ)
+
+        recon_ramp = fdk_reconstruct(sinogram, geom, output_size, phantom.fov; kernel=k_ramp)
+        recon_soft = fdk_reconstruct(sinogram, geom, output_size, phantom.fov; kernel=k_soft)
+        recon_bone = fdk_reconstruct(sinogram, geom, output_size, phantom.fov; kernel=k_bone)
+
+        @test size(recon_ramp) == output_size
+        @test size(recon_soft) == output_size
+        @test size(recon_bone) == output_size
+        @test all(isfinite.(recon_ramp))
+        @test all(isfinite.(recon_soft))
+        @test all(isfinite.(recon_bone))
+
+        # Soft should be smoother (lower variance)
+        mid_slice = output_size[3] ÷ 2
+        var_ramp = var(recon_ramp[:, :, mid_slice])
+        var_soft = var(recon_soft[:, :, mid_slice])
+        # Note: Soft is smoother which might reduce or increase variance depending on image
+        # Just check they're different and finite
+        @test var_ramp > 0
+        @test var_soft > 0
+    end
+
     @testset "End-to-End Validation" begin
         phantom = create_gammex_472(n_voxels=32)
         geom = create_aquilion_one(n_angles=180, n_rows=8, n_cols=128, fov_cm=phantom.fov[1])

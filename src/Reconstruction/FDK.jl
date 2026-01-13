@@ -18,7 +18,7 @@ using FFTW
 # =============================================================================
 
 """
-    fdk_reconstruct(sinogram::Array{Float32,3}, geom::CTGeometry, output_size::NTuple{3,Int}, fov::NTuple{3,Float64})
+    fdk_reconstruct(sinogram::Array{Float32,3}, geom::CTGeometry, output_size::NTuple{3,Int}, fov::NTuple{3,Float64}; kernel=RampKernel())
 
 Reconstruct a 3D volume from cone-beam projections using FDK.
 
@@ -27,20 +27,27 @@ Reconstruct a 3D volume from cone-beam projections using FDK.
 - `geom::CTGeometry`: Scanner geometry
 - `output_size::NTuple{3,Int}`: Output volume size (nx, ny, nz)
 - `fov::NTuple{3,Float64}`: Field of view (cm) for output volume
+- `kernel::ReconKernel`: Reconstruction kernel (default: RampKernel)
+  - `kernel_ramp()`: Maximum resolution, highest noise
+  - `kernel_shepp_logan()`: Slightly smoother than ramp
+  - `kernel_soft()`: Smooth, low noise (body imaging)
+  - `kernel_standard()`: Balanced (general purpose)
+  - `kernel_bone()`: Sharp, high noise (bone/lung)
 
 # Returns
 `Array{Float32,3}`: Reconstructed μ values (cm⁻¹)
 
 # Algorithm
 1. Cosine-weight projections for cone-beam geometry
-2. Apply ramp filter via FFT
+2. Apply reconstruction filter via FFT
 3. Backproject with distance weighting
 """
 function fdk_reconstruct(
     sinogram::Array{Float32,3},
     geom::CTGeometry,
     output_size::NTuple{3,Int},
-    fov::NTuple{3,Float64}
+    fov::NTuple{3,Float64};
+    kernel::ReconKernel=RampKernel()
 )
     n_cols, n_rows, n_angles = size(sinogram)
 
@@ -48,9 +55,9 @@ function fdk_reconstruct(
     weighted = copy(sinogram)
     preweight_sinogram!(weighted, geom)
 
-    # Step 2: Filter rows
+    # Step 2: Filter rows with specified kernel
     filtered = copy(weighted)
-    filter_sinogram!(filtered, geom)
+    filter_sinogram!(filtered, geom, kernel)
 
     # Step 3: Backproject
     volume = zeros(Float32, output_size...)
@@ -90,20 +97,21 @@ function preweight_sinogram!(sinogram::Array{Float32,3}, geom::CTGeometry)
 end
 
 """
-    filter_sinogram!(sinogram, geom)
+    filter_sinogram!(sinogram, geom, kernel)
 
-Apply ramp filter to each row of the sinogram.
-Uses FFT-based filtering with Ram-Lak filter in frequency domain.
+Apply reconstruction filter to each row of the sinogram.
+Uses FFT-based filtering with specified kernel in frequency domain.
 """
-function filter_sinogram!(sinogram::Array{Float32,3}, geom::CTGeometry)
+function filter_sinogram!(sinogram::Array{Float32,3}, geom::CTGeometry,
+                          kernel::ReconKernel=RampKernel())
     n_cols, n_rows, n_angles = size(sinogram)
 
     # Pad for FFT (next power of 2)
     n_fft = nextpow(2, 2 * n_cols)
 
-    # Create frequency domain ramp filter
+    # Create frequency domain filter
     pixel_size_det = geom.pixel_size * (geom.SDD / geom.SAD)
-    ramp_freq = create_ramp_filter_freq(n_fft, pixel_size_det)
+    filter_freq = create_kernel_filter(kernel, n_fft, pixel_size_det)
 
     padded = zeros(Float64, n_fft)
 
@@ -115,9 +123,9 @@ function filter_sinogram!(sinogram::Array{Float32,3}, geom::CTGeometry)
                 padded[col] = sinogram[col, row, angle_idx]
             end
 
-            # FFT, multiply by ramp, inverse FFT
+            # FFT, multiply by filter, inverse FFT
             row_fft = fft(padded)
-            row_fft .*= ramp_freq
+            row_fft .*= filter_freq
             filtered_row = real(ifft(row_fft))
 
             # Store back (extract valid portion)
@@ -126,43 +134,6 @@ function filter_sinogram!(sinogram::Array{Float32,3}, geom::CTGeometry)
             end
         end
     end
-end
-
-"""
-    create_ramp_filter_freq(n_fft, pixel_size)
-
-Create a frequency domain ramp filter (Ram-Lak).
-Returns complex array for direct multiplication with FFT output.
-"""
-function create_ramp_filter_freq(n_fft::Int, pixel_size::Float64)
-    ramp = zeros(ComplexF64, n_fft)
-
-    # Nyquist frequency
-    freq_max = 1.0 / (2.0 * pixel_size)
-
-    for i in 1:n_fft
-        # Frequency index (0 to n_fft-1, then wraps to negative)
-        if i <= n_fft ÷ 2 + 1
-            freq_idx = i - 1
-        else
-            freq_idx = i - 1 - n_fft
-        end
-
-        # Normalized frequency (0 to 0.5 for positive, -0.5 to 0 for negative)
-        freq_normalized = freq_idx / n_fft
-
-        # Frequency in physical units
-        freq = freq_normalized / pixel_size
-
-        # Ram-Lak filter: |freq| with cutoff at Nyquist
-        if abs(freq) <= freq_max
-            ramp[i] = abs(freq)
-        else
-            ramp[i] = 0.0
-        end
-    end
-
-    return ramp
 end
 
 """
