@@ -726,6 +726,72 @@ using Reactant
         @test info.materials == ["Al"]
     end
 
+    @testset "Flat Filter" begin
+        geom = create_aquilion_one(n_angles=36, n_rows=4, n_cols=64)
+
+        # Test filter creation
+        filter_none = flat_filter_none()
+        filter_al = flat_filter_al(2.5)
+        filter_cu = flat_filter_cu(0.1)
+        filter_al_cu = flat_filter_al_cu(2.5, 0.1)
+        filter_ti = flat_filter_ti(0.5)
+
+        @test filter_none isa FlatFilter
+        @test isempty(filter_none.materials)
+        @test filter_al.materials == ["Al"]
+        @test filter_al.thicknesses == [2.5]
+        @test filter_al_cu.materials == ["Al", "Cu"]
+
+        # Test custom filter
+        filter_custom = flat_filter_custom(["Al", "Cu"], [3.0, 0.2])
+        @test length(filter_custom.materials) == 2
+
+        # Test attenuation computation
+        transmission = compute_flat_filter_attenuation(filter_al, geom)
+        @test size(transmission) == (64, 4)
+        @test all(0 .< transmission .<= 1)
+
+        # Center should have higher transmission (shorter path)
+        center_col = 32
+        edge_col = 1
+        @test transmission[center_col, 2] > transmission[edge_col, 2]
+
+        # No filter should give all ones
+        trans_none = compute_flat_filter_attenuation(filter_none, geom)
+        @test all(trans_none .== 1.0)
+
+        # Cu has higher μ, so should have lower transmission for same thickness
+        trans_al = compute_flat_filter_attenuation(flat_filter_al(1.0), geom)
+        trans_cu = compute_flat_filter_attenuation(flat_filter_cu(1.0), geom)
+        @test mean(trans_cu) < mean(trans_al)
+
+        # Test spectral attenuation
+        energies = [40.0, 60.0, 80.0, 100.0]
+        trans_spectral = compute_flat_filter_attenuation_spectral(filter_al, geom, energies)
+        @test size(trans_spectral) == (64, 4, 4)
+        # Lower energy should have lower transmission
+        @test trans_spectral[32, 2, 1] < trans_spectral[32, 2, 4]
+
+        # Test application to sinogram
+        phantom = create_gammex_472(n_voxels=16)
+        geom_small = create_aquilion_one(n_angles=18, n_rows=4, n_cols=32, fov_cm=phantom.fov[1])
+        sinogram = forward_project(phantom, geom_small)
+
+        sino_filtered = apply_flat_filter(sinogram, filter_al, geom_small)
+        @test size(sino_filtered) == size(sinogram)
+        @test all(isfinite.(sino_filtered))
+        @test mean(sino_filtered) > mean(sinogram)  # Filter adds attenuation
+
+        # No filter should return same values
+        sino_none = apply_flat_filter(sinogram, filter_none, geom_small)
+        @test sino_none ≈ sinogram
+
+        # Test info
+        info = get_flat_filter_info(filter_al_cu)
+        @test info.n_materials == 2
+        @test info.total_al_equivalent_mm > 2.5  # Cu adds Al-equivalent
+    end
+
     @testset "Focal Spot" begin
         geom = create_aquilion_one(n_angles=36, n_rows=4, n_cols=64)
 

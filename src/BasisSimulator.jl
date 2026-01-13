@@ -63,6 +63,9 @@ include("Forward/DetectorNoise.jl")
 # Bowtie filter modeling
 include("Forward/BowtieFilter.jl")
 
+# Flat (inherent) filter modeling
+include("Forward/FlatFilter.jl")
+
 # Finite focal spot modeling
 include("Forward/FocalSpot.jl")
 
