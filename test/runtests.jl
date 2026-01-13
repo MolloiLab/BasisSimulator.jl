@@ -699,6 +699,31 @@ using Reactant
         intensity = exp.(-sinogram)
         intensity_bowtie = apply_bowtie_to_intensity(intensity, filter_medium, geom_small)
         @test all(intensity_bowtie .<= intensity)  # Bowtie reduces intensity
+
+        # Test multi-material bowtie (CatSim-style)
+        filter_multi = bowtie_filter_multimaterial()
+        @test length(filter_multi.materials) == 4
+        @test filter_multi.materials == ["Al", "graphite", "Cu", "Ti"]
+        @test size(filter_multi.thickness, 2) == 4  # 4 materials
+
+        # Test energy-dependent μ
+        μ_al_60 = get_bowtie_mu("Al", 60.0)
+        μ_al_30 = get_bowtie_mu("Al", 30.0)
+        @test μ_al_30 > μ_al_60  # Higher μ at lower energy
+
+        # Test spectral attenuation
+        energies = [40.0, 60.0, 80.0, 100.0]
+        trans_spectral = compute_bowtie_attenuation_spectral(filter_medium, geom, energies)
+        @test size(trans_spectral) == (64, 4, 4)  # [n_cols, n_rows, n_energies]
+        @test all(0 .< trans_spectral .<= 1)
+        # Lower energy should have lower transmission (more attenuation)
+        @test trans_spectral[32, 2, 1] < trans_spectral[32, 2, 4]
+
+        # Test bowtie info
+        info = get_bowtie_info(filter_large)
+        @test info.name == "large_body"
+        @test info.n_materials == 1
+        @test info.materials == ["Al"]
     end
 
     @testset "Focal Spot" begin
