@@ -62,15 +62,16 @@ BasisSimulator.jl is a differentiable 3D cone-beam CT simulator designed for:
 |---------|------|-------------|
 | Water BHC | `src/Reconstruction/BeamHardeningCorrection.jl` | Polynomial correction, Horner scheme |
 | Helical FDK | `src/Geometry/Helical.jl` | Slice-by-slice interpolation + FDK |
+| Tang 3D Weighting | `src/Reconstruction/FDK.jl` | Cone-beam artifact reduction |
+| Optical Crosstalk | `src/Forward/Crosstalk.jl` | CatSim-style separable kernel |
+| Fill Factors | `src/Forward/FillFactor.jl` | Detector pixel active area |
+| Flying Focal Spot | `src/Forward/FlyingFocalSpot.jl` | 2/4-position sampling improvement |
 
 ### ❌ Not Yet Implemented
 
 | Feature | Priority | Complexity |
 |---------|----------|------------|
-| Fill Factors | Medium | Detector pixel fill ratio |
-| Optical Crosstalk | Medium | Light spreading in scintillator |
 | Azimuthal Blur | Medium | Motion blur within view |
-| Focal Spot Deflection | Low | Position drift with heating |
 | Material Database | Medium | NIST XCOM 194 materials |
 | XCAT Phantoms | High | Anatomical phantom support |
 | Photon Counting | High | PC detector model |
@@ -157,7 +158,7 @@ src/
 
 Run tests: `julia --project -e 'using Pkg; Pkg.test()'`
 
-Current test count: **361 tests**
+Current test count: **420 tests**
 
 ### Test Categories
 - Forward projection accuracy
@@ -282,5 +283,6 @@ When continuing a session:
 5. Commit and push incrementally
 
 Last updated: 2026-01-12
-Current test count: 361
+Current test count: 420
 Phase 1 (CatSim Parity): COMPLETE
+Additional features: Tang 3D weighting, optical crosstalk, fill factors, flying focal spot
