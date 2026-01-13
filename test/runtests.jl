@@ -332,6 +332,65 @@ using Reactant
         @test var_soft > 0
     end
 
+    @testset "Beam Hardening Correction" begin
+        # Test simple BHC calibration
+        bhc_120 = water_bhc_120kVp()
+        bhc_80 = water_bhc_80kVp()
+
+        @test bhc_120 isa WaterBHC
+        @test bhc_120.poly_order == 5
+        @test length(bhc_120.coefficients) == 6  # order + 1
+
+        # Effective μ should be reasonable for water
+        @test 0.1 < bhc_120.effective_μ < 0.3  # Typical range
+
+        # Higher kVp should have lower effective μ
+        @test bhc_80.effective_μ > bhc_120.effective_μ
+
+        # Test BHC info
+        info = get_bhc_info(bhc_120)
+        @test info.poly_order == 5
+        @test info.max_path_cm > 0
+
+        # Test polynomial evaluation
+        paths = collect(range(1.0, 30.0, length=10))
+        uncorr, corr = evaluate_bhc_correction(bhc_120, paths)
+        @test length(uncorr) == length(paths)
+        @test length(corr) == length(paths)
+
+        # Correction should be approximately identity (small correction)
+        # The polynomial maps uncorrected back close to the linear value
+        @test all(isfinite.(corr))
+
+        # Test BHC error computation
+        err = compute_bhc_error(bhc_120)
+        @test isfinite(err)
+        @test err >= 0
+
+        # Test BHC application
+        phantom = create_gammex_472(n_voxels=16)
+        geom = create_aquilion_one(n_angles=36, n_rows=4, n_cols=32, fov_cm=phantom.fov[1])
+        sinogram = forward_project(phantom, geom)
+
+        sino_corrected = apply_water_bhc(sinogram, bhc_120)
+        @test size(sino_corrected) == size(sinogram)
+        @test all(isfinite.(sino_corrected))
+
+        # In-place correction
+        sino_copy = copy(sinogram)
+        apply_water_bhc!(sino_copy, bhc_120)
+        @test sino_copy ≈ sino_corrected
+
+        # Test with polychromatic data (should reduce cupping)
+        projector = create_polychromatic_projector(phantom, geom, 120; n_bins=10)
+        sino_poly = forward_project_polychromatic(phantom, projector)
+
+        # Apply BHC
+        sino_poly_corrected = apply_water_bhc(sino_poly, bhc_120)
+        @test size(sino_poly_corrected) == size(sino_poly)
+        @test all(isfinite.(sino_poly_corrected))
+    end
+
     @testset "End-to-End Validation" begin
         phantom = create_gammex_472(n_voxels=32)
         geom = create_aquilion_one(n_angles=180, n_rows=8, n_cols=128, fov_cm=phantom.fov[1])
