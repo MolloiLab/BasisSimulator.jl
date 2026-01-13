@@ -113,27 +113,34 @@ function simulate_sinogram(
     end
 
     # Step 1: Forward projection (polychromatic or monochromatic)
+    # NOTE: Filters are applied in the spectral domain for polychromatic simulation.
+    # This is physically correct: filters modify the X-ray spectrum BEFORE the object.
+    # The air calibration (I₀) is done WITH filters in place, so filter effects
+    # should NOT be added to the sinogram after projection.
+    #
+    # For monochromatic simulation, filters have no effect on the sinogram
+    # (they attenuate both I and I₀ equally, canceling in -log(I/I₀)).
     if polychromatic
-        sinogram = forward_project_polychromatic(phantom, geom, kVp; n_bins=n_energy_bins)
+        sinogram = forward_project_polychromatic(phantom, geom, kVp;
+            n_bins=n_energy_bins,
+            flat_filter=flat_filter,
+            bowtie_filter=bowtie_filter
+        )
     else
+        # Monochromatic: filters have no effect (cancel in I/I₀)
         sinogram = forward_project_raymarching(phantom, geom)
     end
 
-    # Step 2: Source effects (applied to projection values)
-    if flat_filter !== nothing
-        sinogram = apply_flat_filter(sinogram, flat_filter, geom)
-    end
+    # NOTE: Flat filter and bowtie filter are NOT applied post-projection.
+    # They are integrated into the polychromatic simulation above.
+    # For monochromatic, they have no physical effect.
 
-    if bowtie_filter !== nothing
-        sinogram = apply_bowtie_filter(sinogram, bowtie_filter, geom)
-    end
-
-    # Step 3: Scatter (adds to sinogram)
+    # Step 2: Scatter (adds to sinogram)
     if scatter !== nothing
         sinogram = add_scatter(sinogram, scatter)
     end
 
-    # Step 4: Detector effects
+    # Step 3: Detector effects
     # Note: These are applied in intensity domain internally
 
     if fill_factor !== nothing
@@ -156,7 +163,7 @@ function simulate_sinogram(
         sinogram = apply_focal_spot_blur(sinogram, focal_spot, geom)
     end
 
-    # Step 5: Detector noise (quantum + electronic)
+    # Step 4: Detector noise (quantum + electronic)
     if detector !== nothing
         sinogram = apply_detector_model(sinogram, detector)
     end

@@ -718,3 +718,86 @@ Clinical Scanners: GE Revolution Apex Elite (K213715) with FDA 510(k) sourced pa
 - `src/Reconstruction/RayMarchingBackproj.jl` - Single-kernel backprojection for ALL angles
 - Key functions: `compute_ray_geometry()`, `forward_project_raymarching_vectorized()`, `backproject_raymarching_kernel()`, `fdk_reconstruct_raymarching()`
 - Pluto notebook updated to use ray marching approach
+
+---
+
+## Known Issues: Iterative Reconstruction (SIRT/CGLS)
+
+### Current Status
+- **FDK**: ✅ Works correctly (Water HU ≈ 0, all materials accurate)
+- **SIRT**: ⚠️ Overshoots progressively with iterations
+- **CGLS**: ⚠️ Converges slowly to wrong solution
+
+### SIRT Overshoot Data
+| Iterations | Water HU | Overshoot |
+|------------|----------|-----------|
+| 1 | -119 | -11.9% |
+| 2 | 30 | +3.0% |
+| 5 | 114 | +11.4% |
+| 10 | 154 | +15.4% |
+| 20 | 167 | +16.7% |
+
+### Root Cause: Operator Mismatch
+The forward and backward projection operators are not proper adjoints:
+
+1. **Forward Projection** (`forward_project_raymarching_vectorized`):
+   - Ray-driven: shoots rays from source through detector pixels
+   - Accumulates μ values along ray path with trilinear interpolation
+   - Each sample weighted by `step_size`
+
+2. **Backprojection** (`backproject_raw_kernel`):
+   - Voxel-driven: for each voxel, finds corresponding detector position
+   - Samples sinogram with bilinear interpolation
+   - No step_size weighting
+
+For iterative methods to converge correctly, we need `<Ax, y> = <x, A^T y>` (adjoint property).
+Currently this doesn't hold because the operators use different traversal strategies.
+
+### Fix Options (Priority Order)
+
+**Option 1: Matched Ray-Driven Operators** (Recommended)
+- Implement ray-driven backprojection that mirrors forward projection
+- For each ray (source → detector pixel), distribute sinogram value back to voxels along ray
+- Use same step_size and interpolation as forward projection
+- Pros: True adjoint, CGLS will converge correctly
+- Cons: More memory access patterns, potentially slower
+
+**Option 2: Matched Voxel-Driven Operators**
+- Implement voxel-driven forward projection
+- For each voxel, find all detector pixels it projects to
+- Pros: Simpler geometry
+- Cons: Harder to parallelize, may miss some rays
+
+**Option 3: Normalization Correction**
+- Keep mismatched operators but add correction factors
+- Compute `D = A^T A` diagonal approximation
+- Scale SIRT/CGLS updates by inverse of D
+- Pros: No algorithm changes
+- Cons: Approximate, may not fully fix convergence
+
+### Implementation Plan
+1. **Phase 1** (Current): FDK works, SIRT/CGLS marked experimental
+2. **Phase 2**: Implement ray-driven backprojection (`backproject_raydriven_kernel`)
+3. **Phase 3**: Test SIRT/CGLS with matched operators
+4. **Phase 4**: Optimize ray-driven backprojection for performance
+
+### Files to Modify
+- `src/Reconstruction/RayMarchingBackproj.jl`: Add `backproject_raydriven_kernel`
+- `src/API.jl`: Update `_reconstruct_sirt` and `_reconstruct_cgls` to use matched operators
+- `test/runtests.jl`: Add convergence tests for iterative methods
+
+### Reference: Ray-Driven Backprojection Algorithm
+```
+For each angle:
+    For each detector pixel (col, row):
+        ray_origin = source_position[angle]
+        ray_direction = normalize(detector_pixel_position - ray_origin)
+        sinogram_value = sinogram[col, row, angle]
+
+        For each sample point along ray:
+            voxel_coords = ray_origin + t * ray_direction
+            # Distribute sinogram_value to nearby voxels using trilinear weights
+            # Weight by step_size (same as forward projection)
+```
+
+This ensures the backprojection is the true transpose of forward projection.

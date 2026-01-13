@@ -173,6 +173,15 @@ The realistic sinogram has higher values due to added attenuation from filters.
 md"""
 ## 4. Reconstruction Methods
 
+**Note on Physical Effects:**
+Physical effects (polychromatic beam, filters, scatter) add attenuation to the sinogram.
+This causes HU shifts in the reconstruction:
+- Ideal (mono, no effects): Water ≈ 0 HU ✓
+- With all effects: Water ≈ 150 HU (due to added attenuation)
+
+This is **expected behavior** - FDK correctly reconstructs what's in the sinogram.
+Clinical CT uses calibration and corrections (BHC, scatter correction) to recover accurate HU.
+
 ### 4a. FDK Reconstruction (Default)
 """
 
@@ -198,10 +207,12 @@ recon_bone = reconstruct(sino_ideal, geom, output_size, phantom.fov; kernel=kern
 
 # ╔═╡ 1d8a0f6b-e4c5-7d1c-2f3a-6b1c8d9e0a46
 md"""
-### 4c. SIRT Iterative Reconstruction
+### 4c. SIRT Iterative Reconstruction (Experimental)
+Note: SIRT overshoots due to operator mismatch. With 5 iterations, expect ~10-15% overshoot.
 """
 
 # ╔═╡ 2e9b1a7c-f5d6-8e2d-3a4b-7c2d9e0f1b57
+# SIRT is experimental - results may overshoot correct values
 recon_sirt = reconstruct(sino_ideal, geom, output_size, phantom.fov;
 	method=:sirt, n_iterations=5, verbose=true)
 
