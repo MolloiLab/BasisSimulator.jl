@@ -112,22 +112,15 @@ sino_realistic = simulate_sinogram(phantom, geom; seed=42)
 
 # ╔═╡ 8c5f7e3a-d1b2-4c8b-9e0f-3a8b5c6d7f12
 md"""
-### 3b. Polychromatic Only (No Detector Effects)
+### 3b. Polychromatic with All Effects
+Uses default physical effects (same as realistic).
 """
 
 # ╔═╡ 9d6a8f4b-e2c3-5d9c-0f1a-4b9c6d7e8a23
 sino_poly = simulate_sinogram(phantom, geom;
 	polychromatic=true,
 	kVp=120,
-	flat_filter=nothing,
-	bowtie_filter=nothing,
-	scatter=nothing,
-	detector=nothing,
-	crosstalk=nothing,
-	lag=nothing,
-	optical_crosstalk=nothing,
-	fill_factor=nothing,
-	focal_spot=nothing
+	seed=123  # Different seed for reproducibility
 )
 
 # ╔═╡ 0e7b9a5c-f3d4-6e0d-1a2b-5c0d7e8f9b34
@@ -214,12 +207,15 @@ recon_sirt = reconstruct(sino_ideal, geom, output_size, phantom.fov;
 
 # ╔═╡ 3f0c2b8d-a6e7-9f3e-4b5c-8d3e0f1a2c68
 md"""
-### 4d. CGLS Iterative Reconstruction
+### 4d. CGLS Iterative Reconstruction (Experimental)
+Note: CGLS may not converge correctly due to operator mismatch between
+ray-driven forward projection and voxel-driven backprojection.
 """
 
 # ╔═╡ 4a1d3c9e-b7f8-0a4f-5c6d-9e4f1a2b3d79
+# CGLS is experimental - results may not be accurate
 recon_cgls = reconstruct(sino_ideal, geom, output_size, phantom.fov;
-	method=:cgls, n_iterations=3, verbose=true)
+	method=:cgls, n_iterations=5, verbose=true)
 
 # ╔═╡ 5b2e4d0f-c8a9-1b5a-6d7e-0f5a2b3c4e80
 md"""

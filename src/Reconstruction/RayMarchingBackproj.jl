@@ -86,37 +86,34 @@ function compute_backproj_geometry(geom::CTGeometry)
 end
 
 # =============================================================================
-# XLA-Compatible Backprojection Kernel
+# Core Backprojection Kernel (Shared Implementation)
 # =============================================================================
 
 """
-    backproject_raymarching_kernel(
-        filtered_sinogram, bp_geom,
-        voxel_coords_x, voxel_coords_y, voxel_coords_z
+    _backproject_core(
+        sinogram, source_pos, det_center, det_u, det_v, sd_axis,
+        voxel_x, voxel_y, voxel_z, SAD, SDD, pixel_size_det, delta_angle,
+        n_cols, n_rows, fdk_weighting
     )
 
-XLA-compilable backprojection using on-the-fly geometry.
-
-For each voxel, for each angle:
-1. Compute ray from source through voxel
-2. Find detector intersection point
-3. Bilinearly interpolate filtered sinogram
-4. Apply distance weighting
+Core backprojection implementation shared by FDK and iterative methods.
 
 # Arguments
-- `filtered_sinogram`: Filtered projections [n_cols, n_rows, n_angles]
+- `sinogram`: Projection data [n_cols, n_rows, n_angles]
 - `source_pos`: Source positions [3, n_angles]
 - `det_center`: Detector centers [3, n_angles]
 - `det_u, det_v`: Detector axes [3, n_angles]
 - `sd_axis`: Source-detector axis [3, n_angles]
 - `voxel_x, voxel_y, voxel_z`: Voxel coordinates [nx], [ny], [nz]
-- Scalar parameters: SAD, SDD, pixel_size_det, etc.
+- `SAD, SDD, pixel_size_det, delta_angle`: Geometry scalars
+- `n_cols, n_rows`: Detector dimensions
+- `fdk_weighting`: If true, apply FDK distance² and delta_angle weighting
 
 # Returns
 Reconstructed volume [nx, ny, nz]
 """
-function backproject_raymarching_kernel(
-    filtered_sinogram::AbstractArray{T, 3},
+function _backproject_core(
+    sinogram::AbstractArray{T, 3},
     source_pos::AbstractArray{T, 2},
     det_center::AbstractArray{T, 2},
     det_u::AbstractArray{T, 2},
@@ -126,12 +123,13 @@ function backproject_raymarching_kernel(
     voxel_y::AbstractVector{T},
     voxel_z::AbstractVector{T},
     SAD::T, SDD::T, pixel_size_det::T, delta_angle::T,
-    n_cols::Int, n_rows::Int
+    n_cols::Int, n_rows::Int,
+    fdk_weighting::Bool
 ) where T
     nx = length(voxel_x)
     ny = length(voxel_y)
     nz = length(voxel_z)
-    n_angles = size(filtered_sinogram, 3)
+    n_angles = size(sinogram, 3)
 
     # Initialize output volume
     volume = zeros(T, nx, ny, nz)
@@ -229,23 +227,110 @@ function backproject_raymarching_kernel(
                     w01 = (T(1) - fc) * fr
                     w11 = fc * fr
 
-                    # Sample filtered sinogram
-                    val = w00 * filtered_sinogram[col0, row0, angle_idx] +
-                          w10 * filtered_sinogram[col1, row0, angle_idx] +
-                          w01 * filtered_sinogram[col0, row1, angle_idx] +
-                          w11 * filtered_sinogram[col1, row1, angle_idx]
+                    # Sample sinogram
+                    val = w00 * sinogram[col0, row0, angle_idx] +
+                          w10 * sinogram[col1, row0, angle_idx] +
+                          w01 * sinogram[col0, row1, angle_idx] +
+                          w11 * sinogram[col1, row1, angle_idx]
 
-                    # Distance weighting: (SAD / t)²
-                    dist_weight = (SAD / t)^2
-
-                    # Accumulate with angle weighting
-                    volume[ix, iy, iz] += val * dist_weight * delta_angle
+                    # Apply weighting based on mode
+                    if fdk_weighting
+                        # FDK: distance² and angle weighting
+                        dist_weight = (SAD / t)^2
+                        volume[ix, iy, iz] += val * dist_weight * delta_angle
+                    else
+                        # Raw: no weighting (for iterative methods)
+                        volume[ix, iy, iz] += val
+                    end
                 end
             end
         end
     end
 
     return volume
+end
+
+# =============================================================================
+# Public API: FDK Backprojection (with weighting)
+# =============================================================================
+
+"""
+    backproject_raymarching_kernel(
+        filtered_sinogram, source_pos, det_center, det_u, det_v, sd_axis,
+        voxel_x, voxel_y, voxel_z, SAD, SDD, pixel_size_det, delta_angle, n_cols, n_rows
+    )
+
+FDK backprojection with distance² and delta_angle weighting.
+
+For each voxel, for each angle:
+1. Compute ray from source through voxel
+2. Find detector intersection point
+3. Bilinearly interpolate filtered sinogram
+4. Apply FDK distance and angle weighting
+
+Use this for FDK (Feldkamp-Davis-Kress) cone-beam reconstruction.
+For iterative methods (SIRT, CGLS), use `backproject_raw_kernel` instead.
+"""
+function backproject_raymarching_kernel(
+    filtered_sinogram::AbstractArray{T, 3},
+    source_pos::AbstractArray{T, 2},
+    det_center::AbstractArray{T, 2},
+    det_u::AbstractArray{T, 2},
+    det_v::AbstractArray{T, 2},
+    sd_axis::AbstractArray{T, 2},
+    voxel_x::AbstractVector{T},
+    voxel_y::AbstractVector{T},
+    voxel_z::AbstractVector{T},
+    SAD::T, SDD::T, pixel_size_det::T, delta_angle::T,
+    n_cols::Int, n_rows::Int
+) where T
+    return _backproject_core(
+        filtered_sinogram, source_pos, det_center, det_u, det_v, sd_axis,
+        voxel_x, voxel_y, voxel_z,
+        SAD, SDD, pixel_size_det, delta_angle, n_cols, n_rows,
+        true  # fdk_weighting=true
+    )
+end
+
+# =============================================================================
+# Public API: Raw Backprojection (for iterative methods)
+# =============================================================================
+
+"""
+    backproject_raw_kernel(
+        sinogram, source_pos, det_center, det_u, det_v, sd_axis,
+        voxel_x, voxel_y, voxel_z, SAD, SDD, pixel_size_det, n_cols, n_rows
+    )
+
+Raw backprojection WITHOUT FDK-specific weighting.
+
+This is the true transpose of the forward projection operator, suitable for
+iterative reconstruction methods (SIRT, CGLS) where we need matched
+forward/backward operators: A and A^T.
+
+For FDK reconstruction, use `backproject_raymarching_kernel` instead.
+"""
+function backproject_raw_kernel(
+    sinogram::AbstractArray{T, 3},
+    source_pos::AbstractArray{T, 2},
+    det_center::AbstractArray{T, 2},
+    det_u::AbstractArray{T, 2},
+    det_v::AbstractArray{T, 2},
+    sd_axis::AbstractArray{T, 2},
+    voxel_x::AbstractVector{T},
+    voxel_y::AbstractVector{T},
+    voxel_z::AbstractVector{T},
+    SAD::T, SDD::T, pixel_size_det::T,
+    n_cols::Int, n_rows::Int
+) where T
+    # delta_angle is unused when fdk_weighting=false, but needed for function signature
+    delta_angle = T(2π / size(sinogram, 3))
+    return _backproject_core(
+        sinogram, source_pos, det_center, det_u, det_v, sd_axis,
+        voxel_x, voxel_y, voxel_z,
+        SAD, SDD, pixel_size_det, delta_angle, n_cols, n_rows,
+        false  # fdk_weighting=false
+    )
 end
 
 # =============================================================================
@@ -307,7 +392,7 @@ function fdk_reconstruct_raymarching(
     voxel_y = Float32.(range(-fov[2]/2 + dy/2, fov[2]/2 - dy/2, length=ny))
     voxel_z = Float32.(range(-fov[3]/2 + dz/2, fov[3]/2 - dz/2, length=nz))
 
-    # Step 5: Backproject with on-the-fly geometry
+    # Step 5: Backproject with on-the-fly geometry (uses shared core)
     volume = backproject_raymarching_kernel(
         Float32.(filtered),
         bp_geom.source_positions,
@@ -446,6 +531,7 @@ end
 
 export BackprojGeometry, compute_backproj_geometry
 export backproject_raymarching_kernel
+export backproject_raw_kernel
 export backproject_raymarching_compiled
 export fdk_reconstruct_raymarching
 export CompiledCTOperators, create_ct_operators
