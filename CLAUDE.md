@@ -56,12 +56,12 @@ BasisSimulator.jl is a differentiable 3D cone-beam CT simulator designed for:
 | Helical Forward | `src/Geometry/Helical.jl` | Pitch, rotations, interpolation |
 | Phantoms | `src/Geometry/Phantom.jl` | Gammex 472 with semantic masks |
 
-### 🔄 In Progress
+### ✅ Recently Completed
 
-| Feature | Priority | Notes |
-|---------|----------|-------|
-| Water BHC | High | Beam hardening correction |
-| Helical FDK | High | Weighted helical reconstruction |
+| Feature | File | Description |
+|---------|------|-------------|
+| Water BHC | `src/Reconstruction/BeamHardeningCorrection.jl` | Polynomial correction, Horner scheme |
+| Helical FDK | `src/Geometry/Helical.jl` | Slice-by-slice interpolation + FDK |
 
 ### ❌ Not Yet Implemented
 
@@ -123,7 +123,7 @@ src/
 
 ## Roadmap
 
-### Phase 1: CatSim Parity (Current)
+### Phase 1: CatSim Parity (COMPLETE ✅)
 - [x] Core forward projection
 - [x] Polychromatic/beam hardening
 - [x] Scatter model
@@ -131,8 +131,8 @@ src/
 - [x] Source effects (bowtie, flat filter, focal spot)
 - [x] FDK reconstruction with kernels
 - [x] Helical forward projection
-- [ ] Water beam hardening correction
-- [ ] Helical FDK reconstruction
+- [x] Water beam hardening correction
+- [x] Helical FDK reconstruction
 
 ### Phase 2: Advanced Features
 - [ ] Iterative reconstruction (SIRT, CGLS, TV)
@@ -157,7 +157,7 @@ src/
 
 Run tests: `julia --project -e 'using Pkg; Pkg.test()'`
 
-Current test count: **335 tests**
+Current test count: **361 tests**
 
 ### Test Categories
 - Forward projection accuracy
@@ -264,7 +264,7 @@ dqe = compute_dqe(det, 60.0)
 
 ## User Goals (Project Owner)
 
-1. ✅ Finish CatSim parity of BasisSimulator.jl (in progress)
+1. ✅ Finish CatSim parity of BasisSimulator.jl (COMPLETE)
 2. ⏳ Add iterative reconstruction
 3. ⏳ Add perfectly documented GE Revolution Apex scanner config
 4. ⏳ Build out Pluto notebook showing the CatSim++ parity
@@ -282,4 +282,5 @@ When continuing a session:
 5. Commit and push incrementally
 
 Last updated: 2026-01-12
-Current test count: 335
+Current test count: 361
+Phase 1 (CatSim Parity): COMPLETE
