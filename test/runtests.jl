@@ -1261,6 +1261,51 @@ using Reactant
 
         # Interpolation should give values similar to nearby helical data
         @test mean(interp_axial) > 0
+
+        # Test helical FDK reconstruction
+        # Use a simpler geometry for faster testing
+        geom_recon = create_scan_geometry(
+            mode=:helical,
+            n_angles=36,
+            n_rows=8,
+            n_cols=32,
+            pitch=1.0,
+            n_rotations=2.0,
+            z_start=0.0
+        )
+        phantom_recon = create_gammex_472(n_voxels=16)
+        sino_recon = forward_project(phantom_recon, geom_recon)
+
+        # Test basic reconstruction
+        recon_vol = reconstruct_helical_fdk(sino_recon, geom_recon; recon_size=16)
+
+        @test ndims(recon_vol) == 3
+        @test size(recon_vol, 1) == 16
+        @test size(recon_vol, 2) == 16
+        @test all(isfinite.(recon_vol))
+
+        # Reconstruction should have positive values (μ values)
+        @test maximum(recon_vol) > 0
+
+        # Test with explicit z_positions
+        z_pos = [0.5, 1.0, 1.5]
+        recon_explicit = reconstruct_helical_fdk(sino_recon, geom_recon;
+                                                  z_positions=z_pos,
+                                                  recon_size=16)
+        @test size(recon_explicit, 3) == length(z_pos)
+        @test all(isfinite.(recon_explicit))
+
+        # Test that different pitches produce different results
+        geom_low_pitch = create_scan_geometry(
+            mode=:helical, n_angles=36, n_rows=8, n_cols=32,
+            pitch=0.5, n_rotations=2.0
+        )
+        sino_low_pitch = forward_project(phantom_recon, geom_low_pitch)
+
+        # Both should reconstruct without error
+        recon_low = reconstruct_helical_fdk(sino_low_pitch, geom_low_pitch; recon_size=16)
+        @test all(isfinite.(recon_low))
+        @test maximum(recon_low) > 0
     end
 
     # Visualization is in stuff/scripts/visualize.jl (run manually with CairoMakie)
