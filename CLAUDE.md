@@ -331,6 +331,49 @@ compiled_backproject = @compile backproject_volume(sino_ra, bp_geom)
 
 ---
 
+## Performance Optimization: Polychromatic Projection
+
+### Key Insight
+The number of distinct **materials** (27 regions) and **energy bins** (10-50) is fixed and small.
+Only **ray tracing** and **reconstruction** scale with voxel count. The μ lookup should NOT.
+
+### Current Implementation (src/Forward/Polychromatic.jl)
+- Line 71: `μ_by_energy` is a small [27 × n_energies] lookup table (GOOD)
+- Line 161: Creates full μ volume for EACH energy bin (INEFFICIENT)
+
+```julia
+# CURRENT (inefficient) - O(n_voxels × n_energies)
+for e_idx in 1:n_energies
+    μ_volume_flat = [μ_at_energy[mask_flat[i] + 1] for i in 1:length(mask_flat)]  # Creates n_voxel array
+    samples = μ_volume_flat[linear_indices]  # Then gathers
+    ...
+end
+```
+
+### Optimized Approach
+Gather mask values ONCE, then use direct indexing into the small μ table:
+
+```julia
+# OPTIMIZED - O(n_samples × n_energies), no temporary volume
+mask_samples = UInt8.(mask_flat[linear_indices])  # Gather mask ONCE
+
+for e_idx in 1:n_energies
+    μ_samples = μ_at_energy[mask_samples .+ 1]  # Direct lookup, no temp array
+    ...
+end
+```
+
+### Memory Comparison (512×512×32 phantom, 10 energies, 360 angles)
+- Current: Creates 10 × 8.4M = 84M element temp arrays
+- Optimized: Zero temp arrays, just index into 27×10 = 270 element table
+
+### Implementation Status
+- [x] Optimize `forward_project_polychromatic` to gather mask samples once
+- [x] Tests pass (564/564) - results identical to previous implementation
+- [ ] Ensure XLA compatibility with optimized version (future)
+
+---
+
 ## Testing
 
 Run tests: `julia --project -e 'using Pkg; Pkg.test()'`
