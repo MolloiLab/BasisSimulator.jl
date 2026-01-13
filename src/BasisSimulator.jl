@@ -97,6 +97,16 @@ include("Reconstruction/BeamHardeningCorrection.jl")
 # FDK cone-beam reconstruction
 include("Reconstruction/FDK.jl")
 
+# Iterative reconstruction (SIRT, CGLS)
+include("Reconstruction/Iterative.jl")
+
+# =============================================================================
+# Clinical Scanner Configurations
+# =============================================================================
+
+# Scanner specifications (GE, Siemens, Canon, etc.)
+include("Scanners/Scanners.jl")
+
 # =============================================================================
 # Optimization (Gradients & Iterative Reconstruction)
 # =============================================================================
