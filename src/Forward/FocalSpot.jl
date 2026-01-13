@@ -167,59 +167,65 @@ function create_focal_spot_kernel(
     sigma_x = blur_fwhm[1] / (2 * sqrt(2 * log(2)))
     sigma_y = blur_fwhm[2] / (2 * sqrt(2 * log(2)))
 
-    # Center
-    cx = (n_cols + 1) / 2
-    cy = (n_rows + 1) / 2
+    # For FFT convolution, kernel must be centered at (1,1) with wrap-around
+    # Compute kernel extent (how many pixels on each side)
+    extent_x = max(1, ceil(Int, 3 * sigma_x))
+    extent_y = max(1, ceil(Int, 3 * sigma_y))
 
     if fs.shape == :gaussian
-        for j in 1:n_rows, i in 1:n_cols
-            dx = i - cx
-            dy = j - cy
-            if sigma_x > 0 && sigma_y > 0
-                kernel[i, j] = exp(-dx^2 / (2 * sigma_x^2) - dy^2 / (2 * sigma_y^2))
-            elseif sigma_x > 0
-                kernel[i, j] = exp(-dx^2 / (2 * sigma_x^2))
-            elseif sigma_y > 0
-                kernel[i, j] = exp(-dy^2 / (2 * sigma_y^2))
-            else
-                kernel[i, j] = (i == round(Int, cx) && j == round(Int, cy)) ? 1.0 : 0.0
+        for dy in -extent_y:extent_y
+            for dx in -extent_x:extent_x
+                # Wrap indices for FFT (center at 1,1)
+                ix = mod1(1 + dx, n_cols)
+                iy = mod1(1 + dy, n_rows)
+                if sigma_x > 0 && sigma_y > 0
+                    kernel[ix, iy] += exp(-dx^2 / (2 * sigma_x^2) - dy^2 / (2 * sigma_y^2))
+                elseif sigma_x > 0
+                    kernel[ix, iy] += exp(-dx^2 / (2 * sigma_x^2))
+                elseif sigma_y > 0
+                    kernel[ix, iy] += exp(-dy^2 / (2 * sigma_y^2))
+                end
             end
+        end
+        # Handle zero sigma case
+        if sigma_x <= 0 && sigma_y <= 0
+            kernel[1, 1] = 1.0
         end
 
     elseif fs.shape == :uniform
         # Rectangular uniform distribution
-        half_w = blur_fwhm[1] / 2
-        half_h = blur_fwhm[2] / 2
-        for j in 1:n_rows, i in 1:n_cols
-            dx = abs(i - cx)
-            dy = abs(j - cy)
-            if dx <= half_w && dy <= half_h
-                kernel[i, j] = 1.0
+        half_w = ceil(Int, blur_fwhm[1] / 2)
+        half_h = ceil(Int, blur_fwhm[2] / 2)
+        for dy in -half_h:half_h
+            for dx in -half_w:half_w
+                ix = mod1(1 + dx, n_cols)
+                iy = mod1(1 + dy, n_rows)
+                kernel[ix, iy] = 1.0
             end
         end
 
     elseif fs.shape == :bimodal
         # Bi-modal (double peak) typical of some X-ray tubes
-        # Two peaks separated by ~half the focal spot width
         separation = blur_fwhm[1] / 4
-        for j in 1:n_rows, i in 1:n_cols
-            dx = i - cx
-            dy = j - cy
-            if sigma_x > 0 && sigma_y > 0
-                # Two offset Gaussians
-                g1 = exp(-(dx - separation)^2 / (2 * sigma_x^2) - dy^2 / (2 * sigma_y^2))
-                g2 = exp(-(dx + separation)^2 / (2 * sigma_x^2) - dy^2 / (2 * sigma_y^2))
-                kernel[i, j] = g1 + g2
+        for dy in -extent_y:extent_y
+            for dx in -extent_x:extent_x
+                ix = mod1(1 + dx, n_cols)
+                iy = mod1(1 + dy, n_rows)
+                if sigma_x > 0 && sigma_y > 0
+                    g1 = exp(-(dx - separation)^2 / (2 * sigma_x^2) - dy^2 / (2 * sigma_y^2))
+                    g2 = exp(-(dx + separation)^2 / (2 * sigma_x^2) - dy^2 / (2 * sigma_y^2))
+                    kernel[ix, iy] += g1 + g2
+                end
             end
         end
     end
 
-    # Normalize
+    # Normalize to preserve total signal
     total = sum(kernel)
     if total > 0
         kernel ./= total
     else
-        kernel[round(Int, cx), round(Int, cy)] = 1.0
+        kernel[1, 1] = 1.0
     end
 
     return kernel
