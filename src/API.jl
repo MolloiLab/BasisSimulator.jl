@@ -320,11 +320,11 @@ function _reconstruct_sirt(
 
     # C: column sums (backproject ones)
     ones_sino = ones(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
-    C_vol = backproject_raymarching_kernel(
+    C_vol = backproject_raw_kernel(
         ones_sino, bp_geom.source_positions, bp_geom.detector_centers,
         bp_geom.detector_u, bp_geom.detector_v, bp_geom.sd_axis,
         voxel_x, voxel_y, voxel_z,
-        bp_geom.SAD, bp_geom.SDD, bp_geom.pixel_size_det, bp_geom.delta_angle,
+        bp_geom.SAD, bp_geom.SDD, bp_geom.pixel_size_det,
         bp_geom.n_cols, bp_geom.n_rows
     )
     C_sirt = map(c -> c > 1f-8 ? 1f0 / c : 0f0, vec(C_vol))
@@ -348,11 +348,11 @@ function _reconstruct_sirt(
 
         # Backproject: A^T * R * (b - Ax)
         residual_sino = reshape(residual_weighted, geom.n_cols, geom.n_rows, geom.n_angles)
-        correction = backproject_raymarching_kernel(
+        correction = backproject_raw_kernel(
             residual_sino, bp_geom.source_positions, bp_geom.detector_centers,
             bp_geom.detector_u, bp_geom.detector_v, bp_geom.sd_axis,
             voxel_x, voxel_y, voxel_z,
-            bp_geom.SAD, bp_geom.SDD, bp_geom.pixel_size_det, bp_geom.delta_angle,
+            bp_geom.SAD, bp_geom.SDD, bp_geom.pixel_size_det,
             bp_geom.n_cols, bp_geom.n_rows
         )
 
@@ -420,11 +420,11 @@ function _reconstruct_cgls(
 
     # Initial gradient: s = A^T * r
     r_sino = reshape(r, geom.n_cols, geom.n_rows, geom.n_angles)
-    s = vec(backproject_raymarching_kernel(
+    s = vec(backproject_raw_kernel(
         r_sino, bp_geom.source_positions, bp_geom.detector_centers,
         bp_geom.detector_u, bp_geom.detector_v, bp_geom.sd_axis,
         voxel_x, voxel_y, voxel_z,
-        bp_geom.SAD, bp_geom.SDD, bp_geom.pixel_size_det, bp_geom.delta_angle,
+        bp_geom.SAD, bp_geom.SDD, bp_geom.pixel_size_det,
         bp_geom.n_cols, bp_geom.n_rows
     ))
 
@@ -454,11 +454,11 @@ function _reconstruct_cgls(
 
         # Update gradient: s = A^T * r
         r_sino = reshape(r, geom.n_cols, geom.n_rows, geom.n_angles)
-        s = vec(backproject_raymarching_kernel(
+        s = vec(backproject_raw_kernel(
             r_sino, bp_geom.source_positions, bp_geom.detector_centers,
             bp_geom.detector_u, bp_geom.detector_v, bp_geom.sd_axis,
             voxel_x, voxel_y, voxel_z,
-            bp_geom.SAD, bp_geom.SDD, bp_geom.pixel_size_det, bp_geom.delta_angle,
+            bp_geom.SAD, bp_geom.SDD, bp_geom.pixel_size_det,
             bp_geom.n_cols, bp_geom.n_rows
         ))
 
