@@ -294,6 +294,180 @@ function get_crosstalk_info(model::CrosstalkModel)
 end
 
 # =============================================================================
+# Optical Crosstalk (CatSim-style separable kernel)
+# =============================================================================
+
+"""
+    OpticalCrosstalkModel
+
+Optical crosstalk model using separable convolution kernels.
+
+This models light spreading in the scintillator layer, which is different from
+electronic crosstalk (signal coupling in readout electronics).
+
+CatSim uses separable kernels:
+- Row kernel: [α, 1-2α, α]
+- Column kernel: [β, 1-2β, β]
+- 2D kernel: outer product of row and column kernels
+
+# Fields
+- `row_coeff`: Row crosstalk coefficient α (typical: 0.04-0.05)
+- `col_coeff`: Column crosstalk coefficient β (typical: 0.04-0.05)
+"""
+struct OpticalCrosstalkModel
+    row_coeff::Float64
+    col_coeff::Float64
+end
+
+"""
+    optical_crosstalk_none()
+
+No optical crosstalk.
+"""
+optical_crosstalk_none() = OpticalCrosstalkModel(0.0, 0.0)
+
+"""
+    optical_crosstalk_typical()
+
+Typical optical crosstalk for GOS scintillator detector.
+
+Values from CatSim: row=0.045, col=0.040
+"""
+optical_crosstalk_typical() = OpticalCrosstalkModel(0.045, 0.040)
+
+"""
+    optical_crosstalk_low()
+
+Low optical crosstalk (high-quality CsI detector).
+"""
+optical_crosstalk_low() = OpticalCrosstalkModel(0.02, 0.02)
+
+"""
+    optical_crosstalk_high()
+
+High optical crosstalk (thick scintillator, large pixels).
+"""
+optical_crosstalk_high() = OpticalCrosstalkModel(0.08, 0.08)
+
+"""
+    create_optical_crosstalk_kernel(model::OpticalCrosstalkModel)
+
+Create 3x3 separable optical crosstalk kernel.
+
+Returns the 2D kernel as outer product of row and column 1D kernels.
+"""
+function create_optical_crosstalk_kernel(model::OpticalCrosstalkModel)
+    α = model.row_coeff
+    β = model.col_coeff
+
+    # 1D kernels
+    row_kernel = [α, 1 - 2α, α]
+    col_kernel = [β, 1 - 2β, β]
+
+    # 2D kernel as outer product
+    kernel_2d = col_kernel * row_kernel'
+
+    return kernel_2d
+end
+
+"""
+    apply_optical_crosstalk(sinogram, model::OpticalCrosstalkModel) -> Array
+
+Apply optical crosstalk using separable convolution.
+
+# Arguments
+- `sinogram`: Input sinogram [n_cols, n_rows, n_angles] (projection domain)
+- `model::OpticalCrosstalkModel`: Optical crosstalk coefficients
+
+# Returns
+Sinogram with optical crosstalk effects.
+"""
+function apply_optical_crosstalk(
+    sinogram::AbstractArray{T,3},
+    model::OpticalCrosstalkModel
+) where T
+    # Skip if no crosstalk
+    if model.row_coeff ≈ 0 && model.col_coeff ≈ 0
+        return sinogram
+    end
+
+    n_cols, n_rows, n_angles = size(sinogram)
+
+    # Create 3x3 kernel
+    kernel_3x3 = create_optical_crosstalk_kernel(model)
+
+    # Embed in full-size array for FFT (centered at 1,1)
+    kernel = zeros(Float64, n_cols, n_rows)
+    for di in -1:1
+        for dj in -1:1
+            ci = mod1(1 + di, n_cols)
+            cj = mod1(1 + dj, n_rows)
+            kernel[ci, cj] = kernel_3x3[di+2, dj+2]
+        end
+    end
+    kernel_fft = fft(kernel)
+
+    result = similar(sinogram)
+
+    for angle in 1:n_angles
+        proj = sinogram[:, :, angle]
+
+        # Convert to intensity domain
+        intensity = exp.(-proj)
+
+        # Apply optical crosstalk convolution
+        intensity_fft = fft(intensity)
+        intensity_xt = real(ifft(intensity_fft .* kernel_fft))
+
+        # Ensure positive values
+        intensity_xt = max.(intensity_xt, T(1e-10))
+
+        # Convert back to projection domain
+        result[:, :, angle] = T.(-log.(intensity_xt))
+    end
+
+    return result
+end
+
+"""
+    apply_optical_crosstalk_intensity(intensity, model::OpticalCrosstalkModel) -> Array
+
+Apply optical crosstalk directly to intensity-domain data.
+"""
+function apply_optical_crosstalk_intensity(
+    intensity::AbstractArray{T,3},
+    model::OpticalCrosstalkModel
+) where T
+    if model.row_coeff ≈ 0 && model.col_coeff ≈ 0
+        return intensity
+    end
+
+    n_cols, n_rows, n_angles = size(intensity)
+
+    kernel_3x3 = create_optical_crosstalk_kernel(model)
+    kernel = zeros(Float64, n_cols, n_rows)
+    for di in -1:1
+        for dj in -1:1
+            ci = mod1(1 + di, n_cols)
+            cj = mod1(1 + dj, n_rows)
+            kernel[ci, cj] = kernel_3x3[di+2, dj+2]
+        end
+    end
+    kernel_fft = fft(kernel)
+
+    result = similar(intensity)
+
+    for angle in 1:n_angles
+        frame = intensity[:, :, angle]
+        frame_fft = fft(frame)
+        frame_xt = real(ifft(frame_fft .* kernel_fft))
+        result[:, :, angle] = T.(max.(frame_xt, T(0)))
+    end
+
+    return result
+end
+
+# =============================================================================
 # Exports
 # =============================================================================
 
@@ -301,3 +475,9 @@ export CrosstalkModel
 export crosstalk_none, crosstalk_low, crosstalk_medium, crosstalk_high, crosstalk_custom
 export apply_crosstalk, apply_crosstalk_intensity
 export get_crosstalk_mtf_degradation, get_crosstalk_info
+
+# Optical crosstalk
+export OpticalCrosstalkModel
+export optical_crosstalk_none, optical_crosstalk_typical, optical_crosstalk_low, optical_crosstalk_high
+export create_optical_crosstalk_kernel
+export apply_optical_crosstalk, apply_optical_crosstalk_intensity
