@@ -76,6 +76,57 @@ function validate_material_hu(material_symbol::Symbol, energy_keV::Float64)
 end
 
 # =============================================================================
+# Region to Material Mapping for Polychromatic Simulation
+# =============================================================================
+
+"""
+    get_region_materials() -> Vector{XA.Material}
+
+Return a vector of materials indexed by region number (1-based).
+Used for polychromatic simulation where μ_by_energy[region, energy] is needed.
+
+The vector has 27 elements (indices 1-27, but only 18 are used):
+- Index 1 (REGION 0): air (background)
+- Index 2 (REGION 1): air
+- Index 3 (REGION 2): water
+- Index 4 (REGION 3): solid_water
+- Indices 5-10: unused (filled with air)
+- Index 11-17 (REGION 10-16): Ca_50 through Ca_600
+- Indices 18-20: unused (filled with air)
+- Index 21-27 (REGION 20-26): I_2_0 through I_20_0
+"""
+function get_region_materials()
+    # Max region index is 26, so we need 27 elements (0-indexed regions become 1-indexed)
+    materials = fill(XA.Materials.air, 27)
+
+    # Map region indices to materials
+    materials[1] = XA.Materials.air       # REGION_BACKGROUND = 0
+    materials[2] = XA.Materials.air       # REGION_AIR = 1
+    materials[3] = XA.Materials.water     # REGION_WATER = 2
+    materials[4] = solid_water            # REGION_SOLID_WATER = 3
+
+    # Calcium inserts (REGION 10-16 -> indices 11-17)
+    materials[11] = Ca_50   # REGION_CA_50 = 10
+    materials[12] = Ca_100  # REGION_CA_100 = 11
+    materials[13] = Ca_200  # REGION_CA_200 = 12
+    materials[14] = Ca_300  # REGION_CA_300 = 13
+    materials[15] = Ca_400  # REGION_CA_400 = 14
+    materials[16] = Ca_500  # REGION_CA_500 = 15
+    materials[17] = Ca_600  # REGION_CA_600 = 16
+
+    # Iodine inserts (REGION 20-26 -> indices 21-27)
+    materials[21] = I_2_0   # REGION_I_2_0 = 20
+    materials[22] = I_2_5   # REGION_I_2_5 = 21
+    materials[23] = I_5_0   # REGION_I_5_0 = 22
+    materials[24] = I_7_5   # REGION_I_7_5 = 23
+    materials[25] = I_10_0  # REGION_I_10_0 = 24
+    materials[26] = I_15_0  # REGION_I_15_0 = 25
+    materials[27] = I_20_0  # REGION_I_20_0 = 26
+
+    return materials
+end
+
+# =============================================================================
 # Exports
 # =============================================================================
 
@@ -83,3 +134,4 @@ export Ca_50, Ca_100, Ca_200, Ca_300, Ca_400, Ca_500, Ca_600
 export I_2_0, I_2_5, I_5_0, I_7_5, I_10_0, I_15_0, I_20_0
 export solid_water
 export get_material, MATERIALS_REGISTRY, validate_material_hu
+export get_region_materials

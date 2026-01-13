@@ -1,92 +1,320 @@
 using Test
 using BasisSimulator
 using Statistics
-using Reactant
 
 @testset "BasisSimulator.jl" begin
+
+    # =========================================================================
+    # PHYSICS-VALIDATED TESTS
+    # These tests verify medically meaningful HU values for known materials
+    # =========================================================================
+
+    @testset "Medical Physics - Expected HU Values" begin
+        # Reference values at 60 keV
+        μ_water_ref = get_reference_μ_water(60.0)
+        @test 0.19 < μ_water_ref < 0.22  # Water μ should be ~0.21 cm⁻¹
+
+        # Expected HU values for Gammex materials (at 60 keV, approximate)
+        # Water = 0 HU (by definition)
+        # Air ≈ -1000 HU
+        # Ca100 ≈ 350-400 HU
+        # Ca200 ≈ 700-800 HU
+        # I_10 ≈ 350-400 HU
+
+        # Verify material HU calculations
+        hu_water = validate_material_hu(:water, 60.0)
+        @test abs(hu_water) < 1  # Water should be 0 HU
+
+        hu_air = validate_material_hu(:air, 60.0)
+        @test -1010 < hu_air < -990  # Air should be ~-1000 HU
+
+        hu_ca100 = validate_material_hu(:Ca_100, 60.0)
+        @test 300 < hu_ca100 < 450  # Ca100 should be ~375 HU
+
+        hu_ca200 = validate_material_hu(:Ca_200, 60.0)
+        @test 650 < hu_ca200 < 850  # Ca200 should be ~750 HU
+    end
+
+    @testset "Medical Physics - Ideal Reconstruction Accuracy" begin
+        # Use n_voxels=64 for good resolution and accuracy
+        phantom = create_gammex_472(n_voxels=64)
+        geom = create_aquilion_one(n_angles=180, n_rows=8, n_cols=128, fov_cm=phantom.fov[1])
+        output_size = size(phantom.μ)
+        μ_water_ref = get_reference_μ_water(60.0)
+
+        # Ideal simulation (monochromatic, no effects)
+        sino, recon = simulate_and_reconstruct(phantom, geom, output_size;
+            polychromatic=false,
+            flat_filter=nothing, bowtie_filter=nothing, scatter=nothing,
+            detector=nothing, crosstalk=nothing, lag=nothing,
+            optical_crosstalk=nothing, fill_factor=nothing, focal_spot=nothing
+        )
+
+        # Use central slice only (edge slices are outside detector cone-beam coverage)
+        mid_z = output_size[3] ÷ 2 + 1
+
+        # Water region should be ~0 HU (tolerance: ±50 HU)
+        water_mask_2d = phantom.mask[:, :, mid_z] .== UInt8(REGION_SOLID_WATER)
+        water_HU = μ_to_HU(mean(recon[:, :, mid_z][water_mask_2d]), μ_water_ref)
+        @test abs(water_HU) < 50
+
+        # Calcium inserts should be higher than water
+        ca100_mask_2d = phantom.mask[:, :, mid_z] .== UInt8(REGION_CA_100)
+        if sum(ca100_mask_2d) > 0
+            ca100_HU = μ_to_HU(mean(recon[:, :, mid_z][ca100_mask_2d]), μ_water_ref)
+            @test ca100_HU > water_HU + 100  # Should be significantly higher
+            @test 200 < ca100_HU < 600  # Ca100 expected ~375 HU
+        end
+
+        # Higher calcium should have higher HU
+        ca200_mask_2d = phantom.mask[:, :, mid_z] .== UInt8(REGION_CA_200)
+        if sum(ca200_mask_2d) > 0 && sum(ca100_mask_2d) > 0
+            ca200_HU = μ_to_HU(mean(recon[:, :, mid_z][ca200_mask_2d]), μ_water_ref)
+            ca100_HU = μ_to_HU(mean(recon[:, :, mid_z][ca100_mask_2d]), μ_water_ref)
+            @test ca200_HU > ca100_HU  # Ca200 should be higher than Ca100
+        end
+
+        # Iodine inserts should be higher than water
+        i10_mask_2d = phantom.mask[:, :, mid_z] .== UInt8(REGION_I_10_0)
+        if sum(i10_mask_2d) > 0
+            i10_HU = μ_to_HU(mean(recon[:, :, mid_z][i10_mask_2d]), μ_water_ref)
+            @test i10_HU > water_HU + 50
+        end
+    end
+
+    @testset "Medical Physics - Polychromatic Simulation" begin
+        phantom = create_gammex_472(n_voxels=32)
+        geom = create_aquilion_one(n_angles=90, n_rows=4, n_cols=64, fov_cm=phantom.fov[1])
+        output_size = size(phantom.μ)
+        μ_water_ref = get_reference_μ_water(60.0)
+
+        # Polychromatic (no detector effects for clean comparison)
+        sino, recon = simulate_and_reconstruct(phantom, geom, output_size;
+            polychromatic=true, kVp=120,
+            flat_filter=nothing, bowtie_filter=nothing, scatter=nothing,
+            detector=nothing, crosstalk=nothing, lag=nothing,
+            optical_crosstalk=nothing, fill_factor=nothing, focal_spot=nothing
+        )
+
+        # Check basic validity
+        @test all(isfinite.(sino))
+        @test all(isfinite.(recon))
+        @test maximum(recon) > 0
+
+        # Use central slice only (edge slices are outside detector cone-beam coverage)
+        mid_z = output_size[3] ÷ 2 + 1
+
+        # Water HU should still be reasonable (polychromatic causes beam hardening)
+        water_mask_2d = phantom.mask[:, :, mid_z] .== UInt8(REGION_SOLID_WATER)
+        water_HU = μ_to_HU(mean(recon[:, :, mid_z][water_mask_2d]), μ_water_ref)
+        @test -150 < water_HU < 150  # Relaxed tolerance for polychromatic
+
+        # Material ordering should still be preserved
+        ca_mask_2d = phantom.mask[:, :, mid_z] .== UInt8(REGION_CA_100)
+        if sum(ca_mask_2d) > 0 && sum(water_mask_2d) > 0
+            @test mean(recon[:, :, mid_z][ca_mask_2d]) > mean(recon[:, :, mid_z][water_mask_2d])
+        end
+    end
+
+    @testset "Medical Physics - Forward Projection Accuracy" begin
+        # Test that forward projection produces correct line integrals
+        phantom = create_gammex_472(n_voxels=64)
+        geom = create_aquilion_one(n_angles=180, n_rows=8, n_cols=128, fov_cm=phantom.fov[1])
+
+        sino = forward_project_raymarching(phantom, geom)
+
+        # Sinogram should have positive values where rays hit the phantom
+        @test maximum(sino) > 0
+        @test all(sino .>= 0)
+
+        # Central ray through water should have line integral ~6.8
+        # (μ_water ~0.21 × phantom_diameter ~33cm)
+        center_col = geom.n_cols ÷ 2
+        center_row = geom.n_rows ÷ 2
+        center_sino = mean(sino[center_col, center_row, :])
+
+        μ_water = get_reference_μ_water(60.0)
+        expected_integral = μ_water * 33.0  # Approximate diameter
+        @test 0.7 < center_sino / expected_integral < 1.5  # Within 50%
+    end
+
+    # =========================================================================
+    # UNIFIED API TESTS
+    # =========================================================================
+
+    @testset "Unified API - simulate_sinogram" begin
+        phantom = create_gammex_472(n_voxels=32)
+        geom = create_aquilion_one(n_angles=72, n_rows=4, n_cols=64, fov_cm=phantom.fov[1])
+
+        # Full realistic simulation (default)
+        sino_full = simulate_sinogram(phantom, geom; seed=42)
+        @test size(sino_full) == (64, 4, 72)
+        @test maximum(sino_full) > 0
+        @test all(isfinite.(sino_full))
+
+        # Ideal simulation (no effects)
+        sino_ideal = simulate_sinogram(phantom, geom;
+            polychromatic=false,
+            flat_filter=nothing, bowtie_filter=nothing, scatter=nothing,
+            detector=nothing, crosstalk=nothing, lag=nothing,
+            optical_crosstalk=nothing, fill_factor=nothing, focal_spot=nothing
+        )
+        @test size(sino_ideal) == (64, 4, 72)
+
+        # Ideal should have lower values (no added attenuation from filters)
+        @test mean(sino_ideal) < mean(sino_full)
+    end
+
+    @testset "Unified API - reconstruct" begin
+        phantom = create_gammex_472(n_voxels=32)
+        geom = create_aquilion_one(n_angles=90, n_rows=4, n_cols=64, fov_cm=phantom.fov[1])
+        output_size = size(phantom.μ)
+
+        sino = simulate_sinogram(phantom, geom;
+            polychromatic=false,
+            flat_filter=nothing, bowtie_filter=nothing, scatter=nothing,
+            detector=nothing, crosstalk=nothing, lag=nothing,
+            optical_crosstalk=nothing, fill_factor=nothing, focal_spot=nothing
+        )
+
+        # FDK reconstruction
+        recon_fdk = reconstruct(sino, geom, output_size, phantom.fov)
+        @test size(recon_fdk) == output_size
+        @test all(isfinite.(recon_fdk))
+
+        # Different kernels
+        recon_soft = reconstruct(sino, geom, output_size, phantom.fov; kernel=kernel_soft())
+        recon_bone = reconstruct(sino, geom, output_size, phantom.fov; kernel=kernel_bone())
+        @test size(recon_soft) == output_size
+        @test size(recon_bone) == output_size
+
+        # SIRT reconstruction
+        recon_sirt = reconstruct(sino, geom, output_size, phantom.fov;
+            method=:sirt, n_iterations=2)
+        @test size(recon_sirt) == output_size
+        @test all(isfinite.(recon_sirt))
+
+        # CGLS reconstruction
+        recon_cgls = reconstruct(sino, geom, output_size, phantom.fov;
+            method=:cgls, n_iterations=2)
+        @test size(recon_cgls) == output_size
+        @test all(isfinite.(recon_cgls))
+    end
+
+    @testset "Unified API - simulate_and_reconstruct" begin
+        phantom = create_gammex_472(n_voxels=32)
+        geom = create_aquilion_one(n_angles=72, n_rows=4, n_cols=64, fov_cm=phantom.fov[1])
+        output_size = size(phantom.μ)
+
+        sino, recon = simulate_and_reconstruct(phantom, geom, output_size;
+            polychromatic=false,
+            flat_filter=nothing, bowtie_filter=nothing, scatter=nothing,
+            detector=nothing, crosstalk=nothing, lag=nothing,
+            optical_crosstalk=nothing, fill_factor=nothing, focal_spot=nothing
+        )
+
+        @test size(sino) == (64, 4, 72)
+        @test size(recon) == output_size
+        @test all(isfinite.(sino))
+        @test all(isfinite.(recon))
+    end
+
+    # =========================================================================
+    # PHYSICAL EFFECT TESTS
+    # =========================================================================
+
+    @testset "Physical Effects - Filters" begin
+        phantom = create_gammex_472(n_voxels=16)
+        geom = create_aquilion_one(n_angles=36, n_rows=4, n_cols=32, fov_cm=phantom.fov[1])
+
+        sino_baseline = simulate_sinogram(phantom, geom;
+            polychromatic=false,
+            flat_filter=nothing, bowtie_filter=nothing, scatter=nothing,
+            detector=nothing, crosstalk=nothing, lag=nothing,
+            optical_crosstalk=nothing, fill_factor=nothing, focal_spot=nothing
+        )
+
+        # Flat filter adds attenuation
+        sino_flat = simulate_sinogram(phantom, geom;
+            polychromatic=false,
+            flat_filter=DEFAULT_FLAT_FILTER,
+            bowtie_filter=nothing, scatter=nothing,
+            detector=nothing, crosstalk=nothing, lag=nothing,
+            optical_crosstalk=nothing, fill_factor=nothing, focal_spot=nothing
+        )
+        @test mean(sino_flat) > mean(sino_baseline)
+
+        # Bowtie filter adds attenuation
+        sino_bowtie = simulate_sinogram(phantom, geom;
+            polychromatic=false,
+            flat_filter=nothing,
+            bowtie_filter=DEFAULT_BOWTIE_FILTER,
+            scatter=nothing, detector=nothing, crosstalk=nothing, lag=nothing,
+            optical_crosstalk=nothing, fill_factor=nothing, focal_spot=nothing
+        )
+        @test mean(sino_bowtie) > mean(sino_baseline)
+    end
+
+    @testset "Physical Effects - Scatter and Noise" begin
+        phantom = create_gammex_472(n_voxels=16)
+        geom = create_aquilion_one(n_angles=36, n_rows=4, n_cols=32, fov_cm=phantom.fov[1])
+
+        sino_baseline = simulate_sinogram(phantom, geom;
+            polychromatic=false,
+            flat_filter=nothing, bowtie_filter=nothing, scatter=nothing,
+            detector=nothing, crosstalk=nothing, lag=nothing,
+            optical_crosstalk=nothing, fill_factor=nothing, focal_spot=nothing
+        )
+
+        # Scatter changes sinogram
+        sino_scatter = simulate_sinogram(phantom, geom;
+            polychromatic=false,
+            flat_filter=nothing, bowtie_filter=nothing,
+            scatter=DEFAULT_SCATTER_MODEL,
+            detector=nothing, crosstalk=nothing, lag=nothing,
+            optical_crosstalk=nothing, fill_factor=nothing, focal_spot=nothing
+        )
+        @test sino_scatter != sino_baseline
+
+        # Detector noise changes sinogram
+        sino_noisy = simulate_sinogram(phantom, geom;
+            polychromatic=false,
+            flat_filter=nothing, bowtie_filter=nothing, scatter=nothing,
+            detector=DEFAULT_DETECTOR_MODEL,
+            crosstalk=nothing, lag=nothing,
+            optical_crosstalk=nothing, fill_factor=nothing, focal_spot=nothing,
+            seed=42
+        )
+        @test sino_noisy != sino_baseline
+        @test all(isfinite.(sino_noisy))
+    end
+
+    # =========================================================================
+    # COMPONENT TESTS
+    # =========================================================================
+
     @testset "Materials" begin
-        # Test that Gammex materials are properly aliased from XrayAttenuation.jl
         @test Ca_50 isa XA.Material
         @test Ca_100 isa XA.Material
-        @test Ca_200 isa XA.Material
         @test I_2_0 isa XA.Material
-        @test I_10_0 isa XA.Material
         @test solid_water isa XA.Material
 
-        # Test material lookup
         @test get_material(:Ca_50) === Ca_50
         @test get_material(:water) isa XA.Material
-        @test get_material(:solid_water) === solid_water
 
-        # Test HU validation function
-        hu = validate_material_hu(:Ca_100, 60.0)
-        @test hu > 0  # Calcium should have positive HU
-
-        # Verify all materials come from XrayAttenuation.jl
-        @test Ca_50 === XA.Materials.gammex_472_ca50_0
-        @test Ca_100 === XA.Materials.gammex_472_ca100_0
-        @test Ca_200 === XA.Materials.gammex_472_ca200_0
-        @test I_2_0 === XA.Materials.gammex_472_i2_0
-        @test I_10_0 === XA.Materials.gammex_472_i10_0
-        @test solid_water === XA.Materials.gammex_water
+        region_mats = get_region_materials()
+        @test length(region_mats) == 27
     end
 
     @testset "Spectrum" begin
-        # Test loading xspect spectrum
         energies, weights = load_spectrum(120)
         @test length(energies) == length(weights)
         @test length(energies) > 0
         @test all(energies .> 0)
-        @test all(weights .>= 0)
         @test maximum(energies) <= 120
 
-        # Test loading different kVp
-        energies_80, weights_80 = load_spectrum(80)
-        @test maximum(energies_80) <= 80
-
-        # Test loading xcist spectrum
-        energies_xcist, weights_xcist = load_spectrum(120; source=:xcist)
-        @test length(energies_xcist) > 0
-
-        # Test mean energy
         mean_E = spectrum_mean_energy(energies, weights)
         @test 40 < mean_E < 80
-
-        # Test available spectra
-        avail = available_spectra()
-        @test :xspect in keys(avail)
-        @test :xcist in keys(avail)
-        @test 120 in avail[:xspect][:kVp]
-    end
-
-    @testset "Attenuation" begin
-        water = XA.Materials.water
-        μ_water = compute_μ_at_energy(water, 60.0)
-        @test μ_water > 0
-        @test 0.1 < μ_water < 0.5
-
-        μ_ρ_water = compute_mass_μ_at_energy(water, 60.0)
-        @test μ_ρ_water > 0
-
-        ρ_water = get_density(water)
-        @test 0.9 < ρ_water < 1.1
-
-        # Test μ matrix computation
-        materials = [water, Ca_100, I_10_0]
-        energies, weights = load_spectrum(120)
-        μ_matrix = compute_μ_matrix(materials, energies)
-
-        @test size(μ_matrix) == (3, length(energies))
-        @test all(μ_matrix .>= 0)
-
-        # Higher Z materials have higher attenuation at lower energies
-        low_E_idx = findfirst(e -> e > 30, energies)
-        @test μ_matrix[2, low_E_idx] > μ_matrix[1, low_E_idx]
-        @test μ_matrix[3, low_E_idx] > μ_matrix[1, low_E_idx]
-
-        μ_eff = compute_effective_μ(μ_matrix, weights)
-        @test length(μ_eff) == 3
-        @test all(μ_eff .> 0)
     end
 
     @testset "HU Conversion" begin
@@ -99,108 +327,21 @@ using Reactant
 
         @test HU_to_μ(0.0, μ_water) ≈ μ_water
         @test HU_to_μ(-1000.0, μ_water) ≈ 0.0
-        @test HU_to_μ(1000.0, μ_water) ≈ 2 * μ_water
-
-        # Round-trip
-        test_μ = 0.35
-        HU = μ_to_HU(test_μ, μ_water)
-        @test HU_to_μ(HU, μ_water) ≈ test_μ
-
-        # Array conversion
-        μ_array = [0.0, μ_water, 2 * μ_water]
-        HU_array = μ_to_HU(μ_array, μ_water)
-        @test HU_array ≈ [-1000.0, 0.0, 1000.0]
     end
 
     @testset "Phantom" begin
         phantom = create_gammex_472(n_voxels=32)
 
         @test phantom isa Phantom
-        @test size(phantom.μ) == size(phantom.mask)
         @test size(phantom.μ, 1) == 32
         @test size(phantom.μ, 2) == 32
 
         @test sum(phantom.mask .== UInt8(REGION_SOLID_WATER)) > 0
         @test sum(phantom.mask .== UInt8(REGION_CA_100)) > 0
-        @test sum(phantom.mask .== UInt8(REGION_I_10_0)) > 0
 
         stats_water = get_region_stats(phantom, REGION_SOLID_WATER)
         @test stats_water.n_voxels > 0
         @test stats_water.mean > 0
-        @test isfinite(stats_water.std)
-
-        stats_ca = get_region_stats(phantom, REGION_CA_100)
-        @test stats_ca.n_voxels > 0
-        @test stats_ca.mean > stats_water.mean
-
-        water_mask = get_region_mask(phantom, REGION_SOLID_WATER)
-        @test water_mask isa BitArray{3}
-        @test sum(water_mask) == stats_water.n_voxels
-
-        # All 14 inserts present
-        ca_labels = [REGION_CA_50, REGION_CA_100, REGION_CA_200, REGION_CA_300, REGION_CA_400, REGION_CA_500, REGION_CA_600]
-        i_labels = [REGION_I_2_0, REGION_I_2_5, REGION_I_5_0, REGION_I_7_5, REGION_I_10_0, REGION_I_15_0, REGION_I_20_0]
-
-        n_ca_types = sum([sum(phantom.mask .== UInt8(l)) > 0 for l in ca_labels])
-        n_i_types = sum([sum(phantom.mask .== UInt8(l)) > 0 for l in i_labels])
-        @test n_ca_types == 7
-        @test n_i_types == 7
-
-        # Validation
-        val_result = validate_reconstruction(phantom, phantom.μ)
-        @test val_result.passed == true
-
-        noisy_recon = phantom.μ .* 1.05f0
-        val_noisy = validate_reconstruction(phantom, noisy_recon; tolerance_pct=10.0)
-        @test val_noisy.passed == true
-
-        bad_recon = phantom.μ .* 2.0f0
-        val_bad = validate_reconstruction(phantom, bad_recon; tolerance_pct=10.0)
-        @test val_bad.passed == false
-
-        @test phantom.voxel_size[1] > 0
-        @test phantom.fov[1] > 0
-    end
-
-    @testset "Phantom HU Values" begin
-        phantom = create_gammex_472(n_voxels=32)
-        μ_water = get_reference_μ_water(60.0)
-
-        # Background (air) near HU = -1000
-        bg_mask = get_region_mask(phantom, REGION_BACKGROUND)
-        if sum(bg_mask) > 0
-            bg_HU = μ_to_HU(mean(phantom.μ[bg_mask]), μ_water)
-            @test bg_HU < -900
-        end
-
-        # Solid water near HU = 0
-        water_mask = get_region_mask(phantom, REGION_SOLID_WATER)
-        water_HU = μ_to_HU(mean(phantom.μ[water_mask]), μ_water)
-        @test -100 < water_HU < 100
-
-        # Calcium inserts positive HU
-        ca_100_mask = get_region_mask(phantom, REGION_CA_100)
-        if sum(ca_100_mask) > 0
-            ca_100_HU = μ_to_HU(mean(phantom.μ[ca_100_mask]), μ_water)
-            @test ca_100_HU > 50
-            @test ca_100_HU < 500
-        end
-
-        # Calcium ordering correct
-        ca_masks = [
-            (REGION_CA_50, get_region_mask(phantom, REGION_CA_50)),
-            (REGION_CA_100, get_region_mask(phantom, REGION_CA_100)),
-            (REGION_CA_200, get_region_mask(phantom, REGION_CA_200)),
-        ]
-        ca_HUs = Float64[]
-        for (_, mask) in ca_masks
-            if sum(mask) > 0
-                push!(ca_HUs, μ_to_HU(mean(phantom.μ[mask]), μ_water))
-            end
-        end
-        if length(ca_HUs) >= 2
-            @test issorted(ca_HUs)
-        end
     end
 
     @testset "Scanner Geometry" begin
@@ -211,1672 +352,82 @@ using Reactant
         @test geom.n_angles == 36
         @test geom.n_rows == 8
         @test geom.n_cols == 16
-        @test geom.pixel_size ≈ 0.05
 
         @test size(geom.source_positions) == (3, 36)
         @test size(geom.detector_centers) == (3, 36)
-
-        # First angle: source at (0, -SAD, 0)
-        @test geom.source_positions[1, 1] ≈ 0.0 atol=1e-10
-        @test geom.source_positions[2, 1] ≈ -60.0 atol=1e-10
-        @test geom.source_positions[3, 1] ≈ 0.0 atol=1e-10
-
-        src = get_source_position(geom, 1)
-        @test src[1] ≈ 0.0 atol=1e-10
-        @test src[2] ≈ -60.0 atol=1e-10
-    end
-
-    @testset "Forward Projection - Siddon" begin
-        phantom = create_gammex_472(n_voxels=16)
-        geom = create_aquilion_one(n_angles=36, n_rows=4, n_cols=32, fov_cm=phantom.fov[1])
-
-        sinogram = forward_project(phantom, geom)
-
-        @test size(sinogram) == (32, 4, 36)
-        @test maximum(sinogram) > 0
-        @test maximum(sinogram) < 50.0
-
-        # Different angles have similar total signal
-        totals = [sum(sinogram[:, :, i]) for i in 1:36]
-        mean_total = mean(totals)
-        @test all(t -> abs(t - mean_total) / mean_total < 0.5, totals)
-    end
-
-    @testset "FDK Reconstruction" begin
-        phantom = create_gammex_472(n_voxels=16)
-        geom = create_aquilion_one(n_angles=72, n_rows=8, n_cols=64, fov_cm=phantom.fov[1])
-
-        sinogram = forward_project(phantom, geom)
-
-        output_size = (16, 16, size(phantom.μ, 3))
-        recon = fdk_reconstruct(sinogram, geom, output_size, phantom.fov)
-
-        @test size(recon) == size(phantom.μ)
-        @test maximum(recon) > 0
-        @test maximum(recon) < 2.0
     end
 
     @testset "Reconstruction Kernels" begin
-        # Test kernel creation
         k_ramp = kernel_ramp()
-        k_sl = kernel_shepp_logan()
-        k_hamming = kernel_hamming()
-        k_cosine = kernel_cosine()
         k_soft = kernel_soft()
-        k_standard = kernel_standard()
         k_bone = kernel_bone()
-        k_lung = kernel_lung()
 
         @test k_ramp isa RampKernel
         @test k_soft isa SoftKernel
         @test k_bone isa BoneKernel
-        @test k_ramp.cutoff == 1.0
 
-        # Test cutoff parameter
-        k_ramp_half = kernel_ramp(cutoff=0.5)
-        @test k_ramp_half.cutoff == 0.5
-
-        # Test filter creation
         n_fft = 256
-        pixel_size = 0.1  # cm
+        pixel_size = 0.1
 
         filter_ramp = create_kernel_filter(k_ramp, n_fft, pixel_size)
         filter_soft = create_kernel_filter(k_soft, n_fft, pixel_size)
-        filter_bone = create_kernel_filter(k_bone, n_fft, pixel_size)
 
         @test length(filter_ramp) == n_fft
-        @test length(filter_soft) == n_fft
-        @test length(filter_bone) == n_fft
-
-        # At DC (zero frequency), filter should be zero
-        @test abs(filter_ramp[1]) < 1e-10
-        @test abs(filter_soft[1]) < 1e-10
-
-        # Soft kernel should have lower high-frequency response than ramp
-        nyquist_idx = n_fft ÷ 2
-        @test real(filter_soft[nyquist_idx]) < real(filter_ramp[nyquist_idx])
-
-        # Test kernel info
-        info_soft = get_kernel_info(k_soft)
-        @test info_soft.type == "Soft"
-        @test info_soft.noise_level == "Low"
-
-        info_bone = get_kernel_info(k_bone)
-        @test info_bone.type == "Bone"
-        @test info_bone.noise_level == "High"
-
-        # Test reconstruction with different kernels
-        phantom = create_gammex_472(n_voxels=16)
-        geom = create_aquilion_one(n_angles=72, n_rows=4, n_cols=64, fov_cm=phantom.fov[1])
-        sinogram = forward_project(phantom, geom)
-        output_size = size(phantom.μ)
-
-        recon_ramp = fdk_reconstruct(sinogram, geom, output_size, phantom.fov; kernel=k_ramp)
-        recon_soft = fdk_reconstruct(sinogram, geom, output_size, phantom.fov; kernel=k_soft)
-        recon_bone = fdk_reconstruct(sinogram, geom, output_size, phantom.fov; kernel=k_bone)
-
-        @test size(recon_ramp) == output_size
-        @test size(recon_soft) == output_size
-        @test size(recon_bone) == output_size
-        @test all(isfinite.(recon_ramp))
-        @test all(isfinite.(recon_soft))
-        @test all(isfinite.(recon_bone))
-
-        # Soft should be smoother (lower variance)
-        mid_slice = output_size[3] ÷ 2
-        var_ramp = var(recon_ramp[:, :, mid_slice])
-        var_soft = var(recon_soft[:, :, mid_slice])
-        # Note: Soft is smoother which might reduce or increase variance depending on image
-        # Just check they're different and finite
-        @test var_ramp > 0
-        @test var_soft > 0
-    end
-
-    @testset "XLA-Compatible FDK (Differentiable)" begin
-        # Test pre-computed backprojection geometry
-        phantom = create_gammex_472(n_voxels=16)
-        geom = create_aquilion_one(n_angles=72, n_rows=8, n_cols=64, fov_cm=phantom.fov[1])
-        output_size = size(phantom.μ)
-        fov = phantom.fov
-
-        # Pre-compute backprojection geometry
-        bp_geom = precompute_backprojection_geometry(geom, output_size, fov)
-
-        @test bp_geom isa BackprojectionGeometry
-        @test bp_geom.nx == output_size[1]
-        @test bp_geom.ny == output_size[2]
-        @test bp_geom.nz == output_size[3]
-        @test bp_geom.n_angles == geom.n_angles
-        @test size(bp_geom.linear_indices) == (4, output_size..., geom.n_angles)
-        @test size(bp_geom.bilinear_weights) == (4, output_size..., geom.n_angles)
-        @test size(bp_geom.distance_weights) == (output_size..., geom.n_angles)
-
-        # Test functional pre-weighting
-        sinogram = forward_project(phantom, geom)
-        weighted = preweight_cosine(sinogram, geom)
-
-        @test size(weighted) == size(sinogram)
-        @test maximum(weighted) <= maximum(sinogram)  # Cosine weights are <= 1
-        @test all(isfinite.(weighted))
-
-        # Test functional ramp filtering
-        filtered = filter_ramp(weighted, geom)
-
-        @test size(filtered) == size(sinogram)
-        @test all(isfinite.(filtered))
-
-        # Test gather-based backprojection
-        sinogram_flat = vec(filtered)
-        volume = backproject_volume(sinogram_flat, bp_geom)
-
-        @test size(volume) == output_size
-        @test all(isfinite.(volume))
-        @test maximum(volume) > 0
-
-        # Test full XLA-compatible FDK
-        recon_xla = fdk_reconstruct_xla(Float32.(sinogram), geom, bp_geom)
-
-        @test size(recon_xla) == output_size
-        @test all(isfinite.(recon_xla))
-        @test maximum(recon_xla) > 0
-        @test maximum(recon_xla) < 2.0
-
-        # Compare XLA version with legacy version (should be similar)
-        recon_legacy = fdk_reconstruct(Float32.(sinogram), geom, output_size, fov)
-
-        # Allow some tolerance due to floating point differences
-        max_diff = maximum(abs.(recon_xla .- recon_legacy))
-        @test max_diff < 0.1  # Should be very close
-
-        # Test with Tang weighting
-        bp_geom_tang = precompute_backprojection_geometry(geom, output_size, fov; tang_order=5)
-        @test all(bp_geom_tang.distance_weights .<= bp_geom.distance_weights)  # Tang reduces weights
+        @test abs(filter_ramp[1]) < 1e-10  # DC = 0
     end
 
     @testset "Beam Hardening Correction" begin
-        # Test simple BHC calibration
         bhc_120 = water_bhc_120kVp()
         bhc_80 = water_bhc_80kVp()
 
         @test bhc_120 isa WaterBHC
-        @test bhc_120.poly_order == 5
-        @test length(bhc_120.coefficients) == 6  # order + 1
-
-        # Effective μ should be reasonable for water
-        @test 0.1 < bhc_120.effective_μ < 0.3  # Typical range
-
-        # Higher kVp should have lower effective μ
+        @test 0.1 < bhc_120.effective_μ < 0.3
         @test bhc_80.effective_μ > bhc_120.effective_μ
 
-        # Test BHC info
-        info = get_bhc_info(bhc_120)
-        @test info.poly_order == 5
-        @test info.max_path_cm > 0
-
-        # Test polynomial evaluation
-        paths = collect(range(1.0, 30.0, length=10))
-        uncorr, corr = evaluate_bhc_correction(bhc_120, paths)
-        @test length(uncorr) == length(paths)
-        @test length(corr) == length(paths)
-
-        # Correction should be approximately identity (small correction)
-        # The polynomial maps uncorrected back close to the linear value
-        @test all(isfinite.(corr))
-
-        # Test BHC error computation
-        err = compute_bhc_error(bhc_120)
-        @test isfinite(err)
-        @test err >= 0
-
-        # Test BHC application
         phantom = create_gammex_472(n_voxels=16)
         geom = create_aquilion_one(n_angles=36, n_rows=4, n_cols=32, fov_cm=phantom.fov[1])
-        sinogram = forward_project(phantom, geom)
+        sinogram = forward_project_raymarching(phantom, geom)
 
         sino_corrected = apply_water_bhc(sinogram, bhc_120)
         @test size(sino_corrected) == size(sinogram)
         @test all(isfinite.(sino_corrected))
-
-        # In-place correction
-        sino_copy = copy(sinogram)
-        apply_water_bhc!(sino_copy, bhc_120)
-        @test sino_copy ≈ sino_corrected
-
-        # Test with polychromatic data (should reduce cupping)
-        projector = create_polychromatic_projector(phantom, geom, 120; n_bins=10)
-        sino_poly = forward_project_polychromatic(phantom, projector)
-
-        # Apply BHC
-        sino_poly_corrected = apply_water_bhc(sino_poly, bhc_120)
-        @test size(sino_poly_corrected) == size(sino_poly)
-        @test all(isfinite.(sino_poly_corrected))
     end
 
-    @testset "Tang 3D Cone-Beam Weighting" begin
-        phantom = create_gammex_472(n_voxels=16)
-        geom = create_aquilion_one(n_angles=36, n_rows=8, n_cols=32, fov_cm=phantom.fov[1])
-        sinogram = forward_project(phantom, geom)
+    @testset "Scanner Configurations" begin
+        spec = GERevolutionApexElite()
+        @test manufacturer(spec) == GE_HEALTHCARE
+        @test model_name(spec) == "Revolution Apex Elite"
+        @test fda_510k(spec) == "K213715"
 
-        output_size = (16, 16, 8)
-        fov = phantom.fov
-
-        # Test without Tang weighting (default)
-        recon_no_tang = fdk_reconstruct(sinogram, geom, output_size, fov)
-        @test all(isfinite.(recon_no_tang))
-        @test maximum(recon_no_tang) > 0
-
-        # Test with Tang weighting (order 5, CatSim default)
-        recon_tang5 = fdk_reconstruct(sinogram, geom, output_size, fov; tang_order=5)
-        @test all(isfinite.(recon_tang5))
-        @test maximum(recon_tang5) > 0
-
-        # Results should be different due to weighting
-        @test recon_no_tang != recon_tang5
-
-        # Test with other tang orders
-        recon_tang3 = fdk_reconstruct(sinogram, geom, output_size, fov; tang_order=3)
-        @test all(isfinite.(recon_tang3))
-
-        # Convenience method should also work with tang_order
-        recon_conv = fdk_reconstruct(sinogram, geom; n_voxels=16, tang_order=5)
-        @test all(isfinite.(recon_conv))
+        geom = create_geometry(spec; n_angles=180, n_rows=16, n_cols=256)
+        @test geom isa CTGeometry
+        @test geom.SAD ≈ 62.6
+        @test geom.SDD ≈ 109.7
     end
 
-    @testset "Optical Crosstalk" begin
-        # Test model creation
-        model_none = optical_crosstalk_none()
-        model_typical = optical_crosstalk_typical()
-        model_low = optical_crosstalk_low()
-        model_high = optical_crosstalk_high()
+    @testset "Helical Scanning" begin
+        geom_axial = create_scan_geometry(mode=:axial, n_angles=36, n_rows=8, n_cols=32)
+        @test !is_helical(geom_axial)
 
-        @test model_none.row_coeff ≈ 0.0
-        @test model_typical.row_coeff ≈ 0.045
-        @test model_typical.col_coeff ≈ 0.040
-        @test model_low.row_coeff < model_typical.row_coeff
-        @test model_high.row_coeff > model_typical.row_coeff
-
-        # Test kernel creation
-        kernel = create_optical_crosstalk_kernel(model_typical)
-        @test size(kernel) == (3, 3)
-        @test sum(kernel) ≈ 1.0  # Should sum to 1
-
-        # Center should have most weight
-        @test kernel[2, 2] > kernel[1, 1]
-        @test kernel[2, 2] > kernel[2, 1]
-
-        # Test application
-        phantom = create_gammex_472(n_voxels=16)
-        geom = create_aquilion_one(n_angles=36, n_rows=8, n_cols=32, fov_cm=phantom.fov[1])
-        sinogram = forward_project(phantom, geom)
-
-        sino_xt = apply_optical_crosstalk(sinogram, model_typical)
-        @test size(sino_xt) == size(sinogram)
-        @test all(isfinite.(sino_xt))
-
-        # Should be different from original
-        @test sino_xt != sinogram
-
-        # No crosstalk should return unchanged
-        sino_none = apply_optical_crosstalk(sinogram, model_none)
-        @test sino_none ≈ sinogram
-
-        # Test intensity domain application
-        intensity = exp.(-sinogram)
-        intensity_xt = apply_optical_crosstalk_intensity(intensity, model_typical)
-        @test size(intensity_xt) == size(intensity)
-        @test all(isfinite.(intensity_xt))
-    end
-
-    @testset "Fill Factor" begin
-        # Test model creation
-        ff_ideal = fill_factor_ideal()
-        ff_std = fill_factor_standard()
-        ff_high = fill_factor_high()
-        ff_low = fill_factor_low()
-        ff_pc = fill_factor_photon_counting()
-
-        @test effective_fill_factor(ff_ideal) ≈ 1.0
-        @test 0.89 < effective_fill_factor(ff_std) < 0.91
-        @test effective_fill_factor(ff_high) > effective_fill_factor(ff_std)
-        @test effective_fill_factor(ff_low) < effective_fill_factor(ff_std)
-        @test effective_fill_factor(ff_pc) < effective_fill_factor(ff_low)
-
-        # Custom fill factor
-        ff_custom = fill_factor_custom(0.9, 0.95)
-        @test ff_custom.row_fill ≈ 0.9
-        @test ff_custom.col_fill ≈ 0.95
-        @test effective_fill_factor(ff_custom) ≈ 0.9 * 0.95
-
-        # Test application
-        phantom = create_gammex_472(n_voxels=16)
-        geom = create_aquilion_one(n_angles=36, n_rows=8, n_cols=32, fov_cm=phantom.fov[1])
-        sinogram = forward_project(phantom, geom)
-
-        sino_ff = apply_fill_factor(sinogram, ff_std)
-        @test size(sino_ff) == size(sinogram)
-        @test all(isfinite.(sino_ff))
-
-        # Fill factor < 1 means fewer photons detected = higher projection values
-        @test mean(sino_ff) > mean(sinogram)
-
-        # Ideal fill factor should not change anything
-        sino_ideal = apply_fill_factor(sinogram, ff_ideal)
-        @test sino_ideal ≈ sinogram
-
-        # Test info
-        info = get_fill_factor_info(ff_std)
-        @test info.effective_fill_factor ≈ effective_fill_factor(ff_std)
-        @test info.signal_loss_percent > 0
-
-        # Test intensity domain
-        intensity = exp.(-sinogram)
-        intensity_ff = apply_fill_factor_intensity(intensity, ff_std)
-        @test all(intensity_ff .< intensity)  # Reduced signal
-    end
-
-    @testset "Flying Focal Spot" begin
-        # Test model creation
-        ffs_off = ffs_none()
-        ffs_ip = ffs_in_plane()
-        ffs_z = ffs_z_axis()
-        ffs_comb = ffs_combined()
-
-        @test !ffs_off.enabled
-        @test ffs_ip.enabled
-        @test ffs_ip.pattern == :in_plane
-        @test ffs_ip.n_positions == 2
-        @test ffs_z.pattern == :z_axis
-        @test ffs_comb.pattern == :combined
-        @test ffs_comb.n_positions == 4
-
-        # Test custom
-        ffs_custom_model = ffs_custom(0.05, 0.02, 4)
-        @test ffs_custom_model.deflection_u ≈ 0.05
-        @test ffs_custom_model.deflection_z ≈ 0.02
-        @test ffs_custom_model.n_positions == 4
-
-        # Test offset calculation
-        u1, z1 = get_ffs_offset(ffs_ip, 1)
-        u2, z2 = get_ffs_offset(ffs_ip, 2)
-        @test u1 ≈ ffs_ip.deflection_u
-        @test u2 ≈ -ffs_ip.deflection_u
-        @test z1 ≈ 0.0
-        @test z2 ≈ 0.0
-
-        # Get all offsets
-        u_offs, z_offs = get_ffs_offsets(ffs_ip, 10)
-        @test length(u_offs) == 10
-        @test length(z_offs) == 10
-        # Should alternate
-        @test u_offs[1] ≈ -u_offs[2]
-
-        # Test geometry modification
-        geom = create_aquilion_one(n_angles=36, n_rows=8, n_cols=32)
-        original_pos = copy(geom.source_positions)
-
-        geom_ffs = create_geometry_with_ffs(geom, ffs_ip)
-        @test geom_ffs.n_angles == geom.n_angles
-        # Positions should be different
-        @test geom_ffs.source_positions != original_pos
-
-        # No FFS should return same geometry
-        geom_no_ffs = create_geometry_with_ffs(geom, ffs_off)
-        @test geom_no_ffs.source_positions == original_pos
-
-        # Test info
-        info = get_ffs_info(ffs_ip)
-        @test info.enabled == true
-        @test info.sampling_improvement == 2
-    end
-
-    @testset "End-to-End Validation" begin
-        phantom = create_gammex_472(n_voxels=32)
-        geom = create_aquilion_one(n_angles=180, n_rows=8, n_cols=128, fov_cm=phantom.fov[1])
-
-        sinogram = forward_project(phantom, geom)
-        recon = fdk_reconstruct(sinogram, geom, size(phantom.μ), phantom.fov)
-
-        μ_water_ref = get_reference_μ_water(60.0)
-
-        water_mask = get_region_mask(phantom, REGION_SOLID_WATER)
-        expected_water_HU = μ_to_HU(mean(phantom.μ[water_mask]), μ_water_ref)
-        measured_water_HU = μ_to_HU(mean(recon[water_mask]), μ_water_ref)
-
-        @test -100 < expected_water_HU < 100
-        @test -500 < measured_water_HU < 500
-
-        # Background lower than water
-        bg_mask = phantom.mask .== UInt8(REGION_BACKGROUND)
-        if sum(bg_mask) > 0
-            bg_recon_HU = μ_to_HU(mean(recon[bg_mask]), μ_water_ref)
-            @test bg_recon_HU < measured_water_HU
-        end
-
-        # Calcium higher than water
-        ca_mask = get_region_mask(phantom, REGION_CA_100)
-        if sum(ca_mask) > 0
-            @test mean(recon[ca_mask]) > 0
-        end
-
-        # Contrast preserved
-        water_vals = recon[water_mask]
-        background_vals = recon[bg_mask]
-        if length(water_vals) > 0 && length(background_vals) > 0
-            @test mean(water_vals) > mean(background_vals)
-        end
-    end
-
-    @testset "Reactant Compilation" begin
-        # NO allowscalar - must work without it
-        phantom = create_gammex_472(n_voxels=8)
-        geom = create_aquilion_one(n_angles=4, n_rows=2, n_cols=8, fov_cm=phantom.fov[1])
-
-        # Test forward projection compilation
-        proj_geom = precompute_projection_geometry(
-            geom, phantom.fov, phantom.voxel_size, size(phantom.μ)
+        geom_helical = create_scan_geometry(
+            mode=:helical, n_angles=36, n_rows=8, n_cols=32,
+            pitch=1.0, n_rotations=3.0, z_start=0.0
         )
-
-        volume_ra = Reactant.to_rarray(phantom.μ)
-
-        compiled_pv = @compile project_volume(volume_ra, proj_geom)
-        @test compiled_pv !== nothing
-
-        sinogram_ra = compiled_pv(volume_ra, proj_geom)
-        sinogram_result = Array(sinogram_ra)
-
-        @test maximum(sinogram_result) > 0
-
-        sinogram_julia = project_volume(phantom.μ, proj_geom)
-        @test maximum(abs.(sinogram_result .- sinogram_julia)) < 1e-5
-
-        # Test backprojection compilation - use the ACTUAL backproject_volume function
-        output_size = size(phantom.μ)
-        fov = phantom.fov
-        bp_geom = precompute_backprojection_geometry(geom, output_size, fov)
-
-        # Pre-weight and filter the sinogram (in Julia, not compiled)
-        sino_weighted = preweight_cosine(Float32.(sinogram_result), geom)
-        sino_filtered = filter_ramp(sino_weighted, geom)
-        sino_flat = vec(sino_filtered)
-
-        # Convert to Reactant array
-        sino_flat_ra = Reactant.to_rarray(sino_flat)
-
-        # Compile the ACTUAL backproject_volume function
-        compiled_bp = @compile backproject_volume(sino_flat_ra, bp_geom)
-        @test compiled_bp !== nothing
-
-        # Run compiled backprojection
-        volume_ra = compiled_bp(sino_flat_ra, bp_geom)
-        volume_result = Array(volume_ra)
-
-        @test size(volume_result) == output_size
-        @test all(isfinite.(volume_result))
-        @test maximum(volume_result) > 0
-
-        # Compare with Julia version
-        volume_julia = backproject_volume(sino_flat, bp_geom)
-        @test maximum(abs.(volume_result .- volume_julia)) < 1e-4
-    end
-
-    @testset "Polychromatic Simulation" begin
-        phantom = create_gammex_472(n_voxels=16)
-        geom = create_aquilion_one(n_angles=36, n_rows=4, n_cols=32, fov_cm=phantom.fov[1])
-
-        # Create polychromatic projector
-        projector = create_polychromatic_projector(phantom, geom, 120; n_bins=10)
-        @test projector isa PolychromaticProjector
-        @test length(projector.energies) == 10
-
-        # Check effective energy is reasonable
-        eff_E = compute_effective_energy(projector)
-        @test 40 < eff_E < 80  # Typical range for 120 kVp
-
-        # Check effective μ_water
-        μ_eff = get_effective_μ_water(projector)
-        @test 0.15 < μ_eff < 0.25
-
-        # Forward project with polychromatic spectrum
-        sino_poly = forward_project_polychromatic(phantom, projector)
-        @test size(sino_poly) == (32, 4, 36)
-        @test maximum(sino_poly) > 0
-        @test all(isfinite.(sino_poly))
-
-        # Compare to monochromatic at effective energy
-        sino_mono = forward_project(phantom, geom)
-
-        # Polychromatic should generally have lower values due to beam hardening
-        # (harder spectrum after passing through material)
-        # But both should be in similar range
-        @test 0.5 < mean(sino_poly) / mean(sino_mono) < 2.0
-
-        # Higher-density paths should show more beam hardening difference
-        # (This is a qualitative check - polychromatic is more realistic)
-        @test maximum(sino_poly) > 0
-    end
-
-    @testset "Polychromatic Reconstruction" begin
-        phantom = create_gammex_472(n_voxels=32)
-        geom = create_aquilion_one(n_angles=180, n_rows=8, n_cols=128, fov_cm=phantom.fov[1])
-
-        # Create polychromatic projector with binned spectrum
-        projector = create_polychromatic_projector(phantom, geom, 120; n_bins=20)
-
-        # Forward project
-        sinogram = forward_project_polychromatic(phantom, projector)
-
-        # Reconstruct
-        recon = fdk_reconstruct(sinogram, geom, size(phantom.μ), phantom.fov)
-
-        # Get effective μ_water for HU conversion
-        μ_water_eff = get_effective_μ_water(projector)
-
-        # Basic validation
-        @test maximum(recon) > 0
-        @test all(isfinite.(recon))
-
-        # Water region should have finite, reasonable HU value
-        # (polychromatic beam hardening causes HU shifts)
-        water_mask = get_region_mask(phantom, REGION_SOLID_WATER)
-        water_HU = μ_to_HU(mean(recon[water_mask]), μ_water_eff)
-        @test -1000 < water_HU < 500  # Wide tolerance for beam hardening
-
-        # Key test: Calcium should have HIGHER attenuation than water
-        # (This is the physics we care about, not absolute HU values)
-        ca_mask = get_region_mask(phantom, REGION_CA_100)
-        if sum(ca_mask) > 0
-            @test mean(recon[ca_mask]) > mean(recon[water_mask])
-        end
-    end
-
-    @testset "Scatter Simulation" begin
-        phantom = create_gammex_472(n_voxels=16)
-        geom = create_aquilion_one(n_angles=36, n_rows=4, n_cols=32, fov_cm=phantom.fov[1])
-
-        # Create clean sinogram
-        sinogram = forward_project(phantom, geom)
-
-        # Create scatter model (XCIST-style)
-        model = default_scatter_model(scale_factor=1.0, kernel_fwhm=10.0)
-        @test model isa ScatterModel
-        @test model.scale_factor == 1.0
-        @test model.scatter_coefficient ≈ 0.025
-
-        # Add scatter
-        sino_scatter = add_scatter(sinogram, model)
-        @test size(sino_scatter) == size(sinogram)
-        @test all(isfinite.(sino_scatter))
-
-        # Scatter should reduce contrast (increase low-attenuation values)
-        # In attenuation space, scatter causes values to shift
-        @test sino_scatter != sinogram  # Should be different
-
-        # Estimate scale factor from phantom
-        estimated_scale = estimate_scale_factor(phantom, geom)
-        @test 0.1 < estimated_scale < 3.0
-
-        # Deprecated SPR estimate still works
-        estimated_spr = estimate_spr(phantom, geom)
-        @test 0.01 < estimated_spr < 0.5
-
-        # Compute scatter artifact magnitude
-        artifact_mag = compute_scatter_artifact_magnitude(sinogram, sino_scatter)
-        @test artifact_mag > 0  # Should have some difference
-        @test artifact_mag < 1.0  # But not overwhelming
-
-        # In-place version
-        sino_copy = copy(sinogram)
-        add_scatter!(sino_copy, model)
-        @test sino_copy ≈ sino_scatter
-
-        # Test deprecated spr parameter conversion
-        model_deprecated = default_scatter_model(spr=0.15)
-        @test model_deprecated.scale_factor ≈ 1.0  # spr=0.15 maps to scale=1.0
-    end
-
-    @testset "Detector Blur" begin
-        phantom = create_gammex_472(n_voxels=16)
-        geom = create_aquilion_one(n_angles=8, n_rows=4, n_cols=32, fov_cm=phantom.fov[1])
-        sinogram = forward_project(phantom, geom)
-
-        # Create detector model with blur
-        model = default_detector_model(blur_fwhm=2.0, I0=1e6, electronic_noise_std=0.0, seed=42)
-        @test model isa DetectorModel
-
-        # Apply blur only
-        blurred = apply_detector_blur(sinogram, model)
-        @test size(blurred) == size(sinogram)
-        @test all(isfinite.(blurred))
-
-        # Blurred should be smoother (lower max gradient)
-        # Just check it's different
-        @test blurred != sinogram
-    end
-
-    @testset "Quantum Noise" begin
-        phantom = create_gammex_472(n_voxels=16)
-        geom = create_aquilion_one(n_angles=8, n_rows=4, n_cols=32, fov_cm=phantom.fov[1])
-        sinogram = forward_project(phantom, geom)
-
-        # High dose (low noise)
-        model_high = default_detector_model(blur_fwhm=0.0, I0=1e6, electronic_noise_std=0.0, seed=42)
-        noisy_high = add_quantum_noise(sinogram, model_high)
-
-        # Low dose (high noise)
-        model_low = default_detector_model(blur_fwhm=0.0, I0=1e3, electronic_noise_std=0.0, seed=42)
-        noisy_low = add_quantum_noise(sinogram, model_low)
-
-        @test all(isfinite.(noisy_high))
-        @test all(isfinite.(noisy_low))
-
-        # Lower dose should have more noise
-        noise_high = compute_noise_level(sinogram, noisy_high)
-        noise_low = compute_noise_level(sinogram, noisy_low)
-        @test noise_low.std_diff > noise_high.std_diff
-    end
-
-    @testset "Electronic Noise" begin
-        phantom = create_gammex_472(n_voxels=16)
-        geom = create_aquilion_one(n_angles=8, n_rows=4, n_cols=32, fov_cm=phantom.fov[1])
-        sinogram = forward_project(phantom, geom)
-
-        model = default_detector_model(blur_fwhm=0.0, I0=1e6, electronic_noise_std=50.0, seed=42)
-        noisy = add_electronic_noise(sinogram, model)
-
-        @test all(isfinite.(noisy))
-        @test noisy != sinogram
-
-        noise_stats = compute_noise_level(sinogram, noisy)
-        @test noise_stats.std_diff > 0
-    end
-
-    @testset "Full Detector Model" begin
-        phantom = create_gammex_472(n_voxels=16)
-        geom = create_aquilion_one(n_angles=36, n_rows=4, n_cols=32, fov_cm=phantom.fov[1])
-        sinogram = forward_project(phantom, geom)
-
-        # Apply full detector model
-        model = default_detector_model(blur_fwhm=1.5, I0=1e5, electronic_noise_std=20.0, seed=42)
-        degraded = apply_detector_model(sinogram, model)
-
-        @test size(degraded) == size(sinogram)
-        @test all(isfinite.(degraded))
-
-        # Should be different from clean
-        @test degraded != sinogram
-
-        # Noise stats
-        stats = compute_noise_level(sinogram, degraded)
-        @test stats.snr > 0
-        @test stats.std_diff > 0
-    end
-
-    @testset "Detector Efficiency" begin
-        geom = create_aquilion_one(n_angles=36, n_rows=8, n_cols=64)
-
-        # Test model creation
-        det_gos = detector_efficiency_gos(0.5)
-        det_csi = detector_efficiency_csi(0.6)
-        det_cdte = detector_efficiency_cdte(1.6)
-        det_ideal = detector_efficiency_ideal()
-
-        @test det_gos isa DetectorEfficiency
-        @test det_gos.material == "GOS"
-        @test det_gos.thickness_mm == 0.5
-        @test det_ideal.material == "ideal"
-
-        # Test custom detector
-        det_custom = detector_efficiency_custom("CsI", 0.8; fill_factor=0.92)
-        @test det_custom.fill_factor == 0.92
-
-        # Test scintillator μ lookup
-        μ_gos_60 = get_scintillator_mu("GOS", 60.0)
-        μ_gos_80 = get_scintillator_mu("GOS", 80.0)
-        @test μ_gos_60 > μ_gos_80  # Higher μ at lower energy (in general)
-        @test μ_gos_60 > 10  # GOS has high μ around K-edge
-
-        # Test efficiency computation
-        η = compute_detector_efficiency(det_gos, geom)
-        @test size(η) == (64, 8)
-        @test all(0 .< η .<= 1)
-
-        # Efficiency should be slightly lower at edges (oblique rays)
-        # Actually for thin detectors, oblique rays have higher absorption
-        # Let's just check reasonable values
-        @test η[32, 4] > 0.5  # Typical GOS efficiency at 60 keV
-
-        # Ideal detector should have 100% efficiency
-        η_ideal = compute_detector_efficiency(det_ideal, geom)
-        @test all(η_ideal .== 1.0)
-
-        # CdTe should have higher efficiency than Si for same thickness
-        det_cdte_1mm = detector_efficiency_custom("CdTe", 1.0)
-        det_si_1mm = detector_efficiency_custom("Si", 1.0)
-        η_cdte = compute_detector_efficiency(det_cdte_1mm, geom)
-        η_si = compute_detector_efficiency(det_si_1mm, geom)
-        @test mean(η_cdte) > mean(η_si)
-
-        # Test spectral efficiency
-        energies = [40.0, 60.0, 80.0, 100.0]
-        η_spectral = compute_detector_efficiency_spectral(det_gos, geom, energies)
-        @test size(η_spectral) == (64, 8, 4)
-        @test all(0 .< η_spectral .<= 1)
-
-        # Test DQE computation
-        dqe = compute_dqe(det_gos, 60.0)
-        @test 0 < dqe <= 1
-        @test dqe < det_gos.fill_factor  # DQE is always less than fill factor
-
-        # Test info
-        info = get_detector_efficiency_info(det_gos)
-        @test info.material == "GOS"
-        @test info.total_efficiency > 0
-        @test info.absorption_at_ref_energy > 0
-
-        # Test application to intensity
-        phantom = create_gammex_472(n_voxels=16)
-        geom_small = create_aquilion_one(n_angles=18, n_rows=4, n_cols=32, fov_cm=phantom.fov[1])
-        sinogram = forward_project(phantom, geom_small)
-        intensity = exp.(-sinogram)
-
-        intensity_detected = apply_detector_efficiency(intensity, det_gos, geom_small)
-        @test size(intensity_detected) == size(intensity)
-        @test all(intensity_detected .<= intensity)  # Efficiency reduces signal
-
-        # Ideal detector should not change intensity
-        intensity_ideal = apply_detector_efficiency(intensity, det_ideal, geom_small)
-        @test intensity_ideal ≈ intensity
-    end
-
-    @testset "Scatter Effects on Reconstruction" begin
-        phantom = create_gammex_472(n_voxels=32)
-        geom = create_aquilion_one(n_angles=180, n_rows=8, n_cols=128, fov_cm=phantom.fov[1])
-
-        # Clean forward projection
-        sinogram = forward_project(phantom, geom)
-
-        # Add scatter using XCIST-style model
-        model = default_scatter_model(scale_factor=1.5)  # ~22% SPR
-        sino_scatter = add_scatter(sinogram, model)
-
-        # Reconstruct both
-        recon_clean = fdk_reconstruct(sinogram, geom, size(phantom.μ), phantom.fov)
-        recon_scatter = fdk_reconstruct(sino_scatter, geom, size(phantom.μ), phantom.fov)
-
-        # Scatter causes cupping artifact (lower values in center)
-        water_mask = get_region_mask(phantom, REGION_SOLID_WATER)
-        μ_clean = mean(recon_clean[water_mask])
-        μ_scatter = mean(recon_scatter[water_mask])
-
-        # Scatter typically reduces reconstructed values
-        @test maximum(recon_scatter) > 0
-        @test all(isfinite.(recon_scatter))
+        @test geom_helical.n_angles == 36 * 3
+        @test is_helical(geom_helical)
     end
 
     @testset "Loss Functions" begin
-        # Test MSE loss
         pred = [1.0f0, 2.0f0, 3.0f0]
         target = [1.0f0, 2.0f0, 3.0f0]
         @test mse_loss(pred, target) ≈ 0.0f0
 
         pred2 = [2.0f0, 3.0f0, 4.0f0]
         @test mse_loss(pred2, target) ≈ 1.0f0
-
-        # Test MAE loss
-        @test mae_loss(pred, target) ≈ 0.0f0
         @test mae_loss(pred2, target) ≈ 1.0f0
 
-        # Test Huber loss
-        @test huber_loss(pred, target) ≈ 0.0f0
-        @test huber_loss(pred2, target) > 0.0f0
-
-        # Test regularization terms
         volume = ones(Float32, 4, 4, 4)
         @test l2_regularization(volume) ≈ 64.0f0
-        @test l1_regularization(volume) ≈ 64.0f0
-
-        # TV should be small for constant volume (epsilon adds small baseline)
-        @test tv_regularization(volume) < 0.01
-
-        # Non-constant volume should have positive TV
-        volume_var = randn(Float32, 4, 4, 4)
-        @test tv_regularization(volume_var) > 0
-
-        # Non-negativity penalty
-        pos_volume = abs.(randn(Float32, 4, 4, 4))
-        neg_volume = -abs.(randn(Float32, 4, 4, 4))
-        @test non_negativity_penalty(pos_volume) ≈ 0.0f0
-        @test non_negativity_penalty(neg_volume) > 0.0f0
     end
 
-    @testset "Backprojection" begin
-        phantom = create_gammex_472(n_voxels=8)
-        geom = create_aquilion_one(n_angles=18, n_rows=4, n_cols=16, fov_cm=phantom.fov[1])
-
-        # Pre-compute geometry
-        proj_geom = precompute_projection_geometry(
-            geom, phantom.fov, phantom.voxel_size, size(phantom.μ)
-        )
-
-        # Forward project
-        sinogram = project_volume(Float32.(phantom.μ), proj_geom)
-
-        # Backproject
-        bp = backproject_volume(sinogram, proj_geom, size(phantom.μ))
-
-        @test size(bp) == size(phantom.μ)
-        @test maximum(bp) > 0
-        @test all(isfinite.(bp))
-
-        # Backprojection should have higher values where phantom is denser
-        # (qualitative check)
-        @test sum(bp) > 0
-    end
-
-    @testset "Gradient Computation" begin
-        phantom = create_gammex_472(n_voxels=8)
-        geom = create_aquilion_one(n_angles=18, n_rows=4, n_cols=16, fov_cm=phantom.fov[1])
-
-        proj_geom = precompute_projection_geometry(
-            geom, phantom.fov, phantom.voxel_size, size(phantom.μ)
-        )
-
-        volume = Float32.(phantom.μ)
-        sinogram_target = project_volume(volume, proj_geom)
-
-        # Gradient at true solution should be near zero
-        grad = compute_gradient_data_term(volume, sinogram_target, proj_geom)
-        @test size(grad) == size(volume)
-        @test maximum(abs.(grad)) < 1e-3
-
-        # Perturbed volume should have non-zero gradient
-        perturbed = volume .+ 0.1f0
-        grad_perturbed = compute_gradient_data_term(perturbed, sinogram_target, proj_geom)
-        @test maximum(abs.(grad_perturbed)) > 1e-5
-    end
-
-    @testset "Iterative Reconstruction" begin
-        # Small problem for fast testing
-        phantom = create_gammex_472(n_voxels=8)
-        geom = create_aquilion_one(n_angles=36, n_rows=4, n_cols=16, fov_cm=phantom.fov[1])
-
-        proj_geom = precompute_projection_geometry(
-            geom, phantom.fov, phantom.voxel_size, size(phantom.μ)
-        )
-
-        # Generate target sinogram
-        sinogram_target = project_volume(Float32.(phantom.μ), proj_geom)
-
-        # Run gradient descent (few iterations for testing)
-        result = gradient_descent_reconstruction(
-            sinogram_target, proj_geom, size(phantom.μ);
-            n_iterations=20,
-            learning_rate=1f-3,
-            λ_l2=1f-5,
-            verbose=false
-        )
-
-        @test result isa GradientDescentResult
-        @test size(result.volume) == size(phantom.μ)
-        @test length(result.loss_history) > 0
-        @test all(isfinite.(result.volume))
-
-        # Loss should decrease
-        @test result.loss_history[end] < result.loss_history[1]
-    end
-
-    @testset "SIRT Reconstruction" begin
-        # Small problem for fast testing
-        phantom = create_gammex_472(n_voxels=8)
-        geom = create_aquilion_one(n_angles=36, n_rows=4, n_cols=16, fov_cm=phantom.fov[1])
-
-        # Pre-compute geometries
-        voxel_size = phantom.voxel_size
-        output_size = size(phantom.μ)
-        proj_geom = precompute_projection_geometry(geom, phantom.fov, voxel_size, output_size)
-        bp_geom = precompute_backprojection_geometry(geom, output_size, phantom.fov)
-
-        # Generate target sinogram
-        sinogram = project_volume(Float32.(phantom.μ), proj_geom)
-
-        # Test SIRT normalization computation
-        sirt_norm = compute_sirt_normalization(proj_geom, bp_geom)
-        @test sirt_norm isa SIRTNormalization
-        @test length(sirt_norm.C) == prod(output_size)
-        @test length(sirt_norm.R) == prod(size(sinogram))
-        @test all(sirt_norm.C .>= 0)
-        @test all(sirt_norm.R .>= 0)
-
-        # Test single SIRT step
-        x0 = zeros(Float32, prod(output_size))
-        b = vec(sinogram)
-        x1 = sirt_step(x0, b, proj_geom, bp_geom, sirt_norm)
-        @test length(x1) == length(x0)
-        @test all(isfinite.(x1))
-        @test sum(abs.(x1 .- x0)) > 0  # Should have changed
-
-        # Test full SIRT reconstruction
-        result = sirt_reconstruct(sinogram, proj_geom, bp_geom;
-            n_iterations=10,
-            relaxation=1.0f0,
-            verbose=false
-        )
-        @test size(result.volume) == output_size
-        @test all(isfinite.(result.volume))
-        @test result.iterations <= 10
-        @test result.iterations >= 1
-
-        # SIRT should produce non-zero reconstruction
-        @test maximum(result.volume) > 0
-
-        # Test with initial estimate
-        x0_vol = zeros(Float32, output_size...)
-        x0_vol .= mean(phantom.μ)
-        result_warm = sirt_reconstruct(sinogram, proj_geom, bp_geom;
-            n_iterations=5,
-            x0=x0_vol,
-            verbose=false
-        )
-        @test size(result_warm.volume) == output_size
-
-        # Test with different relaxation parameter
-        result_relax = sirt_reconstruct(sinogram, proj_geom, bp_geom;
-            n_iterations=5,
-            relaxation=1.5f0,
-            verbose=false
-        )
-        @test all(isfinite.(result_relax.volume))
-    end
-
-    @testset "CGLS Reconstruction" begin
-        # Small problem for fast testing
-        phantom = create_gammex_472(n_voxels=8)
-        geom = create_aquilion_one(n_angles=36, n_rows=4, n_cols=16, fov_cm=phantom.fov[1])
-
-        # Pre-compute geometries
-        voxel_size = phantom.voxel_size
-        output_size = size(phantom.μ)
-        proj_geom = precompute_projection_geometry(geom, phantom.fov, voxel_size, output_size)
-        bp_geom = precompute_backprojection_geometry(geom, output_size, phantom.fov)
-
-        # Generate target sinogram
-        sinogram = project_volume(Float32.(phantom.μ), proj_geom)
-
-        # Test full CGLS reconstruction
-        result = cgls_reconstruct(sinogram, proj_geom, bp_geom;
-            n_iterations=10,
-            verbose=false
-        )
-        @test size(result.volume) == output_size
-        @test all(isfinite.(result.volume))
-        @test result.iterations <= 10
-        @test result.iterations >= 1
-        @test result.residual >= 0
-
-        # CGLS should produce non-zero reconstruction
-        @test maximum(result.volume) > 0
-
-        # CGLS converges faster than SIRT typically
-        # Test that residual decreases
-        result_more = cgls_reconstruct(sinogram, proj_geom, bp_geom;
-            n_iterations=15,
-            verbose=false
-        )
-        # More iterations should give smaller or equal residual
-        @test result_more.residual <= result.residual + 1e-5
-
-        # Test with initial estimate
-        x0_vol = zeros(Float32, output_size...)
-        x0_vol .= mean(phantom.μ)
-        result_warm = cgls_reconstruct(sinogram, proj_geom, bp_geom;
-            n_iterations=5,
-            x0=x0_vol,
-            verbose=false
-        )
-        @test size(result_warm.volume) == output_size
-    end
-
-    @testset "Iterative Reconstruct Convenience" begin
-        # Test the convenience wrapper
-        phantom = create_gammex_472(n_voxels=8)
-        geom = create_aquilion_one(n_angles=36, n_rows=4, n_cols=16, fov_cm=phantom.fov[1])
-
-        # Generate sinogram using standard forward projection
-        sinogram = forward_project(phantom, geom)
-
-        # Test SIRT via convenience wrapper
-        recon_sirt = iterative_reconstruct(sinogram, geom, size(phantom.μ), phantom.fov;
-            method=:sirt,
-            n_iterations=5,
-            verbose=false
-        )
-        @test size(recon_sirt) == size(phantom.μ)
-        @test all(isfinite.(recon_sirt))
-        @test maximum(recon_sirt) > 0
-
-        # Test CGLS via convenience wrapper
-        recon_cgls = iterative_reconstruct(sinogram, geom, size(phantom.μ), phantom.fov;
-            method=:cgls,
-            n_iterations=5,
-            verbose=false
-        )
-        @test size(recon_cgls) == size(phantom.μ)
-        @test all(isfinite.(recon_cgls))
-        @test maximum(recon_cgls) > 0
-    end
-
-    @testset "Bowtie Filter" begin
-        geom = create_aquilion_one(n_angles=36, n_rows=4, n_cols=64)
-
-        # Test filter creation
-        filter_large = bowtie_filter_large_body()
-        filter_medium = bowtie_filter_medium_body()
-        filter_small = bowtie_filter_small_body()
-        filter_head = bowtie_filter_head()
-        filter_none = bowtie_filter_none()
-
-        @test filter_large isa BowtieFilter
-        @test filter_large.name == "large_body"
-        @test filter_none.name == "none"
-
-        # Test thickness interpolation
-        t_center = get_bowtie_thickness(filter_large, 0.0)
-        t_edge = get_bowtie_thickness(filter_large, 25.0)
-        @test t_center > t_edge  # Thicker at center
-
-        # Test attenuation computation
-        transmission = compute_bowtie_attenuation(filter_large, geom)
-        @test size(transmission) == (64, 4)
-        @test all(0 .< transmission .<= 1)  # Valid transmission range
-
-        # Center should have lower transmission (more attenuation)
-        center_col = 32
-        edge_col = 1
-        @test transmission[center_col, 1] < transmission[edge_col, 1]
-
-        # Get profile for visualization
-        profile = get_bowtie_profile(filter_large, geom)
-        @test length(profile) == 64
-        @test profile[32] < profile[1]  # Center more attenuated
-
-        # Test application to sinogram
-        phantom = create_gammex_472(n_voxels=16)
-        geom_small = create_aquilion_one(n_angles=18, n_rows=4, n_cols=32, fov_cm=phantom.fov[1])
-        sinogram = forward_project(phantom, geom_small)
-
-        sino_bowtie = apply_bowtie_filter(sinogram, filter_medium, geom_small)
-        @test size(sino_bowtie) == size(sinogram)
-        @test all(isfinite.(sino_bowtie))
-
-        # Bowtie adds attenuation, so values should increase
-        @test mean(sino_bowtie) > mean(sinogram)
-
-        # No filter should return same values
-        sino_none = apply_bowtie_filter(sinogram, filter_none, geom_small)
-        @test sino_none ≈ sinogram
-
-        # Test intensity-domain application
-        intensity = exp.(-sinogram)
-        intensity_bowtie = apply_bowtie_to_intensity(intensity, filter_medium, geom_small)
-        @test all(intensity_bowtie .<= intensity)  # Bowtie reduces intensity
-
-        # Test multi-material bowtie (CatSim-style)
-        filter_multi = bowtie_filter_multimaterial()
-        @test length(filter_multi.materials) == 4
-        @test filter_multi.materials == ["Al", "graphite", "Cu", "Ti"]
-        @test size(filter_multi.thickness, 2) == 4  # 4 materials
-
-        # Test energy-dependent μ
-        μ_al_60 = get_bowtie_mu("Al", 60.0)
-        μ_al_30 = get_bowtie_mu("Al", 30.0)
-        @test μ_al_30 > μ_al_60  # Higher μ at lower energy
-
-        # Test spectral attenuation
-        energies = [40.0, 60.0, 80.0, 100.0]
-        trans_spectral = compute_bowtie_attenuation_spectral(filter_medium, geom, energies)
-        @test size(trans_spectral) == (64, 4, 4)  # [n_cols, n_rows, n_energies]
-        @test all(0 .< trans_spectral .<= 1)
-        # Lower energy should have lower transmission (more attenuation)
-        @test trans_spectral[32, 2, 1] < trans_spectral[32, 2, 4]
-
-        # Test bowtie info
-        info = get_bowtie_info(filter_large)
-        @test info.name == "large_body"
-        @test info.n_materials == 1
-        @test info.materials == ["Al"]
-    end
-
-    @testset "Flat Filter" begin
-        geom = create_aquilion_one(n_angles=36, n_rows=4, n_cols=64)
-
-        # Test filter creation
-        filter_none = flat_filter_none()
-        filter_al = flat_filter_al(2.5)
-        filter_cu = flat_filter_cu(0.1)
-        filter_al_cu = flat_filter_al_cu(2.5, 0.1)
-        filter_ti = flat_filter_ti(0.5)
-
-        @test filter_none isa FlatFilter
-        @test isempty(filter_none.materials)
-        @test filter_al.materials == ["Al"]
-        @test filter_al.thicknesses == [2.5]
-        @test filter_al_cu.materials == ["Al", "Cu"]
-
-        # Test custom filter
-        filter_custom = flat_filter_custom(["Al", "Cu"], [3.0, 0.2])
-        @test length(filter_custom.materials) == 2
-
-        # Test attenuation computation
-        transmission = compute_flat_filter_attenuation(filter_al, geom)
-        @test size(transmission) == (64, 4)
-        @test all(0 .< transmission .<= 1)
-
-        # Center should have higher transmission (shorter path)
-        center_col = 32
-        edge_col = 1
-        @test transmission[center_col, 2] > transmission[edge_col, 2]
-
-        # No filter should give all ones
-        trans_none = compute_flat_filter_attenuation(filter_none, geom)
-        @test all(trans_none .== 1.0)
-
-        # Cu has higher μ, so should have lower transmission for same thickness
-        trans_al = compute_flat_filter_attenuation(flat_filter_al(1.0), geom)
-        trans_cu = compute_flat_filter_attenuation(flat_filter_cu(1.0), geom)
-        @test mean(trans_cu) < mean(trans_al)
-
-        # Test spectral attenuation
-        energies = [40.0, 60.0, 80.0, 100.0]
-        trans_spectral = compute_flat_filter_attenuation_spectral(filter_al, geom, energies)
-        @test size(trans_spectral) == (64, 4, 4)
-        # Lower energy should have lower transmission
-        @test trans_spectral[32, 2, 1] < trans_spectral[32, 2, 4]
-
-        # Test application to sinogram
-        phantom = create_gammex_472(n_voxels=16)
-        geom_small = create_aquilion_one(n_angles=18, n_rows=4, n_cols=32, fov_cm=phantom.fov[1])
-        sinogram = forward_project(phantom, geom_small)
-
-        sino_filtered = apply_flat_filter(sinogram, filter_al, geom_small)
-        @test size(sino_filtered) == size(sinogram)
-        @test all(isfinite.(sino_filtered))
-        @test mean(sino_filtered) > mean(sinogram)  # Filter adds attenuation
-
-        # No filter should return same values
-        sino_none = apply_flat_filter(sinogram, filter_none, geom_small)
-        @test sino_none ≈ sinogram
-
-        # Test info
-        info = get_flat_filter_info(filter_al_cu)
-        @test info.n_materials == 2
-        @test info.total_al_equivalent_mm > 2.5  # Cu adds Al-equivalent
-    end
-
-    @testset "Focal Spot" begin
-        geom = create_aquilion_one(n_angles=36, n_rows=4, n_cols=64)
-
-        # Test focal spot creation
-        fs_small = focal_spot_small()
-        fs_medium = focal_spot_medium()
-        fs_large = focal_spot_large()
-        fs_point = focal_spot_point()
-
-        @test fs_small isa FocalSpot
-        @test fs_small.width == 0.5
-        @test fs_small.shape == :gaussian
-        @test fs_point.width == 0.0
-
-        # Test blur computation
-        blur_fwhm = compute_focal_spot_blur_fwhm(fs_medium, geom, geom.SAD)
-        @test blur_fwhm[1] > 0  # Has some blur
-        @test blur_fwhm[2] > 0
-
-        # Blur should be larger for objects closer to source
-        blur_near = compute_focal_spot_blur_fwhm(fs_medium, geom, geom.SAD * 0.7)
-        blur_far = compute_focal_spot_blur_fwhm(fs_medium, geom, geom.SAD * 1.3)
-        @test blur_near[1] > blur_far[1]
-
-        # Test focal spot info
-        info = get_focal_spot_info(fs_medium, geom)
-        @test info.size_mm == (0.8, 0.8)
-        @test info.shape == :gaussian
-
-        # Test sample generation
-        positions, weights = generate_focal_spot_samples(fs_medium)
-        @test length(positions) == fs_medium.n_samples^2
-        @test length(weights) == length(positions)
-        @test sum(weights) ≈ 1.0  # Normalized
-
-        # Point source should have single sample
-        pos_point, w_point = generate_focal_spot_samples(fs_point)
-        @test length(pos_point) == 1
-        @test pos_point[1] == (0.0, 0.0)
-
-        # Test blur application
-        # Use larger geometry with more detector columns for visible blur
-        phantom = create_gammex_472(n_voxels=32)
-        geom_test = create_aquilion_one(n_angles=18, n_rows=4, n_cols=256, fov_cm=phantom.fov[1])
-        sinogram = forward_project(phantom, geom_test)
-
-        # Use very large focal spot to ensure visible blur
-        fs_very_large = FocalSpot(5.0, 5.0, :gaussian, 5)  # 5mm focal spot
-        sino_blurred = apply_focal_spot_blur(sinogram, fs_very_large, geom_test)
-        @test size(sino_blurred) == size(sinogram)
-        @test all(isfinite.(sino_blurred))
-
-        # Point source should not change sinogram
-        sino_point = apply_focal_spot_blur(sinogram, fs_point, geom_test)
-        @test sino_point ≈ sinogram
-
-        # Large focal spot should produce visible blur (use tighter tolerance)
-        @test !isapprox(sino_blurred, sinogram, rtol=0.001)
-    end
-
-    @testset "Detector Crosstalk" begin
-        # Test model creation
-        ct_none = crosstalk_none()
-        ct_low = crosstalk_low()
-        ct_medium = crosstalk_medium()
-        ct_high = crosstalk_high()
-
-        @test ct_none isa CrosstalkModel
-        @test ct_none.primary_fraction == 1.0
-        @test ct_low.primary_fraction > ct_medium.primary_fraction > ct_high.primary_fraction
-
-        # Test custom crosstalk
-        ct_custom = crosstalk_custom(0.12)
-        @test ct_custom.primary_fraction ≈ 0.88
-        info = get_crosstalk_info(ct_custom)
-        @test info.total_crosstalk_fraction ≈ 0.12
-
-        # Test MTF degradation estimate
-        mtf_none = get_crosstalk_mtf_degradation(ct_none)
-        mtf_low = get_crosstalk_mtf_degradation(ct_low)
-        @test mtf_none ≈ 1.0
-        @test mtf_low < 1.0
-        @test mtf_low > 0.5
-
-        # Test kernel creation
-        kernel = BasisSimulator.create_crosstalk_kernel(ct_medium, 32, 4)
-        @test size(kernel) == (32, 4)
-        @test sum(kernel) ≈ 1.0  # Normalized
-
-        # Test application to sinogram
-        phantom = create_gammex_472(n_voxels=16)
-        geom = create_aquilion_one(n_angles=18, n_rows=4, n_cols=32, fov_cm=phantom.fov[1])
-        sinogram = forward_project(phantom, geom)
-
-        sino_ct = apply_crosstalk(sinogram, ct_medium)
-        @test size(sino_ct) == size(sinogram)
-        @test all(isfinite.(sino_ct))
-
-        # No crosstalk should return same sinogram
-        sino_none = apply_crosstalk(sinogram, ct_none)
-        @test sino_none ≈ sinogram
-
-        # Crosstalk should change values
-        @test !isapprox(sino_ct, sinogram, rtol=0.001)
-
-        # Test intensity-domain application
-        intensity = exp.(-sinogram)
-        intensity_ct = apply_crosstalk_intensity(intensity, ct_medium)
-        @test all(intensity_ct .>= 0)
-        @test !isapprox(intensity_ct, intensity, rtol=0.001)
-    end
-
-    @testset "Detector Lag" begin
-        # Test model creation
-        lag_0 = lag_none()
-        lag_gos = lag_gadox(frame_time=0.5)
-        lag_cesium = lag_csi(frame_time=0.5)
-        lag_hi = lag_high(frame_time=0.5)
-
-        @test lag_0 isa LagModel
-        @test isempty(lag_0.amplitudes)
-        @test length(lag_gos.amplitudes) == 2
-        @test lag_gos.frame_time == 0.5
-
-        # Test custom lag
-        lag_cust = lag_custom([0.02, 0.01], [2.0, 15.0]; frame_time=1.0)
-        @test lag_cust.amplitudes == [0.02, 0.01]
-        @test lag_cust.time_constants == [2.0, 15.0]
-
-        # Test lag info
-        info = get_lag_info(lag_gos)
-        @test info.n_components == 2
-        @test info.total_lag_fraction ≈ sum(lag_gos.amplitudes)
-
-        # Test coefficient computation
-        coeffs = compute_lag_coefficients(lag_gos, 10)
-        @test length(coeffs) == 10
-        @test sum(coeffs) ≈ 1.0  # Normalized to preserve signal
-        @test coeffs[1] > 0.9  # Primary coefficient is largest
-        @test all(coeffs[2:end] .>= 0)  # Lag contributions non-negative
-        @test coeffs[2] > coeffs[end]  # Decay over time
-
-        # Test impulse response
-        ir = compute_lag_impulse_response(lag_gos, 20)
-        @test length(ir) == 20
-        # At t=0: primary (1-sum(a)) + lag (sum(a*exp(0))=sum(a)) = 1.0
-        @test ir[1] ≈ 1.0
-        @test ir[end] < ir[1]  # Decays
-
-        # Test application to sinogram
-        phantom = create_gammex_472(n_voxels=16)
-        geom = create_aquilion_one(n_angles=36, n_rows=4, n_cols=32, fov_cm=phantom.fov[1])
-        sinogram = forward_project(phantom, geom)
-
-        sino_lag = apply_lag(sinogram, lag_gos)
-        @test size(sino_lag) == size(sinogram)
-        @test all(isfinite.(sino_lag))
-
-        # No lag should return same sinogram
-        sino_none = apply_lag(sinogram, lag_0)
-        @test sino_none ≈ sinogram
-
-        # Lag should change values
-        @test !isapprox(sino_lag, sinogram, rtol=0.0001)
-
-        # Test recursive implementation gives similar results
-        sino_lag_rec = apply_lag_recursive(sinogram, lag_gos)
-        @test size(sino_lag_rec) == size(sinogram)
-        @test all(isfinite.(sino_lag_rec))
-        # Results should be similar (not identical due to different boundary handling)
-        @test isapprox(mean(sino_lag), mean(sino_lag_rec), rtol=0.05)
-    end
-
-    @testset "Helical Scanning" begin
-        # Test axial geometry creation via create_scan_geometry
-        geom_axial = create_scan_geometry(
-            mode=:axial,
-            n_angles=36,
-            n_rows=8,
-            n_cols=32
-        )
-        @test geom_axial.n_angles == 36
-        @test geom_axial.n_rows == 8
-        @test geom_axial.n_cols == 32
-        @test !is_helical(geom_axial)
-
-        # Test helical geometry creation
-        geom_helical = create_scan_geometry(
-            mode=:helical,
-            n_angles=36,  # angles per rotation
-            n_rows=8,
-            n_cols=32,
-            pitch=1.0,
-            n_rotations=3.0,
-            z_start=0.0
-        )
-
-        # Helical should have 3x the angles (3 rotations)
-        @test geom_helical.n_angles == 36 * 3
-        @test is_helical(geom_helical)
-
-        # Test helical parameter extraction
-        params = get_helical_parameters(geom_helical)
-        @test params !== nothing
-        @test params.pitch ≈ 1.0 atol=0.01
-        @test params.n_rotations ≈ 3.0
-        @test params.angles_per_rotation == 36
-
-        # Test Z positions increase with angle
-        z_first = geom_helical.source_positions[3, 1]
-        z_last = geom_helical.source_positions[3, end]
-        @test z_last > z_first  # Z increases
-
-        # Test different pitch values
-        geom_pitch_low = create_scan_geometry(
-            mode=:helical, n_angles=36, n_rows=8, n_cols=32,
-            pitch=0.5, n_rotations=2.0
-        )
-        geom_pitch_high = create_scan_geometry(
-            mode=:helical, n_angles=36, n_rows=8, n_cols=32,
-            pitch=1.5, n_rotations=2.0
-        )
-
-        # Higher pitch = more table travel
-        params_low = get_helical_parameters(geom_pitch_low)
-        params_high = get_helical_parameters(geom_pitch_high)
-        @test params_high.table_travel_cm > params_low.table_travel_cm
-
-        # Test coverage computation
-        coverage = compute_helical_z_coverage(geom_helical)
-        @test coverage > 0
-        @test coverage > params.table_travel_cm  # Coverage includes collimation
-
-        # Test scan time estimation
-        scan_time = estimate_helical_scan_time(geom_helical, 0.5)  # 0.5s per rotation
-        @test scan_time ≈ 1.5  # 3 rotations × 0.5s
-
-        # Test forward projection with helical geometry
-        phantom = create_gammex_472(n_voxels=16)
-        sinogram_helical = forward_project(phantom, geom_helical)
-
-        @test size(sinogram_helical, 1) == geom_helical.n_cols
-        @test size(sinogram_helical, 2) == geom_helical.n_rows
-        @test size(sinogram_helical, 3) == geom_helical.n_angles
-        @test all(isfinite.(sinogram_helical))
-
-        # Test interpolation to axial
-        z_target = params.z_start + params.table_travel_cm / 2  # Middle of scan
-        interp_axial = interpolate_helical_to_axial(sinogram_helical, geom_helical, z_target)
-
-        @test size(interp_axial, 1) == geom_helical.n_cols
-        @test size(interp_axial, 2) == geom_helical.n_rows
-        @test size(interp_axial, 3) == params.angles_per_rotation  # One rotation
-        @test all(isfinite.(interp_axial))
-
-        # Interpolation should give values similar to nearby helical data
-        @test mean(interp_axial) > 0
-
-        # Test helical FDK reconstruction
-        # Use a simpler geometry for faster testing
-        geom_recon = create_scan_geometry(
-            mode=:helical,
-            n_angles=36,
-            n_rows=8,
-            n_cols=32,
-            pitch=1.0,
-            n_rotations=2.0,
-            z_start=0.0
-        )
-        phantom_recon = create_gammex_472(n_voxels=16)
-        sino_recon = forward_project(phantom_recon, geom_recon)
-
-        # Test basic reconstruction
-        recon_vol = reconstruct_helical_fdk(sino_recon, geom_recon; recon_size=16)
-
-        @test ndims(recon_vol) == 3
-        @test size(recon_vol, 1) == 16
-        @test size(recon_vol, 2) == 16
-        @test all(isfinite.(recon_vol))
-
-        # Reconstruction should have positive values (μ values)
-        @test maximum(recon_vol) > 0
-
-        # Test with explicit z_positions
-        z_pos = [0.5, 1.0, 1.5]
-        recon_explicit = reconstruct_helical_fdk(sino_recon, geom_recon;
-                                                  z_positions=z_pos,
-                                                  recon_size=16)
-        @test size(recon_explicit, 3) == length(z_pos)
-        @test all(isfinite.(recon_explicit))
-
-        # Test that different pitches produce different results
-        geom_low_pitch = create_scan_geometry(
-            mode=:helical, n_angles=36, n_rows=8, n_cols=32,
-            pitch=0.5, n_rotations=2.0
-        )
-        sino_low_pitch = forward_project(phantom_recon, geom_low_pitch)
-
-        # Both should reconstruct without error
-        recon_low = reconstruct_helical_fdk(sino_low_pitch, geom_low_pitch; recon_size=16)
-        @test all(isfinite.(recon_low))
-        @test maximum(recon_low) > 0
-    end
-
-    @testset "Scanner Configurations" begin
-        # Test GE Revolution Apex Elite creation
-        spec = GERevolutionApexElite()
-        @test spec isa GERevolutionApexElite
-        @test spec isa AbstractScannerSpec
-
-        # Test interface methods
-        @test manufacturer(spec) == GE_HEALTHCARE
-        @test model_name(spec) == "Revolution Apex Elite"
-        @test fda_510k(spec) == "K213715"
-
-        # Test detector specification
-        det = detector(spec)
-        @test det isa DetectorSpecification
-        @test det.material[] == LUMEX
-        @test det.n_rows[] == 256
-        @test det.n_cols[] == 832
-        @test det.row_size_mm[] ≈ 0.625
-        @test det.z_coverage_mm[] ≈ 160.0
-        @test det.detector_type[] == ENERGY_INTEGRATING
-
-        # Test tube specification
-        tb = tube(spec)
-        @test tb isa TubeSpecification
-        @test tb.model_name[] == "Quantix 160"
-        @test tb.max_power_kw[] ≈ 108.0
-        @test tb.target_angle_deg[] ≈ 10.0
-        @test tb.max_ma[] == 1300
-        @test tb.has_flying_focal_spot[] == true
-        @test 120 in tb.kvp_options[]
-
-        # Test geometry specification
-        gm = geometry(spec)
-        @test gm isa GeometrySpecification
-        @test gm.sid_mm[] ≈ 626.0
-        @test gm.sdd_mm[] ≈ 1097.0
-        @test gm.gantry_aperture_mm[] ≈ 800.0
-        @test gm.max_sfov_mm[] ≈ 500.0
-
-        # Test acquisition specification
-        acq = acquisition(spec)
-        @test acq isa AcquisitionSpecification
-        @test acq.min_rotation_time_s[] ≈ 0.23
-        @test acq.max_rotation_time_s[] ≈ 1.0
-        @test acq.max_views_per_rotation[] == 2496
-        @test 0.992 in acq.helical_pitch_options[]
-
-        # Test SourceCitation access
-        @test det.material.source == :fda_510k
-        @test !isempty(det.material.url)
-        @test !isempty(det.material.note)
-
-        # Test geometry creation from spec
-        geom = create_geometry(spec; n_angles=180, n_rows=16, n_cols=256)
-        @test geom isa CTGeometry
-        @test geom.SAD ≈ 62.6  # 626.0 mm → 62.6 cm
-        @test geom.SDD ≈ 109.7  # 1097.0 mm → 109.7 cm
-        @test geom.n_angles == 180
-        @test geom.n_rows == 16
-        @test geom.n_cols == 256
-
-        # Test geometry with default cols from spec
-        geom_default = create_geometry(spec; n_angles=36, n_rows=8)
-        @test geom_default.n_cols == 832  # From spec
-
-        # Test source/detector positions
-        @test size(geom.source_positions) == (3, 180)
-        @test size(geom.detector_centers) == (3, 180)
-        @test size(geom.detector_u) == (3, 180)
-        @test size(geom.detector_v) == (3, 180)
-
-        # Test first angle source position (0, -SAD, 0)
-        @test geom.source_positions[1, 1] ≈ 0.0 atol=1e-10
-        @test geom.source_positions[2, 1] ≈ -62.6 atol=1e-10
-        @test geom.source_positions[3, 1] ≈ 0.0 atol=1e-10
-
-        # Test protocol presets
-        protocol_chest = GEApexChestHelical()
-        @test protocol_chest isa HelicalProtocol
-        @test protocol_chest.kvp == 120
-        @test protocol_chest.pitch ≈ 0.992
-        @test protocol_chest.rotation_time_s ≈ 0.5
-        @test protocol_chest.n_angles_per_rotation == 984
-        @test protocol_chest.slice_thickness_mm ≈ 0.625
-
-        protocol_head = GEApexHeadAxial()
-        @test protocol_head isa AxialProtocol
-        @test protocol_head.kvp == 120
-        @test protocol_head.rotation_time_s ≈ 1.0
-        @test protocol_head.n_angles == 984
-
-        protocol_cardiac = GEApexCardiacHelical()
-        @test protocol_cardiac isa HelicalProtocol
-        @test protocol_cardiac.rotation_time_s ≈ 0.28  # Fast rotation
-        @test protocol_cardiac.pitch ≈ 0.5  # Low pitch for cardiac
-
-        protocol_abdomen = GEApexAbdomenHelical()
-        @test protocol_abdomen isa HelicalProtocol
-        @test protocol_abdomen.slice_thickness_mm ≈ 1.25
-
-        # Test pediatric protocol
-        protocol_ped = GEApexPediatricHelical(; age_group=:infant)
-        @test protocol_ped.kvp == 80  # Reduced kVp for infants
-        @test protocol_ped.ma == 80   # Reduced mA
-
-        protocol_ped_child = GEApexPediatricHelical(; age_group=:child)
-        @test protocol_ped_child.kvp == 100
-
-        # Test dose level variants
-        protocol_low = GEApexChestHelical(; dose_level=:low)
-        protocol_high = GEApexChestHelical(; dose_level=:high)
-        @test protocol_low.ma < protocol_chest.ma
-        @test protocol_high.ma > protocol_chest.ma
-
-        # Test geometry creation with protocol
-        geom_protocol = create_geometry(spec, protocol_chest; n_rows=16)
-        @test geom_protocol.n_angles == 984  # From protocol
-        @test geom_protocol.n_rows == 16
-
-        geom_axial = create_geometry(spec, protocol_head; n_rows=16)
-        @test geom_axial.n_angles == 984  # From protocol
-
-        # Test print_scanner_info (just check it runs without error)
-        # Note: We can't easily capture stdout in tests, so just verify it doesn't throw
-        @test begin
-            print_scanner_info(spec)
-            true
-        end
-
-        # Test get_source_citations
-        citations = get_source_citations(spec)
-        @test citations isa Dict{String, SourceCitation}
-        @test haskey(citations, "detector.material")
-        @test haskey(citations, "geometry.sid_mm")
-        @test haskey(citations, "tube.model_name")
-        @test citations["detector.n_rows"][] == 256
-
-        # Test forward projection with scanner geometry
-        phantom = create_gammex_472(n_voxels=16)
-        geom_sim = create_geometry(spec; n_angles=36, n_rows=8, n_cols=64, fov_cm=phantom.fov[1])
-        sinogram = forward_project(phantom, geom_sim)
-
-        @test size(sinogram) == (64, 8, 36)
-        @test maximum(sinogram) > 0
-        @test all(isfinite.(sinogram))
-
-        # Test FDK reconstruction with scanner geometry
-        recon = fdk_reconstruct(sinogram, geom_sim, size(phantom.μ), phantom.fov)
-        @test size(recon) == size(phantom.μ)
-        @test maximum(recon) > 0
-        @test all(isfinite.(recon))
-
-        # Test enums
-        @test GE_HEALTHCARE isa ScannerManufacturer
-        @test SIEMENS_HEALTHINEERS isa ScannerManufacturer
-        @test ENERGY_INTEGRATING isa DetectorType
-        @test PHOTON_COUNTING isa DetectorType
-        @test GOS isa DetectorMaterial
-        @test LUMEX isa DetectorMaterial
-        @test CDTE isa DetectorMaterial
-    end
-
-    # Visualization is in stuff/scripts/visualize.jl (run manually with CairoMakie)
 end

@@ -48,12 +48,6 @@ include("Geometry/Helical.jl")
 # Forward Projection
 # =============================================================================
 
-# Forward projector (ray-driven, Siddon's method)
-include("Forward/Projector.jl")
-
-# Polychromatic simulation (energy-dependent attenuation)
-include("Forward/Polychromatic.jl")
-
 # Scatter simulation (analytic kernel)
 include("Forward/Scatter.jl")
 
@@ -84,6 +78,9 @@ include("Forward/FillFactor.jl")
 # Flying focal spot modeling
 include("Forward/FlyingFocalSpot.jl")
 
+# Ray marching projector (on-the-fly geometry, single compiled kernel, polychromatic support)
+include("Forward/RayMarching.jl")
+
 # =============================================================================
 # Reconstruction
 # =============================================================================
@@ -97,8 +94,8 @@ include("Reconstruction/BeamHardeningCorrection.jl")
 # FDK cone-beam reconstruction
 include("Reconstruction/FDK.jl")
 
-# Iterative reconstruction (SIRT, CGLS)
-include("Reconstruction/Iterative.jl")
+# Ray marching backprojection (on-the-fly geometry, single compiled kernel)
+include("Reconstruction/RayMarchingBackproj.jl")
 
 # =============================================================================
 # Clinical Scanner Configurations
@@ -116,5 +113,12 @@ include("Optimization/Loss.jl")
 
 # Gradient computation and optimization
 include("Optimization/Gradients.jl")
+
+# =============================================================================
+# Unified High-Level API
+# =============================================================================
+
+# Main API: simulate_sinogram() and reconstruct()
+include("API.jl")
 
 end # module

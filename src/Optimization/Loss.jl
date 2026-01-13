@@ -164,61 +164,8 @@ function non_negativity_penalty(volume::AbstractArray{T}; strength::T=T(1e6)) wh
 end
 
 # =============================================================================
-# Combined Loss Functions
-# =============================================================================
-
-"""
-    reconstruction_loss(volume, sinogram_target, proj_geom;
-                        λ_tv=0.0, λ_l2=0.0, λ_nn=1e6)
-
-Combined loss for iterative reconstruction.
-
-    L = MSE(A·x, y) + λ_tv·TV(x) + λ_l2·L2(x) + λ_nn·NN(x)
-
-where A is the forward projector, x is the volume, y is the target sinogram.
-
-# Arguments
-- `volume`: Current volume estimate
-- `sinogram_target`: Target sinogram (measured data)
-- `proj_geom`: Pre-computed projection geometry
-- `λ_tv`: Total variation weight
-- `λ_l2`: L2 regularization weight
-- `λ_nn`: Non-negativity penalty weight
-"""
-function reconstruction_loss(
-    volume::AbstractArray{T},
-    sinogram_target::AbstractArray{T},
-    proj_geom::ProjectionGeometry;
-    λ_tv::T=T(0.0),
-    λ_l2::T=T(0.0),
-    λ_nn::T=T(1e6)
-) where T
-    # Data fidelity term
-    sinogram_pred = project_volume(volume, proj_geom)
-    data_loss = mse_loss(sinogram_pred, sinogram_target)
-
-    # Regularization terms
-    reg_loss = T(0)
-
-    if λ_tv > 0
-        reg_loss += λ_tv * tv_regularization(volume)
-    end
-
-    if λ_l2 > 0
-        reg_loss += λ_l2 * l2_regularization(volume)
-    end
-
-    if λ_nn > 0
-        reg_loss += non_negativity_penalty(volume; strength=λ_nn)
-    end
-
-    return data_loss + reg_loss
-end
-
-# =============================================================================
 # Exports
 # =============================================================================
 
 export mse_loss, weighted_mse_loss, mae_loss, huber_loss
 export tv_regularization, l1_regularization, l2_regularization, non_negativity_penalty
-export reconstruction_loss

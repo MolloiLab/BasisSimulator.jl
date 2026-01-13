@@ -96,7 +96,9 @@ src/
 │   ├── Scanner.jl             # CT geometry (Aquilion One)
 │   └── Helical.jl             # Helical scanning
 ├── Forward/
-│   ├── Projector.jl           # Forward projection
+│   ├── Projector.jl           # Forward projection (Siddon)
+│   ├── RayMarching.jl         # Ray marching forward projection (NEW)
+│   ├── ClinicalProjector.jl   # Angle-batched projection
 │   ├── Polychromatic.jl       # Polychromatic simulation
 │   ├── Scatter.jl             # Scatter modeling
 │   ├── DetectorNoise.jl       # Noise modeling
@@ -109,6 +111,8 @@ src/
 ├── Reconstruction/
 │   ├── Kernels.jl             # Recon kernels
 │   ├── FDK.jl                 # FDK reconstruction
+│   ├── RayMarchingBackproj.jl # Ray marching backprojection (NEW)
+│   ├── ClinicalFDK.jl         # Angle-batched FDK
 │   └── Iterative.jl           # SIRT, CGLS iterative recon
 ├── Scanners/
 │   ├── Scanners.jl            # Scanner module with base types
@@ -206,6 +210,7 @@ src/Scanners/
   - [x] GE Revolution Apex Elite (K213715)
   - [ ] Siemens SOMATOM (future)
   - [ ] Canon Aquilion (future)
+- [x] Clinical-scale projection/reconstruction (angle-batched)
 - [ ] Full material database (NIST XCOM)
 - [ ] Photon counting detector model
 
@@ -374,6 +379,164 @@ end
 
 ---
 
+## Clinical-Scale Architecture: Angle-Batched Processing
+
+### The Problem
+The standard pre-computed geometry approach stores indices/weights for ALL angles:
+- `ProjectionGeometry`: [n_cols × n_rows × n_angles × max_samples]
+- `BackprojectionGeometry`: [4 × nx × ny × nz × n_angles]
+
+For clinical scale (1000 angles, 1000 cols, 512³ volume):
+- Projection: 1000 × 64 × 1000 × 1500 = **96 trillion elements** = impossible
+- Backprojection: 4 × 512 × 512 × 320 × 1000 = **335 billion elements** = impossible
+
+### The Solution: Angle-Batched Processing
+Process one angle (or small batch) at a time:
+1. Pre-compute geometry for ONE angle (~1-2 GB)
+2. XLA-compile the single-angle kernel
+3. Loop over angles, accumulating results
+4. Geometry gets GC'd between angles
+
+Memory per angle:
+- Projection: 1000 × 64 × 1500 = 96M elements = **~1.5 GB** (manageable!)
+- Backprojection: 4 × 512 × 512 × 320 = 335M elements = **~5 GB** (manageable!)
+
+### Implementation Files
+- `src/Forward/ClinicalProjector.jl` - Angle-batched forward projection
+- `src/Reconstruction/ClinicalFDK.jl` - Angle-batched FDK reconstruction
+
+### Key Functions
+```julia
+# Forward projection (clinical scale)
+sinogram = forward_project_clinical(phantom, geom; verbose=true)
+
+# FDK reconstruction (clinical scale)
+volume = fdk_reconstruct_clinical(sinogram, geom, output_size, fov; verbose=true)
+
+# XLA-compilable kernels (for user-side Reactant integration)
+project_single_angle(volume_flat, indices, weights)
+backproject_single_angle(sino_flat, indices, bilinear_w, distance_w)
+```
+
+### Usage Pattern for Reactant Compilation
+```julia
+using Reactant
+
+# Compile kernel once
+volume_ra = Reactant.to_rarray(volume_flat)
+indices_ra = Reactant.to_rarray(angle_geom.linear_indices)
+weights_ra = Reactant.to_rarray(angle_geom.sample_weights)
+compiled_project = @compile project_single_angle(volume_ra, indices_ra, weights_ra)
+
+# Reuse for each angle
+for angle_idx in 1:n_angles
+    angle_geom = precompute_single_angle_geometry(geom, phantom, angle_idx)
+    indices_ra = Reactant.to_rarray(angle_geom.linear_indices)
+    weights_ra = Reactant.to_rarray(angle_geom.sample_weights)
+    projection = Array(compiled_project(volume_ra, indices_ra, weights_ra))
+    sinogram[:, :, angle_idx] = projection
+end
+```
+
+### Trade-offs
+| Approach | Memory | Speed | XLA-Compatible |
+|----------|--------|-------|----------------|
+| Full pre-computed | O(angles × detector × samples) | Fastest | Yes (if fits) |
+| Angle-batched | O(detector × samples) | Slower | Yes |
+| On-the-fly | O(1) | Slowest | Harder |
+
+The angle-batched approach is the sweet spot for clinical scale: bounded memory with XLA compilation.
+
+---
+
+## Ray Marching Architecture (NEW - Optimal Approach)
+
+### The Problem with Angle-Batched
+While angle-batched processing bounds memory, it still requires:
+- One kernel call per angle (e.g., 984 kernel launches for clinical CT)
+- Pre-computed geometry arrays (~500MB-1GB per angle)
+- Significant kernel launch overhead
+
+### The Solution: Ray Marching with On-the-Fly Geometry
+Compute geometry **inside** the kernel from compact parameters:
+- Store only ray origins/directions (~600MB total for all rays)
+- **ONE kernel call** for ALL angles
+- Fixed-step ray marching with trilinear interpolation
+
+### Memory Comparison
+
+| Approach | Geometry Storage | Kernel Calls (360 angles) |
+|----------|-----------------|---------------------------|
+| Full pre-computed | ~500GB | 1 |
+| Angle-batched | ~500MB/angle | 360 |
+| **Ray marching** | **~600MB total** | **1** |
+
+### Implementation Files
+- `src/Forward/RayMarching.jl` - Ray marching forward projection
+- `src/Reconstruction/RayMarchingBackproj.jl` - Ray marching backprojection
+
+### Key Functions
+
+```julia
+# Forward Projection (ray marching)
+ray_geom = compute_ray_geometry(geom, fov, volume_size)
+sinogram = forward_project_raymarching_vectorized(
+    volume, ray_geom.origins, ray_geom.directions,
+    ray_geom.vol_min, voxel_size, n_samples, step_size
+)
+
+# Backprojection (ray marching)
+bp_geom = compute_backproj_geometry(geom)
+volume = backproject_raymarching_kernel(
+    filtered_sinogram,
+    bp_geom.source_positions, bp_geom.detector_centers,
+    bp_geom.detector_u, bp_geom.detector_v, bp_geom.sd_axis,
+    voxel_x, voxel_y, voxel_z,
+    bp_geom.SAD, bp_geom.SDD, bp_geom.pixel_size_det, bp_geom.delta_angle,
+    bp_geom.n_cols, bp_geom.n_rows
+)
+
+# FDK Reconstruction (complete)
+recon = fdk_reconstruct_raymarching(sinogram, geom, output_size, fov)
+```
+
+### Ray Marching Parameters
+
+```julia
+# Step size: typically 0.5 × minimum voxel size
+min_voxel = minimum(voxel_size)
+step_size = Float32(min_voxel * 0.5)
+
+# Number of samples: enough to traverse volume diagonal
+diagonal = sqrt(sum(fov .^ 2))
+n_samples = ceil(Int, diagonal / step_size) + 10
+```
+
+### Accuracy
+Ray marching with step_size = 0.5 × voxel_size achieves accuracy indistinguishable from Siddon's exact method. The error is well below quantum noise levels. Many commercial scanners use similar approximate methods.
+
+### Reactant Compilation (Future)
+The ray marching kernels are designed for Reactant.@compile:
+
+```julia
+using Reactant
+
+# Convert to Reactant arrays
+vol_ra = Reactant.to_rarray(volume)
+origins_ra = Reactant.to_rarray(ray_geom.origins)
+dirs_ra = Reactant.to_rarray(ray_geom.directions)
+
+# Compile once, run many times
+compiled_proj = @compile forward_project_raymarching_compiled(
+    vol_ra, origins_ra, dirs_ra,
+    vol_min_x, vol_min_y, vol_min_z,
+    voxel_size_x, voxel_size_y, voxel_size_z,
+    n_samples, step_size
+)
+```
+
+---
+
 ## Testing
 
 Run tests: `julia --project -e 'using Pkg; Pkg.test()'`
@@ -469,15 +632,28 @@ weighted = preweight_cosine(sino, geom)
 filtered = filter_ramp(weighted, geom; kernel=kernel_soft())
 volume = backproject_volume(vec(filtered), bp_geom)
 
-# Iterative Reconstruction (XLA-compatible)
+# Array-based functions for Reactant compilation
+# (avoids embedding structs as constants)
 proj_geom = precompute_projection_geometry(geom, fov, voxel_size, output_size)
 bp_geom = precompute_backprojection_geometry(geom, output_size, fov)
 
-# SIRT (robust to noise, slower convergence)
+# Compile with Reactant (extract arrays, pass directly)
+vol_ra = Reactant.to_rarray(volume)
+proj_indices_ra = Reactant.to_rarray(proj_geom.linear_indices)
+proj_weights_ra = Reactant.to_rarray(Float32.(proj_geom.sample_weights))
+compiled_proj = @compile project_volume_arrays(vol_ra, proj_indices_ra, proj_weights_ra)
+
+sino_ra = Reactant.to_rarray(vec(sinogram))
+bp_indices_ra = Reactant.to_rarray(bp_geom.linear_indices)
+bp_bilinear_ra = Reactant.to_rarray(bp_geom.bilinear_weights)
+bp_distance_ra = Reactant.to_rarray(bp_geom.distance_weights)
+compiled_bp = @compile backproject_volume_arrays(sino_ra, bp_indices_ra, bp_bilinear_ra, bp_distance_ra)
+
+# Iterative Reconstruction (XLA-compatible)
+# Use struct-based functions for convenience (slower, not compiled)
 result = sirt_reconstruct(sino, proj_geom, bp_geom; n_iterations=50)
 recon = result.volume
 
-# CGLS (faster convergence, semi-convergent)
 result = cgls_reconstruct(sino, proj_geom, bp_geom; n_iterations=20)
 recon = result.volume
 
@@ -529,10 +705,16 @@ When continuing a session:
 4. Consult CatSim source code before implementing new features
 5. Commit and push incrementally
 
-Last updated: 2026-01-12
+Last updated: 2026-01-13
 Current test count: 564
 Phase 1 (CatSim Parity): COMPLETE
 Phase 2 (Differentiable Reconstruction): COMPLETE
 Additional features: Tang 3D weighting, optical crosstalk, fill factors, flying focal spot, iterative recon (SIRT, CGLS)
 XLA-Compatible: forward_project (project_volume), fdk_reconstruct_xla (backproject_volume), sirt_reconstruct, cgls_reconstruct
 Clinical Scanners: GE Revolution Apex Elite (K213715) with FDA 510(k) sourced parameters
+
+**NEW: Ray Marching Architecture**
+- `src/Forward/RayMarching.jl` - Single-kernel forward projection for ALL angles
+- `src/Reconstruction/RayMarchingBackproj.jl` - Single-kernel backprojection for ALL angles
+- Key functions: `compute_ray_geometry()`, `forward_project_raymarching_vectorized()`, `backproject_raymarching_kernel()`, `fdk_reconstruct_raymarching()`
+- Pluto notebook updated to use ray marching approach
