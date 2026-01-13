@@ -637,7 +637,7 @@ Uses @trace to prevent loop unrolling over energy bins.
 # Arguments
 - `path_lengths`: [n_cols, n_rows, n_angles, n_regions] - path through each region
 - `μ_by_energy`: [n_regions, n_energies] - attenuation coefficients
-- `spectrum_weights`: [n_energies] - normalized spectrum weights
+- `spectrum_weights`: Either [n_energies] for uniform weights, or [n_cols, n_rows, n_energies] for per-pixel weights
 - `n_energies`: Number of energy bins
 
 # Returns
@@ -646,19 +646,20 @@ Transmission [n_cols, n_rows, n_angles]
 function compute_polychromatic_transmission(
     path_lengths::AbstractArray{<:Real, 4},
     μ_by_energy::AbstractArray{<:Real, 2},
-    spectrum_weights::AbstractArray{<:Real, 1},
+    spectrum_weights::AbstractArray{<:Real},
     n_energies::Int
 )
     n_cols, n_rows, n_angles, n_regions = size(path_lengths)
     ET = eltype(path_lengths)  # Element type
+
+    # Check if we have per-pixel weights (3D) or uniform weights (1D)
+    has_perpixel_weights = ndims(spectrum_weights) == 3
 
     # Initialize transmission accumulator
     transmission = zeros(ET, n_cols, n_rows, n_angles)
 
     # Use @trace to prevent loop unrolling - critical for XLA efficiency
     @trace for e_idx in 1:n_energies
-        weight = spectrum_weights[e_idx]
-
         # Compute line integral for this energy
         line_integral = zeros(ET, n_cols, n_rows, n_angles)
 
@@ -668,7 +669,17 @@ function compute_polychromatic_transmission(
         end
 
         # Accumulate weighted transmission (Beer-Lambert law)
-        transmission .+= weight .* exp.(-line_integral)
+        if has_perpixel_weights
+            # Per-pixel weights: spectrum_weights[col, row, energy]
+            # Broadcast over angles dimension
+            for angle in 1:n_angles
+                transmission[:, :, angle] .+= spectrum_weights[:, :, e_idx] .* exp.(-line_integral[:, :, angle])
+            end
+        else
+            # Uniform weights: spectrum_weights[energy]
+            weight = spectrum_weights[e_idx]
+            transmission .+= weight .* exp.(-line_integral)
+        end
     end
 
     return transmission
@@ -694,7 +705,7 @@ This is a SINGLE compiled kernel for ALL angles and ALL energies.
 # Arguments
 - `mask`: Region labels [nx, ny, nz] (UInt8, values 0-26)
 - `μ_by_energy`: Attenuation table [n_regions, n_energies]
-- `spectrum_weights`: Normalized spectrum weights [n_energies]
+- `spectrum_weights`: Normalized spectrum weights - either [n_energies] (uniform) or [n_cols, n_rows, n_energies] (per-pixel, for filter effects)
 - `ray_origins`: Ray start points [3, n_cols, n_rows, n_angles]
 - `ray_directions`: Normalized ray directions [3, n_cols, n_rows, n_angles]
 - `vol_min`: Volume minimum coordinates (x, y, z)
@@ -708,7 +719,7 @@ Sinogram [n_cols, n_rows, n_angles] with beam hardening effects
 function forward_project_polychromatic_raymarching(
     mask::AbstractArray{UInt8, 3},
     μ_by_energy::AbstractArray{T, 2},
-    spectrum_weights::AbstractArray{T, 1},
+    spectrum_weights::AbstractArray{<:Real},
     ray_origins::AbstractArray{T, 4},
     ray_directions::AbstractArray{T, 4},
     vol_min::NTuple{3, T},
@@ -740,18 +751,22 @@ end
 """
     create_polychromatic_projector_raymarching(
         phantom, geom, kVp;
-        n_bins=20, spectrum_source=:xspect
+        n_bins=20, spectrum_source=:xspect, flat_filter=nothing, bowtie_filter=nothing
     )
 
 Create parameters for polychromatic ray marching projection.
+
+Filters are applied correctly in the spectral domain: they modify the X-ray spectrum
+before the object, not add to the sinogram after projection.
 
 Returns a NamedTuple with all parameters needed for `forward_project_polychromatic_raymarching`.
 
 # Example
 ```julia
-params = create_polychromatic_projector_raymarching(phantom, geom, 120)
+params = create_polychromatic_projector_raymarching(phantom, geom, 120;
+    flat_filter=flat_filter_al_cu(), bowtie_filter=bowtie_filter_medium_body())
 sinogram = forward_project_polychromatic_raymarching(
-    params.mask, params.μ_by_energy, params.spectrum_weights,
+    params.mask, params.μ_by_energy, params.spectrum_weights_filtered,
     params.ray_origins, params.ray_directions,
     params.vol_min, params.voxel_size, params.n_samples, params.step_size
 )
@@ -763,7 +778,9 @@ function create_polychromatic_projector_raymarching(
     kVp::Int;
     n_bins::Int=20,
     spectrum_source::Symbol=:xspect,
-    step_factor::Float64=0.5
+    step_factor::Float64=0.5,
+    flat_filter::Union{FlatFilter,Nothing}=nothing,
+    bowtie_filter::Union{BowtieFilter,Nothing}=nothing
 )
     # Load spectrum
     energies, weights = load_spectrum(kVp; source=spectrum_source)
@@ -820,10 +837,62 @@ function create_polychromatic_projector_raymarching(
         Float32(phantom.voxel_size[3])
     )
 
+    # ==========================================================================
+    # CORRECT FILTER APPLICATION: Modify spectrum weights, not sinogram
+    #
+    # Physics: I = ∫ S(E) × T_flat(E) × T_bowtie(E, θ) × exp(-∫μ(E,r)dr) dE
+    #
+    # Filters attenuate the X-ray beam BEFORE the object. The air calibration (I₀)
+    # is done WITH filters in place, so filters should NOT add to the sinogram.
+    # Instead, they cause spectral hardening that must be modeled in the integral.
+    #
+    # For each detector pixel, compute filter transmission at each energy and
+    # incorporate into the spectrum weights.
+    # ==========================================================================
+
+    # Compute energy-dependent filter transmission [n_cols, n_rows, n_energies]
+    n_cols = geom.n_cols
+    n_rows = geom.n_rows
+
+    # Initialize filter transmission (default = 1.0 = no filter effect)
+    filter_transmission = ones(Float32, n_cols, n_rows, n_energies)
+
+    # Apply flat filter transmission
+    if flat_filter !== nothing && !isempty(flat_filter.materials)
+        flat_trans = compute_flat_filter_attenuation_spectral(flat_filter, geom, energies)
+        filter_transmission .*= Float32.(flat_trans)
+    end
+
+    # Apply bowtie filter transmission
+    if bowtie_filter !== nothing && bowtie_filter.name != "none"
+        bowtie_trans = compute_bowtie_attenuation_spectral(bowtie_filter, geom, energies)
+        filter_transmission .*= Float32.(bowtie_trans)
+    end
+
+    # Compute spectrum weights including filter transmission
+    # spectrum_weights_filtered[col, row, energy] = original_weight[energy] × filter_trans[col, row, energy]
+    spectrum_weights_filtered = zeros(Float32, n_cols, n_rows, n_energies)
+    for e_idx in 1:n_energies
+        spectrum_weights_filtered[:, :, e_idx] = Float32(weights[e_idx]) .* filter_transmission[:, :, e_idx]
+    end
+
+    # Renormalize per pixel so that sum over energies = 1 for each pixel
+    # This ensures the "air calibration" is properly handled - filters reduce I₀
+    # but since we normalize, their effect is only on spectral shape (beam hardening)
+    for col in 1:n_cols
+        for row in 1:n_rows
+            pixel_sum = sum(spectrum_weights_filtered[col, row, :])
+            if pixel_sum > 1e-10
+                spectrum_weights_filtered[col, row, :] ./= pixel_sum
+            end
+        end
+    end
+
     return (
         mask = phantom.mask,
         μ_by_energy = μ_by_energy,
-        spectrum_weights = Float32.(weights),
+        spectrum_weights = Float32.(weights),  # Original weights (no filters)
+        spectrum_weights_filtered = spectrum_weights_filtered,  # Per-pixel filtered weights
         ray_origins = ray_geom.origins,
         ray_directions = ray_geom.directions,
         vol_min = vol_min,
@@ -833,7 +902,8 @@ function create_polychromatic_projector_raymarching(
         energies = Float32.(energies),
         effective_energy = sum(energies .* weights),
         n_energies = n_energies,
-        n_regions = n_regions
+        n_regions = n_regions,
+        has_filters = (flat_filter !== nothing || bowtie_filter !== nothing)
     )
 end
 
@@ -851,9 +921,15 @@ that processes ALL angles and ALL energies.
 - `kVp::Int`: Tube voltage (determines spectrum)
 - `n_bins::Int=20`: Number of energy bins
 - `spectrum_source::Symbol=:xspect`: Spectrum data source
+- `flat_filter`: Flat filter (applied in spectral domain), `nothing` to disable
+- `bowtie_filter`: Bowtie filter (applied in spectral domain), `nothing` to disable
 
 # Returns
 Sinogram [n_cols, n_rows, n_angles] with beam hardening effects
+
+# Note
+Filters are applied correctly in the spectral domain - they modify the X-ray
+spectrum before the object, not add to the sinogram after projection.
 """
 function forward_project_polychromatic(
     phantom::Phantom,
@@ -861,17 +937,27 @@ function forward_project_polychromatic(
     kVp::Int;
     n_bins::Int=20,
     spectrum_source::Symbol=:xspect,
-    step_factor::Float64=0.5
+    step_factor::Float64=0.5,
+    flat_filter::Union{FlatFilter,Nothing}=nothing,
+    bowtie_filter::Union{BowtieFilter,Nothing}=nothing
 )
     params = create_polychromatic_projector_raymarching(
         phantom, geom, kVp;
-        n_bins=n_bins, spectrum_source=spectrum_source, step_factor=step_factor
+        n_bins=n_bins, spectrum_source=spectrum_source, step_factor=step_factor,
+        flat_filter=flat_filter, bowtie_filter=bowtie_filter
     )
+
+    # Use filtered spectrum weights if filters are present
+    spectrum_weights = if params.has_filters
+        params.spectrum_weights_filtered
+    else
+        params.spectrum_weights
+    end
 
     return forward_project_polychromatic_raymarching(
         params.mask,
         params.μ_by_energy,
-        params.spectrum_weights,
+        spectrum_weights,
         params.ray_origins,
         params.ray_directions,
         params.vol_min,
