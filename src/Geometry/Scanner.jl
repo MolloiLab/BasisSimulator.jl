@@ -53,11 +53,11 @@ struct CTGeometry
 end
 
 """
-    create_aquilion_one(; n_angles=360, n_rows=64, n_cols=128, fov_cm=nothing)
+    create_aquilion_one(; n_angles=360, n_rows=64, n_cols=128, fov_cm=nothing, sad=nothing, sdd=nothing)
 
-Create Canon Aquilion ONE scanner geometry.
+Create CT scanner geometry (defaults to Canon Aquilion ONE specifications).
 
-# Canon Aquilion ONE Specifications
+# Canon Aquilion ONE Specifications (defaults)
 - SAD: 600 mm (source-to-axis distance)
 - SDD: 1000 mm (source-to-detector distance)
 - Detector: 320 rows × 896 columns (full)
@@ -70,6 +70,8 @@ Create Canon Aquilion ONE scanner geometry.
 - `n_cols::Int`: Detector columns, reduced for fast iteration (default 128)
 - `fov_cm::Union{Float64,Nothing}`: If specified, adjust pixel size to cover this FOV.
   If nothing, use real scanner pixel size (0.5mm).
+- `sad::Union{Float64,Nothing}`: Source-to-axis distance in cm (default 60.0 cm / 600 mm)
+- `sdd::Union{Float64,Nothing}`: Source-to-detector distance in cm (default 100.0 cm / 1000 mm)
 
 # Returns
 `CTGeometry` with pre-computed source/detector positions.
@@ -78,16 +80,18 @@ function create_aquilion_one(;
     n_angles::Int=360,
     n_rows::Int=64,
     n_cols::Int=128,
-    fov_cm::Union{Float64,Nothing}=nothing
+    fov_cm::Union{Float64,Nothing}=nothing,
+    sad::Union{Float64,Nothing}=nothing,
+    sdd::Union{Float64,Nothing}=nothing
 )
-    # Canon Aquilion ONE specifications
+    # Canon Aquilion ONE specifications (defaults)
     SAD_mm = 600.0   # Source-to-axis distance (mm)
     SDD_mm = 1000.0  # Source-to-detector distance (mm)
     pixel_pitch_mm = 0.5  # At isocenter (mm)
 
-    # Convert to cm
-    SAD = SAD_mm / 10.0
-    SDD = SDD_mm / 10.0
+    # Use custom SAD/SDD if provided (input in cm), otherwise use defaults
+    SAD = sad !== nothing ? sad : SAD_mm / 10.0
+    SDD = sdd !== nothing ? sdd : SDD_mm / 10.0
 
     # Determine pixel size
     if fov_cm === nothing
