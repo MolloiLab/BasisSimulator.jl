@@ -271,135 +271,6 @@ let
 	fig
 end
 
-# ╔═╡ 00000001-0000-0000-0000-000000000030
-md"""
----
-## 3.5 Beam Hardening Correction (BHC)
-
-Beam hardening causes **cupping artifacts** - the center of uniform objects appears darker than the edges. Water BHC uses a polynomial correction to linearize the relationship between polychromatic and monochromatic attenuation.
-
-BasisSimulator implements CatSim-style water BHC:
-- Polynomial fitting (typically order 5)
-- Horner scheme for efficient evaluation
-- Pre-calibrated models for 80/100/120/140 kVp
-"""
-
-# ╔═╡ 00000001-0000-0000-0000-000000000031
-begin
-	# Calibrate BHC for different kVp
-	bhc_120 = water_bhc_120kVp()
-	bhc_80 = water_bhc_80kVp()
-
-	# Get BHC info
-	bhc_info = get_bhc_info(bhc_120)
-
-	md"""
-	**Water BHC Model (120 kVp):**
-	- Polynomial order: $(bhc_info.poly_order)
-	- Effective μ water: $(round(bhc_info.effective_μ_cm, digits=4)) cm⁻¹
-	- Max calibrated path: $(bhc_info.max_path_cm) cm
-	"""
-end
-
-# ╔═╡ 00000001-0000-0000-0000-000000000032
-begin
-	# Apply BHC to 120 kVp polychromatic sinogram
-	sino_120_corrected = apply_water_bhc(sino_poly[120], bhc_120)
-
-	# Reconstruct with BHC
-	recon_120_bhc = fdk_reconstruct(sino_120_corrected, geom, size(phantom.μ), phantom.fov)
-	recon_120_bhc_HU = μ_to_HU(recon_120_bhc, get_effective_μ_water(projectors[120]))
-
-	# Also do 80 kVp (more severe beam hardening)
-	sino_80_corrected = apply_water_bhc(sino_poly[80], bhc_80)
-	recon_80_bhc = fdk_reconstruct(sino_80_corrected, geom, size(phantom.μ), phantom.fov)
-	recon_80_bhc_HU = μ_to_HU(recon_80_bhc, get_effective_μ_water(projectors[80]))
-
-	md"""
-	**BHC applied to sinograms** - reconstructions complete for 80 and 120 kVp
-	"""
-end
-
-# ╔═╡ 00000001-0000-0000-0000-000000000033
-let
-	fig = Figure(size=(1100, 450))
-
-	# 120 kVp comparison
-	ax1 = Axis(fig[1, 1], aspect=DataAspect(), title="120 kVp - No BHC")
-	hm1 = heatmap!(ax1, recon_poly_HU[120][:, :, mid_slice]';
-		colormap=:grays, colorrange=(-200, 400))
-	hidedecorations!(ax1)
-
-	ax2 = Axis(fig[1, 2], aspect=DataAspect(), title="120 kVp - With BHC")
-	hm2 = heatmap!(ax2, recon_120_bhc_HU[:, :, mid_slice]';
-		colormap=:grays, colorrange=(-200, 400))
-	hidedecorations!(ax2)
-
-	Colorbar(fig[1, 3], hm2, label="HU")
-
-	# 80 kVp comparison (more dramatic effect)
-	ax3 = Axis(fig[1, 4], aspect=DataAspect(), title="80 kVp - No BHC")
-	hm3 = heatmap!(ax3, recon_poly_HU[80][:, :, mid_slice]';
-		colormap=:grays, colorrange=(-200, 400))
-	hidedecorations!(ax3)
-
-	ax4 = Axis(fig[1, 5], aspect=DataAspect(), title="80 kVp - With BHC")
-	hm4 = heatmap!(ax4, recon_80_bhc_HU[:, :, mid_slice]';
-		colormap=:grays, colorrange=(-200, 400))
-	hidedecorations!(ax4)
-
-	Colorbar(fig[1, 6], hm4, label="HU")
-
-	Label(fig[0, :], "Beam Hardening Correction Comparison", fontsize=16)
-	fig
-end
-
-# ╔═╡ 00000001-0000-0000-0000-000000000034
-let
-	fig = Figure(size=(800, 400))
-
-	center = size(recon_poly_HU[120], 1) ÷ 2
-
-	ax = Axis(fig[1, 1], xlabel="Position (pixels)", ylabel="HU",
-		title="Central Profile - BHC Effect")
-
-	# Ground truth
-	gt_profile = μ_to_HU(phantom.μ[center, :, mid_slice], μ_water_60keV)
-	lines!(ax, gt_profile, label="Ground Truth", color=:black, linewidth=2, linestyle=:dash)
-
-	# 120 kVp without BHC
-	profile_120_no = recon_poly_HU[120][center, :, mid_slice]
-	lines!(ax, profile_120_no, label="120 kVp (no BHC)", color=:red, linewidth=2)
-
-	# 120 kVp with BHC
-	profile_120_bhc = recon_120_bhc_HU[center, :, mid_slice]
-	lines!(ax, profile_120_bhc, label="120 kVp (with BHC)", color=:blue, linewidth=2)
-
-	# 80 kVp without BHC
-	profile_80_no = recon_poly_HU[80][center, :, mid_slice]
-	lines!(ax, profile_80_no, label="80 kVp (no BHC)", color=:orange, linewidth=1.5, linestyle=:dot)
-
-	# 80 kVp with BHC
-	profile_80_bhc = recon_80_bhc_HU[center, :, mid_slice]
-	lines!(ax, profile_80_bhc, label="80 kVp (with BHC)", color=:purple, linewidth=1.5, linestyle=:dot)
-
-	axislegend(ax, position=:rb)
-
-	fig
-end
-
-# ╔═╡ 00000001-0000-0000-0000-000000000035
-md"""
-### BHC Analysis
-
-The plots above show:
-1. **Cupping reduction**: BHC flattens the central dip in uniform water regions
-2. **80 kVp benefits more**: Lower kVp has more severe beam hardening, so BHC has larger effect
-3. **Not perfect**: BHC assumes water-equivalent material; dense objects (bone, calcium) may still show artifacts
-
-**Note**: For non-water materials, iterative methods or dual-energy techniques are needed.
-"""
-
 # ╔═╡ 00000001-0000-0000-0000-000000000016
 md"""
 ---
@@ -712,10 +583,299 @@ let
 	fig
 end
 
+# ╔═╡ 00000001-0000-0000-0000-000000000040
+md"""
+---
+## 6. Reactant Compilation
+
+**Reactant.jl** enables XLA compilation of Julia code for:
+- GPU acceleration (CUDA, ROCm, Metal)
+- Automatic differentiation (via Enzyme)
+- TPU support
+- Optimized CPU execution
+
+### Key Concepts
+
+BasisSimulator.jl separates code into:
+1. **Pre-computation** (not traced): Geometry, indices, weights
+2. **XLA-traceable** (compiled): Array operations on volumes/sinograms
+
+This separation is crucial because XLA cannot handle:
+- Dynamic control flow based on data
+- Scalar array indexing in loops
+- Most I/O operations
+"""
+
+# ╔═╡ 00000001-0000-0000-0000-000000000041
+md"""
+### 6.1 Forward Projection with Reactant
+
+The forward projector has two parts:
+1. `precompute_projection_geometry()` - Creates index arrays (NOT compiled)
+2. `project_volume()` - The XLA-traceable kernel (CAN be compiled)
+"""
+
+# ╔═╡ 00000001-0000-0000-0000-000000000042
+begin
+	using Reactant
+
+	# Step 1: Pre-compute geometry (this runs in Julia, not XLA)
+	proj_geom = precompute_projection_geometry(
+		geom,
+		phantom.fov,
+		phantom.voxel_size,
+		size(phantom.μ)
+	)
+
+	md"""
+	**Projection geometry pre-computed:**
+	- Linear indices shape: $(size(proj_geom.linear_indices))
+	- Sample weights shape: $(size(proj_geom.sample_weights))
+	- Volume dims: $(proj_geom.nx) × $(proj_geom.ny) × $(proj_geom.nz)
+
+	This pre-computation only needs to happen **once** per geometry configuration.
+	"""
+end
+
+# ╔═╡ 00000001-0000-0000-0000-000000000043
+begin
+	# Step 2: Compile the projection kernel
+	# Convert volume to Reactant array (ConcreteRArray)
+	volume_ra = Reactant.to_rarray(Float32.(phantom.μ))
+
+	# Also need to convert the geometry arrays to Reactant
+	indices_ra = Reactant.to_rarray(proj_geom.linear_indices)
+	weights_ra = Reactant.to_rarray(Float32.(proj_geom.sample_weights))
+
+	md"""
+	**Reactant arrays created:**
+	- Volume: $(typeof(volume_ra))
+	- Indices: $(typeof(indices_ra))
+	- Weights: $(typeof(weights_ra))
+	"""
+end
+
+# ╔═╡ 00000001-0000-0000-0000-000000000044
+begin
+	# Define the compilable projection function
+	# This only uses array operations, no scalar indexing
+	function project_volume_xla(volume_flat, linear_indices, sample_weights)
+		# Gather samples using pre-computed indices
+		samples = volume_flat[linear_indices]
+
+		# Multiply by path-length weights and sum along sample dimension
+		weighted = samples .* sample_weights
+		sinogram = dropdims(sum(weighted, dims=4), dims=4)
+
+		return sinogram
+	end
+
+	# Flatten volume for linear indexing
+	volume_flat_ra = reshape(volume_ra, :)
+
+	md"""
+	**XLA-compatible projection function defined**
+
+	Key requirements for XLA compatibility:
+	- No scalar indexing (use array indexing)
+	- No dynamic control flow
+	- Pure array operations
+	"""
+end
+
+# ╔═╡ 00000001-0000-0000-0000-000000000045
+begin
+	# Compile with Reactant
+	# The @compile macro traces the function and compiles to XLA
+
+	compiled_project = @compile project_volume_xla(
+		volume_flat_ra,
+		indices_ra,
+		weights_ra
+	)
+
+	md"""
+	**Function compiled to XLA!**
+
+	`compiled_project` is now an optimized, compiled function that:
+	- Runs on GPU if available
+	- Has minimal overhead for repeated calls
+	- Can be differentiated with Enzyme
+	"""
+end
+
+# ╔═╡ 00000001-0000-0000-0000-000000000046
+begin
+	# Run compiled projection
+	sino_compiled = compiled_project(volume_flat_ra, indices_ra, weights_ra)
+
+	# Convert back to Julia array for comparison
+	sino_compiled_jl = Array(sino_compiled)
+
+	# Compare with non-compiled version
+	sino_julia = forward_project(phantom, geom)
+	max_diff = maximum(abs.(sino_compiled_jl .- sino_julia))
+
+	md"""
+	### Compiled vs Julia Comparison
+
+	| Metric | Value |
+	|--------|-------|
+	| Compiled sinogram size | $(size(sino_compiled_jl)) |
+	| Max difference | $(round(max_diff, sigdigits=3)) |
+	| Results match | $(max_diff < 1e-4 ? "✓ Yes" : "✗ Check precision") |
+
+	The small difference (if any) is due to floating-point precision differences between XLA and native Julia.
+	"""
+end
+
+# ╔═╡ 00000001-0000-0000-0000-000000000047
+md"""
+### 6.2 Differentiable Imaging Chain
+
+For inverse problems, we need gradients through the **entire forward model**:
+
+```
+Volume → Forward Project → [Detector Effects] → Measured Sinogram
+   ↑                                                    |
+   └──────────── ∇loss ←──────────────────────────────←┘
+```
+
+#### What's Currently Differentiable?
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| `project_volume_xla` | ✅ Compilable | Array gather/scatter |
+| Scatter convolution | ✅ Compilable | FFT-based, needs Reactant.fft |
+| Bowtie attenuation | ✅ Compilable | Element-wise operations |
+| Crosstalk convolution | ✅ Compilable | Small kernel convolution |
+| Detector lag | ⚠️ Partial | Cumulative ops need care |
+| Poisson noise | ❌ Not differentiable | Stochastic - use reparameterization |
+| FDK reconstruction | ❌ Not yet | FFTW + loops |
+
+#### Why This Matters
+
+For **iterative reconstruction** (SIRT, CGLS, learned recon):
+```julia
+# Optimize volume to match measured data
+for iter in 1:n_iters
+    # Forward model (must be differentiable!)
+    sino_pred = forward_chain(volume)
+
+    # Compute loss
+    loss = sum((sino_pred .- sino_measured).^2)
+
+    # Backprop through entire chain
+    ∇volume = gradient(loss, volume)
+
+    # Update
+    volume .-= α .* ∇volume
+end
+```
+
+#### FDK Reconstruction Limitations
+
+**FDK is NOT yet XLA-compatible** because it uses:
+1. **FFTW** - External C library, not traceable by XLA
+2. **In-place mutations** - `filter_sinogram!` modifies arrays
+3. **Nested scalar loops** - `backproject!` iterates voxel-by-voxel
+
+**Roadmap**: Pre-compute backprojection indices (like forward projection) and use `Reactant.fft` when mature.
+"""
+
+# ╔═╡ 00000001-0000-0000-0000-000000000048
+md"""
+### 6.3 Practical Usage Pattern
+
+For inverse problems and iterative reconstruction:
+
+```julia
+using Reactant
+using Enzyme
+
+# 1. Pre-compute geometries (once)
+proj_geom = precompute_projection_geometry(geom, fov, voxel_size, vol_size)
+
+# 2. Convert to Reactant arrays
+indices_ra = Reactant.to_rarray(proj_geom.linear_indices)
+weights_ra = Reactant.to_rarray(Float32.(proj_geom.sample_weights))
+measured_ra = Reactant.to_rarray(Float32.(measured_sinogram))
+
+# 3. Define loss function
+function loss(volume_flat)
+    sino = project_volume_xla(volume_flat, indices_ra, weights_ra)
+    return sum((sino .- measured_ra).^2)
+end
+
+# 4. Compile and get gradients
+compiled_loss = @compile loss(volume_flat_ra)
+
+# 5. Optimize (e.g., gradient descent)
+for iter in 1:n_iters
+    grad = Enzyme.gradient(Reverse, compiled_loss, volume_flat_ra)
+    volume_flat_ra .-= learning_rate .* grad
+end
+```
+
+This pattern enables:
+- Fast forward projection on GPU
+- Automatic gradients for optimization
+- Seamless integration with Flux.jl or Lux.jl
+"""
+
+# ╔═╡ 00000001-0000-0000-0000-000000000049
+let
+	# Demonstrate timing comparison (if running on capable hardware)
+	using Statistics
+
+	# Warmup
+	_ = forward_project(phantom, geom)
+	_ = compiled_project(volume_flat_ra, indices_ra, weights_ra)
+
+	# Time Julia version
+	n_runs = 5
+	julia_times = Float64[]
+	for _ in 1:n_runs
+		t = @elapsed forward_project(phantom, geom)
+		push!(julia_times, t)
+	end
+
+	# Time compiled version
+	compiled_times = Float64[]
+	for _ in 1:n_runs
+		t = @elapsed compiled_project(volume_flat_ra, indices_ra, weights_ra)
+		push!(compiled_times, t)
+	end
+
+	julia_mean = mean(julia_times) * 1000  # ms
+	compiled_mean = mean(compiled_times) * 1000  # ms
+	speedup = julia_mean / compiled_mean
+
+	fig = Figure(size=(600, 300))
+
+	ax = Axis(fig[1, 1],
+		xlabel="Implementation",
+		ylabel="Time (ms)",
+		title="Forward Projection Performance",
+		xticks=(1:2, ["Julia", "Reactant"]))
+
+	barplot!(ax, [1, 2], [julia_mean, compiled_mean],
+		color=[:steelblue, :orange])
+
+	text!(ax, 1, julia_mean + 2, text="$(round(julia_mean, digits=1)) ms",
+		align=(:center, :bottom))
+	text!(ax, 2, compiled_mean + 2, text="$(round(compiled_mean, digits=1)) ms",
+		align=(:center, :bottom))
+
+	Label(fig[0, 1], "Speedup: $(round(speedup, digits=1))×", fontsize=14)
+
+	fig
+end
+
 # ╔═╡ 00000001-0000-0000-0000-000000000027
 md"""
 ---
-## 6. Summary
+## 7. Summary
 
 ### Key Observations
 
@@ -746,20 +906,11 @@ md"""
 
 ### Reactant/Enzyme Compatibility
 
-BasisSimulator.jl is designed for differentiability. The forward model can be compiled with Reactant for:
-- GPU acceleration
-- Automatic differentiation for inverse problems
-- Machine learning integration
-
-```julia
-using Reactant
-
-# Compile forward projection
-@compile forward_project(phantom, geom)
-
-# Use gradients for optimization
-∇sino = gradient(loss_fn, sino)
-```
+See **Section 6** for detailed Reactant compilation examples, including:
+- XLA compilation of forward projection
+- Differentiable imaging chain status
+- Practical usage patterns for iterative reconstruction
+- Current limitations and roadmap for FDK
 """
 
 # ╔═╡ 00000001-0000-0000-0000-000000000028
@@ -835,5 +986,15 @@ sino = apply_detector_model(sino, default_detector_model(I0=5e4))
 # ╟─00000001-0000-0000-0000-000000000024
 # ╟─00000001-0000-0000-0000-000000000025
 # ╟─00000001-0000-0000-0000-000000000026
+# ╟─00000001-0000-0000-0000-000000000040
+# ╟─00000001-0000-0000-0000-000000000041
+# ╟─00000001-0000-0000-0000-000000000042
+# ╟─00000001-0000-0000-0000-000000000043
+# ╟─00000001-0000-0000-0000-000000000044
+# ╟─00000001-0000-0000-0000-000000000045
+# ╟─00000001-0000-0000-0000-000000000046
+# ╟─00000001-0000-0000-0000-000000000047
+# ╟─00000001-0000-0000-0000-000000000048
+# ╟─00000001-0000-0000-0000-000000000049
 # ╟─00000001-0000-0000-0000-000000000027
 # ╟─00000001-0000-0000-0000-000000000028
