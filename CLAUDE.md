@@ -66,6 +66,7 @@ BasisSimulator.jl is a differentiable 3D cone-beam CT simulator designed for:
 | Optical Crosstalk | `src/Forward/Crosstalk.jl` | CatSim-style separable kernel |
 | Fill Factors | `src/Forward/FillFactor.jl` | Detector pixel active area |
 | Flying Focal Spot | `src/Forward/FlyingFocalSpot.jl` | 2/4-position sampling improvement |
+| Iterative Recon | `src/Reconstruction/Iterative.jl` | SIRT, CGLS (XLA-compatible) |
 
 ### ❌ Not Yet Implemented
 
@@ -76,7 +77,6 @@ BasisSimulator.jl is a differentiable 3D cone-beam CT simulator designed for:
 | XCAT Phantoms | High | Anatomical phantom support |
 | Photon Counting | High | PC detector model |
 | Dose Estimation | Medium | Kernel-based dose calc |
-| Iterative Recon | High | SIRT, CGLS, etc. |
 | DICOM Output | Medium | Standard medical format |
 
 ---
@@ -108,7 +108,11 @@ src/
 │   └── DetectorLag.jl         # Afterglow
 ├── Reconstruction/
 │   ├── Kernels.jl             # Recon kernels
-│   └── FDK.jl                 # FDK reconstruction
+│   ├── FDK.jl                 # FDK reconstruction
+│   └── Iterative.jl           # SIRT, CGLS iterative recon
+├── Scanners/
+│   ├── Scanners.jl            # Scanner module with base types
+│   └── GeneralElectric.jl     # GE Revolution Apex Elite
 └── Optimization/
     ├── Loss.jl                # Loss functions
     └── Gradients.jl           # Gradient computation
@@ -144,6 +148,36 @@ Volume → Forward Project → [Effects] → Sinogram → FDK Reconstruct → Vo
 - Pre-computed backprojection indices with gather-based sampling
 - No scalar loops in traced code
 
+### Clinical Scanner Configurations
+
+Scanner configurations are modular and manufacturer-specific:
+
+```
+src/Scanners/
+├── Scanners.jl           # Main module with base types
+├── GeneralElectric.jl    # GE scanners (Revolution Apex Elite, etc.)
+├── Siemens.jl            # Future: Siemens scanners
+└── Canon.jl              # Future: Canon/Toshiba scanners
+```
+
+**Design Pattern**:
+1. **Specification Structs**: Detailed hardware specs with FDA 510(k) citations
+2. **Factory Functions**: Create `CTGeometry` from specs using base functions
+3. **Protocol Presets**: Common clinical protocols (chest, head, cardiac, etc.)
+
+**Adding a New Scanner**:
+1. Create manufacturer file (e.g., `Siemens.jl`)
+2. Define spec struct with all hardware parameters + source citations
+3. Implement `create_[scanner]_geometry()` factory function
+4. Add protocol presets as needed
+5. Export from `Scanners.jl`
+
+**Source Requirements** (for publication-ready configs):
+- FDA 510(k) summaries (accessdata.fda.gov)
+- Manufacturer technical specifications
+- Peer-reviewed publications
+- Each parameter must have a source URL or derivation note
+
 ---
 
 ## Roadmap
@@ -166,8 +200,12 @@ Volume → Forward Project → [Effects] → Sinogram → FDK Reconstruct → Vo
   - [x] Pre-computed backprojection geometry (`BackprojectionGeometry`)
   - [x] Gather-based backprojection kernel (`backproject_volume`)
   - [x] XLA-compatible FDK (`fdk_reconstruct_xla`)
-- [ ] Iterative reconstruction (SIRT, CGLS, TV)
-- [ ] GE Revolution Apex scanner configuration
+- [x] Iterative reconstruction (SIRT, CGLS)
+- [x] Clinical Scanner Configurations
+  - [x] Scanner configuration module (`src/Scanners/`)
+  - [x] GE Revolution Apex Elite (K213715)
+  - [ ] Siemens SOMATOM (future)
+  - [ ] Canon Aquilion (future)
 - [ ] Full material database (NIST XCOM)
 - [ ] Photon counting detector model
 
@@ -188,7 +226,7 @@ Volume → Forward Project → [Effects] → Sinogram → FDK Reconstruct → Vo
 
 Run tests: `julia --project -e 'using Pkg; Pkg.test()'`
 
-Current test count: **447 tests**
+Current test count: **564 tests**
 
 ### Test Categories
 - Forward projection accuracy
@@ -196,6 +234,8 @@ Current test count: **447 tests**
 - Scatter effects
 - Detector noise models
 - FDK reconstruction
+- Iterative reconstruction (SIRT, CGLS)
+- Scanner configurations (GE Revolution Apex Elite)
 - All CatSim parity features
 
 ---
@@ -276,6 +316,21 @@ recon = fdk_reconstruct_xla(sino, geom, bp_geom)
 weighted = preweight_cosine(sino, geom)
 filtered = filter_ramp(weighted, geom; kernel=kernel_soft())
 volume = backproject_volume(vec(filtered), bp_geom)
+
+# Iterative Reconstruction (XLA-compatible)
+proj_geom = precompute_projection_geometry(geom, fov, voxel_size, output_size)
+bp_geom = precompute_backprojection_geometry(geom, output_size, fov)
+
+# SIRT (robust to noise, slower convergence)
+result = sirt_reconstruct(sino, proj_geom, bp_geom; n_iterations=50)
+recon = result.volume
+
+# CGLS (faster convergence, semi-convergent)
+result = cgls_reconstruct(sino, proj_geom, bp_geom; n_iterations=20)
+recon = result.volume
+
+# Convenience wrapper
+recon = iterative_reconstruct(sino, geom, output_size, fov; method=:sirt, n_iterations=30)
 ```
 
 ### Detector Efficiency
@@ -306,8 +361,8 @@ dqe = compute_dqe(det, 60.0)
 ## User Goals (Project Owner)
 
 1. ✅ Finish CatSim parity of BasisSimulator.jl (COMPLETE)
-2. ⏳ Add iterative reconstruction
-3. ⏳ Add perfectly documented GE Revolution Apex scanner config
+2. ✅ Add iterative reconstruction (SIRT, CGLS)
+3. ✅ Add perfectly documented GE Revolution Apex scanner config
 4. ⏳ Build out Pluto notebook showing the CatSim++ parity
 5. ⏳ Begin building out DukeSim parity
 
@@ -323,8 +378,9 @@ When continuing a session:
 5. Commit and push incrementally
 
 Last updated: 2026-01-12
-Current test count: 447
+Current test count: 564
 Phase 1 (CatSim Parity): COMPLETE
 Phase 2 (Differentiable Reconstruction): COMPLETE
-Additional features: Tang 3D weighting, optical crosstalk, fill factors, flying focal spot
-XLA-Compatible: forward_project (project_volume), fdk_reconstruct_xla (backproject_volume)
+Additional features: Tang 3D weighting, optical crosstalk, fill factors, flying focal spot, iterative recon (SIRT, CGLS)
+XLA-Compatible: forward_project (project_volume), fdk_reconstruct_xla (backproject_volume), sirt_reconstruct, cgls_reconstruct
+Clinical Scanners: GE Revolution Apex Elite (K213715) with FDA 510(k) sourced parameters

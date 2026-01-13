@@ -1125,6 +1125,146 @@ using Reactant
         @test result.loss_history[end] < result.loss_history[1]
     end
 
+    @testset "SIRT Reconstruction" begin
+        # Small problem for fast testing
+        phantom = create_gammex_472(n_voxels=8)
+        geom = create_aquilion_one(n_angles=36, n_rows=4, n_cols=16, fov_cm=phantom.fov[1])
+
+        # Pre-compute geometries
+        voxel_size = phantom.voxel_size
+        output_size = size(phantom.μ)
+        proj_geom = precompute_projection_geometry(geom, phantom.fov, voxel_size, output_size)
+        bp_geom = precompute_backprojection_geometry(geom, output_size, phantom.fov)
+
+        # Generate target sinogram
+        sinogram = project_volume(Float32.(phantom.μ), proj_geom)
+
+        # Test SIRT normalization computation
+        sirt_norm = compute_sirt_normalization(proj_geom, bp_geom)
+        @test sirt_norm isa SIRTNormalization
+        @test length(sirt_norm.C) == prod(output_size)
+        @test length(sirt_norm.R) == prod(size(sinogram))
+        @test all(sirt_norm.C .>= 0)
+        @test all(sirt_norm.R .>= 0)
+
+        # Test single SIRT step
+        x0 = zeros(Float32, prod(output_size))
+        b = vec(sinogram)
+        x1 = sirt_step(x0, b, proj_geom, bp_geom, sirt_norm)
+        @test length(x1) == length(x0)
+        @test all(isfinite.(x1))
+        @test sum(abs.(x1 .- x0)) > 0  # Should have changed
+
+        # Test full SIRT reconstruction
+        result = sirt_reconstruct(sinogram, proj_geom, bp_geom;
+            n_iterations=10,
+            relaxation=1.0f0,
+            verbose=false
+        )
+        @test size(result.volume) == output_size
+        @test all(isfinite.(result.volume))
+        @test result.iterations <= 10
+        @test result.iterations >= 1
+
+        # SIRT should produce non-zero reconstruction
+        @test maximum(result.volume) > 0
+
+        # Test with initial estimate
+        x0_vol = zeros(Float32, output_size...)
+        x0_vol .= mean(phantom.μ)
+        result_warm = sirt_reconstruct(sinogram, proj_geom, bp_geom;
+            n_iterations=5,
+            x0=x0_vol,
+            verbose=false
+        )
+        @test size(result_warm.volume) == output_size
+
+        # Test with different relaxation parameter
+        result_relax = sirt_reconstruct(sinogram, proj_geom, bp_geom;
+            n_iterations=5,
+            relaxation=1.5f0,
+            verbose=false
+        )
+        @test all(isfinite.(result_relax.volume))
+    end
+
+    @testset "CGLS Reconstruction" begin
+        # Small problem for fast testing
+        phantom = create_gammex_472(n_voxels=8)
+        geom = create_aquilion_one(n_angles=36, n_rows=4, n_cols=16, fov_cm=phantom.fov[1])
+
+        # Pre-compute geometries
+        voxel_size = phantom.voxel_size
+        output_size = size(phantom.μ)
+        proj_geom = precompute_projection_geometry(geom, phantom.fov, voxel_size, output_size)
+        bp_geom = precompute_backprojection_geometry(geom, output_size, phantom.fov)
+
+        # Generate target sinogram
+        sinogram = project_volume(Float32.(phantom.μ), proj_geom)
+
+        # Test full CGLS reconstruction
+        result = cgls_reconstruct(sinogram, proj_geom, bp_geom;
+            n_iterations=10,
+            verbose=false
+        )
+        @test size(result.volume) == output_size
+        @test all(isfinite.(result.volume))
+        @test result.iterations <= 10
+        @test result.iterations >= 1
+        @test result.residual >= 0
+
+        # CGLS should produce non-zero reconstruction
+        @test maximum(result.volume) > 0
+
+        # CGLS converges faster than SIRT typically
+        # Test that residual decreases
+        result_more = cgls_reconstruct(sinogram, proj_geom, bp_geom;
+            n_iterations=15,
+            verbose=false
+        )
+        # More iterations should give smaller or equal residual
+        @test result_more.residual <= result.residual + 1e-5
+
+        # Test with initial estimate
+        x0_vol = zeros(Float32, output_size...)
+        x0_vol .= mean(phantom.μ)
+        result_warm = cgls_reconstruct(sinogram, proj_geom, bp_geom;
+            n_iterations=5,
+            x0=x0_vol,
+            verbose=false
+        )
+        @test size(result_warm.volume) == output_size
+    end
+
+    @testset "Iterative Reconstruct Convenience" begin
+        # Test the convenience wrapper
+        phantom = create_gammex_472(n_voxels=8)
+        geom = create_aquilion_one(n_angles=36, n_rows=4, n_cols=16, fov_cm=phantom.fov[1])
+
+        # Generate sinogram using standard forward projection
+        sinogram = forward_project(phantom, geom)
+
+        # Test SIRT via convenience wrapper
+        recon_sirt = iterative_reconstruct(sinogram, geom, size(phantom.μ), phantom.fov;
+            method=:sirt,
+            n_iterations=5,
+            verbose=false
+        )
+        @test size(recon_sirt) == size(phantom.μ)
+        @test all(isfinite.(recon_sirt))
+        @test maximum(recon_sirt) > 0
+
+        # Test CGLS via convenience wrapper
+        recon_cgls = iterative_reconstruct(sinogram, geom, size(phantom.μ), phantom.fov;
+            method=:cgls,
+            n_iterations=5,
+            verbose=false
+        )
+        @test size(recon_cgls) == size(phantom.μ)
+        @test all(isfinite.(recon_cgls))
+        @test maximum(recon_cgls) > 0
+    end
+
     @testset "Bowtie Filter" begin
         geom = create_aquilion_one(n_angles=36, n_rows=4, n_cols=64)
 
@@ -1574,6 +1714,168 @@ using Reactant
         recon_low = reconstruct_helical_fdk(sino_low_pitch, geom_low_pitch; recon_size=16)
         @test all(isfinite.(recon_low))
         @test maximum(recon_low) > 0
+    end
+
+    @testset "Scanner Configurations" begin
+        # Test GE Revolution Apex Elite creation
+        spec = GERevolutionApexElite()
+        @test spec isa GERevolutionApexElite
+        @test spec isa AbstractScannerSpec
+
+        # Test interface methods
+        @test manufacturer(spec) == GE_HEALTHCARE
+        @test model_name(spec) == "Revolution Apex Elite"
+        @test fda_510k(spec) == "K213715"
+
+        # Test detector specification
+        det = detector(spec)
+        @test det isa DetectorSpecification
+        @test det.material[] == LUMEX
+        @test det.n_rows[] == 256
+        @test det.n_cols[] == 832
+        @test det.row_size_mm[] ≈ 0.625
+        @test det.z_coverage_mm[] ≈ 160.0
+        @test det.detector_type[] == ENERGY_INTEGRATING
+
+        # Test tube specification
+        tb = tube(spec)
+        @test tb isa TubeSpecification
+        @test tb.model_name[] == "Quantix 160"
+        @test tb.max_power_kw[] ≈ 108.0
+        @test tb.target_angle_deg[] ≈ 10.0
+        @test tb.max_ma[] == 1300
+        @test tb.has_flying_focal_spot[] == true
+        @test 120 in tb.kvp_options[]
+
+        # Test geometry specification
+        gm = geometry(spec)
+        @test gm isa GeometrySpecification
+        @test gm.sid_mm[] ≈ 626.0
+        @test gm.sdd_mm[] ≈ 1097.0
+        @test gm.gantry_aperture_mm[] ≈ 800.0
+        @test gm.max_sfov_mm[] ≈ 500.0
+
+        # Test acquisition specification
+        acq = acquisition(spec)
+        @test acq isa AcquisitionSpecification
+        @test acq.min_rotation_time_s[] ≈ 0.23
+        @test acq.max_rotation_time_s[] ≈ 1.0
+        @test acq.max_views_per_rotation[] == 2496
+        @test 0.992 in acq.helical_pitch_options[]
+
+        # Test SourceCitation access
+        @test det.material.source == :fda_510k
+        @test !isempty(det.material.url)
+        @test !isempty(det.material.note)
+
+        # Test geometry creation from spec
+        geom = create_geometry(spec; n_angles=180, n_rows=16, n_cols=256)
+        @test geom isa CTGeometry
+        @test geom.SAD ≈ 62.6  # 626.0 mm → 62.6 cm
+        @test geom.SDD ≈ 109.7  # 1097.0 mm → 109.7 cm
+        @test geom.n_angles == 180
+        @test geom.n_rows == 16
+        @test geom.n_cols == 256
+
+        # Test geometry with default cols from spec
+        geom_default = create_geometry(spec; n_angles=36, n_rows=8)
+        @test geom_default.n_cols == 832  # From spec
+
+        # Test source/detector positions
+        @test size(geom.source_positions) == (3, 180)
+        @test size(geom.detector_centers) == (3, 180)
+        @test size(geom.detector_u) == (3, 180)
+        @test size(geom.detector_v) == (3, 180)
+
+        # Test first angle source position (0, -SAD, 0)
+        @test geom.source_positions[1, 1] ≈ 0.0 atol=1e-10
+        @test geom.source_positions[2, 1] ≈ -62.6 atol=1e-10
+        @test geom.source_positions[3, 1] ≈ 0.0 atol=1e-10
+
+        # Test protocol presets
+        protocol_chest = GEApexChestHelical()
+        @test protocol_chest isa HelicalProtocol
+        @test protocol_chest.kvp == 120
+        @test protocol_chest.pitch ≈ 0.992
+        @test protocol_chest.rotation_time_s ≈ 0.5
+        @test protocol_chest.n_angles_per_rotation == 984
+        @test protocol_chest.slice_thickness_mm ≈ 0.625
+
+        protocol_head = GEApexHeadAxial()
+        @test protocol_head isa AxialProtocol
+        @test protocol_head.kvp == 120
+        @test protocol_head.rotation_time_s ≈ 1.0
+        @test protocol_head.n_angles == 984
+
+        protocol_cardiac = GEApexCardiacHelical()
+        @test protocol_cardiac isa HelicalProtocol
+        @test protocol_cardiac.rotation_time_s ≈ 0.28  # Fast rotation
+        @test protocol_cardiac.pitch ≈ 0.5  # Low pitch for cardiac
+
+        protocol_abdomen = GEApexAbdomenHelical()
+        @test protocol_abdomen isa HelicalProtocol
+        @test protocol_abdomen.slice_thickness_mm ≈ 1.25
+
+        # Test pediatric protocol
+        protocol_ped = GEApexPediatricHelical(; age_group=:infant)
+        @test protocol_ped.kvp == 80  # Reduced kVp for infants
+        @test protocol_ped.ma == 80   # Reduced mA
+
+        protocol_ped_child = GEApexPediatricHelical(; age_group=:child)
+        @test protocol_ped_child.kvp == 100
+
+        # Test dose level variants
+        protocol_low = GEApexChestHelical(; dose_level=:low)
+        protocol_high = GEApexChestHelical(; dose_level=:high)
+        @test protocol_low.ma < protocol_chest.ma
+        @test protocol_high.ma > protocol_chest.ma
+
+        # Test geometry creation with protocol
+        geom_protocol = create_geometry(spec, protocol_chest; n_rows=16)
+        @test geom_protocol.n_angles == 984  # From protocol
+        @test geom_protocol.n_rows == 16
+
+        geom_axial = create_geometry(spec, protocol_head; n_rows=16)
+        @test geom_axial.n_angles == 984  # From protocol
+
+        # Test print_scanner_info (just check it runs without error)
+        # Note: We can't easily capture stdout in tests, so just verify it doesn't throw
+        @test begin
+            print_scanner_info(spec)
+            true
+        end
+
+        # Test get_source_citations
+        citations = get_source_citations(spec)
+        @test citations isa Dict{String, SourceCitation}
+        @test haskey(citations, "detector.material")
+        @test haskey(citations, "geometry.sid_mm")
+        @test haskey(citations, "tube.model_name")
+        @test citations["detector.n_rows"][] == 256
+
+        # Test forward projection with scanner geometry
+        phantom = create_gammex_472(n_voxels=16)
+        geom_sim = create_geometry(spec; n_angles=36, n_rows=8, n_cols=64, fov_cm=phantom.fov[1])
+        sinogram = forward_project(phantom, geom_sim)
+
+        @test size(sinogram) == (64, 8, 36)
+        @test maximum(sinogram) > 0
+        @test all(isfinite.(sinogram))
+
+        # Test FDK reconstruction with scanner geometry
+        recon = fdk_reconstruct(sinogram, geom_sim, size(phantom.μ), phantom.fov)
+        @test size(recon) == size(phantom.μ)
+        @test maximum(recon) > 0
+        @test all(isfinite.(recon))
+
+        # Test enums
+        @test GE_HEALTHCARE isa ScannerManufacturer
+        @test SIEMENS_HEALTHINEERS isa ScannerManufacturer
+        @test ENERGY_INTEGRATING isa DetectorType
+        @test PHOTON_COUNTING isa DetectorType
+        @test GOS isa DetectorMaterial
+        @test LUMEX isa DetectorMaterial
+        @test CDTE isa DetectorMaterial
     end
 
     # Visualization is in stuff/scripts/visualize.jl (run manually with CairoMakie)
