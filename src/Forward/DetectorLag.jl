@@ -142,13 +142,13 @@ function compute_lag_coefficients(model::LagModel, n_frames::Int)
     end
 
     coeffs = zeros(Float64, n_frames)
+    total_lag = sum(model.amplitudes)
 
     for k in 0:(n_frames-1)
         t = k * model.frame_time  # Time delay for frame k frames ago
 
         if k == 0
             # Current frame: primary signal (1 - total lag)
-            total_lag = sum(model.amplitudes)
             coeffs[k+1] = 1.0 - total_lag
         else
             # Previous frames: sum of exponential decays
@@ -157,6 +157,10 @@ function compute_lag_coefficients(model::LagModel, n_frames::Int)
             end
         end
     end
+
+    # Normalize to sum to 1.0 to preserve total signal
+    # This accounts for truncated exponential tail
+    coeffs ./= sum(coeffs)
 
     return coeffs
 end
