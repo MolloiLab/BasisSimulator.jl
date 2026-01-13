@@ -119,6 +119,30 @@ src/
 2. **Intensity Domain**: Crosstalk/lag applied in intensity (exp(-sino)), focal blur in projection
 3. **Coefficient Normalization**: Lag coefficients sum to 1.0 to preserve signal
 4. **NIST XCOM Data**: Lookup tables with log-linear interpolation for μ values
+5. **Differentiable Design**: Separate pre-computation (geometry/indices) from XLA-traceable code
+
+### Differentiable Architecture (Reactant/XLA)
+
+The entire imaging chain must be differentiable for inverse problems:
+
+```
+Volume → Forward Project → [Effects] → Sinogram → FDK Reconstruct → Volume
+   ↑                                                                    |
+   └──────────────────── ∇loss ←───────────────────────────────────────┘
+```
+
+**Pattern**: Pre-compute geometry indices once, then use gather/scatter operations.
+
+| Component | Pre-computation | XLA-Traceable Kernel |
+|-----------|----------------|---------------------|
+| Forward Proj | `precompute_projection_geometry()` | `project_volume()` |
+| FDK Recon | `precompute_backprojection_geometry()` | `backproject_volume()` |
+
+**FDK Differentiable Requirements**:
+- Functional (non-mutating) cosine pre-weighting
+- FFT filtering without FFTW (use real-valued convolution or Reactant.fft)
+- Pre-computed backprojection indices with gather-based sampling
+- No scalar loops in traced code
 
 ---
 
@@ -135,7 +159,13 @@ src/
 - [x] Water beam hardening correction
 - [x] Helical FDK reconstruction
 
-### Phase 2: Advanced Features
+### Phase 2: Differentiable Reconstruction (COMPLETE ✅)
+- [x] Differentiable forward projection (`project_volume`)
+- [x] Differentiable FDK reconstruction
+  - [x] Functional cosine pre-weighting (`preweight_cosine`)
+  - [x] Pre-computed backprojection geometry (`BackprojectionGeometry`)
+  - [x] Gather-based backprojection kernel (`backproject_volume`)
+  - [x] XLA-compatible FDK (`fdk_reconstruct_xla`)
 - [ ] Iterative reconstruction (SIRT, CGLS, TV)
 - [ ] GE Revolution Apex scanner configuration
 - [ ] Full material database (NIST XCOM)
@@ -158,7 +188,7 @@ src/
 
 Run tests: `julia --project -e 'using Pkg; Pkg.test()'`
 
-Current test count: **420 tests**
+Current test count: **447 tests**
 
 ### Test Categories
 - Forward projection accuracy
@@ -233,9 +263,19 @@ sino = apply_detector_model(sino, default_detector_model())
 
 ### Reconstruction
 ```julia
+# Legacy FDK (loop-based, faster for single runs)
 recon = fdk_reconstruct(sino, geom, size(phantom.μ), phantom.fov)
 recon = fdk_reconstruct(sino, geom, size, fov; kernel=kernel_soft())
 recon_HU = μ_to_HU(recon, get_reference_μ_water(60.0))
+
+# XLA-Compatible FDK (differentiable, for Reactant compilation)
+bp_geom = precompute_backprojection_geometry(geom, output_size, fov)
+recon = fdk_reconstruct_xla(sino, geom, bp_geom)
+
+# Individual steps (for custom pipelines)
+weighted = preweight_cosine(sino, geom)
+filtered = filter_ramp(weighted, geom; kernel=kernel_soft())
+volume = backproject_volume(vec(filtered), bp_geom)
 ```
 
 ### Detector Efficiency
@@ -283,6 +323,8 @@ When continuing a session:
 5. Commit and push incrementally
 
 Last updated: 2026-01-12
-Current test count: 420
+Current test count: 447
 Phase 1 (CatSim Parity): COMPLETE
+Phase 2 (Differentiable Reconstruction): COMPLETE
 Additional features: Tang 3D weighting, optical crosstalk, fill factors, flying focal spot
+XLA-Compatible: forward_project (project_volume), fdk_reconstruct_xla (backproject_volume)

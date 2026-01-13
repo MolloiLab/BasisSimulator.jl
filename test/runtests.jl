@@ -332,6 +332,67 @@ using Reactant
         @test var_soft > 0
     end
 
+    @testset "XLA-Compatible FDK (Differentiable)" begin
+        # Test pre-computed backprojection geometry
+        phantom = create_gammex_472(n_voxels=16)
+        geom = create_aquilion_one(n_angles=72, n_rows=8, n_cols=64, fov_cm=phantom.fov[1])
+        output_size = size(phantom.μ)
+        fov = phantom.fov
+
+        # Pre-compute backprojection geometry
+        bp_geom = precompute_backprojection_geometry(geom, output_size, fov)
+
+        @test bp_geom isa BackprojectionGeometry
+        @test bp_geom.nx == output_size[1]
+        @test bp_geom.ny == output_size[2]
+        @test bp_geom.nz == output_size[3]
+        @test bp_geom.n_angles == geom.n_angles
+        @test size(bp_geom.linear_indices) == (4, output_size..., geom.n_angles)
+        @test size(bp_geom.bilinear_weights) == (4, output_size..., geom.n_angles)
+        @test size(bp_geom.distance_weights) == (output_size..., geom.n_angles)
+
+        # Test functional pre-weighting
+        sinogram = forward_project(phantom, geom)
+        weighted = preweight_cosine(sinogram, geom)
+
+        @test size(weighted) == size(sinogram)
+        @test maximum(weighted) <= maximum(sinogram)  # Cosine weights are <= 1
+        @test all(isfinite.(weighted))
+
+        # Test functional ramp filtering
+        filtered = filter_ramp(weighted, geom)
+
+        @test size(filtered) == size(sinogram)
+        @test all(isfinite.(filtered))
+
+        # Test gather-based backprojection
+        sinogram_flat = vec(filtered)
+        volume = backproject_volume(sinogram_flat, bp_geom)
+
+        @test size(volume) == output_size
+        @test all(isfinite.(volume))
+        @test maximum(volume) > 0
+
+        # Test full XLA-compatible FDK
+        recon_xla = fdk_reconstruct_xla(Float32.(sinogram), geom, bp_geom)
+
+        @test size(recon_xla) == output_size
+        @test all(isfinite.(recon_xla))
+        @test maximum(recon_xla) > 0
+        @test maximum(recon_xla) < 2.0
+
+        # Compare XLA version with legacy version (should be similar)
+        recon_legacy = fdk_reconstruct(Float32.(sinogram), geom, output_size, fov)
+
+        # Allow some tolerance due to floating point differences
+        max_diff = maximum(abs.(recon_xla .- recon_legacy))
+        @test max_diff < 0.1  # Should be very close
+
+        # Test with Tang weighting
+        bp_geom_tang = precompute_backprojection_geometry(geom, output_size, fov; tang_order=5)
+        @test all(bp_geom_tang.distance_weights .<= bp_geom.distance_weights)  # Tang reduces weights
+    end
+
     @testset "Beam Hardening Correction" begin
         # Test simple BHC calibration
         bhc_120 = water_bhc_120kVp()
@@ -610,6 +671,7 @@ using Reactant
         phantom = create_gammex_472(n_voxels=8)
         geom = create_aquilion_one(n_angles=4, n_rows=2, n_cols=8, fov_cm=phantom.fov[1])
 
+        # Test forward projection compilation
         proj_geom = precompute_projection_geometry(
             geom, phantom.fov, phantom.voxel_size, size(phantom.μ)
         )
@@ -626,6 +688,35 @@ using Reactant
 
         sinogram_julia = project_volume(phantom.μ, proj_geom)
         @test maximum(abs.(sinogram_result .- sinogram_julia)) < 1e-5
+
+        # Test backprojection compilation - use the ACTUAL backproject_volume function
+        output_size = size(phantom.μ)
+        fov = phantom.fov
+        bp_geom = precompute_backprojection_geometry(geom, output_size, fov)
+
+        # Pre-weight and filter the sinogram (in Julia, not compiled)
+        sino_weighted = preweight_cosine(Float32.(sinogram_result), geom)
+        sino_filtered = filter_ramp(sino_weighted, geom)
+        sino_flat = vec(sino_filtered)
+
+        # Convert to Reactant array
+        sino_flat_ra = Reactant.to_rarray(sino_flat)
+
+        # Compile the ACTUAL backproject_volume function
+        compiled_bp = @compile backproject_volume(sino_flat_ra, bp_geom)
+        @test compiled_bp !== nothing
+
+        # Run compiled backprojection
+        volume_ra = compiled_bp(sino_flat_ra, bp_geom)
+        volume_result = Array(volume_ra)
+
+        @test size(volume_result) == output_size
+        @test all(isfinite.(volume_result))
+        @test maximum(volume_result) > 0
+
+        # Compare with Julia version
+        volume_julia = backproject_volume(sino_flat, bp_geom)
+        @test maximum(abs.(volume_result .- volume_julia)) < 1e-4
     end
 
     @testset "Polychromatic Simulation" begin
