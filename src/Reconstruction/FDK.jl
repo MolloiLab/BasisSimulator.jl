@@ -295,6 +295,61 @@ function sample_sinogram_bilinear(
 end
 
 # =============================================================================
+# Convenience Overloads
+# =============================================================================
+
+"""
+    fdk_reconstruct(sinogram, geom; n_voxels=128, kernel=RampKernel())
+
+Convenience version with automatic FOV calculation.
+
+FOV is estimated from detector coverage at isocenter.
+"""
+function fdk_reconstruct(
+    sinogram::AbstractArray{T,3},
+    geom::CTGeometry;
+    n_voxels::Int=128,
+    kernel::ReconKernel=RampKernel()
+) where T
+    # Convert to Float32 if necessary
+    sino32 = T == Float32 ? sinogram : Array{Float32}(sinogram)
+
+    # Estimate FOV from detector coverage
+    # Detector coverage at isocenter ≈ n_cols × pixel_size
+    fov_xy = geom.n_cols * geom.pixel_size * 1.1  # 10% margin
+    fov_z = geom.n_rows * geom.pixel_size * 1.1
+
+    # Cubic voxels
+    output_size = (n_voxels, n_voxels, n_voxels)
+    fov = (fov_xy, fov_xy, fov_z)
+
+    return fdk_reconstruct(sino32, geom, output_size, fov; kernel=kernel)
+end
+
+"""
+    fdk_reconstruct(sinogram, geom, output_size; fov=nothing, kernel=RampKernel())
+
+Version with output_size tuple and optional FOV.
+"""
+function fdk_reconstruct(
+    sinogram::AbstractArray{T,3},
+    geom::CTGeometry,
+    output_size::NTuple{3,Int};
+    fov::Union{NTuple{3,Float64},Nothing}=nothing,
+    kernel::ReconKernel=RampKernel()
+) where T
+    # Convert to Float32 if necessary
+    sino32 = T == Float32 ? sinogram : Array{Float32}(sinogram)
+
+    if fov === nothing
+        fov_xy = geom.n_cols * geom.pixel_size * 1.1
+        fov_z = geom.n_rows * geom.pixel_size * 1.1
+        fov = (fov_xy, fov_xy, fov_z)
+    end
+    return fdk_reconstruct(sino32, geom, output_size, fov; kernel=kernel)
+end
+
+# =============================================================================
 # Exports
 # =============================================================================
 
