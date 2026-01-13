@@ -147,6 +147,14 @@ function forward_project_polychromatic(
     # Flatten mask for linear indexing
     mask_flat = vec(phantom.mask)
 
+    # OPTIMIZATION: Gather mask samples ONCE (not per energy)
+    # This avoids creating a full μ volume for each energy bin
+    # mask_samples: [n_cols, n_rows, n_angles, n_samples] of UInt8 region indices
+    mask_samples = mask_flat[projector.proj_geom.linear_indices]
+
+    # Pre-compute sample weights once
+    weights_T = T.(projector.proj_geom.sample_weights)
+
     # Initialize transmission (accumulated I/I₀)
     transmission = zeros(T, n_cols, n_rows, n_angles)
 
@@ -154,18 +162,16 @@ function forward_project_polychromatic(
     for e_idx in 1:n_energies
         weight = T(projector.spectrum_weights[e_idx])
 
-        # Create μ volume at this energy using mask lookup
-        μ_at_energy = projector.μ_by_energy[:, e_idx]
+        # Get μ values for all 27 regions at this energy (small array!)
+        μ_at_energy = T.(projector.μ_by_energy[:, e_idx])
 
-        # Map mask values to μ values
-        μ_volume_flat = [T(μ_at_energy[mask_flat[i] + 1]) for i in 1:length(mask_flat)]
-
-        # Gather samples using pre-computed indices
-        samples = μ_volume_flat[projector.proj_geom.linear_indices]
+        # OPTIMIZATION: Direct lookup from mask samples into small μ table
+        # mask_samples contains region indices (0-26), add 1 for Julia indexing
+        # μ_at_energy is only [27] elements - the lookup is O(n_samples), not O(n_voxels)
+        μ_samples = μ_at_energy[mask_samples .+ 1]
 
         # Compute line integrals (path length weighted sum)
-        weights_T = T.(projector.proj_geom.sample_weights)
-        line_integrals = dropdims(sum(samples .* weights_T, dims=4), dims=4)
+        line_integrals = dropdims(sum(μ_samples .* weights_T, dims=4), dims=4)
 
         # Accumulate: weight * exp(-line_integral)
         transmission .+= weight .* exp.(-line_integrals)
