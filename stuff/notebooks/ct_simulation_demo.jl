@@ -271,6 +271,135 @@ let
 	fig
 end
 
+# ╔═╡ 00000001-0000-0000-0000-000000000030
+md"""
+---
+## 3.5 Beam Hardening Correction (BHC)
+
+Beam hardening causes **cupping artifacts** - the center of uniform objects appears darker than the edges. Water BHC uses a polynomial correction to linearize the relationship between polychromatic and monochromatic attenuation.
+
+BasisSimulator implements CatSim-style water BHC:
+- Polynomial fitting (typically order 5)
+- Horner scheme for efficient evaluation
+- Pre-calibrated models for 80/100/120/140 kVp
+"""
+
+# ╔═╡ 00000001-0000-0000-0000-000000000031
+begin
+	# Calibrate BHC for different kVp
+	bhc_120 = water_bhc_120kVp()
+	bhc_80 = water_bhc_80kVp()
+
+	# Get BHC info
+	bhc_info = get_bhc_info(bhc_120)
+
+	md"""
+	**Water BHC Model (120 kVp):**
+	- Polynomial order: $(bhc_info.poly_order)
+	- Effective μ water: $(round(bhc_info.effective_μ_cm, digits=4)) cm⁻¹
+	- Max calibrated path: $(bhc_info.max_path_cm) cm
+	"""
+end
+
+# ╔═╡ 00000001-0000-0000-0000-000000000032
+begin
+	# Apply BHC to 120 kVp polychromatic sinogram
+	sino_120_corrected = apply_water_bhc(sino_poly[120], bhc_120)
+
+	# Reconstruct with BHC
+	recon_120_bhc = fdk_reconstruct(sino_120_corrected, geom, size(phantom.μ), phantom.fov)
+	recon_120_bhc_HU = μ_to_HU(recon_120_bhc, get_effective_μ_water(projectors[120]))
+
+	# Also do 80 kVp (more severe beam hardening)
+	sino_80_corrected = apply_water_bhc(sino_poly[80], bhc_80)
+	recon_80_bhc = fdk_reconstruct(sino_80_corrected, geom, size(phantom.μ), phantom.fov)
+	recon_80_bhc_HU = μ_to_HU(recon_80_bhc, get_effective_μ_water(projectors[80]))
+
+	md"""
+	**BHC applied to sinograms** - reconstructions complete for 80 and 120 kVp
+	"""
+end
+
+# ╔═╡ 00000001-0000-0000-0000-000000000033
+let
+	fig = Figure(size=(1100, 450))
+
+	# 120 kVp comparison
+	ax1 = Axis(fig[1, 1], aspect=DataAspect(), title="120 kVp - No BHC")
+	hm1 = heatmap!(ax1, recon_poly_HU[120][:, :, mid_slice]';
+		colormap=:grays, colorrange=(-200, 400))
+	hidedecorations!(ax1)
+
+	ax2 = Axis(fig[1, 2], aspect=DataAspect(), title="120 kVp - With BHC")
+	hm2 = heatmap!(ax2, recon_120_bhc_HU[:, :, mid_slice]';
+		colormap=:grays, colorrange=(-200, 400))
+	hidedecorations!(ax2)
+
+	Colorbar(fig[1, 3], hm2, label="HU")
+
+	# 80 kVp comparison (more dramatic effect)
+	ax3 = Axis(fig[1, 4], aspect=DataAspect(), title="80 kVp - No BHC")
+	hm3 = heatmap!(ax3, recon_poly_HU[80][:, :, mid_slice]';
+		colormap=:grays, colorrange=(-200, 400))
+	hidedecorations!(ax3)
+
+	ax4 = Axis(fig[1, 5], aspect=DataAspect(), title="80 kVp - With BHC")
+	hm4 = heatmap!(ax4, recon_80_bhc_HU[:, :, mid_slice]';
+		colormap=:grays, colorrange=(-200, 400))
+	hidedecorations!(ax4)
+
+	Colorbar(fig[1, 6], hm4, label="HU")
+
+	Label(fig[0, :], "Beam Hardening Correction Comparison", fontsize=16)
+	fig
+end
+
+# ╔═╡ 00000001-0000-0000-0000-000000000034
+let
+	fig = Figure(size=(800, 400))
+
+	center = size(recon_poly_HU[120], 1) ÷ 2
+
+	ax = Axis(fig[1, 1], xlabel="Position (pixels)", ylabel="HU",
+		title="Central Profile - BHC Effect")
+
+	# Ground truth
+	gt_profile = μ_to_HU(phantom.μ[center, :, mid_slice], μ_water_60keV)
+	lines!(ax, gt_profile, label="Ground Truth", color=:black, linewidth=2, linestyle=:dash)
+
+	# 120 kVp without BHC
+	profile_120_no = recon_poly_HU[120][center, :, mid_slice]
+	lines!(ax, profile_120_no, label="120 kVp (no BHC)", color=:red, linewidth=2)
+
+	# 120 kVp with BHC
+	profile_120_bhc = recon_120_bhc_HU[center, :, mid_slice]
+	lines!(ax, profile_120_bhc, label="120 kVp (with BHC)", color=:blue, linewidth=2)
+
+	# 80 kVp without BHC
+	profile_80_no = recon_poly_HU[80][center, :, mid_slice]
+	lines!(ax, profile_80_no, label="80 kVp (no BHC)", color=:orange, linewidth=1.5, linestyle=:dot)
+
+	# 80 kVp with BHC
+	profile_80_bhc = recon_80_bhc_HU[center, :, mid_slice]
+	lines!(ax, profile_80_bhc, label="80 kVp (with BHC)", color=:purple, linewidth=1.5, linestyle=:dot)
+
+	axislegend(ax, position=:rb)
+
+	fig
+end
+
+# ╔═╡ 00000001-0000-0000-0000-000000000035
+md"""
+### BHC Analysis
+
+The plots above show:
+1. **Cupping reduction**: BHC flattens the central dip in uniform water regions
+2. **80 kVp benefits more**: Lower kVp has more severe beam hardening, so BHC has larger effect
+3. **Not perfect**: BHC assumes water-equivalent material; dense objects (bone, calcium) may still show artifacts
+
+**Note**: For non-water materials, iterative methods or dual-energy techniques are needed.
+"""
+
 # ╔═╡ 00000001-0000-0000-0000-000000000016
 md"""
 ---
@@ -689,6 +818,12 @@ sino = apply_detector_model(sino, default_detector_model(I0=5e4))
 # ╟─00000001-0000-0000-0000-000000000013
 # ╟─00000001-0000-0000-0000-000000000014
 # ╟─00000001-0000-0000-0000-000000000015
+# ╟─00000001-0000-0000-0000-000000000030
+# ╟─00000001-0000-0000-0000-000000000031
+# ╟─00000001-0000-0000-0000-000000000032
+# ╟─00000001-0000-0000-0000-000000000033
+# ╟─00000001-0000-0000-0000-000000000034
+# ╟─00000001-0000-0000-0000-000000000035
 # ╟─00000001-0000-0000-0000-000000000016
 # ╟─00000001-0000-0000-0000-000000000017
 # ╟─00000001-0000-0000-0000-000000000018
