@@ -60,6 +60,9 @@ include("Forward/Scatter.jl")
 # Detector response and noise modeling
 include("Forward/DetectorNoise.jl")
 
+# Detector absorption efficiency and DQE
+include("Forward/DetectorEfficiency.jl")
+
 # Bowtie filter modeling
 include("Forward/BowtieFilter.jl")
 

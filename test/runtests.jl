@@ -508,6 +508,83 @@ using Reactant
         @test stats.std_diff > 0
     end
 
+    @testset "Detector Efficiency" begin
+        geom = create_aquilion_one(n_angles=36, n_rows=8, n_cols=64)
+
+        # Test model creation
+        det_gos = detector_efficiency_gos(0.5)
+        det_csi = detector_efficiency_csi(0.6)
+        det_cdte = detector_efficiency_cdte(1.6)
+        det_ideal = detector_efficiency_ideal()
+
+        @test det_gos isa DetectorEfficiency
+        @test det_gos.material == "GOS"
+        @test det_gos.thickness_mm == 0.5
+        @test det_ideal.material == "ideal"
+
+        # Test custom detector
+        det_custom = detector_efficiency_custom("CsI", 0.8; fill_factor=0.92)
+        @test det_custom.fill_factor == 0.92
+
+        # Test scintillator μ lookup
+        μ_gos_60 = get_scintillator_mu("GOS", 60.0)
+        μ_gos_80 = get_scintillator_mu("GOS", 80.0)
+        @test μ_gos_60 > μ_gos_80  # Higher μ at lower energy (in general)
+        @test μ_gos_60 > 10  # GOS has high μ around K-edge
+
+        # Test efficiency computation
+        η = compute_detector_efficiency(det_gos, geom)
+        @test size(η) == (64, 8)
+        @test all(0 .< η .<= 1)
+
+        # Efficiency should be slightly lower at edges (oblique rays)
+        # Actually for thin detectors, oblique rays have higher absorption
+        # Let's just check reasonable values
+        @test η[32, 4] > 0.5  # Typical GOS efficiency at 60 keV
+
+        # Ideal detector should have 100% efficiency
+        η_ideal = compute_detector_efficiency(det_ideal, geom)
+        @test all(η_ideal .== 1.0)
+
+        # CdTe should have higher efficiency than Si for same thickness
+        det_cdte_1mm = detector_efficiency_custom("CdTe", 1.0)
+        det_si_1mm = detector_efficiency_custom("Si", 1.0)
+        η_cdte = compute_detector_efficiency(det_cdte_1mm, geom)
+        η_si = compute_detector_efficiency(det_si_1mm, geom)
+        @test mean(η_cdte) > mean(η_si)
+
+        # Test spectral efficiency
+        energies = [40.0, 60.0, 80.0, 100.0]
+        η_spectral = compute_detector_efficiency_spectral(det_gos, geom, energies)
+        @test size(η_spectral) == (64, 8, 4)
+        @test all(0 .< η_spectral .<= 1)
+
+        # Test DQE computation
+        dqe = compute_dqe(det_gos, 60.0)
+        @test 0 < dqe <= 1
+        @test dqe < det_gos.fill_factor  # DQE is always less than fill factor
+
+        # Test info
+        info = get_detector_efficiency_info(det_gos)
+        @test info.material == "GOS"
+        @test info.total_efficiency > 0
+        @test info.absorption_at_ref_energy > 0
+
+        # Test application to intensity
+        phantom = create_gammex_472(n_voxels=16)
+        geom_small = create_aquilion_one(n_angles=18, n_rows=4, n_cols=32, fov_cm=phantom.fov[1])
+        sinogram = forward_project(phantom, geom_small)
+        intensity = exp.(-sinogram)
+
+        intensity_detected = apply_detector_efficiency(intensity, det_gos, geom_small)
+        @test size(intensity_detected) == size(intensity)
+        @test all(intensity_detected .<= intensity)  # Efficiency reduces signal
+
+        # Ideal detector should not change intensity
+        intensity_ideal = apply_detector_efficiency(intensity, det_ideal, geom_small)
+        @test intensity_ideal ≈ intensity
+    end
+
     @testset "Scatter Effects on Reconstruction" begin
         phantom = create_gammex_472(n_voxels=32)
         geom = create_aquilion_one(n_angles=180, n_rows=8, n_cols=128, fov_cm=phantom.fov[1])
