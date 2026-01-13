@@ -105,14 +105,15 @@ end
 # =============================================================================
 
 """
-    create_gammex_472(; n_voxels=64, fov_cm=35.0, z_cm=4.0, μ_effective_energy_keV=60.0)
+    create_gammex_472(; n_voxels=64, n_slices=nothing, fov_cm=35.0, z_cm=4.0, μ_effective_energy_keV=60.0)
 
 Create a Gammex 472 calibration phantom with semantic mask.
 
 # Arguments
 - `n_voxels::Int`: Voxels per side in x/y (default 64 for fast iteration)
+- `n_slices::Union{Int,Nothing}`: Number of z slices (if specified, overrides z_cm calculation)
 - `fov_cm::Float64`: Field of view in x/y (cm), default 35.0
-- `z_cm::Float64`: Height in z (cm), default 4.0
+- `z_cm::Float64`: Height in z (cm), default 4.0 (used if n_slices not specified)
 - `μ_effective_energy_keV::Float64`: Energy for μ values (keV), default 60.0
 
 # Returns
@@ -132,12 +133,17 @@ Create a Gammex 472 calibration phantom with semantic mask.
 """
 function create_gammex_472(;
     n_voxels::Int=64,
+    n_slices::Union{Int,Nothing}=nothing,
     fov_cm::Float64=35.0,
     z_cm::Float64=4.0,
     μ_effective_energy_keV::Float64=60.0
 )
-    # Grid setup
-    n_z = max(1, round(Int, n_voxels * z_cm / fov_cm))
+    # Grid setup - use n_slices if specified, otherwise compute from z_cm
+    n_z = if n_slices !== nothing
+        n_slices
+    else
+        max(1, round(Int, n_voxels * z_cm / fov_cm))
+    end
     dx = fov_cm / n_voxels
     dy = fov_cm / n_voxels
     dz = z_cm / n_z
