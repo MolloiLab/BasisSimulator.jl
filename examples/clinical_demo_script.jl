@@ -1,16 +1,16 @@
 # =============================================================================
-# Clinical CT Simulation Demo
+# Clinical CT Simulation Demo (Fully GPU-Native)
 # =============================================================================
 #
 # Interactive script for VSCode - step through with Shift+Enter
 #
 # Demonstrates:
-# - Siddon forward projection (AcceleratedKernels.jl)
-# - FDK reconstruction
+# - Siddon forward projection on Metal GPU
+# - FDK reconstruction (entirely on GPU - spatial domain filtering)
 # - Polychromatic projection with beam hardening
 # - HU validation
 #
-# Works on: CPU, Metal (Apple), CUDA (NVIDIA), ROCm (AMD)
+# All core operations run on Metal GPU via AcceleratedKernels.jl
 #
 # =============================================================================
 
@@ -36,11 +36,6 @@ println()
 
 # %%
 # Simulation parameters
-# n_energy_bins: Number of energy bins for polychromatic projection
-#   - 30-50 bins: <1% error (2-3 keV bins) - recommended for accuracy
-#   - 20-30 bins: ~2% error (3-5 keV bins) - good balance
-#   - 10-20 bins: ~5% error (5-10 keV bins) - fast but less accurate
-#   Reference: https://pmc.ncbi.nlm.nih.gov/articles/PMC8126163/
 CONFIG = (
     n_cols = 256,
     n_rows = 32,
@@ -95,7 +90,7 @@ let
 end
 
 # =============================================================================
-# 4. Forward Projection (AcceleratedKernels.jl + Metal GPU)
+# 4. Forward Projection (Metal GPU)
 # =============================================================================
 
 # %%
@@ -107,8 +102,14 @@ println("  GPU array type: ", typeof(phantom_μ_gpu))
 # %%
 println("Running Siddon forward projection on GPU...")
 @time sinogram_gpu = siddon_forward_project(phantom_μ_gpu, geom)
-sinogram = Array(sinogram_gpu)  # Transfer back to CPU for visualization
-println("Sinogram size: ", size(sinogram))
+println("Sinogram type: ", typeof(sinogram_gpu))
+println("Sinogram size: ", size(sinogram_gpu))
+
+# Second run to show actual performance (without compilation)
+println("\nTimed run (after compilation):")
+@time sinogram_gpu = siddon_forward_project(phantom_μ_gpu, geom)
+
+sinogram = Array(sinogram_gpu)  # Transfer to CPU for visualization
 println("Sinogram range: ", round(minimum(sinogram), digits=3), " to ", round(maximum(sinogram), digits=3))
 
 # %%
@@ -130,21 +131,27 @@ let
 end
 
 # =============================================================================
-# 5. FDK Reconstruction (Filtering on CPU, Backprojection on GPU)
+# 5. FDK Reconstruction (Entirely on GPU)
 # =============================================================================
+#
+# The entire FDK pipeline now runs on GPU:
+# - Cosine weighting: GPU (AcceleratedKernels.jl)
+# - Ramp filtering: GPU (spatial domain convolution)
+# - Backprojection: GPU (AcceleratedKernels.jl)
+#
+# No CPU transfer needed!
+#
 
 # %%
-# Filtering uses FFTW (CPU), then backprojection on GPU
-println("Running FDK filtering (CPU/FFTW)...")
-@time filtered = filter_sinogram(sinogram, geom)
-println("Filtered sinogram range: ", round(minimum(filtered), digits=3), " to ", round(maximum(filtered), digits=3))
+println("Running full FDK reconstruction on GPU...")
+@time recon_gpu = fdk_reconstruct(sinogram_gpu, geom, size(phantom.μ))
+println("Reconstruction type: ", typeof(recon_gpu))
 
-# %%
-# Transfer filtered sinogram to GPU for backprojection
-println("Running backprojection on GPU...")
-filtered_gpu = MtlArray(filtered)
-@time recon_gpu = backproject(filtered_gpu, geom, size(phantom.μ))
-recon = Array(recon_gpu)  # Transfer back to CPU
+# Second run to show actual performance
+println("\nTimed run (after compilation):")
+@time recon_gpu = fdk_reconstruct(sinogram_gpu, geom, size(phantom.μ))
+
+recon = Array(recon_gpu)  # Transfer to CPU for visualization
 println("Reconstruction size: ", size(recon))
 
 # %%
@@ -227,17 +234,16 @@ let
 end
 
 # =============================================================================
-# 7. Polychromatic Forward Projection (GPU-accelerated)
+# 7. Polychromatic Forward Projection
 # =============================================================================
+#
+# Polychromatic uses CPU arrays because material lookup tables are CPU-based.
+# Each internal Siddon projection still benefits from AcceleratedKernels.jl.
 #
 # Memory-efficient approach using the unified forward_project API:
 # - Loops over energy bins internally
-# - Each energy bin uses GPU-accelerated Siddon projection
 # - Accumulates Beer-Lambert: I = Σ w_e × exp(-∫μ_e dl)
 # - Converts to line integral: -log(I / I_0)
-#
-# Reference: XCIST/CatSim uses similar loop-over-energies approach
-# https://github.com/xcist/main
 #
 
 # %%
@@ -253,9 +259,7 @@ println("  Effective bin width: ~$(bin_width) keV")
 println("  Materials: $(length(materials))")
 
 # %%
-# For polychromatic, we use CPU arrays (material lookup tables are CPU-based)
-# Each internal Siddon projection still benefits from parallel execution
-println("\nRunning polychromatic projection ($(CONFIG.n_energy_bins) energies, CPU)...")
+println("\nRunning polychromatic projection ($(CONFIG.n_energy_bins) energies)...")
 @time sino_poly = forward_project(
     phantom.mask, geom;
     energies=energies,
@@ -269,8 +273,8 @@ println("Poly sinogram range: ", round(minimum(sino_poly), digits=3), " to ", ro
 # =============================================================================
 
 # %%
-# Also run monochromatic at 60 keV for comparison (CPU for material lookup)
-println("Running monochromatic projection (60 keV, CPU)...")
+# Also run monochromatic at 60 keV for comparison
+println("Running monochromatic projection (60 keV)...")
 @time sino_mono = forward_project(
     phantom.mask, geom;
     energy=60.0,
@@ -308,22 +312,20 @@ println("  Max difference: ", round(maximum(abs.(diff)), digits=4))
 println("  Poly max < Mono max: $(maximum(sino_poly) < maximum(sino_mono)) (expected for beam hardening)")
 
 # =============================================================================
-# 9. Mono vs Poly Reconstruction Comparison (GPU Backprojection)
+# 9. Mono vs Poly Reconstruction Comparison (GPU)
 # =============================================================================
 
 # %%
-println("\nReconstructing monochromatic sinogram (GPU backprojection)...")
-filtered_mono = filter_sinogram(sino_mono, geom)
-filtered_mono_gpu = MtlArray(filtered_mono)
-@time recon_mono_gpu = backproject(filtered_mono_gpu, geom, size(phantom.μ))
+println("\nReconstructing monochromatic sinogram (GPU)...")
+sino_mono_gpu = MtlArray(Float32.(sino_mono))
+@time recon_mono_gpu = fdk_reconstruct(sino_mono_gpu, geom, size(phantom.μ))
 recon_mono = Array(recon_mono_gpu)
 println("Mono recon range: ", round(minimum(recon_mono), digits=4), " to ", round(maximum(recon_mono), digits=4))
 
 # %%
-println("Reconstructing polychromatic sinogram (GPU backprojection)...")
-filtered_poly = filter_sinogram(sino_poly, geom)
-filtered_poly_gpu = MtlArray(filtered_poly)
-@time recon_poly_gpu = backproject(filtered_poly_gpu, geom, size(phantom.μ))
+println("Reconstructing polychromatic sinogram (GPU)...")
+sino_poly_gpu = MtlArray(Float32.(sino_poly))
+@time recon_poly_gpu = fdk_reconstruct(sino_poly_gpu, geom, size(phantom.μ))
 recon_poly = Array(recon_poly_gpu)
 println("Poly recon range: ", round(minimum(recon_poly), digits=4), " to ", round(maximum(recon_poly), digits=4))
 
@@ -383,9 +385,24 @@ let
 end
 
 # =============================================================================
-# Done!
+# 10. Performance Summary
 # =============================================================================
+
+# %%
+println("\n" * "="^60)
+println("Performance Summary (Metal GPU)")
+println("="^60)
+println("\nForward Projection:")
+@time siddon_forward_project(phantom_μ_gpu, geom)
+
+println("\nFull FDK Reconstruction:")
+@time fdk_reconstruct(sinogram_gpu, geom, size(phantom.μ))
 
 println("\n" * "="^60)
 println("Clinical Demo Complete!")
 println("="^60)
+println("\nAll core operations run on Metal GPU:")
+println("  ✓ Forward projection (Siddon)")
+println("  ✓ Cosine weighting")
+println("  ✓ Ramp filtering (spatial domain)")
+println("  ✓ Backprojection (FDK)")
