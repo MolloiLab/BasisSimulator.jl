@@ -31,6 +31,7 @@ to enable Reactant/XLA compilation (no runtime trig).
 - `detector_centers::Matrix{Float64}`: [3, n_angles] detector center XYZ
 - `detector_u::Matrix{Float64}`: [3, n_angles] detector u-axis (column direction)
 - `detector_v::Matrix{Float64}`: [3, n_angles] detector v-axis (row direction)
+- `fov::NTuple{3, Float64}`: (fov_x, fov_y, fov_z) volume FOV in cm
 
 # Coordinate System
 - X: left-right (increasing right)
@@ -50,10 +51,11 @@ struct CTGeometry
     detector_centers::Matrix{Float64}
     detector_u::Matrix{Float64}
     detector_v::Matrix{Float64}
+    fov::NTuple{3, Float64}  # (fov_x, fov_y, fov_z) in cm
 end
 
 """
-    create_aquilion_one(; n_angles=360, n_rows=64, n_cols=128, fov_cm=nothing, sad=nothing, sdd=nothing)
+    create_aquilion_one(; n_angles=360, n_rows=64, n_cols=128, fov_cm=nothing, z_cm=nothing, sad=nothing, sdd=nothing)
 
 Create CT scanner geometry (defaults to Canon Aquilion ONE specifications).
 
@@ -68,8 +70,8 @@ Create CT scanner geometry (defaults to Canon Aquilion ONE specifications).
 - `n_angles::Int`: Number of projection angles (default 360)
 - `n_rows::Int`: Detector rows, reduced for fast iteration (default 64)
 - `n_cols::Int`: Detector columns, reduced for fast iteration (default 128)
-- `fov_cm::Union{Float64,Nothing}`: If specified, adjust pixel size to cover this FOV.
-  If nothing, use real scanner pixel size (0.5mm).
+- `fov_cm::Union{Float64,Nothing}`: XY field of view in cm. If nothing, compute from pixel size.
+- `z_cm::Union{Float64,Nothing}`: Z field of view in cm. If nothing, compute from pixel size and n_rows.
 - `sad::Union{Float64,Nothing}`: Source-to-axis distance in cm (default 60.0 cm / 600 mm)
 - `sdd::Union{Float64,Nothing}`: Source-to-detector distance in cm (default 100.0 cm / 1000 mm)
 
@@ -81,6 +83,7 @@ function create_aquilion_one(;
     n_rows::Int=64,
     n_cols::Int=128,
     fov_cm::Union{Float64,Nothing}=nothing,
+    z_cm::Union{Float64,Nothing}=nothing,
     sad::Union{Float64,Nothing}=nothing,
     sdd::Union{Float64,Nothing}=nothing
 )
@@ -93,13 +96,22 @@ function create_aquilion_one(;
     SAD = sad !== nothing ? sad : SAD_mm / 10.0
     SDD = sdd !== nothing ? sdd : SDD_mm / 10.0
 
-    # Determine pixel size
+    # Determine pixel size and FOV
     if fov_cm === nothing
         pixel_size = pixel_pitch_mm / 10.0
+        fov_xy = pixel_size * n_cols  # FOV from detector size
     else
         # Compute pixel size to cover the specified FOV
         # Add some margin (1.1x) to ensure full coverage
         pixel_size = (fov_cm * 1.1) / n_cols
+        fov_xy = fov_cm
+    end
+
+    # Z FOV
+    if z_cm === nothing
+        fov_z = pixel_size * n_rows
+    else
+        fov_z = z_cm
     end
 
     # Generate angles (full 360° rotation)
@@ -138,9 +150,12 @@ function create_aquilion_one(;
         detector_v[3, i] = 1.0
     end
 
+    fov = (fov_xy, fov_xy, fov_z)
+
     return CTGeometry(
         SAD, SDD, n_angles, n_rows, n_cols, pixel_size,
-        angles, source_positions, detector_centers, detector_u, detector_v
+        angles, source_positions, detector_centers, detector_u, detector_v,
+        fov
     )
 end
 

@@ -174,9 +174,14 @@ function create_axial_geometry(
         detector_v[3, i] = 1.0
     end
 
+    # Default FOV for axial geometry (based on detector coverage)
+    fov_xy = n_cols * pixel_size  # Approximate FOV from detector
+    fov_z = n_rows * pixel_size
+    fov = (fov_xy, fov_xy, fov_z)
+
     return CTGeometry(
         SAD, SDD, n_angles, n_rows, n_cols, pixel_size,
-        angles, source_positions, detector_centers, detector_u, detector_v
+        angles, source_positions, detector_centers, detector_u, detector_v, fov
     )
 end
 
@@ -246,9 +251,15 @@ function create_helical_geometry_internal(
         detector_v[3, i] = 1.0
     end
 
+    # Default FOV for helical geometry (based on detector coverage and z range)
+    fov_xy = n_cols * pixel_size  # Approximate FOV from detector
+    z_range = abs(source_positions[3, end] - source_positions[3, 1])
+    fov_z = z_range + n_rows * pixel_size  # Z coverage plus beam width
+    fov = (fov_xy, fov_xy, fov_z)
+
     return CTGeometry(
         SAD, SDD, total_angles, n_rows, n_cols, pixel_size,
-        angles, source_positions, detector_centers, detector_u, detector_v
+        angles, source_positions, detector_centers, detector_u, detector_v, fov
     )
 end
 
