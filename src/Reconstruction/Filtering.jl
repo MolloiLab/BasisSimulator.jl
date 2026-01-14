@@ -1,19 +1,19 @@
 # =============================================================================
-# FDK Filtering (Ramp Filter + Cosine Weighting)
+# FDK Filtering (GPU-Native Spatial Domain)
 # =============================================================================
 #
-# Implements standard CT reconstruction filtering:
+# Implements CT reconstruction filtering entirely on GPU:
 #   1. Cosine weighting for cone-beam geometry
-#   2. Ramp filter (Ram-Lak) in Fourier domain
+#   2. Spatial domain ramp filter convolution (no FFT needed)
 #   3. Optional filter windows (Shepp-Logan, Cosine, Hamming, Hann)
 #
 # Reference:
 #   - Feldkamp, Davis, Kress (1984)
-#   - TIGRE filter options: ram_lak, shepp_logan, cosine, hamming, hann
+#   - Kak & Slaney, "Principles of Computerized Tomographic Imaging"
+#   - Ram-Lak filter spatial domain form
 #
 # =============================================================================
 
-using FFTW
 import AcceleratedKernels as AK
 
 export filter_sinogram!, filter_sinogram
@@ -41,69 +41,107 @@ struct HammingFilter <: FilterType end
 struct HannFilter <: FilterType end
 
 # =============================================================================
-# Filter Construction
+# Spatial Domain Filter Kernel
 # =============================================================================
 
 """
-    create_ramp_filter(n, filter_type, cutoff=1.0)
+    create_spatial_kernel(n, filter_type, pixel_size)
 
-Create a ramp filter in the frequency domain.
+Create ramp filter kernel in spatial domain.
+
+The Ram-Lak (ramp) filter in spatial domain:
+- h[0] = 1/(4Δ²)
+- h[n] = 0 for even n ≠ 0
+- h[n] = -1/(π²n²Δ²) for odd n
 
 # Arguments
-- `n`: Number of frequency bins (typically padded detector width)
-- `filter_type`: Type of filter window (RampFilter, SheppLoganFilter, etc.)
-- `cutoff`: Frequency cutoff as fraction of Nyquist (0-1)
+- `n`: Kernel size (typically n_cols)
+- `filter_type`: Type of filter window
+- `pixel_size`: Detector pixel spacing
 
 # Returns
-Filter array of length n (frequency domain)
+Filter kernel array of length n (centered at n÷2+1)
 """
-function create_ramp_filter(n::Int, filter_type::FilterType, cutoff::Float64=1.0)
-    # Frequency axis (normalized to Nyquist)
-    freq = fftfreq(n)
+function create_spatial_kernel(n::Int, filter_type::FilterType, pixel_size::T) where T <: AbstractFloat
+    kernel = zeros(T, n)
+    center = n ÷ 2 + 1
+    Δ = pixel_size
+    Δ_sq = Δ * Δ
 
-    # Ramp filter: |f|
-    ramp = abs.(freq)
+    for i in 1:n
+        k = i - center  # Distance from center
 
-    # Apply cutoff
-    ramp[abs.(freq) .> cutoff / 2] .= 0
+        if k == 0
+            # Central value
+            kernel[i] = one(T) / (T(4) * Δ_sq)
+        elseif k % 2 == 0
+            # Even indices (excluding center)
+            kernel[i] = zero(T)
+        else
+            # Odd indices
+            kernel[i] = -one(T) / (T(π)^2 * T(k)^2 * Δ_sq)
+        end
+    end
 
     # Apply window function
-    filter = apply_filter_window(ramp, freq, filter_type)
+    apply_spatial_window!(kernel, filter_type)
 
-    return Float32.(filter)
+    return kernel
 end
 
-"""
-    apply_filter_window(ramp, freq, filter_type)
-
-Apply windowing function to ramp filter.
-"""
-function apply_filter_window(ramp, freq, ::RampFilter)
-    return ramp
+"""Apply windowing to spatial domain kernel"""
+function apply_spatial_window!(kernel::Vector{T}, ::RampFilter) where T
+    # No windowing for pure ramp
+    return kernel
 end
 
-function apply_filter_window(ramp, freq, ::SheppLoganFilter)
-    # sinc(f / (2 * f_max)) where f_max = 0.5
-    window = sinc.(freq)
-    return ramp .* window
+function apply_spatial_window!(kernel::Vector{T}, ::SheppLoganFilter) where T
+    n = length(kernel)
+    center = n ÷ 2 + 1
+    for i in 1:n
+        k = i - center
+        if k != 0
+            # Shepp-Logan: multiply by sinc(k/n) in spatial domain
+            # This is approximate - exact would require convolution
+            x = T(k) / T(n)
+            kernel[i] *= sinc(x)
+        end
+    end
+    return kernel
 end
 
-function apply_filter_window(ramp, freq, ::CosineFilter)
-    # cos(π * f / (2 * f_max))
-    window = cos.(π .* freq)
-    return ramp .* window
+function apply_spatial_window!(kernel::Vector{T}, ::CosineFilter) where T
+    n = length(kernel)
+    center = n ÷ 2 + 1
+    for i in 1:n
+        k = i - center
+        # Cosine window in spatial domain
+        x = T(k) / T(n)
+        kernel[i] *= cos(T(π) * x / T(2))^2
+    end
+    return kernel
 end
 
-function apply_filter_window(ramp, freq, ::HammingFilter)
-    # 0.54 + 0.46 * cos(π * f / f_max)
-    window = 0.54 .+ 0.46 .* cos.(2π .* freq)
-    return ramp .* window
+function apply_spatial_window!(kernel::Vector{T}, ::HammingFilter) where T
+    n = length(kernel)
+    center = n ÷ 2 + 1
+    for i in 1:n
+        k = i - center
+        x = T(k) / T(n)
+        kernel[i] *= T(0.54) + T(0.46) * cos(T(π) * x)
+    end
+    return kernel
 end
 
-function apply_filter_window(ramp, freq, ::HannFilter)
-    # 0.5 * (1 + cos(π * f / f_max))
-    window = 0.5 .* (1 .+ cos.(2π .* freq))
-    return ramp .* window
+function apply_spatial_window!(kernel::Vector{T}, ::HannFilter) where T
+    n = length(kernel)
+    center = n ÷ 2 + 1
+    for i in 1:n
+        k = i - center
+        x = T(k) / T(n)
+        kernel[i] *= T(0.5) * (one(T) + cos(T(π) * x))
+    end
+    return kernel
 end
 
 # =============================================================================
@@ -169,23 +207,23 @@ function cosine_weight!(
 end
 
 # =============================================================================
-# Main Filtering Function
+# GPU-Native Spatial Domain Filtering
 # =============================================================================
 
 """
     filter_sinogram!(sinogram, geom; filter=RampFilter(), cutoff=1.0)
 
-Apply FDK filtering to sinogram in-place.
+Apply FDK filtering to sinogram in-place using GPU-native spatial domain convolution.
 
 Steps:
 1. Cosine weighting for cone-beam geometry
-2. Row-by-row FFT filtering with ramp filter
+2. Row-by-row convolution with ramp filter kernel
 
 # Arguments
 - `sinogram`: Sinogram [n_cols, n_rows, n_angles] (modified in place)
 - `geom`: CTGeometry with scanner parameters
 - `filter`: Filter type (RampFilter, SheppLoganFilter, etc.)
-- `cutoff`: Frequency cutoff as fraction of Nyquist (0-1)
+- `cutoff`: Frequency cutoff (0-1) - controls kernel truncation
 
 # Returns
 The filtered sinogram (modified in place)
@@ -202,47 +240,62 @@ function filter_sinogram!(
     cutoff::Float64 = 1.0
 ) where T <: AbstractFloat
 
-    n_cols, n_rows, n_angles = size(sinogram)
+    n_cols = Int32(size(sinogram, 1))
+    n_rows = Int32(size(sinogram, 2))
+    n_angles = Int32(size(sinogram, 3))
 
     # Step 1: Cosine weighting
     cosine_weight!(sinogram, geom)
 
-    # Step 2: Create filter (zero-padded for FFT)
-    # Pad to next power of 2 for efficient FFT
-    n_padded = nextpow(2, 2 * n_cols)
-    filt = create_ramp_filter(n_padded, filter, cutoff)
-
-    # Scale filter by detector spacing for proper units
+    # Step 2: Create spatial domain filter kernel
     pixel_size = T(geom.pixel_size)
-    filt .*= T(2 * n_cols / n_padded) / pixel_size
 
-    # Step 3: Filter each row using FFT
-    # Pre-allocate padded array
-    padded = zeros(Complex{T}, n_padded)
+    # Kernel size based on cutoff (smaller cutoff = smaller kernel = faster)
+    # Compute without reassignment to avoid GPU boxing issues
+    raw_size = max(Int(ceil(Int(n_cols) * cutoff)), 32)
+    kernel_size_int = min(raw_size + (1 - raw_size % 2), Int(n_cols))  # Make odd, clamp to n_cols
 
-    for angle in 1:n_angles
-        for row in 1:n_rows
-            # Zero-pad row
-            fill!(padded, zero(Complex{T}))
-            for col in 1:n_cols
-                padded[col] = Complex{T}(sinogram[col, row, angle])
-            end
+    kernel_cpu = create_spatial_kernel(kernel_size_int, filter, pixel_size)
 
-            # FFT
-            fft!(padded)
+    # Transfer kernel to same device as sinogram
+    kernel = similar(sinogram, T, kernel_size_int)
+    copyto!(kernel, kernel_cpu)
 
-            # Apply filter
-            padded .*= filt
+    # Use Int32 constants for GPU
+    kernel_size = Int32(kernel_size_int)
+    kernel_half = Int32(kernel_size_int ÷ 2)
 
-            # Inverse FFT
-            ifft!(padded)
+    # Allocate output buffer on same device
+    filtered = similar(sinogram)
 
-            # Copy back (real part only)
-            for col in 1:n_cols
-                sinogram[col, row, angle] = T(real(padded[col]))
+    # Step 3: Convolve each row with the filter kernel (GPU-parallel)
+    AK.foreachindex(sinogram) do idx
+        # Convert linear index to (col, row, angle)
+        idx_0 = Int32(idx - 1)
+        col = (idx_0 % n_cols) + Int32(1)
+        idx_0 = idx_0 ÷ n_cols
+        row = (idx_0 % n_rows) + Int32(1)
+        angle = (idx_0 ÷ n_rows) + Int32(1)
+
+        # Convolution for this pixel
+        acc = zero(T)
+
+        for k in Int32(1):kernel_size
+            # Source column index (with boundary handling)
+            k_offset = k - kernel_half - Int32(1)
+            src_col = col + k_offset
+
+            # Clamp to valid range (zero-padding at boundaries)
+            if src_col >= Int32(1) && src_col <= n_cols
+                acc += sinogram[src_col, row, angle] * kernel[k]
             end
         end
+
+        filtered[idx] = acc
     end
+
+    # Copy result back to sinogram
+    copyto!(sinogram, filtered)
 
     return sinogram
 end
