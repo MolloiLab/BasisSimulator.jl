@@ -55,9 +55,15 @@ function fdk_reconstruct(
 ) where T <: AbstractFloat
 
     # Step 1: Filter sinogram (includes cosine weighting)
-    filtered = filter_sinogram(sinogram, geom; filter=filter, cutoff=cutoff)
+    # Note: FFTW requires CPU arrays, so we convert if needed
+    sinogram_cpu = Array(sinogram)  # No-op if already CPU array
+    filtered_cpu = filter_sinogram(sinogram_cpu, geom; filter=filter, cutoff=cutoff)
 
-    # Step 2: Backproject
+    # Step 2: Transfer filtered sinogram back to same device as input
+    filtered = similar(sinogram)
+    copyto!(filtered, filtered_cpu)
+
+    # Step 3: Backproject
     volume = backproject(filtered, geom, volume_size)
 
     return volume

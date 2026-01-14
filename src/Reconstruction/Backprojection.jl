@@ -1,8 +1,8 @@
 # =============================================================================
-# Voxel-Driven Backprojection (TIGRE-style, KernelAbstractions.jl)
+# Voxel-Driven Backprojection (TIGRE-style, AcceleratedKernels.jl)
 # =============================================================================
 #
-# Direct port of TIGRE's voxel backprojection algorithm using KernelAbstractions.jl
+# Direct port of TIGRE's voxel backprojection algorithm using AcceleratedKernels.jl
 # for backend-agnostic GPU/CPU execution.
 #
 # Reference:
@@ -11,45 +11,37 @@
 #
 # =============================================================================
 
-using KernelAbstractions
+import AcceleratedKernels as AK
 
 export backproject!, backproject
 
 # =============================================================================
-# GPU Kernel for Voxel Backprojection
+# Single Voxel Backprojection (inlined into the main loop)
 # =============================================================================
 
-@kernel function backproject_kernel!(
-    volume, @Const(sinogram),
-    @Const(source_positions), @Const(detector_centers),
-    @Const(detector_u), @Const(detector_v),
-    vol_min_x, vol_min_y, vol_min_z,
-    voxel_size_x, voxel_size_y, voxel_size_z,
-    nx::Int32, ny::Int32, nz::Int32,
+"""
+    backproject_voxel(...)
+
+Backproject all angles onto a single voxel using TIGRE's algorithm.
+Port of TIGRE's voxel backprojection logic from voxel_backprojection.cu
+
+Returns accumulated weighted backprojection value.
+
+Note: Uses Int32 for dimensions to ensure GPU compatibility.
+"""
+@inline function backproject_voxel(
+    sinogram::AbstractArray{T, 3},
+    voxel_x::T, voxel_y::T, voxel_z::T,
+    source_positions::AbstractArray{T, 2},
+    detector_centers::AbstractArray{T, 2},
+    detector_u::AbstractArray{T, 2},
+    detector_v::AbstractArray{T, 2},
     n_cols::Int32, n_rows::Int32, n_angles::Int32,
-    col_center, row_center,
-    pixel_size, magnification, SAD, pi_over_angles
-)
-    idx = @index(Global)
-    T = eltype(volume)
+    col_center::T, row_center::T,
+    pixel_mag::T, SAD::T, SAD_sq::T, pi_over_angles::T
+) where T
 
-    # Convert linear index to (ix, iy, iz) using integer arithmetic
-    idx_0 = idx - Int32(1)
-    ix = (idx_0 % nx) + Int32(1)
-    idx_0 = idx_0 ÷ nx
-    iy = (idx_0 % ny) + Int32(1)
-    iz = (idx_0 ÷ ny) + Int32(1)
-
-    # Voxel center in world coordinates
-    half = T(0.5)
-    voxel_x = vol_min_x + (T(ix) - half) * voxel_size_x
-    voxel_y = vol_min_y + (T(iy) - half) * voxel_size_y
-    voxel_z = vol_min_z + (T(iz) - half) * voxel_size_z
-
-    # Accumulator for backprojection
     acc = zero(T)
-    SAD_sq = SAD * SAD
-    pixel_mag = pixel_size * magnification
 
     # Loop over all angles
     for angle in Int32(1):n_angles
@@ -86,6 +78,12 @@ export backproject!, backproject
 
         # Parameter t where ray from source through voxel intersects detector plane
         sv_dot_sd = sv_x * sd_x + sv_y * sd_y + sv_z * sd_z
+
+        # Avoid division by zero
+        if abs(sv_dot_sd) < T(1e-10)
+            continue
+        end
+
         t = sd_len_sq / sv_dot_sd
 
         # Projected point on detector plane
@@ -130,7 +128,7 @@ export backproject!, backproject
                   (one(T) - w_col) * w_row * sinogram[col_lo, row_hi, angle] +
                   w_col * w_row * sinogram[col_hi, row_hi, angle]
 
-            # FDK distance weighting
+            # FDK distance weighting (TIGRE style)
             dist_sq = sv_x^2 + sv_y^2 + sv_z^2
             weight = SAD_sq / dist_sq
 
@@ -139,17 +137,17 @@ export backproject!, backproject
     end
 
     # Scale by angle step
-    volume[idx] = acc * pi_over_angles
+    return acc * pi_over_angles
 end
 
 # =============================================================================
-# High-Level Interface
+# High-Level Interface using AcceleratedKernels.jl
 # =============================================================================
 
 """
     backproject!(volume, sinogram, geom)
 
-In-place FDK backprojection using KernelAbstractions.jl.
+In-place FDK backprojection using AcceleratedKernels.jl.
 
 Automatically runs on GPU (Metal/CUDA/ROCm) or CPU based on array type.
 
@@ -167,25 +165,32 @@ function backproject!(
     geom::CTGeometry
 ) where T <: AbstractFloat
 
-    nx, ny, nz = size(volume)
-    n_cols, n_rows, n_angles = size(sinogram)
+    # Get dimensions as Int32 for GPU compatibility
+    nx = Int32(size(volume, 1))
+    ny = Int32(size(volume, 2))
+    nz = Int32(size(volume, 3))
+    n_cols = Int32(size(sinogram, 1))
+    n_rows = Int32(size(sinogram, 2))
+    n_angles = Int32(size(sinogram, 3))
 
     # Volume parameters (typed constants)
     vol_min_x = T(-geom.fov[1] / 2)
     vol_min_y = T(-geom.fov[2] / 2)
     vol_min_z = T(-geom.fov[3] / 2)
 
-    voxel_size_x = T(geom.fov[1] / nx)
-    voxel_size_y = T(geom.fov[2] / ny)
-    voxel_size_z = T(geom.fov[3] / nz)
+    voxel_size_x = T(geom.fov[1]) / T(nx)
+    voxel_size_y = T(geom.fov[2]) / T(ny)
+    voxel_size_z = T(geom.fov[3]) / T(nz)
 
     magnification = T(geom.SDD / geom.SAD)
     pixel_size = T(geom.pixel_size)
     SAD = T(geom.SAD)
+    SAD_sq = SAD * SAD
+    pixel_mag = pixel_size * magnification
 
     # Pre-compute constants
-    col_center = T((n_cols + 1) / 2)
-    row_center = T((n_rows + 1) / 2)
+    col_center = (T(n_cols) + one(T)) / T(2)
+    row_center = (T(n_rows) + one(T)) / T(2)
     pi_over_angles = T(π) / T(n_angles)
 
     # Copy geometry arrays to same device as sinogram
@@ -198,24 +203,34 @@ function backproject!(
     detector_v = similar(sinogram, T, size(geom.detector_v)...)
     copyto!(detector_v, T.(geom.detector_v))
 
-    # Get backend from array type
-    backend = KernelAbstractions.get_backend(volume)
+    # Pre-compute voxel offset for centering
+    half = T(0.5)
 
-    # Launch kernel
-    kernel! = backproject_kernel!(backend)
-    kernel!(
-        volume, sinogram,
-        source_positions, detector_centers,
-        detector_u, detector_v,
-        vol_min_x, vol_min_y, vol_min_z,
-        voxel_size_x, voxel_size_y, voxel_size_z,
-        Int32(nx), Int32(ny), Int32(nz),
-        Int32(n_cols), Int32(n_rows), Int32(n_angles),
-        col_center, row_center,
-        pixel_size, magnification, SAD, pi_over_angles;
-        ndrange=length(volume)
-    )
-    KernelAbstractions.synchronize(backend)
+    # Use AcceleratedKernels.jl to parallelize over all voxels
+    AK.foreachindex(volume) do idx
+        # Convert linear index to (ix, iy, iz) using integer arithmetic
+        idx_0 = Int32(idx - 1)
+        ix = (idx_0 % nx) + Int32(1)
+        idx_0 = idx_0 ÷ nx
+        iy = (idx_0 % ny) + Int32(1)
+        iz = (idx_0 ÷ ny) + Int32(1)
+
+        # Voxel center in world coordinates
+        voxel_x = vol_min_x + (T(ix) - half) * voxel_size_x
+        voxel_y = vol_min_y + (T(iy) - half) * voxel_size_y
+        voxel_z = vol_min_z + (T(iz) - half) * voxel_size_z
+
+        # Backproject all angles for this voxel
+        volume[idx] = backproject_voxel(
+            sinogram,
+            voxel_x, voxel_y, voxel_z,
+            source_positions, detector_centers,
+            detector_u, detector_v,
+            n_cols, n_rows, n_angles,
+            col_center, row_center,
+            pixel_mag, SAD, SAD_sq, pi_over_angles
+        )
+    end
 
     return volume
 end

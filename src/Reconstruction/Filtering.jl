@@ -130,7 +130,9 @@ function cosine_weight!(
     geom::CTGeometry
 ) where T <: AbstractFloat
 
-    n_cols, n_rows, n_angles = size(sinogram)
+    # Get dimensions as Int32 for GPU compatibility
+    n_cols = Int32(size(sinogram, 1))
+    n_rows = Int32(size(sinogram, 2))
 
     # Detector pixel positions relative to center (typed constants for GPU)
     pixel_size = T(geom.pixel_size)
@@ -139,17 +141,16 @@ function cosine_weight!(
     SDD_sq = SDD * SDD
 
     # Pre-compute center offsets for GPU
-    col_center = T((n_cols + 1) / 2)
-    row_center = T((n_rows + 1) / 2)
+    col_center = (T(n_cols) + one(T)) / T(2)
+    row_center = (T(n_rows) + one(T)) / T(2)
 
     # Use AcceleratedKernels.jl for parallel cosine weighting
     AK.foreachindex(sinogram) do idx
-        # Convert linear index to (col, row, angle) using integer arithmetic
-        idx_0 = idx - 1
-        col = (idx_0 % n_cols) + 1
+        # Convert linear index to (col, row) using integer arithmetic (Int32 for GPU)
+        idx_0 = Int32(idx - 1)
+        col = (idx_0 % n_cols) + Int32(1)
         idx_0 = idx_0 ÷ n_cols
-        row = (idx_0 % n_rows) + 1
-        # angle = (idx_0 ÷ n_rows) + 1  # not needed for cosine weight
+        row = (idx_0 % n_rows) + Int32(1)
 
         # Compute detector pixel position
         u = (T(col) - col_center) * pixel_size * magnification
