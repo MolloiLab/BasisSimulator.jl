@@ -1,21 +1,38 @@
 """
     BasisSimulator.jl
 
-Differentiable CT simulator for inverse problems.
+CT simulation with backend-agnostic GPU/CPU execution via AcceleratedKernels.jl.
 
-Built with Reactant/Enzyme compatibility from the ground up.
+Core algorithms ported from TIGRE (CERN/TIGRE).
+Works on: Metal (Apple), CUDA (NVIDIA), ROCm (AMD), or CPU.
+
+# Quick Start
+```julia
+using BasisSimulator
+
+# Create phantom and geometry
+phantom = create_gammex_472(n_voxels=128, fov_cm=35.0, z_cm=4.0)
+geom = create_aquilion_one(n_angles=180, n_rows=32, n_cols=256, fov_cm=35.0)
+
+# Forward projection
+sinogram = siddon_forward_project(Float32.(phantom.μ), geom)
+
+# FDK reconstruction
+recon = fdk_reconstruct(sinogram, geom, size(phantom.μ))
+```
 """
 module BasisSimulator
 
 using LinearAlgebra
 using Statistics
 using Random
-using FFTW
 using DelimitedFiles
 using Unitful
+using FFTW
+import AcceleratedKernels as AK
 import XrayAttenuation as XA
 
-# Re-export XrayAttenuation for convenience
+# Re-export for convenience
 export XA
 
 # =============================================================================
@@ -45,7 +62,37 @@ include("Geometry/Scanner.jl")
 include("Geometry/Helical.jl")
 
 # =============================================================================
-# Forward Projection
+# Forward Projection (TIGRE port via AcceleratedKernels.jl)
+# =============================================================================
+
+# Siddon forward projection (exact ray-voxel intersections)
+# Reference: CERN/TIGRE/Common/CUDA/Siddon_projection.cu
+include("Forward/Siddon.jl")
+
+# =============================================================================
+# Polychromatic Forward Projection (NOT from TIGRE)
+# =============================================================================
+
+# Beer-Lambert spectral physics: I = Σ wₑ × exp(-∫μₑ dl)
+# TIGRE is monochromatic only - this is our own implementation
+include("Forward/Polychromatic.jl")
+
+# =============================================================================
+# Reconstruction (TIGRE port via AcceleratedKernels.jl)
+# =============================================================================
+
+# Voxel-driven backprojection
+# Reference: CERN/TIGRE/Common/CUDA/voxel_backprojection.cu
+include("Reconstruction/Backprojection.jl")
+
+# FDK filtering (ramp filter, cosine weighting)
+include("Reconstruction/Filtering.jl")
+
+# FDK reconstruction (filter + backproject)
+include("Reconstruction/FDK.jl")
+
+# =============================================================================
+# Physics Effects (not from TIGRE, but useful)
 # =============================================================================
 
 # Scatter simulation (analytic kernel)
@@ -78,47 +125,11 @@ include("Forward/FillFactor.jl")
 # Flying focal spot modeling
 include("Forward/FlyingFocalSpot.jl")
 
-# Ray marching projector (on-the-fly geometry, single compiled kernel, polychromatic support)
-include("Forward/RayMarching.jl")
-
-# =============================================================================
-# Reconstruction
-# =============================================================================
-
-# Reconstruction kernels (filters)
-include("Reconstruction/Kernels.jl")
-
-# Beam hardening correction
-include("Reconstruction/BeamHardeningCorrection.jl")
-
-# FDK cone-beam reconstruction
-include("Reconstruction/FDK.jl")
-
-# Ray marching backprojection (on-the-fly geometry, single compiled kernel)
-include("Reconstruction/RayMarchingBackproj.jl")
-
 # =============================================================================
 # Clinical Scanner Configurations
 # =============================================================================
 
 # Scanner specifications (GE, Siemens, Canon, etc.)
 include("Scanners/Scanners.jl")
-
-# =============================================================================
-# Optimization (Gradients & Iterative Reconstruction)
-# =============================================================================
-
-# Loss functions
-include("Optimization/Loss.jl")
-
-# Gradient computation and optimization
-include("Optimization/Gradients.jl")
-
-# =============================================================================
-# Unified High-Level API
-# =============================================================================
-
-# Main API: simulate_sinogram() and reconstruct()
-include("API.jl")
 
 end # module
