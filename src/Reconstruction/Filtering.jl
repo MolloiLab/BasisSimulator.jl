@@ -66,20 +66,30 @@ function create_spatial_kernel(n::Int, filter_type::FilterType, pixel_size::T) w
     kernel = zeros(T, n)
     center = n ÷ 2 + 1
     Δ = pixel_size
-    Δ_sq = Δ * Δ
+
+    # Ram-Lak (ramp) filter in spatial domain
+    # Reference: Kak & Slaney, "Principles of Computerized Tomographic Imaging"
+    #
+    # The discrete ramp filter kernel:
+    # h[0] = 1/(4Δ²)
+    # h[n] = 0 for even n ≠ 0
+    # h[n] = -1/(π²n²Δ²) for odd n
+    #
+    # Additional scaling by Δ to match FFT-based filter normalization
+    # (FFT version scales by 1/pixel_size, spatial version has 1/Δ² built in)
 
     for i in 1:n
         k = i - center  # Distance from center
 
         if k == 0
-            # Central value
-            kernel[i] = one(T) / (T(4) * Δ_sq)
+            # Central value: 1/(4Δ²) * Δ = 1/(4Δ)
+            kernel[i] = one(T) / (T(4) * Δ)
         elseif k % 2 == 0
             # Even indices (excluding center)
             kernel[i] = zero(T)
         else
-            # Odd indices
-            kernel[i] = -one(T) / (T(π)^2 * T(k)^2 * Δ_sq)
+            # Odd indices: -1/(π²n²Δ²) * Δ = -1/(π²n²Δ)
+            kernel[i] = -one(T) / (T(π)^2 * T(k)^2 * Δ)
         end
     end
 
