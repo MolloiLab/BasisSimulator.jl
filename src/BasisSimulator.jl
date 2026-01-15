@@ -61,6 +61,9 @@ include("Geometry/Scanner.jl")
 # Helical (spiral) scanning mode
 include("Geometry/Helical.jl")
 
+# Analytical phantoms (exact ray-object intersection, no discretization)
+include("Geometry/AnalyticalPhantom.jl")
+
 # =============================================================================
 # Forward Projection - Core (TIGRE port via AcceleratedKernels.jl)
 # =============================================================================
@@ -107,6 +110,22 @@ include("Forward/FlyingFocalSpot.jl")
 include("Forward/PhysicsPipeline.jl")
 
 # =============================================================================
+# Calibration & Signal Processing (CatSim-style)
+# =============================================================================
+
+# Calibration pipeline: air scan, offset, gain correction, log transform
+include("Forward/Calibration.jl")
+
+# Beam hardening correction (water-based polynomial)
+include("Forward/BeamHardeningCorrection.jl")
+
+# Data Acquisition System model (signal chain, noise, quantization)
+include("Forward/DASModel.jl")
+
+# Heel effect (anode self-attenuation)
+include("Forward/HeelEffect.jl")
+
+# =============================================================================
 # Forward Projection - Unified API (includes physics)
 # =============================================================================
 
@@ -135,6 +154,9 @@ include("Reconstruction/SIRT.jl")
 # CGLS iterative reconstruction
 # Reference: CERN/TIGRE/MATLAB/Algorithms/CGLS.m
 include("Reconstruction/CGLS.jl")
+
+# Helical (spiral) CT reconstruction
+include("Reconstruction/HelicalRecon.jl")
 
 # =============================================================================
 # Clinical Scanner Configurations
