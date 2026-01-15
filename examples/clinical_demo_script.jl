@@ -164,56 +164,86 @@ println("\nRunning polychromatic projection...")
 println("Poly sinogram range: $(round(minimum(sinogram_poly), digits=3)) to $(round(maximum(sinogram_poly), digits=3))")
 
 # =============================================================================
-# 6. Physics Effects via Unified API
+# 6. Unified API - All Patterns
 # =============================================================================
 #
-# The forward_project() function now accepts a `physics` kwarg to apply
-# all physics effects in one call:
-# - Scatter (Compton/Rayleigh)
-# - Crosstalk (detector pixel coupling)
-# - Focal spot blur (geometric blur)
-# - Detector noise (quantum + electronic)
-# - Detector lag (afterglow)
+# forward_project() is a single entry point for:
+# - Monochromatic (direct volume or mask + energy)
+# - Polychromatic (mask + spectrum)
+# - Optional physics effects (scatter, noise, crosstalk, etc.)
 #
-# All effects are GPU-native via AcceleratedKernels.jl
+# GPU input → GPU output automatically
+#
 
 # %%
 println("\n" * "="^60)
-println("Physics Effects via Unified API")
+println("Unified API Demonstration")
 println("="^60)
 
-# Create physics configuration with realistic settings
+# -----------------------------------------------------------------------------
+# Pattern 1: Simple monochromatic (no physics)
+# -----------------------------------------------------------------------------
+println("\n[Pattern 1] Monochromatic - direct volume input:")
+println("  sinogram = forward_project(volume, geom)")
+@time sino_pattern1 = forward_project(phantom_μ_gpu, geom)
+println("  Output on GPU: $(typeof(sino_pattern1))")
+
+# -----------------------------------------------------------------------------
+# Pattern 2: Monochromatic with physics
+# -----------------------------------------------------------------------------
+println("\n[Pattern 2] Monochromatic + physics effects:")
+println("  sinogram = forward_project(volume, geom; physics=config)")
+
 physics_config = realistic_physics_config(
-    scatter_scale = 1.0,      # Nominal scatter (~15% SPR)
-    noise_level = 1.0,        # Standard noise level
-    noise_seed = 42           # For reproducibility
+    scatter_scale = 1.0,
+    noise_level = 1.0,
+    noise_seed = 42
 )
 
-# Show enabled effects
+# Show what's enabled
 physics_info = get_physics_config_info(physics_config)
-println("\nEnabled physics effects:")
-for effect in physics_info.enabled_effects
-    println("  - $effect")
-end
+println("  Enabled effects: $(join(physics_info.enabled_effects, ", "))")
 
-# %%
-# Use unified API: forward projection + physics in one call
-println("\nUnified API: forward_project with physics kwarg...")
-@time sinogram_mono_physics_gpu = forward_project(phantom_μ_gpu, geom; physics=physics_config)
-sinogram_mono_physics = Array(sinogram_mono_physics_gpu)
-println("  Forward projection + physics (GPU)")
+@time sino_pattern2 = forward_project(phantom_μ_gpu, geom; physics=physics_config)
+println("  Output on GPU: $(typeof(sino_pattern2))")
 
-# Compare to ideal (no physics)
-println("\nSinogram comparison:")
-println("  Ideal (no physics): mean=$(round(mean(sinogram_mono), digits=3)), std=$(round(std(sinogram_mono), digits=3))")
-println("  With physics:       mean=$(round(mean(sinogram_mono_physics), digits=3)), std=$(round(std(sinogram_mono_physics), digits=3))")
+# -----------------------------------------------------------------------------
+# Pattern 3: Polychromatic with physics
+# -----------------------------------------------------------------------------
+println("\n[Pattern 3] Polychromatic + physics:")
+println("  sinogram = forward_project(mask, geom; energies=..., weights=..., materials=..., physics=...)")
 
-# %%
-# Noise-only comparison using minimal_physics_config
+mask_gpu = MtlArray(phantom.mask)
+@time sino_pattern3 = forward_project(mask_gpu, geom;
+    energies = energies,
+    weights = weights,
+    materials = materials,
+    physics = physics_config
+)
+println("  Output on GPU: $(typeof(sino_pattern3))")
+
+# -----------------------------------------------------------------------------
+# Pattern 4: Minimal physics (noise only)
+# -----------------------------------------------------------------------------
+println("\n[Pattern 4] Minimal physics (noise only):")
+println("  sinogram = forward_project(volume, geom; physics=minimal_physics_config())")
+
 minimal_config = minimal_physics_config(noise_level=1.0, noise_seed=42)
-sinogram_mono_noisy_gpu = forward_project(phantom_μ_gpu, geom; physics=minimal_config)
-sinogram_mono_noisy = Array(sinogram_mono_noisy_gpu)
-println("  Noise-only:         mean=$(round(mean(sinogram_mono_noisy), digits=3)), std=$(round(std(sinogram_mono_noisy), digits=3))")
+@time sino_pattern4 = forward_project(phantom_μ_gpu, geom; physics=minimal_config)
+
+# -----------------------------------------------------------------------------
+# Summary comparison
+# -----------------------------------------------------------------------------
+println("\n" * "-"^40)
+println("Sinogram Statistics Comparison:")
+println("-"^40)
+
+sinogram_mono_physics = Array(sino_pattern2)
+sinogram_mono_noisy = Array(sino_pattern4)
+
+println("  No physics:    mean=$(round(mean(sinogram_mono), digits=3)), std=$(round(std(sinogram_mono), digits=3))")
+println("  Noise only:    mean=$(round(mean(sinogram_mono_noisy), digits=3)), std=$(round(std(sinogram_mono_noisy), digits=3))")
+println("  Full physics:  mean=$(round(mean(sinogram_mono_physics), digits=3)), std=$(round(std(sinogram_mono_physics), digits=3))")
 
 # =============================================================================
 # 7. Visualize Sinograms (Ideal vs Physics)
