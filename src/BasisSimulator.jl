@@ -106,24 +106,33 @@ include("Forward/FillFactor.jl")
 # Flying focal spot modeling
 include("Forward/FlyingFocalSpot.jl")
 
-# Unified physics pipeline (depends on all physics effects above)
-include("Forward/PhysicsPipeline.jl")
-
 # =============================================================================
-# Calibration & Signal Processing (CatSim-style)
+# CatSim-style Signal Processing (types without PhysicsConfig dependency)
+# Must be loaded before PhysicsPipeline which references these types
 # =============================================================================
 
-# Calibration pipeline: air scan, offset, gain correction, log transform
-include("Forward/Calibration.jl")
-
-# Beam hardening correction (water-based polynomial)
-include("Forward/BeamHardeningCorrection.jl")
+# Heel effect (anode self-attenuation)
+include("Forward/HeelEffect.jl")
 
 # Data Acquisition System model (signal chain, noise, quantization)
 include("Forward/DASModel.jl")
 
-# Heel effect (anode self-attenuation)
-include("Forward/HeelEffect.jl")
+# Beam hardening correction (water-based polynomial)
+include("Forward/BeamHardeningCorrection.jl")
+
+# =============================================================================
+# Unified Physics Pipeline
+# Depends on all physics effects above including CatSim-style
+# =============================================================================
+
+include("Forward/PhysicsPipeline.jl")
+
+# =============================================================================
+# Calibration Pipeline (needs PhysicsConfig from PhysicsPipeline)
+# =============================================================================
+
+# Calibration pipeline: air scan, offset, gain correction, log transform
+include("Forward/Calibration.jl")
 
 # =============================================================================
 # Forward Projection - Unified API (includes physics)

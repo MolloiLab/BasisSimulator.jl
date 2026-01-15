@@ -56,19 +56,22 @@ end
 # =============================================================================
 
 """
-    default_heel_effect(; anode_angle_deg=7.0, target_material=:tungsten, effective_thickness_mm=0.05)
+    default_heel_effect(; anode_angle_deg=7.0, target_material=:tungsten, effective_thickness_mm=0.01)
 
 Create heel effect model with specified parameters.
 
 # Default values for typical CT tube:
 - anode_angle: 7° (common for CT)
 - target: tungsten
-- effective_thickness: 0.05 mm (empirical, produces ~10-20% variation)
+- effective_thickness: 0.01 mm (conservative, produces ~5-10% intensity variation)
+
+Note: Real CT tubes have heel effects producing 10-30% intensity variation across the field.
+Use effective_thickness_mm=0.02-0.05 for stronger effects.
 """
 function default_heel_effect(;
     anode_angle_deg::Real = 7.0,
     target_material::Symbol = :tungsten,
-    effective_thickness_mm::Real = 0.05
+    effective_thickness_mm::Real = 0.01
 )
     return HeelEffect(
         Float64(anode_angle_deg),
@@ -141,6 +144,10 @@ function apply_heel_effect!(
     max_path = t / sin(θ_max)
     max_atten = T(exp(-μ_target * max_path))  # Minimum attenuation (maximum transmission)
 
+    # Minimum effective angle (prevent extreme attenuation at anode limit)
+    # Clamp to at least θ_anode/3 to keep attenuation physically reasonable
+    θ_min = θ_anode / T(3)
+
     AK.foreachindex(intensity) do idx
         ci = CartesianIndices(intensity)[idx]
         col, row, angle = Tuple(ci)
@@ -154,8 +161,9 @@ function apply_heel_effect!(
         # On anode side (negative γ), angle is steeper, more attenuation
         θ_effective = θ_anode + γ
 
-        # Ensure angle is positive and reasonable
-        θ_effective = max(θ_effective, T(0.01))
+        # Clamp to minimum angle (prevents extreme attenuation at anode edge)
+        # This represents the physical limit where X-rays are mostly blocked
+        θ_effective = max(θ_effective, θ_min)
 
         # Path length through target
         path_length = t / sin(θ_effective)
