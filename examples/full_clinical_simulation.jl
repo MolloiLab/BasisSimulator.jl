@@ -162,7 +162,8 @@ println("STEP 4: Physics Configuration")
 println("-" ^ 70)
 
 # ============================================================================
-# PHYSICS CONFIG - Comment out any line to disable that effect!
+# PHYSICS CONFIG - Comment out any line OR set to `nothing` to disable!
+# (Don't use `false` - only `nothing` or the model works)
 # ============================================================================
 physics_config = default_physics_config(
     # --- CATSIM ESSENTIAL (scanner-specific) ---
