@@ -7,6 +7,9 @@
 # Demonstrates:
 # - Monochromatic forward projection (60 keV)
 # - Polychromatic forward projection (120 kVp)
+# - GPU-native physics effects pipeline:
+#   - Scatter (Compton/Rayleigh), Crosstalk, Focal spot blur
+#   - Detector noise (quantum + electronic), Detector lag
 # - Three reconstruction methods: FDK, SIRT, CGLS
 # - HU validation against XrayAttenuation.jl physics
 #
@@ -161,35 +164,97 @@ println("\nRunning polychromatic projection...")
 println("Poly sinogram range: $(round(minimum(sinogram_poly), digits=3)) to $(round(maximum(sinogram_poly), digits=3))")
 
 # =============================================================================
-# 6. Visualize Sinograms (Mono vs Poly)
+# 6. Physics Effects Pipeline (GPU-Native)
+# =============================================================================
+#
+# Apply realistic physics effects to the sinogram:
+# - Scatter (Compton/Rayleigh)
+# - Crosstalk (detector pixel coupling)
+# - Focal spot blur (geometric blur)
+# - Detector noise (quantum + electronic)
+# - Detector lag (afterglow)
+#
+# All effects are GPU-native via AcceleratedKernels.jl
+
+# %%
+println("\n" * "="^60)
+println("Physics Effects Pipeline")
+println("="^60)
+
+# Create physics configuration with realistic settings
+physics_config = realistic_physics_config(
+    scatter_scale = 1.0,      # Nominal scatter (~15% SPR)
+    noise_level = 1.0,        # Standard noise level
+    noise_seed = 42           # For reproducibility
+)
+
+# Show enabled effects
+physics_info = get_physics_config_info(physics_config)
+println("\nEnabled physics effects:")
+for effect in physics_info.enabled_effects
+    println("  - $effect")
+end
+
+# %%
+# Apply physics to monochromatic sinogram
+println("\nApplying physics effects to monochromatic sinogram...")
+sinogram_mono_physics_gpu = copy(sinogram_mono_gpu)
+@time apply_physics_effects!(sinogram_mono_physics_gpu, geom, physics_config)
+sinogram_mono_physics = Array(sinogram_mono_physics_gpu)
+println("  Physics effects applied (GPU)")
+
+# Compare before/after
+println("\nSinogram comparison:")
+println("  Before physics: mean=$(round(mean(sinogram_mono), digits=3)), std=$(round(std(sinogram_mono), digits=3))")
+println("  After physics:  mean=$(round(mean(sinogram_mono_physics), digits=3)), std=$(round(std(sinogram_mono_physics), digits=3))")
+
+# %%
+# Also create minimal physics (noise only) for comparison
+minimal_config = minimal_physics_config(noise_level=1.0, noise_seed=42)
+sinogram_mono_noisy_gpu = copy(sinogram_mono_gpu)
+apply_physics_effects!(sinogram_mono_noisy_gpu, geom, minimal_config)
+sinogram_mono_noisy = Array(sinogram_mono_noisy_gpu)
+println("\n  Noise-only:     mean=$(round(mean(sinogram_mono_noisy), digits=3)), std=$(round(std(sinogram_mono_noisy), digits=3))")
+
+# =============================================================================
+# 7. Visualize Sinograms (Ideal vs Physics)
 # =============================================================================
 
 # %%
 let
     row = size(sinogram_mono, 2) ÷ 2
-    fig = Figure(size=(1000, 350))
+    angle_mid = size(sinogram_mono, 3) ÷ 2
+    fig = Figure(size=(1200, 600))
 
-    ax1 = Axis(fig[1, 1], title="Monochromatic ($(SIM_ENERGY_KEV) keV)",
+    # Row 1: Sinogram comparison
+    ax1 = Axis(fig[1, 1], title="Ideal (no physics)",
                xlabel="Detector Column", ylabel="Angle Index")
     heatmap!(ax1, sinogram_mono[:, row, :]', colormap=:inferno)
 
-    ax2 = Axis(fig[1, 2], title="Polychromatic (120 kVp)",
+    ax2 = Axis(fig[1, 2], title="With Noise Only",
                xlabel="Detector Column", ylabel="Angle Index")
-    hm = heatmap!(ax2, sinogram_poly[:, row, :]', colormap=:inferno)
-    Colorbar(fig[1, 3], hm, label="Line Integral")
+    heatmap!(ax2, sinogram_mono_noisy[:, row, :]', colormap=:inferno)
 
-    ax3 = Axis(fig[1, 4], title="Profile Comparison",
+    ax3 = Axis(fig[1, 3], title="Full Physics (scatter+crosstalk+blur+noise+lag)",
+               xlabel="Detector Column", ylabel="Angle Index")
+    hm = heatmap!(ax3, sinogram_mono_physics[:, row, :]', colormap=:inferno)
+    Colorbar(fig[1, 4], hm, label="Line Integral")
+
+    # Row 2: Profile comparison
+    ax4 = Axis(fig[2, 1:3], title="Profile Comparison (angle=$angle_mid)",
                xlabel="Detector Column", ylabel="Line Integral")
-    angle_mid = size(sinogram_mono, 3) ÷ 2
-    lines!(ax3, sinogram_mono[:, row, angle_mid], label="Mono", linewidth=2)
-    lines!(ax3, sinogram_poly[:, row, angle_mid], label="Poly", linewidth=2, linestyle=:dash)
-    axislegend(ax3, position=:rb)
+    lines!(ax4, sinogram_mono[:, row, angle_mid], label="Ideal", linewidth=2, color=:blue)
+    lines!(ax4, sinogram_mono_noisy[:, row, angle_mid], label="Noise Only", linewidth=1.5, color=:orange, linestyle=:dash)
+    lines!(ax4, sinogram_mono_physics[:, row, angle_mid], label="Full Physics", linewidth=1.5, color=:red, linestyle=:dot)
+    axislegend(ax4, position=:rb)
+
+    Label(fig[0, 1:3], "Physics Effects Comparison", fontsize=18, tellwidth=false)
 
     display(fig)
 end
 
 # =============================================================================
-# 7. Reconstruction - All Three Methods (Mono & Poly)
+# 8. Reconstruction - All Three Methods (Mono & Poly)
 # =============================================================================
 #
 # Reconstruct BOTH sinograms using all three methods:
@@ -251,7 +316,7 @@ println("[Poly 3/3] CGLS (FDK init + 15 iter)...")
 recon_poly_cgls = Array(recon_poly_cgls_gpu)
 
 # =============================================================================
-# 8. Convert to HU
+# 9. Convert to HU
 # =============================================================================
 
 # %%
@@ -269,7 +334,7 @@ recon_poly_cgls_hu = μ_to_HU(recon_poly_cgls, μ_water_poly)
 phantom_hu = μ_to_HU(phantom.μ, μ_water)
 
 # =============================================================================
-# 9. Visualize Reconstructions (Two Rows: Mono vs Poly)
+# 10. Visualize Reconstructions (Two Rows: Mono vs Poly)
 # =============================================================================
 
 # %%
@@ -315,7 +380,7 @@ let
 end
 
 # =============================================================================
-# 10. HU Validation
+# 11. HU Validation
 # =============================================================================
 #
 # Compare measured HU against physics-based expected values.
@@ -418,7 +483,7 @@ let
 end
 
 # =============================================================================
-# 11. Noise Comparison
+# 12. Noise Comparison
 # =============================================================================
 
 # %%
@@ -443,7 +508,7 @@ println("  SIRT: $(round(sw_poly_sirt.std, digits=1)) HU ($(round(100*sw_poly_si
 println("  CGLS: $(round(sw_poly_cgls.std, digits=1)) HU ($(round(100*sw_poly_cgls.std/sw_poly_fdk.std, digits=0))% of FDK)")
 
 # =============================================================================
-# 12. Performance Summary
+# 13. Performance Summary
 # =============================================================================
 
 # %%
@@ -464,7 +529,7 @@ println("\nCGLS (15 iterations, FDK init):")
 @time cgls_reconstruct(sinogram_mono_gpu, geom, volume_size; niter=15, init=:fdk)
 
 # =============================================================================
-# 13. Summary
+# 14. Summary
 # =============================================================================
 
 # %%
@@ -473,11 +538,13 @@ println("Demo Complete!")
 println("="^60)
 println("\nAll operations run on Metal GPU via AcceleratedKernels.jl:")
 println("  - Forward projection (Siddon ray tracing)")
+println("  - Physics effects pipeline (scatter, crosstalk, blur, noise, lag)")
 println("  - FDK reconstruction (cosine weighting + ramp filter + backprojection)")
 println("  - SIRT iterative reconstruction")
 println("  - CGLS iterative reconstruction")
 println("\nKey findings:")
 println("  - Monochromatic and polychromatic forward projection")
+println("  - All 10 physics effects GPU-native (unified pipeline)")
 println("  - All three reconstruction methods compared (FDK, SIRT, CGLS)")
 println("  - SIRT produces lowest noise (~35% of FDK)")
 println("  - Expected HU values computed from XrayAttenuation.jl physics")
