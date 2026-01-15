@@ -12,10 +12,11 @@ neighboring cells due to optical or electrical coupling. This:
 The crosstalk is modeled as a convolution with a small kernel where
 a fraction of the signal is shared with nearest neighbors.
 
-Note: Implementation uses FFT convolution for Reactant/XLA compatibility.
+GPU-native implementation using AcceleratedKernels.jl with spatial domain convolution.
+The 3x3 kernel is small enough for efficient spatial convolution on GPU.
 """
 
-using FFTW
+import AcceleratedKernels as AK
 
 # =============================================================================
 # Crosstalk Types
@@ -119,40 +120,36 @@ function crosstalk_custom(total_fraction::Float64; neighbor_ratio::Float64=0.8)
 end
 
 # =============================================================================
-# Crosstalk Application
+# Crosstalk Application (GPU-native)
 # =============================================================================
 
 """
-    create_crosstalk_kernel(model::CrosstalkModel, n_cols::Int, n_rows::Int)
+    create_crosstalk_kernel_3x3(model::CrosstalkModel) -> Matrix{Float64}
 
-Create 2D crosstalk convolution kernel.
+Create 3×3 crosstalk convolution kernel.
 
-The kernel is a 3×3 pattern embedded in a full-size array for FFT convolution.
+Returns a normalized 3×3 kernel for spatial domain convolution.
 """
-function create_crosstalk_kernel(model::CrosstalkModel, n_cols::Int, n_rows::Int)
-    kernel = zeros(Float64, n_cols, n_rows)
+function create_crosstalk_kernel_3x3(model::CrosstalkModel)
+    kernel = zeros(Float64, 3, 3)
 
     # Center pixel (primary signal)
-    cx = 1  # FFT kernel centered at (1,1)
-    cy = 1
-
-    kernel[cx, cy] = model.primary_fraction
+    kernel[2, 2] = model.primary_fraction
 
     # Direct neighbors (up, down, left, right)
     if model.neighbor_fraction > 0
-        # Handle wrap-around for FFT
-        kernel[cx, mod1(cy+1, n_rows)] = model.neighbor_fraction  # up
-        kernel[cx, mod1(cy-1, n_rows)] = model.neighbor_fraction  # down
-        kernel[mod1(cx+1, n_cols), cy] = model.neighbor_fraction  # right
-        kernel[mod1(cx-1, n_cols), cy] = model.neighbor_fraction  # left
+        kernel[2, 1] = model.neighbor_fraction  # left
+        kernel[2, 3] = model.neighbor_fraction  # right
+        kernel[1, 2] = model.neighbor_fraction  # up
+        kernel[3, 2] = model.neighbor_fraction  # down
     end
 
     # Diagonal neighbors
     if model.diagonal_fraction > 0
-        kernel[mod1(cx+1, n_cols), mod1(cy+1, n_rows)] = model.diagonal_fraction
-        kernel[mod1(cx+1, n_cols), mod1(cy-1, n_rows)] = model.diagonal_fraction
-        kernel[mod1(cx-1, n_cols), mod1(cy+1, n_rows)] = model.diagonal_fraction
-        kernel[mod1(cx-1, n_cols), mod1(cy-1, n_rows)] = model.diagonal_fraction
+        kernel[1, 1] = model.diagonal_fraction
+        kernel[1, 3] = model.diagonal_fraction
+        kernel[3, 1] = model.diagonal_fraction
+        kernel[3, 3] = model.diagonal_fraction
     end
 
     # Normalize to preserve total signal
@@ -165,76 +162,20 @@ function create_crosstalk_kernel(model::CrosstalkModel, n_cols::Int, n_rows::Int
 end
 
 """
-    apply_crosstalk(sinogram, model::CrosstalkModel) -> Array
+    apply_crosstalk_intensity!(intensity, model::CrosstalkModel) -> intensity
 
-Apply detector crosstalk to sinogram using convolution.
+Apply detector crosstalk to intensity-domain data (in-place, GPU-native).
 
-This simulates signal bleeding between detector pixels in the intensity
-domain, then converts back to projection domain.
-
-# Arguments
-- `sinogram`: Input sinogram [n_cols, n_rows, n_angles] (projection domain)
-- `model::CrosstalkModel`: Crosstalk model specification
-
-# Returns
-Sinogram with crosstalk effects.
-
-# Note
-For physically accurate simulation, crosstalk should be applied in the
-intensity domain (before log transform). This function handles the conversion.
-"""
-function apply_crosstalk(
-    sinogram::AbstractArray{T,3},
-    model::CrosstalkModel
-) where T
-    # Skip if no crosstalk
-    if model.type == :none || model.primary_fraction >= 1.0
-        return sinogram
-    end
-
-    n_cols, n_rows, n_angles = size(sinogram)
-
-    # Create crosstalk kernel
-    kernel = create_crosstalk_kernel(model, n_cols, n_rows)
-    kernel_fft = fft(kernel)
-
-    result = similar(sinogram)
-
-    for angle in 1:n_angles
-        proj = sinogram[:, :, angle]
-
-        # Convert to intensity domain
-        intensity = exp.(-proj)
-
-        # Apply crosstalk convolution
-        intensity_fft = fft(intensity)
-        intensity_ct = real(ifft(intensity_fft .* kernel_fft))
-
-        # Ensure positive values
-        intensity_ct = max.(intensity_ct, T(1e-10))
-
-        # Convert back to projection domain
-        result[:, :, angle] = T.(-log.(intensity_ct))
-    end
-
-    return result
-end
-
-"""
-    apply_crosstalk_intensity(intensity, model::CrosstalkModel) -> Array
-
-Apply detector crosstalk directly to intensity-domain data.
-
-Use this when working in intensity domain (before log transform).
+Uses spatial domain 3x3 convolution for GPU compatibility.
 
 # Arguments
 - `intensity`: Input intensity [n_cols, n_rows, n_angles]
 - `model::CrosstalkModel`: Crosstalk model specification
 
 # Returns
-Intensity with crosstalk effects.
+Modified intensity with crosstalk effects.
 """
-function apply_crosstalk_intensity(
+function apply_crosstalk_intensity!(
     intensity::AbstractArray{T,3},
     model::CrosstalkModel
 ) where T
@@ -242,21 +183,126 @@ function apply_crosstalk_intensity(
         return intensity
     end
 
-    n_cols, n_rows, n_angles = size(intensity)
+    n_cols = size(intensity, 1)
+    n_rows = size(intensity, 2)
+    n_angles = size(intensity, 3)
 
-    kernel = create_crosstalk_kernel(model, n_cols, n_rows)
-    kernel_fft = fft(kernel)
+    # Create 3x3 kernel on CPU
+    kernel_cpu = T.(create_crosstalk_kernel_3x3(model))
 
-    result = similar(intensity)
+    # Transfer kernel to GPU (same type as intensity)
+    kernel = similar(intensity, 3, 3)
+    copyto!(kernel, kernel_cpu)
 
-    for angle in 1:n_angles
-        frame = intensity[:, :, angle]
-        frame_fft = fft(frame)
-        frame_ct = real(ifft(frame_fft .* kernel_fft))
-        result[:, :, angle] = T.(max.(frame_ct, T(0)))
+    # Need temporary output buffer
+    output = similar(intensity)
+
+    # GPU-native spatial convolution
+    AK.foreachindex(intensity) do idx
+        ci = CartesianIndices(intensity)[idx]
+        col, row, angle = Tuple(ci)
+
+        # Apply 3x3 convolution
+        acc = zero(T)
+        for di in -1:1
+            for dj in -1:1
+                # Clamp to valid range (edge handling)
+                src_col = clamp(col + di, 1, n_cols)
+                src_row = clamp(row + dj, 1, n_rows)
+
+                # Kernel indexing: di,dj ∈ [-1,1] → ki,kj ∈ [1,3]
+                ki = di + 2
+                kj = dj + 2
+
+                acc += intensity[src_col, src_row, angle] * kernel[ki, kj]
+            end
+        end
+
+        # Ensure positive (crosstalk shouldn't create negative values)
+        output[idx] = max(acc, T(1e-10))
     end
 
-    return result
+    # Copy result back
+    copyto!(intensity, output)
+
+    return intensity
+end
+
+"""
+    apply_crosstalk!(sinogram, model::CrosstalkModel) -> sinogram
+
+Apply detector crosstalk to sinogram (in-place, GPU-native).
+
+Converts to intensity domain, applies crosstalk, converts back.
+
+# Arguments
+- `sinogram`: Input sinogram [n_cols, n_rows, n_angles] (projection domain)
+- `model::CrosstalkModel`: Crosstalk model specification
+
+# Returns
+Modified sinogram with crosstalk effects.
+"""
+function apply_crosstalk!(
+    sinogram::AbstractArray{T,3},
+    model::CrosstalkModel
+) where T
+    if model.type == :none || model.primary_fraction >= 1.0
+        return sinogram
+    end
+
+    n_cols = size(sinogram, 1)
+    n_rows = size(sinogram, 2)
+    n_angles = size(sinogram, 3)
+
+    # Create 3x3 kernel on CPU
+    kernel_cpu = T.(create_crosstalk_kernel_3x3(model))
+
+    # Transfer kernel to GPU
+    kernel = similar(sinogram, 3, 3)
+    copyto!(kernel, kernel_cpu)
+
+    # Output buffer
+    output = similar(sinogram)
+
+    # GPU-native: convert to intensity, apply convolution, convert back
+    AK.foreachindex(sinogram) do idx
+        ci = CartesianIndices(sinogram)[idx]
+        col, row, angle = Tuple(ci)
+
+        # Apply 3x3 convolution in intensity domain
+        acc = zero(T)
+        for di in -1:1
+            for dj in -1:1
+                src_col = clamp(col + di, 1, n_cols)
+                src_row = clamp(row + dj, 1, n_rows)
+
+                ki = di + 2
+                kj = dj + 2
+
+                # Convert source to intensity, apply kernel weight
+                intensity_src = exp(-sinogram[src_col, src_row, angle])
+                acc += intensity_src * kernel[ki, kj]
+            end
+        end
+
+        # Ensure positive and convert back to projection domain
+        output[idx] = -log(max(acc, T(1e-10)))
+    end
+
+    copyto!(sinogram, output)
+
+    return sinogram
+end
+
+# Convenience wrappers that allocate (for backward compatibility during transition)
+function apply_crosstalk(sinogram::AbstractArray{T,3}, model::CrosstalkModel) where T
+    result = copy(sinogram)
+    return apply_crosstalk!(result, model)
+end
+
+function apply_crosstalk_intensity(intensity::AbstractArray{T,3}, model::CrosstalkModel) where T
+    result = copy(intensity)
+    return apply_crosstalk_intensity!(result, model)
 end
 
 """
@@ -371,70 +417,13 @@ function create_optical_crosstalk_kernel(model::OpticalCrosstalkModel)
 end
 
 """
-    apply_optical_crosstalk(sinogram, model::OpticalCrosstalkModel) -> Array
+    apply_optical_crosstalk_intensity!(intensity, model::OpticalCrosstalkModel) -> intensity
 
-Apply optical crosstalk using separable convolution.
+Apply optical crosstalk to intensity-domain data (in-place, GPU-native).
 
-# Arguments
-- `sinogram`: Input sinogram [n_cols, n_rows, n_angles] (projection domain)
-- `model::OpticalCrosstalkModel`: Optical crosstalk coefficients
-
-# Returns
-Sinogram with optical crosstalk effects.
+Uses spatial domain 3x3 convolution for GPU compatibility.
 """
-function apply_optical_crosstalk(
-    sinogram::AbstractArray{T,3},
-    model::OpticalCrosstalkModel
-) where T
-    # Skip if no crosstalk
-    if model.row_coeff ≈ 0 && model.col_coeff ≈ 0
-        return sinogram
-    end
-
-    n_cols, n_rows, n_angles = size(sinogram)
-
-    # Create 3x3 kernel
-    kernel_3x3 = create_optical_crosstalk_kernel(model)
-
-    # Embed in full-size array for FFT (centered at 1,1)
-    kernel = zeros(Float64, n_cols, n_rows)
-    for di in -1:1
-        for dj in -1:1
-            ci = mod1(1 + di, n_cols)
-            cj = mod1(1 + dj, n_rows)
-            kernel[ci, cj] = kernel_3x3[di+2, dj+2]
-        end
-    end
-    kernel_fft = fft(kernel)
-
-    result = similar(sinogram)
-
-    for angle in 1:n_angles
-        proj = sinogram[:, :, angle]
-
-        # Convert to intensity domain
-        intensity = exp.(-proj)
-
-        # Apply optical crosstalk convolution
-        intensity_fft = fft(intensity)
-        intensity_xt = real(ifft(intensity_fft .* kernel_fft))
-
-        # Ensure positive values
-        intensity_xt = max.(intensity_xt, T(1e-10))
-
-        # Convert back to projection domain
-        result[:, :, angle] = T.(-log.(intensity_xt))
-    end
-
-    return result
-end
-
-"""
-    apply_optical_crosstalk_intensity(intensity, model::OpticalCrosstalkModel) -> Array
-
-Apply optical crosstalk directly to intensity-domain data.
-"""
-function apply_optical_crosstalk_intensity(
+function apply_optical_crosstalk_intensity!(
     intensity::AbstractArray{T,3},
     model::OpticalCrosstalkModel
 ) where T
@@ -442,29 +431,111 @@ function apply_optical_crosstalk_intensity(
         return intensity
     end
 
-    n_cols, n_rows, n_angles = size(intensity)
+    n_cols = size(intensity, 1)
+    n_rows = size(intensity, 2)
 
-    kernel_3x3 = create_optical_crosstalk_kernel(model)
-    kernel = zeros(Float64, n_cols, n_rows)
-    for di in -1:1
-        for dj in -1:1
-            ci = mod1(1 + di, n_cols)
-            cj = mod1(1 + dj, n_rows)
-            kernel[ci, cj] = kernel_3x3[di+2, dj+2]
+    # Create 3x3 kernel on CPU
+    kernel_cpu = T.(create_optical_crosstalk_kernel(model))
+
+    # Transfer kernel to GPU
+    kernel = similar(intensity, 3, 3)
+    copyto!(kernel, kernel_cpu)
+
+    # Output buffer
+    output = similar(intensity)
+
+    # GPU-native spatial convolution
+    AK.foreachindex(intensity) do idx
+        ci = CartesianIndices(intensity)[idx]
+        col, row, angle = Tuple(ci)
+
+        # Apply 3x3 convolution
+        acc = zero(T)
+        for di in -1:1
+            for dj in -1:1
+                src_col = clamp(col + di, 1, n_cols)
+                src_row = clamp(row + dj, 1, n_rows)
+
+                ki = di + 2
+                kj = dj + 2
+
+                acc += intensity[src_col, src_row, angle] * kernel[ki, kj]
+            end
         end
-    end
-    kernel_fft = fft(kernel)
 
-    result = similar(intensity)
-
-    for angle in 1:n_angles
-        frame = intensity[:, :, angle]
-        frame_fft = fft(frame)
-        frame_xt = real(ifft(frame_fft .* kernel_fft))
-        result[:, :, angle] = T.(max.(frame_xt, T(0)))
+        output[idx] = max(acc, T(0))
     end
 
-    return result
+    copyto!(intensity, output)
+
+    return intensity
+end
+
+"""
+    apply_optical_crosstalk!(sinogram, model::OpticalCrosstalkModel) -> sinogram
+
+Apply optical crosstalk to sinogram (in-place, GPU-native).
+
+Converts to intensity domain, applies crosstalk, converts back.
+"""
+function apply_optical_crosstalk!(
+    sinogram::AbstractArray{T,3},
+    model::OpticalCrosstalkModel
+) where T
+    if model.row_coeff ≈ 0 && model.col_coeff ≈ 0
+        return sinogram
+    end
+
+    n_cols = size(sinogram, 1)
+    n_rows = size(sinogram, 2)
+
+    # Create 3x3 kernel on CPU
+    kernel_cpu = T.(create_optical_crosstalk_kernel(model))
+
+    # Transfer kernel to GPU
+    kernel = similar(sinogram, 3, 3)
+    copyto!(kernel, kernel_cpu)
+
+    # Output buffer
+    output = similar(sinogram)
+
+    # GPU-native: convert to intensity, apply convolution, convert back
+    AK.foreachindex(sinogram) do idx
+        ci = CartesianIndices(sinogram)[idx]
+        col, row, angle = Tuple(ci)
+
+        # Apply 3x3 convolution in intensity domain
+        acc = zero(T)
+        for di in -1:1
+            for dj in -1:1
+                src_col = clamp(col + di, 1, n_cols)
+                src_row = clamp(row + dj, 1, n_rows)
+
+                ki = di + 2
+                kj = dj + 2
+
+                intensity_src = exp(-sinogram[src_col, src_row, angle])
+                acc += intensity_src * kernel[ki, kj]
+            end
+        end
+
+        output[idx] = -log(max(acc, T(1e-10)))
+    end
+
+    copyto!(sinogram, output)
+
+    return sinogram
+end
+
+# Convenience wrappers that allocate
+function apply_optical_crosstalk(sinogram::AbstractArray{T,3}, model::OpticalCrosstalkModel) where T
+    result = copy(sinogram)
+    return apply_optical_crosstalk!(result, model)
+end
+
+function apply_optical_crosstalk_intensity(intensity::AbstractArray{T,3}, model::OpticalCrosstalkModel) where T
+    result = copy(intensity)
+    return apply_optical_crosstalk_intensity!(result, model)
 end
 
 # =============================================================================
@@ -473,6 +544,8 @@ end
 
 export CrosstalkModel
 export crosstalk_none, crosstalk_low, crosstalk_medium, crosstalk_high, crosstalk_custom
+export create_crosstalk_kernel_3x3
+export apply_crosstalk!, apply_crosstalk_intensity!
 export apply_crosstalk, apply_crosstalk_intensity
 export get_crosstalk_mtf_degradation, get_crosstalk_info
 
@@ -480,4 +553,5 @@ export get_crosstalk_mtf_degradation, get_crosstalk_info
 export OpticalCrosstalkModel
 export optical_crosstalk_none, optical_crosstalk_typical, optical_crosstalk_low, optical_crosstalk_high
 export create_optical_crosstalk_kernel
+export apply_optical_crosstalk!, apply_optical_crosstalk_intensity!
 export apply_optical_crosstalk, apply_optical_crosstalk_intensity

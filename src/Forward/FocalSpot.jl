@@ -15,11 +15,13 @@ The blur width at the detector depends on:
 Blur width at detector ≈ fs × (SDD - SOD) / SOD = fs × (M - 1)
 
 This module provides two approaches:
-1. Fast: Convolution-based blur approximation
+1. Fast: Convolution-based blur approximation (GPU-native)
 2. Accurate: Multi-sample ray tracing (slower but more accurate)
+
+GPU-native implementation using AcceleratedKernels.jl with spatial domain convolution.
 """
 
-using FFTW
+import AcceleratedKernels as AK
 
 # =============================================================================
 # Focal Spot Types
@@ -142,103 +144,89 @@ function compute_focal_spot_blur_fwhm(
     return (blur_width_pixels, blur_length_pixels)
 end
 
+# Maximum kernel size for spatial convolution (controls quality/performance tradeoff)
+const MAX_FOCAL_SPOT_KERNEL_SIZE = 15
+
 """
-    create_focal_spot_kernel(fs::FocalSpot, blur_fwhm::Tuple, n_cols::Int, n_rows::Int)
+    create_focal_spot_kernel_spatial(fs::FocalSpot, blur_fwhm::Tuple{Float64,Float64})
 
-Create 2D blur kernel for focal spot convolution.
+Create small 2D blur kernel for spatial domain focal spot convolution.
 
-# Arguments
-- `fs::FocalSpot`: Focal spot specification
-- `blur_fwhm`: (width_fwhm, length_fwhm) in pixels
-- `n_cols`, `n_rows`: Kernel dimensions
-
-# Returns
-Normalized 2D kernel array.
+Returns a normalized kernel array of size (2*extent+1) × (2*extent+1),
+capped at MAX_FOCAL_SPOT_KERNEL_SIZE.
 """
-function create_focal_spot_kernel(
+function create_focal_spot_kernel_spatial(
     fs::FocalSpot,
-    blur_fwhm::Tuple{Float64,Float64},
-    n_cols::Int,
-    n_rows::Int
+    blur_fwhm::Tuple{Float64,Float64}
 )
-    kernel = zeros(Float64, n_cols, n_rows)
-
     # Convert FWHM to sigma for Gaussian
     sigma_x = blur_fwhm[1] / (2 * sqrt(2 * log(2)))
     sigma_y = blur_fwhm[2] / (2 * sqrt(2 * log(2)))
 
-    # For FFT convolution, kernel must be centered at (1,1) with wrap-around
-    # Compute kernel extent (how many pixels on each side)
-    extent_x = max(1, ceil(Int, 3 * sigma_x))
-    extent_y = max(1, ceil(Int, 3 * sigma_y))
+    # Compute kernel extent (3σ typically captures 99.7% of the Gaussian)
+    extent_x = min(MAX_FOCAL_SPOT_KERNEL_SIZE ÷ 2, max(1, ceil(Int, 3 * sigma_x)))
+    extent_y = min(MAX_FOCAL_SPOT_KERNEL_SIZE ÷ 2, max(1, ceil(Int, 3 * sigma_y)))
+    extent = max(extent_x, extent_y)
+
+    kernel_size = 2 * extent + 1
+    kernel = zeros(Float64, kernel_size, kernel_size)
+
+    center = extent + 1
 
     if fs.shape == :gaussian
-        for dy in -extent_y:extent_y
-            for dx in -extent_x:extent_x
-                # Wrap indices for FFT (center at 1,1)
-                ix = mod1(1 + dx, n_cols)
-                iy = mod1(1 + dy, n_rows)
+        for dy in -extent:extent
+            for dx in -extent:extent
                 if sigma_x > 0 && sigma_y > 0
-                    kernel[ix, iy] += exp(-dx^2 / (2 * sigma_x^2) - dy^2 / (2 * sigma_y^2))
+                    kernel[center + dx, center + dy] = exp(-dx^2 / (2 * sigma_x^2) - dy^2 / (2 * sigma_y^2))
                 elseif sigma_x > 0
-                    kernel[ix, iy] += exp(-dx^2 / (2 * sigma_x^2))
+                    kernel[center + dx, center + dy] = exp(-dx^2 / (2 * sigma_x^2))
                 elseif sigma_y > 0
-                    kernel[ix, iy] += exp(-dy^2 / (2 * sigma_y^2))
+                    kernel[center + dx, center + dy] = exp(-dy^2 / (2 * sigma_y^2))
                 end
             end
-        end
-        # Handle zero sigma case
-        if sigma_x <= 0 && sigma_y <= 0
-            kernel[1, 1] = 1.0
         end
 
     elseif fs.shape == :uniform
         # Rectangular uniform distribution
-        half_w = ceil(Int, blur_fwhm[1] / 2)
-        half_h = ceil(Int, blur_fwhm[2] / 2)
+        half_w = min(extent, ceil(Int, blur_fwhm[1] / 2))
+        half_h = min(extent, ceil(Int, blur_fwhm[2] / 2))
         for dy in -half_h:half_h
             for dx in -half_w:half_w
-                ix = mod1(1 + dx, n_cols)
-                iy = mod1(1 + dy, n_rows)
-                kernel[ix, iy] = 1.0
+                kernel[center + dx, center + dy] = 1.0
             end
         end
 
     elseif fs.shape == :bimodal
-        # Bi-modal (double peak) typical of some X-ray tubes
         separation = blur_fwhm[1] / 4
-        for dy in -extent_y:extent_y
-            for dx in -extent_x:extent_x
-                ix = mod1(1 + dx, n_cols)
-                iy = mod1(1 + dy, n_rows)
+        for dy in -extent:extent
+            for dx in -extent:extent
                 if sigma_x > 0 && sigma_y > 0
                     g1 = exp(-(dx - separation)^2 / (2 * sigma_x^2) - dy^2 / (2 * sigma_y^2))
                     g2 = exp(-(dx + separation)^2 / (2 * sigma_x^2) - dy^2 / (2 * sigma_y^2))
-                    kernel[ix, iy] += g1 + g2
+                    kernel[center + dx, center + dy] = g1 + g2
                 end
             end
         end
     end
 
-    # Normalize to preserve total signal
+    # Handle case where sigma is zero or negative
     total = sum(kernel)
     if total > 0
         kernel ./= total
     else
-        kernel[1, 1] = 1.0
+        kernel[center, center] = 1.0
     end
 
     return kernel
 end
 
 """
-    apply_focal_spot_blur(sinogram, fs::FocalSpot, geom::CTGeometry;
-                          object_distance=nothing) -> Array
+    apply_focal_spot_blur!(sinogram, fs::FocalSpot, geom::CTGeometry;
+                           object_distance=nothing) -> sinogram
 
-Apply focal spot blur to sinogram using convolution.
+Apply focal spot blur to sinogram (in-place, GPU-native).
 
-This is the fast approximation method - applies a fixed blur based on
-average object position. For more accuracy, use multi-sample ray tracing.
+Uses spatial domain convolution for GPU compatibility.
 
 # Arguments
 - `sinogram`: Input sinogram [n_cols, n_rows, n_angles]
@@ -248,9 +236,9 @@ average object position. For more accuracy, use multi-sample ray tracing.
                      Default: isocenter (SAD)
 
 # Returns
-Blurred sinogram.
+Modified blurred sinogram.
 """
-function apply_focal_spot_blur(
+function apply_focal_spot_blur!(
     sinogram::AbstractArray{T,3},
     fs::FocalSpot,
     geom::CTGeometry;
@@ -266,7 +254,8 @@ function apply_focal_spot_blur(
         object_distance = geom.SAD
     end
 
-    n_cols, n_rows, n_angles = size(sinogram)
+    n_cols = size(sinogram, 1)
+    n_rows = size(sinogram, 2)
 
     # Compute blur FWHM at detector
     blur_fwhm = compute_focal_spot_blur_fwhm(fs, geom, object_distance)
@@ -276,22 +265,55 @@ function apply_focal_spot_blur(
         return sinogram
     end
 
-    # Create blur kernel
-    kernel = create_focal_spot_kernel(fs, blur_fwhm, n_cols, n_rows)
+    # Create spatial domain kernel on CPU
+    kernel_cpu = T.(create_focal_spot_kernel_spatial(fs, blur_fwhm))
+    kernel_size = size(kernel_cpu, 1)
+    half_k = kernel_size ÷ 2
 
-    # FFT of kernel
-    kernel_fft = fft(kernel)
+    # Transfer kernel to GPU
+    kernel = similar(sinogram, size(kernel_cpu)...)
+    copyto!(kernel, kernel_cpu)
 
-    # Apply blur to each angle
-    result = similar(sinogram)
-    for angle in 1:n_angles
-        proj = sinogram[:, :, angle]
-        proj_fft = fft(proj)
-        blurred = real(ifft(proj_fft .* kernel_fft))
-        result[:, :, angle] = T.(blurred)
+    # Output buffer
+    output = similar(sinogram)
+
+    # GPU-native spatial convolution
+    AK.foreachindex(sinogram) do idx
+        ci = CartesianIndices(sinogram)[idx]
+        col, row, angle = Tuple(ci)
+
+        # Apply kernel
+        acc = zero(T)
+        for dj in -half_k:half_k
+            for di in -half_k:half_k
+                src_col = clamp(col + di, 1, n_cols)
+                src_row = clamp(row + dj, 1, n_rows)
+
+                # Kernel indexing
+                ki = di + half_k + 1
+                kj = dj + half_k + 1
+
+                acc += sinogram[src_col, src_row, angle] * kernel[ki, kj]
+            end
+        end
+
+        output[idx] = acc
     end
 
-    return result
+    copyto!(sinogram, output)
+
+    return sinogram
+end
+
+# Convenience wrapper that allocates (for backward compatibility)
+function apply_focal_spot_blur(
+    sinogram::AbstractArray{T,3},
+    fs::FocalSpot,
+    geom::CTGeometry;
+    object_distance::Union{Nothing,Float64}=nothing
+) where T
+    result = copy(sinogram)
+    return apply_focal_spot_blur!(result, fs, geom; object_distance=object_distance)
 end
 
 # =============================================================================
@@ -386,5 +408,7 @@ end
 
 export FocalSpot
 export focal_spot_small, focal_spot_medium, focal_spot_large, focal_spot_point
-export compute_focal_spot_blur_fwhm, apply_focal_spot_blur
+export compute_focal_spot_blur_fwhm
+export create_focal_spot_kernel_spatial
+export apply_focal_spot_blur!, apply_focal_spot_blur
 export generate_focal_spot_samples, get_focal_spot_info
