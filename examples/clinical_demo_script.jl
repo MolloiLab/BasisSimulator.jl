@@ -164,10 +164,11 @@ println("\nRunning polychromatic projection...")
 println("Poly sinogram range: $(round(minimum(sinogram_poly), digits=3)) to $(round(maximum(sinogram_poly), digits=3))")
 
 # =============================================================================
-# 6. Physics Effects Pipeline (GPU-Native)
+# 6. Physics Effects via Unified API
 # =============================================================================
 #
-# Apply realistic physics effects to the sinogram:
+# The forward_project() function now accepts a `physics` kwarg to apply
+# all physics effects in one call:
 # - Scatter (Compton/Rayleigh)
 # - Crosstalk (detector pixel coupling)
 # - Focal spot blur (geometric blur)
@@ -178,7 +179,7 @@ println("Poly sinogram range: $(round(minimum(sinogram_poly), digits=3)) to $(ro
 
 # %%
 println("\n" * "="^60)
-println("Physics Effects Pipeline")
+println("Physics Effects via Unified API")
 println("="^60)
 
 # Create physics configuration with realistic settings
@@ -196,25 +197,23 @@ for effect in physics_info.enabled_effects
 end
 
 # %%
-# Apply physics to monochromatic sinogram
-println("\nApplying physics effects to monochromatic sinogram...")
-sinogram_mono_physics_gpu = copy(sinogram_mono_gpu)
-@time apply_physics_effects!(sinogram_mono_physics_gpu, geom, physics_config)
+# Use unified API: forward projection + physics in one call
+println("\nUnified API: forward_project with physics kwarg...")
+@time sinogram_mono_physics_gpu = forward_project(phantom_μ_gpu, geom; physics=physics_config)
 sinogram_mono_physics = Array(sinogram_mono_physics_gpu)
-println("  Physics effects applied (GPU)")
+println("  Forward projection + physics (GPU)")
 
-# Compare before/after
+# Compare to ideal (no physics)
 println("\nSinogram comparison:")
-println("  Before physics: mean=$(round(mean(sinogram_mono), digits=3)), std=$(round(std(sinogram_mono), digits=3))")
-println("  After physics:  mean=$(round(mean(sinogram_mono_physics), digits=3)), std=$(round(std(sinogram_mono_physics), digits=3))")
+println("  Ideal (no physics): mean=$(round(mean(sinogram_mono), digits=3)), std=$(round(std(sinogram_mono), digits=3))")
+println("  With physics:       mean=$(round(mean(sinogram_mono_physics), digits=3)), std=$(round(std(sinogram_mono_physics), digits=3))")
 
 # %%
-# Also create minimal physics (noise only) for comparison
+# Noise-only comparison using minimal_physics_config
 minimal_config = minimal_physics_config(noise_level=1.0, noise_seed=42)
-sinogram_mono_noisy_gpu = copy(sinogram_mono_gpu)
-apply_physics_effects!(sinogram_mono_noisy_gpu, geom, minimal_config)
+sinogram_mono_noisy_gpu = forward_project(phantom_μ_gpu, geom; physics=minimal_config)
 sinogram_mono_noisy = Array(sinogram_mono_noisy_gpu)
-println("\n  Noise-only:     mean=$(round(mean(sinogram_mono_noisy), digits=3)), std=$(round(std(sinogram_mono_noisy), digits=3))")
+println("  Noise-only:         mean=$(round(mean(sinogram_mono_noisy), digits=3)), std=$(round(std(sinogram_mono_noisy), digits=3))")
 
 # =============================================================================
 # 7. Visualize Sinograms (Ideal vs Physics)

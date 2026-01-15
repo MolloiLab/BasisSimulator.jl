@@ -62,7 +62,7 @@ include("Geometry/Scanner.jl")
 include("Geometry/Helical.jl")
 
 # =============================================================================
-# Forward Projection (TIGRE port via AcceleratedKernels.jl)
+# Forward Projection - Core (TIGRE port via AcceleratedKernels.jl)
 # =============================================================================
 
 # Siddon forward projection (exact ray-voxel intersections)
@@ -70,40 +70,10 @@ include("Geometry/Helical.jl")
 include("Forward/Siddon.jl")
 
 # =============================================================================
-# Polychromatic Forward Projection (NOT from TIGRE)
+# Physics Effects (GPU-native via AcceleratedKernels.jl)
 # =============================================================================
 
-# Beer-Lambert spectral physics: I = Σ wₑ × exp(-∫μₑ dl)
-# TIGRE is monochromatic only - this is our own implementation
-include("Forward/Polychromatic.jl")
-
-# =============================================================================
-# Reconstruction (TIGRE port via AcceleratedKernels.jl)
-# =============================================================================
-
-# Voxel-driven backprojection
-# Reference: CERN/TIGRE/Common/CUDA/voxel_backprojection.cu
-include("Reconstruction/Backprojection.jl")
-
-# FDK filtering (ramp filter, cosine weighting)
-include("Reconstruction/Filtering.jl")
-
-# FDK reconstruction (filter + backproject)
-include("Reconstruction/FDK.jl")
-
-# SIRT iterative reconstruction
-# Reference: CERN/TIGRE/MATLAB/Algorithms/SIRT.m
-include("Reconstruction/SIRT.jl")
-
-# CGLS iterative reconstruction
-# Reference: CERN/TIGRE/MATLAB/Algorithms/CGLS.m
-include("Reconstruction/CGLS.jl")
-
-# =============================================================================
-# Physics Effects (not from TIGRE, but useful)
-# =============================================================================
-
-# Scatter simulation (analytic kernel)
+# Scatter simulation (spatial convolution)
 include("Forward/Scatter.jl")
 
 # Detector response and noise modeling
@@ -133,8 +103,38 @@ include("Forward/FillFactor.jl")
 # Flying focal spot modeling
 include("Forward/FlyingFocalSpot.jl")
 
-# Unified physics pipeline
+# Unified physics pipeline (depends on all physics effects above)
 include("Forward/PhysicsPipeline.jl")
+
+# =============================================================================
+# Forward Projection - Unified API (includes physics)
+# =============================================================================
+
+# Beer-Lambert spectral physics: I = Σ wₑ × exp(-∫μₑ dl)
+# Unified API for mono/poly projection + optional physics effects
+include("Forward/Polychromatic.jl")
+
+# =============================================================================
+# Reconstruction (TIGRE port via AcceleratedKernels.jl)
+# =============================================================================
+
+# Voxel-driven backprojection
+# Reference: CERN/TIGRE/Common/CUDA/voxel_backprojection.cu
+include("Reconstruction/Backprojection.jl")
+
+# FDK filtering (ramp filter, cosine weighting)
+include("Reconstruction/Filtering.jl")
+
+# FDK reconstruction (filter + backproject)
+include("Reconstruction/FDK.jl")
+
+# SIRT iterative reconstruction
+# Reference: CERN/TIGRE/MATLAB/Algorithms/SIRT.m
+include("Reconstruction/SIRT.jl")
+
+# CGLS iterative reconstruction
+# Reference: CERN/TIGRE/MATLAB/Algorithms/CGLS.m
+include("Reconstruction/CGLS.jl")
 
 # =============================================================================
 # Clinical Scanner Configurations
