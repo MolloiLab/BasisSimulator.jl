@@ -328,26 +328,31 @@ println("\n" * "-" ^ 70)
 println("STEP 8: Visualization")
 println("-" ^ 70)
 
+# --- Reconstruction Heatmap ---
 begin
-    # Create figure with reconstruction heatmaps and HU bar chart
-    fig = Figure(size=(1400, 900))
-
-    # Row 1: Heatmaps
-    # Center slice HU
-    ax1 = Axis(fig[1, 1], title="Reconstruction (HU) - Center Slice z=$center_z",
+    fig1 = Figure(size=(600, 500))
+    ax1 = Axis(fig1[1, 1], title="Reconstruction (HU) - Center Slice z=$center_z",
             xlabel="x", ylabel="y", aspect=DataAspect())
     hm1 = heatmap!(ax1, center_hu', colormap=:grays, colorrange=(-200, 400))
-    Colorbar(fig[1, 2], hm1, label="HU")
+    Colorbar(fig1[1, 2], hm1, label="HU")
+    display(fig1)
+end
 
-    # Sinogram center row
+# --- Sinogram Heatmap ---
+begin
+    fig2 = Figure(size=(600, 500))
     sino_center = sinogram_cpu[:, CONFIG.n_rows÷2, :]
-    ax2 = Axis(fig[1, 3], title="Sinogram - Center Row",
+    ax2 = Axis(fig2[1, 1], title="Sinogram - Center Row",
             xlabel="Detector Column", ylabel="Angle")
     hm2 = heatmap!(ax2, sino_center', colormap=:viridis)
-    Colorbar(fig[1, 4], hm2, label="Line Integral")
+    Colorbar(fig2[1, 2], hm2, label="Line Integral")
+    display(fig2)
+end
 
-    # Row 2: HU Validation Bar Chart
-    ax3 = Axis(fig[2, 1:4],
+# --- HU Validation Bar Chart ---
+begin
+    fig3 = Figure(size=(800, 400))
+    ax3 = Axis(fig3[1, 1],
             title="HU Validation: Measured vs Expected",
             xlabel="Region",
             ylabel="HU Value",
@@ -377,13 +382,43 @@ begin
     # Add zero line for reference
     hlines!(ax3, [0], color=:gray, linestyle=:dash, linewidth=1)
 
-    # Save figure
-    output_path = joinpath(@__DIR__, "full_clinical_simulation_output.png")
-    save(output_path, fig)
-    println("\nSaved visualization to: $output_path")
+    display(fig3)
+end
 
-    # Display if in interactive mode
-    display(fig)
+# --- Save Combined Figure ---
+begin
+    fig_combined = Figure(size=(1400, 900))
+
+    # Row 1: Heatmaps
+    ax1 = Axis(fig_combined[1, 1], title="Reconstruction (HU) - Center Slice z=$center_z",
+            xlabel="x", ylabel="y", aspect=DataAspect())
+    hm1 = heatmap!(ax1, center_hu', colormap=:grays, colorrange=(-200, 400))
+    Colorbar(fig_combined[1, 2], hm1, label="HU")
+
+    sino_center = sinogram_cpu[:, CONFIG.n_rows÷2, :]
+    ax2 = Axis(fig_combined[1, 3], title="Sinogram - Center Row",
+            xlabel="Detector Column", ylabel="Angle")
+    hm2 = heatmap!(ax2, sino_center', colormap=:viridis)
+    Colorbar(fig_combined[1, 4], hm2, label="Line Integral")
+
+    # Row 2: Bar Chart
+    ax3 = Axis(fig_combined[2, 1:4],
+            title="HU Validation: Measured vs Expected",
+            xlabel="Region", ylabel="HU Value",
+            xticks=(1:length(region_names), region_names),
+            xticklabelrotation=π/6)
+    barplot!(ax3, (1:length(region_names)) .- 0.175, hu_expected,
+            width=0.35, color=:steelblue, label="Expected")
+    barplot!(ax3, (1:length(region_names)) .+ 0.175, hu_measured,
+            width=0.35, color=:coral, label="Measured")
+    errorbars!(ax3, (1:length(region_names)) .+ 0.175, hu_measured, hu_std_vals,
+            color=:black, whiskerwidth=8)
+    axislegend(ax3, position=:lt)
+    hlines!(ax3, [0], color=:gray, linestyle=:dash, linewidth=1)
+
+    output_path = joinpath(@__DIR__, "full_clinical_simulation_output.png")
+    save(output_path, fig_combined)
+    println("\nSaved visualization to: $output_path")
 end
 
 # =============================================================================
