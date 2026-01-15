@@ -37,6 +37,7 @@ Pkg.activate(joinpath(@__DIR__, ".."))
 
 using BasisSimulator
 using Statistics
+using CairoMakie  # For visualization
 
 # =============================================================================
 # GPU Setup - REQUIRED
@@ -154,28 +155,50 @@ println("  Mean energy: $(round(mean_energy, digits=1)) keV")
 println()
 
 # =============================================================================
-# STEP 4: Configure ALL Physics Effects (Using full_physics_config)
+# STEP 4: Configure Physics Effects (EXPLICIT - comment out to disable)
 # =============================================================================
 println("-" ^ 70)
-println("STEP 4: Physics Configuration (ALL 13 EFFECTS ENABLED)")
+println("STEP 4: Physics Configuration")
 println("-" ^ 70)
 
-# full_physics_config() enables ALL 13 effects:
-# - 10 physics pipeline effects (fill_factor, flat_filter, bowtie, etc.)
-# - 3 signal chain effects (heel_effect, das_model, bhc)
-physics_config = full_physics_config(
+# ============================================================================
+# PHYSICS CONFIG - Comment out any line to disable that effect!
+# ============================================================================
+physics_config = default_physics_config(
+    # --- CATSIM ESSENTIAL (scanner-specific) ---
+    fill_factor = fill_factor_standard(),                      # 0.9 fill factor
+    flat_filter = flat_filter_al(3.0),                         # 3mm Al
+    bowtie_filter = bowtie_filter_large_body(),                # Large body
+    detector_efficiency = detector_efficiency_gos(0.5),        # GOS 0.5mm
+
+    # --- CATSIM OPTIONAL (we enable for realism) ---
+    scatter = default_scatter_model(scale_factor=1.0),         # Compton/Rayleigh
+    crosstalk = crosstalk_medium(),                            # X-ray pixel coupling
+    optical_crosstalk = optical_crosstalk_typical(),           # Scintillator spread
+    focal_spot = focal_spot_medium(),                          # Geometric blur
+    noise = default_detector_model(I0=1e6, seed=CONFIG.noise_seed),  # Quantum noise
+    lag = lag_gadox(),                                         # Afterglow
+
+    # --- SIGNAL CHAIN (CatSim-exact) ---
+    heel_effect = default_heel_effect(anode_angle_deg=CONFIG.anode_angle_deg),
+    das_model = default_das_model(gain=CONFIG.das_gain, electronic_noise_sigma=CONFIG.das_noise_electrons),
+    bhc = bhc_water_default(reference_energy_keV=mean_energy),
+
+    # --- Settings ---
     energy_keV = Float64(mean_energy),
-    noise_seed = CONFIG.noise_seed,
-    scatter_scale = 1.0,
-    noise_level = 1.0,
-    das_noise_sigma = CONFIG.das_noise_electrons,
-    anode_angle_deg = CONFIG.anode_angle_deg
+    noise_seed = CONFIG.noise_seed
 )
 
 physics_info = get_physics_config_info(physics_config)
-println("\nUsing full_physics_config() - ALL $(physics_info.n_enabled)/13 effects enabled:")
+println("\nPhysics effects enabled: $(physics_info.n_enabled)/13")
 for effect in physics_info.enabled_effects
     println("  ✓ $effect")
+end
+if length(physics_info.disabled_effects) > 0
+    println("\nDisabled:")
+    for effect in physics_info.disabled_effects
+        println("  ✗ $effect")
+    end
 end
 
 # =============================================================================
@@ -286,21 +309,50 @@ for region in validation_regions
 end
 
 # =============================================================================
+# STEP 8: Visualization
+# =============================================================================
+println("\n" * "-" ^ 70)
+println("STEP 8: Visualization")
+println("-" ^ 70)
+
+# Create figure with reconstruction heatmaps
+fig = Figure(size=(1200, 500))
+
+# Center slice HU
+ax1 = Axis(fig[1, 1], title="Reconstruction (HU) - Center Slice z=$center_z",
+           xlabel="x", ylabel="y", aspect=DataAspect())
+hm1 = heatmap!(ax1, center_hu', colormap=:grays, colorrange=(-200, 400))
+Colorbar(fig[1, 2], hm1, label="HU")
+
+# Sinogram center row
+sino_center = sinogram_cpu[:, CONFIG.n_rows÷2, :]
+ax2 = Axis(fig[1, 3], title="Sinogram - Center Row",
+           xlabel="Detector Column", ylabel="Angle")
+hm2 = heatmap!(ax2, sino_center', colormap=:viridis)
+Colorbar(fig[1, 4], hm2, label="Line Integral")
+
+# Save figure
+output_path = joinpath(@__DIR__, "full_clinical_simulation_output.png")
+save(output_path, fig)
+println("\nSaved visualization to: $output_path")
+
+# Display if in interactive mode
+display(fig)
+
+# =============================================================================
 # SUMMARY
 # =============================================================================
 println("\n" * "=" ^ 70)
-println("Full-Scale Clinical Simulation Complete (ALL Physics Enabled)")
+println("Full-Scale Clinical Simulation Complete")
 println("=" ^ 70)
 
-println("\nUsed full_physics_config() - ALL $(physics_info.n_enabled)/13 effects enabled:")
-for effect in physics_info.enabled_effects
-    println("  ✓ $effect")
-end
+println("\nPhysics effects: $(physics_info.n_enabled)/13 enabled")
+println("  (Edit physics_config to enable/disable individual effects)")
 
 println("\nKey features:")
-println("  ✓ Single call: physics=full_physics_config() includes EVERYTHING")
-println("  ✓ Air scan calibration: NO noise (CatSim-exact)")
+println("  ✓ CatSim-exact air scan calibration (NO noise)")
 println("  ✓ Low signal correction: smooth negatives")
+println("  ✓ All operations on GPU (Metal)")
 
-println("\nALL OPERATIONS ON GPU (Metal)")
+println("\nOutput: $output_path")
 println()
