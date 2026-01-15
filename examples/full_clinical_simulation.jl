@@ -60,8 +60,8 @@ println()
 
 CONFIG = (
     # Phantom (clinical resolution)
-    phantom_n_voxels = 512,
-    phantom_n_slices = 32,
+    phantom_n_voxels = 256,
+    phantom_n_slices = 16,
     fov_cm = 35.0,
     z_cm = 4.0,
 
@@ -71,8 +71,8 @@ CONFIG = (
     n_angles = 1160,
 
     # Reconstruction output
-    recon_n_voxels = 512,
-    recon_n_slices = 32,
+    recon_n_voxels = 256,
+    recon_n_slices = 16,
 
     # Spectrum
     kvp = 120,
@@ -182,7 +182,7 @@ physics_config = default_physics_config(
 
     # --- SIGNAL CHAIN (CatSim-exact) ---
     heel_effect = default_heel_effect(anode_angle_deg=CONFIG.anode_angle_deg),
-    das_model = default_das_model(gain=CONFIG.das_gain, electronic_noise_sigma=CONFIG.das_noise_electrons),
+    # das_model = default_das_model(gain=CONFIG.das_gain, electronic_noise_sigma=CONFIG.das_noise_electrons), # COMPLETELY BROKEN
     bhc = bhc_water_default(reference_energy_keV=mean_energy),
 
     # --- Settings ---
@@ -298,6 +298,12 @@ validation_regions = [
 println("\nRegion          | Mean HU  | Std HU  | Expected | N voxels")
 println("-" ^ 60)
 
+# Collect data for bar chart
+hu_measured = Float64[]
+hu_expected = Float64[]
+hu_std_vals = Float64[]
+region_names = String[]
+
 for region in validation_regions
     mask_2d = center_mask .== UInt8(region.id)
     n_voxels = sum(mask_2d)
@@ -306,6 +312,12 @@ for region in validation_regions
         hu_mean = mean(hu_vals)
         hu_std = std(hu_vals)
         println("  $(rpad(region.name, 12)) | $(lpad(round(Int, hu_mean), 6)) | $(lpad(round(Int, hu_std), 6))  | $(lpad("~$(region.expected)", 8)) | $(n_voxels)")
+
+        # Store for visualization
+        push!(region_names, region.name)
+        push!(hu_measured, hu_mean)
+        push!(hu_expected, Float64(region.expected))
+        push!(hu_std_vals, hu_std)
     end
 end
 
@@ -316,29 +328,63 @@ println("\n" * "-" ^ 70)
 println("STEP 8: Visualization")
 println("-" ^ 70)
 
-# Create figure with reconstruction heatmaps
-fig = Figure(size=(1200, 500))
+begin
+    # Create figure with reconstruction heatmaps and HU bar chart
+    fig = Figure(size=(1400, 900))
 
-# Center slice HU
-ax1 = Axis(fig[1, 1], title="Reconstruction (HU) - Center Slice z=$center_z",
-           xlabel="x", ylabel="y", aspect=DataAspect())
-hm1 = heatmap!(ax1, center_hu', colormap=:grays, colorrange=(-200, 400))
-Colorbar(fig[1, 2], hm1, label="HU")
+    # Row 1: Heatmaps
+    # Center slice HU
+    ax1 = Axis(fig[1, 1], title="Reconstruction (HU) - Center Slice z=$center_z",
+            xlabel="x", ylabel="y", aspect=DataAspect())
+    hm1 = heatmap!(ax1, center_hu', colormap=:grays, colorrange=(-200, 400))
+    Colorbar(fig[1, 2], hm1, label="HU")
 
-# Sinogram center row
-sino_center = sinogram_cpu[:, CONFIG.n_rows÷2, :]
-ax2 = Axis(fig[1, 3], title="Sinogram - Center Row",
-           xlabel="Detector Column", ylabel="Angle")
-hm2 = heatmap!(ax2, sino_center', colormap=:viridis)
-Colorbar(fig[1, 4], hm2, label="Line Integral")
+    # Sinogram center row
+    sino_center = sinogram_cpu[:, CONFIG.n_rows÷2, :]
+    ax2 = Axis(fig[1, 3], title="Sinogram - Center Row",
+            xlabel="Detector Column", ylabel="Angle")
+    hm2 = heatmap!(ax2, sino_center', colormap=:viridis)
+    Colorbar(fig[1, 4], hm2, label="Line Integral")
 
-# Save figure
-output_path = joinpath(@__DIR__, "full_clinical_simulation_output.png")
-save(output_path, fig)
-println("\nSaved visualization to: $output_path")
+    # Row 2: HU Validation Bar Chart
+    ax3 = Axis(fig[2, 1:4],
+            title="HU Validation: Measured vs Expected",
+            xlabel="Region",
+            ylabel="HU Value",
+            xticks=(1:length(region_names), region_names),
+            xticklabelrotation=π/6)
 
-# Display if in interactive mode
-display(fig)
+    # Bar positions
+    n_regions = length(region_names)
+    x_pos = 1:n_regions
+    bar_width = 0.35
+
+    # Expected values (reference)
+    barplot!(ax3, x_pos .- bar_width/2, hu_expected,
+            width=bar_width, color=:steelblue, label="Expected")
+
+    # Measured values with error bars
+    barplot!(ax3, x_pos .+ bar_width/2, hu_measured,
+            width=bar_width, color=:coral, label="Measured")
+
+    # Error bars for measured values
+    errorbars!(ax3, x_pos .+ bar_width/2, hu_measured, hu_std_vals,
+            color=:black, whiskerwidth=8)
+
+    # Add legend
+    axislegend(ax3, position=:lt)
+
+    # Add zero line for reference
+    hlines!(ax3, [0], color=:gray, linestyle=:dash, linewidth=1)
+
+    # Save figure
+    output_path = joinpath(@__DIR__, "full_clinical_simulation_output.png")
+    save(output_path, fig)
+    println("\nSaved visualization to: $output_path")
+
+    # Display if in interactive mode
+    display(fig)
+end
 
 # =============================================================================
 # SUMMARY
