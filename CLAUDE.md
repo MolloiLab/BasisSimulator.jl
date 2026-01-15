@@ -98,13 +98,17 @@ default_physics_config()    # All nothing (use kwargs to enable)
 | Physics Pipeline (10 effects) | ✅ | All GPU-native |
 | Signal Chain (heel, BHC) | ✅ | CatSim-exact |
 | DAS Model | ⚠️ BROKEN | Needs fixing |
+| Scatter | ⚠️ NO CORRECTION | Requires scatter correction |
 
 ### Physics Effects (13 total)
 
 **Physics Pipeline (10):**
-- fill_factor, flat_filter, bowtie_filter, detector_efficiency
-- scatter, crosstalk, optical_crosstalk, focal_spot
+- fill_factor, flat_filter, bowtie_filter, detector_efficiency*
+- scatter**, crosstalk, optical_crosstalk, focal_spot
 - noise (quantum), lag (afterglow)
+
+*detector_efficiency: no-op in calibrated mode (efficiency cancels in air scan normalization)
+**scatter: adds scatter but has NO correction - will produce cupping artifacts
 
 **Signal Chain (3):**
 - heel_effect (anode self-attenuation)
