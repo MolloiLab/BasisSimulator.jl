@@ -40,7 +40,7 @@ println()
 
 # %%
 # Simulation parameters
-const SIM_ENERGY_KEV = 60.0  # Reference energy for monochromatic simulation
+SIM_ENERGY_KEV = 60.0  # Reference energy for monochromatic simulation
 
 CONFIG = (
     n_cols = 256,
