@@ -355,6 +355,22 @@ end
             @test correlation > 0.95  # Strong positive correlation required
         end
 
+        # Test 5: Low-density materials within tolerance (beam hardening effect is smaller)
+        # Ca_50 and I_2_0 should be relatively close to expected (within ~30%)
+        # Higher density materials have larger beam hardening offset
+        if !isempty(ca_results)
+            ca_50_result = filter(r -> r.entry.material_symbol == :Ca_50, ca_results)
+            if !isempty(ca_50_result)
+                measured_ca50 = ca_50_result[1].measured
+                expected_ca50 = ca_50_result[1].expected
+                # For low density, measured should be >50% of expected
+                # (beam hardening causes measured < expected, but not by huge amount)
+                @test measured_ca50 > expected_ca50 * 0.5
+                @test measured_ca50 < expected_ca50 * 1.5
+                println("\nCa_50 tolerance check: measured=$(round(Int, measured_ca50)), expected=$(round(Int, expected_ca50))")
+            end
+        end
+
         println()
     end
 
