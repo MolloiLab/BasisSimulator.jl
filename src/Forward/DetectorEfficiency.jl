@@ -16,7 +16,11 @@ where:
 - μ(E) is the energy-dependent linear attenuation coefficient
 - d is the scintillator thickness
 - θ is the incidence angle
+
+GPU-native implementation using AcceleratedKernels.jl.
 """
+
+import AcceleratedKernels as AK
 
 # =============================================================================
 # Scintillator Materials Database
@@ -307,10 +311,10 @@ function compute_detector_efficiency_spectral(
 end
 
 """
-    apply_detector_efficiency(intensity, model::DetectorEfficiency, geom::CTGeometry;
-                              energy_keV::Float64=60.0) -> Array
+    apply_detector_efficiency!(intensity, model::DetectorEfficiency, geom::CTGeometry;
+                               energy_keV::Float64=60.0) -> intensity
 
-Apply detector efficiency to intensity-domain data.
+Apply detector efficiency to intensity-domain data (in-place, GPU-native).
 
 This should be applied BEFORE adding noise, as it affects the number
 of detected photons.
@@ -321,9 +325,9 @@ of detected photons.
 - `geom::CTGeometry`: Scanner geometry
 
 # Returns
-Intensity scaled by detector efficiency.
+Modified intensity scaled by detector efficiency.
 """
-function apply_detector_efficiency(
+function apply_detector_efficiency!(
     intensity::AbstractArray{T,3},
     model::DetectorEfficiency,
     geom::CTGeometry;
@@ -333,16 +337,36 @@ function apply_detector_efficiency(
         return intensity
     end
 
-    η = T.(compute_detector_efficiency(model, geom; energy_keV=energy_keV))
+    n_cols = size(intensity, 1)
+    n_rows = size(intensity, 2)
 
-    n_angles = size(intensity, 3)
-    result = similar(intensity)
+    # Compute efficiency on CPU (done once)
+    η_cpu = T.(compute_detector_efficiency(model, geom; energy_keV=energy_keV))
 
-    for angle in 1:n_angles
-        result[:, :, angle] = intensity[:, :, angle] .* η
+    # Transfer to GPU (same type as intensity)
+    η = similar(intensity, n_cols, n_rows)
+    copyto!(η, η_cpu)
+
+    # GPU-native element-wise operation
+    AK.foreachindex(intensity) do idx
+        ci = CartesianIndices(intensity)[idx]
+        col, row, _ = Tuple(ci)
+        eff_idx = col + (row - 1) * n_cols
+        intensity[idx] *= η[eff_idx]
     end
 
-    return result
+    return intensity
+end
+
+# Convenience wrapper that allocates (for backward compatibility during transition)
+function apply_detector_efficiency(
+    intensity::AbstractArray{T,3},
+    model::DetectorEfficiency,
+    geom::CTGeometry;
+    energy_keV::Float64=60.0
+) where T
+    result = copy(intensity)
+    return apply_detector_efficiency!(result, model, geom; energy_keV=energy_keV)
 end
 
 """
@@ -414,5 +438,5 @@ export detector_efficiency_gos, detector_efficiency_csi, detector_efficiency_cdt
 export detector_efficiency_ideal, detector_efficiency_custom
 export get_scintillator_mu
 export compute_detector_efficiency, compute_detector_efficiency_spectral
-export apply_detector_efficiency
+export apply_detector_efficiency!, apply_detector_efficiency
 export get_detector_efficiency_info, compute_dqe

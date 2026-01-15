@@ -16,7 +16,11 @@ Typical values:
 - High-quality flat panel: 0.85-0.95
 - Standard CT detector: 0.90
 - Photon counting detector: 0.70-0.85 (smaller pixels, more dead area)
+
+GPU-native implementation using AcceleratedKernels.jl.
 """
+
+import AcceleratedKernels as AK
 
 # =============================================================================
 # Fill Factor Types
@@ -113,7 +117,7 @@ function fill_factor_custom(row_fill::Float64, col_fill::Float64)
 end
 
 # =============================================================================
-# Fill Factor Application
+# Fill Factor Application (GPU-native)
 # =============================================================================
 
 """
@@ -124,9 +128,9 @@ Get the effective (total) fill factor.
 effective_fill_factor(model::FillFactorModel) = model.row_fill * model.col_fill
 
 """
-    apply_fill_factor(sinogram, model::FillFactorModel) -> Array
+    apply_fill_factor!(sinogram, model::FillFactorModel) -> sinogram
 
-Apply fill factor effect to sinogram.
+Apply fill factor effect to sinogram (in-place, GPU-native).
 
 This reduces the detected signal proportional to the fill factor,
 modeling the loss of photons hitting dead areas between detector elements.
@@ -136,7 +140,7 @@ modeling the loss of photons hitting dead areas between detector elements.
 - `model::FillFactorModel`: Fill factor specification
 
 # Returns
-Sinogram with fill factor effects (increased projection values due to fewer detected photons).
+Modified sinogram with fill factor effects.
 
 # Physics
 In projection domain: p_out = p_in - log(fill_factor)
@@ -144,7 +148,7 @@ This is equivalent to multiplying intensity by fill_factor:
   I_out = I_in × fill_factor
   p_out = -log(I_out) = -log(I_in × ff) = p_in - log(ff)
 """
-function apply_fill_factor(
+function apply_fill_factor!(
     sinogram::AbstractArray{T,3},
     model::FillFactorModel
 ) where T
@@ -157,13 +161,19 @@ function apply_fill_factor(
 
     # In projection domain: add -log(fill_factor) to each value
     offset = T(-log(ff))
-    return sinogram .+ offset
+
+    # GPU-native element-wise operation
+    AK.foreachindex(sinogram) do idx
+        sinogram[idx] += offset
+    end
+
+    return sinogram
 end
 
 """
-    apply_fill_factor_intensity(intensity, model::FillFactorModel) -> Array
+    apply_fill_factor_intensity!(intensity, model::FillFactorModel) -> intensity
 
-Apply fill factor directly to intensity-domain data.
+Apply fill factor directly to intensity-domain data (in-place, GPU-native).
 
 This multiplies the intensity by the fill factor.
 
@@ -172,9 +182,9 @@ This multiplies the intensity by the fill factor.
 - `model::FillFactorModel`: Fill factor specification
 
 # Returns
-Intensity with fill factor effects (reduced signal).
+Modified intensity with fill factor effects (reduced signal).
 """
-function apply_fill_factor_intensity(
+function apply_fill_factor_intensity!(
     intensity::AbstractArray{T,3},
     model::FillFactorModel
 ) where T
@@ -184,7 +194,23 @@ function apply_fill_factor_intensity(
         return intensity
     end
 
-    return intensity .* ff
+    # GPU-native element-wise operation
+    AK.foreachindex(intensity) do idx
+        intensity[idx] *= ff
+    end
+
+    return intensity
+end
+
+# Convenience wrappers that allocate (for backward compatibility during transition)
+function apply_fill_factor(sinogram::AbstractArray{T,3}, model::FillFactorModel) where T
+    result = copy(sinogram)
+    return apply_fill_factor!(result, model)
+end
+
+function apply_fill_factor_intensity(intensity::AbstractArray{T,3}, model::FillFactorModel) where T
+    result = copy(intensity)
+    return apply_fill_factor_intensity!(result, model)
 end
 
 """
@@ -213,5 +239,6 @@ export FillFactorModel
 export fill_factor_ideal, fill_factor_standard, fill_factor_high
 export fill_factor_low, fill_factor_photon_counting, fill_factor_custom
 export effective_fill_factor
+export apply_fill_factor!, apply_fill_factor_intensity!
 export apply_fill_factor, apply_fill_factor_intensity
 export get_fill_factor_info
