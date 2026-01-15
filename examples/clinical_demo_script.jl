@@ -416,10 +416,12 @@ end
 #
 
 # %%
+# Measure HU in center slice only (avoids cone-beam edge artifacts)
 function measure_hu(vol, mask, region_id, μ_water)
-    m = mask .== UInt8(region_id)
-    sum(m) < 100 && return (mean=NaN, std=NaN)
-    vals = vol[m]
+    center_z = size(mask, 3) ÷ 2 + 1
+    m = mask[:, :, center_z] .== UInt8(region_id)
+    sum(m) < 10 && return (mean=NaN, std=NaN)
+    vals = vol[:, :, center_z][m]
     hu = μ_to_HU.(vals, μ_water)
     (mean=mean(hu), std=std(hu))
 end

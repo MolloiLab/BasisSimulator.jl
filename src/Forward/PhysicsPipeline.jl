@@ -19,6 +19,12 @@ The recommended order for applying physics effects is:
 9. Detector noise (quantum + electronic)
 10. Detector lag (temporal persistence)
 
+CatSim-style signal processing (separate pipeline):
+- Heel effect (intensity domain - before log transform)
+- DAS model (raw signal domain - ADC effects)
+- Calibration (air scan normalization)
+- Beam hardening correction (sinogram domain)
+
 All effects are GPU-native using AcceleratedKernels.jl.
 """
 
@@ -35,7 +41,7 @@ Configuration for physics effects pipeline.
 
 All fields are optional - set to `nothing` to skip that effect.
 
-# Fields
+# Fields (Standard Physics)
 - `fill_factor`: FillFactorModel for detector active area
 - `flat_filter`: FlatFilter for uniform beam filtration
 - `bowtie_filter`: BowtieFilter for angle-dependent filtration
@@ -48,6 +54,11 @@ All fields are optional - set to `nothing` to skip that effect.
 - `lag`: LagModel for temporal persistence
 - `noise_seed`: Random seed for noise (for reproducibility)
 - `energy_keV`: X-ray energy for filter calculations (default: 60.0)
+
+# Fields (CatSim-style Signal Processing)
+- `heel_effect`: HeelEffect for anode self-attenuation (intensity domain)
+- `das_model`: DASModel for signal chain effects (intensity domain)
+- `bhc`: BHCPolynomial for beam hardening correction (sinogram domain)
 """
 struct PhysicsConfig
     fill_factor::Union{Nothing, FillFactorModel}
@@ -62,6 +73,10 @@ struct PhysicsConfig
     lag::Union{Nothing, LagModel}
     noise_seed::Union{Nothing, Int}
     energy_keV::Float64
+    # CatSim-style effects
+    heel_effect::Union{Nothing, HeelEffect}
+    das_model::Union{Nothing, DASModel}
+    bhc::Union{Nothing, BHCPolynomial}
 end
 
 """
@@ -82,6 +97,13 @@ config = default_physics_config(
 
 # Apply to sinogram
 apply_physics_effects!(sinogram, geom, config)
+
+# With CatSim-style effects
+config = default_physics_config(
+    heel_effect = default_heel_effect(),
+    das_model = das_clinical(),
+    bhc = bhc_water_default()
+)
 ```
 """
 function default_physics_config(;
@@ -96,7 +118,11 @@ function default_physics_config(;
     noise::Union{Nothing, DetectorModel}=nothing,
     lag::Union{Nothing, LagModel}=nothing,
     noise_seed::Union{Nothing, Int}=nothing,
-    energy_keV::Float64=60.0
+    energy_keV::Float64=60.0,
+    # CatSim-style effects
+    heel_effect::Union{Nothing, HeelEffect}=nothing,
+    das_model::Union{Nothing, DASModel}=nothing,
+    bhc::Union{Nothing, BHCPolynomial}=nothing
 )
     return PhysicsConfig(
         fill_factor,
@@ -110,7 +136,10 @@ function default_physics_config(;
         noise,
         lag,
         noise_seed,
-        energy_keV
+        energy_keV,
+        heel_effect,
+        das_model,
+        bhc
     )
 end
 
@@ -126,17 +155,29 @@ nominal parameters.
 - `scatter_scale`: Scatter scale factor (default: 1.0)
 - `noise_level`: Noise multiplier (default: 1.0, higher = more noise)
 - `energy_keV`: X-ray energy (default: 60.0)
+- `heel_effect`: Enable heel effect (default: nothing)
+- `das_model`: Enable DAS model (default: nothing)
+- `bhc`: Enable beam hardening correction (default: nothing)
 
 # Example
 ```julia
 config = realistic_physics_config(scatter_scale=1.5, noise_level=0.5)
+
+# With CatSim-style effects
+config = realistic_physics_config(
+    heel_effect = default_heel_effect(),
+    bhc = bhc_water_default()
+)
 ```
 """
 function realistic_physics_config(;
     scatter_scale::Float64=1.0,
     noise_level::Float64=1.0,
     energy_keV::Float64=60.0,
-    noise_seed::Union{Nothing, Int}=nothing
+    noise_seed::Union{Nothing, Int}=nothing,
+    heel_effect::Union{Nothing, HeelEffect}=nothing,
+    das_model::Union{Nothing, DASModel}=nothing,
+    bhc::Union{Nothing, BHCPolynomial}=nothing
 )
     # Adjust I0 (photon count) inversely with noise_level
     # Higher noise_level = lower I0 = more quantum noise
@@ -154,7 +195,10 @@ function realistic_physics_config(;
         default_detector_model(I0=I0, seed=noise_seed),
         lag_gadox(),
         noise_seed,
-        energy_keV
+        energy_keV,
+        heel_effect,
+        das_model,
+        bhc
     )
 end
 
@@ -168,6 +212,7 @@ Only enables noise (which is always present in real CT).
 # Keyword Arguments
 - `noise_level`: Noise multiplier (default: 1.0)
 - `noise_seed`: Random seed for reproducibility
+- `bhc`: Enable beam hardening correction (default: nothing)
 
 # Example
 ```julia
@@ -176,7 +221,8 @@ config = minimal_physics_config(noise_level=0.5)
 """
 function minimal_physics_config(;
     noise_level::Float64=1.0,
-    noise_seed::Union{Nothing, Int}=nothing
+    noise_seed::Union{Nothing, Int}=nothing,
+    bhc::Union{Nothing, BHCPolynomial}=nothing
 )
     I0 = 1e6 / noise_level
 
@@ -186,7 +232,93 @@ function minimal_physics_config(;
         default_detector_model(I0=I0, seed=noise_seed),
         nothing,
         noise_seed,
-        60.0
+        60.0,
+        nothing,  # heel_effect
+        nothing,  # das_model
+        bhc
+    )
+end
+
+"""
+    full_physics_config(; kwargs...) -> PhysicsConfig
+
+Create a physics configuration with ALL 13 effects enabled by default.
+
+This is the recommended configuration for realistic clinical CT simulation.
+Includes ALL physics effects AND signal chain effects.
+
+## ALL Effects Enabled (13 total):
+
+**Physics Pipeline (10):**
+1. fill_factor: 0.9 (detector dead area)
+2. flat_filter: 3mm Al (beam hardening, dose reduction)
+3. bowtie_filter: Large body (peripheral dose reduction)
+4. detector_efficiency: GOS 0.5mm (scintillator absorption)
+5. scatter: Convolution-based (Compton/Rayleigh)
+6. crosstalk: Medium X-ray pixel coupling
+7. optical_crosstalk: Typical scintillator light spread
+8. focal_spot: Medium geometric blur
+9. noise: Quantum + electronic noise
+10. lag: GadOx afterglow
+
+**Signal Chain (3):**
+11. heel_effect: 7° tungsten anode
+12. das_model: Gain + electronic noise
+13. bhc: Water polynomial correction
+
+## Scanner-Specific Notes:
+The flat filter, bowtie filter, detector efficiency, fill factor, heel effect,
+DAS model, and BHC are SCANNER-SPECIFIC and will vary by manufacturer/model.
+The defaults here represent typical body CT parameters.
+
+# Keyword Arguments
+- `energy_keV`: X-ray mean energy for filter calculations (default: 60.0)
+- `noise_seed`: Random seed for reproducibility (default: nothing)
+- `scatter_scale`: Scatter multiplier (default: 1.0)
+- `noise_level`: Noise multiplier, higher = more noise (default: 1.0)
+- `das_noise_sigma`: DAS electronic noise sigma (default: 100.0)
+- `anode_angle_deg`: Heel effect anode angle (default: 7.0)
+
+# Example
+```julia
+# Full physics for clinical simulation - just pass physics config!
+config = full_physics_config(energy_keV=65.0, noise_seed=42)
+
+sinogram = forward_project(phantom.mask, geom;
+    energies=energies, weights=weights, materials=materials,
+    physics=config
+)
+```
+"""
+function full_physics_config(;
+    energy_keV::Float64=60.0,
+    noise_seed::Union{Nothing, Int}=nothing,
+    scatter_scale::Float64=1.0,
+    noise_level::Float64=1.0,
+    das_noise_sigma::Float64=100.0,
+    anode_angle_deg::Float64=7.0
+)
+    # Adjust I0 (photon count) inversely with noise_level
+    I0 = 1e6 / noise_level
+
+    return PhysicsConfig(
+        # Physics pipeline effects (10)
+        fill_factor_standard(),                    # 0.9 fill factor
+        flat_filter_al(3.0),                       # 3mm Al flat filter
+        bowtie_filter_large_body(),                # Large body bowtie
+        default_scatter_model(scale_factor=scatter_scale),  # Scatter
+        crosstalk_medium(),                        # X-ray crosstalk
+        optical_crosstalk_typical(),               # Optical crosstalk
+        focal_spot_medium(),                       # Focal spot blur
+        detector_efficiency_gos(0.5),              # GOS 0.5mm scintillator
+        default_detector_model(I0=I0, seed=noise_seed),  # Quantum + electronic noise
+        lag_gadox(),                               # GadOx afterglow
+        noise_seed,
+        energy_keV,
+        # Signal chain effects (3) - ALL ENABLED
+        default_heel_effect(anode_angle_deg=anode_angle_deg),  # Heel effect
+        default_das_model(gain=1.0, electronic_noise_sigma=das_noise_sigma),  # DAS model
+        bhc_water_default(reference_energy_keV=energy_keV)  # BHC
     )
 end
 
@@ -211,6 +343,14 @@ input sinogram.
 # Returns
 Modified sinogram with all configured physics effects applied.
 
+# Signal Processing Order
+Standard effects (sinogram domain):
+1. Fill factor, flat/bowtie filter, scatter, crosstalk, focal spot, DQE, noise, lag
+
+CatSim-style effects:
+- Heel effect and DAS model operate in intensity domain (converted internally)
+- BHC operates in sinogram domain (applied at end)
+
 # Example
 ```julia
 # Create configuration
@@ -224,6 +364,12 @@ apply_physics_effects!(sinogram, geom, config)
 
 # Reconstruct
 recon = fdk_reconstruct(sinogram, geom, volume_size)
+
+# With CatSim-style effects
+config = default_physics_config(
+    heel_effect = default_heel_effect(),
+    bhc = bhc_water_default()
+)
 ```
 """
 function apply_physics_effects!(
@@ -231,6 +377,41 @@ function apply_physics_effects!(
     geom::CTGeometry,
     config::PhysicsConfig
 ) where T
+
+    # =========================================================================
+    # INTENSITY-DOMAIN EFFECTS (heel effect, DAS model)
+    # Convert sinogram to intensity, apply effects, convert back
+    # =========================================================================
+    has_intensity_effects = config.heel_effect !== nothing || config.das_model !== nothing
+
+    if has_intensity_effects
+        eps = T(1e-10)
+
+        # Convert to intensity domain: I = exp(-sinogram)
+        AK.foreachindex(sinogram) do idx
+            sinogram[idx] = exp(-sinogram[idx])
+        end
+
+        # Apply heel effect (intensity domain)
+        if config.heel_effect !== nothing
+            apply_heel_effect!(sinogram, config.heel_effect, geom)
+        end
+
+        # Apply DAS model (intensity domain - noise, gain, quantization)
+        if config.das_model !== nothing
+            apply_das_model!(sinogram, config.das_model; seed=config.noise_seed)
+        end
+
+        # Convert back to sinogram domain: sinogram = -log(intensity)
+        AK.foreachindex(sinogram) do idx
+            sinogram[idx] = -log(max(sinogram[idx], eps))
+        end
+    end
+
+    # =========================================================================
+    # STANDARD SINOGRAM-DOMAIN EFFECTS
+    # =========================================================================
+
     # 1. Fill factor (detector active area)
     if config.fill_factor !== nothing
         apply_fill_factor!(sinogram, config.fill_factor)
@@ -273,7 +454,8 @@ function apply_physics_effects!(
 
     # 8. Detector noise (quantum + electronic)
     # This should be applied late, after deterministic effects
-    if config.noise !== nothing
+    # Skip if DAS model was used (it has its own noise)
+    if config.noise !== nothing && config.das_model === nothing
         apply_detector_model!(sinogram, config.noise)
     end
 
@@ -281,6 +463,13 @@ function apply_physics_effects!(
     # This is applied last as it's a temporal effect
     if config.lag !== nothing
         apply_lag!(sinogram, config.lag)
+    end
+
+    # =========================================================================
+    # BEAM HARDENING CORRECTION (sinogram domain, applied last)
+    # =========================================================================
+    if config.bhc !== nothing
+        apply_bhc!(sinogram, config.bhc)
     end
 
     return sinogram
@@ -315,7 +504,11 @@ function get_physics_config_info(config::PhysicsConfig)
         ("focal_spot", config.focal_spot),
         ("detector_efficiency", config.detector_efficiency),
         ("noise", config.noise),
-        ("lag", config.lag)
+        ("lag", config.lag),
+        # CatSim-style effects
+        ("heel_effect", config.heel_effect),
+        ("das_model", config.das_model),
+        ("bhc", config.bhc)
     ]
 
     for (name, effect) in effects
@@ -341,6 +534,6 @@ end
 # =============================================================================
 
 export PhysicsConfig
-export default_physics_config, realistic_physics_config, minimal_physics_config
+export default_physics_config, realistic_physics_config, minimal_physics_config, full_physics_config
 export apply_physics_effects!, apply_physics_effects
 export get_physics_config_info

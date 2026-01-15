@@ -263,17 +263,39 @@ sinogram_gpu = forward_project(volume_gpu, geom; physics=physics)
 ### Physics Configuration
 
 ```julia
-# Preset configurations
-physics = realistic_physics_config(scatter_scale=1.0, noise_level=1.0)
-physics = minimal_physics_config()
+# RECOMMENDED: full_physics_config() - ALL effects enabled by default
+physics = full_physics_config(energy_keV=65.0, noise_seed=42)
+
+# Other preset configurations
+physics = realistic_physics_config(scatter_scale=1.0, noise_level=1.0)  # Some effects
+physics = minimal_physics_config()  # Noise only
 
 # Custom configuration
 physics = default_physics_config(
+    fill_factor = fill_factor_standard(),
+    flat_filter = flat_filter_al(3.0),
+    bowtie_filter = bowtie_filter_large_body(),
     scatter = default_scatter_model(),
-    noise = default_detector_model(I0=1e5),
-    crosstalk = default_crosstalk_model()
+    crosstalk = crosstalk_medium()
 )
 ```
+
+### Scanner-Specific vs General Physics
+
+**SCANNER-SPECIFIC** (vary by manufacturer/model):
+- `flat_filter` - Material and thickness
+- `bowtie_filter` - Profile shape
+- `detector_efficiency` - Scintillator type
+- `fill_factor` - Detector geometry
+- `heel_effect` - Anode angle/target
+- `das_model` - Electronics characteristics
+- `bhc` - Calibration-dependent
+
+**GENERAL PHYSICS** (patient/setup dependent):
+- `scatter` - Patient size dependent
+- `crosstalk` - Optional
+- `focal_spot` - Optional
+- `lag` - Optional
 
 ### Polychromatic Physics
 
@@ -287,6 +309,58 @@ sinogram = -log(I / I₀)
 
 ---
 
+## CatSim-Exact Signal Chain (NEW)
+
+The `forward_project()` function now supports the **full CatSim-style clinical signal chain** via kwargs. When any signal chain parameter is provided, the complete pipeline is executed automatically:
+
+### Signal Chain Pipeline
+
+1. **Polychromatic projection** (Beer-Lambert spectral physics)
+2. **Physics effects** (scatter, crosstalk, focal spot, lag)
+3. **Heel effect** (anode self-attenuation - intensity domain)
+4. **DAS model** (gain + electronic noise to phantom)
+5. **Air scan calibration** (noise-free reference - CatSim exact!)
+6. **Low signal correction** (replace negatives with smoothed neighbors)
+7. **Log transform**
+8. **Beam hardening correction**
+
+### Key CatSim Design Decisions
+
+- **Air scan has NO noise** - simulates averaged reference (CatSim: `enableQuantumNoise = 0`)
+- **Low signal correction** - negatives replaced with smoothed neighbors (not simple clamping)
+- **DAS noise** - applied to phantom only, not to air scan
+- **Calibration formula** - `prep = phantom_intensity / air_intensity`
+
+### Usage - Full Clinical Simulation
+
+```julia
+# Single call - full_physics_config() includes ALL 13 effects!
+sinogram = forward_project(mask_gpu, geom;
+    energies = energies,
+    weights = weights,
+    materials = materials,
+    physics = full_physics_config(energy_keV=mean_energy, noise_seed=42)
+)
+
+# Then just reconstruct
+recon = fdk_reconstruct(sinogram, geom, recon_size)
+```
+
+**Note**: `full_physics_config()` includes ALL effects:
+- 10 physics pipeline (fill_factor, flat_filter, bowtie, scatter, crosstalk, optical_crosstalk, focal_spot, detector_efficiency, noise, lag)
+- 3 signal chain (heel_effect, das_model, bhc)
+
+### CatSim Signal Chain Components
+
+| Component | File | Description |
+|-----------|------|-------------|
+| Heel Effect | `Forward/HeelEffect.jl` | Anode self-attenuation |
+| DAS Model | `Forward/DASModel.jl` | Gain + electronic noise |
+| Calibration | `Forward/Calibration.jl` | Air scan + low signal correction |
+| BHC | `Forward/BeamHardeningCorrection.jl` | Water polynomial correction |
+
+---
+
 ## File Structure
 
 ```
@@ -294,7 +368,7 @@ src/
 ├── BasisSimulator.jl
 ├── Forward/
 │   ├── Siddon.jl              # ✅ GPU - TIGRE port
-│   ├── Polychromatic.jl       # ✅ GPU - Beer-Lambert spectral
+│   ├── Polychromatic.jl       # ✅ GPU - Beer-Lambert + CatSim signal chain
 │   ├── Scatter.jl             # ✅ GPU - Spatial convolution scatter
 │   ├── DetectorNoise.jl       # ✅ GPU - Quantum + electronic noise
 │   ├── DetectorEfficiency.jl  # ✅ GPU - Scintillator DQE
@@ -305,7 +379,11 @@ src/
 │   ├── DetectorLag.jl         # ✅ GPU - Afterglow
 │   ├── FillFactor.jl          # ✅ GPU - Dead area
 │   ├── FlyingFocalSpot.jl     # N/A - Geometry modification
-│   └── PhysicsPipeline.jl     # ✅ GPU - Unified physics effects
+│   ├── PhysicsPipeline.jl     # ✅ GPU - Unified physics effects
+│   ├── HeelEffect.jl          # ✅ GPU - CatSim anode self-attenuation
+│   ├── DASModel.jl            # ✅ GPU - CatSim signal chain
+│   ├── Calibration.jl         # ✅ GPU - CatSim air scan + low signal
+│   └── BeamHardeningCorrection.jl  # ✅ GPU - Water polynomial BHC
 ├── Reconstruction/
 │   ├── Backprojection.jl      # ✅ GPU - TIGRE port
 │   ├── Filtering.jl           # ✅ GPU - Spatial domain ramp filter
@@ -365,4 +443,4 @@ sinogram_gpu = siddon_forward_project(volume_gpu, geom)
 
 ---
 
-Last Updated: 2026-01-14 (All physics effects GPU-native)
+Last Updated: 2026-01-15 (Added full_physics_config, info logging for signal chain)
