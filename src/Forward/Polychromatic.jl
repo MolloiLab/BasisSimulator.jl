@@ -63,47 +63,60 @@ end
 # =============================================================================
 
 """
-    forward_project!(sinogram, volume_or_mask, geom; energy=nothing, energies=nothing, weights=nothing, materials=nothing)
+    forward_project!(sinogram, volume_or_mask, geom; energy=nothing, energies=nothing, weights=nothing, materials=nothing, physics=nothing)
 
-Unified forward projection with monochromatic or polychromatic options.
+Unified forward projection with monochromatic/polychromatic options and physics effects.
 
 # Arguments
 - `sinogram`: Output sinogram [n_cols, n_rows, n_angles] (modified in place)
 - `volume_or_mask`: Either a 3D μ volume (Float32/64) or a UInt8 material mask
 - `geom`: CTGeometry with scanner parameters
 
-# Keyword Arguments (choose one mode)
+# Keyword Arguments
 
-**Monochromatic mode** (direct volume input):
-- Just pass a μ volume directly - no kwargs needed
+**Spectrum Mode** (choose one):
 
-**Monochromatic mode** (mask + single energy):
+*Monochromatic* (direct volume input):
+- Just pass a μ volume directly - no spectrum kwargs needed
+
+*Monochromatic* (mask + single energy):
 - `energy`: Single energy in keV (e.g., 60.0)
 - `materials`: Vector of materials from `get_region_materials()`
 
-**Polychromatic mode** (mask + spectrum):
+*Polychromatic* (mask + spectrum):
 - `energies`: Vector of energy bin centers (keV)
 - `weights`: Vector of photon fluence weights
 - `materials`: Vector of materials from `get_region_materials()`
 
+**Physics Effects** (optional):
+- `physics`: PhysicsConfig from `realistic_physics_config()`, `minimal_physics_config()`,
+             or `default_physics_config(...)`. If `nothing`, no physics effects applied.
+
 # Returns
-The modified sinogram array
+The modified sinogram array (with physics effects if specified)
 
 # Examples
 
 ```julia
-# Direct volume (monochromatic at whatever energy the μ values represent)
-sinogram = zeros(Float32, 256, 32, 180)
+# Simple monochromatic projection (no physics)
 forward_project!(sinogram, Float32.(phantom.μ), geom)
 
-# Monochromatic with mask and specified energy
-materials = get_region_materials()
-forward_project!(sinogram, phantom.mask, geom; energy=60.0, materials=materials)
+# Monochromatic with realistic physics
+physics = realistic_physics_config(scatter_scale=1.0, noise_level=1.0)
+forward_project!(sinogram, Float32.(phantom.μ), geom; physics=physics)
 
-# Polychromatic with full spectrum
+# Polychromatic with custom physics
+materials = get_region_materials()
 energies, weights = load_spectrum(120)
 energies, weights = downsample_spectrum(energies, weights, 30)
-forward_project!(sinogram, phantom.mask, geom; energies=energies, weights=weights, materials=materials)
+physics = default_physics_config(
+    scatter = default_scatter_model(),
+    noise = default_detector_model(I0=1e5)
+)
+forward_project!(sinogram, phantom.mask, geom;
+    energies=energies, weights=weights, materials=materials,
+    physics=physics
+)
 ```
 """
 function forward_project!(
@@ -113,13 +126,14 @@ function forward_project!(
     energy::Union{Nothing, Real} = nothing,
     energies::Union{Nothing, Vector} = nothing,
     weights::Union{Nothing, Vector} = nothing,
-    materials::Union{Nothing, Vector} = nothing
+    materials::Union{Nothing, Vector} = nothing,
+    physics::Union{Nothing, PhysicsConfig} = nothing
 ) where T <: AbstractFloat
 
     # Determine mode based on input type and kwargs
     if eltype(volume_or_mask) <: AbstractFloat
         # Direct volume input - simple monochromatic projection
-        return siddon_forward_project!(sinogram, volume_or_mask, geom)
+        siddon_forward_project!(sinogram, volume_or_mask, geom)
 
     elseif eltype(volume_or_mask) == UInt8
         # Mask input - need energy specification
@@ -131,11 +145,11 @@ function forward_project!(
 
         if energy !== nothing
             # Monochromatic mode with single energy
-            return _forward_project_mono!(sinogram, mask, geom, T(energy), materials)
+            _forward_project_mono!(sinogram, mask, geom, T(energy), materials)
 
         elseif energies !== nothing && weights !== nothing
             # Polychromatic mode
-            return _forward_project_poly!(sinogram, mask, geom, energies, weights, materials)
+            _forward_project_poly!(sinogram, mask, geom, energies, weights, materials)
 
         else
             error("Must specify either `energy` (single keV) or `energies` + `weights` (spectrum)")
@@ -143,19 +157,54 @@ function forward_project!(
     else
         error("volume_or_mask must be Float32/Float64 (μ volume) or UInt8 (material mask)")
     end
+
+    # Apply physics effects if specified
+    if physics !== nothing
+        apply_physics_effects!(sinogram, geom, physics)
+    end
+
+    return sinogram
 end
 
 """
     forward_project(volume_or_mask, geom; kwargs...)
 
 Allocating version of forward_project!. See `forward_project!` for details.
+
+The output sinogram is allocated on the same device as the input (CPU or GPU).
+
+# Examples
+
+```julia
+# Simple monochromatic (CPU)
+sinogram = forward_project(Float32.(phantom.μ), geom)
+
+# GPU input -> GPU output
+using Metal
+volume_gpu = MtlArray(Float32.(phantom.μ))
+sinogram_gpu = forward_project(volume_gpu, geom; physics=realistic_physics_config())
+
+# Polychromatic with physics
+sinogram = forward_project(phantom.mask, geom;
+    energies = energies,
+    weights = weights,
+    materials = materials,
+    physics = realistic_physics_config(scatter_scale=1.0, noise_level=0.5)
+)
+```
 """
 function forward_project(
-    volume_or_mask::AbstractArray,
+    volume_or_mask::AbstractArray{T},
     geom::CTGeometry;
     kwargs...
-)
-    sinogram = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
+) where T
+    # Determine element type for output
+    out_type = T <: AbstractFloat ? T : Float32
+
+    # Create sinogram on same device as input
+    sinogram = similar(volume_or_mask, out_type, geom.n_cols, geom.n_rows, geom.n_angles)
+    fill!(sinogram, zero(out_type))
+
     return forward_project!(sinogram, volume_or_mask, geom; kwargs...)
 end
 
