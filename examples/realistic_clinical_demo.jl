@@ -4,12 +4,16 @@
 #
 # High-resolution polychromatic CT simulation with full physics modeling.
 #
-# Parameters matched to clinical CT:
-# - 512x512x20 reconstruction volume
-# - 1160 projection angles (full rotation)
-# - 736x64 detector (typical clinical detector)
-# - 120 kVp polychromatic spectrum
-# - Full physics: scatter, noise, crosstalk, focal spot blur, lag
+# KEY FEATURE: Avoids "inverse crime" by using different resolutions for
+# ground truth phantom vs reconstruction output (like real CT systems).
+#
+# Parameters:
+# - Ground truth phantom: 1024x1024x40 (0.34 mm voxels) - high-res "physical" phantom
+# - Reconstruction output: 512x512x20 (0.68 mm voxels) - clinical output resolution
+# - Detector: 736x64 (typical clinical 64-slice CT)
+# - Projections: 1160 angles (full rotation)
+# - Spectrum: 120 kVp polychromatic (30 energy bins)
+# - Physics: scatter, noise, crosstalk, focal spot blur, lag
 #
 # =============================================================================
 
@@ -34,29 +38,42 @@ println("="^70)
 println("\nGPU: ", Metal.current_device())
 
 # Clinical-grade parameters
-const CONFIG = (
-    # Reconstruction volume
-    n_voxels = 512,          # 512x512 in-plane
-    n_slices = 20,           # 20 slices
-    fov_cm = 35.0,           # 35 cm FOV (body imaging)
-    z_cm = 2.0,              # 2 cm z-coverage
+CONFIG = (
+    # Ground truth phantom (high resolution - like real physical phantom)
+    phantom_n_voxels = 1024,    # 1024x1024 in-plane (high-res ground truth)
+    phantom_n_slices = 40,      # 40 slices
+    fov_cm = 35.0,              # 35 cm FOV (body imaging)
+    z_cm = 2.0,                 # 2 cm z-coverage
+
+    # Reconstruction volume (lower resolution - typical clinical output)
+    recon_n_voxels = 512,       # 512x512 in-plane
+    recon_n_slices = 20,        # 20 slices
 
     # Detector geometry
-    n_cols = 736,            # Detector columns (typical clinical)
-    n_rows = 64,             # Detector rows (64-slice CT)
-    n_angles = 1160,         # Projections per rotation
+    n_cols = 736,               # Detector columns (typical clinical)
+    n_rows = 64,                # Detector rows (64-slice CT)
+    n_angles = 1160,            # Projections per rotation
 
     # Spectrum
-    kvp = 120,               # Tube voltage
-    n_energy_bins = 30,      # Downsampled energy bins
-    effective_keV = 70.0,    # Effective energy for HU reference
+    kvp = 120,                  # Tube voltage
+    n_energy_bins = 30,         # Downsampled energy bins
+    effective_keV = 70.0,       # Effective energy for HU reference
 )
 
+# Compute voxel sizes
+phantom_voxel_mm = CONFIG.fov_cm * 10 / CONFIG.phantom_n_voxels
+recon_voxel_mm = CONFIG.fov_cm * 10 / CONFIG.recon_n_voxels
+
 println("\nSimulation Configuration:")
-println("  Volume:   $(CONFIG.n_voxels) x $(CONFIG.n_voxels) x $(CONFIG.n_slices)")
-println("  Detector: $(CONFIG.n_cols) x $(CONFIG.n_rows)")
-println("  Angles:   $(CONFIG.n_angles)")
-println("  Spectrum: $(CONFIG.kvp) kVp ($(CONFIG.n_energy_bins) bins)")
+println("  Ground Truth Phantom:")
+println("    Size:       $(CONFIG.phantom_n_voxels) x $(CONFIG.phantom_n_voxels) x $(CONFIG.phantom_n_slices)")
+println("    Voxel size: $(round(phantom_voxel_mm, digits=2)) mm")
+println("  Reconstruction Output:")
+println("    Size:       $(CONFIG.recon_n_voxels) x $(CONFIG.recon_n_voxels) x $(CONFIG.recon_n_slices)")
+println("    Voxel size: $(round(recon_voxel_mm, digits=2)) mm")
+println("  Detector:     $(CONFIG.n_cols) x $(CONFIG.n_rows)")
+println("  Angles:       $(CONFIG.n_angles)")
+println("  Spectrum:     $(CONFIG.kvp) kVp ($(CONFIG.n_energy_bins) bins)")
 
 # =============================================================================
 # 2. Create Phantom and Geometry
@@ -67,14 +84,34 @@ println("\n" * "="^70)
 println("Creating Phantom and Geometry")
 println("="^70)
 
+# Create HIGH-RESOLUTION phantom (like a real physical phantom)
 phantom = create_gammex_472(
-    n_voxels = CONFIG.n_voxels,
-    n_slices = CONFIG.n_slices,
+    n_voxels = CONFIG.phantom_n_voxels,
+    n_slices = CONFIG.phantom_n_slices,
     fov_cm = CONFIG.fov_cm,
     z_cm = CONFIG.z_cm,
     μ_effective_energy_keV = CONFIG.effective_keV
 )
-println("\nPhantom: $(size(phantom.μ))")
+println("\nHigh-res phantom: $(size(phantom.μ)) ($(round(phantom_voxel_mm, digits=2)) mm voxels)")
+
+# Create downsampled mask for HU validation at reconstruction resolution
+function downsample_mask(mask, new_size)
+    old_size = size(mask)
+    scale = old_size ./ new_size
+    result = similar(mask, new_size)
+    for k in 1:new_size[3], j in 1:new_size[2], i in 1:new_size[1]
+        # Nearest neighbor sampling
+        oi = clamp(round(Int, (i - 0.5) * scale[1] + 0.5), 1, old_size[1])
+        oj = clamp(round(Int, (j - 0.5) * scale[2] + 0.5), 1, old_size[2])
+        ok = clamp(round(Int, (k - 0.5) * scale[3] + 0.5), 1, old_size[3])
+        result[i, j, k] = mask[oi, oj, ok]
+    end
+    return result
+end
+
+recon_size = (CONFIG.recon_n_voxels, CONFIG.recon_n_voxels, CONFIG.recon_n_slices)
+mask_recon = downsample_mask(phantom.mask, recon_size)
+println("Recon-resolution mask: $(size(mask_recon)) (for HU validation)")
 
 # %%
 geom = create_aquilion_one(
@@ -134,9 +171,9 @@ println("\n" * "="^70)
 println("Forward Projection (Polychromatic + Physics)")
 println("="^70)
 
-# Transfer to GPU
+# Transfer HIGH-RES phantom to GPU for forward projection
 mask_gpu = MtlArray(phantom.mask)
-println("\nPhantom mask transferred to GPU")
+println("\nHigh-res phantom mask transferred to GPU")
 
 # Full simulation: polychromatic + all physics effects
 println("\nRunning polychromatic forward projection with full physics...")
@@ -163,7 +200,9 @@ println("\n" * "="^70)
 println("Reconstruction (FDK, SIRT, CGLS)")
 println("="^70)
 
-volume_size = size(phantom.μ)
+# Reconstruct at LOWER resolution than phantom (avoids inverse crime)
+volume_size = recon_size
+println("\nReconstructing to $(volume_size[1])x$(volume_size[2])x$(volume_size[3]) ($(round(recon_voxel_mm, digits=2)) mm voxels)")
 
 # %%
 println("\n[1/3] FDK Reconstruction...")
@@ -195,9 +234,26 @@ println("  Complete")
 recon_fdk_hu = μ_to_HU(recon_fdk, μ_water)
 recon_sirt_hu = μ_to_HU(recon_sirt, μ_water)
 recon_cgls_hu = μ_to_HU(recon_cgls, μ_water)
-phantom_hu = μ_to_HU(phantom.μ, μ_water)
+
+# Downsample ground truth for visualization (to match recon resolution)
+function downsample_volume(vol::AbstractArray{T,3}, new_size) where T
+    old_size = size(vol)
+    scale = old_size ./ new_size
+    result = similar(vol, new_size)
+    for k in 1:new_size[3], j in 1:new_size[2], i in 1:new_size[1]
+        oi = clamp(round(Int, (i - 0.5) * scale[1] + 0.5), 1, old_size[1])
+        oj = clamp(round(Int, (j - 0.5) * scale[2] + 0.5), 1, old_size[2])
+        ok = clamp(round(Int, (k - 0.5) * scale[3] + 0.5), 1, old_size[3])
+        result[i, j, k] = vol[oi, oj, ok]
+    end
+    return result
+end
+
+phantom_recon_res = downsample_volume(phantom.μ, recon_size)
+phantom_hu = μ_to_HU(phantom_recon_res, μ_water)
 
 println("\nHU Conversion (reference: μ_water = $(round(μ_water, digits=4)) cm⁻¹ at $(CONFIG.effective_keV) keV)")
+println("Ground truth downsampled to $(size(phantom_hu)) for visualization")
 
 # =============================================================================
 # 8. HU Validation
@@ -241,9 +297,9 @@ println("-"^80)
 
 for r in REGIONS
     exp = round(Int, expected_hu(r.material, CONFIG.effective_keV))
-    fdk = measure_hu(recon_fdk, phantom.mask, r.id, μ_water)
-    sirt = measure_hu(recon_sirt, phantom.mask, r.id, μ_water)
-    cgls = measure_hu(recon_cgls, phantom.mask, r.id, μ_water)
+    fdk = measure_hu(recon_fdk, mask_recon, r.id, μ_water)
+    sirt = measure_hu(recon_sirt, mask_recon, r.id, μ_water)
+    cgls = measure_hu(recon_cgls, mask_recon, r.id, μ_water)
 
     fdk_str = @sprintf("%4d ± %3d", round(Int, fdk.mean), round(Int, fdk.std))
     sirt_str = @sprintf("%4d ± %3d", round(Int, sirt.mean), round(Int, sirt.std))
@@ -261,9 +317,9 @@ println("\n" * "="^70)
 println("Noise Analysis (Solid Water Region)")
 println("="^70)
 
-sw_fdk = measure_hu(recon_fdk, phantom.mask, REGION_SOLID_WATER, μ_water)
-sw_sirt = measure_hu(recon_sirt, phantom.mask, REGION_SOLID_WATER, μ_water)
-sw_cgls = measure_hu(recon_cgls, phantom.mask, REGION_SOLID_WATER, μ_water)
+sw_fdk = measure_hu(recon_fdk, mask_recon, REGION_SOLID_WATER, μ_water)
+sw_sirt = measure_hu(recon_sirt, mask_recon, REGION_SOLID_WATER, μ_water)
+sw_cgls = measure_hu(recon_cgls, mask_recon, REGION_SOLID_WATER, μ_water)
 
 println("\n  FDK:  $(round(sw_fdk.std, digits=1)) HU")
 println("  SIRT: $(round(sw_sirt.std, digits=1)) HU ($(round(100*sw_sirt.std/sw_fdk.std))% of FDK)")
@@ -278,7 +334,7 @@ println("\n" * "="^70)
 println("Generating Figures")
 println("="^70)
 
-slice = CONFIG.n_slices ÷ 2
+slice = CONFIG.recon_n_slices ÷ 2
 hu_range = (-200, 500)
 
 fig1 = Figure(size=(1400, 400))
@@ -321,9 +377,9 @@ ax = Axis(fig2[1, 1],
 
 names = [r.name for r in REGIONS]
 expected_vals = [expected_hu(r.material, CONFIG.effective_keV) for r in REGIONS]
-fdk_vals = [measure_hu(recon_fdk, phantom.mask, r.id, μ_water).mean for r in REGIONS]
-sirt_vals = [measure_hu(recon_sirt, phantom.mask, r.id, μ_water).mean for r in REGIONS]
-cgls_vals = [measure_hu(recon_cgls, phantom.mask, r.id, μ_water).mean for r in REGIONS]
+fdk_vals = [measure_hu(recon_fdk, mask_recon, r.id, μ_water).mean for r in REGIONS]
+sirt_vals = [measure_hu(recon_sirt, mask_recon, r.id, μ_water).mean for r in REGIONS]
+cgls_vals = [measure_hu(recon_cgls, mask_recon, r.id, μ_water).mean for r in REGIONS]
 
 x = 1:length(names)
 w = 0.2
@@ -371,10 +427,11 @@ println("Simulation Complete")
 println("="^70)
 
 println("\nConfiguration:")
-println("  Volume:     $(CONFIG.n_voxels) x $(CONFIG.n_voxels) x $(CONFIG.n_slices)")
-println("  Detector:   $(CONFIG.n_cols) x $(CONFIG.n_rows)")
-println("  Angles:     $(CONFIG.n_angles)")
-println("  Spectrum:   $(CONFIG.kvp) kVp polychromatic")
+println("  Ground Truth: $(CONFIG.phantom_n_voxels) x $(CONFIG.phantom_n_voxels) x $(CONFIG.phantom_n_slices) ($(round(phantom_voxel_mm, digits=2)) mm)")
+println("  Recon Output: $(CONFIG.recon_n_voxels) x $(CONFIG.recon_n_voxels) x $(CONFIG.recon_n_slices) ($(round(recon_voxel_mm, digits=2)) mm)")
+println("  Detector:     $(CONFIG.n_cols) x $(CONFIG.n_rows)")
+println("  Angles:       $(CONFIG.n_angles)")
+println("  Spectrum:     $(CONFIG.kvp) kVp polychromatic")
 
 println("\nPhysics Effects:")
 for effect in info.enabled_effects
