@@ -4,11 +4,17 @@
 Detector response and noise modeling for CT simulation.
 
 Implements:
-1. Detector blur (point spread function)
-2. Quantum noise (Poisson statistics)
-3. Electronic noise (Gaussian additive)
+1. Detector blur (point spread function) - Phase 3 (convolution)
+2. Quantum noise (Poisson statistics) - GPU-native with Gaussian approximation
+3. Electronic noise (Gaussian additive) - GPU-native
+
+GPU-native implementation using AcceleratedKernels.jl.
+
+For GPU, random numbers are pre-generated on CPU and transferred to GPU.
+This is a common pattern for simulation work where reproducibility is important.
 """
 
+import AcceleratedKernels as AK
 using Random
 
 """
@@ -114,74 +120,121 @@ function apply_detector_blur(sinogram::AbstractArray{T,3}, model::DetectorModel)
 end
 
 """
-    add_quantum_noise(sinogram, model::DetectorModel) -> Array
+    add_quantum_noise!(sinogram, model::DetectorModel) -> sinogram
 
-Add Poisson (quantum) noise to sinogram.
+Add Poisson (quantum) noise to sinogram (in-place, GPU-native).
 
 CT noise follows Poisson statistics: N(detected) ~ Poisson(I0 * exp(-attenuation))
+
+Uses Gaussian approximation for all counts (valid for typical CT counts >> 100).
+This is standard practice in CT simulation as counts are typically > 10^4.
 """
-function add_quantum_noise(sinogram::AbstractArray{T,3}, model::DetectorModel) where T
+function add_quantum_noise!(sinogram::AbstractArray{T,3}, model::DetectorModel) where T
     rng = isnothing(model.seed) ? Random.default_rng() : MersenneTwister(model.seed)
 
-    # Convert attenuation to detected photon counts
-    # I = I0 * exp(-attenuation)
-    intensity = model.I0 .* exp.(-sinogram)
+    n_elements = length(sinogram)
+    I0 = T(model.I0)
 
-    # Apply Poisson noise
-    # For high counts, use Gaussian approximation: N ~ Normal(λ, √λ)
-    noisy_intensity = similar(intensity)
-    for i in eachindex(intensity)
-        λ = max(intensity[i], 1.0)  # Ensure positive
-        if λ > 100
-            # Gaussian approximation for large λ
-            noisy_intensity[i] = λ + sqrt(λ) * randn(rng)
-        else
-            # Direct Poisson for small counts
-            noisy_intensity[i] = Float64(rand(rng, Poisson(λ)))
-        end
+    # Pre-generate Gaussian random numbers on CPU
+    rand_cpu = randn(rng, T, n_elements)
+
+    # Transfer to GPU (same type as sinogram)
+    rand_gpu = similar(sinogram, n_elements)
+    copyto!(rand_gpu, rand_cpu)
+
+    # GPU-native noise application
+    # Poisson noise with Gaussian approximation:
+    # λ = I0 * exp(-sinogram), noisy_λ = λ + sqrt(λ) * randn
+    # noisy_sinogram = -log(noisy_λ / I0)
+    AK.foreachindex(sinogram) do idx
+        # Convert to intensity (λ)
+        λ = I0 * exp(-sinogram[idx])
+
+        # Apply Gaussian approximation of Poisson noise
+        # σ = sqrt(λ) for Poisson distribution
+        λ_noisy = λ + sqrt(max(λ, T(1))) * rand_gpu[idx]
+
+        # Clamp to positive
+        λ_noisy = max(λ_noisy, T(1))
+
+        # Convert back to attenuation
+        sinogram[idx] = -log(λ_noisy / I0)
     end
 
-    # Clamp to positive
-    noisy_intensity = max.(noisy_intensity, T(1.0))
-
-    # Convert back to attenuation
-    noisy_sinogram = -log.(noisy_intensity ./ model.I0)
-
-    return T.(noisy_sinogram)
+    return sinogram
 end
 
 """
-    add_electronic_noise(sinogram, model::DetectorModel) -> Array
+    add_electronic_noise!(sinogram, model::DetectorModel) -> sinogram
 
-Add Gaussian electronic noise to sinogram.
+Add Gaussian electronic noise to sinogram (in-place, GPU-native).
+
+Electronic noise is additive in detector signal space, approximated
+as additive noise in attenuation space scaled by I0.
 """
-function add_electronic_noise(sinogram::AbstractArray{T,3}, model::DetectorModel) where T
+function add_electronic_noise!(sinogram::AbstractArray{T,3}, model::DetectorModel) where T
     if model.electronic_noise_std <= 0.0
-        return copy(sinogram)
+        return sinogram
     end
 
     rng = isnothing(model.seed) ? Random.default_rng() : MersenneTwister(model.seed + 1)
 
-    # Electronic noise is additive in detector signal space
-    # Approximate by adding noise in attenuation space scaled appropriately
-    noise_scale = model.electronic_noise_std / model.I0
+    n_elements = length(sinogram)
+    noise_scale = T(model.electronic_noise_std / model.I0)
 
-    noisy = sinogram .+ T(noise_scale) .* randn(rng, T, size(sinogram))
+    # Pre-generate Gaussian random numbers on CPU
+    rand_cpu = randn(rng, T, n_elements)
 
-    return noisy
+    # Transfer to GPU (same type as sinogram)
+    rand_gpu = similar(sinogram, n_elements)
+    copyto!(rand_gpu, rand_cpu)
+
+    # GPU-native noise application
+    AK.foreachindex(sinogram) do idx
+        sinogram[idx] += noise_scale * rand_gpu[idx]
+    end
+
+    return sinogram
+end
+
+# Convenience wrappers that allocate (for backward compatibility during transition)
+function add_quantum_noise(sinogram::AbstractArray{T,3}, model::DetectorModel) where T
+    result = copy(sinogram)
+    return add_quantum_noise!(result, model)
+end
+
+function add_electronic_noise(sinogram::AbstractArray{T,3}, model::DetectorModel) where T
+    result = copy(sinogram)
+    return add_electronic_noise!(result, model)
 end
 
 """
-    apply_detector_model(sinogram, model::DetectorModel) -> Array
+    apply_detector_model!(sinogram, model::DetectorModel) -> sinogram
 
-Apply full detector model: blur + quantum noise + electronic noise.
+Apply full detector model in-place: blur + quantum noise + electronic noise (GPU-native).
+
+Note: Blur is currently CPU-only (convolution, Phase 3). Noise effects are GPU-native.
 """
-function apply_detector_model(sinogram::AbstractArray{T,3}, model::DetectorModel) where T
+function apply_detector_model!(sinogram::AbstractArray{T,3}, model::DetectorModel) where T
     # Apply in order: blur -> quantum noise -> electronic noise
+    # Blur modifies and returns the result (CPU-only for now)
     result = apply_detector_blur(sinogram, model)
-    result = add_quantum_noise(result, model)
-    result = add_electronic_noise(result, model)
-    return result
+
+    # Copy blur result back if needed (blur allocates new array)
+    if result !== sinogram
+        copyto!(sinogram, result)
+    end
+
+    # Apply noise in-place (GPU-native)
+    add_quantum_noise!(sinogram, model)
+    add_electronic_noise!(sinogram, model)
+    return sinogram
+end
+
+# Convenience wrapper that allocates
+function apply_detector_model(sinogram::AbstractArray{T,3}, model::DetectorModel) where T
+    result = copy(sinogram)
+    return apply_detector_model!(result, model)
 end
 
 """
@@ -239,6 +292,8 @@ end
 # =============================================================================
 
 export DetectorModel, default_detector_model
-export apply_detector_blur, add_quantum_noise, add_electronic_noise
-export apply_detector_model
+export apply_detector_blur
+export add_quantum_noise!, add_electronic_noise!
+export add_quantum_noise, add_electronic_noise
+export apply_detector_model!, apply_detector_model
 export compute_noise_level, estimate_dose_from_noise
