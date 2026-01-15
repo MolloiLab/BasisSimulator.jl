@@ -16,8 +16,11 @@ Implementation follows CatSim/XCIST approach:
 - Energy-dependent attenuation μ(E)
 - Cone angle geometric correction
 - File-based profile loading
+
+GPU-native implementation using AcceleratedKernels.jl.
 """
 
+import AcceleratedKernels as AK
 using Statistics
 using DelimitedFiles
 
@@ -457,10 +460,10 @@ function compute_bowtie_attenuation_spectral(
 end
 
 """
-    apply_bowtie_filter(sinogram, filter::BowtieFilter, geom::CTGeometry;
-                        energy_keV::Float64=60.0) -> Array
+    apply_bowtie_filter!(sinogram, filter::BowtieFilter, geom::CTGeometry;
+                         energy_keV::Float64=60.0) -> sinogram
 
-Apply bowtie filter attenuation to sinogram.
+Apply bowtie filter attenuation to sinogram (in-place, GPU-native).
 
 In projection domain, bowtie adds to the line integral:
     p_total = p_patient + p_bowtie
@@ -472,9 +475,9 @@ In projection domain, bowtie adds to the line integral:
 - `energy_keV`: Reference energy (default: 60 keV)
 
 # Returns
-Sinogram with bowtie filter effect added.
+Modified sinogram with bowtie filter effect added.
 """
-function apply_bowtie_filter(
+function apply_bowtie_filter!(
     sinogram::AbstractArray{T,3},
     filter::BowtieFilter,
     geom::CTGeometry;
@@ -485,28 +488,35 @@ function apply_bowtie_filter(
         return sinogram
     end
 
-    # Compute bowtie transmission
-    transmission = compute_bowtie_attenuation(filter, geom; energy_keV=energy_keV)
+    n_cols = size(sinogram, 1)
+    n_rows = size(sinogram, 2)
+
+    # Compute bowtie transmission on CPU (done once)
+    transmission_cpu = compute_bowtie_attenuation(filter, geom; energy_keV=energy_keV)
 
     # In projection domain: p_bowtie = -log(transmission)
-    bowtie_projection = -log.(transmission)
+    bowtie_projection_cpu = T.(-log.(transmission_cpu))
 
-    # Add bowtie attenuation to each angle
-    n_angles = size(sinogram, 3)
-    result = similar(sinogram)
+    # Transfer to GPU (same type as sinogram)
+    bowtie_projection = similar(sinogram, n_cols, n_rows)
+    copyto!(bowtie_projection, bowtie_projection_cpu)
 
-    for angle in 1:n_angles
-        result[:, :, angle] = sinogram[:, :, angle] .+ T.(bowtie_projection)
+    # GPU-native element-wise operation
+    AK.foreachindex(sinogram) do idx
+        ci = CartesianIndices(sinogram)[idx]
+        col, row, _ = Tuple(ci)
+        proj_idx = col + (row - 1) * n_cols
+        sinogram[idx] += bowtie_projection[proj_idx]
     end
 
-    return result
+    return sinogram
 end
 
 """
-    apply_bowtie_to_intensity(intensity, filter::BowtieFilter, geom::CTGeometry;
-                              energy_keV::Float64=60.0) -> Array
+    apply_bowtie_to_intensity!(intensity, filter::BowtieFilter, geom::CTGeometry;
+                               energy_keV::Float64=60.0) -> intensity
 
-Apply bowtie filter to intensity-domain data (before log transform).
+Apply bowtie filter to intensity-domain data (in-place, GPU-native).
 
 This is the physically correct approach: bowtie attenuates the beam
 before it reaches the patient.
@@ -518,9 +528,9 @@ before it reaches the patient.
 - `energy_keV`: Reference energy (default: 60 keV)
 
 # Returns
-Attenuated intensity data.
+Modified attenuated intensity data.
 """
-function apply_bowtie_to_intensity(
+function apply_bowtie_to_intensity!(
     intensity::AbstractArray{T,3},
     filter::BowtieFilter,
     geom::CTGeometry;
@@ -530,16 +540,46 @@ function apply_bowtie_to_intensity(
         return intensity
     end
 
-    transmission = T.(compute_bowtie_attenuation(filter, geom; energy_keV=energy_keV))
+    n_cols = size(intensity, 1)
+    n_rows = size(intensity, 2)
 
-    n_angles = size(intensity, 3)
-    result = similar(intensity)
+    # Compute transmission on CPU (done once)
+    transmission_cpu = T.(compute_bowtie_attenuation(filter, geom; energy_keV=energy_keV))
 
-    for angle in 1:n_angles
-        result[:, :, angle] = intensity[:, :, angle] .* transmission
+    # Transfer to GPU (same type as intensity)
+    transmission = similar(intensity, n_cols, n_rows)
+    copyto!(transmission, transmission_cpu)
+
+    # GPU-native element-wise operation
+    AK.foreachindex(intensity) do idx
+        ci = CartesianIndices(intensity)[idx]
+        col, row, _ = Tuple(ci)
+        trans_idx = col + (row - 1) * n_cols
+        intensity[idx] *= transmission[trans_idx]
     end
 
-    return result
+    return intensity
+end
+
+# Convenience wrappers that allocate (for backward compatibility during transition)
+function apply_bowtie_filter(
+    sinogram::AbstractArray{T,3},
+    filter::BowtieFilter,
+    geom::CTGeometry;
+    energy_keV::Float64=60.0
+) where T
+    result = copy(sinogram)
+    return apply_bowtie_filter!(result, filter, geom; energy_keV=energy_keV)
+end
+
+function apply_bowtie_to_intensity(
+    intensity::AbstractArray{T,3},
+    filter::BowtieFilter,
+    geom::CTGeometry;
+    energy_keV::Float64=60.0
+) where T
+    result = copy(intensity)
+    return apply_bowtie_to_intensity!(result, filter, geom; energy_keV=energy_keV)
 end
 
 """
@@ -586,6 +626,7 @@ export bowtie_filter_small_body, bowtie_filter_head, bowtie_filter_none
 export bowtie_filter_multimaterial, load_bowtie_filter
 export get_bowtie_thickness, interpolate_thickness
 export compute_bowtie_attenuation, compute_bowtie_attenuation_spectral
+export apply_bowtie_filter!, apply_bowtie_to_intensity!
 export apply_bowtie_filter, apply_bowtie_to_intensity
 export get_bowtie_profile, get_bowtie_info
 export get_bowtie_mu, get_bowtie_mu_reference

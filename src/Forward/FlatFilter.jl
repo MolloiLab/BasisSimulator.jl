@@ -15,7 +15,11 @@ Implementation follows CatSim/XCIST approach:
 - Multiple filter layers supported
 - Energy-dependent attenuation
 - Geometric correction for oblique rays
+
+GPU-native implementation using AcceleratedKernels.jl.
 """
+
+import AcceleratedKernels as AK
 
 # =============================================================================
 # Flat Filter Types
@@ -243,10 +247,10 @@ function compute_flat_filter_attenuation_spectral(
 end
 
 """
-    apply_flat_filter(sinogram, filter::FlatFilter, geom::CTGeometry;
-                      energy_keV::Float64=60.0) -> Array
+    apply_flat_filter!(sinogram, filter::FlatFilter, geom::CTGeometry;
+                       energy_keV::Float64=60.0) -> sinogram
 
-Apply flat filter attenuation to sinogram.
+Apply flat filter attenuation to sinogram (in-place, GPU-native).
 
 # Arguments
 - `sinogram`: Sinogram [n_cols, n_rows, n_angles]
@@ -255,9 +259,9 @@ Apply flat filter attenuation to sinogram.
 - `energy_keV`: Reference energy (default: 60 keV)
 
 # Returns
-Sinogram with flat filter effect added.
+Modified sinogram with flat filter effect added.
 """
-function apply_flat_filter(
+function apply_flat_filter!(
     sinogram::AbstractArray{T,3},
     filter::FlatFilter,
     geom::CTGeometry;
@@ -267,27 +271,36 @@ function apply_flat_filter(
         return sinogram
     end
 
-    # Compute transmission
-    transmission = compute_flat_filter_attenuation(filter, geom; energy_keV=energy_keV)
+    n_cols = size(sinogram, 1)
+    n_rows = size(sinogram, 2)
+    n_angles = size(sinogram, 3)
+
+    # Compute transmission on CPU (done once)
+    transmission_cpu = compute_flat_filter_attenuation(filter, geom; energy_keV=energy_keV)
 
     # In projection domain: add -log(transmission)
-    filter_projection = -log.(transmission)
+    filter_projection_cpu = T.(-log.(transmission_cpu))
 
-    n_angles = size(sinogram, 3)
-    result = similar(sinogram)
+    # Transfer to GPU (same type as sinogram)
+    filter_projection = similar(sinogram, n_cols, n_rows)
+    copyto!(filter_projection, filter_projection_cpu)
 
-    for angle in 1:n_angles
-        result[:, :, angle] = sinogram[:, :, angle] .+ T.(filter_projection)
+    # GPU-native element-wise operation
+    AK.foreachindex(sinogram) do idx
+        ci = CartesianIndices(sinogram)[idx]
+        col, row, _ = Tuple(ci)
+        proj_idx = col + (row - 1) * n_cols
+        sinogram[idx] += filter_projection[proj_idx]
     end
 
-    return result
+    return sinogram
 end
 
 """
-    apply_flat_filter_to_intensity(intensity, filter::FlatFilter, geom::CTGeometry;
-                                   energy_keV::Float64=60.0) -> Array
+    apply_flat_filter_to_intensity!(intensity, filter::FlatFilter, geom::CTGeometry;
+                                    energy_keV::Float64=60.0) -> intensity
 
-Apply flat filter to intensity-domain data (before log transform).
+Apply flat filter to intensity-domain data (in-place, GPU-native).
 
 # Arguments
 - `intensity`: Intensity data [n_cols, n_rows, n_angles]
@@ -295,9 +308,9 @@ Apply flat filter to intensity-domain data (before log transform).
 - `geom::CTGeometry`: Scanner geometry
 
 # Returns
-Attenuated intensity data.
+Modified attenuated intensity data.
 """
-function apply_flat_filter_to_intensity(
+function apply_flat_filter_to_intensity!(
     intensity::AbstractArray{T,3},
     filter::FlatFilter,
     geom::CTGeometry;
@@ -307,16 +320,46 @@ function apply_flat_filter_to_intensity(
         return intensity
     end
 
-    transmission = T.(compute_flat_filter_attenuation(filter, geom; energy_keV=energy_keV))
+    n_cols = size(intensity, 1)
+    n_rows = size(intensity, 2)
 
-    n_angles = size(intensity, 3)
-    result = similar(intensity)
+    # Compute transmission on CPU (done once)
+    transmission_cpu = T.(compute_flat_filter_attenuation(filter, geom; energy_keV=energy_keV))
 
-    for angle in 1:n_angles
-        result[:, :, angle] = intensity[:, :, angle] .* transmission
+    # Transfer to GPU (same type as intensity)
+    transmission = similar(intensity, n_cols, n_rows)
+    copyto!(transmission, transmission_cpu)
+
+    # GPU-native element-wise operation
+    AK.foreachindex(intensity) do idx
+        ci = CartesianIndices(intensity)[idx]
+        col, row, _ = Tuple(ci)
+        trans_idx = col + (row - 1) * n_cols
+        intensity[idx] *= transmission[trans_idx]
     end
 
-    return result
+    return intensity
+end
+
+# Convenience wrappers that allocate (for backward compatibility during transition)
+function apply_flat_filter(
+    sinogram::AbstractArray{T,3},
+    filter::FlatFilter,
+    geom::CTGeometry;
+    energy_keV::Float64=60.0
+) where T
+    result = copy(sinogram)
+    return apply_flat_filter!(result, filter, geom; energy_keV=energy_keV)
+end
+
+function apply_flat_filter_to_intensity(
+    intensity::AbstractArray{T,3},
+    filter::FlatFilter,
+    geom::CTGeometry;
+    energy_keV::Float64=60.0
+) where T
+    result = copy(intensity)
+    return apply_flat_filter_to_intensity!(result, filter, geom; energy_keV=energy_keV)
 end
 
 """
@@ -360,5 +403,6 @@ export FlatFilter
 export flat_filter_none, flat_filter_al, flat_filter_cu
 export flat_filter_al_cu, flat_filter_ti, flat_filter_custom
 export compute_flat_filter_attenuation, compute_flat_filter_attenuation_spectral
+export apply_flat_filter!, apply_flat_filter_to_intensity!
 export apply_flat_filter, apply_flat_filter_to_intensity
 export get_flat_filter_info
