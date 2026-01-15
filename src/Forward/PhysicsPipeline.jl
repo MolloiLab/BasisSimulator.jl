@@ -449,7 +449,7 @@ function apply_physics_effects!(
 
     # 7. Detector efficiency (scintillator response)
     if config.detector_efficiency !== nothing
-        apply_detector_efficiency!(sinogram, config.detector_efficiency; energy_keV=config.energy_keV)
+        apply_detector_efficiency!(sinogram, config.detector_efficiency, geom; energy_keV=config.energy_keV)
     end
 
     # 8. Detector noise (quantum + electronic)

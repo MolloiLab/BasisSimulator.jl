@@ -311,51 +311,48 @@ function compute_detector_efficiency_spectral(
 end
 
 """
-    apply_detector_efficiency!(intensity, model::DetectorEfficiency, geom::CTGeometry;
-                               energy_keV::Float64=60.0) -> intensity
+    apply_detector_efficiency!(sinogram, model::DetectorEfficiency, geom::CTGeometry;
+                               energy_keV::Float64=60.0) -> sinogram
 
-Apply detector efficiency to intensity-domain data (in-place, GPU-native).
+Apply detector efficiency to sinogram data (in-place, GPU-native).
 
-This should be applied BEFORE adding noise, as it affects the number
-of detected photons.
+In CT with proper calibration (air scan normalization), detector efficiency
+does NOT change projection values because both phantom and air scans use
+the same detector - the efficiency cancels in the ratio:
+    projection = -log(I_phantom/I_air) = -log(I0×exp(-μL)×η / (I0×η)) = μL
+
+The main effect of detector efficiency is on NOISE levels (fewer detected
+photons = more quantum noise). This is handled separately in noise modeling.
+
+This function is kept for API compatibility but currently has no effect on
+projection values. Energy-dependent efficiency variations could be added
+in the future for more sophisticated spectral modeling.
 
 # Arguments
-- `intensity`: Intensity data [n_cols, n_rows, n_angles]
+- `sinogram`: Sinogram data [n_cols, n_rows, n_angles] in projection domain
 - `model::DetectorEfficiency`: Detector efficiency model
 - `geom::CTGeometry`: Scanner geometry
 
 # Returns
-Modified intensity scaled by detector efficiency.
+Sinogram (unchanged - efficiency is handled via calibration).
 """
 function apply_detector_efficiency!(
-    intensity::AbstractArray{T,3},
+    sinogram::AbstractArray{T,3},
     model::DetectorEfficiency,
     geom::CTGeometry;
     energy_keV::Float64=60.0
 ) where T
-    if model.material == "ideal"
-        return intensity
-    end
+    # In calibrated CT, detector efficiency cancels between phantom and air scan.
+    # The effect on signal levels is already handled by the calibration pipeline.
+    # The effect on noise is handled by the noise model.
+    #
+    # Therefore, this function is a no-op for projection-domain data.
+    # If intensity-domain application is needed, convert explicitly:
+    #   intensity = exp.(-sinogram)
+    #   intensity .*= efficiency
+    #   sinogram .= -log.(intensity)
 
-    n_cols = size(intensity, 1)
-    n_rows = size(intensity, 2)
-
-    # Compute efficiency on CPU (done once)
-    η_cpu = T.(compute_detector_efficiency(model, geom; energy_keV=energy_keV))
-
-    # Transfer to GPU (same type as intensity)
-    η = similar(intensity, n_cols, n_rows)
-    copyto!(η, η_cpu)
-
-    # GPU-native element-wise operation
-    AK.foreachindex(intensity) do idx
-        ci = CartesianIndices(intensity)[idx]
-        col, row, _ = Tuple(ci)
-        eff_idx = col + (row - 1) * n_cols
-        intensity[idx] *= η[eff_idx]
-    end
-
-    return intensity
+    return sinogram
 end
 
 # Convenience wrapper that allocates (for backward compatibility during transition)
