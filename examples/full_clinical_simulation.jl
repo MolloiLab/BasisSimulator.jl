@@ -60,8 +60,8 @@ println()
 
 CONFIG = (
     # Phantom (clinical resolution)
-    phantom_n_voxels = 256,
-    phantom_n_slices = 16,
+    phantom_n_voxels = 1024,
+    phantom_n_slices = 64,
     fov_cm = 35.0,
     z_cm = 4.0,
 
@@ -71,8 +71,8 @@ CONFIG = (
     n_angles = 1160,
 
     # Reconstruction output
-    recon_n_voxels = 256,
-    recon_n_slices = 16,
+    recon_n_voxels = 512,
+    recon_n_slices = 32,
 
     # Spectrum
     kvp = 120,

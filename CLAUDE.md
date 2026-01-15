@@ -1,363 +1,135 @@
-# BasisSimulator.jl - TIGRE-Style CT Simulator
+# BasisSimulator.jl - CT Simulator
 
 ## Overview
 
 CT simulation with backend-agnostic GPU/CPU execution via **AcceleratedKernels.jl**.
 
-Core ray tracing algorithms ported from TIGRE. Polychromatic physics is our own implementation (TIGRE is monochromatic only).
+- Core ray tracing: ported from TIGRE
+- Polychromatic physics: our own implementation (TIGRE is monochromatic only)
+- Signal chain: CatSim-exact calibration workflow
 
 **Works on:** Metal (Apple), CUDA (NVIDIA), ROCm (AMD), Intel oneAPI, or CPU.
 
 ---
 
-## Current Status
-
-| Component | File | Reference | Status |
-|-----------|------|-----------|--------|
-| Forward Projection | `Forward/Siddon.jl` | TIGRE `Siddon_projection.cu` | ✅ Complete |
-| Polychromatic FP | `Forward/Polychromatic.jl` | Beer-Lambert physics | ✅ Complete |
-| Backprojection | `Reconstruction/Backprojection.jl` | TIGRE `voxel_backprojection.cu` | ✅ Complete |
-| FDK Filtering | `Reconstruction/Filtering.jl` | Spatial domain ramp filter | ✅ Complete |
-| FDK Reconstruction | `Reconstruction/FDK.jl` | TIGRE FDK | ✅ Complete |
-| SIRT | `Reconstruction/SIRT.jl` | TIGRE `SIRT.m` | ✅ Complete |
-| CGLS | `Reconstruction/CGLS.jl` | TIGRE `CGLS.m` | ✅ Complete |
-
-### Physics Effects (All GPU-Native)
-
-| Effect | File | Status | GPU Status |
-|--------|------|--------|------------|
-| Fill Factor | `Forward/FillFactor.jl` | ✅ Complete | ✅ GPU |
-| Flat Filter | `Forward/FlatFilter.jl` | ✅ Complete | ✅ GPU |
-| Bowtie Filter | `Forward/BowtieFilter.jl` | ✅ Complete | ✅ GPU |
-| Detector Efficiency | `Forward/DetectorEfficiency.jl` | ✅ Complete | ✅ GPU |
-| Detector Noise | `Forward/DetectorNoise.jl` | ✅ Complete | ✅ GPU |
-| Crosstalk | `Forward/Crosstalk.jl` | ✅ Complete | ✅ GPU |
-| Focal Spot Blur | `Forward/FocalSpot.jl` | ✅ Complete | ✅ GPU |
-| Scatter | `Forward/Scatter.jl` | ✅ Complete | ✅ GPU |
-| Detector Lag | `Forward/DetectorLag.jl` | ✅ Complete | ✅ GPU |
-| Flying Focal Spot | `Forward/FlyingFocalSpot.jl` | ✅ Complete | N/A (geometry) |
-
-**All 10 physics effects are GPU-native via AcceleratedKernels.jl.**
-
-### Unified Physics Pipeline
-
-Use `apply_physics_effects!()` for a single entry point to all physics effects:
+## Quick Start
 
 ```julia
 using BasisSimulator
-
-# Create physics configuration
-config = realistic_physics_config(scatter_scale=1.0, noise_level=1.0)
-
-# Forward project
-sinogram = siddon_forward_project(volume, geom)
-
-# Apply all physics effects (GPU-native)
-apply_physics_effects!(sinogram, geom, config)
-
-# Reconstruct
-recon = fdk_reconstruct(sinogram, geom, volume_size)
-```
-
----
-
-## AcceleratedKernels.jl Approach
-
-We use [AcceleratedKernels.jl](https://github.com/JuliaGPU/AcceleratedKernels.jl) instead of raw KernelAbstractions.jl for cleaner code:
-
-```julia
-import AcceleratedKernels as AK
-
-# Parallel loop - automatically runs on GPU or CPU
-AK.foreachindex(sinogram) do idx
-    # Convert linear index to (col, row, angle)
-    ci = CartesianIndices(sinogram)[idx]
-    col, row, angle = Tuple(ci)
-
-    # Compute ray trace for this detector pixel
-    sinogram[idx] = siddon_trace_ray(...)
-end
-```
-
-**Key advantages:**
-- No `@kernel` macros needed - just normal Julia code
-- `AK.foreachindex` automatically parallelizes
-- Works on any backend without code changes
-- Cleaner, more readable than raw CUDA/KA code
-
----
-
-## Siddon Forward Projection
-
-**Reference:** `CERN/TIGRE/Common/CUDA/Siddon_projection.cu`
-
-### Algorithm
-
-Per-ray computation (each thread = one detector pixel):
-1. Compute ray from source to detector pixel
-2. Find entry/exit points where ray intersects volume
-3. Traverse voxels using Siddon's parametric algorithm
-4. Accumulate: `line_integral += μ[voxel] × path_length`
-
-### Usage
-
-```julia
-using BasisSimulator
+using Metal  # or CUDA
 
 # Create phantom and geometry
-phantom = create_gammex_472(n_voxels=128, fov_cm=35.0, z_cm=4.0)
-geom = create_aquilion_one(n_angles=180, n_rows=32, n_cols=256, fov_cm=35.0)
+phantom = create_gammex_472(n_voxels=512, n_slices=32, fov_cm=35.0, z_cm=4.0)
+geom = create_aquilion_one(n_angles=1160, n_rows=64, n_cols=736, fov_cm=35.0, z_cm=4.0)
 
-# Forward projection (automatically uses GPU if available)
-sinogram = siddon_forward_project(Float32.(phantom.μ), geom)
-```
-
----
-
-## Voxel Backprojection
-
-**Reference:** `CERN/TIGRE/Common/CUDA/voxel_backprojection.cu`
-
-### Algorithm
-
-Per-voxel computation (each thread = one voxel):
-1. Compute voxel center in world coordinates
-2. For each angle:
-   - Project voxel onto detector plane
-   - Bilinear interpolation of detector values
-   - Apply FDK distance weight: `(SAD / dist)²`
-3. Accumulate weighted contributions
-
-### Usage
-
-```julia
-# Backproject filtered sinogram
-volume = backproject(filtered_sinogram, geom, (128, 128, 64))
-```
-
----
-
-## FDK Reconstruction
-
-**Reference:** Feldkamp, Davis, Kress (1984)
-
-### Pipeline
-
-1. **Cosine weighting** - Pre-weight for cone-beam geometry
-2. **Ramp filtering** - Fourier domain filter (Ram-Lak, Shepp-Logan, etc.)
-3. **Weighted backprojection** - FDK distance weights
-
-### Usage
-
-```julia
-# Full FDK reconstruction
-recon = fdk_reconstruct(sinogram, geom, size(phantom.μ))
-
-# With filter options
-recon = fdk_reconstruct(sinogram, geom, size(phantom.μ);
-                        filter=SheppLoganFilter(), cutoff=0.8)
-```
-
-### Available Filters
-
-- `RampFilter()` - Standard Ram-Lak
-- `SheppLoganFilter()` - Ramp × sinc
-- `CosineFilter()` - Ramp × cos
-- `HammingFilter()` - Ramp × Hamming window
-- `HannFilter()` - Ramp × Hann window
-
----
-
-## SIRT Iterative Reconstruction
-
-**Reference:** TIGRE `MATLAB/Algorithms/SIRT.m`
-
-### Algorithm
-
-SIRT (Simultaneous Iterative Reconstruction Technique) minimizes ||Ax - b||² iteratively:
-
-```
-x_{k+1} = x_k + λ · V⁻¹ · Aᵀ · W · (b - A·x_k)
-```
-
-Where:
-- `W = 1/(A·1)` - projection domain weights (ray length normalization)
-- `V = 1/(Aᵀ·1)` - image domain weights (voxel sensitivity)
-- `λ` - relaxation parameter
-
-### Usage
-
-```julia
-# Basic SIRT (starting from zeros)
-recon = sirt_reconstruct(sinogram, geom, volume_size; niter=50)
-
-# SIRT with FDK initialization (faster convergence)
-recon = sirt_reconstruct(sinogram, geom, volume_size; niter=30, init=:fdk)
-```
-
-SIRT typically produces lower noise than FDK (~30-50% noise reduction).
-
----
-
-## CGLS Iterative Reconstruction
-
-**Reference:** TIGRE `MATLAB/Algorithms/CGLS.m`
-
-### Algorithm
-
-CGLS (Conjugate Gradient Least Squares) solves min||Ax - b||² using conjugate gradients:
-
-1. Initialize: `r = b - Ax`, `p = Aᵀr`, `γ = ||p||²`
-2. Loop:
-   - `q = Ap`
-   - `α = γ / ||q||²`
-   - `x = x + αp`
-   - `r = r - αq`
-   - `s = Aᵀr`
-   - `β = ||s||² / γ`
-   - `p = s + βp`
-
-### Usage
-
-```julia
-# CGLS with FDK initialization (recommended)
-recon = cgls_reconstruct(sinogram, geom, volume_size; niter=15, init=:fdk)
-
-# Note: CGLS converges slowly from zeros; FDK init strongly recommended
-```
-
-CGLS converges faster than SIRT but may exhibit semi-convergence for noisy data.
-
----
-
-## Unified Forward Projection API
-
-Single function for monochromatic/polychromatic projection with optional physics effects:
-
-```julia
-# Direct volume input (monochromatic)
-sinogram = forward_project(Float32.(phantom.μ), geom)
-
-# Monochromatic with physics effects
-physics = realistic_physics_config(scatter_scale=1.0, noise_level=1.0)
-sinogram = forward_project(Float32.(phantom.μ), geom; physics=physics)
-
-# Mask + single energy (monochromatic)
-materials = get_region_materials()
-sinogram = forward_project(phantom.mask, geom; energy=60.0, materials=materials)
-
-# Mask + spectrum (polychromatic) with physics
+# Load spectrum
 energies, weights = load_spectrum(120)
 energies, weights = downsample_spectrum(energies, weights, 30)
-sinogram = forward_project(phantom.mask, geom;
+materials = get_region_materials()
+
+# Full clinical simulation (ALL 13 physics effects)
+mask_gpu = MtlArray(phantom.mask)
+sinogram = forward_project(mask_gpu, geom;
     energies=energies, weights=weights, materials=materials,
-    physics=realistic_physics_config()
+    physics=full_physics_config(energy_keV=65.0, noise_seed=42)
 )
 
-# GPU input -> GPU output automatically
-using Metal
-volume_gpu = MtlArray(Float32.(phantom.μ))
-sinogram_gpu = forward_project(volume_gpu, geom; physics=physics)
-```
+# Reconstruct
+recon = fdk_reconstruct(sinogram, geom, (512, 512, 32))
 
-### Physics Configuration
-
-```julia
-# RECOMMENDED: full_physics_config() - ALL effects enabled by default
-physics = full_physics_config(energy_keV=65.0, noise_seed=42)
-
-# Other preset configurations
-physics = realistic_physics_config(scatter_scale=1.0, noise_level=1.0)  # Some effects
-physics = minimal_physics_config()  # Noise only
-
-# Custom configuration
-physics = default_physics_config(
-    fill_factor = fill_factor_standard(),
-    flat_filter = flat_filter_al(3.0),
-    bowtie_filter = bowtie_filter_large_body(),
-    scatter = default_scatter_model(),
-    crosstalk = crosstalk_medium()
-)
-```
-
-### Scanner-Specific vs General Physics
-
-**SCANNER-SPECIFIC** (vary by manufacturer/model):
-- `flat_filter` - Material and thickness
-- `bowtie_filter` - Profile shape
-- `detector_efficiency` - Scintillator type
-- `fill_factor` - Detector geometry
-- `heel_effect` - Anode angle/target
-- `das_model` - Electronics characteristics
-- `bhc` - Calibration-dependent
-
-**GENERAL PHYSICS** (patient/setup dependent):
-- `scatter` - Patient size dependent
-- `crosstalk` - Optional
-- `focal_spot` - Optional
-- `lag` - Optional
-
-### Polychromatic Physics
-
-**NOT from TIGRE** - TIGRE is monochromatic only.
-
-Beer-Lambert law:
-```
-I = Σₑ wₑ × exp(-∫μₑ dl)
-sinogram = -log(I / I₀)
+# Convert to HU
+μ_water = get_effective_μ_water_kVp(120)
+recon_hu = 1000f0 .* (Array(recon) .- μ_water) ./ μ_water
 ```
 
 ---
 
-## CatSim-Exact Signal Chain (NEW)
+## Physics Configuration
 
-The `forward_project()` function now supports the **full CatSim-style clinical signal chain** via kwargs. When any signal chain parameter is provided, the complete pipeline is executed automatically:
+### Enabling/Disabling Effects
 
-### Signal Chain Pipeline
+Use `default_physics_config()` with explicit kwargs. **Comment out or set to `nothing` to disable** (NOT `false`):
 
-1. **Polychromatic projection** (Beer-Lambert spectral physics)
-2. **Physics effects** (scatter, crosstalk, focal spot, lag)
-3. **Heel effect** (anode self-attenuation - intensity domain)
-4. **DAS model** (gain + electronic noise to phantom)
+```julia
+physics = default_physics_config(
+    # --- SCANNER-SPECIFIC (CatSim essential) ---
+    fill_factor = fill_factor_standard(),           # 0.9 fill factor
+    flat_filter = flat_filter_al(3.0),              # 3mm Al
+    bowtie_filter = bowtie_filter_large_body(),     # Large body
+    detector_efficiency = detector_efficiency_gos(0.5),  # GOS 0.5mm
+
+    # --- OPTIONAL PHYSICS ---
+    scatter = default_scatter_model(scale_factor=1.0),
+    crosstalk = crosstalk_medium(),
+    optical_crosstalk = optical_crosstalk_typical(),
+    # focal_spot = focal_spot_medium(),             # <-- commented out = disabled
+    noise = default_detector_model(I0=1e6, seed=42),
+    lag = lag_gadox(),
+
+    # --- SIGNAL CHAIN (CatSim-exact) ---
+    heel_effect = default_heel_effect(anode_angle_deg=7.0),
+    das_model = default_das_model(gain=1.0, electronic_noise_sigma=100.0),
+    bhc = bhc_water_default(reference_energy_keV=65.0),
+
+    energy_keV = 65.0,
+    noise_seed = 42
+)
+```
+
+### Preset Configurations
+
+```julia
+full_physics_config()       # ALL 13 effects enabled
+realistic_physics_config()  # Common subset
+minimal_physics_config()    # Noise only
+default_physics_config()    # All nothing (use kwargs to enable)
+```
+
+---
+
+## Current Status
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Forward Projection (Siddon) | ✅ | TIGRE port |
+| Polychromatic FP | ✅ | Beer-Lambert |
+| FDK Reconstruction | ✅ | TIGRE port |
+| SIRT/CGLS | ✅ | TIGRE port |
+| Physics Pipeline (10 effects) | ✅ | All GPU-native |
+| Signal Chain (heel, BHC) | ✅ | CatSim-exact |
+| DAS Model | ⚠️ BROKEN | Needs fixing |
+
+### Physics Effects (13 total)
+
+**Physics Pipeline (10):**
+- fill_factor, flat_filter, bowtie_filter, detector_efficiency
+- scatter, crosstalk, optical_crosstalk, focal_spot
+- noise (quantum), lag (afterglow)
+
+**Signal Chain (3):**
+- heel_effect (anode self-attenuation)
+- das_model (gain + electronic noise) - **BROKEN**
+- bhc (beam hardening correction)
+
+---
+
+## CatSim Signal Chain
+
+The signal chain follows CatSim-exact methodology:
+
+1. **Polychromatic projection** (Beer-Lambert)
+2. **Physics effects** (scatter, crosstalk, focal spot, lag, etc.)
+3. **Heel effect** (intensity domain)
+4. **DAS model** (gain + noise to phantom only)
 5. **Air scan calibration** (noise-free reference - CatSim exact!)
-6. **Low signal correction** (replace negatives with smoothed neighbors)
+6. **Low signal correction** (smooth negatives, not clamp)
 7. **Log transform**
 8. **Beam hardening correction**
 
-### Key CatSim Design Decisions
-
-- **Air scan has NO noise** - simulates averaged reference (CatSim: `enableQuantumNoise = 0`)
-- **Low signal correction** - negatives replaced with smoothed neighbors (not simple clamping)
-- **DAS noise** - applied to phantom only, not to air scan
-- **Calibration formula** - `prep = phantom_intensity / air_intensity`
-
-### Usage - Full Clinical Simulation
-
-```julia
-# Single call - full_physics_config() includes ALL 13 effects!
-sinogram = forward_project(mask_gpu, geom;
-    energies = energies,
-    weights = weights,
-    materials = materials,
-    physics = full_physics_config(energy_keV=mean_energy, noise_seed=42)
-)
-
-# Then just reconstruct
-recon = fdk_reconstruct(sinogram, geom, recon_size)
-```
-
-**Note**: `full_physics_config()` includes ALL effects:
-- 10 physics pipeline (fill_factor, flat_filter, bowtie, scatter, crosstalk, optical_crosstalk, focal_spot, detector_efficiency, noise, lag)
-- 3 signal chain (heel_effect, das_model, bhc)
-
-### CatSim Signal Chain Components
-
-| Component | File | Description |
-|-----------|------|-------------|
-| Heel Effect | `Forward/HeelEffect.jl` | Anode self-attenuation |
-| DAS Model | `Forward/DASModel.jl` | Gain + electronic noise |
-| Calibration | `Forward/Calibration.jl` | Air scan + low signal correction |
-| BHC | `Forward/BeamHardeningCorrection.jl` | Water polynomial correction |
+Key design decisions:
+- Air scan has NO noise (simulates averaged reference)
+- Low signal correction uses smoothed neighbors
+- Calibration: `prep = phantom_intensity / air_intensity`
 
 ---
 
@@ -367,60 +139,47 @@ recon = fdk_reconstruct(sinogram, geom, recon_size)
 src/
 ├── BasisSimulator.jl
 ├── Forward/
-│   ├── Siddon.jl              # ✅ GPU - TIGRE port
-│   ├── Polychromatic.jl       # ✅ GPU - Beer-Lambert + CatSim signal chain
-│   ├── Scatter.jl             # ✅ GPU - Spatial convolution scatter
-│   ├── DetectorNoise.jl       # ✅ GPU - Quantum + electronic noise
-│   ├── DetectorEfficiency.jl  # ✅ GPU - Scintillator DQE
-│   ├── BowtieFilter.jl        # ✅ GPU - Angle-dependent filtration
-│   ├── FlatFilter.jl          # ✅ GPU - Uniform filtration
-│   ├── FocalSpot.jl           # ✅ GPU - Geometric blur
-│   ├── Crosstalk.jl           # ✅ GPU - Pixel coupling
-│   ├── DetectorLag.jl         # ✅ GPU - Afterglow
-│   ├── FillFactor.jl          # ✅ GPU - Dead area
-│   ├── FlyingFocalSpot.jl     # N/A - Geometry modification
-│   ├── PhysicsPipeline.jl     # ✅ GPU - Unified physics effects
-│   ├── HeelEffect.jl          # ✅ GPU - CatSim anode self-attenuation
-│   ├── DASModel.jl            # ✅ GPU - CatSim signal chain
-│   ├── Calibration.jl         # ✅ GPU - CatSim air scan + low signal
-│   └── BeamHardeningCorrection.jl  # ✅ GPU - Water polynomial BHC
+│   ├── Siddon.jl                    # Ray tracing (TIGRE)
+│   ├── Polychromatic.jl             # Beer-Lambert + signal chain
+│   ├── PhysicsPipeline.jl           # Unified physics config
+│   ├── Scatter.jl, Crosstalk.jl     # Physics effects
+│   ├── FocalSpot.jl, DetectorLag.jl
+│   ├── FillFactor.jl, FlatFilter.jl, BowtieFilter.jl
+│   ├── DetectorNoise.jl, DetectorEfficiency.jl
+│   ├── HeelEffect.jl                # Signal chain
+│   ├── DASModel.jl                  # BROKEN
+│   ├── Calibration.jl
+│   └── BeamHardeningCorrection.jl
 ├── Reconstruction/
-│   ├── Backprojection.jl      # ✅ GPU - TIGRE port
-│   ├── Filtering.jl           # ✅ GPU - Spatial domain ramp filter
-│   ├── FDK.jl                 # ✅ GPU - Full pipeline
-│   ├── SIRT.jl                # ✅ GPU - TIGRE port
-│   └── CGLS.jl                # ✅ GPU - TIGRE port
+│   ├── FDK.jl, Backprojection.jl, Filtering.jl
+│   ├── SIRT.jl, CGLS.jl
+│   └── HelicalRecon.jl
 ├── Geometry/
-│   ├── Scanner.jl
-│   ├── Phantom.jl
-│   └── Helical.jl
+│   ├── Scanner.jl, Phantom.jl, Helical.jl
+│   └── AnalyticalPhantom.jl
 ├── Physics/
-│   ├── Materials.jl
-│   ├── Attenuation.jl
-│   └── Spectrum.jl
+│   ├── Materials.jl, Attenuation.jl, Spectrum.jl
 └── Scanners/
-    └── Scanners.jl
+    ├── Scanners.jl, GeneralElectric.jl
 ```
 
 ---
 
 ## GPU Usage
 
-AcceleratedKernels.jl automatically detects the backend from the array type:
+AcceleratedKernels.jl auto-detects backend from array type:
 
 ```julia
-# CPU (default)
-sinogram = siddon_forward_project(Float32.(volume), geom)
+# CPU
+sinogram = forward_project(phantom.mask, geom; ...)
 
-# Metal (Apple Silicon)
+# Metal (Apple)
 using Metal
-volume_gpu = MtlArray(Float32.(volume))
-sinogram_gpu = siddon_forward_project(volume_gpu, geom)
+sinogram = forward_project(MtlArray(phantom.mask), geom; ...)
 
 # CUDA (NVIDIA)
 using CUDA
-volume_gpu = CuArray(Float32.(volume))
-sinogram_gpu = siddon_forward_project(volume_gpu, geom)
+sinogram = forward_project(CuArray(phantom.mask), geom; ...)
 ```
 
 ---
@@ -428,19 +187,9 @@ sinogram_gpu = siddon_forward_project(volume_gpu, geom)
 ## References
 
 1. **TIGRE**: https://github.com/CERN/TIGRE
-   - `Common/CUDA/Siddon_projection.cu`
-   - `Common/CUDA/voxel_backprojection.cu`
-
 2. **CatSim/XCIST**: https://github.com/xcist/main
-   - Physics effects reference implementation
-   - [XCIST Paper (PMC)](https://pmc.ncbi.nlm.nih.gov/articles/PMC10151073/)
-
 3. **AcceleratedKernels.jl**: https://github.com/JuliaGPU/AcceleratedKernels.jl
-
-4. **Feldkamp, Davis, Kress (1984)**: "Practical cone-beam algorithm"
-
-5. **Siddon (1985)**: "Fast calculation of the exact radiological path"
 
 ---
 
-Last Updated: 2026-01-15 (Added full_physics_config, info logging for signal chain)
+Last Updated: 2026-01-15
