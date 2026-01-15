@@ -42,12 +42,16 @@ function create_μ_volume!(
     energy_keV::Real
 ) where T <: AbstractFloat
 
-    # Pre-compute μ for all regions at this energy
+    # Pre-compute μ for all regions at this energy (on CPU)
     n_regions = length(materials)
-    μ_at_energy = Vector{T}(undef, n_regions)
+    μ_at_energy_cpu = Vector{T}(undef, n_regions)
     for i in 1:n_regions
-        μ_at_energy[i] = T(compute_μ_at_energy(materials[i], Float64(energy_keV)))
+        μ_at_energy_cpu[i] = T(compute_μ_at_energy(materials[i], Float64(energy_keV)))
     end
+
+    # Transfer lookup table to same device as mask (GPU or CPU)
+    μ_at_energy = similar(mask, T, n_regions)
+    copyto!(μ_at_energy, μ_at_energy_cpu)
 
     # Use AcceleratedKernels.jl for parallel execution
     AK.foreachindex(mask) do idx
