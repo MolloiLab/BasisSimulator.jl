@@ -133,6 +133,9 @@ include("Forward/FillFactor.jl")
 # Flying focal spot modeling
 include("Forward/FlyingFocalSpot.jl")
 
+# Unified physics pipeline
+include("Forward/PhysicsPipeline.jl")
+
 # =============================================================================
 # Clinical Scanner Configurations
 # =============================================================================

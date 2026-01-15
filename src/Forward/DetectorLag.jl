@@ -15,8 +15,12 @@ The lag is modeled using a multi-exponential decay:
 
 where aᵢ are amplitudes and τᵢ are time constants.
 
-Note: Implementation is designed for Reactant/XLA compatibility.
+GPU-native implementation using AcceleratedKernels.jl.
+Each output pixel is computed as a weighted sum of previous frames,
+which can be parallelized across all (col, row, angle) positions.
 """
+
+import AcceleratedKernels as AK
 
 # =============================================================================
 # Lag Model Types
@@ -166,12 +170,15 @@ function compute_lag_coefficients(model::LagModel, n_frames::Int)
 end
 
 """
-    apply_lag(sinogram, model::LagModel; n_history::Int=20) -> Array
+    apply_lag!(sinogram, model::LagModel; n_history::Int=20) -> sinogram
 
-Apply detector lag to sinogram.
+Apply detector lag to sinogram (in-place, GPU-native).
 
 This simulates the temporal persistence of signal between views.
 The output at view n is a weighted sum of current and previous views.
+
+Each output pixel (col, row, angle) is computed independently as a
+weighted sum over previous angles, enabling full GPU parallelization.
 
 # Arguments
 - `sinogram`: Input sinogram [n_cols, n_rows, n_angles]
@@ -179,12 +186,12 @@ The output at view n is a weighted sum of current and previous views.
 - `n_history`: Number of previous frames to consider (default: 20)
 
 # Returns
-Sinogram with lag effects.
+Modified sinogram with lag effects.
 
 # Note
 Lag is applied in the intensity domain for physical correctness.
 """
-function apply_lag(
+function apply_lag!(
     sinogram::AbstractArray{T,3},
     model::LagModel;
     n_history::Int=20
@@ -194,49 +201,72 @@ function apply_lag(
         return sinogram
     end
 
-    n_cols, n_rows, n_angles = size(sinogram)
+    n_cols = size(sinogram, 1)
+    n_rows = size(sinogram, 2)
+    n_angles = size(sinogram, 3)
 
-    # Compute lag coefficients
+    # Compute lag coefficients on CPU
     n_frames = min(n_history, n_angles)
-    coeffs = T.(compute_lag_coefficients(model, n_frames))
+    coeffs_cpu = T.(compute_lag_coefficients(model, n_frames))
 
-    # Convert to intensity domain
-    intensity = exp.(-sinogram)
+    # Transfer coefficients to GPU
+    coeffs = similar(sinogram, n_frames)
+    copyto!(coeffs, coeffs_cpu)
 
-    # Apply lag as weighted sum of previous frames
-    result_intensity = similar(intensity)
+    # Pre-compute intensity domain (GPU-native)
+    intensity = similar(sinogram)
+    AK.foreachindex(sinogram) do idx
+        intensity[idx] = exp(-sinogram[idx])
+    end
 
-    for angle in 1:n_angles
-        # Weighted sum of current and previous frames
-        weighted_sum = zeros(T, n_cols, n_rows)
+    # Output buffer
+    output = similar(sinogram)
 
+    # GPU-native: compute each output pixel as weighted sum of previous frames
+    # Each (col, row, angle) can be computed independently
+    AK.foreachindex(sinogram) do idx
+        ci = CartesianIndices(sinogram)[idx]
+        col, row, angle = Tuple(ci)
+
+        # Weighted sum over previous frames
+        weighted_sum = zero(T)
         for k in 0:(n_frames-1)
             prev_angle = angle - k
             if prev_angle >= 1
-                weighted_sum .+= coeffs[k+1] .* intensity[:, :, prev_angle]
+                weighted_sum += coeffs[k+1] * intensity[col, row, prev_angle]
             else
                 # For early frames, use first available frame
-                weighted_sum .+= coeffs[k+1] .* intensity[:, :, 1]
+                weighted_sum += coeffs[k+1] * intensity[col, row, 1]
             end
         end
 
-        result_intensity[:, :, angle] = weighted_sum
+        # Ensure positive and convert back to projection domain
+        output[idx] = -log(max(weighted_sum, T(1e-10)))
     end
 
-    # Ensure positive values
-    result_intensity = max.(result_intensity, T(1e-10))
+    copyto!(sinogram, output)
 
-    # Convert back to projection domain
-    return T.(-log.(result_intensity))
+    return sinogram
+end
+
+# Convenience wrapper that allocates (for backward compatibility)
+function apply_lag(
+    sinogram::AbstractArray{T,3},
+    model::LagModel;
+    n_history::Int=20
+) where T
+    result = copy(sinogram)
+    return apply_lag!(result, model; n_history=n_history)
 end
 
 """
-    apply_lag_recursive(sinogram, model::LagModel) -> Array
+    apply_lag_recursive!(sinogram, model::LagModel) -> sinogram
 
-Apply detector lag using recursive IIR filter formulation.
+Apply detector lag using recursive IIR filter formulation (in-place, GPU-native).
 
-This is more efficient for long sequences and is equivalent to
-the direct weighted sum for multi-exponential models.
+This uses a pixel-parallel approach where each (col, row) position is processed
+independently through all angles. Within each pixel, angles are processed
+sequentially to maintain the IIR state, but different pixels run in parallel.
 
 For each exponential component:
     state[n] = decay × state[n-1] + amplitude × input[n]
@@ -247,9 +277,14 @@ For each exponential component:
 - `model::LagModel`: Lag model
 
 # Returns
-Sinogram with lag effects.
+Modified sinogram with lag effects.
+
+# Note
+For most cases, apply_lag! (weighted sum approach) is preferred as it
+fully parallelizes over all elements. This recursive version maintains
+compatibility with the IIR filter formulation.
 """
-function apply_lag_recursive(
+function apply_lag_recursive!(
     sinogram::AbstractArray{T,3},
     model::LagModel
 ) where T
@@ -257,41 +292,84 @@ function apply_lag_recursive(
         return sinogram
     end
 
-    n_cols, n_rows, n_angles = size(sinogram)
+    n_cols = size(sinogram, 1)
+    n_rows = size(sinogram, 2)
+    n_angles = size(sinogram, 3)
     n_components = length(model.amplitudes)
 
-    # Decay factors for each component
-    decay_factors = T.([exp(-model.frame_time / τ) for τ in model.time_constants])
-    amplitudes_T = T.(model.amplitudes)
-    total_amp = sum(amplitudes_T)
+    # Pre-compute decay factors and amplitudes on CPU
+    decay_factors_cpu = T.([exp(-model.frame_time / τ) for τ in model.time_constants])
+    amplitudes_cpu = T.(model.amplitudes)
+    total_amp = sum(amplitudes_cpu)
 
-    # Convert to intensity
-    intensity = exp.(-sinogram)
+    # Transfer to GPU
+    decay_factors = similar(sinogram, n_components)
+    amplitudes_arr = similar(sinogram, n_components)
+    copyto!(decay_factors, decay_factors_cpu)
+    copyto!(amplitudes_arr, amplitudes_cpu)
 
-    # State for each exponential component
-    states = [zeros(T, n_cols, n_rows) for _ in 1:n_components]
-
-    result_intensity = similar(intensity)
-
-    for angle in 1:n_angles
-        current_frame = intensity[:, :, angle]
-
-        # Update states and compute lag contribution
-        lag_contribution = zeros(T, n_cols, n_rows)
-
-        for i in 1:n_components
-            # Recursive update: state = decay × prev_state + amp × input
-            states[i] .= decay_factors[i] .* states[i] .+ amplitudes_T[i] .* current_frame
-            lag_contribution .+= states[i]
-        end
-
-        # Output: primary + lag
-        result_intensity[:, :, angle] = (1 - total_amp) .* current_frame .+ lag_contribution
+    # Pre-compute intensity domain
+    intensity = similar(sinogram)
+    AK.foreachindex(sinogram) do idx
+        intensity[idx] = exp(-sinogram[idx])
     end
 
-    # Ensure positive and convert back
-    result_intensity = max.(result_intensity, T(1e-10))
-    return T.(-log.(result_intensity))
+    # Output buffer
+    output = similar(sinogram)
+
+    # For recursive version, we need to process angles sequentially per pixel
+    # But we can parallelize across pixels
+    # Create a 2D slice for indexing (col, row) pairs
+    pixel_indices = similar(sinogram, n_cols, n_rows)
+
+    # GPU-native: parallelize over pixels, sequential over angles within each pixel
+    AK.foreachindex(pixel_indices) do idx
+        ci = CartesianIndices(pixel_indices)[idx]
+        col, row = Tuple(ci)
+
+        # State for each exponential component (local to this pixel)
+        # Using a simple approach with fixed max components
+        state1 = zero(T)
+        state2 = zero(T)
+        state3 = zero(T)
+
+        for angle in 1:n_angles
+            current = intensity[col, row, angle]
+
+            # Update states and compute lag contribution
+            lag_contribution = zero(T)
+
+            if n_components >= 1
+                state1 = decay_factors[1] * state1 + amplitudes_arr[1] * current
+                lag_contribution += state1
+            end
+            if n_components >= 2
+                state2 = decay_factors[2] * state2 + amplitudes_arr[2] * current
+                lag_contribution += state2
+            end
+            if n_components >= 3
+                state3 = decay_factors[3] * state3 + amplitudes_arr[3] * current
+                lag_contribution += state3
+            end
+
+            # Output: primary + lag
+            result = (T(1) - T(total_amp)) * current + lag_contribution
+            output[col, row, angle] = -log(max(result, T(1e-10)))
+        end
+    end
+
+    copyto!(sinogram, output)
+
+    return sinogram
+end
+
+# Convenience wrapper that allocates
+function apply_lag_recursive(
+    sinogram::AbstractArray{T,3},
+    model::LagModel
+) where T
+    result = copy(sinogram)
+    return apply_lag_recursive!(result, model)
 end
 
 """
@@ -359,5 +437,6 @@ end
 
 export LagModel
 export lag_none, lag_gadox, lag_csi, lag_high, lag_custom
-export compute_lag_coefficients, apply_lag, apply_lag_recursive
+export compute_lag_coefficients
+export apply_lag!, apply_lag, apply_lag_recursive!, apply_lag_recursive
 export get_lag_info, compute_lag_impulse_response

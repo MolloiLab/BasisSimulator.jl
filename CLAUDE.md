@@ -22,22 +22,42 @@ Core ray tracing algorithms ported from TIGRE. Polychromatic physics is our own 
 | SIRT | `Reconstruction/SIRT.jl` | TIGRE `SIRT.m` | ✅ Complete |
 | CGLS | `Reconstruction/CGLS.jl` | TIGRE `CGLS.m` | ✅ Complete |
 
-### Physics Effects (CPU-only, GPU migration planned)
+### Physics Effects (All GPU-Native)
 
-| Effect | File | Status | GPU Ready? |
+| Effect | File | Status | GPU Status |
 |--------|------|--------|------------|
-| Scatter | `Forward/Scatter.jl` | ✅ Complete | ⏳ Needs AK.jl |
-| Detector Noise | `Forward/DetectorNoise.jl` | ✅ Complete | ⏳ Needs AK.jl |
-| Detector Efficiency | `Forward/DetectorEfficiency.jl` | ✅ Complete | ⏳ Easy |
-| Bowtie Filter | `Forward/BowtieFilter.jl` | ✅ Complete | ⏳ Easy |
-| Flat Filter | `Forward/FlatFilter.jl` | ✅ Complete | ⏳ Easy |
-| Focal Spot Blur | `Forward/FocalSpot.jl` | ✅ Complete | ⏳ Needs AK.jl |
-| Crosstalk | `Forward/Crosstalk.jl` | ✅ Complete | ⏳ Needs AK.jl |
-| Detector Lag | `Forward/DetectorLag.jl` | ✅ Complete | ⏳ Hard |
-| Fill Factor | `Forward/FillFactor.jl` | ✅ Complete | ⏳ Trivial |
-| Flying Focal Spot | `Forward/FlyingFocalSpot.jl` | ✅ Complete | N/A |
+| Fill Factor | `Forward/FillFactor.jl` | ✅ Complete | ✅ GPU |
+| Flat Filter | `Forward/FlatFilter.jl` | ✅ Complete | ✅ GPU |
+| Bowtie Filter | `Forward/BowtieFilter.jl` | ✅ Complete | ✅ GPU |
+| Detector Efficiency | `Forward/DetectorEfficiency.jl` | ✅ Complete | ✅ GPU |
+| Detector Noise | `Forward/DetectorNoise.jl` | ✅ Complete | ✅ GPU |
+| Crosstalk | `Forward/Crosstalk.jl` | ✅ Complete | ✅ GPU |
+| Focal Spot Blur | `Forward/FocalSpot.jl` | ✅ Complete | ✅ GPU |
+| Scatter | `Forward/Scatter.jl` | ✅ Complete | ✅ GPU |
+| Detector Lag | `Forward/DetectorLag.jl` | ✅ Complete | ✅ GPU |
+| Flying Focal Spot | `Forward/FlyingFocalSpot.jl` | ✅ Complete | N/A (geometry) |
 
-**See [docs/PHYSICS_ROADMAP.md](docs/PHYSICS_ROADMAP.md) for GPU migration plan.**
+**All 10 physics effects are GPU-native via AcceleratedKernels.jl.**
+
+### Unified Physics Pipeline
+
+Use `apply_physics_effects!()` for a single entry point to all physics effects:
+
+```julia
+using BasisSimulator
+
+# Create physics configuration
+config = realistic_physics_config(scatter_scale=1.0, noise_level=1.0)
+
+# Forward project
+sinogram = siddon_forward_project(volume, geom)
+
+# Apply all physics effects (GPU-native)
+apply_physics_effects!(sinogram, geom, config)
+
+# Reconstruct
+recon = fdk_reconstruct(sinogram, geom, volume_size)
+```
 
 ---
 
@@ -248,16 +268,17 @@ src/
 ├── Forward/
 │   ├── Siddon.jl              # ✅ GPU - TIGRE port
 │   ├── Polychromatic.jl       # ✅ GPU - Beer-Lambert spectral
-│   ├── Scatter.jl             # ⏳ CPU - Convolution scatter model
-│   ├── DetectorNoise.jl       # ⏳ CPU - Quantum + electronic noise
-│   ├── DetectorEfficiency.jl  # ⏳ CPU - Scintillator DQE
-│   ├── BowtieFilter.jl        # ⏳ CPU - Angle-dependent filtration
-│   ├── FlatFilter.jl          # ⏳ CPU - Uniform filtration
-│   ├── FocalSpot.jl           # ⏳ CPU - Geometric blur
-│   ├── Crosstalk.jl           # ⏳ CPU - Pixel coupling
-│   ├── DetectorLag.jl         # ⏳ CPU - Afterglow
-│   ├── FillFactor.jl          # ⏳ CPU - Dead area
-│   └── FlyingFocalSpot.jl     # N/A - Geometry modification
+│   ├── Scatter.jl             # ✅ GPU - Spatial convolution scatter
+│   ├── DetectorNoise.jl       # ✅ GPU - Quantum + electronic noise
+│   ├── DetectorEfficiency.jl  # ✅ GPU - Scintillator DQE
+│   ├── BowtieFilter.jl        # ✅ GPU - Angle-dependent filtration
+│   ├── FlatFilter.jl          # ✅ GPU - Uniform filtration
+│   ├── FocalSpot.jl           # ✅ GPU - Geometric blur
+│   ├── Crosstalk.jl           # ✅ GPU - Pixel coupling
+│   ├── DetectorLag.jl         # ✅ GPU - Afterglow
+│   ├── FillFactor.jl          # ✅ GPU - Dead area
+│   ├── FlyingFocalSpot.jl     # N/A - Geometry modification
+│   └── PhysicsPipeline.jl     # ✅ GPU - Unified physics effects
 ├── Reconstruction/
 │   ├── Backprojection.jl      # ✅ GPU - TIGRE port
 │   ├── Filtering.jl           # ✅ GPU - Spatial domain ramp filter
@@ -274,9 +295,6 @@ src/
 │   └── Spectrum.jl
 └── Scanners/
     └── Scanners.jl
-
-docs/
-└── PHYSICS_ROADMAP.md         # GPU migration plan for physics effects
 ```
 
 ---
@@ -320,4 +338,4 @@ sinogram_gpu = siddon_forward_project(volume_gpu, geom)
 
 ---
 
-Last Updated: 2026-01-14
+Last Updated: 2026-01-14 (All physics effects GPU-native)

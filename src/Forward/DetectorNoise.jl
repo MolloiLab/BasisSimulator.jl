@@ -57,66 +57,78 @@ function default_detector_model(;
     return DetectorModel(blur_fwhm, I0, electronic_noise_std, seed)
 end
 
-"""
-    apply_detector_blur(sinogram, model::DetectorModel) -> Array
+# Maximum kernel size for detector blur
+const MAX_DETECTOR_BLUR_KERNEL_SIZE = 15
 
-Apply detector blur (PSF convolution) to sinogram.
 """
-function apply_detector_blur(sinogram::AbstractArray{T,3}, model::DetectorModel) where T
+    apply_detector_blur!(sinogram, model::DetectorModel) -> sinogram
+
+Apply detector blur (PSF convolution) to sinogram (in-place, GPU-native).
+
+Uses spatial domain convolution for GPU compatibility.
+"""
+function apply_detector_blur!(sinogram::AbstractArray{T,3}, model::DetectorModel) where T
     if model.blur_fwhm <= 0.0
-        return copy(sinogram)
+        return sinogram
     end
 
-    n_cols, n_rows, n_angles = size(sinogram)
+    n_cols = size(sinogram, 1)
+    n_rows = size(sinogram, 2)
 
-    # Create 2D Gaussian blur kernel
+    # Create 2D Gaussian blur kernel on CPU
     sigma = model.blur_fwhm / (2 * sqrt(2 * log(2)))
-    kernel_size = max(3, 2 * ceil(Int, 3 * sigma) + 1)
+    extent = min(MAX_DETECTOR_BLUR_KERNEL_SIZE ÷ 2, max(1, ceil(Int, 3 * sigma)))
+    kernel_size = 2 * extent + 1
+    half_k = extent
 
-    kernel = zeros(Float64, kernel_size, kernel_size)
-    center = (kernel_size + 1) / 2
+    kernel_cpu = zeros(T, kernel_size, kernel_size)
+    center = extent + 1
 
-    for j in 1:kernel_size, i in 1:kernel_size
-        dx = i - center
-        dy = j - center
-        kernel[i, j] = exp(-(dx^2 + dy^2) / (2 * sigma^2))
-    end
-    kernel ./= sum(kernel)
-
-    # Pad for convolution
-    pad_x = kernel_size ÷ 2
-    pad_y = kernel_size ÷ 2
-
-    blurred = similar(sinogram)
-
-    for angle in 1:n_angles
-        # Pad image
-        img = sinogram[:, :, angle]
-        padded = zeros(T, n_cols + 2*pad_x, n_rows + 2*pad_y)
-
-        # Fill padded region with edge values
-        for j in 1:n_rows+2*pad_y, i in 1:n_cols+2*pad_x
-            src_i = clamp(i - pad_x, 1, n_cols)
-            src_j = clamp(j - pad_y, 1, n_rows)
-            padded[i, j] = img[src_i, src_j]
+    for dy in -extent:extent
+        for dx in -extent:extent
+            kernel_cpu[center + dx, center + dy] = exp(-(dx^2 + dy^2) / (2 * sigma^2))
         end
+    end
+    kernel_cpu ./= sum(kernel_cpu)
 
-        # Convolve
-        result = zeros(T, n_cols, n_rows)
-        for j in 1:n_rows, i in 1:n_cols
-            val = zero(T)
-            for kj in 1:kernel_size, ki in 1:kernel_size
-                pi = i + ki - 1
-                pj = j + kj - 1
-                val += padded[pi, pj] * T(kernel[ki, kj])
+    # Transfer kernel to GPU
+    kernel = similar(sinogram, kernel_size, kernel_size)
+    copyto!(kernel, kernel_cpu)
+
+    # Output buffer
+    output = similar(sinogram)
+
+    # GPU-native spatial convolution
+    AK.foreachindex(sinogram) do idx
+        ci = CartesianIndices(sinogram)[idx]
+        col, row, angle = Tuple(ci)
+
+        # Apply kernel
+        acc = zero(T)
+        for dj in -half_k:half_k
+            for di in -half_k:half_k
+                src_col = clamp(col + di, 1, n_cols)
+                src_row = clamp(row + dj, 1, n_rows)
+
+                ki = di + half_k + 1
+                kj = dj + half_k + 1
+
+                acc += sinogram[src_col, src_row, angle] * kernel[ki, kj]
             end
-            result[i, j] = val
         end
 
-        blurred[:, :, angle] = result
+        output[idx] = acc
     end
 
-    return blurred
+    copyto!(sinogram, output)
+
+    return sinogram
+end
+
+# Convenience wrapper that allocates
+function apply_detector_blur(sinogram::AbstractArray{T,3}, model::DetectorModel) where T
+    result = copy(sinogram)
+    return apply_detector_blur!(result, model)
 end
 
 """
@@ -213,19 +225,12 @@ end
 
 Apply full detector model in-place: blur + quantum noise + electronic noise (GPU-native).
 
-Note: Blur is currently CPU-only (convolution, Phase 3). Noise effects are GPU-native.
+All effects are GPU-native using AcceleratedKernels.jl.
 """
 function apply_detector_model!(sinogram::AbstractArray{T,3}, model::DetectorModel) where T
     # Apply in order: blur -> quantum noise -> electronic noise
-    # Blur modifies and returns the result (CPU-only for now)
-    result = apply_detector_blur(sinogram, model)
-
-    # Copy blur result back if needed (blur allocates new array)
-    if result !== sinogram
-        copyto!(sinogram, result)
-    end
-
-    # Apply noise in-place (GPU-native)
+    # All operations are now GPU-native
+    apply_detector_blur!(sinogram, model)
     add_quantum_noise!(sinogram, model)
     add_electronic_noise!(sinogram, model)
     return sinogram
@@ -292,7 +297,7 @@ end
 # =============================================================================
 
 export DetectorModel, default_detector_model
-export apply_detector_blur
+export apply_detector_blur!, apply_detector_blur
 export add_quantum_noise!, add_electronic_noise!
 export add_quantum_noise, add_electronic_noise
 export apply_detector_model!, apply_detector_model

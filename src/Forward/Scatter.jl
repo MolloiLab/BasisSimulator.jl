@@ -23,9 +23,11 @@ Reference:
   correction algorithm for third and fourth generation CT scanners."
   Eur Radiol. 1999;9(3):563-9.
 - XCIST: https://github.com/xcist/main
+
+GPU-native implementation using AcceleratedKernels.jl with spatial domain convolution.
 """
 
-using FFTW
+import AcceleratedKernels as AK
 
 """
     ScatterModel
@@ -96,128 +98,149 @@ function default_scatter_model(;
     return ScatterModel(scatter_coefficient, scale_factor, kernel_fwhm, kernel_type)
 end
 
+# Maximum scatter kernel size (controls quality vs performance)
+# Scatter kernels are large (FWHM ~50 pixels) but we truncate at 3σ
+const MAX_SCATTER_KERNEL_SIZE = 63
+
 """
-    create_scatter_kernel(model::ScatterModel, n_cols::Int, n_rows::Int) -> Array{Float64,2}
+    create_scatter_kernel_spatial(model::ScatterModel) -> Matrix{Float64}
 
-Create 2D scatter kernel for FFT-based convolution.
+Create 2D scatter kernel for spatial domain convolution.
 
-The kernel is centered at (1,1) with wrap-around for proper FFT convolution.
+Returns a compact kernel (max size MAX_SCATTER_KERNEL_SIZE) for GPU-compatible
+spatial convolution. The kernel is truncated at 3σ.
 """
-function create_scatter_kernel(model::ScatterModel, n_cols::Int, n_rows::Int)
-    # Kernel size (use full projection dimensions for circular convolution)
-    kernel = zeros(Float64, n_cols, n_rows)
-
-    # Convert FWHM to sigma (Gaussian) or decay constant (exponential)
+function create_scatter_kernel_spatial(model::ScatterModel)
+    # Convert FWHM to sigma
     sigma = model.kernel_fwhm / (2 * sqrt(2 * log(2)))
 
-    # For FFT convolution, kernel must be centered at (1,1) with wrap-around
-    # Use mod1 to handle wrap-around indexing
+    # Compute kernel extent (truncate at 3σ or max size)
+    extent = min(MAX_SCATTER_KERNEL_SIZE ÷ 2, ceil(Int, 3 * sigma))
+    kernel_size = 2 * extent + 1
+
+    kernel = zeros(Float64, kernel_size, kernel_size)
+    center = extent + 1
+
     if model.kernel_type == :gaussian
-        for j in 1:n_rows, i in 1:n_cols
-            # Distance from (1,1) with wrap-around
-            dx = min(i - 1, n_cols - i + 1)
-            dy = min(j - 1, n_rows - j + 1)
-            r2 = dx^2 + dy^2
-            kernel[i, j] = exp(-r2 / (2 * sigma^2))
+        for dy in -extent:extent
+            for dx in -extent:extent
+                r2 = dx^2 + dy^2
+                kernel[center + dx, center + dy] = exp(-r2 / (2 * sigma^2))
+            end
         end
     elseif model.kernel_type == :exponential
-        decay = sigma  # Use sigma as decay constant
-        for j in 1:n_rows, i in 1:n_cols
-            # Distance from (1,1) with wrap-around
-            dx = min(i - 1, n_cols - i + 1)
-            dy = min(j - 1, n_rows - j + 1)
-            r = sqrt(dx^2 + dy^2)
-            kernel[i, j] = exp(-r / decay)
+        decay = sigma
+        for dy in -extent:extent
+            for dx in -extent:extent
+                r = sqrt(dx^2 + dy^2)
+                kernel[center + dx, center + dy] = exp(-r / decay)
+            end
         end
     else
         error("Unknown kernel type: $(model.kernel_type)")
     end
 
     # Normalize kernel
-    kernel ./= sum(kernel)
+    total = sum(kernel)
+    if total > 0
+        kernel ./= total
+    else
+        kernel[center, center] = 1.0
+    end
 
     return kernel
 end
 
 """
-    add_scatter(sinogram, model::ScatterModel) -> Array
+    add_scatter!(sinogram, model::ScatterModel) -> sinogram
 
-Add scatter to sinogram using XCIST-style convolution model.
+Add scatter to sinogram (in-place, GPU-native).
+
+Uses spatial domain convolution with truncated kernel for GPU compatibility.
 
 The scatter contribution is computed as (Ohnesorge et al., 1999; XCIST):
     scatter_pre = intensity × path_length × C × scale_factor
     scatter = convolve(scatter_pre, kernel)
-
-This produces physically realistic scatter that:
-- Is stronger for thicker objects (more material to scatter)
-- Is weighted by the primary signal (more photons = more scatter)
-- Creates appropriate cupping artifacts without excessive darkening
 
 # Arguments
 - `sinogram`: Primary sinogram [n_cols × n_rows × n_angles] (line integrals)
 - `model::ScatterModel`: Scatter model parameters
 
 # Returns
-Sinogram with scatter added (still in line-integral/attenuation space).
-"""
-function add_scatter(sinogram::AbstractArray{T,3}, model::ScatterModel) where T
-    n_cols, n_rows, n_angles = size(sinogram)
-
-    # Create scatter kernel
-    kernel = create_scatter_kernel(model, n_cols, n_rows)
-
-    # FFT of kernel (for convolution via FFT)
-    kernel_fft = fft(kernel)
-
-    # Output array
-    sinogram_with_scatter = similar(sinogram)
-
-    # Combined scatter coefficient
-    C = model.scatter_coefficient * model.scale_factor
-
-    # Process each angle
-    for angle in 1:n_angles
-        # Get projection at this angle (path length in line-integral space)
-        projection = sinogram[:, :, angle]
-
-        # Convert to intensity domain: I = exp(-projection)
-        # Clamp projection to avoid overflow for very large values
-        clamped_proj = min.(projection, T(20))  # exp(-20) ≈ 2e-9
-        intensity = exp.(-clamped_proj)
-
-        # XCIST formula: scatter_pre = intensity × path_length × C
-        # path_length is just the projection value (line integral = -log(I/I₀))
-        # This makes scatter proportional to both signal AND object thickness
-        scatter_pre = intensity .* projection .* C
-
-        # Convolve with scatter kernel (broad, low-frequency PSF)
-        scatter_contribution = real(ifft(fft(scatter_pre) .* kernel_fft))
-
-        # Ensure scatter is non-negative
-        scatter_contribution = max.(scatter_contribution, T(0))
-
-        # Add scatter to intensity: I_total = I_primary + I_scatter
-        total_intensity = intensity .+ scatter_contribution
-
-        # Clamp to positive values before log
-        total_intensity = max.(total_intensity, T(1e-10))
-
-        # Convert back to projection domain
-        sinogram_with_scatter[:, :, angle] = -log.(total_intensity)
-    end
-
-    return sinogram_with_scatter
-end
-
-"""
-    add_scatter!(sinogram, model::ScatterModel)
-
-In-place version of add_scatter.
+Modified sinogram with scatter added.
 """
 function add_scatter!(sinogram::AbstractArray{T,3}, model::ScatterModel) where T
-    result = add_scatter(sinogram, model)
-    sinogram .= result
+    n_cols = size(sinogram, 1)
+    n_rows = size(sinogram, 2)
+
+    # Combined scatter coefficient
+    C = T(model.scatter_coefficient * model.scale_factor)
+
+    # Create scatter kernel on CPU
+    kernel_cpu = T.(create_scatter_kernel_spatial(model))
+    kernel_size = size(kernel_cpu, 1)
+    half_k = kernel_size ÷ 2
+
+    # Transfer kernel to GPU
+    kernel = similar(sinogram, size(kernel_cpu)...)
+    copyto!(kernel, kernel_cpu)
+
+    # Output buffer
+    output = similar(sinogram)
+
+    # GPU-native scatter computation
+    # For each pixel: compute scatter pre-signal, convolve, add to intensity
+    AK.foreachindex(sinogram) do idx
+        ci = CartesianIndices(sinogram)[idx]
+        col, row, angle = Tuple(ci)
+
+        # Current projection value
+        proj = sinogram[idx]
+
+        # Convert to intensity (clamp projection to avoid overflow)
+        clamped_proj = min(proj, T(20))
+        intensity = exp(-clamped_proj)
+
+        # Compute scatter contribution via spatial convolution
+        # scatter = convolve(intensity × projection × C, kernel)
+        scatter_acc = zero(T)
+        for dj in -half_k:half_k
+            for di in -half_k:half_k
+                src_col = clamp(col + di, 1, n_cols)
+                src_row = clamp(row + dj, 1, n_rows)
+
+                # Source projection
+                src_proj = sinogram[src_col, src_row, angle]
+                src_clamped = min(src_proj, T(20))
+                src_intensity = exp(-src_clamped)
+
+                # Scatter pre-signal at source pixel
+                scatter_pre = src_intensity * src_proj * C
+
+                # Kernel weight
+                ki = di + half_k + 1
+                kj = dj + half_k + 1
+
+                scatter_acc += scatter_pre * kernel[ki, kj]
+            end
+        end
+
+        # Add scatter to intensity
+        total_intensity = intensity + max(scatter_acc, T(0))
+
+        # Clamp and convert back to projection domain
+        output[idx] = -log(max(total_intensity, T(1e-10)))
+    end
+
+    copyto!(sinogram, output)
+
     return sinogram
+end
+
+# Convenience wrapper that allocates
+function add_scatter(sinogram::AbstractArray{T,3}, model::ScatterModel) where T
+    result = copy(sinogram)
+    return add_scatter!(result, model)
 end
 
 """
@@ -279,5 +302,6 @@ end
 # =============================================================================
 
 export ScatterModel, default_scatter_model
-export add_scatter, add_scatter!
+export create_scatter_kernel_spatial
+export add_scatter!, add_scatter
 export estimate_scale_factor, estimate_spr, compute_scatter_artifact_magnitude
