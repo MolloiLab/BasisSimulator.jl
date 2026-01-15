@@ -205,28 +205,34 @@ c) **Matrix formulation**: Express as sparse matrix multiply (GPU-friendly)
 
 ## Proposed Implementation Order
 
-### Phase 1: Element-wise Effects (Week 1)
-1. `FillFactor.jl` - GPU version (trivial, warm-up)
-2. `FlatFilter.jl` - GPU version
-3. `BowtieFilter.jl` - GPU version
-4. `DetectorEfficiency.jl` - GPU version
+**Strategy: Replace CPU code entirely, test after each phase.**
 
-### Phase 2: Noise Effects (Week 2)
-5. `DetectorNoise.jl` - Electronic noise (Gaussian) GPU
-6. `DetectorNoise.jl` - Quantum noise (Gaussian approx) GPU
+### Phase 1: Element-wise Effects
+1. `FillFactor.jl` - **Replace** with GPU version (trivial, warm-up)
+2. `FlatFilter.jl` - **Replace** with GPU version
+3. `BowtieFilter.jl` - **Replace** with GPU version
+4. `DetectorEfficiency.jl` - **Replace** with GPU version
+5. **TEST**: Run demo with all 4 effects on Metal GPU, verify HU accuracy
 
-### Phase 3: Convolution Effects (Week 3)
-7. `Crosstalk.jl` - Spatial domain GPU convolution
-8. `FocalSpot.jl` - Spatial domain GPU convolution
+### Phase 2: Noise Effects
+6. `DetectorNoise.jl` - **Replace** electronic noise with GPU version
+7. `DetectorNoise.jl` - **Replace** quantum noise with GPU version (Gaussian approx)
+8. **TEST**: Run noisy simulation on Metal GPU, verify noise statistics
 
-### Phase 4: Complex Effects (Week 4)
-9. `Scatter.jl` - Spatial domain GPU (or keep CPU)
-10. `DetectorLag.jl` - CPU with GPU data transfer
+### Phase 3: Convolution Effects
+9. `Crosstalk.jl` - **Replace** with spatial domain GPU convolution
+10. `FocalSpot.jl` - **Replace** with spatial domain GPU convolution
+11. **TEST**: Run blur/crosstalk simulation on Metal GPU, verify MTF
 
-### Phase 5: Integration & Testing
-11. Create unified `apply_physics_effects!()` pipeline
-12. Benchmark against CPU versions
-13. Validate against CatSim outputs (if available)
+### Phase 4: Complex Effects
+12. `Scatter.jl` - **Replace** with spatial domain GPU
+13. `DetectorLag.jl` - **Replace** (may need hybrid CPU/GPU approach)
+14. **TEST**: Full physics pipeline on Metal GPU, compare to baseline
+
+### Phase 5: Integration
+15. Create unified `apply_physics_effects!()` pipeline
+16. Update demo script with full physics
+17. Final benchmarks and documentation
 
 ---
 
