@@ -22,6 +22,23 @@ Core ray tracing algorithms ported from TIGRE. Polychromatic physics is our own 
 | SIRT | `Reconstruction/SIRT.jl` | TIGRE `SIRT.m` | ✅ Complete |
 | CGLS | `Reconstruction/CGLS.jl` | TIGRE `CGLS.m` | ✅ Complete |
 
+### Physics Effects (CPU-only, GPU migration planned)
+
+| Effect | File | Status | GPU Ready? |
+|--------|------|--------|------------|
+| Scatter | `Forward/Scatter.jl` | ✅ Complete | ⏳ Needs AK.jl |
+| Detector Noise | `Forward/DetectorNoise.jl` | ✅ Complete | ⏳ Needs AK.jl |
+| Detector Efficiency | `Forward/DetectorEfficiency.jl` | ✅ Complete | ⏳ Easy |
+| Bowtie Filter | `Forward/BowtieFilter.jl` | ✅ Complete | ⏳ Easy |
+| Flat Filter | `Forward/FlatFilter.jl` | ✅ Complete | ⏳ Easy |
+| Focal Spot Blur | `Forward/FocalSpot.jl` | ✅ Complete | ⏳ Needs AK.jl |
+| Crosstalk | `Forward/Crosstalk.jl` | ✅ Complete | ⏳ Needs AK.jl |
+| Detector Lag | `Forward/DetectorLag.jl` | ✅ Complete | ⏳ Hard |
+| Fill Factor | `Forward/FillFactor.jl` | ✅ Complete | ⏳ Trivial |
+| Flying Focal Spot | `Forward/FlyingFocalSpot.jl` | ✅ Complete | N/A |
+
+**See [docs/PHYSICS_ROADMAP.md](docs/PHYSICS_ROADMAP.md) for GPU migration plan.**
+
 ---
 
 ## AcceleratedKernels.jl Approach
@@ -229,15 +246,24 @@ sinogram = -log(I / I₀)
 src/
 ├── BasisSimulator.jl
 ├── Forward/
-│   ├── Siddon.jl              # ✅ TIGRE port (AcceleratedKernels.jl)
-│   ├── Polychromatic.jl       # ✅ Our implementation
-│   └── [physics effects]      # Scatter, noise, etc.
+│   ├── Siddon.jl              # ✅ GPU - TIGRE port
+│   ├── Polychromatic.jl       # ✅ GPU - Beer-Lambert spectral
+│   ├── Scatter.jl             # ⏳ CPU - Convolution scatter model
+│   ├── DetectorNoise.jl       # ⏳ CPU - Quantum + electronic noise
+│   ├── DetectorEfficiency.jl  # ⏳ CPU - Scintillator DQE
+│   ├── BowtieFilter.jl        # ⏳ CPU - Angle-dependent filtration
+│   ├── FlatFilter.jl          # ⏳ CPU - Uniform filtration
+│   ├── FocalSpot.jl           # ⏳ CPU - Geometric blur
+│   ├── Crosstalk.jl           # ⏳ CPU - Pixel coupling
+│   ├── DetectorLag.jl         # ⏳ CPU - Afterglow
+│   ├── FillFactor.jl          # ⏳ CPU - Dead area
+│   └── FlyingFocalSpot.jl     # N/A - Geometry modification
 ├── Reconstruction/
-│   ├── Backprojection.jl      # ✅ TIGRE port (AcceleratedKernels.jl)
-│   ├── Filtering.jl           # ✅ Spatial domain ramp filter (GPU-native)
-│   ├── FDK.jl                 # ✅ Full FDK pipeline
-│   ├── SIRT.jl                # ✅ TIGRE port (AcceleratedKernels.jl)
-│   └── CGLS.jl                # ✅ TIGRE port (AcceleratedKernels.jl)
+│   ├── Backprojection.jl      # ✅ GPU - TIGRE port
+│   ├── Filtering.jl           # ✅ GPU - Spatial domain ramp filter
+│   ├── FDK.jl                 # ✅ GPU - Full pipeline
+│   ├── SIRT.jl                # ✅ GPU - TIGRE port
+│   └── CGLS.jl                # ✅ GPU - TIGRE port
 ├── Geometry/
 │   ├── Scanner.jl
 │   ├── Phantom.jl
@@ -248,6 +274,9 @@ src/
 │   └── Spectrum.jl
 └── Scanners/
     └── Scanners.jl
+
+docs/
+└── PHYSICS_ROADMAP.md         # GPU migration plan for physics effects
 ```
 
 ---
@@ -279,11 +308,15 @@ sinogram_gpu = siddon_forward_project(volume_gpu, geom)
    - `Common/CUDA/Siddon_projection.cu`
    - `Common/CUDA/voxel_backprojection.cu`
 
-2. **AcceleratedKernels.jl**: https://github.com/JuliaGPU/AcceleratedKernels.jl
+2. **CatSim/XCIST**: https://github.com/xcist/main
+   - Physics effects reference implementation
+   - [XCIST Paper (PMC)](https://pmc.ncbi.nlm.nih.gov/articles/PMC10151073/)
 
-3. **Feldkamp, Davis, Kress (1984)**: "Practical cone-beam algorithm"
+3. **AcceleratedKernels.jl**: https://github.com/JuliaGPU/AcceleratedKernels.jl
 
-4. **Siddon (1985)**: "Fast calculation of the exact radiological path"
+4. **Feldkamp, Davis, Kress (1984)**: "Practical cone-beam algorithm"
+
+5. **Siddon (1985)**: "Fast calculation of the exact radiological path"
 
 ---
 
