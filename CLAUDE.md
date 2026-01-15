@@ -232,20 +232,47 @@ CGLS converges faster than SIRT but may exhibit semi-convergence for noisy data.
 
 ## Unified Forward Projection API
 
-Single function for both monochromatic and polychromatic projection:
+Single function for monochromatic/polychromatic projection with optional physics effects:
 
 ```julia
 # Direct volume input (monochromatic)
 sinogram = forward_project(Float32.(phantom.μ), geom)
 
+# Monochromatic with physics effects
+physics = realistic_physics_config(scatter_scale=1.0, noise_level=1.0)
+sinogram = forward_project(Float32.(phantom.μ), geom; physics=physics)
+
 # Mask + single energy (monochromatic)
 materials = get_region_materials()
 sinogram = forward_project(phantom.mask, geom; energy=60.0, materials=materials)
 
-# Mask + spectrum (polychromatic)
+# Mask + spectrum (polychromatic) with physics
 energies, weights = load_spectrum(120)
 energies, weights = downsample_spectrum(energies, weights, 30)
-sinogram = forward_project(phantom.mask, geom; energies=energies, weights=weights, materials=materials)
+sinogram = forward_project(phantom.mask, geom;
+    energies=energies, weights=weights, materials=materials,
+    physics=realistic_physics_config()
+)
+
+# GPU input -> GPU output automatically
+using Metal
+volume_gpu = MtlArray(Float32.(phantom.μ))
+sinogram_gpu = forward_project(volume_gpu, geom; physics=physics)
+```
+
+### Physics Configuration
+
+```julia
+# Preset configurations
+physics = realistic_physics_config(scatter_scale=1.0, noise_level=1.0)
+physics = minimal_physics_config()
+
+# Custom configuration
+physics = default_physics_config(
+    scatter = default_scatter_model(),
+    noise = default_detector_model(I0=1e5),
+    crosstalk = default_crosstalk_model()
+)
 ```
 
 ### Polychromatic Physics
