@@ -184,7 +184,7 @@ println("  (This may take a minute for high-resolution simulation)")
     weights = weights,
     materials = materials,
     physics = physics
-)
+);
 
 sinogram = Array(sinogram_gpu)
 println("\nSinogram: $(size(sinogram))")
@@ -206,22 +206,22 @@ println("\nReconstructing to $(volume_size[1])x$(volume_size[2])x$(volume_size[3
 
 # %%
 println("\n[1/3] FDK Reconstruction...")
-@time recon_fdk_gpu = fdk_reconstruct(sinogram_gpu, geom, volume_size)
+@time recon_fdk_gpu = fdk_reconstruct(sinogram_gpu, geom, volume_size);
 recon_fdk = Array(recon_fdk_gpu)
 println("  Complete")
 
 # %%
 println("\n[2/3] SIRT Reconstruction (FDK init, 30 iterations)...")
 @time recon_sirt_gpu = sirt_reconstruct(sinogram_gpu, geom, volume_size;
-    niter = 30, init = :fdk, verbose = false)
-recon_sirt = Array(recon_sirt_gpu)
+    niter = 30, init = :fdk, verbose = false);
+recon_sirt = Array(recon_sirt_gpu);
 println("  Complete")
 
 # %%
 println("\n[3/3] CGLS Reconstruction (FDK init, 15 iterations)...")
 @time recon_cgls_gpu = cgls_reconstruct(sinogram_gpu, geom, volume_size;
-    niter = 15, init = :fdk, verbose = false)
-recon_cgls = Array(recon_cgls_gpu)
+    niter = 15, init = :fdk, verbose = false);
+recon_cgls = Array(recon_cgls_gpu);
 println("  Complete")
 
 # =============================================================================
@@ -333,89 +333,94 @@ println("  CGLS: $(round(sw_cgls.std, digits=1)) HU ($(round(100*sw_cgls.std/sw_
 println("\n" * "="^70)
 println("Generating Figures")
 println("="^70)
+begin
+    slice = CONFIG.recon_n_slices ÷ 2
+    hu_range = (-200, 500)
 
-slice = CONFIG.recon_n_slices ÷ 2
-hu_range = (-200, 500)
+    fig1 = Figure(size=(1400, 400))
 
-fig1 = Figure(size=(1400, 400))
+    Label(fig1[0, 1:4], "Polychromatic CT Reconstruction ($(CONFIG.kvp) kVp, Full Physics)",
+        fontsize=20, tellwidth=false)
 
-Label(fig1[0, 1:4], "Polychromatic CT Reconstruction ($(CONFIG.kvp) kVp, Full Physics)",
-      fontsize=20, tellwidth=false)
+    ax1 = Axis(fig1[1, 1], title="Ground Truth", aspect=DataAspect())
+    heatmap!(ax1, phantom_hu[:, :, slice], colormap=:grays, colorrange=hu_range)
+    hidedecorations!(ax1)
 
-ax1 = Axis(fig1[1, 1], title="Ground Truth", aspect=DataAspect())
-heatmap!(ax1, phantom_hu[:, :, slice], colormap=:grays, colorrange=hu_range)
-hidedecorations!(ax1)
+    ax2 = Axis(fig1[1, 2], title="FDK", aspect=DataAspect())
+    heatmap!(ax2, recon_fdk_hu[:, :, slice], colormap=:grays, colorrange=hu_range)
+    hidedecorations!(ax2)
 
-ax2 = Axis(fig1[1, 2], title="FDK", aspect=DataAspect())
-heatmap!(ax2, recon_fdk_hu[:, :, slice], colormap=:grays, colorrange=hu_range)
-hidedecorations!(ax2)
+    ax3 = Axis(fig1[1, 3], title="SIRT (30 iter)", aspect=DataAspect())
+    heatmap!(ax3, recon_sirt_hu[:, :, slice], colormap=:grays, colorrange=hu_range)
+    hidedecorations!(ax3)
 
-ax3 = Axis(fig1[1, 3], title="SIRT (30 iter)", aspect=DataAspect())
-heatmap!(ax3, recon_sirt_hu[:, :, slice], colormap=:grays, colorrange=hu_range)
-hidedecorations!(ax3)
+    ax4 = Axis(fig1[1, 4], title="CGLS (15 iter)", aspect=DataAspect())
+    hm = heatmap!(ax4, recon_cgls_hu[:, :, slice], colormap=:grays, colorrange=hu_range)
+    hidedecorations!(ax4)
 
-ax4 = Axis(fig1[1, 4], title="CGLS (15 iter)", aspect=DataAspect())
-hm = heatmap!(ax4, recon_cgls_hu[:, :, slice], colormap=:grays, colorrange=hu_range)
-hidedecorations!(ax4)
+    Colorbar(fig1[1, 5], hm, label="HU")
 
-Colorbar(fig1[1, 5], hm, label="HU")
-
-display(fig1)
+    display(fig1)
+end
 
 # =============================================================================
 # 11. Visualization - HU Accuracy Bar Chart
 # =============================================================================
 
 # %%
-fig2 = Figure(size=(900, 500))
+begin
+    fig2 = Figure(size=(900, 500))
 
-ax = Axis(fig2[1, 1],
-    title = "HU Accuracy: Expected vs Measured ($(CONFIG.kvp) kVp)",
-    xlabel = "Material",
-    ylabel = "HU Value"
-)
+    ax = Axis(fig2[1, 1],
+        title = "HU Accuracy: Expected vs Measured ($(CONFIG.kvp) kVp)",
+        xlabel = "Material",
+        ylabel = "HU Value"
+    )
 
-names = [r.name for r in REGIONS]
-expected_vals = [expected_hu(r.material, CONFIG.effective_keV) for r in REGIONS]
-fdk_vals = [measure_hu(recon_fdk, mask_recon, r.id, μ_water).mean for r in REGIONS]
-sirt_vals = [measure_hu(recon_sirt, mask_recon, r.id, μ_water).mean for r in REGIONS]
-cgls_vals = [measure_hu(recon_cgls, mask_recon, r.id, μ_water).mean for r in REGIONS]
+    names = [r.name for r in REGIONS]
+    expected_vals = [expected_hu(r.material, CONFIG.effective_keV) for r in REGIONS]
+    fdk_vals = [measure_hu(recon_fdk, mask_recon, r.id, μ_water).mean for r in REGIONS]
+    sirt_vals = [measure_hu(recon_sirt, mask_recon, r.id, μ_water).mean for r in REGIONS]
+    cgls_vals = [measure_hu(recon_cgls, mask_recon, r.id, μ_water).mean for r in REGIONS]
 
-x = 1:length(names)
-w = 0.2
+    x = 1:length(names)
+    w = 0.2
 
-barplot!(ax, x .- 1.5w, expected_vals, width=w, label="Expected", color=:gray60)
-barplot!(ax, x .- 0.5w, fdk_vals, width=w, label="FDK", color=:steelblue)
-barplot!(ax, x .+ 0.5w, sirt_vals, width=w, label="SIRT", color=:coral)
-barplot!(ax, x .+ 1.5w, cgls_vals, width=w, label="CGLS", color=:seagreen)
+    barplot!(ax, x .- 1.5w, expected_vals, width=w, label="Expected", color=:gray60)
+    barplot!(ax, x .- 0.5w, fdk_vals, width=w, label="FDK", color=:steelblue)
+    barplot!(ax, x .+ 0.5w, sirt_vals, width=w, label="SIRT", color=:coral)
+    barplot!(ax, x .+ 1.5w, cgls_vals, width=w, label="CGLS", color=:seagreen)
 
-ax.xticks = (x, names)
-ax.xticklabelrotation = π/6
-axislegend(ax, position=:lt)
+    ax.xticks = (x, names)
+    ax.xticklabelrotation = π/6
+    axislegend(ax, position=:lt)
 
-display(fig2)
+    display(fig2)
+end
 
 # =============================================================================
 # 12. Visualization - Sinogram
 # =============================================================================
 
 # %%
-fig3 = Figure(size=(1000, 400))
+begin
+    fig3 = Figure(size=(1000, 400))
 
-Label(fig3[0, 1:2], "Sinogram (Central Row)", fontsize=18, tellwidth=false)
+    Label(fig3[0, 1:2], "Sinogram (Central Row)", fontsize=18, tellwidth=false)
 
-row_mid = CONFIG.n_rows ÷ 2
+    row_mid = CONFIG.n_rows ÷ 2
 
-ax1 = Axis(fig3[1, 1], title="Full Sinogram", xlabel="Detector Column", ylabel="Angle")
-hm1 = heatmap!(ax1, sinogram[:, row_mid, :]', colormap=:inferno)
-Colorbar(fig3[1, 2], hm1, label="Line Integral")
+    ax1 = Axis(fig3[1, 1], title="Full Sinogram", xlabel="Detector Column", ylabel="Angle")
+    hm1 = heatmap!(ax1, sinogram[:, row_mid, :]', colormap=:inferno)
+    Colorbar(fig3[1, 2], hm1, label="Line Integral")
 
-# Profile at one angle
-ax2 = Axis(fig3[2, 1:2], title="Profile (angle = $(CONFIG.n_angles÷2))",
-           xlabel="Detector Column", ylabel="Line Integral")
-lines!(ax2, sinogram[:, row_mid, CONFIG.n_angles÷2], linewidth=1.5, color=:steelblue)
+    # Profile at one angle
+    ax2 = Axis(fig3[2, 1:2], title="Profile (angle = $(CONFIG.n_angles÷2))",
+            xlabel="Detector Column", ylabel="Line Integral")
+    lines!(ax2, sinogram[:, row_mid, CONFIG.n_angles÷2], linewidth=1.5, color=:steelblue)
 
-display(fig3)
+    display(fig3)
+end
 
 # =============================================================================
 # 13. Summary
