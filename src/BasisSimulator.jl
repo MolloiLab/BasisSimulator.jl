@@ -91,6 +91,14 @@ include("Reconstruction/Filtering.jl")
 # FDK reconstruction (filter + backproject)
 include("Reconstruction/FDK.jl")
 
+# SIRT iterative reconstruction
+# Reference: CERN/TIGRE/MATLAB/Algorithms/SIRT.m
+include("Reconstruction/SIRT.jl")
+
+# CGLS iterative reconstruction
+# Reference: CERN/TIGRE/MATLAB/Algorithms/CGLS.m
+include("Reconstruction/CGLS.jl")
+
 # =============================================================================
 # Physics Effects (not from TIGRE, but useful)
 # =============================================================================

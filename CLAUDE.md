@@ -17,8 +17,10 @@ Core ray tracing algorithms ported from TIGRE. Polychromatic physics is our own 
 | Forward Projection | `Forward/Siddon.jl` | TIGRE `Siddon_projection.cu` | ✅ Complete |
 | Polychromatic FP | `Forward/Polychromatic.jl` | Beer-Lambert physics | ✅ Complete |
 | Backprojection | `Reconstruction/Backprojection.jl` | TIGRE `voxel_backprojection.cu` | ✅ Complete |
-| FDK Filtering | `Reconstruction/Filtering.jl` | Standard ramp filter | ✅ Complete |
+| FDK Filtering | `Reconstruction/Filtering.jl` | Spatial domain ramp filter | ✅ Complete |
 | FDK Reconstruction | `Reconstruction/FDK.jl` | TIGRE FDK | ✅ Complete |
+| SIRT | `Reconstruction/SIRT.jl` | TIGRE `SIRT.m` | ✅ Complete |
+| CGLS | `Reconstruction/CGLS.jl` | TIGRE `CGLS.m` | ✅ Complete |
 
 ---
 
@@ -129,6 +131,68 @@ recon = fdk_reconstruct(sinogram, geom, size(phantom.μ);
 
 ---
 
+## SIRT Iterative Reconstruction
+
+**Reference:** TIGRE `MATLAB/Algorithms/SIRT.m`
+
+### Algorithm
+
+SIRT (Simultaneous Iterative Reconstruction Technique) minimizes ||Ax - b||² iteratively:
+
+```
+x_{k+1} = x_k + λ · V⁻¹ · Aᵀ · W · (b - A·x_k)
+```
+
+Where:
+- `W = 1/(A·1)` - projection domain weights (ray length normalization)
+- `V = 1/(Aᵀ·1)` - image domain weights (voxel sensitivity)
+- `λ` - relaxation parameter
+
+### Usage
+
+```julia
+# Basic SIRT (starting from zeros)
+recon = sirt_reconstruct(sinogram, geom, volume_size; niter=50)
+
+# SIRT with FDK initialization (faster convergence)
+recon = sirt_reconstruct(sinogram, geom, volume_size; niter=30, init=:fdk)
+```
+
+SIRT typically produces lower noise than FDK (~30-50% noise reduction).
+
+---
+
+## CGLS Iterative Reconstruction
+
+**Reference:** TIGRE `MATLAB/Algorithms/CGLS.m`
+
+### Algorithm
+
+CGLS (Conjugate Gradient Least Squares) solves min||Ax - b||² using conjugate gradients:
+
+1. Initialize: `r = b - Ax`, `p = Aᵀr`, `γ = ||p||²`
+2. Loop:
+   - `q = Ap`
+   - `α = γ / ||q||²`
+   - `x = x + αp`
+   - `r = r - αq`
+   - `s = Aᵀr`
+   - `β = ||s||² / γ`
+   - `p = s + βp`
+
+### Usage
+
+```julia
+# CGLS with FDK initialization (recommended)
+recon = cgls_reconstruct(sinogram, geom, volume_size; niter=15, init=:fdk)
+
+# Note: CGLS converges slowly from zeros; FDK init strongly recommended
+```
+
+CGLS converges faster than SIRT but may exhibit semi-convergence for noisy data.
+
+---
+
 ## Unified Forward Projection API
 
 Single function for both monochromatic and polychromatic projection:
@@ -170,8 +234,10 @@ src/
 │   └── [physics effects]      # Scatter, noise, etc.
 ├── Reconstruction/
 │   ├── Backprojection.jl      # ✅ TIGRE port (AcceleratedKernels.jl)
-│   ├── Filtering.jl           # ✅ Ramp filter (FFTW)
-│   └── FDK.jl                 # ✅ Full FDK pipeline
+│   ├── Filtering.jl           # ✅ Spatial domain ramp filter (GPU-native)
+│   ├── FDK.jl                 # ✅ Full FDK pipeline
+│   ├── SIRT.jl                # ✅ TIGRE port (AcceleratedKernels.jl)
+│   └── CGLS.jl                # ✅ TIGRE port (AcceleratedKernels.jl)
 ├── Geometry/
 │   ├── Scanner.jl
 │   ├── Phantom.jl
@@ -221,4 +287,4 @@ sinogram_gpu = siddon_forward_project(volume_gpu, geom)
 
 ---
 
-Last Updated: 2025-01-14
+Last Updated: 2026-01-14
