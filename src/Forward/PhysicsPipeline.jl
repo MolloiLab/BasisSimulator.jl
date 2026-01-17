@@ -45,7 +45,8 @@ All fields are optional - set to `nothing` to skip that effect.
 - `fill_factor`: FillFactorModel for detector active area
 - `flat_filter`: FlatFilter for uniform beam filtration
 - `bowtie_filter`: BowtieFilter for angle-dependent filtration
-- `scatter`: ScatterModel for patient scatter
+- `scatter`: ScatterModel for patient scatter (adds scatter)
+- `scatter_correction`: ScatterCorrectionModel for scatter correction (removes scatter)
 - `crosstalk`: CrosstalkModel for detector pixel coupling
 - `optical_crosstalk`: OpticalCrosstalkModel for optical crosstalk
 - `focal_spot`: FocalSpot for geometric blur
@@ -58,13 +59,28 @@ All fields are optional - set to `nothing` to skip that effect.
 # Fields (CatSim-style Signal Processing)
 - `heel_effect`: HeelEffect for anode self-attenuation (intensity domain)
 - `das_model`: DASModel for signal chain effects (intensity domain)
-- `bhc`: BHCPolynomial for beam hardening correction (sinogram domain)
+- `bhc`: BHCPolynomial or BeamHardeningCorrection for beam hardening correction
+
+# Scatter Workflow
+Scatter simulation has two parts:
+1. `scatter`: Adds scatter during simulation (simulates physical scatter)
+2. `scatter_correction`: Removes estimated scatter (correction algorithm)
+
+For realistic simulation with cupping:
+- Set scatter, leave scatter_correction = nothing
+
+For realistic simulation with scatter correction:
+- Set both scatter and scatter_correction
+
+For ideal simulation (no scatter):
+- Leave both as nothing
 """
 struct PhysicsConfig
     fill_factor::Union{Nothing, FillFactorModel}
     flat_filter::Union{Nothing, FlatFilter}
     bowtie_filter::Union{Nothing, BowtieFilter}
     scatter::Union{Nothing, ScatterModel}
+    scatter_correction::Union{Nothing, ScatterCorrectionModel}
     crosstalk::Union{Nothing, CrosstalkModel}
     optical_crosstalk::Union{Nothing, OpticalCrosstalkModel}
     focal_spot::Union{Nothing, FocalSpot}
@@ -76,7 +92,7 @@ struct PhysicsConfig
     # CatSim-style effects
     heel_effect::Union{Nothing, HeelEffect}
     das_model::Union{Nothing, DASModel}
-    bhc::Union{Nothing, BHCPolynomial}
+    bhc::Union{Nothing, BHCPolynomial, BeamHardeningCorrection}
 end
 
 """
@@ -111,6 +127,7 @@ function default_physics_config(;
     flat_filter::Union{Nothing, FlatFilter}=nothing,
     bowtie_filter::Union{Nothing, BowtieFilter}=nothing,
     scatter::Union{Nothing, ScatterModel}=nothing,
+    scatter_correction::Union{Nothing, ScatterCorrectionModel}=nothing,
     crosstalk::Union{Nothing, CrosstalkModel}=nothing,
     optical_crosstalk::Union{Nothing, OpticalCrosstalkModel}=nothing,
     focal_spot::Union{Nothing, FocalSpot}=nothing,
@@ -122,13 +139,14 @@ function default_physics_config(;
     # CatSim-style effects
     heel_effect::Union{Nothing, HeelEffect}=nothing,
     das_model::Union{Nothing, DASModel}=nothing,
-    bhc::Union{Nothing, BHCPolynomial}=nothing
+    bhc::Union{Nothing, BHCPolynomial, BeamHardeningCorrection}=nothing
 )
     return PhysicsConfig(
         fill_factor,
         flat_filter,
         bowtie_filter,
         scatter,
+        scatter_correction,
         crosstalk,
         optical_crosstalk,
         focal_spot,
@@ -172,6 +190,8 @@ config = realistic_physics_config(
 """
 function realistic_physics_config(;
     scatter_scale::Float64=1.0,
+    scatter_correction_scale::Float64=1.0,
+    enable_scatter_correction::Bool=true,
     noise_level::Float64=1.0,
     energy_keV::Float64=60.0,
     noise_seed::Union{Nothing, Int}=nothing,
@@ -183,11 +203,16 @@ function realistic_physics_config(;
     # Higher noise_level = lower I0 = more quantum noise
     I0 = 1e6 / noise_level
 
+    # Scatter correction (enabled by default to reduce cupping)
+    sc_correction = enable_scatter_correction ?
+        default_scatter_correction(scale_factor=scatter_correction_scale) : nothing
+
     return PhysicsConfig(
         nothing,  # fill_factor - typically not needed for most simulations
         nothing,  # flat_filter - depends on specific scanner
         nothing,  # bowtie_filter - depends on specific scanner
         default_scatter_model(scale_factor=scatter_scale),
+        sc_correction,  # scatter_correction
         crosstalk_medium(),
         nothing,  # optical_crosstalk - use crosstalk instead
         focal_spot_medium(),
@@ -227,10 +252,17 @@ function minimal_physics_config(;
     I0 = 1e6 / noise_level
 
     return PhysicsConfig(
-        nothing, nothing, nothing, nothing, nothing, nothing,
-        nothing, nothing,
+        nothing,  # fill_factor
+        nothing,  # flat_filter
+        nothing,  # bowtie_filter
+        nothing,  # scatter
+        nothing,  # scatter_correction
+        nothing,  # crosstalk
+        nothing,  # optical_crosstalk
+        nothing,  # focal_spot
+        nothing,  # detector_efficiency
         default_detector_model(I0=I0, seed=noise_seed),
-        nothing,
+        nothing,  # lag
         noise_seed,
         60.0,
         nothing,  # heel_effect
@@ -294,6 +326,7 @@ function full_physics_config(;
     energy_keV::Float64=60.0,
     noise_seed::Union{Nothing, Int}=nothing,
     scatter_scale::Float64=1.0,
+    scatter_correction_scale::Float64=1.0,
     noise_level::Float64=1.0,
     das_noise_sigma::Float64=100.0,
     anode_angle_deg::Float64=7.0
@@ -302,11 +335,12 @@ function full_physics_config(;
     I0 = 1e6 / noise_level
 
     return PhysicsConfig(
-        # Physics pipeline effects (10)
+        # Physics pipeline effects (11)
         fill_factor_standard(),                    # 0.9 fill factor
         flat_filter_al(3.0),                       # 3mm Al flat filter
         bowtie_filter_large_body(),                # Large body bowtie
-        default_scatter_model(scale_factor=scatter_scale),  # Scatter
+        default_scatter_model(scale_factor=scatter_scale),  # Scatter (adds)
+        default_scatter_correction(scale_factor=scatter_correction_scale),  # Scatter correction (removes)
         crosstalk_medium(),                        # X-ray crosstalk
         optical_crosstalk_typical(),               # Optical crosstalk
         focal_spot_medium(),                       # Focal spot blur
@@ -466,6 +500,16 @@ function apply_physics_effects!(
     end
 
     # =========================================================================
+    # SCATTER CORRECTION (sinogram domain, after all physics effects)
+    # =========================================================================
+    # Scatter correction estimates and subtracts scatter contribution
+    # This reduces cupping artifacts caused by scatter
+    # Applied BEFORE BHC since BHC assumes scatter-corrected data
+    if config.scatter_correction !== nothing
+        correct_scatter!(sinogram, config.scatter_correction)
+    end
+
+    # =========================================================================
     # BEAM HARDENING CORRECTION (sinogram domain, applied last)
     # =========================================================================
     if config.bhc !== nothing
@@ -499,6 +543,7 @@ function get_physics_config_info(config::PhysicsConfig)
         ("flat_filter", config.flat_filter),
         ("bowtie_filter", config.bowtie_filter),
         ("scatter", config.scatter),
+        ("scatter_correction", config.scatter_correction),
         ("crosstalk", config.crosstalk),
         ("optical_crosstalk", config.optical_crosstalk),
         ("focal_spot", config.focal_spot),

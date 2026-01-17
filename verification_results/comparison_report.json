@@ -1,0 +1,31 @@
+{
+  "summary": {
+    "n_basis_failures": 1,
+    "calcium_ordering_basis": true,
+    "n_regions": 1,
+    "water_hu_basis": -58.188575744628906,
+    "water_hu_catsim": null,
+    "iodine_ordering_basis": true,
+    "n_basis_acceptable": 0,
+    "cupping_hu_basis": null
+  },
+  "config": {
+    "phantom_type": "water",
+    "scale": "dev",
+    "kvp": 120
+  },
+  "timestamp": "2026-01-16T05:55:22.213",
+  "regions": [
+    {
+      "catsim_deviation": null,
+      "catsim_hu_mean": null,
+      "material": "water",
+      "basis_failure": true,
+      "basis_deviation": -58.188575744628906,
+      "basis_acceptable": false,
+      "basis_hu_std": 103.08213806152344,
+      "basis_hu_mean": -58.188575744628906,
+      "ground_truth_hu": 0.0
+    }
+  ]
+}

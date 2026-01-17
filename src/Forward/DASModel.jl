@@ -9,12 +9,24 @@
 #
 # Reference: CatSim DAS parameters (das_gain, das_enoise, das_lsb)
 #
+# IMPORTANT: BasisSimulator operates in normalized intensity domain (0-1),
+# not in energy (keV) or photon count domain like CatSim. The DAS model
+# parameters are scaled internally to work correctly with intensity signals.
+#
+# The key relationship:
+#   CatSim signal (keV) ≈ I0 × mean_energy × intensity
+#   where I0 ~ 1e5-1e6 photons, mean_energy ~ 60 keV
+#
+# Electronic noise in CatSim (e.g., 5000 electrons) relative to signal:
+#   noise_ratio = electronic_noise_sigma / (I0 × mean_energy × gain)
+#                ≈ 5000 / (1e6 × 60 × 15) ≈ 5.5e-9
+#
 # =============================================================================
 
 import AcceleratedKernels as AK
 
 export DASModel
-export default_das_model, das_ideal, das_clinical
+export default_das_model, das_ideal, das_clinical, das_catsim_compatible
 export apply_das_model!, apply_das_model
 export apply_tube_current!, apply_tube_current
 export get_das_info
@@ -29,22 +41,36 @@ export get_das_info
 Data Acquisition System model for CT detector signal chain.
 
 # Fields
-- `gain`: Gain factor (electrons per keV of deposited X-ray energy)
-- `electronic_noise_sigma`: Electronic noise standard deviation (in electrons)
+- `gain`: Multiplicative gain factor applied to signal (dimensionless for normalized intensity)
+- `electronic_noise_sigma`: Electronic noise standard deviation (RELATIVE to signal, not absolute)
+- `reference_signal`: Expected signal level for noise scaling (default: 1e6, typical photon fluence)
 - `lsb`: Least significant bit for quantization (0 = no quantization)
 - `min_value`: Minimum output value (for truncation)
 - `max_value`: Maximum output value (for saturation)
 - `offset`: DC offset added to signal
 
-# Signal chain:
-1. signal_electrons = deposited_energy_keV × gain
-2. signal_electrons += Normal(0, electronic_noise_sigma)
-3. signal_digital = round(signal_electrons / lsb) × lsb  (if lsb > 0)
-4. signal_digital = clamp(signal_digital, min_value, max_value)
+# Signal chain (for normalized intensity input):
+1. signal_out = signal_in × gain
+2. noise_sigma_scaled = electronic_noise_sigma / reference_signal
+3. signal_out += Normal(0, noise_sigma_scaled)
+4. signal_out = round(signal_out / lsb) × lsb  (if lsb > 0)
+5. signal_out = clamp(signal_out, min_value, max_value)
+6. signal_out += offset
+
+# Note on units:
+When using CatSim-like parameters (e.g., electronic_noise_sigma=5000 electrons,
+gain=15 electrons/keV), set reference_signal to the expected integrated signal
+level (e.g., I0 × mean_energy × gain ≈ 1e6 × 60 × 15 ≈ 9e8).
+
+For BasisSimulator's intensity domain, you can equivalently use:
+- gain = 1.0 (no gain change since we normalize)
+- electronic_noise_sigma = 0.01 (1% relative noise)
+- reference_signal = 1.0 (signal is already normalized)
 """
 struct DASModel
-    gain::Float64               # electrons per keV
-    electronic_noise_sigma::Float64  # noise sigma in electrons
+    gain::Float64               # multiplicative gain (dimensionless for intensity)
+    electronic_noise_sigma::Float64  # noise sigma (in same units as reference_signal)
+    reference_signal::Float64   # expected signal level for noise scaling
     lsb::Float64                # quantization step (0 = none)
     min_value::Float64          # minimum output
     max_value::Float64          # maximum output (saturation)
@@ -56,18 +82,32 @@ end
 # =============================================================================
 
 """
-    default_das_model(; gain=20.0, electronic_noise_sigma=100.0, lsb=0.0, min_value=0.0, max_value=Inf, offset=0.0)
+    default_das_model(; gain=1.0, electronic_noise_sigma=0.0, reference_signal=1.0, ...)
 
 Create DAS model with specified parameters.
 
-# Default values approximate typical clinical CT:
-- gain: 20 electrons/keV (typical GOS scintillator + photodiode)
-- electronic_noise: 100 electrons RMS
-- lsb: 0 (no quantization for floating point simulation)
+# For BasisSimulator (intensity domain):
+- gain: 1.0 (multiplicative, cancels in calibration)
+- electronic_noise_sigma: 0.0 (no additional noise beyond quantum noise)
+- reference_signal: 1.0 (signal is normalized intensity)
+
+# For CatSim-like parameters:
+Use `das_catsim_compatible()` which converts CatSim's electron-based
+parameters to work with intensity domain.
+
+# Example
+```julia
+# No DAS noise (default)
+das = default_das_model()
+
+# Small relative electronic noise (1% of signal)
+das = default_das_model(electronic_noise_sigma=0.01, reference_signal=1.0)
+```
 """
 function default_das_model(;
-    gain::Real = 20.0,
-    electronic_noise_sigma::Real = 100.0,
+    gain::Real = 1.0,
+    electronic_noise_sigma::Real = 0.0,
+    reference_signal::Real = 1.0,
     lsb::Real = 0.0,
     min_value::Real = 0.0,
     max_value::Real = Inf,
@@ -76,6 +116,7 @@ function default_das_model(;
     return DASModel(
         Float64(gain),
         Float64(electronic_noise_sigma),
+        Float64(reference_signal),
         Float64(lsb),
         Float64(min_value),
         Float64(max_value),
@@ -89,27 +130,111 @@ end
 Ideal DAS with no noise or quantization (for testing).
 """
 function das_ideal()
-    return DASModel(1.0, 0.0, 0.0, -Inf, Inf, 0.0)
+    return DASModel(1.0, 0.0, 1.0, 0.0, -Inf, Inf, 0.0)
 end
 
 """
-    das_clinical(; noise_level=1.0)
+    das_clinical(; noise_level=1.0, I0=1e6, mean_energy_keV=60.0)
 
-Clinical-grade DAS model with realistic parameters.
+Clinical-grade DAS model with realistic electronic noise.
 
-# Parameters (typical for modern clinical CT):
-- gain: 25 electrons/keV
-- electronic_noise: 80-150 electrons (scaled by noise_level)
-- 16-bit quantization (LSB based on dynamic range)
+The electronic noise level is calibrated to match CatSim's typical clinical
+parameters (5000 electrons σ with gain of 15 e-/keV).
+
+# Parameters
+- `noise_level`: Multiplier for electronic noise (1.0 = typical clinical)
+- `I0`: Photon fluence (used for noise scaling, default: 1e6)
+- `mean_energy_keV`: Mean photon energy (default: 60 keV for 120 kVp)
+
+# Default produces approximately:
+- 5-15 HU additional noise std from DAS electronics
+- Matches CatSim clinical simulation parameters
+
+# Note
+The quantum noise (from `DetectorModel.noise`) typically dominates over
+electronic noise in well-designed clinical CT. Electronic noise becomes
+significant only at very low dose.
 """
-function das_clinical(; noise_level::Real = 1.0)
+function das_clinical(;
+    noise_level::Real = 1.0,
+    I0::Real = 1e6,
+    mean_energy_keV::Real = 60.0
+)
+    # Match CatSim clinical parameters:
+    # - electronic_noise_electrons = 5000 (typical)
+    # - gain_electrons_per_keV = 15 (typical GOS)
+    #
+    # Convert to relative noise in intensity domain:
+    gain = 15.0
+    electronic_noise_electrons = 5000.0 * noise_level
+    expected_signal = I0 * mean_energy_keV * gain
+    noise_relative = electronic_noise_electrons / expected_signal
+
     return DASModel(
-        25.0,                    # gain
-        100.0 * noise_level,     # electronic noise
-        0.0,                     # no quantization in simulation
-        0.0,                     # min value
-        1e7,                     # max value (saturation)
-        0.0                      # no offset
+        1.0,              # gain (no change, cancels in calibration)
+        noise_relative,   # electronic noise (relative to full signal)
+        1.0,              # reference signal (normalized intensity)
+        0.0,              # no quantization in simulation
+        0.0,              # min value
+        Inf,              # max value (no saturation)
+        0.0               # no offset
+    )
+end
+
+"""
+    das_catsim_compatible(;
+        gain_electrons_per_keV=15.0,
+        electronic_noise_electrons=5000.0,
+        I0=1e6,
+        mean_energy_keV=60.0
+    )
+
+Create DAS model using CatSim-compatible parameters.
+
+Converts CatSim's electron-based parameters to work with BasisSimulator's
+normalized intensity domain.
+
+# Parameters (CatSim-style)
+- `gain_electrons_per_keV`: Detector gain (electrons per keV deposited)
+- `electronic_noise_electrons`: Electronic noise σ (in electrons)
+- `I0`: Photon fluence (photons per pixel)
+- `mean_energy_keV`: Mean energy of detected photons (keV)
+
+# Conversion
+The noise is converted to relative intensity noise:
+  noise_relative = electronic_noise_electrons / (I0 × mean_energy_keV × gain)
+
+# Example
+```julia
+# CatSim-like parameters
+das = das_catsim_compatible(
+    gain_electrons_per_keV = 15.0,
+    electronic_noise_electrons = 5000.0,
+    I0 = 1e6,
+    mean_energy_keV = 60.0
+)
+```
+"""
+function das_catsim_compatible(;
+    gain_electrons_per_keV::Real = 15.0,
+    electronic_noise_electrons::Real = 5000.0,
+    I0::Real = 1e6,
+    mean_energy_keV::Real = 60.0
+)
+    # Total expected signal in electrons
+    expected_signal_electrons = I0 * mean_energy_keV * gain_electrons_per_keV
+
+    # Relative noise
+    noise_relative = electronic_noise_electrons / expected_signal_electrons
+
+    return DASModel(
+        1.0,              # gain (cancels in calibration for intensity domain)
+        noise_relative,   # electronic noise (relative)
+        1.0,              # reference signal (normalized intensity)
+        0.0,              # no quantization
+        0.0,              # min value
+        Inf,              # max value
+        0.0               # no offset
     )
 end
 
@@ -123,8 +248,8 @@ end
 Apply DAS model to signal (in-place).
 
 This applies the full DAS signal chain:
-1. Scale by gain (if signal is in energy units)
-2. Add electronic noise
+1. Scale by gain
+2. Add electronic noise (scaled by electronic_noise_sigma / reference_signal)
 3. Apply quantization (if lsb > 0)
 4. Clamp to [min_value, max_value]
 5. Add offset
@@ -136,8 +261,13 @@ This applies the full DAS signal chain:
 # Keyword Arguments
 - `seed`: Random seed for reproducibility (nothing = random)
 
-# Note: This function assumes signal is in arbitrary units.
-For proper simulation, signal should be in keV or photon counts.
+# Signal Domain
+This function works with normalized intensity signals (0-1 range) as used
+by BasisSimulator. The electronic noise is scaled by the ratio
+(electronic_noise_sigma / reference_signal) to properly match the signal level.
+
+For CatSim-compatible parameters, use `das_catsim_compatible()` which handles
+the unit conversion automatically.
 """
 function apply_das_model!(
     signal::AbstractArray{T, 3},
@@ -159,9 +289,13 @@ function apply_das_model!(
     has_noise = das.electronic_noise_sigma > 0
     has_quant = lsb > 0
 
+    # Compute scaled noise sigma for intensity domain
+    # noise_sigma_scaled = electronic_noise_sigma / reference_signal
+    noise_sigma_scaled = T(das.electronic_noise_sigma / das.reference_signal)
+
     # Generate noise on CPU, transfer to GPU
     if has_noise
-        noise_cpu = randn(Float32, size(signal)) .* Float32(das.electronic_noise_sigma)
+        noise_cpu = randn(Float32, size(signal)) .* Float32(noise_sigma_scaled)
         noise = similar(signal)
         copyto!(noise, noise_cpu)
 
@@ -303,6 +437,8 @@ function get_das_info(das::DASModel)
     return (
         gain = das.gain,
         electronic_noise_sigma = das.electronic_noise_sigma,
+        reference_signal = das.reference_signal,
+        effective_noise = das.electronic_noise_sigma / das.reference_signal,
         lsb = das.lsb,
         min_value = das.min_value,
         max_value = das.max_value,

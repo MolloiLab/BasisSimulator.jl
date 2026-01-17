@@ -174,4 +174,24 @@ include("Reconstruction/HelicalRecon.jl")
 # Scanner specifications (GE, Siemens, Canon, etc.)
 include("Scanners/Scanners.jl")
 
+# =============================================================================
+# Dual-Energy CT (Spectral Imaging)
+# =============================================================================
+
+# Dual kVp (GSI) forward projection, material decomposition, VMI
+include("DualEnergy/DualEnergy.jl")
+
+# =============================================================================
+# Image Quality Metrics (AAPM TG-233)
+# =============================================================================
+
+# Modulation Transfer Function (MTF) - spatial resolution
+include("Metrics/MTF.jl")
+
+# Noise Power Spectrum (NPS) - noise texture characterization
+include("Metrics/NPS.jl")
+
+# Point Spread Function (PSF) - spatial resolution in real space
+include("Metrics/PSF.jl")
+
 end # module

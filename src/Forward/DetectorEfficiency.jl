@@ -3,21 +3,70 @@
 
 Detector absorption efficiency and DQE modeling for CT simulation.
 
-The detector efficiency depends on:
-1. Scintillator material (GOS, CsI, CdTe, etc.)
-2. Scintillator thickness
-3. Photon energy
-4. Incidence angle (oblique rays travel longer paths)
+# Physics Background
 
-Implementation follows CatSim/XCIST approach:
+The detector efficiency η(E, θ) represents the probability that an incident
+X-ray photon of energy E is absorbed in the scintillator. It follows the
+Beer-Lambert absorption law:
+
     η(E, θ) = 1 - exp(-μ(E) × d / cos(θ))
 
 where:
-- μ(E) is the energy-dependent linear attenuation coefficient
-- d is the scintillator thickness
-- θ is the incidence angle
+- μ(E) is the energy-dependent linear attenuation coefficient (cm⁻¹)
+- d is the scintillator thickness (cm)
+- θ is the incidence angle (cone angle for peripheral detector rows)
 
-GPU-native implementation using AcceleratedKernels.jl.
+# Key Physics Characteristics
+
+1. **Low-energy photons**: Nearly 100% absorbed (high μ at low E)
+2. **High-energy photons**: Increased transparency (low μ at high E)
+3. **K-edge effects**: Sudden increase in absorption at element K-edges
+   - GOS: Gd K-edge at 50.2 keV
+   - CsI: Cs K-edge at 36 keV, I K-edge at 33 keV
+   - CdTe: Cd K-edge at 26.7 keV, Te K-edge at 31.8 keV
+
+# CatSim Compatibility
+
+This implementation uses the exact CatSim formula from Detection_EI.py:
+
+    detEff = 1 - exp(-0.1 × detectorDepth / cos(beta) × detectorMu)
+
+where:
+- `detectorDepth` is scintillator thickness in mm (0.1 factor converts to cm)
+- `detectorMu` is linear attenuation coefficient from GetMu() in cm⁻¹
+- `beta` is the cone angle (z-direction incidence)
+
+# Calibration Note
+
+In properly calibrated CT (with air scan normalization), detector efficiency
+cancels between phantom and reference scans:
+
+    projection = -log(I_phantom / I_air) = -log(I₀·exp(-μL)·η / (I₀·η)) = μL
+
+Therefore, `apply_detector_efficiency!` is a no-op for projection data.
+The primary effect of detector efficiency is on NOISE levels (fewer detected
+photons = more quantum noise), which is handled separately in noise modeling.
+
+# GPU Compatibility
+- ✅ Metal (via AcceleratedKernels.jl)
+- ✅ CUDA
+- ✅ ROCm
+- ✅ CPU fallback
+
+# References
+
+1. Swank RK. "Absorption and noise in x-ray phosphors."
+   J Appl Phys. 1973;44(9):4199-4203. doi:10.1063/1.1662918
+
+2. Huda W, et al. "X-ray absorption in scintillators used in
+   computed tomography." Med Phys. 1984;11(6):785-790.
+   doi:10.1118/1.595575
+
+3. GE CatSim/XCIST Detection_EI.py - Reference implementation
+   https://github.com/xcist/main
+
+4. NIST XCOM database for scintillator attenuation coefficients
+   https://physics.nist.gov/PhysRefData/Xcom/html/xcom1.html
 """
 
 import AcceleratedKernels as AK
@@ -166,7 +215,41 @@ end
 
 Get linear attenuation coefficient for scintillator material at given energy.
 
-Returns μ in cm⁻¹.
+# Algorithm
+
+Uses log-linear interpolation of tabulated μ values from NIST XCOM data.
+K-edge discontinuities are captured by including data points at the edge energies.
+
+# Arguments
+- `material::String`: Scintillator material ("GOS", "CsI", "CdTe", "CZT", "Si")
+- `energy_keV::Float64`: Photon energy in keV (clamped to valid range)
+
+# Returns
+- `Float64`: Linear attenuation coefficient μ in cm⁻¹
+
+# CatSim Equivalence
+
+This function returns the same μ values as CatSim's GetMu() function for the
+corresponding material, enabling direct comparison:
+
+    # CatSim (Python)
+    detectorMu = GetMu(cfg.scanner.detectorMaterial, Evec)
+
+    # BasisSimulator (Julia)
+    μ = get_scintillator_mu(material, E)
+
+# Example
+```julia
+# Get μ for GOS at 60 keV (typical CT imaging energy)
+μ_gos = get_scintillator_mu("GOS", 60.0)  # ~42 cm⁻¹
+
+# Get μ for CdTe at the Cd K-edge
+μ_cdte_kedge = get_scintillator_mu("CdTe", 27.0)  # Very high (>180 cm⁻¹)
+```
+
+# See Also
+- [`compute_detector_efficiency`](@ref): Compute absorption efficiency from μ
+- [`SCINTILLATOR_MU_DATA`](@ref): Tabulated μ values
 """
 function get_scintillator_mu(material::String, energy_keV::Float64)
     if material == "ideal"
@@ -402,13 +485,47 @@ end
 
 Compute approximate Detective Quantum Efficiency (DQE).
 
-DQE ≈ η × Swank factor × fill_factor²
+# Definition
 
-The Swank factor accounts for variance in light output per absorbed X-ray.
-Typical values: 0.90-0.98 for GOS/CsI.
+DQE measures how efficiently a detector converts incoming X-ray photons into
+useful signal, accounting for both absorption efficiency and signal variance:
+
+    DQE(E) = (SNR_out² / SNR_in²) ≈ η(E) × I_s × f²
+
+where:
+- η(E) is the absorption efficiency at energy E
+- I_s is the Swank factor (accounts for variance in scintillator light output)
+- f is the geometric fill factor
+
+# Arguments
+- `model::DetectorEfficiency`: Detector efficiency model
+- `energy_keV::Float64`: Photon energy in keV
+- `swank_factor::Float64=0.95`: Swank factor (0.90-0.98 typical for GOS/CsI)
 
 # Returns
-DQE value (0 to 1).
+- `Float64`: DQE value (0 to 1)
+
+# Typical Values
+
+| Material | Thickness | DQE at 60 keV |
+|----------|-----------|---------------|
+| GOS      | 3.0 mm    | ~0.77         |
+| CsI      | 0.6 mm    | ~0.56         |
+| CdTe     | 1.6 mm    | ~0.77         |
+
+# References
+
+1. Swank RK. "Absorption and noise in x-ray phosphors."
+   J Appl Phys. 1973;44(9):4199-4203.
+
+2. Siewerdsen JH, Antonuk LE. "DQE and system optimization for indirect-detection
+   flat-panel imagers." Med Phys. 1998;25(11):2199-2209.
+
+# Example
+```julia
+model = detector_efficiency_gos(3.0)
+dqe = compute_dqe(model, 60.0)  # ~0.77 with default Swank factor
+```
 """
 function compute_dqe(model::DetectorEfficiency, energy_keV::Float64;
                      swank_factor::Float64=0.95)

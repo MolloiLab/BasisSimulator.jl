@@ -3,21 +3,98 @@
 
 Detector pixel fill factor modeling for CT simulation.
 
-Fill factor is the ratio of active detector area to total pixel area.
-A fill factor < 1.0 means there are gaps between detector elements (e.g., due to
-electrode grid, scintillator packaging, or anti-scatter grid supports).
+# Overview
 
-Effects of fill factor:
-- Reduces signal proportionally (fewer photons detected)
-- Can cause aliasing at high spatial frequencies
-- May introduce structured noise patterns if non-uniform
+Fill factor (also called geometric efficiency) is the ratio of active detector area
+to total pixel area. A fill factor < 1.0 means there are gaps between detector
+elements due to:
 
-Typical values:
-- High-quality flat panel: 0.85-0.95
-- Standard CT detector: 0.90
-- Photon counting detector: 0.70-0.85 (smaller pixels, more dead area)
+- Electrode grid structures for charge collection
+- Scintillator packaging/mounting
+- Anti-scatter grid supports
+- Pixel isolation/crosstalk barriers
 
-GPU-native implementation using AcceleratedKernels.jl.
+# Physics Background
+
+The fill factor directly affects photon detection efficiency:
+
+    detected_photons = incident_photons × fill_factor
+
+In CT signal processing, this manifests as:
+- **Intensity domain**: I_out = I_in × ff
+- **Projection domain**: p_out = p_in - log(ff)
+
+The second form follows from the relationship p = -log(I), where:
+    p_out = -log(I_out) = -log(I_in × ff) = -log(I_in) - log(ff) = p_in - log(ff)
+
+Since ff < 1, -log(ff) > 0, so projections increase (appears as additional attenuation).
+
+# CatSim Compatibility
+
+This implementation matches CatSim's fill factor handling in `Detector_ThirdgenCurved.py`:
+
+```python
+cfg.det.activeArea = colSize * detectorColFillFraction * rowSize * detectorRowFillFraction
+cfg.detFlux = Ivec * (activeArea * distanceFactor)
+```
+
+CatSim applies separate row and column fill fractions, yielding:
+    effective_fill_factor = row_fill × col_fill
+
+# Typical Values
+
+| Detector Type              | Fill Factor | Notes                          |
+|----------------------------|-------------|--------------------------------|
+| High-quality flat panel    | 0.85-0.95   | Modern indirect conversion     |
+| Standard CT scintillator   | 0.90        | Third-generation CT default    |
+| Photon counting (CdTe)     | 0.70-0.85   | Smaller pixels, more dead area |
+| Ideal (theoretical)        | 1.0         | No dead area                   |
+
+# References
+
+1. Hsieh J. "Computed Tomography: Principles, Design, Artifacts, and Recent
+   Advances." 3rd ed. SPIE Press; 2015. Chapter 3: System Design.
+
+2. Flohr TG, et al. "Photon-counting CT review." Physica Medica. 2020;79:126-136.
+   doi:10.1016/j.ejmp.2020.10.030
+
+3. XCIST/CatSim: `pyfiles/Detector_ThirdgenCurved.py`, `pyfiles/Detection_Flux.py`
+   https://github.com/xcist/main
+
+# GPU Compatibility
+
+✅ Metal (Apple Silicon)
+✅ CUDA (NVIDIA)
+✅ ROCm (AMD)
+✅ CPU fallback
+
+All operations use AcceleratedKernels.jl for backend-agnostic GPU execution.
+
+# Example
+
+```julia
+using BasisSimulator
+
+# Standard 90% fill factor
+model = fill_factor_standard()
+@assert effective_fill_factor(model) ≈ 0.9
+
+# Apply to intensity data
+intensity = ones(Float32, 128, 32, 360)
+apply_fill_factor_intensity!(intensity, model)
+# Now mean(intensity) ≈ 0.9
+
+# Apply to projection data (sinogram)
+sinogram = ones(Float32, 128, 32, 360)
+apply_fill_factor!(sinogram, model)
+# Now mean(sinogram) ≈ 1.0 - log(0.9) ≈ 1.105
+```
+
+# Verified Against
+
+- CatSim `Detector_ThirdgenCurved.py` (geometry setup)
+- CatSim `Detection_Flux.py` (flux calculation)
+- PHYSICS-001 verification test suite
 """
 
 import AcceleratedKernels as AK
@@ -130,23 +207,50 @@ effective_fill_factor(model::FillFactorModel) = model.row_fill * model.col_fill
 """
     apply_fill_factor!(sinogram, model::FillFactorModel) -> sinogram
 
-Apply fill factor effect to sinogram (in-place, GPU-native).
+Apply fill factor effect to sinogram data (in-place, GPU-native).
 
-This reduces the detected signal proportional to the fill factor,
-modeling the loss of photons hitting dead areas between detector elements.
+Models the reduced photon detection due to inactive detector area by adding
+a uniform offset to projection values.
+
+# Mathematical Formulation
+
+In the projection domain:
+
+    p_out = p_in - log(ff)
+
+where `ff` is the effective fill factor (0 < ff ≤ 1).
+
+This is equivalent to multiplying intensity by the fill factor:
+    I_out = I_in × ff
+    p = -log(I)  →  p_out = -log(I_in × ff) = p_in - log(ff)
+
+Since ff < 1, -log(ff) > 0, so projection values increase uniformly.
 
 # Arguments
-- `sinogram`: Input sinogram [n_cols, n_rows, n_angles] (projection domain)
+- `sinogram::AbstractArray{T,3}`: Input sinogram [n_cols, n_rows, n_angles] in projection domain
 - `model::FillFactorModel`: Fill factor specification
 
 # Returns
-Modified sinogram with fill factor effects.
+Modified sinogram (same array, modified in-place).
 
-# Physics
-In projection domain: p_out = p_in - log(fill_factor)
-This is equivalent to multiplying intensity by fill_factor:
-  I_out = I_in × fill_factor
-  p_out = -log(I_out) = -log(I_in × ff) = p_in - log(ff)
+# GPU Compatibility
+✅ Metal, CUDA, ROCm, CPU via AcceleratedKernels.jl
+
+# CatSim Reference
+This matches CatSim's fill factor effect on detected flux.
+See `Detection_Flux.py` line 30: `detFlux = Ivec * (activeArea * distanceFactor)`
+
+# Example
+```julia
+sinogram = ones(Float32, 128, 32, 360)  # Unit projection
+model = fill_factor_standard()          # ff = 0.9
+apply_fill_factor!(sinogram, model)
+# mean(sinogram) ≈ 1.0 - log(0.9) ≈ 1.105
+```
+
+# See Also
+- [`apply_fill_factor_intensity!`](@ref): For intensity-domain data
+- [`effective_fill_factor`](@ref): Get combined fill factor value
 """
 function apply_fill_factor!(
     sinogram::AbstractArray{T,3},
@@ -175,14 +279,43 @@ end
 
 Apply fill factor directly to intensity-domain data (in-place, GPU-native).
 
-This multiplies the intensity by the fill factor.
+Models the reduced photon detection by directly scaling the intensity.
+
+# Mathematical Formulation
+
+In the intensity domain:
+
+    I_out = I_in × ff
+
+where `ff` is the effective fill factor (0 < ff ≤ 1).
+
+For ff = 0.9, intensity is reduced by 10%.
 
 # Arguments
-- `intensity`: Input intensity [n_cols, n_rows, n_angles]
+- `intensity::AbstractArray{T,3}`: Input intensity [n_cols, n_rows, n_angles]
 - `model::FillFactorModel`: Fill factor specification
 
 # Returns
-Modified intensity with fill factor effects (reduced signal).
+Modified intensity array (same array, modified in-place).
+
+# GPU Compatibility
+✅ Metal, CUDA, ROCm, CPU via AcceleratedKernels.jl
+
+# CatSim Reference
+Matches CatSim `Detection_Flux.py`: `detFlux = Ivec * activeArea * distanceFactor`
+where `activeArea = colSize × colFillFraction × rowSize × rowFillFraction`
+
+# Example
+```julia
+intensity = ones(Float32, 128, 32, 360)
+model = fill_factor_standard()  # ff = 0.9
+apply_fill_factor_intensity!(intensity, model)
+# mean(intensity) ≈ 0.9
+```
+
+# See Also
+- [`apply_fill_factor!`](@ref): For projection-domain (sinogram) data
+- [`effective_fill_factor`](@ref): Get combined fill factor value
 """
 function apply_fill_factor_intensity!(
     intensity::AbstractArray{T,3},

@@ -8,6 +8,62 @@
 # NOT from TIGRE - TIGRE is monochromatic only.
 # This implements proper spectral physics: I = Σ wₑ × exp(-∫μₑ dl)
 #
+# Algorithm Overview
+# ------------------
+# Polychromatic projection models the energy-dependent attenuation of X-rays
+# as they traverse a heterogeneous medium. Unlike monochromatic projection
+# (single energy), polychromatic simulation accounts for the broad energy
+# spectrum produced by an X-ray tube and the energy-dependence of material
+# attenuation coefficients.
+#
+# Mathematical Foundation: Beer-Lambert Law
+# -----------------------------------------
+# For a monochromatic beam of intensity I₀ at energy E traversing a path:
+#
+#     I(E) = I₀(E) × exp(-∫ μ(E, l) dl)
+#
+# where μ(E, l) is the linear attenuation coefficient (mm⁻¹) at energy E and
+# position l along the ray path.
+#
+# For a polychromatic beam with spectral distribution w(E) (photon fluence
+# weights normalized such that Σ w(E) = 1), the transmitted intensity is:
+#
+#     I_total = ∫ w(E) × I₀(E) × exp(-∫ μ(E, l) dl) dE
+#
+# In discretized form with N energy bins:
+#
+#     I_total = Σₑ wₑ × exp(-∫ μₑ(l) dl) = Σₑ wₑ × exp(-Lₑ)
+#
+# where wₑ is the normalized weight for energy bin e, and Lₑ is the line
+# integral of attenuation at energy e computed via ray tracing.
+#
+# The measured projection value is converted back to an "effective" line
+# integral via the log transform:
+#
+#     p = -log(I_total / I₀) = -log(Σₑ wₑ × exp(-Lₑ))
+#
+# Spectral Integration Method
+# ---------------------------
+# This implementation uses an energy-sequential approach for memory efficiency:
+#
+# 1. For each energy bin e in spectrum:
+#    a. Create μ-volume: μᵢⱼₖ(e) = μ(material[i,j,k], E_e) for all voxels
+#    b. Forward project: Lₑ = Siddon ray-trace through μ-volume
+#    c. Accumulate: I_total += wₑ × exp(-Lₑ)
+#
+# 2. After all energies: p = -log(I_total)
+#
+# This approach requires O(1) additional memory per energy bin (one μ-volume),
+# versus O(N) memory for storing all energy-specific projections simultaneously.
+#
+# Beam Hardening
+# --------------
+# The nonlinear log-sum-exp operation causes beam hardening artifacts:
+# - p_poly ≠ Σₑ wₑ × pₑ (projection is NOT a linear combination)
+# - Low-energy photons are preferentially absorbed, "hardening" the beam
+# - Results in cupping artifacts in reconstructed images
+# - Corrected via polynomial BHC (beam hardening correction) post-projection
+#
 # CatSim Signal Chain (when enabled via kwargs):
 # 1. Polychromatic forward projection (Beer-Lambert)
 # 2. Physics pipeline (scatter, crosstalk, focal spot, noise, lag)
@@ -17,6 +73,47 @@
 # 6. Low signal correction (replace negatives with smoothed neighbors)
 # 7. Log transform
 # 8. Beam hardening correction
+#
+# Physical Units
+# --------------
+# - Energy bins: keV
+# - Spectral weights: normalized photon fluence (dimensionless, sum to 1)
+# - Attenuation coefficients μ: mm⁻¹
+# - Line integrals: dimensionless (mm⁻¹ × mm)
+# - Intensity: relative transmitted photon counts (dimensionless)
+#
+# GPU Compatibility (via AcceleratedKernels.jl)
+# ---------------------------------------------
+# - ✅ Metal (Apple Silicon) - Primary development platform
+# - ✅ CUDA (NVIDIA GPUs)
+# - ✅ ROCm (AMD GPUs)
+# - ✅ Intel oneAPI
+# - ✅ CPU fallback (multi-threaded)
+#
+# The algorithm auto-detects backend from array type. Pass MtlArray (Metal),
+# CuArray (CUDA), ROCArray (ROCm), or regular Array (CPU).
+#
+# References
+# ----------
+# 1. Hsieh J. "Computed Tomography: Principles, Design, Artifacts, and Recent
+#    Advances." 3rd ed. SPIE Press; 2015. Chapter 3: X-ray Production and
+#    Interactions. doi:10.1117/3.2197756
+#
+# 2. Buzug TM. "Computed Tomography: From Photon Statistics to Modern Cone-Beam
+#    CT." Springer; 2008. Section 5.3: Polychromatic Effects and Beam Hardening.
+#    doi:10.1007/978-3-540-39408-2
+#
+# 3. De Man B, Nuyts J, Dupont P, Marchal G, Suetens P. "An iterative maximum-
+#    likelihood polychromatic algorithm for CT." IEEE Trans Med Imaging.
+#    2001;20(10):999-1008. doi:10.1109/42.959297
+#
+# 4. Joseph PM, Spital RD. "A method for correcting bone induced artifacts in
+#    computed tomography scanners." J Comput Assist Tomogr. 1978;2(1):100-108.
+#    doi:10.1097/00004728-197801000-00017
+#
+# 5. Hubbell JH, Seltzer SM. "Tables of X-Ray Mass Attenuation Coefficients and
+#    Mass Energy-Absorption Coefficients." NIST Standard Reference Database 126.
+#    https://www.nist.gov/pml/x-ray-mass-attenuation-coefficients
 #
 # Uses AcceleratedKernels.jl for GPU/CPU acceleration.
 #
@@ -31,15 +128,88 @@ export forward_project!, forward_project
 # =============================================================================
 
 """
-    create_μ_volume!(μ_volume, mask, materials, energy_keV)
+    create_μ_volume!(μ_volume, mask, materials, energy_keV) -> μ_volume
 
-Create attenuation volume for a single energy from material mask.
+Create a 3D attenuation coefficient volume for a single energy from a material
+mask. This is a helper function for polychromatic projection that maps material
+indices to energy-specific attenuation coefficients.
+
+# Algorithm
+
+For each voxel in the volume:
+1. Read material index m from mask (0-indexed UInt8)
+2. Look up material composition: composition = materials[m + 1]
+3. Compute attenuation: μᵢⱼₖ = μ(composition, E) using XrayAttenuation.jl
+
+The attenuation lookup uses NIST XCOM cross-section data interpolated to the
+specified energy via `compute_μ_at_energy()`.
 
 # Arguments
-- `μ_volume`: Output volume [nx, ny, nz] (modified in place)
-- `mask`: 3D material mask (UInt8 region indices)
-- `materials`: Vector of materials indexed by region
-- `energy_keV`: Energy in keV
+
+- `μ_volume::AbstractArray{T,3}`: Output attenuation volume of size `[nx, ny, nz]`,
+  modified in place. After execution, contains linear attenuation coefficients
+  μ in mm⁻¹ for each voxel at the specified energy.
+
+- `mask::AbstractArray{UInt8,3}`: Input material index volume of size `[nx, ny, nz]`.
+  Values are 0-indexed region indices (0 = region 1, 1 = region 2, etc.).
+  Typically created by phantom generators with material segmentation.
+
+- `materials::Vector`: Vector of material definitions indexed by region.
+  Each material should be compatible with `compute_μ_at_energy(material, E)`.
+  Typically from `get_region_materials()` which returns Gammex 472 or custom
+  tissue compositions.
+
+- `energy_keV::Real`: X-ray photon energy in keV for attenuation lookup.
+  Valid range: typically 10-150 keV for diagnostic CT.
+
+# Returns
+
+- `μ_volume::AbstractArray{T,3}`: The modified input array (same reference)
+
+# GPU Compatibility
+
+Uses `AK.foreachindex` for parallel execution on any backend:
+
+| Array Type | Backend | Notes |
+|------------|---------|-------|
+| `Array` | CPU | Multi-threaded via Julia |
+| `MtlArray` | Metal | Apple Silicon GPU |
+| `CuArray` | CUDA | NVIDIA GPU |
+| `ROCArray` | ROCm | AMD GPU |
+
+# Example
+
+```julia
+using BasisSimulator
+
+# Create a simple 2-material phantom mask
+mask = zeros(UInt8, 128, 128, 32)
+mask[40:90, 40:90, :] .= 1  # Water region
+# Region 0 = air (background), Region 1 = water
+
+# Get material definitions
+materials = get_region_materials()  # Returns [air, water, ...]
+
+# Create μ-volume at 60 keV
+μ_volume = zeros(Float32, 128, 128, 32)
+create_μ_volume!(μ_volume, mask, materials, 60.0)
+
+# Result: μ_volume contains ~0.0 for air, ~0.02 mm⁻¹ for water at 60 keV
+println("Water μ at 60 keV: ", μ_volume[65, 65, 16], " mm⁻¹")
+```
+
+# Notes
+
+- The lookup table is computed on CPU then transferred to GPU for efficiency
+- UInt8 mask values are converted to 1-based Julia indices internally
+- Attenuation values are linearly interpolated from NIST XCOM data
+- For very large volumes, this is the memory bottleneck (one full μ-volume)
+
+# See Also
+
+- [`forward_project!`](@ref): High-level projection interface
+- [`get_region_materials`](@ref): Standard phantom material definitions
+- [`compute_μ_at_energy`](@ref): Single-material attenuation lookup
 """
 function create_μ_volume!(
     μ_volume::AbstractArray{T, 3},
@@ -73,78 +243,226 @@ end
 # =============================================================================
 
 """
-    forward_project!(sinogram, volume_or_mask, geom; kwargs...)
+    forward_project!(sinogram, volume_or_mask, geom; kwargs...) -> sinogram
 
-Unified forward projection with monochromatic/polychromatic options,
-physics effects, and optional CatSim-exact signal chain.
+Unified forward projection with monochromatic or polychromatic X-ray physics,
+optional detector effects, and CatSim-exact calibration signal chain.
+
+This is the primary interface for CT simulation in BasisSimulator.jl, supporting
+three modes of operation:
+1. **Monochromatic**: Single effective energy (fast, simple)
+2. **Polychromatic**: Full spectral simulation (accurate, slower)
+3. **Full Signal Chain**: CatSim-exact clinical simulation pipeline
+
+# Algorithm
+
+## Polychromatic Projection (Beer-Lambert Law)
+
+For a polychromatic X-ray beam with N energy bins, the transmitted intensity is:
+
+    I_total = Σₑ wₑ × exp(-Lₑ)
+
+where:
+- wₑ = normalized spectral weight for energy bin e (Σ wₑ = 1)
+- Lₑ = ∫ μₑ(l) dl = line integral of attenuation at energy e
+
+The projection value is the negative log of transmitted intensity:
+
+    p = -log(I_total) = -log(Σₑ wₑ × exp(-Lₑ))
+
+This nonlinear operation produces beam hardening, where low-energy photons are
+preferentially absorbed, shifting the effective energy along the ray path.
+
+## Spectral Integration Method
+
+Uses energy-sequential integration for memory efficiency:
+
+```
+for e in 1:N_energies:
+    μ_volume[i,j,k] = μ(material[i,j,k], E_e)     # Create energy-specific volume
+    L_e = siddon_ray_trace(μ_volume)               # Ray trace at this energy
+    I_total += w_e × exp(-L_e)                     # Accumulate Beer-Lambert
+end
+sinogram = -log(I_total)                           # Convert to projection
+```
+
+Memory: O(volume_size) additional storage (one μ-volume), independent of N_energies.
+
+## CatSim Signal Chain
+
+When signal chain parameters are provided, applies clinical CT pipeline:
+
+1. **Polychromatic FP**: Beer-Lambert projection as above
+2. **Physics Pipeline**: scatter, crosstalk, focal spot, detector lag
+3. **Intensity Domain**: exp(-sinogram) to get transmitted photon counts
+4. **Heel Effect**: anode self-attenuation intensity gradient
+5. **DAS Model**: gain and electronic noise (phantom only)
+6. **Air Calibration**: ratio to noise-free air scan (CatSim-exact)
+7. **Low Signal Correction**: smooth replacement of negative values
+8. **Log Transform**: -log(calibrated_intensity)
+9. **BHC**: polynomial beam hardening correction
 
 # Arguments
-- `sinogram`: Output sinogram [n_cols, n_rows, n_angles] (modified in place)
-- `volume_or_mask`: Either a 3D μ volume (Float32/64) or a UInt8 material mask
-- `geom`: CTGeometry with scanner parameters
+
+- `sinogram::AbstractArray{T,3}`: Output sinogram of size `[n_cols, n_rows, n_angles]`,
+  modified in place. Contains line integrals (projection domain) after execution.
+  - `n_cols`: Detector columns (transaxial direction)
+  - `n_rows`: Detector rows (axial direction, typically 1 for 2D, >1 for cone-beam)
+  - `n_angles`: Number of projection angles
+
+- `volume_or_mask::AbstractArray`: Input volume, either:
+  - `AbstractArray{T,3}` where `T <: AbstractFloat`: Pre-computed attenuation volume
+    μ in mm⁻¹. Used directly for monochromatic projection.
+  - `AbstractArray{UInt8,3}`: Material index mask. Combined with `materials` and
+    `energies`/`weights` for polychromatic projection.
+
+- `geom::CTGeometry`: Scanner geometry containing source positions, detector
+  geometry, and field of view. See `CTGeometry` for required fields.
 
 # Keyword Arguments
 
-**Spectrum Mode** (choose one):
+## Spectrum Parameters (required for mask input)
 
-*Monochromatic* (direct volume input):
-- Just pass a μ volume directly - no spectrum kwargs needed
+- `energy::Union{Nothing,Real}=nothing`: Single energy in keV for monochromatic
+  projection from mask input. Mutually exclusive with `energies`/`weights`.
 
-*Monochromatic* (mask + single energy):
-- `energy`: Single energy in keV (e.g., 60.0)
-- `materials`: Vector of materials from `get_region_materials()`
+- `energies::Union{Nothing,Vector}=nothing`: Vector of energy bin centers in keV.
+  Typically 10-60 bins spanning 20-140 keV. From `load_spectrum()` or custom.
 
-*Polychromatic* (mask + spectrum):
-- `energies`: Vector of energy bin centers (keV)
-- `weights`: Vector of photon fluence weights
-- `materials`: Vector of materials from `get_region_materials()`
+- `weights::Union{Nothing,Vector}=nothing`: Vector of spectral weights (photon
+  fluence). Will be normalized internally (sum to 1). Paired with `energies`.
 
-**Physics Effects** (optional):
-- `physics`: PhysicsConfig from `realistic_physics_config()`, `minimal_physics_config()`,
-             or `default_physics_config(...)`. If `nothing`, no physics effects applied.
+- `materials::Union{Nothing,Vector}=nothing`: Vector of material definitions for
+  each region in the mask. From `get_region_materials()`. Required when using
+  mask input.
 
-**CatSim Signal Chain** (optional - enables full clinical pipeline):
-- `heel_effect`: HeelEffect model for anode self-attenuation
-- `das_model`: DASModel for detector signal chain (gain + electronic noise)
-- `bhc`: BHCPolynomial for beam hardening correction
-- `calibrate`: Enable full CatSim calibration (default: true when signal chain enabled)
-- `max_prep`: Maximum sinogram value for clamping (default: nothing)
+## Physics Effects
 
-When any signal chain parameter is provided, the function automatically:
-1. Applies physics effects (if physics provided)
-2. Converts to intensity domain
-3. Applies heel effect (if provided)
-4. Applies DAS model with noise (if provided)
-5. Creates noise-free air scan reference (CatSim-exact)
-6. Applies air scan calibration with low signal correction
-7. Applies log transform
-8. Applies BHC (if provided)
+- `physics::Union{Nothing,PhysicsConfig}=nothing`: Physics configuration from:
+  - `realistic_physics_config()`: Common clinical effects
+  - `minimal_physics_config()`: Noise only
+  - `full_physics_config()`: All 13 effects
+  - `default_physics_config(...)`: Custom via kwargs
+
+## Signal Chain Parameters
+
+- `heel_effect::Union{Nothing,HeelEffect}=nothing`: Anode heel effect model.
+  From `default_heel_effect(anode_angle_deg=7.0)`.
+
+- `das_model::Union{Nothing,DASModel}=nothing`: Data acquisition system model
+  with gain and electronic noise. From `default_das_model(gain=1.0, ...)`.
+
+- `bhc::Union{Nothing,Union{BHCPolynomial,BeamHardeningCorrection}}=nothing`:
+  Beam hardening correction polynomial. From `bhc_water_default()`.
+
+- `calibrate::Bool=true`: Enable full CatSim calibration when signal chain
+  parameters are provided. Set to `false` for raw projections.
+
+- `max_prep::Union{Nothing,Real}=nothing`: Maximum projection value for clamping.
+  Prevents extreme values from saturation/negative values.
+
+- `noise_seed::Union{Nothing,Int}=nothing`: Random seed for reproducible noise.
 
 # Returns
-The modified sinogram array
+
+- `sinogram::AbstractArray{T,3}`: The modified sinogram array (same reference)
+
+# GPU Compatibility
+
+Backend auto-detected from array type via AcceleratedKernels.jl:
+
+| Array Type | Backend | Speedup vs CPU |
+|------------|---------|----------------|
+| `Array` | CPU (multi-threaded) | 1× (baseline) |
+| `MtlArray` | Metal (Apple Silicon) | ~50-100× |
+| `CuArray` | CUDA (NVIDIA) | ~50-100× |
+| `ROCArray` | ROCm (AMD) | ~50-100× |
 
 # Examples
 
+## Simple Monochromatic Projection
+
 ```julia
-# Simple monochromatic projection (no physics, no signal chain)
-forward_project!(sinogram, Float32.(phantom.μ), geom)
+using BasisSimulator
 
-# Polychromatic with physics pipeline only
-physics = realistic_physics_config(scatter_scale=1.0, noise_level=1.0)
-forward_project!(sinogram, phantom.mask, geom;
-    energies=energies, weights=weights, materials=materials,
-    physics=physics
-)
+# Create geometry and phantom
+scanner = GERevolutionApex()
+geom = CTGeometry(scanner; n_angles=360, fov=(350.0, 350.0, 40.0))
+phantom = create_water_cylinder(128, diameter_mm=200.0)
 
-# FULL CatSim signal chain (recommended for clinical simulation)
+# Direct μ-volume projection (fastest)
+sinogram = similar(phantom.μ, Float32, geom.n_cols, geom.n_rows, geom.n_angles)
+fill!(sinogram, 0f0)
+forward_project!(sinogram, phantom.μ, geom)
+```
+
+## Polychromatic Projection
+
+```julia
+# Load 120 kVp spectrum and materials
+energies, weights = load_spectrum(120)
+energies, weights = downsample_spectrum(energies, weights, 30)  # 30 bins
+materials = get_region_materials()
+
+# Polychromatic projection (includes beam hardening)
 forward_project!(sinogram, phantom.mask, geom;
-    energies=energies, weights=weights, materials=materials,
-    physics=realistic_physics_config(scatter_scale=1.0, noise_level=0.01),
-    heel_effect=default_heel_effect(anode_angle_deg=7.0),
-    das_model=default_das_model(gain=1.0, electronic_noise_sigma=100.0),
-    bhc=bhc_water_default()
+    energies=energies,
+    weights=weights,
+    materials=materials
 )
 ```
+
+## Full Clinical Simulation (CatSim Signal Chain)
+
+```julia
+using Metal  # GPU acceleration
+
+# GPU arrays
+mask_gpu = MtlArray(phantom.mask)
+sinogram_gpu = MtlArray(zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles))
+
+# Full physics + signal chain
+forward_project!(sinogram_gpu, mask_gpu, geom;
+    energies=energies,
+    weights=weights,
+    materials=materials,
+    physics=full_physics_config(energy_keV=65.0, noise_seed=42),
+    heel_effect=default_heel_effect(anode_angle_deg=7.0),
+    das_model=default_das_model(gain=1.0, electronic_noise_sigma=100.0),
+    bhc=bhc_water_default(reference_energy_keV=65.0)
+)
+
+# sinogram_gpu now contains calibrated, BHC-corrected projections
+```
+
+# Performance Notes
+
+- **Memory**: O(volume_size) working memory for μ-volume at each energy
+- **Time complexity**: O(N_energies × N_rays × N_voxels_per_ray)
+- **Bottleneck**: Ray tracing (GPU) or memory bandwidth (CPU)
+- For repeated projections, prefer in-place version to avoid allocations
+
+# References
+
+1. Hsieh J. "Computed Tomography: Principles, Design, Artifacts, and Recent
+   Advances." 3rd ed. SPIE Press; 2015. doi:10.1117/3.2197756
+
+2. Buzug TM. "Computed Tomography: From Photon Statistics to Modern Cone-Beam
+   CT." Springer; 2008. doi:10.1007/978-3-540-39408-2
+
+3. De Man B, et al. "An iterative maximum-likelihood polychromatic algorithm
+   for CT." IEEE Trans Med Imaging. 2001;20(10):999-1008.
+   doi:10.1109/42.959297
+
+4. Hubbell JH, Seltzer SM. "Tables of X-Ray Mass Attenuation Coefficients."
+   NIST Standard Reference Database 126.
+
+# See Also
+
+- [`forward_project`](@ref): Allocating version (creates sinogram)
+- [`siddon_forward_project!`](@ref): Low-level ray tracing
+- [`fdk_reconstruct`](@ref): Filtered backprojection reconstruction
+- [`PhysicsConfig`](@ref): Physics effects configuration
 """
 function forward_project!(
     sinogram::AbstractArray{T, 3},
@@ -245,32 +563,129 @@ function forward_project!(
 end
 
 """
-    forward_project(volume_or_mask, geom; kwargs...)
+    forward_project(volume_or_mask, geom; kwargs...) -> sinogram
 
-Allocating version of forward_project!. See `forward_project!` for details.
+Compute forward projection and return a newly allocated sinogram array.
+This is the allocating version of [`forward_project!`](@ref).
 
-The output sinogram is allocated on the same device as the input (CPU or GPU).
+# Algorithm
+
+Implements polychromatic X-ray projection via Beer-Lambert law:
+
+    I_total = Σₑ wₑ × exp(-Lₑ)
+    p = -log(I_total)
+
+where wₑ are spectral weights and Lₑ are energy-specific line integrals.
+See [`forward_project!`](@ref) for detailed algorithm description.
+
+# Arguments
+
+- `volume_or_mask::AbstractArray`: Input volume, either:
+  - `AbstractArray{T,3}` where `T <: AbstractFloat`: Pre-computed μ-volume (mm⁻¹)
+  - `AbstractArray{UInt8,3}`: Material mask for polychromatic projection
+
+- `geom::CTGeometry`: Scanner geometry (source positions, detector, FOV)
+
+# Keyword Arguments
+
+See [`forward_project!`](@ref) for complete list. Key parameters:
+- `energies`, `weights`, `materials`: For polychromatic mode
+- `physics`: PhysicsConfig for detector effects
+- `heel_effect`, `das_model`, `bhc`: CatSim signal chain
+
+# Returns
+
+- `sinogram::AbstractArray{T,3}`: Newly allocated sinogram of size
+  `[n_cols, n_rows, n_angles]`. The array is allocated on the same device
+  as `volume_or_mask` (CPU or GPU).
+
+# GPU Compatibility
+
+The returned sinogram is allocated on the same device as input:
+
+```julia
+# CPU
+sinogram = forward_project(Array(phantom.μ), geom)      # returns Array
+
+# Metal (Apple Silicon)
+sinogram = forward_project(MtlArray(phantom.μ), geom)   # returns MtlArray
+
+# CUDA (NVIDIA)
+sinogram = forward_project(CuArray(phantom.μ), geom)    # returns CuArray
+```
 
 # Examples
 
+## Simple Monochromatic Projection
+
 ```julia
-# Simple monochromatic (CPU)
-sinogram = forward_project(Float32.(phantom.μ), geom)
+using BasisSimulator
 
-# GPU input -> GPU output
+scanner = GERevolutionApex()
+geom = CTGeometry(scanner; n_angles=180, fov=(300.0, 300.0, 32.0))
+
+# Create uniform water phantom (μ ≈ 0.02 mm⁻¹ at 60 keV)
+phantom_μ = fill(0.02f0, 128, 128, 32)
+
+# Forward projection - sinogram auto-allocated
+sinogram = forward_project(phantom_μ, geom)
+println("Sinogram size: ", size(sinogram))  # (n_cols, n_rows, 180)
+```
+
+## Polychromatic with GPU
+
+```julia
 using Metal
-volume_gpu = MtlArray(Float32.(phantom.μ))
-sinogram_gpu = forward_project(volume_gpu, geom)
 
-# Full CatSim signal chain
+# Load spectrum and materials
+energies, weights = load_spectrum(120)
+materials = get_region_materials()
+
+# GPU phantom mask
+mask_gpu = MtlArray(phantom.mask)
+
+# Polychromatic projection on GPU
+sinogram_gpu = forward_project(mask_gpu, geom;
+    energies=energies,
+    weights=weights,
+    materials=materials
+)
+```
+
+## Full Clinical Pipeline
+
+```julia
+# Complete CatSim-exact simulation
 sinogram = forward_project(phantom.mask, geom;
-    energies=energies, weights=weights, materials=materials,
-    physics=realistic_physics_config(),
-    heel_effect=default_heel_effect(),
-    das_model=default_das_model(),
+    energies=energies,
+    weights=weights,
+    materials=materials,
+    physics=full_physics_config(energy_keV=65.0),
+    heel_effect=default_heel_effect(anode_angle_deg=7.0),
+    das_model=default_das_model(gain=1.0, electronic_noise_sigma=100.0),
     bhc=bhc_water_default()
 )
 ```
+
+# Performance Notes
+
+For iterative algorithms or repeated projections, prefer [`forward_project!`](@ref)
+to avoid allocation overhead. This function allocates O(n_cols × n_rows × n_angles)
+elements for the output sinogram.
+
+# References
+
+1. Hsieh J. "Computed Tomography: Principles, Design, Artifacts, and Recent
+   Advances." 3rd ed. SPIE Press; 2015. doi:10.1117/3.2197756
+
+2. Buzug TM. "Computed Tomography: From Photon Statistics to Modern Cone-Beam
+   CT." Springer; 2008. doi:10.1007/978-3-540-39408-2
+
+# See Also
+
+- [`forward_project!`](@ref): In-place version (avoids allocation)
+- [`siddon_forward_project`](@ref): Low-level allocating ray tracing
+- [`fdk_reconstruct`](@ref): Filtered backprojection reconstruction
 """
 function forward_project(
     volume_or_mask::AbstractArray{T},
@@ -431,7 +846,16 @@ function _forward_project_with_signal_chain!(
     end
 
     # =========================================================================
-    # STEP 10: Beam hardening correction
+    # STEP 10: Scatter correction (after log transform, before BHC)
+    # =========================================================================
+    # Apply scatter correction if specified in physics config
+    # This estimates and subtracts scatter to reduce cupping artifacts
+    if physics !== nothing && physics.scatter_correction !== nothing
+        correct_scatter!(sinogram, physics.scatter_correction)
+    end
+
+    # =========================================================================
+    # STEP 11: Beam hardening correction
     # =========================================================================
     if bhc !== nothing
         apply_bhc!(sinogram, bhc)
@@ -523,7 +947,94 @@ function _forward_project_mono!(
     return siddon_forward_project!(sinogram, μ_volume, geom)
 end
 
-"""Polychromatic forward projection from mask + spectrum"""
+"""
+    _forward_project_poly!(sinogram, mask, geom, energies, weights, materials) -> sinogram
+
+Internal implementation of polychromatic forward projection using Beer-Lambert
+physics with energy-sequential integration.
+
+# Algorithm
+
+Implements the polychromatic Beer-Lambert formula:
+
+    I_total = Σₑ wₑ × exp(-Lₑ)
+
+where:
+- wₑ = normalized weight for energy bin e
+- Lₑ = Siddon line integral through μ(E_e) volume
+
+The algorithm proceeds energy-by-energy for memory efficiency:
+
+```
+I_transmitted = 0
+for e in 1:N_energies:
+    μ_volume = create_μ_volume(mask, materials, E_e)  # Energy-specific μ
+    L_e = siddon_project(μ_volume)                     # Ray trace
+    I_transmitted += w_e × exp(-L_e)                   # Accumulate intensity
+end
+sinogram = -log(max(I_transmitted, ε))                 # Convert to projection
+```
+
+# Mathematical Formulation
+
+For a polychromatic beam passing through heterogeneous material:
+
+    I/I₀ = ∫ w(E) × exp(-∫ μ(E, l) dl) dE
+
+Discretized with N energy bins:
+
+    I/I₀ = Σₑ₌₁ᴺ wₑ × exp(-Σᵢ μᵢ(Eₑ) × Δlᵢ)
+
+The projection (negative log-intensity) is:
+
+    p = -log(Σₑ wₑ × exp(-Lₑ))
+
+Note: This is NOT equal to Σₑ wₑ × Lₑ (weighted average of monochromatic
+projections) due to the nonlinearity of log-sum-exp. This nonlinearity
+causes beam hardening artifacts.
+
+# Arguments
+
+- `sinogram::AbstractArray{T,3}`: Output array [n_cols, n_rows, n_angles], modified
+  in place with line integral values.
+
+- `mask::AbstractArray{UInt8,3}`: Material index volume [nx, ny, nz]. Values 0-255
+  index into materials array (0-indexed, converted internally).
+
+- `geom::CTGeometry`: Scanner geometry with source/detector positions and FOV.
+
+- `energies::Vector`: Energy bin centers in keV. Length N_energies.
+  Example: [20.0, 30.0, ..., 120.0] for 10 keV bins.
+
+- `weights::Vector`: Photon fluence weights per energy bin. Will be normalized
+  internally to sum to 1.0. Typically from X-ray tube spectrum.
+
+- `materials::Vector`: Material definitions for each region index. Must include
+  all indices present in mask. From `get_region_materials()`.
+
+# Returns
+
+- `sinogram::AbstractArray{T,3}`: The modified sinogram (same reference)
+
+# Memory Usage
+
+- One temporary μ-volume: O(nx × ny × nz) elements
+- One temporary monochromatic sinogram: O(n_cols × n_rows × n_angles)
+- One intensity accumulator: O(n_cols × n_rows × n_angles)
+- Total: ~3× sinogram size additional memory, independent of N_energies
+
+# Notes
+
+- Weights are normalized internally (sum to 1.0)
+- Epsilon clamping (1e-10) prevents log(0) errors
+- GPU execution via AcceleratedKernels.jl when arrays are GPU arrays
+
+# See Also
+
+- [`forward_project!`](@ref): High-level interface
+- [`create_μ_volume!`](@ref): Energy-specific μ volume creation
+- [`siddon_forward_project!`](@ref): Monochromatic ray tracing
+"""
 function _forward_project_poly!(
     sinogram::AbstractArray{T, 3},
     mask::AbstractArray{UInt8, 3},

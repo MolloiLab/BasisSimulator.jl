@@ -164,10 +164,11 @@ function create_gammex_472(;
     outer_ring_radius = 10.5  # 105mm - iodine inserts
 
     # Get materials and compute μ values
-    solid_water = XA.Materials.water  # Approximate solid water as water
+    # Use pure water for the phantom body (water-equivalent)
+    solid_water_mat = XA.Materials.water
     air_mat = XA.Materials.air
 
-    μ_solid_water = Float32(compute_μ_at_energy(solid_water, μ_effective_energy_keV))
+    μ_solid_water = Float32(compute_μ_at_energy(solid_water_mat, μ_effective_energy_keV))
     μ_air = Float32(compute_μ_at_energy(air_mat, μ_effective_energy_keV))
 
     # Calcium inserts (inner ring) - 7 inserts evenly spaced

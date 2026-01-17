@@ -298,6 +298,282 @@ function compute_scatter_artifact_magnitude(
 end
 
 # =============================================================================
+# Scatter Correction
+# =============================================================================
+
+"""
+    ScatterCorrectionModel
+
+Parameters for scatter correction using CatSim-style convolution-based estimation.
+
+The estimated scatter at each detector pixel is computed as:
+    scatter_est = convolve(intensity × prep^α × C × scale, kernel)
+
+where:
+- intensity = measured intensity (after calibration)
+- prep = -log(calibrated_ratio), the line integral estimate
+- α = 0.9 (empirical exponent from CatSim)
+- C = base correction coefficient (~0.0268)
+- scale = configurable scale factor
+- kernel = scatter point spread function
+
+This scatter estimate is then subtracted from the measured intensity.
+
+Reference: CatSim Scatter_Correction.py
+"""
+struct ScatterCorrectionModel
+    # Base correction coefficient (CatSim uses 0.0268)
+    correction_coefficient::Float64
+
+    # User-adjustable scale factor (1.0 = nominal correction)
+    scale_factor::Float64
+
+    # Exponent for prep term (CatSim uses 0.9)
+    prep_exponent::Float64
+
+    # Scatter kernel FWHM (in detector pixels)
+    kernel_fwhm::Float64
+
+    # Scatter kernel type (:gaussian or :exponential)
+    kernel_type::Symbol
+end
+
+"""
+    default_scatter_correction(; scale_factor=1.0, kernel_fwhm=50.0)
+
+Create a scatter correction model with default CatSim parameters.
+
+# Parameters
+- `scale_factor`: Multiplier for correction magnitude (1.0 = nominal)
+- `kernel_fwhm`: Full-width half-maximum of scatter kernel in pixels
+
+# Notes
+Uses CatSim-exact parameters:
+- correction_coefficient = 0.0268
+- prep_exponent = 0.9
+
+Adjust scale_factor to fine-tune correction strength:
+- scale_factor < 1.0: Under-correction (residual cupping)
+- scale_factor = 1.0: Nominal correction
+- scale_factor > 1.0: Over-correction (may cause ring artifacts)
+"""
+function default_scatter_correction(;
+    scale_factor::Float64=1.0,
+    kernel_fwhm::Float64=50.0,
+    kernel_type::Symbol=:gaussian
+)
+    # CatSim-exact parameters
+    correction_coefficient = 0.0268
+    prep_exponent = 0.9
+
+    return ScatterCorrectionModel(
+        correction_coefficient,
+        scale_factor,
+        prep_exponent,
+        kernel_fwhm,
+        kernel_type
+    )
+end
+
+"""
+    correct_scatter!(sinogram, model::ScatterCorrectionModel) -> sinogram
+
+Apply scatter correction to sinogram (in-place, GPU-native).
+
+Uses CatSim-style convolution-based scatter estimation and subtraction.
+
+The algorithm (per view):
+1. Compute prep = sinogram value (already in log domain)
+2. Compute scatter_pre = exp(-prep) × prep^α × C × scale
+3. Scatter estimate = convolve(scatter_pre, kernel)
+4. Convert sinogram to intensity: I = exp(-sinogram)
+5. Subtract scatter: I_corrected = I - scatter_estimate
+6. Convert back: sinogram = -log(I_corrected)
+
+# Arguments
+- `sinogram`: Sinogram [n_cols × n_rows × n_angles] (line integrals, log domain)
+- `model::ScatterCorrectionModel`: Correction model parameters
+
+# Returns
+Modified sinogram with scatter correction applied.
+
+# Notes
+- Reduces cupping artifacts in uniform phantoms
+- Center-to-edge HU difference should be < 20 HU after correction
+- Works in log domain (takes sinogram, applies correction, returns sinogram)
+
+Reference: CatSim Scatter_Correction.py
+"""
+function correct_scatter!(sinogram::AbstractArray{T,3}, model::ScatterCorrectionModel) where T
+    n_cols = size(sinogram, 1)
+    n_rows = size(sinogram, 2)
+    n_angles = size(sinogram, 3)
+
+    # Combined correction coefficient
+    C = T(model.correction_coefficient * model.scale_factor)
+    alpha = T(model.prep_exponent)
+
+    # Create scatter kernel on CPU
+    # Reuse the same kernel creation as for scatter addition
+    scatter_model_temp = ScatterModel(
+        model.correction_coefficient,
+        model.scale_factor,
+        model.kernel_fwhm,
+        model.kernel_type
+    )
+    kernel_cpu = T.(create_scatter_kernel_spatial(scatter_model_temp))
+    kernel_size = size(kernel_cpu, 1)
+    half_k = kernel_size ÷ 2
+
+    # Transfer kernel to GPU
+    kernel = similar(sinogram, size(kernel_cpu)...)
+    copyto!(kernel, kernel_cpu)
+
+    # Output buffer
+    output = similar(sinogram)
+
+    eps = T(1e-10)
+
+    # GPU-native scatter correction
+    # For each pixel: estimate scatter, subtract from intensity, convert back
+    AK.foreachindex(sinogram) do idx
+        ci = CartesianIndices(sinogram)[idx]
+        col, row, angle = Tuple(ci)
+
+        # Current value (log domain = line integral)
+        prep = sinogram[idx]
+
+        # Convert to intensity
+        clamped_prep = min(max(prep, T(0)), T(15))
+        intensity = exp(-clamped_prep)
+
+        # Compute scatter estimate via spatial convolution
+        # scatter_est = convolve(exp(-prep) × prep^α × C, kernel)
+        scatter_est = zero(T)
+        for dj in -half_k:half_k
+            for di in -half_k:half_k
+                src_col = clamp(col + di, 1, n_cols)
+                src_row = clamp(row + dj, 1, n_rows)
+
+                # Source prep value
+                src_prep = sinogram[src_col, src_row, angle]
+                src_clamped = min(max(src_prep, eps), T(15))
+                src_intensity = exp(-src_clamped)
+
+                # Scatter pre-signal: intensity × prep^α × C
+                # CatSim: sc_preConv = phantomScan × prep^0.9 × 0.0268
+                scatter_pre = src_intensity * (src_clamped ^ alpha) * C
+
+                # Kernel weight
+                ki = di + half_k + 1
+                kj = dj + half_k + 1
+
+                scatter_est += scatter_pre * kernel[ki, kj]
+            end
+        end
+
+        # Subtract scatter estimate from intensity
+        # Ensure result is positive
+        corrected_intensity = max(intensity - scatter_est, eps)
+
+        # Convert back to log domain
+        output[idx] = -log(corrected_intensity)
+    end
+
+    copyto!(sinogram, output)
+
+    return sinogram
+end
+
+# Convenience wrapper that allocates
+function correct_scatter(sinogram::AbstractArray{T,3}, model::ScatterCorrectionModel) where T
+    result = copy(sinogram)
+    return correct_scatter!(result, model)
+end
+
+"""
+    measure_cupping(recon_hu, center_radius_frac=0.1, edge_radius_frac=0.8)
+
+Measure cupping artifact as center-to-edge HU difference in a uniform phantom.
+
+# Arguments
+- `recon_hu`: Reconstruction in HU [nx, ny, nz]
+- `center_radius_frac`: Fraction of image radius for center ROI (default: 0.1)
+- `edge_radius_frac`: Fraction of image radius for edge ROI (default: 0.8)
+
+# Returns
+Named tuple with:
+- `center_hu`: Mean HU in center ROI
+- `edge_hu`: Mean HU in edge annulus
+- `cupping_hu`: Center - Edge HU difference (positive = cupping, negative = doming)
+- `center_std`: Standard deviation in center
+- `edge_std`: Standard deviation in edge
+
+# Notes
+For a water phantom, cupping_hu should be < 20 HU after scatter correction.
+"""
+function measure_cupping(
+    recon_hu::AbstractArray{T,3};
+    center_radius_frac::Float64=0.1,
+    edge_radius_frac::Float64=0.8
+) where T
+    nx, ny, nz = size(recon_hu)
+
+    # Use central slice
+    central_slice = nz ÷ 2
+    slice = Array(recon_hu[:, :, central_slice])
+
+    cx, cy = nx ÷ 2, ny ÷ 2
+    max_radius = min(nx, ny) / 2
+
+    center_radius = center_radius_frac * max_radius
+    edge_inner = edge_radius_frac * max_radius
+    edge_outer = 0.95 * max_radius  # Leave small margin
+
+    center_vals = T[]
+    edge_vals = T[]
+
+    for j in 1:ny
+        for i in 1:nx
+            r = sqrt((i - cx)^2 + (j - cy)^2)
+            val = slice[i, j]
+
+            # Skip air (outside phantom)
+            if val < -500
+                continue
+            end
+
+            if r <= center_radius
+                push!(center_vals, val)
+            elseif edge_inner <= r <= edge_outer
+                push!(edge_vals, val)
+            end
+        end
+    end
+
+    if isempty(center_vals) || isempty(edge_vals)
+        return (
+            center_hu = T(NaN),
+            edge_hu = T(NaN),
+            cupping_hu = T(NaN),
+            center_std = T(NaN),
+            edge_std = T(NaN)
+        )
+    end
+
+    center_hu = mean(center_vals)
+    edge_hu = mean(edge_vals)
+
+    return (
+        center_hu = center_hu,
+        edge_hu = edge_hu,
+        cupping_hu = center_hu - edge_hu,  # Positive = cupping
+        center_std = std(center_vals),
+        edge_std = std(edge_vals)
+    )
+end
+
+# =============================================================================
 # Exports
 # =============================================================================
 
@@ -305,3 +581,6 @@ export ScatterModel, default_scatter_model
 export create_scatter_kernel_spatial
 export add_scatter!, add_scatter
 export estimate_scale_factor, estimate_spr, compute_scatter_artifact_magnitude
+export ScatterCorrectionModel, default_scatter_correction
+export correct_scatter!, correct_scatter
+export measure_cupping

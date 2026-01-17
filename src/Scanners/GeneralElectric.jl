@@ -442,9 +442,69 @@ function GEApexPediatricHelical(; age_group::Symbol=:child)
 end
 
 # =============================================================================
+# GE Revolution Apex - Convenience Alias
+# =============================================================================
+
+"""
+    GERevolutionApex() -> GERevolutionApexElite
+
+Convenience constructor for GE Revolution Apex scanner preset.
+
+Returns a `GERevolutionApexElite` scanner specification with all parameters
+sourced from RESEARCH-001 (docs/scanners/GE_Revolution_Apex_Research.md).
+
+# All Parameters with Source Citations
+
+## Verified Parameters (from FDA 510(k), GE sell sheets, publications)
+- SID: 626.0 mm [CITE: GE GoldSeal Revolution CT EX 160mm Sell Sheet]
+- SDD: 1097.0 mm [CITE: GE GoldSeal Revolution CT EX 160mm Sell Sheet]
+- Detector rows: 256 [CITE: FDA K133705]
+- Detector columns: 832 [DERIVED: 212,992 total cells / 256 rows]
+- Row size: 0.625 mm [CITE: FDA K133705]
+- Z-coverage: 160 mm [CITE: FDA K133705]
+- Target angle: 10° [CITE: PMC10332658]
+- Focal spots: 1.0×0.7, 1.6×1.2, 2.0×1.2 mm [CITE: GE Sell Sheet, IEC 60336]
+- kVp: 70, 80, 100, 120, 140 [CITE: GE Sell Sheet]
+- Max rotation: 0.23s (Elite) [CITE: FDA K213715]
+- Gantry aperture: 800 mm [CITE: FDA K133705]
+- Max SFOV: 500 mm [CITE: GE Sell Sheet]
+
+## Estimated Parameters (marked in code)
+- Column size: ~1.053 mm [DERIVED: SFOV / magnification]
+- Detector depth: 3.0 mm [ESTIMATED: typical garnet scintillator]
+- Fill factors: 0.9 [ESTIMATED: typical modern CT]
+- Flat filter: 2.5 mm Al [ESTIMATED: federal minimum]
+
+# Example
+```julia
+using BasisSimulator
+
+# Get scanner spec
+spec = GERevolutionApex()
+
+# Create geometry for simulation
+geom = create_geometry(spec; n_angles=984, n_rows=64)
+
+# Print specification details
+print_scanner_info(spec)
+```
+
+# References
+- FDA 510(k) K213715: https://www.accessdata.fda.gov/cdrh_docs/pdf21/K213715.pdf
+- FDA 510(k) K133705: https://www.accessdata.fda.gov/cdrh_docs/pdf13/K133705.pdf
+- PMC10332658: https://pmc.ncbi.nlm.nih.gov/articles/PMC10332658/
+- RESEARCH-001: docs/scanners/GE_Revolution_Apex_Research.md
+
+See also: [`GERevolutionApexElite`](@ref), [`create_geometry`](@ref)
+"""
+function GERevolutionApex()
+    return GERevolutionApexElite()
+end
+
+# =============================================================================
 # Exports
 # =============================================================================
 
-export GERevolutionApexElite
+export GERevolutionApexElite, GERevolutionApex
 export GEApexChestHelical, GEApexHeadAxial, GEApexCardiacHelical
 export GEApexAbdomenHelical, GEApexPediatricHelical
