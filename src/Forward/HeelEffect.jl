@@ -5,15 +5,25 @@
 # Models the heel effect: X-rays emitted toward the anode side travel through
 # more target material, resulting in lower intensity on the anode side.
 #
-# The intensity variation across the field follows approximately:
-#   I(θ) = I₀ × exp(-μ_target × t / sin(θ_target + θ))
+# The intensity variation across the field follows the CatSim-exact formula:
+#
+#   I(θ) = I₀ × exp(-μ × d × cos(θ_target) / sin(θ_target + θ))
 #
 # where:
-#   θ_target = anode angle (typically 7-12°)
-#   θ = angle from central ray
-#   t = effective target thickness
+#   θ_target = anode (target) angle (typically 7-12° for CT)
+#   θ = take-off angle deviation from central ray
+#   d = electron penetration depth in anode material (mm)
+#   μ = linear attenuation coefficient of target material (cm⁻¹)
 #
-# Reference: Bushberg et al., "The Essential Physics of Medical Imaging"
+# The cos(θ_target) factor accounts for the effective electron beam penetration
+# depth projected onto the anode surface.
+#
+# References:
+# 1. Bushberg JT, et al. "The Essential Physics of Medical Imaging", 3rd ed.
+#    Chapter 6: X-ray Production, X-ray Tubes, and X-ray Generators.
+# 2. CatSim CreateHeelEffect.py - HeelEffectIntensity function
+#    https://github.com/xcist/main
+# 3. Podgorsak EB. "Radiation Physics for Medical Physicists", Chapter 4.
 #
 # =============================================================================
 
@@ -97,7 +107,21 @@ end
 """
     apply_heel_effect!(intensity, heel, geom)
 
-Apply heel effect to intensity data (in-place).
+Apply heel effect to intensity data (in-place) using CatSim-exact formula.
+
+# Algorithm
+The heel effect is modeled using the CatSim formula (from CreateHeelEffect.py):
+
+    I(θ) = I₀ × exp(-μ × d × cos(θ_target) / sin(θ_target + θ))
+
+where:
+- μ = target material attenuation coefficient (cm⁻¹)
+- d = electron penetration depth (cm)
+- θ_target = anode (target) angle
+- θ = take-off angle deviation from central ray
+
+The cos(θ_target) factor accounts for the electron beam penetration geometry
+in the tilted anode surface.
 
 # Arguments
 - `intensity`: Intensity array [n_cols, n_rows, n_angles] (modified in place)
@@ -106,6 +130,16 @@ Apply heel effect to intensity data (in-place).
 
 # Returns
 - Modified intensity array with heel effect applied
+
+# GPU Compatibility
+- ✅ Metal (via AcceleratedKernels.jl)
+- ✅ CUDA
+- ✅ ROCm
+- ✅ CPU fallback
+
+# References
+1. CatSim CreateHeelEffect.py - HeelEffectIntensity function
+2. Bushberg JT, et al. "The Essential Physics of Medical Imaging"
 
 # Example
 ```julia
@@ -132,17 +166,21 @@ function apply_heel_effect!(
     # Anode angle in radians
     θ_anode = T(heel.anode_angle_deg * π / 180)
 
-    # Effective thickness
-    t = T(heel.effective_thickness_mm / 10)  # Convert to cm
+    # Electron penetration depth in cm (CatSim uses mm, we convert)
+    d = T(heel.effective_thickness_mm / 10)
+
+    # CatSim-exact: cos(θ_target) factor for electron penetration geometry
+    cos_θ_anode = cos(θ_anode)
 
     # Fan angle range (assumes symmetric detector)
     fan_angle_max = T(atan(geom.fov[1] / 2 / geom.SAD))
 
-    # Precompute cathode side (maximum effective angle) for normalization
-    # This ensures intensity is always ≤ original
-    θ_max = θ_anode + fan_angle_max  # Maximum angle = cathode side
-    max_path = t / sin(θ_max)
-    max_atten = T(exp(-μ_target * max_path))  # Minimum attenuation (maximum transmission)
+    # Precompute reference angle attenuation for normalization
+    # We normalize to the central ray (θ = 0) so that center intensity = 1.0
+    sin_ref = sin(θ_anode)  # Reference at central ray
+    sin_ref = max(sin_ref, T(0.01))  # Prevent division by zero
+    exp_ref = -μ_target * d * cos_θ_anode / sin_ref
+    I_ref = exp(clamp(exp_ref, T(-700), T(700)))
 
     # Minimum effective angle (prevent extreme attenuation at anode limit)
     # Clamp to at least θ_anode/3 to keep attenuation physically reasonable
@@ -157,23 +195,22 @@ function apply_heel_effect!(
         n_cols_T = T(n_cols)
         γ = (T(col) - n_cols_T/T(2) - T(0.5)) / (n_cols_T/T(2)) * fan_angle_max
 
-        # Angle through target material
-        # On anode side (negative γ), angle is steeper, more attenuation
+        # Effective angle through target material
+        # On anode side (negative γ), angle is smaller, more attenuation
         θ_effective = θ_anode + γ
 
         # Clamp to minimum angle (prevents extreme attenuation at anode edge)
-        # This represents the physical limit where X-rays are mostly blocked
         θ_effective = max(θ_effective, θ_min)
 
-        # Path length through target
-        path_length = t / sin(θ_effective)
+        # CatSim-exact formula: exp(-μ × d × cos(θ_target) / sin(θ_target + θ))
+        sin_effective = sin(θ_effective)
+        sin_effective = max(sin_effective, T(0.01))  # Prevent division by zero
 
-        # Attenuation factor
-        attenuation = exp(-μ_target * path_length)
+        exp_term = -μ_target * d * cos_θ_anode / sin_effective
+        attenuation = exp(clamp(exp_term, T(-700), T(700)))
 
-        # Normalize to cathode side (maximum transmission)
-        # This ensures multiplier is always ≤ 1.0
-        intensity[idx] *= attenuation / max_atten
+        # Normalize to central ray (so center stays at ~1.0)
+        intensity[idx] *= attenuation / I_ref
     end
 
     return intensity
@@ -217,15 +254,42 @@ end
     get_heel_effect_info(heel)
 
 Get information about heel effect model.
+
+# Returns
+Named tuple with:
+- `enabled`: Whether heel effect is active
+- `anode_angle_deg`: Target angle in degrees
+- `target_material`: Target material symbol
+- `effective_thickness_mm`: Electron penetration depth in mm
+- `expected_variation`: Human-readable description of expected intensity variation
 """
 function get_heel_effect_info(heel::HeelEffect)
+    if !heel.enabled
+        return (
+            enabled = false,
+            anode_angle_deg = heel.anode_angle_deg,
+            target_material = heel.target_material,
+            effective_thickness_mm = heel.effective_thickness_mm,
+            expected_variation = "disabled"
+        )
+    end
+
+    # Calculate expected intensity drop using CatSim formula
+    # At anode limit (θ ≈ 0), most attenuation
+    μ = get_target_attenuation(heel.target_material)
+    d = heel.effective_thickness_mm / 10  # Convert to cm
+    θ_anode = heel.anode_angle_deg * π / 180
+
+    # CatSim formula: exp(-μ × d × cos(θ_anode) / sin(θ_anode + θ))
+    # At central ray (θ = 0): exp(-μ × d × cos(θ_anode) / sin(θ_anode))
+    # Intensity drop ≈ 1 - exp(...)
+    central_atten = 1 - exp(-μ * d * cos(θ_anode) / sin(θ_anode))
+
     return (
         enabled = heel.enabled,
         anode_angle_deg = heel.anode_angle_deg,
         target_material = heel.target_material,
         effective_thickness_mm = heel.effective_thickness_mm,
-        expected_variation = heel.enabled ?
-            "~$(round(Int, (1 - exp(-get_target_attenuation(heel.target_material) * heel.effective_thickness_mm/10 / sin(heel.anode_angle_deg*π/180))) * 100))% intensity drop on anode side" :
-            "disabled"
+        expected_variation = "~$(round(Int, central_atten * 100))% intensity drop at central ray"
     )
 end

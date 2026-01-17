@@ -169,6 +169,126 @@ src/
 
 ---
 
+## Dual-Energy (Dual kVp) CT
+
+BasisSimulator supports GE GSI-style dual-energy CT with rapid kVp switching:
+
+```julia
+using BasisSimulator
+using Metal  # or CUDA
+
+# Create phantom and geometry
+phantom = create_gammex_472(n_voxels=256, n_slices=32)
+spec = GERevolutionApex()
+geom = create_geometry(spec; n_angles=984, n_rows=64)
+materials = get_region_materials()
+
+# Define GSI protocol (80/140 kVp rapid switching)
+protocol = default_gsi_protocol(
+    low_mA = 400.0,   # 80 kVp tube current
+    high_mA = 400.0   # 140 kVp tube current
+)
+
+# Dual-energy forward projection
+de_sino = forward_project_dual_energy(
+    MtlArray(phantom.mask), geom, protocol;
+    materials = materials,
+    scanner = spec
+)
+
+# Access low/high energy sinograms
+sino_80kVp = de_sino.low    # 80 kVp sinogram
+sino_140kVp = de_sino.high  # 140 kVp sinogram
+
+# Material decomposition (water/iodine basis)
+mat_map = decompose_materials(de_sino; basis=(:water, :iodine))
+water_sino = mat_map.material1
+iodine_sino = mat_map.material2
+
+# Virtual Monoenergetic Imaging (VMI)
+vmi_50keV = virtual_monoenergetic(mat_map, 50.0)   # High iodine contrast
+vmi_70keV = virtual_monoenergetic(mat_map, 70.0)   # Balanced
+vmi_100keV = virtual_monoenergetic(mat_map, 100.0) # Metal artifact reduction
+
+# Reconstruct VMI
+recon_70keV = fdk_reconstruct(vmi_70keV, geom, size(phantom.μ))
+```
+
+### VMI Energy Selection Guide
+
+| Energy (keV) | Use Case |
+|--------------|----------|
+| 40-50 | Maximum iodine enhancement (high noise) |
+| 50-60 | Good contrast, moderate noise |
+| 65-75 | Balanced (similar to 120 kVp single-energy) |
+| 80-100 | Reduced beam hardening artifacts |
+| 100-140 | Metal artifact reduction |
+
+### VMI Reconstruction Integration
+
+The `reconstruct_vmi()` function provides a complete VMI reconstruction pipeline:
+
+```julia
+# Full VMI reconstruction with HU conversion
+vmi_70_hu = reconstruct_vmi(mat_map, 70.0, geom, (256, 256, 32);
+    method=:fdk,        # or :sirt
+    to_hu=true,         # Convert to Hounsfield Units
+    niter=3             # SIRT iterations (ignored for FDK)
+)
+
+# Get attenuation values instead of HU
+vmi_70_mu = reconstruct_vmi(mat_map, 70.0, geom, (256, 256, 32);
+    to_hu=false
+)
+
+# Use SIRT for better quality (slower)
+vmi_70_sirt = reconstruct_vmi(mat_map, 70.0, geom, (256, 256, 32);
+    method=:sirt, niter=5
+)
+```
+
+### Batch VMI Generation (keV Sweep)
+
+Generate VMI at multiple energies for visualization:
+
+```julia
+energies = [40.0, 50.0, 60.0, 70.0, 80.0, 100.0, 120.0, 140.0]
+vmi_series = generate_vmi_series(mat_map, energies, geom, (128, 128, 16))
+
+# Access specific energy
+vmi_50 = vmi_series[50.0]
+
+# Plot iodine enhancement vs energy
+using Statistics
+iodine_mask = phantom.mask[:, :, 8] .== UInt8(REGION_I_10_0)
+mean_hu = [mean(vmi_series[E][:, :, 8][iodine_mask]) for E in energies]
+```
+
+### VMI HU Conversion
+
+Energy-specific water attenuation is used for correct HU conversion:
+
+```julia
+# Get NIST-validated water attenuation
+μ_water_70 = get_water_attenuation_vmi(70.0)  # ~0.193 cm⁻¹
+
+# Manual HU conversion (if needed)
+vmi_sino = virtual_monoenergetic(mat_map, 70.0)
+recon = fdk_reconstruct(vmi_sino, geom, recon_size)
+recon_hu = vmi_to_hu(Array(recon), 70.0)  # Water = 0 HU
+```
+
+### Physics Behavior in VMI
+
+- **Water:** HU = 0 at all VMI energies (by definition)
+- **Iodine:** Maximum HU at ~40-50 keV (above K-edge at 33.2 keV), decreases at high keV
+- **Calcium:** HU decreases monotonically with keV (K-edge at 4 keV, below diagnostic range)
+- **Noise:** Increases at low keV (~3× at 40 keV vs 70 keV baseline)
+
+Example: `examples/vmi_keV_sweep.jl` demonstrates energy-dependent contrast behavior.
+
+---
+
 ## GPU Usage
 
 AcceleratedKernels.jl auto-detects backend from array type:
@@ -196,4 +316,4 @@ sinogram = forward_project(CuArray(phantom.mask), geom; ...)
 
 ---
 
-Last Updated: 2026-01-15
+Last Updated: 2026-01-16

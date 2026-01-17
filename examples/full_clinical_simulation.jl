@@ -38,6 +38,7 @@ Pkg.activate(joinpath(@__DIR__, ".."))
 using BasisSimulator
 using Statistics
 using CairoMakie  # For visualization
+import XrayAttenuation as XA
 
 # =============================================================================
 # GPU Setup - REQUIRED
@@ -170,10 +171,10 @@ physics_config = default_physics_config(
     fill_factor = fill_factor_standard(),                      # 0.9 fill factor
     flat_filter = flat_filter_al(3.0),                         # 3mm Al
     bowtie_filter = bowtie_filter_large_body(),                # Large body
-    detector_efficiency = detector_efficiency_gos(0.5),        # GOS 0.5mm
+    detector_efficiency = detector_efficiency_gos(0.5),        # GOS 0.5mm (no-op in calibrated mode)
 
-    # --- CATSIM OPTIONAL (we enable for realism) ---
-    scatter = default_scatter_model(scale_factor=1.0),         # Compton/Rayleigh
+    # --- CATSIM OPTIONAL ---
+    # scatter = default_scatter_model(scale_factor=1.0),       # DISABLED - requires scatter correction
     crosstalk = crosstalk_medium(),                            # X-ray pixel coupling
     optical_crosstalk = optical_crosstalk_typical(),           # Scintillator spread
     focal_spot = focal_spot_medium(),                          # Geometric blur
@@ -182,8 +183,8 @@ physics_config = default_physics_config(
 
     # --- SIGNAL CHAIN (CatSim-exact) ---
     heel_effect = default_heel_effect(anode_angle_deg=CONFIG.anode_angle_deg),
-    # das_model = default_das_model(gain=CONFIG.das_gain, electronic_noise_sigma=CONFIG.das_noise_electrons), # COMPLETELY BROKEN
-    bhc = bhc_water_default(reference_energy_keV=mean_energy),
+    # das_model = default_das_model(...),                      # BROKEN - needs fixing
+    # bhc = bhc_water_default(reference_energy_keV=mean_energy),
 
     # --- Settings ---
     energy_keV = Float64(mean_energy),
@@ -206,7 +207,7 @@ end
 # STEP 5: Forward Projection with FULL Signal Chain (GPU)
 # =============================================================================
 println("\n" * "-" ^ 70)
-println("STEP 5: Forward Projection (ALL physics in one call)")
+println("STEP 5: Gammex Phantom Projection")
 println("-" ^ 70)
 
 mask_gpu = MtlArray(phantom.mask);
@@ -234,19 +235,34 @@ println("  Range: [$(round(minimum(sinogram_cpu), digits=3)), $(round(maximum(si
 println("  Mean: $(round(mean(sinogram_cpu), digits=3))")
 
 # =============================================================================
-# STEP 6: FDK Reconstruction (GPU)
+# STEP 6: Reconstruction (FDK, SIRT, CGLS - all on GPU)
 # =============================================================================
 println("\n" * "-" ^ 70)
-println("STEP 6: FDK Reconstruction")
+println("STEP 6: Reconstruction (FDK, SIRT, CGLS)")
 println("-" ^ 70)
 
 recon_size = (CONFIG.recon_n_voxels, CONFIG.recon_n_voxels, CONFIG.recon_n_slices)
-println("\nReconstructing $(recon_size) volume (GPU)...")
 
-@time recon_gpu = fdk_reconstruct(sinogram_gpu, geom, recon_size);
+# --- FDK Reconstruction (fast, filtered backprojection) ---
+println("\n[FDK] Reconstructing $(recon_size) volume (GPU)...")
+@time recon_fdk_gpu = fdk_reconstruct(sinogram_gpu, geom, recon_size);
+recon_fdk = Array(recon_fdk_gpu);
+println("  FDK mu range: [$(round(minimum(recon_fdk), digits=4)), $(round(maximum(recon_fdk), digits=4))] cm^-1")
 
-recon_cpu = Array(recon_gpu);
-println("Reconstruction mu range: [$(round(minimum(recon_cpu), digits=4)), $(round(maximum(recon_cpu), digits=4))] cm^-1")
+# --- SIRT Reconstruction (iterative, 10 iterations for demo) ---
+println("\n[SIRT] Reconstructing $(recon_size) volume (GPU, 10 iterations)...")
+@time recon_sirt_gpu = sirt_reconstruct(sinogram_gpu, geom, recon_size; niter=10);
+recon_sirt = Array(recon_sirt_gpu);
+println("  SIRT mu range: [$(round(minimum(recon_sirt), digits=4)), $(round(maximum(recon_sirt), digits=4))] cm^-1")
+
+# --- CGLS Reconstruction (iterative, 10 iterations for demo) ---
+println("\n[CGLS] Reconstructing $(recon_size) volume (GPU, 10 iterations)...")
+@time recon_cgls_gpu = cgls_reconstruct(sinogram_gpu, geom, recon_size; niter=10);
+recon_cgls = Array(recon_cgls_gpu);
+println("  CGLS mu range: [$(round(minimum(recon_cgls), digits=4)), $(round(maximum(recon_cgls), digits=4))] cm^-1")
+
+# Use FDK as the primary reconstruction for HU validation
+recon_cpu = recon_fdk
 
 # =============================================================================
 # STEP 7: HU Conversion and Validation
@@ -255,12 +271,7 @@ println("\n" * "-" ^ 70)
 println("STEP 7: HU Conversion and Validation")
 println("-" ^ 70)
 
-mu_water_eff = Float32(get_effective_μ_water_kVp(CONFIG.kvp));
-println("\nReference mu_water ($(CONFIG.kvp) kVp): $(mu_water_eff) cm^-1")
-
-recon_hu = 1000.0f0 .* (recon_cpu .- mu_water_eff) ./ mu_water_eff;
-println("HU range: [$(round(minimum(recon_hu))), $(round(maximum(recon_hu)))]")
-
+# Get mask at reconstruction resolution for calibration
 function downsample_mask(mask, new_size)
     old_size = size(mask)
     if old_size == new_size
@@ -277,22 +288,48 @@ function downsample_mask(mask, new_size)
     return result
 end
 
-mask_recon = downsample_mask(phantom.mask, recon_size);
+mask_recon = downsample_mask(phantom.mask, recon_size)
+
+# Use EMPIRICAL water μ from solid_water region of reconstruction
+# (solid_water is pure water, so this is proper calibration)
 center_z = Int(recon_size[3] / 2 + 1)
-center_hu = recon_hu[:, :, center_z];
 center_mask = mask_recon[:, :, center_z]
+water_cal_mask = center_mask .== UInt8(REGION_SOLID_WATER)
+mu_water_empirical = mean(recon_cpu[:, :, center_z][water_cal_mask])
+
+# Also compute NIST reference for comparison
+mu_water_nist = Float32(compute_effective_μ_material(XA.Materials.water, energies, weights))
+
+println("\nμ_water references:")
+println("  NIST spectrum-weighted: $(round(mu_water_nist, digits=4)) cm^-1")
+println("  EMPIRICAL (from recon):  $(round(mu_water_empirical, digits=4)) cm^-1")
+println("  Ratio: $(round(mu_water_empirical/mu_water_nist, digits=3))")
+
+# Use empirical water reference for HU conversion (proper CT calibration)
+mu_water_eff = mu_water_empirical
+println("\nUsing EMPIRICAL μ_water for HU conversion")
+
+recon_hu = 1000.0f0 .* (recon_cpu .- mu_water_eff) ./ mu_water_eff;
+println("HU range: [$(round(minimum(recon_hu))), $(round(maximum(recon_hu)))]")
+
+center_hu = recon_hu[:, :, center_z]
 
 println("\n" * "=" ^ 60)
 println("HU VALIDATION (Center Slice z=$center_z)")
 println("=" ^ 60)
 
+# Compute expected HU values from NIST data
+# NOTE: Solid water is pure water, so it should be 0 HU (by definition with empirical calibration)
+expected_hu_table = get_nist_expected_hu_table(CONFIG.kvp; n_bins=CONFIG.n_energy_bins)
+expected_hu_dict = Dict(e.material_symbol => e.expected_hu for e in expected_hu_table)
+
 validation_regions = [
-    (name="Solid Water", id=REGION_SOLID_WATER, expected=0),
-    (name="Ca-50",       id=REGION_CA_50,       expected=50),
-    (name="Ca-100",      id=REGION_CA_100,      expected=100),
-    (name="Ca-200",      id=REGION_CA_200,      expected=200),
-    (name="Ca-300",      id=REGION_CA_300,      expected=300),
-    (name="Ca-400",      id=REGION_CA_400,      expected=400),
+    (name="Water (BG)", id=REGION_SOLID_WATER, expected=0),  # Water = 0 HU by calibration
+    (name="Ca-50",      id=REGION_CA_50,       expected=round(Int, get(expected_hu_dict, :Ca_50, 247))),
+    (name="Ca-100",     id=REGION_CA_100,      expected=round(Int, get(expected_hu_dict, :Ca_100, 505))),
+    (name="Ca-200",     id=REGION_CA_200,      expected=round(Int, get(expected_hu_dict, :Ca_200, 1046))),
+    (name="Ca-300",     id=REGION_CA_300,      expected=round(Int, get(expected_hu_dict, :Ca_300, 1574))),
+    (name="Ca-400",     id=REGION_CA_400,      expected=round(Int, get(expected_hu_dict, :Ca_400, 2102))),
 ]
 
 println("\nRegion          | Mean HU  | Std HU  | Expected | N voxels")

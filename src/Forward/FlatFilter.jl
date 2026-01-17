@@ -3,20 +3,92 @@
 
 Flat (inherent) filtration modeling for CT simulation.
 
+# Overview
+
 The flat filter is placed at the X-ray source before the bowtie filter to:
 1. Remove low-energy photons (reduce patient dose)
-2. Harden the beam spectrum
-3. Reduce beam hardening artifacts
+2. Harden the beam spectrum (shift mean energy higher)
+3. Reduce beam hardening artifacts in reconstruction
 
 Unlike the bowtie filter, the flat filter has uniform thickness across the beam.
 Common materials: aluminum (Al), copper (Cu), titanium (Ti).
 
-Implementation follows CatSim/XCIST approach:
-- Multiple filter layers supported
-- Energy-dependent attenuation
-- Geometric correction for oblique rays
+# Mathematical Formulation
 
-GPU-native implementation using AcceleratedKernels.jl.
+For a beam passing through filter materials at perpendicular incidence:
+
+    T(E) = exp(-Σᵢ μᵢ(E) × tᵢ)
+
+where:
+- T(E) is the transmission at energy E
+- μᵢ(E) is the linear attenuation coefficient of material i at energy E [cm⁻¹]
+- tᵢ is the thickness of material i [cm]
+
+For oblique rays at fan angle γ and cone angle α, the path length increases:
+
+    path_factor = 1 / (cos(α) × cos(γ))
+    T(E, α, γ) = exp(-Σᵢ μᵢ(E) × tᵢ × path_factor)
+
+The spectrum after filtering becomes:
+
+    w_out(E) = w_in(E) × T(E)
+
+This preferentially removes low-energy photons, shifting the mean energy higher
+(beam hardening).
+
+# CatSim Compatibility
+
+Implementation follows CatSim/XCIST (Xray_Filter.py) exactly:
+
+```python
+# CatSim formula:
+cosineFactors = 1/cos(gammas)/cos(alphas)
+trans = exp(-depth * 0.1 * cosineFactors @ mu)
+```
+
+This is mathematically identical to our implementation:
+- `depth` in mm × 0.1 → thickness in cm
+- `cosineFactors` → `path_factor`
+- `mu` from GetMu() → `get_bowtie_mu()` using same NIST data
+
+# Typical Values
+
+| Material | Thickness | Purpose |
+|----------|-----------|---------|
+| Al       | 2-7 mm    | Standard diagnostic CT |
+| Cu       | 0.1-0.5 mm| Additional hardening |
+| Ti       | 0.3-1 mm  | Modern CT alternatives |
+| Al + Cu  | 2.5 + 0.1 mm | Clinical dose reduction |
+
+# Quality Metrics
+
+- **Half-Value Layer (HVL)**: Thickness to reduce intensity by 50%
+  - Unfiltered 120 kVp: ~2-3 mm Al
+  - With 2.5mm Al: ~4-5 mm Al
+- **Mean Energy**: Weighted average energy of spectrum
+  - Unfiltered 120 kVp: ~50 keV
+  - With 3mm Al: ~55-60 keV
+
+# GPU Compatibility
+
+- ✅ Metal (via AcceleratedKernels.jl)
+- ✅ CUDA
+- ✅ ROCm
+- ✅ CPU fallback
+
+# References
+
+1. Boone JM. "X-ray production, interaction, and detection in diagnostic imaging."
+   In: Handbook of Medical Imaging, Vol 1. SPIE Press, 2000.
+
+2. Bushberg JT, et al. "The Essential Physics of Medical Imaging." 3rd ed.
+   Lippincott Williams & Wilkins, 2011.
+
+3. GE Healthcare. "CatSim/XCIST CT Simulation Toolkit."
+   https://github.com/xcist/main
+
+4. Hubbell JH, Seltzer SM. "Tables of X-Ray Mass Attenuation Coefficients."
+   NIST Standard Reference Database 126. https://www.nist.gov/pml/x-ray-mass-attenuation-coefficients
 """
 
 import AcceleratedKernels as AK
@@ -128,10 +200,19 @@ end
     compute_flat_filter_attenuation(filter::FlatFilter, geom::CTGeometry;
                                     energy_keV::Float64=60.0) -> Array{Float64,2}
 
-Compute flat filter transmission for all detector pixels.
+Compute flat filter transmission for all detector pixels at a reference energy.
 
 The flat filter has uniform thickness but rays at oblique angles
-travel longer paths through the filter.
+travel longer paths through the filter, following the CatSim approach.
+
+# Algorithm
+
+For each detector pixel at fan angle γ and cone angle α:
+
+    path_factor = 1 / (cos(α) × cos(γ))
+    T = exp(-Σᵢ μᵢ(E) × tᵢ × path_factor)
+
+This is CatSim-exact: `cosineFactors = 1/cos(gammas)/cos(alphas)`
 
 # Arguments
 - `filter::FlatFilter`: Flat filter specification

@@ -345,9 +345,15 @@ function create_geometry(spec::AbstractScannerSpec;
         detector_v[3, i] = 1.0
     end
 
+    # Compute z FOV from detector coverage
+    magnification = sdd_cm / sid_cm
+    z_coverage_cm = n_rows * (det.row_size_mm[] / 10.0) / magnification
+    fov = (_fov_cm, _fov_cm, z_coverage_cm)
+
     return CTGeometry(
         sid_cm, sdd_cm, n_angles, n_rows, _n_cols, pixel_size_cm,
-        angles, source_positions, detector_centers, detector_u, detector_v
+        angles, source_positions, detector_centers, detector_u, detector_v,
+        fov
     )
 end
 

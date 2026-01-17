@@ -38,7 +38,10 @@ const I_20_0 = XA.Materials.gammex_472_i20_0
 # Background Materials (from XrayAttenuation.jl)
 # =============================================================================
 
-const solid_water = XA.Materials.gammex_water
+# NOTE: The Gammex phantom body is water-equivalent. We use pure water here.
+# The XrayAttenuation.jl "gammex_water" material has incorrect composition (13% Cl).
+# Real Gammex solid water should be nearly identical to pure water in attenuation.
+const solid_water = XA.Materials.water
 
 # =============================================================================
 # Material Registry
