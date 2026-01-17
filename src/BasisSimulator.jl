@@ -164,6 +164,18 @@ include("Reconstruction/SIRT.jl")
 # Reference: CERN/TIGRE/MATLAB/Algorithms/CGLS.m
 include("Reconstruction/CGLS.jl")
 
+# Total Variation regularization for iterative reconstruction
+# Reference: Rudin-Osher-Fatemi (ROF) model
+include("Reconstruction/TVRegularization.jl")
+
+# Statistical Iterative Reconstruction (ASIR-style)
+# Reference: GE ASIR/ASIR-V, Penalized Weighted Least Squares
+include("Reconstruction/StatisticalIR.jl")
+
+# Model-Based Iterative Reconstruction (TrueFidelity/ADMIRE/QIR-style)
+# Reference: Thibault et al. Med Phys 2007, Siemens ADMIRE/QIR
+include("Reconstruction/MBIR.jl")
+
 # Helical (spiral) CT reconstruction
 include("Reconstruction/HelicalRecon.jl")
 
@@ -174,12 +186,25 @@ include("Reconstruction/HelicalRecon.jl")
 # Scanner specifications (GE, Siemens, Canon, etc.)
 include("Scanners/Scanners.jl")
 
+# Helical protocol integration with scanner specs (must come after Scanners.jl)
+include("Scanners/HelicalProtocols.jl")
+
 # =============================================================================
 # Dual-Energy CT (Spectral Imaging)
 # =============================================================================
 
 # Dual kVp (GSI) forward projection, material decomposition, VMI
 include("DualEnergy/DualEnergy.jl")
+
+# =============================================================================
+# Photon-Counting CT (Spectral Imaging)
+# =============================================================================
+
+# Photon-counting detector model: energy binning, charge sharing, pile-up
+include("Forward/PhotonCounting.jl")
+
+# PCCT spectral imaging: native VMI, K-edge, effective Z, multi-material decomposition
+include("Forward/PCCTSpectral.jl")
 
 # =============================================================================
 # Image Quality Metrics (AAPM TG-233)
