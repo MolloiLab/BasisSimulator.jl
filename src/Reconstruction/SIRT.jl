@@ -14,11 +14,14 @@
 # Where:
 #   - x is the reconstruction
 #   - b is the measured sinogram
-#   - A is the forward projection operator
-#   - Aᵀ is the backprojection operator
+#   - A is the forward projection operator (Siddon)
+#   - Aᵀ is the MATCHED backprojection operator (NOT FDK-weighted!)
 #   - W = 1 / (A · 1) - projection domain weights (ray length normalization)
 #   - V = 1 / (Aᵀ · 1) - image domain weights (voxel sensitivity)
 #   - λ is the relaxation parameter
+#
+# CRITICAL: SIRT requires matched/unweighted backprojection (weighted=false).
+# Using FDK-weighted backprojection causes excessive blur!
 #
 # =============================================================================
 
@@ -66,6 +69,10 @@ end
 Compute image domain weights V = 1 / (Aᵀ · 1).
 
 These weights account for non-uniform voxel sensitivity in cone-beam geometry.
+
+IMPORTANT: Uses matched/unweighted backprojection (weighted=false) to match
+the forward projection operator. Using FDK-weighted backprojection here
+would result in incorrect weights and excessive blur.
 """
 function compute_image_weights(
     geom::CTGeometry,
@@ -77,7 +84,8 @@ function compute_image_weights(
     ones_sino = ones(T, geom.n_cols, geom.n_rows, geom.n_angles)
 
     # Backproject ones to get voxel sensitivities
-    voxel_sums = backproject(ones_sino, geom, volume_size)
+    # CRITICAL: Use matched backprojection (weighted=false), NOT FDK-weighted!
+    voxel_sums = backproject(ones_sino, geom, volume_size; weighted=false)
 
     # V_inv = 1 / voxel_sums, with protection against division by zero
     eps = T(1e-8)
@@ -100,6 +108,9 @@ end
 Perform one SIRT iteration in-place.
 
 x = x + λ · V⁻¹ · Aᵀ · W · (b - A·x)
+
+IMPORTANT: Uses matched/unweighted backprojection (Aᵀ) which is the transpose
+of the Siddon forward projection operator. This is NOT FDK-weighted backprojection.
 """
 function sirt_iteration!(
     recon::AbstractArray{T, 3},
@@ -121,7 +132,8 @@ function sirt_iteration!(
     end
 
     # Backproject weighted residual: Aᵀ · W · (b - A·x)
-    correction = backproject(projected, geom, size(recon))
+    # CRITICAL: Use matched backprojection (weighted=false), NOT FDK-weighted!
+    correction = backproject(projected, geom, size(recon); weighted=false)
 
     # Apply image weights and update: x + λ · V⁻¹ · correction
     AK.foreachindex(recon) do idx

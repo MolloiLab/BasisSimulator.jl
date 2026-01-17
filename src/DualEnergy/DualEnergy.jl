@@ -50,9 +50,9 @@ For GE Revolution Apex GSI:
 
 See also: [`forward_project_dual_energy`](@ref), [`decompose_materials`](@ref)
 """
-struct DualEnergySinogram{T<:AbstractFloat}
-    low::Array{T,3}
-    high::Array{T,3}
+struct DualEnergySinogram{T<:AbstractFloat, A<:AbstractArray{T,3}}
+    low::A
+    high::A
     low_kvp::Int
     high_kvp::Int
     n_cols::Int
@@ -60,11 +60,11 @@ struct DualEnergySinogram{T<:AbstractFloat}
     n_angles::Int
 end
 
-function DualEnergySinogram(low::Array{T,3}, high::Array{T,3};
-                            low_kvp::Int=80, high_kvp::Int=140) where T
+function DualEnergySinogram(low::A, high::A;
+                            low_kvp::Int=80, high_kvp::Int=140) where {T<:AbstractFloat, A<:AbstractArray{T,3}}
     @assert size(low) == size(high) "Low and high sinograms must have same size"
     n_cols, n_rows, n_angles = size(low)
-    return DualEnergySinogram{T}(low, high, low_kvp, high_kvp, n_cols, n_rows, n_angles)
+    return DualEnergySinogram{T,A}(low, high, low_kvp, high_kvp, n_cols, n_rows, n_angles)
 end
 
 Base.size(ds::DualEnergySinogram) = (ds.n_cols, ds.n_rows, ds.n_angles)
@@ -104,20 +104,20 @@ vmi_50 = virtual_monoenergetic(mat_map, 50.0)
 
 See also: [`decompose_materials`](@ref), [`virtual_monoenergetic`](@ref)
 """
-struct MaterialMap{T<:AbstractFloat}
-    material1::Array{T,3}
-    material2::Array{T,3}
+struct MaterialMap{T<:AbstractFloat, A<:AbstractArray{T,3}}
+    material1::A
+    material2::A
     material1_name::Symbol
     material2_name::Symbol
     domain::Symbol  # :projection or :image
 end
 
-function MaterialMap(m1::Array{T,3}, m2::Array{T,3};
+function MaterialMap(m1::A, m2::A;
                      material1_name::Symbol=:water,
                      material2_name::Symbol=:iodine,
-                     domain::Symbol=:projection) where T
+                     domain::Symbol=:projection) where {T<:AbstractFloat, A<:AbstractArray{T,3}}
     @assert size(m1) == size(m2) "Material maps must have same size"
-    return MaterialMap{T}(m1, m2, material1_name, material2_name, domain)
+    return MaterialMap{T,A}(m1, m2, material1_name, material2_name, domain)
 end
 
 Base.size(mm::MaterialMap) = size(mm.material1)
@@ -328,11 +328,9 @@ function forward_project_dual_energy(
         physics = physics_high
     )
 
-    # Transfer to CPU if on GPU
-    sino_low_cpu = Array(sino_low)
-    sino_high_cpu = Array(sino_high)
-
-    return DualEnergySinogram(sino_low_cpu, sino_high_cpu;
+    # Keep arrays on same device as input (GPU-native)
+    # No forced CPU transfer - preserves GPU arrays if input was GPU
+    return DualEnergySinogram(sino_low, sino_high;
                               low_kvp=protocol.low_kvp,
                               high_kvp=protocol.high_kvp)
 end
@@ -385,9 +383,9 @@ hardening effects since it accounts for the full energy spectrum.
 
 See also: [`DualEnergySinogram`](@ref), [`MaterialMap`](@ref)
 """
-function decompose_materials(sino::DualEnergySinogram{T};
+function decompose_materials(sino::DualEnergySinogram{T,A};
                              basis::Tuple{Symbol,Symbol}=(:water, :iodine),
-                             method::Symbol=:polynomial) where T
+                             method::Symbol=:polynomial) where {T, A}
 
     if method != :polynomial
         error("Only :polynomial method currently supported")
@@ -414,23 +412,27 @@ function decompose_materials(sino::DualEnergySinogram{T};
         error("Singular decomposition matrix - basis materials too similar at these energies")
     end
 
-    # Inverse matrix elements
-    inv_a11 = μ2_high / det_A
-    inv_a12 = -μ2_low / det_A
-    inv_a21 = -μ1_high / det_A
-    inv_a22 = μ1_low / det_A
+    # Inverse matrix elements (typed for GPU)
+    inv_a11 = T(μ2_high / det_A)
+    inv_a12 = T(-μ2_low / det_A)
+    inv_a21 = T(-μ1_high / det_A)
+    inv_a22 = T(μ1_low / det_A)
 
-    # Allocate output
+    # Allocate output on same device as input (GPU-compatible)
     material1 = similar(sino.low)
     material2 = similar(sino.low)
 
-    # Apply decomposition
-    for i in eachindex(sino.low)
-        p_low = sino.low[i]
-        p_high = sino.high[i]
+    # Apply decomposition using AcceleratedKernels for GPU compatibility
+    # Reference: sino.low and sino.high for input, write to material1/material2
+    sino_low = sino.low
+    sino_high = sino.high
 
-        material1[i] = inv_a11 * p_low + inv_a12 * p_high
-        material2[i] = inv_a21 * p_low + inv_a22 * p_high
+    AK.foreachindex(material1) do idx
+        p_low = sino_low[idx]
+        p_high = sino_high[idx]
+
+        material1[idx] = inv_a11 * p_low + inv_a12 * p_high
+        material2[idx] = inv_a21 * p_low + inv_a22 * p_high
     end
 
     return MaterialMap(material1, material2;
@@ -483,19 +485,24 @@ mass attenuation coefficients at energy E.
 
 See also: [`decompose_materials`](@ref), [`MaterialMap`](@ref)
 """
-function virtual_monoenergetic(materials::MaterialMap{T}, energy_keV::Float64) where T
+function virtual_monoenergetic(materials::MaterialMap{T,A}, energy_keV::Float64) where {T, A}
     if energy_keV < 10.0 || energy_keV > 150.0
         error("Energy must be between 10 and 150 keV (got $energy_keV)")
     end
 
-    # Get attenuation coefficients at target energy
-    μ1 = get_material_attenuation(materials.material1_name, energy_keV)
-    μ2 = get_material_attenuation(materials.material2_name, energy_keV)
+    # Get attenuation coefficients at target energy (typed for GPU)
+    μ1 = T(get_material_attenuation(materials.material1_name, energy_keV))
+    μ2 = T(get_material_attenuation(materials.material2_name, energy_keV))
 
     # Synthesize VMI: μ_VMI = ρ1 × μ1 + ρ2 × μ2
+    # Allocate on same device as input (GPU-compatible)
     vmi = similar(materials.material1)
-    for i in eachindex(materials.material1)
-        vmi[i] = materials.material1[i] * μ1 + materials.material2[i] * μ2
+    mat1 = materials.material1
+    mat2 = materials.material2
+
+    # Use AcceleratedKernels for GPU compatibility
+    AK.foreachindex(vmi) do idx
+        vmi[idx] = mat1[idx] * μ1 + mat2[idx] * μ2
     end
 
     return vmi
@@ -508,22 +515,16 @@ end
 """
     get_effective_energy(kvp::Int) -> Float64
 
-Get approximate effective energy for a given kVp setting.
+Get spectrum-weighted mean effective energy for a given kVp setting.
+
+These values are computed from the actual spectra used in forward projection
+to ensure consistency between projection and material decomposition.
 """
 function get_effective_energy(kvp::Int)
-    # Approximate effective energies (from NIST/literature)
-    # These are rough estimates; actual values depend on filtration
-    if kvp <= 80
-        return 45.0  # ~45 keV effective for 80 kVp
-    elseif kvp <= 100
-        return 55.0
-    elseif kvp <= 120
-        return 65.0
-    elseif kvp <= 140
-        return 75.0
-    else
-        return 85.0
-    end
+    # Compute mean energy from actual spectrum for accurate decomposition
+    # These match the spectra used in forward_project_dual_energy()
+    energies, weights = load_spectrum(kvp)
+    return sum(energies .* weights) / sum(weights)
 end
 
 """
@@ -690,28 +691,48 @@ compute_effective_μ_water(energy_keV::Float64) = get_water_attenuation_vmi(ener
 # =============================================================================
 
 """
-    vmi_to_hu(vmi_image::AbstractArray, energy_keV::Float64) -> Array
+    vmi_to_hu(vmi_image::AbstractArray, energy_keV::Float64; μ_water=nothing) -> Array
 
-Convert Virtual Monoenergetic Image from attenuation (cm⁻¹) to Hounsfield Units.
-
-Uses energy-specific water attenuation from NIST XCOM database.
+Convert Virtual Monoenergetic Image from attenuation to Hounsfield Units.
 
 # Arguments
-- `vmi_image`: VMI in linear attenuation units (cm⁻¹)
+- `vmi_image`: VMI reconstruction (attenuation values)
 - `energy_keV`: VMI energy in keV
 
-# Returns
-Array in Hounsfield Units where water = 0 HU at any energy.
+# Keyword Arguments
+- `μ_water=nothing`: Water attenuation for calibration. If nothing, uses NIST value.
 
-# Example
+# Returns
+Array in Hounsfield Units where water = 0 HU at the calibration energy.
+
+# Calibration Methods
+
+**Empirical calibration (recommended):**
+Measure μ_water from a known water region in the reconstruction. This ensures
+water = 0 HU regardless of geometry/scaling factors:
+
 ```julia
-vmi_70 = virtual_monoenergetic(mat_map, 70.0)
-recon = fdk_reconstruct(vmi_70, geom, (256, 256, 32))
-recon_hu = vmi_to_hu(recon, 70.0)  # Water regions ≈ 0 HU
+water_mask = phantom.mask .== REGION_WATER
+μ_water_measured = mean(vmi_recon[water_mask])
+hu = vmi_to_hu(vmi_recon, 70.0; μ_water=μ_water_measured)
 ```
+
+**NIST calibration (default):**
+Uses theoretical NIST XCOM water attenuation. May have HU offset due to
+geometry-dependent scaling in reconstruction.
+
+```julia
+hu = vmi_to_hu(vmi_recon, 70.0)  # Uses NIST μ_water
+```
+
+See also: [`reconstruct_vmi`](@ref) with `water_mask` parameter for automatic calibration.
 """
-function vmi_to_hu(vmi_image::AbstractArray{T}, energy_keV::Float64) where T
-    μ_water = T(get_water_attenuation_vmi(energy_keV))
+function vmi_to_hu(vmi_image::AbstractArray{T}, energy_keV::Float64; μ_water=nothing) where T
+    if μ_water === nothing
+        μ_water = T(get_water_attenuation_vmi(energy_keV))
+    else
+        μ_water = T(μ_water)
+    end
     return T(1000) .* (vmi_image .- μ_water) ./ μ_water
 end
 
@@ -719,7 +740,7 @@ end
     reconstruct_vmi(materials::MaterialMap, energy_keV::Float64,
                     geom::CTGeometry, recon_size::NTuple{3,Int};
                     method::Symbol=:fdk, to_hu::Bool=true,
-                    fdk_kwargs...) -> Array
+                    water_mask=nothing, fdk_kwargs...) -> Array
 
 Full VMI reconstruction pipeline: synthesize VMI sinogram + reconstruct + HU conversion.
 
@@ -734,13 +755,30 @@ This is the recommended high-level API for generating VMI images.
 # Keyword Arguments
 - `method::Symbol=:fdk`: Reconstruction method (:fdk or :sirt)
 - `to_hu::Bool=true`: Convert output to Hounsfield Units
+- `water_mask::Union{Nothing,AbstractArray{Bool}}=nothing`: Mask for water region
+  (for empirical HU calibration). If provided, μ_water is measured from this region.
 - `niter::Int=3`: Number of iterations for SIRT (ignored for FDK)
 - `filter::FilterType=RampFilter()`: FDK filter (passed to fdk_reconstruct)
 - `cutoff::Float64=1.0`: FDK frequency cutoff
 
 # Returns
 - If to_hu=true: VMI reconstruction in Hounsfield Units
-- If to_hu=false: VMI reconstruction in attenuation units (cm⁻¹)
+- If to_hu=false: VMI reconstruction in attenuation units
+
+# HU Calibration
+
+**With water_mask (recommended for accurate HU):**
+```julia
+water_mask = phantom.mask .== REGION_SOLID_WATER
+vmi_hu = reconstruct_vmi(mat_map, 70.0, geom, size; water_mask=water_mask)
+# Water region will be 0 HU by empirical calibration
+```
+
+**Without water_mask (uses NIST reference):**
+```julia
+vmi_hu = reconstruct_vmi(mat_map, 70.0, geom, size)
+# Uses theoretical NIST water attenuation (may have scale offset)
+```
 
 # Example
 ```julia
@@ -748,15 +786,14 @@ This is the recommended high-level API for generating VMI images.
 de_sino = forward_project_dual_energy(phantom.mask, geom, protocol; ...)
 mat_map = decompose_materials(de_sino; basis=(:water, :iodine))
 
-# Reconstruct at 50 keV (high iodine contrast)
-vmi_50_hu = reconstruct_vmi(mat_map, 50.0, geom, (256, 256, 32))
-
-# Reconstruct at 100 keV (reduced artifacts)
-vmi_100_hu = reconstruct_vmi(mat_map, 100.0, geom, (256, 256, 32))
+# Reconstruct with empirical water calibration (most accurate)
+water_mask = phantom.mask .== 3  # REGION_SOLID_WATER
+vmi_50_hu = reconstruct_vmi(mat_map, 50.0, geom, (256, 256, 32);
+                            water_mask=water_mask)
 
 # Use SIRT for better quality
 vmi_70_sirt = reconstruct_vmi(mat_map, 70.0, geom, (256, 256, 32);
-                               method=:sirt, niter=3)
+                               method=:sirt, niter=3, water_mask=water_mask)
 ```
 
 # Energy Selection Guide
@@ -767,16 +804,17 @@ vmi_70_sirt = reconstruct_vmi(mat_map, 70.0, geom, (256, 256, 32);
 - 100-140 keV: Metal artifact reduction
 """
 function reconstruct_vmi(
-    materials::MaterialMap{T},
+    materials::MaterialMap{T,A},
     energy_keV::Float64,
     geom::CTGeometry,
     recon_size::NTuple{3,Int};
     method::Symbol=:fdk,
     to_hu::Bool=true,
+    water_mask=nothing,
     niter::Int=3,
     filter::FilterType=RampFilter(),
     cutoff::Float64=1.0
-) where T
+) where {T, A}
 
     # Step 1: Generate VMI sinogram
     vmi_sino = virtual_monoenergetic(materials, energy_keV)
@@ -792,7 +830,15 @@ function reconstruct_vmi(
 
     # Step 3: Convert to HU if requested
     if to_hu
-        return vmi_to_hu(Array(recon), energy_keV)
+        recon_cpu = Array(recon)
+        if water_mask !== nothing
+            # Empirical calibration: measure μ_water from reconstruction
+            μ_water = mean(recon_cpu[water_mask])
+            return vmi_to_hu(recon_cpu, energy_keV; μ_water=μ_water)
+        else
+            # NIST-based calibration (may have scale offset)
+            return vmi_to_hu(recon_cpu, energy_keV)
+        end
     else
         return Array(recon)
     end
