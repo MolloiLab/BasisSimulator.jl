@@ -372,6 +372,68 @@ end
         @test all(isfinite.(recon))
     end
 
+    @testset "SIRT Reconstruction - CPU" begin
+        phantom, geom = small_test_setup()
+        sino = forward_project(Float32.(phantom.μ), geom)
+
+        # Basic SIRT reconstruction with 3 iterations
+        recon_sirt = sirt_reconstruct(sino, geom, size(phantom.μ); niter=3)
+
+        @test size(recon_sirt) == size(phantom.μ)
+        @test all(isfinite.(recon_sirt))
+
+        # SIRT should converge to reasonable values
+        @test maximum(recon_sirt) > 0  # Should have positive values
+        @test minimum(recon_sirt) >= -0.1  # Should not have large negative artifacts
+    end
+
+    @testset "SIRT vs FDK Resolution - CPU" begin
+        # Test that SIRT produces comparable sharpness to FDK
+        # Uses a simple phantom with sharp edges
+        phantom, geom = small_test_setup()
+        sino = forward_project(Float32.(phantom.μ), geom)
+
+        # Reconstruct with both methods
+        recon_fdk = fdk_reconstruct(sino, geom, size(phantom.μ))
+        recon_sirt = sirt_reconstruct(sino, geom, size(phantom.μ); niter=10)
+
+        # Both should have similar standard deviation (measure of edge preservation)
+        # A blurry SIRT would have much lower std than FDK
+        std_fdk = std(recon_fdk)
+        std_sirt = std(recon_sirt)
+
+        # SIRT std should be at least 40% of FDK std (not overly blurred)
+        # Note: SIRT with limited iterations will be smoother than FDK, but should
+        # not be dramatically different (the old bug caused SIRT to be ~10% of FDK)
+        @test std_sirt > 0.4 * std_fdk
+
+        # Both should reconstruct similar max values (edge response)
+        # With limited iterations, SIRT may not fully converge to peak values
+        max_fdk = maximum(recon_fdk)
+        max_sirt = maximum(recon_sirt)
+        @test max_sirt > 0.4 * max_fdk
+    end
+
+    @testset "Backprojection Weighted vs Matched - CPU" begin
+        # Test that weighted=true gives different results than weighted=false
+        phantom, geom = small_test_setup()
+        sino = forward_project(Float32.(phantom.μ), geom)
+
+        # Weighted backprojection (FDK style)
+        vol_weighted = backproject(sino, geom, size(phantom.μ); weighted=true)
+
+        # Unweighted/matched backprojection (for iterative methods)
+        vol_matched = backproject(sino, geom, size(phantom.μ); weighted=false)
+
+        @test size(vol_weighted) == size(phantom.μ)
+        @test size(vol_matched) == size(phantom.μ)
+        @test all(isfinite.(vol_weighted))
+        @test all(isfinite.(vol_matched))
+
+        # The two should be different (different weighting)
+        @test !isapprox(vol_weighted, vol_matched, rtol=0.01)
+    end
+
     # -------------------------------------------------------------------------
     # Physics Configuration
     # -------------------------------------------------------------------------
@@ -3020,10 +3082,11 @@ end
         end
 
         @testset "Helper Functions" begin
-            # Test effective energy estimation
-            @test BasisSimulator.get_effective_energy(80) ≈ 45.0
-            @test BasisSimulator.get_effective_energy(120) ≈ 65.0
-            @test BasisSimulator.get_effective_energy(140) ≈ 75.0
+            # Test effective energy - now computed from spectra (mean energy)
+            # 80 kVp should be around 45-50 keV, 120 kVp around 55-65 keV, 140 kVp around 60-70 keV
+            @test 40.0 < BasisSimulator.get_effective_energy(80) < 55.0
+            @test 55.0 < BasisSimulator.get_effective_energy(120) < 70.0
+            @test 60.0 < BasisSimulator.get_effective_energy(140) < 75.0
 
             # Test material attenuation
             μ_water_50 = BasisSimulator.get_material_attenuation(:water, 50.0)
