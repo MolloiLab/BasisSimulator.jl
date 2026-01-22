@@ -65,9 +65,9 @@ println()
 
 CONFIG = (
     # Volume dimensions (optimized for demo while maintaining clinical relevance)
-    volume_nx = 128,
-    volume_ny = 128,
-    volume_nz = 32,
+    volume_nx = 256,
+    volume_ny = 256,
+    volume_nz = 64,
 
     # Field of view
     fov_cm = 35.0,      # 350 mm FOV (standard body)
@@ -76,7 +76,7 @@ CONFIG = (
     # Detector configuration (scaled for demo)
     n_cols = 128,       # Detector columns
     n_rows = 32,        # Detector rows
-    n_views = 360,      # Adequate views for demo (clinical would be 984)
+    n_views = 2000,      # Adequate views for demo (clinical would be 984)
 
     # Spectrum
     kvp = 120,          # Standard PCCT protocol
@@ -444,7 +444,7 @@ println("-" ^ 70)
 fig = Figure(size=(1600, 1200), fontsize=11)
 
 # Display window (soft tissue)
-clim = (-100, 200)
+clim = (-100, 500)
 
 # Row 1: FDK, QIR, K-edge, and VMI comparison
 ax1 = Axis(fig[1, 1], title="FDK 70 keV (Baseline)", aspect=DataAspect())

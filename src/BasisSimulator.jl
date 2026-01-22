@@ -79,6 +79,9 @@ include("Forward/Siddon.jl")
 # Scatter simulation (spatial convolution)
 include("Forward/Scatter.jl")
 
+# Protocol definitions
+include("Forward/Protocol.jl")
+
 # Detector response and noise modeling
 include("Forward/DetectorNoise.jl")
 
@@ -218,5 +221,12 @@ include("Metrics/NPS.jl")
 
 # Point Spread Function (PSF) - spatial resolution in real space
 include("Metrics/PSF.jl")
+
+# =============================================================================
+# High-Level Simulation Driver
+# =============================================================================
+
+include("Simulation/Options.jl")
+include("Simulation/Driver.jl")
 
 end # module
