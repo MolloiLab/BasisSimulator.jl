@@ -82,14 +82,12 @@ function simulate(
         # CASE A: User explicitly provided spectra (e.g. from the notebook loop)
         current_energies = energies
         current_weights = weights
-    elseif sim_opts.use_beam_hardening
-        # CASE B: Internal Polychromatic Lookup
+    elseif needs_polychromatic(sim_opts)
+        # CASE B: Internal Polychromatic Lookup (auto-detected from enabled effects)
         e_full, w_full = load_spectrum(Int(protocol.kVp))
-        # Downsample for speed (30 bins is standard accuracy/speed tradeoff)
-        current_energies, current_weights = downsample_spectrum(e_full, w_full, 30)
+        current_energies, current_weights = downsample_spectrum(e_full, w_full, sim_opts.n_energy_bins)
     else
         # CASE C: Monochromatic Fallback
-        # Default to ~half kVp for effective energy
         current_energies = [Float64(protocol.kVp) * 0.5]
         current_weights = [1.0]
     end
@@ -185,3 +183,17 @@ function get_spectrum(protocol::CTProtocol)
 end
 
 export get_spectrum
+
+"""
+    needs_polychromatic(sim_opts::SimOptions) -> Bool
+
+Determine if polychromatic spectrum is needed based on enabled effects.
+Returns true if any energy-dependent effect is ON: flat_filter, bowtie_filter,
+detector_efficiency, or bhc.
+"""
+function needs_polychromatic(sim_opts::SimOptions)::Bool
+    return sim_opts.use_flat_filter ||
+           sim_opts.use_bowtie_filter ||
+           sim_opts.use_detector_efficiency ||
+           sim_opts.use_bhc
+end
