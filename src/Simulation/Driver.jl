@@ -20,36 +20,28 @@ struct SimulationResult{T, G, P}
 end
 
 """
-    simulate(phantom, scanner, protocol, sim_opts, recon_opts; energies, weights, physics_config)
+    simulate(phantom, scanner, protocol, sim_opts, recon_opts)
 
 Run a full end-to-end CT simulation.
+
+The 4-struct API: Scanner provides hardware parameters, CTProtocol provides acquisition
+settings, SimOptions controls which physics effects are enabled, and ReconOptions
+controls image reconstruction. No additional kwargs needed.
 
 # Arguments
 - `phantom`: Struct containing `.mask` (UInt8) and material definitions.
 - `scanner`: `Scanner` hardware definition.
 - `protocol`: `CTProtocol` acquisition settings.
-- `sim_opts`: `SimOptions` for physics fidelity.
+- `sim_opts`: `SimOptions` for physics fidelity (controls all 14 effects).
 - `recon_opts`: `ReconOptions` for image formation.
-
-# Keyword Arguments
-- `energies`: Optional Vector{Float64} of energy bin centers (keV). Overrides internal lookup.
-- `weights`: Optional Vector{Float64} of photon weights. Overrides internal lookup.
-- `physics_config`: Optional `PhysicsConfig` for full control over all physics effects.
-  When provided, bypasses SimOptions-driven physics construction and passes this config
-  directly to `forward_project()`. Use `full_physics_config()`, `realistic_physics_config()`,
-  or build a custom `PhysicsConfig` to control all 13 effects.
 
 # Returns
 `SimulationResult` containing sinograms and reconstruction.
 
 # Example
 ```julia
-# Simple preset-based usage:
-result = simulate(phantom, scanner, protocol, SimOptions(fidelity=:high), recon_opts)
-
-# Full physics control:
-config = full_physics_config(energy_keV=65.0, noise_seed=42)
-result = simulate(phantom, scanner, protocol, SimOptions(), recon_opts; physics_config=config)
+result = simulate(phantom, scanner, protocol, SimOptions(fidelity=:high), ReconOptions())
+result = simulate(phantom, scanner, protocol, SimOptions(fidelity=:medium, use_scatter=false), ReconOptions())
 ```
 """
 function simulate(
@@ -57,93 +49,40 @@ function simulate(
     scanner::Scanner,
     protocol::CTProtocol,
     sim_opts::SimOptions = SimOptions(),
-    recon_opts::ReconOptions = ReconOptions();
-    energies::Union{Vector{Float64}, Nothing} = nothing,
-    weights::Union{Vector{Float64}, Nothing} = nothing,
-    physics_config::Union{PhysicsConfig, Nothing} = nothing
+    recon_opts::ReconOptions = ReconOptions()
 )
     # 1. Build Geometry
     geom = CTGeometry(
-        scanner; 
+        scanner;
         n_angles = protocol.views,
         fov_cm = recon_opts.fov_cm,
-        z_cm = nothing # Auto-calc from detector
+        z_cm = nothing  # Auto-calc from detector
     )
 
-    # 2. Build Physics Config (The Bridge)
+    # 2. Resolve spectrum (polychromatic vs monochromatic)
+    energies, weights = resolve_spectrum(sim_opts, protocol)
 
-    # Initialize these to ensure they are defined for the physics config later
-    current_energies = nothing
-    current_weights = nothing
+    # 3. Build PhysicsConfig from Scanner + SimOptions
+    config = build_physics_config(scanner, sim_opts, energies, weights)
+
+    # 4. Forward Project (physics-only, no noise)
     materials = get_region_materials()
-
-    # LOGIC UPDATE: Prioritize injected kwargs, then fall back to sim_opts settings
-    if !isnothing(energies) && !isnothing(weights)
-        # CASE A: User explicitly provided spectra (e.g. from the notebook loop)
-        current_energies = energies
-        current_weights = weights
-    elseif needs_polychromatic(sim_opts)
-        # CASE B: Internal Polychromatic Lookup (auto-detected from enabled effects)
-        e_full, w_full = load_spectrum(Int(protocol.kVp))
-        current_energies, current_weights = downsample_spectrum(e_full, w_full, sim_opts.n_energy_bins)
-    else
-        # CASE C: Monochromatic Fallback
-        current_energies = [Float64(protocol.kVp) * 0.5]
-        current_weights = [1.0]
-    end
-
-    # Physics config: use explicit config if provided, otherwise build from SimOptions
-    config = if !isnothing(physics_config)
-        # User provided full PhysicsConfig - use directly
-        physics_config
-    else
-        # Build from SimOptions presets
-        physics_kwargs = Dict{Symbol, Any}()
-
-        # Common settings
-        physics_kwargs[:energy_keV] = sum(current_energies .* current_weights) / sum(current_weights)
-        physics_kwargs[:noise_seed] = sim_opts.seed
-
-        # Explicitly DISABLE internal noise in PhysicsConfig (handled via sim_detect)
-        physics_kwargs[:noise] = nothing
-
-        # Scatter
-        if sim_opts.use_scatter
-            physics_kwargs[:scatter] = default_scatter_model()
-            physics_kwargs[:scatter_correction] = default_scatter_correction()
-        end
-
-        # Focal Spot
-        if sim_opts.use_focal_spot
-            physics_kwargs[:focal_spot] = focal_spot_medium()
-        end
-
-        # Crosstalk
-        if sim_opts.use_crosstalk
-            physics_kwargs[:crosstalk] = crosstalk_medium()
-        end
-
-        # Assemble Config
-        default_physics_config(; physics_kwargs...)
-    end
-    
-    # 3. Forward Project (Ideal/Physics-only, No Noise)
     sino_ideal = forward_project(
         phantom.mask, geom;
-        energies=current_energies,
-        weights=current_weights,
+        energies=energies,
+        weights=weights,
         materials=materials,
         physics=config
     )
-    
-    # 4. Apply Detector Noise (Protocol-driven)
+
+    # 5. Apply Detector Noise (protocol-driven I0)
     sino_final = if sim_opts.use_noise
         sim_detect(sino_ideal, geom, protocol)
     else
         copy(sino_ideal)
     end
-    
-    # 5. Reconstruction
+
+    # 6. Reconstruction
     recon_vol = if recon_opts.algorithm == :fdk
         fdk_reconstruct(sino_final, geom, recon_opts.matrix_size)
     elseif recon_opts.algorithm == :sirt
@@ -153,7 +92,7 @@ function simulate(
     else
         error("Unknown reconstruction algorithm: $(recon_opts.algorithm)")
     end
-    
+
     return SimulationResult(
         sino_ideal,
         sino_final,
@@ -183,6 +122,23 @@ function get_spectrum(protocol::CTProtocol)
 end
 
 export get_spectrum
+
+"""
+    resolve_spectrum(sim_opts::SimOptions, protocol::CTProtocol) -> (energies, weights)
+
+Determine the energy spectrum based on SimOptions effect toggles.
+If any energy-dependent effect is enabled (flat_filter, bowtie_filter, detector_efficiency,
+bhc), loads the full polychromatic spectrum and downsamples to `sim_opts.n_energy_bins`.
+Otherwise, uses monochromatic approximation at `kVp * 0.5` keV.
+"""
+function resolve_spectrum(sim_opts::SimOptions, protocol::CTProtocol)
+    if needs_polychromatic(sim_opts)
+        e_full, w_full = load_spectrum(Int(protocol.kVp))
+        return downsample_spectrum(e_full, w_full, sim_opts.n_energy_bins)
+    else
+        return [Float64(protocol.kVp) * 0.5], [1.0]
+    end
+end
 
 """
     needs_polychromatic(sim_opts::SimOptions) -> Bool
