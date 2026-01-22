@@ -20,7 +20,7 @@ struct SimulationResult{T, G, P}
 end
 
 """
-    simulate(phantom, scanner, protocol, sim_opts, recon_opts; energies, weights)
+    simulate(phantom, scanner, protocol, sim_opts, recon_opts; energies, weights, physics_config)
 
 Run a full end-to-end CT simulation.
 
@@ -34,18 +34,33 @@ Run a full end-to-end CT simulation.
 # Keyword Arguments
 - `energies`: Optional Vector{Float64} of energy bin centers (keV). Overrides internal lookup.
 - `weights`: Optional Vector{Float64} of photon weights. Overrides internal lookup.
+- `physics_config`: Optional `PhysicsConfig` for full control over all physics effects.
+  When provided, bypasses SimOptions-driven physics construction and passes this config
+  directly to `forward_project()`. Use `full_physics_config()`, `realistic_physics_config()`,
+  or build a custom `PhysicsConfig` to control all 13 effects.
 
 # Returns
 `SimulationResult` containing sinograms and reconstruction.
+
+# Example
+```julia
+# Simple preset-based usage:
+result = simulate(phantom, scanner, protocol, SimOptions(fidelity=:high), recon_opts)
+
+# Full physics control:
+config = full_physics_config(energy_keV=65.0, noise_seed=42)
+result = simulate(phantom, scanner, protocol, SimOptions(), recon_opts; physics_config=config)
+```
 """
 function simulate(
-    phantom, 
-    scanner::Scanner, 
-    protocol::CTProtocol, 
-    sim_opts::SimOptions = SimOptions(), 
+    phantom,
+    scanner::Scanner,
+    protocol::CTProtocol,
+    sim_opts::SimOptions = SimOptions(),
     recon_opts::ReconOptions = ReconOptions();
     energies::Union{Vector{Float64}, Nothing} = nothing,
-    weights::Union{Vector{Float64}, Nothing} = nothing
+    weights::Union{Vector{Float64}, Nothing} = nothing,
+    physics_config::Union{PhysicsConfig, Nothing} = nothing
 )
     # 1. Build Geometry
     geom = CTGeometry(
@@ -56,7 +71,7 @@ function simulate(
     )
 
     # 2. Build Physics Config (The Bridge)
-    
+
     # Initialize these to ensure they are defined for the physics config later
     current_energies = nothing
     current_weights = nothing
@@ -75,38 +90,44 @@ function simulate(
     else
         # CASE C: Monochromatic Fallback
         # Default to ~half kVp for effective energy
-        current_energies = [Float64(protocol.kVp) * 0.5] 
+        current_energies = [Float64(protocol.kVp) * 0.5]
         current_weights = [1.0]
     end
-    
-    # Physics pipeline construction
-    physics_kwargs = Dict{Symbol, Any}()
-    
-    # Common settings
-    physics_kwargs[:energy_keV] = sum(current_energies .* current_weights) / sum(current_weights)
-    physics_kwargs[:noise_seed] = sim_opts.seed
-    
-    # Explicitly DISABLE internal noise in PhysicsConfig (handled via sim_detect)
-    physics_kwargs[:noise] = nothing 
-    
-    # Scatter
-    if sim_opts.use_scatter
-        physics_kwargs[:scatter] = default_scatter_model()
-        physics_kwargs[:scatter_correction] = default_scatter_correction()
+
+    # Physics config: use explicit config if provided, otherwise build from SimOptions
+    config = if !isnothing(physics_config)
+        # User provided full PhysicsConfig - use directly
+        physics_config
+    else
+        # Build from SimOptions presets
+        physics_kwargs = Dict{Symbol, Any}()
+
+        # Common settings
+        physics_kwargs[:energy_keV] = sum(current_energies .* current_weights) / sum(current_weights)
+        physics_kwargs[:noise_seed] = sim_opts.seed
+
+        # Explicitly DISABLE internal noise in PhysicsConfig (handled via sim_detect)
+        physics_kwargs[:noise] = nothing
+
+        # Scatter
+        if sim_opts.use_scatter
+            physics_kwargs[:scatter] = default_scatter_model()
+            physics_kwargs[:scatter_correction] = default_scatter_correction()
+        end
+
+        # Focal Spot
+        if sim_opts.use_focal_spot
+            physics_kwargs[:focal_spot] = focal_spot_medium()
+        end
+
+        # Crosstalk
+        if sim_opts.use_crosstalk
+            physics_kwargs[:crosstalk] = crosstalk_medium()
+        end
+
+        # Assemble Config
+        default_physics_config(; physics_kwargs...)
     end
-    
-    # Focal Spot
-    if sim_opts.use_focal_spot
-        physics_kwargs[:focal_spot] = focal_spot_medium()
-    end
-    
-    # Crosstalk
-    if sim_opts.use_crosstalk
-        physics_kwargs[:crosstalk] = crosstalk_medium()
-    end
-    
-    # Assemble Config
-    config = default_physics_config(; physics_kwargs...)
     
     # 3. Forward Project (Ideal/Physics-only, No Noise)
     sino_ideal = forward_project(
