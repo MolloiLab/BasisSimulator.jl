@@ -745,3 +745,65 @@ export add_quantum_noise!, add_electronic_noise!
 export add_quantum_noise, add_electronic_noise
 export apply_detector_model!, apply_detector_model
 export compute_noise_level, estimate_dose_from_noise
+export sim_detect
+
+"""
+    sim_detect(sinogram, geom::CTGeometry, protocol::CTProtocol)
+
+Apply physics-based photon statistics to a clean sinogram.
+
+This function bridges the gap between geometric ray tracing and physical
+data acquisition by converting attenuation line integrals into photon counts,
+applying Poisson statistics, and converting back to attenuation.
+
+# Algorithm
+1. Calculates incident photon count (I0) from protocol and geometry.
+   I0 = Flux × (mAs/views) × PixelArea × (1000/SDD)²
+2. Applies Poisson noise (quantum noise) to the sinogram.
+
+# Arguments
+- `sinogram`: Input attenuation sinogram (clean). Not modified.
+- `geom`: Scanner geometry (provides SDD, SAD, pixel size)
+- `protocol`: CT protocol (provides mAs, kVp, flux)
+
+# Returns
+- A new sinogram array with quantum noise applied.
+"""
+function sim_detect(
+    sinogram::AbstractArray{T,3},
+    geom::CTGeometry,
+    protocol::CTProtocol
+) where T
+    # 1. Calculate Geometry factors
+    # Convert cm (CTGeometry) to mm (Physics standard)
+    SDD_mm = geom.SDD * 10.0
+    SAD_mm = geom.SAD * 10.0
+    
+    # Pixel size at detector plane (in mm)
+    # geom.pixel_size is at isocenter in cm
+    magnification = SDD_mm / SAD_mm
+    pixel_size_det_mm = (geom.pixel_size * 10.0) * magnification
+    pixel_area_mm2 = pixel_size_det_mm^2
+    
+    # 2. Calculate I0 (Photons per pixel per view)
+    # I0 = Flux * mA * TimePerView * Area * DistFactor
+    
+    time_per_view = protocol.rotation_time / protocol.views
+    
+    # Inverse square law from reference distance (1000 mm)
+    dist_factor = (1000.0 / SDD_mm)^2
+    
+    # Flux is per mA per second per mm2 at 1m
+    I0 = protocol.flux_density * protocol.mA * time_per_view * pixel_area_mm2 * dist_factor
+    
+    # 3. Apply Noise
+    # Create a temporary detector model for noise application
+    # We use 0.0 for other params as we only want quantum noise here
+    model = DetectorModel(0.0, I0, 0.0, nothing)
+    
+    # Create copy and apply noise
+    noisy_sino = copy(sinogram)
+    add_quantum_noise!(noisy_sino, model)
+    
+    return noisy_sino
+end
