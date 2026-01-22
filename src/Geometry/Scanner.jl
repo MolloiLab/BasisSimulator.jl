@@ -532,15 +532,15 @@ function CTGeometry(scanner::Scanner{T};
     SAD = scanner.source_to_isocenter / 10.0
     SDD = scanner.source_to_detector / 10.0
 
-    # Determine FOV and pixel size
+    # Pixel size comes from the physical detector element pitch (mm -> cm)
+    pixel_size = scanner.detector_col_size / 10.0
+
+    # FOV is independent: it controls the reconstruction grid, not the detector geometry
     if fov_cm !== nothing
         fov_xy = fov_cm
-        # Compute pixel size to cover the specified FOV with margin
-        pixel_size = (fov_cm * 1.1) / _n_cols
     else
-        # Use scanner's max FOV
-        fov_xy = scanner.max_scan_fov / 10.0
-        pixel_size = (fov_xy * 1.1) / _n_cols
+        # Default FOV = full detector coverage at isocenter
+        fov_xy = _n_cols * pixel_size
     end
 
     # Z FOV
