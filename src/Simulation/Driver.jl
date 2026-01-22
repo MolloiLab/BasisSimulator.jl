@@ -197,3 +197,143 @@ function needs_polychromatic(sim_opts::SimOptions)::Bool
            sim_opts.use_detector_efficiency ||
            sim_opts.use_bhc
 end
+
+"""
+    build_physics_config(scanner::Scanner, sim_opts::SimOptions, energies::Vector{Float64}, weights::Vector{Float64}) -> PhysicsConfig
+
+Build a complete PhysicsConfig from Scanner hardware fields and SimOptions toggles.
+
+For effects with Scanner fields (focal_spot, flat_filter, fill_factor, detector_efficiency,
+heel_effect), the Scanner hardware parameters are used to construct the effect structs.
+For effects without Scanner fields (scatter, scatter_correction, crosstalk, optical_crosstalk,
+bowtie, lag, bhc), factory function defaults are used.
+
+Noise is ALWAYS `nothing` in the returned PhysicsConfig — noise is applied externally
+via `sim_detect()` when `sim_opts.use_noise == true`.
+
+# Arguments
+- `scanner`: Scanner hardware definition (provides physical parameters)
+- `sim_opts`: SimOptions with resolved boolean toggles
+- `energies`: Energy bin centers (keV) for the current spectrum
+- `weights`: Photon weights for each energy bin
+
+# Returns
+A `PhysicsConfig` ready for `forward_project()`.
+"""
+function build_physics_config(
+    scanner::Scanner,
+    sim_opts::SimOptions,
+    energies::Vector{Float64},
+    weights::Vector{Float64}
+)
+    kwargs = Dict{Symbol, Any}()
+
+    # --- Common settings ---
+    kwargs[:energy_keV] = sum(energies .* weights) / sum(weights)
+    kwargs[:noise_seed] = sim_opts.seed
+    kwargs[:noise] = nothing  # Noise is ALWAYS handled by sim_detect, never in PhysicsConfig
+
+    # --- Physics Pipeline effects (from Scanner fields where available) ---
+
+    # Fill factor: use Scanner's row/col fill factors
+    if sim_opts.use_fill_factor
+        row_fill = scanner.fill_factor_row
+        col_fill = scanner.fill_factor_col
+        if row_fill > 0 && col_fill > 0
+            kwargs[:fill_factor] = FillFactorModel(row_fill, col_fill, row_fill ≈ col_fill)
+        else
+            kwargs[:fill_factor] = fill_factor_standard()
+        end
+    end
+
+    # Flat filter: use Scanner's material and thickness
+    if sim_opts.use_flat_filter
+        thickness = scanner.flat_filter_thickness
+        material = scanner.flat_filter_material
+        if thickness > 0
+            kwargs[:flat_filter] = FlatFilter([String(material)], [thickness], "scanner_$(material)_$(thickness)mm")
+        else
+            kwargs[:flat_filter] = flat_filter_al()
+        end
+    end
+
+    # Bowtie filter: no Scanner field, use factory default
+    if sim_opts.use_bowtie_filter
+        kwargs[:bowtie_filter] = bowtie_filter_large_body()
+    end
+
+    # Detector efficiency: use Scanner's material and depth
+    if sim_opts.use_detector_efficiency
+        depth = scanner.detector_depth
+        material = scanner.detector_material
+        if depth > 0
+            kwargs[:detector_efficiency] = DetectorEfficiency(String(material), depth, 1.0)
+        else
+            kwargs[:detector_efficiency] = detector_efficiency_gos()
+        end
+    end
+
+    # Scatter: no Scanner field, use factory default
+    if sim_opts.use_scatter
+        kwargs[:scatter] = default_scatter_model()
+    end
+
+    # Scatter correction: no Scanner field, use factory default
+    if sim_opts.use_scatter_correction
+        kwargs[:scatter_correction] = default_scatter_correction()
+    end
+
+    # Crosstalk (electronic): no Scanner field, use factory default
+    if sim_opts.use_crosstalk
+        kwargs[:crosstalk] = crosstalk_medium()
+    end
+
+    # Optical crosstalk: no Scanner field, use factory default
+    if sim_opts.use_optical_crosstalk
+        kwargs[:optical_crosstalk] = optical_crosstalk_typical()
+    end
+
+    # Focal spot: use Scanner's width and length
+    if sim_opts.use_focal_spot
+        width = scanner.focal_spot_width
+        length = scanner.focal_spot_length
+        if width > 0 && length > 0
+            kwargs[:focal_spot] = FocalSpot(width, length, :gaussian, 5)
+        else
+            kwargs[:focal_spot] = focal_spot_medium()
+        end
+    end
+
+    # Lag: no Scanner field, use factory default
+    if sim_opts.use_lag
+        kwargs[:lag] = lag_gadox()
+    end
+
+    # --- Signal Chain effects ---
+
+    # Heel effect: use Scanner's target angle
+    if sim_opts.use_heel_effect
+        angle = scanner.target_angle
+        if angle > 0
+            kwargs[:heel_effect] = HeelEffect(angle, :tungsten, 0.01, true)
+        else
+            kwargs[:heel_effect] = default_heel_effect()
+        end
+    end
+
+    # DAS: BROKEN — never enable even if toggle is true (safety guard)
+    # sim_opts.use_das defaults to false at all fidelity levels
+    if sim_opts.use_das
+        @warn "DAS model is BROKEN. Ignoring use_das=true."
+    end
+
+    # BHC: no Scanner field, use factory default with reference energy from spectrum
+    if sim_opts.use_bhc
+        ref_energy = sum(energies .* weights) / sum(weights)
+        kwargs[:bhc] = bhc_water_default(; reference_energy_keV=ref_energy)
+    end
+
+    return default_physics_config(; kwargs...)
+end
+
+export build_physics_config
