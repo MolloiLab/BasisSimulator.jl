@@ -161,35 +161,129 @@ end
 
 Standardized options for image reconstruction.
 
-# Fields
-- `algorithm::Symbol`: :fdk, :sirt, :cgls. Default :fdk.
-- `matrix_size::NTuple{3, Int}`: Output volume size (nx, ny, nz).
-- `fov_cm::Float64`: Field of view in cm.
-- `filter::Symbol`: FDK filter kernel (:ram_lak, :shepp_logan). Default :ram_lak.
-- `iterations::Int`: Number of iterations (for SIRT/CGLS). Default 10.
+Supports all reconstruction algorithms with algorithm-specific parameters.
+Parameters irrelevant to the chosen algorithm are silently ignored.
+
+# Core Fields
+- `algorithm::Symbol`: Reconstruction algorithm (see below)
+- `matrix_size::NTuple{3, Int}`: Output volume size (nx, ny, nz)
+- `fov_cm::Float64`: Field of view in cm
+- `filter::Symbol`: FDK filter kernel (:ram_lak, :shepp_logan)
+- `iterations::Int`: Number of iterations (iterative methods)
+
+# Iterative Parameters
+- `lambda::Float64`: Relaxation/step size (SIRT, MBIR, ASIR)
+- `tv_weight::Float64`: TV regularization strength (TV-SIRT, TV-CGLS)
+- `n_subsets::Int`: Ordered subsets count (MBIR)
+- `penalty::Symbol`: Regularizer type (:none, :quadratic, :huber, :hyperbola)
+- `penalty_delta::Float64`: Huber/hyperbola delta parameter
+- `use_edge_weights::Bool`: Edge-preserving weights (MBIR)
+- `blend_percent::Float64`: FDK/iterative blend percentage (ASIR)
+
+# Helical Parameters
+- `interpolation::Symbol`: Helical interpolation method (:li_180 or :li_360)
+
+# VMI Parameters
+- `vmi_energies::Vector{Float64}`: VMI energies to reconstruct (keV)
+- `vmi_basis::Tuple{Symbol,Symbol}`: Material basis for decomposition
+
+# Initialization
+- `warm_start::Union{Nothing, AbstractArray}`: Initial estimate for iterative methods
+
+# Supported Algorithms
+| Symbol | Function | Key Params |
+|--------|----------|-----------|
+| :fdk | FDK (filtered backprojection) | filter |
+| :sirt | SIRT (iterative) | iterations, lambda |
+| :cgls | CGLS (conjugate gradient) | iterations |
+| :tv_sirt | TV-SIRT (TV regularized) | iterations, lambda, tv_weight |
+| :tv_cgls | TV-CGLS | iterations, tv_weight |
+| :asir | ASIR-style blend | iterations, lambda, blend_percent |
+| :mbir | Model-based IR | iterations, lambda, n_subsets, penalty |
+| :helical_fdk | Helical FDK | interpolation |
+| :helical_sirt | Helical SIRT | iterations, lambda, interpolation |
 """
 struct ReconOptions
+    # Core fields (original 5)
     algorithm::Symbol
     matrix_size::NTuple{3, Int}
     fov_cm::Float64
     filter::Symbol
     iterations::Int
+    # Iterative parameters
+    lambda::Float64
+    tv_weight::Float64
+    n_subsets::Int
+    penalty::Symbol
+    penalty_delta::Float64
+    use_edge_weights::Bool
+    blend_percent::Float64
+    # Helical parameters
+    interpolation::Symbol
+    # VMI parameters
+    vmi_energies::Vector{Float64}
+    vmi_basis::Tuple{Symbol, Symbol}
+    # Initialization
+    warm_start::Union{Nothing, AbstractArray}
 end
 
 """
     ReconOptions(; kwargs...)
 
-Create reconstruction options. Defaults to standard 512x512x64 clinical volume.
+Create reconstruction options. All new fields have backward-compatible defaults.
+
+# Examples
+```julia
+# Simple FDK (unchanged from before)
+ReconOptions(algorithm=:fdk, matrix_size=(512, 512, 64), fov_cm=35.0)
+
+# SIRT with custom lambda
+ReconOptions(algorithm=:sirt, iterations=50, lambda=0.5)
+
+# TV-SIRT with regularization
+ReconOptions(algorithm=:tv_sirt, iterations=50, lambda=1.0, tv_weight=0.01)
+
+# MBIR with penalty
+ReconOptions(algorithm=:mbir, iterations=30, n_subsets=12, penalty=:hyperbola)
+
+# Helical FDK with 360LI
+ReconOptions(algorithm=:helical_fdk, interpolation=:li_360)
+
+# VMI reconstruction request
+ReconOptions(algorithm=:fdk, vmi_energies=[40.0, 50.0, 70.0, 100.0], vmi_basis=(:water, :iodine))
+```
 """
 function ReconOptions(;
     algorithm::Symbol = :fdk,
     matrix_size::Union{NTuple{3, Int}, Nothing} = nothing,
     fov_cm::Real = 35.0,
     filter::Symbol = :ram_lak,
-    iterations::Int = 10
+    iterations::Int = 10,
+    # Iterative parameters
+    lambda::Real = 0.01,
+    tv_weight::Real = 0.0,
+    n_subsets::Int = 1,
+    penalty::Symbol = :none,
+    penalty_delta::Real = 0.01,
+    use_edge_weights::Bool = false,
+    blend_percent::Real = 50.0,
+    # Helical parameters
+    interpolation::Symbol = :li_180,
+    # VMI parameters
+    vmi_energies::Vector{Float64} = Float64[],
+    vmi_basis::Tuple{Symbol, Symbol} = (:water, :iodine),
+    # Initialization
+    warm_start::Union{Nothing, AbstractArray} = nothing
 )
     # Default to 512x512x64 if not specified
     _size = isnothing(matrix_size) ? (512, 512, 64) : matrix_size
-    
-    return ReconOptions(algorithm, _size, Float64(fov_cm), filter, iterations)
+
+    return ReconOptions(
+        algorithm, _size, Float64(fov_cm), filter, iterations,
+        Float64(lambda), Float64(tv_weight), n_subsets,
+        penalty, Float64(penalty_delta), use_edge_weights, Float64(blend_percent),
+        interpolation,
+        vmi_energies, vmi_basis,
+        warm_start
+    )
 end
