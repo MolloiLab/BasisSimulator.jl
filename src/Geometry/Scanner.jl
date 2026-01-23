@@ -158,6 +158,17 @@ struct Scanner{T<:AbstractFloat}
     fill_factor_col::T          # 0-1
     detection_gain::T           # electrons/keV
     electronic_noise::T         # electrons
+
+    # === PCCT Fields (flat kwargs, defaults = conventional EID behavior) ===
+    # Same pattern as dual_energy fields in CTProtocol:
+    # ignored when detector_type == :energy_integrating
+    detector_type::Symbol       # :energy_integrating (default) or :photon_counting
+    n_energy_bins::Int          # 1 (EID) or 2-8 (PCCT)
+    energy_thresholds::Vector{T}  # Energy thresholds keV (empty for EID)
+    energy_resolution::T        # Detector FWHM keV (0.0 for EID)
+    charge_sharing_fwhm::T      # Charge cloud FWHM mm (0.0 for EID)
+    dead_time_ns::T             # Pulse dead time ns (0.0 for EID)
+    pixel_mode::Symbol          # :standard, :uhr, :macro
 end
 
 """
@@ -252,9 +263,37 @@ function Scanner(;
     fill_factor_row::Real = 0.9,
     fill_factor_col::Real = 0.9,
     detection_gain::Real = 15.0,
-    electronic_noise::Real = 5000.0
+    electronic_noise::Real = 5000.0,
+
+    # PCCT fields (flat kwargs — ignored when detector_type == :energy_integrating)
+    detector_type::Symbol = :energy_integrating,
+    n_energy_bins::Int = 1,
+    energy_thresholds::Vector{<:Real} = Float64[],
+    energy_resolution::Real = 0.0,
+    charge_sharing_fwhm::Real = 0.0,
+    dead_time_ns::Real = 0.0,
+    pixel_mode::Symbol = :standard
 )
     T = Float64
+
+    # PCCT validation
+    if detector_type == :photon_counting
+        if isempty(energy_thresholds)
+            error("PCCT scanner requires energy_thresholds (got empty vector)")
+        end
+        if n_energy_bins != length(energy_thresholds)
+            error("n_energy_bins ($n_energy_bins) must equal length(energy_thresholds) ($(length(energy_thresholds)))")
+        end
+        if !issorted(energy_thresholds)
+            error("energy_thresholds must be sorted ascending (got $energy_thresholds)")
+        end
+        if !(pixel_mode in (:standard, :uhr, :macro))
+            error("pixel_mode must be :standard, :uhr, or :macro (got :$pixel_mode)")
+        end
+    elseif detector_type != :energy_integrating
+        error("detector_type must be :energy_integrating or :photon_counting (got :$detector_type)")
+    end
+
     return Scanner{T}(
         T(source_to_isocenter),
         T(source_to_detector),
@@ -278,7 +317,14 @@ function Scanner(;
         T(fill_factor_row),
         T(fill_factor_col),
         T(detection_gain),
-        T(electronic_noise)
+        T(electronic_noise),
+        detector_type,
+        n_energy_bins,
+        T.(energy_thresholds),
+        T(energy_resolution),
+        T(charge_sharing_fwhm),
+        T(dead_time_ns),
+        pixel_mode
     )
 end
 
@@ -747,12 +793,171 @@ function get_source_position(geom::CTGeometry, angle_idx::Int)
 end
 
 # =============================================================================
+# PCCT Scanner Helpers (PCCT-SCANNER-BRIDGE)
+# =============================================================================
+
+"""
+    is_pcct(scanner::Scanner) -> Bool
+
+Check if scanner is configured for photon-counting CT mode.
+
+# Example
+```julia
+scanner = Scanner(detector_type = :photon_counting, n_energy_bins=4, energy_thresholds=[20,35,55,70])
+is_pcct(scanner)  # true
+
+scanner = Scanner()  # Default EID
+is_pcct(scanner)  # false
+```
+"""
+is_pcct(scanner::Scanner) = scanner.detector_type == :photon_counting
+
+"""
+    create_naeotom_alpha(; mode::Symbol=:standard) -> Scanner
+
+Create a Siemens NAEOTOM Alpha-like PCCT scanner configuration.
+
+The NAEOTOM Alpha is the first clinical photon-counting CT system (FDA cleared 2021).
+Uses CdTe detector crystal with 4 energy thresholds.
+
+# Keyword Arguments
+- `mode::Symbol = :standard`: Detector mode
+  - `:standard` — 2×2 binned pixels (0.5 mm), 144 rows, 57.6 mm z-coverage
+  - `:uhr` — Unbinned pixels (0.25 mm), 120 rows, UHR spatial resolution
+
+# Scanner Specifications (FDA 510(k) K201501)
+- Source-to-isocenter: 595 mm
+- Source-to-detector: 1085.5 mm
+- Detector: CdTe, 1.6 mm thick
+- 4 energy bins: 20, 35, 55, 70 keV thresholds
+- Energy resolution: ~10 keV FWHM at 60 keV
+- Min rotation time: 0.25 s
+
+# Example
+```julia
+scanner = create_naeotom_alpha()
+is_pcct(scanner)  # true
+scanner.n_energy_bins  # 4
+
+# UHR mode for high-resolution imaging
+scanner_uhr = create_naeotom_alpha(mode=:uhr)
+scanner_uhr.detector_row_size  # 0.25 mm (vs 0.5 mm standard)
+```
+"""
+function create_naeotom_alpha(; mode::Symbol=:standard)
+    if mode == :uhr
+        pixel_size = 0.25
+        n_rows = 120
+    elseif mode == :standard
+        pixel_size = 0.5
+        n_rows = 144
+    else
+        error("mode must be :standard or :uhr (got :$mode)")
+    end
+
+    return Scanner(
+        # Geometry (NAEOTOM Alpha specs)
+        source_to_isocenter = 595.0,
+        source_to_detector = 1085.5,
+
+        # Detector array
+        detector_rows = n_rows,
+        detector_cols = 736,
+        detector_row_size = pixel_size,
+        detector_col_size = pixel_size,
+        detector_shape = CURVED_DETECTOR,
+        detector_row_offset = 0.0,
+        detector_col_offset = 0.25,
+
+        # Source
+        focal_spot_width = 0.4,
+        focal_spot_length = 0.5,
+        target_angle = 7.0,
+
+        # Gantry
+        gantry_rotation_time = 0.25,
+        max_scan_fov = 500.0,
+        gantry_aperture = 820.0,
+
+        # Filters
+        flat_filter_material = :aluminum,
+        flat_filter_thickness = 2.5,
+
+        # Detection (CdTe direct-conversion)
+        detector_material = :cdte,
+        detector_depth = 1.6,
+        fill_factor_row = 0.95,
+        fill_factor_col = 0.95,
+        detection_gain = 1.0,       # Direct conversion (no scintillator gain)
+        electronic_noise = 0.0,     # PCCT has no electronic noise (threshold eliminates it)
+
+        # PCCT fields
+        detector_type = :photon_counting,
+        n_energy_bins = 4,
+        energy_thresholds = [20.0, 35.0, 55.0, 70.0],
+        energy_resolution = 10.0,
+        charge_sharing_fwhm = 0.08,
+        dead_time_ns = 25.0,
+        pixel_mode = mode
+    )
+end
+
+"""
+    _build_pcct_detector(scanner::Scanner) -> PhotonCountingDetector
+
+Internal: construct a PhotonCountingDetector from Scanner's flat PCCT kwargs.
+
+This bridges the user-facing flat kwargs API to the internal physics struct.
+Users should NEVER call this directly — it's used by the simulation driver.
+"""
+function _build_pcct_detector(scanner::Scanner{T}) where T
+    @assert is_pcct(scanner) "_build_pcct_detector called on non-PCCT scanner"
+
+    # Map detector_material Symbol to DetectorMaterialPCCT enum
+    material = _infer_pcct_material(scanner.detector_material)
+
+    return PhotonCountingDetector(
+        material = material,
+        thickness_mm = scanner.detector_depth,
+        pixel_size_mm = (scanner.detector_row_size, scanner.detector_col_size),
+        energy_thresholds_keV = Float64.(scanner.energy_thresholds),
+        energy_resolution_keV = scanner.energy_resolution,
+        charge_sharing_fwhm_mm = scanner.charge_sharing_fwhm,
+        enable_charge_sharing = scanner.charge_sharing_fwhm > 0.0,
+        dead_time_ns = scanner.dead_time_ns,
+        enable_pile_up = scanner.dead_time_ns > 0.0,
+        enable_anti_coincidence = scanner.charge_sharing_fwhm > 0.0,
+        coincidence_window_ns = scanner.dead_time_ns,
+        electronic_noise_keV = 0.0  # PCCT eliminates electronic noise via thresholding
+    )
+end
+
+"""
+    _infer_pcct_material(material_symbol::Symbol) -> DetectorMaterialPCCT
+
+Map a Symbol to DetectorMaterialPCCT enum for internal physics dispatch.
+"""
+function _infer_pcct_material(material_symbol::Symbol)
+    if material_symbol in (:cdte, :CdTe, :CDTE)
+        return CDTE_MATERIAL
+    elseif material_symbol in (:czt, :CZT, :CdZnTe)
+        return CZT_MATERIAL
+    elseif material_symbol in (:si, :Si, :silicon, :Silicon)
+        return SI_MATERIAL
+    else
+        @warn "Unknown PCCT detector material :$material_symbol, defaulting to CdTe"
+        return CDTE_MATERIAL
+    end
+end
+
+# =============================================================================
 # Exports
 # =============================================================================
 
 # Scanner definition
 export Scanner, DetectorShape, CURVED_DETECTOR, FLAT_DETECTOR
 export validate_scanner, print_scanner_summary
+export is_pcct, create_naeotom_alpha
 
 # CTGeometry (computed positions for simulation)
 export CTGeometry, create_aquilion_one
