@@ -410,22 +410,32 @@ function _run_reconstruction(
 ) where T
     alg = recon_opts.algorithm
     ms = recon_opts.matrix_size
+    ws = recon_opts.warm_start
+
+    # Resolve init: warm_start array takes priority, otherwise use algorithm default
+    # SIRT/CGLS/TV-SIRT/TV-CGLS default to :zeros; MBIR defaults to :fdk
+    init_sirt = isnothing(ws) ? :zeros : ws
+    init_mbir = isnothing(ws) ? :fdk : ws
 
     if alg == :fdk
         return fdk_reconstruct(sinogram, geom, ms)
     elseif alg == :sirt
         return sirt_reconstruct(sinogram, geom, ms;
-            niter=recon_opts.iterations, lambda=recon_opts.lambda)
+            niter=recon_opts.iterations, lambda=recon_opts.lambda,
+            init=init_sirt)
     elseif alg == :cgls
         return cgls_reconstruct(sinogram, geom, ms;
-            niter=recon_opts.iterations)
+            niter=recon_opts.iterations,
+            init=init_sirt)
     elseif alg == :tv_sirt
         return tv_sirt_reconstruct(sinogram, geom, ms;
             niter=recon_opts.iterations, lambda_sirt=recon_opts.lambda,
-            lambda_tv=recon_opts.tv_weight)
+            lambda_tv=recon_opts.tv_weight,
+            init=init_sirt)
     elseif alg == :tv_cgls
         return tv_cgls_reconstruct(sinogram, geom, ms;
-            niter=recon_opts.iterations, lambda_tv=recon_opts.tv_weight)
+            niter=recon_opts.iterations, lambda_tv=recon_opts.tv_weight,
+            init=init_sirt)
     elseif alg == :asir
         return asir_style_reconstruct(sinogram, geom, ms;
             niter=recon_opts.iterations, lambda=recon_opts.lambda,
@@ -435,14 +445,16 @@ function _run_reconstruction(
         return mbir_reconstruct(sinogram, geom, ms;
             niter=recon_opts.iterations, n_subsets=recon_opts.n_subsets,
             lambda=recon_opts.lambda, penalty=penalty_type,
-            use_edge_weights=recon_opts.use_edge_weights)
+            use_edge_weights=recon_opts.use_edge_weights,
+            init=init_mbir)
     elseif alg == :helical_fdk || alg == :helical_sirt
         # If user requests helical algo on axial data, fall back to axial equivalent
         if alg == :helical_fdk
             return fdk_reconstruct(sinogram, geom, ms)
         else
             return sirt_reconstruct(sinogram, geom, ms;
-                niter=recon_opts.iterations, lambda=recon_opts.lambda)
+                niter=recon_opts.iterations, lambda=recon_opts.lambda,
+                init=init_sirt)
         end
     else
         error("Unknown reconstruction algorithm: $alg. " *
@@ -466,18 +478,24 @@ function _run_helical_reconstruction(
 ) where T
     alg = recon_opts.algorithm
     ms = recon_opts.matrix_size
+    ws = recon_opts.warm_start
     interp = recon_opts.interpolation == :li_360 ? :li360 : :li180
+
+    # Resolve init: warm_start array takes priority, otherwise use algorithm default
+    init_helical = isnothing(ws) ? :zeros : ws
 
     if alg ∈ (:fdk, :helical_fdk)
         return helical_fdk_reconstruct_volume(sinogram, helical_geom, ms;
             interpolation=interp)
     elseif alg ∈ (:sirt, :helical_sirt)
         return helical_sirt_reconstruct(sinogram, helical_geom, ms;
-            niter=recon_opts.iterations, lambda=recon_opts.lambda)
+            niter=recon_opts.iterations, lambda=recon_opts.lambda,
+            init=init_helical)
     elseif alg == :cgls
         # No helical CGLS — fall back to helical SIRT
         return helical_sirt_reconstruct(sinogram, helical_geom, ms;
-            niter=recon_opts.iterations, lambda=recon_opts.lambda)
+            niter=recon_opts.iterations, lambda=recon_opts.lambda,
+            init=init_helical)
     else
         # For other algorithms, use helical FDK as fallback
         return helical_fdk_reconstruct_volume(sinogram, helical_geom, ms;
