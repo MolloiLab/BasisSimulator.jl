@@ -7331,6 +7331,22 @@ end
             @test result.sinogram_noisy != result.sinogram_ideal
         end
 
+        @testset "PCCT + Dual-Energy Errors" begin
+            protocol_de = CTProtocol(kVp=140.0, mA=200.0, dual_energy=true, kVp_low=80.0, mA_low=350.0)
+            sim_opts = SimOptions(fidelity=:ideal)
+            recon_opts = ReconOptions(algorithm=:fdk, matrix_size=(16, 16, 4), fov_cm=20.0)
+
+            @test_throws ErrorException simulate(phantom, pcct_scanner, protocol_de, sim_opts, recon_opts)
+        end
+
+        @testset "PCCT + Helical Errors" begin
+            protocol_helical = CTProtocol(kVp=120.0, mA=300.0, scan_mode=:helical, pitch=0.984, n_rotations=3.0)
+            sim_opts = SimOptions(fidelity=:ideal)
+            recon_opts = ReconOptions(algorithm=:fdk, matrix_size=(16, 16, 4), fov_cm=20.0)
+
+            @test_throws ErrorException simulate(phantom, pcct_scanner, protocol_helical, sim_opts, recon_opts)
+        end
+
         @testset "Non-PCCT Scanner Still Works" begin
             # Regular scanner should NOT route to PCCT
             regular_scanner = Scanner(
@@ -7350,6 +7366,46 @@ end
             @test result.pcct_sinogram === nothing
             @test result.pcct_material_maps === nothing
             @test isempty(result.pcct_vmi_volumes)
+            # bin_sinograms accessor should also return nothing for non-PCCT
+            @test result.bin_sinograms === nothing
+        end
+
+        @testset "bin_sinograms Property Accessor" begin
+            protocol = CTProtocol(kVp=120.0, mA=300.0, views=36)
+            sim_opts = SimOptions(fidelity=:ideal)
+            recon_opts = ReconOptions(
+                algorithm=:fdk,
+                matrix_size=(16, 16, 4),
+                fov_cm=20.0,
+                vmi_basis=[:water, :iodine]
+            )
+
+            result = simulate(phantom, pcct_scanner, protocol, sim_opts, recon_opts)
+
+            # bin_sinograms is an alias for pcct_sinogram
+            @test result.bin_sinograms isa EnergyResolvedSinogram
+            @test result.bin_sinograms === result.pcct_sinogram
+            @test length(result.bin_sinograms.bins) == 4
+            @test :bin_sinograms in propertynames(result)
+        end
+
+        @testset "Vector{ReconOptions} with PCCT" begin
+            protocol = CTProtocol(kVp=120.0, mA=300.0, views=36)
+            sim_opts = SimOptions(fidelity=:ideal)
+            recon_list = [
+                ReconOptions(algorithm=:fdk, matrix_size=(16, 16, 4), fov_cm=20.0, vmi_basis=[:water, :iodine]),
+                ReconOptions(algorithm=:sirt, matrix_size=(16, 16, 4), fov_cm=20.0, iterations=5, cascade_warm_start=true)
+            ]
+
+            result = simulate(phantom, pcct_scanner, protocol, sim_opts, recon_list)
+
+            # Multi-recon: should have 2 reconstructions
+            @test length(result.reconstructions) == 2
+            @test result.reconstructions[1].first == :fdk
+            @test result.reconstructions[2].first == :sirt
+            # PCCT fields still populated from first run
+            @test result.pcct_sinogram isa EnergyResolvedSinogram
+            @test length(result.pcct_sinogram.bins) == 4
         end
     end
 
