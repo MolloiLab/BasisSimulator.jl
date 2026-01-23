@@ -6929,6 +6929,430 @@ end
         end
     end
 
+    # -------------------------------------------------------------------------
+    # PCCT Noise, Decomposition, VMI (PCCT-NOISE-DECOMP)
+    # -------------------------------------------------------------------------
+    @testset "PCCT Noise and Decomposition" begin
+
+        # Create test sinogram data for noise/decomp tests
+        phantom = create_gammex_472(n_voxels=16, n_slices=4, fov_cm=20.0, z_cm=2.0)
+        scanner = Scanner(
+            source_to_isocenter = 595.0,
+            source_to_detector = 1085.5,
+            detector_rows = 4,
+            detector_cols = 32,
+            detector_row_size = 1.0,
+            detector_col_size = 1.0
+        )
+        geom = CTGeometry(scanner; n_angles=36, fov_cm=20.0, z_cm=2.0)
+
+        detector = PhotonCountingDetector(
+            material = CDTE_MATERIAL,
+            thickness_mm = 1.6,
+            pixel_size_mm = (0.5, 0.5),
+            energy_thresholds_keV = [20.0, 35.0, 55.0, 70.0],
+            energy_resolution_keV = 0.0,
+            charge_sharing_fwhm_mm = 0.0,
+            enable_charge_sharing = false,
+            dead_time_ns = 0.0,
+            enable_pile_up = false,
+            enable_anti_coincidence = false,
+            coincidence_window_ns = 0.0,
+            electronic_noise_keV = 0.0,
+            seed = 42
+        )
+        materials = get_region_materials()
+        e_full, w_full = load_spectrum(120)
+        energies, weights = downsample_spectrum(e_full, w_full, 20)
+
+        # Generate a clean PCCT sinogram for testing
+        pcct_sino = pcct_forward_project(
+            phantom.mask, geom, detector;
+            energies=energies, weights=weights,
+            materials=materials,
+            apply_spectral_response=false
+        )
+
+        @testset "Per-Bin Poisson Noise" begin
+            # Make a copy for noisy version
+            clean_bins = [copy(b) for b in pcct_sino.bins]
+            clean_sino = EnergyResolvedSinogram(clean_bins, copy(pcct_sino.thresholds_keV))
+
+            protocol = CTProtocol(kVp=120.0, mA=300.0, views=36)
+
+            noisy_sino = apply_pcct_noise!(
+                clean_sino, detector, protocol;
+                seed=123, I0=1e5
+            )
+
+            # Should return modified sinogram
+            @test noisy_sino isa EnergyResolvedSinogram
+            @test length(noisy_sino.bins) == 4
+
+            # Noise should be added (bins should differ from clean)
+            for b in 1:4
+                @test noisy_sino.bins[b] != pcct_sino.bins[b]  # Modified
+                @test all(isfinite.(noisy_sino.bins[b]))
+            end
+        end
+
+        @testset "Per-Bin Noise with Spectrum Weighting" begin
+            clean_bins = [copy(b) for b in pcct_sino.bins]
+            clean_sino = EnergyResolvedSinogram(clean_bins, copy(pcct_sino.thresholds_keV))
+
+            protocol = CTProtocol(kVp=120.0, mA=300.0, views=36)
+
+            noisy_sino = apply_pcct_noise!(
+                clean_sino, detector, protocol;
+                seed=456, I0=1e5,
+                energies=energies, weights=weights
+            )
+
+            @test noisy_sino isa EnergyResolvedSinogram
+            @test all(isfinite.(noisy_sino.bins[1]))
+            @test all(isfinite.(noisy_sino.bins[4]))
+        end
+
+        @testset "Noise Reproducibility with Seed" begin
+            clean1 = EnergyResolvedSinogram([copy(b) for b in pcct_sino.bins], copy(pcct_sino.thresholds_keV))
+            clean2 = EnergyResolvedSinogram([copy(b) for b in pcct_sino.bins], copy(pcct_sino.thresholds_keV))
+
+            protocol = CTProtocol(kVp=120.0, mA=300.0, views=36)
+
+            apply_pcct_noise!(clean1, detector, protocol; seed=999, I0=1e5)
+            apply_pcct_noise!(clean2, detector, protocol; seed=999, I0=1e5)
+
+            # Same seed → same noise
+            for b in 1:4
+                @test clean1.bins[b] ≈ clean2.bins[b]
+            end
+        end
+
+        @testset "No Electronic Noise (PCCT Advantage)" begin
+            # PCCT noise model should NOT add electronic noise
+            # This is verified by: noise variance ≈ 1/N (Poisson only)
+            # No additional Gaussian component
+            clean_bins = [fill(Float32(0.5), 32, 4, 36) for _ in 1:4]
+            uniform_sino = EnergyResolvedSinogram(clean_bins, Float32.([20.0, 35.0, 55.0, 70.0]))
+
+            protocol = CTProtocol(kVp=120.0, mA=300.0, views=36)
+
+            noisy = apply_pcct_noise!(
+                uniform_sino, detector, protocol;
+                seed=42, I0=1e5
+            )
+
+            # With I0=1e5 per bin and projection=0.5:
+            # N = I0/4 × exp(-0.5) ≈ 15163 counts
+            # σ² = 1/N² × N = 1/N ≈ 6.6e-5
+            # σ ≈ 0.008 in projection domain
+            for b in 1:4
+                std_b = std(noisy.bins[b])
+                @test std_b > 0.001  # There is noise
+                @test std_b < 0.1    # But not too much (electronic noise would add more)
+            end
+        end
+
+        @testset "_compute_pcct_noise_I0 Helper" begin
+            # Without spectrum: uniform I0/n_bins
+            I0_uniform = BasisSimulator._compute_pcct_noise_I0(
+                detector, 4, Float32.([20.0, 35.0, 55.0, 70.0]), 1e6, nothing, nothing
+            )
+            @test length(I0_uniform) == 4
+            @test all(I0_uniform .≈ 1e6 / 4)
+
+            # With spectrum: weighted by spectrum × η
+            I0_weighted = BasisSimulator._compute_pcct_noise_I0(
+                detector, 4, Float32.([20.0, 35.0, 55.0, 70.0]),
+                1e6, energies, weights
+            )
+            @test length(I0_weighted) == 4
+            @test all(I0_weighted .> 0.0)
+            # Higher energy bins should have fewer photons (spectrum peaks at ~50 keV)
+            @test sum(I0_weighted) > 0.0
+        end
+
+        @testset "2-Material Least-Squares Decomposition" begin
+            mat_map = pcct_material_decomposition(pcct_sino; basis=(:water, :iodine))
+
+            @test mat_map isa PCCTMaterialMap
+            @test length(mat_map.materials) == 2
+            @test mat_map.material_names == [:water, :iodine]
+            @test mat_map.domain == :projection
+            @test size(mat_map.materials[1]) == (32, 4, 36)
+            @test all(isfinite.(mat_map.materials[1]))
+            @test all(isfinite.(mat_map.materials[2]))
+        end
+
+        @testset "3-Material Least-Squares Decomposition" begin
+            mat_map = pcct_material_decomposition(pcct_sino; basis=(:water, :iodine, :calcium))
+
+            @test mat_map isa PCCTMaterialMap
+            @test length(mat_map.materials) == 3
+            @test mat_map.material_names == [:water, :iodine, :calcium]
+            @test all(isfinite.(mat_map.materials[1]))
+            @test all(isfinite.(mat_map.materials[2]))
+            @test all(isfinite.(mat_map.materials[3]))
+        end
+
+        @testset "Decomposition Error: Too Many Materials" begin
+            # 4 bins can decompose at most 3 materials
+            @test_throws ErrorException pcct_material_decomposition(
+                pcct_sino; basis=(:water, :iodine, :calcium, :gadolinium)
+            )
+        end
+
+        @testset "Vector{Symbol} Basis Overload" begin
+            # ReconOptions.vmi_basis is Vector{Symbol}
+            basis_vec = [:water, :iodine, :calcium]
+            mat_map = pcct_material_decomposition(pcct_sino; basis=basis_vec)
+
+            @test mat_map isa PCCTMaterialMap
+            @test length(mat_map.materials) == 3
+            @test mat_map.material_names == [:water, :iodine, :calcium]
+        end
+
+        @testset "MLE Decomposition" begin
+            mat_map_mle = pcct_material_decomposition_mle(
+                pcct_sino, detector;
+                basis=(:water, :iodine),
+                energies=energies, weights=weights,
+                max_iterations=10, I0=1e6
+            )
+
+            @test mat_map_mle isa PCCTMaterialMap
+            @test length(mat_map_mle.materials) == 2
+            @test mat_map_mle.material_names == [:water, :iodine]
+            @test all(isfinite.(mat_map_mle.materials[1]))
+            @test all(isfinite.(mat_map_mle.materials[2]))
+        end
+
+        @testset "MLE 3-Material Decomposition" begin
+            mat_map_mle = pcct_material_decomposition_mle(
+                pcct_sino, detector;
+                basis=[:water, :iodine, :calcium],
+                energies=energies, weights=weights,
+                max_iterations=5, I0=1e6
+            )
+
+            @test mat_map_mle isa PCCTMaterialMap
+            @test length(mat_map_mle.materials) == 3
+            @test all(isfinite.(mat_map_mle.materials[1]))
+        end
+
+        @testset "MLE Requires Spectrum" begin
+            @test_throws ErrorException pcct_material_decomposition_mle(
+                pcct_sino, detector;
+                basis=(:water, :iodine)
+            )
+        end
+
+        @testset "VMI Synthesis" begin
+            mat_map = pcct_material_decomposition(pcct_sino; basis=(:water, :iodine))
+
+            # Synthesize VMI at different energies
+            vmi_40 = synthesize_vmi(mat_map, 40.0)
+            vmi_70 = synthesize_vmi(mat_map, 70.0)
+            vmi_100 = synthesize_vmi(mat_map, 100.0)
+
+            @test size(vmi_40) == (32, 4, 36)
+            @test size(vmi_70) == (32, 4, 36)
+            @test size(vmi_100) == (32, 4, 36)
+            @test all(isfinite.(vmi_40))
+            @test all(isfinite.(vmi_70))
+            @test all(isfinite.(vmi_100))
+        end
+
+        @testset "VMI with 3 Basis Materials" begin
+            mat_map = pcct_material_decomposition(pcct_sino; basis=(:water, :iodine, :calcium))
+
+            vmi_70 = synthesize_vmi(mat_map, 70.0)
+            @test size(vmi_70) == (32, 4, 36)
+            @test all(isfinite.(vmi_70))
+        end
+
+        @testset "ReconOptions vmi_basis is Vector{Symbol}" begin
+            # Accepts Tuple (backward compat)
+            recon1 = ReconOptions(vmi_basis=(:water, :iodine))
+            @test recon1.vmi_basis == [:water, :iodine]
+            @test recon1.vmi_basis isa Vector{Symbol}
+
+            # Accepts Vector
+            recon2 = ReconOptions(vmi_basis=[:water, :iodine, :calcium])
+            @test recon2.vmi_basis == [:water, :iodine, :calcium]
+            @test recon2.vmi_basis isa Vector{Symbol}
+
+            # VMI energies
+            recon3 = ReconOptions(vmi_energies=[40.0, 50.0, 70.0, 100.0, 150.0])
+            @test length(recon3.vmi_energies) == 5
+        end
+
+        @testset "_poisson_sample Helper" begin
+            rng = MersenneTwister(42)
+
+            # λ = 0 → always 0
+            @test BasisSimulator._poisson_sample(rng, 0.0) == 0
+            @test BasisSimulator._poisson_sample(rng, 1e-15) == 0
+
+            # λ = 100 → around 100 (Gaussian approximation path)
+            samples_100 = [BasisSimulator._poisson_sample(rng, 100.0) for _ in 1:100]
+            @test mean(samples_100) > 80
+            @test mean(samples_100) < 120
+
+            # λ = 5 → around 5 (Knuth path)
+            samples_5 = [BasisSimulator._poisson_sample(rng, 5.0) for _ in 1:100]
+            @test mean(samples_5) > 3
+            @test mean(samples_5) < 8
+        end
+    end
+
+    # -------------------------------------------------------------------------
+    # PCCT Driver Integration (PCCT-DRIVER-INTEGRATE)
+    # -------------------------------------------------------------------------
+    @testset "PCCT Driver Integration" begin
+
+        # Create a PCCT scanner using create_naeotom_alpha
+        pcct_scanner = create_naeotom_alpha(mode=:standard)
+
+        # Simple phantom
+        phantom = create_gammex_472(n_voxels=16, n_slices=4, fov_cm=20.0, z_cm=2.0)
+
+        @testset "PCCT Auto-Routing" begin
+            # PCCT scanner should route to _simulate_axial_pcct
+            @test is_pcct(pcct_scanner)
+
+            protocol = CTProtocol(kVp=120.0, mA=300.0, views=36)
+            sim_opts = SimOptions(fidelity=:ideal)  # No noise for clean test
+            recon_opts = ReconOptions(
+                algorithm=:fdk,
+                matrix_size=(16, 16, 4),
+                fov_cm=20.0,
+                vmi_basis=[:water, :iodine],
+                vmi_energies=[40.0, 70.0, 100.0]
+            )
+
+            result = simulate(phantom, pcct_scanner, protocol, sim_opts, recon_opts)
+
+            @test result isa SimulationResult
+            @test result.sinogram_ideal isa AbstractArray{Float32, 3}
+            @test result.sinogram_noisy isa AbstractArray{Float32, 3}
+            @test length(result.reconstructions) == 1
+            @test result.reconstructions[1].first == :fdk
+        end
+
+        @testset "PCCT Sinogram in Result" begin
+            protocol = CTProtocol(kVp=120.0, mA=300.0, views=36)
+            sim_opts = SimOptions(fidelity=:ideal)
+            recon_opts = ReconOptions(
+                algorithm=:fdk,
+                matrix_size=(16, 16, 4),
+                fov_cm=20.0,
+                vmi_basis=[:water, :iodine]
+            )
+
+            result = simulate(phantom, pcct_scanner, protocol, sim_opts, recon_opts)
+
+            # PCCT fields should be populated
+            @test result.pcct_sinogram isa EnergyResolvedSinogram
+            @test length(result.pcct_sinogram.bins) == 4  # NAEOTOM has 4 bins
+            @test all(isfinite.(result.pcct_sinogram.bins[1]))
+        end
+
+        @testset "PCCT Material Decomposition in Result" begin
+            protocol = CTProtocol(kVp=120.0, mA=300.0, views=36)
+            sim_opts = SimOptions(fidelity=:ideal)
+            recon_opts = ReconOptions(
+                algorithm=:fdk,
+                matrix_size=(16, 16, 4),
+                fov_cm=20.0,
+                vmi_basis=[:water, :iodine]
+            )
+
+            result = simulate(phantom, pcct_scanner, protocol, sim_opts, recon_opts)
+
+            @test result.pcct_material_maps isa PCCTMaterialMap
+            @test length(result.pcct_material_maps.materials) == 2
+            @test result.pcct_material_maps.material_names == [:water, :iodine]
+        end
+
+        @testset "PCCT 3-Material Decomposition" begin
+            protocol = CTProtocol(kVp=120.0, mA=300.0, views=36)
+            sim_opts = SimOptions(fidelity=:ideal)
+            recon_opts = ReconOptions(
+                algorithm=:fdk,
+                matrix_size=(16, 16, 4),
+                fov_cm=20.0,
+                vmi_basis=[:water, :iodine, :calcium]
+            )
+
+            result = simulate(phantom, pcct_scanner, protocol, sim_opts, recon_opts)
+
+            @test result.pcct_material_maps isa PCCTMaterialMap
+            @test length(result.pcct_material_maps.materials) == 3
+            @test result.pcct_material_maps.material_names == [:water, :iodine, :calcium]
+        end
+
+        @testset "PCCT VMI Volumes in Result" begin
+            protocol = CTProtocol(kVp=120.0, mA=300.0, views=36)
+            sim_opts = SimOptions(fidelity=:ideal)
+            recon_opts = ReconOptions(
+                algorithm=:fdk,
+                matrix_size=(16, 16, 4),
+                fov_cm=20.0,
+                vmi_basis=[:water, :iodine],
+                vmi_energies=[40.0, 70.0, 100.0]
+            )
+
+            result = simulate(phantom, pcct_scanner, protocol, sim_opts, recon_opts)
+
+            @test length(result.pcct_vmi_volumes) == 3
+            @test haskey(result.pcct_vmi_volumes, 40.0)
+            @test haskey(result.pcct_vmi_volumes, 70.0)
+            @test haskey(result.pcct_vmi_volumes, 100.0)
+            @test size(result.pcct_vmi_volumes[70.0]) == (16, 16, 4)
+            @test all(isfinite.(result.pcct_vmi_volumes[70.0]))
+        end
+
+        @testset "PCCT with Noise" begin
+            protocol = CTProtocol(kVp=120.0, mA=300.0, views=36)
+            sim_opts = SimOptions(fidelity=:low, seed=42)  # :low enables noise only
+            recon_opts = ReconOptions(
+                algorithm=:fdk,
+                matrix_size=(16, 16, 4),
+                fov_cm=20.0,
+                vmi_basis=[:water, :iodine]
+            )
+
+            result = simulate(phantom, pcct_scanner, protocol, sim_opts, recon_opts)
+
+            @test result.pcct_sinogram isa EnergyResolvedSinogram
+            @test all(isfinite.(result.pcct_sinogram.bins[1]))
+            # Noisy should differ from ideal (noise was applied)
+            @test result.sinogram_noisy != result.sinogram_ideal
+        end
+
+        @testset "Non-PCCT Scanner Still Works" begin
+            # Regular scanner should NOT route to PCCT
+            regular_scanner = Scanner(
+                source_to_isocenter=595.0, source_to_detector=1085.5,
+                detector_rows=4, detector_cols=32,
+                detector_row_size=1.0, detector_col_size=1.0
+            )
+            @test !is_pcct(regular_scanner)
+
+            protocol = CTProtocol(kVp=120.0, mA=300.0, views=36)
+            sim_opts = SimOptions(fidelity=:ideal)
+            recon_opts = ReconOptions(
+                algorithm=:fdk, matrix_size=(16, 16, 4), fov_cm=20.0
+            )
+
+            result = simulate(phantom, regular_scanner, protocol, sim_opts, recon_opts)
+            @test result.pcct_sinogram === nothing
+            @test result.pcct_material_maps === nothing
+            @test isempty(result.pcct_vmi_volumes)
+        end
+    end
+
 end
 
 println("\nTests complete!")

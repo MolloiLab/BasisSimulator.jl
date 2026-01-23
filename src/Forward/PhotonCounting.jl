@@ -1145,7 +1145,7 @@ end
 
 """
     apply_pcct_noise!(sino::EnergyResolvedSinogram, detector, protocol;
-                       seed=nothing, I0=1e6) -> EnergyResolvedSinogram
+                       seed=nothing, I0=1e6, energies=nothing, weights=nothing) -> EnergyResolvedSinogram
 
 Apply per-bin Poisson noise to PCCT energy-resolved sinograms (in-place).
 
@@ -1162,14 +1162,21 @@ Key PCCT noise characteristics:
 
 # Keyword Arguments
 - `seed::Union{Nothing,Int}`: Random seed for reproducibility
-- `I0::Real`: Reference photon count per detector element per bin
+- `I0::Real`: Reference photon count per detector element (total, before binning)
+- `energies::Union{Nothing,AbstractVector}`: Spectrum energies (keV) for proper per-bin I₀
+- `weights::Union{Nothing,AbstractVector}`: Spectrum weights for proper per-bin I₀
 
 # Physics
 
 For each bin b and pixel:
-1. Convert from line-integral to photon counts: N = I₀_bin × exp(-sino_value)
-2. Sample: N_measured ~ Poisson(N)
-3. Convert back: sino_noisy = -log(N_measured / I₀_bin)
+1. Compute I₀_bin from spectrum: I₀_bin = I₀ × Σ_{E∈bin} S(E) × η(E)
+2. Convert from line-integral to photon counts: N = I₀_bin × exp(-sino_value)
+3. Sample: N_measured ~ Poisson(N)
+4. Convert back: sino_noisy = -log(N_measured / I₀_bin)
+
+When `energies` and `weights` are provided, per-bin I₀ is computed from the
+spectrum weighted by quantum efficiency — this gives physically correct noise
+levels per bin (lower bins get fewer photons from the spectrum).
 
 # Returns
 Modified EnergyResolvedSinogram with noise applied.
@@ -1179,24 +1186,24 @@ function apply_pcct_noise!(
     detector::PhotonCountingDetector,
     protocol;
     seed::Union{Nothing,Int} = nothing,
-    I0::Real = 1e6
+    I0::Real = 1e6,
+    energies::Union{Nothing,AbstractVector} = nothing,
+    weights::Union{Nothing,AbstractVector} = nothing
 ) where {T, A}
 
     rng = isnothing(seed) ? Random.default_rng() : MersenneTwister(seed)
     n_bins = length(sino.bins)
-    n_elements = length(sino.bins[1])
+    thresholds = sino.thresholds_keV
+
+    # Compute per-bin I₀ values
+    I0_per_bin = _compute_pcct_noise_I0(detector, n_bins, thresholds, I0, energies, weights)
 
     for (b, bin) in enumerate(sino.bins)
-        # Compute I₀ for this bin (fraction of total flux in this energy range)
-        # Use uniform approximation: each bin gets I0/n_bins
-        # (proper computation would use spectrum weighting, done in driver)
-        I0_bin = T(I0 / n_bins)
+        I0_bin = T(I0_per_bin[b])
 
         # Generate Poisson noise on CPU, transfer to device
-        # 1. Read current sinogram values (line-integral domain)
         bin_cpu = Array(bin)
 
-        # 2. Convert to photon counts and apply Poisson
         for idx in eachindex(bin_cpu)
             # Expected counts: N = I₀_bin × exp(-projection_value)
             N_expected = I0_bin * exp(-bin_cpu[idx])
@@ -1222,6 +1229,32 @@ function apply_pcct_noise!(
     end
 
     return sino
+end
+
+"""
+    _compute_pcct_noise_I0(detector, n_bins, thresholds, I0, energies, weights) -> Vector{Float64}
+
+Compute per-bin reference photon counts for noise model.
+
+When spectrum (energies, weights) is provided, computes the proper per-bin I₀
+by integrating spectrum × quantum efficiency over each bin's energy range.
+Otherwise falls back to uniform distribution (I0/n_bins).
+"""
+function _compute_pcct_noise_I0(detector, n_bins, thresholds, I0, energies, weights)
+    if isnothing(energies) || isnothing(weights)
+        # Fallback: uniform distribution across bins
+        return fill(Float64(I0) / n_bins, n_bins)
+    end
+
+    # Compute quantum efficiency for all energies
+    η = quantum_efficiency_vector(detector.material, detector.thickness_mm, energies)
+    kVp = maximum(energies)
+
+    I0_per_bin = zeros(Float64, n_bins)
+    for b in 1:n_bins
+        I0_per_bin[b] = _compute_bin_I0(detector, energies, weights, η, thresholds, b, Float64(kVp), Float64(I0))
+    end
+    return I0_per_bin
 end
 
 """
