@@ -963,10 +963,95 @@ function get_supported_kedge_elements(detector::PhotonCountingDetector)
 end
 
 # =============================================================================
+# VMI Synthesis from Material Maps (PCCT-NOISE-DECOMP)
+# =============================================================================
+
+"""
+    synthesize_vmi(material_map::PCCTMaterialMap, energy_keV::Float64) -> AbstractArray
+
+Synthesize a Virtual Monoenergetic Image (VMI) from material density maps.
+
+The VMI at energy E is computed as:
+    μ_VMI(E) = Σᵢ ρᵢ × μᵢ(E)
+
+where ρᵢ is the material density map and μᵢ(E) is the linear attenuation
+coefficient of basis material i at energy E.
+
+This works for any number of basis materials (2 for dual-energy, 3+ for PCCT).
+
+# Arguments
+- `material_map::PCCTMaterialMap`: N-material density maps from decomposition
+- `energy_keV::Float64`: Target VMI energy in keV
+
+# Returns
+- Array of same shape as material maps (VMI sinogram or image, depending on domain)
+
+# Example
+```julia
+# 3-material decomposition from PCCT
+mat_map = pcct_material_decomposition(pcct_sino; basis=(:water, :iodine, :calcium))
+
+# VMI at 70 keV
+vmi_70 = synthesize_vmi(mat_map, 70.0)
+```
+"""
+function synthesize_vmi(material_map::PCCTMaterialMap{T,A}, energy_keV::Float64) where {T, A}
+    n_materials = length(material_map.materials)
+    @assert n_materials > 0 "Material map must have at least one material"
+
+    # Get attenuation coefficient for each basis material at target energy
+    μ_values = Vector{T}(undef, n_materials)
+    for (i, mat_name) in enumerate(material_map.material_names)
+        μ_values[i] = T(_get_basis_material_attenuation(mat_name, energy_keV))
+    end
+
+    # Synthesize VMI: μ_VMI = Σ ρᵢ × μᵢ(E)
+    result = similar(material_map.materials[1])
+    fill!(result, zero(T))
+
+    for i in 1:n_materials
+        μ_i = μ_values[i]
+        mat_i = material_map.materials[i]
+        AK.foreachindex(result) do idx
+            result[idx] += mat_i[idx] * μ_i
+        end
+    end
+
+    return result
+end
+
+"""
+    _get_basis_material_attenuation(material_name::Symbol, energy_keV::Float64) -> Float64
+
+Get linear attenuation coefficient for a basis material at given energy.
+Maps common VMI basis names to XrayAttenuation.jl materials.
+"""
+function _get_basis_material_attenuation(material_name::Symbol, energy_keV::Float64)
+    if material_name == :water
+        return compute_μ_at_energy(XA.Materials.water, energy_keV)
+    elseif material_name == :iodine
+        # Iodine solution at 1 mg/mL as reference concentration
+        return compute_mass_μ_at_energy(XA.Elements.Iodine, energy_keV) * 0.001  # 1 mg/mL
+    elseif material_name == :calcium
+        # Calcium hydroxyapatite as reference
+        return compute_μ_at_energy(Ca_200, energy_keV)  # Ca_200 as representative
+    elseif material_name == :bone
+        return compute_μ_at_energy(Ca_200, energy_keV)
+    elseif material_name == :air
+        return compute_μ_at_energy(XA.Materials.air, energy_keV)
+    else
+        # Try to look up in materials registry
+        mat = get_material(material_name)
+        return compute_μ_at_energy(mat, energy_keV)
+    end
+end
+
+# =============================================================================
 # Exports
 # =============================================================================
 
 export PCCTVMIResult, PCCTMaterialMap
+export synthesize_vmi
 export compute_bin_weights, pcct_virtual_monoenergetic, pcct_vmi_to_hu
 export reconstruct_pcct_vmi, generate_pcct_vmi_series
 export pcct_material_decomposition, get_material_attenuation_pcct

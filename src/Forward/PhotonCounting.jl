@@ -1064,7 +1064,13 @@ function _compute_bin_I0(detector, energies, weights, η, thresholds, bin_idx, k
     I0_bin = 0.0
     for (i, E) in enumerate(energies)
         E_f = Float64(E)
-        if E_f >= T_low && E_f < T_high
+        # Last bin includes upper bound (E <= kVp)
+        in_bin = if bin_idx == n_bins
+            E_f >= T_low && E_f <= T_high
+        else
+            E_f >= T_low && E_f < T_high
+        end
+        if in_bin
             I0_bin += I0 * Float64(weights[i]) * η[i]
         end
     end
@@ -1130,8 +1136,123 @@ function pcct_forward_project(
         end
     end
 
-    return EnergyResolvedSinogram(bins, detector.energy_thresholds_keV)
+    return EnergyResolvedSinogram(bins, T.(detector.energy_thresholds_keV))
 end
+
+# =============================================================================
+# PCCT Noise Model (PCCT-NOISE-DECOMP)
+# =============================================================================
+
+"""
+    apply_pcct_noise!(sino::EnergyResolvedSinogram, detector, protocol;
+                       seed=nothing, I0=1e6) -> EnergyResolvedSinogram
+
+Apply per-bin Poisson noise to PCCT energy-resolved sinograms (in-place).
+
+Key PCCT noise characteristics:
+- Each bin has INDEPENDENT Poisson statistics
+- NO electronic noise (eliminated by energy thresholds — fundamental PCCT advantage)
+- Lower counts per bin → higher relative noise per bin vs conventional
+- Total counts (sum of all bins) ≈ conventional EID counts × η_avg
+
+# Arguments
+- `sino::EnergyResolvedSinogram`: Energy-resolved sinograms (in line-integral domain)
+- `detector::PhotonCountingDetector`: Detector specification
+- `protocol`: CTProtocol (for exposure/flux information)
+
+# Keyword Arguments
+- `seed::Union{Nothing,Int}`: Random seed for reproducibility
+- `I0::Real`: Reference photon count per detector element per bin
+
+# Physics
+
+For each bin b and pixel:
+1. Convert from line-integral to photon counts: N = I₀_bin × exp(-sino_value)
+2. Sample: N_measured ~ Poisson(N)
+3. Convert back: sino_noisy = -log(N_measured / I₀_bin)
+
+# Returns
+Modified EnergyResolvedSinogram with noise applied.
+"""
+function apply_pcct_noise!(
+    sino::EnergyResolvedSinogram{T,A},
+    detector::PhotonCountingDetector,
+    protocol;
+    seed::Union{Nothing,Int} = nothing,
+    I0::Real = 1e6
+) where {T, A}
+
+    rng = isnothing(seed) ? Random.default_rng() : MersenneTwister(seed)
+    n_bins = length(sino.bins)
+    n_elements = length(sino.bins[1])
+
+    for (b, bin) in enumerate(sino.bins)
+        # Compute I₀ for this bin (fraction of total flux in this energy range)
+        # Use uniform approximation: each bin gets I0/n_bins
+        # (proper computation would use spectrum weighting, done in driver)
+        I0_bin = T(I0 / n_bins)
+
+        # Generate Poisson noise on CPU, transfer to device
+        # 1. Read current sinogram values (line-integral domain)
+        bin_cpu = Array(bin)
+
+        # 2. Convert to photon counts and apply Poisson
+        for idx in eachindex(bin_cpu)
+            # Expected counts: N = I₀_bin × exp(-projection_value)
+            N_expected = I0_bin * exp(-bin_cpu[idx])
+            N_expected = max(N_expected, T(0.1))  # Floor to avoid zero
+
+            # Poisson sampling (using Gaussian approximation for large N)
+            if N_expected > T(20)
+                # Gaussian approximation: N ~ Normal(μ=N, σ²=N)
+                N_measured = N_expected + sqrt(N_expected) * T(randn(rng))
+                N_measured = max(N_measured, T(1))
+            else
+                # Exact Poisson for small counts
+                N_measured = T(_poisson_sample(rng, Float64(N_expected)))
+                N_measured = max(N_measured, T(1))
+            end
+
+            # Convert back to line-integral domain
+            bin_cpu[idx] = -log(N_measured / I0_bin)
+        end
+
+        # Transfer back to device
+        copyto!(bin, bin_cpu)
+    end
+
+    return sino
+end
+
+"""
+    _poisson_sample(rng, λ) -> Int
+
+Sample from Poisson distribution with parameter λ.
+Uses Knuth's algorithm for small λ, normal approximation for large λ.
+"""
+function _poisson_sample(rng, λ::Float64)
+    if λ > 30.0
+        # Gaussian approximation
+        return max(round(Int, λ + sqrt(λ) * randn(rng)), 0)
+    elseif λ < 1e-10
+        return 0
+    else
+        # Knuth's algorithm
+        L = exp(-λ)
+        k = 0
+        p = 1.0
+        while true
+            k += 1
+            p *= rand(rng)
+            if p < L
+                return k - 1
+            end
+        end
+    end
+end
+
+# Note: synthesize_vmi and _get_basis_material_attenuation are defined in PCCTSpectral.jl
+# (requires PCCTMaterialMap which is defined there)
 
 # =============================================================================
 # Utility Functions
@@ -1925,3 +2046,4 @@ export ChargeTransportParams, get_charge_transport_params
 export charge_collection_efficiency, mean_charge_collection_efficiency
 export hole_tailing_distribution
 export compute_spectral_response_matrix, get_spectral_response_energies
+export apply_pcct_noise!
