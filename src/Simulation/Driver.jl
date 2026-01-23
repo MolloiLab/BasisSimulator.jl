@@ -301,7 +301,7 @@ function _simulate_helical_single(phantom, scanner, protocol, sim_opts, recon_op
         z_cm = nothing
     )
 
-    # 2. Create helical geometry
+    # 2. Create helical geometry (modifies source/detector z-positions for helical motion)
     helical_geom = create_helical_geometry(
         base_geom;
         pitch = protocol.pitch,
@@ -315,17 +315,17 @@ function _simulate_helical_single(phantom, scanner, protocol, sim_opts, recon_op
     # 4. Build PhysicsConfig
     config = build_physics_config(scanner, sim_opts, energies, weights)
 
-    # 5. Helical forward projection
+    # 5. Helical forward projection (use helical geometry with z-varying positions)
     materials = get_region_materials()
     sino_ideal = forward_project(
-        phantom.mask, base_geom;
+        phantom.mask, helical_geom.base_geom;
         energies=energies, weights=weights,
         materials=materials, physics=config
     )
 
     # 6. Apply detector noise
     sino_final = if sim_opts.use_noise
-        sim_detect(sino_ideal, base_geom, protocol)
+        sim_detect(sino_ideal, helical_geom.base_geom, protocol)
     else
         copy(sino_ideal)
     end
@@ -371,10 +371,10 @@ function _simulate_helical_dual(phantom, scanner, protocol, sim_opts, recon_opts
     # 3. Build GSIProtocol
     gsi = _build_gsi_protocol(protocol)
 
-    # 4. Dual-energy forward projection (uses base geometry for both)
+    # 4. Dual-energy forward projection (uses helical geometry with z-varying positions)
     materials = get_region_materials()
     de_sino = forward_project_dual_energy(
-        phantom.mask, base_geom, gsi;
+        phantom.mask, helical_geom.base_geom, gsi;
         materials=materials,
         physics=config,
         scanner=nothing
@@ -383,7 +383,7 @@ function _simulate_helical_dual(phantom, scanner, protocol, sim_opts, recon_opts
     # 5. High-kVp sinogram as primary
     sino_ideal = de_sino.high
     sino_final = if sim_opts.use_noise
-        sim_detect(sino_ideal, base_geom, protocol)
+        sim_detect(sino_ideal, helical_geom.base_geom, protocol)
     else
         copy(sino_ideal)
     end

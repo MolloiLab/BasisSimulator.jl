@@ -4239,7 +4239,14 @@ end
             @test helical isa HelicalGeometry
             @test helical.pitch ≈ 1.0
             @test helical.rotation_time ≈ 0.5
-            @test helical.base_geom === base_geom
+            @test helical.base_geom.SAD == base_geom.SAD
+            @test helical.base_geom.SDD == base_geom.SDD
+            @test helical.base_geom.n_angles == base_geom.n_angles
+            @test helical.base_geom.n_rows == base_geom.n_rows
+            @test helical.base_geom.n_cols == base_geom.n_cols
+            # Z-positions should vary (helical motion applied to base_geom)
+            @test helical.base_geom.source_positions[3, 1] ≈ helical.z_positions[1]
+            @test helical.base_geom.source_positions[3, end] ≈ helical.z_positions[end]
             @test length(helical.z_positions) == base_geom.n_angles
         end
 
