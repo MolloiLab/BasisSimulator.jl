@@ -997,20 +997,22 @@ function pcct_forward_project(
                 if R_val < T(1e-10)
                     continue
                 end
-                weight_total = I0_T * w_T * η_E * R_val
-                bin_arr = bins[b]
-                AK.foreachindex(sino_buf) do idx
-                    bin_arr[idx] += weight_total * exp(-sino_buf[idx])
+                # Use let-block to avoid Core.Box capture in GPU kernel
+                let wt = I0_T * w_T * η_E * R_val, ba = bins[b]
+                    AK.foreachindex(sino_buf) do idx
+                        ba[idx] += wt * exp(-sino_buf[idx])
+                    end
                 end
             end
         else
             # Ideal binning: photon goes to exactly one bin based on energy
             bin_idx = _find_energy_bin(E_float, thresholds, Float64(kVp))
             if bin_idx > 0
-                weight_total = I0_T * w_T * η_E
-                bin_arr = bins[bin_idx]
-                AK.foreachindex(sino_buf) do idx
-                    bin_arr[idx] += weight_total * exp(-sino_buf[idx])
+                # Use let-block to avoid Core.Box capture in GPU kernel
+                let wt = I0_T * w_T * η_E, ba = bins[bin_idx]
+                    AK.foreachindex(sino_buf) do idx
+                        ba[idx] += wt * exp(-sino_buf[idx])
+                    end
                 end
             end
         end
