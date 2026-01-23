@@ -1001,6 +1001,720 @@ function print_pcct_detector_info(detector::PhotonCountingDetector)
 end
 
 # =============================================================================
+# Material-Dependent Detector Physics (PCCT-MATERIAL-MODEL)
+# =============================================================================
+
+# Material-agnostic architecture: ALL physics functions dispatch on
+# DetectorMaterialPCCT enum. CZT and Si work by adding entries to
+# get_detector_material_properties() — no other code changes needed.
+
+# Abramowitz & Stegun erf approximation (accuracy ~1.5×10⁻⁷)
+# Used for spectral response matrix (CPU precomputation, not in GPU hot path)
+function _erf_approx(x::Float64)
+    # Handle sign
+    sign_x = x < 0.0 ? -1.0 : 1.0
+    x = abs(x)
+
+    # Constants (Abramowitz & Stegun 7.1.26)
+    a1 = 0.254829592
+    a2 = -0.284496736
+    a3 = 1.421413741
+    a4 = -1.453152027
+    a5 = 1.061405429
+    p = 0.3275911
+
+    t = 1.0 / (1.0 + p * x)
+    y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * exp(-x * x)
+    return sign_x * y
+end
+
+"""
+    get_detector_material_properties(material::DetectorMaterialPCCT) -> NamedTuple
+
+Master lookup for ALL material-dependent PCCT detector parameters.
+
+This is the SINGLE source of truth for material constants. All physics functions
+dispatch through this function to ensure material-agnostic operation.
+
+# Returns NamedTuple with fields:
+- `elements`: Element symbols
+- `atomic_numbers`: Z values for each element
+- `mass_fractions`: Mass fraction of each element in compound
+- `density_g_cm3`: Crystal density
+- `k_edges_keV`: K-edge energies for each element
+- `k_alpha_keV`: K-α fluorescence line energies
+- `k_yields`: Fluorescence yields ω_K for each element
+- `k_fluorescence_range_mm`: Mean free path of fluorescence X-rays in crystal
+- `mu_e_tau_e`: Electron mobility-lifetime product (cm²/V)
+- `mu_h_tau_h`: Hole mobility-lifetime product (cm²/V)
+- `bias_voltage_V`: Typical operating bias voltage
+- `pair_creation_energy_eV`: Energy per electron-hole pair
+- `fano_factor`: Fano factor for intrinsic energy resolution
+- `charge_cloud_sigma_mm`: Charge cloud size at typical bias
+- `energy_resolution_fwhm_keV`: Measured system FWHM at 60 keV
+
+# References
+- CdTe: Taguchi & Iwanczyk, Med Phys 2013; del Risco Norrlid et al, NIMPA 2017
+- CZT: Pennicard et al, JINST 2014; Veale et al, NIMPA 2014
+- Si: Persson et al, Phys Med Biol 2014; Fredenberg et al, NIMPA 2010
+
+# Example
+```julia
+props = get_detector_material_properties(CDTE_MATERIAL)
+props.density_g_cm3  # 5.85
+props.k_edges_keV    # [26.7, 31.8]
+```
+"""
+function get_detector_material_properties(material::DetectorMaterialPCCT)
+    if material == CDTE_MATERIAL
+        # Cadmium Telluride — primary PCCT detector material (Siemens NAEOTOM Alpha)
+        # Atomic weights: Cd = 112.411, Te = 127.60 → total = 240.011
+        return (
+            elements = [:Cd, :Te],
+            atomic_numbers = [48, 52],
+            mass_fractions = [112.411 / 240.011, 127.60 / 240.011],  # [0.4683, 0.5317]
+            density_g_cm3 = 5.85,
+
+            # K-edges and fluorescence (NIST XCOM)
+            k_edges_keV = [26.7, 31.8],           # Cd K-edge, Te K-edge
+            k_alpha_keV = [23.2, 27.4],           # Cd K-α, Te K-α fluorescence
+            k_yields = [0.84, 0.87],              # Fluorescence yields ω_K (Bambynek 1972)
+            k_fluorescence_range_mm = [0.12, 0.10], # Mean free path in CdTe crystal
+
+            # Charge transport (Taguchi & Iwanczyk 2013, Table 2)
+            mu_e_tau_e = 3.0e-3,                  # cm²/V (electrons — good mobility)
+            mu_h_tau_h = 5.0e-5,                  # cm²/V (holes — poor mobility!)
+            bias_voltage_V = 800.0,               # Typical operating voltage
+
+            # Intrinsic energy resolution
+            pair_creation_energy_eV = 4.43,       # eV per e-h pair
+            fano_factor = 0.11,                   # Intrinsic variance reduction
+            charge_cloud_sigma_mm = 0.04,         # At 800V bias, 1.6mm thick
+
+            # System-level measured resolution (includes electronics)
+            energy_resolution_fwhm_keV = 10.0     # Typical for NAEOTOM at 60 keV
+        )
+    elseif material == CZT_MATERIAL
+        # Cadmium Zinc Telluride (Cd₀.₉Zn₀.₁Te)
+        # Zn substitutes ~10% of Cd → slightly different properties
+        # Atomic weights: Cd=112.411, Zn=65.38, Te=127.60
+        # CZT formula: Cd₀.₉Zn₀.₁Te → effective mass per formula unit
+        # = 0.9×112.411 + 0.1×65.38 + 127.60 = 234.307
+        eff_mass = 0.9 * 112.411 + 0.1 * 65.38 + 127.60  # 234.307
+        return (
+            elements = [:Cd, :Zn, :Te],
+            atomic_numbers = [48, 30, 52],
+            mass_fractions = [0.9 * 112.411 / eff_mass, 0.1 * 65.38 / eff_mass, 127.60 / eff_mass],
+            density_g_cm3 = 5.78,                 # Slightly lower than CdTe
+
+            # K-edges and fluorescence
+            k_edges_keV = [26.7, 9.66, 31.8],    # Cd, Zn, Te K-edges
+            k_alpha_keV = [23.2, 8.63, 27.4],    # Cd, Zn, Te K-α lines
+            k_yields = [0.84, 0.47, 0.87],       # ω_K values (Zn lower yield)
+            k_fluorescence_range_mm = [0.12, 0.50, 0.10], # Zn K-α has long range (low-E)
+
+            # Charge transport (Pennicard et al 2014)
+            mu_e_tau_e = 1.0e-2,                  # cm²/V (better than CdTe)
+            mu_h_tau_h = 5.0e-5,                  # cm²/V (similar hole trapping)
+            bias_voltage_V = 600.0,               # Lower voltage needed
+
+            # Intrinsic energy resolution
+            pair_creation_energy_eV = 4.64,       # eV per e-h pair (Owens 2004)
+            fano_factor = 0.089,                  # Better than CdTe (Pennicard 2014)
+            charge_cloud_sigma_mm = 0.045,        # Slightly larger cloud
+
+            energy_resolution_fwhm_keV = 8.0      # CZT typically better resolution
+        )
+    elseif material == SI_MATERIAL
+        # Silicon — excellent charge transport but very low stopping power at CT energies
+        # Atomic weight: Si = 28.085
+        return (
+            elements = [:Si],
+            atomic_numbers = [14],
+            mass_fractions = [1.0],
+            density_g_cm3 = 2.33,
+
+            # K-edge (irrelevant for CT — 1.84 keV is far below useful range)
+            k_edges_keV = [1.84],
+            k_alpha_keV = [1.74],                 # Si K-α (irrelevant at CT energies)
+            k_yields = [0.05],                    # Very low fluorescence yield for low-Z
+            k_fluorescence_range_mm = [0.001],    # Absorbed immediately
+
+            # Charge transport (excellent! — Persson 2014)
+            mu_e_tau_e = 1.0,                     # cm²/V (near-perfect collection)
+            mu_h_tau_h = 0.5,                     # cm²/V (also excellent)
+            bias_voltage_V = 200.0,               # Low voltage sufficient
+
+            # Intrinsic energy resolution (best of all three)
+            pair_creation_energy_eV = 3.62,       # eV per e-h pair (lowest)
+            fano_factor = 0.115,                  # Similar to CdTe
+            charge_cloud_sigma_mm = 0.015,        # Very small cloud (light material)
+
+            energy_resolution_fwhm_keV = 2.5      # Excellent energy resolution
+        )
+    else
+        error("Unknown detector material: $material")
+    end
+end
+
+"""
+    get_detector_material_attenuation(material::DetectorMaterialPCCT, energy_keV::Real) -> Float64
+
+Get linear attenuation coefficient μ (cm⁻¹) for PCCT detector material at given energy.
+
+Uses the tabulated data in DetectorEfficiency.jl (SCINTILLATOR_MU_DATA) with log-linear
+interpolation. This provides NIST XCOM-calibrated values with proper K-edge handling.
+
+# Arguments
+- `material::DetectorMaterialPCCT`: Detector material enum
+- `energy_keV::Real`: Photon energy in keV
+
+# Returns
+- `Float64`: Linear attenuation coefficient in cm⁻¹
+
+# Example
+```julia
+μ = get_detector_material_attenuation(CDTE_MATERIAL, 60.0)  # ~33 cm⁻¹
+μ = get_detector_material_attenuation(SI_MATERIAL, 60.0)    # ~0.46 cm⁻¹
+```
+"""
+function get_detector_material_attenuation(material::DetectorMaterialPCCT, energy_keV::Real)
+    mat_name = if material == CDTE_MATERIAL
+        "CdTe"
+    elseif material == CZT_MATERIAL
+        "CZT"
+    elseif material == SI_MATERIAL
+        "Si"
+    else
+        error("Unknown detector material: $material")
+    end
+    return get_scintillator_mu(mat_name, Float64(energy_keV))
+end
+
+"""
+    quantum_efficiency(material::DetectorMaterialPCCT, thickness_mm::Real, energy_keV::Real) -> Float64
+
+Compute quantum detection efficiency η(E) for a PCCT detector crystal.
+
+The probability that a photon of energy E is absorbed in the detector:
+    η(E) = 1 - exp(-μ_det(E) × d)
+
+where μ_det(E) is the linear attenuation of the detector material and d is thickness.
+
+# Arguments
+- `material::DetectorMaterialPCCT`: Detector crystal material
+- `thickness_mm::Real`: Crystal thickness in mm
+- `energy_keV::Real`: Photon energy in keV
+
+# Returns
+- `Float64`: Detection efficiency in [0, 1]
+
+# Physics
+- CdTe 1.6mm: η ≈ 0.99 at 60 keV (nearly opaque)
+- CZT 2.0mm: η ≈ 0.99 at 60 keV (similar to CdTe)
+- Si 1.6mm: η ≈ 0.05 at 60 keV (mostly transparent!)
+- Si needs 30+ mm thickness for >90% efficiency at CT energies
+
+# Example
+```julia
+η_cdte = quantum_efficiency(CDTE_MATERIAL, 1.6, 60.0)  # ≈ 0.995
+η_si = quantum_efficiency(SI_MATERIAL, 1.6, 60.0)      # ≈ 0.071
+```
+"""
+function quantum_efficiency(material::DetectorMaterialPCCT, thickness_mm::Real, energy_keV::Real)
+    μ = get_detector_material_attenuation(material, energy_keV)  # cm⁻¹
+    thickness_cm = Float64(thickness_mm) / 10.0
+    return 1.0 - exp(-μ * thickness_cm)
+end
+
+"""
+    quantum_efficiency_vector(material::DetectorMaterialPCCT, thickness_mm::Real,
+                              energies::AbstractVector) -> Vector{Float64}
+
+Compute quantum efficiency η(E) for a vector of energies (batch operation).
+
+More efficient than calling `quantum_efficiency` in a loop for spectrum processing.
+"""
+function quantum_efficiency_vector(material::DetectorMaterialPCCT, thickness_mm::Real,
+                                    energies::AbstractVector)
+    return [quantum_efficiency(material, thickness_mm, E) for E in energies]
+end
+
+# =============================================================================
+# K-Fluorescence Escape Model
+# =============================================================================
+
+"""
+    KFluorescenceParams{T<:AbstractFloat}
+
+Parameters for K-fluorescence escape modeling in PCCT detectors.
+
+When a photon is absorbed above a material's K-edge, a K-shell vacancy is created.
+This can lead to fluorescence X-ray emission that may escape the pixel, causing:
+- Primary pixel: registers E_photon - E_fluorescence
+- Neighbor pixel: registers E_fluorescence (if absorbed there)
+- Net effect: spectral distortion near K-edges
+
+# Fields
+- `n_lines`: Number of K-fluorescence lines for this material
+- `k_edge_energies`: K-edge energies [keV] (absorption threshold)
+- `fluorescence_energies`: K-α emission line energies [keV]
+- `fluorescence_yields`: ω_K (probability of fluorescence vs Auger)
+- `escape_probabilities`: P_escape (fraction of fluorescence X-rays leaving pixel)
+"""
+struct KFluorescenceParams{T<:AbstractFloat}
+    n_lines::Int
+    k_edge_energies::Vector{T}
+    fluorescence_energies::Vector{T}
+    fluorescence_yields::Vector{T}
+    escape_probabilities::Vector{T}
+end
+
+"""
+    compute_fluorescence_escape_probability(material::DetectorMaterialPCCT,
+                                             thickness_mm::Real,
+                                             pixel_size_mm::Tuple{<:Real,<:Real}) -> KFluorescenceParams
+
+Compute K-fluorescence escape parameters for a given detector geometry.
+
+Escape probability depends on:
+1. Mean free path of fluorescence X-ray in crystal (material-dependent)
+2. Pixel dimensions (smaller pixels → more escapes)
+3. Absorption depth distribution (shallower → more escape from top/bottom)
+
+The model computes P_escape as the fraction of fluorescence photons whose
+mean free path exceeds half the pixel dimension (simplified geometric model).
+
+# Arguments
+- `material`: Detector material
+- `thickness_mm`: Crystal thickness in mm
+- `pixel_size_mm`: Pixel dimensions (row, col) in mm
+
+# References
+- Cammin et al, "A cascaded model for spectral response of PCCT detectors"
+  Med Phys 2014;41:041905
+"""
+function compute_fluorescence_escape_probability(
+    material::DetectorMaterialPCCT,
+    thickness_mm::Real,
+    pixel_size_mm::Tuple{<:Real,<:Real}
+)
+    props = get_detector_material_properties(material)
+    T = Float64
+
+    n_lines = length(props.k_edges_keV)
+    k_edges = T.(props.k_edges_keV)
+    k_alphas = T.(props.k_alpha_keV)
+    yields = T.(props.k_yields)
+    ranges = T.(props.k_fluorescence_range_mm)
+
+    # Compute escape probability for each fluorescence line
+    # Geometric model: fraction of isotropically emitted photons that
+    # travel far enough to leave the pixel
+    escape_probs = zeros(T, n_lines)
+    pixel_half_size = min(T(pixel_size_mm[1]), T(pixel_size_mm[2])) / 2.0
+    half_thickness = T(thickness_mm) / 2.0
+
+    for i in 1:n_lines
+        # Skip lines below useful CT energy range (e.g., Si K-α at 1.74 keV)
+        if k_alphas[i] < 5.0
+            escape_probs[i] = 0.0
+            continue
+        end
+
+        # Mean free path of fluorescence X-ray in crystal
+        λ = ranges[i]  # mm
+
+        # Probability of escape: P ≈ 1 - (1 - exp(-d/2λ))
+        # where d is the smaller of pixel_size and thickness
+        # This is a simplified solid-angle model
+        # Lateral escape (out sides of pixel):
+        p_lateral = exp(-pixel_half_size / λ)
+        # Axial escape (out top/bottom of crystal):
+        p_axial = exp(-half_thickness / λ)
+
+        # Combined: fraction of fluorescence that escapes the pixel
+        # Weight lateral more (4 sides vs 2 faces), but solid angle matters
+        # Simplified: P_escape ≈ (4 × p_lateral + 2 × p_axial) / 6
+        # but capped to reasonable values
+        escape_probs[i] = min((4.0 * p_lateral + 2.0 * p_axial) / 6.0, 0.95)
+    end
+
+    return KFluorescenceParams{T}(n_lines, k_edges, k_alphas, yields, escape_probs)
+end
+
+"""
+    apply_fluorescence_escape(E_incident::Real, fluorescence::KFluorescenceParams) -> Tuple{Float64, Float64}
+
+Compute the probability and energy shift from K-fluorescence escape.
+
+For incident photon energy E, returns:
+- `p_escape`: Total probability of fluorescence escape event
+- `E_registered`: Energy registered in primary pixel (E - E_fluorescence)
+
+If E is below all K-edges, p_escape = 0 (no fluorescence possible).
+If E is above multiple K-edges, the dominant (highest probability) line is used.
+"""
+function apply_fluorescence_escape(E_incident::Real, fluorescence::KFluorescenceParams{T}) where T
+    E = T(E_incident)
+    p_escape_total = zero(T)
+    E_lost = zero(T)
+
+    for i in 1:fluorescence.n_lines
+        if E > fluorescence.k_edge_energies[i]
+            # Photon energy is above this K-edge → fluorescence possible
+            p_this = fluorescence.fluorescence_yields[i] * fluorescence.escape_probabilities[i]
+            p_escape_total += p_this
+            E_lost += p_this * fluorescence.fluorescence_energies[i]
+        end
+    end
+
+    # Cap total escape probability
+    p_escape_total = min(p_escape_total, 0.5)
+
+    if p_escape_total > zero(T)
+        E_registered = E - E_lost / p_escape_total  # Average energy if escape occurs
+        return (Float64(p_escape_total), Float64(E_registered))
+    else
+        return (0.0, Float64(E))
+    end
+end
+
+# =============================================================================
+# Charge Collection Efficiency — Hecht Equation
+# =============================================================================
+
+"""
+    ChargeTransportParams{T<:AbstractFloat}
+
+Charge transport parameters for Hecht equation modeling.
+
+# Fields
+- `mu_e_tau_e`: Electron mobility-lifetime product (cm²/V)
+- `mu_h_tau_h`: Hole mobility-lifetime product (cm²/V)
+- `bias_voltage`: Applied voltage (V)
+- `thickness_cm`: Crystal thickness (cm)
+"""
+struct ChargeTransportParams{T<:AbstractFloat}
+    mu_e_tau_e::T
+    mu_h_tau_h::T
+    bias_voltage::T
+    thickness_cm::T
+end
+
+"""
+    get_charge_transport_params(material::DetectorMaterialPCCT, thickness_mm::Real) -> ChargeTransportParams
+
+Get charge transport parameters for Hecht equation calculation.
+"""
+function get_charge_transport_params(material::DetectorMaterialPCCT, thickness_mm::Real)
+    props = get_detector_material_properties(material)
+    return ChargeTransportParams{Float64}(
+        props.mu_e_tau_e,
+        props.mu_h_tau_h,
+        props.bias_voltage_V,
+        Float64(thickness_mm) / 10.0
+    )
+end
+
+"""
+    charge_collection_efficiency(x_cm::Real, params::ChargeTransportParams) -> Float64
+
+Compute charge collection efficiency (CCE) at absorption depth x using Hecht equation.
+
+    CCE(x) = (μₑτₑ×E_field/d) × [1 - exp(-(d-x)×d/(μₑτₑ×V))]
+           + (μₕτₕ×E_field/d) × [1 - exp(-x×d/(μₕτₕ×V))]
+
+where:
+- x = absorption depth from cathode (0 = cathode, d = anode)
+- d = crystal thickness
+- V = bias voltage
+- E_field = V/d (uniform field approximation)
+
+# Physics
+
+In CdTe/CZT:
+- Electrons (good mobility μₑτₑ ≈ 3×10⁻³): collected efficiently from anywhere
+- Holes (poor mobility μₕτₕ ≈ 5×10⁻⁵): only collected if generated near anode
+
+This creates an asymmetric low-energy tail (incomplete charge collection = lower
+registered energy), which is the dominant spectral artifact in CdTe detectors.
+
+In Si:
+- Both carriers have excellent mobility → CCE ≈ 1.0 everywhere
+
+# Arguments
+- `x_cm::Real`: Absorption depth from cathode in cm (0 ≤ x ≤ thickness)
+- `params::ChargeTransportParams`: Transport parameters
+
+# Returns
+- `Float64`: Charge collection efficiency in [0, 1]
+"""
+function charge_collection_efficiency(x_cm::Real, params::ChargeTransportParams{T}) where T
+    d = params.thickness_cm
+    V = params.bias_voltage
+    x = clamp(T(x_cm), zero(T), d)
+
+    # Electric field (V/cm) — uniform approximation
+    E_field = V / d
+
+    # Electron contribution (generated at x, drifts toward anode at d)
+    # Drift length for electrons: (d - x)
+    λ_e = params.mu_e_tau_e * E_field  # Mean drift length (cm)
+    if λ_e > zero(T)
+        cce_e = (λ_e / d) * (one(T) - exp(-(d - x) / λ_e))
+    else
+        cce_e = zero(T)
+    end
+
+    # Hole contribution (generated at x, drifts toward cathode at 0)
+    # Drift length for holes: x
+    λ_h = params.mu_h_tau_h * E_field  # Mean drift length (cm)
+    if λ_h > zero(T)
+        cce_h = (λ_h / d) * (one(T) - exp(-x / λ_h))
+    else
+        cce_h = zero(T)
+    end
+
+    return Float64(min(cce_e + cce_h, one(T)))
+end
+
+"""
+    mean_charge_collection_efficiency(material::DetectorMaterialPCCT,
+                                       thickness_mm::Real;
+                                       n_points::Int=50) -> Float64
+
+Compute depth-averaged charge collection efficiency for a detector crystal.
+
+Averages CCE over the absorption depth distribution. For simplicity, uses
+uniform absorption distribution (valid when μ×d is moderate).
+
+# Returns
+Mean CCE in [0, 1]. For CdTe: ~0.90-0.95. For Si: ~0.99+.
+"""
+function mean_charge_collection_efficiency(material::DetectorMaterialPCCT,
+                                            thickness_mm::Real;
+                                            n_points::Int=50)
+    params = get_charge_transport_params(material, thickness_mm)
+    d = params.thickness_cm
+
+    # Average over depth (simple numerical integration)
+    cce_sum = 0.0
+    for i in 1:n_points
+        x = d * (i - 0.5) / n_points
+        cce_sum += charge_collection_efficiency(x, params)
+    end
+
+    return cce_sum / n_points
+end
+
+"""
+    hole_tailing_distribution(E_incident::Real, material::DetectorMaterialPCCT,
+                               thickness_mm::Real; n_depth::Int=20) -> Tuple{Vector{Float64}, Vector{Float64}}
+
+Compute the energy distribution due to incomplete charge collection (hole tailing).
+
+Returns (energies, probabilities) representing the distribution of registered
+energies for a photon of true energy E_incident.
+
+The distribution has:
+- A peak near E_incident × mean_CCE (most photons)
+- A low-energy tail from deep absorption events (poor hole collection)
+
+# Returns
+- `energies`: Registered energy values
+- `weights`: Probability weights (sum to 1.0)
+"""
+function hole_tailing_distribution(E_incident::Real, material::DetectorMaterialPCCT,
+                                    thickness_mm::Real; n_depth::Int=20)
+    params = get_charge_transport_params(material, thickness_mm)
+    d = params.thickness_cm
+    E = Float64(E_incident)
+
+    energies = zeros(Float64, n_depth)
+    weights = zeros(Float64, n_depth)
+
+    for i in 1:n_depth
+        x = d * (i - 0.5) / n_depth
+        cce = charge_collection_efficiency(x, params)
+        energies[i] = E * cce
+        weights[i] = 1.0 / n_depth  # Uniform absorption approximation
+    end
+
+    return (energies, weights)
+end
+
+# =============================================================================
+# Spectral Response Matrix R(E, b)
+# =============================================================================
+
+"""
+    compute_spectral_response_matrix(material::DetectorMaterialPCCT,
+                                      thickness_mm::Real,
+                                      thresholds_keV::AbstractVector,
+                                      kVp::Real;
+                                      energy_resolution_keV::Real=10.0,
+                                      pixel_size_mm::Tuple{<:Real,<:Real}=(0.302, 0.302),
+                                      include_fluorescence::Bool=true,
+                                      include_tailing::Bool=true,
+                                      n_energy_points::Int=200) -> Matrix{Float64}
+
+Compute the spectral response matrix R(E, b) for a PCCT detector.
+
+R[i, b] = probability that a photon of true energy E_i is registered in bin b.
+
+The matrix combines three physical effects:
+1. **Gaussian energy blur**: Finite energy resolution broadens the step function
+2. **K-fluorescence escape**: Photons above K-edge may lose fluorescence energy
+3. **Hole tailing**: Incomplete charge collection creates low-energy tail
+
+# Matrix Properties
+- Size: [n_energy_points × n_bins]
+- Each row sums to ≤ 1.0 (photons below lowest threshold are lost)
+- Ideal detector: R is a block-diagonal step function
+- Realistic: R has off-diagonal entries (spectral cross-talk between bins)
+
+# Arguments
+- `material`: Detector crystal material
+- `thickness_mm`: Crystal thickness in mm
+- `thresholds_keV`: Energy thresholds defining bins
+- `kVp`: Maximum tube voltage (defines upper energy bound)
+- `energy_resolution_keV`: System FWHM in keV (default: from material properties)
+- `pixel_size_mm`: Pixel dimensions for fluorescence escape calculation
+- `include_fluorescence`: Whether to model K-fluorescence escape
+- `include_tailing`: Whether to model hole tailing
+- `n_energy_points`: Number of energy sample points
+
+# Returns
+- `Matrix{Float64}`: [n_energy_points × n_bins] response matrix
+
+# Performance Note
+This matrix is computed ONCE per detector configuration and reused for all
+projections. It does NOT need GPU acceleration (precomputed on CPU).
+
+# Example
+```julia
+R = compute_spectral_response_matrix(
+    CDTE_MATERIAL, 1.6, [20.0, 35.0, 55.0, 70.0], 120.0
+)
+# R[100, 3]  → probability that a 60 keV photon registers in bin 3
+```
+"""
+function compute_spectral_response_matrix(
+    material::DetectorMaterialPCCT,
+    thickness_mm::Real,
+    thresholds_keV::AbstractVector,
+    kVp::Real;
+    energy_resolution_keV::Real=0.0,
+    pixel_size_mm::Tuple{<:Real,<:Real}=(0.302, 0.302),
+    include_fluorescence::Bool=true,
+    include_tailing::Bool=true,
+    n_energy_points::Int=200
+)
+    props = get_detector_material_properties(material)
+    n_bins = length(thresholds_keV)
+
+    # Use material-specific resolution if not overridden
+    σ_E = if energy_resolution_keV > 0.0
+        energy_resolution_keV / (2.0 * sqrt(2.0 * log(2.0)))
+    else
+        props.energy_resolution_fwhm_keV / (2.0 * sqrt(2.0 * log(2.0)))
+    end
+
+    # Energy grid: from 1 keV to kVp
+    E_min = 1.0
+    E_max = Float64(kVp)
+    energies = range(E_min, E_max, length=n_energy_points)
+
+    # Fluorescence parameters
+    fluorescence = if include_fluorescence
+        compute_fluorescence_escape_probability(material, thickness_mm, pixel_size_mm)
+    else
+        nothing
+    end
+
+    # Charge transport for tailing
+    transport_params = if include_tailing
+        get_charge_transport_params(material, thickness_mm)
+    else
+        nothing
+    end
+    mean_cce = include_tailing ? mean_charge_collection_efficiency(material, thickness_mm) : 1.0
+
+    # Build response matrix
+    R = zeros(Float64, n_energy_points, n_bins)
+
+    for (i, E) in enumerate(energies)
+        # Threshold values
+        T_values = Float64.(thresholds_keV)
+
+        # Start with the primary photopeak at energy E
+        # Apply hole tailing: distribute E across CCE values
+        if include_tailing && transport_params !== nothing
+            tail_energies, tail_weights = hole_tailing_distribution(E, material, thickness_mm; n_depth=20)
+        else
+            tail_energies = [E]
+            tail_weights = [1.0]
+        end
+
+        for (t_idx, E_tail) in enumerate(tail_energies)
+            w_tail = tail_weights[t_idx]
+
+            # Apply fluorescence escape: split into primary and escape peaks
+            if include_fluorescence && fluorescence !== nothing
+                p_escape, E_escaped = apply_fluorescence_escape(E_tail, fluorescence)
+                # Two components: (1-p_escape) at E_tail, p_escape at E_escaped
+                energy_components = [(E_tail, 1.0 - p_escape), (E_escaped, p_escape)]
+            else
+                energy_components = [(E_tail, 1.0)]
+            end
+
+            for (E_comp, w_comp) in energy_components
+                # Apply Gaussian energy blur and bin
+                for b in 1:n_bins
+                    T_low = T_values[b]
+                    T_high = b < n_bins ? T_values[b + 1] : E_max
+
+                    if σ_E > 0.0
+                        # Gaussian CDF: P(T_low ≤ E_measured < T_high)
+                        z_low = (T_low - E_comp) / (σ_E * sqrt(2.0))
+                        z_high = (T_high - E_comp) / (σ_E * sqrt(2.0))
+                        prob = 0.5 * (_erf_approx(z_high) - _erf_approx(z_low))
+                    else
+                        # Perfect resolution: delta function binning
+                        prob = (E_comp >= T_low && E_comp < T_high) ? 1.0 : 0.0
+                    end
+
+                    R[i, b] += w_tail * w_comp * max(prob, 0.0)
+                end
+            end
+        end
+    end
+
+    # Ensure no row exceeds 1.0 (physical constraint: photon counted at most once)
+    for i in 1:n_energy_points
+        row_sum = sum(R[i, :])
+        if row_sum > 1.0
+            R[i, :] ./= row_sum
+        end
+    end
+
+    return R
+end
+
+"""
+    get_spectral_response_energies(kVp::Real; n_energy_points::Int=200) -> Vector{Float64}
+
+Get the energy grid corresponding to the spectral response matrix.
+
+Returns the energy values (keV) for each row of the matrix returned by
+`compute_spectral_response_matrix`.
+"""
+function get_spectral_response_energies(kVp::Real; n_energy_points::Int=200)
+    return collect(range(1.0, Float64(kVp), length=n_energy_points))
+end
+
+# =============================================================================
 # Exports
 # =============================================================================
 
@@ -1013,3 +1727,10 @@ export apply_charge_sharing!, apply_pulse_pileup!
 export apply_anti_coincidence!, apply_pcct_electronic_noise!
 export pcct_forward_project
 export get_pcct_detector_info, print_pcct_detector_info
+export get_detector_material_properties, get_detector_material_attenuation
+export quantum_efficiency, quantum_efficiency_vector
+export KFluorescenceParams, compute_fluorescence_escape_probability, apply_fluorescence_escape
+export ChargeTransportParams, get_charge_transport_params
+export charge_collection_efficiency, mean_charge_collection_efficiency
+export hole_tailing_distribution
+export compute_spectral_response_matrix, get_spectral_response_energies
