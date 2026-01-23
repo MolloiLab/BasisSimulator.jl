@@ -9,14 +9,51 @@ export simulate, SimulationResult
 """
     SimulationResult
 
-Container for simulation outputs.
+Container for simulation outputs. Supports single and multi-reconstruction,
+dual-energy sinograms, material maps, and VMI volumes.
+
+# Core Fields
+- `sinogram_ideal`: Noise-free sinogram (or high-kVp sinogram for DE)
+- `sinogram_noisy`: Noisy sinogram after detector simulation
+- `reconstructions`: Vector of (algorithm_name, volume) pairs
+- `geometry`: CTGeometry or HelicalGeometry used for simulation
+- `physics_config`: PhysicsConfig with all enabled effects
+
+# Dual-Energy Fields
+- `de_sinogram`: DualEnergySinogram (low/high kVp pair), nothing if single-kVp
+- `material_maps`: MaterialMap from decomposition, nothing if single-kVp
+- `vmi_volumes`: Dict{Float64, Array} of VMI reconstructions by energy
+
+# Backward Compatibility
+- `result.reconstruction` returns the first reconstruction volume
+- Single-recon calls populate `reconstructions` with one entry
 """
 struct SimulationResult{T, G, P}
     sinogram_ideal::AbstractArray{T, 3}
     sinogram_noisy::AbstractArray{T, 3}
-    reconstruction::AbstractArray{T, 3}
+    reconstructions::Vector{Pair{Symbol, AbstractArray{T, 3}}}
     geometry::G
     physics_config::P
+    # Dual-energy fields
+    de_sinogram::Union{Nothing, DualEnergySinogram}
+    material_maps::Union{Nothing, MaterialMap}
+    vmi_volumes::Dict{Float64, AbstractArray{T, 3}}
+end
+
+# Backward-compatible property accessor: result.reconstruction → first volume
+function Base.getproperty(r::SimulationResult, s::Symbol)
+    if s === :reconstruction
+        recons = getfield(r, :reconstructions)
+        isempty(recons) && error("No reconstructions available")
+        return recons[1].second
+    else
+        return getfield(r, s)
+    end
+end
+
+function Base.propertynames(::SimulationResult, private::Bool=false)
+    return (:sinogram_ideal, :sinogram_noisy, :reconstruction, :reconstructions,
+            :geometry, :physics_config, :de_sinogram, :material_maps, :vmi_volumes)
 end
 
 """
@@ -93,12 +130,19 @@ function simulate(
         error("Unknown reconstruction algorithm: $(recon_opts.algorithm)")
     end
 
+    T = eltype(recon_vol)
+    recons = Pair{Symbol, AbstractArray{T, 3}}[recon_opts.algorithm => recon_vol]
+    vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
+
     return SimulationResult(
         sino_ideal,
         sino_final,
-        recon_vol,
+        recons,
         geom,
-        config
+        config,
+        nothing,              # de_sinogram
+        nothing,              # material_maps
+        vmi_dict              # vmi_volumes
     )
 end
 
