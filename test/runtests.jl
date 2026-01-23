@@ -6309,6 +6309,232 @@ end
         end
     end
 
+    # -------------------------------------------------------------------------
+    # PCCT Scanner Bridge (PCCT-SCANNER-BRIDGE)
+    # -------------------------------------------------------------------------
+    @testset "PCCT Scanner Bridge" begin
+
+        @testset "Default Scanner is EID" begin
+            scanner = Scanner()
+            @test scanner.detector_type == :energy_integrating
+            @test scanner.n_energy_bins == 1
+            @test isempty(scanner.energy_thresholds)
+            @test scanner.energy_resolution ≈ 0.0
+            @test scanner.charge_sharing_fwhm ≈ 0.0
+            @test scanner.dead_time_ns ≈ 0.0
+            @test scanner.pixel_mode == :standard
+            @test is_pcct(scanner) == false
+        end
+
+        @testset "PCCT Scanner Construction" begin
+            scanner = Scanner(
+                detector_type = :photon_counting,
+                n_energy_bins = 4,
+                energy_thresholds = [20.0, 35.0, 55.0, 70.0],
+                energy_resolution = 10.0,
+                charge_sharing_fwhm = 0.08,
+                dead_time_ns = 25.0,
+                pixel_mode = :standard
+            )
+            @test scanner.detector_type == :photon_counting
+            @test scanner.n_energy_bins == 4
+            @test scanner.energy_thresholds == [20.0, 35.0, 55.0, 70.0]
+            @test scanner.energy_resolution ≈ 10.0
+            @test scanner.charge_sharing_fwhm ≈ 0.08
+            @test scanner.dead_time_ns ≈ 25.0
+            @test scanner.pixel_mode == :standard
+            @test is_pcct(scanner) == true
+        end
+
+        @testset "PCCT Validation Errors" begin
+            # Missing energy_thresholds
+            @test_throws ErrorException Scanner(
+                detector_type = :photon_counting,
+                n_energy_bins = 4,
+                energy_thresholds = Float64[]
+            )
+
+            # n_energy_bins mismatch
+            @test_throws ErrorException Scanner(
+                detector_type = :photon_counting,
+                n_energy_bins = 3,
+                energy_thresholds = [20.0, 35.0, 55.0, 70.0]
+            )
+
+            # Unsorted thresholds
+            @test_throws ErrorException Scanner(
+                detector_type = :photon_counting,
+                n_energy_bins = 4,
+                energy_thresholds = [70.0, 55.0, 35.0, 20.0]
+            )
+
+            # Invalid pixel_mode
+            @test_throws ErrorException Scanner(
+                detector_type = :photon_counting,
+                n_energy_bins = 4,
+                energy_thresholds = [20.0, 35.0, 55.0, 70.0],
+                pixel_mode = :invalid
+            )
+
+            # Invalid detector_type
+            @test_throws ErrorException Scanner(
+                detector_type = :invalid_type
+            )
+        end
+
+        @testset "is_pcct helper" begin
+            eid_scanner = Scanner()
+            @test is_pcct(eid_scanner) == false
+
+            pcct_scanner = Scanner(
+                detector_type = :photon_counting,
+                n_energy_bins = 2,
+                energy_thresholds = [20.0, 50.0]
+            )
+            @test is_pcct(pcct_scanner) == true
+        end
+
+        @testset "create_naeotom_alpha standard mode" begin
+            scanner = create_naeotom_alpha()
+            @test is_pcct(scanner) == true
+            @test scanner.source_to_isocenter ≈ 595.0
+            @test scanner.source_to_detector ≈ 1085.5
+            @test scanner.detector_rows == 144
+            @test scanner.detector_cols == 736
+            @test scanner.detector_row_size ≈ 0.5
+            @test scanner.detector_col_size ≈ 0.5
+            @test scanner.detector_shape == CURVED_DETECTOR
+            @test scanner.gantry_rotation_time ≈ 0.25
+            @test scanner.detector_material == :cdte
+            @test scanner.detector_depth ≈ 1.6
+            @test scanner.electronic_noise ≈ 0.0  # PCCT no electronic noise
+            @test scanner.detector_type == :photon_counting
+            @test scanner.n_energy_bins == 4
+            @test scanner.energy_thresholds == [20.0, 35.0, 55.0, 70.0]
+            @test scanner.energy_resolution ≈ 10.0
+            @test scanner.charge_sharing_fwhm ≈ 0.08
+            @test scanner.dead_time_ns ≈ 25.0
+            @test scanner.pixel_mode == :standard
+        end
+
+        @testset "create_naeotom_alpha UHR mode" begin
+            scanner = create_naeotom_alpha(mode=:uhr)
+            @test is_pcct(scanner) == true
+            @test scanner.detector_rows == 120
+            @test scanner.detector_row_size ≈ 0.25
+            @test scanner.detector_col_size ≈ 0.25
+            @test scanner.pixel_mode == :uhr
+            # Other PCCT fields same as standard
+            @test scanner.n_energy_bins == 4
+            @test scanner.energy_thresholds == [20.0, 35.0, 55.0, 70.0]
+        end
+
+        @testset "create_naeotom_alpha invalid mode" begin
+            @test_throws ErrorException create_naeotom_alpha(mode=:invalid)
+        end
+
+        @testset "_build_pcct_detector" begin
+            scanner = create_naeotom_alpha()
+            detector = BasisSimulator._build_pcct_detector(scanner)
+            @test detector isa PhotonCountingDetector
+            @test detector.material == CDTE_MATERIAL
+            @test detector.thickness_mm ≈ 1.6
+            @test detector.pixel_size_mm == (0.5, 0.5)
+            @test detector.energy_thresholds_keV == [20.0, 35.0, 55.0, 70.0]
+            @test detector.energy_resolution_keV ≈ 10.0
+            @test detector.charge_sharing_fwhm_mm ≈ 0.08
+            @test detector.enable_charge_sharing == true
+            @test detector.dead_time_ns ≈ 25.0
+            @test detector.enable_pile_up == true
+            @test detector.enable_anti_coincidence == true
+            @test detector.electronic_noise_keV ≈ 0.0
+
+            # Non-PCCT scanner should assert
+            eid_scanner = Scanner()
+            @test_throws AssertionError BasisSimulator._build_pcct_detector(eid_scanner)
+        end
+
+        @testset "_infer_pcct_material" begin
+            @test BasisSimulator._infer_pcct_material(:cdte) == CDTE_MATERIAL
+            @test BasisSimulator._infer_pcct_material(:CdTe) == CDTE_MATERIAL
+            @test BasisSimulator._infer_pcct_material(:CDTE) == CDTE_MATERIAL
+            @test BasisSimulator._infer_pcct_material(:czt) == CZT_MATERIAL
+            @test BasisSimulator._infer_pcct_material(:CZT) == CZT_MATERIAL
+            @test BasisSimulator._infer_pcct_material(:CdZnTe) == CZT_MATERIAL
+            @test BasisSimulator._infer_pcct_material(:si) == SI_MATERIAL
+            @test BasisSimulator._infer_pcct_material(:Si) == SI_MATERIAL
+            @test BasisSimulator._infer_pcct_material(:silicon) == SI_MATERIAL
+            @test BasisSimulator._infer_pcct_material(:Silicon) == SI_MATERIAL
+            # Unknown material defaults to CdTe with warning
+            @test BasisSimulator._infer_pcct_material(:unknown) == CDTE_MATERIAL
+        end
+
+        @testset "Backward Compatibility" begin
+            # Existing Scanner construction without PCCT kwargs must work unchanged
+            scanner = Scanner(
+                source_to_isocenter = 626.0,
+                source_to_detector = 1097.0,
+                detector_rows = 256,
+                detector_cols = 832,
+                detector_row_size = 0.625,
+                detector_col_size = 1.0,
+                target_angle = 10.0
+            )
+            @test scanner.detector_type == :energy_integrating
+            @test is_pcct(scanner) == false
+            @test scanner.n_energy_bins == 1
+            @test isempty(scanner.energy_thresholds)
+
+            # CTGeometry from PCCT scanner works
+            pcct_scanner = create_naeotom_alpha()
+            geom = CTGeometry(pcct_scanner; n_angles=90, fov_cm=25.0)
+            @test geom.n_angles == 90
+            @test geom.n_rows == 144
+            @test geom.n_cols == 736
+            @test geom.SAD ≈ 59.5  # 595mm → 59.5cm
+            @test geom.SDD ≈ 108.55  # 1085.5mm → 108.55cm
+        end
+
+        @testset "PCCT Fields Ignored for EID" begin
+            # When detector_type is :energy_integrating, PCCT fields should be set to defaults
+            # but not cause any issues
+            scanner = Scanner(detector_type = :energy_integrating)
+            @test scanner.n_energy_bins == 1
+            @test isempty(scanner.energy_thresholds)
+            @test scanner.energy_resolution ≈ 0.0
+            @test scanner.charge_sharing_fwhm ≈ 0.0
+            @test scanner.dead_time_ns ≈ 0.0
+        end
+
+        @testset "PCCT Scanner with CZT and Si" begin
+            # CZT scanner
+            scanner_czt = Scanner(
+                detector_type = :photon_counting,
+                detector_material = :czt,
+                n_energy_bins = 4,
+                energy_thresholds = [20.0, 35.0, 55.0, 70.0]
+            )
+            @test is_pcct(scanner_czt) == true
+            detector_czt = BasisSimulator._build_pcct_detector(scanner_czt)
+            @test detector_czt.material == CZT_MATERIAL
+
+            # Si scanner (deep-silicon, thick crystal needed)
+            scanner_si = Scanner(
+                detector_type = :photon_counting,
+                detector_material = :Si,
+                detector_depth = 30.0,  # Si needs thick crystal
+                n_energy_bins = 8,
+                energy_thresholds = [20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 100.0],
+                energy_resolution = 2.5  # Si has excellent resolution
+            )
+            @test is_pcct(scanner_si) == true
+            detector_si = BasisSimulator._build_pcct_detector(scanner_si)
+            @test detector_si.material == SI_MATERIAL
+            @test detector_si.thickness_mm ≈ 30.0
+            @test detector_si.energy_resolution_keV ≈ 2.5
+        end
+    end
+
 end
 
 println("\nTests complete!")
