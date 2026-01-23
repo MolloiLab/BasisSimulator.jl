@@ -841,37 +841,56 @@ end
 # =============================================================================
 
 """
-    pcct_forward_project(volume, geom, detector, energies, weights; kwargs...) -> EnergyResolvedSinogram
+    pcct_forward_project(mask, geom, detector; energies, weights, materials, kwargs...) -> EnergyResolvedSinogram
 
-Perform photon-counting CT forward projection with full detector physics.
+Perform polychromatic photon-counting CT forward projection with full detector physics.
 
-This is the main API for PCCT simulation. It projects the volume at each
-energy, applies detector physics effects, and returns energy-resolved sinograms.
+This is the main PCCT forward projection API. It:
+1. Computes energy-dependent μ-volumes from mask + materials (per energy)
+2. Forward projects at each energy using Siddon ray-tracing
+3. Applies quantum efficiency η(E) weighting (material-dependent)
+4. Applies spectral response matrix R(E,b) for realistic energy binning
+5. Applies detector physics chain (charge sharing, pileup, anti-coincidence)
+6. Returns energy-resolved sinograms in line-integral domain
 
 # Arguments
-- `volume::AbstractArray{T,3}`: Attenuation volume (μ values at reference energy)
+- `mask::AbstractArray{UInt8,3}`: Material mask (region indices)
 - `geom::CTGeometry`: CT geometry
 - `detector::PhotonCountingDetector`: PCCT detector specification
-- `energies::Vector{T}`: Spectral energies in keV
-- `weights::Vector{T}`: Spectral weights (photon fluence)
 
 # Keyword Arguments
-- `flux_rate::Float64=1e9`: Photon flux rate in photons/s/mm² (for pile-up)
-- `I0::Float64=1e6`: Reference photon count per detector element
+- `energies::AbstractVector`: Spectral energies in keV
+- `weights::AbstractVector`: Spectral weights (normalized photon fluence)
+- `materials::Vector`: Material vector (from get_region_materials())
+- `flux_rate::Real=1e9`: Photon flux rate in photons/s/mm² (for pile-up)
+- `I0::Real=1e6`: Reference photon count per detector element
+- `apply_spectral_response::Bool=true`: Whether to use spectral response matrix R(E,b)
 
 # Returns
 `EnergyResolvedSinogram` with one sinogram per energy bin.
+
+# Physics
+
+The per-bin photon count (before detector effects) is:
+    N_b = Σ_E R(E,b) × S(E) × η(E) × exp(-∫μ(x,E)dl)
+
+where:
+- R(E,b) = spectral response matrix entry (probability E registers in bin b)
+- S(E) = normalized tube spectrum weight
+- η(E) = quantum detection efficiency of detector crystal
+- ∫μ(x,E)dl = line integral of energy-dependent attenuation
 
 # Example
 
 ```julia
 detector = naeotom_detector_standard()
 energies, weights = load_spectrum(120)
+materials = get_region_materials()
 
 pcct_sino = pcct_forward_project(
-    volume, geom, detector, energies, weights;
-    flux_rate = 1e9,
-    I0 = 1e6
+    phantom.mask, geom, detector;
+    energies=energies, weights=weights,
+    materials=materials
 )
 
 # Access energy bins
@@ -880,6 +899,186 @@ high_E_sino = pcct_sino.bins[4]  # 70+ keV
 ```
 
 See also: [`PhotonCountingDetector`](@ref), [`EnergyResolvedSinogram`](@ref)
+"""
+function pcct_forward_project(
+    mask::AbstractArray{UInt8,3},
+    geom,
+    detector::PhotonCountingDetector;
+    energies::AbstractVector,
+    weights::AbstractVector,
+    materials::Vector = get_region_materials(),
+    flux_rate::Real = 1e9,
+    I0::Real = 1e6,
+    apply_spectral_response::Bool = true
+)
+    T = Float32  # Use Float32 for GPU efficiency
+
+    n_cols = geom.n_cols
+    n_rows = geom.n_rows
+    n_angles = geom.n_angles
+    n_energies = length(energies)
+    n_bins = length(detector.energy_thresholds_keV)
+    thresholds = detector.energy_thresholds_keV
+    kVp = maximum(energies)
+
+    # Pre-compute quantum efficiency for all energies (CPU, scalar values)
+    η = quantum_efficiency_vector(detector.material, detector.thickness_mm, energies)
+
+    # Pre-compute spectral response matrix if requested (CPU, precomputed once)
+    R = if apply_spectral_response
+        compute_spectral_response_matrix(
+            detector.material, detector.thickness_mm, thresholds, kVp;
+            energy_resolution_keV=detector.energy_resolution_keV,
+            pixel_size_mm=detector.pixel_size_mm,
+            include_fluorescence=true,
+            include_tailing=true,
+            n_energy_points=n_energies
+        )
+    else
+        nothing
+    end
+
+    # Energy grid for R matrix (maps energy index to row in R)
+    R_energies = if apply_spectral_response
+        collect(range(1.0, Float64(kVp), length=n_energies))
+    else
+        nothing
+    end
+
+    # Allocate per-bin photon count sinograms (GPU-compatible)
+    sino_shape = (n_cols, n_rows, n_angles)
+    bins = [similar(mask, T, sino_shape) for _ in 1:n_bins]
+    for bin in bins
+        fill!(bin, zero(T))
+    end
+
+    # Temporary μ-volume (reused across energies, same device as mask)
+    μ_volume = similar(mask, T, size(mask))
+
+    # Temporary sinogram buffer (reused across energies)
+    sino_buf = similar(mask, T, sino_shape)
+
+    # Per-energy ray-tracing with spectral weighting
+    for (e_idx, E) in enumerate(energies)
+        E_float = Float64(E)
+
+        # Skip energies below lowest threshold (not detected)
+        if E_float < thresholds[1]
+            continue
+        end
+
+        # Skip negligible spectrum weights
+        w = Float64(weights[e_idx])
+        if w < 1e-12
+            continue
+        end
+
+        # Create energy-dependent μ-volume from mask + materials
+        create_μ_volume!(μ_volume, mask, materials, E_float)
+
+        # Forward project at this energy (reuses existing Siddon infrastructure)
+        fill!(sino_buf, zero(T))
+        siddon_forward_project!(sino_buf, μ_volume, geom)
+
+        # Weight by spectrum and quantum efficiency
+        # Photon count: N = I₀ × S(E) × η(E) × exp(-∫μ dl)
+        η_E = T(η[e_idx])
+        w_T = T(w)
+        I0_T = T(I0)
+
+        if apply_spectral_response && R !== nothing
+            # Use spectral response matrix: distribute photons across bins
+            # Find the R matrix row for this energy
+            # R is computed on a uniform grid from 1 to kVp
+            r_idx = clamp(round(Int, (E_float - 1.0) / (Float64(kVp) - 1.0) * (n_energies - 1)) + 1, 1, n_energies)
+
+            for b in 1:n_bins
+                R_val = T(R[r_idx, b])
+                if R_val < T(1e-10)
+                    continue
+                end
+                weight_total = I0_T * w_T * η_E * R_val
+                bin_arr = bins[b]
+                AK.foreachindex(sino_buf) do idx
+                    bin_arr[idx] += weight_total * exp(-sino_buf[idx])
+                end
+            end
+        else
+            # Ideal binning: photon goes to exactly one bin based on energy
+            bin_idx = _find_energy_bin(E_float, thresholds, Float64(kVp))
+            if bin_idx > 0
+                weight_total = I0_T * w_T * η_E
+                bin_arr = bins[bin_idx]
+                AK.foreachindex(sino_buf) do idx
+                    bin_arr[idx] += weight_total * exp(-sino_buf[idx])
+                end
+            end
+        end
+    end
+
+    # Apply detector physics chain (charge sharing, pileup, anti-coincidence)
+    apply_charge_sharing!(bins, detector)
+    apply_pulse_pileup!(bins, detector, Float64(flux_rate))
+    apply_anti_coincidence!(bins, detector)
+
+    # Convert from photon counts to line-integral domain: sino = -log(N / I₀_bin)
+    for b in 1:n_bins
+        I0_bin = _compute_bin_I0(detector, energies, weights, η, thresholds, b, Float64(kVp), Float64(I0))
+        I0_bin_T = T(I0_bin)
+        bin_arr = bins[b]
+        AK.foreachindex(bin_arr) do idx
+            bin_arr[idx] = -log(max(bin_arr[idx], T(1e-10)) / I0_bin_T)
+        end
+    end
+
+    return EnergyResolvedSinogram(bins, T.(detector.energy_thresholds_keV))
+end
+
+"""
+    _find_energy_bin(energy_keV, thresholds, kVp) -> Int
+
+Find which energy bin a photon of given energy belongs to (ideal binning).
+Returns 0 if below all thresholds or above kVp.
+"""
+function _find_energy_bin(energy_keV::Float64, thresholds::Vector{<:Real}, kVp::Float64)
+    n_bins = length(thresholds)
+    for b in n_bins:-1:1
+        if energy_keV >= thresholds[b]
+            return b
+        end
+    end
+    return 0
+end
+
+"""
+    _compute_bin_I0(detector, energies, weights, η, thresholds, bin_idx, kVp, I0) -> Float64
+
+Compute the reference photon count I₀ for a specific energy bin.
+This is the unattenuated count expected in this bin (for -log normalization).
+"""
+function _compute_bin_I0(detector, energies, weights, η, thresholds, bin_idx, kVp, I0)
+    n_bins = length(thresholds)
+    T_low = Float64(thresholds[bin_idx])
+    T_high = bin_idx < n_bins ? Float64(thresholds[bin_idx + 1]) : kVp
+
+    I0_bin = 0.0
+    for (i, E) in enumerate(energies)
+        E_f = Float64(E)
+        if E_f >= T_low && E_f < T_high
+            I0_bin += I0 * Float64(weights[i]) * η[i]
+        end
+    end
+    return max(I0_bin, 1.0)  # Avoid division by zero
+end
+
+# Legacy method: raw volume input (deprecated, kept for backward compatibility)
+"""
+    pcct_forward_project(volume::AbstractArray{T,3}, geom, detector, energies, weights; kwargs...)
+
+DEPRECATED: Use the mask+materials method instead for polychromatic PCCT.
+
+This legacy method projects the same volume at every energy (monochromatic behavior).
+For correct polychromatic PCCT, use `pcct_forward_project(mask, geom, detector; ...)`.
 """
 function pcct_forward_project(
     volume::AbstractArray{T,3},
@@ -891,6 +1090,8 @@ function pcct_forward_project(
     I0::Real = T(1e6)
 ) where T
 
+    @warn "pcct_forward_project(volume, ...) is deprecated. Use pcct_forward_project(mask, geom, detector; energies=..., weights=..., materials=...) for polychromatic PCCT." maxlog=1
+
     n_cols = geom.n_cols
     n_rows = geom.n_rows
     n_angles = geom.n_angles
@@ -898,18 +1099,12 @@ function pcct_forward_project(
     n_bins = length(detector.energy_thresholds_keV)
 
     # Allocate spectral intensity array
-    # For GPU, this can be large - process in batches if needed
     intensity_spectrum = similar(volume, n_cols, n_rows, n_angles, n_energies)
 
-    # Project at each energy
-    # This uses the existing forward projection infrastructure
+    # Project at each energy (SAME volume — monochromatic behavior!)
     for (e_idx, E) in enumerate(energies)
-        # For now, use direct Siddon projection
-        # In practice, this would call forward_project with energy-specific μ
         sino_E = siddon_forward_project(volume, geom)
-
-        # Convert to intensity: I = I0 × exp(-∫μ dl)
-        I0_E = I0 * weights[e_idx]  # Weighted by spectrum
+        I0_E = I0 * weights[e_idx]
 
         AK.foreachindex(sino_E) do idx
             intensity_spectrum[CartesianIndex(Tuple(CartesianIndices(sino_E)[idx])..., e_idx)] =
@@ -920,20 +1115,16 @@ function pcct_forward_project(
     # Apply energy thresholds to get binned counts
     bins = apply_energy_thresholds(intensity_spectrum, energies, weights, detector)
 
-    # Apply detector physics effects in order
+    # Apply detector physics effects
     apply_charge_sharing!(bins, detector)
     apply_pulse_pileup!(bins, detector, flux_rate)
     apply_anti_coincidence!(bins, detector)
     apply_pcct_electronic_noise!(bins, detector)
 
-    # Convert back to projection domain (log transform)
-    # Each bin: p = -log(C / I0_bin)
+    # Convert to line-integral domain
     for (bin_idx, bin) in enumerate(bins)
-        # Estimate I0 for this bin based on threshold
         threshold = detector.energy_thresholds_keV[bin_idx]
-        # Sum weights above threshold
         I0_bin = I0 * sum(w for (E, w) in zip(energies, weights) if E >= threshold)
-
         AK.foreachindex(bin) do idx
             bin[idx] = -log(max(bin[idx], one(T)) / I0_bin)
         end
