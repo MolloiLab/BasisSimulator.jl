@@ -6067,6 +6067,248 @@ end
         end
     end
 
+    # -------------------------------------------------------------------------
+    # PCCT Material Model (PCCT-MATERIAL-MODEL)
+    # -------------------------------------------------------------------------
+    @testset "PCCT Material Model" begin
+
+        @testset "Material Properties Database" begin
+            # CdTe properties
+            props_cdte = get_detector_material_properties(CDTE_MATERIAL)
+            @test props_cdte.density_g_cm3 ≈ 5.85
+            @test props_cdte.elements == [:Cd, :Te]
+            @test props_cdte.atomic_numbers == [48, 52]
+            @test length(props_cdte.k_edges_keV) == 2
+            @test props_cdte.k_edges_keV[1] ≈ 26.7  # Cd K-edge
+            @test props_cdte.k_edges_keV[2] ≈ 31.8  # Te K-edge
+            @test props_cdte.k_alpha_keV[1] ≈ 23.2  # Cd K-α
+            @test props_cdte.k_alpha_keV[2] ≈ 27.4  # Te K-α
+            @test props_cdte.mu_e_tau_e ≈ 3.0e-3
+            @test props_cdte.mu_h_tau_h ≈ 5.0e-5
+            @test props_cdte.pair_creation_energy_eV ≈ 4.43
+            @test props_cdte.fano_factor ≈ 0.11
+            @test sum(props_cdte.mass_fractions) ≈ 1.0
+
+            # CZT properties
+            props_czt = get_detector_material_properties(CZT_MATERIAL)
+            @test props_czt.density_g_cm3 ≈ 5.78
+            @test props_czt.elements == [:Cd, :Zn, :Te]
+            @test length(props_czt.k_edges_keV) == 3
+            @test sum(props_czt.mass_fractions) ≈ 1.0 atol=0.001
+
+            # Si properties
+            props_si = get_detector_material_properties(SI_MATERIAL)
+            @test props_si.density_g_cm3 ≈ 2.33
+            @test props_si.elements == [:Si]
+            @test props_si.mass_fractions == [1.0]
+            @test props_si.mu_e_tau_e > 0.1  # Excellent electron transport
+            @test props_si.mu_h_tau_h > 0.1  # Excellent hole transport
+        end
+
+        @testset "Quantum Efficiency η(E)" begin
+            # CdTe 1.6mm at 60 keV: should be ~99% (high-Z, thick crystal)
+            η_cdte_60 = quantum_efficiency(CDTE_MATERIAL, 1.6, 60.0)
+            @test η_cdte_60 > 0.95
+            @test η_cdte_60 < 1.0
+
+            # CdTe at 100 keV: still high
+            η_cdte_100 = quantum_efficiency(CDTE_MATERIAL, 1.6, 100.0)
+            @test η_cdte_100 > 0.70
+
+            # Si 1.6mm at 60 keV: should be very low (~5%)
+            η_si_60 = quantum_efficiency(SI_MATERIAL, 1.6, 60.0)
+            @test η_si_60 < 0.10
+            @test η_si_60 > 0.0
+
+            # CZT should be similar to CdTe
+            η_czt_60 = quantum_efficiency(CZT_MATERIAL, 1.6, 60.0)
+            @test η_czt_60 > 0.90
+
+            # η increases with thickness
+            η_thin = quantum_efficiency(CDTE_MATERIAL, 0.5, 60.0)
+            η_thick = quantum_efficiency(CDTE_MATERIAL, 3.0, 60.0)
+            @test η_thick > η_thin
+
+            # η decreases with energy (above K-edge)
+            η_low = quantum_efficiency(CDTE_MATERIAL, 1.6, 40.0)
+            η_high = quantum_efficiency(CDTE_MATERIAL, 1.6, 120.0)
+            @test η_low > η_high
+
+            # Vector version
+            energies = [40.0, 60.0, 80.0, 100.0, 120.0]
+            η_vec = quantum_efficiency_vector(CDTE_MATERIAL, 1.6, energies)
+            @test length(η_vec) == 5
+            @test all(0 .< η_vec .< 1)
+        end
+
+        @testset "Detector Material Attenuation" begin
+            # CdTe should have high μ at CT energies
+            μ_cdte = get_detector_material_attenuation(CDTE_MATERIAL, 60.0)
+            @test μ_cdte > 20.0  # Should be ~33 cm⁻¹
+
+            # Si should have much lower μ
+            μ_si = get_detector_material_attenuation(SI_MATERIAL, 60.0)
+            @test μ_si < 1.0  # Should be ~0.46 cm⁻¹
+
+            # CdTe μ should show K-edge jump
+            μ_below_kedge = get_detector_material_attenuation(CDTE_MATERIAL, 25.0)
+            μ_above_kedge = get_detector_material_attenuation(CDTE_MATERIAL, 28.0)
+            @test μ_above_kedge > μ_below_kedge  # K-edge increase
+        end
+
+        @testset "K-Fluorescence Escape" begin
+            # CdTe with standard pixel
+            fluor = compute_fluorescence_escape_probability(
+                CDTE_MATERIAL, 1.6, (0.302, 0.302)
+            )
+            @test fluor isa KFluorescenceParams
+            @test fluor.n_lines == 2  # Cd and Te
+            @test fluor.k_edge_energies[1] ≈ 26.7
+            @test fluor.k_edge_energies[2] ≈ 31.8
+            @test all(0 .≤ fluor.escape_probabilities .≤ 1.0)
+            @test all(fluor.escape_probabilities .> 0.0)  # CdTe has significant escape
+
+            # Apply fluorescence escape
+            # Photon above Te K-edge (31.8 keV)
+            p_esc, E_reg = apply_fluorescence_escape(50.0, fluor)
+            @test p_esc > 0.0  # Should have non-zero escape probability
+            @test E_reg < 50.0  # Registered energy less than incident
+
+            # Photon below all K-edges: no escape
+            p_esc_low, E_reg_low = apply_fluorescence_escape(20.0, fluor)
+            @test p_esc_low ≈ 0.0
+            @test E_reg_low ≈ 20.0
+
+            # Si: K-edge at 1.84 keV — effectively no escape at CT energies
+            fluor_si = compute_fluorescence_escape_probability(
+                SI_MATERIAL, 1.6, (0.302, 0.302)
+            )
+            @test all(fluor_si.escape_probabilities .≈ 0.0)  # Si K-α too low energy
+        end
+
+        @testset "Charge Collection (Hecht Equation)" begin
+            # CdTe charge transport
+            params_cdte = get_charge_transport_params(CDTE_MATERIAL, 1.6)
+            @test params_cdte.mu_e_tau_e ≈ 3.0e-3
+            @test params_cdte.mu_h_tau_h ≈ 5.0e-5
+            @test params_cdte.thickness_cm ≈ 0.16
+
+            # CCE at surface (x=0, cathode): electrons must travel full thickness
+            cce_surface = charge_collection_efficiency(0.0, params_cdte)
+            @test 0.5 < cce_surface < 1.0
+
+            # CCE at anode (x=d): holes must travel full thickness (poor!)
+            cce_anode = charge_collection_efficiency(params_cdte.thickness_cm, params_cdte)
+            @test cce_anode < cce_surface  # Worse at anode due to hole trapping
+
+            # CCE should be between 0 and 1
+            @test 0.0 ≤ cce_surface ≤ 1.0
+            @test 0.0 ≤ cce_anode ≤ 1.0
+
+            # Mean CCE for CdTe: should be ~0.90-0.95
+            mean_cce_cdte = mean_charge_collection_efficiency(CDTE_MATERIAL, 1.6)
+            @test 0.80 < mean_cce_cdte < 1.0
+
+            # Si: excellent charge collection (both carriers good)
+            mean_cce_si = mean_charge_collection_efficiency(SI_MATERIAL, 1.6)
+            @test mean_cce_si > 0.99  # Nearly perfect
+
+            # Hole tailing distribution
+            E_tail, w_tail = hole_tailing_distribution(60.0, CDTE_MATERIAL, 1.6)
+            @test length(E_tail) == 20
+            @test length(w_tail) == 20
+            @test sum(w_tail) ≈ 1.0
+            @test all(E_tail .≤ 60.0)  # All registered energies ≤ incident
+            @test all(E_tail .> 0.0)   # All positive
+        end
+
+        @testset "Spectral Response Matrix" begin
+            thresholds = [20.0, 35.0, 55.0, 70.0]
+
+            # Ideal detector (no degradation)
+            R_ideal = compute_spectral_response_matrix(
+                CDTE_MATERIAL, 1.6, thresholds, 120.0;
+                energy_resolution_keV=0.0,
+                include_fluorescence=false,
+                include_tailing=false,
+                n_energy_points=120
+            )
+            @test size(R_ideal) == (120, 4)
+
+            # Each row should sum to ≤ 1.0
+            for i in 1:size(R_ideal, 1)
+                @test sum(R_ideal[i, :]) ≤ 1.0 + 1e-10
+            end
+
+            # Below lowest threshold: no counts in any bin
+            # Energy 10 keV → should be below threshold 20 keV
+            E_idx_10 = round(Int, 10.0 / 120.0 * 120)
+            if E_idx_10 >= 1
+                @test sum(R_ideal[E_idx_10, :]) ≈ 0.0 atol=0.01
+            end
+
+            # Realistic CdTe response (with all effects)
+            R_real = compute_spectral_response_matrix(
+                CDTE_MATERIAL, 1.6, thresholds, 120.0;
+                energy_resolution_keV=10.0,
+                include_fluorescence=true,
+                include_tailing=true,
+                n_energy_points=120
+            )
+            @test size(R_real) == (120, 4)
+
+            # Realistic response should have off-diagonal entries (spectral cross-talk)
+            # A 60 keV photon should primarily be in bin 3 (55-70 keV) but
+            # with some leakage to bins 2 and 4
+            E_idx_60 = round(Int, 60.0 / 120.0 * 120)
+            @test R_real[E_idx_60, 3] > 0.0  # Primary bin
+            # With energy blur, some leakage expected
+            total_60 = sum(R_real[E_idx_60, :])
+            @test total_60 > 0.0
+            @test total_60 ≤ 1.0
+
+            # Si response: different characteristics (no significant K-edges at CT)
+            R_si = compute_spectral_response_matrix(
+                SI_MATERIAL, 1.6, thresholds, 120.0;
+                energy_resolution_keV=2.5,
+                include_fluorescence=true,
+                include_tailing=true,
+                n_energy_points=120
+            )
+            @test size(R_si) == (120, 4)
+            # Si has excellent energy resolution — should be more diagonal
+            # (narrower Gaussian blur)
+        end
+
+        @testset "Material-Agnostic Dispatch" begin
+            # All three materials should work with all functions
+            for material in [CDTE_MATERIAL, CZT_MATERIAL, SI_MATERIAL]
+                props = get_detector_material_properties(material)
+                @test hasproperty(props, :density_g_cm3)
+                @test hasproperty(props, :k_edges_keV)
+                @test hasproperty(props, :mu_e_tau_e)
+
+                μ = get_detector_material_attenuation(material, 60.0)
+                @test μ > 0.0
+
+                η = quantum_efficiency(material, 1.6, 60.0)
+                @test 0.0 < η ≤ 1.0
+
+                fluor = compute_fluorescence_escape_probability(material, 1.6, (0.3, 0.3))
+                @test fluor isa KFluorescenceParams
+
+                cce = mean_charge_collection_efficiency(material, 1.6)
+                @test 0.0 < cce ≤ 1.0
+
+                R = compute_spectral_response_matrix(
+                    material, 1.6, [20.0, 50.0, 80.0], 120.0;
+                    n_energy_points=50
+                )
+                @test size(R) == (50, 3)
+            end
+        end
+    end
+
 end
 
 println("\nTests complete!")
