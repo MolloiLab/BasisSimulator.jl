@@ -485,92 +485,82 @@ function apply_charge_sharing!(
     detector::PhotonCountingDetector
 ) where {T, A<:AbstractArray{T,3}}
 
-    if !detector.enable_charge_sharing || detector.charge_sharing_fwhm_mm ≤ zero(T)
+    if !detector.enable_charge_sharing || detector.charge_sharing_fwhm_mm ≤ 0.0
         return bins
     end
 
     n_bins = length(bins)
     n_cols, n_rows, n_angles = size(bins[1])
 
-    # Charge cloud sigma from FWHM
-    σ_cloud = detector.charge_sharing_fwhm_mm / (2 * sqrt(2 * log(T(2))))
+    # Cast all detector parameters to T (Float32 for GPU compatibility)
+    σ_cloud = T(detector.charge_sharing_fwhm_mm) / (T(2) * sqrt(T(2) * log(T(2))))
 
-    # Pixel size at isocenter
-    pixel_row, pixel_col = detector.pixel_size_mm
+    # Pixel size at isocenter (cast to T)
+    pixel_row = T(detector.pixel_size_mm[1])
+    pixel_col = T(detector.pixel_size_mm[2])
 
     # Compute charge sharing probability
-    # Fraction of events that split to neighboring pixels
-    # Based on distance from pixel center to boundary vs charge cloud size
-    boundary_dist_row = pixel_row / 2
-    boundary_dist_col = pixel_col / 2
+    boundary_dist_row = pixel_row / T(2)
+    boundary_dist_col = pixel_col / T(2)
 
-    # Probability that charge reaches boundary (approximate)
-    # P(|x| > boundary) ≈ 2 × (1 - Φ(boundary/σ))
-    # Using complementary error function approximation
     z_row = boundary_dist_row / σ_cloud
     z_col = boundary_dist_col / σ_cloud
 
     # Sigmoid approximation for Gaussian tail
-    p_share_row = T(2) * one(T) / (one(T) + exp(T(1.5) * z_row))
-    p_share_col = T(2) * one(T) / (one(T) + exp(T(1.5) * z_col))
-    p_share = min(p_share_row + p_share_col, T(0.5))  # Cap at 50% sharing
+    p_share_row = T(2) / (one(T) + exp(T(1.5) * z_row))
+    p_share_col = T(2) / (one(T) + exp(T(1.5) * z_col))
+    p_share = min(p_share_row + p_share_col, T(0.5))
 
     # Primary signal retention
     p_primary = one(T) - p_share
 
-    # When charge is shared, energy is split between pixels
-    # This causes counts to appear in lower energy bins
-    # Model: shared events lose ~50% of energy on average
+    # Neighbor weight (divide among 8 neighbors)
+    nw = p_share / T(8)
+
+    # Energy loss fraction for split events
     energy_loss_fraction = T(0.5)
 
     # Process each bin: redistribute counts to lower bins due to charge sharing
-    # Work from highest to lowest bin to avoid double counting
     for bin_idx in n_bins:-1:1
-        current_bin = bins[bin_idx]
+        # Use let-blocks for GPU kernel capture safety
+        let cb = bins[bin_idx], pp = p_primary, nweight = nw,
+            nc = Int32(n_cols), nr = Int32(n_rows)
 
-        # Create output buffer
-        output = similar(current_bin)
+            output = similar(cb)
 
-        AK.foreachindex(current_bin) do idx
-            ci = CartesianIndices(current_bin)[idx]
-            col, row, angle = Tuple(ci)
+            AK.foreachindex(cb) do idx
+                ci = CartesianIndices(cb)[idx]
+                col, row, angle = Tuple(ci)
 
-            # Start with current value scaled by primary retention
-            val = current_bin[idx] * p_primary
+                val = cb[idx] * pp
 
-            # Add contributions from neighbors (charge shared TO this pixel)
-            # 3x3 spatial kernel for charge sharing
-            for di in -1:1
-                for dj in -1:1
-                    if di == 0 && dj == 0
-                        continue
+                for di in Int32(-1):Int32(1)
+                    for dj in Int32(-1):Int32(1)
+                        if di == Int32(0) && dj == Int32(0)
+                            continue
+                        end
+                        src_col = clamp(col + di, Int32(1), nc)
+                        src_row = clamp(row + dj, Int32(1), nr)
+                        val += cb[src_col, src_row, angle] * nweight
                     end
-
-                    src_col = clamp(col + di, 1, n_cols)
-                    src_row = clamp(row + dj, 1, n_rows)
-
-                    # Neighbor's contribution to this pixel
-                    neighbor_weight = p_share / T(8)  # Divide among 8 neighbors
-                    val += current_bin[src_col, src_row, angle] * neighbor_weight
                 end
+
+                output[idx] = val
             end
 
-            output[idx] = val
+            copyto!(cb, output)
         end
 
-        copyto!(current_bin, output)
-
-        # Energy redistribution: some counts from this bin move to lower bins
-        # due to partial energy deposition in split events
+        # Energy redistribution: move fraction of counts to lower bin
         if bin_idx > 1
-            target_bin = bins[bin_idx - 1]  # Energy moves to lower bin
-            lost_fraction = p_share * energy_loss_fraction
+            let cb = bins[bin_idx], tb = bins[bin_idx - 1],
+                lf = p_share * energy_loss_fraction
 
-            AK.foreachindex(current_bin) do idx
-                # Move fraction of counts to lower bin
-                transfer = current_bin[idx] * lost_fraction
-                target_bin[idx] += transfer
-                current_bin[idx] -= transfer
+                AK.foreachindex(cb) do idx
+                    transfer = cb[idx] * lf
+                    tb[idx] += transfer
+                    cb[idx] -= transfer
+                end
             end
         end
     end
@@ -618,52 +608,41 @@ function apply_pulse_pileup!(
     flux_rate::Real
 ) where {T, A<:AbstractArray{T,3}}
 
-    if !detector.enable_pile_up || detector.dead_time_ns ≤ zero(T)
+    if !detector.enable_pile_up || detector.dead_time_ns ≤ 0.0
         return bins
     end
 
-    # Convert dead time to seconds
-    τ = detector.dead_time_ns * T(1e-9)
-
-    # Pixel area (mm²)
-    pixel_area = detector.pixel_size_mm[1] * detector.pixel_size_mm[2]
-
-    # Expected count rate per pixel
-    # Assuming flux_rate is in photons/s/mm²
-    count_rate = flux_rate * pixel_area
+    # Cast all to T (Float32 for GPU compatibility)
+    τ = T(detector.dead_time_ns) * T(1e-9)
+    pixel_area = T(detector.pixel_size_mm[1]) * T(detector.pixel_size_mm[2])
+    count_rate = T(flux_rate) * pixel_area
 
     # Pile-up correction factor (nonparalyzable model)
-    # N_recorded/N_true = 1/(1 + N_true × τ)
     pile_up_factor = one(T) / (one(T) + count_rate * τ)
 
     # Apply count rate reduction to all bins
     for bin in bins
-        AK.foreachindex(bin) do idx
-            bin[idx] *= pile_up_factor
+        let pf = pile_up_factor, b = bin
+            AK.foreachindex(b) do idx
+                b[idx] *= pf
+            end
         end
     end
 
-    # Energy pile-up: some counts from lower bins sum to appear in higher bins
-    # This is a simplified model - accurate pile-up modeling requires
-    # tracking individual photon arrival times
+    # Energy pile-up: some counts from lower bins shift to higher bins
     n_bins = length(bins)
     if n_bins >= 2
-        # Fraction of pile-up events
         p_pileup = one(T) - pile_up_factor
 
-        # Pile-up causes some counts to shift to higher energy bins
-        # (two photons summed together appear as one higher-energy photon)
         for bin_idx in 1:(n_bins-1)
-            current_bin = bins[bin_idx]
-            next_bin = bins[bin_idx + 1]
+            let cb = bins[bin_idx], nb = bins[bin_idx + 1],
+                sf = p_pileup * T(0.1)
 
-            # Simplified: small fraction of low-energy counts appear as high-energy
-            shift_fraction = p_pileup * T(0.1)  # 10% of pile-up shifts energy
-
-            AK.foreachindex(current_bin) do idx
-                transfer = current_bin[idx] * shift_fraction
-                next_bin[idx] += transfer
-                current_bin[idx] -= transfer
+                AK.foreachindex(cb) do idx
+                    transfer = cb[idx] * sf
+                    nb[idx] += transfer
+                    cb[idx] -= transfer
+                end
             end
         end
     end
@@ -718,60 +697,60 @@ function apply_anti_coincidence!(
     # by summing coincident signals in adjacent pixels
 
     # Compute total counts per pixel (across all energy bins)
-    # to identify coincident pixels
     total_counts = similar(bins[1])
     fill!(total_counts, zero(T))
     for bin in bins
-        AK.foreachindex(total_counts) do idx
-            total_counts[idx] += bin[idx]
+        let tc = total_counts, b = bin
+            AK.foreachindex(tc) do idx
+                tc[idx] += b[idx]
+            end
         end
     end
 
-    # Correction factor: estimate fraction of events that can be recovered
-    # This depends on timing electronics - simplified model here
-    recovery_fraction = T(0.3)  # 30% of charge-shared events recovered
+    # Correction factor: fraction of charge-shared events recovered
+    rf = T(0.3)  # 30% recovery
+    rf8 = rf / T(8)  # Pre-divide by 8 neighbors
+    zero_T = T(0)  # Pre-compute to avoid Type capture in kernel
 
     # For each pixel, look for coincident neighbors and redistribute
     for bin_idx in 1:n_bins
-        current_bin = bins[bin_idx]
-        output = similar(current_bin)
+        let cb = bins[bin_idx], tc = total_counts, recovery_per_neighbor = rf8,
+            nc = Int32(n_cols), nr = Int32(n_rows), z = zero_T
 
-        AK.foreachindex(current_bin) do idx
-            ci = CartesianIndices(current_bin)[idx]
-            col, row, angle = Tuple(ci)
+            output = similar(cb)
 
-            val = current_bin[idx]
+            AK.foreachindex(cb) do idx
+                ci = CartesianIndices(cb)[idx]
+                col, row, angle = Tuple(ci)
 
-            # Check 3x3 neighborhood for coincident events
-            my_total = total_counts[idx]
+                val = cb[idx]
+                my_total = tc[idx]
 
-            if my_total > zero(T)
-                for di in -1:1
-                    for dj in -1:1
-                        if di == 0 && dj == 0
-                            continue
-                        end
+                if my_total > z
+                    for di in Int32(-1):Int32(1)
+                        for dj in Int32(-1):Int32(1)
+                            if di == Int32(0) && dj == Int32(0)
+                                continue
+                            end
 
-                        src_col = clamp(col + di, 1, n_cols)
-                        src_row = clamp(row + dj, 1, n_rows)
+                            src_col = clamp(col + di, Int32(1), nc)
+                            src_row = clamp(row + dj, Int32(1), nr)
 
-                        neighbor_total = total_counts[src_col, src_row, angle]
+                            neighbor_total = tc[src_col, src_row, angle]
 
-                        # If this pixel has higher counts, recover some from neighbor
-                        if my_total > neighbor_total && neighbor_total > zero(T)
-                            # Recover fraction of neighbor's counts (charge sharing correction)
-                            neighbor_val = bins[bin_idx][src_col, src_row, angle]
-                            recovery = neighbor_val * recovery_fraction / T(8)
-                            val += recovery
+                            if my_total > neighbor_total && neighbor_total > z
+                                neighbor_val = cb[src_col, src_row, angle]
+                                val += neighbor_val * recovery_per_neighbor
+                            end
                         end
                     end
                 end
+
+                output[idx] = val
             end
 
-            output[idx] = val
+            copyto!(cb, output)
         end
-
-        copyto!(current_bin, output)
     end
 
     return bins
@@ -1024,12 +1003,13 @@ function pcct_forward_project(
     apply_anti_coincidence!(bins, detector)
 
     # Convert from photon counts to line-integral domain: sino = -log(N / I₀_bin)
+    eps_val = T(1e-10)  # Pre-compute to avoid capturing Type{T} in kernel
     for b in 1:n_bins
         I0_bin = _compute_bin_I0(detector, energies, weights, η, thresholds, b, Float64(kVp), Float64(I0))
-        I0_bin_T = T(I0_bin)
-        bin_arr = bins[b]
-        AK.foreachindex(bin_arr) do idx
-            bin_arr[idx] = -log(max(bin_arr[idx], T(1e-10)) / I0_bin_T)
+        let I0_bin_T = T(I0_bin), ba = bins[b], eps = eps_val
+            AK.foreachindex(ba) do idx
+                ba[idx] = -log(max(ba[idx], eps) / I0_bin_T)
+            end
         end
     end
 
