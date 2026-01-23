@@ -185,7 +185,7 @@ Parameters irrelevant to the chosen algorithm are silently ignored.
 
 # VMI Parameters
 - `vmi_energies::Vector{Float64}`: VMI energies to reconstruct (keV)
-- `vmi_basis::Tuple{Symbol,Symbol}`: Material basis for decomposition
+- `vmi_basis::Vector{Symbol}`: Material basis for decomposition (2+ materials; accepts Tuple for backward compat)
 
 # Initialization
 - `warm_start::Union{Nothing, AbstractArray}`: Initial estimate for iterative methods
@@ -222,7 +222,7 @@ struct ReconOptions
     interpolation::Symbol
     # VMI parameters
     vmi_energies::Vector{Float64}
-    vmi_basis::Tuple{Symbol, Symbol}
+    vmi_basis::Vector{Symbol}
     # Initialization
     warm_start::Union{Nothing, AbstractArray}
     cascade_warm_start::Bool
@@ -272,7 +272,7 @@ function ReconOptions(;
     interpolation::Symbol = :li_180,
     # VMI parameters
     vmi_energies::Vector{Float64} = Float64[],
-    vmi_basis::Tuple{Symbol, Symbol} = (:water, :iodine),
+    vmi_basis::Union{Tuple{Symbol, Symbol}, Vector{Symbol}} = (:water, :iodine),
     # Initialization
     warm_start::Union{Nothing, AbstractArray} = nothing,
     cascade_warm_start::Bool = false
@@ -280,12 +280,15 @@ function ReconOptions(;
     # Default to 512x512x64 if not specified
     _size = isnothing(matrix_size) ? (512, 512, 64) : matrix_size
 
+    # Convert Tuple to Vector for backward compatibility
+    _vmi_basis = vmi_basis isa Tuple ? collect(Symbol, vmi_basis) : Vector{Symbol}(vmi_basis)
+
     return ReconOptions(
         algorithm, _size, Float64(fov_cm), filter, iterations,
         Float64(lambda), Float64(tv_weight), n_subsets,
         penalty, Float64(penalty_delta), use_edge_weights, Float64(blend_percent),
         interpolation,
-        vmi_energies, vmi_basis,
+        vmi_energies, _vmi_basis,
         warm_start, cascade_warm_start
     )
 end
