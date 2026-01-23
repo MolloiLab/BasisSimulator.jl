@@ -488,15 +488,15 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts)
     )
 
     # 6. Also produce conventional sinogram (sum of all bins → single channel)
-    # This is used for standard reconstruction
+    # This is used for standard reconstruction — transfer to CPU for recon
     T = Float32
-    sino_ideal = similar(pcct_sino.bins[1])
-    fill!(sino_ideal, zero(T))
+    sino_ideal_gpu = similar(pcct_sino.bins[1])
+    fill!(sino_ideal_gpu, zero(T))
     for bin in pcct_sino.bins
-        sino_ideal .+= bin
+        sino_ideal_gpu .+= bin
     end
-    # Normalize: combined sinogram from weighted bin sum
-    sino_ideal ./= T(length(pcct_sino.bins))
+    sino_ideal_gpu ./= T(length(pcct_sino.bins))
+    sino_ideal = Array(sino_ideal_gpu)
 
     # 7. Apply PCCT noise (per-bin Poisson, no electronic noise)
     pcct_sino_noisy = if sim_opts.use_noise
@@ -510,18 +510,22 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts)
         pcct_sino
     end
 
-    # 8. Conventional noisy sinogram (for standard recon)
-    sino_noisy = similar(pcct_sino_noisy.bins[1])
-    fill!(sino_noisy, zero(T))
+    # 8. Conventional noisy sinogram (for standard recon — CPU for reconstruction)
+    sino_noisy_gpu = similar(pcct_sino_noisy.bins[1])
+    fill!(sino_noisy_gpu, zero(T))
     for bin in pcct_sino_noisy.bins
-        sino_noisy .+= bin
+        sino_noisy_gpu .+= bin
     end
-    sino_noisy ./= T(length(pcct_sino_noisy.bins))
+    sino_noisy_gpu ./= T(length(pcct_sino_noisy.bins))
+    sino_noisy = Array(sino_noisy_gpu)
 
     # 9. N-material decomposition (if vmi_basis specified with 2+ materials)
+    # Decomposition is a per-pixel CPU operation — transfer bins to CPU if on GPU
     pcct_mat_map = if length(recon_opts.vmi_basis) >= 2
         basis_tuple = Tuple(recon_opts.vmi_basis)
-        pcct_material_decomposition(pcct_sino_noisy; basis=basis_tuple)
+        cpu_bins = [Array(b) for b in pcct_sino_noisy.bins]
+        cpu_sino = EnergyResolvedSinogram(cpu_bins, pcct_sino_noisy.thresholds_keV)
+        pcct_material_decomposition(cpu_sino; basis=basis_tuple)
     else
         nothing
     end
