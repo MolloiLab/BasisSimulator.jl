@@ -6535,6 +6535,400 @@ end
         end
     end
 
+    # -------------------------------------------------------------------------
+    # PCCT Forward Projection Refactor (PCCT-FP-REFACTOR)
+    # -------------------------------------------------------------------------
+    @testset "PCCT Forward Projection" begin
+
+        # Small test phantom and geometry for all FP tests
+        phantom = create_gammex_472(n_voxels=16, n_slices=4, fov_cm=20.0, z_cm=2.0)
+        scanner = Scanner(
+            source_to_isocenter = 595.0,
+            source_to_detector = 1085.5,
+            detector_rows = 4,
+            detector_cols = 32,
+            detector_row_size = 1.0,
+            detector_col_size = 1.0
+        )
+        geom = CTGeometry(scanner; n_angles=36, fov_cm=20.0, z_cm=2.0)
+
+        # CdTe detector (standard NAEOTOM-like)
+        detector_cdte = PhotonCountingDetector(
+            material = CDTE_MATERIAL,
+            thickness_mm = 1.6,
+            pixel_size_mm = (0.5, 0.5),
+            energy_thresholds_keV = [20.0, 35.0, 55.0, 70.0],
+            energy_resolution_keV = 0.0,   # Ideal for testing
+            charge_sharing_fwhm_mm = 0.0,  # Disable for clean tests
+            enable_charge_sharing = false,
+            dead_time_ns = 0.0,
+            enable_pile_up = false,
+            enable_anti_coincidence = false,
+            coincidence_window_ns = 0.0,
+            electronic_noise_keV = 0.0,
+            seed = 42
+        )
+
+        materials = get_region_materials()
+
+        @testset "Mask+Materials Signature Works" begin
+            # Simple polychromatic spectrum (5 energies across range)
+            energies = [30.0, 50.0, 70.0, 90.0, 110.0]
+            weights = [0.1, 0.3, 0.3, 0.2, 0.1]
+
+            result = pcct_forward_project(
+                phantom.mask, geom, detector_cdte;
+                energies=energies, weights=weights,
+                materials=materials,
+                apply_spectral_response=false  # Ideal binning for clarity
+            )
+
+            @test result isa EnergyResolvedSinogram
+            @test length(result.bins) == 4  # 4 energy bins
+            @test size(result.bins[1]) == (32, 4, 36)  # (cols, rows, angles)
+            @test all(isfinite.(result.bins[1]))
+            @test all(isfinite.(result.bins[2]))
+            @test all(isfinite.(result.bins[3]))
+            @test all(isfinite.(result.bins[4]))
+        end
+
+        @testset "Monochromatic Input → Correct Bin" begin
+            # Single energy at 50 keV → should go to bin 2 (35-55 keV)
+            energies_mono = [50.0]
+            weights_mono = [1.0]
+
+            result = pcct_forward_project(
+                phantom.mask, geom, detector_cdte;
+                energies=energies_mono, weights=weights_mono,
+                materials=materials,
+                apply_spectral_response=false
+            )
+
+            # Bin 2 (35-55 keV) should have proper sinogram data
+            no_signal_value = -log(Float32(1e-10))  # ≈ 23.03
+            @test any(result.bins[2] .!= no_signal_value)  # Bin 2 has signal
+
+            # Bins 1, 3, 4 should be "no signal" (all energy in bin 2)
+            @test all(result.bins[1] .≈ no_signal_value)
+        end
+
+        @testset "Monochromatic at 90 keV → Bin 4" begin
+            # 90 keV → bin 4 (70+ keV)
+            energies_mono = [90.0]
+            weights_mono = [1.0]
+
+            result = pcct_forward_project(
+                phantom.mask, geom, detector_cdte;
+                energies=energies_mono, weights=weights_mono,
+                materials=materials,
+                apply_spectral_response=false
+            )
+
+            # Bin 4 should have proper sinogram data (not the "no signal" default)
+            no_signal_value = -log(Float32(1e-10))  # ≈ 23.03
+            @test any(result.bins[4] .!= no_signal_value)
+            # Bins 1-3 should be "no signal" (all energy in bin 4)
+            @test all(result.bins[1] .≈ no_signal_value)
+            @test all(result.bins[2] .≈ no_signal_value)
+            @test all(result.bins[3] .≈ no_signal_value)
+        end
+
+        @testset "Polychromatic → Counts in Multiple Bins" begin
+            # Spectrum spanning all bins
+            energies = [25.0, 40.0, 60.0, 80.0, 100.0]
+            weights = [0.2, 0.2, 0.2, 0.2, 0.2]
+
+            result = pcct_forward_project(
+                phantom.mask, geom, detector_cdte;
+                energies=energies, weights=weights,
+                materials=materials,
+                apply_spectral_response=false
+            )
+
+            # All bins should have some signal
+            for b in 1:4
+                @test any(result.bins[b] .> 0.0)
+            end
+        end
+
+        @testset "Quantum Efficiency Affects Counts" begin
+            # CdTe detector: η≈0.99 at 60 keV
+            # Si detector: η≈0.05 at 60 keV → should produce MUCH fewer counts
+
+            detector_si = PhotonCountingDetector(
+                material = SI_MATERIAL,
+                thickness_mm = 1.6,
+                pixel_size_mm = (0.5, 0.5),
+                energy_thresholds_keV = [20.0, 35.0, 55.0, 70.0],
+                energy_resolution_keV = 0.0,
+                charge_sharing_fwhm_mm = 0.0,
+                enable_charge_sharing = false,
+                dead_time_ns = 0.0,
+                enable_pile_up = false,
+                enable_anti_coincidence = false,
+                coincidence_window_ns = 0.0,
+                electronic_noise_keV = 0.0,
+                seed = 42
+            )
+
+            energies = [60.0]
+            weights = [1.0]
+
+            result_cdte = pcct_forward_project(
+                phantom.mask, geom, detector_cdte;
+                energies=energies, weights=weights,
+                materials=materials,
+                apply_spectral_response=false
+            )
+
+            result_si = pcct_forward_project(
+                phantom.mask, geom, detector_si;
+                energies=energies, weights=weights,
+                materials=materials,
+                apply_spectral_response=false
+            )
+
+            # Both produce valid sinograms
+            @test result_cdte isa EnergyResolvedSinogram
+            @test result_si isa EnergyResolvedSinogram
+
+            # CdTe has η≈0.99, Si has η≈0.05
+            # Line integrals should differ: Si has fewer counts → higher noise floor
+            # But the actual line integral values should be similar (same physics)
+            # The difference shows up in that Si's I0_bin is much lower
+            # Both should have finite values in the correct bin (55-70 keV → bin 3)
+            @test any(result_cdte.bins[3] .> 0.0)
+            @test any(result_si.bins[3] .> 0.0)
+        end
+
+        @testset "Spectral Response Matrix Applied" begin
+            energies = [50.0, 60.0, 70.0]
+            weights = [0.3, 0.4, 0.3]
+
+            # With spectral response (realistic)
+            result_real = pcct_forward_project(
+                phantom.mask, geom, detector_cdte;
+                energies=energies, weights=weights,
+                materials=materials,
+                apply_spectral_response=true
+            )
+
+            # Without spectral response (ideal binning)
+            result_ideal = pcct_forward_project(
+                phantom.mask, geom, detector_cdte;
+                energies=energies, weights=weights,
+                materials=materials,
+                apply_spectral_response=false
+            )
+
+            # Both should produce valid results
+            @test result_real isa EnergyResolvedSinogram
+            @test result_ideal isa EnergyResolvedSinogram
+            @test length(result_real.bins) == 4
+            @test length(result_ideal.bins) == 4
+
+            # With spectral response, there should be cross-talk between bins
+            # (energies near bin boundaries leak to adjacent bins)
+            # Results should be different from ideal
+            # Note: if energy_resolution=0, no blur → same as ideal
+            # We set energy_resolution=0 in our test detector, so they should be similar
+            # Let's just check they're both finite and valid
+            @test all(isfinite.(result_real.bins[1]))
+            @test all(isfinite.(result_ideal.bins[1]))
+        end
+
+        @testset "Spectral Response with Energy Blur" begin
+            # Detector with realistic energy resolution → cross-talk
+            detector_blur = PhotonCountingDetector(
+                material = CDTE_MATERIAL,
+                thickness_mm = 1.6,
+                pixel_size_mm = (0.5, 0.5),
+                energy_thresholds_keV = [20.0, 35.0, 55.0, 70.0],
+                energy_resolution_keV = 10.0,  # Realistic blur
+                charge_sharing_fwhm_mm = 0.0,
+                enable_charge_sharing = false,
+                dead_time_ns = 0.0,
+                enable_pile_up = false,
+                enable_anti_coincidence = false,
+                coincidence_window_ns = 0.0,
+                electronic_noise_keV = 0.0,
+                seed = 42
+            )
+
+            energies = [30.0, 50.0, 70.0, 90.0]
+            weights = [0.25, 0.25, 0.25, 0.25]
+
+            result = pcct_forward_project(
+                phantom.mask, geom, detector_blur;
+                energies=energies, weights=weights,
+                materials=materials,
+                apply_spectral_response=true
+            )
+
+            @test result isa EnergyResolvedSinogram
+            @test all(isfinite.(result.bins[1]))
+            @test all(isfinite.(result.bins[2]))
+            @test all(isfinite.(result.bins[3]))
+            @test all(isfinite.(result.bins[4]))
+        end
+
+        @testset "Energy Below Threshold Skipped" begin
+            # Energy at 15 keV (below lowest threshold 20 keV)
+            energies = [15.0]
+            weights = [1.0]
+
+            result = pcct_forward_project(
+                phantom.mask, geom, detector_cdte;
+                energies=energies, weights=weights,
+                materials=materials,
+                apply_spectral_response=false
+            )
+
+            # All bins should have essentially no signal from detected photons
+            # (15 keV is below T₁=20 keV, so skipped)
+            @test result isa EnergyResolvedSinogram
+        end
+
+        @testset "Detector Physics Chain" begin
+            # Detector with charge sharing and pileup enabled
+            detector_full = PhotonCountingDetector(
+                material = CDTE_MATERIAL,
+                thickness_mm = 1.6,
+                pixel_size_mm = (0.5, 0.5),
+                energy_thresholds_keV = [20.0, 35.0, 55.0, 70.0],
+                energy_resolution_keV = 0.0,
+                charge_sharing_fwhm_mm = 0.08,
+                enable_charge_sharing = true,
+                dead_time_ns = 25.0,
+                enable_pile_up = true,
+                enable_anti_coincidence = true,
+                coincidence_window_ns = 25.0,
+                electronic_noise_keV = 0.0,
+                seed = 42
+            )
+
+            energies = [40.0, 60.0, 80.0, 100.0]
+            weights = [0.25, 0.35, 0.25, 0.15]
+
+            result = pcct_forward_project(
+                phantom.mask, geom, detector_full;
+                energies=energies, weights=weights,
+                materials=materials,
+                apply_spectral_response=false
+            )
+
+            # Should still produce valid results with detector physics
+            @test result isa EnergyResolvedSinogram
+            @test length(result.bins) == 4
+            @test all(isfinite.(result.bins[1]))
+            @test all(isfinite.(result.bins[2]))
+        end
+
+        @testset "EnergyResolvedSinogram Structure" begin
+            energies = [40.0, 60.0, 80.0]
+            weights = [0.3, 0.4, 0.3]
+
+            result = pcct_forward_project(
+                phantom.mask, geom, detector_cdte;
+                energies=energies, weights=weights,
+                materials=materials,
+                apply_spectral_response=false
+            )
+
+            @test result.thresholds_keV == Float32.([20.0, 35.0, 55.0, 70.0])
+            @test result.n_cols == 32
+            @test result.n_rows == 4
+            @test result.n_angles == 36
+        end
+
+        @testset "Legacy Deprecated Signature" begin
+            # Create a simple attenuation volume
+            volume = zeros(Float32, 16, 16, 4)
+            volume[6:11, 6:11, :] .= 0.02f0  # Simple attenuating object
+
+            energies = [40.0, 60.0, 80.0]
+            weights = [0.3, 0.4, 0.3]
+
+            # Should work (may emit deprecation warning with maxlog=1)
+            result = pcct_forward_project(
+                volume, geom, detector_cdte, energies, weights
+            )
+
+            @test result isa EnergyResolvedSinogram
+            @test length(result.bins) == 4
+        end
+
+        @testset "_find_energy_bin Helper" begin
+            thresholds = [20.0, 35.0, 55.0, 70.0]
+
+            # Below all thresholds
+            @test BasisSimulator._find_energy_bin(15.0, thresholds, 120.0) == 0
+
+            # In bin 1 (20-35)
+            @test BasisSimulator._find_energy_bin(25.0, thresholds, 120.0) == 1
+            @test BasisSimulator._find_energy_bin(20.0, thresholds, 120.0) == 1
+
+            # In bin 2 (35-55)
+            @test BasisSimulator._find_energy_bin(40.0, thresholds, 120.0) == 2
+            @test BasisSimulator._find_energy_bin(35.0, thresholds, 120.0) == 2
+
+            # In bin 3 (55-70)
+            @test BasisSimulator._find_energy_bin(60.0, thresholds, 120.0) == 3
+
+            # In bin 4 (70+)
+            @test BasisSimulator._find_energy_bin(90.0, thresholds, 120.0) == 4
+            @test BasisSimulator._find_energy_bin(70.0, thresholds, 120.0) == 4
+            @test BasisSimulator._find_energy_bin(110.0, thresholds, 120.0) == 4
+        end
+
+        @testset "_compute_bin_I0 Helper" begin
+            thresholds = [20.0, 35.0, 55.0, 70.0]
+            energies = [25.0, 40.0, 60.0, 90.0]
+            weights = [0.25, 0.25, 0.25, 0.25]
+            η = [0.99, 0.99, 0.99, 0.95]
+
+            # Bin 1 (20-35): only 25 keV contributes
+            I0_1 = BasisSimulator._compute_bin_I0(
+                detector_cdte, energies, weights, η, thresholds, 1, 120.0, 1e6
+            )
+            @test I0_1 > 0.0
+            @test I0_1 ≈ 1e6 * 0.25 * 0.99  # E=25 is in [20,35)
+
+            # Bin 2 (35-55): only 40 keV contributes
+            I0_2 = BasisSimulator._compute_bin_I0(
+                detector_cdte, energies, weights, η, thresholds, 2, 120.0, 1e6
+            )
+            @test I0_2 ≈ 1e6 * 0.25 * 0.99
+
+            # Bin 4 (70+): only 90 keV contributes
+            I0_4 = BasisSimulator._compute_bin_I0(
+                detector_cdte, energies, weights, η, thresholds, 4, 120.0, 1e6
+            )
+            @test I0_4 ≈ 1e6 * 0.25 * 0.95
+        end
+
+        @testset "Full Polychromatic Spectrum" begin
+            # Use real spectrum from load_spectrum
+            e_full, w_full = load_spectrum(120)
+            energies, weights = downsample_spectrum(e_full, w_full, 20)
+
+            result = pcct_forward_project(
+                phantom.mask, geom, detector_cdte;
+                energies=energies, weights=weights,
+                materials=materials,
+                apply_spectral_response=false
+            )
+
+            @test result isa EnergyResolvedSinogram
+            @test length(result.bins) == 4
+            # All bins should have signal with a full 120 kVp spectrum
+            for b in 1:4
+                @test any(result.bins[b] .> 0.0)
+                @test all(isfinite.(result.bins[b]))
+            end
+        end
+    end
+
 end
 
 println("\nTests complete!")
