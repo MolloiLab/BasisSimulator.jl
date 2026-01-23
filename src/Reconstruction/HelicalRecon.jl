@@ -141,8 +141,6 @@ function create_helical_geometry(
     z_start::Real = 0.0
 )
     # Compute beam width (collimation)
-    # beam_width = n_rows × detector_row_size × magnification at isocenter
-    # Simplified: use z component of fov tuple
     beam_width = base_geom.fov[3]
 
     # Table advance per rotation
@@ -153,7 +151,16 @@ function create_helical_geometry(
 
     # Compute z-position for each angle
     n_angles = base_geom.n_angles
-    angles_per_rotation = 2π / (base_geom.angles[end] - base_geom.angles[1]) * n_angles
+    angles_per_rotation = round(Int, n_angles / max(n_angles * (base_geom.angles[end] - base_geom.angles[1]) / (2π * n_angles) |> x -> max(x, 1.0 / n_angles), 1.0))
+
+    # For multi-rotation scans: angles span more than 2π
+    # angles_per_rotation = views per 360°
+    angle_range = base_geom.angles[end] - base_geom.angles[1]
+    if angle_range > 0
+        angles_per_rotation = round(Int, n_angles * 2π / angle_range)
+    else
+        angles_per_rotation = n_angles
+    end
 
     # Number of rotations
     n_rotations = n_angles / angles_per_rotation
@@ -165,8 +172,28 @@ function create_helical_geometry(
         z_positions[i] = z_start + fraction * n_rotations * table_advance
     end
 
+    # Create NEW CTGeometry with z-varying source/detector positions
+    # This is the critical fix: source and detector move in z during helical scan
+    new_source_positions = copy(base_geom.source_positions)
+    new_detector_centers = copy(base_geom.detector_centers)
+    for i in 1:n_angles
+        new_source_positions[3, i] = z_positions[i]
+        new_detector_centers[3, i] = z_positions[i]
+    end
+
+    # Update FOV z-extent to cover the helical z-range plus beam width
+    z_range = z_positions[end] - z_positions[1]
+    new_fov = (base_geom.fov[1], base_geom.fov[2], z_range + beam_width)
+
+    helical_base_geom = CTGeometry(
+        base_geom.SAD, base_geom.SDD,
+        base_geom.n_angles, base_geom.n_rows, base_geom.n_cols, base_geom.pixel_size,
+        base_geom.angles, new_source_positions, new_detector_centers,
+        base_geom.detector_u, base_geom.detector_v, new_fov
+    )
+
     return HelicalGeometry{Float64, Vector{Float64}}(
-        base_geom,
+        helical_base_geom,
         Float64(pitch),
         table_speed,
         Float64(rotation_time),
@@ -417,40 +444,32 @@ function apply_helical_weights!(
 
     if method == :linear_interp
         # 180° Linear Interpolation weighting
-        # Weight based on distance from slice plane
-
-        # Compute z-positions on GPU
-        z_pos = similar(sinogram, T, n_angles)
-        copyto!(z_pos, T.(helical_geom.z_positions))
-
-        AK.foreachindex(sinogram) do idx
-            ci = CartesianIndices(sinogram)[idx]
-            col, row, angle = Tuple(ci)
-
-            # Simple weighting based on z-position relative to reconstruction plane
-            # More sophisticated implementations would use exact redundancy weighting
-            weight = one(T)
-
-            sinogram[idx] *= weight
-        end
+        # Currently identity weights (future: implement proper redundancy weights)
+        # No-op: weight = 1.0 for all rays
+        return sinogram
 
     elseif method == :parker
         # Parker weighting for short scan
-        # (Simplified version - full implementation would consider exact geometry)
+        # Extract scalars and arrays before kernel (GPU bitstype fix)
+        fan_angle_max = T(atan(base.fov[1] / 2 / base.SAD))
 
-        fan_angle_max = atan(base.fov[1] / 2 / base.SAD)
+        # Extract angles to GPU array
+        angles_gpu = similar(sinogram, T, n_angles)
+        copyto!(angles_gpu, T.(base.angles))
+
+        n_cols_T = T(n_cols)
 
         AK.foreachindex(sinogram) do idx
             ci = CartesianIndices(sinogram)[idx]
             col, row, angle = Tuple(ci)
 
             # Fan angle for this column
-            gamma = (col - n_cols/2 - T(0.5)) / (n_cols/2) * fan_angle_max
+            gamma = (T(col) - n_cols_T/T(2) - T(0.5)) / (n_cols_T/T(2)) * fan_angle_max
 
-            # Projection angle
-            beta = base.angles[angle]
+            # Projection angle (from GPU array, not struct)
+            beta = angles_gpu[angle]
 
-            # Parker weight (simplified)
+            # Parker weight (simplified — identity for now)
             weight = one(T)
 
             sinogram[idx] *= weight
@@ -606,6 +625,9 @@ function interpolate_helical_180li!(
     n_per_rot_i32 = Int32(n_per_rot)
     n_cols_i32 = Int32(n_cols)
 
+    # Extract scalar before kernel to avoid capturing helical_geom struct (GPU bitstype fix)
+    beam_half = T(helical_geom.beam_width / 2)
+
     backend = AK.get_backend(output)
     AK.foreachindex(output, backend) do idx
         # Convert linear index to (col, row, angle_in_rot)
@@ -616,7 +638,6 @@ function interpolate_helical_180li!(
         # Views at same angle: angle_in_rot, angle_in_rot + n_per_rot, angle_in_rot + 2*n_per_rot, ...
         # Conjugate angle: (angle_in_rot + half_rot - 1) % n_per_rot + 1
 
-        best_weight = T(0)
         accumulated_val = T(0)
         total_weight = T(0)
 
@@ -632,8 +653,6 @@ function interpolate_helical_180li!(
             dz = abs(z_view - z_target)
 
             # Distance-based weight: views closer to z_target get higher weight
-            # Using inverse distance weighting
-            beam_half = T(helical_geom.beam_width / 2)
             if dz < beam_half
                 weight = one(T) - dz / beam_half
                 accumulated_val += weight * sinogram[col, row, view_idx]
@@ -658,7 +677,6 @@ function interpolate_helical_180li!(
             z_view = z_positions[view_idx]
             dz = abs(z_view - z_target)
 
-            beam_half = T(helical_geom.beam_width / 2)
             if dz < beam_half
                 weight = one(T) - dz / beam_half
                 # Use conjugate column for the opposite ray direction
@@ -1022,7 +1040,8 @@ function helical_sirt_reconstruct!(
 
     # Pre-compute weights using the helical geometry
     # W = 1 / (A · 1) - projection domain weights
-    ones_volume = ones(T, volume_size...)
+    ones_volume = similar(recon, T, volume_size...)
+    fill!(ones_volume, one(T))
     ray_sums = helical_forward_project(ones_volume, helical_geom)
     eps = T(1e-8)
     AK.foreachindex(ray_sums) do idx
@@ -1032,7 +1051,8 @@ function helical_sirt_reconstruct!(
     W_gpu = ray_sums
 
     # V_inv = 1 / (Aᵀ · 1) - image domain weights
-    ones_sino = ones(T, base.n_cols, base.n_rows, base.n_angles)
+    ones_sino = similar(sinogram, T, base.n_cols, base.n_rows, base.n_angles)
+    fill!(ones_sino, one(T))
     # Use matched backprojection
     voxel_sums = backproject(ones_sino, base, volume_size; weighted=false)
     AK.foreachindex(voxel_sums) do idx
