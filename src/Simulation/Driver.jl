@@ -137,10 +137,32 @@ function simulate(
     T = eltype(first_result.sinogram_noisy)
     recons = copy(first_result.reconstructions)
     geom = first_result.geometry
+    is_helical = geom isa HelicalGeometry
 
     for i in 2:length(recon_opts_list)
         opts = recon_opts_list[i]
-        vol = _run_reconstruction(first_result.sinogram_noisy, geom, opts)
+
+        # Cascading warm start: use previous reconstruction as init (opt-in)
+        # Priority: explicit warm_start > cascade_warm_start > algorithm default
+        effective_opts = if opts.cascade_warm_start && isnothing(opts.warm_start) && !isempty(recons)
+            # Create new ReconOptions with previous result as warm_start
+            prev_vol = recons[end].second
+            ReconOptions(
+                opts.algorithm, opts.matrix_size, opts.fov_cm, opts.filter, opts.iterations,
+                opts.lambda, opts.tv_weight, opts.n_subsets,
+                opts.penalty, opts.penalty_delta, opts.use_edge_weights, opts.blend_percent,
+                opts.interpolation, opts.vmi_energies, opts.vmi_basis,
+                prev_vol, opts.cascade_warm_start
+            )
+        else
+            opts
+        end
+
+        vol = if is_helical
+            _run_helical_reconstruction(first_result.sinogram_noisy, geom, effective_opts)
+        else
+            _run_reconstruction(first_result.sinogram_noisy, geom, effective_opts)
+        end
         push!(recons, opts.algorithm => vol)
     end
 

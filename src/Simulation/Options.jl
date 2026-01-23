@@ -225,6 +225,7 @@ struct ReconOptions
     vmi_basis::Tuple{Symbol, Symbol}
     # Initialization
     warm_start::Union{Nothing, AbstractArray}
+    cascade_warm_start::Bool
 end
 
 """
@@ -273,7 +274,8 @@ function ReconOptions(;
     vmi_energies::Vector{Float64} = Float64[],
     vmi_basis::Tuple{Symbol, Symbol} = (:water, :iodine),
     # Initialization
-    warm_start::Union{Nothing, AbstractArray} = nothing
+    warm_start::Union{Nothing, AbstractArray} = nothing,
+    cascade_warm_start::Bool = false
 )
     # Default to 512x512x64 if not specified
     _size = isnothing(matrix_size) ? (512, 512, 64) : matrix_size
@@ -284,6 +286,6 @@ function ReconOptions(;
         penalty, Float64(penalty_delta), use_edge_weights, Float64(blend_percent),
         interpolation,
         vmi_energies, vmi_basis,
-        warm_start
+        warm_start, cascade_warm_start
     )
 end
