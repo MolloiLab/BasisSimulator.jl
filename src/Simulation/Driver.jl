@@ -59,26 +59,45 @@ end
 """
     simulate(phantom, scanner, protocol, sim_opts, recon_opts)
 
-Run a full end-to-end CT simulation.
+Run a full end-to-end CT simulation with automatic mode routing.
 
 The 4-struct API: Scanner provides hardware parameters, CTProtocol provides acquisition
 settings, SimOptions controls which physics effects are enabled, and ReconOptions
-controls image reconstruction. No additional kwargs needed.
+controls image reconstruction. The driver automatically routes between 4 scan modes:
+
+1. **Axial single-kVp** (default): Standard CT acquisition
+2. **Axial dual-kVp**: Dual-energy with VMI pipeline
+3. **Helical single-kVp**: Spiral CT with helical reconstruction
+4. **Helical dual-kVp**: Combined helical + dual-energy
 
 # Arguments
 - `phantom`: Struct containing `.mask` (UInt8) and material definitions.
 - `scanner`: `Scanner` hardware definition.
-- `protocol`: `CTProtocol` acquisition settings.
+- `protocol`: `CTProtocol` acquisition settings (scan_mode, dual_energy select mode).
 - `sim_opts`: `SimOptions` for physics fidelity (controls all 14 effects).
-- `recon_opts`: `ReconOptions` for image formation.
+- `recon_opts`: `ReconOptions` or `Vector{ReconOptions}` for multi-recon.
 
 # Returns
-`SimulationResult` containing sinograms and reconstruction.
+`SimulationResult` containing sinograms, reconstructions, and optional DE outputs.
 
-# Example
+# Examples
 ```julia
-result = simulate(phantom, scanner, protocol, SimOptions(fidelity=:high), ReconOptions())
-result = simulate(phantom, scanner, protocol, SimOptions(fidelity=:medium, use_scatter=false), ReconOptions())
+# Axial single-kVp (unchanged from before)
+result = simulate(phantom, scanner, CTProtocol(kVp=120, mA=200), SimOptions(), ReconOptions())
+
+# Helical single-kVp
+result = simulate(phantom, scanner,
+    CTProtocol(scan_mode=:helical, kVp=120, mA=200, pitch=0.984, n_rotations=5.0),
+    SimOptions(), ReconOptions(algorithm=:helical_fdk))
+
+# Dual-energy axial with VMI
+result = simulate(phantom, scanner,
+    CTProtocol(dual_energy=true, kVp=140, mA=200, kVp_low=80, mA_low=350),
+    SimOptions(), ReconOptions(vmi_energies=[50.0, 70.0, 100.0]))
+
+# Multi-recon from one scan
+recon_list = [ReconOptions(algorithm=:fdk), ReconOptions(algorithm=:sirt, iterations=50)]
+result = simulate(phantom, scanner, protocol, sim_opts, recon_list)
 ```
 """
 function simulate(
@@ -88,31 +107,83 @@ function simulate(
     sim_opts::SimOptions = SimOptions(),
     recon_opts::ReconOptions = ReconOptions()
 )
+    # Route based on scan_mode and dual_energy
+    is_helical = protocol.scan_mode == :helical
+    is_dual = protocol.dual_energy
+
+    if !is_helical && !is_dual
+        return _simulate_axial_single(phantom, scanner, protocol, sim_opts, recon_opts)
+    elseif !is_helical && is_dual
+        return _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts)
+    elseif is_helical && !is_dual
+        return _simulate_helical_single(phantom, scanner, protocol, sim_opts, recon_opts)
+    else  # is_helical && is_dual
+        return _simulate_helical_dual(phantom, scanner, protocol, sim_opts, recon_opts)
+    end
+end
+
+# Multi-recon dispatch: simulate() with Vector{ReconOptions}
+function simulate(
+    phantom,
+    scanner::Scanner,
+    protocol::CTProtocol,
+    sim_opts::SimOptions,
+    recon_opts_list::Vector{ReconOptions}
+)
+    # Run simulation with first recon option to get sinograms
+    first_result = simulate(phantom, scanner, protocol, sim_opts, recon_opts_list[1])
+
+    # Reconstruct with additional options from the same sinogram
+    T = eltype(first_result.sinogram_noisy)
+    recons = copy(first_result.reconstructions)
+    geom = first_result.geometry
+
+    for i in 2:length(recon_opts_list)
+        opts = recon_opts_list[i]
+        vol = _run_reconstruction(first_result.sinogram_noisy, geom, opts)
+        push!(recons, opts.algorithm => vol)
+    end
+
+    return SimulationResult(
+        first_result.sinogram_ideal,
+        first_result.sinogram_noisy,
+        recons,
+        geom,
+        first_result.physics_config,
+        first_result.de_sinogram,
+        first_result.material_maps,
+        first_result.vmi_volumes
+    )
+end
+
+# =============================================================================
+# Mode 1: Axial Single-kVp (original behavior preserved)
+# =============================================================================
+
+function _simulate_axial_single(phantom, scanner, protocol, sim_opts, recon_opts)
     # 1. Build Geometry
     geom = CTGeometry(
         scanner;
         n_angles = protocol.views,
         fov_cm = recon_opts.fov_cm,
-        z_cm = nothing  # Auto-calc from detector
+        z_cm = nothing
     )
 
-    # 2. Resolve spectrum (polychromatic vs monochromatic)
+    # 2. Resolve spectrum
     energies, weights = resolve_spectrum(sim_opts, protocol)
 
-    # 3. Build PhysicsConfig from Scanner + SimOptions
+    # 3. Build PhysicsConfig
     config = build_physics_config(scanner, sim_opts, energies, weights)
 
-    # 4. Forward Project (physics-only, no noise)
+    # 4. Forward Project
     materials = get_region_materials()
     sino_ideal = forward_project(
         phantom.mask, geom;
-        energies=energies,
-        weights=weights,
-        materials=materials,
-        physics=config
+        energies=energies, weights=weights,
+        materials=materials, physics=config
     )
 
-    # 5. Apply Detector Noise (protocol-driven I0)
+    # 5. Apply Detector Noise
     sino_final = if sim_opts.use_noise
         sim_detect(sino_ideal, geom, protocol)
     else
@@ -120,30 +191,336 @@ function simulate(
     end
 
     # 6. Reconstruction
-    recon_vol = if recon_opts.algorithm == :fdk
-        fdk_reconstruct(sino_final, geom, recon_opts.matrix_size)
-    elseif recon_opts.algorithm == :sirt
-        sirt_reconstruct(sino_final, geom, recon_opts.matrix_size; niter=recon_opts.iterations)
-    elseif recon_opts.algorithm == :cgls
-        cgls_reconstruct(sino_final, geom, recon_opts.matrix_size; niter=recon_opts.iterations)
-    else
-        error("Unknown reconstruction algorithm: $(recon_opts.algorithm)")
-    end
+    recon_vol = _run_reconstruction(sino_final, geom, recon_opts)
 
     T = eltype(recon_vol)
     recons = Pair{Symbol, AbstractArray{T, 3}}[recon_opts.algorithm => recon_vol]
     vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
 
     return SimulationResult(
-        sino_ideal,
-        sino_final,
-        recons,
-        geom,
-        config,
-        nothing,              # de_sinogram
-        nothing,              # material_maps
-        vmi_dict              # vmi_volumes
+        sino_ideal, sino_final, recons, geom, config,
+        nothing, nothing, vmi_dict
     )
+end
+
+# =============================================================================
+# Mode 2: Axial Dual-kVp
+# =============================================================================
+
+function _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts)
+    # 1. Build Geometry
+    geom = CTGeometry(
+        scanner;
+        n_angles = protocol.views,
+        fov_cm = recon_opts.fov_cm,
+        z_cm = nothing
+    )
+
+    # 2. Build PhysicsConfig (using high-kVp spectrum)
+    energies_high, weights_high = resolve_spectrum(sim_opts, protocol)
+    config = build_physics_config(scanner, sim_opts, energies_high, weights_high)
+
+    # 3. Build GSIProtocol from CTProtocol fields
+    gsi = _build_gsi_protocol(protocol)
+
+    # 4. Dual-energy forward projection
+    materials = get_region_materials()
+    de_sino = forward_project_dual_energy(
+        phantom.mask, geom, gsi;
+        materials=materials,
+        physics=config,
+        scanner=nothing  # Use GSI protocol's I0 directly
+    )
+
+    # 5. Use high-kVp sinogram as primary (for noise and standard recon)
+    sino_ideal = de_sino.high
+    sino_final = if sim_opts.use_noise
+        sim_detect(sino_ideal, geom, protocol)
+    else
+        copy(sino_ideal)
+    end
+
+    # 6. Material decomposition
+    mat_map = decompose_materials(de_sino; basis=recon_opts.vmi_basis)
+
+    # 7. VMI reconstruction (if energies specified)
+    T = eltype(sino_final)
+    vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
+    if !isempty(recon_opts.vmi_energies)
+        for E in recon_opts.vmi_energies
+            vmi_vol = reconstruct_vmi(mat_map, E, geom, recon_opts.matrix_size;
+                                      method=recon_opts.algorithm == :sirt ? :sirt : :fdk,
+                                      to_hu=false)
+            vmi_dict[E] = T.(vmi_vol)
+        end
+    end
+
+    # 8. Standard reconstruction from high-kVp sinogram
+    recon_vol = _run_reconstruction(sino_final, geom, recon_opts)
+    recons = Pair{Symbol, AbstractArray{T, 3}}[recon_opts.algorithm => recon_vol]
+
+    return SimulationResult(
+        sino_ideal, sino_final, recons, geom, config,
+        de_sino, mat_map, vmi_dict
+    )
+end
+
+# =============================================================================
+# Mode 3: Helical Single-kVp
+# =============================================================================
+
+function _simulate_helical_single(phantom, scanner, protocol, sim_opts, recon_opts)
+    # 1. Build axial geometry first (for beam parameters)
+    n_angles_total = round(Int, protocol.views * protocol.n_rotations)
+    base_geom = CTGeometry(
+        scanner;
+        n_angles = n_angles_total,
+        fov_cm = recon_opts.fov_cm,
+        z_cm = nothing
+    )
+
+    # 2. Create helical geometry
+    helical_geom = create_helical_geometry(
+        base_geom;
+        pitch = protocol.pitch,
+        rotation_time = protocol.rotation_time,
+        z_start = 0.0
+    )
+
+    # 3. Resolve spectrum
+    energies, weights = resolve_spectrum(sim_opts, protocol)
+
+    # 4. Build PhysicsConfig
+    config = build_physics_config(scanner, sim_opts, energies, weights)
+
+    # 5. Helical forward projection
+    materials = get_region_materials()
+    sino_ideal = forward_project(
+        phantom.mask, base_geom;
+        energies=energies, weights=weights,
+        materials=materials, physics=config
+    )
+
+    # 6. Apply detector noise
+    sino_final = if sim_opts.use_noise
+        sim_detect(sino_ideal, base_geom, protocol)
+    else
+        copy(sino_ideal)
+    end
+
+    # 7. Helical reconstruction
+    recon_vol = _run_helical_reconstruction(sino_final, helical_geom, recon_opts)
+
+    T = eltype(recon_vol)
+    recons = Pair{Symbol, AbstractArray{T, 3}}[recon_opts.algorithm => recon_vol]
+    vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
+
+    return SimulationResult(
+        sino_ideal, sino_final, recons, helical_geom, config,
+        nothing, nothing, vmi_dict
+    )
+end
+
+# =============================================================================
+# Mode 4: Helical Dual-kVp
+# =============================================================================
+
+function _simulate_helical_dual(phantom, scanner, protocol, sim_opts, recon_opts)
+    # 1. Build helical geometry
+    n_angles_total = round(Int, protocol.views * protocol.n_rotations)
+    base_geom = CTGeometry(
+        scanner;
+        n_angles = n_angles_total,
+        fov_cm = recon_opts.fov_cm,
+        z_cm = nothing
+    )
+
+    helical_geom = create_helical_geometry(
+        base_geom;
+        pitch = protocol.pitch,
+        rotation_time = protocol.rotation_time,
+        z_start = 0.0
+    )
+
+    # 2. Build PhysicsConfig (high-kVp)
+    energies_high, weights_high = resolve_spectrum(sim_opts, protocol)
+    config = build_physics_config(scanner, sim_opts, energies_high, weights_high)
+
+    # 3. Build GSIProtocol
+    gsi = _build_gsi_protocol(protocol)
+
+    # 4. Dual-energy forward projection (uses base geometry for both)
+    materials = get_region_materials()
+    de_sino = forward_project_dual_energy(
+        phantom.mask, base_geom, gsi;
+        materials=materials,
+        physics=config,
+        scanner=nothing
+    )
+
+    # 5. High-kVp sinogram as primary
+    sino_ideal = de_sino.high
+    sino_final = if sim_opts.use_noise
+        sim_detect(sino_ideal, base_geom, protocol)
+    else
+        copy(sino_ideal)
+    end
+
+    # 6. Material decomposition
+    mat_map = decompose_materials(de_sino; basis=recon_opts.vmi_basis)
+
+    # 7. VMI reconstruction (helical)
+    T = eltype(sino_final)
+    vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
+    if !isempty(recon_opts.vmi_energies)
+        for E in recon_opts.vmi_energies
+            # Generate VMI sinogram, then helical reconstruct
+            vmi_sino = virtual_monoenergetic(mat_map, E)
+            vmi_vol = helical_fdk_reconstruct_volume(
+                T.(vmi_sino), helical_geom, recon_opts.matrix_size;
+                interpolation = recon_opts.interpolation == :li_360 ? :li360 : :li180
+            )
+            vmi_dict[E] = vmi_vol
+        end
+    end
+
+    # 8. Helical reconstruction from high-kVp sinogram
+    recon_vol = _run_helical_reconstruction(sino_final, helical_geom, recon_opts)
+    recons = Pair{Symbol, AbstractArray{T, 3}}[recon_opts.algorithm => recon_vol]
+
+    return SimulationResult(
+        sino_ideal, sino_final, recons, helical_geom, config,
+        de_sino, mat_map, vmi_dict
+    )
+end
+
+# =============================================================================
+# Reconstruction Dispatcher (axial)
+# =============================================================================
+
+"""
+    _run_reconstruction(sinogram, geom, recon_opts) -> Array{T,3}
+
+Dispatch to the correct reconstruction algorithm based on ReconOptions.
+"""
+function _run_reconstruction(
+    sinogram::AbstractArray{T, 3},
+    geom::CTGeometry,
+    recon_opts::ReconOptions
+) where T
+    alg = recon_opts.algorithm
+    ms = recon_opts.matrix_size
+
+    if alg == :fdk
+        return fdk_reconstruct(sinogram, geom, ms)
+    elseif alg == :sirt
+        return sirt_reconstruct(sinogram, geom, ms;
+            niter=recon_opts.iterations, lambda=recon_opts.lambda)
+    elseif alg == :cgls
+        return cgls_reconstruct(sinogram, geom, ms;
+            niter=recon_opts.iterations)
+    elseif alg == :tv_sirt
+        return tv_sirt_reconstruct(sinogram, geom, ms;
+            niter=recon_opts.iterations, lambda_sirt=recon_opts.lambda,
+            lambda_tv=recon_opts.tv_weight)
+    elseif alg == :tv_cgls
+        return tv_cgls_reconstruct(sinogram, geom, ms;
+            niter=recon_opts.iterations, lambda_tv=recon_opts.tv_weight)
+    elseif alg == :asir
+        return asir_style_reconstruct(sinogram, geom, ms;
+            niter=recon_opts.iterations, lambda=recon_opts.lambda,
+            blend_percent=recon_opts.blend_percent)
+    elseif alg == :mbir
+        penalty_type = _resolve_penalty(recon_opts.penalty, recon_opts.penalty_delta)
+        return mbir_reconstruct(sinogram, geom, ms;
+            niter=recon_opts.iterations, n_subsets=recon_opts.n_subsets,
+            lambda=recon_opts.lambda, penalty=penalty_type,
+            use_edge_weights=recon_opts.use_edge_weights)
+    elseif alg == :helical_fdk || alg == :helical_sirt
+        # If user requests helical algo on axial data, fall back to axial equivalent
+        if alg == :helical_fdk
+            return fdk_reconstruct(sinogram, geom, ms)
+        else
+            return sirt_reconstruct(sinogram, geom, ms;
+                niter=recon_opts.iterations, lambda=recon_opts.lambda)
+        end
+    else
+        error("Unknown reconstruction algorithm: $alg. " *
+              "Supported: :fdk, :sirt, :cgls, :tv_sirt, :tv_cgls, :asir, :mbir, :helical_fdk, :helical_sirt")
+    end
+end
+
+# =============================================================================
+# Helical Reconstruction Dispatcher
+# =============================================================================
+
+"""
+    _run_helical_reconstruction(sinogram, helical_geom, recon_opts) -> Array{T,3}
+
+Dispatch to helical reconstruction algorithms.
+"""
+function _run_helical_reconstruction(
+    sinogram::AbstractArray{T, 3},
+    helical_geom::HelicalGeometry,
+    recon_opts::ReconOptions
+) where T
+    alg = recon_opts.algorithm
+    ms = recon_opts.matrix_size
+    interp = recon_opts.interpolation == :li_360 ? :li360 : :li180
+
+    if alg ∈ (:fdk, :helical_fdk)
+        return helical_fdk_reconstruct_volume(sinogram, helical_geom, ms;
+            interpolation=interp)
+    elseif alg ∈ (:sirt, :helical_sirt)
+        return helical_sirt_reconstruct(sinogram, helical_geom, ms;
+            niter=recon_opts.iterations, lambda=recon_opts.lambda)
+    elseif alg == :cgls
+        # No helical CGLS — fall back to helical SIRT
+        return helical_sirt_reconstruct(sinogram, helical_geom, ms;
+            niter=recon_opts.iterations, lambda=recon_opts.lambda)
+    else
+        # For other algorithms, use helical FDK as fallback
+        return helical_fdk_reconstruct_volume(sinogram, helical_geom, ms;
+            interpolation=interp)
+    end
+end
+
+# =============================================================================
+# Helper Functions
+# =============================================================================
+
+"""
+    _build_gsi_protocol(protocol::CTProtocol) -> GSIProtocol
+
+Build a GSIProtocol from CTProtocol dual-energy fields.
+"""
+function _build_gsi_protocol(protocol::CTProtocol)
+    return GSIProtocol(
+        Int(protocol.kVp_low),       # low_kvp
+        Int(protocol.kVp),           # high_kvp
+        protocol.mA_low > 0 ? protocol.mA_low : protocol.mA,  # low_mA
+        protocol.mA,                 # high_mA
+        protocol.integration_fraction,
+        protocol.rotation_time,
+        protocol.views
+    )
+end
+
+"""
+    _resolve_penalty(penalty::Symbol, delta::Float64) -> PenaltyType
+
+Convert penalty symbol to PenaltyType instance.
+"""
+function _resolve_penalty(penalty::Symbol, delta::Float64)
+    if penalty == :quadratic
+        return QuadraticPenalty()
+    elseif penalty == :huber
+        return HuberPenalty(delta)
+    elseif penalty == :hyperbola
+        return HyperbolaPenalty(delta)
+    else
+        return QuadraticPenalty()  # Default fallback
+    end
 end
 
 # -- HELPERS -- #
