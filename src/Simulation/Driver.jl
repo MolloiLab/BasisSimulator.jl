@@ -24,8 +24,14 @@ dual-energy sinograms, material maps, and VMI volumes.
 - `material_maps`: MaterialMap from decomposition, nothing if single-kVp
 - `vmi_volumes`: Dict{Float64, Array} of VMI reconstructions by energy
 
-# Backward Compatibility
+# PCCT Fields
+- `pcct_sinogram`: EnergyResolvedSinogram from PCCT, nothing if not PCCT
+- `pcct_material_maps`: PCCTMaterialMap from N-material decomposition, nothing if not PCCT
+- `pcct_vmi_volumes`: Dict{Float64, Array} of VMI from material synthesis
+
+# Property Aliases
 - `result.reconstruction` returns the first reconstruction volume
+- `result.bin_sinograms` is an alias for `pcct_sinogram` (PRD naming convention)
 - Single-recon calls populate `reconstructions` with one entry
 """
 struct SimulationResult{T, G, P}
@@ -38,14 +44,20 @@ struct SimulationResult{T, G, P}
     de_sinogram::Union{Nothing, DualEnergySinogram}
     material_maps::Union{Nothing, MaterialMap}
     vmi_volumes::Dict{Float64, AbstractArray{T, 3}}
+    # PCCT fields
+    pcct_sinogram::Union{Nothing, EnergyResolvedSinogram}
+    pcct_material_maps::Union{Nothing, PCCTMaterialMap}
+    pcct_vmi_volumes::Dict{Float64, AbstractArray{T, 3}}
 end
 
-# Backward-compatible property accessor: result.reconstruction → first volume
+# Property accessors for backward compatibility and PRD naming conventions
 function Base.getproperty(r::SimulationResult, s::Symbol)
     if s === :reconstruction
         recons = getfield(r, :reconstructions)
         isempty(recons) && error("No reconstructions available")
         return recons[1].second
+    elseif s === :bin_sinograms
+        return getfield(r, :pcct_sinogram)
     else
         return getfield(r, s)
     end
@@ -53,7 +65,8 @@ end
 
 function Base.propertynames(::SimulationResult, private::Bool=false)
     return (:sinogram_ideal, :sinogram_noisy, :reconstruction, :reconstructions,
-            :geometry, :physics_config, :de_sinogram, :material_maps, :vmi_volumes)
+            :geometry, :physics_config, :de_sinogram, :material_maps, :vmi_volumes,
+            :pcct_sinogram, :pcct_material_maps, :pcct_vmi_volumes, :bin_sinograms)
 end
 
 """
@@ -63,12 +76,14 @@ Run a full end-to-end CT simulation with automatic mode routing.
 
 The 4-struct API: Scanner provides hardware parameters, CTProtocol provides acquisition
 settings, SimOptions controls which physics effects are enabled, and ReconOptions
-controls image reconstruction. The driver automatically routes between 4 scan modes:
+controls image reconstruction. The driver automatically routes between 5 scan modes:
 
 1. **Axial single-kVp** (default): Standard CT acquisition
 2. **Axial dual-kVp**: Dual-energy with VMI pipeline
 3. **Helical single-kVp**: Spiral CT with helical reconstruction
 4. **Helical dual-kVp**: Combined helical + dual-energy
+5. **Axial PCCT**: Photon-counting CT with energy-resolved sinograms, N-material
+   decomposition, and material-based VMI synthesis (auto-detected via Scanner)
 
 # Arguments
 - `phantom`: Struct containing `.mask` (UInt8) and material definitions.
@@ -107,11 +122,23 @@ function simulate(
     sim_opts::SimOptions = SimOptions(),
     recon_opts::ReconOptions = ReconOptions()
 )
-    # Route based on scan_mode and dual_energy
+    # Route based on scan_mode, dual_energy, and PCCT
     is_helical = protocol.scan_mode == :helical
     is_dual = protocol.dual_energy
+    _is_pcct = is_pcct(scanner)
 
-    if !is_helical && !is_dual
+    if _is_pcct && is_dual
+        error("PCCT scanners cannot use dual_energy mode — spectral info comes from detector energy bins, not dual kVp. Set dual_energy=false.")
+    end
+
+    if _is_pcct && is_helical
+        error("Helical PCCT is not yet implemented. Use axial scan_mode with PCCT scanner.")
+    end
+
+    if _is_pcct
+        # PCCT mode: photon-counting scanner detected
+        return _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts)
+    elseif !is_helical && !is_dual
         return _simulate_axial_single(phantom, scanner, protocol, sim_opts, recon_opts)
     elseif !is_helical && is_dual
         return _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts)
@@ -174,7 +201,10 @@ function simulate(
         first_result.physics_config,
         first_result.de_sinogram,
         first_result.material_maps,
-        first_result.vmi_volumes
+        first_result.vmi_volumes,
+        first_result.pcct_sinogram,
+        first_result.pcct_material_maps,
+        first_result.pcct_vmi_volumes
     )
 end
 
@@ -219,9 +249,11 @@ function _simulate_axial_single(phantom, scanner, protocol, sim_opts, recon_opts
     recons = Pair{Symbol, AbstractArray{T, 3}}[recon_opts.algorithm => recon_vol]
     vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
 
+    pcct_vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
     return SimulationResult(
         sino_ideal, sino_final, recons, geom, config,
-        nothing, nothing, vmi_dict
+        nothing, nothing, vmi_dict,
+        nothing, nothing, pcct_vmi_dict
     )
 end
 
@@ -263,7 +295,7 @@ function _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts)
     end
 
     # 6. Material decomposition
-    mat_map = decompose_materials(de_sino; basis=recon_opts.vmi_basis)
+    mat_map = decompose_materials(de_sino; basis=Tuple(recon_opts.vmi_basis[1:2]))
 
     # 7. VMI reconstruction (if energies specified)
     T = eltype(sino_final)
@@ -281,9 +313,11 @@ function _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts)
     recon_vol = _run_reconstruction(sino_final, geom, recon_opts)
     recons = Pair{Symbol, AbstractArray{T, 3}}[recon_opts.algorithm => recon_vol]
 
+    pcct_vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
     return SimulationResult(
         sino_ideal, sino_final, recons, geom, config,
-        de_sino, mat_map, vmi_dict
+        de_sino, mat_map, vmi_dict,
+        nothing, nothing, pcct_vmi_dict
     )
 end
 
@@ -337,9 +371,11 @@ function _simulate_helical_single(phantom, scanner, protocol, sim_opts, recon_op
     recons = Pair{Symbol, AbstractArray{T, 3}}[recon_opts.algorithm => recon_vol]
     vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
 
+    pcct_vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
     return SimulationResult(
         sino_ideal, sino_final, recons, helical_geom, config,
-        nothing, nothing, vmi_dict
+        nothing, nothing, vmi_dict,
+        nothing, nothing, pcct_vmi_dict
     )
 end
 
@@ -389,7 +425,7 @@ function _simulate_helical_dual(phantom, scanner, protocol, sim_opts, recon_opts
     end
 
     # 6. Material decomposition
-    mat_map = decompose_materials(de_sino; basis=recon_opts.vmi_basis)
+    mat_map = decompose_materials(de_sino; basis=Tuple(recon_opts.vmi_basis[1:2]))
 
     # 7. VMI reconstruction (helical)
     T = eltype(sino_final)
@@ -410,9 +446,106 @@ function _simulate_helical_dual(phantom, scanner, protocol, sim_opts, recon_opts
     recon_vol = _run_helical_reconstruction(sino_final, helical_geom, recon_opts)
     recons = Pair{Symbol, AbstractArray{T, 3}}[recon_opts.algorithm => recon_vol]
 
+    pcct_vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
     return SimulationResult(
         sino_ideal, sino_final, recons, helical_geom, config,
-        de_sino, mat_map, vmi_dict
+        de_sino, mat_map, vmi_dict,
+        nothing, nothing, pcct_vmi_dict
+    )
+end
+
+# =============================================================================
+# Mode 5: Axial PCCT (Photon-Counting CT)
+# =============================================================================
+
+function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts)
+    # 1. Build Geometry
+    geom = CTGeometry(
+        scanner;
+        n_angles = protocol.views,
+        fov_cm = recon_opts.fov_cm,
+        z_cm = nothing
+    )
+
+    # 2. Resolve spectrum — PCCT ALWAYS needs polychromatic spectrum
+    # (energy-resolved detection is meaningless with monochromatic input)
+    e_full, w_full = load_spectrum(Int(protocol.kVp))
+    energies, weights = downsample_spectrum(e_full, w_full, sim_opts.n_energy_bins)
+
+    # 3. Build PhysicsConfig
+    config = build_physics_config(scanner, sim_opts, energies, weights)
+
+    # 4. Build PCCT detector from Scanner
+    pcct_detector = _build_pcct_detector(scanner)
+
+    # 5. PCCT forward projection (mask+materials → energy-resolved sinogram)
+    materials = get_region_materials()
+    pcct_sino = pcct_forward_project(
+        phantom.mask, geom, pcct_detector;
+        energies=energies, weights=weights,
+        materials=materials,
+        apply_spectral_response=true
+    )
+
+    # 6. Also produce conventional sinogram (sum of all bins → single channel)
+    # This is used for standard reconstruction
+    T = Float32
+    sino_ideal = similar(pcct_sino.bins[1])
+    fill!(sino_ideal, zero(T))
+    for bin in pcct_sino.bins
+        sino_ideal .+= bin
+    end
+    # Normalize: combined sinogram from weighted bin sum
+    sino_ideal ./= T(length(pcct_sino.bins))
+
+    # 7. Apply PCCT noise (per-bin Poisson, no electronic noise)
+    pcct_sino_noisy = if sim_opts.use_noise
+        noisy_bins = [copy(b) for b in pcct_sino.bins]
+        noisy_sino = EnergyResolvedSinogram(noisy_bins, copy(pcct_sino.thresholds_keV))
+        apply_pcct_noise!(noisy_sino, pcct_detector, protocol;
+                          seed=sim_opts.seed, I0=1e6,
+                          energies=energies, weights=weights)
+        noisy_sino
+    else
+        pcct_sino
+    end
+
+    # 8. Conventional noisy sinogram (for standard recon)
+    sino_noisy = similar(pcct_sino_noisy.bins[1])
+    fill!(sino_noisy, zero(T))
+    for bin in pcct_sino_noisy.bins
+        sino_noisy .+= bin
+    end
+    sino_noisy ./= T(length(pcct_sino_noisy.bins))
+
+    # 9. N-material decomposition (if vmi_basis specified with 2+ materials)
+    pcct_mat_map = if length(recon_opts.vmi_basis) >= 2
+        basis_tuple = Tuple(recon_opts.vmi_basis)
+        pcct_material_decomposition(pcct_sino_noisy; basis=basis_tuple)
+    else
+        nothing
+    end
+
+    # 10. VMI synthesis (if energies specified and decomposition succeeded)
+    pcct_vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
+    if !isempty(recon_opts.vmi_energies) && !isnothing(pcct_mat_map)
+        for E in recon_opts.vmi_energies
+            vmi_sino = synthesize_vmi(pcct_mat_map, E)
+            # Reconstruct VMI volume
+            vmi_vol = _run_reconstruction(vmi_sino, geom, recon_opts)
+            pcct_vmi_dict[E] = vmi_vol
+        end
+    end
+
+    # 11. Standard reconstruction from combined sinogram
+    recon_vol = _run_reconstruction(sino_noisy, geom, recon_opts)
+    recons = Pair{Symbol, AbstractArray{T, 3}}[recon_opts.algorithm => recon_vol]
+    vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
+
+    return SimulationResult(
+        sino_ideal, sino_noisy, recons, geom, config,
+        nothing, nothing, vmi_dict,
+        pcct_sino_noisy, pcct_mat_map, pcct_vmi_dict
     )
 end
 
