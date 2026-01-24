@@ -58,11 +58,6 @@ include("Geometry/Phantom.jl")
 # CT scanner geometry
 include("Geometry/Scanner.jl")
 
-# Helical (spiral) scanning mode
-include("Geometry/Helical.jl")
-
-# Analytical phantoms (exact ray-object intersection, no discretization)
-include("Geometry/AnalyticalPhantom.jl")
 
 # =============================================================================
 # Forward Projection - Core (TIGRE port via AcceleratedKernels.jl)
@@ -106,8 +101,6 @@ include("Forward/DetectorLag.jl")
 # Detector fill factor modeling
 include("Forward/FillFactor.jl")
 
-# Flying focal spot modeling
-include("Forward/FlyingFocalSpot.jl")
 
 # =============================================================================
 # CatSim-style Signal Processing (types without PhysicsConfig dependency)
