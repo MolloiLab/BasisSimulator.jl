@@ -1259,26 +1259,14 @@ end
     _get_basis_material_attenuation(material_name::Symbol, energy_keV::Float64) -> Float64
 
 Get linear attenuation coefficient for a basis material at given energy.
-Maps common VMI basis names to XrayAttenuation.jl materials.
+
+IMPORTANT: This MUST return the same values as `get_material_attenuation_pcct`
+to ensure consistency between the decomposition system matrix and VMI synthesis.
+The decomposition solves: p = A × ρ, and synthesis computes: μ_VMI = Σ ρᵢ × μᵢ(E).
+If A and μᵢ(E) use different basis functions, the result is physically wrong.
 """
 function _get_basis_material_attenuation(material_name::Symbol, energy_keV::Float64)
-    if material_name == :water
-        return compute_μ_at_energy(XA.Materials.water, energy_keV)
-    elseif material_name == :iodine
-        # Iodine solution at 1 mg/mL as reference concentration
-        return compute_mass_μ_at_energy(XA.Elements.Iodine, energy_keV) * 0.001  # 1 mg/mL
-    elseif material_name == :calcium
-        # Calcium hydroxyapatite as reference
-        return compute_μ_at_energy(Ca_200, energy_keV)  # Ca_200 as representative
-    elseif material_name == :bone
-        return compute_μ_at_energy(Ca_200, energy_keV)
-    elseif material_name == :air
-        return compute_μ_at_energy(XA.Materials.air, energy_keV)
-    else
-        # Try to look up in materials registry
-        mat = get_material(material_name)
-        return compute_μ_at_energy(mat, energy_keV)
-    end
+    return get_material_attenuation_pcct(material_name, energy_keV)
 end
 
 # =============================================================================
