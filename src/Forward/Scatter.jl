@@ -243,59 +243,6 @@ function add_scatter(sinogram::AbstractArray{T,3}, model::ScatterModel) where T
     return add_scatter!(result, model)
 end
 
-"""
-    estimate_scale_factor(phantom::Phantom, geom::CTGeometry) -> Float64
-
-Estimate scatter scale factor based on phantom size and geometry.
-
-Larger phantoms and closer detector geometry produce more scatter.
-
-# Returns
-Scale factor for use with default_scatter_model(scale_factor=...)
-- 1.0 = nominal body CT (~15% SPR)
-- <1.0 = less scatter (smaller patient, pediatric)
-- >1.0 = more scatter (large patient)
-"""
-function estimate_scale_factor(phantom::Phantom, geom::CTGeometry)
-    # Approximate patient diameter (cm)
-    patient_diameter = max(phantom.fov[1], phantom.fov[2])
-
-    # Reference diameter for scale_factor=1.0 (typical adult body: ~30 cm)
-    reference_diameter = 30.0
-
-    # Scale factor increases with patient size
-    size_factor = patient_diameter / reference_diameter
-
-    # Air gap factor (larger SDD reduces scatter)
-    # Normalized to typical 100 cm SDD
-    air_gap_factor = 100.0 / geom.SDD
-
-    scale = size_factor * air_gap_factor
-
-    # Clamp to reasonable range
-    return clamp(scale, 0.1, 3.0)
-end
-
-# Deprecated alias
-function estimate_spr(phantom::Phantom, geom::CTGeometry)
-    # Return approximate SPR for backward compatibility
-    # scale_factor=1.0 corresponds to ~15% SPR
-    scale = estimate_scale_factor(phantom, geom)
-    return 0.15 * scale
-end
-
-"""
-    compute_scatter_artifact_magnitude(sinogram_clean, sinogram_scatter) -> Float64
-
-Compute the magnitude of scatter artifacts as relative difference.
-"""
-function compute_scatter_artifact_magnitude(
-    sinogram_clean::AbstractArray,
-    sinogram_scatter::AbstractArray
-)
-    diff = abs.(sinogram_scatter .- sinogram_clean)
-    return mean(diff) / mean(abs.(sinogram_clean) .+ 1e-10)
-end
 
 # =============================================================================
 # Scatter Correction
@@ -491,87 +438,6 @@ function correct_scatter(sinogram::AbstractArray{T,3}, model::ScatterCorrectionM
     return correct_scatter!(result, model)
 end
 
-"""
-    measure_cupping(recon_hu, center_radius_frac=0.1, edge_radius_frac=0.8)
-
-Measure cupping artifact as center-to-edge HU difference in a uniform phantom.
-
-# Arguments
-- `recon_hu`: Reconstruction in HU [nx, ny, nz]
-- `center_radius_frac`: Fraction of image radius for center ROI (default: 0.1)
-- `edge_radius_frac`: Fraction of image radius for edge ROI (default: 0.8)
-
-# Returns
-Named tuple with:
-- `center_hu`: Mean HU in center ROI
-- `edge_hu`: Mean HU in edge annulus
-- `cupping_hu`: Center - Edge HU difference (positive = cupping, negative = doming)
-- `center_std`: Standard deviation in center
-- `edge_std`: Standard deviation in edge
-
-# Notes
-For a water phantom, cupping_hu should be < 20 HU after scatter correction.
-"""
-function measure_cupping(
-    recon_hu::AbstractArray{T,3};
-    center_radius_frac::Float64=0.1,
-    edge_radius_frac::Float64=0.8
-) where T
-    nx, ny, nz = size(recon_hu)
-
-    # Use central slice
-    central_slice = nz ÷ 2
-    slice = Array(recon_hu[:, :, central_slice])
-
-    cx, cy = nx ÷ 2, ny ÷ 2
-    max_radius = min(nx, ny) / 2
-
-    center_radius = center_radius_frac * max_radius
-    edge_inner = edge_radius_frac * max_radius
-    edge_outer = 0.95 * max_radius  # Leave small margin
-
-    center_vals = T[]
-    edge_vals = T[]
-
-    for j in 1:ny
-        for i in 1:nx
-            r = sqrt((i - cx)^2 + (j - cy)^2)
-            val = slice[i, j]
-
-            # Skip air (outside phantom)
-            if val < -500
-                continue
-            end
-
-            if r <= center_radius
-                push!(center_vals, val)
-            elseif edge_inner <= r <= edge_outer
-                push!(edge_vals, val)
-            end
-        end
-    end
-
-    if isempty(center_vals) || isempty(edge_vals)
-        return (
-            center_hu = T(NaN),
-            edge_hu = T(NaN),
-            cupping_hu = T(NaN),
-            center_std = T(NaN),
-            edge_std = T(NaN)
-        )
-    end
-
-    center_hu = mean(center_vals)
-    edge_hu = mean(edge_vals)
-
-    return (
-        center_hu = center_hu,
-        edge_hu = edge_hu,
-        cupping_hu = center_hu - edge_hu,  # Positive = cupping
-        center_std = std(center_vals),
-        edge_std = std(edge_vals)
-    )
-end
 
 # =============================================================================
 # Exports
@@ -580,7 +446,5 @@ end
 export ScatterModel, default_scatter_model
 export create_scatter_kernel_spatial
 export add_scatter!, add_scatter
-export estimate_scale_factor, estimate_spr, compute_scatter_artifact_magnitude
 export ScatterCorrectionModel, default_scatter_correction
 export correct_scatter!, correct_scatter
-export measure_cupping

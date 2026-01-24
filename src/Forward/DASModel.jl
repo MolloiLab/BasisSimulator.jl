@@ -26,9 +26,8 @@
 import AcceleratedKernels as AK
 
 export DASModel
-export default_das_model, das_ideal, das_clinical, das_catsim_compatible
+export default_das_model, das_clinical
 export apply_das_model!, apply_das_model
-export apply_tube_current!, apply_tube_current
 export get_das_info
 
 # =============================================================================
@@ -124,14 +123,6 @@ function default_das_model(;
     )
 end
 
-"""
-    das_ideal()
-
-Ideal DAS with no noise or quantization (for testing).
-"""
-function das_ideal()
-    return DASModel(1.0, 0.0, 1.0, 0.0, -Inf, Inf, 0.0)
-end
 
 """
     das_clinical(; noise_level=1.0, I0=1e6, mean_energy_keV=60.0)
@@ -181,62 +172,6 @@ function das_clinical(;
     )
 end
 
-"""
-    das_catsim_compatible(;
-        gain_electrons_per_keV=15.0,
-        electronic_noise_electrons=5000.0,
-        I0=1e6,
-        mean_energy_keV=60.0
-    )
-
-Create DAS model using CatSim-compatible parameters.
-
-Converts CatSim's electron-based parameters to work with BasisSimulator's
-normalized intensity domain.
-
-# Parameters (CatSim-style)
-- `gain_electrons_per_keV`: Detector gain (electrons per keV deposited)
-- `electronic_noise_electrons`: Electronic noise σ (in electrons)
-- `I0`: Photon fluence (photons per pixel)
-- `mean_energy_keV`: Mean energy of detected photons (keV)
-
-# Conversion
-The noise is converted to relative intensity noise:
-  noise_relative = electronic_noise_electrons / (I0 × mean_energy_keV × gain)
-
-# Example
-```julia
-# CatSim-like parameters
-das = das_catsim_compatible(
-    gain_electrons_per_keV = 15.0,
-    electronic_noise_electrons = 5000.0,
-    I0 = 1e6,
-    mean_energy_keV = 60.0
-)
-```
-"""
-function das_catsim_compatible(;
-    gain_electrons_per_keV::Real = 15.0,
-    electronic_noise_electrons::Real = 5000.0,
-    I0::Real = 1e6,
-    mean_energy_keV::Real = 60.0
-)
-    # Total expected signal in electrons
-    expected_signal_electrons = I0 * mean_energy_keV * gain_electrons_per_keV
-
-    # Relative noise
-    noise_relative = electronic_noise_electrons / expected_signal_electrons
-
-    return DASModel(
-        1.0,              # gain (cancels in calibration for intensity domain)
-        noise_relative,   # electronic noise (relative)
-        1.0,              # reference signal (normalized intensity)
-        0.0,              # no quantization
-        0.0,              # min value
-        Inf,              # max value
-        0.0               # no offset
-    )
-end
 
 # =============================================================================
 # DAS Model Application
@@ -349,80 +284,6 @@ function apply_das_model(
     return apply_das_model!(result, das; seed=seed)
 end
 
-# =============================================================================
-# Tube Current (mA) Modulation
-# =============================================================================
-
-"""
-    apply_tube_current!(intensity, mA_per_view)
-
-Apply tube current modulation to intensity data.
-
-In clinical CT, tube current (mA) can vary per view for dose modulation.
-This scales the photon fluence proportionally.
-
-# Arguments
-- `intensity`: Intensity array [n_cols, n_rows, n_angles] (modified in place)
-- `mA_per_view`: Either scalar (constant mA) or vector of length n_angles
-
-# Returns
-- Modified intensity array
-
-# Example
-```julia
-# Constant tube current
-apply_tube_current!(intensity, 200.0)  # 200 mA
-
-# Angular tube current modulation (lower dose in lateral views)
-n_angles = 360
-mA = [200.0 * (1 + 0.3 * cos(2π * i / n_angles)) for i in 1:n_angles]
-apply_tube_current!(intensity, mA)
-```
-"""
-function apply_tube_current!(
-    intensity::AbstractArray{T, 3},
-    mA_per_view::Union{Real, Vector}
-) where T <: AbstractFloat
-
-    n_cols, n_rows, n_angles = size(intensity)
-
-    if mA_per_view isa Real
-        # Constant tube current - just scale everything
-        scale = T(mA_per_view / 100.0)  # Normalize to 100 mA reference
-        AK.foreachindex(intensity) do idx
-            intensity[idx] *= scale
-        end
-    else
-        # Per-view tube current
-        @assert length(mA_per_view) == n_angles "mA_per_view must have length n_angles"
-
-        # Transfer to GPU
-        mA_gpu = similar(intensity, T, n_angles)
-        copyto!(mA_gpu, T.(mA_per_view ./ 100.0))
-
-        AK.foreachindex(intensity) do idx
-            ci = CartesianIndices(intensity)[idx]
-            col, row, angle = Tuple(ci)
-            intensity[idx] *= mA_gpu[angle]
-        end
-    end
-
-    return intensity
-end
-
-"""
-    apply_tube_current(intensity, mA_per_view)
-
-Non-mutating version of apply_tube_current!.
-"""
-function apply_tube_current(
-    intensity::AbstractArray{T, 3},
-    mA_per_view::Union{Real, Vector}
-) where T <: AbstractFloat
-    result = similar(intensity)
-    copyto!(result, intensity)
-    return apply_tube_current!(result, mA_per_view)
-end
 
 # =============================================================================
 # Utilities
