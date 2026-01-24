@@ -84,26 +84,6 @@ function load_spectrum(kVp::Int; spectrum_dir::AbstractString=SPECTRUM_DIR, targ
     return energies, weights
 end
 
-"""
-    available_spectra()
-
-List all available pre-computed spectra.
-
-# Returns
-Dictionary with :xspect and :xcist keys, each containing available kVp values.
-"""
-function available_spectra()
-    return Dict(
-        :xspect => Dict(
-            :kVp => [70, 80, 90, 100, 110, 120, 130, 140],
-            :target_angles => [7.0, 10.0]
-        ),
-        :xcist => Dict(
-            :kVp => [80, 100, 120, 140],
-            :target_angles => [7.0]
-        )
-    )
-end
 
 """
     spectrum_mean_energy(energies, weights)
@@ -184,4 +164,4 @@ function downsample_spectrum(
 end
 
 # Exports
-export load_spectrum, available_spectra, spectrum_mean_energy, downsample_spectrum
+export load_spectrum, spectrum_mean_energy, downsample_spectrum

@@ -844,90 +844,6 @@ function reconstruct_vmi(
     end
 end
 
-"""
-    generate_vmi_series(materials::MaterialMap, energies_keV::Vector{Float64},
-                        geom::CTGeometry, recon_size::NTuple{3,Int};
-                        kwargs...) -> Dict{Float64, Array}
-
-Generate VMI images at multiple energies for keV sweep visualization.
-
-Useful for demonstrating energy-dependent contrast behavior or
-finding optimal VMI energy for a specific diagnostic task.
-
-# Arguments
-- `materials::MaterialMap`: Result of material decomposition
-- `energies_keV::Vector{Float64}`: Vector of target energies
-- `geom::CTGeometry`: CT geometry
-- `recon_size::NTuple{3,Int}`: Output volume dimensions
-
-# Keyword Arguments
-All kwargs passed to `reconstruct_vmi()`.
-
-# Returns
-Dict{Float64, Array} mapping energy (keV) to reconstructed VMI image.
-
-# Example
-```julia
-# Generate VMI sweep from 40-140 keV
-energies = [40.0, 50.0, 60.0, 70.0, 80.0, 100.0, 120.0, 140.0]
-vmi_series = generate_vmi_series(mat_map, energies, geom, (128, 128, 16))
-
-# Access specific energy
-vmi_50 = vmi_series[50.0]
-
-# Plot iodine enhancement vs energy
-using Plots
-iodine_mask = ...  # mask for iodine ROI
-mean_hu = [mean(vmi_series[E][iodine_mask]) for E in energies]
-plot(energies, mean_hu, xlabel="Energy (keV)", ylabel="Mean HU")
-```
-"""
-function generate_vmi_series(
-    materials::MaterialMap,
-    energies_keV::Vector{Float64},
-    geom::CTGeometry,
-    recon_size::NTuple{3,Int};
-    kwargs...
-)
-    return Dict(E => reconstruct_vmi(materials, E, geom, recon_size; kwargs...)
-                for E in energies_keV)
-end
-
-"""
-    VMIResult
-
-Container for VMI reconstruction results with metadata.
-
-# Fields
-- `image::Array{Float32,3}`: Reconstructed image (HU or attenuation)
-- `energy_keV::Float64`: VMI energy
-- `is_hu::Bool`: True if image is in HU, false if in attenuation units
-- `μ_water::Float64`: Water attenuation used for HU conversion
-- `method::Symbol`: Reconstruction method used (:fdk or :sirt)
-"""
-struct VMIResult{T<:AbstractFloat}
-    image::Array{T,3}
-    energy_keV::Float64
-    is_hu::Bool
-    μ_water::Float64
-    method::Symbol
-end
-
-"""
-    get_vmi_info(result::VMIResult)
-
-Print summary information about a VMI result.
-"""
-function get_vmi_info(result::VMIResult)
-    unit_str = result.is_hu ? "HU" : "cm⁻¹"
-    println("VMI Result:")
-    println("  Energy: $(result.energy_keV) keV")
-    println("  Size: $(size(result.image))")
-    println("  Units: $unit_str")
-    println("  μ_water: $(round(result.μ_water, digits=4)) cm⁻¹")
-    println("  Method: $(result.method)")
-    println("  Range: [$(round(minimum(result.image), digits=1)), $(round(maximum(result.image), digits=1))]")
-end
 
 # =============================================================================
 # Exports
@@ -939,5 +855,4 @@ export forward_project_dual_energy
 export decompose_materials, virtual_monoenergetic
 export get_water_attenuation_vmi, vmi_to_hu
 export get_material_attenuation, get_iodine_solution_attenuation, get_calcium_material_attenuation
-export reconstruct_vmi, generate_vmi_series
-export VMIResult, get_vmi_info
+export reconstruct_vmi

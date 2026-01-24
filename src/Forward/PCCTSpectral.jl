@@ -43,31 +43,6 @@ import AcceleratedKernels as AK
 import XrayAttenuation as XA
 using Statistics
 
-# =============================================================================
-# PCCT VMI Result Container
-# =============================================================================
-
-"""
-    PCCTVMIResult{T<:AbstractFloat}
-
-Container for PCCT-native VMI reconstruction results.
-
-# Fields
-- `image::Array{T,3}`: Reconstructed image (HU or attenuation units)
-- `energy_keV::Float64`: Target VMI energy
-- `is_hu::Bool`: True if image is in HU, false if in attenuation units
-- `μ_water::Float64`: Water attenuation used for HU conversion
-- `method::Symbol`: Reconstruction method used
-- `source::Symbol`: :pcct (bin-weighted) vs :dual_energy (material decomposition)
-"""
-struct PCCTVMIResult{T<:AbstractFloat}
-    image::Array{T,3}
-    energy_keV::Float64
-    is_hu::Bool
-    μ_water::Float64
-    method::Symbol
-    source::Symbol
-end
 
 # =============================================================================
 # Bin-Weighted VMI (Native PCCT VMI)
@@ -176,7 +151,7 @@ vmi_50 = pcct_virtual_monoenergetic(pcct_sino, 50.0)
 recon = fdk_reconstruct(vmi_50, geom, recon_size)
 ```
 
-See also: [`EnergyResolvedSinogram`](@ref), [`reconstruct_pcct_vmi`](@ref)
+See also: [`EnergyResolvedSinogram`](@ref)
 """
 function pcct_virtual_monoenergetic(
     sino::EnergyResolvedSinogram{T,A},
@@ -239,82 +214,6 @@ function pcct_vmi_to_hu(vmi_sinogram::AbstractArray{T,3}, target_keV::Float64;
     return output
 end
 
-"""
-    reconstruct_pcct_vmi(sino::EnergyResolvedSinogram, target_keV::Float64,
-                         geom::CTGeometry, recon_size::NTuple{3,Int};
-                         kwargs...) -> PCCTVMIResult
-
-Full PCCT VMI reconstruction pipeline.
-
-# Arguments
-- `sino::EnergyResolvedSinogram`: Energy-resolved sinogram from PCCT
-- `target_keV::Float64`: Target VMI energy (40-190 keV)
-- `geom::CTGeometry`: CT geometry for reconstruction
-- `recon_size::NTuple{3,Int}`: Output volume dimensions
-
-# Keyword Arguments
-- `method::Symbol=:fdk`: Reconstruction method (:fdk or :sirt)
-- `to_hu::Bool=true`: Convert output to Hounsfield Units
-- `water_mask=nothing`: Mask for water region (for empirical HU calibration)
-- `max_keV::Float64=120.0`: Maximum energy (tube kVp)
-- `niter::Int=3`: Number of iterations for SIRT
-- `filter::FilterType=RampFilter()`: FDK filter
-- `cutoff::Float64=1.0`: FDK frequency cutoff
-
-# Returns
-`PCCTVMIResult` with reconstructed image and metadata.
-
-# Example
-
-```julia
-pcct_sino = pcct_forward_project(volume, geom, detector, energies, weights)
-vmi_result = reconstruct_pcct_vmi(pcct_sino, 50.0, geom, (256, 256, 64))
-println("VMI at \$(vmi_result.energy_keV) keV, range: [\$(minimum(vmi_result.image)), \$(maximum(vmi_result.image))] HU")
-```
-"""
-function reconstruct_pcct_vmi(
-    sino::EnergyResolvedSinogram{T,A},
-    target_keV::Float64,
-    geom,
-    recon_size::NTuple{3,Int};
-    method::Symbol=:fdk,
-    to_hu::Bool=true,
-    water_mask=nothing,
-    max_keV::Float64=120.0,
-    niter::Int=3,
-    filter=RampFilter(),
-    cutoff::Float64=1.0
-) where {T, A}
-
-    # Step 1: Generate VMI sinogram from bins
-    vmi_sino = pcct_virtual_monoenergetic(sino, target_keV; max_keV=max_keV)
-
-    # Step 2: Reconstruct
-    if method == :fdk
-        recon = fdk_reconstruct(vmi_sino, geom, recon_size; filter=filter, cutoff=cutoff)
-    elseif method == :sirt
-        recon = sirt_reconstruct(vmi_sino, geom, recon_size; niter=niter)
-    else
-        error("Unknown reconstruction method: $method. Use :fdk or :sirt")
-    end
-
-    # Step 3: Convert to HU if requested
-    μ_water = T(compute_μ_at_energy(XA.Materials.water, target_keV))
-
-    if to_hu
-        recon_cpu = Array(recon)
-        if water_mask !== nothing
-            # Empirical calibration
-            μ_water = mean(recon_cpu[water_mask])
-        end
-
-        recon_hu = T(1000) .* (recon_cpu .- μ_water) ./ μ_water
-
-        return PCCTVMIResult(recon_hu, target_keV, true, Float64(μ_water), method, :pcct)
-    else
-        return PCCTVMIResult(Array(recon), target_keV, false, Float64(μ_water), method, :pcct)
-    end
-end
 
 # =============================================================================
 # Multi-Bin Material Decomposition
@@ -1029,157 +928,6 @@ function compute_effective_z(
     return output
 end
 
-# =============================================================================
-# PCCT vs Dual-Energy Comparison
-# =============================================================================
-
-"""
-    compare_pcct_vs_dect_vmi(pcct_vmi::Array, dect_vmi::Array;
-                             mask=nothing) -> NamedTuple
-
-Compare PCCT VMI with dual-energy VMI for quantitative analysis.
-
-# Arguments
-- `pcct_vmi`: VMI from PCCT (bin-weighted)
-- `dect_vmi`: VMI from dual-kVp material decomposition
-
-# Keyword Arguments
-- `mask`: Optional mask for ROI analysis
-
-# Returns
-NamedTuple with comparison metrics:
-- `mean_diff`: Mean difference (PCCT - DECT)
-- `std_diff`: Standard deviation of difference
-- `correlation`: Pearson correlation coefficient
-- `pcct_noise`: Noise (std) in PCCT VMI
-- `dect_noise`: Noise (std) in DECT VMI
-- `noise_ratio`: DECT_noise / PCCT_noise (>1 means PCCT has lower noise)
-"""
-function compare_pcct_vs_dect_vmi(
-    pcct_vmi::AbstractArray{T},
-    dect_vmi::AbstractArray{T};
-    mask=nothing
-) where T
-
-    if size(pcct_vmi) != size(dect_vmi)
-        error("VMI arrays must have same size")
-    end
-
-    # Apply mask if provided
-    if mask !== nothing
-        pcct_vals = pcct_vmi[mask]
-        dect_vals = dect_vmi[mask]
-    else
-        pcct_vals = vec(pcct_vmi)
-        dect_vals = vec(dect_vmi)
-    end
-
-    # Compute difference statistics
-    diff = pcct_vals .- dect_vals
-    mean_diff = mean(diff)
-    std_diff = std(diff)
-
-    # Correlation
-    correlation = cor(pcct_vals, dect_vals)
-
-    # Noise (using local variance estimate)
-    pcct_noise = std(pcct_vals)
-    dect_noise = std(dect_vals)
-    noise_ratio = dect_noise / (pcct_noise + 1e-10)
-
-    return (
-        mean_diff = mean_diff,
-        std_diff = std_diff,
-        correlation = correlation,
-        pcct_noise = pcct_noise,
-        dect_noise = dect_noise,
-        noise_ratio = noise_ratio
-    )
-end
-
-"""
-    expected_pcct_noise_advantage(energy_keV::Float64) -> Float64
-
-Compute expected noise advantage of PCCT VMI vs dual-energy VMI at given energy.
-
-PCCT provides lower noise especially at low keV due to:
-1. Electronic noise rejection via thresholding
-2. No spectral overlap between bins
-3. More energy levels for interpolation
-
-# Returns
-Expected noise ratio (DECT_noise / PCCT_noise). Values > 1 indicate PCCT advantage.
-
-# Reference
-Springer Performance improvements of VMI in PCD-CT vs DSCT (2024)
-"""
-function expected_pcct_noise_advantage(energy_keV::Float64)
-    # Empirical model from literature
-    # Maximum advantage at low keV (40-50), decreasing at higher keV
-
-    if energy_keV <= 40
-        return 1.4  # 40% lower noise
-    elseif energy_keV <= 50
-        return 1.3
-    elseif energy_keV <= 60
-        return 1.2
-    elseif energy_keV <= 80
-        return 1.1
-    else
-        return 1.05  # Minimal advantage at high keV
-    end
-end
-
-# =============================================================================
-# Utility Functions
-# =============================================================================
-
-"""
-    generate_pcct_vmi_series(sino::EnergyResolvedSinogram, energies_keV::Vector{Float64},
-                              geom, recon_size::NTuple{3,Int};
-                              kwargs...) -> Dict{Float64, PCCTVMIResult}
-
-Generate PCCT VMI at multiple energies.
-
-# Example
-```julia
-energies = [40.0, 50.0, 70.0, 100.0, 140.0]
-vmi_series = generate_pcct_vmi_series(pcct_sino, energies, geom, (128, 128, 32))
-```
-"""
-function generate_pcct_vmi_series(
-    sino::EnergyResolvedSinogram,
-    energies_keV::Vector{Float64},
-    geom,
-    recon_size::NTuple{3,Int};
-    kwargs...
-)
-    return Dict(E => reconstruct_pcct_vmi(sino, E, geom, recon_size; kwargs...)
-                for E in energies_keV)
-end
-
-"""
-    print_pcct_spectral_info(sino::EnergyResolvedSinogram)
-
-Print summary information about PCCT spectral data.
-"""
-function print_pcct_spectral_info(sino::EnergyResolvedSinogram)
-    println("=" ^ 60)
-    println("PCCT SPECTRAL SINOGRAM")
-    println("=" ^ 60)
-    println("Dimensions:       $(sino.n_cols) × $(sino.n_rows) × $(sino.n_angles)")
-    println("Number of bins:   $(n_energy_bins(sino))")
-    println("Thresholds (keV): $(sino.thresholds_keV)")
-    println()
-    println("Bin Statistics:")
-    println("-" ^ 40)
-    for (i, bin) in enumerate(sino.bins)
-        lower = sino.thresholds_keV[i]
-        upper = i < length(sino.thresholds_keV) ? sino.thresholds_keV[i+1] : "max"
-        println("  Bin $i ($lower-$upper keV): mean=$(round(mean(bin), digits=2)), std=$(round(std(bin), digits=2))")
-    end
-    println("=" ^ 60)
-end
 
 """
     get_supported_kedge_elements(detector::PhotonCountingDetector) -> Vector{Symbol}
@@ -1273,14 +1021,11 @@ end
 # Exports
 # =============================================================================
 
-export PCCTVMIResult, PCCTMaterialMap
+export PCCTMaterialMap, n_materials
 export synthesize_vmi
 export compute_bin_weights, pcct_virtual_monoenergetic, pcct_vmi_to_hu
-export reconstruct_pcct_vmi, generate_pcct_vmi_series
 export pcct_material_decomposition, pcct_material_decomposition_mle, get_material_attenuation_pcct
 export get_gadolinium_solution_attenuation, get_gold_solution_attenuation
 export K_EDGE_ENERGIES, compute_kedge_enhancement, get_kedge_sensitivity
 export compute_effective_z
-export compare_pcct_vs_dect_vmi, expected_pcct_noise_advantage
-export print_pcct_spectral_info, get_supported_kedge_elements
-export n_materials
+export get_supported_kedge_elements
