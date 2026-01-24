@@ -81,41 +81,6 @@ function compute_mass_μ_at_energy(material, energy_keV::Float64)
     return ustrip(u"cm^2/g", μ_ρ_unitful)
 end
 
-"""
-    get_density(material)
-
-Get density of a material in g/cm³.
-"""
-function get_density(material)
-    return ustrip(u"g/cm^3", material.density)
-end
-
-"""
-    compute_effective_μ(μ_matrix::Matrix{Float64}, weights::Vector{Float64})
-
-Compute effective (spectrum-weighted) linear attenuation for each material.
-
-# Arguments
-- `μ_matrix::Matrix{Float64}`: [n_materials × n_energies]
-- `weights::Vector{Float64}`: Spectrum weights [n_energies]
-
-# Returns
-- `μ_eff::Vector{Float64}`: Effective attenuation for each material (cm⁻¹)
-
-This gives the "average" attenuation across the polychromatic spectrum.
-Useful for monochromatic approximations or initial estimates.
-"""
-function compute_effective_μ(μ_matrix::Matrix{Float64}, weights::Vector{Float64})
-    n_materials = size(μ_matrix, 1)
-    total_weight = sum(weights)
-
-    μ_eff = Vector{Float64}(undef, n_materials)
-    for i in 1:n_materials
-        μ_eff[i] = sum(μ_matrix[i, :] .* weights) / total_weight
-    end
-
-    return μ_eff
-end
 
 # =============================================================================
 # HU Conversion
@@ -183,65 +148,13 @@ end
 # Source: DukeSim team pre-calculated values
 # =============================================================================
 
-"""
-Pre-computed effective μ_water values for different kVp settings.
-
-When using a polychromatic spectrum at a given kVp, use these values
-for HU conversion to ensure water = 0 HU (water calibration).
-
-Source: DukeSim team
-"""
-const EFFECTIVE_μ_WATER_KVP = Dict{Int, Float64}(
-    80  => 0.2206,
-    90  => 0.2122,
-    100 => 0.2059,
-    110 => 0.2026,
-    120 => 0.1992
-)
-
-"""
-    get_effective_μ_water_kVp(kVp::Int)
-
-Get effective water linear attenuation coefficient for a given tube voltage.
-
-These values are pre-computed for polychromatic spectra and ensure
-water = 0 HU when used for HU calibration.
-
-# Arguments
-- `kVp::Int`: Tube voltage (80, 90, 100, 110, or 120)
-
-# Returns
-- `μ_eff::Float64`: Effective water attenuation coefficient (cm⁻¹)
-
-# Source
-DukeSim team pre-calculated values
-
-# Example
-```julia
-# For 120 kVp scan
-μ_water = get_effective_μ_water_kVp(120)  # Returns 0.1992
-hu = μ_to_HU(μ_recon, μ_water)
-```
-"""
-function get_effective_μ_water_kVp(kVp::Int)
-    if haskey(EFFECTIVE_μ_WATER_KVP, kVp)
-        return EFFECTIVE_μ_WATER_KVP[kVp]
-    else
-        # Interpolate or warn
-        available = sort(collect(keys(EFFECTIVE_μ_WATER_KVP)))
-        @warn "No pre-computed μ_water for $(kVp) kVp. Available: $(available). Using XrayAttenuation.jl lookup."
-        # Estimate effective energy (rough approximation)
-        effective_energy = 0.4 * kVp  # Rough rule of thumb
-        return compute_μ_at_energy(XA.Materials.water, Float64(effective_energy))
-    end
-end
 
 """
     get_reference_μ_water(energy_keV::Float64=60.0)
 
 Get linear attenuation coefficient of water at specified energy from XrayAttenuation.jl.
 
-For polychromatic spectra, prefer `get_effective_μ_water_kVp(kVp)` instead.
+For polychromatic spectra, use `compute_effective_μ_material(water, energies, weights)` instead.
 
 Default energy is 60 keV (approximate effective energy for 100 kVp spectrum).
 """
@@ -434,136 +347,9 @@ function get_nist_expected_hu_table(kVp::Int; n_bins::Int=30)
     return results
 end
 
-"""
-    print_nist_expected_hu_table(kVp::Int; n_bins::Int=30)
-
-Print formatted table of expected HU values from NIST data.
-"""
-function print_nist_expected_hu_table(kVp::Int; n_bins::Int=30)
-    expected = get_nist_expected_hu_table(kVp; n_bins=n_bins)
-
-    println("=" ^ 60)
-    println("NIST-Derived Expected HU Values ($(kVp) kVp, $(n_bins) bins)")
-    println("=" ^ 60)
-    println()
-    println("Material        | Expected HU | μ_eff (cm⁻¹)")
-    println("-" ^ 50)
-
-    for e in expected
-        name = rpad(string(e.material_symbol), 14)
-        hu = lpad(round(Int, e.expected_hu), 8)
-        μ = round(e.μ_eff, digits=4)
-        println("  $(name) | $(hu)    | $(μ)")
-    end
-    println()
-end
-
-# =============================================================================
-# Monochromatic (BHC-Referenced) Expected HU
-# =============================================================================
-
-"""
-    MonochromaticExpectedHU
-
-Expected HU values at a specific reference energy (for BHC-corrected scans).
-
-# Fields
-- `region::UInt8`: Region ID (matches phantom mask values)
-- `material_symbol::Symbol`: Material symbol
-- `expected_hu::Float64`: Expected HU at reference energy
-- `μ::Float64`: Linear attenuation coefficient at reference energy (cm⁻¹)
-- `reference_energy_keV::Float64`: Reference energy used
-"""
-struct MonochromaticExpectedHU
-    region::UInt8
-    material_symbol::Symbol
-    expected_hu::Float64
-    μ::Float64
-    reference_energy_keV::Float64
-end
-
-"""
-    get_monochromatic_expected_hu_table(reference_energy_keV::Float64=60.0) -> Vector{MonochromaticExpectedHU}
-
-Compute expected HU values for all Gammex 472 materials at a specific reference energy.
-
-This is the correct "ground truth" for BHC-corrected polychromatic scans,
-where BHC maps polychromatic line integrals to monochromatic equivalents
-at the reference energy.
-
-# Arguments
-- `reference_energy_keV`: Reference energy in keV (default 60.0, matching CatSim)
-
-# Returns
-- `Vector{MonochromaticExpectedHU}`: Expected HU for each phantom region
-
-# Note
-For BHC-corrected scans, use this instead of `get_nist_expected_hu_table()`.
-The thin-sample approximation (spectrum-weighted) gives higher HU values
-that don't match what water-based BHC actually produces.
-
-# Example
-```julia
-# Get expected HU for BHC at 60 keV reference
-expected = get_monochromatic_expected_hu_table(60.0)
-for e in expected
-    println("\$(e.material_symbol): \$(round(e.expected_hu, digits=1)) HU")
-end
-```
-"""
-function get_monochromatic_expected_hu_table(reference_energy_keV::Float64=60.0)
-    μ_water_ref = compute_μ_at_energy(XA.Materials.water, reference_energy_keV)
-
-    results = MonochromaticExpectedHU[]
-
-    # All testable regions with their materials (region ID, material symbol)
-    test_regions = [
-        (_REGION_SOLID_WATER, :solid_water),
-        (_REGION_CA_50, :Ca_50),
-        (_REGION_CA_100, :Ca_100),
-        (_REGION_CA_200, :Ca_200),
-        (_REGION_CA_300, :Ca_300),
-        (_REGION_CA_400, :Ca_400),
-        (_REGION_CA_500, :Ca_500),
-        (_REGION_CA_600, :Ca_600),
-        (_REGION_I_2_0, :I_2_0),
-        (_REGION_I_2_5, :I_2_5),
-        (_REGION_I_5_0, :I_5_0),
-        (_REGION_I_7_5, :I_7_5),
-        (_REGION_I_10_0, :I_10_0),
-        (_REGION_I_15_0, :I_15_0),
-        (_REGION_I_20_0, :I_20_0),
-    ]
-
-    for (region_id, mat_sym) in test_regions
-        material = get_material(mat_sym)
-        μ = compute_μ_at_energy(material, reference_energy_keV)
-        expected_hu = 1000.0 * (μ - μ_water_ref) / μ_water_ref
-        push!(results, MonochromaticExpectedHU(region_id, mat_sym, expected_hu, μ, reference_energy_keV))
-    end
-
-    return results
-end
-
-"""
-    compute_expected_hu_monochromatic(material_symbol::Symbol, reference_energy_keV::Float64=60.0)
-
-Compute expected HU for a single material at a specific reference energy.
-
-Use this for comparing against BHC-corrected polychromatic reconstruction.
-"""
-function compute_expected_hu_monochromatic(material_symbol::Symbol, reference_energy_keV::Float64=60.0)
-    material = get_material(material_symbol)
-    μ = compute_μ_at_energy(material, reference_energy_keV)
-    μ_water = compute_μ_at_energy(XA.Materials.water, reference_energy_keV)
-    return 1000.0 * (μ - μ_water) / μ_water
-end
 
 # Exports
 export compute_μ_matrix, compute_μ_at_energy, compute_mass_μ_at_energy
-export get_density, compute_effective_μ
 export μ_to_HU, HU_to_μ, get_reference_μ_water
-export get_effective_μ_water_kVp, EFFECTIVE_μ_WATER_KVP
 export compute_effective_μ_material, compute_expected_hu_spectrum
-export NistExpectedHU, get_nist_expected_hu_table, print_nist_expected_hu_table
-export MonochromaticExpectedHU, get_monochromatic_expected_hu_table, compute_expected_hu_monochromatic
+export NistExpectedHU, get_nist_expected_hu_table
