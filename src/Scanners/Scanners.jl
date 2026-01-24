@@ -368,13 +368,12 @@ Create a helical CTGeometry from scanner spec and protocol.
 - `n_rows`: Number of detector rows to simulate (default: 64 for speed)
 
 # Notes
-For helical geometry, use `create_scan_geometry()` with the scanner parameters.
 This method returns an axial geometry with the protocol's angle count.
-For true helical reconstruction, use `create_scan_geometry(mode=:helical, ...)`.
+For true helical reconstruction, use `create_helical_geometry()` from HelicalRecon.
 """
 function create_geometry(spec::AbstractScannerSpec, protocol::HelicalProtocol; n_rows::Int=64)
     # Create geometry with protocol's angle count
-    # For true helical, user should use create_scan_geometry with custom parameters
+    # For true helical, user should use create_helical_geometry() from HelicalRecon
     return create_geometry(spec;
         n_angles=protocol.n_angles_per_rotation,
         n_rows=n_rows

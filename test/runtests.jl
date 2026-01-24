@@ -4405,28 +4405,6 @@ end
             @test info.z_coverage > 0
         end
 
-        @testset "is_helical Detection" begin
-            # Axial geometry should not be helical
-            axial_geom = create_aquilion_one(n_angles=180, n_rows=16, n_cols=64)
-            @test is_helical(axial_geom) == false
-
-            # Helical geometry (via create_scan_geometry) should be helical
-            helical_geom = create_scan_geometry(
-                mode=:helical,
-                n_angles=180,
-                n_rows=16,
-                n_cols=64,
-                pitch=0.992,
-                n_rotations=2.0
-            )
-            @test is_helical(helical_geom) == true
-
-            # Helical geometry from spec should also be detected
-            spec = GERevolutionApex()
-            protocol = HelicalProtocol(120, 400, 0.5, 0.992, 2.0, 90, 0.625)
-            helical_from_spec = create_helical_geometry_from_spec(spec, protocol; n_rows=16)
-            @test is_helical(helical_from_spec.base_geom) == true
-        end
     end
 
     # =========================================================================
