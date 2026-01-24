@@ -748,49 +748,6 @@ function create_aquilion_one(;
     )
 end
 
-"""
-    get_detector_pixel_position(geom::CTGeometry, angle_idx::Int, row::Int, col::Int)
-
-Get the 3D position of a detector pixel center.
-
-# Arguments
-- `geom::CTGeometry`: Scanner geometry
-- `angle_idx::Int`: Projection angle index (1-based)
-- `row::Int`: Detector row (1-based, 1 = bottom)
-- `col::Int`: Detector column (1-based, 1 = left when facing detector)
-
-# Returns
-`(x, y, z)` position of pixel center in cm.
-"""
-function get_detector_pixel_position(geom::CTGeometry, angle_idx::Int, row::Int, col::Int)
-    # Pixel offsets from detector center (in detector coordinates)
-    # u: column direction, v: row direction
-    u_offset = (col - (geom.n_cols + 1) / 2) * geom.pixel_size * (geom.SDD / geom.SAD)
-    v_offset = (row - (geom.n_rows + 1) / 2) * geom.pixel_size * (geom.SDD / geom.SAD)
-
-    # Convert to world coordinates
-    x = geom.detector_centers[1, angle_idx] + u_offset * geom.detector_u[1, angle_idx] + v_offset * geom.detector_v[1, angle_idx]
-    y = geom.detector_centers[2, angle_idx] + u_offset * geom.detector_u[2, angle_idx] + v_offset * geom.detector_v[2, angle_idx]
-    z = geom.detector_centers[3, angle_idx] + u_offset * geom.detector_u[3, angle_idx] + v_offset * geom.detector_v[3, angle_idx]
-
-    return (x, y, z)
-end
-
-"""
-    get_source_position(geom::CTGeometry, angle_idx::Int)
-
-Get the source position for a given angle.
-
-# Returns
-`(x, y, z)` position of X-ray source in cm.
-"""
-function get_source_position(geom::CTGeometry, angle_idx::Int)
-    return (
-        geom.source_positions[1, angle_idx],
-        geom.source_positions[2, angle_idx],
-        geom.source_positions[3, angle_idx]
-    )
-end
 
 # =============================================================================
 # PCCT Scanner Helpers (PCCT-SCANNER-BRIDGE)
@@ -961,4 +918,3 @@ export is_pcct, create_naeotom_alpha
 
 # CTGeometry (computed positions for simulation)
 export CTGeometry, create_aquilion_one
-export get_detector_pixel_position, get_source_position

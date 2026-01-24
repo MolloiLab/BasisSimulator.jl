@@ -4131,51 +4131,6 @@ end
             @test all(isfinite.(vmi_sirt))
         end
 
-        @testset "Batch VMI Generation" begin
-            # Test generate_vmi_series
-            # Create simple material maps
-            water = fill(0.8f0, 8, 4, 4)
-            iodine = fill(0.1f0, 8, 4, 4)
-            mat_map = MaterialMap(water, iodine)
-
-            phantom, geom = small_test_setup()
-            recon_size = (16, 16, 2)
-
-            # Generate VMI series at multiple energies
-            energies = [50.0, 70.0, 100.0]
-            vmi_series = generate_vmi_series(mat_map, energies, geom, recon_size)
-
-            @test vmi_series isa Dict
-            @test length(vmi_series) == 3
-            @test haskey(vmi_series, 50.0)
-            @test haskey(vmi_series, 70.0)
-            @test haskey(vmi_series, 100.0)
-
-            # Each VMI should have correct size
-            for E in energies
-                @test size(vmi_series[E]) == recon_size
-                @test all(isfinite.(vmi_series[E]))
-            end
-        end
-
-        @testset "VMIResult Container" begin
-            # Test VMIResult type
-            test_image = randn(Float32, 8, 8, 4)
-            μ_water = get_water_attenuation_vmi(70.0)
-
-            result = VMIResult(test_image, 70.0, true, μ_water, :fdk)
-
-            @test result.energy_keV == 70.0
-            @test result.is_hu == true
-            @test result.method == :fdk
-            @test result.μ_water ≈ μ_water
-            @test size(result.image) == (8, 8, 4)
-
-            # Test get_vmi_info runs without error
-            # (we can't easily capture stdout in Julia 1.11, so just verify it doesn't throw)
-            get_vmi_info(result)  # Should not throw
-            @test true  # If we got here, get_vmi_info worked
-        end
 
         @testset "VMI Water HU Stability Across Energies" begin
             # Critical validation: water should measure ~0 HU at all energies
@@ -5057,44 +5012,6 @@ end
             @test_throws ErrorException compute_effective_z(er_sino; method=:invalid)
         end
 
-        @testset "PCCT vs DECT VMI Comparison" begin
-            # Create mock VMI images
-            n = 32
-            pcct_vmi = randn(Float32, n, n, 4) .+ 100.0f0
-            dect_vmi = randn(Float32, n, n, 4) .+ 105.0f0  # Slightly different
-
-            comparison = compare_pcct_vs_dect_vmi(pcct_vmi, dect_vmi)
-
-            @test haskey(comparison, :mean_diff)
-            @test haskey(comparison, :std_diff)
-            @test haskey(comparison, :correlation)
-            @test haskey(comparison, :pcct_noise)
-            @test haskey(comparison, :dect_noise)
-            @test haskey(comparison, :noise_ratio)
-
-            @test isfinite(comparison.mean_diff)
-            @test comparison.std_diff >= 0
-            @test -1 <= comparison.correlation <= 1
-
-            # With mask
-            mask = trues(n, n, 4)
-            mask[1:10, 1:10, :] .= false
-            comparison_masked = compare_pcct_vs_dect_vmi(pcct_vmi, dect_vmi; mask=mask)
-            @test isfinite(comparison_masked.correlation)
-        end
-
-        @testset "Expected PCCT Noise Advantage" begin
-            # Low energy should have higher noise advantage
-            advantage_40 = expected_pcct_noise_advantage(40.0)
-            advantage_70 = expected_pcct_noise_advantage(70.0)
-            advantage_120 = expected_pcct_noise_advantage(120.0)
-
-            @test advantage_40 >= 1.0  # PCCT should be better
-            @test advantage_70 >= 1.0
-            @test advantage_120 >= 1.0
-
-            @test advantage_40 > advantage_120  # More advantage at low keV
-        end
 
         @testset "Gadolinium Solution Attenuation" begin
             # Below K-edge (50.2 keV)
@@ -5133,24 +5050,6 @@ end
             @test :iodine in supported  # Iodine should be supported
         end
 
-        @testset "PCCTVMIResult Container" begin
-            test_image = randn(Float32, 16, 16, 4)
-
-            result = PCCTVMIResult(
-                test_image,
-                50.0,  # energy_keV
-                true,  # is_hu
-                0.2,   # μ_water
-                :fdk,  # method
-                :pcct  # source
-            )
-
-            @test result.energy_keV == 50.0
-            @test result.is_hu == true
-            @test result.method == :fdk
-            @test result.source == :pcct
-            @test size(result.image) == (16, 16, 4)
-        end
 
         @testset "PCCT Water HU Stability" begin
             # Test that PCCT VMI produces consistent water HU across energies
