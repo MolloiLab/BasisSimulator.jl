@@ -2000,16 +2000,26 @@ function compute_spectral_response_matrix(
                 # Apply Gaussian energy blur and bin
                 for b in 1:n_bins
                     T_low = T_values[b]
-                    T_high = b < n_bins ? T_values[b + 1] : E_max
 
                     if σ_E > 0.0
-                        # Gaussian CDF: P(T_low ≤ E_measured < T_high)
                         z_low = (T_low - E_comp) / (σ_E * sqrt(2.0))
-                        z_high = (T_high - E_comp) / (σ_E * sqrt(2.0))
-                        prob = 0.5 * (_erf_approx(z_high) - _erf_approx(z_low))
+                        if b == n_bins
+                            # Last bin: one-sided CDF (everything above T_low)
+                            prob = 0.5 * (1.0 - _erf_approx(z_low))
+                        else
+                            # Interior bins: two-sided CDF
+                            T_high = T_values[b + 1]
+                            z_high = (T_high - E_comp) / (σ_E * sqrt(2.0))
+                            prob = 0.5 * (_erf_approx(z_high) - _erf_approx(z_low))
+                        end
                     else
                         # Perfect resolution: delta function binning
-                        prob = (E_comp >= T_low && E_comp < T_high) ? 1.0 : 0.0
+                        if b == n_bins
+                            prob = E_comp >= T_low ? 1.0 : 0.0
+                        else
+                            T_high = T_values[b + 1]
+                            prob = (E_comp >= T_low && E_comp < T_high) ? 1.0 : 0.0
+                        end
                     end
 
                     R[i, b] += w_tail * w_comp * max(prob, 0.0)
