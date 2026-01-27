@@ -470,6 +470,116 @@ const SCATTER_PHYSICAL_KERNEL_FWHM_MM = 50.0
 """Reference scatter correction coefficient (CatSim-exact)."""
 const SCATTER_REF_CORRECTION_COEFFICIENT = 0.0268
 
+# =============================================================================
+# Phantom Size Scaling Constants
+# =============================================================================
+
+"""Reference phantom diameter (cm) for scatter calibration (adult body)."""
+const SCATTER_REF_PHANTOM_DIAMETER_CM = 30.0
+
+"""SPR scaling exponent for phantom diameter (empirical: 1.5-2.0)."""
+const SCATTER_SIZE_SCALING_EXPONENT = 1.5
+
+"""
+    estimate_phantom_diameter_cm(mask::AbstractArray{UInt8,3}, voxel_size_mm) -> Float64
+
+Estimate effective phantom diameter from material mask.
+
+Computes the effective diameter as sqrt(width × height) from the bounding box of
+non-air voxels (region index > 0) in the central slice.
+
+# Arguments
+- `mask`: Material index volume [nx, ny, nz], where 0 = air
+- `voxel_size_mm`: Tuple of voxel dimensions (dx, dy, dz) in mm
+
+# Returns
+Effective diameter in cm.
+
+# Notes
+Uses the effective diameter formula: d_eff = sqrt(AP × LAT), which is standard
+in CT dosimetry (AAPM Task Group 220).
+"""
+function estimate_phantom_diameter_cm(
+    mask::AbstractArray{UInt8,3},
+    voxel_size_mm::Union{NTuple{3,<:Real}, AbstractVector{<:Real}}
+)
+    nx, ny, nz = size(mask)
+    dx, dy, dz = voxel_size_mm[1], voxel_size_mm[2], voxel_size_mm[3]
+
+    # Find bounding box of non-air voxels across all slices
+    min_x, max_x = nx, 1
+    min_y, max_y = ny, 1
+
+    # Sample central slices to estimate size (faster than full volume)
+    z_mid = nz ÷ 2
+    z_range = max(1, z_mid - 5):min(nz, z_mid + 5)
+
+    for z in z_range
+        for y in 1:ny
+            for x in 1:nx
+                if mask[x, y, z] > 0
+                    min_x = min(min_x, x)
+                    max_x = max(max_x, x)
+                    min_y = min(min_y, y)
+                    max_y = max(max_y, y)
+                end
+            end
+        end
+    end
+
+    # Compute extents in mm
+    if max_x >= min_x && max_y >= min_y
+        width_mm = (max_x - min_x + 1) * dx
+        height_mm = (max_y - min_y + 1) * dy
+
+        # Effective diameter = sqrt(AP × LAT)
+        effective_diameter_mm = sqrt(width_mm * height_mm)
+
+        # Convert to cm
+        return effective_diameter_mm / 10.0
+    else
+        # No non-air voxels found, return reference size
+        return SCATTER_REF_PHANTOM_DIAMETER_CM
+    end
+end
+
+"""
+    compute_scatter_size_scale(phantom_diameter_cm::Real) -> Float64
+
+Compute scatter scaling factor based on phantom/patient size.
+
+Returns a multiplier for the scatter coefficient. Larger phantoms produce
+more scatter than the reference 30 cm body.
+
+# Scaling Formula
+scale = (diameter / SCATTER_REF_PHANTOM_DIAMETER_CM)^SCATTER_SIZE_SCALING_EXPONENT
+      = (diameter / 30)^1.5
+
+# Typical Values
+| Diameter | Scale | Description |
+|----------|-------|-------------|
+| 15 cm | 0.35 | Pediatric head |
+| 18 cm | 0.47 | Adult head |
+| 20 cm | 0.59 | Pediatric body |
+| 30 cm | 1.00 | Adult body (reference) |
+| 40 cm | 1.54 | Large body |
+| 50 cm | 2.15 | Very large body |
+
+# Example
+```julia
+scale = compute_scatter_size_scale(20.0)  # Pediatric body → 0.59
+scale = compute_scatter_size_scale(40.0)  # Large body → 1.54
+```
+"""
+function compute_scatter_size_scale(phantom_diameter_cm::Real)
+    ratio = phantom_diameter_cm / SCATTER_REF_PHANTOM_DIAMETER_CM
+    scale = ratio ^ SCATTER_SIZE_SCALING_EXPONENT
+
+    # Clamp to reasonable range
+    return clamp(scale, 0.1, 10.0)
+end
+
+
 """
     compute_scatter_geometry_scale(scanner::Scanner) -> Float64
 
@@ -531,12 +641,14 @@ function compute_scatter_kernel_fwhm_pixels(scanner::Scanner)
 end
 
 """
-    geometry_aware_scatter_model(scanner::Scanner; scale_factor=1.0, kernel_type=:gaussian)
+    geometry_aware_scatter_model(scanner::Scanner; scale_factor=1.0, kernel_type=:gaussian, phantom_diameter_cm=nothing)
 
-Create a scatter model with parameters automatically scaled for scanner geometry.
+Create a scatter model with parameters automatically scaled for scanner geometry and
+optionally for phantom/patient size.
 
 This function computes appropriate scatter parameters based on the scanner's
-physical geometry, ensuring consistent SPR (~15%) regardless of scanner configuration.
+physical geometry, ensuring consistent SPR (~15% for 30cm body) regardless of
+scanner configuration.
 
 # Arguments
 - `scanner::Scanner`: Scanner definition with geometry parameters
@@ -544,49 +656,68 @@ physical geometry, ensuring consistent SPR (~15%) regardless of scanner configur
 # Keyword Arguments
 - `scale_factor::Float64 = 1.0`: Additional user multiplier for scatter magnitude
 - `kernel_type::Symbol = :gaussian`: Kernel shape (:gaussian or :exponential)
+- `phantom_diameter_cm::Union{Nothing, Real} = nothing`: Effective phantom diameter (cm).
+  If `nothing`, uses reference diameter (30 cm). Smaller phantoms get less scatter,
+  larger phantoms get more scatter.
 
 # Returns
-`ScatterModel` with geometry-appropriate parameters.
+`ScatterModel` with geometry and size-appropriate parameters.
 
 # Scaling Behavior
-- Scatter coefficient scales with (air_gap_ref / air_gap)²
+- Geometry: Scatter coefficient scales with (air_gap_ref / air_gap)²
+- Size: Scatter coefficient scales with (diameter / 30)^1.5
 - Kernel FWHM scales with physical_fwhm_mm / detector_pixel_pitch_mm
-- `scale_factor` applies on top of geometry scaling
+- `scale_factor` applies on top of geometry and size scaling
+
+# Phantom Size Scaling
+| Diameter | Scale | Description |
+|----------|-------|-------------|
+| 15 cm | 0.35 | Pediatric head |
+| 18 cm | 0.47 | Adult head |
+| 20 cm | 0.59 | Pediatric body |
+| 30 cm | 1.00 | Adult body (reference) |
+| 40 cm | 1.54 | Large body |
+| 50 cm | 2.15 | Very large body |
 
 # Example
 ```julia
-# Default scanner (reference geometry)
+# Default scanner (reference geometry), reference phantom size
 scanner = Scanner()
 model = geometry_aware_scatter_model(scanner)
 # model.scatter_coefficient ≈ 0.025
-# model.kernel_fwhm ≈ 50.0 pixels
 
-# GE Revolution (larger air gap, smaller pitch)
-scanner = Scanner(
-    source_to_isocenter = 626.0,
-    source_to_detector = 1097.0,
-    detector_col_size = 0.5
-)
-model = geometry_aware_scatter_model(scanner)
-# model.scatter_coefficient ≈ 0.019 (less scatter due to larger air gap)
-# model.kernel_fwhm ≈ 100.0 pixels (same physical size, more pixels)
+# With phantom size (smaller = less scatter)
+model = geometry_aware_scatter_model(scanner; phantom_diameter_cm=18.0)
+# model.scatter_coefficient ≈ 0.025 * 0.47 ≈ 0.012 (head phantom)
 
-# Increase scatter beyond geometry-based estimate
-model = geometry_aware_scatter_model(scanner; scale_factor=1.5)
+# GE Revolution + large patient
+scanner = Scanner(source_to_isocenter=626.0, source_to_detector=1097.0)
+model = geometry_aware_scatter_model(scanner; phantom_diameter_cm=40.0)
+# geometry_scale ≈ 0.76, size_scale ≈ 1.54
+# model.scatter_coefficient ≈ 0.025 * 0.76 * 1.54 ≈ 0.029
 ```
 
-See also: [`default_scatter_model`](@ref), [`geometry_aware_scatter_correction`](@ref)
+See also: [`default_scatter_model`](@ref), [`geometry_aware_scatter_correction`](@ref),
+[`estimate_phantom_diameter_cm`](@ref), [`compute_scatter_size_scale`](@ref)
 """
 function geometry_aware_scatter_model(
     scanner::Scanner;
     scale_factor::Float64 = 1.0,
-    kernel_type::Symbol = :gaussian
+    kernel_type::Symbol = :gaussian,
+    phantom_diameter_cm::Union{Nothing, Real} = nothing
 )
-    # Compute geometry-based scaling
+    # Compute geometry-based scaling (air gap)
     geometry_scale = compute_scatter_geometry_scale(scanner)
 
-    # Scale the base coefficient
-    scatter_coefficient = SCATTER_REF_COEFFICIENT * geometry_scale
+    # Compute size-based scaling (phantom diameter)
+    size_scale = if phantom_diameter_cm !== nothing
+        compute_scatter_size_scale(phantom_diameter_cm)
+    else
+        1.0  # Use reference size (30 cm body)
+    end
+
+    # Scale the base coefficient by both geometry and size
+    scatter_coefficient = SCATTER_REF_COEFFICIENT * geometry_scale * size_scale
 
     # Compute kernel FWHM in pixels for this detector
     kernel_fwhm = compute_scatter_kernel_fwhm_pixels(scanner)
@@ -596,11 +727,12 @@ function geometry_aware_scatter_model(
 end
 
 """
-    geometry_aware_scatter_correction(scanner::Scanner; scale_factor=1.0, kernel_type=:gaussian)
+    geometry_aware_scatter_correction(scanner::Scanner; scale_factor=1.0, kernel_type=:gaussian, phantom_diameter_cm=nothing)
 
-Create a scatter correction model with parameters automatically scaled for scanner geometry.
+Create a scatter correction model with parameters automatically scaled for scanner geometry
+and optionally for phantom/patient size.
 
-Uses the same geometry scaling AND base coefficient as `geometry_aware_scatter_model`
+Uses the same geometry and size scaling AND base coefficient as `geometry_aware_scatter_model`
 for consistent scatter estimation and correction in simulation scenarios.
 
 # Arguments
@@ -609,36 +741,53 @@ for consistent scatter estimation and correction in simulation scenarios.
 # Keyword Arguments
 - `scale_factor::Float64 = 1.0`: Additional user multiplier for correction strength
 - `kernel_type::Symbol = :gaussian`: Kernel shape (:gaussian or :exponential)
+- `phantom_diameter_cm::Union{Nothing, Real} = nothing`: Effective phantom diameter (cm).
+  If `nothing`, uses reference diameter (30 cm). Must match the value used in
+  `geometry_aware_scatter_model()` for consistent correction.
 
 # Returns
-`ScatterCorrectionModel` with geometry-appropriate parameters.
+`ScatterCorrectionModel` with geometry and size-appropriate parameters.
 
 # Notes
-The correction uses the SAME coefficient as scatter addition (SCATTER_REF_COEFFICIENT)
-to ensure consistent behavior. The `prep_exponent` field is set to 1.0 (linear model)
-to match the `add_scatter!()` algorithm.
+The correction uses the SAME coefficient and scaling as scatter addition
+(SCATTER_REF_COEFFICIENT × geometry_scale × size_scale) to ensure consistent behavior.
+The `prep_exponent` field is set to 1.0 (linear model) to match the `add_scatter!()`
+algorithm.
 
 For CatSim-exact correction parameters, use `default_scatter_correction()` instead.
 
 # Example
 ```julia
 scanner = Scanner(source_to_isocenter=626.0, source_to_detector=1097.0)
+
+# Reference size correction
 correction = geometry_aware_scatter_correction(scanner)
+
+# With phantom size (must match scatter model)
+correction = geometry_aware_scatter_correction(scanner; phantom_diameter_cm=18.0)
 ```
 
-See also: [`default_scatter_correction`](@ref), [`geometry_aware_scatter_model`](@ref)
+See also: [`default_scatter_correction`](@ref), [`geometry_aware_scatter_model`](@ref),
+[`estimate_phantom_diameter_cm`](@ref)
 """
 function geometry_aware_scatter_correction(
     scanner::Scanner;
     scale_factor::Float64 = 1.0,
-    kernel_type::Symbol = :gaussian
+    kernel_type::Symbol = :gaussian,
+    phantom_diameter_cm::Union{Nothing, Real} = nothing
 )
     # Same geometry scaling as scatter model
     geometry_scale = compute_scatter_geometry_scale(scanner)
 
-    # Use SAME coefficient as scatter addition for consistent simulation
-    # (Previously used SCATTER_REF_CORRECTION_COEFFICIENT = 0.0268, now uses 0.025)
-    correction_coefficient = SCATTER_REF_COEFFICIENT * geometry_scale
+    # Same size scaling as scatter model
+    size_scale = if phantom_diameter_cm !== nothing
+        compute_scatter_size_scale(phantom_diameter_cm)
+    else
+        1.0  # Use reference size (30 cm body)
+    end
+
+    # Use SAME coefficient and scaling as scatter addition for consistent simulation
+    correction_coefficient = SCATTER_REF_COEFFICIENT * geometry_scale * size_scale
 
     # Compute kernel FWHM in pixels
     kernel_fwhm = compute_scatter_kernel_fwhm_pixels(scanner)
@@ -675,3 +824,7 @@ export compute_scatter_geometry_scale, compute_scatter_kernel_fwhm_pixels
 export SCATTER_REF_SID_MM, SCATTER_REF_SDD_MM, SCATTER_REF_AIR_GAP_MM
 export SCATTER_REF_PIXEL_PITCH_MM, SCATTER_REF_COEFFICIENT
 export SCATTER_PHYSICAL_KERNEL_FWHM_MM, SCATTER_REF_CORRECTION_COEFFICIENT
+
+# Phantom size-aware scatter API
+export estimate_phantom_diameter_cm, compute_scatter_size_scale
+export SCATTER_REF_PHANTOM_DIAMETER_CM, SCATTER_SIZE_SCALING_EXPONENT
