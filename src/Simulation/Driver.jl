@@ -827,14 +827,14 @@ function build_physics_config(
         end
     end
 
-    # Scatter: no Scanner field, use factory default
+    # Scatter: use geometry-aware model scaled for this scanner
     if sim_opts.use_scatter
-        kwargs[:scatter] = default_scatter_model()
+        kwargs[:scatter] = geometry_aware_scatter_model(scanner)
     end
 
-    # Scatter correction: no Scanner field, use factory default
+    # Scatter correction: use geometry-aware correction scaled for this scanner
     if sim_opts.use_scatter_correction
-        kwargs[:scatter_correction] = default_scatter_correction()
+        kwargs[:scatter_correction] = geometry_aware_scatter_correction(scanner)
     end
 
     # Crosstalk (electronic): no Scanner field, use factory default
