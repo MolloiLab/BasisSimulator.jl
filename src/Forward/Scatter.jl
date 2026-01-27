@@ -480,6 +480,24 @@ const SCATTER_REF_PHANTOM_DIAMETER_CM = 30.0
 """SPR scaling exponent for phantom diameter (empirical: 1.5-2.0)."""
 const SCATTER_SIZE_SCALING_EXPONENT = 1.5
 
+# =============================================================================
+# Energy-Dependent Scatter Constants
+# =============================================================================
+
+"""Reference mean photon energy (keV) for scatter calibration (corresponds to ~120 kVp)."""
+const SCATTER_REF_ENERGY_KEV = 60.0
+
+"""
+SPR energy scaling exponent (empirical, 0.5-1.0 range).
+
+Derived from literature:
+- At 80 kVp (~50 keV mean): SPR is ~1.2-1.5× higher than at 120 kVp
+- At 140 kVp (~70 keV mean): SPR is ~0.85-0.9× of 120 kVp
+
+Conservative value of 0.6 balances physics (Klein-Nishina) with empirical observations.
+"""
+const SCATTER_ENERGY_EXPONENT = 0.6
+
 """
     estimate_phantom_diameter_cm(mask::AbstractArray{UInt8,3}, voxel_size_mm) -> Float64
 
@@ -503,7 +521,10 @@ function estimate_phantom_diameter_cm(
     mask::AbstractArray{UInt8,3},
     voxel_size_mm::Union{NTuple{3,<:Real}, AbstractVector{<:Real}}
 )
-    nx, ny, nz = size(mask)
+    # Convert to CPU if on GPU (bounding box computation is fast on CPU)
+    mask_cpu = Array(mask)
+
+    nx, ny, nz = size(mask_cpu)
     dx, dy, dz = voxel_size_mm[1], voxel_size_mm[2], voxel_size_mm[3]
 
     # Find bounding box of non-air voxels across all slices
@@ -517,7 +538,7 @@ function estimate_phantom_diameter_cm(
     for z in z_range
         for y in 1:ny
             for x in 1:nx
-                if mask[x, y, z] > 0
+                if mask_cpu[x, y, z] > 0
                     min_x = min(min_x, x)
                     max_x = max(max_x, x)
                     min_y = min(min_y, y)
@@ -577,6 +598,47 @@ function compute_scatter_size_scale(phantom_diameter_cm::Real)
 
     # Clamp to reasonable range
     return clamp(scale, 0.1, 10.0)
+end
+
+"""
+    compute_scatter_energy_scale(mean_energy_keV::Real) -> Float64
+
+Compute scatter scaling factor based on mean photon energy.
+
+Lower energies have higher scatter (more Compton interactions relative to primary,
+and photoelectric absorption decreases as 1/E³).
+
+# Scaling Formula
+scale = (SCATTER_REF_ENERGY_KEV / mean_energy_keV)^SCATTER_ENERGY_EXPONENT
+      = (60 / mean_energy_keV)^0.6
+
+# Typical Values
+| Mean Energy | Scale | Description |
+|-------------|-------|-------------|
+| 45 keV | 1.20 | ~80 kVp (high scatter) |
+| 50 keV | 1.13 | ~80 kVp |
+| 60 keV | 1.00 | ~120 kVp (reference) |
+| 70 keV | 0.91 | ~140 kVp |
+| 75 keV | 0.87 | ~140 kVp (low scatter) |
+
+# Example
+```julia
+scale = compute_scatter_energy_scale(50.0)  # 80 kVp → 1.13
+scale = compute_scatter_energy_scale(70.0)  # 140 kVp → 0.91
+```
+
+# References
+- PMC2674384: SPR decreases when x-ray kVp increases
+- PMC8611284: SPRmax inversely proportional to beam energy
+- Klein-Nishina formula: Compton cross-section slowly decreases with energy
+"""
+function compute_scatter_energy_scale(mean_energy_keV::Real)
+    ratio = SCATTER_REF_ENERGY_KEV / mean_energy_keV
+    scale = ratio ^ SCATTER_ENERGY_EXPONENT
+
+    # Clamp to reasonable range (0.5 to 2.0)
+    # Prevents extreme values at very low or high energies
+    return clamp(scale, 0.5, 2.0)
 end
 
 
@@ -641,13 +703,13 @@ function compute_scatter_kernel_fwhm_pixels(scanner::Scanner)
 end
 
 """
-    geometry_aware_scatter_model(scanner::Scanner; scale_factor=1.0, kernel_type=:gaussian, phantom_diameter_cm=nothing)
+    geometry_aware_scatter_model(scanner::Scanner; scale_factor=1.0, kernel_type=:gaussian, phantom_diameter_cm=nothing, mean_energy_keV=nothing)
 
-Create a scatter model with parameters automatically scaled for scanner geometry and
-optionally for phantom/patient size.
+Create a scatter model with parameters automatically scaled for scanner geometry,
+phantom/patient size, and beam energy.
 
 This function computes appropriate scatter parameters based on the scanner's
-physical geometry, ensuring consistent SPR (~15% for 30cm body) regardless of
+physical geometry, ensuring consistent SPR (~15% for 30cm body at 120 kVp) regardless of
 scanner configuration.
 
 # Arguments
@@ -659,52 +721,61 @@ scanner configuration.
 - `phantom_diameter_cm::Union{Nothing, Real} = nothing`: Effective phantom diameter (cm).
   If `nothing`, uses reference diameter (30 cm). Smaller phantoms get less scatter,
   larger phantoms get more scatter.
+- `mean_energy_keV::Union{Nothing, Real} = nothing`: Mean photon energy (keV).
+  If `nothing`, uses reference energy (60 keV, ~120 kVp). Lower energies get more scatter,
+  higher energies get less scatter. For dual-energy CT, use different values for each kVp.
 
 # Returns
-`ScatterModel` with geometry and size-appropriate parameters.
+`ScatterModel` with geometry, size, and energy-appropriate parameters.
 
 # Scaling Behavior
 - Geometry: Scatter coefficient scales with (air_gap_ref / air_gap)²
 - Size: Scatter coefficient scales with (diameter / 30)^1.5
+- Energy: Scatter coefficient scales with (60 / mean_energy_keV)^0.6
 - Kernel FWHM scales with physical_fwhm_mm / detector_pixel_pitch_mm
-- `scale_factor` applies on top of geometry and size scaling
+- `scale_factor` applies on top of all automatic scaling
 
-# Phantom Size Scaling
-| Diameter | Scale | Description |
-|----------|-------|-------------|
-| 15 cm | 0.35 | Pediatric head |
-| 18 cm | 0.47 | Adult head |
-| 20 cm | 0.59 | Pediatric body |
-| 30 cm | 1.00 | Adult body (reference) |
-| 40 cm | 1.54 | Large body |
-| 50 cm | 2.15 | Very large body |
+# Energy Scaling (for Dual-Energy CT)
+| Mean Energy | Scale | Description |
+|-------------|-------|-------------|
+| 45 keV | 1.20 | ~80 kVp (high scatter) |
+| 50 keV | 1.13 | ~80 kVp |
+| 60 keV | 1.00 | ~120 kVp (reference) |
+| 70 keV | 0.91 | ~140 kVp |
+| 75 keV | 0.87 | ~140 kVp (low scatter) |
 
 # Example
 ```julia
-# Default scanner (reference geometry), reference phantom size
+# Default scanner (reference geometry), reference phantom and energy
 scanner = Scanner()
 model = geometry_aware_scatter_model(scanner)
 # model.scatter_coefficient ≈ 0.025
 
-# With phantom size (smaller = less scatter)
-model = geometry_aware_scatter_model(scanner; phantom_diameter_cm=18.0)
-# model.scatter_coefficient ≈ 0.025 * 0.47 ≈ 0.012 (head phantom)
+# With energy for dual-energy low-kVp acquisition (80 kVp, mean ~50 keV)
+model_low = geometry_aware_scatter_model(scanner; mean_energy_keV=50.0)
+# energy_scale = 1.13, so coefficient ≈ 0.025 * 1.13 ≈ 0.028
 
-# GE Revolution + large patient
+# With energy for dual-energy high-kVp acquisition (140 kVp, mean ~70 keV)
+model_high = geometry_aware_scatter_model(scanner; mean_energy_keV=70.0)
+# energy_scale = 0.91, so coefficient ≈ 0.025 * 0.91 ≈ 0.023
+
+# GE Revolution + large patient + low kVp
 scanner = Scanner(source_to_isocenter=626.0, source_to_detector=1097.0)
-model = geometry_aware_scatter_model(scanner; phantom_diameter_cm=40.0)
-# geometry_scale ≈ 0.76, size_scale ≈ 1.54
-# model.scatter_coefficient ≈ 0.025 * 0.76 * 1.54 ≈ 0.029
+model = geometry_aware_scatter_model(scanner; phantom_diameter_cm=40.0, mean_energy_keV=50.0)
+# geometry_scale ≈ 0.76, size_scale ≈ 1.54, energy_scale ≈ 1.13
+# model.scatter_coefficient ≈ 0.025 * 0.76 * 1.54 * 1.13 ≈ 0.033
 ```
 
 See also: [`default_scatter_model`](@ref), [`geometry_aware_scatter_correction`](@ref),
-[`estimate_phantom_diameter_cm`](@ref), [`compute_scatter_size_scale`](@ref)
+[`estimate_phantom_diameter_cm`](@ref), [`compute_scatter_size_scale`](@ref),
+[`compute_scatter_energy_scale`](@ref)
 """
 function geometry_aware_scatter_model(
     scanner::Scanner;
     scale_factor::Float64 = 1.0,
     kernel_type::Symbol = :gaussian,
-    phantom_diameter_cm::Union{Nothing, Real} = nothing
+    phantom_diameter_cm::Union{Nothing, Real} = nothing,
+    mean_energy_keV::Union{Nothing, Real} = nothing
 )
     # Compute geometry-based scaling (air gap)
     geometry_scale = compute_scatter_geometry_scale(scanner)
@@ -716,8 +787,15 @@ function geometry_aware_scatter_model(
         1.0  # Use reference size (30 cm body)
     end
 
-    # Scale the base coefficient by both geometry and size
-    scatter_coefficient = SCATTER_REF_COEFFICIENT * geometry_scale * size_scale
+    # Compute energy-based scaling (mean photon energy)
+    energy_scale = if mean_energy_keV !== nothing
+        compute_scatter_energy_scale(mean_energy_keV)
+    else
+        1.0  # Use reference energy (60 keV, ~120 kVp)
+    end
+
+    # Scale the base coefficient by geometry, size, AND energy
+    scatter_coefficient = SCATTER_REF_COEFFICIENT * geometry_scale * size_scale * energy_scale
 
     # Compute kernel FWHM in pixels for this detector
     kernel_fwhm = compute_scatter_kernel_fwhm_pixels(scanner)
@@ -727,12 +805,12 @@ function geometry_aware_scatter_model(
 end
 
 """
-    geometry_aware_scatter_correction(scanner::Scanner; scale_factor=1.0, kernel_type=:gaussian, phantom_diameter_cm=nothing)
+    geometry_aware_scatter_correction(scanner::Scanner; scale_factor=1.0, kernel_type=:gaussian, phantom_diameter_cm=nothing, mean_energy_keV=nothing)
 
-Create a scatter correction model with parameters automatically scaled for scanner geometry
-and optionally for phantom/patient size.
+Create a scatter correction model with parameters automatically scaled for scanner geometry,
+phantom/patient size, and beam energy.
 
-Uses the same geometry and size scaling AND base coefficient as `geometry_aware_scatter_model`
+Uses the same geometry, size, and energy scaling AND base coefficient as `geometry_aware_scatter_model`
 for consistent scatter estimation and correction in simulation scenarios.
 
 # Arguments
@@ -744,15 +822,22 @@ for consistent scatter estimation and correction in simulation scenarios.
 - `phantom_diameter_cm::Union{Nothing, Real} = nothing`: Effective phantom diameter (cm).
   If `nothing`, uses reference diameter (30 cm). Must match the value used in
   `geometry_aware_scatter_model()` for consistent correction.
+- `mean_energy_keV::Union{Nothing, Real} = nothing`: Mean photon energy (keV).
+  If `nothing`, uses reference energy (60 keV, ~120 kVp). Must match the value used in
+  `geometry_aware_scatter_model()` for consistent correction.
 
 # Returns
-`ScatterCorrectionModel` with geometry and size-appropriate parameters.
+`ScatterCorrectionModel` with geometry, size, and energy-appropriate parameters.
 
 # Notes
 The correction uses the SAME coefficient and scaling as scatter addition
-(SCATTER_REF_COEFFICIENT × geometry_scale × size_scale) to ensure consistent behavior.
+(SCATTER_REF_COEFFICIENT × geometry_scale × size_scale × energy_scale) to ensure consistent behavior.
 The `prep_exponent` field is set to 1.0 (linear model) to match the `add_scatter!()`
 algorithm.
+
+**CRITICAL for Dual-Energy:** The `mean_energy_keV` parameter MUST match the value used in
+`geometry_aware_scatter_model()` for the same acquisition. Using mismatched energy values
+will cause wave artifacts in material decomposition.
 
 For CatSim-exact correction parameters, use `default_scatter_correction()` instead.
 
@@ -760,21 +845,25 @@ For CatSim-exact correction parameters, use `default_scatter_correction()` inste
 ```julia
 scanner = Scanner(source_to_isocenter=626.0, source_to_detector=1097.0)
 
-# Reference size correction
+# Reference size and energy correction
 correction = geometry_aware_scatter_correction(scanner)
 
-# With phantom size (must match scatter model)
-correction = geometry_aware_scatter_correction(scanner; phantom_diameter_cm=18.0)
+# With phantom size and energy (must match scatter model parameters)
+correction_low = geometry_aware_scatter_correction(scanner;
+    phantom_diameter_cm=30.0, mean_energy_keV=50.0)  # 80 kVp
+correction_high = geometry_aware_scatter_correction(scanner;
+    phantom_diameter_cm=30.0, mean_energy_keV=70.0)  # 140 kVp
 ```
 
 See also: [`default_scatter_correction`](@ref), [`geometry_aware_scatter_model`](@ref),
-[`estimate_phantom_diameter_cm`](@ref)
+[`estimate_phantom_diameter_cm`](@ref), [`compute_scatter_energy_scale`](@ref)
 """
 function geometry_aware_scatter_correction(
     scanner::Scanner;
     scale_factor::Float64 = 1.0,
     kernel_type::Symbol = :gaussian,
-    phantom_diameter_cm::Union{Nothing, Real} = nothing
+    phantom_diameter_cm::Union{Nothing, Real} = nothing,
+    mean_energy_keV::Union{Nothing, Real} = nothing
 )
     # Same geometry scaling as scatter model
     geometry_scale = compute_scatter_geometry_scale(scanner)
@@ -786,8 +875,15 @@ function geometry_aware_scatter_correction(
         1.0  # Use reference size (30 cm body)
     end
 
+    # Same energy scaling as scatter model
+    energy_scale = if mean_energy_keV !== nothing
+        compute_scatter_energy_scale(mean_energy_keV)
+    else
+        1.0  # Use reference energy (60 keV, ~120 kVp)
+    end
+
     # Use SAME coefficient and scaling as scatter addition for consistent simulation
-    correction_coefficient = SCATTER_REF_COEFFICIENT * geometry_scale * size_scale
+    correction_coefficient = SCATTER_REF_COEFFICIENT * geometry_scale * size_scale * energy_scale
 
     # Compute kernel FWHM in pixels
     kernel_fwhm = compute_scatter_kernel_fwhm_pixels(scanner)
@@ -828,3 +924,7 @@ export SCATTER_PHYSICAL_KERNEL_FWHM_MM, SCATTER_REF_CORRECTION_COEFFICIENT
 # Phantom size-aware scatter API
 export estimate_phantom_diameter_cm, compute_scatter_size_scale
 export SCATTER_REF_PHANTOM_DIAMETER_CM, SCATTER_SIZE_SCALING_EXPONENT
+
+# Energy-dependent scatter API
+export compute_scatter_energy_scale
+export SCATTER_REF_ENERGY_KEV, SCATTER_ENERGY_EXPONENT

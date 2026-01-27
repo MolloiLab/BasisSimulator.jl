@@ -300,45 +300,26 @@ function _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts)
     )
 
     # 2. Build PhysicsConfig (using high-kVp spectrum, with phantom for size-aware scatter)
-    # NOTE: SCATTER IS DISABLED for dual-energy forward projection!
-    # The scatter model is not energy-dependent, so using the same scatter coefficient
-    # for both 80 kVp and 140 kVp produces artifacts in material decomposition.
-    # See DE-SCATTER-RESEARCH story for details.
+    # NOTE: Scatter is now ENERGY-DEPENDENT! The forward_project_dual_energy function
+    # will create separate scatter configs for 80 kVp and 140 kVp using mean_energy_keV.
+    # See SCATTER-ENERGY-RESEARCH story for the physics rationale.
     energies_high, weights_high = resolve_spectrum(sim_opts, protocol)
 
-    # Create scatter-disabled sim_opts for DE forward projection
-    de_sim_opts = SimOptions(
-        sim_opts.fidelity,
-        sim_opts.use_fill_factor,
-        sim_opts.use_flat_filter,
-        sim_opts.use_bowtie_filter,
-        sim_opts.use_detector_efficiency,
-        false,  # use_scatter = false (DISABLED for DE)
-        false,  # use_scatter_correction = false (DISABLED for DE)
-        sim_opts.use_crosstalk,
-        sim_opts.use_optical_crosstalk,
-        sim_opts.use_focal_spot,
-        sim_opts.use_noise,
-        sim_opts.use_lag,
-        sim_opts.use_heel_effect,
-        sim_opts.use_das,
-        sim_opts.use_bhc,
-        sim_opts.seed,
-        sim_opts.n_energy_bins
-    )
-    config = build_physics_config(scanner, de_sim_opts, energies_high, weights_high; phantom=phantom)
+    # Build physics config with scatter enabled (energy dependence handled in forward_project_dual_energy)
+    config = build_physics_config(scanner, sim_opts, energies_high, weights_high; phantom=phantom)
 
     # 3. Build GSIProtocol from CTProtocol fields
     gsi = _build_gsi_protocol(protocol)
 
     # 4. Dual-energy forward projection (move mask to GPU if available)
+    # Pass scanner so forward_project_dual_energy can compute energy-dependent scatter
     materials = get_region_materials()
     mask_gpu = _to_gpu(phantom.mask)
     de_sino = forward_project_dual_energy(
         mask_gpu, geom, gsi;
         materials=materials,
         physics=config,
-        scanner=nothing  # Use GSI protocol's I0 directly
+        scanner=scanner  # Pass scanner for energy-dependent scatter and I0 calculation
     )
 
     # 5. Use high-kVp sinogram as primary (for noise and standard recon)
