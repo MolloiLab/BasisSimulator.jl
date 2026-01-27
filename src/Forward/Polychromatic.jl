@@ -869,6 +869,11 @@ function _apply_physics_no_noise!(
 
     # Apply deterministic physics effects only
     # Skip noise since DAS model handles it
+    #
+    # CRITICAL ORDER: Scatter add/correct MUST come BEFORE bowtie filter!
+    # The bowtie filter dramatically modifies projection values (especially at edges),
+    # which breaks scatter estimation if scatter operates on bowtie-filtered data.
+    # See SCATTER-V3-REORDER story for details.
 
     # Fill factor
     if config.fill_factor !== nothing
@@ -880,20 +885,21 @@ function _apply_physics_no_noise!(
         apply_flat_filter!(sinogram, config.flat_filter, geom; energy_keV=config.energy_keV)
     end
 
-    # Bowtie filter
-    if config.bowtie_filter !== nothing
-        apply_bowtie_filter!(sinogram, config.bowtie_filter, geom; energy_keV=config.energy_keV)
-    end
-
-    # Scatter
+    # Scatter (BEFORE bowtie filter!)
+    # Scatter operates on raw projection values without bowtie distortion
     if config.scatter !== nothing
         add_scatter!(sinogram, config.scatter)
     end
 
-    # Scatter CORRECTION (immediately after scatter addition)
-    # CRITICAL: Must apply before any other effects modify the signal
+    # Scatter CORRECTION (immediately after scatter addition, BEFORE bowtie)
+    # CRITICAL: Must apply before bowtie filter modifies the signal
     if config.scatter_correction !== nothing
         correct_scatter!(sinogram, config.scatter_correction)
+    end
+
+    # Bowtie filter (AFTER scatter add/correct)
+    if config.bowtie_filter !== nothing
+        apply_bowtie_filter!(sinogram, config.bowtie_filter, geom; energy_keV=config.energy_keV)
     end
 
     # Crosstalk

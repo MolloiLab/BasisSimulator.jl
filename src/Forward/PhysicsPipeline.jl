@@ -445,6 +445,10 @@ function apply_physics_effects!(
     # =========================================================================
     # STANDARD SINOGRAM-DOMAIN EFFECTS
     # =========================================================================
+    # CRITICAL ORDER: Scatter add/correct MUST come BEFORE bowtie filter!
+    # The bowtie filter dramatically modifies projection values (especially at edges),
+    # which breaks scatter estimation if scatter operates on bowtie-filtered data.
+    # See SCATTER-V3-REORDER story for details.
 
     # 1. Fill factor (detector active area)
     if config.fill_factor !== nothing
@@ -456,22 +460,22 @@ function apply_physics_effects!(
         apply_flat_filter!(sinogram, config.flat_filter, geom; energy_keV=config.energy_keV)
     end
 
-    # 3. Bowtie filter (angle-dependent filtration)
-    if config.bowtie_filter !== nothing
-        apply_bowtie_filter!(sinogram, config.bowtie_filter, geom; energy_keV=config.energy_keV)
-    end
-
-    # 4. Scatter (patient-dependent, large kernel convolution)
+    # 3. Scatter (BEFORE bowtie filter!)
+    # Scatter operates on raw projection values without bowtie distortion
     if config.scatter !== nothing
         add_scatter!(sinogram, config.scatter)
     end
 
-    # 4b. Scatter CORRECTION (immediately after scatter addition)
-    # CRITICAL: Must apply correction BEFORE noise and other stochastic effects.
+    # 3b. Scatter CORRECTION (immediately after scatter addition, BEFORE bowtie)
+    # CRITICAL: Must apply before bowtie filter modifies the signal.
     # The scatter estimate must see the same signal that scatter was added to.
-    # If correction is applied after noise, the estimate will be corrupted.
     if config.scatter_correction !== nothing
         correct_scatter!(sinogram, config.scatter_correction)
+    end
+
+    # 4. Bowtie filter (AFTER scatter add/correct)
+    if config.bowtie_filter !== nothing
+        apply_bowtie_filter!(sinogram, config.bowtie_filter, geom; energy_keV=config.energy_keV)
     end
 
     # 5. Crosstalk (detector pixel coupling)
