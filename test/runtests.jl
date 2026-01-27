@@ -203,6 +203,122 @@ end
     end
 
     # -------------------------------------------------------------------------
+    # Geometry-Aware Scatter (SCATTER-GEOMETRY-001)
+    # Tests for scatter scaling based on scanner geometry
+    # -------------------------------------------------------------------------
+    @testset "Geometry-Aware Scatter" begin
+        @testset "Reference Constants" begin
+            # Verify reference constants are defined and consistent
+            @test SCATTER_REF_SID_MM ≈ 540.0
+            @test SCATTER_REF_SDD_MM ≈ 950.0
+            @test SCATTER_REF_AIR_GAP_MM ≈ 410.0  # SDD - SID
+            @test SCATTER_REF_PIXEL_PITCH_MM ≈ 1.0
+            @test SCATTER_REF_COEFFICIENT ≈ 0.025
+            @test SCATTER_PHYSICAL_KERNEL_FWHM_MM ≈ 50.0
+            @test SCATTER_REF_CORRECTION_COEFFICIENT ≈ 0.0268
+        end
+
+        @testset "Reference Geometry Scale = 1.0" begin
+            # Default scanner (reference geometry) should give scale ≈ 1.0
+            scanner_ref = Scanner()  # SID=540, SDD=950
+            scale = compute_scatter_geometry_scale(scanner_ref)
+            @test scale ≈ 1.0 atol=0.01
+        end
+
+        @testset "Larger Air Gap Reduces Scatter" begin
+            # GE Revolution-like scanner (larger air gap → less scatter)
+            scanner_ge = Scanner(source_to_isocenter=626.0, source_to_detector=1097.0)
+            air_gap_ge = scanner_ge.source_to_detector - scanner_ge.source_to_isocenter
+            @test air_gap_ge ≈ 471.0
+
+            scale = compute_scatter_geometry_scale(scanner_ge)
+            # Expected: (410/471)² ≈ 0.758
+            @test scale < 1.0  # Less scatter than reference
+            @test scale ≈ 0.758 atol=0.01
+        end
+
+        @testset "Smaller Air Gap Increases Scatter" begin
+            # Compact scanner (smaller air gap → more scatter)
+            scanner_compact = Scanner(
+                source_to_isocenter=500.0,
+                source_to_detector=700.0  # Air gap = 200mm
+            )
+            scale = compute_scatter_geometry_scale(scanner_compact)
+            # Expected: (410/200)² ≈ 4.2
+            @test scale > 1.0  # More scatter than reference
+            @test scale ≈ 4.2025 atol=0.1
+        end
+
+        @testset "Kernel FWHM Scales with Pixel Pitch" begin
+            # 1.0 mm pitch → 50 pixels
+            scanner_1mm = Scanner(detector_col_size=1.0)
+            fwhm_1mm = compute_scatter_kernel_fwhm_pixels(scanner_1mm)
+            @test fwhm_1mm ≈ 50.0
+
+            # 0.5 mm pitch → 100 pixels (same physical spread)
+            scanner_05mm = Scanner(detector_col_size=0.5)
+            fwhm_05mm = compute_scatter_kernel_fwhm_pixels(scanner_05mm)
+            @test fwhm_05mm ≈ 100.0
+
+            # 2.0 mm pitch → 25 pixels
+            scanner_2mm = Scanner(detector_col_size=2.0)
+            fwhm_2mm = compute_scatter_kernel_fwhm_pixels(scanner_2mm)
+            @test fwhm_2mm ≈ 25.0
+        end
+
+        @testset "Geometry-Aware Scatter Model" begin
+            # Reference geometry
+            scanner_ref = Scanner()
+            model_ref = geometry_aware_scatter_model(scanner_ref)
+            @test model_ref.scatter_coefficient ≈ 0.025 atol=0.001
+            @test model_ref.kernel_fwhm ≈ 50.0
+            @test model_ref.scale_factor ≈ 1.0
+
+            # GE Revolution-like (larger air gap)
+            scanner_ge = Scanner(
+                source_to_isocenter=626.0,
+                source_to_detector=1097.0,
+                detector_col_size=0.5
+            )
+            model_ge = geometry_aware_scatter_model(scanner_ge)
+            @test model_ge.scatter_coefficient < 0.025  # Less scatter
+            @test model_ge.scatter_coefficient ≈ 0.019 atol=0.001
+            @test model_ge.kernel_fwhm ≈ 100.0  # More pixels for same physical size
+
+            # User scale factor still works
+            model_scaled = geometry_aware_scatter_model(scanner_ref; scale_factor=2.0)
+            @test model_scaled.scale_factor ≈ 2.0
+            @test model_scaled.scatter_coefficient ≈ 0.025  # Base unchanged
+        end
+
+        @testset "Geometry-Aware Scatter Correction" begin
+            scanner_ref = Scanner()
+            corr_ref = geometry_aware_scatter_correction(scanner_ref)
+            @test corr_ref.correction_coefficient ≈ 0.0268 atol=0.001
+            @test corr_ref.prep_exponent ≈ 0.9
+            @test corr_ref.kernel_fwhm ≈ 50.0
+
+            # Larger air gap → less correction needed
+            scanner_ge = Scanner(source_to_isocenter=626.0, source_to_detector=1097.0)
+            corr_ge = geometry_aware_scatter_correction(scanner_ge)
+            @test corr_ge.correction_coefficient < 0.0268
+        end
+
+        @testset "Backward Compatibility" begin
+            # default_scatter_model still works (unchanged API)
+            model_default = default_scatter_model()
+            @test model_default.scatter_coefficient ≈ 0.025
+            @test model_default.kernel_fwhm ≈ 50.0
+            @test model_default.scale_factor ≈ 1.0
+
+            # default_scatter_correction still works
+            corr_default = default_scatter_correction()
+            @test corr_default.correction_coefficient ≈ 0.0268
+            @test corr_default.prep_exponent ≈ 0.9
+        end
+    end
+
+    # -------------------------------------------------------------------------
     # GE Revolution Apex Scanner (SCANNER-002)
     # All parameters verified against RESEARCH-001 document
     # -------------------------------------------------------------------------
