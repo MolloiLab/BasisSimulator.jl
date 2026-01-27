@@ -327,11 +327,12 @@ end
 
 Apply scatter correction to sinogram (in-place, GPU-native).
 
-Uses CatSim-style convolution-based scatter estimation and subtraction.
+Uses convolution-based scatter estimation and subtraction. The algorithm matches
+`add_scatter!()` to ensure consistent scatter estimation for simulation scenarios.
 
 The algorithm (per view):
 1. Compute prep = sinogram value (already in log domain)
-2. Compute scatter_pre = exp(-prep) × prep^α × C × scale
+2. Compute scatter_pre = exp(-prep) × prep × C × scale
 3. Scatter estimate = convolve(scatter_pre, kernel)
 4. Convert sinogram to intensity: I = exp(-sinogram)
 5. Subtract scatter: I_corrected = I - scatter_estimate
@@ -348,8 +349,9 @@ Modified sinogram with scatter correction applied.
 - Reduces cupping artifacts in uniform phantoms
 - Center-to-edge HU difference should be < 20 HU after correction
 - Works in log domain (takes sinogram, applies correction, returns sinogram)
-
-Reference: CatSim Scatter_Correction.py
+- Algorithm matches `add_scatter!()` for consistent simulation behavior.
+  The `prep_exponent` field is kept for API compatibility but is now ignored
+  in favor of linear (exponent=1.0) model matching scatter addition.
 """
 function correct_scatter!(sinogram::AbstractArray{T,3}, model::ScatterCorrectionModel) where T
     n_cols = size(sinogram, 1)
@@ -358,7 +360,7 @@ function correct_scatter!(sinogram::AbstractArray{T,3}, model::ScatterCorrection
 
     # Combined correction coefficient
     C = T(model.correction_coefficient * model.scale_factor)
-    alpha = T(model.prep_exponent)
+    # NOTE: prep_exponent is now ignored - we use linear model to match add_scatter!()
 
     # Create scatter kernel on CPU
     # Reuse the same kernel creation as for scatter addition
@@ -395,7 +397,8 @@ function correct_scatter!(sinogram::AbstractArray{T,3}, model::ScatterCorrection
         intensity = exp(-clamped_prep)
 
         # Compute scatter estimate via spatial convolution
-        # scatter_est = convolve(exp(-prep) × prep^α × C, kernel)
+        # scatter_est = convolve(exp(-prep) × prep × C, kernel)
+        # NOTE: Using linear model (prep × C) to match add_scatter!()
         scatter_est = zero(T)
         for dj in -half_k:half_k
             for di in -half_k:half_k
@@ -407,9 +410,9 @@ function correct_scatter!(sinogram::AbstractArray{T,3}, model::ScatterCorrection
                 src_clamped = min(max(src_prep, eps), T(15))
                 src_intensity = exp(-src_clamped)
 
-                # Scatter pre-signal: intensity × prep^α × C
-                # CatSim: sc_preConv = phantomScan × prep^0.9 × 0.0268
-                scatter_pre = src_intensity * (src_clamped ^ alpha) * C
+                # Scatter pre-signal: intensity × prep × C
+                # Matches add_scatter!() formula for consistent simulation
+                scatter_pre = src_intensity * src_clamped * C
 
                 # Kernel weight
                 ki = di + half_k + 1
@@ -597,8 +600,8 @@ end
 
 Create a scatter correction model with parameters automatically scaled for scanner geometry.
 
-Uses the same geometry scaling as `geometry_aware_scatter_model` for consistency
-between scatter simulation and correction.
+Uses the same geometry scaling AND base coefficient as `geometry_aware_scatter_model`
+for consistent scatter estimation and correction in simulation scenarios.
 
 # Arguments
 - `scanner::Scanner`: Scanner definition with geometry parameters
@@ -609,6 +612,13 @@ between scatter simulation and correction.
 
 # Returns
 `ScatterCorrectionModel` with geometry-appropriate parameters.
+
+# Notes
+The correction uses the SAME coefficient as scatter addition (SCATTER_REF_COEFFICIENT)
+to ensure consistent behavior. The `prep_exponent` field is set to 1.0 (linear model)
+to match the `add_scatter!()` algorithm.
+
+For CatSim-exact correction parameters, use `default_scatter_correction()` instead.
 
 # Example
 ```julia
@@ -626,14 +636,16 @@ function geometry_aware_scatter_correction(
     # Same geometry scaling as scatter model
     geometry_scale = compute_scatter_geometry_scale(scanner)
 
-    # Scale the base correction coefficient
-    correction_coefficient = SCATTER_REF_CORRECTION_COEFFICIENT * geometry_scale
+    # Use SAME coefficient as scatter addition for consistent simulation
+    # (Previously used SCATTER_REF_CORRECTION_COEFFICIENT = 0.0268, now uses 0.025)
+    correction_coefficient = SCATTER_REF_COEFFICIENT * geometry_scale
 
     # Compute kernel FWHM in pixels
     kernel_fwhm = compute_scatter_kernel_fwhm_pixels(scanner)
 
-    # CatSim-exact exponent (not geometry-dependent)
-    prep_exponent = 0.9
+    # Linear model (exponent = 1.0) to match add_scatter!()
+    # The prep_exponent field is kept for API compatibility but is ignored by correct_scatter!()
+    prep_exponent = 1.0
 
     return ScatterCorrectionModel(
         correction_coefficient,
