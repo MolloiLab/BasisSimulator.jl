@@ -294,14 +294,16 @@ end
         @testset "Geometry-Aware Scatter Correction" begin
             scanner_ref = Scanner()
             corr_ref = geometry_aware_scatter_correction(scanner_ref)
-            @test corr_ref.correction_coefficient ≈ 0.0268 atol=0.001
-            @test corr_ref.prep_exponent ≈ 0.9
+            # Uses SCATTER_REF_COEFFICIENT (0.025) to match scatter addition
+            @test corr_ref.correction_coefficient ≈ SCATTER_REF_COEFFICIENT atol=0.001
+            # Linear model (exponent=1.0) to match add_scatter!()
+            @test corr_ref.prep_exponent ≈ 1.0
             @test corr_ref.kernel_fwhm ≈ 50.0
 
             # Larger air gap → less correction needed
             scanner_ge = Scanner(source_to_isocenter=626.0, source_to_detector=1097.0)
             corr_ge = geometry_aware_scatter_correction(scanner_ge)
-            @test corr_ge.correction_coefficient < 0.0268
+            @test corr_ge.correction_coefficient < SCATTER_REF_COEFFICIENT
         end
 
         @testset "Backward Compatibility" begin
