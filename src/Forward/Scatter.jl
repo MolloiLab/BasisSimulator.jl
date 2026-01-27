@@ -440,6 +440,212 @@ end
 
 
 # =============================================================================
+# Geometry-Aware Scatter (adapts to scanner configuration)
+# =============================================================================
+
+# Reference geometry constants (CatSim/BasisSimulator defaults)
+# These values define the baseline for which the scatter coefficient was calibrated
+
+"""Reference source-to-isocenter distance (mm) for scatter calibration."""
+const SCATTER_REF_SID_MM = 540.0
+
+"""Reference source-to-detector distance (mm) for scatter calibration."""
+const SCATTER_REF_SDD_MM = 950.0
+
+"""Reference air gap (mm) = SDD - SID for scatter calibration."""
+const SCATTER_REF_AIR_GAP_MM = SCATTER_REF_SDD_MM - SCATTER_REF_SID_MM  # 410.0
+
+"""Reference detector pixel pitch (mm) for scatter calibration."""
+const SCATTER_REF_PIXEL_PITCH_MM = 1.0
+
+"""Base scatter coefficient calibrated for reference geometry (~15% SPR)."""
+const SCATTER_REF_COEFFICIENT = 0.025
+
+"""Physical scatter kernel FWHM at detector (mm) - approximately constant."""
+const SCATTER_PHYSICAL_KERNEL_FWHM_MM = 50.0
+
+"""Reference scatter correction coefficient (CatSim-exact)."""
+const SCATTER_REF_CORRECTION_COEFFICIENT = 0.0268
+
+"""
+    compute_scatter_geometry_scale(scanner::Scanner) -> Float64
+
+Compute scatter scaling factor based on scanner geometry relative to reference.
+
+Returns a multiplier for the base scatter coefficient. Values < 1.0 indicate
+less scatter than reference (e.g., larger air gap), values > 1.0 indicate
+more scatter than reference.
+
+# Physics
+Scatter intensity at detector scales approximately with (air_gap_ref/air_gap)²
+due to the geometric divergence of scattered photons. This inverse-square
+behavior is consistent with Monte Carlo studies of scatter transport.
+
+# Example
+```julia
+# Reference geometry scanner
+scanner_ref = Scanner()  # SID=540, SDD=950
+scale = compute_scatter_geometry_scale(scanner_ref)  # ≈ 1.0
+
+# GE Revolution (larger air gap)
+scanner_ge = Scanner(source_to_isocenter=626.0, source_to_detector=1097.0)
+scale = compute_scatter_geometry_scale(scanner_ge)  # ≈ 0.76
+```
+"""
+function compute_scatter_geometry_scale(scanner::Scanner)
+    # Current air gap
+    air_gap = scanner.source_to_detector - scanner.source_to_isocenter
+
+    # Inverse square scaling: larger air gap → less scatter → scale < 1
+    scale = (SCATTER_REF_AIR_GAP_MM / air_gap)^2
+
+    # Clamp to reasonable range to avoid extreme values
+    return clamp(scale, 0.1, 10.0)
+end
+
+"""
+    compute_scatter_kernel_fwhm_pixels(scanner::Scanner) -> Float64
+
+Compute scatter kernel FWHM in pixels for given scanner geometry.
+
+The physical scatter kernel size (~50 mm FWHM at detector) is approximately
+constant regardless of scanner geometry. This function converts to pixel units
+based on detector pitch.
+
+# Example
+```julia
+# 1.0 mm pitch (reference)
+scanner = Scanner(detector_col_size=1.0)
+fwhm = compute_scatter_kernel_fwhm_pixels(scanner)  # = 50.0 pixels
+
+# 0.5 mm pitch (high resolution)
+scanner = Scanner(detector_col_size=0.5)
+fwhm = compute_scatter_kernel_fwhm_pixels(scanner)  # = 100.0 pixels
+```
+"""
+function compute_scatter_kernel_fwhm_pixels(scanner::Scanner)
+    return SCATTER_PHYSICAL_KERNEL_FWHM_MM / scanner.detector_col_size
+end
+
+"""
+    geometry_aware_scatter_model(scanner::Scanner; scale_factor=1.0, kernel_type=:gaussian)
+
+Create a scatter model with parameters automatically scaled for scanner geometry.
+
+This function computes appropriate scatter parameters based on the scanner's
+physical geometry, ensuring consistent SPR (~15%) regardless of scanner configuration.
+
+# Arguments
+- `scanner::Scanner`: Scanner definition with geometry parameters
+
+# Keyword Arguments
+- `scale_factor::Float64 = 1.0`: Additional user multiplier for scatter magnitude
+- `kernel_type::Symbol = :gaussian`: Kernel shape (:gaussian or :exponential)
+
+# Returns
+`ScatterModel` with geometry-appropriate parameters.
+
+# Scaling Behavior
+- Scatter coefficient scales with (air_gap_ref / air_gap)²
+- Kernel FWHM scales with physical_fwhm_mm / detector_pixel_pitch_mm
+- `scale_factor` applies on top of geometry scaling
+
+# Example
+```julia
+# Default scanner (reference geometry)
+scanner = Scanner()
+model = geometry_aware_scatter_model(scanner)
+# model.scatter_coefficient ≈ 0.025
+# model.kernel_fwhm ≈ 50.0 pixels
+
+# GE Revolution (larger air gap, smaller pitch)
+scanner = Scanner(
+    source_to_isocenter = 626.0,
+    source_to_detector = 1097.0,
+    detector_col_size = 0.5
+)
+model = geometry_aware_scatter_model(scanner)
+# model.scatter_coefficient ≈ 0.019 (less scatter due to larger air gap)
+# model.kernel_fwhm ≈ 100.0 pixels (same physical size, more pixels)
+
+# Increase scatter beyond geometry-based estimate
+model = geometry_aware_scatter_model(scanner; scale_factor=1.5)
+```
+
+See also: [`default_scatter_model`](@ref), [`geometry_aware_scatter_correction`](@ref)
+"""
+function geometry_aware_scatter_model(
+    scanner::Scanner;
+    scale_factor::Float64 = 1.0,
+    kernel_type::Symbol = :gaussian
+)
+    # Compute geometry-based scaling
+    geometry_scale = compute_scatter_geometry_scale(scanner)
+
+    # Scale the base coefficient
+    scatter_coefficient = SCATTER_REF_COEFFICIENT * geometry_scale
+
+    # Compute kernel FWHM in pixels for this detector
+    kernel_fwhm = compute_scatter_kernel_fwhm_pixels(scanner)
+
+    # Return model with combined scale_factor
+    return ScatterModel(scatter_coefficient, scale_factor, kernel_fwhm, kernel_type)
+end
+
+"""
+    geometry_aware_scatter_correction(scanner::Scanner; scale_factor=1.0, kernel_type=:gaussian)
+
+Create a scatter correction model with parameters automatically scaled for scanner geometry.
+
+Uses the same geometry scaling as `geometry_aware_scatter_model` for consistency
+between scatter simulation and correction.
+
+# Arguments
+- `scanner::Scanner`: Scanner definition with geometry parameters
+
+# Keyword Arguments
+- `scale_factor::Float64 = 1.0`: Additional user multiplier for correction strength
+- `kernel_type::Symbol = :gaussian`: Kernel shape (:gaussian or :exponential)
+
+# Returns
+`ScatterCorrectionModel` with geometry-appropriate parameters.
+
+# Example
+```julia
+scanner = Scanner(source_to_isocenter=626.0, source_to_detector=1097.0)
+correction = geometry_aware_scatter_correction(scanner)
+```
+
+See also: [`default_scatter_correction`](@ref), [`geometry_aware_scatter_model`](@ref)
+"""
+function geometry_aware_scatter_correction(
+    scanner::Scanner;
+    scale_factor::Float64 = 1.0,
+    kernel_type::Symbol = :gaussian
+)
+    # Same geometry scaling as scatter model
+    geometry_scale = compute_scatter_geometry_scale(scanner)
+
+    # Scale the base correction coefficient
+    correction_coefficient = SCATTER_REF_CORRECTION_COEFFICIENT * geometry_scale
+
+    # Compute kernel FWHM in pixels
+    kernel_fwhm = compute_scatter_kernel_fwhm_pixels(scanner)
+
+    # CatSim-exact exponent (not geometry-dependent)
+    prep_exponent = 0.9
+
+    return ScatterCorrectionModel(
+        correction_coefficient,
+        scale_factor,
+        prep_exponent,
+        kernel_fwhm,
+        kernel_type
+    )
+end
+
+
+# =============================================================================
 # Exports
 # =============================================================================
 
@@ -448,3 +654,12 @@ export create_scatter_kernel_spatial
 export add_scatter!, add_scatter
 export ScatterCorrectionModel, default_scatter_correction
 export correct_scatter!, correct_scatter
+
+# Geometry-aware scatter API
+export geometry_aware_scatter_model, geometry_aware_scatter_correction
+export compute_scatter_geometry_scale, compute_scatter_kernel_fwhm_pixels
+
+# Reference constants for scatter calibration
+export SCATTER_REF_SID_MM, SCATTER_REF_SDD_MM, SCATTER_REF_AIR_GAP_MM
+export SCATTER_REF_PIXEL_PITCH_MM, SCATTER_REF_COEFFICIENT
+export SCATTER_PHYSICAL_KERNEL_FWHM_MM, SCATTER_REF_CORRECTION_COEFFICIENT
