@@ -280,7 +280,49 @@ function forward_project_dual_energy(
                           rotation_time_s=effective_rotation_high,
                           n_views=protocol.n_views)
 
+        # Create ENERGY-DEPENDENT scatter models if scatter is enabled
+        # See SCATTER-ENERGY-RESEARCH: Lower kVp (80) has higher SPR than higher kVp (140)
+        # Using mean_energy_keV ensures scatter coefficient scales appropriately for each energy
+        scatter_low = nothing
+        scatter_correction_low = nothing
+        scatter_high = nothing
+        scatter_correction_high = nothing
+
+        if physics.scatter !== nothing
+            # Estimate phantom diameter from mask if possible (using scanner for geometry)
+            # Note: We use the geometry from physics.scatter as reference for size estimation
+            phantom_diameter_cm = nothing  # Will use reference size if not estimable
+
+            scatter_low = geometry_aware_scatter_model(scanner;
+                scale_factor=physics.scatter.scale_factor,
+                kernel_type=physics.scatter.kernel_type,
+                phantom_diameter_cm=phantom_diameter_cm,
+                mean_energy_keV=mean_e_low)  # Energy-dependent scaling for 80 kVp
+            scatter_high = geometry_aware_scatter_model(scanner;
+                scale_factor=physics.scatter.scale_factor,
+                kernel_type=physics.scatter.kernel_type,
+                phantom_diameter_cm=phantom_diameter_cm,
+                mean_energy_keV=mean_e_high)  # Energy-dependent scaling for 140 kVp
+        end
+
+        if physics.scatter_correction !== nothing
+            phantom_diameter_cm = nothing  # Same as scatter model
+
+            scatter_correction_low = geometry_aware_scatter_correction(scanner;
+                scale_factor=physics.scatter_correction.scale_factor,
+                kernel_type=physics.scatter_correction.kernel_type,
+                phantom_diameter_cm=phantom_diameter_cm,
+                mean_energy_keV=mean_e_low)  # Must match scatter model energy
+            scatter_correction_high = geometry_aware_scatter_correction(scanner;
+                scale_factor=physics.scatter_correction.scale_factor,
+                kernel_type=physics.scatter_correction.kernel_type,
+                phantom_diameter_cm=phantom_diameter_cm,
+                mean_energy_keV=mean_e_high)  # Must match scatter model energy
+        end
+
         # Create separate noise models
+        noise_low = physics.noise
+        noise_high = physics.noise
         if physics.noise !== nothing
             noise_low = DetectorModel(
                 physics.noise.blur_fwhm,
@@ -294,47 +336,46 @@ function forward_project_dual_energy(
                 physics.noise.electronic_noise_std,
                 physics.noise.seed !== nothing ? physics.noise.seed + 1 : nothing
             )
-
-            # Create PhysicsConfig with correct field order matching struct definition
-            # Note: scatter is disabled for dual-energy forward projection because
-            # the scatter model lacks energy dependence (see DE-SCATTER-RESEARCH)
-            physics_low = PhysicsConfig(
-                physics.fill_factor,        # 1. fill_factor
-                physics.flat_filter,        # 2. flat_filter
-                physics.bowtie_filter,      # 3. bowtie_filter
-                nothing,                    # 4. scatter (DISABLED for DE)
-                nothing,                    # 5. scatter_correction (DISABLED for DE)
-                physics.crosstalk,          # 6. crosstalk
-                physics.optical_crosstalk,  # 7. optical_crosstalk
-                physics.focal_spot,         # 8. focal_spot
-                physics.detector_efficiency,# 9. detector_efficiency
-                noise_low,                  # 10. noise
-                physics.lag,                # 11. lag
-                physics.noise_seed,         # 12. noise_seed
-                mean_e_low,                 # 13. energy_keV
-                physics.heel_effect,        # 14. heel_effect
-                physics.das_model,          # 15. das_model
-                physics.bhc                 # 16. bhc
-            )
-            physics_high = PhysicsConfig(
-                physics.fill_factor,        # 1. fill_factor
-                physics.flat_filter,        # 2. flat_filter
-                physics.bowtie_filter,      # 3. bowtie_filter
-                nothing,                    # 4. scatter (DISABLED for DE)
-                nothing,                    # 5. scatter_correction (DISABLED for DE)
-                physics.crosstalk,          # 6. crosstalk
-                physics.optical_crosstalk,  # 7. optical_crosstalk
-                physics.focal_spot,         # 8. focal_spot
-                physics.detector_efficiency,# 9. detector_efficiency
-                noise_high,                 # 10. noise
-                physics.lag,                # 11. lag
-                physics.noise_seed,         # 12. noise_seed
-                mean_e_high,                # 13. energy_keV
-                physics.heel_effect,        # 14. heel_effect
-                physics.das_model,          # 15. das_model
-                physics.bhc                 # 16. bhc
-            )
         end
+
+        # Create PhysicsConfig with correct field order matching struct definition
+        # Now using ENERGY-DEPENDENT scatter models instead of disabling scatter
+        physics_low = PhysicsConfig(
+            physics.fill_factor,        # 1. fill_factor
+            physics.flat_filter,        # 2. flat_filter
+            physics.bowtie_filter,      # 3. bowtie_filter
+            scatter_low,                # 4. scatter (energy-dependent for 80 kVp)
+            scatter_correction_low,     # 5. scatter_correction (energy-dependent)
+            physics.crosstalk,          # 6. crosstalk
+            physics.optical_crosstalk,  # 7. optical_crosstalk
+            physics.focal_spot,         # 8. focal_spot
+            physics.detector_efficiency,# 9. detector_efficiency
+            noise_low,                  # 10. noise
+            physics.lag,                # 11. lag
+            physics.noise_seed,         # 12. noise_seed
+            mean_e_low,                 # 13. energy_keV
+            physics.heel_effect,        # 14. heel_effect
+            physics.das_model,          # 15. das_model
+            physics.bhc                 # 16. bhc
+        )
+        physics_high = PhysicsConfig(
+            physics.fill_factor,        # 1. fill_factor
+            physics.flat_filter,        # 2. flat_filter
+            physics.bowtie_filter,      # 3. bowtie_filter
+            scatter_high,               # 4. scatter (energy-dependent for 140 kVp)
+            scatter_correction_high,    # 5. scatter_correction (energy-dependent)
+            physics.crosstalk,          # 6. crosstalk
+            physics.optical_crosstalk,  # 7. optical_crosstalk
+            physics.focal_spot,         # 8. focal_spot
+            physics.detector_efficiency,# 9. detector_efficiency
+            noise_high,                 # 10. noise
+            physics.lag,                # 11. lag
+            physics.noise_seed,         # 12. noise_seed
+            mean_e_high,                # 13. energy_keV
+            physics.heel_effect,        # 14. heel_effect
+            physics.das_model,          # 15. das_model
+            physics.bhc                 # 16. bhc
+        )
     end
 
     # Forward project low kVp
