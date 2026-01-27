@@ -466,6 +466,14 @@ function apply_physics_effects!(
         add_scatter!(sinogram, config.scatter)
     end
 
+    # 4b. Scatter CORRECTION (immediately after scatter addition)
+    # CRITICAL: Must apply correction BEFORE noise and other stochastic effects.
+    # The scatter estimate must see the same signal that scatter was added to.
+    # If correction is applied after noise, the estimate will be corrupted.
+    if config.scatter_correction !== nothing
+        correct_scatter!(sinogram, config.scatter_correction)
+    end
+
     # 5. Crosstalk (detector pixel coupling)
     if config.crosstalk !== nothing
         apply_crosstalk!(sinogram, config.crosstalk)
@@ -500,18 +508,10 @@ function apply_physics_effects!(
     end
 
     # =========================================================================
-    # SCATTER CORRECTION (sinogram domain, after all physics effects)
-    # =========================================================================
-    # Scatter correction estimates and subtracts scatter contribution
-    # This reduces cupping artifacts caused by scatter
-    # Applied BEFORE BHC since BHC assumes scatter-corrected data
-    if config.scatter_correction !== nothing
-        correct_scatter!(sinogram, config.scatter_correction)
-    end
-
-    # =========================================================================
     # BEAM HARDENING CORRECTION (sinogram domain, applied last)
     # =========================================================================
+    # NOTE: Scatter correction was moved to step 4b (immediately after scatter addition)
+    # to ensure the correction sees the same signal that scatter was added to.
     if config.bhc !== nothing
         apply_bhc!(sinogram, config.bhc)
     end
