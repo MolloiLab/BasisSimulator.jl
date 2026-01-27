@@ -846,17 +846,11 @@ function _forward_project_with_signal_chain!(
     end
 
     # =========================================================================
-    # STEP 10: Scatter correction (after log transform, before BHC)
+    # STEP 10: Beam hardening correction
     # =========================================================================
-    # Apply scatter correction if specified in physics config
-    # This estimates and subtracts scatter to reduce cupping artifacts
-    if physics !== nothing && physics.scatter_correction !== nothing
-        correct_scatter!(sinogram, physics.scatter_correction)
-    end
-
-    # =========================================================================
-    # STEP 11: Beam hardening correction
-    # =========================================================================
+    # NOTE: Scatter correction is now applied in step 2 (_apply_physics_no_noise!)
+    # immediately after scatter addition, BEFORE any other effects modify the signal.
+    # This ensures the correction estimates scatter from the same signal it was added to.
     if bhc !== nothing
         apply_bhc!(sinogram, bhc)
     end
@@ -894,6 +888,12 @@ function _apply_physics_no_noise!(
     # Scatter
     if config.scatter !== nothing
         add_scatter!(sinogram, config.scatter)
+    end
+
+    # Scatter CORRECTION (immediately after scatter addition)
+    # CRITICAL: Must apply before any other effects modify the signal
+    if config.scatter_correction !== nothing
+        correct_scatter!(sinogram, config.scatter_correction)
     end
 
     # Crosstalk
