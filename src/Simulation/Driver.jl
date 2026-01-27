@@ -6,6 +6,34 @@ High-level driver for running end-to-end CT simulations.
 
 export simulate, SimulationResult
 
+# =============================================================================
+# GPU Array Handling
+# =============================================================================
+
+"""
+    _to_gpu(arr::AbstractArray)
+
+Move array to GPU if a GPU backend is available.
+Automatically detects Metal, CUDA, or AMDGPU and uses the appropriate array type.
+Falls back to CPU if no GPU backend is loaded.
+"""
+function _to_gpu(arr::AbstractArray)
+    # Check for Metal (Apple Silicon)
+    if isdefined(Main, :Metal) && isdefined(Main.Metal, :MtlArray)
+        return Main.Metal.MtlArray(arr)
+    end
+    # Check for CUDA (NVIDIA)
+    if isdefined(Main, :CUDA) && isdefined(Main.CUDA, :CuArray)
+        return Main.CUDA.CuArray(arr)
+    end
+    # Check for AMDGPU (AMD)
+    if isdefined(Main, :AMDGPU) && isdefined(Main.AMDGPU, :ROCArray)
+        return Main.AMDGPU.ROCArray(arr)
+    end
+    # No GPU backend - return as-is
+    return arr
+end
+
 """
     SimulationResult
 
@@ -227,10 +255,11 @@ function _simulate_axial_single(phantom, scanner, protocol, sim_opts, recon_opts
     # 3. Build PhysicsConfig (with phantom for size-aware scatter)
     config = build_physics_config(scanner, sim_opts, energies, weights; phantom=phantom)
 
-    # 4. Forward Project
+    # 4. Forward Project (move mask to GPU if available)
     materials = get_region_materials()
+    mask_gpu = _to_gpu(phantom.mask)
     sino_ideal = forward_project(
-        phantom.mask, geom;
+        mask_gpu, geom;
         energies=energies, weights=weights,
         materials=materials, physics=config
     )
@@ -271,16 +300,42 @@ function _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts)
     )
 
     # 2. Build PhysicsConfig (using high-kVp spectrum, with phantom for size-aware scatter)
+    # NOTE: SCATTER IS DISABLED for dual-energy forward projection!
+    # The scatter model is not energy-dependent, so using the same scatter coefficient
+    # for both 80 kVp and 140 kVp produces artifacts in material decomposition.
+    # See DE-SCATTER-RESEARCH story for details.
     energies_high, weights_high = resolve_spectrum(sim_opts, protocol)
-    config = build_physics_config(scanner, sim_opts, energies_high, weights_high; phantom=phantom)
+
+    # Create scatter-disabled sim_opts for DE forward projection
+    de_sim_opts = SimOptions(
+        sim_opts.fidelity,
+        sim_opts.use_fill_factor,
+        sim_opts.use_flat_filter,
+        sim_opts.use_bowtie_filter,
+        sim_opts.use_detector_efficiency,
+        false,  # use_scatter = false (DISABLED for DE)
+        false,  # use_scatter_correction = false (DISABLED for DE)
+        sim_opts.use_crosstalk,
+        sim_opts.use_optical_crosstalk,
+        sim_opts.use_focal_spot,
+        sim_opts.use_noise,
+        sim_opts.use_lag,
+        sim_opts.use_heel_effect,
+        sim_opts.use_das,
+        sim_opts.use_bhc,
+        sim_opts.seed,
+        sim_opts.n_energy_bins
+    )
+    config = build_physics_config(scanner, de_sim_opts, energies_high, weights_high; phantom=phantom)
 
     # 3. Build GSIProtocol from CTProtocol fields
     gsi = _build_gsi_protocol(protocol)
 
-    # 4. Dual-energy forward projection
+    # 4. Dual-energy forward projection (move mask to GPU if available)
     materials = get_region_materials()
+    mask_gpu = _to_gpu(phantom.mask)
     de_sino = forward_project_dual_energy(
-        phantom.mask, geom, gsi;
+        mask_gpu, geom, gsi;
         materials=materials,
         physics=config,
         scanner=nothing  # Use GSI protocol's I0 directly
@@ -478,10 +533,11 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts)
     # 4. Build PCCT detector from Scanner
     pcct_detector = _build_pcct_detector(scanner)
 
-    # 5. PCCT forward projection (mask+materials → energy-resolved sinogram)
+    # 5. PCCT forward projection (mask+materials → energy-resolved sinogram, GPU if available)
     materials = get_region_materials()
+    mask_gpu = _to_gpu(phantom.mask)
     pcct_sino = pcct_forward_project(
-        phantom.mask, geom, pcct_detector;
+        mask_gpu, geom, pcct_detector;
         energies=energies, weights=weights,
         materials=materials,
         apply_spectral_response=true

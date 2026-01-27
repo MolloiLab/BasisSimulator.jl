@@ -295,19 +295,44 @@ function forward_project_dual_energy(
                 physics.noise.seed !== nothing ? physics.noise.seed + 1 : nothing
             )
 
+            # Create PhysicsConfig with correct field order matching struct definition
+            # Note: scatter is disabled for dual-energy forward projection because
+            # the scatter model lacks energy dependence (see DE-SCATTER-RESEARCH)
             physics_low = PhysicsConfig(
-                physics.fill_factor, physics.flat_filter, physics.bowtie_filter,
-                physics.heel_effect, physics.scatter, physics.focal_spot,
-                physics.crosstalk, physics.detector_efficiency, noise_low,
-                physics.lag, physics.das, physics.bhc, physics.air_scan,
-                physics.scatter_correction, mean_e_low, physics.noise_seed
+                physics.fill_factor,        # 1. fill_factor
+                physics.flat_filter,        # 2. flat_filter
+                physics.bowtie_filter,      # 3. bowtie_filter
+                nothing,                    # 4. scatter (DISABLED for DE)
+                nothing,                    # 5. scatter_correction (DISABLED for DE)
+                physics.crosstalk,          # 6. crosstalk
+                physics.optical_crosstalk,  # 7. optical_crosstalk
+                physics.focal_spot,         # 8. focal_spot
+                physics.detector_efficiency,# 9. detector_efficiency
+                noise_low,                  # 10. noise
+                physics.lag,                # 11. lag
+                physics.noise_seed,         # 12. noise_seed
+                mean_e_low,                 # 13. energy_keV
+                physics.heel_effect,        # 14. heel_effect
+                physics.das_model,          # 15. das_model
+                physics.bhc                 # 16. bhc
             )
             physics_high = PhysicsConfig(
-                physics.fill_factor, physics.flat_filter, physics.bowtie_filter,
-                physics.heel_effect, physics.scatter, physics.focal_spot,
-                physics.crosstalk, physics.detector_efficiency, noise_high,
-                physics.lag, physics.das, physics.bhc, physics.air_scan,
-                physics.scatter_correction, mean_e_high, physics.noise_seed
+                physics.fill_factor,        # 1. fill_factor
+                physics.flat_filter,        # 2. flat_filter
+                physics.bowtie_filter,      # 3. bowtie_filter
+                nothing,                    # 4. scatter (DISABLED for DE)
+                nothing,                    # 5. scatter_correction (DISABLED for DE)
+                physics.crosstalk,          # 6. crosstalk
+                physics.optical_crosstalk,  # 7. optical_crosstalk
+                physics.focal_spot,         # 8. focal_spot
+                physics.detector_efficiency,# 9. detector_efficiency
+                noise_high,                 # 10. noise
+                physics.lag,                # 11. lag
+                physics.noise_seed,         # 12. noise_seed
+                mean_e_high,                # 13. energy_keV
+                physics.heel_effect,        # 14. heel_effect
+                physics.das_model,          # 15. das_model
+                physics.bhc                 # 16. bhc
             )
         end
     end
