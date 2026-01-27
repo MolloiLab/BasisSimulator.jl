@@ -224,8 +224,8 @@ function _simulate_axial_single(phantom, scanner, protocol, sim_opts, recon_opts
     # 2. Resolve spectrum
     energies, weights = resolve_spectrum(sim_opts, protocol)
 
-    # 3. Build PhysicsConfig
-    config = build_physics_config(scanner, sim_opts, energies, weights)
+    # 3. Build PhysicsConfig (with phantom for size-aware scatter)
+    config = build_physics_config(scanner, sim_opts, energies, weights; phantom=phantom)
 
     # 4. Forward Project
     materials = get_region_materials()
@@ -270,9 +270,9 @@ function _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts)
         z_cm = nothing
     )
 
-    # 2. Build PhysicsConfig (using high-kVp spectrum)
+    # 2. Build PhysicsConfig (using high-kVp spectrum, with phantom for size-aware scatter)
     energies_high, weights_high = resolve_spectrum(sim_opts, protocol)
-    config = build_physics_config(scanner, sim_opts, energies_high, weights_high)
+    config = build_physics_config(scanner, sim_opts, energies_high, weights_high; phantom=phantom)
 
     # 3. Build GSIProtocol from CTProtocol fields
     gsi = _build_gsi_protocol(protocol)
@@ -346,8 +346,8 @@ function _simulate_helical_single(phantom, scanner, protocol, sim_opts, recon_op
     # 3. Resolve spectrum
     energies, weights = resolve_spectrum(sim_opts, protocol)
 
-    # 4. Build PhysicsConfig
-    config = build_physics_config(scanner, sim_opts, energies, weights)
+    # 4. Build PhysicsConfig (with phantom for size-aware scatter)
+    config = build_physics_config(scanner, sim_opts, energies, weights; phantom=phantom)
 
     # 5. Helical forward projection (use helical geometry with z-varying positions)
     materials = get_region_materials()
@@ -400,9 +400,9 @@ function _simulate_helical_dual(phantom, scanner, protocol, sim_opts, recon_opts
         z_start = 0.0
     )
 
-    # 2. Build PhysicsConfig (high-kVp)
+    # 2. Build PhysicsConfig (high-kVp, with phantom for size-aware scatter)
     energies_high, weights_high = resolve_spectrum(sim_opts, protocol)
-    config = build_physics_config(scanner, sim_opts, energies_high, weights_high)
+    config = build_physics_config(scanner, sim_opts, energies_high, weights_high; phantom=phantom)
 
     # 3. Build GSIProtocol
     gsi = _build_gsi_protocol(protocol)
@@ -472,8 +472,8 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts)
     e_full, w_full = load_spectrum(Int(protocol.kVp))
     energies, weights = downsample_spectrum(e_full, w_full, sim_opts.n_energy_bins)
 
-    # 3. Build PhysicsConfig
-    config = build_physics_config(scanner, sim_opts, energies, weights)
+    # 3. Build PhysicsConfig (with phantom for size-aware scatter)
+    config = build_physics_config(scanner, sim_opts, energies, weights; phantom=phantom)
 
     # 4. Build PCCT detector from Scanner
     pcct_detector = _build_pcct_detector(scanner)
@@ -753,7 +753,7 @@ function needs_polychromatic(sim_opts::SimOptions)::Bool
 end
 
 """
-    build_physics_config(scanner::Scanner, sim_opts::SimOptions, energies::Vector{Float64}, weights::Vector{Float64}) -> PhysicsConfig
+    build_physics_config(scanner::Scanner, sim_opts::SimOptions, energies::Vector{Float64}, weights::Vector{Float64}; phantom=nothing) -> PhysicsConfig
 
 Build a complete PhysicsConfig from Scanner hardware fields and SimOptions toggles.
 
@@ -771,6 +771,11 @@ via `sim_detect()` when `sim_opts.use_noise == true`.
 - `energies`: Energy bin centers (keV) for the current spectrum
 - `weights`: Photon weights for each energy bin
 
+# Keyword Arguments
+- `phantom::Union{Nothing, Phantom} = nothing`: Phantom for automatic scatter scaling.
+  If provided and scatter is enabled, the phantom diameter is estimated from the mask
+  and used to scale the scatter coefficient appropriately.
+
 # Returns
 A `PhysicsConfig` ready for `forward_project()`.
 """
@@ -778,7 +783,8 @@ function build_physics_config(
     scanner::Scanner,
     sim_opts::SimOptions,
     energies::Vector{Float64},
-    weights::Vector{Float64}
+    weights::Vector{Float64};
+    phantom::Union{Nothing, Phantom} = nothing
 )
     kwargs = Dict{Symbol, Any}()
 
@@ -827,14 +833,23 @@ function build_physics_config(
         end
     end
 
-    # Scatter: use geometry-aware model scaled for this scanner
+    # Scatter: use geometry-aware model scaled for this scanner and phantom size
+    # If phantom is provided, estimate diameter from mask for size-aware scatter scaling
+    phantom_diameter_cm = if phantom !== nothing && (sim_opts.use_scatter || sim_opts.use_scatter_correction)
+        # Convert voxel_size from cm to mm for estimate_phantom_diameter_cm
+        voxel_size_mm = phantom.voxel_size .* 10.0
+        estimate_phantom_diameter_cm(phantom.mask, voxel_size_mm)
+    else
+        nothing  # Use default reference diameter (30 cm)
+    end
+
     if sim_opts.use_scatter
-        kwargs[:scatter] = geometry_aware_scatter_model(scanner)
+        kwargs[:scatter] = geometry_aware_scatter_model(scanner; phantom_diameter_cm=phantom_diameter_cm)
     end
 
     # Scatter correction: use geometry-aware correction scaled for this scanner
     if sim_opts.use_scatter_correction
-        kwargs[:scatter_correction] = geometry_aware_scatter_correction(scanner)
+        kwargs[:scatter_correction] = geometry_aware_scatter_correction(scanner; phantom_diameter_cm=phantom_diameter_cm)
     end
 
     # Crosstalk (electronic): no Scanner field, use factory default
