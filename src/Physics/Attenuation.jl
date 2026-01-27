@@ -348,8 +348,88 @@ function get_nist_expected_hu_table(kVp::Int; n_bins::Int=30)
 end
 
 
+# =============================================================================
+# Convenience API for Reconstruction HU Conversion
+# =============================================================================
+
+"""
+    to_hounsfield(reconstruction::AbstractArray; water_mask=nothing, μ_water=nothing)
+
+Convert reconstruction from linear attenuation (cm⁻¹) to Hounsfield Units.
+
+This is the recommended way to convert simulate() results to HU.
+
+# Arguments
+- `reconstruction`: 3D array in μ (cm⁻¹) from FDK or iterative reconstruction
+
+# Keyword Arguments
+- `water_mask::Union{Nothing,AbstractArray{Bool}}=nothing`: Boolean mask identifying
+  water regions. If provided, μ_water is empirically calibrated from the mean
+  attenuation in the masked region. This is the most accurate approach.
+- `μ_water::Union{Nothing,Real}=nothing`: Manual water attenuation value (cm⁻¹).
+  If not provided and no water_mask given, defaults to NIST water at 70 keV.
+
+# Returns
+- Array in Hounsfield Units where water ≈ 0 HU
+
+# Best Practices
+
+**Option 1: Empirical calibration with water_mask (most accurate)**
+```julia
+result = simulate(phantom, scanner, protocol, sim_opts, recon_opts)
+
+# Create water mask from phantom
+water_mask = phantom.mask .== REGION_SOLID_WATER
+
+# Convert to HU with empirical calibration
+recon_hu = to_hounsfield(result.reconstruction; water_mask=water_mask)
+# Water region will be ~0 HU by construction
+```
+
+**Option 2: Manual μ_water specification**
+```julia
+# Measure μ_water from reconstruction
+recon = result.reconstruction
+cx, cy, cz = size(recon) .÷ 2
+μ_water_measured = mean(recon[cx-5:cx+5, cy-5:cy+5, cz])
+
+# Convert
+recon_hu = to_hounsfield(recon; μ_water=μ_water_measured)
+```
+
+**Option 3: Use NIST reference (less accurate)**
+```julia
+# Uses NIST water at 70 keV (~0.193 cm⁻¹)
+# May have offset due to reconstruction scaling
+recon_hu = to_hounsfield(result.reconstruction)
+```
+
+# Notes
+- For polychromatic CT, empirical calibration is preferred because
+  the effective attenuation depends on spectrum, filtration, and patient size.
+- For VMI from dual-energy, use `vmi_to_hu()` instead which accounts for
+  the VMI synthesis process.
+"""
+function to_hounsfield(reconstruction::AbstractArray{T};
+                       water_mask::Union{Nothing, AbstractArray{Bool}}=nothing,
+                       μ_water::Union{Nothing, Real}=nothing) where T
+    # Determine μ_water for calibration
+    if water_mask !== nothing
+        # Empirical calibration from water region
+        μ_cal = T(mean(reconstruction[water_mask]))
+    elseif μ_water !== nothing
+        μ_cal = T(μ_water)
+    else
+        # Default: NIST water at 70 keV (approximate effective energy for 120 kVp)
+        μ_cal = T(get_reference_μ_water(70.0))
+    end
+
+    # Convert to HU
+    return μ_to_HU(reconstruction, μ_cal)
+end
+
 # Exports
 export compute_μ_matrix, compute_μ_at_energy, compute_mass_μ_at_energy
-export μ_to_HU, HU_to_μ, get_reference_μ_water
+export μ_to_HU, HU_to_μ, get_reference_μ_water, to_hounsfield
 export compute_effective_μ_material, compute_expected_hu_spectrum
 export NistExpectedHU, get_nist_expected_hu_table
