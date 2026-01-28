@@ -602,6 +602,70 @@ function _simulate_helical_dual(phantom, scanner, protocol, sim_opts, recon_opts
 end
 
 # =============================================================================
+# PCCT Combined Sinogram Helper
+# =============================================================================
+
+"""
+    _combine_pcct_bins(pcct_sino, detector, energies, weights, kVp; I0=1e6)
+
+Combine energy-resolved PCCT sinogram bins into a single conventional-equivalent
+sinogram using correct physics.
+
+The bins are in line-integral domain: sino_bin = -log(N_bin / I0_bin).
+To combine correctly:
+1. Convert back to counts: N_bin = I0_bin × exp(-sino_bin)
+2. Sum counts: N_total = Σ N_bin
+3. Sum reference: I0_total = Σ I0_bin
+4. Combined: sino = -log(N_total / I0_total)
+
+Returns a GPU array (same device as input bins).
+"""
+function _combine_pcct_bins(pcct_sino::EnergyResolvedSinogram, detector::PhotonCountingDetector,
+                             energies, weights, kVp; I0=1e6)
+    T = Float32
+    n_bins = length(pcct_sino.bins)
+    thresholds = detector.energy_thresholds_keV
+
+    # Compute quantum efficiency and spectral response matrix (CPU, cheap)
+    η = quantum_efficiency_vector(detector.material, detector.thickness_mm, energies)
+    R = compute_spectral_response_matrix(
+        detector.material, detector.thickness_mm, thresholds, kVp;
+        energy_resolution_keV=detector.energy_resolution_keV,
+        pixel_size_mm=detector.pixel_size_mm,
+        include_fluorescence=true,
+        include_tailing=true,
+        n_energy_points=length(energies)
+    )
+
+    # Compute per-bin I0 values (using R matrix for consistency with forward projection)
+    I0_bins = [_compute_bin_I0(detector, energies, weights, η, thresholds, b,
+                                Float64(kVp), Float64(I0); R=R) for b in 1:n_bins]
+    I0_total = T(sum(I0_bins))
+
+    # Accumulate total photon counts: N_total = Σ I0_bin × exp(-sino_bin)
+    N_total_gpu = similar(pcct_sino.bins[1])
+    fill!(N_total_gpu, zero(T))
+
+    eps_val = T(1e-10)
+    for (b, bin_sino) in enumerate(pcct_sino.bins)
+        let I0b = T(I0_bins[b]), bs = bin_sino, nt = N_total_gpu
+            AK.foreachindex(bs) do idx
+                nt[idx] += I0b * exp(-bs[idx])
+            end
+        end
+    end
+
+    # Combined sinogram = -log(N_total / I0_total)
+    let nt = N_total_gpu, I0t = I0_total, eps = eps_val
+        AK.foreachindex(nt) do idx
+            nt[idx] = -log(max(nt[idx], eps) / I0t)
+        end
+    end
+
+    return N_total_gpu
+end
+
+# =============================================================================
 # Mode 5: Axial PCCT (Photon-Counting CT)
 # =============================================================================
 
@@ -635,15 +699,11 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts)
         apply_spectral_response=true
     )
 
-    # 6. Also produce conventional sinogram (sum of all bins → single channel)
-    # This is used for standard reconstruction — transfer to CPU for recon
+    # 6. Also produce conventional sinogram (combine all bins → single channel)
+    # Correct physics: convert line integrals to counts, sum, re-normalize
     T = Float32
-    sino_ideal_gpu = similar(pcct_sino.bins[1])
-    fill!(sino_ideal_gpu, zero(T))
-    for bin in pcct_sino.bins
-        sino_ideal_gpu .+= bin
-    end
-    sino_ideal_gpu ./= T(length(pcct_sino.bins))
+    kVp = Float64(maximum(energies))
+    sino_ideal_gpu = _combine_pcct_bins(pcct_sino, pcct_detector, energies, weights, kVp)
     sino_ideal = Array(sino_ideal_gpu)
 
     # 7. Apply PCCT noise (per-bin Poisson, no electronic noise)
@@ -658,13 +718,8 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts)
         pcct_sino
     end
 
-    # 8. Conventional noisy sinogram (for standard recon — CPU for reconstruction)
-    sino_noisy_gpu = similar(pcct_sino_noisy.bins[1])
-    fill!(sino_noisy_gpu, zero(T))
-    for bin in pcct_sino_noisy.bins
-        sino_noisy_gpu .+= bin
-    end
-    sino_noisy_gpu ./= T(length(pcct_sino_noisy.bins))
+    # 8. Conventional noisy sinogram (combine all bins → single channel)
+    sino_noisy_gpu = _combine_pcct_bins(pcct_sino_noisy, pcct_detector, energies, weights, kVp)
     sino_noisy = Array(sino_noisy_gpu)
 
     # 9. N-material decomposition (if vmi_basis specified with 2+ materials)
