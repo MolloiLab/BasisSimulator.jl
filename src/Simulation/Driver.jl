@@ -287,11 +287,55 @@ function _simulate_axial_single(phantom, scanner, protocol, sim_opts, recon_opts
 end
 
 # =============================================================================
-# Mode 2: Axial Dual-kVp
+# Mode 2: Axial Dual-kVp (WRAPPER AROUND SINGLE-KVP)
+# =============================================================================
+#
+# v11.0 REFACTOR: Dual-energy now runs single-kVp pipeline TWICE.
+#
+# Previous implementation had wave artifacts because:
+# - Scatter was ADDED with energy-dependent coefficients (different for 80/140 kVp)
+# - Scatter was CORRECTED with joint estimate at average energy
+# - The coefficient mismatch created different residuals that amplified in decomposition
+#
+# New implementation:
+# - Run single-kVp for 80 kVp → scatter added AND corrected at 50 keV (matched!)
+# - Run single-kVp for 140 kVp → scatter added AND corrected at 70 keV (matched!)
+# - Each sinogram is fully corrected before decomposition
+# - No special dual-energy scatter handling needed
+#
+# See DESIGN-DE-WRAPPER in progress.md for full rationale.
 # =============================================================================
 
+"""
+    _forward_single_pass(phantom, scanner, protocol, sim_opts, geom) -> (sinogram, config)
+
+Run forward projection for a single kVp with all physics effects.
+Returns fully-corrected sinogram (scatter added AND corrected at same energy).
+
+This is the core building block for both single-kVp and dual-kVp simulations.
+By using this for dual-energy, we ensure scatter is properly matched.
+"""
+function _forward_single_pass(phantom, scanner, protocol, sim_opts, geom)
+    # Resolve spectrum for this kVp
+    energies, weights = resolve_spectrum(sim_opts, protocol)
+
+    # Build PhysicsConfig (scatter add + scatter correct at SAME energy)
+    config = build_physics_config(scanner, sim_opts, energies, weights; phantom=phantom)
+
+    # Forward project with all physics
+    materials = get_region_materials()
+    mask_gpu = _to_gpu(phantom.mask)
+    sinogram = forward_project(
+        mask_gpu, geom;
+        energies=energies, weights=weights,
+        materials=materials, physics=config
+    )
+
+    return sinogram, config
+end
+
 function _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts)
-    # 1. Build Geometry
+    # 1. Build Geometry (shared for both kVp)
     geom = CTGeometry(
         scanner;
         n_angles = protocol.views,
@@ -299,41 +343,57 @@ function _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts)
         z_cm = nothing
     )
 
-    # 2. Build PhysicsConfig (using high-kVp spectrum, with phantom for size-aware scatter)
-    # NOTE: Scatter is now ENERGY-DEPENDENT! The forward_project_dual_energy function
-    # will create separate scatter configs for 80 kVp and 140 kVp using mean_energy_keV.
-    # See SCATTER-ENERGY-RESEARCH story for the physics rationale.
-    energies_high, weights_high = resolve_spectrum(sim_opts, protocol)
-
-    # Build physics config with scatter enabled (energy dependence handled in forward_project_dual_energy)
-    config = build_physics_config(scanner, sim_opts, energies_high, weights_high; phantom=phantom)
-
-    # 3. Build GSIProtocol from CTProtocol fields
-    gsi = _build_gsi_protocol(protocol)
-
-    # 4. Dual-energy forward projection (move mask to GPU if available)
-    # Pass scanner so forward_project_dual_energy can compute energy-dependent scatter
-    materials = get_region_materials()
-    mask_gpu = _to_gpu(phantom.mask)
-    de_sino = forward_project_dual_energy(
-        mask_gpu, geom, gsi;
-        materials=materials,
-        physics=config,
-        scanner=scanner  # Pass scanner for energy-dependent scatter and I0 calculation
+    # 2. Create single-kVp protocols for each energy level
+    # These are single-kVp protocols (dual_energy=false) so that
+    # _forward_single_pass uses the standard scatter add/correct pipeline
+    protocol_low = CTProtocol(
+        mA = protocol.mA_low > 0 ? protocol.mA_low : protocol.mA,
+        kVp = protocol.kVp_low,       # 80 kVp
+        views = protocol.views,
+        rotation_time = protocol.rotation_time,
+        flux_density = protocol.flux_density,
+        spectrum_path = nothing,
+        scan_mode = :axial,
+        dual_energy = false           # Single-kVp mode for clean scatter handling
     )
 
-    # 5. Use high-kVp sinogram as primary (for noise and standard recon)
-    sino_ideal = de_sino.high
+    protocol_high = CTProtocol(
+        mA = protocol.mA,
+        kVp = protocol.kVp,           # 140 kVp
+        views = protocol.views,
+        rotation_time = protocol.rotation_time,
+        flux_density = protocol.flux_density,
+        spectrum_path = nothing,
+        scan_mode = :axial,
+        dual_energy = false           # Single-kVp mode for clean scatter handling
+    )
+
+    # 3. Run single-kVp pipeline for LOW kVp (80 kVp)
+    # Scatter is added AND corrected at ~50 keV (matched coefficients!)
+    sino_low, config_low = _forward_single_pass(phantom, scanner, protocol_low, sim_opts, geom)
+
+    # 4. Run single-kVp pipeline for HIGH kVp (140 kVp)
+    # Scatter is added AND corrected at ~70 keV (matched coefficients!)
+    sino_high, config_high = _forward_single_pass(phantom, scanner, protocol_high, sim_opts, geom)
+
+    # 5. Apply detector noise to high-kVp sinogram (used for standard recon)
+    sino_ideal = sino_high
     sino_final = if sim_opts.use_noise
-        sim_detect(sino_ideal, geom, protocol)
+        sim_detect(sino_high, geom, protocol_high)
     else
-        copy(sino_ideal)
+        copy(sino_high)
     end
 
-    # 6. Material decomposition
+    # 6. Create DualEnergySinogram from the two clean sinograms
+    de_sino = DualEnergySinogram(sino_low, sino_high;
+        low_kvp = Int(protocol.kVp_low),
+        high_kvp = Int(protocol.kVp)
+    )
+
+    # 7. Material decomposition (works on clean sinograms!)
     mat_map = decompose_materials(de_sino; basis=Tuple(recon_opts.vmi_basis[1:2]))
 
-    # 7. VMI reconstruction (if energies specified)
+    # 8. VMI reconstruction (if energies specified)
     T = eltype(sino_final)
     vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
     if !isempty(recon_opts.vmi_energies)
@@ -345,13 +405,13 @@ function _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts)
         end
     end
 
-    # 8. Standard reconstruction from high-kVp sinogram
+    # 9. Standard reconstruction from high-kVp sinogram
     recon_vol = _run_reconstruction(sino_final, geom, recon_opts)
     recons = Pair{Symbol, AbstractArray{T, 3}}[recon_opts.algorithm => recon_vol]
 
     pcct_vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
     return SimulationResult(
-        sino_ideal, sino_final, recons, geom, config,
+        sino_ideal, sino_final, recons, geom, config_high,
         de_sino, mat_map, vmi_dict,
         nothing, nothing, pcct_vmi_dict
     )
@@ -416,11 +476,39 @@ function _simulate_helical_single(phantom, scanner, protocol, sim_opts, recon_op
 end
 
 # =============================================================================
-# Mode 4: Helical Dual-kVp
+# Mode 4: Helical Dual-kVp (WRAPPER AROUND SINGLE-KVP)
+# =============================================================================
+#
+# v11.0 REFACTOR: Helical dual-energy also uses single-kVp wrapper pattern.
+# See _simulate_axial_dual() for full rationale.
 # =============================================================================
 
+"""
+    _forward_helical_single_pass(phantom, scanner, protocol, sim_opts, helical_geom) -> (sinogram, config)
+
+Run helical forward projection for a single kVp with all physics effects.
+Returns fully-corrected sinogram (scatter added AND corrected at same energy).
+"""
+function _forward_helical_single_pass(phantom, scanner, protocol, sim_opts, helical_geom)
+    # Resolve spectrum for this kVp
+    energies, weights = resolve_spectrum(sim_opts, protocol)
+
+    # Build PhysicsConfig (scatter add + scatter correct at SAME energy)
+    config = build_physics_config(scanner, sim_opts, energies, weights; phantom=phantom)
+
+    # Forward project with all physics (using base geometry for helical)
+    materials = get_region_materials()
+    sinogram = forward_project(
+        phantom.mask, helical_geom.base_geom;
+        energies=energies, weights=weights,
+        materials=materials, physics=config
+    )
+
+    return sinogram, config
+end
+
 function _simulate_helical_dual(phantom, scanner, protocol, sim_opts, recon_opts)
-    # 1. Build helical geometry
+    # 1. Build helical geometry (shared for both kVp)
     n_angles_total = round(Int, protocol.views * protocol.n_rotations)
     base_geom = CTGeometry(
         scanner;
@@ -436,34 +524,57 @@ function _simulate_helical_dual(phantom, scanner, protocol, sim_opts, recon_opts
         z_start = 0.0
     )
 
-    # 2. Build PhysicsConfig (high-kVp, with phantom for size-aware scatter)
-    energies_high, weights_high = resolve_spectrum(sim_opts, protocol)
-    config = build_physics_config(scanner, sim_opts, energies_high, weights_high; phantom=phantom)
-
-    # 3. Build GSIProtocol
-    gsi = _build_gsi_protocol(protocol)
-
-    # 4. Dual-energy forward projection (uses helical geometry with z-varying positions)
-    materials = get_region_materials()
-    de_sino = forward_project_dual_energy(
-        phantom.mask, helical_geom.base_geom, gsi;
-        materials=materials,
-        physics=config,
-        scanner=nothing
+    # 2. Create single-kVp protocols for each energy level
+    protocol_low = CTProtocol(
+        mA = protocol.mA_low > 0 ? protocol.mA_low : protocol.mA,
+        kVp = protocol.kVp_low,       # 80 kVp
+        views = protocol.views,
+        rotation_time = protocol.rotation_time,
+        flux_density = protocol.flux_density,
+        spectrum_path = nothing,
+        scan_mode = :helical,
+        pitch = protocol.pitch,
+        n_rotations = protocol.n_rotations,
+        dual_energy = false           # Single-kVp mode for clean scatter handling
     )
 
-    # 5. High-kVp sinogram as primary
-    sino_ideal = de_sino.high
+    protocol_high = CTProtocol(
+        mA = protocol.mA,
+        kVp = protocol.kVp,           # 140 kVp
+        views = protocol.views,
+        rotation_time = protocol.rotation_time,
+        flux_density = protocol.flux_density,
+        spectrum_path = nothing,
+        scan_mode = :helical,
+        pitch = protocol.pitch,
+        n_rotations = protocol.n_rotations,
+        dual_energy = false           # Single-kVp mode for clean scatter handling
+    )
+
+    # 3. Run single-kVp pipeline for LOW kVp (80 kVp)
+    sino_low, config_low = _forward_helical_single_pass(phantom, scanner, protocol_low, sim_opts, helical_geom)
+
+    # 4. Run single-kVp pipeline for HIGH kVp (140 kVp)
+    sino_high, config_high = _forward_helical_single_pass(phantom, scanner, protocol_high, sim_opts, helical_geom)
+
+    # 5. Apply detector noise to high-kVp sinogram
+    sino_ideal = sino_high
     sino_final = if sim_opts.use_noise
-        sim_detect(sino_ideal, helical_geom.base_geom, protocol)
+        sim_detect(sino_high, helical_geom.base_geom, protocol_high)
     else
-        copy(sino_ideal)
+        copy(sino_high)
     end
 
-    # 6. Material decomposition
+    # 6. Create DualEnergySinogram from the two clean sinograms
+    de_sino = DualEnergySinogram(sino_low, sino_high;
+        low_kvp = Int(protocol.kVp_low),
+        high_kvp = Int(protocol.kVp)
+    )
+
+    # 7. Material decomposition (works on clean sinograms!)
     mat_map = decompose_materials(de_sino; basis=Tuple(recon_opts.vmi_basis[1:2]))
 
-    # 7. VMI reconstruction (helical)
+    # 8. VMI reconstruction (helical)
     T = eltype(sino_final)
     vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
     if !isempty(recon_opts.vmi_energies)
@@ -478,13 +589,13 @@ function _simulate_helical_dual(phantom, scanner, protocol, sim_opts, recon_opts
         end
     end
 
-    # 8. Helical reconstruction from high-kVp sinogram
+    # 9. Helical reconstruction from high-kVp sinogram
     recon_vol = _run_helical_reconstruction(sino_final, helical_geom, recon_opts)
     recons = Pair{Symbol, AbstractArray{T, 3}}[recon_opts.algorithm => recon_vol]
 
     pcct_vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
     return SimulationResult(
-        sino_ideal, sino_final, recons, helical_geom, config,
+        sino_ideal, sino_final, recons, helical_geom, config_high,
         de_sino, mat_map, vmi_dict,
         nothing, nothing, pcct_vmi_dict
     )
