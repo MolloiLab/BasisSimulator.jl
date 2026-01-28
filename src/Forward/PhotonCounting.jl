@@ -1003,9 +1003,10 @@ function pcct_forward_project(
     apply_anti_coincidence!(bins, detector)
 
     # Convert from photon counts to line-integral domain: sino = -log(N / I₀_bin)
+    # Pass R to _compute_bin_I0 so it uses the same spectral response as forward projection
     eps_val = T(1e-10)  # Pre-compute to avoid capturing Type{T} in kernel
     for b in 1:n_bins
-        I0_bin = _compute_bin_I0(detector, energies, weights, η, thresholds, b, Float64(kVp), Float64(I0))
+        I0_bin = _compute_bin_I0(detector, energies, weights, η, thresholds, b, Float64(kVp), Float64(I0); R=R)
         let I0_bin_T = T(I0_bin), ba = bins[b], eps = eps_val
             AK.foreachindex(ba) do idx
                 ba[idx] = -log(max(ba[idx], eps) / I0_bin_T)
@@ -1033,30 +1034,61 @@ function _find_energy_bin(energy_keV::Float64, thresholds::Vector{<:Real}, kVp::
 end
 
 """
-    _compute_bin_I0(detector, energies, weights, η, thresholds, bin_idx, kVp, I0) -> Float64
+    _compute_bin_I0(detector, energies, weights, η, thresholds, bin_idx, kVp, I0; R=nothing) -> Float64
 
 Compute the reference photon count I₀ for a specific energy bin.
 This is the unattenuated count expected in this bin (for -log normalization).
-"""
-function _compute_bin_I0(detector, energies, weights, η, thresholds, bin_idx, kVp, I0)
-    n_bins = length(thresholds)
-    T_low = Float64(thresholds[bin_idx])
-    T_high = bin_idx < n_bins ? Float64(thresholds[bin_idx + 1]) : kVp
 
-    I0_bin = 0.0
-    for (i, E) in enumerate(energies)
-        E_f = Float64(E)
-        # Last bin includes upper bound (E <= kVp)
-        in_bin = if bin_idx == n_bins
-            E_f >= T_low && E_f <= T_high
-        else
-            E_f >= T_low && E_f < T_high
+When `R` (spectral response matrix) is provided, uses consistent calculation with forward projection.
+When `R` is nothing, falls back to ideal binning (photon goes to exactly one bin based on energy).
+
+The spectral response matrix R accounts for:
+- Detector energy resolution (Gaussian blurring)
+- Charge sharing between pixels
+- K-fluorescence escape/reabsorption
+- Electronic noise
+
+Using R ensures that -log(N/I0_bin) produces the correct line integral values.
+"""
+function _compute_bin_I0(detector, energies, weights, η, thresholds, bin_idx, kVp, I0; R=nothing)
+    if R !== nothing
+        # Use spectral response matrix (consistent with forward projection)
+        # This matches how photons are distributed in pcct_forward_project()
+        n_energies = length(energies)
+        I0_bin = 0.0
+        for e_idx in 1:n_energies
+            E_float = Float64(energies[e_idx])
+            w = Float64(weights[e_idx])
+            if w < 1e-12
+                continue
+            end
+            # Same R index calculation as forward projection
+            r_idx = clamp(round(Int, (E_float - 1.0) / (kVp - 1.0) * (n_energies - 1)) + 1, 1, n_energies)
+            R_val = R[r_idx, bin_idx]
+            I0_bin += I0 * w * η[e_idx] * R_val
         end
-        if in_bin
-            I0_bin += I0 * Float64(weights[i]) * η[i]
+        return max(I0_bin, 1.0)  # Avoid division by zero
+    else
+        # Ideal binning fallback: photon goes to exactly one bin based on energy
+        n_bins = length(thresholds)
+        T_low = Float64(thresholds[bin_idx])
+        T_high = bin_idx < n_bins ? Float64(thresholds[bin_idx + 1]) : kVp
+
+        I0_bin = 0.0
+        for (i, E) in enumerate(energies)
+            E_f = Float64(E)
+            # Last bin includes upper bound (E <= kVp)
+            in_bin = if bin_idx == n_bins
+                E_f >= T_low && E_f <= T_high
+            else
+                E_f >= T_low && E_f < T_high
+            end
+            if in_bin
+                I0_bin += I0 * Float64(weights[i]) * η[i]
+            end
         end
+        return max(I0_bin, 1.0)  # Avoid division by zero
     end
-    return max(I0_bin, 1.0)  # Avoid division by zero
 end
 
 # Legacy method: raw volume input (deprecated, kept for backward compatibility)
