@@ -686,8 +686,46 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts)
     # 3. Build PhysicsConfig (with phantom for size-aware scatter)
     config = build_physics_config(scanner, sim_opts, energies, weights; phantom=phantom)
 
-    # 4. Build PCCT detector from Scanner
+    # 4. Build PCCT detector from Scanner, respecting SimOptions fidelity
     pcct_detector = _build_pcct_detector(scanner)
+
+    # Override detector effects based on SimOptions:
+    # - :ideal fidelity disables all detector physics (charge sharing, pileup, anti-coincidence, energy blurring)
+    # - :low fidelity keeps noise but disables detector spatial effects
+    # - :medium/:high keeps all detector effects as specified by the scanner
+    if sim_opts.fidelity == :ideal
+        pcct_detector = PhotonCountingDetector(
+            material = pcct_detector.material,
+            thickness_mm = pcct_detector.thickness_mm,
+            pixel_size_mm = pcct_detector.pixel_size_mm,
+            energy_thresholds_keV = Float64.(pcct_detector.energy_thresholds_keV),
+            energy_resolution_keV = 0.0,       # Perfect energy resolution
+            charge_sharing_fwhm_mm = 0.0,      # No charge sharing
+            enable_charge_sharing = false,
+            dead_time_ns = 0.0,                # No pileup
+            enable_pile_up = false,
+            enable_anti_coincidence = false,    # No anti-coincidence
+            coincidence_window_ns = 0.0,
+            electronic_noise_keV = 0.0,        # No electronic noise
+            seed = pcct_detector.seed
+        )
+    elseif sim_opts.fidelity == :low
+        pcct_detector = PhotonCountingDetector(
+            material = pcct_detector.material,
+            thickness_mm = pcct_detector.thickness_mm,
+            pixel_size_mm = pcct_detector.pixel_size_mm,
+            energy_thresholds_keV = Float64.(pcct_detector.energy_thresholds_keV),
+            energy_resolution_keV = 0.0,       # Perfect energy resolution
+            charge_sharing_fwhm_mm = 0.0,      # No charge sharing
+            enable_charge_sharing = false,
+            dead_time_ns = 0.0,                # No pileup
+            enable_pile_up = false,
+            enable_anti_coincidence = false,    # No anti-coincidence
+            coincidence_window_ns = 0.0,
+            electronic_noise_keV = 0.0,        # No electronic noise
+            seed = pcct_detector.seed
+        )
+    end
 
     # 5. PCCT forward projection (mask+materials → energy-resolved sinogram, GPU if available)
     materials = get_region_materials()
@@ -704,7 +742,6 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts)
     T = Float32
     kVp = Float64(maximum(energies))
     sino_ideal_gpu = _combine_pcct_bins(pcct_sino, pcct_detector, energies, weights, kVp)
-    sino_ideal = Array(sino_ideal_gpu)
 
     # 7. Apply PCCT noise (per-bin Poisson, no electronic noise)
     pcct_sino_noisy = if sim_opts.use_noise
@@ -720,7 +757,6 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts)
 
     # 8. Conventional noisy sinogram (combine all bins → single channel)
     sino_noisy_gpu = _combine_pcct_bins(pcct_sino_noisy, pcct_detector, energies, weights, kVp)
-    sino_noisy = Array(sino_noisy_gpu)
 
     # 9. N-material decomposition (if vmi_basis specified with 2+ materials)
     # Decomposition is a per-pixel CPU operation — transfer bins to CPU if on GPU
@@ -744,10 +780,15 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts)
         end
     end
 
-    # 11. Standard reconstruction from combined sinogram
-    recon_vol = _run_reconstruction(sino_noisy, geom, recon_opts)
+    # 11. Reconstruction from combined sinogram (GPU-native — no CPU conversion needed)
+    # FDK accepts AbstractArray, so GPU arrays flow through directly
+    recon_vol = _run_reconstruction(sino_noisy_gpu, geom, recon_opts)
     recons = Pair{Symbol, AbstractArray{T, 3}}[recon_opts.algorithm => recon_vol]
     vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
+
+    # Store sinograms as CPU arrays for the result (user-facing data)
+    sino_ideal = Array(sino_ideal_gpu)
+    sino_noisy = Array(sino_noisy_gpu)
 
     return SimulationResult(
         sino_ideal, sino_noisy, recons, geom, config,
