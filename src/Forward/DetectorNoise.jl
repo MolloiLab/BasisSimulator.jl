@@ -745,7 +745,42 @@ export add_quantum_noise!, add_electronic_noise!
 export add_quantum_noise, add_electronic_noise
 export apply_detector_model!, apply_detector_model
 export compute_noise_level, estimate_dose_from_noise
-export sim_detect
+export sim_detect, compute_detector_I0
+
+"""
+    compute_detector_I0(geom::CTGeometry, protocol::CTProtocol) -> Float64
+
+Compute physics-based I₀ (photons per pixel per view) from scanner geometry
+and acquisition protocol.
+
+# Formula
+    I₀ = flux_density × mA × (rotation_time / views) × pixel_area_mm² × (1000/SDD_mm)²
+
+where pixel_area is at the detector plane (magnified from isocenter).
+
+# Arguments
+- `geom`: Scanner geometry (SDD, SAD, pixel_size in cm)
+- `protocol`: CT protocol (flux_density, mA, rotation_time, views)
+"""
+function compute_detector_I0(geom::CTGeometry, protocol::CTProtocol)
+    # Convert cm (CTGeometry) to mm (physics standard)
+    SDD_mm = geom.SDD * 10.0
+    SAD_mm = geom.SAD * 10.0
+
+    # Pixel size at detector plane (magnified from isocenter)
+    magnification = SDD_mm / SAD_mm
+    pixel_size_det_mm = (geom.pixel_size * 10.0) * magnification
+    pixel_area_mm2 = pixel_size_det_mm^2
+
+    # Time per view
+    time_per_view = protocol.rotation_time / protocol.views
+
+    # Inverse square law from reference distance (1000 mm)
+    dist_factor = (1000.0 / SDD_mm)^2
+
+    # I₀ = Flux × mA × TimePerView × Area × DistFactor
+    return protocol.flux_density * protocol.mA * time_per_view * pixel_area_mm2 * dist_factor
+end
 
 """
     sim_detect(sinogram, geom::CTGeometry, protocol::CTProtocol)
@@ -774,36 +809,17 @@ function sim_detect(
     geom::CTGeometry,
     protocol::CTProtocol
 ) where T
-    # 1. Calculate Geometry factors
-    # Convert cm (CTGeometry) to mm (Physics standard)
-    SDD_mm = geom.SDD * 10.0
-    SAD_mm = geom.SAD * 10.0
-    
-    # Pixel size at detector plane (in mm)
-    # geom.pixel_size is at isocenter in cm
-    magnification = SDD_mm / SAD_mm
-    pixel_size_det_mm = (geom.pixel_size * 10.0) * magnification
-    pixel_area_mm2 = pixel_size_det_mm^2
-    
-    # 2. Calculate I0 (Photons per pixel per view)
-    # I0 = Flux * mA * TimePerView * Area * DistFactor
-    
-    time_per_view = protocol.rotation_time / protocol.views
-    
-    # Inverse square law from reference distance (1000 mm)
-    dist_factor = (1000.0 / SDD_mm)^2
-    
-    # Flux is per mA per second per mm2 at 1m
-    I0 = protocol.flux_density * protocol.mA * time_per_view * pixel_area_mm2 * dist_factor
-    
-    # 3. Apply Noise
+    # 1. Compute physics-based I0 using shared helper
+    I0 = compute_detector_I0(geom, protocol)
+
+    # 2. Apply Noise
     # Create a temporary detector model for noise application
     # We use 0.0 for other params as we only want quantum noise here
     model = DetectorModel(0.0, I0, 0.0, nothing)
-    
+
     # Create copy and apply noise
     noisy_sino = copy(sinogram)
     add_quantum_noise!(noisy_sino, model)
-    
+
     return noisy_sino
 end
