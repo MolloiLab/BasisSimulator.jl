@@ -131,7 +131,7 @@ detector = PhotonCountingDetector(
     pixel_size_mm = (0.302, 0.302),
     energy_thresholds_keV = [20.0, 35.0, 55.0, 70.0],
     charge_sharing_fwhm_mm = 0.08,
-    dead_time_ns = 25.0
+    dead_time_ns = 5.0
 )
 ```
 
@@ -179,7 +179,7 @@ Construct a PhotonCountingDetector with keyword arguments.
 - `energy_resolution_keV::Float64=10.0`: Energy resolution FWHM at 60 keV
 - `charge_sharing_fwhm_mm::Float64=0.08`: Charge cloud FWHM
 - `enable_charge_sharing::Bool=true`: Enable charge sharing simulation
-- `dead_time_ns::Float64=25.0`: Detector dead time
+- `dead_time_ns::Float64=5.0`: Detector dead time
 - `enable_pile_up::Bool=true`: Enable pile-up simulation
 - `enable_anti_coincidence::Bool=true`: Enable anti-coincidence correction
 - `coincidence_window_ns::Float64=30.0`: Coincidence time window
@@ -194,7 +194,7 @@ function PhotonCountingDetector(;
     energy_resolution_keV::Float64=10.0,
     charge_sharing_fwhm_mm::Float64=0.08,
     enable_charge_sharing::Bool=true,
-    dead_time_ns::Float64=25.0,
+    dead_time_ns::Float64=5.0,
     enable_pile_up::Bool=true,
     enable_anti_coincidence::Bool=true,
     coincidence_window_ns::Float64=30.0,
@@ -237,7 +237,7 @@ function naeotom_detector_standard()
         energy_resolution_keV = 10.0,
         charge_sharing_fwhm_mm = 0.08,
         enable_charge_sharing = true,
-        dead_time_ns = 25.0,
+        dead_time_ns = 5.0,
         enable_pile_up = true,
         enable_anti_coincidence = true,
         coincidence_window_ns = 30.0,
@@ -267,7 +267,7 @@ function naeotom_detector_uhr()
         energy_resolution_keV = 10.0,
         charge_sharing_fwhm_mm = 0.08,
         enable_charge_sharing = true,
-        dead_time_ns = 25.0,
+        dead_time_ns = 5.0,
         enable_pile_up = true,
         enable_anti_coincidence = true,
         coincidence_window_ns = 30.0,
@@ -651,6 +651,84 @@ function apply_pulse_pileup!(
 end
 
 # =============================================================================
+# Pulse Pile-up Correction (GPU-native)
+# =============================================================================
+
+"""
+    correct_pulse_pileup!(bins, detector, flux_rate) -> bins
+
+Apply inverse pulse pile-up correction to energy-binned counts (in-place, GPU-native).
+
+This is the inverse of `apply_pulse_pileup!`. It recovers the original count rates
+from pileup-degraded measurements using the algebraic inverse of the nonparalyzable
+dead time model.
+
+# Forward model (nonparalyzable):
+    N_recorded = N_true / (1 + N_true × τ)
+
+# Inverse correction:
+    N_corrected = N_recorded / (1 - N_recorded × τ × rate_factor)
+
+The energy redistribution reversal iterates bins in reverse order (high→low) to
+undo the forward model's low→high energy shifting.
+
+# Arguments
+- `bins::Vector{Array}`: Energy-binned counts (modified in-place)
+- `detector::PhotonCountingDetector`: Detector specification
+- `flux_rate::Float64`: Photon flux rate in photons/s/mm² (at detector)
+"""
+function correct_pulse_pileup!(
+    bins::Vector{A},
+    detector::PhotonCountingDetector,
+    flux_rate::Real
+) where {T, A<:AbstractArray{T,3}}
+
+    if !detector.enable_pile_up || detector.dead_time_ns ≤ 0.0
+        return bins
+    end
+
+    # Cast all to T (Float32 for GPU compatibility)
+    τ = T(detector.dead_time_ns) * T(1e-9)
+    pixel_area = T(detector.pixel_size_mm[1]) * T(detector.pixel_size_mm[2])
+    count_rate = T(flux_rate) * pixel_area
+
+    # Inverse pile-up factor: undo the nonparalyzable count rate reduction
+    # Forward: N_rec = N_true * pile_up_factor, where pile_up_factor = 1/(1 + count_rate*τ)
+    # Inverse: N_true = N_rec / pile_up_factor = N_rec * (1 + count_rate*τ)
+    correction_factor = one(T) + count_rate * τ
+
+    # Reverse energy redistribution first (high→low, opposite of forward low→high)
+    n_bins = length(bins)
+    if n_bins >= 2
+        pile_up_factor = one(T) / correction_factor
+        p_pileup = one(T) - pile_up_factor
+
+        for bin_idx in (n_bins):-1:2
+            let cb = bins[bin_idx], pb = bins[bin_idx - 1],
+                sf = p_pileup * T(0.1)
+
+                AK.foreachindex(cb) do idx
+                    transfer = cb[idx] * sf
+                    pb[idx] += transfer
+                    cb[idx] -= transfer
+                end
+            end
+        end
+    end
+
+    # Apply inverse count rate correction to all bins
+    for bin in bins
+        let cf = correction_factor, b = bin
+            AK.foreachindex(b) do idx
+                b[idx] *= cf
+            end
+        end
+    end
+
+    return bins
+end
+
+# =============================================================================
 # Anti-Coincidence Logic (GPU-native)
 # =============================================================================
 
@@ -841,7 +919,7 @@ This is the main PCCT forward projection API. It:
 - `energies::AbstractVector`: Spectral energies in keV
 - `weights::AbstractVector`: Spectral weights (normalized photon fluence)
 - `materials::Vector`: Material vector (from get_region_materials())
-- `flux_rate::Real=1e9`: Photon flux rate in photons/s/mm² (for pile-up)
+- `flux_rate::Real=1e8`: Photon flux rate in photons/s/mm² (for pile-up)
 - `I0::Real=1e6`: Reference photon count per detector element
 - `apply_spectral_response::Bool=true`: Whether to use spectral response matrix R(E,b)
 
@@ -886,9 +964,10 @@ function pcct_forward_project(
     energies::AbstractVector,
     weights::AbstractVector,
     materials::Vector = get_region_materials(),
-    flux_rate::Real = 1e9,
+    flux_rate::Real = 1e8,
     I0::Real = 1e6,
-    apply_spectral_response::Bool = true
+    apply_spectral_response::Bool = true,
+    apply_detector_effects::Bool = true
 )
     T = Float32  # Use Float32 for GPU efficiency
 
@@ -998,16 +1077,25 @@ function pcct_forward_project(
     end
 
     # Apply detector physics chain (charge sharing, pileup, anti-coincidence)
-    apply_charge_sharing!(bins, detector)
-    apply_pulse_pileup!(bins, detector, Float64(flux_rate))
-    apply_anti_coincidence!(bins, detector)
+    # Only when requested — these are systematic detector imperfections
+    if apply_detector_effects
+        apply_charge_sharing!(bins, detector)
+        apply_pulse_pileup!(bins, detector, Float64(flux_rate))
+        apply_anti_coincidence!(bins, detector)
+    end
 
     # Convert from photon counts to line-integral domain: sino = -log(N / I₀_bin)
-    # Pass R to _compute_bin_I0 so it uses the same spectral response as forward projection
     eps_val = T(1e-10)  # Pre-compute to avoid capturing Type{T} in kernel
+    I0_bins_norm = if apply_detector_effects
+        # Use degraded I0 so detector effects cancel in the ratio N/I0
+        _compute_degraded_I0(detector, energies, weights, η, thresholds, kVp, I0, flux_rate; R=R)
+    else
+        # Theoretical I0 — no detector effects applied
+        [_compute_bin_I0(detector, energies, weights, η, thresholds, b,
+                          Float64(kVp), Float64(I0); R=R) for b in 1:n_bins]
+    end
     for b in 1:n_bins
-        I0_bin = _compute_bin_I0(detector, energies, weights, η, thresholds, b, Float64(kVp), Float64(I0); R=R)
-        let I0_bin_T = T(I0_bin), ba = bins[b], eps = eps_val
+        let I0_bin_T = T(I0_bins_norm[b]), ba = bins[b], eps = eps_val
             AK.foreachindex(ba) do idx
                 ba[idx] = -log(max(ba[idx], eps) / I0_bin_T)
             end
@@ -1091,6 +1179,73 @@ function _compute_bin_I0(detector, energies, weights, η, thresholds, bin_idx, k
     end
 end
 
+"""
+    _compute_degraded_I0(detector, energies, weights, η, thresholds, kVp, I0, flux_rate; R=nothing)
+
+Compute per-bin I0 values with detector degradation applied, for correct -log(N/I0)
+normalization in `pcct_forward_project`.
+
+Models the same effects as the detector physics chain for a uniform (air) field:
+1. Charge sharing energy redistribution (higher bins → lower bins)
+2. Pulse pileup (count rate reduction + energy upshift)
+
+Spatial effects (charge sharing spatial, anti-coincidence) have no net effect on
+a uniform field (inflow = outflow for all interior pixels).
+"""
+function _compute_degraded_I0(detector, energies, weights, η, thresholds, kVp, I0, flux_rate; R=nothing)
+    n_bins = length(thresholds)
+
+    # Start with theoretical I0 per bin
+    I0_bins = [_compute_bin_I0(detector, energies, weights, η, thresholds, b,
+                                Float64(kVp), Float64(I0); R=R) for b in 1:n_bins]
+
+    # 1. Charge sharing energy redistribution (mirrors apply_charge_sharing! energy part)
+    # Spatial redistribution is a no-op for uniform fields (all neighbors equal).
+    # But energy redistribution transfers counts from higher bins to lower bins.
+    if detector.enable_charge_sharing && detector.charge_sharing_fwhm_mm > 0.0
+        σ_cloud = detector.charge_sharing_fwhm_mm / (2.0 * sqrt(2.0 * log(2.0)))
+        pixel_row = detector.pixel_size_mm[1]
+        pixel_col = detector.pixel_size_mm[2]
+        z_row = (pixel_row / 2.0) / σ_cloud
+        z_col = (pixel_col / 2.0) / σ_cloud
+        p_share_row = 2.0 / (1.0 + exp(1.5 * z_row))
+        p_share_col = 2.0 / (1.0 + exp(1.5 * z_col))
+        p_share = min(p_share_row + p_share_col, 0.5)
+        energy_loss_fraction = 0.5
+
+        # Process from highest to lowest bin (same order as apply_charge_sharing!)
+        for b in n_bins:-1:2
+            transfer = I0_bins[b] * p_share * energy_loss_fraction
+            I0_bins[b] -= transfer
+            I0_bins[b-1] += transfer
+        end
+    end
+
+    # 2. Pulse pileup (mirrors apply_pulse_pileup! exactly)
+    if detector.enable_pile_up && detector.dead_time_ns > 0.0
+        τ = detector.dead_time_ns * 1e-9
+        pixel_area = detector.pixel_size_mm[1] * detector.pixel_size_mm[2]
+        count_rate = Float64(flux_rate) * pixel_area
+        pile_up_factor = 1.0 / (1.0 + count_rate * τ)
+
+        # Count rate reduction
+        I0_bins .*= pile_up_factor
+
+        # Energy pileup transfer (lower bins → higher bins)
+        p_pileup = 1.0 - pile_up_factor
+        for b in 1:(n_bins-1)
+            transfer = I0_bins[b] * p_pileup * 0.1
+            I0_bins[b+1] += transfer
+            I0_bins[b] -= transfer
+        end
+    end
+
+    # Anti-coincidence: no net effect on uniform field (all neighbors equal,
+    # condition my_total > neighbor_total is never true)
+
+    return I0_bins
+end
+
 # Legacy method: raw volume input (deprecated, kept for backward compatibility)
 """
     pcct_forward_project(volume::AbstractArray{T,3}, geom, detector, energies, weights; kwargs...)
@@ -1106,7 +1261,7 @@ function pcct_forward_project(
     detector::PhotonCountingDetector,
     energies::AbstractVector,
     weights::AbstractVector;
-    flux_rate::Real = T(1e9),
+    flux_rate::Real = T(1e8),
     I0::Real = T(1e6)
 ) where T
 
@@ -1250,9 +1405,12 @@ end
 
 Compute per-bin reference photon counts for noise model.
 
-When spectrum (energies, weights) is provided, computes the proper per-bin I₀
-by integrating spectrum × quantum efficiency over each bin's energy range.
-Otherwise falls back to uniform distribution (I0/n_bins).
+`I0` is the physics-based total photons per pixel per view (from `compute_detector_I0`).
+This function distributes I0 across bins based on the fractional spectrum × quantum
+efficiency × spectral response contribution of each bin.
+
+The spectrum weights may be unnormalized (raw tube output), so we compute the
+fractional bin distribution using a unit I0, then scale by the actual I0.
 """
 function _compute_pcct_noise_I0(detector, n_bins, thresholds, I0, energies, weights)
     if isnothing(energies) || isnothing(weights)
@@ -1264,11 +1422,19 @@ function _compute_pcct_noise_I0(detector, n_bins, thresholds, I0, energies, weig
     η = quantum_efficiency_vector(detector.material, detector.thickness_mm, energies)
     kVp = maximum(energies)
 
-    I0_per_bin = zeros(Float64, n_bins)
+    # Compute per-bin contributions with unit I0 to get relative fractions
+    raw_per_bin = zeros(Float64, n_bins)
     for b in 1:n_bins
-        I0_per_bin[b] = _compute_bin_I0(detector, energies, weights, η, thresholds, b, Float64(kVp), Float64(I0))
+        raw_per_bin[b] = _compute_bin_I0(detector, energies, weights, η, thresholds, b, Float64(kVp), 1.0)
     end
-    return I0_per_bin
+
+    # Normalize to get fractional distribution, then scale by physics I0
+    total_raw = sum(raw_per_bin)
+    if total_raw > 0
+        return (raw_per_bin ./ total_raw) .* Float64(I0)
+    else
+        return fill(Float64(I0) / n_bins, n_bins)
+    end
 end
 
 """
