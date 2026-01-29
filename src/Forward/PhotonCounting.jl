@@ -569,6 +569,114 @@ function apply_charge_sharing!(
 end
 
 # =============================================================================
+# Charge Sharing Correction (GPU-native)
+# =============================================================================
+
+"""
+    correct_charge_sharing!(bins, detector) -> bins
+
+Apply inverse charge sharing correction to energy-binned counts (in-place, GPU-native).
+
+This is the inverse of `apply_charge_sharing!`. It approximately reverses the spatial
+blur and energy redistribution caused by charge cloud diffusion.
+
+# Algorithm
+1. Reverse energy redistribution (low→high bins, opposite of forward high→low)
+2. Apply inverse spatial filter (sharpening kernel, approximate deconvolution of 3x3 blur)
+
+The sharpening kernel uses: `corrected[i,j] = center_boost * pixel[i,j] - nw * sum(neighbors)`
+where `center_boost = 1 + p_share` and `nw = p_share / 8`, approximately inverting the
+forward blur kernel `p_primary * center + nw * sum(neighbors)`.
+
+# Arguments
+- `bins::Vector{Array}`: Energy-binned counts (modified in-place)
+- `detector::PhotonCountingDetector`: Detector specification
+"""
+function correct_charge_sharing!(
+    bins::Vector{A},
+    detector::PhotonCountingDetector
+) where {T, A<:AbstractArray{T,3}}
+
+    if !detector.enable_charge_sharing || detector.charge_sharing_fwhm_mm ≤ 0.0
+        return bins
+    end
+
+    n_bins = length(bins)
+    n_cols, n_rows, n_angles = size(bins[1])
+
+    # Cast all detector parameters to T (same computation as forward model)
+    σ_cloud = T(detector.charge_sharing_fwhm_mm) / (T(2) * sqrt(T(2) * log(T(2))))
+
+    pixel_row = T(detector.pixel_size_mm[1])
+    pixel_col = T(detector.pixel_size_mm[2])
+
+    boundary_dist_row = pixel_row / T(2)
+    boundary_dist_col = pixel_col / T(2)
+
+    z_row = boundary_dist_row / σ_cloud
+    z_col = boundary_dist_col / σ_cloud
+
+    p_share_row = T(2) / (one(T) + exp(T(1.5) * z_row))
+    p_share_col = T(2) / (one(T) + exp(T(1.5) * z_col))
+    p_share = min(p_share_row + p_share_col, T(0.5))
+
+    energy_loss_fraction = T(0.5)
+
+    # Step 1: Reverse energy redistribution (low→high, opposite of forward high→low)
+    # Forward transfers from higher bins to lower bins; inverse transfers from lower to higher
+    for bin_idx in 1:(n_bins-1)
+        let lb = bins[bin_idx], hb = bins[bin_idx + 1],
+            lf = p_share * energy_loss_fraction
+
+            AK.foreachindex(lb) do idx
+                transfer = lb[idx] * lf
+                hb[idx] += transfer
+                lb[idx] -= transfer
+            end
+        end
+    end
+
+    # Step 2: Inverse spatial filter (sharpening kernel)
+    # Forward: output = p_primary * center + nw * sum(neighbors)
+    # where p_primary = 1 - p_share, nw = p_share / 8
+    # Inverse (approximate): output = center_boost * center - nw * sum(neighbors)
+    # where center_boost = 1 + p_share (approximately 1/p_primary for small p_share)
+    nw = p_share / T(8)
+    center_boost = one(T) + p_share
+
+    for bin in bins
+        let b = bin, nb = nw, cb = center_boost,
+            nc = Int32(n_cols), nr = Int32(n_rows)
+
+            output = similar(b)
+
+            AK.foreachindex(b) do idx
+                ci = CartesianIndices(b)[idx]
+                col, row, angle = Tuple(ci)
+
+                center_val = b[col, row, angle]
+                neighbor_sum = zero(T)
+
+                for di in Int32(-1):Int32(1)
+                    for dj in Int32(-1):Int32(1)
+                        (di == Int32(0) && dj == Int32(0)) && continue
+                        r2 = clamp(row + dj, Int32(1), nr)
+                        c2 = clamp(col + di, Int32(1), nc)
+                        neighbor_sum += b[c2, r2, angle]
+                    end
+                end
+
+                output[idx] = cb * center_val - nb * neighbor_sum
+            end
+
+            copyto!(b, output)
+        end
+    end
+
+    return bins
+end
+
+# =============================================================================
 # Pulse Pile-up Model (GPU-native)
 # =============================================================================
 
