@@ -711,7 +711,7 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts)
     # At :medium/:high fidelity, detector effects model real CdTe behavior.
     materials = get_region_materials()
     mask_gpu = _to_gpu(phantom.mask)
-    use_detector_fx = sim_opts.fidelity in (:medium, :high)
+    use_detector_fx = sim_opts.fidelity in (:medium, :high, :pcct)
     pcct_sino = pcct_forward_project(
         mask_gpu, geom, pcct_detector;
         energies=energies, weights=weights,
