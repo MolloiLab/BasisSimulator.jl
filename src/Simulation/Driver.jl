@@ -705,10 +705,13 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts)
     pcct_detector = _build_pcct_detector(scanner)
 
     # 5. PCCT forward projection (mask+materials → energy-resolved sinogram, GPU if available)
-    # Skip detector effects (charge sharing, pileup, anti-coincidence) when noise is off
+    # Detector effects (charge sharing, pileup, anti-coincidence) are deterministic
+    # physical processes controlled by fidelity, independent of Poisson noise.
+    # At :ideal/:low fidelity, detector effects are disabled for clean baseline.
+    # At :medium/:high fidelity, detector effects model real CdTe behavior.
     materials = get_region_materials()
     mask_gpu = _to_gpu(phantom.mask)
-    use_detector_fx = sim_opts.use_noise
+    use_detector_fx = sim_opts.fidelity in (:medium, :high)
     pcct_sino = pcct_forward_project(
         mask_gpu, geom, pcct_detector;
         energies=energies, weights=weights,
@@ -731,11 +734,13 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts)
     end
 
     # 7. Apply PCCT noise (per-bin Poisson, no electronic noise)
+    # Use physics-based I0 from protocol and geometry (same formula as sim_detect)
     pcct_sino_noisy = if sim_opts.use_noise
+        I0_physics = compute_detector_I0(geom, protocol)
         noisy_bins = [copy(b) for b in pcct_sino.bins]
         noisy_sino = EnergyResolvedSinogram(noisy_bins, copy(pcct_sino.thresholds_keV))
         apply_pcct_noise!(noisy_sino, pcct_detector, protocol;
-                          seed=sim_opts.seed, I0=1e6,
+                          seed=sim_opts.seed, I0=I0_physics,
                           energies=energies, weights=weights)
         noisy_sino
     else
