@@ -14,7 +14,7 @@ Each `use_*` field is `Bool`: `true` = effect ON, `false` = effect OFF.
 These are resolved from fidelity presets and user overrides at construction time.
 
 # Fields
-- `fidelity::Symbol`: Preset level (:high, :medium, :low, :ideal). Default :high.
+- `fidelity::Symbol`: Preset level (:pcct, :high, :medium, :low, :ideal). Default :high.
 - `use_fill_factor::Bool`: Enable detector fill factor.
 - `use_flat_filter::Bool`: Enable flat (inherent) filtration.
 - `use_bowtie_filter::Bool`: Enable bowtie filter.
@@ -29,6 +29,7 @@ These are resolved from fidelity presets and user overrides at construction time
 - `use_heel_effect::Bool`: Enable anode heel effect.
 - `use_das::Bool`: Enable DAS model (BROKEN — always false).
 - `use_bhc::Bool`: Enable beam hardening correction.
+- `use_pcct_corrections::Bool`: Enable PCCT detector corrections (inverse pileup, inverse charge sharing).
 - `n_energy_bins::Int`: Number of spectrum bins for polychromatic mode. Default 30.
 - `seed::Union{Int, Nothing}`: Random seed for reproducibility. Default 42.
 """
@@ -53,6 +54,9 @@ struct SimOptions
     use_das::Bool
     use_bhc::Bool
 
+    # --- PCCT Corrections ---
+    use_pcct_corrections::Bool
+
     # --- General ---
     seed::Union{Int, Nothing}
     n_energy_bins::Int
@@ -68,6 +72,7 @@ Create simulation options with fidelity presets and per-effect overrides.
 - `:low`: Noise only.
 - `:medium`: Noise + focal_spot + crosstalk + flat_filter + bhc (polychromatic).
 - `:high`: All effects ON except DAS (BROKEN).
+- `:pcct`: Same as :high but with PCCT detector corrections enabled.
 
 # Keyword Overrides
 Pass `use_*=true/false` to override the fidelity preset for individual effects.
@@ -99,35 +104,42 @@ function SimOptions(;
     use_heel_effect::Union{Bool, Nothing} = nothing,
     use_das::Union{Bool, Nothing} = nothing,
     use_bhc::Union{Bool, Nothing} = nothing,
+    use_pcct_corrections::Union{Bool, Nothing} = nothing,
     n_energy_bins::Int = 30,
     seed::Union{Int, Nothing} = 42,
     # Deprecated kwarg — ignored but accepted for backwards compatibility
     use_beam_hardening::Union{Bool, Nothing} = nothing
 )
-    # Fidelity preset defaults for all 14 effects
-    # :ideal = all OFF; :low = noise only; :medium = polychromatic subset; :high = all ON except DAS
-    defaults = if fidelity == :high
+    # Fidelity preset defaults for all 15 effects
+    # :ideal = all OFF; :low = noise only; :medium = polychromatic subset; :high = all ON except DAS; :pcct = :high + corrections
+    defaults = if fidelity == :pcct
+        # Same as :high but with PCCT corrections enabled
         (fill_factor=true, flat_filter=true, bowtie_filter=true, detector_efficiency=true,
          scatter=true, scatter_correction=true, crosstalk=true, optical_crosstalk=true,
          focal_spot=true, noise=true, lag=true,
-         heel_effect=true, das=false, bhc=true)  # das=false: DAS model is BROKEN
+         heel_effect=true, das=false, bhc=true, pcct_corrections=true)
+    elseif fidelity == :high
+        (fill_factor=true, flat_filter=true, bowtie_filter=true, detector_efficiency=true,
+         scatter=true, scatter_correction=true, crosstalk=true, optical_crosstalk=true,
+         focal_spot=true, noise=true, lag=true,
+         heel_effect=true, das=false, bhc=true, pcct_corrections=false)  # das=false: DAS model is BROKEN
     elseif fidelity == :medium
         (fill_factor=false, flat_filter=true, bowtie_filter=false, detector_efficiency=false,
          scatter=false, scatter_correction=false, crosstalk=true, optical_crosstalk=false,
          focal_spot=true, noise=true, lag=false,
-         heel_effect=false, das=false, bhc=true)
+         heel_effect=false, das=false, bhc=true, pcct_corrections=false)
     elseif fidelity == :low
         (fill_factor=false, flat_filter=false, bowtie_filter=false, detector_efficiency=false,
          scatter=false, scatter_correction=false, crosstalk=false, optical_crosstalk=false,
          focal_spot=false, noise=true, lag=false,
-         heel_effect=false, das=false, bhc=false)
+         heel_effect=false, das=false, bhc=false, pcct_corrections=false)
     elseif fidelity == :ideal
         (fill_factor=false, flat_filter=false, bowtie_filter=false, detector_efficiency=false,
          scatter=false, scatter_correction=false, crosstalk=false, optical_crosstalk=false,
          focal_spot=false, noise=false, lag=false,
-         heel_effect=false, das=false, bhc=false)
+         heel_effect=false, das=false, bhc=false, pcct_corrections=false)
     else
-        error("Unknown fidelity preset: $fidelity. Use :high, :medium, :low, or :ideal.")
+        error("Unknown fidelity preset: $fidelity. Use :pcct, :high, :medium, :low, or :ideal.")
     end
 
     # Resolve each toggle: user override wins, otherwise use preset default
@@ -145,6 +157,7 @@ function SimOptions(;
     _heel_effect = isnothing(use_heel_effect) ? defaults.heel_effect : use_heel_effect
     _das = isnothing(use_das) ? defaults.das : use_das
     _bhc = isnothing(use_bhc) ? defaults.bhc : use_bhc
+    _pcct_corrections = isnothing(use_pcct_corrections) ? defaults.pcct_corrections : use_pcct_corrections
 
     return SimOptions(
         fidelity,
@@ -152,6 +165,7 @@ function SimOptions(;
         _scatter, _scatter_correction, _crosstalk, _optical_crosstalk,
         _focal_spot, _noise, _lag,
         _heel_effect, _das, _bhc,
+        _pcct_corrections,
         seed, n_energy_bins
     )
 end
