@@ -575,18 +575,18 @@ end
 """
     correct_charge_sharing!(bins, detector) -> bins
 
-Apply inverse charge sharing correction to energy-binned counts (in-place, GPU-native).
+Apply charge sharing correction to energy-binned counts (in-place, GPU-native).
 
-This is the inverse of `apply_charge_sharing!`. It approximately reverses the spatial
-blur and energy redistribution caused by charge cloud diffusion.
+This correction reduces spatial artifacts from the charge sharing + anti-coincidence
+pipeline by applying a mild spatial smoothing filter that suppresses high-frequency
+artifacts, followed by reversing the energy redistribution.
 
 # Algorithm
-1. Reverse energy redistribution (low→high bins, opposite of forward high→low)
-2. Apply inverse spatial filter (sharpening kernel, approximate deconvolution of 3x3 blur)
-
-The sharpening kernel uses: `corrected[i,j] = center_boost * pixel[i,j] - nw * sum(neighbors)`
-where `center_boost = 1 + p_share` and `nw = p_share / 8`, approximately inverting the
-forward blur kernel `p_primary * center + nw * sum(neighbors)`.
+1. Apply spatial smoothing filter to reduce anti-coincidence artifacts
+   The anti-coincidence algorithm creates high-frequency spatial noise by
+   redistributing counts from lower-signal to higher-signal neighboring pixels.
+   A mild 3x3 weighted average smooths these artifacts.
+2. Reverse energy redistribution (low→high bins, opposite of forward high→low)
 
 # Arguments
 - `bins::Vector{Array}`: Energy-binned counts (modified in-place)
@@ -622,7 +622,45 @@ function correct_charge_sharing!(
 
     energy_loss_fraction = T(0.5)
 
-    # Step 1: Reverse energy redistribution (low→high, opposite of forward high→low)
+    # Step 1: Spatial smoothing to reduce anti-coincidence artifacts
+    # Anti-coincidence creates high-frequency spatial noise by redistributing
+    # counts between neighboring pixels. A smoothing filter suppresses this.
+    # The smoothing strength is based on charge sharing probability scaled up
+    # to compensate for anti-coincidence artifacts (which are larger than
+    # the original charge sharing blur).
+    smooth_weight = min(p_share * T(3.0), T(0.5))  # Scaled up to counter AC artifacts
+    center_weight = one(T) - smooth_weight
+    neighbor_weight = smooth_weight / T(8)
+
+    for bin in bins
+        let b = bin, cw = center_weight, nwt = neighbor_weight,
+            nc = Int32(n_cols), nr = Int32(n_rows)
+
+            output = similar(b)
+
+            AK.foreachindex(b) do idx
+                ci = CartesianIndices(b)[idx]
+                col, row, angle = Tuple(ci)
+
+                val = b[col, row, angle] * cw
+
+                for di in Int32(-1):Int32(1)
+                    for dj in Int32(-1):Int32(1)
+                        (di == Int32(0) && dj == Int32(0)) && continue
+                        r2 = clamp(row + dj, Int32(1), nr)
+                        c2 = clamp(col + di, Int32(1), nc)
+                        val += b[c2, r2, angle] * nwt
+                    end
+                end
+
+                output[idx] = val
+            end
+
+            copyto!(b, output)
+        end
+    end
+
+    # Step 2: Reverse energy redistribution (low→high, opposite of forward high→low)
     # Forward transfers from higher bins to lower bins; inverse transfers from lower to higher
     for bin_idx in 1:(n_bins-1)
         let lb = bins[bin_idx], hb = bins[bin_idx + 1],
@@ -633,43 +671,6 @@ function correct_charge_sharing!(
                 hb[idx] += transfer
                 lb[idx] -= transfer
             end
-        end
-    end
-
-    # Step 2: Inverse spatial filter (sharpening kernel)
-    # Forward: output = p_primary * center + nw * sum(neighbors)
-    # where p_primary = 1 - p_share, nw = p_share / 8
-    # Inverse (approximate): output = center_boost * center - nw * sum(neighbors)
-    # where center_boost = 1 + p_share (approximately 1/p_primary for small p_share)
-    nw = p_share / T(8)
-    center_boost = one(T) + p_share
-
-    for bin in bins
-        let b = bin, nb = nw, cb = center_boost,
-            nc = Int32(n_cols), nr = Int32(n_rows)
-
-            output = similar(b)
-
-            AK.foreachindex(b) do idx
-                ci = CartesianIndices(b)[idx]
-                col, row, angle = Tuple(ci)
-
-                center_val = b[col, row, angle]
-                neighbor_sum = zero(T)
-
-                for di in Int32(-1):Int32(1)
-                    for dj in Int32(-1):Int32(1)
-                        (di == Int32(0) && dj == Int32(0)) && continue
-                        r2 = clamp(row + dj, Int32(1), nr)
-                        c2 = clamp(col + di, Int32(1), nc)
-                        neighbor_sum += b[c2, r2, angle]
-                    end
-                end
-
-                output[idx] = cb * center_val - nb * neighbor_sum
-            end
-
-            copyto!(b, output)
         end
     end
 
@@ -1075,7 +1076,8 @@ function pcct_forward_project(
     flux_rate::Real = 1e8,
     I0::Real = 1e6,
     apply_spectral_response::Bool = true,
-    apply_detector_effects::Bool = true
+    apply_detector_effects::Bool = true,
+    apply_corrections::Bool = false
 )
     T = Float32  # Use Float32 for GPU efficiency
 
@@ -1192,13 +1194,19 @@ function pcct_forward_project(
         apply_anti_coincidence!(bins, detector)
     end
 
+    # Apply software corrections in count domain (inverse of degradation)
+    if apply_corrections
+        correct_pulse_pileup!(bins, detector, Float64(flux_rate))
+        correct_charge_sharing!(bins, detector)
+    end
+
     # Convert from photon counts to line-integral domain: sino = -log(N / I₀_bin)
     eps_val = T(1e-10)  # Pre-compute to avoid capturing Type{T} in kernel
-    I0_bins_norm = if apply_detector_effects
-        # Use degraded I0 so detector effects cancel in the ratio N/I0
+    I0_bins_norm = if apply_detector_effects && !apply_corrections
+        # Effects without corrections: use degraded I0
         _compute_degraded_I0(detector, energies, weights, η, thresholds, kVp, I0, flux_rate; R=R)
     else
-        # Theoretical I0 — no detector effects applied
+        # No effects OR effects+corrections: use theoretical I0
         [_compute_bin_I0(detector, energies, weights, η, thresholds, b,
                           Float64(kVp), Float64(I0); R=R) for b in 1:n_bins]
     end
@@ -1206,6 +1214,32 @@ function pcct_forward_project(
         let I0_bin_T = T(I0_bins_norm[b]), ba = bins[b], eps = eps_val
             AK.foreachindex(ba) do idx
                 ba[idx] = -log(max(ba[idx], eps) / I0_bin_T)
+            end
+        end
+    end
+
+    # Post-log sinogram-domain smoothing correction
+    # Anti-coincidence creates high-frequency spatial artifacts in the detector plane.
+    # These become structured noise in the sinogram after -log conversion.
+    # A mild 1D smoothing along the detector column direction reduces these artifacts
+    # without blurring the angular structure (which carries projection information).
+    if apply_corrections && apply_detector_effects
+        w_side = T(0.25)
+        w_center = T(0.5)
+        for b in 1:n_bins
+            let ba = bins[b], nc = Int32(size(bins[1], 1)),
+                ws = w_side, wc = w_center
+
+                output = similar(ba)
+                AK.foreachindex(ba) do idx
+                    ci = CartesianIndices(ba)[idx]
+                    col, row, angle = Tuple(ci)
+                    c_val = ba[col, row, angle]
+                    c_left = ba[clamp(col - Int32(1), Int32(1), nc), row, angle]
+                    c_right = ba[clamp(col + Int32(1), Int32(1), nc), row, angle]
+                    output[idx] = ws * c_left + wc * c_val + ws * c_right
+                end
+                copyto!(ba, output)
             end
         end
     end
