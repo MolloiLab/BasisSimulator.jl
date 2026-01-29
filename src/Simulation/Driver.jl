@@ -376,21 +376,27 @@ function _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts)
     # Scatter is added AND corrected at ~70 keV (matched coefficients!)
     sino_high, config_high = _forward_single_pass(phantom, scanner, protocol_high, sim_opts, geom)
 
-    # 5. Apply detector noise to high-kVp sinogram (used for standard recon)
+    # 5. Apply detector noise to BOTH sinograms for realistic downstream processing
+    # sim_detect returns a copy — originals remain clean for sino_ideal
     sino_ideal = sino_high
-    sino_final = if sim_opts.use_noise
-        sim_detect(sino_high, geom, protocol_high)
+    if sim_opts.use_noise
+        sino_low_noisy = sim_detect(sino_low, geom, protocol_low)
+        sino_high_noisy = sim_detect(sino_high, geom, protocol_high)
     else
-        copy(sino_high)
+        sino_low_noisy = sino_low
+        sino_high_noisy = sino_high
     end
+    sino_final = sino_high_noisy
 
-    # 6. Create DualEnergySinogram from the two clean sinograms
-    de_sino = DualEnergySinogram(sino_low, sino_high;
+    # 6. Create DualEnergySinogram from (potentially noisy) sinograms
+    # With use_noise=true: material decomposition sees realistic noise
+    # With use_noise=false: identical to previous behavior (clean sinograms)
+    de_sino = DualEnergySinogram(sino_low_noisy, sino_high_noisy;
         low_kvp = Int(protocol.kVp_low),
         high_kvp = Int(protocol.kVp)
     )
 
-    # 7. Material decomposition (works on clean sinograms!)
+    # 7. Material decomposition (now operates on noisy sinograms when use_noise=true)
     mat_map = decompose_materials(de_sino; basis=Tuple(recon_opts.vmi_basis[1:2]))
 
     # 8. VMI reconstruction (if energies specified)
@@ -606,22 +612,27 @@ end
 # =============================================================================
 
 """
-    _combine_pcct_bins(pcct_sino, detector, energies, weights, kVp; I0=1e6)
+    _combine_pcct_bins(pcct_sino, detector, energies, weights, kVp; I0=1e6,
+                        apply_detector_effects=false, flux_rate=1e8)
 
 Combine energy-resolved PCCT sinogram bins into a single conventional-equivalent
 sinogram using correct physics.
 
 The bins are in line-integral domain: sino_bin = -log(N_bin / I0_bin).
-To combine correctly:
+To combine correctly, the SAME I0 used for normalization must be used here:
 1. Convert back to counts: N_bin = I0_bin × exp(-sino_bin)
 2. Sum counts: N_total = Σ N_bin
 3. Sum reference: I0_total = Σ I0_bin
 4. Combined: sino = -log(N_total / I0_total)
 
+When `apply_detector_effects=true`, uses degraded I0 (consistent with
+`pcct_forward_project` normalization when detector effects are applied).
+
 Returns a GPU array (same device as input bins).
 """
 function _combine_pcct_bins(pcct_sino::EnergyResolvedSinogram, detector::PhotonCountingDetector,
-                             energies, weights, kVp; I0=1e6)
+                             energies, weights, kVp; I0=1e6,
+                             apply_detector_effects::Bool=false, flux_rate::Real=1e8)
     T = Float32
     n_bins = length(pcct_sino.bins)
     thresholds = detector.energy_thresholds_keV
@@ -637,9 +648,13 @@ function _combine_pcct_bins(pcct_sino::EnergyResolvedSinogram, detector::PhotonC
         n_energy_points=length(energies)
     )
 
-    # Compute per-bin I0 values (using R matrix for consistency with forward projection)
-    I0_bins = [_compute_bin_I0(detector, energies, weights, η, thresholds, b,
-                                Float64(kVp), Float64(I0); R=R) for b in 1:n_bins]
+    # Compute per-bin I0 values — MUST match what pcct_forward_project used for normalization
+    I0_bins = if apply_detector_effects
+        _compute_degraded_I0(detector, energies, weights, η, thresholds, kVp, I0, flux_rate; R=R)
+    else
+        [_compute_bin_I0(detector, energies, weights, η, thresholds, b,
+                          Float64(kVp), Float64(I0); R=R) for b in 1:n_bins]
+    end
     I0_total = T(sum(I0_bins))
 
     # Accumulate total photon counts: N_total = Σ I0_bin × exp(-sino_bin)
@@ -686,62 +701,34 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts)
     # 3. Build PhysicsConfig (with phantom for size-aware scatter)
     config = build_physics_config(scanner, sim_opts, energies, weights; phantom=phantom)
 
-    # 4. Build PCCT detector from Scanner, respecting SimOptions fidelity
+    # 4. Build PCCT detector from Scanner
     pcct_detector = _build_pcct_detector(scanner)
 
-    # Override detector effects based on SimOptions:
-    # - :ideal fidelity disables all detector physics (charge sharing, pileup, anti-coincidence, energy blurring)
-    # - :low fidelity keeps noise but disables detector spatial effects
-    # - :medium/:high keeps all detector effects as specified by the scanner
-    if sim_opts.fidelity == :ideal
-        pcct_detector = PhotonCountingDetector(
-            material = pcct_detector.material,
-            thickness_mm = pcct_detector.thickness_mm,
-            pixel_size_mm = pcct_detector.pixel_size_mm,
-            energy_thresholds_keV = Float64.(pcct_detector.energy_thresholds_keV),
-            energy_resolution_keV = 0.0,       # Perfect energy resolution
-            charge_sharing_fwhm_mm = 0.0,      # No charge sharing
-            enable_charge_sharing = false,
-            dead_time_ns = 0.0,                # No pileup
-            enable_pile_up = false,
-            enable_anti_coincidence = false,    # No anti-coincidence
-            coincidence_window_ns = 0.0,
-            electronic_noise_keV = 0.0,        # No electronic noise
-            seed = pcct_detector.seed
-        )
-    elseif sim_opts.fidelity == :low
-        pcct_detector = PhotonCountingDetector(
-            material = pcct_detector.material,
-            thickness_mm = pcct_detector.thickness_mm,
-            pixel_size_mm = pcct_detector.pixel_size_mm,
-            energy_thresholds_keV = Float64.(pcct_detector.energy_thresholds_keV),
-            energy_resolution_keV = 0.0,       # Perfect energy resolution
-            charge_sharing_fwhm_mm = 0.0,      # No charge sharing
-            enable_charge_sharing = false,
-            dead_time_ns = 0.0,                # No pileup
-            enable_pile_up = false,
-            enable_anti_coincidence = false,    # No anti-coincidence
-            coincidence_window_ns = 0.0,
-            electronic_noise_keV = 0.0,        # No electronic noise
-            seed = pcct_detector.seed
-        )
-    end
-
     # 5. PCCT forward projection (mask+materials → energy-resolved sinogram, GPU if available)
+    # Skip detector effects (charge sharing, pileup, anti-coincidence) when noise is off
     materials = get_region_materials()
     mask_gpu = _to_gpu(phantom.mask)
+    use_detector_fx = sim_opts.use_noise
     pcct_sino = pcct_forward_project(
         mask_gpu, geom, pcct_detector;
         energies=energies, weights=weights,
         materials=materials,
-        apply_spectral_response=true
+        apply_spectral_response=true,
+        apply_detector_effects=use_detector_fx
     )
 
     # 6. Also produce conventional sinogram (combine all bins → single channel)
     # Correct physics: convert line integrals to counts, sum, re-normalize
+    # Must use same I0 type (degraded vs theoretical) as forward projection
     T = Float32
     kVp = Float64(maximum(energies))
-    sino_ideal_gpu = _combine_pcct_bins(pcct_sino, pcct_detector, energies, weights, kVp)
+    sino_ideal_gpu = _combine_pcct_bins(pcct_sino, pcct_detector, energies, weights, kVp;
+                                         apply_detector_effects=use_detector_fx)
+
+    # 6b. Apply beam hardening correction to combined sinogram
+    if config.bhc !== nothing
+        apply_bhc!(sino_ideal_gpu, config.bhc)
+    end
 
     # 7. Apply PCCT noise (per-bin Poisson, no electronic noise)
     pcct_sino_noisy = if sim_opts.use_noise
@@ -756,7 +743,13 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts)
     end
 
     # 8. Conventional noisy sinogram (combine all bins → single channel)
-    sino_noisy_gpu = _combine_pcct_bins(pcct_sino_noisy, pcct_detector, energies, weights, kVp)
+    sino_noisy_gpu = _combine_pcct_bins(pcct_sino_noisy, pcct_detector, energies, weights, kVp;
+                                         apply_detector_effects=use_detector_fx)
+
+    # 8b. Apply beam hardening correction to noisy combined sinogram
+    if config.bhc !== nothing
+        apply_bhc!(sino_noisy_gpu, config.bhc)
+    end
 
     # 9. N-material decomposition (if vmi_basis specified with 2+ materials)
     # Decomposition is a per-pixel CPU operation — transfer bins to CPU if on GPU
