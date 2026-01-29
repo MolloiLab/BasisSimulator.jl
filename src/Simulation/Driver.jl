@@ -613,7 +613,7 @@ end
 
 """
     _combine_pcct_bins(pcct_sino, detector, energies, weights, kVp; I0=1e6,
-                        apply_detector_effects=false, flux_rate=1e8)
+                        apply_detector_effects=false, apply_corrections=false, flux_rate=1e8)
 
 Combine energy-resolved PCCT sinogram bins into a single conventional-equivalent
 sinogram using correct physics.
@@ -625,14 +625,16 @@ To combine correctly, the SAME I0 used for normalization must be used here:
 3. Sum reference: I0_total = Σ I0_bin
 4. Combined: sino = -log(N_total / I0_total)
 
-When `apply_detector_effects=true`, uses degraded I0 (consistent with
-`pcct_forward_project` normalization when detector effects are applied).
+When `apply_detector_effects=true` and `apply_corrections=false`, uses degraded I0
+(consistent with `pcct_forward_project` normalization when detector effects are applied
+without corrections). When corrections are applied, uses theoretical I0.
 
 Returns a GPU array (same device as input bins).
 """
 function _combine_pcct_bins(pcct_sino::EnergyResolvedSinogram, detector::PhotonCountingDetector,
                              energies, weights, kVp; I0=1e6,
-                             apply_detector_effects::Bool=false, flux_rate::Real=1e8)
+                             apply_detector_effects::Bool=false, apply_corrections::Bool=false,
+                             flux_rate::Real=1e8)
     T = Float32
     n_bins = length(pcct_sino.bins)
     thresholds = detector.energy_thresholds_keV
@@ -649,9 +651,11 @@ function _combine_pcct_bins(pcct_sino::EnergyResolvedSinogram, detector::PhotonC
     )
 
     # Compute per-bin I0 values — MUST match what pcct_forward_project used for normalization
-    I0_bins = if apply_detector_effects
+    I0_bins = if apply_detector_effects && !apply_corrections
+        # Effects without corrections: use degraded I0
         _compute_degraded_I0(detector, energies, weights, η, thresholds, kVp, I0, flux_rate; R=R)
     else
+        # No effects OR effects+corrections: use theoretical I0
         [_compute_bin_I0(detector, energies, weights, η, thresholds, b,
                           Float64(kVp), Float64(I0); R=R) for b in 1:n_bins]
     end
@@ -712,12 +716,14 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts)
     materials = get_region_materials()
     mask_gpu = _to_gpu(phantom.mask)
     use_detector_fx = sim_opts.fidelity in (:medium, :high, :pcct)
+    use_corrections = sim_opts.use_pcct_corrections
     pcct_sino = pcct_forward_project(
         mask_gpu, geom, pcct_detector;
         energies=energies, weights=weights,
         materials=materials,
         apply_spectral_response=true,
-        apply_detector_effects=use_detector_fx
+        apply_detector_effects=use_detector_fx,
+        apply_corrections=use_corrections
     )
 
     # 6. Also produce conventional sinogram (combine all bins → single channel)
@@ -726,7 +732,8 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts)
     T = Float32
     kVp = Float64(maximum(energies))
     sino_ideal_gpu = _combine_pcct_bins(pcct_sino, pcct_detector, energies, weights, kVp;
-                                         apply_detector_effects=use_detector_fx)
+                                         apply_detector_effects=use_detector_fx,
+                                         apply_corrections=use_corrections)
 
     # 6b. Apply beam hardening correction to combined sinogram
     if config.bhc !== nothing
@@ -749,7 +756,8 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts)
 
     # 8. Conventional noisy sinogram (combine all bins → single channel)
     sino_noisy_gpu = _combine_pcct_bins(pcct_sino_noisy, pcct_detector, energies, weights, kVp;
-                                         apply_detector_effects=use_detector_fx)
+                                         apply_detector_effects=use_detector_fx,
+                                         apply_corrections=use_corrections)
 
     # 8b. Apply beam hardening correction to noisy combined sinogram
     if config.bhc !== nothing
