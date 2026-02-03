@@ -90,11 +90,21 @@ Digital phantom with semantic mask for validation.
 ```julia
 phantom = create_gammex_472(; n_voxels=64)
 mean_μ = mean(phantom.μ[phantom.mask .== UInt8(REGION_CA_100)])
+
+# GPU phantom (Metal)
+using Metal
+phantom_gpu = Phantom(
+    MtlArray(phantom_cpu.μ),
+    MtlArray(phantom_cpu.mask),
+    phantom_cpu.voxel_size,
+    phantom_cpu.origin,
+    phantom_cpu.fov
+)
 ```
 """
-struct Phantom
-    μ::Array{Float32,3}
-    mask::Array{UInt8,3}
+struct Phantom{T<:AbstractArray{Float32,3}, M<:AbstractArray{UInt8,3}}
+    μ::T
+    mask::M
     voxel_size::NTuple{3,Float64}
     origin::NTuple{3,Float64}
     fov::NTuple{3,Float64}
@@ -244,6 +254,202 @@ function create_gammex_472(;
 end
 
 # =============================================================================
+# Create Phantom from Arbitrary Labeled Array
+# =============================================================================
+
+"""
+    create_phantom_from_mask(labeled_array, materials, voxel_size_cm; kwargs...) -> Phantom
+
+Create a Phantom from an arbitrary labeled array with custom material mapping.
+
+This function enables loading arbitrary phantoms (XCAT, custom segmentations, etc.)
+by providing a mapping from integer labels to materials.
+
+# Arguments
+- `labeled_array::AbstractArray{<:Integer, 3}`: Integer array where each voxel
+  contains a region label (0-255 supported via UInt8 conversion)
+- `materials::Dict{Int, <:Any}`: Mapping from label values to materials. Materials
+  can be:
+  - `XA.Material`: Direct XrayAttenuation.jl material
+  - `Symbol`: Material name to look up in MATERIALS_REGISTRY (e.g., `:water`, `:Ca_100`)
+- `voxel_size_cm::NTuple{3, Real}`: Physical voxel dimensions in cm as (dx, dy, dz)
+
+# Keyword Arguments
+- `energy_keV::Real=60.0`: Energy for computing μ values in the Phantom (keV)
+- `origin::Union{Nothing, NTuple{3, Real}}=nothing`: Origin coordinates (cm).
+  If `nothing`, phantom is centered at isocenter.
+
+# Returns
+A `Phantom` struct with:
+- `μ`: Linear attenuation coefficients (cm⁻¹) at specified energy
+- `mask`: UInt8 mask with original label values
+- `voxel_size`: Physical voxel dimensions (cm)
+- `origin`: Origin coordinates (cm)
+- `fov`: Field of view (cm)
+
+# Material Lookup
+For polychromatic simulation, the returned `Phantom.mask` values are used as indices
+into a materials vector. To use this phantom with `simulate()`, you must also
+provide a `materials` vector via the `materials` keyword argument (see IMPL-CUSTOM-MATERIALS).
+
+The materials vector should be constructed such that `materials[mask_value + 1]`
+returns the correct material for each voxel. Use `build_materials_vector()` to
+create this vector from the materials dict.
+
+# Example
+
+```julia
+using BasisSimulator, XrayAttenuation
+import XrayAttenuation as XA
+
+# Load XCAT phantom (hypothetical)
+xcat_mask = load_phantom_bin("xcat.bin"; cols=400, rows=400, slices=200)
+
+# Define materials for each label
+materials_dict = Dict{Int, XA.Material}(
+    0 => XA.Materials.air,
+    1 => XA.Materials.water,  # soft tissue approximation
+    2 => XA.Materials.cortical_bone,
+    3 => XA.Materials.lung,
+    # ... more materials
+)
+
+# Create phantom (0.1 cm = 1mm voxels)
+phantom = create_phantom_from_mask(
+    xcat_mask,
+    materials_dict,
+    (0.1, 0.1, 0.1);
+    energy_keV=70.0
+)
+
+# Build materials vector for simulation
+materials_vec = build_materials_vector(materials_dict)
+
+# Simulate with custom materials
+result = simulate(phantom, scanner, protocol, sim_opts, recon_opts;
+                  materials=materials_vec)
+```
+
+See also: [`build_materials_vector`](@ref), [`create_gammex_472`](@ref)
+"""
+function create_phantom_from_mask(
+    labeled_array::AbstractArray{<:Integer, 3},
+    materials::Dict{Int, M},
+    voxel_size_cm::NTuple{3, Real};
+    energy_keV::Real = 60.0,
+    origin::Union{Nothing, NTuple{3, Real}} = nothing
+) where M
+    # Get dimensions
+    nx, ny, nz = size(labeled_array)
+    dx, dy, dz = Float64.(voxel_size_cm)
+
+    # Compute FOV
+    fov_x = dx * nx
+    fov_y = dy * ny
+    fov_z = dz * nz
+
+    # Compute origin (center at isocenter if not specified)
+    if origin === nothing
+        origin_x = -fov_x/2 + dx/2
+        origin_y = -fov_y/2 + dy/2
+        origin_z = -fov_z/2 + dz/2
+        computed_origin = (origin_x, origin_y, origin_z)
+    else
+        computed_origin = Float64.(origin)
+    end
+
+    # Convert labeled array to UInt8 mask
+    # Note: labels > 255 will wrap around, but this is documented limitation
+    mask = UInt8.(labeled_array)
+
+    # Build μ array from materials
+    μ = zeros(Float32, nx, ny, nz)
+
+    # Pre-compute μ for each unique label
+    unique_labels = unique(labeled_array)
+    μ_lookup = Dict{Int, Float32}()
+
+    for label in unique_labels
+        if !haskey(materials, label)
+            @warn "Label $label not found in materials dict, using air"
+            mat = XA.Materials.air
+        else
+            mat = materials[label]
+            # Handle Symbol lookup
+            if mat isa Symbol
+                mat = get_material(mat)
+            end
+        end
+        μ_lookup[label] = Float32(compute_μ_at_energy(mat, Float64(energy_keV)))
+    end
+
+    # Fill μ array
+    for k in 1:nz
+        for j in 1:ny
+            for i in 1:nx
+                label = labeled_array[i, j, k]
+                μ[i, j, k] = μ_lookup[label]
+            end
+        end
+    end
+
+    return Phantom(
+        μ,
+        mask,
+        (dx, dy, dz),
+        computed_origin,
+        (fov_x, fov_y, fov_z)
+    )
+end
+
+"""
+    build_materials_vector(materials_dict::Dict{Int, <:Any}) -> Vector{XA.Material}
+
+Build a materials vector from a materials dictionary for use with `simulate()`.
+
+The returned vector is indexed by `mask_value + 1`, so `materials_vec[1]` corresponds
+to label 0, `materials_vec[2]` to label 1, etc.
+
+# Arguments
+- `materials_dict::Dict{Int, <:Any}`: Mapping from label values to materials.
+  Materials can be `XA.Material` or `Symbol`.
+
+# Returns
+`Vector{XA.Material}` with length `max_label + 1`.
+
+# Example
+```julia
+materials_dict = Dict(
+    0 => XA.Materials.air,
+    1 => :water,
+    2 => XA.Materials.cortical_bone
+)
+materials_vec = build_materials_vector(materials_dict)
+# materials_vec has 3 elements: [air, water, bone]
+```
+"""
+function build_materials_vector(materials_dict::Dict{Int, M}) where M
+    max_label = maximum(keys(materials_dict))
+    materials_vec = Vector{XA.Material}(undef, max_label + 1)
+
+    # Fill with air by default
+    for i in 1:(max_label + 1)
+        materials_vec[i] = XA.Materials.air
+    end
+
+    # Fill from dict
+    for (label, mat) in materials_dict
+        if mat isa Symbol
+            materials_vec[label + 1] = get_material(mat)
+        else
+            materials_vec[label + 1] = mat
+        end
+    end
+
+    return materials_vec
+end
+
+# =============================================================================
 # Validation Functions
 # =============================================================================
 
@@ -270,5 +476,5 @@ export REGION_CA_50, REGION_CA_100, REGION_CA_200, REGION_CA_300, REGION_CA_400,
 export REGION_I_2_0, REGION_I_2_5, REGION_I_5_0, REGION_I_7_5, REGION_I_10_0, REGION_I_15_0, REGION_I_20_0
 export REGION_TO_MATERIAL
 
-export Phantom, create_gammex_472
+export Phantom, create_gammex_472, create_phantom_from_mask, build_materials_vector
 export get_region_mask

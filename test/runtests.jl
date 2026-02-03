@@ -94,6 +94,90 @@ end
         @test sum(phantom.mask .== UInt8(REGION_SOLID_WATER)) > 0
     end
 
+    @testset "create_phantom_from_mask" begin
+        # Create a simple 3-material labeled array
+        labeled = zeros(Int, 16, 16, 4)
+        labeled[1:5, :, :] .= 0   # Air (background)
+        labeled[6:11, :, :] .= 1  # Water
+        labeled[12:16, :, :] .= 2 # Bone
+
+        # Define materials dict with XA.Material
+        materials_dict = Dict{Int, XA.Material}(
+            0 => XA.Materials.air,
+            1 => XA.Materials.water,
+            2 => XA.Materials.corticalbone
+        )
+
+        # Create phantom (1mm voxels = 0.1cm)
+        phantom = create_phantom_from_mask(
+            labeled,
+            materials_dict,
+            (0.1, 0.1, 0.1);
+            energy_keV=60.0
+        )
+
+        @test phantom isa Phantom
+        @test size(phantom.μ) == (16, 16, 4)
+        @test size(phantom.mask) == (16, 16, 4)
+
+        # Check μ values are correct
+        μ_air = compute_μ_at_energy(XA.Materials.air, 60.0)
+        μ_water = compute_μ_at_energy(XA.Materials.water, 60.0)
+        μ_bone = compute_μ_at_energy(XA.Materials.corticalbone, 60.0)
+
+        @test phantom.μ[3, 8, 2] ≈ Float32(μ_air)   # Air region
+        @test phantom.μ[8, 8, 2] ≈ Float32(μ_water) # Water region
+        @test phantom.μ[14, 8, 2] ≈ Float32(μ_bone) # Bone region
+
+        # Check mask values preserved
+        @test phantom.mask[3, 8, 2] == 0
+        @test phantom.mask[8, 8, 2] == 1
+        @test phantom.mask[14, 8, 2] == 2
+
+        # Check geometry
+        @test phantom.voxel_size == (0.1, 0.1, 0.1)
+        @test phantom.fov == (1.6, 1.6, 0.4)  # 16*0.1, 16*0.1, 4*0.1
+    end
+
+    @testset "create_phantom_from_mask with Symbol" begin
+        # Test Symbol material lookup
+        labeled = zeros(Int, 8, 8, 2)
+        labeled[1:4, :, :] .= 0  # Air
+        labeled[5:8, :, :] .= 1  # Water
+
+        materials_dict = Dict{Int, Symbol}(
+            0 => :air,
+            1 => :water
+        )
+
+        phantom = create_phantom_from_mask(
+            labeled,
+            materials_dict,
+            (0.2, 0.2, 0.2);
+            energy_keV=70.0
+        )
+
+        @test phantom isa Phantom
+        μ_water = compute_μ_at_energy(get_material(:water), 70.0)
+        @test phantom.μ[6, 4, 1] ≈ Float32(μ_water)
+    end
+
+    @testset "build_materials_vector" begin
+        materials_dict = Dict{Int, XA.Material}(
+            0 => XA.Materials.air,
+            2 => XA.Materials.water,
+            5 => XA.Materials.corticalbone
+        )
+
+        vec = build_materials_vector(materials_dict)
+
+        @test length(vec) == 6  # max label (5) + 1
+        @test vec[1] === XA.Materials.air   # label 0
+        @test vec[2] === XA.Materials.air   # label 1 (default)
+        @test vec[3] === XA.Materials.water # label 2
+        @test vec[6] === XA.Materials.corticalbone # label 5
+    end
+
     @testset "Scanner Geometry" begin
         geom = create_aquilion_one(n_angles=36, n_rows=8, n_cols=16)
         @test geom.SAD ≈ 60.0
@@ -4670,7 +4754,7 @@ end
             @test standard.pixel_size_mm[1] ≈ 0.302
             @test standard.pixel_size_mm[2] ≈ 0.302
             @test standard.energy_thresholds_keV == [20.0, 35.0, 55.0, 70.0]
-            @test standard.dead_time_ns ≈ 25.0
+            @test standard.dead_time_ns ≈ 5.0
 
             # UHR mode
             uhr = naeotom_detector_uhr()
@@ -6408,7 +6492,7 @@ end
             @test scanner.energy_thresholds == [20.0, 35.0, 55.0, 70.0]
             @test scanner.energy_resolution ≈ 10.0
             @test scanner.charge_sharing_fwhm ≈ 0.08
-            @test scanner.dead_time_ns ≈ 25.0
+            @test scanner.dead_time_ns ≈ 5.0
             @test scanner.pixel_mode == :standard
         end
 
@@ -6439,7 +6523,7 @@ end
             @test detector.energy_resolution_keV ≈ 10.0
             @test detector.charge_sharing_fwhm_mm ≈ 0.08
             @test detector.enable_charge_sharing == true
-            @test detector.dead_time_ns ≈ 25.0
+            @test detector.dead_time_ns ≈ 5.0
             @test detector.enable_pile_up == true
             @test detector.enable_anti_coincidence == true
             @test detector.electronic_noise_keV ≈ 0.0
