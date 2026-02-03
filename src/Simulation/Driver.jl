@@ -98,7 +98,7 @@ function Base.propertynames(::SimulationResult, private::Bool=false)
 end
 
 """
-    simulate(phantom, scanner, protocol, sim_opts, recon_opts)
+    simulate(phantom, scanner, protocol, sim_opts, recon_opts; materials=nothing)
 
 Run a full end-to-end CT simulation with automatic mode routing.
 
@@ -119,6 +119,13 @@ controls image reconstruction. The driver automatically routes between 5 scan mo
 - `protocol`: `CTProtocol` acquisition settings (scan_mode, dual_energy select mode).
 - `sim_opts`: `SimOptions` for physics fidelity (controls all 14 effects).
 - `recon_opts`: `ReconOptions` or `Vector{ReconOptions}` for multi-recon.
+
+# Keyword Arguments
+- `materials::Union{Nothing, Vector}=nothing`: Custom materials vector for arbitrary phantoms.
+  If `nothing`, uses `get_region_materials()` (Gammex 472 materials, backwards compatible).
+  For custom phantoms, provide a `Vector{XA.Material}` where `materials[mask_value + 1]`
+  returns the material for each voxel. Use `build_materials_vector(materials_dict)` to
+  create this from a Dict{Int, XA.Material}.
 
 # Returns
 `SimulationResult` containing sinograms, reconstructions, and optional DE outputs.
@@ -141,6 +148,13 @@ result = simulate(phantom, scanner,
 # Multi-recon from one scan
 recon_list = [ReconOptions(algorithm=:fdk), ReconOptions(algorithm=:sirt, iterations=50)]
 result = simulate(phantom, scanner, protocol, sim_opts, recon_list)
+
+# Custom phantom with arbitrary materials (XCAT, custom segmentation, etc.)
+import XrayAttenuation as XA
+materials_dict = Dict(0 => XA.Materials.air, 1 => XA.Materials.water, 2 => XA.Materials.corticalbone)
+phantom = create_phantom_from_mask(labeled_array, materials_dict, (0.1, 0.1, 0.1))
+materials_vec = build_materials_vector(materials_dict)
+result = simulate(phantom, scanner, protocol, sim_opts, recon_opts; materials=materials_vec)
 ```
 """
 function simulate(
@@ -148,7 +162,8 @@ function simulate(
     scanner::Scanner,
     protocol::CTProtocol,
     sim_opts::SimOptions = SimOptions(),
-    recon_opts::ReconOptions = ReconOptions()
+    recon_opts::ReconOptions = ReconOptions();
+    materials::Union{Nothing, Vector} = nothing
 )
     # Route based on scan_mode, dual_energy, and PCCT
     is_helical = protocol.scan_mode == :helical
@@ -165,15 +180,15 @@ function simulate(
 
     if _is_pcct
         # PCCT mode: photon-counting scanner detected
-        return _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts)
+        return _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts; materials=materials)
     elseif !is_helical && !is_dual
-        return _simulate_axial_single(phantom, scanner, protocol, sim_opts, recon_opts)
+        return _simulate_axial_single(phantom, scanner, protocol, sim_opts, recon_opts; materials=materials)
     elseif !is_helical && is_dual
-        return _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts)
+        return _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts; materials=materials)
     elseif is_helical && !is_dual
-        return _simulate_helical_single(phantom, scanner, protocol, sim_opts, recon_opts)
+        return _simulate_helical_single(phantom, scanner, protocol, sim_opts, recon_opts; materials=materials)
     else  # is_helical && is_dual
-        return _simulate_helical_dual(phantom, scanner, protocol, sim_opts, recon_opts)
+        return _simulate_helical_dual(phantom, scanner, protocol, sim_opts, recon_opts; materials=materials)
     end
 end
 
@@ -183,10 +198,11 @@ function simulate(
     scanner::Scanner,
     protocol::CTProtocol,
     sim_opts::SimOptions,
-    recon_opts_list::Vector{ReconOptions}
+    recon_opts_list::Vector{ReconOptions};
+    materials::Union{Nothing, Vector} = nothing
 )
     # Run simulation with first recon option to get sinograms
-    first_result = simulate(phantom, scanner, protocol, sim_opts, recon_opts_list[1])
+    first_result = simulate(phantom, scanner, protocol, sim_opts, recon_opts_list[1]; materials=materials)
 
     # Reconstruct with additional options from the same sinogram
     T = eltype(first_result.sinogram_noisy)
@@ -240,7 +256,8 @@ end
 # Mode 1: Axial Single-kVp (original behavior preserved)
 # =============================================================================
 
-function _simulate_axial_single(phantom, scanner, protocol, sim_opts, recon_opts)
+function _simulate_axial_single(phantom, scanner, protocol, sim_opts, recon_opts;
+                                materials::Union{Nothing, Vector} = nothing)
     # 1. Build Geometry
     geom = CTGeometry(
         scanner;
@@ -256,12 +273,13 @@ function _simulate_axial_single(phantom, scanner, protocol, sim_opts, recon_opts
     config = build_physics_config(scanner, sim_opts, energies, weights; phantom=phantom)
 
     # 4. Forward Project (move mask to GPU if available)
-    materials = get_region_materials()
+    # Use custom materials if provided, otherwise default to Gammex region materials
+    mats = isnothing(materials) ? get_region_materials() : materials
     mask_gpu = _to_gpu(phantom.mask)
     sino_ideal = forward_project(
         mask_gpu, geom;
         energies=energies, weights=weights,
-        materials=materials, physics=config
+        materials=mats, physics=config
     )
 
     # 5. Apply Detector Noise
@@ -307,7 +325,7 @@ end
 # =============================================================================
 
 """
-    _forward_single_pass(phantom, scanner, protocol, sim_opts, geom) -> (sinogram, config)
+    _forward_single_pass(phantom, scanner, protocol, sim_opts, geom; materials=nothing) -> (sinogram, config)
 
 Run forward projection for a single kVp with all physics effects.
 Returns fully-corrected sinogram (scatter added AND corrected at same energy).
@@ -315,7 +333,8 @@ Returns fully-corrected sinogram (scatter added AND corrected at same energy).
 This is the core building block for both single-kVp and dual-kVp simulations.
 By using this for dual-energy, we ensure scatter is properly matched.
 """
-function _forward_single_pass(phantom, scanner, protocol, sim_opts, geom)
+function _forward_single_pass(phantom, scanner, protocol, sim_opts, geom;
+                              materials::Union{Nothing, Vector} = nothing)
     # Resolve spectrum for this kVp
     energies, weights = resolve_spectrum(sim_opts, protocol)
 
@@ -323,18 +342,20 @@ function _forward_single_pass(phantom, scanner, protocol, sim_opts, geom)
     config = build_physics_config(scanner, sim_opts, energies, weights; phantom=phantom)
 
     # Forward project with all physics
-    materials = get_region_materials()
+    # Use custom materials if provided, otherwise default to Gammex region materials
+    mats = isnothing(materials) ? get_region_materials() : materials
     mask_gpu = _to_gpu(phantom.mask)
     sinogram = forward_project(
         mask_gpu, geom;
         energies=energies, weights=weights,
-        materials=materials, physics=config
+        materials=mats, physics=config
     )
 
     return sinogram, config
 end
 
-function _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts)
+function _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts;
+                              materials::Union{Nothing, Vector} = nothing)
     # 1. Build Geometry (shared for both kVp)
     geom = CTGeometry(
         scanner;
@@ -370,11 +391,11 @@ function _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts)
 
     # 3. Run single-kVp pipeline for LOW kVp (80 kVp)
     # Scatter is added AND corrected at ~50 keV (matched coefficients!)
-    sino_low, config_low = _forward_single_pass(phantom, scanner, protocol_low, sim_opts, geom)
+    sino_low, config_low = _forward_single_pass(phantom, scanner, protocol_low, sim_opts, geom; materials=materials)
 
     # 4. Run single-kVp pipeline for HIGH kVp (140 kVp)
     # Scatter is added AND corrected at ~70 keV (matched coefficients!)
-    sino_high, config_high = _forward_single_pass(phantom, scanner, protocol_high, sim_opts, geom)
+    sino_high, config_high = _forward_single_pass(phantom, scanner, protocol_high, sim_opts, geom; materials=materials)
 
     # 5. Apply detector noise to BOTH sinograms for realistic downstream processing
     # sim_detect returns a copy — originals remain clean for sino_ideal
@@ -427,7 +448,8 @@ end
 # Mode 3: Helical Single-kVp
 # =============================================================================
 
-function _simulate_helical_single(phantom, scanner, protocol, sim_opts, recon_opts)
+function _simulate_helical_single(phantom, scanner, protocol, sim_opts, recon_opts;
+                                  materials::Union{Nothing, Vector} = nothing)
     # 1. Build axial geometry first (for beam parameters)
     n_angles_total = round(Int, protocol.views * protocol.n_rotations)
     base_geom = CTGeometry(
@@ -452,11 +474,12 @@ function _simulate_helical_single(phantom, scanner, protocol, sim_opts, recon_op
     config = build_physics_config(scanner, sim_opts, energies, weights; phantom=phantom)
 
     # 5. Helical forward projection (use helical geometry with z-varying positions)
-    materials = get_region_materials()
+    # Use custom materials if provided, otherwise default to Gammex region materials
+    mats = isnothing(materials) ? get_region_materials() : materials
     sino_ideal = forward_project(
         phantom.mask, helical_geom.base_geom;
         energies=energies, weights=weights,
-        materials=materials, physics=config
+        materials=mats, physics=config
     )
 
     # 6. Apply detector noise
@@ -490,12 +513,13 @@ end
 # =============================================================================
 
 """
-    _forward_helical_single_pass(phantom, scanner, protocol, sim_opts, helical_geom) -> (sinogram, config)
+    _forward_helical_single_pass(phantom, scanner, protocol, sim_opts, helical_geom; materials=nothing) -> (sinogram, config)
 
 Run helical forward projection for a single kVp with all physics effects.
 Returns fully-corrected sinogram (scatter added AND corrected at same energy).
 """
-function _forward_helical_single_pass(phantom, scanner, protocol, sim_opts, helical_geom)
+function _forward_helical_single_pass(phantom, scanner, protocol, sim_opts, helical_geom;
+                                      materials::Union{Nothing, Vector} = nothing)
     # Resolve spectrum for this kVp
     energies, weights = resolve_spectrum(sim_opts, protocol)
 
@@ -503,17 +527,19 @@ function _forward_helical_single_pass(phantom, scanner, protocol, sim_opts, heli
     config = build_physics_config(scanner, sim_opts, energies, weights; phantom=phantom)
 
     # Forward project with all physics (using base geometry for helical)
-    materials = get_region_materials()
+    # Use custom materials if provided, otherwise default to Gammex region materials
+    mats = isnothing(materials) ? get_region_materials() : materials
     sinogram = forward_project(
         phantom.mask, helical_geom.base_geom;
         energies=energies, weights=weights,
-        materials=materials, physics=config
+        materials=mats, physics=config
     )
 
     return sinogram, config
 end
 
-function _simulate_helical_dual(phantom, scanner, protocol, sim_opts, recon_opts)
+function _simulate_helical_dual(phantom, scanner, protocol, sim_opts, recon_opts;
+                                materials::Union{Nothing, Vector} = nothing)
     # 1. Build helical geometry (shared for both kVp)
     n_angles_total = round(Int, protocol.views * protocol.n_rotations)
     base_geom = CTGeometry(
@@ -558,10 +584,10 @@ function _simulate_helical_dual(phantom, scanner, protocol, sim_opts, recon_opts
     )
 
     # 3. Run single-kVp pipeline for LOW kVp (80 kVp)
-    sino_low, config_low = _forward_helical_single_pass(phantom, scanner, protocol_low, sim_opts, helical_geom)
+    sino_low, config_low = _forward_helical_single_pass(phantom, scanner, protocol_low, sim_opts, helical_geom; materials=materials)
 
     # 4. Run single-kVp pipeline for HIGH kVp (140 kVp)
-    sino_high, config_high = _forward_helical_single_pass(phantom, scanner, protocol_high, sim_opts, helical_geom)
+    sino_high, config_high = _forward_helical_single_pass(phantom, scanner, protocol_high, sim_opts, helical_geom; materials=materials)
 
     # 5. Apply detector noise to high-kVp sinogram
     sino_ideal = sino_high
@@ -688,7 +714,8 @@ end
 # Mode 5: Axial PCCT (Photon-Counting CT)
 # =============================================================================
 
-function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts)
+function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts;
+                              materials::Union{Nothing, Vector} = nothing)
     # 1. Build Geometry
     geom = CTGeometry(
         scanner;
@@ -713,14 +740,15 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts)
     # physical processes controlled by fidelity, independent of Poisson noise.
     # At :ideal/:low fidelity, detector effects are disabled for clean baseline.
     # At :medium/:high fidelity, detector effects model real CdTe behavior.
-    materials = get_region_materials()
+    # Use custom materials if provided, otherwise default to Gammex region materials
+    mats = isnothing(materials) ? get_region_materials() : materials
     mask_gpu = _to_gpu(phantom.mask)
     use_detector_fx = sim_opts.fidelity in (:medium, :high, :pcct)
     use_corrections = sim_opts.use_pcct_corrections
     pcct_sino = pcct_forward_project(
         mask_gpu, geom, pcct_detector;
         energies=energies, weights=weights,
-        materials=materials,
+        materials=mats,
         apply_spectral_response=true,
         apply_detector_effects=use_detector_fx,
         apply_corrections=use_corrections

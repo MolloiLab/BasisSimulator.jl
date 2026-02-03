@@ -178,6 +178,56 @@ end
         @test vec[6] === XA.Materials.corticalbone # label 5
     end
 
+    @testset "simulate with custom materials" begin
+        # Create a simple 2-material phantom
+        labeled = zeros(Int, 32, 32, 4)
+        labeled[1:16, :, :] .= 0   # Air
+        labeled[17:32, :, :] .= 1  # Water
+
+        materials_dict = Dict{Int, XA.Material}(
+            0 => XA.Materials.air,
+            1 => XA.Materials.water
+        )
+
+        # Create phantom using new API
+        phantom = create_phantom_from_mask(
+            labeled,
+            materials_dict,
+            (0.1, 0.1, 0.1);
+            energy_keV=70.0
+        )
+
+        # Build materials vector for simulate()
+        materials_vec = build_materials_vector(materials_dict)
+
+        # Create scanner and protocol
+        scanner = Scanner(
+            source_to_isocenter = 50.0,
+            source_to_detector = 100.0,
+            detector_rows = 4,
+            detector_cols = 64,
+            detector_row_size = 1.0,
+            detector_col_size = 1.0
+        )
+        protocol = CTProtocol(kVp=120.0, mA=100.0, views=36)
+        sim_opts = SimOptions(fidelity=:ideal, use_noise=false)
+        recon_opts = ReconOptions(matrix_size=(32, 32, 4), fov_cm=3.2)
+
+        # Simulate with custom materials
+        result = simulate(phantom, scanner, protocol, sim_opts, recon_opts; materials=materials_vec)
+
+        @test result isa SimulationResult
+        @test size(result.sinogram_ideal) == (64, 4, 36)  # cols × rows × angles
+        @test size(result.reconstruction) == (32, 32, 4)
+
+        # Verify reconstruction has reasonable contrast between air and water
+        # Convert to CPU array for indexing (reconstruction may be on GPU)
+        recon = Array(result.reconstruction)
+        air_region = recon[8, 16, 2]    # Should be low (air)
+        water_region = recon[24, 16, 2] # Should be higher (water)
+        @test water_region > air_region  # Water should have higher μ/HU than air
+    end
+
     @testset "Scanner Geometry" begin
         geom = create_aquilion_one(n_angles=36, n_rows=8, n_cols=16)
         @test geom.SAD ≈ 60.0
