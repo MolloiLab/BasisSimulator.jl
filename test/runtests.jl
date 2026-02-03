@@ -162,6 +162,50 @@ end
         @test phantom.μ[6, 4, 1] ≈ Float32(μ_water)
     end
 
+    @testset "Unified Phantom constructor (v20.0)" begin
+        # Test the new Phantom(labeled_array, materials_dict, voxel_size) constructor
+        labeled = zeros(Int, 16, 16, 4)
+        labeled[1:5, :, :] .= 0   # Air (background)
+        labeled[6:11, :, :] .= 1  # Water
+        labeled[12:16, :, :] .= 2 # Bone
+
+        materials_dict = Dict{Int, XA.Material}(
+            0 => XA.Materials.air,
+            1 => XA.Materials.water,
+            2 => XA.Materials.corticalbone
+        )
+
+        # Create phantom using unified constructor
+        phantom = Phantom(labeled, materials_dict, (0.1, 0.1, 0.1); energy_keV=60.0)
+
+        @test phantom isa Phantom
+        @test size(phantom.μ) == (16, 16, 4)
+        @test size(phantom.mask) == (16, 16, 4)
+
+        # KEY TEST: materials are stored in phantom!
+        @test phantom.materials !== nothing
+        @test phantom.materials isa Vector{XA.Material}
+        @test length(phantom.materials) == 3  # labels 0, 1, 2
+
+        # Check materials are correct
+        @test phantom.materials[1] === XA.Materials.air        # label 0
+        @test phantom.materials[2] === XA.Materials.water      # label 1
+        @test phantom.materials[3] === XA.Materials.corticalbone # label 2
+
+        # Check μ values are correct
+        μ_air = compute_μ_at_energy(XA.Materials.air, 60.0)
+        μ_water = compute_μ_at_energy(XA.Materials.water, 60.0)
+        μ_bone = compute_μ_at_energy(XA.Materials.corticalbone, 60.0)
+
+        @test phantom.μ[3, 8, 2] ≈ Float32(μ_air)   # Air region
+        @test phantom.μ[8, 8, 2] ≈ Float32(μ_water) # Water region
+        @test phantom.μ[14, 8, 2] ≈ Float32(μ_bone) # Bone region
+
+        # Check geometry
+        @test phantom.voxel_size == (0.1, 0.1, 0.1)
+        @test phantom.fov == (1.6, 1.6, 0.4)
+    end
+
     @testset "build_materials_vector" begin
         materials_dict = Dict{Int, XA.Material}(
             0 => XA.Materials.air,

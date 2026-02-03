@@ -134,6 +134,135 @@ function Phantom(
 end
 
 # =============================================================================
+# Unified Phantom Constructor (v20.0)
+# =============================================================================
+
+"""
+    Phantom(labeled_array, materials_dict, voxel_size_cm; kwargs...) -> Phantom
+
+Create a Phantom from a labeled array with materials stored internally.
+
+This is the **unified v20.0 API**: the returned Phantom contains everything needed
+for polychromatic simulation, so `simulate(phantom, scanner, protocol)` just works
+without a separate `materials` kwarg.
+
+# Arguments
+- `labeled_array::AbstractArray{<:Integer, 3}`: Integer array where each voxel
+  contains a region label (0-255 supported via UInt8 conversion)
+- `materials_dict::Dict{Int, <:Any}`: Mapping from label values to materials.
+  Materials can be:
+  - `XA.Material`: Direct XrayAttenuation.jl material
+  - `Symbol`: Material name to look up (e.g., `:water`, `:Ca_100`)
+- `voxel_size_cm::NTuple{3, Real}`: Physical voxel dimensions in cm as (dx, dy, dz)
+
+# Keyword Arguments
+- `energy_keV::Real=60.0`: Energy for computing reference μ values (keV)
+- `origin::Union{Nothing, NTuple{3, Real}}=nothing`: Origin coordinates (cm).
+  If `nothing`, phantom is centered at isocenter.
+
+# Returns
+A `Phantom` with:
+- `μ`: Linear attenuation coefficients (cm⁻¹) at specified energy
+- `mask`: UInt8 mask with original label values
+- `materials`: Vector{XA.Material} for polychromatic simulation
+- `voxel_size`, `origin`, `fov`: Geometry parameters
+
+# Example
+
+```julia
+using BasisSimulator, XrayAttenuation
+import XrayAttenuation as XA
+
+# Define materials
+materials_dict = Dict{Int, XA.Material}(
+    0 => XA.Materials.air,
+    1 => XA.Materials.water,
+    2 => XA.Materials.cortical_bone
+)
+
+# Create phantom (1mm voxels)
+phantom = Phantom(labeled_array, materials_dict, (0.1, 0.1, 0.1))
+
+# Simulate - no materials kwarg needed!
+result = simulate(phantom, scanner, protocol, SimOptions(), ReconOptions())
+```
+
+See also: [`create_phantom_from_mask`](@ref), [`create_gammex_472`](@ref)
+"""
+function Phantom(
+    labeled_array::AbstractArray{<:Integer, 3},
+    materials_dict::Dict{Int, M},
+    voxel_size_cm::NTuple{3, Real};
+    energy_keV::Real = 60.0,
+    origin::Union{Nothing, NTuple{3, Real}} = nothing
+) where M
+    # Get dimensions
+    nx, ny, nz = size(labeled_array)
+    dx, dy, dz = Float64.(voxel_size_cm)
+
+    # Compute FOV
+    fov_x = dx * nx
+    fov_y = dy * ny
+    fov_z = dz * nz
+
+    # Compute origin (center at isocenter if not specified)
+    if origin === nothing
+        origin_x = -fov_x/2 + dx/2
+        origin_y = -fov_y/2 + dy/2
+        origin_z = -fov_z/2 + dz/2
+        computed_origin = (origin_x, origin_y, origin_z)
+    else
+        computed_origin = Float64.(origin)
+    end
+
+    # Convert labeled array to UInt8 mask
+    mask = UInt8.(labeled_array)
+
+    # Build materials vector (indexed by mask_value + 1)
+    materials_vec = build_materials_vector(materials_dict)
+
+    # Build μ array from materials
+    μ = zeros(Float32, nx, ny, nz)
+
+    # Pre-compute μ for each unique label
+    unique_labels = unique(labeled_array)
+    μ_lookup = Dict{Int, Float32}()
+
+    for label in unique_labels
+        if !haskey(materials_dict, label)
+            @warn "Label $label not found in materials dict, using air"
+            mat = XA.Materials.air
+        else
+            mat = materials_dict[label]
+            # Handle Symbol lookup
+            if mat isa Symbol
+                mat = get_material(mat)
+            end
+        end
+        μ_lookup[label] = Float32(compute_μ_at_energy(mat, Float64(energy_keV)))
+    end
+
+    # Fill μ array
+    for k in 1:nz
+        for j in 1:ny
+            for i in 1:nx
+                label = labeled_array[i, j, k]
+                μ[i, j, k] = μ_lookup[label]
+            end
+        end
+    end
+
+    return Phantom(
+        μ,
+        mask,
+        materials_vec,
+        (dx, dy, dz),
+        computed_origin,
+        (fov_x, fov_y, fov_z)
+    )
+end
+
+# =============================================================================
 # Gammex 472 Phantom
 # =============================================================================
 
