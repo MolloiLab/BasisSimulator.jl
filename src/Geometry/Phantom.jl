@@ -71,11 +71,12 @@ const REGION_TO_MATERIAL = Dict{RegionLabel, Symbol}(
 """
     Phantom
 
-Digital phantom with semantic mask for validation.
+Digital phantom with semantic mask for validation and optional materials for polychromatic simulation.
 
 # Fields
 - `μ::Array{Float32,3}`: Linear attenuation coefficients (cm⁻¹) at effective energy
 - `mask::Array{UInt8,3}`: Region labels (see `RegionLabel` enum)
+- `materials::Union{Vector{XA.Material}, Nothing}`: Materials for polychromatic simulation (v20.0+)
 - `voxel_size::NTuple{3,Float64}`: Voxel dimensions (cm) as (dx, dy, dz)
 - `origin::NTuple{3,Float64}`: Origin coordinates (cm) - center of first voxel
 - `fov::NTuple{3,Float64}`: Field of view (cm) as (x, y, z)
@@ -86,28 +87,50 @@ Digital phantom with semantic mask for validation.
 - Z: inferior-superior (increasing superior)
 - Origin at isocenter (0, 0, 0)
 
+# Materials Field (v20.0)
+When `materials` is populated, `simulate(phantom, ...)` automatically uses it for
+polychromatic physics without needing a separate `materials` kwarg.
+
+Materials vector is indexed by `mask_value + 1`, so `materials[1]` corresponds to
+region label 0, `materials[2]` to label 1, etc.
+
 # Usage
 ```julia
-phantom = create_gammex_472(; n_voxels=64)
-mean_μ = mean(phantom.μ[phantom.mask .== UInt8(REGION_CA_100)])
+# Create phantom with materials (v20.0 unified API)
+materials_dict = Dict(0 => XA.Materials.air, 1 => XA.Materials.water)
+phantom = Phantom(labeled_array, materials_dict, (0.1, 0.1, 0.1))
+result = simulate(phantom, scanner, protocol)  # Just works!
 
-# GPU phantom (Metal)
+# Legacy: GPU phantom (Metal) - materials stay on CPU
 using Metal
 phantom_gpu = Phantom(
     MtlArray(phantom_cpu.μ),
     MtlArray(phantom_cpu.mask),
+    phantom_cpu.materials,  # CPU reference, not transferred to GPU
     phantom_cpu.voxel_size,
     phantom_cpu.origin,
     phantom_cpu.fov
 )
 ```
 """
-struct Phantom{T<:AbstractArray{Float32,3}, M<:AbstractArray{UInt8,3}}
+struct Phantom{T<:AbstractArray{Float32,3}, M<:AbstractArray{UInt8,3}, Mat}
     μ::T
     mask::M
+    materials::Mat  # Vector{XA.Material} or Nothing
     voxel_size::NTuple{3,Float64}
     origin::NTuple{3,Float64}
     fov::NTuple{3,Float64}
+end
+
+# Backwards-compatible constructor (5 args, no materials)
+function Phantom(
+    μ::T,
+    mask::M,
+    voxel_size::NTuple{3,Float64},
+    origin::NTuple{3,Float64},
+    fov::NTuple{3,Float64}
+) where {T<:AbstractArray{Float32,3}, M<:AbstractArray{UInt8,3}}
+    return Phantom{T, M, Nothing}(μ, mask, nothing, voxel_size, origin, fov)
 end
 
 # =============================================================================
