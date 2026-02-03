@@ -90,7 +90,7 @@ end
     @testset "Phantom" begin
         phantom = create_gammex_472(n_voxels=32)
         @test phantom isa Phantom
-        @test size(phantom.μ, 1) == 32
+        @test size(phantom.mask, 1) == 32
         @test sum(phantom.mask .== UInt8(REGION_SOLID_WATER)) > 0
     end
 
@@ -112,22 +112,21 @@ end
         phantom = create_phantom_from_mask(
             labeled,
             materials_dict,
-            (0.1, 0.1, 0.1);
-            energy_keV=60.0
+            (0.1, 0.1, 0.1)
         )
 
         @test phantom isa Phantom
-        @test size(phantom.μ) == (16, 16, 4)
         @test size(phantom.mask) == (16, 16, 4)
 
-        # Check μ values are correct
+        # Check μ values are correct via compute_μ
         μ_air = compute_μ_at_energy(XA.Materials.air, 60.0)
         μ_water = compute_μ_at_energy(XA.Materials.water, 60.0)
         μ_bone = compute_μ_at_energy(XA.Materials.corticalbone, 60.0)
 
-        @test phantom.μ[3, 8, 2] ≈ Float32(μ_air)   # Air region
-        @test phantom.μ[8, 8, 2] ≈ Float32(μ_water) # Water region
-        @test phantom.μ[14, 8, 2] ≈ Float32(μ_bone) # Bone region
+        μ_volume = compute_μ(phantom, 60.0)
+        @test μ_volume[3, 8, 2] ≈ Float32(μ_air)   # Air region
+        @test μ_volume[8, 8, 2] ≈ Float32(μ_water) # Water region
+        @test μ_volume[14, 8, 2] ≈ Float32(μ_bone) # Bone region
 
         # Check mask values preserved
         @test phantom.mask[3, 8, 2] == 0
@@ -153,13 +152,13 @@ end
         phantom = create_phantom_from_mask(
             labeled,
             materials_dict,
-            (0.2, 0.2, 0.2);
-            energy_keV=70.0
+            (0.2, 0.2, 0.2)
         )
 
         @test phantom isa Phantom
         μ_water = compute_μ_at_energy(get_material(:water), 70.0)
-        @test phantom.μ[6, 4, 1] ≈ Float32(μ_water)
+        μ_volume = compute_μ(phantom, 70.0)
+        @test μ_volume[6, 4, 1] ≈ Float32(μ_water)
     end
 
     @testset "Unified Phantom constructor (v20.0)" begin
@@ -175,15 +174,13 @@ end
             2 => XA.Materials.corticalbone
         )
 
-        # Create phantom using unified constructor
-        phantom = Phantom(labeled, materials_dict, (0.1, 0.1, 0.1); energy_keV=60.0)
+        # Create phantom using unified constructor (no energy_keV needed in v20.0-pivot)
+        phantom = Phantom(labeled, materials_dict, (0.1, 0.1, 0.1))
 
         @test phantom isa Phantom
-        @test size(phantom.μ) == (16, 16, 4)
         @test size(phantom.mask) == (16, 16, 4)
 
         # KEY TEST: materials are stored in phantom!
-        @test phantom.materials !== nothing
         @test phantom.materials isa Vector{XA.Material}
         @test length(phantom.materials) == 3  # labels 0, 1, 2
 
@@ -192,14 +189,15 @@ end
         @test phantom.materials[2] === XA.Materials.water      # label 1
         @test phantom.materials[3] === XA.Materials.corticalbone # label 2
 
-        # Check μ values are correct
+        # Check μ values via compute_μ (v20.0-pivot: on-demand computation)
         μ_air = compute_μ_at_energy(XA.Materials.air, 60.0)
         μ_water = compute_μ_at_energy(XA.Materials.water, 60.0)
         μ_bone = compute_μ_at_energy(XA.Materials.corticalbone, 60.0)
 
-        @test phantom.μ[3, 8, 2] ≈ Float32(μ_air)   # Air region
-        @test phantom.μ[8, 8, 2] ≈ Float32(μ_water) # Water region
-        @test phantom.μ[14, 8, 2] ≈ Float32(μ_bone) # Bone region
+        μ_volume = compute_μ(phantom, 60.0)
+        @test μ_volume[3, 8, 2] ≈ Float32(μ_air)   # Air region
+        @test μ_volume[8, 8, 2] ≈ Float32(μ_water) # Water region
+        @test μ_volume[14, 8, 2] ≈ Float32(μ_bone) # Bone region
 
         # Check geometry
         @test phantom.voxel_size == (0.1, 0.1, 0.1)
@@ -233,12 +231,11 @@ end
             1 => XA.Materials.water
         )
 
-        # Create phantom using new API
+        # Create phantom using new API (no energy_keV needed in v20.0-pivot)
         phantom = create_phantom_from_mask(
             labeled,
             materials_dict,
-            (0.1, 0.1, 0.1);
-            energy_keV=70.0
+            (0.1, 0.1, 0.1)
         )
 
         # Build materials vector for simulate()
@@ -270,6 +267,51 @@ end
         air_region = recon[8, 16, 2]    # Should be low (air)
         water_region = recon[24, 16, 2] # Should be higher (water)
         @test water_region > air_region  # Water should have higher μ/HU than air
+    end
+
+    @testset "simulate without materials kwarg (v20.0 unified API)" begin
+        # Test that simulate() uses phantom.materials when present
+        labeled = zeros(Int, 32, 32, 4)
+        labeled[1:16, :, :] .= 0   # Air
+        labeled[17:32, :, :] .= 1  # Water
+
+        materials_dict = Dict{Int, XA.Material}(
+            0 => XA.Materials.air,
+            1 => XA.Materials.water
+        )
+
+        # Create phantom using UNIFIED constructor (materials stored internally)
+        # v20.0-pivot: no energy_keV needed - μ computed on demand
+        phantom = Phantom(labeled, materials_dict, (0.1, 0.1, 0.1))
+
+        # Verify materials are stored
+        @test phantom.materials isa Vector{XA.Material}
+
+        # Create scanner and protocol
+        scanner = Scanner(
+            source_to_isocenter = 50.0,
+            source_to_detector = 100.0,
+            detector_rows = 4,
+            detector_cols = 64,
+            detector_row_size = 1.0,
+            detector_col_size = 1.0
+        )
+        protocol = CTProtocol(kVp=120.0, mA=100.0, views=36)
+        sim_opts = SimOptions(fidelity=:ideal, use_noise=false)
+        recon_opts = ReconOptions(matrix_size=(32, 32, 4), fov_cm=3.2)
+
+        # KEY TEST: Simulate WITHOUT materials kwarg - should use phantom.materials!
+        result = simulate(phantom, scanner, protocol, sim_opts, recon_opts)
+
+        @test result isa SimulationResult
+        @test size(result.sinogram_ideal) == (64, 4, 36)
+        @test size(result.reconstruction) == (32, 32, 4)
+
+        # Verify reconstruction has reasonable contrast between air and water
+        recon = Array(result.reconstruction)
+        air_region = recon[8, 16, 2]
+        water_region = recon[24, 16, 2]
+        @test water_region > air_region  # Materials were used correctly!
     end
 
     @testset "Scanner Geometry" begin
@@ -891,7 +933,7 @@ end
         phantom, geom = small_test_setup()
 
         # Monochromatic
-        sino = forward_project(Float32.(phantom.μ), geom)
+        sino = forward_project(compute_μ(phantom, 60.0), geom)
         @test size(sino) == (64, 8, 36)
         @test all(isfinite.(sino))
         @test maximum(sino) > 0
@@ -916,21 +958,21 @@ end
     # -------------------------------------------------------------------------
     @testset "FDK Reconstruction - CPU" begin
         phantom, geom = small_test_setup()
-        sino = forward_project(Float32.(phantom.μ), geom)
-        recon = fdk_reconstruct(sino, geom, size(phantom.μ))
+        sino = forward_project(compute_μ(phantom, 60.0), geom)
+        recon = fdk_reconstruct(sino, geom, size(phantom.mask))
 
-        @test size(recon) == size(phantom.μ)
+        @test size(recon) == size(phantom.mask)
         @test all(isfinite.(recon))
     end
 
     @testset "SIRT Reconstruction - CPU" begin
         phantom, geom = small_test_setup()
-        sino = forward_project(Float32.(phantom.μ), geom)
+        sino = forward_project(compute_μ(phantom, 60.0), geom)
 
         # Basic SIRT reconstruction with 3 iterations
-        recon_sirt = sirt_reconstruct(sino, geom, size(phantom.μ); niter=3)
+        recon_sirt = sirt_reconstruct(sino, geom, size(phantom.mask); niter=3)
 
-        @test size(recon_sirt) == size(phantom.μ)
+        @test size(recon_sirt) == size(phantom.mask)
         @test all(isfinite.(recon_sirt))
 
         # SIRT should converge to reasonable values
@@ -942,11 +984,11 @@ end
         # Test that SIRT produces comparable sharpness to FDK
         # Uses a simple phantom with sharp edges
         phantom, geom = small_test_setup()
-        sino = forward_project(Float32.(phantom.μ), geom)
+        sino = forward_project(compute_μ(phantom, 60.0), geom)
 
         # Reconstruct with both methods
-        recon_fdk = fdk_reconstruct(sino, geom, size(phantom.μ))
-        recon_sirt = sirt_reconstruct(sino, geom, size(phantom.μ); niter=10)
+        recon_fdk = fdk_reconstruct(sino, geom, size(phantom.mask))
+        recon_sirt = sirt_reconstruct(sino, geom, size(phantom.mask); niter=10)
 
         # Both should have similar standard deviation (measure of edge preservation)
         # A blurry SIRT would have much lower std than FDK
@@ -968,16 +1010,16 @@ end
     @testset "Backprojection Weighted vs Matched - CPU" begin
         # Test that weighted=true gives different results than weighted=false
         phantom, geom = small_test_setup()
-        sino = forward_project(Float32.(phantom.μ), geom)
+        sino = forward_project(compute_μ(phantom, 60.0), geom)
 
         # Weighted backprojection (FDK style)
-        vol_weighted = backproject(sino, geom, size(phantom.μ); weighted=true)
+        vol_weighted = backproject(sino, geom, size(phantom.mask); weighted=true)
 
         # Unweighted/matched backprojection (for iterative methods)
-        vol_matched = backproject(sino, geom, size(phantom.μ); weighted=false)
+        vol_matched = backproject(sino, geom, size(phantom.mask); weighted=false)
 
-        @test size(vol_weighted) == size(phantom.μ)
-        @test size(vol_matched) == size(phantom.μ)
+        @test size(vol_weighted) == size(phantom.mask)
+        @test size(vol_matched) == size(phantom.mask)
         @test all(isfinite.(vol_weighted))
         @test all(isfinite.(vol_matched))
 
@@ -990,12 +1032,12 @@ end
     # -------------------------------------------------------------------------
     @testset "CGLS Reconstruction - CPU" begin
         phantom, geom = small_test_setup()
-        sino = forward_project(Float32.(phantom.μ), geom)
+        sino = forward_project(compute_μ(phantom, 60.0), geom)
 
         # Basic CGLS reconstruction with 5 iterations
-        recon_cgls = cgls_reconstruct(sino, geom, size(phantom.μ); niter=5)
+        recon_cgls = cgls_reconstruct(sino, geom, size(phantom.mask); niter=5)
 
-        @test size(recon_cgls) == size(phantom.μ)
+        @test size(recon_cgls) == size(phantom.mask)
         @test all(isfinite.(recon_cgls))
 
         # CGLS should converge to reasonable values
@@ -1006,11 +1048,11 @@ end
     @testset "CGLS Uses Matched Backprojection" begin
         # Test that CGLS produces comparable results to SIRT (both use matched backprojection)
         phantom, geom = small_test_setup()
-        sino = forward_project(Float32.(phantom.μ), geom)
+        sino = forward_project(compute_μ(phantom, 60.0), geom)
 
         # Reconstruct with both methods - CGLS typically converges faster
-        recon_sirt = sirt_reconstruct(sino, geom, size(phantom.μ); niter=10)
-        recon_cgls = cgls_reconstruct(sino, geom, size(phantom.μ); niter=5)
+        recon_sirt = sirt_reconstruct(sino, geom, size(phantom.mask); niter=10)
+        recon_cgls = cgls_reconstruct(sino, geom, size(phantom.mask); niter=5)
 
         # Both should have similar standard deviations (not blurred vs sharp)
         std_sirt = std(recon_sirt)
@@ -1024,11 +1066,11 @@ end
     @testset "CGLS vs SIRT Convergence" begin
         # CGLS typically converges faster than SIRT
         phantom, geom = small_test_setup()
-        sino = forward_project(Float32.(phantom.μ), geom)
+        sino = forward_project(compute_μ(phantom, 60.0), geom)
 
         # CGLS with few iterations
-        recon_cgls_5 = cgls_reconstruct(sino, geom, size(phantom.μ); niter=5)
-        recon_cgls_10 = cgls_reconstruct(sino, geom, size(phantom.μ); niter=10)
+        recon_cgls_5 = cgls_reconstruct(sino, geom, size(phantom.mask); niter=5)
+        recon_cgls_10 = cgls_reconstruct(sino, geom, size(phantom.mask); niter=10)
 
         # More iterations should reduce residual (for clean data)
         # Forward project both reconstructions
@@ -1044,15 +1086,15 @@ end
 
     @testset "CGLS with Tikhonov Regularization" begin
         phantom, geom = small_test_setup()
-        sino = forward_project(Float32.(phantom.μ), geom)
+        sino = forward_project(compute_μ(phantom, 60.0), geom)
 
         # CGLS without regularization
-        recon_unreg = cgls_reconstruct(sino, geom, size(phantom.μ); niter=10, lambda=0.0)
+        recon_unreg = cgls_reconstruct(sino, geom, size(phantom.mask); niter=10, lambda=0.0)
 
         # CGLS with Tikhonov regularization
-        recon_reg = cgls_reconstruct(sino, geom, size(phantom.μ); niter=10, lambda=0.01)
+        recon_reg = cgls_reconstruct(sino, geom, size(phantom.mask); niter=10, lambda=0.01)
 
-        @test size(recon_reg) == size(phantom.μ)
+        @test size(recon_reg) == size(phantom.mask)
         @test all(isfinite.(recon_reg))
 
         # Regularized solution should generally have smaller norm (less extreme values)
@@ -1065,31 +1107,31 @@ end
 
     @testset "CGLS Convergence Tolerance" begin
         phantom, geom = small_test_setup()
-        sino = forward_project(Float32.(phantom.μ), geom)
+        sino = forward_project(compute_μ(phantom, 60.0), geom)
 
         # CGLS with convergence tolerance - should terminate early if converged
         # Note: For this test, we just verify it runs without error
-        recon_tol = cgls_reconstruct(sino, geom, size(phantom.μ);
+        recon_tol = cgls_reconstruct(sino, geom, size(phantom.mask);
                                       niter=100, tol=1e-4)
 
-        @test size(recon_tol) == size(phantom.μ)
+        @test size(recon_tol) == size(phantom.mask)
         @test all(isfinite.(recon_tol))
     end
 
     @testset "CGLS FDK Initialization" begin
         phantom, geom = small_test_setup()
-        sino = forward_project(Float32.(phantom.μ), geom)
+        sino = forward_project(compute_μ(phantom, 60.0), geom)
 
         # CGLS initialized with zeros
-        recon_zeros = cgls_reconstruct(sino, geom, size(phantom.μ);
+        recon_zeros = cgls_reconstruct(sino, geom, size(phantom.mask);
                                         niter=3, init=:zeros)
 
         # CGLS initialized with FDK
-        recon_fdk_init = cgls_reconstruct(sino, geom, size(phantom.μ);
+        recon_fdk_init = cgls_reconstruct(sino, geom, size(phantom.mask);
                                            niter=3, init=:fdk)
 
-        @test size(recon_zeros) == size(phantom.μ)
-        @test size(recon_fdk_init) == size(phantom.μ)
+        @test size(recon_zeros) == size(phantom.mask)
+        @test size(recon_fdk_init) == size(phantom.mask)
         @test all(isfinite.(recon_zeros))
         @test all(isfinite.(recon_fdk_init))
 
@@ -1100,11 +1142,11 @@ end
     @testset "CGLS vs FDK Resolution" begin
         # Test that CGLS produces comparable sharpness to FDK (not blurred)
         phantom, geom = small_test_setup()
-        sino = forward_project(Float32.(phantom.μ), geom)
+        sino = forward_project(compute_μ(phantom, 60.0), geom)
 
         # Reconstruct with both methods
-        recon_fdk = fdk_reconstruct(sino, geom, size(phantom.μ))
-        recon_cgls = cgls_reconstruct(sino, geom, size(phantom.μ); niter=10)
+        recon_fdk = fdk_reconstruct(sino, geom, size(phantom.mask))
+        recon_cgls = cgls_reconstruct(sino, geom, size(phantom.mask); niter=10)
 
         # Both should have similar standard deviation (measure of edge preservation)
         std_fdk = std(recon_fdk)
@@ -1223,13 +1265,13 @@ end
 
     @testset "TV-SIRT Reconstruction - CPU" begin
         phantom, geom = small_test_setup()
-        sino = forward_project(Float32.(phantom.μ), geom)
+        sino = forward_project(compute_μ(phantom, 60.0), geom)
 
         # TV-SIRT with few iterations
-        recon = tv_sirt_reconstruct(sino, geom, size(phantom.μ);
+        recon = tv_sirt_reconstruct(sino, geom, size(phantom.mask);
                                      niter=10, lambda_tv=0.01, tv_niter=5)
 
-        @test size(recon) == size(phantom.μ)
+        @test size(recon) == size(phantom.mask)
         @test all(isfinite.(recon))
         @test maximum(recon) > 0  # Should have positive values
     end
@@ -1238,12 +1280,12 @@ end
         phantom, geom = small_test_setup()
 
         # Add some noise to sinogram
-        sino = forward_project(Float32.(phantom.μ), geom)
+        sino = forward_project(compute_μ(phantom, 60.0), geom)
         sino_noisy = sino .+ 0.01f0 .* randn(Float32, size(sino)...)
 
         # Reconstruct with both methods
-        recon_sirt = sirt_reconstruct(sino_noisy, geom, size(phantom.μ); niter=20)
-        recon_tv = tv_sirt_reconstruct(sino_noisy, geom, size(phantom.μ);
+        recon_sirt = sirt_reconstruct(sino_noisy, geom, size(phantom.mask); niter=20)
+        recon_tv = tv_sirt_reconstruct(sino_noisy, geom, size(phantom.mask);
                                         niter=20, lambda_tv=0.005, tv_niter=5)
 
         # Both should produce valid reconstructions
@@ -1256,17 +1298,17 @@ end
 
     @testset "TV-SIRT Anisotropic TV" begin
         phantom, geom = small_test_setup()
-        sino = forward_project(Float32.(phantom.μ), geom)
+        sino = forward_project(compute_μ(phantom, 60.0), geom)
 
         # TV-SIRT with anisotropic TV - use more iterations for stronger effect
-        recon_aniso = tv_sirt_reconstruct(sino, geom, size(phantom.μ);
+        recon_aniso = tv_sirt_reconstruct(sino, geom, size(phantom.mask);
                                            niter=20, lambda_tv=0.02,
                                            tv_type=AnisotropicTV())
 
         @test all(isfinite.(recon_aniso))
 
         # Compare with isotropic
-        recon_iso = tv_sirt_reconstruct(sino, geom, size(phantom.μ);
+        recon_iso = tv_sirt_reconstruct(sino, geom, size(phantom.mask);
                                          niter=20, lambda_tv=0.02,
                                          tv_type=IsotropicTV())
 
@@ -1276,15 +1318,15 @@ end
 
     @testset "TV-SIRT FDK Initialization" begin
         phantom, geom = small_test_setup()
-        sino = forward_project(Float32.(phantom.μ), geom)
+        sino = forward_project(compute_μ(phantom, 60.0), geom)
 
         # TV-SIRT with FDK initialization
-        recon_fdk_init = tv_sirt_reconstruct(sino, geom, size(phantom.μ);
+        recon_fdk_init = tv_sirt_reconstruct(sino, geom, size(phantom.mask);
                                               niter=5, lambda_tv=0.01,
                                               init=:fdk)
 
         # TV-SIRT with zeros initialization
-        recon_zeros = tv_sirt_reconstruct(sino, geom, size(phantom.μ);
+        recon_zeros = tv_sirt_reconstruct(sino, geom, size(phantom.mask);
                                            niter=5, lambda_tv=0.01,
                                            init=:zeros)
 
@@ -1294,13 +1336,13 @@ end
 
     @testset "TV-CGLS Reconstruction - CPU" begin
         phantom, geom = small_test_setup()
-        sino = forward_project(Float32.(phantom.μ), geom)
+        sino = forward_project(compute_μ(phantom, 60.0), geom)
 
         # TV-CGLS with few iterations
-        recon = tv_cgls_reconstruct(sino, geom, size(phantom.μ);
+        recon = tv_cgls_reconstruct(sino, geom, size(phantom.mask);
                                      niter=10, lambda_tv=0.01, tv_niter=3)
 
-        @test size(recon) == size(phantom.μ)
+        @test size(recon) == size(phantom.mask)
         @test all(isfinite.(recon))
         @test maximum(recon) > 0  # Should have positive values
     end
@@ -1309,12 +1351,12 @@ end
         phantom, geom = small_test_setup()
 
         # Add noise
-        sino = forward_project(Float32.(phantom.μ), geom)
+        sino = forward_project(compute_μ(phantom, 60.0), geom)
         sino_noisy = sino .+ 0.01f0 .* randn(Float32, size(sino)...)
 
         # Reconstruct with both methods
-        recon_cgls = cgls_reconstruct(sino_noisy, geom, size(phantom.μ); niter=15)
-        recon_tv = tv_cgls_reconstruct(sino_noisy, geom, size(phantom.μ);
+        recon_cgls = cgls_reconstruct(sino_noisy, geom, size(phantom.mask); niter=15)
+        recon_tv = tv_cgls_reconstruct(sino_noisy, geom, size(phantom.mask);
                                         niter=15, lambda_tv=0.005, tv_niter=3)
 
         # Both should produce valid reconstructions
@@ -1327,10 +1369,10 @@ end
 
     @testset "TV-CGLS FDK Initialization" begin
         phantom, geom = small_test_setup()
-        sino = forward_project(Float32.(phantom.μ), geom)
+        sino = forward_project(compute_μ(phantom, 60.0), geom)
 
         # TV-CGLS with FDK initialization
-        recon_fdk_init = tv_cgls_reconstruct(sino, geom, size(phantom.μ);
+        recon_fdk_init = tv_cgls_reconstruct(sino, geom, size(phantom.mask);
                                               niter=5, lambda_tv=0.01,
                                               init=:fdk)
 
@@ -1340,12 +1382,12 @@ end
 
     @testset "TV Lambda Parameter Impact" begin
         phantom, geom = small_test_setup()
-        sino = forward_project(Float32.(phantom.μ), geom)
+        sino = forward_project(compute_μ(phantom, 60.0), geom)
 
         # Different lambda values
-        recon_low_lambda = tv_sirt_reconstruct(sino, geom, size(phantom.μ);
+        recon_low_lambda = tv_sirt_reconstruct(sino, geom, size(phantom.mask);
                                                 niter=10, lambda_tv=0.001, tv_niter=5)
-        recon_high_lambda = tv_sirt_reconstruct(sino, geom, size(phantom.μ);
+        recon_high_lambda = tv_sirt_reconstruct(sino, geom, size(phantom.mask);
                                                  niter=10, lambda_tv=0.1, tv_niter=5)
 
         # Both should produce valid reconstructions
@@ -1436,7 +1478,7 @@ end
 
     @testset "Statistical Weights" begin
         phantom, geom = small_test_setup()
-        sino = forward_project(Float32.(phantom.μ), geom)
+        sino = forward_project(compute_μ(phantom, 60.0), geom)
 
         # Simple weights from sinogram
         w_simple = compute_simple_weights(sino)
@@ -1445,7 +1487,7 @@ end
         @test all(w_simple .> 0)
 
         # Statistical weights (requires forward projection)
-        recon = fdk_reconstruct(sino, geom, size(phantom.μ))
+        recon = fdk_reconstruct(sino, geom, size(phantom.mask))
         w_stat = compute_statistical_weights(sino, geom, recon; I0=1e6)
         @test size(w_stat) == size(sino)
         @test all(isfinite.(w_stat))
@@ -1454,23 +1496,23 @@ end
 
     @testset "PWLS Reconstruction - CPU" begin
         phantom, geom = small_test_setup()
-        sino = forward_project(Float32.(phantom.μ), geom)
+        sino = forward_project(compute_μ(phantom, 60.0), geom)
 
         # PWLS with quadratic penalty
-        recon = pwls_reconstruct(sino, geom, size(phantom.μ);
+        recon = pwls_reconstruct(sino, geom, size(phantom.mask);
                                  niter=5, lambda=0.001)
 
-        @test size(recon) == size(phantom.μ)
+        @test size(recon) == size(phantom.mask)
         @test all(isfinite.(recon))
         @test maximum(recon) > 0
     end
 
     @testset "PWLS vs FDK Comparison" begin
         phantom, geom = small_test_setup()
-        sino = forward_project(Float32.(phantom.μ), geom)
+        sino = forward_project(compute_μ(phantom, 60.0), geom)
 
-        recon_fdk = fdk_reconstruct(sino, geom, size(phantom.μ))
-        recon_pwls = pwls_reconstruct(sino, geom, size(phantom.μ);
+        recon_fdk = fdk_reconstruct(sino, geom, size(phantom.mask))
+        recon_pwls = pwls_reconstruct(sino, geom, size(phantom.mask);
                                       niter=10, lambda=0.01, relaxation=1.0)
 
         # Both should be finite
@@ -1486,10 +1528,10 @@ end
 
     @testset "PWLS with Huber Penalty" begin
         phantom, geom = small_test_setup()
-        sino = forward_project(Float32.(phantom.μ), geom)
+        sino = forward_project(compute_μ(phantom, 60.0), geom)
 
         # PWLS with Huber (edge-preserving)
-        recon_huber = pwls_reconstruct(sino, geom, size(phantom.μ);
+        recon_huber = pwls_reconstruct(sino, geom, size(phantom.mask);
                                        niter=5, lambda=0.001,
                                        penalty=HuberPenalty(0.01f0))
 
@@ -1499,21 +1541,21 @@ end
 
     @testset "ASIR-Style Blending" begin
         phantom, geom = small_test_setup()
-        sino = forward_project(Float32.(phantom.μ), geom)
+        sino = forward_project(compute_μ(phantom, 60.0), geom)
 
         # 0% blend = pure FDK
-        recon_0 = asir_style_reconstruct(sino, geom, size(phantom.μ);
+        recon_0 = asir_style_reconstruct(sino, geom, size(phantom.mask);
                                          blend_percent=0, niter=5)
-        recon_fdk = fdk_reconstruct(sino, geom, size(phantom.μ))
+        recon_fdk = fdk_reconstruct(sino, geom, size(phantom.mask))
         @test isapprox(recon_0, recon_fdk, rtol=1e-5)
 
         # 50% blend
-        recon_50 = asir_style_reconstruct(sino, geom, size(phantom.μ);
+        recon_50 = asir_style_reconstruct(sino, geom, size(phantom.mask);
                                           blend_percent=50, niter=5)
         @test all(isfinite.(recon_50))
 
         # 100% blend = full IR
-        recon_100 = asir_style_reconstruct(sino, geom, size(phantom.μ);
+        recon_100 = asir_style_reconstruct(sino, geom, size(phantom.mask);
                                            blend_percent=100, niter=5)
         @test all(isfinite.(recon_100))
 
@@ -1524,16 +1566,16 @@ end
 
     @testset "ASIR Noise Reduction" begin
         phantom, geom = small_test_setup()
-        sino = forward_project(Float32.(phantom.μ), geom)
+        sino = forward_project(compute_μ(phantom, 60.0), geom)
 
         # Add noise to sinogram
         Random.seed!(42)
         sino_noisy = sino .+ 0.01f0 .* randn(Float32, size(sino)...)
 
         # Compare FBP vs ASIR on noisy data
-        recon_fdk = fdk_reconstruct(sino_noisy, geom, size(phantom.μ))
+        recon_fdk = fdk_reconstruct(sino_noisy, geom, size(phantom.mask))
         # Use higher blend percentage and more iterations for visible effect
-        recon_asir = asir_style_reconstruct(sino_noisy, geom, size(phantom.μ);
+        recon_asir = asir_style_reconstruct(sino_noisy, geom, size(phantom.mask);
                                             blend_percent=100, niter=20, lambda=0.02)
 
         # Both should be finite
@@ -1575,22 +1617,22 @@ end
 
     @testset "Strength IR Reconstruction" begin
         phantom, geom = small_test_setup()
-        sino = forward_project(Float32.(phantom.μ), geom)
+        sino = forward_project(compute_μ(phantom, 60.0), geom)
 
         # Test all strength levels produce valid results
         for level in 1:5
-            recon = strength_ir_reconstruct(sino, geom, size(phantom.μ); strength=level)
-            @test size(recon) == size(phantom.μ)
+            recon = strength_ir_reconstruct(sino, geom, size(phantom.mask); strength=level)
+            @test size(recon) == size(phantom.mask)
             @test all(isfinite.(recon))
         end
 
         # Test that different strength levels produce different results
-        recon1 = strength_ir_reconstruct(sino, geom, size(phantom.μ); strength=1)
-        recon5 = strength_ir_reconstruct(sino, geom, size(phantom.μ); strength=5)
+        recon1 = strength_ir_reconstruct(sino, geom, size(phantom.mask); strength=1)
+        recon5 = strength_ir_reconstruct(sino, geom, size(phantom.mask); strength=5)
         @test !isapprox(recon1, recon5, rtol=0.01)  # Should be noticeably different
 
         # Test with IRStrengthLevel type
-        recon_typed = strength_ir_reconstruct(sino, geom, size(phantom.μ);
+        recon_typed = strength_ir_reconstruct(sino, geom, size(phantom.mask);
                                               strength=IRStrengthLevel(3))
         @test all(isfinite.(recon_typed))
     end
@@ -1624,7 +1666,7 @@ end
             noise = default_detector_model(I0=1e6, seed=42)
         )
 
-        sino = forward_project(Float32.(phantom.μ), geom; physics=physics)
+        sino = forward_project(compute_μ(phantom, 60.0), geom; physics=physics)
         @test all(isfinite.(sino))
     end
 
@@ -2573,8 +2615,8 @@ end
         phantom, geom = small_test_setup()
         μ_water = get_reference_μ_water(60.0)
 
-        sino = forward_project(Float32.(phantom.μ), geom)
-        recon = fdk_reconstruct(sino, geom, size(phantom.μ))
+        sino = forward_project(compute_μ(phantom, 60.0), geom)
+        recon = fdk_reconstruct(sino, geom, size(phantom.mask))
 
         mid_z = size(recon, 3) ÷ 2 + 1
         water_mask = phantom.mask[:, :, mid_z] .== UInt8(REGION_SOLID_WATER)
@@ -2668,7 +2710,7 @@ end
         @test all(isfinite.(sino))
 
         # Reconstruct
-        recon = fdk_reconstruct(sino, geom, size(phantom.μ))
+        recon = fdk_reconstruct(sino, geom, size(phantom.mask))
         @test all(isfinite.(recon))
 
         # Convert to HU using EMPIRICAL μ_water from water region
@@ -2805,10 +2847,10 @@ end
             sino_gpu = forward_project(mask_gpu, geom;
                 energies=energies, weights=weights, materials=materials)
 
-            recon_gpu = fdk_reconstruct(sino_gpu, geom, size(phantom.μ))
+            recon_gpu = fdk_reconstruct(sino_gpu, geom, size(phantom.mask))
 
             @test recon_gpu isa MtlArray
-            @test size(recon_gpu) == size(phantom.μ)
+            @test size(recon_gpu) == size(phantom.mask)
 
             recon_cpu = Array(recon_gpu)
             @test all(isfinite.(recon_cpu))
@@ -2844,7 +2886,7 @@ end
             @test all(isfinite.(sino_cpu))
 
             # Reconstruct and check HU using empirical water calibration
-            recon_gpu = fdk_reconstruct(sino_gpu, geom, size(phantom.μ))
+            recon_gpu = fdk_reconstruct(sino_gpu, geom, size(phantom.mask))
             recon_cpu = Array(recon_gpu)
 
             mid_z = size(recon_cpu, 3) ÷ 2 + 1
@@ -2913,7 +2955,7 @@ end
             @test all(isfinite.(Array(sino_gpu)))
 
             # Reconstruct
-            recon_gpu = fdk_reconstruct(sino_gpu, geom, size(phantom.μ))
+            recon_gpu = fdk_reconstruct(sino_gpu, geom, size(phantom.mask))
             recon_cpu = Array(recon_gpu)
             @test all(isfinite.(recon_cpu))
 
@@ -4590,7 +4632,7 @@ end
                                                             n_rows=16, n_cols=64, fov_cm=35.0)
 
             # Forward projection
-            volume = Float32.(phantom.μ)
+            volume = compute_μ(phantom, 60.0)
             sinogram = helical_forward_project(volume, helical_geom)
 
             @test size(sinogram, 1) == helical_geom.base_geom.n_cols
@@ -4720,7 +4762,7 @@ end
                                                             n_rows=16, n_cols=64, fov_cm=35.0)
 
             # Forward projection
-            volume = Float32.(phantom.μ)
+            volume = compute_μ(phantom, 60.0)
             sinogram = helical_forward_project(volume, helical_geom)
 
             @test all(isfinite.(sinogram))
@@ -4743,7 +4785,7 @@ end
         @testset "Helical vs Axial Comparison" begin
             # Create water cylinder phantom
             phantom = create_gammex_472(n_voxels=32, n_slices=16, fov_cm=35.0, z_cm=8.0)
-            volume = Float32.(phantom.μ)
+            volume = compute_μ(phantom, 60.0)
 
             spec = GERevolutionApex()
 
@@ -4777,7 +4819,7 @@ end
         @testset "Helical SIRT Reconstruction" begin
             # Create water cylinder phantom
             phantom = create_gammex_472(n_voxels=32, n_slices=16, fov_cm=35.0, z_cm=8.0)
-            volume = Float32.(phantom.μ)
+            volume = compute_μ(phantom, 60.0)
 
             # Create helical geometry
             spec = GERevolutionApex()
@@ -4800,7 +4842,7 @@ end
             # Test different pitch values produce valid reconstructions
             spec = GERevolutionApex()
             phantom = create_gammex_472(n_voxels=32, n_slices=16, fov_cm=35.0, z_cm=8.0)
-            volume = Float32.(phantom.μ)
+            volume = compute_μ(phantom, 60.0)
 
             pitch_values = [0.5, 1.0, 1.5]
 
@@ -5480,23 +5522,23 @@ end
 
         @testset "MBIR Reconstruction - CPU" begin
             phantom, geom = small_test_setup()
-            sino = forward_project(Float32.(phantom.μ), geom)
+            sino = forward_project(compute_μ(phantom, 60.0), geom)
 
             # MBIR with small number of iterations for speed
-            recon = mbir_reconstruct(sino, geom, size(phantom.μ);
+            recon = mbir_reconstruct(sino, geom, size(phantom.mask);
                                      niter=3, n_subsets=4, lambda=0.01)
 
-            @test size(recon) == size(phantom.μ)
+            @test size(recon) == size(phantom.mask)
             @test all(isfinite.(recon))
             @test maximum(recon) > 0
         end
 
         @testset "MBIR vs FDK Comparison" begin
             phantom, geom = small_test_setup()
-            sino = forward_project(Float32.(phantom.μ), geom)
+            sino = forward_project(compute_μ(phantom, 60.0), geom)
 
-            recon_fdk = fdk_reconstruct(sino, geom, size(phantom.μ))
-            recon_mbir = mbir_reconstruct(sino, geom, size(phantom.μ);
+            recon_fdk = fdk_reconstruct(sino, geom, size(phantom.mask))
+            recon_mbir = mbir_reconstruct(sino, geom, size(phantom.mask);
                                           niter=5, n_subsets=4, lambda=0.01)
 
             # Both should be finite
@@ -5511,22 +5553,22 @@ end
 
         @testset "MBIR with Different Penalties" begin
             phantom, geom = small_test_setup()
-            sino = forward_project(Float32.(phantom.μ), geom)
+            sino = forward_project(compute_μ(phantom, 60.0), geom)
 
             # Hyperbola penalty (default)
-            recon_hyp = mbir_reconstruct(sino, geom, size(phantom.μ);
+            recon_hyp = mbir_reconstruct(sino, geom, size(phantom.mask);
                                          niter=3, n_subsets=4,
                                          penalty=HyperbolaPenalty(0.01f0))
             @test all(isfinite.(recon_hyp))
 
             # Huber penalty
-            recon_hub = mbir_reconstruct(sino, geom, size(phantom.μ);
+            recon_hub = mbir_reconstruct(sino, geom, size(phantom.mask);
                                          niter=3, n_subsets=4,
                                          penalty=HuberPenalty(0.01f0))
             @test all(isfinite.(recon_hub))
 
             # Quadratic penalty
-            recon_quad = mbir_reconstruct(sino, geom, size(phantom.μ);
+            recon_quad = mbir_reconstruct(sino, geom, size(phantom.mask);
                                           niter=3, n_subsets=4,
                                           penalty=QuadraticPenalty())
             @test all(isfinite.(recon_quad))
@@ -5534,22 +5576,22 @@ end
 
         @testset "MBIR Initialization Options" begin
             phantom, geom = small_test_setup()
-            sino = forward_project(Float32.(phantom.μ), geom)
+            sino = forward_project(compute_μ(phantom, 60.0), geom)
 
             # FDK initialization (default) - fast convergence
-            recon_fdk = mbir_reconstruct(sino, geom, size(phantom.μ);
+            recon_fdk = mbir_reconstruct(sino, geom, size(phantom.mask);
                                          niter=3, n_subsets=4, init=:fdk)
             @test all(isfinite.(recon_fdk))
 
             # Custom initialization (from FDK)
-            custom_init = fdk_reconstruct(sino, geom, size(phantom.μ))
-            recon_custom = mbir_reconstruct(sino, geom, size(phantom.μ);
+            custom_init = fdk_reconstruct(sino, geom, size(phantom.mask))
+            recon_custom = mbir_reconstruct(sino, geom, size(phantom.mask);
                                             niter=3, n_subsets=4, init=custom_init)
             @test all(isfinite.(recon_custom))
 
             # Zeros initialization - requires more iterations for convergence
             # but should still produce finite results
-            recon_zeros = mbir_reconstruct(sino, geom, size(phantom.μ);
+            recon_zeros = mbir_reconstruct(sino, geom, size(phantom.mask);
                                            niter=10, n_subsets=4, init=:zeros,
                                            lambda=0.001)  # Lower lambda helps stability
             @test all(isfinite.(recon_zeros))
@@ -5557,39 +5599,39 @@ end
 
         @testset "MBIR Edge Weight Toggle" begin
             phantom, geom = small_test_setup()
-            sino = forward_project(Float32.(phantom.μ), geom)
+            sino = forward_project(compute_μ(phantom, 60.0), geom)
 
             # With edge weights (default)
-            recon_edge = mbir_reconstruct(sino, geom, size(phantom.μ);
+            recon_edge = mbir_reconstruct(sino, geom, size(phantom.mask);
                                           niter=3, n_subsets=4, use_edge_weights=true)
             @test all(isfinite.(recon_edge))
 
             # Without edge weights
-            recon_no_edge = mbir_reconstruct(sino, geom, size(phantom.μ);
+            recon_no_edge = mbir_reconstruct(sino, geom, size(phantom.mask);
                                              niter=3, n_subsets=4, use_edge_weights=false)
             @test all(isfinite.(recon_no_edge))
         end
 
         @testset "ADMIRE-Style Reconstruction" begin
             phantom, geom = small_test_setup()
-            sino = forward_project(Float32.(phantom.μ), geom)
+            sino = forward_project(compute_μ(phantom, 60.0), geom)
 
             # Test all strength levels produce valid results
             for level in 1:5
                 # Use smaller parameters for testing
-                recon = admire_style_reconstruct(sino, geom, size(phantom.μ); strength=level)
-                @test size(recon) == size(phantom.μ)
+                recon = admire_style_reconstruct(sino, geom, size(phantom.mask); strength=level)
+                @test size(recon) == size(phantom.mask)
                 @test all(isfinite.(recon))
             end
         end
 
         @testset "ADMIRE Different Strengths" begin
             phantom, geom = small_test_setup()
-            sino = forward_project(Float32.(phantom.μ), geom)
+            sino = forward_project(compute_μ(phantom, 60.0), geom)
 
             # Different strength levels should produce different results
-            recon1 = admire_style_reconstruct(sino, geom, size(phantom.μ); strength=1)
-            recon5 = admire_style_reconstruct(sino, geom, size(phantom.μ); strength=5)
+            recon1 = admire_style_reconstruct(sino, geom, size(phantom.mask); strength=1)
+            recon5 = admire_style_reconstruct(sino, geom, size(phantom.mask); strength=5)
 
             @test all(isfinite.(recon1))
             @test all(isfinite.(recon5))
@@ -5605,7 +5647,7 @@ end
             phantom, geom = small_test_setup()
 
             # Create multi-bin sinograms (simulate PCCT)
-            sino_base = forward_project(Float32.(phantom.μ), geom)
+            sino_base = forward_project(compute_μ(phantom, 60.0), geom)
             energy_bins = [
                 sino_base .* 0.8f0,   # Low energy bin
                 sino_base .* 0.9f0,   # Mid-low
@@ -5673,7 +5715,7 @@ end
 
         @testset "Subset Sinogram Extraction" begin
             phantom, geom = small_test_setup()
-            sino = forward_project(Float32.(phantom.μ), geom)
+            sino = forward_project(compute_μ(phantom, 60.0), geom)
 
             angle_indices = [1, 3, 5]
             sino_subset = extract_subset_sinogram(sino, angle_indices)
@@ -5690,14 +5732,14 @@ end
 
         @testset "MBIR Lambda Parameter Impact" begin
             phantom, geom = small_test_setup()
-            sino = forward_project(Float32.(phantom.μ), geom)
+            sino = forward_project(compute_μ(phantom, 60.0), geom)
 
             # Low regularization
-            recon_low = mbir_reconstruct(sino, geom, size(phantom.μ);
+            recon_low = mbir_reconstruct(sino, geom, size(phantom.mask);
                                          niter=5, n_subsets=4, lambda=0.001)
 
             # High regularization
-            recon_high = mbir_reconstruct(sino, geom, size(phantom.μ);
+            recon_high = mbir_reconstruct(sino, geom, size(phantom.mask);
                                           niter=5, n_subsets=4, lambda=0.1)
 
             # Both should be finite
@@ -5710,14 +5752,14 @@ end
 
         @testset "MBIR Subset Count Impact" begin
             phantom, geom = small_test_setup()
-            sino = forward_project(Float32.(phantom.μ), geom)
+            sino = forward_project(compute_μ(phantom, 60.0), geom)
 
             # Few subsets
-            recon_few = mbir_reconstruct(sino, geom, size(phantom.μ);
+            recon_few = mbir_reconstruct(sino, geom, size(phantom.mask);
                                          niter=3, n_subsets=2, lambda=0.01)
 
             # More subsets
-            recon_many = mbir_reconstruct(sino, geom, size(phantom.μ);
+            recon_many = mbir_reconstruct(sino, geom, size(phantom.mask);
                                           niter=3, n_subsets=8, lambda=0.01)
 
             # Both should be finite
@@ -5744,7 +5786,7 @@ end
         @testset "Gradient Forward Project" begin
             # Small test setup for fast gradient testing
             phantom, geom = small_test_setup()
-            volume = Float32.(phantom.μ)
+            volume = compute_μ(phantom, 60.0)
 
             # Forward projection
             sinogram = siddon_forward_project(volume, geom)
@@ -5768,7 +5810,7 @@ end
 
         @testset "Gradient Forward Project In-Place" begin
             phantom, geom = small_test_setup()
-            volume = Float32.(phantom.μ)
+            volume = compute_μ(phantom, 60.0)
             sinogram = siddon_forward_project(volume, geom)
             ∂L_∂sinogram = copy(sinogram)
 
@@ -5784,7 +5826,7 @@ end
 
         @testset "Gradient Backproject" begin
             phantom, geom = small_test_setup()
-            volume_size = size(phantom.μ)
+            volume_size = size(phantom.mask)
 
             # Create synthetic sinogram
             sinogram = randn(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
@@ -5810,7 +5852,7 @@ end
         @testset "Gradient Backproject In-Place" begin
             phantom, geom = small_test_setup()
             sinogram = randn(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
-            volume = backproject(sinogram, geom, size(phantom.μ); weighted=true)
+            volume = backproject(sinogram, geom, size(phantom.mask); weighted=true)
             ∂L_∂volume = copy(volume)
 
             # Pre-allocated gradient
@@ -5834,7 +5876,7 @@ end
             # Use fixed seed for reproducibility
             using Random
             rng = MersenneTwister(42)
-            x = randn(rng, Float32, size(phantom.μ))  # Random volume
+            x = randn(rng, Float32, size(phantom.mask))  # Random volume
             y = randn(rng, Float32, geom.n_cols, geom.n_rows, geom.n_angles)  # Random sinogram
 
             # A*x (forward projection)
@@ -5868,7 +5910,7 @@ end
             # Use very small phantom for fast FD verification
             small_phantom = create_gammex_472(n_voxels=16, n_slices=4, fov_cm=35.0, z_cm=4.0)
             small_geom = create_aquilion_one(n_angles=18, n_rows=4, n_cols=32, fov_cm=35.0, z_cm=4.0)
-            volume = Float32.(small_phantom.μ)
+            volume = compute_μ(small_phantom, 60.0)
 
             # Verify gradients - use EnzymeExt directly to avoid scoping issues
             result = EnzymeExt.verify_gradient_forward_project(volume, small_geom;
@@ -5887,7 +5929,7 @@ end
             sinogram = randn(Float32, small_geom.n_cols, small_geom.n_rows, small_geom.n_angles)
 
             # Verify gradients - use EnzymeExt directly to avoid scoping issues
-            result = EnzymeExt.verify_gradient_backproject(sinogram, small_geom, size(small_phantom.μ);
+            result = EnzymeExt.verify_gradient_backproject(sinogram, small_geom, size(small_phantom.mask);
                 ε=Float32(1e-4), n_samples=3, seed=42, weighted=true)
 
             # Note: Weighted backprojection is FDK-weighted, not matched adjoint
@@ -5914,7 +5956,7 @@ end
         @testset "Gradient Chain Rule" begin
             # Test that gradients compose correctly through a simple pipeline
             phantom, geom = small_test_setup()
-            volume = Float32.(phantom.μ)
+            volume = compute_μ(phantom, 60.0)
 
             # Forward: sinogram = forward_project(volume)
             sinogram = siddon_forward_project(volume, geom)
@@ -6140,10 +6182,10 @@ end
             # Small test setup for fast gradient testing
             small_phantom = create_gammex_472(n_voxels=16, n_slices=4, fov_cm=35.0, z_cm=4.0)
             small_geom = create_aquilion_one(n_angles=18, n_rows=4, n_cols=32, fov_cm=35.0, z_cm=4.0)
-            volume_size = size(small_phantom.μ)
+            volume_size = size(small_phantom.mask)
 
             # Create sinogram from phantom
-            volume = Float32.(small_phantom.μ)
+            volume = compute_μ(small_phantom, 60.0)
             sinogram = siddon_forward_project(volume, small_geom)
 
             # FDK reconstruction
@@ -6165,9 +6207,9 @@ end
             # Very small test for fast FD verification
             small_phantom = create_gammex_472(n_voxels=12, n_slices=3, fov_cm=35.0, z_cm=3.0)
             small_geom = create_aquilion_one(n_angles=12, n_rows=3, n_cols=24, fov_cm=35.0, z_cm=3.0)
-            volume_size = size(small_phantom.μ)
+            volume_size = size(small_phantom.mask)
 
-            volume = Float32.(small_phantom.μ)
+            volume = compute_μ(small_phantom, 60.0)
             sinogram = siddon_forward_project(volume, small_geom)
 
             result = EnzymeExt.verify_gradient_fdk_reconstruct(
@@ -6183,10 +6225,10 @@ end
             # Test that FDK gradients enable loss reduction
             small_phantom = create_gammex_472(n_voxels=16, n_slices=4, fov_cm=35.0, z_cm=4.0)
             small_geom = create_aquilion_one(n_angles=18, n_rows=4, n_cols=32, fov_cm=35.0, z_cm=4.0)
-            volume_size = size(small_phantom.μ)
+            volume_size = size(small_phantom.mask)
 
             # Create sinogram
-            volume = Float32.(small_phantom.μ)
+            volume = compute_μ(small_phantom, 60.0)
             sinogram = siddon_forward_project(volume, small_geom)
 
             # FDK reconstruction

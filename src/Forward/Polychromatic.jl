@@ -391,9 +391,10 @@ geom = CTGeometry(scanner; n_angles=360, fov=(350.0, 350.0, 40.0))
 phantom = create_water_cylinder(128, diameter_mm=200.0)
 
 # Direct μ-volume projection (fastest)
-sinogram = similar(phantom.μ, Float32, geom.n_cols, geom.n_rows, geom.n_angles)
+μ = compute_μ(phantom, 60.0)  # Get μ at 60 keV
+sinogram = similar(μ, Float32, geom.n_cols, geom.n_rows, geom.n_angles)
 fill!(sinogram, 0f0)
-forward_project!(sinogram, phantom.μ, geom)
+forward_project!(sinogram, μ, geom)
 ```
 
 ## Polychromatic Projection
@@ -604,14 +605,16 @@ See [`forward_project!`](@ref) for complete list. Key parameters:
 The returned sinogram is allocated on the same device as input:
 
 ```julia
+μ = compute_μ(phantom, 60.0)  # Get μ at desired energy
+
 # CPU
-sinogram = forward_project(Array(phantom.μ), geom)      # returns Array
+sinogram = forward_project(μ, geom)              # returns Array
 
 # Metal (Apple Silicon)
-sinogram = forward_project(MtlArray(phantom.μ), geom)   # returns MtlArray
+sinogram = forward_project(MtlArray(μ), geom)   # returns MtlArray
 
 # CUDA (NVIDIA)
-sinogram = forward_project(CuArray(phantom.μ), geom)    # returns CuArray
+sinogram = forward_project(CuArray(μ), geom)    # returns CuArray
 ```
 
 # Examples
