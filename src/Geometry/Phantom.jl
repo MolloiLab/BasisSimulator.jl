@@ -71,12 +71,11 @@ const REGION_TO_MATERIAL = Dict{RegionLabel, Symbol}(
 """
     Phantom
 
-Digital phantom with semantic mask for validation and optional materials for polychromatic simulation.
+Digital phantom with semantic mask and materials for polychromatic simulation.
 
-# Fields
-- `μ::Array{Float32,3}`: Linear attenuation coefficients (cm⁻¹) at effective energy
-- `mask::Array{UInt8,3}`: Region labels (see `RegionLabel` enum)
-- `materials::Union{Vector{XA.Material}, Nothing}`: Materials for polychromatic simulation (v20.0+)
+# Fields (v20.0-pivot: simplified, no μ field)
+- `mask::AbstractArray{UInt8,3}`: Region labels (see `RegionLabel` enum)
+- `materials::Vector{XA.Material}`: Materials for each region (indexed by mask_value + 1)
 - `voxel_size::NTuple{3,Float64}`: Voxel dimensions (cm) as (dx, dy, dz)
 - `origin::NTuple{3,Float64}`: Origin coordinates (cm) - center of first voxel
 - `fov::NTuple{3,Float64}`: Field of view (cm) as (x, y, z)
@@ -87,50 +86,85 @@ Digital phantom with semantic mask for validation and optional materials for pol
 - Z: inferior-superior (increasing superior)
 - Origin at isocenter (0, 0, 0)
 
-# Materials Field (v20.0)
-When `materials` is populated, `simulate(phantom, ...)` automatically uses it for
-polychromatic physics without needing a separate `materials` kwarg.
+# Design (v20.0-pivot)
+The μ field was removed because polychromatic simulation computes μ(E) on-demand
+at each spectrum energy via `create_μ_volume!()`. The pre-computed μ at arbitrary
+60 keV was redundant and confusing.
 
-Materials vector is indexed by `mask_value + 1`, so `materials[1]` corresponds to
-region label 0, `materials[2]` to label 1, etc.
+Use `compute_μ(phantom, energy_keV)` to get attenuation coefficients at any energy.
 
 # Usage
 ```julia
-# Create phantom with materials (v20.0 unified API)
+# Create phantom (no energy_keV needed!)
 materials_dict = Dict(0 => XA.Materials.air, 1 => XA.Materials.water)
 phantom = Phantom(labeled_array, materials_dict, (0.1, 0.1, 0.1))
-result = simulate(phantom, scanner, protocol)  # Just works!
 
-# Legacy: GPU phantom (Metal) - materials stay on CPU
+# Get μ at any energy when needed
+μ_60keV = compute_μ(phantom, 60.0)
+μ_120keV = compute_μ(phantom, 120.0)
+
+# Simulate - just works (uses mask + materials internally)
+result = simulate(phantom, scanner, protocol)
+
+# GPU workflow: mask on GPU, materials stay on CPU
 using Metal
 phantom_gpu = Phantom(
-    MtlArray(phantom_cpu.μ),
     MtlArray(phantom_cpu.mask),
-    phantom_cpu.materials,  # CPU reference, not transferred to GPU
+    phantom_cpu.materials,
     phantom_cpu.voxel_size,
     phantom_cpu.origin,
     phantom_cpu.fov
 )
 ```
+
+See also: [`compute_μ`](@ref)
 """
-struct Phantom{T<:AbstractArray{Float32,3}, M<:AbstractArray{UInt8,3}, Mat}
-    μ::T
+struct Phantom{M<:AbstractArray{UInt8,3}, Mat}
     mask::M
-    materials::Mat  # Vector{XA.Material} or Nothing
+    materials::Mat  # Vector{XA.Material}
     voxel_size::NTuple{3,Float64}
     origin::NTuple{3,Float64}
     fov::NTuple{3,Float64}
 end
 
-# Backwards-compatible constructor (5 args, no materials)
-function Phantom(
-    μ::T,
-    mask::M,
-    voxel_size::NTuple{3,Float64},
-    origin::NTuple{3,Float64},
-    fov::NTuple{3,Float64}
-) where {T<:AbstractArray{Float32,3}, M<:AbstractArray{UInt8,3}}
-    return Phantom{T, M, Nothing}(μ, mask, nothing, voxel_size, origin, fov)
+# =============================================================================
+# Compute μ On-Demand
+# =============================================================================
+
+"""
+    compute_μ(phantom::Phantom, energy_keV::Real) -> Array{Float32,3}
+
+Compute linear attenuation coefficient volume at specified energy.
+
+This function efficiently computes μ by:
+1. Computing μ for each unique material once (O(n_materials))
+2. Broadcasting via mask indexing (O(n_voxels), but just integer lookups)
+
+This is exactly what `create_μ_volume!()` does internally in polychromatic
+forward projection, so there's no performance penalty vs the old μ field.
+
+# Arguments
+- `phantom::Phantom`: Phantom with mask and materials
+- `energy_keV::Real`: Energy in keV for attenuation computation
+
+# Returns
+- `Array{Float32,3}`: Linear attenuation coefficients (cm⁻¹) at specified energy
+
+# Example
+```julia
+phantom = create_gammex_472(n_voxels=128)
+
+# Get μ at different energies
+μ_60 = compute_μ(phantom, 60.0)   # ~0.207 cm⁻¹ for water
+μ_120 = compute_μ(phantom, 120.0) # ~0.165 cm⁻¹ for water
+```
+"""
+function compute_μ(phantom::Phantom, energy_keV::Real)
+    # Compute μ for each material at this energy (O(n_materials))
+    μ_lookup = Float32[compute_μ_at_energy(mat, Float64(energy_keV))
+                       for mat in phantom.materials]
+    # Broadcast via mask indexing (mask is 0-based, vector is 1-based)
+    return μ_lookup[phantom.mask .+ 1]
 end
 
 # =============================================================================
@@ -142,9 +176,12 @@ end
 
 Create a Phantom from a labeled array with materials stored internally.
 
-This is the **unified v20.0 API**: the returned Phantom contains everything needed
+This is the **unified v20.0-pivot API**: the returned Phantom contains everything needed
 for polychromatic simulation, so `simulate(phantom, scanner, protocol)` just works
 without a separate `materials` kwarg.
+
+**No energy_keV parameter needed!** The μ field was removed in v20.0-pivot. Use
+`compute_μ(phantom, energy_keV)` to get attenuation coefficients at any energy.
 
 # Arguments
 - `labeled_array::AbstractArray{<:Integer, 3}`: Integer array where each voxel
@@ -156,13 +193,11 @@ without a separate `materials` kwarg.
 - `voxel_size_cm::NTuple{3, Real}`: Physical voxel dimensions in cm as (dx, dy, dz)
 
 # Keyword Arguments
-- `energy_keV::Real=60.0`: Energy for computing reference μ values (keV)
 - `origin::Union{Nothing, NTuple{3, Real}}=nothing`: Origin coordinates (cm).
   If `nothing`, phantom is centered at isocenter.
 
 # Returns
 A `Phantom` with:
-- `μ`: Linear attenuation coefficients (cm⁻¹) at specified energy
 - `mask`: UInt8 mask with original label values
 - `materials`: Vector{XA.Material} for polychromatic simulation
 - `voxel_size`, `origin`, `fov`: Geometry parameters
@@ -183,17 +218,19 @@ materials_dict = Dict{Int, XA.Material}(
 # Create phantom (1mm voxels)
 phantom = Phantom(labeled_array, materials_dict, (0.1, 0.1, 0.1))
 
+# Get μ at any energy when needed
+μ_60keV = compute_μ(phantom, 60.0)
+
 # Simulate - no materials kwarg needed!
 result = simulate(phantom, scanner, protocol, SimOptions(), ReconOptions())
 ```
 
-See also: [`create_phantom_from_mask`](@ref), [`create_gammex_472`](@ref)
+See also: [`compute_μ`](@ref), [`create_phantom_from_mask`](@ref), [`create_gammex_472`](@ref)
 """
 function Phantom(
     labeled_array::AbstractArray{<:Integer, 3},
     materials_dict::Dict{Int, M},
     voxel_size_cm::NTuple{3, Real};
-    energy_keV::Real = 60.0,
     origin::Union{Nothing, NTuple{3, Real}} = nothing
 ) where M
     # Get dimensions
@@ -221,39 +258,7 @@ function Phantom(
     # Build materials vector (indexed by mask_value + 1)
     materials_vec = build_materials_vector(materials_dict)
 
-    # Build μ array from materials
-    μ = zeros(Float32, nx, ny, nz)
-
-    # Pre-compute μ for each unique label
-    unique_labels = unique(labeled_array)
-    μ_lookup = Dict{Int, Float32}()
-
-    for label in unique_labels
-        if !haskey(materials_dict, label)
-            @warn "Label $label not found in materials dict, using air"
-            mat = XA.Materials.air
-        else
-            mat = materials_dict[label]
-            # Handle Symbol lookup
-            if mat isa Symbol
-                mat = get_material(mat)
-            end
-        end
-        μ_lookup[label] = Float32(compute_μ_at_energy(mat, Float64(energy_keV)))
-    end
-
-    # Fill μ array
-    for k in 1:nz
-        for j in 1:ny
-            for i in 1:nx
-                label = labeled_array[i, j, k]
-                μ[i, j, k] = μ_lookup[label]
-            end
-        end
-    end
-
     return Phantom(
-        μ,
         mask,
         materials_vec,
         (dx, dy, dz),
@@ -267,7 +272,7 @@ end
 # =============================================================================
 
 """
-    create_gammex_472(; n_voxels=64, n_slices=nothing, fov_cm=35.0, z_cm=4.0, μ_effective_energy_keV=60.0)
+    create_gammex_472(; n_voxels=64, n_slices=nothing, fov_cm=35.0, z_cm=4.0)
 
 Create a Gammex 472 calibration phantom with semantic mask.
 
@@ -276,7 +281,6 @@ Create a Gammex 472 calibration phantom with semantic mask.
 - `n_slices::Union{Int,Nothing}`: Number of z slices (if specified, overrides z_cm calculation)
 - `fov_cm::Float64`: Field of view in x/y (cm), default 35.0
 - `z_cm::Float64`: Height in z (cm), default 4.0 (used if n_slices not specified)
-- `μ_effective_energy_keV::Float64`: Energy for μ values (keV), default 60.0
 
 # Returns
 `Phantom` with:
@@ -285,6 +289,9 @@ Create a Gammex 472 calibration phantom with semantic mask.
 - 7 iodine inserts (2-20 mg/ml) in outer ring (10.5cm radius)
 - 28mm diameter rods
 - Semantic mask labeling each region
+- Materials vector for polychromatic simulation
+
+Use `compute_μ(phantom, energy_keV)` to get attenuation coefficients at any energy.
 
 # Gammex 472 Specifications
 - Body: 330mm diameter solid water cylinder
@@ -292,13 +299,24 @@ Create a Gammex 472 calibration phantom with semantic mask.
 - Inner ring radius: 50mm (calcium inserts)
 - Outer ring radius: 105mm (iodine inserts)
 - Insert spacing: ~51.4° (7 inserts per ring)
+
+# Example
+```julia
+phantom = create_gammex_472(n_voxels=128)
+
+# Get μ at any energy
+μ_60 = compute_μ(phantom, 60.0)
+μ_120 = compute_μ(phantom, 120.0)
+
+# Simulate - just works
+result = simulate(phantom, scanner, protocol)
+```
 """
 function create_gammex_472(;
     n_voxels::Int=64,
     n_slices::Union{Int,Nothing}=nothing,
     fov_cm::Float64=35.0,
-    z_cm::Float64=4.0,
-    μ_effective_energy_keV::Float64=60.0
+    z_cm::Float64=4.0
 )
     # Grid setup - use n_slices if specified, otherwise compute from z_cm
     n_z = if n_slices !== nothing
@@ -313,10 +331,8 @@ function create_gammex_472(;
     # Coordinate arrays (centered at isocenter)
     x = range(-fov_cm/2 + dx/2, fov_cm/2 - dx/2, length=n_voxels)
     y = range(-fov_cm/2 + dy/2, fov_cm/2 - dy/2, length=n_voxels)
-    z = range(-z_cm/2 + dz/2, z_cm/2 - dz/2, length=n_z)
 
-    # Initialize arrays
-    μ = zeros(Float32, n_voxels, n_voxels, n_z)
+    # Initialize mask array only (no μ array - computed on demand)
     mask = zeros(UInt8, n_voxels, n_voxels, n_z)
 
     # Gammex 472 dimensions (cm)
@@ -325,30 +341,16 @@ function create_gammex_472(;
     inner_ring_radius = 5.0   # 50mm - calcium inserts
     outer_ring_radius = 10.5  # 105mm - iodine inserts
 
-    # Get materials and compute μ values
-    # Use pure water for the phantom body (water-equivalent)
-    solid_water_mat = XA.Materials.water
-    air_mat = XA.Materials.air
-
-    μ_solid_water = Float32(compute_μ_at_energy(solid_water_mat, μ_effective_energy_keV))
-    μ_air = Float32(compute_μ_at_energy(air_mat, μ_effective_energy_keV))
-
-    # Calcium inserts (inner ring) - 7 inserts evenly spaced
-    ca_materials = [:Ca_50, :Ca_100, :Ca_200, :Ca_300, :Ca_400, :Ca_500, :Ca_600]
+    # Region labels for inserts
     ca_labels = [REGION_CA_50, REGION_CA_100, REGION_CA_200, REGION_CA_300, REGION_CA_400, REGION_CA_500, REGION_CA_600]
-    ca_μ = [Float32(compute_μ_at_energy(get_material(m), μ_effective_energy_keV)) for m in ca_materials]
-
-    # Iodine inserts (outer ring) - 7 inserts evenly spaced
-    i_materials = [:I_2_0, :I_2_5, :I_5_0, :I_7_5, :I_10_0, :I_15_0, :I_20_0]
     i_labels = [REGION_I_2_0, REGION_I_2_5, REGION_I_5_0, REGION_I_7_5, REGION_I_10_0, REGION_I_15_0, REGION_I_20_0]
-    i_μ = [Float32(compute_μ_at_energy(get_material(m), μ_effective_energy_keV)) for m in i_materials]
 
     # Insert angular positions (evenly spaced, starting at 0°)
     n_inserts = 7
     angles_ca = [2π * i / n_inserts for i in 0:(n_inserts-1)]
     angles_i = [2π * i / n_inserts + π/n_inserts for i in 0:(n_inserts-1)]  # Offset by half spacing
 
-    # Fill phantom voxel by voxel
+    # Fill mask voxel by voxel (geometry only, no μ computation)
     for k in 1:n_z
         for j in 1:n_voxels
             for i in 1:n_voxels
@@ -357,13 +359,11 @@ function create_gammex_472(;
                 r = sqrt(xi^2 + yj^2)
 
                 # Default: background (air)
-                μ[i, j, k] = μ_air
                 mask[i, j, k] = UInt8(REGION_BACKGROUND)
 
                 # Check if inside body cylinder
                 if r <= body_radius
                     # Default body is solid water
-                    μ[i, j, k] = μ_solid_water
                     mask[i, j, k] = UInt8(REGION_SOLID_WATER)
 
                     # Check calcium inserts (inner ring)
@@ -372,7 +372,6 @@ function create_gammex_472(;
                         cy = inner_ring_radius * sin(angle)
                         dist = sqrt((xi - cx)^2 + (yj - cy)^2)
                         if dist <= rod_radius
-                            μ[i, j, k] = ca_μ[idx]
                             mask[i, j, k] = UInt8(ca_labels[idx])
                             break
                         end
@@ -385,7 +384,6 @@ function create_gammex_472(;
                             cy = outer_ring_radius * sin(angle)
                             dist = sqrt((xi - cx)^2 + (yj - cy)^2)
                             if dist <= rod_radius
-                                μ[i, j, k] = i_μ[idx]
                                 mask[i, j, k] = UInt8(i_labels[idx])
                                 break
                             end
@@ -396,9 +394,33 @@ function create_gammex_472(;
         end
     end
 
+    # Build materials vector for all region labels used in Gammex 472
+    # Index = label_value + 1 (since Julia is 1-indexed)
+    materials_dict = Dict{Int, XA.Material}(
+        Int(REGION_BACKGROUND) => XA.Materials.air,
+        Int(REGION_AIR) => XA.Materials.air,
+        Int(REGION_WATER) => XA.Materials.water,
+        Int(REGION_SOLID_WATER) => XA.Materials.water,  # Solid water approximated as water
+        Int(REGION_CA_50) => get_material(:Ca_50),
+        Int(REGION_CA_100) => get_material(:Ca_100),
+        Int(REGION_CA_200) => get_material(:Ca_200),
+        Int(REGION_CA_300) => get_material(:Ca_300),
+        Int(REGION_CA_400) => get_material(:Ca_400),
+        Int(REGION_CA_500) => get_material(:Ca_500),
+        Int(REGION_CA_600) => get_material(:Ca_600),
+        Int(REGION_I_2_0) => get_material(:I_2_0),
+        Int(REGION_I_2_5) => get_material(:I_2_5),
+        Int(REGION_I_5_0) => get_material(:I_5_0),
+        Int(REGION_I_7_5) => get_material(:I_7_5),
+        Int(REGION_I_10_0) => get_material(:I_10_0),
+        Int(REGION_I_15_0) => get_material(:I_15_0),
+        Int(REGION_I_20_0) => get_material(:I_20_0),
+    )
+    materials_vec = build_materials_vector(materials_dict)
+
     return Phantom(
-        μ,
         mask,
+        materials_vec,
         (dx, dy, dz),
         (-fov_cm/2 + dx/2, -fov_cm/2 + dy/2, -z_cm/2 + dz/2),
         (fov_cm, fov_cm, z_cm)
@@ -417,6 +439,9 @@ Create a Phantom from an arbitrary labeled array with custom material mapping.
 This function enables loading arbitrary phantoms (XCAT, custom segmentations, etc.)
 by providing a mapping from integer labels to materials.
 
+**Note (v20.0-pivot):** This function is now equivalent to the `Phantom()` constructor.
+Consider using `Phantom(labeled_array, materials_dict, voxel_size)` directly.
+
 # Arguments
 - `labeled_array::AbstractArray{<:Integer, 3}`: Integer array where each voxel
   contains a region label (0-255 supported via UInt8 conversion)
@@ -427,26 +452,18 @@ by providing a mapping from integer labels to materials.
 - `voxel_size_cm::NTuple{3, Real}`: Physical voxel dimensions in cm as (dx, dy, dz)
 
 # Keyword Arguments
-- `energy_keV::Real=60.0`: Energy for computing μ values in the Phantom (keV)
 - `origin::Union{Nothing, NTuple{3, Real}}=nothing`: Origin coordinates (cm).
   If `nothing`, phantom is centered at isocenter.
 
 # Returns
 A `Phantom` struct with:
-- `μ`: Linear attenuation coefficients (cm⁻¹) at specified energy
 - `mask`: UInt8 mask with original label values
+- `materials`: Vector{XA.Material} for polychromatic simulation
 - `voxel_size`: Physical voxel dimensions (cm)
 - `origin`: Origin coordinates (cm)
 - `fov`: Field of view (cm)
 
-# Material Lookup
-For polychromatic simulation, the returned `Phantom.mask` values are used as indices
-into a materials vector. To use this phantom with `simulate()`, you must also
-provide a `materials` vector via the `materials` keyword argument (see IMPL-CUSTOM-MATERIALS).
-
-The materials vector should be constructed such that `materials[mask_value + 1]`
-returns the correct material for each voxel. Use `build_materials_vector()` to
-create this vector from the materials dict.
+Use `compute_μ(phantom, energy_keV)` to get attenuation coefficients at any energy.
 
 # Example
 
@@ -463,95 +480,28 @@ materials_dict = Dict{Int, XA.Material}(
     1 => XA.Materials.water,  # soft tissue approximation
     2 => XA.Materials.cortical_bone,
     3 => XA.Materials.lung,
-    # ... more materials
 )
 
 # Create phantom (0.1 cm = 1mm voxels)
-phantom = create_phantom_from_mask(
-    xcat_mask,
-    materials_dict,
-    (0.1, 0.1, 0.1);
-    energy_keV=70.0
-)
+phantom = create_phantom_from_mask(xcat_mask, materials_dict, (0.1, 0.1, 0.1))
 
-# Build materials vector for simulation
-materials_vec = build_materials_vector(materials_dict)
+# Get μ at any energy when needed
+μ_70 = compute_μ(phantom, 70.0)
 
-# Simulate with custom materials
-result = simulate(phantom, scanner, protocol, sim_opts, recon_opts;
-                  materials=materials_vec)
+# Simulate - just works (materials stored in phantom)
+result = simulate(phantom, scanner, protocol)
 ```
 
-See also: [`build_materials_vector`](@ref), [`create_gammex_472`](@ref)
+See also: [`Phantom`](@ref), [`compute_μ`](@ref), [`create_gammex_472`](@ref)
 """
 function create_phantom_from_mask(
     labeled_array::AbstractArray{<:Integer, 3},
     materials::Dict{Int, M},
     voxel_size_cm::NTuple{3, Real};
-    energy_keV::Real = 60.0,
     origin::Union{Nothing, NTuple{3, Real}} = nothing
 ) where M
-    # Get dimensions
-    nx, ny, nz = size(labeled_array)
-    dx, dy, dz = Float64.(voxel_size_cm)
-
-    # Compute FOV
-    fov_x = dx * nx
-    fov_y = dy * ny
-    fov_z = dz * nz
-
-    # Compute origin (center at isocenter if not specified)
-    if origin === nothing
-        origin_x = -fov_x/2 + dx/2
-        origin_y = -fov_y/2 + dy/2
-        origin_z = -fov_z/2 + dz/2
-        computed_origin = (origin_x, origin_y, origin_z)
-    else
-        computed_origin = Float64.(origin)
-    end
-
-    # Convert labeled array to UInt8 mask
-    # Note: labels > 255 will wrap around, but this is documented limitation
-    mask = UInt8.(labeled_array)
-
-    # Build μ array from materials
-    μ = zeros(Float32, nx, ny, nz)
-
-    # Pre-compute μ for each unique label
-    unique_labels = unique(labeled_array)
-    μ_lookup = Dict{Int, Float32}()
-
-    for label in unique_labels
-        if !haskey(materials, label)
-            @warn "Label $label not found in materials dict, using air"
-            mat = XA.Materials.air
-        else
-            mat = materials[label]
-            # Handle Symbol lookup
-            if mat isa Symbol
-                mat = get_material(mat)
-            end
-        end
-        μ_lookup[label] = Float32(compute_μ_at_energy(mat, Float64(energy_keV)))
-    end
-
-    # Fill μ array
-    for k in 1:nz
-        for j in 1:ny
-            for i in 1:nx
-                label = labeled_array[i, j, k]
-                μ[i, j, k] = μ_lookup[label]
-            end
-        end
-    end
-
-    return Phantom(
-        μ,
-        mask,
-        (dx, dy, dz),
-        computed_origin,
-        (fov_x, fov_y, fov_z)
-    )
+    # Delegate to the unified Phantom constructor
+    return Phantom(labeled_array, materials, voxel_size_cm; origin=origin)
 end
 
 """
@@ -628,5 +578,5 @@ export REGION_CA_50, REGION_CA_100, REGION_CA_200, REGION_CA_300, REGION_CA_400,
 export REGION_I_2_0, REGION_I_2_5, REGION_I_5_0, REGION_I_7_5, REGION_I_10_0, REGION_I_15_0, REGION_I_20_0
 export REGION_TO_MATERIAL
 
-export Phantom, create_gammex_472, create_phantom_from_mask, build_materials_vector
+export Phantom, compute_μ, create_gammex_472, create_phantom_from_mask, build_materials_vector
 export get_region_mask
