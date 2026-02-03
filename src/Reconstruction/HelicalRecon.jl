@@ -241,10 +241,11 @@ protocol = GEApexChestHelical()
 helical_geom = create_helical_geometry_from_spec(spec, protocol)
 
 phantom = create_gammex_472(n_voxels=128)
+μ = compute_μ(phantom, 60.0)  # Get μ at 60 keV
 sinogram = zeros(Float32, helical_geom.base_geom.n_cols,
                          helical_geom.base_geom.n_rows,
                          helical_geom.base_geom.n_angles)
-helical_forward_project!(sinogram, Float32.(phantom.μ), helical_geom)
+helical_forward_project!(sinogram, μ, helical_geom)
 ```
 """
 function helical_forward_project!(
@@ -278,7 +279,8 @@ protocol = GEApexChestHelical()
 helical_geom = create_helical_geometry_from_spec(spec, protocol)
 
 phantom = create_gammex_472(n_voxels=128)
-sinogram = helical_forward_project(Float32.(phantom.μ), helical_geom)
+μ = compute_μ(phantom, 60.0)  # Get μ at 60 keV
+sinogram = helical_forward_project(μ, helical_geom)
 ```
 """
 function helical_forward_project(

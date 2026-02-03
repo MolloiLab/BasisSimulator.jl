@@ -14,11 +14,14 @@ using BasisSimulator
 phantom = create_gammex_472(n_voxels=128, fov_cm=35.0, z_cm=4.0)
 geom = create_aquilion_one(n_angles=180, n_rows=32, n_cols=256, fov_cm=35.0)
 
+# Get μ at desired energy (v20.0-pivot: compute on demand)
+μ = compute_μ(phantom, 60.0)  # 60 keV
+
 # Forward projection
-sinogram = siddon_forward_project(Float32.(phantom.μ), geom)
+sinogram = siddon_forward_project(μ, geom)
 
 # FDK reconstruction
-recon = fdk_reconstruct(sinogram, geom, size(phantom.μ))
+recon = fdk_reconstruct(sinogram, geom, size(phantom.mask))
 ```
 """
 module BasisSimulator
