@@ -235,24 +235,163 @@ Phantom (mask + materials)
   CT Volume (HU)
 ```
 
-## Code Quality Assessment
+## File Verification Guide
 
-### Cleanest Files (Best for Learning)
+This section categorizes all 43 source files by confidence level to guide verification efforts.
 
-| File | Notes |
-|------|-------|
-| `forward/siddon.jl` | Excellent documentation, mathematical foundation, TIGRE references |
-| `reconstruction/fdk.jl` | Complete algorithm explanation, physical interpretation |
-| `metrics/mtf.jl` | AAPM TG-233 references, clinical methodology |
-| `forward/photon_counting.jl` | Comprehensive physics, FDA references |
+### Confidence Tiers
 
-### Files Needing Verification
+| Tier | Description | Collaborator Action |
+|------|-------------|---------------------|
+| HIGH | Validated algorithms, TIGRE ports, NIST data | Use confidently |
+| MEDIUM | Mostly validated, some empirical parameters | Review before critical use |
+| LOW | Needs verification, complex physics chains | Verify before use |
+| BROKEN | Known non-functional | Do not use |
 
-| File | Concern |
-|------|---------|
-| `forward/scatter.jl` | Empirical model, needs Monte Carlo validation |
-| `forward/das_model.jl` | **BROKEN** — disabled in all fidelity presets |
-| `reconstruction/mbir.jl` | Regularization parameters need clinical tuning |
+### Tier Summary
+
+| Tier | Count | Notable Files |
+|------|-------|---------------|
+| HIGH | 11 | siddon.jl, fdk.jl, backprojection.jl, materials.jl, attenuation.jl |
+| MEDIUM | 30 | scatter.jl, polychromatic.jl, mbir.jl, dual_energy.jl |
+| LOW | 2 | photon_counting.jl, pcct_spectral.jl |
+| BROKEN | 1 | das_model.jl |
+
+---
+
+### TIER 1: HIGH CONFIDENCE (11 files)
+
+*Ready for use — validated algorithms with strong documentation*
+
+#### Forward Projection
+
+| File | Source | Justification |
+|------|--------|---------------|
+| `siddon.jl` | TIGRE port | Standard Siddon algorithm with 40+ years validation, direct TIGRE port |
+| `fill_factor.jl` | CatSim-compatible | Simple geometric model, no physics complexity |
+| `calibration.jl` | Original | Simple eps clamping for numerical stability |
+
+#### Reconstruction
+
+| File | Source | Justification |
+|------|--------|---------------|
+| `backprojection.jl` | TIGRE port | Direct TIGRE port, well-documented voxel-driven algorithm |
+| `filtering.jl` | Original | Standard ramp filter, Kak & Slaney textbook algorithm |
+| `fdk.jl` | TIGRE port | Standard Feldkamp-Davis-Kress, TIGRE-validated |
+| `sirt.jl` | TIGRE-style | Correct matched backprojection, TIGRE-validated |
+| `cgls.jl` | TIGRE-style | Standard conjugate gradient least squares |
+
+#### Physics & Infrastructure
+
+| File | Source | Justification |
+|------|--------|---------------|
+| `materials.jl` | NIST wrapper | Direct NIST XCOM data via XrayAttenuation.jl |
+| `attenuation.jl` | NIST wrapper | Wraps validated NIST XCOM database |
+| `scanners/scanners.jl` | Original | Design pattern infrastructure, no physics validation needed |
+
+---
+
+### TIER 2: MEDIUM CONFIDENCE (30 files)
+
+*Use with caution — mostly validated with some gaps or empirical parameters*
+
+#### Forward Projection (14 files)
+
+| File | Source | Key Uncertainty | Verification Needed |
+|------|--------|-----------------|---------------------|
+| `polychromatic.jl` | XCIST-inspired | CatSim flux constant (5.6e13) unvalidated | Validate flux density against tube output curves |
+| `scatter.jl` | XCIST-inspired | Empirical scatter kernel coefficients | Compare SPR to GATE/MCNP Monte Carlo |
+| `protocol.jl` | Original | Clinical parameter ranges untested | Verify ranges against clinical scanner specs |
+| `detector_noise.jl` | Original | Gaussian approximation at low flux | Test ultra-low-dose scenarios |
+| `detector_efficiency.jl` | CatSim-exact | Energy-dependent DQE unvalidated | Compare η(E) to published detector data |
+| `bowtie_filter.jl` | XCIST-inspired | GE profiles may not match current firmware | Validate against service manuals |
+| `flat_filter.jl` | CatSim-exact | Filter material/thickness assumptions | Validate HVL measurements |
+| `focal_spot.jl` | CatSim-inspired | Focal spot size assumptions | Validate MTF degradation on wire phantom |
+| `crosstalk.jl` | CatSim-exact | Detector-specific kernel parameters | Validate against manufacturer data |
+| `detector_lag.jl` | CatSim-exact | Material-dependent time constants | Validate afterglow curves for GOS/CsI |
+| `heel_effect.jl` | CatSim-exact | Anode angle assumptions | Validate intensity profile |
+| `beam_hardening_correction.jl` | CatSim-compatible | Spectrum-dependent polynomial coefficients | Test bone BH correction |
+| `physics_pipeline.jl` | Original | Effect ordering may differ from clinical | Validate against CatSim documentation |
+
+#### Reconstruction (4 files)
+
+| File | Source | Key Uncertainty | Verification Needed |
+|------|--------|-----------------|---------------------|
+| `tv_regularization.jl` | Original | λ selection problem-dependent | Compare to TIGRE defaults |
+| `statistical_ir.jl` | Original | ASIR strength level mappings empirical | Validate noise reduction vs strength level |
+| `mbir.jl` | Original | Hyperbola δ empirical, ordered subsets untested | Compare edge preservation to clinical ADMIRE |
+| `helical_recon.jl` | Original | 180LI/360LI accuracy at high pitch | Test for windmill artifacts |
+
+#### Geometry & Physics (4 files)
+
+| File | Source | Key Uncertainty | Verification Needed |
+|------|--------|-----------------|---------------------|
+| `phantom.jl` | Original | Gammex HU may differ from measured values | Validate against measured Gammex 472 data |
+| `scanner.jl` | Original | PCCT energy thresholds approximate | Verify energy threshold placement |
+| `spectrum.jl` | Original | Spectrum provenance undocumented | Document spectrum generation process |
+
+#### Metrics (3 files)
+
+| File | Source | Key Uncertainty | Verification Needed |
+|------|--------|-----------------|---------------------|
+| `mtf.jl` | Original | Edge detection may fail on noisy images | Validate against commercial QA software |
+| `nps.jl` | Original | ROI placement affects results | Compare radial averaging to published curves |
+| `psf.jl` | Original | Assumes symmetric PSF | Test asymmetric scenarios |
+
+#### Dual-Energy & Scanners (5 files)
+
+| File | Source | Key Uncertainty | Verification Needed |
+|------|--------|-----------------|---------------------|
+| `dual_energy.jl` | Original | VMI weighting may not match vendor implementation | Validate VMI HU against Gammex dual-energy phantom |
+| `siemens.jl` | FDA 510(k) | FDA parameters may differ from current firmware | Validate against current scanner specs |
+| `general_electric.jl` | FDA 510(k) | Same as above | Validate against current scanner specs |
+| `helical_protocols.jl` | Original | Helical geometry vendor-specific | Validate z-coverage calculations |
+
+#### Simulation (2 files)
+
+| File | Source | Key Uncertainty | Verification Needed |
+|------|--------|-----------------|---------------------|
+| `options.jl` | Original | Fidelity preset mappings empirical | Validate preset quality against clinical images |
+| `driver.jl` | Original | 5-mode complexity may have edge cases | Test all mode combinations systematically |
+
+---
+
+### TIER 3: LOW CONFIDENCE (2 files)
+
+*Needs verification — original implementations with complex physics chains*
+
+| File | Lines | Key Issues | Critical Verification |
+|------|-------|------------|----------------------|
+| `photon_counting.jl` | ~2200 | Complex PCCT physics (charge sharing, pile-up, K-fluorescence) not validated against real PCCT data | Validate energy bin counts against NAEOTOM phantom data; compare charge sharing artifacts to real PCCT images |
+| `pcct_spectral.jl` | ~1032 | VMI accuracy unknown; 3-material decomposition untested; K-edge sensitivity unverified | Validate VMI HU against Gammex phantom (40-190 keV); test 3-material decomposition; verify K-edge detection |
+
+**Collaborator action**: Verify against real PCCT data before any use; consider Monte Carlo validation (GATE/MCNP).
+
+---
+
+### TIER 4: BROKEN (1 file)
+
+| File | Issue | Recommendation |
+|------|-------|----------------|
+| `das_model.jl` | Produces incorrect gain/offset values; explicitly disabled in all fidelity presets | Do not use; fix or remove in v23.0 |
+
+---
+
+### Verification Priority Matrix
+
+#### Priority 1: PCCT Validation (Tier 3)
+1. Obtain NAEOTOM Alpha phantom data for validation
+2. Compare simulated energy bin counts to measured data
+3. Validate VMI HU accuracy across 40-190 keV range
+
+#### Priority 2: Scatter/Physics Validation
+1. Run GATE/MCNP Monte Carlo for ACR phantom
+2. Compare scatter-to-primary ratios
+3. Validate CatSim flux density constant (5.6e13)
+
+#### Priority 3: Image Quality Metrics
+1. Compare MTF/NPS/PSF to commercial QA software (e.g., CT ACR)
+2. Validate against published phantom measurements
 
 ## Clinical Verification Checklist
 
