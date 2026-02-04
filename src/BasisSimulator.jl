@@ -43,23 +43,23 @@ export XA
 # =============================================================================
 
 # Materials (Gammex 472)
-include("Physics/Materials.jl")
+include("physics/materials.jl")
 
 # Spectrum loading (from .dat files)
-include("Physics/Spectrum.jl")
+include("physics/spectrum.jl")
 
 # Attenuation coefficient computation
-include("Physics/Attenuation.jl")
+include("physics/attenuation.jl")
 
 # =============================================================================
 # Geometry
 # =============================================================================
 
 # Phantom generation with semantic masks
-include("Geometry/Phantom.jl")
+include("geometry/phantom.jl")
 
 # CT scanner geometry
-include("Geometry/Scanner.jl")
+include("geometry/scanner.jl")
 
 
 # =============================================================================
@@ -68,41 +68,41 @@ include("Geometry/Scanner.jl")
 
 # Siddon forward projection (exact ray-voxel intersections)
 # Reference: CERN/TIGRE/Common/CUDA/Siddon_projection.cu
-include("Forward/Siddon.jl")
+include("forward/siddon.jl")
 
 # =============================================================================
 # Physics Effects (GPU-native via AcceleratedKernels.jl)
 # =============================================================================
 
 # Scatter simulation (spatial convolution)
-include("Forward/Scatter.jl")
+include("forward/scatter.jl")
 
 # Protocol definitions
-include("Forward/Protocol.jl")
+include("forward/protocol.jl")
 
 # Detector response and noise modeling
-include("Forward/DetectorNoise.jl")
+include("forward/detector_noise.jl")
 
 # Detector absorption efficiency and DQE
-include("Forward/DetectorEfficiency.jl")
+include("forward/detector_efficiency.jl")
 
 # Bowtie filter modeling
-include("Forward/BowtieFilter.jl")
+include("forward/bowtie_filter.jl")
 
 # Flat (inherent) filter modeling
-include("Forward/FlatFilter.jl")
+include("forward/flat_filter.jl")
 
 # Finite focal spot modeling
-include("Forward/FocalSpot.jl")
+include("forward/focal_spot.jl")
 
 # Detector crosstalk modeling (electronic and optical)
-include("Forward/Crosstalk.jl")
+include("forward/crosstalk.jl")
 
 # Detector lag (afterglow) modeling
-include("Forward/DetectorLag.jl")
+include("forward/detector_lag.jl")
 
 # Detector fill factor modeling
-include("Forward/FillFactor.jl")
+include("forward/fill_factor.jl")
 
 
 # =============================================================================
@@ -111,27 +111,27 @@ include("Forward/FillFactor.jl")
 # =============================================================================
 
 # Heel effect (anode self-attenuation)
-include("Forward/HeelEffect.jl")
+include("forward/heel_effect.jl")
 
 # Data Acquisition System model (signal chain, noise, quantization)
-include("Forward/DASModel.jl")
+include("forward/das_model.jl")
 
 # Beam hardening correction (water-based polynomial)
-include("Forward/BeamHardeningCorrection.jl")
+include("forward/beam_hardening_correction.jl")
 
 # =============================================================================
 # Unified Physics Pipeline
 # Depends on all physics effects above including CatSim-style
 # =============================================================================
 
-include("Forward/PhysicsPipeline.jl")
+include("forward/physics_pipeline.jl")
 
 # =============================================================================
 # Calibration Pipeline (needs PhysicsConfig from PhysicsPipeline)
 # =============================================================================
 
 # Calibration pipeline: air scan, offset, gain correction, log transform
-include("Forward/Calibration.jl")
+include("forward/calibration.jl")
 
 # =============================================================================
 # Forward Projection - Unified API (includes physics)
@@ -139,7 +139,7 @@ include("Forward/Calibration.jl")
 
 # Beer-Lambert spectral physics: I = Σ wₑ × exp(-∫μₑ dl)
 # Unified API for mono/poly projection + optional physics effects
-include("Forward/Polychromatic.jl")
+include("forward/polychromatic.jl")
 
 # =============================================================================
 # Reconstruction (TIGRE port via AcceleratedKernels.jl)
@@ -147,82 +147,82 @@ include("Forward/Polychromatic.jl")
 
 # Voxel-driven backprojection
 # Reference: CERN/TIGRE/Common/CUDA/voxel_backprojection.cu
-include("Reconstruction/Backprojection.jl")
+include("reconstruction/backprojection.jl")
 
 # FDK filtering (ramp filter, cosine weighting)
-include("Reconstruction/Filtering.jl")
+include("reconstruction/filtering.jl")
 
 # FDK reconstruction (filter + backproject)
-include("Reconstruction/FDK.jl")
+include("reconstruction/fdk.jl")
 
 # SIRT iterative reconstruction
 # Reference: CERN/TIGRE/MATLAB/Algorithms/SIRT.m
-include("Reconstruction/SIRT.jl")
+include("reconstruction/sirt.jl")
 
 # CGLS iterative reconstruction
 # Reference: CERN/TIGRE/MATLAB/Algorithms/CGLS.m
-include("Reconstruction/CGLS.jl")
+include("reconstruction/cgls.jl")
 
 # Total Variation regularization for iterative reconstruction
 # Reference: Rudin-Osher-Fatemi (ROF) model
-include("Reconstruction/TVRegularization.jl")
+include("reconstruction/tv_regularization.jl")
 
 # Statistical Iterative Reconstruction (ASIR-style)
 # Reference: GE ASIR/ASIR-V, Penalized Weighted Least Squares
-include("Reconstruction/StatisticalIR.jl")
+include("reconstruction/statistical_ir.jl")
 
 # Model-Based Iterative Reconstruction (TrueFidelity/ADMIRE/QIR-style)
 # Reference: Thibault et al. Med Phys 2007, Siemens ADMIRE/QIR
-include("Reconstruction/MBIR.jl")
+include("reconstruction/mbir.jl")
 
 # Helical (spiral) CT reconstruction
-include("Reconstruction/HelicalRecon.jl")
+include("reconstruction/helical_recon.jl")
 
 # =============================================================================
 # Clinical Scanner Configurations
 # =============================================================================
 
 # Scanner specifications (GE, Siemens, Canon, etc.)
-include("Scanners/Scanners.jl")
+include("scanners/scanners.jl")
 
-# Helical protocol integration with scanner specs (must come after Scanners.jl)
-include("Scanners/HelicalProtocols.jl")
+# Helical protocol integration with scanner specs (must come after scanners.jl)
+include("scanners/helical_protocols.jl")
 
 # =============================================================================
 # Dual-Energy CT (Spectral Imaging)
 # =============================================================================
 
 # Dual kVp (GSI) forward projection, material decomposition, VMI
-include("DualEnergy/DualEnergy.jl")
+include("dual_energy/dual_energy.jl")
 
 # =============================================================================
 # Photon-Counting CT (Spectral Imaging)
 # =============================================================================
 
 # Photon-counting detector model: energy binning, charge sharing, pile-up
-include("Forward/PhotonCounting.jl")
+include("forward/photon_counting.jl")
 
 # PCCT spectral imaging: native VMI, K-edge, effective Z, multi-material decomposition
-include("Forward/PCCTSpectral.jl")
+include("forward/pcct_spectral.jl")
 
 # =============================================================================
 # Image Quality Metrics (AAPM TG-233)
 # =============================================================================
 
 # Modulation Transfer Function (MTF) - spatial resolution
-include("Metrics/MTF.jl")
+include("metrics/mtf.jl")
 
 # Noise Power Spectrum (NPS) - noise texture characterization
-include("Metrics/NPS.jl")
+include("metrics/nps.jl")
 
 # Point Spread Function (PSF) - spatial resolution in real space
-include("Metrics/PSF.jl")
+include("metrics/psf.jl")
 
 # =============================================================================
 # High-Level Simulation Driver
 # =============================================================================
 
-include("Simulation/Options.jl")
-include("Simulation/Driver.jl")
+include("simulation/options.jl")
+include("simulation/driver.jl")
 
 end # module

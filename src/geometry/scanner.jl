@@ -578,8 +578,9 @@ function CTGeometry(scanner::Scanner{T};
     SAD = scanner.source_to_isocenter / 10.0
     SDD = scanner.source_to_detector / 10.0
 
-    # Pixel size comes from the physical detector element pitch (mm -> cm)
-    pixel_size = scanner.detector_col_size / 10.0
+    # Pixel size at isocenter (detector pitch projected through magnification)
+    magnification = scanner.source_to_detector / scanner.source_to_isocenter
+    pixel_size = (scanner.detector_col_size / 10.0) / magnification
 
     # FOV is independent: it controls the reconstruction grid, not the detector geometry
     if fov_cm !== nothing
@@ -779,8 +780,8 @@ Uses CdTe detector crystal with 4 energy thresholds.
 
 # Keyword Arguments
 - `mode::Symbol = :standard`: Detector mode
-  - `:standard` — 2×2 binned pixels (0.5 mm), 144 rows, 57.6 mm z-coverage
-  - `:uhr` — Unbinned pixels (0.25 mm), 120 rows, UHR spatial resolution
+  - `:standard` — 2×2 binned pixels (0.4 mm), 144 rows, 57.6 mm z-coverage
+  - `:uhr` — Unbinned pixels (0.2 mm), 120 rows, UHR spatial resolution
 
 # Scanner Specifications (FDA 510(k) K201501)
 - Source-to-isocenter: 595 mm
@@ -798,16 +799,21 @@ scanner.n_energy_bins  # 4
 
 # UHR mode for high-resolution imaging
 scanner_uhr = create_naeotom_alpha(mode=:uhr)
-scanner_uhr.detector_row_size  # 0.25 mm (vs 0.5 mm standard)
+scanner_uhr.detector_row_size  # 0.2 mm (vs 0.4 mm standard)
 ```
 """
 function create_naeotom_alpha(; mode::Symbol=:standard)
+    # NAEOTOM Alpha has 50cm scan FOV at isocenter
+    # Magnification = 1085.5/595 = 1.824
+    # Detector width for 50cm FOV = 500mm × 1.824 = 912mm
     if mode == :uhr
-        pixel_size = 0.25
+        pixel_size = 0.2    # Native unbinned (120 × 0.2 mm collimation)
         n_rows = 120
+        n_cols = 4560       # 912mm / 0.2mm = 4560 cols for 50cm FOV
     elseif mode == :standard
-        pixel_size = 0.5
+        pixel_size = 0.4    # 2×2 binned (144 × 0.4 mm collimation)
         n_rows = 144
+        n_cols = 2280       # 912mm / 0.4mm = 2280 cols for 50cm FOV
     else
         error("mode must be :standard or :uhr (got :$mode)")
     end
@@ -817,14 +823,14 @@ function create_naeotom_alpha(; mode::Symbol=:standard)
         source_to_isocenter = 595.0,
         source_to_detector = 1085.5,
 
-        # Detector array
+        # Detector array (50cm scan FOV)
         detector_rows = n_rows,
-        detector_cols = 736,
+        detector_cols = n_cols,
         detector_row_size = pixel_size,
         detector_col_size = pixel_size,
         detector_shape = CURVED_DETECTOR,
         detector_row_offset = 0.0,
-        detector_col_offset = 0.25,
+        detector_col_offset = pixel_size / 2,  # Quarter-detector offset
 
         # Source
         focal_spot_width = 0.4,
@@ -854,7 +860,7 @@ function create_naeotom_alpha(; mode::Symbol=:standard)
         energy_thresholds = [20.0, 35.0, 55.0, 70.0],
         energy_resolution = 10.0,
         charge_sharing_fwhm = 0.08,
-        dead_time_ns = 25.0,
+        dead_time_ns = 5.0,
         pixel_mode = mode
     )
 end

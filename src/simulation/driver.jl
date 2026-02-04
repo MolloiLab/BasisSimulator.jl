@@ -11,6 +11,26 @@ export simulate, SimulationResult
 # =============================================================================
 
 """
+    _resolve_materials(phantom, materials_kwarg) -> Vector{XA.Material}
+
+Resolve materials with priority: (1) explicit kwarg, (2) phantom.materials, (3) fallback.
+
+This is the v20.0 unified materials resolution logic used by all simulate() functions.
+"""
+function _resolve_materials(phantom, materials_kwarg::Union{Nothing, Vector})
+    if !isnothing(materials_kwarg)
+        # Priority 1: Explicit materials kwarg override
+        return materials_kwarg
+    elseif hasproperty(phantom, :materials) && !isnothing(phantom.materials)
+        # Priority 2: Materials stored in phantom (v20.0 unified API)
+        return phantom.materials
+    else
+        # Priority 3: Fallback to Gammex 472 region materials (backwards compat)
+        return get_region_materials()
+    end
+end
+
+"""
     _to_gpu(arr::AbstractArray)
 
 Move array to GPU if a GPU backend is available.
@@ -274,7 +294,7 @@ function _simulate_axial_single(phantom, scanner, protocol, sim_opts, recon_opts
 
     # 4. Forward Project (move mask to GPU if available)
     # Use custom materials if provided, otherwise default to Gammex region materials
-    mats = isnothing(materials) ? get_region_materials() : materials
+    mats = _resolve_materials(phantom, materials)
     mask_gpu = _to_gpu(phantom.mask)
     sino_ideal = forward_project(
         mask_gpu, geom;
@@ -343,7 +363,7 @@ function _forward_single_pass(phantom, scanner, protocol, sim_opts, geom;
 
     # Forward project with all physics
     # Use custom materials if provided, otherwise default to Gammex region materials
-    mats = isnothing(materials) ? get_region_materials() : materials
+    mats = _resolve_materials(phantom, materials)
     mask_gpu = _to_gpu(phantom.mask)
     sinogram = forward_project(
         mask_gpu, geom;
@@ -475,7 +495,7 @@ function _simulate_helical_single(phantom, scanner, protocol, sim_opts, recon_op
 
     # 5. Helical forward projection (use helical geometry with z-varying positions)
     # Use custom materials if provided, otherwise default to Gammex region materials
-    mats = isnothing(materials) ? get_region_materials() : materials
+    mats = _resolve_materials(phantom, materials)
     sino_ideal = forward_project(
         phantom.mask, helical_geom.base_geom;
         energies=energies, weights=weights,
@@ -528,7 +548,7 @@ function _forward_helical_single_pass(phantom, scanner, protocol, sim_opts, heli
 
     # Forward project with all physics (using base geometry for helical)
     # Use custom materials if provided, otherwise default to Gammex region materials
-    mats = isnothing(materials) ? get_region_materials() : materials
+    mats = _resolve_materials(phantom, materials)
     sinogram = forward_project(
         phantom.mask, helical_geom.base_geom;
         energies=energies, weights=weights,
@@ -741,7 +761,7 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts;
     # At :ideal/:low fidelity, detector effects are disabled for clean baseline.
     # At :medium/:high fidelity, detector effects model real CdTe behavior.
     # Use custom materials if provided, otherwise default to Gammex region materials
-    mats = isnothing(materials) ? get_region_materials() : materials
+    mats = _resolve_materials(phantom, materials)
     mask_gpu = _to_gpu(phantom.mask)
     use_detector_fx = sim_opts.fidelity in (:medium, :high, :pcct)
     use_corrections = sim_opts.use_pcct_corrections
