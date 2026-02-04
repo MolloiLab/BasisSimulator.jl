@@ -142,29 +142,38 @@ Key design decisions:
 ```
 src/
 ├── BasisSimulator.jl
-├── Forward/
-│   ├── Siddon.jl                    # Ray tracing (TIGRE)
-│   ├── Polychromatic.jl             # Beer-Lambert + signal chain
-│   ├── PhysicsPipeline.jl           # Unified physics config
-│   ├── Scatter.jl, Crosstalk.jl     # Physics effects
-│   ├── FocalSpot.jl, DetectorLag.jl
-│   ├── FillFactor.jl, FlatFilter.jl, BowtieFilter.jl
-│   ├── DetectorNoise.jl, DetectorEfficiency.jl
-│   ├── HeelEffect.jl                # Signal chain
-│   ├── DASModel.jl                  # BROKEN
-│   ├── Calibration.jl
-│   └── BeamHardeningCorrection.jl
-├── Reconstruction/
-│   ├── FDK.jl, Backprojection.jl, Filtering.jl
-│   ├── SIRT.jl, CGLS.jl
-│   └── HelicalRecon.jl
-├── Geometry/
-│   ├── Scanner.jl, Phantom.jl, Helical.jl
-│   └── AnalyticalPhantom.jl
-├── Physics/
-│   ├── Materials.jl, Attenuation.jl, Spectrum.jl
-└── Scanners/
-    ├── Scanners.jl, GeneralElectric.jl
+├── forward/
+│   ├── siddon.jl                    # Ray tracing (TIGRE)
+│   ├── polychromatic.jl             # Beer-Lambert + signal chain
+│   ├── physics_pipeline.jl          # Unified physics config
+│   ├── scatter.jl, crosstalk.jl     # Physics effects
+│   ├── focal_spot.jl, detector_lag.jl
+│   ├── fill_factor.jl, flat_filter.jl, bowtie_filter.jl
+│   ├── detector_noise.jl, detector_efficiency.jl
+│   ├── heel_effect.jl               # Signal chain
+│   ├── das_model.jl                 # BROKEN
+│   ├── calibration.jl
+│   ├── beam_hardening_correction.jl
+│   ├── photon_counting.jl           # PCCT detector model
+│   └── pcct_spectral.jl             # PCCT spectral imaging
+├── reconstruction/
+│   ├── fdk.jl, backprojection.jl, filtering.jl
+│   ├── sirt.jl, cgls.jl, mbir.jl
+│   └── helical_recon.jl
+├── geometry/
+│   ├── scanner.jl                   # Scanner, CTGeometry
+│   └── phantom.jl                   # Phantom, compute_μ
+├── physics/
+│   ├── materials.jl, attenuation.jl, spectrum.jl
+├── dual_energy/
+│   └── dual_energy.jl               # VMI, material decomposition
+├── metrics/
+│   ├── mtf.jl, nps.jl, psf.jl       # AAPM TG-233 metrics
+├── scanners/
+│   ├── scanners.jl, general_electric.jl, siemens.jl
+└── simulation/
+    ├── options.jl                   # SimOptions, ReconOptions
+    └── driver.jl                    # simulate() entry point
 ```
 
 ---
