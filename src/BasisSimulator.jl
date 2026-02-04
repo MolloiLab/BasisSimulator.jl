@@ -143,40 +143,47 @@ include("forward/polychromatic.jl")
 
 # =============================================================================
 # Reconstruction (TIGRE port via AcceleratedKernels.jl)
+# Organized by clinical terminology: FBP, Hybrid IR, MBIR
 # =============================================================================
 
+# --- Core Components ---
 # Voxel-driven backprojection
 # Reference: CERN/TIGRE/Common/CUDA/voxel_backprojection.cu
-include("reconstruction/backprojection.jl")
+include("reconstruction/core/backprojection.jl")
 
 # FDK filtering (ramp filter, cosine weighting)
-include("reconstruction/filtering.jl")
+include("reconstruction/core/filtering.jl")
 
+# --- FBP (Filtered Back-Projection) ---
 # FDK reconstruction (filter + backproject)
-include("reconstruction/fdk.jl")
+include("reconstruction/fbp/fdk.jl")
 
+# Helical (spiral) CT reconstruction
+include("reconstruction/fbp/helical_recon.jl")
+
+# --- Classic Iterative Reconstruction ---
 # SIRT iterative reconstruction
 # Reference: CERN/TIGRE/MATLAB/Algorithms/SIRT.m
-include("reconstruction/sirt.jl")
+include("reconstruction/ir/sirt.jl")
 
 # CGLS iterative reconstruction
 # Reference: CERN/TIGRE/MATLAB/Algorithms/CGLS.m
-include("reconstruction/cgls.jl")
+include("reconstruction/ir/cgls.jl")
 
+# --- Regularization ---
 # Total Variation regularization for iterative reconstruction
 # Reference: Rudin-Osher-Fatemi (ROF) model
-include("reconstruction/tv_regularization.jl")
+include("reconstruction/regularization/tv_regularization.jl")
 
+# --- Statistical IR (PWLS core, to be refactored) ---
 # Statistical Iterative Reconstruction (ASIR-style)
 # Reference: GE ASIR/ASIR-V, Penalized Weighted Least Squares
 include("reconstruction/statistical_ir.jl")
 
+# --- Model-Based IR ---
 # Model-Based Iterative Reconstruction (TrueFidelity/ADMIRE/QIR-style)
 # Reference: Thibault et al. Med Phys 2007, Siemens ADMIRE/QIR
-include("reconstruction/mbir.jl")
-
-# Helical (spiral) CT reconstruction
-include("reconstruction/helical_recon.jl")
+include("reconstruction/mbir/mbir.jl")
 
 # =============================================================================
 # Clinical Scanner Configurations
