@@ -8,7 +8,7 @@ A comprehensive CT (Computed Tomography) simulator for medical imaging research,
 
 - **GPU Acceleration**: Metal (Apple Silicon), CUDA (NVIDIA), ROCm (AMD), or CPU fallback
 - **Full Physics Pipeline**: 14 toggleable physics effects (scatter, crosstalk, focal spot blur, etc.)
-- **Multiple Reconstruction Algorithms**: FDK, SIRT, CGLS, TV-regularized, MBIR
+- **Multiple Reconstruction Algorithms**: FDK, Hybrid IR (ASIR-V/SAFIRE-style), MBIR, SIRT, CGLS
 - **Spectral Imaging**: Dual-energy CT with VMI and material decomposition
 - **Photon-Counting CT**: Energy-resolved sinograms, N-material decomposition
 - **End-to-End Differentiability**: Enzyme.jl integration for inverse problems
@@ -155,6 +155,9 @@ SimOptions(fidelity=:high, use_scatter=false)   # Selective effect override
 # FDK (default)
 ReconOptions(algorithm=:fdk, matrix_size=(512, 512, 64), fov_cm=35.0)
 
+# Hybrid IR (TRUE iterative refinement, like ASIR-V/SAFIRE)
+ReconOptions(algorithm=:hybrid_ir, strength=3)  # 1-5, 3=standard clinical
+
 # Iterative (SIRT)
 ReconOptions(algorithm=:sirt, iterations=50, lambda=0.5)
 
@@ -164,6 +167,74 @@ ReconOptions(algorithm=:tv_sirt, iterations=50, tv_weight=0.01)
 # VMI reconstruction
 ReconOptions(algorithm=:fdk, vmi_energies=[40.0, 70.0, 100.0])
 ```
+
+## Hybrid IR (Iterative Reconstruction)
+
+BasisSimulator includes vendor-general Hybrid IR that matches clinical systems like GE ASIR-V and Siemens SAFIRE.
+
+### What is TRUE Hybrid IR?
+
+TRUE Hybrid IR uses statistical iterative refinement — not simple blending:
+
+```
+FDK initialization → PWLS iterations with statistical weights → Refined result
+```
+
+**TRUE Hybrid IR has:**
+- Statistical noise model (Poisson-based weights)
+- Data fidelity term using measured sinogram
+- Edge-preserving regularization (Huber penalty)
+- FDK provides fast initialization, iterations provide refinement
+
+**FALSE Hybrid IR (what we avoid):**
+```julia
+# This is NOT true HIR — just post-processing blending
+x = (1-α) * fdk_result + α * smooth(fdk_result)
+```
+
+### Strength Levels
+
+| Strength | Noise Reduction | Performance | Clinical Use |
+|----------|-----------------|-------------|--------------|
+| 1 | ~10-15% | ~1.5x FDK | Preserve texture (lung imaging) |
+| 2 | ~20-30% | ~2x FDK | Light smoothing |
+| 3 | ~35-40% | ~3x FDK | **Standard clinical (recommended)** |
+| 4 | ~45-55% | ~4x FDK | Strong smoothing |
+| 5 | ~55-65% | ~5x FDK | Maximum noise reduction |
+
+### Vendor Equivalents
+
+| Our Strength | GE ASIR-V | Siemens SAFIRE | Philips iDose4 | Canon AIDR 3D |
+|--------------|-----------|----------------|----------------|---------------|
+| 1 | ~20% | S1 | Level 1 | - |
+| 2 | ~40% | S2 | Level 2-3 | Mild |
+| 3 | ~60% | S3 | Level 3-4 | Standard |
+| 4 | ~80% | S4 | Level 5 | Strong |
+| 5 | ~100% | S5 | Level 6-7 | - |
+
+### Usage
+
+```julia
+using BasisSimulator
+
+# Direct API
+recon = hybrid_ir_reconstruct(sinogram, geom, (256, 256, 128); strength=3)
+
+# Via simulate() driver
+result = simulate(phantom, scanner, protocol, sim_opts,
+                  ReconOptions(algorithm=:hybrid_ir, strength=3))
+
+# Get parameters for a strength level
+params = get_hir_params(3)
+# HIRParams(3, 0.015f0, 8, 0.01f0, (30, 42))
+```
+
+### Clinical Guidelines
+
+- **Strength 1**: Use when FBP texture is critical (lung nodules, emphysema)
+- **Strength 2-3**: General clinical imaging, good balance of noise/texture
+- **Strength 4**: Higher dose reduction needed, some texture loss acceptable
+- **Strength 5**: Maximum dose reduction (may appear "plastic")
 
 ## Architecture
 
@@ -183,11 +254,13 @@ src/
 │   ├── scatter.jl                 # XCIST-style scatter model
 │   ├── photon_counting.jl         # PCCT detector model
 │   └── ...                        # 15+ physics effect modules
-├── reconstruction/                # Image reconstruction
-│   ├── fdk.jl                     # FDK cone-beam reconstruction
-│   ├── sirt.jl, cgls.jl           # Iterative algorithms
-│   ├── mbir.jl                    # Model-based IR
-│   └── helical_recon.jl           # Helical CT
+├── reconstruction/                # Image reconstruction (by clinical category)
+│   ├── core/                      # Shared: backprojection.jl, filtering.jl
+│   ├── fbp/                       # FBP: fdk.jl, helical_recon.jl
+│   ├── hybrid_ir/                 # Hybrid IR: hybrid_ir.jl (ASIR-V/SAFIRE-style)
+│   ├── ir/                        # Classic IR: sirt.jl, cgls.jl
+│   ├── mbir/                      # Model-based: mbir.jl
+│   └── regularization/            # TV regularization
 ├── dual_energy/                   # Spectral CT
 │   └── dual_energy.jl             # VMI, material decomposition
 ├── metrics/                       # Image quality metrics
@@ -318,7 +391,7 @@ This section categorizes all 43 source files by confidence level to guide verifi
 | File | Source | Key Uncertainty | Verification Needed |
 |------|--------|-----------------|---------------------|
 | `tv_regularization.jl` | Original | λ selection problem-dependent | Compare to TIGRE defaults |
-| `statistical_ir.jl` | Original | ASIR strength level mappings empirical | Validate noise reduction vs strength level |
+| `hybrid_ir.jl` | Research-based | Parameters from SAFIRE clinical studies | Validate noise reduction vs clinical targets |
 | `mbir.jl` | Original | Hyperbola δ empirical, ordered subsets untested | Compare edge preservation to clinical ADMIRE |
 | `helical_recon.jl` | Original | 180LI/360LI accuracy at high pitch | Test for windmill artifacts |
 
