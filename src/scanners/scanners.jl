@@ -495,8 +495,8 @@ end
 # Include Manufacturer-Specific Files
 # =============================================================================
 
-include("GeneralElectric.jl")
-include("Siemens.jl")
+include("general_electric.jl")
+include("siemens.jl")
 
 # =============================================================================
 # Exports

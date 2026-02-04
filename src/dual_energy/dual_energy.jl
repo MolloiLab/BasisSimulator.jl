@@ -262,68 +262,101 @@ function forward_project_dual_energy(
     mean_e_low = sum(e_low .* w_low) / sum(w_low)
     mean_e_high = sum(e_high .* w_high) / sum(w_high)
 
-    # Setup noise models with mA-based I0 if scanner provided
+    # Setup physics configs for low and high kVp
     physics_low = physics
     physics_high = physics
 
-    if scanner !== nothing && physics !== nothing
-        # Compute I0 for each kVp based on mA and integration time
-        # Low kVp gets more integration time to balance flux
-        effective_rotation_low = protocol.rotation_time_s * protocol.low_integration_fraction
-        effective_rotation_high = protocol.rotation_time_s * (1.0 - protocol.low_integration_fraction)
+    # Get Scanner geometry for energy-dependent scatter
+    # geometry_aware_scatter_model requires a Scanner object, not a GeometrySpecification
+    scanner_geom = if scanner isa Scanner
+        scanner
+    elseif scanner !== nothing && hasmethod(geometry, Tuple{typeof(scanner)})
+        # AbstractScannerSpec - extract geometry and create a Scanner with those values
+        geom_spec = geometry(scanner)
+        det_spec = detector(scanner)
+        Scanner(
+            source_to_isocenter = geom_spec.sid_mm.value,
+            source_to_detector = geom_spec.sdd_mm.value,
+            detector_cols = det_spec.n_cols.value,
+            detector_rows = det_spec.n_rows.value,
+            detector_col_size = det_spec.col_size_mm.value,
+            detector_row_size = det_spec.row_size_mm.value
+        )
+    else
+        nothing
+    end
 
-        # Use the mA_to_I0 function from DetectorNoise
-        I0_low = mA_to_I0(protocol.low_mA, scanner;
-                         rotation_time_s=effective_rotation_low,
-                         n_views=protocol.n_views)
-        I0_high = mA_to_I0(protocol.high_mA, scanner;
-                          rotation_time_s=effective_rotation_high,
-                          n_views=protocol.n_views)
+    # Initialize flag for joint scatter correction (applied after both sinograms generated)
+    apply_joint_scatter_correction = false
 
-        # Create ENERGY-DEPENDENT scatter models if scatter is enabled
+    if physics !== nothing
+        # Create ENERGY-DEPENDENT scatter models if scatter is enabled AND we have scanner geometry
         # See SCATTER-ENERGY-RESEARCH: Lower kVp (80) has higher SPR than higher kVp (140)
         # Using mean_energy_keV ensures scatter coefficient scales appropriately for each energy
-        scatter_low = nothing
-        scatter_correction_low = nothing
-        scatter_high = nothing
-        scatter_correction_high = nothing
+        scatter_low = physics.scatter
+        scatter_correction_low = physics.scatter_correction
+        scatter_high = physics.scatter
+        scatter_correction_high = physics.scatter_correction
 
-        if physics.scatter !== nothing
-            # Estimate phantom diameter from mask if possible (using scanner for geometry)
-            # Note: We use the geometry from physics.scatter as reference for size estimation
+        if scanner_geom !== nothing && physics.scatter !== nothing
             phantom_diameter_cm = nothing  # Will use reference size if not estimable
 
-            scatter_low = geometry_aware_scatter_model(scanner;
+            scatter_low = geometry_aware_scatter_model(scanner_geom;
                 scale_factor=physics.scatter.scale_factor,
                 kernel_type=physics.scatter.kernel_type,
                 phantom_diameter_cm=phantom_diameter_cm,
                 mean_energy_keV=mean_e_low)  # Energy-dependent scaling for 80 kVp
-            scatter_high = geometry_aware_scatter_model(scanner;
+            scatter_high = geometry_aware_scatter_model(scanner_geom;
                 scale_factor=physics.scatter.scale_factor,
                 kernel_type=physics.scatter.kernel_type,
                 phantom_diameter_cm=phantom_diameter_cm,
                 mean_energy_keV=mean_e_high)  # Energy-dependent scaling for 140 kVp
         end
 
-        if physics.scatter_correction !== nothing
-            phantom_diameter_cm = nothing  # Same as scatter model
+        if scanner_geom !== nothing && physics.scatter_correction !== nothing
+            # Use JOINT scatter correction instead of per-sinogram correction
+            #
+            # Per-sinogram scatter correction causes wave artifacts in material
+            # decomposition because:
+            # 1. 80 kVp and 140 kVp have different SPR (up to 5x difference per PMC3097788)
+            # 2. Different energy-dependent coefficients → different estimation residuals
+            # 3. Material decomposition takes a weighted DIFFERENCE of sinograms
+            # 4. Different residual errors get AMPLIFIED in the decomposition
+            #
+            # Joint scatter correction uses a single scatter estimate for BOTH sinograms:
+            # - Combines sinograms to create average signal
+            # - Estimates scatter from combined signal at average energy
+            # - Applies SAME scatter estimate to BOTH sinograms
+            # - Results in identical residual patterns that DON'T amplify in decomposition
+            #
+            # See DE-CROSS-SCATTER-RESEARCH in progress.md for full analysis with citations.
+            @info "Using joint scatter correction for dual-energy (avoids decomposition artifacts)" maxlog=1
 
-            scatter_correction_low = geometry_aware_scatter_correction(scanner;
-                scale_factor=physics.scatter_correction.scale_factor,
-                kernel_type=physics.scatter_correction.kernel_type,
-                phantom_diameter_cm=phantom_diameter_cm,
-                mean_energy_keV=mean_e_low)  # Must match scatter model energy
-            scatter_correction_high = geometry_aware_scatter_correction(scanner;
-                scale_factor=physics.scatter_correction.scale_factor,
-                kernel_type=physics.scatter_correction.kernel_type,
-                phantom_diameter_cm=phantom_diameter_cm,
-                mean_energy_keV=mean_e_high)  # Must match scatter model energy
+            # Disable per-sinogram scatter correction (will use joint correction instead)
+            scatter_correction_low = nothing
+            scatter_correction_high = nothing
+
+            # Flag to apply joint correction after both sinograms are generated
+            apply_joint_scatter_correction = true
         end
 
-        # Create separate noise models
+        # Compute I0 for each kVp only if scanner is an AbstractScannerSpec that supports mA_to_I0
         noise_low = physics.noise
         noise_high = physics.noise
-        if physics.noise !== nothing
+
+        if scanner !== nothing && hasmethod(geometry, Tuple{typeof(scanner)}) && physics.noise !== nothing
+            # Low kVp gets more integration time to balance flux
+            effective_rotation_low = protocol.rotation_time_s * protocol.low_integration_fraction
+            effective_rotation_high = protocol.rotation_time_s * (1.0 - protocol.low_integration_fraction)
+
+            # Use the mA_to_I0 function from DetectorNoise (only works with AbstractScannerSpec)
+            I0_low = mA_to_I0(protocol.low_mA, scanner;
+                             rotation_time_s=effective_rotation_low,
+                             n_views=protocol.n_views)
+            I0_high = mA_to_I0(protocol.high_mA, scanner;
+                              rotation_time_s=effective_rotation_high,
+                              n_views=protocol.n_views)
+
             noise_low = DetectorModel(
                 physics.noise.blur_fwhm,
                 I0_low,
@@ -339,13 +372,14 @@ function forward_project_dual_energy(
         end
 
         # Create PhysicsConfig with correct field order matching struct definition
-        # Now using ENERGY-DEPENDENT scatter models instead of disabling scatter
+        # Scatter ADDITION is energy-dependent, but scatter CORRECTION is disabled
+        # (correction causes wave artifacts in decomposition - see DE-SCATTER-RESEARCH)
         physics_low = PhysicsConfig(
             physics.fill_factor,        # 1. fill_factor
             physics.flat_filter,        # 2. flat_filter
             physics.bowtie_filter,      # 3. bowtie_filter
             scatter_low,                # 4. scatter (energy-dependent for 80 kVp)
-            scatter_correction_low,     # 5. scatter_correction (energy-dependent)
+            scatter_correction_low,     # 5. scatter_correction (=nothing, disabled for DE)
             physics.crosstalk,          # 6. crosstalk
             physics.optical_crosstalk,  # 7. optical_crosstalk
             physics.focal_spot,         # 8. focal_spot
@@ -363,7 +397,7 @@ function forward_project_dual_energy(
             physics.flat_filter,        # 2. flat_filter
             physics.bowtie_filter,      # 3. bowtie_filter
             scatter_high,               # 4. scatter (energy-dependent for 140 kVp)
-            scatter_correction_high,    # 5. scatter_correction (energy-dependent)
+            scatter_correction_high,    # 5. scatter_correction (=nothing, disabled for DE)
             physics.crosstalk,          # 6. crosstalk
             physics.optical_crosstalk,  # 7. optical_crosstalk
             physics.focal_spot,         # 8. focal_spot
@@ -393,6 +427,16 @@ function forward_project_dual_energy(
         materials = materials,
         physics = physics_high
     )
+
+    # Apply joint scatter correction if enabled
+    # This uses a single scatter estimate for BOTH sinograms to ensure identical
+    # residual patterns that don't amplify in material decomposition
+    if physics !== nothing && apply_joint_scatter_correction && scanner_geom !== nothing
+        correct_scatter_dual_energy!(sino_low, sino_high, scanner_geom;
+            mean_energy_low_keV = mean_e_low,
+            mean_energy_high_keV = mean_e_high
+        )
+    end
 
     # Keep arrays on same device as input (GPU-native)
     # No forced CPU transfer - preserves GPU arrays if input was GPU
