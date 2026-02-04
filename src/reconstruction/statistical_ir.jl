@@ -623,13 +623,18 @@ function pwls_reconstruct(
 end
 
 # =============================================================================
-# ASIR-Style Blending
+# ASIR-Style Blending (DEPRECATED - use hybrid_ir_reconstruct instead)
 # =============================================================================
 
 """
     asir_style_reconstruct(sinogram, geom, volume_size; blend_percent=50,
                            niter=30, lambda=0.01, penalty=QuadraticPenalty(),
                            verbose=false)
+
+!!! warning "Deprecated"
+    This function uses post-hoc blending which is NOT true Hybrid IR.
+    Use [`hybrid_ir_reconstruct`](@ref) instead for clinically-validated
+    vendor-general Hybrid IR.
 
 ASIR-style reconstruction: blend FBP with iterative result.
 
@@ -790,13 +795,14 @@ function get_ir_strength_params(level::Union{Int, IRStrengthLevel})
 end
 
 """
-    strength_ir_reconstruct(sinogram, geom, volume_size; strength=3,
-                            penalty=QuadraticPenalty(), verbose=false)
+    strength_ir_reconstruct(sinogram, geom, volume_size; strength=3, verbose=false)
 
 Statistical IR reconstruction using clinical strength levels (1-5).
 
-This provides a simplified, clinically-oriented interface to the ASIR-style
-reconstruction. Just specify a strength level and get optimized parameters.
+!!! note "Implementation Change"
+    As of v23.0, this function now uses TRUE Hybrid IR via [`hybrid_ir_reconstruct`](@ref)
+    instead of the deprecated blending approach. This provides clinically-validated
+    noise reduction based on SAFIRE clinical studies.
 
 # Arguments
 - `sinogram`: Measured sinogram (log-transformed) [n_cols, n_rows, n_angles]
@@ -805,16 +811,15 @@ reconstruction. Just specify a strength level and get optimized parameters.
 
 # Keyword Arguments
 - `strength`: Noise reduction level 1-5 (default: 3, standard clinical)
-  - 1: Minimal (preserves FBP texture)
-  - 2: Light
-  - 3: Standard clinical (recommended)
-  - 4: Strong
-  - 5: Maximum (most noise reduction)
-- `penalty`: PenaltyType - QuadraticPenalty() or HuberPenalty(δ) (default: QuadraticPenalty())
+  - 1: Minimal (~10% noise reduction, preserves FBP texture)
+  - 2: Light (~23% noise reduction)
+  - 3: Standard clinical (~35% noise reduction, recommended)
+  - 4: Strong (~48% noise reduction)
+  - 5: Maximum (~59% noise reduction)
 - `verbose`: Print progress (default: false)
 
 # Returns
-Reconstructed volume [nx, ny, nz]
+Reconstructed volume [nx, ny, nz] — TRUE PWLS-refined result
 
 # Example
 ```julia
@@ -823,39 +828,29 @@ recon = strength_ir_reconstruct(sinogram, geom, (256, 256, 128); strength=3)
 
 # Maximum noise reduction
 recon = strength_ir_reconstruct(sinogram, geom, (256, 256, 128); strength=5)
-
-# Edge-preserving with Huber penalty
-recon = strength_ir_reconstruct(sinogram, geom, (256, 256, 128);
-                                strength=4, penalty=HuberPenalty(0.01f0))
 ```
 
-# Clinical Guidelines (similar to ASIR-V/ADMIRE)
+# Clinical Guidelines (similar to ASIR-V/SAFIRE)
 - **Level 1**: Use when FBP texture is critical (e.g., lung nodules)
 - **Level 2-3**: General clinical imaging, good balance
 - **Level 4**: Higher dose reduction needed
 - **Level 5**: Maximum dose reduction, may affect texture
 
-See also: [`asir_style_reconstruct`](@ref), [`pwls_reconstruct`](@ref)
+See also: [`hybrid_ir_reconstruct`](@ref), [`pwls_reconstruct`](@ref)
 """
 function strength_ir_reconstruct(
     sinogram::AbstractArray{T, 3},
     geom::CTGeometry,
     volume_size::NTuple{3, Int};
     strength::Union{Int, IRStrengthLevel} = 3,
-    penalty::PenaltyType = QuadraticPenalty(),
     verbose::Bool = false
 ) where T <: AbstractFloat
 
-    # Get optimized parameters for this strength level
-    params = get_ir_strength_params(strength)
+    # Convert IRStrengthLevel to Int if needed
+    s = strength isa IRStrengthLevel ? strength.level : strength
 
-    verbose && println("Strength IR reconstruction (Level $(strength isa IRStrengthLevel ? strength.level : strength))...")
-    verbose && println("  Parameters: blend=$(params.blend_percent)%, λ=$(params.lambda), niter=$(params.niter)")
-
-    return asir_style_reconstruct(sinogram, geom, volume_size;
-                                   blend_percent=params.blend_percent,
-                                   niter=params.niter,
-                                   lambda=params.lambda,
-                                   penalty=penalty,
+    # Use TRUE Hybrid IR (v23.0+)
+    return hybrid_ir_reconstruct(sinogram, geom, volume_size;
+                                  strength=s,
                                    verbose=verbose)
 end

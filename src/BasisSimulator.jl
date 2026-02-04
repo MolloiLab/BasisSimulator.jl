@@ -175,10 +175,15 @@ include("reconstruction/ir/cgls.jl")
 # Reference: Rudin-Osher-Fatemi (ROF) model
 include("reconstruction/regularization/tv_regularization.jl")
 
-# --- Statistical IR (PWLS core, to be refactored) ---
+# --- Statistical IR (PWLS core) ---
 # Statistical Iterative Reconstruction (ASIR-style)
 # Reference: GE ASIR/ASIR-V, Penalized Weighted Least Squares
 include("reconstruction/statistical_ir.jl")
+
+# --- Hybrid IR (TRUE Hybrid IR) ---
+# Vendor-general Hybrid IR with PWLS refinement
+# Reference: Geyer et al. 2015, Willemink & Noël 2019, SAFIRE clinical studies
+include("reconstruction/hybrid_ir/hybrid_ir.jl")
 
 # --- Model-Based IR ---
 # Model-Based Iterative Reconstruction (TrueFidelity/ADMIRE/QIR-style)
