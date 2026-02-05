@@ -811,27 +811,33 @@ Apply pulse pile-up effects to energy-binned counts (in-place, GPU-native).
 Pulse pile-up occurs when photons arrive faster than the detector can process
 them (within the dead time). Effects include:
 - Count rate saturation (recorded counts < true counts)
-- Energy distortion (piled-up pulses registered at sum energy)
+- Spectral migration (piled-up pulses shift counts from low to high thresholds)
+- Sub-Poisson statistics (VMR < 1 at high flux)
 
-# Dead Time Models
+# Dead Time Model: Seminonparalyzable (Yang 2025)
 
-**Nonparalyzable model** (used here):
-    N_recorded = N_true / (1 + N_true × τ)
+Uses a seminonparalyzable model where dead time is retriggered by pulses
+during the dead time period, giving stronger count loss than pure
+nonparalyzable at high flux. This is more realistic for modern PCCT detectors.
 
-**Paralyzable model**:
-    N_recorded = N_true × exp(-N_true × τ)
+    N_recorded = N_true × seminonparalyzable_count_factor(aτ)
+
+# Spectral Migration (Taguchi 2010)
+
+Pileup-order probability P(m) follows a shifted Poisson distribution.
+For order m, the recorded energy is the sum of m photon energies.
+The spectral migration matrix S maps true bin counts to recorded bin counts,
+weighted by the actual incident spectrum shape.
 
 # Arguments
 - `bins::Vector{Array}`: Energy-binned counts
 - `detector::PhotonCountingDetector`: Detector specification
 - `flux_rate::Float64`: Photon flux rate in photons/s/mm² (at detector)
 
-# Physics
-
-Dead time τ (typically 20-100 ns for CdTe) limits maximum count rate to ~1/τ.
-At typical CT flux rates (~10⁹ photons/s/mm²), pile-up can be significant.
-
-Reference: Taguchi & Iwanczyk, Med Phys 2013
+# References
+- Taguchi et al 2010, Med Phys 37:3957-3969
+- Yang et al 2025, Med Phys 52:3658-3674
+- Grönberg et al 2018, Med Phys 45:3800-3811
 """
 function apply_pulse_pileup!(
     bins::Vector{A},
@@ -848,8 +854,13 @@ function apply_pulse_pileup!(
     pixel_area = T(detector.pixel_size_mm[1]) * T(detector.pixel_size_mm[2])
     count_rate = T(flux_rate) * pixel_area
 
-    # Pile-up correction factor (nonparalyzable model)
-    pile_up_factor = one(T) / (one(T) + count_rate * τ)
+    # aτ product: key parameter for pileup severity (Taguchi 2010)
+    aτ = Float64(count_rate * τ)
+
+    # Count-loss factor: seminonparalyzable model (Yang 2025)
+    # Accounts for dead-time retriggering by pulses during dead time,
+    # giving stronger count loss than pure nonparalyzable at high flux
+    pile_up_factor = T(seminonparalyzable_count_factor(aτ))
 
     # Apply count rate reduction to all bins
     for bin in bins
@@ -860,19 +871,64 @@ function apply_pulse_pileup!(
         end
     end
 
-    # Energy pile-up: some counts from lower bins shift to higher bins
+    # Physics-based spectral migration (Taguchi 2010, Section II.B)
+    # Piled-up photons have SUMMED energy → shifts counts from low to high bins
     n_bins = length(bins)
-    if n_bins >= 2
-        p_pileup = one(T) - pile_up_factor
+    if n_bins >= 2 && aτ > 0.001
+        # Estimate bin weights from current counts (incident spectrum shape)
+        # Use mean across all pixels for a representative spectrum
+        bin_weights = zeros(Float64, n_bins)
+        for i in 1:n_bins
+            bin_weights[i] = Float64(sum(bins[i])) / max(Float64(length(bins[i])), 1.0)
+        end
+        total_w = sum(bin_weights)
+        if total_w > 0.0
+            bin_weights ./= total_w
+        else
+            bin_weights .= 1.0 / n_bins
+        end
 
-        for bin_idx in 1:(n_bins-1)
-            let cb = bins[bin_idx], nb = bins[bin_idx + 1],
-                sf = p_pileup * T(0.1)
+        S = compute_spectral_migration_matrix(
+            detector.energy_thresholds_keV, aτ;
+            max_pileup_order=6, kVp=140.0,
+            bin_weights=bin_weights
+        )
 
-                AK.foreachindex(cb) do idx
-                    transfer = cb[idx] * sf
-                    nb[idx] += transfer
-                    cb[idx] -= transfer
+        # Extract off-diagonal transfer fractions from S
+        # S already encodes both diagonal (no-pileup) and off-diagonal (pileup)
+        # After count-loss, we redistribute the surviving counts spectrally.
+        # The off-diagonal part of S (normalized per column) gives the fraction
+        # of counts in each source bin that migrate to other bins.
+        transfer_fracs = zeros(Float64, n_bins, n_bins)
+        for i in 1:n_bins
+            diag_val = S[i, i]
+            col_sum = sum(S[:, i])
+            if col_sum > 0.0 && diag_val < col_sum
+                # Fraction of events in bin i that migrate to other bins
+                for j in 1:n_bins
+                    if j != i
+                        # Normalize: off-diag fraction relative to total column
+                        transfer_fracs[j, i] = S[j, i] / col_sum
+                    end
+                end
+            end
+        end
+
+        # Apply spectral migration via GPU-compatible kernels
+        for src_bin in 1:n_bins
+            for dst_bin in 1:n_bins
+                if dst_bin == src_bin
+                    continue
+                end
+                frac = T(transfer_fracs[dst_bin, src_bin])
+                if frac > T(1e-6)
+                    let cb = bins[src_bin], db = bins[dst_bin], f = frac
+                        AK.foreachindex(cb) do idx
+                            transfer = cb[idx] * f
+                            db[idx] += transfer
+                            cb[idx] -= transfer
+                        end
+                    end
                 end
             end
         end
@@ -890,17 +946,16 @@ end
 
 Apply inverse pulse pile-up correction to energy-binned counts (in-place, GPU-native).
 
-This is the inverse of `apply_pulse_pileup!`. It recovers the original count rates
-from pileup-degraded measurements using the algebraic inverse of the nonparalyzable
-dead time model.
+This is the approximate inverse of `apply_pulse_pileup!`. It recovers the original
+count rates from pileup-degraded measurements.
 
-# Forward model (nonparalyzable):
-    N_recorded = N_true / (1 + N_true × τ)
+# Forward model (seminonparalyzable, Yang 2025):
+    N_recorded = N_true × seminonparalyzable_count_factor(aτ)
 
 # Inverse correction:
-    N_corrected = N_recorded / (1 - N_recorded × τ × rate_factor)
+    N_corrected = N_recorded / seminonparalyzable_count_factor(aτ)
 
-The energy redistribution reversal iterates bins in reverse order (high→low) to
+The spectral migration reversal iterates bins in reverse order (high→low) to
 undo the forward model's low→high energy shifting.
 
 # Arguments
@@ -923,25 +978,63 @@ function correct_pulse_pileup!(
     pixel_area = T(detector.pixel_size_mm[1]) * T(detector.pixel_size_mm[2])
     count_rate = T(flux_rate) * pixel_area
 
-    # Inverse pile-up factor: undo the nonparalyzable count rate reduction
-    # Forward: N_rec = N_true * pile_up_factor, where pile_up_factor = 1/(1 + count_rate*τ)
-    # Inverse: N_true = N_rec / pile_up_factor = N_rec * (1 + count_rate*τ)
-    correction_factor = one(T) + count_rate * τ
+    # aτ product
+    aτ = Float64(count_rate * τ)
 
-    # Reverse energy redistribution first (high→low, opposite of forward low→high)
+    # Inverse of seminonparalyzable count factor (Yang 2025)
+    correction_factor = T(1.0 / seminonparalyzable_count_factor(aτ))
+
+    # Reverse spectral migration (approximate inverse: transfer back high→low)
     n_bins = length(bins)
-    if n_bins >= 2
-        pile_up_factor = one(T) / correction_factor
-        p_pileup = one(T) - pile_up_factor
+    if n_bins >= 2 && aτ > 0.001
+        # Estimate bin weights from current (degraded) counts
+        bin_weights = zeros(Float64, n_bins)
+        for i in 1:n_bins
+            bin_weights[i] = Float64(sum(bins[i])) / max(Float64(length(bins[i])), 1.0)
+        end
+        total_w = sum(bin_weights)
+        if total_w > 0.0
+            bin_weights ./= total_w
+        else
+            bin_weights .= 1.0 / n_bins
+        end
 
-        for bin_idx in (n_bins):-1:2
-            let cb = bins[bin_idx], pb = bins[bin_idx - 1],
-                sf = p_pileup * T(0.1)
+        S = compute_spectral_migration_matrix(
+            detector.energy_thresholds_keV, aτ;
+            max_pileup_order=6, kVp=140.0,
+            bin_weights=bin_weights
+        )
 
-                AK.foreachindex(cb) do idx
-                    transfer = cb[idx] * sf
-                    pb[idx] += transfer
-                    cb[idx] -= transfer
+        # Compute transfer fractions (same normalization as forward model)
+        transfer_fracs = zeros(Float64, n_bins, n_bins)
+        for i in 1:n_bins
+            col_sum = sum(S[:, i])
+            if col_sum > 0.0
+                for j in 1:n_bins
+                    if j != i
+                        transfer_fracs[j, i] = S[j, i] / col_sum
+                    end
+                end
+            end
+        end
+
+        # Reverse the spectral migration: transfer from higher bins back to lower
+        # Iterate in reverse order to undo the low→high shifting
+        for dst_bin in n_bins:-1:1
+            for src_bin in n_bins:-1:1
+                if src_bin == dst_bin
+                    continue
+                end
+                # Reverse: what was transferred src→dst in forward, transfer dst→src
+                frac = T(transfer_fracs[dst_bin, src_bin])
+                if frac > T(1e-6)
+                    let db = bins[dst_bin], sb = bins[src_bin], f = frac
+                        AK.foreachindex(db) do idx
+                            transfer = db[idx] * f
+                            sb[idx] += transfer
+                            db[idx] -= transfer
+                        end
+                    end
                 end
             end
         end
@@ -1485,22 +1578,36 @@ function _compute_degraded_I0(detector, energies, weights, η, thresholds, kVp, 
         end
     end
 
-    # 2. Pulse pileup (mirrors apply_pulse_pileup! exactly)
+    # 2. Pulse pileup (mirrors apply_pulse_pileup!, Yang 2025 seminonparalyzable)
     if detector.enable_pile_up && detector.dead_time_ns > 0.0
         τ = detector.dead_time_ns * 1e-9
         pixel_area = detector.pixel_size_mm[1] * detector.pixel_size_mm[2]
         count_rate = Float64(flux_rate) * pixel_area
-        pile_up_factor = 1.0 / (1.0 + count_rate * τ)
+        aτ = count_rate * τ
 
-        # Count rate reduction
+        # Seminonparalyzable count-loss factor (Yang 2025)
+        pile_up_factor = seminonparalyzable_count_factor(aτ)
         I0_bins .*= pile_up_factor
 
-        # Energy pileup transfer (lower bins → higher bins)
-        p_pileup = 1.0 - pile_up_factor
-        for b in 1:(n_bins-1)
-            transfer = I0_bins[b] * p_pileup * 0.1
-            I0_bins[b+1] += transfer
-            I0_bins[b] -= transfer
+        # Spectral migration via migration matrix (Taguchi 2010)
+        if n_bins >= 2 && aτ > 0.001
+            bin_weights = I0_bins ./ max(sum(I0_bins), 1e-30)
+            S = compute_spectral_migration_matrix(
+                Float64.(detector.energy_thresholds_keV), aτ;
+                max_pileup_order=6, kVp=140.0,
+                bin_weights=bin_weights
+            )
+
+            # Apply off-diagonal transfers
+            new_I0 = zeros(Float64, n_bins)
+            for j in 1:n_bins
+                for i in 1:n_bins
+                    col_sum = sum(S[:, i])
+                    frac = col_sum > 0.0 ? S[j, i] / col_sum : (j == i ? 1.0 : 0.0)
+                    new_I0[j] += I0_bins[i] * frac
+                end
+            end
+            I0_bins .= new_I0
         end
     end
 

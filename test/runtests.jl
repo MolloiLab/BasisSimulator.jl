@@ -4998,12 +4998,18 @@ end
             flux_rate = Float32(1e9)  # photons/s/mm²
             apply_pulse_pileup!(bins, detector, flux_rate)
 
-            # Pile-up should reduce counts
+            # Pile-up should reduce total counts, but spectral migration
+            # can increase counts in high-energy bins (pileup shifts low→high)
             for bin in bins
                 @test all(isfinite.(bin))
                 @test all(bin .>= 0)
-                @test all(bin .<= 1000.0f0)  # Counts reduced
             end
+            # Lower bins should lose counts (shifted up by pileup)
+            @test all(bins[1] .<= 1000.0f0)
+            # Total counts across all bins should be ≤ original (some lost above kVp)
+            total_after = sum(sum(b) for b in bins)
+            total_before = 4 * 1000.0f0 * 16 * 8 * 18
+            @test total_after <= total_before * 1.01f0  # Allow 1% tolerance
 
             # With no pile-up, counts unchanged
             ideal_detector = pcct_detector_ideal()

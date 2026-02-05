@@ -57,6 +57,7 @@ include("physics/pcct/cdte_constants.jl")
 include("physics/pcct/charge_transport.jl")
 include("physics/pcct/k_fluorescence.jl")
 include("physics/pcct/charge_collection.jl")
+include("physics/pcct/pileup_model.jl")
 
 # =============================================================================
 # Geometry
