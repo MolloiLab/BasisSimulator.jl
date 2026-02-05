@@ -56,6 +56,7 @@ include("physics/attenuation.jl")
 include("physics/pcct/cdte_constants.jl")
 include("physics/pcct/charge_transport.jl")
 include("physics/pcct/k_fluorescence.jl")
+include("physics/pcct/charge_collection.jl")
 
 # =============================================================================
 # Geometry

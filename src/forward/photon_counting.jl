@@ -2207,104 +2207,117 @@ function get_charge_transport_params(material::DetectorMaterialPCCT, thickness_m
 end
 
 """
-    charge_collection_efficiency(x_cm::Real, params::ChargeTransportParams) -> Float64
+    charge_collection_efficiency(x_cm::Real, params::ChargeTransportParams;
+                                  pixel_pitch_mm::Tuple{<:Real,<:Real}=(0.0, 0.0)) -> Float64
 
-Compute charge collection efficiency (CCE) at absorption depth x using Hecht equation.
+Compute charge collection efficiency (CCE) at absorption depth x using the Hecht
+equation with optional small-pixel weighting potential (Koch-Mehrin 2020, Eq. 15).
 
-    CCE(x) = (μₑτₑ×E_field/d) × [1 - exp(-(d-x)×d/(μₑτₑ×V))]
-           + (μₕτₕ×E_field/d) × [1 - exp(-x×d/(μₕτₕ×V))]
+    CCE(x) = (λ_e/L) × (1-ψ(z)) × [1 - exp(-(L-x)/λ_e)]  (electron contrib)
+           + (λ_h/L) × ψ(z) × [1 - exp(-x/λ_h)]          (hole contrib)
 
-where:
-- x = absorption depth from cathode (0 = cathode, d = anode)
-- d = crystal thickness
-- V = bias voltage
-- E_field = V/d (uniform field approximation)
+where ψ(z) is the small-pixel weighting potential. For planar geometry (or when
+pixel_pitch_mm is not provided), ψ(z) = z/L (linear, standard Hecht).
 
 # Physics
 
 In CdTe/CZT:
-- Electrons (good mobility μₑτₑ ≈ 3×10⁻³): collected efficiently from anywhere
-- Holes (poor mobility μₕτₕ ≈ 5×10⁻⁵): only collected if generated near anode
-
-This creates an asymmetric low-energy tail (incomplete charge collection = lower
-registered energy), which is the dominant spectral artifact in CdTe detectors.
-
-In Si:
-- Both carriers have excellent mobility → CCE ≈ 1.0 everywhere
+- Electrons (good mobility μₑτₑ ≈ 3.3×10⁻³): collected efficiently from anywhere
+- Holes (poor mobility μₕτₕ ≈ 2×10⁻⁴): trapped if generated far from anode
+- Small-pixel effect (w/L < 0.5): reduces hole-trapping impact on signal
 
 # Arguments
 - `x_cm::Real`: Absorption depth from cathode in cm (0 ≤ x ≤ thickness)
 - `params::ChargeTransportParams`: Transport parameters
+- `pixel_pitch_mm`: Pixel dimensions (row, col) [mm] for small-pixel effect.
+  If (0,0) or not provided, uses standard Hecht (linear weighting potential).
 
 # Returns
 - `Float64`: Charge collection efficiency in [0, 1]
+
+# References
+- Koch-Mehrin 2020, Eq. 15
+- Barrett et al. 1995, NIM-A 380:131 (small-pixel weighting potential)
 """
-function charge_collection_efficiency(x_cm::Real, params::ChargeTransportParams{T}) where T
+function charge_collection_efficiency(x_cm::Real, params::ChargeTransportParams{T};
+                                       pixel_pitch_mm::Tuple{<:Real,<:Real}=(0.0, 0.0)) where T
     d = params.thickness_cm
     V = params.bias_voltage
     x = clamp(T(x_cm), zero(T), d)
 
-    # Electric field (V/cm) — uniform approximation
-    E_field = V / d
+    # Compute w/L ratio for small-pixel weighting potential
+    w_mm = min(Float64(pixel_pitch_mm[1]), Float64(pixel_pitch_mm[2]))
+    L_mm = d * 10.0  # cm to mm
+    wL_ratio = w_mm > 0.0 ? w_mm / L_mm : 100.0  # large value → planar limit
 
-    # Electron contribution (generated at x, drifts toward anode at d)
-    # Drift length for electrons: (d - x)
-    λ_e = params.mu_e_tau_e * E_field  # Mean drift length (cm)
-    if λ_e > zero(T)
-        cce_e = (λ_e / d) * (one(T) - exp(-(d - x) / λ_e))
-    else
-        cce_e = zero(T)
-    end
-
-    # Hole contribution (generated at x, drifts toward cathode at 0)
-    # Drift length for holes: x
-    λ_h = params.mu_h_tau_h * E_field  # Mean drift length (cm)
-    if λ_h > zero(T)
-        cce_h = (λ_h / d) * (one(T) - exp(-x / λ_h))
-    else
-        cce_h = zero(T)
-    end
-
-    return Float64(min(cce_e + cce_h, one(T)))
+    # Use improved Hecht with weighting potential from charge_collection.jl
+    return hecht_cce_weighted(Float64(x), Float64(d), Float64(V),
+                              Float64(params.mu_e_tau_e), Float64(params.mu_h_tau_h),
+                              wL_ratio)
 end
 
 """
     mean_charge_collection_efficiency(material::DetectorMaterialPCCT,
                                        thickness_mm::Real;
-                                       n_points::Int=50) -> Float64
+                                       n_points::Int=50,
+                                       E_keV::Real=60.0,
+                                       pixel_pitch_mm::Tuple{<:Real,<:Real}=(0.0,0.0)) -> Float64
 
 Compute depth-averaged charge collection efficiency for a detector crystal.
 
-Averages CCE over the absorption depth distribution. For simplicity, uses
-uniform absorption distribution (valid when μ×d is moderate).
+When `pixel_pitch_mm` is provided (non-zero), uses Beer-Lambert absorption
+weighting and small-pixel weighting potential (physics-based model from
+Koch-Mehrin 2020). Otherwise falls back to uniform depth averaging with
+standard Hecht equation.
 
 # Returns
 Mean CCE in [0, 1]. For CdTe: ~0.90-0.95. For Si: ~0.99+.
+
+# References
+- Koch-Mehrin 2020, Eq. 15 (Hecht with weighting potential)
 """
 function mean_charge_collection_efficiency(material::DetectorMaterialPCCT,
                                             thickness_mm::Real;
-                                            n_points::Int=50)
-    params = get_charge_transport_params(material, thickness_mm)
-    d = params.thickness_cm
+                                            n_points::Int=50,
+                                            E_keV::Real=60.0,
+                                            pixel_pitch_mm::Tuple{<:Real,<:Real}=(0.0,0.0))
+    props = get_detector_material_properties(material)
+    w_mm = min(Float64(pixel_pitch_mm[1]), Float64(pixel_pitch_mm[2]))
 
-    # Average over depth (simple numerical integration)
-    cce_sum = 0.0
-    for i in 1:n_points
-        x = d * (i - 0.5) / n_points
-        cce_sum += charge_collection_efficiency(x, params)
+    if w_mm > 0.0
+        # Physics-based: Beer-Lambert weighting + small-pixel potential
+        wL = w_mm / Float64(thickness_mm)
+        return mean_cce_beer_lambert(E_keV, thickness_mm, props.bias_voltage_V,
+                                     props.mu_e_tau_e, props.mu_h_tau_h, wL;
+                                     n_depth=n_points)
+    else
+        # Legacy: uniform depth averaging, standard Hecht
+        params = get_charge_transport_params(material, thickness_mm)
+        d = params.thickness_cm
+        cce_sum = 0.0
+        for i in 1:n_points
+            x = d * (i - 0.5) / n_points
+            cce_sum += charge_collection_efficiency(x, params)
+        end
+        return cce_sum / n_points
     end
-
-    return cce_sum / n_points
 end
 
 """
     hole_tailing_distribution(E_incident::Real, material::DetectorMaterialPCCT,
-                               thickness_mm::Real; n_depth::Int=20) -> Tuple{Vector{Float64}, Vector{Float64}}
+                               thickness_mm::Real;
+                               n_depth::Int=20,
+                               pixel_pitch_mm::Tuple{<:Real,<:Real}=(0.0,0.0))
+        -> Tuple{Vector{Float64}, Vector{Float64}}
 
 Compute the energy distribution due to incomplete charge collection (hole tailing).
 
 Returns (energies, probabilities) representing the distribution of registered
 energies for a photon of true energy E_incident.
+
+When `pixel_pitch_mm` is provided (non-zero), uses Beer-Lambert absorption
+weighting and small-pixel weighting potential (Koch-Mehrin 2020, Eq. 15).
+Otherwise falls back to uniform absorption with standard Hecht equation.
 
 The distribution has:
 - A peak near E_incident × mean_CCE (most photons)
@@ -2315,22 +2328,37 @@ The distribution has:
 - `weights`: Probability weights (sum to 1.0)
 """
 function hole_tailing_distribution(E_incident::Real, material::DetectorMaterialPCCT,
-                                    thickness_mm::Real; n_depth::Int=20)
-    params = get_charge_transport_params(material, thickness_mm)
-    d = params.thickness_cm
-    E = Float64(E_incident)
+                                    thickness_mm::Real;
+                                    n_depth::Int=20,
+                                    pixel_pitch_mm::Tuple{<:Real,<:Real}=(0.0,0.0))
+    props = get_detector_material_properties(material)
+    w_mm = min(Float64(pixel_pitch_mm[1]), Float64(pixel_pitch_mm[2]))
 
-    energies = zeros(Float64, n_depth)
-    weights = zeros(Float64, n_depth)
+    if w_mm > 0.0
+        # Physics-based: Beer-Lambert weighting + small-pixel potential
+        wL = w_mm / Float64(thickness_mm)
+        return hole_tailing_beer_lambert(Float64(E_incident), Float64(E_incident),
+                                         Float64(thickness_mm), props.bias_voltage_V,
+                                         props.mu_e_tau_e, props.mu_h_tau_h, wL;
+                                         n_depth=n_depth)
+    else
+        # Legacy: uniform absorption, standard Hecht
+        params = get_charge_transport_params(material, thickness_mm)
+        d = params.thickness_cm
+        E = Float64(E_incident)
 
-    for i in 1:n_depth
-        x = d * (i - 0.5) / n_depth
-        cce = charge_collection_efficiency(x, params)
-        energies[i] = E * cce
-        weights[i] = 1.0 / n_depth  # Uniform absorption approximation
+        energies = zeros(Float64, n_depth)
+        weights = zeros(Float64, n_depth)
+
+        for i in 1:n_depth
+            x = d * (i - 0.5) / n_depth
+            cce = charge_collection_efficiency(x, params)
+            energies[i] = E * cce
+            weights[i] = 1.0 / n_depth
+        end
+
+        return (energies, weights)
     end
-
-    return (energies, weights)
 end
 
 # =============================================================================
@@ -2429,13 +2457,14 @@ function compute_spectral_response_matrix(
         nothing
     end
 
-    # Charge transport for tailing
+    # Charge transport for tailing (now with small-pixel weighting potential)
     transport_params = if include_tailing
         get_charge_transport_params(material, thickness_mm)
     else
         nothing
     end
-    mean_cce = include_tailing ? mean_charge_collection_efficiency(material, thickness_mm) : 1.0
+    mean_cce = include_tailing ? mean_charge_collection_efficiency(material, thickness_mm;
+                                    pixel_pitch_mm=pixel_size_mm) : 1.0
 
     # Build response matrix
     R = zeros(Float64, n_energy_points, n_bins)
@@ -2447,7 +2476,8 @@ function compute_spectral_response_matrix(
         # Start with the primary photopeak at energy E
         # Apply hole tailing: distribute E across CCE values
         if include_tailing && transport_params !== nothing
-            tail_energies, tail_weights = hole_tailing_distribution(E, material, thickness_mm; n_depth=20)
+            tail_energies, tail_weights = hole_tailing_distribution(E, material, thickness_mm;
+                                            n_depth=20, pixel_pitch_mm=pixel_size_mm)
         else
             tail_energies = [E]
             tail_weights = [1.0]
