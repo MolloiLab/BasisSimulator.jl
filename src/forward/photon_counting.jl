@@ -1292,7 +1292,8 @@ function pcct_forward_project(
     I0::Real = 1e6,
     apply_spectral_response::Bool = true,
     apply_detector_effects::Bool = true,
-    apply_corrections::Bool = false
+    apply_corrections::Bool = false,
+    use_unified_drm::Bool = false
 )
     T = Float32  # Use Float32 for GPU efficiency
 
@@ -1309,14 +1310,23 @@ function pcct_forward_project(
 
     # Pre-compute spectral response matrix if requested (CPU, precomputed once)
     R = if apply_spectral_response
-        compute_spectral_response_matrix(
-            detector.material, detector.thickness_mm, thresholds, kVp;
-            energy_resolution_keV=detector.energy_resolution_keV,
-            pixel_size_mm=detector.pixel_size_mm,
-            include_fluorescence=true,
-            include_tailing=true,
-            n_energy_points=n_energies
-        )
+        if use_unified_drm
+            # Unified DRM: physics-based Fano + electronic noise resolution,
+            # combined with fluorescence, CCE, and tailing (Koch-Mehrin 2020)
+            compute_unified_drm(detector, kVp;
+                n_energy_points=n_energies,
+                use_physics_resolution=true)
+        else
+            # Legacy DRM: fixed FWHM energy resolution
+            compute_spectral_response_matrix(
+                detector.material, detector.thickness_mm, thresholds, kVp;
+                energy_resolution_keV=detector.energy_resolution_keV,
+                pixel_size_mm=detector.pixel_size_mm,
+                include_fluorescence=true,
+                include_tailing=true,
+                n_energy_points=n_energies
+            )
+        end
     else
         nothing
     end
