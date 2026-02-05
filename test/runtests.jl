@@ -6294,14 +6294,14 @@ end
             @test props_cdte.elements == [:Cd, :Te]
             @test props_cdte.atomic_numbers == [48, 52]
             @test length(props_cdte.k_edges_keV) == 2
-            @test props_cdte.k_edges_keV[1] ≈ 26.7  # Cd K-edge
-            @test props_cdte.k_edges_keV[2] ≈ 31.8  # Te K-edge
+            @test props_cdte.k_edges_keV[1] ≈ 26.711  # Cd K-edge (NIST)
+            @test props_cdte.k_edges_keV[2] ≈ 31.814  # Te K-edge (NIST)
             @test props_cdte.k_alpha_keV[1] ≈ 23.2  # Cd K-α
-            @test props_cdte.k_alpha_keV[2] ≈ 27.4  # Te K-α
-            @test props_cdte.mu_e_tau_e ≈ 3.0e-3
-            @test props_cdte.mu_h_tau_h ≈ 5.0e-5
-            @test props_cdte.pair_creation_energy_eV ≈ 4.43
-            @test props_cdte.fano_factor ≈ 0.11
+            @test props_cdte.k_alpha_keV[2] ≈ 27.5  # Te K-α
+            @test props_cdte.mu_e_tau_e ≈ 3.3e-3    # Koch-Mehrin 2020
+            @test props_cdte.mu_h_tau_h ≈ 2.0e-4    # Koch-Mehrin 2020
+            @test props_cdte.pair_creation_energy_eV ≈ 4.3  # Koch-Mehrin 2020
+            @test props_cdte.fano_factor ≈ 0.1       # Redus 2009
             @test sum(props_cdte.mass_fractions) ≈ 1.0
 
             # CZT properties
@@ -6378,8 +6378,8 @@ end
             )
             @test fluor isa KFluorescenceParams
             @test fluor.n_lines == 2  # Cd and Te
-            @test fluor.k_edge_energies[1] ≈ 26.7
-            @test fluor.k_edge_energies[2] ≈ 31.8
+            @test fluor.k_edge_energies[1] ≈ 26.711
+            @test fluor.k_edge_energies[2] ≈ 31.814
             @test all(0 .≤ fluor.escape_probabilities .≤ 1.0)
             @test all(fluor.escape_probabilities .> 0.0)  # CdTe has significant escape
 
@@ -6404,8 +6404,8 @@ end
         @testset "Charge Collection (Hecht Equation)" begin
             # CdTe charge transport
             params_cdte = get_charge_transport_params(CDTE_MATERIAL, 1.6)
-            @test params_cdte.mu_e_tau_e ≈ 3.0e-3
-            @test params_cdte.mu_h_tau_h ≈ 5.0e-5
+            @test params_cdte.mu_e_tau_e ≈ 3.3e-3    # Koch-Mehrin 2020
+            @test params_cdte.mu_h_tau_h ≈ 2.0e-4   # Koch-Mehrin 2020
             @test params_cdte.thickness_cm ≈ 0.16
 
             # CCE at surface (x=0, cathode): electrons must travel full thickness

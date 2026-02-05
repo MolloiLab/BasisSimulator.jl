@@ -462,7 +462,7 @@ end
 # =============================================================================
 
 """
-    apply_charge_sharing!(bins, detector) -> bins
+    apply_charge_sharing!(bins, detector; use_physics_model=true) -> bins
 
 Apply charge sharing effects to energy-binned sinograms (in-place, GPU-native).
 
@@ -472,57 +472,90 @@ resulting charge cloud to split between adjacent pixels. This causes:
 - Spectral degradation (low-energy tail)
 - Spatial PSF broadening
 
-# Algorithm
+# Physics Model (Koch-Mehrin 2020)
 
-1. For each pixel, compute probability that charge cloud extends to neighbors
-2. Redistribute counts: fraction of high-energy counts shifted to low-energy bins
-3. Apply spatial convolution for PSF effects
+When `use_physics_model=true` (default), computes energy-dependent charge cloud
+size using the drift-diffusion ODE (Koch-Mehrin 2020, Eq. 9-14):
+- Charge cloud σ ≈ 13 μm (depth-averaged), varying with photon energy
+- Per-bin sharing probability from cloud-pixel overlap geometry
 
-The charge sharing kernel depends on pixel size and charge cloud FWHM.
+# Legacy Model
+
+When `use_physics_model=false`, uses the fixed Gaussian FWHM from
+`detector.charge_sharing_fwhm_mm` (pre-v24.0 behavior, σ ≈ 34 μm).
+
+# References
+- Koch-Mehrin et al. 2020, NIM-A 976:164241 (charge cloud transport ODE)
+- Konrad et al. 2025, PMB 70:065004 (PCCT detector validation)
 """
 function apply_charge_sharing!(
+    bins::Vector{A},
+    detector::PhotonCountingDetector;
+    use_physics_model::Bool=true
+) where {T, A<:AbstractArray{T,3}}
+
+    if !detector.enable_charge_sharing
+        return bins
+    end
+
+    if use_physics_model && detector.material == CDTE_MATERIAL
+        return _apply_charge_sharing_physics!(bins, detector)
+    else
+        return _apply_charge_sharing_legacy!(bins, detector)
+    end
+end
+
+"""
+    _apply_charge_sharing_physics!(bins, detector) -> bins
+
+Physics-based charge sharing using Koch-Mehrin 2020 charge cloud transport.
+Computes per-bin σ from drift-diffusion ODE, then applies energy-dependent
+spatial redistribution and spectral downshift.
+"""
+function _apply_charge_sharing_physics!(
     bins::Vector{A},
     detector::PhotonCountingDetector
 ) where {T, A<:AbstractArray{T,3}}
 
-    if !detector.enable_charge_sharing || detector.charge_sharing_fwhm_mm ≤ 0.0
-        return bins
-    end
-
     n_bins = length(bins)
     n_cols, n_rows, n_angles = size(bins[1])
 
-    # Cast all detector parameters to T (Float32 for GPU compatibility)
-    σ_cloud = T(detector.charge_sharing_fwhm_mm) / (T(2) * sqrt(T(2) * log(T(2))))
+    # Build PCCTDetectorGeometry from detector parameters
+    geom = PCCTDetectorGeometry(
+        "runtime",
+        Float64.(detector.pixel_size_mm),
+        Float64(detector.thickness_mm),
+        800.0,   # bias voltage [V] — NAEOTOM default
+        680.0,   # effective voltage [V] — ~85% of applied
+        1.5,     # electronic noise σ [keV]
+        3.0      # noise threshold [keV]
+    )
 
-    # Pixel size at isocenter (cast to T)
-    pixel_row = T(detector.pixel_size_mm[1])
-    pixel_col = T(detector.pixel_size_mm[2])
+    thresholds = detector.energy_thresholds_keV
+    pixel_pitch = detector.pixel_size_mm
 
-    # Compute charge sharing probability
-    boundary_dist_row = pixel_row / T(2)
-    boundary_dist_col = pixel_col / T(2)
+    # Compute per-bin charge cloud σ and sharing probability on CPU
+    bin_p_share = Vector{Float64}(undef, n_bins)
 
-    z_row = boundary_dist_row / σ_cloud
-    z_col = boundary_dist_col / σ_cloud
+    for b in 1:n_bins
+        E_low = thresholds[b]
+        E_high = b < n_bins ? thresholds[b+1] : 140.0
+        E_center = (E_low + E_high) / 2.0
 
-    # Sigmoid approximation for Gaussian tail
-    p_share_row = T(2) / (one(T) + exp(T(1.5) * z_row))
-    p_share_col = T(2) / (one(T) + exp(T(1.5) * z_col))
-    p_share = min(p_share_row + p_share_col, T(0.5))
+        # Depth-averaged σ at bin-center energy (Koch-Mehrin 2020 ODE)
+        σ = mean_charge_cloud_sigma_mm(E_center, geom)
 
-    # Primary signal retention
-    p_primary = one(T) - p_share
+        # Charge sharing probability from cloud-pixel overlap geometry
+        bin_p_share[b] = charge_sharing_probability(σ, pixel_pitch)
+    end
 
-    # Neighbor weight (divide among 8 neighbors)
-    nw = p_share / T(8)
-
-    # Energy loss fraction for split events
-    energy_loss_fraction = T(0.5)
-
-    # Process each bin: redistribute counts to lower bins due to charge sharing
+    # Process each bin: spatial redistribution + energy downshift
     for bin_idx in n_bins:-1:1
-        # Use let-blocks for GPU kernel capture safety
+        p_share = T(min(bin_p_share[bin_idx], 0.5))
+        p_primary = one(T) - p_share
+        nw = p_share / T(8)
+
+        # Spatial redistribution: 8-neighbor kernel
         let cb = bins[bin_idx], pp = p_primary, nweight = nw,
             nc = Int32(n_cols), nr = Int32(n_rows)
 
@@ -551,7 +584,91 @@ function apply_charge_sharing!(
             copyto!(cb, output)
         end
 
-        # Energy redistribution: move fraction of counts to lower bin
+        # Energy redistribution: shared charge deposits less energy → counts
+        # shift to lower bins. Fraction scales with sharing probability.
+        # Physics: split charge cloud means primary pixel sees reduced energy.
+        if bin_idx > 1
+            let cb = bins[bin_idx], tb = bins[bin_idx - 1],
+                lf = p_share * T(0.4)
+
+                AK.foreachindex(cb) do idx
+                    transfer = cb[idx] * lf
+                    tb[idx] += transfer
+                    cb[idx] -= transfer
+                end
+            end
+        end
+    end
+
+    return bins
+end
+
+"""
+    _apply_charge_sharing_legacy!(bins, detector) -> bins
+
+Legacy charge sharing model using fixed Gaussian FWHM (pre-v24.0).
+Maintained for backward compatibility. See `apply_charge_sharing!` docs.
+"""
+function _apply_charge_sharing_legacy!(
+    bins::Vector{A},
+    detector::PhotonCountingDetector
+) where {T, A<:AbstractArray{T,3}}
+
+    if detector.charge_sharing_fwhm_mm ≤ 0.0
+        return bins
+    end
+
+    n_bins = length(bins)
+    n_cols, n_rows, n_angles = size(bins[1])
+
+    σ_cloud = T(detector.charge_sharing_fwhm_mm) / (T(2) * sqrt(T(2) * log(T(2))))
+
+    pixel_row = T(detector.pixel_size_mm[1])
+    pixel_col = T(detector.pixel_size_mm[2])
+
+    boundary_dist_row = pixel_row / T(2)
+    boundary_dist_col = pixel_col / T(2)
+
+    z_row = boundary_dist_row / σ_cloud
+    z_col = boundary_dist_col / σ_cloud
+
+    p_share_row = T(2) / (one(T) + exp(T(1.5) * z_row))
+    p_share_col = T(2) / (one(T) + exp(T(1.5) * z_col))
+    p_share = min(p_share_row + p_share_col, T(0.5))
+
+    p_primary = one(T) - p_share
+    nw = p_share / T(8)
+    energy_loss_fraction = T(0.5)
+
+    for bin_idx in n_bins:-1:1
+        let cb = bins[bin_idx], pp = p_primary, nweight = nw,
+            nc = Int32(n_cols), nr = Int32(n_rows)
+
+            output = similar(cb)
+
+            AK.foreachindex(cb) do idx
+                ci = CartesianIndices(cb)[idx]
+                col, row, angle = Tuple(ci)
+
+                val = cb[idx] * pp
+
+                for di in Int32(-1):Int32(1)
+                    for dj in Int32(-1):Int32(1)
+                        if di == Int32(0) && dj == Int32(0)
+                            continue
+                        end
+                        src_col = clamp(col + di, Int32(1), nc)
+                        src_row = clamp(row + dj, Int32(1), nr)
+                        val += cb[src_col, src_row, angle] * nweight
+                    end
+                end
+
+                output[idx] = val
+            end
+
+            copyto!(cb, output)
+        end
+
         if bin_idx > 1
             let cb = bins[bin_idx], tb = bins[bin_idx - 1],
                 lf = p_share * energy_loss_fraction
@@ -1742,21 +1859,21 @@ function get_detector_material_properties(material::DetectorMaterialPCCT)
             mass_fractions = [112.411 / 240.011, 127.60 / 240.011],  # [0.4683, 0.5317]
             density_g_cm3 = 5.85,
 
-            # K-edges and fluorescence (NIST XCOM)
-            k_edges_keV = [26.7, 31.8],           # Cd K-edge, Te K-edge
-            k_alpha_keV = [23.2, 27.4],           # Cd K-α, Te K-α fluorescence
-            k_yields = [0.84, 0.87],              # Fluorescence yields ω_K (Bambynek 1972)
-            k_fluorescence_range_mm = [0.12, 0.10], # Mean free path in CdTe crystal
+            # K-edges and fluorescence (NIST XCOM, Koch-Mehrin 2020 Table 1)
+            k_edges_keV = [26.711, 31.814],       # Cd K-edge, Te K-edge (NIST)
+            k_alpha_keV = [23.2, 27.5],           # Cd K-α, Te K-α fluorescence
+            k_yields = [0.84, 0.88],              # Fluorescence yields ω_K (Bambynek 1972)
+            k_fluorescence_range_mm = [0.10, 0.06], # Koch-Mehrin 2020: Cd Kα ~100μm, Te Kα ~60μm
 
-            # Charge transport (Taguchi & Iwanczyk 2013, Table 2)
-            mu_e_tau_e = 3.0e-3,                  # cm²/V (electrons — good mobility)
-            mu_h_tau_h = 5.0e-5,                  # cm²/V (holes — poor mobility!)
+            # Charge transport (Koch-Mehrin 2020 + Owens 2012)
+            mu_e_tau_e = 3.3e-3,                  # cm²/V — μ_e=1100×τ_e=3μs (Koch-Mehrin 2020)
+            mu_h_tau_h = 2.0e-4,                  # cm²/V — μ_h=100×τ_h=2μs (Koch-Mehrin 2020)
             bias_voltage_V = 800.0,               # Typical operating voltage
 
-            # Intrinsic energy resolution
-            pair_creation_energy_eV = 4.43,       # eV per e-h pair
-            fano_factor = 0.11,                   # Intrinsic variance reduction
-            charge_cloud_sigma_mm = 0.04,         # At 800V bias, 1.6mm thick
+            # Intrinsic energy resolution (Koch-Mehrin 2020, Redus 2009)
+            pair_creation_energy_eV = 4.3,        # eV per e-h pair (Koch-Mehrin 2020)
+            fano_factor = 0.1,                    # Intrinsic variance reduction (Redus 2009)
+            charge_cloud_sigma_mm = 0.013,        # Physics-based: ~13μm from ODE (Koch-Mehrin 2020)
 
             # System-level measured resolution (includes electronics)
             energy_resolution_fwhm_keV = 10.0     # Typical for NAEOTOM at 60 keV
