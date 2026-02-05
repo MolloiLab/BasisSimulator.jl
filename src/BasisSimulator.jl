@@ -54,6 +54,7 @@ include("physics/attenuation.jl")
 # PCCT detector physics: CdTe material constants, charge transport, fluorescence
 # Reference: Koch-Mehrin 2020 (NIM-A 976:164241), Konrad 2025 (PMB 70:065004)
 include("physics/pcct/cdte_constants.jl")
+include("physics/pcct/charge_transport.jl")
 
 # =============================================================================
 # Geometry
