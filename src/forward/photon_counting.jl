@@ -2415,8 +2415,15 @@ function compute_spectral_response_matrix(
     E_max = Float64(kVp)
     energies = range(E_min, E_max, length=n_energy_points)
 
-    # Fluorescence parameters
-    fluorescence = if include_fluorescence
+    # Fluorescence parameters — use extended model (Koch-Mehrin 2020, Table 1)
+    # with full Cd/Te K-shell transitions and Te→Cd cascade
+    fluor_extended = if include_fluorescence && material == CDTE_MATERIAL
+        compute_cdte_fluorescence_model(pixel_size_mm, thickness_mm)
+    else
+        nothing
+    end
+    # Legacy model fallback for non-CdTe materials
+    fluorescence = if include_fluorescence && fluor_extended === nothing
         compute_fluorescence_escape_probability(material, thickness_mm, pixel_size_mm)
     else
         nothing
@@ -2450,9 +2457,24 @@ function compute_spectral_response_matrix(
             w_tail = tail_weights[t_idx]
 
             # Apply fluorescence escape: split into primary and escape peaks
-            if include_fluorescence && fluorescence !== nothing
+            # Extended model (Koch-Mehrin 2020 Table 1) for CdTe: full K-shell
+            # transitions, Te→Cd cascade, inter-pixel energy deposition
+            if include_fluorescence && fluor_extended !== nothing
+                p_escape, E_primary_if_esc, E_neighbor = apply_fluorescence_escape_extended(E_tail, fluor_extended)
+                # Three components:
+                # (1) No escape: full energy at E_tail
+                # (2) Escape, primary pixel: E_tail - E_fluorescence (escape peak)
+                # (3) Escape, neighbor pixel: E_fluorescence deposited in neighbor
+                # The neighbor energy appears as additional counts in the neighbor's
+                # spectral response — modeled as a separate energy component
+                energy_components = [
+                    (E_tail, 1.0 - p_escape),           # no escape: photopeak
+                    (E_primary_if_esc, p_escape * 0.5),  # escape: primary pixel sees reduced energy
+                    (E_neighbor, p_escape * 0.5),         # escape: neighbor pixel gets fluorescence energy
+                ]
+            elseif include_fluorescence && fluorescence !== nothing
+                # Legacy fallback for non-CdTe materials
                 p_escape, E_escaped = apply_fluorescence_escape(E_tail, fluorescence)
-                # Two components: (1-p_escape) at E_tail, p_escape at E_escaped
                 energy_components = [(E_tail, 1.0 - p_escape), (E_escaped, p_escape)]
             else
                 energy_components = [(E_tail, 1.0)]
@@ -2529,6 +2551,8 @@ export get_pcct_detector_info, print_pcct_detector_info
 export get_detector_material_properties, get_detector_material_attenuation
 export quantum_efficiency, quantum_efficiency_vector
 export KFluorescenceParams, compute_fluorescence_escape_probability, apply_fluorescence_escape
+export CdTeFluorescenceModel, compute_cdte_fluorescence_model
+export fluorescence_escape_fraction, fluorescence_sharing_boost, apply_fluorescence_escape_extended
 export ChargeTransportParams, get_charge_transport_params
 export charge_collection_efficiency, mean_charge_collection_efficiency
 export hole_tailing_distribution
