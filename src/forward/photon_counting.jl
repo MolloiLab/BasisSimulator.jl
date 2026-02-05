@@ -534,6 +534,9 @@ function _apply_charge_sharing_physics!(
     thresholds = detector.energy_thresholds_keV
     pixel_pitch = detector.pixel_size_mm
 
+    # Pre-compute fluorescence model for K-edge sharing boosts
+    fluor_model = compute_cdte_fluorescence_model(pixel_pitch, detector.thickness_mm)
+
     # Compute per-bin charge cloud σ and sharing probability on CPU
     bin_p_share = Vector{Float64}(undef, n_bins)
 
@@ -545,8 +548,10 @@ function _apply_charge_sharing_physics!(
         # Depth-averaged σ at bin-center energy (Koch-Mehrin 2020 ODE)
         σ = mean_charge_cloud_sigma_mm(E_center, geom)
 
-        # Charge sharing probability from cloud-pixel overlap geometry
-        bin_p_share[b] = charge_sharing_probability(σ, pixel_pitch)
+        # Charge sharing = cloud overlap + fluorescence escape
+        p_cloud = charge_sharing_probability(σ, pixel_pitch)
+        p_fluor = fluorescence_sharing_boost(E_center, fluor_model)
+        bin_p_share[b] = min(p_cloud + p_fluor, 0.7)
     end
 
     # Process each bin: spatial redistribution + energy downshift
