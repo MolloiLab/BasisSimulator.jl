@@ -369,3 +369,15 @@ function pixel_to_thickness_ratio(geom::PCCTDetectorGeometry)
     w = min(geom.pixel_pitch_mm...)
     return w / geom.thickness_mm
 end
+
+# =============================================================================
+# Exports
+# =============================================================================
+
+export CdTeTransport, CDTE_TRANSPORT
+export KShellTransition, ElementFluorescence
+export CD_FLUORESCENCE, TE_FLUORESCENCE
+export PCCTDetectorGeometry, NAEOTOM_ALPHA, HEXITEC
+export initial_cloud_sigma_um, cdte_diffusion_coefficient_cm2_per_s
+export electron_drift_time_s, num_electron_hole_pairs
+export weighted_mean_fluorescence_energy, pixel_to_thickness_ratio
