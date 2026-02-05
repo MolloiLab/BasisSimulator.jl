@@ -222,6 +222,10 @@ include("dual_energy/dual_energy.jl")
 # Photon-counting detector model: energy binning, charge sharing, pile-up
 include("forward/photon_counting.jl")
 
+# Unified Detector Response Matrix (DRM) combining all energy-dependent physics
+# Must be after photon_counting.jl (uses get_detector_material_properties, etc.)
+include("physics/pcct/detector_response.jl")
+
 # PCCT spectral imaging: native VMI, K-edge, effective Z, multi-material decomposition
 include("forward/pcct_spectral.jl")
 
