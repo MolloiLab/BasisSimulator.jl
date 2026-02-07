@@ -1751,30 +1751,29 @@ function apply_pcct_noise!(
     for (b, bin) in enumerate(sino.bins)
         I0_bin = T(I0_per_bin[b])
 
-        # Generate Poisson noise on CPU, transfer to device
+        # Bulk GPU→CPU transfer
         bin_cpu = Array(bin)
 
-        for idx in eachindex(bin_cpu)
-            # Expected counts: N = I₀_bin × exp(-projection_value)
-            N_expected = I0_bin * exp(-bin_cpu[idx])
-            N_expected = max(N_expected, T(0.1))  # Floor to avoid zero
+        # Vectorized: compute expected counts for all pixels at once
+        N_expected = @. I0_bin * exp(-bin_cpu)
+        @. N_expected = max(N_expected, T(0.1))
 
-            # Poisson sampling (using Gaussian approximation for large N)
-            if N_expected > T(20)
-                # Gaussian approximation: N ~ Normal(μ=N, σ²=N)
-                N_measured = N_expected + sqrt(N_expected) * T(randn(rng))
-                N_measured = max(N_measured, T(1))
-            else
-                # Exact Poisson for small counts
-                N_measured = T(_poisson_sample(rng, Float64(N_expected)))
-                N_measured = max(N_measured, T(1))
+        # Vectorized Gaussian noise for all pixels (dominant path for clinical CT)
+        noise = randn(rng, T, size(bin_cpu))
+        N_measured = @. N_expected + sqrt(N_expected) * noise
+
+        # Fix up low-count pixels with exact Poisson sampling (rare in clinical data)
+        @inbounds for idx in eachindex(N_expected)
+            if N_expected[idx] <= T(20)
+                N_measured[idx] = T(_poisson_sample(rng, Float64(N_expected[idx])))
             end
-
-            # Convert back to line-integral domain
-            bin_cpu[idx] = -log(N_measured / I0_bin)
         end
 
-        # Transfer back to device
+        # Floor measured counts and convert back to line-integral domain
+        @. N_measured = max(N_measured, T(1))
+        @. bin_cpu = -log(N_measured / I0_bin)
+
+        # Bulk CPU→GPU transfer
         copyto!(bin, bin_cpu)
     end
 
