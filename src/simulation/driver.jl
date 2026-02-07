@@ -788,19 +788,16 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts;
         apply_bhc!(sino_ideal_gpu, config.bhc)
     end
 
-    # 7. Apply PCCT noise (per-bin Poisson, no electronic noise)
-    # Use physics-based I0 from protocol and geometry (same formula as sim_detect)
-    pcct_sino_noisy = if sim_opts.use_noise
+    # 7. Apply PCCT noise in-place (per-bin Poisson, no electronic noise)
+    # sino_ideal_gpu was already computed from clean bins above, so we can
+    # safely modify pcct_sino.bins in-place — no copy needed, saves ~3GB GPU.
+    if sim_opts.use_noise
         I0_physics = compute_detector_I0(geom, protocol)
-        noisy_bins = [copy(b) for b in pcct_sino.bins]
-        noisy_sino = EnergyResolvedSinogram(noisy_bins, copy(pcct_sino.thresholds_keV))
-        apply_pcct_noise!(noisy_sino, pcct_detector, protocol;
+        apply_pcct_noise!(pcct_sino, pcct_detector, protocol;
                           seed=sim_opts.seed, I0=I0_physics,
                           energies=energies, weights=weights)
-        noisy_sino
-    else
-        pcct_sino
     end
+    pcct_sino_noisy = pcct_sino
 
     # 8. Conventional noisy sinogram (combine all bins → single channel)
     sino_noisy_gpu = _combine_pcct_bins(pcct_sino_noisy, pcct_detector, energies, weights, kVp;
