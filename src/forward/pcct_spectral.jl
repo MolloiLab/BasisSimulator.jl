@@ -324,22 +324,19 @@ function pcct_material_decomposition(
     # Compute pseudo-inverse
     A_pinv = pinv(A_mat)
 
-    # Allocate output materials
-    n_cols, n_rows, n_angles = size(sino)
-    material_maps = [similar(sino.bins[1]) for _ in 1:n_materials]
-    for m in material_maps
-        fill!(m, zero(T))
-    end
+    # Bulk copy bins to CPU to avoid scalar GPU indexing
+    bins_cpu = [Array(b) for b in sino.bins]
 
-    # Apply decomposition
-    bins = sino.bins
+    # Allocate output on CPU
+    n_elements = length(bins_cpu[1])
+    material_maps_cpu = [zeros(T, size(bins_cpu[1])) for _ in 1:n_materials]
 
-    # For each pixel, compute material densities
-    for idx in 1:length(material_maps[1])
+    # Apply decomposition on CPU (fast memory access)
+    p = zeros(T, n_bins)
+    @inbounds for idx in 1:n_elements
         # Gather bin values for this pixel
-        p = zeros(T, n_bins)
         for i in 1:n_bins
-            p[i] = bins[i][idx]
+            p[i] = bins_cpu[i][idx]
         end
 
         # Apply pseudo-inverse
@@ -348,8 +345,14 @@ function pcct_material_decomposition(
             for i in 1:n_bins
                 ρ += A_pinv[j, i] * p[i]
             end
-            material_maps[j][idx] = ρ
+            material_maps_cpu[j][idx] = ρ
         end
+    end
+
+    # Copy results back to device (same type as input)
+    material_maps = [similar(sino.bins[1]) for _ in 1:n_materials]
+    for j in 1:n_materials
+        copyto!(material_maps[j], material_maps_cpu[j])
     end
 
     return PCCTMaterialMap{T,A}(material_maps, basis_vec, :projection)
