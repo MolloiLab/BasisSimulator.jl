@@ -168,7 +168,7 @@ specified energy via `compute_μ_at_energy()`.
 
 # GPU Compatibility
 
-Uses `AK.foreachindex` for parallel execution on any backend:
+Uses `_foreachindex!` for parallel execution on any backend:
 
 | Array Type | Backend | Notes |
 |------------|---------|-------|
@@ -215,22 +215,33 @@ function create_μ_volume!(
     μ_volume::AbstractArray{T, 3},
     mask::AbstractArray{UInt8, 3},
     materials::Vector,
-    energy_keV::Real
+    energy_keV::Real;
+    ws_μ_lut_cpu::Union{Nothing, Vector{T}} = nothing,
+    ws_μ_lut_gpu = nothing,
+    ws_μ_table = nothing,   # pre-computed μ[region, energy] matrix
+    energy_idx::Int = 0      # index into μ_table columns
 ) where T <: AbstractFloat
 
     # Pre-compute μ for all regions at this energy (on CPU)
     n_regions = length(materials)
-    μ_at_energy_cpu = Vector{T}(undef, n_regions)
-    for i in 1:n_regions
-        μ_at_energy_cpu[i] = T(compute_μ_at_energy(materials[i], Float64(energy_keV)))
+    μ_at_energy_cpu = ws_μ_lut_cpu !== nothing ? ws_μ_lut_cpu : Vector{T}(undef, n_regions)
+    if ws_μ_table !== nothing && energy_idx > 0
+        # Use pre-computed table (zero-alloc path)
+        for i in 1:n_regions
+            μ_at_energy_cpu[i] = ws_μ_table[i, energy_idx]
+        end
+    else
+        for i in 1:n_regions
+            μ_at_energy_cpu[i] = T(compute_μ_at_energy(materials[i], Float64(energy_keV)))
+        end
     end
 
     # Transfer lookup table to same device as mask (GPU or CPU)
-    μ_at_energy = similar(mask, T, n_regions)
+    μ_at_energy = ws_μ_lut_gpu !== nothing ? ws_μ_lut_gpu : similar(mask, T, n_regions)
     copyto!(μ_at_energy, μ_at_energy_cpu)
 
     # Use AcceleratedKernels.jl for parallel execution
-    AK.foreachindex(mask) do idx
+    _foreachindex!(mask) do idx
         region_idx = mask[idx] + 1  # Convert 0-based region to 1-based array index
         μ_volume[idx] = μ_at_energy[region_idx]
     end
@@ -781,7 +792,7 @@ function _forward_project_with_signal_chain!(
     eps = T(1e-10)
 
     # Clamp sinogram to reasonable range before exp (avoid extreme intensities)
-    AK.foreachindex(sinogram) do idx
+    _foreachindex!(sinogram) do idx
         sinogram[idx] = exp(-clamp(sinogram[idx], T(-1), T(15)))
     end
 
@@ -815,7 +826,7 @@ function _forward_project_with_signal_chain!(
     if das_model !== nothing
         # Apply gain ONLY (no noise) - CatSim exact
         gain = T(das_model.gain)
-        AK.foreachindex(air_scan) do idx
+        _foreachindex!(air_scan) do idx
             air_scan[idx] *= gain
         end
     end
@@ -823,7 +834,7 @@ function _forward_project_with_signal_chain!(
     # =========================================================================
     # STEP 7: Calibration (prep = phantom / air)
     # =========================================================================
-    AK.foreachindex(sinogram) do idx
+    _foreachindex!(sinogram) do idx
         air_val = max(air_scan[idx], eps)
         sinogram[idx] = sinogram[idx] / air_val
     end
@@ -838,12 +849,12 @@ function _forward_project_with_signal_chain!(
     # =========================================================================
     if max_prep !== nothing
         max_val = T(max_prep)
-        AK.foreachindex(sinogram) do idx
+        _foreachindex!(sinogram) do idx
             val = -log(max(sinogram[idx], eps))
             sinogram[idx] = min(val, max_val)
         end
     else
-        AK.foreachindex(sinogram) do idx
+        _foreachindex!(sinogram) do idx
             sinogram[idx] = -log(max(sinogram[idx], eps))
         end
     end
@@ -1078,7 +1089,7 @@ function _forward_project_poly!(
         # Accumulate Beer-Lambert: I += w × exp(-line_integral)
         w = weights_norm[e_idx]
 
-        AK.foreachindex(I_transmitted) do idx
+        _foreachindex!(I_transmitted) do idx
             I_transmitted[idx] += w * exp(-sino_mono[idx])
         end
     end
@@ -1086,7 +1097,7 @@ function _forward_project_poly!(
     # Convert back to line integral: sinogram = -log(I / I₀)
     eps = T(1e-10)
 
-    AK.foreachindex(sinogram) do idx
+    _foreachindex!(sinogram) do idx
         sinogram[idx] = -log(max(I_transmitted[idx], eps))
     end
 

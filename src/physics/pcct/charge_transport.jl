@@ -373,3 +373,6 @@ function charge_sharing_probability(σ_mm::Real, pixel_pitch_mm::Tuple{<:Real,<:
     p_no_share = (inner_row / w_row) * (inner_col / w_col)
     return 1.0 - p_no_share
 end
+
+export charge_cloud_sigma_mm, mean_charge_cloud_sigma_mm, charge_sharing_probability
+export ChargeCloudLUT, compute_charge_cloud_lut, lookup_sigma_mm

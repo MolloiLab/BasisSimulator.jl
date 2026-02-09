@@ -418,7 +418,7 @@ function apply_energy_thresholds(
         upper_threshold = bin_idx < n_bins ? T(thresholds[bin_idx + 1]) : T(Inf)
         output_bin = bins[bin_idx]
 
-        AK.foreachindex(output_bin) do idx
+        _foreachindex!(output_bin) do idx
             ci = CartesianIndices(output_bin)[idx]
             col, row, angle = Tuple(ci)
 
@@ -492,7 +492,8 @@ function apply_charge_sharing!(
     bins::Vector{A},
     detector::PhotonCountingDetector;
     use_physics_model::Bool=true,
-    scratch::Union{Nothing,A}=nothing
+    scratch::Union{Nothing,A}=nothing,
+    ws_charge_probs::Union{Nothing, Vector{Float64}}=nothing
 ) where {T, A<:AbstractArray{T,3}}
 
     if !detector.enable_charge_sharing
@@ -502,7 +503,8 @@ function apply_charge_sharing!(
     _scratch = scratch === nothing ? similar(bins[1]) : scratch
 
     if use_physics_model && detector.material == CDTE_MATERIAL
-        return _apply_charge_sharing_physics!(bins, detector, _scratch)
+        return _apply_charge_sharing_physics!(bins, detector, _scratch;
+                                               ws_charge_probs=ws_charge_probs)
     else
         return _apply_charge_sharing_legacy!(bins, detector, _scratch)
     end
@@ -518,44 +520,51 @@ spatial redistribution and spectral downshift.
 function _apply_charge_sharing_physics!(
     bins::Vector{A},
     detector::PhotonCountingDetector,
-    scratch::A
+    scratch::A;
+    ws_charge_probs::Union{Nothing, Vector{Float64}}=nothing
 ) where {T, A<:AbstractArray{T,3}}
 
     n_bins = length(bins)
     n_cols, n_rows, n_angles = size(bins[1])
 
-    # Build PCCTDetectorGeometry from detector parameters
-    geom = PCCTDetectorGeometry(
-        "runtime",
-        Float64.(detector.pixel_size_mm),
-        Float64(detector.thickness_mm),
-        800.0,   # bias voltage [V] — NAEOTOM default
-        680.0,   # effective voltage [V] — ~85% of applied
-        1.5,     # electronic noise σ [keV]
-        3.0      # noise threshold [keV]
-    )
+    # Use pre-computed probabilities if provided, otherwise compute
+    bin_p_share = if ws_charge_probs !== nothing
+        ws_charge_probs
+    else
+        # Build PCCTDetectorGeometry from detector parameters
+        geom = PCCTDetectorGeometry(
+            "runtime",
+            Float64.(detector.pixel_size_mm),
+            Float64(detector.thickness_mm),
+            800.0,   # bias voltage [V] — NAEOTOM default
+            680.0,   # effective voltage [V] — ~85% of applied
+            1.5,     # electronic noise σ [keV]
+            3.0      # noise threshold [keV]
+        )
 
-    thresholds = detector.energy_thresholds_keV
-    pixel_pitch = detector.pixel_size_mm
+        thresholds = detector.energy_thresholds_keV
+        pixel_pitch = detector.pixel_size_mm
 
-    # Pre-compute fluorescence model for K-edge sharing boosts
-    fluor_model = compute_cdte_fluorescence_model(pixel_pitch, detector.thickness_mm)
+        # Pre-compute fluorescence model for K-edge sharing boosts
+        fluor_model = compute_cdte_fluorescence_model(pixel_pitch, detector.thickness_mm)
 
-    # Compute per-bin charge cloud σ and sharing probability on CPU
-    bin_p_share = Vector{Float64}(undef, n_bins)
+        # Compute per-bin charge cloud σ and sharing probability on CPU
+        _bin_p_share = Vector{Float64}(undef, n_bins)
 
-    for b in 1:n_bins
-        E_low = thresholds[b]
-        E_high = b < n_bins ? thresholds[b+1] : 140.0
-        E_center = (E_low + E_high) / 2.0
+        for b in 1:n_bins
+            E_low = thresholds[b]
+            E_high = b < n_bins ? thresholds[b+1] : 140.0
+            E_center = (E_low + E_high) / 2.0
 
-        # Depth-averaged σ at bin-center energy (Koch-Mehrin 2020 ODE)
-        σ = mean_charge_cloud_sigma_mm(E_center, geom)
+            # Depth-averaged σ at bin-center energy (Koch-Mehrin 2020 ODE)
+            σ = mean_charge_cloud_sigma_mm(E_center, geom)
 
-        # Charge sharing = cloud overlap + fluorescence escape
-        p_cloud = charge_sharing_probability(σ, pixel_pitch)
-        p_fluor = fluorescence_sharing_boost(E_center, fluor_model)
-        bin_p_share[b] = min(p_cloud + p_fluor, 0.7)
+            # Charge sharing = cloud overlap + fluorescence escape
+            p_cloud = charge_sharing_probability(σ, pixel_pitch)
+            p_fluor = fluorescence_sharing_boost(E_center, fluor_model)
+            _bin_p_share[b] = min(p_cloud + p_fluor, 0.7)
+        end
+        _bin_p_share
     end
 
     # Process each bin: spatial redistribution + energy downshift
@@ -568,7 +577,7 @@ function _apply_charge_sharing_physics!(
         let cb = bins[bin_idx], pp = p_primary, nweight = nw,
             nc = Int32(n_cols), nr = Int32(n_rows), out = scratch
 
-            AK.foreachindex(cb) do idx
+            _foreachindex!(cb) do idx
                 ci = CartesianIndices(cb)[idx]
                 col, row, angle = Tuple(ci)
 
@@ -598,7 +607,7 @@ function _apply_charge_sharing_physics!(
             let cb = bins[bin_idx], tb = bins[bin_idx - 1],
                 lf = p_share * T(0.4)
 
-                AK.foreachindex(cb) do idx
+                _foreachindex!(cb) do idx
                     transfer = cb[idx] * lf
                     tb[idx] += transfer
                     cb[idx] -= transfer
@@ -652,7 +661,7 @@ function _apply_charge_sharing_legacy!(
         let cb = bins[bin_idx], pp = p_primary, nweight = nw,
             nc = Int32(n_cols), nr = Int32(n_rows), out = scratch
 
-            AK.foreachindex(cb) do idx
+            _foreachindex!(cb) do idx
                 ci = CartesianIndices(cb)[idx]
                 col, row, angle = Tuple(ci)
 
@@ -679,7 +688,7 @@ function _apply_charge_sharing_legacy!(
             let cb = bins[bin_idx], tb = bins[bin_idx - 1],
                 lf = p_share * energy_loss_fraction
 
-                AK.foreachindex(cb) do idx
+                _foreachindex!(cb) do idx
                     transfer = cb[idx] * lf
                     tb[idx] += transfer
                     cb[idx] -= transfer
@@ -762,7 +771,7 @@ function correct_charge_sharing!(
         let b = bin, cw = center_weight, nwt = neighbor_weight,
             nc = Int32(n_cols), nr = Int32(n_rows), out = _scratch
 
-            AK.foreachindex(b) do idx
+            _foreachindex!(b) do idx
                 ci = CartesianIndices(b)[idx]
                 col, row, angle = Tuple(ci)
 
@@ -790,7 +799,7 @@ function correct_charge_sharing!(
         let lb = bins[bin_idx], hb = bins[bin_idx + 1],
             lf = p_share * energy_loss_fraction
 
-            AK.foreachindex(lb) do idx
+            _foreachindex!(lb) do idx
                 transfer = lb[idx] * lf
                 hb[idx] += transfer
                 lb[idx] -= transfer
@@ -844,7 +853,15 @@ weighted by the actual incident spectrum shape.
 function apply_pulse_pileup!(
     bins::Vector{A},
     detector::PhotonCountingDetector,
-    flux_rate::Real
+    flux_rate::Real;
+    ws_pileup_counts=nothing,
+    ws_pileup_migration=nothing,
+    ws_pileup_S=nothing,
+    ws_pileup_thresh=nothing,
+    ws_pileup_E_low=nothing,
+    ws_pileup_E_high=nothing,
+    ws_pileup_E_centers=nothing,
+    ws_pileup_w=nothing
 ) where {T, A<:AbstractArray{T,3}}
 
     if !detector.enable_pile_up || detector.dead_time_ns ≤ 0.0
@@ -860,26 +877,22 @@ function apply_pulse_pileup!(
     aτ = Float64(count_rate * τ)
 
     # Count-loss factor: seminonparalyzable model (Yang 2025)
-    # Accounts for dead-time retriggering by pulses during dead time,
-    # giving stronger count loss than pure nonparalyzable at high flux
     pile_up_factor = T(seminonparalyzable_count_factor(aτ))
 
     # Apply count rate reduction to all bins
     for bin in bins
         let pf = pile_up_factor, b = bin
-            AK.foreachindex(b) do idx
+            _foreachindex!(b) do idx
                 b[idx] *= pf
             end
         end
     end
 
     # Physics-based spectral migration (Taguchi 2010, Section II.B)
-    # Piled-up photons have SUMMED energy → shifts counts from low to high bins
     n_bins = length(bins)
     if n_bins >= 2 && aτ > 0.001
-        # Estimate bin weights from current counts (incident spectrum shape)
-        # Use mean across all pixels for a representative spectrum
-        bin_weights = zeros(Float64, n_bins)
+        # Estimate bin weights from current counts
+        bin_weights = ws_pileup_counts !== nothing ? ws_pileup_counts : zeros(Float64, n_bins)
         for i in 1:n_bins
             bin_weights[i] = Float64(sum(bins[i])) / max(Float64(length(bins[i])), 1.0)
         end
@@ -893,23 +906,24 @@ function apply_pulse_pileup!(
         S = compute_spectral_migration_matrix(
             detector.energy_thresholds_keV, aτ;
             max_pileup_order=6, kVp=140.0,
-            bin_weights=bin_weights
+            bin_weights=bin_weights,
+            ws_S=ws_pileup_S,
+            ws_thresh=ws_pileup_thresh,
+            ws_E_low=ws_pileup_E_low,
+            ws_E_high=ws_pileup_E_high,
+            ws_E_centers=ws_pileup_E_centers,
+            ws_w=ws_pileup_w
         )
 
         # Extract off-diagonal transfer fractions from S
-        # S already encodes both diagonal (no-pileup) and off-diagonal (pileup)
-        # After count-loss, we redistribute the surviving counts spectrally.
-        # The off-diagonal part of S (normalized per column) gives the fraction
-        # of counts in each source bin that migrate to other bins.
-        transfer_fracs = zeros(Float64, n_bins, n_bins)
+        transfer_fracs = ws_pileup_migration !== nothing ? ws_pileup_migration : zeros(Float64, n_bins, n_bins)
+        fill!(transfer_fracs, 0.0)
         for i in 1:n_bins
             diag_val = S[i, i]
             col_sum = sum(S[:, i])
             if col_sum > 0.0 && diag_val < col_sum
-                # Fraction of events in bin i that migrate to other bins
                 for j in 1:n_bins
                     if j != i
-                        # Normalize: off-diag fraction relative to total column
                         transfer_fracs[j, i] = S[j, i] / col_sum
                     end
                 end
@@ -925,7 +939,7 @@ function apply_pulse_pileup!(
                 frac = T(transfer_fracs[dst_bin, src_bin])
                 if frac > T(1e-6)
                     let cb = bins[src_bin], db = bins[dst_bin], f = frac
-                        AK.foreachindex(cb) do idx
+                        _foreachindex!(cb) do idx
                             transfer = cb[idx] * f
                             db[idx] += transfer
                             cb[idx] -= transfer
@@ -968,7 +982,15 @@ undo the forward model's low→high energy shifting.
 function correct_pulse_pileup!(
     bins::Vector{A},
     detector::PhotonCountingDetector,
-    flux_rate::Real
+    flux_rate::Real;
+    ws_correction_counts=nothing,
+    ws_correction_migration=nothing,
+    ws_pileup_S=nothing,
+    ws_pileup_thresh=nothing,
+    ws_pileup_E_low=nothing,
+    ws_pileup_E_high=nothing,
+    ws_pileup_E_centers=nothing,
+    ws_pileup_w=nothing
 ) where {T, A<:AbstractArray{T,3}}
 
     if !detector.enable_pile_up || detector.dead_time_ns ≤ 0.0
@@ -990,7 +1012,7 @@ function correct_pulse_pileup!(
     n_bins = length(bins)
     if n_bins >= 2 && aτ > 0.001
         # Estimate bin weights from current (degraded) counts
-        bin_weights = zeros(Float64, n_bins)
+        bin_weights = ws_correction_counts !== nothing ? ws_correction_counts : zeros(Float64, n_bins)
         for i in 1:n_bins
             bin_weights[i] = Float64(sum(bins[i])) / max(Float64(length(bins[i])), 1.0)
         end
@@ -1004,11 +1026,18 @@ function correct_pulse_pileup!(
         S = compute_spectral_migration_matrix(
             detector.energy_thresholds_keV, aτ;
             max_pileup_order=6, kVp=140.0,
-            bin_weights=bin_weights
+            bin_weights=bin_weights,
+            ws_S=ws_pileup_S,
+            ws_thresh=ws_pileup_thresh,
+            ws_E_low=ws_pileup_E_low,
+            ws_E_high=ws_pileup_E_high,
+            ws_E_centers=ws_pileup_E_centers,
+            ws_w=ws_pileup_w
         )
 
         # Compute transfer fractions (same normalization as forward model)
-        transfer_fracs = zeros(Float64, n_bins, n_bins)
+        transfer_fracs = ws_correction_migration !== nothing ? ws_correction_migration : zeros(Float64, n_bins, n_bins)
+        fill!(transfer_fracs, 0.0)
         for i in 1:n_bins
             col_sum = sum(S[:, i])
             if col_sum > 0.0
@@ -1021,17 +1050,15 @@ function correct_pulse_pileup!(
         end
 
         # Reverse the spectral migration: transfer from higher bins back to lower
-        # Iterate in reverse order to undo the low→high shifting
         for dst_bin in n_bins:-1:1
             for src_bin in n_bins:-1:1
                 if src_bin == dst_bin
                     continue
                 end
-                # Reverse: what was transferred src→dst in forward, transfer dst→src
                 frac = T(transfer_fracs[dst_bin, src_bin])
                 if frac > T(1e-6)
                     let db = bins[dst_bin], sb = bins[src_bin], f = frac
-                        AK.foreachindex(db) do idx
+                        _foreachindex!(db) do idx
                             transfer = db[idx] * f
                             sb[idx] += transfer
                             db[idx] -= transfer
@@ -1045,7 +1072,7 @@ function correct_pulse_pileup!(
     # Apply inverse count rate correction to all bins
     for bin in bins
         let cf = correction_factor, b = bin
-            AK.foreachindex(b) do idx
+            _foreachindex!(b) do idx
                 b[idx] *= cf
             end
         end
@@ -1110,7 +1137,7 @@ function apply_anti_coincidence!(
     fill!(total_counts, zero(T))
     for bin in bins
         let tc = total_counts, b = bin
-            AK.foreachindex(tc) do idx
+            _foreachindex!(tc) do idx
                 tc[idx] += b[idx]
             end
         end
@@ -1126,7 +1153,7 @@ function apply_anti_coincidence!(
         let cb = bins[bin_idx], tc = total_counts, recovery_per_neighbor = rf8,
             nc = Int32(n_cols), nr = Int32(n_rows), z = zero_T, out = _scratch
 
-            AK.foreachindex(cb) do idx
+            _foreachindex!(cb) do idx
                 ci = CartesianIndices(cb)[idx]
                 col, row, angle = Tuple(ci)
 
@@ -1223,7 +1250,7 @@ function apply_pcct_electronic_noise!(
         copyto!(rand_gpu, rand_cpu)
 
         let rg = rand_gpu, ns = noise_scale
-            AK.foreachindex(bin) do idx
+            _foreachindex!(bin) do idx
                 # Noise proportional to sqrt(counts) - Poisson-like
                 noise_sigma = sqrt(max(bin[idx], one(T))) * ns
                 bin[idx] += noise_sigma * rg[idx]
@@ -1318,7 +1345,35 @@ function pcct_forward_project(
     ws_sino_buf = nothing,
     ws_scratch = nothing,
     ws_total_counts = nothing,
-    ws_thresholds_T = nothing
+    ws_thresholds_T = nothing,
+    # Pre-computed spectral data (optional — compute internally if not provided)
+    ws_η = nothing,           # quantum efficiency vector (n_energies)
+    ws_R = nothing,           # spectral response matrix (n_energies × n_bins)
+    ws_R_energies = nothing,  # energy grid for R
+    ws_I0_bins_norm = nothing, # per-bin I0 for normalization
+    # Pre-allocated μ lookup buffers for create_μ_volume!
+    ws_μ_lut_cpu = nothing,   # Vector{T}(n_regions) CPU
+    ws_μ_lut_gpu = nothing,   # similar(mask, T, n_regions) GPU-side
+    ws_μ_table = nothing,     # Matrix{T}(n_regions, n_energies) pre-computed μ table
+    # Pre-allocated pileup buffers
+    ws_pileup_counts = nothing,    # Vector{Float64}(n_bins) for bin weights
+    ws_pileup_migration = nothing, # Matrix{Float64}(n_bins, n_bins) for transfer fracs
+    ws_correction_counts = nothing,    # Vector{Float64}(n_bins) for correction bin weights
+    ws_correction_migration = nothing,  # Matrix{Float64}(n_bins, n_bins) for correction transfer fracs
+    # Pre-allocated pileup migration scratch buffers
+    ws_pileup_S = nothing,
+    ws_pileup_thresh = nothing,
+    ws_pileup_E_low = nothing,
+    ws_pileup_E_high = nothing,
+    ws_pileup_E_centers = nothing,
+    ws_pileup_w = nothing,
+    # Pre-allocated geometry arrays for siddon_forward_project!
+    ws_source_positions = nothing,
+    ws_detector_centers = nothing,
+    ws_detector_u = nothing,
+    ws_detector_v = nothing,
+    # Pre-computed charge sharing probabilities
+    ws_charge_probs = nothing
 )
     T = Float32  # Use Float32 for GPU efficiency
 
@@ -1331,18 +1386,19 @@ function pcct_forward_project(
     kVp = maximum(energies)
 
     # Pre-compute quantum efficiency for all energies (CPU, scalar values)
-    η = quantum_efficiency_vector(detector.material, detector.thickness_mm, energies)
+    # Use workspace buffer if provided to avoid allocation
+    η = ws_η !== nothing ? ws_η : quantum_efficiency_vector(detector.material, detector.thickness_mm, energies)
 
     # Pre-compute spectral response matrix if requested (CPU, precomputed once)
-    R = if apply_spectral_response
+    # Use workspace buffer if provided to avoid allocation
+    R = if ws_R !== nothing
+        ws_R
+    elseif apply_spectral_response
         if use_unified_drm
-            # Unified DRM: physics-based Fano + electronic noise resolution,
-            # combined with fluorescence, CCE, and tailing (Koch-Mehrin 2020)
             compute_unified_drm(detector, kVp;
                 n_energy_points=n_energies,
                 use_physics_resolution=true)
         else
-            # Legacy DRM: fixed FWHM energy resolution
             compute_spectral_response_matrix(
                 detector.material, detector.thickness_mm, thresholds, kVp;
                 energy_resolution_keV=detector.energy_resolution_keV,
@@ -1357,7 +1413,10 @@ function pcct_forward_project(
     end
 
     # Energy grid for R matrix (maps energy index to row in R)
-    R_energies = if apply_spectral_response
+    # Use workspace buffer if provided to avoid allocation
+    R_energies = if ws_R_energies !== nothing
+        ws_R_energies
+    elseif apply_spectral_response
         collect(range(1.0, Float64(kVp), length=n_energies))
     else
         nothing
@@ -1397,11 +1456,17 @@ function pcct_forward_project(
         end
 
         # Create energy-dependent μ-volume from mask + materials
-        create_μ_volume!(μ_volume, mask, materials, E_float)
+        create_μ_volume!(μ_volume, mask, materials, E_float;
+                         ws_μ_lut_cpu=ws_μ_lut_cpu, ws_μ_lut_gpu=ws_μ_lut_gpu,
+                         ws_μ_table=ws_μ_table, energy_idx=e_idx)
 
         # Forward project at this energy (reuses existing Siddon infrastructure)
         fill!(sino_buf, zero(T))
-        siddon_forward_project!(sino_buf, μ_volume, geom)
+        siddon_forward_project!(sino_buf, μ_volume, geom;
+            ws_source_positions=ws_source_positions,
+            ws_detector_centers=ws_detector_centers,
+            ws_detector_u=ws_detector_u,
+            ws_detector_v=ws_detector_v)
 
         # Weight by spectrum and quantum efficiency
         # Photon count: N = I₀ × S(E) × η(E) × exp(-∫μ dl)
@@ -1422,7 +1487,7 @@ function pcct_forward_project(
                 end
                 # Use let-block to avoid Core.Box capture in GPU kernel
                 let wt = I0_T * w_T * η_E * R_val, ba = bins[b]
-                    AK.foreachindex(sino_buf) do idx
+                    _foreachindex!(sino_buf) do idx
                         ba[idx] += wt * exp(-sino_buf[idx])
                     end
                 end
@@ -1433,7 +1498,7 @@ function pcct_forward_project(
             if bin_idx > 0
                 # Use let-block to avoid Core.Box capture in GPU kernel
                 let wt = I0_T * w_T * η_E, ba = bins[bin_idx]
-                    AK.foreachindex(sino_buf) do idx
+                    _foreachindex!(sino_buf) do idx
                         ba[idx] += wt * exp(-sino_buf[idx])
                     end
                 end
@@ -1448,21 +1513,41 @@ function pcct_forward_project(
     # Use workspace scratch if provided, otherwise sino_buf serves as scratch
     _scratch = ws_scratch !== nothing ? ws_scratch : sino_buf
     if apply_detector_effects
-        apply_charge_sharing!(bins, detector; scratch=_scratch)
-        apply_pulse_pileup!(bins, detector, Float64(flux_rate))
+        apply_charge_sharing!(bins, detector; scratch=_scratch,
+                              ws_charge_probs=ws_charge_probs)
+        apply_pulse_pileup!(bins, detector, Float64(flux_rate);
+                            ws_pileup_counts=ws_pileup_counts,
+                            ws_pileup_migration=ws_pileup_migration,
+                            ws_pileup_S=ws_pileup_S,
+                            ws_pileup_thresh=ws_pileup_thresh,
+                            ws_pileup_E_low=ws_pileup_E_low,
+                            ws_pileup_E_high=ws_pileup_E_high,
+                            ws_pileup_E_centers=ws_pileup_E_centers,
+                            ws_pileup_w=ws_pileup_w)
         apply_anti_coincidence!(bins, detector; scratch=_scratch,
                                 total_counts_buf=ws_total_counts)
     end
 
     # Apply software corrections in count domain (inverse of degradation)
     if apply_corrections
-        correct_pulse_pileup!(bins, detector, Float64(flux_rate))
+        correct_pulse_pileup!(bins, detector, Float64(flux_rate);
+                              ws_correction_counts=ws_correction_counts,
+                              ws_correction_migration=ws_correction_migration,
+                              ws_pileup_S=ws_pileup_S,
+                              ws_pileup_thresh=ws_pileup_thresh,
+                              ws_pileup_E_low=ws_pileup_E_low,
+                              ws_pileup_E_high=ws_pileup_E_high,
+                              ws_pileup_E_centers=ws_pileup_E_centers,
+                              ws_pileup_w=ws_pileup_w)
         correct_charge_sharing!(bins, detector; scratch=_scratch)
     end
 
     # Convert from photon counts to line-integral domain: sino = -log(N / I₀_bin)
     eps_val = T(1e-10)  # Pre-compute to avoid capturing Type{T} in kernel
-    I0_bins_norm = if apply_detector_effects && !apply_corrections
+    # Use workspace buffer if provided to avoid allocation
+    I0_bins_norm = if ws_I0_bins_norm !== nothing
+        ws_I0_bins_norm
+    elseif apply_detector_effects && !apply_corrections
         # Effects without corrections: use degraded I0
         _compute_degraded_I0(detector, energies, weights, η, thresholds, kVp, I0, flux_rate; R=R)
     else
@@ -1472,7 +1557,7 @@ function pcct_forward_project(
     end
     for b in 1:n_bins
         let I0_bin_T = T(I0_bins_norm[b]), ba = bins[b], eps = eps_val
-            AK.foreachindex(ba) do idx
+            _foreachindex!(ba) do idx
                 ba[idx] = -log(max(ba[idx], eps) / I0_bin_T)
             end
         end
@@ -1490,7 +1575,7 @@ function pcct_forward_project(
             let ba = bins[b], nc = Int32(size(bins[1], 1)),
                 ws_side = w_side, wc = w_center, out = _scratch
 
-                AK.foreachindex(ba) do idx
+                _foreachindex!(ba) do idx
                     ci = CartesianIndices(ba)[idx]
                     col, row, angle = Tuple(ci)
                     c_val = ba[col, row, angle]
@@ -1705,7 +1790,7 @@ function pcct_forward_project(
         sino_E = siddon_forward_project(volume, geom)
         I0_E = I0 * weights[e_idx]
 
-        AK.foreachindex(sino_E) do idx
+        _foreachindex!(sino_E) do idx
             intensity_spectrum[CartesianIndex(Tuple(CartesianIndices(sino_E)[idx])..., e_idx)] =
                 I0_E * exp(-sino_E[idx])
         end
@@ -1724,7 +1809,7 @@ function pcct_forward_project(
     for (bin_idx, bin) in enumerate(bins)
         threshold = detector.energy_thresholds_keV[bin_idx]
         I0_bin = I0 * sum(w for (E, w) in zip(energies, weights) if E >= threshold)
-        AK.foreachindex(bin) do idx
+        _foreachindex!(bin) do idx
             bin[idx] = -log(max(bin[idx], one(T)) / I0_bin)
         end
     end
@@ -1786,7 +1871,8 @@ function apply_pcct_noise!(
     ws_noise_staging = nothing,
     ws_noise_buf = nothing,
     ws_rng = nothing,
-    ws_noise_I0 = nothing
+    ws_noise_I0 = nothing,
+    ws_η = nothing
 ) where {T, A}
 
     rng = if ws_rng !== nothing
@@ -1800,7 +1886,7 @@ function apply_pcct_noise!(
 
     # Compute per-bin I₀ values (into workspace buffer if provided)
     I0_per_bin = _compute_pcct_noise_I0(detector, n_bins, thresholds, I0, energies, weights;
-                                         output=ws_noise_I0)
+                                         output=ws_noise_I0, ws_η=ws_η)
 
     # Pre-allocate reusable CPU buffers (one-time allocation, reused across all bins)
     # Use workspace buffers if provided
@@ -1854,7 +1940,7 @@ The spectrum weights may be unnormalized (raw tube output), so we compute the
 fractional bin distribution using a unit I0, then scale by the actual I0.
 """
 function _compute_pcct_noise_I0(detector, n_bins, thresholds, I0, energies, weights;
-                                output=nothing)
+                                output=nothing, ws_η=nothing)
     if isnothing(energies) || isnothing(weights)
         # Fallback: uniform distribution across bins
         if output !== nothing
@@ -1864,8 +1950,8 @@ function _compute_pcct_noise_I0(detector, n_bins, thresholds, I0, energies, weig
         return fill(Float64(I0) / n_bins, n_bins)
     end
 
-    # Compute quantum efficiency for all energies
-    η = quantum_efficiency_vector(detector.material, detector.thickness_mm, energies)
+    # Compute quantum efficiency for all energies (use pre-computed if available)
+    η = ws_η !== nothing ? ws_η : quantum_efficiency_vector(detector.material, detector.thickness_mm, energies)
     kVp = maximum(energies)
 
     # Compute per-bin contributions with unit I0 to get relative fractions

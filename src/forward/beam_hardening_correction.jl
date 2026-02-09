@@ -464,24 +464,32 @@ apply_bhc!(sinogram, bhc_none())  # p_out = p_in
 """
 function apply_bhc!(
     sinogram::AbstractArray{T, 3},
-    bhc::BeamHardeningCorrection
+    bhc::BeamHardeningCorrection;
+    ws_coeffs_gpu=nothing
 ) where T <: AbstractFloat
-    return apply_bhc!(sinogram, bhc.polynomial)
+    return apply_bhc!(sinogram, bhc.polynomial; ws_coeffs_gpu=ws_coeffs_gpu)
 end
 
 function apply_bhc!(
     sinogram::AbstractArray{T, 3},
-    poly::BHCPolynomial
+    poly::BHCPolynomial;
+    ws_coeffs_gpu=nothing
 ) where T <: AbstractFloat
 
     order = poly.order
 
     # Transfer coefficients to GPU (similar pattern for GPU compatibility)
-    coeffs_cpu = T.(poly.coefficients)
-    coeffs = similar(sinogram, T, length(coeffs_cpu))
-    copyto!(coeffs, coeffs_cpu)
+    # Use pre-allocated buffer if provided
+    coeffs = if ws_coeffs_gpu !== nothing
+        ws_coeffs_gpu
+    else
+        coeffs_cpu = T.(poly.coefficients)
+        c = similar(sinogram, T, length(coeffs_cpu))
+        copyto!(c, coeffs_cpu)
+        c
+    end
 
-    AK.foreachindex(sinogram) do idx
+    _foreachindex!(sinogram) do idx
         p = sinogram[idx]
 
         # Evaluate polynomial: p_corrected = Σ aᵢ × p^i
