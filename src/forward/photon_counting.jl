@@ -1202,19 +1202,23 @@ function apply_pcct_electronic_noise!(
     # Model as additive Gaussian noise scaled by count level
     noise_scale = detector.electronic_noise_keV / T(60)  # Relative to 60 keV
 
-    for (bin_idx, bin) in enumerate(bins)
-        n_elements = length(bin)
+    # Pre-allocate reusable noise buffers (one-time, reused across bins)
+    n_elements = length(bins[1])
+    rand_cpu = Vector{T}(undef, n_elements)
+    rand_gpu = similar(bins[1], n_elements)
 
-        # Pre-generate noise on CPU
-        rand_cpu = randn(rng, T, n_elements)
-        rand_gpu = similar(bin, n_elements)
+    for (bin_idx, bin) in enumerate(bins)
+        # Fill pre-allocated CPU noise buffer (same RNG sequence as before)
+        randn!(rng, rand_cpu)
         copyto!(rand_gpu, rand_cpu)
 
-        AK.foreachindex(bin) do idx
-            # Noise proportional to sqrt(counts) - Poisson-like
-            noise_sigma = sqrt(max(bin[idx], one(T))) * noise_scale
-            bin[idx] += noise_sigma * rand_gpu[idx]
-            bin[idx] = max(bin[idx], zero(T))  # Ensure non-negative
+        let rg = rand_gpu, ns = noise_scale
+            AK.foreachindex(bin) do idx
+                # Noise proportional to sqrt(counts) - Poisson-like
+                noise_sigma = sqrt(max(bin[idx], one(T))) * ns
+                bin[idx] += noise_sigma * rg[idx]
+                bin[idx] = max(bin[idx], zero(T))  # Ensure non-negative
+            end
         end
     end
 
@@ -1753,33 +1757,39 @@ function apply_pcct_noise!(
     # Compute per-bin I₀ values
     I0_per_bin = _compute_pcct_noise_I0(detector, n_bins, thresholds, I0, energies, weights)
 
+    # Pre-allocate reusable CPU buffers (one-time allocation, reused across all bins)
+    cpu_buf = Array(sino.bins[1])     # 1S CPU: working buffer for GPU↔CPU transfer
+    noise_buf = similar(cpu_buf)       # 1S CPU: noise storage, reused per bin
+
     for (b, bin) in enumerate(sino.bins)
         I0_bin = T(I0_per_bin[b])
 
-        # Bulk GPU→CPU transfer
-        bin_cpu = Array(bin)
+        # Bulk GPU→CPU transfer (reuses pre-allocated buffer)
+        copyto!(cpu_buf, bin)
 
-        # Vectorized: compute expected counts for all pixels at once
-        N_expected = @. I0_bin * exp(-bin_cpu)
-        @. N_expected = max(N_expected, T(0.1))
+        # In-place: convert line integrals → expected counts
+        @. cpu_buf = I0_bin * exp(-cpu_buf)
+        @. cpu_buf = max(cpu_buf, T(0.1))
 
-        # Vectorized Gaussian noise for all pixels (dominant path for clinical CT)
-        noise = randn(rng, T, size(bin_cpu))
-        N_measured = @. N_expected + sqrt(N_expected) * noise
+        # Fill pre-allocated noise buffer (same RNG sequence as before)
+        randn!(rng, noise_buf)
+        # In-place: compute measured counts = N_expected + sqrt(N_expected) * noise
+        @. noise_buf = cpu_buf + sqrt(cpu_buf) * noise_buf
 
         # Fix up low-count pixels with exact Poisson sampling (rare in clinical data)
-        @inbounds for idx in eachindex(N_expected)
-            if N_expected[idx] <= T(20)
-                N_measured[idx] = T(_poisson_sample(rng, Float64(N_expected[idx])))
+        # cpu_buf still holds N_expected, noise_buf holds N_measured
+        @inbounds for idx in eachindex(cpu_buf)
+            if cpu_buf[idx] <= T(20)
+                noise_buf[idx] = T(_poisson_sample(rng, Float64(cpu_buf[idx])))
             end
         end
 
         # Floor measured counts and convert back to line-integral domain
-        @. N_measured = max(N_measured, T(1))
-        @. bin_cpu = -log(N_measured / I0_bin)
+        @. noise_buf = max(noise_buf, T(1))
+        @. cpu_buf = -log(noise_buf / I0_bin)
 
         # Bulk CPU→GPU transfer
-        copyto!(bin, bin_cpu)
+        copyto!(bin, cpu_buf)
     end
 
     return sino
