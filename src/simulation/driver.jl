@@ -810,12 +810,10 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts;
     end
 
     # 9. N-material decomposition (if vmi_basis specified with 2+ materials)
-    # Decomposition is a per-pixel CPU operation — transfer bins to CPU if on GPU
+    # pcct_material_decomposition handles GPU→CPU transfer internally if needed
     pcct_mat_map = if length(recon_opts.vmi_basis) >= 2
         basis_tuple = Tuple(recon_opts.vmi_basis)
-        cpu_bins = [Array(b) for b in pcct_sino_noisy.bins]
-        cpu_sino = EnergyResolvedSinogram(cpu_bins, pcct_sino_noisy.thresholds_keV)
-        pcct_material_decomposition(cpu_sino; basis=basis_tuple)
+        pcct_material_decomposition(pcct_sino_noisy; basis=basis_tuple)
     else
         nothing
     end

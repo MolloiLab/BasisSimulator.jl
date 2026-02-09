@@ -324,8 +324,12 @@ function pcct_material_decomposition(
     # Compute pseudo-inverse
     A_pinv = pinv(A_mat)
 
-    # Bulk copy bins to CPU to avoid scalar GPU indexing
-    bins_cpu = [Array(b) for b in sino.bins]
+    # Copy bins to CPU only if needed (avoid redundant copy when already CPU)
+    bins_cpu = if eltype(sino.bins) <: Array
+        sino.bins  # Already CPU arrays — use directly, no copy
+    else
+        [Array(b) for b in sino.bins]  # GPU→CPU transfer
+    end
 
     # Allocate output on CPU
     n_elements = length(bins_cpu[1])
@@ -349,13 +353,9 @@ function pcct_material_decomposition(
         end
     end
 
-    # Copy results back to device (same type as input)
-    material_maps = [similar(sino.bins[1]) for _ in 1:n_materials]
-    for j in 1:n_materials
-        copyto!(material_maps[j], material_maps_cpu[j])
-    end
-
-    return PCCTMaterialMap{T,A}(material_maps, basis_vec, :projection)
+    # Return CPU arrays directly — no redundant copy to GPU then back
+    # The caller (driver) will use these as-is or copy to GPU if needed
+    return PCCTMaterialMap{T,typeof(material_maps_cpu[1])}(material_maps_cpu, basis_vec, :projection)
 end
 
 """
