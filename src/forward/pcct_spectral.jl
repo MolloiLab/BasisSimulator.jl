@@ -291,7 +291,11 @@ function pcct_material_decomposition(
     sino::EnergyResolvedSinogram{T,A};
     basis::Union{NTuple{M,Symbol} where M, Vector{Symbol}} = (:water, :iodine),
     method::Symbol=:least_squares,
-    max_keV::Float64=120.0
+    max_keV::Float64=120.0,
+    # Workspace buffers (optional — allocate internally if not provided)
+    ws_bins_cpu = nothing,
+    ws_material_maps = nothing,
+    ws_decomp_pixel_buf = nothing
 ) where {T, A}
 
     basis_vec = basis isa Tuple ? collect(Symbol, basis) : Vector{Symbol}(basis)
@@ -325,18 +329,43 @@ function pcct_material_decomposition(
     A_pinv = pinv(A_mat)
 
     # Copy bins to CPU only if needed (avoid redundant copy when already CPU)
-    bins_cpu = if eltype(sino.bins) <: Array
+    bins_cpu = if ws_bins_cpu !== nothing
+        # Use workspace buffers — copyto! each bin
+        if eltype(sino.bins) <: Array
+            # Already CPU, just reference directly
+            for (i, b) in enumerate(sino.bins)
+                copyto!(ws_bins_cpu[i], b)
+            end
+        else
+            # GPU→CPU transfer into pre-allocated buffers
+            for (i, b) in enumerate(sino.bins)
+                copyto!(ws_bins_cpu[i], b)
+            end
+        end
+        ws_bins_cpu
+    elseif eltype(sino.bins) <: Array
         sino.bins  # Already CPU arrays — use directly, no copy
     else
         [Array(b) for b in sino.bins]  # GPU→CPU transfer
     end
 
-    # Allocate output on CPU
+    # Allocate output on CPU (or use workspace)
     n_elements = length(bins_cpu[1])
-    material_maps_cpu = [zeros(T, size(bins_cpu[1])) for _ in 1:n_materials]
+    material_maps_cpu = if ws_material_maps !== nothing
+        for m in ws_material_maps
+            fill!(m, zero(T))
+        end
+        ws_material_maps
+    else
+        [zeros(T, size(bins_cpu[1])) for _ in 1:n_materials]
+    end
 
     # Apply decomposition on CPU (fast memory access)
-    p = zeros(T, n_bins)
+    p = if ws_decomp_pixel_buf !== nothing
+        ws_decomp_pixel_buf
+    else
+        zeros(T, n_bins)
+    end
     @inbounds for idx in 1:n_elements
         # Gather bin values for this pixel
         for i in 1:n_bins
@@ -982,12 +1011,13 @@ vmi_70 = synthesize_vmi(mat_map, 70.0)
 ```
 """
 function synthesize_vmi(material_map::PCCTMaterialMap{T,A}, energy_keV::Float64;
-                        output=nothing) where {T, A}
+                        output=nothing,
+                        ws_μ_values=nothing) where {T, A}
     n_materials = length(material_map.materials)
     @assert n_materials > 0 "Material map must have at least one material"
 
     # Get attenuation coefficient for each basis material at target energy
-    μ_values = Vector{T}(undef, n_materials)
+    μ_values = ws_μ_values !== nothing ? ws_μ_values : Vector{T}(undef, n_materials)
     for (i, mat_name) in enumerate(material_map.material_names)
         μ_values[i] = T(_get_basis_material_attenuation(mat_name, energy_keV))
     end
