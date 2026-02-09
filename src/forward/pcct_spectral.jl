@@ -981,7 +981,8 @@ mat_map = pcct_material_decomposition(pcct_sino; basis=(:water, :iodine, :calciu
 vmi_70 = synthesize_vmi(mat_map, 70.0)
 ```
 """
-function synthesize_vmi(material_map::PCCTMaterialMap{T,A}, energy_keV::Float64) where {T, A}
+function synthesize_vmi(material_map::PCCTMaterialMap{T,A}, energy_keV::Float64;
+                        output=nothing) where {T, A}
     n_materials = length(material_map.materials)
     @assert n_materials > 0 "Material map must have at least one material"
 
@@ -992,7 +993,8 @@ function synthesize_vmi(material_map::PCCTMaterialMap{T,A}, energy_keV::Float64)
     end
 
     # Synthesize VMI: μ_VMI = Σ ρᵢ × μᵢ(E)
-    result = similar(material_map.materials[1])
+    # Reuse pre-allocated output buffer if provided
+    result = output === nothing ? similar(material_map.materials[1]) : output
     fill!(result, zero(T))
 
     for i in 1:n_materials
