@@ -680,7 +680,8 @@ Returns a GPU array (same device as input bins).
 function _combine_pcct_bins(pcct_sino::EnergyResolvedSinogram, detector::PhotonCountingDetector,
                              energies, weights, kVp; I0=1e6,
                              apply_detector_effects::Bool=false, apply_corrections::Bool=false,
-                             flux_rate::Real=1e8)
+                             flux_rate::Real=1e8,
+                             output=nothing)
     T = Float32
     n_bins = length(pcct_sino.bins)
     thresholds = detector.energy_thresholds_keV
@@ -708,7 +709,8 @@ function _combine_pcct_bins(pcct_sino::EnergyResolvedSinogram, detector::PhotonC
     I0_total = T(sum(I0_bins))
 
     # Accumulate total photon counts: N_total = Σ I0_bin × exp(-sino_bin)
-    N_total_gpu = similar(pcct_sino.bins[1])
+    # Reuse pre-allocated output buffer if provided
+    N_total_gpu = output === nothing ? similar(pcct_sino.bins[1]) : output
     fill!(N_total_gpu, zero(T))
 
     eps_val = T(1e-10)
@@ -779,17 +781,24 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts;
     # Must use same I0 type (degraded vs theoretical) as forward projection
     T = Float32
     kVp = Float64(maximum(energies))
+
+    # Pre-allocate one combine buffer, reused for both ideal and noisy combine calls
+    combine_buf = similar(pcct_sino.bins[1])
     sino_ideal_gpu = _combine_pcct_bins(pcct_sino, pcct_detector, energies, weights, kVp;
                                          apply_detector_effects=use_detector_fx,
-                                         apply_corrections=use_corrections)
+                                         apply_corrections=use_corrections,
+                                         output=combine_buf)
 
     # 6b. Apply beam hardening correction to combined sinogram
     if config.bhc !== nothing
         apply_bhc!(sino_ideal_gpu, config.bhc)
     end
 
+    # Copy ideal sinogram to CPU now so combine_buf can be reused for noisy
+    sino_ideal = Array(sino_ideal_gpu)
+
     # 7. Apply PCCT noise in-place (per-bin Poisson, no electronic noise)
-    # sino_ideal_gpu was already computed from clean bins above, so we can
+    # sino_ideal was already saved to CPU above, so we can
     # safely modify pcct_sino.bins in-place — no copy needed, saves ~3GB GPU.
     if sim_opts.use_noise
         I0_physics = compute_detector_I0(geom, protocol)
@@ -800,9 +809,11 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts;
     pcct_sino_noisy = pcct_sino
 
     # 8. Conventional noisy sinogram (combine all bins → single channel)
+    # Reuse combine_buf (sino_ideal already saved to CPU)
     sino_noisy_gpu = _combine_pcct_bins(pcct_sino_noisy, pcct_detector, energies, weights, kVp;
                                          apply_detector_effects=use_detector_fx,
-                                         apply_corrections=use_corrections)
+                                         apply_corrections=use_corrections,
+                                         output=combine_buf)
 
     # 8b. Apply beam hardening correction to noisy combined sinogram
     if config.bhc !== nothing
@@ -819,10 +830,13 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts;
     end
 
     # 10. VMI synthesis (if energies specified and decomposition succeeded)
+    # Pre-allocate one VMI buffer, reused across all energies
+    # (reconstruction consumes vmi_sino before next iteration)
     pcct_vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
     if !isempty(recon_opts.vmi_energies) && !isnothing(pcct_mat_map)
+        vmi_buf = similar(pcct_mat_map.materials[1])
         for E in recon_opts.vmi_energies
-            vmi_sino = synthesize_vmi(pcct_mat_map, E)
+            vmi_sino = synthesize_vmi(pcct_mat_map, E; output=vmi_buf)
             # Reconstruct VMI volume
             vmi_vol = _run_reconstruction(vmi_sino, geom, recon_opts)
             pcct_vmi_dict[E] = vmi_vol
@@ -835,8 +849,7 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts;
     recons = Pair{Symbol, AbstractArray{T, 3}}[recon_opts.algorithm => recon_vol]
     vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
 
-    # Store sinograms as CPU arrays for the result (user-facing data)
-    sino_ideal = Array(sino_ideal_gpu)
+    # sino_noisy to CPU for result
     sino_noisy = Array(sino_noisy_gpu)
 
     return SimulationResult(
