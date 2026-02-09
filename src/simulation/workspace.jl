@@ -405,6 +405,9 @@ mutable struct EICTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A1<:Abstr
     sino_mono::A3         # monochromatic sinogram scratch (sino shape)
     I_transmitted::A3     # Beer-Lambert accumulator (sino shape)
 
+    # ─── Signal chain scratch (GPU-side) ───
+    air_scan::A3          # CatSim air scan buffer (sino shape)
+
     # ─── Noise (CPU + GPU) ───
     noise_rand_cpu::Vector{T}  # randn output (n_elements)
     noise_rand_gpu::A1         # GPU transfer buffer (n_elements)
@@ -423,6 +426,11 @@ mutable struct EICTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A1<:Abstr
     config::PhysicsConfig
     mats::Vector
     rng::MersenneTwister
+    # Signal chain config (extracted from PhysicsConfig for zero-alloc)
+    heel_effect::Union{Nothing, HeelEffect}
+    das_model::Union{Nothing, DASModel}
+    bhc::Union{Nothing, Union{BHCPolynomial, BeamHardeningCorrection}}
+    has_signal_chain::Bool
 
     # ─── Result staging (CPU) ───
     sino_ideal_out::Array{T,3}
@@ -464,6 +472,7 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     μ_volume = similar(ref, T, vol_shape)
     sino_mono = similar(ref, T, sino_shape)
     I_transmitted = similar(ref, T, sino_shape)
+    air_scan = similar(ref, T, sino_shape)
 
     # Noise buffers
     noise_rand_cpu = Vector{T}(undef, n_elements)
@@ -492,6 +501,12 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     bhc_coeffs_gpu = similar(ref, T, length(bhc_coeffs_cpu))
     copyto!(bhc_coeffs_gpu, bhc_coeffs_cpu)
 
+    # Extract signal chain config from PhysicsConfig (pre-computed)
+    heel = config.heel_effect
+    das = config.das_model
+    bhc_effect = config.bhc
+    has_sc = heel !== nothing || das !== nothing || bhc_effect !== nothing
+
     # RNG
     rng = MersenneTwister(0)
 
@@ -500,10 +515,11 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     sino_noisy_out = zeros(T, sino_shape)
 
     return EICTWorkspace{T, typeof(sinogram), typeof(noise_rand_gpu)}(
-        sinogram, μ_volume, sino_mono, I_transmitted,
+        sinogram, μ_volume, sino_mono, I_transmitted, air_scan,
         noise_rand_cpu, noise_rand_gpu,
         weights_norm, μ_lut_cpu, μ_lut_gpu, μ_table, bhc_coeffs_gpu,
         geom, energies, weights_vec, config, mats, rng,
+        heel, das, bhc_effect, has_sc,
         sino_ideal_out, sino_noisy_out
     )
 end

@@ -902,7 +902,9 @@ function simulate!(
     mats = ws.mats
     config = ws.config
 
-    # Polychromatic forward projection using workspace buffers
+    # ═══════════════════════════════════════════════════════════════════════
+    # STEP 1: Polychromatic forward projection (Beer-Lambert)
+    # ═══════════════════════════════════════════════════════════════════════
     fill!(ws.sinogram, zero(T))
     _forward_project_poly!(ws.sinogram, phantom.mask, geom, energies, ws.weights, mats;
                             ws_μ_volume=ws.μ_volume, ws_sino_mono=ws.sino_mono,
@@ -911,34 +913,92 @@ function simulate!(
                             ws_μ_lut_cpu=ws.μ_lut_cpu, ws_μ_lut_gpu=ws.μ_lut_gpu,
                             ws_μ_table=ws.μ_table)
 
-    # Apply physics effects (in-place, no allocation)
-    if config !== nothing
-        apply_physics_effects!(ws.sinogram, geom, config)
-    end
+    if ws.has_signal_chain
+        # ═══════════════════════════════════════════════════════════════════
+        # CatSim signal chain — inlined from _forward_project_with_signal_chain!
+        # Uses workspace buffers to avoid allocations
+        # ═══════════════════════════════════════════════════════════════════
 
-    # Apply BHC if configured
-    if config !== nothing && config.bhc !== nothing
-        apply_bhc!(ws.sinogram, config.bhc; ws_coeffs_gpu=ws.bhc_coeffs_gpu)
-    end
+        heel_effect = ws.heel_effect
+        das_model = ws.das_model
+        bhc_eff = ws.bhc
 
-    # Save ideal to CPU
-    copyto!(ws.sino_ideal_out, ws.sinogram)
+        # STEP 2: Apply physics pipeline (sinogram domain, no noise)
+        _apply_physics_no_noise!(ws.sinogram, geom, config)
 
-    # Apply quantum noise (in-place using workspace buffers)
-    if sim_opts.use_noise
-        I0 = compute_detector_I0(geom, protocol)
-        I0_T = T(I0)
-
-        # Seed RNG
-        if sim_opts.seed !== nothing
-            Random.seed!(ws.rng, sim_opts.seed)
+        # STEP 3: Convert to intensity domain
+        eps = T(1e-10)
+        _foreachindex!(ws.sinogram) do idx
+            ws.sinogram[idx] = exp(-clamp(ws.sinogram[idx], T(-1), T(15)))
         end
 
-        # Generate random numbers into workspace buffers
-        randn!(ws.rng, ws.noise_rand_cpu)
+        # STEP 4: Apply heel effect to phantom intensity
+        if heel_effect !== nothing
+            apply_heel_effect!(ws.sinogram, heel_effect, geom)
+        end
+
+        # STEP 5: Apply DAS model (gain + noise) to phantom
+        if das_model !== nothing
+            apply_das_model!(ws.sinogram, das_model; seed=config.noise_seed)
+        end
+
+        # STEP 6: Create noise-free air scan (workspace buffer)
+        fill!(ws.air_scan, one(T))
+        if heel_effect !== nothing
+            apply_heel_effect!(ws.air_scan, heel_effect, geom)
+        end
+        if das_model !== nothing
+            gain = T(das_model.gain)
+            _foreachindex!(ws.air_scan) do idx
+                ws.air_scan[idx] *= gain
+            end
+        end
+
+        # STEP 7: Calibration (prep = phantom / air)
+        let sino = ws.sinogram, air = ws.air_scan
+            _foreachindex!(sino) do idx
+                air_val = max(air[idx], eps)
+                sino[idx] = sino[idx] / air_val
+            end
+        end
+
+        # STEP 8: Low signal correction
+        low_signal_correction_gpu!(ws.sinogram)
+
+        # STEP 9: Log transform
+        _foreachindex!(ws.sinogram) do idx
+            ws.sinogram[idx] = -log(max(ws.sinogram[idx], eps))
+        end
+
+        # STEP 10: Beam hardening correction
+        if bhc_eff !== nothing
+            apply_bhc!(ws.sinogram, bhc_eff; ws_coeffs_gpu=ws.bhc_coeffs_gpu)
+        end
+    else
+        # Standard path (no signal chain) — apply physics + BHC separately
+        if config !== nothing
+            apply_physics_effects!(ws.sinogram, geom, config)
+        end
+        if config !== nothing && config.bhc !== nothing
+            apply_bhc!(ws.sinogram, config.bhc; ws_coeffs_gpu=ws.bhc_coeffs_gpu)
+        end
+    end
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Save ideal sinogram to CPU
+    # ═══════════════════════════════════════════════════════════════════════
+    copyto!(ws.sino_ideal_out, ws.sinogram)
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Apply quantum noise (in-place using workspace buffers)
+    # ═══════════════════════════════════════════════════════════════════════
+    if sim_opts.use_noise
+        I0_T = T(compute_detector_I0(geom, protocol))
+
+        # Use default RNG (matches sim_detect behavior: seed=nothing)
+        randn!(ws.noise_rand_cpu)
         copyto!(ws.noise_rand_gpu, ws.noise_rand_cpu)
 
-        # Apply Poisson noise (Gaussian approximation) in-place
         let sino = ws.sinogram, rg = ws.noise_rand_gpu, I0v = I0_T
             _foreachindex!(sino) do idx
                 λ = I0v * exp(-sino[idx])
@@ -949,7 +1009,7 @@ function simulate!(
         end
     end
 
-    # Save noisy to CPU
+    # Save noisy sinogram to CPU
     copyto!(ws.sino_noisy_out, ws.sinogram)
 
     return (sino_ideal=ws.sino_ideal_out, sino_noisy=ws.sino_noisy_out)
