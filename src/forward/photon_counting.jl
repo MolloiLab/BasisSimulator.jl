@@ -491,17 +491,20 @@ When `use_physics_model=false`, uses the fixed Gaussian FWHM from
 function apply_charge_sharing!(
     bins::Vector{A},
     detector::PhotonCountingDetector;
-    use_physics_model::Bool=true
+    use_physics_model::Bool=true,
+    scratch::Union{Nothing,A}=nothing
 ) where {T, A<:AbstractArray{T,3}}
 
     if !detector.enable_charge_sharing
         return bins
     end
 
+    _scratch = scratch === nothing ? similar(bins[1]) : scratch
+
     if use_physics_model && detector.material == CDTE_MATERIAL
-        return _apply_charge_sharing_physics!(bins, detector)
+        return _apply_charge_sharing_physics!(bins, detector, _scratch)
     else
-        return _apply_charge_sharing_legacy!(bins, detector)
+        return _apply_charge_sharing_legacy!(bins, detector, _scratch)
     end
 end
 
@@ -514,7 +517,8 @@ spatial redistribution and spectral downshift.
 """
 function _apply_charge_sharing_physics!(
     bins::Vector{A},
-    detector::PhotonCountingDetector
+    detector::PhotonCountingDetector,
+    scratch::A
 ) where {T, A<:AbstractArray{T,3}}
 
     n_bins = length(bins)
@@ -562,9 +566,7 @@ function _apply_charge_sharing_physics!(
 
         # Spatial redistribution: 8-neighbor kernel
         let cb = bins[bin_idx], pp = p_primary, nweight = nw,
-            nc = Int32(n_cols), nr = Int32(n_rows)
-
-            output = similar(cb)
+            nc = Int32(n_cols), nr = Int32(n_rows), out = scratch
 
             AK.foreachindex(cb) do idx
                 ci = CartesianIndices(cb)[idx]
@@ -583,10 +585,10 @@ function _apply_charge_sharing_physics!(
                     end
                 end
 
-                output[idx] = val
+                out[idx] = val
             end
 
-            copyto!(cb, output)
+            copyto!(cb, scratch)
         end
 
         # Energy redistribution: shared charge deposits less energy → counts
@@ -616,7 +618,8 @@ Maintained for backward compatibility. See `apply_charge_sharing!` docs.
 """
 function _apply_charge_sharing_legacy!(
     bins::Vector{A},
-    detector::PhotonCountingDetector
+    detector::PhotonCountingDetector,
+    scratch::A
 ) where {T, A<:AbstractArray{T,3}}
 
     if detector.charge_sharing_fwhm_mm ≤ 0.0
@@ -647,9 +650,7 @@ function _apply_charge_sharing_legacy!(
 
     for bin_idx in n_bins:-1:1
         let cb = bins[bin_idx], pp = p_primary, nweight = nw,
-            nc = Int32(n_cols), nr = Int32(n_rows)
-
-            output = similar(cb)
+            nc = Int32(n_cols), nr = Int32(n_rows), out = scratch
 
             AK.foreachindex(cb) do idx
                 ci = CartesianIndices(cb)[idx]
@@ -668,10 +669,10 @@ function _apply_charge_sharing_legacy!(
                     end
                 end
 
-                output[idx] = val
+                out[idx] = val
             end
 
-            copyto!(cb, output)
+            copyto!(cb, scratch)
         end
 
         if bin_idx > 1
@@ -716,7 +717,8 @@ artifacts, followed by reversing the energy redistribution.
 """
 function correct_charge_sharing!(
     bins::Vector{A},
-    detector::PhotonCountingDetector
+    detector::PhotonCountingDetector;
+    scratch::Union{Nothing,A}=nothing
 ) where {T, A<:AbstractArray{T,3}}
 
     if !detector.enable_charge_sharing || detector.charge_sharing_fwhm_mm ≤ 0.0
@@ -754,11 +756,11 @@ function correct_charge_sharing!(
     center_weight = one(T) - smooth_weight
     neighbor_weight = smooth_weight / T(8)
 
+    _scratch = scratch === nothing ? similar(bins[1]) : scratch
+
     for bin in bins
         let b = bin, cw = center_weight, nwt = neighbor_weight,
-            nc = Int32(n_cols), nr = Int32(n_rows)
-
-            output = similar(b)
+            nc = Int32(n_cols), nr = Int32(n_rows), out = _scratch
 
             AK.foreachindex(b) do idx
                 ci = CartesianIndices(b)[idx]
@@ -775,10 +777,10 @@ function correct_charge_sharing!(
                     end
                 end
 
-                output[idx] = val
+                out[idx] = val
             end
 
-            copyto!(b, output)
+            copyto!(b, _scratch)
         end
     end
 
@@ -1085,7 +1087,8 @@ Reference: PMC5975362
 """
 function apply_anti_coincidence!(
     bins::Vector{A},
-    detector::PhotonCountingDetector
+    detector::PhotonCountingDetector;
+    scratch::Union{Nothing,A}=nothing
 ) where {T, A<:AbstractArray{T,3}}
 
     if !detector.enable_anti_coincidence
@@ -1095,10 +1098,13 @@ function apply_anti_coincidence!(
     n_bins = length(bins)
     n_cols, n_rows, n_angles = size(bins[1])
 
+    _scratch = scratch === nothing ? similar(bins[1]) : scratch
+
     # Anti-coincidence recovers some charge-shared events
     # by summing coincident signals in adjacent pixels
 
     # Compute total counts per pixel (across all energy bins)
+    # Use sino_buf (passed as scratch2) if available, else allocate
     total_counts = similar(bins[1])
     fill!(total_counts, zero(T))
     for bin in bins
@@ -1117,9 +1123,7 @@ function apply_anti_coincidence!(
     # For each pixel, look for coincident neighbors and redistribute
     for bin_idx in 1:n_bins
         let cb = bins[bin_idx], tc = total_counts, recovery_per_neighbor = rf8,
-            nc = Int32(n_cols), nr = Int32(n_rows), z = zero_T
-
-            output = similar(cb)
+            nc = Int32(n_cols), nr = Int32(n_rows), z = zero_T, out = _scratch
 
             AK.foreachindex(cb) do idx
                 ci = CartesianIndices(cb)[idx]
@@ -1148,10 +1152,10 @@ function apply_anti_coincidence!(
                     end
                 end
 
-                output[idx] = val
+                out[idx] = val
             end
 
-            copyto!(cb, output)
+            copyto!(cb, _scratch)
         end
     end
 
@@ -1413,16 +1417,18 @@ function pcct_forward_project(
 
     # Apply detector physics chain (charge sharing, pileup, anti-coincidence)
     # Only when requested — these are systematic detector imperfections
+    # Reuse sino_buf as scratch buffer — it's the same size/type and no longer needed
+    # after the energy loop above. This avoids allocating a new scratch buffer.
     if apply_detector_effects
-        apply_charge_sharing!(bins, detector)
+        apply_charge_sharing!(bins, detector; scratch=sino_buf)
         apply_pulse_pileup!(bins, detector, Float64(flux_rate))
-        apply_anti_coincidence!(bins, detector)
+        apply_anti_coincidence!(bins, detector; scratch=sino_buf)
     end
 
     # Apply software corrections in count domain (inverse of degradation)
     if apply_corrections
         correct_pulse_pileup!(bins, detector, Float64(flux_rate))
-        correct_charge_sharing!(bins, detector)
+        correct_charge_sharing!(bins, detector; scratch=sino_buf)
     end
 
     # Convert from photon counts to line-integral domain: sino = -log(N / I₀_bin)
@@ -1453,18 +1459,17 @@ function pcct_forward_project(
         w_center = T(0.5)
         for b in 1:n_bins
             let ba = bins[b], nc = Int32(size(bins[1], 1)),
-                ws = w_side, wc = w_center
+                ws = w_side, wc = w_center, out = sino_buf
 
-                output = similar(ba)
                 AK.foreachindex(ba) do idx
                     ci = CartesianIndices(ba)[idx]
                     col, row, angle = Tuple(ci)
                     c_val = ba[col, row, angle]
                     c_left = ba[clamp(col - Int32(1), Int32(1), nc), row, angle]
                     c_right = ba[clamp(col + Int32(1), Int32(1), nc), row, angle]
-                    output[idx] = ws * c_left + wc * c_val + ws * c_right
+                    out[idx] = ws * c_left + wc * c_val + ws * c_right
                 end
-                copyto!(ba, output)
+                copyto!(ba, sino_buf)
             end
         end
     end
