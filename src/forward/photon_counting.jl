@@ -1088,7 +1088,8 @@ Reference: PMC5975362
 function apply_anti_coincidence!(
     bins::Vector{A},
     detector::PhotonCountingDetector;
-    scratch::Union{Nothing,A}=nothing
+    scratch::Union{Nothing,A}=nothing,
+    total_counts_buf::Union{Nothing,A}=nothing
 ) where {T, A<:AbstractArray{T,3}}
 
     if !detector.enable_anti_coincidence
@@ -1104,8 +1105,8 @@ function apply_anti_coincidence!(
     # by summing coincident signals in adjacent pixels
 
     # Compute total counts per pixel (across all energy bins)
-    # Use sino_buf (passed as scratch2) if available, else allocate
-    total_counts = similar(bins[1])
+    # Use pre-allocated buffer if provided, otherwise allocate
+    total_counts = total_counts_buf !== nothing ? total_counts_buf : similar(bins[1])
     fill!(total_counts, zero(T))
     for bin in bins
         let tc = total_counts, b = bin
@@ -1189,14 +1190,23 @@ because individual photons are counted rather than integrated.
 """
 function apply_pcct_electronic_noise!(
     bins::Vector{A},
-    detector::PhotonCountingDetector
+    detector::PhotonCountingDetector;
+    # Workspace buffers (optional — allocate internally if not provided)
+    ws_enoise_cpu = nothing,
+    ws_enoise_gpu = nothing,
+    ws_rng = nothing
 ) where {T, A<:AbstractArray{T,3}}
 
     if detector.electronic_noise_keV ≤ zero(T)
         return bins
     end
 
-    rng = isnothing(detector.seed) ? Random.default_rng() : MersenneTwister(detector.seed)
+    rng = if ws_rng !== nothing
+        Random.seed!(ws_rng, isnothing(detector.seed) ? 0 : detector.seed)
+        ws_rng
+    else
+        isnothing(detector.seed) ? Random.default_rng() : MersenneTwister(detector.seed)
+    end
 
     # Electronic noise effect on counts is small for PCCT
     # Model as additive Gaussian noise scaled by count level
@@ -1204,8 +1214,8 @@ function apply_pcct_electronic_noise!(
 
     # Pre-allocate reusable noise buffers (one-time, reused across bins)
     n_elements = length(bins[1])
-    rand_cpu = Vector{T}(undef, n_elements)
-    rand_gpu = similar(bins[1], n_elements)
+    rand_cpu = ws_enoise_cpu !== nothing ? ws_enoise_cpu : Vector{T}(undef, n_elements)
+    rand_gpu = ws_enoise_gpu !== nothing ? ws_enoise_gpu : similar(bins[1], n_elements)
 
     for (bin_idx, bin) in enumerate(bins)
         # Fill pre-allocated CPU noise buffer (same RNG sequence as before)
@@ -1301,7 +1311,14 @@ function pcct_forward_project(
     apply_spectral_response::Bool = true,
     apply_detector_effects::Bool = true,
     apply_corrections::Bool = false,
-    use_unified_drm::Bool = false
+    use_unified_drm::Bool = false,
+    # Workspace buffers (optional — allocate internally if not provided)
+    ws_bins = nothing,
+    ws_μ_volume = nothing,
+    ws_sino_buf = nothing,
+    ws_scratch = nothing,
+    ws_total_counts = nothing,
+    ws_thresholds_T = nothing
 )
     T = Float32  # Use Float32 for GPU efficiency
 
@@ -1347,17 +1364,22 @@ function pcct_forward_project(
     end
 
     # Allocate per-bin photon count sinograms (GPU-compatible)
+    # Use workspace buffers if provided, otherwise allocate
     sino_shape = (n_cols, n_rows, n_angles)
-    bins = [similar(mask, T, sino_shape) for _ in 1:n_bins]
+    bins = if ws_bins !== nothing
+        ws_bins
+    else
+        [similar(mask, T, sino_shape) for _ in 1:n_bins]
+    end
     for bin in bins
         fill!(bin, zero(T))
     end
 
     # Temporary μ-volume (reused across energies, same device as mask)
-    μ_volume = similar(mask, T, size(mask))
+    μ_volume = ws_μ_volume !== nothing ? ws_μ_volume : similar(mask, T, size(mask))
 
     # Temporary sinogram buffer (reused across energies)
-    sino_buf = similar(mask, T, sino_shape)
+    sino_buf = ws_sino_buf !== nothing ? ws_sino_buf : similar(mask, T, sino_shape)
 
     # Per-energy ray-tracing with spectral weighting
     for (e_idx, E) in enumerate(energies)
@@ -1423,16 +1445,19 @@ function pcct_forward_project(
     # Only when requested — these are systematic detector imperfections
     # Reuse sino_buf as scratch buffer — it's the same size/type and no longer needed
     # after the energy loop above. This avoids allocating a new scratch buffer.
+    # Use workspace scratch if provided, otherwise sino_buf serves as scratch
+    _scratch = ws_scratch !== nothing ? ws_scratch : sino_buf
     if apply_detector_effects
-        apply_charge_sharing!(bins, detector; scratch=sino_buf)
+        apply_charge_sharing!(bins, detector; scratch=_scratch)
         apply_pulse_pileup!(bins, detector, Float64(flux_rate))
-        apply_anti_coincidence!(bins, detector; scratch=sino_buf)
+        apply_anti_coincidence!(bins, detector; scratch=_scratch,
+                                total_counts_buf=ws_total_counts)
     end
 
     # Apply software corrections in count domain (inverse of degradation)
     if apply_corrections
         correct_pulse_pileup!(bins, detector, Float64(flux_rate))
-        correct_charge_sharing!(bins, detector; scratch=sino_buf)
+        correct_charge_sharing!(bins, detector; scratch=_scratch)
     end
 
     # Convert from photon counts to line-integral domain: sino = -log(N / I₀_bin)
@@ -1463,7 +1488,7 @@ function pcct_forward_project(
         w_center = T(0.5)
         for b in 1:n_bins
             let ba = bins[b], nc = Int32(size(bins[1], 1)),
-                ws = w_side, wc = w_center, out = sino_buf
+                ws_side = w_side, wc = w_center, out = _scratch
 
                 AK.foreachindex(ba) do idx
                     ci = CartesianIndices(ba)[idx]
@@ -1471,14 +1496,23 @@ function pcct_forward_project(
                     c_val = ba[col, row, angle]
                     c_left = ba[clamp(col - Int32(1), Int32(1), nc), row, angle]
                     c_right = ba[clamp(col + Int32(1), Int32(1), nc), row, angle]
-                    out[idx] = ws * c_left + wc * c_val + ws * c_right
+                    out[idx] = ws_side * c_left + wc * c_val + ws_side * c_right
                 end
-                copyto!(ba, sino_buf)
+                copyto!(ba, _scratch)
             end
         end
     end
 
-    return EnergyResolvedSinogram(bins, T.(detector.energy_thresholds_keV))
+    # Use workspace thresholds if provided, otherwise allocate
+    thresh_T = if ws_thresholds_T !== nothing
+        for i in eachindex(ws_thresholds_T)
+            ws_thresholds_T[i] = T(detector.energy_thresholds_keV[i])
+        end
+        ws_thresholds_T
+    else
+        T.(detector.energy_thresholds_keV)
+    end
+    return EnergyResolvedSinogram(bins, thresh_T)
 end
 
 """
@@ -1747,19 +1781,31 @@ function apply_pcct_noise!(
     seed::Union{Nothing,Int} = nothing,
     I0::Real = 1e6,
     energies::Union{Nothing,AbstractVector} = nothing,
-    weights::Union{Nothing,AbstractVector} = nothing
+    weights::Union{Nothing,AbstractVector} = nothing,
+    # Workspace buffers (optional — allocate internally if not provided)
+    ws_noise_staging = nothing,
+    ws_noise_buf = nothing,
+    ws_rng = nothing,
+    ws_noise_I0 = nothing
 ) where {T, A}
 
-    rng = isnothing(seed) ? Random.default_rng() : MersenneTwister(seed)
+    rng = if ws_rng !== nothing
+        Random.seed!(ws_rng, isnothing(seed) ? 0 : seed)
+        ws_rng
+    else
+        isnothing(seed) ? Random.default_rng() : MersenneTwister(seed)
+    end
     n_bins = length(sino.bins)
     thresholds = sino.thresholds_keV
 
-    # Compute per-bin I₀ values
-    I0_per_bin = _compute_pcct_noise_I0(detector, n_bins, thresholds, I0, energies, weights)
+    # Compute per-bin I₀ values (into workspace buffer if provided)
+    I0_per_bin = _compute_pcct_noise_I0(detector, n_bins, thresholds, I0, energies, weights;
+                                         output=ws_noise_I0)
 
     # Pre-allocate reusable CPU buffers (one-time allocation, reused across all bins)
-    cpu_buf = Array(sino.bins[1])     # 1S CPU: working buffer for GPU↔CPU transfer
-    noise_buf = similar(cpu_buf)       # 1S CPU: noise storage, reused per bin
+    # Use workspace buffers if provided
+    cpu_buf = ws_noise_staging !== nothing ? ws_noise_staging : Array(sino.bins[1])
+    noise_buf = ws_noise_buf !== nothing ? ws_noise_buf : similar(cpu_buf)
 
     for (b, bin) in enumerate(sino.bins)
         I0_bin = T(I0_per_bin[b])
@@ -1807,9 +1853,14 @@ efficiency × spectral response contribution of each bin.
 The spectrum weights may be unnormalized (raw tube output), so we compute the
 fractional bin distribution using a unit I0, then scale by the actual I0.
 """
-function _compute_pcct_noise_I0(detector, n_bins, thresholds, I0, energies, weights)
+function _compute_pcct_noise_I0(detector, n_bins, thresholds, I0, energies, weights;
+                                output=nothing)
     if isnothing(energies) || isnothing(weights)
         # Fallback: uniform distribution across bins
+        if output !== nothing
+            fill!(output, Float64(I0) / n_bins)
+            return output
+        end
         return fill(Float64(I0) / n_bins, n_bins)
     end
 
@@ -1818,7 +1869,8 @@ function _compute_pcct_noise_I0(detector, n_bins, thresholds, I0, energies, weig
     kVp = maximum(energies)
 
     # Compute per-bin contributions with unit I0 to get relative fractions
-    raw_per_bin = zeros(Float64, n_bins)
+    raw_per_bin = output !== nothing ? output : zeros(Float64, n_bins)
+    fill!(raw_per_bin, 0.0)
     for b in 1:n_bins
         raw_per_bin[b] = _compute_bin_I0(detector, energies, weights, η, thresholds, b, Float64(kVp), 1.0)
     end
@@ -1826,9 +1878,13 @@ function _compute_pcct_noise_I0(detector, n_bins, thresholds, I0, energies, weig
     # Normalize to get fractional distribution, then scale by physics I0
     total_raw = sum(raw_per_bin)
     if total_raw > 0
-        return (raw_per_bin ./ total_raw) .* Float64(I0)
+        for i in eachindex(raw_per_bin)
+            raw_per_bin[i] = (raw_per_bin[i] / total_raw) * Float64(I0)
+        end
+        return raw_per_bin
     else
-        return fill(Float64(I0) / n_bins, n_bins)
+        fill!(raw_per_bin, Float64(I0) / n_bins)
+        return raw_per_bin
     end
 end
 
