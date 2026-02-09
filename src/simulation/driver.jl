@@ -877,6 +877,85 @@ function simulate!(
 end
 
 # =============================================================================
+# simulate!() — Zero-allocation EICT single-kVp simulation hot path
+# =============================================================================
+
+"""
+    simulate!(ws::EICTWorkspace, phantom, scanner, protocol, sim_opts, recon_opts; materials=nothing)
+
+Run EICT single-kVp simulation using pre-allocated workspace buffers.
+
+Create the workspace with `create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)`.
+Reconstruction is NOT included — handled by the wrapper.
+"""
+function simulate!(
+    ws::EICTWorkspace{T},
+    phantom,
+    scanner::Scanner,
+    protocol::CTProtocol,
+    sim_opts::SimOptions = SimOptions(),
+    recon_opts::ReconOptions = ReconOptions();
+    materials::Union{Nothing, Vector} = nothing
+) where {T}
+    geom = ws.geom
+    energies = ws.energies
+    mats = ws.mats
+    config = ws.config
+
+    # Polychromatic forward projection using workspace buffers
+    fill!(ws.sinogram, zero(T))
+    _forward_project_poly!(ws.sinogram, phantom.mask, geom, energies, ws.weights, mats;
+                            ws_μ_volume=ws.μ_volume, ws_sino_mono=ws.sino_mono,
+                            ws_I_transmitted=ws.I_transmitted,
+                            ws_weights_norm=ws.weights_norm,
+                            ws_μ_lut_cpu=ws.μ_lut_cpu, ws_μ_lut_gpu=ws.μ_lut_gpu,
+                            ws_μ_table=ws.μ_table)
+
+    # Apply physics effects (in-place, no allocation)
+    if config !== nothing
+        apply_physics_effects!(ws.sinogram, geom, config)
+    end
+
+    # Apply BHC if configured
+    if config !== nothing && config.bhc !== nothing
+        apply_bhc!(ws.sinogram, config.bhc; ws_coeffs_gpu=ws.bhc_coeffs_gpu)
+    end
+
+    # Save ideal to CPU
+    copyto!(ws.sino_ideal_out, ws.sinogram)
+
+    # Apply quantum noise (in-place using workspace buffers)
+    if sim_opts.use_noise
+        I0 = compute_detector_I0(geom, protocol)
+        I0_T = T(I0)
+
+        # Seed RNG
+        if sim_opts.seed !== nothing
+            Random.seed!(ws.rng, sim_opts.seed)
+        end
+
+        # Generate random numbers into workspace buffers
+        randn!(ws.rng, ws.noise_rand_cpu)
+        copyto!(ws.noise_rand_gpu, ws.noise_rand_cpu)
+
+        # Apply Poisson noise (Gaussian approximation) in-place
+        let sino = ws.sinogram, rg = ws.noise_rand_gpu, I0v = I0_T
+            _foreachindex!(sino) do idx
+                λ = I0v * exp(-sino[idx])
+                λ_noisy = λ + sqrt(max(λ, T(1))) * rg[idx]
+                λ_noisy = max(λ_noisy, T(1))
+                sino[idx] = -log(λ_noisy / I0v)
+            end
+        end
+    end
+
+    # Save noisy to CPU
+    copyto!(ws.sino_noisy_out, ws.sinogram)
+
+    return (sino_ideal=ws.sino_ideal_out, sino_noisy=ws.sino_noisy_out)
+end
+
+# =============================================================================
 # Mode 5: Axial PCCT (Photon-Counting CT)
 # =============================================================================
 
