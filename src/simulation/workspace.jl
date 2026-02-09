@@ -47,6 +47,7 @@ end
 # Never references Metal.jl, CUDA.jl, or any specific GPU backend.
 
 export PCCTWorkspace, create_workspace
+export EICTWorkspace, create_eict_workspace
 
 """
     PCCTWorkspace{T, A3, A1}
@@ -377,5 +378,132 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         A_pinv_mat, basis_vec,
         geom, energies, weights_vec, config, pcct_detector, mats,
         use_detector_fx, use_corrections, kVp, basis_tuple
+    )
+end
+
+# =============================================================================
+# EICTWorkspace — Pre-allocated workspace for zero-allocation EICT simulate!()
+# =============================================================================
+#
+# Energy-Integrating CT (single-kVp). Much simpler than PCCT — ~16 fields.
+# Buffers for polychromatic forward projection + quantum noise.
+
+"""
+    EICTWorkspace{T, A3, A1}
+
+Pre-allocated workspace for zero-allocation EICT single-kVp simulation.
+
+Type parameters:
+- `T`: Element type (typically Float32)
+- `A3`: 3D array type matching GPU backend
+- `A1`: 1D array type matching GPU backend
+"""
+mutable struct EICTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A1<:AbstractArray{T,1}}
+    # ─── Forward projection (GPU-side) ───
+    sinogram::A3          # output sinogram (n_cols, n_rows, n_angles)
+    μ_volume::A3          # attenuation volume, reused per energy (nx, ny, nz)
+    sino_mono::A3         # monochromatic sinogram scratch (sino shape)
+    I_transmitted::A3     # Beer-Lambert accumulator (sino shape)
+
+    # ─── Noise (CPU + GPU) ───
+    noise_rand_cpu::Vector{T}  # randn output (n_elements)
+    noise_rand_gpu::A1         # GPU transfer buffer (n_elements)
+
+    # ─── Pre-computed vectors ───
+    weights_norm::Vector{T}    # T.(weights ./ sum(weights))
+    μ_lut_cpu::Vector{T}       # μ LUT CPU buffer (n_regions)
+    μ_lut_gpu::A1              # μ LUT GPU buffer (matches mask backend)
+    μ_table::Matrix{T}         # pre-computed μ[region, energy] (n_regions × n_energies)
+    bhc_coeffs_gpu::A1         # BHC polynomial coefficients (GPU/backend)
+
+    # ─── Pre-computed setup data ───
+    geom::CTGeometry
+    energies::Vector{Float64}
+    weights::Vector{Float64}
+    config::PhysicsConfig
+    mats::Vector
+    rng::MersenneTwister
+
+    # ─── Result staging (CPU) ───
+    sino_ideal_out::Array{T,3}
+    sino_noisy_out::Array{T,3}
+end
+
+"""
+    create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom; T=Float32, materials=nothing)
+
+Create a pre-allocated workspace for zero-allocation EICT single-kVp `simulate!()`.
+"""
+function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
+                                T::Type{<:AbstractFloat}=Float32,
+                                materials::Union{Nothing, Vector}=nothing)
+    # Geometry
+    geom = CTGeometry(scanner; n_angles=protocol.views, fov_cm=recon_opts.fov_cm, z_cm=nothing)
+
+    # Spectrum
+    energies, weights_vec = resolve_spectrum(sim_opts, protocol)
+    n_energies = length(energies)
+
+    # Physics config
+    config = build_physics_config(scanner, sim_opts, energies, weights_vec; phantom=phantom)
+
+    # Materials
+    mats = _resolve_materials(phantom, materials)
+    n_regions = length(mats)
+
+    # Dimensions
+    sino_shape = (geom.n_cols, geom.n_rows, geom.n_angles)
+    vol_shape = size(phantom.mask)
+    n_elements = prod(sino_shape)
+
+    # Reference array for similar() — matches GPU backend
+    ref = phantom.mask
+
+    # GPU-side buffers
+    sinogram = similar(ref, T, sino_shape)
+    μ_volume = similar(ref, T, vol_shape)
+    sino_mono = similar(ref, T, sino_shape)
+    I_transmitted = similar(ref, T, sino_shape)
+
+    # Noise buffers
+    noise_rand_cpu = Vector{T}(undef, n_elements)
+    noise_rand_gpu = similar(ref, T, n_elements)
+
+    # Pre-computed weights
+    w_sum = sum(weights_vec)
+    weights_norm = T.(weights_vec ./ w_sum)
+
+    # μ lookup table
+    μ_lut_cpu = Vector{T}(undef, n_regions)
+    μ_lut_gpu = similar(ref, T, n_regions)
+    μ_table = zeros(T, n_regions, n_energies)
+    for (e_idx, E) in enumerate(energies)
+        for r in 1:n_regions
+            μ_table[r, e_idx] = T(compute_μ_at_energy(mats[r], Float64(E)))
+        end
+    end
+
+    # BHC coefficients
+    bhc_coeffs_cpu = if config.bhc !== nothing
+        T.(config.bhc.coefficients)
+    else
+        zeros(T, 1)
+    end
+    bhc_coeffs_gpu = similar(ref, T, length(bhc_coeffs_cpu))
+    copyto!(bhc_coeffs_gpu, bhc_coeffs_cpu)
+
+    # RNG
+    rng = MersenneTwister(0)
+
+    # CPU staging
+    sino_ideal_out = zeros(T, sino_shape)
+    sino_noisy_out = zeros(T, sino_shape)
+
+    return EICTWorkspace{T, typeof(sinogram), typeof(noise_rand_gpu)}(
+        sinogram, μ_volume, sino_mono, I_transmitted,
+        noise_rand_cpu, noise_rand_gpu,
+        weights_norm, μ_lut_cpu, μ_lut_gpu, μ_table, bhc_coeffs_gpu,
+        geom, energies, weights_vec, config, mats, rng,
+        sino_ideal_out, sino_noisy_out
     )
 end

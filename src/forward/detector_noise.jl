@@ -583,17 +583,27 @@ add_quantum_noise!(sinogram, model)
 - [`apply_detector_model!`](@ref): Apply full detector model (blur + noise)
 - [`default_detector_model`](@ref): Create detector model with default parameters
 """
-function add_quantum_noise!(sinogram::AbstractArray{T,3}, model::DetectorModel) where T
-    rng = isnothing(model.seed) ? Random.default_rng() : MersenneTwister(model.seed)
+function add_quantum_noise!(sinogram::AbstractArray{T,3}, model::DetectorModel;
+                            ws_rand_cpu::Union{Nothing, Vector{T}}=nothing,
+                            ws_rand_gpu=nothing,
+                            ws_rng::Union{Nothing, MersenneTwister}=nothing) where T
+    rng = if ws_rng !== nothing
+        ws_rng
+    elseif isnothing(model.seed)
+        Random.default_rng()
+    else
+        MersenneTwister(model.seed)
+    end
 
     n_elements = length(sinogram)
     I0 = T(model.I0)
 
     # Pre-generate Gaussian random numbers on CPU
-    rand_cpu = randn(rng, T, n_elements)
+    rand_cpu = ws_rand_cpu !== nothing ? ws_rand_cpu : Vector{T}(undef, n_elements)
+    randn!(rng, rand_cpu)
 
     # Transfer to GPU (same type as sinogram)
-    rand_gpu = similar(sinogram, n_elements)
+    rand_gpu = ws_rand_gpu !== nothing ? ws_rand_gpu : similar(sinogram, n_elements)
     copyto!(rand_gpu, rand_cpu)
 
     # GPU-native noise application

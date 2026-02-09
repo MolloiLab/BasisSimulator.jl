@@ -1061,18 +1061,26 @@ function _forward_project_poly!(
     geom::CTGeometry,
     energies::Vector,
     weights::Vector,
-    materials::Vector
+    materials::Vector;
+    # Workspace kwargs for zero-allocation path
+    ws_μ_volume=nothing,
+    ws_sino_mono=nothing,
+    ws_I_transmitted=nothing,
+    ws_weights_norm::Union{Nothing, Vector{T}}=nothing,
+    ws_μ_lut_cpu::Union{Nothing, Vector{T}}=nothing,
+    ws_μ_lut_gpu=nothing,
+    ws_μ_table=nothing
 ) where T <: AbstractFloat
 
     n_energies = length(energies)
 
-    # Normalize weights
-    weights_norm = T.(weights ./ sum(weights))
+    # Normalize weights (use pre-computed if available)
+    weights_norm = ws_weights_norm !== nothing ? ws_weights_norm : T.(weights ./ sum(weights))
 
-    # Allocate temporary arrays
-    μ_volume = similar(sinogram, T, size(mask))
-    sino_mono = similar(sinogram)
-    I_transmitted = similar(sinogram)
+    # Use workspace buffers or allocate
+    μ_volume = ws_μ_volume !== nothing ? ws_μ_volume : similar(sinogram, T, size(mask))
+    sino_mono = ws_sino_mono !== nothing ? ws_sino_mono : similar(sinogram)
+    I_transmitted = ws_I_transmitted !== nothing ? ws_I_transmitted : similar(sinogram)
 
     # Initialize transmitted intensity
     fill!(I_transmitted, zero(T))
@@ -1080,7 +1088,9 @@ function _forward_project_poly!(
     # Loop over energies (memory-efficient approach)
     for e_idx in 1:n_energies
         # Create μ volume for this energy
-        create_μ_volume!(μ_volume, mask, materials, energies[e_idx])
+        create_μ_volume!(μ_volume, mask, materials, energies[e_idx];
+                         ws_μ_lut_cpu=ws_μ_lut_cpu, ws_μ_lut_gpu=ws_μ_lut_gpu,
+                         ws_μ_table=ws_μ_table, energy_idx=e_idx)
 
         # Forward project at this energy
         fill!(sino_mono, zero(T))
