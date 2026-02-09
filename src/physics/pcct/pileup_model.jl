@@ -123,14 +123,31 @@ function compute_spectral_migration_matrix(
     aτ::Real;
     max_pileup_order::Int=6,
     kVp::Real=140.0,
-    bin_weights::Union{Nothing, Vector{Float64}}=nothing
+    bin_weights::Union{Nothing, Vector{Float64}}=nothing,
+    # Workspace scratch buffers (optional — allocate internally if not provided)
+    ws_S::Union{Nothing, Matrix{Float64}}=nothing,
+    ws_thresh::Union{Nothing, Vector{Float64}}=nothing,
+    ws_E_low::Union{Nothing, Vector{Float64}}=nothing,
+    ws_E_high::Union{Nothing, Vector{Float64}}=nothing,
+    ws_E_centers::Union{Nothing, Vector{Float64}}=nothing,
+    ws_w::Union{Nothing, Vector{Float64}}=nothing
 )
     n_bins = length(thresholds_keV)
-    thresh = Float64.(thresholds_keV)
+    thresh = if ws_thresh !== nothing
+        for i in 1:n_bins; ws_thresh[i] = Float64(thresholds_keV[i]); end
+        ws_thresh
+    else
+        Float64.(thresholds_keV)
+    end
     x = Float64(aτ)
 
     # S[j, i]: probability that count in true bin i → recorded bin j
-    S = zeros(Float64, n_bins, n_bins)
+    S = if ws_S !== nothing
+        fill!(ws_S, 0.0)
+        ws_S
+    else
+        zeros(Float64, n_bins, n_bins)
+    end
 
     if x ≤ 0.0 || n_bins < 1
         # No pileup: identity
@@ -141,19 +158,34 @@ function compute_spectral_migration_matrix(
     end
 
     # Compute bin edge energies (lower bounds + upper bound)
-    E_low = zeros(Float64, n_bins)
-    E_high = zeros(Float64, n_bins)
+    E_low = if ws_E_low !== nothing; ws_E_low else zeros(Float64, n_bins) end
+    E_high = if ws_E_high !== nothing; ws_E_high else zeros(Float64, n_bins) end
     for b in 1:n_bins
         E_low[b] = thresh[b]
         E_high[b] = b < n_bins ? thresh[b+1] : Float64(kVp)
     end
 
     # Bin center energies (used for convolution)
-    E_centers = [(E_low[b] + E_high[b]) / 2.0 for b in 1:n_bins]
+    E_centers = if ws_E_centers !== nothing; ws_E_centers else zeros(Float64, n_bins) end
+    for b in 1:n_bins
+        E_centers[b] = (E_low[b] + E_high[b]) / 2.0
+    end
 
     # Incident spectrum weights for the pileup companion photon
     # Default: uniform across bins; better: actual spectrum distribution
-    w = if bin_weights === nothing
+    w = if ws_w !== nothing
+        if bin_weights === nothing
+            fill!(ws_w, 1.0 / n_bins)
+        else
+            s = sum(bin_weights)
+            if s > 0.0
+                for i in 1:n_bins; ws_w[i] = bin_weights[i] / s; end
+            else
+                fill!(ws_w, 1.0 / n_bins)
+            end
+        end
+        ws_w
+    elseif bin_weights === nothing
         fill(1.0 / n_bins, n_bins)
     else
         # Normalize to probability

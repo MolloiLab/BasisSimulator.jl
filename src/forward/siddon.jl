@@ -414,7 +414,12 @@ siddon_forward_project!(sinogram_gpu, phantom_gpu, geom)
 function siddon_forward_project!(
     sinogram::AbstractArray{T, 3},
     volume::AbstractArray{T, 3},
-    geom::CTGeometry
+    geom::CTGeometry;
+    # Pre-allocated geometry arrays (optional — allocate internally if not provided)
+    ws_source_positions = nothing,
+    ws_detector_centers = nothing,
+    ws_detector_u = nothing,
+    ws_detector_v = nothing
 ) where T <: AbstractFloat
 
     # Get dimensions as Int32 for GPU compatibility
@@ -444,17 +449,38 @@ function siddon_forward_project!(
     row_center = (T(n_rows) + one(T)) / T(2)
 
     # Extract geometry and convert to same array type as volume (GPU compatibility)
-    source_positions = similar(volume, T, size(geom.source_positions)...)
-    copyto!(source_positions, T.(geom.source_positions))
-    detector_centers = similar(volume, T, size(geom.detector_centers)...)
-    copyto!(detector_centers, T.(geom.detector_centers))
-    detector_u = similar(volume, T, size(geom.detector_u)...)
-    copyto!(detector_u, T.(geom.detector_u))
-    detector_v = similar(volume, T, size(geom.detector_v)...)
-    copyto!(detector_v, T.(geom.detector_v))
+    # Use pre-allocated workspace buffers if provided to avoid allocation
+    source_positions = if ws_source_positions !== nothing
+        ws_source_positions
+    else
+        _sp = similar(volume, T, size(geom.source_positions)...)
+        copyto!(_sp, T.(geom.source_positions))
+        _sp
+    end
+    detector_centers = if ws_detector_centers !== nothing
+        ws_detector_centers
+    else
+        _dc = similar(volume, T, size(geom.detector_centers)...)
+        copyto!(_dc, T.(geom.detector_centers))
+        _dc
+    end
+    detector_u = if ws_detector_u !== nothing
+        ws_detector_u
+    else
+        _du = similar(volume, T, size(geom.detector_u)...)
+        copyto!(_du, T.(geom.detector_u))
+        _du
+    end
+    detector_v = if ws_detector_v !== nothing
+        ws_detector_v
+    else
+        _dv = similar(volume, T, size(geom.detector_v)...)
+        copyto!(_dv, T.(geom.detector_v))
+        _dv
+    end
 
     # Use AcceleratedKernels.jl to parallelize over all rays
-    AK.foreachindex(sinogram) do idx
+    _foreachindex!(sinogram) do idx
         # Convert linear index to (col, row, angle) using integer arithmetic
         # Use Int32 throughout to avoid boxing
         idx_0 = Int32(idx - 1)

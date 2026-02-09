@@ -173,7 +173,7 @@ function pcct_virtual_monoenergetic(
     for (i, w) in enumerate(weights)
         w_T = T(w)
         bin = sino.bins[i]
-        AK.foreachindex(vmi_sino) do idx
+        _foreachindex!(vmi_sino) do idx
             vmi_sino[idx] += bin[idx] * w_T
         end
     end
@@ -207,7 +207,7 @@ function pcct_vmi_to_hu(vmi_sinogram::AbstractArray{T,3}, target_keV::Float64;
 
     # HU = 1000 × (μ - μ_water) / μ_water
     output = similar(vmi_sinogram)
-    AK.foreachindex(output) do idx
+    _foreachindex!(output) do idx
         output[idx] = T(1000) * (vmi_sinogram[idx] - μ_water) / μ_water
     end
 
@@ -295,10 +295,16 @@ function pcct_material_decomposition(
     # Workspace buffers (optional — allocate internally if not provided)
     ws_bins_cpu = nothing,
     ws_material_maps = nothing,
-    ws_decomp_pixel_buf = nothing
+    ws_decomp_pixel_buf = nothing,
+    ws_A_pinv = nothing,  # Pre-computed pseudo-inverse (n_materials × n_bins)
+    ws_basis_vec = nothing  # Pre-computed basis vector
 ) where {T, A}
 
-    basis_vec = basis isa Tuple ? collect(Symbol, basis) : Vector{Symbol}(basis)
+    basis_vec = if ws_basis_vec !== nothing
+        ws_basis_vec
+    else
+        basis isa Tuple ? collect(Symbol, basis) : Vector{Symbol}(basis)
+    end
     n_bins = n_energy_bins(sino)
     n_materials = length(basis_vec)
 
@@ -306,27 +312,28 @@ function pcct_material_decomposition(
         error("Number of basis materials ($n_materials) must be less than number of energy bins ($n_bins)")
     end
 
-    # Compute effective energies for each bin
-    thresholds = sino.thresholds_keV
-    bin_energies = zeros(T, n_bins)
-    for i in 1:n_bins
-        lower = thresholds[i]
-        upper = i < n_bins ? thresholds[i+1] : max_keV
-        bin_energies[i] = (lower + upper) / 2
-    end
-
-    # Build attenuation matrix A: [n_bins × n_materials]
-    # A[i,j] = μⱼ(Ē_i) = attenuation of material j at energy of bin i
-    A_mat = zeros(T, n_bins, n_materials)
-    for (j, mat_sym) in enumerate(basis_vec)
+    A_pinv = if ws_A_pinv !== nothing
+        ws_A_pinv
+    else
+        # Compute effective energies for each bin
+        thresholds = sino.thresholds_keV
+        bin_energies = zeros(T, n_bins)
         for i in 1:n_bins
-            A_mat[i, j] = T(get_material_attenuation_pcct(mat_sym, Float64(bin_energies[i])))
+            lower = thresholds[i]
+            upper = i < n_bins ? thresholds[i+1] : max_keV
+            bin_energies[i] = (lower + upper) / 2
         end
-    end
 
-    # Solve least squares: p = A × ρ  →  ρ = A⁺ × p
-    # Compute pseudo-inverse
-    A_pinv = pinv(A_mat)
+        # Build attenuation matrix A: [n_bins × n_materials]
+        A_mat = zeros(T, n_bins, n_materials)
+        for (j, mat_sym) in enumerate(basis_vec)
+            for i in 1:n_bins
+                A_mat[i, j] = T(get_material_attenuation_pcct(mat_sym, Float64(bin_energies[i])))
+            end
+        end
+
+        pinv(A_mat)
+    end
 
     # Copy bins to CPU only if needed (avoid redundant copy when already CPU)
     bins_cpu = if ws_bins_cpu !== nothing
@@ -763,12 +770,12 @@ function compute_kedge_enhancement(
     bin_below_data = sino.bins[bin_below]
 
     if method == :subtraction
-        AK.foreachindex(output) do idx
+        _foreachindex!(output) do idx
             output[idx] = bin_above_data[idx] - bin_below_data[idx]
         end
     elseif method == :ratio
         ε = T(1e-10)  # Avoid division by zero
-        AK.foreachindex(output) do idx
+        _foreachindex!(output) do idx
             output[idx] = bin_above_data[idx] / (bin_below_data[idx] + ε)
         end
     else
@@ -909,7 +916,7 @@ function compute_effective_z(
         R_water = μ_water_low / μ_water_high
         Z_water = T(7.42)
 
-        AK.foreachindex(output) do idx
+        _foreachindex!(output) do idx
             μ_low = low_bin[idx]
             μ_high = high_bin[idx]
 
@@ -929,7 +936,7 @@ function compute_effective_z(
         # μ(E) = a × E^(-m), m depends on Z_eff
 
         ε = T(1e-10)
-        AK.foreachindex(output) do idx
+        _foreachindex!(output) do idx
             # Gather data points
             μ_vals = [sino.bins[i][idx] for i in 1:n_bins]
 
@@ -1030,7 +1037,7 @@ function synthesize_vmi(material_map::PCCTMaterialMap{T,A}, energy_keV::Float64;
     for i in 1:n_materials
         μ_i = μ_values[i]
         mat_i = material_map.materials[i]
-        AK.foreachindex(result) do idx
+        _foreachindex!(result) do idx
             result[idx] += mat_i[idx] * μ_i
         end
     end

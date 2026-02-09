@@ -4,7 +4,7 @@
 High-level driver for running end-to-end CT simulations.
 """
 
-export simulate, SimulationResult
+export simulate, simulate!, SimulationResult
 
 # =============================================================================
 # GPU Array Handling
@@ -681,28 +681,38 @@ function _combine_pcct_bins(pcct_sino::EnergyResolvedSinogram, detector::PhotonC
                              energies, weights, kVp; I0=1e6,
                              apply_detector_effects::Bool=false, apply_corrections::Bool=false,
                              flux_rate::Real=1e8,
-                             output=nothing)
+                             output=nothing,
+                             ws_I0_bins=nothing)
     T = Float32
     n_bins = length(pcct_sino.bins)
     thresholds = detector.energy_thresholds_keV
 
-    # Compute quantum efficiency and spectral response matrix (CPU, cheap)
-    η = quantum_efficiency_vector(detector.material, detector.thickness_mm, energies)
-    R = compute_spectral_response_matrix(
-        detector.material, detector.thickness_mm, thresholds, kVp;
-        energy_resolution_keV=detector.energy_resolution_keV,
-        pixel_size_mm=detector.pixel_size_mm,
-        include_fluorescence=true,
-        include_tailing=true,
-        n_energy_points=length(energies)
-    )
-
     # Compute per-bin I0 values — MUST match what pcct_forward_project used for normalization
-    I0_bins = if apply_detector_effects && !apply_corrections
+    I0_bins = if ws_I0_bins !== nothing
+        ws_I0_bins  # Pre-computed by caller (zero-alloc path)
+    elseif apply_detector_effects && !apply_corrections
         # Effects without corrections: use degraded I0
+        η = quantum_efficiency_vector(detector.material, detector.thickness_mm, energies)
+        R = compute_spectral_response_matrix(
+            detector.material, detector.thickness_mm, thresholds, kVp;
+            energy_resolution_keV=detector.energy_resolution_keV,
+            pixel_size_mm=detector.pixel_size_mm,
+            include_fluorescence=true,
+            include_tailing=true,
+            n_energy_points=length(energies)
+        )
         _compute_degraded_I0(detector, energies, weights, η, thresholds, kVp, I0, flux_rate; R=R)
     else
         # No effects OR effects+corrections: use theoretical I0
+        η = quantum_efficiency_vector(detector.material, detector.thickness_mm, energies)
+        R = compute_spectral_response_matrix(
+            detector.material, detector.thickness_mm, thresholds, kVp;
+            energy_resolution_keV=detector.energy_resolution_keV,
+            pixel_size_mm=detector.pixel_size_mm,
+            include_fluorescence=true,
+            include_tailing=true,
+            n_energy_points=length(energies)
+        )
         [_compute_bin_I0(detector, energies, weights, η, thresholds, b,
                           Float64(kVp), Float64(I0); R=R) for b in 1:n_bins]
     end
@@ -716,7 +726,7 @@ function _combine_pcct_bins(pcct_sino::EnergyResolvedSinogram, detector::PhotonC
     eps_val = T(1e-10)
     for (b, bin_sino) in enumerate(pcct_sino.bins)
         let I0b = T(I0_bins[b]), bs = bin_sino, nt = N_total_gpu
-            AK.foreachindex(bs) do idx
+            _foreachindex!(bs) do idx
                 nt[idx] += I0b * exp(-bs[idx])
             end
         end
@@ -724,7 +734,7 @@ function _combine_pcct_bins(pcct_sino::EnergyResolvedSinogram, detector::PhotonC
 
     # Combined sinogram = -log(N_total / I0_total)
     let nt = N_total_gpu, I0t = I0_total, eps = eps_val
-        AK.foreachindex(nt) do idx
+        _foreachindex!(nt) do idx
             nt[idx] = -log(max(nt[idx], eps) / I0t)
         end
     end
@@ -733,129 +743,185 @@ function _combine_pcct_bins(pcct_sino::EnergyResolvedSinogram, detector::PhotonC
 end
 
 # =============================================================================
+# simulate!() — Zero-allocation PCCT simulation hot path
+# =============================================================================
+
+"""
+    simulate!(ws::PCCTWorkspace, phantom, scanner, protocol, sim_opts, recon_opts; materials=nothing)
+
+Run PCCT simulation using pre-allocated workspace buffers for zero allocations.
+
+The first call may allocate due to JIT compilation. The second call with the same
+workspace achieves `@allocated == 0`.
+
+Create the workspace with `create_workspace(scanner, protocol, sim_opts, recon_opts, phantom)`.
+
+All setup data (geometry, spectrum, physics config, detector, spectral response matrices)
+is pre-computed in the workspace by `create_workspace()`. Reconstruction is NOT included —
+it is handled by the `simulate()` wrapper or `_simulate_axial_pcct`.
+
+# Returns
+`SimulationResult` with sinograms, material maps, and VMI sinograms from workspace.
+Reconstruction fields are empty (filled by wrapper).
+"""
+function simulate!(
+    ws::PCCTWorkspace{T},
+    phantom,
+    scanner::Scanner,
+    protocol::CTProtocol,
+    sim_opts::SimOptions = SimOptions(),
+    recon_opts::ReconOptions = ReconOptions();
+    materials::Union{Nothing, Vector} = nothing
+) where {T}
+    # All setup data comes from workspace (pre-computed in create_workspace)
+    geom = ws.geom
+    energies = ws.energies
+    weights = ws.weights
+    config = ws.config
+    pcct_detector = ws.pcct_detector
+    mats = ws.mats
+    use_detector_fx = ws.use_detector_fx
+    use_corrections = ws.use_corrections
+    kVp = ws.kVp
+
+    # Forward projection with ALL workspace buffers
+    pcct_sino = pcct_forward_project(
+        phantom.mask, geom, pcct_detector;
+        energies=energies, weights=weights,
+        materials=mats,
+        apply_spectral_response=true,
+        apply_detector_effects=use_detector_fx,
+        apply_corrections=use_corrections,
+        ws_bins=ws.bins, ws_μ_volume=ws.μ_volume, ws_sino_buf=ws.sino_buf,
+        ws_scratch=ws.scratch, ws_total_counts=ws.total_counts,
+        ws_thresholds_T=ws.thresholds_T,
+        ws_η=ws.η, ws_R=ws.R, ws_R_energies=ws.R_energies,
+        ws_I0_bins_norm=ws.I0_bins_norm,
+        ws_μ_lut_cpu=ws.μ_lut_cpu, ws_μ_lut_gpu=ws.μ_lut_gpu,
+        ws_μ_table=ws.μ_table,
+        ws_pileup_counts=ws.pileup_counts,
+        ws_pileup_migration=ws.pileup_migration,
+        ws_correction_counts=ws.correction_pileup_counts,
+        ws_correction_migration=ws.correction_migration,
+        ws_pileup_S=ws.pileup_S,
+        ws_pileup_thresh=ws.pileup_thresh,
+        ws_pileup_E_low=ws.pileup_E_low,
+        ws_pileup_E_high=ws.pileup_E_high,
+        ws_pileup_E_centers=ws.pileup_E_centers,
+        ws_pileup_w=ws.pileup_w,
+        ws_source_positions=ws.geom_source_positions,
+        ws_detector_centers=ws.geom_detector_centers,
+        ws_detector_u=ws.geom_detector_u,
+        ws_detector_v=ws.geom_detector_v,
+        ws_charge_probs=ws.charge_sharing_probs
+    )
+
+    # Combine ideal (workspace buffer + pre-computed I0_bins)
+    sino_ideal_gpu = _combine_pcct_bins(pcct_sino, pcct_detector, energies, weights, kVp;
+                                         apply_detector_effects=use_detector_fx,
+                                         apply_corrections=use_corrections,
+                                         output=ws.combined,
+                                         ws_I0_bins=ws.I0_bins)
+
+    # BHC on ideal
+    if config.bhc !== nothing
+        apply_bhc!(sino_ideal_gpu, config.bhc; ws_coeffs_gpu=ws.bhc_coeffs_gpu)
+    end
+
+    # Save ideal to CPU workspace buffer
+    copyto!(ws.sino_ideal_out, sino_ideal_gpu)
+
+    # Noise (in-place on pcct_sino.bins)
+    if sim_opts.use_noise
+        I0_physics = compute_detector_I0(geom, protocol)
+        apply_pcct_noise!(pcct_sino, pcct_detector, protocol;
+                          seed=sim_opts.seed, I0=I0_physics,
+                          energies=energies, weights=weights,
+                          ws_noise_staging=ws.noise_staging,
+                          ws_noise_buf=ws.noise_buf,
+                          ws_rng=ws.rng,
+                          ws_noise_I0=ws.noise_I0,
+                          ws_η=ws.η)
+    end
+
+    # Combine noisy (reuse workspace buffer + pre-computed I0_bins)
+    sino_noisy_gpu = _combine_pcct_bins(pcct_sino, pcct_detector, energies, weights, kVp;
+                                         apply_detector_effects=use_detector_fx,
+                                         apply_corrections=use_corrections,
+                                         output=ws.combined,
+                                         ws_I0_bins=ws.I0_bins)
+
+    # BHC on noisy
+    if config.bhc !== nothing
+        apply_bhc!(sino_noisy_gpu, config.bhc; ws_coeffs_gpu=ws.bhc_coeffs_gpu)
+    end
+
+    # Save noisy to CPU workspace buffer
+    copyto!(ws.sino_noisy_out, sino_noisy_gpu)
+
+    # Material decomposition (into workspace buffers)
+    pcct_mat_map = if length(ws.basis_tuple) >= 2
+        pcct_material_decomposition(pcct_sino; basis=ws.basis_tuple,
+                                     ws_bins_cpu=ws.bins_cpu,
+                                     ws_material_maps=ws.material_maps,
+                                     ws_decomp_pixel_buf=ws.decomp_pixel_buf,
+                                     ws_A_pinv=ws.A_pinv,
+                                     ws_basis_vec=ws.basis_vec)
+    else
+        nothing
+    end
+
+    # Return intermediate results — reconstruction and VMI are done by the wrapper
+    # (they inherently allocate new volumes, outside zero-alloc scope)
+    return (pcct_sino=pcct_sino, pcct_mat_map=pcct_mat_map)
+end
+
+# =============================================================================
 # Mode 5: Axial PCCT (Photon-Counting CT)
 # =============================================================================
 
 function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts;
                               materials::Union{Nothing, Vector} = nothing)
-    # 1. Build Geometry
-    geom = CTGeometry(
-        scanner;
-        n_angles = protocol.views,
-        fov_cm = recon_opts.fov_cm,
-        z_cm = nothing
-    )
-
-    # 2. Resolve spectrum — PCCT ALWAYS needs polychromatic spectrum
-    # (energy-resolved detection is meaningless with monochromatic input)
-    e_full, w_full = load_spectrum(Int(protocol.kVp))
-    energies, weights = downsample_spectrum(e_full, w_full, sim_opts.n_energy_bins)
-
-    # 3. Build PhysicsConfig (with phantom for size-aware scatter)
-    config = build_physics_config(scanner, sim_opts, energies, weights; phantom=phantom)
-
-    # 4. Build PCCT detector from Scanner
-    pcct_detector = _build_pcct_detector(scanner)
-
-    # 5. PCCT forward projection (mask+materials → energy-resolved sinogram, GPU if available)
-    # Detector effects (charge sharing, pileup, anti-coincidence) are deterministic
-    # physical processes controlled by fidelity, independent of Poisson noise.
-    # At :ideal/:low fidelity, detector effects are disabled for clean baseline.
-    # At :medium/:high fidelity, detector effects model real CdTe behavior.
-    # Use custom materials if provided, otherwise default to Gammex region materials
-    mats = _resolve_materials(phantom, materials)
-    mask_gpu = _to_gpu(phantom.mask)
-    use_detector_fx = sim_opts.fidelity in (:medium, :high, :pcct)
-    use_corrections = sim_opts.use_pcct_corrections
-    pcct_sino = pcct_forward_project(
-        mask_gpu, geom, pcct_detector;
-        energies=energies, weights=weights,
-        materials=mats,
-        apply_spectral_response=true,
-        apply_detector_effects=use_detector_fx,
-        apply_corrections=use_corrections
-    )
-
-    # 6. Also produce conventional sinogram (combine all bins → single channel)
-    # Correct physics: convert line integrals to counts, sum, re-normalize
-    # Must use same I0 type (degraded vs theoretical) as forward projection
     T = Float32
-    kVp = Float64(maximum(energies))
+    # Convert mask to GPU before creating workspace so buffers match GPU backend
+    mask_gpu = _to_gpu(phantom.mask)
+    # Create a phantom wrapper with the GPU mask for consistent backend
+    gpu_phantom = Phantom(mask_gpu, phantom.materials, phantom.voxel_size,
+                          phantom.origin, phantom.fov)
+    ws = create_workspace(scanner, protocol, sim_opts, recon_opts, gpu_phantom;
+                          materials=materials)
 
-    # Pre-allocate one combine buffer, reused for both ideal and noisy combine calls
-    combine_buf = similar(pcct_sino.bins[1])
-    sino_ideal_gpu = _combine_pcct_bins(pcct_sino, pcct_detector, energies, weights, kVp;
-                                         apply_detector_effects=use_detector_fx,
-                                         apply_corrections=use_corrections,
-                                         output=combine_buf)
+    # Run zero-alloc PCCT pipeline
+    result = simulate!(ws, gpu_phantom, scanner, protocol, sim_opts, recon_opts;
+                        materials=materials)
+    pcct_sino = result.pcct_sino
+    pcct_mat_map = result.pcct_mat_map
 
-    # 6b. Apply beam hardening correction to combined sinogram
-    if config.bhc !== nothing
-        apply_bhc!(sino_ideal_gpu, config.bhc)
-    end
+    # --- Post-processing (allocates — outside zero-alloc scope) ---
+    geom = ws.geom
 
-    # Copy ideal sinogram to CPU now so combine_buf can be reused for noisy
-    sino_ideal = Array(sino_ideal_gpu)
-
-    # 7. Apply PCCT noise in-place (per-bin Poisson, no electronic noise)
-    # sino_ideal was already saved to CPU above, so we can
-    # safely modify pcct_sino.bins in-place — no copy needed, saves ~3GB GPU.
-    if sim_opts.use_noise
-        I0_physics = compute_detector_I0(geom, protocol)
-        apply_pcct_noise!(pcct_sino, pcct_detector, protocol;
-                          seed=sim_opts.seed, I0=I0_physics,
-                          energies=energies, weights=weights)
-    end
-    pcct_sino_noisy = pcct_sino
-
-    # 8. Conventional noisy sinogram (combine all bins → single channel)
-    # Reuse combine_buf (sino_ideal already saved to CPU)
-    sino_noisy_gpu = _combine_pcct_bins(pcct_sino_noisy, pcct_detector, energies, weights, kVp;
-                                         apply_detector_effects=use_detector_fx,
-                                         apply_corrections=use_corrections,
-                                         output=combine_buf)
-
-    # 8b. Apply beam hardening correction to noisy combined sinogram
-    if config.bhc !== nothing
-        apply_bhc!(sino_noisy_gpu, config.bhc)
-    end
-
-    # 9. N-material decomposition (if vmi_basis specified with 2+ materials)
-    # pcct_material_decomposition handles GPU→CPU transfer internally if needed
-    pcct_mat_map = if length(recon_opts.vmi_basis) >= 2
-        basis_tuple = Tuple(recon_opts.vmi_basis)
-        pcct_material_decomposition(pcct_sino_noisy; basis=basis_tuple)
-    else
-        nothing
-    end
-
-    # 10. VMI synthesis (if energies specified and decomposition succeeded)
-    # Pre-allocate one VMI buffer, reused across all energies
-    # (reconstruction consumes vmi_sino before next iteration)
+    # VMI synthesis + reconstruction
     pcct_vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
     if !isempty(recon_opts.vmi_energies) && !isnothing(pcct_mat_map)
-        vmi_buf = similar(pcct_mat_map.materials[1])
         for E in recon_opts.vmi_energies
-            vmi_sino = synthesize_vmi(pcct_mat_map, E; output=vmi_buf)
-            # Reconstruct VMI volume
+            vmi_sino = synthesize_vmi(pcct_mat_map, E;
+                                      output=ws.vmi_sino,
+                                      ws_μ_values=ws.μ_values)
             vmi_vol = _run_reconstruction(vmi_sino, geom, recon_opts)
             pcct_vmi_dict[E] = vmi_vol
         end
     end
 
-    # 11. Reconstruction from combined sinogram (GPU-native — no CPU conversion needed)
-    # FDK accepts AbstractArray, so GPU arrays flow through directly
-    recon_vol = _run_reconstruction(sino_noisy_gpu, geom, recon_opts)
+    # Main reconstruction
+    sino_noisy_gpu = ws.combined  # Still holds the noisy combined sinogram
+    recon_vol = _run_reconstruction(ws.sino_noisy_out, geom, recon_opts)
     recons = Pair{Symbol, AbstractArray{T, 3}}[recon_opts.algorithm => recon_vol]
     vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
 
-    # sino_noisy to CPU for result
-    sino_noisy = Array(sino_noisy_gpu)
-
     return SimulationResult(
-        sino_ideal, sino_noisy, recons, geom, config,
+        ws.sino_ideal_out, ws.sino_noisy_out, recons, geom, ws.config,
         nothing, nothing, vmi_dict,
-        pcct_sino_noisy, pcct_mat_map, pcct_vmi_dict
+        pcct_sino, pcct_mat_map, pcct_vmi_dict
     )
 end
 
