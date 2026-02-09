@@ -247,6 +247,7 @@ include("metrics/psf.jl")
 # =============================================================================
 
 include("simulation/options.jl")
+include("simulation/workspace.jl")
 include("simulation/driver.jl")
 
 end # module
