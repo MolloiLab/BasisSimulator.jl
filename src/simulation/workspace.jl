@@ -12,6 +12,7 @@ export PCCTWorkspace, create_workspace
 export EICTWorkspace, create_eict_workspace
 export EICTDualWorkspace, create_eict_dual_workspace
 export FDKReconWorkspace, create_fdk_recon_workspace
+export HIRReconWorkspace, create_hir_recon_workspace
 
 """
     PCCTWorkspace{T, A3, A1}
@@ -1090,5 +1091,125 @@ function create_fdk_recon_workspace(
     return FDKReconWorkspace{T, typeof(volume), typeof(bp_source_positions), typeof(filter_kernel)}(
         volume, filtered, conv_scratch, filter_kernel,
         bp_source_positions, bp_detector_centers, bp_detector_u, bp_detector_v
+    )
+end
+
+# =============================================================================
+# HIRReconWorkspace — Pre-allocated workspace for zero-allocation Hybrid IR reconstruct!()
+# =============================================================================
+
+"""
+    HIRReconWorkspace{T, A3, A2, A1}
+
+Pre-allocated workspace for zero-allocation Hybrid IR reconstruction.
+
+Includes FDK initialization buffers + PWLS iteration buffers.
+Geometry arrays are shared between forward projection and backprojection.
+
+Type parameters:
+- `T`: Element type (Float32, Float64)
+- `A3`: 3D array type (Array{T,3}, MtlArray{T,3}, CuArray{T,3})
+- `A2`: 2D array type for geometry arrays
+- `A1`: 1D array type for filter kernel
+
+Create with [`create_hir_recon_workspace`](@ref).
+"""
+mutable struct HIRReconWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:AbstractArray{T,2}, A1<:AbstractArray{T,1}}
+    # ─── Output / iterate ───
+    volume::A3                # (nx, ny, nz) — FDK result → PWLS iterate
+
+    # ─── FDK filtering scratch ───
+    filtered::A3              # (sino shape)
+    conv_scratch::A3          # (sino shape)
+    filter_kernel::A1         # (~n_cols elements)
+
+    # ─── Shared geometry (GPU-side, used by fwd_proj + backproj) ───
+    geom_source_positions::A2 # (3, n_angles)
+    geom_detector_centers::A2
+    geom_detector_u::A2
+    geom_detector_v::A2
+
+    # ─── PWLS pre-computed weights (computed once in create) ───
+    W_proj::A3                # Projection domain weights (sino shape)
+    V_inv::A3                 # Image domain weights (vol shape)
+
+    # ─── PWLS iteration scratch (reused every iteration) ───
+    stat_weights::A3          # Statistical weights (sino shape)
+    Ax::A3                    # Forward projection scratch (sino shape)
+    correction::A3            # Backprojection scratch (vol shape)
+    reg_grad::A3              # Regularization gradient (vol shape)
+
+    # ─── Pre-computed HIR params ───
+    params::HIRParams
+end
+
+"""
+    create_hir_recon_workspace(sinogram, geom, volume_size; T=eltype(sinogram), strength=3, filter=RampFilter(), cutoff=1.0)
+
+Create a pre-allocated workspace for zero-allocation Hybrid IR `reconstruct!()`.
+"""
+function create_hir_recon_workspace(
+    sinogram::AbstractArray{<:AbstractFloat, 3},
+    geom::CTGeometry,
+    volume_size::NTuple{3, Int};
+    T::Type{<:AbstractFloat} = eltype(sinogram),
+    strength::Int = 3,
+    filter::FilterType = RampFilter(),
+    cutoff::Float64 = 1.0
+)
+    sino_shape = size(sinogram)
+
+    # Output volume / iterate
+    volume = similar(sinogram, T, volume_size...)
+    fill!(volume, zero(T))
+
+    # FDK filtering scratch
+    filtered = similar(sinogram, T, sino_shape...)
+    conv_scratch = similar(sinogram, T, sino_shape...)
+
+    # Pre-compute filter kernel on GPU
+    pixel_size = T(geom.pixel_size)
+    n_cols = size(sinogram, 1)
+    raw_size = max(Int(ceil(n_cols * cutoff)), 32)
+    kernel_size_int = min(raw_size + (1 - raw_size % 2), n_cols)
+    kernel_cpu = create_spatial_kernel(kernel_size_int, filter, pixel_size)
+    filter_kernel = similar(sinogram, T, kernel_size_int)
+    copyto!(filter_kernel, kernel_cpu)
+
+    # Pre-compute geometry arrays on GPU (shared by fwd_proj + backproj)
+    geom_source_positions = similar(sinogram, T, size(geom.source_positions)...)
+    copyto!(geom_source_positions, T.(geom.source_positions))
+    geom_detector_centers = similar(sinogram, T, size(geom.detector_centers)...)
+    copyto!(geom_detector_centers, T.(geom.detector_centers))
+    geom_detector_u = similar(sinogram, T, size(geom.detector_u)...)
+    copyto!(geom_detector_u, T.(geom.detector_u))
+    geom_detector_v = similar(sinogram, T, size(geom.detector_v)...)
+    copyto!(geom_detector_v, T.(geom.detector_v))
+
+    # Pre-compute SIRT-style normalization weights (W_proj and V_inv)
+    # These are expensive but only computed once
+    W_proj_cpu = compute_projection_weights(geom, volume_size, T)
+    W_proj = similar(sinogram, T, size(W_proj_cpu)...)
+    copyto!(W_proj, W_proj_cpu)
+
+    V_inv_cpu = compute_image_weights(geom, volume_size, T)
+    V_inv = similar(sinogram, T, size(V_inv_cpu)...)
+    copyto!(V_inv, V_inv_cpu)
+
+    # PWLS iteration scratch buffers
+    stat_weights = similar(sinogram, T, sino_shape...)
+    Ax = similar(sinogram, T, sino_shape...)
+    correction = similar(sinogram, T, volume_size...)
+    reg_grad = similar(sinogram, T, volume_size...)
+
+    # HIR params
+    params = get_hir_params(strength)
+
+    return HIRReconWorkspace{T, typeof(volume), typeof(geom_source_positions), typeof(filter_kernel)}(
+        volume, filtered, conv_scratch, filter_kernel,
+        geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
+        W_proj, V_inv,
+        stat_weights, Ax, correction, reg_grad,
+        params
     )
 end

@@ -1722,3 +1722,121 @@ function reconstruct!(
 
     return ws.volume
 end
+
+# =============================================================================
+# reconstruct!() — Zero-allocation Hybrid IR reconstruction hot path
+# =============================================================================
+
+"""
+    reconstruct!(ws::HIRReconWorkspace, sinogram, geom, volume_size; filter=RampFilter(), cutoff=1.0)
+
+Zero-allocation Hybrid IR reconstruction using pre-allocated workspace buffers.
+
+Implements TRUE Hybrid IR = FDK initialization + PWLS refinement with Huber regularization.
+All iteration buffers (Ax, correction, reg_grad, stat_weights) are pre-allocated in the workspace.
+
+Create the workspace with `create_hir_recon_workspace(sinogram, geom, volume_size; strength=3)`.
+"""
+function reconstruct!(
+    ws::HIRReconWorkspace{T},
+    sinogram::AbstractArray{T, 3},
+    geom::CTGeometry,
+    volume_size::NTuple{3, Int};
+    filter::FilterType = RampFilter(),
+    cutoff::Float64 = 1.0
+) where T <: AbstractFloat
+
+    # ─── Step 1: FDK initialization (same as FDKReconWorkspace) ───
+    copyto!(ws.filtered, sinogram)
+    filter_sinogram!(ws.filtered, geom; filter=filter, cutoff=cutoff,
+                     ws_conv_scratch=ws.conv_scratch,
+                     ws_filter_kernel=ws.filter_kernel)
+    fill!(ws.volume, zero(T))
+    backproject!(ws.volume, ws.filtered, geom;
+                 weighted=true,
+                 ws_source_positions=ws.geom_source_positions,
+                 ws_detector_centers=ws.geom_detector_centers,
+                 ws_detector_u=ws.geom_detector_u,
+                 ws_detector_v=ws.geom_detector_v)
+
+    # ─── Step 2: PWLS refinement with Huber regularization ───
+    params = ws.params
+    λ = T(params.lambda)
+    λ_relax = one(T)
+    δ = T(params.huber_delta)
+    niter = params.niter
+    backend = AK.get_backend(ws.volume)
+
+    # Initialize simple statistical weights from sinogram: w ≈ exp(-y)
+    let ε = T(1e-6)
+        AK.foreachindex(ws.stat_weights, backend) do idx
+            y_val = sinogram[idx]
+            y_clipped = clamp(y_val, T(-10), T(10))
+            ws.stat_weights[idx] = exp(-y_clipped) + ε
+        end
+    end
+
+    for iter in 1:niter
+        # Update statistical weights periodically (Poisson noise model)
+        if iter == 1 || iter % 10 == 0
+            # Forward project current estimate into ws.Ax
+            fill!(ws.Ax, zero(T))
+            siddon_forward_project!(ws.Ax, ws.volume, geom;
+                ws_source_positions=ws.geom_source_positions,
+                ws_detector_centers=ws.geom_detector_centers,
+                ws_detector_u=ws.geom_detector_u,
+                ws_detector_v=ws.geom_detector_v)
+
+            # Compute weights: w = exp(-Ax), normalized to max=1
+            AK.foreachindex(ws.stat_weights, backend) do idx
+                ax_val = ws.Ax[idx]
+                ax_clipped = clamp(ax_val, T(-10), T(10))
+                ws.stat_weights[idx] = exp(-ax_clipped)
+            end
+            max_w = maximum(ws.stat_weights)
+            if max_w > zero(T)
+                let mw = max_w
+                    AK.foreachindex(ws.stat_weights, backend) do idx
+                        ws.stat_weights[idx] = ws.stat_weights[idx] / mw
+                    end
+                end
+            end
+        end
+
+        # Compute Huber regularization gradient
+        compute_huber_gradient!(ws.reg_grad, ws.volume, δ)
+
+        # Forward project: Ax = A * x
+        fill!(ws.Ax, zero(T))
+        siddon_forward_project!(ws.Ax, ws.volume, geom;
+            ws_source_positions=ws.geom_source_positions,
+            ws_detector_centers=ws.geom_detector_centers,
+            ws_detector_u=ws.geom_detector_u,
+            ws_detector_v=ws.geom_detector_v)
+
+        # Compute combined-weighted residual in-place: Ax = W_proj ⊙ stat_weights ⊙ (y - Ax)
+        AK.foreachindex(ws.Ax, backend) do idx
+            residual = sinogram[idx] - ws.Ax[idx]
+            ws.Ax[idx] = ws.W_proj[idx] * ws.stat_weights[idx] * residual
+        end
+
+        # Backproject weighted residual into ws.correction (unweighted for SIRT)
+        fill!(ws.correction, zero(T))
+        backproject!(ws.correction, ws.Ax, geom;
+                     weighted=false,
+                     ws_source_positions=ws.geom_source_positions,
+                     ws_detector_centers=ws.geom_detector_centers,
+                     ws_detector_u=ws.geom_detector_u,
+                     ws_detector_v=ws.geom_detector_v)
+
+        # Apply SIRT-style update with regularization:
+        # x = x + λ_relax * V_inv * correction - λ_reg * V_inv * reg_grad
+        AK.foreachindex(ws.volume, backend) do idx
+            data_update = λ_relax * ws.V_inv[idx] * ws.correction[idx]
+            reg_update = λ * ws.V_inv[idx] * ws.reg_grad[idx]
+            ws.volume[idx] += data_update - reg_update
+        end
+    end
+
+    return ws.volume
+end
