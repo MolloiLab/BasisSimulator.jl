@@ -45,6 +45,70 @@ using Statistics
 
 
 # =============================================================================
+# Spectrum-Weighted Bin Energies
+# =============================================================================
+
+"""
+    compute_pcct_bin_energies(thresholds; max_keV=120.0, kvp=120) -> Vector{Float64}
+
+Compute spectrum-weighted effective energy for each PCCT energy bin.
+
+Uses the X-ray spectrum at the given kVp to compute the photon-weighted mean
+energy within each bin window. This is more accurate than arithmetic mean of
+bin boundaries because real spectra are not uniform.
+
+# Arguments
+- `thresholds::Vector`: Energy thresholds defining bins (e.g., [20, 35, 55, 70])
+
+# Keyword Arguments
+- `max_keV::Float64=120.0`: Maximum energy (tube kVp)
+- `kvp::Int=120`: Tube kVp for spectrum loading
+
+# Returns
+Vector of effective energies for each bin (keV).
+
+# Example
+```julia
+thresholds = [20.0, 35.0, 55.0, 70.0]
+E_eff = compute_pcct_bin_energies(thresholds; kvp=120)
+# [28.3, 44.5, 62.3, 88.7]  (vs arithmetic: [27.5, 45.0, 62.5, 95.0])
+```
+"""
+function compute_pcct_bin_energies(thresholds::Vector{T}; max_keV::Float64=120.0, kvp::Int=120) where T
+    n_bins = length(thresholds)
+    bin_energies = zeros(Float64, n_bins)
+
+    # Load spectrum for this kVp
+    energies, weights = load_spectrum(kvp)
+
+    for i in 1:n_bins
+        lower = Float64(thresholds[i])
+        upper = i < n_bins ? Float64(thresholds[i+1]) : max_keV
+
+        # Find spectrum components within this bin window
+        total_weight = 0.0
+        weighted_energy = 0.0
+        for k in eachindex(energies)
+            if lower ≤ energies[k] < upper
+                weighted_energy += energies[k] * weights[k]
+                total_weight += weights[k]
+            end
+        end
+
+        if total_weight > 0
+            bin_energies[i] = weighted_energy / total_weight
+        else
+            # Fallback to arithmetic mean if no spectrum data in this window
+            bin_energies[i] = (lower + upper) / 2
+        end
+    end
+
+    return bin_energies
+end
+
+export compute_pcct_bin_energies
+
+# =============================================================================
 # Bin-Weighted VMI (Native PCCT VMI)
 # =============================================================================
 
@@ -79,17 +143,12 @@ providing smooth interpolation between bin centers.
 
 Si-Mohamed et al., "Spectral Photon-Counting CT" (Radiology 2021)
 """
-function compute_bin_weights(target_keV::Float64, thresholds::Vector{T}; max_keV::Float64=120.0) where T
+function compute_bin_weights(target_keV::Float64, thresholds::Vector{T}; max_keV::Float64=120.0, kvp::Int=120) where T
     n_bins = length(thresholds)
     weights = zeros(T, n_bins)
 
-    # Compute bin center energies
-    bin_centers = zeros(T, n_bins)
-    for i in 1:n_bins
-        lower = thresholds[i]
-        upper = i < n_bins ? thresholds[i+1] : max_keV
-        bin_centers[i] = (lower + upper) / 2
-    end
+    # Compute bin center energies (spectrum-weighted)
+    bin_centers = compute_pcct_bin_energies(thresholds; max_keV=max_keV, kvp=kvp)
 
     # Inverse-distance weighting with Gaussian kernel
     σ = T(15.0)  # keV, controls smoothness of interpolation
@@ -117,8 +176,10 @@ end
 
 Synthesize virtual monoenergetic sinogram from PCCT energy bins.
 
-This is the native PCCT VMI - no material decomposition required.
-The monoenergetic sinogram is computed as a weighted sum of energy bins.
+Fast approximate VMI via weighted sum of energy bins (no material decomposition).
+
+This is a fast approximation that interpolates between bins using Gaussian weights.
+For quantitative HU accuracy, use `synthesize_vmi()` with material decomposition instead.
 
 # Arguments
 - `sino::EnergyResolvedSinogram`: Energy-resolved sinogram from PCCT
@@ -126,16 +187,19 @@ The monoenergetic sinogram is computed as a weighted sum of energy bins.
 
 # Keyword Arguments
 - `max_keV::Float64=120.0`: Maximum energy (tube kVp)
+- `kvp::Int=120`: Tube kVp for spectrum-weighted bin energy calculation
 
 # Returns
-Sinogram at the virtual monoenergetic energy level.
+Sinogram at the approximate monoenergetic energy level.
 
-# Advantages over Dual-Energy VMI
-
-1. **Native spectral data**: No dual-kVp switching artifacts
-2. **Lower noise at low keV**: Electronic noise rejection via thresholding
-3. **Better energy resolution**: 4 bins vs 2 energy levels
-4. **No material decomposition required**: Direct bin weighting
+# Note
+Water HU from this function may deviate from 0 (typically 20-100 HU offset)
+because bin weighting is an approximation, not physics-based synthesis.
+For accurate HU, use the material decomposition approach:
+```julia
+mat_map = pcct_material_decomposition(sino; basis=(:water, :iodine))
+vmi = synthesize_vmi(mat_map, target_keV)
+```
 
 # Example
 
@@ -144,27 +208,28 @@ Sinogram at the virtual monoenergetic energy level.
 detector = naeotom_detector_standard()
 pcct_sino = pcct_forward_project(volume, geom, detector, energies, weights)
 
-# Native VMI at 50 keV
+# Fast approximate VMI at 50 keV
 vmi_50 = pcct_virtual_monoenergetic(pcct_sino, 50.0)
 
 # Reconstruct
 recon = fdk_reconstruct(vmi_50, geom, recon_size)
 ```
 
-See also: [`EnergyResolvedSinogram`](@ref)
+See also: [`synthesize_vmi`](@ref), [`pcct_material_decomposition`](@ref)
 """
 function pcct_virtual_monoenergetic(
     sino::EnergyResolvedSinogram{T,A},
     target_keV::Float64;
-    max_keV::Float64=120.0
+    max_keV::Float64=120.0,
+    kvp::Int=120
 ) where {T, A}
 
     if target_keV < 10.0 || target_keV > 190.0
         error("VMI energy must be between 10 and 190 keV (got $target_keV)")
     end
 
-    # Compute optimal weights for this energy
-    weights = compute_bin_weights(target_keV, sino.thresholds_keV; max_keV=max_keV)
+    # Compute optimal weights for this energy (using spectrum-weighted bin centers)
+    weights = compute_bin_weights(target_keV, sino.thresholds_keV; max_keV=max_keV, kvp=kvp)
 
     # Weighted sum of bins
     vmi_sino = similar(sino.bins[1])
@@ -292,6 +357,7 @@ function pcct_material_decomposition(
     basis::Union{NTuple{M,Symbol} where M, Vector{Symbol}} = (:water, :iodine),
     method::Symbol=:least_squares,
     max_keV::Float64=120.0,
+    kvp::Int=120,
     # Workspace buffers (optional — allocate internally if not provided)
     ws_bins_cpu = nothing,
     ws_material_maps = nothing,
@@ -315,14 +381,8 @@ function pcct_material_decomposition(
     A_pinv = if ws_A_pinv !== nothing
         ws_A_pinv
     else
-        # Compute effective energies for each bin
-        thresholds = sino.thresholds_keV
-        bin_energies = zeros(T, n_bins)
-        for i in 1:n_bins
-            lower = thresholds[i]
-            upper = i < n_bins ? thresholds[i+1] : max_keV
-            bin_energies[i] = (lower + upper) / 2
-        end
+        # Compute spectrum-weighted effective energies for each bin
+        bin_energies = compute_pcct_bin_energies(sino.thresholds_keV; max_keV=max_keV, kvp=kvp)
 
         # Build attenuation matrix A: [n_bins × n_materials]
         A_mat = zeros(T, n_bins, n_materials)
@@ -496,7 +556,8 @@ function pcct_material_decomposition_mle(
     end
 
     # Get initial estimate from polynomial decomposition (warm start for MLE)
-    init_map = pcct_material_decomposition(sino; basis=Tuple(basis_vec), method=:least_squares, max_keV=max_keV)
+    _kvp = isempty(energies) ? 120 : Int(round(maximum(energies)))
+    init_map = pcct_material_decomposition(sino; basis=Tuple(basis_vec), method=:least_squares, max_keV=max_keV, kvp=_kvp)
 
     # Allocate output materials on CPU (transfer after)
     material_maps = [similar(sino.bins[1]) for _ in 1:n_materials]
