@@ -7,11 +7,12 @@ A comprehensive CT (Computed Tomography) simulator for medical imaging research,
 ## Features
 
 - **GPU Acceleration**: Metal (Apple Silicon), CUDA (NVIDIA), ROCm (AMD), or CPU fallback
-- **Full Physics Pipeline**: 14 toggleable physics effects (scatter, crosstalk, focal spot blur, etc.)
+- **Full Physics Pipeline**: 13 toggleable physics effects (scatter, crosstalk, focal spot blur, etc.)
 - **Multiple Reconstruction Algorithms**: FDK, Hybrid IR (ASIR-V/SAFIRE-style), MBIR, SIRT, CGLS
-- **Spectral Imaging**: Dual-energy CT with VMI and material decomposition
-- **Photon-Counting CT**: Energy-resolved sinograms, N-material decomposition
-- **End-to-End Differentiability**: Enzyme.jl integration for inverse problems
+- **Spectral Imaging**: Dual-energy CT and PCCT with VMI and material decomposition
+- **Photon-Counting CT**: Energy-resolved sinograms with CdTe detector physics (charge sharing, K-fluorescence, pileup, DRM)
+- **Dose Validation**: Protocol validation, CTDIvol, DLP, constant-dose/constant-noise helpers
+- **Zero-Allocation Workspaces**: Pre-allocated GPU buffers for production pipelines
 
 ## Installation
 
@@ -27,462 +28,449 @@ Pkg.add("CUDA")      # NVIDIA
 Pkg.add("AMDGPU")    # AMD
 ```
 
-## Quick Start
+---
+
+## 1. Imaging Chain Architecture
+
+The `src/` folder mirrors the physical X-ray imaging chain, making the codebase self-documenting:
+
+```
+                  X-ray Source           Object            Scanner
+                  ──────────            ──────            ───────
+                  source/               object/           geometry/
+                  spectrum.jl           phantom.jl        scanner.jl
+                  bowtie_filter.jl      materials.jl
+                  flat_filter.jl        attenuation.jl
+                  heel_effect.jl
+                  focal_spot.jl
+                  protocol.jl
+                       │                    │                 │
+                       └────────┬───────────┘                 │
+                                ▼                             │
+                        Ray Tracing                           │
+                        ───────────                           │
+                        projection/                           │
+                        siddon.jl  ◄──────────────────────────┘
+                        polychromatic.jl
+                                │
+                                ▼
+                        Detector Response
+                        ─────────────────
+                        detector/
+                        scatter.jl            detector_noise.jl
+                        crosstalk.jl          detector_efficiency.jl
+                        detector_lag.jl       fill_factor.jl
+                        das_model.jl          physics_pipeline.jl
+                        photon_counting.jl
+                        └── pcct/
+                            cdte_constants.jl       charge_collection.jl
+                            charge_transport.jl     pileup_model.jl
+                            k_fluorescence.jl       detector_response.jl
+                                │
+                                ▼
+                        Post-Detection
+                        ──────────────
+                        correction/                 spectral/
+                        beam_hardening_correction.jl pcct_spectral.jl
+                        calibration.jl              dual_energy.jl
+                                │
+                                ▼
+                        Reconstruction
+                        ──────────────
+                        reconstruction/
+                        ├── core/           backprojection.jl, filtering.jl
+                        ├── fbp/            fdk.jl, helical_recon.jl
+                        ├── ir/             sirt.jl, cgls.jl
+                        ├── hybrid_ir/      hybrid_ir.jl
+                        ├── mbir/           mbir.jl
+                        ├── regularization/ tv_regularization.jl
+                        └── statistical_ir.jl
+                                │
+                                ▼
+                        Image Quality
+                        ─────────────
+                        metrics/
+                        mtf.jl    nps.jl    psf.jl
+```
+
+**Orchestration layer** (`api/`): `options.jl`, `workspace.jl`, `driver.jl`
+**Scanner presets** (`scanners/`): `scanners.jl`, `general_electric.jl`, `siemens.jl`, `helical_protocols.jl`
+
+---
+
+## 2. API & Type Reference
+
+### The 5-Part API
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                        simulate(...)                             │
+│                                                                  │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────┐  ┌─────┐│
+│  │ Phantom  │  │ Scanner  │  │ Protocol │  │SimOpts  │  │Recon││
+│  │          │  │          │  │          │  │         │  │Opts ││
+│  │ mask     │  │ geometry │  │ kVp, mA  │  │fidelity │  │algo ││
+│  │ materials│  │ detector │  │ views    │  │ seed    │  │fov  ││
+│  │ voxel_sz │  │ source   │  │ pitch    │  │ use_*   │  │vmi  ││
+│  └──────────┘  └──────────┘  └──────────┘  └─────────┘  └─────┘│
+│  Geometry      Hardware      Acquisition    Simulation   Recon  │
+│  + Materials   Config        Parameters     Fidelity     Config │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### Key Types
+
+| Type | Purpose | Key Fields |
+|------|---------|------------|
+| `Phantom` | Labeled voxel volume + materials | `mask`, `materials`, `voxel_size` |
+| `Scanner` | Hardware configuration | `ScannerType`, detector, geometry specs |
+| `CTProtocol` | Acquisition parameters | `kVp`, `mA`, `views`, `rotation_time`, `pitch`, `dual_energy` |
+| `CTGeometry` | Pre-computed geometry arrays | `SAD`, `SDD`, `angles`, `source_positions`, `detector_centers` |
+| `SimOptions` | Simulation fidelity control | `fidelity` preset, per-effect `use_*` flags |
+| `ReconOptions` | Reconstruction settings | `algorithm`, `matrix_size`, `fov_cm`, `vmi_energies` |
+| `PhysicsConfig` | Low-level physics effect config | Per-effect model structs (scatter, crosstalk, etc.) |
+| `SimulationResult` | All simulation outputs | `sinogram_noisy`, `reconstruction`, `pcct_material_maps`, `vmi_volumes` |
+
+### Key Functions
+
+**Simulation:**
+```julia
+simulate(phantom, scanner, protocol, sim_opts, recon_opts; materials=nothing) -> SimulationResult
+simulate!(ws::PCCTWorkspace, ...)    # Zero-allocation PCCT
+simulate!(ws::EICTWorkspace, ...)    # Zero-allocation single-kVp
+simulate!(ws::EICTDualWorkspace, ...)# Zero-allocation dual-kVp
+```
+
+**Reconstruction:**
+```julia
+fdk_reconstruct(sinogram, geom, volume_size)
+hybrid_ir_reconstruct(sinogram, geom, volume_size; strength=3)
+reconstruct!(ws::FDKReconWorkspace, ...)
+reconstruct!(ws::HIRReconWorkspace, ...)
+```
+
+**Forward projection:**
+```julia
+siddon_forward_project(volume, geom)
+forward_project(mask, geom; energies, weights, materials, physics)
+```
+
+**Spectral imaging:**
+```julia
+pcct_material_decomposition(pcct_sino; basis, kvp)
+synthesize_vmi(material_map, target_keV)
+decompose_materials(de_sino; basis)
+virtual_monoenergetic(material_map, target_keV)
+compute_pcct_bin_energies(thresholds; kvp, max_keV)
+```
+
+**Dose validation:**
+```julia
+validate_protocol(protocol, scanner) -> (valid, messages)
+compute_ctdi_vol(protocol; phantom_diameter=320)
+compute_dlp(protocol, scan_length_cm)
+dose_report(protocol, geom)
+constant_dose_protocol(base, new_views)
+constant_noise_protocol(base, new_views)
+```
+
+**Phantoms:**
+```julia
+create_gammex_472(; n_voxels=512, n_slices=32, fov_cm=35.0, z_cm=4.0)
+create_acr_464(; n_voxels=512)
+```
+
+---
+
+## 3. GPU Computation Model
+
+### Backend-Agnostic Execution
+
+All GPU operations use [AcceleratedKernels.jl](https://github.com/JuliaGPU/AcceleratedKernels.jl) (AK) and [KernelAbstractions.jl](https://github.com/JuliaGPU/KernelAbstractions.jl) (KA). The backend is determined by the array type passed in — no backend-specific imports in source code.
 
 ```julia
 using BasisSimulator
 
-# Create Gammex 472 calibration phantom
-phantom = create_gammex_472(n_voxels=128, fov_cm=35.0)
+# CPU (default)
+sinogram = forward_project(phantom.mask, geom; ...)
 
-# Configure scanner (Canon Aquilion ONE-like)
-scanner = Scanner(
-    source_to_isocenter = 600.0,  # mm
-    source_to_detector = 1000.0,
-    detector_rows = 64,
-    detector_cols = 900
-)
+# Metal (Apple Silicon)
+using Metal
+sinogram = forward_project(MtlArray(phantom.mask), geom; ...)
 
-# Set acquisition protocol
-protocol = CTProtocol(kVp=120, mA=200, views=984)
-
-# Configure simulation fidelity
-sim_opts = SimOptions(fidelity=:high, seed=42)
-
-# Configure reconstruction
-recon_opts = ReconOptions(
-    algorithm=:fdk,
-    matrix_size=(512, 512, 64),
-    fov_cm=35.0
-)
-
-# Run simulation
-result = simulate(phantom, scanner, protocol, sim_opts, recon_opts)
-
-# Access results
-volume = result.reconstruction
-sinogram = result.sinogram_noisy
+# CUDA (NVIDIA)
+using CUDA
+sinogram = forward_project(CuArray(phantom.mask), geom; ...)
 ```
 
-## The 5-Part API
+### Pre-Computed on CPU (Once)
 
-BasisSimulator uses a clean 5-struct API:
+These are computed during workspace creation and do not require GPU:
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                      simulate(...)                                   │
-│                                                                      │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌─────────┐│
-│  │ Phantom  │  │ Scanner  │  │ Protocol │  │SimOptions│  │ReconOpts││
-│  │          │  │          │  │          │  │          │  │         ││
-│  │ mask     │  │ geometry │  │ kVp, mA  │  │ fidelity │  │algorithm││
-│  │ materials│  │ detector │  │ views    │  │ seed     │  │fov_cm   ││
-│  │ voxel_sz │  │ source   │  │ pitch    │  │ use_*    │  │vmi_keV  ││
-│  └──────────┘  └──────────┘  └──────────┘  └──────────┘  └─────────┘│
-│                                                                      │
-│  Geometry      Hardware      Acquisition    Simulation   Reconstruction
-│  + Materials   Config        Parameters     Fidelity     Settings
-└─────────────────────────────────────────────────────────────────────┘
-```
+- Scanner geometry (source positions, detector centers, angles)
+- Spectrum loading and downsampling
+- Attenuation lookup tables (NIST XCOM via XrayAttenuation.jl)
+- SIRT normalization weights (W_proj, V_inv)
+- Physics effect kernels (scatter, crosstalk, bowtie profiles)
 
-### 1. Phantom — Geometry + Materials
+### Runs on GPU Every Call
+
+These execute via `AK.foreachindex` or KA kernels on whichever backend the arrays live on:
+
+- Siddon ray tracing (forward projection)
+- Beer-Lambert spectral integration
+- All 13 physics effects (scatter, crosstalk, noise, etc.)
+- Voxel-driven backprojection
+- PWLS iterative updates (Hybrid IR)
+- Material decomposition
+
+### Zero-Allocation Pattern
+
+Production pipelines use pre-allocated workspace structs:
 
 ```julia
-# Create from labeled array
-materials_dict = Dict(0 => XA.Materials.air, 1 => XA.Materials.water)
-phantom = Phantom(labeled_array, materials_dict, (0.1, 0.1, 0.1))  # 1mm voxels
+# Create workspace (allocates all GPU buffers once)
+ws = create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
+                           T=Float32, materials=materials)
 
-# Or use built-in Gammex 472
-phantom = create_gammex_472(n_voxels=128)
+# Simulate (zero buffer allocations — writes into workspace buffers)
+simulate!(ws, phantom, scanner, protocol, sim_opts, recon_opts)
 
-# Get attenuation at any energy
-μ_60keV = compute_μ(phantom, 60.0)
+# Reconstruct (also zero-allocation)
+recon_ws = create_hir_recon_workspace(sinogram, geom, volume_size; strength=3)
+reconstruct!(recon_ws, sinogram, geom, volume_size)
 ```
 
-### 2. Scanner — Hardware Configuration
+**Workspace types:** `PCCTWorkspace`, `EICTWorkspace`, `EICTDualWorkspace`, `FDKReconWorkspace`, `HIRReconWorkspace`
+
+---
+
+## 4. Physics Effects Reference
+
+### All 13 Effects
+
+| # | Effect | Config | Domain | Description |
+|---|--------|--------|--------|-------------|
+| 1 | Fill factor | `fill_factor_standard()` | Attenuation | Detector active area fraction (0.9 typical) |
+| 2 | Flat filter | `flat_filter_al(3.0)` | Attenuation | Inherent filtration (Al, Cu) |
+| 3 | Bowtie filter | `bowtie_filter_large_body()` | Attenuation | Angle-dependent beam shaping |
+| 4 | Scatter | `default_scatter_model()` | Attenuation | Patient scatter (spatial convolution) |
+| 5 | Scatter correction | scatter_correction model | Attenuation | Scatter removal (if applied) |
+| 6 | Crosstalk | `crosstalk_medium()` | Attenuation | Electronic pixel-to-pixel coupling |
+| 7 | Optical crosstalk | `optical_crosstalk_typical()` | Attenuation | Optical light spread in scintillator |
+| 8 | Focal spot | `focal_spot_medium()` | Attenuation | Geometric blur from finite focal spot |
+| 9 | Detector efficiency | `detector_efficiency_gos(0.5)` | Attenuation | Scintillator DQE |
+| 10 | Lag | `lag_gadox()` | Attenuation | Temporal persistence (afterglow) |
+| 11 | Heel effect | `default_heel_effect()` | Intensity | Anode self-attenuation |
+| 12 | DAS model | `default_das_model()` | Intensity | Signal chain (BROKEN) |
+| 13 | BHC | `bhc_water_default()` | Post-log | Water-based beam hardening correction |
+
+Noise is always applied via `sim_detect()` (Poisson → Gaussian approximation).
+
+### Preset Configurations
 
 ```julia
-# Default scanner
-scanner = Scanner()
-
-# Custom scanner
-scanner = Scanner(
-    source_to_isocenter = 595.0,   # mm
-    source_to_detector = 1085.5,
-    detector_rows = 144,
-    detector_cols = 2280
-)
-
-# PCCT scanner (Siemens NAEOTOM Alpha-like)
-scanner = create_naeotom_alpha(mode=:standard)
-is_pcct(scanner)  # true
+full_physics_config()       # ALL 13 effects enabled (complete clinical simulation)
+realistic_physics_config()  # Common subset (scatter, crosstalk, focal_spot, noise, lag)
+minimal_physics_config()    # Noise only
+default_physics_config()    # All disabled — use kwargs to enable selectively
 ```
 
-### 3. CTProtocol — Acquisition Parameters
+### SimOptions Fidelity Presets
 
-```julia
-# Simple axial
-CTProtocol(kVp=120, mA=200, views=984)
-
-# Helical
-CTProtocol(scan_mode=:helical, kVp=120, mA=200, pitch=0.984, n_rotations=10.0)
-
-# Dual-energy
-CTProtocol(dual_energy=true, kVp=140, mA=200, kVp_low=80, mA_low=350)
-```
-
-### 4. SimOptions — Simulation Fidelity
-
-```julia
-SimOptions(fidelity=:high)                      # Full physics (default)
-SimOptions(fidelity=:medium)                    # Noise + key effects
-SimOptions(fidelity=:ideal)                     # Geometric ray tracing only
-SimOptions(fidelity=:high, use_scatter=false)   # Selective effect override
-```
-
-**Fidelity Presets:**
 | Preset | Effects |
 |--------|---------|
-| `:ideal` | All OFF — geometric ray tracing |
+| `:ideal` | All OFF — geometric ray tracing only |
 | `:low` | Noise only |
 | `:medium` | Noise + focal_spot + crosstalk + flat_filter + bhc |
-| `:high` | All 14 effects enabled |
-| `:pcct` | High + PCCT corrections |
+| `:high` | All effects enabled (except DAS) |
+| `:pcct` | High + PCCT detector corrections |
 
-### 5. ReconOptions — Reconstruction Settings
+---
+
+## 5. Clinical Scanner Support
+
+### Supported Scanners
+
+| Scanner | Manufacturer | Type | Detector | Key Specs |
+|---------|-------------|------|----------|-----------|
+| GE Revolution Apex Elite | GE Healthcare | EICT | 256 x 832, Gemstone Clarity (LUMEX) | SID=626mm, SDD=1097mm, 160mm z-coverage |
+| Siemens NAEOTOM Alpha | Siemens Healthineers | PCCT | 144 x 2280 (std), CdTe | SID=600mm, SDD=1072mm, 4 energy bins [20,35,55,70] keV |
+| Siemens NAEOTOM Alpha UHR | Siemens Healthineers | PCCT | 120 x 2280, CdTe | 0.2mm pixels, 24mm z-coverage |
+| Canon Aquilion ONE | Canon Medical | EICT | Configurable | Generic EICT geometry |
 
 ```julia
-# FDK (default)
-ReconOptions(algorithm=:fdk, matrix_size=(512, 512, 64), fov_cm=35.0)
+# Clinical scanner with validated specs (from FDA 510(k))
+spec = GERevolutionApexElite()
+geom = create_geometry(spec; n_angles=984, fov_cm=35.0)
 
-# Hybrid IR (TRUE iterative refinement, like ASIR-V/SAFIRE)
-ReconOptions(algorithm=:hybrid_ir, strength=3)  # 1-5, 3=standard clinical
+spec = SiemensNAEOTOMAlpha(:standard)
+geom = create_geometry(spec; n_angles=984)
 
-# Iterative (SIRT)
-ReconOptions(algorithm=:sirt, iterations=50, lambda=0.5)
-
-# TV-regularized
-ReconOptions(algorithm=:tv_sirt, iterations=50, tv_weight=0.01)
-
-# VMI reconstruction
-ReconOptions(algorithm=:fdk, vmi_energies=[40.0, 70.0, 100.0])
+# Protocol presets
+axial = AxialProtocol(kvp=120, ma=200, rotation_time_s=1.0, n_angles=984)
+helical = HelicalProtocol(kvp=120, ma=200, pitch=0.8, n_rotations=10)
+geom = create_geometry(spec, helical)
 ```
 
-## Hybrid IR (Iterative Reconstruction)
+### PCCT Detector Physics (CdTe)
 
-BasisSimulator includes vendor-general Hybrid IR that matches clinical systems like GE ASIR-V and Siemens SAFIRE.
+The PCCT model includes physics-based CdTe detector simulation:
 
-### What is TRUE Hybrid IR?
+| Component | Model | Reference |
+|-----------|-------|-----------|
+| Charge cloud transport | Koch-Mehrin ODE (sigma ~12-14 um) | Koch-Mehrin 2020 (NIM-A) |
+| K-fluorescence | 5 K-lines per element, Te to Cd cascade | Koch-Mehrin Table 1 |
+| Charge collection | Hecht CCE + Barrett small-pixel weighting | Barrett 1995 |
+| Pileup | Yang 2025 seminonparalyzable | Yang 2025 |
+| DRM | Unified detector response matrix (FWHM ~3.55 keV) | Konrad 2025 (PMB) |
 
-TRUE Hybrid IR uses statistical iterative refinement — not simple blending:
+---
 
-```
-FDK initialization → PWLS iterations with statistical weights → Refined result
-```
+## 6. Quick Start Examples
 
-**TRUE Hybrid IR has:**
-- Statistical noise model (Poisson-based weights)
-- Data fidelity term using measured sinogram
-- Edge-preserving regularization (Huber penalty)
-- FDK provides fast initialization, iterations provide refinement
-
-**FALSE Hybrid IR (what we avoid):**
-```julia
-# This is NOT true HIR — just post-processing blending
-x = (1-α) * fdk_result + α * smooth(fdk_result)
-```
-
-### Strength Levels
-
-| Strength | Noise Reduction | Performance | Clinical Use |
-|----------|-----------------|-------------|--------------|
-| 1 | ~10-15% | ~1.5x FDK | Preserve texture (lung imaging) |
-| 2 | ~20-30% | ~2x FDK | Light smoothing |
-| 3 | ~35-40% | ~3x FDK | **Standard clinical (recommended)** |
-| 4 | ~45-55% | ~4x FDK | Strong smoothing |
-| 5 | ~55-65% | ~5x FDK | Maximum noise reduction |
-
-### Vendor Equivalents
-
-| Our Strength | GE ASIR-V | Siemens SAFIRE | Philips iDose4 | Canon AIDR 3D |
-|--------------|-----------|----------------|----------------|---------------|
-| 1 | ~20% | S1 | Level 1 | - |
-| 2 | ~40% | S2 | Level 2-3 | Mild |
-| 3 | ~60% | S3 | Level 3-4 | Standard |
-| 4 | ~80% | S4 | Level 5 | Strong |
-| 5 | ~100% | S5 | Level 6-7 | - |
-
-### Usage
+### Basic Simulation (Single-kVp)
 
 ```julia
 using BasisSimulator
 
-# Direct API
+phantom = create_gammex_472(n_voxels=128, fov_cm=35.0)
+scanner = Scanner(ScannerType.EICT)
+protocol = CTProtocol(kVp=120, mA=200, views=984)
+sim_opts = SimOptions(fidelity=:high, seed=42)
+recon_opts = ReconOptions(algorithm=:fdk, matrix_size=(512, 512, 64))
+
+result = simulate(phantom, scanner, protocol, sim_opts, recon_opts)
+volume = result.reconstruction
+```
+
+### Hybrid IR Reconstruction
+
+```julia
+recon_opts = ReconOptions(algorithm=:hybrid_ir, strength=3)
+result = simulate(phantom, scanner, protocol, sim_opts, recon_opts)
+
+# Or direct API
 recon = hybrid_ir_reconstruct(sinogram, geom, (256, 256, 128); strength=3)
-
-# Via simulate() driver
-result = simulate(phantom, scanner, protocol, sim_opts,
-                  ReconOptions(algorithm=:hybrid_ir, strength=3))
-
-# Get parameters for a strength level
-params = get_hir_params(3)
-# HIRParams(3, 0.015f0, 8, 0.01f0, (30, 42))
 ```
 
-### Clinical Guidelines
+| Strength | Noise Reduction | Iterations | Use Case |
+|----------|-----------------|------------|----------|
+| 1 | ~9% | 8 | Minimal smoothing, preserve texture |
+| 2 | ~20% | 15 | Moderate smoothing |
+| 3 | ~32% | 30 | Balanced (recommended) |
+| 4 | ~38% | 60 | Strong smoothing |
+| 5 | ~38% | 100 | Maximum (SIRT ceiling) |
 
-- **Strength 1**: Use when FBP texture is critical (lung nodules, emphysema)
-- **Strength 2-3**: General clinical imaging, good balance of noise/texture
-- **Strength 4**: Higher dose reduction needed, some texture loss acceptable
-- **Strength 5**: Maximum dose reduction (may appear "plastic")
+### Dual-Energy CT with VMI
 
-## Architecture
+```julia
+protocol = CTProtocol(dual_energy=true, kVp=140, mA=200, kVp_low=80, mA_low=350)
+recon_opts = ReconOptions(algorithm=:fdk, vmi_energies=[40.0, 70.0, 100.0])
 
-```
-src/
-├── BasisSimulator.jl              # Module entry point
-├── physics/                       # Material attenuation, spectra
-│   ├── materials.jl               # Gammex 472 materials
-│   ├── spectrum.jl                # X-ray spectra loading
-│   └── attenuation.jl             # μ computation
-├── geometry/                      # Phantom and scanner definitions
-│   ├── phantom.jl                 # Phantom struct, compute_μ
-│   └── scanner.jl                 # Scanner, CTGeometry
-├── forward/                       # Forward projection pipeline
-│   ├── siddon.jl                  # Siddon ray tracing (TIGRE port)
-│   ├── polychromatic.jl           # Beer-Lambert spectral physics
-│   ├── scatter.jl                 # XCIST-style scatter model
-│   ├── photon_counting.jl         # PCCT detector model
-│   └── ...                        # 15+ physics effect modules
-├── reconstruction/                # Image reconstruction (by clinical category)
-│   ├── core/                      # Shared: backprojection.jl, filtering.jl
-│   ├── fbp/                       # FBP: fdk.jl, helical_recon.jl
-│   ├── hybrid_ir/                 # Hybrid IR: hybrid_ir.jl (ASIR-V/SAFIRE-style)
-│   ├── ir/                        # Classic IR: sirt.jl, cgls.jl
-│   ├── mbir/                      # Model-based: mbir.jl
-│   └── regularization/            # TV regularization
-├── dual_energy/                   # Spectral CT
-│   └── dual_energy.jl             # VMI, material decomposition
-├── metrics/                       # Image quality metrics
-│   ├── mtf.jl                     # Spatial resolution (AAPM TG-233)
-│   ├── nps.jl                     # Noise power spectrum
-│   └── psf.jl                     # Point spread function
-├── scanners/                      # Clinical scanner presets
-│   ├── scanners.jl                # Scanner specifications
-│   ├── siemens.jl                 # NAEOTOM Alpha, etc.
-│   └── general_electric.jl        # Revolution, etc.
-└── simulation/                    # High-level driver
-    ├── options.jl                 # SimOptions, ReconOptions
-    └── driver.jl                  # simulate() entry point
+result = simulate(phantom, scanner, protocol, sim_opts, recon_opts)
+vmi_70 = result.vmi_volumes[70.0]
 ```
 
-## Data Flow
+### PCCT Simulation with Material Decomposition
 
-```
-Phantom (mask + materials)
-        │
-        ▼
-┌───────────────────────────────────────────────────┐
-│               Forward Projection                   │
-│  ┌─────────┐    ┌──────────┐    ┌──────────────┐ │
-│  │ Siddon  │ →  │ Physics  │ →  │   Detector   │ │
-│  │Ray Trace│    │ Effects  │    │  Simulation  │ │
-│  └─────────┘    └──────────┘    └──────────────┘ │
-│                 (scatter,        (noise, DQE,    │
-│                  filters)        efficiency)     │
-└───────────────────────────────────────────────────┘
-        │
-        ▼
-    Sinogram
-        │
-        ▼
-┌───────────────────────────────────────────────────┐
-│              Reconstruction                        │
-│  ┌─────────┐    ┌──────────┐    ┌──────────────┐ │
-│  │  Filter │ →  │   Back-  │ →  │     Post-    │ │
-│  │ (ramp)  │    │ project  │    │  processing  │ │
-│  └─────────┘    └──────────┘    └──────────────┘ │
-└───────────────────────────────────────────────────┘
-        │
-        ▼
-  CT Volume (HU)
+```julia
+scanner = Scanner(ScannerType.PCCT)
+protocol = CTProtocol(kVp=120, mA=200, views=984)
+sim_opts = SimOptions(fidelity=:pcct)
+
+result = simulate(phantom, scanner, protocol, sim_opts, recon_opts)
+
+# Access energy-resolved data
+bin_sinograms = result.pcct_sinogram
+material_maps = result.pcct_material_maps
+vmi_volumes = result.pcct_vmi_volumes
 ```
 
-## File Verification Guide
+### VMI Physics
 
-This section categorizes all 43 source files by confidence level to guide verification efforts.
+```julia
+# Spectrum-weighted bin energies (not arithmetic mean)
+E_eff = compute_pcct_bin_energies([20.0, 35.0, 55.0, 70.0]; kvp=120)
 
-### Confidence Tiers
+# Material decomposition + VMI synthesis
+mat_map = pcct_material_decomposition(pcct_sino; basis=(:water, :iodine), kvp=120)
+vmi_70 = synthesize_vmi(mat_map, 70.0)
+```
 
-| Tier | Description | Collaborator Action |
-|------|-------------|---------------------|
-| HIGH | Validated algorithms, TIGRE ports, NIST data | Use confidently |
-| MEDIUM | Mostly validated, some empirical parameters | Review before critical use |
-| LOW | Needs verification, complex physics chains | Verify before use |
-| BROKEN | Known non-functional | Do not use |
+**Expected physics:**
+- Water: HU = 0 at all energies (by definition)
+- Iodine: Maximum contrast at ~40-50 keV (above K-edge at 33.2 keV)
+- Calcium: Contrast decreases monotonically (K-edge at 4 keV, below diagnostic range)
 
-### Tier Summary
+### Dose Validation and Reporting
 
-| Tier | Count | Notable Files |
-|------|-------|---------------|
-| HIGH | 11 | siddon.jl, fdk.jl, backprojection.jl, materials.jl, attenuation.jl |
-| MEDIUM | 30 | scatter.jl, polychromatic.jl, mbir.jl, dual_energy.jl |
-| LOW | 2 | photon_counting.jl, pcct_spectral.jl |
-| BROKEN | 1 | das_model.jl |
+```julia
+protocol = CTProtocol(kVp=120, mA=200, views=984)
+scanner = Scanner(ScannerType.EICT)
 
----
+# Validate protocol parameters
+result = validate_protocol(protocol, scanner)
+println(result.valid, " — ", result.messages)
 
-### TIER 1: HIGH CONFIDENCE (11 files)
+# Compute dose metrics
+ctdi = compute_ctdi_vol(protocol)          # mGy
+dlp = compute_dlp(protocol, 30.0)          # mGy*cm (30cm scan)
 
-*Ready for use — validated algorithms with strong documentation*
+# Formatted dose report
+report = dose_report(protocol, geom)
 
-#### Forward Projection
+# Adjust protocol for different view counts
+proto_2000 = constant_dose_protocol(protocol, 2000)   # Same dose, more views
+proto_2000n = constant_noise_protocol(protocol, 2000)  # Same noise/view, more dose
+```
 
-| File | Source | Justification |
-|------|--------|---------------|
-| `siddon.jl` | TIGRE port | Standard Siddon algorithm with 40+ years validation, direct TIGRE port |
-| `fill_factor.jl` | CatSim-compatible | Simple geometric model, no physics complexity |
-| `calibration.jl` | Original | Simple eps clamping for numerical stability |
+### Image Quality Metrics
 
-#### Reconstruction
+```julia
+# Spatial resolution
+mtf_result = compute_mtf(volume, roi_center, roi_radius)
+f50, f10 = mtf_result.f50, mtf_result.f10
 
-| File | Source | Justification |
-|------|--------|---------------|
-| `backprojection.jl` | TIGRE port | Direct TIGRE port, well-documented voxel-driven algorithm |
-| `filtering.jl` | Original | Standard ramp filter, Kak & Slaney textbook algorithm |
-| `fdk.jl` | TIGRE port | Standard Feldkamp-Davis-Kress, TIGRE-validated |
-| `sirt.jl` | TIGRE-style | Correct matched backprojection, TIGRE-validated |
-| `cgls.jl` | TIGRE-style | Standard conjugate gradient least squares |
+# Noise texture
+nps_result = compute_nps(volume, roi_center, roi_size)
 
-#### Physics & Infrastructure
+# Point spread function
+psf_result = compute_psf(volume, wire_center)
+```
 
-| File | Source | Justification |
-|------|--------|---------------|
-| `materials.jl` | NIST wrapper | Direct NIST XCOM data via XrayAttenuation.jl |
-| `attenuation.jl` | NIST wrapper | Wraps validated NIST XCOM database |
-| `scanners/scanners.jl` | Original | Design pattern infrastructure, no physics validation needed |
+### GPU Execution
 
----
+```julia
+using Metal  # or CUDA
 
-### TIER 2: MEDIUM CONFIDENCE (30 files)
+# Option 1: Via workspaces (zero-allocation)
+ws = create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
+                           T=Float32, materials=get_region_materials())
+simulate!(ws, phantom, scanner, protocol, sim_opts, recon_opts)
 
-*Use with caution — mostly validated with some gaps or empirical parameters*
+# Option 2: Via forward_project API
+mask_gpu = MtlArray(phantom.mask)
+sinogram = forward_project(mask_gpu, geom;
+    energies=energies, weights=weights, materials=materials,
+    physics=full_physics_config())
 
-#### Forward Projection (14 files)
-
-| File | Source | Key Uncertainty | Verification Needed |
-|------|--------|-----------------|---------------------|
-| `polychromatic.jl` | XCIST-inspired | CatSim flux constant (5.6e13) unvalidated | Validate flux density against tube output curves |
-| `scatter.jl` | XCIST-inspired | Empirical scatter kernel coefficients | Compare SPR to GATE/MCNP Monte Carlo |
-| `protocol.jl` | Original | Clinical parameter ranges untested | Verify ranges against clinical scanner specs |
-| `detector_noise.jl` | Original | Gaussian approximation at low flux | Test ultra-low-dose scenarios |
-| `detector_efficiency.jl` | CatSim-exact | Energy-dependent DQE unvalidated | Compare η(E) to published detector data |
-| `bowtie_filter.jl` | XCIST-inspired | GE profiles may not match current firmware | Validate against service manuals |
-| `flat_filter.jl` | CatSim-exact | Filter material/thickness assumptions | Validate HVL measurements |
-| `focal_spot.jl` | CatSim-inspired | Focal spot size assumptions | Validate MTF degradation on wire phantom |
-| `crosstalk.jl` | CatSim-exact | Detector-specific kernel parameters | Validate against manufacturer data |
-| `detector_lag.jl` | CatSim-exact | Material-dependent time constants | Validate afterglow curves for GOS/CsI |
-| `heel_effect.jl` | CatSim-exact | Anode angle assumptions | Validate intensity profile |
-| `beam_hardening_correction.jl` | CatSim-compatible | Spectrum-dependent polynomial coefficients | Test bone BH correction |
-| `physics_pipeline.jl` | Original | Effect ordering may differ from clinical | Validate against CatSim documentation |
-
-#### Reconstruction (4 files)
-
-| File | Source | Key Uncertainty | Verification Needed |
-|------|--------|-----------------|---------------------|
-| `tv_regularization.jl` | Original | λ selection problem-dependent | Compare to TIGRE defaults |
-| `hybrid_ir.jl` | Research-based | Parameters from SAFIRE clinical studies | Validate noise reduction vs clinical targets |
-| `mbir.jl` | Original | Hyperbola δ empirical, ordered subsets untested | Compare edge preservation to clinical ADMIRE |
-| `helical_recon.jl` | Original | 180LI/360LI accuracy at high pitch | Test for windmill artifacts |
-
-#### Geometry & Physics (4 files)
-
-| File | Source | Key Uncertainty | Verification Needed |
-|------|--------|-----------------|---------------------|
-| `phantom.jl` | Original | Gammex HU may differ from measured values | Validate against measured Gammex 472 data |
-| `scanner.jl` | Original | PCCT energy thresholds approximate | Verify energy threshold placement |
-| `spectrum.jl` | Original | Spectrum provenance undocumented | Document spectrum generation process |
-
-#### Metrics (3 files)
-
-| File | Source | Key Uncertainty | Verification Needed |
-|------|--------|-----------------|---------------------|
-| `mtf.jl` | Original | Edge detection may fail on noisy images | Validate against commercial QA software |
-| `nps.jl` | Original | ROI placement affects results | Compare radial averaging to published curves |
-| `psf.jl` | Original | Assumes symmetric PSF | Test asymmetric scenarios |
-
-#### Dual-Energy & Scanners (5 files)
-
-| File | Source | Key Uncertainty | Verification Needed |
-|------|--------|-----------------|---------------------|
-| `dual_energy.jl` | Original | VMI weighting may not match vendor implementation | Validate VMI HU against Gammex dual-energy phantom |
-| `siemens.jl` | FDA 510(k) | FDA parameters may differ from current firmware | Validate against current scanner specs |
-| `general_electric.jl` | FDA 510(k) | Same as above | Validate against current scanner specs |
-| `helical_protocols.jl` | Original | Helical geometry vendor-specific | Validate z-coverage calculations |
-
-#### Simulation (2 files)
-
-| File | Source | Key Uncertainty | Verification Needed |
-|------|--------|-----------------|---------------------|
-| `options.jl` | Original | Fidelity preset mappings empirical | Validate preset quality against clinical images |
-| `driver.jl` | Original | 5-mode complexity may have edge cases | Test all mode combinations systematically |
+# Option 3: Via simulate() — auto-detects GPU from workspace
+result = simulate(phantom, scanner, protocol, sim_opts, recon_opts)
+```
 
 ---
-
-### TIER 3: LOW CONFIDENCE (2 files)
-
-*Needs verification — original implementations with complex physics chains*
-
-| File | Lines | Key Issues | Critical Verification |
-|------|-------|------------|----------------------|
-| `photon_counting.jl` | ~2200 | Complex PCCT physics (charge sharing, pile-up, K-fluorescence) not validated against real PCCT data | Validate energy bin counts against NAEOTOM phantom data; compare charge sharing artifacts to real PCCT images |
-| `pcct_spectral.jl` | ~1032 | VMI accuracy unknown; 3-material decomposition untested; K-edge sensitivity unverified | Validate VMI HU against Gammex phantom (40-190 keV); test 3-material decomposition; verify K-edge detection |
-
-**Collaborator action**: Verify against real PCCT data before any use; consider Monte Carlo validation (GATE/MCNP).
-
----
-
-### TIER 4: BROKEN (1 file)
-
-| File | Issue | Recommendation |
-|------|-------|----------------|
-| `das_model.jl` | Produces incorrect gain/offset values; explicitly disabled in all fidelity presets | Do not use; fix or remove in v23.0 |
-
----
-
-### Verification Priority Matrix
-
-#### Priority 1: PCCT Validation (Tier 3)
-1. Obtain NAEOTOM Alpha phantom data for validation
-2. Compare simulated energy bin counts to measured data
-3. Validate VMI HU accuracy across 40-190 keV range
-
-#### Priority 2: Scatter/Physics Validation
-1. Run GATE/MCNP Monte Carlo for ACR phantom
-2. Compare scatter-to-primary ratios
-3. Validate CatSim flux density constant (5.6e13)
-
-#### Priority 3: Image Quality Metrics
-1. Compare MTF/NPS/PSF to commercial QA software (e.g., CT ACR)
-2. Validate against published phantom measurements
-
-## Clinical Verification Checklist
-
-For clinical-grade simulation:
-
-- [ ] **CT Number Accuracy**: Water 0±4 HU, Air -1000±20 HU
-- [ ] **Spatial Resolution**: MTF50/MTF10 within 10% of scanner specs
-- [ ] **Noise Characteristics**: SD scales as 1/√(mAs)
-- [ ] **Spectral Accuracy**: VMI HU within ±10 HU (40-140 keV)
-- [ ] **Dose Metrics**: CTDIvol/DLP match reference values
 
 ## References
 
 - **TIGRE**: Biguri A, et al. "TIGRE: A MATLAB-GPU toolbox for CBCT image reconstruction." Biomed Phys Eng Express. 2016. [GitHub](https://github.com/CERN/TIGRE)
 - **CatSim/XCIST**: GE Healthcare CT simulation tools. [GitHub](https://github.com/xcist/main)
-- **AAPM TG-233**: Quality assurance for CT-based technologies
-- **Feldkamp**: Feldkamp LA, et al. "Practical cone-beam algorithm." J Opt Soc Am A. 1984.
-- **Siddon**: Siddon RL. "Fast calculation of the exact radiological path." Med Phys. 1985.
+- **Koch-Mehrin 2020**: Koch-Mehrin KAF, et al. "Charge transport in CdTe photon-counting detectors." NIM-A 976:164241.
+- **Konrad 2025**: Konrad U, et al. "Validated NAEOTOM Alpha MC model." PMB 70:065004.
+- **Yang 2025**: Yang Q, et al. "Seminonparalyzable pileup model for PCCT."
+- **AAPM TG-233**: Quality assurance for CT-based technologies.
+- **Feldkamp 1984**: Feldkamp LA, et al. "Practical cone-beam algorithm." J Opt Soc Am A.
+- **Siddon 1985**: Siddon RL. "Fast calculation of the exact radiological path." Med Phys.
 
 ## License
 
