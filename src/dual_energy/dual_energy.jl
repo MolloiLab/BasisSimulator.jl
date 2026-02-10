@@ -547,17 +547,20 @@ function decompose_materials(sino::DualEnergySinogram{T,A};
     material2 = ws_material2 === nothing ? similar(sino.low) : ws_material2
 
     # Apply decomposition using AcceleratedKernels for GPU compatibility
-    # Reference: sino.low and sino.high for input, write to material1/material2
+    # let-binding captures concrete types to avoid Union{Nothing,T} closure instability
     sino_low = sino.low
     sino_high = sino.high
     m1_name, m2_name = basis
 
-    AK.foreachindex(material1) do idx
-        p_low = sino_low[idx]
-        p_high = sino_high[idx]
+    let inv_a11=T(inv_a11), inv_a12=T(inv_a12), inv_a21=T(inv_a21), inv_a22=T(inv_a22),
+        material1=material1, material2=material2, sino_low=sino_low, sino_high=sino_high
+        AK.foreachindex(material1) do idx
+            p_low = sino_low[idx]
+            p_high = sino_high[idx]
 
-        material1[idx] = inv_a11 * p_low + inv_a12 * p_high
-        material2[idx] = inv_a21 * p_low + inv_a22 * p_high
+            material1[idx] = inv_a11 * p_low + inv_a12 * p_high
+            material2[idx] = inv_a21 * p_low + inv_a22 * p_high
+        end
     end
 
     return MaterialMap(material1, material2;
