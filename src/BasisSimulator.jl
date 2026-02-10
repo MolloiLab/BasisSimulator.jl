@@ -233,6 +233,9 @@ include("detector/pcct/detector_response.jl")
 # PCCT spectral imaging: native VMI, K-edge, effective Z, multi-material decomposition
 include("spectral/pcct_spectral.jl")
 
+# Unified VMI pipeline (shared by dual-kVp and PCCT)
+include("spectral/vmi.jl")
+
 # =============================================================================
 # Image Quality Metrics (AAPM TG-233)
 # =============================================================================

@@ -317,7 +317,7 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     _A_mat = zeros(T, n_bins, n_materials)
     for (j, mat_sym) in enumerate(basis_vec)
         for i in 1:n_bins
-            _A_mat[i, j] = T(get_material_attenuation_pcct(mat_sym, Float64(_bin_energies[i])))
+            _A_mat[i, j] = T(get_basis_mu(mat_sym, Float64(_bin_energies[i])))
         end
     end
     A_pinv_mat = Matrix{T}(pinv(_A_mat))
@@ -963,21 +963,9 @@ function create_eict_dual_workspace(scanner, protocol, sim_opts, recon_opts, pha
 
     # ─── Pre-computed decomposition matrix inverse ───
     basis = length(recon_opts.vmi_basis) >= 2 ? Tuple(recon_opts.vmi_basis[1:2]) : (:water, :iodine)
-    m1, m2 = basis
     e_eff_low = get_effective_energy(Int(protocol.kVp_low))
     e_eff_high = get_effective_energy(Int(protocol.kVp))
-    μ1_low = get_material_attenuation(m1, e_eff_low)
-    μ1_high = get_material_attenuation(m1, e_eff_high)
-    μ2_low = get_material_attenuation(m2, e_eff_low)
-    μ2_high = get_material_attenuation(m2, e_eff_high)
-    det_A = μ1_low * μ2_high - μ2_low * μ1_high
-    if abs(det_A) < 1e-10
-        error("Singular decomposition matrix - basis materials too similar at these energies")
-    end
-    inv_a11 = T(μ2_high / det_A)
-    inv_a12 = T(-μ2_low / det_A)
-    inv_a21 = T(-μ1_high / det_A)
-    inv_a22 = T(μ1_low / det_A)
+    inv_a11, inv_a12, inv_a21, inv_a22 = compute_decomposition_matrix(basis, e_eff_low, e_eff_high; T=T)
 
     # RNG
     rng = MersenneTwister(0)
@@ -1134,6 +1122,18 @@ mutable struct HIRReconWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:A
     correction::A3            # Backprojection scratch (vol shape)
     reg_grad::A3              # Regularization gradient (vol shape)
 
+    # ─── Ordered subsets (pre-computed) ───
+    subsets::Vector{Vector{Int}}            # angle indices per subset
+    subset_geometries::Vector{CTGeometry}   # pre-built geometry per subset
+    subset_geom_source_positions::Vector{A2}  # GPU geometry arrays per subset
+    subset_geom_detector_centers::Vector{A2}
+    subset_geom_detector_u::Vector{A2}
+    subset_geom_detector_v::Vector{A2}
+    subset_sino_buf::A3                     # (n_cols, n_rows, max_subset_size)
+    subset_Ax_buf::A3                       # same shape for forward projection
+    subset_W_proj_buf::A3                   # same shape for projection weights
+    subset_stat_weights_buf::A3             # same shape for statistical weights
+
     # ─── Pre-computed HIR params ───
     params::HIRParams
 end
@@ -1200,11 +1200,59 @@ function create_hir_recon_workspace(
     # HIR params
     params = get_hir_params(strength)
 
+    # Ordered subsets pre-computation
+    n_subsets = params.n_subsets
+    if n_subsets > 0
+        subsets = create_ordered_subsets(geom.n_angles, n_subsets)
+        subset_geometries = [create_subset_geometry(geom, indices) for indices in subsets]
+
+        # Pre-compute GPU geometry arrays for each subset
+        subset_geom_src = Vector{typeof(geom_source_positions)}(undef, n_subsets)
+        subset_geom_det = Vector{typeof(geom_source_positions)}(undef, n_subsets)
+        subset_geom_u = Vector{typeof(geom_source_positions)}(undef, n_subsets)
+        subset_geom_v = Vector{typeof(geom_source_positions)}(undef, n_subsets)
+        for s in 1:n_subsets
+            sg = subset_geometries[s]
+            subset_geom_src[s] = similar(sinogram, T, size(sg.source_positions)...)
+            copyto!(subset_geom_src[s], T.(sg.source_positions))
+            subset_geom_det[s] = similar(sinogram, T, size(sg.detector_centers)...)
+            copyto!(subset_geom_det[s], T.(sg.detector_centers))
+            subset_geom_u[s] = similar(sinogram, T, size(sg.detector_u)...)
+            copyto!(subset_geom_u[s], T.(sg.detector_u))
+            subset_geom_v[s] = similar(sinogram, T, size(sg.detector_v)...)
+            copyto!(subset_geom_v[s], T.(sg.detector_v))
+        end
+
+        # Allocate subset buffers sized for the largest subset
+        max_subset_size = maximum(length(s) for s in subsets)
+        subset_sino_shape = (sino_shape[1], sino_shape[2], max_subset_size)
+        subset_sino_buf = similar(sinogram, T, subset_sino_shape...)
+        subset_Ax_buf = similar(sinogram, T, subset_sino_shape...)
+        subset_W_proj_buf = similar(sinogram, T, subset_sino_shape...)
+        subset_stat_weights_buf = similar(sinogram, T, subset_sino_shape...)
+    else
+        # Legacy mode: no subsets
+        subsets = Vector{Int}[]
+        subset_geometries = CTGeometry[]
+        subset_geom_src = typeof(geom_source_positions)[]
+        subset_geom_det = typeof(geom_source_positions)[]
+        subset_geom_u = typeof(geom_source_positions)[]
+        subset_geom_v = typeof(geom_source_positions)[]
+        # Allocate minimal buffers (won't be used)
+        subset_sino_buf = similar(sinogram, T, 1, 1, 1)
+        subset_Ax_buf = similar(sinogram, T, 1, 1, 1)
+        subset_W_proj_buf = similar(sinogram, T, 1, 1, 1)
+        subset_stat_weights_buf = similar(sinogram, T, 1, 1, 1)
+    end
+
     return HIRReconWorkspace{T, typeof(volume), typeof(geom_source_positions), typeof(filter_kernel)}(
         volume, filtered, conv_scratch, filter_kernel,
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
         W_proj, V_inv,
         stat_weights, Ax, correction, reg_grad,
+        subsets, subset_geometries,
+        subset_geom_src, subset_geom_det, subset_geom_u, subset_geom_v,
+        subset_sino_buf, subset_Ax_buf, subset_W_proj_buf, subset_stat_weights_buf,
         params
     )
 end
