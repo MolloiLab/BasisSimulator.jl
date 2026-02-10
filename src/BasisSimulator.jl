@@ -57,11 +57,11 @@ include("object/attenuation.jl")
 
 # PCCT detector physics: CdTe material constants, charge transport, fluorescence
 # Reference: Koch-Mehrin 2020 (NIM-A 976:164241), Konrad 2025 (PMB 70:065004)
-include("physics/pcct/cdte_constants.jl")
-include("physics/pcct/charge_transport.jl")
-include("physics/pcct/k_fluorescence.jl")
-include("physics/pcct/charge_collection.jl")
-include("physics/pcct/pileup_model.jl")
+include("detector/pcct/cdte_constants.jl")
+include("detector/pcct/charge_transport.jl")
+include("detector/pcct/k_fluorescence.jl")
+include("detector/pcct/charge_collection.jl")
+include("detector/pcct/pileup_model.jl")
 
 # =============================================================================
 # Geometry
@@ -75,28 +75,28 @@ include("geometry/scanner.jl")
 
 
 # =============================================================================
-# Forward Projection - Core (TIGRE port via AcceleratedKernels.jl)
+# Projection (ray tracing)
 # =============================================================================
 
 # Siddon forward projection (exact ray-voxel intersections)
 # Reference: CERN/TIGRE/Common/CUDA/Siddon_projection.cu
-include("forward/siddon.jl")
+include("projection/siddon.jl")
 
 # =============================================================================
-# Physics Effects (GPU-native via AcceleratedKernels.jl)
+# Detector (ALL detector effects + noise)
 # =============================================================================
 
 # Scatter simulation (spatial convolution)
-include("forward/scatter.jl")
+include("detector/scatter.jl")
 
 # Protocol definitions
 include("source/protocol.jl")
 
 # Detector response and noise modeling
-include("forward/detector_noise.jl")
+include("detector/detector_noise.jl")
 
 # Detector absorption efficiency and DQE
-include("forward/detector_efficiency.jl")
+include("detector/detector_efficiency.jl")
 
 # Bowtie filter modeling
 include("source/bowtie_filter.jl")
@@ -108,13 +108,13 @@ include("source/flat_filter.jl")
 include("source/focal_spot.jl")
 
 # Detector crosstalk modeling (electronic and optical)
-include("forward/crosstalk.jl")
+include("detector/crosstalk.jl")
 
 # Detector lag (afterglow) modeling
-include("forward/detector_lag.jl")
+include("detector/detector_lag.jl")
 
 # Detector fill factor modeling
-include("forward/fill_factor.jl")
+include("detector/fill_factor.jl")
 
 
 # =============================================================================
@@ -126,7 +126,7 @@ include("forward/fill_factor.jl")
 include("source/heel_effect.jl")
 
 # Data Acquisition System model (signal chain, noise, quantization)
-include("forward/das_model.jl")
+include("detector/das_model.jl")
 
 # Beam hardening correction (water-based polynomial)
 include("forward/beam_hardening_correction.jl")
@@ -136,7 +136,7 @@ include("forward/beam_hardening_correction.jl")
 # Depends on all physics effects above including CatSim-style
 # =============================================================================
 
-include("forward/physics_pipeline.jl")
+include("detector/physics_pipeline.jl")
 
 # =============================================================================
 # Calibration Pipeline (needs PhysicsConfig from PhysicsPipeline)
@@ -146,12 +146,12 @@ include("forward/physics_pipeline.jl")
 include("forward/calibration.jl")
 
 # =============================================================================
-# Forward Projection - Unified API (includes physics)
+# Projection - Unified API (includes physics)
 # =============================================================================
 
 # Beer-Lambert spectral physics: I = Σ wₑ × exp(-∫μₑ dl)
 # Unified API for mono/poly projection + optional physics effects
-include("forward/polychromatic.jl")
+include("projection/polychromatic.jl")
 
 # =============================================================================
 # Reconstruction (TIGRE port via AcceleratedKernels.jl)
@@ -224,11 +224,11 @@ include("dual_energy/dual_energy.jl")
 # =============================================================================
 
 # Photon-counting detector model: energy binning, charge sharing, pile-up
-include("forward/photon_counting.jl")
+include("detector/photon_counting.jl")
 
 # Unified Detector Response Matrix (DRM) combining all energy-dependent physics
 # Must be after photon_counting.jl (uses get_detector_material_properties, etc.)
-include("physics/pcct/detector_response.jl")
+include("detector/pcct/detector_response.jl")
 
 # PCCT spectral imaging: native VMI, K-edge, effective Z, multi-material decomposition
 include("forward/pcct_spectral.jl")
