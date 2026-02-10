@@ -1776,11 +1776,11 @@ function reconstruct!(
     backend = AK.get_backend(ws.volume)
 
     # Initialize simple statistical weights from sinogram: w ≈ exp(-y)
-    let ε = T(1e-6)
-        AK.foreachindex(ws.stat_weights, backend) do idx
+    let sw = ws.stat_weights, ε = T(1e-6)
+        AK.foreachindex(sw, backend) do idx
             y_val = sinogram[idx]
             y_clipped = clamp(y_val, T(-10), T(10))
-            ws.stat_weights[idx] = exp(-y_clipped) + ε
+            sw[idx] = exp(-y_clipped) + ε
         end
     end
 
@@ -1796,16 +1796,18 @@ function reconstruct!(
                 ws_detector_v=ws.geom_detector_v)
 
             # Compute weights: w = exp(-Ax), normalized to max=1
-            AK.foreachindex(ws.stat_weights, backend) do idx
-                ax_val = ws.Ax[idx]
-                ax_clipped = clamp(ax_val, T(-10), T(10))
-                ws.stat_weights[idx] = exp(-ax_clipped)
+            let sw = ws.stat_weights, ax = ws.Ax
+                AK.foreachindex(sw, backend) do idx
+                    ax_val = ax[idx]
+                    ax_clipped = clamp(ax_val, T(-10), T(10))
+                    sw[idx] = exp(-ax_clipped)
+                end
             end
             max_w = maximum(ws.stat_weights)
             if max_w > zero(T)
-                let mw = max_w
-                    AK.foreachindex(ws.stat_weights, backend) do idx
-                        ws.stat_weights[idx] = ws.stat_weights[idx] / mw
+                let sw = ws.stat_weights, mw = max_w
+                    AK.foreachindex(sw, backend) do idx
+                        sw[idx] = sw[idx] / mw
                     end
                 end
             end
@@ -1823,9 +1825,11 @@ function reconstruct!(
             ws_detector_v=ws.geom_detector_v)
 
         # Compute combined-weighted residual in-place: Ax = W_proj ⊙ stat_weights ⊙ (y - Ax)
-        AK.foreachindex(ws.Ax, backend) do idx
-            residual = sinogram[idx] - ws.Ax[idx]
-            ws.Ax[idx] = ws.W_proj[idx] * ws.stat_weights[idx] * residual
+        let ax = ws.Ax, wp = ws.W_proj, sw = ws.stat_weights
+            AK.foreachindex(ax, backend) do idx
+                residual = sinogram[idx] - ax[idx]
+                ax[idx] = wp[idx] * sw[idx] * residual
+            end
         end
 
         # Backproject weighted residual into ws.correction (unweighted for SIRT)
@@ -1839,10 +1843,12 @@ function reconstruct!(
 
         # Apply SIRT-style update with regularization:
         # x = x + λ_relax * V_inv * correction - λ_reg * V_inv * reg_grad
-        AK.foreachindex(ws.volume, backend) do idx
-            data_update = λ_relax * ws.V_inv[idx] * ws.correction[idx]
-            reg_update = λ * ws.V_inv[idx] * ws.reg_grad[idx]
-            ws.volume[idx] += data_update - reg_update
+        let vol = ws.volume, vinv = ws.V_inv, corr = ws.correction, rg = ws.reg_grad
+            AK.foreachindex(vol, backend) do idx
+                data_update = λ_relax * vinv[idx] * corr[idx]
+                reg_update = λ * vinv[idx] * rg[idx]
+                vol[idx] += data_update - reg_update
+            end
         end
     end
 
