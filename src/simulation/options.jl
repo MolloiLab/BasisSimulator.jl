@@ -106,9 +106,7 @@ function SimOptions(;
     use_bhc::Union{Bool, Nothing} = nothing,
     use_pcct_corrections::Union{Bool, Nothing} = nothing,
     n_energy_bins::Int = 30,
-    seed::Union{Int, Nothing} = 42,
-    # Deprecated kwarg — ignored but accepted for backwards compatibility
-    use_beam_hardening::Union{Bool, Nothing} = nothing
+    seed::Union{Int, Nothing} = 42
 )
     # Fidelity preset defaults for all 15 effects
     # :ideal = all OFF; :low = noise only; :medium = polychromatic subset; :high = all ON except DAS; :pcct = :high + corrections

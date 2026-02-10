@@ -694,56 +694,6 @@ function apply_detector_model(sinogram::AbstractArray{T,3}, model::DetectorModel
     return apply_detector_model!(result, model)
 end
 
-"""
-    compute_noise_level(sinogram_clean, sinogram_noisy) -> NamedTuple
-
-Compute noise statistics comparing clean and noisy sinograms.
-"""
-function compute_noise_level(sinogram_clean, sinogram_noisy)
-    diff = sinogram_noisy .- sinogram_clean
-    return (
-        mean_diff = mean(diff),
-        std_diff = std(diff),
-        max_diff = maximum(abs.(diff)),
-        snr = mean(abs.(sinogram_clean)) / (std(diff) + 1e-10)
-    )
-end
-
-"""
-    estimate_dose_from_noise(noise_std::Float64, μ_water::Float64) -> Float64
-
-Estimate relative dose level from noise standard deviation.
-Lower noise = higher dose.
-"""
-function estimate_dose_from_noise(noise_std::Float64, μ_water::Float64)
-    # Rough estimate: noise_std ∝ 1/√(dose)
-    # Normalize to typical clinical noise level
-    clinical_noise = 0.02 * μ_water  # ~2% noise at clinical dose
-    return (clinical_noise / max(noise_std, 1e-10))^2
-end
-
-# =============================================================================
-# Poisson Distribution (simple implementation)
-# =============================================================================
-
-struct Poisson
-    λ::Float64
-end
-
-function Base.rand(rng::AbstractRNG, p::Poisson)
-    # Knuth algorithm for small λ
-    L = exp(-p.λ)
-    k = 0
-    prob = 1.0
-
-    while prob > L
-        k += 1
-        prob *= rand(rng)
-    end
-
-    return k - 1
-end
-
 # =============================================================================
 # Exports
 # =============================================================================
@@ -754,7 +704,6 @@ export apply_detector_blur!, apply_detector_blur
 export add_quantum_noise!, add_electronic_noise!
 export add_quantum_noise, add_electronic_noise
 export apply_detector_model!, apply_detector_model
-export compute_noise_level, estimate_dose_from_noise
 export sim_detect, compute_detector_I0
 
 """

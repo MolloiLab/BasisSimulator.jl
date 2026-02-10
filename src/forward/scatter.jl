@@ -68,7 +68,6 @@ Create a scatter model with default parameters for body CT.
 - `scale_factor`: Multiplier for scatter magnitude (1.0 = ~15% SPR for body CT)
 - `kernel_fwhm`: Full-width half-maximum of scatter kernel in pixels
 - `kernel_type`: Kernel shape (:gaussian or :exponential)
-- `spr`: DEPRECATED - use scale_factor instead. If provided, converted to scale_factor.
 
 # Notes
 The base scatter coefficient (0.025) is calibrated to produce approximately
@@ -82,16 +81,8 @@ To increase/decrease scatter:
 function default_scatter_model(;
     scale_factor::Float64=1.0,
     kernel_fwhm::Float64=50.0,
-    kernel_type::Symbol=:gaussian,
-    spr::Union{Nothing,Float64}=nothing  # Deprecated parameter
+    kernel_type::Symbol=:gaussian
 )
-    # Handle deprecated spr parameter
-    if spr !== nothing
-        # Convert old SPR to approximate scale_factor
-        # Old model: SPR=0.15 was "nominal", so scale_factor ≈ spr/0.15
-        scale_factor = spr / 0.15
-    end
-
     # Base coefficient from XCIST (produces ~15% SPR)
     scatter_coefficient = 0.025
 

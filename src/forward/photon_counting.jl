@@ -1755,68 +1755,6 @@ function _compute_degraded_I0(detector, energies, weights, η, thresholds, kVp, 
     return I0_bins
 end
 
-# Legacy method: raw volume input (deprecated, kept for backward compatibility)
-"""
-    pcct_forward_project(volume::AbstractArray{T,3}, geom, detector, energies, weights; kwargs...)
-
-DEPRECATED: Use the mask+materials method instead for polychromatic PCCT.
-
-This legacy method projects the same volume at every energy (monochromatic behavior).
-For correct polychromatic PCCT, use `pcct_forward_project(mask, geom, detector; ...)`.
-"""
-function pcct_forward_project(
-    volume::AbstractArray{T,3},
-    geom,
-    detector::PhotonCountingDetector,
-    energies::AbstractVector,
-    weights::AbstractVector;
-    flux_rate::Real = T(1e8),
-    I0::Real = T(1e6)
-) where T
-
-    @warn "pcct_forward_project(volume, ...) is deprecated. Use pcct_forward_project(mask, geom, detector; energies=..., weights=..., materials=...) for polychromatic PCCT." maxlog=1
-
-    n_cols = geom.n_cols
-    n_rows = geom.n_rows
-    n_angles = geom.n_angles
-    n_energies = length(energies)
-    n_bins = length(detector.energy_thresholds_keV)
-
-    # Allocate spectral intensity array
-    intensity_spectrum = similar(volume, n_cols, n_rows, n_angles, n_energies)
-
-    # Project at each energy (SAME volume — monochromatic behavior!)
-    for (e_idx, E) in enumerate(energies)
-        sino_E = siddon_forward_project(volume, geom)
-        I0_E = I0 * weights[e_idx]
-
-        AK.foreachindex(sino_E) do idx
-            intensity_spectrum[CartesianIndex(Tuple(CartesianIndices(sino_E)[idx])..., e_idx)] =
-                I0_E * exp(-sino_E[idx])
-        end
-    end
-
-    # Apply energy thresholds to get binned counts
-    bins = apply_energy_thresholds(intensity_spectrum, energies, weights, detector)
-
-    # Apply detector physics effects
-    apply_charge_sharing!(bins, detector)
-    apply_pulse_pileup!(bins, detector, flux_rate)
-    apply_anti_coincidence!(bins, detector)
-    apply_pcct_electronic_noise!(bins, detector)
-
-    # Convert to line-integral domain
-    for (bin_idx, bin) in enumerate(bins)
-        threshold = detector.energy_thresholds_keV[bin_idx]
-        I0_bin = I0 * sum(w for (E, w) in zip(energies, weights) if E >= threshold)
-        AK.foreachindex(bin) do idx
-            bin[idx] = -log(max(bin[idx], one(T)) / I0_bin)
-        end
-    end
-
-    return EnergyResolvedSinogram(bins, T.(detector.energy_thresholds_keV))
-end
-
 # =============================================================================
 # PCCT Noise Model (PCCT-NOISE-DECOMP)
 # =============================================================================
