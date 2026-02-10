@@ -518,6 +518,7 @@ struct CTGeometry
     n_rows::Int
     n_cols::Int
     pixel_size::Float64
+    pixel_row_size::Float64    # row-based pixel size at isocenter (cm)
     angles::Vector{Float64}
     source_positions::Matrix{Float64}
     detector_centers::Matrix{Float64}
@@ -581,6 +582,7 @@ function CTGeometry(scanner::Scanner{T};
     # Pixel size at isocenter (detector pitch projected through magnification)
     magnification = scanner.source_to_detector / scanner.source_to_isocenter
     pixel_size = (scanner.detector_col_size / 10.0) / magnification
+    pixel_row_size = (scanner.detector_row_size / 10.0) / magnification
 
     # FOV is independent: it controls the reconstruction grid, not the detector geometry
     if fov_cm !== nothing
@@ -638,7 +640,7 @@ function CTGeometry(scanner::Scanner{T};
     fov = (fov_xy, fov_xy, fov_z)
 
     return CTGeometry(
-        SAD, SDD, n_angles, _n_rows, _n_cols, pixel_size,
+        SAD, SDD, n_angles, _n_rows, _n_cols, pixel_size, pixel_row_size,
         angles, source_positions, detector_centers, detector_u, detector_v,
         fov
     )
@@ -743,7 +745,7 @@ function create_aquilion_one(;
     fov = (fov_xy, fov_xy, fov_z)
 
     return CTGeometry(
-        SAD, SDD, n_angles, n_rows, n_cols, pixel_size,
+        SAD, SDD, n_angles, n_rows, n_cols, pixel_size, pixel_size,
         angles, source_positions, detector_centers, detector_u, detector_v,
         fov
     )

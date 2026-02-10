@@ -737,7 +737,6 @@ function create_eict_dual_workspace(scanner, protocol, sim_opts, recon_opts, pha
         rotation_time = protocol.rotation_time,
         flux_density = protocol.flux_density,
         spectrum_path = nothing,
-        scan_mode = :axial,
         dual_energy = false
     )
     protocol_high = CTProtocol(
@@ -747,7 +746,6 @@ function create_eict_dual_workspace(scanner, protocol, sim_opts, recon_opts, pha
         rotation_time = protocol.rotation_time,
         flux_density = protocol.flux_density,
         spectrum_path = nothing,
-        scan_mode = :axial,
         dual_energy = false
     )
 

@@ -170,9 +170,6 @@ include("reconstruction/core/filtering.jl")
 # FDK reconstruction (filter + backproject)
 include("reconstruction/fbp/fdk.jl")
 
-# Helical (spiral) CT reconstruction
-include("reconstruction/fbp/helical_recon.jl")
-
 # --- Classic Iterative Reconstruction ---
 # SIRT iterative reconstruction
 # Reference: CERN/TIGRE/MATLAB/Algorithms/SIRT.m
@@ -208,9 +205,6 @@ include("reconstruction/mbir/mbir.jl")
 
 # Scanner specifications (GE, Siemens, Canon, etc.)
 include("scanners/scanners.jl")
-
-# Helical protocol integration with scanner specs (must come after scanners.jl)
-include("scanners/helical_protocols.jl")
 
 # =============================================================================
 # Spectral Imaging (Dual-Energy + PCCT)

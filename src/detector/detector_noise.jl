@@ -728,8 +728,9 @@ function compute_detector_I0(geom::CTGeometry, protocol::CTProtocol)
 
     # Pixel size at detector plane (magnified from isocenter)
     magnification = SDD_mm / SAD_mm
-    pixel_size_det_mm = (geom.pixel_size * 10.0) * magnification
-    pixel_area_mm2 = pixel_size_det_mm^2
+    pixel_col_det_mm = (geom.pixel_size * 10.0) * magnification
+    pixel_row_det_mm = (geom.pixel_row_size * 10.0) * magnification
+    pixel_area_mm2 = pixel_col_det_mm * pixel_row_det_mm
 
     # Time per view
     time_per_view = protocol.rotation_time / protocol.views

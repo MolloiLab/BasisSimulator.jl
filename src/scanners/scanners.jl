@@ -178,14 +178,12 @@ Acquisition capability specification.
 - `max_rotation_time_s`: Slowest rotation time (seconds)
 - `rotation_time_options_s`: Available rotation times (seconds)
 - `max_views_per_rotation`: Maximum views per 360° rotation
-- `helical_pitch_options`: Available helical pitch values
 """
 struct AcquisitionSpecification
     min_rotation_time_s::SourceCitation{Float64}
     max_rotation_time_s::SourceCitation{Float64}
     rotation_time_options_s::SourceCitation{Vector{Float64}}
     max_views_per_rotation::SourceCitation{Int}
-    helical_pitch_options::SourceCitation{Vector{Float64}}
 end
 
 """
@@ -241,30 +239,6 @@ struct AxialProtocol <: AbstractProtocol
     ma::Int
     rotation_time_s::Float64
     n_angles::Int
-    slice_thickness_mm::Float64
-end
-
-"""
-    HelicalProtocol
-
-Helical (spiral) scan protocol.
-
-# Fields
-- `kvp`: Tube voltage (kV)
-- `ma`: Tube current (mA)
-- `rotation_time_s`: Rotation time (seconds)
-- `pitch`: Helical pitch (table travel per rotation / beam width)
-- `n_rotations`: Number of gantry rotations
-- `n_angles_per_rotation`: Projection angles per rotation
-- `slice_thickness_mm`: Reconstructed slice thickness (mm)
-"""
-struct HelicalProtocol <: AbstractProtocol
-    kvp::Int
-    ma::Int
-    rotation_time_s::Float64
-    pitch::Float64
-    n_rotations::Float64
-    n_angles_per_rotation::Int
     slice_thickness_mm::Float64
 end
 
@@ -347,36 +321,14 @@ function create_geometry(spec::AbstractScannerSpec;
 
     # Compute z FOV from detector coverage
     magnification = sdd_cm / sid_cm
-    z_coverage_cm = n_rows * (det.row_size_mm[] / 10.0) / magnification
+    pixel_row_size_cm = (det.row_size_mm[] / 10.0) / magnification
+    z_coverage_cm = n_rows * pixel_row_size_cm
     fov = (_fov_cm, _fov_cm, z_coverage_cm)
 
     return CTGeometry(
-        sid_cm, sdd_cm, n_angles, n_rows, _n_cols, pixel_size_cm,
+        sid_cm, sdd_cm, n_angles, n_rows, _n_cols, pixel_size_cm, pixel_row_size_cm,
         angles, source_positions, detector_centers, detector_u, detector_v,
         fov
-    )
-end
-
-"""
-    create_geometry(spec::AbstractScannerSpec, protocol::HelicalProtocol; n_rows::Int=64)
-
-Create a helical CTGeometry from scanner spec and protocol.
-
-# Arguments
-- `spec`: Scanner specification
-- `protocol`: Helical protocol with pitch, rotation time, etc.
-- `n_rows`: Number of detector rows to simulate (default: 64 for speed)
-
-# Notes
-This method returns an axial geometry with the protocol's angle count.
-For true helical reconstruction, use `create_helical_geometry()` from HelicalRecon.
-"""
-function create_geometry(spec::AbstractScannerSpec, protocol::HelicalProtocol; n_rows::Int=64)
-    # Create geometry with protocol's angle count
-    # For true helical, user should use create_helical_geometry() from HelicalRecon
-    return create_geometry(spec;
-        n_angles=protocol.n_angles_per_rotation,
-        n_rows=n_rows
     )
 end
 
@@ -454,7 +406,6 @@ function print_scanner_info(spec::AbstractScannerSpec)
     println("-" ^ 40)
     println("  Rotation:     $(acq.min_rotation_time_s[]) - $(acq.max_rotation_time_s[]) s")
     println("  Max Views:    $(acq.max_views_per_rotation[]) per rotation")
-    println("  Pitch Values: $(acq.helical_pitch_options[])")
     println("=" ^ 80)
 end
 
@@ -508,6 +459,6 @@ export DetectorMaterial, GOS, LUMEX, CSI, CDTE, CZT
 export SourceCitation
 export DetectorSpecification, TubeSpecification, GeometrySpecification, AcquisitionSpecification
 export AbstractScannerSpec, AbstractProtocol
-export AxialProtocol, HelicalProtocol
+export AxialProtocol
 export manufacturer, model_name, fda_510k, detector, tube, geometry, acquisition
 export create_geometry, print_scanner_info, get_source_citations
