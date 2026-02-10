@@ -339,28 +339,31 @@ function apply_crosstalk!(
     output = ws_output !== nothing ? ws_output : similar(sinogram)
 
     # GPU-native: convert to intensity, apply convolution, convert back
-    AK.foreachindex(sinogram) do idx
-        ci = CartesianIndices(sinogram)[idx]
-        col, row, angle = Tuple(ci)
+    # let-bind to capture with concrete type (avoids Core.Box on GPU)
+    let kernel = kernel, output = output, n_cols = n_cols, n_rows = n_rows
+        AK.foreachindex(sinogram) do idx
+            ci = CartesianIndices(sinogram)[idx]
+            col, row, angle = Tuple(ci)
 
-        # Apply 3x3 convolution in intensity domain
-        acc = zero(T)
-        for di in -1:1
-            for dj in -1:1
-                src_col = clamp(col + di, 1, n_cols)
-                src_row = clamp(row + dj, 1, n_rows)
+            # Apply 3x3 convolution in intensity domain
+            acc = zero(T)
+            for di in -1:1
+                for dj in -1:1
+                    src_col = clamp(col + di, 1, n_cols)
+                    src_row = clamp(row + dj, 1, n_rows)
 
-                ki = di + 2
-                kj = dj + 2
+                    ki = di + 2
+                    kj = dj + 2
 
-                # Convert source to intensity, apply kernel weight
-                intensity_src = exp(-sinogram[src_col, src_row, angle])
-                acc += intensity_src * kernel[ki, kj]
+                    # Convert source to intensity, apply kernel weight
+                    intensity_src = exp(-sinogram[src_col, src_row, angle])
+                    acc += intensity_src * kernel[ki, kj]
+                end
             end
-        end
 
-        # Ensure positive and convert back to projection domain
-        output[idx] = -log(max(acc, T(1e-10)))
+            # Ensure positive and convert back to projection domain
+            output[idx] = -log(max(acc, T(1e-10)))
+        end
     end
 
     copyto!(sinogram, output)
@@ -618,26 +621,29 @@ function apply_optical_crosstalk!(
     output = ws_output !== nothing ? ws_output : similar(sinogram)
 
     # GPU-native: convert to intensity, apply convolution, convert back
-    AK.foreachindex(sinogram) do idx
-        ci = CartesianIndices(sinogram)[idx]
-        col, row, angle = Tuple(ci)
+    # let-bind to capture with concrete type (avoids Core.Box on GPU)
+    let kernel = kernel, output = output, n_cols = n_cols, n_rows = n_rows
+        AK.foreachindex(sinogram) do idx
+            ci = CartesianIndices(sinogram)[idx]
+            col, row, angle = Tuple(ci)
 
-        # Apply 3x3 convolution in intensity domain
-        acc = zero(T)
-        for di in -1:1
-            for dj in -1:1
-                src_col = clamp(col + di, 1, n_cols)
-                src_row = clamp(row + dj, 1, n_rows)
+            # Apply 3x3 convolution in intensity domain
+            acc = zero(T)
+            for di in -1:1
+                for dj in -1:1
+                    src_col = clamp(col + di, 1, n_cols)
+                    src_row = clamp(row + dj, 1, n_rows)
 
-                ki = di + 2
-                kj = dj + 2
+                    ki = di + 2
+                    kj = dj + 2
 
-                intensity_src = exp(-sinogram[src_col, src_row, angle])
-                acc += intensity_src * kernel[ki, kj]
+                    intensity_src = exp(-sinogram[src_col, src_row, angle])
+                    acc += intensity_src * kernel[ki, kj]
+                end
             end
-        end
 
-        output[idx] = -log(max(acc, T(1e-10)))
+            output[idx] = -log(max(acc, T(1e-10)))
+        end
     end
 
     copyto!(sinogram, output)

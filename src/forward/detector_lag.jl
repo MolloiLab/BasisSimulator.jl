@@ -260,8 +260,11 @@ function apply_lag!(
 
     # Pre-compute intensity domain (use workspace or allocate)
     intensity = ws_intensity !== nothing ? ws_intensity : similar(sinogram)
-    AK.foreachindex(sinogram) do idx
-        intensity[idx] = exp(-sinogram[idx])
+    # let-bind to capture with concrete type (avoids Core.Box on GPU)
+    let intensity = intensity
+        AK.foreachindex(sinogram) do idx
+            intensity[idx] = exp(-sinogram[idx])
+        end
     end
 
     # Output buffer (use workspace or allocate)
@@ -269,24 +272,27 @@ function apply_lag!(
 
     # GPU-native: compute each output pixel as weighted sum of previous frames
     # Each (col, row, angle) can be computed independently
-    AK.foreachindex(sinogram) do idx
-        ci = CartesianIndices(sinogram)[idx]
-        col, row, angle = Tuple(ci)
+    # let-bind to capture with concrete type (avoids Core.Box on GPU)
+    let coeffs = coeffs, intensity = intensity, output = output, n_frames = n_frames
+        AK.foreachindex(sinogram) do idx
+            ci = CartesianIndices(sinogram)[idx]
+            col, row, angle = Tuple(ci)
 
-        # Weighted sum over previous frames
-        weighted_sum = zero(T)
-        for k in 0:(n_frames-1)
-            prev_angle = angle - k
-            if prev_angle >= 1
-                weighted_sum += coeffs[k+1] * intensity[col, row, prev_angle]
-            else
-                # For early frames, use first available frame
-                weighted_sum += coeffs[k+1] * intensity[col, row, 1]
+            # Weighted sum over previous frames
+            weighted_sum = zero(T)
+            for k in 0:(n_frames-1)
+                prev_angle = angle - k
+                if prev_angle >= 1
+                    weighted_sum += coeffs[k+1] * intensity[col, row, prev_angle]
+                else
+                    # For early frames, use first available frame
+                    weighted_sum += coeffs[k+1] * intensity[col, row, 1]
+                end
             end
-        end
 
-        # Ensure positive and convert back to projection domain
-        output[idx] = -log(max(weighted_sum, T(1e-10)))
+            # Ensure positive and convert back to projection domain
+            output[idx] = -log(max(weighted_sum, T(1e-10)))
+        end
     end
 
     copyto!(sinogram, output)

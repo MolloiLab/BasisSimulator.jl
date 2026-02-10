@@ -368,11 +368,14 @@ function apply_flat_filter!(
     end
 
     # GPU-native element-wise operation
-    AK.foreachindex(sinogram) do idx
-        ci = CartesianIndices(sinogram)[idx]
-        col, row, _ = Tuple(ci)
-        proj_idx = col + (row - 1) * n_cols
-        sinogram[idx] += filter_projection[proj_idx]
+    # let-bind to capture with concrete type (avoids Core.Box on GPU)
+    let filter_projection = filter_projection, n_cols = n_cols
+        AK.foreachindex(sinogram) do idx
+            ci = CartesianIndices(sinogram)[idx]
+            col, row, _ = Tuple(ci)
+            proj_idx = col + (row - 1) * n_cols
+            sinogram[idx] += filter_projection[proj_idx]
+        end
     end
 
     return sinogram
