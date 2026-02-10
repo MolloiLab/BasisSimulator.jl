@@ -83,6 +83,86 @@ recon_hu = 1000f0 .* (Array(recon) .- μ_water) ./ μ_water
 
 ---
 
+## File Structure
+
+Organized by imaging chain: source → object → geometry → projection → detector → correction → spectral → reconstruction → metrics → scanners → api
+
+```
+src/
+├── BasisSimulator.jl
+├── source/                         # X-ray source + beam shaping
+│   ├── spectrum.jl                 # Spectrum loading (.dat files)
+│   ├── bowtie_filter.jl            # Bowtie filter modeling
+│   ├── flat_filter.jl              # Flat (inherent) filter
+│   ├── heel_effect.jl              # Anode self-attenuation
+│   ├── focal_spot.jl               # Finite focal spot
+│   └── protocol.jl                 # CTProtocol, dose validation/reporting
+├── object/                         # Scanned object
+│   ├── materials.jl                # Gammex 472 materials
+│   ├── attenuation.jl              # Attenuation coefficient computation
+│   └── phantom.jl                  # Phantom generation (semantic masks)
+├── geometry/
+│   └── scanner.jl                  # Scanner, CTGeometry
+├── projection/                     # Ray tracing
+│   ├── siddon.jl                   # Siddon forward projection (TIGRE)
+│   └── polychromatic.jl            # Beer-Lambert + unified API
+├── detector/                       # ALL detector effects + noise
+│   ├── scatter.jl                  # Scatter simulation
+│   ├── crosstalk.jl                # Electronic + optical crosstalk
+│   ├── detector_lag.jl             # Afterglow modeling
+│   ├── detector_noise.jl           # Quantum noise + I0 computation
+│   ├── detector_efficiency.jl      # DQE (no-op in calibrated mode)
+│   ├── fill_factor.jl              # Fill factor modeling
+│   ├── das_model.jl                # DAS model (BROKEN)
+│   ├── physics_pipeline.jl         # Unified PhysicsConfig
+│   ├── photon_counting.jl          # PCCT detector model
+│   └── pcct/                       # CdTe-specific physics
+│       ├── cdte_constants.jl       # Material constants
+│       ├── charge_transport.jl     # Charge cloud transport (Koch-Mehrin ODE)
+│       ├── k_fluorescence.jl       # K-fluorescence (5 K-lines/element)
+│       ├── charge_collection.jl    # Hecht CCE + small-pixel weighting
+│       ├── pileup_model.jl         # Yang 2025 seminonparalyzable pileup
+│       └── detector_response.jl    # Unified DRM
+├── correction/                     # Post-detection corrections
+│   ├── beam_hardening_correction.jl # Water-based polynomial BHC
+│   └── calibration.jl              # Air scan calibration pipeline
+├── spectral/                       # Spectral imaging (PCCT + dual-energy)
+│   ├── pcct_spectral.jl            # PCCT VMI, K-edge, effective Z, decomposition
+│   └── dual_energy.jl              # Dual-kVp VMI, material decomposition
+├── reconstruction/                 # Image reconstruction
+│   ├── core/
+│   │   ├── backprojection.jl       # Voxel-driven backprojection (TIGRE)
+│   │   └── filtering.jl           # Ramp filter, cosine weighting
+│   ├── fbp/
+│   │   ├── fdk.jl                 # FDK reconstruction
+│   │   └── helical_recon.jl       # Helical (spiral) CT
+│   ├── ir/
+│   │   ├── sirt.jl                # SIRT iterative reconstruction
+│   │   └── cgls.jl                # CGLS iterative reconstruction
+│   ├── regularization/
+│   │   └── tv_regularization.jl   # Total Variation (ROF model)
+│   ├── hybrid_ir/
+│   │   └── hybrid_ir.jl           # Hybrid IR (FDK + PWLS refinement)
+│   ├── mbir/
+│   │   └── mbir.jl                # Model-Based IR
+│   └── statistical_ir.jl          # PWLS core (used by Hybrid IR)
+├── metrics/                        # Image quality (AAPM TG-233)
+│   ├── mtf.jl                     # Modulation Transfer Function
+│   ├── nps.jl                     # Noise Power Spectrum
+│   └── psf.jl                     # Point Spread Function
+├── scanners/                       # Clinical scanner configurations
+│   ├── scanners.jl                # Scanner specifications
+│   ├── general_electric.jl        # GE Revolution Apex
+│   ├── siemens.jl                 # Siemens NAEOTOM Alpha
+│   └── helical_protocols.jl       # Helical protocol integration
+└── api/                           # Top-level orchestration
+    ├── options.jl                 # SimOptions, ReconOptions
+    ├── workspace.jl               # Workspace structs (pre-allocated buffers)
+    └── driver.jl                  # simulate!(), reconstruct!() entry points
+```
+
+---
+
 ## Physics Configuration
 
 ### Enabling/Disabling Effects
@@ -126,214 +206,103 @@ default_physics_config()    # All nothing (use kwargs to enable)
 
 ---
 
+## Hybrid Iterative Reconstruction (HIR)
+
+FDK initialization + PWLS (Penalized Weighted Least Squares) refinement with Huber edge-preserving regularization. Strength 1-5 provides progressive noise reduction.
+
+```julia
+# Create HIR workspace
+hir_ws = create_hir_recon_workspace(geom, sinogram; strength=3, array_type=MtlArray)
+reconstruct!(hir_ws, geom, sinogram)
+hir_result = Array(hir_ws.volume)
+```
+
+### Noise Reduction by Strength
+
+| Strength | Noise Reduction | Iterations | Use Case |
+|----------|-----------------|------------|----------|
+| 1 | ~9% | 8 | Minimal smoothing |
+| 2 | ~20% | 15 | Moderate |
+| 3 | ~32% | 30 | Balanced (recommended) |
+| 4 | ~38% | 60 | Strong smoothing |
+| 5 | ~38% | 100 | Maximum (SIRT ceiling) |
+
+---
+
+## Dose Validation and Reporting
+
+Protocol validation and dose estimation functions (CPU-only, no GPU):
+
+```julia
+# Validate protocol parameters
+result = validate_protocol(protocol, scanner)
+println(result.valid, " — ", result.messages)
+
+# Compute dose metrics
+ctdi = compute_ctdi_vol(protocol)
+dlp = compute_dlp(protocol, 30.0)  # 30 cm scan length
+
+# Formatted dose report
+report = dose_report(protocol, geom)
+
+# Constant-dose protocol (same dose, different views)
+proto_2000 = constant_dose_protocol(protocol, 2000)
+
+# Constant-noise protocol (same noise/view, more dose)
+proto_2000_noise = constant_noise_protocol(protocol, 2000)
+```
+
+---
+
+## VMI (Virtual Monoenergetic Imaging)
+
+### PCCT VMI (Material Decomposition)
+
+Uses spectrum-weighted bin energies for accurate physics:
+
+```julia
+# Material decomposition from PCCT energy bins
+mat_map = pcct_material_decomposition(pcct_sino; basis=(:water, :iodine), kvp=120)
+
+# Synthesize VMI at target energy
+vmi_70 = synthesize_vmi(mat_map, 70.0)
+
+# Bin energies use spectrum-weighted mean (not arithmetic mean)
+E_eff = compute_pcct_bin_energies([20.0, 35.0, 55.0, 70.0]; kvp=120)
+```
+
+### Dual-Energy VMI
+
+```julia
+mat_map = decompose_materials(de_sino; basis=(:water, :iodine))
+vmi_50 = virtual_monoenergetic(mat_map, 50.0)
+```
+
+### Physics Behavior
+
+- **Water:** HU = 0 at all energies (by definition)
+- **Iodine:** Maximum contrast at ~40-50 keV (above K-edge at 33.2 keV)
+- **Calcium:** Contrast decreases monotonically (K-edge at 4 keV, below diagnostic)
+
+---
+
 ## Current Status
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| Forward Projection (Siddon) | ✅ | TIGRE port |
-| Polychromatic FP | ✅ | Beer-Lambert |
-| FDK Reconstruction | ✅ | TIGRE port |
-| SIRT/CGLS | ✅ | TIGRE port |
-| Physics Pipeline (10 effects) | ✅ | All GPU-native |
-| Signal Chain (heel, BHC) | ✅ | CatSim-exact |
-| DAS Model | ⚠️ BROKEN | Needs fixing |
-| Scatter | ⚠️ NO CORRECTION | Requires scatter correction |
-
-### Physics Effects (13 total)
-
-**Physics Pipeline (10):**
-- fill_factor, flat_filter, bowtie_filter, detector_efficiency*
-- scatter**, crosstalk, optical_crosstalk, focal_spot
-- noise (quantum), lag (afterglow)
-
-*detector_efficiency: no-op in calibrated mode (efficiency cancels in air scan normalization)
-**scatter: adds scatter but has NO correction - will produce cupping artifacts
-
-**Signal Chain (3):**
-- heel_effect (anode self-attenuation)
-- das_model (gain + electronic noise) - **BROKEN**
-- bhc (beam hardening correction)
-
----
-
-## CatSim Signal Chain
-
-The signal chain follows CatSim-exact methodology:
-
-1. **Polychromatic projection** (Beer-Lambert)
-2. **Physics effects** (scatter, crosstalk, focal spot, lag, etc.)
-3. **Heel effect** (intensity domain)
-4. **DAS model** (gain + noise to phantom only)
-5. **Air scan calibration** (noise-free reference - CatSim exact!)
-6. **Low signal correction** (smooth negatives, not clamp)
-7. **Log transform**
-8. **Beam hardening correction**
-
-Key design decisions:
-- Air scan has NO noise (simulates averaged reference)
-- Low signal correction uses smoothed neighbors
-- Calibration: `prep = phantom_intensity / air_intensity`
-
----
-
-## File Structure
-
-```
-src/
-├── BasisSimulator.jl
-├── forward/
-│   ├── siddon.jl                    # Ray tracing (TIGRE)
-│   ├── polychromatic.jl             # Beer-Lambert + signal chain
-│   ├── physics_pipeline.jl          # Unified physics config
-│   ├── scatter.jl, crosstalk.jl     # Physics effects
-│   ├── focal_spot.jl, detector_lag.jl
-│   ├── fill_factor.jl, flat_filter.jl, bowtie_filter.jl
-│   ├── detector_noise.jl, detector_efficiency.jl
-│   ├── heel_effect.jl               # Signal chain
-│   ├── das_model.jl                 # BROKEN
-│   ├── calibration.jl
-│   ├── beam_hardening_correction.jl
-│   ├── photon_counting.jl           # PCCT detector model
-│   └── pcct_spectral.jl             # PCCT spectral imaging
-├── reconstruction/
-│   ├── fdk.jl, backprojection.jl, filtering.jl
-│   ├── sirt.jl, cgls.jl, mbir.jl
-│   └── helical_recon.jl
-├── geometry/
-│   ├── scanner.jl                   # Scanner, CTGeometry
-│   └── phantom.jl                   # Phantom, compute_μ
-├── physics/
-│   ├── materials.jl, attenuation.jl, spectrum.jl
-├── dual_energy/
-│   └── dual_energy.jl               # VMI, material decomposition
-├── metrics/
-│   ├── mtf.jl, nps.jl, psf.jl       # AAPM TG-233 metrics
-├── scanners/
-│   ├── scanners.jl, general_electric.jl, siemens.jl
-└── simulation/
-    ├── options.jl                   # SimOptions, ReconOptions
-    └── driver.jl                    # simulate() entry point
-```
-
----
-
-## Dual-Energy (Dual kVp) CT
-
-BasisSimulator supports GE GSI-style dual-energy CT with rapid kVp switching:
-
-```julia
-using BasisSimulator
-using Metal  # or CUDA
-
-# Create phantom and geometry
-phantom = create_gammex_472(n_voxels=256, n_slices=32)
-spec = GERevolutionApex()
-geom = create_geometry(spec; n_angles=984, n_rows=64)
-materials = get_region_materials()
-
-# Define GSI protocol (80/140 kVp rapid switching)
-protocol = default_gsi_protocol(
-    low_mA = 400.0,   # 80 kVp tube current
-    high_mA = 400.0   # 140 kVp tube current
-)
-
-# Dual-energy forward projection
-de_sino = forward_project_dual_energy(
-    MtlArray(phantom.mask), geom, protocol;
-    materials = materials,
-    scanner = spec
-)
-
-# Access low/high energy sinograms
-sino_80kVp = de_sino.low    # 80 kVp sinogram
-sino_140kVp = de_sino.high  # 140 kVp sinogram
-
-# Material decomposition (water/iodine basis)
-mat_map = decompose_materials(de_sino; basis=(:water, :iodine))
-water_sino = mat_map.material1
-iodine_sino = mat_map.material2
-
-# Virtual Monoenergetic Imaging (VMI)
-vmi_50keV = virtual_monoenergetic(mat_map, 50.0)   # High iodine contrast
-vmi_70keV = virtual_monoenergetic(mat_map, 70.0)   # Balanced
-vmi_100keV = virtual_monoenergetic(mat_map, 100.0) # Metal artifact reduction
-
-# Reconstruct VMI
-recon_70keV = fdk_reconstruct(vmi_70keV, geom, size(phantom.μ))
-```
-
-### VMI Energy Selection Guide
-
-| Energy (keV) | Use Case |
-|--------------|----------|
-| 40-50 | Maximum iodine enhancement (high noise) |
-| 50-60 | Good contrast, moderate noise |
-| 65-75 | Balanced (similar to 120 kVp single-energy) |
-| 80-100 | Reduced beam hardening artifacts |
-| 100-140 | Metal artifact reduction |
-
-### VMI Reconstruction Integration
-
-The `reconstruct_vmi()` function provides a complete VMI reconstruction pipeline:
-
-```julia
-# Full VMI reconstruction with HU conversion
-vmi_70_hu = reconstruct_vmi(mat_map, 70.0, geom, (256, 256, 32);
-    method=:fdk,        # or :sirt
-    to_hu=true,         # Convert to Hounsfield Units
-    niter=3             # SIRT iterations (ignored for FDK)
-)
-
-# Get attenuation values instead of HU
-vmi_70_mu = reconstruct_vmi(mat_map, 70.0, geom, (256, 256, 32);
-    to_hu=false
-)
-
-# Use SIRT for better quality (slower)
-vmi_70_sirt = reconstruct_vmi(mat_map, 70.0, geom, (256, 256, 32);
-    method=:sirt, niter=5
-)
-```
-
-### Batch VMI Generation (keV Sweep)
-
-Generate VMI at multiple energies for visualization:
-
-```julia
-energies = [40.0, 50.0, 60.0, 70.0, 80.0, 100.0, 120.0, 140.0]
-vmi_series = generate_vmi_series(mat_map, energies, geom, (128, 128, 16))
-
-# Access specific energy
-vmi_50 = vmi_series[50.0]
-
-# Plot iodine enhancement vs energy
-using Statistics
-iodine_mask = phantom.mask[:, :, 8] .== UInt8(REGION_I_10_0)
-mean_hu = [mean(vmi_series[E][:, :, 8][iodine_mask]) for E in energies]
-```
-
-### VMI HU Conversion
-
-Energy-specific water attenuation is used for correct HU conversion:
-
-```julia
-# Get NIST-validated water attenuation
-μ_water_70 = get_water_attenuation_vmi(70.0)  # ~0.193 cm⁻¹
-
-# Manual HU conversion (if needed)
-vmi_sino = virtual_monoenergetic(mat_map, 70.0)
-recon = fdk_reconstruct(vmi_sino, geom, recon_size)
-recon_hu = vmi_to_hu(Array(recon), 70.0)  # Water = 0 HU
-```
-
-### Physics Behavior in VMI
-
-- **Water:** HU = 0 at all VMI energies (by definition)
-- **Iodine:** Maximum HU at ~40-50 keV (above K-edge at 33.2 keV), decreases at high keV
-- **Calcium:** HU decreases monotonically with keV (K-edge at 4 keV, below diagnostic range)
-- **Noise:** Increases at low keV (~3× at 40 keV vs 70 keV baseline)
-
-Example: `examples/vmi_keV_sweep.jl` demonstrates energy-dependent contrast behavior.
+| Forward Projection (Siddon) | OK | TIGRE port |
+| Polychromatic FP | OK | Beer-Lambert |
+| FDK Reconstruction | OK | TIGRE port |
+| SIRT/CGLS | OK | TIGRE port |
+| Hybrid IR (HIR) | OK | Strength 1-5, PWLS-based |
+| Physics Pipeline (10 effects) | OK | All GPU-native |
+| Signal Chain (heel, BHC) | OK | CatSim-exact |
+| Dose Validation/Reporting | OK | validate_protocol, dose_report |
+| PCCT VMI | OK | Spectrum-weighted bin energies |
+| Dual-Energy VMI | OK | GE GSI-style |
+| PCCT Detector Physics | OK | Koch-Mehrin charge cloud, K-fluorescence, pileup, DRM |
+| DAS Model | BROKEN | Guarded in driver.jl |
+| Scatter | NO CORRECTION | Adds scatter but no correction |
 
 ---
 
@@ -364,4 +333,4 @@ sinogram = forward_project(CuArray(phantom.mask), geom; ...)
 
 ---
 
-Last Updated: 2026-01-16
+Last Updated: 2026-02-09
