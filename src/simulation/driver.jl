@@ -1238,8 +1238,10 @@ function _eict_dual_forward_pass!(
         end
         if das_model !== nothing
             gain = T(das_model.gain)
-            AK.foreachindex(ws.air_scan) do idx
-                ws.air_scan[idx] *= gain
+            let air = ws.air_scan
+                AK.foreachindex(air) do idx
+                    air[idx] *= gain
+                end
             end
         end
 
