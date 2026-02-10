@@ -944,19 +944,16 @@ gives Z_eff ∝ R^(1/n) after accounting for Compton contributions.
 function compute_effective_z(
     sino::EnergyResolvedSinogram{T,A};
     method::Symbol=:dual_ratio,
-    max_keV::Float64=120.0
+    max_keV::Float64=120.0,
+    kvp::Int=120
 ) where {T, A}
 
     n_bins = n_energy_bins(sino)
     thresholds = sino.thresholds_keV
 
-    # Compute bin center energies
-    bin_energies = zeros(T, n_bins)
-    for i in 1:n_bins
-        lower = thresholds[i]
-        upper = i < n_bins ? thresholds[i+1] : max_keV
-        bin_energies[i] = (lower + upper) / 2
-    end
+    # Compute spectrum-weighted bin center energies
+    bin_energies_f64 = compute_pcct_bin_energies(thresholds; max_keV=max_keV, kvp=kvp)
+    bin_energies = T.(bin_energies_f64)
 
     output = similar(sino.bins[1])
 
@@ -1087,7 +1084,7 @@ function synthesize_vmi(material_map::PCCTMaterialMap{T,A}, energy_keV::Float64;
     # Get attenuation coefficient for each basis material at target energy
     μ_values = ws_μ_values !== nothing ? ws_μ_values : Vector{T}(undef, n_materials)
     for (i, mat_name) in enumerate(material_map.material_names)
-        μ_values[i] = T(_get_basis_material_attenuation(mat_name, energy_keV))
+        μ_values[i] = T(get_material_attenuation_pcct(mat_name, energy_keV))
     end
 
     # Synthesize VMI: μ_VMI = Σ ρᵢ × μᵢ(E)
@@ -1104,20 +1101,6 @@ function synthesize_vmi(material_map::PCCTMaterialMap{T,A}, energy_keV::Float64;
     end
 
     return result
-end
-
-"""
-    _get_basis_material_attenuation(material_name::Symbol, energy_keV::Float64) -> Float64
-
-Get linear attenuation coefficient for a basis material at given energy.
-
-IMPORTANT: This MUST return the same values as `get_material_attenuation_pcct`
-to ensure consistency between the decomposition system matrix and VMI synthesis.
-The decomposition solves: p = A × ρ, and synthesis computes: μ_VMI = Σ ρᵢ × μᵢ(E).
-If A and μᵢ(E) use different basis functions, the result is physically wrong.
-"""
-function _get_basis_material_attenuation(material_name::Symbol, energy_keV::Float64)
-    return get_material_attenuation_pcct(material_name, energy_keV)
 end
 
 # =============================================================================

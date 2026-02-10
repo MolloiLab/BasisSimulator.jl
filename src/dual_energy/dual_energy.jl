@@ -807,9 +807,6 @@ function get_water_attenuation_vmi(energy_keV::Float64)
     return compute_μ_at_energy(XA.Materials.water, energy_keV)
 end
 
-# Backward compatibility alias
-compute_effective_μ_water(energy_keV::Float64) = get_water_attenuation_vmi(energy_keV)
-
 # =============================================================================
 # VMI Reconstruction Integration
 # =============================================================================
