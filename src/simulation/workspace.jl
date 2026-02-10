@@ -1017,18 +1017,19 @@ end
 # =============================================================================
 
 """
-    FDKReconWorkspace{T, A3, A1}
+    FDKReconWorkspace{T, A3, A2, A1}
 
 Pre-allocated workspace for zero-allocation FDK reconstruction.
 
 Type parameters:
 - `T`: Element type (Float32, Float64)
 - `A3`: 3D array type (Array{T,3}, MtlArray{T,3}, CuArray{T,3})
+- `A2`: 2D array type for geometry arrays (Matrix{T}, MtlArray{T,2}, etc.)
 - `A1`: 1D array type for filter kernel
 
 Create with [`create_fdk_recon_workspace`](@ref).
 """
-mutable struct FDKReconWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A1<:AbstractArray{T,1}}
+mutable struct FDKReconWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:AbstractArray{T,2}, A1<:AbstractArray{T,1}}
     # ─── Output ───
     volume::A3                # Reconstructed volume (nx, ny, nz)
 
@@ -1038,10 +1039,10 @@ mutable struct FDKReconWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A1<:A
     filter_kernel::A1         # Spatial domain filter kernel
 
     # ─── Backprojection geometry (GPU-side, pre-computed) ───
-    bp_source_positions::A3   # Geometry arrays for backproject!
-    bp_detector_centers::A3
-    bp_detector_u::A3
-    bp_detector_v::A3
+    bp_source_positions::A2   # Geometry arrays for backproject! [3, n_angles]
+    bp_detector_centers::A2
+    bp_detector_u::A2
+    bp_detector_v::A2
 end
 
 """
@@ -1086,7 +1087,7 @@ function create_fdk_recon_workspace(
     bp_detector_v = similar(sinogram, T, size(geom.detector_v)...)
     copyto!(bp_detector_v, T.(geom.detector_v))
 
-    return FDKReconWorkspace{T, typeof(volume), typeof(filter_kernel)}(
+    return FDKReconWorkspace{T, typeof(volume), typeof(bp_source_positions), typeof(filter_kernel)}(
         volume, filtered, conv_scratch, filter_kernel,
         bp_source_positions, bp_detector_centers, bp_detector_u, bp_detector_v
     )
