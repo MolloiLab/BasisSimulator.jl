@@ -235,17 +235,21 @@ function apply_das_model!(
         copyto!(noise, noise_cpu)
 
         if has_quant
-            AK.foreachindex(signal) do idx
-                s = signal[idx] * gain + noise[idx]
-                s = round(s / lsb) * lsb  # Quantization
-                s = clamp(s, min_val, max_val)
-                signal[idx] = s + offset
+            let noise = noise
+                AK.foreachindex(signal) do idx
+                    s = signal[idx] * gain + noise[idx]
+                    s = round(s / lsb) * lsb  # Quantization
+                    s = clamp(s, min_val, max_val)
+                    signal[idx] = s + offset
+                end
             end
         else
-            AK.foreachindex(signal) do idx
-                s = signal[idx] * gain + noise[idx]
-                s = clamp(s, min_val, max_val)
-                signal[idx] = s + offset
+            let noise = noise
+                AK.foreachindex(signal) do idx
+                    s = signal[idx] * gain + noise[idx]
+                    s = clamp(s, min_val, max_val)
+                    signal[idx] = s + offset
+                end
             end
         end
     else

@@ -489,18 +489,20 @@ function apply_bhc!(
         c
     end
 
-    AK.foreachindex(sinogram) do idx
-        p = sinogram[idx]
+    let coeffs = coeffs, order = order
+        AK.foreachindex(sinogram) do idx
+            p = sinogram[idx]
 
-        # Evaluate polynomial: p_corrected = Σ aᵢ × p^i
-        p_corrected = coeffs[1]
-        p_power = one(T)
-        for i in 1:order
-            p_power *= p
-            p_corrected += coeffs[i+1] * p_power
+            # Evaluate polynomial: p_corrected = Σ aᵢ × p^i
+            p_corrected = coeffs[1]
+            p_power = one(T)
+            for i in 1:order
+                p_power *= p
+                p_corrected += coeffs[i+1] * p_power
+            end
+
+            sinogram[idx] = p_corrected
         end
-
-        sinogram[idx] = p_corrected
     end
 
     return sinogram
