@@ -39,17 +39,21 @@ import XrayAttenuation as XA
 export XA
 
 # =============================================================================
-# Physics
+# Source (X-ray source + beam shaping)
+# =============================================================================
+
+# Spectrum loading (from .dat files)
+include("source/spectrum.jl")
+
+# =============================================================================
+# Object (scanned object: phantoms, materials, attenuation)
 # =============================================================================
 
 # Materials (Gammex 472)
-include("physics/materials.jl")
-
-# Spectrum loading (from .dat files)
-include("physics/spectrum.jl")
+include("object/materials.jl")
 
 # Attenuation coefficient computation
-include("physics/attenuation.jl")
+include("object/attenuation.jl")
 
 # PCCT detector physics: CdTe material constants, charge transport, fluorescence
 # Reference: Koch-Mehrin 2020 (NIM-A 976:164241), Konrad 2025 (PMB 70:065004)
@@ -64,7 +68,7 @@ include("physics/pcct/pileup_model.jl")
 # =============================================================================
 
 # Phantom generation with semantic masks
-include("geometry/phantom.jl")
+include("object/phantom.jl")
 
 # CT scanner geometry
 include("geometry/scanner.jl")
@@ -86,7 +90,7 @@ include("forward/siddon.jl")
 include("forward/scatter.jl")
 
 # Protocol definitions
-include("forward/protocol.jl")
+include("source/protocol.jl")
 
 # Detector response and noise modeling
 include("forward/detector_noise.jl")
@@ -95,13 +99,13 @@ include("forward/detector_noise.jl")
 include("forward/detector_efficiency.jl")
 
 # Bowtie filter modeling
-include("forward/bowtie_filter.jl")
+include("source/bowtie_filter.jl")
 
 # Flat (inherent) filter modeling
-include("forward/flat_filter.jl")
+include("source/flat_filter.jl")
 
 # Finite focal spot modeling
-include("forward/focal_spot.jl")
+include("source/focal_spot.jl")
 
 # Detector crosstalk modeling (electronic and optical)
 include("forward/crosstalk.jl")
@@ -119,7 +123,7 @@ include("forward/fill_factor.jl")
 # =============================================================================
 
 # Heel effect (anode self-attenuation)
-include("forward/heel_effect.jl")
+include("source/heel_effect.jl")
 
 # Data Acquisition System model (signal chain, noise, quantization)
 include("forward/das_model.jl")
