@@ -313,12 +313,7 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     # Pre-compute material decomposition pseudo-inverse (avoids allocation each call)
     basis_vec = collect(Symbol, basis_tuple)
     max_keV = 120.0
-    _bin_energies = zeros(T, n_bins)
-    for i in 1:n_bins
-        lower = thresholds[i]
-        upper = i < n_bins ? thresholds[i+1] : max_keV
-        _bin_energies[i] = T((lower + upper) / 2)
-    end
+    _bin_energies = T.(compute_pcct_bin_energies(thresholds; max_keV=max_keV, kvp=Int(protocol.kVp)))
     _A_mat = zeros(T, n_bins, n_materials)
     for (j, mat_sym) in enumerate(basis_vec)
         for i in 1:n_bins
