@@ -1679,3 +1679,46 @@ function build_physics_config(
 end
 
 export build_physics_config
+
+# =============================================================================
+# reconstruct!() — Zero-allocation FDK reconstruction hot path
+# =============================================================================
+
+export reconstruct!
+
+"""
+    reconstruct!(ws::FDKReconWorkspace, sinogram, geom, volume_size; filter=RampFilter(), cutoff=1.0)
+
+Zero-allocation FDK reconstruction using pre-allocated workspace buffers.
+
+Create the workspace with `create_fdk_recon_workspace(sinogram, geom, volume_size)`.
+"""
+function reconstruct!(
+    ws::FDKReconWorkspace{T},
+    sinogram::AbstractArray{T, 3},
+    geom::CTGeometry,
+    volume_size::NTuple{3, Int};
+    filter::FilterType = RampFilter(),
+    cutoff::Float64 = 1.0
+) where T <: AbstractFloat
+
+    # Step 1: Copy sinogram into filtering scratch buffer
+    copyto!(ws.filtered, sinogram)
+
+    # Step 2: Filter in-place (cosine weighting + ramp convolution)
+    # Uses pre-allocated convolution scratch and filter kernel
+    filter_sinogram!(ws.filtered, geom; filter=filter, cutoff=cutoff,
+                     ws_conv_scratch=ws.conv_scratch,
+                     ws_filter_kernel=ws.filter_kernel)
+
+    # Step 3: Backproject into pre-allocated volume
+    fill!(ws.volume, zero(T))
+    backproject!(ws.volume, ws.filtered, geom;
+                 weighted=true,
+                 ws_source_positions=ws.bp_source_positions,
+                 ws_detector_centers=ws.bp_detector_centers,
+                 ws_detector_u=ws.bp_detector_u,
+                 ws_detector_v=ws.bp_detector_v)
+
+    return ws.volume
+end
