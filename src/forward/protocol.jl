@@ -398,3 +398,97 @@ function dose_report(protocol::CTProtocol, geom::CTGeometry;
 end
 
 export validate_protocol, compute_ctdi_vol, compute_dlp, dose_report
+
+# =============================================================================
+# Constant-Dose / Constant-Noise Protocol Helpers
+# =============================================================================
+
+"""
+    constant_dose_protocol(base::CTProtocol, new_views::Int) -> CTProtocol
+
+Create a new protocol with adjusted mA to maintain constant total dose when views change.
+
+Total dose ∝ mA × rotation_time (mAs). When views change, mA is adjusted so that
+mAs stays constant. This means each view gets fewer photons (more noise per view)
+but total dose to the patient is unchanged.
+
+# Formula
+    new_mA = base_mA  (unchanged — dose is mAs, independent of views)
+
+Since I₀ ∝ mA × rotation_time / views, changing views changes per-view noise
+but NOT total dose. So this function simply returns a protocol with new_views
+and the same mA.
+
+# Arguments
+- `base`: Base protocol to modify
+- `new_views`: New number of views
+
+# Example
+```julia
+base = CTProtocol(kVp=120, mA=200, views=984, rotation_time=1.0)
+proto_2000 = constant_dose_protocol(base, 2000)
+# Same CTDIvol, more angular samples, noisier per view
+```
+"""
+function constant_dose_protocol(base::CTProtocol, new_views::Int)
+    return CTProtocol(
+        base.mA,            # Same mA → same mAs → same dose
+        base.kVp,
+        new_views,
+        base.rotation_time,
+        base.flux_density,
+        base.spectrum_path,
+        base.scan_mode,
+        base.pitch,
+        base.n_rotations,
+        base.dual_energy,
+        base.kVp_low,
+        base.mA_low,
+        base.integration_fraction
+    )
+end
+
+"""
+    constant_noise_protocol(base::CTProtocol, new_views::Int) -> CTProtocol
+
+Create a new protocol with adjusted mA to maintain constant noise per view when views change.
+
+Noise per view ∝ 1/√I₀, where I₀ ∝ mA × rotation_time / views.
+To keep I₀ per view constant when views changes, mA must scale with views.
+
+# Formula
+    new_mA = base_mA × (new_views / base_views)
+
+This means total dose scales linearly with views (more views = more dose).
+
+# Arguments
+- `base`: Base protocol to modify
+- `new_views`: New number of views
+
+# Example
+```julia
+base = CTProtocol(kVp=120, mA=200, views=984, rotation_time=1.0)
+proto_2000 = constant_noise_protocol(base, 2000)
+# Same noise per view, ~2× total dose, ~2× mA
+```
+"""
+function constant_noise_protocol(base::CTProtocol, new_views::Int)
+    new_mA = base.mA * (new_views / base.views)
+    return CTProtocol(
+        new_mA,
+        base.kVp,
+        new_views,
+        base.rotation_time,
+        base.flux_density,
+        base.spectrum_path,
+        base.scan_mode,
+        base.pitch,
+        base.n_rotations,
+        base.dual_energy,
+        base.kVp_low,
+        base.mA_low,
+        base.integration_fraction
+    )
+end
+
+export constant_dose_protocol, constant_noise_protocol
