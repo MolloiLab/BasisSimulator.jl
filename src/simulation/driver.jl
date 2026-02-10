@@ -726,7 +726,7 @@ function _combine_pcct_bins(pcct_sino::EnergyResolvedSinogram, detector::PhotonC
     eps_val = T(1e-10)
     for (b, bin_sino) in enumerate(pcct_sino.bins)
         let I0b = T(I0_bins[b]), bs = bin_sino, nt = N_total_gpu
-            _foreachindex!(bs) do idx
+            AK.foreachindex(bs) do idx
                 nt[idx] += I0b * exp(-bs[idx])
             end
         end
@@ -734,7 +734,7 @@ function _combine_pcct_bins(pcct_sino::EnergyResolvedSinogram, detector::PhotonC
 
     # Combined sinogram = -log(N_total / I0_total)
     let nt = N_total_gpu, I0t = I0_total, eps = eps_val
-        _foreachindex!(nt) do idx
+        AK.foreachindex(nt) do idx
             nt[idx] = -log(max(nt[idx], eps) / I0t)
         end
     end
@@ -939,7 +939,7 @@ function simulate!(
 
         # STEP 3: Convert to intensity domain
         eps = T(1e-10)
-        _foreachindex!(ws.sinogram) do idx
+        AK.foreachindex(ws.sinogram) do idx
             ws.sinogram[idx] = exp(-clamp(ws.sinogram[idx], T(-1), T(15)))
         end
 
@@ -960,14 +960,14 @@ function simulate!(
         end
         if das_model !== nothing
             gain = T(das_model.gain)
-            _foreachindex!(ws.air_scan) do idx
+            AK.foreachindex(ws.air_scan) do idx
                 ws.air_scan[idx] *= gain
             end
         end
 
         # STEP 7: Calibration (prep = phantom / air)
         let sino = ws.sinogram, air = ws.air_scan
-            _foreachindex!(sino) do idx
+            AK.foreachindex(sino) do idx
                 air_val = max(air[idx], eps)
                 sino[idx] = sino[idx] / air_val
             end
@@ -977,7 +977,7 @@ function simulate!(
         low_signal_correction_gpu!(ws.sinogram)
 
         # STEP 9: Log transform
-        _foreachindex!(ws.sinogram) do idx
+        AK.foreachindex(ws.sinogram) do idx
             ws.sinogram[idx] = -log(max(ws.sinogram[idx], eps))
         end
 
@@ -1020,7 +1020,7 @@ function simulate!(
         copyto!(ws.noise_rand_gpu, ws.noise_rand_cpu)
 
         let sino = ws.sinogram, rg = ws.noise_rand_gpu, I0v = I0_T
-            _foreachindex!(sino) do idx
+            AK.foreachindex(sino) do idx
                 λ = I0v * exp(-sino[idx])
                 λ_noisy = λ + sqrt(max(λ, T(1))) * rg[idx]
                 λ_noisy = max(λ_noisy, T(1))

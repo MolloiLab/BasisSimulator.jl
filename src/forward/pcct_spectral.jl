@@ -173,7 +173,7 @@ function pcct_virtual_monoenergetic(
     for (i, w) in enumerate(weights)
         w_T = T(w)
         bin = sino.bins[i]
-        _foreachindex!(vmi_sino) do idx
+        AK.foreachindex(vmi_sino) do idx
             vmi_sino[idx] += bin[idx] * w_T
         end
     end
@@ -207,7 +207,7 @@ function pcct_vmi_to_hu(vmi_sinogram::AbstractArray{T,3}, target_keV::Float64;
 
     # HU = 1000 × (μ - μ_water) / μ_water
     output = similar(vmi_sinogram)
-    _foreachindex!(output) do idx
+    AK.foreachindex(output) do idx
         output[idx] = T(1000) * (vmi_sinogram[idx] - μ_water) / μ_water
     end
 
@@ -770,12 +770,12 @@ function compute_kedge_enhancement(
     bin_below_data = sino.bins[bin_below]
 
     if method == :subtraction
-        _foreachindex!(output) do idx
+        AK.foreachindex(output) do idx
             output[idx] = bin_above_data[idx] - bin_below_data[idx]
         end
     elseif method == :ratio
         ε = T(1e-10)  # Avoid division by zero
-        _foreachindex!(output) do idx
+        AK.foreachindex(output) do idx
             output[idx] = bin_above_data[idx] / (bin_below_data[idx] + ε)
         end
     else
@@ -916,7 +916,7 @@ function compute_effective_z(
         R_water = μ_water_low / μ_water_high
         Z_water = T(7.42)
 
-        _foreachindex!(output) do idx
+        AK.foreachindex(output) do idx
             μ_low = low_bin[idx]
             μ_high = high_bin[idx]
 
@@ -936,7 +936,7 @@ function compute_effective_z(
         # μ(E) = a × E^(-m), m depends on Z_eff
 
         ε = T(1e-10)
-        _foreachindex!(output) do idx
+        AK.foreachindex(output) do idx
             # Gather data points
             μ_vals = [sino.bins[i][idx] for i in 1:n_bins]
 
@@ -1037,7 +1037,7 @@ function synthesize_vmi(material_map::PCCTMaterialMap{T,A}, energy_keV::Float64;
     for i in 1:n_materials
         μ_i = μ_values[i]
         mat_i = material_map.materials[i]
-        _foreachindex!(result) do idx
+        AK.foreachindex(result) do idx
             result[idx] += mat_i[idx] * μ_i
         end
     end

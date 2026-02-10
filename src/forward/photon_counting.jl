@@ -418,7 +418,7 @@ function apply_energy_thresholds(
         upper_threshold = bin_idx < n_bins ? T(thresholds[bin_idx + 1]) : T(Inf)
         output_bin = bins[bin_idx]
 
-        _foreachindex!(output_bin) do idx
+        AK.foreachindex(output_bin) do idx
             ci = CartesianIndices(output_bin)[idx]
             col, row, angle = Tuple(ci)
 
@@ -577,7 +577,7 @@ function _apply_charge_sharing_physics!(
         let cb = bins[bin_idx], pp = p_primary, nweight = nw,
             nc = Int32(n_cols), nr = Int32(n_rows), out = scratch
 
-            _foreachindex!(cb) do idx
+            AK.foreachindex(cb) do idx
                 ci = CartesianIndices(cb)[idx]
                 col, row, angle = Tuple(ci)
 
@@ -607,7 +607,7 @@ function _apply_charge_sharing_physics!(
             let cb = bins[bin_idx], tb = bins[bin_idx - 1],
                 lf = p_share * T(0.4)
 
-                _foreachindex!(cb) do idx
+                AK.foreachindex(cb) do idx
                     transfer = cb[idx] * lf
                     tb[idx] += transfer
                     cb[idx] -= transfer
@@ -661,7 +661,7 @@ function _apply_charge_sharing_legacy!(
         let cb = bins[bin_idx], pp = p_primary, nweight = nw,
             nc = Int32(n_cols), nr = Int32(n_rows), out = scratch
 
-            _foreachindex!(cb) do idx
+            AK.foreachindex(cb) do idx
                 ci = CartesianIndices(cb)[idx]
                 col, row, angle = Tuple(ci)
 
@@ -688,7 +688,7 @@ function _apply_charge_sharing_legacy!(
             let cb = bins[bin_idx], tb = bins[bin_idx - 1],
                 lf = p_share * energy_loss_fraction
 
-                _foreachindex!(cb) do idx
+                AK.foreachindex(cb) do idx
                     transfer = cb[idx] * lf
                     tb[idx] += transfer
                     cb[idx] -= transfer
@@ -771,7 +771,7 @@ function correct_charge_sharing!(
         let b = bin, cw = center_weight, nwt = neighbor_weight,
             nc = Int32(n_cols), nr = Int32(n_rows), out = _scratch
 
-            _foreachindex!(b) do idx
+            AK.foreachindex(b) do idx
                 ci = CartesianIndices(b)[idx]
                 col, row, angle = Tuple(ci)
 
@@ -799,7 +799,7 @@ function correct_charge_sharing!(
         let lb = bins[bin_idx], hb = bins[bin_idx + 1],
             lf = p_share * energy_loss_fraction
 
-            _foreachindex!(lb) do idx
+            AK.foreachindex(lb) do idx
                 transfer = lb[idx] * lf
                 hb[idx] += transfer
                 lb[idx] -= transfer
@@ -882,7 +882,7 @@ function apply_pulse_pileup!(
     # Apply count rate reduction to all bins
     for bin in bins
         let pf = pile_up_factor, b = bin
-            _foreachindex!(b) do idx
+            AK.foreachindex(b) do idx
                 b[idx] *= pf
             end
         end
@@ -939,7 +939,7 @@ function apply_pulse_pileup!(
                 frac = T(transfer_fracs[dst_bin, src_bin])
                 if frac > T(1e-6)
                     let cb = bins[src_bin], db = bins[dst_bin], f = frac
-                        _foreachindex!(cb) do idx
+                        AK.foreachindex(cb) do idx
                             transfer = cb[idx] * f
                             db[idx] += transfer
                             cb[idx] -= transfer
@@ -1058,7 +1058,7 @@ function correct_pulse_pileup!(
                 frac = T(transfer_fracs[dst_bin, src_bin])
                 if frac > T(1e-6)
                     let db = bins[dst_bin], sb = bins[src_bin], f = frac
-                        _foreachindex!(db) do idx
+                        AK.foreachindex(db) do idx
                             transfer = db[idx] * f
                             sb[idx] += transfer
                             db[idx] -= transfer
@@ -1072,7 +1072,7 @@ function correct_pulse_pileup!(
     # Apply inverse count rate correction to all bins
     for bin in bins
         let cf = correction_factor, b = bin
-            _foreachindex!(b) do idx
+            AK.foreachindex(b) do idx
                 b[idx] *= cf
             end
         end
@@ -1137,7 +1137,7 @@ function apply_anti_coincidence!(
     fill!(total_counts, zero(T))
     for bin in bins
         let tc = total_counts, b = bin
-            _foreachindex!(tc) do idx
+            AK.foreachindex(tc) do idx
                 tc[idx] += b[idx]
             end
         end
@@ -1153,7 +1153,7 @@ function apply_anti_coincidence!(
         let cb = bins[bin_idx], tc = total_counts, recovery_per_neighbor = rf8,
             nc = Int32(n_cols), nr = Int32(n_rows), z = zero_T, out = _scratch
 
-            _foreachindex!(cb) do idx
+            AK.foreachindex(cb) do idx
                 ci = CartesianIndices(cb)[idx]
                 col, row, angle = Tuple(ci)
 
@@ -1250,7 +1250,7 @@ function apply_pcct_electronic_noise!(
         copyto!(rand_gpu, rand_cpu)
 
         let rg = rand_gpu, ns = noise_scale
-            _foreachindex!(bin) do idx
+            AK.foreachindex(bin) do idx
                 # Noise proportional to sqrt(counts) - Poisson-like
                 noise_sigma = sqrt(max(bin[idx], one(T))) * ns
                 bin[idx] += noise_sigma * rg[idx]
@@ -1487,7 +1487,7 @@ function pcct_forward_project(
                 end
                 # Use let-block to avoid Core.Box capture in GPU kernel
                 let wt = I0_T * w_T * η_E * R_val, ba = bins[b]
-                    _foreachindex!(sino_buf) do idx
+                    AK.foreachindex(sino_buf) do idx
                         ba[idx] += wt * exp(-sino_buf[idx])
                     end
                 end
@@ -1498,7 +1498,7 @@ function pcct_forward_project(
             if bin_idx > 0
                 # Use let-block to avoid Core.Box capture in GPU kernel
                 let wt = I0_T * w_T * η_E, ba = bins[bin_idx]
-                    _foreachindex!(sino_buf) do idx
+                    AK.foreachindex(sino_buf) do idx
                         ba[idx] += wt * exp(-sino_buf[idx])
                     end
                 end
@@ -1557,7 +1557,7 @@ function pcct_forward_project(
     end
     for b in 1:n_bins
         let I0_bin_T = T(I0_bins_norm[b]), ba = bins[b], eps = eps_val
-            _foreachindex!(ba) do idx
+            AK.foreachindex(ba) do idx
                 ba[idx] = -log(max(ba[idx], eps) / I0_bin_T)
             end
         end
@@ -1575,7 +1575,7 @@ function pcct_forward_project(
             let ba = bins[b], nc = Int32(size(bins[1], 1)),
                 ws_side = w_side, wc = w_center, out = _scratch
 
-                _foreachindex!(ba) do idx
+                AK.foreachindex(ba) do idx
                     ci = CartesianIndices(ba)[idx]
                     col, row, angle = Tuple(ci)
                     c_val = ba[col, row, angle]
@@ -1790,7 +1790,7 @@ function pcct_forward_project(
         sino_E = siddon_forward_project(volume, geom)
         I0_E = I0 * weights[e_idx]
 
-        _foreachindex!(sino_E) do idx
+        AK.foreachindex(sino_E) do idx
             intensity_spectrum[CartesianIndex(Tuple(CartesianIndices(sino_E)[idx])..., e_idx)] =
                 I0_E * exp(-sino_E[idx])
         end
@@ -1809,7 +1809,7 @@ function pcct_forward_project(
     for (bin_idx, bin) in enumerate(bins)
         threshold = detector.energy_thresholds_keV[bin_idx]
         I0_bin = I0 * sum(w for (E, w) in zip(energies, weights) if E >= threshold)
-        _foreachindex!(bin) do idx
+        AK.foreachindex(bin) do idx
             bin[idx] = -log(max(bin[idx], one(T)) / I0_bin)
         end
     end

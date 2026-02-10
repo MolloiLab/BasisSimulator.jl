@@ -480,7 +480,7 @@ function siddon_forward_project!(
     end
 
     # Use AcceleratedKernels.jl to parallelize over all rays
-    _foreachindex!(sinogram) do idx
+    AK.foreachindex(sinogram) do idx
         # Convert linear index to (col, row, angle) using integer arithmetic
         # Use Int32 throughout to avoid boxing
         idx_0 = Int32(idx - 1)
