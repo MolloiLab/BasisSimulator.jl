@@ -9,11 +9,9 @@ Protocol definitions for CT simulation.
 
 Scan protocol parameters for physical simulation.
 
-Supports four scan modes via `scan_mode` and `dual_energy`:
-- Axial single-kVp: `scan_mode=:axial, dual_energy=false` (default)
-- Axial dual-kVp: `scan_mode=:axial, dual_energy=true`
-- Helical single-kVp: `scan_mode=:helical, dual_energy=false`
-- Helical dual-kVp: `scan_mode=:helical, dual_energy=true`
+Supports two scan modes via `dual_energy`:
+- Axial single-kVp: `dual_energy=false` (default)
+- Axial dual-kVp: `dual_energy=true`
 
 For dual-energy, `kVp` and `mA` are the HIGH energy settings.
 `kVp_low` and `mA_low` are the LOW energy settings.
@@ -25,8 +23,6 @@ For dual-energy, `kVp` and `mA` are the HIGH energy settings.
 - `rotation_time`: Gantry rotation time in seconds
 - `flux_density`: Reference photon flux density at 1m (photons/mm²/s)
 - `spectrum_path`: Optional path to spectrum file
-- `scan_mode`: `:axial` or `:helical`
-- `pitch`: Table pitch for helical (0.0 for axial)
 - `n_rotations`: Number of gantry rotations
 - `dual_energy`: Whether this is a dual-kVp scan
 - `kVp_low`: Low tube voltage for dual-energy (0.0 if single)
@@ -34,16 +30,12 @@ For dual-energy, `kVp` and `mA` are the HIGH energy settings.
 - `integration_fraction`: Fraction of views at low kVp (0.5 default)
 """
 struct CTProtocol
-    # Existing fields (unchanged)
     mA::Float64            # Tube current (high energy for DE)
     kVp::Float64           # Tube voltage (high energy for DE)
     views::Int             # Number of projections per rotation
     rotation_time::Float64 # Rotation time
     flux_density::Float64  # Reference flux
     spectrum_path::Union{String, Nothing}
-    # New fields for 4-mode support
-    scan_mode::Symbol      # :axial or :helical
-    pitch::Float64         # Helical pitch (0.0 for axial)
     n_rotations::Float64   # Number of gantry rotations
     dual_energy::Bool      # Dual-kVp scan flag
     kVp_low::Float64       # Low kVp for dual-energy
@@ -64,8 +56,6 @@ Create a CT protocol. You must provide either `mA` OR `mAs`.
 - `rotation_time`: Rotation time in seconds (default: 1.0)
 - `flux_density`: Reference flux density (default: 2.0e6)
 - `spectrum_path`: Custom spectrum file (default: nothing)
-- `scan_mode`: `:axial` or `:helical` (default: :axial)
-- `pitch`: Helical pitch factor (default: 0.0, required > 0 for helical)
 - `n_rotations`: Number of gantry rotations (default: 1.0)
 - `dual_energy`: Enable dual-kVp mode (default: false)
 - `kVp_low`: Low tube voltage for DE (default: 0.0, required > 0 when dual_energy=true)
@@ -77,14 +67,8 @@ Create a CT protocol. You must provide either `mA` OR `mAs`.
 # Simple axial (backward compatible)
 CTProtocol(kVp=120, mA=200, views=984)
 
-# Helical
-CTProtocol(scan_mode=:helical, kVp=120, mA=200, views=984, pitch=0.984, n_rotations=10.0)
-
 # Dual-energy axial
 CTProtocol(dual_energy=true, kVp=140, mA=200, kVp_low=80, mA_low=350, views=984)
-
-# Dual-energy helical
-CTProtocol(scan_mode=:helical, dual_energy=true, kVp=140, mA=200, kVp_low=80, mA_low=350, pitch=0.531, n_rotations=5.0)
 ```
 """
 function CTProtocol(;
@@ -95,9 +79,6 @@ function CTProtocol(;
     rotation_time=1.0,
     flux_density=2.0e6,
     spectrum_path=nothing,
-    # New fields for 4-mode support
-    scan_mode::Symbol=:axial,
-    pitch::Real=0.0,
     n_rotations::Real=1.0,
     dual_energy::Bool=false,
     kVp_low::Real=0.0,
@@ -114,16 +95,6 @@ function CTProtocol(;
         200.0
     end
 
-    # Validate scan_mode
-    if scan_mode ∉ (:axial, :helical)
-        error("scan_mode must be :axial or :helical (got :$scan_mode)")
-    end
-
-    # Validate helical requirements
-    if scan_mode == :helical && pitch <= 0.0
-        error("Helical mode requires pitch > 0 (got $pitch)")
-    end
-
     # Validate dual-energy requirements
     if dual_energy && kVp_low <= 0.0
         error("Dual-energy mode requires kVp_low > 0 (got $kVp_low)")
@@ -136,8 +107,6 @@ function CTProtocol(;
         Float64(rotation_time),
         Float64(flux_density),
         spectrum_path,
-        scan_mode,
-        Float64(pitch),
         Float64(n_rotations),
         dual_energy,
         Float64(kVp_low),
@@ -251,7 +220,7 @@ Uses the empirical formula:
 where C is a scanner-specific calibration constant (default: generic research scanner).
 
 # Arguments
-- `protocol`: CT protocol with mA, kVp, rotation_time, scan_mode, pitch
+- `protocol`: CT protocol with mA, kVp, rotation_time
 
 # Keyword Arguments
 - `phantom_diameter`: Phantom diameter in mm (320 for body, 160 for head). Default: 320.
@@ -275,14 +244,7 @@ function compute_ctdi_vol(protocol::CTProtocol; phantom_diameter::Real=320.0)
     # Body (320mm) = reference, Head (160mm) ≈ 2× body CTDIvol
     size_factor = (320.0 / phantom_diameter)^2
 
-    # Pitch correction (helical only)
-    pitch_factor = if protocol.scan_mode == :helical && protocol.pitch > 0
-        1.0 / protocol.pitch
-    else
-        1.0
-    end
-
-    return _CTDI_CAL_CONSTANT * mAs * kvp_factor * size_factor * pitch_factor
+    return _CTDI_CAL_CONSTANT * mAs * kvp_factor * size_factor
 end
 
 """
@@ -368,10 +330,6 @@ function dose_report(protocol::CTProtocol, geom::CTGeometry;
     println("  mAs:            $(round(mAs, digits=1))")
     println("  Views:          $(protocol.views)")
     println("  Rotation time:  $(protocol.rotation_time) s")
-    println("  Scan mode:      $(protocol.scan_mode)")
-    if protocol.scan_mode == :helical
-        println("  Pitch:          $(protocol.pitch)")
-    end
     if protocol.dual_energy
         println("  Dual-energy:    kVp_low=$(protocol.kVp_low), mA_low=$(protocol.mA_low)")
     end
@@ -438,8 +396,6 @@ function constant_dose_protocol(base::CTProtocol, new_views::Int)
         base.rotation_time,
         base.flux_density,
         base.spectrum_path,
-        base.scan_mode,
-        base.pitch,
         base.n_rotations,
         base.dual_energy,
         base.kVp_low,
@@ -481,8 +437,6 @@ function constant_noise_protocol(base::CTProtocol, new_views::Int)
         base.rotation_time,
         base.flux_density,
         base.spectrum_path,
-        base.scan_mode,
-        base.pitch,
         base.n_rotations,
         base.dual_energy,
         base.kVp_low,

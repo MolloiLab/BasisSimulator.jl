@@ -53,7 +53,7 @@ print_scanner_info(spec)
 geom = create_geometry(spec; n_angles=984, n_rows=64)
 
 # Create with protocol
-protocol = HelicalProtocol(120, 400, 0.5, 0.992, 3.0, 984, 0.625)
+protocol = AxialProtocol(120, 400, 0.5, 984, 0.625)
 geom = create_geometry(spec, protocol)
 ```
 
@@ -266,13 +266,7 @@ function GERevolutionApexElite()
         SourceCitation(2496;
             source=:manufacturer,
             url="https://info.ncdhhs.gov/dhsr/coneed/reviews/2020/dec/3455-Cabarrus-Carolinas-HealthCare-System-Imaging-Kannapolis-061206-Exemption.pdf",
-            note="Maximum projection views per rotation"),
-
-        # Helical pitch options
-        SourceCitation([0.5, 0.531, 0.969, 0.992, 1.375, 1.531];
-            source=:publication,
-            url=GE_APEX_AJR_2018,
-            note="Documented helical pitch values")
+            note="Maximum projection views per rotation")
     )
 
     return GERevolutionApexElite(detector_spec, tube_spec, geometry_spec, acquisition_spec)
@@ -290,36 +284,6 @@ acquisition(spec::GERevolutionApexElite) = spec.acquisition_spec
 # =============================================================================
 # GE Revolution Apex Elite - Protocol Presets
 # =============================================================================
-
-"""
-    GEApexChestHelical(; dose_level=:standard)
-
-Standard chest helical protocol for GE Revolution Apex Elite.
-
-# Keyword Arguments
-- `dose_level`: :low, :standard, or :high
-
-# Protocol Details
-- 120 kVp
-- 0.5 s rotation
-- 0.992 pitch
-- 0.625 mm slice thickness
-"""
-function GEApexChestHelical(; dose_level::Symbol=:standard)
-    ma = dose_level == :low ? 200 :
-         dose_level == :standard ? 400 :
-         dose_level == :high ? 600 : 400
-
-    return HelicalProtocol(
-        120,        # kVp
-        ma,         # mA
-        0.5,        # rotation time
-        0.992,      # pitch
-        3.0,        # rotations
-        984,        # angles per rotation
-        0.625       # slice thickness
-    )
-end
 
 """
     GEApexHeadAxial(; dose_level=:standard)
@@ -345,98 +309,6 @@ function GEApexHeadAxial(; dose_level::Symbol=:standard)
         ma,         # mA
         1.0,        # rotation time
         984,        # angles
-        0.625       # slice thickness
-    )
-end
-
-"""
-    GEApexCardiacHelical(; dose_level=:standard)
-
-Cardiac helical protocol for GE Revolution Apex Elite.
-
-Uses fast rotation and low pitch for cardiac imaging.
-
-# Protocol Details
-- 120 kVp
-- 0.28 s rotation (fastest practical for cardiac)
-- 0.5 pitch (good temporal resolution)
-- 0.625 mm slice thickness
-"""
-function GEApexCardiacHelical(; dose_level::Symbol=:standard)
-    ma = dose_level == :low ? 400 :
-         dose_level == :standard ? 600 :
-         dose_level == :high ? 800 : 600
-
-    return HelicalProtocol(
-        120,        # kVp
-        ma,         # mA
-        0.28,       # rotation time (fast)
-        0.5,        # pitch (low for cardiac)
-        5.0,        # rotations
-        984,        # angles per rotation
-        0.625       # slice thickness
-    )
-end
-
-"""
-    GEApexAbdomenHelical(; dose_level=:standard)
-
-Standard abdomen/pelvis helical protocol for GE Revolution Apex Elite.
-
-# Protocol Details
-- 120 kVp
-- 0.5 s rotation
-- 0.992 pitch
-- 1.25 mm slice thickness
-"""
-function GEApexAbdomenHelical(; dose_level::Symbol=:standard)
-    ma = dose_level == :low ? 250 :
-         dose_level == :standard ? 450 :
-         dose_level == :high ? 650 : 450
-
-    return HelicalProtocol(
-        120,        # kVp
-        ma,         # mA
-        0.5,        # rotation time
-        0.992,      # pitch
-        4.0,        # rotations
-        984,        # angles per rotation
-        1.25        # slice thickness
-    )
-end
-
-"""
-    GEApexPediatricHelical(; age_group=:child)
-
-Pediatric helical protocol for GE Revolution Apex Elite.
-
-Uses reduced dose parameters appropriate for pediatric imaging.
-
-# Keyword Arguments
-- `age_group`: :infant, :child, or :adolescent
-
-# Protocol Details
-- 80-100 kVp (based on age)
-- Reduced mA
-- 0.5 s rotation
-- 0.992 pitch
-"""
-function GEApexPediatricHelical(; age_group::Symbol=:child)
-    kvp = age_group == :infant ? 80 :
-          age_group == :child ? 100 :
-          age_group == :adolescent ? 120 : 100
-
-    ma = age_group == :infant ? 80 :
-         age_group == :child ? 150 :
-         age_group == :adolescent ? 250 : 150
-
-    return HelicalProtocol(
-        kvp,        # kVp
-        ma,         # mA
-        0.5,        # rotation time
-        0.992,      # pitch
-        2.0,        # rotations
-        984,        # angles per rotation
         0.625       # slice thickness
     )
 end
@@ -506,5 +378,4 @@ end
 # =============================================================================
 
 export GERevolutionApexElite, GERevolutionApex
-export GEApexChestHelical, GEApexHeadAxial, GEApexCardiacHelical
-export GEApexAbdomenHelical, GEApexPediatricHelical
+export GEApexHeadAxial

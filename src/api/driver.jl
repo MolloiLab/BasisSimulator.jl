@@ -64,7 +64,7 @@ dual-energy sinograms, material maps, and VMI volumes.
 - `sinogram_ideal`: Noise-free sinogram (or high-kVp sinogram for DE)
 - `sinogram_noisy`: Noisy sinogram after detector simulation
 - `reconstructions`: Vector of (algorithm_name, volume) pairs
-- `geometry`: CTGeometry or HelicalGeometry used for simulation
+- `geometry`: CTGeometry used for simulation
 - `physics_config`: PhysicsConfig with all enabled effects
 
 # Dual-Energy Fields
@@ -124,19 +124,17 @@ Run a full end-to-end CT simulation with automatic mode routing.
 
 The 4-struct API: Scanner provides hardware parameters, CTProtocol provides acquisition
 settings, SimOptions controls which physics effects are enabled, and ReconOptions
-controls image reconstruction. The driver automatically routes between 5 scan modes:
+controls image reconstruction. The driver automatically routes between 3 scan modes:
 
 1. **Axial single-kVp** (default): Standard CT acquisition
 2. **Axial dual-kVp**: Dual-energy with VMI pipeline
-3. **Helical single-kVp**: Spiral CT with helical reconstruction
-4. **Helical dual-kVp**: Combined helical + dual-energy
-5. **Axial PCCT**: Photon-counting CT with energy-resolved sinograms, N-material
+3. **Axial PCCT**: Photon-counting CT with energy-resolved sinograms, N-material
    decomposition, and material-based VMI synthesis (auto-detected via Scanner)
 
 # Arguments
 - `phantom`: Struct containing `.mask` (UInt8) and material definitions.
 - `scanner`: `Scanner` hardware definition.
-- `protocol`: `CTProtocol` acquisition settings (scan_mode, dual_energy select mode).
+- `protocol`: `CTProtocol` acquisition settings.
 - `sim_opts`: `SimOptions` for physics fidelity (controls all 14 effects).
 - `recon_opts`: `ReconOptions` or `Vector{ReconOptions}` for multi-recon.
 
@@ -154,11 +152,6 @@ controls image reconstruction. The driver automatically routes between 5 scan mo
 ```julia
 # Axial single-kVp (unchanged from before)
 result = simulate(phantom, scanner, CTProtocol(kVp=120, mA=200), SimOptions(), ReconOptions())
-
-# Helical single-kVp
-result = simulate(phantom, scanner,
-    CTProtocol(scan_mode=:helical, kVp=120, mA=200, pitch=0.984, n_rotations=5.0),
-    SimOptions(), ReconOptions(algorithm=:helical_fdk))
 
 # Dual-energy axial with VMI
 result = simulate(phantom, scanner,
@@ -185,8 +178,7 @@ function simulate(
     recon_opts::ReconOptions = ReconOptions();
     materials::Union{Nothing, Vector} = nothing
 )
-    # Route based on scan_mode, dual_energy, and PCCT
-    is_helical = protocol.scan_mode == :helical
+    # Route based on dual_energy and PCCT
     is_dual = protocol.dual_energy
     _is_pcct = is_pcct(scanner)
 
@@ -194,21 +186,13 @@ function simulate(
         error("PCCT scanners cannot use dual_energy mode — spectral info comes from detector energy bins, not dual kVp. Set dual_energy=false.")
     end
 
-    if _is_pcct && is_helical
-        error("Helical PCCT is not yet implemented. Use axial scan_mode with PCCT scanner.")
-    end
-
     if _is_pcct
         # PCCT mode: photon-counting scanner detected
         return _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts; materials=materials)
-    elseif !is_helical && !is_dual
+    elseif !is_dual
         return _simulate_axial_single(phantom, scanner, protocol, sim_opts, recon_opts; materials=materials)
-    elseif !is_helical && is_dual
+    else
         return _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts; materials=materials)
-    elseif is_helical && !is_dual
-        return _simulate_helical_single(phantom, scanner, protocol, sim_opts, recon_opts; materials=materials)
-    else  # is_helical && is_dual
-        return _simulate_helical_dual(phantom, scanner, protocol, sim_opts, recon_opts; materials=materials)
     end
 end
 
@@ -228,7 +212,6 @@ function simulate(
     T = eltype(first_result.sinogram_noisy)
     recons = copy(first_result.reconstructions)
     geom = first_result.geometry
-    is_helical = geom isa HelicalGeometry
 
     for i in 2:length(recon_opts_list)
         opts = recon_opts_list[i]
@@ -242,18 +225,14 @@ function simulate(
                 opts.algorithm, opts.matrix_size, opts.fov_cm, opts.filter, opts.iterations,
                 opts.lambda, opts.tv_weight, opts.n_subsets,
                 opts.penalty, opts.penalty_delta, opts.use_edge_weights, opts.blend_percent,
-                opts.interpolation, opts.vmi_energies, opts.vmi_basis,
+                opts.vmi_energies, opts.vmi_basis,
                 prev_vol, opts.cascade_warm_start
             )
         else
             opts
         end
 
-        vol = if is_helical
-            _run_helical_reconstruction(first_result.sinogram_noisy, geom, effective_opts)
-        else
-            _run_reconstruction(first_result.sinogram_noisy, geom, effective_opts)
-        end
+        vol = _run_reconstruction(first_result.sinogram_noisy, geom, effective_opts)
         push!(recons, opts.algorithm => vol)
     end
 
@@ -394,7 +373,6 @@ function _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts;
         rotation_time = protocol.rotation_time,
         flux_density = protocol.flux_density,
         spectrum_path = nothing,
-        scan_mode = :axial,
         dual_energy = false           # Single-kVp mode for clean scatter handling
     )
 
@@ -405,7 +383,6 @@ function _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts;
         rotation_time = protocol.rotation_time,
         flux_density = protocol.flux_density,
         spectrum_path = nothing,
-        scan_mode = :axial,
         dual_energy = false           # Single-kVp mode for clean scatter handling
     )
 
@@ -458,195 +435,6 @@ function _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts;
     pcct_vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
     return SimulationResult(
         sino_ideal, sino_final, recons, geom, config_high,
-        de_sino, mat_map, vmi_dict,
-        nothing, nothing, pcct_vmi_dict
-    )
-end
-
-# =============================================================================
-# Mode 3: Helical Single-kVp
-# =============================================================================
-
-function _simulate_helical_single(phantom, scanner, protocol, sim_opts, recon_opts;
-                                  materials::Union{Nothing, Vector} = nothing)
-    # 1. Build axial geometry first (for beam parameters)
-    n_angles_total = round(Int, protocol.views * protocol.n_rotations)
-    base_geom = CTGeometry(
-        scanner;
-        n_angles = n_angles_total,
-        fov_cm = recon_opts.fov_cm,
-        z_cm = nothing
-    )
-
-    # 2. Create helical geometry (modifies source/detector z-positions for helical motion)
-    helical_geom = create_helical_geometry(
-        base_geom;
-        pitch = protocol.pitch,
-        rotation_time = protocol.rotation_time,
-        z_start = 0.0
-    )
-
-    # 3. Resolve spectrum
-    energies, weights = resolve_spectrum(sim_opts, protocol)
-
-    # 4. Build PhysicsConfig (with phantom for size-aware scatter)
-    config = build_physics_config(scanner, sim_opts, energies, weights; phantom=phantom)
-
-    # 5. Helical forward projection (use helical geometry with z-varying positions)
-    # Use custom materials if provided, otherwise default to Gammex region materials
-    mats = _resolve_materials(phantom, materials)
-    sino_ideal = forward_project(
-        phantom.mask, helical_geom.base_geom;
-        energies=energies, weights=weights,
-        materials=mats, physics=config
-    )
-
-    # 6. Apply detector noise
-    sino_final = if sim_opts.use_noise
-        sim_detect(sino_ideal, helical_geom.base_geom, protocol)
-    else
-        copy(sino_ideal)
-    end
-
-    # 7. Helical reconstruction
-    recon_vol = _run_helical_reconstruction(sino_final, helical_geom, recon_opts)
-
-    T = eltype(recon_vol)
-    recons = Pair{Symbol, AbstractArray{T, 3}}[recon_opts.algorithm => recon_vol]
-    vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
-
-    pcct_vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
-    return SimulationResult(
-        sino_ideal, sino_final, recons, helical_geom, config,
-        nothing, nothing, vmi_dict,
-        nothing, nothing, pcct_vmi_dict
-    )
-end
-
-# =============================================================================
-# Mode 4: Helical Dual-kVp (WRAPPER AROUND SINGLE-KVP)
-# =============================================================================
-#
-# v11.0 REFACTOR: Helical dual-energy also uses single-kVp wrapper pattern.
-# See _simulate_axial_dual() for full rationale.
-# =============================================================================
-
-"""
-    _forward_helical_single_pass(phantom, scanner, protocol, sim_opts, helical_geom; materials=nothing) -> (sinogram, config)
-
-Run helical forward projection for a single kVp with all physics effects.
-Returns fully-corrected sinogram (scatter added AND corrected at same energy).
-"""
-function _forward_helical_single_pass(phantom, scanner, protocol, sim_opts, helical_geom;
-                                      materials::Union{Nothing, Vector} = nothing)
-    # Resolve spectrum for this kVp
-    energies, weights = resolve_spectrum(sim_opts, protocol)
-
-    # Build PhysicsConfig (scatter add + scatter correct at SAME energy)
-    config = build_physics_config(scanner, sim_opts, energies, weights; phantom=phantom)
-
-    # Forward project with all physics (using base geometry for helical)
-    # Use custom materials if provided, otherwise default to Gammex region materials
-    mats = _resolve_materials(phantom, materials)
-    sinogram = forward_project(
-        phantom.mask, helical_geom.base_geom;
-        energies=energies, weights=weights,
-        materials=mats, physics=config
-    )
-
-    return sinogram, config
-end
-
-function _simulate_helical_dual(phantom, scanner, protocol, sim_opts, recon_opts;
-                                materials::Union{Nothing, Vector} = nothing)
-    # 1. Build helical geometry (shared for both kVp)
-    n_angles_total = round(Int, protocol.views * protocol.n_rotations)
-    base_geom = CTGeometry(
-        scanner;
-        n_angles = n_angles_total,
-        fov_cm = recon_opts.fov_cm,
-        z_cm = nothing
-    )
-
-    helical_geom = create_helical_geometry(
-        base_geom;
-        pitch = protocol.pitch,
-        rotation_time = protocol.rotation_time,
-        z_start = 0.0
-    )
-
-    # 2. Create single-kVp protocols for each energy level
-    protocol_low = CTProtocol(
-        mA = protocol.mA_low > 0 ? protocol.mA_low : protocol.mA,
-        kVp = protocol.kVp_low,       # 80 kVp
-        views = protocol.views,
-        rotation_time = protocol.rotation_time,
-        flux_density = protocol.flux_density,
-        spectrum_path = nothing,
-        scan_mode = :helical,
-        pitch = protocol.pitch,
-        n_rotations = protocol.n_rotations,
-        dual_energy = false           # Single-kVp mode for clean scatter handling
-    )
-
-    protocol_high = CTProtocol(
-        mA = protocol.mA,
-        kVp = protocol.kVp,           # 140 kVp
-        views = protocol.views,
-        rotation_time = protocol.rotation_time,
-        flux_density = protocol.flux_density,
-        spectrum_path = nothing,
-        scan_mode = :helical,
-        pitch = protocol.pitch,
-        n_rotations = protocol.n_rotations,
-        dual_energy = false           # Single-kVp mode for clean scatter handling
-    )
-
-    # 3. Run single-kVp pipeline for LOW kVp (80 kVp)
-    sino_low, config_low = _forward_helical_single_pass(phantom, scanner, protocol_low, sim_opts, helical_geom; materials=materials)
-
-    # 4. Run single-kVp pipeline for HIGH kVp (140 kVp)
-    sino_high, config_high = _forward_helical_single_pass(phantom, scanner, protocol_high, sim_opts, helical_geom; materials=materials)
-
-    # 5. Apply detector noise to high-kVp sinogram
-    sino_ideal = sino_high
-    sino_final = if sim_opts.use_noise
-        sim_detect(sino_high, helical_geom.base_geom, protocol_high)
-    else
-        copy(sino_high)
-    end
-
-    # 6. Create DualEnergySinogram from the two clean sinograms
-    de_sino = DualEnergySinogram(sino_low, sino_high;
-        low_kvp = Int(protocol.kVp_low),
-        high_kvp = Int(protocol.kVp)
-    )
-
-    # 7. Material decomposition (works on clean sinograms!)
-    mat_map = decompose_materials(de_sino; basis=Tuple(recon_opts.vmi_basis[1:2]))
-
-    # 8. VMI reconstruction (helical)
-    T = eltype(sino_final)
-    vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
-    if !isempty(recon_opts.vmi_energies)
-        for E in recon_opts.vmi_energies
-            # Generate VMI sinogram, then helical reconstruct
-            vmi_sino = virtual_monoenergetic(mat_map, E)
-            vmi_vol = helical_fdk_reconstruct_volume(
-                T.(vmi_sino), helical_geom, recon_opts.matrix_size;
-                interpolation = recon_opts.interpolation == :li_360 ? :li360 : :li180
-            )
-            vmi_dict[E] = vmi_vol
-        end
-    end
-
-    # 9. Helical reconstruction from high-kVp sinogram
-    recon_vol = _run_helical_reconstruction(sino_final, helical_geom, recon_opts)
-    recons = Pair{Symbol, AbstractArray{T, 3}}[recon_opts.algorithm => recon_vol]
-
-    pcct_vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
-    return SimulationResult(
-        sino_ideal, sino_final, recons, helical_geom, config_high,
         de_sino, mat_map, vmi_dict,
         nothing, nothing, pcct_vmi_dict
     )
@@ -840,7 +628,8 @@ function simulate!(
                           ws_noise_buf=ws.noise_buf,
                           ws_rng=ws.rng,
                           ws_noise_I0=ws.noise_I0,
-                          ws_η=ws.η)
+                          ws_η=ws.η,
+                          noise_reduction=sim_opts.pcct_noise_reduction)
     end
 
     # Combine noisy (reuse workspace buffer + pre-computed I0_bins)
@@ -1376,59 +1165,9 @@ function _run_reconstruction(
             lambda=recon_opts.lambda, penalty=penalty_type,
             use_edge_weights=recon_opts.use_edge_weights,
             init=init_mbir)
-    elseif alg == :helical_fdk || alg == :helical_sirt
-        # If user requests helical algo on axial data, fall back to axial equivalent
-        if alg == :helical_fdk
-            return fdk_reconstruct(sinogram, geom, ms)
-        else
-            return sirt_reconstruct(sinogram, geom, ms;
-                niter=recon_opts.iterations, lambda=recon_opts.lambda,
-                init=init_sirt)
-        end
     else
         error("Unknown reconstruction algorithm: $alg. " *
-              "Supported: :fdk, :sirt, :cgls, :tv_sirt, :tv_cgls, :asir, :mbir, :helical_fdk, :helical_sirt")
-    end
-end
-
-# =============================================================================
-# Helical Reconstruction Dispatcher
-# =============================================================================
-
-"""
-    _run_helical_reconstruction(sinogram, helical_geom, recon_opts) -> Array{T,3}
-
-Dispatch to helical reconstruction algorithms.
-"""
-function _run_helical_reconstruction(
-    sinogram::AbstractArray{T, 3},
-    helical_geom::HelicalGeometry,
-    recon_opts::ReconOptions
-) where T
-    alg = recon_opts.algorithm
-    ms = recon_opts.matrix_size
-    ws = recon_opts.warm_start
-    interp = recon_opts.interpolation == :li_360 ? :li360 : :li180
-
-    # Resolve init: warm_start array takes priority, otherwise use algorithm default
-    init_helical = isnothing(ws) ? :zeros : ws
-
-    if alg ∈ (:fdk, :helical_fdk)
-        return helical_fdk_reconstruct_volume(sinogram, helical_geom, ms;
-            interpolation=interp)
-    elseif alg ∈ (:sirt, :helical_sirt)
-        return helical_sirt_reconstruct(sinogram, helical_geom, ms;
-            niter=recon_opts.iterations, lambda=recon_opts.lambda,
-            init=init_helical)
-    elseif alg == :cgls
-        # No helical CGLS — fall back to helical SIRT
-        return helical_sirt_reconstruct(sinogram, helical_geom, ms;
-            niter=recon_opts.iterations, lambda=recon_opts.lambda,
-            init=init_helical)
-    else
-        # For other algorithms, use helical FDK as fallback
-        return helical_fdk_reconstruct_volume(sinogram, helical_geom, ms;
-            interpolation=interp)
+              "Supported: :fdk, :sirt, :cgls, :tv_sirt, :tv_cgls, :asir, :mbir")
     end
 end
 

@@ -30,6 +30,9 @@ These are resolved from fidelity presets and user overrides at construction time
 - `use_das::Bool`: Enable DAS model (BROKEN — always false).
 - `use_bhc::Bool`: Enable beam hardening correction.
 - `use_pcct_corrections::Bool`: Enable PCCT detector corrections (inverse pileup, inverse charge sharing).
+- `pcct_noise_reduction::Float64`: PCCT noise reduction factor (0.0–1.0). Approximates clinical
+  vendor reconstruction (e.g., Siemens QIR). 0.0 = raw physics (default), 0.7 = 70% noise reduction
+  (~QIR-3). Only affects PCCT sinogram noise; EICT noise is unaffected.
 - `n_energy_bins::Int`: Number of spectrum bins for polychromatic mode. Default 30.
 - `seed::Union{Int, Nothing}`: Random seed for reproducibility. Default 42.
 """
@@ -56,6 +59,7 @@ struct SimOptions
 
     # --- PCCT Corrections ---
     use_pcct_corrections::Bool
+    pcct_noise_reduction::Float64
 
     # --- General ---
     seed::Union{Int, Nothing}
@@ -105,6 +109,7 @@ function SimOptions(;
     use_das::Union{Bool, Nothing} = nothing,
     use_bhc::Union{Bool, Nothing} = nothing,
     use_pcct_corrections::Union{Bool, Nothing} = nothing,
+    pcct_noise_reduction::Float64 = 0.0,
     n_energy_bins::Int = 30,
     seed::Union{Int, Nothing} = 42
 )
@@ -164,6 +169,7 @@ function SimOptions(;
         _focal_spot, _noise, _lag,
         _heel_effect, _das, _bhc,
         _pcct_corrections,
+        clamp(pcct_noise_reduction, 0.0, 1.0),
         seed, n_energy_bins
     )
 end
@@ -192,9 +198,6 @@ Parameters irrelevant to the chosen algorithm are silently ignored.
 - `use_edge_weights::Bool`: Edge-preserving weights (MBIR)
 - `blend_percent::Float64`: FDK/iterative blend percentage (ASIR)
 
-# Helical Parameters
-- `interpolation::Symbol`: Helical interpolation method (:li_180 or :li_360)
-
 # VMI Parameters
 - `vmi_energies::Vector{Float64}`: VMI energies to reconstruct (keV)
 - `vmi_basis::Vector{Symbol}`: Material basis for decomposition (2+ materials; accepts Tuple for backward compat)
@@ -212,8 +215,6 @@ Parameters irrelevant to the chosen algorithm are silently ignored.
 | :tv_cgls | TV-CGLS | iterations, tv_weight |
 | :asir | ASIR-style blend | iterations, lambda, blend_percent |
 | :mbir | Model-based IR | iterations, lambda, n_subsets, penalty |
-| :helical_fdk | Helical FDK | interpolation |
-| :helical_sirt | Helical SIRT | iterations, lambda, interpolation |
 """
 struct ReconOptions
     # Core fields (original 5)
@@ -230,8 +231,6 @@ struct ReconOptions
     penalty_delta::Float64
     use_edge_weights::Bool
     blend_percent::Float64
-    # Helical parameters
-    interpolation::Symbol
     # VMI parameters
     vmi_energies::Vector{Float64}
     vmi_basis::Vector{Symbol}
@@ -259,9 +258,6 @@ ReconOptions(algorithm=:tv_sirt, iterations=50, lambda=1.0, tv_weight=0.01)
 # MBIR with penalty
 ReconOptions(algorithm=:mbir, iterations=30, n_subsets=12, penalty=:hyperbola)
 
-# Helical FDK with 360LI
-ReconOptions(algorithm=:helical_fdk, interpolation=:li_360)
-
 # VMI reconstruction request
 ReconOptions(algorithm=:fdk, vmi_energies=[40.0, 50.0, 70.0, 100.0], vmi_basis=(:water, :iodine))
 ```
@@ -280,8 +276,6 @@ function ReconOptions(;
     penalty_delta::Real = 0.01,
     use_edge_weights::Bool = false,
     blend_percent::Real = 50.0,
-    # Helical parameters
-    interpolation::Symbol = :li_180,
     # VMI parameters
     vmi_energies::Vector{Float64} = Float64[],
     vmi_basis::Union{Tuple{Symbol, Symbol}, Vector{Symbol}} = (:water, :iodine),
@@ -299,7 +293,6 @@ function ReconOptions(;
         algorithm, _size, Float64(fov_cm), filter, iterations,
         Float64(lambda), Float64(tv_weight), n_subsets,
         penalty, Float64(penalty_delta), use_edge_weights, Float64(blend_percent),
-        interpolation,
         vmi_energies, _vmi_basis,
         warm_start, cascade_warm_start
     )

@@ -73,7 +73,7 @@ print_scanner_info(spec)
 geom = create_geometry(spec; n_angles=984, n_rows=64)
 
 # Create with protocol
-protocol = NAEOTOMChestHelical()
+protocol = NAEOTOMHeadAxial()
 geom = create_geometry(spec, protocol)
 ```
 
@@ -332,13 +332,7 @@ function SiemensNAEOTOMAlpha(mode::NAEOTOMMode)
         SourceCitation(2304;
             source=:estimate,
             url="",
-            note="Estimated from temporal resolution"),
-
-        # Helical pitch options
-        SourceCitation([0.4, 0.5, 0.6, 0.8, 1.0, 1.2, 1.4, 1.5];
-            source=:fda_510k,
-            url=NAEOTOM_FDA_K201501,
-            note="Helical pitch range 0.4-1.5")
+            note="Estimated from temporal resolution")
     )
 
     # Energy thresholds: 20, 35, 55, 70 keV (fixed in clinical mode)
@@ -424,36 +418,6 @@ end
 # =============================================================================
 
 """
-    NAEOTOMChestHelical(; dose_level=:standard)
-
-Standard chest helical protocol for Siemens NAEOTOM Alpha.
-
-# Keyword Arguments
-- `dose_level`: :low, :standard, or :high
-
-# Protocol Details
-- 120 kVp
-- 0.5 s rotation
-- 1.0 pitch
-- 0.4 mm slice thickness
-"""
-function NAEOTOMChestHelical(; dose_level::Symbol=:standard)
-    ma = dose_level == :low ? 150 :
-         dose_level == :standard ? 300 :
-         dose_level == :high ? 450 : 300
-
-    return HelicalProtocol(
-        120,        # kVp
-        ma,         # mA
-        0.5,        # rotation time
-        1.0,        # pitch
-        3.0,        # rotations
-        984,        # angles per rotation
-        0.4         # slice thickness (native PCCT resolution)
-    )
-end
-
-"""
     NAEOTOMHeadAxial(; dose_level=:standard)
 
 Standard head axial protocol for Siemens NAEOTOM Alpha.
@@ -474,94 +438,6 @@ function NAEOTOMHeadAxial(; dose_level::Symbol=:standard)
         ma,         # mA
         1.0,        # rotation time
         984,        # angles
-        0.4         # slice thickness
-    )
-end
-
-"""
-    NAEOTOMCardiacHelical(; dose_level=:standard)
-
-Cardiac helical protocol for Siemens NAEOTOM Alpha.
-
-Uses fast rotation and low pitch for cardiac imaging with high temporal resolution.
-
-# Protocol Details
-- 120 kVp
-- 0.25 s rotation (fastest)
-- 0.4 pitch (low for cardiac)
-- 0.4 mm slice thickness
-"""
-function NAEOTOMCardiacHelical(; dose_level::Symbol=:standard)
-    ma = dose_level == :low ? 300 :
-         dose_level == :standard ? 500 :
-         dose_level == :high ? 700 : 500
-
-    return HelicalProtocol(
-        120,        # kVp
-        ma,         # mA
-        0.25,       # rotation time (fastest)
-        0.4,        # pitch (low for cardiac)
-        5.0,        # rotations
-        984,        # angles per rotation
-        0.4         # slice thickness
-    )
-end
-
-"""
-    NAEOTOMUHRHelical(; dose_level=:standard)
-
-Ultra-high resolution helical protocol for Siemens NAEOTOM Alpha.
-
-Uses micro focal spot and unbinned detector for maximum spatial resolution.
-
-# Protocol Details
-- 120 kVp
-- 0.5 s rotation
-- 0.8 pitch
-- 0.2 mm slice thickness (UHR native)
-"""
-function NAEOTOMUHRHelical(; dose_level::Symbol=:standard)
-    # UHR requires higher dose for equivalent noise
-    ma = dose_level == :low ? 300 :
-         dose_level == :standard ? 500 :
-         dose_level == :high ? 700 : 500
-
-    return HelicalProtocol(
-        120,        # kVp
-        ma,         # mA (higher for UHR)
-        0.5,        # rotation time
-        0.8,        # pitch
-        3.0,        # rotations
-        984,        # angles per rotation
-        0.2         # slice thickness (UHR native)
-    )
-end
-
-"""
-    NAEOTOMSpectralHelical(; dose_level=:standard)
-
-Spectral imaging (QuantumPlus) helical protocol for Siemens NAEOTOM Alpha.
-
-Enables 4-bin spectral data acquisition for VMI, VNCa, and material decomposition.
-
-# Protocol Details
-- 120 kVp (single kVp, spectral from energy binning)
-- 0.5 s rotation
-- 1.0 pitch
-- 0.4 mm slice thickness
-"""
-function NAEOTOMSpectralHelical(; dose_level::Symbol=:standard)
-    ma = dose_level == :low ? 200 :
-         dose_level == :standard ? 350 :
-         dose_level == :high ? 500 : 350
-
-    return HelicalProtocol(
-        120,        # kVp (single kVp for PCCT spectral)
-        ma,         # mA
-        0.5,        # rotation time
-        1.0,        # pitch
-        3.0,        # rotations
-        984,        # angles per rotation
         0.4         # slice thickness
     )
 end
@@ -650,5 +526,4 @@ export NAEOTOMMode, NAEOTOM_STANDARD, NAEOTOM_UHR, NAEOTOM_QUANTUM
 export SiemensNAEOTOMAlpha, NAEOTOMAlpha
 export get_energy_thresholds, get_mode, is_photon_counting, is_uhr_mode, is_spectral_mode
 export get_pcct_detector, print_naeotom_info
-export NAEOTOMChestHelical, NAEOTOMHeadAxial, NAEOTOMCardiacHelical
-export NAEOTOMUHRHelical, NAEOTOMSpectralHelical
+export NAEOTOMHeadAxial

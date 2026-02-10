@@ -438,6 +438,7 @@ function create_subset_geometry(geom::CTGeometry, angle_indices::Vector{Int})
         geom.n_rows,
         geom.n_cols,
         geom.pixel_size,
+        geom.pixel_row_size,
         angles_subset,
         source_positions_subset,
         detector_centers_subset,

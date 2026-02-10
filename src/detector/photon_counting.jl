@@ -1810,7 +1810,8 @@ function apply_pcct_noise!(
     ws_noise_buf = nothing,
     ws_rng = nothing,
     ws_noise_I0 = nothing,
-    ws_η = nothing
+    ws_η = nothing,
+    noise_reduction::Float64 = 0.0
 ) where {T, A}
 
     rng = if ws_rng !== nothing
@@ -1843,14 +1844,18 @@ function apply_pcct_noise!(
 
         # Fill pre-allocated noise buffer (same RNG sequence as before)
         randn!(rng, noise_buf)
-        # In-place: compute measured counts = N_expected + sqrt(N_expected) * noise
-        @. noise_buf = cpu_buf + sqrt(cpu_buf) * noise_buf
+        # In-place: compute measured counts = N_expected + scale * sqrt(N_expected) * noise
+        # noise_reduction ∈ [0,1]: 0 = raw physics, 0.7 = 70% noise reduction (~QIR-3)
+        nr_scale = T(1.0 - noise_reduction)
+        @. noise_buf = cpu_buf + nr_scale * sqrt(cpu_buf) * noise_buf
 
         # Fix up low-count pixels with exact Poisson sampling (rare in clinical data)
         # cpu_buf still holds N_expected, noise_buf holds N_measured
         @inbounds for idx in eachindex(cpu_buf)
             if cpu_buf[idx] <= T(20)
-                noise_buf[idx] = T(_poisson_sample(rng, Float64(cpu_buf[idx])))
+                sampled = T(_poisson_sample(rng, Float64(cpu_buf[idx])))
+                # Apply same noise reduction: blend toward expected value
+                noise_buf[idx] = cpu_buf[idx] + nr_scale * (sampled - cpu_buf[idx])
             end
         end
 

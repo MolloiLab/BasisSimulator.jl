@@ -417,7 +417,7 @@ function fdk_reconstruct(
     # Create a copy of geometry with modified FOV
     geom_fov = CTGeometry(
         geom.SAD, geom.SDD,
-        geom.n_angles, geom.n_rows, geom.n_cols, geom.pixel_size,
+        geom.n_angles, geom.n_rows, geom.n_cols, geom.pixel_size, geom.pixel_row_size,
         geom.angles, geom.source_positions, geom.detector_centers,
         geom.detector_u, geom.detector_v,
         fov  # Use specified FOV
