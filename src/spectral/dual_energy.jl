@@ -509,59 +509,24 @@ function decompose_materials(sino::DualEnergySinogram{T,A};
 
     # Use pre-computed inverse matrix elements if provided (zero-alloc path)
     if ws_inv_a11 !== nothing
-        inv_a11 = ws_inv_a11
-        inv_a12 = ws_inv_a12
-        inv_a21 = ws_inv_a21
-        inv_a22 = ws_inv_a22
+        inv_a11 = T(ws_inv_a11)
+        inv_a12 = T(ws_inv_a12)
+        inv_a21 = T(ws_inv_a21)
+        inv_a22 = T(ws_inv_a22)
     else
-        # Get basis material attenuation coefficients
-        m1, m2 = basis
-
-        # Get effective energies (approximate)
         e_eff_low = get_effective_energy(sino.low_kvp)
         e_eff_high = get_effective_energy(sino.high_kvp)
-
-        # Get material attenuation at effective energies
-        μ1_low = get_material_attenuation(m1, e_eff_low)
-        μ1_high = get_material_attenuation(m1, e_eff_high)
-        μ2_low = get_material_attenuation(m2, e_eff_low)
-        μ2_high = get_material_attenuation(m2, e_eff_high)
-
-        # Matrix form: [μ1_low μ2_low; μ1_high μ2_high] * [ρ1; ρ2] = [p_low; p_high]
-        # Solve for [ρ1; ρ2] = A^-1 * [p_low; p_high]
-        det_A = μ1_low * μ2_high - μ2_low * μ1_high
-
-        if abs(det_A) < 1e-10
-            error("Singular decomposition matrix - basis materials too similar at these energies")
-        end
-
-        # Inverse matrix elements (typed for GPU)
-        inv_a11 = T(μ2_high / det_A)
-        inv_a12 = T(-μ2_low / det_A)
-        inv_a21 = T(-μ1_high / det_A)
-        inv_a22 = T(μ1_low / det_A)
+        inv_a11, inv_a12, inv_a21, inv_a22 = compute_decomposition_matrix(basis, e_eff_low, e_eff_high; T=T)
     end
 
     # Use pre-allocated output buffers if provided (zero-alloc path)
     material1 = ws_material1 === nothing ? similar(sino.low) : ws_material1
     material2 = ws_material2 === nothing ? similar(sino.low) : ws_material2
 
-    # Apply decomposition using AcceleratedKernels for GPU compatibility
-    # let-binding captures concrete types to avoid Union{Nothing,T} closure instability
-    sino_low = sino.low
-    sino_high = sino.high
     m1_name, m2_name = basis
 
-    let inv_a11=T(inv_a11), inv_a12=T(inv_a12), inv_a21=T(inv_a21), inv_a22=T(inv_a22),
-        material1=material1, material2=material2, sino_low=sino_low, sino_high=sino_high
-        AK.foreachindex(material1) do idx
-            p_low = sino_low[idx]
-            p_high = sino_high[idx]
-
-            material1[idx] = inv_a11 * p_low + inv_a12 * p_high
-            material2[idx] = inv_a21 * p_low + inv_a22 * p_high
-        end
-    end
+    spectral_decompose!(material1, material2, sino.low, sino.high,
+                        inv_a11, inv_a12, inv_a21, inv_a22)
 
     return MaterialMap(material1, material2;
                        material1_name=m1_name, material2_name=m2_name,
@@ -569,49 +534,15 @@ function decompose_materials(sino::DualEnergySinogram{T,A};
 end
 
 """
-    virtual_monoenergetic(materials::MaterialMap, energy_keV::Float64) -> Array
+    virtual_monoenergetic(materials::MaterialMap, energy_keV::Float64; ws_output=nothing) -> Array
 
 Generate virtual monoenergetic image (VMI) at specified energy.
 
-VMI synthesizes what the CT image would look like if acquired with a
-perfectly monochromatic X-ray beam at the specified energy. This is
-computed from the material maps using known attenuation coefficients.
+Delegates to `spectral_vmi!()` from the unified VMI pipeline.
 
 # Arguments
 - `materials::MaterialMap`: Result of material decomposition
 - `energy_keV::Float64`: Target energy in keV (40-140)
-
-# Returns
-Sinogram or image at the virtual monoenergetic energy level.
-
-# Energy Selection Guide
-- 40-50 keV: Maximum iodine enhancement (high noise)
-- 50-60 keV: Good contrast, moderate noise
-- 65-75 keV: Balanced (similar to 120 kVp single-energy)
-- 80-100 keV: Reduced beam hardening artifacts
-- 100-140 keV: Metal artifact reduction
-
-# Example
-
-```julia
-# Material decomposition
-mat_map = decompose_materials(de_sino; basis=(:water, :iodine))
-
-# Generate VMI at different energies
-vmi_50 = virtual_monoenergetic(mat_map, 50.0)   # High iodine contrast
-vmi_70 = virtual_monoenergetic(mat_map, 70.0)   # Balanced
-vmi_100 = virtual_monoenergetic(mat_map, 100.0) # Low artifacts
-```
-
-# Technical Notes
-
-The VMI is computed as:
-    μ_VMI(E) = ρ₁ × μ₁(E) + ρ₂ × μ₂(E)
-
-where ρ₁, ρ₂ are the material densities and μ₁(E), μ₂(E) are the
-mass attenuation coefficients at energy E.
-
-See also: [`decompose_materials`](@ref), [`MaterialMap`](@ref)
 """
 function virtual_monoenergetic(materials::MaterialMap{T,A}, energy_keV::Float64;
                                ws_output=nothing) where {T, A}
@@ -619,20 +550,11 @@ function virtual_monoenergetic(materials::MaterialMap{T,A}, energy_keV::Float64;
         error("Energy must be between 10 and 150 keV (got $energy_keV)")
     end
 
-    # Get attenuation coefficients at target energy (typed for GPU)
-    μ1 = T(get_material_attenuation(materials.material1_name, energy_keV))
-    μ2 = T(get_material_attenuation(materials.material2_name, energy_keV))
+    μ1 = T(get_basis_mu(materials.material1_name, energy_keV))
+    μ2 = T(get_basis_mu(materials.material2_name, energy_keV))
 
-    # Use pre-allocated output buffer if provided (zero-alloc path)
     vmi = ws_output === nothing ? similar(materials.material1) : ws_output
-    mat1 = materials.material1
-    mat2 = materials.material2
-
-    # Use AcceleratedKernels for GPU compatibility
-    AK.foreachindex(vmi) do idx
-        vmi[idx] = mat1[idx] * μ1 + mat2[idx] * μ2
-    end
-
+    spectral_vmi!(vmi, materials.material1, materials.material2, μ1, μ2)
     return vmi
 end
 
@@ -658,36 +580,10 @@ end
 """
     get_material_attenuation(material::Symbol, energy_keV::Float64) -> Float64
 
-Get linear attenuation coefficient for material at given energy.
-
-Uses NIST XCOM database via XrayAttenuation.jl for water.
-For iodine and calcium, uses physics-based models validated against NIST.
-
-# Arguments
-- `material::Symbol`: Material type (:water, :iodine, or :calcium)
-- `energy_keV::Float64`: Energy in keV
-
-# Returns
-- `μ::Float64`: Linear attenuation coefficient (cm⁻¹)
-
-# Notes
-- :iodine represents dilute iodine solution (5 mg/mL in water)
-- :calcium represents calcium equivalent material (cortical bone-like)
-- For pure elemental attenuation, use XrayAttenuation.jl directly
+Deprecated: use `get_basis_mu()` from the unified VMI pipeline instead.
+Kept as thin wrapper for backward compatibility.
 """
-function get_material_attenuation(material::Symbol, energy_keV::Float64)
-    if material == :water
-        return get_water_attenuation_vmi(energy_keV)
-    elseif material == :iodine
-        # Dilute iodine solution (5 mg/mL typical contrast concentration)
-        return get_iodine_solution_attenuation(energy_keV)
-    elseif material == :calcium
-        # Calcium-equivalent material (cortical bone-like)
-        return get_calcium_material_attenuation(energy_keV)
-    else
-        error("Unknown material: $material. Use :water, :iodine, or :calcium")
-    end
-end
+get_material_attenuation(material::Symbol, energy_keV::Float64) = get_basis_mu(material, energy_keV)
 
 """
     get_iodine_solution_attenuation(energy_keV::Float64; conc_mg_ml::Float64=5.0) -> Float64
@@ -807,122 +703,10 @@ function get_water_attenuation_vmi(energy_keV::Float64)
     return compute_μ_at_energy(XA.Materials.water, energy_keV)
 end
 
-# =============================================================================
-# VMI Reconstruction Integration
-# =============================================================================
-
 """
-    vmi_to_hu(vmi_image::AbstractArray, energy_keV::Float64; μ_water=nothing) -> Array
+    reconstruct_vmi(materials::MaterialMap, energy_keV, geom, recon_size; kwargs...) -> Array
 
-Convert Virtual Monoenergetic Image from attenuation to Hounsfield Units.
-
-# Arguments
-- `vmi_image`: VMI reconstruction (attenuation values)
-- `energy_keV`: VMI energy in keV
-
-# Keyword Arguments
-- `μ_water=nothing`: Water attenuation for calibration. If nothing, uses NIST value.
-
-# Returns
-Array in Hounsfield Units where water = 0 HU at the calibration energy.
-
-# Calibration Methods
-
-**Empirical calibration (recommended):**
-Measure μ_water from a known water region in the reconstruction. This ensures
-water = 0 HU regardless of geometry/scaling factors:
-
-```julia
-water_mask = phantom.mask .== REGION_WATER
-μ_water_measured = mean(vmi_recon[water_mask])
-hu = vmi_to_hu(vmi_recon, 70.0; μ_water=μ_water_measured)
-```
-
-**NIST calibration (default):**
-Uses theoretical NIST XCOM water attenuation. May have HU offset due to
-geometry-dependent scaling in reconstruction.
-
-```julia
-hu = vmi_to_hu(vmi_recon, 70.0)  # Uses NIST μ_water
-```
-
-See also: [`reconstruct_vmi`](@ref) with `water_mask` parameter for automatic calibration.
-"""
-function vmi_to_hu(vmi_image::AbstractArray{T}, energy_keV::Float64; μ_water=nothing) where T
-    if μ_water === nothing
-        μ_water = T(get_water_attenuation_vmi(energy_keV))
-    else
-        μ_water = T(μ_water)
-    end
-    return T(1000) .* (vmi_image .- μ_water) ./ μ_water
-end
-
-"""
-    reconstruct_vmi(materials::MaterialMap, energy_keV::Float64,
-                    geom::CTGeometry, recon_size::NTuple{3,Int};
-                    method::Symbol=:fdk, to_hu::Bool=true,
-                    water_mask=nothing, fdk_kwargs...) -> Array
-
-Full VMI reconstruction pipeline: synthesize VMI sinogram + reconstruct + HU conversion.
-
-This is the recommended high-level API for generating VMI images.
-
-# Arguments
-- `materials::MaterialMap`: Result of material decomposition
-- `energy_keV::Float64`: Target VMI energy (40-140 keV typical)
-- `geom::CTGeometry`: CT geometry for reconstruction
-- `recon_size::NTuple{3,Int}`: Output volume dimensions
-
-# Keyword Arguments
-- `method::Symbol=:fdk`: Reconstruction method (:fdk or :sirt)
-- `to_hu::Bool=true`: Convert output to Hounsfield Units
-- `water_mask::Union{Nothing,AbstractArray{Bool}}=nothing`: Mask for water region
-  (for empirical HU calibration). If provided, μ_water is measured from this region.
-- `niter::Int=3`: Number of iterations for SIRT (ignored for FDK)
-- `filter::FilterType=RampFilter()`: FDK filter (passed to fdk_reconstruct)
-- `cutoff::Float64=1.0`: FDK frequency cutoff
-
-# Returns
-- If to_hu=true: VMI reconstruction in Hounsfield Units
-- If to_hu=false: VMI reconstruction in attenuation units
-
-# HU Calibration
-
-**With water_mask (recommended for accurate HU):**
-```julia
-water_mask = phantom.mask .== REGION_SOLID_WATER
-vmi_hu = reconstruct_vmi(mat_map, 70.0, geom, size; water_mask=water_mask)
-# Water region will be 0 HU by empirical calibration
-```
-
-**Without water_mask (uses NIST reference):**
-```julia
-vmi_hu = reconstruct_vmi(mat_map, 70.0, geom, size)
-# Uses theoretical NIST water attenuation (may have scale offset)
-```
-
-# Example
-```julia
-# Standard workflow
-de_sino = forward_project_dual_energy(phantom.mask, geom, protocol; ...)
-mat_map = decompose_materials(de_sino; basis=(:water, :iodine))
-
-# Reconstruct with empirical water calibration (most accurate)
-water_mask = phantom.mask .== 3  # REGION_SOLID_WATER
-vmi_50_hu = reconstruct_vmi(mat_map, 50.0, geom, (256, 256, 32);
-                            water_mask=water_mask)
-
-# Use SIRT for better quality
-vmi_70_sirt = reconstruct_vmi(mat_map, 70.0, geom, (256, 256, 32);
-                               method=:sirt, niter=3, water_mask=water_mask)
-```
-
-# Energy Selection Guide
-- 40-50 keV: Maximum iodine enhancement (high noise)
-- 50-60 keV: Good contrast, moderate noise
-- 65-75 keV: Balanced (similar to 120 kVp single-energy)
-- 80-100 keV: Reduced beam hardening artifacts
-- 100-140 keV: Metal artifact reduction
+Full VMI reconstruction pipeline: synthesize VMI sinogram + reconstruct + optional HU.
 """
 function reconstruct_vmi(
     materials::MaterialMap{T,A},
@@ -937,10 +721,8 @@ function reconstruct_vmi(
     cutoff::Float64=1.0
 ) where {T, A}
 
-    # Step 1: Generate VMI sinogram
     vmi_sino = virtual_monoenergetic(materials, energy_keV)
 
-    # Step 2: Reconstruct based on method
     if method == :fdk
         recon = fdk_reconstruct(vmi_sino, geom, recon_size; filter=filter, cutoff=cutoff)
     elseif method == :sirt
@@ -949,15 +731,12 @@ function reconstruct_vmi(
         error("Unknown reconstruction method: $method. Use :fdk or :sirt")
     end
 
-    # Step 3: Convert to HU if requested
     if to_hu
         recon_cpu = Array(recon)
         if water_mask !== nothing
-            # Empirical calibration: measure μ_water from reconstruction
-            μ_water = mean(recon_cpu[water_mask])
-            return vmi_to_hu(recon_cpu, energy_keV; μ_water=μ_water)
+            μ_w = mean(recon_cpu[water_mask])
+            return vmi_to_hu(recon_cpu, energy_keV; μ_water=μ_w)
         else
-            # NIST-based calibration (may have scale offset)
             return vmi_to_hu(recon_cpu, energy_keV)
         end
     else
@@ -974,6 +753,6 @@ export DualEnergySinogram, MaterialMap
 export GSIProtocol, default_gsi_protocol
 export forward_project_dual_energy
 export decompose_materials, virtual_monoenergetic
-export get_water_attenuation_vmi, vmi_to_hu
+export get_water_attenuation_vmi
 export get_material_attenuation, get_iodine_solution_attenuation, get_calcium_material_attenuation
 export reconstruct_vmi

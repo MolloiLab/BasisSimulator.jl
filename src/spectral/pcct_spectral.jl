@@ -112,172 +112,6 @@ export compute_pcct_bin_energies
 # Bin-Weighted VMI (Native PCCT VMI)
 # =============================================================================
 
-"""
-    compute_bin_weights(target_keV::Float64, thresholds::Vector{Float64}) -> Vector{Float64}
-
-Compute optimal weighting factors for bin-weighted VMI synthesis.
-
-The weights are designed to synthesize the equivalent monoenergetic image
-at `target_keV` from the energy-binned data. This uses a linear combination
-approach based on the center energy of each bin.
-
-# Arguments
-- `target_keV::Float64`: Target monoenergetic energy in keV
-- `thresholds::Vector{Float64}`: Energy thresholds defining bins (e.g., [20, 35, 55, 70])
-
-# Returns
-- `weights::Vector{Float64}`: Weighting factors for each energy bin
-
-# Physics
-
-For NAEOTOM Alpha with thresholds [20, 35, 55, 70] keV and max kVp = 120:
-- Bin 1: 20-35 keV, center ≈ 27.5 keV
-- Bin 2: 35-55 keV, center ≈ 45 keV
-- Bin 3: 55-70 keV, center ≈ 62.5 keV
-- Bin 4: 70-120 keV, center ≈ 95 keV (assuming 120 kVp)
-
-The weights are computed using inverse-distance weighting in energy space,
-providing smooth interpolation between bin centers.
-
-# Reference
-
-Si-Mohamed et al., "Spectral Photon-Counting CT" (Radiology 2021)
-"""
-function compute_bin_weights(target_keV::Float64, thresholds::Vector{T}; max_keV::Float64=120.0, kvp::Int=120) where T
-    n_bins = length(thresholds)
-    weights = zeros(T, n_bins)
-
-    # Compute bin center energies (spectrum-weighted)
-    bin_centers = compute_pcct_bin_energies(thresholds; max_keV=max_keV, kvp=kvp)
-
-    # Inverse-distance weighting with Gaussian kernel
-    σ = T(15.0)  # keV, controls smoothness of interpolation
-
-    for i in 1:n_bins
-        dist = abs(target_keV - bin_centers[i])
-        weights[i] = exp(-(dist^2) / (2 * σ^2))
-    end
-
-    # Normalize weights to sum to 1
-    total = sum(weights)
-    if total > zero(T)
-        weights ./= total
-    else
-        # Fallback: equal weights
-        weights .= one(T) / n_bins
-    end
-
-    return weights
-end
-
-"""
-    pcct_virtual_monoenergetic(sino::EnergyResolvedSinogram, target_keV::Float64;
-                                max_keV::Float64=120.0) -> Array
-
-Synthesize virtual monoenergetic sinogram from PCCT energy bins.
-
-Fast approximate VMI via weighted sum of energy bins (no material decomposition).
-
-This is a fast approximation that interpolates between bins using Gaussian weights.
-For quantitative HU accuracy, use `synthesize_vmi()` with material decomposition instead.
-
-# Arguments
-- `sino::EnergyResolvedSinogram`: Energy-resolved sinogram from PCCT
-- `target_keV::Float64`: Target VMI energy (40-190 keV)
-
-# Keyword Arguments
-- `max_keV::Float64=120.0`: Maximum energy (tube kVp)
-- `kvp::Int=120`: Tube kVp for spectrum-weighted bin energy calculation
-
-# Returns
-Sinogram at the approximate monoenergetic energy level.
-
-# Note
-Water HU from this function may deviate from 0 (typically 20-100 HU offset)
-because bin weighting is an approximation, not physics-based synthesis.
-For accurate HU, use the material decomposition approach:
-```julia
-mat_map = pcct_material_decomposition(sino; basis=(:water, :iodine))
-vmi = synthesize_vmi(mat_map, target_keV)
-```
-
-# Example
-
-```julia
-# PCCT forward projection
-detector = naeotom_detector_standard()
-pcct_sino = pcct_forward_project(volume, geom, detector, energies, weights)
-
-# Fast approximate VMI at 50 keV
-vmi_50 = pcct_virtual_monoenergetic(pcct_sino, 50.0)
-
-# Reconstruct
-recon = fdk_reconstruct(vmi_50, geom, recon_size)
-```
-
-See also: [`synthesize_vmi`](@ref), [`pcct_material_decomposition`](@ref)
-"""
-function pcct_virtual_monoenergetic(
-    sino::EnergyResolvedSinogram{T,A},
-    target_keV::Float64;
-    max_keV::Float64=120.0,
-    kvp::Int=120
-) where {T, A}
-
-    if target_keV < 10.0 || target_keV > 190.0
-        error("VMI energy must be between 10 and 190 keV (got $target_keV)")
-    end
-
-    # Compute optimal weights for this energy (using spectrum-weighted bin centers)
-    weights = compute_bin_weights(target_keV, sino.thresholds_keV; max_keV=max_keV, kvp=kvp)
-
-    # Weighted sum of bins
-    vmi_sino = similar(sino.bins[1])
-    fill!(vmi_sino, zero(T))
-
-    for (i, w) in enumerate(weights)
-        w_T = T(w)
-        bin = sino.bins[i]
-        AK.foreachindex(vmi_sino) do idx
-            vmi_sino[idx] += bin[idx] * w_T
-        end
-    end
-
-    return vmi_sino
-end
-
-"""
-    pcct_vmi_to_hu(vmi_sinogram::AbstractArray{T,3}, target_keV::Float64;
-                   μ_water=nothing) -> Array
-
-Convert PCCT VMI sinogram to Hounsfield Units.
-
-# Arguments
-- `vmi_sinogram`: VMI sinogram from pcct_virtual_monoenergetic
-- `target_keV`: VMI energy in keV
-
-# Keyword Arguments
-- `μ_water`: Water attenuation for calibration. If nothing, uses NIST value.
-
-# Returns
-Sinogram converted to HU scale.
-"""
-function pcct_vmi_to_hu(vmi_sinogram::AbstractArray{T,3}, target_keV::Float64;
-                        μ_water=nothing) where T
-    if μ_water === nothing
-        μ_water = T(compute_μ_at_energy(XA.Materials.water, target_keV))
-    else
-        μ_water = T(μ_water)
-    end
-
-    # HU = 1000 × (μ - μ_water) / μ_water
-    output = similar(vmi_sinogram)
-    AK.foreachindex(output) do idx
-        output[idx] = T(1000) * (vmi_sinogram[idx] - μ_water) / μ_water
-    end
-
-    return output
-end
 
 
 # =============================================================================
@@ -388,7 +222,7 @@ function pcct_material_decomposition(
         A_mat = zeros(T, n_bins, n_materials)
         for (j, mat_sym) in enumerate(basis_vec)
             for i in 1:n_bins
-                A_mat[i, j] = T(get_material_attenuation_pcct(mat_sym, Float64(bin_energies[i])))
+                A_mat[i, j] = T(get_basis_mu(mat_sym, Float64(bin_energies[i])))
             end
         end
 
@@ -454,295 +288,14 @@ function pcct_material_decomposition(
     return PCCTMaterialMap{T,typeof(material_maps_cpu[1])}(material_maps_cpu, basis_vec, :projection)
 end
 
-"""
-    pcct_material_decomposition_mle(sino, detector; basis, energies, weights, max_iterations, max_keV) -> PCCTMaterialMap
-
-Maximum Likelihood Estimation (MLE) material decomposition from N energy bins.
-
-Uses the full forward model with Poisson log-likelihood to find optimal
-material densities. Statistically optimal (approaches Cramér-Rao lower bound)
-but more computationally expensive than least-squares.
-
-# Arguments
-- `sino::EnergyResolvedSinogram`: Energy-resolved sinograms
-- `detector::PhotonCountingDetector`: Detector for spectral response
-
-# Keyword Arguments
-- `basis::Union{NTuple{M,Symbol}, Vector{Symbol}}`: Basis materials
-- `energies::AbstractVector`: Spectrum energies (keV)
-- `weights::AbstractVector`: Spectrum weights (normalized photon fluence)
-- `max_iterations::Int=20`: Maximum Newton-Raphson iterations
-- `max_keV::Float64=120.0`: Maximum energy (tube kVp)
-- `I0::Float64=1e6`: Reference photon count
-
-# Physics
-
-Maximizes the Poisson log-likelihood:
-    L(ρ) = Σ_b [ N_b × log(N̄_b(ρ)) - N̄_b(ρ) ]
-
-where N̄_b(ρ) is the expected count in bin b given material densities ρ:
-    N̄_b(ρ) = Σ_E R(E,b) × S(E) × η(E) × exp(-Σ_j ρ_j × μ_j(E) × L)
-
-Uses Newton-Raphson iteration with the Hessian of the log-likelihood.
-
-# References
-- Roessl & Proksa (2007), "K-edge imaging in x-ray computed tomography..."
-- Alvarez & Macovski (1976), "Energy-selective reconstructions in X-ray CT"
-"""
-function pcct_material_decomposition_mle(
-    sino::EnergyResolvedSinogram{T,A},
-    detector::PhotonCountingDetector;
-    basis::Union{NTuple{M,Symbol} where M, Vector{Symbol}} = (:water, :iodine),
-    energies::AbstractVector = Float64[],
-    weights::AbstractVector = Float64[],
-    max_iterations::Int = 20,
-    max_keV::Float64 = 120.0,
-    I0::Float64 = 1e6
-) where {T, A}
-
-    basis_vec = basis isa Tuple ? collect(Symbol, basis) : Vector{Symbol}(basis)
-    n_bins = n_energy_bins(sino)
-    n_materials = length(basis_vec)
-
-    if n_materials >= n_bins
-        error("Number of basis materials ($n_materials) must be less than number of energy bins ($n_bins)")
-    end
-
-    if isempty(energies) || isempty(weights)
-        error("MLE decomposition requires energies and weights (tube spectrum)")
-    end
-
-    thresholds = sino.thresholds_keV
-    n_cols, n_rows, n_angles = size(sino)
-
-    # Pre-compute material attenuation coefficients at each energy
-    # μ_mat[j, e] = μ_j(E_e) for material j at energy e
-    n_energies = length(energies)
-    μ_mat = zeros(Float64, n_materials, n_energies)
-    for j in 1:n_materials
-        for e in 1:n_energies
-            μ_mat[j, e] = get_material_attenuation_pcct(basis_vec[j], Float64(energies[e]))
-        end
-    end
-
-    # Pre-compute quantum efficiency
-    η = quantum_efficiency_vector(detector.material, detector.thickness_mm, energies)
-
-    # Pre-compute spectral response matrix R(E,b) or use ideal binning
-    R = compute_spectral_response_matrix(
-        detector.material, detector.thickness_mm, collect(Float64, thresholds),
-        max_keV;
-        energy_resolution_keV=detector.energy_resolution_keV,
-        n_energy_points=n_energies
-    )
-
-    # Energy grid for R matrix mapping
-    R_energy_grid = collect(range(1.0, max_keV, length=n_energies))
-
-    # Pre-compute bin assignment or R-mapping for each spectral energy
-    # Maps each energy in `energies` to the closest R matrix row
-    r_indices = zeros(Int, n_energies)
-    for e in 1:n_energies
-        r_indices[e] = clamp(
-            round(Int, (Float64(energies[e]) - 1.0) / (max_keV - 1.0) * (n_energies - 1)) + 1,
-            1, n_energies
-        )
-    end
-
-    # Pre-compute S(E) × η(E) for each energy
-    Sη = zeros(Float64, n_energies)
-    for e in 1:n_energies
-        Sη[e] = Float64(weights[e]) * η[e]
-    end
-
-    # Get initial estimate from polynomial decomposition (warm start for MLE)
-    _kvp = isempty(energies) ? 120 : Int(round(maximum(energies)))
-    init_map = pcct_material_decomposition(sino; basis=Tuple(basis_vec), method=:least_squares, max_keV=max_keV, kvp=_kvp)
-
-    # Allocate output materials on CPU (transfer after)
-    material_maps = [similar(sino.bins[1]) for _ in 1:n_materials]
-
-    # Work on CPU for MLE (iterative per-pixel)
-    bins_cpu = [Array(b) for b in sino.bins]
-    init_cpu = [Array(m) for m in init_map.materials]
-
-    # Per-pixel Newton-Raphson MLE
-    n_pixels = length(bins_cpu[1])
-    for idx in 1:n_pixels
-        # Measured bin values (line-integral domain)
-        p = zeros(Float64, n_bins)
-        for b in 1:n_bins
-            p[b] = Float64(bins_cpu[b][idx])
-        end
-
-        # Initial guess from polynomial decomposition
-        ρ = zeros(Float64, n_materials)
-        for j in 1:n_materials
-            ρ[j] = Float64(init_cpu[j][idx])
-        end
-
-        # Newton-Raphson iterations
-        for iter in 1:max_iterations
-            # Compute expected counts per bin: N̄_b(ρ)
-            N_bar = zeros(Float64, n_bins)
-            # And gradient: ∂N̄_b/∂ρ_j
-            grad_N = zeros(Float64, n_bins, n_materials)
-
-            for e in 1:n_energies
-                if Sη[e] < 1e-15
-                    continue
-                end
-
-                # Line integral: Σ_j ρ_j × μ_j(E)
-                line_integral = 0.0
-                for j in 1:n_materials
-                    line_integral += ρ[j] * μ_mat[j, e]
-                end
-
-                transmission = exp(-line_integral)
-                r_idx = r_indices[e]
-
-                for b in 1:n_bins
-                    R_val = R[r_idx, b]
-                    if R_val < 1e-15
-                        continue
-                    end
-                    contribution = I0 * Sη[e] * R_val * transmission
-                    N_bar[b] += contribution
-
-                    # Gradient: ∂N̄_b/∂ρ_j = -μ_j(E) × contribution
-                    for j in 1:n_materials
-                        grad_N[b, j] -= μ_mat[j, e] * contribution
-                    end
-                end
-            end
-
-            # Compute Poisson log-likelihood gradient and Hessian
-            # ∂L/∂ρ_j = Σ_b (N_b/N̄_b - 1) × ∂N̄_b/∂ρ_j
-            # where N_b = I0 × exp(-p[b]) (measured counts from sinogram)
-            gradient = zeros(Float64, n_materials)
-            hessian = zeros(Float64, n_materials, n_materials)
-
-            for b in 1:n_bins
-                N_b_meas = I0 * exp(-p[b])  # Measured counts
-                N_bar_b = max(N_bar[b], 1.0)  # Expected counts (floor)
-
-                ratio = N_b_meas / N_bar_b - 1.0
-
-                for j in 1:n_materials
-                    gradient[j] += ratio * grad_N[b, j]
-                end
-
-                # Hessian (Fisher information approximation):
-                # H[j,k] ≈ -Σ_b (1/N̄_b) × ∂N̄_b/∂ρ_j × ∂N̄_b/∂ρ_k
-                for j in 1:n_materials
-                    for k in j:n_materials
-                        h_val = -(1.0 / N_bar_b) * grad_N[b, j] * grad_N[b, k]
-                        hessian[j, k] += h_val
-                        if k != j
-                            hessian[k, j] += h_val
-                        end
-                    end
-                end
-            end
-
-            # Newton step: Δρ = -H⁻¹ × ∇L
-            # Use regularized Hessian for stability
-            for j in 1:n_materials
-                hessian[j, j] -= 1e-8  # Small negative definite regularization
-            end
-
-            # Solve via Cholesky or fallback to gradient step
-            Δρ = try
-                -hessian \ gradient
-            catch
-                # Fallback: steepest descent with small step
-                0.01 * gradient
-            end
-
-            # Update with damping
-            step_size = 1.0
-            for j in 1:n_materials
-                ρ[j] += step_size * Δρ[j]
-            end
-
-            # Check convergence
-            if maximum(abs.(Δρ)) < 1e-6
-                break
-            end
-        end
-
-        # Store results
-        for j in 1:n_materials
-            bins_cpu[1][idx] = T(ρ[1])  # Temporary storage reuse
-        end
-        for j in 1:n_materials
-            init_cpu[j][idx] = T(ρ[j])
-        end
-    end
-
-    # Copy results to output (same device as input)
-    for j in 1:n_materials
-        copyto!(material_maps[j], init_cpu[j])
-    end
-
-    return PCCTMaterialMap{T,A}(material_maps, basis_vec, :projection)
-end
 
 """
     get_material_attenuation_pcct(material::Symbol, energy_keV::Float64) -> Float64
 
-Get linear attenuation coefficient for PCCT material at given energy.
-
-Supports standard materials plus K-edge contrast agents.
+Deprecated: use `get_basis_mu()` from the unified VMI pipeline instead.
+Kept as thin wrapper for backward compatibility.
 """
-function get_material_attenuation_pcct(material::Symbol, energy_keV::Float64)
-    if material == :water
-        return compute_μ_at_energy(XA.Materials.water, energy_keV)
-    elseif material == :iodine
-        # Dilute iodine solution (5 mg/mL)
-        return get_iodine_solution_attenuation(energy_keV; conc_mg_ml=5.0)
-    elseif material == :calcium
-        # Calcium-equivalent material (200 mg/cc)
-        return get_calcium_material_attenuation(energy_keV; density_mg_cc=200.0)
-    elseif material == :gadolinium
-        # Dilute gadolinium solution (1 mM ≈ 0.157 mg/mL)
-        return get_gadolinium_solution_attenuation(energy_keV; conc_mg_ml=0.5)
-    elseif material == :gold
-        # Gold nanoparticles (1 mg/mL)
-        return get_gold_solution_attenuation(energy_keV; conc_mg_ml=1.0)
-    else
-        error("Unknown PCCT material: $material. Use :water, :iodine, :calcium, :gadolinium, or :gold")
-    end
-end
-
-"""
-    get_gadolinium_solution_attenuation(energy_keV::Float64; conc_mg_ml::Float64=0.5) -> Float64
-
-Get linear attenuation for dilute gadolinium solution.
-
-Gadolinium K-edge is at 50.2 keV.
-"""
-function get_gadolinium_solution_attenuation(energy_keV::Float64; conc_mg_ml::Float64=0.5)
-    μ_water = compute_μ_at_energy(XA.Materials.water, energy_keV)
-    μ_ρ_gd = compute_mass_μ_at_energy(XA.Elements.Gadolinium, energy_keV)
-    conc_g_cm3 = conc_mg_ml / 1000.0
-    return μ_water + conc_g_cm3 * μ_ρ_gd
-end
-
-"""
-    get_gold_solution_attenuation(energy_keV::Float64; conc_mg_ml::Float64=1.0) -> Float64
-
-Get linear attenuation for gold nanoparticle solution.
-
-Gold K-edge is at 80.7 keV.
-"""
-function get_gold_solution_attenuation(energy_keV::Float64; conc_mg_ml::Float64=1.0)
-    μ_water = compute_μ_at_energy(XA.Materials.water, energy_keV)
-    μ_ρ_au = compute_mass_μ_at_energy(XA.Elements.Gold, energy_keV)
-    conc_g_cm3 = conc_mg_ml / 1000.0
-    return μ_water + conc_g_cm3 * μ_ρ_au
-end
+get_material_attenuation_pcct(material::Symbol, energy_keV::Float64) = get_basis_mu(material, energy_keV)
 
 # =============================================================================
 # K-Edge Imaging
@@ -1042,61 +595,40 @@ function get_supported_kedge_elements(detector::PhotonCountingDetector)
     return supported
 end
 
-# =============================================================================
-# VMI Synthesis from Material Maps (PCCT-NOISE-DECOMP)
-# =============================================================================
-
 """
-    synthesize_vmi(material_map::PCCTMaterialMap, energy_keV::Float64) -> AbstractArray
+    synthesize_vmi(material_map::PCCTMaterialMap, energy_keV::Float64; output=nothing, ws_μ_values=nothing) -> AbstractArray
 
-Synthesize a Virtual Monoenergetic Image (VMI) from material density maps.
+Synthesize VMI from N-material density maps.
 
-The VMI at energy E is computed as:
-    μ_VMI(E) = Σᵢ ρᵢ × μᵢ(E)
-
-where ρᵢ is the material density map and μᵢ(E) is the linear attenuation
-coefficient of basis material i at energy E.
-
-This works for any number of basis materials (2 for dual-energy, 3+ for PCCT).
-
-# Arguments
-- `material_map::PCCTMaterialMap`: N-material density maps from decomposition
-- `energy_keV::Float64`: Target VMI energy in keV
-
-# Returns
-- Array of same shape as material maps (VMI sinogram or image, depending on domain)
-
-# Example
-```julia
-# 3-material decomposition from PCCT
-mat_map = pcct_material_decomposition(pcct_sino; basis=(:water, :iodine, :calcium))
-
-# VMI at 70 keV
-vmi_70 = synthesize_vmi(mat_map, 70.0)
-```
+For 2-material maps, delegates to `spectral_vmi!()`. For 3+ materials,
+uses a loop over materials (general N-material path).
 """
 function synthesize_vmi(material_map::PCCTMaterialMap{T,A}, energy_keV::Float64;
                         output=nothing,
                         ws_μ_values=nothing) where {T, A}
-    n_materials = length(material_map.materials)
-    @assert n_materials > 0 "Material map must have at least one material"
+    n_mats = length(material_map.materials)
+    @assert n_mats > 0 "Material map must have at least one material"
 
-    # Get attenuation coefficient for each basis material at target energy
-    μ_values = ws_μ_values !== nothing ? ws_μ_values : Vector{T}(undef, n_materials)
+    μ_values = ws_μ_values !== nothing ? ws_μ_values : Vector{T}(undef, n_mats)
     for (i, mat_name) in enumerate(material_map.material_names)
-        μ_values[i] = T(get_material_attenuation_pcct(mat_name, energy_keV))
+        μ_values[i] = T(get_basis_mu(mat_name, energy_keV))
     end
 
-    # Synthesize VMI: μ_VMI = Σ ρᵢ × μᵢ(E)
-    # Reuse pre-allocated output buffer if provided
     result = output === nothing ? similar(material_map.materials[1]) : output
-    fill!(result, zero(T))
 
-    for i in 1:n_materials
-        μ_i = μ_values[i]
-        mat_i = material_map.materials[i]
-        AK.foreachindex(result) do idx
-            result[idx] += mat_i[idx] * μ_i
+    if n_mats == 2
+        spectral_vmi!(result, material_map.materials[1], material_map.materials[2],
+                      μ_values[1], μ_values[2])
+    else
+        fill!(result, zero(T))
+        for i in 1:n_mats
+            μ_i = μ_values[i]
+            mat_i = material_map.materials[i]
+            let result=result, mat_i=mat_i, μ_i=μ_i
+                AK.foreachindex(result) do idx
+                    result[idx] += mat_i[idx] * μ_i
+                end
+            end
         end
     end
 
@@ -1109,9 +641,7 @@ end
 
 export PCCTMaterialMap, n_materials
 export synthesize_vmi
-export compute_bin_weights, pcct_virtual_monoenergetic, pcct_vmi_to_hu
-export pcct_material_decomposition, pcct_material_decomposition_mle, get_material_attenuation_pcct
-export get_gadolinium_solution_attenuation, get_gold_solution_attenuation
+export pcct_material_decomposition, get_material_attenuation_pcct
 export K_EDGE_ENERGIES, compute_kedge_enhancement, get_kedge_sensitivity
 export compute_effective_z
 export get_supported_kedge_elements

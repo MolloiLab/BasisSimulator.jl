@@ -35,7 +35,9 @@ Based on SAFIRE clinical validation data (Ghetti et al., PMC5714520).
 # Fields
 - `strength`: Strength level (1-5)
 - `lambda`: Regularization strength
-- `niter`: Number of PWLS iterations
+- `niter`: Number of PWLS iterations (legacy full-data mode when n_subsets=0)
+- `nepochs`: Number of OS epochs (used when n_subsets > 0)
+- `n_subsets`: Number of ordered subsets (0 = legacy full-data mode)
 - `huber_delta`: Huber penalty edge threshold
 - `relaxation`: SIRT relaxation parameter (< 1.0 for stability)
 - `target_noise_reduction`: Expected noise reduction percentage
@@ -44,6 +46,8 @@ struct HIRParams
     strength::Int
     lambda::Float32
     niter::Int
+    nepochs::Int
+    n_subsets::Int
     huber_delta::Float32
     relaxation::Float32
     target_noise_reduction::Tuple{Int, Int}  # (min%, max%)
@@ -83,15 +87,16 @@ function get_hir_params(strength::Int)
     # suppress the effective regularization, so λ must be O(1-10).
     # Relaxation < 1.0 is needed for stability at higher λ.
     #
-    # NOTE: SIRT-based PWLS has a noise-reduction ceiling of ~38% on small phantoms.
-    # Strengths 4-5 push against this ceiling. Achieving >40% would require SQS update.
-    #                    strength, lambda, niter, huber_delta, relaxation, target_noise_reduction
+    # Ordered Subsets (OS-PWLS): n_subsets=12 with nepochs epochs.
+    # One OS epoch with M subsets ≈ M full iterations of convergence.
+    # niter is preserved for legacy (n_subsets=0) backward compatibility.
+    #                    strength, lambda, niter, nepochs, n_subsets, huber_delta, relaxation, target_noise_reduction
     params = Dict(
-        1 => HIRParams(1, 1.0f0,   8, 0.08f0, 0.5f0,  (8, 15)),
-        2 => HIRParams(2, 2.0f0,  15, 0.07f0, 0.4f0,  (15, 25)),
-        3 => HIRParams(3, 4.0f0,  30, 0.06f0, 0.35f0, (25, 35)),
-        4 => HIRParams(4, 6.0f0,  60, 0.05f0, 0.3f0,  (30, 42)),
-        5 => HIRParams(5, 6.0f0, 100, 0.05f0, 0.3f0,  (35, 50)),
+        1 => HIRParams(1, 1.0f0,   8, 1, 12, 0.08f0, 0.5f0,  (8, 15)),
+        2 => HIRParams(2, 2.0f0,  15, 2, 12, 0.07f0, 0.4f0,  (15, 25)),
+        3 => HIRParams(3, 4.0f0,  30, 2, 12, 0.06f0, 0.35f0, (25, 35)),
+        4 => HIRParams(4, 6.0f0,  60, 3, 12, 0.05f0, 0.3f0,  (30, 42)),
+        5 => HIRParams(5, 6.0f0, 100, 4, 12, 0.05f0, 0.3f0,  (35, 50)),
     )
 
     return params[strength]
@@ -169,7 +174,7 @@ function hybrid_ir_reconstruct(
     params = get_hir_params(strength)
 
     verbose && println("Hybrid IR reconstruction (Strength $strength)...")
-    verbose && println("  Parameters: λ=$(params.lambda), niter=$(params.niter), δ=$(params.huber_delta), relax=$(params.relaxation)")
+    verbose && println("  Parameters: λ=$(params.lambda), n_subsets=$(params.n_subsets), nepochs=$(params.nepochs), δ=$(params.huber_delta), relax=$(params.relaxation)")
     verbose && println("  Expected noise reduction: $(params.target_noise_reduction[1])-$(params.target_noise_reduction[2])%")
 
     # 2. FDK initialization (fast warm start)
