@@ -1,5 +1,44 @@
 # BasisSimulator.jl - CT Simulator
 
+## CRITICAL: GPU Closure Type Stability Rule
+
+**NEVER conditionally assign a variable and then capture it in an `AK.foreachindex` closure.**
+
+This causes `Core.Box` wrapping which makes the closure non-bitstype — Metal/CUDA GPU compilation will fail.
+
+**BAD — causes Core.Box on GPU:**
+```julia
+if ws_kernel !== nothing
+    kernel = ws_kernel
+else
+    kernel = similar(sinogram, 3, 3)
+    copyto!(kernel, kernel_cpu)
+end
+AK.foreachindex(sinogram) do idx
+    val = kernel[idx]  # Core.Box! GPU compilation fails
+end
+```
+
+**GOOD — use `let` to capture with concrete type:**
+```julia
+if ws_kernel !== nothing
+    kernel = ws_kernel
+else
+    kernel = similar(sinogram, 3, 3)
+    copyto!(kernel, kernel_cpu)
+end
+let kernel = kernel
+    AK.foreachindex(sinogram) do idx
+        val = kernel[idx]  # Concrete type, GPU compiles
+    end
+end
+```
+
+This applies to ALL variables captured from conditional branches (if/else, ternary).
+Same rule for any `ws_*` kwargs with `nothing` defaults.
+
+---
+
 ## Overview
 
 CT simulation with backend-agnostic GPU/CPU execution via **AcceleratedKernels.jl**.

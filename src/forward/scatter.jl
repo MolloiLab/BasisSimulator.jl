@@ -194,46 +194,49 @@ function add_scatter!(sinogram::AbstractArray{T,3}, model::ScatterModel;
 
     # GPU-native scatter computation
     # For each pixel: compute scatter pre-signal, convolve, add to intensity
-    AK.foreachindex(sinogram) do idx
-        ci = CartesianIndices(sinogram)[idx]
-        col, row, angle = Tuple(ci)
+    # let-bind to capture with concrete type (avoids Core.Box on GPU)
+    let kernel = kernel, output = output, half_k = half_k, n_cols = n_cols, n_rows = n_rows, C = C
+        AK.foreachindex(sinogram) do idx
+            ci = CartesianIndices(sinogram)[idx]
+            col, row, angle = Tuple(ci)
 
-        # Current projection value
-        proj = sinogram[idx]
+            # Current projection value
+            proj = sinogram[idx]
 
-        # Convert to intensity (clamp projection to avoid overflow)
-        clamped_proj = min(proj, T(20))
-        intensity = exp(-clamped_proj)
+            # Convert to intensity (clamp projection to avoid overflow)
+            clamped_proj = min(proj, T(20))
+            intensity = exp(-clamped_proj)
 
-        # Compute scatter contribution via spatial convolution
-        # scatter = convolve(intensity × projection × C, kernel)
-        scatter_acc = zero(T)
-        for dj in -half_k:half_k
-            for di in -half_k:half_k
-                src_col = clamp(col + di, 1, n_cols)
-                src_row = clamp(row + dj, 1, n_rows)
+            # Compute scatter contribution via spatial convolution
+            # scatter = convolve(intensity × projection × C, kernel)
+            scatter_acc = zero(T)
+            for dj in -half_k:half_k
+                for di in -half_k:half_k
+                    src_col = clamp(col + di, 1, n_cols)
+                    src_row = clamp(row + dj, 1, n_rows)
 
-                # Source projection
-                src_proj = sinogram[src_col, src_row, angle]
-                src_clamped = min(src_proj, T(20))
-                src_intensity = exp(-src_clamped)
+                    # Source projection
+                    src_proj = sinogram[src_col, src_row, angle]
+                    src_clamped = min(src_proj, T(20))
+                    src_intensity = exp(-src_clamped)
 
-                # Scatter pre-signal at source pixel
-                scatter_pre = src_intensity * src_proj * C
+                    # Scatter pre-signal at source pixel
+                    scatter_pre = src_intensity * src_proj * C
 
-                # Kernel weight
-                ki = di + half_k + 1
-                kj = dj + half_k + 1
+                    # Kernel weight
+                    ki = di + half_k + 1
+                    kj = dj + half_k + 1
 
-                scatter_acc += scatter_pre * kernel[ki, kj]
+                    scatter_acc += scatter_pre * kernel[ki, kj]
+                end
             end
+
+            # Add scatter to intensity
+            total_intensity = intensity + max(scatter_acc, T(0))
+
+            # Clamp and convert back to projection domain
+            output[idx] = -log(max(total_intensity, T(1e-10)))
         end
-
-        # Add scatter to intensity
-        total_intensity = intensity + max(scatter_acc, T(0))
-
-        # Clamp and convert back to projection domain
-        output[idx] = -log(max(total_intensity, T(1e-10)))
     end
 
     copyto!(sinogram, output)
@@ -403,49 +406,52 @@ function correct_scatter!(sinogram::AbstractArray{T,3}, model::ScatterCorrection
     # Empirically, ~0.85 damping compensates for the ~17% over-estimation.
     scatter_damping = T(0.85)
 
-    AK.foreachindex(sinogram) do idx
-        ci = CartesianIndices(sinogram)[idx]
-        col, row, angle = Tuple(ci)
+    # let-bind to capture with concrete type (avoids Core.Box on GPU)
+    let kernel = kernel, output = output, half_k = half_k, n_cols = n_cols, n_rows = n_rows, C = C, scatter_damping = scatter_damping, eps = eps
+        AK.foreachindex(sinogram) do idx
+            ci = CartesianIndices(sinogram)[idx]
+            col, row, angle = Tuple(ci)
 
-        # Current value (log domain = line integral)
-        prep = sinogram[idx]
+            # Current value (log domain = line integral)
+            prep = sinogram[idx]
 
-        # Convert to intensity
-        clamped_prep = min(max(prep, T(0)), T(20))
-        intensity = exp(-clamped_prep)
+            # Convert to intensity
+            clamped_prep = min(max(prep, T(0)), T(20))
+            intensity = exp(-clamped_prep)
 
-        # Compute scatter estimate via spatial convolution
-        scatter_est = zero(T)
-        for dj in -half_k:half_k
-            for di in -half_k:half_k
-                src_col = clamp(col + di, 1, n_cols)
-                src_row = clamp(row + dj, 1, n_rows)
+            # Compute scatter estimate via spatial convolution
+            scatter_est = zero(T)
+            for dj in -half_k:half_k
+                for di in -half_k:half_k
+                    src_col = clamp(col + di, 1, n_cols)
+                    src_row = clamp(row + dj, 1, n_rows)
 
-                # Source prep value
-                src_prep = sinogram[src_col, src_row, angle]
-                src_clamped = min(max(src_prep, eps), T(20))
-                src_intensity = exp(-src_clamped)
+                    # Source prep value
+                    src_prep = sinogram[src_col, src_row, angle]
+                    src_clamped = min(max(src_prep, eps), T(20))
+                    src_intensity = exp(-src_clamped)
 
-                # Scatter pre-signal: intensity × prep × C
-                scatter_pre = src_intensity * src_clamped * C
+                    # Scatter pre-signal: intensity × prep × C
+                    scatter_pre = src_intensity * src_clamped * C
 
-                # Kernel weight
-                ki = di + half_k + 1
-                kj = dj + half_k + 1
+                    # Kernel weight
+                    ki = di + half_k + 1
+                    kj = dj + half_k + 1
 
-                scatter_est += scatter_pre * kernel[ki, kj]
+                    scatter_est += scatter_pre * kernel[ki, kj]
+                end
             end
+
+            # Apply damping to prevent over-correction
+            scatter_est_damped = scatter_est * scatter_damping
+
+            # Subtract scatter estimate from intensity
+            # Ensure result is positive
+            corrected_intensity = max(intensity - scatter_est_damped, eps)
+
+            # Convert back to log domain
+            output[idx] = -log(corrected_intensity)
         end
-
-        # Apply damping to prevent over-correction
-        scatter_est_damped = scatter_est * scatter_damping
-
-        # Subtract scatter estimate from intensity
-        # Ensure result is positive
-        corrected_intensity = max(intensity - scatter_est_damped, eps)
-
-        # Convert back to log domain
-        output[idx] = -log(corrected_intensity)
     end
 
     copyto!(sinogram, output)

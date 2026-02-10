@@ -437,26 +437,29 @@ function apply_focal_spot_blur!(
     output = ws_output !== nothing ? ws_output : similar(sinogram)
 
     # GPU-native spatial convolution
-    AK.foreachindex(sinogram) do idx
-        ci = CartesianIndices(sinogram)[idx]
-        col, row, angle = Tuple(ci)
+    # let-bind to capture with concrete type (avoids Core.Box on GPU)
+    let kernel = kernel, output = output, half_k = half_k, n_cols = n_cols, n_rows = n_rows
+        AK.foreachindex(sinogram) do idx
+            ci = CartesianIndices(sinogram)[idx]
+            col, row, angle = Tuple(ci)
 
-        # Apply kernel
-        acc = zero(T)
-        for dj in -half_k:half_k
-            for di in -half_k:half_k
-                src_col = clamp(col + di, 1, n_cols)
-                src_row = clamp(row + dj, 1, n_rows)
+            # Apply kernel
+            acc = zero(T)
+            for dj in -half_k:half_k
+                for di in -half_k:half_k
+                    src_col = clamp(col + di, 1, n_cols)
+                    src_row = clamp(row + dj, 1, n_rows)
 
-                # Kernel indexing
-                ki = di + half_k + 1
-                kj = dj + half_k + 1
+                    # Kernel indexing
+                    ki = di + half_k + 1
+                    kj = dj + half_k + 1
 
-                acc += sinogram[src_col, src_row, angle] * kernel[ki, kj]
+                    acc += sinogram[src_col, src_row, angle] * kernel[ki, kj]
+                end
             end
-        end
 
-        output[idx] = acc
+            output[idx] = acc
+        end
     end
 
     copyto!(sinogram, output)
