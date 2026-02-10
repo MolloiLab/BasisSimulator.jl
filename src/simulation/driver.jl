@@ -943,8 +943,10 @@ function simulate!(
 
         # STEP 3: Convert to intensity domain
         eps = T(1e-10)
-        AK.foreachindex(ws.sinogram) do idx
-            ws.sinogram[idx] = exp(-clamp(ws.sinogram[idx], T(-1), T(15)))
+        let sino = ws.sinogram
+            AK.foreachindex(sino) do idx
+                sino[idx] = exp(-clamp(sino[idx], T(-1), T(15)))
+            end
         end
 
         # STEP 4: Apply heel effect to phantom intensity
@@ -964,8 +966,10 @@ function simulate!(
         end
         if das_model !== nothing
             gain = T(das_model.gain)
-            AK.foreachindex(ws.air_scan) do idx
-                ws.air_scan[idx] *= gain
+            let air = ws.air_scan
+                AK.foreachindex(air) do idx
+                    air[idx] *= gain
+                end
             end
         end
 
@@ -981,8 +985,10 @@ function simulate!(
         low_signal_correction_gpu!(ws.sinogram)
 
         # STEP 9: Log transform
-        AK.foreachindex(ws.sinogram) do idx
-            ws.sinogram[idx] = -log(max(ws.sinogram[idx], eps))
+        let sino = ws.sinogram
+            AK.foreachindex(sino) do idx
+                sino[idx] = -log(max(sino[idx], eps))
+            end
         end
 
         # STEP 10: Beam hardening correction
