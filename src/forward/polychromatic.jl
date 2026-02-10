@@ -1091,7 +1091,12 @@ function _forward_project_poly!(
     ws_weights_norm::Union{Nothing, Vector{T}}=nothing,
     ws_μ_lut_cpu::Union{Nothing, Vector{T}}=nothing,
     ws_μ_lut_gpu=nothing,
-    ws_μ_table=nothing
+    ws_μ_table=nothing,
+    # Siddon geometry arrays (avoid re-allocating per energy)
+    ws_source_positions=nothing,
+    ws_detector_centers=nothing,
+    ws_detector_u=nothing,
+    ws_detector_v=nothing
 ) where T <: AbstractFloat
 
     n_energies = length(energies)
@@ -1116,7 +1121,11 @@ function _forward_project_poly!(
 
         # Forward project at this energy
         fill!(sino_mono, zero(T))
-        siddon_forward_project!(sino_mono, μ_volume, geom)
+        siddon_forward_project!(sino_mono, μ_volume, geom;
+            ws_source_positions=ws_source_positions,
+            ws_detector_centers=ws_detector_centers,
+            ws_detector_u=ws_detector_u,
+            ws_detector_v=ws_detector_v)
 
         # Accumulate Beer-Lambert: I += w × exp(-line_integral)
         w = weights_norm[e_idx]
