@@ -1040,6 +1040,244 @@ function simulate!(
 end
 
 # =============================================================================
+# simulate!() — Zero-allocation EICT dual-kVp simulation hot path
+# =============================================================================
+
+"""
+    simulate!(ws::EICTDualWorkspace, phantom, scanner, protocol, sim_opts, recon_opts; materials=nothing)
+
+Run EICT dual-kVp simulation using pre-allocated workspace buffers.
+
+Runs single-kVp pipeline twice (low + high kVp) using shared scratch buffers,
+then performs material decomposition into workspace buffers.
+
+Create the workspace with `create_eict_dual_workspace(scanner, protocol, sim_opts, recon_opts, phantom)`.
+Reconstruction and VMI reconstruction are NOT included — handled by the wrapper.
+"""
+function simulate!(
+    ws::EICTDualWorkspace{T},
+    phantom,
+    scanner::Scanner,
+    protocol::CTProtocol,
+    sim_opts::SimOptions = SimOptions(),
+    recon_opts::ReconOptions = ReconOptions();
+    materials::Union{Nothing, Vector} = nothing
+) where {T}
+    geom = ws.geom
+    mats = ws.mats
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # PASS 1: Low kVp forward projection + physics → ws.sino_low
+    # ═══════════════════════════════════════════════════════════════════════
+    _eict_dual_forward_pass!(ws, ws.sino_low, phantom, geom, mats,
+        ws.energies_low, ws.weights_low, ws.weights_norm_low,
+        ws.μ_table_low, ws.config_low,
+        ws.flat_filter_projection_low, ws.bowtie_projection_low,
+        ws.bhc_coeffs_gpu_low, ws.bhc_low,
+        sim_opts)
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # PASS 2: High kVp forward projection + physics → ws.sino_high
+    # ═══════════════════════════════════════════════════════════════════════
+    _eict_dual_forward_pass!(ws, ws.sino_high, phantom, geom, mats,
+        ws.energies_high, ws.weights_high, ws.weights_norm_high,
+        ws.μ_table_high, ws.config_high,
+        ws.flat_filter_projection_high, ws.bowtie_projection_high,
+        ws.bhc_coeffs_gpu_high, ws.bhc_high,
+        sim_opts)
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Save ideal sinogram (high kVp) to CPU
+    # ═══════════════════════════════════════════════════════════════════════
+    copyto!(ws.sino_ideal_out, ws.sino_high)
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Apply quantum noise to BOTH sinograms (in-place, sequential)
+    # ═══════════════════════════════════════════════════════════════════════
+    if sim_opts.use_noise
+        # Noise for low kVp
+        I0_low = T(compute_detector_I0(geom, CTProtocol(
+            mA = protocol.mA_low > 0 ? protocol.mA_low : protocol.mA,
+            kVp = protocol.kVp_low, views = protocol.views,
+            rotation_time = protocol.rotation_time,
+            flux_density = protocol.flux_density)))
+
+        randn!(ws.rng, ws.noise_rand_cpu)
+        copyto!(ws.noise_rand_gpu, ws.noise_rand_cpu)
+        let sino = ws.sino_low, rg = ws.noise_rand_gpu, I0v = I0_low
+            AK.foreachindex(sino) do idx
+                λ = I0v * exp(-sino[idx])
+                λ_noisy = λ + sqrt(max(λ, T(1))) * rg[idx]
+                λ_noisy = max(λ_noisy, T(1))
+                sino[idx] = -log(λ_noisy / I0v)
+            end
+        end
+
+        # Noise for high kVp
+        I0_high = T(compute_detector_I0(geom, CTProtocol(
+            mA = protocol.mA, kVp = protocol.kVp, views = protocol.views,
+            rotation_time = protocol.rotation_time,
+            flux_density = protocol.flux_density)))
+
+        randn!(ws.rng, ws.noise_rand_cpu)
+        copyto!(ws.noise_rand_gpu, ws.noise_rand_cpu)
+        let sino = ws.sino_high, rg = ws.noise_rand_gpu, I0v = I0_high
+            AK.foreachindex(sino) do idx
+                λ = I0v * exp(-sino[idx])
+                λ_noisy = λ + sqrt(max(λ, T(1))) * rg[idx]
+                λ_noisy = max(λ_noisy, T(1))
+                sino[idx] = -log(λ_noisy / I0v)
+            end
+        end
+    end
+
+    # Save noisy sinogram (high kVp) to CPU
+    copyto!(ws.sino_noisy_out, ws.sino_high)
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Material decomposition (in-place into workspace buffers)
+    # ═══════════════════════════════════════════════════════════════════════
+    de_sino = DualEnergySinogram(ws.sino_low, ws.sino_high;
+        low_kvp = Int(protocol.kVp_low),
+        high_kvp = Int(protocol.kVp))
+
+    # Inline decomposition with let-binding for zero-alloc (avoids Union-typed kwargs)
+    let sl = ws.sino_low, sh = ws.sino_high,
+        m1 = ws.material1, m2 = ws.material2,
+        a11 = ws.inv_a11, a12 = ws.inv_a12,
+        a21 = ws.inv_a21, a22 = ws.inv_a22
+        AK.foreachindex(m1) do idx
+            p_low = sl[idx]
+            p_high = sh[idx]
+            m1[idx] = a11 * p_low + a12 * p_high
+            m2[idx] = a21 * p_low + a22 * p_high
+        end
+    end
+    mat_map = MaterialMap(ws.material1, ws.material2;
+        material1_name=ws.basis[1], material2_name=ws.basis[2],
+        domain=:projection)
+
+    return (sino_ideal=ws.sino_ideal_out, sino_noisy=ws.sino_noisy_out,
+            de_sino=de_sino, mat_map=mat_map)
+end
+
+"""
+    _eict_dual_forward_pass!(ws, target_sino, phantom, geom, mats,
+        energies, weights, weights_norm, μ_table, config,
+        flat_filter_proj, bowtie_proj, bhc_coeffs_gpu, bhc_effect,
+        sim_opts)
+
+Run one forward projection pass for dual-kVp simulation.
+Uses shared scratch buffers from the dual workspace (μ_volume, sino_mono, I_transmitted).
+Writes result into `target_sino`.
+"""
+function _eict_dual_forward_pass!(
+    ws::EICTDualWorkspace{T}, target_sino, phantom, geom, mats,
+    energies, weights, weights_norm, μ_table, config,
+    flat_filter_proj, bowtie_proj, bhc_coeffs_gpu, bhc_effect,
+    sim_opts
+) where {T}
+    # Forward projection (Beer-Lambert polychromatic)
+    fill!(target_sino, zero(T))
+    _forward_project_poly!(target_sino, phantom.mask, geom, energies, weights, mats;
+                            ws_μ_volume=ws.μ_volume, ws_sino_mono=ws.sino_mono,
+                            ws_I_transmitted=ws.I_transmitted,
+                            ws_weights_norm=weights_norm,
+                            ws_μ_lut_cpu=ws.μ_lut_cpu, ws_μ_lut_gpu=ws.μ_lut_gpu,
+                            ws_μ_table=μ_table,
+                            ws_source_positions=ws.geom_source_positions,
+                            ws_detector_centers=ws.geom_detector_centers,
+                            ws_detector_u=ws.geom_detector_u,
+                            ws_detector_v=ws.geom_detector_v)
+
+    if ws.has_signal_chain
+        # CatSim signal chain
+        heel_effect = ws.heel_effect
+        das_model = ws.das_model
+
+        # Apply physics pipeline (no noise)
+        _apply_physics_no_noise!(target_sino, geom, config;
+            ws_output=ws.physics_output,
+            ws_scatter_kernel=ws.scatter_kernel,
+            ws_scatter_correct_kernel=ws.scatter_correct_kernel,
+            ws_crosstalk_kernel=ws.crosstalk_kernel,
+            ws_optical_crosstalk_kernel=ws.optical_crosstalk_kernel,
+            ws_focal_spot_kernel=ws.focal_spot_kernel,
+            ws_flat_filter_projection=flat_filter_proj,
+            ws_bowtie_projection=bowtie_proj,
+            ws_lag_output=ws.physics_output,
+            ws_lag_intensity=ws.lag_intensity,
+            ws_lag_coeffs=ws.lag_coeffs)
+
+        # Convert to intensity domain
+        eps = T(1e-10)
+        AK.foreachindex(target_sino) do idx
+            target_sino[idx] = exp(-clamp(target_sino[idx], T(-1), T(15)))
+        end
+
+        # Heel effect
+        if heel_effect !== nothing
+            apply_heel_effect!(target_sino, heel_effect, geom)
+        end
+
+        # DAS model
+        if das_model !== nothing
+            apply_das_model!(target_sino, das_model; seed=config.noise_seed)
+        end
+
+        # Air scan (workspace buffer)
+        fill!(ws.air_scan, one(T))
+        if heel_effect !== nothing
+            apply_heel_effect!(ws.air_scan, heel_effect, geom)
+        end
+        if das_model !== nothing
+            gain = T(das_model.gain)
+            AK.foreachindex(ws.air_scan) do idx
+                ws.air_scan[idx] *= gain
+            end
+        end
+
+        # Calibration
+        let sino = target_sino, air = ws.air_scan
+            AK.foreachindex(sino) do idx
+                air_val = max(air[idx], eps)
+                sino[idx] = sino[idx] / air_val
+            end
+        end
+
+        # Low signal correction
+        low_signal_correction_gpu!(target_sino)
+
+        # Log transform
+        AK.foreachindex(target_sino) do idx
+            target_sino[idx] = -log(max(target_sino[idx], eps))
+        end
+
+        # BHC
+        if bhc_effect !== nothing
+            apply_bhc!(target_sino, bhc_effect; ws_coeffs_gpu=bhc_coeffs_gpu)
+        end
+    else
+        # Standard path (no signal chain)
+        if config !== nothing
+            apply_physics_effects!(target_sino, geom, config;
+                ws_output=ws.physics_output,
+                ws_scatter_kernel=ws.scatter_kernel,
+                ws_scatter_correct_kernel=ws.scatter_correct_kernel,
+                ws_crosstalk_kernel=ws.crosstalk_kernel,
+                ws_optical_crosstalk_kernel=ws.optical_crosstalk_kernel,
+                ws_focal_spot_kernel=ws.focal_spot_kernel,
+                ws_flat_filter_projection=flat_filter_proj,
+                ws_bowtie_projection=bowtie_proj,
+                ws_lag_output=ws.physics_output,
+                ws_lag_intensity=ws.lag_intensity,
+                ws_lag_coeffs=ws.lag_coeffs,
+                ws_bhc_coeffs_gpu=bhc_coeffs_gpu)
+        end
+    end
+end
+
+# =============================================================================
 # Mode 5: Axial PCCT (Photon-Counting CT)
 # =============================================================================
 

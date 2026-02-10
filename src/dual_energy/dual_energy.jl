@@ -495,47 +495,62 @@ See also: [`DualEnergySinogram`](@ref), [`MaterialMap`](@ref)
 """
 function decompose_materials(sino::DualEnergySinogram{T,A};
                              basis::Tuple{Symbol,Symbol}=(:water, :iodine),
-                             method::Symbol=:polynomial) where {T, A}
+                             method::Symbol=:polynomial,
+                             ws_material1=nothing,
+                             ws_material2=nothing,
+                             ws_inv_a11=nothing,
+                             ws_inv_a12=nothing,
+                             ws_inv_a21=nothing,
+                             ws_inv_a22=nothing) where {T, A}
 
     if method != :polynomial
         error("Only :polynomial method currently supported")
     end
 
-    # Get basis material attenuation coefficients
-    m1, m2 = basis
+    # Use pre-computed inverse matrix elements if provided (zero-alloc path)
+    if ws_inv_a11 !== nothing
+        inv_a11 = ws_inv_a11
+        inv_a12 = ws_inv_a12
+        inv_a21 = ws_inv_a21
+        inv_a22 = ws_inv_a22
+    else
+        # Get basis material attenuation coefficients
+        m1, m2 = basis
 
-    # Get effective energies (approximate)
-    e_eff_low = get_effective_energy(sino.low_kvp)
-    e_eff_high = get_effective_energy(sino.high_kvp)
+        # Get effective energies (approximate)
+        e_eff_low = get_effective_energy(sino.low_kvp)
+        e_eff_high = get_effective_energy(sino.high_kvp)
 
-    # Get material attenuation at effective energies
-    μ1_low = get_material_attenuation(m1, e_eff_low)
-    μ1_high = get_material_attenuation(m1, e_eff_high)
-    μ2_low = get_material_attenuation(m2, e_eff_low)
-    μ2_high = get_material_attenuation(m2, e_eff_high)
+        # Get material attenuation at effective energies
+        μ1_low = get_material_attenuation(m1, e_eff_low)
+        μ1_high = get_material_attenuation(m1, e_eff_high)
+        μ2_low = get_material_attenuation(m2, e_eff_low)
+        μ2_high = get_material_attenuation(m2, e_eff_high)
 
-    # Matrix form: [μ1_low μ2_low; μ1_high μ2_high] * [ρ1; ρ2] = [p_low; p_high]
-    # Solve for [ρ1; ρ2] = A^-1 * [p_low; p_high]
-    det_A = μ1_low * μ2_high - μ2_low * μ1_high
+        # Matrix form: [μ1_low μ2_low; μ1_high μ2_high] * [ρ1; ρ2] = [p_low; p_high]
+        # Solve for [ρ1; ρ2] = A^-1 * [p_low; p_high]
+        det_A = μ1_low * μ2_high - μ2_low * μ1_high
 
-    if abs(det_A) < 1e-10
-        error("Singular decomposition matrix - basis materials too similar at these energies")
+        if abs(det_A) < 1e-10
+            error("Singular decomposition matrix - basis materials too similar at these energies")
+        end
+
+        # Inverse matrix elements (typed for GPU)
+        inv_a11 = T(μ2_high / det_A)
+        inv_a12 = T(-μ2_low / det_A)
+        inv_a21 = T(-μ1_high / det_A)
+        inv_a22 = T(μ1_low / det_A)
     end
 
-    # Inverse matrix elements (typed for GPU)
-    inv_a11 = T(μ2_high / det_A)
-    inv_a12 = T(-μ2_low / det_A)
-    inv_a21 = T(-μ1_high / det_A)
-    inv_a22 = T(μ1_low / det_A)
-
-    # Allocate output on same device as input (GPU-compatible)
-    material1 = similar(sino.low)
-    material2 = similar(sino.low)
+    # Use pre-allocated output buffers if provided (zero-alloc path)
+    material1 = ws_material1 === nothing ? similar(sino.low) : ws_material1
+    material2 = ws_material2 === nothing ? similar(sino.low) : ws_material2
 
     # Apply decomposition using AcceleratedKernels for GPU compatibility
     # Reference: sino.low and sino.high for input, write to material1/material2
     sino_low = sino.low
     sino_high = sino.high
+    m1_name, m2_name = basis
 
     AK.foreachindex(material1) do idx
         p_low = sino_low[idx]
@@ -546,7 +561,7 @@ function decompose_materials(sino::DualEnergySinogram{T,A};
     end
 
     return MaterialMap(material1, material2;
-                       material1_name=m1, material2_name=m2,
+                       material1_name=m1_name, material2_name=m2_name,
                        domain=:projection)
 end
 
@@ -595,7 +610,8 @@ mass attenuation coefficients at energy E.
 
 See also: [`decompose_materials`](@ref), [`MaterialMap`](@ref)
 """
-function virtual_monoenergetic(materials::MaterialMap{T,A}, energy_keV::Float64) where {T, A}
+function virtual_monoenergetic(materials::MaterialMap{T,A}, energy_keV::Float64;
+                               ws_output=nothing) where {T, A}
     if energy_keV < 10.0 || energy_keV > 150.0
         error("Energy must be between 10 and 150 keV (got $energy_keV)")
     end
@@ -604,9 +620,8 @@ function virtual_monoenergetic(materials::MaterialMap{T,A}, energy_keV::Float64)
     μ1 = T(get_material_attenuation(materials.material1_name, energy_keV))
     μ2 = T(get_material_attenuation(materials.material2_name, energy_keV))
 
-    # Synthesize VMI: μ_VMI = ρ1 × μ1 + ρ2 × μ2
-    # Allocate on same device as input (GPU-compatible)
-    vmi = similar(materials.material1)
+    # Use pre-allocated output buffer if provided (zero-alloc path)
+    vmi = ws_output === nothing ? similar(materials.material1) : ws_output
     mat1 = materials.material1
     mat2 = materials.material2
 
