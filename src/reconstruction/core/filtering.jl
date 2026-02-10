@@ -247,7 +247,9 @@ function filter_sinogram!(
     sinogram::AbstractArray{T, 3},
     geom::CTGeometry;
     filter::FilterType = RampFilter(),
-    cutoff::Float64 = 1.0
+    cutoff::Float64 = 1.0,
+    ws_conv_scratch = nothing,
+    ws_filter_kernel = nothing
 ) where T <: AbstractFloat
 
     n_cols = Int32(size(sinogram, 1))
@@ -265,18 +267,22 @@ function filter_sinogram!(
     raw_size = max(Int(ceil(Int(n_cols) * cutoff)), 32)
     kernel_size_int = min(raw_size + (1 - raw_size % 2), Int(n_cols))  # Make odd, clamp to n_cols
 
-    kernel_cpu = create_spatial_kernel(kernel_size_int, filter, pixel_size)
-
-    # Transfer kernel to same device as sinogram
-    kernel = similar(sinogram, T, kernel_size_int)
-    copyto!(kernel, kernel_cpu)
+    # Use pre-allocated filter kernel if provided (zero-alloc path)
+    kernel = if ws_filter_kernel !== nothing
+        ws_filter_kernel
+    else
+        kernel_cpu = create_spatial_kernel(kernel_size_int, filter, pixel_size)
+        _k = similar(sinogram, T, kernel_size_int)
+        copyto!(_k, kernel_cpu)
+        _k
+    end
 
     # Use Int32 constants for GPU
     kernel_size = Int32(kernel_size_int)
     kernel_half = Int32(kernel_size_int ÷ 2)
 
-    # Allocate output buffer on same device
-    filtered = similar(sinogram)
+    # Use pre-allocated convolution scratch buffer if provided (zero-alloc path)
+    filtered = ws_conv_scratch !== nothing ? ws_conv_scratch : similar(sinogram)
 
     # Step 3: Convolve each row with the filter kernel (GPU-parallel)
     AK.foreachindex(sinogram) do idx

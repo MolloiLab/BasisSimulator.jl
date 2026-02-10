@@ -297,7 +297,11 @@ function backproject!(
     volume::AbstractArray{T, 3},
     sinogram::AbstractArray{T, 3},
     geom::CTGeometry;
-    weighted::Bool = true
+    weighted::Bool = true,
+    ws_source_positions = nothing,
+    ws_detector_centers = nothing,
+    ws_detector_u = nothing,
+    ws_detector_v = nothing
 ) where T <: AbstractFloat
 
     # Get dimensions as Int32 for GPU compatibility
@@ -328,15 +332,35 @@ function backproject!(
     row_center = (T(n_rows) + one(T)) / T(2)
     pi_over_angles = T(π) / T(n_angles)
 
-    # Copy geometry arrays to same device as sinogram
-    source_positions = similar(sinogram, T, size(geom.source_positions)...)
-    copyto!(source_positions, T.(geom.source_positions))
-    detector_centers = similar(sinogram, T, size(geom.detector_centers)...)
-    copyto!(detector_centers, T.(geom.detector_centers))
-    detector_u = similar(sinogram, T, size(geom.detector_u)...)
-    copyto!(detector_u, T.(geom.detector_u))
-    detector_v = similar(sinogram, T, size(geom.detector_v)...)
-    copyto!(detector_v, T.(geom.detector_v))
+    # Use pre-allocated geometry arrays if provided (zero-alloc path), else allocate
+    source_positions = if ws_source_positions !== nothing
+        ws_source_positions
+    else
+        _sp = similar(sinogram, T, size(geom.source_positions)...)
+        copyto!(_sp, T.(geom.source_positions))
+        _sp
+    end
+    detector_centers = if ws_detector_centers !== nothing
+        ws_detector_centers
+    else
+        _dc = similar(sinogram, T, size(geom.detector_centers)...)
+        copyto!(_dc, T.(geom.detector_centers))
+        _dc
+    end
+    detector_u = if ws_detector_u !== nothing
+        ws_detector_u
+    else
+        _du = similar(sinogram, T, size(geom.detector_u)...)
+        copyto!(_du, T.(geom.detector_u))
+        _du
+    end
+    detector_v = if ws_detector_v !== nothing
+        ws_detector_v
+    else
+        _dv = similar(sinogram, T, size(geom.detector_v)...)
+        copyto!(_dv, T.(geom.detector_v))
+        _dv
+    end
 
     # Pre-compute voxel offset for centering
     half = T(0.5)
