@@ -1,42 +1,4 @@
 # =============================================================================
-# Zero-Allocation foreachindex — CPU plain loop / GPU via AK.foreachindex
-# =============================================================================
-#
-# AK.foreachindex on CPU with multithreading allocates ~5,888 bytes per call
-# for task spawning overhead. On GPU backends (Metal, CUDA, ROCm), this overhead
-# is minimal (~16 bytes) and handled by KernelAbstractions.jl.
-#
-# _foreachindex! dispatches:
-#   - Array (CPU) → plain @inbounds for loop (zero allocations)
-#   - GPU arrays  → AK.foreachindex (backend-agnostic via KA.jl)
-#
-# This is the key to achieving @allocated == 0 on CPU while preserving
-# GPU acceleration when a GPU backend is loaded.
-
-"""
-    _foreachindex!(f, A::Array)
-
-Zero-allocating CPU version: plain sequential loop over all indices.
-"""
-@inline function _foreachindex!(f, A::Array)
-    @inbounds for idx in eachindex(A)
-        f(idx)
-    end
-    return nothing
-end
-
-"""
-    _foreachindex!(f, A::AbstractArray)
-
-GPU fallback: delegates to AK.foreachindex for any non-Array type
-(e.g., MtlArray, CuArray, ROCArray — detected via AcceleratedKernels.jl).
-"""
-@inline function _foreachindex!(f, A::AbstractArray)
-    AK.foreachindex(f, A)
-    return nothing
-end
-
-# =============================================================================
 # PCCTWorkspace — Pre-allocated workspace for zero-allocation simulate!()
 # =============================================================================
 #

@@ -489,7 +489,7 @@ function apply_bhc!(
         c
     end
 
-    _foreachindex!(sinogram) do idx
+    AK.foreachindex(sinogram) do idx
         p = sinogram[idx]
 
         # Evaluate polynomial: p_corrected = Σ aᵢ × p^i
