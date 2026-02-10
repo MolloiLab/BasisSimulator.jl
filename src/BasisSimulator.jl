@@ -129,7 +129,7 @@ include("source/heel_effect.jl")
 include("detector/das_model.jl")
 
 # Beam hardening correction (water-based polynomial)
-include("forward/beam_hardening_correction.jl")
+include("correction/beam_hardening_correction.jl")
 
 # =============================================================================
 # Unified Physics Pipeline
@@ -139,11 +139,11 @@ include("forward/beam_hardening_correction.jl")
 include("detector/physics_pipeline.jl")
 
 # =============================================================================
-# Calibration Pipeline (needs PhysicsConfig from PhysicsPipeline)
+# Correction (post-detection corrections)
 # =============================================================================
 
 # Calibration pipeline: air scan, offset, gain correction, log transform
-include("forward/calibration.jl")
+include("correction/calibration.jl")
 
 # =============================================================================
 # Projection - Unified API (includes physics)
@@ -213,11 +213,11 @@ include("scanners/scanners.jl")
 include("scanners/helical_protocols.jl")
 
 # =============================================================================
-# Dual-Energy CT (Spectral Imaging)
+# Spectral Imaging (Dual-Energy + PCCT)
 # =============================================================================
 
 # Dual kVp (GSI) forward projection, material decomposition, VMI
-include("dual_energy/dual_energy.jl")
+include("spectral/dual_energy.jl")
 
 # =============================================================================
 # Photon-Counting CT (Spectral Imaging)
@@ -231,7 +231,7 @@ include("detector/photon_counting.jl")
 include("detector/pcct/detector_response.jl")
 
 # PCCT spectral imaging: native VMI, K-edge, effective Z, multi-material decomposition
-include("forward/pcct_spectral.jl")
+include("spectral/pcct_spectral.jl")
 
 # =============================================================================
 # Image Quality Metrics (AAPM TG-233)
@@ -247,11 +247,11 @@ include("metrics/nps.jl")
 include("metrics/psf.jl")
 
 # =============================================================================
-# High-Level Simulation Driver
+# API (top-level orchestration)
 # =============================================================================
 
-include("simulation/options.jl")
-include("simulation/workspace.jl")
-include("simulation/driver.jl")
+include("api/options.jl")
+include("api/workspace.jl")
+include("api/driver.jl")
 
 end # module
