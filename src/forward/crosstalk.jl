@@ -563,25 +563,27 @@ function apply_optical_crosstalk_intensity!(
     output = similar(intensity)
 
     # GPU-native spatial convolution
-    AK.foreachindex(intensity) do idx
-        ci = CartesianIndices(intensity)[idx]
-        col, row, angle = Tuple(ci)
+    let kernel = kernel, output = output, n_cols = n_cols, n_rows = n_rows
+        AK.foreachindex(intensity) do idx
+            ci = CartesianIndices(intensity)[idx]
+            col, row, angle = Tuple(ci)
 
-        # Apply 3x3 convolution
-        acc = zero(T)
-        for di in -1:1
-            for dj in -1:1
-                src_col = clamp(col + di, 1, n_cols)
-                src_row = clamp(row + dj, 1, n_rows)
+            # Apply 3x3 convolution
+            acc = zero(T)
+            for di in -1:1
+                for dj in -1:1
+                    src_col = clamp(col + di, 1, n_cols)
+                    src_row = clamp(row + dj, 1, n_rows)
 
-                ki = di + 2
-                kj = dj + 2
+                    ki = di + 2
+                    kj = dj + 2
 
-                acc += intensity[src_col, src_row, angle] * kernel[ki, kj]
+                    acc += intensity[src_col, src_row, angle] * kernel[ki, kj]
+                end
             end
-        end
 
-        output[idx] = max(acc, T(0))
+            output[idx] = max(acc, T(0))
+        end
     end
 
     copyto!(intensity, output)

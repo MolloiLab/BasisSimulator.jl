@@ -901,11 +901,13 @@ function apply_bowtie_to_intensity!(
     copyto!(transmission, transmission_cpu)
 
     # GPU-native element-wise operation
-    AK.foreachindex(intensity) do idx
-        ci = CartesianIndices(intensity)[idx]
-        col, row, _ = Tuple(ci)
-        trans_idx = col + (row - 1) * n_cols
-        intensity[idx] *= transmission[trans_idx]
+    let transmission = transmission, n_cols = n_cols
+        AK.foreachindex(intensity) do idx
+            ci = CartesianIndices(intensity)[idx]
+            col, row, _ = Tuple(ci)
+            trans_idx = col + (row - 1) * n_cols
+            intensity[idx] *= transmission[trans_idx]
+        end
     end
 
     return intensity
