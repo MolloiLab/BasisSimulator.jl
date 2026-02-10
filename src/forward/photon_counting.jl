@@ -1939,7 +1939,7 @@ function _poisson_sample(rng, λ::Float64)
     end
 end
 
-# Note: synthesize_vmi and _get_basis_material_attenuation are defined in PCCTSpectral.jl
+# Note: synthesize_vmi and get_material_attenuation_pcct are defined in PCCTSpectral.jl
 # (requires PCCTMaterialMap which is defined there)
 
 # =============================================================================
