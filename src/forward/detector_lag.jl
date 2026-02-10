@@ -236,7 +236,8 @@ Lag is applied in the intensity domain for physical correctness.
 function apply_lag!(
     sinogram::AbstractArray{T,3},
     model::LagModel;
-    n_history::Int=20
+    n_history::Int=20,
+    ws_output=nothing, ws_intensity=nothing, ws_coeffs=nothing
 ) where T
     # Skip if no lag
     if isempty(model.amplitudes)
@@ -247,22 +248,24 @@ function apply_lag!(
     n_rows = size(sinogram, 2)
     n_angles = size(sinogram, 3)
 
-    # Compute lag coefficients on CPU
+    # Compute lag coefficients (or use pre-computed workspace)
     n_frames = min(n_history, n_angles)
-    coeffs_cpu = T.(compute_lag_coefficients(model, n_frames))
+    if ws_coeffs !== nothing
+        coeffs = ws_coeffs
+    else
+        coeffs_cpu = T.(compute_lag_coefficients(model, n_frames))
+        coeffs = similar(sinogram, n_frames)
+        copyto!(coeffs, coeffs_cpu)
+    end
 
-    # Transfer coefficients to GPU
-    coeffs = similar(sinogram, n_frames)
-    copyto!(coeffs, coeffs_cpu)
-
-    # Pre-compute intensity domain (GPU-native)
-    intensity = similar(sinogram)
+    # Pre-compute intensity domain (use workspace or allocate)
+    intensity = ws_intensity !== nothing ? ws_intensity : similar(sinogram)
     AK.foreachindex(sinogram) do idx
         intensity[idx] = exp(-sinogram[idx])
     end
 
-    # Output buffer
-    output = similar(sinogram)
+    # Output buffer (use workspace or allocate)
+    output = ws_output !== nothing ? ws_output : similar(sinogram)
 
     # GPU-native: compute each output pixel as weighted sum of previous frames
     # Each (col, row, angle) can be computed independently

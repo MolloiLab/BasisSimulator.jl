@@ -878,7 +878,19 @@ Apply physics effects except noise (which is handled by DAS model).
 function _apply_physics_no_noise!(
     sinogram::AbstractArray{T,3},
     geom::CTGeometry,
-    config::PhysicsConfig
+    config::PhysicsConfig;
+    # Workspace kwargs for zero-allocation path
+    ws_output=nothing,             # sinogram-sized scratch (shared by convolution effects)
+    ws_scatter_kernel=nothing,     # pre-computed scatter kernel (GPU)
+    ws_scatter_correct_kernel=nothing, # pre-computed scatter correction kernel (GPU)
+    ws_crosstalk_kernel=nothing,   # pre-computed crosstalk 3x3 kernel (GPU)
+    ws_optical_crosstalk_kernel=nothing, # pre-computed optical crosstalk 3x3 kernel (GPU)
+    ws_focal_spot_kernel=nothing,  # pre-computed focal spot kernel (GPU)
+    ws_flat_filter_projection=nothing,   # pre-computed flat filter 2D projection (GPU)
+    ws_bowtie_projection=nothing,        # pre-computed bowtie 2D projection (GPU)
+    ws_lag_output=nothing,         # sinogram-sized scratch for lag (needs separate from ws_output)
+    ws_lag_intensity=nothing,      # sinogram-sized intensity scratch for lag
+    ws_lag_coeffs=nothing          # pre-computed lag coefficients (GPU)
 ) where T
 
     # Apply deterministic physics effects only
@@ -896,39 +908,48 @@ function _apply_physics_no_noise!(
 
     # Flat filter
     if config.flat_filter !== nothing
-        apply_flat_filter!(sinogram, config.flat_filter, geom; energy_keV=config.energy_keV)
+        apply_flat_filter!(sinogram, config.flat_filter, geom;
+                           energy_keV=config.energy_keV,
+                           ws_filter_projection=ws_flat_filter_projection)
     end
 
     # Scatter (BEFORE bowtie filter!)
     # Scatter operates on raw projection values without bowtie distortion
     if config.scatter !== nothing
-        add_scatter!(sinogram, config.scatter)
+        add_scatter!(sinogram, config.scatter;
+                     ws_output=ws_output, ws_kernel=ws_scatter_kernel)
     end
 
     # Scatter CORRECTION (immediately after scatter addition, BEFORE bowtie)
     # CRITICAL: Must apply before bowtie filter modifies the signal
     if config.scatter_correction !== nothing
-        correct_scatter!(sinogram, config.scatter_correction)
+        correct_scatter!(sinogram, config.scatter_correction;
+                         ws_output=ws_output, ws_kernel=ws_scatter_correct_kernel)
     end
 
     # Bowtie filter (AFTER scatter add/correct)
     if config.bowtie_filter !== nothing
-        apply_bowtie_filter!(sinogram, config.bowtie_filter, geom; energy_keV=config.energy_keV)
+        apply_bowtie_filter!(sinogram, config.bowtie_filter, geom;
+                             energy_keV=config.energy_keV,
+                             ws_bowtie_projection=ws_bowtie_projection)
     end
 
     # Crosstalk
     if config.crosstalk !== nothing
-        apply_crosstalk!(sinogram, config.crosstalk)
+        apply_crosstalk!(sinogram, config.crosstalk;
+                         ws_output=ws_output, ws_kernel=ws_crosstalk_kernel)
     end
 
     # Optical crosstalk
     if config.optical_crosstalk !== nothing
-        apply_optical_crosstalk!(sinogram, config.optical_crosstalk)
+        apply_optical_crosstalk!(sinogram, config.optical_crosstalk;
+                                  ws_output=ws_output, ws_kernel=ws_optical_crosstalk_kernel)
     end
 
     # Focal spot blur
     if config.focal_spot !== nothing
-        apply_focal_spot_blur!(sinogram, config.focal_spot, geom)
+        apply_focal_spot_blur!(sinogram, config.focal_spot, geom;
+                               ws_output=ws_output, ws_kernel=ws_focal_spot_kernel)
     end
 
     # Detector efficiency
@@ -940,7 +961,8 @@ function _apply_physics_no_noise!(
 
     # Detector lag
     if config.lag !== nothing
-        apply_lag!(sinogram, config.lag)
+        apply_lag!(sinogram, config.lag;
+                   ws_output=ws_lag_output, ws_intensity=ws_lag_intensity, ws_coeffs=ws_lag_coeffs)
     end
 
     return sinogram

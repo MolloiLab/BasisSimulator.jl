@@ -346,7 +346,8 @@ function apply_flat_filter!(
     sinogram::AbstractArray{T,3},
     filter::FlatFilter,
     geom::CTGeometry;
-    energy_keV::Float64=60.0
+    energy_keV::Float64=60.0,
+    ws_filter_projection=nothing
 ) where T
     if isempty(filter.materials)
         return sinogram
@@ -356,15 +357,15 @@ function apply_flat_filter!(
     n_rows = size(sinogram, 2)
     n_angles = size(sinogram, 3)
 
-    # Compute transmission on CPU (done once)
-    transmission_cpu = compute_flat_filter_attenuation(filter, geom; energy_keV=energy_keV)
-
-    # In projection domain: add -log(transmission)
-    filter_projection_cpu = T.(-log.(transmission_cpu))
-
-    # Transfer to GPU (same type as sinogram)
-    filter_projection = similar(sinogram, n_cols, n_rows)
-    copyto!(filter_projection, filter_projection_cpu)
+    # Use pre-computed filter projection or compute on the fly
+    if ws_filter_projection !== nothing
+        filter_projection = ws_filter_projection
+    else
+        transmission_cpu = compute_flat_filter_attenuation(filter, geom; energy_keV=energy_keV)
+        filter_projection_cpu = T.(-log.(transmission_cpu))
+        filter_projection = similar(sinogram, n_cols, n_rows)
+        copyto!(filter_projection, filter_projection_cpu)
+    end
 
     # GPU-native element-wise operation
     AK.foreachindex(sinogram) do idx

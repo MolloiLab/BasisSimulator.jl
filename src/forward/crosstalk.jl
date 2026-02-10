@@ -315,7 +315,8 @@ Modified sinogram with crosstalk effects.
 """
 function apply_crosstalk!(
     sinogram::AbstractArray{T,3},
-    model::CrosstalkModel
+    model::CrosstalkModel;
+    ws_output=nothing, ws_kernel=nothing
 ) where T
     if model.type == :none || model.primary_fraction >= 1.0
         return sinogram
@@ -325,15 +326,17 @@ function apply_crosstalk!(
     n_rows = size(sinogram, 2)
     n_angles = size(sinogram, 3)
 
-    # Create 3x3 kernel on CPU
-    kernel_cpu = T.(create_crosstalk_kernel_3x3(model))
+    # Create 3x3 kernel (or use pre-computed workspace kernel)
+    if ws_kernel !== nothing
+        kernel = ws_kernel
+    else
+        kernel_cpu = T.(create_crosstalk_kernel_3x3(model))
+        kernel = similar(sinogram, 3, 3)
+        copyto!(kernel, kernel_cpu)
+    end
 
-    # Transfer kernel to GPU
-    kernel = similar(sinogram, 3, 3)
-    copyto!(kernel, kernel_cpu)
-
-    # Output buffer
-    output = similar(sinogram)
+    # Output buffer (use workspace or allocate)
+    output = ws_output !== nothing ? ws_output : similar(sinogram)
 
     # GPU-native: convert to intensity, apply convolution, convert back
     AK.foreachindex(sinogram) do idx
@@ -592,7 +595,8 @@ Converts to intensity domain, applies crosstalk, converts back.
 """
 function apply_optical_crosstalk!(
     sinogram::AbstractArray{T,3},
-    model::OpticalCrosstalkModel
+    model::OpticalCrosstalkModel;
+    ws_output=nothing, ws_kernel=nothing
 ) where T
     if model.row_coeff ≈ 0 && model.col_coeff ≈ 0
         return sinogram
@@ -601,15 +605,17 @@ function apply_optical_crosstalk!(
     n_cols = size(sinogram, 1)
     n_rows = size(sinogram, 2)
 
-    # Create 3x3 kernel on CPU
-    kernel_cpu = T.(create_optical_crosstalk_kernel(model))
+    # Create 3x3 kernel (or use pre-computed workspace kernel)
+    if ws_kernel !== nothing
+        kernel = ws_kernel
+    else
+        kernel_cpu = T.(create_optical_crosstalk_kernel(model))
+        kernel = similar(sinogram, 3, 3)
+        copyto!(kernel, kernel_cpu)
+    end
 
-    # Transfer kernel to GPU
-    kernel = similar(sinogram, 3, 3)
-    copyto!(kernel, kernel_cpu)
-
-    # Output buffer
-    output = similar(sinogram)
+    # Output buffer (use workspace or allocate)
+    output = ws_output !== nothing ? ws_output : similar(sinogram)
 
     # GPU-native: convert to intensity, apply convolution, convert back
     AK.foreachindex(sinogram) do idx

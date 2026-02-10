@@ -169,24 +169,28 @@ The scatter contribution is computed as (Ohnesorge et al., 1999; XCIST):
 # Returns
 Modified sinogram with scatter added.
 """
-function add_scatter!(sinogram::AbstractArray{T,3}, model::ScatterModel) where T
+function add_scatter!(sinogram::AbstractArray{T,3}, model::ScatterModel;
+                      ws_output=nothing, ws_kernel=nothing) where T
     n_cols = size(sinogram, 1)
     n_rows = size(sinogram, 2)
 
     # Combined scatter coefficient
     C = T(model.scatter_coefficient * model.scale_factor)
 
-    # Create scatter kernel on CPU
-    kernel_cpu = T.(create_scatter_kernel_spatial(model))
-    kernel_size = size(kernel_cpu, 1)
+    # Create scatter kernel on CPU (or use pre-computed workspace kernel)
+    if ws_kernel !== nothing
+        kernel = ws_kernel
+        kernel_size = size(kernel, 1)
+    else
+        kernel_cpu = T.(create_scatter_kernel_spatial(model))
+        kernel_size = size(kernel_cpu, 1)
+        kernel = similar(sinogram, size(kernel_cpu)...)
+        copyto!(kernel, kernel_cpu)
+    end
     half_k = kernel_size ÷ 2
 
-    # Transfer kernel to GPU
-    kernel = similar(sinogram, size(kernel_cpu)...)
-    copyto!(kernel, kernel_cpu)
-
-    # Output buffer
-    output = similar(sinogram)
+    # Output buffer (use workspace or allocate)
+    output = ws_output !== nothing ? ws_output : similar(sinogram)
 
     # GPU-native scatter computation
     # For each pixel: compute scatter pre-signal, convolve, add to intensity
@@ -353,7 +357,8 @@ Modified sinogram with scatter correction applied.
   The `prep_exponent` field is kept for API compatibility but is now ignored
   in favor of linear (exponent=1.0) model matching scatter addition.
 """
-function correct_scatter!(sinogram::AbstractArray{T,3}, model::ScatterCorrectionModel) where T
+function correct_scatter!(sinogram::AbstractArray{T,3}, model::ScatterCorrectionModel;
+                          ws_output=nothing, ws_kernel=nothing) where T
     n_cols = size(sinogram, 1)
     n_rows = size(sinogram, 2)
     n_angles = size(sinogram, 3)
@@ -362,24 +367,26 @@ function correct_scatter!(sinogram::AbstractArray{T,3}, model::ScatterCorrection
     C = T(model.correction_coefficient * model.scale_factor)
     # NOTE: prep_exponent is now ignored - we use linear model to match add_scatter!()
 
-    # Create scatter kernel on CPU
-    # Reuse the same kernel creation as for scatter addition
-    scatter_model_temp = ScatterModel(
-        model.correction_coefficient,
-        model.scale_factor,
-        model.kernel_fwhm,
-        model.kernel_type
-    )
-    kernel_cpu = T.(create_scatter_kernel_spatial(scatter_model_temp))
-    kernel_size = size(kernel_cpu, 1)
+    # Create scatter kernel (or use pre-computed workspace kernel)
+    if ws_kernel !== nothing
+        kernel = ws_kernel
+        kernel_size = size(kernel, 1)
+    else
+        scatter_model_temp = ScatterModel(
+            model.correction_coefficient,
+            model.scale_factor,
+            model.kernel_fwhm,
+            model.kernel_type
+        )
+        kernel_cpu = T.(create_scatter_kernel_spatial(scatter_model_temp))
+        kernel_size = size(kernel_cpu, 1)
+        kernel = similar(sinogram, size(kernel_cpu)...)
+        copyto!(kernel, kernel_cpu)
+    end
     half_k = kernel_size ÷ 2
 
-    # Transfer kernel to GPU
-    kernel = similar(sinogram, size(kernel_cpu)...)
-    copyto!(kernel, kernel_cpu)
-
-    # Output buffer
-    output = similar(sinogram)
+    # Output buffer (use workspace or allocate)
+    output = ws_output !== nothing ? ws_output : similar(sinogram)
 
     eps = T(1e-10)
 
