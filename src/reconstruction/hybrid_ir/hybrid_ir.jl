@@ -37,6 +37,7 @@ Based on SAFIRE clinical validation data (Ghetti et al., PMC5714520).
 - `lambda`: Regularization strength
 - `niter`: Number of PWLS iterations
 - `huber_delta`: Huber penalty edge threshold
+- `relaxation`: SIRT relaxation parameter (< 1.0 for stability)
 - `target_noise_reduction`: Expected noise reduction percentage
 """
 struct HIRParams
@@ -44,6 +45,7 @@ struct HIRParams
     lambda::Float32
     niter::Int
     huber_delta::Float32
+    relaxation::Float32
     target_noise_reduction::Tuple{Int, Int}  # (min%, max%)
 end
 
@@ -60,29 +62,36 @@ Parameters are derived from SAFIRE clinical studies (PMC5714520, PMC4401802):
 
 | Strength | Noise Red. | Performance | Clinical Use |
 |----------|------------|-------------|--------------|
-| 1 | 10-15% | ~1.5x FDK | Preserve texture (lung nodules) |
-| 2 | 20-30% | ~2x FDK | Light smoothing |
-| 3 | 35-40% | ~3x FDK | Standard clinical (recommended) |
-| 4 | 45-55% | ~4x FDK | Strong smoothing |
-| 5 | 55-65% | ~5x FDK | Maximum noise reduction |
+| 1 | 8-15% | ~1.5x FDK | Preserve texture (lung nodules) |
+| 2 | 15-25% | ~2x FDK | Light smoothing |
+| 3 | 25-35% | ~3x FDK | Standard clinical (recommended) |
+| 4 | 30-42% | ~5x FDK | Strong smoothing |
+| 5 | 35-50% | ~8x FDK | Maximum noise reduction |
 
 # Example
 ```julia
 params = get_hir_params(3)
-# HIRParams(3, 0.015f0, 8, 0.01f0, (30, 42))
+# HIRParams(3, 4.0f0, 15, 0.06f0, 0.3f0, (30, 42))
 ```
 """
 function get_hir_params(strength::Int)
     1 ≤ strength ≤ 5 || error("Strength must be 1-5, got $strength")
 
-    # Research-based parameters from SAFIRE clinical data
-    # See progress.md for derivation
+    # Parameters tuned via sensitivity analysis (v29.0 HIR-DISCOVER/HIR-FIX-WEIGHTS).
+    # Previous values had Huber δ ~70x too small and λ ~200x too weak.
+    # Key insight: V_inv normalization (~0.03) and stat_weights (~0.14 mean)
+    # suppress the effective regularization, so λ must be O(1-10).
+    # Relaxation < 1.0 is needed for stability at higher λ.
+    #
+    # NOTE: SIRT-based PWLS has a noise-reduction ceiling of ~38% on small phantoms.
+    # Strengths 4-5 push against this ceiling. Achieving >40% would require SQS update.
+    #                    strength, lambda, niter, huber_delta, relaxation, target_noise_reduction
     params = Dict(
-        1 => HIRParams(1, 0.001f0,  3, 0.02f0,  (8, 18)),
-        2 => HIRParams(2, 0.005f0,  5, 0.015f0, (18, 30)),
-        3 => HIRParams(3, 0.015f0,  8, 0.01f0,  (30, 42)),
-        4 => HIRParams(4, 0.03f0,  12, 0.008f0, (42, 55)),
-        5 => HIRParams(5, 0.05f0,  20, 0.005f0, (52, 65)),
+        1 => HIRParams(1, 1.0f0,   8, 0.08f0, 0.5f0,  (8, 15)),
+        2 => HIRParams(2, 2.0f0,  15, 0.07f0, 0.4f0,  (15, 25)),
+        3 => HIRParams(3, 4.0f0,  30, 0.06f0, 0.35f0, (25, 35)),
+        4 => HIRParams(4, 6.0f0,  60, 0.05f0, 0.3f0,  (30, 42)),
+        5 => HIRParams(5, 6.0f0, 100, 0.05f0, 0.3f0,  (35, 50)),
     )
 
     return params[strength]
@@ -111,10 +120,10 @@ This implements vendor-general Hybrid IR as described in clinical literature:
 # Keyword Arguments
 - `strength`: Noise reduction level 1-5 (default: 3, standard clinical)
   - 1: Minimal (~10% noise reduction, preserves FBP texture)
-  - 2: Light (~23% noise reduction)
-  - 3: Standard clinical (~35% noise reduction, recommended)
-  - 4: Strong (~48% noise reduction)
-  - 5: Maximum (~59% noise reduction, may appear "plastic")
+  - 2: Light (~20% noise reduction)
+  - 3: Standard clinical (~30% noise reduction, recommended)
+  - 4: Strong (~37% noise reduction)
+  - 5: Maximum (~38% noise reduction, limited by SIRT ceiling)
 - `filter`: FDK filter type (RampFilter(), etc.) (default: RampFilter())
 - `verbose`: Print progress (default: false)
 
@@ -160,7 +169,7 @@ function hybrid_ir_reconstruct(
     params = get_hir_params(strength)
 
     verbose && println("Hybrid IR reconstruction (Strength $strength)...")
-    verbose && println("  Parameters: λ=$(params.lambda), niter=$(params.niter), δ=$(params.huber_delta)")
+    verbose && println("  Parameters: λ=$(params.lambda), niter=$(params.niter), δ=$(params.huber_delta), relax=$(params.relaxation)")
     verbose && println("  Expected noise reduction: $(params.target_noise_reduction[1])-$(params.target_noise_reduction[2])%")
 
     # 2. FDK initialization (fast warm start)
@@ -174,6 +183,7 @@ function hybrid_ir_reconstruct(
         niter = params.niter,
         lambda = params.lambda,
         penalty = HuberPenalty(params.huber_delta),
+        relaxation = params.relaxation,
         update_weights = true,
         verbose = false  # pwls has its own verbosity
     )

@@ -1770,7 +1770,7 @@ function reconstruct!(
     # ─── Step 2: PWLS refinement with Huber regularization ───
     params = ws.params
     λ = T(params.lambda)
-    λ_relax = one(T)
+    λ_relax = T(params.relaxation)
     δ = T(params.huber_delta)
     niter = params.niter
     backend = AK.get_backend(ws.volume)
