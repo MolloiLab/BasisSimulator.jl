@@ -911,7 +911,11 @@ function simulate!(
                             ws_I_transmitted=ws.I_transmitted,
                             ws_weights_norm=ws.weights_norm,
                             ws_μ_lut_cpu=ws.μ_lut_cpu, ws_μ_lut_gpu=ws.μ_lut_gpu,
-                            ws_μ_table=ws.μ_table)
+                            ws_μ_table=ws.μ_table,
+                            ws_source_positions=ws.geom_source_positions,
+                            ws_detector_centers=ws.geom_detector_centers,
+                            ws_detector_u=ws.geom_detector_u,
+                            ws_detector_v=ws.geom_detector_v)
 
     if ws.has_signal_chain
         # ═══════════════════════════════════════════════════════════════════

@@ -395,6 +395,12 @@ mutable struct EICTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:Abstr
     μ_table::Matrix{T}         # pre-computed μ[region, energy] (n_regions × n_energies)
     bhc_coeffs_gpu::A1         # BHC polynomial coefficients (GPU/backend)
 
+    # ─── Pre-computed geometry arrays (T-typed, same backend as mask) ───
+    geom_source_positions::A2      # (3, n_angles) source positions
+    geom_detector_centers::A2      # (3, n_angles) detector centers
+    geom_detector_u::A2            # (3, n_angles) detector u vectors
+    geom_detector_v::A2            # (3, n_angles) detector v vectors
+
     # ─── Pre-computed setup data ───
     geom::CTGeometry
     energies::Vector{Float64}
@@ -575,6 +581,16 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     bhc_effect = config.bhc
     has_sc = heel !== nothing || das !== nothing || bhc_effect !== nothing
 
+    # Pre-computed geometry arrays (T-typed, same backend as mask) for siddon_forward_project!
+    geom_source_positions = similar(ref, T, size(geom.source_positions)...)
+    copyto!(geom_source_positions, T.(geom.source_positions))
+    geom_detector_centers = similar(ref, T, size(geom.detector_centers)...)
+    copyto!(geom_detector_centers, T.(geom.detector_centers))
+    geom_detector_u = similar(ref, T, size(geom.detector_u)...)
+    copyto!(geom_detector_u, T.(geom.detector_u))
+    geom_detector_v = similar(ref, T, size(geom.detector_v)...)
+    copyto!(geom_detector_v, T.(geom.detector_v))
+
     # RNG
     rng = MersenneTwister(0)
 
@@ -582,7 +598,7 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     sino_ideal_out = zeros(T, sino_shape)
     sino_noisy_out = zeros(T, sino_shape)
 
-    return EICTWorkspace{T, typeof(sinogram), typeof(similar(ref, T, 1, 1)), typeof(noise_rand_gpu)}(
+    return EICTWorkspace{T, typeof(sinogram), typeof(geom_source_positions), typeof(noise_rand_gpu)}(
         sinogram, μ_volume, sino_mono, I_transmitted, air_scan,
         physics_output, lag_intensity,
         scatter_kernel, scatter_correct_kernel, crosstalk_kernel,
@@ -590,6 +606,7 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         bowtie_proj, lag_coeffs_buf,
         noise_rand_cpu, noise_rand_gpu,
         weights_norm, μ_lut_cpu, μ_lut_gpu, μ_table, bhc_coeffs_gpu,
+        geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
         geom, energies, weights_vec, config, mats, rng,
         heel, das, bhc_effect, has_sc,
         sino_ideal_out, sino_noisy_out
