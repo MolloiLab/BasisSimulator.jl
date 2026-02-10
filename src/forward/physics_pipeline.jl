@@ -510,10 +510,8 @@ function apply_physics_effects!(
                                ws_output=ws_output, ws_kernel=ws_focal_spot_kernel)
     end
 
-    # 7. Detector efficiency (scintillator response)
-    if config.detector_efficiency !== nothing
-        apply_detector_efficiency!(sinogram, config.detector_efficiency, geom; energy_keV=config.energy_keV)
-    end
+    # 7. Detector efficiency — no-op in calibrated CT (efficiency cancels
+    #    between phantom and air scan). Effect on noise handled separately.
 
     # 8. Detector noise (quantum + electronic)
     # This should be applied late, after deterministic effects

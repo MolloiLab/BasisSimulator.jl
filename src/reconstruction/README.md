@@ -21,7 +21,7 @@ reconstruction/
 │   └── mbir.jl           # Full statistical MBIR
 ├── regularization/       # Regularization penalties
 │   └── tv_regularization.jl  # Total Variation
-└── statistical_ir.jl     # Legacy PWLS/ASIR-style (to be deprecated)
+└── statistical_ir.jl     # PWLS core (used by hybrid_ir)
 ```
 
 ## Clinical Terminology Mapping

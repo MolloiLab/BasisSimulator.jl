@@ -4300,8 +4300,8 @@ end
             @test μ_iodine_50 > μ_water_50  # Iodine has higher attenuation
 
             # Test iodine K-edge behavior
-            μ_iodine_30 = BasisSimulator.get_iodine_attenuation(30.0)  # Below K-edge
-            μ_iodine_40 = BasisSimulator.get_iodine_attenuation(40.0)  # Above K-edge
+            μ_iodine_30 = BasisSimulator.get_iodine_solution_attenuation(30.0)  # Below K-edge
+            μ_iodine_40 = BasisSimulator.get_iodine_solution_attenuation(40.0)  # Above K-edge
             # K-edge at 33.2 keV causes jump in attenuation
             @test μ_iodine_40 > 0  # Should be positive
         end

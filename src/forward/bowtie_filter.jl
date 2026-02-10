@@ -680,12 +680,6 @@ function interpolate_thickness(filter::BowtieFilter, fan_angle::Float64)
     return filter.thickness[end, :]
 end
 
-# Legacy function for backward compatibility
-function get_bowtie_thickness(filter::BowtieFilter, fan_angle_deg::Float64)
-    thickness_vec = interpolate_thickness(filter, deg2rad(fan_angle_deg))
-    return sum(thickness_vec)  # Return total equivalent thickness
-end
-
 """
     compute_bowtie_attenuation(filter::BowtieFilter, geom::CTGeometry;
                                energy_keV::Float64=60.0) -> Array{Float64,2}
@@ -977,7 +971,7 @@ export bowtie_filter_large_body, bowtie_filter_medium_body
 export bowtie_filter_small_body, bowtie_filter_head, bowtie_filter_none
 export bowtie_filter_multimaterial, load_bowtie_filter, load_catsim_bowtie
 export ge_revolution_bowtie_large, ge_revolution_bowtie_medium, ge_revolution_bowtie_small
-export get_bowtie_thickness, interpolate_thickness
+export interpolate_thickness
 export compute_bowtie_attenuation, compute_bowtie_attenuation_spectral
 export apply_bowtie_filter!, apply_bowtie_to_intensity!
 export apply_bowtie_filter, apply_bowtie_to_intensity

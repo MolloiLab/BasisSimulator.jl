@@ -771,10 +771,6 @@ function get_calcium_material_attenuation(energy_keV::Float64; density_mg_cc::Fl
     return μ_material
 end
 
-# Legacy compatibility aliases (deprecated, use NIST-based functions)
-get_iodine_attenuation(energy_keV::Float64) = get_iodine_solution_attenuation(energy_keV)
-get_calcium_attenuation(energy_keV::Float64) = get_calcium_material_attenuation(energy_keV)
-
 """
     get_water_attenuation_vmi(energy_keV::Float64) -> Float64
 
