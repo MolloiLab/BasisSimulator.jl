@@ -397,7 +397,8 @@ function apply_focal_spot_blur!(
     sinogram::AbstractArray{T,3},
     fs::FocalSpot,
     geom::CTGeometry;
-    object_distance::Union{Nothing,Float64}=nothing
+    object_distance::Union{Nothing,Float64}=nothing,
+    ws_output=nothing, ws_kernel=nothing
 ) where T
     # Skip if point source
     if fs.width <= 0 && fs.length <= 0
@@ -420,17 +421,20 @@ function apply_focal_spot_blur!(
         return sinogram
     end
 
-    # Create spatial domain kernel on CPU
-    kernel_cpu = T.(create_focal_spot_kernel_spatial(fs, blur_fwhm))
-    kernel_size = size(kernel_cpu, 1)
+    # Create spatial domain kernel (or use pre-computed workspace kernel)
+    if ws_kernel !== nothing
+        kernel = ws_kernel
+        kernel_size = size(kernel, 1)
+    else
+        kernel_cpu = T.(create_focal_spot_kernel_spatial(fs, blur_fwhm))
+        kernel_size = size(kernel_cpu, 1)
+        kernel = similar(sinogram, size(kernel_cpu)...)
+        copyto!(kernel, kernel_cpu)
+    end
     half_k = kernel_size ÷ 2
 
-    # Transfer kernel to GPU
-    kernel = similar(sinogram, size(kernel_cpu)...)
-    copyto!(kernel, kernel_cpu)
-
-    # Output buffer
-    output = similar(sinogram)
+    # Output buffer (use workspace or allocate)
+    output = ws_output !== nothing ? ws_output : similar(sinogram)
 
     # GPU-native spatial convolution
     AK.foreachindex(sinogram) do idx

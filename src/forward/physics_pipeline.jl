@@ -409,7 +409,15 @@ config = default_physics_config(
 function apply_physics_effects!(
     sinogram::AbstractArray{T,3},
     geom::CTGeometry,
-    config::PhysicsConfig
+    config::PhysicsConfig;
+    # Workspace kwargs for zero-allocation path (all default to nothing for backwards compat)
+    ws_output=nothing,
+    ws_scatter_kernel=nothing, ws_scatter_correct_kernel=nothing,
+    ws_crosstalk_kernel=nothing, ws_optical_crosstalk_kernel=nothing,
+    ws_focal_spot_kernel=nothing,
+    ws_flat_filter_projection=nothing, ws_bowtie_projection=nothing,
+    ws_lag_output=nothing, ws_lag_intensity=nothing, ws_lag_coeffs=nothing,
+    ws_bhc_coeffs_gpu=nothing
 ) where T
 
     # =========================================================================
@@ -457,40 +465,49 @@ function apply_physics_effects!(
 
     # 2. Flat filter (uniform beam filtration)
     if config.flat_filter !== nothing
-        apply_flat_filter!(sinogram, config.flat_filter, geom; energy_keV=config.energy_keV)
+        apply_flat_filter!(sinogram, config.flat_filter, geom;
+                           energy_keV=config.energy_keV,
+                           ws_filter_projection=ws_flat_filter_projection)
     end
 
     # 3. Scatter (BEFORE bowtie filter!)
     # Scatter operates on raw projection values without bowtie distortion
     if config.scatter !== nothing
-        add_scatter!(sinogram, config.scatter)
+        add_scatter!(sinogram, config.scatter;
+                     ws_output=ws_output, ws_kernel=ws_scatter_kernel)
     end
 
     # 3b. Scatter CORRECTION (immediately after scatter addition, BEFORE bowtie)
     # CRITICAL: Must apply before bowtie filter modifies the signal.
     # The scatter estimate must see the same signal that scatter was added to.
     if config.scatter_correction !== nothing
-        correct_scatter!(sinogram, config.scatter_correction)
+        correct_scatter!(sinogram, config.scatter_correction;
+                         ws_output=ws_output, ws_kernel=ws_scatter_correct_kernel)
     end
 
     # 4. Bowtie filter (AFTER scatter add/correct)
     if config.bowtie_filter !== nothing
-        apply_bowtie_filter!(sinogram, config.bowtie_filter, geom; energy_keV=config.energy_keV)
+        apply_bowtie_filter!(sinogram, config.bowtie_filter, geom;
+                             energy_keV=config.energy_keV,
+                             ws_bowtie_projection=ws_bowtie_projection)
     end
 
     # 5. Crosstalk (detector pixel coupling)
     if config.crosstalk !== nothing
-        apply_crosstalk!(sinogram, config.crosstalk)
+        apply_crosstalk!(sinogram, config.crosstalk;
+                         ws_output=ws_output, ws_kernel=ws_crosstalk_kernel)
     end
 
     # 5b. Optical crosstalk (alternative model)
     if config.optical_crosstalk !== nothing
-        apply_optical_crosstalk!(sinogram, config.optical_crosstalk)
+        apply_optical_crosstalk!(sinogram, config.optical_crosstalk;
+                                  ws_output=ws_output, ws_kernel=ws_optical_crosstalk_kernel)
     end
 
     # 6. Focal spot blur (geometric blur)
     if config.focal_spot !== nothing
-        apply_focal_spot_blur!(sinogram, config.focal_spot, geom)
+        apply_focal_spot_blur!(sinogram, config.focal_spot, geom;
+                               ws_output=ws_output, ws_kernel=ws_focal_spot_kernel)
     end
 
     # 7. Detector efficiency (scintillator response)
@@ -508,7 +525,8 @@ function apply_physics_effects!(
     # 9. Detector lag (temporal persistence)
     # This is applied last as it's a temporal effect
     if config.lag !== nothing
-        apply_lag!(sinogram, config.lag)
+        apply_lag!(sinogram, config.lag;
+                   ws_output=ws_lag_output, ws_intensity=ws_lag_intensity, ws_coeffs=ws_lag_coeffs)
     end
 
     # =========================================================================
@@ -517,7 +535,7 @@ function apply_physics_effects!(
     # NOTE: Scatter correction was moved to step 4b (immediately after scatter addition)
     # to ensure the correction sees the same signal that scatter was added to.
     if config.bhc !== nothing
-        apply_bhc!(sinogram, config.bhc)
+        apply_bhc!(sinogram, config.bhc; ws_coeffs_gpu=ws_bhc_coeffs_gpu)
     end
 
     return sinogram

@@ -924,7 +924,18 @@ function simulate!(
         bhc_eff = ws.bhc
 
         # STEP 2: Apply physics pipeline (sinogram domain, no noise)
-        _apply_physics_no_noise!(ws.sinogram, geom, config)
+        _apply_physics_no_noise!(ws.sinogram, geom, config;
+            ws_output=ws.physics_output,
+            ws_scatter_kernel=ws.scatter_kernel,
+            ws_scatter_correct_kernel=ws.scatter_correct_kernel,
+            ws_crosstalk_kernel=ws.crosstalk_kernel,
+            ws_optical_crosstalk_kernel=ws.optical_crosstalk_kernel,
+            ws_focal_spot_kernel=ws.focal_spot_kernel,
+            ws_flat_filter_projection=ws.flat_filter_projection,
+            ws_bowtie_projection=ws.bowtie_projection,
+            ws_lag_output=ws.physics_output,
+            ws_lag_intensity=ws.lag_intensity,
+            ws_lag_coeffs=ws.lag_coeffs)
 
         # STEP 3: Convert to intensity domain
         eps = T(1e-10)
@@ -977,10 +988,19 @@ function simulate!(
     else
         # Standard path (no signal chain) — apply physics + BHC separately
         if config !== nothing
-            apply_physics_effects!(ws.sinogram, geom, config)
-        end
-        if config !== nothing && config.bhc !== nothing
-            apply_bhc!(ws.sinogram, config.bhc; ws_coeffs_gpu=ws.bhc_coeffs_gpu)
+            apply_physics_effects!(ws.sinogram, geom, config;
+                ws_output=ws.physics_output,
+                ws_scatter_kernel=ws.scatter_kernel,
+                ws_scatter_correct_kernel=ws.scatter_correct_kernel,
+                ws_crosstalk_kernel=ws.crosstalk_kernel,
+                ws_optical_crosstalk_kernel=ws.optical_crosstalk_kernel,
+                ws_focal_spot_kernel=ws.focal_spot_kernel,
+                ws_flat_filter_projection=ws.flat_filter_projection,
+                ws_bowtie_projection=ws.bowtie_projection,
+                ws_lag_output=ws.physics_output,
+                ws_lag_intensity=ws.lag_intensity,
+                ws_lag_coeffs=ws.lag_coeffs,
+                ws_bhc_coeffs_gpu=ws.bhc_coeffs_gpu)
         end
     end
 

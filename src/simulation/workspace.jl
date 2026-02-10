@@ -398,7 +398,7 @@ Type parameters:
 - `A3`: 3D array type matching GPU backend
 - `A1`: 1D array type matching GPU backend
 """
-mutable struct EICTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A1<:AbstractArray{T,1}}
+mutable struct EICTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:AbstractArray{T,2}, A1<:AbstractArray{T,1}}
     # ─── Forward projection (GPU-side) ───
     sinogram::A3          # output sinogram (n_cols, n_rows, n_angles)
     μ_volume::A3          # attenuation volume, reused per energy (nx, ny, nz)
@@ -407,6 +407,20 @@ mutable struct EICTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A1<:Abstr
 
     # ─── Signal chain scratch (GPU-side) ───
     air_scan::A3          # CatSim air scan buffer (sino shape)
+
+    # ─── Physics effect scratch buffers (GPU-side, shared) ───
+    physics_output::A3    # sinogram-sized scratch for convolution effects (shared)
+    lag_intensity::A3     # sinogram-sized scratch for lag intensity computation
+
+    # ─── Pre-computed physics kernels (GPU-side) ───
+    scatter_kernel::Union{Nothing, A2}          # scatter convolution kernel
+    scatter_correct_kernel::Union{Nothing, A2}  # scatter correction kernel
+    crosstalk_kernel::Union{Nothing, A2}        # 3×3 crosstalk kernel
+    optical_crosstalk_kernel::Union{Nothing, A2} # 3×3 optical crosstalk kernel
+    focal_spot_kernel::Union{Nothing, A2}       # focal spot blur kernel
+    flat_filter_projection::Union{Nothing, A2}  # 2D flat filter projection (n_cols × n_rows)
+    bowtie_projection::Union{Nothing, A2}       # 2D bowtie projection (n_cols × n_rows)
+    lag_coeffs::Union{Nothing, A1}              # lag coefficients (n_frames)
 
     # ─── Noise (CPU + GPU) ───
     noise_rand_cpu::Vector{T}  # randn output (n_elements)
@@ -474,6 +488,98 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     I_transmitted = similar(ref, T, sino_shape)
     air_scan = similar(ref, T, sino_shape)
 
+    # Physics effect scratch buffers (sinogram-sized, shared)
+    physics_output = similar(ref, T, sino_shape)
+    lag_intensity = similar(ref, T, sino_shape)
+
+    # Pre-compute physics kernels (GPU-side)
+    # These depend only on config and are constant across calls.
+    scatter_kernel = if config.scatter !== nothing
+        k_cpu = T.(create_scatter_kernel_spatial(config.scatter))
+        k_gpu = similar(ref, T, size(k_cpu)...)
+        copyto!(k_gpu, k_cpu)
+        k_gpu
+    else
+        nothing
+    end
+
+    scatter_correct_kernel = if config.scatter_correction !== nothing
+        sc_temp = ScatterModel(
+            config.scatter_correction.correction_coefficient,
+            config.scatter_correction.scale_factor,
+            config.scatter_correction.kernel_fwhm,
+            config.scatter_correction.kernel_type
+        )
+        k_cpu = T.(create_scatter_kernel_spatial(sc_temp))
+        k_gpu = similar(ref, T, size(k_cpu)...)
+        copyto!(k_gpu, k_cpu)
+        k_gpu
+    else
+        nothing
+    end
+
+    crosstalk_kernel = if config.crosstalk !== nothing
+        k_cpu = T.(create_crosstalk_kernel_3x3(config.crosstalk))
+        k_gpu = similar(ref, T, 3, 3)
+        copyto!(k_gpu, k_cpu)
+        k_gpu
+    else
+        nothing
+    end
+
+    optical_crosstalk_kernel = if config.optical_crosstalk !== nothing
+        k_cpu = T.(create_optical_crosstalk_kernel(config.optical_crosstalk))
+        k_gpu = similar(ref, T, 3, 3)
+        copyto!(k_gpu, k_cpu)
+        k_gpu
+    else
+        nothing
+    end
+
+    focal_spot_kernel = if config.focal_spot !== nothing
+        blur_fwhm = compute_focal_spot_blur_fwhm(config.focal_spot, geom, geom.SAD)
+        if blur_fwhm[1] >= 0.1 || blur_fwhm[2] >= 0.1
+            k_cpu = T.(create_focal_spot_kernel_spatial(config.focal_spot, blur_fwhm))
+            k_gpu = similar(ref, T, size(k_cpu)...)
+            copyto!(k_gpu, k_cpu)
+            k_gpu
+        else
+            nothing
+        end
+    else
+        nothing
+    end
+
+    flat_filter_proj = if config.flat_filter !== nothing
+        transmission_cpu = compute_flat_filter_attenuation(config.flat_filter, geom; energy_keV=config.energy_keV)
+        fp_cpu = T.(-log.(transmission_cpu))
+        fp_gpu = similar(ref, T, sino_shape[1], sino_shape[2])
+        copyto!(fp_gpu, fp_cpu)
+        fp_gpu
+    else
+        nothing
+    end
+
+    bowtie_proj = if config.bowtie_filter !== nothing
+        transmission_cpu = compute_bowtie_attenuation(config.bowtie_filter, geom; energy_keV=config.energy_keV)
+        bp_cpu = T.(-log.(transmission_cpu))
+        bp_gpu = similar(ref, T, sino_shape[1], sino_shape[2])
+        copyto!(bp_gpu, bp_cpu)
+        bp_gpu
+    else
+        nothing
+    end
+
+    lag_coeffs_buf = if config.lag !== nothing && !isempty(config.lag.amplitudes)
+        n_frames = min(20, sino_shape[3])
+        c_cpu = T.(compute_lag_coefficients(config.lag, n_frames))
+        c_gpu = similar(ref, T, n_frames)
+        copyto!(c_gpu, c_cpu)
+        c_gpu
+    else
+        nothing
+    end
+
     # Noise buffers
     noise_rand_cpu = Vector{T}(undef, n_elements)
     noise_rand_gpu = similar(ref, T, n_elements)
@@ -514,8 +620,12 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     sino_ideal_out = zeros(T, sino_shape)
     sino_noisy_out = zeros(T, sino_shape)
 
-    return EICTWorkspace{T, typeof(sinogram), typeof(noise_rand_gpu)}(
+    return EICTWorkspace{T, typeof(sinogram), typeof(similar(ref, T, 1, 1)), typeof(noise_rand_gpu)}(
         sinogram, μ_volume, sino_mono, I_transmitted, air_scan,
+        physics_output, lag_intensity,
+        scatter_kernel, scatter_correct_kernel, crosstalk_kernel,
+        optical_crosstalk_kernel, focal_spot_kernel, flat_filter_proj,
+        bowtie_proj, lag_coeffs_buf,
         noise_rand_cpu, noise_rand_gpu,
         weights_norm, μ_lut_cpu, μ_lut_gpu, μ_table, bhc_coeffs_gpu,
         geom, energies, weights_vec, config, mats, rng,

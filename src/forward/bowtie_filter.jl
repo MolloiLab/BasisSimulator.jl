@@ -827,7 +827,8 @@ function apply_bowtie_filter!(
     sinogram::AbstractArray{T,3},
     filter::BowtieFilter,
     geom::CTGeometry;
-    energy_keV::Float64=60.0
+    energy_keV::Float64=60.0,
+    ws_bowtie_projection=nothing
 ) where T
     # Skip if no filter
     if filter.name == "none"
@@ -837,15 +838,15 @@ function apply_bowtie_filter!(
     n_cols = size(sinogram, 1)
     n_rows = size(sinogram, 2)
 
-    # Compute bowtie transmission on CPU (done once)
-    transmission_cpu = compute_bowtie_attenuation(filter, geom; energy_keV=energy_keV)
-
-    # In projection domain: p_bowtie = -log(transmission)
-    bowtie_projection_cpu = T.(-log.(transmission_cpu))
-
-    # Transfer to GPU (same type as sinogram)
-    bowtie_projection = similar(sinogram, n_cols, n_rows)
-    copyto!(bowtie_projection, bowtie_projection_cpu)
+    # Use pre-computed bowtie projection or compute on the fly
+    if ws_bowtie_projection !== nothing
+        bowtie_projection = ws_bowtie_projection
+    else
+        transmission_cpu = compute_bowtie_attenuation(filter, geom; energy_keV=energy_keV)
+        bowtie_projection_cpu = T.(-log.(transmission_cpu))
+        bowtie_projection = similar(sinogram, n_cols, n_rows)
+        copyto!(bowtie_projection, bowtie_projection_cpu)
+    end
 
     # GPU-native element-wise operation
     AK.foreachindex(sinogram) do idx
