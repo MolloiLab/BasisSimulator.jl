@@ -52,16 +52,20 @@ max_err = maximum(abs.(n1 .- n2))
 println("  ", max_err == 0.0 ? "PASS" : "FAIL", "  noisy_combined  max_abs_err=$max_err")
 if max_err != 0.0; all_pass = false; end
 
-if result1.pcct_material_maps !== nothing
-    for i in 1:length(result1.pcct_material_maps.materials)
-        m1 = result1.pcct_material_maps.materials[i]
-        m2 = result2.pcct_material_maps.materials[i]
-        local max_err = maximum(abs.(m1 .- m2))
-        local status = max_err == 0.0 ? "PASS" : "FAIL"
-        if max_err != 0.0; global all_pass = false; end
-        name = result1.pcct_material_maps.material_names[i]
-        println("  $status  material_$name  max_abs_err=$max_err")
-    end
+if result1.material_maps !== nothing
+    m1_mat1 = Array(result1.material_maps.material1)
+    m2_mat1 = Array(result2.material_maps.material1)
+    max_err = maximum(abs.(m1_mat1 .- m2_mat1))
+    status = max_err == 0.0 ? "PASS" : "FAIL"
+    if max_err != 0.0; all_pass = false; end
+    println("  $status  material_$(result1.material_maps.material1_name)  max_abs_err=$max_err")
+
+    m1_mat2 = Array(result1.material_maps.material2)
+    m2_mat2 = Array(result2.material_maps.material2)
+    max_err = maximum(abs.(m1_mat2 .- m2_mat2))
+    status = max_err == 0.0 ? "PASS" : "FAIL"
+    if max_err != 0.0; all_pass = false; end
+    println("  $status  material_$(result1.material_maps.material2_name)  max_abs_err=$max_err")
 end
 
 println(all_pass ? "\n=== ALL PARITY CHECKS PASS ===" : "\n=== SOME PARITY CHECKS FAILED ===")

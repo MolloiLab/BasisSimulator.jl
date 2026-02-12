@@ -7491,12 +7491,12 @@ end
 
             result = simulate(phantom, pcct_scanner, protocol, sim_opts, recon_opts)
 
-            @test result.pcct_material_maps isa PCCTMaterialMap
-            @test length(result.pcct_material_maps.materials) == 2
-            @test result.pcct_material_maps.material_names == [:water, :iodine]
+            @test result.material_maps isa MaterialMap
+            @test result.material_maps.material1_name == :water
+            @test result.material_maps.material2_name == :iodine
         end
 
-        @testset "PCCT 3-Material Decomposition" begin
+        @testset "PCCT 3-Material Basis (uses first 2 for decomposition)" begin
             protocol = CTProtocol(kVp=120.0, mA=300.0, views=36)
             sim_opts = SimOptions(fidelity=:ideal)
             recon_opts = ReconOptions(
@@ -7508,9 +7508,10 @@ end
 
             result = simulate(phantom, pcct_scanner, protocol, sim_opts, recon_opts)
 
-            @test result.pcct_material_maps isa PCCTMaterialMap
-            @test length(result.pcct_material_maps.materials) == 3
-            @test result.pcct_material_maps.material_names == [:water, :iodine, :calcium]
+            # Unified path always uses 2-material decomposition (first 2 basis materials)
+            @test result.material_maps isa MaterialMap
+            @test result.material_maps.material1_name == :water
+            @test result.material_maps.material2_name == :iodine
         end
 
         @testset "PCCT VMI Volumes in Result" begin

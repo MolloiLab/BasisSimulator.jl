@@ -145,6 +145,7 @@ include("detector/physics_pipeline.jl")
 # Calibration pipeline: air scan, offset, gain correction, log transform
 include("correction/calibration.jl")
 
+
 # =============================================================================
 # Projection - Unified API (includes physics)
 # =============================================================================

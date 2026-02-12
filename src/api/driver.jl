@@ -74,7 +74,7 @@ dual-energy sinograms, material maps, and VMI volumes.
 
 # PCCT Fields
 - `pcct_sinogram`: EnergyResolvedSinogram from PCCT, nothing if not PCCT
-- `pcct_material_maps`: PCCTMaterialMap from N-material decomposition, nothing if not PCCT
+- `pcct_material_maps`: Legacy field (always nothing — use `material_maps` for PCCT decomposition)
 - `pcct_vmi_volumes`: Dict{Float64, Array} of VMI from material synthesis
 
 # Property Aliases
@@ -644,24 +644,28 @@ function simulate!(
         apply_bhc!(sino_noisy_gpu, config.bhc; ws_coeffs_gpu=ws.bhc_coeffs_gpu)
     end
 
-    # Save noisy to CPU workspace buffer
+    # Save noisy to CPU workspace buffer (uncorrected, for inspection)
     copyto!(ws.sino_noisy_out, sino_noisy_gpu)
 
-    # Material decomposition (into workspace buffers)
-    pcct_mat_map = if length(ws.basis_tuple) >= 2
-        pcct_material_decomposition(pcct_sino; basis=ws.basis_tuple,
-                                     ws_bins_cpu=ws.bins_cpu,
-                                     ws_material_maps=ws.material_maps,
-                                     ws_decomp_pixel_buf=ws.decomp_pixel_buf,
-                                     ws_A_pinv=ws.A_pinv,
-                                     ws_basis_vec=ws.basis_vec)
+    # Combine PCCT bins into pseudo-dual-energy sinograms (GPU)
+    combine_pcct_bins!(ws.vmi_sino_low, ws.vmi_sino_high, pcct_sino.bins; split_bin=2)
+
+    # 2-material decomposition (same as dual-kVp, GPU)
+    spectral_decompose!(ws.vmi_material1, ws.vmi_material2,
+                        ws.vmi_sino_low, ws.vmi_sino_high,
+                        ws.vmi_inv_a11, ws.vmi_inv_a12, ws.vmi_inv_a21, ws.vmi_inv_a22)
+
+    mat_map = if length(ws.basis_tuple) >= 2
+        MaterialMap(ws.vmi_material1, ws.vmi_material2;
+            material1_name=ws.basis_tuple[1], material2_name=ws.basis_tuple[2],
+            domain=:projection)
     else
         nothing
     end
 
     # Return intermediate results — reconstruction and VMI are done by the wrapper
     # (they inherently allocate new volumes, outside zero-alloc scope)
-    return (pcct_sino=pcct_sino, pcct_mat_map=pcct_mat_map)
+    return (pcct_sino=pcct_sino, mat_map=mat_map)
 end
 
 # =============================================================================
@@ -881,9 +885,10 @@ function simulate!(
         sim_opts)
 
     # ═══════════════════════════════════════════════════════════════════════
-    # Save ideal sinogram (high kVp) to CPU
+    # Save ideal sinograms (both kVps) to CPU
     # ═══════════════════════════════════════════════════════════════════════
-    copyto!(ws.sino_ideal_out, ws.sino_high)
+    copyto!(ws.sino_ideal_out_low, ws.sino_low)
+    copyto!(ws.sino_ideal_out_high, ws.sino_high)
 
     # ═══════════════════════════════════════════════════════════════════════
     # Apply quantum noise to BOTH sinograms (in-place, sequential)
@@ -925,8 +930,9 @@ function simulate!(
         end
     end
 
-    # Save noisy sinogram (high kVp) to CPU
-    copyto!(ws.sino_noisy_out, ws.sino_high)
+    # Save noisy sinograms (both kVps) to CPU
+    copyto!(ws.sino_noisy_out_low, ws.sino_low)
+    copyto!(ws.sino_noisy_out_high, ws.sino_high)
 
     # ═══════════════════════════════════════════════════════════════════════
     # Material decomposition (in-place into workspace buffers)
@@ -941,7 +947,8 @@ function simulate!(
         material1_name=ws.basis[1], material2_name=ws.basis[2],
         domain=:projection)
 
-    return (sino_ideal=ws.sino_ideal_out, sino_noisy=ws.sino_noisy_out,
+    return (sino_ideal_low=ws.sino_ideal_out_low, sino_ideal_high=ws.sino_ideal_out_high,
+            sino_noisy_low=ws.sino_noisy_out_low, sino_noisy_high=ws.sino_noisy_out_high,
             de_sino=de_sino, mat_map=mat_map)
 end
 
@@ -1082,33 +1089,30 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts;
     result = simulate!(ws, gpu_phantom, scanner, protocol, sim_opts, recon_opts;
                         materials=materials)
     pcct_sino = result.pcct_sino
-    pcct_mat_map = result.pcct_mat_map
+    mat_map = result.mat_map
 
     # --- Post-processing (allocates — outside zero-alloc scope) ---
     geom = ws.geom
 
-    # VMI synthesis + reconstruction
+    # VMI synthesis + reconstruction (unified with dual-kVp path)
     pcct_vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
-    if !isempty(recon_opts.vmi_energies) && !isnothing(pcct_mat_map)
+    if !isempty(recon_opts.vmi_energies) && !isnothing(mat_map)
         for E in recon_opts.vmi_energies
-            vmi_sino = synthesize_vmi(pcct_mat_map, E;
-                                      output=ws.vmi_sino,
-                                      ws_μ_values=ws.μ_values)
+            vmi_sino = virtual_monoenergetic(mat_map, E; ws_output=ws.vmi_sino)
             vmi_vol = _run_reconstruction(vmi_sino, geom, recon_opts)
             pcct_vmi_dict[E] = vmi_vol
         end
     end
 
     # Main reconstruction
-    sino_noisy_gpu = ws.combined  # Still holds the noisy combined sinogram
     recon_vol = _run_reconstruction(ws.sino_noisy_out, geom, recon_opts)
     recons = Pair{Symbol, AbstractArray{T, 3}}[recon_opts.algorithm => recon_vol]
     vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
 
     return SimulationResult(
         ws.sino_ideal_out, ws.sino_noisy_out, recons, geom, ws.config,
-        nothing, nothing, vmi_dict,
-        pcct_sino, pcct_mat_map, pcct_vmi_dict
+        nothing, mat_map, vmi_dict,
+        pcct_sino, nothing, pcct_vmi_dict
     )
 end
 
