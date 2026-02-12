@@ -60,3 +60,13 @@ All three modules use `pixel_size` (column-based) for BOTH u and v directions:
 - **Summary:** The pixel_size/pixel_row_size bug exists but is self-consistent. It won't cause ghost artifacts — just incorrect z-scaling. The ghost artifacts likely have a different root cause.
 - **Next:** Run TEST-BARE-SIDDON to determine if artifacts are from physics effects or core ray tracing
 
+### TEST-BARE-SIDDON — Iteration 1 (2026-02-12)
+- **Test:** Bare Siddon + FDK with ALL physics disabled (PHYSICS_ENABLED=false)
+- **Settings:** 844 cols × 64 rows, 1.0mm col / 0.625mm row, 1600 views, 120 kVp
+- **Result:** **ARTIFACTS APPEAR ABSENT** — The bare Siddon reconstruction looks clean
+- **Observation:** The XCAT chest phantom reconstructs with clear anatomical detail. Ribs appear as clean bright arcs without obvious ghost/aliasing halos. Soft tissue regions appear smooth. HU range [-1455, 2329] looks reasonable for bare (no physics) reconstruction.
+- **μ_water:** 0.223 cm⁻¹ (reasonable for polychromatic 120 kVp — may include some BH since this is polychromatic FP even without physics effects)
+- **Image:** diag_bare_siddon.png, sino_bare_siddon.png
+- **Conclusion:** The core ray tracing (Siddon FP) + FDK reconstruction pipeline appears clean. Ghost artifacts are likely introduced by one or more physics effects.
+- **Next:** Run baseline with ALL physics enabled to confirm artifacts appear, then physics ablation (TEST-PHYSICS-ABLATION)
+
