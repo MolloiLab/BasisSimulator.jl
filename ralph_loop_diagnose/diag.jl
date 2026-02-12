@@ -11,7 +11,7 @@
 using Printf
 
 # ─── CONFIG (modify these for each test) ─────────────────────────────────────
-PHYSICS_ENABLED     = false    # false = bare Siddon + FDK only (overrides all USE_* flags)
+PHYSICS_ENABLED     = true     # false = bare Siddon + FDK only (overrides all USE_* flags)
 
 # Individual physics toggles (only used when PHYSICS_ENABLED = true)
 USE_FILL_FACTOR        = true
@@ -45,7 +45,7 @@ RECON_FOV_CM       = 35.0
 DOWNSAMPLE_FACTOR  = 2
 
 # Output
-TEST_NAME          = "bare_siddon"
+TEST_NAME          = "all_physics"
 OUTPUT_DIR         = joinpath(@__DIR__, "outputs")
 
 # HU window for display
