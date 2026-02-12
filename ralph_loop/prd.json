@@ -249,7 +249,7 @@
       "id": "RUN-NB03",
       "title": "Run NB03 via Pluto headless, verify figures",
       "priority": 13,
-      "status": "open",
+      "status": "done",
       "phase": "validation",
       "blockers": [],
       "description": "## Mission\n\nRun notebook 03 (dual-kVp VMI verification) headlessly via Pluto and verify all expected figure PNGs.\n\n## Procedure\n\n1. Run notebook headlessly (see prompt.md)\n2. Check all cells pass\n3. Verify expected figures in verification/figures/:\n   - nb03_vmi_sweep.png\n   - nb03_hu_vs_energy.png\n   - nb03_r_squared.png\n   - nb03_nist_scatter.png\n   - nb03_water_stability.png\n   - nb03_iodine_linearity.png\n   - nb03_nist_overlay.png\n   - nb03_validation_summary.png\n4. All figures >1KB\n5. If errors: debug, fix, re-run\n6. CHECKPOINT",

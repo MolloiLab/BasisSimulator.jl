@@ -159,3 +159,18 @@ The old VALIDATE-RUN and UPDATE-GITIGNORE-CLEANUP stories were removed. RALPH_CO
 - **Next:** RUN-NB03 (priority 13)
 
 ---
+
+## RUN-NB03 — Iteration 1 (2026-02-11)
+- **Done:** Notebook 03 ran headlessly with 0 errored cells
+- **Figures verified (8/8, all >1KB):**
+  - nb03_vmi_sweep.png (2.5 MB)
+  - nb03_hu_vs_energy.png (240 KB)
+  - nb03_r_squared.png (75 KB)
+  - nb03_nist_scatter.png (111 KB)
+  - nb03_water_stability.png (47 KB)
+  - nb03_iodine_linearity.png (61 KB)
+  - nb03_nist_overlay.png (181 KB)
+  - nb03_validation_summary.png (97 KB)
+- **Next:** RUN-NB04 (priority 14)
+
+---
