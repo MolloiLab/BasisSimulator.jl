@@ -70,3 +70,16 @@ All three modules use `pixel_size` (column-based) for BOTH u and v directions:
 - **Conclusion:** The core ray tracing (Siddon FP) + FDK reconstruction pipeline appears clean. Ghost artifacts are likely introduced by one or more physics effects.
 - **Next:** Run baseline with ALL physics enabled to confirm artifacts appear, then physics ablation (TEST-PHYSICS-ABLATION)
 
+### TEST-BARE-SIDDON — Iteration 2 (2026-02-12): All Physics Baseline
+- **Test:** All physics enabled (fill_factor, flat_filter, bowtie, det_eff, crosstalk, optical, focal_spot, lag, heel, bhc)
+- **Settings:** Same detector config (844×64, 1.0mm/0.625mm), 1600 views, 120 kVp
+- **Result:** **ARTIFACTS PRESENT — SUBTLE** — The all-physics image shows slightly more blur/halos around high-contrast edges compared to bare Siddon
+- **Observation:**
+  - μ_water = 0.269 cm⁻¹ (higher than bare: 0.223, because physics effects add filtration/attenuation)
+  - HU range [-1050, 1249] is more compressed than bare [-1455, 2329]
+  - The image shows slightly smeared rib edges compared to bare Siddon
+  - Simulation took 300s (vs 3.6s for bare) — physics effects are computationally expensive
+- **Image:** diag_all_physics.png, sino_all_physics.png
+- **Conclusion:** Artifacts are subtle at this display resolution but visible in comparison. Physics effects introduce the edge artifacts.
+- **Next:** Begin physics ablation — test crosstalk first (highest priority suspect)
+
