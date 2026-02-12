@@ -45,8 +45,16 @@ test/output/*.png
 test/output/*.jpg
 test/output/*.pdf
 
+# CatSim / GECATSIM binary output files (generated at root or anywhere)
+*.air
+*.offset
+*.scan
+*.prep
+
 # Verification environment (generated/transient files)
 verification/.CondaPkg/
 verification/Manifest.toml
 verification/figures/
 verification/catsim_work/
+verification/notebooks/catsim_work/
+verification/data/xcat/*.bin

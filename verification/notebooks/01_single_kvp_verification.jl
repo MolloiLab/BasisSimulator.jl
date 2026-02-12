@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.20.21
+# v0.20.13
 
 using Markdown
 using InteractiveUtils
@@ -141,33 +141,10 @@ const _cfg_path = Ref("")
 
 # ╔═╡ c37961d0-a102-491e-9056-6a9529574be0
 function catsim_init()
-	# Check if the reference is assigned.
+	# Check if the reference is assigned. 
 	# This is robust against notebook re-runs/state resets.
 	if !isassigned(_catsim)
 		_catsim[] = pyimport("gecatsim")
-
-		# Patch: newer gecatsim versions import ART/SIRT/CGLS at top of recon.py,
-		# which require C_DD3Back (not compiled on macOS ARM64). Patch recon.py
-		# to make these imports optional before first import.
-		let
-			spec = pyimport("importlib.util")
-			gs = spec.find_spec("gecatsim")
-			gs_path = pyconvert(String, gs.origin)
-			recon_py = joinpath(dirname(dirname(gs_path)), "gecatsim",
-				"reconstruction", "pyfiles", "recon.py")
-			src = read(recon_py, String)
-			if contains(src, "from gecatsim.reconstruction.pyfiles.art_equiAngle") &&
-			   !contains(src, "try:")
-				patched = replace(src,
-					"from gecatsim.reconstruction.pyfiles.art_equiAngle import art_equiAngle\nfrom gecatsim.reconstruction.pyfiles.sirt_equiAngle import sirt_equiAngle\nfrom gecatsim.reconstruction.pyfiles.cgls_equiAngle import cgls_equiAngle" =>
-					"try:\n    from gecatsim.reconstruction.pyfiles.art_equiAngle import art_equiAngle\n    from gecatsim.reconstruction.pyfiles.sirt_equiAngle import sirt_equiAngle\n    from gecatsim.reconstruction.pyfiles.cgls_equiAngle import cgls_equiAngle\nexcept ImportError:\n    pass  # C_DD3Back not available — FDK still works")
-				write(recon_py, patched)
-				# Clear Python's bytecache so the patched file is picked up
-				cache_dir = joinpath(dirname(recon_py), "__pycache__")
-				isdir(cache_dir) && rm(cache_dir; recursive=true)
-			end
-		end
-
 		_recon_mod[] = pyimport("gecatsim.reconstruction.pyfiles.recon")
 		_np[] = pyimport("numpy")
 		
