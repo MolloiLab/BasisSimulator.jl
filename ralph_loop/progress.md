@@ -174,3 +174,16 @@ The old VALIDATE-RUN and UPDATE-GITIGNORE-CLEANUP stories were removed. RALPH_CO
 - **Next:** RUN-NB04 (priority 14)
 
 ---
+
+## RUN-NB04 — Iteration 1 (2026-02-11)
+- **Done:** Notebook 04 ran headlessly with 0 errored cells
+- **Figures verified (16/16, all >1KB):**
+  - nb04_naeotom_qe_curve.png, nb04_charge_cloud_sigma.png, nb04_charge_cloud_depth.png
+  - nb04_charge_sharing.png, nb04_weighting_potential.png, nb04_cce_vs_depth.png
+  - nb04_count_rate_curves.png, nb04_vmr_vs_flux.png, nb04_unified_drm.png
+  - nb04_energy_resolution.png, nb04_fdk_vs_hir.png, nb04_noise_comparison.png
+  - nb04_4bin_reconstructions.png, nb04_vmi_montage.png, nb04_vmi_energy_curves.png
+  - nb04_kedge_imaging.png
+- **Next:** RUN-NB01 (priority 15)
+
+---

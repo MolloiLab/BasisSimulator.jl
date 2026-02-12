@@ -264,7 +264,7 @@
       "id": "RUN-NB04",
       "title": "Run NB04 via Pluto headless, verify figures",
       "priority": 14,
-      "status": "open",
+      "status": "done",
       "phase": "validation",
       "blockers": [],
       "description": "## Mission\n\nRun notebook 04 (PCCT demonstration) headlessly via Pluto and verify all expected figure PNGs.\n\n## Procedure\n\n1. Run notebook headlessly (see prompt.md)\n2. Check all cells pass\n3. Verify expected figures in verification/figures/:\n   - nb04_naeotom_qe_curve.png\n   - nb04_charge_cloud_sigma.png\n   - nb04_charge_cloud_depth.png\n   - nb04_charge_sharing.png\n   - nb04_weighting_potential.png\n   - nb04_cce_vs_depth.png\n   - nb04_count_rate_curves.png\n   - nb04_vmr_vs_flux.png\n   - nb04_unified_drm.png\n   - nb04_energy_resolution.png\n   - nb04_fdk_vs_hir.png\n   - nb04_noise_comparison.png\n   - nb04_4bin_reconstructions.png\n   - nb04_vmi_montage.png\n   - nb04_vmi_energy_curves.png\n   - nb04_kedge_imaging.png\n4. All figures >1KB\n5. If errors: debug, fix, re-run\n6. CHECKPOINT",
