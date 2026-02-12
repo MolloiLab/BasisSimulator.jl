@@ -1,0 +1,16 @@
+{
+  "volumefractionmap_filename": ["dual_iodine_80kvp_water.density_"],
+  "x_offset": [64.5],
+  "z_offset": [8.5],
+  "mat_name": ["water"],
+  "density_scale": [1.0],
+  "z_size": [2.5],
+  "n_materials": 1,
+  "cols": [128],
+  "y_offset": [64.5],
+  "slices": [16],
+  "volumefractionmap_datatype": ["float"],
+  "rows": [128],
+  "x_size": [2.734375],
+  "y_size": [2.734375]
+}
