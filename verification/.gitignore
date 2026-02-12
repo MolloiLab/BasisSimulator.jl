@@ -6,3 +6,6 @@ catsim_work/
 *.air
 *.offset
 *.scan
+
+# XCAT phantom binary (1 GB — too large for git, see data/xcat/README.md)
+data/xcat/*.bin
