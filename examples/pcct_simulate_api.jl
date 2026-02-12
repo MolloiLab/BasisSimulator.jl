@@ -15,7 +15,7 @@
 #
 # PCCT OUTPUT (SimulationResult fields):
 # - result.pcct_sinogram      → EnergyResolvedSinogram (4 energy bins)
-# - result.pcct_material_maps → PCCTMaterialMap (N-material decomposition)
+# - result.material_maps      → MaterialMap (2-material decomposition, unified with dual-kVp)
 # - result.pcct_vmi_volumes   → Dict{Float64, Array} (VMI at each energy)
 # - result.reconstruction     → Standard FDK reconstruction
 #
@@ -136,15 +136,16 @@ for (i, bin) in enumerate(pcct_sino.bins)
     println("    Bin $i ($lower-$upper keV): mean=$(round(mean(bin), digits=4))")
 end
 
-# 7b. Material decomposition maps
-mat_maps = result.pcct_material_maps
-println("\nPCCT Material Maps ($(length(mat_maps.materials))-material):")
-println("  Materials: $(mat_maps.material_names)")
-println("  Domain: $(mat_maps.domain)")
-for (i, name) in enumerate(mat_maps.material_names)
-    m = mat_maps.materials[i]
-    println("    $name: range=[$(round(minimum(m), digits=4)), $(round(maximum(m), digits=4))]")
-end
+# 7b. Material decomposition maps (unified MaterialMap)
+mat_map = result.material_maps
+println("\nPCCT Material Maps (2-material, unified with dual-kVp):")
+println("  Material 1: $(mat_map.material1_name)")
+println("  Material 2: $(mat_map.material2_name)")
+println("  Domain: $(mat_map.domain)")
+m1 = Array(mat_map.material1)
+m2 = Array(mat_map.material2)
+println("    $(mat_map.material1_name): range=[$(round(minimum(m1), digits=4)), $(round(maximum(m1), digits=4))]")
+println("    $(mat_map.material2_name): range=[$(round(minimum(m2), digits=4)), $(round(maximum(m2), digits=4))]")
 
 # 7c. VMI volumes
 println("\nPCCT VMI Volumes:")

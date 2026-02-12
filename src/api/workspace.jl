@@ -43,8 +43,16 @@ mutable struct PCCTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A1<:Abstr
     # ─── Combine (GPU-side) ───
     combined::A3               # _combine_pcct_bins output (reused ideal + noisy)
 
-    # ─── VMI synthesis (CPU-side, matches material_maps backend) ───
-    vmi_sino::Array{T,3}       # synthesize_vmi output (CPU, reused across energies)
+    # ─── VMI decomposition (GPU-side, unified with dual-kVp) ───
+    vmi_sino_low::A3           # combined low-energy sinogram (bins 1:2 averaged)
+    vmi_sino_high::A3          # combined high-energy sinogram (bins 3:4 averaged)
+    vmi_material1::A3          # first basis material map (GPU)
+    vmi_material2::A3          # second basis material map (GPU)
+    vmi_inv_a11::T             # pre-computed 2×2 inverse decomposition matrix
+    vmi_inv_a12::T
+    vmi_inv_a21::T
+    vmi_inv_a22::T
+    vmi_sino::A3               # VMI synthesis output (GPU, reused across energies)
 
     # ─── Noise CPU staging (Phase 1: CPU RNG) ───
     noise_staging::Array{T,3}  # CPU buffer for GPU↔CPU noise transfer
@@ -53,11 +61,6 @@ mutable struct PCCTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A1<:Abstr
     # ─── Electronic noise ───
     enoise_cpu::Vector{T}      # randn output for electronic noise (CPU, flat)
     enoise_gpu::A1             # electronic noise GPU transfer buffer (flat)
-
-    # ─── Material decomposition (CPU) ───
-    bins_cpu::Vector{Array{T,3}}       # CPU copies of bins for decomposition
-    material_maps::Vector{Array{T,3}}  # n_materials output arrays (CPU)
-    decomp_pixel_buf::Vector{T}        # per-pixel gather buffer (n_bins)
 
     # ─── Result staging (CPU) ───
     sino_ideal_out::Array{T,3}  # final ideal sinogram for return
@@ -107,10 +110,6 @@ mutable struct PCCTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A1<:Abstr
     geom_detector_centers::A2                # (3, n_angles) detector centers
     geom_detector_u::A2                      # (3, n_angles) detector u vectors
     geom_detector_v::A2                      # (3, n_angles) detector v vectors
-
-    # ─── Pre-computed decomposition data ───
-    A_pinv::Matrix{T}                        # pseudo-inverse for material decomposition
-    basis_vec::Vector{Symbol}                # basis material symbols
 
     # ─── Pre-computed setup data (computed once, reused) ───
     geom::CTGeometry                         # CT geometry
@@ -177,16 +176,17 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     combined = similar(ref_mask, T, sino_shape)
     enoise_gpu = similar(ref_mask, T, n_elements)
 
-    # VMI sinogram — CPU (matches material_maps backend)
-    vmi_sino = zeros(T, sino_shape)
+    # VMI decomposition buffers (GPU-side, unified with dual-kVp)
+    vmi_sino_low = similar(ref_mask, T, sino_shape)
+    vmi_sino_high = similar(ref_mask, T, sino_shape)
+    vmi_material1 = similar(ref_mask, T, sino_shape)
+    vmi_material2 = similar(ref_mask, T, sino_shape)
+    vmi_sino = similar(ref_mask, T, sino_shape)
 
     # CPU-side buffers
     noise_staging = zeros(T, sino_shape)
     noise_buf = zeros(T, sino_shape)
     enoise_cpu = Vector{T}(undef, n_elements)
-    bins_cpu = [zeros(T, sino_shape) for _ in 1:n_bins]
-    material_maps_buf = [zeros(T, sino_shape) for _ in 1:n_materials]
-    decomp_pixel_buf = zeros(T, n_bins)
     sino_ideal_out = zeros(T, sino_shape)
     sino_noisy_out = zeros(T, sino_shape)
 
@@ -310,23 +310,22 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         end
     end
 
-    # Pre-compute material decomposition pseudo-inverse (avoids allocation each call)
-    basis_vec = collect(Symbol, basis_tuple)
+    # Pre-compute 2×2 decomposition matrix for pseudo-dual-energy VMI
     max_keV = 120.0
     _bin_energies = T.(compute_pcct_bin_energies(thresholds; max_keV=max_keV, kvp=Int(protocol.kVp)))
-    _A_mat = zeros(T, n_bins, n_materials)
-    for (j, mat_sym) in enumerate(basis_vec)
-        for i in 1:n_bins
-            _A_mat[i, j] = T(get_basis_mu(mat_sym, Float64(_bin_energies[i])))
-        end
-    end
-    A_pinv_mat = Matrix{T}(pinv(_A_mat))
+    _split_bin = 2
+    E_low = Float64(sum(_bin_energies[1:_split_bin]) / _split_bin)
+    E_high = Float64(sum(_bin_energies[_split_bin+1:end]) / (n_bins - _split_bin))
+    _basis_2 = length(basis_tuple) >= 2 ? (basis_tuple[1], basis_tuple[2]) : (:water, :iodine)
+    vmi_inv_a11, vmi_inv_a12, vmi_inv_a21, vmi_inv_a22 = compute_decomposition_matrix(_basis_2, E_low, E_high; T=T)
 
     return PCCTWorkspace{T, typeof(sino_buf), typeof(enoise_gpu), typeof(geom_source_positions)}(
         bins, μ_volume, sino_buf, scratch, total_counts,
-        combined, vmi_sino,
+        combined,
+        vmi_sino_low, vmi_sino_high, vmi_material1, vmi_material2,
+        vmi_inv_a11, vmi_inv_a12, vmi_inv_a21, vmi_inv_a22,
+        vmi_sino,
         noise_staging, noise_buf, enoise_cpu, enoise_gpu,
-        bins_cpu, material_maps_buf, decomp_pixel_buf,
         sino_ideal_out, sino_noisy_out,
         η_vec, R_mat, R_energies_vec, I0_bins_combine, I0_bins_norm_vec, thresholds_T_vec, rng,
         charge_sharing_probs, pileup_counts, pileup_migration,
@@ -335,7 +334,6 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         μ_lut_cpu, μ_lut_gpu, μ_table,
         bhc_coeffs_cpu, bhc_coeffs_gpu,
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
-        A_pinv_mat, basis_vec,
         geom, energies, weights_vec, config, pcct_detector, mats,
         use_detector_fx, use_corrections, kVp, basis_tuple
     )
@@ -714,8 +712,10 @@ mutable struct EICTDualWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:A
     basis::Tuple{Symbol, Symbol}
 
     # ─── Result staging (CPU) ───
-    sino_ideal_out::Array{T,3}   # CPU: ideal high-kVp sinogram
-    sino_noisy_out::Array{T,3}   # CPU: noisy high-kVp sinogram
+    sino_ideal_out_low::Array{T,3}    # CPU: ideal low-kVp sinogram
+    sino_ideal_out_high::Array{T,3}   # CPU: ideal high-kVp sinogram
+    sino_noisy_out_low::Array{T,3}    # CPU: noisy low-kVp sinogram
+    sino_noisy_out_high::Array{T,3}   # CPU: noisy high-kVp sinogram
 end
 
 """
@@ -968,9 +968,11 @@ function create_eict_dual_workspace(scanner, protocol, sim_opts, recon_opts, pha
     # RNG
     rng = MersenneTwister(0)
 
-    # CPU staging
-    sino_ideal_out = zeros(T, sino_shape)
-    sino_noisy_out = zeros(T, sino_shape)
+    # CPU staging (both low and high kVp)
+    sino_ideal_out_low = zeros(T, sino_shape)
+    sino_ideal_out_high = zeros(T, sino_shape)
+    sino_noisy_out_low = zeros(T, sino_shape)
+    sino_noisy_out_high = zeros(T, sino_shape)
 
     return EICTDualWorkspace{T, typeof(sino_low), typeof(geom_source_positions), typeof(noise_rand_gpu)}(
         μ_volume, sino_mono, I_transmitted,
@@ -990,7 +992,7 @@ function create_eict_dual_workspace(scanner, protocol, sim_opts, recon_opts, pha
         config_low, config_high, mats, rng,
         heel, das, bhc_eff_low, bhc_eff_high, has_sc,
         inv_a11, inv_a12, inv_a21, inv_a22, basis,
-        sino_ideal_out, sino_noisy_out
+        sino_ideal_out_low, sino_ideal_out_high, sino_noisy_out_low, sino_noisy_out_high
     )
 end
 
