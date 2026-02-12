@@ -1,0 +1,5 @@
+[deps]
+numpy = ""
+
+[pip.deps]
+gecatsim = "@ git+https://github.com/MolloiLab/main"

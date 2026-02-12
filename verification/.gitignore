@@ -1,0 +1,8 @@
+.CondaPkg/
+Manifest.toml
+.DS_Store
+figures/
+catsim_work/
+*.air
+*.offset
+*.scan
