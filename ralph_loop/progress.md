@@ -145,3 +145,17 @@ The old VALIDATE-RUN and UPDATE-GITIGNORE-CLEANUP stories were removed. RALPH_CO
 - **Next:** RUN-NB02 (priority 12)
 
 ---
+
+## RUN-NB02 — Iteration 1 (2026-02-11)
+- **Done:** Notebook 02 ran headlessly with 0 errored cells
+- **Figures verified (7/7, all >1KB):**
+  - nb02_dose_comparison.png (95 KB)
+  - nb02_dose_comparison_recon.png (1.8 MB)
+  - nb02_spectral_noise.png (94 KB)
+  - nb02_hir_comparison.png (2.3 MB)
+  - nb02_hir_cnr_noise.png (60 KB)
+  - nb02_hir_comparison_std.png (2.3 MB)
+  - nb02_hir_cnr_noise_std.png (72 KB)
+- **Next:** RUN-NB03 (priority 13)
+
+---

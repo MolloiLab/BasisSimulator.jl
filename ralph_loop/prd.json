@@ -234,7 +234,7 @@
       "id": "RUN-NB02",
       "title": "Run NB02 via Pluto headless, verify figures in verification/figures/",
       "priority": 12,
-      "status": "open",
+      "status": "done",
       "phase": "validation",
       "blockers": [],
       "description": "## Mission\n\nRun notebook 02 (multi-dose & iterative reconstruction) headlessly via Pluto and verify all expected figure PNGs are generated.\n\n## Procedure\n\n1. Run notebook headlessly (see prompt.md for exact command)\n2. Check that ALL cells pass (no errors)\n3. Verify expected figures exist in verification/figures/:\n   - nb02_dose_comparison.png\n   - nb02_dose_comparison_recon.png\n   - nb02_spectral_noise.png\n   - nb02_hir_comparison.png\n   - nb02_hir_cnr_noise.png\n   - nb02_hir_comparison_std.png\n   - nb02_hir_cnr_noise_std.png\n4. All figures must be >1KB\n5. If errors: debug, fix notebook, re-run\n6. CHECKPOINT\n\n## Note\n\nNB02 is self-contained (no external data, no CatSim). Uses create_gammex_472() from BasisSimulator.",
