@@ -1131,11 +1131,15 @@ function plot_scanner_comparison(volumes, titles; slice_idx=32, window=(-300, 40
 end
 
 # ╔═╡ 00000024-0000-0000-0000-000000000004
-plot_scanner_comparison(
-	[recon_eict_fdk_hu, recon_dual_80kVp_fdk_hu, recon_dual_140kVp_fdk_hu, recon_pcct_fdk_hu],
-	["EICT 120 kVp\n(FDK)", "Dual 80 kVp\n(FDK)", "Dual 140 kVp\n(FDK)", "PCCT Standard\n(FDK)"];
-	slice_idx=32
-)
+let
+	fig = plot_scanner_comparison(
+		[recon_eict_fdk_hu, recon_dual_80kVp_fdk_hu, recon_dual_140kVp_fdk_hu, recon_pcct_fdk_hu],
+		["EICT 120 kVp\n(FDK)", "Dual 80 kVp\n(FDK)", "Dual 140 kVp\n(FDK)", "PCCT Standard\n(FDK)"];
+		slice_idx=32
+	)
+	CM.save(joinpath(FIGURES_DIR, "nb05_scanner_comparison.png"), fig)
+	fig
+end
 
 # ╔═╡ c0d1e2f3-a4b5-6789-abcd-000000000001
 md"""
@@ -1171,6 +1175,7 @@ let
 	end
 
 	CM.Colorbar(f[1:2, length(titles)+1], colormap=:grays, colorrange=window, label="HU")
+	CM.save(joinpath(FIGURES_DIR, "nb05_fdk_vs_hir.png"), f)
 	f
 end
 
@@ -1215,10 +1220,14 @@ function plot_detail_comparison(vol_eict_hu, vol_pcct_hu; slice_idx=32,
 end
 
 # ╔═╡ 01e76cfe-7061-455b-8f7e-0b07fbd17ca3
-plot_detail_comparison(
-	recon_eict_fdk_hu, recon_pcct_fdk_hu;
-	slice_idx=32, zoom_center=(Int.(recon_xy ÷ 2.2), Int.(recon_xy ÷ 2.2)), zoom_size=min(80, recon_xy ÷ 4)
-)
+let
+	fig = plot_detail_comparison(
+		recon_eict_fdk_hu, recon_pcct_fdk_hu;
+		slice_idx=32, zoom_center=(Int.(recon_xy ÷ 2.2), Int.(recon_xy ÷ 2.2)), zoom_size=min(80, recon_xy ÷ 4)
+	)
+	CM.save(joinpath(FIGURES_DIR, "nb05_detail_comparison.png"), fig)
+	fig
+end
 
 # ╔═╡ 00000024-0000-0000-0000-000000000008
 md"""
@@ -1255,7 +1264,11 @@ function plot_vmi_comparison(dual_vmi_vols, pcct_vmi_vols; slice_idx=32, window=
 end
 
 # ╔═╡ 00000024-0000-0000-0000-000000000010
-plot_vmi_comparison(dual_vmi_volumes, pcct_vmi_volumes; slice_idx=32)
+let
+	fig = plot_vmi_comparison(dual_vmi_volumes, pcct_vmi_volumes; slice_idx=32)
+	CM.save(joinpath(FIGURES_DIR, "nb05_vmi_comparison.png"), fig)
+	fig
+end
 
 # ╔═╡ 00000024-0000-0000-0000-000000000011
 md"""
@@ -1323,6 +1336,7 @@ let
 	CM.barplot!(ax2, 1:n_vols, [s.std_hu for s in stats],
 		color=repeat([:coral, :salmon], n_vols ÷ 2))
 
+	CM.save(joinpath(FIGURES_DIR, "nb05_noise_stats.png"), f)
 	f
 end
 
@@ -1367,6 +1381,7 @@ let
 
 	CM.axislegend(ax, position=:rt)
 
+	CM.save(joinpath(FIGURES_DIR, "nb05_noise_reduction.png"), f)
 	f
 end
 

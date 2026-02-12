@@ -1,0 +1,326 @@
+{
+  "project": "BasisSimulator — Verification Suite Migration",
+  "version": "1.0",
+  "updated": "2026-02-11",
+  "description": "Migrate the standalone BasisSimulatorVerification project into BasisSimulator.jl/verification/ so the verification suite ships with the package. Includes 5 Pluto notebooks, phantom data, CatSim (gecatsim) integration, and all dependencies.",
+
+  "context": {
+    "source_dir": "/Users/daleblack/Documents/dev/CTSimulatorStuff/BasisSimulatorVerification",
+    "target_dir": "/Users/daleblack/Documents/dev/CTSimulatorStuff/BasisSimulator.jl/verification",
+    "basesim_dir": "/Users/daleblack/Documents/dev/CTSimulatorStuff/BasisSimulator.jl",
+
+    "notebooks": [
+      {"file": "01_single_kvp_verification.jl", "lines": 1243, "purpose": "Single-energy verification against CatSim", "catsim_required": true},
+      {"file": "02_multi_dose_and_iterative_reconstruction.jl", "lines": 715, "purpose": "Multi-protocol physics & Hybrid IR", "catsim_required": false},
+      {"file": "03_dual_kvp_vmi_verification.jl", "lines": 863, "purpose": "Dual-energy VMI validation", "catsim_required": false},
+      {"file": "04_pcct_demonstration.jl", "lines": 879, "purpose": "PCCT physics verification on Gammex 472", "catsim_required": false},
+      {"file": "05_xcat_full.jl", "lines": 1494, "purpose": "Full XCAT clinical workflow (3 scanners)", "catsim_required": false}
+    ],
+
+    "phantom_data": {
+      "gammex_basic": {
+        "source": "notebooks/phantom_export/",
+        "size_mb": 2,
+        "strategy": "commit_directly",
+        "files": ["dual_iodine_80kvp.json", "dual_iodine_80kvp_water.density_", "dual_iodine_140kvp.json", "dual_iodine_140kvp_water.density_"]
+      },
+      "gammex_multimaterial": {
+        "source": "notebooks/phantom_export_multimaterial/",
+        "size_mb": 224,
+        "strategy": "git_lfs_or_skip",
+        "note": "16 material maps, not actively used in current notebooks"
+      },
+      "xcat_clinical": {
+        "source": "notebooks/phantom_export_xcat/",
+        "size_mb": 1070,
+        "strategy": "git_lfs_with_download_script",
+        "files": ["vmale_50_1600x1400x500_8bit_little_endian_act_1.bin", "Material_Spreadsheets/*.xlsx"],
+        "note": "1 GB binary + 3 XLSX material spreadsheets. Required for notebook 05."
+      }
+    },
+
+    "dependencies": {
+      "julia": {
+        "BasisSimulator": "path = \"../\"",
+        "CairoMakie": "0.15",
+        "CondaPkg": "0.2",
+        "FFTW": "1",
+        "Metal": "1.9.1",
+        "Pluto": "0.20",
+        "PlutoUI": "0.7",
+        "PythonCall": "0.9",
+        "Revise": "3.13.1",
+        "Unitful": "1.28.0",
+        "XLSX": "0.10.4",
+        "XrayAttenuation": "0.2.0"
+      },
+      "python": {
+        "gecatsim": "git+https://github.com/MolloiLab/main",
+        "numpy": ""
+      }
+    },
+
+    "path_adjustments": {
+      "pkg_activate": "Pkg.activate(dirname(@__DIR__)) — resolves to verification/ from verification/notebooks/",
+      "figures_dir": "joinpath(dirname(@__DIR__), \"figures\") — resolves to verification/figures/",
+      "phantom_paths": "Relative paths from notebooks/ to data/ must be updated",
+      "note": "Notebook 05 references phantom_export_xcat/ and Material_Spreadsheets/ — update to data/xcat/"
+    }
+  },
+
+  "stories": [
+    {
+      "id": "DISCOVER-STRUCTURE",
+      "title": "Catalogue all source files and plan target directory layout",
+      "priority": 1,
+      "status": "done",
+      "phase": "discovery",
+      "blockers": [],
+      "description": "## Already Complete\n\nThis discovery was done interactively. Key findings documented in context above.\n\n## Target Directory Layout\n\n```\nBasisSimulator.jl/verification/\n  Project.toml\n  CondaPkg.toml\n  .gitignore\n  notebooks/\n    01_single_kvp_verification.jl\n    02_multi_dose_and_iterative_reconstruction.jl\n    03_dual_kvp_vmi_verification.jl\n    04_pcct_demonstration.jl\n    05_xcat_full.jl\n  data/\n    gammex_basic/\n      dual_iodine_80kvp.json\n      dual_iodine_80kvp_water.density_\n      dual_iodine_140kvp.json\n      dual_iodine_140kvp_water.density_\n    xcat/\n      vmale_50_1600x1400x500_8bit_little_endian_act_1.bin  (LFS)\n      Material_Spreadsheets/\n        vmale_50_materials_heart_high_contrast.xlsx\n        vmale_50_materials_heart_low_contrast.xlsx\n        vmale_50_materials_heart_non_contrast.xlsx\n  figures/  (gitignored — regenerated on notebook run)\n  catsim_work/  (gitignored — CatSim working directory)\n```",
+      "acceptance_criteria": ["Directory layout documented", "All source files catalogued"]
+    },
+    {
+      "id": "CREATE-SCAFFOLD",
+      "title": "Create verification/ directory structure, Project.toml, CondaPkg.toml, .gitignore",
+      "priority": 2,
+      "status": "done",
+      "phase": "implementation",
+      "blockers": ["DISCOVER-STRUCTURE"],
+      "description": "## Mission\n\nCreate the target directory structure and configuration files.\n\n## Steps\n\n1. Create directories:\n   ```\n   BasisSimulator.jl/verification/\n   BasisSimulator.jl/verification/notebooks/\n   BasisSimulator.jl/verification/data/\n   BasisSimulator.jl/verification/data/gammex_basic/\n   BasisSimulator.jl/verification/data/xcat/\n   BasisSimulator.jl/verification/data/xcat/Material_Spreadsheets/\n   BasisSimulator.jl/verification/figures/\n   ```\n\n2. Create `verification/Project.toml`:\n   - Same deps as BasisSimulatorVerification/Project.toml\n   - BasisSimulator source: `path = \"../\"`\n   - Keep all [compat] entries\n   - Change name to \"BasisSimulatorVerification\" (same as before)\n\n3. Create `verification/CondaPkg.toml`:\n   - Copy from source (numpy + gecatsim pip dep)\n\n4. Create `verification/.gitignore`:\n   ```\n   .CondaPkg/\n   Manifest.toml\n   .DS_Store\n   figures/\n   catsim_work/\n   *.air\n   *.offset\n   *.scan\n   ```\n\n5. Update `BasisSimulator.jl/.gitignore` to add:\n   ```\n   # Verification environment\n   verification/.CondaPkg/\n   verification/Manifest.toml\n   verification/figures/\n   verification/catsim_work/\n   ```\n\n6. Checkpoint: commit scaffold\n\n## Verify\n\n- All directories exist\n- Project.toml parses correctly\n- .gitignore is correct",
+      "acceptance_criteria": [
+        "verification/ directory structure created",
+        "Project.toml with path = '../' for BasisSimulator",
+        "CondaPkg.toml copied",
+        ".gitignore created",
+        "Parent .gitignore updated",
+        "Git commit with [CREATE-SCAFFOLD]"
+      ]
+    },
+    {
+      "id": "MIGRATE-PHANTOM-BASIC",
+      "title": "Copy Gammex 472 basic phantom data (2 MB — commit directly)",
+      "priority": 3,
+      "status": "done",
+      "phase": "implementation",
+      "blockers": ["CREATE-SCAFFOLD"],
+      "description": "## Mission\n\nCopy the small Gammex 472 phantom data files into verification/data/gammex_basic/.\n\n## Steps\n\n1. Copy 4 files from source notebooks/phantom_export/ to verification/data/gammex_basic/:\n   - dual_iodine_80kvp.json\n   - dual_iodine_80kvp_water.density_\n   - dual_iodine_140kvp.json\n   - dual_iodine_140kvp_water.density_\n\n2. Verify file sizes match source (~2 MB total)\n\n3. Checkpoint: git add + commit\n\n## Note\n\nThese files are small enough to commit directly (no LFS needed).",
+      "acceptance_criteria": [
+        "4 phantom files copied to verification/data/gammex_basic/",
+        "File sizes verified",
+        "Git commit with [MIGRATE-PHANTOM-BASIC]"
+      ]
+    },
+    {
+      "id": "MIGRATE-PHANTOM-XCAT",
+      "title": "Set up XCAT phantom data with Git LFS tracking + download instructions",
+      "priority": 4,
+      "status": "done",
+      "phase": "implementation",
+      "blockers": ["CREATE-SCAFFOLD"],
+      "description": "## Mission\n\nSet up XCAT phantom data. The binary is 1 GB so needs Git LFS or a download script.\n\n## Steps\n\n1. Check if Git LFS is initialized in the repo:\n   ```bash\n   git lfs install  # If not already\n   git lfs track 'verification/data/xcat/*.bin'\n   ```\n\n2. Copy XCAT files:\n   - vmale_50_1600x1400x500_8bit_little_endian_act_1.bin → verification/data/xcat/\n   - Material_Spreadsheets/*.xlsx → verification/data/xcat/Material_Spreadsheets/\n\n3. Update .gitattributes for LFS tracking:\n   ```\n   verification/data/xcat/*.bin filter=lfs diff=lfs merge=lfs -text\n   ```\n\n4. If LFS is not viable, create a download script instead:\n   - verification/data/xcat/download_xcat.sh\n   - Document where the data lives\n   - Add .bin to .gitignore\n\n5. Checkpoint: commit\n\n## Decision Point\n\nIf git lfs is available and the hosting supports it, use LFS.\nIf not, use .gitignore + download script + README explaining where to get the data.\nThe XLSX files (26 KB total) should always be committed directly.",
+      "acceptance_criteria": [
+        "XCAT Material_Spreadsheets committed (26 KB)",
+        "XCAT binary either in LFS or documented download procedure",
+        ".gitattributes updated if using LFS",
+        "Git commit with [MIGRATE-PHANTOM-XCAT]"
+      ]
+    },
+    {
+      "id": "MIGRATE-NB01",
+      "title": "Migrate notebook 01 (single-kVp verification) — adjust all paths",
+      "priority": 5,
+      "status": "done",
+      "phase": "implementation",
+      "blockers": ["MIGRATE-PHANTOM-BASIC"],
+      "description": "## Mission\n\nCopy notebook 01 to verification/notebooks/ and adjust all paths.\n\n## Path Adjustments Required\n\n1. `Pkg.activate(dirname(@__DIR__))` — already correct (resolves to verification/)\n2. Phantom paths: `phantom_export/` → `joinpath(@__DIR__, \"..\", \"data\", \"gammex_basic\")` or similar\n   - Search for ALL references to `phantom_export` in the notebook\n   - Replace with path relative to verification/data/gammex_basic/\n3. Figure save paths: `joinpath(dirname(@__DIR__), \"figures\")` — already correct\n4. CatSim working directory: `catsim_work/` → path relative to verification/notebooks/\n5. Any hardcoded paths to BasisSimulatorVerification → update\n\n## CatSim Integration\n\nNotebook 01 is the only notebook that uses CatSim (gecatsim via PythonCall).\n- CatSim reference config path is auto-detected from gecatsim install location\n- catsim_work/ is a temp directory for CatSim output files (.air, .scan, .prep)\n- Path: verification/notebooks/catsim_work/ (gitignored)\n\n## Verify\n\n- No references to old BasisSimulatorVerification paths remain\n- All data paths point to verification/data/\n- Checkpoint: commit",
+      "acceptance_criteria": [
+        "Notebook copied to verification/notebooks/",
+        "All phantom paths updated to verification/data/gammex_basic/",
+        "CatSim work dir path updated",
+        "Figure paths correct",
+        "No old path references remain",
+        "Git commit with [MIGRATE-NB01]"
+      ]
+    },
+    {
+      "id": "MIGRATE-NB02",
+      "title": "Migrate notebook 02 (multi-dose & IR) — adjust all paths",
+      "priority": 6,
+      "status": "done",
+      "phase": "implementation",
+      "blockers": ["CREATE-SCAFFOLD"],
+      "description": "## Mission\n\nCopy notebook 02 to verification/notebooks/ and adjust all paths.\n\n## Path Adjustments\n\nSame pattern as NB01:\n1. Pkg.activate — already correct\n2. Phantom paths → verification/data/gammex_basic/ (if applicable)\n3. Figure paths — already correct\n4. No CatSim dependency in this notebook\n\n## Note\n\nThis notebook uses create_gammex_472() from BasisSimulator (no external phantom files needed).\nOnly adjust paths for figures and Pkg.activate.",
+      "acceptance_criteria": [
+        "Notebook copied to verification/notebooks/",
+        "All paths verified/updated",
+        "Git commit with [MIGRATE-NB02]"
+      ]
+    },
+    {
+      "id": "MIGRATE-NB03",
+      "title": "Migrate notebook 03 (dual-kVp VMI) — adjust all paths",
+      "priority": 7,
+      "status": "done",
+      "phase": "implementation",
+      "blockers": ["CREATE-SCAFFOLD"],
+      "description": "## Mission\n\nCopy notebook 03 to verification/notebooks/ and adjust all paths.\n\n## Path Adjustments\n\nSame pattern:\n1. Pkg.activate — already correct\n2. Figure paths — already correct\n3. No external phantom files (uses create_gammex_472)\n4. No CatSim dependency",
+      "acceptance_criteria": [
+        "Notebook copied to verification/notebooks/",
+        "All paths verified/updated",
+        "Git commit with [MIGRATE-NB03]"
+      ]
+    },
+    {
+      "id": "MIGRATE-NB04",
+      "title": "Migrate notebook 04 (PCCT) — adjust all paths",
+      "priority": 8,
+      "status": "done",
+      "phase": "implementation",
+      "blockers": ["CREATE-SCAFFOLD"],
+      "description": "## Mission\n\nCopy notebook 04 to verification/notebooks/ and adjust all paths.\n\n## Path Adjustments\n\nSame pattern:\n1. Pkg.activate — already correct\n2. Figure paths — already correct\n3. No external phantom files (uses create_gammex_472)\n4. No CatSim dependency",
+      "acceptance_criteria": [
+        "Notebook copied to verification/notebooks/",
+        "All paths verified/updated",
+        "Git commit with [MIGRATE-NB04]"
+      ]
+    },
+    {
+      "id": "MIGRATE-NB05",
+      "title": "Migrate notebook 05 (XCAT full) — adjust all paths including XCAT data",
+      "priority": 9,
+      "status": "done",
+      "phase": "implementation",
+      "blockers": ["MIGRATE-PHANTOM-XCAT"],
+      "description": "## Mission\n\nCopy notebook 05 to verification/notebooks/ and adjust all paths. This notebook is the most complex because it references XCAT phantom data.\n\n## Path Adjustments\n\n1. Pkg.activate — already correct\n2. XCAT phantom binary path: `phantom_export_xcat/vmale_50...` → `joinpath(@__DIR__, \"..\", \"data\", \"xcat\", \"vmale_50...\")`\n3. Material spreadsheet paths: `phantom_export_xcat/Material_Spreadsheets/` → `joinpath(@__DIR__, \"..\", \"data\", \"xcat\", \"Material_Spreadsheets\", ...)`\n4. Figure paths — already correct\n5. Search for ALL occurrences of `phantom_export_xcat` and update\n\n## Note\n\nThis notebook is 1494 lines and references XCAT data in multiple places. Be thorough in path search.",
+      "acceptance_criteria": [
+        "Notebook copied to verification/notebooks/",
+        "All XCAT phantom paths updated to verification/data/xcat/",
+        "Material spreadsheet paths updated",
+        "Figure paths correct",
+        "No old path references remain",
+        "Git commit with [MIGRATE-NB05]"
+      ]
+    },
+    {
+      "id": "SETUP-XCAT-SYMLINK",
+      "title": "Create symlink for XCAT binary so NB05 can find it",
+      "priority": 10,
+      "status": "done",
+      "phase": "setup",
+      "blockers": ["MIGRATE-NB05"],
+      "description": "## Mission\n\nCreate a symlink from verification/data/xcat/vmale_50_1600x1400x500_8bit_little_endian_act_1.bin to the original file in BasisSimulatorVerification so NB05 can load the XCAT phantom.\n\n## Steps\n\n1. Check if the source binary exists:\n   ```bash\n   ls -la /Users/daleblack/Documents/dev/CTSimulatorStuff/BasisSimulatorVerification/notebooks/phantom_export_xcat/vmale_50_1600x1400x500_8bit_little_endian_act_1.bin\n   ```\n\n2. Create symlink:\n   ```bash\n   ln -sf /Users/daleblack/Documents/dev/CTSimulatorStuff/BasisSimulatorVerification/notebooks/phantom_export_xcat/vmale_50_1600x1400x500_8bit_little_endian_act_1.bin verification/data/xcat/vmale_50_1600x1400x500_8bit_little_endian_act_1.bin\n   ```\n\n3. Verify symlink resolves:\n   ```bash\n   ls -la verification/data/xcat/vmale_50*.bin\n   julia -e 'println(filesize(\"verification/data/xcat/vmale_50_1600x1400x500_8bit_little_endian_act_1.bin\"))'\n   ```\n\n4. The .gitignore already excludes `data/xcat/*.bin` so the symlink won't be committed.\n\n5. CHECKPOINT",
+      "acceptance_criteria": [
+        "Symlink exists at verification/data/xcat/vmale_50_*.bin",
+        "Symlink resolves to valid file (filesize > 0)",
+        "Binary is NOT tracked by git (.gitignore covers it)"
+      ]
+    },
+    {
+      "id": "ADD-NB05-SAVES",
+      "title": "Add CM.save() calls to NB05's 6 figures",
+      "priority": 11,
+      "status": "done",
+      "phase": "setup",
+      "blockers": ["MIGRATE-NB05"],
+      "description": "## Mission\n\nNB05 (05_xcat_full.jl) creates 6 inline Pluto figures but never calls CM.save(). Add CM.save() calls so figures are written to verification/figures/.\n\n## Figures to Save\n\nSearch the notebook for figure creation patterns (CM.Figure, etc.) and add CM.save() after each:\n\n1. `nb05_scanner_comparison.png` — Scanner comparison (Section 8.1)\n2. `nb05_fdk_vs_hir.png` — FDK vs HIR comparison (Section 8.2)\n3. `nb05_detail_comparison.png` — Detail comparison (Section 8.3)\n4. `nb05_vmi_comparison.png` — VMI comparison (Section 8.4)\n5. `nb05_noise_stats.png` — Noise statistics (Section 8.5)\n6. `nb05_noise_reduction.png` — Noise reduction (Section 8.6)\n\n## Rules\n\n- Preserve Pluto cell IDs (do NOT modify UUIDs)\n- Use the same pattern as NB01-04: `CM.save(joinpath(FIGURES_DIR, \"nb05_xxx.png\"), fig)`\n- Add the save call AFTER the figure is fully constructed (after the last axis/legend call)\n- The notebook already defines FIGURES_DIR\n\n## Verify\n\n- Search for all CM.Figure or figure creation patterns\n- Confirm 6 save calls added\n- No cell IDs modified\n- CHECKPOINT",
+      "acceptance_criteria": [
+        "6 CM.save() calls added to NB05",
+        "Figure filenames match nb05_*.png pattern",
+        "Cell UUIDs preserved",
+        "Git commit with [ADD-NB05-SAVES]"
+      ]
+    },
+    {
+      "id": "RUN-NB02",
+      "title": "Run NB02 via Pluto headless, verify figures in verification/figures/",
+      "priority": 12,
+      "status": "open",
+      "phase": "validation",
+      "blockers": [],
+      "description": "## Mission\n\nRun notebook 02 (multi-dose & iterative reconstruction) headlessly via Pluto and verify all expected figure PNGs are generated.\n\n## Procedure\n\n1. Run notebook headlessly (see prompt.md for exact command)\n2. Check that ALL cells pass (no errors)\n3. Verify expected figures exist in verification/figures/:\n   - nb02_dose_comparison.png\n   - nb02_dose_comparison_recon.png\n   - nb02_spectral_noise.png\n   - nb02_hir_comparison.png\n   - nb02_hir_cnr_noise.png\n   - nb02_hir_comparison_std.png\n   - nb02_hir_cnr_noise_std.png\n4. All figures must be >1KB\n5. If errors: debug, fix notebook, re-run\n6. CHECKPOINT\n\n## Note\n\nNB02 is self-contained (no external data, no CatSim). Uses create_gammex_472() from BasisSimulator.",
+      "acceptance_criteria": [
+        "Notebook runs to completion with 0 errored cells",
+        "All nb02_*.png figures exist in verification/figures/",
+        "All figures are >1KB",
+        "Git commit with [RUN-NB02]"
+      ]
+    },
+    {
+      "id": "RUN-NB03",
+      "title": "Run NB03 via Pluto headless, verify figures",
+      "priority": 13,
+      "status": "open",
+      "phase": "validation",
+      "blockers": [],
+      "description": "## Mission\n\nRun notebook 03 (dual-kVp VMI verification) headlessly via Pluto and verify all expected figure PNGs.\n\n## Procedure\n\n1. Run notebook headlessly (see prompt.md)\n2. Check all cells pass\n3. Verify expected figures in verification/figures/:\n   - nb03_vmi_sweep.png\n   - nb03_hu_vs_energy.png\n   - nb03_r_squared.png\n   - nb03_nist_scatter.png\n   - nb03_water_stability.png\n   - nb03_iodine_linearity.png\n   - nb03_nist_overlay.png\n   - nb03_validation_summary.png\n4. All figures >1KB\n5. If errors: debug, fix, re-run\n6. CHECKPOINT",
+      "acceptance_criteria": [
+        "Notebook runs with 0 errored cells",
+        "All nb03_*.png figures exist",
+        "All figures >1KB",
+        "Git commit with [RUN-NB03]"
+      ]
+    },
+    {
+      "id": "RUN-NB04",
+      "title": "Run NB04 via Pluto headless, verify figures",
+      "priority": 14,
+      "status": "open",
+      "phase": "validation",
+      "blockers": [],
+      "description": "## Mission\n\nRun notebook 04 (PCCT demonstration) headlessly via Pluto and verify all expected figure PNGs.\n\n## Procedure\n\n1. Run notebook headlessly (see prompt.md)\n2. Check all cells pass\n3. Verify expected figures in verification/figures/:\n   - nb04_naeotom_qe_curve.png\n   - nb04_charge_cloud_sigma.png\n   - nb04_charge_cloud_depth.png\n   - nb04_charge_sharing.png\n   - nb04_weighting_potential.png\n   - nb04_cce_vs_depth.png\n   - nb04_count_rate_curves.png\n   - nb04_vmr_vs_flux.png\n   - nb04_unified_drm.png\n   - nb04_energy_resolution.png\n   - nb04_fdk_vs_hir.png\n   - nb04_noise_comparison.png\n   - nb04_4bin_reconstructions.png\n   - nb04_vmi_montage.png\n   - nb04_vmi_energy_curves.png\n   - nb04_kedge_imaging.png\n4. All figures >1KB\n5. If errors: debug, fix, re-run\n6. CHECKPOINT",
+      "acceptance_criteria": [
+        "Notebook runs with 0 errored cells",
+        "All nb04_*.png figures exist",
+        "All figures >1KB",
+        "Git commit with [RUN-NB04]"
+      ]
+    },
+    {
+      "id": "RUN-NB01",
+      "title": "Run NB01 via Pluto headless (includes CatSim), verify figures",
+      "priority": 15,
+      "status": "open",
+      "phase": "validation",
+      "blockers": [],
+      "description": "## Mission\n\nRun notebook 01 (single-kVp verification against CatSim) headlessly via Pluto. This notebook requires gecatsim (Python/CatSim via PythonCall/CondaPkg).\n\n## Procedure\n\n1. Ensure CondaPkg environment is set up:\n   ```bash\n   cd verification && julia --project=. -e 'using Pkg; Pkg.instantiate(); using CondaPkg; CondaPkg.resolve()'\n   ```\n2. Run notebook headlessly (see prompt.md)\n3. Check all cells pass\n4. Verify expected figures in verification/figures/:\n   - nb01_forward_projection.png\n   - nb01_fdk_comparison.png\n   - nb01_hu_accuracy.png\n   - nb01_nps.png\n   - nb01_mtf.png\n   - nb01_cnr.png\n5. All figures >1KB\n6. If CatSim errors: check CondaPkg.toml, gecatsim install, Python env\n7. CHECKPOINT\n\n## Note\n\nThis is the most complex notebook — it runs CatSim (Python) AND BasisSimulator (Julia) for comparison. gecatsim auto-installs via CondaPkg on first use.",
+      "acceptance_criteria": [
+        "gecatsim installs successfully via CondaPkg",
+        "Notebook runs with 0 errored cells",
+        "All nb01_*.png figures exist",
+        "All figures >1KB",
+        "Git commit with [RUN-NB01]"
+      ]
+    },
+    {
+      "id": "RUN-NB05",
+      "title": "Run NB05 via Pluto headless, verify figures",
+      "priority": 16,
+      "status": "open",
+      "phase": "validation",
+      "blockers": ["SETUP-XCAT-SYMLINK", "ADD-NB05-SAVES"],
+      "description": "## Mission\n\nRun notebook 05 (full XCAT clinical workflow) headlessly via Pluto and verify all expected figure PNGs.\n\n## Prerequisites\n\n- XCAT binary symlink must exist (SETUP-XCAT-SYMLINK)\n- CM.save() calls must be added (ADD-NB05-SAVES)\n\n## Procedure\n\n1. Verify XCAT binary is accessible:\n   ```bash\n   ls -la verification/data/xcat/vmale_50_*.bin\n   ```\n2. Run notebook headlessly (see prompt.md)\n3. Check all cells pass\n4. Verify expected figures in verification/figures/:\n   - nb05_scanner_comparison.png\n   - nb05_fdk_vs_hir.png\n   - nb05_detail_comparison.png\n   - nb05_vmi_comparison.png\n   - nb05_noise_stats.png\n   - nb05_noise_reduction.png\n5. All figures >1KB\n6. If errors: debug, fix, re-run\n7. CHECKPOINT",
+      "acceptance_criteria": [
+        "XCAT binary loads successfully",
+        "Notebook runs with 0 errored cells",
+        "All nb05_*.png figures exist",
+        "All figures >1KB",
+        "Git commit with [RUN-NB05]"
+      ]
+    },
+    {
+      "id": "VERIFY-ALL-FIGURES",
+      "title": "Final gate: all expected figure PNGs exist and are >1KB",
+      "priority": 17,
+      "status": "open",
+      "phase": "validation",
+      "blockers": ["RUN-NB01", "RUN-NB02", "RUN-NB03", "RUN-NB04", "RUN-NB05"],
+      "description": "## Mission\n\nFinal verification gate. Confirm ALL expected figures from ALL 5 notebooks exist and are valid.\n\n## Procedure\n\n1. List all figures:\n   ```bash\n   ls -la verification/figures/nb*.png\n   ```\n\n2. Check counts:\n   - nb01_*.png: 6 files\n   - nb02_*.png: 7 files\n   - nb03_*.png: 8 files\n   - nb04_*.png: 16 files\n   - nb05_*.png: 6 files\n   - Total: 43 figures\n\n3. Verify ALL are >1KB:\n   ```bash\n   find verification/figures -name 'nb*.png' -size -1k\n   ```\n   (Should return nothing — all files should be >=1KB)\n\n4. If any missing or too small: identify which notebook needs re-running\n\n5. Mark story done and output RALPH_COMPLETE",
+      "acceptance_criteria": [
+        "43 figure PNGs exist in verification/figures/",
+        "All figures are >1KB",
+        "No errored notebooks",
+        "RALPH_COMPLETE output"
+      ]
+    }
+  ]
+}
