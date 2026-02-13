@@ -43,7 +43,7 @@ Note: Uses Int32 for dimensions to ensure GPU compatibility.
     detector_v::AbstractArray{T, 2},
     n_cols::Int32, n_rows::Int32, n_angles::Int32,
     col_center::T, row_center::T,
-    pixel_mag::T, SAD::T, SAD_sq::T, pi_over_angles::T
+    pixel_mag::T, pixel_row_mag::T, SAD::T, SAD_sq::T, pi_over_angles::T
 ) where T
 
     acc = zero(T)
@@ -101,9 +101,9 @@ Note: Uses Int32 for dimensions to ensure GPU compatibility.
         dp_y = proj_y - dcy
         dp_z = proj_z - dcz
 
-        # Detector coordinates (u, v)
+        # Detector coordinates (u, v) — use pixel_mag for u (columns), pixel_row_mag for v (rows)
         u = (dp_x * dux + dp_y * duy + dp_z * duz) / pixel_mag
-        v = (dp_x * dvx + dp_y * dvy + dp_z * dvz) / pixel_mag
+        v = (dp_x * dvx + dp_y * dvy + dp_z * dvz) / pixel_row_mag
 
         # Convert to pixel indices (centered)
         col_f = u + col_center
@@ -165,7 +165,7 @@ This ensures the backprojection is the matched adjoint of the Siddon forward pro
     detector_v::AbstractArray{T, 2},
     n_cols::Int32, n_rows::Int32, n_angles::Int32,
     col_center::T, row_center::T,
-    pixel_mag::T
+    pixel_mag::T, pixel_row_mag::T
 ) where T
 
     acc = zero(T)
@@ -223,9 +223,9 @@ This ensures the backprojection is the matched adjoint of the Siddon forward pro
         dp_y = proj_y - dcy
         dp_z = proj_z - dcz
 
-        # Detector coordinates (u, v)
+        # Detector coordinates (u, v) — use pixel_mag for u (columns), pixel_row_mag for v (rows)
         u = (dp_x * dux + dp_y * duy + dp_z * duz) / pixel_mag
-        v = (dp_x * dvx + dp_y * dvy + dp_z * dvz) / pixel_mag
+        v = (dp_x * dvx + dp_y * dvy + dp_z * dvz) / pixel_row_mag
 
         # Convert to pixel indices (centered)
         col_f = u + col_center
@@ -323,9 +323,11 @@ function backproject!(
 
     magnification = T(geom.SDD / geom.SAD)
     pixel_size = T(geom.pixel_size)
+    pixel_row_size = T(geom.pixel_row_size)
     SAD = T(geom.SAD)
     SAD_sq = SAD * SAD
     pixel_mag = pixel_size * magnification
+    pixel_row_mag = pixel_row_size * magnification
 
     # Pre-compute constants
     col_center = (T(n_cols) + one(T)) / T(2)
@@ -389,7 +391,7 @@ function backproject!(
                 detector_u, detector_v,
                 n_cols, n_rows, n_angles,
                 col_center, row_center,
-                pixel_mag, SAD, SAD_sq, pi_over_angles
+                pixel_mag, pixel_row_mag, SAD, SAD_sq, pi_over_angles
             )
         end
     else
@@ -415,7 +417,7 @@ function backproject!(
                 detector_u, detector_v,
                 n_cols, n_rows, n_angles,
                 col_center, row_center,
-                pixel_mag
+                pixel_mag, pixel_row_mag
             )
         end
     end

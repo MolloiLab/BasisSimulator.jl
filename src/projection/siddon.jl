@@ -443,6 +443,7 @@ function siddon_forward_project!(
 
     magnification = T(geom.SDD / geom.SAD)
     pixel_size = T(geom.pixel_size)
+    pixel_row_size = T(geom.pixel_row_size)
 
     # Pre-compute detector center offset for GPU
     col_center = (T(n_cols) + one(T)) / T(2)
@@ -509,7 +510,7 @@ function siddon_forward_project!(
 
         # Compute detector pixel position
         u_offset = (T(col) - col_center) * pixel_size * magnification
-        v_offset = (T(row) - row_center) * pixel_size * magnification
+        v_offset = (T(row) - row_center) * pixel_row_size * magnification
 
         det_x = dcx + u_offset * dux + v_offset * dvx
         det_y = dcy + u_offset * duy + v_offset * dvy

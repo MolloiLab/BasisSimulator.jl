@@ -291,10 +291,11 @@ function compute_focal_spot_blur_fwhm(
     blur_width_cm = fs_width_cm * M_blur
     blur_length_cm = fs_length_cm * M_blur
 
-    # Convert to detector pixels
+    # Convert to detector pixels (width=columns, length=rows)
     pixel_size_det = geom.pixel_size * (geom.SDD / geom.SAD)
+    pixel_row_size_det = geom.pixel_row_size * (geom.SDD / geom.SAD)
     blur_width_pixels = blur_width_cm / pixel_size_det
-    blur_length_pixels = blur_length_cm / pixel_size_det
+    blur_length_pixels = blur_length_cm / pixel_row_size_det
 
     return (blur_width_pixels, blur_length_pixels)
 end
