@@ -14,16 +14,16 @@ using Printf
 PHYSICS_ENABLED     = true     # false = bare Siddon + FDK only (overrides all USE_* flags)
 
 # Individual physics toggles (only used when PHYSICS_ENABLED = true)
-USE_FILL_FACTOR        = true
-USE_FLAT_FILTER        = true
-USE_BOWTIE_FILTER      = true
-USE_DETECTOR_EFFICIENCY = true
-USE_CROSSTALK          = true
-USE_OPTICAL_CROSSTALK  = true
-USE_FOCAL_SPOT         = true
-USE_LAG                = true
-USE_HEEL_EFFECT        = true
-USE_BHC                = true
+USE_FILL_FACTOR        = false
+USE_FLAT_FILTER        = false
+USE_BOWTIE_FILTER      = false
+USE_DETECTOR_EFFICIENCY = false
+USE_CROSSTALK          = false
+USE_OPTICAL_CROSSTALK  = false
+USE_FOCAL_SPOT         = false
+USE_LAG                = false
+USE_HEEL_EFFECT        = false
+USE_BHC                = true    # <-- TESTING THIS
 
 # Detector geometry
 DETECTOR_COL_SIZE  = 1.0     # mm
@@ -45,7 +45,7 @@ RECON_FOV_CM       = 35.0
 DOWNSAMPLE_FACTOR  = 2
 
 # Output
-TEST_NAME          = "all_physics"
+TEST_NAME          = "plus_bhc"
 OUTPUT_DIR         = joinpath(@__DIR__, "outputs")
 
 # HU window for display
