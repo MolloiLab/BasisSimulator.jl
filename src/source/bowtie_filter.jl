@@ -709,12 +709,13 @@ function compute_bowtie_attenuation(
 
     # Compute detector pixel positions
     pixel_size_det = geom.pixel_size * (geom.SDD / geom.SAD)
+    pixel_row_size_det = geom.pixel_row_size * (geom.SDD / geom.SAD)
 
     transmission = zeros(Float64, n_cols, n_rows)
 
     for row in 1:n_rows
         # Cone angle for this row (alpha in CatSim)
-        v_offset = (row - (n_rows + 1) / 2) * pixel_size_det
+        v_offset = (row - (n_rows + 1) / 2) * pixel_row_size_det
         cone_angle = atan(v_offset / geom.SDD)
         cos_alpha = cos(cone_angle)
 
@@ -774,10 +775,11 @@ function compute_bowtie_attenuation_spectral(
     end
 
     pixel_size_det = geom.pixel_size * (geom.SDD / geom.SAD)
+    pixel_row_size_det = geom.pixel_row_size * (geom.SDD / geom.SAD)
     transmission = zeros(Float64, n_cols, n_rows, n_energies)
 
     for row in 1:n_rows
-        v_offset = (row - (n_rows + 1) / 2) * pixel_size_det
+        v_offset = (row - (n_rows + 1) / 2) * pixel_row_size_det
         cone_angle = atan(v_offset / geom.SDD)
         cos_alpha = cos(cone_angle)
 

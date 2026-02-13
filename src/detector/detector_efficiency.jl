@@ -320,12 +320,12 @@ function compute_detector_efficiency(
     # Convert thickness from mm to cm
     d_cm = model.thickness_mm / 10.0
 
-    pixel_size_det = geom.pixel_size * (geom.SDD / geom.SAD)
+    pixel_row_size_det = geom.pixel_row_size * (geom.SDD / geom.SAD)
     efficiency = zeros(Float64, n_cols, n_rows)
 
     for row in 1:n_rows
         # Cone angle (beta in CatSim)
-        v_offset = (row - (n_rows + 1) / 2) * pixel_size_det
+        v_offset = (row - (n_rows + 1) / 2) * pixel_row_size_det
         cos_beta = cos(atan(v_offset / geom.SDD))
 
         # Path length through scintillator
@@ -371,12 +371,12 @@ function compute_detector_efficiency_spectral(
     μ_vec = [get_scintillator_mu(model.material, E) for E in energies]
 
     d_cm = model.thickness_mm / 10.0
-    pixel_size_det = geom.pixel_size * (geom.SDD / geom.SAD)
+    pixel_row_size_det = geom.pixel_row_size * (geom.SDD / geom.SAD)
 
     efficiency = zeros(Float64, n_cols, n_rows, n_energies)
 
     for row in 1:n_rows
-        v_offset = (row - (n_rows + 1) / 2) * pixel_size_det
+        v_offset = (row - (n_rows + 1) / 2) * pixel_row_size_det
         cos_beta = cos(atan(v_offset / geom.SDD))
         path_length = d_cm / cos_beta
 

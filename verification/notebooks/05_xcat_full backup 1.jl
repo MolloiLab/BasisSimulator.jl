@@ -409,6 +409,9 @@ phantom_extent_mm = max(
 	size(phantom_labeled, 2) * voxel_size_cm[2]
 ) * 10.0
 
+# ╔═╡ a21a509a-3cb2-452d-ae46-53f1339e0f37
+@info "Auto-sized detectors from $(round(phantom_extent_mm/10, digits=1)) cm phantom" eict_det_cols eict_det_rows pcct_det_cols pcct_det_rows pcct_n_views
+
 # ╔═╡ ea2db1d2-d7ef-4c5c-9d74-e273ffda11b1
 md"""
 ### 3.1 EICT Single-kVp — GE Revolution Apex (Quantix 160, 120 kVp)
@@ -538,26 +541,8 @@ Clinical-quality simulation with full physics:
 
 # ╔═╡ a70bc722-e769-4132-b082-b0e89a6822b1
 sim_opts_eict = BS.SimOptions(
-	fidelity = :ideal,
+	fidelity = :high,
 	n_energy_bins = 100,
-	# n_energy_bins = 1,
-	
-	# use_fill_factor = true,
-	# use_flat_filter = true,
-	# use_bowtie_filter = true,
-	# use_detector_efficiency = true,
-	# use_scatter = true,
-	# use_scatter_correction = true,
-	# use_crosstalk = true,
-	# use_optical_crosstalk = true,
-	# use_focal_spot = true,
-	# use_noise = true,
-	# use_lag = true,
-	# use_heel_effect = true,
-	# use_das = false,
-	# use_bhc = true,
-	# use_pcct_corrections = false,
-	# pcct_noise_reduction = 0.0,
 	seed = 42
 )
 
@@ -566,7 +551,6 @@ sim_opts_pcct = BS.SimOptions(
 	fidelity = :high,
 	pcct_noise_reduction = 0.60,
 	n_energy_bins = 100,
-	# n_energy_bins = 2,
 	seed = 42
 )
 
@@ -643,9 +627,6 @@ begin
 	pcct_det_cols = ceil(Int, phantom_extent_mm * pcct_mag / 0.4) # 0.4mm col pitch
 	pcct_det_rows = min(144, n_recon_slices) # cap at clinical max
 end
-
-# ╔═╡ a21a509a-3cb2-452d-ae46-53f1339e0f37
-@info "Auto-sized detectors from $(round(phantom_extent_mm/10, digits=1)) cm phantom" eict_det_cols eict_det_rows pcct_det_cols pcct_det_rows pcct_n_views
 
 # ╔═╡ 00000007-0000-0000-0000-000000000001
 scanner_pcct_standard = BS.Scanner(
@@ -838,7 +819,6 @@ end
 end
 
 # ╔═╡ 5fe71f6b-e96e-45c7-ae60-dad1f13f110a
-# ╠═╡ disabled = true
 #=╠═╡
 # EICT Dual-kVp calibration — workspace scoped locally to free GPU memory
 (μ_water_dual_low, μ_water_dual_high) = let
@@ -879,7 +859,6 @@ end
   ╠═╡ =#
 
 # ╔═╡ 8396962e-dc91-436c-90fb-1525d5459a8a
-# ╠═╡ disabled = true
 #=╠═╡
 # PCCT 140kVp calibration — workspace scoped locally to free GPU memory
 μ_water_pcct = let
@@ -984,7 +963,7 @@ md"""
 	(fdk_hu, hir_hu)
 end;
 
-# ╔═╡ f409ebb5-12b9-455b-ac5e-4e96b95e0410
+# ╔═╡ 809eff73-0adf-4b2e-8581-aa49cb324837
 function plot_scanner_comparison_eict_only(volumes, titles; slice_idx=32, window=(-300, 400))
 	n = length(volumes)
 	f = CM.Figure(size=(350 * n + 50, 400))
@@ -998,17 +977,6 @@ function plot_scanner_comparison_eict_only(volumes, titles; slice_idx=32, window
 
 	CM.Colorbar(f[1, n+1], colormap=:grays, colorrange=window, label="HU")
 	f
-end
-
-# ╔═╡ fc8b2628-60cc-4110-a0ba-b9c44b08ce6b
-let
-	fig = plot_scanner_comparison_eict_only(
-		[recon_eict_fdk_hu],
-		["EICT 120 kVp\n(FDK)"];
-		slice_idx=32
-	)
-	# CM.save(joinpath(FIGURES_DIR, "nb05_scanner_comparison.png"), fig)
-	fig
 end
 
 # ╔═╡ 00000018-0000-0000-0000-000000000001
@@ -1561,8 +1529,7 @@ end
 # ╟─1b8aa963-7a95-4cc6-8670-de2e2caf28ab
 # ╟─00000016-0000-0000-0000-000000000001
 # ╠═00000017-0000-0000-0000-000000000001
-# ╠═f409ebb5-12b9-455b-ac5e-4e96b95e0410
-# ╟─fc8b2628-60cc-4110-a0ba-b9c44b08ce6b
+# ╠═809eff73-0adf-4b2e-8581-aa49cb324837
 # ╟─00000018-0000-0000-0000-000000000001
 # ╠═00000020-0000-0000-0000-000000000001
 # ╟─00000021-0000-0000-0000-000000000001
