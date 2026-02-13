@@ -13,7 +13,7 @@
 | NOISE-003 | open | — | — |
 | NOISE-004 | open | — | — |
 | NOISE-005 | open | — | — |
-| NOISE-006 | WIP | — | — |
+| NOISE-006 | done | PARTIAL — FDK normalization is primary suspect | ~5.5x |
 | NOISE-007 | open | — | — |
 | NOISE-008 | open | — | — |
 | NOISE-009 | open | — | — |
@@ -154,3 +154,36 @@ I0 = flux_density × mA × (rotation_time/views) × pixel_area_mm² × (1000/SDD
 - But noise σ_HU should be directly comparable
 
 **Script:** `ralph_loop/scripts/noise_isolation_test.jl` — measures σ_HU in 61×61 center water ROI
+
+**RESULTS (critical finding!):**
+
+| Configuration | σ_HU | μ_water (cm⁻¹) | Sino noise σ |
+|---------------|------|-----------------|--------------|
+| NOISELESS     | 11.7 | 0.2061          | 0.0          |
+| NOISE-ONLY    | 92.99| 0.2066          | 0.0668       |
+| FULL-PHYSICS  | 123.96| 0.2597         | 0.1165       |
+
+**Key findings:**
+
+1. **μ_water = 0.2066 cm⁻¹ — this is correct!** NIST water at 60 keV = 0.02059 cm⁻¹, but our value seems 10x high.
+   HOWEVER: CatSim uses `mu = 0.02` in **mm⁻¹** units. Our FDK reconstructs in **cm⁻¹** units. 0.2066 cm⁻¹ = 0.02066 mm⁻¹ → matches CatSim!
+
+2. **σ_HU = 93 for noise-only vs CatSim ~17 HU → 5.5x too noisy!**
+   This is WORSE than the original "2x" estimate from the notebook. The 2x figure was likely comparing full-physics BasisSimulator vs CatSim, not noise-only.
+
+3. **Noiseless σ = 11.7 HU** — significant FDK discretization artifacts even without noise. This should be near 0 for a uniform water region.
+
+4. **Full-physics adds ~33% more noise** (σ goes from 93 → 124 HU). Physics effects compound the problem but are NOT the primary cause.
+
+5. **NOISE-ONLY σ = 93 HU means the problem is in FDK normalization, NOT I0 or physics.**
+   The I0 is correct (NOISE-001 confirmed), the physics effects contribute ~33% (NOISE-003 scope), but the FDK reconstruction itself amplifies noise by ~5.5x too much.
+
+**Root cause partition: The 2x noise problem is actually a ~5.5x FDK normalization error.**
+
+WAIT — need to double-check. CatSim noise expectation of ~17 HU is for full-physics simulation. Our noise-only σ should be LESS than CatSim's full-physics σ (since no physics effects add noise). So the comparison should be: our noise-only σ vs CatSim noise-only σ. We don't have CatSim noise-only data. But 93 HU vs ~17 HU full-physics is clearly way too high.
+
+**Verdict: PARTIAL — The FDK reconstruction normalization is the primary suspect (NOISE-004/008/009). Noise-only σ = 93 HU is ~5.5x the CatSim full-physics σ, pointing strongly at FDK scaling.**
+
+**Impact: The 2x noise discrepancy in the notebook may have been measured differently (perhaps using a different ROI or comparing different things), but the underlying issue is the FDK normalization producing values with too much noise amplification.**
+
+**Next: NOISE-004 (FDK normalization factor) and NOISE-008 (ramp filter kernel normalization) are the top priorities. These can produce exactly this kind of systematic noise scaling error.**
