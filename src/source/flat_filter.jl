@@ -245,11 +245,12 @@ function compute_flat_filter_attenuation(
 
     # Compute geometric correction for each detector pixel
     pixel_size_det = geom.pixel_size * (geom.SDD / geom.SAD)
+    pixel_row_size_det = geom.pixel_row_size * (geom.SDD / geom.SAD)
     transmission = zeros(Float64, n_cols, n_rows)
 
     for row in 1:n_rows
         # Cone angle (alpha)
-        v_offset = (row - (n_rows + 1) / 2) * pixel_size_det
+        v_offset = (row - (n_rows + 1) / 2) * pixel_row_size_det
         cos_alpha = cos(atan(v_offset / geom.SDD))
 
         for col in 1:n_cols
@@ -307,10 +308,11 @@ function compute_flat_filter_attenuation_spectral(
     μt_vec = [sum(μ_matrix[:, k] .* t_cm) for k in 1:n_energies]
 
     pixel_size_det = geom.pixel_size * (geom.SDD / geom.SAD)
+    pixel_row_size_det = geom.pixel_row_size * (geom.SDD / geom.SAD)
     transmission = zeros(Float64, n_cols, n_rows, n_energies)
 
     for row in 1:n_rows
-        v_offset = (row - (n_rows + 1) / 2) * pixel_size_det
+        v_offset = (row - (n_rows + 1) / 2) * pixel_row_size_det
         cos_alpha = cos(atan(v_offset / geom.SDD))
 
         for col in 1:n_cols

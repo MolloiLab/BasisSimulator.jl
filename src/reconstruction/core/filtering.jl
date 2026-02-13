@@ -184,6 +184,7 @@ function cosine_weight!(
 
     # Detector pixel positions relative to center (typed constants for GPU)
     pixel_size = T(geom.pixel_size)
+    pixel_row_size = T(geom.pixel_row_size)
     magnification = T(geom.SDD / geom.SAD)
     SDD = T(geom.SDD)
     SDD_sq = SDD * SDD
@@ -200,9 +201,9 @@ function cosine_weight!(
         idx_0 = idx_0 ÷ n_cols
         row = (idx_0 % n_rows) + Int32(1)
 
-        # Compute detector pixel position
+        # Compute detector pixel position (u uses col pixel_size, v uses row pixel_size)
         u = (T(col) - col_center) * pixel_size * magnification
-        v = (T(row) - row_center) * pixel_size * magnification
+        v = (T(row) - row_center) * pixel_row_size * magnification
 
         # Distance from source to detector pixel
         dist = sqrt(SDD_sq + u^2 + v^2)
