@@ -172,3 +172,58 @@ All three modules use `pixel_size` (column-based) for BOTH u and v directions:
 
 - **Next:** Complete TEST-PHYSICS-ABLATION story (all acceptance criteria met). Move to TEST-DEXEL-SWEEP to investigate the "more dexels = worse" observation.
 
+### TEST-DEXEL-SWEEP — Iteration 1 (2026-02-12): Coarse / Default / Fine
+- **Test:** Polychromatic (flat_filter only) at 3 detector resolutions
+- **Settings:** All same: 64 rows, 1600 views, HannFilter recon to 512x512x64
+
+| Config | Col Size | Cols | Sim Time | Center μ | μ Range | Observation |
+|--------|----------|------|----------|----------|---------|-------------|
+| coarse_2mm | 2.0mm | 422 | ~275s | ~0.29 | similar | Fine aliasing texture (horizontal striations), relatively smooth edges |
+| default_1mm | 1.0mm | 844 | ~275s | ~0.29 | similar | Cleaner overall, sharper edges, subtle dark halos at bone boundaries |
+| fine_05mm | 0.5mm | 1688 | ~275s | ~0.29 | similar | Dark halos/streaks around bone more pronounced, better resolved |
+
+- **Trend:** Artifacts do get slightly more visible with finer sampling, BUT the artifact character is consistent beam hardening (not aliasing ghosts). Finer detector pixels better resolve the beam hardening patterns that exist in the sinogram data.
+- **Image:** dexel_coarse_2mm.png, dexel_default_1mm.png, dexel_fine_05mm.png (+ zoom versions)
+- **Note:** Ultrafine (0.25mm, 3376 cols) was not completed — script was killed by timeout during this run.
+
+### TEST-DEXEL-SWEEP — Iteration 2 (2026-02-12): Square Pixel Test
+- **Test:** Square pixels (col_size = row_size = 1.0mm) — tests pixel_size/pixel_row_size bug theory
+- **Settings:** 844 cols × 64 rows, 1.0mm × 1.0mm, polychromatic (flat_filter only)
+- **Result:** **ARTIFACTS IDENTICAL** to default (1.0mm col × 0.625mm row) configuration
+- **Observation:**
+  - Sim time: 652.9s (longer than expected — may be JIT recompilation due to different row_size)
+  - Center μ = 0.3362, range [-0.1401, 0.6382]
+  - Zoomed image looks essentially identical to default_1mm
+  - The pixel_size/pixel_row_size self-consistent bug does NOT change the artifact pattern
+- **Conclusion:** pixel_row_size bug is NOT the cause of the ghost artifacts. It causes z-direction scaling errors but since FP/BP/filter all use the same wrong value, the errors cancel.
+- **Image:** dexel_square_1mm.png, dexel_square_1mm_zoom.png
+
+### INSPECT-SINOGRAM — Iteration 1 (2026-02-12): Full Sinogram Analysis
+- **Test:** Detailed sinogram inspection — polychromatic vs bare (monochromatic)
+- **Settings:** 844 cols × 64 rows, 1.0mm col, 0.625mm row, 1600 views
+
+#### Raw Sinogram
+- **sino_full_polychromatic.png:** Full sinogram (all angles, middle row) — smooth sinusoidal traces of anatomical structures. No visible oscillations, ringing, or anomalous patterns.
+- **sino_single_view.png:** Single detector view — clean 2D detector image, smooth attenuation profile across rows and columns.
+- **sino_view_diff.png:** Mean absolute difference between adjacent views — shows smooth angular change concentrated at high-contrast boundaries (ribs, spine). No high-frequency oscillations.
+- **sino_profiles.png:** Line profiles at 4 angles — smooth profiles with clean transitions at material boundaries. No ringing.
+- **sino_angle_trace.png:** Value at peak column across all angles — smooth sinusoidal trace as bone rotates past that detector column.
+
+#### Polychromatic vs Bare Comparison
+- **sino_diff_poly_vs_bare.png:** Sinogram difference is SMOOTH — concentrated where rays pass through bone (beam hardening reduces measured μ·L). Maximum difference ~-1.0 at thickest bone paths. No high-frequency artifacts, no oscillations.
+- **sino_profile_bare_vs_poly.png:** Polychromatic line profile is uniformly LOWER than bare through body center (beam hardening) but similar at edges (short path lengths). Transitions are smooth — no edge ringing.
+- **sino_diff_profile.png:** Difference profile is smooth with peaks at -1.0 Δ(μ·L) through thickest bone paths. No oscillations or ringing.
+
+#### Reconstruction Comparison
+- **recon_bare_vs_poly_comparison.png:** Side-by-side bare / polychromatic / difference:
+  - Bare: center=0.3804, range [-0.1015, 0.7422]
+  - Poly: center=0.3204, range [-0.0852, 0.6297]
+  - Difference range: [-0.1374, +0.0543]
+  - Difference image shows CLASSIC beam hardening: negative (dark) halos around all bone structures, positive (bright) cupping in body center. The pattern matches textbook beam hardening artifacts exactly.
+
+#### Key Conclusion
+- **Artifact is in the SINOGRAM (forward projection)**, not introduced by reconstruction
+- The sinogram difference is smooth and physically correct — it IS beam hardening
+- No high-frequency "ghost" patterns visible in sinogram or reconstruction
+- The "ghost-like aliasing" described by the user is most likely **beam hardening artifacts** (cupping + dark streaks near bone) — expected physics behavior of polychromatic X-ray simulation without perfect BHC
+
