@@ -174,6 +174,9 @@ function run_and_measure(phantom_gpu, phantom_water_gpu, scanner, protocol, sim_
     geom = ws.geom
     I0 = BS.compute_detector_I0(geom, protocol)
 
+    _sino_mean = mean(sino_center)
+    _sino_noise_std = std(sino_noise_center)
+
     ws = nothing; ws_fdk = nothing; vol = nothing; GC.gc(true)
 
     results = (
@@ -182,8 +185,8 @@ function run_and_measure(phantom_gpu, phantom_water_gpu, scanner, protocol, sim_
         μ_hu_water = μ_hu,
         μ_water_cal = μ_water,
         I0 = I0,
-        sino_mean = mean(sino_center),
-        sino_noise_std = std(sino_noise_center),
+        sino_mean = _sino_mean,
+        sino_noise_std = _sino_noise_std,
     )
 
     println("  [$label] Results:")
@@ -191,8 +194,8 @@ function run_and_measure(phantom_gpu, phantom_water_gpu, scanner, protocol, sim_
     println("    μ_HU (water ROI mean)           = $(round(μ_hu, digits=2)) HU")
     println("    μ_water (calibration)            = $(round(μ_water, sigdigits=4)) cm⁻¹")
     println("    I0 (photons/pixel/view)          = $(round(Int, I0))")
-    println("    Mean sinogram (center)           = $(round(sino_mean, digits=4))")
-    println("    Sinogram noise σ (center)        = $(round(sino_noise_std, sigdigits=4))")
+    println("    Mean sinogram (center)           = $(round(_sino_mean, digits=4))")
+    println("    Sinogram noise σ (center)        = $(round(_sino_noise_std, sigdigits=4))")
     println()
 
     return results

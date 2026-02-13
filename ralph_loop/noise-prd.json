@@ -69,7 +69,7 @@
       "id": "NOISE-006",
       "title": "DIAGNOSTIC: Isolate noise — run noise-only simulation",
       "priority": 0,
-      "status": "open",
+      "status": "done",
       "type": "DIAGNOSTIC",
       "description": "The most direct diagnostic: run the notebook 01 simulation with fidelity=:ideal (no physics) + use_noise=true. This isolates quantum noise from all other effects.\n\nExperiment:\n1. Create a minimal Julia script that:\n   a. Creates the same phantom/scanner/protocol as notebook 01\n   b. Runs simulate() with SimOptions(fidelity=:ideal, use_noise=true)\n   c. Reconstructs with same ReconOptions\n   d. Measures noise (σ) in central water ROI\n2. Compare this noise value to:\n   a. The full-physics noise from notebook 01\n   b. CatSim's noise value\n3. If noise-only matches CatSim → problem is in physics effects\n4. If noise-only is STILL 2x → problem is in I0 computation or FDK normalization\n\nThis is the MOST IMPORTANT experiment because it partitions the problem:\n- Pure noise issue (I0, reconstruction) vs physics effects interaction\n\nACCEPTANCE: Report noise-only σ value, compare to full-physics σ and CatSim σ. Identify which partition the 2x discrepancy falls into.",
       "testCommand": "julia --project=. -e 'include(\"ralph_loop/scripts/noise_isolation_test.jl\")'",
