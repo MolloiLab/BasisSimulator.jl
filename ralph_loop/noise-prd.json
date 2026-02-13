@@ -1,0 +1,159 @@
+{
+  "project": "BasisSimulator.jl — 2x Noise Diagnosis",
+  "version": "1.0.0",
+  "created": "2026-02-13",
+  "goal": "Identify and fix the root cause of BasisSimulator being ~2x noisier than CatSim/XCIST",
+  "CRITICAL_STATUS": {
+    "symptom": "CNR in notebook 01 is 2x worse than CatSim for identical geometry/protocol",
+    "impact": "All downstream metrics (NPS, MTF, image quality) are affected",
+    "topHypotheses": [
+      "NOISE-001: Notebook 01 may bypass driver API and use hardcoded I0=1e6",
+      "NOISE-002: Spectrum .dat files may already include Al filtration (double-filtering)",
+      "NOISE-003: Physics effects applied BEFORE noise artificially increase attenuation",
+      "NOISE-004: FDK reconstruction normalization factor may be wrong",
+      "NOISE-005: CatSim comparison parameters may not truly match"
+    ]
+  },
+  "stories": [
+    {
+      "id": "NOISE-001",
+      "title": "DIAGNOSTIC: Trace exact I0 value used in notebook 01",
+      "priority": 0,
+      "status": "done",
+      "type": "DIAGNOSTIC",
+      "description": "Read verification/notebooks/01_single_kvp_verification.jl end-to-end. Trace exactly how I0 (photon count per detector per view) is computed.\n\nKey questions:\n1. Does notebook 01 use simulate() driver API or direct forward_project() calls?\n2. If driver API: I0 is computed by compute_detector_I0() via sim_detect(). Check this path.\n3. If direct API: I0 may be hardcoded via full_physics_config() which uses I0=1e6.\n4. What is the ACTUAL numeric I0 value for the notebook's parameters?\n   - mA=200, rotation_time=1.0s, views=984, SID=540mm, SDD=950mm\n   - pixel_size=0.569mm at isocenter, magnification=950/540=1.759\n   - pixel area at detector = (0.569*1.759)^2 = ~1.0 mm^2\n5. Compare computed I0 to what CatSim uses for the same parameters.\n\nACCEPTANCE: Document exact I0 value, how it was computed, and whether it matches CatSim expectations.",
+      "testCommand": "Read notebook 01 and src/api/driver.jl to trace I0 computation path",
+      "blockedBy": []
+    },
+    {
+      "id": "NOISE-002",
+      "title": "DIAGNOSTIC: Check spectrum files for pre-existing filtration",
+      "priority": 0,
+      "status": "open",
+      "type": "DIAGNOSTIC",
+      "description": "The spectrum .dat files loaded by load_spectrum() may already include aluminum inherent filtration. If so, applying flat_filter_al(2.5) in the physics pipeline DOUBLE-FILTERS the beam.\n\nDouble filtering means:\n1. Effective spectrum is harder (more high-energy photons removed twice)\n2. Total photon flux is lower\n3. Lower flux = more noise (noise ∝ 1/√flux)\n4. A 2.5mm Al filter reduces flux by ~30-50% at 120 kVp\n5. Double-applying could reduce flux by another 30-50%, increasing noise by ~40-70%\n\nInvestigation:\n1. Read src/source/spectrum.jl — how are spectrum files loaded?\n2. Look at the actual .dat files — do their headers mention filtration?\n3. Compare raw spectrum shape to unfiltered tungsten (should peak at ~30-40 keV)\n4. If pre-filtered, the low-energy tail will be suppressed below the K-edge of Al (1.56 keV) and around 20-40 keV range\n5. Check CatSim's spectrum loading — does XCIST apply filtration separately too?\n\nACCEPTANCE: Determine definitively whether spectrum files include inherent filtration. If yes, quantify the double-filtering noise impact.",
+      "testCommand": "Read spectrum .dat files and compare to expected unfiltered tungsten spectrum",
+      "blockedBy": []
+    },
+    {
+      "id": "NOISE-003",
+      "title": "DIAGNOSTIC: Quantify noise impact of physics effects applied before noise",
+      "priority": 1,
+      "status": "open",
+      "type": "DIAGNOSTIC",
+      "description": "Several physics effects are applied to the sinogram BEFORE quantum noise. These modify sinogram values (attenuation), which changes λ = I0 * exp(-p). If p increases, λ decreases, and noise increases.\n\nEffects applied before noise (in order):\n1. Heel effect (intensity domain — non-uniform intensity)\n2. DAS model (gain + electronic noise — BROKEN, not used)\n3. Fill factor (reduces signal by 10%)\n4. Flat filter (adds 2.5mm Al attenuation — 30-50% flux reduction)\n5. Scatter (adds scatter photons — actually REDUCES noise!)\n6. Scatter correction (removes scatter — INCREASES noise)\n7. Bowtie filter (adds angle-dependent attenuation)\n8. Crosstalk (spreads signal between pixels — generally neutral)\n9. Focal spot blur (spatial averaging — generally reduces noise)\n\nCritical question: Are these effects ALSO present in CatSim's pipeline in the same order? If CatSim applies noise to the IDEAL sinogram (before physics effects), and we apply it AFTER, the effective noise levels differ.\n\nSpecifically:\n- Fill factor adds ~0.105 to sinogram (-log(0.9) = 0.105)\n- This means λ is reduced by factor 0.9\n- Noise increases by factor 1/√0.9 ≈ 1.054 (5.4%)\n- Flat filter, bowtie, scatter correction all compound this\n\nACCEPTANCE: Run a controlled experiment — simulate with and without each physics effect, measure noise (σ in water ROI). Create a table showing noise contribution of each effect.",
+      "testCommand": "Compare noise with incremental physics effects enabled/disabled",
+      "blockedBy": ["NOISE-001"]
+    },
+    {
+      "id": "NOISE-004",
+      "title": "DIAGNOSTIC: Verify FDK reconstruction normalization factor",
+      "priority": 1,
+      "status": "open",
+      "type": "DIAGNOSTIC",
+      "description": "FDK reconstruction has a normalization factor that scales the final image. If this factor is wrong, ALL noise measurements will be systematically off.\n\nCheck:\n1. Read src/reconstruction/fbp/fdk.jl — find the normalization factor\n2. The standard FDK formula uses factor: Δθ/(2π) or π/N\n   where N = number of angles, Δθ = angular step\n3. TIGRE uses: factor = (2*π/nangles) * (DSO/DSD)^2\n4. Our implementation should match TIGRE since we ported from it\n5. If we use π/N instead of 2π/N (or vice versa), noise is 2x off!\n6. Also check cosine weighting factor in filtering.jl\n7. Check the ramp filter kernel normalization\n\nThis is a HIGH-PRIORITY hypothesis because a 2x FDK normalization error would perfectly explain 2x noise.\n\nACCEPTANCE: Verify FDK normalization matches TIGRE reference implementation. If different, quantify the factor.",
+      "testCommand": "Read src/reconstruction/fbp/fdk.jl and src/reconstruction/core/filtering.jl and compare to TIGRE FDK",
+      "blockedBy": []
+    },
+    {
+      "id": "NOISE-005",
+      "title": "DIAGNOSTIC: Compare CatSim parameters exhaustively",
+      "priority": 1,
+      "status": "open",
+      "type": "DIAGNOSTIC",
+      "description": "The 2x noise difference could be from parameter mismatch between BasisSimulator and CatSim. Even small differences compound.\n\nCheck notebook 01's CatSim configuration against BasisSimulator:\n1. SID/SDD: Are they identical? (540/950 mm)\n2. Detector size: Is CatSim using 1.0mm face pitch while we use 0.569mm at isocenter?\n3. Number of detector elements: Same count?\n4. mA: Same (200)?\n5. kVp: Same (120)?\n6. Spectrum: Same source? CatSim uses tungsten_tar7.0_120_filt.dat — 'filt' suggests pre-filtered!\n7. Bowtie filter: CatSim may have different bowtie shape\n8. Reconstruction FOV: Same (350mm)?\n9. Matrix size: Same (512x512x9)?\n10. FDK filter: Both using Ram-Lak?\n11. CatSim's mu = 0.02 cm^-1 — is this the same as our empirical water μ?\n\nCRITICAL INSIGHT from notebook 01: CatSim uses 'tungsten_tar7.0_120_filt.dat' — the '_filt' suffix likely means the spectrum is ALREADY pre-filtered through inherent aluminum. This directly relates to NOISE-002.\n\nACCEPTANCE: Create side-by-side parameter comparison table. Identify ANY discrepancies.",
+      "testCommand": "Read notebook 01 CatSim setup section and compare all parameters",
+      "blockedBy": []
+    },
+    {
+      "id": "NOISE-006",
+      "title": "DIAGNOSTIC: Isolate noise — run noise-only simulation",
+      "priority": 0,
+      "status": "open",
+      "type": "DIAGNOSTIC",
+      "description": "The most direct diagnostic: run the notebook 01 simulation with fidelity=:ideal (no physics) + use_noise=true. This isolates quantum noise from all other effects.\n\nExperiment:\n1. Create a minimal Julia script that:\n   a. Creates the same phantom/scanner/protocol as notebook 01\n   b. Runs simulate() with SimOptions(fidelity=:ideal, use_noise=true)\n   c. Reconstructs with same ReconOptions\n   d. Measures noise (σ) in central water ROI\n2. Compare this noise value to:\n   a. The full-physics noise from notebook 01\n   b. CatSim's noise value\n3. If noise-only matches CatSim → problem is in physics effects\n4. If noise-only is STILL 2x → problem is in I0 computation or FDK normalization\n\nThis is the MOST IMPORTANT experiment because it partitions the problem:\n- Pure noise issue (I0, reconstruction) vs physics effects interaction\n\nACCEPTANCE: Report noise-only σ value, compare to full-physics σ and CatSim σ. Identify which partition the 2x discrepancy falls into.",
+      "testCommand": "julia --project=. -e 'include(\"ralph_loop/scripts/noise_isolation_test.jl\")'",
+      "blockedBy": []
+    },
+    {
+      "id": "NOISE-007",
+      "title": "DIAGNOSTIC: Verify detector blur is not amplifying noise",
+      "priority": 2,
+      "status": "open",
+      "type": "DIAGNOSTIC",
+      "description": "The DetectorModel includes a blur with FWHM=1.5 pixels by default. This is applied BEFORE quantum noise in apply_detector_model!().\n\nThe order is: blur → quantum noise → electronic noise (line 683-688 of detector_noise.jl)\n\nApplying blur BEFORE noise doesn't make physical sense — in real CT:\n1. Photons hit detector → quantum noise occurs at photon absorption\n2. Scintillator light spreads → detector PSF/blur\n3. Readout → electronic noise\n\nSo the correct order should be: quantum noise → blur → electronic noise\n\nBut applying blur BEFORE noise means noise is computed on a BLURRED sinogram. The effect:\n- Blur averages nearby pixels, reducing effective signal variations\n- This reduces λ variations but doesn't reduce λ itself\n- So noise magnitude should be similar, but spatial correlation changes\n- However, the 2D convolution kernel normalization might be wrong\n\nCheck:\n1. Is FWHM=1.5 reasonable? (CatSim default?)\n2. Does CatSim apply detector blur? At what stage?\n3. Does the blur kernel sum to exactly 1.0? (If > 1.0, it amplifies signal + noise)\n4. Should blur be applied in the physics pipeline at all, or is it implicit in other effects?\n\nACCEPTANCE: Determine if detector blur order/magnitude contributes to noise discrepancy.",
+      "testCommand": "Read detector_noise.jl apply_detector_blur! and compare to CatSim Detection_EI.py",
+      "blockedBy": []
+    },
+    {
+      "id": "NOISE-008",
+      "title": "DIAGNOSTIC: Check ramp filter kernel normalization",
+      "priority": 1,
+      "status": "open",
+      "type": "DIAGNOSTIC",
+      "description": "The ramp filter in FDK reconstruction amplifies high-frequency components, including noise. If the ramp filter normalization is wrong, noise is systematically scaled.\n\nKey checks in src/reconstruction/core/filtering.jl:\n1. Ramp kernel values:\n   - h[0] = 1/(4*Δ²) where Δ = pixel_size\n   - h[n] = 0 for even n != 0\n   - h[n] = -1/(π²*n²*Δ²) for odd n\n2. Is Δ correctly computed from pixel_size?\n3. Is there proper zero-padding for FFT?\n4. Does the filter scale with pixel_size correctly?\n5. Compare our ramp kernel to TIGRE's ramp kernel (since we ported from TIGRE)\n\nA factor of 2 error in Δ (using pixel_size in wrong units — cm vs mm) would cause exactly 4x difference in ramp filter amplitude, which translates to 2x in noise (noise scales linearly with filter amplitude).\n\nACCEPTANCE: Verify ramp filter kernel matches TIGRE implementation. Check Δ units (cm vs mm).",
+      "testCommand": "Read src/reconstruction/core/filtering.jl and compare to TIGRE filtering",
+      "blockedBy": []
+    },
+    {
+      "id": "NOISE-009",
+      "title": "DIAGNOSTIC: Check backprojection weighting factor",
+      "priority": 1,
+      "status": "open",
+      "type": "DIAGNOSTIC",
+      "description": "The FDK backprojection has a distance-dependent weight: D²/(D-s)². If this weight is wrong or the overall scaling factor (Δθ normalization) is wrong, it directly affects noise.\n\nCheck in src/reconstruction/core/backprojection.jl:\n1. The angular step factor: Δθ = 2π/N_angles or Δθ = π/N_angles?\n2. The FDK weight: D²/(D-s)² — is D in the same units as s?\n3. The overall normalization: some implementations use 1/N, others use Δθ\n4. Does our implementation match TIGRE's voxel_backprojection?\n\nCRITICAL: TIGRE uses Δθ as the normalization, and computes it as:\n  Δθ = 2π / n_angles (full rotation)\n  but some implementations use π / n_angles (half rotation, Parker weighting)\n\nUsing 2π/N instead of π/N would make the reconstruction values 2x larger, making noise (in HU) appear 2x larger.\n\nACCEPTANCE: Verify backprojection normalization matches TIGRE. Document exact formula used.",
+      "testCommand": "Read src/reconstruction/core/backprojection.jl and compare to TIGRE",
+      "blockedBy": []
+    },
+    {
+      "id": "NOISE-010",
+      "title": "DIAGNOSTIC: Verify cosine weighting implementation",
+      "priority": 2,
+      "status": "open",
+      "type": "DIAGNOSTIC",
+      "description": "FDK applies cosine weighting before filtering:\n  p̃(θ,u,v) = p(θ,u,v) × D / √(D² + u² + v²)\n\nThis weight is always ≤ 1 (reduces signal at detector edges). If applied incorrectly:\n1. If applied twice → signal reduced by D²/(D²+u²+v²), noise effectively doubled\n2. If not applied → reconstructed values are wrong, but noise might be similar\n3. If applied in wrong coordinate system → values are wrong\n\nCheck:\n1. Is cosine weighting applied in filtering.jl or in fdk.jl?\n2. Is it applied once or possibly twice (e.g., also in backprojection)?\n3. Does our implementation match TIGRE?\n4. Is D in cm or mm? Consistent with u, v?\n\nACCEPTANCE: Verify cosine weighting is applied exactly once, in correct coordinate system.",
+      "testCommand": "Read filtering.jl cosine weighting code and search for duplicates",
+      "blockedBy": []
+    },
+    {
+      "id": "NOISE-011",
+      "title": "DIAGNOSTIC: Check HU conversion μ_water value",
+      "priority": 2,
+      "status": "open",
+      "type": "DIAGNOSTIC",
+      "description": "Noise in HU is computed as:\n  σ_HU = σ_μ × 1000 / μ_water\n\nIf μ_water is wrong by factor k, σ_HU is wrong by factor 1/k.\n\nNotebook 01 uses empirical water calibration (measures μ_water from a water cylinder scan). But:\n1. If the empirical μ_water is too LOW (e.g., from reconstruction artifacts), σ_HU is TOO HIGH\n2. A μ_water that's 50% of correct → σ_HU is 2x too large\n3. Compare empirical μ_water to NIST value at effective energy (~65-70 keV for 120 kVp)\n   NIST water μ at 65 keV ≈ 0.0200 cm⁻¹, at 70 keV ≈ 0.0193 cm⁻¹\n4. If reconstruction values are in mm⁻¹ instead of cm⁻¹, μ_water would be 10x smaller\n\nACCEPTANCE: Report empirical μ_water from notebook 01, compare to NIST expectation. Check units.",
+      "testCommand": "Trace μ_water computation in notebook 01",
+      "blockedBy": ["NOISE-001"]
+    },
+    {
+      "id": "NOISE-012",
+      "title": "DIAGNOSTIC: Verify spectrum weight normalization",
+      "priority": 2,
+      "status": "open",
+      "type": "DIAGNOSTIC",
+      "description": "The polychromatic forward projection uses:\n  I/I₀ = Σ w_e × exp(-L_e)\n  p = -log(I/I₀)\n\nThis assumes Σ w_e = 1.0 (normalized weights). If weights don't sum to 1:\n- If Σw > 1: I/I₀ > 1 for air (p < 0), but relative noise should be OK\n- If Σw < 1: I/I₀ < 1 for air, noise slightly higher\n\nBut the bigger issue: does downsample_spectrum() preserve normalization?\n\nCheck:\n1. load_spectrum() — does it normalize weights to sum=1?\n2. downsample_spectrum() — after binning, do new weights sum=1?\n3. If weights sum to 0.95 (5% lost in binning), this is a small but real effect\n\nACCEPTANCE: Verify weights sum to 1.0 after loading and downsampling. If not, quantify impact.",
+      "testCommand": "Read spectrum.jl load_spectrum and downsample_spectrum, check normalization",
+      "blockedBy": []
+    },
+    {
+      "id": "NOISE-013",
+      "title": "FIX: Apply root cause fix for 2x noise",
+      "priority": 0,
+      "status": "open",
+      "type": "FIX",
+      "description": "Based on findings from NOISE-001 through NOISE-012, implement the fix for the root cause(s) of 2x noise.\n\nThis story is a placeholder — its scope depends on which diagnostic story identifies the root cause.\n\nPossible fixes:\n- If I0 is wrong: fix compute_detector_I0() or the notebook's I0 path\n- If spectrum is double-filtered: remove flat_filter from physics when using pre-filtered spectra\n- If FDK normalization is wrong: fix the scaling factor\n- If ramp filter Δ has wrong units: fix unit conversion\n- If multiple factors each contribute 20-30%: fix all of them\n\nACCEPTANCE: After fix, re-run notebook 01 and verify CNR is within 20% of CatSim.",
+      "testCommand": "Re-run notebook 01, compare CNR to CatSim",
+      "blockedBy": ["NOISE-001", "NOISE-002", "NOISE-003", "NOISE-004", "NOISE-005", "NOISE-006"]
+    },
+    {
+      "id": "NOISE-014",
+      "title": "VALIDATE: Re-run all 5 notebooks after fix",
+      "priority": 3,
+      "status": "open",
+      "type": "VALIDATE",
+      "description": "After NOISE-013 is complete, re-run all 5 verification notebooks to ensure:\n1. No regressions in HU accuracy\n2. Noise levels are reasonable\n3. VMI still works correctly\n4. PCCT physics still produces expected results\n5. XCAT simulation still runs\n\nACCEPTANCE: All 5 notebooks produce expected results without errors.",
+      "testCommand": "Run all 5 verification notebooks",
+      "blockedBy": ["NOISE-013"]
+    }
+  ]
+}
