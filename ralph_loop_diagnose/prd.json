@@ -129,7 +129,7 @@
       "id": "TEST-PHYSICS-ABLATION",
       "title": "Enable physics effects one by one to find the culprit",
       "priority": 3,
-      "status": "in_progress",
+      "status": "done",
       "phase": "diagnosis",
       "blockers": ["TEST-BARE-SIDDON"],
       "description": "## Mission\n\n**Only run this if TEST-BARE-SIDDON shows NO artifacts** (clean bare image).\n\nStarting from bare Siddon + FDK, enable ONE physics effect at a time and check for artifacts:\n\n1. `diag_plus_crosstalk.png` — crosstalk only\n2. `diag_plus_optical_crosstalk.png` — optical crosstalk only\n3. `diag_plus_focal_spot.png` — focal spot only\n4. `diag_plus_lag.png` — detector lag only\n5. `diag_plus_bowtie.png` — bowtie filter only\n6. `diag_plus_bhc.png` — beam hardening correction only\n7. `diag_plus_fill_factor.png` — fill factor only\n8. `diag_plus_flat_filter.png` — flat filter only\n9. `diag_plus_heel.png` — heel effect only\n10. `diag_plus_det_eff.png` — detector efficiency only\n\nFor each, document: ARTIFACTS PRESENT / ABSENT.\n\nIf time is limited, prioritize in this order (most likely culprits first):\n1. crosstalk\n2. optical_crosstalk\n3. focal_spot\n4. lag\n5. bowtie\n6. bhc\n\nThese are the effects that spread signal spatially or spectrally and could create edge ghosts.\n\n## Key\n\nFor each test, keep ALL OTHER physics off. Only enable the ONE effect being tested.\n\n## If multiple effects needed\n\nIf no single effect reproduces the artifact, try combinations:\n- crosstalk + optical_crosstalk\n- all filter effects (flat + bowtie + fill_factor)\n- all detector effects (crosstalk + optical + lag + efficiency)\n\nDocument which combination first shows artifacts.",

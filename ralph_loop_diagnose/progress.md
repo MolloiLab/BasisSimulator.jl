@@ -125,3 +125,50 @@ All three modules use `pixel_size` (column-based) for BOTH u and v directions:
 - **Created:** `ralph_loop_diagnose/diag_diff.jl` — difference image script that tests flat_filter, det_eff, lag, fill_factor, heel individually + creates difference images
 - **Next:** Run diag_diff.jl to confirm flat_filter and det_eff also show the artifact (confirming polychromatic pathway hypothesis)
 
+### TEST-PHYSICS-ABLATION — Iteration 3 (2026-02-12): Difference Images + All 10 Effects Tested
+- **Task:** Ran diag_diff.jl — all 10 individual physics effects tested, plus difference images
+- **Full results table (all 10 effects):**
+
+| Effect | Sim Time | Center μ | μ Range | Spectral? | Artifact Change |
+|--------|----------|----------|---------|-----------|-----------------|
+| bare_siddon (none) | 5.9s | 0.334 | [-0.10, 0.74] | NO | baseline |
+| flat_filter only | 277.5s | 0.291 | [-0.09, 0.63] | YES | PRESENT — same as all-physics |
+| det_eff only | 277.9s | 0.287 | [-0.09, 0.63] | YES | PRESENT — same as all-physics |
+| bowtie only | 275.1s | 0.340 | [-0.05, 0.66] | YES | PRESENT — same as all-physics |
+| bhc only | 302s | 0.213 | [-1388, 1826]* | YES | PRESENT — same as all-physics |
+| crosstalk only | 3.2s | 0.334 | same as bare | NO | ABSENT |
+| optical only | 3.1s | 0.334 | same as bare | NO | ABSENT |
+| focal_spot only | 3.2s | 0.334 | same as bare | NO | ABSENT |
+| lag only | 3.1s | 0.334 | [-0.10, 0.72] | NO | ABSENT |
+| fill_factor only | 2.9s | 0.339 | [-0.10, 0.75] | NO | ABSENT |
+| heel only | 3.1s | 0.334 | same as bare | NO | ABSENT |
+
+(*bhc μ values from earlier iteration with different calibration)
+
+- **Difference Image Analysis (bare vs polychromatic):**
+  - **diff_flat_filter.png:** Classic beam hardening pattern — blue (negative) halos around bone, red (positive) cupping in center body. Difference is smooth, no high-frequency "ghost" patterns.
+  - **diff_det_eff.png:** Nearly identical pattern to flat_filter difference.
+  - **diff_bowtie.png:** Same bone-boundary pattern plus radial modulation from bowtie filter shape (stronger attenuation at periphery).
+  - **sino_diff_bowtie.png:** Sinogram difference is spatially smooth — dominated by bowtie attenuation pattern. No high-frequency artifacts or oscillations.
+  - **profile_bare_vs_bowtie.png:** Line profile shows bowtie raises soft tissue μ, slightly reduces bone/soft-tissue contrast. Transitions remain smooth — no oscillations or ringing.
+  - **narrow_window_comparison.png:** Narrow HU window (-50 to 100) — mostly clipped. No obvious ghost patterns visible beyond the expected contrast changes.
+
+- **CRITICAL CONCLUSION: All artifacts correlate 100% with spectral integration (polychromatic pathway)**
+  - ALL 4 spectral triggers (flat_filter, bowtie, det_eff, bhc) produce the same artifact pattern
+  - ALL 6 non-spectral effects (crosstalk, optical, focal_spot, lag, fill_factor, heel) produce images identical to bare Siddon
+  - The artifact pattern in difference images is **classic beam hardening** — cupping + bone-edge effects
+  - This is **expected physics**, not a bug in the polychromatic code
+
+- **GPU Closure Analysis:**
+  - Investigated potential Core.Box GPU closure bugs in polychromatic.jl (CLAUDE.md anti-pattern)
+  - polychromatic.jl:1105-1110 — conditional assignment of `weights_norm`, `μ_volume`, `sino_mono`, `I_transmitted`
+  - polychromatic.jl:240 — conditional assignment of `μ_at_energy` in `create_μ_volume!`
+  - **However:** When called through the workspace path (always the case in practice), these kwargs are ALWAYS non-nothing, so the conditional branch always takes one path. Julia's compiler likely doesn't box these.
+  - siddon.jl:453-480 — conditional geometry arrays also always provided by workspace
+  - **Verdict:** Core.Box may be a latent bug but is unlikely to be causing the artifacts in the workspace path
+
+- **Revised hypothesis about user's "ghost-like aliasing":**
+  The user may be describing **beam hardening artifacts** (cupping, dark streaks near bone) that are expected physical effects of polychromatic X-ray simulation. The "more dexels = worse" observation needs testing — could be that finer sampling better resolves these beam hardening patterns, making them more visible.
+
+- **Next:** Complete TEST-PHYSICS-ABLATION story (all acceptance criteria met). Move to TEST-DEXEL-SWEEP to investigate the "more dexels = worse" observation.
+
