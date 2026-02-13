@@ -205,7 +205,7 @@
       "id": "DIAGNOSIS-REPORT",
       "title": "Compile findings into a clear diagnosis report",
       "priority": 8,
-      "status": "in_progress",
+      "status": "done",
       "phase": "report",
       "blockers": ["TEST-BARE-SIDDON", "TEST-DEXEL-SWEEP", "INSPECT-SINOGRAM", "CODE-AUDIT"],
       "description": "## Mission\n\nCompile ALL diagnostic findings into a clear report in `ralph_loop_diagnose/DIAGNOSIS.md`.\n\n## Report structure\n\n```markdown\n# Ghost Artifact Diagnosis Report\n\n## Summary\n- Root cause: [one sentence]\n- Confidence: [high/medium/low]\n- Recommended fix: [brief description]\n\n## Evidence\n\n### 1. Bare Siddon Test\n- Result: [artifacts present/absent]\n- Image: [filename]\n\n### 2. Physics Ablation\n- [effect]: [present/absent]\n- ...\n- Culprit: [which effect(s)]\n\n### 3. Dexel Sweep\n- Coarse (2.0mm): [present/absent]\n- Default (1.0mm): [present/absent]\n- Fine (0.5mm): [present/absent]\n- Trend: [confirms/denies 'more dexels = worse']\n\n### 4. Sinogram Inspection\n- Artifact visible in raw sinogram: [yes/no]\n- Artifact visible in filtered sinogram: [yes/no]\n- Conclusion: [FP bug / BP bug / filter bug / physics bug]\n\n### 5. Code Audit\n- pixel_size consistency: [consistent/mismatch at line X]\n- Detector position FP↔BP: [consistent/mismatch]\n- FOV propagation: [consistent/mismatch]\n\n### 6. Simple Phantom\n- Gammex: [present/absent]\n- Oblique bone strip: [present/absent]\n- Conclusion: [general / XCAT-specific]\n\n## Root Cause Analysis\n[Detailed explanation of WHY the artifact occurs]\n\n## Recommended Fix\n[What code change would fix it — do NOT implement, just describe]\n```\n\nThen output RALPH_COMPLETE.",
