@@ -13,7 +13,7 @@
 | NOISE-003 | open | — | — |
 | NOISE-004 | open | — | — |
 | NOISE-005 | open | — | — |
-| NOISE-006 | open | — | — |
+| NOISE-006 | WIP | — | — |
 | NOISE-007 | open | — | — |
 | NOISE-008 | open | — | — |
 | NOISE-009 | open | — | — |
@@ -133,3 +133,24 @@ I0 = flux_density × mA × (rotation_time/views) × pixel_area_mm² × (1000/SDD
 - Impact factor: ~1.0x (no contribution to 2x noise)
 - The 0.5mm Al mismatch slightly FAVORS BasisSimulator (less noise), wrong direction
 - **Next: FDK reconstruction normalization (NOISE-004, NOISE-008, NOISE-009) — these are Tier 1 hypotheses**
+
+### 2026-02-13: NOISE-006 [WIP — Script created, running]
+
+**Plan:** Run noise-only simulation (fidelity=:ideal + use_noise=true) vs full-physics (fidelity=:high) to partition the 2x noise problem.
+
+**Code analysis before running:**
+- `SimOptions(fidelity=:ideal, use_noise=true)`: All physics OFF, noise ON
+  - `needs_polychromatic()` → false (no flat_filter/bowtie/det_eff/bhc) → **monochromatic at 60 keV**
+  - `build_physics_config()` → all effects = nothing, noise = nothing (noise via sim_detect)
+  - `has_signal_chain = false` (no heel/DAS/BHC)
+  - In `simulate!()`: Forward projection → no physics → noise applied → done
+- `SimOptions(fidelity=:high)`: All physics ON
+  - `needs_polychromatic()` → true → **30-bin polychromatic spectrum**
+  - `has_signal_chain = true` (heel + BHC enabled)
+
+**Key insight:** The noise-only path uses monochromatic (60 keV) while full-physics uses polychromatic. This means:
+- Forward projection values will differ (monochromatic vs polychromatic)
+- μ_water calibration will differ between the two
+- But noise σ_HU should be directly comparable
+
+**Script:** `ralph_loop/scripts/noise_isolation_test.jl` — measures σ_HU in 61×61 center water ROI
