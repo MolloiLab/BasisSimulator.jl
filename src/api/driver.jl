@@ -600,7 +600,8 @@ function simulate!(
         ws_detector_centers=ws.geom_detector_centers,
         ws_detector_u=ws.geom_detector_u,
         ws_detector_v=ws.geom_detector_v,
-        ws_charge_probs=ws.charge_sharing_probs
+        ws_charge_probs=ws.charge_sharing_probs,
+        volume_fov=phantom.fov
     )
 
     # Combine ideal (workspace buffer + pre-computed I0_bins)
@@ -707,7 +708,8 @@ function simulate!(
                             ws_source_positions=ws.geom_source_positions,
                             ws_detector_centers=ws.geom_detector_centers,
                             ws_detector_u=ws.geom_detector_u,
-                            ws_detector_v=ws.geom_detector_v)
+                            ws_detector_v=ws.geom_detector_v,
+                            volume_fov=phantom.fov)
 
     if ws.has_signal_chain
         # ═══════════════════════════════════════════════════════════════════
@@ -979,7 +981,8 @@ function _eict_dual_forward_pass!(
                             ws_source_positions=ws.geom_source_positions,
                             ws_detector_centers=ws.geom_detector_centers,
                             ws_detector_u=ws.geom_detector_u,
-                            ws_detector_v=ws.geom_detector_v)
+                            ws_detector_v=ws.geom_detector_v,
+                            volume_fov=phantom.fov)
 
     if ws.has_signal_chain
         # CatSim signal chain

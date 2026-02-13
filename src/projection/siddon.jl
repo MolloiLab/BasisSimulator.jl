@@ -419,7 +419,9 @@ function siddon_forward_project!(
     ws_source_positions = nothing,
     ws_detector_centers = nothing,
     ws_detector_u = nothing,
-    ws_detector_v = nothing
+    ws_detector_v = nothing,
+    # Override volume bounds (use phantom's actual FOV instead of geom.fov)
+    volume_fov::Union{Nothing, NTuple{3, Float64}} = nothing
 ) where T <: AbstractFloat
 
     # Get dimensions as Int32 for GPU compatibility
@@ -431,15 +433,19 @@ function siddon_forward_project!(
     n_angles = Int32(size(sinogram, 3))
 
     # Pre-compute volume parameters (typed constants for GPU)
-    vol_min_x = T(-geom.fov[1] / 2)
-    vol_min_y = T(-geom.fov[2] / 2)
-    vol_min_z = T(-geom.fov[3] / 2)
-    vol_max_x = T(geom.fov[1] / 2)
-    vol_max_y = T(geom.fov[2] / 2)
-    vol_max_z = T(geom.fov[3] / 2)
-    voxel_size_x = T(geom.fov[1]) / T(nx)
-    voxel_size_y = T(geom.fov[2]) / T(ny)
-    voxel_size_z = T(geom.fov[3]) / T(nz)
+    # Use volume_fov (phantom's physical dimensions) if provided,
+    # otherwise fall back to geom.fov (reconstruction FOV).
+    # These differ when the phantom extent ≠ reconstruction FOV.
+    fov = volume_fov !== nothing ? volume_fov : geom.fov
+    vol_min_x = T(-fov[1] / 2)
+    vol_min_y = T(-fov[2] / 2)
+    vol_min_z = T(-fov[3] / 2)
+    vol_max_x = T(fov[1] / 2)
+    vol_max_y = T(fov[2] / 2)
+    vol_max_z = T(fov[3] / 2)
+    voxel_size_x = T(fov[1]) / T(nx)
+    voxel_size_y = T(fov[2]) / T(ny)
+    voxel_size_z = T(fov[3]) / T(nz)
 
     magnification = T(geom.SDD / geom.SAD)
     pixel_size = T(geom.pixel_size)
@@ -615,12 +621,13 @@ version [`siddon_forward_project!`](@ref) to avoid repeated allocations.
 """
 function siddon_forward_project(
     volume::AbstractArray{T, 3},
-    geom::CTGeometry
+    geom::CTGeometry;
+    volume_fov::Union{Nothing, NTuple{3, Float64}} = nothing
 ) where T <: AbstractFloat
 
     # Allocate output on same device as input
     sinogram = similar(volume, T, geom.n_cols, geom.n_rows, geom.n_angles)
     fill!(sinogram, zero(T))
 
-    return siddon_forward_project!(sinogram, volume, geom)
+    return siddon_forward_project!(sinogram, volume, geom; volume_fov=volume_fov)
 end

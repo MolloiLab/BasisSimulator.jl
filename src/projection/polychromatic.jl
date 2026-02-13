@@ -1096,7 +1096,9 @@ function _forward_project_poly!(
     ws_source_positions=nothing,
     ws_detector_centers=nothing,
     ws_detector_u=nothing,
-    ws_detector_v=nothing
+    ws_detector_v=nothing,
+    # Override volume bounds for phantom FOV
+    volume_fov::Union{Nothing, NTuple{3, Float64}} = nothing
 ) where T <: AbstractFloat
 
     n_energies = length(energies)
@@ -1125,7 +1127,8 @@ function _forward_project_poly!(
             ws_source_positions=ws_source_positions,
             ws_detector_centers=ws_detector_centers,
             ws_detector_u=ws_detector_u,
-            ws_detector_v=ws_detector_v)
+            ws_detector_v=ws_detector_v,
+            volume_fov=volume_fov)
 
         # Accumulate Beer-Lambert: I += w × exp(-line_integral)
         w = weights_norm[e_idx]

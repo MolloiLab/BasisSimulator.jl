@@ -538,7 +538,7 @@ Clinical-quality simulation with full physics:
 
 # ╔═╡ a70bc722-e769-4132-b082-b0e89a6822b1
 sim_opts_eict = BS.SimOptions(
-	fidelity = :ideal,
+	fidelity = :high,
 	n_energy_bins = 100,
 	# n_energy_bins = 1,
 	
@@ -592,6 +592,7 @@ begin
 
 	# Z slices: cover ~10cm of the phantom (100 slices at 1mm)
 	n_recon_slices = 64
+	# n_recon_slices = 8 # near fan beam
 
 	# VMI energies for spectral imaging
 	vmi_energies = [40.0, 70.0, 100.0, 140.0]
@@ -602,7 +603,8 @@ begin
 	# ─── EICT (GE Revolution Apex) ───
 	eict_mag = 1100.0 / 625.6 # SDD / SID
 	eict_det_cols = ceil(Int, phantom_extent_mm * eict_mag / 1.0) # 1.0mm col pitch
-	eict_det_rows = min(256, n_recon_slices) # cap at clinical max
+	eict_det_rows = min(256, n_recon_slices) # cap at clinical 
+	# eict_det_rows = 8 # near fan beam
 end
 
 # ╔═╡ 00000006-0000-0000-0000-000000000001
@@ -838,8 +840,6 @@ end
 end
 
 # ╔═╡ 5fe71f6b-e96e-45c7-ae60-dad1f13f110a
-# ╠═╡ disabled = true
-#=╠═╡
 # EICT Dual-kVp calibration — workspace scoped locally to free GPU memory
 (μ_water_dual_low, μ_water_dual_high) = let
 	ws = BS.create_eict_dual_workspace(
@@ -876,11 +876,8 @@ end
 
 	result
 end
-  ╠═╡ =#
 
 # ╔═╡ 8396962e-dc91-436c-90fb-1525d5459a8a
-# ╠═╡ disabled = true
-#=╠═╡
 # PCCT 140kVp calibration — workspace scoped locally to free GPU memory
 μ_water_pcct = let
 	ws = BS.create_workspace(
@@ -918,10 +915,8 @@ end
 
 	result
 end
-  ╠═╡ =#
 
 # ╔═╡ a0b1c2d3-e4f5-6789-abcd-000000000004
-#=╠═╡
 md"""
 **Water calibration values (μ\_water in cm⁻¹):**
 - EICT 120 kVp: $(round(μ_water_eict, sigdigits=4))
@@ -931,7 +926,6 @@ md"""
 
 Expected range: ~0.19–0.21 cm⁻¹
 """
-  ╠═╡ =#
 
 # ╔═╡ 1b8aa963-7a95-4cc6-8670-de2e2caf28ab
 md"""
@@ -985,7 +979,7 @@ md"""
 end;
 
 # ╔═╡ f409ebb5-12b9-455b-ac5e-4e96b95e0410
-function plot_scanner_comparison_eict_only(volumes, titles; slice_idx=32, window=(-300, 400))
+function plot_scanner_comparison_eict_only(volumes, titles; slice_idx=32, window=(-300, 500))
 	n = length(volumes)
 	f = CM.Figure(size=(350 * n + 50, 400))
 
@@ -1000,12 +994,15 @@ function plot_scanner_comparison_eict_only(volumes, titles; slice_idx=32, window
 	f
 end
 
+# ╔═╡ 3944d6e8-2109-4464-aad2-dee03ad9b0f5
+@bind z2 UI.Slider(axes(recon_eict_fdk_hu, 3); show_value = true)
+
 # ╔═╡ fc8b2628-60cc-4110-a0ba-b9c44b08ce6b
 let
 	fig = plot_scanner_comparison_eict_only(
-		[recon_eict_fdk_hu],
-		["EICT 120 kVp\n(FDK)"];
-		slice_idx=32
+		[recon_eict_fdk_hu, recon_eict_hir_hu],
+		["EICT 120 kVp\n(FDK)", "EICT 120 kVp\n(HIR)"];
+		slice_idx=z2
 	)
 	# CM.save(joinpath(FIGURES_DIR, "nb05_scanner_comparison.png"), fig)
 	fig
@@ -1017,7 +1014,6 @@ md"""
 """
 
 # ╔═╡ 00000020-0000-0000-0000-000000000001
-#=╠═╡
 # Simulate + reconstruct all dual-kVp in one let block — GPU workspaces freed when block exits
 (recon_dual_80kVp_fdk_hu, recon_dual_140kVp_fdk_hu,
  recon_dual_80kVp_hir_hu, recon_dual_140kVp_hir_hu,
@@ -1095,7 +1091,6 @@ md"""
 
 	(fdk_80_hu, fdk_140_hu, hir_80_hu, hir_140_hu, vmi_dict)
 end;
-  ╠═╡ =#
 
 # ╔═╡ 00000021-0000-0000-0000-000000000001
 md"""
@@ -1103,7 +1098,6 @@ md"""
 """
 
 # ╔═╡ 00000023-0000-0000-0000-000000000001
-#=╠═╡
 # Simulate + reconstruct all PCCT in one let block — GPU workspaces freed when block exits
 (recon_pcct_fdk_hu, recon_pcct_hir_hu, pcct_vmi_volumes) = let
 	recon_size = (recon_xy, recon_xy, n_recon_slices)
@@ -1162,7 +1156,6 @@ md"""
 
 	(fdk_hu, hir_hu, vmi_dict)
 end;
-  ╠═╡ =#
 
 # ╔═╡ 00000024-0000-0000-0000-000000000001
 md"""
@@ -1195,7 +1188,6 @@ function plot_scanner_comparison(volumes, titles; slice_idx=32, window=(-300, 40
 end
 
 # ╔═╡ 00000024-0000-0000-0000-000000000004
-#=╠═╡
 let
 	fig = plot_scanner_comparison(
 		[recon_eict_fdk_hu, recon_dual_80kVp_fdk_hu, recon_dual_140kVp_fdk_hu, recon_pcct_fdk_hu],
@@ -1205,7 +1197,6 @@ let
 	CM.save(joinpath(FIGURES_DIR, "nb05_scanner_comparison.png"), fig)
 	fig
 end
-  ╠═╡ =#
 
 # ╔═╡ c0d1e2f3-a4b5-6789-abcd-000000000001
 md"""
@@ -1215,7 +1206,6 @@ Two rows: FDK (top) vs Hybrid IR strength 3 (bottom) for each scanner. Soft tiss
 """
 
 # ╔═╡ c0d1e2f3-a4b5-6789-abcd-000000000002
-#=╠═╡
 let
 	fdk_volumes = [recon_eict_fdk_hu, recon_dual_80kVp_fdk_hu, recon_dual_140kVp_fdk_hu, recon_pcct_fdk_hu]
 	hir_volumes = [recon_eict_hir_hu, recon_dual_80kVp_hir_hu, recon_dual_140kVp_hir_hu, recon_pcct_hir_hu]
@@ -1245,7 +1235,6 @@ let
 	CM.save(joinpath(FIGURES_DIR, "nb05_fdk_vs_hir.png"), f)
 	f
 end
-  ╠═╡ =#
 
 # ╔═╡ 82f0501e-ee06-4907-8b9e-45d74b0c8f19
 md"""
@@ -1288,7 +1277,6 @@ function plot_detail_comparison(vol_eict_hu, vol_pcct_hu; slice_idx=32,
 end
 
 # ╔═╡ 01e76cfe-7061-455b-8f7e-0b07fbd17ca3
-#=╠═╡
 let
 	fig = plot_detail_comparison(
 		recon_eict_fdk_hu, recon_pcct_fdk_hu;
@@ -1297,7 +1285,6 @@ let
 	CM.save(joinpath(FIGURES_DIR, "nb05_detail_comparison.png"), fig)
 	fig
 end
-  ╠═╡ =#
 
 # ╔═╡ 00000024-0000-0000-0000-000000000008
 md"""
@@ -1307,7 +1294,7 @@ Comparison of Virtual Monoenergetic Images at 40, 70, 100, 140 keV.
 """
 
 # ╔═╡ 00000024-0000-0000-0000-000000000009
-function plot_vmi_comparison(dual_vmi_vols, pcct_vmi_vols; slice_idx=32, window=(-160, 400))
+function plot_vmi_comparison(dual_vmi_vols, pcct_vmi_vols; slice_idx=32, window=(-300, 400))
 	energies = [40, 70, 100, 140]
 
 	f = CM.Figure(size=(1100, 600))
@@ -1334,13 +1321,11 @@ function plot_vmi_comparison(dual_vmi_vols, pcct_vmi_vols; slice_idx=32, window=
 end
 
 # ╔═╡ 00000024-0000-0000-0000-000000000010
-#=╠═╡
 let
 	fig = plot_vmi_comparison(dual_vmi_volumes, pcct_vmi_volumes; slice_idx=32)
 	CM.save(joinpath(FIGURES_DIR, "nb05_vmi_comparison.png"), fig)
 	fig
 end
-  ╠═╡ =#
 
 # ╔═╡ 00000024-0000-0000-0000-000000000011
 md"""
@@ -1378,7 +1363,6 @@ function analyze_roi_stats(volumes, names; slice_idx=32, roi_center=nothing, roi
 end
 
 # ╔═╡ 00000024-0000-0000-0000-000000000013
-#=╠═╡
 let
 	volumes = [
 		recon_eict_fdk_hu, recon_eict_hir_hu,
@@ -1412,7 +1396,6 @@ let
 	CM.save(joinpath(FIGURES_DIR, "nb05_noise_stats.png"), f)
 	f
 end
-  ╠═╡ =#
 
 # ╔═╡ c0d1e2f3-a4b5-6789-abcd-000000000003
 md"""
@@ -1422,7 +1405,6 @@ Bar chart showing noise (std dev in uniform ROI) for FDK vs Hybrid IR, with nois
 """
 
 # ╔═╡ c0d1e2f3-a4b5-6789-abcd-000000000004
-#=╠═╡
 let
 	fdk_volumes = [recon_eict_fdk_hu, recon_dual_80kVp_fdk_hu, recon_dual_140kVp_fdk_hu, recon_pcct_fdk_hu]
 	hir_volumes = [recon_eict_hir_hu, recon_dual_80kVp_hir_hu, recon_dual_140kVp_hir_hu, recon_pcct_hir_hu]
@@ -1459,7 +1441,6 @@ let
 	CM.save(joinpath(FIGURES_DIR, "nb05_noise_reduction.png"), f)
 	f
 end
-  ╠═╡ =#
 
 # ╔═╡ 00000025-0000-0000-0000-000000000001
 # md"""
@@ -1561,7 +1542,8 @@ end
 # ╟─1b8aa963-7a95-4cc6-8670-de2e2caf28ab
 # ╟─00000016-0000-0000-0000-000000000001
 # ╠═00000017-0000-0000-0000-000000000001
-# ╠═f409ebb5-12b9-455b-ac5e-4e96b95e0410
+# ╟─f409ebb5-12b9-455b-ac5e-4e96b95e0410
+# ╟─3944d6e8-2109-4464-aad2-dee03ad9b0f5
 # ╟─fc8b2628-60cc-4110-a0ba-b9c44b08ce6b
 # ╟─00000018-0000-0000-0000-000000000001
 # ╠═00000020-0000-0000-0000-000000000001
