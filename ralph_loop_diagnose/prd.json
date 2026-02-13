@@ -144,7 +144,7 @@
       "id": "TEST-DEXEL-SWEEP",
       "title": "Vary detector columns and pixel size to confirm 'more dexels = worse'",
       "priority": 4,
-      "status": "open",
+      "status": "in_progress",
       "phase": "diagnosis",
       "blockers": ["TEST-BARE-SIDDON"],
       "description": "## Mission\n\nConfirm the user's observation that artifacts get WORSE with more detector columns and smaller pixel size.\n\nRun with the SAME physics settings that show artifacts (from TEST-BARE-SIDDON or TEST-PHYSICS-ABLATION), but vary detector parameters:\n\n1. `diag_dexel_coarse.png` — detector_cols=422, detector_col_size=2.0mm (half resolution)\n2. `diag_dexel_default.png` — detector_cols=844, detector_col_size=1.0mm (current)\n3. `diag_dexel_fine.png` — detector_cols=1688, detector_col_size=0.5mm (double resolution)\n4. `diag_dexel_ultrafine.png` — detector_cols=3376, detector_col_size=0.25mm (quad resolution)\n\nKeep views constant at 1600 for all tests.\n\n## What to look for\n\n- Do artifacts get progressively WORSE from coarse → fine? (confirms user observation)\n- Do artifacts change CHARACTER (different pattern, not just stronger)?\n- Are artifacts absent at coarse resolution?\n\nThis helps distinguish between:\n- **Aliasing** (better sampling → less artifact) — RULED OUT if artifacts worsen\n- **Physics-effect edge spread** (finer sampling → sharper ghost) — CONFIRMED if artifacts worsen\n- **Numerical precision** (more operations at finer sampling → accumulation of error)\n\n## Also try\n\n5. `diag_dexel_square.png` — detector_col_size = detector_row_size = 1.0mm (square pixels)\n\nThis tests the pixel_size_row != pixel_size_col theory.",
