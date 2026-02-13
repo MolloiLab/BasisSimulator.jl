@@ -105,3 +105,23 @@ All three modules use `pixel_size` (column-based) for BOTH u and v directions:
 
 - **Next:** Create difference images between bare and all-physics to isolate the artifact pattern. Also test lag and fill_factor.
 
+### TEST-PHYSICS-ABLATION — Iteration 2 (2026-02-12): Code Path Analysis
+- **Task:** Analyzed what triggers the polychromatic (spectral integration) code path
+- **Finding:** `needs_polychromatic()` in driver.jl:1261-1266 returns true if ANY of these are enabled:
+  - `use_flat_filter`
+  - `use_bowtie_filter`
+  - `use_detector_efficiency`
+  - `use_bhc`
+- **When polychromatic:**
+  - Full spectrum loaded (30+ energy bins)
+  - Siddon forward projection called 30× (once per energy)
+  - Beer-Lambert spectral integration: `sinogram = -log(Σ wᵢ × exp(-μ(Eᵢ) × L))`
+  - Explains the 3s → 300s slowdown (30× ray tracing)
+- **When monochromatic (crosstalk/optical/focal_spot/lag/fill_factor/heel):**
+  - Single energy: kVp × 0.5 = 60 keV
+  - One Siddon call
+  - No spectral integration
+- **Implication:** The artifact is NOT caused by a specific physics effect (bowtie, bhc, etc.) — it's caused by the **polychromatic spectral integration pathway itself**. ANY of the 4 spectral triggers should reproduce it.
+- **Created:** `ralph_loop_diagnose/diag_diff.jl` — difference image script that tests flat_filter, det_eff, lag, fill_factor, heel individually + creates difference images
+- **Next:** Run diag_diff.jl to confirm flat_filter and det_eff also show the artifact (confirming polychromatic pathway hypothesis)
+
