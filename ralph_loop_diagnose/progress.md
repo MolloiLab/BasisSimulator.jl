@@ -83,3 +83,25 @@ All three modules use `pixel_size` (column-based) for BOTH u and v directions:
 - **Conclusion:** Artifacts are subtle at this display resolution but visible in comparison. Physics effects introduce the edge artifacts.
 - **Next:** Begin physics ablation — test crosstalk first (highest priority suspect)
 
+### TEST-PHYSICS-ABLATION — Iteration 1 (2026-02-12)
+- **Tests completed (4 individual effects):**
+
+| Effect | Sim Time | μ_water | HU Range | Artifacts |
+|--------|----------|---------|----------|-----------|
+| bare_siddon (none) | 3.6s | 0.223 | [-1455, 2329] | ABSENT |
+| all_physics | 300s | 0.269 | [-1050, 1249] | SUBTLE |
+| crosstalk only | 3.2s | 0.223 | [-1409, 2195] | ABSENT |
+| optical only | 3.1s | 0.223 | [-1390, 2148] | ABSENT |
+| focal_spot only | 3.2s | 0.223 | [-1442, 2301] | ABSENT |
+| bowtie only | 305s | 0.276 | [-1185, 1392] | SIMILAR TO ALL |
+| bhc only | 302s | 0.213 | [-1388, 1826] | SIMILAR TO ALL |
+
+- **Key Observations:**
+  1. Effects that DON'T trigger spectral integration (crosstalk, optical, focal_spot) leave the image unchanged from bare Siddon — sim time ~3s, μ_water=0.223
+  2. Effects that DO trigger spectral integration (bowtie, bhc) take ~300s and change μ_water significantly
+  3. The bowtie filter and BHC both independently produce images similar to all-physics
+  4. The "ghost artifacts" may be beam hardening artifacts (cupping, streaks near bone) rather than edge-ghost artifacts
+  5. Need to look more carefully at what the user means by "ghost-like aliasing" — may need narrower window or difference imaging
+
+- **Next:** Create difference images between bare and all-physics to isolate the artifact pattern. Also test lag and fill_factor.
+
