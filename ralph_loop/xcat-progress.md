@@ -529,3 +529,38 @@ to cupping. But PCCT doesn't HAVE a bowtie, so missing it in the model is correc
 physics. The cupping must come from something else.
 
 **Verdict: PASS — fully documented in XCAT-001. No additional investigation needed.**
+
+---
+
+### 2026-02-13: XCAT-005 — DIAGNOSTIC: PCCT noise_reduction interaction with edges [PASS]
+
+**Investigation:** Does `pcct_noise_reduction=0.60` cause edge artifacts or cupping?
+
+**Finding: NO — noise reduction is purely per-pixel amplitude scaling**
+
+At photon_counting.jl:1852-1853:
+```julia
+nr_scale = T(1.0 - noise_reduction)  # 0.40 for noise_reduction=0.60
+@. noise_buf = cpu_buf + nr_scale * sqrt(cpu_buf) * noise_buf
+```
+
+This computes: `N_measured = N_expected + 0.40 × √(N_expected) × randn()`
+
+Key properties:
+1. **No spatial kernel**: Each pixel is processed independently
+2. **No neighbor averaging**: Unlike a spatial filter, this doesn't blend adjacent pixels
+3. **Position-independent**: The scale factor `nr_scale=0.40` is constant everywhere
+4. **Only scales noise magnitude**: Reduces the Gaussian noise amplitude by 60%
+5. **Does not change the expected value**: E[N_measured] = N_expected (zero mean noise)
+
+For low-count pixels (N ≤ 20), Poisson sampling with the same blend:
+```julia
+noise_buf[idx] = cpu_buf[idx] + nr_scale * (sampled - cpu_buf[idx])
+```
+Same principle — blend toward expected value, no spatial operation.
+
+**Verdict: NO — pcct_noise_reduction CANNOT cause cupping or edge artifacts**
+
+It's a purely local, position-independent noise amplitude scaling.
+No spatial smoothing, no edge interaction, no position dependence.
+This definitively rules out noise_reduction as a cause.

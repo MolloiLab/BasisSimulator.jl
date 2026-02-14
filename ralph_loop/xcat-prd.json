@@ -67,7 +67,7 @@
       "id": "XCAT-005",
       "title": "DIAGNOSTIC: PCCT noise_reduction interaction with edges",
       "priority": 1,
-      "status": "open",
+      "status": "done",
       "type": "DIAGNOSTIC",
       "description": "NB05 uses pcct_noise_reduction=0.60 in sim_opts_pcct. This applies noise reduction DURING the PCCT signal chain.\n\nKey questions:\n1. WHERE is pcct_noise_reduction applied? Is it in apply_pcct_noise!() or elsewhere?\n2. If it smooths the sinogram, does it smooth BEFORE or AFTER BHC?\n3. Does it use a spatial kernel that could create edge effects?\n4. At tissue boundaries (lung/soft-tissue, ~500 HU difference), a smoothing kernel could mix high and low attenuation values, creating:\n   - Partial-volume effects in sinogram domain\n   - Boundary brightness/darkness artifacts when reconstructed\n5. Does EICT have any equivalent smoothing? If not, this is a PCCT-only effect.\n\nACCEPTANCE: Determine if pcct_noise_reduction contributes to the visible cupping/edge artifacts. If yes, describe the mechanism.",
       "testCommand": "Read detector_noise.jl apply_pcct_noise!() and trace noise_reduction parameter",
