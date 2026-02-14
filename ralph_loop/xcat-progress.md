@@ -1,0 +1,283 @@
+# XCAT PCCT Artifact Investigation — Progress Log
+
+> Started: 2026-02-13
+> Issue: PCCT FDK shows cupping/edge artifacts not present in EICT
+
+---
+
+## Pre-Investigation Summary
+
+**Observed**: PCCT Standard FDK reconstruction shows subtle cupping/edge artifacts
+at tissue boundaries (lung/soft-tissue, body contour) that do NOT appear in
+EICT 120 kVp FDK from the same XCAT phantom.
+
+**Slice mismatch confirmed**: EICT z=8.0cm, PCCT z=5.12cm → same slice index =
+different anatomy. This is expected behavior (different z-coverage), not a bug.
+
+**Prior fixes verified**: volume_fov threading, pixel_row_size, StandardFilter defaults
+are all correct.
+
+---
+
+## Investigation Log
+
+### 2026-02-13: XCAT-001 — DIAGNOSTIC: Map exact PCCT vs EICT signal chains side-by-side [PASS]
+
+**NB05 Configuration (both scanners use `fidelity = :high`):**
+
+Both EICT and PCCT use `SimOptions(fidelity = :high)`, which enables ALL physics effects:
+fill_factor, flat_filter, bowtie_filter, detector_efficiency, scatter, scatter_correction,
+crosstalk, optical_crosstalk, focal_spot, noise, lag, heel_effect, bhc (das=false, broken).
+PCCT additionally uses `pcct_noise_reduction = 0.60`, `use_pcct_corrections = false`.
+
+---
+
+#### EICT Signal Chain (`simulate!(ws::EICTWorkspace, ...)` at driver.jl:684)
+
+The EICT workspace path has TWO branches: **signal chain** (`ws.has_signal_chain = true`)
+and **standard** path. For `fidelity = :high`, signal chain effects (heel_effect, das_model)
+are present in the config, so `has_signal_chain = true`.
+
+```
+STEP 1: _forward_project_poly!() [driver.jl:702]
+  - Polychromatic Beer-Lambert: I_total = Σ w_E × exp(-L_E)
+  - sinogram = -log(I_total)
+  - Uses phantom.fov for volume bounds (volume_fov kwarg)
+
+STEP 2: _apply_physics_no_noise!() [driver.jl:725, polychromatic.jl:878]
+  - Applies 10 deterministic effects IN THIS ORDER (sinogram domain):
+    1. fill_factor → apply_fill_factor!()
+    2. flat_filter → apply_flat_filter!()
+    3. scatter → add_scatter!()
+    4. scatter_correction → correct_scatter!()
+    5. bowtie_filter → apply_bowtie_filter!()
+    6. crosstalk → apply_crosstalk!()
+    7. optical_crosstalk → apply_optical_crosstalk!()
+    8. focal_spot → apply_focal_spot_blur!()
+    9. detector_efficiency → apply_detector_efficiency!()
+   10. lag → apply_lag!()
+  - NOTE: BHC is NOT applied here (it's done after the signal chain)
+  - NOTE: Noise is NOT applied here (DAS model handles it in signal chain)
+
+STEP 3: Convert to intensity domain [driver.jl:740]
+  - sinogram[idx] = exp(-clamp(sinogram[idx], -1, 15))
+
+STEP 4: Heel effect (intensity domain) [driver.jl:748]
+  - apply_heel_effect!(sinogram, heel_effect, geom)
+
+STEP 5: DAS model (intensity domain) [driver.jl:753]
+  - apply_das_model!(sinogram, das_model; seed=...)
+  - NOTE: DAS is BROKEN and use_das=false at fidelity=:high, so this is SKIPPED
+
+STEP 6: Create noise-free air scan [driver.jl:757]
+  - fill air_scan with 1.0
+  - Apply heel_effect to air_scan
+  - Apply DAS gain to air_scan (if DAS enabled, which it isn't)
+
+STEP 7: Calibration [driver.jl:771]
+  - sinogram = sinogram / air_scan  (normalize by air scan)
+
+STEP 8: Low signal correction [driver.jl:779]
+  - low_signal_correction_gpu!()
+
+STEP 9: Log transform [driver.jl:782]
+  - sinogram = -log(max(sinogram, eps))
+
+STEP 10: BHC [driver.jl:789]
+  - apply_bhc!(sinogram, bhc)
+  - Uses bhc_water_default() with coefficients [0, 1.05, -0.02, 0.001]
+  - Reference energy = weighted mean of spectrum energies
+
+--- Save ideal sinogram to CPU [driver.jl:814] ---
+
+STEP 11: Quantum noise [driver.jl:819]
+  - I0 = compute_detector_I0(geom, protocol)
+  - Gaussian approximation: N_measured = N_expected + sqrt(N_expected) × randn
+  - sinogram_noisy = -log(N_measured / I0)
+
+--- Save noisy sinogram to CPU [driver.jl:837] ---
+```
+
+**SUMMARY OF EICT SIGNAL CHAIN:**
+```
+poly_fp → 10 physics effects → intensity domain → heel → (DAS skip) →
+calibrate (÷ air) → low_signal_correction → -log → BHC → save ideal →
+noise → save noisy
+```
+
+---
+
+#### PCCT Signal Chain (`simulate!(ws::PCCTWorkspace, ...)` at driver.jl:554)
+
+```
+STEP 1: pcct_forward_project() [driver.jl:575, photon_counting.jl:1329]
+  For each energy E in spectrum (100 bins):
+    a. create_μ_volume!(μ_volume, mask, materials, E)
+    b. siddon_forward_project!(sino_buf, μ_volume, geom; volume_fov=phantom.fov)
+    c. For each energy bin b:
+       bins[b] += I0 × w_E × η_E × R[E,b] × exp(-sino_buf)
+       (R = spectral response matrix, η = quantum efficiency)
+
+  After energy loop, apply detector physics chain:
+    d. apply_charge_sharing!(bins, detector)     ← spatial + energy redistribution
+    e. apply_pulse_pileup!(bins, detector)        ← count rate effects
+    f. apply_anti_coincidence!(bins, detector)     ← multi-pixel rejection
+
+  Software corrections (if use_pcct_corrections = true):
+    g. correct_pulse_pileup!()    ← SKIPPED (use_pcct_corrections=false in NB05)
+    h. correct_charge_sharing!()  ← SKIPPED
+
+  Convert counts → line integrals:
+    i. For each bin b: sino_bin = -log(N_bin / I0_bin_norm)
+       I0_bin_norm = _compute_degraded_I0() (since detector effects ON, corrections OFF)
+
+  Post-log smoothing (if corrections ON): SKIPPED (corrections OFF)
+
+  Returns: EnergyResolvedSinogram with per-bin sinograms
+
+STEP 2: _combine_pcct_bins() for IDEAL sinogram [driver.jl:608]
+  - N_total = Σ I0_bins[b] × exp(-sino_bin[b])
+  - sino_combined = -log(N_total / I0_total)
+  - I0_bins = ws.I0_bins (pre-computed in create_workspace, uses _compute_degraded_I0)
+
+STEP 3: BHC on ideal combined sinogram [driver.jl:615]
+  - apply_bhc!(sino_ideal, config.bhc)
+  - SAME coefficients as EICT: [0, 1.05, -0.02, 0.001]
+
+--- Save ideal to CPU [driver.jl:620] ---
+
+STEP 4: apply_pcct_noise!() on PER-BIN sinograms [driver.jl:623]
+  - I0_physics = compute_detector_I0(geom, protocol)
+  - For each bin:
+    a. Convert line integrals → expected counts: N = I0_bin × exp(-sino)
+    b. Add Gaussian noise: N_noisy = N + (1 - noise_reduction) × sqrt(N) × randn
+       noise_reduction = 0.60 → scale = 0.40 → 60% less noise variance
+    c. Low-count Poisson sampling (N ≤ 20)
+    d. Floor: N_noisy = max(N_noisy, 1)
+    e. Convert back: sino = -log(N_noisy / I0_bin)
+
+  NOTE: I0_bin for noise is computed by _compute_pcct_noise_I0(), which uses
+  _compute_bin_I0() with unit I0, normalizes to fractions, scales by physics I0.
+  This is a DIFFERENT I0 computation than the normalization I0 in pcct_forward_project!
+
+STEP 5: _combine_pcct_bins() for NOISY sinogram [driver.jl:637]
+  - Same combination as step 2, but on noisy per-bin sinograms
+  - Uses SAME I0_bins as step 2
+
+STEP 6: BHC on noisy combined sinogram [driver.jl:644]
+  - apply_bhc!(sino_noisy, config.bhc)
+  - SAME coefficients as ideal BHC
+
+--- Save noisy to CPU [driver.jl:649] ---
+
+STEP 7: Material decomposition for VMI [driver.jl:652]
+  - combine_pcct_bins!() for pseudo-dual-energy
+  - spectral_decompose!() for material maps
+```
+
+**SUMMARY OF PCCT SIGNAL CHAIN:**
+```
+pcct_fp (per-energy Siddon + DRM) → charge_sharing → pileup → anti_coincidence →
+-log(N/I0_degraded) → combine_bins → BHC → save ideal →
+noise (per-bin, 60% reduction) → combine_bins → BHC → save noisy →
+material decomposition
+```
+
+---
+
+#### CRITICAL DIFFERENCES TABLE
+
+| # | Aspect | EICT Path | PCCT Path | Position-Dependent? | Cupping Impact |
+|---|--------|-----------|-----------|---------------------|----------------|
+| 1 | **Forward Projection** | Polychromatic Beer-Lambert: -log(Σ w×exp(-μL)) | Per-energy Siddon → DRM → per-bin counts → -log(N/I0) | — | — |
+| 2 | **Fill Factor** | YES (apply_fill_factor!) | **NO** — not applied | NO (uniform scaling) | NONE — cancels in air cal |
+| 3 | **Flat Filter** | YES (apply_flat_filter!) | **NO** — not applied | NO (uniform additive in log domain) | NONE — uniform shift |
+| 4 | **Bowtie Filter** | YES (apply_bowtie_filter!) | **NO** — not applied | **YES** (fan-angle dependent) | **POSSIBLE** — changes sinogram values in position-dependent way, affects BHC behavior |
+| 5 | **Scatter** | YES (add_scatter! + correct_scatter!) | **NO** — not applied | **YES** (patient-size dependent) | **POSSIBLE** — uncorrected scatter in PCCT is absent but would cause cupping if present |
+| 6 | **Scatter Correction** | YES (correct_scatter!) | **NO** — not applied | YES | See above |
+| 7 | **Crosstalk** | YES (apply_crosstalk!) | **NO** — not applied (PCCT uses charge sharing instead) | Partly | Low impact — analogous to charge sharing |
+| 8 | **Optical Crosstalk** | YES (apply_optical_crosstalk!) | **NO** — not applied (CdTe has no scintillator) | Partly | Low impact — correct physics for direct-conversion |
+| 9 | **Focal Spot** | YES (apply_focal_spot_blur!) | **NO** — not applied | YES (geometric) | Low — blurs rather than shifts |
+| 10 | **Detector Efficiency** | YES (apply_detector_efficiency!) | **NO** — PCCT uses quantum efficiency η in DRM | NO (uniform) | NONE |
+| 11 | **Lag** | YES (apply_lag!) | **NO** — not applied | Temporal | Low — afterglow, not spatial |
+| 12 | **Heel Effect** | YES (intensity domain) | **NO** — not applied | **YES** (position-dependent) | **POSSIBLE** — anode-cathode intensity gradient |
+| 13 | **DAS Model** | SKIPPED (broken) | SKIPPED | — | — |
+| 14 | **Air Calibration** | YES (÷ air_scan, includes heel) | **NO** — raw combined sinogram | **YES** | **KEY DIFFERENCE** — see analysis |
+| 15 | **Low Signal Correction** | YES | **NO** | YES | Low |
+| 16 | **BHC** | On polychromatic sinogram (AFTER physics + calibration) | On PCCT combined sinogram (NO physics, NO calibration) | **YES** | **HIGH** — different input statistics |
+| 17 | **BHC Applied** | ONCE (on ideal) | **TWICE** (once ideal, once noisy) | YES | **MODERATE** — double correction |
+| 18 | **Noise** | Gaussian on combined sinogram (I0 from geometry) | Per-BIN Gaussian with 60% reduction | — | — |
+| 19 | **Charge Sharing** | N/A | YES (Koch-Mehrin ODE) | YES (energy-dependent) | **POSSIBLE** — redistributes counts between bins |
+| 20 | **Pileup** | N/A | YES (Yang 2025 semi-nonparalyzable) | YES (count-rate dependent) | **POSSIBLE** — high-count pixels affected more |
+
+---
+
+#### KEY FINDINGS
+
+**Finding 1: Physics effects missing from PCCT path**
+The PCCT path does NOT apply the following 10 EICT physics effects:
+- fill_factor, flat_filter, bowtie_filter, scatter, scatter_correction,
+  crosstalk, optical_crosstalk, focal_spot, detector_efficiency, lag
+
+Instead, the PCCT path only applies:
+- DRM (charge sharing, K-fluorescence, pileup) via pcct_forward_project
+- BHC via apply_bhc! after bin combination
+- Noise via apply_pcct_noise!
+
+**Verdict on missing effects:** Most missing effects (fill_factor, flat_filter, detector_efficiency,
+optical_crosstalk, lag) are NOT position-dependent or cancel in calibration. They should NOT
+cause cupping.
+
+**However:** Bowtie filter IS position-dependent (adds fan-angle-dependent attenuation).
+For EICT, the bowtie modifies the sinogram before BHC. For PCCT, the bowtie is absent,
+so the sinogram values entering BHC are different. Since BHC is a polynomial that varies
+with input value, and bowtie changes input values in a position-dependent way, this could
+contribute to differences (but likely NOT cupping since PCCT doesn't have bowtie to begin with).
+
+**Finding 2: BHC input is fundamentally different**
+- EICT BHC input: polychromatic sinogram AFTER 10 physics effects + heel effect + air calibration
+- PCCT BHC input: combined sinogram from energy-resolved bins with DRM effects, NO physics effects, NO air calibration
+
+The PCCT combined sinogram has LESS beam hardening than the EICT polychromatic sinogram
+because the energy-resolved bins partially separate the spectral contributions. Applying
+the SAME BHC polynomial [0, 1.05, -0.02, 0.001] could OVER-correct the PCCT sinogram.
+
+Over-correction is position-dependent (BHC polynomial has quadratic/cubic terms that
+grow with path length). This WOULD cause cupping.
+
+**Verdict: BHC over-correction is the #1 hypothesis for PCCT-specific cupping.**
+
+**Finding 3: BHC applied TWICE in PCCT path**
+- Ideal path: combine → BHC → save
+- Noisy path: noise → combine → BHC → save
+
+The noisy sinogram gets BHC applied once (not twice, since the noise is on per-bin
+sinograms, not on the combined sinogram). Each combine→BHC is a separate operation.
+This is actually correct (two separate combined sinograms each get BHC once).
+
+**Finding 4: No air calibration in PCCT path**
+EICT applies: intensity / air_scan → -log → BHC
+PCCT applies: -log(N/I0_bin_norm) → combine → BHC
+
+The PCCT normalization uses I0_bin_norm (degraded I0 accounting for DRM), which is
+the PCCT equivalent of air calibration. This should be correct as long as I0_bin_norm
+accurately models the unattenuated bin counts.
+
+**Finding 5: Noise reduction = 0.60 in PCCT**
+The pcct_noise_reduction=0.60 reduces noise amplitude by 60% in the Gaussian approximation.
+This is equivalent to clinical vendor noise reduction (Siemens QIR-3 level). It does NOT
+smooth spatially — it reduces the noise magnitude at each pixel independently. This should
+NOT cause cupping or edge artifacts by itself.
+
+---
+
+#### SUMMARY VERDICT
+
+| Root Cause | Confidence | Mechanism |
+|-----------|------------|-----------|
+| BHC over-correction | **HIGH** | Same BHC polynomial on sinogram with less beam hardening → over-subtraction at long paths → cupping |
+| I0_bins mismatch | **MEDIUM** | If _combine_pcct_bins I0 doesn't match pcct_forward_project normalization, position-dependent error |
+| Missing bowtie in PCCT | **LOW** | Bowtie is absent, so PCCT sinogram values are different from EICT, but this doesn't directly cause cupping |
+| Charge sharing + pileup | **LOW** | Position-dependent, but these are physical effects, not artifacts per se |
+
+**Next steps:** XCAT-002 (BHC analysis) and XCAT-003 (I0_bins verification) are the highest priority.

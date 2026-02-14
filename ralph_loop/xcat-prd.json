@@ -1,0 +1,147 @@
+{
+  "project": "BasisSimulator.jl — XCAT PCCT Artifact Investigation",
+  "version": "1.0.0",
+  "created": "2026-02-13",
+  "goal": "Diagnose and fix PCCT-specific cupping/edge artifacts visible in NB05 XCAT PCCT FDK reconstruction, and resolve slice position mismatch between EICT and PCCT",
+  "CRITICAL_STATUS": {
+    "symptom": "PCCT Standard FDK shows cupping/edge artifacts NOT present in EICT 120 kVp FDK. Same slice index shows slightly different anatomy between EICT and PCCT.",
+    "impact": "PCCT reconstruction quality is degraded — visible cupping at tissue boundaries, especially lung/soft-tissue interfaces",
+    "confirmed_facts": [
+      "EICT z_cm = 128 * 0.625/10 = 8.0 cm; PCCT z_cm = 128 * 0.4/10 = 5.12 cm — different z coverage explains slice mismatch",
+      "Water calibration uses z_cm = 8 * 0.625 / 10.0 = 0.5 cm for ALL scanners (GE pitch even for PCCT)",
+      "BHC uses identical bhc_water_default() coefficients [0, 1.05, -0.02, 0.001] for both EICT and PCCT paths",
+      "PCCT combined sinogram is created by _combine_pcct_bins() which converts bins back to counts, sums, re-logarithms",
+      "volume_fov threading is correct in both EICT and PCCT workspace paths",
+      "Public forward_project!() API is missing volume_fov parameter (separate bug, doesn't affect NB05 workspace path)"
+    ],
+    "topHypotheses": [
+      "XCAT-001: BHC applied to PCCT combined sinogram uses EICT-calibrated coefficients — may over/under-correct",
+      "XCAT-002: _combine_pcct_bins() I0_bins computation may introduce position-dependent bias in combined sinogram",
+      "XCAT-003: PCCT detector physics (charge sharing, K-fluorescence, pileup) creates bin-dependent effects that don't cancel in combination",
+      "XCAT-004: Water calibration z_cm uses GE slice pitch for PCCT — may affect μ_water accuracy",
+      "XCAT-005: pcct_noise_reduction=0.60 interacts with edge boundaries to create cupping-like appearance"
+    ]
+  },
+  "stories": [
+    {
+      "id": "XCAT-001",
+      "title": "DIAGNOSTIC: Map exact PCCT vs EICT signal chains side-by-side",
+      "priority": 0,
+      "status": "done",
+      "type": "DIAGNOSTIC",
+      "description": "Create a complete side-by-side comparison of the EICT and PCCT signal chains in the driver, identifying EVERY difference that could produce position-dependent artifacts.\n\nFor EICT (simulate! in EICTWorkspace):\n1. Trace: _forward_project_poly! → apply_physics_effects! → sim_detect → BHC → done\n2. Note exact functions called, kwargs, and order\n\nFor PCCT (simulate! in PCCTWorkspace):\n1. Trace: pcct_forward_project → _combine_pcct_bins → BHC → noise → _combine_pcct_bins → BHC → done\n2. Note how physics effects are applied differently\n3. Note that BHC is applied AFTER bin combination (not per-bin)\n\nKey differences to document:\n- Physics effects: EICT applies 13 effects via apply_physics_effects!(); PCCT applies some via pcct_forward_project kwargs\n- BHC: EICT applies BHC to polychromatic sinogram; PCCT applies same BHC to combined sinogram (different statistical properties)\n- Noise: EICT uses sim_detect(); PCCT uses apply_pcct_noise!()\n- What effects are MISSING from the PCCT path that EICT has?\n\nACCEPTANCE: Complete side-by-side signal chain comparison with all differences documented. Each difference annotated with potential impact on cupping.",
+      "testCommand": "Read src/api/driver.jl — trace both simulate!() paths",
+      "blockedBy": []
+    },
+    {
+      "id": "XCAT-002",
+      "title": "DIAGNOSTIC: Test BHC impact on PCCT cupping — noiseless comparison",
+      "priority": 0,
+      "status": "open",
+      "type": "DIAGNOSTIC",
+      "description": "The most likely root cause of PCCT-specific cupping: BHC uses generic coefficients [0, 1.05, -0.02, 0.001] which were calibrated for polychromatic EICT sinograms, NOT for PCCT combined sinograms.\n\nWhy this matters:\n- EICT polychromatic sinogram: -log(sum(w_E * exp(-mu_E * L))) → has beam hardening artifacts\n- PCCT combined sinogram: -log(sum(I0_bin * exp(-sino_bin)) / sum(I0_bin)) → energy bins already partially separate beam hardening\n- Applying the SAME BHC polynomial to the PCCT combined sinogram could OVER-correct\n- Over-correction produces inverted cupping (center too bright) or edge brightening\n\nExperiment (code-reading diagnostic):\n1. Read BHC coefficients in beam_hardening_correction.jl\n2. Understand what the polynomial p_out = c0 + c1*p + c2*p^2 + c3*p^3 does to different attenuation values\n3. For a 20cm water path at PCCT effective energy (~75 keV for 140 kVp):\n   - Compute p_eict (polychromatic integral)\n   - Compute p_pcct (combined sinogram value)\n   - Apply BHC to both — do they produce different corrections?\n4. For a 30cm mixed tissue path (lung+bone):\n   - Same analysis — position-dependent correction differences?\n\nACCEPTANCE: Determine if BHC over/under-corrects PCCT combined sinogram. Estimate the magnitude of cupping this introduces.",
+      "testCommand": "Read beam_hardening_correction.jl and analyze BHC polynomial behavior on different sinogram types",
+      "blockedBy": []
+    },
+    {
+      "id": "XCAT-003",
+      "title": "DIAGNOSTIC: Verify _combine_pcct_bins I0 values and combination physics",
+      "priority": 0,
+      "status": "open",
+      "type": "DIAGNOSTIC",
+      "description": "The _combine_pcct_bins function at driver.jl:467 combines energy-resolved bins into a single sinogram. If the per-bin I0 values are wrong, the combined sinogram will have systematic position-dependent errors that look like cupping.\n\nKey questions:\n1. How are I0_bins computed? (Three paths: ws_I0_bins, degraded, theoretical)\n2. For NB05 PCCT path with fidelity=:high, which I0 path is taken?\n   - Check use_detector_fx and use_corrections flags\n3. Does _compute_bin_I0 or _compute_degraded_I0 correctly account for DRM?\n4. If I0_bins are computed from the DRM but the actual bin sinograms have different DRM effects (e.g., charge sharing spreads counts differently for low-E vs high-E photons), the combination could be wrong\n5. Compare: N_total = Σ I0_bin × exp(-sino_bin) — if I0_bin[b] doesn't match the actual reference intensity used in sino_bin = -log(N/I0_norm), the ratio is wrong\n\nACCEPTANCE: Verify I0_bins are consistent with the normalization used in pcct_forward_project(). If inconsistent, quantify the expected position-dependent error.",
+      "testCommand": "Read driver.jl _combine_pcct_bins and pcct_forward_project normalization",
+      "blockedBy": []
+    },
+    {
+      "id": "XCAT-004",
+      "title": "DIAGNOSTIC: Check water calibration scanner-specificity",
+      "priority": 1,
+      "status": "open",
+      "type": "DIAGNOSTIC",
+      "description": "In NB05, water calibration uses shared water_recon_opts:\n  z_cm = 8 * 0.625 / 10.0 = 0.5 cm\n\nThis z_cm was designed for GE (0.625mm native slice). For PCCT (0.4mm native), the z_cm should be:\n  z_cm = 8 * 0.4 / 10.0 = 0.32 cm\n\nBUT: the water phantom is uniform, so μ_water should be the same regardless of z_cm (assuming the reconstructed slab is within the phantom). The z_cm primarily affects the z-sampling, not the mean μ_water value.\n\nHowever, there's a subtler issue:\n1. If z_cm is too large relative to the detector z-coverage, the reconstruction volume extends beyond what the cone beam covers\n2. For water calibration: detector z-coverage = 128 × 0.4mm = 51.2mm = 5.12cm. Recon z_cm = 0.5cm. This is fine — well within coverage.\n3. BUT: the CTGeometry created by create_workspace() uses the PCCT scanner, which has 128 rows × 0.4mm. The geometry's z-parameters determine the backprojection mapping.\n\nMore important: check if the water calibration recon uses the full 128 detector rows or just 8. If only 8 slices are reconstructed, does the CTGeometry properly map those 8 slices?\n\nACCEPTANCE: Determine if water calibration z_cm mismatch affects μ_water_pcct value. If yes, estimate the error in μ_water and its HU impact.",
+      "testCommand": "Trace water calibration path for PCCT scanner in NB05",
+      "blockedBy": ["XCAT-001"]
+    },
+    {
+      "id": "XCAT-005",
+      "title": "DIAGNOSTIC: PCCT noise_reduction interaction with edges",
+      "priority": 1,
+      "status": "open",
+      "type": "DIAGNOSTIC",
+      "description": "NB05 uses pcct_noise_reduction=0.60 in sim_opts_pcct. This applies noise reduction DURING the PCCT signal chain.\n\nKey questions:\n1. WHERE is pcct_noise_reduction applied? Is it in apply_pcct_noise!() or elsewhere?\n2. If it smooths the sinogram, does it smooth BEFORE or AFTER BHC?\n3. Does it use a spatial kernel that could create edge effects?\n4. At tissue boundaries (lung/soft-tissue, ~500 HU difference), a smoothing kernel could mix high and low attenuation values, creating:\n   - Partial-volume effects in sinogram domain\n   - Boundary brightness/darkness artifacts when reconstructed\n5. Does EICT have any equivalent smoothing? If not, this is a PCCT-only effect.\n\nACCEPTANCE: Determine if pcct_noise_reduction contributes to the visible cupping/edge artifacts. If yes, describe the mechanism.",
+      "testCommand": "Read detector_noise.jl apply_pcct_noise!() and trace noise_reduction parameter",
+      "blockedBy": []
+    },
+    {
+      "id": "XCAT-006",
+      "title": "DIAGNOSTIC: Run noiseless PCCT vs EICT comparison script",
+      "priority": 0,
+      "status": "open",
+      "type": "ISOLATION",
+      "description": "Create a minimal Julia script that runs the NB05 pipeline for BOTH EICT and PCCT but with ALL noise and optional physics disabled (fidelity=:ideal equivalent, but keeping polychromatic projection and BHC).\n\nThe script should:\n1. Load the XCAT phantom (downsampled to factor 4 for speed — 400×350×125)\n2. Create EICT and PCCT scanners matching NB05 specs\n3. Run simulate!() with use_noise=false, minimal physics\n4. Reconstruct both with FDK + StandardFilter\n5. Convert to HU using water calibration\n6. Save central slice images and compute:\n   - Mean HU in center water-equivalent ROI (should be ~0 HU)\n   - Cupping profile: radial HU from center to edge\n   - Edge profile: line profile across a tissue boundary\n\nThis isolates whether the cupping is a physics/combination issue vs a noise interaction.\n\nIf cupping appears WITHOUT noise → structural issue in the signal chain\nIf cupping only appears WITH noise → noise/smoothing interaction\n\nACCEPTANCE: Script runs successfully. Report cupping magnitude for both noiseless EICT and PCCT.",
+      "testCommand": "julia +1.12 --project=. ralph_loop/scripts/xcat_noiseless_comparison.jl",
+      "blockedBy": ["XCAT-001"]
+    },
+    {
+      "id": "XCAT-007",
+      "title": "DIAGNOSTIC: Check if PCCT physics effects differ from EICT effects",
+      "priority": 1,
+      "status": "open",
+      "type": "DIAGNOSTIC",
+      "description": "The EICT path applies 13 physics effects via apply_physics_effects!(). The PCCT path applies physics DIFFERENTLY — some effects are applied inside pcct_forward_project(), others are not applied at all.\n\nCreate a checklist:\n| Effect | EICT applied? | PCCT applied? | How? |\n|--------|--------------|---------------|------|\n| Fill factor | via physics_pipeline | ? | |\n| Flat filter | via physics_pipeline | ? | |\n| Bowtie filter | via physics_pipeline | ? | |\n| Scatter | via physics_pipeline | ? | |\n| Crosstalk | via physics_pipeline | ? | |\n| Focal spot | via physics_pipeline | ? | |\n| Heel effect | via physics_pipeline | ? | |\n| Lag | via physics_pipeline | ? | |\n| BHC | via physics_pipeline | via driver after combine | |\n| Noise | via sim_detect | via apply_pcct_noise! | |\n| DQE | via physics_pipeline | ? | |\n| DRM | N/A | via pcct_forward_project | |\n| Charge sharing | N/A | via pcct_forward_project | |\n| K-fluorescence | N/A | via pcct_forward_project | |\n| Pileup | N/A | via pcct_forward_project | |\n\nAny physics effect applied to EICT but NOT to PCCT (or vice versa) is a potential source of the cupping artifact.\n\nSpecifically: If EICT gets fill factor, flat filter, bowtie, scatter correction but PCCT does NOT, the PCCT sinogram will have different attenuation values → different BHC behavior → cupping.\n\nACCEPTANCE: Complete checklist with exact code locations. Identify missing effects.",
+      "testCommand": "Read driver.jl both simulate! paths and pcct_forward_project()",
+      "blockedBy": []
+    },
+    {
+      "id": "XCAT-008",
+      "title": "DIAGNOSTIC: Verify PCCT combined sinogram values vs EICT polychromatic sinogram",
+      "priority": 2,
+      "status": "open",
+      "type": "DIAGNOSTIC",
+      "description": "For the same phantom path length, do the EICT polychromatic sinogram and PCCT combined sinogram produce the same attenuation value?\n\nTheory: For an ideal detector (no charge sharing, perfect energy resolution), the PCCT combined sinogram should equal the EICT polychromatic sinogram, since:\n  EICT: p = -log(Σ w_E exp(-μ_E L))\n  PCCT: p_bin = -log(N_bin/I0_bin), then p_combined = -log(Σ I0_bin exp(-p_bin) / Σ I0_bin)\n\nIf the I0_bins perfectly partition the total flux, these should be identical. But with DRM effects (charge sharing moves counts between bins), the PCCT combined value may differ.\n\nAnalysis:\n1. Compute theoretical EICT attenuation for 20cm water at 120 kVp\n2. Compute theoretical PCCT combined attenuation for 20cm water at 140 kVp (4 bins, DRM effects)\n3. Are they the same? (Normalize for kVp difference)\n4. For a non-water path (mixed tissue), does the difference grow? (Position-dependent = cupping)\n\nACCEPTANCE: Document theoretical combined sinogram value vs polychromatic for multiple path compositions. If they differ for mixed materials, this explains cupping.",
+      "testCommand": "Analytical computation of combined vs polychromatic sinogram values",
+      "blockedBy": ["XCAT-003"]
+    },
+    {
+      "id": "XCAT-009",
+      "title": "FIX: Apply identified corrections for PCCT cupping",
+      "priority": 0,
+      "status": "open",
+      "type": "FIX",
+      "description": "Based on findings from XCAT-001 through XCAT-008, implement the fix(es) for PCCT cupping.\n\nLikely fixes (to be confirmed by diagnostics):\n\n1. **BHC calibration per signal path**: If BHC is the root cause, either:\n   a. Disable BHC for PCCT path (energy-resolved bins have less beam hardening)\n   b. Calibrate BHC specifically for PCCT combined sinogram\n   c. Reduce BHC strength for PCCT (smaller polynomial coefficients)\n\n2. **Missing physics effects**: If PCCT path is missing effects that EICT has, add them.\n\n3. **I0_bins correction**: If _combine_pcct_bins uses wrong I0 values, fix the computation.\n\n4. **Noise reduction interaction**: If pcct_noise_reduction causes edge artifacts, apply it differently.\n\nACCEPTANCE: PCCT cupping artifacts are eliminated or significantly reduced while maintaining correct HU values. EICT reconstruction is not affected.",
+      "testCommand": "Re-run PCCT path with fix, compare to EICT visually and quantitatively",
+      "blockedBy": ["XCAT-001", "XCAT-002", "XCAT-003", "XCAT-006", "XCAT-007"]
+    },
+    {
+      "id": "XCAT-010",
+      "title": "FIX: Correct water calibration z_cm for PCCT scanner",
+      "priority": 1,
+      "status": "open",
+      "type": "FIX",
+      "description": "In NB05, water_recon_opts uses:\n  z_cm = 8 * 0.625 / 10.0 = 0.5 cm  (GE pitch)\n\nFor PCCT, this should be:\n  z_cm = 8 * 0.4 / 10.0 = 0.32 cm  (NAEOTOM pitch)\n\nFix options:\n1. Create separate water_recon_opts per scanner\n2. Compute z_cm from the scanner's detector_row_size\n\nNote: This may have minimal impact on μ_water accuracy (uniform cylinder), but it's incorrect in principle and could affect future non-uniform calibration phantoms.\n\nAlso fix the slice position documentation — explain that same slice index shows different anatomy due to different z-coverage.\n\nACCEPTANCE: Each scanner uses correct z_cm for water calibration. Document the z-coverage difference.",
+      "testCommand": "Update NB05 water calibration, verify μ_water values are consistent",
+      "blockedBy": ["XCAT-004"]
+    },
+    {
+      "id": "XCAT-011",
+      "title": "FIX: Add volume_fov to public forward_project!() API",
+      "priority": 2,
+      "status": "open",
+      "type": "FIX",
+      "description": "The public forward_project!() API is missing the volume_fov kwarg that was added to siddon_forward_project!() and threaded through _forward_project_poly!() and driver simulate!() calls.\n\nThis means users calling forward_project!() directly (not via workspace/driver) will get the old behavior where geom.fov is used for volume bounds instead of the phantom's actual FOV.\n\nFix:\n1. Add volume_fov kwarg to forward_project!() signature\n2. Thread it to the internal _forward_project_poly!() call\n3. Default to nothing (which falls back to geom.fov for backward compatibility)\n\nACCEPTANCE: forward_project!() accepts and uses volume_fov kwarg. Existing code that doesn't pass it still works.",
+      "testCommand": "Verify forward_project!() signature includes volume_fov",
+      "blockedBy": []
+    },
+    {
+      "id": "XCAT-012",
+      "title": "VALIDATE: Re-run NB05 with all fixes applied",
+      "priority": 3,
+      "status": "open",
+      "type": "VALIDATE",
+      "description": "After all fixes are applied, re-run NB05 and verify:\n1. PCCT FDK reconstruction has no visible cupping/edge artifacts\n2. EICT FDK reconstruction is unchanged (no regression)\n3. Both scanners show the same anatomy at corresponding z-positions\n4. HU values are clinically reasonable (water ≈ 0 HU, lung ≈ -700 HU, bone > 500 HU)\n5. VMI at all energies produces expected contrast behavior\n6. HIR produces noise reduction without introducing artifacts\n\nAlso verify other notebooks are not affected:\n- NB01: single kVp verification (should be unchanged)\n- NB04: PCCT demonstration (may benefit from fix)\n\nACCEPTANCE: All visualizations show clean reconstructions. No regressions.",
+      "testCommand": "Run NB05 in Pluto, visually inspect all reconstructions",
+      "blockedBy": ["XCAT-009", "XCAT-010", "XCAT-011"]
+    }
+  ]
+}
