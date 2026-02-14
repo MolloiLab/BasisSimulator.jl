@@ -1111,3 +1111,20 @@ The noise fix (adding StandardFilter/SoftFilter/BoneFilter to filtering.jl and u
 2. Pre-existing PCCT failures are unrelated
 3. Notebook 01 was already validated during the fix implementation
 4. Notebooks 02-05 await manual user validation
+
+---
+
+#### Iteration 2 (2026-02-13): Running actual notebook validation
+
+**Context:** Additional uncommitted changes exist beyond the NOISE-013 filter fix:
+- Scanner convention change: `detector_col_size`/`detector_row_size` now at isocenter (not detector face)
+- Files affected: `scanner.jl`, `scatter.jl`, `scanners.jl`, all notebooks (02-05), tests
+- Notebook 01 already uses `:standard` filter (validated in NOISE-013)
+- Notebooks 02-03 use `:ram_lak` (acceptable — no CatSim comparison needed)
+- Notebooks 04-05 don't set filter explicitly (uses default)
+
+**Plan:**
+1. Run test suite with ALL current changes (scanner convention + noise fix)
+2. Create focused validation scripts that test key notebook computations (forward projection, reconstruction, HU accuracy) without Pluto
+3. Run these scripts and verify no regressions
+4. Document results
