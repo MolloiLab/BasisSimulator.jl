@@ -19,7 +19,7 @@
 | NOISE-009 | **done** | **ROOT CAUSE: CatSim uses 'standard' windowed kernel, we use Ram-Lak** | **~2.1x** |
 | NOISE-010 | **done** | NO — Cosine weighting applied exactly once, correct coordinate system | ~1.0x |
 | NOISE-011 | **done** | NO — μ_water empirical calibration correct, units consistent | ~1.03x |
-| NOISE-012 | open | — | — |
+| NOISE-012 | **done** | NO — Weights explicitly normalized to sum=1 before use | ~1.0x |
 | NOISE-013 | **done** | **FIX: StandardFilter implemented — σ=68.89 HU vs CatSim 71.37 HU (3.5% match)** | **FIXED** |
 | NOISE-014 | open | — | — |
 
@@ -950,3 +950,88 @@ The 3.3% difference between CatSim's hardcoded 0.20 cm⁻¹ and NIST monochromat
 - **Units are consistent** (cm⁻¹ throughout BasisSimulator, mm⁻¹ throughout CatSim, ratios cancel)
 - **No unit confusion** between cm⁻¹ and mm⁻¹
 - **Impact factor: ~1.03x** (the small calibration difference is negligible and in the wrong direction)
+
+### 2026-02-13: NOISE-012 [PASS — Spectrum weights correctly normalized]
+
+**Investigated:** Whether spectrum weight normalization could cause noise differences. The hypothesis: if Σw ≠ 1 after downsampling, the polychromatic forward projection computes wrong I/I₀ values, affecting noise.
+
+---
+
+#### Finding 1: Weights are explicitly normalized to sum=1 before use
+
+**polychromatic.jl line 1107:**
+```julia
+weights_norm = ws_weights_norm !== nothing ? ws_weights_norm : T.(weights ./ sum(weights))
+```
+
+This normalization happens inside `_forward_project_poly!()`, which is the sole entry point for polychromatic forward projection. Regardless of what `load_spectrum()` or `downsample_spectrum()` return, the weights are ALWAYS normalized to sum=1 before use in the Beer-Lambert computation.
+
+---
+
+#### Finding 2: load_spectrum() returns raw (unnormalized) weights
+
+**spectrum.jl lines 42-85:**
+- Loads energy and weight columns directly from `.dat` file
+- No normalization applied
+- Raw units: photons/mA/cm²/s at 1m (xspect) or photons/mA/mm²/s at 1m (xcist)
+- These are absolute fluence values, not normalized probabilities
+
+This is fine because normalization happens later in `_forward_project_poly!()`.
+
+---
+
+#### Finding 3: downsample_spectrum() preserves total weight (sum)
+
+**spectrum.jl lines 125-164:**
+- Each bin sums its constituent weights: `new_weights[i] = sum(weights[start_idx:end_idx])` (line 160)
+- Bin partition is gap-free and non-overlapping:
+  - For n_original=240, n_bins=15: bin_size=16.0
+  - Bin 1: [1:16], Bin 2: [17:32], ..., Bin 15: [225:240]
+  - Total: 15 × 16 = 240 elements covered
+- `sum(new_weights) == sum(weights)` — total fluence is conserved exactly
+
+---
+
+#### Finding 4: The Beer-Lambert formula is correct for normalized weights
+
+**polychromatic.jl lines 1133-1138:**
+```julia
+w = weights_norm[e_idx]
+AK.foreachindex(I_transmitted) do idx
+    I_transmitted[idx] += w * exp(-sino_mono[idx])
+end
+```
+
+Then at line 1145:
+```julia
+sinogram[idx] = -log(max(I_transmitted[idx], eps))
+```
+
+With Σ w_e = 1:
+- Air (all L_e = 0): I = Σ w_e × exp(0) = 1.0, sinogram = -log(1) = 0. ✓
+- Water: I = Σ w_e × exp(-L_e) < 1, sinogram > 0. ✓
+- The sinogram represents -log(I/I₀) where I₀ is implicitly 1 (due to normalization). ✓
+
+**No noise impact from normalization:** Since weights are always normalized to sum=1, the absolute magnitude of raw spectrum weights has NO effect on forward projection or noise. The normalization is a mathematical identity for the Beer-Lambert model.
+
+---
+
+#### Answers to Story Questions
+
+1. **Does load_spectrum() normalize weights to sum=1?** — NO, it returns raw fluence values. But this doesn't matter because normalization happens in `_forward_project_poly!()`.
+
+2. **Does downsample_spectrum() preserve normalization?** — It preserves the total sum (sum of new weights = sum of old weights). Since normalization happens downstream, this is sufficient.
+
+3. **If weights don't sum to 1, what's the impact?** — None, because `_forward_project_poly!()` always normalizes: `weights ./ sum(weights)`. Even if downsample_spectrum() lost 5% of fluence, the normalization step would compensate.
+
+4. **Could this explain the noise discrepancy?** — NO. The explicit normalization at polychromatic.jl:1107 eliminates any possible spectrum weight normalization issue.
+
+---
+
+#### Verdict: NO — Spectrum weight normalization does NOT contribute to noise discrepancy.
+
+- **Weights are explicitly normalized** to sum=1 in `_forward_project_poly!()` (line 1107)
+- **downsample_spectrum()** preserves total weight (gap-free bin partition)
+- **No fluence is lost** in the downsampling process
+- **The normalization is robust** against any raw weight magnitude
+- **Impact factor: ~1.0x** (zero contribution to noise discrepancy)
