@@ -686,7 +686,10 @@ function create_aquilion_one(;
     SAD = sad !== nothing ? sad : SAD_mm / 10.0
     SDD = sdd !== nothing ? sdd : SDD_mm / 10.0
 
-    # Determine pixel size and FOV
+    # Row pixel size (z-direction) — always native detector pitch
+    pixel_row_size = pixel_pitch_mm / 10.0
+
+    # Determine column pixel size and XY FOV
     if fov_cm === nothing
         pixel_size = pixel_pitch_mm / 10.0
         fov_xy = pixel_size * n_cols  # FOV from detector size
@@ -697,9 +700,9 @@ function create_aquilion_one(;
         fov_xy = fov_cm
     end
 
-    # Z FOV
+    # Z FOV — uses row pixel size (native detector pitch), not column pixel size
     if z_cm === nothing
-        fov_z = pixel_size * n_rows
+        fov_z = pixel_row_size * n_rows
     else
         fov_z = z_cm
     end
@@ -743,7 +746,7 @@ function create_aquilion_one(;
     fov = (fov_xy, fov_xy, fov_z)
 
     return CTGeometry(
-        SAD, SDD, n_angles, n_rows, n_cols, pixel_size, pixel_size,
+        SAD, SDD, n_angles, n_rows, n_cols, pixel_size, pixel_row_size,
         angles, source_positions, detector_centers, detector_u, detector_v,
         fov
     )
