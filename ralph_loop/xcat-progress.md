@@ -281,3 +281,40 @@ NOT cause cupping or edge artifacts by itself.
 | Charge sharing + pileup | **LOW** | Position-dependent, but these are physical effects, not artifacts per se |
 
 **Next steps:** XCAT-002 (BHC analysis) and XCAT-003 (I0_bins verification) are the highest priority.
+
+---
+
+### 2026-02-13: XCAT-002 — DIAGNOSTIC: Test BHC impact on PCCT cupping [WIP]
+
+**Plan:** Analyze BHC polynomial behavior on EICT (120 kVp) vs PCCT (140 kVp) sinograms.
+
+**Initial Code Reading Findings:**
+
+1. **BHC polynomial is HARDCODED**: `bhc_water_default()` at beam_hardening_correction.jl:205-209
+   always returns `[0.0, 1.05, -0.02, 0.001]` regardless of `reference_energy_keV` argument.
+   The `reference_energy_keV` is stored as metadata only — it does NOT change the polynomial.
+
+2. **Both EICT and PCCT use the same polynomial**: driver.jl:1416-1418 calls
+   `bhc_water_default(reference_energy_keV=ref_energy)` for all scanners. Since the
+   coefficients are hardcoded, both 120 kVp EICT and 140 kVp PCCT get identical BHC.
+
+3. **PCCT combined sinogram math**: For ideal detection (no DRM loss), the combination
+   `_combine_pcct_bins` perfectly recovers the total photon count:
+   ```
+   N_total = Σ_b N_bin(b) = Σ_E I0 × w_E × η_E × exp(-μ_E × d)
+   p_pcct = -log(N_total / I0_total) = -log(Σ w_E×η_E×exp(-μ_E×d) / Σ w_E×η_E)
+   ```
+   This is the EICT polychromatic integral but weighted by η_E (quantum efficiency).
+   For CdTe at diagnostic energies (>40 keV), η ≈ 1.0, so p_pcct ≈ p_eict_140kVp.
+
+4. **I0 normalization is consistent**: workspace.jl:218-230 shows that `I0_bins_norm`
+   (used by pcct_forward_project) and `I0_bins_combine` (used by _combine_pcct_bins)
+   are computed identically when `use_detector_fx && !use_corrections` (NB05 case).
+   Both use `_compute_degraded_I0()`.
+
+5. **Key hypothesis**: The BHC polynomial `[0, 1.05, -0.02, 0.001]` was designed for
+   a 120 kVp spectrum. For 140 kVp (harder spectrum, less beam hardening), the SAME
+   polynomial OVER-corrects. Over-correction is position-dependent because the
+   quadratic/cubic terms grow with path length → cupping.
+
+**Next:** Numerical analysis of BHC correction magnitude for 120 kVp vs 140 kVp.
