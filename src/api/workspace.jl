@@ -191,7 +191,7 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     sino_noisy_out = zeros(T, sino_shape)
 
     # --- Pre-compute setup data (done once, reused by simulate!()) ---
-    geom = CTGeometry(scanner; n_angles=protocol.views, fov_cm=recon_opts.fov_cm, z_cm=nothing)
+    geom = CTGeometry(scanner; n_angles=protocol.views, fov_cm=recon_opts.fov_cm, z_cm=recon_opts.z_cm)
     e_full, w_full = load_spectrum(Int(protocol.kVp))
     energies, weights_vec = downsample_spectrum(e_full, w_full, sim_opts.n_energy_bins)
     config = build_physics_config(scanner, sim_opts, energies, weights_vec; phantom=phantom)
@@ -424,7 +424,7 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
                                 T::Type{<:AbstractFloat}=Float32,
                                 materials::Union{Nothing, Vector}=nothing)
     # Geometry
-    geom = CTGeometry(scanner; n_angles=protocol.views, fov_cm=recon_opts.fov_cm, z_cm=nothing)
+    geom = CTGeometry(scanner; n_angles=protocol.views, fov_cm=recon_opts.fov_cm, z_cm=recon_opts.z_cm)
 
     # Spectrum
     energies, weights_vec = resolve_spectrum(sim_opts, protocol)
@@ -727,7 +727,7 @@ function create_eict_dual_workspace(scanner, protocol, sim_opts, recon_opts, pha
                                      T::Type{<:AbstractFloat}=Float32,
                                      materials::Union{Nothing, Vector}=nothing)
     # Geometry (shared)
-    geom = CTGeometry(scanner; n_angles=protocol.views, fov_cm=recon_opts.fov_cm, z_cm=nothing)
+    geom = CTGeometry(scanner; n_angles=protocol.views, fov_cm=recon_opts.fov_cm, z_cm=recon_opts.z_cm)
 
     # Create per-kVp protocols (same as _simulate_axial_dual)
     protocol_low = CTProtocol(
@@ -1033,15 +1033,19 @@ end
     create_fdk_recon_workspace(sinogram, geom, volume_size; T=eltype(sinogram), filter=RampFilter(), cutoff=1.0)
 
 Create a pre-allocated workspace for zero-allocation FDK `reconstruct!()`.
+
+`filter` can be a `FilterType` struct (e.g., `StandardFilter()`) or a `Symbol`
+(e.g., `:standard`, `:ram_lak`).
 """
 function create_fdk_recon_workspace(
     sinogram::AbstractArray{<:AbstractFloat, 3},
     geom::CTGeometry,
     volume_size::NTuple{3, Int};
     T::Type{<:AbstractFloat} = eltype(sinogram),
-    filter::FilterType = RampFilter(),
+    filter::Union{FilterType, Symbol} = RampFilter(),
     cutoff::Float64 = 1.0
 )
+    filter = filter isa Symbol ? filter_from_symbol(filter) : filter
     sino_shape = size(sinogram)
 
     # Output volume
@@ -1142,6 +1146,8 @@ end
     create_hir_recon_workspace(sinogram, geom, volume_size; T=eltype(sinogram), strength=3, filter=RampFilter(), cutoff=1.0)
 
 Create a pre-allocated workspace for zero-allocation Hybrid IR `reconstruct!()`.
+
+`filter` can be a `FilterType` struct or a `Symbol` (e.g., `:standard`).
 """
 function create_hir_recon_workspace(
     sinogram::AbstractArray{<:AbstractFloat, 3},
@@ -1149,9 +1155,10 @@ function create_hir_recon_workspace(
     volume_size::NTuple{3, Int};
     T::Type{<:AbstractFloat} = eltype(sinogram),
     strength::Int = 3,
-    filter::FilterType = RampFilter(),
+    filter::Union{FilterType, Symbol} = RampFilter(),
     cutoff::Float64 = 1.0
 )
+    filter = filter isa Symbol ? filter_from_symbol(filter) : filter
     sino_shape = size(sinogram)
 
     # Output volume / iterate

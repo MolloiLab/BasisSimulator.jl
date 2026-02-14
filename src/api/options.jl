@@ -185,8 +185,10 @@ Parameters irrelevant to the chosen algorithm are silently ignored.
 # Core Fields
 - `algorithm::Symbol`: Reconstruction algorithm (see below)
 - `matrix_size::NTuple{3, Int}`: Output volume size (nx, ny, nz)
-- `fov_cm::Float64`: Field of view in cm
-- `filter::Symbol`: FDK filter kernel (:ram_lak, :shepp_logan)
+- `fov_cm::Float64`: XY field of view in cm
+- `z_cm::Union{Float64, Nothing}`: Z extent in cm. If nothing, auto-computed from detector coverage.
+  Set this to `sliceCount * sliceThickness / 10` for clinical-style slice thickness control.
+- `filter::Symbol`: FDK filter kernel (:ram_lak, :shepp_logan, :cosine, :hamming, :hann, :standard, :soft, :bone)
 - `iterations::Int`: Number of iterations (iterative methods)
 
 # Iterative Parameters
@@ -217,10 +219,11 @@ Parameters irrelevant to the chosen algorithm are silently ignored.
 | :mbir | Model-based IR | iterations, lambda, n_subsets, penalty |
 """
 struct ReconOptions
-    # Core fields (original 5)
+    # Core fields
     algorithm::Symbol
     matrix_size::NTuple{3, Int}
     fov_cm::Float64
+    z_cm::Union{Float64, Nothing}
     filter::Symbol
     iterations::Int
     # Iterative parameters
@@ -266,6 +269,7 @@ function ReconOptions(;
     algorithm::Symbol = :fdk,
     matrix_size::Union{NTuple{3, Int}, Nothing} = nothing,
     fov_cm::Real = 35.0,
+    z_cm::Union{Real, Nothing} = nothing,
     filter::Symbol = :ram_lak,
     iterations::Int = 10,
     # Iterative parameters
@@ -289,8 +293,10 @@ function ReconOptions(;
     # Convert Tuple to Vector for backward compatibility
     _vmi_basis = vmi_basis isa Tuple ? collect(Symbol, vmi_basis) : Vector{Symbol}(vmi_basis)
 
+    _z_cm = isnothing(z_cm) ? nothing : Float64(z_cm)
+
     return ReconOptions(
-        algorithm, _size, Float64(fov_cm), filter, iterations,
+        algorithm, _size, Float64(fov_cm), _z_cm, filter, iterations,
         Float64(lambda), Float64(tv_weight), n_subsets,
         penalty, Float64(penalty_delta), use_edge_weights, Float64(blend_percent),
         vmi_energies, _vmi_basis,
