@@ -394,3 +394,15 @@ All occurrences of `detector_row_size` and `detector_col_size` are used for the 
 - The non-workspace `simulate()` paths for single-kVp and dual-kVp are WRONG — they don't pass `volume_fov`.
 - The allocating `forward_project()` correctly accepts and forwards `volume_fov` via `kwargs...`, so the fix is simply to add `volume_fov=phantom.fov` to the call sites.
 - All iterative recon paths correctly do NOT pass volume_fov (they project the recon volume, not the phantom).
+
+### 2026-02-14: GEO-004 — WIP
+
+**Agent:** Auditing ALL 5 verification notebooks for z_cm and fov_cm consistency
+**Method:** `grep -n 'z_cm\|fov_cm\|detector_row_size' verification/notebooks/*.jl` — every hit checked
+
+**Plan:**
+1. For each notebook, identify: scanner type, detector_row_size, n_slices, sliceThickness
+2. Compute expected z_cm = sliceCount × sliceThickness / 10
+3. Check every z_cm value in phantom creation, recon options, and water calibration
+4. Check fov_cm consistency between phantom and recon
+5. Check if ReconOptions with z_cm=nothing (auto) is appropriate
