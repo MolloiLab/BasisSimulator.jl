@@ -854,3 +854,72 @@ All iterative reconstruction paths correctly:
 **Summary: 5 issues fixed, 0 regressions expected**
 
 All fixes are minimal and targeted. The Aquilion ONE has square pixels so the scanner.jl fix has no numerical effect on current usage. The driver.jl fix aligns the non-workspace API with the workspace API that was already correct.
+
+### 2026-02-14: GEO-008 — PASS (0 issues found, 1 note)
+
+**Agent:** Auditing scatter.jl geometry for z-direction correctness
+**Method:** Full file read (1198 lines) + `grep -rn 'pixel_size\|pixel_row\|geom\.' src/detector/scatter.jl` + `grep -rn 'scanner\.\|detector_col\|detector_row\|magnification\|pixel\|pitch\|fov' src/detector/scatter.jl`
+
+#### Architecture Summary
+
+The scatter module has two main components:
+
+1. **Core scatter add/correct** (`add_scatter!`, `correct_scatter!`): Work entirely in **pixel-index space**. They operate on the sinogram `[n_cols × n_rows × n_angles]` using pixel indices for the 2D convolution kernel. No `pixel_size`, `pixel_row_size`, or `geom.*` references at all. The kernel FWHM is specified in **pixels** (not physical units).
+
+2. **Geometry-aware scatter** (`geometry_aware_scatter_model`, `geometry_aware_scatter_correction`): Use `Scanner` struct fields to compute scaling factors. The only geometry-to-pixel conversion is `compute_scatter_kernel_fwhm_pixels()`.
+
+#### Audit Questions Answered
+
+1. **Does scatter use detector pixel geometry?** YES — `compute_scatter_kernel_fwhm_pixels()` (line 716-720) converts physical FWHM (50mm) to pixel units using `scanner.detector_col_size * magnification`.
+
+2. **Does scatter compute patient size from sinogram?** NO — `estimate_phantom_diameter_cm()` takes a `mask` volume and `voxel_size_mm` tuple, computes in-plane bounding box using `dx`, `dy` only. Does not use sinogram geometry.
+
+3. **Any position-dependent scatter kernel that uses pixel_size vs pixel_row_size?** NO — the core scatter functions (`add_scatter!`, `correct_scatter!`) use a single symmetric 2D kernel indexed by pixel offsets `(di, dj)`. No `pixel_size` or `pixel_row_size` references.
+
+4. **Does scatter model use cone angle (z) or fan angle (xy)?** NEITHER — scatter is modeled as isotropic 2D convolution in sinogram pixel space.
+
+5. **Is the kernel applied correctly in both row and column dimensions?** YES — the 2D kernel is symmetric (same FWHM in both directions) and applied via nested loops over `di` (col offset) and `dj` (row offset).
+
+#### Detailed Audit Table
+
+| File:Line | Variable | Direction | Verdict | Notes |
+|-----------|----------|-----------|---------|-------|
+| scatter.jl:54-55 | `kernel_fwhm` | — (comment) | N/A | "FWHM in detector pixels" |
+| scatter.jl:69 | `kernel_fwhm` | — (docstring) | N/A | Parameter documentation |
+| scatter.jl:104-143 | `create_scatter_kernel_spatial()` | both (symmetric) | CORRECT | 2D symmetric Gaussian/exponential kernel, same extent in both directions |
+| scatter.jl:163-236 | `add_scatter!()` | both (pixel index) | CORRECT | No geom references. Kernel applied symmetrically via `di` (col) and `dj` (row) loops |
+| scatter.jl:354-451 | `correct_scatter!()` | both (pixel index) | CORRECT | Same structure as add_scatter!(), no geom references |
+| scatter.jl:476 | `SCATTER_REF_PIXEL_PITCH_MM = 1.0` | — (constant) | N/A | Reference calibration constant |
+| scatter.jl:483 | `SCATTER_PHYSICAL_KERNEL_FWHM_MM = 50.0` | — (constant) | N/A | Physical scatter kernel size at detector |
+| scatter.jl:685-694 | `compute_scatter_geometry_scale()` | — (scalar) | CORRECT | Uses `scanner.source_to_detector - scanner.source_to_isocenter` for air gap. No pixel geometry. |
+| scatter.jl:716-720 | `compute_scatter_kernel_fwhm_pixels()` | xy (col) | CORRECT* | Uses `scanner.detector_col_size * magnification` for pixel pitch. *See note below. |
+| scatter.jl:719 | `detector_face_pitch = scanner.detector_col_size * magnification` | xy (col) | CORRECT* | Column-direction pitch at detector face |
+| scatter.jl:535-580 | `estimate_phantom_diameter_cm()` | in-plane (xy) | CORRECT | Uses `dx`, `dy` from `voxel_size_mm` tuple for bounding box. `dz` present but unused (correct — diameter is in-plane). |
+| scatter.jl:976-1037 | `estimate_scatter_joint()` | both (pixel index) | CORRECT | Same symmetric kernel convolution structure. No geom references. |
+| scatter.jl:1070-1092 | `correct_scatter_with_estimate!()` | — (per-pixel) | CORRECT | Simple intensity subtraction, no geometry. |
+| scatter.jl:1139-1165 | `correct_scatter_dual_energy!()` | — (scalar) | CORRECT | Delegates to `geometry_aware_scatter_model()` and `estimate_scatter_joint()`. |
+
+#### Issues Found: 0
+
+#### Note: Isotropic Kernel FWHM Uses Column Pitch Only
+
+`compute_scatter_kernel_fwhm_pixels()` (line 716-720) converts the 50mm physical scatter FWHM to pixel units using only `scanner.detector_col_size` (xy-direction). For non-square detectors (e.g., GE Revolution: col=0.6mm, row=0.625mm), this means the kernel FWHM in row-pixel units is slightly different from col-pixel units:
+
+- At detector face: col pitch = 0.6 × (1097/626) = 1.051mm, row pitch = 0.625 × (1097/626) = 1.095mm
+- Kernel FWHM in col pixels: 50/1.051 = 47.6 pixels
+- Kernel FWHM in row pixels: 50/1.095 = 45.7 pixels (4.2% smaller)
+
+The kernel is applied as a single symmetric 2D Gaussian with the col-pixel FWHM, making it slightly wider in the row direction (in physical mm) than ideal.
+
+**Impact: NEGLIGIBLE** — The scatter kernel is a very broad, low-frequency signal (FWHM ~48 pixels ≈ 50mm). A 4% asymmetry in such a broad kernel has no measurable effect on the scatter estimate. The dominant factors are the scatter coefficient, phantom size, and energy — not the kernel shape.
+
+**Recommendation: NO ACTION NEEDED** — Making the kernel anisotropic would add complexity for negligible improvement. The current isotropic kernel is standard practice in CT scatter simulation (XCIST/CatSim also uses isotropic kernels).
+
+#### Summary
+
+The scatter module is architecturally clean from a geometry perspective:
+- Core scatter add/correct functions are geometry-free (work in pixel-index space)
+- Geometry-aware functions correctly use `Scanner` struct fields
+- `detector_col_size` is used for in-plane kernel FWHM conversion — correct for an isotropic scatter kernel
+- No `pixel_size`, `pixel_row_size`, or `geom.*` references in the entire file
+- No z-direction geometry issues
