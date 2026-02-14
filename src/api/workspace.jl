@@ -271,9 +271,9 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     end
 
     # BHC coefficients pre-allocated
-    bhc_n_coeffs = config.bhc !== nothing ? length(config.bhc.coefficients) : 1
+    bhc_n_coeffs = config.bhc !== nothing ? length(get_bhc_coefficients(config.bhc)) : 1
     bhc_coeffs_cpu = if config.bhc !== nothing
-        T.(config.bhc.coefficients)
+        T.(get_bhc_coefficients(config.bhc))
     else
         zeros(T, 1)
     end
@@ -564,7 +564,7 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
 
     # BHC coefficients
     bhc_coeffs_cpu = if config.bhc !== nothing
-        T.(config.bhc.coefficients)
+        T.(get_bhc_coefficients(config.bhc))
     else
         zeros(T, 1)
     end
@@ -927,7 +927,7 @@ function create_eict_dual_workspace(scanner, protocol, sim_opts, recon_opts, pha
 
     # ─── BHC coefficients (per-kVp) ───
     bhc_coeffs_cpu_low = if config_low.bhc !== nothing
-        T.(config_low.bhc.coefficients)
+        T.(get_bhc_coefficients(config_low.bhc))
     else
         zeros(T, 1)
     end
@@ -935,7 +935,7 @@ function create_eict_dual_workspace(scanner, protocol, sim_opts, recon_opts, pha
     copyto!(bhc_coeffs_gpu_low, bhc_coeffs_cpu_low)
 
     bhc_coeffs_cpu_high = if config_high.bhc !== nothing
-        T.(config_high.bhc.coefficients)
+        T.(get_bhc_coefficients(config_high.bhc))
     else
         zeros(T, 1)
     end
