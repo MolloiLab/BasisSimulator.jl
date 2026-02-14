@@ -553,16 +553,178 @@ When explicitly set, z_cm should equal `n_recon_slices × row_pitch / 10` so the
 1. NB03 and NB04 have phantoms with z_cm much larger than detector z-coverage. This wastes memory but is not incorrect — the projector only captures what the detector sees.
 2. NB01/NB02 use `sliceCount × sliceThickness / 10` which is ~1% less than detector z-coverage due to `floor()` rounding. Negligible.
 
-### 2026-02-14: GEO-005 — WIP
+### 2026-02-14: GEO-005 — PASS (0 bugs, 1 documentation note)
 
 **Agent:** Deep audit of PCCT-specific geometry in photon_counting.jl and pcct/*.jl
-**Method:** `grep -rn 'pixel_size\|pixel_pitch\|pixel_row\|pixel_col' src/detector/photon_counting.jl src/detector/pcct/`
+**Method:** `grep -rn 'pixel_size\|pixel_pitch\|pixel_row\|pixel_col' src/detector/photon_counting.jl src/detector/pcct/` — every hit checked
 
-**Plan:**
-1. photon_counting.jl: Verify PhotonCountingDetector struct, pcct_forward_project(), compute_spectral_response_matrix()
-2. pcct/charge_transport.jl: Koch-Mehrin ODE model pixel pitch usage
-3. pcct/charge_collection.jl: Hecht CCE, small_pixel_weighting()
-4. pcct/k_fluorescence.jl: Fluorescence escape pixel geometry
-5. pcct/pileup_model.jl: Count rate per pixel, pixel area calculation
-6. pcct/detector_response.jl: Unified DRM pixel_size_mm usage
-7. pcct/cdte_constants.jl: Any pixel geometry references
+#### Architecture Summary
+
+The PCCT code uses two geometry structs:
+
+1. **`PhotonCountingDetector.pixel_size_mm::Tuple{T,T}`** — documented as `(row, col)` = `(z, xy)`
+   - Used for all high-level detector physics: charge sharing, pileup, spectral response
+   - Always accessed as tuple with `[1]`=row, `[2]`=col — direction-aware
+
+2. **`PCCTDetectorGeometry.pixel_pitch_mm::Tuple{Float64,Float64}`** — documented as `(channel, slice)` = `(xy, z)`
+   - Used only for low-level charge transport ODE (Koch-Mehrin 2020)
+   - `pixel_pitch_mm` is only accessed via `min(geom.pixel_pitch_mm...)` in `pixel_to_thickness_ratio()` — **order-independent**
+   - `charge_cloud_sigma_mm()` and `mean_charge_cloud_sigma_mm()` use `geom.thickness_mm` and `geom.effective_voltage_V` — they do NOT use `pixel_pitch_mm`
+
+**Key insight:** Despite the opposite tuple ordering conventions between the two structs, no actual direction bug exists because:
+- `PCCTDetectorGeometry.pixel_pitch_mm` is only used with `min()` (order-independent)
+- All direction-sensitive code uses `PhotonCountingDetector.pixel_size_mm` with explicit `[1]`=row, `[2]`=col indexing
+
+#### Detailed Audit Table — photon_counting.jl
+
+| File:Line | Variable | Direction | Verdict | Notes |
+|-----------|----------|-----------|---------|-------|
+| :100 | `pixel_size_mm::Tuple{T,T}` | — (docstring) | N/A | Documents "(row, col)" |
+| :131 | `pixel_size_mm = (0.302, 0.302)` | both | CORRECT | Square pixels, order doesn't matter |
+| :144 | `pixel_size_mm::Tuple{T,T}` | both | CORRECT | Struct field |
+| :177 | `pixel_size_mm` kwarg doc | — (docstring) | N/A | Documents "(row, col)" |
+| :192 | `pixel_size_mm::Tuple{Float64,Float64}=(0.302, 0.302)` | both | CORRECT | Constructor kwarg |
+| :205 | `pixel_size_mm` passed to struct | both | CORRECT | Forwarded to struct |
+| :235 | `pixel_size_mm = (0.302, 0.302)` | both | CORRECT | naeotom_detector_standard() preset |
+| :265 | `pixel_size_mm = (0.151, 0.151)` | both | CORRECT | naeotom_detector_uhr() preset — square |
+| :289 | `pixel_size_mm = (0.302, 0.302)` | both | CORRECT | naeotom_detector_chess() preset |
+| :537 | `Float64.(detector.pixel_size_mm)` | both | CORRECT | Passed to PCCTDetectorGeometry (see note) |
+| :546 | `pixel_pitch = detector.pixel_size_mm` | both | CORRECT | Alias for fluorescence model |
+| :549 | `compute_cdte_fluorescence_model(pixel_pitch, ...)` | both | CORRECT | Tuple passed to k_fluorescence.jl |
+| :563 | `charge_sharing_probability(σ, pixel_pitch)` | both | CORRECT | Tuple passed to charge_transport.jl |
+| :643-644 | `pixel_row = detector.pixel_size_mm[1]`, `pixel_col = detector.pixel_size_mm[2]` | row/col | CORRECT | Explicit row/col decomposition |
+| :646-647 | `boundary_dist_row/col = pixel_row/col / 2` | row/col | CORRECT | Per-direction charge sharing |
+| :649-654 | `z_row`, `z_col`, `p_share_row`, `p_share_col` | row/col | CORRECT | Per-direction probabilities, combined |
+| :743-744 | Same as :643-644 | row/col | CORRECT | apply_anti_coincidence_correction! |
+| :746-747 | Same as :646-647 | row/col | CORRECT | |
+| :749-753 | Same as :649-654 | row/col | CORRECT | |
+| :873 | `pixel_area = pixel_size_mm[1] * pixel_size_mm[2]` | area | CORRECT | row × col = area (correct for pileup) |
+| :1002 | Same area calculation | area | CORRECT | apply_pulse_pileup_correction! |
+| :1407 | `pixel_size_mm=detector.pixel_size_mm` | both | CORRECT | Passed to compute_spectral_response_matrix |
+| :1705-1706 | `pixel_row/col` from tuple | row/col | CORRECT | compute_I0_per_bin_pcct |
+| :1707-1708 | `z_row/z_col` | row/col | CORRECT | Per-direction charge sharing |
+| :1725 | `pixel_area = pixel_size_mm[1] * pixel_size_mm[2]` | area | CORRECT | row × col = area |
+| :1968 | `pixel_size_mm = detector.pixel_size_mm` | both | CORRECT | Info struct passthrough |
+| :1994 | Print statement | both | CORRECT | Display: "$(info.pixel_size_mm[1]) × $(info.pixel_size_mm[2]) mm" |
+| :2284 | `pixel_size_mm::Tuple{<:Real,<:Real}` | both | CORRECT | compute_fluorescence_escape_probability param |
+| :2299 | Doc: "(row, col)" | — | N/A | Documentation |
+| :2308 | `pixel_size_mm::Tuple{<:Real,<:Real}` | both | CORRECT | Type constraint |
+| :2323 | `min(pixel_size_mm[1], pixel_size_mm[2]) / 2` | both | CORRECT | Uses smaller dim — order-independent |
+| :2337 | Comment about pixel_size | — | N/A | Documentation |
+| :2430 | `pixel_pitch_mm::Tuple{<:Real,<:Real}=(0.0, 0.0)` | both | CORRECT | CCE kwarg |
+| :2439 | Doc about pixel_pitch_mm | — | N/A | Documentation |
+| :2451 | Doc: "(row, col)" | — | N/A | Documentation |
+| :2462 | `pixel_pitch_mm::Tuple{<:Real,<:Real}=(0.0, 0.0)` | both | CORRECT | charge_collection_efficiency param |
+| :2468 | `w_mm = min(pixel_pitch_mm[1], pixel_pitch_mm[2])` | both | CORRECT | Uses min — order-independent |
+| :2483 | `pixel_pitch_mm` in mean_charge_collection_efficiency | both | CORRECT | Forwarded |
+| :2502 | `pixel_pitch_mm` kwarg | both | CORRECT | |
+| :2504 | `w_mm = min(pixel_pitch_mm[1], pixel_pitch_mm[2])` | both | CORRECT | Uses min — order-independent |
+| :2529 | `pixel_pitch_mm` in hole_tailing_distribution | both | CORRECT | Forwarded |
+| :2552 | `pixel_pitch_mm` kwarg | both | CORRECT | |
+| :2554 | `w_mm = min(pixel_pitch_mm[1], pixel_pitch_mm[2])` | both | CORRECT | Uses min — order-independent |
+| :2593 | `pixel_size_mm::Tuple=(0.302, 0.302)` | both | CORRECT | compute_spectral_response_matrix kwarg |
+| :2619 | Doc about pixel_size_mm | — | N/A | Documentation |
+| :2645 | `pixel_size_mm::Tuple=(0.302, 0.302)` | both | CORRECT | Function param |
+| :2668 | `compute_cdte_fluorescence_model(pixel_size_mm, ...)` | both | CORRECT | Tuple passed to k_fluorescence |
+| :2674 | `compute_fluorescence_escape_probability(..., pixel_size_mm)` | both | CORRECT | Tuple passed |
+| :2686 | `pixel_pitch_mm=pixel_size_mm` | both | CORRECT | Forwarded to CCE |
+| :2699 | `pixel_pitch_mm=pixel_size_mm` | both | CORRECT | Forwarded to hole tailing |
+
+#### Detailed Audit Table — pcct/charge_transport.jl
+
+| File:Line | Variable | Direction | Verdict | Notes |
+|-----------|----------|-----------|---------|-------|
+| :337 | `σ/pixel_size` | — (comment) | N/A | Documentation only |
+| :350 | Doc: "(row, col)" | — | N/A | Documentation |
+| :355 | `pixel_pitch_mm::Tuple{<:Real,<:Real}` | both | CORRECT | charge_sharing_probability param |
+| :357 | `w_row = Float64(pixel_pitch_mm[1])` | z (row) | CORRECT | Tuple[1]=row |
+| :358 | `w_col = Float64(pixel_pitch_mm[2])` | xy (col) | CORRECT | Tuple[2]=col |
+| :370-371 | `inner_row/inner_col` | row/col | CORRECT | Per-direction safe region |
+| :373 | `p_no_share = (inner_row/w_row) * (inner_col/w_col)` | both | CORRECT | 2D probability |
+
+Note: `charge_cloud_sigma_mm()` (:61) and `mean_charge_cloud_sigma_mm()` (:289) use `geom.thickness_mm` and `geom.effective_voltage_V` from `PCCTDetectorGeometry` — they do NOT use `pixel_pitch_mm`. The pixel pitch is irrelevant for charge cloud growth (which depends only on sensor thickness, voltage, and photon energy).
+
+#### Detailed Audit Table — pcct/charge_collection.jl
+
+| File:Line | Variable | Direction | Verdict | Notes |
+|-----------|----------|-----------|---------|-------|
+| (entire file) | `wL_ratio` | — | CORRECT | Uses `min(pixel_pitch_mm...)` via callers — order-independent |
+
+`charge_collection.jl` does NOT directly reference `pixel_size_mm` or `pixel_pitch_mm`. All functions take `wL_ratio::Real` (scalar), computed upstream by callers using `min(pixel_pitch_mm[1], pixel_pitch_mm[2]) / thickness_mm`. The `min()` makes it order-independent.
+
+Functions: `small_pixel_weighting_potential()`, `hecht_cce_weighted()`, `mean_cce_beer_lambert()`, `hole_tailing_beer_lambert()` — all work with scalar `wL_ratio`.
+
+#### Detailed Audit Table — pcct/k_fluorescence.jl
+
+| File:Line | Variable | Direction | Verdict | Notes |
+|-----------|----------|-----------|---------|-------|
+| :45 | Doc: "(row, col)" | — | N/A | Documentation |
+| :56 | `pixel_pitch_mm::Tuple{<:Real,<:Real}` | both | CORRECT | fluorescence_escape_fraction param |
+| :64 | `w_row = Float64(pixel_pitch_mm[1])` | z (row) | CORRECT | Row dimension |
+| :65 | `w_col = Float64(pixel_pitch_mm[2])` | xy (col) | CORRECT | Col dimension |
+| :70-71 | `d_row = w_row / 4.0`, `d_col = w_col / 4.0` | row/col | CORRECT | Per-direction avg distance |
+| :75-77 | `p_row`, `p_col`, `p_axial` | row/col/z | CORRECT | Per-direction escape probability |
+| :80-87 | Solid angle weighting: `Ω_row = 2*w_col*L`, `Ω_col = 2*w_row*L` | cross-terms | CORRECT | Row faces have area `w_col × L`, col faces have area `w_row × L` |
+| :89 | `p_escape = weighted average` | both | CORRECT | Physically correct solid-angle weighting |
+| :139 | Doc: "(row, col)" | — | N/A | Documentation |
+| :146 | `pixel_pitch_mm::Tuple{<:Real,<:Real}` | both | CORRECT | compute_cdte_fluorescence_model param |
+| :158 | `fluorescence_escape_fraction(cd.mean_path_mm, pixel_pitch_mm, thickness_mm)` | both | CORRECT | Tuple forwarded |
+| :165 | Same for Te | both | CORRECT | Tuple forwarded |
+| :203 | `fluorescence_escape_fraction(te.mean_path_mm, pixel_pitch_mm, thickness_mm)` | both | CORRECT | Te reabsorption |
+
+The fluorescence escape model is direction-aware: it correctly treats the pixel as a 3D rectangular parallelepiped with different dimensions in row, col, and depth directions, weighted by solid angle fractions.
+
+#### Detailed Audit Table — pcct/pileup_model.jl
+
+| File:Line | Variable | Direction | Verdict | Notes |
+|-----------|----------|-----------|---------|-------|
+
+`pileup_model.jl` does NOT contain any pixel geometry references. All functions work with scalar `aτ` (count rate × dead time product). The pixel area calculation for count rate happens upstream in `photon_counting.jl` (:873, :1002, :1725) using `pixel_size_mm[1] * pixel_size_mm[2]` (row × col = correct area).
+
+#### Detailed Audit Table — pcct/detector_response.jl
+
+| File:Line | Variable | Direction | Verdict | Notes |
+|-----------|----------|-----------|---------|-------|
+| :136 | `pixel_size_mm = detector.pixel_size_mm` | both | CORRECT | Local alias |
+| :147 | `compute_cdte_fluorescence_model(pixel_size_mm, ...)` | both | CORRECT | Tuple forwarded |
+| :152 | `compute_fluorescence_escape_probability(..., pixel_size_mm)` | both | CORRECT | Tuple forwarded |
+| :185 | `pixel_pitch_mm=pixel_size_mm` | both | CORRECT | Forwarded to hole_tailing_distribution |
+
+The unified DRM (`compute_unified_drm()`) passes the tuple through to lower-level functions (fluorescence, CCE, hole tailing) which handle direction correctly as documented above.
+
+#### Detailed Audit Table — pcct/cdte_constants.jl
+
+| File:Line | Variable | Direction | Verdict | Notes |
+|-----------|----------|-----------|---------|-------|
+| :188 | Doc: "(channel, slice)" | — | N/A | **NOTE: Opposite convention from PhotonCountingDetector's (row, col)** |
+| :197 | `pixel_pitch_mm::Tuple{Float64, Float64}` | both | CORRECT | Struct field |
+| :209 | Doc: "275 × 322 μm pixel pitch (non-square: channel × slice)" | — | N/A | Documentation |
+| :217 | `(0.275, 0.322)` | (channel, slice) | CORRECT* | *See note about convention mismatch |
+| :369 | `w = min(geom.pixel_pitch_mm...)` | both | CORRECT | `min()` is order-independent |
+
+#### Documentation Convention Note (NOT a bug)
+
+**`PCCTDetectorGeometry.pixel_pitch_mm`** is documented as `(channel, slice)` = `(xy, z)`.
+**`PhotonCountingDetector.pixel_size_mm`** is documented as `(row, col)` = `(z, xy)`.
+
+When `detector.pixel_size_mm` is passed to `PCCTDetectorGeometry()` (photon_counting.jl:537, workspace.jl:315), the tuple order would technically be swapped relative to the `PCCTDetectorGeometry` convention.
+
+**However, this causes NO runtime bug because:**
+1. `PCCTDetectorGeometry.pixel_pitch_mm` is ONLY accessed via `min(geom.pixel_pitch_mm...)` in `pixel_to_thickness_ratio()`, which is order-independent.
+2. `charge_cloud_sigma_mm()` and `mean_charge_cloud_sigma_mm()` do NOT use `pixel_pitch_mm` — they use `thickness_mm` and `effective_voltage_V`.
+3. All direction-sensitive code uses `PhotonCountingDetector.pixel_size_mm` with explicit `[1]`=row, `[2]`=col indexing.
+
+**Recommendation (LOW priority):** Align the documentation of `PCCTDetectorGeometry.pixel_pitch_mm` from `(channel, slice)` to `(row, col)` to match `PhotonCountingDetector.pixel_size_mm`. But since the field is only used via `min()`, this is purely cosmetic.
+
+#### Summary — PCCT Geometry Patterns
+
+All PCCT geometry code follows these safe patterns:
+
+1. **Direction-aware tuple indexing**: `pixel_size_mm[1]`=row, `pixel_size_mm[2]`=col — used for charge sharing, pileup area, fluorescence escape solid angles
+2. **Order-independent `min()`**: Small-pixel effect uses `min(pixel_pitch_mm...)` — correctly uses smaller dimension regardless of tuple order
+3. **Scalar passthrough**: CCE/hole-tailing use `wL_ratio` (scalar) — no direction sensitivity
+4. **Area = row × col**: Pileup count rate uses `pixel_size_mm[1] * pixel_size_mm[2]` — commutative, correct
+5. **No hardcoded square-pixel assumptions**: All tuple code works correctly for non-square pixels
+
+**Issues found: 0 (bugs)**
+**Notes found: 1 (documentation convention mismatch between PCCTDetectorGeometry and PhotonCountingDetector)**
