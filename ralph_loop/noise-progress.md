@@ -10,7 +10,7 @@
 |-------|--------|---------|--------|
 | NOISE-001 | done | NO | ~1.0x |
 | NOISE-002 | done | NO | ~1.0x |
-| NOISE-003 | open | — | — |
+| NOISE-003 | in-progress | — | — |
 | NOISE-004 | done | NO — Reconstruction values correct, normalization verified | ~1.0x |
 | NOISE-005 | open | — | — |
 | NOISE-006 | done | Noise isolation: σ=93 HU noise-only, 124 HU full-physics, 61 HU water-only | baseline |
@@ -358,3 +358,16 @@ ws_fdk = BS.create_fdk_recon_workspace(sino, geom, size; filter=:standard)
 - Root cause: CatSim `kernelType = 'standard'` vs our `:ram_lak`
 - Fix: Added `StandardFilter` matching CatSim's apodization window
 - Result: 3.5% match to CatSim (68.89 vs 71.37 HU)
+
+### 2026-02-13: NOISE-003 [WIP — Plan]
+
+**Plan:** Quantify noise contribution of each physics effect applied before noise. This is a DIAGNOSTIC story.
+
+**Approach:**
+1. Read `apply_physics_effects!()` in `physics_pipeline.jl` to trace exact order of effects
+2. Read CatSim's equivalent pipeline to compare ordering
+3. Use NOISE-006 data (noise-only σ=93 HU vs full-physics σ=124 HU) to quantify compound physics impact
+4. Compute individual contribution estimates from code analysis (fill factor, flat filter, bowtie, scatter)
+5. Answer: Are physics effects also present in CatSim in same order? Does ordering mismatch explain any remaining discrepancy?
+
+**Context:** Root cause (2.1x) already found as filter kernel difference (NOISE-009/013). NOISE-003 quantifies the remaining ~33% noise difference from physics effects (93→124 HU in NOISE-006).
