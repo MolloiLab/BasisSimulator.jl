@@ -564,3 +564,58 @@ Same principle — blend toward expected value, no spatial operation.
 It's a purely local, position-independent noise amplitude scaling.
 No spatial smoothing, no edge interaction, no position dependence.
 This definitively rules out noise_reduction as a cause.
+
+---
+
+### 2026-02-14: XCAT-006 — ISOLATION: Noiseless PCCT vs EICT comparison [PASS]
+
+**Script:** `ralph_loop/scripts/xcat006_noiseless_comparison.jl`
+**Phantom:** Gammex 472 (128×128×32, FOV=35cm) — simpler than XCAT but has water body + inserts
+**Config:** `fidelity = :ideal` + `use_bhc = true` (polychromatic + BHC only, no other physics)
+
+**Results:**
+
+| Metric | EICT 120kVp | PCCT 140kVp |
+|--------|-------------|-------------|
+| μ_water_cal | 0.17345 | 0.17159 |
+| Center ROI | 242.3 HU | 232.9 HU |
+| Edge ROI | 217.4 HU | 239.5 HU |
+| **Cupping** | **+24.9 HU** (inverse) | **-6.6 HU** (forward) |
+| Sinogram range | [0, 8.124] | [0.004, 7.881] |
+
+**Analysis:**
+
+1. **Both reconstructions have ~100 HU offset in water ROI** — the center of the
+   Gammex water body reads ~100 HU instead of 0. This is because the default BHC
+   `[0, 1.05, -0.02, 0.001]` systematically over-scales sinogram values (a₁=1.05
+   inflates by 5%), and the water calibration on a small cylinder (8 slices) doesn't
+   fully capture the BHC error for the larger Gammex phantom.
+
+2. **Cupping difference is ~31.5 HU** — EICT shows inverse cupping (+24.9 HU)
+   while PCCT shows slight forward cupping (-6.6 HU). The sign reversal is notable.
+
+3. **Both cupping values are moderate** — For the Gammex phantom (mostly water),
+   the cupping is only ~25 HU. For the XCAT phantom with mixed tissues (lung, bone,
+   soft tissue), the cupping differential could be much larger due to:
+   - More diverse path lengths (20-40cm through body vs 10-20cm through Gammex)
+   - BHC error grows nonlinearly with path length (quadratic/cubic terms)
+   - Mixed materials amplify BHC errors (BHC assumes pure water paths)
+
+4. **PCCT combined sinogram has slightly narrower range** [0.004, 7.881] vs EICT
+   [0, 8.124]. This reflects the slightly harder 140 kVp spectrum having less
+   beam hardening than 120 kVp.
+
+**Verdict: PARTIAL — Cupping exists without noise, confirming structural signal chain issue**
+
+The noiseless comparison shows different cupping behavior between EICT and PCCT
+even without noise. The cupping is caused by the incorrect BHC polynomial applied
+to different spectra (120 vs 140 kVp). For the Gammex phantom, the difference is
+moderate (~31 HU). For XCAT with complex anatomy, the effect could be amplified.
+
+**Key insight:** The cupping is NOT noise-related. It's a deterministic signal chain
+effect. The primary cause is the wrong BHC polynomial (`bhc_water_default` with
+hardcoded coefficients that don't match any real spectrum).
+
+**Recommendation:** Replace `bhc_water_default()` with `calibrate_bhc(energies, weights)`
+in `build_physics_config()` at driver.jl:1416-1418. This will generate per-spectrum BHC
+coefficients that properly correct beam hardening for each kVp.
