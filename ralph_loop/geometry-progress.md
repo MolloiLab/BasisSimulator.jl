@@ -728,3 +728,19 @@ All PCCT geometry code follows these safe patterns:
 
 **Issues found: 0 (bugs)**
 **Notes found: 1 (documentation convention mismatch between PCCTDetectorGeometry and PhotonCountingDetector)**
+
+### 2026-02-14: GEO-006 — WIP
+**Agent:** Auditing iterative recon (SIRT, CGLS, MBIR, Hybrid IR, statistical_ir) z-geometry
+**Method:** `grep -rn 'siddon\|forward_project\|volume_fov' src/reconstruction/ir/ src/reconstruction/hybrid_ir/ src/reconstruction/mbir/` + read each file for context
+
+**Key principle:** Iterative recon forward-projects the RECONSTRUCTION volume, so should use `geom.fov` (recon FOV), NOT `phantom.fov`. No `volume_fov` kwarg should be passed.
+
+**Plan:**
+1. Run testCommand grep
+2. Read and audit sirt.jl — siddon calls, volume_fov, pixel_row_size
+3. Read and audit cgls.jl — same checks
+4. Read and audit hybrid_ir.jl — PWLS forward projection
+5. Read and audit mbir.jl — model-based forward projection
+6. Read and audit statistical_ir.jl — PWLS core
+7. Also check driver.jl reconstruct!() paths for volume_fov misuse
+8. Document findings
