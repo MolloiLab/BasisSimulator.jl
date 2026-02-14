@@ -109,7 +109,7 @@
       "id": "NOISE-010",
       "title": "DIAGNOSTIC: Verify cosine weighting implementation",
       "priority": 2,
-      "status": "open",
+      "status": "done",
       "type": "DIAGNOSTIC",
       "description": "FDK applies cosine weighting before filtering:\n  p̃(θ,u,v) = p(θ,u,v) × D / √(D² + u² + v²)\n\nThis weight is always ≤ 1 (reduces signal at detector edges). If applied incorrectly:\n1. If applied twice → signal reduced by D²/(D²+u²+v²), noise effectively doubled\n2. If not applied → reconstructed values are wrong, but noise might be similar\n3. If applied in wrong coordinate system → values are wrong\n\nCheck:\n1. Is cosine weighting applied in filtering.jl or in fdk.jl?\n2. Is it applied once or possibly twice (e.g., also in backprojection)?\n3. Does our implementation match TIGRE?\n4. Is D in cm or mm? Consistent with u, v?\n\nACCEPTANCE: Verify cosine weighting is applied exactly once, in correct coordinate system.",
       "testCommand": "Read filtering.jl cosine weighting code and search for duplicates",
