@@ -87,7 +87,7 @@
       "id": "XCAT-007",
       "title": "DIAGNOSTIC: Check if PCCT physics effects differ from EICT effects",
       "priority": 1,
-      "status": "open",
+      "status": "done",
       "type": "DIAGNOSTIC",
       "description": "The EICT path applies 13 physics effects via apply_physics_effects!(). The PCCT path applies physics DIFFERENTLY — some effects are applied inside pcct_forward_project(), others are not applied at all.\n\nCreate a checklist:\n| Effect | EICT applied? | PCCT applied? | How? |\n|--------|--------------|---------------|------|\n| Fill factor | via physics_pipeline | ? | |\n| Flat filter | via physics_pipeline | ? | |\n| Bowtie filter | via physics_pipeline | ? | |\n| Scatter | via physics_pipeline | ? | |\n| Crosstalk | via physics_pipeline | ? | |\n| Focal spot | via physics_pipeline | ? | |\n| Heel effect | via physics_pipeline | ? | |\n| Lag | via physics_pipeline | ? | |\n| BHC | via physics_pipeline | via driver after combine | |\n| Noise | via sim_detect | via apply_pcct_noise! | |\n| DQE | via physics_pipeline | ? | |\n| DRM | N/A | via pcct_forward_project | |\n| Charge sharing | N/A | via pcct_forward_project | |\n| K-fluorescence | N/A | via pcct_forward_project | |\n| Pileup | N/A | via pcct_forward_project | |\n\nAny physics effect applied to EICT but NOT to PCCT (or vice versa) is a potential source of the cupping artifact.\n\nSpecifically: If EICT gets fill factor, flat filter, bowtie, scatter correction but PCCT does NOT, the PCCT sinogram will have different attenuation values → different BHC behavior → cupping.\n\nACCEPTANCE: Complete checklist with exact code locations. Identify missing effects.",
       "testCommand": "Read driver.jl both simulate! paths and pcct_forward_project()",
