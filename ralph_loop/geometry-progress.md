@@ -205,3 +205,8 @@
 - Severity: LOW (cosmetic for current scanner, but incorrect pattern)
 
 Note: Both issues are in `create_aquilion_one()` which hardcodes `pixel_pitch_mm = 0.5` (square). The `create_ct_geometry()` (scanner.jl:583-641) and `create_scanner_geometry()` (scanners.jl:285-331) correctly use separate row/col pixel sizes. The NAEOTOM Alpha `create_naeotom_alpha()` (scanner.jl:805-865) also uses square pixels and stores them separately in `detector_row_size`/`detector_col_size`.
+
+### 2026-02-14: GEO-002 — WIP
+- **Scope:** grep ALL detector_row_size/detector_col_size/detector_size in src/ AND verification/
+- **Hits found:** ~50 in src/, ~15 in verification/
+- **Files to check:** scanner.jl, scatter.jl, dual_energy.jl, scanners.jl, photon_counting.jl, all 5 notebooks
