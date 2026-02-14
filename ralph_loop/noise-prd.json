@@ -79,7 +79,7 @@
       "id": "NOISE-007",
       "title": "DIAGNOSTIC: Verify detector blur is not amplifying noise",
       "priority": 2,
-      "status": "open",
+      "status": "done",
       "type": "DIAGNOSTIC",
       "description": "The DetectorModel includes a blur with FWHM=1.5 pixels by default. This is applied BEFORE quantum noise in apply_detector_model!().\n\nThe order is: blur → quantum noise → electronic noise (line 683-688 of detector_noise.jl)\n\nApplying blur BEFORE noise doesn't make physical sense — in real CT:\n1. Photons hit detector → quantum noise occurs at photon absorption\n2. Scintillator light spreads → detector PSF/blur\n3. Readout → electronic noise\n\nSo the correct order should be: quantum noise → blur → electronic noise\n\nBut applying blur BEFORE noise means noise is computed on a BLURRED sinogram. The effect:\n- Blur averages nearby pixels, reducing effective signal variations\n- This reduces λ variations but doesn't reduce λ itself\n- So noise magnitude should be similar, but spatial correlation changes\n- However, the 2D convolution kernel normalization might be wrong\n\nCheck:\n1. Is FWHM=1.5 reasonable? (CatSim default?)\n2. Does CatSim apply detector blur? At what stage?\n3. Does the blur kernel sum to exactly 1.0? (If > 1.0, it amplifies signal + noise)\n4. Should blur be applied in the physics pipeline at all, or is it implicit in other effects?\n\nACCEPTANCE: Determine if detector blur order/magnitude contributes to noise discrepancy.",
       "testCommand": "Read detector_noise.jl apply_detector_blur! and compare to CatSim Detection_EI.py",
