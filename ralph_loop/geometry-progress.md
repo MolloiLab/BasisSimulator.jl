@@ -836,3 +836,21 @@ All iterative reconstruction paths correctly:
 **Plan:**
 - Fix 1: In `create_aquilion_one()`, add `pixel_row_size = pixel_pitch_mm / 10.0` (separate from pixel_size), use it for z FOV and pass it separately to CTGeometry
 - Fix 2: In `_forward_single_pass()`, add `volume_fov=phantom.fov` to the `forward_project()` call. This fixes all 3 driver.jl issues since `_simulate_axial_single()` calls `forward_project()` directly and `_simulate_axial_dual()` calls through `_forward_single_pass()`
+
+#### Fixes Applied:
+
+**Fix 1: scanner.jl — `create_aquilion_one()` (2 issues resolved)**
+- Added `pixel_row_size = pixel_pitch_mm / 10.0` as a separate variable for the z-direction
+- Changed `fov_z = pixel_size * n_rows` → `fov_z = pixel_row_size * n_rows` (line 705)
+- Changed `CTGeometry(..., pixel_size, pixel_size, ...)` → `CTGeometry(..., pixel_size, pixel_row_size, ...)` (line 749)
+- **Impact:** For Aquilion ONE (square 0.5mm pixels), no numerical change. But the code is now correct for non-square pixel extensions and the z FOV default no longer depends on the XY-overridden pixel_size when fov_cm is specified.
+
+**Fix 2: driver.jl — non-workspace simulate paths (3 issues resolved)**
+- `_simulate_axial_single()`: Added `volume_fov=phantom.fov` to `forward_project()` call (line 282)
+- `_forward_single_pass()`: Added `volume_fov=phantom.fov` to `forward_project()` call (line 352)
+- This transitively fixes `_simulate_axial_dual()` which calls `_forward_single_pass()` for both kVp passes
+- **Impact:** Non-workspace simulate paths now correctly use phantom physical dimensions for volume bounds, matching the workspace-based simulate!() paths that were already fixed.
+
+**Summary: 5 issues fixed, 0 regressions expected**
+
+All fixes are minimal and targeted. The Aquilion ONE has square pixels so the scanner.jl fix has no numerical effect on current usage. The driver.jl fix aligns the non-workspace API with the workspace API that was already correct.

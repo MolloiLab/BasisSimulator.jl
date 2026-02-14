@@ -111,7 +111,7 @@
       "id": "GEO-009",
       "title": "FIX: Correct any z/xy geometry issues found in GEO-001 through GEO-008",
       "priority": 0,
-      "status": "open",
+      "status": "done",
       "type": "FIX",
       "description": "Based on findings from all audit stories, fix any remaining z/xy geometry issues.\n\nLikely fixes:\n1. Replace pixel_size with pixel_row_size in z-direction code paths\n2. Add missing volume_fov threading\n3. Fix hardcoded square-pixel assumptions\n4. Correct z_cm values in notebooks\n\nKeep changes minimal and targeted. Each fix should be a separate commit.\n\nACCEPTANCE: All identified geometry issues fixed. No regressions.",
       "testCommand": "grep -rn 'pixel_size' src/ | grep -v pixel_row_size | grep -v pixel_col_size | grep -v 'pixel_size_det\\|pixel_size_mm'",
