@@ -923,3 +923,45 @@ The scatter module is architecturally clean from a geometry perspective:
 - `detector_col_size` is used for in-plane kernel FWHM conversion — correct for an isotropic scatter kernel
 - No `pixel_size`, `pixel_row_size`, or `geom.*` references in the entire file
 - No z-direction geometry issues
+
+### 2026-02-14: GEO-007 — PASS (0 issues — files do not exist)
+
+**Agent:** Auditing helical reconstruction geometry
+**Method:** `glob src/reconstruction/fbp/**/*` + `glob src/scanners/**/*` + `grep -rni 'helical|spiral|pitch' src/`
+
+#### Finding: Target Files Do Not Exist
+
+The two files specified in the story:
+- `src/reconstruction/fbp/helical_recon.jl` — **DOES NOT EXIST**
+- `src/scanners/helical_protocols.jl` — **DOES NOT EXIST**
+
+These are listed in CLAUDE.md's file structure documentation as planned files, but they have never been implemented.
+
+#### What Does Exist in `src/reconstruction/fbp/`:
+- `fdk.jl` — FDK reconstruction (only file)
+
+#### What Does Exist in `src/scanners/`:
+- `scanners.jl` — Scanner specifications and create_scanner_geometry()
+- `general_electric.jl` — GE Revolution Apex scanner
+- `siemens.jl` — Siemens NAEOTOM Alpha scanner
+
+#### Helical/Spiral/Pitch References in src/
+
+All references are documentation only — no actual helical geometry code exists:
+
+| File:Line | Context | Type | Verdict |
+|-----------|---------|------|---------|
+| fdk.jl:69 | "exact algorithms (Katsevich) for helical acquisition" | Comment | N/A — future work note |
+| fdk.jl:289 | "Helical acquisition with Katsevich algorithm" | Docstring | N/A — limitation doc |
+| mbir.jl:28,70,571 | "multislice helical CT" | Comment | N/A — paper reference (Thibault 2007) |
+| protocol.jl:218 | "CTDIvol = C × mAs × (kVp/120)^2.5 / pitch" | Docstring formula | N/A — no code, just dose formula doc |
+| reconstruction/README.md:14 | "helical_recon.jl  # Helical/spiral FBP variants" | README | N/A — planned file listing |
+
+All other "pitch" references in the codebase relate to pixel_pitch/detector pitch, not helical pitch. These were already audited in GEO-001, GEO-002, GEO-005, and GEO-008.
+
+#### Issues Found: 0
+
+**Summary:** The helical reconstruction module has not been implemented yet. There is no helical geometry code to audit. The story acceptance criterion "Helical geometry verified or issues flagged" is met — there is no helical geometry code, so no geometry issues exist. When `helical_recon.jl` and `helical_protocols.jl` are eventually implemented, they should follow the established patterns:
+- Use `pixel_row_size` (not `pixel_size`) for z-direction calculations
+- z-coverage = `n_rows × pixel_row_size` (in cm) or `n_rows × detector_row_size` (in mm)
+- Helical pitch = table feed per rotation / z-coverage
