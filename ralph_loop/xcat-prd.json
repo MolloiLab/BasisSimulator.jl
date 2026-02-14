@@ -57,7 +57,7 @@
       "id": "XCAT-004",
       "title": "DIAGNOSTIC: Check water calibration scanner-specificity",
       "priority": 1,
-      "status": "open",
+      "status": "done",
       "type": "DIAGNOSTIC",
       "description": "In NB05, water calibration uses shared water_recon_opts:\n  z_cm = 8 * 0.625 / 10.0 = 0.5 cm\n\nThis z_cm was designed for GE (0.625mm native slice). For PCCT (0.4mm native), the z_cm should be:\n  z_cm = 8 * 0.4 / 10.0 = 0.32 cm\n\nBUT: the water phantom is uniform, so μ_water should be the same regardless of z_cm (assuming the reconstructed slab is within the phantom). The z_cm primarily affects the z-sampling, not the mean μ_water value.\n\nHowever, there's a subtler issue:\n1. If z_cm is too large relative to the detector z-coverage, the reconstruction volume extends beyond what the cone beam covers\n2. For water calibration: detector z-coverage = 128 × 0.4mm = 51.2mm = 5.12cm. Recon z_cm = 0.5cm. This is fine — well within coverage.\n3. BUT: the CTGeometry created by create_workspace() uses the PCCT scanner, which has 128 rows × 0.4mm. The geometry's z-parameters determine the backprojection mapping.\n\nMore important: check if the water calibration recon uses the full 128 detector rows or just 8. If only 8 slices are reconstructed, does the CTGeometry properly map those 8 slices?\n\nACCEPTANCE: Determine if water calibration z_cm mismatch affects μ_water_pcct value. If yes, estimate the error in μ_water and its HU impact.",
       "testCommand": "Trace water calibration path for PCCT scanner in NB05",

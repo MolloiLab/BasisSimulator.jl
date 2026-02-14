@@ -622,6 +622,43 @@ coefficients that properly correct beam hardening for each kVp.
 
 ---
 
+### 2026-02-14: XCAT-004 — DIAGNOSTIC: Check water calibration scanner-specificity [PASS]
+
+**Issue:** NB05's `water_recon_opts` uses `z_cm = 8 * 0.625 / 10.0 = 0.5 cm` for ALL
+scanners. For PCCT (0.4mm row pitch), z_cm should be `8 * 0.4 / 10.0 = 0.32 cm`.
+
+**Analysis:**
+
+1. **z_cm flow**: `ReconOptions.z_cm` → `CTGeometry.fov[3]` → backprojection voxel spacing.
+   With z_cm=0.5, voxel_size_z = 0.5/8 = 0.0625 cm (0.625mm — GE pitch).
+   With z_cm=0.32, voxel_size_z = 0.32/8 = 0.04 cm (0.4mm — PCCT pitch).
+
+2. **Water phantom is UNIFORM**: The water calibration phantom is a 20cm uniform water
+   cylinder (400×400×16 voxels, voxel 0.05×0.05×0.1 cm, z-extent = 1.6 cm).
+   For a uniform phantom, z voxel spacing changes WHERE in z the 8 slices land,
+   but NOT what they reconstruct — every z-position sees the same water attenuation.
+
+3. **Cone-beam weight negligible**: FDK uses weight = SAD² / (SAD² + z²). At z=0.25cm
+   (worst case) with PCCT SAD=59.5cm: weight ≈ 59.5²/(59.5²+0.25²) ≈ 1.00000
+   The z_cm difference produces < 0.001% change in FDK weighting.
+
+4. **Detector mapping**: PCCT z-coverage = 5.12cm. The 0.5cm recon slab (or 0.32cm) is
+   well within coverage. For uniform phantom, all detector rows see the same projection,
+   so the row interpolation doesn't matter.
+
+**Verdict: NO — z_cm mismatch has NEGLIGIBLE impact on μ_water for uniform phantoms**
+
+The z_cm=0.5 is technically wrong for PCCT (should be 0.32), but for a uniform water
+cylinder the effect is < 0.001%. This does NOT explain the PCCT-specific cupping.
+
+**Note:** For non-uniform calibration phantoms (e.g., with bone inserts), the z_cm mismatch
+would matter because different slices would sample different materials. NB05's uniform water
+cylinder avoids this issue.
+
+**Recommendation:** Fix z_cm for correctness but this is cosmetic, not functional. Low priority.
+
+---
+
 ### 2026-02-14: XCAT-009 — FIX: Replace bhc_water_default() with calibrate_bhc() [DONE]
 
 **Changes made:**
