@@ -77,7 +77,7 @@
       "id": "XCAT-006",
       "title": "DIAGNOSTIC: Run noiseless PCCT vs EICT comparison script",
       "priority": 0,
-      "status": "open",
+      "status": "done",
       "type": "ISOLATION",
       "description": "Create a minimal Julia script that runs the NB05 pipeline for BOTH EICT and PCCT but with ALL noise and optional physics disabled (fidelity=:ideal equivalent, but keeping polychromatic projection and BHC).\n\nThe script should:\n1. Load the XCAT phantom (downsampled to factor 4 for speed — 400×350×125)\n2. Create EICT and PCCT scanners matching NB05 specs\n3. Run simulate!() with use_noise=false, minimal physics\n4. Reconstruct both with FDK + StandardFilter\n5. Convert to HU using water calibration\n6. Save central slice images and compute:\n   - Mean HU in center water-equivalent ROI (should be ~0 HU)\n   - Cupping profile: radial HU from center to edge\n   - Edge profile: line profile across a tissue boundary\n\nThis isolates whether the cupping is a physics/combination issue vs a noise interaction.\n\nIf cupping appears WITHOUT noise → structural issue in the signal chain\nIf cupping only appears WITH noise → noise/smoothing interaction\n\nACCEPTANCE: Script runs successfully. Report cupping magnitude for both noiseless EICT and PCCT.",
       "testCommand": "julia +1.12 --project=. ralph_loop/scripts/xcat_noiseless_comparison.jl",

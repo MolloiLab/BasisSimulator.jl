@@ -19,7 +19,7 @@ println("="^70)
 # ─── Create Phantom ───
 println("\n--- Creating Gammex 472 phantom ---")
 phantom = create_gammex_472(n_voxels=128, n_slices=32, fov_cm=35.0, z_cm=4.0)
-phantom_gpu = BS.Phantom(MtlArray(phantom.mask), phantom.materials, phantom.voxel_size)
+phantom_gpu = BS.Phantom(MtlArray(phantom.mask), phantom.materials, phantom.voxel_size, phantom.origin, phantom.fov)
 println("  Phantom: $(size(phantom.mask)), FOV: $(phantom.fov) cm")
 
 # ─── Scanners ───
@@ -103,7 +103,7 @@ recon_opts = BS.ReconOptions(
 # ─── Water calibration ───
 println("\n--- Water calibration ---")
 water_phantom = create_gammex_472(n_voxels=64, n_slices=8, fov_cm=35.0, z_cm=0.5)
-water_phantom_gpu = BS.Phantom(MtlArray(water_phantom.mask), water_phantom.materials, water_phantom.voxel_size)
+water_phantom_gpu = BS.Phantom(MtlArray(water_phantom.mask), water_phantom.materials, water_phantom.voxel_size, water_phantom.origin, water_phantom.fov)
 water_recon_opts = BS.ReconOptions(
     algorithm = :fdk,
     matrix_size = (64, 64, 8),
