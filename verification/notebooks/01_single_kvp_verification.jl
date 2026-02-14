@@ -43,6 +43,7 @@ using FFTW
 using Random
 
 # ╔═╡ 04ddc034-3cf7-4bda-9242-82bb6de4b598
+# ╠═╡ show_logs = false
 using Metal
 
 # ╔═╡ 58bbe3ac-ef92-4a99-877e-716ee5f91750
@@ -61,6 +62,7 @@ md"""
 import PlutoUI as UI
 
 # ╔═╡ 3cfa2553-ab67-48cb-a179-7ad583b7f176
+# ╠═╡ show_logs = false
 import BasisSimulator as BS
 
 # ╔═╡ 53b5042f-b653-4665-beae-6392b45de84e
@@ -86,34 +88,53 @@ md"""
 We define the configuration **once** here. Both `BasisSimulator` and `CatSim` will read from this single source of truth to ensure 1:1 parity.
 """
 
+# ╔═╡ 45f217d7-1c9c-4623-a8ff-fe22787831e8
+begin
+	# --- Scanner Geometry ---
+	sid = 540.0                 # Source-to-Iso (mm)
+	sdd = 950.0                 # Source-to-Detector (mm)
+	magnification = sdd / sid   # 1.759
+	detectorColCount = 900      # Total columns
+	detectorRowCount = 16       # Total rows
+
+	# CatSim uses detector-face pitch (1.0mm); BasisSimulator uses isocenter pitch
+	detectorColSize_face = 1.0  # Column pitch at detector face (mm) — for CatSim
+	detectorRowSize_face = 1.0  # Row pitch at detector face (mm) — for CatSim
+	detectorColSize = detectorColSize_face / magnification   # ≈ 0.569 mm at isocenter
+	detectorRowSize = detectorRowSize_face / magnification   # ≈ 0.569 mm at isocenter
+
+	# --- Clinical Reconstruction Parameters ---
+	z_coverage_mm = detectorRowCount * detectorRowSize       # at isocenter (≈ 9.09 mm)
+	sliceThickness = 1.0        # mm (clinical standard — 0.5, 0.625, 1.0, 1.25, 2.5, 5.0)
+	sliceCount = floor(Int, z_coverage_mm / sliceThickness)  # = 9
+end
+
 # ╔═╡ ad03b067-dfd5-4a2d-8b91-a81b5d29c1bf
 # Simulation configuration - Single Source of Truth
 # RENAMED to match CatSim conventions exactly to prevent mismatch errors
 SIM_CONFIG = (
-    # --- Phantom / Reconstruction Volume ---
-    # We define the volume based on the output requirements
-    imageSize = 512,            # Reconstruction Matrix X/Y
-    sliceCount = 64,            # Reconstruction Z slices
-    sliceThickness = 0.625,     # mm
-    fov_mm = 350.0,             # Field of View
-
-    # --- Scanner Geometry (CatSim Naming) ---
-    sid = 540.0,                # Source-to-Iso (mm)
-    sdd = 950.0,                # Source-to-Detector (mm)
-    detectorColCount = 900,     # Total columns
-    detectorRowCount = 16,      # Total rows
-    detectorColSize = 1.0,      # Pitch X (mm)
-    detectorRowSize = 1.0,      # Pitch Z (mm)
-
-    # --- Protocol ---
-    kvp = 120,
-    mA = 200,
-    viewsPerRotation = 984,
-    rotationTime = 1.0,         # seconds
-
-    # --- Physics ---
-    # Note: simulate() uses 30 bins internally; this is for reference display only
-    n_energy_bins = 15
+	imageSize = 512,            # Reconstruction Matrix X/Y
+	fov_mm = 350.0,             # Field of View (mm)
+	
+	sid = sid,
+	sdd = sdd,
+	detectorColCount = detectorColCount,
+	detectorRowCount = detectorRowCount,
+	detectorColSize = detectorColSize,
+	detectorRowSize = detectorRowSize,
+	detectorColSize_face = detectorColSize_face,
+	detectorRowSize_face = detectorRowSize_face,
+	
+	sliceCount = sliceCount,
+	sliceThickness = sliceThickness,
+	z_coverage_mm = z_coverage_mm,
+	
+	kvp = 120,
+	mA = 200,
+	viewsPerRotation = 984,
+	rotationTime = 1.0,         # seconds
+	
+	n_energy_bins = 15,
 )
 
 # ╔═╡ 888e1831-dc35-4f21-b32d-d20a7b046152
@@ -520,8 +541,7 @@ scanner = BS.Scanner(
 	detector_cols = SIM_CONFIG.detectorColCount,
 	detector_row_size = SIM_CONFIG.detectorRowSize,
 
-	# detector_col_size is the element pitch at the detector face (mm).
-	# CTGeometry internally projects to isocenter via magnification.
+	# detector_col_size is the element pitch at isocenter (mm).
 	detector_col_size = SIM_CONFIG.detectorColSize,
 
 	detector_shape = BS.CURVED_DETECTOR,
@@ -567,7 +587,8 @@ recon_opts = BS.ReconOptions(
 	algorithm = :fdk,
 	matrix_size = (SIM_CONFIG.imageSize, SIM_CONFIG.imageSize, SIM_CONFIG.sliceCount),
 	fov_cm = SIM_CONFIG.fov_mm / 10.0,
-	filter = :ram_lak, 
+	z_cm = SIM_CONFIG.sliceCount * SIM_CONFIG.sliceThickness / 10.0,
+	filter = :standard,  # CatSim uses 'standard' kernel (apodized ramp); use :ram_lak for pure ramp
 );
 
 # ╔═╡ e9425189-6734-4b69-8251-4e093c09367c
@@ -616,7 +637,7 @@ end;
 	BS.simulate!(ws, phantom_water_gpu, scanner, protocol, sim_opts, recon_opts)
 
 	recon_size = recon_opts.matrix_size
-	ws_fdk = BS.create_fdk_recon_workspace(ws.sino_noisy_out, ws.geom, recon_size)
+	ws_fdk = BS.create_fdk_recon_workspace(ws.sino_noisy_out, ws.geom, recon_size; filter=recon_opts.filter)
 	vol = Array(BS.reconstruct!(ws_fdk, ws.sino_noisy_out, ws.geom, recon_size))
 
 	cx, cy, cz = size(vol) .÷ 2
@@ -657,7 +678,7 @@ phantom_gammex_gpu = BS.Phantom(
 
 	# FDK reconstruction → CPU HU
 	recon_size = recon_opts.matrix_size
-	ws_fdk = BS.create_fdk_recon_workspace(ws.sino_noisy_out, ws.geom, recon_size)
+	ws_fdk = BS.create_fdk_recon_workspace(ws.sino_noisy_out, ws.geom, recon_size; filter=recon_opts.filter)
 	fdk_hu = BS.to_hounsfield(
 		Array(BS.reconstruct!(ws_fdk, ws.sino_noisy_out, ws.geom, recon_size));
 		μ_water=μ_water_calibrated
@@ -695,7 +716,7 @@ catsim_results = let
         sdd=SIM_CONFIG.sdd, 
         cols=SIM_CONFIG.detectorColCount,
         rows=SIM_CONFIG.detectorRowCount,
-        pitch=SIM_CONFIG.detectorColSize # Assumes square pixels if pitch is scalar
+        pitch=SIM_CONFIG.detectorColSize_face # CatSim expects detector-face pitch
     )
     
     catsim_configure_protocol!(ct, 
@@ -804,7 +825,7 @@ We compare the FDK reconstructions. Note that `BasisSimulator` was converted to 
 """
 
 # ╔═╡ 74d9a742-6428-499b-8161-1bf3954c4da3
-@bind recon_slice UI.Slider(1:size(recon_basis_hu, 3), default=32, show_value=true)
+@bind recon_slice UI.Slider(1:size(recon_basis_hu, 3), default=size(recon_basis_hu, 3) ÷ 2, show_value=true)
 
 # ╔═╡ abbda23d-c67e-4ce8-bc4e-fccbdb6bead7
 let
@@ -1185,6 +1206,7 @@ end
 # ╠═f0000001-0001-0001-0001-000000000001
 # ╠═1e5e1a0b-ab52-4b44-b17e-bff4c8e9802b
 # ╟─59dc49d1-875e-4288-a61b-cf33ada02fdd
+# ╠═45f217d7-1c9c-4623-a8ff-fe22787831e8
 # ╠═ad03b067-dfd5-4a2d-8b91-a81b5d29c1bf
 # ╟─888e1831-dc35-4f21-b32d-d20a7b046152
 # ╠═279f4105-4ba9-48f3-99da-17327ede3a6a
