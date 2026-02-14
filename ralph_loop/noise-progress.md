@@ -21,7 +21,29 @@
 | NOISE-011 | **done** | NO — μ_water empirical calibration correct, units consistent | ~1.03x |
 | NOISE-012 | **done** | NO — Weights explicitly normalized to sum=1 before use | ~1.0x |
 | NOISE-013 | **done** | **FIX: StandardFilter implemented — σ=68.89 HU vs CatSim 71.37 HU (3.5% match)** | **FIXED** |
-| NOISE-014 | open | — | — |
+| NOISE-014 | open | Pending — requires running all 5 notebooks (GPU, ~30+ min) | — |
+
+---
+
+## Overall Conclusion
+
+**Root cause identified and fixed:** CatSim uses a `'standard'` reconstruction kernel (heavily apodized ramp filter with 5-point control window) while BasisSimulator was using `:ram_lak` (pure ramp). This single factor accounted for **~2.1x noise difference**.
+
+**Fix (NOISE-013):** Added `StandardFilter`, `SoftFilter`, and `BoneFilter` types to `filtering.jl` matching CatSim's apodization windows. Result: **σ = 68.89 HU vs CatSim 71.37 HU (3.5% match)**.
+
+**All other hypotheses ruled out:**
+- I0 computation (NOISE-001): correct, matches CatSim within ~1%
+- Spectrum double-filtering (NOISE-002): no double-filtering, same spectrum files
+- Physics effects ordering (NOISE-003): mathematically equivalent pipelines
+- FDK normalization (NOISE-004): values match within 0.1%
+- Parameter mismatches (NOISE-005): 37 parameters checked, minor discrepancies are non-causal
+- Detector blur (NOISE-007): inactive in notebook path
+- Ramp filter gain (NOISE-008): FFT = spatial, ratio 0.934
+- Cosine weighting (NOISE-010): applied exactly once, correct formula
+- μ_water calibration (NOISE-011): empirical value correct, units consistent
+- Spectrum normalization (NOISE-012): explicitly normalized to sum=1
+
+**Remaining:** NOISE-014 (re-run all 5 notebooks) requires manual execution on GPU hardware.
 
 ---
 
