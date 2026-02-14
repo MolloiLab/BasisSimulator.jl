@@ -319,9 +319,8 @@ function create_geometry(spec::AbstractScannerSpec;
         detector_v[3, i] = 1.0
     end
 
-    # Compute z FOV from detector coverage
-    magnification = sdd_cm / sid_cm
-    pixel_row_size_cm = (det.row_size_mm[] / 10.0) / magnification
+    # Compute z FOV from detector coverage (row_size_mm is already at isocenter)
+    pixel_row_size_cm = det.row_size_mm[] / 10.0
     z_coverage_cm = n_rows * pixel_row_size_cm
     fov = (_fov_cm, _fov_cm, z_coverage_cm)
 

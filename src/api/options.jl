@@ -270,7 +270,7 @@ function ReconOptions(;
     matrix_size::Union{NTuple{3, Int}, Nothing} = nothing,
     fov_cm::Real = 35.0,
     z_cm::Union{Real, Nothing} = nothing,
-    filter::Symbol = :ram_lak,
+    filter::Symbol = :standard,
     iterations::Int = 10,
     # Iterative parameters
     lambda::Real = 0.01,

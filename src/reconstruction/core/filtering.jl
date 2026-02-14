@@ -378,7 +378,7 @@ end
 # =============================================================================
 
 """
-    filter_sinogram!(sinogram, geom; filter=RampFilter(), cutoff=1.0)
+    filter_sinogram!(sinogram, geom; filter=StandardFilter(), cutoff=1.0)
 
 Apply FDK filtering to sinogram in-place using GPU-native spatial domain convolution.
 
@@ -403,7 +403,7 @@ filter_sinogram!(sinogram, geom; filter=SheppLoganFilter(), cutoff=0.8)
 function filter_sinogram!(
     sinogram::AbstractArray{T, 3},
     geom::CTGeometry;
-    filter::FilterType = RampFilter(),
+    filter::FilterType = StandardFilter(),
     cutoff::Float64 = 1.0,
     ws_conv_scratch = nothing,
     ws_filter_kernel = nothing
@@ -474,7 +474,7 @@ function filter_sinogram!(
 end
 
 """
-    filter_sinogram(sinogram, geom; filter=RampFilter(), cutoff=1.0)
+    filter_sinogram(sinogram, geom; filter=StandardFilter(), cutoff=1.0)
 
 Allocating version of FDK filtering.
 
@@ -489,13 +489,13 @@ New filtered sinogram
 
 # Example
 ```julia
-filtered = filter_sinogram(sinogram, geom; filter=RampFilter())
+filtered = filter_sinogram(sinogram, geom; filter=StandardFilter())
 ```
 """
 function filter_sinogram(
     sinogram::AbstractArray{T, 3},
     geom::CTGeometry;
-    filter::FilterType = RampFilter(),
+    filter::FilterType = StandardFilter(),
     cutoff::Float64 = 1.0
 ) where T <: AbstractFloat
 

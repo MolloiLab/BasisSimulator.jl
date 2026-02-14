@@ -1,8 +1,20 @@
 ### A Pluto.jl notebook ###
-# v0.20.21
+# v0.20.13
 
 using Markdown
 using InteractiveUtils
+
+# This Pluto notebook uses @bind for interactivity. When running this notebook outside of Pluto, the following 'mock version' of @bind gives bound variables a default value (instead of an error).
+macro bind(def, element)
+    #! format: off
+    return quote
+        local iv = try Base.loaded_modules[Base.PkgId(Base.UUID("6e696c72-6542-2067-7265-42206c756150"), "AbstractPlutoDingetjes")].Bonds.initial_value catch; b -> missing; end
+        local el = $(esc(element))
+        global $(esc(def)) = Core.applicable(Base.get, el) ? Base.get(el) : iv(el)
+        el
+    end
+    #! format: on
+end
 
 # ╔═╡ a0000001-0001-0001-0001-000000000001
 # ╠═╡ show_logs = false
@@ -74,23 +86,28 @@ GE Revolution-style clinical scanner with all hardware fields populated for `bui
 """
 
 # ╔═╡ a0000001-0001-0001-0001-000000000010
-SIM_CONFIG = (
-    imageSize = 512,
-    sliceCount = 32,
-    sliceThickness = 1.25,      # mm
-    fov_mm = 350.0,
+SIM_CONFIG = let
+    sid = 540.0
+    sdd = 950.0
+    magnification = sdd / sid   # 1.759
+    (
+        imageSize = 512,
+        sliceCount = 32,
+        sliceThickness = 1.25,      # mm
+        fov_mm = 350.0,
 
-    sid = 540.0,
-    sdd = 950.0,
-    detectorColCount = 900,
-    detectorRowCount = 16,
-    detectorColSize = 1.0,      # mm at detector face
-    detectorRowSize = 1.0,      # mm
+        sid = sid,
+        sdd = sdd,
+        detectorColCount = 900,
+        detectorRowCount = 16,
+        detectorColSize = 1.0 / magnification,   # ≈ 0.569 mm at isocenter
+        detectorRowSize = 1.0 / magnification,   # ≈ 0.569 mm at isocenter
 
-    viewsPerRotation = 984,
-    rotationTime = 1.0,
-    n_energy_bins = 15
-)
+        viewsPerRotation = 984,
+        rotationTime = 1.0,
+        n_energy_bins = 15
+    )
+end
 
 # ╔═╡ a0000001-0001-0001-0001-000000000011
 scanner = BS.Scanner(
@@ -100,8 +117,7 @@ scanner = BS.Scanner(
 	detector_cols = SIM_CONFIG.detectorColCount,
 	detector_row_size = SIM_CONFIG.detectorRowSize,
 
-	# detector_col_size is the element pitch at the detector face (mm).
-	# CTGeometry internally projects to isocenter via magnification.
+	# detector_col_size is the element pitch at isocenter (mm).
 	detector_col_size = SIM_CONFIG.detectorColSize,
 
 	detector_shape = BS.CURVED_DETECTOR,
@@ -135,7 +151,7 @@ recon_opts = BS.ReconOptions(
 	algorithm = :fdk,
 	matrix_size = (SIM_CONFIG.imageSize, SIM_CONFIG.imageSize, SIM_CONFIG.sliceCount),
 	fov_cm = SIM_CONFIG.fov_mm / 10.0,
-	filter = :ram_lak,
+	filter = :standard,
 )
 
 # ╔═╡ a0000001-0001-0001-0001-000000000015
@@ -269,6 +285,15 @@ md"""
 Energy-dependent contrast: iodine inserts (outer ring) are brightest at low keV due to the photoelectric effect, while calcium inserts (inner ring) also decrease with energy but less dramatically.
 """
 
+# ╔═╡ fa4ecd77-1991-44da-b56c-37adaa9d728f
+import PlutoUI as UI
+
+# ╔═╡ 4130c9d2-020e-4224-81da-94dfcfdab6b0
+UI.TableOfContents()
+
+# ╔═╡ e2c3e4d6-d4fc-44ef-84b4-b08a7f7566dc
+@bind z UI.Slider(axes(vmi_hu_volumes[VMI_ENERGIES[1]], 3), show_value = true, default = SIM_CONFIG.sliceCount ÷ 2)
+
 # ╔═╡ a0000001-0001-0001-0001-000000000028
 let
 	fig = CM.Figure(size=(1600, 800), fontsize=11)
@@ -279,7 +304,7 @@ let
 		col = (i - 1) % 4 + 1
 
 		ax = CM.Axis(fig[row, col], title="$(Int(E)) keV", aspect=CM.DataAspect())
-		hm = CM.heatmap!(ax, vmi_hu_volumes[E][:, :, mid_z],
+		hm = CM.heatmap!(ax, vmi_hu_volumes[E][:, :, z],
 			colormap=:grays, colorrange=(-500, 800))
 		CM.hidedecorations!(ax)
 
@@ -812,10 +837,12 @@ md"""
 # ╠═a0000001-0001-0001-0001-000000000001
 # ╠═a0000001-0001-0001-0001-000000000002
 # ╠═a0000001-0001-0001-0001-000000000003
+# ╠═fa4ecd77-1991-44da-b56c-37adaa9d728f
 # ╠═a0000001-0001-0001-0001-000000000004
 # ╠═a0000001-0001-0001-0001-000000000091
 # ╠═a0000001-0001-0001-0001-000000000090
 # ╠═a0000001-0001-0001-0001-000000000005
+# ╠═4130c9d2-020e-4224-81da-94dfcfdab6b0
 # ╠═a0000001-0001-0001-0001-000000000007
 # ╟─a0000001-0001-0001-0001-000000000008
 # ╟─a0000001-0001-0001-0001-000000000009
@@ -837,6 +864,7 @@ md"""
 # ╠═a0000001-0001-0001-0001-000000000025
 # ╠═a0000001-0001-0001-0001-000000000026
 # ╟─a0000001-0001-0001-0001-000000000027
+# ╟─e2c3e4d6-d4fc-44ef-84b4-b08a7f7566dc
 # ╟─a0000001-0001-0001-0001-000000000028
 # ╟─a0000001-0001-0001-0001-000000000029
 # ╠═a0000001-0001-0001-0001-000000000030
