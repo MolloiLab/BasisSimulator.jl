@@ -127,7 +127,7 @@
       "id": "XCAT-011",
       "title": "FIX: Add volume_fov to public forward_project!() API",
       "priority": 2,
-      "status": "open",
+      "status": "done",
       "type": "FIX",
       "description": "The public forward_project!() API is missing the volume_fov kwarg that was added to siddon_forward_project!() and threaded through _forward_project_poly!() and driver simulate!() calls.\n\nThis means users calling forward_project!() directly (not via workspace/driver) will get the old behavior where geom.fov is used for volume bounds instead of the phantom's actual FOV.\n\nFix:\n1. Add volume_fov kwarg to forward_project!() signature\n2. Thread it to the internal _forward_project_poly!() call\n3. Default to nothing (which falls back to geom.fov for backward compatibility)\n\nACCEPTANCE: forward_project!() accepts and uses volume_fov kwarg. Existing code that doesn't pass it still works.",
       "testCommand": "Verify forward_project!() signature includes volume_fov",
