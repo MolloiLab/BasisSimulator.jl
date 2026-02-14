@@ -37,7 +37,7 @@
       "id": "XCAT-002",
       "title": "DIAGNOSTIC: Test BHC impact on PCCT cupping — noiseless comparison",
       "priority": 0,
-      "status": "open",
+      "status": "done",
       "type": "DIAGNOSTIC",
       "description": "The most likely root cause of PCCT-specific cupping: BHC uses generic coefficients [0, 1.05, -0.02, 0.001] which were calibrated for polychromatic EICT sinograms, NOT for PCCT combined sinograms.\n\nWhy this matters:\n- EICT polychromatic sinogram: -log(sum(w_E * exp(-mu_E * L))) → has beam hardening artifacts\n- PCCT combined sinogram: -log(sum(I0_bin * exp(-sino_bin)) / sum(I0_bin)) → energy bins already partially separate beam hardening\n- Applying the SAME BHC polynomial to the PCCT combined sinogram could OVER-correct\n- Over-correction produces inverted cupping (center too bright) or edge brightening\n\nExperiment (code-reading diagnostic):\n1. Read BHC coefficients in beam_hardening_correction.jl\n2. Understand what the polynomial p_out = c0 + c1*p + c2*p^2 + c3*p^3 does to different attenuation values\n3. For a 20cm water path at PCCT effective energy (~75 keV for 140 kVp):\n   - Compute p_eict (polychromatic integral)\n   - Compute p_pcct (combined sinogram value)\n   - Apply BHC to both — do they produce different corrections?\n4. For a 30cm mixed tissue path (lung+bone):\n   - Same analysis — position-dependent correction differences?\n\nACCEPTANCE: Determine if BHC over/under-corrects PCCT combined sinogram. Estimate the magnitude of cupping this introduces.",
       "testCommand": "Read beam_hardening_correction.jl and analyze BHC polynomial behavior on different sinogram types",

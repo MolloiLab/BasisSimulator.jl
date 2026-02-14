@@ -318,3 +318,85 @@ NOT cause cupping or edge artifacts by itself.
    quadratic/cubic terms grow with path length → cupping.
 
 **Next:** Numerical analysis of BHC correction magnitude for 120 kVp vs 140 kVp.
+
+**Numerical Analysis Results (xcat002_bhc_analysis.jl):**
+
+Spectrum properties:
+- 120 kVp: 240 bins, mean energy = 59.4 keV, μ_water_eff = 0.22562 cm⁻¹
+- 140 kVp: 280 bins, mean energy = 65.1 keV, μ_water_eff = 0.21532 cm⁻¹
+- μ_water(70 keV reference) = 0.19283 cm⁻¹
+
+**CRITICAL FINDING: Default BHC coefficients are completely WRONG!**
+
+The hardcoded `bhc_water_default()` coefficients `[0, 1.05, -0.02, 0.001]` do NOT match
+the actual calibration curve for ANY spectrum:
+
+| Coefficient | Default | 120 kVp calibrated | 140 kVp calibrated |
+|-------------|---------|-------------------|-------------------|
+| a₀ | 0.0 | -0.006 | -0.004 |
+| a₁ | 1.05 | 0.870 | 0.907 |
+| a₂ | -0.02 | +0.014 | +0.014 |
+| a₃ | 0.001 | -0.0004 | -0.0003 |
+
+Key differences:
+- a₁: Default 1.05 vs calibrated ~0.87-0.91 (20% too large!)
+- a₂: Default NEGATIVE vs calibrated POSITIVE (wrong sign!)
+- a₃: Default POSITIVE vs calibrated NEGATIVE (wrong sign!)
+
+This means the default BHC polynomial is essentially an aggressive OVER-scaling
+(a₁=1.05 inflates all values by 5%) combined with wrong-direction curvature corrections.
+
+**Cupping with default vs calibrated BHC (30cm water cylinder):**
+
+| Spectrum | Default BHC | Calibrated BHC (order 5) |
+|----------|-------------|--------------------------|
+| 120 kVp | -146 HU | -0.2 HU |
+| 140 kVp | -133 HU | -0.1 HU |
+
+Both spectra have massive cupping with the default BHC. The difference between
+120 and 140 kVp is only ~13 HU with the default BHC.
+
+**BUT: Water calibration absorbs the BHC error**
+
+NB05 uses empirical water calibration: simulate water cylinder → reconstruct → measure μ_water.
+This μ_water already includes the BHC error, so when converting to HU via
+`HU = 1000 × (μ - μ_water) / μ_water`, the BHC error partially cancels.
+
+However, the cancellation is only exact at the calibration phantom's path length.
+For the XCAT phantom (different size, different materials, different paths through
+tissue vs bone vs lung), the BHC error is different → **residual cupping**.
+
+**Verdict: PARTIAL — BHC default is severely wrong for both EICT and PCCT**
+
+The default BHC is wrong for both paths, not specifically wrong for PCCT. The cupping
+it causes is similar magnitude for both spectra (~133-146 HU raw, largely absorbed
+by water calibration). The PCCT-specific artifact must come from additional factors:
+- Different water calibration behavior (PCCT uses different geometry, z-coverage)
+- DRM effects that change the effective spectrum after bin combination
+- Missing physics effects in the PCCT path (no bowtie, no scatter, etc.)
+
+The fact that the default BHC has fundamentally WRONG coefficients is a bug that
+should be fixed (use `calibrate_bhc()` instead), but it likely doesn't explain
+the PCCT-SPECIFIC cupping — it causes cupping equally in both paths.
+
+**Important secondary finding: PCCT combined sinogram ≈ EICT polychromatic**
+
+The math shows that for ideal detection (no DRM spatial effects), the PCCT combined
+sinogram is equivalent to a polychromatic integral with η-weighted spectrum:
+```
+p_pcct = -log(Σ w_E × η_E × exp(-μ_E × d) / Σ w_E × η_E)
+```
+For CdTe at diagnostic energies (>40 keV), η ≈ 1.0, so p_pcct ≈ p_eict_polychromatic.
+
+This means the PCCT combined sinogram has the SAME beam hardening as a standard
+polychromatic sinogram for the same kVp — the energy binning does NOT reduce
+beam hardening in the combined sinogram (only in individual bins).
+
+**Conclusion for XCAT-002:**
+
+1. The default BHC is wrong (should use `calibrate_bhc()`) — this is a codebase bug
+   but affects EICT and PCCT similarly
+2. The PCCT combined sinogram has equivalent beam hardening to a polychromatic
+   sinogram at the same kVp — the BHC correction needed is the same
+3. The PCCT-specific artifact is NOT explained by BHC over/under-correction of the
+   combined sinogram. The root cause lies elsewhere (XCAT-003, XCAT-006, XCAT-007).
