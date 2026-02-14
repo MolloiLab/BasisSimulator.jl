@@ -817,3 +817,22 @@ All iterative reconstruction paths correctly:
 3. Properly delegate pixel geometry to siddon/backproject (which handle pixel_size vs pixel_row_size internally)
 4. Pass `volume_size = size(recon)` consistently
 5. mbir.jl's `create_subset_geometry()` correctly preserves separate `pixel_size` (xy) and `pixel_row_size` (z)
+
+### 2026-02-14: GEO-009 — WIP — Starting fixes for geometry issues
+
+**Agent:** Fixing all issues identified in GEO-001 through GEO-006.
+
+#### Issues to fix:
+
+**From GEO-001 (2 issues in scanner.jl):**
+1. `scanner.jl:702` — `fov_z = pixel_size * n_rows` should use a row pixel size
+2. `scanner.jl:746` — `pixel_size, pixel_size` passed to CTGeometry should have separate pixel_row_size
+
+**From GEO-003 (3 issues in driver.jl):**
+1. `driver.jl:278-282` — `_simulate_axial_single()` missing `volume_fov=phantom.fov`
+2. `driver.jl:347-351` — `_forward_single_pass()` missing `volume_fov=phantom.fov`
+3. `driver.jl:391-395` — `_simulate_axial_dual()` inherits missing from `_forward_single_pass()`
+
+**Plan:**
+- Fix 1: In `create_aquilion_one()`, add `pixel_row_size = pixel_pitch_mm / 10.0` (separate from pixel_size), use it for z FOV and pass it separately to CTGeometry
+- Fix 2: In `_forward_single_pass()`, add `volume_fov=phantom.fov` to the `forward_project()` call. This fixes all 3 driver.jl issues since `_simulate_axial_single()` calls `forward_project()` directly and `_simulate_axial_dual()` calls through `_forward_single_pass()`
