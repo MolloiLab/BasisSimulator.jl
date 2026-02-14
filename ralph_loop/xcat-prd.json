@@ -97,7 +97,7 @@
       "id": "XCAT-008",
       "title": "DIAGNOSTIC: Verify PCCT combined sinogram values vs EICT polychromatic sinogram",
       "priority": 2,
-      "status": "open",
+      "status": "done",
       "type": "DIAGNOSTIC",
       "description": "For the same phantom path length, do the EICT polychromatic sinogram and PCCT combined sinogram produce the same attenuation value?\n\nTheory: For an ideal detector (no charge sharing, perfect energy resolution), the PCCT combined sinogram should equal the EICT polychromatic sinogram, since:\n  EICT: p = -log(Σ w_E exp(-μ_E L))\n  PCCT: p_bin = -log(N_bin/I0_bin), then p_combined = -log(Σ I0_bin exp(-p_bin) / Σ I0_bin)\n\nIf the I0_bins perfectly partition the total flux, these should be identical. But with DRM effects (charge sharing moves counts between bins), the PCCT combined value may differ.\n\nAnalysis:\n1. Compute theoretical EICT attenuation for 20cm water at 120 kVp\n2. Compute theoretical PCCT combined attenuation for 20cm water at 140 kVp (4 bins, DRM effects)\n3. Are they the same? (Normalize for kVp difference)\n4. For a non-water path (mixed tissue), does the difference grow? (Position-dependent = cupping)\n\nACCEPTANCE: Document theoretical combined sinogram value vs polychromatic for multiple path compositions. If they differ for mixed materials, this explains cupping.",
       "testCommand": "Analytical computation of combined vs polychromatic sinogram values",
