@@ -107,7 +107,7 @@
       "id": "XCAT-009",
       "title": "FIX: Apply identified corrections for PCCT cupping",
       "priority": 0,
-      "status": "open",
+      "status": "done",
       "type": "FIX",
       "description": "Based on findings from XCAT-001 through XCAT-008, implement the fix(es) for PCCT cupping.\n\nLikely fixes (to be confirmed by diagnostics):\n\n1. **BHC calibration per signal path**: If BHC is the root cause, either:\n   a. Disable BHC for PCCT path (energy-resolved bins have less beam hardening)\n   b. Calibrate BHC specifically for PCCT combined sinogram\n   c. Reduce BHC strength for PCCT (smaller polynomial coefficients)\n\n2. **Missing physics effects**: If PCCT path is missing effects that EICT has, add them.\n\n3. **I0_bins correction**: If _combine_pcct_bins uses wrong I0 values, fix the computation.\n\n4. **Noise reduction interaction**: If pcct_noise_reduction causes edge artifacts, apply it differently.\n\nACCEPTANCE: PCCT cupping artifacts are eliminated or significantly reduced while maintaining correct HU values. EICT reconstruction is not affected.",
       "testCommand": "Re-run PCCT path with fix, compare to EICT visually and quantitatively",
