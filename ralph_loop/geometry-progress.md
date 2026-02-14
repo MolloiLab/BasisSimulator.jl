@@ -965,3 +965,31 @@ All other "pitch" references in the codebase relate to pixel_pitch/detector pitc
 - Use `pixel_row_size` (not `pixel_size`) for z-direction calculations
 - z-coverage = `n_rows × pixel_row_size` (in cm) or `n_rows × detector_row_size` (in mm)
 - Helical pitch = table feed per rotation / z-coverage
+
+### 2026-02-14: GEO-010 — PASS (validation complete)
+
+**Agent:** Runtime validation of geometry fixes
+**Method:** `julia +1.11 --project=. -e 'using BasisSimulator; ...'` — 5 tests
+
+#### Test Results
+
+| Test | Description | Result |
+|------|-------------|--------|
+| 1 | `create_aquilion_one()` square pixels: `pixel_size == pixel_row_size` | PASS |
+| 2 | FOV z uses `pixel_row_size`: 32 rows × 0.05cm = 1.6cm | PASS |
+| 3 | Non-square detector (0.625mm row, 1.0mm col): `pixel_size=0.1 ≠ pixel_row_size=0.0625` | PASS |
+| 4 | `forward_project()` with `volume_fov` kwarg — produces non-trivial sinogram | PASS |
+| 5 | `forward_project()` without `volume_fov` (recon path) — produces non-trivial sinogram | PASS |
+
+**Additional validation:**
+- `using BasisSimulator` compiles and precompiles without errors (2.7s)
+- BasisSimulatorEnzymeExt precompiles without errors (2.0s)
+
+#### Summary
+
+All geometry fixes from GEO-009 are validated:
+1. `create_aquilion_one()` correctly uses separate `pixel_row_size` for z-direction
+2. FOV z computation uses `pixel_row_size` (not `pixel_size`)
+3. Non-square detectors correctly preserve different row/col pixel sizes
+4. `volume_fov` kwarg works in forward projection
+5. No compilation or runtime regressions

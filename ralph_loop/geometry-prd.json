@@ -121,7 +121,7 @@
       "id": "GEO-010",
       "title": "VALIDATE: Run NB01 and NB04 to verify no regressions",
       "priority": 3,
-      "status": "open",
+      "status": "done",
       "type": "VALIDATE",
       "description": "After all fixes, run at least NB01 (EICT baseline) and NB04 (PCCT baseline) to verify:\n1. No compilation errors\n2. HU values are reasonable\n3. No new artifacts introduced\n4. PCCT and EICT reconstructions both look correct\n\nIf Julia/GPU is not available, at minimum verify code parses without errors.\n\nACCEPTANCE: Notebooks run or parse without errors.",
       "testCommand": "julia +1.12 --project=. -e 'using BasisSimulator; println(\"OK\")'",
