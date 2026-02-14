@@ -512,3 +512,20 @@ physics-based charge sharing models in `_compute_degraded_I0` is a minor inconsi
 
 **Impact:** Low — fix the `_compute_degraded_I0` to use physics-based model for
 consistency, but this is unlikely to cause the observed cupping artifact.
+
+---
+
+### 2026-02-13: XCAT-007 — DIAGNOSTIC: PCCT vs EICT physics effects checklist [PASS]
+
+**Already answered by XCAT-001** — see the CRITICAL DIFFERENCES TABLE above (lines 188-211).
+
+Summary: PCCT path is MISSING 10 EICT physics effects (fill_factor, flat_filter,
+bowtie_filter, scatter, scatter_correction, crosstalk, optical_crosstalk, focal_spot,
+detector_efficiency, lag). Instead, PCCT applies DRM (charge sharing, K-fluorescence,
+pileup) and BHC.
+
+Of the missing effects, only **bowtie_filter** is position-dependent and could contribute
+to cupping. But PCCT doesn't HAVE a bowtie, so missing it in the model is correct
+physics. The cupping must come from something else.
+
+**Verdict: PASS — fully documented in XCAT-001. No additional investigation needed.**
