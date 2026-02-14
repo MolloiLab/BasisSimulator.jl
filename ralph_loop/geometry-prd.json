@@ -101,7 +101,7 @@
       "id": "GEO-008",
       "title": "AUDIT: Check scatter.jl geometry for z-direction correctness",
       "priority": 1,
-      "status": "open",
+      "status": "done",
       "type": "AUDIT",
       "description": "The scatter simulation at src/detector/scatter.jl models patient-size-dependent scatter. This requires correct geometry in both directions.\n\nCheck:\n1. Does scatter use detector pixel geometry? If so, which dimension?\n2. Does scatter compute patient size from sinogram? How?\n3. Any position-dependent scatter kernel that uses pixel_size vs pixel_row_size?\n4. Does scatter model use cone angle (z-dependent) or fan angle (xy-dependent)?\n5. If scatter uses a kernel, is it applied correctly in both row and column dimensions?\n\nACCEPTANCE: Scatter geometry verified or issues flagged.",
       "testCommand": "grep -rn 'pixel_size\\|pixel_row\\|geom\\.' src/detector/scatter.jl",
