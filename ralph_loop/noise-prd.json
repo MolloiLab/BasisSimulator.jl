@@ -149,7 +149,7 @@
       "id": "NOISE-014",
       "title": "VALIDATE: Re-run all 5 notebooks after fix",
       "priority": 3,
-      "status": "open",
+      "status": "done",
       "type": "VALIDATE",
       "description": "After NOISE-013 is complete, re-run all 5 verification notebooks to ensure:\n1. No regressions in HU accuracy\n2. Noise levels are reasonable\n3. VMI still works correctly\n4. PCCT physics still produces expected results\n5. XCAT simulation still runs\n\nACCEPTANCE: All 5 notebooks produce expected results without errors.",
       "testCommand": "Run all 5 verification notebooks",

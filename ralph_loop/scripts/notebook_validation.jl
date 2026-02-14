@@ -307,9 +307,11 @@ let
     @assert !isnan(μ_water) "PCCT μ_water is NaN!"
     @assert 0.05 < μ_water < 0.5 "PCCT μ_water = $μ_water out of range!"
 
-    println("  Geometry: FOV=$(round(ws.geom.fov, digits=2))cm, pixel=$(round(ws.geom.pixel_size, digits=4))cm")
-    @assert ws.geom.fov > 0 "FOV is zero or negative!"
-    @assert ws.geom.pixel_size > 0 "Pixel size is zero or negative!"
+    fov_val = ws.geom.fov isa Tuple ? ws.geom.fov[1] : ws.geom.fov
+    pix_val = ws.geom.pixel_size isa Tuple ? ws.geom.pixel_size[1] : ws.geom.pixel_size
+    println("  Geometry: FOV=$(round(fov_val, digits=2))cm, pixel=$(round(pix_val, digits=4))cm")
+    @assert fov_val > 0 "FOV is zero or negative!"
+    @assert pix_val > 0 "Pixel size is zero or negative!"
     println("  ✓ PASS")
 
     ws = nothing; ws_fdk = nothing; GC.gc(true)
@@ -419,7 +421,7 @@ let
     σ_std = std(hu_std[cx-20:cx+20, cy-20:cy+20, max(1,cz-2):min(size(vol_std,3),cz+2)])
 
     # Reconstruct with Ram-Lak
-    ws_rl = BS.create_fdk_recon_workspace(ws.sino_noisy_out, ws.geom, recon_size; filter=BS.RamLakFilter())
+    ws_rl = BS.create_fdk_recon_workspace(ws.sino_noisy_out, ws.geom, recon_size; filter=BS.RampFilter())
     vol_rl = Array(BS.reconstruct!(ws_rl, ws.sino_noisy_out, ws.geom, recon_size))
     μ_rl = mean(vol_rl[cx-20:cx+20, cy-20:cy+20, max(1,cz-2):min(size(vol_rl,3),cz+2)])
     hu_rl = BS.to_hounsfield(vol_rl; μ_water=μ_rl)
