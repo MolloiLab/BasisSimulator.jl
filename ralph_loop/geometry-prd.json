@@ -51,7 +51,7 @@
       "id": "GEO-003",
       "title": "AUDIT: Verify volume_fov threading in ALL forward projection paths",
       "priority": 0,
-      "status": "open",
+      "status": "done",
       "type": "AUDIT",
       "description": "The volume_fov kwarg was added to separate phantom physical extent from reconstruction FOV. Verify it's threaded correctly through ALL projection paths:\n\n1. **siddon.jl**: siddon_forward_project!() — KNOWN CORRECT (accepts volume_fov, uses it for bounds)\n\n2. **polychromatic.jl**: Check EVERY function that calls siddon_forward_project!:\n   - _forward_project_poly!() — does it accept and pass volume_fov?\n   - forward_project() public API — does it accept and pass volume_fov?\n   - forward_project!() public API — does it accept and pass volume_fov?\n   - Any other wrapper functions?\n\n3. **driver.jl**: Check ALL simulate! paths:\n   - simulate!(ws::EICTWorkspace, ...) — passes volume_fov=phantom.fov?\n   - simulate!(ws::EICTDualWorkspace, ...) — passes volume_fov=phantom.fov?\n   - simulate!(ws::PCCTWorkspace, ...) — passes volume_fov=phantom.fov?\n   - _simulate_axial_single() — passes volume_fov?\n   - _simulate_axial_dual() — passes volume_fov?\n   - _simulate_axial_pcct() — passes volume_fov?\n\n4. **photon_counting.jl**: pcct_forward_project() — passes volume_fov to siddon?\n\n5. **ir/sirt.jl and ir/cgls.jl**: Iterative reconstruction forward projects — these should use geom.fov (recon FOV), NOT phantom.fov. Verify.\n\nACCEPTANCE: Every forward projection call documented with volume_fov status. Any missing threading flagged.",
       "testCommand": "grep -rn 'volume_fov' src/",
