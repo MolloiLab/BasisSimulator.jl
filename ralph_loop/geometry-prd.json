@@ -31,7 +31,7 @@
       "id": "GEO-001",
       "title": "AUDIT: grep ALL pixel_size/pixel_row_size/pixel_col_size usage in src/",
       "priority": 0,
-      "status": "open",
+      "status": "done",
       "type": "AUDIT",
       "description": "Run exhaustive grep for every occurrence of pixel_size, pixel_row_size, pixel_col_size across the ENTIRE src/ directory. For each occurrence, verify:\n1. Is it used in xy-direction (columns/u) or z-direction (rows/v)?\n2. Is the correct variant used? (pixel_size/pixel_col_size for xy, pixel_row_size for z)\n3. Document every occurrence with file:line and verdict\n\nThe 7 known-correct files are: siddon.jl, backprojection.jl, filtering.jl, flat_filter.jl, bowtie_filter.jl, focal_spot.jl, detector_efficiency.jl.\n\nFocus on files NOT in this list — especially:\n- scatter.jl (scatter simulation may use detector geometry)\n- crosstalk.jl (pixel neighbor operations)\n- detector_lag.jl (temporal, but may reference geometry)\n- heel_effect.jl (anode-cathode axis uses detector geometry)\n- das_model.jl (gain may vary by detector position)\n- physics_pipeline.jl (orchestrator — may pass geometry)\n- photon_counting.jl (PCCT detector uses pixel geometry)\n- pcct/*.jl files (charge_transport, charge_collection, etc.)\n\nACCEPTANCE: Complete list of every pixel_size/pixel_row_size usage with file:line, direction (xy/z), and CORRECT/WRONG verdict.",
       "testCommand": "grep -rn 'pixel_size\\|pixel_row_size\\|pixel_col_size' src/",

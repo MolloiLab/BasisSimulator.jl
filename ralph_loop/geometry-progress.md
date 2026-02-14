@@ -22,28 +22,186 @@
 
 ## Audit Log
 
-### 2026-02-14: GEO-001 — IN PROGRESS
-**Agent:** Exhaustive grep of pixel_size/pixel_row_size/pixel_col_size in src/
-**Plan:** Check every occurrence, classify direction (xy/z), give verdict (CORRECT/WRONG)
+### 2026-02-14: GEO-001 — PASS (2 issues found)
 
-Files to check (from grep results):
-1. src/projection/siddon.jl — KNOWN CORRECT
-2. src/source/flat_filter.jl — KNOWN CORRECT
-3. src/source/focal_spot.jl — KNOWN CORRECT
-4. src/source/bowtie_filter.jl — KNOWN CORRECT
-5. src/detector/detector_efficiency.jl — KNOWN CORRECT
-6. src/reconstruction/core/backprojection.jl — KNOWN CORRECT
-7. src/reconstruction/core/filtering.jl — KNOWN CORRECT
-8. src/metrics/psf.jl — NEEDS CHECK
-9. src/metrics/nps.jl — NEEDS CHECK
-10. src/metrics/mtf.jl — NEEDS CHECK
-11. src/reconstruction/mbir/mbir.jl — NEEDS CHECK
-12. src/reconstruction/fbp/fdk.jl — NEEDS CHECK
-13. src/detector/detector_noise.jl — NEEDS CHECK
-14. src/detector/photon_counting.jl — NEEDS CHECK
-15. src/detector/pcct/detector_response.jl — NEEDS CHECK
-16. src/detector/pcct/charge_transport.jl — NEEDS CHECK
-17. src/api/driver.jl — NEEDS CHECK
-18. src/api/workspace.jl — NEEDS CHECK
-19. src/scanners/scanners.jl — NEEDS CHECK
-20. src/geometry/scanner.jl — NEEDS CHECK
+**Agent:** Exhaustive grep of pixel_size/pixel_row_size/pixel_col_size in src/
+**Method:** `grep -rn 'pixel_size\|pixel_row_size\|pixel_col_size' src/` — every hit checked
+
+#### Files with NO pixel_size/pixel_row_size references (CLEAN — no action needed):
+- src/projection/polychromatic.jl
+- src/detector/scatter.jl
+- src/detector/crosstalk.jl
+- src/detector/detector_lag.jl
+- src/detector/fill_factor.jl
+- src/detector/physics_pipeline.jl
+- src/detector/das_model.jl
+- src/detector/pcct/charge_collection.jl
+- src/detector/pcct/k_fluorescence.jl (uses pixel_pitch_mm tuple — correct)
+- src/detector/pcct/pileup_model.jl
+- src/detector/pcct/cdte_constants.jl (uses pixel_pitch_mm tuple — correct)
+- src/source/heel_effect.jl
+- src/source/protocol.jl
+- src/source/spectrum.jl
+- src/object/*.jl
+- src/correction/*.jl
+- src/spectral/*.jl
+- src/reconstruction/ir/sirt.jl
+- src/reconstruction/ir/cgls.jl
+- src/reconstruction/hybrid_ir/hybrid_ir.jl
+- src/reconstruction/statistical_ir.jl
+- src/scanners/general_electric.jl
+- src/scanners/siemens.jl
+- src/api/options.jl
+
+#### Detailed Audit Table
+
+| File:Line | Variable | Direction | Verdict | Notes |
+|-----------|----------|-----------|---------|-------|
+| **src/projection/siddon.jl** | | | | |
+| :339 | `pixel_size` | — (docstring) | N/A | Documentation |
+| :451 | `pixel_size = T(geom.pixel_size)` | xy (col) | CORRECT | Stored for u_offset |
+| :452 | `pixel_row_size = T(geom.pixel_row_size)` | z (row) | CORRECT | Stored for v_offset |
+| :518 | `pixel_size * magnification` | xy (col) | CORRECT | u_offset = col * pixel_size * mag |
+| :519 | `pixel_row_size * magnification` | z (row) | CORRECT | v_offset = row * pixel_row_size * mag |
+| **src/source/flat_filter.jl** | | | | |
+| :247 | `pixel_size_det = geom.pixel_size * (SDD/SAD)` | xy (col) | CORRECT | u_offset |
+| :248 | `pixel_row_size_det = geom.pixel_row_size * (SDD/SAD)` | z (row) | CORRECT | v_offset |
+| :253 | `pixel_row_size_det` | z (row) | CORRECT | v_offset |
+| :258 | `pixel_size_det` | xy (col) | CORRECT | u_offset |
+| :310-311 | Same pattern | xy/z | CORRECT | Second function |
+| :315 | `pixel_row_size_det` | z (row) | CORRECT | v_offset |
+| :319 | `pixel_size_det` | xy (col) | CORRECT | u_offset |
+| **src/source/focal_spot.jl** | | | | |
+| :35,37 | Comments | — | N/A | Documentation |
+| :233,237,247 | Comments | — | N/A | Documentation |
+| :295 | `pixel_size_det = geom.pixel_size * (SDD/SAD)` | xy (col) | CORRECT | blur_width |
+| :296 | `pixel_row_size_det = geom.pixel_row_size * (SDD/SAD)` | z (row) | CORRECT | blur_length |
+| :297 | `blur_width_pixels = blur_width_cm / pixel_size_det` | xy (col) | CORRECT | Width → xy |
+| :298 | `blur_length_pixels = blur_length_cm / pixel_row_size_det` | z (row) | CORRECT | Length → z |
+| **src/source/bowtie_filter.jl** | | | | |
+| :711 | `pixel_size_det = geom.pixel_size * (SDD/SAD)` | xy (col) | CORRECT | u_offset |
+| :712 | `pixel_row_size_det = geom.pixel_row_size * (SDD/SAD)` | z (row) | CORRECT | v_offset |
+| :718 | `pixel_row_size_det` | z (row) | CORRECT | v_offset |
+| :724 | `pixel_size_det` | xy (col) | CORRECT | u_offset |
+| :777-778 | Same pattern | xy/z | CORRECT | Second function |
+| :782 | `pixel_row_size_det` | z (row) | CORRECT | v_offset |
+| :787 | `pixel_size_det` | xy (col) | CORRECT | u_offset |
+| **src/detector/detector_efficiency.jl** | | | | |
+| :323 | `pixel_row_size_det = geom.pixel_row_size * (SDD/SAD)` | z (row) | CORRECT | v_offset |
+| :328 | `pixel_row_size_det` | z (row) | CORRECT | v_offset (only uses z) |
+| :374 | `pixel_row_size_det = geom.pixel_row_size * (SDD/SAD)` | z (row) | CORRECT | Second function |
+| :379 | `pixel_row_size_det` | z (row) | CORRECT | v_offset |
+| **src/reconstruction/core/backprojection.jl** | | | | |
+| :325 | `pixel_size = T(geom.pixel_size)` | xy (col) | CORRECT | pixel_mag |
+| :326 | `pixel_row_size = T(geom.pixel_row_size)` | z (row) | CORRECT | pixel_row_mag |
+| :329 | `pixel_mag = pixel_size * magnification` | xy (col) | CORRECT | u-direction |
+| :330 | `pixel_row_mag = pixel_row_size * magnification` | z (row) | CORRECT | v-direction |
+| **src/reconstruction/core/filtering.jl** | | | | |
+| :77-108 | `pixel_size` (param/docstring) | — | N/A | create_spatial_kernel param — always receives col pixel |
+| :94 | `pixel_size::T` (function param) | xy (col) | CORRECT | Ramp filter spacing = column pixel |
+| :97 | `Δ = pixel_size` | xy (col) | CORRECT | Filter operates row-by-row on columns |
+| :342 | `pixel_size = T(geom.pixel_size)` | xy (col) | CORRECT | cosine_weight! u direction |
+| :343 | `pixel_row_size = T(geom.pixel_row_size)` | z (row) | CORRECT | cosine_weight! v direction |
+| :361 | `pixel_size * magnification` | xy (col) | CORRECT | u position |
+| :362 | `pixel_row_size * magnification` | z (row) | CORRECT | v position |
+| :420 | `pixel_size = T(geom.pixel_size)` | xy (col) | CORRECT | filter kernel spacing |
+| :431 | `create_spatial_kernel(..., pixel_size)` | xy (col) | CORRECT | Ramp filter in column direction |
+| **src/reconstruction/fbp/fdk.jl** | | | | |
+| :185 | `pixel_size` | — (docstring) | N/A | Documentation |
+| :423 | `geom.pixel_size, geom.pixel_row_size` | xy, z | CORRECT | Passed to CTGeometry constructor |
+| **src/reconstruction/mbir/mbir.jl** | | | | |
+| :440 | `geom.pixel_size` | xy (col) | CORRECT | Passed to create_subset_geometry |
+| :441 | `geom.pixel_row_size` | z (row) | CORRECT | Passed to create_subset_geometry |
+| **src/detector/detector_noise.jl** | | | | |
+| :721 | `pixel_size` | — (docstring) | N/A | Documentation |
+| :731 | `pixel_col_det_mm = (geom.pixel_size * 10.0) * magnification` | xy (col) | CORRECT | Column pixel at detector |
+| :732 | `pixel_row_det_mm = (geom.pixel_row_size * 10.0) * magnification` | z (row) | CORRECT | Row pixel at detector |
+| **src/detector/photon_counting.jl** | | | | |
+| :100 | `pixel_size_mm::Tuple{T,T}` — (row, col) | both | CORRECT | Direction-aware tuple |
+| :131 | `pixel_size_mm = (0.302, 0.302)` | both | CORRECT | Default value (tuple) |
+| :144 | `pixel_size_mm::Tuple{T,T}` | both | CORRECT | Struct field |
+| :177-192-205 | `pixel_size_mm` kwarg/docstring | both | CORRECT | Tuple (row, col) |
+| :235 | `pixel_size_mm = (0.302, 0.302)` | both | CORRECT | Preset |
+| :265 | `pixel_size_mm = (0.151, 0.151)` | both | CORRECT | UHR preset |
+| :289 | `pixel_size_mm = (0.302, 0.302)` | both | CORRECT | Preset |
+| :537 | `Float64.(detector.pixel_size_mm)` | both | CORRECT | Tuple passthrough |
+| :546 | `pixel_pitch = detector.pixel_size_mm` | both | CORRECT | Alias |
+| :643-644 | `pixel_row = detector.pixel_size_mm[1]`, `pixel_col = detector.pixel_size_mm[2]` | row/col | CORRECT | Tuple [1]=row, [2]=col |
+| :743-744 | Same pattern | row/col | CORRECT | Second usage |
+| :873 | `detector.pixel_size_mm[1] * detector.pixel_size_mm[2]` | area | CORRECT | row × col = area |
+| :1002 | Same area calculation | area | CORRECT | |
+| :1407 | `pixel_size_mm=detector.pixel_size_mm` | both | CORRECT | Passthrough |
+| :1705-1706 | `pixel_row/pixel_col` from tuple | row/col | CORRECT | |
+| :1725 | Area from tuple product | area | CORRECT | |
+| :1968 | `pixel_size_mm = detector.pixel_size_mm` | both | CORRECT | Info struct |
+| :1994 | Print statement | both | CORRECT | Display |
+| :2284-2337 | `pixel_size_mm` param + usage | both | CORRECT | Fluorescence model |
+| :2323 | `min(pixel_size_mm[1], pixel_size_mm[2]) / 2` | both | CORRECT | Uses smaller dim |
+| :2593-2699 | `pixel_size_mm` kwarg + passthrough | both | CORRECT | compute_spectral_response_matrix |
+| **src/detector/pcct/detector_response.jl** | | | | |
+| :136 | `pixel_size_mm = detector.pixel_size_mm` | both | CORRECT | Tuple |
+| :147 | `compute_cdte_fluorescence_model(pixel_size_mm, ...)` | both | CORRECT | Tuple |
+| :152 | `compute_fluorescence_escape_probability(..., pixel_size_mm)` | both | CORRECT | Tuple |
+| :185 | `pixel_pitch_mm=pixel_size_mm` | both | CORRECT | Tuple |
+| **src/detector/pcct/charge_transport.jl** | | | | |
+| :337 | `σ/pixel_size` | — (comment) | N/A | Documentation only |
+| **src/api/driver.jl** | | | | |
+| :486 | `pixel_size_mm=detector.pixel_size_mm` | both | CORRECT | Passthrough to compute_spectral_response_matrix |
+| :498 | `pixel_size_mm=detector.pixel_size_mm` | both | CORRECT | Same |
+| **src/api/workspace.jl** | | | | |
+| :211 | `pixel_size_mm=pcct_detector.pixel_size_mm` | both | CORRECT | Passthrough |
+| :315 | `Float64.(pcct_detector.pixel_size_mm)` | both | CORRECT | Tuple conversion |
+| :319 | `compute_cdte_fluorescence_model(pcct_detector.pixel_size_mm, ...)` | both | CORRECT | Tuple |
+| :325 | `charge_sharing_probability(σ, pcct_detector.pixel_size_mm)` | both | CORRECT | Tuple |
+| :1078 | `pixel_size = T(geom.pixel_size)` | xy (col) | CORRECT | Filter kernel spacing (FDK workspace) |
+| :1082 | `create_spatial_kernel(..., pixel_size)` | xy (col) | CORRECT | Ramp filter |
+| :1191 | `pixel_size = T(geom.pixel_size)` | xy (col) | CORRECT | Filter kernel spacing (HIR workspace) |
+| :1195 | `create_spatial_kernel(..., pixel_size)` | xy (col) | CORRECT | Ramp filter |
+| **src/scanners/scanners.jl** | | | | |
+| :285 | `pixel_size_cm = (_fov_cm * 1.1) / _n_cols` | xy (col) | CORRECT | Column pixel from FOV |
+| :323 | `pixel_row_size_cm = det.row_size_mm[] / 10.0` | z (row) | CORRECT | Row pixel from detector spec |
+| :324 | `z_coverage_cm = n_rows * pixel_row_size_cm` | z (row) | CORRECT | Z coverage |
+| :328 | `..., pixel_size_cm, pixel_row_size_cm, ...` | xy, z | CORRECT | Passed to CTGeometry |
+| **src/geometry/scanner.jl** | | | | |
+| :500 | `pixel_size` | — (docstring) | N/A | CTGeometry struct field doc |
+| :520 | `pixel_size::Float64` | xy (col) | CORRECT | CTGeometry struct field |
+| :521 | `pixel_row_size::Float64` | z (row) | CORRECT | CTGeometry struct field |
+| :583 | `pixel_size = scanner.detector_col_size / 10.0` | xy (col) | CORRECT | create_ct_geometry |
+| :584 | `pixel_row_size = scanner.detector_row_size / 10.0` | z (row) | CORRECT | create_ct_geometry |
+| :591 | `fov_xy = _n_cols * pixel_size` | xy (col) | CORRECT | Default FOV |
+| :641 | `..., pixel_size, pixel_row_size, ...` | xy, z | CORRECT | CTGeometry constructor |
+| :691 | `pixel_size = pixel_pitch_mm / 10.0` | xy (col) | CORRECT | create_aquilion_one (single pitch for square pixels) |
+| :692 | `fov_xy = pixel_size * n_cols` | xy (col) | CORRECT | FOV from cols |
+| :696 | `pixel_size = (fov_cm * 1.1) / n_cols` | xy (col) | CORRECT | FOV override |
+| :702 | `fov_z = pixel_size * n_rows` | **z (row)** | **WRONG** | Uses `pixel_size` (column) for z-direction FOV. Should use row pixel size. |
+| :746 | `..., pixel_size, pixel_size, ...` | xy, **z** | **WRONG** | Passes `pixel_size` as BOTH pixel_size AND pixel_row_size to CTGeometry. Should be `pixel_size, pixel_row_size` (but Aquilion ONE has 0.5mm square pixels, so numerically same). |
+| :809 | `pixel_size = 0.2` | both | N/A | NAEOTOM Alpha local var (square pixels, used for both row/col) |
+| :813 | `pixel_size = 0.4` | both | N/A | NAEOTOM Alpha standard mode (square pixels) |
+| :828 | `detector_row_size = pixel_size` | z (row) | CORRECT* | *Correct for square pixels |
+| :829 | `detector_col_size = pixel_size` | xy (col) | CORRECT | |
+| :832 | `detector_col_offset = pixel_size / 2` | xy (col) | CORRECT | Quarter-detector offset |
+| :886 | `pixel_size_mm = (scanner.detector_row_size * mag, scanner.detector_col_size * mag)` | (row, col) | CORRECT | Tuple with explicit row/col |
+| **src/metrics/psf.jl** | | | | |
+| :183-807 | `pixel_size_mm` | in-plane | N/A | Function parameter for recon pixel size, NOT geom.pixel_size. Used for generic 2D image measurement. Not a geometry direction issue. |
+| **src/metrics/nps.jl** | | | | |
+| :173-417 | `pixel_size_mm` | in-plane | N/A | Same as psf.jl — generic recon pixel size parameter. Not geometry direction issue. |
+| **src/metrics/mtf.jl** | | | | |
+| :148-711 | `pixel_size_mm` | in-plane | N/A | Same as psf.jl — generic recon pixel size parameter. Not geometry direction issue. |
+
+#### Issues Found: 2
+
+**Issue 1: scanner.jl:702 — `fov_z = pixel_size * n_rows`**
+- `create_aquilion_one()` uses `pixel_size` (column direction, 0.5mm) for z-direction FOV default.
+- Should use a separate `pixel_row_size` for z-direction.
+- **Impact: NONE for Aquilion ONE** — it has square 0.5mm pixels, so `pixel_size == pixel_row_size`.
+- **Impact if code is copied for non-square scanner: BUG**
+- Severity: LOW (cosmetic for current scanner, but incorrect pattern)
+
+**Issue 2: scanner.jl:746 — `pixel_size, pixel_size` passed to CTGeometry**
+- `create_aquilion_one()` passes `pixel_size` as both `pixel_size` and `pixel_row_size` in CTGeometry constructor.
+- Should pass `pixel_size, pixel_row_size` (separate variables).
+- **Impact: NONE for Aquilion ONE** — square 0.5mm pixels.
+- **Impact if code is copied for non-square scanner: BUG** — z-direction would use wrong pixel pitch.
+- Severity: LOW (cosmetic for current scanner, but incorrect pattern)
+
+Note: Both issues are in `create_aquilion_one()` which hardcodes `pixel_pitch_mm = 0.5` (square). The `create_ct_geometry()` (scanner.jl:583-641) and `create_scanner_geometry()` (scanners.jl:285-331) correctly use separate row/col pixel sizes. The NAEOTOM Alpha `create_naeotom_alpha()` (scanner.jl:805-865) also uses square pixels and stores them separately in `detector_row_size`/`detector_col_size`.
