@@ -119,7 +119,7 @@
       "id": "NOISE-011",
       "title": "DIAGNOSTIC: Check HU conversion μ_water value",
       "priority": 2,
-      "status": "open",
+      "status": "done",
       "type": "DIAGNOSTIC",
       "description": "Noise in HU is computed as:\n  σ_HU = σ_μ × 1000 / μ_water\n\nIf μ_water is wrong by factor k, σ_HU is wrong by factor 1/k.\n\nNotebook 01 uses empirical water calibration (measures μ_water from a water cylinder scan). But:\n1. If the empirical μ_water is too LOW (e.g., from reconstruction artifacts), σ_HU is TOO HIGH\n2. A μ_water that's 50% of correct → σ_HU is 2x too large\n3. Compare empirical μ_water to NIST value at effective energy (~65-70 keV for 120 kVp)\n   NIST water μ at 65 keV ≈ 0.0200 cm⁻¹, at 70 keV ≈ 0.0193 cm⁻¹\n4. If reconstruction values are in mm⁻¹ instead of cm⁻¹, μ_water would be 10x smaller\n\nACCEPTANCE: Report empirical μ_water from notebook 01, compare to NIST expectation. Check units.",
       "testCommand": "Trace μ_water computation in notebook 01",
