@@ -729,18 +729,91 @@ All PCCT geometry code follows these safe patterns:
 **Issues found: 0 (bugs)**
 **Notes found: 1 (documentation convention mismatch between PCCTDetectorGeometry and PhotonCountingDetector)**
 
-### 2026-02-14: GEO-006 — WIP
+### 2026-02-14: GEO-006 — PASS (0 issues found)
+
 **Agent:** Auditing iterative recon (SIRT, CGLS, MBIR, Hybrid IR, statistical_ir) z-geometry
-**Method:** `grep -rn 'siddon\|forward_project\|volume_fov' src/reconstruction/ir/ src/reconstruction/hybrid_ir/ src/reconstruction/mbir/` + read each file for context
+**Method:** `grep -rn 'siddon\|forward_project\|volume_fov' src/reconstruction/ir/ src/reconstruction/hybrid_ir/ src/reconstruction/mbir/` + full file reads + driver.jl reconstruct! paths
 
 **Key principle:** Iterative recon forward-projects the RECONSTRUCTION volume, so should use `geom.fov` (recon FOV), NOT `phantom.fov`. No `volume_fov` kwarg should be passed.
 
-**Plan:**
-1. Run testCommand grep
-2. Read and audit sirt.jl — siddon calls, volume_fov, pixel_row_size
-3. Read and audit cgls.jl — same checks
-4. Read and audit hybrid_ir.jl — PWLS forward projection
-5. Read and audit mbir.jl — model-based forward projection
-6. Read and audit statistical_ir.jl — PWLS core
-7. Also check driver.jl reconstruct!() paths for volume_fov misuse
-8. Document findings
+#### 1. sirt.jl — CORRECT (no volume_fov, no pixel_size/pixel_row_size)
+
+| File:Line | Call | volume_fov | Verdict | Notes |
+|-----------|------|------------|---------|-------|
+| sirt.jl:53 | `siddon_forward_project(ones_volume, geom)` | NOT passed | CORRECT | `compute_projection_weights`: ray lengths — uses `geom.fov` |
+| sirt.jl:125 | `siddon_forward_project(recon, geom)` | NOT passed | CORRECT | `sirt_iteration!`: recon estimate — uses `geom.fov` |
+| sirt.jl:88 | `backproject(ones_sino, geom, volume_size; weighted=false)` | N/A | CORRECT | Voxel sensitivity |
+| sirt.jl:136 | `backproject(projected, geom, size(recon); weighted=false)` | N/A | CORRECT | Matched backprojection |
+
+**pixel_size/pixel_row_size:** Not directly referenced. Delegated to siddon/backproject. CORRECT.
+
+#### 2. cgls.jl — CORRECT (no volume_fov, no pixel_size/pixel_row_size)
+
+| File:Line | Call | volume_fov | Verdict | Notes |
+|-----------|------|------------|---------|-------|
+| cgls.jl:93 | `siddon_forward_project(p, geom)` | NOT passed | CORRECT | Search direction — uses `geom.fov` |
+| cgls.jl:207 | `siddon_forward_project(recon, geom)` | NOT passed | CORRECT | Initial residual — uses `geom.fov` |
+| cgls.jl:118 | `backproject(r, geom, size(x); weighted=false)` | N/A | CORRECT | Adjoint backprojection |
+| cgls.jl:218 | `backproject(r, geom, size(recon); weighted=false)` | N/A | CORRECT | Initial search direction |
+
+**pixel_size/pixel_row_size:** Not directly referenced. Delegated to siddon/backproject. CORRECT.
+
+#### 3. hybrid_ir.jl — CORRECT (delegates to pwls_reconstruct!, no direct forward projection)
+
+| File:Line | Call | volume_fov | Verdict | Notes |
+|-----------|------|------------|---------|-------|
+| hybrid_ir.jl:182 | `fdk_reconstruct(sinogram, geometry, volume_size; filter)` | N/A | CORRECT | FDK init |
+| hybrid_ir.jl:187-194 | `pwls_reconstruct!(x, sinogram, geometry; ...)` | NOT passed | CORRECT | Delegates to statistical_ir.jl |
+
+**pixel_size/pixel_row_size:** Not directly referenced. No direct siddon calls. CORRECT.
+
+#### 4. mbir.jl — CORRECT (no volume_fov, correct pixel_size/pixel_row_size in subset geometry)
+
+| File:Line | Call | volume_fov | Verdict | Notes |
+|-----------|------|------------|---------|-------|
+| mbir.jl:500 | `siddon_forward_project(recon, geom_subset)` | NOT passed | CORRECT | OS-SQS: recon through subset geom |
+| mbir.jl:509 | `backproject(Ax_subset, geom_subset, size(recon); weighted=false)` | N/A | CORRECT | Matched backprojection |
+| mbir.jl:603-604 | `compute_projection_weights`/`compute_image_weights` | NOT passed | CORRECT | Normalization weights |
+| mbir.jl:440-441 | `create_subset_geometry`: `geom.pixel_size, geom.pixel_row_size` | N/A | CORRECT | xy and z preserved separately in subset CTGeometry |
+| mbir.jl:447 | `create_subset_geometry`: `geom.fov` | N/A | CORRECT | Subset preserves recon FOV |
+
+#### 5. statistical_ir.jl (PWLS core) — CORRECT (no volume_fov, no pixel_size/pixel_row_size)
+
+| File:Line | Call | volume_fov | Verdict | Notes |
+|-----------|------|------------|---------|-------|
+| statistical_ir.jl:343 | `siddon_forward_project(x_current, geom)` | NOT passed | CORRECT | `compute_statistical_weights` |
+| statistical_ir.jl:429 | `siddon_forward_project(x, geom)` | NOT passed | CORRECT | `pwls_iteration_sirt!` data fidelity |
+| statistical_ir.jl:439 | `backproject(Ax, geom, size(x); weighted=false)` | N/A | CORRECT | Matched backprojection |
+| statistical_ir.jl:513-514 | `compute_projection_weights`/`compute_image_weights` | NOT passed | CORRECT | Normalization weights |
+
+**pixel_size/pixel_row_size:** Not directly referenced. Delegated to siddon/backproject. CORRECT.
+
+#### 6. driver.jl reconstruct!() paths — CORRECT (no volume_fov in reconstruction forward projections)
+
+| File:Line | Call | volume_fov | Verdict | Notes |
+|-----------|------|------------|---------|-------|
+| driver.jl:1566 | `siddon_forward_project!(ax_view, ws.volume, geom_s; ws_*)` | NOT passed | CORRECT | HIR OS-PWLS subset FP |
+| driver.jl:1624 | `siddon_forward_project!(ws.Ax, ws.volume, geom; ws_*)` | NOT passed | CORRECT | HIR legacy stat weights |
+| driver.jl:1652 | `siddon_forward_project!(ws.Ax, ws.volume, geom; ws_*)` | NOT passed | CORRECT | HIR legacy data fidelity |
+
+**Note:** All three driver.jl reconstruction FP calls correctly do NOT pass `volume_fov`. Distinguished from the **simulation** FP calls (driver.jl:604, :712, :985) which DO pass `volume_fov=phantom.fov`.
+
+#### Summary
+
+| File | FP calls | volume_fov | pixel_size/pixel_row_size | Verdict |
+|------|----------|------------|---------------------------|---------|
+| sirt.jl | 2 FP + 2 BP | NOT passed | Delegated | PASS |
+| cgls.jl | 2 FP + 2 BP | NOT passed | Delegated | PASS |
+| hybrid_ir.jl | 0 direct | NOT passed | N/A | PASS |
+| mbir.jl | 1 FP + 1 BP + subset_geom | NOT passed | Correct: xy/z separate | PASS |
+| statistical_ir.jl | 2 FP + 1 BP | NOT passed | Delegated | PASS |
+| driver.jl (recon!) | 3 FP + 3 BP | NOT passed | Via workspace geom | PASS |
+
+**Issues found: 0**
+
+All iterative reconstruction paths correctly:
+1. Do NOT pass `volume_fov` — they project the recon volume using `geom.fov`
+2. Use matched/unweighted backprojection (`weighted=false`)
+3. Properly delegate pixel geometry to siddon/backproject (which handle pixel_size vs pixel_row_size internally)
+4. Pass `volume_size = size(recon)` consistently
+5. mbir.jl's `create_subset_geometry()` correctly preserves separate `pixel_size` (xy) and `pixel_row_size` (z)
