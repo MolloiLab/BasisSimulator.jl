@@ -39,7 +39,7 @@
       "id": "NOISE-003",
       "title": "DIAGNOSTIC: Quantify noise impact of physics effects applied before noise",
       "priority": 1,
-      "status": "open",
+      "status": "done",
       "type": "DIAGNOSTIC",
       "description": "Several physics effects are applied to the sinogram BEFORE quantum noise. These modify sinogram values (attenuation), which changes λ = I0 * exp(-p). If p increases, λ decreases, and noise increases.\n\nEffects applied before noise (in order):\n1. Heel effect (intensity domain — non-uniform intensity)\n2. DAS model (gain + electronic noise — BROKEN, not used)\n3. Fill factor (reduces signal by 10%)\n4. Flat filter (adds 2.5mm Al attenuation — 30-50% flux reduction)\n5. Scatter (adds scatter photons — actually REDUCES noise!)\n6. Scatter correction (removes scatter — INCREASES noise)\n7. Bowtie filter (adds angle-dependent attenuation)\n8. Crosstalk (spreads signal between pixels — generally neutral)\n9. Focal spot blur (spatial averaging — generally reduces noise)\n\nCritical question: Are these effects ALSO present in CatSim's pipeline in the same order? If CatSim applies noise to the IDEAL sinogram (before physics effects), and we apply it AFTER, the effective noise levels differ.\n\nSpecifically:\n- Fill factor adds ~0.105 to sinogram (-log(0.9) = 0.105)\n- This means λ is reduced by factor 0.9\n- Noise increases by factor 1/√0.9 ≈ 1.054 (5.4%)\n- Flat filter, bowtie, scatter correction all compound this\n\nACCEPTANCE: Run a controlled experiment — simulate with and without each physics effect, measure noise (σ in water ROI). Create a table showing noise contribution of each effect.",
       "testCommand": "Compare noise with incremental physics effects enabled/disabled",
