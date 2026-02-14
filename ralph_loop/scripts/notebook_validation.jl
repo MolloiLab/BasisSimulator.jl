@@ -174,9 +174,10 @@ let
     BS.simulate!(ws, water_gpu, scanner, prot_120, sim_opts, recon_opts)
     sino_gpu = ws.sino_noisy_out
     geom = ws.geom
+    recon_size = recon_opts.matrix_size
 
-    ws_hir = BS.create_hir_recon_workspace(geom, sino_gpu; strength=3, array_type=MtlArray)
-    BS.reconstruct!(ws_hir, geom, sino_gpu)
+    ws_hir = BS.create_hir_recon_workspace(sino_gpu, geom, recon_size; strength=3)
+    BS.reconstruct!(ws_hir, sino_gpu, geom, recon_size)
     hir_vol = Array(ws_hir.volume)
     cx, cy, cz = size(hir_vol) .÷ 2
     z_half = min(cz - 1, 2)
@@ -284,7 +285,7 @@ let
     )
 
     protocol = BS.CTProtocol(kVp=140.0, mA=300.0, views=984, rotation_time=0.25)
-    sim_opts = BS.SimOptions(fidelity=:standard, seed=9999)
+    sim_opts = BS.SimOptions(fidelity=:medium, seed=9999)
     recon_opts = BS.ReconOptions(
         algorithm=:fdk,
         matrix_size=(128, 128, 8),
@@ -338,7 +339,7 @@ let
     )
 
     protocol = BS.CTProtocol(kVp=120.0, mA=300.0, views=984, rotation_time=0.5)
-    sim_opts = BS.SimOptions(fidelity=:standard, seed=12345)
+    sim_opts = BS.SimOptions(fidelity=:medium, seed=12345)
     recon_opts = BS.ReconOptions(
         algorithm=:fdk,
         matrix_size=(128, 128, 8),
