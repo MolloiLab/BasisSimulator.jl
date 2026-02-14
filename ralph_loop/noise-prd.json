@@ -59,7 +59,7 @@
       "id": "NOISE-005",
       "title": "DIAGNOSTIC: Compare CatSim parameters exhaustively",
       "priority": 1,
-      "status": "open",
+      "status": "done",
       "type": "DIAGNOSTIC",
       "description": "The 2x noise difference could be from parameter mismatch between BasisSimulator and CatSim. Even small differences compound.\n\nCheck notebook 01's CatSim configuration against BasisSimulator:\n1. SID/SDD: Are they identical? (540/950 mm)\n2. Detector size: Is CatSim using 1.0mm face pitch while we use 0.569mm at isocenter?\n3. Number of detector elements: Same count?\n4. mA: Same (200)?\n5. kVp: Same (120)?\n6. Spectrum: Same source? CatSim uses tungsten_tar7.0_120_filt.dat — 'filt' suggests pre-filtered!\n7. Bowtie filter: CatSim may have different bowtie shape\n8. Reconstruction FOV: Same (350mm)?\n9. Matrix size: Same (512x512x9)?\n10. FDK filter: Both using Ram-Lak?\n11. CatSim's mu = 0.02 cm^-1 — is this the same as our empirical water μ?\n\nCRITICAL INSIGHT from notebook 01: CatSim uses 'tungsten_tar7.0_120_filt.dat' — the '_filt' suffix likely means the spectrum is ALREADY pre-filtered through inherent aluminum. This directly relates to NOISE-002.\n\nACCEPTANCE: Create side-by-side parameter comparison table. Identify ANY discrepancies.",
       "testCommand": "Read notebook 01 CatSim setup section and compare all parameters",
