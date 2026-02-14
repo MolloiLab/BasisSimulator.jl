@@ -1128,3 +1128,7 @@ The noise fix (adding StandardFilter/SoftFilter/BoneFilter to filtering.jl and u
 2. Create focused validation scripts that test key notebook computations (forward projection, reconstruction, HU accuracy) without Pluto
 3. Run these scripts and verify no regressions
 4. Document results
+
+**Test suite results:** 1759 passed, 6 failed, 36 errored (same as previous iteration — all failures in pre-existing PCCT spectral decomposition tests, NOT related to noise fix or scanner convention changes)
+
+**Validation script:** Running `ralph_loop/scripts/notebook_validation.jl` — tests all 5 notebook paths (NB01-05) with actual GPU simulation and reconstruction, checking μ_water ranges, HU accuracy, physics correctness, and StandardFilter noise reduction ratio. Awaiting results...
