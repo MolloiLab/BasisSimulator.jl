@@ -1412,10 +1412,13 @@ function build_physics_config(
         @warn "DAS model is BROKEN. Ignoring use_das=true."
     end
 
-    # BHC: no Scanner field, use factory default with reference energy from spectrum
+    # BHC: calibrate polynomial from actual spectrum (not hardcoded defaults)
+    # The calibration generates a water-based BHC that properly maps polychromatic
+    # line integrals to monochromatic-equivalent values at the reference energy.
     if sim_opts.use_bhc
         ref_energy = sum(energies .* weights) / sum(weights)
-        kwargs[:bhc] = bhc_water_default(; reference_energy_keV=ref_energy)
+        kwargs[:bhc] = calibrate_bhc(energies, weights;
+                                      order=5, reference_energy_keV=ref_energy)
     end
 
     return default_physics_config(; kwargs...)
