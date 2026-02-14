@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.20.21
+# v0.20.13
 
 using Markdown
 using InteractiveUtils
@@ -73,28 +73,44 @@ We use the exact same geometric configuration as Part 1 to ensure 1:1 parity, on
 
 # ╔═╡ ea44a25a-5358-4aef-b301-d462798141c8
 # Simulation configuration - Single Source of Truth
-SIM_CONFIG = (
-    # --- Phantom / Reconstruction Volume ---
-    imageSize = 512,            # Reconstruction Matrix X/Y
-    sliceCount = 64,            # Reconstruction Z slices
-    sliceThickness = 0.625,     # mm
-    fov_mm = 350.0,             # Field of View
-
+SIM_CONFIG = let
     # --- Scanner Geometry ---
-    sid = 540.0,                # Source-to-Iso (mm)
-    sdd = 950.0,                # Source-to-Detector (mm)
-    detectorColCount = 900,     # Total columns
-    detectorRowCount = 16,      # Total rows
-    detectorColSize = 1.0,      # Pitch X (mm)
-    detectorRowSize = 1.0,      # Pitch Z (mm)
+    sid = 540.0                 # Source-to-Iso (mm)
+    sdd = 950.0                 # Source-to-Detector (mm)
+    magnification = sdd / sid   # 1.759
+    detectorColCount = 900      # Total columns
+    detectorRowCount = 16       # Total rows
 
-    # --- Base Protocol ---
-    viewsPerRotation = 984,
-    rotationTime = 1.0,         # seconds
+    # CatSim uses 1.0mm at detector face; convert to isocenter for Scanner
+    detectorColSize = 1.0 / magnification   # ≈ 0.569 mm at isocenter
+    detectorRowSize = 1.0 / magnification   # ≈ 0.569 mm at isocenter
 
-    # Note: simulate() uses 30 bins internally; this is for spectrum display only
-    n_energy_bins = 15
-)
+    # --- Clinical Reconstruction Parameters ---
+    z_coverage_mm = detectorRowCount * detectorRowSize  # at isocenter
+    sliceThickness = 1.0        # mm (clinical slice thickness)
+    sliceCount = floor(Int, z_coverage_mm / sliceThickness)
+
+    (
+        imageSize = 512,
+        fov_mm = 350.0,
+
+        sid = sid,
+        sdd = sdd,
+        detectorColCount = detectorColCount,
+        detectorRowCount = detectorRowCount,
+        detectorColSize = detectorColSize,
+        detectorRowSize = detectorRowSize,
+
+        sliceCount = sliceCount,
+        sliceThickness = sliceThickness,
+        z_coverage_mm = z_coverage_mm,
+
+        viewsPerRotation = 984,
+        rotationTime = 1.0,
+
+        n_energy_bins = 15,
+    )
+end
 
 # ╔═╡ 62222977-9635-434c-b3dd-21720c19402c
 # Define the Scenarios
@@ -214,8 +230,7 @@ scanner = BS.Scanner(
 	detector_cols = SIM_CONFIG.detectorColCount,
 	detector_row_size = SIM_CONFIG.detectorRowSize,
 
-	# detector_col_size is the element pitch at the detector face (mm).
-	# CTGeometry internally projects to isocenter via magnification.
+	# detector_col_size is the element pitch at isocenter (mm).
 	detector_col_size = SIM_CONFIG.detectorColSize,
 
 	detector_shape = BS.CURVED_DETECTOR,
@@ -250,9 +265,10 @@ sim_opts = BS.SimOptions(fidelity=:high, seed=1234)
 # ╔═╡ 286bb6a0-ce50-4370-a4f0-1f5c8f62f60c
 recon_opts = BS.ReconOptions(
     algorithm=:fdk,
-    filter=:ram_lak,
+    filter=:standard,
     matrix_size=(SIM_CONFIG.imageSize, SIM_CONFIG.imageSize, SIM_CONFIG.sliceCount),
-    fov_cm=SIM_CONFIG.fov_mm/10.0
+    fov_cm=SIM_CONFIG.fov_mm/10.0,
+    z_cm=SIM_CONFIG.sliceCount * SIM_CONFIG.sliceThickness / 10.0,
 )
 
 # ╔═╡ ac0e51fd-a1d8-4521-8bfd-7f105f637d16
@@ -273,7 +289,8 @@ sim_results = let
 		ws_fdk_cal = BS.create_fdk_recon_workspace(ws_cal.sino_noisy_out, ws_cal.geom, recon_size)
 		vol_cal = Array(BS.reconstruct!(ws_fdk_cal, ws_cal.sino_noisy_out, ws_cal.geom, recon_size))
 		cx, cy, cz = size(vol_cal) .÷ 2
-		μ_calib = mean(vol_cal[cx-10:cx+10, cy-10:cy+10, cz-4:cz+4])
+		z_half = min(cz - 1, 4)
+		μ_calib = mean(vol_cal[cx-10:cx+10, cy-10:cy+10, cz-z_half:cz+z_half])
 
 		ws_fdk_cal = nothing; vol_cal = nothing
 		ws_cal = nothing; GC.gc(true)
@@ -353,7 +370,7 @@ physics_metrics = let
 end
 
 # ╔═╡ c717df6c-f356-43c9-98b1-f0c926eb9384
-@bind scen_slice UI.Slider(1:SIM_CONFIG.sliceCount, default=32, show_value=true)
+@bind scen_slice UI.Slider(1:SIM_CONFIG.sliceCount, default=SIM_CONFIG.sliceCount ÷ 2, show_value=true)
 
 # ╔═╡ f889723d-a117-47a9-a120-43f16e827cd8
 let
@@ -478,7 +495,7 @@ Comparing FDK vs HIR at strength 1, 3, and 5.
 """
 
 # ╔═╡ afd76526-df37-4fa2-8a62-8032a8641225
-@bind slice_idx UI.Slider(1:SIM_CONFIG.sliceCount, default=32, show_value=true)
+@bind slice_idx UI.Slider(1:SIM_CONFIG.sliceCount, default=SIM_CONFIG.sliceCount ÷ 2, show_value=true)
 
 # ╔═╡ 94441708-b5c3-4555-a8f1-7b40fcdeaf9f
 let
@@ -601,7 +618,7 @@ hir_results_std = let
 end
 
 # ╔═╡ f0000002-0003-0001-0001-000000000005
-@bind slice_idx_std UI.Slider(1:SIM_CONFIG.sliceCount, default=32, show_value=true)
+@bind slice_idx_std UI.Slider(1:SIM_CONFIG.sliceCount, default=SIM_CONFIG.sliceCount ÷ 2, show_value=true)
 
 # ╔═╡ f0000002-0003-0001-0001-000000000006
 let

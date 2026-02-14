@@ -470,20 +470,23 @@ end
         end
 
         @testset "Kernel FWHM Scales with Pixel Pitch" begin
-            # 1.0 mm pitch → 50 pixels
+            # Default magnification for face-pitch conversion
+            default_mag = 950.0 / 540.0
+
+            # 1.0 mm at isocenter → face = 1.0 * mag → fwhm = 50 / face
             scanner_1mm = Scanner(detector_col_size=1.0)
             fwhm_1mm = compute_scatter_kernel_fwhm_pixels(scanner_1mm)
-            @test fwhm_1mm ≈ 50.0
+            @test fwhm_1mm ≈ 50.0 / (1.0 * default_mag) atol=0.01
 
-            # 0.5 mm pitch → 100 pixels (same physical spread)
+            # 0.5 mm at isocenter → double fwhm in pixels
             scanner_05mm = Scanner(detector_col_size=0.5)
             fwhm_05mm = compute_scatter_kernel_fwhm_pixels(scanner_05mm)
-            @test fwhm_05mm ≈ 100.0
+            @test fwhm_05mm ≈ 50.0 / (0.5 * default_mag) atol=0.01
 
-            # 2.0 mm pitch → 25 pixels
+            # 2.0 mm at isocenter → half fwhm in pixels
             scanner_2mm = Scanner(detector_col_size=2.0)
             fwhm_2mm = compute_scatter_kernel_fwhm_pixels(scanner_2mm)
-            @test fwhm_2mm ≈ 25.0
+            @test fwhm_2mm ≈ 50.0 / (2.0 * default_mag) atol=0.01
         end
 
         @testset "Geometry-Aware Scatter Model" begin
@@ -491,7 +494,7 @@ end
             scanner_ref = Scanner()
             model_ref = geometry_aware_scatter_model(scanner_ref)
             @test model_ref.scatter_coefficient ≈ 0.025 atol=0.001
-            @test model_ref.kernel_fwhm ≈ 50.0
+            @test model_ref.kernel_fwhm ≈ 50.0 / (950.0 / 540.0) atol=0.01
             @test model_ref.scale_factor ≈ 1.0
 
             # GE Revolution-like (larger air gap)
@@ -503,7 +506,7 @@ end
             model_ge = geometry_aware_scatter_model(scanner_ge)
             @test model_ge.scatter_coefficient < 0.025  # Less scatter
             @test model_ge.scatter_coefficient ≈ 0.019 atol=0.001
-            @test model_ge.kernel_fwhm ≈ 100.0  # More pixels for same physical size
+            @test model_ge.kernel_fwhm ≈ 50.0 / (0.5 * 1097.0 / 626.0) atol=0.01  # More pixels for same physical size
 
             # User scale factor still works
             model_scaled = geometry_aware_scatter_model(scanner_ref; scale_factor=2.0)
@@ -617,15 +620,13 @@ end
         det = detector(spec)
 
         # Test: Z-coverage consistency
-        # Z-coverage should equal n_rows × row_size / magnification
-        magnification = geom_spec.sdd_mm[] / geom_spec.sid_mm[]
+        # Z-coverage = n_rows × row_size (both at isocenter)
         computed_z_coverage = det.n_rows[] * det.row_size_mm[]
         @test computed_z_coverage ≈ 160.0 atol=0.01  # 256 × 0.625 = 160 mm
 
         # Test: Fan angle coverage
-        # At isocenter, detector width / 2 / SID gives half fan angle
-        detector_width_at_det = det.n_cols[] * det.col_size_mm[]
-        detector_width_at_iso = detector_width_at_det / magnification
+        # col_size_mm is at isocenter, so n_cols × col_size = width at isocenter
+        detector_width_at_iso = det.n_cols[] * det.col_size_mm[]
         half_fan_angle_rad = atan(detector_width_at_iso / 2 / geom_spec.sid_mm[])
         half_fan_angle_deg = rad2deg(half_fan_angle_rad)
         # GE Revolution has ~25° half fan angle for 500mm SFOV
@@ -817,10 +818,8 @@ end
             computed_z_coverage = det.n_rows[] * det.row_size_mm[]
             @test computed_z_coverage ≈ det.z_coverage_mm[] atol=0.01
 
-            # Fan angle coverage
-            magnification = geom_spec.sdd_mm[] / geom_spec.sid_mm[]
-            detector_width_at_det = det.n_cols[] * det.col_size_mm[]
-            detector_width_at_iso = detector_width_at_det / magnification
+            # Fan angle coverage (col_size_mm is at isocenter)
+            detector_width_at_iso = det.n_cols[] * det.col_size_mm[]
             half_fan_angle_rad = atan(detector_width_at_iso / 2 / geom_spec.sid_mm[])
             half_fan_angle_deg = rad2deg(half_fan_angle_rad)
             # Should have sufficient coverage for 50cm SFOV
@@ -6621,9 +6620,9 @@ end
             @test scanner.source_to_isocenter ≈ 595.0
             @test scanner.source_to_detector ≈ 1085.5
             @test scanner.detector_rows == 144
-            @test scanner.detector_cols == 736
-            @test scanner.detector_row_size ≈ 0.5
-            @test scanner.detector_col_size ≈ 0.5
+            @test scanner.detector_cols == 1250
+            @test scanner.detector_row_size ≈ 0.4
+            @test scanner.detector_col_size ≈ 0.4
             @test scanner.detector_shape == CURVED_DETECTOR
             @test scanner.gantry_rotation_time ≈ 0.25
             @test scanner.detector_material == :cdte
@@ -6642,8 +6641,8 @@ end
             scanner = create_naeotom_alpha(mode=:uhr)
             @test is_pcct(scanner) == true
             @test scanner.detector_rows == 120
-            @test scanner.detector_row_size ≈ 0.25
-            @test scanner.detector_col_size ≈ 0.25
+            @test scanner.detector_row_size ≈ 0.2
+            @test scanner.detector_col_size ≈ 0.2
             @test scanner.pixel_mode == :uhr
             # Other PCCT fields same as standard
             @test scanner.n_energy_bins == 4
@@ -6660,7 +6659,9 @@ end
             @test detector isa PhotonCountingDetector
             @test detector.material == CDTE_MATERIAL
             @test detector.thickness_mm ≈ 1.6
-            @test detector.pixel_size_mm == (0.5, 0.5)
+            naeotom_mag = 1085.5 / 595.0
+            @test detector.pixel_size_mm[1] ≈ 0.4 * naeotom_mag atol=0.001
+            @test detector.pixel_size_mm[2] ≈ 0.4 * naeotom_mag atol=0.001
             @test detector.energy_thresholds_keV == [20.0, 35.0, 55.0, 70.0]
             @test detector.energy_resolution_keV ≈ 10.0
             @test detector.charge_sharing_fwhm_mm ≈ 0.08
@@ -6711,7 +6712,7 @@ end
             geom = CTGeometry(pcct_scanner; n_angles=90, fov_cm=25.0)
             @test geom.n_angles == 90
             @test geom.n_rows == 144
-            @test geom.n_cols == 736
+            @test geom.n_cols == 1250
             @test geom.SAD ≈ 59.5  # 595mm → 59.5cm
             @test geom.SDD ≈ 108.55  # 1085.5mm → 108.55cm
         end

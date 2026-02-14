@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.20.21
+# v0.20.13
 
 using Markdown
 using InteractiveUtils
@@ -88,10 +88,10 @@ SIM_CONFIG = (
 	# NAEOTOM Alpha geometry — VERIFIED (Konrad 2025, FDA K201501)
 	sid = 595.0,
 	sdd = 1085.5,
-	detectorColCount = 2280,    # 50cm FOV coverage
+	detectorColCount = ceil(Int, 500.0 / 0.4),  # 1250 cols for 50cm FOV at isocenter
 	detectorRowCount = 64,      # subset for speed
-	detectorColSize = 0.4,      # mm at detector face (2×2 binned)
-	detectorRowSize = 0.4,      # mm
+	detectorColSize = 0.4,      # mm at isocenter (2×2 binned from 0.2mm native)
+	detectorRowSize = 0.4,      # mm at isocenter
 
 	viewsPerRotation = 984,
 	rotationTime = 0.25,        # fast gantry
@@ -109,8 +109,7 @@ naeotom = BS.Scanner(
 	detector_cols = SIM_CONFIG.detectorColCount,
 	detector_row_size = SIM_CONFIG.detectorRowSize,
 
-	# detector_col_size is the element pitch at the detector face (mm).
-	# CTGeometry internally projects to isocenter via magnification.
+	# detector_col_size is the element pitch at isocenter (mm).
 	detector_col_size = SIM_CONFIG.detectorColSize,
 
 	detector_shape = BS.CURVED_DETECTOR,
@@ -513,6 +512,7 @@ recon_opts_pcct = BS.ReconOptions(
 	algorithm = :fdk,
 	matrix_size = (SIM_CONFIG.imageSize, SIM_CONFIG.imageSize, SIM_CONFIG.sliceCount),
 	fov_cm = SIM_CONFIG.fov_mm / 10.0,
+	filter = :standard,
 	vmi_energies = [40.0, 70.0, 100.0, 140.0],
 	vmi_basis = [:water, :iodine, :calcium]
 )

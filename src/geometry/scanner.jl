@@ -419,15 +419,15 @@ function validate_scanner(scanner::Scanner{T}) where T
     end
 
     # FOV consistency warning
-    # Detector coverage at isocenter = detector_cols * detector_col_size * (SID/SDD)
-    magnification = scanner.source_to_detector / scanner.source_to_isocenter
-    detector_coverage_at_iso = scanner.detector_cols * scanner.detector_col_size / magnification
+    # detector_col_size is already at isocenter (mm)
+    detector_coverage_at_iso = scanner.detector_cols * scanner.detector_col_size
     if scanner.max_scan_fov > detector_coverage_at_iso
         push!(messages, "WARNING: max_scan_fov ($(scanner.max_scan_fov) mm) exceeds detector coverage at isocenter ($(round(detector_coverage_at_iso, digits=1)) mm)")
     end
 
-    # Z coverage
-    z_coverage = scanner.detector_rows * scanner.detector_row_size / magnification
+    # Z coverage (detector_row_size is already at isocenter)
+    magnification = scanner.source_to_detector / scanner.source_to_isocenter
+    z_coverage = scanner.detector_rows * scanner.detector_row_size
     if z_coverage > 0
         push!(messages, "INFO: Z coverage at isocenter: $(round(z_coverage, digits=1)) mm")
     end
@@ -459,7 +459,7 @@ function print_scanner_summary(scanner::Scanner{T}) where T
     println("  Array Size:           $(scanner.detector_cols) × $(scanner.detector_rows)")
     println("  Element Size:         $(scanner.detector_col_size) × $(scanner.detector_row_size) mm")
     println("  Offset (col, row):    $(scanner.detector_col_offset), $(scanner.detector_row_offset)")
-    z_coverage = scanner.detector_rows * scanner.detector_row_size / magnification
+    z_coverage = scanner.detector_rows * scanner.detector_row_size
     println("  Z Coverage (iso):     $(round(z_coverage, digits=1)) mm")
     println("  Material:             $(scanner.detector_material)")
     println("  Depth:                $(scanner.detector_depth) mm")
@@ -579,10 +579,9 @@ function CTGeometry(scanner::Scanner{T};
     SAD = scanner.source_to_isocenter / 10.0
     SDD = scanner.source_to_detector / 10.0
 
-    # Pixel size at isocenter (detector pitch projected through magnification)
-    magnification = scanner.source_to_detector / scanner.source_to_isocenter
-    pixel_size = (scanner.detector_col_size / 10.0) / magnification
-    pixel_row_size = (scanner.detector_row_size / 10.0) / magnification
+    # Pixel size at isocenter (detector sizes are already at isocenter, just convert mm→cm)
+    pixel_size = scanner.detector_col_size / 10.0
+    pixel_row_size = scanner.detector_row_size / 10.0
 
     # FOV is independent: it controls the reconstruction grid, not the detector geometry
     if fov_cm !== nothing
@@ -596,9 +595,8 @@ function CTGeometry(scanner::Scanner{T};
     if z_cm !== nothing
         fov_z = z_cm
     else
-        # Compute from detector coverage at isocenter
-        magnification = scanner.source_to_detector / scanner.source_to_isocenter
-        z_coverage_mm = scanner.detector_rows * scanner.detector_row_size / magnification
+        # Compute from detector coverage at isocenter (detector_row_size is already at isocenter)
+        z_coverage_mm = scanner.detector_rows * scanner.detector_row_size
         fov_z = z_coverage_mm / 10.0  # Convert to cm
     end
 
@@ -806,16 +804,15 @@ scanner_uhr.detector_row_size  # 0.2 mm (vs 0.4 mm standard)
 """
 function create_naeotom_alpha(; mode::Symbol=:standard)
     # NAEOTOM Alpha has 50cm scan FOV at isocenter
-    # Magnification = 1085.5/595 = 1.824
-    # Detector width for 50cm FOV = 500mm × 1.824 = 912mm
+    # Pixel sizes are at isocenter (clinical convention)
     if mode == :uhr
-        pixel_size = 0.2    # Native unbinned (120 × 0.2 mm collimation)
+        pixel_size = 0.2    # Native unbinned at isocenter (120 × 0.2 mm collimation)
         n_rows = 120
-        n_cols = 4560       # 912mm / 0.2mm = 4560 cols for 50cm FOV
+        n_cols = ceil(Int, 500.0 / 0.2)   # 2500 cols for 50cm FOV at isocenter
     elseif mode == :standard
-        pixel_size = 0.4    # 2×2 binned (144 × 0.4 mm collimation)
+        pixel_size = 0.4    # 2×2 binned at isocenter (144 × 0.4 mm collimation)
         n_rows = 144
-        n_cols = 2280       # 912mm / 0.4mm = 2280 cols for 50cm FOV
+        n_cols = ceil(Int, 500.0 / 0.4)   # 1250 cols for 50cm FOV at isocenter
     else
         error("mode must be :standard or :uhr (got :$mode)")
     end
@@ -881,10 +878,12 @@ function _build_pcct_detector(scanner::Scanner{T}) where T
     # Map detector_material Symbol to DetectorMaterialPCCT enum
     material = _infer_pcct_material(scanner.detector_material)
 
+    # Convert isocenter pixel sizes to detector-face sizes for PCCT physics
+    magnification = scanner.source_to_detector / scanner.source_to_isocenter
     return PhotonCountingDetector(
         material = material,
         thickness_mm = scanner.detector_depth,
-        pixel_size_mm = (scanner.detector_row_size, scanner.detector_col_size),
+        pixel_size_mm = (scanner.detector_row_size * magnification, scanner.detector_col_size * magnification),
         energy_thresholds_keV = Float64.(scanner.energy_thresholds),
         energy_resolution_keV = scanner.energy_resolution,
         charge_sharing_fwhm_mm = scanner.charge_sharing_fwhm,

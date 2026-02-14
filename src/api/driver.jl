@@ -1430,7 +1430,7 @@ export build_physics_config
 export reconstruct!
 
 """
-    reconstruct!(ws::FDKReconWorkspace, sinogram, geom, volume_size; filter=RampFilter(), cutoff=1.0)
+    reconstruct!(ws::FDKReconWorkspace, sinogram, geom, volume_size; filter=StandardFilter(), cutoff=1.0)
 
 Zero-allocation FDK reconstruction using pre-allocated workspace buffers.
 
@@ -1441,7 +1441,7 @@ function reconstruct!(
     sinogram::AbstractArray{T, 3},
     geom::CTGeometry,
     volume_size::NTuple{3, Int};
-    filter::FilterType = RampFilter(),
+    filter::FilterType = StandardFilter(),
     cutoff::Float64 = 1.0
 ) where T <: AbstractFloat
 
@@ -1488,7 +1488,7 @@ function _copy_subset_into_buffer!(
 end
 
 """
-    reconstruct!(ws::HIRReconWorkspace, sinogram, geom, volume_size; filter=RampFilter(), cutoff=1.0)
+    reconstruct!(ws::HIRReconWorkspace, sinogram, geom, volume_size; filter=StandardFilter(), cutoff=1.0)
 
 Zero-allocation Hybrid IR reconstruction using pre-allocated workspace buffers.
 
@@ -1503,7 +1503,7 @@ function reconstruct!(
     sinogram::AbstractArray{T, 3},
     geom::CTGeometry,
     volume_size::NTuple{3, Int};
-    filter::FilterType = RampFilter(),
+    filter::FilterType = StandardFilter(),
     cutoff::Float64 = 1.0
 ) where T <: AbstractFloat
 

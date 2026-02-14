@@ -717,7 +717,7 @@ function reconstruct_vmi(
     to_hu::Bool=true,
     water_mask=nothing,
     niter::Int=3,
-    filter::FilterType=RampFilter(),
+    filter::FilterType=StandardFilter(),
     cutoff::Float64=1.0
 ) where {T, A}
 
