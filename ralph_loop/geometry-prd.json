@@ -41,7 +41,7 @@
       "id": "GEO-002",
       "title": "AUDIT: grep ALL detector_row_size/detector_col_size usage in src/",
       "priority": 0,
-      "status": "open",
+      "status": "done",
       "type": "AUDIT",
       "description": "Same as GEO-001 but for Scanner-level fields. The Scanner struct has:\n- detector_row_size: mm at isocenter, z-direction\n- detector_col_size: mm at isocenter, xy-direction\n\nGrep for ALL uses of detector_row_size and detector_col_size in src/ AND verification/.\nFor each occurrence verify it's used for the correct direction.\n\nAlso check for any uses of detector_size (without row/col qualifier) that might be ambiguous.\n\nKey files to check:\n- geometry/scanner.jl (CTGeometry constructor — known correct)\n- scanners/*.jl (scanner definitions — verify row vs col assignment)\n- api/workspace.jl (workspace creation — may derive geometry)\n- api/driver.jl (simulation — may reference scanner fields)\n- detector/photon_counting.jl (PCCT detector setup)\n\nACCEPTANCE: Complete list with file:line, direction, and verdict.",
       "testCommand": "grep -rn 'detector_row_size\\|detector_col_size\\|detector_size' src/ verification/",
