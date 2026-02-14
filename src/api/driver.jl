@@ -278,7 +278,8 @@ function _simulate_axial_single(phantom, scanner, protocol, sim_opts, recon_opts
     sino_ideal = forward_project(
         mask_gpu, geom;
         energies=energies, weights=weights,
-        materials=mats, physics=config
+        materials=mats, physics=config,
+        volume_fov=phantom.fov
     )
 
     # 5. Apply Detector Noise
@@ -347,7 +348,8 @@ function _forward_single_pass(phantom, scanner, protocol, sim_opts, geom;
     sinogram = forward_project(
         mask_gpu, geom;
         energies=energies, weights=weights,
-        materials=mats, physics=config
+        materials=mats, physics=config,
+        volume_fov=phantom.fov
     )
 
     return sinogram, config
