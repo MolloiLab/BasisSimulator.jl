@@ -729,6 +729,41 @@ cupping pattern.
 **Fix Required:** Compute PCCT BHC using effective weights `w_eff = w × η × Σ_b R[E,b]`
 instead of raw spectrum weights. This should eliminate the ~30 HU cupping difference.
 
+**Fix Applied (workspace.jl, after R_mat computation):**
+```julia
+R_row_sums = vec(sum(R_mat; dims=2))
+w_eff = weights_vec .* η_vec .* R_row_sums
+pcct_bhc = calibrate_bhc(energies, w_eff; order=5, reference_energy_keV=ref_energy)
+```
+
+BHC coefficients comparison (140 kVp PCCT):
+- Raw spectrum: a₁=0.907
+- R-matrix effective: a₁=0.938 (harder spectrum → less correction needed)
+
+**Test results (Gammex 472, noiseless):**
+
+| Metric | Before R-fix | After R-fix |
+|--------|-------------|-------------|
+| EICT cupping | +46.2 HU | +46.2 HU (unchanged) |
+| PCCT cupping | +16.7 HU | +16.0 HU |
+| Cupping diff | 29.5 HU | 30.2 HU |
+
+The R-matrix correction has MINIMAL impact on the Gammex phantom (~0.7 HU).
+The ~30 HU difference is dominated by the kVp difference (120 vs 140), not
+the R-matrix spectral filtering. For the XCAT phantom with mixed materials,
+the R-matrix effect may be slightly larger but is unlikely to be the dominant
+source of the observed artifact.
+
+**Revised understanding:** The PCCT cupping artifact visible in NB05 is likely
+caused by the combination of:
+1. Different spectra (120 vs 140 kVp) → different BHC behavior (now calibrated)
+2. Full DRM effects (charge sharing, pileup) at fidelity=:high → position-dependent bias
+3. Water calibration absorbs most BHC errors but not DRM-related errors
+
+The BHC fixes (XCAT-009 + R-matrix calibration) provide the correct theoretical
+foundation. The remaining cupping will need to be evaluated on the actual XCAT
+phantom with full physics (XCAT-012).
+
 ---
 
 ### 2026-02-14: XCAT-009 — FIX: Replace bhc_water_default() with calibrate_bhc() [DONE]
