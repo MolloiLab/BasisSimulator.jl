@@ -657,6 +657,11 @@ cylinder avoids this issue.
 
 **Recommendation:** Fix z_cm for correctness but this is cosmetic, not functional. Low priority.
 
+**Fix Applied (NB05 notebook):** Split `water_recon_opts` into `water_recon_opts_eict` and
+`water_recon_opts_pcct`, each computing z_cm from the scanner's `detector_row_size`:
+- EICT: `z_cm = 8 * scanner_eict.detector_row_size / 10.0` = 0.5 cm (unchanged)
+- PCCT: `z_cm = 8 * scanner_pcct_standard.detector_row_size / 10.0` = 0.32 cm (corrected)
+
 ---
 
 ### 2026-02-14: XCAT-008 — DIAGNOSTIC: PCCT combined sinogram vs EICT polychromatic [PASS]

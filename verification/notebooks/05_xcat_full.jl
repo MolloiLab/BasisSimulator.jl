@@ -32,7 +32,7 @@ using Unitful: @u_str, ustrip
 
 # ╔═╡ 00000001-0000-0000-0000-000000000001
 md"""
-# Notebook 06: Full XCAT Simulation — Three Scanner Comparison
+# Notebook 05: Full XCAT Simulation — Three Scanner Comparison
 
 This notebook demonstrates a complete clinical CT simulation workflow using the XCAT phantom:
 
@@ -777,12 +777,19 @@ begin
 end
 
 # ╔═╡ 808b0a9b-a3ff-4fad-88f9-3bc2b1df543c
-# Small recon for calibration
-water_recon_opts = BS.ReconOptions(
+# Small recon for calibration — per-scanner z_cm from native row pitch
+water_recon_opts_eict = BS.ReconOptions(
 	algorithm = :fdk,
 	matrix_size = (256, 256, 8),
 	fov_cm = 25.0,
-	z_cm = 8 * 0.625 / 10.0,  # match scanner slice thickness
+	z_cm = 8 * scanner_eict.detector_row_size / 10.0,  # GE: 8×0.625mm = 0.5cm
+	filter = :standard
+)
+water_recon_opts_pcct = BS.ReconOptions(
+	algorithm = :fdk,
+	matrix_size = (256, 256, 8),
+	fov_cm = 25.0,
+	z_cm = 8 * scanner_pcct_standard.detector_row_size / 10.0,  # NAEOTOM: 8×0.4mm = 0.32cm
 	filter = :standard
 )
 
@@ -820,18 +827,18 @@ end
 μ_water_eict = let
 	ws = BS.create_eict_workspace(
 		scanner_eict, protocol_eict_single,
-		sim_opts_eict, water_recon_opts, water_phantom_gpu
+		sim_opts_eict, water_recon_opts_eict, water_phantom_gpu
 	)
 	BS.simulate!(
 		ws, water_phantom_gpu, scanner_eict,
-		protocol_eict_single, sim_opts_eict, water_recon_opts
+		protocol_eict_single, sim_opts_eict, water_recon_opts_eict
 	)
 	ws_fdk = BS.create_fdk_recon_workspace(
-		ws.sino_noisy_out, ws.geom, water_recon_opts.matrix_size,
+		ws.sino_noisy_out, ws.geom, water_recon_opts_eict.matrix_size,
 		filter=BS.StandardFilter()
 	)
 	vol = Array(BS.reconstruct!(
-		ws_fdk, ws.sino_noisy_out, ws.geom, water_recon_opts.matrix_size
+		ws_fdk, ws.sino_noisy_out, ws.geom, water_recon_opts_eict.matrix_size
 	))
 	
 	result = extract_water_mu(vol)
@@ -850,25 +857,25 @@ end
 (μ_water_dual_low, μ_water_dual_high) = let
 	ws = BS.create_eict_dual_workspace(
 		scanner_eict, protocol_eict_dual,
-		sim_opts_eict, water_recon_opts, water_phantom_gpu
+		sim_opts_eict, water_recon_opts_eict, water_phantom_gpu
 	)
 	BS.simulate!(
 		ws, water_phantom_gpu, scanner_eict,
-		protocol_eict_dual, sim_opts_eict, water_recon_opts
+		protocol_eict_dual, sim_opts_eict, water_recon_opts_eict
 	)
 	# Low-kVp (80 kVp)
 	ws_fdk_low = BS.create_fdk_recon_workspace(
-		ws.sino_noisy_out_low, ws.geom, water_recon_opts.matrix_size
+		ws.sino_noisy_out_low, ws.geom, water_recon_opts_eict.matrix_size
 	)
 	vol_low = Array(BS.reconstruct!(
-		ws_fdk_low, ws.sino_noisy_out_low, ws.geom, water_recon_opts.matrix_size
+		ws_fdk_low, ws.sino_noisy_out_low, ws.geom, water_recon_opts_eict.matrix_size
 	))
 	# High-kVp (140 kVp)
 	ws_fdk_high = BS.create_fdk_recon_workspace(
-		ws.sino_noisy_out_high, ws.geom, water_recon_opts.matrix_size
+		ws.sino_noisy_out_high, ws.geom, water_recon_opts_eict.matrix_size
 	)
 	vol_high = Array(BS.reconstruct!(
-		ws_fdk_high, ws.sino_noisy_out_high, ws.geom, water_recon_opts.matrix_size
+		ws_fdk_high, ws.sino_noisy_out_high, ws.geom, water_recon_opts_eict.matrix_size
 	))
 
 	result = (extract_water_mu(vol_low), extract_water_mu(vol_high))
@@ -888,17 +895,17 @@ end
 μ_water_pcct = let
 	ws = BS.create_workspace(
 		scanner_pcct_standard, protocol_pcct_standard,
-		sim_opts_pcct, water_recon_opts, water_phantom_gpu
+		sim_opts_pcct, water_recon_opts_pcct, water_phantom_gpu
 	)
 	BS.simulate!(
 		ws, water_phantom_gpu, scanner_pcct_standard,
-		protocol_pcct_standard, sim_opts_pcct, water_recon_opts
+		protocol_pcct_standard, sim_opts_pcct, water_recon_opts_pcct
 	)
 	ws_fdk = BS.create_fdk_recon_workspace(
-		ws.sino_noisy_out, ws.geom, water_recon_opts.matrix_size
+		ws.sino_noisy_out, ws.geom, water_recon_opts_pcct.matrix_size
 	)
 	vol = Array(BS.reconstruct!(
-		ws_fdk, ws.sino_noisy_out, ws.geom, water_recon_opts.matrix_size
+		ws_fdk, ws.sino_noisy_out, ws.geom, water_recon_opts_pcct.matrix_size
 	))
 	nx, ny, nz = size(vol)
 	cx, cy = nx ÷ 2, ny ÷ 2
@@ -1198,7 +1205,7 @@ let
 	fig = plot_scanner_comparison(
 		[recon_eict_fdk_hu, recon_dual_80kVp_fdk_hu, recon_dual_140kVp_fdk_hu, recon_pcct_fdk_hu],
 		["EICT 120 kVp\n(FDK)", "Dual 80 kVp\n(FDK)", "Dual 140 kVp\n(FDK)", "PCCT Standard\n(FDK)"];
-		slice_idx=32
+		slice_idx=40
 	)
 	CM.save(joinpath(FIGURES_DIR, "nb05_scanner_comparison.png"), fig)
 	fig
@@ -1557,7 +1564,7 @@ end
 # ╠═00000023-0000-0000-0000-000000000001
 # ╟─00000024-0000-0000-0000-000000000001
 # ╟─00000024-0000-0000-0000-000000000002
-# ╟─00000024-0000-0000-0000-000000000003
+# ╠═00000024-0000-0000-0000-000000000003
 # ╟─00000024-0000-0000-0000-000000000004
 # ╟─c0d1e2f3-a4b5-6789-abcd-000000000001
 # ╟─c0d1e2f3-a4b5-6789-abcd-000000000002

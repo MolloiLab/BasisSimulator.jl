@@ -117,7 +117,7 @@
       "id": "XCAT-010",
       "title": "FIX: Correct water calibration z_cm for PCCT scanner",
       "priority": 1,
-      "status": "open",
+      "status": "done",
       "type": "FIX",
       "description": "In NB05, water_recon_opts uses:\n  z_cm = 8 * 0.625 / 10.0 = 0.5 cm  (GE pitch)\n\nFor PCCT, this should be:\n  z_cm = 8 * 0.4 / 10.0 = 0.32 cm  (NAEOTOM pitch)\n\nFix options:\n1. Create separate water_recon_opts per scanner\n2. Compute z_cm from the scanner's detector_row_size\n\nNote: This may have minimal impact on μ_water accuracy (uniform cylinder), but it's incorrect in principle and could affect future non-uniform calibration phantoms.\n\nAlso fix the slice position documentation — explain that same slice index shows different anatomy due to different z-coverage.\n\nACCEPTANCE: Each scanner uses correct z_cm for water calibration. Document the z-coverage difference.",
       "testCommand": "Update NB05 water calibration, verify μ_water values are consistent",
