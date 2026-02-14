@@ -552,3 +552,17 @@ When explicitly set, z_cm should equal `n_recon_slices × row_pitch / 10` so the
 **Notes:**
 1. NB03 and NB04 have phantoms with z_cm much larger than detector z-coverage. This wastes memory but is not incorrect — the projector only captures what the detector sees.
 2. NB01/NB02 use `sliceCount × sliceThickness / 10` which is ~1% less than detector z-coverage due to `floor()` rounding. Negligible.
+
+### 2026-02-14: GEO-005 — WIP
+
+**Agent:** Deep audit of PCCT-specific geometry in photon_counting.jl and pcct/*.jl
+**Method:** `grep -rn 'pixel_size\|pixel_pitch\|pixel_row\|pixel_col' src/detector/photon_counting.jl src/detector/pcct/`
+
+**Plan:**
+1. photon_counting.jl: Verify PhotonCountingDetector struct, pcct_forward_project(), compute_spectral_response_matrix()
+2. pcct/charge_transport.jl: Koch-Mehrin ODE model pixel pitch usage
+3. pcct/charge_collection.jl: Hecht CCE, small_pixel_weighting()
+4. pcct/k_fluorescence.jl: Fluorescence escape pixel geometry
+5. pcct/pileup_model.jl: Count rate per pixel, pixel area calculation
+6. pcct/detector_response.jl: Unified DRM pixel_size_mm usage
+7. pcct/cdte_constants.jl: Any pixel geometry references
