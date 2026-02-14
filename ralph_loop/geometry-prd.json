@@ -81,7 +81,7 @@
       "id": "GEO-006",
       "title": "AUDIT: Check iterative recon (SIRT, CGLS, MBIR, Hybrid IR) z-geometry",
       "priority": 1,
-      "status": "open",
+      "status": "in-progress",
       "type": "AUDIT",
       "description": "Iterative reconstruction methods forward-project the RECONSTRUCTION volume (not the phantom), so they should use geom.fov (recon FOV), NOT phantom.fov. Verify:\n\n1. **sirt.jl**: SIRT forward projection calls — uses siddon with what FOV?\n2. **cgls.jl**: CGLS forward/backward projection — uses siddon with what FOV?\n3. **hybrid_ir.jl**: PWLS refinement — forward projection uses what FOV?\n4. **mbir.jl**: Model-based IR — forward projection uses what FOV?\n5. **statistical_ir.jl**: PWLS core — forward projection uses what FOV?\n\nAll of these should NOT pass volume_fov (letting siddon default to geom.fov for the recon volume). If any pass phantom.fov, that's wrong — they'd be projecting a recon-sized volume but treating it as phantom-sized.\n\nAlso verify:\n- Do these use pixel_row_size correctly for z-direction?\n- Is the volume_size parameter consistent with z_cm?\n\nACCEPTANCE: All iterative recon paths verified. Any volume_fov misuse or z-direction issues flagged.",
       "testCommand": "grep -rn 'siddon\\|forward_project\\|volume_fov' src/reconstruction/ir/ src/reconstruction/hybrid_ir/ src/reconstruction/mbir/",
