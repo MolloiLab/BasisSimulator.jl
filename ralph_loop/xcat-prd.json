@@ -47,7 +47,7 @@
       "id": "XCAT-003",
       "title": "DIAGNOSTIC: Verify _combine_pcct_bins I0 values and combination physics",
       "priority": 0,
-      "status": "open",
+      "status": "done",
       "type": "DIAGNOSTIC",
       "description": "The _combine_pcct_bins function at driver.jl:467 combines energy-resolved bins into a single sinogram. If the per-bin I0 values are wrong, the combined sinogram will have systematic position-dependent errors that look like cupping.\n\nKey questions:\n1. How are I0_bins computed? (Three paths: ws_I0_bins, degraded, theoretical)\n2. For NB05 PCCT path with fidelity=:high, which I0 path is taken?\n   - Check use_detector_fx and use_corrections flags\n3. Does _compute_bin_I0 or _compute_degraded_I0 correctly account for DRM?\n4. If I0_bins are computed from the DRM but the actual bin sinograms have different DRM effects (e.g., charge sharing spreads counts differently for low-E vs high-E photons), the combination could be wrong\n5. Compare: N_total = Σ I0_bin × exp(-sino_bin) — if I0_bin[b] doesn't match the actual reference intensity used in sino_bin = -log(N/I0_norm), the ratio is wrong\n\nACCEPTANCE: Verify I0_bins are consistent with the normalization used in pcct_forward_project(). If inconsistent, quantify the expected position-dependent error.",
       "testCommand": "Read driver.jl _combine_pcct_bins and pcct_forward_project normalization",

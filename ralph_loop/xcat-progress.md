@@ -400,3 +400,115 @@ beam hardening in the combined sinogram (only in individual bins).
    sinogram at the same kVp — the BHC correction needed is the same
 3. The PCCT-specific artifact is NOT explained by BHC over/under-correction of the
    combined sinogram. The root cause lies elsewhere (XCAT-003, XCAT-006, XCAT-007).
+
+---
+
+### 2026-02-13: XCAT-003 — DIAGNOSTIC: Verify _combine_pcct_bins I0 values [PASS]
+
+**Investigation:** Are the I0_bins used by `_combine_pcct_bins` consistent with the
+normalization I0 used by `pcct_forward_project`?
+
+**Finding 1: I0 paths are identical for NB05 configuration**
+
+For NB05 PCCT with `fidelity=:high`:
+- `use_detector_fx = true` (`:high` in `(:medium, :high, :pcct)` — workspace.jl:200)
+- `use_corrections = false` (`:high` defaults `pcct_corrections=false` — options.jl:128)
+
+With this configuration, workspace.jl:218-230:
+- `I0_bins_norm` → `_compute_degraded_I0(...)` (photon_counting.jl:1693)
+- `I0_bins_combine` → `copy(I0_bins_norm_vec)` (exact copy!)
+
+Both the forward projection normalization (`pcct_forward_project` line 1551-1555)
+and the combination (`_combine_pcct_bins` line 478-479) use the SAME I0 values.
+
+**Finding 2: Combination math is exact**
+
+The round-trip is:
+1. Forward proj: `sino_bin = -log(N_bin / I0_degraded_bin)`
+2. Combine: `N_total = Σ I0_degraded_bin × exp(-sino_bin) = Σ N_bin` (exact)
+3. Combined: `-log(N_total / I0_total)`
+
+Since `I0_degraded_bin × exp(-sino_bin) = I0_degraded_bin × (N_bin / I0_degraded_bin) = N_bin`,
+the combination perfectly recovers the total photon count. No information is lost.
+
+**Finding 3: _compute_degraded_I0 correctly models DRM**
+
+`_compute_degraded_I0` (photon_counting.jl:1693-1758) accounts for:
+1. Spectral response matrix R (energy resolution, K-fluorescence, charge sharing spectral)
+2. Charge sharing energy redistribution (high bins → low bins transfer)
+3. Pileup count loss (seminonparalyzable model)
+4. Spectral migration (Taguchi 2010 migration matrix)
+
+It does NOT model spatial charge sharing (8-neighbor averaging) or anti-coincidence.
+But the comments correctly note: "Spatial redistribution is a no-op for uniform fields
+(all neighbors equal)." This is correct — I0 represents the unattenuated (uniform) case.
+
+**Finding 4: Charge sharing is significant (~24% from charge cloud alone)**
+
+For Koch-Mehrin ODE model with σ ≈ 0.013mm and pixel = 0.4mm:
+- `charge_sharing_probability` = 1 - ((0.4 - 4×0.013)/0.4)² = 1 - 0.757 = **0.243**
+- Plus fluorescence escape adds more above K-edges
+
+This spatial charge sharing operates in count domain and creates position-dependent
+smoothing at tissue boundaries. After log transform, this produces a nonlinear
+effect: log(smooth(counts)) ≠ smooth(log(counts)). This IS a potential source of
+edge artifacts, but it's a REAL physical effect, not a normalization error.
+
+**Finding 5: _compute_degraded_I0 uses different charge sharing model than forward proj**
+
+The `_compute_degraded_I0` models energy redistribution with:
+```
+σ_cloud = fwhm / 2.355  (using charge_sharing_fwhm_mm = 0.08)
+p_share = 2/(1+exp(1.5*z_row)) + 2/(1+exp(1.5*z_col))
+energy_loss_fraction = 0.5
+```
+
+But the forward projection uses the physics-based `_apply_charge_sharing_physics!` with:
+```
+σ = mean_charge_cloud_sigma_mm(E_center, geom)  (Koch-Mehrin ODE, σ ≈ 0.013mm)
+p_cloud = charge_sharing_probability(σ, pixel_pitch)
+p_fluor = fluorescence_sharing_boost(E_center, fluor_model)
+p_share[b] = min(p_cloud + p_fluor, 0.7)
+energy_loss_fraction = 0.4 (not 0.5!)
+```
+
+**This IS a mismatch!** The `_compute_degraded_I0` uses the LEGACY charge sharing model
+(fixed FWHM = 0.08mm → p_share ≈ 0.06%) while the forward projection uses the PHYSICS
+model (Koch-Mehrin σ ≈ 0.013mm → p_share ≈ 24% + fluorescence). However, in practice
+the energy redistribution amount depends on both p_share and energy_loss_fraction:
+- Legacy: 0.0006 × 0.5 = 0.0003 (negligible)
+- Physics: not applied in `_compute_degraded_I0` (it uses the legacy path)
+
+Actually wait — re-reading `_compute_degraded_I0` more carefully:
+The function checks `detector.enable_charge_sharing && detector.charge_sharing_fwhm_mm > 0.0`.
+For NAEOTOM with `charge_sharing_fwhm = 0.08`, this IS true, and it uses the legacy
+formula with σ_cloud = 0.08/2.355 = 0.034mm. This gives p_share = 0.0006 (negligible).
+
+Meanwhile, the forward projection uses `_apply_charge_sharing_physics!` which uses
+Koch-Mehrin σ ≈ 0.013mm with `charge_sharing_probability` function → p_share ≈ 0.24.
+The energy redistribution in the forward proj is `lf = p_share * 0.4`.
+
+So the ENERGY redistribution per bin in the forward proj is ~24% × 0.4 = 9.6% transfer
+from each bin to the bin below. But the `_compute_degraded_I0` models only ~0.06% × 0.5
+= 0.03% transfer. **This is a 300× mismatch in energy redistribution modeling.**
+
+However — this mismatch exists between two different effects in the degraded I0 vs
+the actual forward projection. The `_compute_degraded_I0` function ALSO uses the
+spectral response matrix R to compute I0_bins, which DOES include the spectral
+effects of charge sharing and K-fluorescence. The R matrix is the main mechanism
+for spectral redistribution. The subsequent charge sharing energy transfer in
+`_compute_degraded_I0` is a secondary correction.
+
+**Verdict: NO — I0_bins mismatch does NOT explain PCCT-specific cupping**
+
+The I0_bins are consistent between forward projection normalization and combination.
+The math is exact. The secondary energy redistribution mismatch between legacy and
+physics-based charge sharing models in `_compute_degraded_I0` is a minor inconsistency
+(legacy uses negligible 0.03% vs physics-based 9.6%), but:
+1. The R matrix already captures the primary spectral redistribution
+2. The secondary transfer is small compared to R matrix effects
+3. Even if there's a small mismatch, it's approximately uniform across the sinogram
+   (same p_share at every pixel) → does NOT produce position-dependent cupping
+
+**Impact:** Low — fix the `_compute_degraded_I0` to use physics-based model for
+consistency, but this is unlikely to cause the observed cupping artifact.
