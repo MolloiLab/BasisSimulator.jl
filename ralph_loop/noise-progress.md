@@ -14,7 +14,7 @@
 | NOISE-004 | done | NO — Reconstruction values correct, normalization verified | ~1.0x |
 | NOISE-005 | done | NO — parameters mostly match; discrepancies are minor and non-causal | ~1.0x |
 | NOISE-006 | done | Noise isolation: σ=93 HU noise-only, 124 HU full-physics, 61 HU water-only | baseline |
-| NOISE-007 | open | — | — |
+| NOISE-007 | done | NO — Blur not applied in notebook path; CatSim has no curved-detector blur | ~1.0x |
 | NOISE-008 | done | NO — Filter noise gains match (FFT = spatial, ratio 0.934) | ~1.0x |
 | NOISE-009 | **done** | **ROOT CAUSE: CatSim uses 'standard' windowed kernel, we use Ram-Lak** | **~2.1x** |
 | NOISE-010 | open | — | — |
@@ -602,3 +602,108 @@ Also noteworthy: CatSim default fill factor = 0.9 × 0.9 = 0.81, while BasisSimu
 3. Disable scatter/crosstalk/lag to match CatSim defaults
 4. Load CatSim's exact bowtie file using `load_catsim_bowtie()`
 5. Use CatSim's fixed μ_water=0.02 mm⁻¹ instead of empirical calibration
+
+### 2026-02-13: NOISE-007 [PASS — Detector blur does NOT contribute to noise discrepancy]
+
+**Investigated:** Whether detector blur (PSF convolution) in `apply_detector_blur!()` amplifies noise or is ordered incorrectly relative to quantum noise.
+
+---
+
+#### Finding 1: Detector blur is NOT applied in notebook 01 path
+
+The notebook 01 simulation path goes through:
+1. `simulate!()` → `_simulate_axial_single()` (driver.jl:258)
+2. `build_physics_config()` sets `noise=nothing` (driver.jl:1310)
+3. `apply_physics_effects!()` — noise section skipped because `config.noise === nothing`
+4. `sim_detect()` (detector_noise.jl:767-785) creates:
+   ```julia
+   model = DetectorModel(0.0, I0, 0.0, nothing)  # blur_fwhm = 0.0!
+   ```
+5. Only `add_quantum_noise!()` is called — NOT `apply_detector_model!()`
+
+Since `blur_fwhm = 0.0`, the early-return guard at line 443 triggers:
+```julia
+if model.blur_fwhm <= 0.0
+    return sinogram  # Blur SKIPPED
+end
+```
+
+**Conclusion: Detector blur is completely inactive in the notebook 01 simulation path. It cannot contribute to any noise discrepancy.**
+
+---
+
+#### Finding 2: CatSim does NOT apply detector blur for curved detectors
+
+CatSim's `Detection_EI.py` (standard curved-array detector pipeline) signal chain:
+```
+1. Detection_Flux → photon flux
+2. Detector efficiency (Wvec)
+3. Electronic crosstalk (optional 3×3 kernel)
+4. Quantum noise (Poisson via randpf)
+5. Energy binning
+6. Lag (optional)
+7. Optical crosstalk (optional 3×3 kernel)
+8. Detection_DAS → gain + electronic noise
+```
+
+**No spatial blur/PSF/MTF convolution** is applied for curved-array clinical detectors.
+
+CatSim's flat-panel detector code (`Detection_DAS_FlatPanel.py`) DOES include a 2D sinc MTF model, but this is only for cone-beam CT / flat-panel systems — not the curved-array geometry used in notebook 01.
+
+---
+
+#### Finding 3: Blur kernel normalization is correct (when used)
+
+The `apply_detector_blur!()` implementation (detector_noise.jl:442-498):
+- Creates a 2D Gaussian kernel with `sigma = blur_fwhm / (2√(2 ln 2))`
+- For FWHM=1.5 pixels: `sigma = 1.5 / 2.355 = 0.637 pixels`
+- Kernel extent: `ceil(3 × 0.637) = 2`, so kernel_size = 5×5
+- **Normalization: `kernel_cpu ./= sum(kernel_cpu)` (line 464)** — kernel sums to EXACTLY 1.0
+- Uses `clamp` boundary conditions (extends edge pixels), which is conservative
+
+**The kernel normalization is correct — it preserves total signal (sum = 1.0). If blur were applied, it would not amplify noise magnitude.**
+
+---
+
+#### Finding 4: Blur ordering analysis (theoretical, since blur is inactive)
+
+The story correctly identifies that the ordering in `apply_detector_model!()` is:
+```
+blur → quantum noise → electronic noise  (line 683-688)
+```
+
+Physically correct ordering would be:
+```
+quantum noise → blur → electronic noise
+```
+
+However, this ordering issue is **moot** because:
+1. `apply_detector_model!()` is never called in the driver/notebook path
+2. CatSim doesn't have detector blur for curved detectors
+3. Even if applied, a normalized (sum=1.0) blur before noise would:
+   - Smooth the sinogram slightly → reduce λ variations between pixels
+   - But λ per pixel remains the same → quantum noise magnitude unchanged
+   - Change NPS shape (spatial correlation) but NOT total noise power
+   - Net effect on σ_HU: negligible (within ~1-2%)
+
+---
+
+#### Answers to Story Questions
+
+1. **Is FWHM=1.5 reasonable?** — Yes, typical range is 1.0-2.0 pixels for GOS scintillators. But CatSim does NOT use detector blur for curved detectors, so this is moot for comparison.
+
+2. **Does CatSim apply detector blur? At what stage?** — NO for curved-array detectors (used in notebook 01). Only flat-panel detectors get a sinc MTF model, applied after electronic noise in `Detection_DAS_FlatPanel.py`.
+
+3. **Does the blur kernel sum to exactly 1.0?** — YES. Line 464: `kernel_cpu ./= sum(kernel_cpu)` ensures exact normalization. No signal amplification.
+
+4. **Should blur be applied in the physics pipeline at all?** — For CatSim comparison, NO. CatSim doesn't include it. For physical accuracy, it could model scintillator light spread, but it's correctly disabled via `blur_fwhm=0.0` in the driver path.
+
+---
+
+#### Verdict: NO — Detector blur does NOT contribute to the noise discrepancy.
+
+- **Blur is completely inactive** in the notebook 01 path (blur_fwhm=0.0 in sim_detect)
+- **CatSim has no equivalent** for curved-array detectors
+- **Kernel normalization is correct** (sum=1.0, no signal amplification)
+- **Ordering concern is moot** since blur is never applied
+- **Impact factor: ~1.0x** (zero contribution to noise discrepancy)
