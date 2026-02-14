@@ -17,7 +17,7 @@
 | NOISE-007 | done | NO — Blur not applied in notebook path; CatSim has no curved-detector blur | ~1.0x |
 | NOISE-008 | done | NO — Filter noise gains match (FFT = spatial, ratio 0.934) | ~1.0x |
 | NOISE-009 | **done** | **ROOT CAUSE: CatSim uses 'standard' windowed kernel, we use Ram-Lak** | **~2.1x** |
-| NOISE-010 | open | — | — |
+| NOISE-010 | **done** | NO — Cosine weighting applied exactly once, correct coordinate system | ~1.0x |
 | NOISE-011 | open | — | — |
 | NOISE-012 | open | — | — |
 | NOISE-013 | **done** | **FIX: StandardFilter implemented — σ=68.89 HU vs CatSim 71.37 HU (3.5% match)** | **FIXED** |
@@ -706,4 +706,104 @@ However, this ordering issue is **moot** because:
 - **CatSim has no equivalent** for curved-array detectors
 - **Kernel normalization is correct** (sum=1.0, no signal amplification)
 - **Ordering concern is moot** since blur is never applied
+- **Impact factor: ~1.0x** (zero contribution to noise discrepancy)
+
+### 2026-02-13: NOISE-010 [PASS — Cosine weighting is correct]
+
+**Investigated:** Is FDK cosine weighting applied exactly once, in the correct coordinate system, with consistent units?
+
+---
+
+#### Finding 1: Cosine weighting is applied EXACTLY ONCE
+
+**Call chain:**
+1. `fdk_reconstruct()` (fdk.jl:332) → `filter_sinogram()` → `filter_sinogram!()` (filtering.jl:403)
+2. `filter_sinogram!()` calls `cosine_weight!(sinogram, geom)` at line 417
+3. Then applies spatial domain ramp filter convolution (lines 445-468)
+4. `backproject!()` (backprojection.jl:296) → `backproject_voxel()` — NO cosine weight here
+
+**Workspace path (driver.jl:1439):**
+1. `reconstruct!(ws, sino, geom, ...)` → `filter_sinogram!(ws.filtered, geom; ...)` (line 1453)
+2. Same `filter_sinogram!` → same single `cosine_weight!` call
+3. Then `backproject!(ws.volume, ws.filtered, geom; weighted=true)` (line 1459) — no cosine weight
+
+**Grep confirmation:** `cosine_weight!` appears only in:
+- filtering.jl:332 (function definition)
+- filtering.jl:417 (the ONE call site inside `filter_sinogram!`)
+
+**Conclusion: Cosine weighting is applied exactly once, before ramp filtering. No duplication.**
+
+---
+
+#### Finding 2: Backprojection weight is DIFFERENT from cosine weight
+
+The backprojection applies `SAD²/dist²` (backprojection.jl:137-138):
+```julia
+dist_sq = sv_x^2 + sv_y^2 + sv_z^2
+weight = SAD_sq / dist_sq
+```
+
+This is the **FDK distance weight** (1/r² correction for cone-beam divergence), NOT cosine weighting. These are two distinct weights in the FDK algorithm:
+- **Cosine weight** (pre-filtering): `D / √(D² + u² + v²)` — corrects for oblique ray path lengths on detector
+- **Distance weight** (backprojection): `D² / (D - s)²` — corrects for cone-beam intensity falloff
+
+In TIGRE's formulation, our implementation matches: cosine before filter, distance in backprojection. The final scaling `π/N_angles` is applied at backprojection.jl:145 (`acc * pi_over_angles`), computed at backprojection.jl:335 (`pi_over_angles = T(π) / T(n_angles)`).
+
+---
+
+#### Finding 3: Units are consistent (all cm)
+
+CTGeometry stores everything in **cm** (scanner.jl:578-584 converts mm→cm):
+- `geom.SAD` = cm (e.g., 54.0 cm for 540mm SID)
+- `geom.SDD` = cm (e.g., 95.0 cm for 950mm SDD)
+- `geom.pixel_size` = cm at isocenter (e.g., 0.0569 cm for 0.569mm)
+- `geom.pixel_row_size` = cm at isocenter
+
+In `cosine_weight!` (filtering.jl:332-374):
+```julia
+SDD = T(geom.SDD)                                     # cm
+magnification = T(geom.SDD / geom.SAD)                # dimensionless
+u = (T(col) - col_center) * pixel_size * magnification # cm × dimensionless = cm
+v = (T(row) - row_center) * pixel_row_size * magnification  # cm
+weight = SDD / sqrt(SDD_sq + u^2 + v^2)               # cm / cm = dimensionless ✓
+```
+
+**All quantities in cm. Units cancel correctly to produce a dimensionless weight ≤ 1.**
+
+---
+
+#### Finding 4: Formula matches TIGRE and textbook FDK
+
+Our formula: `weight = SDD / √(SDD² + u² + v²)`
+
+This is the standard FDK cone-beam cosine weight (Feldkamp et al. 1984, Eq. 5):
+- `p̃(θ,u,v) = p(θ,u,v) × D / √(D² + u² + v²)`
+- Equivalent to `cos(γ)` where γ is the angle between the ray and the central ray
+
+**CatSim difference (minor):** CatSim's `fdk_equiAngle.py` uses equi-angle parameterization, separating fan and cone components:
+- Fan: `cos((Yindex - YCtr) × DeltaUW)` (angular coordinates)
+- Cone: `DistD / √(DistD² + v_mm²)` (physical coordinates)
+
+For equi-space flat detector (our geometry), the combined formula `D/√(D²+u²+v²)` is correct. CatSim's separated form is equivalent for equi-angle geometry. Both are valid for their respective parameterizations.
+
+---
+
+#### Answers to Story Questions
+
+1. **Where is cosine weighting applied?** In `filtering.jl:cosine_weight!()`, called once from `filter_sinogram!()` at line 417. NOT in fdk.jl, NOT in backprojection.jl.
+
+2. **Is it applied once or possibly twice?** **Exactly once.** No cosine weight in backprojection — only FDK distance weight (`SAD²/dist²`). Grep confirms only one call site.
+
+3. **Does our implementation match TIGRE?** **Yes.** TIGRE uses `D/√(D²+u²+v²)` for equi-space flat detector geometry, which is identical to our formula. CatSim uses a different (equi-angle) parameterization but the physics is equivalent.
+
+4. **Is D in cm or mm? Consistent with u, v?** **All in cm.** `geom.SDD` is cm, `u` and `v` are computed as `pixel_size_cm × magnification` = cm. Units are fully consistent.
+
+---
+
+#### Verdict: NO — Cosine weighting is correct and does NOT contribute to the noise discrepancy.
+
+- **Applied exactly once** (filtering.jl:417), before ramp filtering
+- **No duplication** with backprojection distance weight (different physics, different formula)
+- **Units consistent** (all cm, weight is dimensionless ≤ 1)
+- **Formula matches** TIGRE and textbook FDK (D/√(D²+u²+v²))
 - **Impact factor: ~1.0x** (zero contribution to noise discrepancy)
