@@ -298,3 +298,99 @@ All occurrences of `detector_row_size` and `detector_col_size` are used for the 
 - **dual_energy.jl**: CatSim spec mapping col→col, row→row — correct
 - **NB01-04**: All use `SIM_CONFIG.detectorRowSize` → `detector_row_size` and `SIM_CONFIG.detectorColSize` → `detector_col_size` — correct
 - **NB05**: Hardcoded values and per-scanner z_cm calculations — all correct
+
+### 2026-02-14: GEO-003 — FAIL (3 issues found)
+
+**Agent:** Exhaustive audit of `volume_fov` threading in ALL forward projection paths
+**Method:** `grep -rn 'volume_fov' src/` — every hit checked, plus analysis of ALL paths that call `siddon_forward_project!` or `forward_project`/`forward_project!`
+
+#### 1. siddon.jl — KNOWN CORRECT (base layer)
+
+| File:Line | Function | volume_fov Status | Verdict | Notes |
+|-----------|----------|-------------------|---------|-------|
+| siddon.jl:424 | `siddon_forward_project!()` | Accepts `volume_fov` kwarg | CORRECT | Uses it for volume bounds (lines 436-448) |
+| siddon.jl:625 | `siddon_forward_project()` | Accepts `volume_fov` kwarg | CORRECT | Passes to `siddon_forward_project!()` (line 632) |
+
+#### 2. polychromatic.jl — ALL CORRECT (middle layer)
+
+| File:Line | Function | volume_fov Status | Verdict | Notes |
+|-----------|----------|-------------------|---------|-------|
+| polychromatic.jl:498 | `forward_project!()` | Accepts `volume_fov` kwarg | CORRECT | Passes to all downstream paths |
+| polychromatic.jl:533 | → `_forward_project_with_signal_chain!()` call | Passes `volume_fov=volume_fov` | CORRECT | Signal chain path |
+| polychromatic.jl:542 | → `siddon_forward_project!()` call (direct Float volume) | Passes `volume_fov=volume_fov` | CORRECT | Monochromatic float path |
+| polychromatic.jl:555 | → `_forward_project_mono!()` call | Passes `volume_fov=volume_fov` | CORRECT | Mono from mask path |
+| polychromatic.jl:560 | → `_forward_project_poly!()` call | Passes `volume_fov=volume_fov` | CORRECT | Polychromatic path |
+| polychromatic.jl:757 | `_forward_project_with_signal_chain!()` | Accepts `volume_fov` kwarg | CORRECT | |
+| polychromatic.jl:769 | → `siddon_forward_project!()` call (Float volume) | Passes `volume_fov=volume_fov` | CORRECT | |
+| polychromatic.jl:777 | → `_forward_project_mono!()` call | Passes `volume_fov=volume_fov` | CORRECT | |
+| polychromatic.jl:780 | → `_forward_project_poly!()` call | Passes `volume_fov=volume_fov` | CORRECT | |
+| polychromatic.jl:990 | `_forward_project_mono!()` | Accepts `volume_fov` kwarg | CORRECT | Passes to `siddon_forward_project!()` (line 998) |
+| polychromatic.jl:1110 | `_forward_project_poly!()` | Accepts `volume_fov` kwarg | CORRECT | Passes to `siddon_forward_project!()` in loop (line 1140) |
+| polychromatic.jl:709-722 | `forward_project()` (allocating) | Passes `kwargs...` to `forward_project!()` | CORRECT | All kwargs including volume_fov forwarded |
+
+#### 3. driver.jl — workspace simulate!() paths — ALL CORRECT
+
+| File:Line | Function | volume_fov Status | Verdict | Notes |
+|-----------|----------|-------------------|---------|-------|
+| driver.jl:604 | `simulate!(ws::PCCTWorkspace, ...)` | Passes `volume_fov=phantom.fov` | CORRECT | PCCT workspace path |
+| driver.jl:712 | `simulate!(ws::EICTWorkspace, ...)` | Passes `volume_fov=phantom.fov` | CORRECT | EICT workspace path, via `_forward_project_poly!()` |
+| driver.jl:985 | `_eict_dual_forward_pass!()` | Passes `volume_fov=phantom.fov` | CORRECT | Dual-kVp workspace path, via `_forward_project_poly!()` |
+
+#### 4. driver.jl — non-workspace simulate() paths — **3 MISSING**
+
+| File:Line | Function | volume_fov Status | Verdict | Notes |
+|-----------|----------|-------------------|---------|-------|
+| driver.jl:278-282 | `_simulate_axial_single()` | **NOT passed** to `forward_project()` | **WRONG** | Calls `forward_project(mask_gpu, geom; energies=..., weights=..., materials=mats, physics=config)` — missing `volume_fov=phantom.fov` |
+| driver.jl:347-351 | `_forward_single_pass()` | **NOT passed** to `forward_project()` | **WRONG** | Calls `forward_project(mask_gpu, geom; energies=..., weights=..., materials=mats, physics=config)` — missing `volume_fov=phantom.fov` |
+| driver.jl:391-395 | `_simulate_axial_dual()` | **NOT passed** (via `_forward_single_pass()`) | **WRONG** | Both low-kVp and high-kVp calls go through `_forward_single_pass()` which is missing volume_fov |
+
+**Note:** `_simulate_axial_pcct()` is CORRECT because it creates a workspace and calls `simulate!(ws, ...)` which does pass `volume_fov=phantom.fov`.
+
+#### 5. photon_counting.jl — CORRECT
+
+| File:Line | Function | volume_fov Status | Verdict | Notes |
+|-----------|----------|-------------------|---------|-------|
+| photon_counting.jl:1378 | `pcct_forward_project()` | Accepts `volume_fov` kwarg | CORRECT | |
+| photon_counting.jl:1472 | → `siddon_forward_project!()` call | Passes `volume_fov=volume_fov` | CORRECT | |
+
+#### 6. Iterative Reconstruction — CORRECTLY does NOT pass volume_fov
+
+| File:Line | Function | volume_fov Status | Verdict | Notes |
+|-----------|----------|-------------------|---------|-------|
+| sirt.jl:53 | `sirt_compute_weights()` | No volume_fov | CORRECT | Projects ones for ray lengths — uses geom.fov (recon FOV) |
+| sirt.jl:125 | `sirt_iterate()` | No volume_fov | CORRECT | Projects recon volume — uses geom.fov (recon FOV) |
+| cgls.jl:93 | `cgls_iterate()` | No volume_fov | CORRECT | Projects search direction — uses geom.fov (recon FOV) |
+| cgls.jl:207 | `cgls_reconstruct()` init | No volume_fov | CORRECT | Initial residual — uses geom.fov (recon FOV) |
+| mbir.jl:500 | `mbir_iterate()` | No volume_fov | CORRECT | Projects recon volume — uses geom.fov (recon FOV) |
+
+#### 7. Hybrid IR (driver.jl reconstruct!) — CORRECTLY does NOT pass volume_fov
+
+| File:Line | Function | volume_fov Status | Verdict | Notes |
+|-----------|----------|-------------------|---------|-------|
+| driver.jl:1566 | HIR OS-PWLS `siddon_forward_project!()` | No volume_fov | CORRECT | Projects recon volume |
+| driver.jl:1624 | HIR legacy stat weights update | No volume_fov | CORRECT | Projects recon volume |
+| driver.jl:1652 | HIR legacy PWLS iterate | No volume_fov | CORRECT | Projects recon volume |
+
+#### Issues Found: 3
+
+**Issue 1: driver.jl:278-282 — `_simulate_axial_single()` missing `volume_fov=phantom.fov`**
+- When using the non-workspace `simulate()` API for single-kVp EICT, the forward projection call does NOT pass `volume_fov=phantom.fov`.
+- This means `siddon_forward_project!()` falls back to `geom.fov` (reconstruction FOV) for volume bounds.
+- **Impact:** When `phantom.fov ≠ geom.fov`, the phantom is projected as if it fits within `geom.fov`, causing XY stretching and Z compression. This is the exact bug that was fixed in the workspace paths.
+- **Severity: HIGH** — affects all non-workspace single-kVp simulations with non-matching phantom/recon FOVs (e.g., XCAT phantoms).
+
+**Issue 2: driver.jl:347-351 — `_forward_single_pass()` missing `volume_fov=phantom.fov`**
+- Same issue in the helper function used by dual-kVp.
+- **Impact:** Same as Issue 1 but for dual-kVp mode.
+- **Severity: HIGH**
+
+**Issue 3: driver.jl:391-395 — `_simulate_axial_dual()` inherits missing volume_fov from `_forward_single_pass()`**
+- Both low-kVp and high-kVp passes go through `_forward_single_pass()` which is missing volume_fov.
+- **Impact:** All non-workspace dual-kVp simulations with non-matching phantom/recon FOVs.
+- **Severity: HIGH**
+
+**Summary:**
+- The workspace-based `simulate!()` paths (PCCT, EICT, Dual) are ALL CORRECT — they pass `volume_fov=phantom.fov`.
+- The non-workspace `simulate()` paths for single-kVp and dual-kVp are WRONG — they don't pass `volume_fov`.
+- The allocating `forward_project()` correctly accepts and forwards `volume_fov` via `kwargs...`, so the fix is simply to add `volume_fov=phantom.fov` to the call sites.
+- All iterative recon paths correctly do NOT pass volume_fov (they project the recon volume, not the phantom).
