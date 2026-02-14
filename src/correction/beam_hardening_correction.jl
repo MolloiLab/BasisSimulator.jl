@@ -87,7 +87,7 @@ export BeamHardeningCorrection, BHCPolynomial
 export calibrate_bhc, apply_bhc!, apply_bhc
 export generate_water_calibration_curve
 export bhc_water_default, bhc_none
-export evaluate_bhc, get_bhc_info
+export evaluate_bhc, get_bhc_info, get_bhc_coefficients
 
 # =============================================================================
 # BHC Types
@@ -179,6 +179,14 @@ struct BeamHardeningCorrection
     calibration_measured::Vector{Float64}
     calibration_true::Vector{Float64}
 end
+
+"""
+    get_bhc_coefficients(bhc) -> Vector{Float64}
+
+Extract polynomial coefficients from either BHCPolynomial or BeamHardeningCorrection.
+"""
+get_bhc_coefficients(poly::BHCPolynomial) = poly.coefficients
+get_bhc_coefficients(bhc::BeamHardeningCorrection) = bhc.polynomial.coefficients
 
 # =============================================================================
 # Default BHC Models
