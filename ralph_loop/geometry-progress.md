@@ -395,14 +395,160 @@ All occurrences of `detector_row_size` and `detector_col_size` are used for the 
 - The allocating `forward_project()` correctly accepts and forwards `volume_fov` via `kwargs...`, so the fix is simply to add `volume_fov=phantom.fov` to the call sites.
 - All iterative recon paths correctly do NOT pass volume_fov (they project the recon volume, not the phantom).
 
-### 2026-02-14: GEO-004 — WIP
+### 2026-02-14: GEO-004 — PASS (0 issues found, 2 notes)
 
 **Agent:** Auditing ALL 5 verification notebooks for z_cm and fov_cm consistency
 **Method:** `grep -n 'z_cm\|fov_cm\|detector_row_size' verification/notebooks/*.jl` — every hit checked
 
-**Plan:**
-1. For each notebook, identify: scanner type, detector_row_size, n_slices, sliceThickness
-2. Compute expected z_cm = sliceCount × sliceThickness / 10
-3. Check every z_cm value in phantom creation, recon options, and water calibration
-4. Check fov_cm consistency between phantom and recon
-5. Check if ReconOptions with z_cm=nothing (auto) is appropriate
+#### Key Principle
+
+`ReconOptions.z_cm` controls the reconstruction volume z-extent. When set to `nothing` (default), it auto-computes from detector z-coverage via `CTGeometry(scanner; z_cm=nothing)` → `z_coverage = detector_rows × detector_row_size`. This is CORRECT for most cases.
+
+When explicitly set, z_cm should equal `n_recon_slices × row_pitch / 10` so the recon grid slice thickness matches the native detector row pitch.
+
+#### NB01: 01_single_kvp_verification.jl — PASS
+
+| Parameter | Value | Source |
+|-----------|-------|--------|
+| Scanner | Generic CatSim-style | sid=540, sdd=950 |
+| detector_row_size | ≈0.569 mm (1.0mm face / 1.759 mag) | :104 |
+| detector_rows | 16 | :98 |
+| sliceCount | 9 (= floor(16×0.569/1.0)) | :109 |
+| sliceThickness | 1.0 mm | :108 |
+
+| Location | z_cm formula | Value | Verdict |
+|----------|-------------|-------|---------|
+| :441 (phantom gen) | config.sliceCount × config.sliceThickness / 10 | 0.9 cm | CORRECT |
+| :590 (recon_opts) | SIM_CONFIG.sliceCount × SIM_CONFIG.sliceThickness / 10 | 0.9 cm | CORRECT |
+| :609 (water phantom) | SIM_CONFIG.sliceCount × SIM_CONFIG.sliceThickness / 10 | 0.9 cm | CORRECT |
+| :659 (Gammex phantom) | SIM_CONFIG.sliceCount × SIM_CONFIG.sliceThickness / 10 | 0.9 cm | CORRECT |
+
+| Location | fov_cm | Verdict |
+|----------|--------|---------|
+| :589 (recon_opts) | 35.0 cm | CORRECT |
+| :607 (water phantom) | 35.0 cm | CORRECT |
+| :658 (Gammex phantom) | 35.0 cm | CORRECT |
+
+**Note:** z_cm = sliceCount × sliceThickness / 10 = 9 × 1.0 / 10 = 0.9 cm, while detector z-coverage = 16 × 0.569 / 10 = 0.909 cm. Tiny rounding difference (0.9 vs 0.909) due to `floor()` in sliceCount calculation. Harmless — recon z is 1% smaller than detector z.
+
+#### NB02: 02_multi_dose_and_iterative_reconstruction.jl — PASS
+
+| Parameter | Value | Source |
+|-----------|-------|--------|
+| Scanner | Same as NB01 | sid=540, sdd=950 |
+| detector_row_size | ≈0.569 mm | :86 |
+| detector_rows | 16 | :82 |
+| sliceCount | 9 | :91 |
+| sliceThickness | 1.0 mm | :90 |
+
+| Location | z_cm formula | Value | Verdict |
+|----------|-------------|-------|---------|
+| :184 (water phantom) | SIM_CONFIG.sliceCount × SIM_CONFIG.sliceThickness / 10 | 0.9 cm | CORRECT |
+| :212 (Gammex phantom) | SIM_CONFIG.sliceCount × SIM_CONFIG.sliceThickness / 10 | 0.9 cm | CORRECT |
+| :271 (recon_opts) | SIM_CONFIG.sliceCount × SIM_CONFIG.sliceThickness / 10 | 0.9 cm | CORRECT |
+
+| Location | fov_cm | Verdict |
+|----------|--------|---------|
+| :182 (water phantom) | 35.0 cm | CORRECT |
+| :211 (Gammex phantom) | 35.0 cm | CORRECT |
+| :270 (recon_opts) | 35.0 cm | CORRECT |
+
+**Iterative recon (HIR):** Uses workspace API with same `recon_opts` → same z_cm. HIR calls `create_hir_recon_workspace()` with sinogram from same geometry. CORRECT.
+
+#### NB03: 03_dual_kvp_vmi_verification.jl — PASS (with note)
+
+| Parameter | Value | Source |
+|-----------|-------|--------|
+| Scanner | Same CatSim-style | sid=540, sdd=950 |
+| detector_row_size | ≈0.569 mm | :104 |
+| detector_rows | 16 | :102 (implied from config) |
+| sliceCount | 32 | :95 |
+| sliceThickness | 1.25 mm | :96 |
+
+| Location | z_cm formula | Value | Verdict |
+|----------|-------------|-------|---------|
+| :169 (phantom) | SIM_CONFIG.sliceCount × SIM_CONFIG.sliceThickness / 10 | 4.0 cm | CORRECT |
+| :153 (recon_opts) | **z_cm not set** → auto from detector | ~0.909 cm | CORRECT |
+
+| Location | fov_cm | Verdict |
+|----------|--------|---------|
+| :153 (recon_opts) | 35.0 cm | CORRECT |
+| :168 (phantom) | 35.0 cm | CORRECT |
+
+**Both kVp use same geometry:** Both 80 kVp (:194) and 140 kVp (:210) call `create_eict_workspace(scanner, ...)` with same scanner and recon_opts. CORRECT — same geometry for both energies.
+
+**NOTE:** Phantom z_cm (4.0 cm) is much larger than detector z-coverage (~0.909 cm). The phantom is over-allocated in z. Only the central ~0.909 cm is visible to the detector. This is harmless but wastes memory on unused phantom voxels. Not a correctness issue.
+
+#### NB04: 04_pcct_demonstration.jl — PASS (with note)
+
+| Parameter | Value | Source |
+|-----------|-------|--------|
+| Scanner | NAEOTOM Alpha (PCCT) | :88-94 |
+| detector_row_size | 0.4 mm (square pixels) | :94 |
+| detector_rows | 64 | :92 |
+| sliceCount | 32 | :84 |
+| sliceThickness | 1.25 mm | :85 |
+| Detector z-coverage | 64 × 0.4 / 10 = 2.56 cm | computed |
+
+| Location | z_cm formula | Value | Verdict |
+|----------|-------------|-------|---------|
+| :472 (phantom) | SIM_CONFIG.sliceCount × SIM_CONFIG.sliceThickness / 10 | 4.0 cm | CORRECT |
+| :514 (recon_opts) | **z_cm not set** → auto from detector | 2.56 cm | CORRECT |
+| :542 (water cal recon) | **z_cm not set** → auto from detector | 2.56 cm | CORRECT |
+
+| Location | fov_cm | Verdict |
+|----------|--------|---------|
+| :471 (phantom) | 35.0 cm | CORRECT |
+| :514 (recon_opts) | 35.0 cm | CORRECT |
+| :542 (water cal recon) | 15.0 cm | CORRECT (smaller FOV for water cal) |
+
+**NOTE:** Same pattern as NB03 — phantom z_cm (4.0 cm) > detector z-coverage (2.56 cm). Harmless; only central 2.56 cm of phantom is projected.
+
+**Water calibration:** Uses same NAEOTOM scanner, so auto-derived z_cm = 2.56 cm. Water phantom z-extent = 16 × 0.1 = 1.6 cm (smaller than detector z-coverage). Central ROI extraction handles this correctly.
+
+#### NB05: 05_xcat_full.jl — PASS
+
+| Parameter | EICT (GE Revolution) | PCCT (NAEOTOM Alpha) |
+|-----------|---------------------|---------------------|
+| detector_row_size | 0.625 mm (:621) | 0.4 mm (:659) |
+| detector_rows | min(256, 128) = 128 | min(144, 128) = 128 |
+| n_recon_slices | 128 (:598) | 128 (:598) |
+| recon_fov_cm | 25.0 (:589) | 25.0 (:589) |
+
+**EICT Recon z_cm:**
+
+| Location | z_cm formula | Value | Verdict |
+|----------|-------------|-------|---------|
+| :704 (single) | n_recon_slices × 0.625 / 10 | 8.0 cm | CORRECT |
+| :721 (dual) | n_recon_slices × 0.625 / 10 | 8.0 cm | CORRECT |
+| :785 (water cal) | 8 × scanner_eict.detector_row_size / 10 = 8 × 0.625 / 10 | 0.5 cm | CORRECT |
+
+**PCCT Recon z_cm:**
+
+| Location | z_cm formula | Value | Verdict |
+|----------|-------------|-------|---------|
+| :740 (standard) | n_recon_slices × 0.4 / 10 | 5.12 cm | CORRECT |
+| :794 (water cal) | 8 × scanner_pcct_standard.detector_row_size / 10 = 8 × 0.4 / 10 | 0.32 cm | CORRECT |
+
+**Consistency checks:**
+- EICT: recon z_cm = n_recon_slices × detector_row_size / 10 = detector_rows × detector_row_size / 10 (since det_rows = n_recon_slices = 128). **Match** ✓
+- PCCT: Same pattern. **Match** ✓
+- Water cal: Uses scanner.detector_row_size directly for per-scanner z_cm. **CORRECT** ✓
+- Dual-kVp: Same z_cm as single-kVp (both = 8.0 cm). **CORRECT** ✓
+- fov_cm: All recon opts use recon_fov_cm = 25.0. **Consistent** ✓
+
+#### Summary
+
+| Notebook | Scanner | z_cm Method | Consistency | Verdict |
+|----------|---------|------------|-------------|---------|
+| NB01 | Generic (≈0.569mm) | Explicit: sliceCount × sliceThickness / 10 | All 4 usages = 0.9 cm | PASS |
+| NB02 | Generic (≈0.569mm) | Explicit: sliceCount × sliceThickness / 10 | All 3 usages = 0.9 cm | PASS |
+| NB03 | Generic (≈0.569mm) | Auto (z_cm=nothing) + Phantom explicit | Phantom oversized (4.0 vs 0.909 cm) but harmless | PASS |
+| NB04 | NAEOTOM (0.4mm) | Auto (z_cm=nothing) + Phantom explicit | Phantom oversized (4.0 vs 2.56 cm) but harmless | PASS |
+| NB05 | GE Rev + NAEOTOM | Explicit: n_slices × row_pitch / 10 | All values match scanner row pitch | PASS |
+
+**Issues found: 0**
+
+**Notes:**
+1. NB03 and NB04 have phantoms with z_cm much larger than detector z-coverage. This wastes memory but is not incorrect — the projector only captures what the detector sees.
+2. NB01/NB02 use `sliceCount × sliceThickness / 10` which is ~1% less than detector z-coverage due to `floor()` rounding. Negligible.
