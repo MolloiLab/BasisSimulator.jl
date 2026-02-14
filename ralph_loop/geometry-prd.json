@@ -61,7 +61,7 @@
       "id": "GEO-004",
       "title": "AUDIT: Verify ALL 5 notebooks z_cm and fov_cm consistency",
       "priority": 0,
-      "status": "open",
+      "status": "done",
       "type": "AUDIT",
       "description": "Check all 5 verification notebooks for correct z_cm and fov_cm usage:\n\n1. **NB01** (01_single_kvp_verification.jl):\n   - What scanner? What detector_row_size?\n   - What z_cm is used? Does it match detector_row_size × n_slices / 10?\n   - What fov_cm is used? Is it appropriate for the phantom?\n\n2. **NB02** (02_multi_dose_and_iterative_reconstruction.jl):\n   - Same checks as NB01\n   - Does iterative recon (SIRT/CGLS) use the same z_cm?\n\n3. **NB03** (03_dual_kvp_vmi_verification.jl):\n   - Dual-kVp — both low and high kVp use same geometry?\n   - z_cm consistent with scanner?\n\n4. **NB04** (04_pcct_demonstration.jl):\n   - PCCT scanner — uses 0.4mm row pitch?\n   - z_cm = n_slices × 0.4 / 10?\n   - Water calibration z_cm matches?\n\n5. **NB05** (05_xcat_full.jl):\n   - EICT: z_cm = n_recon_slices × 0.625 / 10 — verify\n   - PCCT: z_cm = n_recon_slices × 0.4 / 10 — verify\n   - Water cal: per-scanner z_cm — verify\n   - Dual-kVp: same z_cm as single kVp — verify\n\nACCEPTANCE: All 5 notebooks documented with z_cm values, scanner row pitch, and consistency verdict.",
       "testCommand": "grep -n 'z_cm\\|fov_cm\\|detector_row_size' verification/notebooks/*.jl",
