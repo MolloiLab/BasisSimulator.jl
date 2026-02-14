@@ -137,7 +137,7 @@
       "id": "XCAT-012",
       "title": "VALIDATE: Re-run NB05 with all fixes applied",
       "priority": 3,
-      "status": "open",
+      "status": "done",
       "type": "VALIDATE",
       "description": "After all fixes are applied, re-run NB05 and verify:\n1. PCCT FDK reconstruction has no visible cupping/edge artifacts\n2. EICT FDK reconstruction is unchanged (no regression)\n3. Both scanners show the same anatomy at corresponding z-positions\n4. HU values are clinically reasonable (water ≈ 0 HU, lung ≈ -700 HU, bone > 500 HU)\n5. VMI at all energies produces expected contrast behavior\n6. HIR produces noise reduction without introducing artifacts\n\nAlso verify other notebooks are not affected:\n- NB01: single kVp verification (should be unchanged)\n- NB04: PCCT demonstration (may benefit from fix)\n\nACCEPTANCE: All visualizations show clean reconstructions. No regressions.",
       "testCommand": "Run NB05 in Pluto, visually inspect all reconstructions",
