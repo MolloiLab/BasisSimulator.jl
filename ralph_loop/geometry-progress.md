@@ -206,7 +206,95 @@
 
 Note: Both issues are in `create_aquilion_one()` which hardcodes `pixel_pitch_mm = 0.5` (square). The `create_ct_geometry()` (scanner.jl:583-641) and `create_scanner_geometry()` (scanners.jl:285-331) correctly use separate row/col pixel sizes. The NAEOTOM Alpha `create_naeotom_alpha()` (scanner.jl:805-865) also uses square pixels and stores them separately in `detector_row_size`/`detector_col_size`.
 
-### 2026-02-14: GEO-002 — WIP
-- **Scope:** grep ALL detector_row_size/detector_col_size/detector_size in src/ AND verification/
-- **Hits found:** ~50 in src/, ~15 in verification/
-- **Files to check:** scanner.jl, scatter.jl, dual_energy.jl, scanners.jl, photon_counting.jl, all 5 notebooks
+### 2026-02-14: GEO-002 — PASS (0 issues found)
+
+**Agent:** Exhaustive grep of detector_row_size/detector_col_size/detector_size in src/ AND verification/
+**Method:** `grep -rn 'detector_row_size\|detector_col_size\|detector_size' src/ verification/` — every hit checked
+**Also checked:** `\bdetector_size\b` (word-boundary) — **zero matches** (no ambiguous bare `detector_size` anywhere)
+
+#### Files with NO detector_row_size/detector_col_size references (CLEAN):
+- All src/ files not listed below (polychromatic.jl, siddon.jl, backprojection.jl, filtering.jl, flat_filter.jl, bowtie_filter.jl, focal_spot.jl, detector_efficiency.jl, detector_noise.jl, detector_lag.jl, crosstalk.jl, fill_factor.jl, physics_pipeline.jl, das_model.jl, heel_effect.jl, protocol.jl, spectrum.jl, object/*.jl, correction/*.jl, spectral/pcct_spectral.jl, reconstruction/*.jl, metrics/*.jl, api/options.jl, scanners/general_electric.jl, scanners/siemens.jl, scanners/helical_protocols.jl)
+
+#### Detailed Audit Table — src/
+
+| File:Line | Variable | Direction | Verdict | Notes |
+|-----------|----------|-----------|---------|-------|
+| **src/geometry/scanner.jl** | | | | |
+| :62 | `detector_row_size` | — (docstring) | N/A | Documentation: "z (mm) at isocenter" |
+| :63 | `detector_col_size` | — (docstring) | N/A | Documentation: "fan direction (mm) at isocenter" |
+| :108 | `detector_row_size` | — (CatSim mapping table) | N/A | Doc: maps to detectorRowSize |
+| :109 | `detector_col_size` | — (CatSim mapping table) | N/A | Doc: maps to detectorColSize |
+| :134 | `detector_row_size::T` | z (row) | CORRECT | Scanner struct field definition |
+| :135 | `detector_col_size::T` | xy (col) | CORRECT | Scanner struct field definition |
+| :187 | `detector_row_size` | — (docstring) | N/A | Kwarg doc: "row pitch (mm)" |
+| :188 | `detector_col_size` | — (docstring) | N/A | Kwarg doc: "column pitch (mm)" |
+| :218 | `detector_row_size = 0.625` | — (docstring example) | N/A | Example code in docstring |
+| :227 | `detector_row_size = 0.15` | — (docstring example) | N/A | Flat panel example |
+| :228 | `detector_col_size = 0.15` | — (docstring example) | N/A | Flat panel example |
+| :240 | `detector_row_size::Real = 1.0` | z (row) | CORRECT | Scanner constructor kwarg |
+| :241 | `detector_col_size::Real = 1.0` | xy (col) | CORRECT | Scanner constructor kwarg |
+| :302 | `T(detector_row_size)` | z (row) | CORRECT | Passed to Scanner struct field |
+| :303 | `T(detector_col_size)` | xy (col) | CORRECT | Passed to Scanner struct field |
+| :388 | `scanner.detector_row_size <= 0` | z (row) | CORRECT | Validation check |
+| :389 | `scanner.detector_row_size` (error msg) | — | N/A | Error message |
+| :393 | `scanner.detector_col_size <= 0` | xy (col) | CORRECT | Validation check |
+| :394 | `scanner.detector_col_size` (error msg) | — | N/A | Error message |
+| :422 | `# detector_col_size is already at isocenter` | — (comment) | N/A | Documentation |
+| :423 | `scanner.detector_cols * scanner.detector_col_size` | xy (col) | CORRECT | XY detector coverage at iso |
+| :428 | `# Z coverage (detector_row_size is already at isocenter)` | — (comment) | N/A | Documentation |
+| :430 | `scanner.detector_rows * scanner.detector_row_size` | z (row) | CORRECT | Z coverage at isocenter |
+| :460 | `scanner.detector_col_size × scanner.detector_row_size` | both (display) | CORRECT | Print col×row element size |
+| :462 | `scanner.detector_rows * scanner.detector_row_size` | z (row) | CORRECT | Z coverage for display |
+| :583 | `scanner.detector_col_size / 10.0` → `pixel_size` | xy (col) | CORRECT | CTGeometry: col → pixel_size |
+| :584 | `scanner.detector_row_size / 10.0` → `pixel_row_size` | z (row) | CORRECT | CTGeometry: row → pixel_row_size |
+| :598 | `# detector_row_size is already at isocenter` | — (comment) | N/A | Documentation |
+| :599 | `scanner.detector_rows * scanner.detector_row_size` | z (row) | CORRECT | Default z coverage |
+| :802 | `scanner_uhr.detector_row_size` | — (docstring) | N/A | Example showing 0.2mm |
+| :828 | `detector_row_size = pixel_size` | z (row) | CORRECT | NAEOTOM: pixel_size is local var (square pixels) |
+| :829 | `detector_col_size = pixel_size` | xy (col) | CORRECT | NAEOTOM: pixel_size is local var (square pixels) |
+| :886 | `scanner.detector_row_size * magnification` | z (row) | CORRECT | PCCT detector tuple[1] = row |
+| :886 | `scanner.detector_col_size * magnification` | xy (col) | CORRECT | PCCT detector tuple[2] = col |
+| **src/detector/scatter.jl** | | | | |
+| :708 | `Scanner(detector_col_size=1.0)` | — (docstring) | N/A | Example code |
+| :712 | `Scanner(detector_col_size=0.5)` | — (docstring) | N/A | Example code |
+| :717 | `# detector_col_size is at isocenter` | — (comment) | N/A | Documentation |
+| :719 | `scanner.detector_col_size * magnification` | xy (col) | CORRECT | Scatter kernel is applied in-plane (xy), column-direction pitch is correct for the 2D Gaussian scatter kernel |
+| **src/spectral/dual_energy.jl** | | | | |
+| :282 | `detector_col_size = det_spec.col_size_mm.value` | xy (col) | CORRECT | Builds Scanner from CatSim spec, col → col |
+| :283 | `detector_row_size = det_spec.row_size_mm.value` | z (row) | CORRECT | Builds Scanner from CatSim spec, row → row |
+
+#### Detailed Audit Table — verification/
+
+| File:Line | Variable | Direction | Verdict | Notes |
+|-----------|----------|-----------|---------|-------|
+| **NB01 (01_single_kvp_verification.jl)** | | | | |
+| :542 | `detector_row_size = SIM_CONFIG.detectorRowSize` | z (row) | CORRECT | Row → row mapping |
+| :545 | `detector_col_size = SIM_CONFIG.detectorColSize` | xy (col) | CORRECT | Col → col mapping |
+| **NB02 (02_multi_dose_and_iterative_reconstruction.jl)** | | | | |
+| :231 | `detector_row_size = SIM_CONFIG.detectorRowSize` | z (row) | CORRECT | Row → row mapping |
+| :234 | `detector_col_size = SIM_CONFIG.detectorColSize` | xy (col) | CORRECT | Col → col mapping |
+| **NB03 (03_dual_kvp_vmi_verification.jl)** | | | | |
+| :118 | `detector_row_size = SIM_CONFIG.detectorRowSize` | z (row) | CORRECT | Row → row mapping |
+| :121 | `detector_col_size = SIM_CONFIG.detectorColSize` | xy (col) | CORRECT | Col → col mapping |
+| **NB04 (04_pcct_demonstration.jl)** | | | | |
+| :110 | `detector_row_size = SIM_CONFIG.detectorRowSize` | z (row) | CORRECT | Row → row mapping |
+| :113 | `detector_col_size = SIM_CONFIG.detectorColSize` | xy (col) | CORRECT | Col → col mapping |
+| :162 | `naeotom.detector_col_size` | — (display) | CORRECT | Shows element pitch in markdown string (NAEOTOM has square pixels; col pitch is appropriate for a generic "pitch" display) |
+| **NB05 (05_xcat_full.jl)** | | | | |
+| :621 | `detector_row_size = 0.625` | z (row) | CORRECT | GE Revolution z-direction pitch |
+| :622 | `detector_col_size = eict_col_size_iso` | xy (col) | CORRECT | GE Revolution in-plane pitch (computed variable) |
+| :659 | `detector_row_size = 0.4` | z (row) | CORRECT | NAEOTOM z-direction pitch |
+| :660 | `detector_col_size = 0.4` | xy (col) | CORRECT | NAEOTOM in-plane pitch |
+| :785 | `scanner_eict.detector_row_size / 10.0` | z (row) | CORRECT | z_cm for water calibration: 8 × 0.625mm / 10 = 0.5cm |
+| :794 | `scanner_pcct_standard.detector_row_size / 10.0` | z (row) | CORRECT | z_cm for water calibration: 8 × 0.4mm / 10 = 0.32cm |
+
+#### Issues Found: 0
+
+All occurrences of `detector_row_size` and `detector_col_size` are used for the correct direction (z and xy respectively). No ambiguous bare `detector_size` found anywhere in src/ or verification/.
+
+**Summary:**
+- **scanner.jl**: Struct definition, constructor, validation, CTGeometry conversion, NAEOTOM Alpha factory, PCCT builder — all correct
+- **scatter.jl**: Uses `detector_col_size` for in-plane scatter kernel — correct (scatter is applied as 2D kernel in sinogram plane)
+- **dual_energy.jl**: CatSim spec mapping col→col, row→row — correct
+- **NB01-04**: All use `SIM_CONFIG.detectorRowSize` → `detector_row_size` and `SIM_CONFIG.detectorColSize` → `detector_col_size` — correct
+- **NB05**: Hardcoded values and per-scanner z_cm calculations — all correct
