@@ -631,23 +631,25 @@ phantom_water_gpu = let
 end;
 
 # ╔═╡ 6c63ee86-ed7a-435d-b6d9-12adc99d7b3e
-# Water calibration — workspace scoped locally to free GPU memory
-μ_water_calibrated = let
-	ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom_water_gpu)
-	BS.simulate!(ws, phantom_water_gpu, scanner, protocol, sim_opts, recon_opts)
+# # Water calibration — workspace scoped locally to free GPU memory
+# μ_water_calibrated = let
+# 	ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom_water_gpu)
+# 	BS.simulate!(ws, phantom_water_gpu, scanner, protocol, sim_opts, recon_opts)
 
-	recon_size = recon_opts.matrix_size
-	ws_fdk = BS.create_fdk_recon_workspace(ws.sino_noisy_out, ws.geom, recon_size; filter=recon_opts.filter)
-	vol = Array(BS.reconstruct!(ws_fdk, ws.sino_noisy_out, ws.geom, recon_size))
+# 	recon_size = recon_opts.matrix_size
+# 	ws_fdk = BS.create_fdk_recon_workspace(ws.sino_noisy_out, ws.geom, recon_size; filter=recon_opts.filter)
+# 	vol = Array(BS.reconstruct!(ws_fdk, ws.sino_noisy_out, ws.geom, recon_size))
 
-	cx, cy, cz = size(vol) .÷ 2
-	result = mean(vol[cx-2:cx+2, cy-2:cy+2, cz-1:cz+1])
+# 	cx, cy, cz = size(vol) .÷ 2
+# 	result = mean(vol[cx-2:cx+2, cy-2:cy+2, cz-1:cz+1])
 
-	ws = nothing; ws_fdk = nothing; vol = nothing
-	GC.gc(true)
+# 	ws = nothing; ws_fdk = nothing; vol = nothing
+# 	GC.gc(true)
 
-	result
-end
+# 	result
+# end
+
+μ_water_calibrated = 0.23
 
 # ╔═╡ 539cb27b-cae4-4461-ad5b-357a1840035b
 phantom_basis = BS.create_gammex_472(
@@ -910,22 +912,59 @@ hu_accuracy_results = let
 	results
 end
 
-# ╔═╡ 6806a79b-36b3-4d61-b24e-e4c587784a19
+# ╔═╡ 751c7086-603b-480f-9be6-de51f6cc446d
 let
-    fig = CM.Figure(size=(800, 500), fontsize=12)
-    ax = CM.Axis(fig[1,1], title="HU Accuracy Comparison", xlabel="Expected HU", ylabel="Measured HU")
+	fig = CM.Figure(size=(900, 900), fontsize=16)
 
-    expected = [r.expected for r in hu_accuracy_results]
-    basis = [r.basis_hu for r in hu_accuracy_results]
-    catsim = [r.catsim_hu for r in hu_accuracy_results]
+	ca_idx = [i for i in eachindex(hu_accuracy_results) if startswith(hu_accuracy_results[i].name, "Ca")]
+	i_idx = [i for i in eachindex(hu_accuracy_results) if startswith(hu_accuracy_results[i].name, "I")]
 
-    CM.scatter!(ax, expected, basis, color=:blue, label="BasisSimulator")
-    CM.scatter!(ax, expected, catsim, color=:red, marker=:utriangle, label="CatSim")
-    CM.lines!(ax, [0, 1000], [0, 1000], color=:black, linestyle=:dash, label="Identity")
+	# --- Calcium ---
+	ax1 = CM.Axis(fig[1, 1], xlabel="CatSim HU", ylabel="BasisSimulator HU", title="Calcium")
 
-    CM.axislegend(ax, position=:lt)
-    CM.save(joinpath(FIGURES_DIR, "nb01_hu_accuracy.png"), fig, px_per_unit=2)
-    fig
+	ca_x = [hu_accuracy_results[i].catsim_hu for i in ca_idx]
+	ca_y = [hu_accuracy_results[i].basis_hu for i in ca_idx]
+
+	CM.scatter!(ax1, ca_x, ca_y, color=:blue, marker=:circle, markersize=12, label="Calcium")
+
+	ca_lo, ca_hi = min(minimum(ca_x), minimum(ca_y)), max(maximum(ca_x), maximum(ca_y))
+	ca_pad = 0.05 * (ca_hi - ca_lo)
+	CM.lines!(ax1, [ca_lo - ca_pad, ca_hi + ca_pad], [ca_lo - ca_pad, ca_hi + ca_pad], color=:gray, linestyle=:dash, label="Identity")
+
+	ca_n = length(ca_x)
+	ca_slope = (ca_n * sum(ca_x .* ca_y) - sum(ca_x) * sum(ca_y)) / (ca_n * sum(ca_x .^ 2) - sum(ca_x)^2)
+	ca_int = (sum(ca_y) - ca_slope * sum(ca_x)) / ca_n
+	ca_xfit = collect(range(ca_lo - ca_pad, ca_hi + ca_pad, length=100))
+	ca_sign = ca_int >= 0 ? "+" : "-"
+	ca_eq = "y = $(round(ca_slope, digits=3))x $(ca_sign) $(round(abs(ca_int), digits=1))"
+	CM.lines!(ax1, ca_xfit, ca_int .+ ca_slope .* ca_xfit, color=:blue, linewidth=2, label=ca_eq)
+
+	CM.axislegend(ax1, position=:rb)
+
+	# --- Iodine ---
+	ax2 = CM.Axis(fig[2, 1], xlabel="CatSim HU", ylabel="BasisSimulator HU", title="Iodine")
+
+	i_x = [hu_accuracy_results[i].catsim_hu for i in i_idx]
+	i_y = [hu_accuracy_results[i].basis_hu for i in i_idx]
+
+	CM.scatter!(ax2, i_x, i_y, color=:red, marker=:utriangle, markersize=12, label="Iodine")
+
+	i_lo, i_hi = min(minimum(i_x), minimum(i_y)), max(maximum(i_x), maximum(i_y))
+	i_pad = 0.05 * (i_hi - i_lo)
+	CM.lines!(ax2, [i_lo - i_pad, i_hi + i_pad], [i_lo - i_pad, i_hi + i_pad], color=:gray, linestyle=:dash, label="Identity")
+
+	i_n = length(i_x)
+	i_slope = (i_n * sum(i_x .* i_y) - sum(i_x) * sum(i_y)) / (i_n * sum(i_x .^ 2) - sum(i_x)^2)
+	i_int = (sum(i_y) - i_slope * sum(i_x)) / i_n
+	i_xfit = collect(range(i_lo - i_pad, i_hi + i_pad, length=100))
+	i_sign = i_int >= 0 ? "+" : "-"
+	i_eq = "y = $(round(i_slope, digits=3))x $(i_sign) $(round(abs(i_int), digits=1))"
+	CM.lines!(ax2, i_xfit, i_int .+ i_slope .* i_xfit, color=:red, linewidth=2, label=i_eq)
+
+	CM.axislegend(ax2, position=:rb)
+
+	CM.save(joinpath(FIGURES_DIR, "nb01_hu_accuracy.png"), fig, px_per_unit=2)
+	fig
 end
 
 # ╔═╡ 0081a253-6a6a-4a1b-bad0-6b4ca76e1b29
@@ -1251,7 +1290,7 @@ end
 # ╟─abbda23d-c67e-4ce8-bc4e-fccbdb6bead7
 # ╟─5caa1e46-8e9e-4b5d-b66c-bc0318a4fae8
 # ╠═3651a048-d7e0-4f84-a448-b0d8da3e1e28
-# ╟─6806a79b-36b3-4d61-b24e-e4c587784a19
+# ╟─751c7086-603b-480f-9be6-de51f6cc446d
 # ╟─0081a253-6a6a-4a1b-bad0-6b4ca76e1b29
 # ╠═4a65cf5c-26c9-47b3-9f1b-779757148567
 # ╠═4eac87de-e0a2-4e9f-9fc4-045f75ba5cdd

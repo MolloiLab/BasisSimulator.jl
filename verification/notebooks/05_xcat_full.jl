@@ -1001,7 +1001,7 @@ function plot_scanner_comparison_eict_only(volumes, titles; slice_idx=32, window
 end
 
 # ╔═╡ 3944d6e8-2109-4464-aad2-dee03ad9b0f5
-@bind z2 UI.Slider(axes(recon_eict_fdk_hu, 3); show_value = true)
+@bind z2 UI.Slider(axes(recon_eict_fdk_hu, 3); show_value = true, default = size(recon_eict_fdk_hu, 3) ÷ 2)
 
 # ╔═╡ fc8b2628-60cc-4110-a0ba-b9c44b08ce6b
 let
@@ -1300,7 +1300,7 @@ Comparison of Virtual Monoenergetic Images at 40, 70, 100, 140 keV.
 """
 
 # ╔═╡ 00000024-0000-0000-0000-000000000009
-function plot_vmi_comparison(dual_vmi_vols, pcct_vmi_vols; slice_idx=32, window=(-300, 400))
+function plot_vmi_comparison(dual_vmi_vols, pcct_vmi_vols; slice_idx=32, window=(-200, 600))
 	energies = [40, 70, 100, 140]
 
 	f = CM.Figure(size=(1100, 600))
@@ -1548,7 +1548,7 @@ end
 # ╟─1b8aa963-7a95-4cc6-8670-de2e2caf28ab
 # ╟─00000016-0000-0000-0000-000000000001
 # ╠═00000017-0000-0000-0000-000000000001
-# ╟─f409ebb5-12b9-455b-ac5e-4e96b95e0410
+# ╠═f409ebb5-12b9-455b-ac5e-4e96b95e0410
 # ╟─3944d6e8-2109-4464-aad2-dee03ad9b0f5
 # ╟─fc8b2628-60cc-4110-a0ba-b9c44b08ce6b
 # ╟─00000018-0000-0000-0000-000000000001

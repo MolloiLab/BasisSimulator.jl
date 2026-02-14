@@ -688,7 +688,7 @@ let
 	fig = CM.Figure(size=(1600, 450), fontsize=14)
 	for (i, label) in enumerate(bin_labels)
 		ax = CM.Axis(fig[1, i], title=label, titlesize=13, aspect=CM.DataAspect())
-		CM.heatmap!(ax, pcct_bin_recons[i][:, :, mid_z], colormap=:grays)
+		CM.heatmap!(ax, pcct_bin_recons[i][:, :, mid_z], colormap=:grays, colorrange = (-0.05, 0.5))
 		CM.hidedecorations!(ax)
 	end
 	CM.save(joinpath(FIGURES_DIR, "nb04_4bin_reconstructions.png"), fig, px_per_unit=3)
@@ -707,7 +707,7 @@ let
 	for (idx, E) in enumerate(vmi_E)
 		ax = CM.Axis(fig[1, idx], title="VMI $(Int(E)) keV", titlesize=13, aspect=CM.DataAspect())
 		if haskey(pcct_vmi_volumes, E)
-			CM.heatmap!(ax, pcct_vmi_volumes[E][:, :, mid_z], colormap=:grays)
+			CM.heatmap!(ax, pcct_vmi_volumes[E][:, :, mid_z], colormap=:grays, colorrange = (-0.05, 0.5))
 		end
 		CM.hidedecorations!(ax)
 	end
