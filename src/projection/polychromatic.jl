@@ -493,7 +493,9 @@ function forward_project!(
     bhc::Union{Nothing, Union{BHCPolynomial, BeamHardeningCorrection}} = nothing,
     calibrate::Bool = true,
     max_prep::Union{Nothing, Real} = nothing,
-    noise_seed::Union{Nothing, Int} = nothing
+    noise_seed::Union{Nothing, Int} = nothing,
+    # Volume bounds override (for phantoms with FOV different from recon FOV)
+    volume_fov::Union{Nothing, NTuple{3, Float64}} = nothing
 ) where T <: AbstractFloat
 
     # Get signal chain effects from PhysicsConfig if not provided as kwargs
@@ -527,7 +529,8 @@ function forward_project!(
             sinogram, volume_or_mask, geom;
             energy=energy, energies=energies, weights=weights, materials=materials,
             physics=physics, heel_effect=effective_heel, das_model=effective_das,
-            bhc=effective_bhc, max_prep=max_prep, noise_seed=effective_seed
+            bhc=effective_bhc, max_prep=max_prep, noise_seed=effective_seed,
+            volume_fov=volume_fov
         )
     end
 
@@ -536,7 +539,7 @@ function forward_project!(
     # Determine mode based on input type and kwargs
     if eltype(volume_or_mask) <: AbstractFloat
         # Direct volume input - simple monochromatic projection
-        siddon_forward_project!(sinogram, volume_or_mask, geom)
+        siddon_forward_project!(sinogram, volume_or_mask, geom; volume_fov=volume_fov)
 
     elseif eltype(volume_or_mask) == UInt8
         # Mask input - need energy specification
@@ -548,11 +551,13 @@ function forward_project!(
 
         if energy !== nothing
             # Monochromatic mode with single energy
-            _forward_project_mono!(sinogram, mask, geom, T(energy), materials)
+            _forward_project_mono!(sinogram, mask, geom, T(energy), materials;
+                                   volume_fov=volume_fov)
 
         elseif energies !== nothing && weights !== nothing
             # Polychromatic mode
-            _forward_project_poly!(sinogram, mask, geom, energies, weights, materials)
+            _forward_project_poly!(sinogram, mask, geom, energies, weights, materials;
+                                   volume_fov=volume_fov)
 
         else
             error("Must specify either `energy` (single keV) or `energies` + `weights` (spectrum)")
@@ -748,7 +753,8 @@ function _forward_project_with_signal_chain!(
     das_model::Union{Nothing, DASModel},
     bhc::Union{Nothing, Union{BHCPolynomial, BeamHardeningCorrection}},
     max_prep::Union{Nothing, Real},
-    noise_seed::Union{Nothing, Int}
+    noise_seed::Union{Nothing, Int},
+    volume_fov::Union{Nothing, NTuple{3, Float64}} = nothing
 ) where T <: AbstractFloat
 
     # =========================================================================
@@ -760,16 +766,18 @@ function _forward_project_with_signal_chain!(
     # STEP 1: Get raw sinogram (line integrals)
     # =========================================================================
     if eltype(volume_or_mask) <: AbstractFloat
-        siddon_forward_project!(sinogram, volume_or_mask, geom)
+        siddon_forward_project!(sinogram, volume_or_mask, geom; volume_fov=volume_fov)
     elseif eltype(volume_or_mask) == UInt8
         mask = volume_or_mask
         if materials === nothing
             error("materials must be provided when using a mask input")
         end
         if energy !== nothing
-            _forward_project_mono!(sinogram, mask, geom, T(energy), materials)
+            _forward_project_mono!(sinogram, mask, geom, T(energy), materials;
+                                   volume_fov=volume_fov)
         elseif energies !== nothing && weights !== nothing
-            _forward_project_poly!(sinogram, mask, geom, energies, weights, materials)
+            _forward_project_poly!(sinogram, mask, geom, energies, weights, materials;
+                                   volume_fov=volume_fov)
         else
             error("Must specify either `energy` or `energies` + `weights`")
         end
@@ -978,7 +986,8 @@ function _forward_project_mono!(
     mask::AbstractArray{UInt8, 3},
     geom::CTGeometry,
     energy_keV::T,
-    materials::Vector
+    materials::Vector;
+    volume_fov::Union{Nothing, NTuple{3, Float64}} = nothing
 ) where T <: AbstractFloat
 
     # Create μ volume at this energy
@@ -986,7 +995,7 @@ function _forward_project_mono!(
     create_μ_volume!(μ_volume, mask, materials, energy_keV)
 
     # Forward project
-    return siddon_forward_project!(sinogram, μ_volume, geom)
+    return siddon_forward_project!(sinogram, μ_volume, geom; volume_fov=volume_fov)
 end
 
 """
