@@ -129,7 +129,7 @@
       "id": "NOISE-012",
       "title": "DIAGNOSTIC: Verify spectrum weight normalization",
       "priority": 2,
-      "status": "open",
+      "status": "done",
       "type": "DIAGNOSTIC",
       "description": "The polychromatic forward projection uses:\n  I/I₀ = Σ w_e × exp(-L_e)\n  p = -log(I/I₀)\n\nThis assumes Σ w_e = 1.0 (normalized weights). If weights don't sum to 1:\n- If Σw > 1: I/I₀ > 1 for air (p < 0), but relative noise should be OK\n- If Σw < 1: I/I₀ < 1 for air, noise slightly higher\n\nBut the bigger issue: does downsample_spectrum() preserve normalization?\n\nCheck:\n1. load_spectrum() — does it normalize weights to sum=1?\n2. downsample_spectrum() — after binning, do new weights sum=1?\n3. If weights sum to 0.95 (5% lost in binning), this is a small but real effect\n\nACCEPTANCE: Verify weights sum to 1.0 after loading and downsampling. If not, quantify impact.",
       "testCommand": "Read spectrum.jl load_spectrum and downsample_spectrum, check normalization",
