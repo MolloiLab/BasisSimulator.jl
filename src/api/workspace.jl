@@ -214,6 +214,24 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     )
     R_energies_vec = collect(range(1.0, kVp, length=n_energies))
 
+    # Recalibrate BHC for PCCT using effective spectrum weights.
+    # The PCCT combined sinogram uses effective weights w_eff = w × η × Σ_b R[E,b]
+    # because the R matrix drops low-energy photons (row sum < 1.0), making the
+    # effective spectrum harder. BHC must be calibrated to this harder spectrum.
+    if config.bhc !== nothing
+        R_row_sums = vec(sum(R_mat; dims=2))  # Σ_b R[E,b] for each energy
+        w_eff = Float64.(weights_vec) .* Float64.(η_vec) .* R_row_sums
+        ref_energy = sum(Float64.(energies) .* w_eff) / sum(w_eff)
+        pcct_bhc = calibrate_bhc(energies, w_eff;
+                                  order=5, reference_energy_keV=ref_energy)
+        config = PhysicsConfig(
+            config.fill_factor, config.flat_filter, config.bowtie_filter,
+            config.scatter, config.scatter_correction, config.crosstalk,
+            config.optical_crosstalk, config.focal_spot, config.detector_efficiency,
+            config.noise, config.lag, config.noise_seed, config.energy_keV,
+            config.heel_effect, config.das_model, pcct_bhc)
+    end
+
     # Pre-compute I0_bins for normalization (forward projection)
     I0_bins_norm_vec = if use_detector_fx && !use_corrections
         _compute_degraded_I0(pcct_detector, energies, weights_vec, η_vec, thresholds, kVp, 1e6, 1e8; R=R_mat)
