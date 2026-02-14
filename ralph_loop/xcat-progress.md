@@ -659,6 +659,78 @@ cylinder avoids this issue.
 
 ---
 
+### 2026-02-14: XCAT-008 — DIAGNOSTIC: PCCT combined sinogram vs EICT polychromatic [PASS]
+
+**Question:** Do the PCCT combined sinogram and EICT polychromatic sinogram produce the
+same attenuation value for the same path length?
+
+**Finding 1: R matrix does NOT conserve total photon count**
+
+The spectral response matrix R at photon_counting.jl:2764-2769 clamps rows to sum ≤ 1.0:
+```julia
+for i in 1:n_energy_points
+    row_sum = sum(R[i, :])
+    if row_sum > 1.0
+        R[i, :] ./= row_sum
+    end
+end
+```
+
+Rows with sum < 1.0 represent photon loss (energy falls below lowest threshold or is
+redistributed outside detection window). This is energy-dependent:
+- Low energies near thresholds: Gaussian blur → falls below T₁ → lost
+- Energies near K-edges (Cd 26.7, Te 31.8 keV): fluorescence escape → reduced energy → lost
+- High energies: well above thresholds → sum ≈ 1.0 (fully detected)
+
+**Finding 2: PCCT combined sinogram uses effectively harder spectrum**
+
+EICT polychromatic integral: `p = -log(Σ w_E × η_E × exp(-μ_E × d) / Σ w_E × η_E)`
+PCCT combined sinogram: `p = -log(Σ w_E × η_E × (Σ_b R[E,b]) × exp(-μ_E × d) / Σ w_E × η_E × (Σ_b R[E,b]))`
+
+The effective PCCT spectrum weights are `w_eff_E = w_E × η_E × Σ_b R[E,b]`, which
+preferentially removes low-energy photons (where R row sum < 1.0). This makes the
+effective spectrum HARDER → less beam hardening.
+
+**Finding 3: BHC calibration uses WRONG effective spectrum for PCCT**
+
+The XCAT-009 fix uses `calibrate_bhc(energies, weights; ...)` with the RAW spectrum weights.
+For PCCT, the effective spectrum after R-matrix filtering has different weights. The BHC
+polynomial is therefore calibrated for a softer spectrum than what the PCCT combined sinogram
+actually represents → BHC over-corrects → cupping.
+
+**THIS IS THE ROOT CAUSE of the ~30 HU PCCT-EICT cupping difference!**
+
+**Finding 4: For NB05 with fidelity=:high, pileup adds additional cupping**
+
+With `fidelity=:high`, pileup is active (5ns dead time, ~1e8 photon/s flux):
+- Edge pixels (short paths): high count rate → ~50% pileup loss
+- Center pixels (long paths): low count rate → negligible pileup
+- I0_degraded accounts for pileup at unattenuated level only
+- Path-length-dependent pileup bias ≈ (n₀-n)×τ → negative bias at center → cupping
+
+Estimated pileup bias for 30cm water: ~0.5 in sinogram domain (7.5% of μd=6.6).
+
+**Finding 5: Charge sharing causes edge artifacts but NOT cupping**
+
+Spatial charge sharing (24% probability at 0.4mm pixels) blurs counts between neighbors.
+At tissue boundaries, this creates edge blurring. In uniform regions, neighbors are equal
+so sharing is a no-op. This causes edge artifacts but NOT the systematic center-vs-edge
+cupping pattern.
+
+**Root Cause Summary:**
+
+| Effect | Cupping Contribution | Mechanism |
+|--------|---------------------|-----------|
+| R-matrix spectral filtering | **PRIMARY (~30 HU)** | Harder effective spectrum → BHC over-correction |
+| Pileup (fidelity=:high only) | **SECONDARY (~10-50 HU)** | Path-length-dependent count loss |
+| Charge sharing | NONE (cupping) | Edge artifacts only, not cupping |
+| kVp difference (120 vs 140) | **INCLUDED** | Calibrated BHC handles this correctly |
+
+**Fix Required:** Compute PCCT BHC using effective weights `w_eff = w × η × Σ_b R[E,b]`
+instead of raw spectrum weights. This should eliminate the ~30 HU cupping difference.
+
+---
+
 ### 2026-02-14: XCAT-009 — FIX: Replace bhc_water_default() with calibrate_bhc() [DONE]
 
 **Changes made:**
