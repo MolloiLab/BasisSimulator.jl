@@ -91,7 +91,7 @@
       "id": "GEO-007",
       "title": "AUDIT: Check helical reconstruction geometry",
       "priority": 2,
-      "status": "open",
+      "status": "done",
       "type": "AUDIT",
       "description": "Helical (spiral) CT reconstruction has unique z-geometry requirements:\n\n1. **helical_recon.jl**: \n   - Table feed / pitch calculation — uses detector z-coverage\n   - z-coverage = n_rows × detector_row_size\n   - Does it correctly use detector_row_size (not detector_col_size)?\n   - Does the z-interpolation use pixel_row_size?\n\n2. **helical_protocols.jl**:\n   - Protocol definitions — pitch ratio uses z-coverage\n   - Verify z-coverage formula\n\nACCEPTANCE: Helical geometry verified or issues flagged.",
       "testCommand": "grep -rn 'pixel_size\\|pixel_row\\|z_coverage\\|pitch' src/reconstruction/fbp/helical_recon.jl src/scanners/helical_protocols.jl",
