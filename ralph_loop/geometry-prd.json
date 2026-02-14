@@ -1,0 +1,131 @@
+{
+  "project": "BasisSimulator.jl — Z/XY Geometry Scaling Audit",
+  "version": "1.0.0",
+  "created": "2026-02-14",
+  "goal": "Exhaustive audit of z-direction and xy-direction geometry scaling throughout the entire codebase. Verify PCCT and EICT paths are consistent. Find and fix any remaining mismatches.",
+  "CRITICAL_STATUS": {
+    "context": "Recent fixes changed 7 files from pixel_size to pixel_row_size for z-direction, added volume_fov kwarg to separate phantom FOV from recon FOV, and fixed per-scanner water calibration z_cm. This audit verifies ALL geometry usage is correct.",
+    "known_correct": [
+      "siddon.jl: pixel_row_size for z, pixel_size for xy",
+      "backprojection.jl: pixel_row_size for z, pixel_size for xy",
+      "filtering.jl: pixel_row_size for z, pixel_size for xy",
+      "flat_filter.jl: pixel_row_size_det for z, pixel_size_det for xy",
+      "bowtie_filter.jl: pixel_row_size_det for z, pixel_size_det for xy",
+      "focal_spot.jl: pixel_row_size_det for z, pixel_size_det for xy",
+      "detector_efficiency.jl: pixel_row_size_det for z",
+      "CTGeometry constructor: detector_row_size for z, detector_col_size for xy",
+      "NB05: per-scanner z_cm for water calibration"
+    ],
+    "suspected_gaps": [
+      "polychromatic.jl: volume_fov threading not fully verified",
+      "driver.jl: volume_fov in all simulate! paths not fully verified",
+      "photon_counting.jl: volume_fov in pcct_forward_project not fully verified",
+      "scatter.jl, crosstalk.jl, detector_lag.jl, heel_effect.jl: may use pixel_size where pixel_row_size needed",
+      "SIRT/CGLS iterative recon: may have z-direction issues",
+      "helical_recon.jl: spiral pitch uses z geometry",
+      "NB01-04: may still use hardcoded z_cm values"
+    ]
+  },
+  "stories": [
+    {
+      "id": "GEO-001",
+      "title": "AUDIT: grep ALL pixel_size/pixel_row_size/pixel_col_size usage in src/",
+      "priority": 0,
+      "status": "open",
+      "type": "AUDIT",
+      "description": "Run exhaustive grep for every occurrence of pixel_size, pixel_row_size, pixel_col_size across the ENTIRE src/ directory. For each occurrence, verify:\n1. Is it used in xy-direction (columns/u) or z-direction (rows/v)?\n2. Is the correct variant used? (pixel_size/pixel_col_size for xy, pixel_row_size for z)\n3. Document every occurrence with file:line and verdict\n\nThe 7 known-correct files are: siddon.jl, backprojection.jl, filtering.jl, flat_filter.jl, bowtie_filter.jl, focal_spot.jl, detector_efficiency.jl.\n\nFocus on files NOT in this list — especially:\n- scatter.jl (scatter simulation may use detector geometry)\n- crosstalk.jl (pixel neighbor operations)\n- detector_lag.jl (temporal, but may reference geometry)\n- heel_effect.jl (anode-cathode axis uses detector geometry)\n- das_model.jl (gain may vary by detector position)\n- physics_pipeline.jl (orchestrator — may pass geometry)\n- photon_counting.jl (PCCT detector uses pixel geometry)\n- pcct/*.jl files (charge_transport, charge_collection, etc.)\n\nACCEPTANCE: Complete list of every pixel_size/pixel_row_size usage with file:line, direction (xy/z), and CORRECT/WRONG verdict.",
+      "testCommand": "grep -rn 'pixel_size\\|pixel_row_size\\|pixel_col_size' src/",
+      "blockedBy": []
+    },
+    {
+      "id": "GEO-002",
+      "title": "AUDIT: grep ALL detector_row_size/detector_col_size usage in src/",
+      "priority": 0,
+      "status": "open",
+      "type": "AUDIT",
+      "description": "Same as GEO-001 but for Scanner-level fields. The Scanner struct has:\n- detector_row_size: mm at isocenter, z-direction\n- detector_col_size: mm at isocenter, xy-direction\n\nGrep for ALL uses of detector_row_size and detector_col_size in src/ AND verification/.\nFor each occurrence verify it's used for the correct direction.\n\nAlso check for any uses of detector_size (without row/col qualifier) that might be ambiguous.\n\nKey files to check:\n- geometry/scanner.jl (CTGeometry constructor — known correct)\n- scanners/*.jl (scanner definitions — verify row vs col assignment)\n- api/workspace.jl (workspace creation — may derive geometry)\n- api/driver.jl (simulation — may reference scanner fields)\n- detector/photon_counting.jl (PCCT detector setup)\n\nACCEPTANCE: Complete list with file:line, direction, and verdict.",
+      "testCommand": "grep -rn 'detector_row_size\\|detector_col_size\\|detector_size' src/ verification/",
+      "blockedBy": []
+    },
+    {
+      "id": "GEO-003",
+      "title": "AUDIT: Verify volume_fov threading in ALL forward projection paths",
+      "priority": 0,
+      "status": "open",
+      "type": "AUDIT",
+      "description": "The volume_fov kwarg was added to separate phantom physical extent from reconstruction FOV. Verify it's threaded correctly through ALL projection paths:\n\n1. **siddon.jl**: siddon_forward_project!() — KNOWN CORRECT (accepts volume_fov, uses it for bounds)\n\n2. **polychromatic.jl**: Check EVERY function that calls siddon_forward_project!:\n   - _forward_project_poly!() — does it accept and pass volume_fov?\n   - forward_project() public API — does it accept and pass volume_fov?\n   - forward_project!() public API — does it accept and pass volume_fov?\n   - Any other wrapper functions?\n\n3. **driver.jl**: Check ALL simulate! paths:\n   - simulate!(ws::EICTWorkspace, ...) — passes volume_fov=phantom.fov?\n   - simulate!(ws::EICTDualWorkspace, ...) — passes volume_fov=phantom.fov?\n   - simulate!(ws::PCCTWorkspace, ...) — passes volume_fov=phantom.fov?\n   - _simulate_axial_single() — passes volume_fov?\n   - _simulate_axial_dual() — passes volume_fov?\n   - _simulate_axial_pcct() — passes volume_fov?\n\n4. **photon_counting.jl**: pcct_forward_project() — passes volume_fov to siddon?\n\n5. **ir/sirt.jl and ir/cgls.jl**: Iterative reconstruction forward projects — these should use geom.fov (recon FOV), NOT phantom.fov. Verify.\n\nACCEPTANCE: Every forward projection call documented with volume_fov status. Any missing threading flagged.",
+      "testCommand": "grep -rn 'volume_fov' src/",
+      "blockedBy": []
+    },
+    {
+      "id": "GEO-004",
+      "title": "AUDIT: Verify ALL 5 notebooks z_cm and fov_cm consistency",
+      "priority": 0,
+      "status": "open",
+      "type": "AUDIT",
+      "description": "Check all 5 verification notebooks for correct z_cm and fov_cm usage:\n\n1. **NB01** (01_single_kvp_verification.jl):\n   - What scanner? What detector_row_size?\n   - What z_cm is used? Does it match detector_row_size × n_slices / 10?\n   - What fov_cm is used? Is it appropriate for the phantom?\n\n2. **NB02** (02_multi_dose_and_iterative_reconstruction.jl):\n   - Same checks as NB01\n   - Does iterative recon (SIRT/CGLS) use the same z_cm?\n\n3. **NB03** (03_dual_kvp_vmi_verification.jl):\n   - Dual-kVp — both low and high kVp use same geometry?\n   - z_cm consistent with scanner?\n\n4. **NB04** (04_pcct_demonstration.jl):\n   - PCCT scanner — uses 0.4mm row pitch?\n   - z_cm = n_slices × 0.4 / 10?\n   - Water calibration z_cm matches?\n\n5. **NB05** (05_xcat_full.jl):\n   - EICT: z_cm = n_recon_slices × 0.625 / 10 — verify\n   - PCCT: z_cm = n_recon_slices × 0.4 / 10 — verify\n   - Water cal: per-scanner z_cm — verify\n   - Dual-kVp: same z_cm as single kVp — verify\n\nACCEPTANCE: All 5 notebooks documented with z_cm values, scanner row pitch, and consistency verdict.",
+      "testCommand": "grep -n 'z_cm\\|fov_cm\\|detector_row_size' verification/notebooks/*.jl",
+      "blockedBy": []
+    },
+    {
+      "id": "GEO-005",
+      "title": "AUDIT: Check PCCT-specific geometry in photon_counting.jl and pcct/*.jl",
+      "priority": 1,
+      "status": "open",
+      "type": "AUDIT",
+      "description": "The PCCT detector physics code uses pixel geometry extensively. Verify ALL geometry usage:\n\n1. **photon_counting.jl**:\n   - pcct_forward_project(): How does it get pixel geometry? From geom? From detector struct?\n   - Does it pass pixel_size and pixel_row_size correctly to siddon?\n   - PhotonCountingDetector struct: what pixel_size_mm field does it have? Is this row or col?\n   - compute_spectral_response_matrix(): uses pixel_size_mm — is this row, col, or both?\n\n2. **pcct/charge_transport.jl**:\n   - mean_charge_cloud_sigma_mm(): uses geometry — which pixel dimension?\n   - Koch-Mehrin ODE model: pixel pitch assumption — row or col?\n\n3. **pcct/charge_collection.jl**:\n   - Hecht CCE model: depends on detector depth, not pixel pitch (should be OK)\n   - small_pixel_weighting(): uses pixel geometry — row or col?\n\n4. **pcct/k_fluorescence.jl**:\n   - Fluorescence escape: depends on pixel geometry — which dimension?\n\n5. **pcct/pileup_model.jl**:\n   - Pileup: depends on count rate per pixel — pixel area calculation?\n   - Is area = row_pitch × col_pitch? Or row_pitch²?\n\n6. **pcct/detector_response.jl**:\n   - Unified DRM: uses pixel_size_mm — verify which dimension\n\nCRITICAL: The NAEOTOM Alpha has SQUARE pixels (0.4mm × 0.4mm) so row=col for this scanner.\nBut the code should be general enough to handle non-square PCCT pixels.\n\nACCEPTANCE: All PCCT geometry usage documented. Any hardcoded square-pixel assumptions flagged.",
+      "testCommand": "grep -rn 'pixel_size\\|pixel_pitch\\|pixel_row\\|pixel_col' src/detector/photon_counting.jl src/detector/pcct/",
+      "blockedBy": []
+    },
+    {
+      "id": "GEO-006",
+      "title": "AUDIT: Check iterative recon (SIRT, CGLS, MBIR, Hybrid IR) z-geometry",
+      "priority": 1,
+      "status": "open",
+      "type": "AUDIT",
+      "description": "Iterative reconstruction methods forward-project the RECONSTRUCTION volume (not the phantom), so they should use geom.fov (recon FOV), NOT phantom.fov. Verify:\n\n1. **sirt.jl**: SIRT forward projection calls — uses siddon with what FOV?\n2. **cgls.jl**: CGLS forward/backward projection — uses siddon with what FOV?\n3. **hybrid_ir.jl**: PWLS refinement — forward projection uses what FOV?\n4. **mbir.jl**: Model-based IR — forward projection uses what FOV?\n5. **statistical_ir.jl**: PWLS core — forward projection uses what FOV?\n\nAll of these should NOT pass volume_fov (letting siddon default to geom.fov for the recon volume). If any pass phantom.fov, that's wrong — they'd be projecting a recon-sized volume but treating it as phantom-sized.\n\nAlso verify:\n- Do these use pixel_row_size correctly for z-direction?\n- Is the volume_size parameter consistent with z_cm?\n\nACCEPTANCE: All iterative recon paths verified. Any volume_fov misuse or z-direction issues flagged.",
+      "testCommand": "grep -rn 'siddon\\|forward_project\\|volume_fov' src/reconstruction/ir/ src/reconstruction/hybrid_ir/ src/reconstruction/mbir/",
+      "blockedBy": []
+    },
+    {
+      "id": "GEO-007",
+      "title": "AUDIT: Check helical reconstruction geometry",
+      "priority": 2,
+      "status": "open",
+      "type": "AUDIT",
+      "description": "Helical (spiral) CT reconstruction has unique z-geometry requirements:\n\n1. **helical_recon.jl**: \n   - Table feed / pitch calculation — uses detector z-coverage\n   - z-coverage = n_rows × detector_row_size\n   - Does it correctly use detector_row_size (not detector_col_size)?\n   - Does the z-interpolation use pixel_row_size?\n\n2. **helical_protocols.jl**:\n   - Protocol definitions — pitch ratio uses z-coverage\n   - Verify z-coverage formula\n\nACCEPTANCE: Helical geometry verified or issues flagged.",
+      "testCommand": "grep -rn 'pixel_size\\|pixel_row\\|z_coverage\\|pitch' src/reconstruction/fbp/helical_recon.jl src/scanners/helical_protocols.jl",
+      "blockedBy": []
+    },
+    {
+      "id": "GEO-008",
+      "title": "AUDIT: Check scatter.jl geometry for z-direction correctness",
+      "priority": 1,
+      "status": "open",
+      "type": "AUDIT",
+      "description": "The scatter simulation at src/detector/scatter.jl models patient-size-dependent scatter. This requires correct geometry in both directions.\n\nCheck:\n1. Does scatter use detector pixel geometry? If so, which dimension?\n2. Does scatter compute patient size from sinogram? How?\n3. Any position-dependent scatter kernel that uses pixel_size vs pixel_row_size?\n4. Does scatter model use cone angle (z-dependent) or fan angle (xy-dependent)?\n5. If scatter uses a kernel, is it applied correctly in both row and column dimensions?\n\nACCEPTANCE: Scatter geometry verified or issues flagged.",
+      "testCommand": "grep -rn 'pixel_size\\|pixel_row\\|geom\\.' src/detector/scatter.jl",
+      "blockedBy": []
+    },
+    {
+      "id": "GEO-009",
+      "title": "FIX: Correct any z/xy geometry issues found in GEO-001 through GEO-008",
+      "priority": 0,
+      "status": "open",
+      "type": "FIX",
+      "description": "Based on findings from all audit stories, fix any remaining z/xy geometry issues.\n\nLikely fixes:\n1. Replace pixel_size with pixel_row_size in z-direction code paths\n2. Add missing volume_fov threading\n3. Fix hardcoded square-pixel assumptions\n4. Correct z_cm values in notebooks\n\nKeep changes minimal and targeted. Each fix should be a separate commit.\n\nACCEPTANCE: All identified geometry issues fixed. No regressions.",
+      "testCommand": "grep -rn 'pixel_size' src/ | grep -v pixel_row_size | grep -v pixel_col_size | grep -v 'pixel_size_det\\|pixel_size_mm'",
+      "blockedBy": ["GEO-001", "GEO-002", "GEO-003", "GEO-004", "GEO-005", "GEO-006"]
+    },
+    {
+      "id": "GEO-010",
+      "title": "VALIDATE: Run NB01 and NB04 to verify no regressions",
+      "priority": 3,
+      "status": "open",
+      "type": "VALIDATE",
+      "description": "After all fixes, run at least NB01 (EICT baseline) and NB04 (PCCT baseline) to verify:\n1. No compilation errors\n2. HU values are reasonable\n3. No new artifacts introduced\n4. PCCT and EICT reconstructions both look correct\n\nIf Julia/GPU is not available, at minimum verify code parses without errors.\n\nACCEPTANCE: Notebooks run or parse without errors.",
+      "testCommand": "julia +1.12 --project=. -e 'using BasisSimulator; println(\"OK\")'",
+      "blockedBy": ["GEO-009"]
+    }
+  ]
+}
