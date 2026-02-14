@@ -526,7 +526,8 @@ pcct_n_views = 1600 # standard clinical
 protocol_pcct_standard = BS.CTProtocol(
 	kVp = 140.0,
 	mA = 300.0,
-	views = pcct_n_views  # auto: 600 (standard Siemens clinical)
+	views = pcct_n_views,
+	rotation_time = 0.25  # NAEOTOM Alpha fast gantry
 )
 
 # ╔═╡ a70bc722-e769-4132-b082-b0e89a6822b0
@@ -581,8 +582,8 @@ For z-coverage, we reconstruct a subset of slices for demonstration:
 
 # ╔═╡ 00000009-0000-0000-0000-000000000001
 begin
-	# Clinical reconstruction FOV (35cm for body)
-	recon_fov_cm = 35.0
+	# Clinical cardiac reconstruction FOV (25cm for cardiac)
+	recon_fov_cm = 25.0
 
 	# Output matrix: match recon to phantom resolution
 	# At full resolution (factor=1,2): 512×512 clinical standard
@@ -590,9 +591,8 @@ begin
 	# reconstruct finer than the input data supports
 	recon_xy = min(512, min(size(phantom_labeled, 1), size(phantom_labeled, 2)))
 
-	# Z slices: cover ~10cm of the phantom (100 slices at 1mm)
-	n_recon_slices = 64
-	# n_recon_slices = 8 # near fan beam
+	# Z slices: 128 for ~8cm coverage (practical for GPU)
+	n_recon_slices = 128
 
 	# VMI energies for spectral imaging
 	vmi_energies = [40.0, 70.0, 100.0, 140.0]
@@ -601,10 +601,9 @@ end
 # ╔═╡ f8fd4ab6-7c18-4d89-9045-41cf60666d63
 begin
 	# ─── EICT (GE Revolution Apex) ───
-	eict_mag = 1100.0 / 625.6 # SDD / SID
-	eict_det_cols = ceil(Int, phantom_extent_mm * eict_mag / 1.0) # 1.0mm col pitch
-	eict_det_rows = min(256, n_recon_slices) # cap at clinical 
-	# eict_det_rows = 8 # near fan beam
+	eict_col_size_iso = 0.6  # mm at isocenter (estimated, not published)
+	eict_det_cols = ceil(Int, phantom_extent_mm / eict_col_size_iso) # isocenter convention
+	eict_det_rows = min(256, n_recon_slices) # cap at clinical max
 end
 
 # ╔═╡ 00000006-0000-0000-0000-000000000001
@@ -617,7 +616,7 @@ scanner_eict = BS.Scanner(
 	detector_rows = eict_det_rows, # auto: min(256, n_recon_slices)
 	detector_cols = eict_det_cols, # auto: phantom_extent × mag / 1.0mm pitch
 	detector_row_size = 0.625, # mm at isocenter — VERIFIED (FDA K213715, GE docs)
-	detector_col_size = 1.0, # mm at detector — ESTIMATED (in-plane pitch not published)
+	detector_col_size = eict_col_size_iso, # mm at isocenter — ESTIMATED (in-plane pitch not published)
 	detector_shape = BS.CURVED_DETECTOR,
 
 	# X-RAY SOURCE
@@ -641,8 +640,7 @@ scanner_eict = BS.Scanner(
 # ╔═╡ b1a2c3d4-e5f6-7890-abcd-222222222222
 begin
 	# ─── PCCT (Siemens NAEOTOM Alpha) ───
-	pcct_mag = 1085.5 / 595.0 # SDD / SID
-	pcct_det_cols = ceil(Int, phantom_extent_mm * pcct_mag / 0.4) # 0.4mm col pitch
+	pcct_det_cols = ceil(Int, phantom_extent_mm / 0.4) # 0.4mm at isocenter
 	pcct_det_rows = min(144, n_recon_slices) # cap at clinical max
 end
 
@@ -702,7 +700,9 @@ md"""
 recon_opts_eict_single = BS.ReconOptions(
 	algorithm = :fdk,
 	matrix_size = (recon_xy, recon_xy, n_recon_slices),
-	fov_cm = recon_fov_cm
+	fov_cm = recon_fov_cm,
+	z_cm = n_recon_slices * 0.625 / 10.0,  # GE native slice thickness 0.625mm
+	filter = :standard
 )
 
 # ╔═╡ 00000012-0000-0000-0000-000000000001
@@ -718,6 +718,8 @@ recon_opts_eict_dual = BS.ReconOptions(
 	algorithm = :fdk,
 	matrix_size = (recon_xy, recon_xy, n_recon_slices),
 	fov_cm = recon_fov_cm,
+	z_cm = n_recon_slices * 0.625 / 10.0,  # GE native slice thickness 0.625mm
+	filter = :standard,
 	vmi_energies = vmi_energies,
 	vmi_basis = (:water, :iodine)
 )
@@ -735,6 +737,8 @@ recon_opts_pcct_standard = BS.ReconOptions(
 	algorithm = :fdk,
 	matrix_size = (recon_xy, recon_xy, n_recon_slices),
 	fov_cm = recon_fov_cm,
+	z_cm = n_recon_slices * 0.4 / 10.0,  # NAEOTOM native slice thickness 0.4mm
+	filter = :standard,
 	vmi_energies = vmi_energies,
 	vmi_basis = [:water, :iodine, :calcium]
 )
@@ -777,7 +781,9 @@ end
 water_recon_opts = BS.ReconOptions(
 	algorithm = :fdk,
 	matrix_size = (256, 256, 8),
-	fov_cm = 25.0
+	fov_cm = 25.0,
+	z_cm = 8 * 0.625 / 10.0,  # match scanner slice thickness
+	filter = :standard
 )
 
 # ╔═╡ ee23461e-378d-4172-8c01-5783e40ef3b8
@@ -822,7 +828,7 @@ end
 	)
 	ws_fdk = BS.create_fdk_recon_workspace(
 		ws.sino_noisy_out, ws.geom, water_recon_opts.matrix_size,
-		filter=BS.HannFilter()
+		filter=BS.StandardFilter()
 	)
 	vol = Array(BS.reconstruct!(
 		ws_fdk, ws.sino_noisy_out, ws.geom, water_recon_opts.matrix_size
@@ -956,7 +962,7 @@ md"""
 	geom = ws.geom
 
 	# --- FDK reconstruction → CPU HU ---
-	ws_fdk = BS.create_fdk_recon_workspace(sino, geom, recon_size; filter=BS.HannFilter())
+	ws_fdk = BS.create_fdk_recon_workspace(sino, geom, recon_size; filter=BS.StandardFilter())
 	fdk_hu = BS.to_hounsfield(
 		Array(BS.reconstruct!(ws_fdk, sino, geom, recon_size));
 		μ_water=μ_water_eict

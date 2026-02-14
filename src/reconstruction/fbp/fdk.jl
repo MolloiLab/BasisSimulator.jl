@@ -123,7 +123,7 @@
 export fdk_reconstruct
 
 """
-    fdk_reconstruct(sinogram, geom, volume_size; filter=RampFilter(), cutoff=1.0)
+    fdk_reconstruct(sinogram, geom, volume_size; filter=StandardFilter(), cutoff=1.0)
 
 Perform FDK (Feldkamp-Davis-Kress) cone-beam CT reconstruction from a sinogram.
 
@@ -194,8 +194,11 @@ where:
 
 # Keyword Arguments
 
-- `filter::FilterType = RampFilter()`: Reconstruction filter type. Options:
-  - `RampFilter()`: Standard Ram-Lak filter (sharpest, highest noise)
+- `filter::FilterType = StandardFilter()`: Reconstruction filter type. Options:
+  - `StandardFilter()`: CatSim-matched apodized ramp (clinical default, balanced noise/resolution)
+  - `SoftFilter()`: Stronger smoothing than Standard (lower noise, softer edges)
+  - `BoneFilter()`: Boosted mid-frequencies (sharper bone edges, higher noise)
+  - `RampFilter()`: Pure Ram-Lak (sharpest, highest noise)
   - `SheppLoganFilter()`: Ramp × sinc (moderate smoothing)
   - `CosineFilter()`: Ramp × cos² (smooth)
   - `HammingFilter()`: Ramp × Hamming window (low noise)
@@ -323,7 +326,7 @@ function fdk_reconstruct(
     sinogram::AbstractArray{T, 3},
     geom::CTGeometry,
     volume_size::NTuple{3, Int};
-    filter::FilterType = RampFilter(),
+    filter::FilterType = StandardFilter(),
     cutoff::Float64 = 1.0
 ) where T <: AbstractFloat
 
@@ -338,7 +341,7 @@ function fdk_reconstruct(
 end
 
 """
-    fdk_reconstruct(sinogram, geom, volume_size, fov; filter=RampFilter(), cutoff=1.0)
+    fdk_reconstruct(sinogram, geom, volume_size, fov; filter=StandardFilter(), cutoff=1.0)
 
 FDK reconstruction with explicit field-of-view (FOV) specification.
 
@@ -365,7 +368,7 @@ original acquisition geometry.
 
 # Keyword Arguments
 
-- `filter::FilterType = RampFilter()`: Reconstruction filter type
+- `filter::FilterType = StandardFilter()`: Reconstruction filter type
 - `cutoff::Float64 = 1.0`: Frequency cutoff (0-1)
 
 # Returns
@@ -410,7 +413,7 @@ function fdk_reconstruct(
     geom::CTGeometry,
     volume_size::NTuple{3, Int},
     fov::NTuple{3, Float64};
-    filter::FilterType = RampFilter(),
+    filter::FilterType = StandardFilter(),
     cutoff::Float64 = 1.0
 ) where T <: AbstractFloat
 

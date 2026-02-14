@@ -1030,7 +1030,7 @@ mutable struct FDKReconWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:A
 end
 
 """
-    create_fdk_recon_workspace(sinogram, geom, volume_size; T=eltype(sinogram), filter=RampFilter(), cutoff=1.0)
+    create_fdk_recon_workspace(sinogram, geom, volume_size; T=eltype(sinogram), filter=StandardFilter(), cutoff=1.0)
 
 Create a pre-allocated workspace for zero-allocation FDK `reconstruct!()`.
 
@@ -1042,7 +1042,7 @@ function create_fdk_recon_workspace(
     geom::CTGeometry,
     volume_size::NTuple{3, Int};
     T::Type{<:AbstractFloat} = eltype(sinogram),
-    filter::Union{FilterType, Symbol} = RampFilter(),
+    filter::Union{FilterType, Symbol} = StandardFilter(),
     cutoff::Float64 = 1.0
 )
     filter = filter isa Symbol ? filter_from_symbol(filter) : filter
@@ -1143,7 +1143,7 @@ mutable struct HIRReconWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:A
 end
 
 """
-    create_hir_recon_workspace(sinogram, geom, volume_size; T=eltype(sinogram), strength=3, filter=RampFilter(), cutoff=1.0)
+    create_hir_recon_workspace(sinogram, geom, volume_size; T=eltype(sinogram), strength=3, filter=StandardFilter(), cutoff=1.0)
 
 Create a pre-allocated workspace for zero-allocation Hybrid IR `reconstruct!()`.
 
@@ -1155,7 +1155,7 @@ function create_hir_recon_workspace(
     volume_size::NTuple{3, Int};
     T::Type{<:AbstractFloat} = eltype(sinogram),
     strength::Int = 3,
-    filter::Union{FilterType, Symbol} = RampFilter(),
+    filter::Union{FilterType, Symbol} = StandardFilter(),
     cutoff::Float64 = 1.0
 )
     filter = filter isa Symbol ? filter_from_symbol(filter) : filter

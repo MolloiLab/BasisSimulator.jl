@@ -714,7 +714,10 @@ fwhm = compute_scatter_kernel_fwhm_pixels(scanner)  # = 100.0 pixels
 ```
 """
 function compute_scatter_kernel_fwhm_pixels(scanner::Scanner)
-    return SCATTER_PHYSICAL_KERNEL_FWHM_MM / scanner.detector_col_size
+    # detector_col_size is at isocenter; scatter is physical at detector face
+    magnification = scanner.source_to_detector / scanner.source_to_isocenter
+    detector_face_pitch = scanner.detector_col_size * magnification
+    return SCATTER_PHYSICAL_KERNEL_FWHM_MM / detector_face_pitch
 end
 
 """

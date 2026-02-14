@@ -166,7 +166,7 @@ function hybrid_ir_reconstruct(
     geometry::CTGeometry,
     volume_size::NTuple{3, Int};
     strength::Int = 3,
-    filter::FilterType = RampFilter(),
+    filter::FilterType = StandardFilter(),
     verbose::Bool = false
 ) where T <: AbstractFloat
 
