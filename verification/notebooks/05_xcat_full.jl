@@ -776,7 +776,7 @@ begin
 	water_phantom_gpu = BS.Phantom(water_mask_gpu, water_materials, water_voxel_cm)
 end
 
-# ╔═╡ 808b0a9b-a3ff-4fad-88f9-3bc2b1df543c
+# ╔═╡ 0d37c90b-89ec-4a2f-b03e-bf7514971d10
 # Small recon for calibration — per-scanner z_cm from native row pitch
 water_recon_opts_eict = BS.ReconOptions(
 	algorithm = :fdk,
@@ -785,6 +785,8 @@ water_recon_opts_eict = BS.ReconOptions(
 	z_cm = 8 * scanner_eict.detector_row_size / 10.0,  # GE: 8×0.625mm = 0.5cm
 	filter = :standard
 )
+
+# ╔═╡ 808b0a9b-a3ff-4fad-88f9-3bc2b1df543c
 water_recon_opts_pcct = BS.ReconOptions(
 	algorithm = :fdk,
 	matrix_size = (256, 256, 8),
@@ -1546,6 +1548,7 @@ end
 # ╠═00000015-0000-0000-0000-000000000001
 # ╟─a0b1c2d3-e4f5-6789-abcd-000000000001
 # ╠═a0b1c2d3-e4f5-6789-abcd-000000000002
+# ╠═0d37c90b-89ec-4a2f-b03e-bf7514971d10
 # ╠═808b0a9b-a3ff-4fad-88f9-3bc2b1df543c
 # ╠═ee23461e-378d-4172-8c01-5783e40ef3b8
 # ╠═d9dfaa24-2254-4953-993f-f9fdb0c3326d
