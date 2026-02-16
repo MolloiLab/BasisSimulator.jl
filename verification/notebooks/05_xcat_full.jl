@@ -188,8 +188,8 @@ begin
 	# ═══════════════════════════════════════════════════════════════════════════
 
 	# DOWNSAMPLE_FACTOR = 1   # UHR: 1600×1400×500 (original, slowest)
-	DOWNSAMPLE_FACTOR = 2   # HR:  800×700×250  (4× faster)
-	# DOWNSAMPLE_FACTOR = 4   # Std: 400×350×125  (16× faster)
+	# DOWNSAMPLE_FACTOR = 2   # HR:  800×700×250  (4× faster)
+	DOWNSAMPLE_FACTOR = 4   # Std: 400×350×125  (16× faster)
 	# DOWNSAMPLE_FACTOR = 5   # Fast: 320×280×100 (~25× faster, good for testing)
 
 	phantom_labeled = downsample_phantom(phantom_labeled_raw, DOWNSAMPLE_FACTOR)
@@ -490,9 +490,9 @@ md"""
 # ╔═╡ a70bc722-e769-4132-b082-b0e89a68228e
 protocol_eict_single = BS.CTProtocol(
 	kVp = 120.0,
-	mA = 700.0,
-	# views = 984,
-	views = 1600,
+	mA = 300.0,
+	views = 984,
+	# views = 1600,
 	rotation_time = 0.5
 )
 
@@ -508,8 +508,8 @@ protocol_eict_dual = BS.CTProtocol(
 	mA = 200.0,
 	kVp_low = 80.0,
 	mA_low = 350.0,
-	# views = 984,
-	views = 1600,
+	views = 984,
+	# views = 1600,
 	rotation_time = 0.5
 )
 
@@ -540,7 +540,7 @@ Clinical-quality simulation with full physics:
 # ╔═╡ a70bc722-e769-4132-b082-b0e89a6822b1
 sim_opts_eict = BS.SimOptions(
 	fidelity = :high,
-	n_energy_bins = 100,
+	# n_energy_bins = 100,
 	# n_energy_bins = 1,
 	
 	# use_fill_factor = true,
@@ -566,7 +566,7 @@ sim_opts_eict = BS.SimOptions(
 sim_opts_pcct = BS.SimOptions(
 	fidelity = :high,
 	pcct_noise_reduction = 0.60,
-	n_energy_bins = 100,
+	# n_energy_bins = 100,
 	# n_energy_bins = 2,
 	seed = 42
 )
@@ -689,6 +689,10 @@ scanner_pcct_standard = BS.Scanner(
 	pixel_mode = :standard # :standard (0.4mm), :uhr (0.2mm), :macro (0.8mm)
 )
 
+# ╔═╡ a369a59e-22b4-476f-a195-a16c9f13dc7e
+# Use PCCT z-coverage for ALL scanners (smallest common z)
+common_z_cm = n_recon_slices * 0.4 / 10.0  # 5.12 cm
+
 # ╔═╡ 00000010-0000-0000-0000-000000000001
 md"""
 ### 6.1 EICT Single-kVp Reconstruction
@@ -701,7 +705,8 @@ recon_opts_eict_single = BS.ReconOptions(
 	algorithm = :fdk,
 	matrix_size = (recon_xy, recon_xy, n_recon_slices),
 	fov_cm = recon_fov_cm,
-	z_cm = n_recon_slices * 0.625 / 10.0,  # GE native slice thickness 0.625mm
+	# z_cm = n_recon_slices * 0.625 / 10.0,  # GE native slice thickness 0.625mm
+	z_cm = common_z_cm,
 	filter = :standard
 )
 
@@ -718,7 +723,8 @@ recon_opts_eict_dual = BS.ReconOptions(
 	algorithm = :fdk,
 	matrix_size = (recon_xy, recon_xy, n_recon_slices),
 	fov_cm = recon_fov_cm,
-	z_cm = n_recon_slices * 0.625 / 10.0,  # GE native slice thickness 0.625mm
+	# z_cm = n_recon_slices * 0.625 / 10.0,  # GE native slice thickness 0.625mm
+	z_cm = common_z_cm,
 	filter = :standard,
 	vmi_energies = vmi_energies,
 	vmi_basis = (:water, :iodine)
@@ -737,7 +743,8 @@ recon_opts_pcct_standard = BS.ReconOptions(
 	algorithm = :fdk,
 	matrix_size = (recon_xy, recon_xy, n_recon_slices),
 	fov_cm = recon_fov_cm,
-	z_cm = n_recon_slices * 0.4 / 10.0,  # NAEOTOM native slice thickness 0.4mm
+	# z_cm = n_recon_slices * 0.4 / 10.0,  # NAEOTOM native slice thickness 0.4mm
+	z_cm = common_z_cm,
 	filter = :standard,
 	vmi_energies = vmi_energies,
 	vmi_basis = [:water, :iodine, :calcium]
@@ -1187,7 +1194,7 @@ Side-by-side FDK comparison of EICT Single-kVp, EICT Dual-kVp, and PCCT Standard
 """
 
 # ╔═╡ 00000024-0000-0000-0000-000000000003
-function plot_scanner_comparison(volumes, titles; slice_idx=32, window=(-300, 400))
+function plot_scanner_comparison(volumes, titles; slice_idx=64, window=(-300, 400))
 	n = length(volumes)
 	f = CM.Figure(size=(350 * n + 50, 400))
 
@@ -1202,12 +1209,19 @@ function plot_scanner_comparison(volumes, titles; slice_idx=32, window=(-300, 40
 	f
 end
 
+# ╔═╡ 620d6d45-8e4d-40f1-80f7-c62bc8a65fcf
+@bind z3 UI.Slider(
+	axes(recon_eict_fdk_hu, 3);
+	default = size(recon_eict_fdk_hu, 3) ÷ 2,
+	show_value = true
+)
+
 # ╔═╡ 00000024-0000-0000-0000-000000000004
 let
 	fig = plot_scanner_comparison(
 		[recon_eict_fdk_hu, recon_dual_80kVp_fdk_hu, recon_dual_140kVp_fdk_hu, recon_pcct_fdk_hu],
 		["EICT 120 kVp\n(FDK)", "Dual 80 kVp\n(FDK)", "Dual 140 kVp\n(FDK)", "PCCT Standard\n(FDK)"];
-		slice_idx=40
+		slice_idx=z3
 	)
 	CM.save(joinpath(FIGURES_DIR, "nb05_scanner_comparison.png"), fig)
 	fig
@@ -1540,6 +1554,7 @@ end
 # ╠═a70bc722-e769-4132-b082-b0e89a6822b2
 # ╟─937ad7ea-f5c3-42c1-9f5d-6c6600fffaba
 # ╠═00000009-0000-0000-0000-000000000001
+# ╠═a369a59e-22b4-476f-a195-a16c9f13dc7e
 # ╟─00000010-0000-0000-0000-000000000001
 # ╠═00000011-0000-0000-0000-000000000001
 # ╟─00000012-0000-0000-0000-000000000001
@@ -1568,6 +1583,7 @@ end
 # ╟─00000024-0000-0000-0000-000000000001
 # ╟─00000024-0000-0000-0000-000000000002
 # ╠═00000024-0000-0000-0000-000000000003
+# ╟─620d6d45-8e4d-40f1-80f7-c62bc8a65fcf
 # ╟─00000024-0000-0000-0000-000000000004
 # ╟─c0d1e2f3-a4b5-6789-abcd-000000000001
 # ╟─c0d1e2f3-a4b5-6789-abcd-000000000002
