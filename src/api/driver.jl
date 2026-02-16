@@ -252,7 +252,7 @@ function simulate(
 end
 
 # =============================================================================
-# Mode 1: Axial Single-kVp (original behavior preserved)
+# Mode 1: Axial Single-kVp (DEPRECATED — use workspace-based simulate!() instead)
 # =============================================================================
 
 function _simulate_axial_single(phantom, scanner, protocol, sim_opts, recon_opts;
@@ -262,7 +262,7 @@ function _simulate_axial_single(phantom, scanner, protocol, sim_opts, recon_opts
         scanner;
         n_angles = protocol.views,
         fov_cm = recon_opts.fov_cm,
-        z_cm = nothing
+        z_cm = recon_opts.z_cm
     )
 
     # 2. Resolve spectrum
@@ -358,11 +358,12 @@ end
 function _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts;
                               materials::Union{Nothing, Vector} = nothing)
     # 1. Build Geometry (shared for both kVp)
+    # DEPRECATED: prefer workspace-based simulate!() path
     geom = CTGeometry(
         scanner;
         n_angles = protocol.views,
         fov_cm = recon_opts.fov_cm,
-        z_cm = nothing
+        z_cm = recon_opts.z_cm
     )
 
     # 2. Create single-kVp protocols for each energy level
