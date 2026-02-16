@@ -73,6 +73,9 @@ include("object/phantom.jl")
 # CT scanner geometry
 include("geometry/scanner.jl")
 
+# Affine transforms: phantom ↔ world ↔ recon coordinate mapping
+include("geometry/affine.jl")
+
 
 # =============================================================================
 # Projection (ray tracing)

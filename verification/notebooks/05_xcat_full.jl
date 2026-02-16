@@ -1483,6 +1483,88 @@ let
 	f
 end
 
+# ╔═╡ aaa00001-0000-0000-0000-a00000000001
+md"""
+### 8.7 Ground Truth Overlay — EICT vs PCCT
+
+Resample the XCAT phantom labels onto the reconstruction grid using `resample_to_recon`, then show side-by-side with EICT and PCCT FDK reconstructions.
+"""
+
+# ╔═╡ aaa00002-0000-0000-0000-a00000000002
+# Resample phantom labels onto each scanner's actual reconstruction grid
+(ground_truth_eict, ground_truth_pcct) = let
+	# EICT: use scanner_eict + recon_opts_eict_single
+	geom_eict = BS.CTGeometry(scanner_eict;
+		n_angles = 1,
+		n_rows = eict_det_rows,
+		n_cols = eict_det_cols,
+		fov_cm = recon_opts_eict_single.fov_cm,
+		z_cm = recon_opts_eict_single.z_cm
+	)
+	gt_eict = BS.resample_to_recon(
+		phantom_gpu, geom_eict, recon_opts_eict_single.matrix_size
+	)
+
+	# PCCT: use scanner_pcct_standard + recon_opts_pcct_standard
+	geom_pcct = BS.CTGeometry(scanner_pcct_standard;
+		n_angles = 1,
+		n_rows = pcct_det_rows,
+		n_cols = pcct_det_cols,
+		fov_cm = recon_opts_pcct_standard.fov_cm,
+		z_cm = recon_opts_pcct_standard.z_cm
+	)
+	gt_pcct = BS.resample_to_recon(
+		phantom_gpu, geom_pcct, recon_opts_pcct_standard.matrix_size
+	)
+
+	(gt_eict, gt_pcct)
+end
+
+# ╔═╡ aaa00003-0000-0000-0000-a00000000003
+@bind z_gt UI.Slider(
+	axes(recon_eict_fdk_hu, 3);
+	default = size(recon_eict_fdk_hu, 3) ÷ 2,
+	show_value = true
+)
+
+# ╔═╡ aaa00004-0000-0000-0000-a00000000004
+let
+	slice = z_gt
+	window = (-300, 400)
+
+	f = CM.Figure(size=(1200, 650))
+
+	# Row 1: EICT — Ground Truth | FDK
+	ax1 = CM.Axis(f[1, 1], title="EICT Ground Truth", aspect=CM.DataAspect(),
+		xticksvisible=false, yticksvisible=false,
+		xticklabelsvisible=false, yticklabelsvisible=false)
+	CM.heatmap!(ax1, Float32.(ground_truth_eict[:, :, slice]),
+		colormap=:glasbey_hv_n256)
+
+	ax2 = CM.Axis(f[1, 2], title="EICT 120 kVp (FDK)", aspect=CM.DataAspect(),
+		xticksvisible=false, yticksvisible=false,
+		xticklabelsvisible=false, yticklabelsvisible=false)
+	CM.heatmap!(ax2, recon_eict_fdk_hu[:, :, slice],
+		colormap=:grays, colorrange=window)
+
+	# Row 2: PCCT — Ground Truth | FDK
+	ax3 = CM.Axis(f[2, 1], title="PCCT Ground Truth", aspect=CM.DataAspect(),
+		xticksvisible=false, yticksvisible=false,
+		xticklabelsvisible=false, yticklabelsvisible=false)
+	CM.heatmap!(ax3, Float32.(ground_truth_pcct[:, :, slice]),
+		colormap=:glasbey_hv_n256)
+
+	ax4 = CM.Axis(f[2, 2], title="PCCT Standard (FDK)", aspect=CM.DataAspect(),
+		xticksvisible=false, yticksvisible=false,
+		xticklabelsvisible=false, yticklabelsvisible=false)
+	CM.heatmap!(ax4, recon_pcct_fdk_hu[:, :, slice],
+		colormap=:grays, colorrange=window)
+
+	CM.Colorbar(f[1:2, 3], colormap=:grays, colorrange=window, label="HU")
+	CM.save(joinpath(FIGURES_DIR, "nb05_ground_truth_overlay.png"), f)
+	f
+end
+
 # ╔═╡ 00000025-0000-0000-0000-000000000001
 # md"""
 # ## 9. Summary
@@ -1611,4 +1693,8 @@ end
 # ╟─00000024-0000-0000-0000-000000000013
 # ╟─c0d1e2f3-a4b5-6789-abcd-000000000003
 # ╟─c0d1e2f3-a4b5-6789-abcd-000000000004
+# ╟─aaa00001-0000-0000-0000-a00000000001
+# ╠═aaa00002-0000-0000-0000-a00000000002
+# ╟─aaa00003-0000-0000-0000-a00000000003
+# ╟─aaa00004-0000-0000-0000-a00000000004
 # ╟─00000025-0000-0000-0000-000000000001
