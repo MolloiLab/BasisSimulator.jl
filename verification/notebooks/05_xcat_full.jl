@@ -1097,7 +1097,8 @@ md"""
 	for E in vmi_energies
 		vmi_sino = BS.virtual_monoenergetic(mat_map, E)
 		ws_fdk_vmi = BS.create_fdk_recon_workspace(vmi_sino, geom, recon_size)
-		vmi_dict[E] = Array(BS.reconstruct!(ws_fdk_vmi, vmi_sino, geom, recon_size))
+		vmi_recon = Array(BS.reconstruct!(ws_fdk_vmi, vmi_sino, geom, recon_size))
+		vmi_dict[E] = BS.vmi_to_hu(vmi_recon, E)
 		ws_fdk_vmi = nothing
 		GC.gc(true)
 	end
@@ -1108,7 +1109,7 @@ md"""
 	sino_low = nothing
 	sino_high = nothing
 	mat_map = nothing
-	
+
 	GC.gc(true)
 
 	(fdk_80_hu, fdk_140_hu, hir_80_hu, hir_140_hu, vmi_dict)
@@ -1163,7 +1164,8 @@ md"""
 	for E in vmi_energies
 		vmi_sino = BS.virtual_monoenergetic(mat_map, E; ws_output=vmi_sino_buf)
 		ws_fdk_vmi = BS.create_fdk_recon_workspace(vmi_sino, geom, recon_size)
-		vmi_dict[E] = Array(BS.reconstruct!(ws_fdk_vmi, vmi_sino, geom, recon_size))
+		vmi_recon = Array(BS.reconstruct!(ws_fdk_vmi, vmi_sino, geom, recon_size))
+		vmi_dict[E] = BS.vmi_to_hu(vmi_recon, E)
 		ws_fdk_vmi = nothing
 		GC.gc(true)
 	end
@@ -1323,35 +1325,45 @@ Comparison of Virtual Monoenergetic Images at 40, 70, 100, 140 keV.
 """
 
 # ╔═╡ 00000024-0000-0000-0000-000000000009
-function plot_vmi_comparison(dual_vmi_vols, pcct_vmi_vols; slice_idx=32, window=(-200, 600))
+function plot_vmi_comparison(dual_vmi_vols, pcct_vmi_vols; slice_idx=64, window=(-300, 500))
 	energies = [40, 70, 100, 140]
 
-	f = CM.Figure(size=(1100, 600))
+	f = CM.Figure(size=(1200, 600))
 
 	# Row 1: Dual-kVp VMI
 	for (i, E) in enumerate(energies)
 		ax = CM.Axis(f[1, i], title="Dual-kVp $(E) keV",
+			aspect=CM.DataAspect(),
 			xticksvisible=false, yticksvisible=false,
 			xticklabelsvisible=false, yticklabelsvisible=false)
 		img = dual_vmi_vols[Float64(E)][:, :, slice_idx]
-		CM.heatmap!(ax, img, colormap=:grays)
+		CM.heatmap!(ax, img, colormap=:grays, colorrange=window)
 	end
 
 	# Row 2: PCCT VMI (from virtual_monoenergetic + reconstruct!)
 	for (i, E) in enumerate(energies)
 		ax = CM.Axis(f[2, i], title="PCCT $(E) keV",
+			aspect=CM.DataAspect(),
 			xticksvisible=false, yticksvisible=false,
 			xticklabelsvisible=false, yticklabelsvisible=false)
 		img = pcct_vmi_vols[Float64(E)][:, :, slice_idx]
-		CM.heatmap!(ax, img, colormap=:grays)
+		CM.heatmap!(ax, img, colormap=:grays, colorrange=window)
 	end
 
+	CM.Colorbar(f[1:2, 5], colormap=:grays, colorrange=window, label="HU")
 	f
 end
 
+# ╔═╡ 7b2d3e4f-a5c6-4890-bcde-000000000001
+@bind z_vmi UI.Slider(
+	axes(recon_eict_fdk_hu, 3);
+	default = size(recon_eict_fdk_hu, 3) ÷ 2,
+	show_value = true
+)
+
 # ╔═╡ 00000024-0000-0000-0000-000000000010
 let
-	fig = plot_vmi_comparison(dual_vmi_volumes, pcct_vmi_volumes; slice_idx=32)
+	fig = plot_vmi_comparison(dual_vmi_volumes, pcct_vmi_volumes; slice_idx=z_vmi)
 	CM.save(joinpath(FIGURES_DIR, "nb05_vmi_comparison.png"), fig)
 	fig
 end
@@ -1592,6 +1604,7 @@ end
 # ╟─01e76cfe-7061-455b-8f7e-0b07fbd17ca3
 # ╟─00000024-0000-0000-0000-000000000008
 # ╟─00000024-0000-0000-0000-000000000009
+# ╟─7b2d3e4f-a5c6-4890-bcde-000000000001
 # ╟─00000024-0000-0000-0000-000000000010
 # ╟─00000024-0000-0000-0000-000000000011
 # ╟─00000024-0000-0000-0000-000000000012
