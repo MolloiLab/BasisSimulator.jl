@@ -28,10 +28,28 @@ else
 end
 
 # ─── Create phantom ──────────────────────────────────────────────────────────
-println("\n[3/7] Creating Gammex 472 phantom (128³)...")
-phantom = BS.create_gammex_472(n_voxels=512, n_slices=32, fov_cm=35.0, z_cm=4.0)
-println("  Mask size: ", size(phantom.mask))
-println("  Materials: ", length(phantom.materials), " regions")
+# Step 1: Create phantom on CPU (geometry + materials)
+println("\n[3/7] Creating Gammex 472 phantom...")
+phantom_cpu = BS.create_gammex_472(n_voxels=512, n_slices=32, fov_cm=35.0, z_cm=4.0)
+println("  Mask size: ", size(phantom_cpu.mask))
+println("  Materials: ", length(phantom_cpu.materials), " regions")
+
+# Step 2: Move mask to GPU, keep materials + metadata on CPU
+if CUDA.functional()
+    println("  Moving phantom mask to GPU...")
+    phantom_gpu_mask = CuArray(phantom_cpu.mask)
+    phantom = BS.Phantom(
+        phantom_gpu_mask,
+        phantom_cpu.materials,
+        phantom_cpu.voxel_size,
+        phantom_cpu.origin,
+        phantom_cpu.fov,
+    )
+    println("  ✓ Phantom mask on GPU ($(typeof(phantom.mask)))")
+else
+    phantom = phantom_cpu
+    println("  ⚠ CUDA not available — using CPU phantom")
+end
 
 # ─── Configure simulation ───────────────────────────────────────────────────
 println("\n[4/7] Configuring scanner + protocol...")
