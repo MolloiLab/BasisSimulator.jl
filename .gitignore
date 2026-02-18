@@ -66,3 +66,7 @@ phantom-loading-reference/
 
 # Analysis output (generated)
 analysis_output/
+
+# Custom config files (user-specific, not committed)
+config/*.toml
+!config/semantic_classification_config.toml

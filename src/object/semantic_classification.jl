@@ -32,12 +32,15 @@ Intelligent semantic classification system for anatomical structures in CT phant
 
 module SemanticClassification
 
+using JSON
+
 export 
     StructureCategory,
     SemanticMapping,
     PerfusionData,
     IodineMapping,
     XCATPhantom,
+    SemanticConfig,
     classify_structure,
     get_category_material,
     is_customizable,
@@ -63,6 +66,12 @@ export
     generate_organ_colors,
     convert_organ_ids,
     create_compatible_phantom,
+    load_semantic_config,
+    get_hollow_organs,
+    get_artery_patterns,
+    get_vein_patterns,
+    get_bone_patterns,
+    get_id_ranges,
     HOLLOW_ORGANS,
     ARTERY_PATTERNS,
     VEIN_PATTERNS,
@@ -117,6 +126,229 @@ const CATEGORY_SYMBOLS = Dict(
     CAT_CARTILAGE => :cartilage,
     CAT_UNKNOWN => :unknown
 )
+
+# =============================================================================
+# Configurable Semantic Classification
+# =============================================================================
+
+"""
+    SemanticConfig
+
+Configuration for semantic classification that can be loaded from TOML.
+Provides flexibility to customize patterns, ID ranges, and mappings.
+"""
+struct SemanticConfig
+    hollow_organs::Set{String}
+    artery_patterns::Vector{Regex}
+    vein_patterns::Vector{Regex}
+    bone_patterns::Vector{Regex}
+    muscle_patterns::Vector{Regex}
+    brain_patterns::Vector{Regex}
+    id_ranges::Dict{Symbol, Tuple{Int, Int}}
+    id_to_category::Dict{Int, StructureCategory}
+    id_to_material::Dict{Int, String}
+    customizable_categories::Set{Symbol}
+end
+
+"""
+    load_semantic_config(path::String; lazy=false) -> SemanticConfig
+
+Load semantic classification configuration from TOML file.
+If file not found, returns default configuration.
+
+# Arguments
+- `path::String`: Path to TOML config file
+- `lazy::Bool`: If true, don't error on missing file (return defaults)
+
+# Example
+```julia
+config = load_semantic_config("config/semantic_classification_config.toml")
+```
+"""
+function load_semantic_config(path::String; lazy::Bool=false)
+    if !isfile(path)
+        if lazy
+            return _default_semantic_config()
+        else
+            @warn "Config file not found: $path, using defaults"
+            return _default_semantic_config()
+        end
+    end
+    
+    try
+        data = JSON.parsefile(path; dicttype=Dict)
+        
+        # Parse hollow organs
+        hollow_organs_data = get(data, "hollow_organs", nothing)
+        if hollow_organs_data !== nothing
+            hollow_organs = Set(get(hollow_organs_data, "names", String[]))
+        else
+            hollow_organs = HOLLOW_ORGANS
+        end
+        
+        # Parse regex patterns - handle both JSON array and nested object formats
+        artery_patterns = _parse_patterns_json(data, "artery_patterns")
+        vein_patterns = _parse_patterns_json(data, "vein_patterns")
+        bone_patterns = _parse_patterns_json(data, "bone_patterns")
+        muscle_patterns = _parse_patterns_json(data, "muscle_patterns")
+        brain_patterns = _parse_patterns_json(data, "brain_patterns")
+        
+        # Parse ID ranges
+        id_ranges_data = get(data, "id_ranges", nothing)
+        id_ranges = Dict{Symbol, Tuple{Int, Int}}()
+        if id_ranges_data !== nothing
+            if haskey(id_ranges_data, "artery_start")
+                id_ranges[:artery] = (id_ranges_data["artery_start"], id_ranges_data["artery_end"])
+            end
+            if haskey(id_ranges_data, "vein_start")
+                id_ranges[:vein] = (id_ranges_data["vein_start"], id_ranges_data["vein_end"])
+            end
+            if haskey(id_ranges_data, "gray_matter_start")
+                id_ranges[:gray_matter] = (id_ranges_data["gray_matter_start"], id_ranges_data["gray_matter_end"])
+            end
+            if haskey(id_ranges_data, "white_matter_start")
+                id_ranges[:white_matter] = (id_ranges_data["white_matter_start"], id_ranges_data["white_matter_end"])
+            end
+        else
+            id_ranges = Dict(:artery => (703, 1102), :vein => (468, 702), :gray_matter => (252, 329), :white_matter => (338, 454))
+        end
+        
+        # Parse ID to category mapping
+        id_to_category_data = get(data, "id_category_p1", nothing)
+        id_to_category = Dict{Int, StructureCategory}()
+        if id_to_category_data !== nothing
+            for (id_str, cat_str) in id_to_category_data
+                id = parse(Int, id_str)
+                cat = Symbol(cat_str)
+                id_to_category[id] = _symbol_to_category(cat)
+            end
+        else
+            id_to_category = ID_TO_CATEGORY
+        end
+        
+        # Parse ID to material mapping
+        id_to_material_data = get(data, "id_material", nothing)
+        id_to_material = Dict{Int, String}()
+        if id_to_material_data !== nothing
+            for (id_str, mat) in id_to_material_data
+                id_to_material[parse(Int, id_str)] = mat
+            end
+        else
+            id_to_material = ID_TO_MATERIAL
+        end
+        
+        # Parse customizable categories
+        customizable_data = get(data, "customizable", nothing)
+        if customizable_data !== nothing
+            cats = get(customizable_data, "categories", String["blood_vessel", "brain"])
+            customizable_categories = Set(Symbol.(cats))
+        else
+            customizable_categories = Set([:blood_vessel, :brain])
+        end
+        
+        return SemanticConfig(
+            hollow_organs,
+            artery_patterns,
+            vein_patterns,
+            bone_patterns,
+            muscle_patterns,
+            brain_patterns,
+            id_ranges,
+            id_to_category,
+            id_to_material,
+            customizable_categories
+        )
+    catch e
+        @warn "Error loading config: $e, using defaults"
+        return _default_semantic_config()
+    end
+end
+
+function _parse_patterns_json(data::Dict, key::String)
+    section = get(data, key, nothing)
+    if section === nothing
+        # Return defaults based on key
+        if key == "artery_patterns"
+            return ARTERY_PATTERNS
+        elseif key == "vein_patterns"
+            return VEIN_PATTERNS
+        elseif key == "bone_patterns"
+            return BONE_PATTERNS
+        elseif key == "muscle_patterns"
+            return MUSCLE_PATTERNS
+        elseif key == "brain_patterns"
+            return BRAIN_PATTERNS
+        end
+        return Regex[]
+    end
+    
+    # Handle both array format and nested object format
+    patterns = nothing
+    if isa(section, Vector)
+        patterns = section
+    elseif isa(section, Dict)
+        patterns = get(section, "patterns", String[])
+    else
+        patterns = String[]
+    end
+    
+    return [Regex(p) for p in patterns]
+end
+
+function _symbol_to_category(sym::Symbol)::StructureCategory
+    return get(Dict(
+        :air_cavity => CAT_AIR_CAVITY,
+        :soft_tissue => CAT_SOFT_TISSUE,
+        :bone => CAT_BONE,
+        :brain => CAT_BRAIN,
+        :blood_vessel => CAT_BLOOD_VESSEL,
+        :csf => CAT_CSF,
+        :airway => CAT_AIRWAY,
+        :eye => CAT_EYE,
+        :cartilage => CAT_CARTILAGE,
+        :unknown => CAT_UNKNOWN
+    ), sym, CAT_UNKNOWN)
+end
+
+function _default_semantic_config()::SemanticConfig
+    return SemanticConfig(
+        HOLLOW_ORGANS,
+        ARTERY_PATTERNS,
+        VEIN_PATTERNS,
+        BONE_PATTERNS,
+        MUSCLE_PATTERNS,
+        BRAIN_PATTERNS,
+        Dict(:artery => (703, 1102), :vein => (468, 702), :gray_matter => (252, 329), :white_matter => (338, 454)),
+        ID_TO_CATEGORY,
+        ID_TO_MATERIAL,
+        Set([:blood_vessel, :brain])
+    )
+end
+
+"""
+    get_hollow_organs(config::SemanticConfig) -> Set{String}
+"""
+get_hollow_organs(config::SemanticConfig) = config.hollow_organs
+
+"""
+    get_artery_patterns(config::SemanticConfig) -> Vector{Regex}
+"""
+get_artery_patterns(config::SemanticConfig) = config.artery_patterns
+
+"""
+    get_vein_patterns(config::SemanticConfig) -> Vector{Regex}
+"""
+get_vein_patterns(config::SemanticConfig) = config.vein_patterns
+
+"""
+    get_bone_patterns(config::SemanticConfig) -> Vector{Regex}
+"""
+get_bone_patterns(config::SemanticConfig) = config.bone_patterns
+
+"""
+    get_id_ranges(config::SemanticConfig) -> Dict{Symbol, Tuple{Int, Int}}
+"""
+get_id_ranges(config::SemanticConfig) = config.id_ranges
 
 # =============================================================================
 # Pattern Matching Rules
