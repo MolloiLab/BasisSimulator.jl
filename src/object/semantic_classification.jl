@@ -1043,18 +1043,42 @@ function extract_dims_from_filename(filepath::String)::Tuple{Int,Int,Int}
         return (parse(Int, m[1]), parse(Int, m[2]), parse(Int, m[3]))
     end
     
+    # Try pattern: P1_XXX_YYY_ZZZ or P2_XXX_YYY_ZZZ
+    m = match(r"[Pp](\d+)_(\d+)_(\d+)_(\d+)\.raw$", filename)
+    if m !== nothing
+        return (parse(Int, m[2]), parse(Int, m[3]), parse(Int, m[4]))
+    end
+    
     # Try pattern: XXX_YYY_ZZZ.raw (at end of filename)
-    m = match(r"_(\d+)_(\d+)_(\d+)\.raw$", filename)
+    m = match(r"_(\d+)_(\d+)_(\d+)\.(raw|bin)$", filename)
+    if m !== nothing
+        return (parse(Int, m[1]), parse(Int, m[2]), parse(Int, m[3]))
+    end
+    
+    # Try pattern: XXXxYYYxZZZ (with x or X)
+    m = match(r"(\d+)x(\d+)x(\d+)", filename)
+    if m !== nothing
+        return (parse(Int, m[1]), parse(Int, m[2]), parse(Int, m[3]))
+    end
+    
+    # Try pattern: XXX-YYY-ZZZ (with hyphen)
+    m = match(r"(\d+)-(\d+)-(\d+)", filename)
     if m !== nothing
         return (parse(Int, m[1]), parse(Int, m[2]), parse(Int, m[3]))
     end
     
     # Try to get from file size if UInt16 (400*400*400 * 2 = 320000 bytes)
     file_size = filesize(filepath)
-    for dims in [(512,512,512), (400,400,400), (256,256,256), (512,512,256), (400,400,200)]
+    for dims in [(512,512,512), (400,400,400), (256,256,256), (512,512,256), (400,400,200), (500,500,300), (1600,1400,500)]
         expected = prod(dims) * 2  # UInt16 = 2 bytes
         if file_size == expected
             @warn "Auto-detected dimensions $dims from file size. Verify this is correct."
+            return dims
+        end
+        # Also try UInt8 = 1 byte
+        expected = prod(dims) * 1
+        if file_size == expected
+            @warn "Auto-detected dimensions $dims from file size (UInt8). Verify this is correct."
             return dims
         end
     end

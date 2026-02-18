@@ -300,11 +300,13 @@ function create_mixture(
     za_ratio = mixture_density / sum(Zs[i] * final_wfs[i] for i in 1:length(Zs))
     
     # Create the material using XA.Material (5 positional args)
+    # Need to use Unitful units for density
+    mixture_density_unitful = mixture_density * u"g/cm^3"
     return XA.Material(
         name,
         za_ratio,  # Z/A ratio
         75.0,  # I (mean excitation energy in eV - typical value)
-        mixture_density,  # density in g/cm³
+        mixture_density_unitful,  # density in g/cm³
         comp_dict  # composition dict
     )
 end
@@ -438,16 +440,8 @@ end
 Calculate linear attenuation coefficient for a mixture at given energy.
 """
 function calculate_mixture_attenuation(mixture::XA.Material, energy_keV::Float64)::Float64
-    μ = 0.0
-    comp = XA.composition(mixture)
-    Zs = comp.first
-    wfs = comp.second
-    
-    for (Z, wf) in zip(Zs, wfs)
-        μ += wf * XA.attenuation_coefficient(Z, energy_keV)
-    end
-    
-    return μ * mixture.density
+    μ = XA.linear_attenuation_coeff(mixture, energy_keV * u"keV")
+    return ustrip(u"cm^-1", μ)
 end
 
 # =============================================================================
