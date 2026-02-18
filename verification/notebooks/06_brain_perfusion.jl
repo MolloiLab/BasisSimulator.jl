@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.20.13
+# v0.20.21
 
 using Markdown
 using InteractiveUtils
@@ -16,20 +16,6 @@ macro bind(def, element)
     #! format: on
 end
 
-# ╔═╡ 00000000-0000-0000-0000-000000000001
-# ╠═╡ show_logs = false
-begin
-    import Pkg
-    Pkg.activate(dirname(@__DIR__))
-    Pkg.instantiate()
-end
-
-# ╔═╡ 00000000-0000-0000-0000-000000000002
-# ╠═╡ show_logs = false
-begin
-    using Revise
-end
-
 # ╔═╡ 00000000-0000-0000-0000-000000000003
 # ╠═╡ show_logs = false
 begin
@@ -41,32 +27,12 @@ begin
     import BasisSimulator.SemanticClassification as SC
 end
 
-# ╔═╡ 00000000-0000-0000-0000-000000000004
-# ╠═╡ show_logs = false
-begin
-    "## Brain Perfusion CT Simulation"
-    Markdown.md"""
-    Interactive brain perfusion simulation with configurable phantom and parameters.
-    
-    Use the controls below to:
-    - Adjust phantom dimensions and voxel size
-    - Set perfusion parameters (time points, contrast concentrations)
-    - Visualize results with interactive plots
-    """
-end
-
 # ╔═╡ 00000000-0000-0000-0000-000000000005
 # ╠═╡ show_logs = false
 begin
-    "### 1. Configuration Parameters"
-end
-
-# ╔═╡ 00000000-0000-0000-0000-000000000006
-# ╠═╡ show_logs = false
-begin
     # Phantom parameters
-    global phantom_dims = (64, 64, 32)  # Smaller for interactive performance
-    global phantom_voxel_size = (0.2, 0.2, 0.2)  # 2mm voxels
+    global phantom_dims = (64, 64, 32)
+    global phantom_voxel_size = (0.2, 0.2, 0.2)
 end
 
 # ╔═╡ 00000000-0000-0000-0000-000000000007
@@ -79,17 +45,10 @@ begin
     global energy_keV = 60.0
 end
 
-# ╔═╡ 00000000-0000-0000-0000-000000000008
-# ╠═╡ show_logs = false
-begin
-    "### 2. Phantom Generation"
-end
-
 # ╔═╡ 00000000-0000-0000-0000-000000000009
 # ╠═╡ show_logs = false
 begin
     function create_test_phantom(dims, voxel_size)
-        # Create simple test phantom with brain structures
         dtype = UInt8
         labeled = zeros(dtype, dims)
         
@@ -102,15 +61,14 @@ begin
             r = sqrt(dx^2 + dy^2 + dz^2)
             
             if r <= r_brain
-                labeled[i, j, k] = 2  # Brain
+                labeled[i, j, k] = 2
             elseif r <= r_head
-                labeled[i, j, k] = 1  # Soft tissue
+                labeled[i, j, k] = 1
             else
-                labeled[i, j, k] = 0  # Air
+                labeled[i, j, k] = 0
             end
         end
         
-        # Create materials
         materials_dict = Dict{Int, XA.Material}()
         materials_dict[0] = XA.Materials.air
         materials_dict[1] = BS.get_material(:soft_tissue)
@@ -121,13 +79,7 @@ begin
     end
     
     global phantom = create_test_phantom(phantom_dims, phantom_voxel_size)
-    size(phantom.mask)
-end
-
-# ╔═╡ 00000000-0000-0000-0000-000000000010
-# ╠═╡ show_logs = false
-begin
-    "### 3. Perfusion Simulation"
+    "Phantom created: $(size(phantom.mask))"
 end
 
 # ╔═╡ 00000000-0000-0000-0000-000000000011
@@ -140,13 +92,10 @@ begin
             art_c = arterial_conc[t_idx]
             ven_c = venous_conc[t_idx]
             
-            # Create materials (simplified - all soft tissue gets same treatment)
             materials_contrast = Dict{Int, XA.Material}()
             
             for (id, mat) in zip(keys(phantom.materials), phantom.materials)
-                # For brain tissue, simulate perfusion
-                if id == 2  # Brain
-                    # Apply iodine contrast
+                if id == 2
                     if art_c > 0
                         materials_contrast[id] = BS.create_iodine_blood_mixture(mat, art_c)
                     else
@@ -157,7 +106,6 @@ begin
                 end
             end
             
-            # Compute attenuation
             contrast_phantom = BS.Phantom(phantom.mask, materials_contrast, phantom.voxel_size)
             mu = BS.compute_μ(contrast_phantom, energy_keV)
             
@@ -180,17 +128,10 @@ end
 # ╔═╡ 00000000-0000-0000-0000-000000000012
 # ╠═╡ show_logs = false
 begin
-    "### 4. Interactive Visualization"
-end
-
-# ╔═╡ 00000000-0000-0000-0000-000000000013
-# ╠═╡ show_logs = false
-begin
     global mu_water = BS.calculate_mixture_attenuation(XA.Materials.water, energy_keV)
     global dims = size(phantom.mask)
     global cz = dims[3] ÷ 2
     
-    # Compute global ranges
     global mu_min = minimum(perfusion_results[t]["mu"] for t in time_points)
     global mu_max = maximum(perfusion_results[t]["mu"] for t in time_points)
 end
@@ -198,7 +139,7 @@ end
 # ╔═╡ 00000000-0000-0000-0000-000000000014
 # ╠═╡ show_logs = false
 begin
-    "#### Time Slider"
+    "Time slider - select time point"
 end
 
 # ╔═╡ 00000000-0000-0000-0000-000000000015
@@ -208,7 +149,7 @@ end
 # ╔═╡ 00000000-0000-0000-0000-000000000016
 # ╠═╡ show_logs = false
 begin
-    "#### Slice Position Slider"
+    "Slice position slider"
 end
 
 # ╔═╡ 00000000-0000-0000-0000-000000000017
@@ -221,11 +162,9 @@ begin
     t = time_points[selected_time]
     z = selected_slice
     
-    # Get data for current selection
     mu_slice = perfusion_results[t]["mu"][:, :, z]
     hu_slice = 1000 .* (mu_slice .- mu_water) ./ mu_water
     
-    # Display slice
     fig = Figure(resolution=(600, 500))
     ax = Axis(fig[1, 1], title="HU Map: t=$(round(t, digits=1))s, z=$z")
     hm = heatmap!(ax, hu_slice; colormap=:viridis, colorrange=(-100, 100))
@@ -238,18 +177,12 @@ end
 # ╔═╡ 00000000-0000-0000-0000-000000000019
 # ╠═╡ show_logs = false
 begin
-    "#### Material Distribution at Selected Time"
-end
-
-# ╔═╡ 00000000-0000-0000-0000-000000000020
-# ╠═╡ show_logs = false
-begin
     t = time_points[selected_time]
     mu_data = vec(perfusion_results[t]["mu"])
     
     fig = Figure(resolution=(500, 300))
     ax = Axis(fig[1, 1], title="Attenuation Distribution (t=$(round(t, digits=1))s)",
-              xlabel="μ (1/cm)", ylabel="Count")
+              xlabel="mu (1/cm)", ylabel="Count")
     hist!(ax, mu_data, bins=30)
     fig
 end
@@ -257,13 +190,6 @@ end
 # ╔═╡ 00000000-0000-0000-0000-000000000021
 # ╠═╡ show_logs = false
 begin
-    "### 5. Time-Attenuation Curves (TAC)"
-end
-
-# ╔═╡ 00000000-0000-0000-0000-000000000022
-# ╠═╡ show_logs = false
-begin
-    # Sample multiple locations
     cx, cy = dims[1]÷2, dims[2]÷2
     
     region_points = Dict(
@@ -289,13 +215,6 @@ end
 # ╔═╡ 00000000-0000-0000-0000-000000000023
 # ╠═╡ show_logs = false
 begin
-    "### 6. Multi-Timepoint Overlay"
-end
-
-# ╔═╡ 00000000-0000-0000-0000-000000000024
-# ╠═╡ show_logs = false
-begin
-    # Show first, middle, and last time points
     selected_times = [time_points[1], time_points[length(time_points)÷2+1], time_points[end]]
     
     fig = Figure(resolution=(900, 300))
@@ -319,37 +238,26 @@ end
 # ╔═╡ 00000000-0000-0000-0000-000000000025
 # ╠═╡ show_logs = false
 begin
-    "### 7. Summary Dashboard"
-end
-
-# ╔═╡ 00000000-0000-0000-0000-000000000026
-# ╠═╡ show_logs = false
-begin
     fig = Figure(resolution=(1000, 700))
     
-    # 1. Time-averaged attenuation
     ax1 = Axis(fig[1, 1], title="Mean Attenuation")
     mu_mean = mean(perfusion_results[t]["mu"] for t in time_points)
     hm1 = heatmap!(ax1, mu_mean[:, :, cz]; colormap=:viridis)
     Colorbar(fig[1, 2], hm1)
     
-    # 2. Max change from baseline
     ax2 = Axis(fig[1, 3], title="Max Change from Baseline")
     mu_baseline = perfusion_results[time_points[1]]["mu"]
     mu_change = maximum(perfusion_results[t]["mu"] .- mu_baseline for t in time_points)
     hm2 = heatmap!(ax2, mu_change[:, :, cz]; colormap=:magma)
     Colorbar(fig[1, 4], hm2)
     
-    # 3. TAC at center
     ax3 = Axis(fig[2, 1:2], title="TAC at Center", xlabel="Time (s)", ylabel="HU")
     hu_center = [1000 * (perfusion_results[t]["mu"][cx, cy, cz] - mu_water) / mu_water for t in time_points]
     lines!(ax3, time_points, hu_center; color=:red, linewidth=2)
     
-    # 4. Histogram of changes
-    ax4 = Axis(fig[2, 3], title="Distribution of μ Changes")
+    ax4 = Axis(fig[2, 3], title="Distribution of mu Changes")
     hist!(ax4, vec(mu_change), bins=30)
     
-    # 5. Material composition pie chart
     ax5 = Axis(fig[2, 4], title="Material Composition")
     mask_data = vec(phantom.mask)
     unique_ids = unique(mask_data)
@@ -362,23 +270,17 @@ end
 # ╔═╡ 00000000-0000-0000-0000-000000000027
 # ╠═╡ show_logs = false
 begin
-    "### 8. Phantom Material Colors"
-end
-
-# ╔═╡ 00000000-0000-0000-0000-000000000028
-# ╠═╡ show_logs = false
-begin
     const MATERIAL_COLORS = Dict(
-        0 => RGBf(0.0, 0.0, 0.0),        # Air - black
-        1 => RGBf(0.8, 0.5, 0.5),       # Soft tissue - pinkish
-        2 => RGBf(0.9, 0.8, 0.7),       # Brain - cream
+        0 => RGBf(0.0, 0.0, 0.0),
+        1 => RGBf(0.8, 0.5, 0.5),
+        2 => RGBf(0.9, 0.8, 0.7),
     )
     
     slice_data = phantom.mask[:, :, cz]
-    dims = size(slice_data)
+    dims_slice = size(slice_data)
     
-    color_image = Matrix{RGBf}(undef, dims[1], dims[2])
-    for j in 1:dims[2], i in 1:dims[1]
+    color_image = Matrix{RGBf}(undef, dims_slice[1], dims_slice[2])
+    for j in 1:dims_slice[2], i in 1:dims_slice[1]
         color_image[i, j] = get(MATERIAL_COLORS, slice_data[i, j], RGBf(0.5, 0.5, 0.5))
     end
     
@@ -390,20 +292,19 @@ begin
     fig
 end
 
-# ╔═╡ 00000000-0000-0000-0000-000000000029
+# ╔═╡ 00000000-0000-0000-0000-000000000028
 # ╠═╡ show_logs = false
 begin
-    "### Summary"
+    "## Summary"
     Markdown.md"""
-    This notebook demonstrates:
+    This notebook demonstrates brain perfusion CT simulation with interactive visualization.
     
-    1. **Phantom Generation** - Creates a simple brain phantom with air, soft tissue, and brain regions
-    2. **Perfusion Simulation** - Simulates iodine contrast enhancement over time
-    3. **Interactive Visualization** - Sliders for time and slice selection
-    4. **Time-Attenuation Curves** - Shows contrast dynamics at different locations
-    5. **Summary Dashboard** - Overview of perfusion effects
-    
-    Use the sliders above to explore different time points and slice positions.
+    **Features:**
+    - Phantom generation with brain structures
+    - Perfusion simulation over time
+    - Interactive time/slice sliders
+    - Time-attenuation curves
+    - Summary dashboard
     """
 end
 
