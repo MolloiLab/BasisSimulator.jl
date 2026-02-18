@@ -5,7 +5,8 @@ on:
     branches:
       - main
       - master
-      - tigre-reactant-rewrite
+      - tiger-reactant-rewrite
+      - phantom-loading
     tags: ['*']
   pull_request:
   workflow_dispatch:
