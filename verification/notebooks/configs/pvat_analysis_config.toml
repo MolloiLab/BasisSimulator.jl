@@ -1,0 +1,136 @@
+# PVAT Analysis Configuration
+# 
+# Usage:
+#   julia 07_pvat_analysis.jl --config configs/pvat_analysis_config.toml
+#   julia 07_pvat_analysis.jl --phantom vmale50.raw --materials custom_materials.toml
+
+# =============================================================================
+# Phantom Configuration
+# =============================================================================
+[phantom]
+# Path to PVAT phantom file
+phantom_file = "vmale50_1600x1400x500.raw"
+
+# Dimensions (auto-detected from filename if not specified)
+# dims = [1600, 1400, 500]
+
+# Data type: UInt8 (typical for PVAT)
+data_type = "UInt8"
+
+# Voxel size in cm (typical for PVAT: 1mm in-plane, 2mm slice)
+voxel_size = [0.1, 0.1, 0.2]
+
+# Downsample factor for faster simulation
+downsample_factor = 4
+
+# =============================================================================
+# Material Configuration
+# =============================================================================
+[materials]
+# Material mapping strategy: "auto", "xlsx", "toml"
+mapping_strategy = "auto"
+
+# Path to Excel material file (if using xlsx)
+material_xlsx = "path/to/materials.xlsx"
+
+# Path to TOML material file (if using toml)
+material_toml = "path/to/materials.toml"
+
+# Manual material mapping (organ_id => material_symbol)
+# This is used if mapping_strategy = "auto"
+# Material symbols: :air, :water, :bone, :muscle, :brain, :blood, :lung, :soft_tissue
+[[materials.manual_mapping]]
+# Example: organ_id = material_symbol
+# 0 = "air"
+# 1 = "water" 
+# 2 = "bone"
+# 3 = "muscle"
+# 4 = "brain"
+
+# =============================================================================
+# Material Mixture Configuration
+# =============================================================================
+[mixtures]
+# Enable dynamic material mixtures
+enabled = true
+
+# Iodine contrast configuration
+enable_iodine_contrast = false
+
+# Iodine concentration in mg/g for contrast-enhanced regions
+iodine_concentration_mg_g = 5.0
+
+# List of region IDs to apply contrast (empty = auto-detect blood vessels)
+contrast_region_ids = []
+
+# Custom mixture ratios (region_id = [material1, ratio1, material2, ratio2, ...])
+# Example: [[mixtures.custom]]
+# 3 = ["bone", 0.8, "bone_marrow", 0.2]
+
+# =============================================================================
+# Scanner Configuration
+# =============================================================================
+[scanner]
+# Scanner type: "eict", "eict_dual", "pcct"
+scanner_type = "eict"
+
+# kVp value
+kVp = 120.0
+
+# mA value
+mA = 300.0
+
+# Number of views
+views = 984
+
+# =============================================================================
+# Analysis Parameters
+# =============================================================================
+[analysis]
+# ROI analysis
+compute_roi_stats = true
+
+# ROI center (as fraction of phantom size, e.g., [0.5, 0.5, 0.5] = center)
+roi_center = [0.5, 0.5, 0.5]
+
+# ROI radius in voxels
+roi_radius = 20
+
+# Compute HU histograms
+compute_histograms = true
+
+# Number of histogram bins
+histogram_bins = 100
+
+# HU range for histogram
+histogram_range = [-1000, 1000]
+
+# =============================================================================
+# Simulation Options
+# =============================================================================
+[simulation]
+# Reconstruction matrix size
+recon_xy = 512
+recon_z = 64
+
+# Reconstruction FOV in cm
+recon_fov_cm = 35.0
+
+# Seed for reproducibility
+seed = 42
+
+# =============================================================================
+# Output Configuration
+# =============================================================================
+[output]
+# Output directory
+output_dir = "./pvat_output"
+
+# Save images
+save_images = true
+
+# Save data
+save_data = true
+
+# Figure format
+figure_format = "png"
