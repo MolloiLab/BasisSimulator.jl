@@ -58,3 +58,11 @@ verification/figures/
 verification/catsim_work/
 verification/notebooks/catsim_work/
 verification/data/xcat/*.bin
+
+# Phantom reference data (large, external)
+phantom-loading-reference/
+*.raw
+*.mat
+
+# Analysis output (generated)
+analysis_output/

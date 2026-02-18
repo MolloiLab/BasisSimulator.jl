@@ -568,6 +568,73 @@ function get_region_mask(phantom::Phantom, label::RegionLabel)
 end
 
 
+"""
+    get_xcat_material(symbol::Symbol) -> XA.Material
+
+Get XrayAttenuation material for XCAT semantic categories.
+"""
+function get_xcat_material(symbol::Symbol)::XA.Material
+    return get_xcat_material_dict(symbol)
+end
+
+const XCAT_MATERIALS = Dict{Symbol, XA.Material}()
+
+function get_xcat_material_dict(symbol::Symbol)::XA.Material
+    if isempty(XCAT_MATERIALS)
+        initialize_xcat_materials()
+    end
+    return get(XCAT_MATERIALS, symbol, XA.Materials.water)
+end
+
+function initialize_xcat_materials()
+    XCAT_MATERIALS[:air] = XA.Materials.air
+    XCAT_MATERIALS[:soft_tissue] = XA.Materials.water
+    XCAT_MATERIALS[:bone] = XA.Materials.cortical_bone
+    XCAT_MATERIALS[:brain] = XA.Materials.brain
+    XCAT_MATERIALS[:blood] = XA.Materials.blood
+    XCAT_MATERIALS[:csf] = XA.Materials.csf
+    XCAT_MATERIALS[:cartilage] = XA.Materials.cortical_bone
+end
+
+"""
+    create_phantom_from_xcat(
+        mask::Array{UInt16,3},
+        material_mapping::Dict{Int, Symbol},
+        voxel_size_cm::NTuple{3, Float64}
+    ) -> Phantom
+
+Create a BasisSimulator Phantom from XCAT classification data.
+
+# Arguments
+- `mask::Array{UInt16,3}`: Raw XCAT mask with structure IDs
+- `material_mapping::Dict{Int, Symbol}`: Mapping from structure ID to material symbol
+- `voxel_size_cm::NTuple{3, Float64}`: Voxel dimensions in cm
+
+# Returns
+Phantom ready for simulation
+"""
+function create_phantom_from_xcat(
+    mask::Array{UInt16,3},
+    material_mapping::Dict{Int, Symbol},
+    voxel_size_cm::NTuple{3, Float64}
+)::Phantom
+    initialize_xcat_materials()
+    
+    unique_ids = unique(mask)
+    
+    materials_dict = Dict{Int, XA.Material}()
+    for id in unique_ids
+        if haskey(material_mapping, Int(id))
+            mat_symbol = material_mapping[Int(id)]
+            materials_dict[Int(id)] = get_xcat_material(mat_symbol)
+        else
+            materials_dict[Int(id)] = XA.Materials.air
+        end
+    end
+    
+    return Phantom(mask, materials_dict, voxel_size_cm)
+end
+
 # =============================================================================
 # Exports
 # =============================================================================
@@ -580,3 +647,4 @@ export REGION_TO_MATERIAL
 
 export Phantom, compute_μ, create_gammex_472, create_phantom_from_mask, build_materials_vector
 export get_region_mask
+export create_phantom_from_xcat

@@ -52,6 +52,9 @@ include("source/spectrum.jl")
 # Materials (Gammex 472)
 include("object/materials.jl")
 
+# Semantic classification for anatomical structures
+include("object/semantic_classification.jl")
+
 # Attenuation coefficient computation
 include("object/attenuation.jl")
 
