@@ -83,6 +83,7 @@ SIM_CONFIG = (
 	imageSize = 512,
 	sliceCount = 32,
 	sliceThickness = 1.25,      # mm
+	phantom_z_cm = 5.0,         # Actual Gammex 472 physical thickness (50mm)
 	fov_mm = 350.0,
 
 	# NAEOTOM Alpha geometry — VERIFIED (Konrad 2025, FDA K201501)
@@ -123,7 +124,7 @@ naeotom = BS.Scanner(
 
 	# GANTRY
 	gantry_rotation_time = SIM_CONFIG.rotationTime,
-	max_scan_fov = 500.0,
+	scan_diameter = 500.0,
 	gantry_aperture = 820.0,
 
 	# FILTRATION
@@ -461,7 +462,11 @@ let
 end
 
 # ╔═╡ a0000005-0013-4000-8000-000000000013
-md"## 8. Phantom & Protocol Setup"
+md"""
+## 8. Phantom & Protocol Setup
+
+The Gammex 472 is 33cm diameter × **5cm thick** (manufacturer spec). The phantom (5cm) is larger than the detector z-coverage (64 rows × 0.4mm = 2.56cm) so every detector row sees through phantom material.
+"""
 
 # ╔═╡ d1d7870b-d0bd-4010-847e-5af71edb7fc1
 begin
@@ -469,7 +474,7 @@ begin
 		n_voxels=SIM_CONFIG.imageSize,
 		n_slices=SIM_CONFIG.sliceCount,
 		fov_cm=SIM_CONFIG.fov_mm / 10.0,
-		z_cm=(SIM_CONFIG.sliceCount * SIM_CONFIG.sliceThickness) / 10.0
+		z_cm=SIM_CONFIG.phantom_z_cm  # 5cm — actual Gammex 472 thickness
 	)
 
 	phantom_gpu = BS.Phantom(
@@ -477,7 +482,7 @@ begin
 		phantom_cpu.materials,
 		phantom_cpu.voxel_size,
 		phantom_cpu.origin,
-		phantom_cpu.fov
+		phantom_cpu.extent
 	)
 end
 

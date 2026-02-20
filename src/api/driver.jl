@@ -262,7 +262,8 @@ function _simulate_axial_single(phantom, scanner, protocol, sim_opts, recon_opts
         scanner;
         n_angles = protocol.views,
         fov_cm = recon_opts.fov_cm,
-        z_cm = recon_opts.z_cm
+        z_cm = recon_opts.z_cm,
+        collimation_mm = protocol.collimation_mm
     )
 
     # 2. Resolve spectrum
@@ -279,7 +280,7 @@ function _simulate_axial_single(phantom, scanner, protocol, sim_opts, recon_opts
         mask_gpu, geom;
         energies=energies, weights=weights,
         materials=mats, physics=config,
-        volume_fov=phantom.fov
+        volume_extent=phantom.extent
     )
 
     # 5. Apply Detector Noise
@@ -349,7 +350,7 @@ function _forward_single_pass(phantom, scanner, protocol, sim_opts, geom;
         mask_gpu, geom;
         energies=energies, weights=weights,
         materials=mats, physics=config,
-        volume_fov=phantom.fov
+        volume_extent=phantom.extent
     )
 
     return sinogram, config
@@ -363,7 +364,8 @@ function _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts;
         scanner;
         n_angles = protocol.views,
         fov_cm = recon_opts.fov_cm,
-        z_cm = recon_opts.z_cm
+        z_cm = recon_opts.z_cm,
+        collimation_mm = protocol.collimation_mm
     )
 
     # 2. Create single-kVp protocols for each energy level
@@ -604,7 +606,7 @@ function simulate!(
         ws_detector_u=ws.geom_detector_u,
         ws_detector_v=ws.geom_detector_v,
         ws_charge_probs=ws.charge_sharing_probs,
-        volume_fov=phantom.fov
+        volume_extent=phantom.extent
     )
 
     # Combine ideal (workspace buffer + pre-computed I0_bins)
@@ -712,7 +714,7 @@ function simulate!(
                             ws_detector_centers=ws.geom_detector_centers,
                             ws_detector_u=ws.geom_detector_u,
                             ws_detector_v=ws.geom_detector_v,
-                            volume_fov=phantom.fov)
+                            volume_extent=phantom.extent)
 
     if ws.has_signal_chain
         # ═══════════════════════════════════════════════════════════════════
@@ -985,7 +987,7 @@ function _eict_dual_forward_pass!(
                             ws_detector_centers=ws.geom_detector_centers,
                             ws_detector_u=ws.geom_detector_u,
                             ws_detector_v=ws.geom_detector_v,
-                            volume_fov=phantom.fov)
+                            volume_extent=phantom.extent)
 
     if ws.has_signal_chain
         # CatSim signal chain
@@ -1087,7 +1089,7 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts;
     mask_gpu = _to_gpu(phantom.mask)
     # Create a phantom wrapper with the GPU mask for consistent backend
     gpu_phantom = Phantom(mask_gpu, phantom.materials, phantom.voxel_size,
-                          phantom.origin, phantom.fov)
+                          phantom.origin, phantom.extent)
     ws = create_workspace(scanner, protocol, sim_opts, recon_opts, gpu_phantom;
                           materials=materials)
 

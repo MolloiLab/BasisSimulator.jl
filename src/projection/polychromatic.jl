@@ -494,8 +494,8 @@ function forward_project!(
     calibrate::Bool = true,
     max_prep::Union{Nothing, Real} = nothing,
     noise_seed::Union{Nothing, Int} = nothing,
-    # Volume bounds override (for phantoms with FOV different from recon FOV)
-    volume_fov::Union{Nothing, NTuple{3, Float64}} = nothing
+    # Volume bounds override (for phantoms with extent different from recon FOV)
+    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing
 ) where T <: AbstractFloat
 
     # Get signal chain effects from PhysicsConfig if not provided as kwargs
@@ -530,7 +530,7 @@ function forward_project!(
             energy=energy, energies=energies, weights=weights, materials=materials,
             physics=physics, heel_effect=effective_heel, das_model=effective_das,
             bhc=effective_bhc, max_prep=max_prep, noise_seed=effective_seed,
-            volume_fov=volume_fov
+            volume_extent=volume_extent
         )
     end
 
@@ -539,7 +539,7 @@ function forward_project!(
     # Determine mode based on input type and kwargs
     if eltype(volume_or_mask) <: AbstractFloat
         # Direct volume input - simple monochromatic projection
-        siddon_forward_project!(sinogram, volume_or_mask, geom; volume_fov=volume_fov)
+        siddon_forward_project!(sinogram, volume_or_mask, geom; volume_extent=volume_extent)
 
     elseif eltype(volume_or_mask) == UInt8
         # Mask input - need energy specification
@@ -552,12 +552,12 @@ function forward_project!(
         if energy !== nothing
             # Monochromatic mode with single energy
             _forward_project_mono!(sinogram, mask, geom, T(energy), materials;
-                                   volume_fov=volume_fov)
+                                   volume_extent=volume_extent)
 
         elseif energies !== nothing && weights !== nothing
             # Polychromatic mode
             _forward_project_poly!(sinogram, mask, geom, energies, weights, materials;
-                                   volume_fov=volume_fov)
+                                   volume_extent=volume_extent)
 
         else
             error("Must specify either `energy` (single keV) or `energies` + `weights` (spectrum)")
@@ -754,7 +754,7 @@ function _forward_project_with_signal_chain!(
     bhc::Union{Nothing, Union{BHCPolynomial, BeamHardeningCorrection}},
     max_prep::Union{Nothing, Real},
     noise_seed::Union{Nothing, Int},
-    volume_fov::Union{Nothing, NTuple{3, Float64}} = nothing
+    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing
 ) where T <: AbstractFloat
 
     # =========================================================================
@@ -766,7 +766,7 @@ function _forward_project_with_signal_chain!(
     # STEP 1: Get raw sinogram (line integrals)
     # =========================================================================
     if eltype(volume_or_mask) <: AbstractFloat
-        siddon_forward_project!(sinogram, volume_or_mask, geom; volume_fov=volume_fov)
+        siddon_forward_project!(sinogram, volume_or_mask, geom; volume_extent=volume_extent)
     elseif eltype(volume_or_mask) == UInt8
         mask = volume_or_mask
         if materials === nothing
@@ -774,10 +774,10 @@ function _forward_project_with_signal_chain!(
         end
         if energy !== nothing
             _forward_project_mono!(sinogram, mask, geom, T(energy), materials;
-                                   volume_fov=volume_fov)
+                                   volume_extent=volume_extent)
         elseif energies !== nothing && weights !== nothing
             _forward_project_poly!(sinogram, mask, geom, energies, weights, materials;
-                                   volume_fov=volume_fov)
+                                   volume_extent=volume_extent)
         else
             error("Must specify either `energy` or `energies` + `weights`")
         end
@@ -987,7 +987,7 @@ function _forward_project_mono!(
     geom::CTGeometry,
     energy_keV::T,
     materials::Vector;
-    volume_fov::Union{Nothing, NTuple{3, Float64}} = nothing
+    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing
 ) where T <: AbstractFloat
 
     # Create μ volume at this energy
@@ -995,7 +995,7 @@ function _forward_project_mono!(
     create_μ_volume!(μ_volume, mask, materials, energy_keV)
 
     # Forward project
-    return siddon_forward_project!(sinogram, μ_volume, geom; volume_fov=volume_fov)
+    return siddon_forward_project!(sinogram, μ_volume, geom; volume_extent=volume_extent)
 end
 
 """
@@ -1107,7 +1107,7 @@ function _forward_project_poly!(
     ws_detector_u=nothing,
     ws_detector_v=nothing,
     # Override volume bounds for phantom FOV
-    volume_fov::Union{Nothing, NTuple{3, Float64}} = nothing
+    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing
 ) where T <: AbstractFloat
 
     n_energies = length(energies)
@@ -1137,7 +1137,7 @@ function _forward_project_poly!(
             ws_detector_centers=ws_detector_centers,
             ws_detector_u=ws_detector_u,
             ws_detector_v=ws_detector_v,
-            volume_fov=volume_fov)
+            volume_extent=volume_extent)
 
         # Accumulate Beer-Lambert: I += w × exp(-line_integral)
         w = weights_norm[e_idx]
