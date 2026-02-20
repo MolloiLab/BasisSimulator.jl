@@ -72,7 +72,7 @@ with CatSim and medical imaging conventions.
 
 # Gantry Parameters
 - `gantry_rotation_time::T`: Gantry rotation time (seconds)
-- `max_scan_fov::T`: Maximum scan field of view (mm)
+- `scan_diameter::T`: Maximum scan diameter (mm)
 - `gantry_aperture::T`: Gantry bore diameter (mm)
 
 # Filter Parameters
@@ -144,7 +144,7 @@ struct Scanner{T<:AbstractFloat}
 
     # Gantry
     gantry_rotation_time::T     # seconds
-    max_scan_fov::T             # mm
+    scan_diameter::T             # mm
     gantry_aperture::T          # mm
 
     # Filters
@@ -193,7 +193,7 @@ All distances are in mm. Default values match a generic research CT scanner
 - `focal_spot_length::Real = 1.0`: Focal spot length (mm)
 - `target_angle::Real = 7.0`: Anode target angle (degrees)
 - `gantry_rotation_time::Real = 0.5`: Rotation time (seconds)
-- `max_scan_fov::Real = 500.0`: Maximum scan FOV (mm)
+- `scan_diameter::Real = 500.0`: Maximum scan diameter (mm)
 - `gantry_aperture::Real = 700.0`: Gantry bore diameter (mm)
 - `flat_filter_material::Symbol = :aluminum`: Flat filter material
 - `flat_filter_thickness::Real = 2.0`: Flat filter thickness (mm)
@@ -250,7 +250,7 @@ function Scanner(;
 
     # Gantry
     gantry_rotation_time::Real = 0.5,
-    max_scan_fov::Real = 500.0,
+    scan_diameter::Real = 500.0,
     gantry_aperture::Real = 700.0,
 
     # Filters
@@ -308,7 +308,7 @@ function Scanner(;
         T(focal_spot_length),
         T(target_angle),
         T(gantry_rotation_time),
-        T(max_scan_fov),
+        T(scan_diameter),
         T(gantry_aperture),
         flat_filter_material,
         T(flat_filter_thickness),
@@ -339,7 +339,7 @@ Checks:
 3. Detector array: Rows and columns must be positive integers
 4. Detector geometry: Pixel sizes must be positive
 5. Fill factors: Must be between 0 and 1
-6. FOV consistency: Max FOV fits within detector coverage
+6. Scan diameter consistency: scan_diameter fits within detector coverage
 7. Target angle: Must be positive and < 90 degrees
 
 # Returns
@@ -418,11 +418,11 @@ function validate_scanner(scanner::Scanner{T}) where T
         valid = false
     end
 
-    # FOV consistency warning
+    # Scan diameter vs detector coverage consistency warning
     # detector_col_size is already at isocenter (mm)
     detector_coverage_at_iso = scanner.detector_cols * scanner.detector_col_size
-    if scanner.max_scan_fov > detector_coverage_at_iso
-        push!(messages, "WARNING: max_scan_fov ($(scanner.max_scan_fov) mm) exceeds detector coverage at isocenter ($(round(detector_coverage_at_iso, digits=1)) mm)")
+    if scanner.scan_diameter > detector_coverage_at_iso
+        push!(messages, "WARNING: scan_diameter ($(scanner.scan_diameter) mm) exceeds detector coverage at isocenter ($(round(detector_coverage_at_iso, digits=1)) mm)")
     end
 
     # Z coverage (detector_row_size is already at isocenter)
@@ -451,7 +451,7 @@ function print_scanner_summary(scanner::Scanner{T}) where T
     println("  Source-to-Detector:   $(scanner.source_to_detector) mm")
     magnification = scanner.source_to_detector / scanner.source_to_isocenter
     println("  Magnification:        $(round(magnification, digits=3))")
-    println("  Max Scan FOV:         $(scanner.max_scan_fov) mm")
+    println("  Scan Diameter:        $(scanner.scan_diameter) mm")
     println("  Gantry Aperture:      $(scanner.gantry_aperture) mm")
     println()
     println("DETECTOR ($(scanner.detector_shape))")
@@ -528,7 +528,7 @@ struct CTGeometry
 end
 
 """
-    CTGeometry(scanner::Scanner; n_angles=360, fov_cm=nothing, z_cm=nothing, n_rows=nothing, n_cols=nothing)
+    CTGeometry(scanner::Scanner; n_angles=360, fov_cm=nothing, z_cm=nothing, n_rows=nothing, n_cols=nothing, collimation_mm=nothing)
 
 Create a CTGeometry from a Scanner definition.
 
@@ -540,10 +540,12 @@ trajectory positions suitable for simulation.
 
 # Keyword Arguments
 - `n_angles::Int = 360`: Number of projection angles
-- `fov_cm::Union{Float64,Nothing} = nothing`: XY FOV in cm. If nothing, uses scanner.max_scan_fov/10.
-- `z_cm::Union{Float64,Nothing} = nothing`: Z FOV in cm. If nothing, computes from detector coverage.
+- `fov_cm::Union{Float64,Nothing} = nothing`: Reconstruction XY FOV in cm. If nothing, uses full detector coverage at isocenter.
+- `z_cm::Union{Float64,Nothing} = nothing`: Reconstruction Z extent in cm. If nothing, computes from detector coverage.
 - `n_rows::Union{Int,Nothing} = nothing`: Override detector rows. If nothing, uses scanner.detector_rows.
 - `n_cols::Union{Int,Nothing} = nothing`: Override detector columns. If nothing, uses scanner.detector_cols.
+- `collimation_mm::Union{Float64,Nothing} = nothing`: Detector z-collimation in mm.
+  Derives n_rows automatically. Errors if it exceeds scanner physical max or if n_rows is also specified.
 
 # Returns
 `CTGeometry` with pre-computed source/detector positions.
@@ -561,6 +563,9 @@ geom = CTGeometry(scanner; n_angles=360, fov_cm=35.0)
 
 # Or with reduced detector for fast testing
 geom_fast = CTGeometry(scanner; n_angles=90, n_rows=16, n_cols=128, fov_cm=35.0)
+
+# With collimation (derives n_rows automatically)
+geom_coll = CTGeometry(scanner; n_angles=360, collimation_mm=80.0)
 ```
 """
 function CTGeometry(scanner::Scanner{T};
@@ -568,11 +573,23 @@ function CTGeometry(scanner::Scanner{T};
     fov_cm::Union{Float64,Nothing} = nothing,
     z_cm::Union{Float64,Nothing} = nothing,
     n_rows::Union{Int,Nothing} = nothing,
-    n_cols::Union{Int,Nothing} = nothing
+    n_cols::Union{Int,Nothing} = nothing,
+    collimation_mm::Union{Float64,Nothing} = nothing
 ) where T
 
-    # Use scanner values or overrides
-    _n_rows = n_rows !== nothing ? n_rows : scanner.detector_rows
+    # Determine active detector rows from collimation or explicit override
+    if collimation_mm !== nothing
+        max_collimation = scanner.detector_rows * scanner.detector_row_size
+        if collimation_mm > max_collimation
+            error("collimation_mm ($collimation_mm mm) exceeds scanner physical maximum ($(scanner.detector_rows) × $(scanner.detector_row_size) = $max_collimation mm)")
+        end
+        if n_rows !== nothing
+            error("Cannot specify both collimation_mm and n_rows")
+        end
+        _n_rows = round(Int, collimation_mm / scanner.detector_row_size)
+    else
+        _n_rows = n_rows !== nothing ? n_rows : scanner.detector_rows
+    end
     _n_cols = n_cols !== nothing ? n_cols : scanner.detector_cols
 
     # Convert mm to cm (BasisSimulator internal unit)
@@ -591,13 +608,12 @@ function CTGeometry(scanner::Scanner{T};
         fov_xy = _n_cols * pixel_size
     end
 
-    # Z FOV
+    # Z FOV — uses active rows (from collimation or override), not full scanner
     if z_cm !== nothing
         fov_z = z_cm
     else
-        # Compute from detector coverage at isocenter (detector_row_size is already at isocenter)
-        z_coverage_mm = scanner.detector_rows * scanner.detector_row_size
-        fov_z = z_coverage_mm / 10.0  # Convert to cm
+        z_coverage_mm = _n_rows * scanner.detector_row_size
+        fov_z = z_coverage_mm / 10.0  # mm → cm
     end
 
     # Generate angles (full 360° rotation)
@@ -806,16 +822,16 @@ scanner_uhr.detector_row_size  # 0.2 mm (vs 0.4 mm standard)
 ```
 """
 function create_naeotom_alpha(; mode::Symbol=:standard)
-    # NAEOTOM Alpha has 50cm scan FOV at isocenter
+    # NAEOTOM Alpha has 50cm scan diameter at isocenter
     # Pixel sizes are at isocenter (clinical convention)
     if mode == :uhr
         pixel_size = 0.2    # Native unbinned at isocenter (120 × 0.2 mm collimation)
         n_rows = 120
-        n_cols = ceil(Int, 500.0 / 0.2)   # 2500 cols for 50cm FOV at isocenter
+        n_cols = ceil(Int, 500.0 / 0.2)   # 2500 cols for 50cm scan diameter
     elseif mode == :standard
         pixel_size = 0.4    # 2×2 binned at isocenter (144 × 0.4 mm collimation)
         n_rows = 144
-        n_cols = ceil(Int, 500.0 / 0.4)   # 1250 cols for 50cm FOV at isocenter
+        n_cols = ceil(Int, 500.0 / 0.4)   # 1250 cols for 50cm scan diameter
     else
         error("mode must be :standard or :uhr (got :$mode)")
     end
@@ -825,7 +841,7 @@ function create_naeotom_alpha(; mode::Symbol=:standard)
         source_to_isocenter = 595.0,
         source_to_detector = 1085.5,
 
-        # Detector array (50cm scan FOV)
+        # Detector array (50cm scan diameter)
         detector_rows = n_rows,
         detector_cols = n_cols,
         detector_row_size = pixel_size,
@@ -841,7 +857,7 @@ function create_naeotom_alpha(; mode::Symbol=:standard)
 
         # Gantry
         gantry_rotation_time = 0.25,
-        max_scan_fov = 500.0,
+        scan_diameter = 500.0,
         gantry_aperture = 820.0,
 
         # Filters

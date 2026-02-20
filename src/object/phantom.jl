@@ -78,7 +78,7 @@ Digital phantom with semantic mask and materials for polychromatic simulation.
 - `materials::Vector{XA.Material}`: Materials for each region (indexed by mask_value + 1)
 - `voxel_size::NTuple{3,Float64}`: Voxel dimensions (cm) as (dx, dy, dz)
 - `origin::NTuple{3,Float64}`: Origin coordinates (cm) - center of first voxel
-- `fov::NTuple{3,Float64}`: Field of view (cm) as (x, y, z)
+- `extent::NTuple{3,Float64}`: Physical extent (cm) as (x, y, z)
 
 # Coordinate System
 - X: left-right (increasing right)
@@ -113,7 +113,7 @@ phantom_gpu = Phantom(
     phantom_cpu.materials,
     phantom_cpu.voxel_size,
     phantom_cpu.origin,
-    phantom_cpu.fov
+    phantom_cpu.extent
 )
 ```
 
@@ -124,7 +124,7 @@ struct Phantom{M<:AbstractArray{UInt8,3}, Mat}
     materials::Mat  # Vector{XA.Material}
     voxel_size::NTuple{3,Float64}
     origin::NTuple{3,Float64}
-    fov::NTuple{3,Float64}
+    extent::NTuple{3,Float64}
 end
 
 # =============================================================================
@@ -200,7 +200,7 @@ without a separate `materials` kwarg.
 A `Phantom` with:
 - `mask`: UInt8 mask with original label values
 - `materials`: Vector{XA.Material} for polychromatic simulation
-- `voxel_size`, `origin`, `fov`: Geometry parameters
+- `voxel_size`, `origin`, `extent`: Geometry parameters
 
 # Example
 
@@ -237,16 +237,16 @@ function Phantom(
     nx, ny, nz = size(labeled_array)
     dx, dy, dz = Float64.(voxel_size_cm)
 
-    # Compute FOV
-    fov_x = dx * nx
-    fov_y = dy * ny
-    fov_z = dz * nz
+    # Compute physical extent
+    ext_x = dx * nx
+    ext_y = dy * ny
+    ext_z = dz * nz
 
     # Compute origin (center at isocenter if not specified)
     if origin === nothing
-        origin_x = -fov_x/2 + dx/2
-        origin_y = -fov_y/2 + dy/2
-        origin_z = -fov_z/2 + dz/2
+        origin_x = -ext_x/2 + dx/2
+        origin_y = -ext_y/2 + dy/2
+        origin_z = -ext_z/2 + dz/2
         computed_origin = (origin_x, origin_y, origin_z)
     else
         computed_origin = Float64.(origin)
@@ -263,7 +263,7 @@ function Phantom(
         materials_vec,
         (dx, dy, dz),
         computed_origin,
-        (fov_x, fov_y, fov_z)
+        (ext_x, ext_y, ext_z)
     )
 end
 
@@ -423,7 +423,7 @@ function create_gammex_472(;
         materials_vec,
         (dx, dy, dz),
         (-fov_cm/2 + dx/2, -fov_cm/2 + dy/2, -z_cm/2 + dz/2),
-        (fov_cm, fov_cm, z_cm)
+        (Float64(fov_cm), Float64(fov_cm), Float64(z_cm))
     )
 end
 
@@ -461,7 +461,7 @@ A `Phantom` struct with:
 - `materials`: Vector{XA.Material} for polychromatic simulation
 - `voxel_size`: Physical voxel dimensions (cm)
 - `origin`: Origin coordinates (cm)
-- `fov`: Field of view (cm)
+- `extent`: Physical extent (cm)
 
 Use `compute_μ(phantom, energy_keV)` to get attenuation coefficients at any energy.
 
