@@ -157,7 +157,10 @@ result2 = simulate!(ws, phantom, scanner, protocol, sim_opts, recon_opts)
 function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
                           T::Type{<:AbstractFloat}=Float32, mask=nothing,
                           materials::Union{Nothing, Vector}=nothing)
-    sino_shape = (scanner.detector_cols, scanner.detector_rows, protocol.views)
+    # --- Pre-compute geometry first (collimation derives n_rows) ---
+    geom = CTGeometry(scanner; n_angles=protocol.views, fov_cm=recon_opts.fov_cm, z_cm=recon_opts.z_cm, collimation_mm=protocol.collimation_mm)
+
+    sino_shape = (geom.n_cols, geom.n_rows, geom.n_angles)
     vol_shape = size(phantom.mask)
     n_bins = length(scanner.energy_thresholds)
     n_materials = length(recon_opts.vmi_basis)
@@ -189,9 +192,6 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     enoise_cpu = Vector{T}(undef, n_elements)
     sino_ideal_out = zeros(T, sino_shape)
     sino_noisy_out = zeros(T, sino_shape)
-
-    # --- Pre-compute setup data (done once, reused by simulate!()) ---
-    geom = CTGeometry(scanner; n_angles=protocol.views, fov_cm=recon_opts.fov_cm, z_cm=recon_opts.z_cm)
     e_full, w_full = load_spectrum(Int(protocol.kVp))
     energies, weights_vec = downsample_spectrum(e_full, w_full, sim_opts.n_energy_bins)
     config = build_physics_config(scanner, sim_opts, energies, weights_vec; phantom=phantom)
@@ -442,7 +442,7 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
                                 T::Type{<:AbstractFloat}=Float32,
                                 materials::Union{Nothing, Vector}=nothing)
     # Geometry
-    geom = CTGeometry(scanner; n_angles=protocol.views, fov_cm=recon_opts.fov_cm, z_cm=recon_opts.z_cm)
+    geom = CTGeometry(scanner; n_angles=protocol.views, fov_cm=recon_opts.fov_cm, z_cm=recon_opts.z_cm, collimation_mm=protocol.collimation_mm)
 
     # Spectrum
     energies, weights_vec = resolve_spectrum(sim_opts, protocol)
@@ -745,7 +745,7 @@ function create_eict_dual_workspace(scanner, protocol, sim_opts, recon_opts, pha
                                      T::Type{<:AbstractFloat}=Float32,
                                      materials::Union{Nothing, Vector}=nothing)
     # Geometry (shared)
-    geom = CTGeometry(scanner; n_angles=protocol.views, fov_cm=recon_opts.fov_cm, z_cm=recon_opts.z_cm)
+    geom = CTGeometry(scanner; n_angles=protocol.views, fov_cm=recon_opts.fov_cm, z_cm=recon_opts.z_cm, collimation_mm=protocol.collimation_mm)
 
     # Create per-kVp protocols (same as _simulate_axial_dual)
     protocol_low = CTProtocol(

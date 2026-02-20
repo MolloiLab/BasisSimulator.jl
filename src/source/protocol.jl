@@ -28,6 +28,7 @@ For dual-energy, `kVp` and `mA` are the HIGH energy settings.
 - `kVp_low`: Low tube voltage for dual-energy (0.0 if single)
 - `mA_low`: Low tube current for dual-energy (0.0 if single)
 - `integration_fraction`: Fraction of views at low kVp (0.5 default)
+- `collimation_mm`: Detector z-collimation in mm (nothing = use full detector)
 """
 struct CTProtocol
     mA::Float64            # Tube current (high energy for DE)
@@ -41,6 +42,7 @@ struct CTProtocol
     kVp_low::Float64       # Low kVp for dual-energy
     mA_low::Float64        # Low mA for dual-energy
     integration_fraction::Float64  # Fraction of views at low kVp
+    collimation_mm::Union{Float64, Nothing}  # Detector z-collimation (mm), nothing = full detector
 end
 
 """
@@ -61,11 +63,15 @@ Create a CT protocol. You must provide either `mA` OR `mAs`.
 - `kVp_low`: Low tube voltage for DE (default: 0.0, required > 0 when dual_energy=true)
 - `mA_low`: Low tube current for DE (default: 0.0)
 - `integration_fraction`: Fraction of views at low kVp (default: 0.5)
+- `collimation_mm`: Detector z-collimation in mm (default: nothing = full detector)
 
 # Examples
 ```julia
 # Simple axial (backward compatible)
 CTProtocol(kVp=120, mA=200, views=984)
+
+# With collimation (128×0.625mm = 80mm)
+CTProtocol(kVp=120, mA=200, views=984, collimation_mm=80.0)
 
 # Dual-energy axial
 CTProtocol(dual_energy=true, kVp=140, mA=200, kVp_low=80, mA_low=350, views=984)
@@ -83,7 +89,8 @@ function CTProtocol(;
     dual_energy::Bool=false,
     kVp_low::Real=0.0,
     mA_low::Real=0.0,
-    integration_fraction::Real=0.5
+    integration_fraction::Real=0.5,
+    collimation_mm::Union{Real, Nothing}=nothing
 )
     # Handle mA / mAs exclusivity
     final_mA = if !isnothing(mA)
@@ -111,7 +118,8 @@ function CTProtocol(;
         dual_energy,
         Float64(kVp_low),
         Float64(mA_low),
-        Float64(integration_fraction)
+        Float64(integration_fraction),
+        collimation_mm === nothing ? nothing : Float64(collimation_mm)
     )
 end
 
@@ -196,6 +204,19 @@ function validate_protocol(protocol::CTProtocol, scanner::Scanner)
     if protocol.flux_density ≤ 0.0
         push!(messages, "ERROR: flux_density must be positive (got $(protocol.flux_density))")
         valid = false
+    end
+
+    # Collimation validation
+    if protocol.collimation_mm !== nothing
+        if protocol.collimation_mm <= 0
+            push!(messages, "ERROR: collimation_mm must be positive (got $(protocol.collimation_mm))")
+            valid = false
+        end
+        max_mm = scanner.detector_rows * scanner.detector_row_size
+        if protocol.collimation_mm > max_mm
+            push!(messages, "ERROR: collimation_mm ($(protocol.collimation_mm)) exceeds scanner max ($max_mm mm = $(scanner.detector_rows) × $(scanner.detector_row_size) mm)")
+            valid = false
+        end
     end
 
     return valid, messages
@@ -400,7 +421,8 @@ function constant_dose_protocol(base::CTProtocol, new_views::Int)
         base.dual_energy,
         base.kVp_low,
         base.mA_low,
-        base.integration_fraction
+        base.integration_fraction,
+        base.collimation_mm
     )
 end
 
@@ -441,7 +463,8 @@ function constant_noise_protocol(base::CTProtocol, new_views::Int)
         base.dual_energy,
         base.kVp_low,
         base.mA_low,
-        base.integration_fraction
+        base.integration_fraction,
+        base.collimation_mm
     )
 end
 

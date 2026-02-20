@@ -86,6 +86,8 @@ md"""
 ## 1. Simulation Configuration
 
 We define the configuration **once** here. Both `BasisSimulator` and `CatSim` will read from this single source of truth to ensure 1:1 parity.
+
+**Physical correctness:** The Gammex 472 is **5cm thick** (from manufacturer spec sheet). The detector z-coverage is only ~9.1mm (16 rows × 0.569mm). By making the phantom taller than the detector, every detector row traces rays through the full phantom body — no rows look past into air. The reconstruction covers only the central ~9mm.
 """
 
 # ╔═╡ 45f217d7-1c9c-4623-a8ff-fe22787831e8
@@ -107,6 +109,12 @@ begin
 	z_coverage_mm = detectorRowCount * detectorRowSize       # at isocenter (≈ 9.09 mm)
 	sliceThickness = 1.0        # mm (clinical standard — 0.5, 0.625, 1.0, 1.25, 2.5, 5.0)
 	sliceCount = floor(Int, z_coverage_mm / sliceThickness)  # = 9
+
+	# --- Phantom Physical Dimensions ---
+	# Gammex 472 is 33cm diameter × 5cm thick (from manufacturer spec sheet).
+	# The phantom must be LARGER than the detector z-coverage so every detector
+	# row sees through the full phantom body — no rows look past into air.
+	phantom_z_cm = 5.0          # Actual Gammex 472 physical thickness (50mm)
 end
 
 # ╔═╡ ad03b067-dfd5-4a2d-8b91-a81b5d29c1bf
@@ -376,8 +384,7 @@ REGION_TO_CATSIM = Dict(
 
 # ╔═╡ 0d039ffd-1b0f-432c-aac7-7c802562d2de
 # --- 2. Phantom Geometry Generator ---
-function generate_gammex_labels(; n_voxels=512, fov_cm=35.0, z_cm=2.0)
-	n_slices = 16 
+function generate_gammex_labels(; n_voxels=512, fov_cm=35.0, z_cm=2.0, n_slices=16)
 	dx = fov_cm / n_voxels
 	dy = fov_cm / n_voxels
 	dz = z_cm / n_slices # Slice thickness for the label map
@@ -434,16 +441,15 @@ function generate_gammex_labels(; n_voxels=512, fov_cm=35.0, z_cm=2.0)
 end
 
 # ╔═╡ cdfdab68-0813-433e-9628-d3168cf48041
-function create_and_export_phantom(output_dir, basename, config)
-	# CALCULATE Z-EXTENT CORRECTLY
-	# Fix: Use sliceCount * sliceThickness (Total Recon Volume)
-	# instead of detectorRows (which is just one rotation height)
-	total_z_cm = (config.sliceCount * config.sliceThickness) / 10.0
-	
+function create_and_export_phantom(output_dir, basename, config; phantom_z_cm=nothing)
+	# Phantom z: use physical phantom thickness if provided,
+	# otherwise fall back to recon z-extent
+	total_z_cm = phantom_z_cm !== nothing ? phantom_z_cm : (config.sliceCount * config.sliceThickness) / 10.0
+
 	phantom = generate_gammex_labels(
-		n_voxels=config.imageSize, 
-		fov_cm=config.fov_mm/10.0, 
-		z_cm=total_z_cm 
+		n_voxels=config.imageSize,
+		fov_cm=config.fov_mm/10.0,
+		z_cm=total_z_cm
 	)
 	
 	mkpath(output_dir)
@@ -602,11 +608,12 @@ end;
 
 # ╔═╡ 67cf1256-34a0-46e8-bb15-a7dc5e1f1ffb
 phantom_water_gpu = let
-	# 20cm diameter water cylinder (matching notebook 06 pattern)
+	# 20cm diameter water cylinder — use actual Gammex 472 physical thickness
+	# so phantom extends beyond detector z-coverage in both directions
 	nx, ny, nz = SIM_CONFIG.imageSize, SIM_CONFIG.imageSize, SIM_CONFIG.sliceCount
 	water_fov_cm = SIM_CONFIG.fov_mm / 10.0
 	voxel_cm = water_fov_cm / nx
-	z_cm = (SIM_CONFIG.sliceCount * SIM_CONFIG.sliceThickness) / 10.0
+	z_cm = phantom_z_cm  # actual physical thickness (5cm)
 	voxel_z_cm = z_cm / nz
 
 	water_mask = zeros(UInt8, nx, ny, nz)
@@ -656,7 +663,7 @@ phantom_basis = BS.create_gammex_472(
     n_voxels = SIM_CONFIG.imageSize,
     n_slices = SIM_CONFIG.sliceCount,
     fov_cm = SIM_CONFIG.fov_mm / 10.0,
-    z_cm = (SIM_CONFIG.sliceCount * SIM_CONFIG.sliceThickness) / 10.0
+    z_cm = phantom_z_cm,  # 5cm — actual Gammex 472 thickness (> 0.9cm detector z-coverage)
 );
 
 # ╔═╡ a1ca5b27-83c2-4dc8-8822-69b723a3bf12
@@ -666,7 +673,7 @@ phantom_gammex_gpu = BS.Phantom(
 	phantom_basis.materials,
 	phantom_basis.voxel_size,
 	phantom_basis.origin,
-	phantom_basis.fov
+	phantom_basis.extent
 );
 
 # ╔═╡ 743c4088-97e9-4584-b324-c54b765417c4
@@ -707,7 +714,7 @@ catsim_results = let
     catsim_cleanup("sim_final")
 
     work_dir = joinpath(@__DIR__, "catsim_work")
-    phantom_json = create_and_export_phantom(work_dir, "phantom_120kvp", SIM_CONFIG)
+    phantom_json = create_and_export_phantom(work_dir, "phantom_120kvp", SIM_CONFIG; phantom_z_cm=phantom_z_cm)
 
     ct = catsim_create_simulation()
     catsim_configure_phantom!(ct, phantom_json)

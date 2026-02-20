@@ -58,6 +58,7 @@ import PlutoUI as UI
 import BasisSimulator as BS
 
 # ╔═╡ 3cbd1220-7118-42c7-9562-27c8c2e1b608
+# ╠═╡ show_logs = false
 import CairoMakie as CM
 
 # ╔═╡ f36f0c25-3c0c-4202-b890-917b031fa9e8
@@ -333,25 +334,25 @@ md"""
 
 ### Voxel Size Calculation
 
-XCAT phantom dimensions: **1600 × 1400 × 500** voxels
+XCAT phantom dimensions: **1600 × 1400 × 500** voxels at **0.2mm isotropic**
 
-Assuming clinical torso FOV:
-- X (lateral): ~48 cm → voxel = 0.03 cm = 0.3 mm
-- Y (AP): ~42 cm → voxel = 0.03 cm = 0.3 mm
-- Z (SI): ~50 cm → voxel = 0.1 cm = 1.0 mm
+Physical FOV:
+- X (lateral): 32 cm
+- Y (AP): 28 cm
+- Z (SI): 10 cm (thin slab — sufficient for 8cm EICT / 5cm PCCT collimation)
 
-This gives **high input resolution** (0.3mm in-plane).
+This gives **high input resolution** (0.2mm isotropic).
 """
 
 # ╔═╡ f3861cff-abd7-4cb9-9eb6-2a4f63677d29
 begin
 	# Base XCAT voxel dimensions (at original 1600×1400×500 resolution)
-	base_voxel_cm = (0.03, 0.03, 0.1)  # 0.3mm × 0.3mm × 1.0mm
+	base_voxel_cm = (0.02, 0.02, 0.02)  # 0.2mm isotropic
 
 	# Scale voxel size by downsample factor to maintain correct FOV
 	voxel_size_cm = base_voxel_cm .* DOWNSAMPLE_FACTOR
 
-	# Computed FOV (should be ~48cm × 42cm × 50cm regardless of downsample)
+	# Computed FOV (should be ~32cm × 28cm × 10cm regardless of downsample)
 	fov_x_cm = size(phantom_labeled, 1) * voxel_size_cm[1]
 	fov_y_cm = size(phantom_labeled, 2) * voxel_size_cm[2]
 	fov_z_cm = size(phantom_labeled, 3) * voxel_size_cm[3]
@@ -375,7 +376,7 @@ md"""
 - Mask size: $(size(phantom_gpu.mask))
 - Mask type: $(typeof(phantom_gpu.mask))
 - Materials: $(length(phantom_gpu.materials))
-- FOV: $(phantom_gpu.fov) cm
+- Extent: $(phantom_gpu.extent) cm
 - Downsample: $(DOWNSAMPLE_FACTOR)× (voxel = $(round.(voxel_size_cm .* 10, digits=2)) mm)
 """
 
@@ -388,18 +389,16 @@ Three scanner configurations matching clinical systems:
 
 # ╔═╡ b1a2c3d4-e5f6-7890-abcd-111111111111
 md"""
-#### Auto-Sized Detector Arrays
+#### Physical Detector Arrays
 
-Detector columns and rows are derived from the phantom FOV and scanner magnification.
-This ensures full lateral coverage at each scanner's native pixel pitch while keeping
-the z-dimension reasonable for GPU memory.
+Scanner detector arrays match clinical hardware specifications:
 
-- **`detector_cols`** = `ceil(phantom_extent_mm × magnification / pixel_pitch)`
-- **`detector_rows`** = `min(clinical_max, n_recon_slices)` — caps z-coverage
-- **`pcct_n_views`** = 600 (standard Siemens clinical)
+- **GE Revolution Apex:** 834 cols × 256 rows (50cm FOV, 0.6mm col pitch, 0.625mm row pitch)
+- **NAEOTOM Alpha:** 1250 cols × 144 rows (50cm FOV, 0.4mm pitch, standard 2×2 binned mode)
 
-All PCCT physics (charge cloud, K-fluorescence, CCE, pileup, DRM) are per-pixel —
-reducing array size does not change the physics model.
+Z-coverage is controlled via `collimation_mm` in the protocol (clinically: operator
+selects collimation on the scanner console). The phantom is 10cm in z, so collimation
+must stay ≤ 10cm (128 rows gives 8.0cm EICT / 5.12cm PCCT).
 """
 
 # ╔═╡ 619f09c1-315e-42b6-9e44-2f36a98f8fee
@@ -408,6 +407,9 @@ phantom_extent_mm = max(
 	size(phantom_labeled, 1) * voxel_size_cm[1],
 	size(phantom_labeled, 2) * voxel_size_cm[2]
 ) * 10.0
+
+# ╔═╡ a21a509a-3cb2-452d-ae46-53f1339e0f37
+@info "Scanner detector config" eict_det_cols eict_collimation_mm pcct_det_cols pcct_collimation_mm pcct_n_views
 
 # ╔═╡ ea2db1d2-d7ef-4c5c-9d74-e273ffda11b1
 md"""
@@ -487,31 +489,10 @@ md"""
 ### 4.1 EICT Single-kVp Protocol
 """
 
-# ╔═╡ a70bc722-e769-4132-b082-b0e89a68228e
-protocol_eict_single = BS.CTProtocol(
-	kVp = 120.0,
-	mA = 300.0,
-	views = 984,
-	# views = 1600,
-	rotation_time = 0.5
-)
-
 # ╔═╡ a70bc722-e769-4132-b082-b0e89a6822a0
 md"""
 ### 4.2 EICT Dual-kVp Protocol (GSI)
 """
-
-# ╔═╡ a70bc722-e769-4132-b082-b0e89a6822a1
-protocol_eict_dual = BS.CTProtocol(
-	dual_energy = true,
-	kVp = 140.0,
-	mA = 200.0,
-	kVp_low = 80.0,
-	mA_low = 350.0,
-	views = 984,
-	# views = 1600,
-	rotation_time = 0.5
-)
 
 # ╔═╡ a70bc722-e769-4132-b082-b0e89a6822a2
 md"""
@@ -521,14 +502,6 @@ md"""
 # ╔═╡ 4ae79dad-dd72-4db6-98f5-0f2d28cb9f5e
 # pcct_n_views = 984 # standard clinical
 pcct_n_views = 1600 # standard clinical
-
-# ╔═╡ a70bc722-e769-4132-b082-b0e89a6822a3
-protocol_pcct_standard = BS.CTProtocol(
-	kVp = 140.0,
-	mA = 300.0,
-	views = pcct_n_views,
-	rotation_time = 0.25  # NAEOTOM Alpha fast gantry
-)
 
 # ╔═╡ a70bc722-e769-4132-b082-b0e89a6822b0
 md"""
@@ -600,10 +573,11 @@ end
 
 # ╔═╡ f8fd4ab6-7c18-4d89-9045-41cf60666d63
 begin
-	# ─── EICT (GE Revolution Apex) ───
-	eict_col_size_iso = 0.6  # mm at isocenter (estimated, not published)
-	eict_det_cols = ceil(Int, phantom_extent_mm / eict_col_size_iso) # isocenter convention
-	eict_det_rows = min(256, n_recon_slices) # cap at clinical max
+	# ─── EICT (GE Revolution Apex) — physical detector specs ───
+	# 50cm scan FOV / 0.6mm pitch ≈ 834 columns (estimated — col pitch not published)
+	eict_det_cols = 834
+	eict_col_size_iso = 0.6  # mm at isocenter (estimated)
+	eict_collimation_mm = n_recon_slices * 0.625  # 128×0.625mm = 80.0mm
 end
 
 # ╔═╡ 00000006-0000-0000-0000-000000000001
@@ -612,9 +586,9 @@ scanner_eict = BS.Scanner(
 	source_to_isocenter = 625.6,  # mm — VERIFIED (PMC6448170: Fluka MC validation)
 	source_to_detector = 1100.0,  # mm — ESTIMATED (magnification ~1.76, same as XCIST ratio)
 
-	# DETECTOR ARRAY — auto-sized from phantom FOV (see cell above)
-	detector_rows = eict_det_rows, # auto: min(256, n_recon_slices)
-	detector_cols = eict_det_cols, # auto: phantom_extent × mag / 1.0mm pitch
+	# DETECTOR ARRAY — full physical hardware; collimation in protocol controls active rows
+	detector_rows = 256, # physical max (Quantix 160: 256 × 0.625mm = 160mm)
+	detector_cols = eict_det_cols, # 834 (50cm FOV / 0.6mm pitch)
 	detector_row_size = 0.625, # mm at isocenter — VERIFIED (FDA K213715, GE docs)
 	detector_col_size = eict_col_size_iso, # mm at isocenter — ESTIMATED (in-plane pitch not published)
 	detector_shape = BS.CURVED_DETECTOR,
@@ -637,15 +611,36 @@ scanner_eict = BS.Scanner(
 	# electronic_noise = 5000.0 # ⚠️ NOT USED — display only; noise comes from sim_opts
 )
 
+# ╔═╡ a70bc722-e769-4132-b082-b0e89a68228e
+protocol_eict_single = BS.CTProtocol(
+	kVp = 120.0,
+	mA = 300.0,
+	views = 984,
+	# views = 1600,
+	rotation_time = 0.5,
+	collimation_mm = eict_collimation_mm  # 128×0.625mm = 80.0mm
+)
+
+# ╔═╡ a70bc722-e769-4132-b082-b0e89a6822a1
+protocol_eict_dual = BS.CTProtocol(
+	dual_energy = true,
+	kVp = 140.0,
+	mA = 200.0,
+	kVp_low = 80.0,
+	mA_low = 350.0,
+	views = 984,
+	# views = 1600,
+	rotation_time = 0.5,
+	collimation_mm = eict_collimation_mm  # 128×0.625mm = 80.0mm
+)
+
 # ╔═╡ b1a2c3d4-e5f6-7890-abcd-222222222222
 begin
-	# ─── PCCT (Siemens NAEOTOM Alpha) ───
-	pcct_det_cols = ceil(Int, phantom_extent_mm / 0.4) # 0.4mm at isocenter
-	pcct_det_rows = min(144, n_recon_slices) # cap at clinical max
+	# ─── PCCT (Siemens NAEOTOM Alpha) — physical detector specs ───
+	# 50cm scan FOV / 0.4mm pitch = 1250 columns (VERIFIED: Konrad 2025)
+	pcct_det_cols = 1250
+	pcct_collimation_mm = n_recon_slices * 0.4  # 128×0.4mm = 51.2mm
 end
-
-# ╔═╡ a21a509a-3cb2-452d-ae46-53f1339e0f37
-@info "Auto-sized detectors from $(round(phantom_extent_mm/10, digits=1)) cm phantom" eict_det_cols eict_det_rows pcct_det_cols pcct_det_rows pcct_n_views
 
 # ╔═╡ 00000007-0000-0000-0000-000000000001
 scanner_pcct_standard = BS.Scanner(
@@ -653,9 +648,9 @@ scanner_pcct_standard = BS.Scanner(
 	source_to_isocenter = 595.0, # mm — VERIFIED (Konrad 2025)
 	source_to_detector = 1085.5, # mm — VERIFIED (Konrad 2025)
 
-	# DETECTOR ARRAY — auto-sized from phantom FOV (see cell above)
-	detector_rows = pcct_det_rows, # auto: min(144, n_recon_slices)
-	detector_cols = pcct_det_cols, # auto: phantom_extent × mag / 0.4mm pitch
+	# DETECTOR ARRAY — full physical hardware; collimation in protocol controls active rows
+	detector_rows = 144, # physical max (NAEOTOM Alpha: 144 × 0.4mm = 57.6mm)
+	detector_cols = pcct_det_cols, # 1250 (50cm FOV / 0.4mm pitch)
 	detector_row_size = 0.4, # mm — VERIFIED (2×2 binned from 0.2mm native dexels)
 	detector_col_size = 0.4, # mm — VERIFIED
 	detector_shape = BS.CURVED_DETECTOR,
@@ -689,9 +684,18 @@ scanner_pcct_standard = BS.Scanner(
 	pixel_mode = :standard # :standard (0.4mm), :uhr (0.2mm), :macro (0.8mm)
 )
 
+# ╔═╡ a70bc722-e769-4132-b082-b0e89a6822a3
+protocol_pcct_standard = BS.CTProtocol(
+	kVp = 140.0,
+	mA = 300.0,
+	views = pcct_n_views,
+	rotation_time = 0.25,  # NAEOTOM Alpha fast gantry
+	collimation_mm = pcct_collimation_mm  # 128×0.4mm = 51.2mm
+)
+
 # ╔═╡ a369a59e-22b4-476f-a195-a16c9f13dc7e
-# Use PCCT z-coverage for ALL scanners (smallest common z)
-common_z_cm = n_recon_slices * 0.4 / 10.0  # 5.12 cm
+# z-coverage is now auto-derived from collimation_mm in the protocol
+# EICT: 128×0.625mm = 8.0cm, PCCT: 128×0.4mm = 5.12cm
 
 # ╔═╡ 00000010-0000-0000-0000-000000000001
 md"""
@@ -705,8 +709,7 @@ recon_opts_eict_single = BS.ReconOptions(
 	algorithm = :fdk,
 	matrix_size = (recon_xy, recon_xy, n_recon_slices),
 	fov_cm = recon_fov_cm,
-	# z_cm = n_recon_slices * 0.625 / 10.0,  # GE native slice thickness 0.625mm
-	z_cm = common_z_cm,
+	# z_cm auto-matches collimation: 128×0.625mm = 8.0cm
 	filter = :standard
 )
 
@@ -723,8 +726,7 @@ recon_opts_eict_dual = BS.ReconOptions(
 	algorithm = :fdk,
 	matrix_size = (recon_xy, recon_xy, n_recon_slices),
 	fov_cm = recon_fov_cm,
-	# z_cm = n_recon_slices * 0.625 / 10.0,  # GE native slice thickness 0.625mm
-	z_cm = common_z_cm,
+	# z_cm auto-matches collimation: 128×0.625mm = 8.0cm
 	filter = :standard,
 	vmi_energies = vmi_energies,
 	vmi_basis = (:water, :iodine)
@@ -743,8 +745,7 @@ recon_opts_pcct_standard = BS.ReconOptions(
 	algorithm = :fdk,
 	matrix_size = (recon_xy, recon_xy, n_recon_slices),
 	fov_cm = recon_fov_cm,
-	# z_cm = n_recon_slices * 0.4 / 10.0,  # NAEOTOM native slice thickness 0.4mm
-	z_cm = common_z_cm,
+	# z_cm auto-matches collimation: 128×0.4mm = 5.12cm
 	filter = :standard,
 	vmi_energies = vmi_energies,
 	vmi_basis = [:water, :iodine, :calcium]
@@ -979,19 +980,19 @@ md"""
 
 	# --- FDK reconstruction → CPU HU ---
 	ws_fdk = BS.create_fdk_recon_workspace(sino, geom, recon_size; filter=BS.StandardFilter())
-	fdk_hu = BS.to_hounsfield(
+	fdk_hu = Array(BS.to_hounsfield(
 		Array(BS.reconstruct!(ws_fdk, sino, geom, recon_size));
 		μ_water=μ_water_eict
-	)
+	))
 	ws_fdk = nothing
 	GC.gc(true)
 
 	# --- Hybrid IR (strength 3) → CPU HU ---
 	ws_hir = BS.create_hir_recon_workspace(sino, geom, recon_size; strength = 3)
-	hir_hu = BS.to_hounsfield(
+	hir_hu = Array(BS.to_hounsfield(
 		Array(BS.reconstruct!(ws_hir, sino, geom, recon_size));
 		μ_water=μ_water_eict
-	)
+	))
 	ws_hir = nothing
 	ws = nothing
 	sino = nothing
@@ -1059,37 +1060,37 @@ md"""
 
 	# --- FDK: 80 kVp (low) → CPU HU ---
 	ws_fdk_low = BS.create_fdk_recon_workspace(sino_low, geom, recon_size)
-	fdk_80_hu = BS.to_hounsfield(
+	fdk_80_hu = Array(BS.to_hounsfield(
 		Array(BS.reconstruct!(ws_fdk_low, sino_low, geom, recon_size));
 		μ_water=μ_water_dual_low
-	)
+	))
 	ws_fdk_low = nothing
 	GC.gc(true)
 
 	# --- FDK: 140 kVp (high) → CPU HU ---
 	ws_fdk_high = BS.create_fdk_recon_workspace(sino_high, geom, recon_size)
-	fdk_140_hu = BS.to_hounsfield(
+	fdk_140_hu = Array(BS.to_hounsfield(
 		Array(BS.reconstruct!(ws_fdk_high, sino_high, geom, recon_size));
 		μ_water=μ_water_dual_high
-	)
+	))
 	ws_fdk_high = nothing
 	GC.gc(true)
 
 	# --- Hybrid IR: 80 kVp (low) → CPU HU ---
 	ws_hir_low = BS.create_hir_recon_workspace(sino_low, geom, recon_size; strength = 3)
-	hir_80_hu = BS.to_hounsfield(
+	hir_80_hu = Array(BS.to_hounsfield(
 		Array(BS.reconstruct!(ws_hir_low, sino_low, geom, recon_size));
 		μ_water=μ_water_dual_low
-	)
+	))
 	ws_hir_low = nothing
 	GC.gc(true)
 
 	# --- Hybrid IR: 140 kVp (high) → CPU HU ---
 	ws_hir_high = BS.create_hir_recon_workspace(sino_high, geom, recon_size; strength = 3)
-	hir_140_hu = BS.to_hounsfield(
+	hir_140_hu = Array(BS.to_hounsfield(
 		Array(BS.reconstruct!(ws_hir_high, sino_high, geom, recon_size));
 		μ_water=μ_water_dual_high
-	)
+	))
 	ws_hir_high = nothing; GC.gc(true)
 
 	# --- VMI volumes (one at a time, GC between each) ---
@@ -1098,7 +1099,7 @@ md"""
 		vmi_sino = BS.virtual_monoenergetic(mat_map, E)
 		ws_fdk_vmi = BS.create_fdk_recon_workspace(vmi_sino, geom, recon_size)
 		vmi_recon = Array(BS.reconstruct!(ws_fdk_vmi, vmi_sino, geom, recon_size))
-		vmi_dict[E] = BS.vmi_to_hu(vmi_recon, E)
+		vmi_dict[E] = Array(BS.vmi_to_hu(vmi_recon, E))
 		ws_fdk_vmi = nothing
 		GC.gc(true)
 	end
@@ -1143,19 +1144,19 @@ md"""
 
 	# --- FDK reconstruction → CPU HU ---
 	ws_fdk = BS.create_fdk_recon_workspace(combined_sino, geom, recon_size)
-	fdk_hu = BS.to_hounsfield(
+	fdk_hu = Array(BS.to_hounsfield(
 		Array(BS.reconstruct!(ws_fdk, combined_sino, geom, recon_size));
 		μ_water=μ_water_pcct
-	)
+	))
 	ws_fdk = nothing
 	GC.gc(true)
 
 	# --- Hybrid IR (strength 3) → CPU HU ---
 	ws_hir = BS.create_hir_recon_workspace(combined_sino, geom, recon_size; strength = 3)
-	hir_hu = BS.to_hounsfield(
+	hir_hu = Array(BS.to_hounsfield(
 		Array(BS.reconstruct!(ws_hir, combined_sino, geom, recon_size));
 		μ_water=μ_water_pcct
-	)
+	))
 	ws_hir = nothing
 	GC.gc(true)
 
@@ -1165,7 +1166,7 @@ md"""
 		vmi_sino = BS.virtual_monoenergetic(mat_map, E; ws_output=vmi_sino_buf)
 		ws_fdk_vmi = BS.create_fdk_recon_workspace(vmi_sino, geom, recon_size)
 		vmi_recon = Array(BS.reconstruct!(ws_fdk_vmi, vmi_sino, geom, recon_size))
-		vmi_dict[E] = BS.vmi_to_hu(vmi_recon, E)
+		vmi_dict[E] = Array(BS.vmi_to_hu(vmi_recon, E))
 		ws_fdk_vmi = nothing
 		GC.gc(true)
 	end
@@ -1493,25 +1494,23 @@ Resample the XCAT phantom labels onto the reconstruction grid using `resample_to
 # ╔═╡ aaa00002-0000-0000-0000-a00000000002
 # Resample phantom labels onto each scanner's actual reconstruction grid
 (ground_truth_eict, ground_truth_pcct) = let
-	# EICT: use scanner_eict + recon_opts_eict_single
+	# EICT: use scanner_eict + collimation from protocol
 	geom_eict = BS.CTGeometry(scanner_eict;
 		n_angles = 1,
-		n_rows = eict_det_rows,
 		n_cols = eict_det_cols,
 		fov_cm = recon_opts_eict_single.fov_cm,
-		z_cm = recon_opts_eict_single.z_cm
+		collimation_mm = protocol_eict_single.collimation_mm
 	)
 	gt_eict = BS.resample_to_recon(
 		phantom_gpu, geom_eict, recon_opts_eict_single.matrix_size
 	)
 
-	# PCCT: use scanner_pcct_standard + recon_opts_pcct_standard
+	# PCCT: use scanner_pcct_standard + collimation from protocol
 	geom_pcct = BS.CTGeometry(scanner_pcct_standard;
 		n_angles = 1,
-		n_rows = pcct_det_rows,
 		n_cols = pcct_det_cols,
 		fov_cm = recon_opts_pcct_standard.fov_cm,
-		z_cm = recon_opts_pcct_standard.z_cm
+		collimation_mm = protocol_pcct_standard.collimation_mm
 	)
 	gt_pcct = BS.resample_to_recon(
 		phantom_gpu, geom_pcct, recon_opts_pcct_standard.matrix_size
