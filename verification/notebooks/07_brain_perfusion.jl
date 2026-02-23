@@ -267,9 +267,11 @@ begin
 	# GE Revolution Apex: 256 rows × 0.625 mm pitch
 	brain_det_rows  = 256
 	brain_recon_fov = 40.0  # cm (matches 400-vox × 0.1 cm phantom)
-	# 196 slices = full tissue extent (z=98–285) + 4-slice air padding on each side.
+	brain_vox_cm    = 0.1                                   # phantom voxel size (cm)
+	BRAIN_Z_CROP    = 94:289                                 # full tissue (98–285) + 4-slice padding
+	brain_z_cm      = length(BRAIN_Z_CROP) * brain_vox_cm   # 19.6 cm — actual anatomy z-extent
 	brain_recon_xy  = 512
-	brain_n_slices  = 196
+	brain_n_slices  = round(Int, brain_z_cm / brain_vox_cm) # isotropic 1 mm/slice
 end
 
 # ╔═╡ 00000006-0000-0000-0000-000000000002
@@ -305,11 +307,12 @@ protocol_brain = BS.CTProtocol(
 sim_opts_brain = BS.SimOptions(fidelity = :low, seed = 42)
 
 # ╔═╡ 00000011-0000-0000-0000-000000000002
-recon_opts_brain = BS.ReconOptions(
+	recon_opts_brain = BS.ReconOptions(
 	algorithm   = :fdk,
 	matrix_size = (brain_recon_xy, brain_recon_xy, brain_n_slices),
 	fov_cm      = brain_recon_fov,
-)
+	z_cm        = brain_z_cm,   # explicit z-FOV = cropped phantom extent
+	)
 
 # ╔═╡ a0b1c2d3-e4f5-6789-abcd-000000000001
 md"""
@@ -395,10 +398,7 @@ begin
 				P1_stamped[idxs] .= id
 			end
 		end
-		# Crop to full brain tissue z-range + 4-slice air padding on each side.
-		# Tissue: z=98..285 (188 slices). Padded: z=94..289 = 196 slices.
-		# Vertex (superior) at z=98, mandible (inferior) at z=285.
-		BRAIN_Z_CROP = 94:289
+		# BRAIN_Z_CROP is defined in the scanner/recon parameters cell above.
 		P1_stamped   = P1_stamped[:, :, BRAIN_Z_CROP]
 		P2_raw_crop  = P2_raw_file[:, :, BRAIN_Z_CROP]
 		mask_gpu = Metal.MtlArray(UInt16.(P1_stamped))   # upload once, reused
