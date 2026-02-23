@@ -267,11 +267,16 @@ begin
 	# GE Revolution Apex: 256 rows × 0.625 mm pitch
 	brain_det_rows  = 256
 	brain_recon_fov = 40.0  # cm (matches 400-vox × 0.1 cm phantom)
-	brain_vox_cm    = 0.1                                   # phantom voxel size (cm)
-	BRAIN_Z_CROP    = 94:289                                 # full tissue (98–285) + 4-slice padding
-	brain_z_cm      = length(BRAIN_Z_CROP) * brain_vox_cm   # 19.6 cm — actual anatomy z-extent
-	brain_recon_xy  = 512
-	brain_n_slices  = round(Int, brain_z_cm / brain_vox_cm) # isotropic 1 mm/slice
+	brain_vox_cm    = 0.1   # phantom voxel size (cm)
+	# Auto-detect tissue extent along dim3 (the slice axis) from P1 phantom.
+	# Pad by 4 slices on each side, clamped to array bounds.
+	_z_any       = vec(any(P1_raw_file .!= 0, dims=(1,2)))
+	_z_first     = findfirst(_z_any)
+	_z_last      = findlast(_z_any)
+	BRAIN_Z_CROP = max(1, _z_first - 4) : min(size(P1_raw_file, 3), _z_last + 4)
+	brain_z_cm   = length(BRAIN_Z_CROP) * brain_vox_cm
+	brain_recon_xy = 512
+	brain_n_slices = round(Int, brain_z_cm / brain_vox_cm)
 end
 
 # ╔═╡ 00000006-0000-0000-0000-000000000002
