@@ -5,7 +5,7 @@ version = "0.3.0"
 
 [deps]
 AcceleratedKernels = "6a4ca0a5-0e36-4168-a932-d9be78d558f1"
-ArgParse = "c7e460c6-2fb9-53a9-8c5b-16f535851c63"
+
 CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
 DelimitedFiles = "8bb1440f-4735-579b-a4ab-409b98df4dab"
 Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
@@ -27,7 +27,7 @@ CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 
 [compat]
 AcceleratedKernels = "0.4.3"
-ArgParse = "1.2.0"
+
 CairoMakie = "0.15.8"
 Enzyme = "0.13"
 FFTW = "1"
