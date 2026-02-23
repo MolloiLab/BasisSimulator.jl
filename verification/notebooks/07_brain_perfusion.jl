@@ -267,10 +267,9 @@ begin
 	# GE Revolution Apex: 256 rows × 0.625 mm pitch
 	brain_det_rows  = 256
 	brain_recon_fov = 40.0  # cm (matches 400-vox × 0.1 cm phantom)
-	# Isotropic 512×512×160 recon to match reference output.
-	# 160 slices × 0.1 cm = 16 cm z-coverage (brain region of 400-slice phantom).
+	# 196 slices = full tissue extent (z=98–285) + 4-slice air padding on each side.
 	brain_recon_xy  = 512
-	brain_n_slices  = 160
+	brain_n_slices  = 196
 end
 
 # ╔═╡ 00000006-0000-0000-0000-000000000002
@@ -396,10 +395,10 @@ begin
 				P1_stamped[idxs] .= id
 			end
 		end
-		# Crop to brain anatomy z-range: XCAT z=98..257 (1-indexed) = 160 slices.
-		# Vertex (superior) at z=98, skull base (inferior) at z=257.
-		# After crop: slice 1 → vertex, slice 160 → skull base — matches user expectation.
-		BRAIN_Z_CROP = 98:257
+		# Crop to full brain tissue z-range + 4-slice air padding on each side.
+		# Tissue: z=98..285 (188 slices). Padded: z=94..289 = 196 slices.
+		# Vertex (superior) at z=98, mandible (inferior) at z=285.
+		BRAIN_Z_CROP = 94:289
 		P1_stamped   = P1_stamped[:, :, BRAIN_Z_CROP]
 		P2_raw_crop  = P2_raw_file[:, :, BRAIN_Z_CROP]
 		mask_gpu = Metal.MtlArray(UInt16.(P1_stamped))   # upload once, reused
