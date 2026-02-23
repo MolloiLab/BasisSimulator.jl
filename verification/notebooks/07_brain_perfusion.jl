@@ -85,6 +85,16 @@ UI.TableOfContents()
 # ╔═╡ 20920020-fd6b-4a64-9e19-e00bfd616ee6
 md"""
 ## 1. Paths & Configuration
+> **Large data files are not tracked in git** (confidential phantom data shared by Caedin).
+> Copy the following files from the group share drive into `verification/data/brain_perfusion/`:
+> 
+> **Share drive path:** `smb://160.87.12.113/Molloilab/Wenbo/brain phantom/Caedin Files/dynamic_brain_phantom`
+> 
+> Required files:
+> - `P1_brain_all_2020_RAW_400_400_400.raw` (122 MB)
+> - `P2_brain_all_2020_RAW_400_400_400.raw` (122 MB)
+> - `iodine_mass_data.mat` (501 MB)
+> - `structure_info.mat`
 """
 
 # ╔═╡ c744a9d3-5810-4465-82ee-2b8d9b5f68b1
