@@ -637,6 +637,90 @@ function create_phantom_from_xcat(
 end
 
 # =============================================================================
+# Phantom Utilities
+# =============================================================================
+
+"""
+    relabel_zero_islands_2d!(arr::Array{Int,3}; newlabel::Int=10)
+
+For each z-slice of `arr`, find connected components of zero-valued voxels that do
+not touch the slice border (interior "islands") and relabel them to `newlabel`.
+Border-connected zeros (true background / air outside the head) are left as 0.
+
+This corrects XCAT P1 raw files where interior voxels (e.g. inside the skull) are
+stored as 0 rather than a valid tissue ID.
+"""
+function relabel_zero_islands_2d!(arr::Array{Int,3}; newlabel::Int=10)
+    nx, ny, nz = size(arr)
+    for z in 1:nz
+        slice   = view(arr, :, :, z)
+        visited = falses(nx, ny)
+        queue   = Tuple{Int,Int}[]
+
+        # Seed BFS from every border pixel that is zero
+        for x in 1:nx
+            for y in (1, ny)
+                if slice[x, y] == 0 && !visited[x, y]
+                    visited[x, y] = true
+                    push!(queue, (x, y))
+                end
+            end
+        end
+        for y in 2:ny-1
+            for x in (1, nx)
+                if slice[x, y] == 0 && !visited[x, y]
+                    visited[x, y] = true
+                    push!(queue, (x, y))
+                end
+            end
+        end
+
+        # BFS: flood-fill all border-connected zeros
+        while !isempty(queue)
+            cx, cy = popfirst!(queue)
+            for (dx, dy) in ((-1, 0), (1, 0), (0, -1), (0, 1))
+                nx2, ny2 = cx + dx, cy + dy
+                (nx2 < 1 || nx2 > nx || ny2 < 1 || ny2 > ny) && continue
+                if slice[nx2, ny2] == 0 && !visited[nx2, ny2]
+                    visited[nx2, ny2] = true
+                    push!(queue, (nx2, ny2))
+                end
+            end
+        end
+
+        # Any zero voxel not reached from the border is an interior island
+        for x in 1:nx, y in 1:ny
+            if slice[x, y] == 0 && !visited[x, y]
+                arr[x, y, z] = newlabel
+            end
+        end
+    end
+    return arr
+end
+
+"""
+    load_structure_map(path::String) -> Dict{Int, String}
+
+Load an XCAT voxelize table (tab-separated `name\\tID` per line, no header).
+Returns a `Dict` mapping integer segment ID → segment name.
+"""
+function load_structure_map(path::String)::Dict{Int, String}
+    result = Dict{Int, String}()
+    open(path, "r") do io
+        for line in eachline(io)
+            parts = split(strip(line), '\t')
+            length(parts) == 2 || continue
+            name = strip(parts[1])
+            id   = tryparse(Int, strip(parts[2]))
+            (id === nothing || isempty(name)) && continue
+            result[id] = name
+        end
+    end
+    return result
+end
+
+
+# =============================================================================
 # XCAT I/O Helpers
 # =============================================================================
 

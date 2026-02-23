@@ -52,13 +52,6 @@ This notebook simulates dynamic contrast-enhanced brain CT using the XCAT P1 (ma
 6. Interactive visualizations: phantom anatomy, HU images, time-attenuation curves — slider responds instantly
 """
 
-# ╔═╡ 00000002-0000-0000-0000-000000000002
-md"""
-**Authors / Attribution:**
-- Shu Nie (nies1@uci.edu) — BasisSimulator integration
-- Caedin Miller (caedinm@uci.edu) — Original brain perfusion workflow (Dynamic\_Contrast\_Addition.jl)
-"""
-
 # ╔═╡ 00891cd0-96da-4f83-9f8d-c857259ed5d7
 # ╠═╡ disabled = true
 #=╠═╡
@@ -92,11 +85,14 @@ UI.TableOfContents()
 # ╔═╡ 20920020-fd6b-4a64-9e19-e00bfd616ee6
 md"""
 ## 1. Paths & Configuration
-> **Large data files are not tracked in git** (confidential phantom data shared by Caedin).
+> **Large data files are not tracked in git.**
+> Phantom data from: Sarah E. Divel et al., "A dynamic simulation framework for CT perfusion in stroke
+> assessment built from first principles," *Med. Phys.* 2021. https://doi.org/10.1002/mp.14887
+>
 > Copy the following files from the group share drive into `verification/data/brain_perfusion/`:
-> 
+>
 > **Share drive path:** `smb://160.87.12.113/Molloilab/Wenbo/brain phantom/Caedin Files/dynamic_brain_phantom`
-> 
+>
 > Required files:
 > - `P1_brain_all_2020_RAW_400_400_400.raw` (122 MB)
 > - `P2_brain_all_2020_RAW_400_400_400.raw` (122 MB)
@@ -113,6 +109,8 @@ begin
 	P2_TABLE_PATH  = joinpath(PHANTOM_DIR, "P2_vozelize_table.txt")
 	STRUCT_INFO_PATH  = joinpath(PHANTOM_DIR, "structure_info.mat")
 	IODINE_DATA_PATH  = joinpath(PHANTOM_DIR, "iodine_mass_data.mat")
+	FIGURES_DIR       = joinpath(dirname(@__DIR__), "figures", "brain_perfusion")
+	mkpath(FIGURES_DIR)
 
 	@assert isfile(P1_RAW_PATH)       "P1 raw file not found: $P1_RAW_PATH"
 	@assert isfile(P1_TABLE_PATH)     "P1 table not found: $P1_TABLE_PATH"
@@ -164,23 +162,25 @@ md"""
 # ╔═╡ 00000006-0000-0000-0000-000000000001
 md"""
 ## 3. Load Materials
+These IDs come from `P1_voxelize_table.txt` (tab-separated `name → ID`):
 
-All base materials come directly from `BS.get_material(:symbol)` / `XrayAttenuation.jl` — no file I/O needed.
+| ID | Material | Example structures |
+|----|----------|--------------------|
+| 0  | `:air` | background, oral cavity, tendons, spinal cord |
+| 1  | `:muscle` | scalp/neck muscles, tongue, parotid glands, eyes, optic nerves |
+| 2  | `:air` | throat (airway passages) |
+| 3  | `:bone` | cervical spine (atlas, axis, C3–C5) |
+| 5  | `:soft_tissue` | head surface, ears |
+| 10 | `:soft_tissue` | interior zero islands (relabeled by `relabel_zero_islands_2d!`) |
+| 13 | `:bone` | skull (frontal, temporal, parietal, occipital, mandible) |
+| 14 | `:soft_tissue` | intervertebral disks (disk1–disk3) |
+| 17 | `:csf` | ventricles (lateral, third, fourth), cerebral aqueduct |
+| 18 | `:gray_matter` | brain parenchyma + 78 named GM segments (2001\_gm\_*) |
+| 19 | `:white_matter` | cerebral lobes + 117 named WM segments (3001\_wm\_*) |
+| 21 | `:blood` | arteries: 399 segments (internal carotid, MCA, ACA, basilar, vertebral, …) |
+| 22 | `:blood` | veins: 235 segments (jugular, sagittal/transverse/straight sinus, cerebral veins, …) |
 
-- ID 0  → `:air`
-- ID 1  → `:muscle` (ICRU-44 skeletal muscle, ρ=1.05 g/cm³)
-- ID 2  → `:air` (airway sinus)
-- ID 3  → `:bone` (spine, cortical, ICRU-46, ρ=1.92 g/cm³)
-- ID 5  → `:soft_tissue`
-- ID 10 → `:soft_tissue`
-- ID 13 → `:bone` (skull)
-- ID 17 → `:csf`
-- ID 18 → `:gray_matter` (Woodard & White 1986, ρ=1.04)
-- ID 19 → `:white_matter` (Woodard & White 1986, ρ=1.04)
-- ID 21 → `:blood` (artery base)
-- ID 22 → `:blood` (vein base)
 """
-
 # ╔═╡ b7161fac-2eda-41be-93d4-1162587050cd
 MATERIAL_MAP_BASE = Dict{Int, Symbol}(
 	0  => :air,
@@ -190,6 +190,7 @@ MATERIAL_MAP_BASE = Dict{Int, Symbol}(
 	5  => :soft_tissue,
 	10 => :soft_tissue,
 	13 => :bone,
+	14 => :soft_tissue,
 	17 => :csf,
 	18 => :gray_matter,
 	19 => :white_matter,
@@ -667,6 +668,14 @@ md"""
 **Physics (fidelity=:high):** fill factor · flat filter · scatter · crosstalk · focal spot · Poisson noise · lag · heel effect · BHC
 """
 
+# ╔═╡ 00000002-0000-0000-0000-000000000002
+md"""
+**Authors / Attribution:**
+- Shu Nie (nies1@uci.edu) — BasisSimulator integration
+- Caedin Miller (caedinm@uci.edu) — Original brain perfusion workflow (Dynamic\_Contrast\_Addition.jl)
+- Data: Sarah E. Divel et al. (2021), *Med. Phys.*, https://doi.org/10.1002/mp.14887
+"""
+
 # ╔═╡ Cell order:
 # ╟─00000001-0000-0000-0000-000000000001
 # ╠═d6d62fae-012d-11f1-1efc-67e7f251ff8c
@@ -689,7 +698,7 @@ md"""
 # ╠═71d5cf58-45e1-45bb-8f13-33ad5283c89f
 # ╠═7140bca6-1b57-40db-9b4a-f48132879b93
 # ╟─00000005-0000-0000-0000-000000000001
-# ╟─00000006-0000-0000-0000-000000000001
+# ╠═00000006-0000-0000-0000-000000000001
 # ╠═b7161fac-2eda-41be-93d4-1162587050cd
 # ╠═242bc1e2-d806-4cee-b9b6-d4726c3696b8
 # ╟─00000007-0000-0000-0000-000000000001
@@ -726,3 +735,4 @@ md"""
 # ╟─00000024-0000-0000-0000-000000000007
 # ╟─00000024-0000-0000-0000-000000000008
 # ╟─00000025-0000-0000-0000-000000000001
+# ╠═00000002-0000-0000-0000-000000000002
