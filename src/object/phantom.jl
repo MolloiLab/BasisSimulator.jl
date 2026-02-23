@@ -751,6 +751,13 @@ and build per-segment iodine-doped materials for each segment whose name starts 
 # Returns
 `Dict{Int, XA.Material}` mapping each stamped segment ID to its iodine-doped material.
 IDs with no corresponding row in `info_table` are silently skipped.
+# Notes
+For `:gray_matter` / `:white_matter` the P2 segment name strings do not match the
+`info_table["name"]` entries, so a **positional index** is used instead: segments are
+sorted by ascending P2 ID and paired with `info_table` rows by position (row 1, 2, 3…).
+This matches the reference `Dynamic_Contrast.jl` behaviour.
+For arteries/veins the stripped segment names do match `info_table["name"]`, so a
+name-based lookup is used.
 """
 function update_structures!(
     new_phantom_shift::Array{Int,3},
@@ -763,41 +770,43 @@ function update_structures!(
     iodine_matrix::Matrix{Float64},
     t_contrast::Int,
 )::Dict{Int, XA.Material}
-
-    # --- 1. Filter segments by prefix ---
+    # --- 1. Filter segments by prefix and sort by ascending ID ---
     entries = filter(kv -> startswith(kv[2], tissue_prefix), structure_map)
-    ids     = collect(keys(entries))
-    names   = [replace(v, r"^\d{4}_" => "") for v in values(entries)]
-
+    sorted_pairs = sort(collect(entries), by = kv -> kv[1])   # ascending ID
+    ids   = [kv[1] for kv in sorted_pairs]
+    names = [replace(kv[2], r"^\d{4}_" => "") for kv in sorted_pairs]
     # --- 2. Stamp IDs from reference raw_file into target new_phantom_shift ---
     for id in ids
         idxs = findall(==(id), raw_file)
         isempty(idxs) && continue
         new_phantom_shift[idxs] .= id
     end
-
     # --- 3. Build iodine-doped material per segment ---
     seg_materials = Dict{Int, XA.Material}()
     density = ustrip(u"g/cm^3", base_mat.density)
+    use_positional = (base_sym == :gray_matter || base_sym == :white_matter)
+    n_rows = size(iodine_matrix, 1)
 
-    for (id, name) in zip(ids, names)
-        row = findfirst(==(name), info_table["name"])
-        row === nothing && continue
-
-        # Volume units depend on tissue type
-        if base_sym == :gray_matter || base_sym == :white_matter
-            segment_volume_mL = info_table["volume"][row]           # already cm³
+    for (i, (id, name)) in enumerate(zip(ids, names))
+        # Determine row in info_table
+        if use_positional
+            # Reference behavior: i-th P2 segment (sorted by ID) → i-th info_table row
+            i > n_rows && continue
+            row = i
+            segment_volume_mL = info_table["volume"][row]           # cm³ for GM/WM
         else
+            # Arteries/veins: match by stripped name
+            row = findfirst(==(name), info_table["name"])
+            row === nothing && continue
             segment_volume_mL = info_table["volume"][row] / 1000.0  # mm³ → cm³
         end
 
+        segment_volume_mL <= 0 && continue
         mass_I_mg = iodine_matrix[row, t_contrast]  # mg
         conc_mg_per_mL = mass_I_mg / segment_volume_mL
-
         seg_materials[id] = iodine_contrast_material(base_mat, conc_mg_per_mL;
             density_g_per_mL=density)
     end
-
     return seg_materials
 end
 

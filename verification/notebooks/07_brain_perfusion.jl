@@ -264,20 +264,13 @@ begin
 	brain_extent_mm = 400 * 0.1 * 10.0        # phantom FOV in mm (400 vox × 1 mm/vox)
 	brain_eict_mag  = 1100.0 / 625.6           # magnification SDD/SID
 	brain_det_cols  = ceil(Int, brain_extent_mm * brain_eict_mag / 1.0)
-
-	# GE Revolution Apex: 256 rows × 0.625 mm pitch → 9.1 cm z-coverage at isocenter
-	# (the largest single-rotation axial coverage of any clinical scanner)
+	# GE Revolution Apex: 256 rows × 0.625 mm pitch
 	brain_det_rows  = 256
 	brain_recon_fov = 40.0  # cm (matches 400-vox × 0.1 cm phantom)
-
-	# Isotropic 512×512: voxel_xy = 40.0/512 = 0.0781 cm
-	# fov_z = 256 × 0.625 mm / magnification = 9.1 cm
-	# nz = round(fov_z / voxel_xy) → isotropic voxels
-	brain_recon_xy    = 512
-	brain_det_row_size_cm = 0.0625  # GE Revolution Apex: 0.625 mm = 0.0625 cm row pitch
-	brain_fov_z_cm    = brain_det_rows * brain_det_row_size_cm / brain_eict_mag  # 0.0625 cm = 0.625 mm
-	brain_voxel_xy_cm = brain_recon_fov / brain_recon_xy
-	brain_n_slices    = round(Int, brain_fov_z_cm / brain_voxel_xy_cm)
+	# Isotropic 512×512×160 recon to match reference output.
+	# 160 slices × 0.1 cm = 16 cm z-coverage (brain region of 400-slice phantom).
+	brain_recon_xy  = 512
+	brain_n_slices  = 160
 end
 
 # ╔═╡ 00000006-0000-0000-0000-000000000002
