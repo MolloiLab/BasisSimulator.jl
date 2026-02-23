@@ -1,6 +1,6 @@
 name = "BasisSimulator"
 uuid = "8f904dfe-b85e-4ff6-b463-dae2292396b9"
-authors = ["Dale Black <daleblack@molloi.lab>"]
+authors = ["Dale Black <daleblack@molloi.lab>", "Shu Nie <nies1@uci.edu>", "Caedin Miller <caedinm@uci.edu>"]
 version = "0.3.0"
 
 [deps]

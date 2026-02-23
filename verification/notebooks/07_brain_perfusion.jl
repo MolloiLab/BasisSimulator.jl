@@ -52,6 +52,13 @@ This notebook simulates dynamic contrast-enhanced brain CT using the XCAT P1 (ma
 6. Interactive visualizations: phantom anatomy, HU images, time-attenuation curves — slider responds instantly
 """
 
+# ╔═╡ 00000002-0000-0000-0000-000000000002
+md"""
+**Authors / Attribution:**
+- Shu Nie (nies1@uci.edu) — BasisSimulator integration
+- Caedin Miller (caedinm@uci.edu) — Original brain perfusion workflow (Dynamic\_Contrast\_Addition.jl)
+"""
+
 # ╔═╡ 00891cd0-96da-4f83-9f8d-c857259ed5d7
 # ╠═╡ disabled = true
 #=╠═╡

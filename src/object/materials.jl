@@ -360,64 +360,8 @@ function update_region_with_contrast(
     )
 end
 
-"""
-    create_iodine_blood_mixture(
-        blood::XA.Material,
-        iodine_concentration_mg_g::Float64;
-        base_iodine::XA.Material=get_material(:I_10_0)
-    ) -> XA.Material
-
-Create iodine contrast blood mixture given concentration.
-
-# Arguments
-- `blood::XA.Material`: Base blood material
-- `iodine_concentration_mg_g::Float64`: Iodine concentration in mg/g (mass of iodine per gram tissue)
-- `base_iodine::XA.Material`: Base iodine material to use
-
-# Returns
-XA.Material with updated iodine concentration
-
-# Example
-```julia
-blood = XA.Materials.blood
-iodine_5mg_g = create_iodine_blood_mixture(blood, 5.0)  # 5 mg/g iodine
-```
-"""
-function create_iodine_blood_mixture(
-    blood::XA.Material,
-    iodine_concentration_mg_g::Float64;
-    base_iodine::XA.Material=get_material(:I_10_0)
-)::XA.Material
-    # Convert: mg/g -> mass fraction (mg/g * 1g/1000mg = 0.001)
-    mass_fraction = iodine_concentration_mg_g / 1000.0
-
-    # Cap at reasonable maximum
-    mass_fraction = min(mass_fraction, 0.5)  # Max 50% iodine by mass
-
-    if mass_fraction < 1e-6
-        return blood  # No significant contrast
-    end
-
-    return create_mixture(
-        [blood, base_iodine],
-        [1 - mass_fraction, mass_fraction];
-        by_volume=false,
-        name = "blood_iodine_$(round(Int, iodine_concentration_mg_g))mg"
-    )
-end
-
-"""
-    calculate_mixture_attenuation(mixture::XA.Material, energy_keV::Float64) -> Float64
-
-Calculate linear attenuation coefficient for a mixture at given energy.
-"""
-function calculate_mixture_attenuation(mixture::XA.Material, energy_keV::Float64)::Float64
-    μ = XA.linear_attenuation_coeff(mixture, energy_keV * u"keV")
-    return ustrip(u"cm^-1", μ)
-end
-
 # =============================================================================
-# Iodine-Doped Material Construction (XCAT Perfusion)
+# Iodine Contrast Material (clinical mg I/mL units)
 # =============================================================================
 
 """Atomic masses (g/mol) for elements common in biological tissues."""
@@ -437,41 +381,40 @@ const _I_VALUES = Dict(
 )
 
 """
-    make_iodine_doped_material(name, base_mat, segment_volume, segment_mass, mass_I)
-        -> XA.Material
+    iodine_contrast_material(base_mat, conc_mg_per_mL; density_g_per_mL=nothing) -> XA.Material
 
-Create an iodine-doped material by blending iodine into a base biological material
-at the mass fraction determined by perfusion data.
-
+Create an iodine-doped material at the given clinical concentration.
 # Arguments
-- `name::String`: name for the resulting material
-- `base_mat::XA.Material`: base biological material (blood, gray matter, etc.)
-- `segment_volume::Float64`: segment volume in cm³
-- `segment_mass::Float64`: segment mass in g (density × volume)
-- `mass_I::Float64`: iodine mass in g
+- `base_mat::XA.Material`: base tissue (blood, gray matter, etc.)
+- `conc_mg_per_mL::Float64`: iodine concentration in mg I/mL (= mg I/cm³)
+- `density_g_per_mL`: override base material density (default: use base_mat.density)
+# Example
+```julia
+blood_contrast = iodine_contrast_material(XA.Materials.blood, 5.0)  # 5 mg I/mL
+```
 """
-function make_iodine_doped_material(
-    name::String,
+function iodine_contrast_material(
     base_mat::XA.Material,
-    segment_volume::Float64,
-    segment_mass::Float64,
-    mass_I::Float64,
+    conc_mg_per_mL::Float64;
+    density_g_per_mL::Union{Nothing,Float64}=nothing,
 )::XA.Material
-    segment_volume > 0.0 ||
-        error("make_iodine_doped_material: segment_volume == 0 for \"$name\"")
-    (segment_mass + mass_I) > 0.0 ||
-        error("make_iodine_doped_material: both segment_mass and mass_I are 0 for \"$name\"")
+    conc_mg_per_mL < 0 && error("iodine_contrast_material: concentration must be ≥ 0")
+    conc_mg_per_mL < 1e-6 && return base_mat
 
-    f_I = mass_I / (mass_I + segment_mass)
+    rho = density_g_per_mL !== nothing ? density_g_per_mL :
+          ustrip(u"g/cm^3", base_mat.density)
+
+    # mg I/mL ÷ (g/mL × 1000 mg/g) = mass fraction of iodine
+    f_I = (conc_mg_per_mL / 1000.0) / rho
+    f_I = min(f_I, 1.0)
     f_s = 1.0 - f_I
 
     base_comp = Dict{Int,Float64}(base_mat.composition)
     new_comp  = Dict{Int,Float64}(Z => w * f_s for (Z, w) in base_comp)
     new_comp[53] = get(new_comp, 53, 0.0) + f_I
 
-    new_density = (segment_mass + mass_I) / segment_volume
+    new_density = rho + conc_mg_per_mL / 1000.0  # iodine mass adds to density
 
-    # Bethe mean excitation energy via ICRU 37 Bragg additivity
     log_I_num = sum(
         new_comp[Z] * (Z / get(_ATOMIC_MASSES, Z, Float64(Z) * 2)) *
         log(get(_I_VALUES, Z, 10.0 * Z))
@@ -484,19 +427,29 @@ function make_iodine_doped_material(
     I_mean = exp(log_I_num / log_I_den) * u"eV"
     ZA     = sum(w * Z / get(_ATOMIC_MASSES, Z, Float64(Z) * 2) for (Z, w) in new_comp)
 
+    name = "$(base_mat.name)_$(round(Int, conc_mg_per_mL))mgI_per_mL"
     return XA.Material(name, ZA, I_mean, new_density * u"g/cm^3", new_comp)
+end
+
+"""
+    calculate_mixture_attenuation(mixture::XA.Material, energy_keV::Float64) -> Float64
+
+Calculate linear attenuation coefficient for a mixture at given energy.
+"""
+function calculate_mixture_attenuation(mixture::XA.Material, energy_keV::Float64)::Float64
+    μ = XA.linear_attenuation_coeff(mixture, energy_keV * u"keV")
+    return ustrip(u"cm^-1", μ)
 end
 
 # =============================================================================
 # Exports
 # =============================================================================
-
 export Ca_50, Ca_100, Ca_200, Ca_300, Ca_400, Ca_500, Ca_600
 export I_2_0, I_2_5, I_5_0, I_7_5, I_10_0, I_15_0, I_20_0
 export solid_water
 export gray_matter, white_matter
 export get_material, MATERIALS_REGISTRY, validate_material_hu
 export get_region_materials
-export create_mixture, update_region_with_contrast, create_iodine_blood_mixture
+export create_mixture, update_region_with_contrast
 export calculate_mixture_attenuation
-export make_iodine_doped_material
+export iodine_contrast_material
