@@ -21,6 +21,7 @@ end
 begin
     import Pkg
     Pkg.activate(dirname(@__DIR__))
+    Pkg.resolve()
     Pkg.instantiate()
 end
 
@@ -180,7 +181,8 @@ These IDs come from `P1_voxelize_table.txt` (tab-separated `name → ID`):
 | 21 | `:blood` | arteries: 399 segments (internal carotid, MCA, ACA, basilar, vertebral, …) |
 | 22 | `:blood` | veins: 235 segments (jugular, sagittal/transverse/straight sinus, cerebral veins, …) |
 
-"""
+""
+
 # ╔═╡ b7161fac-2eda-41be-93d4-1162587050cd
 MATERIAL_MAP_BASE = Dict{Int, Symbol}(
 	0  => :air,
