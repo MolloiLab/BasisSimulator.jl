@@ -396,6 +396,12 @@ begin
 				P1_stamped[idxs] .= id
 			end
 		end
+		# Crop to brain anatomy z-range: XCAT z=98..257 (1-indexed) = 160 slices.
+		# Vertex (superior) at z=98, skull base (inferior) at z=257.
+		# After crop: slice 1 → vertex, slice 160 → skull base — matches user expectation.
+		BRAIN_Z_CROP = 98:257
+		P1_stamped   = P1_stamped[:, :, BRAIN_Z_CROP]
+		P2_raw_crop  = P2_raw_file[:, :, BRAIN_Z_CROP]
 		mask_gpu = Metal.MtlArray(UInt16.(P1_stamped))   # upload once, reused
 
 		# Helper: rebuild materials_dict for one time point (no array copy needed).
@@ -411,7 +417,7 @@ begin
 				("2", gm_info,     iodine_gm,     :gray_matter),
 			]
 				seg_mats = BS.update_structures!(
-					P1_stamped, P2_structure_map, prefix, P2_raw_file,
+					P1_stamped, P2_structure_map, prefix, P2_raw_crop,
 					base_sym, material_list_init[base_sym], info, iodine, t_contrast
 				)
 				merge!(materials_dict, seg_mats)
