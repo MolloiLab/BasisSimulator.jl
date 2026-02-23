@@ -533,7 +533,7 @@ Uses the effective diameter formula: d_eff = sqrt(AP × LAT), which is standard
 in CT dosimetry (AAPM Task Group 220).
 """
 function estimate_phantom_diameter_cm(
-    mask::AbstractArray{UInt8,3},
+    mask::AbstractArray{<:Unsigned,3},
     voxel_size_mm::Union{NTuple{3,<:Real}, AbstractVector{<:Real}}
 )
     # Convert to CPU if on GPU (bounding box computation is fast on CPU)

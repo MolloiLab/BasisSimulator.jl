@@ -242,7 +242,7 @@ when computing I0 from mA using the protocol's integration fraction.
 See also: [`GSIProtocol`](@ref), [`DualEnergySinogram`](@ref)
 """
 function forward_project_dual_energy(
-    mask::AbstractArray{UInt8,3},
+    mask::AbstractArray{<:Unsigned,3},
     geom::CTGeometry,
     protocol::GSIProtocol;
     materials::Vector,

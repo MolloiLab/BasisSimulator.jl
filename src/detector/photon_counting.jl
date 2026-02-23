@@ -1327,7 +1327,7 @@ high_E_sino = pcct_sino.bins[4]  # 70+ keV
 See also: [`PhotonCountingDetector`](@ref), [`EnergyResolvedSinogram`](@ref)
 """
 function pcct_forward_project(
-    mask::AbstractArray{UInt8,3},
+    mask::AbstractArray{<:Unsigned,3},
     geom,
     detector::PhotonCountingDetector;
     energies::AbstractVector,

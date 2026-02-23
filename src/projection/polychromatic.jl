@@ -213,7 +213,7 @@ println("Water μ at 60 keV: ", μ_volume[65, 65, 16], " mm⁻¹")
 """
 function create_μ_volume!(
     μ_volume::AbstractArray{T, 3},
-    mask::AbstractArray{UInt8, 3},
+    mask::AbstractArray{<:Unsigned, 3},
     materials::Vector,
     energy_keV::Real;
     ws_μ_lut_cpu::Union{Nothing, Vector{T}} = nothing,
@@ -242,7 +242,7 @@ function create_μ_volume!(
 
     # Use AcceleratedKernels.jl for parallel execution
     AK.foreachindex(mask) do idx
-        region_idx = mask[idx] + 1  # Convert 0-based region to 1-based array index
+        region_idx = Int(mask[idx]) + 1  # Convert 0-based region to 1-based array index
         μ_volume[idx] = μ_at_energy[region_idx]
     end
 
@@ -541,7 +541,7 @@ function forward_project!(
         # Direct volume input - simple monochromatic projection
         siddon_forward_project!(sinogram, volume_or_mask, geom; volume_extent=volume_extent)
 
-    elseif eltype(volume_or_mask) == UInt8
+    elseif eltype(volume_or_mask) <: Unsigned
         # Mask input - need energy specification
         mask = volume_or_mask
 
@@ -767,7 +767,7 @@ function _forward_project_with_signal_chain!(
     # =========================================================================
     if eltype(volume_or_mask) <: AbstractFloat
         siddon_forward_project!(sinogram, volume_or_mask, geom; volume_extent=volume_extent)
-    elseif eltype(volume_or_mask) == UInt8
+    elseif eltype(volume_or_mask) <: Unsigned
         mask = volume_or_mask
         if materials === nothing
             error("materials must be provided when using a mask input")
@@ -983,7 +983,7 @@ end
 """Monochromatic forward projection from mask + single energy"""
 function _forward_project_mono!(
     sinogram::AbstractArray{T, 3},
-    mask::AbstractArray{UInt8, 3},
+    mask::AbstractArray{<:Unsigned, 3},
     geom::CTGeometry,
     energy_keV::T,
     materials::Vector;
@@ -1088,7 +1088,7 @@ causes beam hardening artifacts.
 """
 function _forward_project_poly!(
     sinogram::AbstractArray{T, 3},
-    mask::AbstractArray{UInt8, 3},
+    mask::AbstractArray{<:Unsigned, 3},
     geom::CTGeometry,
     energies::Vector,
     weights::Vector,

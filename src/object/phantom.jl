@@ -74,7 +74,7 @@ const REGION_TO_MATERIAL = Dict{RegionLabel, Symbol}(
 Digital phantom with semantic mask and materials for polychromatic simulation.
 
 # Fields (v20.0-pivot: simplified, no μ field)
-- `mask::AbstractArray{UInt8,3}`: Region labels (see `RegionLabel` enum)
+- `mask::AbstractArray{<:Unsigned,3}`: Region labels (see `RegionLabel` enum)
 - `materials::Vector{XA.Material}`: Materials for each region (indexed by mask_value + 1)
 - `voxel_size::NTuple{3,Float64}`: Voxel dimensions (cm) as (dx, dy, dz)
 - `origin::NTuple{3,Float64}`: Origin coordinates (cm) - center of first voxel
@@ -119,7 +119,7 @@ phantom_gpu = Phantom(
 
 See also: [`compute_μ`](@ref)
 """
-struct Phantom{M<:AbstractArray{UInt8,3}, Mat}
+struct Phantom{T<:Unsigned, M<:AbstractArray{T,3}, Mat}
     mask::M
     materials::Mat  # Vector{XA.Material}
     voxel_size::NTuple{3,Float64}
@@ -252,8 +252,9 @@ function Phantom(
         computed_origin = Float64.(origin)
     end
 
-    # Convert labeled array to UInt8 mask
-    mask = UInt8.(labeled_array)
+    # Convert labeled array to UInt8 or UInt16 mask (auto-promote based on max label)
+    max_label_val = maximum(labeled_array)
+    mask = max_label_val > typemax(UInt8) ? UInt16.(labeled_array) : UInt8.(labeled_array)
 
     # Build materials vector (indexed by mask_value + 1)
     materials_vec = build_materials_vector(materials_dict)
@@ -648,3 +649,4 @@ export REGION_TO_MATERIAL
 export Phantom, compute_μ, create_gammex_472, create_phantom_from_mask, build_materials_vector
 export get_region_mask
 export create_phantom_from_xcat
+export relabel_zero_islands_2d!, load_structure_map

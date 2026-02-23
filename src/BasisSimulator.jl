@@ -72,6 +72,7 @@ include("detector/pcct/pileup_model.jl")
 
 # Phantom generation with semantic masks
 include("object/phantom.jl")
+include("object/xcat_io.jl")
 
 # CT scanner geometry
 include("geometry/scanner.jl")

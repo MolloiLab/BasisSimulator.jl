@@ -60,28 +60,74 @@ const I_20_0 = XA.Materials.gammex_472_i20_0
 const solid_water = XA.Materials.gammex_472_solidwater
 
 # =============================================================================
-# Material Registry
+# Brain Tissue Materials (Woodard & White 1986 / ICRU-44)
 # =============================================================================
 
-# Helper to safely get material from XA.Materials with different naming conventions
-function _get_xa_material(name::String)::XA.Material
-    # Try direct name first
-    sym = Symbol(name)
-    if haskey(XA.Materials, sym)
-        return XA.Materials[sym]
-    end
-    # Try with underscore removed
-    name_no_underscore = replace(name, "_" => "")
-    sym2 = Symbol(name_no_underscore)
-    if haskey(XA.Materials, sym2)
-        return XA.Materials[sym2]
-    end
-    # Try common variations
-    if name == "corticalbone"
-        return _get_xa_material("corticalbone")
-    end
-    error("Material $name not found in XrayAttenuation")
+# Z/A ratio helper used for custom brain tissue construction
+function _zoa_ratio(comp::Dict{Int,Float64})::Float64
+    atomic_masses = Dict(1=>1.008, 6=>12.011, 7=>14.007, 8=>15.999, 11=>22.990,
+        12=>24.305, 15=>30.974, 16=>32.06, 17=>35.45, 19=>39.098, 20=>40.078,
+        26=>55.845, 53=>126.904)
+    num = sum(w * Z / get(atomic_masses, Z, Float64(Z)*2) for (Z, w) in comp)
+    den = sum(values(comp))
+    num / den
 end
+
+function _mean_excitation(comp::Dict{Int,Float64})
+    I_values = Dict(1=>19.2, 6=>81.0, 7=>82.0, 8=>95.0, 11=>149.0, 12=>156.0,
+        15=>173.0, 16=>180.0, 17=>174.0, 19=>190.0, 20=>191.0, 26=>286.0, 53=>491.0)
+    atomic_masses = Dict(1=>1.008, 6=>12.011, 7=>14.007, 8=>15.999, 11=>22.990,
+        12=>24.305, 15=>30.974, 16=>32.06, 17=>35.45, 19=>39.098, 20=>40.078,
+        26=>55.845, 53=>126.904)
+    log_I = sum(w * (Z / get(atomic_masses, Z, Float64(Z)*2)) * log(get(I_values, Z, 10.0*Z))
+                for (Z, w) in comp)
+    z_a  = sum(w * (Z / get(atomic_masses, Z, Float64(Z)*2)) for (Z, w) in comp)
+    exp(log_I / z_a) * u"eV"
+end
+
+# Gray matter: Woodard & White 1986 (mass fractions)
+const _gm_comp = Dict{Int,Float64}(
+    1 => 0.1070,   # H
+    6 => 0.0955,   # C
+    7 => 0.0180,   # N
+    8 => 0.7620,   # O
+    11 => 0.0020,  # Na
+    15 => 0.0035,  # P
+    16 => 0.0020,  # S
+    17 => 0.0030,  # Cl
+    19 => 0.0070,  # K
+)
+const gray_matter = XA.Material(
+    "Gray Matter (Woodard & White 1986)",
+    _zoa_ratio(_gm_comp),
+    _mean_excitation(_gm_comp),
+    1.04u"g/cm^3",
+    _gm_comp,
+)
+
+# White matter: Woodard & White 1986 (mass fractions)
+const _wm_comp = Dict{Int,Float64}(
+    1 => 0.1060,   # H
+    6 => 0.1980,   # C
+    7 => 0.0130,   # N
+    8 => 0.6703,   # O
+    11 => 0.0020,  # Na
+    15 => 0.0040,  # P
+    16 => 0.0017,  # S
+    17 => 0.0020,  # Cl
+    19 => 0.0030,  # K
+)
+const white_matter = XA.Material(
+    "White Matter (Woodard & White 1986)",
+    _zoa_ratio(_wm_comp),
+    _mean_excitation(_wm_comp),
+    1.04u"g/cm^3",
+    _wm_comp,
+)
+
+# =============================================================================
+# Material Registry
+# =============================================================================
 
 const MATERIALS_REGISTRY = Dict{Symbol, XA.Material}(
     # Gammex 472 Calcium
@@ -92,18 +138,18 @@ const MATERIALS_REGISTRY = Dict{Symbol, XA.Material}(
     :I_10_0 => I_10_0, :I_15_0 => I_15_0, :I_20_0 => I_20_0,
     # Basic
     :solid_water => solid_water, :water => XA.Materials.water, :air => XA.Materials.air,
-    # Tissue types for XCAT
-    :bone => _get_xa_material("corticalbone"),
-    :cortical_bone => _get_xa_material("corticalbone"),
-    :blood => _get_xa_material("blood"),
-    :brain => _get_xa_material("brain"),
-    :muscle => _get_xa_material("muscle"),
-    :soft_tissue => _get_xa_material("softtissue"),
-    :lung => _get_xa_material("lung"),
-    :csf => _get_xa_material("cerebrospinal_fluid"),
-    :gray_matter => _get_xa_material("brain"),
-    :white_matter => _get_xa_material("brain"),
-    :iodine => _get_xa_material("iodine"),
+    # Tissue types
+    :bone => XA.Materials.corticalbone,
+    :cortical_bone => XA.Materials.corticalbone,
+    :blood => XA.Materials.blood,
+    :brain => XA.Materials.brain,
+    :muscle => XA.Materials.muscle,
+    :soft_tissue => XA.Materials.softtissue,
+    :lung => XA.Materials.lung,
+    :csf => XA.Materials.cerebrospinal_fluid,
+    :gray_matter => gray_matter,
+    :white_matter => white_matter,
+    :iodine => XA.Materials.iodine,
 )
 
 """
@@ -138,16 +184,6 @@ end
 
 Return a vector of materials indexed by region number (1-based).
 Used for polychromatic simulation where μ_by_energy[region, energy] is needed.
-
-The vector has 27 elements (indices 1-27, but only 18 are used):
-- Index 1 (REGION 0): air (background)
-- Index 2 (REGION 1): air
-- Index 3 (REGION 2): water
-- Index 4 (REGION 3): solid_water
-- Indices 5-10: unused (filled with air)
-- Index 11-17 (REGION 10-16): Ca_50 through Ca_600
-- Indices 18-20: unused (filled with air)
-- Index 21-27 (REGION 20-26): I_2_0 through I_20_0
 """
 function get_region_materials()
     # Max region index is 26, so we need 27 elements (0-indexed regions become 1-indexed)
@@ -185,26 +221,7 @@ end
 # =============================================================================
 
 """
-    MixtureComponent
-
-A component in a material mixture with its fraction and properties.
-"""
-struct MixtureComponent
-    material::XA.Material
-    mass_fraction::Float64
-    volume_fraction::Float64
-    density::Float64  # g/cm³
-    atomic_numbers::Vector{Int}
-    mass_fractions::Vector{Float64}
-end
-
-"""
-    create_mixture(
-        materials::Vector{XA.Material},
-        fractions::Vector{Float64};
-        by_volume::Bool=true,
-        name::String="mixture"
-    ) -> XA.Material
+    create_mixture(materials, fractions; by_volume=true, name="mixture") -> XA.Material
 
 Create a mixture material from base materials.
 
@@ -214,15 +231,12 @@ Create a mixture material from base materials.
 - `by_volume::Bool`: If true, fractions are volume fractions; if false, mass fractions
 - `name::String`: Name for the mixture
 
-# Returns
-XA.Material with computed mixture properties
-
 # Example
 ```julia
 # Create 50/50 water/bone by volume
 mixture = create_mixture([XA.Materials.water, XA.Materials.bone], [0.5, 0.5]; by_volume=true)
 
-# Create 1% iodine contrast (by mass)  
+# Create 1% iodine contrast (by mass)
 iodine = create_mixture([XA.Materials.water, get_material(:I_10_0)], [0.99, 0.01]; by_volume=false)
 ```
 """
@@ -234,79 +248,39 @@ function create_mixture(
 )::XA.Material
     @assert length(materials) == length(fractions) "Materials and fractions must have same length"
     @assert isapprox(sum(fractions), 1.0, atol=1e-6) "Fractions must sum to 1.0"
-    
+
     n = length(materials)
-    
-    # Get densities and compositions for each material
-    densities = Float64[]
-    compositions = []
-    
-    for mat in materials
-        # Extract density as Float64 using ustrip
-        density_val = mat.density
-        rho = try 
-            ustrip(density_val)
-        catch
-            Float64(density_val)
-        end
-        push!(densities, rho)
-        
-        # Get composition (Dict{Z, mass_fraction})
-        push!(compositions, mat.composition)
-    end
-    
-    # Calculate mixture density
+
+    densities    = [ustrip(u"g/cm^3", mat.density) for mat in materials]
+    compositions = [mat.composition for mat in materials]
+
     if by_volume
-        # Volume-weighted: ρ_mix = Σ(v_i * ρ_i)
         mixture_density = sum(fractions[i] * densities[i] for i in 1:n)
-        
-        # Convert volume fractions to mass fractions
-        # m_i = v_i * ρ_i, then normalize
-        masses = [fractions[i] * densities[i] for i in 1:n]
+        masses     = [fractions[i] * densities[i] for i in 1:n]
         total_mass = sum(masses)
         mass_fracs = masses ./ total_mass
     else
-        # Mass fractions provided directly
-        mass_fracs = fractions
-        
-        # Calculate density: 1/ρ_mix = Σ(w_i/ρ_i)
-        inv_rho_mix = sum(fractions[i] / densities[i] for i in 1:n)
+        mass_fracs      = fractions
+        inv_rho_mix     = sum(fractions[i] / densities[i] for i in 1:n)
         mixture_density = 1.0 / inv_rho_mix
     end
-    
-    # Calculate effective mixture composition
-    # Combine all elements from all materials
+
     all_elements = Dict{Int, Float64}()
-    
     for i in 1:n
         for (Z, wf) in compositions[i]
-            element_mass = mass_fracs[i] * wf
-            all_elements[Z] = get(all_elements, Z, 0.0) + element_mass
+            all_elements[Z] = get(all_elements, Z, 0.0) + mass_fracs[i] * wf
         end
     end
-    
-    # Normalize
-    total = sum(values(all_elements))
-    Zs = sort(collect(keys(all_elements)))
+
+    total     = sum(values(all_elements))
+    Zs        = sort(collect(keys(all_elements)))
     final_wfs = [all_elements[Z]/total for Z in Zs]
-    
-    # Create composition dict (required by XA.Material)
     comp_dict = Dict{Int64, Float64}(Z => w for (Z, w) in zip(Zs, final_wfs))
-    
-    # Calculate Z/A ratio for the mixture
-    # Z/A ≈ sum(w_i * Z_i / A_i), simplified: use weighted average
-    za_ratio = mixture_density / sum(Zs[i] * final_wfs[i] for i in 1:length(Zs))
-    
-    # Create the material using XA.Material (5 positional args)
-    # Need to use Unitful units for density
-    mixture_density_unitful = mixture_density * u"g/cm^3"
-    return XA.Material(
-        name,
-        za_ratio,  # Z/A ratio
-        75.0,  # I (mean excitation energy in eV - typical value)
-        mixture_density_unitful,  # density in g/cm³
-        comp_dict  # composition dict
-    )
+
+    za_ratio = _zoa_ratio(comp_dict)
+    I_mean   = _mean_excitation(comp_dict)
+
+    return XA.Material(name, za_ratio, I_mean, mixture_density * u"g/cm^3", comp_dict)
 end
 
 """
@@ -351,32 +325,32 @@ function update_region_with_contrast(
     by_mass::Bool=true
 )::XA.Material
     @assert target_concentration >= 0 && target_concentration <= 1
-    
+
     total_volume = region_voxel_count * voxel_volume_cm3
-    
+
     if target_concentration == 0
         return base_material
     elseif target_concentration == 1
         return contrast_material
     end
-    
+
     # Calculate volumes of each component
     base_volume = total_volume * (1 - target_concentration)
     contrast_volume = total_volume * target_concentration
-    
+
     # Get densities
     ρ_base = base_material.density
     ρ_contrast = contrast_material.density
-    
+
     # Calculate masses
     m_base = base_volume * ρ_base
     m_contrast = contrast_volume * ρ_contrast
     total_mass = m_base + m_contrast
-    
+
     # Get mass fractions
     w_base = m_base / total_mass
     w_contrast = m_contrast / total_mass
-    
+
     # Create mixture using mass fractions
     return create_mixture(
         [base_material, contrast_material],
@@ -416,14 +390,14 @@ function create_iodine_blood_mixture(
 )::XA.Material
     # Convert: mg/g -> mass fraction (mg/g * 1g/1000mg = 0.001)
     mass_fraction = iodine_concentration_mg_g / 1000.0
-    
+
     # Cap at reasonable maximum
     mass_fraction = min(mass_fraction, 0.5)  # Max 50% iodine by mass
-    
+
     if mass_fraction < 1e-6
         return blood  # No significant contrast
     end
-    
+
     return create_mixture(
         [blood, base_iodine],
         [1 - mass_fraction, mass_fraction];
@@ -443,14 +417,86 @@ function calculate_mixture_attenuation(mixture::XA.Material, energy_keV::Float64
 end
 
 # =============================================================================
+# Iodine-Doped Material Construction (XCAT Perfusion)
+# =============================================================================
+
+"""Atomic masses (g/mol) for elements common in biological tissues."""
+const _ATOMIC_MASSES = Dict(
+    1  => 1.008,   6  => 12.011,  7  => 14.007,  8  => 15.999,
+    11 => 22.990,  12 => 24.305,  15 => 30.974,  16 => 32.06,
+    17 => 35.45,   19 => 39.098,  20 => 40.078,  26 => 55.845,
+    53 => 126.904,
+)
+
+"""Mean excitation energies I (eV) for Bethe stopping-power formula (ICRU 37)."""
+const _I_VALUES = Dict(
+    1  => 19.2,   6  => 81.0,   7  => 82.0,   8  => 95.0,
+    11 => 149.0,  12 => 156.0,  15 => 173.0,  16 => 180.0,
+    17 => 174.0,  19 => 190.0,  20 => 191.0,  26 => 286.0,
+    53 => 491.0,
+)
+
+"""
+    make_iodine_doped_material(name, base_mat, segment_volume, segment_mass, mass_I)
+        -> XA.Material
+
+Create an iodine-doped material by blending iodine into a base biological material
+at the mass fraction determined by perfusion data.
+
+# Arguments
+- `name::String`: name for the resulting material
+- `base_mat::XA.Material`: base biological material (blood, gray matter, etc.)
+- `segment_volume::Float64`: segment volume in cm³
+- `segment_mass::Float64`: segment mass in g (density × volume)
+- `mass_I::Float64`: iodine mass in g
+"""
+function make_iodine_doped_material(
+    name::String,
+    base_mat::XA.Material,
+    segment_volume::Float64,
+    segment_mass::Float64,
+    mass_I::Float64,
+)::XA.Material
+    segment_volume > 0.0 ||
+        error("make_iodine_doped_material: segment_volume == 0 for \"$name\"")
+    (segment_mass + mass_I) > 0.0 ||
+        error("make_iodine_doped_material: both segment_mass and mass_I are 0 for \"$name\"")
+
+    f_I = mass_I / (mass_I + segment_mass)
+    f_s = 1.0 - f_I
+
+    base_comp = Dict{Int,Float64}(base_mat.composition)
+    new_comp  = Dict{Int,Float64}(Z => w * f_s for (Z, w) in base_comp)
+    new_comp[53] = get(new_comp, 53, 0.0) + f_I
+
+    new_density = (segment_mass + mass_I) / segment_volume
+
+    # Bethe mean excitation energy via ICRU 37 Bragg additivity
+    log_I_num = sum(
+        new_comp[Z] * (Z / get(_ATOMIC_MASSES, Z, Float64(Z) * 2)) *
+        log(get(_I_VALUES, Z, 10.0 * Z))
+        for Z in keys(new_comp)
+    )
+    log_I_den = sum(
+        new_comp[Z] * (Z / get(_ATOMIC_MASSES, Z, Float64(Z) * 2))
+        for Z in keys(new_comp)
+    )
+    I_mean = exp(log_I_num / log_I_den) * u"eV"
+    ZA     = sum(w * Z / get(_ATOMIC_MASSES, Z, Float64(Z) * 2) for (Z, w) in new_comp)
+
+    return XA.Material(name, ZA, I_mean, new_density * u"g/cm^3", new_comp)
+end
+
+# =============================================================================
 # Exports
 # =============================================================================
 
 export Ca_50, Ca_100, Ca_200, Ca_300, Ca_400, Ca_500, Ca_600
 export I_2_0, I_2_5, I_5_0, I_7_5, I_10_0, I_15_0, I_20_0
 export solid_water
+export gray_matter, white_matter
 export get_material, MATERIALS_REGISTRY, validate_material_hu
 export get_region_materials
 export create_mixture, update_region_with_contrast, create_iodine_blood_mixture
 export calculate_mixture_attenuation
-export MixtureComponent
+export make_iodine_doped_material
