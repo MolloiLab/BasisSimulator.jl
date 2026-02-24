@@ -399,7 +399,7 @@ mutable struct EICTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:Abstr
     lag_coeffs::Union{Nothing, A1}              # lag coefficients (n_frames)
 
     # ─── Noise ───
-    noise_rand_gpu::A1         # randn buffer (n_elements)
+    noise_rand::A1         # randn buffer (n_elements)
 
     # ─── Pre-computed vectors ───
     weights_norm::Vector{T}    # T.(weights ./ sum(weights))
@@ -563,8 +563,8 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     end
 
     # Noise buffers
-    noise_rand_gpu = similar(ref, T, n_elements)
-    noise_rand_gpu = similar(ref, T, n_elements)
+    noise_rand = similar(ref, T, n_elements)
+
 
     # Pre-computed weights
     w_sum = sum(weights_vec)
@@ -608,13 +608,13 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     sino_ideal_out = similar(ref, T, sino_shape)
     sino_noisy_out = similar(ref, T, sino_shape)
 
-    return EICTWorkspace{T, typeof(sinogram), typeof(geom_source_positions), typeof(noise_rand_gpu)}(
+    return EICTWorkspace{T, typeof(sinogram), typeof(geom_source_positions), typeof(noise_rand)}(
         sinogram, μ_volume, sino_mono, I_transmitted, air_scan,
         physics_output, lag_intensity,
         scatter_kernel, scatter_correct_kernel, crosstalk_kernel,
         optical_crosstalk_kernel, focal_spot_kernel, flat_filter_proj,
         bowtie_proj, lag_coeffs_buf,
-        noise_rand_gpu,
+        noise_rand,
         weights_norm, μ_lut_cpu, μ_lut_gpu, μ_table, bhc_coeffs_gpu,
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
         geom, energies, weights_vec, config, mats,
@@ -677,7 +677,7 @@ mutable struct EICTDualWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:A
     bowtie_projection_high::Union{Nothing, A2}
 
     # ─── Noise (reused between low/high) ───
-    noise_rand_gpu::A1
+    noise_rand::A1
 
     # ─── Material decomposition output (GPU-side) ───
     material1::A3         # first basis material (sino shape)
@@ -911,8 +911,8 @@ function create_eict_dual_workspace(scanner, protocol, sim_opts, recon_opts, pha
     end
 
     # ─── Noise buffers ───
-    noise_rand_gpu = similar(ref, T, n_elements)
-    noise_rand_gpu = similar(ref, T, n_elements)
+    noise_rand = similar(ref, T, n_elements)
+
 
     # ─── Pre-computed weights ───
     w_sum_low = sum(weights_low)
@@ -983,7 +983,7 @@ function create_eict_dual_workspace(scanner, protocol, sim_opts, recon_opts, pha
     sino_noisy_out_low = similar(ref, T, sino_shape)
     sino_noisy_out_high = similar(ref, T, sino_shape)
 
-    return EICTDualWorkspace{T, typeof(sino_low), typeof(geom_source_positions), typeof(noise_rand_gpu)}(
+    return EICTDualWorkspace{T, typeof(sino_low), typeof(geom_source_positions), typeof(noise_rand)}(
         μ_volume, sino_mono, I_transmitted,
         sino_low, sino_high,
         air_scan, physics_output, lag_intensity,
@@ -991,7 +991,7 @@ function create_eict_dual_workspace(scanner, protocol, sim_opts, recon_opts, pha
         optical_crosstalk_kernel, focal_spot_kernel, lag_coeffs_buf,
         flat_filter_proj_low, flat_filter_proj_high,
         bowtie_proj_low, bowtie_proj_high,
-        noise_rand_gpu,
+        noise_rand,
         material1, material2,
         weights_norm_low, weights_norm_high,
         μ_lut_cpu, μ_lut_gpu, μ_table_low, μ_table_high,

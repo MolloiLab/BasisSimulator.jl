@@ -503,16 +503,19 @@ end
 # ╔═╡ 00000018-0000-0000-0000-000000000001
 # Export ImageJ-compatible .raw files for all time points.
 # Julia arrays are column-major (x fastest); ImageJ expects row-major (y fastest).
-# permutedims(vol,(2,1,3)) reorders (nx,ny,nz) → (ny,nx,nz), then write big-endian Float32.
+# permutedims(vol,(2,1,3)) reorders (nx,ny,nz) → (ny,nx,nz), then write little-endian Float32.
+# Filename: brain_<recon>_t<seconds>s_<nx>x<ny>x<nz>.raw
 begin
 	RAW_DIR = joinpath(dirname(@__DIR__), "figures", "brain_perfusion", "raw")
 	mkpath(RAW_DIR)
 	for (i, t_s) in enumerate(CONTRAST_TIME_S)
 		for (name, vols) in [("fdk", all_fdk_hu), ("hir", all_hir_hu)]
 			vol = vols[i]
+			nx, ny, nz = size(vol)
 			vol_ij = permutedims(vol, (2, 1, 3))
-			open(joinpath(RAW_DIR, "brain_$(name)_t$(t_s)s.raw"), "w") do io
-				write(io, hton.(vec(vol_ij)))
+			fname = "brain_$(name)_t$(t_s)s_$(nx)x$(ny)x$(nz).raw"
+			open(joinpath(RAW_DIR, fname), "w") do io
+				write(io, vec(vol_ij))  # little-endian Float32 (native on x86/ARM)
 			end
 		end
 	end

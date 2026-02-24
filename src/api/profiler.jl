@@ -402,10 +402,10 @@ function profile_simulate!(
         I0_T = T(compute_detector_I0(geom, protocol))
 
         _timed(prof, :cpu_gpu_copy) do
-            Random.randn!(ws.noise_rand_gpu)
+            Random.randn!(ws.noise_rand)
         end
         _timed(prof, :noise, ws.sinogram) do
-            let sino = ws.sinogram, rg = ws.noise_rand_gpu, I0v = I0_T
+            let sino = ws.sinogram, rg = ws.noise_rand, I0v = I0_T
                 AK.foreachindex(sino) do idx
                     λ = I0v * exp(-sino[idx])
                     λ_noisy = λ + sqrt(max(λ, T(1))) * rg[idx]

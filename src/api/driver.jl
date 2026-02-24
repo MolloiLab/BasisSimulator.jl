@@ -845,9 +845,9 @@ function simulate!(
         I0_T = T(compute_detector_I0(geom, protocol))
 
         # Generate noise directly on device (Metal: MPS Philox, CUDA: cuRAND, CPU: stdlib)
-        Random.randn!(ws.noise_rand_gpu)
+        Random.randn!(ws.noise_rand)
 
-        let sino = ws.sinogram, rg = ws.noise_rand_gpu, I0v = I0_T
+        let sino = ws.sinogram, rg = ws.noise_rand, I0v = I0_T
             AK.foreachindex(sino) do idx
                 λ = I0v * exp(-sino[idx])
                 λ_noisy = λ + sqrt(max(λ, T(1))) * rg[idx]
@@ -927,8 +927,8 @@ function simulate!(
             rotation_time = protocol.rotation_time,
             flux_density = protocol.flux_density)))
 
-        Random.randn!(ws.noise_rand_gpu)
-        let sino = ws.sino_low, rg = ws.noise_rand_gpu, I0v = I0_low
+        Random.randn!(ws.noise_rand)
+        let sino = ws.sino_low, rg = ws.noise_rand, I0v = I0_low
             AK.foreachindex(sino) do idx
                 λ = I0v * exp(-sino[idx])
                 λ_noisy = λ + sqrt(max(λ, T(1))) * rg[idx]
@@ -943,8 +943,8 @@ function simulate!(
             rotation_time = protocol.rotation_time,
             flux_density = protocol.flux_density)))
 
-        Random.randn!(ws.noise_rand_gpu)
-        let sino = ws.sino_high, rg = ws.noise_rand_gpu, I0v = I0_high
+        Random.randn!(ws.noise_rand)
+        let sino = ws.sino_high, rg = ws.noise_rand, I0v = I0_high
             AK.foreachindex(sino) do idx
                 λ = I0v * exp(-sino[idx])
                 λ_noisy = λ + sqrt(max(λ, T(1))) * rg[idx]
