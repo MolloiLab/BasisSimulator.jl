@@ -697,8 +697,18 @@ function simulate!(
 ) where {T}
     geom = ws.geom
     energies = ws.energies
-    mats = ws.mats
     config = ws.config
+    # Re-resolve materials from the incoming phantom each call.
+    # This supports dynamic phantoms (e.g. time-varying iodine contrast) where
+    # phantom.materials changes between simulate! calls on the same workspace.
+    # When materials change, skip the pre-sized LUT workspace buffers so
+    # create_μ_volume! allocates fresh ones of the correct length.
+    mats = _resolve_materials(phantom, materials)
+    lut_cpu, lut_gpu, μ_table = if length(mats) == length(ws.mats)
+        ws.μ_lut_cpu, ws.μ_lut_gpu, ws.μ_table
+    else
+        nothing, nothing, nothing
+    end
 
     # ═══════════════════════════════════════════════════════════════════════
     # STEP 1: Polychromatic forward projection (Beer-Lambert)
@@ -708,8 +718,8 @@ function simulate!(
                             ws_μ_volume=ws.μ_volume, ws_sino_mono=ws.sino_mono,
                             ws_I_transmitted=ws.I_transmitted,
                             ws_weights_norm=ws.weights_norm,
-                            ws_μ_lut_cpu=ws.μ_lut_cpu, ws_μ_lut_gpu=ws.μ_lut_gpu,
-                            ws_μ_table=ws.μ_table,
+                            ws_μ_lut_cpu=lut_cpu, ws_μ_lut_gpu=lut_gpu,
+                            ws_μ_table=μ_table,
                             ws_source_positions=ws.geom_source_positions,
                             ws_detector_centers=ws.geom_detector_centers,
                             ws_detector_u=ws.geom_detector_u,
