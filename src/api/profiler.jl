@@ -172,6 +172,7 @@ function _forward_project_poly_profiled!(
     ws_μ_lut_cpu::Union{Nothing, Vector{T}}=nothing,
     ws_μ_lut_gpu=nothing,
     ws_μ_table=nothing,
+    ws_μ_table_gpu=nothing,
     ws_source_positions=nothing,
     ws_detector_centers=nothing,
     ws_detector_u=nothing,
@@ -195,7 +196,7 @@ function _forward_project_poly_profiled!(
         _timed(prof, :create_μ_volume, sinogram) do
             create_μ_volume!(μ_volume, mask, materials, energies[e_idx];
                              ws_μ_lut_cpu=ws_μ_lut_cpu, ws_μ_lut_gpu=ws_μ_lut_gpu,
-                             ws_μ_table=ws_μ_table, energy_idx=e_idx)
+                             ws_μ_table=ws_μ_table, ws_μ_table_gpu=ws_μ_table_gpu, energy_idx=e_idx)
         end
 
         # Stage 2: siddon_forward_project — GPU ray tracing
@@ -289,6 +290,8 @@ function profile_simulate!(
         end
     end
 
+    μ_table_gpu = ws.μ_table_gpu
+
     # ── Polychromatic forward projection ─────────────────────────────────────
     fill!(ws.sinogram, zero(T))
     _forward_project_poly_profiled!(
@@ -297,7 +300,7 @@ function profile_simulate!(
         ws_I_transmitted=ws.I_transmitted,
         ws_weights_norm=ws.weights_norm,
         ws_μ_lut_cpu=lut_cpu, ws_μ_lut_gpu=lut_gpu,
-        ws_μ_table=μ_table,
+        ws_μ_table=μ_table, ws_μ_table_gpu=μ_table_gpu,
         ws_source_positions=ws.geom_source_positions,
         ws_detector_centers=ws.geom_detector_centers,
         ws_detector_u=ws.geom_detector_u,
