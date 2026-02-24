@@ -422,13 +422,10 @@ mutable struct EICTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:Abstr
     mats::Vector
     # Signal chain config (extracted from PhysicsConfig for zero-alloc)
     heel_effect::Union{Nothing, HeelEffect}
-    heel_effect::Union{Nothing, HeelEffect}
     das_model::Union{Nothing, DASModel}
     bhc::Union{Nothing, Union{BHCPolynomial, BeamHardeningCorrection}}
     has_signal_chain::Bool
-
-    # ─── Result staging (same backend as GPU) ───
-    # ─── Result staging (same backend as GPU) ───
+    # ─── Result staging (same backend) ───
     sino_ideal_out::A3
     sino_noisy_out::A3
 end
