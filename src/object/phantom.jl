@@ -752,12 +752,11 @@ and build per-segment iodine-doped materials for each segment whose name starts 
 `Dict{Int, XA.Material}` mapping each stamped segment ID to its iodine-doped material.
 IDs with no corresponding row in `info_table` are silently skipped.
 # Notes
-For `:gray_matter` / `:white_matter` the P2 segment name strings do not match the
-`info_table["name"]` entries, so a **positional index** is used instead: segments are
-sorted by ascending P2 ID and paired with `info_table` rows by position (row 1, 2, 3…).
-This matches the reference `Dynamic_Contrast.jl` behaviour.
-For arteries/veins the stripped segment names do match `info_table["name"]`, so a
-name-based lookup is used.
+Segment names in the P2 phantom follow the pattern `XNNN_<anatomical_name>` where
+`X` is a tissue-type digit (2=GM, 3=WM, 4=vein, 5=artery) and `NNN` is a 3-digit
+1-based row index into the corresponding `iodine_matrix` and `info_table`.
+This index is extracted directly from the name prefix and used for all tissue types,
+avoiding both positional assumptions and stripped-name matching.
 """
 function update_structures!(
     new_phantom_shift::Array{Int,3},
@@ -773,8 +772,8 @@ function update_structures!(
     # --- 1. Filter segments by prefix and sort by ascending ID ---
     entries = filter(kv -> startswith(kv[2], tissue_prefix), structure_map)
     sorted_pairs = sort(collect(entries), by = kv -> kv[1])   # ascending ID
-    ids   = [kv[1] for kv in sorted_pairs]
-    names = [replace(kv[2], r"^\d{4}_" => "") for kv in sorted_pairs]
+    ids       = [kv[1] for kv in sorted_pairs]
+    raw_names = [kv[2] for kv in sorted_pairs]              # full "XNNN_..." names
     # --- 2. Stamp IDs from reference raw_file into target new_phantom_shift ---
     for id in ids
         idxs = findall(==(id), raw_file)
@@ -783,24 +782,18 @@ function update_structures!(
     end
     # --- 3. Build iodine-doped material per segment ---
     seg_materials = Dict{Int, XA.Material}()
-    density = ustrip(u"g/cm^3", base_mat.density)
-    use_positional = (base_sym == :gray_matter || base_sym == :white_matter)
+    density   = ustrip(u"g/cm^3", base_mat.density)
+    is_vessel = (base_sym == :blood)
     n_rows = size(iodine_matrix, 1)
-
-    for (i, (id, name)) in enumerate(zip(ids, names))
-        # Determine row in info_table
-        if use_positional
-            # Reference behavior: i-th P2 segment (sorted by ID) → i-th info_table row
-            i > n_rows && continue
-            row = i
-            segment_volume_mL = info_table["volume"][row]           # cm³ for GM/WM
-        else
-            # Arteries/veins: match by stripped name
-            row = findfirst(==(name), info_table["name"])
-            row === nothing && continue
-            segment_volume_mL = info_table["volume"][row] / 1000.0  # mm³ → cm³
-        end
-
+    for (id, raw_name) in zip(ids, raw_names)
+        # Extract NNN from "XNNN_..." → 1-based row into iodine_matrix / info_table
+        m = match(r"^\d(\d{3})_", raw_name)
+        m === nothing && continue
+        row = parse(Int, m.captures[1])   # 1-based
+        (row < 1 || row > n_rows) && continue
+        # Volume units: cm³ for GM/WM, mm³ for arteries/veins
+        raw_vol = info_table["volume"][row]
+        segment_volume_mL = is_vessel ? raw_vol / 1000.0 : raw_vol
         segment_volume_mL <= 0 && continue
         mass_I_mg = iodine_matrix[row, t_contrast]  # mg
         conc_mg_per_mL = mass_I_mg / segment_volume_mL

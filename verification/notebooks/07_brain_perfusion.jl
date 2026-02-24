@@ -464,16 +464,17 @@ begin
 				sino = ws.sinogram
 
 				# --- FDK reconstruction (reuses ws_fdk) ---
-				all_fdk_hu[i] = BS.to_hounsfield(
+				# reverse(dims=3): recon iz=1 maps to vol_min_z (inferior),
+				# but phantom dim3=1 is superior. Flip to match anatomical order.
+				all_fdk_hu[i] = reverse(BS.to_hounsfield(
 					Array(BS.reconstruct!(ws_fdk, sino, geom, recon_size));
 					μ_water = μ_water_brain
-				)
-
+				), dims=3)
 				# --- Hybrid IR (reuses ws_hir) ---
-				all_hir_hu[i] = BS.to_hounsfield(
+				all_hir_hu[i] = reverse(BS.to_hounsfield(
 					Array(BS.reconstruct!(ws_hir, sino, geom, recon_size));
 					μ_water = μ_water_brain
-				)
+				), dims=3)
 				phantom_t = nothing
 			end
 			println("   ✓ done t=$(CONTRAST_TIME_S[i]) s")
@@ -556,7 +557,7 @@ Select CT scan z slice:
 """
 
 # ╔═╡ b6bc4ee2-20f3-4d84-a210-5608b0eab80b
-@bind mid_Z UI.Slider(1:brain_n_slices; default=9, show_value=true)
+@bind mid_Z UI.Slider(1:brain_n_slices; default=92, show_value=true)
 
 # ╔═╡ 00000024-0000-0000-0000-000000000002
 let
@@ -733,7 +734,7 @@ md"""
 # ╟─e3ed6608-c9d5-4970-ade1-e622bd712674
 # ╠═e3ed6608-c9d5-4970-ade1-e622bd712675
 # ╟─b1479395-1af2-4684-895c-7227e0396a26
-# ╟─b6bc4ee2-20f3-4d84-a210-5608b0eab80b
+# ╠═b6bc4ee2-20f3-4d84-a210-5608b0eab80b
 # ╟─00000024-0000-0000-0000-000000000002
 # ╠═00000024-0000-0000-0000-000000000003
 # ╠═00000024-0000-0000-0000-000000000006
