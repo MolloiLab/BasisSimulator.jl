@@ -432,8 +432,19 @@ begin
 				merge!(materials_dict, seg_mats)
 			end
 
+			# Some P2 segments are stamped into the mask but skipped by update_structures! when
+			# their row index is out of bounds in the iodine table (e.g. segments 5398, 5399).
+			# Fill them with their base material so all mask labels have a materials entry.
+			_prefix_to_base = Dict("5" => :blood, "4" => :blood, "3" => :white_matter, "2" => :gray_matter)
+			for (id, name) in P2_structure_map
+				id ∈ keys(materials_dict) && continue
+				id ∈ keys(segment_index_map) || continue
+				c = string(first(name))
+				c ∈ keys(_prefix_to_base) || continue
+				materials_dict[id] = material_list_init[_prefix_to_base[c]]
+			end
 			BS.Phantom(mask_gpu, materials_dict, (0.1, 0.1, 0.1))
-		end
+			end
 
 		# Build first phantom to size the workspace.
 		phantom_t_0 = build_phantom(CONTRAST_INDICES[1])
