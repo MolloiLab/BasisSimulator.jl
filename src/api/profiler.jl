@@ -401,9 +401,8 @@ function profile_simulate!(
     if sim_opts.use_noise
         I0_T = T(compute_detector_I0(geom, protocol))
 
-        randn!(ws.noise_rand_cpu)
         _timed(prof, :cpu_gpu_copy) do
-            copyto!(ws.noise_rand_gpu, ws.noise_rand_cpu)
+            Random.randn!(ws.noise_rand_gpu)
         end
         _timed(prof, :noise, ws.sinogram) do
             let sino = ws.sinogram, rg = ws.noise_rand_gpu, I0v = I0_T

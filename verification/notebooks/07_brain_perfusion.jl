@@ -25,12 +25,6 @@ begin
     Pkg.instantiate()
 end
 
-# ╔═╡ 00891cd0-96da-4f83-9f8d-c857259ed5d7
-# ╠═╡ disabled = true
-#=╠═╡
-Pkg.add("MAT")
-  ╠═╡ =#
-
 # ╔═╡ 18a569fd-c6a5-49e9-b7ea-6d27fe4a4df4
 using Revise
 
@@ -58,6 +52,12 @@ This notebook simulates dynamic contrast-enhanced brain CT using the XCAT P1 (ma
 5. Pre-compute all 6 time points (0, 5, 10, 15, 20, 25 s): CT simulation + FDK + Hybrid IR
 6. Interactive visualizations: phantom anatomy, HU images, time-attenuation curves — slider responds instantly
 """
+
+# ╔═╡ 00891cd0-96da-4f83-9f8d-c857259ed5d7
+# ╠═╡ disabled = true
+#=╠═╡
+Pkg.add("MAT")
+  ╠═╡ =#
 
 # ╔═╡ cca08041-b05c-4045-a462-18b30fd0559f
 # ╠═╡ show_logs = false
@@ -92,7 +92,7 @@ md"""
 >
 > Copy the following files from the group share drive into `verification/data/brain_perfusion/`:
 >
-> **Share drive path:** `smb://160.87.12.113/Molloilab/Wenbo/brain phantom/Caedin Files/dynamic_brain_phantom`
+> **Share drive path:** `/Molloilab/Wenbo/brain phantom/Caedin Files/dynamic_brain_phantom`
 >
 > Required files:
 > - `P1_brain_all_2020_RAW_400_400_400.raw` (122 MB)
@@ -500,6 +500,25 @@ begin
 	end;
 end
 
+# ╔═╡ 00000018-0000-0000-0000-000000000001
+# Export ImageJ-compatible .raw files for all time points.
+# Julia arrays are column-major (x fastest); ImageJ expects row-major (y fastest).
+# permutedims(vol,(2,1,3)) reorders (nx,ny,nz) → (ny,nx,nz), then write big-endian Float32.
+begin
+	RAW_DIR = joinpath(dirname(@__DIR__), "figures", "brain_perfusion", "raw")
+	mkpath(RAW_DIR)
+	for (i, t_s) in enumerate(CONTRAST_TIME_S)
+		for (name, vols) in [("fdk", all_fdk_hu), ("hir", all_hir_hu)]
+			vol = vols[i]
+			vol_ij = permutedims(vol, (2, 1, 3))
+			open(joinpath(RAW_DIR, "brain_$(name)_t$(t_s)s.raw"), "w") do io
+				write(io, hton.(vec(vol_ij)))
+			end
+		end
+	end
+	println("RAW files saved to: $RAW_DIR")
+end
+
 # ╔═╡ 00000024-0000-0000-0000-000000000001
 md"""
 ## 8. Visualizations
@@ -712,7 +731,7 @@ md"""
 # ╠═b4370b8e-b684-11f0-3520-1713b81c9b2f
 # ╠═953ef431-2eb3-413d-aadf-f9b5bfff640a
 # ╠═4ca1063f-1cc1-4253-a411-4817f1e584a2
-# ╟─20920020-fd6b-4a64-9e19-e00bfd616ee6
+# ╠═20920020-fd6b-4a64-9e19-e00bfd616ee6
 # ╠═c744a9d3-5810-4465-82ee-2b8d9b5f68b1
 # ╟─00000004-0000-0000-0000-000000000001
 # ╠═1a2f50df-3f2a-49a2-bf9f-f197237fe9ce
@@ -739,6 +758,7 @@ md"""
 # ╟─a0b1c2d3-e4f5-6789-abcd-000000000004
 # ╠═00000016-0000-0000-0000-000000000001
 # ╠═00000017-0000-0000-0000-000000000001
+# ╠═00000018-0000-0000-0000-000000000001
 # ╠═00000024-0000-0000-0000-000000000001
 # ╠═01c4dd1a-a5b7-4b89-bab8-80152fa5da9f
 # ╟─4136f466-fad8-4325-ae51-9632efb00e07

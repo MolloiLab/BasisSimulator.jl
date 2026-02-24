@@ -834,7 +834,7 @@ function simulate!(
     end
 
     # ═══════════════════════════════════════════════════════════════════════
-    # Save ideal sinogram to CPU
+    # Snapshot ideal sinogram before noise
     # ═══════════════════════════════════════════════════════════════════════
     copyto!(ws.sino_ideal_out, ws.sinogram)
 
@@ -844,9 +844,8 @@ function simulate!(
     if sim_opts.use_noise
         I0_T = T(compute_detector_I0(geom, protocol))
 
-        # Use default RNG (matches sim_detect behavior: seed=nothing)
-        randn!(ws.noise_rand_cpu)
-        copyto!(ws.noise_rand_gpu, ws.noise_rand_cpu)
+        # Generate noise directly on device (Metal: MPS Philox, CUDA: cuRAND, CPU: stdlib)
+        Random.randn!(ws.noise_rand_gpu)
 
         let sino = ws.sinogram, rg = ws.noise_rand_gpu, I0v = I0_T
             AK.foreachindex(sino) do idx
@@ -858,7 +857,7 @@ function simulate!(
         end
     end
 
-    # Save noisy sinogram to CPU
+    # Snapshot noisy sinogram
     copyto!(ws.sino_noisy_out, ws.sinogram)
 
     return (sino_ideal=ws.sino_ideal_out, sino_noisy=ws.sino_noisy_out)
@@ -912,7 +911,7 @@ function simulate!(
         sim_opts)
 
     # ═══════════════════════════════════════════════════════════════════════
-    # Save ideal sinograms (both kVps) to CPU
+    # Snapshot ideal sinograms (both kVps) before noise
     # ═══════════════════════════════════════════════════════════════════════
     copyto!(ws.sino_ideal_out_low, ws.sino_low)
     copyto!(ws.sino_ideal_out_high, ws.sino_high)
@@ -928,8 +927,7 @@ function simulate!(
             rotation_time = protocol.rotation_time,
             flux_density = protocol.flux_density)))
 
-        randn!(ws.rng, ws.noise_rand_cpu)
-        copyto!(ws.noise_rand_gpu, ws.noise_rand_cpu)
+        Random.randn!(ws.noise_rand_gpu)
         let sino = ws.sino_low, rg = ws.noise_rand_gpu, I0v = I0_low
             AK.foreachindex(sino) do idx
                 λ = I0v * exp(-sino[idx])
@@ -945,8 +943,7 @@ function simulate!(
             rotation_time = protocol.rotation_time,
             flux_density = protocol.flux_density)))
 
-        randn!(ws.rng, ws.noise_rand_cpu)
-        copyto!(ws.noise_rand_gpu, ws.noise_rand_cpu)
+        Random.randn!(ws.noise_rand_gpu)
         let sino = ws.sino_high, rg = ws.noise_rand_gpu, I0v = I0_high
             AK.foreachindex(sino) do idx
                 λ = I0v * exp(-sino[idx])
@@ -957,7 +954,7 @@ function simulate!(
         end
     end
 
-    # Save noisy sinograms (both kVps) to CPU
+    # Snapshot noisy sinograms (both kVps)
     copyto!(ws.sino_noisy_out_low, ws.sino_low)
     copyto!(ws.sino_noisy_out_high, ws.sino_high)
 

@@ -398,9 +398,8 @@ mutable struct EICTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:Abstr
     bowtie_projection::Union{Nothing, A2}       # 2D bowtie projection (n_cols × n_rows)
     lag_coeffs::Union{Nothing, A1}              # lag coefficients (n_frames)
 
-    # ─── Noise (CPU + GPU) ───
-    noise_rand_cpu::Vector{T}  # randn output (n_elements)
-    noise_rand_gpu::A1         # GPU transfer buffer (n_elements)
+    # ─── Noise ───
+    noise_rand_gpu::A1         # randn buffer (n_elements)
 
     # ─── Pre-computed vectors ───
     weights_norm::Vector{T}    # T.(weights ./ sum(weights))
@@ -421,16 +420,17 @@ mutable struct EICTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:Abstr
     weights::Vector{Float64}
     config::PhysicsConfig
     mats::Vector
-    rng::MersenneTwister
     # Signal chain config (extracted from PhysicsConfig for zero-alloc)
+    heel_effect::Union{Nothing, HeelEffect}
     heel_effect::Union{Nothing, HeelEffect}
     das_model::Union{Nothing, DASModel}
     bhc::Union{Nothing, Union{BHCPolynomial, BeamHardeningCorrection}}
     has_signal_chain::Bool
 
-    # ─── Result staging (CPU) ───
-    sino_ideal_out::Array{T,3}
-    sino_noisy_out::Array{T,3}
+    # ─── Result staging (same backend as GPU) ───
+    # ─── Result staging (same backend as GPU) ───
+    sino_ideal_out::A3
+    sino_noisy_out::A3
 end
 
 """
@@ -563,7 +563,7 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     end
 
     # Noise buffers
-    noise_rand_cpu = Vector{T}(undef, n_elements)
+    noise_rand_gpu = similar(ref, T, n_elements)
     noise_rand_gpu = similar(ref, T, n_elements)
 
     # Pre-computed weights
@@ -605,12 +605,8 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     geom_detector_v = similar(ref, T, size(geom.detector_v)...)
     copyto!(geom_detector_v, T.(geom.detector_v))
 
-    # RNG
-    rng = MersenneTwister(0)
-
-    # CPU staging
-    sino_ideal_out = zeros(T, sino_shape)
-    sino_noisy_out = zeros(T, sino_shape)
+    sino_ideal_out = similar(ref, T, sino_shape)
+    sino_noisy_out = similar(ref, T, sino_shape)
 
     return EICTWorkspace{T, typeof(sinogram), typeof(geom_source_positions), typeof(noise_rand_gpu)}(
         sinogram, μ_volume, sino_mono, I_transmitted, air_scan,
@@ -618,10 +614,10 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         scatter_kernel, scatter_correct_kernel, crosstalk_kernel,
         optical_crosstalk_kernel, focal_spot_kernel, flat_filter_proj,
         bowtie_proj, lag_coeffs_buf,
-        noise_rand_cpu, noise_rand_gpu,
+        noise_rand_gpu,
         weights_norm, μ_lut_cpu, μ_lut_gpu, μ_table, bhc_coeffs_gpu,
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
-        geom, energies, weights_vec, config, mats, rng,
+        geom, energies, weights_vec, config, mats,
         heel, das, bhc_effect, has_sc,
         sino_ideal_out, sino_noisy_out
     )
@@ -680,8 +676,7 @@ mutable struct EICTDualWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:A
     bowtie_projection_low::Union{Nothing, A2}
     bowtie_projection_high::Union{Nothing, A2}
 
-    # ─── Noise (CPU + GPU, reused between low/high) ───
-    noise_rand_cpu::Vector{T}
+    # ─── Noise (reused between low/high) ───
     noise_rand_gpu::A1
 
     # ─── Material decomposition output (GPU-side) ───
@@ -713,7 +708,7 @@ mutable struct EICTDualWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:A
     config_low::PhysicsConfig
     config_high::PhysicsConfig
     mats::Vector
-    rng::MersenneTwister
+    mats::Vector
 
     # ─── Signal chain config (per-kVp, extracted from PhysicsConfig) ───
     heel_effect::Union{Nothing, HeelEffect}
@@ -729,11 +724,11 @@ mutable struct EICTDualWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:A
     inv_a22::T
     basis::Tuple{Symbol, Symbol}
 
-    # ─── Result staging (CPU) ───
-    sino_ideal_out_low::Array{T,3}    # CPU: ideal low-kVp sinogram
-    sino_ideal_out_high::Array{T,3}   # CPU: ideal high-kVp sinogram
-    sino_noisy_out_low::Array{T,3}    # CPU: noisy low-kVp sinogram
-    sino_noisy_out_high::Array{T,3}   # CPU: noisy high-kVp sinogram
+    # ─── Result staging (same backend as GPU) ───
+    sino_ideal_out_low::A3
+    sino_ideal_out_high::A3
+    sino_noisy_out_low::A3
+    sino_noisy_out_high::A3
 end
 
 """
@@ -916,7 +911,7 @@ function create_eict_dual_workspace(scanner, protocol, sim_opts, recon_opts, pha
     end
 
     # ─── Noise buffers ───
-    noise_rand_cpu = Vector{T}(undef, n_elements)
+    noise_rand_gpu = similar(ref, T, n_elements)
     noise_rand_gpu = similar(ref, T, n_elements)
 
     # ─── Pre-computed weights ───
@@ -983,14 +978,10 @@ function create_eict_dual_workspace(scanner, protocol, sim_opts, recon_opts, pha
     e_eff_high = get_effective_energy(Int(protocol.kVp))
     inv_a11, inv_a12, inv_a21, inv_a22 = compute_decomposition_matrix(basis, e_eff_low, e_eff_high; T=T)
 
-    # RNG
-    rng = MersenneTwister(0)
-
-    # CPU staging (both low and high kVp)
-    sino_ideal_out_low = zeros(T, sino_shape)
-    sino_ideal_out_high = zeros(T, sino_shape)
-    sino_noisy_out_low = zeros(T, sino_shape)
-    sino_noisy_out_high = zeros(T, sino_shape)
+    sino_ideal_out_low = similar(ref, T, sino_shape)
+    sino_ideal_out_high = similar(ref, T, sino_shape)
+    sino_noisy_out_low = similar(ref, T, sino_shape)
+    sino_noisy_out_high = similar(ref, T, sino_shape)
 
     return EICTDualWorkspace{T, typeof(sino_low), typeof(geom_source_positions), typeof(noise_rand_gpu)}(
         μ_volume, sino_mono, I_transmitted,
@@ -1000,14 +991,14 @@ function create_eict_dual_workspace(scanner, protocol, sim_opts, recon_opts, pha
         optical_crosstalk_kernel, focal_spot_kernel, lag_coeffs_buf,
         flat_filter_proj_low, flat_filter_proj_high,
         bowtie_proj_low, bowtie_proj_high,
-        noise_rand_cpu, noise_rand_gpu,
+        noise_rand_gpu,
         material1, material2,
         weights_norm_low, weights_norm_high,
         μ_lut_cpu, μ_lut_gpu, μ_table_low, μ_table_high,
         bhc_coeffs_gpu_low, bhc_coeffs_gpu_high,
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
         geom, energies_low, weights_low, energies_high, weights_high,
-        config_low, config_high, mats, rng,
+        config_low, config_high, mats,
         heel, das, bhc_eff_low, bhc_eff_high, has_sc,
         inv_a11, inv_a12, inv_a21, inv_a22, basis,
         sino_ideal_out_low, sino_ideal_out_high, sino_noisy_out_low, sino_noisy_out_high
