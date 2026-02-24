@@ -25,6 +25,12 @@ begin
     Pkg.instantiate()
 end
 
+# ╔═╡ 00891cd0-96da-4f83-9f8d-c857259ed5d7
+# ╠═╡ disabled = true
+#=╠═╡
+Pkg.add("MAT")
+  ╠═╡ =#
+
 # ╔═╡ 18a569fd-c6a5-49e9-b7ea-6d27fe4a4df4
 using Revise
 
@@ -52,12 +58,6 @@ This notebook simulates dynamic contrast-enhanced brain CT using the XCAT P1 (ma
 5. Pre-compute all 6 time points (0, 5, 10, 15, 20, 25 s): CT simulation + FDK + Hybrid IR
 6. Interactive visualizations: phantom anatomy, HU images, time-attenuation curves — slider responds instantly
 """
-
-# ╔═╡ 00891cd0-96da-4f83-9f8d-c857259ed5d7
-# ╠═╡ disabled = true
-#=╠═╡
-Pkg.add("MAT")
-  ╠═╡ =#
 
 # ╔═╡ cca08041-b05c-4045-a462-18b30fd0559f
 # ╠═╡ show_logs = false
@@ -449,6 +449,16 @@ begin
 
 		# Run once to get GPU sinogram, then create workspaces once (weights on GPU)
 		BS.simulate!(ws, phantom_t_0, scanner_brain, protocol_brain, sim_opts_brain, recon_opts_brain)
+
+		# ── GPU profiler: one dedicated profile run at t=0 ──────────────────
+		# Runs profile_simulate! once (after JIT warmup above) to capture
+		# per-stage wall times. Results printed to notebook output.
+		begin
+			_prof = BS.GPUProfiler()
+			BS.profile_simulate!(ws, phantom_t_0, scanner_brain, protocol_brain,
+				sim_opts_brain, recon_opts_brain; profiler=_prof)
+			BS.print_profile(_prof)
+		end
 		sino_gpu = ws.sinogram  # GPU sinogram
 		ws_fdk = BS.create_fdk_recon_workspace(sino_gpu, geom, recon_size)
 		ws_hir = BS.create_hir_recon_workspace(sino_gpu, geom, recon_size; strength = 2)
@@ -743,7 +753,7 @@ md"""
 # ╟─00000024-0000-0000-0000-000000000002
 # ╟─00000024-0000-0000-0000-000000000003
 # ╟─00000024-0000-0000-0000-000000000006
-# ╟─00000024-0000-0000-0000-000000000007
 # ╟─00000024-0000-0000-0000-000000000008
+# ╟─00000024-0000-0000-0000-000000000007
 # ╟─00000025-0000-0000-0000-000000000001
 # ╠═00000002-0000-0000-0000-000000000002
