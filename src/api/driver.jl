@@ -699,17 +699,23 @@ function simulate!(
     energies = ws.energies
     config = ws.config
     # Re-resolve materials from the incoming phantom each call.
-    # This supports dynamic phantoms (e.g. time-varying iodine contrast) where
+    # Supports dynamic phantoms (e.g. time-varying iodine contrast) where
     # phantom.materials changes between simulate! calls on the same workspace.
-    # Reuse pre-allocated LUT buffers (avoids allocation) but never pass ws.μ_table:
-    # that table is pre-computed at workspace creation time from t=0 materials, so
-    # reusing it would silently ignore any iodine/material changes in the phantom.
-    # create_μ_volume! always recomputes μ from `mats` when ws_μ_table=nothing.
     mats = _resolve_materials(phantom, materials)
-    lut_cpu, lut_gpu = if length(mats) == length(ws.mats)
-        ws.μ_lut_cpu, ws.μ_lut_gpu
+    # Recompute μ-table in-place from current materials.
+    # ws.μ_table is a pre-allocated (n_regions × n_energies) matrix — we overwrite
+    # it with fresh values from `mats` so create_μ_volume! can use the fast
+    # table-lookup path (avoids 900+ NIST calls × 30 energies on every GPU kernel).
+    # This is a cheap CPU loop (~27k floats) and is correct for dynamic phantoms.
+    lut_cpu, lut_gpu, μ_table = if length(mats) == length(ws.mats)
+        for (e_idx, E) in enumerate(energies)
+            for r in 1:length(mats)
+                ws.μ_table[r, e_idx] = T(compute_μ_at_energy(mats[r], Float64(E)))
+            end
+        end
+        ws.μ_lut_cpu, ws.μ_lut_gpu, ws.μ_table
     else
-        nothing, nothing
+        nothing, nothing, nothing
     end
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -721,7 +727,7 @@ function simulate!(
                             ws_I_transmitted=ws.I_transmitted,
                             ws_weights_norm=ws.weights_norm,
                             ws_μ_lut_cpu=lut_cpu, ws_μ_lut_gpu=lut_gpu,
-                            ws_μ_table=nothing,
+                            ws_μ_table=μ_table,
                             ws_source_positions=ws.geom_source_positions,
                             ws_detector_centers=ws.geom_detector_centers,
                             ws_detector_u=ws.geom_detector_u,
