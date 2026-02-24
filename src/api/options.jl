@@ -270,7 +270,7 @@ function ReconOptions(;
     matrix_size::Union{NTuple{3, Int}, Nothing} = nothing,
     fov_cm::Real = 35.0,
     z_cm::Union{Real, Nothing} = nothing,
-    filter::Symbol = :standard,
+    filter::Symbol = :standard,  # StandardFilter not RampFilter: matches NOISE-013 fix — ramp alone over-amplifies noise at clinical dose (main default was :ram_lak)
     iterations::Int = 10,
     # Iterative parameters
     lambda::Real = 0.01,

@@ -61,11 +61,7 @@ This notebook simulates dynamic contrast-enhanced brain CT using the XCAT P1 (ma
 6. Interactive visualizations: phantom anatomy, HU images, time-attenuation curves — slider responds instantly
 """
 
-# ╔═╡ 00891cd0-96da-4f83-9f8d-c857259ed5d7
-# ╠═╡ disabled = true
-#=╠═╡
-Pkg.add("MAT")
-  ╠═╡ =#
+
 
 # ╔═╡ cca08041-b05c-4045-a462-18b30fd0559f
 # ╠═╡ show_logs = false
@@ -462,18 +458,9 @@ begin
 		)
 		geom = ws.geom
 
-		# Run once to get GPU sinogram, then create workspaces once (weights on GPU)
+		# JIT warmup + initial sinogram: one simulate! call before building recon workspaces.
+		# This also initializes ws.sinogram which create_fdk/hir_recon_workspace uses as a reference.
 		BS.simulate!(ws, phantom_t_0, scanner_brain, protocol_brain, sim_opts_brain, recon_opts_brain)
-
-		# ── GPU profiler: one dedicated profile run at t=0 ──────────────────
-		# Runs profile_simulate! once (after JIT warmup above) to capture
-		# per-stage wall times. Results printed to notebook output.
-		begin
-			_prof = BS.GPUProfiler()
-			BS.profile_simulate!(ws, phantom_t_0, scanner_brain, protocol_brain,
-				sim_opts_brain, recon_opts_brain; profiler=_prof)
-			BS.print_profile(_prof)
-		end
 		sino_gpu = ws.sinogram  # GPU sinogram
 		ws_fdk = BS.create_fdk_recon_workspace(sino_gpu, geom, recon_size)
 		ws_hir = BS.create_hir_recon_workspace(sino_gpu, geom, recon_size; strength = 2)
@@ -513,32 +500,6 @@ begin
 		GC.gc(true)
 		println("All time points complete.")
 	end;
-end
-
-# ╔═╡ 00000018-0000-0000-0000-000000000001
-# Export ImageJ-compatible .raw files for all time points.
-# Julia arrays are column-major: dims are (x, y, z) = (col, row, slice).
-# ImageJ raw import reads width×height×nSlices as (x fastest, y next, z slowest),
-# matching Julia's memory layout — no axis permutation needed.
-# However, Julia's Y=0 is at the bottom (math convention) while ImageJ's Y=0 is at
-# the top (screen convention), so flip Y (dim 2) to avoid upside-down images.
-# Open in ImageJ with: width=nx, height=ny, nSlices=nz, 32-bit float, little-endian.
-# Filename: brain_<recon>_t<seconds>s_<nx>x<ny>x<nz>.raw
-begin
-	RAW_DIR = joinpath(dirname(@__DIR__), "figures", "brain_perfusion", "raw")
-	mkpath(RAW_DIR)
-	for (i, t_s) in enumerate(CONTRAST_TIME_S)
-		for (name, vols) in [("fdk", all_fdk_hu), ("hir", all_hir_hu)]
-			vol = vols[i]
-			nx, ny, nz = size(vol)
-			vol_ij = vol[:, end:-1:1, :]  # flip Y: Julia bottom-up → ImageJ top-down
-			fname = "brain_$(name)_t$(t_s)s_$(nx)x$(ny)x$(nz).raw"
-			open(joinpath(RAW_DIR, fname), "w") do io
-				write(io, vec(vol_ij))  # little-endian Float32 (native on x86/ARM)
-			end
-		end
-	end
-	println("RAW files saved to: $RAW_DIR")
 end
 
 # ╔═╡ 00000024-0000-0000-0000-000000000001
@@ -730,6 +691,32 @@ md"""
 **Physics (fidelity=:high):** fill factor · flat filter · scatter · crosstalk · focal spot · Poisson noise · lag · heel effect · BHC
 """
 
+# ╔═╡ 00000018-0000-0000-0000-000000000001
+# Export ImageJ-compatible .raw files for all time points.
+# Julia arrays are column-major: dims are (x, y, z) = (col, row, slice).
+# ImageJ raw import reads width×height×nSlices as (x fastest, y next, z slowest),
+# matching Julia's memory layout — no axis permutation needed.
+# However, Julia's Y=0 is at the bottom (math convention) while ImageJ's Y=0 is at
+# the top (screen convention), so flip Y (dim 2) to avoid upside-down images.
+# Open in ImageJ with: width=nx, height=ny, nSlices=nz, 32-bit float, little-endian.
+# Filename: brain_<recon>_t<seconds>s_<nx>x<ny>x<nz>.raw
+begin
+	RAW_DIR = joinpath(dirname(@__DIR__), "figures", "brain_perfusion", "raw")
+	mkpath(RAW_DIR)
+	for (i, t_s) in enumerate(CONTRAST_TIME_S)
+		for (name, vols) in [("fdk", all_fdk_hu), ("hir", all_hir_hu)]
+			vol = vols[i]
+			nx, ny, nz = size(vol)
+			vol_ij = vol[:, end:-1:1, :]  # flip Y: Julia bottom-up → ImageJ top-down
+			fname = "brain_$(name)_t$(t_s)s_$(nx)x$(ny)x$(nz).raw"
+			open(joinpath(RAW_DIR, fname), "w") do io
+				write(io, vec(vol_ij))  # little-endian Float32 (native on x86/ARM)
+			end
+		end
+	end
+	println("RAW files saved to: $RAW_DIR")
+end
+
 # ╔═╡ 00000002-0000-0000-0000-000000000002
 md"""
 **Authors / Attribution:**
@@ -741,7 +728,6 @@ md"""
 # ╔═╡ Cell order:
 # ╟─00000001-0000-0000-0000-000000000001
 # ╠═d6d62fae-012d-11f1-1efc-67e7f251ff8c
-# ╠═00891cd0-96da-4f83-9f8d-c857259ed5d7
 # ╠═18a569fd-c6a5-49e9-b7ea-6d27fe4a4df4
 # ╠═cca08041-b05c-4045-a462-18b30fd0559f
 # ╠═3ad61ec7-ba66-449d-8fd1-e79a2345a9d7

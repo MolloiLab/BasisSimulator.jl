@@ -79,7 +79,7 @@ function to_gpu(arr::AbstractArray)
     return AT(arr)
 end
 
-# Internal alias kept for back-compat
+# Internal alias kept for back-compat — main had only _to_gpu(); phantom-loading promotes to_gpu() as public API
 function _to_gpu(arr::AbstractArray)
     return to_gpu(arr)
 end
@@ -292,8 +292,8 @@ function _simulate_axial_single(phantom, scanner, protocol, sim_opts, recon_opts
         scanner;
         n_angles = protocol.views,
         fov_cm = recon_opts.fov_cm,
-        z_cm = recon_opts.z_cm,
-        collimation_mm = protocol.collimation_mm
+        z_cm = recon_opts.z_cm,          # propagate explicit z-FOV so geometry matches phantom Z extent (was z_cm=nothing in main)
+        collimation_mm = protocol.collimation_mm  # propagate collimation so slice thickness is matched in geometry (was missing in main)
     )
 
     # 2. Resolve spectrum
@@ -310,7 +310,7 @@ function _simulate_axial_single(phantom, scanner, protocol, sim_opts, recon_opts
         mask_gpu, geom;
         energies=energies, weights=weights,
         materials=mats, physics=config,
-        volume_extent=phantom.extent
+        volume_extent=phantom.extent  # fixes phantom-FOV mismatch in Siddon ray tracing (was missing in main)
     )
 
     # 5. Apply Detector Noise

@@ -399,14 +399,14 @@ mutable struct EICTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:Abstr
     lag_coeffs::Union{Nothing, A1}              # lag coefficients (n_frames)
 
     # ─── Noise ───
-    noise_rand::A1         # randn buffer (n_elements)
+    noise_rand::A1         # single noise buffer on same backend as mask — on-device randn! eliminates CPU↔GPU copy per simulate! call (main had noise_rand_cpu + noise_rand_gpu pair)
 
     # ─── Pre-computed vectors ───
     weights_norm::Vector{T}    # T.(weights ./ sum(weights))
     μ_lut_cpu::Vector{T}       # μ LUT CPU buffer (n_regions)
     μ_lut_gpu::A1              # μ LUT GPU buffer (matches mask backend)
     μ_table::Matrix{T}         # pre-computed μ[region, energy] (n_regions × n_energies)
-    μ_table_gpu::A2             # GPU copy of μ_table (n_regions × n_energies, same backend)
+    μ_table_gpu::A2             # GPU copy of μ_table — uploaded once, re-synced only on material change (avoids 900+ NIST calls × n_energies per kernel; not in main)
     bhc_coeffs_gpu::A1         # BHC polynomial coefficients (GPU/backend)
 
     # ─── Pre-computed geometry arrays (T-typed, same backend as mask) ───
@@ -427,8 +427,8 @@ mutable struct EICTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:Abstr
     bhc::Union{Nothing, Union{BHCPolynomial, BeamHardeningCorrection}}
     has_signal_chain::Bool
     # ─── Result staging (same backend) ───
-    sino_ideal_out::A3
-    sino_noisy_out::A3
+    sino_ideal_out::A3  # same backend as GPU arrays — avoids forced GPU→CPU copy at snapshot (main used Array{T,3} CPU-only)
+    sino_noisy_out::A3  # same backend as GPU arrays — avoids forced GPU→CPU copy at snapshot (main used Array{T,3} CPU-only)
 end
 
 """
@@ -677,7 +677,7 @@ mutable struct EICTDualWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:A
     bowtie_projection_high::Union{Nothing, A2}
 
     # ─── Noise (reused between low/high) ───
-    noise_rand::A1
+    noise_rand::A1  # single noise buffer on same backend as mask — on-device randn! eliminates CPU↔GPU copy (main had noise_rand_cpu + noise_rand_gpu pair)
 
     # ─── Material decomposition output (GPU-side) ───
     material1::A3         # first basis material (sino shape)
@@ -690,8 +690,8 @@ mutable struct EICTDualWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:A
     μ_lut_gpu::A1              # shared
     μ_table_low::Matrix{T}     # μ[region, energy] for low kVp
     μ_table_high::Matrix{T}    # μ[region, energy] for high kVp
-    μ_table_gpu_low::A2        # GPU copy of μ_table_low (n_regions × n_energies_low)
-    μ_table_gpu_high::A2       # GPU copy of μ_table_high (n_regions × n_energies_high)
+    μ_table_gpu_low::A2        # GPU copy of μ_table_low — uploaded once, re-synced only on material change (not in main)
+    μ_table_gpu_high::A2       # GPU copy of μ_table_high — uploaded once, re-synced only on material change (not in main)
     bhc_coeffs_gpu_low::A1     # BHC coefficients for low kVp
     bhc_coeffs_gpu_high::A1    # BHC coefficients for high kVp
 
@@ -727,10 +727,10 @@ mutable struct EICTDualWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:A
     basis::Tuple{Symbol, Symbol}
 
     # ─── Result staging (same backend as GPU) ───
-    sino_ideal_out_low::A3
-    sino_ideal_out_high::A3
-    sino_noisy_out_low::A3
-    sino_noisy_out_high::A3
+    sino_ideal_out_low::A3   # same backend as GPU arrays — avoids forced GPU→CPU copy at snapshot (main used Array{T,3})
+    sino_ideal_out_high::A3  # same backend as GPU arrays — avoids forced GPU→CPU copy at snapshot (main used Array{T,3})
+    sino_noisy_out_low::A3   # same backend as GPU arrays — avoids forced GPU→CPU copy at snapshot (main used Array{T,3})
+    sino_noisy_out_high::A3  # same backend as GPU arrays — avoids forced GPU→CPU copy at snapshot (main used Array{T,3})
 end
 
 """
