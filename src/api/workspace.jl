@@ -705,7 +705,7 @@ mutable struct EICTDualWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:A
     config_low::PhysicsConfig
     config_high::PhysicsConfig
     mats::Vector
-    mats::Vector
+
 
     # ─── Signal chain config (per-kVp, extracted from PhysicsConfig) ───
     heel_effect::Union{Nothing, HeelEffect}
