@@ -701,13 +701,15 @@ function simulate!(
     # Re-resolve materials from the incoming phantom each call.
     # This supports dynamic phantoms (e.g. time-varying iodine contrast) where
     # phantom.materials changes between simulate! calls on the same workspace.
-    # When materials change, skip the pre-sized LUT workspace buffers so
-    # create_μ_volume! allocates fresh ones of the correct length.
+    # Reuse pre-allocated LUT buffers (avoids allocation) but never pass ws.μ_table:
+    # that table is pre-computed at workspace creation time from t=0 materials, so
+    # reusing it would silently ignore any iodine/material changes in the phantom.
+    # create_μ_volume! always recomputes μ from `mats` when ws_μ_table=nothing.
     mats = _resolve_materials(phantom, materials)
-    lut_cpu, lut_gpu, μ_table = if length(mats) == length(ws.mats)
-        ws.μ_lut_cpu, ws.μ_lut_gpu, ws.μ_table
+    lut_cpu, lut_gpu = if length(mats) == length(ws.mats)
+        ws.μ_lut_cpu, ws.μ_lut_gpu
     else
-        nothing, nothing, nothing
+        nothing, nothing
     end
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -719,7 +721,7 @@ function simulate!(
                             ws_I_transmitted=ws.I_transmitted,
                             ws_weights_norm=ws.weights_norm,
                             ws_μ_lut_cpu=lut_cpu, ws_μ_lut_gpu=lut_gpu,
-                            ws_μ_table=μ_table,
+                            ws_μ_table=nothing,
                             ws_source_positions=ws.geom_source_positions,
                             ws_detector_centers=ws.geom_detector_centers,
                             ws_detector_u=ws.geom_detector_u,
