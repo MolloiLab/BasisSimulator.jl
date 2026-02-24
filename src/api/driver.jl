@@ -5,6 +5,7 @@ High-level driver for running end-to-end CT simulations.
 """
 
 export simulate, simulate!, SimulationResult
+export gpu_array_type, to_gpu
 
 # =============================================================================
 # GPU Array Handling
@@ -31,27 +32,57 @@ function _resolve_materials(phantom, materials_kwarg::Union{Nothing, Vector})
 end
 
 """
-    _to_gpu(arr::AbstractArray)
+    gpu_array_type() -> Type
 
-Move array to GPU if a GPU backend is available.
-Automatically detects Metal, CUDA, or AMDGPU and uses the appropriate array type.
-Falls back to CPU if no GPU backend is loaded.
+Detect the best available GPU backend and return its array type.
+Tries Metal (Apple), then CUDA (NVIDIA), then CPU Array.
+Uses `Base.require` so the backend is loaded automatically — the caller
+does not need to `using Metal` or `using CUDA` first.
 """
+function gpu_array_type()
+    # Metal (Apple Silicon)
+    metal_id = Base.PkgId(Base.UUID("dde4c033-4e86-420c-a63e-0dd931031962"), "Metal")
+    if haskey(Base.loaded_modules, metal_id)
+        m = Base.loaded_modules[metal_id]
+        m.functional() && return m.MtlArray
+    elseif !isnothing(Base.find_package("Metal"))
+        try
+            m = Base.require(metal_id)
+            m.functional() && return m.MtlArray
+        catch
+        end
+    end
+    # CUDA (NVIDIA)
+    cuda_id = Base.PkgId(Base.UUID("052768ef-5323-5732-b1bb-66c8b64840ba"), "CUDA")
+    if haskey(Base.loaded_modules, cuda_id)
+        m = Base.loaded_modules[cuda_id]
+        m.functional() && return m.CuArray
+    elseif !isnothing(Base.find_package("CUDA"))
+        try
+            m = Base.require(cuda_id)
+            m.functional() && return m.CuArray
+        catch
+        end
+    end
+    # CPU fallback
+    return Array
+end
+
+"""
+    to_gpu(arr::AbstractArray) -> AbstractArray
+
+Move `arr` to the best available GPU. Equivalent to `gpu_array_type()(arr)`.
+Falls back to returning `arr` unchanged if no GPU is available.
+"""
+function to_gpu(arr::AbstractArray)
+    AT = gpu_array_type()
+    AT === Array && return arr
+    return AT(arr)
+end
+
+# Internal alias kept for back-compat
 function _to_gpu(arr::AbstractArray)
-    # Check for Metal (Apple Silicon)
-    if isdefined(Main, :Metal) && isdefined(Main.Metal, :MtlArray)
-        return Main.Metal.MtlArray(arr)
-    end
-    # Check for CUDA (NVIDIA)
-    if isdefined(Main, :CUDA) && isdefined(Main.CUDA, :CuArray)
-        return Main.CUDA.CuArray(arr)
-    end
-    # Check for AMDGPU (AMD)
-    if isdefined(Main, :AMDGPU) && isdefined(Main.AMDGPU, :ROCArray)
-        return Main.AMDGPU.ROCArray(arr)
-    end
-    # No GPU backend - return as-is
-    return arr
+    return to_gpu(arr)
 end
 
 """

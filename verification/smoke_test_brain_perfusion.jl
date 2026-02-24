@@ -20,14 +20,10 @@ import MAT: matread
 import Statistics: mean
 import XrayAttenuation as XA
 
-# Try to load Metal (GPU); fall back silently to CPU
-const USE_GPU = try
-    using Metal
-    Metal.functional()
-catch
-    false
-end
-println("GPU backend: ", USE_GPU ? "Metal" : "CPU")
+# Auto-detect best GPU backend (Metal on Apple, CUDA on NVIDIA, CPU fallback)
+const GPU_ARRAY_TYPE = BS.gpu_array_type()
+const USE_GPU = GPU_ARRAY_TYPE !== Array
+println("GPU backend: ", USE_GPU ? string(GPU_ARRAY_TYPE) : "CPU")
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 const PHANTOM_DIR   = joinpath(@__DIR__, "data", "brain_perfusion")
@@ -217,7 +213,7 @@ function build_phantom(t_contrast)
         c ∈ keys(prefix_to_base) || continue
         materials_dict[id] = material_list_init[prefix_to_base[c]]
     end
-    mask = USE_GPU ? Metal.MtlArray(UInt16.(P1_stamped)) : UInt16.(P1_stamped)
+    mask = GPU_ARRAY_TYPE(UInt16.(P1_stamped))
     BS.Phantom(mask, materials_dict, (0.1, 0.1, 0.1))
 end
 

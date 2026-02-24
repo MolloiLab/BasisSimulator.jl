@@ -72,7 +72,7 @@ import CairoMakie as CM
 
 # ╔═╡ 2a00221a-e861-4d53-bba6-bde7b1bc909f
 # ╠═╡ show_logs = false
-import Metal
+# Metal is loaded automatically by BS.gpu_array_type() — no explicit import needed
 
 # ╔═╡ dc9e51f9-2531-4483-b80a-622f5ecf4d0c
 import XrayAttenuation as XA
@@ -410,7 +410,7 @@ begin
 			P1_stamped[idxs] .= id
 		end
 
-		mask_gpu = Metal.MtlArray(UInt16.(P1_stamped))   # upload once, reused
+		mask_gpu = BS.gpu_array_type()(UInt16.(P1_stamped))   # upload once, reused
 
 		# Helper: rebuild materials_dict for one time point (no array copy needed).
 		function build_phantom(t_contrast)
