@@ -33,21 +33,23 @@ end
 
 """
     gpu_array_type() -> Type
-
-Detect the best available GPU backend and return its array type.
 Tries Metal (Apple), then CUDA (NVIDIA), then CPU Array.
-Uses `Base.require` so the backend is loaded automatically — the caller
-does not need to `using Metal` or `using CUDA` first.
+Only checks already-loaded modules (`Base.loaded_modules`). Metal and CUDA
+**cannot** be loaded via `Base.require` from within a package — their `__init__`
+methods make driver calls (Objective-C / CUDA) that must run on the main thread.
+Load the backend before calling this function:
+
+    using Metal   # or: using CUDA
+    BS.gpu_array_type()  # → MtlArray / CuArray
+
+If neither backend is loaded, returns `Array` (CPU fallback).
 """
 function gpu_array_type()
     # Metal (Apple Silicon)
     metal_id = Base.PkgId(Base.UUID("dde4c033-4e86-420c-a63e-0dd931031962"), "Metal")
     if haskey(Base.loaded_modules, metal_id)
         m = Base.loaded_modules[metal_id]
-        m.functional() && return m.MtlArray
-    elseif !isnothing(Base.find_package("Metal"))
         try
-            m = Base.require(metal_id)
             m.functional() && return m.MtlArray
         catch
         end
@@ -56,10 +58,7 @@ function gpu_array_type()
     cuda_id = Base.PkgId(Base.UUID("052768ef-5323-5732-b1bb-66c8b64840ba"), "CUDA")
     if haskey(Base.loaded_modules, cuda_id)
         m = Base.loaded_modules[cuda_id]
-        m.functional() && return m.CuArray
-    elseif !isnothing(Base.find_package("CUDA"))
         try
-            m = Base.require(cuda_id)
             m.functional() && return m.CuArray
         catch
         end

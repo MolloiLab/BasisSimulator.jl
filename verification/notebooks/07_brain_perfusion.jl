@@ -71,9 +71,12 @@ import BasisSimulator as BS
 import CairoMakie as CM
 
 # ╔═╡ 2a00221a-e861-4d53-bba6-bde7b1bc909f
-# ╠═╡ show_logs = false
-# Metal is loaded automatically by BS.gpu_array_type() — no explicit import needed
-
+# Load GPU backends upfront on the main thread so BS.gpu_array_type() can find them.
+# Metal.__init__ must run on the main thread — Base.require from inside a package fails.
+begin
+	try; using Metal; catch; end  # Apple Silicon — no-op on non-Apple
+	try; using CUDA;  catch; end  # NVIDIA — no-op when unavailable
+end
 # ╔═╡ dc9e51f9-2531-4483-b80a-622f5ecf4d0c
 import XrayAttenuation as XA
 

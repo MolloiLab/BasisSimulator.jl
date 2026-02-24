@@ -20,7 +20,11 @@ import MAT: matread
 import Statistics: mean
 import XrayAttenuation as XA
 
-# Auto-detect best GPU backend (Metal on Apple, CUDA on NVIDIA, CPU fallback)
+# Load GPU backend(s) upfront on the main thread.
+# Metal.__init__ and CUDA.__init__ make driver calls that require the main thread.
+# gpu_array_type() only inspects Base.loaded_modules — it never calls Base.require.
+try; using Metal; catch; end   # no-op on non-Apple or when Metal unavailable
+try; using CUDA;  catch; end   # no-op when CUDA unavailable
 const GPU_ARRAY_TYPE = BS.gpu_array_type()
 const USE_GPU = GPU_ARRAY_TYPE !== Array
 println("GPU backend: ", USE_GPU ? string(GPU_ARRAY_TYPE) : "CPU")
