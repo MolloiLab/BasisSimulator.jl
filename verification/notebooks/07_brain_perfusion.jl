@@ -49,7 +49,7 @@ This notebook simulates dynamic contrast-enhanced brain CT using the XCAT P1 (ma
 2. Apply time-varying iodine contrast via `update_structures!` (arteries, veins, gray matter, white matter)
 3. Build a `BS.Phantom` with native UInt16 mask (900+ segment IDs passed directly)
 4. Water phantom calibration (per scanner/kVp)
-5. Pre-compute all 5 time points (0, 20, 30, 40, 60 s): CT simulation + FDK + Hybrid IR
+5. Pre-compute all 6 time points (0, 5, 10, 15, 20, 25 s): CT simulation + FDK + Hybrid IR
 6. Interactive visualizations: phantom anatomy, HU images, time-attenuation curves — slider responds instantly
 """
 
@@ -370,16 +370,21 @@ md"""
 md"""
 ## 7. Pre-compute: All Time Points
 
-Runs all 5 time points upfront (0, 20, 30, 40, 60 s). After this cell completes the
+Runs all 6 time points upfront (0, 5, 10, 15, 20, 25 s). After this cell completes the
 slider responds instantly — no re-simulation on every move.
+
+**Performance optimizations:**
+- `segment_index_map` is built once from `P2_raw_crop` before the time loop (eliminates 834 `findall` scans × 6 time points = 5004 redundant full-array scans).
+- `ws.μ_table` is recomputed in-place at the start of each `simulate!` call from the current materials, restoring the fast table-lookup path in `create_μ_volume!` (avoids 900+ NIST XCOM calls × 30 energy bins per GPU kernel).
+- `mask_gpu` (UInt16, GPU) is uploaded once and shared across all time points — only `materials_dict` changes.
 """
 
 # ╔═╡ 00000017-0000-0000-0000-000000000001
 begin
-	# Pre-compute: simulate and reconstruct all 5 contrast time points.
+	# Pre-compute: simulate and reconstruct all 6 contrast time points.
 	# Results stored as plain CPU arrays — slider only indexes into these dicts.
-	const CONTRAST_TIME_S = [0, 20, 30, 40, 60]
-	const CONTRAST_INDICES = CONTRAST_TIME_S .* 1000 .+ 1   # → [1, 20001, 30001, 40001, 60001]
+	const CONTRAST_TIME_S = [0, 5, 10, 15, 20, 25]
+	const CONTRAST_INDICES = CONTRAST_TIME_S .* 1000 .+ 1   # → [1, 5001, 10001, 15001, 20001, 25001]
 	
 	all_fdk_hu = Dict{Int, Array{Float32, 3}}()
 	all_hir_hu = Dict{Int, Array{Float32, 3}}()
@@ -387,25 +392,24 @@ begin
 	
 	let
 		recon_size = (brain_recon_xy, brain_recon_xy, brain_n_slices)
-
-		# Pre-stamp P1 with all segment IDs once — the voxel labels are the same
-		# for every time point; only the materials_dict (iodine amounts) changes.
-		P1_stamped = copy(P1_raw_file)
-		for (prefix, info, iodine, base_sym) in [
-			("5", artery_info, iodine_artery, :blood),
-			("4", vein_info,   iodine_vein,   :blood),
-			("3", wm_info,     iodine_wm,     :white_matter),
-			("2", gm_info,     iodine_gm,     :gray_matter),
-		]
-			for (id, name) in filter(kv -> startswith(kv[2], prefix), P2_structure_map)
-				idxs = findall(==(id), P2_raw_file)
-				isempty(idxs) && continue
-				P1_stamped[idxs] .= id
-			end
-		end
 		# BRAIN_Z_CROP is defined in the scanner/recon parameters cell above.
-		P1_stamped   = P1_stamped[:, :, BRAIN_Z_CROP]
+		P1_stamped   = copy(P1_raw_file)[:, :, BRAIN_Z_CROP]
 		P2_raw_crop  = P2_raw_file[:, :, BRAIN_Z_CROP]
+
+		# Pre-build a segment→voxel index map once (avoids 834 findall scans × 6 time points).
+		# Keys are P2 segment IDs whose names start with "2" (GM), "3" (WM), "4" (vein), "5" (artery).
+		segment_index_map = Dict{Int, Vector{CartesianIndex{3}}}()
+		for (id, name) in P2_structure_map
+			first(name) in ('2', '3', '4', '5') || continue
+			idxs = findall(==(id), P2_raw_crop)
+			isempty(idxs) || (segment_index_map[id] = idxs)
+		end
+
+		# Stamp all segment IDs into P1 once — voxel labels are time-invariant.
+		for (id, idxs) in segment_index_map
+			P1_stamped[idxs] .= id
+		end
+
 		mask_gpu = Metal.MtlArray(UInt16.(P1_stamped))   # upload once, reused
 
 		# Helper: rebuild materials_dict for one time point (no array copy needed).
@@ -422,7 +426,8 @@ begin
 			]
 				seg_mats = BS.update_structures!(
 					P1_stamped, P2_structure_map, prefix, P2_raw_crop,
-					base_sym, material_list_init[base_sym], info, iodine, t_contrast
+					base_sym, material_list_init[base_sym], info, iodine, t_contrast;
+					index_map = segment_index_map
 				)
 				merge!(materials_dict, seg_mats)
 			end
@@ -501,7 +506,7 @@ Select phantom z slice:
 """
 
 # ╔═╡ 237bd8ca-6ea5-4aff-81f4-8a77bb45f4fd
-@bind z_preview UI.Slider(1:400; default=90, show_value=true)
+@bind z_preview UI.Slider(1:brain_n_slices; default=90, show_value=true)
 
 # ╔═╡ 91139300-7464-4a84-a22c-180e97b8e692
 md"""
@@ -510,11 +515,11 @@ md"""
 
 # ╔═╡ e3ed6608-c9d5-4970-ade1-e622bd712674
 md"""
-Select time point index (1 = 0 s · 2 = 20 s · 3 = 30 s · 4 = 40 s · 5 = 60 s):
+Select time point index (1 = 0 s · 2 = 5 s · 3 = 10 s · 4 = 15 s · 5 = 20 s · 6 = 25 s):
 """
 
 # ╔═╡ e3ed6608-c9d5-4970-ade1-e622bd712675
-@bind t_idx UI.Slider(1:5; default=3, show_value=true)
+@bind t_idx UI.Slider(1:6; default=3, show_value=true)
 
 # ╔═╡ 00000011-0000-0000-0000-000000000001
 md"""
@@ -730,14 +735,14 @@ md"""
 # ╟─237bd8ca-6ea5-4aff-81f4-8a77bb45f4fd
 # ╟─00000011-0000-0000-0000-000000000001
 # ╟─5dee3049-e56a-41dd-8148-fd9f5de3411b
-# ╠═91139300-7464-4a84-a22c-180e97b8e692
+# ╟─91139300-7464-4a84-a22c-180e97b8e692
 # ╟─e3ed6608-c9d5-4970-ade1-e622bd712674
-# ╠═e3ed6608-c9d5-4970-ade1-e622bd712675
+# ╟─e3ed6608-c9d5-4970-ade1-e622bd712675
 # ╟─b1479395-1af2-4684-895c-7227e0396a26
-# ╠═b6bc4ee2-20f3-4d84-a210-5608b0eab80b
+# ╟─b6bc4ee2-20f3-4d84-a210-5608b0eab80b
 # ╟─00000024-0000-0000-0000-000000000002
-# ╠═00000024-0000-0000-0000-000000000003
-# ╠═00000024-0000-0000-0000-000000000006
+# ╟─00000024-0000-0000-0000-000000000003
+# ╟─00000024-0000-0000-0000-000000000006
 # ╟─00000024-0000-0000-0000-000000000007
 # ╟─00000024-0000-0000-0000-000000000008
 # ╟─00000025-0000-0000-0000-000000000001

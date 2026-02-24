@@ -767,7 +767,8 @@ function update_structures!(
     base_mat::XA.Material,
     info_table::Dict{String,Any},
     iodine_matrix::Matrix{Float64},
-    t_contrast::Int,
+    t_contrast::Int;
+    index_map::Union{Nothing, Dict{Int, Vector{CartesianIndex{3}}}} = nothing,
 )::Dict{Int, XA.Material}
     # --- 1. Filter segments by prefix and sort by ascending ID ---
     entries = filter(kv -> startswith(kv[2], tissue_prefix), structure_map)
@@ -776,7 +777,8 @@ function update_structures!(
     raw_names = [kv[2] for kv in sorted_pairs]              # full "XNNN_..." names
     # --- 2. Stamp IDs from reference raw_file into target new_phantom_shift ---
     for id in ids
-        idxs = findall(==(id), raw_file)
+        idxs = index_map !== nothing ? get(index_map, id, CartesianIndex{3}[]) :
+                                       findall(==(id), raw_file)
         isempty(idxs) && continue
         new_phantom_shift[idxs] .= id
     end
