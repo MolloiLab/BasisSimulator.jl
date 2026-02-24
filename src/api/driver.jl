@@ -844,7 +844,12 @@ function simulate!(
     if sim_opts.use_noise
         I0_T = T(compute_detector_I0(geom, protocol))
 
-        # Generate noise directly on device (Metal: MPS Philox, CUDA: cuRAND, CPU: stdlib)
+        # Generate noise directly on device (Metal: MPS Philox, CUDA: cuRAND, CPU: stdlib).
+        # On CPU, reseed Julia's global RNG so the same seed → same noisy sinogram per call.
+        # On GPU (Metal/CUDA), Random.randn! dispatches to hardware RNG — seeding is a no-op there.
+        if ws.noise_rand isa Array && !isnothing(sim_opts.seed)
+            Random.seed!(sim_opts.seed)
+        end
         Random.randn!(ws.noise_rand)
 
         let sino = ws.sinogram, rg = ws.noise_rand, I0v = I0_T
@@ -927,6 +932,9 @@ function simulate!(
             rotation_time = protocol.rotation_time,
             flux_density = protocol.flux_density)))
 
+        if ws.noise_rand isa Array && !isnothing(sim_opts.seed)
+            Random.seed!(sim_opts.seed)
+        end
         Random.randn!(ws.noise_rand)
         let sino = ws.sino_low, rg = ws.noise_rand, I0v = I0_low
             AK.foreachindex(sino) do idx
@@ -943,6 +951,9 @@ function simulate!(
             rotation_time = protocol.rotation_time,
             flux_density = protocol.flux_density)))
 
+        if ws.noise_rand isa Array && !isnothing(sim_opts.seed)
+            Random.seed!(sim_opts.seed + 1)  # +1 so low/high kVp use different noise realisations
+        end
         Random.randn!(ws.noise_rand)
         let sino = ws.sino_high, rg = ws.noise_rand, I0v = I0_high
             AK.foreachindex(sino) do idx
