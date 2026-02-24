@@ -218,11 +218,22 @@ function create_μ_volume!(
     energy_keV::Real;
     ws_μ_lut_cpu::Union{Nothing, Vector{T}} = nothing,
     ws_μ_lut_gpu = nothing,
-    ws_μ_table = nothing,   # pre-computed μ[region, energy] matrix
-    energy_idx::Int = 0      # index into μ_table columns
+    ws_μ_table = nothing,       # pre-computed μ[region, energy] CPU matrix
+    ws_μ_table_gpu = nothing,   # pre-computed μ[region, energy] GPU array (fast path)
+    energy_idx::Int = 0         # index into μ_table columns
 ) where T <: AbstractFloat
+    # Fast path: GPU table provided — read column directly on device, zero CPU↔GPU copies
+    if ws_μ_table_gpu !== nothing && energy_idx > 0
+        let tbl = ws_μ_table_gpu, e = energy_idx
+            AK.foreachindex(mask) do idx
+                region_idx = Int(mask[idx]) + 1
+                μ_volume[idx] = tbl[region_idx, e]
+            end
+        end
+        return μ_volume
+    end
 
-    # Pre-compute μ for all regions at this energy (on CPU)
+    # Fallback path: upload CPU LUT slice to GPU (used when ws_μ_table_gpu not provided)
     n_regions = length(materials)
     μ_at_energy_cpu = ws_μ_lut_cpu !== nothing ? ws_μ_lut_cpu : Vector{T}(undef, n_regions)
     if ws_μ_table !== nothing && energy_idx > 0
@@ -235,17 +246,15 @@ function create_μ_volume!(
             μ_at_energy_cpu[i] = T(compute_μ_at_energy(materials[i], Float64(energy_keV)))
         end
     end
-
     # Transfer lookup table to same device as mask (GPU or CPU)
     μ_at_energy = ws_μ_lut_gpu !== nothing ? ws_μ_lut_gpu : similar(mask, T, n_regions)
     copyto!(μ_at_energy, μ_at_energy_cpu)
-
-    # Use AcceleratedKernels.jl for parallel execution
-    AK.foreachindex(mask) do idx
-        region_idx = Int(mask[idx]) + 1  # Convert 0-based region to 1-based array index
-        μ_volume[idx] = μ_at_energy[region_idx]
+    let lut = μ_at_energy
+        AK.foreachindex(mask) do idx
+            region_idx = Int(mask[idx]) + 1  # Convert 0-based region to 1-based array index
+            μ_volume[idx] = lut[region_idx]
+        end
     end
-
     return μ_volume
 end
 
@@ -1101,6 +1110,7 @@ function _forward_project_poly!(
     ws_μ_lut_cpu::Union{Nothing, Vector{T}}=nothing,
     ws_μ_lut_gpu=nothing,
     ws_μ_table=nothing,
+    ws_μ_table_gpu=nothing,
     # Siddon geometry arrays (avoid re-allocating per energy)
     ws_source_positions=nothing,
     ws_detector_centers=nothing,
@@ -1128,7 +1138,8 @@ function _forward_project_poly!(
         # Create μ volume for this energy
         create_μ_volume!(μ_volume, mask, materials, energies[e_idx];
                          ws_μ_lut_cpu=ws_μ_lut_cpu, ws_μ_lut_gpu=ws_μ_lut_gpu,
-                         ws_μ_table=ws_μ_table, energy_idx=e_idx)
+                         ws_μ_table=ws_μ_table, ws_μ_table_gpu=ws_μ_table_gpu,
+                         energy_idx=e_idx)
 
         # Forward project at this energy
         fill!(sino_mono, zero(T))

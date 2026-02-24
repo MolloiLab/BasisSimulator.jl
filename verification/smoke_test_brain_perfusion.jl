@@ -287,10 +287,10 @@ let all_ok = true
         for (name, vols) in [("fdk", all_fdk_hu), ("hir", all_hir_hu)]
             vol  = vols[i]
             nx, ny, nz = size(vol)
-            vol_ij = permutedims(vol, (2, 1, 3))
+            # No permutation: Julia column-major matches ImageJ raw import (open as width=nx height=ny nSlices=nz)
             fname  = "brain_$(name)_t$(t_s)s_$(nx)x$(ny)x$(nz).raw"
             fpath  = joinpath(RAW_DIR, fname)
-            open(fpath, "w") do io; write(io, vec(vol_ij)); end
+            open(fpath, "w") do io; write(io, vec(vol)); end
             raw_ok = isfile(fpath) && filesize(fpath) == nx * ny * nz * 4
             check_raw = raw_ok ? "\u2713" : "\u2717"; println("  $fname  ($(filesize(fpath)) bytes)  $check_raw")
             all_ok &= raw_ok

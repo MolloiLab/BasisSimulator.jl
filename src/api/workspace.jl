@@ -406,6 +406,7 @@ mutable struct EICTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:Abstr
     μ_lut_cpu::Vector{T}       # μ LUT CPU buffer (n_regions)
     μ_lut_gpu::A1              # μ LUT GPU buffer (matches mask backend)
     μ_table::Matrix{T}         # pre-computed μ[region, energy] (n_regions × n_energies)
+    μ_table_gpu::A2             # GPU copy of μ_table (n_regions × n_energies, same backend)
     bhc_coeffs_gpu::A1         # BHC polynomial coefficients (GPU/backend)
 
     # ─── Pre-computed geometry arrays (T-typed, same backend as mask) ───
@@ -576,6 +577,8 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
             μ_table[r, e_idx] = T(compute_μ_at_energy(mats[r], Float64(E)))
         end
     end
+    μ_table_gpu = similar(ref, T, n_regions, n_energies)
+    copyto!(μ_table_gpu, μ_table)
 
     # BHC coefficients
     bhc_coeffs_cpu = if config.bhc !== nothing
@@ -612,7 +615,7 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         optical_crosstalk_kernel, focal_spot_kernel, flat_filter_proj,
         bowtie_proj, lag_coeffs_buf,
         noise_rand,
-        weights_norm, μ_lut_cpu, μ_lut_gpu, μ_table, bhc_coeffs_gpu,
+        weights_norm, μ_lut_cpu, μ_lut_gpu, μ_table, μ_table_gpu, bhc_coeffs_gpu,
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
         geom, energies, weights_vec, config, mats,
         heel, das, bhc_effect, has_sc,
@@ -687,6 +690,8 @@ mutable struct EICTDualWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:A
     μ_lut_gpu::A1              # shared
     μ_table_low::Matrix{T}     # μ[region, energy] for low kVp
     μ_table_high::Matrix{T}    # μ[region, energy] for high kVp
+    μ_table_gpu_low::A2        # GPU copy of μ_table_low (n_regions × n_energies_low)
+    μ_table_gpu_high::A2       # GPU copy of μ_table_high (n_regions × n_energies_high)
     bhc_coeffs_gpu_low::A1     # BHC coefficients for low kVp
     bhc_coeffs_gpu_high::A1    # BHC coefficients for high kVp
 
@@ -935,6 +940,11 @@ function create_eict_dual_workspace(scanner, protocol, sim_opts, recon_opts, pha
         end
     end
 
+    μ_table_gpu_low = similar(ref, T, n_regions, n_energies_low)
+    copyto!(μ_table_gpu_low, μ_table_low)
+    μ_table_gpu_high = similar(ref, T, n_regions, n_energies_high)
+    copyto!(μ_table_gpu_high, μ_table_high)
+
     # ─── BHC coefficients (per-kVp) ───
     bhc_coeffs_cpu_low = if config_low.bhc !== nothing
         T.(get_bhc_coefficients(config_low.bhc))
@@ -991,7 +1001,7 @@ function create_eict_dual_workspace(scanner, protocol, sim_opts, recon_opts, pha
         noise_rand,
         material1, material2,
         weights_norm_low, weights_norm_high,
-        μ_lut_cpu, μ_lut_gpu, μ_table_low, μ_table_high,
+        μ_lut_cpu, μ_lut_gpu, μ_table_low, μ_table_high, μ_table_gpu_low, μ_table_gpu_high,
         bhc_coeffs_gpu_low, bhc_coeffs_gpu_high,
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
         geom, energies_low, weights_low, energies_high, weights_high,
