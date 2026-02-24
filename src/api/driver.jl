@@ -708,10 +708,12 @@ function simulate!(
     # table-lookup path (avoids 900+ NIST calls × 30 energies on every GPU kernel).
     # This is a cheap CPU loop (~27k floats) and is correct for dynamic phantoms.
     lut_cpu, lut_gpu, μ_table = if length(mats) == length(ws.mats)
-        for (e_idx, E) in enumerate(energies)
-            for r in 1:length(mats)
+        for r in 1:length(mats)
+            ws.mats[r].name === mats[r].name && continue   # unchanged — skip NIST call
+            for (e_idx, E) in enumerate(energies)
                 ws.μ_table[r, e_idx] = T(compute_μ_at_energy(mats[r], Float64(E)))
             end
+            ws.mats[r] = mats[r]   # keep ws.mats in sync for next call’s diff
         end
         ws.μ_lut_cpu, ws.μ_lut_gpu, ws.μ_table
     else

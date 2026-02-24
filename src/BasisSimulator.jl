@@ -258,5 +258,6 @@ include("metrics/psf.jl")
 include("api/options.jl")
 include("api/workspace.jl")
 include("api/driver.jl")
+include("api/profiler.jl")
 
 end # module
