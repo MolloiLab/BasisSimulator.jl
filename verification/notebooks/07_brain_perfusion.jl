@@ -28,6 +28,14 @@ end
 # ╔═╡ 18a569fd-c6a5-49e9-b7ea-6d27fe4a4df4
 using Revise
 
+# ╔═╡ 2a00221a-e861-4d53-bba6-bde7b1bc909f
+# Load GPU backends upfront on the main thread so BS.gpu_array_type() can find them.
+# Metal.__init__ must run on the main thread — Base.require from inside a package fails.
+begin
+	try; using Metal; catch; end  # Apple Silicon — no-op on non-Apple
+	try; using CUDA;  catch; end  # NVIDIA — no-op when unavailable
+end
+
 # ╔═╡ 2ab74942-1680-47dd-a8dc-f5242387253e
 # ╠═╡ show_logs = false
 using Unitful: @u_str, ustrip
@@ -70,13 +78,6 @@ import BasisSimulator as BS
 # ╔═╡ 3cbd1220-7118-42c7-9562-27c8c2e1b608
 import CairoMakie as CM
 
-# ╔═╡ 2a00221a-e861-4d53-bba6-bde7b1bc909f
-# Load GPU backends upfront on the main thread so BS.gpu_array_type() can find them.
-# Metal.__init__ must run on the main thread — Base.require from inside a package fails.
-begin
-	try; using Metal; catch; end  # Apple Silicon — no-op on non-Apple
-	try; using CUDA;  catch; end  # NVIDIA — no-op when unavailable
-end
 # ╔═╡ dc9e51f9-2531-4483-b80a-622f5ecf4d0c
 import XrayAttenuation as XA
 
@@ -516,10 +517,12 @@ end
 
 # ╔═╡ 00000018-0000-0000-0000-000000000001
 # Export ImageJ-compatible .raw files for all time points.
-# Julia arrays are column-major (x fastest in memory). ImageJ raw import also
-# reads the first dimension as fastest-varying, so write vec(vol) directly and
-# open in ImageJ with: width=nx, height=ny, nSlices=nz, 32-bit float, little-endian.
-# No permutation needed — permutedims would rotate the image 90°.
+# Julia arrays are column-major: dims are (x, y, z) = (col, row, slice).
+# ImageJ raw import reads width×height×nSlices as (x fastest, y next, z slowest),
+# matching Julia's memory layout — no axis permutation needed.
+# However, Julia's Y=0 is at the bottom (math convention) while ImageJ's Y=0 is at
+# the top (screen convention), so flip Y (dim 2) to avoid upside-down images.
+# Open in ImageJ with: width=nx, height=ny, nSlices=nz, 32-bit float, little-endian.
 # Filename: brain_<recon>_t<seconds>s_<nx>x<ny>x<nz>.raw
 begin
 	RAW_DIR = joinpath(dirname(@__DIR__), "figures", "brain_perfusion", "raw")
@@ -528,9 +531,10 @@ begin
 		for (name, vols) in [("fdk", all_fdk_hu), ("hir", all_hir_hu)]
 			vol = vols[i]
 			nx, ny, nz = size(vol)
+			vol_ij = vol[:, end:-1:1, :]  # flip Y: Julia bottom-up → ImageJ top-down
 			fname = "brain_$(name)_t$(t_s)s_$(nx)x$(ny)x$(nz).raw"
 			open(joinpath(RAW_DIR, fname), "w") do io
-				write(io, vec(vol))  # little-endian Float32 (native on x86/ARM); open in ImageJ as width=nx height=ny nSlices=nz
+				write(io, vec(vol_ij))  # little-endian Float32 (native on x86/ARM)
 			end
 		end
 	end
@@ -774,9 +778,8 @@ md"""
 # ╟─a0b1c2d3-e4f5-6789-abcd-000000000002
 # ╠═d9dfaa24-2254-4953-993f-f9fdb0c3326d
 # ╟─a0b1c2d3-e4f5-6789-abcd-000000000004
-# ╠═00000016-0000-0000-0000-000000000001
+# ╟─00000016-0000-0000-0000-000000000001
 # ╠═00000017-0000-0000-0000-000000000001
-# ╠═00000018-0000-0000-0000-000000000001
 # ╠═00000024-0000-0000-0000-000000000001
 # ╠═01c4dd1a-a5b7-4b89-bab8-80152fa5da9f
 # ╟─4136f466-fad8-4325-ae51-9632efb00e07
@@ -794,4 +797,5 @@ md"""
 # ╟─00000024-0000-0000-0000-000000000008
 # ╟─00000024-0000-0000-0000-000000000007
 # ╟─00000025-0000-0000-0000-000000000001
+# ╠═00000018-0000-0000-0000-000000000001
 # ╠═00000002-0000-0000-0000-000000000002
