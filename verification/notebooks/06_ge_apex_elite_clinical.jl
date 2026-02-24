@@ -1729,40 +1729,45 @@ sim_oriented = let
 end;
 
 # ╔═╡ c1349a54-553e-45ec-b37d-631629baa4e3
-# Measurements using CLINICAL segmentation (seg_result) as ground truth
+# Segment the simulated recon independently (finds center + Ca400 anchor in sim image)
+sim_seg_result = let
+	ref = sim_oriented[min(2, end)].recon
+	mid_z = size(ref, 3) ÷ 2
+	mask, rods, center = segment_gammex_rods(ref[:, :, mid_z]; fov_cm=35.0)
+	(mask=mask, rods=rods, center=center, slice_idx=mid_z)
+end;
+
+# ╔═╡ c1349a54-553e-45ec-b37d-631629baa4f3
 sim_measurements = [
-	measure_scan(r.recon, seg_result.mask, seg_result.rods, seg_result.center, "sim_$(r.name)")
+	measure_scan(r.recon, sim_seg_result.mask, sim_seg_result.rods, sim_seg_result.center, "sim_$(r.name)")
 	for r in sim_oriented
 ];
 
 # ╔═╡ 07d10464-2c39-4a4a-aeb0-5549c34b705d
+# Each image segmented independently — clinical uses seg_result, simulated uses sim_seg_result
 let
-	# Clinical reference slice (from seg_result)
+	# Clinical
 	clin_hu = hu_120_mid_ir[:, :, seg_result.slice_idx]
+	clin_mask = Float32.(seg_result.mask)
+	clin_mask[clin_mask .== 0] .= NaN
 
-	# Simulated — use its own mid-slice (different z-count than clinical)
-	sim_vol = sim_oriented[min(2, end)].recon
-	sim_mid = size(sim_vol, 3) ÷ 2
-	sim_hu = sim_vol[:, :, sim_mid]
-
-	# Mask overlay
-	mask_vis = Float32.(seg_result.mask)
-	mask_vis[mask_vis .== 0] .= NaN
+	# Simulated
+	sim_hu = sim_oriented[min(2, end)].recon[:, :, sim_seg_result.slice_idx]
+	sim_mask = Float32.(sim_seg_result.mask)
+	sim_mask[sim_mask .== 0] .= NaN
 
 	fig = CM.Figure(size=(1100, 500), fontsize=11)
 
-	# Left: clinical DICOM + colored mask
-	ax1 = CM.Axis(fig[1, 1]; title="Clinical DICOM (120 kVp 150 mA)",
+	ax1 = CM.Axis(fig[1, 1]; title="Clinical + clinical seg",
 				  aspect=CM.DataAspect(), yreversed=true)
 	CM.heatmap!(ax1, clin_hu; colormap=:grays, colorrange=(-200, 500))
-	CM.heatmap!(ax1, mask_vis; colormap=:turbo, colorrange=(1, 27), nan_color=:transparent)
+	CM.heatmap!(ax1, clin_mask; colormap=:turbo, colorrange=(1, 27), nan_color=:transparent)
 	CM.hidedecorations!(ax1); CM.hidespines!(ax1)
 
-	# Right: simulated + same colored mask
-	ax2 = CM.Axis(fig[1, 2]; title="Simulated (oriented) — slice $sim_mid",
+	ax2 = CM.Axis(fig[1, 2]; title="Simulated + sim seg (slice $(sim_seg_result.slice_idx))",
 				  aspect=CM.DataAspect(), yreversed=true)
 	CM.heatmap!(ax2, sim_hu; colormap=:grays, colorrange=(-200, 500))
-	CM.heatmap!(ax2, mask_vis; colormap=:turbo, colorrange=(1, 27), nan_color=:transparent)
+	CM.heatmap!(ax2, sim_mask; colormap=:turbo, colorrange=(1, 27), nan_color=:transparent)
 	CM.hidedecorations!(ax2); CM.hidespines!(ax2)
 
 	fig
@@ -2031,6 +2036,7 @@ end
 # ╟─e54d80d3-6f67-4cd4-a85f-0e150755bf6e
 # ╠═fc69166c-0bec-441c-a2e5-e40eeaac1831
 # ╠═c1349a54-553e-45ec-b37d-631629baa4e3
+# ╠═c1349a54-553e-45ec-b37d-631629baa4f3
 # ╟─07d10464-2c39-4a4a-aeb0-5549c34b705d
 # ╟─7165348e-58e8-4bd9-b8fd-828021890d50
 # ╟─502a0f41-e6cd-4e2e-b2f9-6196d87f91f8
