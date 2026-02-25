@@ -35,6 +35,8 @@ These are resolved from fidelity presets and user overrides at construction time
   (~QIR-3). Only affects PCCT sinogram noise; EICT noise is unaffected.
 - `n_energy_bins::Int`: Number of spectrum bins for polychromatic mode. Default 30.
 - `seed::Union{Int, Nothing}`: Random seed for reproducibility. Default 42.
+- `detector_efficiency_mode::Symbol`: Override detector efficiency calculation mode.
+  `:auto` (default) = let driver decide; `:mc_lut` = force MC LUT; `:beer_lambert` = force analytical.
 """
 struct SimOptions
     fidelity::Symbol
@@ -62,8 +64,9 @@ struct SimOptions
     pcct_noise_reduction::Float64
 
     # --- General ---
-    seed::Union{Int, Nothing}
+    seed::Union{Int,Nothing}
     n_energy_bins::Int
+    detector_efficiency_mode::Symbol   # :auto, :mc_lut, :beer_lambert
 end
 
 """
@@ -93,54 +96,55 @@ SimOptions(fidelity=:medium, use_bowtie_filter=true) # Medium + bowtie
 ```
 """
 function SimOptions(;
-    fidelity::Symbol = :high,
-    use_fill_factor::Union{Bool, Nothing} = nothing,
-    use_flat_filter::Union{Bool, Nothing} = nothing,
-    use_bowtie_filter::Union{Bool, Nothing} = nothing,
-    use_detector_efficiency::Union{Bool, Nothing} = nothing,
-    use_scatter::Union{Bool, Nothing} = nothing,
-    use_scatter_correction::Union{Bool, Nothing} = nothing,
-    use_crosstalk::Union{Bool, Nothing} = nothing,
-    use_optical_crosstalk::Union{Bool, Nothing} = nothing,
-    use_focal_spot::Union{Bool, Nothing} = nothing,
-    use_noise::Union{Bool, Nothing} = nothing,
-    use_lag::Union{Bool, Nothing} = nothing,
-    use_heel_effect::Union{Bool, Nothing} = nothing,
-    use_das::Union{Bool, Nothing} = nothing,
-    use_bhc::Union{Bool, Nothing} = nothing,
-    use_pcct_corrections::Union{Bool, Nothing} = nothing,
-    pcct_noise_reduction::Float64 = 0.0,
-    n_energy_bins::Int = 30,
-    seed::Union{Int, Nothing} = 42
+    fidelity::Symbol=:high,
+    use_fill_factor::Union{Bool,Nothing}=nothing,
+    use_flat_filter::Union{Bool,Nothing}=nothing,
+    use_bowtie_filter::Union{Bool,Nothing}=nothing,
+    use_detector_efficiency::Union{Bool,Nothing}=nothing,
+    use_scatter::Union{Bool,Nothing}=nothing,
+    use_scatter_correction::Union{Bool,Nothing}=nothing,
+    use_crosstalk::Union{Bool,Nothing}=nothing,
+    use_optical_crosstalk::Union{Bool,Nothing}=nothing,
+    use_focal_spot::Union{Bool,Nothing}=nothing,
+    use_noise::Union{Bool,Nothing}=nothing,
+    use_lag::Union{Bool,Nothing}=nothing,
+    use_heel_effect::Union{Bool,Nothing}=nothing,
+    use_das::Union{Bool,Nothing}=nothing,
+    use_bhc::Union{Bool,Nothing}=nothing,
+    use_pcct_corrections::Union{Bool,Nothing}=nothing,
+    pcct_noise_reduction::Float64=0.0,
+    n_energy_bins::Int=30,
+    seed::Union{Int,Nothing}=42,
+    detector_efficiency_mode::Symbol=:auto
 )
     # Fidelity preset defaults for all 15 effects
     # :ideal = all OFF; :low = noise only; :medium = polychromatic subset; :high = all ON except DAS; :pcct = :high + corrections
     defaults = if fidelity == :pcct
         # Same as :high but with PCCT corrections enabled
         (fill_factor=true, flat_filter=true, bowtie_filter=true, detector_efficiency=true,
-         scatter=true, scatter_correction=true, crosstalk=true, optical_crosstalk=true,
-         focal_spot=true, noise=true, lag=true,
-         heel_effect=true, das=false, bhc=true, pcct_corrections=true)
+            scatter=true, scatter_correction=true, crosstalk=true, optical_crosstalk=true,
+            focal_spot=true, noise=true, lag=true,
+            heel_effect=true, das=false, bhc=true, pcct_corrections=true)
     elseif fidelity == :high
         (fill_factor=true, flat_filter=true, bowtie_filter=true, detector_efficiency=true,
-         scatter=true, scatter_correction=true, crosstalk=true, optical_crosstalk=true,
-         focal_spot=true, noise=true, lag=true,
-         heel_effect=true, das=false, bhc=true, pcct_corrections=false)  # das=false: DAS model is BROKEN
+            scatter=true, scatter_correction=true, crosstalk=true, optical_crosstalk=true,
+            focal_spot=true, noise=true, lag=true,
+            heel_effect=true, das=false, bhc=true, pcct_corrections=false)  # das=false: DAS model is BROKEN
     elseif fidelity == :medium
         (fill_factor=false, flat_filter=true, bowtie_filter=false, detector_efficiency=false,
-         scatter=false, scatter_correction=false, crosstalk=true, optical_crosstalk=false,
-         focal_spot=true, noise=true, lag=false,
-         heel_effect=false, das=false, bhc=true, pcct_corrections=false)
+            scatter=false, scatter_correction=false, crosstalk=true, optical_crosstalk=false,
+            focal_spot=true, noise=true, lag=false,
+            heel_effect=false, das=false, bhc=true, pcct_corrections=false)
     elseif fidelity == :low
         (fill_factor=false, flat_filter=false, bowtie_filter=false, detector_efficiency=false,
-         scatter=false, scatter_correction=false, crosstalk=false, optical_crosstalk=false,
-         focal_spot=false, noise=true, lag=false,
-         heel_effect=false, das=false, bhc=false, pcct_corrections=false)
+            scatter=false, scatter_correction=false, crosstalk=false, optical_crosstalk=false,
+            focal_spot=false, noise=true, lag=false,
+            heel_effect=false, das=false, bhc=false, pcct_corrections=false)
     elseif fidelity == :ideal
         (fill_factor=false, flat_filter=false, bowtie_filter=false, detector_efficiency=false,
-         scatter=false, scatter_correction=false, crosstalk=false, optical_crosstalk=false,
-         focal_spot=false, noise=false, lag=false,
-         heel_effect=false, das=false, bhc=false, pcct_corrections=false)
+            scatter=false, scatter_correction=false, crosstalk=false, optical_crosstalk=false,
+            focal_spot=false, noise=false, lag=false,
+            heel_effect=false, das=false, bhc=false, pcct_corrections=false)
     else
         error("Unknown fidelity preset: $fidelity. Use :pcct, :high, :medium, :low, or :ideal.")
     end
@@ -170,7 +174,8 @@ function SimOptions(;
         _heel_effect, _das, _bhc,
         _pcct_corrections,
         clamp(pcct_noise_reduction, 0.0, 1.0),
-        seed, n_energy_bins
+        seed, n_energy_bins,
+        detector_efficiency_mode
     )
 end
 
@@ -221,9 +226,9 @@ Parameters irrelevant to the chosen algorithm are silently ignored.
 struct ReconOptions
     # Core fields
     algorithm::Symbol
-    matrix_size::NTuple{3, Int}
+    matrix_size::NTuple{3,Int}
     fov_cm::Float64
-    z_cm::Union{Float64, Nothing}
+    z_cm::Union{Float64,Nothing}
     filter::Symbol
     iterations::Int
     # Iterative parameters
@@ -238,7 +243,7 @@ struct ReconOptions
     vmi_energies::Vector{Float64}
     vmi_basis::Vector{Symbol}
     # Initialization
-    warm_start::Union{Nothing, AbstractArray}
+    warm_start::Union{Nothing,AbstractArray}
     cascade_warm_start::Bool
 end
 
@@ -266,26 +271,26 @@ ReconOptions(algorithm=:fdk, vmi_energies=[40.0, 50.0, 70.0, 100.0], vmi_basis=(
 ```
 """
 function ReconOptions(;
-    algorithm::Symbol = :fdk,
-    matrix_size::Union{NTuple{3, Int}, Nothing} = nothing,
-    fov_cm::Real = 35.0,
-    z_cm::Union{Real, Nothing} = nothing,
-    filter::Symbol = :standard,
-    iterations::Int = 10,
+    algorithm::Symbol=:fdk,
+    matrix_size::Union{NTuple{3,Int},Nothing}=nothing,
+    fov_cm::Real=35.0,
+    z_cm::Union{Real,Nothing}=nothing,
+    filter::Symbol=:standard,
+    iterations::Int=10,
     # Iterative parameters
-    lambda::Real = 0.01,
-    tv_weight::Real = 0.0,
-    n_subsets::Int = 1,
-    penalty::Symbol = :none,
-    penalty_delta::Real = 0.01,
-    use_edge_weights::Bool = false,
-    blend_percent::Real = 50.0,
+    lambda::Real=0.01,
+    tv_weight::Real=0.0,
+    n_subsets::Int=1,
+    penalty::Symbol=:none,
+    penalty_delta::Real=0.01,
+    use_edge_weights::Bool=false,
+    blend_percent::Real=50.0,
     # VMI parameters
-    vmi_energies::Vector{Float64} = Float64[],
-    vmi_basis::Union{Tuple{Symbol, Symbol}, Vector{Symbol}} = (:water, :iodine),
+    vmi_energies::Vector{Float64}=Float64[],
+    vmi_basis::Union{Tuple{Symbol,Symbol},Vector{Symbol}}=(:water, :iodine),
     # Initialization
-    warm_start::Union{Nothing, AbstractArray} = nothing,
-    cascade_warm_start::Bool = false
+    warm_start::Union{Nothing,AbstractArray}=nothing,
+    cascade_warm_start::Bool=false
 )
     # Default to 512x512x64 if not specified
     _size = isnothing(matrix_size) ? (512, 512, 64) : matrix_size
