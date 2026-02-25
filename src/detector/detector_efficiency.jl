@@ -77,7 +77,7 @@ import AcceleratedKernels as AK
 
 # Linear attenuation coefficients (cm⁻¹) for common scintillator materials
 # Data from NIST XCOM, organized as (energies, μ values)
-const SCINTILLATOR_MU_DATA = Dict{String, Tuple{Vector{Float64}, Vector{Float64}}}(
+const SCINTILLATOR_MU_DATA = Dict{String,Tuple{Vector{Float64},Vector{Float64}}}(
     # Gadolinium Oxysulfide (Gd₂O₂S, GOS/Gadox)
     # ρ = 7.34 g/cm³, K-edge at 50.2 keV
     "GOS" => (
@@ -111,16 +111,131 @@ const SCINTILLATOR_MU_DATA = Dict{String, Tuple{Vector{Float64}, Vector{Float64}
     "Si" => (
         [20.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0, 120.0, 150.0],
         [2.8, 0.95, 0.58, 0.48, 0.46, 0.43, 0.40, 0.39, 0.37]
+    ),
+
+    # Gemstone Ce:(Tb,Lu)₃Al₅O₁₂ — GE proprietary garnet scintillator
+    # Composition (wt%): Tb(0.287), Lu(0.316), Al(0.163), O(0.231), Ce(0.002)
+    # ρ = 7.0 g/cm³, K-edges: Tb at 52.0 keV, Lu at 63.31 keV
+    # μ(E) = (μ/ρ)(E) × ρ, with (μ/ρ) from NIST XCOM (mixture, coherent incl.)
+    # Source: extracted XCOM data, Feb 2026
+    "Gemstone" => (
+        # Energy (keV) — dense grid around K-edges; offsets ±0.01 keV model discontinuity
+        [10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0,
+            51.0, 51.99, 52.01, 53.0, 55.0, 57.0, 59.0, 60.0,
+            61.0, 63.0, 63.30, 63.32, 65.0, 67.0, 69.0,
+            71.0, 73.0, 75.0, 77.0, 80.0, 85.0,
+            91.0, 95.0, 100.0, 105.0, 110.0, 115.0, 121.0,
+            125.0, 131.0, 135.0, 141.0, 150.0],
+        # μ (cm⁻¹) = (μ/ρ) × 7.0 g/cm³
+        [1098.3, 486.2, 228.3, 126.4, 78.3, 52.1, 36.8, 27.3, 20.8,
+            19.8, 18.9, 47.2, 44.9, 40.8, 37.2, 34.1, 32.7,
+            31.3, 28.8, 28.5, 51.0, 47.7, 44.2, 41.0,
+            38.1, 35.5, 33.2, 31.0, 28.1, 24.1,
+            20.3, 18.2, 16.0, 14.1, 12.3, 11.2, 9.9,
+            9.1, 8.1, 7.6, 6.8, 5.9]
     )
 )
 
-# Aliases
+# Aliases for GOS
 SCINTILLATOR_MU_DATA["Gadox"] = SCINTILLATOR_MU_DATA["GOS"]
 SCINTILLATOR_MU_DATA["Gd2O2S"] = SCINTILLATOR_MU_DATA["GOS"]
+
+# Aliases for Gemstone (GE garnet scintillator)
+SCINTILLATOR_MU_DATA["LUMEX"] = SCINTILLATOR_MU_DATA["Gemstone"]
+SCINTILLATOR_MU_DATA["lumex"] = SCINTILLATOR_MU_DATA["Gemstone"]
+SCINTILLATOR_MU_DATA["Garnet"] = SCINTILLATOR_MU_DATA["Gemstone"]
+SCINTILLATOR_MU_DATA["TbLuAG"] = SCINTILLATOR_MU_DATA["Gemstone"]
+SCINTILLATOR_MU_DATA["TbLuAG:Ce"] = SCINTILLATOR_MU_DATA["Gemstone"]
+
+# =============================================================================
+# Monte Carlo-Derived Detector Efficiency LUT
+# =============================================================================
+
+"""
+    GEMSTONE_MC_EFFICIENCY_LUT
+
+Monte Carlo-derived detector efficiency lookup table for Ce:(Tb,Lu)₃Al₅O₁₂
+(Gemstone-type garnet scintillator) as a function of photon energy.
+
+This LUT was computed from a full Monte Carlo simulation (MCNP) of the
+GE Revolution Apex detector using the material composition:
+
+    m1003  65000 -0.287424   (Tb)
+           71000 -0.316437   (Lu)
+           13000 -0.162658   (Al)
+            8000 -0.231480   (O)
+           58000 -0.002000   (Ce dopant)
+
+# Key Features Captured by MC (Not in Beer-Lambert)
+
+1. **Fluorescence escape at Tb K-edge (52 keV)**: Efficiency drops from
+   0.956 → 0.807 due to Tb Kα fluorescence photons (~44 keV) escaping.
+2. **Fluorescence escape at Lu K-edge (63 keV)**: Efficiency drops from
+   0.846 → 0.762 due to Lu Kα fluorescence photons (~54 keV) escaping.
+3. **L-edge effects** at 8-12 keV from Tb/Lu L-shells.
+4. **Compton scattering escape** at higher energies.
+
+Beer-Lambert predicts efficiency INCREASES at K-edges (more absorption),
+but MC correctly shows DECREASES because fluorescent photons escape the
+detector volume, reducing the energy actually deposited.
+
+# Reference
+- Material: PMC10179960 (Ce:(Tb,Lu)₃Al₅O₁₂ garnet scintillator)
+- Simulation: MCNP with ENDF photon cross-sections
+"""
+const GEMSTONE_MC_EFFICIENCY_LUT = (
+    # Energy (keV): 1-140 keV, 1 keV steps
+    energies=Float64[
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+        11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+        21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+        31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+        41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
+        51, 52, 53, 54, 55, 56, 57, 58, 59, 60,
+        61, 62, 63, 64, 65, 66, 67, 68, 69, 70,
+        71, 72, 73, 74, 75, 76, 77, 78, 79, 80,
+        81, 82, 83, 84, 85, 86, 87, 88, 89, 90,
+        91, 92, 93, 94, 95, 96, 97, 98, 99, 100,
+        101, 102, 103, 104, 105, 106, 107, 108, 109, 110,
+        111, 112, 113, 114, 115, 116, 117, 118, 119, 120,
+        121, 122, 123, 124, 125, 126, 127, 128, 129, 130,
+        131, 132, 133, 134, 135, 136, 137, 138, 139, 140
+    ],
+    # Efficiency η(E) = Real/Ideal from Monte Carlo simulation
+    efficiency=Float64[
+        0.991, 0.990, 0.990, 0.990, 0.990, 0.989, 0.988, 0.989, 0.979, 0.983,
+        0.973, 0.976, 0.979, 0.981, 0.982, 0.983, 0.984, 0.984, 0.985, 0.985,
+        0.985, 0.985, 0.985, 0.985, 0.985, 0.985, 0.985, 0.984, 0.984, 0.984,
+        0.983, 0.983, 0.982, 0.982, 0.981, 0.981, 0.980, 0.979, 0.978, 0.977,
+        0.975, 0.975, 0.974, 0.972, 0.971, 0.970, 0.969, 0.967, 0.965, 0.962,
+        0.960, 0.956, 0.807, 0.813, 0.818, 0.823, 0.827, 0.831, 0.834, 0.838,  # ← Tb K-edge drop
+        0.841, 0.844, 0.846, 0.762, 0.767, 0.773, 0.777, 0.783, 0.787, 0.791,  # ← Lu K-edge drop
+        0.796, 0.800, 0.803, 0.809, 0.813, 0.817, 0.820, 0.823, 0.826, 0.829,
+        0.832, 0.835, 0.837, 0.840, 0.842, 0.844, 0.846, 0.848, 0.850, 0.851,
+        0.853, 0.854, 0.855, 0.856, 0.857, 0.858, 0.859, 0.859, 0.859, 0.859,
+        0.859, 0.859, 0.858, 0.858, 0.857, 0.856, 0.855, 0.854, 0.853, 0.852,
+        0.850, 0.848, 0.847, 0.845, 0.842, 0.840, 0.839, 0.836, 0.833, 0.830,
+        0.828, 0.824, 0.821, 0.819, 0.815, 0.812, 0.808, 0.805, 0.801, 0.797,
+        0.793, 0.789, 0.785, 0.781, 0.777, 0.773, 0.768, 0.763, 0.758, 0.754
+    ]
+)
 
 # =============================================================================
 # Detector Efficiency Types
 # =============================================================================
+
+"""
+    DetectorEfficiencyMode
+
+Selector for how detector efficiency is computed.
+
+- `BEER_LAMBERT` — Analytical Beer-Lambert absorption law using μ(E) from XCOM
+- `MC_LUT` — Monte Carlo-derived lookup table (captures fluorescence escape, etc.)
+"""
+@enum DetectorEfficiencyMode begin
+    BEER_LAMBERT    # Analytical: η = 1 - exp(-μd/cosθ)
+    MC_LUT          # Monte Carlo-derived LUT
+end
 
 """
     DetectorEfficiency
@@ -128,15 +243,21 @@ SCINTILLATOR_MU_DATA["Gd2O2S"] = SCINTILLATOR_MU_DATA["GOS"]
 Detector efficiency model specification.
 
 # Fields
-- `material`: Scintillator material name (GOS, CsI, CdTe, etc.)
+- `material`: Scintillator material name (GOS, CsI, CdTe, Gemstone, etc.)
 - `thickness_mm`: Scintillator thickness in mm
 - `fill_factor`: Fraction of detector area that is active (0-1)
+- `mode`: `BEER_LAMBERT` or `MC_LUT`
 """
 struct DetectorEfficiency
     material::String
     thickness_mm::Float64
     fill_factor::Float64
+    mode::DetectorEfficiencyMode
 end
+
+# Backward-compatible 3-argument constructor (defaults to Beer-Lambert)
+DetectorEfficiency(material::String, thickness_mm::Float64, fill_factor::Float64) =
+    DetectorEfficiency(material, thickness_mm, fill_factor, BEER_LAMBERT)
 
 # =============================================================================
 # Pre-defined Detector Models
@@ -178,6 +299,45 @@ function detector_efficiency_cdte(thickness_mm::Float64=1.6; fill_factor::Float6
 end
 
 """
+    detector_efficiency_gemstone(; mode::Symbol=:mc_lut,
+                                  thickness_mm::Float64=3.0,
+                                  fill_factor::Float64=0.90)
+
+GE Gemstone Clarity Ce:(Tb,Lu)₃Al₅O₁₂ garnet scintillator detector.
+
+# Modes
+- `:mc_lut` (default) — Monte Carlo-derived efficiency LUT from MCNP simulation.
+  Captures fluorescence escape at Tb K-edge (52 keV) and Lu K-edge (63 keV)
+  that Beer-Lambert cannot model. **Recommended for GE Revolution simulations.**
+- `:beer_lambert` — Analytical Beer-Lambert using XCOM-derived μ(E) data.
+  Faster, but overestimates efficiency near K-edges.
+
+# Material Composition
+    Ce:(Tb₁.₅Lu₁.₅)Al₅O₁₂
+    Tb: 0.2874, Lu: 0.3164, Al: 0.1627, O: 0.2315, Ce: 0.002
+    ρ ≈ 7.0 g/cm³
+
+# Reference
+- Composition: PMC10179960
+- MC simulation: MCNP with ENDF photon cross-sections
+
+# Example
+```julia
+# Monte Carlo LUT (recommended)
+model = detector_efficiency_gemstone()  # mode=:mc_lut
+
+# Beer-Lambert analytical
+model = detector_efficiency_gemstone(mode=:beer_lambert)
+```
+"""
+function detector_efficiency_gemstone(; mode::Symbol=:mc_lut,
+    thickness_mm::Float64=3.0,
+    fill_factor::Float64=0.90)
+    eff_mode = mode == :mc_lut ? MC_LUT : BEER_LAMBERT
+    return DetectorEfficiency("Gemstone", thickness_mm, fill_factor, eff_mode)
+end
+
+"""
     detector_efficiency_ideal()
 
 Ideal detector with 100% efficiency.
@@ -195,12 +355,12 @@ end
 Create custom detector efficiency model.
 
 # Arguments
-- `material`: Scintillator material (GOS, CsI, CdTe, CZT, Si)
+- `material`: Scintillator material (GOS, CsI, CdTe, CZT, Si, Gemstone)
 - `thickness_mm`: Scintillator thickness in mm
 - `fill_factor`: Active area fraction (default: 0.90)
 """
 function detector_efficiency_custom(material::String, thickness_mm::Float64;
-                                    fill_factor::Float64=0.90)
+    fill_factor::Float64=0.90)
     @assert 0 < fill_factor <= 1 "Fill factor must be between 0 and 1"
     @assert thickness_mm >= 0 "Thickness must be non-negative"
     return DetectorEfficiency(material, thickness_mm, fill_factor)
@@ -285,6 +445,49 @@ function get_scintillator_mu(material::String, energy_keV::Float64)
     return exp(log_mu)
 end
 
+"""
+    get_gemstone_mc_efficiency(energy_keV::Float64) -> Float64
+
+Look up Monte Carlo-derived detector efficiency for Ce:(Tb,Lu)₃Al₅O₁₂ Gemstone
+scintillator at the given photon energy.
+
+Uses linear interpolation of the 1-140 keV MC efficiency table.
+Energies outside the table range are clamped to the nearest boundary value.
+
+# Key Physics
+- Tb K-edge fluorescence escape at 52-53 keV (η: 0.956 → 0.807)
+- Lu K-edge fluorescence escape at 63-64 keV (η: 0.846 → 0.762)
+- Peak efficiency ~0.985 at 20-27 keV
+- Efficiency ~0.859 at 100 keV, declining to 0.754 at 140 keV
+
+# Example
+```julia
+η = get_gemstone_mc_efficiency(60.0)   # ~0.838
+η = get_gemstone_mc_efficiency(52.5)   # ~0.882 (between Tb K-edge dip)
+```
+"""
+function get_gemstone_mc_efficiency(energy_keV::Float64)
+    lut = GEMSTONE_MC_EFFICIENCY_LUT
+    E = clamp(energy_keV, lut.energies[1], lut.energies[end])
+
+    # Fast path: integer keV within range → direct lookup
+    if E == floor(E) && 1.0 <= E <= 140.0
+        return lut.efficiency[Int(E)]
+    end
+
+    # Linear interpolation for non-integer energies
+    idx = 1
+    for i in 1:(length(lut.energies)-1)
+        if E >= lut.energies[i] && E <= lut.energies[i+1]
+            idx = i
+            break
+        end
+    end
+
+    t = (E - lut.energies[idx]) / (lut.energies[idx+1] - lut.energies[idx])
+    return lut.efficiency[idx] + t * (lut.efficiency[idx+1] - lut.efficiency[idx])
+end
+
 # =============================================================================
 # Efficiency Computation
 # =============================================================================
@@ -314,6 +517,22 @@ function compute_detector_efficiency(
         return ones(Float64, n_cols, n_rows)
     end
 
+    # MC LUT mode for Gemstone: use Monte Carlo-derived efficiency
+    if model.mode == MC_LUT && (model.material == "Gemstone" || model.material == "LUMEX" ||
+                                model.material == "lumex" || model.material == "Garnet")
+        η_mc = get_gemstone_mc_efficiency(energy_keV)
+        η = model.fill_factor * η_mc
+
+        efficiency = zeros(Float64, n_cols, n_rows)
+        for row in 1:n_rows
+            for col in 1:n_cols
+                efficiency[col, row] = η
+            end
+        end
+        return efficiency
+    end
+
+    # Beer-Lambert mode (default for all materials)
     # Get μ for the scintillator material
     μ = get_scintillator_mu(model.material, energy_keV)
 
@@ -367,6 +586,23 @@ function compute_detector_efficiency_spectral(
         return ones(Float64, n_cols, n_rows, n_energies)
     end
 
+    # MC LUT mode for Gemstone: use Monte Carlo-derived efficiency per energy
+    if model.mode == MC_LUT && (model.material == "Gemstone" || model.material == "LUMEX" ||
+                                model.material == "lumex" || model.material == "Garnet")
+        efficiency = zeros(Float64, n_cols, n_rows, n_energies)
+        for k in 1:n_energies
+            η_mc = get_gemstone_mc_efficiency(energies[k])
+            η = model.fill_factor * η_mc
+            for row in 1:n_rows
+                for col in 1:n_cols
+                    efficiency[col, row, k] = η
+                end
+            end
+        end
+        return efficiency
+    end
+
+    # Beer-Lambert mode
     # Get μ for each energy
     μ_vec = [get_scintillator_mu(model.material, E) for E in energies]
 
@@ -457,11 +693,11 @@ Get diagnostic information about detector efficiency.
 function get_detector_efficiency_info(model::DetectorEfficiency; energy_keV::Float64=60.0)
     if model.material == "ideal"
         return (
-            material = "ideal",
-            thickness_mm = 0.0,
-            fill_factor = 1.0,
-            absorption_at_ref_energy = 1.0,
-            total_efficiency = 1.0
+            material="ideal",
+            thickness_mm=0.0,
+            fill_factor=1.0,
+            absorption_at_ref_energy=1.0,
+            total_efficiency=1.0
         )
     end
 
@@ -470,12 +706,12 @@ function get_detector_efficiency_info(model::DetectorEfficiency; energy_keV::Flo
     absorption = 1.0 - exp(-μ * d_cm)
 
     return (
-        material = model.material,
-        thickness_mm = model.thickness_mm,
-        fill_factor = model.fill_factor,
-        μ_at_ref_energy = μ,
-        absorption_at_ref_energy = absorption,
-        total_efficiency = model.fill_factor * absorption
+        material=model.material,
+        thickness_mm=model.thickness_mm,
+        fill_factor=model.fill_factor,
+        μ_at_ref_energy=μ,
+        absorption_at_ref_energy=absorption,
+        total_efficiency=model.fill_factor * absorption
     )
 end
 
@@ -528,7 +764,7 @@ dqe = compute_dqe(model, 60.0)  # ~0.77 with default Swank factor
 ```
 """
 function compute_dqe(model::DetectorEfficiency, energy_keV::Float64;
-                     swank_factor::Float64=0.95)
+    swank_factor::Float64=0.95)
     if model.material == "ideal"
         return 1.0
     end
@@ -547,10 +783,12 @@ end
 # Exports
 # =============================================================================
 
-export DetectorEfficiency
+export DetectorEfficiency, DetectorEfficiencyMode, BEER_LAMBERT, MC_LUT
 export detector_efficiency_gos, detector_efficiency_csi, detector_efficiency_cdte
+export detector_efficiency_gemstone
 export detector_efficiency_ideal, detector_efficiency_custom
-export get_scintillator_mu
+export get_scintillator_mu, get_gemstone_mc_efficiency
 export compute_detector_efficiency, compute_detector_efficiency_spectral
 export apply_detector_efficiency!, apply_detector_efficiency
 export get_detector_efficiency_info, compute_dqe
+export GEMSTONE_MC_EFFICIENCY_LUT
