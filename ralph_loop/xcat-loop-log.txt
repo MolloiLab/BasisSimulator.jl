@@ -1,0 +1,28 @@
+[2026-02-13 23:42:43] XCAT investigation loop started. Max iterations: 30
+[2026-02-13 23:42:44] Iteration 1 started. 12 stories open.
+[2026-02-13 23:42:44] Selected story: XCAT-001 — DIAGNOSTIC: Map exact PCCT vs EICT signal chains side-by-side
+[2026-02-13 23:46:39] Iteration 1 finished in 235s (timeout=false)
+[2026-02-13 23:46:39] STORY COMPLETED: XCAT-001 — DIAGNOSTIC: Map exact PCCT vs EICT signal chains side-by-side
+[2026-02-13 23:46:44] Iteration 2 started. 11 stories open.
+[2026-02-13 23:46:44] Selected story: XCAT-002 — DIAGNOSTIC: Test BHC impact on PCCT cupping — noiseless comparison
+[2026-02-14 00:24:03] Iteration 2 finished in 2239s (timeout=false)
+[2026-02-14 00:24:03] STORY COMPLETED: XCAT-002 — DIAGNOSTIC: Test BHC impact on PCCT cupping — noiseless comparison
+[2026-02-14 00:24:03] STORY COMPLETED: XCAT-003 — DIAGNOSTIC: Verify _combine_pcct_bins I0 values and combination physics
+[2026-02-14 00:24:03] STORY COMPLETED: XCAT-004 — DIAGNOSTIC: Check water calibration scanner-specificity
+[2026-02-14 00:24:03] STORY COMPLETED: XCAT-005 — DIAGNOSTIC: PCCT noise_reduction interaction with edges
+[2026-02-14 00:24:03] STORY COMPLETED: XCAT-006 — DIAGNOSTIC: Run noiseless PCCT vs EICT comparison script
+[2026-02-14 00:24:03] STORY COMPLETED: XCAT-007 — DIAGNOSTIC: Check if PCCT physics effects differ from EICT effects
+[2026-02-14 00:24:03] STORY COMPLETED: XCAT-008 — DIAGNOSTIC: Verify PCCT combined sinogram values vs EICT polychromatic sinogram
+[2026-02-14 00:24:03] STORY COMPLETED: XCAT-009 — FIX: Apply identified corrections for PCCT cupping
+[2026-02-14 00:24:03] STORY COMPLETED: XCAT-010 — FIX: Correct water calibration z_cm for PCCT scanner
+[2026-02-14 00:24:03] STORY COMPLETED: XCAT-011 — FIX: Add volume_fov to public forward_project!() API
+[2026-02-14 00:24:03] STORY COMPLETED: XCAT-012 — VALIDATE: Re-run NB05 with all fixes applied
+[2026-02-14 00:24:08] Iteration 3 started. 0
+0 stories open.
+[2026-02-14 00:24:08] WARNING: No unblocked story found
+[2026-02-14 00:24:32] Iteration 3 finished in 24s (timeout=false)
+[2026-02-14 00:24:32] RALPH_COMPLETE after 3 iterations
+[2026-02-14 03:37:26] XCAT investigation loop started. Max iterations: 30
+[2026-02-14 03:37:26] Iteration 1 started. 0
+0 stories open.
+[2026-02-14 03:37:26] WARNING: No unblocked story found
