@@ -82,12 +82,18 @@
 # =============================================================================
 
 import AcceleratedKernels as AK
+import XrayAttenuation as XA
+using Unitful: ustrip, @u_str
 
 export BeamHardeningCorrection, BHCPolynomial
 export calibrate_bhc, apply_bhc!, apply_bhc
 export generate_water_calibration_curve
 export bhc_water_default, bhc_none
 export evaluate_bhc, get_bhc_info, get_bhc_coefficients
+
+# Two-material (water + bone) BHC exports
+export bone_fraction_smooth, TwoMaterialBHC
+export calibrate_bhc_two_material, apply_bhc_two_material
 
 # =============================================================================
 # BHC Types
@@ -572,4 +578,232 @@ function get_bhc_info(poly::BHCPolynomial)
         reference_energy_keV = poly.reference_energy_keV,
         coefficients = poly.coefficients
     )
+end
+
+# =============================================================================
+# Two-Material (Water + Bone) Beam Hardening Correction
+# =============================================================================
+#
+# Implements the Martinez/Fessler 2022 "2DCalBH" algorithm adapted for
+# simulation where the spectrum is exactly known.
+#
+# Algorithm (projection-domain, no hard segmentation):
+#   Pass 1: Water-only polynomial BHC → FDK → preliminary image
+#   Pass 2: Smooth tissue fraction decomposition → forward-project bone →
+#           compute exact 2D correction from known spectrum → apply → FDK
+#
+# References:
+#   1. Martinez C, Fessler JA, et al. Phys Med Biol. 2022;67(11).
+#   2. Joseph PM, Spital RD. J Comput Assist Tomogr. 1978;2(1):100-108.
+#   3. Elbakri IA, Fessler JA. Phys Med Biol. 2003;48(15):2453-2477.
+# =============================================================================
+
+"""
+    bone_fraction_smooth(hu; hu_low=100.0, hu_high=500.0) -> Float64
+
+Compute smooth bone fraction for tissue decomposition (Elbakri/Fessler 2003).
+
+Uses C1-continuous smoothstep (3t² - 2t³) to avoid hard segmentation artifacts.
+Returns 0.0 for soft tissue (≤ hu_low), 1.0 for bone (≥ hu_high), smooth
+transition between.
+
+# Arguments
+- `hu::Real`: Hounsfield Unit value of the voxel
+
+# Keyword Arguments
+- `hu_low::Real=100.0`: Below this HU, voxel is 100% soft tissue
+- `hu_high::Real=500.0`: Above this HU, voxel is 100% bone
+
+# Returns
+- `Float64`: Bone fraction in [0, 1]
+"""
+function bone_fraction_smooth(hu::Real; hu_low::Real=100.0, hu_high::Real=500.0)
+    hu <= hu_low && return 0.0
+    hu >= hu_high && return 1.0
+    t = (hu - hu_low) / (hu_high - hu_low)
+    return t * t * (3.0 - 2.0 * t)  # C1 smoothstep
+end
+
+"""
+    TwoMaterialBHC
+
+Two-material (water + bone) beam hardening correction model.
+
+Contains the water-only BHC polynomial plus spectral attenuation data for
+both water and cortical bone, enabling exact 2-material correction.
+
+# Fields
+- `water_bhc::BeamHardeningCorrection`: Water-only BHC polynomial
+- `energies::Vector{Float64}`: Spectrum energy bins (keV)
+- `w_norm::Vector{Float64}`: Normalized spectrum weights
+- `μ_water_E::Vector{Float64}`: Water attenuation at each energy (cm⁻¹)
+- `μ_bone_E::Vector{Float64}`: Bone attenuation at each energy (cm⁻¹)
+- `μ_water_ref::Float64`: Water attenuation at reference energy (cm⁻¹)
+- `μ_bone_ref::Float64`: Bone attenuation at reference energy (cm⁻¹)
+- `reference_energy_keV::Float64`: Reference energy for monochromatic model
+- `hu_low::Float64`: Soft tissue / bone boundary threshold (HU)
+- `hu_high::Float64`: Fully-bone threshold (HU)
+"""
+struct TwoMaterialBHC
+    water_bhc::BeamHardeningCorrection
+    energies::Vector{Float64}
+    w_norm::Vector{Float64}
+    μ_water_E::Vector{Float64}
+    μ_bone_E::Vector{Float64}
+    μ_water_ref::Float64
+    μ_bone_ref::Float64
+    reference_energy_keV::Float64
+    hu_low::Float64
+    hu_high::Float64
+end
+
+"""
+    calibrate_bhc_two_material(energies, weights; kwargs...) -> TwoMaterialBHC
+
+Calibrate the two-material (water + bone) BHC model.
+
+Internally calibrates water-only BHC and computes spectral attenuation data
+for both water and cortical bone.
+
+# Arguments
+- `energies::Vector`: Energy bin centers (keV)
+- `weights::Vector`: Photon fluence weights per energy bin
+
+# Keyword Arguments
+- `order::Int=5`: Polynomial order for water-only BHC
+- `max_path_cm::Real=50.0`: Maximum water path length for calibration (cm)
+- `n_points::Int=100`: Number of calibration points
+- `reference_energy_keV::Real=70.0`: Reference energy (keV)
+- `hu_low::Real=100.0`: Soft tissue / bone boundary (HU)
+- `hu_high::Real=500.0`: Fully-bone threshold (HU)
+
+# Returns
+- `TwoMaterialBHC`: Complete two-material BHC model
+"""
+function calibrate_bhc_two_material(
+    energies::Vector,
+    weights::Vector;
+    order::Int = 5,
+    max_path_cm::Real = 50.0,
+    n_points::Int = 100,
+    reference_energy_keV::Real = 70.0,
+    hu_low::Real = 100.0,
+    hu_high::Real = 500.0
+)
+    # 1. Calibrate water-only BHC
+    water_bhc = calibrate_bhc(energies, weights;
+        order=order, max_path_cm=max_path_cm,
+        n_points=n_points, reference_energy_keV=reference_energy_keV)
+
+    # 2. Compute spectral attenuation data for both materials
+    water_mat = XA.Materials.water
+    bone_mat = XA.Materials.corticalbone
+
+    E_vec = Float64.(energies)
+    w_norm = Float64.(weights) ./ sum(Float64.(weights))
+
+    μ_water_E = [ustrip(u"cm^-1", XA.linear_attenuation_coeff(water_mat, E * u"keV")) for E in E_vec]
+    μ_bone_E = [ustrip(u"cm^-1", XA.linear_attenuation_coeff(bone_mat, E * u"keV")) for E in E_vec]
+    μ_water_ref = ustrip(u"cm^-1", XA.linear_attenuation_coeff(water_mat, reference_energy_keV * u"keV"))
+    μ_bone_ref = ustrip(u"cm^-1", XA.linear_attenuation_coeff(bone_mat, reference_energy_keV * u"keV"))
+
+    return TwoMaterialBHC(water_bhc, E_vec, w_norm, μ_water_E, μ_bone_E,
+                          μ_water_ref, μ_bone_ref, Float64(reference_energy_keV),
+                          Float64(hu_low), Float64(hu_high))
+end
+
+"""
+    apply_bhc_two_material(sinogram_raw, bhc_2mat, geom, matrix_size; volume_extent=nothing)
+
+Apply two-material (water + bone) beam hardening correction.
+
+Implements the full Martinez/Fessler 2022 algorithm:
+1. Water-only BHC → FDK → preliminary HU image
+2. Smooth tissue fraction decomposition (no hard threshold)
+3. Forward-project bone image → compute soft/bone line integrals
+4. Exact 2-material polychromatic correction from known spectrum
+5. Apply correction to RAW sinogram
+
+# Arguments
+- `sinogram_raw::AbstractArray{T,3}`: Raw polychromatic sinogram (post-log)
+- `bhc_2mat::TwoMaterialBHC`: Two-material BHC model from `calibrate_bhc_two_material`
+- `geom`: CTGeometry
+- `matrix_size::Tuple{Int,Int,Int}`: Reconstruction matrix size (nx, ny, nz)
+
+# Keyword Arguments
+- `volume_extent::Union{Nothing,NTuple{3,Float64}}=nothing`: Physical extent of the
+  phantom volume (x, y, z) in cm. Pass `phantom.extent` for correct geometry.
+
+# Returns
+- `Array{Float32,3}`: Corrected sinogram (CPU array)
+"""
+function apply_bhc_two_material(
+    sinogram_raw::AbstractArray{T, 3},
+    bhc_2mat::TwoMaterialBHC,
+    geom,
+    matrix_size::Tuple{Int,Int,Int};
+    volume_extent=nothing
+) where T <: AbstractFloat
+
+    # === Pass 1: Water-only BHC → FDK → preliminary HU image ===
+    sino_water = apply_bhc(sinogram_raw, bhc_2mat.water_bhc)
+    recon = Array(fdk_reconstruct(sino_water, geom, matrix_size))
+    hu = 1000.0f0 .* (recon .- T(bhc_2mat.μ_water_ref)) ./ T(bhc_2mat.μ_water_ref)
+
+    # === Pass 2: Bone correction ===
+
+    # Step 1: Smooth tissue fraction decomposition
+    nx, ny, nz = size(recon)
+    bone_μ_3d = zeros(Float32, nx, ny, nz)
+    for s in 1:nz
+        for j in 1:ny, i in 1:nx
+            bf = bone_fraction_smooth(hu[i,j,s];
+                hu_low=bhc_2mat.hu_low, hu_high=bhc_2mat.hu_high)
+            bone_μ_3d[i,j,s] = Float32(bf * recon[i,j,s])
+        end
+    end
+
+    # Step 2: Forward-project bone image
+    p_b = Array(siddon_forward_project(bone_μ_3d, geom; volume_extent=volume_extent))
+
+    # Soft tissue line integral from water-corrected sinogram
+    sino_water_cpu = Array(sino_water)
+    p_s = sino_water_cpu .- p_b
+
+    # Step 3: Material path lengths
+    L_w = p_s ./ Float32(bhc_2mat.μ_water_ref)
+    L_b = p_b ./ Float32(bhc_2mat.μ_bone_ref)
+    L_w .= max.(L_w, 0.0f0)
+    L_b .= max.(L_b, 0.0f0)
+
+    # Step 4: Exact 2-material correction (Float64 for precision)
+    sino_raw_cpu = Array(sinogram_raw)
+    correction = zeros(Float32, size(sino_raw_cpu))
+    w_norm_64 = Float64.(bhc_2mat.w_norm)
+    μ_w_64 = Float64.(bhc_2mat.μ_water_E)
+    μ_b_64 = Float64.(bhc_2mat.μ_bone_E)
+    μ_water_ref = bhc_2mat.μ_water_ref
+    μ_bone_ref = bhc_2mat.μ_bone_ref
+
+    Threads.@threads for idx in eachindex(sino_raw_cpu)
+        Lw = Float64(L_w[idx])
+        Lb = Float64(L_b[idx])
+        (Lw < 1e-6 && Lb < 1e-6) && continue
+
+        # Polychromatic forward model
+        I_poly = 0.0
+        for e in eachindex(w_norm_64)
+            I_poly += w_norm_64[e] * exp(-μ_w_64[e] * Lw - μ_b_64[e] * Lb)
+        end
+        F_2mat = I_poly > 0.0 ? -log(I_poly) : 0.0
+
+        # Monochromatic reference
+        p_mono = μ_water_ref * Lw + μ_bone_ref * Lb
+
+        # Full BH correction
+        correction[idx] = Float32(p_mono - F_2mat)
+    end
+
+    # Step 5: Apply to RAW sinogram
+    return sino_raw_cpu .+ correction
 end
