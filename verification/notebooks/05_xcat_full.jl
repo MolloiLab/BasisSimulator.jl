@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.20.13
+# v0.20.21
 
 using Markdown
 using InteractiveUtils
@@ -20,7 +20,8 @@ end
 # ╠═╡ show_logs = false
 begin
     import Pkg
-    Pkg.activate(dirname(@__DIR__))
+    Pkg.activate(joinpath(@__DIR__, ".."))
+	
     Pkg.instantiate()
 
 	using Revise
@@ -47,7 +48,12 @@ This notebook demonstrates a complete clinical CT simulation workflow using the 
 6. **Visualization**: FDK vs Hybrid IR comparison, noise reduction analysis, ROI statistics in HU
 
 All simulations run on **Apple Metal GPU** for maximum performance.
+
+*WENBO : adding CUDA support to this.*
 """
+
+# ╔═╡ 3775baac-dcb8-4be2-8a19-89abf795c28d
+debug_ = false # set to on during GRAM debugging
 
 # ╔═╡ cca08041-b05c-4045-a462-18b30fd0559f
 # ╠═╡ show_logs = false
@@ -65,7 +71,7 @@ import Statistics: mean, std
 
 # ╔═╡ 2a00221a-e861-4d53-bba6-bde7b1bc909f
 # ╠═╡ show_logs = false
-import Metal
+import Metal, CUDA
 
 # ╔═╡ c071c54d-0950-4260-83b7-7dc79300609e
 import XLSX
@@ -91,15 +97,22 @@ md"""
 ROOT_DIR = dirname(@__DIR__)
 
 # ╔═╡ 7812a13f-0120-47c0-9bbf-e03918a8113a
-PHANTOM_PATH = joinpath(
-	ROOT_DIR, "data/xcat/vmale_50_1600x1400x500_8bit_little_endian_act_1.bin"
-)
+# PHANTOM_PATH = joinpath(
+# 	ROOT_DIR, "data/xcat/vmale_50_1600x1400x500_8bit_little_endian_act_1.bin"
+# )
+PHANTOM_PATH = "/media/molloi-lab/2TB3/wenbo playground/Basis_simulator.github/vmale_50_400x400x348_8bit_little_endian_act_1.bin"
+
+# ╔═╡ eba4eb2b-22d3-453f-b9df-c715004deb92
+@assert isfile(PHANTOM_PATH)
 
 # ╔═╡ b1c2c0ee-e2ca-4ac3-a643-376aeafb0c6c
 MATERIAL_XLSX_PATH = joinpath(
 	ROOT_DIR,
 	"data/xcat/Material_Spreadsheets/vmale_50_materials_heart_high_contrast.xlsx"
 )
+
+# ╔═╡ 81c30820-1d70-4ba6-8562-4056a23411a8
+@assert isfile(MATERIAL_XLSX_PATH)
 
 # ╔═╡ b38ffd25-d549-475d-b92a-5d08ebd6cc53
 function load_phantom_bin(
@@ -137,7 +150,10 @@ function load_phantom_bin(
 end
 
 # ╔═╡ 72791f6b-0178-44dd-8f36-8071aa451b7c
-phantom_labeled_raw = load_phantom_bin(PHANTOM_PATH);
+phantom_labeled_raw = load_phantom_bin(PHANTOM_PATH; 
+		cols=400,
+		rows=400,
+		slices=348);
 
 # ╔═╡ 72791f6b-0178-44dd-8f36-8071aa451b8c
 """
@@ -187,8 +203,8 @@ begin
 	# RESOLUTION CONTROL — Uncomment ONE line below:
 	# ═══════════════════════════════════════════════════════════════════════════
 
-	# DOWNSAMPLE_FACTOR = 1   # UHR: 1600×1400×500 (original, slowest)
-	DOWNSAMPLE_FACTOR = 2   # HR:  800×700×250  (4× faster)
+	DOWNSAMPLE_FACTOR = 1   # UHR: 1600×1400×500 (original, slowest)
+	# DOWNSAMPLE_FACTOR = 2   # HR:  800×700×250  (4× faster)
 	# DOWNSAMPLE_FACTOR = 4   # Std: 400×350×125  (16× faster)
 	# DOWNSAMPLE_FACTOR = 5   # Fast: 320×280×100 (~25× faster, good for testing)
 
@@ -341,12 +357,22 @@ Assuming clinical torso FOV:
 - Z (SI): ~50 cm → voxel = 0.1 cm = 1.0 mm
 
 This gives **high input resolution** (0.3mm in-plane).
+
+
+
+*WENBO: loading low resolution phantom.*
+XCAT phantom dimensions: **400 × 400 × 348** voxels
+
+- X (lateral): ~48 cm → voxel = 0.12 cm = 1.2 mm
+- Y (AP): ~42 cm → voxel = 0.105 cm = 1.05 mm
+- Z (SI): ~50 cm → voxel = 0.1436 cm = 1.436 mm
 """
 
 # ╔═╡ f3861cff-abd7-4cb9-9eb6-2a4f63677d29
 begin
 	# Base XCAT voxel dimensions (at original 1600×1400×500 resolution)
-	base_voxel_cm = (0.03, 0.03, 0.1)  # 0.3mm × 0.3mm × 1.0mm
+	# base_voxel_cm = (0.03, 0.03, 0.1)  # 0.3mm × 0.3mm × 1.0mm
+	base_voxel_cm = (0.12, 0.105, 0.1436)  # 1.2mm × 1.05mm × 1.436mm
 
 	# Scale voxel size by downsample factor to maintain correct FOV
 	voxel_size_cm = base_voxel_cm .* DOWNSAMPLE_FACTOR
@@ -362,16 +388,52 @@ md"""
 **Computed FOV:** $(round(fov_x_cm, digits=1)) × $(round(fov_y_cm, digits=1)) × $(round(fov_z_cm, digits=1)) cm
 """
 
+# ╔═╡ 36f5181b-a4d2-4500-b5ba-599ba9dfd7ff
+begin
+	function check_gpu_support()
+	    return (cuda = CUDA.functional(), metal = Metal.functional())
+	end
+end
+
 # ╔═╡ bb8ec964-3fe8-4b67-8e32-356e8d10b942
 begin
-	# Create GPU phantom — MtlArray mask → GPU simulation
-	phantom_mask_gpu = Metal.MtlArray(phantom_labeled)
+	gpu_support = check_gpu_support()
+	phantom_mask_gpu = nothing
+	
+	if gpu_support.cuda
+	    # Create GPU phantom — CuArray mask → GPU simulation
+		phantom_mask_gpu = CUDA.CuArray(phantom_labeled)
+		
+	    println("Running on NVIDIA CUDA")
+	elseif gpu_support.metal
+	    # Create GPU phantom — MtlArray mask → GPU simulation
+		phantom_mask_gpu = Metal.MtlArray(phantom_labeled)
+		
+	    println("Running on APPLE METAL")
+	else
+		phantom_mask_gpu = phantom_labeled
+		
+	    println("Running on CPU.")
+	end
 	phantom_gpu = BS.Phantom(phantom_mask_gpu, materials_dict, voxel_size_cm)
+	
+	gram_used_mb = sizeof(phantom_gpu.mask) / 1024^2
+end
+
+# ╔═╡ 0c561e83-f704-4f62-89f4-821982cb110b
+begin
+	if gpu_support.cuda
+		CUDA.reclaim()
+		if debug_
+			CUDA.memory_status()
+		end
+	end
 end
 
 # ╔═╡ 6562ecaa-0df4-460b-b2aa-7c1f53505070
 md"""
 **GPU Phantom created:**
+- Memory Usage: $(round(gram_used_mb, digits=2)) MB
 - Mask size: $(size(phantom_gpu.mask))
 - Mask type: $(typeof(phantom_gpu.mask))
 - Materials: $(length(phantom_gpu.materials))
@@ -720,6 +782,16 @@ md"""
 Run a small water cylinder phantom through each scanner/protocol to measure μ\_water for accurate HU conversion. This avoids NIST reference mismatches from spectrum/filtration differences.
 """
 
+# ╔═╡ ad7b8bbc-47b2-4501-8485-62fac863d151
+begin
+	if gpu_support.cuda
+		CUDA.reclaim()
+		if debug_
+			CUDA.memory_status()
+		end
+	end
+end
+
 # ╔═╡ a0b1c2d3-e4f5-6789-abcd-000000000002
 begin
 	# 20cm diameter water cylinder — small grid for speed
@@ -741,9 +813,30 @@ begin
 		Dict(7 => 0.7553, 8 => 0.2318, 18 => 0.0129)
 	)
 	water_materials = Dict(0 => air_material, 1 => XA.Materials.water)
+	
 	# GPU phantom for fast calibration
-	water_mask_gpu = Metal.MtlArray(water_mask)
+	water_mask_gpu = nothing
+	if gpu_support.cuda
+	    # Create GPU phantom — CuArray mask → GPU simulation
+		water_mask_gpu = CUDA.CuArray(water_mask)
+	elseif gpu_support.metal
+	    # Create GPU phantom — MtlArray mask → GPU simulation
+		water_mask_gpu = Metal.MtlArray(water_mask)
+	else
+		water_mask_gpu = water_mask
+	end
+	
 	water_phantom_gpu = BS.Phantom(water_mask_gpu, water_materials, water_voxel_cm)
+end
+
+# ╔═╡ 49ffa9e9-3a7a-499d-a770-612fa0bfa8b9
+begin
+	if gpu_support.cuda
+		CUDA.reclaim()
+		if debug_
+			CUDA.memory_status()
+		end
+	end
 end
 
 # ╔═╡ 808b0a9b-a3ff-4fad-88f9-3bc2b1df543c
@@ -783,6 +876,16 @@ function extract_water_mu(vol)
 	return mean(vals)
 end
 
+# ╔═╡ 7f89bdbe-dd75-4167-8a4b-c1ac359946c7
+begin
+	if gpu_support.cuda
+		CUDA.reclaim()
+		if debug_
+			CUDA.memory_status()
+		end
+	end
+end
+
 # ╔═╡ d9dfaa24-2254-4953-993f-f9fdb0c3326d
 # EICT 120kVp calibration — workspace scoped locally to free GPU memory
 μ_water_eict = let
@@ -810,6 +913,16 @@ end
     GC.gc(true)
     
     result  # only this tiny scalar survives
+end
+
+# ╔═╡ bdaffdd5-caaf-4dbb-ad30-4614b02125e1
+begin
+	if gpu_support.cuda
+		CUDA.reclaim()
+		if debug_
+			CUDA.memory_status()
+		end
+	end
 end
 
 # ╔═╡ 5fe71f6b-e96e-45c7-ae60-dad1f13f110a
@@ -910,6 +1023,16 @@ md"""
 ### 7.1 EICT Single-kVp (120 kVp)
 """
 
+# ╔═╡ fa3b85ad-a53a-4716-bc33-a46262d85f60
+begin
+	if gpu_support.cuda
+		CUDA.reclaim()
+		if debug_
+			CUDA.memory_status()
+		end
+	end
+end
+
 # ╔═╡ 00000017-0000-0000-0000-000000000001
 # Simulate + reconstruct in a single let block — GPU workspaces are freed when block exits
 (recon_eict_fdk_hu, recon_eict_hir_hu) = let
@@ -930,10 +1053,14 @@ md"""
 
 	# --- FDK reconstruction → CPU HU ---
 	ws_fdk = BS.create_fdk_recon_workspace(sino, geom, recon_size)
-	fdk_hu = BS.to_hounsfield(
+	# fdk_hu = BS.to_hounsfield(
+	# 	Array(BS.reconstruct!(ws_fdk, sino, geom, recon_size));
+	# 	μ_water=μ_water_eict
+	# )
+	fdk_hu = Array(BS.to_hounsfield(
 		Array(BS.reconstruct!(ws_fdk, sino, geom, recon_size));
 		μ_water=μ_water_eict
-	)
+	))
 	ws_fdk = nothing
 	GC.gc(true)
 
@@ -950,6 +1077,16 @@ md"""
 
 	(fdk_hu, hir_hu)
 end;
+
+# ╔═╡ a410db1a-b8ba-4e09-af6c-bfc9f11151e7
+begin
+	if gpu_support.cuda
+		CUDA.reclaim()
+		if debug_
+			CUDA.memory_status()
+		end
+	end
+end
 
 # ╔═╡ 00000018-0000-0000-0000-000000000001
 md"""
@@ -1035,6 +1172,16 @@ md"""
 	(fdk_80_hu, fdk_140_hu, hir_80_hu, hir_140_hu, vmi_dict)
 end;
 
+# ╔═╡ 345a40a1-72ab-400b-bb45-ae7539d7a251
+begin
+	if gpu_support.cuda
+		CUDA.reclaim()
+		if debug_
+			CUDA.memory_status()
+		end
+	end
+end
+
 # ╔═╡ 00000021-0000-0000-0000-000000000001
 md"""
 ### 7.3 PCCT Standard (512×512, 0.4mm dexels)
@@ -1099,6 +1246,16 @@ md"""
 
 	(fdk_hu, hir_hu, vmi_dict)
 end;
+
+# ╔═╡ 2a198c77-bf0d-4322-82bf-439147372323
+begin
+	if gpu_support.cuda
+		CUDA.reclaim()
+		if debug_
+			CUDA.memory_status()
+		end
+	end
+end
 
 # ╔═╡ 00000024-0000-0000-0000-000000000001
 md"""
@@ -1407,6 +1564,7 @@ end
 
 # ╔═╡ Cell order:
 # ╟─00000001-0000-0000-0000-000000000001
+# ╠═3775baac-dcb8-4be2-8a19-89abf795c28d
 # ╠═d6d62fae-012d-11f1-1efc-67e7f251ff8c
 # ╠═cca08041-b05c-4045-a462-18b30fd0559f
 # ╠═3ad61ec7-ba66-449d-8fd1-e79a2345a9d7
@@ -1421,10 +1579,12 @@ end
 # ╟─20920020-fd6b-4a64-9e19-e00bfd616ee6
 # ╠═c744a9d3-5810-4465-82ee-2b8d9b5f68b1
 # ╠═7812a13f-0120-47c0-9bbf-e03918a8113a
+# ╠═eba4eb2b-22d3-453f-b9df-c715004deb92
 # ╠═b1c2c0ee-e2ca-4ac3-a643-376aeafb0c6c
+# ╠═81c30820-1d70-4ba6-8562-4056a23411a8
 # ╠═b38ffd25-d549-475d-b92a-5d08ebd6cc53
 # ╠═72791f6b-0178-44dd-8f36-8071aa451b7c
-# ╠═72791f6b-0178-44dd-8f36-8071aa451b8c
+# ╟─72791f6b-0178-44dd-8f36-8071aa451b8c
 # ╟─a1858da5-8231-460e-a471-35115d2b1476
 # ╠═72791f6b-0178-44dd-8f36-8071aa451b9c
 # ╠═702aca88-e592-4718-9f7a-1d3aa7c950ce
@@ -1440,7 +1600,9 @@ end
 # ╟─90070343-33a7-4873-ba42-32d1e80bde31
 # ╠═f3861cff-abd7-4cb9-9eb6-2a4f63677d29
 # ╟─aebd1afc-64d9-4be3-a7d9-10e2c7a3d0ad
+# ╠═36f5181b-a4d2-4500-b5ba-599ba9dfd7ff
 # ╠═bb8ec964-3fe8-4b67-8e32-356e8d10b942
+# ╠═0c561e83-f704-4f62-89f4-821982cb110b
 # ╟─6562ecaa-0df4-460b-b2aa-7c1f53505070
 # ╟─349fcb3d-b8fa-4423-8cdd-05a1a842c345
 # ╟─b1a2c3d4-e5f6-7890-abcd-111111111111
@@ -1475,20 +1637,28 @@ end
 # ╟─00000014-0000-0000-0000-000000000001
 # ╠═00000015-0000-0000-0000-000000000001
 # ╟─a0b1c2d3-e4f5-6789-abcd-000000000001
+# ╠═ad7b8bbc-47b2-4501-8485-62fac863d151
 # ╠═a0b1c2d3-e4f5-6789-abcd-000000000002
+# ╠═49ffa9e9-3a7a-499d-a770-612fa0bfa8b9
 # ╠═808b0a9b-a3ff-4fad-88f9-3bc2b1df543c
 # ╠═ee23461e-378d-4172-8c01-5783e40ef3b8
+# ╠═7f89bdbe-dd75-4167-8a4b-c1ac359946c7
 # ╠═d9dfaa24-2254-4953-993f-f9fdb0c3326d
+# ╠═bdaffdd5-caaf-4dbb-ad30-4614b02125e1
 # ╠═5fe71f6b-e96e-45c7-ae60-dad1f13f110a
 # ╠═8396962e-dc91-436c-90fb-1525d5459a8a
 # ╟─a0b1c2d3-e4f5-6789-abcd-000000000004
 # ╟─1b8aa963-7a95-4cc6-8670-de2e2caf28ab
 # ╟─00000016-0000-0000-0000-000000000001
+# ╠═fa3b85ad-a53a-4716-bc33-a46262d85f60
 # ╠═00000017-0000-0000-0000-000000000001
+# ╠═a410db1a-b8ba-4e09-af6c-bfc9f11151e7
 # ╟─00000018-0000-0000-0000-000000000001
 # ╠═00000020-0000-0000-0000-000000000001
+# ╠═345a40a1-72ab-400b-bb45-ae7539d7a251
 # ╟─00000021-0000-0000-0000-000000000001
 # ╠═00000023-0000-0000-0000-000000000001
+# ╠═2a198c77-bf0d-4322-82bf-439147372323
 # ╟─00000024-0000-0000-0000-000000000001
 # ╟─00000024-0000-0000-0000-000000000002
 # ╟─00000024-0000-0000-0000-000000000003
