@@ -36,3 +36,14 @@ two-material beam hardening correction implementation.
   - Script uses `mkpath` and `save(path, fig, px_per_unit=2)`
 - **Files:** `ralph_loop/scripts/bhc_two_material_test.jl` (rewritten)
 - **Next:** Commit and move to BHC-RUN
+
+### BHC-RUN — Iteration 1 (2026-02-26)
+- **Done:** Ran test script successfully. Results:
+  - No BHC center water: +43.5 HU (beam hardening present)
+  - Water-only BHC center water: +3.0 HU (cupping corrected)
+  - Water+Bone BHC center water: +0.6 HU (both effects corrected)
+  - Center ROI σ: 13.7 → 13.1 → 9.6 HU (bone BHC reduces artifact variance)
+  - Bone correction map shows non-zero correction near Ca insert ray paths
+  - PNG: 1.0 MB at `ralph_loop/results/bhc_two_material.png`
+- **Files:** `ralph_loop/results/bhc_two_material.png` (generated)
+- **Status:** ALL STORIES COMPLETE

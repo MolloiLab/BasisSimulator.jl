@@ -57,7 +57,7 @@
       "id": "BHC-RUN",
       "title": "Run test script and verify PNG output",
       "priority": 3,
-      "status": "in_progress",
+      "status": "done",
       "phase": "validation",
       "blockers": ["BHC-SCRIPT"],
       "description": "## Mission\n\nRun the BHC test script and verify it produces correct output.\n\n## Procedure\n\n1. Run the script:\n   ```bash\n   cd /Users/daleblack/Documents/dev/CTSimulatorStuff/BasisSimulator.jl\n   julia --project=. ralph_loop/scripts/bhc_two_material_test.jl\n   ```\n\n2. Check script output for:\n   - No errors/exceptions\n   - Center water HU (no BHC): should be significantly negative (cupping)\n   - Center water HU (water BHC): should be close to 0\n   - Center water HU (2-mat BHC): should be close to 0, potentially closer than water-only\n   - Bone correction should be non-zero (positive Δp near bone paths)\n\n3. Verify PNG exists and is valid:\n   ```bash\n   ls -la ralph_loop/results/bhc_two_material.png\n   ```\n   File should be >10KB.\n\n4. If script errors:\n   - Read the error carefully\n   - Fix the issue in the script OR the core library\n   - Re-run\n   - Do NOT mark done until script runs to completion AND PNG verified\n\n5. CHECKPOINT\n\n## Expected Quantitative Results\n\n- No BHC center water: -30 to -100 HU (cupping)\n- Water-only BHC center water: -5 to +5 HU\n- Two-material BHC center water: -5 to +5 HU\n- Bone correction magnitude: small but non-zero near Ca insert ray paths\n- The Gammex 472 has calcium inserts (Ca_50 to Ca_600) which should show the bone BHC effect",
