@@ -26,3 +26,13 @@ two-material beam hardening correction implementation.
   - Syntax verified via `Meta.parseall`
 - **Files:** `src/correction/beam_hardening_correction.jl` (modified)
 - **Next:** Commit and move to BHC-SCRIPT
+
+### BHC-SCRIPT — Iteration 1 (2026-02-26)
+- **Done:** Rewrote `ralph_loop/scripts/bhc_two_material_test.jl` to use core library functions:
+  - Replaced inline algorithm with `calibrate_bhc_two_material()` and `apply_bhc_two_material()`
+  - Removed inline `bone_fraction_smooth`, inline material lookups, inline correction loop
+  - Kept same visualization layout (2×4 grid, colorbars, annotation)
+  - Kept same quantitative comparison printout
+  - Script uses `mkpath` and `save(path, fig, px_per_unit=2)`
+- **Files:** `ralph_loop/scripts/bhc_two_material_test.jl` (rewritten)
+- **Next:** Commit and move to BHC-RUN
