@@ -17,7 +17,7 @@ Resolve materials with priority: (1) explicit kwarg, (2) phantom.materials, (3) 
 
 This is the v20.0 unified materials resolution logic used by all simulate() functions.
 """
-function _resolve_materials(phantom, materials_kwarg::Union{Nothing, Vector})
+function _resolve_materials(phantom, materials_kwarg::Union{Nothing,Vector})
     if !isnothing(materials_kwarg)
         # Priority 1: Explicit materials kwarg override
         return materials_kwarg
@@ -82,20 +82,20 @@ dual-energy sinograms, material maps, and VMI volumes.
 - `result.bin_sinograms` is an alias for `pcct_sinogram` (PRD naming convention)
 - Single-recon calls populate `reconstructions` with one entry
 """
-struct SimulationResult{T, G, P}
-    sinogram_ideal::AbstractArray{T, 3}
-    sinogram_noisy::AbstractArray{T, 3}
-    reconstructions::Vector{Pair{Symbol, AbstractArray{T, 3}}}
+struct SimulationResult{T,G,P}
+    sinogram_ideal::AbstractArray{T,3}
+    sinogram_noisy::AbstractArray{T,3}
+    reconstructions::Vector{Pair{Symbol,AbstractArray{T,3}}}
     geometry::G
     physics_config::P
     # Dual-energy fields
-    de_sinogram::Union{Nothing, DualEnergySinogram}
-    material_maps::Union{Nothing, MaterialMap}
-    vmi_volumes::Dict{Float64, AbstractArray{T, 3}}
+    de_sinogram::Union{Nothing,DualEnergySinogram}
+    material_maps::Union{Nothing,MaterialMap}
+    vmi_volumes::Dict{Float64,AbstractArray{T,3}}
     # PCCT fields
-    pcct_sinogram::Union{Nothing, EnergyResolvedSinogram}
-    pcct_material_maps::Union{Nothing, PCCTMaterialMap}
-    pcct_vmi_volumes::Dict{Float64, AbstractArray{T, 3}}
+    pcct_sinogram::Union{Nothing,EnergyResolvedSinogram}
+    pcct_material_maps::Union{Nothing,PCCTMaterialMap}
+    pcct_vmi_volumes::Dict{Float64,AbstractArray{T,3}}
 end
 
 # Property accessors for backward compatibility and PRD naming conventions
@@ -113,8 +113,8 @@ end
 
 function Base.propertynames(::SimulationResult, private::Bool=false)
     return (:sinogram_ideal, :sinogram_noisy, :reconstruction, :reconstructions,
-            :geometry, :physics_config, :de_sinogram, :material_maps, :vmi_volumes,
-            :pcct_sinogram, :pcct_material_maps, :pcct_vmi_volumes, :bin_sinograms)
+        :geometry, :physics_config, :de_sinogram, :material_maps, :vmi_volumes,
+        :pcct_sinogram, :pcct_material_maps, :pcct_vmi_volumes, :bin_sinograms)
 end
 
 """
@@ -174,9 +174,9 @@ function simulate(
     phantom,
     scanner::Scanner,
     protocol::CTProtocol,
-    sim_opts::SimOptions = SimOptions(),
-    recon_opts::ReconOptions = ReconOptions();
-    materials::Union{Nothing, Vector} = nothing
+    sim_opts::SimOptions=SimOptions(),
+    recon_opts::ReconOptions=ReconOptions();
+    materials::Union{Nothing,Vector}=nothing
 )
     # Route based on dual_energy and PCCT
     is_dual = protocol.dual_energy
@@ -203,7 +203,7 @@ function simulate(
     protocol::CTProtocol,
     sim_opts::SimOptions,
     recon_opts_list::Vector{ReconOptions};
-    materials::Union{Nothing, Vector} = nothing
+    materials::Union{Nothing,Vector}=nothing
 )
     # Run simulation with first recon option to get sinograms
     first_result = simulate(phantom, scanner, protocol, sim_opts, recon_opts_list[1]; materials=materials)
@@ -256,17 +256,17 @@ end
 # =============================================================================
 
 function _simulate_axial_single(phantom, scanner, protocol, sim_opts, recon_opts;
-                                materials::Union{Nothing, Vector} = nothing)
+    materials::Union{Nothing,Vector}=nothing)
     # 1. Build Geometry
     geom = CTGeometry(
         scanner;
-        n_angles = protocol.views,
-        fov_cm = recon_opts.fov_cm,
-        z_cm = recon_opts.z_cm
+        n_angles=protocol.views,
+        fov_cm=recon_opts.fov_cm,
+        z_cm=recon_opts.z_cm
     )
 
     # 2. Resolve spectrum
-    energies, weights = resolve_spectrum(sim_opts, protocol)
+    energies, weights = resolve_spectrum(sim_opts, protocol; scanner=scanner)
 
     # 3. Build PhysicsConfig (with phantom for size-aware scatter)
     config = build_physics_config(scanner, sim_opts, energies, weights; phantom=phantom)
@@ -293,10 +293,10 @@ function _simulate_axial_single(phantom, scanner, protocol, sim_opts, recon_opts
     recon_vol = _run_reconstruction(sino_final, geom, recon_opts)
 
     T = eltype(recon_vol)
-    recons = Pair{Symbol, AbstractArray{T, 3}}[recon_opts.algorithm => recon_vol]
-    vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
+    recons = Pair{Symbol,AbstractArray{T,3}}[recon_opts.algorithm=>recon_vol]
+    vmi_dict = Dict{Float64,AbstractArray{T,3}}()
 
-    pcct_vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
+    pcct_vmi_dict = Dict{Float64,AbstractArray{T,3}}()
     return SimulationResult(
         sino_ideal, sino_final, recons, geom, config,
         nothing, nothing, vmi_dict,
@@ -334,9 +334,9 @@ This is the core building block for both single-kVp and dual-kVp simulations.
 By using this for dual-energy, we ensure scatter is properly matched.
 """
 function _forward_single_pass(phantom, scanner, protocol, sim_opts, geom;
-                              materials::Union{Nothing, Vector} = nothing)
+    materials::Union{Nothing,Vector}=nothing)
     # Resolve spectrum for this kVp
-    energies, weights = resolve_spectrum(sim_opts, protocol)
+    energies, weights = resolve_spectrum(sim_opts, protocol; scanner=scanner)
 
     # Build PhysicsConfig (scatter add + scatter correct at SAME energy)
     config = build_physics_config(scanner, sim_opts, energies, weights; phantom=phantom)
@@ -356,37 +356,37 @@ function _forward_single_pass(phantom, scanner, protocol, sim_opts, geom;
 end
 
 function _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts;
-                              materials::Union{Nothing, Vector} = nothing)
+    materials::Union{Nothing,Vector}=nothing)
     # 1. Build Geometry (shared for both kVp)
     # DEPRECATED: prefer workspace-based simulate!() path
     geom = CTGeometry(
         scanner;
-        n_angles = protocol.views,
-        fov_cm = recon_opts.fov_cm,
-        z_cm = recon_opts.z_cm
+        n_angles=protocol.views,
+        fov_cm=recon_opts.fov_cm,
+        z_cm=recon_opts.z_cm
     )
 
     # 2. Create single-kVp protocols for each energy level
     # These are single-kVp protocols (dual_energy=false) so that
     # _forward_single_pass uses the standard scatter add/correct pipeline
     protocol_low = CTProtocol(
-        mA = protocol.mA_low > 0 ? protocol.mA_low : protocol.mA,
-        kVp = protocol.kVp_low,       # 80 kVp
-        views = protocol.views,
-        rotation_time = protocol.rotation_time,
-        flux_density = protocol.flux_density,
-        spectrum_path = nothing,
-        dual_energy = false           # Single-kVp mode for clean scatter handling
+        mA=protocol.mA_low > 0 ? protocol.mA_low : protocol.mA,
+        kVp=protocol.kVp_low,       # 80 kVp
+        views=protocol.views,
+        rotation_time=protocol.rotation_time,
+        flux_density=protocol.flux_density,
+        spectrum_path=nothing,
+        dual_energy=false           # Single-kVp mode for clean scatter handling
     )
 
     protocol_high = CTProtocol(
-        mA = protocol.mA,
-        kVp = protocol.kVp,           # 140 kVp
-        views = protocol.views,
-        rotation_time = protocol.rotation_time,
-        flux_density = protocol.flux_density,
-        spectrum_path = nothing,
-        dual_energy = false           # Single-kVp mode for clean scatter handling
+        mA=protocol.mA,
+        kVp=protocol.kVp,           # 140 kVp
+        views=protocol.views,
+        rotation_time=protocol.rotation_time,
+        flux_density=protocol.flux_density,
+        spectrum_path=nothing,
+        dual_energy=false           # Single-kVp mode for clean scatter handling
     )
 
     # 3. Run single-kVp pipeline for LOW kVp (80 kVp)
@@ -413,8 +413,8 @@ function _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts;
     # With use_noise=true: material decomposition sees realistic noise
     # With use_noise=false: identical to previous behavior (clean sinograms)
     de_sino = DualEnergySinogram(sino_low_noisy, sino_high_noisy;
-        low_kvp = Int(protocol.kVp_low),
-        high_kvp = Int(protocol.kVp)
+        low_kvp=Int(protocol.kVp_low),
+        high_kvp=Int(protocol.kVp)
     )
 
     # 7. Material decomposition (now operates on noisy sinograms when use_noise=true)
@@ -422,7 +422,7 @@ function _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts;
 
     # 8. VMI reconstruction (if energies specified)
     T = eltype(sino_final)
-    vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
+    vmi_dict = Dict{Float64,AbstractArray{T,3}}()
     if !isempty(recon_opts.vmi_energies)
         for E in recon_opts.vmi_energies
             vmi_sino = virtual_monoenergetic(mat_map, E)
@@ -433,9 +433,9 @@ function _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts;
 
     # 9. Standard reconstruction from high-kVp sinogram
     recon_vol = _run_reconstruction(sino_final, geom, recon_opts)
-    recons = Pair{Symbol, AbstractArray{T, 3}}[recon_opts.algorithm => recon_vol]
+    recons = Pair{Symbol,AbstractArray{T,3}}[recon_opts.algorithm=>recon_vol]
 
-    pcct_vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
+    pcct_vmi_dict = Dict{Float64,AbstractArray{T,3}}()
     return SimulationResult(
         sino_ideal, sino_final, recons, geom, config_high,
         de_sino, mat_map, vmi_dict,
@@ -468,11 +468,11 @@ without corrections). When corrections are applied, uses theoretical I0.
 Returns a GPU array (same device as input bins).
 """
 function _combine_pcct_bins(pcct_sino::EnergyResolvedSinogram, detector::PhotonCountingDetector,
-                             energies, weights, kVp; I0=1e6,
-                             apply_detector_effects::Bool=false, apply_corrections::Bool=false,
-                             flux_rate::Real=1e8,
-                             output=nothing,
-                             ws_I0_bins=nothing)
+    energies, weights, kVp; I0=1e6,
+    apply_detector_effects::Bool=false, apply_corrections::Bool=false,
+    flux_rate::Real=1e8,
+    output=nothing,
+    ws_I0_bins=nothing)
     T = Float32
     n_bins = length(pcct_sino.bins)
     thresholds = detector.energy_thresholds_keV
@@ -504,7 +504,7 @@ function _combine_pcct_bins(pcct_sino::EnergyResolvedSinogram, detector::PhotonC
             n_energy_points=length(energies)
         )
         [_compute_bin_I0(detector, energies, weights, η, thresholds, b,
-                          Float64(kVp), Float64(I0); R=R) for b in 1:n_bins]
+            Float64(kVp), Float64(I0); R=R) for b in 1:n_bins]
     end
     I0_total = T(sum(I0_bins))
 
@@ -559,9 +559,9 @@ function simulate!(
     phantom,
     scanner::Scanner,
     protocol::CTProtocol,
-    sim_opts::SimOptions = SimOptions(),
-    recon_opts::ReconOptions = ReconOptions();
-    materials::Union{Nothing, Vector} = nothing
+    sim_opts::SimOptions=SimOptions(),
+    recon_opts::ReconOptions=ReconOptions();
+    materials::Union{Nothing,Vector}=nothing
 ) where {T}
     # All setup data comes from workspace (pre-computed in create_workspace)
     geom = ws.geom
@@ -609,10 +609,10 @@ function simulate!(
 
     # Combine ideal (workspace buffer + pre-computed I0_bins)
     sino_ideal_gpu = _combine_pcct_bins(pcct_sino, pcct_detector, energies, weights, kVp;
-                                         apply_detector_effects=use_detector_fx,
-                                         apply_corrections=use_corrections,
-                                         output=ws.combined,
-                                         ws_I0_bins=ws.I0_bins)
+        apply_detector_effects=use_detector_fx,
+        apply_corrections=use_corrections,
+        output=ws.combined,
+        ws_I0_bins=ws.I0_bins)
 
     # BHC on ideal
     if config.bhc !== nothing
@@ -626,22 +626,22 @@ function simulate!(
     if sim_opts.use_noise
         I0_physics = compute_detector_I0(geom, protocol)
         apply_pcct_noise!(pcct_sino, pcct_detector, protocol;
-                          seed=sim_opts.seed, I0=I0_physics,
-                          energies=energies, weights=weights,
-                          ws_noise_staging=ws.noise_staging,
-                          ws_noise_buf=ws.noise_buf,
-                          ws_rng=ws.rng,
-                          ws_noise_I0=ws.noise_I0,
-                          ws_η=ws.η,
-                          noise_reduction=sim_opts.pcct_noise_reduction)
+            seed=sim_opts.seed, I0=I0_physics,
+            energies=energies, weights=weights,
+            ws_noise_staging=ws.noise_staging,
+            ws_noise_buf=ws.noise_buf,
+            ws_rng=ws.rng,
+            ws_noise_I0=ws.noise_I0,
+            ws_η=ws.η,
+            noise_reduction=sim_opts.pcct_noise_reduction)
     end
 
     # Combine noisy (reuse workspace buffer + pre-computed I0_bins)
     sino_noisy_gpu = _combine_pcct_bins(pcct_sino, pcct_detector, energies, weights, kVp;
-                                         apply_detector_effects=use_detector_fx,
-                                         apply_corrections=use_corrections,
-                                         output=ws.combined,
-                                         ws_I0_bins=ws.I0_bins)
+        apply_detector_effects=use_detector_fx,
+        apply_corrections=use_corrections,
+        output=ws.combined,
+        ws_I0_bins=ws.I0_bins)
 
     # BHC on noisy
     if config.bhc !== nothing
@@ -656,8 +656,8 @@ function simulate!(
 
     # 2-material decomposition (same as dual-kVp, GPU)
     spectral_decompose!(ws.vmi_material1, ws.vmi_material2,
-                        ws.vmi_sino_low, ws.vmi_sino_high,
-                        ws.vmi_inv_a11, ws.vmi_inv_a12, ws.vmi_inv_a21, ws.vmi_inv_a22)
+        ws.vmi_sino_low, ws.vmi_sino_high,
+        ws.vmi_inv_a11, ws.vmi_inv_a12, ws.vmi_inv_a21, ws.vmi_inv_a22)
 
     mat_map = if length(ws.basis_tuple) >= 2
         MaterialMap(ws.vmi_material1, ws.vmi_material2;
@@ -689,9 +689,9 @@ function simulate!(
     phantom,
     scanner::Scanner,
     protocol::CTProtocol,
-    sim_opts::SimOptions = SimOptions(),
-    recon_opts::ReconOptions = ReconOptions();
-    materials::Union{Nothing, Vector} = nothing
+    sim_opts::SimOptions=SimOptions(),
+    recon_opts::ReconOptions=ReconOptions();
+    materials::Union{Nothing,Vector}=nothing
 ) where {T}
     geom = ws.geom
     energies = ws.energies
@@ -703,16 +703,16 @@ function simulate!(
     # ═══════════════════════════════════════════════════════════════════════
     fill!(ws.sinogram, zero(T))
     _forward_project_poly!(ws.sinogram, phantom.mask, geom, energies, ws.weights, mats;
-                            ws_μ_volume=ws.μ_volume, ws_sino_mono=ws.sino_mono,
-                            ws_I_transmitted=ws.I_transmitted,
-                            ws_weights_norm=ws.weights_norm,
-                            ws_μ_lut_cpu=ws.μ_lut_cpu, ws_μ_lut_gpu=ws.μ_lut_gpu,
-                            ws_μ_table=ws.μ_table,
-                            ws_source_positions=ws.geom_source_positions,
-                            ws_detector_centers=ws.geom_detector_centers,
-                            ws_detector_u=ws.geom_detector_u,
-                            ws_detector_v=ws.geom_detector_v,
-                            volume_fov=phantom.fov)
+        ws_μ_volume=ws.μ_volume, ws_sino_mono=ws.sino_mono,
+        ws_I_transmitted=ws.I_transmitted,
+        ws_weights_norm=ws.weights_norm,
+        ws_μ_lut_cpu=ws.μ_lut_cpu, ws_μ_lut_gpu=ws.μ_lut_gpu,
+        ws_μ_table=ws.μ_table,
+        ws_source_positions=ws.geom_source_positions,
+        ws_detector_centers=ws.geom_detector_centers,
+        ws_detector_u=ws.geom_detector_u,
+        ws_detector_v=ws.geom_detector_v,
+        volume_fov=phantom.fov)
 
     if ws.has_signal_chain
         # ═══════════════════════════════════════════════════════════════════
@@ -862,9 +862,9 @@ function simulate!(
     phantom,
     scanner::Scanner,
     protocol::CTProtocol,
-    sim_opts::SimOptions = SimOptions(),
-    recon_opts::ReconOptions = ReconOptions();
-    materials::Union{Nothing, Vector} = nothing
+    sim_opts::SimOptions=SimOptions(),
+    recon_opts::ReconOptions=ReconOptions();
+    materials::Union{Nothing,Vector}=nothing
 ) where {T}
     geom = ws.geom
     mats = ws.mats
@@ -901,10 +901,10 @@ function simulate!(
     if sim_opts.use_noise
         # Noise for low kVp
         I0_low = T(compute_detector_I0(geom, CTProtocol(
-            mA = protocol.mA_low > 0 ? protocol.mA_low : protocol.mA,
-            kVp = protocol.kVp_low, views = protocol.views,
-            rotation_time = protocol.rotation_time,
-            flux_density = protocol.flux_density)))
+            mA=protocol.mA_low > 0 ? protocol.mA_low : protocol.mA,
+            kVp=protocol.kVp_low, views=protocol.views,
+            rotation_time=protocol.rotation_time,
+            flux_density=protocol.flux_density)))
 
         randn!(ws.rng, ws.noise_rand_cpu)
         copyto!(ws.noise_rand_gpu, ws.noise_rand_cpu)
@@ -919,9 +919,9 @@ function simulate!(
 
         # Noise for high kVp
         I0_high = T(compute_detector_I0(geom, CTProtocol(
-            mA = protocol.mA, kVp = protocol.kVp, views = protocol.views,
-            rotation_time = protocol.rotation_time,
-            flux_density = protocol.flux_density)))
+            mA=protocol.mA, kVp=protocol.kVp, views=protocol.views,
+            rotation_time=protocol.rotation_time,
+            flux_density=protocol.flux_density)))
 
         randn!(ws.rng, ws.noise_rand_cpu)
         copyto!(ws.noise_rand_gpu, ws.noise_rand_cpu)
@@ -943,18 +943,18 @@ function simulate!(
     # Material decomposition (in-place into workspace buffers)
     # ═══════════════════════════════════════════════════════════════════════
     de_sino = DualEnergySinogram(ws.sino_low, ws.sino_high;
-        low_kvp = Int(protocol.kVp_low),
-        high_kvp = Int(protocol.kVp))
+        low_kvp=Int(protocol.kVp_low),
+        high_kvp=Int(protocol.kVp))
 
     spectral_decompose!(ws.material1, ws.material2, ws.sino_low, ws.sino_high,
-                        ws.inv_a11, ws.inv_a12, ws.inv_a21, ws.inv_a22)
+        ws.inv_a11, ws.inv_a12, ws.inv_a21, ws.inv_a22)
     mat_map = MaterialMap(ws.material1, ws.material2;
         material1_name=ws.basis[1], material2_name=ws.basis[2],
         domain=:projection)
 
     return (sino_ideal_low=ws.sino_ideal_out_low, sino_ideal_high=ws.sino_ideal_out_high,
-            sino_noisy_low=ws.sino_noisy_out_low, sino_noisy_high=ws.sino_noisy_out_high,
-            de_sino=de_sino, mat_map=mat_map)
+        sino_noisy_low=ws.sino_noisy_out_low, sino_noisy_high=ws.sino_noisy_out_high,
+        de_sino=de_sino, mat_map=mat_map)
 end
 
 """
@@ -976,16 +976,16 @@ function _eict_dual_forward_pass!(
     # Forward projection (Beer-Lambert polychromatic)
     fill!(target_sino, zero(T))
     _forward_project_poly!(target_sino, phantom.mask, geom, energies, weights, mats;
-                            ws_μ_volume=ws.μ_volume, ws_sino_mono=ws.sino_mono,
-                            ws_I_transmitted=ws.I_transmitted,
-                            ws_weights_norm=weights_norm,
-                            ws_μ_lut_cpu=ws.μ_lut_cpu, ws_μ_lut_gpu=ws.μ_lut_gpu,
-                            ws_μ_table=μ_table,
-                            ws_source_positions=ws.geom_source_positions,
-                            ws_detector_centers=ws.geom_detector_centers,
-                            ws_detector_u=ws.geom_detector_u,
-                            ws_detector_v=ws.geom_detector_v,
-                            volume_fov=phantom.fov)
+        ws_μ_volume=ws.μ_volume, ws_sino_mono=ws.sino_mono,
+        ws_I_transmitted=ws.I_transmitted,
+        ws_weights_norm=weights_norm,
+        ws_μ_lut_cpu=ws.μ_lut_cpu, ws_μ_lut_gpu=ws.μ_lut_gpu,
+        ws_μ_table=μ_table,
+        ws_source_positions=ws.geom_source_positions,
+        ws_detector_centers=ws.geom_detector_centers,
+        ws_detector_u=ws.geom_detector_u,
+        ws_detector_v=ws.geom_detector_v,
+        volume_fov=phantom.fov)
 
     if ws.has_signal_chain
         # CatSim signal chain
@@ -1081,19 +1081,19 @@ end
 # =============================================================================
 
 function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts;
-                              materials::Union{Nothing, Vector} = nothing)
+    materials::Union{Nothing,Vector}=nothing)
     T = Float32
     # Convert mask to GPU before creating workspace so buffers match GPU backend
     mask_gpu = _to_gpu(phantom.mask)
     # Create a phantom wrapper with the GPU mask for consistent backend
     gpu_phantom = Phantom(mask_gpu, phantom.materials, phantom.voxel_size,
-                          phantom.origin, phantom.fov)
+        phantom.origin, phantom.fov)
     ws = create_workspace(scanner, protocol, sim_opts, recon_opts, gpu_phantom;
-                          materials=materials)
+        materials=materials)
 
     # Run zero-alloc PCCT pipeline
     result = simulate!(ws, gpu_phantom, scanner, protocol, sim_opts, recon_opts;
-                        materials=materials)
+        materials=materials)
     pcct_sino = result.pcct_sino
     mat_map = result.mat_map
 
@@ -1101,7 +1101,7 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts;
     geom = ws.geom
 
     # VMI synthesis + reconstruction (unified with dual-kVp path)
-    pcct_vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
+    pcct_vmi_dict = Dict{Float64,AbstractArray{T,3}}()
     if !isempty(recon_opts.vmi_energies) && !isnothing(mat_map)
         for E in recon_opts.vmi_energies
             vmi_sino = virtual_monoenergetic(mat_map, E; ws_output=ws.vmi_sino)
@@ -1112,8 +1112,8 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts;
 
     # Main reconstruction
     recon_vol = _run_reconstruction(ws.sino_noisy_out, geom, recon_opts)
-    recons = Pair{Symbol, AbstractArray{T, 3}}[recon_opts.algorithm => recon_vol]
-    vmi_dict = Dict{Float64, AbstractArray{T, 3}}()
+    recons = Pair{Symbol,AbstractArray{T,3}}[recon_opts.algorithm=>recon_vol]
+    vmi_dict = Dict{Float64,AbstractArray{T,3}}()
 
     return SimulationResult(
         ws.sino_ideal_out, ws.sino_noisy_out, recons, geom, ws.config,
@@ -1132,7 +1132,7 @@ end
 Dispatch to the correct reconstruction algorithm based on ReconOptions.
 """
 function _run_reconstruction(
-    sinogram::AbstractArray{T, 3},
+    sinogram::AbstractArray{T,3},
     geom::CTGeometry,
     recon_opts::ReconOptions
 ) where T
@@ -1230,7 +1230,7 @@ function get_spectrum(protocol::CTProtocol)
     # 1. Priority: Explicit Path
     if !isnothing(protocol.spectrum_path) && isfile(protocol.spectrum_path)
         data = readdlm(protocol.spectrum_path)
-        return data[:,1], data[:,2] # energies, weights
+        return data[:, 1], data[:, 2] # energies, weights
     end
 
     # 2. Priority: Auto-Lookup via kVp
@@ -1241,15 +1241,53 @@ end
 export get_spectrum
 
 """
-    resolve_spectrum(sim_opts::SimOptions, protocol::CTProtocol) -> (energies, weights)
+    resolve_spectrum(sim_opts, protocol; scanner=nothing) -> (energies, weights)
 
 Determine the energy spectrum based on SimOptions effect toggles.
-If any energy-dependent effect is enabled (flat_filter, bowtie_filter, detector_efficiency,
-bhc), loads the full polychromatic spectrum and downsamples to `sim_opts.n_energy_bins`.
-Otherwise, uses monochromatic approximation at `kVp * 0.5` keV.
+
+When `use_real_spectrum=true`:
+  Loads unfiltered Anode spectra, applies additional filters (Beer-Lambert),
+  scales to SDD, returns normalized weights for spectral shape.
+
+When `use_real_spectrum=false` (default):
+  If any energy-dependent effect is enabled (flat_filter, bowtie_filter,
+  detector_efficiency, bhc), loads the full polychromatic CatSim spectrum
+  and downsamples to `sim_opts.n_energy_bins`.
+  Otherwise, uses monochromatic approximation at `kVp * 0.5` keV.
 """
-function resolve_spectrum(sim_opts::SimOptions, protocol::CTProtocol)
-    if needs_polychromatic(sim_opts)
+function resolve_spectrum(sim_opts::SimOptions, protocol::CTProtocol; scanner=nothing)
+    if sim_opts.use_real_spectrum
+        # Load unfiltered spectrum from Anode files
+        kVp = Int(protocol.kVp)
+        e_raw, f_raw = load_spectrum_unfiltered(kVp; anode_angle=protocol.anode_angle)
+
+        # Determine SDD for distance scaling
+        sdd_mm = 750.0  # Default: no scaling
+        if !isnothing(scanner)
+            sdd_mm = scanner.source_to_detector  # mm
+        end
+
+        # Apply filters and distance scaling
+        e_filt, f_filt, total_flux = filter_spectrum(e_raw, f_raw;
+            filters=protocol.additional_filters,
+            sdd_mm=sdd_mm)
+
+        # Normalize to relative weights (sum = 1) for spectral shape
+        flux_sum = sum(f_filt)
+        if flux_sum > 0
+            weights = f_filt ./ flux_sum
+        else
+            weights = ones(length(f_filt)) ./ length(f_filt)
+        end
+
+        # Downsample if needed (many bins → n_energy_bins)
+        if length(e_filt) > sim_opts.n_energy_bins && needs_polychromatic(sim_opts)
+            e_filt, weights = downsample_spectrum(e_filt, weights, sim_opts.n_energy_bins)
+        end
+
+        return e_filt, weights
+
+    elseif needs_polychromatic(sim_opts)
         e_full, w_full = load_spectrum(Int(protocol.kVp))
         return downsample_spectrum(e_full, w_full, sim_opts.n_energy_bins)
     else
@@ -1303,9 +1341,9 @@ function build_physics_config(
     sim_opts::SimOptions,
     energies::Vector{Float64},
     weights::Vector{Float64};
-    phantom::Union{Nothing, Phantom} = nothing
+    phantom::Union{Nothing,Phantom}=nothing
 )
-    kwargs = Dict{Symbol, Any}()
+    kwargs = Dict{Symbol,Any}()
 
     # --- Common settings ---
     kwargs[:energy_keV] = sum(energies .* weights) / sum(weights)
@@ -1421,7 +1459,7 @@ function build_physics_config(
     if sim_opts.use_bhc
         ref_energy = sum(energies .* weights) / sum(weights)
         kwargs[:bhc] = calibrate_bhc(energies, weights;
-                                      order=5, reference_energy_keV=ref_energy)
+            order=5, reference_energy_keV=ref_energy)
     end
 
     return default_physics_config(; kwargs...)
@@ -1444,12 +1482,12 @@ Create the workspace with `create_fdk_recon_workspace(sinogram, geom, volume_siz
 """
 function reconstruct!(
     ws::FDKReconWorkspace{T},
-    sinogram::AbstractArray{T, 3},
+    sinogram::AbstractArray{T,3},
     geom::CTGeometry,
-    volume_size::NTuple{3, Int};
-    filter::FilterType = StandardFilter(),
-    cutoff::Float64 = 1.0
-) where T <: AbstractFloat
+    volume_size::NTuple{3,Int};
+    filter::FilterType=StandardFilter(),
+    cutoff::Float64=1.0
+) where T<:AbstractFloat
 
     # Step 1: Copy sinogram into filtering scratch buffer
     copyto!(ws.filtered, sinogram)
@@ -1457,17 +1495,17 @@ function reconstruct!(
     # Step 2: Filter in-place (cosine weighting + ramp convolution)
     # Uses pre-allocated convolution scratch and filter kernel
     filter_sinogram!(ws.filtered, geom; filter=filter, cutoff=cutoff,
-                     ws_conv_scratch=ws.conv_scratch,
-                     ws_filter_kernel=ws.filter_kernel)
+        ws_conv_scratch=ws.conv_scratch,
+        ws_filter_kernel=ws.filter_kernel)
 
     # Step 3: Backproject into pre-allocated volume
     fill!(ws.volume, zero(T))
     backproject!(ws.volume, ws.filtered, geom;
-                 weighted=true,
-                 ws_source_positions=ws.bp_source_positions,
-                 ws_detector_centers=ws.bp_detector_centers,
-                 ws_detector_u=ws.bp_detector_u,
-                 ws_detector_v=ws.bp_detector_v)
+        weighted=true,
+        ws_source_positions=ws.bp_source_positions,
+        ws_detector_centers=ws.bp_detector_centers,
+        ws_detector_u=ws.bp_detector_u,
+        ws_detector_v=ws.bp_detector_v)
 
     return ws.volume
 end
@@ -1483,8 +1521,8 @@ Copy subset of angle data from `full` into pre-allocated `buf`.
 `buf[:,:,1:n_sub] = full[:,:,angle_indices]` — zero-allocation via views.
 """
 function _copy_subset_into_buffer!(
-    buf::AbstractArray{T, 3},
-    full::AbstractArray{T, 3},
+    buf::AbstractArray{T,3},
+    full::AbstractArray{T,3},
     angle_indices::Vector{Int},
     n_sub::Int
 ) where T
@@ -1506,25 +1544,25 @@ Create the workspace with `create_hir_recon_workspace(sinogram, geom, volume_siz
 """
 function reconstruct!(
     ws::HIRReconWorkspace{T},
-    sinogram::AbstractArray{T, 3},
+    sinogram::AbstractArray{T,3},
     geom::CTGeometry,
-    volume_size::NTuple{3, Int};
-    filter::FilterType = StandardFilter(),
-    cutoff::Float64 = 1.0
-) where T <: AbstractFloat
+    volume_size::NTuple{3,Int};
+    filter::FilterType=StandardFilter(),
+    cutoff::Float64=1.0
+) where T<:AbstractFloat
 
     # ─── Step 1: FDK initialization (same as FDKReconWorkspace) ───
     copyto!(ws.filtered, sinogram)
     filter_sinogram!(ws.filtered, geom; filter=filter, cutoff=cutoff,
-                     ws_conv_scratch=ws.conv_scratch,
-                     ws_filter_kernel=ws.filter_kernel)
+        ws_conv_scratch=ws.conv_scratch,
+        ws_filter_kernel=ws.filter_kernel)
     fill!(ws.volume, zero(T))
     backproject!(ws.volume, ws.filtered, geom;
-                 weighted=true,
-                 ws_source_positions=ws.geom_source_positions,
-                 ws_detector_centers=ws.geom_detector_centers,
-                 ws_detector_u=ws.geom_detector_u,
-                 ws_detector_v=ws.geom_detector_v)
+        weighted=true,
+        ws_source_positions=ws.geom_source_positions,
+        ws_detector_centers=ws.geom_detector_centers,
+        ws_detector_u=ws.geom_detector_u,
+        ws_detector_v=ws.geom_detector_v)
 
     # ─── Step 2: PWLS refinement with Huber regularization ───
     params = ws.params
@@ -1578,6 +1616,7 @@ function reconstruct!(
                     sino_s = view(ws.subset_sino_buf, :, :, 1:n_sub),
                     wp_s = view(ws.subset_W_proj_buf, :, :, 1:n_sub),
                     sw_s = view(ws.subset_stat_weights_buf, :, :, 1:n_sub)
+
                     AK.foreachindex(ax, backend) do idx
                         residual = sino_s[idx] - ax[idx]
                         ax[idx] = wp_s[idx] * sw_s[idx] * residual
@@ -1587,16 +1626,17 @@ function reconstruct!(
                 # Backproject weighted residual → correction
                 fill!(ws.correction, zero(T))
                 backproject!(ws.correction, ax_view, geom_s;
-                             weighted=false,
-                             ws_source_positions=ws.subset_geom_source_positions[s],
-                             ws_detector_centers=ws.subset_geom_detector_centers[s],
-                             ws_detector_u=ws.subset_geom_detector_u[s],
-                             ws_detector_v=ws.subset_geom_detector_v[s])
+                    weighted=false,
+                    ws_source_positions=ws.subset_geom_source_positions[s],
+                    ws_detector_centers=ws.subset_geom_detector_centers[s],
+                    ws_detector_u=ws.subset_geom_detector_u[s],
+                    ws_detector_v=ws.subset_geom_detector_v[s])
 
                 # SIRT-style update with subset scaling:
                 # x += λ_relax * V_inv * (n_subsets * correction) - λ * V_inv * reg_grad
                 let vol = ws.volume, vinv = ws.V_inv, corr = ws.correction,
                     rg = ws.reg_grad, ss = subset_scale
+
                     AK.foreachindex(vol, backend) do idx
                         data_update = λ_relax * vinv[idx] * ss * corr[idx]
                         reg_update = λ * vinv[idx] * rg[idx]
@@ -1669,11 +1709,11 @@ function reconstruct!(
             # Backproject weighted residual into ws.correction (unweighted for SIRT)
             fill!(ws.correction, zero(T))
             backproject!(ws.correction, ws.Ax, geom;
-                         weighted=false,
-                         ws_source_positions=ws.geom_source_positions,
-                         ws_detector_centers=ws.geom_detector_centers,
-                         ws_detector_u=ws.geom_detector_u,
-                         ws_detector_v=ws.geom_detector_v)
+                weighted=false,
+                ws_source_positions=ws.geom_source_positions,
+                ws_detector_centers=ws.geom_detector_centers,
+                ws_detector_u=ws.geom_detector_u,
+                ws_detector_v=ws.geom_detector_v)
 
             # Apply SIRT-style update with regularization:
             # x = x + λ_relax * V_inv * correction - λ_reg * V_inv * reg_grad

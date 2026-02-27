@@ -42,6 +42,10 @@ export XA
 # Source (X-ray source + beam shaping)
 # =============================================================================
 
+# Material attenuation coefficients (NIST XCOM data for filter materials)
+# Provides get_filter_mu() used by spectrum filtering and bowtie filter
+include("materials/material_attenuation.jl")
+
 # Spectrum loading (from .dat files)
 include("source/spectrum.jl")
 

@@ -1,4 +1,4 @@
-"""
+﻿"""
     Forward/Protocol.jl
 
 Protocol definitions for CT simulation.
@@ -28,6 +28,10 @@ For dual-energy, `kVp` and `mA` are the HIGH energy settings.
 - `kVp_low`: Low tube voltage for dual-energy (0.0 if single)
 - `mA_low`: Low tube current for dual-energy (0.0 if single)
 - `integration_fraction`: Fraction of views at low kVp (0.5 default)
+- `collimation_mm`: Detector z-collimation in mm (nothing = use full detector)
+- `anode_angle`: X-ray tube anode target angle in degrees (8 or 10)
+- `additional_filters`: Vector of (material, thickness_mm) tuples for beam filtering
+  e.g., [("Al", 2.5), ("Cu", 0.1)]. Used when use_real_spectrum=true.
 """
 struct CTProtocol
     mA::Float64            # Tube current (high energy for DE)
@@ -35,12 +39,15 @@ struct CTProtocol
     views::Int             # Number of projections per rotation
     rotation_time::Float64 # Rotation time
     flux_density::Float64  # Reference flux
-    spectrum_path::Union{String, Nothing}
+    spectrum_path::Union{String,Nothing}
     n_rotations::Float64   # Number of gantry rotations
     dual_energy::Bool      # Dual-kVp scan flag
     kVp_low::Float64       # Low kVp for dual-energy
     mA_low::Float64        # Low mA for dual-energy
     integration_fraction::Float64  # Fraction of views at low kVp
+    collimation_mm::Union{Float64,Nothing}  # Detector z-collimation (mm), nothing = full detector
+    anode_angle::Int       # Anode target angle (8 or 10 degrees)
+    additional_filters::Vector{Tuple{String,Float64}}  # (material, thickness_mm)
 end
 
 """
@@ -61,11 +68,22 @@ Create a CT protocol. You must provide either `mA` OR `mAs`.
 - `kVp_low`: Low tube voltage for DE (default: 0.0, required > 0 when dual_energy=true)
 - `mA_low`: Low tube current for DE (default: 0.0)
 - `integration_fraction`: Fraction of views at low kVp (default: 0.5)
+- `collimation_mm`: Detector z-collimation in mm (default: nothing = full detector)
+- `anode_angle`: Anode target angle in degrees (default: 8, valid: 8 or 10)
+- `additional_filters`: Filter materials and thicknesses in mm (default: empty)
+  e.g., `[("Al", 2.5), ("Cu", 0.1), ("Sn", 0.2)]`
 
 # Examples
 ```julia
 # Simple axial (backward compatible)
 CTProtocol(kVp=120, mA=200, views=984)
+
+# With collimation (128×0.625mm = 80mm)
+CTProtocol(kVp=120, mA=200, views=984, collimation_mm=80.0)
+
+# With unfiltered spectrum and filters (requires SimOptions use_real_spectrum=true)
+CTProtocol(kVp=120, mA=200, anode_angle=10,
+           additional_filters=[("Al", 2.5), ("Cu", 0.1)])
 
 # Dual-energy axial
 CTProtocol(dual_energy=true, kVp=140, mA=200, kVp_low=80, mA_low=350, views=984)
@@ -83,7 +101,10 @@ function CTProtocol(;
     dual_energy::Bool=false,
     kVp_low::Real=0.0,
     mA_low::Real=0.0,
-    integration_fraction::Real=0.5
+    integration_fraction::Real=0.5,
+    collimation_mm::Union{Real,Nothing}=nothing,
+    anode_angle::Int=8,
+    additional_filters::Vector{Tuple{String,Float64}}=Tuple{String,Float64}[]
 )
     # Handle mA / mAs exclusivity
     final_mA = if !isnothing(mA)
@@ -111,7 +132,10 @@ function CTProtocol(;
         dual_energy,
         Float64(kVp_low),
         Float64(mA_low),
-        Float64(integration_fraction)
+        Float64(integration_fraction),
+        collimation_mm === nothing ? nothing : Float64(collimation_mm),
+        anode_angle,
+        additional_filters
     )
 end
 
@@ -196,6 +220,19 @@ function validate_protocol(protocol::CTProtocol, scanner::Scanner)
     if protocol.flux_density ≤ 0.0
         push!(messages, "ERROR: flux_density must be positive (got $(protocol.flux_density))")
         valid = false
+    end
+
+    # Collimation validation
+    if protocol.collimation_mm !== nothing
+        if protocol.collimation_mm <= 0
+            push!(messages, "ERROR: collimation_mm must be positive (got $(protocol.collimation_mm))")
+            valid = false
+        end
+        max_mm = scanner.detector_rows * scanner.detector_row_size
+        if protocol.collimation_mm > max_mm
+            push!(messages, "ERROR: collimation_mm ($(protocol.collimation_mm)) exceeds scanner max ($max_mm mm = $(scanner.detector_rows) × $(scanner.detector_row_size) mm)")
+            valid = false
+        end
     end
 
     return valid, messages
@@ -321,9 +358,9 @@ function dose_report(protocol::CTProtocol, geom::CTGeometry;
     total_photons = I0 * geom.n_cols * geom.n_rows * protocol.views
 
     # Print formatted report
-    println("=" ^ 50)
+    println("="^50)
     println("CT Dose Report")
-    println("=" ^ 50)
+    println("="^50)
     println("Protocol:")
     println("  kVp:            $(protocol.kVp)")
     println("  mA:             $(protocol.mA)")
@@ -342,16 +379,16 @@ function dose_report(protocol::CTProtocol, geom::CTGeometry;
     println("Photon Statistics:")
     println("  I₀/pixel/view:  $(round(I0, sigdigits=4))")
     println("  Total photons:  $(round(total_photons, sigdigits=4))")
-    println("=" ^ 50)
+    println("="^50)
 
     return (
-        ctdi_vol = ctdi,
-        dlp = dlp,
-        I0_per_view = I0,
-        total_photons = total_photons,
-        mAs = mAs,
-        kVp = protocol.kVp,
-        views = protocol.views
+        ctdi_vol=ctdi,
+        dlp=dlp,
+        I0_per_view=I0,
+        total_photons=total_photons,
+        mAs=mAs,
+        kVp=protocol.kVp,
+        views=protocol.views
     )
 end
 
@@ -400,7 +437,8 @@ function constant_dose_protocol(base::CTProtocol, new_views::Int)
         base.dual_energy,
         base.kVp_low,
         base.mA_low,
-        base.integration_fraction
+        base.integration_fraction,
+        base.collimation_mm
     )
 end
 
@@ -441,7 +479,8 @@ function constant_noise_protocol(base::CTProtocol, new_views::Int)
         base.dual_energy,
         base.kVp_low,
         base.mA_low,
-        base.integration_fraction
+        base.integration_fraction,
+        base.collimation_mm
     )
 end
 

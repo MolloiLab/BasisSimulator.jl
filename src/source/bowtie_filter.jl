@@ -433,17 +433,17 @@ function compare_bowtie_profiles(
     correlation = cor(t1, t2)
 
     return (
-        max_thickness_diff_pct = maximum(thickness_diff_pct),
-        mean_thickness_diff_pct = mean(thickness_diff_pct),
-        max_transmission_diff_pct = maximum(transmission_diff_pct),
-        mean_transmission_diff_pct = mean(transmission_diff_pct),
-        correlation = correlation,
-        passes_3pct = maximum(transmission_diff_pct) < 3.0,
-        angles_rad = collect(angles),
-        thickness1 = t1,
-        thickness2 = t2,
-        transmission1 = trans1,
-        transmission2 = trans2
+        max_thickness_diff_pct=maximum(thickness_diff_pct),
+        mean_thickness_diff_pct=mean(thickness_diff_pct),
+        max_transmission_diff_pct=maximum(transmission_diff_pct),
+        mean_transmission_diff_pct=mean(transmission_diff_pct),
+        correlation=correlation,
+        passes_3pct=maximum(transmission_diff_pct) < 3.0,
+        angles_rad=collect(angles),
+        thickness1=t1,
+        thickness2=t2,
+        transmission1=trans1,
+        transmission2=trans2
     )
 end
 
@@ -515,7 +515,7 @@ function verify_bowtie_physics(filter::BowtieFilter; verbose::Bool=true)
 
     # Check 4: Monotonic profile (in either direction)
     # Sample at positive angles only
-    test_angles = sort(filter.angles[filter.angles .>= 0])
+    test_angles = sort(filter.angles[filter.angles.>=0])
     if length(test_angles) > 1
         thicknesses = [sum(interpolate_thickness(filter, θ)) for θ in test_angles]
         is_monotonic_increasing = issorted(thicknesses)
@@ -552,101 +552,39 @@ function verify_bowtie_physics(filter::BowtieFilter; verbose::Bool=true)
     end
 
     return (
-        passes = passes_all,
-        is_bowtie_shape = is_convention_a,  # Legacy field
-        has_dose_reduction = has_dose_reduction,
-        reasonable_thickness = reasonable_thickness,
-        is_monotonic = is_monotonic,
-        t_center_cm = t_center,
-        t_edge_cm = t_edge,
-        trans_center = trans_center,
-        trans_edge = trans_edge,
-        dose_reduction_factor = dose_reduction_factor
+        passes=passes_all,
+        is_bowtie_shape=is_convention_a,  # Legacy field
+        has_dose_reduction=has_dose_reduction,
+        reasonable_thickness=reasonable_thickness,
+        is_monotonic=is_monotonic,
+        t_center_cm=t_center,
+        t_edge_cm=t_edge,
+        trans_center=trans_center,
+        trans_edge=trans_edge,
+        dose_reduction_factor=dose_reduction_factor
     )
 end
 
 # =============================================================================
-# Material Attenuation Coefficients
+# Material Attenuation (delegated to material_attenuation.jl)
 # =============================================================================
-
-# NIST XCOM-based linear attenuation coefficients (cm⁻¹)
-# Data points for interpolation: (energy_keV, μ in cm⁻¹)
-const BOWTIE_MU_DATA = Dict{String, Tuple{Vector{Float64}, Vector{Float64}}}(
-    # Aluminum (ρ = 2.70 g/cm³)
-    # Data from NIST XCOM
-    "Al" => (
-        [20.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0, 120.0, 150.0],
-        [3.44, 1.13, 0.75, 0.63, 0.61, 0.55, 0.51, 0.49, 0.46]
-    ),
-    # Graphite/Carbon (ρ = 1.70 g/cm³ for graphite)
-    "graphite" => (
-        [20.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0, 120.0, 150.0],
-        [0.56, 0.31, 0.27, 0.26, 0.26, 0.25, 0.24, 0.24, 0.23]
-    ),
-    # Copper (ρ = 8.96 g/cm³)
-    # K-edge at 8.98 keV
-    "Cu" => (
-        [20.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0, 120.0, 150.0],
-        [94.5, 31.9, 14.5, 7.77, 4.67, 2.14, 1.22, 0.81, 0.52]
-    ),
-    # Titanium (ρ = 4.51 g/cm³)
-    # K-edge at 4.97 keV
-    "Ti" => (
-        [20.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0, 120.0, 150.0],
-        [17.0, 5.75, 2.74, 1.56, 1.02, 0.54, 0.37, 0.30, 0.25]
-    )
-)
-
-# Alias for carbon
-BOWTIE_MU_DATA["C"] = BOWTIE_MU_DATA["graphite"]
+# All material μ(E) data now lives in materials/material_attenuation.jl.
+# Use get_filter_mu(material, energy_keV) from that module.
+# Legacy wrappers kept for backward compatibility.
 
 """
     get_bowtie_mu(material::String, energy_keV::Float64) -> Float64
 
-Get linear attenuation coefficient for bowtie material at given energy.
-
-Returns μ in cm⁻¹.
-
-Uses NIST XCOM-based lookup tables with log-linear interpolation.
+Legacy wrapper — delegates to `get_filter_mu` from material_attenuation.jl.
 """
-function get_bowtie_mu(material::String, energy_keV::Float64)
-    # Get data for material (default to Al if unknown)
-    if !haskey(BOWTIE_MU_DATA, material)
-        material = "Al"
-    end
-
-    energies, mus = BOWTIE_MU_DATA[material]
-    E = clamp(energy_keV, energies[1], energies[end])
-
-    # Log-linear interpolation (μ varies roughly linearly with log(E) in diagnostic range)
-    log_E = log(E)
-    log_energies = log.(energies)
-    log_mus = log.(mus)
-
-    # Find interpolation interval
-    idx = 1
-    for i in 1:(length(energies)-1)
-        if log_E >= log_energies[i] && log_E <= log_energies[i+1]
-            idx = i
-            break
-        end
-    end
-
-    # Linear interpolation in log space
-    t = (log_E - log_energies[idx]) / (log_energies[idx+1] - log_energies[idx])
-    log_mu = log_mus[idx] + t * (log_mus[idx+1] - log_mus[idx])
-
-    return exp(log_mu)
-end
+get_bowtie_mu(material::String, energy_keV::Float64) = get_filter_mu(material, energy_keV)
 
 """
     get_bowtie_mu_reference(material::String) -> Float64
 
 Get reference linear attenuation coefficient at 60 keV.
 """
-function get_bowtie_mu_reference(material::String)
-    return get_bowtie_mu(material, 60.0)
-end
+get_bowtie_mu_reference(material::String) = get_filter_mu(material, 60.0)
 
 # =============================================================================
 # Bowtie Attenuation Computation
@@ -939,7 +877,7 @@ Get the 1D bowtie transmission profile across detector columns.
 Returns transmission at the central row.
 """
 function get_bowtie_profile(filter::BowtieFilter, geom::CTGeometry;
-                            energy_keV::Float64=60.0)
+    energy_keV::Float64=60.0)
     transmission = compute_bowtie_attenuation(filter, geom; energy_keV=energy_keV)
     mid_row = geom.n_rows ÷ 2 + 1
     return transmission[:, mid_row]
@@ -955,12 +893,12 @@ function get_bowtie_info(filter::BowtieFilter)
     min_thickness = minimum(sum(filter.thickness, dims=2))
 
     return (
-        name = filter.name,
-        n_materials = length(filter.materials),
-        materials = filter.materials,
-        angle_range_deg = (rad2deg(filter.angles[1]), rad2deg(filter.angles[end])),
-        thickness_range_cm = (min_thickness, max_thickness),
-        n_angles = length(filter.angles)
+        name=filter.name,
+        n_materials=length(filter.materials),
+        materials=filter.materials,
+        angle_range_deg=(rad2deg(filter.angles[1]), rad2deg(filter.angles[end])),
+        thickness_range_cm=(min_thickness, max_thickness),
+        n_angles=length(filter.angles)
     )
 end
 
