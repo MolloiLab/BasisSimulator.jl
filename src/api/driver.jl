@@ -714,7 +714,8 @@ function simulate!(
         ws_detector_centers=ws.geom_detector_centers,
         ws_detector_u=ws.geom_detector_u,
         ws_detector_v=ws.geom_detector_v,
-        volume_extent=phantom.extent)
+        volume_extent=phantom.extent,
+        ws_η=ws.η_vec)
 
     if ws.has_signal_chain
         # ═══════════════════════════════════════════════════════════════════
@@ -822,7 +823,10 @@ function simulate!(
     # Apply quantum noise (in-place using workspace buffers)
     # ═══════════════════════════════════════════════════════════════════════
     if sim_opts.use_noise
-        I0_T = T(compute_detector_I0(geom, protocol))
+        I0_raw = compute_detector_I0(geom, protocol)
+        # Scale by spectrum-weighted average efficiency: η_eff = Σ wₑ × η(E)
+        η_eff = sum(ws.weights_norm[i] * ws.η_vec[i] for i in 1:length(ws.η_vec))
+        I0_T = T(I0_raw * η_eff)
 
         # Use default RNG (matches sim_detect behavior: seed=nothing)
         randn!(ws.noise_rand_cpu)
@@ -879,7 +883,7 @@ function simulate!(
         ws.μ_table_low, ws.config_low,
         ws.flat_filter_projection_low, ws.bowtie_projection_low,
         ws.bhc_coeffs_gpu_low, ws.bhc_low,
-        sim_opts)
+        sim_opts, ws.η_vec_low)
 
     # ═══════════════════════════════════════════════════════════════════════
     # PASS 2: High kVp forward projection + physics → ws.sino_high
@@ -889,7 +893,7 @@ function simulate!(
         ws.μ_table_high, ws.config_high,
         ws.flat_filter_projection_high, ws.bowtie_projection_high,
         ws.bhc_coeffs_gpu_high, ws.bhc_high,
-        sim_opts)
+        sim_opts, ws.η_vec_high)
 
     # ═══════════════════════════════════════════════════════════════════════
     # Save ideal sinograms (both kVps) to CPU
@@ -902,11 +906,14 @@ function simulate!(
     # ═══════════════════════════════════════════════════════════════════════
     if sim_opts.use_noise
         # Noise for low kVp
-        I0_low = T(compute_detector_I0(geom, CTProtocol(
+        I0_raw_low = compute_detector_I0(geom, CTProtocol(
             mA=protocol.mA_low > 0 ? protocol.mA_low : protocol.mA,
             kVp=protocol.kVp_low, views=protocol.views,
             rotation_time=protocol.rotation_time,
-            flux_density=protocol.flux_density)))
+            flux_density=protocol.flux_density))
+        # Scale by spectrum-weighted average efficiency: η_eff = Σ wₑ × η(E)
+        η_eff_low = sum(ws.weights_norm_low[i] * ws.η_vec_low[i] for i in 1:length(ws.η_vec_low))
+        I0_low = T(I0_raw_low * η_eff_low)
 
         randn!(ws.rng, ws.noise_rand_cpu)
         copyto!(ws.noise_rand_gpu, ws.noise_rand_cpu)
@@ -920,10 +927,12 @@ function simulate!(
         end
 
         # Noise for high kVp
-        I0_high = T(compute_detector_I0(geom, CTProtocol(
+        I0_raw_high = compute_detector_I0(geom, CTProtocol(
             mA=protocol.mA, kVp=protocol.kVp, views=protocol.views,
             rotation_time=protocol.rotation_time,
-            flux_density=protocol.flux_density)))
+            flux_density=protocol.flux_density))
+        η_eff_high = sum(ws.weights_norm_high[i] * ws.η_vec_high[i] for i in 1:length(ws.η_vec_high))
+        I0_high = T(I0_raw_high * η_eff_high)
 
         randn!(ws.rng, ws.noise_rand_cpu)
         copyto!(ws.noise_rand_gpu, ws.noise_rand_cpu)
@@ -963,7 +972,7 @@ end
     _eict_dual_forward_pass!(ws, target_sino, phantom, geom, mats,
         energies, weights, weights_norm, μ_table, config,
         flat_filter_proj, bowtie_proj, bhc_coeffs_gpu, bhc_effect,
-        sim_opts)
+        sim_opts, η_vec)
 
 Run one forward projection pass for dual-kVp simulation.
 Uses shared scratch buffers from the dual workspace (μ_volume, sino_mono, I_transmitted).
@@ -973,7 +982,7 @@ function _eict_dual_forward_pass!(
     ws::EICTDualWorkspace{T}, target_sino, phantom, geom, mats,
     energies, weights, weights_norm, μ_table, config,
     flat_filter_proj, bowtie_proj, bhc_coeffs_gpu, bhc_effect,
-    sim_opts
+    sim_opts, η_vec
 ) where {T}
     # Forward projection (Beer-Lambert polychromatic)
     fill!(target_sino, zero(T))
@@ -987,7 +996,8 @@ function _eict_dual_forward_pass!(
         ws_detector_centers=ws.geom_detector_centers,
         ws_detector_u=ws.geom_detector_u,
         ws_detector_v=ws.geom_detector_v,
-        volume_extent=phantom.extent)
+        volume_extent=phantom.extent,
+        ws_η=η_vec)
 
     if ws.has_signal_chain
         # CatSim signal chain

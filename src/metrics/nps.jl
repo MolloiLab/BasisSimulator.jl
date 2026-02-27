@@ -330,10 +330,9 @@ function measure_nps(
     # Radial average for 1D NPS
     radial_freqs, nps_1d = _radial_average_nps(nps_2d_shifted, freq_axis)
 
-    # Only positive frequencies
-    center_idx = length(radial_freqs) ÷ 2 + 1
-    radial_freqs = radial_freqs[center_idx:end]
-    nps_1d = nps_1d[center_idx:end]
+    # Skip DC bin (index 1); radial_freqs is already non-negative (0 to max)
+    radial_freqs = radial_freqs[2:end]
+    nps_1d = nps_1d[2:end]
 
     # Convert units if requested
     if unit == :lp_cm

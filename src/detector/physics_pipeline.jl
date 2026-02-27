@@ -510,8 +510,9 @@ function apply_physics_effects!(
                                ws_output=ws_output, ws_kernel=ws_focal_spot_kernel)
     end
 
-    # 7. Detector efficiency — no-op in calibrated CT (efficiency cancels
-    #    between phantom and air scan). Effect on noise handled separately.
+    # 7. Detector efficiency — η(E) is applied in the spectral sum inside
+    #    _forward_project_poly! (ws_η kwarg) and in noise I₀ scaling.
+    #    No sinogram-domain application needed (cancels in calibrated CT).
 
     # 8. Detector noise (quantum + electronic)
     # This should be applied late, after deterministic effects

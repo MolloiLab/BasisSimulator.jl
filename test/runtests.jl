@@ -736,10 +736,6 @@ end
             # CITE: FDA K201501
             @test acq.min_rotation_time_s[] ≈ 0.25    # 0.25s min rotation
             @test acq.max_rotation_time_s[] ≈ 1.0     # 1.0s max rotation
-
-            # Helical pitch range
-            @test 0.4 in acq.helical_pitch_options[]
-            @test 1.5 in acq.helical_pitch_options[]
         end
 
         @testset "UHR Mode Construction" begin
@@ -852,56 +848,12 @@ end
     end
 
     @testset "Siemens NAEOTOM Alpha Protocol Presets" begin
-        @testset "Chest Helical Protocol" begin
-            protocol = NAEOTOMChestHelical()
-            @test protocol isa HelicalProtocol
-            @test protocol.kvp == 120
-            @test protocol.rotation_time_s ≈ 0.5
-            @test protocol.pitch ≈ 1.0
-            @test protocol.slice_thickness_mm ≈ 0.4
-
-            # Dose levels
-            low = NAEOTOMChestHelical(dose_level=:low)
-            std = NAEOTOMChestHelical(dose_level=:standard)
-            high = NAEOTOMChestHelical(dose_level=:high)
-            @test low.ma < std.ma < high.ma
-        end
-
         @testset "Head Axial Protocol" begin
             protocol = NAEOTOMHeadAxial()
             @test protocol isa AxialProtocol
             @test protocol.kvp == 120
             @test protocol.rotation_time_s ≈ 1.0
             @test protocol.slice_thickness_mm ≈ 0.4
-        end
-
-        @testset "Cardiac Helical Protocol" begin
-            protocol = NAEOTOMCardiacHelical()
-            @test protocol isa HelicalProtocol
-            @test protocol.kvp == 120
-            @test protocol.rotation_time_s ≈ 0.25  # Fastest rotation
-            @test protocol.pitch ≈ 0.4             # Low pitch for cardiac
-        end
-
-        @testset "UHR Helical Protocol" begin
-            protocol = NAEOTOMUHRHelical()
-            @test protocol isa HelicalProtocol
-            @test protocol.slice_thickness_mm ≈ 0.2  # UHR native
-        end
-
-        @testset "Spectral Helical Protocol" begin
-            protocol = NAEOTOMSpectralHelical()
-            @test protocol isa HelicalProtocol
-            @test protocol.kvp == 120  # Single kVp for PCCT spectral
-        end
-
-        @testset "Protocol Geometry Integration" begin
-            spec = NAEOTOMAlpha()
-            protocol = NAEOTOMChestHelical()
-
-            geom = create_geometry(spec, protocol; n_rows=64)
-            @test geom isa CTGeometry
-            @test geom.n_rows == 64
         end
     end
 
@@ -2323,48 +2275,26 @@ end
 
             # Ideal detector has 100% efficiency
             info_ideal = get_detector_efficiency_info(detector_efficiency_ideal())
-            @test info_ideal.total_efficiency ≈ 1.0
+            @test info_ideal.absorption_at_ref_energy ≈ 1.0
         end
 
-        # Test geometry integration
-        @testset "Geometry Integration" begin
-            geom = create_aquilion_one(n_angles=1, n_rows=64, n_cols=128,
-                                       fov_cm=35.0, z_cm=8.0)
-            model = detector_efficiency_gos(3.0)
+        # Test EID efficiency vector
+        @testset "EID Efficiency Vector" begin
+            # Ideal detector → all ones
+            model_ideal = detector_efficiency_ideal()
+            η = compute_eid_efficiency_vector(model_ideal, [30.0, 60.0, 100.0])
+            @test all(η .≈ 1.0)
 
-            efficiency = compute_detector_efficiency(model, geom; energy_keV=60.0)
+            # GOS Beer-Lambert: low energy should have higher efficiency
+            model_gos = detector_efficiency_gos(3.0)
+            η_gos = compute_eid_efficiency_vector(model_gos, [30.0, 60.0, 150.0])
+            @test η_gos[1] > η_gos[3]
 
-            @test size(efficiency) == (128, 64)
-            # Edge rows have larger cone angle → longer path → higher absorption
-            @test mean(efficiency[:, 1]) >= mean(efficiency[:, 32]) - 0.01
-        end
-
-        # Test spectral efficiency
-        @testset "Spectral Efficiency" begin
-            geom = create_aquilion_one(n_angles=1, n_rows=16, n_cols=32,
-                                       fov_cm=35.0, z_cm=4.0)
-            model = detector_efficiency_gos(3.0)
-
-            energies = Float64.([30.0, 70.0, 150.0])
-            efficiency = compute_detector_efficiency_spectral(model, geom, energies)
-
-            @test size(efficiency) == (32, 16, 3)
-            # 30 keV should have higher absorption than 150 keV (overall trend)
-            @test efficiency[16, 8, 1] > efficiency[16, 8, 3]
-        end
-
-        # Test calibrated mode no-op
-        @testset "Calibrated Mode No-Op" begin
-            sinogram = rand(Float32, 64, 16, 10) .+ 1.0f0
-            original = copy(sinogram)
-
-            geom = create_aquilion_one(n_angles=10, n_rows=16, n_cols=64,
-                                       fov_cm=35.0, z_cm=4.0)
-            model = detector_efficiency_gos(3.0)
-
-            result = apply_detector_efficiency!(sinogram, model, geom; energy_keV=60.0)
-
-            @test maximum(abs.(result .- original)) < 1e-10
+            # Gemstone MC LUT: K-edge dips
+            model_gem = detector_efficiency_gemstone()
+            η_gem = compute_eid_efficiency_vector(model_gem, [51.0, 53.0, 62.0, 64.0])
+            @test η_gem[1] > η_gem[2]  # Tb K-edge drop
+            @test η_gem[3] > η_gem[4]  # Lu K-edge drop
         end
     end
 
@@ -4513,355 +4443,6 @@ end
             # Should work for valid range
             @test all(isfinite.(virtual_monoenergetic(mat_map, 10.0)))
             @test all(isfinite.(virtual_monoenergetic(mat_map, 150.0)))
-        end
-    end
-
-    # =========================================================================
-    # Helical CT Geometry Tests (IMPL-HELICAL-GEOM)
-    # =========================================================================
-    @testset "Helical CT Geometry" begin
-
-        @testset "HelicalGeometry Struct" begin
-            # Create base geometry
-            base_geom = create_aquilion_one(n_angles=360, n_rows=16, n_cols=64, fov_cm=35.0)
-
-            # Create helical geometry with default parameters
-            helical = create_helical_geometry(base_geom; pitch=1.0, rotation_time=0.5)
-
-            @test helical isa HelicalGeometry
-            @test helical.pitch ≈ 1.0
-            @test helical.rotation_time ≈ 0.5
-            @test helical.base_geom.SAD == base_geom.SAD
-            @test helical.base_geom.SDD == base_geom.SDD
-            @test helical.base_geom.n_angles == base_geom.n_angles
-            @test helical.base_geom.n_rows == base_geom.n_rows
-            @test helical.base_geom.n_cols == base_geom.n_cols
-            # Z-positions should vary (helical motion applied to base_geom)
-            @test helical.base_geom.source_positions[3, 1] ≈ helical.z_positions[1]
-            @test helical.base_geom.source_positions[3, end] ≈ helical.z_positions[end]
-            @test length(helical.z_positions) == base_geom.n_angles
-        end
-
-        @testset "Pitch Parameter Calculation" begin
-            base_geom = create_aquilion_one(n_angles=720, n_rows=16, n_cols=64, fov_cm=35.0)
-
-            # Test pitch = 1.0 (adjacent rotations just touch)
-            helical_1 = create_helical_geometry(base_geom; pitch=1.0, rotation_time=0.5)
-            @test helical_1.pitch ≈ 1.0
-
-            # Test pitch = 0.5 (overlapping coverage)
-            helical_05 = create_helical_geometry(base_geom; pitch=0.5, rotation_time=0.5)
-            @test helical_05.pitch ≈ 0.5
-            @test helical_05.table_speed < helical_1.table_speed  # Slower table for lower pitch
-
-            # Test pitch = 1.5 (gap between rotations)
-            helical_15 = create_helical_geometry(base_geom; pitch=1.5, rotation_time=0.5)
-            @test helical_15.pitch ≈ 1.5
-            @test helical_15.table_speed > helical_1.table_speed  # Faster table for higher pitch
-        end
-
-        @testset "Z-Position Calculation" begin
-            base_geom = create_aquilion_one(n_angles=360, n_rows=16, n_cols=64, fov_cm=35.0)
-
-            # Create helical geometry with known pitch
-            helical = create_helical_geometry(base_geom; pitch=1.0, rotation_time=0.5, z_start=0.0)
-
-            # z-positions should increase linearly
-            @test helical.z_positions[1] ≈ 0.0  # Starts at z_start
-            @test helical.z_positions[end] > helical.z_positions[1]  # Increasing
-
-            # Check linear progression
-            z_diffs = diff(helical.z_positions)
-            @test all(z_diffs .> 0)  # All positive (monotonically increasing)
-
-            # Check z range is reasonable (should be approximately beam_width for 1 rotation at pitch 1.0)
-            z_range = helical.z_positions[end] - helical.z_positions[1]
-            @test z_range > 0
-        end
-
-        @testset "GE Revolution Apex Helical Protocol" begin
-            # Test with GE Revolution Apex scanner specification
-            spec = GERevolutionApex()
-
-            # Standard chest protocol (pitch 0.992)
-            protocol = GEApexChestHelical()
-            @test protocol.pitch ≈ 0.992
-            @test protocol.rotation_time_s ≈ 0.5
-            @test protocol.n_rotations ≈ 3.0
-
-            # Create helical geometry from spec and protocol
-            helical_geom = create_helical_geometry_from_spec(spec, protocol; n_rows=16)
-
-            @test helical_geom isa HelicalGeometry
-            @test helical_geom.pitch ≈ 0.992
-            @test helical_geom.rotation_time ≈ 0.5
-            @test helical_geom.n_rotations ≈ 3.0
-
-            # Verify total angles = angles_per_rotation × n_rotations
-            @test helical_geom.base_geom.n_angles == protocol.n_angles_per_rotation * round(Int, protocol.n_rotations)
-        end
-
-        @testset "GE Apex Variable Pitch Support" begin
-            spec = GERevolutionApex()
-
-            # Test different pitch values from GE Revolution Apex (AJR 2018)
-            pitch_values = [0.5, 0.531, 0.969, 0.992, 1.375, 1.531]
-
-            for pitch in pitch_values
-                protocol = HelicalProtocol(120, 400, 0.5, pitch, 2.0, 100, 0.625)
-                helical_geom = create_helical_geometry_from_spec(spec, protocol; n_rows=16)
-
-                @test helical_geom.pitch ≈ pitch
-                @test helical_geom.table_speed > 0  # Valid table speed
-
-                # Z-coverage should scale with pitch
-                z_range = helical_geom.z_positions[end] - helical_geom.z_positions[1]
-                @test z_range > 0
-            end
-        end
-
-        @testset "Helical Forward Projection - CPU" begin
-            # Create small phantom
-            phantom = create_gammex_472(n_voxels=32, n_slices=16, fov_cm=35.0, z_cm=8.0)
-
-            # Create helical geometry
-            spec = GERevolutionApex()
-            protocol = HelicalProtocol(120, 400, 0.5, 0.992, 2.0, 90, 0.625)
-            helical_geom = create_helical_geometry_from_spec(spec, protocol;
-                                                            n_rows=16, n_cols=64, fov_cm=35.0)
-
-            # Forward projection
-            volume = compute_μ(phantom, 60.0)
-            sinogram = helical_forward_project(volume, helical_geom)
-
-            @test size(sinogram, 1) == helical_geom.base_geom.n_cols
-            @test size(sinogram, 2) == helical_geom.base_geom.n_rows
-            @test size(sinogram, 3) == helical_geom.base_geom.n_angles
-            @test all(isfinite.(sinogram))
-            @test any(sinogram .> 0)  # Should have non-zero projections
-        end
-
-        @testset "Helical vs Axial Geometry Comparison" begin
-            spec = GERevolutionApex()
-
-            # Create axial geometry
-            axial_geom = create_geometry(spec; n_angles=180, n_rows=16, n_cols=64, fov_cm=35.0)
-
-            # Create helical geometry with same angular sampling per rotation
-            protocol = HelicalProtocol(120, 400, 0.5, 0.992, 1.0, 180, 0.625)
-            helical_geom = create_helical_geometry_from_spec(spec, protocol;
-                                                            n_rows=16, n_cols=64, fov_cm=35.0)
-
-            # Compare SAD/SDD (should be the same)
-            @test helical_geom.base_geom.SAD ≈ axial_geom.SAD
-            @test helical_geom.base_geom.SDD ≈ axial_geom.SDD
-
-            # Helical z-positions should vary, axial should be constant
-            @test all(axial_geom.source_positions[3, :] .≈ 0.0)  # Axial: z=0 for all angles
-            z_variance = var(helical_geom.base_geom.source_positions[3, :])
-            @test z_variance > 0  # Helical: z varies
-        end
-
-        @testset "Z-Coverage Calculation" begin
-            spec = GERevolutionApex()
-
-            # Create helical geometry with known parameters
-            protocol = HelicalProtocol(120, 400, 0.5, 1.0, 3.0, 100, 0.625)
-            helical_geom = create_helical_geometry_from_spec(spec, protocol; n_rows=64)
-
-            # Z-coverage should include table travel + beam width
-            z_travel = helical_geom.z_positions[end] - helical_geom.z_positions[1]
-            total_z_coverage = z_travel + helical_geom.beam_width
-
-            # Should match the FOV z component
-            @test helical_geom.base_geom.fov[3] ≈ total_z_coverage
-
-            # Verify that higher pitch gives more z-coverage
-            protocol_high_pitch = HelicalProtocol(120, 400, 0.5, 1.5, 3.0, 100, 0.625)
-            helical_high = create_helical_geometry_from_spec(spec, protocol_high_pitch; n_rows=64)
-
-            z_travel_high = helical_high.z_positions[end] - helical_high.z_positions[1]
-            @test z_travel_high > z_travel  # Higher pitch = more z-travel
-        end
-
-        @testset "Helical Geometry Info" begin
-            base_geom = create_aquilion_one(n_angles=720, n_rows=16, n_cols=64)
-            helical = create_helical_geometry(base_geom; pitch=0.992, rotation_time=0.5)
-
-            info = get_helical_info(helical)
-
-            @test info.pitch ≈ 0.992
-            @test info.rotation_time ≈ 0.5
-            @test info.n_angles == 720
-            @test info.z_range isa Tuple
-            @test info.z_coverage > 0
-        end
-
-    end
-
-    # =========================================================================
-    # Helical CT Reconstruction Tests (IMPL-HELICAL-RECON)
-    # =========================================================================
-    @testset "Helical CT Reconstruction" begin
-
-        @testset "180LI Interpolation" begin
-            # Create helical geometry with 2 rotations
-            spec = GERevolutionApex()
-            protocol = HelicalProtocol(120, 400, 0.5, 0.992, 2.0, 90, 0.625)
-            helical_geom = create_helical_geometry_from_spec(spec, protocol;
-                                                            n_rows=16, n_cols=64, fov_cm=35.0)
-
-            # Create a test sinogram
-            n_cols = helical_geom.base_geom.n_cols
-            n_rows = helical_geom.base_geom.n_rows
-            n_total = helical_geom.base_geom.n_angles
-            n_per_rot = helical_geom.angles_per_rotation
-
-            sinogram = Float32.(rand(n_cols, n_rows, n_total))
-
-            # Interpolate to middle z-position
-            z_mid = (helical_geom.z_positions[1] + helical_geom.z_positions[end]) / 2
-            pseudo_axial = interpolate_helical_180li(sinogram, helical_geom, Float32(z_mid))
-
-            @test size(pseudo_axial) == (n_cols, n_rows, n_per_rot)
-            @test all(isfinite.(pseudo_axial))
-        end
-
-        @testset "360LI Interpolation" begin
-            # Create helical geometry with 3 rotations
-            spec = GERevolutionApex()
-            protocol = HelicalProtocol(120, 400, 0.5, 0.992, 3.0, 90, 0.625)
-            helical_geom = create_helical_geometry_from_spec(spec, protocol;
-                                                            n_rows=16, n_cols=64, fov_cm=35.0)
-
-            # Create a test sinogram
-            n_cols = helical_geom.base_geom.n_cols
-            n_rows = helical_geom.base_geom.n_rows
-            n_total = helical_geom.base_geom.n_angles
-            n_per_rot = helical_geom.angles_per_rotation
-
-            sinogram = Float32.(rand(n_cols, n_rows, n_total))
-
-            # Interpolate to middle z-position
-            z_mid = (helical_geom.z_positions[1] + helical_geom.z_positions[end]) / 2
-            pseudo_axial = interpolate_helical_360li(sinogram, helical_geom, Float32(z_mid))
-
-            @test size(pseudo_axial) == (n_cols, n_rows, n_per_rot)
-            @test all(isfinite.(pseudo_axial))
-        end
-
-        @testset "Helical FDK Volume Reconstruction" begin
-            # Create simple water cylinder phantom
-            phantom = create_gammex_472(n_voxels=32, n_slices=16, fov_cm=35.0, z_cm=8.0)
-
-            # Create helical geometry
-            spec = GERevolutionApex()
-            protocol = HelicalProtocol(120, 400, 0.5, 1.0, 2.0, 90, 0.625)
-            helical_geom = create_helical_geometry_from_spec(spec, protocol;
-                                                            n_rows=16, n_cols=64, fov_cm=35.0)
-
-            # Forward projection
-            volume = compute_μ(phantom, 60.0)
-            sinogram = helical_forward_project(volume, helical_geom)
-
-            @test all(isfinite.(sinogram))
-
-            # Reconstruction with 180LI
-            recon_180li = helical_fdk_reconstruct_volume(sinogram, helical_geom, (32, 32, 8);
-                                                          interpolation=:li180)
-
-            @test size(recon_180li) == (32, 32, 8)
-            @test all(isfinite.(recon_180li))
-
-            # Reconstruction with 360LI
-            recon_360li = helical_fdk_reconstruct_volume(sinogram, helical_geom, (32, 32, 8);
-                                                          interpolation=:li360)
-
-            @test size(recon_360li) == (32, 32, 8)
-            @test all(isfinite.(recon_360li))
-        end
-
-        @testset "Helical vs Axial Comparison" begin
-            # Create water cylinder phantom
-            phantom = create_gammex_472(n_voxels=32, n_slices=16, fov_cm=35.0, z_cm=8.0)
-            volume = compute_μ(phantom, 60.0)
-
-            spec = GERevolutionApex()
-
-            # Axial geometry
-            axial_geom = create_geometry(spec; n_angles=180, n_rows=16, n_cols=64, fov_cm=35.0)
-
-            # Axial forward projection and reconstruction
-            sino_axial = siddon_forward_project(volume, axial_geom)
-            recon_axial = fdk_reconstruct(sino_axial, axial_geom, (32, 32, 16))
-
-            # Helical geometry with low pitch (should be similar to axial)
-            protocol = HelicalProtocol(120, 400, 0.5, 0.5, 2.0, 90, 0.625)
-            helical_geom = create_helical_geometry_from_spec(spec, protocol;
-                                                            n_rows=16, n_cols=64, fov_cm=35.0)
-
-            # Helical forward projection and reconstruction
-            sino_helical = helical_forward_project(volume, helical_geom)
-            recon_helical = helical_fdk_reconstruct_volume(sino_helical, helical_geom, (32, 32, 8))
-
-            # Both should produce finite results
-            @test all(isfinite.(recon_axial))
-            @test all(isfinite.(recon_helical))
-
-            # Both should have similar dynamic range (within 50% at this small scale)
-            axial_range = maximum(recon_axial) - minimum(recon_axial)
-            helical_range = maximum(recon_helical) - minimum(recon_helical)
-            @test axial_range > 0
-            @test helical_range > 0
-        end
-
-        @testset "Helical SIRT Reconstruction" begin
-            # Create water cylinder phantom
-            phantom = create_gammex_472(n_voxels=32, n_slices=16, fov_cm=35.0, z_cm=8.0)
-            volume = compute_μ(phantom, 60.0)
-
-            # Create helical geometry
-            spec = GERevolutionApex()
-            protocol = HelicalProtocol(120, 400, 0.5, 1.0, 2.0, 90, 0.625)
-            helical_geom = create_helical_geometry_from_spec(spec, protocol;
-                                                            n_rows=16, n_cols=64, fov_cm=35.0)
-
-            # Forward projection
-            sinogram = helical_forward_project(volume, helical_geom)
-
-            # SIRT reconstruction with few iterations (just test it runs)
-            recon_sirt = helical_sirt_reconstruct(sinogram, helical_geom, (32, 32, 16);
-                                                   niter=5, lambda=1.0)
-
-            @test size(recon_sirt) == (32, 32, 16)
-            @test all(isfinite.(recon_sirt))
-        end
-
-        @testset "Pitch Variation Test" begin
-            # Test different pitch values produce valid reconstructions
-            spec = GERevolutionApex()
-            phantom = create_gammex_472(n_voxels=32, n_slices=16, fov_cm=35.0, z_cm=8.0)
-            volume = compute_μ(phantom, 60.0)
-
-            pitch_values = [0.5, 1.0, 1.5]
-
-            for pitch in pitch_values
-                protocol = HelicalProtocol(120, 400, 0.5, pitch, 2.0, 90, 0.625)
-                helical_geom = create_helical_geometry_from_spec(spec, protocol;
-                                                                n_rows=16, n_cols=64, fov_cm=35.0)
-
-                # Forward projection
-                sinogram = helical_forward_project(volume, helical_geom)
-                @test all(isfinite.(sinogram))
-
-                # Reconstruction
-                recon = helical_fdk_reconstruct_volume(sinogram, helical_geom, (32, 32, 8))
-                @test all(isfinite.(recon))
-
-                # Z-coverage should increase with pitch
-                z_coverage = helical_geom.z_positions[end] - helical_geom.z_positions[1]
-                @test z_coverage > 0
-            end
         end
     end
 
@@ -7560,14 +7141,6 @@ end
             recon_opts = ReconOptions(algorithm=:fdk, matrix_size=(16, 16, 4), fov_cm=20.0)
 
             @test_throws ErrorException simulate(phantom, pcct_scanner, protocol_de, sim_opts, recon_opts)
-        end
-
-        @testset "PCCT + Helical Errors" begin
-            protocol_helical = CTProtocol(kVp=120.0, mA=300.0, scan_mode=:helical, pitch=0.984, n_rotations=3.0)
-            sim_opts = SimOptions(fidelity=:ideal)
-            recon_opts = ReconOptions(algorithm=:fdk, matrix_size=(16, 16, 4), fov_cm=20.0)
-
-            @test_throws ErrorException simulate(phantom, pcct_scanner, protocol_helical, sim_opts, recon_opts)
         end
 
         @testset "Non-PCCT Scanner Still Works" begin

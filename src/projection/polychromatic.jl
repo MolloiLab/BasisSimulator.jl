@@ -960,10 +960,9 @@ function _apply_physics_no_noise!(
                                ws_output=ws_output, ws_kernel=ws_focal_spot_kernel)
     end
 
-    # Detector efficiency
-    if config.detector_efficiency !== nothing
-        apply_detector_efficiency!(sinogram, config.detector_efficiency, geom; energy_keV=config.energy_keV)
-    end
+    # Detector efficiency η(E) is now applied in the spectral sum inside
+    # _forward_project_poly! (ws_η kwarg) and in the noise I₀ scaling,
+    # so no separate sinogram-domain application is needed here.
 
     # NOTE: Skip noise - handled by DAS model in signal chain
 
@@ -1107,7 +1106,9 @@ function _forward_project_poly!(
     ws_detector_u=nothing,
     ws_detector_v=nothing,
     # Override volume bounds for phantom FOV
-    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing
+    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
+    # Detector efficiency η(E) per energy bin (weights spectral sum)
+    ws_η::Union{Nothing, Vector{Float64}}=nothing
 ) where T <: AbstractFloat
 
     n_energies = length(energies)
@@ -1139,11 +1140,15 @@ function _forward_project_poly!(
             ws_detector_v=ws_detector_v,
             volume_extent=volume_extent)
 
-        # Accumulate Beer-Lambert: I += w × exp(-line_integral)
+        # Accumulate Beer-Lambert: I += w × η(E) × exp(-line_integral)
         w = weights_norm[e_idx]
+        # η(E) reshapes effective spectrum — accounts for detector absorption + fluorescence escape
+        η_e = ws_η !== nothing ? T(ws_η[e_idx]) : one(T)
 
-        AK.foreachindex(I_transmitted) do idx
-            I_transmitted[idx] += w * exp(-sino_mono[idx])
+        let w_eff = w * η_e
+            AK.foreachindex(I_transmitted) do idx
+                I_transmitted[idx] += w_eff * exp(-sino_mono[idx])
+            end
         end
     end
 

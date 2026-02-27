@@ -1245,8 +1245,6 @@ const REFERENCES_DIR = joinpath(dirname(dirname(@__DIR__)), "test", "references"
 
 # ╔═╡ b0000001-0006-0001-0008-000000000004
 # ╠═╡ show_logs = false
-# ╠═╡ disabled = true
-#=╠═╡
 # Scan 2: 120 kVp / 10 mGy
 basis_scan_2 = let
 	sc = SCANS[2]
@@ -1270,12 +1268,9 @@ basis_scan_2 = let
 	ws_fdk = nothing; ws = nothing; GC.gc(true)
 	(sinogram=sino_cpu, recon=recon_hu, mu_water=μ_w, geom=geom_copy)
 end
-  ╠═╡ =#
 
 # ╔═╡ b0000001-0006-0001-0008-000000000005
 # ╠═╡ show_logs = false
-# ╠═╡ disabled = true
-#=╠═╡
 # Scan 3: 120 kVp / 20 mGy
 basis_scan_3 = let
 	sc = SCANS[3]
@@ -1299,12 +1294,9 @@ basis_scan_3 = let
 	ws_fdk = nothing; ws = nothing; GC.gc(true)
 	(sinogram=sino_cpu, recon=recon_hu, mu_water=μ_w, geom=geom_copy)
 end
-  ╠═╡ =#
 
 # ╔═╡ b0000001-0006-0001-0008-000000000002
 # ╠═╡ show_logs = false
-# ╠═╡ disabled = true
-#=╠═╡
 # BasisSim water calibration — 80 kVp
 basis_water_80kvp = let
 	prot = protocols["80kVp_10mGy"]
@@ -1324,12 +1316,9 @@ basis_water_80kvp = let
 	ws_fdk = nothing; ws = nothing; vol = nothing; GC.gc(true)
 	μ_empirical
 end
-  ╠═╡ =#
 
 # ╔═╡ b0000001-0006-0001-0008-000000000006
 # ╠═╡ show_logs = false
-# ╠═╡ disabled = true
-#=╠═╡
 # Scan 4: 80 kVp / 10 mGy
 basis_scan_4 = let
 	sc = SCANS[4]
@@ -1353,12 +1342,9 @@ basis_scan_4 = let
 	ws_fdk = nothing; ws = nothing; GC.gc(true)
 	(sinogram=sino_cpu, recon=recon_hu, mu_water=μ_w, geom=geom_copy)
 end
-  ╠═╡ =#
 
 # ╔═╡ b0000001-0006-0001-0008-000000000010
 # ╠═╡ show_logs = false
-# ╠═╡ disabled = true
-#=╠═╡
 # BasisSim water calibration — 100 kVp
 basis_water_100kvp = let
 	prot = protocols["100kVp_10mGy"]
@@ -1378,12 +1364,9 @@ basis_water_100kvp = let
 	ws_fdk = nothing; ws = nothing; vol = nothing; GC.gc(true)
 	μ_empirical
 end
-  ╠═╡ =#
 
 # ╔═╡ b0000001-0006-0001-0008-000000000007
 # ╠═╡ show_logs = false
-# ╠═╡ disabled = true
-#=╠═╡
 # Scan 5: 100 kVp / 10 mGy
 basis_scan_5 = let
 	sc = SCANS[5]
@@ -1407,12 +1390,9 @@ basis_scan_5 = let
 	ws_fdk = nothing; ws = nothing; GC.gc(true)
 	(sinogram=sino_cpu, recon=recon_hu, mu_water=μ_w, geom=geom_copy)
 end
-  ╠═╡ =#
 
 # ╔═╡ b0000001-0006-0001-0008-000000000011
 # ╠═╡ show_logs = false
-# ╠═╡ disabled = true
-#=╠═╡
 # BasisSim water calibration — 140 kVp
 basis_water_140kvp = let
 	prot = protocols["140kVp_10mGy"]
@@ -1432,12 +1412,9 @@ basis_water_140kvp = let
 	ws_fdk = nothing; ws = nothing; vol = nothing; GC.gc(true)
 	μ_empirical
 end
-  ╠═╡ =#
 
 # ╔═╡ b0000001-0006-0001-0008-000000000008
 # ╠═╡ show_logs = false
-# ╠═╡ disabled = true
-#=╠═╡
 # Scan 6: 140 kVp / 10 mGy
 basis_scan_6 = let
 	sc = SCANS[6]
@@ -1461,11 +1438,8 @@ basis_scan_6 = let
 	ws_fdk = nothing; ws = nothing; GC.gc(true)
 	(sinogram=sino_cpu, recon=recon_hu, mu_water=μ_w, geom=geom_copy)
 end
-  ╠═╡ =#
 
 # ╔═╡ b0000001-0006-0001-0008-000000000009
-# ╠═╡ disabled = true
-#=╠═╡
 # Collect all BasisSimulator results (enable after running desired scans)
 basis_results = Dict(
 	SCANS[1].name => basis_scan_1,
@@ -1475,7 +1449,6 @@ basis_results = Dict(
 	SCANS[5].name => basis_scan_5,
 	SCANS[6].name => basis_scan_6,
 )
-  ╠═╡ =#
 
 # ╔═╡ b0000001-0006-0001-0009-000000000001
 md"""
@@ -1492,19 +1465,14 @@ Enable the phantom export cell first, then water cal + scan cells.
 """
 
 # ╔═╡ b0000001-0006-0001-0009-000000000002
-# ╠═╡ disabled = true
-#=╠═╡
 # Export phantom to CatSim voxelized JSON (must run before any CatSim scan)
 catsim_phantom_json = let
 	work_dir = joinpath(@__DIR__, "catsim_work")
 	export_phantom_for_catsim(phantom_gammex, work_dir, "phantom_gammex")
 end
-  ╠═╡ =#
 
 # ╔═╡ b0000001-0006-0001-0007-000000000007
 # ╠═╡ show_logs = false
-# ╠═╡ disabled = true
-#=╠═╡
 # CatSim water calibration — 120 kVp
 catsim_water_120kvp = let
 	work_dir = joinpath(@__DIR__, "catsim_work")
@@ -1531,12 +1499,9 @@ catsim_water_120kvp = let
 	@info "  120 kVp → water mean HU = $(round(mean_hu, digits=2))"
 	mean_hu
 end
-  ╠═╡ =#
 
 # ╔═╡ b0000001-0006-0001-0009-000000000004
 # ╠═╡ show_logs = false
-# ╠═╡ disabled = true
-#=╠═╡
 # Scan 1: 120 kVp / 3 mGy
 catsim_scan_1 = let
 	sc = SCANS[1]
@@ -1557,11 +1522,9 @@ catsim_scan_1 = let
 	catsim_cleanup(tag)
 	(sinogram=sino, reconstruction=recon)
 end
-  ╠═╡ =#
 
 # ╔═╡ b0000001-0006-0001-0009-000000000005
 # ╠═╡ show_logs = false
-# ╠═╡ disabled = true
 #=╠═╡
 # Scan 2: 120 kVp / 10 mGy
 catsim_scan_2 = let
@@ -1587,7 +1550,6 @@ end
 
 # ╔═╡ b0000001-0006-0001-0009-000000000006
 # ╠═╡ show_logs = false
-# ╠═╡ disabled = true
 #=╠═╡
 # Scan 3: 120 kVp / 20 mGy
 catsim_scan_3 = let
@@ -1613,7 +1575,6 @@ end
 
 # ╔═╡ b0000001-0006-0001-0009-000000000003
 # ╠═╡ show_logs = false
-# ╠═╡ disabled = true
 #=╠═╡
 # CatSim water calibration — 80 kVp
 catsim_water_80kvp = let
@@ -1645,7 +1606,6 @@ end
 
 # ╔═╡ b0000001-0006-0001-0009-000000000007
 # ╠═╡ show_logs = false
-# ╠═╡ disabled = true
 #=╠═╡
 # Scan 4: 80 kVp / 10 mGy
 catsim_scan_4 = let
@@ -1671,7 +1631,6 @@ end
 
 # ╔═╡ b0000001-0006-0001-0009-000000000011
 # ╠═╡ show_logs = false
-# ╠═╡ disabled = true
 #=╠═╡
 # CatSim water calibration — 100 kVp
 catsim_water_100kvp = let
@@ -1703,7 +1662,6 @@ end
 
 # ╔═╡ b0000001-0006-0001-0009-000000000008
 # ╠═╡ show_logs = false
-# ╠═╡ disabled = true
 #=╠═╡
 # Scan 5: 100 kVp / 10 mGy
 catsim_scan_5 = let
@@ -1729,7 +1687,6 @@ end
 
 # ╔═╡ b0000001-0006-0001-0009-000000000012
 # ╠═╡ show_logs = false
-# ╠═╡ disabled = true
 #=╠═╡
 # CatSim water calibration — 140 kVp
 catsim_water_140kvp = let
@@ -1761,7 +1718,6 @@ end
 
 # ╔═╡ b0000001-0006-0001-0009-000000000009
 # ╠═╡ show_logs = false
-# ╠═╡ disabled = true
 #=╠═╡
 # Scan 6: 140 kVp / 10 mGy
 catsim_scan_6 = let
@@ -1786,7 +1742,6 @@ end
   ╠═╡ =#
 
 # ╔═╡ b0000001-0006-0001-0009-000000000010
-# ╠═╡ disabled = true
 #=╠═╡
 # Collect all CatSim results (enable after running desired scans)
 catsim_results = Dict(
@@ -1821,7 +1776,6 @@ BasisSimulator gets compared against — they never change when tuning BasisSim.
 
 # ╔═╡ b0000001-0006-0001-0016-000000000002
 # ╠═╡ show_logs = false
-# ╠═╡ disabled = true
 #=╠═╡
 # Auto-save CatSim references: 6 protocols × (recon PNG + mask PNG + rod CSV + NPS/MTF CSVs)
 ref_summary = let
@@ -2604,7 +2558,6 @@ end
   ╠═╡ =#
 
 # ╔═╡ b0000001-0006-0001-0008-000000000029
-# ╠═╡ disabled = true
 #=╠═╡
 # Compare BasisSim Scan 1 against saved CatSim reference
 let
@@ -2647,7 +2600,6 @@ end
   ╠═╡ =#
 
 # ╔═╡ b0000001-0006-0001-0008-000000000028
-# ╠═╡ disabled = true
 #=╠═╡
 # Save CatSim Scan 1 as reference (enable after running CatSim scans)
 let
