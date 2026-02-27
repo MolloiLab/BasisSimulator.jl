@@ -10,8 +10,7 @@ reconstruction/
 │   ├── backprojection.jl # GPU voxel-driven backprojection
 │   └── filtering.jl      # Ramp/Ram-Lak and other filters
 ├── fbp/                  # Filtered Back-Projection (analytical)
-│   ├── fdk.jl            # Feldkamp-Davis-Kress cone-beam FBP
-│   └── helical_recon.jl  # Helical/spiral FBP variants
+│   └── fdk.jl            # Feldkamp-Davis-Kress cone-beam FBP
 ├── ir/                   # Classic Iterative Reconstruction
 │   ├── sirt.jl           # Simultaneous Iterative Reconstruction
 │   └── cgls.jl           # Conjugate Gradient Least Squares

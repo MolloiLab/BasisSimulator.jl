@@ -746,64 +746,96 @@ function apply_bhc_two_material(
 ) where T <: AbstractFloat
 
     # === Pass 1: Water-only BHC → FDK → preliminary HU image ===
-    sino_water = apply_bhc(sinogram_raw, bhc_2mat.water_bhc)
-    recon = Array(fdk_reconstruct(sino_water, geom, matrix_size))
-    hu = 1000.0f0 .* (recon .- T(bhc_2mat.μ_water_ref)) ./ T(bhc_2mat.μ_water_ref)
+    sino_water = similar(sinogram_raw)
+    copyto!(sino_water, sinogram_raw)
+    apply_bhc!(sino_water, bhc_2mat.water_bhc)
+    recon_gpu = fdk_reconstruct(sino_water, geom, matrix_size)
+
+    # HU conversion on GPU
+    μ_w_ref = T(bhc_2mat.μ_water_ref)
+    hu_low_T = T(bhc_2mat.hu_low)
+    hu_high_T = T(bhc_2mat.hu_high)
 
     # === Pass 2: Bone correction ===
 
-    # Step 1: Smooth tissue fraction decomposition
-    nx, ny, nz = size(recon)
-    bone_μ_3d = zeros(Float32, nx, ny, nz)
-    for s in 1:nz
-        for j in 1:ny, i in 1:nx
-            bf = bone_fraction_smooth(hu[i,j,s];
-                hu_low=bhc_2mat.hu_low, hu_high=bhc_2mat.hu_high)
-            bone_μ_3d[i,j,s] = Float32(bf * recon[i,j,s])
+    # Step 1: Smooth tissue fraction → bone-weighted μ volume (GPU)
+    bone_μ_gpu = similar(recon_gpu)
+    let recon_gpu = recon_gpu, bone_μ_gpu = bone_μ_gpu,
+        μ_w_ref = μ_w_ref, hu_low_T = hu_low_T, hu_high_T = hu_high_T
+        AK.foreachindex(recon_gpu) do idx
+            μ_val = recon_gpu[idx]
+            hu_val = T(1000) * (μ_val - μ_w_ref) / μ_w_ref
+
+            # Smoothstep bone fraction (inline — no function call in GPU kernel)
+            bf = if hu_val <= hu_low_T
+                zero(T)
+            elseif hu_val >= hu_high_T
+                one(T)
+            else
+                t = (hu_val - hu_low_T) / (hu_high_T - hu_low_T)
+                t * t * (T(3) - T(2) * t)
+            end
+
+            bone_μ_gpu[idx] = bf * μ_val
         end
     end
 
-    # Step 2: Forward-project bone image
-    p_b = Array(siddon_forward_project(bone_μ_3d, geom; volume_extent=volume_extent))
+    # Step 2: Forward-project bone image (GPU)
+    p_b_gpu = siddon_forward_project(bone_μ_gpu, geom; volume_extent=volume_extent)
 
-    # Soft tissue line integral from water-corrected sinogram
-    sino_water_cpu = Array(sino_water)
-    p_s = sino_water_cpu .- p_b
-
-    # Step 3: Material path lengths
-    L_w = p_s ./ Float32(bhc_2mat.μ_water_ref)
-    L_b = p_b ./ Float32(bhc_2mat.μ_bone_ref)
-    L_w .= max.(L_w, 0.0f0)
-    L_b .= max.(L_b, 0.0f0)
-
-    # Step 4: Exact 2-material correction (Float64 for precision)
-    sino_raw_cpu = Array(sinogram_raw)
-    correction = zeros(Float32, size(sino_raw_cpu))
-    w_norm_64 = Float64.(bhc_2mat.w_norm)
-    μ_w_64 = Float64.(bhc_2mat.μ_water_E)
-    μ_b_64 = Float64.(bhc_2mat.μ_bone_E)
-    μ_water_ref = bhc_2mat.μ_water_ref
-    μ_bone_ref = bhc_2mat.μ_bone_ref
-
-    Threads.@threads for idx in eachindex(sino_raw_cpu)
-        Lw = Float64(L_w[idx])
-        Lb = Float64(L_b[idx])
-        (Lw < 1e-6 && Lb < 1e-6) && continue
-
-        # Polychromatic forward model
-        I_poly = 0.0
-        for e in eachindex(w_norm_64)
-            I_poly += w_norm_64[e] * exp(-μ_w_64[e] * Lw - μ_b_64[e] * Lb)
+    # Soft tissue line integral: p_s = p_water_corrected - p_b
+    p_s_gpu = similar(sino_water)
+    copyto!(p_s_gpu, sino_water)
+    let p_s_gpu = p_s_gpu, p_b_gpu = p_b_gpu
+        AK.foreachindex(p_s_gpu) do idx
+            p_s_gpu[idx] = p_s_gpu[idx] - p_b_gpu[idx]
         end
-        F_2mat = I_poly > 0.0 ? -log(I_poly) : 0.0
-
-        # Monochromatic reference
-        p_mono = μ_water_ref * Lw + μ_bone_ref * Lb
-
-        # Full BH correction
-        correction[idx] = Float32(p_mono - F_2mat)
     end
 
-    # Step 5: Apply to RAW sinogram
-    return sino_raw_cpu .+ correction
+    # Step 3 + 4: Material path lengths → exact 2-material correction (GPU)
+    # Transfer spectral data to GPU (small arrays — one per energy bin)
+    n_e = length(bhc_2mat.w_norm)
+    w_norm_cpu = T.(bhc_2mat.w_norm)
+    μ_w_cpu = T.(bhc_2mat.μ_water_E)
+    μ_b_cpu = T.(bhc_2mat.μ_bone_E)
+    w_norm_gpu = similar(sinogram_raw, T, n_e)
+    μ_w_gpu = similar(sinogram_raw, T, n_e)
+    μ_b_gpu = similar(sinogram_raw, T, n_e)
+    copyto!(w_norm_gpu, w_norm_cpu)
+    copyto!(μ_w_gpu, μ_w_cpu)
+    copyto!(μ_b_gpu, μ_b_cpu)
+
+    μ_b_ref = T(bhc_2mat.μ_bone_ref)
+
+    # Output: corrected sinogram (start from raw, add correction in-place)
+    sino_out = similar(sinogram_raw)
+    copyto!(sino_out, sinogram_raw)
+
+    let sino_out = sino_out, p_s_gpu = p_s_gpu, p_b_gpu = p_b_gpu,
+        w_norm_gpu = w_norm_gpu, μ_w_gpu = μ_w_gpu, μ_b_gpu = μ_b_gpu,
+        μ_w_ref = μ_w_ref, μ_b_ref = μ_b_ref, n_e = n_e
+        AK.foreachindex(sino_out) do idx
+            # Path lengths (clamped ≥ 0)
+            Lw = max(p_s_gpu[idx] / μ_w_ref, zero(T))
+            Lb = max(p_b_gpu[idx] / μ_b_ref, zero(T))
+
+            # Skip rays with negligible material
+            if Lw > T(1e-6) || Lb > T(1e-6)
+                # Polychromatic forward model: F = -log(Σ wₑ exp(-μ_w(E)Lw - μ_b(E)Lb))
+                I_poly = zero(T)
+                for e in 1:n_e
+                    I_poly += w_norm_gpu[e] * exp(-μ_w_gpu[e] * Lw - μ_b_gpu[e] * Lb)
+                end
+                F_2mat = I_poly > zero(T) ? -log(I_poly) : zero(T)
+
+                # Monochromatic reference
+                p_mono = μ_w_ref * Lw + μ_b_ref * Lb
+
+                # Apply correction: p_corrected = p_raw + (p_mono - F_2mat)
+                sino_out[idx] = sino_out[idx] + (p_mono - F_2mat)
+            end
+        end
+    end
+
+    return Array(sino_out)
 end

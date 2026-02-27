@@ -124,17 +124,17 @@ function SimOptions(;
         (fill_factor=true, flat_filter=true, bowtie_filter=true, detector_efficiency=true,
             scatter=true, scatter_correction=true, crosstalk=true, optical_crosstalk=true,
             focal_spot=true, noise=true, lag=true,
-            heel_effect=true, das=false, bhc=true, pcct_corrections=true)
+            heel_effect=true, das=false, bhc=false, pcct_corrections=true)
     elseif fidelity == :high
         (fill_factor=true, flat_filter=true, bowtie_filter=true, detector_efficiency=true,
             scatter=true, scatter_correction=true, crosstalk=true, optical_crosstalk=true,
             focal_spot=true, noise=true, lag=true,
-            heel_effect=true, das=false, bhc=true, pcct_corrections=false)  # das=false: DAS model is BROKEN
+            heel_effect=true, das=false, bhc=false, pcct_corrections=false)  # das=false: DAS model is BROKEN; bhc=false: use two-material BHC post-simulation
     elseif fidelity == :medium
         (fill_factor=false, flat_filter=true, bowtie_filter=false, detector_efficiency=false,
             scatter=false, scatter_correction=false, crosstalk=true, optical_crosstalk=false,
             focal_spot=true, noise=true, lag=false,
-            heel_effect=false, das=false, bhc=true, pcct_corrections=false)
+            heel_effect=false, das=false, bhc=false, pcct_corrections=false)
     elseif fidelity == :low
         (fill_factor=false, flat_filter=false, bowtie_filter=false, detector_efficiency=false,
             scatter=false, scatter_correction=false, crosstalk=false, optical_crosstalk=false,
