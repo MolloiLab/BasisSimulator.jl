@@ -63,6 +63,8 @@ protocol = CTProtocol(kVp=120, mA=300,
   (~QIR-3). Only affects PCCT sinogram noise; EICT noise is unaffected.
 - `n_energy_bins::Int`: Number of spectrum bins for polychromatic mode. Default 30.
 - `seed::Union{Int, Nothing}`: Random seed for reproducibility. Default 42.
+- `detector_efficiency_mode::Symbol`: Override detector efficiency calculation mode.
+  `:auto` (default) = let driver decide; `:mc_lut` = force MC LUT; `:beer_lambert` = force analytical.
 """
 struct SimOptions
     fidelity::Symbol
@@ -95,6 +97,7 @@ struct SimOptions
     pcct_noise_reduction::Float64
     seed::Union{Int,Nothing}
     n_energy_bins::Int
+    detector_efficiency_mode::Symbol   # :auto, :mc_lut, :beer_lambert
 end
 
 """
@@ -155,7 +158,8 @@ function SimOptions(;
     use_real_spectrum::Union{Bool,Nothing}=nothing,
     pcct_noise_reduction::Float64=0.0,
     n_energy_bins::Int=30,
-    seed::Union{Int,Nothing}=42
+    seed::Union{Int,Nothing}=42,
+    detector_efficiency_mode::Symbol=:auto
 )
     # Fidelity preset defaults for all 15 effects
     # :ideal = all OFF; :low = noise only; :medium = polychromatic subset; :high = all ON except DAS; :pcct = :high + corrections
@@ -236,7 +240,8 @@ function SimOptions(;
         _pcct_corrections,
         _real_spectrum,
         clamp(pcct_noise_reduction, 0.0, 1.0),
-        seed, n_energy_bins
+        seed, n_energy_bins,
+        detector_efficiency_mode
     )
 end
 

@@ -438,7 +438,9 @@ function constant_dose_protocol(base::CTProtocol, new_views::Int)
         base.kVp_low,
         base.mA_low,
         base.integration_fraction,
-        base.collimation_mm
+        base.collimation_mm,
+        base.anode_angle,
+        base.additional_filters
     )
 end
 
@@ -480,7 +482,9 @@ function constant_noise_protocol(base::CTProtocol, new_views::Int)
         base.kVp_low,
         base.mA_low,
         base.integration_fraction,
-        base.collimation_mm
+        base.collimation_mm,
+        base.anode_angle,
+        base.additional_filters
     )
 end
 

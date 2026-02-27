@@ -1374,8 +1374,8 @@ function pcct_forward_project(
     ws_detector_v = nothing,
     # Pre-computed charge sharing probabilities
     ws_charge_probs = nothing,
-    # Override volume bounds for phantom FOV
-    volume_fov::Union{Nothing, NTuple{3, Float64}} = nothing
+    # Override volume bounds for phantom physical extent
+    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing
 )
     T = Float32  # Use Float32 for GPU efficiency
 
@@ -1469,7 +1469,7 @@ function pcct_forward_project(
             ws_detector_centers=ws_detector_centers,
             ws_detector_u=ws_detector_u,
             ws_detector_v=ws_detector_v,
-            volume_fov=volume_fov)
+            volume_extent=volume_extent)
 
         # Weight by spectrum and quantum efficiency
         # Photon count: N = I₀ × S(E) × η(E) × exp(-∫μ dl)

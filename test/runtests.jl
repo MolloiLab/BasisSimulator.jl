@@ -135,7 +135,7 @@ end
 
         # Check geometry
         @test phantom.voxel_size == (0.1, 0.1, 0.1)
-        @test phantom.fov == (1.6, 1.6, 0.4)  # 16*0.1, 16*0.1, 4*0.1
+        @test phantom.extent == (1.6, 1.6, 0.4)  # 16*0.1, 16*0.1, 4*0.1
     end
 
     @testset "create_phantom_from_mask with Symbol" begin
@@ -201,7 +201,7 @@ end
 
         # Check geometry
         @test phantom.voxel_size == (0.1, 0.1, 0.1)
-        @test phantom.fov == (1.6, 1.6, 0.4)
+        @test phantom.extent == (1.6, 1.6, 0.4)
     end
 
     @testset "build_materials_vector" begin

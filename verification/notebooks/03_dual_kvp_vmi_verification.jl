@@ -94,6 +94,7 @@ SIM_CONFIG = let
         imageSize = 512,
         sliceCount = 32,
         sliceThickness = 1.25,      # mm
+        phantom_z_cm = 5.0,         # Actual Gammex 472 physical thickness (50mm)
         fov_mm = 350.0,
 
         sid = sid,
@@ -158,7 +159,9 @@ recon_opts = BS.ReconOptions(
 md"""
 ## 2. Phantom Generation
 
-Gammex 472 digital phantom: 33 cm water body, 7 calcium inserts (inner ring, R=5.0 cm), 7 iodine inserts (outer ring, R=10.5 cm).
+Gammex 472 digital phantom: 33 cm diameter × **5 cm thick** (actual physical dimensions from manufacturer spec sheet). 7 calcium inserts (inner ring, R=5.0 cm), 7 iodine inserts (outer ring, R=10.5 cm).
+
+The phantom (5cm) is much taller than the detector z-coverage (~9mm for 16 rows), so every detector row traces rays through the full phantom body.
 """
 
 # ╔═╡ a0000001-0001-0001-0001-000000000016
@@ -166,7 +169,7 @@ phantom_cpu = BS.create_gammex_472(
 	n_voxels = SIM_CONFIG.imageSize,
 	n_slices = SIM_CONFIG.sliceCount,
 	fov_cm = SIM_CONFIG.fov_mm / 10.0,
-	z_cm = (SIM_CONFIG.sliceCount * SIM_CONFIG.sliceThickness) / 10.0
+	z_cm = SIM_CONFIG.phantom_z_cm,  # 5cm — actual Gammex 472 thickness
 );
 
 # ╔═╡ a0000001-0001-0001-0001-000000000017
@@ -175,7 +178,7 @@ phantom_gpu = BS.Phantom(
 	phantom_cpu.materials,
 	phantom_cpu.voxel_size,
 	phantom_cpu.origin,
-	phantom_cpu.fov
+	phantom_cpu.extent
 );
 
 # ╔═╡ a0000001-0001-0001-0001-000000000018

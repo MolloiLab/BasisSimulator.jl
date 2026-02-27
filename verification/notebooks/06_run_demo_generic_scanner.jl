@@ -1,12 +1,12 @@
 # ============================================================================
-# BasisSimulator.jl — CUDA Demo with Visualization
+# BasisSimulator.jl — Generic Scanner CUDA Demo with Visualization
 # Hamidreza Khodajou-Chokami, PhD
-# Run with: julia --project=. run_demo.jl
+# Run with: julia --project=../.. verification/notebooks/06_run_demo_generic_scanner.jl
 # Or use "Run Without Debugging" in VS Code (set environment first)
 # ============================================================================
 
 println("="^60)
-println("  BasisSimulator.jl — CUDA Demo with Visualization")
+println("  BasisSimulator.jl — Generic Scanner CUDA Demo")
 println("="^60)
 
 # ─── Load packages ───────────────────────────────────────────────────────────
@@ -43,7 +43,7 @@ if CUDA.functional()
         phantom_cpu.materials,
         phantom_cpu.voxel_size,
         phantom_cpu.origin,
-        phantom_cpu.fov,
+        phantom_cpu.extent,
     )
     println("  ✓ Phantom mask on GPU ($(typeof(phantom.mask)))")
 else
@@ -101,7 +101,7 @@ println("  Reconstruction: $(nx)×$(ny)×$(nz)")
 println("  Center slice HU range: [$(round(minimum(recon_hu[:,:,mid_slice]), digits=0)), $(round(maximum(recon_hu[:,:,mid_slice]), digits=0))]")
 
 # ─── Create output directory ────────────────────────────────────────────────
-output_dir = joinpath(@__DIR__, "output_images")
+output_dir = joinpath(@__DIR__, "..", "data", "output_generic_scanner")
 mkpath(output_dir)
 
 # ─── Plot 1: Reconstructed CT Slices (Abdomen Window) ───────────────────────
@@ -255,4 +255,3 @@ println("  ✓ Saved & displayed: 05_phantom_vs_recon.png")
 println("\n", "="^60)
 println("  ✓ All images saved to: $(output_dir)")
 println("="^60)
-println("\nOpen the output_images/ folder to view your CT images!")
