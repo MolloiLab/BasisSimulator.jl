@@ -2073,7 +2073,7 @@ begin
 	sim_recon_cutoff = 1.0 # MUST STAY at 1.0
 	# Dose-independent noise floor (σ HU) — tune to match clinical high-mA noise
 	# σ_total = √(σ_quantum² + σ_floor²). Start at 0, increase until 300mA matches.
-	sim_noise_floor_hu = 32.0
+	sim_noise_floor_hu = 20.0
 end
 
 # ╔═╡ 24e12422-f5a0-4bb7-a46e-2949df45d75c
@@ -2084,7 +2084,7 @@ end
 custom_filter_control = (
 	x = (0.0, 0.25, 0.5, 0.75, 1.0),
 	# y = (1.0, 0.9338, 0.7441, 0.4425, 0.0531),
-	y = (1.0, 0.9, 0.5, 0.15, 0.00001),
+	y = (1.0, 0.962, 0.8, 0.15, 0.001),
 )
 
 # ╔═╡ a1b2c3d4-6011-4000-8000-000000000011
