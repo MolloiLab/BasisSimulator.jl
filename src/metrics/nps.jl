@@ -105,7 +105,7 @@ Configuration for NPS measurement.
 - `roi_size::Int`: Size of square ROI in pixels (power of 2 recommended, e.g., 64, 128)
 - `n_rois::Int`: Number of ROIs to average (higher = smoother NPS)
 - `overlap::Float64`: Fractional overlap between ROIs (0.0 = none, 0.5 = 50%)
-- `detrend::Symbol`: Detrending method (:mean, :linear, :none)
+- `detrend::Symbol`: Detrending method (:mean, :linear, :quadratic, :none)
 - `window::Symbol`: Window function (:none, :hann, :hamming)
 - `include_2d::Bool`: Whether to store full 2D NPS (memory intensive)
 
@@ -159,7 +159,7 @@ function NPSConfig(;
     @assert roi_size > 0 "roi_size must be positive"
     @assert n_rois > 0 "n_rois must be positive"
     @assert 0.0 <= overlap < 1.0 "overlap must be in [0, 1)"
-    @assert detrend in (:mean, :linear, :none) "detrend must be :mean, :linear, or :none"
+    @assert detrend in (:mean, :linear, :quadratic, :none) "detrend must be :mean, :linear, :quadratic, or :none"
     @assert window in (:none, :hann, :hamming) "window must be :none, :hann, or :hamming"
 
     return NPSConfig(roi_size, n_rois, overlap, detrend, window, include_2d)
@@ -537,6 +537,25 @@ function _detrend_roi(roi::Matrix{Float64}, method::Symbol)
 
         # Remove trend
         trend = coeffs[1] * x + coeffs[2] * y .+ coeffs[3]
+        return roi .- trend
+    elseif method == :quadratic
+        # Remove 2D quadratic trend (2nd-order polynomial surface)
+        # Removes cupping (bowl-shaped) artifacts that linear can't handle
+        ny, nx = size(roi)
+
+        x = repeat(1:nx, 1, ny)'
+        y = repeat(1:ny, 1, nx)
+
+        x_flat = vec(Float64.(x))
+        y_flat = vec(Float64.(y))
+        z_flat = vec(roi)
+
+        # Solve for: z = a*x² + b*y² + c*x*y + d*x + e*y + f
+        A = [x_flat.^2 y_flat.^2 x_flat.*y_flat x_flat y_flat ones(length(x_flat))]
+        coeffs = A \ z_flat
+
+        trend = coeffs[1] .* x.^2 .+ coeffs[2] .* y.^2 .+ coeffs[3] .* x .* y .+
+                coeffs[4] .* x .+ coeffs[5] .* y .+ coeffs[6]
         return roi .- trend
     else
         return roi .- mean(roi)

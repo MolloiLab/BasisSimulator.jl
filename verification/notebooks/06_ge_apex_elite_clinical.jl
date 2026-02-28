@@ -822,6 +822,118 @@ The SE segmentation mask (from 120 kVp / 150 mA / ASiR-V 50%) is reused for all
 reused for all 4 DE VMI energies.
 """
 
+# ╔═╡ 0c47ac3f-6d83-47ac-8c94-bc9172db716d
+"""
+	measure_nps_local(hu_slice, pixel_mm; roi_center, roi_radius_mm, roi_size=64,
+	                  n_rois=64, overlap=0.5)
+
+Local NPS with quadratic detrending + Hann window (no package restart needed).
+Returns a NamedTuple matching BS.NPSResult fields used downstream.
+"""
+function measure_nps_local(
+	hu_slice::AbstractMatrix, pixel_mm::Real;
+	roi_center::Tuple{Int,Int},
+	roi_radius_mm::Real,
+	roi_size::Int = 64,
+	n_rois::Int = 64,
+	overlap::Float64 = 0.5,
+	unit::Symbol = :lp_cm,
+)
+	img = Array(Float64.(hu_slice))
+	ny, nx = size(img)
+
+	# Crop to circular ROI bounding box
+	cy, cx = roi_center
+	roi_radius_px = roi_radius_mm / pixel_mm
+	rows_in = [i for i in 1:ny if any(j -> sqrt((i-cy)^2 + (j-cx)^2) <= roi_radius_px, 1:nx)]
+	cols_in = [j for j in 1:nx if any(i -> sqrt((i-cy)^2 + (j-cx)^2) <= roi_radius_px, 1:ny)]
+	img_roi = img[minimum(rows_in):maximum(rows_in), minimum(cols_in):maximum(cols_in)]
+	ny_roi, nx_roi = size(img_roi)
+
+	# Extract ROI patches
+	step = max(round(Int, roi_size * (1 - overlap)), 1)
+	n_y = (ny_roi - roi_size) ÷ step + 1
+	n_x = (nx_roi - roi_size) ÷ step + 1
+	rois = Matrix{Float64}[]
+	for iy in 0:(n_y-1), ix in 0:(n_x-1)
+		r0 = 1 + iy * step; c0 = 1 + ix * step
+		if r0 + roi_size - 1 <= ny_roi && c0 + roi_size - 1 <= nx_roi
+			push!(rois, copy(img_roi[r0:r0+roi_size-1, c0:c0+roi_size-1]))
+		end
+	end
+	if length(rois) > n_rois
+		rois = rois[randperm(length(rois))[1:n_rois]]
+	end
+	actual_n = length(rois)
+
+	# Hann window
+	w1d = [0.5 * (1 - cos(2π * i / (roi_size - 1))) for i in 0:(roi_size-1)]
+	win = w1d * w1d'
+
+	# Compute NPS
+	power_sum = zeros(Float64, roi_size, roi_size)
+	for roi in rois
+		# Quadratic detrend: fit ax²+by²+cxy+dx+ey+f, subtract
+		x = Float64.(repeat(1:roi_size, 1, roi_size)')
+		y = Float64.(repeat(1:roi_size, 1, roi_size))
+		xf = vec(x); yf = vec(y); zf = vec(roi)
+		A = [xf.^2 yf.^2 xf.*yf xf yf ones(length(xf))]
+		c = A \ zf
+		trend = c[1].*x.^2 .+ c[2].*y.^2 .+ c[3].*x.*y .+ c[4].*x .+ c[5].*y .+ c[6]
+		detrended = roi .- trend
+
+		windowed = detrended .* win
+		power_sum .+= abs2.(fft(windowed))
+	end
+
+	nps_2d = fftshift(power_sum ./ actual_n .* (pixel_mm^2 / roi_size^2))
+
+	# Radial average
+	freq_axis = fftshift(BS.fftfreq(roi_size, 1.0 / pixel_mm))
+	df = length(freq_axis) > 1 ? abs(freq_axis[2] - freq_axis[1]) : 1.0
+	n_bins = length(freq_axis) ÷ 2 + 1
+	radial_freqs = collect(range(0, stop=(n_bins-1)*df, length=n_bins))
+	nps_1d = zeros(Float64, n_bins)
+	counts = zeros(Int, n_bins)
+	for j in 1:roi_size, i in 1:roi_size
+		fx = freq_axis[min(j, length(freq_axis))]
+		fy = freq_axis[min(i, length(freq_axis))]
+		r = sqrt(fx^2 + fy^2)
+		bin = round(Int, r / df) + 1
+		if 1 <= bin <= n_bins
+			nps_1d[bin] += nps_2d[i, j]
+			counts[bin] += 1
+		end
+	end
+	for i in 1:n_bins
+		counts[i] > 0 && (nps_1d[i] /= counts[i])
+	end
+
+	# Skip DC
+	radial_freqs = radial_freqs[2:end]
+	nps_1d = nps_1d[2:end]
+
+	# Unit conversion
+	if unit == :lp_cm
+		radial_freqs .*= 10.0
+		nps_1d ./= 100.0
+	end
+
+	# Peak
+	peak_idx = length(nps_1d) > 1 ? argmax(nps_1d[2:end]) + 1 : 1
+	peak_freq = radial_freqs[peak_idx]
+	peak_val = nps_1d[peak_idx]
+	df_out = length(radial_freqs) > 1 ? radial_freqs[2] - radial_freqs[1] : 1.0
+	integrated = sum(nps_1d) * df_out
+
+	return (
+		frequencies = radial_freqs, nps_1d = nps_1d,
+		peak_frequency = peak_freq, peak_value = peak_val,
+		integrated_nps = integrated, n_rois = actual_n,
+		roi_size = (roi_size, roi_size), unit = unit,
+	)
+end
+
 # ╔═╡ a1b2c3d4-0011-4000-8000-000000000011
 begin
 	"""
@@ -838,29 +950,47 @@ begin
 		cx::Float64, cy::Float64,
 		radius_cm::Float64;
 		fov_cm = 35.0,
-		n_angles = 360,
+		n_angles = 720,
 		oversample = 4,
-		margin_pix = 12.0,
+		margin_inner = 15.0,   # pixels inside edge (toward body center) — generous
+		margin_outer = 5.0,    # pixels outside edge (toward air/FOV) — limited by clearance
+		fov_guard_pix = 3.0,   # skip angles where outer samples get this close to FOV edge
 	)
 		nx, ny = size(hu_slice)
 		pixel_cm = fov_cm / nx
 		pixel_mm = pixel_cm * 10.0
-		body_r_pix = radius_cm / pixel_cm
+		edge_r_pix = radius_cm / pixel_cm
+		fov_r_pix = nx / 2.0  # FOV radius in pixels (image center to edge)
 
-		# Sample radial ESF: from edge - margin to edge + margin
-		r_min = body_r_pix - margin_pix
-		r_max = body_r_pix + margin_pix
+		# Image center (FOV center)
+		img_cx = (nx + 1) / 2.0
+		img_cy = (ny + 1) / 2.0
+
+		# Sample radial ESF: asymmetric margins around the edge
+		r_min = edge_r_pix - margin_inner
+		r_max = edge_r_pix + margin_outer
 		n_r = round(Int, (r_max - r_min) * oversample)
 		radii = range(r_min, r_max, length = n_r)
-		positions_mm = collect((radii .- body_r_pix) .* pixel_mm)  # mm from edge
+		positions_mm = collect((radii .- edge_r_pix) .* pixel_mm)  # mm from edge
 
-		# Average ESF across all angles
+		# Average ESF across angles, skipping those too close to FOV boundary
 		esf = zeros(Float64, n_r)
 		counts = zeros(Int, n_r)
 		angles = range(0, 2π - 2π / n_angles, length = n_angles)
+		n_used = 0
 
 		for θ in angles
 			cosθ, sinθ = cos(θ), sin(θ)
+
+			# Check: does the outermost sample point stay within FOV?
+			x_outer = cx + r_max * cosθ
+			y_outer = cy + r_max * sinθ
+			dist_from_img_center = sqrt((x_outer - img_cx)^2 + (y_outer - img_cy)^2)
+			if dist_from_img_center > fov_r_pix - fov_guard_pix
+				continue  # skip this angle — too close to FOV edge
+			end
+
+			n_used += 1
 			for (k, r) in enumerate(radii)
 				xi = cx + r * cosθ
 				yi = cy + r * sinθ
@@ -939,7 +1069,8 @@ begin
 		f50 = find_freq_at(0.5)
 		f10 = find_freq_at(0.1)
 
-		return (frequencies = freq_lp_cm, mtf = mtf_curve, mtf50 = f50, mtf10 = f10)
+		return (frequencies = freq_lp_cm, mtf = mtf_curve, mtf50 = f50, mtf10 = f10,
+				n_angles_used = n_used)
 	end
 
 	"""
@@ -999,22 +1130,32 @@ begin
 
 		rod_cnr = [(rod_means[i] - μ_water) / σ_water for i in 1:length(rod_means)]
 
-		# --- NPS (from uniform body center, avoiding rods) ---
+		# --- NPS (uniform body center, inside inner rod ring at 5.5 cm) ---
 		center_row = round(Int, seg_center.cx)
 		center_col = round(Int, seg_center.cy)
-		nps_result = BS.measure_nps(
+		# nps_result = BS.measure_nps(
+		# 	hu_slice, pixel_mm;
+		# 	config = BS.NPSConfig(roi_size = 64, n_rois = 64, overlap = 0.5, detrend = :linear, window = :hann), 
+		# 	roi_center = (center_row, center_col),
+		# 	roi_radius_mm = 45.0,
+		# 	unit = :lp_cm,
+		# )
+
+		nps_result = measure_nps_local(
 			hu_slice, pixel_mm;
-			config = BS.NPSConfig(roi_size = 64, n_rois = 32, overlap = 0.5),
 			roi_center = (center_row, center_col),
-			roi_radius_mm = 35.0,
+			roi_radius_mm = 64.0,
 			unit = :lp_cm,
+			overlap = 0.25,
 		)
 
-		# --- MTF (circular edge of Ca 400 rod — highest contrast insert) ---
-		ca400_rod = first(filter(x -> x.name == "Ca 400", seg_rods))
+		# --- MTF (phantom outer body / air boundary) ---
 		mtf_result = measure_mtf_circular_edge(
-			hu_slice, ca400_rod.cx, ca400_rod.cy, 1.4;
-			fov_cm = fov_cm, margin_pix = 12.0,
+			hu_slice, Float64(seg_center.cx), Float64(seg_center.cy), 16.5;
+			fov_cm = fov_cm,
+			margin_inner = 15.0,   # plenty of room inside body
+			margin_outer = 5.0,    # ~5 pixels into air (limited by FOV clearance)
+			fov_guard_pix = 3.0,
 		)
 
 		return (
@@ -1080,6 +1221,39 @@ de_measurements = let
 	[measure_scan(vol, seg_result_de.mask, seg_result_de.rods, seg_result_de.center, name)
 	 for (vol, name) in de_scans]
 end;
+
+# ╔═╡ e6322fc0-9a18-43a6-a98d-5af80c2a5f01
+let
+	all_m = vcat(se_measurements, de_measurements)
+
+	fig = CM.Figure(size = (1200, 500), fontsize = 11)
+	ax1 = CM.Axis(fig[1, 1]; title = "NPS — Single-Energy Scans",
+		xlabel = "Spatial frequency (lp/cm)", ylabel = "NPS (HU²·cm²)",
+		yscale = log10)
+	ax2 = CM.Axis(fig[1, 2]; title = "NPS — Dual-Energy VMI",
+		xlabel = "Spatial frequency (lp/cm)", ylabel = "NPS (HU²·cm²)",
+		yscale = log10)
+
+	se_colors = CM.cgrad(:tab10, 12, categorical = true)
+	for (i, m) in enumerate(se_measurements)
+		freqs = m.nps.frequencies
+		vals = m.nps.nps_1d
+		good = vals .> 0
+		CM.lines!(ax1, freqs[good], vals[good]; label = m.name, color = se_colors[i])
+	end
+	CM.axislegend(ax1; position = :rt, labelsize = 8, nbanks = 2)
+
+	de_colors = [:purple, :teal, :darkorange, :crimson]
+	for (i, m) in enumerate(de_measurements)
+		freqs = m.nps.frequencies
+		vals = m.nps.nps_1d
+		good = vals .> 0
+		CM.lines!(ax2, freqs[good], vals[good]; label = m.name, color = de_colors[i], linewidth = 2)
+	end
+	CM.axislegend(ax2; position = :rt, labelsize = 10)
+
+	fig
+end
 
 # ╔═╡ a1b2c3d4-0016-4000-8000-000000000016
 md"""
@@ -1340,7 +1514,7 @@ begin
 		body_radius = 16.5
 		rod_radius = 1.4
 		air_gap_water = 0.03   # 0.3mm clearance for pure water rods
-		air_gap_other = 0.015  # 0.15mm clearance for all other insert rods
+		air_gap_other = 0.010  # 0.10mm clearance for all other insert rods
 		rod_radius² = rod_radius^2
 		outer_ring_R = 10.5
 		inner_ring_R = 5.5
@@ -1472,8 +1646,9 @@ begin
 	# BasisSimulator defaults: electronic_noise=5000 e⁻, detection_gain=15 e⁻/keV
 	# At 120kVp, mean_E ≈ 60 keV → σ_e_photon = 5000/(60×15) ≈ 5.6 photons
 	# Set electronic_noise=0 to disable (quantum-only, previous behavior)
-	sim_electronic_noise = 75000.0  # e⁻ (std dev of DAS readout noise) — high value for noise floor matching clinical
-	sim_detection_gain = 15.0      # e⁻/keV (scintillator + photodiode gain)
+	# sim_electronic_noise = 1500.0  # e⁻ (std dev of DAS readout noise) — high value for noise floor matching clinical
+	sim_electronic_noise = 500.0
+	sim_detection_gain = 10.0      # e⁻/keV (scintillator + photodiode gain)
 
 	sim_scanner = BS.Scanner(
 		source_to_isocenter = 625.6,
@@ -1562,11 +1737,6 @@ end
 # ╔═╡ 53fdf44c-c940-4f9e-9ec3-4f77748ba370
 sim_opts
 
-# ╔═╡ 4370ad68-eebd-4f09-85f0-acb556be9fe2
-# Reconstruction filter (tweak freely — only re-runs recon + HU, NOT simulate!)
-sim_recon_filter = :standard
-sim_recon_cutoff = 0.85  # frequency cutoff (0-1) — mild high-freq rolloff to match clinical noise texture
-
 # ╔═╡ 02f63ae1-4850-4cb6-8daa-8536c3458898
 # Build a custom spatial-domain filter kernel from frequency-domain control points.
 # Uses same approach as CatSim: ramp kernel → FFT → apply window → IFFT.
@@ -1641,269 +1811,6 @@ begin
 		sim_phantom.extent,
 	)
 end;
-
-# ╔═╡ a1b2c3d4-5006-4000-8000-000000000006
-# Water phantom DISABLED — μ_water now comes from bhc_models[kvp].μ_water_ref
-# (analytically exact from XrayAttenuation.jl at the spectrum's effective energy)
-#=
-sim_water_phantom = let
-	nx, ny = sim_recon_xy, sim_recon_xy
-	nz_water = 40
-	voxel_cm = sim_recon_fov_cm / nx
-	voxel_z_cm = sim_phantom_z_cm / nz_water
-
-	water_mask = zeros(UInt8, nx, ny, nz_water)
-	radius_cm = 16.5
-	xs = range(-sim_recon_fov_cm/2 + voxel_cm/2, sim_recon_fov_cm/2 - voxel_cm/2, length=nx)
-	ys = range(-sim_recon_fov_cm/2 + voxel_cm/2, sim_recon_fov_cm/2 - voxel_cm/2, length=ny)
-	for k in 1:nz_water, j in 1:ny, i in 1:nx
-		if sqrt(xs[i]^2 + ys[j]^2) <= radius_cm
-			water_mask[i, j, k] = UInt8(1)
-		end
-	end
-
-	water_materials = [XA.Materials.air, XA.Materials.water]
-	origin = (-sim_recon_fov_cm/2 + voxel_cm/2, -sim_recon_fov_cm/2 + voxel_cm/2, -sim_phantom_z_cm/2 + voxel_z_cm/2)
-	extent = (Float64(sim_recon_fov_cm), Float64(sim_recon_fov_cm), Float64(sim_phantom_z_cm))
-
-	BS.Phantom(water_mask, water_materials, (voxel_cm, voxel_cm, voxel_z_cm), origin, extent)
-end
-=#
-
-# ╔═╡ a1b2c3d4-6002-4000-8000-000000000002
-# Water calibration DISABLED — μ_water now comes from bhc_models[kvp].μ_water_ref
-#=
-μ_water_120,  vol_water_120 = let
-	prot = BS.CTProtocol(
-		kVp=120,
-		mA=500.0,
-		views=sim_n_views,
-		rotation_time=sim_rotation_time,
-		collimation_mm=sim_collimation_mm,
-		additional_filters=additional_filters
-	)
-
-	recon_size = sim_matrix_size
-
-	water_gpu = BS.Phantom(
-		MtlArray(sim_water_phantom.mask),
-		sim_water_phantom.materials,
-		sim_water_phantom.voxel_size,
-		sim_water_phantom.origin,
-		sim_water_phantom.extent
-	)
-
-	ws = BS.create_eict_workspace(
-		sim_scanner,
-		prot,
-		sim_opts,
-		sim_recon_geom,
-		water_gpu
-	)
-	BS.simulate!(ws, water_gpu, sim_scanner, prot, sim_opts, sim_recon_geom)
-	sino_cpu = Array(ws.sino_noisy_out)
-	geom = ws.geom
-	ws = nothing; water_gpu = nothing; GC.gc(true)
-
-	ws_fdk = BS.create_fdk_recon_workspace(
-		MtlArray(sino_cpu),
-		geom,
-		recon_size;
-		filter=:standard
-	)
-	vol = Array(BS.reconstruct!(ws_fdk, MtlArray(sino_cpu), geom, recon_size))
-	ws_fdk = nothing; GC.gc(true)
-
-	# Multi-ROI: 4 off-center positions
-	nxy = size(vol, 1)
-	mid_z = size(vol, 3) ÷ 2
-	s = vol[:, :, mid_z]
-	cx, cy = nxy ÷ 2, nxy ÷ 2
-	r = round(Int, nxy * 0.05)
-	offsets = [(-nxy÷6,0), (nxy÷6,0), (0,-nxy÷6), (0,nxy÷6)]
-	μ_vals = [mean(s[cx+dx-r:cx+dx+r, cy+dy-r:cy+dy+r]) for (dx,dy) in offsets]
-	@info "μ_water(120 kVp) = $(round(mean(μ_vals), digits=6)) cm⁻¹  [4-ROI: $(round.(μ_vals, digits=6))]"
-	mean(μ_vals), vol
-end
-=#
-
-# ╔═╡ 23720661-64a0-405d-8baf-a8f2ab5a9b15
-#= Water phantom plot disabled
-let
-	f = CM.Figure()
-	ax = CM.Axis(f[1, 1], aspect = CM.DataAspect())
-	hm = CM.heatmap!(vol_water_120[:, :, 32]; colormap = :grays)
-	CM.Colorbar(f[1, 2], hm)
-	f
-end
-=#
-
-# ╔═╡ a1b2c3d4-6003-4000-8000-000000000003
-# ╠═╡ disabled = true
-#=╠═╡
-# # Water calibration: 80 kVp — high mA (500) for low noise, noisy sinogram
-# μ_water_80 = let
-# 	prot = BS.CTProtocol(
-# 		kVp=80,
-# 		mA=500.0,
-# 		views=sim_n_views,
-# 		rotation_time=sim_rotation_time,
-# 		collimation_mm=sim_collimation_mm,
-# 		additional_filters=additional_filters
-# 	)
-
-# 	recon_size = sim_matrix_size
-
-# 	water_gpu = BS.Phantom(
-# 		MtlArray(sim_water_phantom.mask),
-# 		sim_water_phantom.materials,
-# 		sim_water_phantom.voxel_size,
-# 		sim_water_phantom.origin,
-# 		sim_water_phantom.extent
-# 	)
-
-# 	ws = BS.create_eict_workspace(
-# 		sim_scanner,
-# 		prot,
-# 		sim_opts,
-# 		sim_recon_geom,
-# 		water_gpu
-# 	)
-# 	BS.simulate!(ws, water_gpu, sim_scanner, prot, sim_opts, sim_recon_geom)
-# 	sino_cpu = Array(ws.sino_noisy_out)
-# 	geom = ws.geom
-# 	ws = nothing; water_gpu = nothing; GC.gc(true)
-
-# 	ws_fdk = BS.create_fdk_recon_workspace(
-# 		MtlArray(sino_cpu),
-# 		geom,
-# 		recon_size;
-# 		filter=:standard
-# 	)
-# 	vol = Array(BS.reconstruct!(ws_fdk, MtlArray(sino_cpu), geom, recon_size))
-# 	ws_fdk = nothing; GC.gc(true)
-
-# 	nxy = size(vol, 1)
-# 	mid_z = size(vol, 3) ÷ 2
-# 	s = vol[:, :, mid_z]
-# 	cx, cy = nxy ÷ 2, nxy ÷ 2
-# 	r = round(Int, nxy * 0.05)
-# 	offsets = [(-nxy÷6,0), (nxy÷6,0), (0,-nxy÷6), (0,nxy÷6)]
-# 	μ_vals = [mean(s[cx+dx-r:cx+dx+r, cy+dy-r:cy+dy+r]) for (dx,dy) in offsets]
-# 	@info "μ_water(80 kVp) = $(round(mean(μ_vals), digits=6)) cm⁻¹  [4-ROI: $(round.(μ_vals, digits=6))]"
-# 	mean(μ_vals)
-# end
-  ╠═╡ =#
-
-# ╔═╡ a1b2c3d4-6004-4000-8000-000000000004
-# ╠═╡ disabled = true
-#=╠═╡
-# # Water calibration: 100 kVp — high mA (500) for low noise, noisy sinogram
-# μ_water_100 = let
-# 	prot = BS.CTProtocol(
-# 		kVp=100,
-# 		mA=500.0,
-# 		views=sim_n_views,
-# 		rotation_time=sim_rotation_time,
-# 		collimation_mm=sim_collimation_mm,
-# 		additional_filters=additional_filters
-# 	)
-
-# 	recon_size = sim_matrix_size
-
-# 	water_gpu = BS.Phantom(
-# 		MtlArray(sim_water_phantom.mask), sim_water_phantom.materials,
-# 		sim_water_phantom.voxel_size, sim_water_phantom.origin, sim_water_phantom.extent)
-
-# 	ws = BS.create_eict_workspace(
-# 		sim_scanner,
-# 		prot, 
-# 		sim_opts,
-# 		sim_recon_geom,
-# 		water_gpu
-# 	)
-# 	BS.simulate!(ws, water_gpu, sim_scanner, prot, sim_opts, sim_recon_geom)
-# 	sino_cpu = Array(ws.sino_noisy_out)
-# 	geom = ws.geom
-# 	ws = nothing; water_gpu = nothing; GC.gc(true)
-
-# 	ws_fdk = BS.create_fdk_recon_workspace(
-# 		MtlArray(sino_cpu),
-# 		geom,
-# 		recon_size;
-# 		filter=:standard
-# 	)
-# 	vol = Array(BS.reconstruct!(ws_fdk, MtlArray(sino_cpu), geom, recon_size))
-# 	ws_fdk = nothing; GC.gc(true)
-
-# 	nxy = size(vol, 1)
-# 	mid_z = size(vol, 3) ÷ 2
-# 	s = vol[:, :, mid_z]
-# 	cx, cy = nxy ÷ 2, nxy ÷ 2
-# 	r = round(Int, nxy * 0.05)
-# 	offsets = [(-nxy÷6,0), (nxy÷6,0), (0,-nxy÷6), (0,nxy÷6)]
-# 	μ_vals = [mean(s[cx+dx-r:cx+dx+r, cy+dy-r:cy+dy+r]) for (dx,dy) in offsets]
-# 	@info "μ_water(100 kVp) = $(round(mean(μ_vals), digits=6)) cm⁻¹  [4-ROI: $(round.(μ_vals, digits=6))]"
-# 	mean(μ_vals)
-# end
-  ╠═╡ =#
-
-# ╔═╡ a1b2c3d4-6005-4000-8000-000000000005
-# ╠═╡ disabled = true
-#=╠═╡
-# # Water calibration: 140 kVp — high mA (500) for low noise, noisy sinogram
-# μ_water_140 = let
-# 	prot = BS.CTProtocol(
-# 		kVp=140,
-# 		mA=500.0,
-# 		views=sim_n_views,
-# 		rotation_time=sim_rotation_time,
-# 		collimation_mm=sim_collimation_mm,
-# 		additional_filters=additional_filters
-# 	)
-
-# 	recon_size = sim_matrix_size
-
-# 	water_gpu = BS.Phantom(
-# 		MtlArray(sim_water_phantom.mask),
-# 		sim_water_phantom.materials,
-# 		sim_water_phantom.voxel_size,
-# 		sim_water_phantom.origin,
-# 		sim_water_phantom.extent
-# 	)
-
-# 	ws = BS.create_eict_workspace(
-# 		sim_scanner,
-# 		prot,
-# 		sim_opts,
-# 		sim_recon_geom,
-# 		water_gpu
-# 	)
-# 	BS.simulate!(ws, water_gpu, sim_scanner, prot, sim_opts, sim_recon_geom)
-# 	sino_cpu = Array(ws.sino_noisy_out)
-# 	geom = ws.geom
-# 	ws = nothing; water_gpu = nothing; GC.gc(true)
-
-# 	ws_fdk = BS.create_fdk_recon_workspace(
-# 		MtlArray(sino_cpu),
-# 		geom,
-# 		recon_size;
-# 		filter=:standard
-# 	)
-# 	vol = Array(BS.reconstruct!(ws_fdk, MtlArray(sino_cpu), geom, recon_size))
-# 	ws_fdk = nothing; GC.gc(true)
-
-# 	nxy = size(vol, 1)
-# 	mid_z = size(vol, 3) ÷ 2
-# 	s = vol[:, :, mid_z]
-# 	cx, cy = nxy ÷ 2, nxy ÷ 2
-# 	r = round(Int, nxy * 0.05)
-# 	offsets = [(-nxy÷6,0), (nxy÷6,0), (0,-nxy÷6), (0,nxy÷6)]
-# 	μ_vals = [mean(s[cx+dx-r:cx+dx+r, cy+dy-r:cy+dy+r]) for (dx,dy) in offsets]
-# 	@info "μ_water(140 kVp) = $(round(mean(μ_vals), digits=6)) cm⁻¹  [4-ROI: $(round.(μ_vals, digits=6))]"
-# 	mean(μ_vals)
-# end
-  ╠═╡ =#
 
 # ╔═╡ a1b2c3d4-6062-4000-8000-000000000062
 md"""
@@ -2088,12 +1995,25 @@ end
 # Scan 6: 140 kVp / 110 mA — SIMULATE
 sim_sino_6 = let
 	sc = SE_SIM_SCANS[6]
-	prot = BS.CTProtocol(kVp = sc.kvp, mA = sc.mA, views = sim_n_views,
-		rotation_time = sim_rotation_time, collimation_mm = sim_collimation_mm,
-		additional_filters = additional_filters)
+	prot = BS.CTProtocol(
+		kVp = sc.kvp,
+		mA = sc.mA,
+		views = sim_n_views,
+		rotation_time = sim_rotation_time,
+		collimation_mm = sim_collimation_mm,
+		additional_filters = additional_filters
+	)
 	@info "Simulating: $(sc.name)..."
 	ws = BS.create_eict_workspace(sim_scanner, prot, sim_opts, sim_recon_geom, sim_phantom_gpu)
-	@time BS.simulate!(ws, sim_phantom_gpu, sim_scanner, prot, sim_opts, sim_recon_geom)
+	
+	BS.simulate!(
+		ws,
+		sim_phantom_gpu,
+		sim_scanner,
+		prot,
+		sim_opts,
+		sim_recon_geom
+	)
 	result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, name = sc.name, kvp = sc.kvp)
 	ws = nothing
 	GC.gc(true)
@@ -2142,6 +2062,19 @@ bhc_models = let
 	models
 end
 
+# ╔═╡ fb6cdb7c-19d0-4f86-950d-464307f0d786
+bhc_models[120].μ_water_ref
+
+# ╔═╡ 4370ad68-eebd-4f09-85f0-acb556be9fe2
+begin
+	# Reconstruction filter (tweak freely — only re-runs recon + HU, NOT simulate!)
+	sim_recon_filter = :standard
+	sim_recon_cutoff = 1.0 # MUST STAY at 1.0
+	# Dose-independent noise floor (σ HU) — tune to match clinical high-mA noise
+	# σ_total = √(σ_quantum² + σ_floor²). Start at 0, increase until 300mA matches.
+	sim_noise_floor_hu = 28.0
+end
+
 # ╔═╡ a1b2c3d4-6011-4000-8000-000000000011
 # Scan 1: 120 kVp / 50 mA — RECONSTRUCT (BHC → GPU FDK → CPU volume)
 sim_recon_1 = let
@@ -2168,14 +2101,12 @@ sim_recon_1 = let
 	(volume = vol, name = sim_sino_1.name, kvp = sim_sino_1.kvp)
 end
 
-# ╔═╡ fb6cdb7c-19d0-4f86-950d-464307f0d786
-bhc_models[120].μ_water_ref
-
 # ╔═╡ a1b2c3d4-6012-4000-8000-000000000012
 # Scan 1: 120 kVp / 50 mA — HU CONVERSION (CPU only)
 sim_hu_1 = let
 	μ_w = bhc_models[120].μ_water_ref
 	recon_hu = Float32.(BS.to_hounsfield(sim_recon_1.volume; μ_water = μ_w))
+	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
 	(name = sim_recon_1.name, recon = recon_hu, mu_water = μ_w)
 end
 
@@ -2228,6 +2159,7 @@ end
 sim_hu_2 = let
 	μ_w = bhc_models[120].μ_water_ref
 	recon_hu = Float32.(BS.to_hounsfield(sim_recon_2.volume; μ_water = μ_w))
+	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
 	(name = sim_recon_2.name, recon = recon_hu, mu_water = μ_w)
 end
 
@@ -2271,6 +2203,7 @@ end
 sim_hu_3 = let
 	μ_w = bhc_models[120].μ_water_ref
 	recon_hu = Float32.(BS.to_hounsfield(sim_recon_3.volume; μ_water = μ_w))
+	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
 	(name = sim_recon_3.name, recon = recon_hu, mu_water = μ_w)
 end
 
@@ -2307,6 +2240,7 @@ end
 sim_hu_4 = let
 	μ_w = bhc_models[80].μ_water_ref
 	recon_hu = Float32.(BS.to_hounsfield(sim_recon_4.volume; μ_water = μ_w))
+	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
 	(name = sim_recon_4.name, recon = recon_hu, mu_water = μ_w)
 end
 
@@ -2333,6 +2267,7 @@ end
 sim_hu_5 = let
 	μ_w = bhc_models[100].μ_water_ref
 	recon_hu = Float32.(BS.to_hounsfield(sim_recon_5.volume; μ_water = μ_w))
+	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
 	(name = sim_recon_5.name, recon = recon_hu, mu_water = μ_w)
 end
 
@@ -2359,6 +2294,7 @@ end
 sim_hu_6 = let
 	μ_w = bhc_models[140].μ_water_ref
 	recon_hu = Float32.(BS.to_hounsfield(sim_recon_6.volume; μ_water = μ_w))
+	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
 	(name = sim_recon_6.name, recon = recon_hu, mu_water = μ_w)
 end
 
@@ -2499,6 +2435,122 @@ let
 	fig
 end
 
+# ╔═╡ ae4465c7-65f0-4ecf-8d97-f537eadce60c
+let
+	base_clinical_idx = [1, 3, 5, 7, 9, 11]
+	base_scan_labels = ["120kVp 50mA", "120kVp 150mA", "120kVp 300mA",
+		"80kVp 480mA", "100kVp 250mA", "140kVp 110mA"]
+
+	target_idx = min(2, length(sim_measurements))
+
+	cm = se_measurements[base_clinical_idx[target_idx]]
+	sm = sim_measurements[target_idx]
+	label = base_scan_labels[target_idx]
+
+	# Filter: only Ca and I rods (skip Water, SW ref)
+	keep = [i for i in 1:length(cm.rod_names)
+			if startswith(cm.rod_names[i], "Ca") || startswith(cm.rod_names[i], "I ")]
+	names = cm.rod_names[keep]
+	cm_means = cm.rod_means[keep]
+	cm_stds = cm.rod_stds[keep]
+	sm_means = sm.rod_means[keep]
+	sm_stds = sm.rod_stds[keep]
+	n = length(names)
+
+	# Color by material: Ca = blue/orange tones, I = green/red tones
+	is_ca = [startswith(nm, "Ca") for nm in names]
+	clin_colors = [c ? :steelblue : :seagreen for c in is_ca]
+	sim_colors = [c ? :darkorange : :indianred for c in is_ca]
+
+	fig = CM.Figure(size = (1100, 500), fontsize = 10)
+	ax = CM.Axis(fig[1, 1]; title = "Rod HU ($label)", subtitle = "Clinical vs Simulated", ylabel = "Mean HU", xticks = (1:n, names), xticklabelrotation = π / 4)
+
+	# Bars — Ca group
+	ca_idx = findall(is_ca)
+	if !isempty(ca_idx)
+		CM.barplot!(ax, ca_idx .- 0.2, cm_means[ca_idx]; width = 0.35,
+			color = :steelblue, label = "Clinical Ca")
+		CM.errorbars!(ax, ca_idx .- 0.2, cm_means[ca_idx], cm_stds[ca_idx];
+			color = :black, whiskerwidth = 3)
+		CM.barplot!(ax, ca_idx .+ 0.2, sm_means[ca_idx]; width = 0.35,
+			color = :darkorange, label = "Simulated Ca")
+		CM.errorbars!(ax, ca_idx .+ 0.2, sm_means[ca_idx], sm_stds[ca_idx];
+			color = :black, whiskerwidth = 3)
+	end
+
+	# Bars — I group
+	i_idx = findall(.!is_ca)
+	if !isempty(i_idx)
+		CM.barplot!(ax, i_idx .- 0.2, cm_means[i_idx]; width = 0.35,
+			color = :seagreen, label = "Clinical I")
+		CM.errorbars!(ax, i_idx .- 0.2, cm_means[i_idx], cm_stds[i_idx];
+			color = :black, whiskerwidth = 3)
+		CM.barplot!(ax, i_idx .+ 0.2, sm_means[i_idx]; width = 0.35,
+			color = :indianred, label = "Simulated I")
+		CM.errorbars!(ax, i_idx .+ 0.2, sm_means[i_idx], sm_stds[i_idx];
+			color = :black, whiskerwidth = 3)
+	end
+
+	CM.axislegend(ax; position = :lt)
+	fig
+end
+
+# ╔═╡ dc0ce201-0efa-4bc0-bd3c-2075650fc67a
+let
+	base_clinical_idx = [1, 3, 5, 7, 9, 11]
+	base_scan_labels = ["120/50", "120/150", "120/300", "80/480", "100/250", "140/110"]
+
+	n_sims = min(length(sim_measurements), length(base_clinical_idx))
+	active_labels = base_scan_labels[1:n_sims]
+
+	water_idx = 1  # "Water (O)" is first rod
+	clin_σ = [se_measurements[base_clinical_idx[i]].rod_stds[water_idx] for i in 1:n_sims]
+	@info clin_σ
+	sim_σ = [sim_measurements[i].rod_stds[water_idx] for i in 1:n_sims]
+	@info sim_σ
+
+	fig = CM.Figure(size = (800, 400), fontsize = 11)
+	ax = CM.Axis(fig[1, 1]; title = "Water ROI Noise (σ)", subtitle = "Clinical vs Simulated",
+		ylabel = "σ (HU)", xticks = (1:n_sims, active_labels), xlabel = "kVp / mA")
+	CM.barplot!(ax, collect(1:n_sims) .- 0.2, clin_σ; width = 0.35, color = :steelblue, label = "Clinical")
+	CM.barplot!(ax, collect(1:n_sims) .+ 0.2, sim_σ; width = 0.35, color = :darkorange, label = "Simulated")
+	CM.axislegend(ax; position = :rt)
+
+	fig
+end
+
+# ╔═╡ 4e15fc9c-217c-4e95-9a0c-bab491f99e4d
+# Each image segmented independently — clinical uses seg_result, simulated uses sim_seg_result
+let
+	# Clinical
+	clin_hu = hu_120_low_fbp[:, :, seg_result.slice_idx]
+	clin_mask = Float32.(seg_result.mask)
+	clin_mask[clin_mask.==0] .= NaN
+
+	# Simulated
+	sim_hu = sim_oriented[1].recon[:, :, sim_seg_result.slice_idx]
+	sim_mask = Float32.(sim_seg_result.mask)
+	sim_mask[sim_mask.==0] .= NaN
+
+	fig = CM.Figure(size = (1100, 500), fontsize = 11)
+
+	ax1 = CM.Axis(fig[1, 1]; title = "Clinical",
+		aspect = CM.DataAspect(), yreversed = true)
+	CM.heatmap!(ax1, clin_hu; colormap = :grays, colorrange = (-200, 500))
+	# CM.heatmap!(ax1, clin_mask; colormap = :turbo, colorrange = (1, 27), nan_color = :transparent)
+	CM.hidedecorations!(ax1)
+	CM.hidespines!(ax1)
+
+	ax2 = CM.Axis(fig[1, 2]; title = "Simulated",
+		aspect = CM.DataAspect(), yreversed = true)
+	CM.heatmap!(ax2, sim_hu; colormap = :grays, colorrange = (-200, 500))
+	# CM.heatmap!(ax2, sim_mask; colormap = :turbo, colorrange = (1, 27), nan_color = :transparent)
+	CM.hidedecorations!(ax2)
+	CM.hidespines!(ax2)
+
+	fig
+end
+
 # ╔═╡ f42424d5-73ec-43a2-afb0-ae741629d8d6
 # Each image segmented independently — clinical uses seg_result, simulated uses sim_seg_result
 let
@@ -2525,6 +2577,38 @@ let
 		aspect = CM.DataAspect(), yreversed = true)
 	CM.heatmap!(ax2, sim_hu; colormap = :grays, colorrange = (-200, 500))
 	CM.heatmap!(ax2, sim_mask; colormap = :turbo, colorrange = (1, 27), nan_color = :transparent)
+	CM.hidedecorations!(ax2)
+	CM.hidespines!(ax2)
+
+	fig
+end
+
+# ╔═╡ cb2b2b03-9aa7-446a-ad61-9e7152f9b1eb
+# Each image segmented independently — clinical uses seg_result, simulated uses sim_seg_result
+let
+	# Clinical
+	clin_hu = hu_120_mid_fbp[:, :, seg_result.slice_idx]
+	clin_mask = Float32.(seg_result.mask)
+	clin_mask[clin_mask.==0] .= NaN
+
+	# Simulated
+	sim_hu = sim_oriented[min(2, end)].recon[:, :, sim_seg_result.slice_idx]
+	sim_mask = Float32.(sim_seg_result.mask)
+	sim_mask[sim_mask.==0] .= NaN
+
+	fig = CM.Figure(size = (1100, 500), fontsize = 11)
+
+	ax1 = CM.Axis(fig[1, 1]; title = "Clinical",
+		aspect = CM.DataAspect(), yreversed = true)
+	CM.heatmap!(ax1, clin_hu; colormap = :grays, colorrange = (-200, 500))
+	# CM.heatmap!(ax1, clin_mask; colormap = :turbo, colorrange = (1, 27), nan_color = :transparent)
+	CM.hidedecorations!(ax1)
+	CM.hidespines!(ax1)
+
+	ax2 = CM.Axis(fig[1, 2]; title = "Simulated",
+		aspect = CM.DataAspect(), yreversed = true)
+	CM.heatmap!(ax2, sim_hu; colormap = :grays, colorrange = (-200, 500))
+	# CM.heatmap!(ax2, sim_mask; colormap = :turbo, colorrange = (1, 27), nan_color = :transparent)
 	CM.hidedecorations!(ax2)
 	CM.hidespines!(ax2)
 
@@ -2655,90 +2739,6 @@ let
 	CM.heatmap!(ax2, sim_mask; colormap = :turbo, colorrange = (1, 27), nan_color = :transparent)
 	CM.hidedecorations!(ax2)
 	CM.hidespines!(ax2)
-
-	fig
-end
-
-# ╔═╡ ae4465c7-65f0-4ecf-8d97-f537eadce60c
-let
-	base_clinical_idx = [1, 3, 5, 7, 9, 11]
-	base_scan_labels = ["120kVp 50mA", "120kVp 150mA", "120kVp 300mA",
-		"80kVp 480mA", "100kVp 250mA", "140kVp 110mA"]
-
-	target_idx = min(2, length(sim_measurements))
-
-	cm = se_measurements[base_clinical_idx[target_idx]]
-	sm = sim_measurements[target_idx]
-	label = base_scan_labels[target_idx]
-
-	# Filter: only Ca and I rods (skip Water, SW ref)
-	keep = [i for i in 1:length(cm.rod_names)
-			if startswith(cm.rod_names[i], "Ca") || startswith(cm.rod_names[i], "I ")]
-	names = cm.rod_names[keep]
-	cm_means = cm.rod_means[keep]
-	cm_stds = cm.rod_stds[keep]
-	sm_means = sm.rod_means[keep]
-	sm_stds = sm.rod_stds[keep]
-	n = length(names)
-
-	# Color by material: Ca = blue/orange tones, I = green/red tones
-	is_ca = [startswith(nm, "Ca") for nm in names]
-	clin_colors = [c ? :steelblue : :seagreen for c in is_ca]
-	sim_colors = [c ? :darkorange : :indianred for c in is_ca]
-
-	fig = CM.Figure(size = (1100, 500), fontsize = 10)
-	ax = CM.Axis(fig[1, 1]; title = "Rod HU ($label)", subtitle = "Clinical vs Simulated", ylabel = "Mean HU", xticks = (1:n, names), xticklabelrotation = π / 4)
-
-	# Bars — Ca group
-	ca_idx = findall(is_ca)
-	if !isempty(ca_idx)
-		CM.barplot!(ax, ca_idx .- 0.2, cm_means[ca_idx]; width = 0.35,
-			color = :steelblue, label = "Clinical Ca")
-		CM.errorbars!(ax, ca_idx .- 0.2, cm_means[ca_idx], cm_stds[ca_idx];
-			color = :black, whiskerwidth = 3)
-		CM.barplot!(ax, ca_idx .+ 0.2, sm_means[ca_idx]; width = 0.35,
-			color = :darkorange, label = "Simulated Ca")
-		CM.errorbars!(ax, ca_idx .+ 0.2, sm_means[ca_idx], sm_stds[ca_idx];
-			color = :black, whiskerwidth = 3)
-	end
-
-	# Bars — I group
-	i_idx = findall(.!is_ca)
-	if !isempty(i_idx)
-		CM.barplot!(ax, i_idx .- 0.2, cm_means[i_idx]; width = 0.35,
-			color = :seagreen, label = "Clinical I")
-		CM.errorbars!(ax, i_idx .- 0.2, cm_means[i_idx], cm_stds[i_idx];
-			color = :black, whiskerwidth = 3)
-		CM.barplot!(ax, i_idx .+ 0.2, sm_means[i_idx]; width = 0.35,
-			color = :indianred, label = "Simulated I")
-		CM.errorbars!(ax, i_idx .+ 0.2, sm_means[i_idx], sm_stds[i_idx];
-			color = :black, whiskerwidth = 3)
-	end
-
-	CM.axislegend(ax; position = :lt)
-	fig
-end
-
-# ╔═╡ dc0ce201-0efa-4bc0-bd3c-2075650fc67a
-let
-	base_clinical_idx = [1, 3, 5, 7, 9, 11]
-	base_scan_labels = ["120/50", "120/150", "120/300", "80/480", "100/250", "140/110"]
-
-	n_sims = min(length(sim_measurements), length(base_clinical_idx))
-	active_labels = base_scan_labels[1:n_sims]
-
-	water_idx = 1  # "Water (O)" is first rod
-	clin_σ = [se_measurements[base_clinical_idx[i]].rod_stds[water_idx] for i in 1:n_sims]
-	@info clin_σ
-	sim_σ = [sim_measurements[i].rod_stds[water_idx] for i in 1:n_sims]
-	@info sim_σ
-
-	fig = CM.Figure(size = (800, 400), fontsize = 11)
-	ax = CM.Axis(fig[1, 1]; title = "Water ROI Noise (σ)", subtitle = "Clinical vs Simulated",
-		ylabel = "σ (HU)", xticks = (1:n_sims, active_labels), xlabel = "kVp / mA")
-	CM.barplot!(ax, collect(1:n_sims) .- 0.2, clin_σ; width = 0.35, color = :steelblue, label = "Clinical")
-	CM.barplot!(ax, collect(1:n_sims) .+ 0.2, sim_σ; width = 0.35, color = :darkorange, label = "Simulated")
-	CM.axislegend(ax; position = :rt)
 
 	fig
 end
@@ -2889,6 +2889,8 @@ end
 # ╟─ce7b3519-78ee-43e0-a8a9-5b0270a68901
 # ╟─e26846b8-719f-4d24-a531-7aac1fe6672a
 # ╟─a1b2c3d4-0010-4000-8000-000000000010
+# ╠═0c47ac3f-6d83-47ac-8c94-bc9172db716d
+# ╠═e6322fc0-9a18-43a6-a98d-5af80c2a5f01
 # ╠═a1b2c3d4-0011-4000-8000-000000000011
 # ╟─a1b2c3d4-0012-4000-8000-000000000012
 # ╠═a1b2c3d4-0013-4000-8000-000000000013
@@ -2912,16 +2914,9 @@ end
 # ╠═a1b2c3d4-5003-4000-8000-000000000003
 # ╠═53fdf44c-c940-4f9e-9ec3-4f77748ba370
 # ╠═a1b2c3d4-5004-4000-8000-000000000004
-# ╠═4370ad68-eebd-4f09-85f0-acb556be9fe2
 # ╠═02f63ae1-4850-4cb6-8daa-8536c3458898
 # ╠═24e12422-f5a0-4bb7-a46e-2949df45d75c
 # ╠═a1b2c3d4-5005-4000-8000-000000000005
-# ╠═a1b2c3d4-5006-4000-8000-000000000006
-# ╠═a1b2c3d4-6002-4000-8000-000000000002
-# ╠═23720661-64a0-405d-8baf-a8f2ab5a9b15
-# ╠═a1b2c3d4-6003-4000-8000-000000000003
-# ╠═a1b2c3d4-6004-4000-8000-000000000004
-# ╠═a1b2c3d4-6005-4000-8000-000000000005
 # ╟─a1b2c3d4-6062-4000-8000-000000000062
 # ╠═a1b2c3d4-6060-4000-8000-000000000060
 # ╠═a1b2c3d4-6010-4000-8000-000000000010
@@ -2951,7 +2946,9 @@ end
 # ╠═d90ed7f3-76bf-4c44-8a0f-2e4f7515c2b6
 # ╠═76883b62-cb08-435d-8214-9b0e86c404d8
 # ╠═b3197a6f-3a23-43f3-b63f-f2f49a1ecb45
+# ╟─4e15fc9c-217c-4e95-9a0c-bab491f99e4d
 # ╟─f42424d5-73ec-43a2-afb0-ae741629d8d6
+# ╟─cb2b2b03-9aa7-446a-ad61-9e7152f9b1eb
 # ╟─0d6bbebf-e15d-4ae2-bb99-974b5e3f5793
 # ╟─21eda799-2429-4fb3-a89c-783bfcdb3beb
 # ╟─8f805112-add3-4505-81c3-b465cbd5f512
@@ -2961,6 +2958,7 @@ end
 # ╠═a1b2c3d4-6061-4000-8000-000000000061
 # ╟─ae4465c7-65f0-4ecf-8d97-f537eadce60c
 # ╟─dc0ce201-0efa-4bc0-bd3c-2075650fc67a
+# ╠═4370ad68-eebd-4f09-85f0-acb556be9fe2
 # ╟─8d4d7038-429f-4402-9dcc-4b4263e9db41
 # ╟─4de369da-bad2-43bd-bf5a-ba654d26c76f
 # ╟─11f8b1f8-4927-41a3-a781-9a169739610a

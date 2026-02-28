@@ -21,7 +21,6 @@ For dual-energy, `kVp` and `mA` are the HIGH energy settings.
 - `kVp`: Tube peak voltage (kV) — high energy for dual-kVp
 - `views`: Number of projections per rotation
 - `rotation_time`: Gantry rotation time in seconds
-- `flux_density`: Reference photon flux density at 1m (photons/mm²/s)
 - `spectrum_path`: Optional path to spectrum file
 - `n_rotations`: Number of gantry rotations
 - `dual_energy`: Whether this is a dual-kVp scan
@@ -29,13 +28,15 @@ For dual-energy, `kVp` and `mA` are the HIGH energy settings.
 - `mA_low`: Low tube current for dual-energy (0.0 if single)
 - `integration_fraction`: Fraction of views at low kVp (0.5 default)
 - `collimation_mm`: Detector z-collimation in mm (nothing = use full detector)
+- `anode_angle`: IPEM anode angle in degrees (8 or 10). Used by :high fidelity.
+- `additional_filters`: Extra filter layers `[(material, thickness_mm), ...]` applied
+  on top of the scanner's built-in flat filter in the spectrum domain.
 """
 struct CTProtocol
     mA::Float64            # Tube current (high energy for DE)
     kVp::Float64           # Tube voltage (high energy for DE)
     views::Int             # Number of projections per rotation
     rotation_time::Float64 # Rotation time
-    flux_density::Float64  # Reference flux
     spectrum_path::Union{String, Nothing}
     n_rotations::Float64   # Number of gantry rotations
     dual_energy::Bool      # Dual-kVp scan flag
@@ -43,6 +44,8 @@ struct CTProtocol
     mA_low::Float64        # Low mA for dual-energy
     integration_fraction::Float64  # Fraction of views at low kVp
     collimation_mm::Union{Float64, Nothing}  # Detector z-collimation (mm), nothing = full detector
+    anode_angle::Int       # IPEM anode angle (8 or 10 degrees)
+    additional_filters::Vector{Tuple{String,Float64}}  # Extra filter layers [(material, thickness_mm)]
 end
 
 """
@@ -56,7 +59,6 @@ Create a CT protocol. You must provide either `mA` OR `mAs`.
 - `kVp`: Tube voltage (default: 120.0) — high energy for dual-kVp
 - `views`: Projections per rotation (default: 984)
 - `rotation_time`: Rotation time in seconds (default: 1.0)
-- `flux_density`: Reference flux density (default: 2.0e6)
 - `spectrum_path`: Custom spectrum file (default: nothing)
 - `n_rotations`: Number of gantry rotations (default: 1.0)
 - `dual_energy`: Enable dual-kVp mode (default: false)
@@ -64,10 +66,12 @@ Create a CT protocol. You must provide either `mA` OR `mAs`.
 - `mA_low`: Low tube current for DE (default: 0.0)
 - `integration_fraction`: Fraction of views at low kVp (default: 0.5)
 - `collimation_mm`: Detector z-collimation in mm (default: nothing = full detector)
+- `anode_angle`: IPEM anode angle, 8 or 10 degrees (default: 10)
+- `additional_filters`: Extra filter layers `[(material, thickness_mm), ...]` (default: empty)
 
 # Examples
 ```julia
-# Simple axial (backward compatible)
+# Simple axial
 CTProtocol(kVp=120, mA=200, views=984)
 
 # With collimation (128×0.625mm = 80mm)
@@ -75,6 +79,9 @@ CTProtocol(kVp=120, mA=200, views=984, collimation_mm=80.0)
 
 # Dual-energy axial
 CTProtocol(dual_energy=true, kVp=140, mA=200, kVp_low=80, mA_low=350, views=984)
+
+# Extra filtration (clinical tube with 4.5mm Al on top of scanner's built-in filter)
+CTProtocol(kVp=120, mA=200, additional_filters=[("Al", 4.5)])
 ```
 """
 function CTProtocol(;
@@ -83,14 +90,15 @@ function CTProtocol(;
     kVp=120.0,
     views=984,
     rotation_time=1.0,
-    flux_density=2.0e6,
     spectrum_path=nothing,
     n_rotations::Real=1.0,
     dual_energy::Bool=false,
     kVp_low::Real=0.0,
     mA_low::Real=0.0,
     integration_fraction::Real=0.5,
-    collimation_mm::Union{Real, Nothing}=nothing
+    collimation_mm::Union{Real, Nothing}=nothing,
+    anode_angle::Int=10,
+    additional_filters::Vector{Tuple{String,Float64}}=Tuple{String,Float64}[]
 )
     # Handle mA / mAs exclusivity
     final_mA = if !isnothing(mA)
@@ -112,14 +120,15 @@ function CTProtocol(;
         Float64(kVp),
         Int(views),
         Float64(rotation_time),
-        Float64(flux_density),
         spectrum_path,
         Float64(n_rotations),
         dual_energy,
         Float64(kVp_low),
         Float64(mA_low),
         Float64(integration_fraction),
-        collimation_mm === nothing ? nothing : Float64(collimation_mm)
+        collimation_mm === nothing ? nothing : Float64(collimation_mm),
+        anode_angle,
+        additional_filters
     )
 end
 
@@ -198,12 +207,6 @@ function validate_protocol(protocol::CTProtocol, scanner::Scanner)
             push!(messages, "ERROR: mA_low must be in [10, 1000] for dual-energy (got $(protocol.mA_low))")
             valid = false
         end
-    end
-
-    # flux_density sanity check
-    if protocol.flux_density ≤ 0.0
-        push!(messages, "ERROR: flux_density must be positive (got $(protocol.flux_density))")
-        valid = false
     end
 
     # Collimation validation
@@ -297,13 +300,15 @@ function compute_dlp(protocol::CTProtocol, scan_length_cm::Real; phantom_diamete
 end
 
 """
-    dose_report(protocol::CTProtocol, geom::CTGeometry; phantom_diameter::Real=320.0, scan_length_cm::Union{Real,Nothing}=nothing) -> NamedTuple
+    dose_report(protocol::CTProtocol, geom::CTGeometry, spectrum_flux_sum::Float64; ...) -> NamedTuple
 
 Generate a dose report for the given protocol and geometry.
 
 # Arguments
 - `protocol`: CT protocol
 - `geom`: Scanner geometry (for I0 calculation)
+- `spectrum_flux_sum`: Sum of unnormalized spectrum weights from `resolve_spectrum`
+  (photons/mAs/mm² at scanner SDD)
 
 # Keyword Arguments
 - `phantom_diameter`: Phantom diameter in mm (default: 320)
@@ -318,15 +323,15 @@ Also prints a formatted summary.
 ```julia
 protocol = CTProtocol(kVp=120, mA=200, views=984, rotation_time=1.0)
 geom = create_aquilion_one(n_angles=984)
-report = dose_report(protocol, geom)
+report = dose_report(protocol, geom, sum(spectrum_weights))
 ```
 """
-function dose_report(protocol::CTProtocol, geom::CTGeometry;
+function dose_report(protocol::CTProtocol, geom::CTGeometry, spectrum_flux_sum::Float64;
     phantom_diameter::Real=320.0,
     scan_length_cm::Union{Real,Nothing}=nothing
 )
     # Compute I0 per pixel per view
-    I0 = compute_detector_I0(geom, protocol)
+    I0 = compute_detector_I0(geom, protocol, spectrum_flux_sum)
 
     # mAs
     mAs = protocol.mA * protocol.rotation_time
@@ -415,14 +420,15 @@ function constant_dose_protocol(base::CTProtocol, new_views::Int)
         base.kVp,
         new_views,
         base.rotation_time,
-        base.flux_density,
         base.spectrum_path,
         base.n_rotations,
         base.dual_energy,
         base.kVp_low,
         base.mA_low,
         base.integration_fraction,
-        base.collimation_mm
+        base.collimation_mm,
+        base.anode_angle,
+        base.additional_filters
     )
 end
 
@@ -457,14 +463,15 @@ function constant_noise_protocol(base::CTProtocol, new_views::Int)
         base.kVp,
         new_views,
         base.rotation_time,
-        base.flux_density,
         base.spectrum_path,
         base.n_rotations,
         base.dual_energy,
         base.kVp_low,
         base.mA_low,
         base.integration_fraction,
-        base.collimation_mm
+        base.collimation_mm,
+        base.anode_angle,
+        base.additional_filters
     )
 end
 

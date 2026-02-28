@@ -49,7 +49,7 @@ trans = exp(-depth * 0.1 * cosineFactors @ mu)
 This is mathematically identical to our implementation:
 - `depth` in mm × 0.1 → thickness in cm
 - `cosineFactors` → `path_factor`
-- `mu` from GetMu() → `get_bowtie_mu()` using same NIST data
+- `mu` from GetMu() → `get_filter_mu()` using same NIST data
 
 # Typical Values
 
@@ -235,7 +235,7 @@ function compute_flat_filter_attenuation(
     end
 
     # Get μ for each material
-    μ_vec = [get_bowtie_mu(mat, energy_keV) for mat in filter.materials]
+    μ_vec = [get_filter_mu(mat, energy_keV) for mat in filter.materials]
 
     # Convert thicknesses from mm to cm
     t_cm = filter.thicknesses ./ 10.0
@@ -297,7 +297,7 @@ function compute_flat_filter_attenuation_spectral(
     μ_matrix = zeros(n_materials, n_energies)
     for (i, mat) in enumerate(filter.materials)
         for (j, E) in enumerate(energies)
-            μ_matrix[i, j] = get_bowtie_mu(mat, E)
+            μ_matrix[i, j] = get_filter_mu(mat, E)
         end
     end
 
@@ -468,10 +468,10 @@ function get_flat_filter_info(filter::FlatFilter)
     end
 
     # Compute Al-equivalent thickness at 60 keV
-    μ_al = get_bowtie_mu("Al", 60.0)
+    μ_al = get_filter_mu("Al", 60.0)
     al_equiv = 0.0
     for (mat, t) in zip(filter.materials, filter.thicknesses)
-        μ_mat = get_bowtie_mu(mat, 60.0)
+        μ_mat = get_filter_mu(mat, 60.0)
         al_equiv += t * (μ_mat / μ_al)
     end
 

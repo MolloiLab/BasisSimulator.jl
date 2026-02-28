@@ -120,7 +120,9 @@
 #
 # =============================================================================
 
-export fdk_reconstruct
+import AcceleratedKernels as AK
+
+export fdk_reconstruct, apply_fov_mask!
 
 """
     fdk_reconstruct(sinogram, geom, volume_size; filter=StandardFilter(), cutoff=1.0)
@@ -337,6 +339,9 @@ function fdk_reconstruct(
     # Step 2: Backproject
     volume = backproject(filtered, geom, volume_size)
 
+    # Step 3: Mask outside FOV (clinical convention)
+    apply_fov_mask!(volume, geom)
+
     return volume
 end
 
@@ -427,4 +432,50 @@ function fdk_reconstruct(
     )
 
     return fdk_reconstruct(sinogram, geom_fov, volume_size; filter=filter, cutoff=cutoff)
+end
+
+"""
+    apply_fov_mask!(volume, geom; sentinel_μ=-0.04)
+
+Mask voxels outside the circular reconstruction FOV to a sentinel value.
+
+Clinical CT scanners set voxels outside the reconstruction circle to a fixed
+value (typically -1024 or -2048 HU equivalent) to suppress FDK edge artifacts.
+The default sentinel_μ = -0.04 cm⁻¹ gives approximately -2048 HU for typical
+μ_water ≈ 0.02 cm⁻¹.
+
+# Arguments
+- `volume`: 3D reconstruction volume (nx, ny, nz), modified in-place
+- `geom`: CT geometry (provides FOV for circle radius)
+
+# Keyword Arguments
+- `sentinel_μ`: Raw μ value to assign outside FOV (default: -0.04 cm⁻¹)
+"""
+function apply_fov_mask!(volume::AbstractArray{T,3}, geom::CTGeometry;
+                         sentinel_μ::Real = T(-0.04)) where T
+    nx, ny, nz = size(volume)
+    fov_x, fov_y = geom.fov[1], geom.fov[2]
+
+    # FOV radius (use the smaller of x/y for a circular mask)
+    radius = T(min(fov_x, fov_y) / 2)
+    radius_sq = radius * radius
+
+    voxel_x = T(fov_x / nx)
+    voxel_y = T(fov_y / ny)
+    sentinel = T(sentinel_μ)
+
+    AK.foreachindex(volume) do idx
+        ci = CartesianIndices(volume)[idx]
+        ix, iy, iz = Tuple(ci)
+
+        # Voxel center in physical coordinates (centered at origin)
+        x = (T(ix) - T(0.5) - T(nx) / T(2)) * voxel_x
+        y = (T(iy) - T(0.5) - T(ny) / T(2)) * voxel_y
+
+        if x * x + y * y > radius_sq
+            volume[idx] = sentinel
+        end
+    end
+
+    return volume
 end

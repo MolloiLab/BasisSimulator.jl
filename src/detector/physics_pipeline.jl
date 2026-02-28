@@ -190,7 +190,6 @@ config = realistic_physics_config(
 """
 function realistic_physics_config(;
     scatter_scale::Float64=1.0,
-    scatter_correction_scale::Float64=1.0,
     enable_scatter_correction::Bool=true,
     noise_level::Float64=1.0,
     energy_keV::Float64=60.0,
@@ -205,7 +204,7 @@ function realistic_physics_config(;
 
     # Scatter correction (enabled by default to reduce cupping)
     sc_correction = enable_scatter_correction ?
-        default_scatter_correction(scale_factor=scatter_correction_scale) : nothing
+        default_scatter_correction() : nothing
 
     return PhysicsConfig(
         nothing,  # fill_factor - typically not needed for most simulations
@@ -326,7 +325,6 @@ function full_physics_config(;
     energy_keV::Float64=60.0,
     noise_seed::Union{Nothing, Int}=nothing,
     scatter_scale::Float64=1.0,
-    scatter_correction_scale::Float64=1.0,
     noise_level::Float64=1.0,
     das_noise_sigma::Float64=100.0,
     anode_angle_deg::Float64=7.0
@@ -340,7 +338,7 @@ function full_physics_config(;
         flat_filter_al(3.0),                       # 3mm Al flat filter
         bowtie_filter_large_body(),                # Large body bowtie
         default_scatter_model(scale_factor=scatter_scale),  # Scatter (adds)
-        default_scatter_correction(scale_factor=scatter_correction_scale),  # Scatter correction (removes)
+        default_scatter_correction(),              # Scatter correction (removes)
         crosstalk_medium(),                        # X-ray crosstalk
         optical_crosstalk_typical(),               # Optical crosstalk
         focal_spot_medium(),                       # Focal spot blur

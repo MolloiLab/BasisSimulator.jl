@@ -145,289 +145,18 @@ function default_detector_model(;
 end
 
 # =============================================================================
-# Clinical mA/mAs Support
+# Physics-Based I₀ from IPEM Spectrum
 # =============================================================================
 #
-# These functions enable clinical dose-based noise specification by converting
-# tube current (mA) to photon count (I0) using scanner geometry parameters.
+# The IPEM spectrum pipeline (resolve_spectrum → filter_spectrum) returns photon
+# weights in absolute units: photons/mAs/mm² at the scanner's actual SDD.
+# This means I₀ can be computed from first principles:
 #
-# Physics:
-#   I0 = flux_density × mA × t_proj × (1/SDD)² × A_det × η_det
+#   I₀ = sum(spectrum_weights) × mA × time_per_view × pixel_area_mm²
 #
-# Where:
-#   - flux_density: ~2×10⁶ photons/mA/mm²/s at 1m (CatSim/XCIST standard)
-#   - t_proj: Exposure time per projection (rotation_time / n_views)
-#   - SDD: Source-to-detector distance
-#   - A_det: Detector element area at detector
-#   - η_det: Detector quantum efficiency
-#
-# Reference: XCIST/CatSim (De Man et al., Phys Med Biol, 2022)
+# No distance correction needed — the spectrum is already at the correct SDD.
+# No hardcoded flux_density — the tube output is encoded in the IPEM spectra.
 # =============================================================================
-
-"""
-    CATSIM_FLUX_DENSITY
-
-Reference photon flux density from CatSim/XCIST at 1 meter distance.
-Units: photons / (mA × mm² × s)
-
-This value incorporates:
-- X-ray tube electron-to-photon conversion efficiency (~1%)
-- Geometric solid angle factors
-- Spectral averaging
-
-Reference: XCIST PMC10151073, typical diagnostic CT tube output.
-"""
-const CATSIM_FLUX_DENSITY = 2.0e6  # photons/mA/mm²/s at 1m
-
-"""
-    mA_to_I0(mA; SDD_mm, det_area_mm2, rotation_time_s=0.5, n_views=984, η_det=0.85) -> Float64
-
-Convert clinical tube current (mA) to photon count per detector element per projection.
-
-This function enables clinical dose specification by computing the expected photon
-count I0 from tube current and scanner geometry, matching CatSim/XCIST conventions.
-
-# Physics Model
-
-The photon count per detector element is:
-
-    I0 = Φ × mA × t_proj × (d_ref/SDD)² × A_det × η_det
-
-Where:
-- Φ = 2×10⁶ photons/mA/mm²/s (CatSim flux density at 1 meter)
-- t_proj = rotation_time / n_views (exposure per projection)
-- d_ref = 1000 mm (reference distance for flux density)
-- SDD = source-to-detector distance
-- A_det = detector element area at detector plane
-- η_det = detector quantum efficiency
-
-# Arguments
-- `mA::Float64`: Tube current in milliamperes (typical: 100-740)
-
-# Keyword Arguments
-- `SDD_mm::Float64`: Source-to-detector distance in mm (required)
-- `det_area_mm2::Float64`: Detector element area at detector plane in mm² (required)
-- `rotation_time_s::Float64=0.5`: Gantry rotation time in seconds
-- `n_views::Int=984`: Number of projection views per rotation
-- `η_det::Float64=0.85`: Detector quantum efficiency (0-1)
-
-# Returns
-- `I0::Float64`: Photon count per detector element per projection
-
-# Clinical Reference Values (GE Revolution Apex at 120 kVp, 0.5s rotation, 984 views)
-
-| mA  | I0 (approx)  | Clinical Use |
-|-----|--------------|--------------|
-| 100 | ~145,000     | Ultra-low dose screening |
-| 200 | ~290,000     | Low dose chest |
-| 400 | ~580,000     | Standard body |
-| 600 | ~870,000     | High quality |
-| 740 | ~1,070,000   | Maximum at 120 kVp |
-
-# Noise Relationship
-
-Image noise scales as: σ ∝ 1/√(mA) ∝ 1/√I0
-
-Doubling mA reduces noise by factor of √2 ≈ 1.41
-
-# Example
-
-```julia
-# GE Revolution Apex geometry
-SDD_mm = 1097.0  # Source-to-detector distance
-det_area_mm2 = 1.84 * 1.10  # ~2.0 mm² at detector plane
-
-# Standard chest protocol: 400 mA, 0.5s rotation
-I0 = mA_to_I0(400.0; SDD_mm=SDD_mm, det_area_mm2=det_area_mm2)
-# → ~580,000 photons/detector/projection
-
-# Low dose: 100 mA
-I0_low = mA_to_I0(100.0; SDD_mm=SDD_mm, det_area_mm2=det_area_mm2)
-# → ~145,000 photons/detector/projection
-```
-
-# References
-
-1. De Man B, et al. "XCIST—an open access x-ray/CT simulation toolkit."
-   Phys Med Biol. 2022;67(18). PMC10151073
-
-2. Hsieh J. "Computed Tomography: Principles, Design, Artifacts, and
-   Recent Advances." 3rd ed. SPIE Press, 2015. Chapter 7.
-
-See also: [`clinical_detector_model`](@ref), [`DetectorModel`](@ref)
-"""
-function mA_to_I0(mA::Float64;
-                  SDD_mm::Float64,
-                  det_area_mm2::Float64,
-                  rotation_time_s::Float64=0.5,
-                  n_views::Int=984,
-                  η_det::Float64=0.85)
-
-    # Validate inputs
-    mA > 0 || throw(ArgumentError("mA must be positive (got $mA)"))
-    SDD_mm > 0 || throw(ArgumentError("SDD_mm must be positive (got $SDD_mm)"))
-    det_area_mm2 > 0 || throw(ArgumentError("det_area_mm2 must be positive (got $det_area_mm2)"))
-    rotation_time_s > 0 || throw(ArgumentError("rotation_time_s must be positive (got $rotation_time_s)"))
-    n_views > 0 || throw(ArgumentError("n_views must be positive (got $n_views)"))
-    0 < η_det <= 1 || throw(ArgumentError("η_det must be in (0, 1] (got $η_det)"))
-
-    # Time per projection (seconds)
-    t_proj = rotation_time_s / n_views
-
-    # Distance scaling: flux density at 1m reference
-    # Inverse square law from reference distance (1000 mm)
-    d_ref = 1000.0  # Reference distance in mm
-    distance_factor = (d_ref / SDD_mm)^2
-
-    # Calculate I0: photons per detector element per projection
-    I0 = CATSIM_FLUX_DENSITY * mA * t_proj * distance_factor * det_area_mm2 * η_det
-
-    return I0
-end
-
-"""
-    mA_to_I0(mA, spec::AbstractScannerSpec; rotation_time_s=0.5, n_views=984, η_det=0.85) -> Float64
-
-Convert mA to I0 using scanner specification for geometry parameters.
-
-This convenience method extracts SDD and detector element area from
-the scanner specification.
-
-# Arguments
-- `mA::Float64`: Tube current in milliamperes
-- `spec::AbstractScannerSpec`: Scanner specification (e.g., GERevolutionApex())
-
-# Keyword Arguments
-- `rotation_time_s::Float64=0.5`: Gantry rotation time in seconds
-- `n_views::Int=984`: Number of projection views per rotation
-- `η_det::Float64=0.85`: Detector quantum efficiency
-
-# Example
-
-```julia
-spec = GERevolutionApex()
-
-# 400 mA standard protocol
-I0 = mA_to_I0(400.0, spec; rotation_time_s=0.5)
-
-# Create detector model with clinical mA
-detector = clinical_detector_model(mA=400.0, scanner=spec)
-```
-
-See also: [`clinical_detector_model`](@ref)
-"""
-function mA_to_I0(mA::Float64, spec;
-                  rotation_time_s::Float64=0.5,
-                  n_views::Int=984,
-                  η_det::Float64=0.85)
-
-    # Extract geometry from scanner spec
-    geom_spec = geometry(spec)
-    det_spec = detector(spec)
-
-    SDD_mm = geom_spec.sdd_mm[]
-
-    # Compute detector element area at detector plane (not at isocenter)
-    # The spec stores sizes at isocenter, need to scale by magnification
-    magnification = SDD_mm / geom_spec.sid_mm[]
-    col_size_at_det = det_spec.col_size_mm[] * magnification
-    row_size_at_det = det_spec.row_size_mm[] * magnification
-    det_area_mm2 = col_size_at_det * row_size_at_det
-
-    return mA_to_I0(mA;
-                    SDD_mm=SDD_mm,
-                    det_area_mm2=det_area_mm2,
-                    rotation_time_s=rotation_time_s,
-                    n_views=n_views,
-                    η_det=η_det)
-end
-
-"""
-    clinical_detector_model(; mA, scanner, rotation_time_s=0.5, n_views=984, kwargs...) -> DetectorModel
-
-Create a detector model with clinical mA specification.
-
-This is the recommended way to specify noise levels in BasisSimulator when
-you want to match clinical CT protocols. The mA setting is converted to
-photon count (I0) using scanner geometry and CatSim-compatible physics.
-
-# Arguments
-
-All arguments are keyword-only.
-
-- `mA::Float64`: Tube current in milliamperes (required)
-- `scanner::AbstractScannerSpec`: Scanner specification (required)
-- `rotation_time_s::Float64=0.5`: Gantry rotation time in seconds
-- `n_views::Int=984`: Number of projection views per rotation
-- `η_det::Float64=0.85`: Detector quantum efficiency
-- `blur_fwhm::Float64=1.5`: Detector PSF FWHM in pixels
-- `electronic_noise_std::Float64=10.0`: Electronic noise standard deviation
-- `seed::Union{Nothing,Int}=nothing`: Random seed for reproducibility
-
-# Returns
-
-`DetectorModel` with I0 computed from mA and scanner geometry.
-
-# Example
-
-```julia
-using BasisSimulator
-
-spec = GERevolutionApex()
-
-# Standard chest protocol: 400 mA, 0.5s rotation
-detector_standard = clinical_detector_model(
-    mA = 400.0,
-    scanner = spec,
-    rotation_time_s = 0.5
-)
-println("Standard I0: \$(detector_standard.I0)")  # ~580,000
-
-# Low dose screening: 100 mA
-detector_lowdose = clinical_detector_model(
-    mA = 100.0,
-    scanner = spec,
-    rotation_time_s = 0.5
-)
-println("Low dose I0: \$(detector_lowdose.I0)")  # ~145,000
-
-# Use in physics config
-physics = default_physics_config(
-    noise = detector_standard,
-    fill_factor = fill_factor_standard(),
-    flat_filter = flat_filter_al(3.0)
-)
-```
-
-# Clinical Protocol Reference (GE Revolution Apex at 120 kVp)
-
-| Protocol | mA | Rotation | mAs | Use Case |
-|----------|-----|----------|-----|----------|
-| Ultra-low dose | 50-100 | 0.5s | 25-50 | Lung screening |
-| Low dose | 100-200 | 0.5s | 50-100 | Chest |
-| Standard | 300-450 | 0.5s | 150-225 | Abdomen |
-| High quality | 500-740 | 0.5s | 250-370 | Contrast studies |
-
-See also: [`mA_to_I0`](@ref), [`default_detector_model`](@ref)
-"""
-function clinical_detector_model(;
-    mA::Float64,
-    scanner,
-    rotation_time_s::Float64=0.5,
-    n_views::Int=984,
-    η_det::Float64=0.85,
-    blur_fwhm::Float64=1.5,
-    electronic_noise_std::Float64=10.0,
-    seed::Union{Nothing, Int}=nothing
-)
-    # Compute I0 from mA and scanner geometry
-    I0 = mA_to_I0(mA, scanner;
-                  rotation_time_s=rotation_time_s,
-                  n_views=n_views,
-                  η_det=η_det)
-
-    return DetectorModel(blur_fwhm, I0, electronic_noise_std, seed)
-end
 
 # Maximum kernel size for detector blur
 const MAX_DETECTOR_BLUR_KERNEL_SIZE = 15
@@ -699,29 +428,33 @@ end
 # =============================================================================
 
 export DetectorModel, default_detector_model
-export CATSIM_FLUX_DENSITY, mA_to_I0, clinical_detector_model
 export apply_detector_blur!, apply_detector_blur
 export add_quantum_noise!, add_electronic_noise!
 export add_quantum_noise, add_electronic_noise
 export apply_detector_model!, apply_detector_model
-export sim_detect, compute_detector_I0
+export compute_detector_I0
 
 """
-    compute_detector_I0(geom::CTGeometry, protocol::CTProtocol) -> Float64
+    compute_detector_I0(geom::CTGeometry, protocol::CTProtocol, spectrum_flux_sum::Float64) -> Float64
 
-Compute physics-based I₀ (photons per pixel per view) from scanner geometry
-and acquisition protocol.
+Compute physics-based I₀ (photons per pixel per view) from scanner geometry,
+acquisition protocol, and IPEM spectrum flux.
 
 # Formula
-    I₀ = flux_density × mA × (rotation_time / views) × pixel_area_mm² × (1000/SDD_mm)²
+    I₀ = spectrum_flux_sum × mA × time_per_view × pixel_area_mm²
 
-where pixel_area is at the detector plane (magnified from isocenter).
+where:
+- `spectrum_flux_sum = sum(weights)` from `resolve_spectrum` (photons/mAs/mm² at SDD)
+- `pixel_area` is at the detector plane (magnified from isocenter)
+- No distance factor needed — spectrum weights are already at the correct SDD
 
 # Arguments
 - `geom`: Scanner geometry (SDD, SAD, pixel_size in cm)
-- `protocol`: CT protocol (flux_density, mA, rotation_time, views)
+- `protocol`: CT protocol (mA, rotation_time, views)
+- `spectrum_flux_sum`: Sum of unnormalized spectrum weights from `resolve_spectrum`
+  (units: photons/mAs/mm² at scanner SDD)
 """
-function compute_detector_I0(geom::CTGeometry, protocol::CTProtocol)
+function compute_detector_I0(geom::CTGeometry, protocol::CTProtocol, spectrum_flux_sum::Float64)
     # Convert cm (CTGeometry) to mm (physics standard)
     SDD_mm = geom.SDD * 10.0
     SAD_mm = geom.SAD * 10.0
@@ -735,51 +468,7 @@ function compute_detector_I0(geom::CTGeometry, protocol::CTProtocol)
     # Time per view
     time_per_view = protocol.rotation_time / protocol.views
 
-    # Inverse square law from reference distance (1000 mm)
-    dist_factor = (1000.0 / SDD_mm)^2
-
-    # I₀ = Flux × mA × TimePerView × Area × DistFactor
-    return protocol.flux_density * protocol.mA * time_per_view * pixel_area_mm2 * dist_factor
-end
-
-"""
-    sim_detect(sinogram, geom::CTGeometry, protocol::CTProtocol)
-
-Apply physics-based photon statistics to a clean sinogram.
-
-This function bridges the gap between geometric ray tracing and physical
-data acquisition by converting attenuation line integrals into photon counts,
-applying Poisson statistics, and converting back to attenuation.
-
-# Algorithm
-1. Calculates incident photon count (I0) from protocol and geometry.
-   I0 = Flux × (mAs/views) × PixelArea × (1000/SDD)²
-2. Applies Poisson noise (quantum noise) to the sinogram.
-
-# Arguments
-- `sinogram`: Input attenuation sinogram (clean). Not modified.
-- `geom`: Scanner geometry (provides SDD, SAD, pixel size)
-- `protocol`: CT protocol (provides mAs, kVp, flux)
-
-# Returns
-- A new sinogram array with quantum noise applied.
-"""
-function sim_detect(
-    sinogram::AbstractArray{T,3},
-    geom::CTGeometry,
-    protocol::CTProtocol
-) where T
-    # 1. Compute physics-based I0 using shared helper
-    I0 = compute_detector_I0(geom, protocol)
-
-    # 2. Apply Noise
-    # Create a temporary detector model for noise application
-    # We use 0.0 for other params as we only want quantum noise here
-    model = DetectorModel(0.0, I0, 0.0, nothing)
-
-    # Create copy and apply noise
-    noisy_sino = copy(sinogram)
-    add_quantum_noise!(noisy_sino, model)
-
-    return noisy_sino
+    # I₀ = SpectrumFlux × mA × TimePerView × Area
+    # spectrum_flux_sum already accounts for tube output + filtration + distance
+    return spectrum_flux_sum * protocol.mA * time_per_view * pixel_area_mm2
 end

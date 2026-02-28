@@ -249,6 +249,8 @@ struct ReconOptions
     # Initialization
     warm_start::Union{Nothing,AbstractArray}
     cascade_warm_start::Bool
+    # Post-reconstruction noise floor
+    system_noise_floor_hu::Float64  # dose-independent noise floor σ (HU), added in quadrature with quantum noise
 end
 
 """
@@ -294,7 +296,9 @@ function ReconOptions(;
     vmi_basis::Union{Tuple{Symbol,Symbol},Vector{Symbol}}=(:water, :iodine),
     # Initialization
     warm_start::Union{Nothing,AbstractArray}=nothing,
-    cascade_warm_start::Bool=false
+    cascade_warm_start::Bool=false,
+    # Post-reconstruction noise floor
+    system_noise_floor_hu::Float64=0.0
 )
     # Default to 512x512x64 if not specified
     _size = isnothing(matrix_size) ? (512, 512, 64) : matrix_size
@@ -309,6 +313,7 @@ function ReconOptions(;
         Float64(lambda), Float64(tv_weight), n_subsets,
         penalty, Float64(penalty_delta), use_edge_weights, Float64(blend_percent),
         vmi_energies, _vmi_basis,
-        warm_start, cascade_warm_start
+        warm_start, cascade_warm_start,
+        max(system_noise_floor_hu, 0.0)
     )
 end
