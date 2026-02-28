@@ -266,8 +266,8 @@ function _simulate_axial_single(phantom, scanner, protocol, sim_opts, recon_opts
         collimation_mm=protocol.collimation_mm
     )
 
-    # 2. Resolve spectrum
-    energies, weights = resolve_spectrum(sim_opts, protocol)
+    # 2. Resolve spectrum (pass scanner for :high IPEM pipeline)
+    energies, weights = resolve_spectrum(sim_opts, protocol; scanner=scanner)
 
     # 3. Build PhysicsConfig (with phantom for size-aware scatter)
     config = build_physics_config(scanner, sim_opts, energies, weights; phantom=phantom)
@@ -285,7 +285,11 @@ function _simulate_axial_single(phantom, scanner, protocol, sim_opts, recon_opts
 
     # 5. Apply Detector Noise
     sino_final = if sim_opts.use_noise
-        sim_detect(sino_ideal, geom, protocol)
+        I0 = compute_detector_I0(geom, protocol, sum(weights))
+        model = DetectorModel(0.0, I0, 0.0, nothing)
+        noisy_sino = copy(sino_ideal)
+        add_quantum_noise!(noisy_sino, model)
+        noisy_sino
     else
         copy(sino_ideal)
     end
@@ -326,18 +330,18 @@ end
 # =============================================================================
 
 """
-    _forward_single_pass(phantom, scanner, protocol, sim_opts, geom; materials=nothing) -> (sinogram, config)
+    _forward_single_pass(phantom, scanner, protocol, sim_opts, geom; materials=nothing) -> (sinogram, config, weights)
 
 Run forward projection for a single kVp with all physics effects.
-Returns fully-corrected sinogram (scatter added AND corrected at same energy).
+Returns fully-corrected sinogram, physics config, and spectrum weights.
 
 This is the core building block for both single-kVp and dual-kVp simulations.
 By using this for dual-energy, we ensure scatter is properly matched.
 """
 function _forward_single_pass(phantom, scanner, protocol, sim_opts, geom;
     materials::Union{Nothing,Vector}=nothing)
-    # Resolve spectrum for this kVp
-    energies, weights = resolve_spectrum(sim_opts, protocol)
+    # Resolve spectrum for this kVp (pass scanner for :high IPEM pipeline)
+    energies, weights = resolve_spectrum(sim_opts, protocol; scanner=scanner)
 
     # Build PhysicsConfig (scatter add + scatter correct at SAME energy)
     config = build_physics_config(scanner, sim_opts, energies, weights; phantom=phantom)
@@ -353,7 +357,7 @@ function _forward_single_pass(phantom, scanner, protocol, sim_opts, geom;
         volume_extent=phantom.extent
     )
 
-    return sinogram, config
+    return sinogram, config, weights
 end
 
 function _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts;
@@ -376,9 +380,10 @@ function _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts;
         kVp=protocol.kVp_low,       # 80 kVp
         views=protocol.views,
         rotation_time=protocol.rotation_time,
-        flux_density=protocol.flux_density,
         spectrum_path=nothing,
-        dual_energy=false           # Single-kVp mode for clean scatter handling
+        dual_energy=false,          # Single-kVp mode for clean scatter handling
+        anode_angle=protocol.anode_angle,
+        additional_filters=protocol.additional_filters
     )
 
     protocol_high = CTProtocol(
@@ -386,25 +391,32 @@ function _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts;
         kVp=protocol.kVp,           # 140 kVp
         views=protocol.views,
         rotation_time=protocol.rotation_time,
-        flux_density=protocol.flux_density,
         spectrum_path=nothing,
-        dual_energy=false           # Single-kVp mode for clean scatter handling
+        dual_energy=false,          # Single-kVp mode for clean scatter handling
+        anode_angle=protocol.anode_angle,
+        additional_filters=protocol.additional_filters
     )
 
     # 3. Run single-kVp pipeline for LOW kVp (80 kVp)
     # Scatter is added AND corrected at ~50 keV (matched coefficients!)
-    sino_low, config_low = _forward_single_pass(phantom, scanner, protocol_low, sim_opts, geom; materials=materials)
+    sino_low, config_low, weights_low = _forward_single_pass(phantom, scanner, protocol_low, sim_opts, geom; materials=materials)
 
     # 4. Run single-kVp pipeline for HIGH kVp (140 kVp)
     # Scatter is added AND corrected at ~70 keV (matched coefficients!)
-    sino_high, config_high = _forward_single_pass(phantom, scanner, protocol_high, sim_opts, geom; materials=materials)
+    sino_high, config_high, weights_high = _forward_single_pass(phantom, scanner, protocol_high, sim_opts, geom; materials=materials)
 
     # 5. Apply detector noise to BOTH sinograms for realistic downstream processing
-    # sim_detect returns a copy — originals remain clean for sino_ideal
     sino_ideal = sino_high
     if sim_opts.use_noise
-        sino_low_noisy = sim_detect(sino_low, geom, protocol_low)
-        sino_high_noisy = sim_detect(sino_high, geom, protocol_high)
+        I0_low = compute_detector_I0(geom, protocol_low, sum(weights_low))
+        model_low = DetectorModel(0.0, I0_low, 0.0, nothing)
+        sino_low_noisy = copy(sino_low)
+        add_quantum_noise!(sino_low_noisy, model_low)
+
+        I0_high = compute_detector_I0(geom, protocol_high, sum(weights_high))
+        model_high = DetectorModel(0.0, I0_high, 0.0, nothing)
+        sino_high_noisy = copy(sino_high)
+        add_quantum_noise!(sino_high_noisy, model_high)
     else
         sino_low_noisy = sino_low
         sino_high_noisy = sino_high
@@ -626,7 +638,7 @@ function simulate!(
 
     # Noise (in-place on pcct_sino.bins)
     if sim_opts.use_noise
-        I0_physics = compute_detector_I0(geom, protocol)
+        I0_physics = compute_detector_I0(geom, protocol, sum(ws.weights))
         apply_pcct_noise!(pcct_sino, pcct_detector, protocol;
             seed=sim_opts.seed, I0=I0_physics,
             energies=energies, weights=weights,
@@ -715,7 +727,8 @@ function simulate!(
         ws_detector_u=ws.geom_detector_u,
         ws_detector_v=ws.geom_detector_v,
         volume_extent=phantom.extent,
-        ws_η=ws.η_vec)
+        ws_η=ws.η_vec,
+        ws_bowtie_spectral=ws.bowtie_spectral)
 
     if ws.has_signal_chain
         # ═══════════════════════════════════════════════════════════════════
@@ -736,7 +749,7 @@ function simulate!(
             ws_optical_crosstalk_kernel=ws.optical_crosstalk_kernel,
             ws_focal_spot_kernel=ws.focal_spot_kernel,
             ws_flat_filter_projection=ws.flat_filter_projection,
-            ws_bowtie_projection=ws.bowtie_projection,
+            ws_bowtie_projection=nothing,
             ws_lag_output=ws.physics_output,
             ws_lag_intensity=ws.lag_intensity,
             ws_lag_coeffs=ws.lag_coeffs)
@@ -760,7 +773,19 @@ function simulate!(
         end
 
         # STEP 6: Create noise-free air scan (workspace buffer)
+        # Clinical scanners calibrate with bowtie in beam, so air scan includes bowtie
+        # Air scan uses spectral bowtie air reference: I₀(col,row) = Σ w(E) × T_bt(E,col,row) × η(E)
         fill!(ws.air_scan, one(T))
+        if ws.bowtie_air_reference !== nothing
+            let air = ws.air_scan, ref = ws.bowtie_air_reference, nc = size(air, 1)
+                AK.foreachindex(air) do idx
+                    ci = CartesianIndices(air)[idx]
+                    col, row, _ = Tuple(ci)
+                    ref_idx = col + (row - 1) * nc
+                    air[idx] *= ref[ref_idx]
+                end
+            end
+        end
         if heel_effect !== nothing
             apply_heel_effect!(ws.air_scan, heel_effect, geom)
         end
@@ -806,7 +831,7 @@ function simulate!(
                 ws_optical_crosstalk_kernel=ws.optical_crosstalk_kernel,
                 ws_focal_spot_kernel=ws.focal_spot_kernel,
                 ws_flat_filter_projection=ws.flat_filter_projection,
-                ws_bowtie_projection=ws.bowtie_projection,
+                ws_bowtie_projection=nothing,
                 ws_lag_output=ws.physics_output,
                 ws_lag_intensity=ws.lag_intensity,
                 ws_lag_coeffs=ws.lag_coeffs,
@@ -823,21 +848,43 @@ function simulate!(
     # Apply quantum noise (in-place using workspace buffers)
     # ═══════════════════════════════════════════════════════════════════════
     if sim_opts.use_noise
-        I0_raw = compute_detector_I0(geom, protocol)
+        I0_raw = compute_detector_I0(geom, protocol, sum(ws.weights))
         # Scale by spectrum-weighted average efficiency: η_eff = Σ wₑ × η(E)
         η_eff = sum(ws.weights_norm[i] * ws.η_vec[i] for i in 1:length(ws.η_vec))
         I0_T = T(I0_raw * η_eff)
 
-        # Use default RNG (matches sim_detect behavior: seed=nothing)
+        # Quantum noise random numbers
         randn!(ws.noise_rand_cpu)
         copyto!(ws.noise_rand_gpu, ws.noise_rand_cpu)
 
-        let sino = ws.sinogram, rg = ws.noise_rand_gpu, I0v = I0_T
-            AK.foreachindex(sino) do idx
-                λ = I0v * exp(-sino[idx])
-                λ_noisy = λ + sqrt(max(λ, T(1))) * rg[idx]
-                λ_noisy = max(λ_noisy, T(1))
-                sino[idx] = -log(λ_noisy / I0v)
+        # Electronic noise: convert from electron domain to photon-equivalent
+        # σ_e_photon = σ_e_electrons / (mean_E_keV × gain_e_per_keV)
+        mean_E_keV = sum(ws.weights_norm[i] * ws.energies[i] for i in 1:length(ws.energies))
+        σ_e_photon = T(scanner.electronic_noise / (mean_E_keV * scanner.detection_gain))
+
+        if σ_e_photon > T(0)
+            randn!(ws.enoise_rand_cpu)
+            copyto!(ws.enoise_rand_gpu, ws.enoise_rand_cpu)
+
+            let sino = ws.sinogram, rg = ws.noise_rand_gpu, eg = ws.enoise_rand_gpu,
+                    I0v = I0_T, σ_e = σ_e_photon
+                AK.foreachindex(sino) do idx
+                    λ = I0v * exp(-sino[idx])
+                    λ_noisy = λ + sqrt(max(λ, T(1))) * rg[idx]  # Quantum (Poisson)
+                    λ_noisy += σ_e * eg[idx]                      # Electronic (Gaussian)
+                    λ_noisy = max(λ_noisy, T(1))
+                    sino[idx] = -log(λ_noisy / I0v)
+                end
+            end
+        else
+            # No electronic noise (e.g., PCCT with thresholding) — quantum only
+            let sino = ws.sinogram, rg = ws.noise_rand_gpu, I0v = I0_T
+                AK.foreachindex(sino) do idx
+                    λ = I0v * exp(-sino[idx])
+                    λ_noisy = λ + sqrt(max(λ, T(1))) * rg[idx]
+                    λ_noisy = max(λ_noisy, T(1))
+                    sino[idx] = -log(λ_noisy / I0v)
+                end
             end
         end
     end
@@ -881,7 +928,7 @@ function simulate!(
     _eict_dual_forward_pass!(ws, ws.sino_low, phantom, geom, mats,
         ws.energies_low, ws.weights_low, ws.weights_norm_low,
         ws.μ_table_low, ws.config_low,
-        ws.flat_filter_projection_low, ws.bowtie_projection_low,
+        ws.flat_filter_projection_low, ws.bowtie_spectral_low, ws.bowtie_air_reference_low,
         ws.bhc_coeffs_gpu_low, ws.bhc_low,
         sim_opts, ws.η_vec_low)
 
@@ -891,7 +938,7 @@ function simulate!(
     _eict_dual_forward_pass!(ws, ws.sino_high, phantom, geom, mats,
         ws.energies_high, ws.weights_high, ws.weights_norm_high,
         ws.μ_table_high, ws.config_high,
-        ws.flat_filter_projection_high, ws.bowtie_projection_high,
+        ws.flat_filter_projection_high, ws.bowtie_spectral_high, ws.bowtie_air_reference_high,
         ws.bhc_coeffs_gpu_high, ws.bhc_high,
         sim_opts, ws.η_vec_high)
 
@@ -905,43 +952,83 @@ function simulate!(
     # Apply quantum noise to BOTH sinograms (in-place, sequential)
     # ═══════════════════════════════════════════════════════════════════════
     if sim_opts.use_noise
+        # Electronic noise: convert from electron domain to photon-equivalent
+        # σ_e_photon = σ_e_electrons / (mean_E_keV × gain_e_per_keV)
+        mean_E_keV_low = sum(ws.weights_norm_low[i] * ws.energies_low[i] for i in 1:length(ws.energies_low))
+        σ_e_photon_low = T(scanner.electronic_noise / (mean_E_keV_low * scanner.detection_gain))
+        mean_E_keV_high = sum(ws.weights_norm_high[i] * ws.energies_high[i] for i in 1:length(ws.energies_high))
+        σ_e_photon_high = T(scanner.electronic_noise / (mean_E_keV_high * scanner.detection_gain))
+
         # Noise for low kVp
         I0_raw_low = compute_detector_I0(geom, CTProtocol(
             mA=protocol.mA_low > 0 ? protocol.mA_low : protocol.mA,
             kVp=protocol.kVp_low, views=protocol.views,
-            rotation_time=protocol.rotation_time,
-            flux_density=protocol.flux_density))
-        # Scale by spectrum-weighted average efficiency: η_eff = Σ wₑ × η(E)
+            rotation_time=protocol.rotation_time),
+            sum(ws.weights_low))
         η_eff_low = sum(ws.weights_norm_low[i] * ws.η_vec_low[i] for i in 1:length(ws.η_vec_low))
         I0_low = T(I0_raw_low * η_eff_low)
 
         randn!(ws.rng, ws.noise_rand_cpu)
         copyto!(ws.noise_rand_gpu, ws.noise_rand_cpu)
-        let sino = ws.sino_low, rg = ws.noise_rand_gpu, I0v = I0_low
-            AK.foreachindex(sino) do idx
-                λ = I0v * exp(-sino[idx])
-                λ_noisy = λ + sqrt(max(λ, T(1))) * rg[idx]
-                λ_noisy = max(λ_noisy, T(1))
-                sino[idx] = -log(λ_noisy / I0v)
+
+        if σ_e_photon_low > T(0)
+            randn!(ws.rng, ws.enoise_rand_cpu)
+            copyto!(ws.enoise_rand_gpu, ws.enoise_rand_cpu)
+
+            let sino = ws.sino_low, rg = ws.noise_rand_gpu, eg = ws.enoise_rand_gpu,
+                    I0v = I0_low, σ_e = σ_e_photon_low
+                AK.foreachindex(sino) do idx
+                    λ = I0v * exp(-sino[idx])
+                    λ_noisy = λ + sqrt(max(λ, T(1))) * rg[idx]  # Quantum (Poisson)
+                    λ_noisy += σ_e * eg[idx]                      # Electronic (Gaussian)
+                    λ_noisy = max(λ_noisy, T(1))
+                    sino[idx] = -log(λ_noisy / I0v)
+                end
+            end
+        else
+            let sino = ws.sino_low, rg = ws.noise_rand_gpu, I0v = I0_low
+                AK.foreachindex(sino) do idx
+                    λ = I0v * exp(-sino[idx])
+                    λ_noisy = λ + sqrt(max(λ, T(1))) * rg[idx]
+                    λ_noisy = max(λ_noisy, T(1))
+                    sino[idx] = -log(λ_noisy / I0v)
+                end
             end
         end
 
         # Noise for high kVp
         I0_raw_high = compute_detector_I0(geom, CTProtocol(
             mA=protocol.mA, kVp=protocol.kVp, views=protocol.views,
-            rotation_time=protocol.rotation_time,
-            flux_density=protocol.flux_density))
+            rotation_time=protocol.rotation_time),
+            sum(ws.weights_high))
         η_eff_high = sum(ws.weights_norm_high[i] * ws.η_vec_high[i] for i in 1:length(ws.η_vec_high))
         I0_high = T(I0_raw_high * η_eff_high)
 
         randn!(ws.rng, ws.noise_rand_cpu)
         copyto!(ws.noise_rand_gpu, ws.noise_rand_cpu)
-        let sino = ws.sino_high, rg = ws.noise_rand_gpu, I0v = I0_high
-            AK.foreachindex(sino) do idx
-                λ = I0v * exp(-sino[idx])
-                λ_noisy = λ + sqrt(max(λ, T(1))) * rg[idx]
-                λ_noisy = max(λ_noisy, T(1))
-                sino[idx] = -log(λ_noisy / I0v)
+
+        if σ_e_photon_high > T(0)
+            randn!(ws.rng, ws.enoise_rand_cpu)
+            copyto!(ws.enoise_rand_gpu, ws.enoise_rand_cpu)
+
+            let sino = ws.sino_high, rg = ws.noise_rand_gpu, eg = ws.enoise_rand_gpu,
+                    I0v = I0_high, σ_e = σ_e_photon_high
+                AK.foreachindex(sino) do idx
+                    λ = I0v * exp(-sino[idx])
+                    λ_noisy = λ + sqrt(max(λ, T(1))) * rg[idx]  # Quantum (Poisson)
+                    λ_noisy += σ_e * eg[idx]                      # Electronic (Gaussian)
+                    λ_noisy = max(λ_noisy, T(1))
+                    sino[idx] = -log(λ_noisy / I0v)
+                end
+            end
+        else
+            let sino = ws.sino_high, rg = ws.noise_rand_gpu, I0v = I0_high
+                AK.foreachindex(sino) do idx
+                    λ = I0v * exp(-sino[idx])
+                    λ_noisy = λ + sqrt(max(λ, T(1))) * rg[idx]
+                    λ_noisy = max(λ_noisy, T(1))
+                    sino[idx] = -log(λ_noisy / I0v)
+                end
             end
         end
     end
@@ -971,7 +1058,7 @@ end
 """
     _eict_dual_forward_pass!(ws, target_sino, phantom, geom, mats,
         energies, weights, weights_norm, μ_table, config,
-        flat_filter_proj, bowtie_proj, bhc_coeffs_gpu, bhc_effect,
+        flat_filter_proj, bowtie_spectral, bowtie_air_ref, bhc_coeffs_gpu, bhc_effect,
         sim_opts, η_vec)
 
 Run one forward projection pass for dual-kVp simulation.
@@ -981,7 +1068,7 @@ Writes result into `target_sino`.
 function _eict_dual_forward_pass!(
     ws::EICTDualWorkspace{T}, target_sino, phantom, geom, mats,
     energies, weights, weights_norm, μ_table, config,
-    flat_filter_proj, bowtie_proj, bhc_coeffs_gpu, bhc_effect,
+    flat_filter_proj, bowtie_spectral, bowtie_air_ref, bhc_coeffs_gpu, bhc_effect,
     sim_opts, η_vec
 ) where {T}
     # Forward projection (Beer-Lambert polychromatic)
@@ -997,7 +1084,8 @@ function _eict_dual_forward_pass!(
         ws_detector_u=ws.geom_detector_u,
         ws_detector_v=ws.geom_detector_v,
         volume_extent=phantom.extent,
-        ws_η=η_vec)
+        ws_η=η_vec,
+        ws_bowtie_spectral=bowtie_spectral)
 
     if ws.has_signal_chain
         # CatSim signal chain
@@ -1013,7 +1101,7 @@ function _eict_dual_forward_pass!(
             ws_optical_crosstalk_kernel=ws.optical_crosstalk_kernel,
             ws_focal_spot_kernel=ws.focal_spot_kernel,
             ws_flat_filter_projection=flat_filter_proj,
-            ws_bowtie_projection=bowtie_proj,
+            ws_bowtie_projection=nothing,
             ws_lag_output=ws.physics_output,
             ws_lag_intensity=ws.lag_intensity,
             ws_lag_coeffs=ws.lag_coeffs)
@@ -1035,7 +1123,19 @@ function _eict_dual_forward_pass!(
         end
 
         # Air scan (workspace buffer)
+        # Clinical scanners calibrate with bowtie in beam, so air scan includes bowtie
+        # Air scan uses spectral bowtie air reference: I₀(col,row) = Σ w(E) × T_bt(E,col,row) × η(E)
         fill!(ws.air_scan, one(T))
+        if bowtie_air_ref !== nothing
+            let air = ws.air_scan, ref = bowtie_air_ref, nc = size(air, 1)
+                AK.foreachindex(air) do idx
+                    ci = CartesianIndices(air)[idx]
+                    col, row, _ = Tuple(ci)
+                    ref_idx = col + (row - 1) * nc
+                    air[idx] *= ref[ref_idx]
+                end
+            end
+        end
         if heel_effect !== nothing
             apply_heel_effect!(ws.air_scan, heel_effect, geom)
         end
@@ -1079,7 +1179,7 @@ function _eict_dual_forward_pass!(
                 ws_optical_crosstalk_kernel=ws.optical_crosstalk_kernel,
                 ws_focal_spot_kernel=ws.focal_spot_kernel,
                 ws_flat_filter_projection=flat_filter_proj,
-                ws_bowtie_projection=bowtie_proj,
+                ws_bowtie_projection=nothing,
                 ws_lag_output=ws.physics_output,
                 ws_lag_intensity=ws.lag_intensity,
                 ws_lag_coeffs=ws.lag_coeffs,
@@ -1250,21 +1350,52 @@ function get_spectrum(protocol::CTProtocol)
     return load_spectrum(Int(protocol.kVp))
 end
 
-export get_spectrum
+export get_spectrum, resolve_spectrum
 
 """
-    resolve_spectrum(sim_opts::SimOptions, protocol::CTProtocol) -> (energies, weights)
+    resolve_spectrum(sim_opts, protocol; scanner=nothing) -> (energies, weights)
 
-Determine the energy spectrum based on SimOptions effect toggles.
-If any energy-dependent effect is enabled (flat_filter, bowtie_filter, detector_efficiency,
-bhc), loads the full polychromatic spectrum and downsamples to `sim_opts.n_energy_bins`.
-Otherwise, uses monochromatic approximation at `kVp * 0.5` keV.
+Determine the energy spectrum for simulation.
+
+For `:high` / `:pcct` fidelity: loads a raw IPEM Anode spectrum and applies
+Beer-Lambert filtering (scanner flat filter + protocol additional_filters) plus
+inverse-square-law distance scaling.  Full resolution (~160-280 bins), no
+downsampling.
+
+For `:medium`: loads a pre-filtered CatSim spectrum (legacy path).
+
+For `:low` / `:ideal`: monochromatic at kVp/2.
+
+Pass `scanner` so that `:high` can read `flat_filter_material`,
+`flat_filter_thickness`, and `source_to_detector` from the hardware spec.
 """
-function resolve_spectrum(sim_opts::SimOptions, protocol::CTProtocol)
-    if needs_polychromatic(sim_opts)
-        e_full, w_full = load_spectrum(Int(protocol.kVp))
-        return downsample_spectrum(e_full, w_full, sim_opts.n_energy_bins)
+function resolve_spectrum(sim_opts::SimOptions, protocol::CTProtocol; scanner=nothing)
+    fidelity = sim_opts.fidelity
+
+    if fidelity in (:high, :pcct)
+        # --- Physics-based: raw IPEM spectrum + Beer-Lambert filtering ---
+        e, w = load_spectrum_unfiltered(Int(protocol.kVp); anode_angle=protocol.anode_angle)
+
+        # Build filter list: scanner's built-in flat filter + protocol extras
+        filters = Tuple{String, Float64}[]
+        if scanner !== nothing && scanner.flat_filter_thickness > 0
+            push!(filters, (String(scanner.flat_filter_material), Float64(scanner.flat_filter_thickness)))
+        end
+        append!(filters, protocol.additional_filters)
+
+        # Apply Beer-Lambert filtering + inverse-square-law distance scaling
+        sdd_mm = scanner !== nothing ? Float64(scanner.source_to_detector) : 750.0
+        e, w = filter_spectrum(e, w; filters=filters, sdd_mm=sdd_mm)
+
+        return e, w
+
+    elseif needs_polychromatic(sim_opts)
+        # --- Legacy CatSim pre-filtered spectrum for :medium ---
+        e_full, w_full = get_spectrum(protocol)
+        return e_full, w_full
+
     else
+        # --- Monochromatic for :low / :ideal ---
         return [Float64(protocol.kVp) * 0.5], [1.0]
     end
 end
@@ -1294,7 +1425,7 @@ For effects without Scanner fields (scatter, scatter_correction, crosstalk, opti
 bowtie, lag, bhc), factory function defaults are used.
 
 Noise is ALWAYS `nothing` in the returned PhysicsConfig — noise is applied externally
-via `sim_detect()` when `sim_opts.use_noise == true`.
+via `compute_detector_I0()` + `add_quantum_noise!()` when `sim_opts.use_noise == true`.
 
 # Arguments
 - `scanner`: Scanner hardware definition (provides physical parameters)
@@ -1322,7 +1453,7 @@ function build_physics_config(
     # --- Common settings ---
     kwargs[:energy_keV] = sum(energies .* weights) / sum(weights)
     kwargs[:noise_seed] = sim_opts.seed
-    kwargs[:noise] = nothing  # Noise is ALWAYS handled by sim_detect, never in PhysicsConfig
+    kwargs[:noise] = nothing  # Noise is handled externally via compute_detector_I0 + add_quantum_noise!
 
     # --- Physics Pipeline effects (from Scanner fields where available) ---
 
@@ -1348,9 +1479,9 @@ function build_physics_config(
         end
     end
 
-    # Bowtie filter: no Scanner field, use factory default
+    # Bowtie filter: resolve from Scanner's bowtie_filter symbol
     if sim_opts.use_bowtie_filter
-        kwargs[:bowtie_filter] = bowtie_filter_large_body()
+        kwargs[:bowtie_filter] = resolve_bowtie_filter(scanner.bowtie_filter)
     end
 
     # Detector efficiency: use Scanner's material and depth
@@ -1429,11 +1560,9 @@ function build_physics_config(
         end
     end
 
-    # DAS: BROKEN — never enable even if toggle is true (safety guard)
-    # sim_opts.use_das defaults to false at all fidelity levels
-    if sim_opts.use_das
-        @warn "DAS model is BROKEN. Ignoring use_das=true."
-    end
+    # DAS electronic noise is now handled inline in the noise kernel.
+    # Scanner.electronic_noise and Scanner.detection_gain control the noise floor.
+    # The signal chain path (ws.has_signal_chain) remains unused.
 
     # BHC: calibrate polynomial from actual spectrum (not hardcoded defaults)
     # The calibration generates a water-based BHC that properly maps polychromatic
@@ -1488,6 +1617,9 @@ function reconstruct!(
         ws_detector_centers=ws.bp_detector_centers,
         ws_detector_u=ws.bp_detector_u,
         ws_detector_v=ws.bp_detector_v)
+
+    # Step 4: Mask outside FOV (clinical convention)
+    apply_fov_mask!(ws.volume, geom)
 
     return ws.volume
 end

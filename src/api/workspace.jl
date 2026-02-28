@@ -165,7 +165,7 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     n_bins = length(scanner.energy_thresholds)
     n_materials = length(recon_opts.vmi_basis)
     n_elements = prod(sino_shape)
-    n_energies = sim_opts.n_energy_bins
+    # n_energies is set after resolve_spectrum below
 
     # GPU-side buffers — similar() matches the provided mask's backend
     # If mask kwarg is provided (e.g. GPU-converted mask), use it for similar();
@@ -192,8 +192,8 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     enoise_cpu = Vector{T}(undef, n_elements)
     sino_ideal_out = zeros(T, sino_shape)
     sino_noisy_out = zeros(T, sino_shape)
-    e_full, w_full = load_spectrum(Int(protocol.kVp))
-    energies, weights_vec = downsample_spectrum(e_full, w_full, sim_opts.n_energy_bins)
+    energies, weights_vec = resolve_spectrum(sim_opts, protocol; scanner=scanner)
+    n_energies = length(energies)
     config = build_physics_config(scanner, sim_opts, energies, weights_vec; phantom=phantom)
     pcct_detector = _build_pcct_detector(scanner)
     mats = _resolve_materials(phantom, materials)
@@ -395,12 +395,15 @@ mutable struct EICTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:Abstr
     optical_crosstalk_kernel::Union{Nothing, A2} # 3×3 optical crosstalk kernel
     focal_spot_kernel::Union{Nothing, A2}       # focal spot blur kernel
     flat_filter_projection::Union{Nothing, A2}  # 2D flat filter projection (n_cols × n_rows)
-    bowtie_projection::Union{Nothing, A2}       # 2D bowtie projection (n_cols × n_rows)
+    bowtie_spectral::Union{Nothing, A3}         # [n_cols, n_rows, n_energies] spectral transmission
+    bowtie_air_reference::Union{Nothing, A2}    # [n_cols, n_rows] spectral air I₀
     lag_coeffs::Union{Nothing, A1}              # lag coefficients (n_frames)
 
     # ─── Noise (CPU + GPU) ───
     noise_rand_cpu::Vector{T}  # randn output (n_elements)
     noise_rand_gpu::A1         # GPU transfer buffer (n_elements)
+    enoise_rand_cpu::Vector{T} # electronic noise randn output (n_elements)
+    enoise_rand_gpu::A1        # electronic noise GPU transfer buffer (n_elements)
 
     # ─── Pre-computed vectors ───
     weights_norm::Vector{T}    # T.(weights ./ sum(weights))
@@ -445,8 +448,8 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     # Geometry
     geom = CTGeometry(scanner; n_angles=protocol.views, fov_cm=recon_opts.fov_cm, z_cm=recon_opts.z_cm, collimation_mm=protocol.collimation_mm)
 
-    # Spectrum
-    energies, weights_vec = resolve_spectrum(sim_opts, protocol)
+    # Spectrum (pass scanner for :high IPEM pipeline)
+    energies, weights_vec = resolve_spectrum(sim_opts, protocol; scanner=scanner)
     n_energies = length(energies)
 
     # Physics config
@@ -543,16 +546,6 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         nothing
     end
 
-    bowtie_proj = if config.bowtie_filter !== nothing
-        transmission_cpu = compute_bowtie_attenuation(config.bowtie_filter, geom; energy_keV=config.energy_keV)
-        bp_cpu = T.(-log.(transmission_cpu))
-        bp_gpu = similar(ref, T, sino_shape[1], sino_shape[2])
-        copyto!(bp_gpu, bp_cpu)
-        bp_gpu
-    else
-        nothing
-    end
-
     lag_coeffs_buf = if config.lag !== nothing && !isempty(config.lag.amplitudes)
         n_frames = min(20, sino_shape[3])
         c_cpu = T.(compute_lag_coefficients(config.lag, n_frames))
@@ -566,6 +559,8 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     # Noise buffers
     noise_rand_cpu = Vector{T}(undef, n_elements)
     noise_rand_gpu = similar(ref, T, n_elements)
+    enoise_rand_cpu = Vector{T}(undef, n_elements)
+    enoise_rand_gpu = similar(ref, T, n_elements)
 
     # Pre-computed weights
     w_sum = sum(weights_vec)
@@ -586,6 +581,31 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         compute_eid_efficiency_vector(config.detector_efficiency, energies)
     else
         ones(Float64, n_energies)
+    end
+
+    # Bowtie spectral transmission: resolve independently from PhysicsConfig
+    # (config.bowtie_filter is now nothing for :high/:pcct since preset is false)
+    bowtie_filter = resolve_bowtie_filter(scanner.bowtie_filter)
+    bowtie_spectral_gpu = nothing
+    bowtie_air_ref_gpu = nothing
+    if bowtie_filter !== nothing && bowtie_filter.name != "none"
+        trans_cpu = compute_bowtie_attenuation_spectral(bowtie_filter, geom, Float64.(energies))
+        bt_gpu = similar(ref, T, size(trans_cpu)...)
+        copyto!(bt_gpu, T.(trans_cpu))
+        bowtie_spectral_gpu = bt_gpu
+
+        # Air reference: I₀(col,row) = Σ w_norm(E) × T_bt(E,col,row) × η(E)
+        w_norm = weights_vec ./ sum(weights_vec)
+        air_ref_cpu = zeros(T, sino_shape[1], sino_shape[2])
+        for e in 1:n_energies
+            η_e = η_vec[e]
+            for row in 1:sino_shape[2], col in 1:sino_shape[1]
+                air_ref_cpu[col, row] += T(w_norm[e] * trans_cpu[col, row, e] * η_e)
+            end
+        end
+        ar_gpu = similar(ref, T, sino_shape[1], sino_shape[2])
+        copyto!(ar_gpu, air_ref_cpu)
+        bowtie_air_ref_gpu = ar_gpu
     end
 
     # BHC coefficients
@@ -625,8 +645,8 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         physics_output, lag_intensity,
         scatter_kernel, scatter_correct_kernel, crosstalk_kernel,
         optical_crosstalk_kernel, focal_spot_kernel, flat_filter_proj,
-        bowtie_proj, lag_coeffs_buf,
-        noise_rand_cpu, noise_rand_gpu,
+        bowtie_spectral_gpu, bowtie_air_ref_gpu, lag_coeffs_buf,
+        noise_rand_cpu, noise_rand_gpu, enoise_rand_cpu, enoise_rand_gpu,
         weights_norm, μ_lut_cpu, μ_lut_gpu, μ_table, η_vec, bhc_coeffs_gpu,
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
         geom, energies, weights_vec, config, mats, rng,
@@ -685,12 +705,16 @@ mutable struct EICTDualWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:A
     # ─── Per-kVp pre-computed projections (GPU-side, energy-dependent) ───
     flat_filter_projection_low::Union{Nothing, A2}
     flat_filter_projection_high::Union{Nothing, A2}
-    bowtie_projection_low::Union{Nothing, A2}
-    bowtie_projection_high::Union{Nothing, A2}
+    bowtie_spectral_low::Union{Nothing, A3}
+    bowtie_spectral_high::Union{Nothing, A3}
+    bowtie_air_reference_low::Union{Nothing, A2}
+    bowtie_air_reference_high::Union{Nothing, A2}
 
     # ─── Noise (CPU + GPU, reused between low/high) ───
     noise_rand_cpu::Vector{T}
     noise_rand_gpu::A1
+    enoise_rand_cpu::Vector{T}
+    enoise_rand_gpu::A1
 
     # ─── Material decomposition output (GPU-side) ───
     material1::A3         # first basis material (sino shape)
@@ -763,23 +787,25 @@ function create_eict_dual_workspace(scanner, protocol, sim_opts, recon_opts, pha
         kVp = protocol.kVp_low,
         views = protocol.views,
         rotation_time = protocol.rotation_time,
-        flux_density = protocol.flux_density,
         spectrum_path = nothing,
-        dual_energy = false
+        dual_energy = false,
+        anode_angle = protocol.anode_angle,
+        additional_filters = protocol.additional_filters
     )
     protocol_high = CTProtocol(
         mA = protocol.mA,
         kVp = protocol.kVp,
         views = protocol.views,
         rotation_time = protocol.rotation_time,
-        flux_density = protocol.flux_density,
         spectrum_path = nothing,
-        dual_energy = false
+        dual_energy = false,
+        anode_angle = protocol.anode_angle,
+        additional_filters = protocol.additional_filters
     )
 
-    # Spectra for both kVps
-    energies_low, weights_low = resolve_spectrum(sim_opts, protocol_low)
-    energies_high, weights_high = resolve_spectrum(sim_opts, protocol_high)
+    # Spectra for both kVps (pass scanner for :high IPEM pipeline)
+    energies_low, weights_low = resolve_spectrum(sim_opts, protocol_low; scanner=scanner)
+    energies_high, weights_high = resolve_spectrum(sim_opts, protocol_high; scanner=scanner)
 
     # Physics configs for both kVps
     config_low = build_physics_config(scanner, sim_opts, energies_low, weights_low; phantom=phantom)
@@ -905,29 +931,11 @@ function create_eict_dual_workspace(scanner, protocol, sim_opts, recon_opts, pha
         nothing
     end
 
-    bowtie_proj_low = if config_low.bowtie_filter !== nothing
-        transmission_cpu = compute_bowtie_attenuation(config_low.bowtie_filter, geom; energy_keV=config_low.energy_keV)
-        bp_cpu = T.(-log.(transmission_cpu))
-        bp_gpu = similar(ref, T, sino_shape[1], sino_shape[2])
-        copyto!(bp_gpu, bp_cpu)
-        bp_gpu
-    else
-        nothing
-    end
-
-    bowtie_proj_high = if config_high.bowtie_filter !== nothing
-        transmission_cpu = compute_bowtie_attenuation(config_high.bowtie_filter, geom; energy_keV=config_high.energy_keV)
-        bp_cpu = T.(-log.(transmission_cpu))
-        bp_gpu = similar(ref, T, sino_shape[1], sino_shape[2])
-        copyto!(bp_gpu, bp_cpu)
-        bp_gpu
-    else
-        nothing
-    end
-
     # ─── Noise buffers ───
     noise_rand_cpu = Vector{T}(undef, n_elements)
     noise_rand_gpu = similar(ref, T, n_elements)
+    enoise_rand_cpu = Vector{T}(undef, n_elements)
+    enoise_rand_gpu = similar(ref, T, n_elements)
 
     # ─── Pre-computed weights ───
     w_sum_low = sum(weights_low)
@@ -963,6 +971,50 @@ function create_eict_dual_workspace(scanner, protocol, sim_opts, recon_opts, pha
         compute_eid_efficiency_vector(config_high.detector_efficiency, energies_high)
     else
         ones(Float64, n_energies_high)
+    end
+
+    # ─── Bowtie spectral transmission: resolve independently from PhysicsConfig ───
+    bowtie_filter = resolve_bowtie_filter(scanner.bowtie_filter)
+    bowtie_spectral_low_gpu = nothing
+    bowtie_spectral_high_gpu = nothing
+    bowtie_air_ref_low_gpu = nothing
+    bowtie_air_ref_high_gpu = nothing
+    if bowtie_filter !== nothing && bowtie_filter.name != "none"
+        # Low kVp
+        trans_cpu_low = compute_bowtie_attenuation_spectral(bowtie_filter, geom, Float64.(energies_low))
+        bt_gpu_low = similar(ref, T, size(trans_cpu_low)...)
+        copyto!(bt_gpu_low, T.(trans_cpu_low))
+        bowtie_spectral_low_gpu = bt_gpu_low
+
+        w_norm_low = weights_low ./ sum(weights_low)
+        air_ref_cpu_low = zeros(T, sino_shape[1], sino_shape[2])
+        for e in 1:n_energies_low
+            η_e = η_vec_low[e]
+            for row in 1:sino_shape[2], col in 1:sino_shape[1]
+                air_ref_cpu_low[col, row] += T(w_norm_low[e] * trans_cpu_low[col, row, e] * η_e)
+            end
+        end
+        ar_gpu_low = similar(ref, T, sino_shape[1], sino_shape[2])
+        copyto!(ar_gpu_low, air_ref_cpu_low)
+        bowtie_air_ref_low_gpu = ar_gpu_low
+
+        # High kVp
+        trans_cpu_high = compute_bowtie_attenuation_spectral(bowtie_filter, geom, Float64.(energies_high))
+        bt_gpu_high = similar(ref, T, size(trans_cpu_high)...)
+        copyto!(bt_gpu_high, T.(trans_cpu_high))
+        bowtie_spectral_high_gpu = bt_gpu_high
+
+        w_norm_high = weights_high ./ sum(weights_high)
+        air_ref_cpu_high = zeros(T, sino_shape[1], sino_shape[2])
+        for e in 1:n_energies_high
+            η_e = η_vec_high[e]
+            for row in 1:sino_shape[2], col in 1:sino_shape[1]
+                air_ref_cpu_high[col, row] += T(w_norm_high[e] * trans_cpu_high[col, row, e] * η_e)
+            end
+        end
+        ar_gpu_high = similar(ref, T, sino_shape[1], sino_shape[2])
+        copyto!(ar_gpu_high, air_ref_cpu_high)
+        bowtie_air_ref_high_gpu = ar_gpu_high
     end
 
     # ─── BHC coefficients (per-kVp) ───
@@ -1021,8 +1073,9 @@ function create_eict_dual_workspace(scanner, protocol, sim_opts, recon_opts, pha
         scatter_kernel, scatter_correct_kernel, crosstalk_kernel,
         optical_crosstalk_kernel, focal_spot_kernel, lag_coeffs_buf,
         flat_filter_proj_low, flat_filter_proj_high,
-        bowtie_proj_low, bowtie_proj_high,
-        noise_rand_cpu, noise_rand_gpu,
+        bowtie_spectral_low_gpu, bowtie_spectral_high_gpu,
+        bowtie_air_ref_low_gpu, bowtie_air_ref_high_gpu,
+        noise_rand_cpu, noise_rand_gpu, enoise_rand_cpu, enoise_rand_gpu,
         material1, material2,
         weights_norm_low, weights_norm_high,
         μ_lut_cpu, μ_lut_gpu, μ_table_low, μ_table_high,

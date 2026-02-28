@@ -1108,7 +1108,9 @@ function _forward_project_poly!(
     # Override volume bounds for phantom FOV
     volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
     # Detector efficiency η(E) per energy bin (weights spectral sum)
-    ws_η::Union{Nothing, Vector{Float64}}=nothing
+    ws_η::Union{Nothing, Vector{Float64}}=nothing,
+    # Bowtie spectral transmission [n_cols, n_rows, n_energies]
+    ws_bowtie_spectral=nothing
 ) where T <: AbstractFloat
 
     n_energies = length(energies)
@@ -1140,14 +1142,30 @@ function _forward_project_poly!(
             ws_detector_v=ws_detector_v,
             volume_extent=volume_extent)
 
-        # Accumulate Beer-Lambert: I += w × η(E) × exp(-line_integral)
+        # Accumulate Beer-Lambert: I += w × η(E) × T_bt(E,col,row) × exp(-line_integral)
         w = weights_norm[e_idx]
         # η(E) reshapes effective spectrum — accounts for detector absorption + fluorescence escape
         η_e = ws_η !== nothing ? T(ws_η[e_idx]) : one(T)
 
-        let w_eff = w * η_e
-            AK.foreachindex(I_transmitted) do idx
-                I_transmitted[idx] += w_eff * exp(-sino_mono[idx])
+        if ws_bowtie_spectral !== nothing
+            # Per-pixel bowtie transmission from [n_cols, n_rows, n_energies] array
+            nc = size(sinogram, 1)
+            nc_nr = nc * size(sinogram, 2)
+            bt_offset = (e_idx - 1) * nc_nr
+            let w = w, η_e = η_e, bt = ws_bowtie_spectral, bt_off = bt_offset, nc = nc
+                AK.foreachindex(I_transmitted) do idx
+                    ci = CartesianIndices(I_transmitted)[idx]
+                    col, row, _ = Tuple(ci)
+                    bt_val = bt[col + (row - 1) * nc + bt_off]
+                    I_transmitted[idx] += w * η_e * bt_val * exp(-sino_mono[idx])
+                end
+            end
+        else
+            # Scalar-weight path (no bowtie)
+            let w_eff = w * η_e
+                AK.foreachindex(I_transmitted) do idx
+                    I_transmitted[idx] += w_eff * exp(-sino_mono[idx])
+                end
             end
         end
     end

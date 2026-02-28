@@ -24,7 +24,7 @@ These are resolved from fidelity presets and user overrides at construction time
 - `use_crosstalk::Bool`: Enable electronic detector crosstalk.
 - `use_optical_crosstalk::Bool`: Enable optical crosstalk.
 - `use_focal_spot::Bool`: Enable focal spot blur.
-- `use_noise::Bool`: Enable quantum/electronic noise (via sim_detect).
+- `use_noise::Bool`: Enable quantum/electronic noise.
 - `use_lag::Bool`: Enable detector lag (afterglow).
 - `use_heel_effect::Bool`: Enable anode heel effect.
 - `use_das::Bool`: Enable DAS model (BROKEN — always false).
@@ -121,12 +121,16 @@ function SimOptions(;
     # :ideal = all OFF; :low = noise only; :medium = polychromatic subset; :high = all ON except DAS; :pcct = :high + corrections
     defaults = if fidelity == :pcct
         # Same as :high but with PCCT corrections enabled
-        (fill_factor=true, flat_filter=true, bowtie_filter=true, detector_efficiency=true,
+        # flat_filter=false: flat filter is applied in spectrum domain by resolve_spectrum()
+        # bowtie_filter=false: bowtie is folded into spectral projector (per-energy transmission)
+        (fill_factor=true, flat_filter=false, bowtie_filter=false, detector_efficiency=true,
             scatter=true, scatter_correction=true, crosstalk=true, optical_crosstalk=true,
             focal_spot=true, noise=true, lag=true,
             heel_effect=true, das=false, bhc=false, pcct_corrections=true)
     elseif fidelity == :high
-        (fill_factor=true, flat_filter=true, bowtie_filter=true, detector_efficiency=true,
+        # flat_filter=false: flat filter is applied in spectrum domain by resolve_spectrum()
+        # bowtie_filter=false: bowtie is folded into spectral projector (per-energy transmission)
+        (fill_factor=true, flat_filter=false, bowtie_filter=false, detector_efficiency=true,
             scatter=true, scatter_correction=true, crosstalk=true, optical_crosstalk=true,
             focal_spot=true, noise=true, lag=true,
             heel_effect=true, das=false, bhc=false, pcct_corrections=false)  # das=false: DAS model is BROKEN; bhc=false: use two-material BHC post-simulation
