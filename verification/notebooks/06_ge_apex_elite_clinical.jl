@@ -1739,55 +1739,56 @@ sim_opts
 
 # ╔═╡ 02f63ae1-4850-4cb6-8daa-8536c3458898
 # Build a custom spatial-domain filter kernel from frequency-domain control points.
-# Uses same approach as CatSim: ramp kernel → FFT → apply window → IFFT.
-function build_custom_filter_kernel(n_kernel::Int, pixel_size::Float32,
+# Exact copy of package's create_spatial_kernel + _apply_catsim_freq_window!
+function build_custom_filter_kernel(n::Int, pixel_size::Float32,
 	control_x::NTuple, control_y::NTuple)
-	# 1. Build ramp (Ram-Lak) kernel in spatial domain
+	T = Float32
+	kernel = zeros(T, n)
+	center = n ÷ 2 + 1
 	Δ = pixel_size
-	center = (n_kernel + 1) ÷ 2
-	kernel = zeros(Float32, n_kernel)
-	for i in 1:n_kernel
+
+	# 1. Build ramp (Ram-Lak) kernel — identical to create_spatial_kernel
+	for i in 1:n
 		k = i - center
 		if k == 0
-			kernel[i] = 1.0f0 / (4.0f0 * Δ)
-		elseif k % 2 != 0
-			kernel[i] = -1.0f0 / (Float32(π)^2 * Float32(k)^2 * Δ)
+			kernel[i] = one(T) / (T(4) * Δ)
+		elseif k % 2 == 0
+			kernel[i] = zero(T)
+		else
+			kernel[i] = -one(T) / (T(π)^2 * T(k)^2 * Δ)
 		end
 	end
 
-	# 2. FFT → apply piecewise-linear window → IFFT
-	shifted = fftshift(kernel)
+	# 2. Apply freq-domain window — identical to _apply_catsim_freq_window!
+	shifted = zeros(Complex{T}, n)
+	for i in 1:n
+		src = mod(i - center, n) + 1
+		shifted[src] = Complex{T}(kernel[i])
+	end
 	freq = fft(shifted)
-	nyquist = n_kernel ÷ 2
-	for k in 0:(n_kernel-1)
-		f_idx = k <= nyquist ? k : n_kernel - k
-		f_norm = Float64(f_idx) / Float64(nyquist)
-		# Piecewise linear interpolation of control points
-		w = 0.0
+	nyquist = n / 2
+	for k in 0:(n-1)
+		f_idx = k <= n ÷ 2 ? k : n - k
+		f_norm = T(f_idx) / T(nyquist)
+		# _catsim_apodization_window — piecewise linear interpolation
+		f = clamp(f_norm, zero(T), one(T))
+		w = T(control_y[end])
 		for j in 1:(length(control_x)-1)
-			if control_x[j] <= f_norm <= control_x[j+1]
-				t = (f_norm - control_x[j]) / (control_x[j+1] - control_x[j])
-				w = control_y[j] * (1.0 - t) + control_y[j+1] * t
+			if f <= T(control_x[j+1]) || j == length(control_x)-1
+				t = (f - T(control_x[j])) / (T(control_x[j+1]) - T(control_x[j]))
+				w = T(control_y[j]) * (one(T) - t) + T(control_y[j+1]) * t
 				break
 			end
 		end
 		freq[k+1] *= w
 	end
-	result = ifft(freq)
-	Float32.(real(ifftshift(result)))
+	spatial = ifft(freq)
+	for i in 1:n
+		src = mod(i - center, n) + 1
+		kernel[i] = T(real(spatial[src]))
+	end
+	return kernel
 end
-
-# ╔═╡ 24e12422-f5a0-4bb7-a46e-2949df45d75c
-# Custom filter apodization — tune these control points to match GE STANDARD kernel MTF.
-# Format: (f_norm, weight) where f_norm ∈ [0,1] (fraction of Nyquist).
-# Our :standard uses CatSim's [1.0, 0.934, 0.744, 0.443, 0.053].
-# GE STANDARD kernel rolls off faster — try more aggressive apodization.
-custom_filter_control = (
-	x = (0.0, 0.25, 0.5, 0.6, 0.75, 1.0),
-	y = (1.0, 0.95, 0.60, 0.55, 0.25, 0.05),   # ← tweak these to match clinical MTF
-	# y = (1.0, 0.78, 0.38, 0.10, 0.005), #Lower y-values = softer kernel (less high-frequency content)
-	# y = (1.0, 0.70, 0.30, 0.5, 0.005)
-)
 
 # ╔═╡ a1b2c3d4-5005-4000-8000-000000000005
 begin
@@ -2072,11 +2073,21 @@ begin
 	sim_recon_cutoff = 1.0 # MUST STAY at 1.0
 	# Dose-independent noise floor (σ HU) — tune to match clinical high-mA noise
 	# σ_total = √(σ_quantum² + σ_floor²). Start at 0, increase until 300mA matches.
-	sim_noise_floor_hu = 28.0
+	sim_noise_floor_hu = 32.0
 end
 
+# ╔═╡ 24e12422-f5a0-4bb7-a46e-2949df45d75c
+# Custom filter apodization — tune these control points to match GE STANDARD kernel MTF.
+# Format: (f_norm, weight) where f_norm ∈ [0,1] (fraction of Nyquist).
+# Our :standard uses CatSim's [1.0, 0.934, 0.744, 0.443, 0.053].
+# GE STANDARD kernel rolls off faster — try more aggressive apodization.
+custom_filter_control = (
+	x = (0.0, 0.25, 0.5, 0.75, 1.0),
+	# y = (1.0, 0.9338, 0.7441, 0.4425, 0.0531),
+	y = (1.0, 0.9, 0.5, 0.15, 0.00001),
+)
+
 # ╔═╡ a1b2c3d4-6011-4000-8000-000000000011
-# Scan 1: 120 kVp / 50 mA — RECONSTRUCT (BHC → GPU FDK → CPU volume)
 sim_recon_1 = let
 	sino_gpu = MtlArray(sim_sino_1.sino)
 	sino_bhc = nothing
@@ -2088,16 +2099,15 @@ sim_recon_1 = let
 	geom = sim_sino_1.geom
 	recon_size = sim_matrix_size
 	ws_fdk = BS.create_fdk_recon_workspace(
-		sino_fdk,
-		geom,
-		recon_size;
+		sino_fdk, geom, recon_size;
 		filter = sim_recon_filter, cutoff = sim_recon_cutoff,
 	)
+	# Inject custom filter kernel — overwrite workspace's pre-computed kernel
+	copyto!(ws_fdk.filter_kernel, build_custom_filter_kernel(
+		length(ws_fdk.filter_kernel), Float32(geom.pixel_size),
+		custom_filter_control.x, custom_filter_control.y))
 	vol = Array(BS.reconstruct!(ws_fdk, sino_fdk, geom, recon_size))
-	ws_fdk = nothing
-	sino_gpu = nothing
-	sino_fdk = nothing
-	GC.gc(true)
+	ws_fdk = nothing; sino_gpu = nothing; sino_fdk = nothing; GC.gc(true)
 	(volume = vol, name = sim_sino_1.name, kvp = sim_sino_1.kvp)
 end
 
@@ -2136,16 +2146,10 @@ sim_recon_2 = let
 		recon_size;
 		filter = sim_recon_filter, cutoff = sim_recon_cutoff,
 	)
-	# # Inject custom filter kernel — overwrite workspace's pre-computed kernel
-	# n_kernel = length(ws_fdk.filter_kernel)
-	# pixel_size = Float32(geom.pixel_size)  # cm (same units as workspace)
-	# custom_kernel = build_custom_filter_kernel(
-	# 	n_kernel,
-	# 	pixel_size,
-	# 	custom_filter_control.x,
-	# 	custom_filter_control.y
-	# )
-	# copyto!(ws_fdk.filter_kernel, custom_kernel)
+	# Inject custom filter kernel — overwrite workspace's pre-computed kernel
+	copyto!(ws_fdk.filter_kernel, build_custom_filter_kernel(
+		length(ws_fdk.filter_kernel), Float32(geom.pixel_size),
+		custom_filter_control.x, custom_filter_control.y))
 	vol = Array(BS.reconstruct!(ws_fdk, sino_fdk, geom, recon_size))
 	ws_fdk = nothing
 	sino_gpu = nothing
@@ -2190,6 +2194,10 @@ sim_recon_3 = let
 		recon_size;
 		filter = sim_recon_filter, cutoff = sim_recon_cutoff,
 	)
+	# Inject custom filter kernel — overwrite workspace's pre-computed kernel
+	copyto!(ws_fdk.filter_kernel, build_custom_filter_kernel(
+		length(ws_fdk.filter_kernel), Float32(geom.pixel_size),
+		custom_filter_control.x, custom_filter_control.y))
 	vol = Array(BS.reconstruct!(ws_fdk, sino_fdk, geom, recon_size))
 	ws_fdk = nothing
 	sino_gpu = nothing
@@ -2227,6 +2235,10 @@ sim_recon_4 = let
 		recon_size;
 		filter = sim_recon_filter, cutoff = sim_recon_cutoff,
 	)
+	# Inject custom filter kernel — overwrite workspace's pre-computed kernel
+	copyto!(ws_fdk.filter_kernel, build_custom_filter_kernel(
+		length(ws_fdk.filter_kernel), Float32(geom.pixel_size),
+		custom_filter_control.x, custom_filter_control.y))
 	vol = Array(BS.reconstruct!(ws_fdk, sino_fdk, geom, recon_size))
 	ws_fdk = nothing
 	sino_gpu = nothing
@@ -2254,6 +2266,10 @@ sim_recon_5 = let
 	geom = sim_sino_5.geom
 	recon_size = sim_matrix_size
 	ws_fdk = BS.create_fdk_recon_workspace(sino_fdk, geom, recon_size; filter = sim_recon_filter, cutoff = sim_recon_cutoff)
+	# Inject custom filter kernel — overwrite workspace's pre-computed kernel
+	copyto!(ws_fdk.filter_kernel, build_custom_filter_kernel(
+		length(ws_fdk.filter_kernel), Float32(geom.pixel_size),
+		custom_filter_control.x, custom_filter_control.y))
 	vol = Array(BS.reconstruct!(ws_fdk, sino_fdk, geom, recon_size))
 	ws_fdk = nothing
 	sino_gpu = nothing
@@ -2281,6 +2297,10 @@ sim_recon_6 = let
 	geom = sim_sino_6.geom
 	recon_size = sim_matrix_size
 	ws_fdk = BS.create_fdk_recon_workspace(sino_fdk, geom, recon_size; filter = sim_recon_filter, cutoff = sim_recon_cutoff)
+	# Inject custom filter kernel — overwrite workspace's pre-computed kernel
+	copyto!(ws_fdk.filter_kernel, build_custom_filter_kernel(
+		length(ws_fdk.filter_kernel), Float32(geom.pixel_size),
+		custom_filter_control.x, custom_filter_control.y))
 	vol = Array(BS.reconstruct!(ws_fdk, sino_fdk, geom, recon_size))
 	ws_fdk = nothing
 	sino_gpu = nothing
@@ -2915,7 +2935,6 @@ end
 # ╠═53fdf44c-c940-4f9e-9ec3-4f77748ba370
 # ╠═a1b2c3d4-5004-4000-8000-000000000004
 # ╠═02f63ae1-4850-4cb6-8daa-8536c3458898
-# ╠═24e12422-f5a0-4bb7-a46e-2949df45d75c
 # ╠═a1b2c3d4-5005-4000-8000-000000000005
 # ╟─a1b2c3d4-6062-4000-8000-000000000062
 # ╠═a1b2c3d4-6060-4000-8000-000000000060
@@ -2959,6 +2978,7 @@ end
 # ╟─ae4465c7-65f0-4ecf-8d97-f537eadce60c
 # ╟─dc0ce201-0efa-4bc0-bd3c-2075650fc67a
 # ╠═4370ad68-eebd-4f09-85f0-acb556be9fe2
+# ╠═24e12422-f5a0-4bb7-a46e-2949df45d75c
 # ╟─8d4d7038-429f-4402-9dcc-4b4263e9db41
 # ╟─4de369da-bad2-43bd-bf5a-ba654d26c76f
 # ╟─11f8b1f8-4927-41a3-a781-9a169739610a
