@@ -78,6 +78,7 @@ with CatSim and medical imaging conventions.
 # Filter Parameters
 - `flat_filter_material::Symbol`: Flat filter material (:aluminum, :copper, :titanium)
 - `flat_filter_thickness::T`: Flat filter thickness (mm)
+- `bowtie_filter::Symbol`: Bowtie filter name (:large_body, :medium_body, :small_body, :head, :none)
 
 # Detection Parameters
 - `detector_material::Symbol`: Detector scintillator/sensor material
@@ -150,6 +151,7 @@ struct Scanner{T<:AbstractFloat}
     # Filters
     flat_filter_material::Symbol
     flat_filter_thickness::T    # mm
+    bowtie_filter::Symbol       # :large_body, :medium_body, :small_body, :head, :none, etc.
 
     # Detection
     detector_material::Symbol
@@ -197,6 +199,7 @@ All distances are in mm. Default values match a generic research CT scanner
 - `gantry_aperture::Real = 700.0`: Gantry bore diameter (mm)
 - `flat_filter_material::Symbol = :aluminum`: Flat filter material
 - `flat_filter_thickness::Real = 2.0`: Flat filter thickness (mm)
+- `bowtie_filter::Symbol = :large_body`: Bowtie filter (`:large_body`, `:medium_body`, `:small_body`, `:head`, `:none`)
 - `detector_material::Symbol = :lumex`: Detector scintillator
 - `detector_depth::Real = 3.0`: Detector depth (mm)
 - `fill_factor_row::Real = 0.9`: Row fill factor (0-1)
@@ -256,6 +259,7 @@ function Scanner(;
     # Filters
     flat_filter_material::Symbol = :aluminum,
     flat_filter_thickness::Real = 2.0,
+    bowtie_filter::Symbol = :large_body,
 
     # Detection
     detector_material::Symbol = :lumex,
@@ -312,6 +316,7 @@ function Scanner(;
         T(gantry_aperture),
         flat_filter_material,
         T(flat_filter_thickness),
+        bowtie_filter,
         detector_material,
         T(detector_depth),
         T(fill_factor_row),
@@ -470,6 +475,7 @@ function print_scanner_summary(scanner::Scanner{T}) where T
     println("  Focal Spot:           $(scanner.focal_spot_width) × $(scanner.focal_spot_length) mm")
     println("  Target Angle:         $(scanner.target_angle)°")
     println("  Flat Filter:          $(scanner.flat_filter_thickness) mm $(scanner.flat_filter_material)")
+    println("  Bowtie Filter:        $(scanner.bowtie_filter)")
     println()
     println("ACQUISITION")
     println("-" ^ 40)
@@ -863,6 +869,7 @@ function create_naeotom_alpha(; mode::Symbol=:standard)
         # Filters
         flat_filter_material = :aluminum,
         flat_filter_thickness = 2.5,
+        bowtie_filter = :large_body,
 
         # Detection (CdTe direct-conversion)
         detector_material = :cdte,

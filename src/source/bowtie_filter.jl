@@ -25,6 +25,13 @@ using Statistics
 using DelimitedFiles
 
 # =============================================================================
+# Built-in Bowtie Data Directory
+# =============================================================================
+
+"""Directory containing built-in bowtie filter data (CatSim/XCIST format)."""
+const BOWTIE_DIR = joinpath(@__DIR__, "..", "bowtie")
+
+# =============================================================================
 # Bowtie Filter Types
 # =============================================================================
 
@@ -142,102 +149,73 @@ function bowtie_filter_none()
 end
 
 # =============================================================================
-# GE Revolution Apex Bowtie Filters
-# Based on PMC6706760: "Data of CT bow tie filter profiles from three modern CT scanners"
-# URL: https://pmc.ncbi.nlm.nih.gov/articles/PMC6706760/
-#
-# These profiles are representative of GE Revolution scanner bowtie filters.
-# The data below is interpolated from the published measurements at 120 kVp.
+# Built-in Bowtie Loader (CatSim/XCIST data bundled with package)
 # =============================================================================
 
 """
-    ge_revolution_bowtie_large()
+    load_builtin_bowtie(size::String; bowtie_dir::AbstractString=BOWTIE_DIR) -> BowtieFilter
 
-GE Revolution large body bowtie filter.
+Load a built-in bowtie filter profile from the bundled CatSim/XCIST data.
 
-Based on measured profiles from PMC6706760 for GE Revolution CT.
+The package ships with GE Revolution bowtie profiles (889 data points each,
+4-material columns) from the CatSim/XCIST open-source CT simulator.
+
+# Arguments
+- `size::String`: Filter size — `"large"`, `"medium"`, or `"small"`
+- `bowtie_dir::AbstractString`: Directory containing bowtie data files (default: bundled data)
+
+# Returns
+`BowtieFilter` with 889-point asymmetric profile.
+
+# Example
+```julia
+filter = load_builtin_bowtie("large")
+length(filter.angles)  # 889
+```
+"""
+function load_builtin_bowtie(size::String; bowtie_dir::AbstractString=BOWTIE_DIR)
+    filepath = joinpath(bowtie_dir, "$(size).txt")
+    isfile(filepath) || error("Built-in bowtie file not found: $filepath")
+    return load_catsim_bowtie(filepath; name="catsim_$(size)")
+end
+
+# =============================================================================
+# GE Revolution Apex Bowtie Filters (from CatSim/XCIST)
+#
+# These are the actual GE Revolution bowtie profiles from CatSim/XCIST:
+# 889 data points, asymmetric, 4-material columns (Al, graphite, Cu, Ti).
+# Licensed BSD 3-Clause by GE Precision HealthCare.
+# =============================================================================
+
+"""
+    ge_revolution_bowtie_large() -> BowtieFilter
+
+GE Revolution large body bowtie filter (889-point CatSim/XCIST profile).
+
 This filter is used for adult body imaging (abdomen, pelvis, chest).
-
-# Source
-CITE: McKenney SE et al. "Data of CT bow tie filter profiles from three modern
-CT scanners." Data in Brief. 2019;25:104261.
-URL: https://pmc.ncbi.nlm.nih.gov/articles/PMC6706760/
-
-# Notes
-- Profile measured at 120 kVp
-- Expressed as aluminum-equivalent thickness
-- Fan angle coverage: ±25° from central ray
+Data from GE Precision HealthCare via CatSim/XCIST (BSD 3-Clause).
 """
-function ge_revolution_bowtie_large()
-    # Fan angles from center (degrees) - symmetric profile
-    # Based on PMC6706760 Figure 2 and supplementary data
-    angles_deg = [0.0, 5.0, 10.0, 15.0, 20.0, 25.0]
-    angles = deg2rad.(angles_deg)
-
-    # Aluminum-equivalent thickness (cm) at each angle
-    # Values representative of GE Revolution large body filter
-    # CITE: PMC6706760 supplementary data
-    # Note: Exact numerical values estimated from published figures
-    # as raw data requires institutional access
-    al_thickness = [3.2, 2.8, 2.0, 1.2, 0.5, 0.15]  # cm
-
-    thickness = reshape(al_thickness, :, 1)
-    materials = ["Al"]
-
-    return BowtieFilter(angles, thickness, materials, "ge_revolution_large")
-end
+ge_revolution_bowtie_large() = load_builtin_bowtie("large")
 
 """
-    ge_revolution_bowtie_medium()
+    ge_revolution_bowtie_medium() -> BowtieFilter
 
-GE Revolution medium body bowtie filter.
+GE Revolution medium body bowtie filter (889-point CatSim/XCIST profile).
 
-Based on measured profiles from PMC6706760 for GE Revolution CT.
 This filter is used for head imaging and medium-sized patients.
-
-# Source
-CITE: McKenney SE et al. "Data of CT bow tie filter profiles from three modern
-CT scanners." Data in Brief. 2019;25:104261.
-URL: https://pmc.ncbi.nlm.nih.gov/articles/PMC6706760/
+Data from GE Precision HealthCare via CatSim/XCIST (BSD 3-Clause).
 """
-function ge_revolution_bowtie_medium()
-    angles_deg = [0.0, 5.0, 10.0, 15.0, 20.0, 25.0]
-    angles = deg2rad.(angles_deg)
-
-    # Medium body filter has less central attenuation than large
-    al_thickness = [2.0, 1.7, 1.2, 0.7, 0.3, 0.08]  # cm
-
-    thickness = reshape(al_thickness, :, 1)
-    materials = ["Al"]
-
-    return BowtieFilter(angles, thickness, materials, "ge_revolution_medium")
-end
+ge_revolution_bowtie_medium() = load_builtin_bowtie("medium")
 
 """
-    ge_revolution_bowtie_small()
+    ge_revolution_bowtie_small() -> BowtieFilter
 
-GE Revolution small body bowtie filter.
+GE Revolution small body bowtie filter (889-point CatSim/XCIST profile).
 
-Based on measured profiles from PMC6706760 for GE Revolution CT.
 This filter is used for pediatric and small patient imaging.
-
-# Source
-CITE: McKenney SE et al. "Data of CT bow tie filter profiles from three modern
-CT scanners." Data in Brief. 2019;25:104261.
-URL: https://pmc.ncbi.nlm.nih.gov/articles/PMC6706760/
+Data from GE Precision HealthCare via CatSim/XCIST (BSD 3-Clause).
 """
-function ge_revolution_bowtie_small()
-    angles_deg = [0.0, 5.0, 10.0, 15.0, 20.0, 25.0]
-    angles = deg2rad.(angles_deg)
-
-    # Small body filter - minimal central attenuation
-    al_thickness = [1.0, 0.85, 0.6, 0.35, 0.15, 0.03]  # cm
-
-    thickness = reshape(al_thickness, :, 1)
-    materials = ["Al"]
-
-    return BowtieFilter(angles, thickness, materials, "ge_revolution_small")
-end
+ge_revolution_bowtie_small() = load_builtin_bowtie("small")
 
 """
     bowtie_filter_multimaterial()
@@ -264,6 +242,130 @@ function bowtie_filter_multimaterial()
     materials = ["Al", "graphite", "Cu", "Ti"]
 
     return BowtieFilter(angles, thickness, materials, "multimaterial")
+end
+
+# =============================================================================
+# Boone Super-Gaussian Analytical Model
+# =============================================================================
+
+"""
+    bowtie_filter_supergaussian(; kwargs...) -> BowtieFilter
+
+Generate a bowtie filter profile using the Boone super-Gaussian analytical model.
+
+The super-Gaussian provides a flexible parametric model for bowtie filters
+with only 4 shape parameters:
+
+    t(θ) = t_center + Δt × (1 - exp(-0.5 × (|θ|/σ)^n))
+
+where θ is the fan angle, σ controls the width, and n controls the shape.
+
+# Keyword Arguments
+- `t_center::Float64 = 0.1`: Minimum thickness at center (cm)
+- `delta_t::Float64 = 3.0`: Additional thickness at field edge (cm)
+- `sigma_deg::Float64 = 15.0`: Angular width parameter (degrees)
+- `n::Float64 = 4.0`: Shape exponent
+  - `n=2`: Gaussian rolloff (head, round cross-section)
+  - `n=4-6`: Flat center plateau with gradual rise (body imaging)
+  - `n=8-10`: Nearly flat-top, aggressive peripheral filtering
+- `material::String = "Al"`: Filter material
+- `n_angles::Int = 100`: Number of angle sample points (positive half)
+- `max_angle_deg::Float64 = 30.0`: Maximum fan angle (degrees)
+- `name::String = "supergaussian"`: Filter name
+
+# Returns
+`BowtieFilter` with symmetric profile (positive angles only, 0 to max).
+
+# Reference
+Boone JM. "Method for evaluating bow tie filter angle-dependent attenuation
+in CT: Theory and simulation results." Med Phys. 2010;37(1):40-48.
+
+# Example
+```julia
+# Body filter: flat center, gradual rise
+body = bowtie_filter_supergaussian(t_center=0.1, delta_t=3.0, sigma_deg=15.0, n=4.0)
+
+# Head filter: Gaussian rolloff
+head = bowtie_filter_supergaussian(t_center=0.05, delta_t=1.5, sigma_deg=12.0, n=2.0)
+
+# Aggressive peripheral filter: flat-top
+flat = bowtie_filter_supergaussian(t_center=0.1, delta_t=4.0, sigma_deg=10.0, n=10.0)
+```
+"""
+function bowtie_filter_supergaussian(;
+    t_center::Float64 = 0.1,
+    delta_t::Float64 = 3.0,
+    sigma_deg::Float64 = 15.0,
+    n::Float64 = 4.0,
+    material::String = "Al",
+    n_angles::Int = 100,
+    max_angle_deg::Float64 = 30.0,
+    name::String = "supergaussian"
+)
+    sigma_rad = deg2rad(sigma_deg)
+    angles_rad = collect(range(0.0, deg2rad(max_angle_deg), length=n_angles))
+
+    # Super-Gaussian thickness profile: t(θ) = t_center + Δt × (1 - exp(-0.5 × (|θ|/σ)^n))
+    al_thickness = [t_center + delta_t * (1.0 - exp(-0.5 * (θ / sigma_rad)^n)) for θ in angles_rad]
+
+    thickness = reshape(al_thickness, :, 1)
+    materials = [material]
+
+    return BowtieFilter(angles_rad, thickness, materials, name)
+end
+
+# =============================================================================
+# Symbol-based Bowtie Resolver
+# =============================================================================
+
+"""
+    resolve_bowtie_filter(name::Symbol; kVp::Int=120) -> BowtieFilter
+
+Resolve a bowtie filter symbol to a `BowtieFilter` object.
+
+This is the primary entry point for the driver to look up bowtie filters by name.
+Built-in CatSim profiles (889-point GE Revolution data) are preferred over the
+generic factory functions.
+
+# Supported Names
+- `:large_body` / `:ge_revolution_large` → CatSim large body (889 pts)
+- `:medium_body` / `:ge_revolution_medium` → CatSim medium body (889 pts)
+- `:small_body` / `:ge_revolution_small` → CatSim small body (889 pts)
+- `:head` → Generic head profile (7 pts)
+- `:none` → No bowtie filter (flat field)
+
+# Arguments
+- `name::Symbol`: Filter name
+- `kVp::Int`: Tube voltage (unused — CatSim profiles are physical thickness, not kVp-dependent)
+
+# Returns
+`BowtieFilter` ready for use with `apply_bowtie_filter!()`.
+
+# Example
+```julia
+filter = resolve_bowtie_filter(:large_body)
+filter = resolve_bowtie_filter(:ge_revolution_large)
+filter = resolve_bowtie_filter(:none)
+```
+"""
+function resolve_bowtie_filter(name::Symbol; kVp::Int=120)
+    # Built-in CatSim profiles (GE Revolution, 889 data points)
+    name == :large_body && return load_builtin_bowtie("large")
+    name == :medium_body && return load_builtin_bowtie("medium")
+    name == :small_body && return load_builtin_bowtie("small")
+
+    # Generic factory functions
+    name == :head && return bowtie_filter_head()
+    name == :none && return bowtie_filter_none()
+
+    # GE Revolution aliases → same CatSim data
+    name == :ge_revolution_large && return load_builtin_bowtie("large")
+    name == :ge_revolution_medium && return load_builtin_bowtie("medium")
+    name == :ge_revolution_small && return load_builtin_bowtie("small")
+
+    error("Unknown bowtie filter: :$name. " *
+          "Supported: :large_body, :medium_body, :small_body, :head, :none, " *
+          ":ge_revolution_large, :ge_revolution_medium, :ge_revolution_small")
 end
 
 # =============================================================================
@@ -569,75 +671,16 @@ end
 # Material Attenuation Coefficients
 # =============================================================================
 
-# NIST XCOM-based linear attenuation coefficients (cm⁻¹)
-# Data points for interpolation: (energy_keV, μ in cm⁻¹)
-const BOWTIE_MU_DATA = Dict{String, Tuple{Vector{Float64}, Vector{Float64}}}(
-    # Aluminum (ρ = 2.70 g/cm³)
-    # Data from NIST XCOM
-    "Al" => (
-        [20.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0, 120.0, 150.0],
-        [3.44, 1.13, 0.75, 0.63, 0.61, 0.55, 0.51, 0.49, 0.46]
-    ),
-    # Graphite/Carbon (ρ = 1.70 g/cm³ for graphite)
-    "graphite" => (
-        [20.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0, 120.0, 150.0],
-        [0.56, 0.31, 0.27, 0.26, 0.26, 0.25, 0.24, 0.24, 0.23]
-    ),
-    # Copper (ρ = 8.96 g/cm³)
-    # K-edge at 8.98 keV
-    "Cu" => (
-        [20.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0, 120.0, 150.0],
-        [94.5, 31.9, 14.5, 7.77, 4.67, 2.14, 1.22, 0.81, 0.52]
-    ),
-    # Titanium (ρ = 4.51 g/cm³)
-    # K-edge at 4.97 keV
-    "Ti" => (
-        [20.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0, 120.0, 150.0],
-        [17.0, 5.75, 2.74, 1.56, 1.02, 0.54, 0.37, 0.30, 0.25]
-    )
-)
-
-# Alias for carbon
-BOWTIE_MU_DATA["C"] = BOWTIE_MU_DATA["graphite"]
+# Attenuation μ(E) for bowtie/flat filter materials — delegates to the
+# centralised get_filter_mu() in spectrum.jl (XrayAttenuation.jl / NIST XCOM).
 
 """
     get_bowtie_mu(material::String, energy_keV::Float64) -> Float64
 
-Get linear attenuation coefficient for bowtie material at given energy.
-
-Returns μ in cm⁻¹.
-
-Uses NIST XCOM-based lookup tables with log-linear interpolation.
+Get linear attenuation coefficient (cm⁻¹) for a filter/bowtie material at the
+given energy.  Delegates to `get_filter_mu()` from spectrum.jl.
 """
-function get_bowtie_mu(material::String, energy_keV::Float64)
-    # Get data for material (default to Al if unknown)
-    if !haskey(BOWTIE_MU_DATA, material)
-        material = "Al"
-    end
-
-    energies, mus = BOWTIE_MU_DATA[material]
-    E = clamp(energy_keV, energies[1], energies[end])
-
-    # Log-linear interpolation (μ varies roughly linearly with log(E) in diagnostic range)
-    log_E = log(E)
-    log_energies = log.(energies)
-    log_mus = log.(mus)
-
-    # Find interpolation interval
-    idx = 1
-    for i in 1:(length(energies)-1)
-        if log_E >= log_energies[i] && log_E <= log_energies[i+1]
-            idx = i
-            break
-        end
-    end
-
-    # Linear interpolation in log space
-    t = (log_E - log_energies[idx]) / (log_energies[idx+1] - log_energies[idx])
-    log_mu = log_mus[idx] + t * (log_mus[idx+1] - log_mus[idx])
-
-    return exp(log_mu)
-end
+const get_bowtie_mu = get_filter_mu
 
 """
     get_bowtie_mu_reference(material::String) -> Float64
@@ -645,7 +688,7 @@ end
 Get reference linear attenuation coefficient at 60 keV.
 """
 function get_bowtie_mu_reference(material::String)
-    return get_bowtie_mu(material, 60.0)
+    return get_filter_mu(material, 60.0)
 end
 
 # =============================================================================
@@ -973,6 +1016,7 @@ export bowtie_filter_large_body, bowtie_filter_medium_body
 export bowtie_filter_small_body, bowtie_filter_head, bowtie_filter_none
 export bowtie_filter_multimaterial, load_bowtie_filter, load_catsim_bowtie
 export ge_revolution_bowtie_large, ge_revolution_bowtie_medium, ge_revolution_bowtie_small
+export load_builtin_bowtie, resolve_bowtie_filter, bowtie_filter_supergaussian
 export interpolate_thickness
 export compute_bowtie_attenuation, compute_bowtie_attenuation_spectral
 export apply_bowtie_filter!, apply_bowtie_to_intensity!

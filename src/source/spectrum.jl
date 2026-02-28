@@ -1,12 +1,13 @@
 """
     Physics/Spectrum.jl
 
-Load pre-computed X-ray spectra from XCAT/XCIST .dat files.
-
-No spectrum generation - just load validated spectra from files.
+Load X-ray spectra: pre-filtered CatSim .dat files for :medium fidelity,
+or raw IPEM Anode spectra with Beer-Lambert filtering for :high fidelity.
 """
 
 using DelimitedFiles
+using Unitful: ustrip, @u_str
+import XrayAttenuation as XA
 
 # Path to spectrum data files
 const SPECTRUM_DIR = joinpath(@__DIR__, "..", "spectrum")
@@ -163,5 +164,131 @@ function downsample_spectrum(
     return new_energies, new_weights
 end
 
+# =============================================================================
+# IPEM Anode spectra — raw (unfiltered) loading and Beer-Lambert filtering
+# =============================================================================
+
+# Map user-facing material strings to XA elements for filter μ(E) lookups
+const FILTER_ELEMENT_MAP = Dict{String, Any}(
+    "Al" => XA.Elements.Aluminum, "aluminum" => XA.Elements.Aluminum,
+    "Cu" => XA.Elements.Copper,   "copper"   => XA.Elements.Copper,
+    "Sn" => XA.Elements.Tin,      "tin"      => XA.Elements.Tin,
+    "Ti" => XA.Elements.Titanium, "titanium" => XA.Elements.Titanium,
+    "C"  => XA.Elements.Carbon,   "graphite" => XA.Elements.Carbon,
+)
+
+"""
+    get_filter_mu(material::String, energy_keV::Float64) -> Float64
+
+Return linear attenuation coefficient μ (cm⁻¹) for a filter material at the
+given energy, using XrayAttenuation.jl (NIST XCOM database).
+
+Replaces the old hand-rolled `BOWTIE_MU_DATA` table with full-resolution data.
+
+# Supported materials
+`"Al"`, `"Cu"`, `"Sn"`, `"Ti"`, `"C"` / `"graphite"` (case-sensitive).
+"""
+function get_filter_mu(material::String, energy_keV::Float64)
+    elem = get(FILTER_ELEMENT_MAP, material, nothing)
+    elem === nothing && error("Unknown filter material: \"$material\". " *
+        "Supported: $(join(sort(collect(keys(FILTER_ELEMENT_MAP))), ", "))")
+    return ustrip(u"cm^-1", XA.linear_attenuation_coeff(elem, energy_keV * u"keV"))
+end
+
+"""
+    load_spectrum_unfiltered(kVp::Int; anode_angle::Int=10) -> (energies, flux)
+
+Load a raw (unfiltered) IPEM Anode spectrum at 0.5 keV resolution.
+
+# Arguments
+- `kVp::Int`: Peak voltage (80, 100, 120, or 140)
+- `anode_angle::Int`: IPEM anode angle (8 or 10 degrees)
+
+# Returns
+- `energies::Vector{Float64}`: Energy bin centres (keV), 0.5 keV steps
+- `flux::Vector{Float64}`: Photon fluence per bin (photons/mAs/mm² at 750 mm)
+
+# File format
+Line 1: header (ignored), then whitespace-separated `energy flux` pairs.
+"""
+function load_spectrum_unfiltered(kVp::Int; anode_angle::Int=10)
+    valid_kvp = (80, 100, 120, 140)
+    valid_angles = (8, 10)
+    kVp in valid_kvp || error("kVp must be one of $valid_kvp (got $kVp)")
+    anode_angle in valid_angles || error("anode_angle must be one of $valid_angles (got $anode_angle)")
+
+    filepath = joinpath(SPECTRUM_DIR, "Anode$anode_angle", "$kVp.TXT")
+    isfile(filepath) || error("IPEM spectrum file not found: $filepath")
+
+    lines = readlines(filepath)
+    # First line is header, rest are "energy flux" pairs
+    n = length(lines) - 1
+    energies = Vector{Float64}(undef, n)
+    flux = Vector{Float64}(undef, n)
+    for i in 1:n
+        parts = split(strip(lines[i + 1]))
+        energies[i] = parse(Float64, parts[1])
+        flux[i] = parse(Float64, parts[2])
+    end
+
+    # Drop zero-flux tails
+    mask = flux .> 0
+    first_nz = findfirst(mask)
+    last_nz = findlast(mask)
+    if first_nz !== nothing && last_nz !== nothing
+        return energies[first_nz:last_nz], flux[first_nz:last_nz]
+    end
+    return energies, flux
+end
+
+"""
+    filter_spectrum(energies, flux; filters, sdd_mm=750.0) -> (energies, filtered_flux)
+
+Apply Beer-Lambert attenuation and inverse-square-law distance scaling to a raw
+X-ray spectrum.
+
+For each energy bin:
+
+    flux_filtered[e] = flux[e] × exp(-Σᵢ μᵢ(E) × tᵢ) × (750 / sdd_mm)²
+
+where `μᵢ(E)` is from XrayAttenuation.jl and `tᵢ` is filter thickness in cm.
+
+# Arguments
+- `energies::Vector{Float64}`: Energy bins (keV)
+- `flux::Vector{Float64}`: Raw photon fluence per bin
+- `filters::Vector{Tuple{String,Float64}}`: Each tuple is `(material, thickness_mm)`.
+  Materials: `"Al"`, `"Cu"`, `"Sn"`, `"Ti"`, `"C"`/`"graphite"`.
+- `sdd_mm::Float64=750.0`: Source-to-detector distance in mm. IPEM spectra are
+  normalised at 750 mm; pass actual SDD for inverse-square-law correction.
+
+# Returns
+- `(energies, filtered_flux)` — same energy grid, attenuated flux.
+"""
+function filter_spectrum(
+    energies::Vector{Float64},
+    flux::Vector{Float64};
+    filters::Vector{Tuple{String,Float64}}=Tuple{String,Float64}[],
+    sdd_mm::Float64=750.0,
+)
+    filtered = copy(flux)
+
+    # Beer-Lambert per filter layer
+    for (material, thickness_mm) in filters
+        thickness_cm = thickness_mm / 10.0
+        for i in eachindex(energies)
+            mu = get_filter_mu(material, energies[i])
+            filtered[i] *= exp(-mu * thickness_cm)
+        end
+    end
+
+    # Inverse-square-law from IPEM 750 mm reference to actual SDD
+    if sdd_mm != 750.0
+        filtered .*= (750.0 / sdd_mm)^2
+    end
+
+    return energies, filtered
+end
+
 # Exports
 export load_spectrum, spectrum_mean_energy, downsample_spectrum
+export load_spectrum_unfiltered, filter_spectrum, get_filter_mu

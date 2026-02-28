@@ -340,36 +340,9 @@ function forward_project_dual_energy(
             apply_joint_scatter_correction = true
         end
 
-        # Compute I0 for each kVp only if scanner is an AbstractScannerSpec that supports mA_to_I0
+        # Use noise from physics config directly
         noise_low = physics.noise
         noise_high = physics.noise
-
-        if scanner !== nothing && hasmethod(geometry, Tuple{typeof(scanner)}) && physics.noise !== nothing
-            # Low kVp gets more integration time to balance flux
-            effective_rotation_low = protocol.rotation_time_s * protocol.low_integration_fraction
-            effective_rotation_high = protocol.rotation_time_s * (1.0 - protocol.low_integration_fraction)
-
-            # Use the mA_to_I0 function from DetectorNoise (only works with AbstractScannerSpec)
-            I0_low = mA_to_I0(protocol.low_mA, scanner;
-                             rotation_time_s=effective_rotation_low,
-                             n_views=protocol.n_views)
-            I0_high = mA_to_I0(protocol.high_mA, scanner;
-                              rotation_time_s=effective_rotation_high,
-                              n_views=protocol.n_views)
-
-            noise_low = DetectorModel(
-                physics.noise.blur_fwhm,
-                I0_low,
-                physics.noise.electronic_noise_std,
-                physics.noise.seed
-            )
-            noise_high = DetectorModel(
-                physics.noise.blur_fwhm,
-                I0_high,
-                physics.noise.electronic_noise_std,
-                physics.noise.seed !== nothing ? physics.noise.seed + 1 : nothing
-            )
-        end
 
         # Create PhysicsConfig with correct field order matching struct definition
         # Scatter ADDITION is energy-dependent, but scatter CORRECTION is disabled

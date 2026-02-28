@@ -4,7 +4,7 @@
 High-level driver for running end-to-end CT simulations.
 """
 
-export simulate, simulate!, SimulationResult
+export simulate, simulate!, SimulationResult, add_system_noise_floor!
 
 # =============================================================================
 # GPU Array Handling
@@ -222,17 +222,19 @@ function simulate(
             # Create new ReconOptions with previous result as warm_start
             prev_vol = recons[end].second
             ReconOptions(
-                opts.algorithm, opts.matrix_size, opts.fov_cm, opts.filter, opts.iterations,
+                opts.algorithm, opts.matrix_size, opts.fov_cm, opts.z_cm, opts.filter, opts.iterations,
                 opts.lambda, opts.tv_weight, opts.n_subsets,
                 opts.penalty, opts.penalty_delta, opts.use_edge_weights, opts.blend_percent,
                 opts.vmi_energies, opts.vmi_basis,
-                prev_vol, opts.cascade_warm_start
+                prev_vol, opts.cascade_warm_start,
+                opts.system_noise_floor_hu
             )
         else
             opts
         end
 
         vol = _run_reconstruction(first_result.sinogram_noisy, geom, effective_opts)
+        add_system_noise_floor!(vol, opts.system_noise_floor_hu)
         push!(recons, opts.algorithm => vol)
     end
 
@@ -296,6 +298,7 @@ function _simulate_axial_single(phantom, scanner, protocol, sim_opts, recon_opts
 
     # 6. Reconstruction
     recon_vol = _run_reconstruction(sino_final, geom, recon_opts)
+    add_system_noise_floor!(recon_vol, recon_opts.system_noise_floor_hu)
 
     T = eltype(recon_vol)
     recons = Pair{Symbol,AbstractArray{T,3}}[recon_opts.algorithm=>recon_vol]
@@ -441,12 +444,14 @@ function _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts;
         for E in recon_opts.vmi_energies
             vmi_sino = virtual_monoenergetic(mat_map, E)
             vmi_vol = _run_reconstruction(vmi_sino, geom, recon_opts)
+            add_system_noise_floor!(vmi_vol, recon_opts.system_noise_floor_hu)
             vmi_dict[E] = T.(vmi_vol)
         end
     end
 
     # 9. Standard reconstruction from high-kVp sinogram
     recon_vol = _run_reconstruction(sino_final, geom, recon_opts)
+    add_system_noise_floor!(recon_vol, recon_opts.system_noise_floor_hu)
     recons = Pair{Symbol,AbstractArray{T,3}}[recon_opts.algorithm=>recon_vol]
 
     pcct_vmi_dict = Dict{Float64,AbstractArray{T,3}}()
@@ -1218,12 +1223,14 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts;
         for E in recon_opts.vmi_energies
             vmi_sino = virtual_monoenergetic(mat_map, E; ws_output=ws.vmi_sino)
             vmi_vol = _run_reconstruction(vmi_sino, geom, recon_opts)
+            add_system_noise_floor!(vmi_vol, recon_opts.system_noise_floor_hu)
             pcct_vmi_dict[E] = vmi_vol
         end
     end
 
     # Main reconstruction
     recon_vol = _run_reconstruction(ws.sino_noisy_out, geom, recon_opts)
+    add_system_noise_floor!(recon_vol, recon_opts.system_noise_floor_hu)
     recons = Pair{Symbol,AbstractArray{T,3}}[recon_opts.algorithm=>recon_vol]
     vmi_dict = Dict{Float64,AbstractArray{T,3}}()
 
@@ -1232,6 +1239,33 @@ function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts;
         nothing, mat_map, vmi_dict,
         pcct_sino, nothing, pcct_vmi_dict
     )
+end
+
+# =============================================================================
+# System Noise Floor (dose-independent)
+# =============================================================================
+
+"""
+    add_system_noise_floor!(vol, sigma_hu; seed=nothing)
+
+Add dose-independent Gaussian noise to a reconstruction volume (in-place).
+
+Models the irreducible scanner noise floor from imperfect scatter correction,
+electronic noise, calibration residuals, etc. Added in quadrature with existing
+noise: σ_total = √(σ_quantum² + σ_floor²).
+
+# Arguments
+- `vol::AbstractArray{T}`: Reconstruction volume in HU
+- `sigma_hu::Real`: Noise floor standard deviation in HU
+
+# Keyword Arguments
+- `seed::Union{Int,Nothing}=nothing`: Random seed for reproducibility
+"""
+function add_system_noise_floor!(vol::AbstractArray{T}, sigma_hu::Real; seed::Union{Int,Nothing}=nothing) where T
+    sigma_hu <= 0 && return vol
+    rng = isnothing(seed) ? Random.default_rng() : Random.MersenneTwister(seed + 7919)
+    vol .+= T(sigma_hu) .* randn(rng, T, size(vol))
+    return vol
 end
 
 # =============================================================================
