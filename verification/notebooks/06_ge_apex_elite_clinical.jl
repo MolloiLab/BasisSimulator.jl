@@ -1675,7 +1675,7 @@ end
 
 # ╔═╡ a1b2c3d4-7000-4000-8000-e00000000001
 md"""
-## Noise Model
+### Noise Model
 - **Quantum noise:** Poisson statistics in intensity domain, scaled by I₀ × η\_eff
 - **Electronic noise:** Gaussian additive in intensity domain, σ\_e = electronic\_noise / (mean\_E × detection\_gain)
 - **MC LUT (Lumex):** η(E) folded into I₀\_eff — orthogonal to DAS noise
@@ -1708,20 +1708,24 @@ begin
 	]
 end
 
+# ╔═╡ c8c50759-2b6a-453b-9a48-9dc11d4bd996
+sim_opts = BS.SimOptions(
+	fidelity = :high,
+	seed = 1234,
+	# n_energy_bins = 50
+)
+
+# ╔═╡ 53fdf44c-c940-4f9e-9ec3-4f77748ba370
+sim_opts
+
 # ╔═╡ a1b2c3d4-5004-4000-8000-000000000004
 # Simulation options + geometry (stable — changing these re-runs simulate!)
 begin
-	sim_opts = BS.SimOptions(
-		fidelity = :high,
-		seed = 1234,
-		# n_energy_bins = 50
-	)
-
 	sim_recon_xy = 512
 	sim_recon_fov_cm = 35.0
-	sim_slice_thickness_mm = 1.25
-	sim_recon_z_cm = sim_collimation_mm / 10.0                            # 8.0 cm
-	sim_n_recon_slices = round(Int, sim_collimation_mm / sim_slice_thickness_mm)  # 64
+	sim_slice_thickness_mm = 0.625
+	sim_recon_z_cm = sim_collimation_mm / 10.0
+	sim_n_recon_slices = round(Int, sim_collimation_mm / sim_slice_thickness_mm)
 	sim_matrix_size = (sim_recon_xy, sim_recon_xy, sim_n_recon_slices)
 
 	# Geometry-only ReconOptions for simulate! workspace creation
@@ -1734,8 +1738,8 @@ begin
 	)
 end
 
-# ╔═╡ 53fdf44c-c940-4f9e-9ec3-4f77748ba370
-sim_opts
+# ╔═╡ 96c17cb8-c478-4938-90d2-497b1e008cf0
+sim_recon_z_cm
 
 # ╔═╡ 02f63ae1-4850-4cb6-8daa-8536c3458898
 # Build a custom spatial-domain filter kernel from frequency-domain control points.
@@ -2021,32 +2025,6 @@ sim_sino_6 = let
 	result
 end
 
-# ╔═╡ a1b2c3d4-5014-4000-8000-000000000014
-md"""
-### 5a. HIR Reconstruction (Planned)
-
-Hybrid Iterative Reconstruction can be applied to the same sinogram data for
-noise reduction comparison. To enable, save sinograms in the individual scan cells
-above and run:
-
-```julia
-ws_hir = BS.create_hir_recon_workspace(sinogram, geom, volume_size; strength=3)
-BS.reconstruct!(ws_hir, sinogram, geom, volume_size)
-hir_result = Array(ws_hir.volume)
-hir_hu = BS.to_hounsfield(hir_result; μ_water=μ_w)
-```
-"""
-
-# ╔═╡ e54d80d3-6f67-4cd4-a85f-0e150755bf6e
-md"""
-## 6. Measurements
-"""
-
-# ╔═╡ c8334797-0992-4e3b-ac6a-f207f313013e
-md"""
-## Lung Window
-"""
-
 # ╔═╡ a1b2c3d4-6061-4000-8000-000000000061
 # Calibrate two-material BHC models (one per kVp) from resolve_spectrum pipeline.
 # Reference energy = spectrum effective energy (kVp-dependent), so μ_water_ref and
@@ -2318,7 +2296,7 @@ sim_hu_6 = let
 	(name = sim_recon_6.name, recon = recon_hu, mu_water = μ_w)
 end
 
-# ╔═╡ a1b2c3d4-5013-4000-8000-000000000013
+# ╔═╡ f28d8eb8-79a4-4e74-9672-5f773c07b818
 sim_results_fbp = [
 	sim_hu_1,
 	sim_hu_2,
@@ -2328,7 +2306,7 @@ sim_results_fbp = [
 	sim_hu_6,
 ]
 
-# ╔═╡ d90ed7f3-76bf-4c44-8a0f-2e4f7515c2b6
+# ╔═╡ 5dee8411-993a-41e7-bab6-717d2b78c585
 sim_oriented = let
 	# --- 1. BASE ORIENTATION (Pick one) ---
 	orient = identity
@@ -2348,22 +2326,22 @@ sim_oriented = let
 	 for r in sim_results_fbp]
 end
 
-# ╔═╡ 76883b62-cb08-435d-8214-9b0e86c404d8
+# ╔═╡ 625d1cf0-1bef-48b0-94d9-42f114a15640
 # Segment the simulated recon independently (finds center + Ca400 anchor in sim image)
 sim_seg_result = let
 	ref = sim_oriented[min(2, end)].recon
-	mid_z = size(ref, 3) ÷ 2
+	mid_z = 3
 	mask, rods, center = segment_gammex_rods(ref[:, :, mid_z]; fov_cm = 35.0)
 	(mask = mask, rods = rods, center = center, slice_idx = mid_z)
 end;
 
-# ╔═╡ b3197a6f-3a23-43f3-b63f-f2f49a1ecb45
+# ╔═╡ 10ecad19-13d4-43f3-b90e-f49912878838
 sim_measurements = [
 	measure_scan(r.recon, sim_seg_result.mask, sim_seg_result.rods, sim_seg_result.center, "sim_$(r.name)")
 	for r in sim_oriented
 ];
 
-# ╔═╡ 5a61d098-5d28-4c00-b360-3dd76da478d4
+# ╔═╡ 432033d0-a833-44d7-8101-0c0a632c1c7c
 let
 	base_clinical_idx = [1, 3, 5, 7, 9, 11]
 	base_scan_labels = ["120kVp 50mA", "120kVp 150mA", "120kVp 300mA",
@@ -2455,7 +2433,7 @@ let
 	fig
 end
 
-# ╔═╡ ae4465c7-65f0-4ecf-8d97-f537eadce60c
+# ╔═╡ c84b7cb9-5ce2-4d98-a636-b24413271805
 let
 	base_clinical_idx = [1, 3, 5, 7, 9, 11]
 	base_scan_labels = ["120kVp 50mA", "120kVp 150mA", "120kVp 300mA",
@@ -2515,31 +2493,55 @@ let
 	fig
 end
 
-# ╔═╡ dc0ce201-0efa-4bc0-bd3c-2075650fc67a
+# ╔═╡ cc4aec8c-732e-49b9-ab94-d22a8567a435
 let
-	base_clinical_idx = [1, 3, 5, 7, 9, 11]
-	base_scan_labels = ["120/50", "120/150", "120/300", "80/480", "100/250", "140/110"]
-
-	n_sims = min(length(sim_measurements), length(base_clinical_idx))
-	active_labels = base_scan_labels[1:n_sims]
-
 	water_idx = 1  # "Water (O)" is first rod
-	clin_σ = [se_measurements[base_clinical_idx[i]].rod_stds[water_idx] for i in 1:n_sims]
-	@info clin_σ
-	sim_σ = [sim_measurements[i].rod_stds[water_idx] for i in 1:n_sims]
-	@info sim_σ
 
-	fig = CM.Figure(size = (800, 400), fontsize = 11)
-	ax = CM.Axis(fig[1, 1]; title = "Water ROI Noise (σ)", subtitle = "Clinical vs Simulated",
-		ylabel = "σ (HU)", xticks = (1:n_sims, active_labels), xlabel = "kVp / mA")
-	CM.barplot!(ax, collect(1:n_sims) .- 0.2, clin_σ; width = 0.35, color = :steelblue, label = "Clinical")
-	CM.barplot!(ax, collect(1:n_sims) .+ 0.2, sim_σ; width = 0.35, color = :darkorange, label = "Simulated")
-	CM.axislegend(ax; position = :rt)
+	# --- Top: 120 kVp dose ladder (scans 1,2,3) ---
+	dose_sim_idx = [1, 2, 3]
+	dose_clin_idx = [1, 3, 5]  # FBP indices
+	dose_labels = ["120 kVp / 50 mA\n(3.38 mGy)", "120 kVp / 150 mA\n(10.16 mGy)", "120 kVp / 300 mA\n(20.38 mGy)"]
+	n_dose = min(length(dose_sim_idx), length(sim_measurements))
+
+	dose_clin_σ = [se_measurements[dose_clin_idx[i]].rod_stds[water_idx] for i in 1:n_dose]
+	dose_sim_σ = [sim_measurements[dose_sim_idx[i]].rod_stds[water_idx] for i in 1:n_dose]
+
+	# --- Bottom: ~10 mGy kVp series (scans 4,5,2,6 → 80,100,120,140 kVp) ---
+	kvp_sim_idx = [4, 5, 2, 6]
+	kvp_clin_idx = [7, 9, 3, 11]  # FBP indices
+	kvp_labels = ["80 kVp / 480 mA\n(10.32 mGy)", "100 kVp / 250 mA\n(10.53 mGy)", "120 kVp / 150 mA\n(10.16 mGy)", "140 kVp / 110 mA\n(10.85 mGy)"]
+	n_kvp = min(length(kvp_sim_idx), length(sim_measurements))
+
+	kvp_clin_σ = [se_measurements[kvp_clin_idx[i]].rod_stds[water_idx] for i in 1:n_kvp]
+	kvp_sim_σ = [sim_measurements[kvp_sim_idx[i]].rod_stds[water_idx] for i in 1:n_kvp]
+
+	fig = CM.Figure(size = (1000, 800), fontsize = 13)
+
+	# Top panel: 120 kVp dose ladder
+	ax1 = CM.Axis(fig[1, 1]; title = "120 kVp — Dose Ladder",
+		ylabel = "Water σ (HU)", xticks = (1:n_dose, dose_labels))
+	CM.barplot!(ax1, collect(1:n_dose) .- 0.2, dose_clin_σ; width = 0.35,
+		color = :steelblue, label = "Clinical FBP")
+	CM.barplot!(ax1, collect(1:n_dose) .+ 0.2, dose_sim_σ; width = 0.35,
+		color = :darkorange, label = "Simulated FBP")
+	CM.axislegend(ax1; position = :rt)
+
+	# Bottom panel: ~10 mGy kVp series
+	ax2 = CM.Axis(fig[2, 1]; title = "~10 mGy CTDIvol — kVp Series",
+		ylabel = "Water σ (HU)", xticks = (1:n_kvp, kvp_labels))
+	CM.barplot!(ax2, collect(1:n_kvp) .- 0.2, kvp_clin_σ; width = 0.35,
+		color = :steelblue, label = "Clinical FBP")
+	CM.barplot!(ax2, collect(1:n_kvp) .+ 0.2, kvp_sim_σ; width = 0.35,
+		color = :darkorange, label = "Simulated FBP")
+	CM.axislegend(ax2; position = :rt)
+
+	# CM.Label(fig[0, :]; text = "Water ROI Noise — Clinical FBP vs Simulated FBP",
+	# 	fontsize = 14, font = :bold)
 
 	fig
 end
 
-# ╔═╡ 4e15fc9c-217c-4e95-9a0c-bab491f99e4d
+# ╔═╡ ae3cee8f-e7e9-48a1-b58e-e598867147d8
 # Each image segmented independently — clinical uses seg_result, simulated uses sim_seg_result
 let
 	# Clinical
@@ -2571,7 +2573,7 @@ let
 	fig
 end
 
-# ╔═╡ f42424d5-73ec-43a2-afb0-ae741629d8d6
+# ╔═╡ e0a9a826-da50-419d-ba9d-5833ad254792
 # Each image segmented independently — clinical uses seg_result, simulated uses sim_seg_result
 let
 	# Clinical
@@ -2603,7 +2605,7 @@ let
 	fig
 end
 
-# ╔═╡ cb2b2b03-9aa7-446a-ad61-9e7152f9b1eb
+# ╔═╡ 6989eff6-ac59-4913-ae84-33f8e43a56d1
 # Each image segmented independently — clinical uses seg_result, simulated uses sim_seg_result
 let
 	# Clinical
@@ -2635,7 +2637,7 @@ let
 	fig
 end
 
-# ╔═╡ 0d6bbebf-e15d-4ae2-bb99-974b5e3f5793
+# ╔═╡ 25b7c0b4-d08a-4b2c-9bb1-64d568ca3540
 # Each image segmented independently — clinical uses seg_result, simulated uses sim_seg_result
 let
 	# Clinical
@@ -2667,7 +2669,7 @@ let
 	fig
 end
 
-# ╔═╡ 21eda799-2429-4fb3-a89c-783bfcdb3beb
+# ╔═╡ 2276aa4f-addf-4e44-8c29-0f0f347cb839
 # Each image segmented independently — clinical uses seg_result, simulated uses sim_seg_result
 let
 	# Clinical
@@ -2699,7 +2701,7 @@ let
 	fig
 end
 
-# ╔═╡ 8f805112-add3-4505-81c3-b465cbd5f512
+# ╔═╡ d193c4b3-c2de-494a-b0c5-6d0c2081fbf4
 # Each image segmented independently — clinical uses seg_result, simulated uses sim_seg_result
 let
 	# Clinical
@@ -2731,7 +2733,7 @@ let
 	fig
 end
 
-# ╔═╡ 83f368fa-178a-4538-b2bd-279bb199b881
+# ╔═╡ a0381edb-cdd2-4d1f-8139-149b6c06bc13
 # Each image segmented independently — clinical uses seg_result, simulated uses sim_seg_result
 let
 	# Clinical
@@ -2763,7 +2765,347 @@ let
 	fig
 end
 
-# ╔═╡ 8d4d7038-429f-4402-9dcc-4b4263e9db41
+# ╔═╡ caeeffcb-5745-4844-aff4-8c70106e3909
+begin
+	hir_strength = 3
+	hir_lambda = 4.0f0
+	hir_nepochs = 2
+	hir_n_subsets = 12
+	hir_huber_delta = 0.06f0
+	hir_relaxation = 0.35f0   
+end
+
+# ╔═╡ b9b74387-2665-4f26-b73e-5dbe46f497c4
+# Scan 1: 120 kVp / 50 mA — HIR RECONSTRUCT (BHC → GPU HIR → CPU volume)
+sim_recon_hir_1 = let
+	sino_gpu = MtlArray(sim_sino_1.sino)
+	sino_bhc = bhc_enabled ? BS.apply_bhc_two_material(sino_gpu, bhc_models[120],
+		sim_sino_1.geom, sim_matrix_size; volume_extent = sim_phantom_gpu.extent) : nothing
+	sino_in = MtlArray(something(sino_bhc, sim_sino_1.sino))
+	geom = sim_sino_1.geom
+	recon_size = sim_matrix_size
+	ws_hir = BS.create_hir_recon_workspace(sino_in, geom, recon_size; strength = hir_strength)
+	copyto!(ws_hir.filter_kernel, build_custom_filter_kernel(
+		length(ws_hir.filter_kernel), Float32(geom.pixel_size),
+		custom_filter_control.x, custom_filter_control.y))
+	ws_hir.params = BS.HIRParams(hir_strength, hir_lambda, 30, hir_nepochs,
+		hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35))
+	BS.reconstruct!(ws_hir, sino_in, geom, recon_size)
+	vol = Array(ws_hir.volume)
+	ws_hir = nothing; sino_gpu = nothing; sino_in = nothing; GC.gc(true)
+	(volume = vol, name = replace(sim_sino_1.name, "FBP" => "HIR"), kvp = sim_sino_1.kvp)
+end
+
+# ╔═╡ 8cd81bd3-2036-4cdc-bb89-079c767306dd
+# Scan 1: 120 kVp / 50 mA — HIR HU CONVERSION (CPU only)
+sim_hu_hir_1 = let
+	μ_w = bhc_models[120].μ_water_ref
+	recon_hu = Float32.(BS.to_hounsfield(sim_recon_hir_1.volume; μ_water = μ_w))
+	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
+	(name = sim_recon_hir_1.name, recon = recon_hu, mu_water = μ_w)
+end
+
+# ╔═╡ e4643553-09c6-436f-9f5d-a2c0cd58967f
+# Scan 2: 120 kVp / 150 mA — HIR RECONSTRUCT (BHC → GPU HIR → CPU volume)
+sim_recon_hir_2 = let
+	sino_gpu = MtlArray(sim_sino_2.sino)
+	sino_bhc = bhc_enabled ? BS.apply_bhc_two_material(sino_gpu, bhc_models[120],
+		sim_sino_2.geom, sim_matrix_size; volume_extent = sim_phantom_gpu.extent) : nothing
+	sino_in = MtlArray(something(sino_bhc, sim_sino_2.sino))
+	geom = sim_sino_2.geom
+	recon_size = sim_matrix_size
+	ws_hir = BS.create_hir_recon_workspace(sino_in, geom, recon_size; strength = hir_strength)
+	copyto!(ws_hir.filter_kernel, build_custom_filter_kernel(
+		length(ws_hir.filter_kernel), Float32(geom.pixel_size),
+		custom_filter_control.x, custom_filter_control.y))
+	ws_hir.params = BS.HIRParams(hir_strength, hir_lambda, 30, hir_nepochs,
+		hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35))
+	BS.reconstruct!(ws_hir, sino_in, geom, recon_size)
+	vol = Array(ws_hir.volume)
+	ws_hir = nothing; sino_gpu = nothing; sino_in = nothing; GC.gc(true)
+	(volume = vol, name = replace(sim_sino_2.name, "FBP" => "HIR"), kvp = sim_sino_2.kvp)
+end
+
+# ╔═╡ 707e2b67-243e-4fd9-a174-84a8bd0e3258
+# Scan 2: 120 kVp / 150 mA — HIR HU CONVERSION (CPU only)
+sim_hu_hir_2 = let
+	μ_w = bhc_models[120].μ_water_ref
+	recon_hu = Float32.(BS.to_hounsfield(sim_recon_hir_2.volume; μ_water = μ_w))
+	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
+	(name = sim_recon_hir_2.name, recon = recon_hu, mu_water = μ_w)
+end
+
+# ╔═╡ dc31e62e-efaf-479a-81f8-5c3a05db204d
+# Scan 3: 120 kVp / 300 mA — HIR RECONSTRUCT (BHC → GPU HIR → CPU volume)
+sim_recon_hir_3 = let
+	sino_gpu = MtlArray(sim_sino_3.sino)
+	sino_bhc = bhc_enabled ? BS.apply_bhc_two_material(sino_gpu, bhc_models[120],
+		sim_sino_3.geom, sim_matrix_size; volume_extent = sim_phantom_gpu.extent) : nothing
+	sino_in = MtlArray(something(sino_bhc, sim_sino_3.sino))
+	geom = sim_sino_3.geom
+	recon_size = sim_matrix_size
+	ws_hir = BS.create_hir_recon_workspace(sino_in, geom, recon_size; strength = hir_strength)
+	copyto!(ws_hir.filter_kernel, build_custom_filter_kernel(
+		length(ws_hir.filter_kernel), Float32(geom.pixel_size),
+		custom_filter_control.x, custom_filter_control.y))
+	ws_hir.params = BS.HIRParams(hir_strength, hir_lambda, 30, hir_nepochs,
+		hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35))
+	BS.reconstruct!(ws_hir, sino_in, geom, recon_size)
+	vol = Array(ws_hir.volume)
+	ws_hir = nothing; sino_gpu = nothing; sino_in = nothing; GC.gc(true)
+	(volume = vol, name = replace(sim_sino_3.name, "FBP" => "HIR"), kvp = sim_sino_3.kvp)
+end
+
+# ╔═╡ 90e8d9c9-0d04-4806-9e13-702919ef9bf0
+# Scan 3: 120 kVp / 300 mA — HIR HU CONVERSION (CPU only)
+sim_hu_hir_3 = let
+	μ_w = bhc_models[120].μ_water_ref
+	recon_hu = Float32.(BS.to_hounsfield(sim_recon_hir_3.volume; μ_water = μ_w))
+	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
+	(name = sim_recon_hir_3.name, recon = recon_hu, mu_water = μ_w)
+end
+
+# ╔═╡ 797905a3-d516-41a0-b3eb-024a9b2ab63d
+# Scan 4: 80 kVp / 480 mA — HIR RECONSTRUCT (BHC → GPU HIR → CPU volume)
+sim_recon_hir_4 = let
+	sino_gpu = MtlArray(sim_sino_4.sino)
+	sino_bhc = bhc_enabled ? BS.apply_bhc_two_material(sino_gpu, bhc_models[80],
+		sim_sino_4.geom, sim_matrix_size; volume_extent = sim_phantom_gpu.extent) : nothing
+	sino_in = MtlArray(something(sino_bhc, sim_sino_4.sino))
+	geom = sim_sino_4.geom
+	recon_size = sim_matrix_size
+	ws_hir = BS.create_hir_recon_workspace(sino_in, geom, recon_size; strength = hir_strength)
+	copyto!(ws_hir.filter_kernel, build_custom_filter_kernel(
+		length(ws_hir.filter_kernel), Float32(geom.pixel_size),
+		custom_filter_control.x, custom_filter_control.y))
+	ws_hir.params = BS.HIRParams(hir_strength, hir_lambda, 30, hir_nepochs,
+		hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35))
+	BS.reconstruct!(ws_hir, sino_in, geom, recon_size)
+	vol = Array(ws_hir.volume)
+	ws_hir = nothing; sino_gpu = nothing; sino_in = nothing; GC.gc(true)
+	(volume = vol, name = replace(sim_sino_4.name, "FBP" => "HIR"), kvp = sim_sino_4.kvp)
+end
+
+# ╔═╡ fe36b139-f792-479a-b58d-e20962391a5e
+# Scan 4: 80 kVp / 480 mA — HIR HU CONVERSION (CPU only)
+sim_hu_hir_4 = let
+	μ_w = bhc_models[80].μ_water_ref
+	recon_hu = Float32.(BS.to_hounsfield(sim_recon_hir_4.volume; μ_water = μ_w))
+	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
+	(name = sim_recon_hir_4.name, recon = recon_hu, mu_water = μ_w)
+end
+
+# ╔═╡ 2cb22b66-66cd-44e3-9418-7fc8eeeb5274
+# Scan 5: 100 kVp / 250 mA — HIR RECONSTRUCT (BHC → GPU HIR → CPU volume)
+sim_recon_hir_5 = let
+	sino_gpu = MtlArray(sim_sino_5.sino)
+	sino_bhc = bhc_enabled ? BS.apply_bhc_two_material(sino_gpu, bhc_models[100],
+		sim_sino_5.geom, sim_matrix_size; volume_extent = sim_phantom_gpu.extent) : nothing
+	sino_in = MtlArray(something(sino_bhc, sim_sino_5.sino))
+	geom = sim_sino_5.geom
+	recon_size = sim_matrix_size
+	ws_hir = BS.create_hir_recon_workspace(sino_in, geom, recon_size; strength = hir_strength)
+	copyto!(ws_hir.filter_kernel, build_custom_filter_kernel(
+		length(ws_hir.filter_kernel), Float32(geom.pixel_size),
+		custom_filter_control.x, custom_filter_control.y))
+	ws_hir.params = BS.HIRParams(hir_strength, hir_lambda, 30, hir_nepochs,
+		hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35))
+	BS.reconstruct!(ws_hir, sino_in, geom, recon_size)
+	vol = Array(ws_hir.volume)
+	ws_hir = nothing; sino_gpu = nothing; sino_in = nothing; GC.gc(true)
+	(volume = vol, name = replace(sim_sino_5.name, "FBP" => "HIR"), kvp = sim_sino_5.kvp)
+end
+
+# ╔═╡ 9833c73a-556c-4957-8d73-ac0e11ce961c
+# Scan 5: 100 kVp / 250 mA — HIR HU CONVERSION (CPU only)
+sim_hu_hir_5 = let
+	μ_w = bhc_models[100].μ_water_ref
+	recon_hu = Float32.(BS.to_hounsfield(sim_recon_hir_5.volume; μ_water = μ_w))
+	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
+	(name = sim_recon_hir_5.name, recon = recon_hu, mu_water = μ_w)
+end
+
+# ╔═╡ ae8ec9e5-6138-4866-b4e8-e406a6536b4a
+# Scan 6: 140 kVp / 110 mA — HIR RECONSTRUCT (BHC → GPU HIR → CPU volume)
+sim_recon_hir_6 = let
+	sino_gpu = MtlArray(sim_sino_6.sino)
+	sino_bhc = bhc_enabled ? BS.apply_bhc_two_material(sino_gpu, bhc_models[140],
+		sim_sino_6.geom, sim_matrix_size; volume_extent = sim_phantom_gpu.extent) : nothing
+	sino_in = MtlArray(something(sino_bhc, sim_sino_6.sino))
+	geom = sim_sino_6.geom
+	recon_size = sim_matrix_size
+	ws_hir = BS.create_hir_recon_workspace(sino_in, geom, recon_size; strength = hir_strength)
+	copyto!(ws_hir.filter_kernel, build_custom_filter_kernel(
+		length(ws_hir.filter_kernel), Float32(geom.pixel_size),
+		custom_filter_control.x, custom_filter_control.y))
+	ws_hir.params = BS.HIRParams(hir_strength, hir_lambda, 30, hir_nepochs,
+		hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35))
+	BS.reconstruct!(ws_hir, sino_in, geom, recon_size)
+	vol = Array(ws_hir.volume)
+	ws_hir = nothing; sino_gpu = nothing; sino_in = nothing; GC.gc(true)
+	(volume = vol, name = replace(sim_sino_6.name, "FBP" => "HIR"), kvp = sim_sino_6.kvp)
+end
+
+# ╔═╡ 8f3ef07e-7f1e-4a94-a0b8-0404d97f23dc
+# Scan 6: 140 kVp / 110 mA — HIR HU CONVERSION (CPU only)
+sim_hu_hir_6 = let
+	μ_w = bhc_models[140].μ_water_ref
+	recon_hu = Float32.(BS.to_hounsfield(sim_recon_hir_6.volume; μ_water = μ_w))
+	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
+	(name = sim_recon_hir_6.name, recon = recon_hu, mu_water = μ_w)
+end
+
+# ╔═╡ 5364d024-e28d-4eca-be96-23b95a4bf121
+sim_results_hir = [
+	sim_hu_hir_1,
+	sim_hu_hir_2,
+	sim_hu_hir_3,
+	sim_hu_hir_4,
+	sim_hu_hir_5,
+	sim_hu_hir_6,
+]
+
+# ╔═╡ 2030fac8-4923-4d49-bd07-cb7ab4a3f8fa
+sim_oriented_hir = let
+	# Must match sim_oriented orientation exactly
+	orient = identity
+	orient = (f -> s -> reverse(f(s), dims = 2))(orient)  # Flip Left-Right
+
+	[(name = r.name,
+		recon = Float32.(mapslices(orient, r.recon, dims = (1, 2))),
+		mu_water = r.mu_water)
+	 for r in sim_results_hir]
+end
+
+# ╔═╡ da35087b-a066-4fa1-9cd7-59dbcca999d5
+# Reuse FBP segmentation (same phantom geometry) for HIR measurements
+sim_measurements_hir = [
+	measure_scan(r.recon, sim_seg_result.mask, sim_seg_result.rods, sim_seg_result.center, "sim_hir_$(r.name)")
+	for r in sim_oriented_hir
+];
+
+# ╔═╡ 54395f3b-d6ac-4429-9070-de4e6286a52b
+# NPS comparison: Simulated HIR vs Clinical ASiR-V 50%
+let
+	asirv_clinical_idx = [2, 4, 6, 8, 10, 12]
+	scan_labels = ["120kVp 50mA", "120kVp 150mA", "120kVp 300mA",
+		"80kVp 480mA", "100kVp 250mA", "140kVp 110mA"]
+
+	n_sims = min(length(sim_measurements_hir), length(asirv_clinical_idx))
+
+	fig = CM.Figure(size = (900, 900), fontsize = 11)
+
+	for i in 1:n_sims
+		row = (i - 1) ÷ 2 + 1
+		col = (i - 1) % 2 + 1
+
+		ax = CM.Axis(fig[row, col]; title = scan_labels[i],
+			subtitle = "Clinical ASiR-V 50% vs Simulated HIR",
+			xlabel = "Spatial frequency (lp/cm)", ylabel = "NPS (HU²·cm²)", yscale = log10)
+
+		cm = se_measurements[asirv_clinical_idx[i]]
+		sm = sim_measurements_hir[i]
+
+		f_c, v_c = cm.nps.frequencies, cm.nps.nps_1d
+		good_c = v_c .> 0
+		CM.lines!(ax, f_c[good_c], v_c[good_c];
+			color = :steelblue, linewidth = 1.5, label = "Clinical ASiR-V")
+
+		f_s, v_s = sm.nps.frequencies, sm.nps.nps_1d
+		good_s = v_s .> 0
+		CM.lines!(ax, f_s[good_s], v_s[good_s];
+			color = :orangered, linewidth = 1.5, linestyle = :dash, label = "Simulated HIR")
+
+		CM.axislegend(ax; position = :rt, labelsize = 8)
+	end
+
+	fig
+end
+
+# ╔═╡ 4798adbb-608d-4fc4-9429-c5a3a99d9e1b
+# MTF comparison: Simulated HIR vs Clinical ASiR-V 50%
+let
+	asirv_clinical_idx = [2, 4, 6, 8, 10, 12]
+	scan_labels = ["120kVp 50mA", "120kVp 150mA", "120kVp 300mA",
+		"80kVp 480mA", "100kVp 250mA", "140kVp 110mA"]
+
+	n_sims = min(length(sim_measurements_hir), length(asirv_clinical_idx))
+
+	fig = CM.Figure(size = (900, 900), fontsize = 11)
+
+	for i in 1:n_sims
+		row = (i - 1) ÷ 2 + 1
+		col = (i - 1) % 2 + 1
+
+		ax = CM.Axis(fig[row, col]; title = scan_labels[i],
+			subtitle = "Clinical ASiR-V 50% vs Simulated HIR",
+			xlabel = "Spatial frequency (lp/cm)", ylabel = "MTF",
+			limits = (nothing, nothing, 0, 1.05))
+		CM.hlines!(ax, [0.5, 0.1]; color = :gray80, linestyle = :dash, linewidth = 0.8)
+
+		cm = se_measurements[asirv_clinical_idx[i]]
+		sm = sim_measurements_hir[i]
+
+		CM.lines!(ax, cm.mtf.frequencies, cm.mtf.mtf;
+			color = :steelblue, linewidth = 1.5, label = "Clinical ASiR-V")
+		CM.lines!(ax, sm.mtf.frequencies, sm.mtf.mtf;
+			color = :orangered, linewidth = 1.5, linestyle = :dash, label = "Simulated HIR")
+
+		CM.axislegend(ax; position = :rt, labelsize = 8)
+	end
+
+	fig
+end
+
+# ╔═╡ 9a1404a2-c8ae-40ad-8359-3658e2eb206d
+let
+	water_idx = 1  # "Water (O)" is first rod
+
+	# --- Top: 120 kVp dose ladder (scans 1,2,3) ---
+	dose_sim_idx = [1, 2, 3]
+	dose_clin_idx = [2, 4, 6]  # ASiR-V indices
+	dose_labels = ["120 kVp / 50 mA\n(3.38 mGy)", "120 kVp / 150 mA\n(10.16 mGy)", "120 kVp / 300 mA\n(20.38 mGy)"]
+	n_dose = min(length(dose_sim_idx), length(sim_measurements_hir))
+
+	dose_clin_σ = [se_measurements[dose_clin_idx[i]].rod_stds[water_idx] for i in 1:n_dose]
+	dose_sim_σ = [sim_measurements_hir[dose_sim_idx[i]].rod_stds[water_idx] for i in 1:n_dose]
+
+	# --- Bottom: ~10 mGy kVp series (scans 4,5,2,6 → 80,100,120,140 kVp) ---
+	kvp_sim_idx = [4, 5, 2, 6]
+	kvp_clin_idx = [8, 10, 4, 12]  # ASiR-V indices
+	kvp_labels = ["80 kVp / 480 mA\n(10.32 mGy)", "100 kVp / 250 mA\n(10.53 mGy)", "120 kVp / 150 mA\n(10.16 mGy)", "140 kVp / 110 mA\n(10.85 mGy)"]
+	n_kvp = min(length(kvp_sim_idx), length(sim_measurements_hir))
+
+	kvp_clin_σ = [se_measurements[kvp_clin_idx[i]].rod_stds[water_idx] for i in 1:n_kvp]
+	kvp_sim_σ = [sim_measurements_hir[kvp_sim_idx[i]].rod_stds[water_idx] for i in 1:n_kvp]
+
+	fig = CM.Figure(size = (1000, 800), fontsize = 13)
+
+	# Top panel: 120 kVp dose ladder
+	ax1 = CM.Axis(fig[1, 1]; title = "120 kVp — Dose Ladder",
+		ylabel = "Water σ (HU)", xticks = (1:n_dose, dose_labels))
+	CM.barplot!(ax1, collect(1:n_dose) .- 0.2, dose_clin_σ; width = 0.35,
+		color = :steelblue, label = "Clinical ASiR-V 50%")
+	CM.barplot!(ax1, collect(1:n_dose) .+ 0.2, dose_sim_σ; width = 0.35,
+		color = :darkorange, label = "Simulated HIR")
+	CM.axislegend(ax1; position = :rt)
+
+	# Bottom panel: ~10 mGy kVp series
+	ax2 = CM.Axis(fig[2, 1]; title = "~10 mGy CTDIvol — kVp Series",
+		ylabel = "Water σ (HU)", xticks = (1:n_kvp, kvp_labels))
+	CM.barplot!(ax2, collect(1:n_kvp) .- 0.2, kvp_clin_σ; width = 0.35,
+		color = :steelblue, label = "Clinical ASiR-V 50%")
+	CM.barplot!(ax2, collect(1:n_kvp) .+ 0.2, kvp_sim_σ; width = 0.35,
+		color = :darkorange, label = "Simulated HIR")
+	CM.axislegend(ax2; position = :rt)
+
+	# CM.Label(fig[0, :]; text = "Water ROI Noise — Clinical ASiR-V 50% vs Simulated HIR",
+		# fontsize = 14, font = :bold)
+
+	fig
+end
+
+# ╔═╡ 378f6ea7-81c3-4f83-9f22-29c6c432dec1
 let
 	base_clinical_idx = [1, 3, 5, 7, 9, 11]
 	base_scan_labels = ["120kVp 50mA", "120kVp 150mA", "120kVp 300mA",
@@ -2800,7 +3142,7 @@ let
 	fig
 end
 
-# ╔═╡ 4de369da-bad2-43bd-bf5a-ba654d26c76f
+# ╔═╡ 12c2ca1a-bee0-48d5-9f8d-aa7a41478cb6
 let
 	base_clinical_idx = [1, 3, 5, 7, 9, 11]
 	base_scan_labels = ["120kVp 50mA", "120kVp 150mA", "120kVp 300mA",
@@ -2834,7 +3176,7 @@ let
 	fig
 end
 
-# ╔═╡ 11f8b1f8-4927-41a3-a781-9a169739610a
+# ╔═╡ 79294509-6f4c-4e17-87c0-b3865c76e929
 let
 	base_clinical_idx = [1, 3, 5, 7, 9, 11]
 	base_scan_labels = ["120kVp 50mA", "120kVp 150mA", "120kVp 300mA",
@@ -2849,6 +3191,296 @@ let
 
 	fig = CM.Figure(size = (1100, 400), fontsize = 10)
 	ax = CM.Axis(fig[1, 1]; title = "HU Error", subtitle = "(Simulated − Clinical) — $label", ylabel = "ΔHU", xticks = (1:length(cm.rod_names), cm.rod_names), xticklabelrotation = π / 4)
+	CM.barplot!(ax, 1:length(Δ), Δ; color = ifelse.(Δ .> 0, :salmon, :steelblue))
+	CM.hlines!(ax, [0]; color = :black, linewidth = 0.8)
+
+	for (i, d) in enumerate(Δ)
+		CM.text!(ax, i, d + sign(d) * 3;
+			text = "$(round(d, digits=1))", fontsize = 8, align = (:center, d > 0 ? :bottom : :top))
+	end
+
+	fig
+end
+
+# ╔═╡ 829ef0b1-dc36-4a94-98fa-ed52c9e82ee2
+md"""
+### FBP vs Clinical FBP
+"""
+
+# ╔═╡ 10c733ff-5b31-4951-809a-2510d48155e9
+md"""
+#### FBP: Qualitative
+"""
+
+# ╔═╡ 2c08722a-16d9-43d7-8bc4-8fc568c1296e
+# FBP: 2×3 qualitative side-by-side (Clinical FBP vs Simulated FBP)
+let
+	clin_vols = [hu_120_low_fbp, hu_120_mid_fbp, hu_120_high_fbp,
+		hu_80_fbp, hu_100_fbp, hu_140_fbp]
+	scan_labels = ["120kVp 50mA", "120kVp 150mA", "120kVp 300mA",
+		"80kVp 480mA", "100kVp 250mA", "140kVp 110mA"]
+
+	n = min(length(clin_vols), length(sim_oriented))
+	fig = CM.Figure(size = (800, n * 400), fontsize = 10)
+
+	for i in 1:n
+		clin_slice = clin_vols[i][:, :, seg_result.slice_idx]
+		sim_slice = sim_oriented[i].recon[:, :, sim_seg_result.slice_idx]
+
+		ax1 = CM.Axis(fig[i, 1]; title = "Clinical — $(scan_labels[i])", yreversed = true)
+		CM.heatmap!(ax1, clin_slice; colormap = :grays, colorrange = (-200, 500))
+		CM.hidedecorations!(ax1); CM.hidespines!(ax1)
+
+		ax2 = CM.Axis(fig[i, 2]; title = "Simulated FBP — $(scan_labels[i])", yreversed = true)
+		CM.heatmap!(ax2, sim_slice; colormap = :grays, colorrange = (-200, 500))
+		CM.hidedecorations!(ax2); CM.hidespines!(ax2)
+	end
+
+	fig
+end
+
+# ╔═╡ 80a5049d-2772-4334-86da-0f972d376078
+md"""
+#### FBP: NPS
+"""
+
+# ╔═╡ 9cb43aa0-29da-44eb-871b-69077b87df8f
+md"""
+#### FBP: MTF
+"""
+
+# ╔═╡ d0615322-2071-4734-8ff6-00a8329e849a
+md"""
+#### FBP: Noise
+"""
+
+# ╔═╡ 70e53b68-de55-4ce0-91cf-21e867710419
+md"""
+#### FBP: HU Accuracy
+"""
+
+# ╔═╡ 376b0cbe-042d-494d-87c4-c260ec5bd734
+md"""
+### HIR vs Clinical ASiR-V 50%
+"""
+
+# ╔═╡ 8e6ad3f2-9eb1-4b32-bf36-2dad1efbf623
+md"""
+#### HIR: Qualitative
+"""
+
+# ╔═╡ 9da1673e-9a2e-48ab-94e8-075489cf3b17
+# HIR: 2×3 qualitative side-by-side (Clinical ASiR-V 50% vs Simulated HIR)
+let
+	clin_vols = [hu_120_low_ir, hu_120_mid_ir, hu_120_high_ir,
+		hu_80_ir, hu_100_ir, hu_140_ir]
+	scan_labels = ["120kVp 50mA", "120kVp 150mA", "120kVp 300mA",
+		"80kVp 480mA", "100kVp 250mA", "140kVp 110mA"]
+
+	n = min(length(clin_vols), length(sim_oriented_hir))
+	fig = CM.Figure(size = (800, n * 400), fontsize = 10)
+
+	for i in 1:n
+		clin_slice = clin_vols[i][:, :, seg_result.slice_idx]
+		sim_slice = sim_oriented_hir[i].recon[:, :, sim_seg_result.slice_idx]
+
+		ax1 = CM.Axis(fig[i, 1]; title = "Clinical ASiR-V — $(scan_labels[i])", yreversed = true)
+		CM.heatmap!(ax1, clin_slice; colormap = :grays, colorrange = (-200, 500))
+		CM.hidedecorations!(ax1); CM.hidespines!(ax1)
+
+		ax2 = CM.Axis(fig[i, 2]; title = "Simulated HIR — $(scan_labels[i])", yreversed = true)
+		CM.heatmap!(ax2, sim_slice; colormap = :grays, colorrange = (-200, 500))
+		CM.hidedecorations!(ax2); CM.hidespines!(ax2)
+	end
+
+	fig
+end
+
+# ╔═╡ 991085bd-defd-40e5-b426-d67cf9feddc1
+sim_seg_result.slice_idx
+
+# ╔═╡ caf044b7-1056-4b27-aaf9-961fa84e941d
+md"""
+#### HIR: NPS
+"""
+
+# ╔═╡ b7b8a5e6-ed89-40d5-a065-64583a742a1a
+md"""
+#### HIR: MTF
+"""
+
+# ╔═╡ 3c4fded0-d14b-40af-9b6a-be8eaf0c4092
+md"""
+#### HIR: Noise
+"""
+
+# ╔═╡ 0bb68bed-7de0-494d-9ba4-f7f168666225
+md"""
+#### HIR: HU Accuracy
+"""
+
+# ╔═╡ ed8551f8-d7bf-4893-ab5d-2a41b65ee81b
+# HIR: Ca/I scatter — Clinical ASiR-V 50% vs Simulated HIR
+let
+	asirv_clinical_idx = [2, 4, 6, 8, 10, 12]
+	scan_labels = ["120kVp 50mA", "120kVp 150mA", "120kVp 300mA",
+		"80kVp 480mA", "100kVp 250mA", "140kVp 110mA"]
+
+	n_sims = min(length(sim_measurements_hir), length(asirv_clinical_idx))
+	active_clinical_idx = asirv_clinical_idx[1:n_sims]
+	active_labels = scan_labels[1:n_sims]
+	colors = CM.cgrad(:tab10, max(n_sims, 2), categorical = true)
+
+	fig = CM.Figure(size = (750, 900), fontsize = 11)
+
+	# --- Top: Calcium rods ---
+	ax_ca = CM.Axis(fig[1, 1]; title = "Calcium Rods", subtitle = "Clinical ASiR-V vs Simulated HIR",
+		xlabel = "Clinical HU", ylabel = "Simulated HU")
+
+	ca_clin_all = Float64[]
+	ca_sim_all = Float64[]
+
+	for (k, (ci, sm_k)) in enumerate(zip(active_clinical_idx, sim_measurements_hir[1:n_sims]))
+		cm = se_measurements[ci]
+		ca_idx = [i for i in 1:length(cm.rod_names) if startswith(cm.rod_names[i], "Ca")]
+		if !isempty(ca_idx)
+			CM.scatter!(ax_ca, cm.rod_means[ca_idx], sm_k.rod_means[ca_idx];
+				color = colors[k], markersize = 10, label = active_labels[k])
+			append!(ca_clin_all, cm.rod_means[ca_idx])
+			append!(ca_sim_all, sm_k.rod_means[ca_idx])
+		end
+	end
+	CM.lines!(ax_ca, [-100, 1400], [-100, 1400];
+		color = :gray60, linestyle = :dash, linewidth = 1, label = "Unity (y = x)")
+	if length(ca_clin_all) > 1
+		X_ca = hcat(ones(length(ca_clin_all)), ca_clin_all)
+		b_ca, m_ca = X_ca \ ca_sim_all
+		r_ca = cor(ca_clin_all, ca_sim_all)
+		rmse_ca = sqrt(sum((ca_sim_all .- ca_clin_all) .^ 2) / length(ca_clin_all))
+		x_fit_ca = range(extrema(ca_clin_all)..., length = 100)
+		sign_ca = b_ca >= 0 ? " + " : " - "
+		eq_ca = "y = $(round(m_ca, digits=3))x$(sign_ca)$(round(abs(b_ca), digits=1))"
+		CM.lines!(ax_ca, collect(x_fit_ca), m_ca .* collect(x_fit_ca) .+ b_ca;
+			color = :black, linewidth = 0.8, label = "Linear fit")
+		CM.poly!(ax_ca,
+			CM.Point2f[(0.60, 0.02), (0.98, 0.02), (0.98, 0.22), (0.60, 0.22)];
+			color = (:white, 0.9), strokecolor = :gray50, strokewidth = 1, space = :relative)
+		CM.text!(ax_ca, 0.62, 0.18; space = :relative, align = (:left, :top), fontsize = 10,
+			text = "$(eq_ca)\nr = $(round(r_ca, digits=4))\nRMSE = $(round(rmse_ca, digits=1)) HU")
+	end
+	CM.axislegend(ax_ca; position = :lt, labelsize = 9)
+
+	# --- Bottom: Iodine rods ---
+	ax_i = CM.Axis(fig[2, 1]; title = "Iodine Rods", subtitle = "Clinical ASiR-V vs Simulated HIR",
+		xlabel = "Clinical HU", ylabel = "Simulated HU")
+
+	i_clin_all = Float64[]
+	i_sim_all = Float64[]
+
+	for (k, (ci, sm_k)) in enumerate(zip(active_clinical_idx, sim_measurements_hir[1:n_sims]))
+		cm = se_measurements[ci]
+		i_idx = [i for i in 1:length(cm.rod_names) if startswith(cm.rod_names[i], "I ")]
+		if !isempty(i_idx)
+			CM.scatter!(ax_i, cm.rod_means[i_idx], sm_k.rod_means[i_idx];
+				color = colors[k], markersize = 10, label = active_labels[k])
+			append!(i_clin_all, cm.rod_means[i_idx])
+			append!(i_sim_all, sm_k.rod_means[i_idx])
+		end
+	end
+	CM.lines!(ax_i, [-50, 500], [-50, 500];
+		color = :gray60, linestyle = :dash, linewidth = 1, label = "Unity (y = x)")
+	if length(i_clin_all) > 1
+		X_i = hcat(ones(length(i_clin_all)), i_clin_all)
+		b_i, m_i = X_i \ i_sim_all
+		r_i = cor(i_clin_all, i_sim_all)
+		rmse_i = sqrt(sum((i_sim_all .- i_clin_all) .^ 2) / length(i_clin_all))
+		x_fit_i = range(extrema(i_clin_all)..., length = 100)
+		sign_i = b_i >= 0 ? " + " : " - "
+		eq_i = "y = $(round(m_i, digits=3))x$(sign_i)$(round(abs(b_i), digits=1))"
+		CM.lines!(ax_i, collect(x_fit_i), m_i .* collect(x_fit_i) .+ b_i;
+			color = :black, linewidth = 0.8, label = "Linear fit")
+		CM.poly!(ax_i,
+			CM.Point2f[(0.60, 0.02), (0.98, 0.02), (0.98, 0.22), (0.60, 0.22)];
+			color = (:white, 0.9), strokecolor = :gray50, strokewidth = 1, space = :relative)
+		CM.text!(ax_i, 0.62, 0.18; space = :relative, align = (:left, :top), fontsize = 10,
+			text = "$(eq_i)\nr = $(round(r_i, digits=4))\nRMSE = $(round(rmse_i, digits=1)) HU")
+	end
+	CM.axislegend(ax_i; position = :lt, labelsize = 9)
+
+	fig
+end
+
+# ╔═╡ 58a833f1-06f6-4135-800b-a8e80b6b767c
+# HIR: Rod HU bars — Clinical ASiR-V 50% vs Simulated HIR
+let
+	asirv_clinical_idx = [2, 4, 6, 8, 10, 12]
+	scan_labels = ["120kVp 50mA", "120kVp 150mA", "120kVp 300mA",
+		"80kVp 480mA", "100kVp 250mA", "140kVp 110mA"]
+
+	target_idx = min(2, length(sim_measurements_hir))
+
+	cm = se_measurements[asirv_clinical_idx[target_idx]]
+	sm = sim_measurements_hir[target_idx]
+	label = scan_labels[target_idx]
+
+	keep = [i for i in 1:length(cm.rod_names)
+			if startswith(cm.rod_names[i], "Ca") || startswith(cm.rod_names[i], "I ")]
+	names = cm.rod_names[keep]
+	cm_means = cm.rod_means[keep]
+	cm_stds = cm.rod_stds[keep]
+	sm_means = sm.rod_means[keep]
+	sm_stds = sm.rod_stds[keep]
+	n = length(names)
+
+	is_ca = [startswith(nm, "Ca") for nm in names]
+
+	fig = CM.Figure(size = (1100, 500), fontsize = 10)
+	ax = CM.Axis(fig[1, 1]; title = "Rod HU ($label)", subtitle = "Clinical ASiR-V vs Simulated HIR", ylabel = "Mean HU", xticks = (1:n, names), xticklabelrotation = π / 4)
+
+	ca_idx = findall(is_ca)
+	if !isempty(ca_idx)
+		CM.barplot!(ax, ca_idx .- 0.2, cm_means[ca_idx]; width = 0.35,
+			color = :steelblue, label = "Clinical Ca")
+		CM.errorbars!(ax, ca_idx .- 0.2, cm_means[ca_idx], cm_stds[ca_idx];
+			color = :black, whiskerwidth = 3)
+		CM.barplot!(ax, ca_idx .+ 0.2, sm_means[ca_idx]; width = 0.35,
+			color = :darkorange, label = "Simulated Ca")
+		CM.errorbars!(ax, ca_idx .+ 0.2, sm_means[ca_idx], sm_stds[ca_idx];
+			color = :black, whiskerwidth = 3)
+	end
+
+	i_idx = findall(.!is_ca)
+	if !isempty(i_idx)
+		CM.barplot!(ax, i_idx .- 0.2, cm_means[i_idx]; width = 0.35,
+			color = :seagreen, label = "Clinical I")
+		CM.errorbars!(ax, i_idx .- 0.2, cm_means[i_idx], cm_stds[i_idx];
+			color = :black, whiskerwidth = 3)
+		CM.barplot!(ax, i_idx .+ 0.2, sm_means[i_idx]; width = 0.35,
+			color = :indianred, label = "Simulated I")
+		CM.errorbars!(ax, i_idx .+ 0.2, sm_means[i_idx], sm_stds[i_idx];
+			color = :black, whiskerwidth = 3)
+	end
+
+	CM.axislegend(ax; position = :lt)
+	fig
+end
+
+# ╔═╡ bbccbfc6-e571-4982-9a5d-9939c45ba951
+# HIR: HU error bars — Clinical ASiR-V 50% vs Simulated HIR
+let
+	asirv_clinical_idx = [2, 4, 6, 8, 10, 12]
+	scan_labels = ["120kVp 50mA", "120kVp 150mA", "120kVp 300mA",
+		"80kVp 480mA", "100kVp 250mA", "140kVp 110mA"]
+
+	target_idx = min(2, length(sim_measurements_hir))
+	cm = se_measurements[asirv_clinical_idx[target_idx]]
+	sm = sim_measurements_hir[target_idx]
+	label = scan_labels[target_idx]
+
+	Δ = sm.rod_means .- cm.rod_means
+
+	fig = CM.Figure(size = (1100, 400), fontsize = 10)
+	ax = CM.Axis(fig[1, 1]; title = "HU Error", subtitle = "(Simulated HIR − Clinical ASiR-V) — $label", ylabel = "ΔHU", xticks = (1:length(cm.rod_names), cm.rod_names), xticklabelrotation = π / 4)
 	CM.barplot!(ax, 1:length(Δ), Δ; color = ifelse.(Δ .> 0, :salmon, :steelblue))
 	CM.hlines!(ax, [0]; color = :black, linewidth = 0.8)
 
@@ -2933,7 +3565,9 @@ end
 # ╠═a1b2c3d4-7001-4000-8000-000000000001
 # ╠═a1b2c3d4-5003-4000-8000-000000000003
 # ╠═53fdf44c-c940-4f9e-9ec3-4f77748ba370
+# ╠═c8c50759-2b6a-453b-9a48-9dc11d4bd996
 # ╠═a1b2c3d4-5004-4000-8000-000000000004
+# ╠═96c17cb8-c478-4938-90d2-497b1e008cf0
 # ╠═02f63ae1-4850-4cb6-8daa-8536c3458898
 # ╠═a1b2c3d4-5005-4000-8000-000000000005
 # ╟─a1b2c3d4-6062-4000-8000-000000000062
@@ -2959,26 +3593,60 @@ end
 # ╠═a1b2c3d4-6025-4000-8000-000000000025
 # ╠═a1b2c3d4-6026-4000-8000-000000000026
 # ╠═a1b2c3d4-6027-4000-8000-000000000027
-# ╠═a1b2c3d4-5013-4000-8000-000000000013
-# ╟─a1b2c3d4-5014-4000-8000-000000000014
-# ╟─e54d80d3-6f67-4cd4-a85f-0e150755bf6e
-# ╠═d90ed7f3-76bf-4c44-8a0f-2e4f7515c2b6
-# ╠═76883b62-cb08-435d-8214-9b0e86c404d8
-# ╠═b3197a6f-3a23-43f3-b63f-f2f49a1ecb45
-# ╟─4e15fc9c-217c-4e95-9a0c-bab491f99e4d
-# ╟─f42424d5-73ec-43a2-afb0-ae741629d8d6
-# ╟─cb2b2b03-9aa7-446a-ad61-9e7152f9b1eb
-# ╟─0d6bbebf-e15d-4ae2-bb99-974b5e3f5793
-# ╟─21eda799-2429-4fb3-a89c-783bfcdb3beb
-# ╟─8f805112-add3-4505-81c3-b465cbd5f512
-# ╟─c8334797-0992-4e3b-ac6a-f207f313013e
-# ╟─83f368fa-178a-4538-b2bd-279bb199b881
-# ╟─5a61d098-5d28-4c00-b360-3dd76da478d4
 # ╠═a1b2c3d4-6061-4000-8000-000000000061
-# ╟─ae4465c7-65f0-4ecf-8d97-f537eadce60c
-# ╟─dc0ce201-0efa-4bc0-bd3c-2075650fc67a
 # ╠═4370ad68-eebd-4f09-85f0-acb556be9fe2
 # ╠═24e12422-f5a0-4bb7-a46e-2949df45d75c
-# ╟─8d4d7038-429f-4402-9dcc-4b4263e9db41
-# ╟─4de369da-bad2-43bd-bf5a-ba654d26c76f
-# ╟─11f8b1f8-4927-41a3-a781-9a169739610a
+# ╠═f28d8eb8-79a4-4e74-9672-5f773c07b818
+# ╠═5dee8411-993a-41e7-bab6-717d2b78c585
+# ╠═625d1cf0-1bef-48b0-94d9-42f114a15640
+# ╠═10ecad19-13d4-43f3-b90e-f49912878838
+# ╟─432033d0-a833-44d7-8101-0c0a632c1c7c
+# ╟─c84b7cb9-5ce2-4d98-a636-b24413271805
+# ╟─cc4aec8c-732e-49b9-ab94-d22a8567a435
+# ╟─ae3cee8f-e7e9-48a1-b58e-e598867147d8
+# ╟─e0a9a826-da50-419d-ba9d-5833ad254792
+# ╟─6989eff6-ac59-4913-ae84-33f8e43a56d1
+# ╟─25b7c0b4-d08a-4b2c-9bb1-64d568ca3540
+# ╟─2276aa4f-addf-4e44-8c29-0f0f347cb839
+# ╟─d193c4b3-c2de-494a-b0c5-6d0c2081fbf4
+# ╟─a0381edb-cdd2-4d1f-8139-149b6c06bc13
+# ╠═caeeffcb-5745-4844-aff4-8c70106e3909
+# ╠═b9b74387-2665-4f26-b73e-5dbe46f497c4
+# ╠═8cd81bd3-2036-4cdc-bb89-079c767306dd
+# ╠═e4643553-09c6-436f-9f5d-a2c0cd58967f
+# ╠═707e2b67-243e-4fd9-a174-84a8bd0e3258
+# ╠═dc31e62e-efaf-479a-81f8-5c3a05db204d
+# ╠═90e8d9c9-0d04-4806-9e13-702919ef9bf0
+# ╠═797905a3-d516-41a0-b3eb-024a9b2ab63d
+# ╠═fe36b139-f792-479a-b58d-e20962391a5e
+# ╠═2cb22b66-66cd-44e3-9418-7fc8eeeb5274
+# ╠═9833c73a-556c-4957-8d73-ac0e11ce961c
+# ╠═ae8ec9e5-6138-4866-b4e8-e406a6536b4a
+# ╠═8f3ef07e-7f1e-4a94-a0b8-0404d97f23dc
+# ╠═5364d024-e28d-4eca-be96-23b95a4bf121
+# ╠═2030fac8-4923-4d49-bd07-cb7ab4a3f8fa
+# ╠═da35087b-a066-4fa1-9cd7-59dbcca999d5
+# ╠═54395f3b-d6ac-4429-9070-de4e6286a52b
+# ╠═4798adbb-608d-4fc4-9429-c5a3a99d9e1b
+# ╟─9a1404a2-c8ae-40ad-8359-3658e2eb206d
+# ╠═378f6ea7-81c3-4f83-9f22-29c6c432dec1
+# ╠═12c2ca1a-bee0-48d5-9f8d-aa7a41478cb6
+# ╠═79294509-6f4c-4e17-87c0-b3865c76e929
+# ╠═829ef0b1-dc36-4a94-98fa-ed52c9e82ee2
+# ╠═10c733ff-5b31-4951-809a-2510d48155e9
+# ╟─2c08722a-16d9-43d7-8bc4-8fc568c1296e
+# ╠═9da1673e-9a2e-48ab-94e8-075489cf3b17
+# ╠═80a5049d-2772-4334-86da-0f972d376078
+# ╠═9cb43aa0-29da-44eb-871b-69077b87df8f
+# ╠═d0615322-2071-4734-8ff6-00a8329e849a
+# ╠═70e53b68-de55-4ce0-91cf-21e867710419
+# ╠═376b0cbe-042d-494d-87c4-c260ec5bd734
+# ╠═8e6ad3f2-9eb1-4b32-bf36-2dad1efbf623
+# ╠═991085bd-defd-40e5-b426-d67cf9feddc1
+# ╠═caf044b7-1056-4b27-aaf9-961fa84e941d
+# ╠═b7b8a5e6-ed89-40d5-a065-64583a742a1a
+# ╠═3c4fded0-d14b-40af-9b6a-be8eaf0c4092
+# ╠═0bb68bed-7de0-494d-9ba4-f7f168666225
+# ╠═ed8551f8-d7bf-4893-ab5d-2a41b65ee81b
+# ╠═58a833f1-06f6-4135-800b-a8e80b6b767c
+# ╠═bbccbfc6-e571-4982-9a5d-9939c45ba951
