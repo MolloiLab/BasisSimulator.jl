@@ -605,55 +605,8 @@ end
 
 # ╔═╡ 07020007-0000-4000-8000-000000000000
 # Build a custom spatial-domain filter kernel from frequency-domain control points.
-function build_custom_filter_kernel(n::Int, pixel_size::Float32,
-	control_x::NTuple, control_y::NTuple)
-	T = Float32
-	kernel = zeros(T, n)
-	center = n ÷ 2 + 1
-	Δ = pixel_size
-
-	# 1. Build ramp (Ram-Lak) kernel — identical to create_spatial_kernel
-	for i in 1:n
-		k = i - center
-		if k == 0
-			kernel[i] = one(T) / (T(4) * Δ)
-		elseif k % 2 == 0
-			kernel[i] = zero(T)
-		else
-			kernel[i] = -one(T) / (T(π)^2 * T(k)^2 * Δ)
-		end
-	end
-
-	# 2. Apply freq-domain window — identical to _apply_catsim_freq_window!
-	shifted = zeros(Complex{T}, n)
-	for i in 1:n
-		src = mod(i - center, n) + 1
-		shifted[src] = Complex{T}(kernel[i])
-	end
-	freq = fft(shifted)
-	nyquist = n / 2
-	for k in 0:(n-1)
-		f_idx = k <= n ÷ 2 ? k : n - k
-		f_norm = T(f_idx) / T(nyquist)
-		# _catsim_apodization_window — piecewise linear interpolation
-		f = clamp(f_norm, zero(T), one(T))
-		w = T(control_y[end])
-		for j in 1:(length(control_x)-1)
-			if f <= T(control_x[j+1]) || j == length(control_x)-1
-				t = (f - T(control_x[j])) / (T(control_x[j+1]) - T(control_x[j]))
-				w = T(control_y[j]) * (one(T) - t) + T(control_y[j+1]) * t
-				break
-			end
-		end
-		freq[k+1] *= w
-	end
-	spatial = ifft(freq)
-	for i in 1:n
-		src = mod(i - center, n) + 1
-		kernel[i] = T(real(spatial[src]))
-	end
-	return kernel
-end
+# Custom filter kernel construction now handled by BS.CustomFilter + BS.create_spatial_kernel
+nothing
 
 # ╔═╡ 07020008-0000-4000-8000-000000000000
 begin
@@ -1778,10 +1731,8 @@ correction. Changing them does NOT re-trigger `simulate!()`.
 """
 
 # ╔═╡ 07100002-0000-4000-8000-000000000000
-begin
-	sim_recon_filter = :standard
-	sim_recon_cutoff = 1.0  # MUST STAY at 1.0
-end
+# Filter type now set directly via BS.CustomFilter in recon cells
+nothing
 
 # ╔═╡ 07100004-0000-4000-8000-000000000000
 # Dose-independent noise floor (σ HU) — tune to match clinical high-mA noise.
@@ -1882,11 +1833,7 @@ sim_recon_1 = let
 	end
 	ws_fdk = BS.create_fdk_recon_workspace(
 		sino_gpu, geom, recon_size;
-		filter = sim_recon_filter, cutoff = sim_recon_cutoff)
-	copyto!(ws_fdk.filter_kernel,
-		build_custom_filter_kernel(
-			length(ws_fdk.filter_kernel), Float32(geom.pixel_size),
-			custom_filter_control.x, custom_filter_control.y))
+		filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y))
 	recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, geom, recon_size)
 	if bhc_enabled
 		BS.apply_bhc_image_domain(
@@ -1923,11 +1870,7 @@ sim_recon_2 = let
 	end
 	ws_fdk = BS.create_fdk_recon_workspace(
 		sino_gpu, geom, recon_size;
-		filter = sim_recon_filter, cutoff = sim_recon_cutoff)
-	copyto!(ws_fdk.filter_kernel,
-		build_custom_filter_kernel(
-			length(ws_fdk.filter_kernel), Float32(geom.pixel_size),
-			custom_filter_control.x, custom_filter_control.y))
+		filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y))
 	recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, geom, recon_size)
 	if bhc_enabled
 		BS.apply_bhc_image_domain(
@@ -1964,11 +1907,7 @@ sim_recon_3 = let
 	end
 	ws_fdk = BS.create_fdk_recon_workspace(
 		sino_gpu, geom, recon_size;
-		filter = sim_recon_filter, cutoff = sim_recon_cutoff)
-	copyto!(ws_fdk.filter_kernel,
-		build_custom_filter_kernel(
-			length(ws_fdk.filter_kernel), Float32(geom.pixel_size),
-			custom_filter_control.x, custom_filter_control.y))
+		filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y))
 	recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, geom, recon_size)
 	if bhc_enabled
 		BS.apply_bhc_image_domain(
@@ -2005,11 +1944,7 @@ sim_recon_4 = let
 	end
 	ws_fdk = BS.create_fdk_recon_workspace(
 		sino_gpu, geom, recon_size;
-		filter = sim_recon_filter, cutoff = sim_recon_cutoff)
-	copyto!(ws_fdk.filter_kernel,
-		build_custom_filter_kernel(
-			length(ws_fdk.filter_kernel), Float32(geom.pixel_size),
-			custom_filter_control.x, custom_filter_control.y))
+		filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y))
 	recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, geom, recon_size)
 	if bhc_enabled
 		BS.apply_bhc_image_domain(
@@ -2046,11 +1981,7 @@ sim_recon_5 = let
 	end
 	ws_fdk = BS.create_fdk_recon_workspace(
 		sino_gpu, geom, recon_size;
-		filter = sim_recon_filter, cutoff = sim_recon_cutoff)
-	copyto!(ws_fdk.filter_kernel,
-		build_custom_filter_kernel(
-			length(ws_fdk.filter_kernel), Float32(geom.pixel_size),
-			custom_filter_control.x, custom_filter_control.y))
+		filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y))
 	recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, geom, recon_size)
 	if bhc_enabled
 		BS.apply_bhc_image_domain(
@@ -2087,11 +2018,7 @@ sim_recon_6 = let
 	end
 	ws_fdk = BS.create_fdk_recon_workspace(
 		sino_gpu, geom, recon_size;
-		filter = sim_recon_filter, cutoff = sim_recon_cutoff)
-	copyto!(ws_fdk.filter_kernel,
-		build_custom_filter_kernel(
-			length(ws_fdk.filter_kernel), Float32(geom.pixel_size),
-			custom_filter_control.x, custom_filter_control.y))
+		filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y))
 	recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, geom, recon_size)
 	if bhc_enabled
 		BS.apply_bhc_image_domain(
@@ -2402,10 +2329,9 @@ sim_recon_hir_1 = let
 			volume_extent = sim_phantom_gpu.extent)
 		sino_gpu = MtlArray(sino_corrected)
 	end
-	ws_hir = BS.create_hir_recon_workspace(sino_gpu, geom, recon_size; strength = hir_strength)
-	copyto!(ws_hir.filter_kernel, build_custom_filter_kernel(
-		length(ws_hir.filter_kernel), Float32(geom.pixel_size),
-		custom_filter_control.x, custom_filter_control.y))
+	ws_hir = BS.create_hir_recon_workspace(sino_gpu, geom, recon_size;
+		strength = hir_strength,
+		filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y))
 	ws_hir.params = BS.HIRParams(hir_strength, hir_lambda, 30, hir_nepochs,
 		hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35))
 	BS.reconstruct!(ws_hir, sino_gpu, geom, recon_size)
@@ -2442,10 +2368,9 @@ sim_recon_hir_2 = let
 			volume_extent = sim_phantom_gpu.extent)
 		sino_gpu = MtlArray(sino_corrected)
 	end
-	ws_hir = BS.create_hir_recon_workspace(sino_gpu, geom, recon_size; strength = hir_strength)
-	copyto!(ws_hir.filter_kernel, build_custom_filter_kernel(
-		length(ws_hir.filter_kernel), Float32(geom.pixel_size),
-		custom_filter_control.x, custom_filter_control.y))
+	ws_hir = BS.create_hir_recon_workspace(sino_gpu, geom, recon_size;
+		strength = hir_strength,
+		filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y))
 	ws_hir.params = BS.HIRParams(hir_strength, hir_lambda, 30, hir_nepochs,
 		hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35))
 	BS.reconstruct!(ws_hir, sino_gpu, geom, recon_size)
@@ -2482,10 +2407,9 @@ sim_recon_hir_3 = let
 			volume_extent = sim_phantom_gpu.extent)
 		sino_gpu = MtlArray(sino_corrected)
 	end
-	ws_hir = BS.create_hir_recon_workspace(sino_gpu, geom, recon_size; strength = hir_strength)
-	copyto!(ws_hir.filter_kernel, build_custom_filter_kernel(
-		length(ws_hir.filter_kernel), Float32(geom.pixel_size),
-		custom_filter_control.x, custom_filter_control.y))
+	ws_hir = BS.create_hir_recon_workspace(sino_gpu, geom, recon_size;
+		strength = hir_strength,
+		filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y))
 	ws_hir.params = BS.HIRParams(hir_strength, hir_lambda, 30, hir_nepochs,
 		hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35))
 	BS.reconstruct!(ws_hir, sino_gpu, geom, recon_size)
@@ -2522,10 +2446,9 @@ sim_recon_hir_4 = let
 			volume_extent = sim_phantom_gpu.extent)
 		sino_gpu = MtlArray(sino_corrected)
 	end
-	ws_hir = BS.create_hir_recon_workspace(sino_gpu, geom, recon_size; strength = hir_strength)
-	copyto!(ws_hir.filter_kernel, build_custom_filter_kernel(
-		length(ws_hir.filter_kernel), Float32(geom.pixel_size),
-		custom_filter_control.x, custom_filter_control.y))
+	ws_hir = BS.create_hir_recon_workspace(sino_gpu, geom, recon_size;
+		strength = hir_strength,
+		filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y))
 	ws_hir.params = BS.HIRParams(hir_strength, hir_lambda, 30, hir_nepochs,
 		hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35))
 	BS.reconstruct!(ws_hir, sino_gpu, geom, recon_size)
@@ -2562,10 +2485,9 @@ sim_recon_hir_5 = let
 			volume_extent = sim_phantom_gpu.extent)
 		sino_gpu = MtlArray(sino_corrected)
 	end
-	ws_hir = BS.create_hir_recon_workspace(sino_gpu, geom, recon_size; strength = hir_strength)
-	copyto!(ws_hir.filter_kernel, build_custom_filter_kernel(
-		length(ws_hir.filter_kernel), Float32(geom.pixel_size),
-		custom_filter_control.x, custom_filter_control.y))
+	ws_hir = BS.create_hir_recon_workspace(sino_gpu, geom, recon_size;
+		strength = hir_strength,
+		filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y))
 	ws_hir.params = BS.HIRParams(hir_strength, hir_lambda, 30, hir_nepochs,
 		hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35))
 	BS.reconstruct!(ws_hir, sino_gpu, geom, recon_size)
@@ -2602,10 +2524,9 @@ sim_recon_hir_6 = let
 			volume_extent = sim_phantom_gpu.extent)
 		sino_gpu = MtlArray(sino_corrected)
 	end
-	ws_hir = BS.create_hir_recon_workspace(sino_gpu, geom, recon_size; strength = hir_strength)
-	copyto!(ws_hir.filter_kernel, build_custom_filter_kernel(
-		length(ws_hir.filter_kernel), Float32(geom.pixel_size),
-		custom_filter_control.x, custom_filter_control.y))
+	ws_hir = BS.create_hir_recon_workspace(sino_gpu, geom, recon_size;
+		strength = hir_strength,
+		filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y))
 	ws_hir.params = BS.HIRParams(hir_strength, hir_lambda, 30, hir_nepochs,
 		hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35))
 	BS.reconstruct!(ws_hir, sino_gpu, geom, recon_size)
@@ -3018,11 +2939,7 @@ sim_de_recon_low = let
 	end
 	ws_fdk = BS.create_fdk_recon_workspace(
 		sino_gpu, geom, recon_size;
-		filter = sim_recon_filter, cutoff = sim_recon_cutoff)
-	copyto!(ws_fdk.filter_kernel,
-		build_custom_filter_kernel(
-			length(ws_fdk.filter_kernel), Float32(geom.pixel_size),
-			custom_filter_control.x, custom_filter_control.y))
+		filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y))
 	recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, geom, recon_size)
 	if bhc_enabled
 		BS.apply_bhc_image_domain(
@@ -3059,11 +2976,7 @@ sim_de_recon_high = let
 	end
 	ws_fdk = BS.create_fdk_recon_workspace(
 		sino_gpu, geom, recon_size;
-		filter = sim_recon_filter, cutoff = sim_recon_cutoff)
-	copyto!(ws_fdk.filter_kernel,
-		build_custom_filter_kernel(
-			length(ws_fdk.filter_kernel), Float32(geom.pixel_size),
-			custom_filter_control.x, custom_filter_control.y))
+		filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y))
 	recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, geom, recon_size)
 	if bhc_enabled
 		BS.apply_bhc_image_domain(
@@ -3186,7 +3099,7 @@ function decompose_and_reconstruct_vmi(
 		additional_filters_low, additional_filters_high,
 		E_eff_low_override = nothing,   # keV — set to override spectrum-computed value
 		E_eff_high_override = nothing,  # keV — set to override spectrum-computed value
-		custom_filter_control = nothing, # optional (x=(...), y=(...)) for FBP apodization
+		filter::BS.FilterType = BS.StandardFilter(), # FBP filter for material recon
 		noise_compensation = true,       # Wu et al. 2009 Eq. 13
 		noise_sigma = 2.0,               # Gaussian σ (pixels) for noise map extraction
 		g_min_energy = 70.0,             # keV at which VMI noise is minimized (~70 for 80/140)
@@ -3224,25 +3137,15 @@ function decompose_and_reconstruct_vmi(
 	# 4. FBP reconstruct each material sinogram → density images m₁(x,y), m₂(x,y)
 	#    (Wu et al. 2009: reconstruct energy-independent density images, then combine)
 	@info "  Reconstructing m₁ ($(basis[1])) density image..."
-	ws_fdk_1 = BS.create_fdk_recon_workspace(mat_map.material1, geom, recon_size)
-	if custom_filter_control !== nothing
-		copyto!(ws_fdk_1.filter_kernel,
-			build_custom_filter_kernel(
-				length(ws_fdk_1.filter_kernel), Float32(geom.pixel_size),
-				custom_filter_control.x, custom_filter_control.y))
-	end
+	ws_fdk_1 = BS.create_fdk_recon_workspace(mat_map.material1, geom, recon_size;
+		filter = filter)
 	m1_gpu = BS.reconstruct!(ws_fdk_1, mat_map.material1, geom, recon_size)
 	m1 = Float32.(Array(m1_gpu))
 	ws_fdk_1 = nothing; m1_gpu = nothing; GC.gc(true)
 
 	@info "  Reconstructing m₂ ($(basis[2])) density image..."
-	ws_fdk_2 = BS.create_fdk_recon_workspace(mat_map.material2, geom, recon_size)
-	if custom_filter_control !== nothing
-		copyto!(ws_fdk_2.filter_kernel,
-			build_custom_filter_kernel(
-				length(ws_fdk_2.filter_kernel), Float32(geom.pixel_size),
-				custom_filter_control.x, custom_filter_control.y))
-	end
+	ws_fdk_2 = BS.create_fdk_recon_workspace(mat_map.material2, geom, recon_size;
+		filter = filter)
 	m2_gpu = BS.reconstruct!(ws_fdk_2, mat_map.material2, geom, recon_size)
 	m2 = Float32.(Array(m2_gpu))
 	ws_fdk_2 = nothing; m2_gpu = nothing; GC.gc(true)
@@ -3295,45 +3198,15 @@ sim_de_vmi_hu = decompose_and_reconstruct_vmi(
 	additional_filters_high = vcat(additional_filters, de_high_kvp_filters),
 	E_eff_low_override = 52.0,   # auto (~49 keV); push lower to help 40 keV VMI
 	# E_eff_high_override = 85.0,
-	custom_filter_control = de_vmi_custom_filter_control,
+	filter = BS.CustomFilter(de_vmi_custom_filter_control.x, de_vmi_custom_filter_control.y),
 	noise_compensation = true,    # Wu et al. 2009 Eq. 13 — suppresses noise at 40/140 keV
 	noise_sigma = 2.0,            # Gaussian σ for noise map extraction (pixels)
 	g_min_energy = 70.0,          # optimal energy for min noise (~70 keV for 80/140 kVp)
 )
 
 # ╔═╡ 09bc3072-a9cd-4be9-b277-0b455bb5e2b9
-# sim_de_vmi_hu = let
-# 	geom = sim_de_sino_low.geom
-# 	recon_size = de_matrix_size
-# 	results = NamedTuple[]
-
-# 	for E in DE_VMI_ENERGIES
-# 		@info "Reconstructing VMI at $(E) keV..."
-
-# 		# Upload material maps to GPU, synthesize VMI sinogram
-# 		mat_gpu = BS.MaterialMap(
-# 			MtlArray(sim_de_material_map.material1),
-# 			MtlArray(sim_de_material_map.material2);
-# 			material1_name = sim_de_material_map.material1_name,
-# 			material2_name = sim_de_material_map.material2_name,
-# 			domain = sim_de_material_map.domain)
-# 		vmi_sino = BS.virtual_monoenergetic(mat_gpu, Float64(E))
-
-# 		# Standard FDK reconstruction (no custom filter — VMI noise differs from SE)
-# 		ws_fdk = BS.create_fdk_recon_workspace(vmi_sino, geom, recon_size)
-# 		recon_μ = BS.reconstruct!(ws_fdk, vmi_sino, geom, recon_size)
-
-# 		# VMI HU: energy-appropriate μ_water(E) via vmi_to_hu
-# 		recon_hu = Float32.(Array(BS.vmi_to_hu(recon_μ, Float64(E))))
-
-# 		push!(results, (name = "sim_DE_$(E)keV", recon = recon_hu, energy_keV = E))
-
-# 		ws_fdk = nothing; vmi_sino = nothing; mat_gpu = nothing; recon_μ = nothing
-# 		GC.gc(true)
-# 	end
-
-# 	results
-# end
+# Old projection-domain VMI pipeline removed — replaced by image-domain (Wu et al. 2009)
+nothing
 
 # ╔═╡ 414b3f29-1a27-4839-83da-1efdc6768d65
 # Orient simulated VMI images (match clinical orientation)

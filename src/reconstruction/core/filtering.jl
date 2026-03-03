@@ -18,7 +18,8 @@ import AcceleratedKernels as AK
 
 export filter_sinogram!, filter_sinogram
 export FilterType, RampFilter, SheppLoganFilter, CosineFilter, HammingFilter, HannFilter
-export StandardFilter, SoftFilter, BoneFilter
+export StandardFilter, SoftFilter, BoneFilter, CustomFilter
+export create_spatial_kernel
 
 # =============================================================================
 # Filter Types
@@ -68,6 +69,31 @@ Matches CatSim/XCIST `kernelType = 'bone'` from `createHSP.py`.
 Boosts mid-frequencies for sharper bone edges; higher noise than StandardFilter.
 """
 struct BoneFilter <: FilterType end
+
+"""
+    CustomFilter(control_x, control_y)
+
+Custom frequency-domain apodization filter with user-specified control points.
+
+Applies ramp × piecewise-linear window defined at normalized frequency control points,
+using the same CatSim-style mechanism as `StandardFilter`, `SoftFilter`, and `BoneFilter`.
+
+# Arguments
+- `control_x`: Tuple of normalized frequency positions (0.0 to 1.0)
+- `control_y`: Tuple of window values at each position (1.0 = full pass, 0.0 = block)
+
+# Example
+```julia
+# Soft-tissue–optimised apodization
+f = CustomFilter((0.0, 0.25, 0.5, 0.75, 1.0),
+                 (1.0, 0.82, 0.54, 0.26, 0.001))
+ws = create_fdk_recon_workspace(sino, geom, recon_size; filter = f)
+```
+"""
+struct CustomFilter{N} <: FilterType
+    control_x::NTuple{N,Float64}
+    control_y::NTuple{N,Float64}
+end
 
 # =============================================================================
 # Spatial Domain Filter Kernel
@@ -282,6 +308,10 @@ function apply_spatial_window!(kernel::Vector{T}, ::BoneFilter) where T
     control_x = (0.0, 0.25, 0.5, 0.75, 1.0)
     control_y = (1.0, 1.0485, 1.17, 1.2202, 0.9201)
     return _apply_catsim_freq_window!(kernel, control_x, control_y)
+end
+
+function apply_spatial_window!(kernel::Vector{T}, f::CustomFilter) where T
+    return _apply_catsim_freq_window!(kernel, f.control_x, f.control_y)
 end
 
 # =============================================================================
