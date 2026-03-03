@@ -679,7 +679,15 @@ end
 """
     reconstruct_vmi(materials::MaterialMap, energy_keV, geom, recon_size; kwargs...) -> Array
 
-Full VMI reconstruction pipeline: synthesize VMI sinogram + reconstruct + optional HU.
+DEPRECATED — projection-domain VMI pipeline. Use image-domain VMI instead:
+
+    # Image-domain VMI (Wu et al. 2009 — the actual GE GSI algorithm):
+    # 1. Reconstruct material sinograms → density images m₁, m₂
+    # 2. image_domain_vmi!(output, m₁, m₂, compute_vmi_g(E, basis[2]))
+    # 3. image_domain_vmi_to_hu!(hu, output)
+
+See: compute_vmi_g, image_domain_vmi!, image_domain_vmi_to_hu!,
+     noise_compensated_vmi!, extract_noise_map
 """
 function reconstruct_vmi(
     materials::MaterialMap{T,A},

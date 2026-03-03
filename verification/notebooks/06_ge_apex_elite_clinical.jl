@@ -4,46 +4,44 @@
 using Markdown
 using InteractiveUtils
 
-# ╔═╡ db7ada07-c245-4427-a9d8-1fa43e74e884
+# ╔═╡ 07010002-0000-4000-8000-000000000000
 begin
 	using Pkg: Pkg
 	Pkg.activate(dirname(@__DIR__))
 	Pkg.instantiate()
-	# Pkg.update()
-
 	using Revise
 end
 
-# ╔═╡ a0839e3b-bd86-44e6-a282-046dcc6a6d39
+# ╔═╡ 07010003-0000-4000-8000-000000000000
 using FileIO
 
-# ╔═╡ 1caeb654-e68e-47d8-a10d-c4020c676c7b
+# ╔═╡ 07010004-0000-4000-8000-000000000000
 using ImageMagick
 
-# ╔═╡ 9d514655-cb7c-4852-8e8e-d2a98527fe0a
+# ╔═╡ 07010011-0000-4000-8000-000000000000
 using Unitful: @u_str
 
-# ╔═╡ 1ce13813-fa59-43a1-9e0e-99741eeace58
+# ╔═╡ 07010012-0000-4000-8000-000000000000
 using LinearAlgebra
 
-# ╔═╡ 02bf2bbb-e785-4e5f-8476-58346735b7fc
+# ╔═╡ 07010013-0000-4000-8000-000000000000
 using FFTW
 
-# ╔═╡ 9636e23b-9d46-41be-988c-843c59de3cf6
+# ╔═╡ 07010014-0000-4000-8000-000000000000
 using Random
 
-# ╔═╡ 993c7d4b-ae9d-4234-ad8d-994a904bd83c
+# ╔═╡ 07010015-0000-4000-8000-000000000000
 using Metal
 
-# ╔═╡ a1b2c3d4-0001-4000-8000-000000000001
+# ╔═╡ 07010017-0000-4000-8000-000000000000
 using JLD2: JLD2
 
-# ╔═╡ a1b2c3d4-0002-4000-8000-000000000002
+# ╔═╡ 07010018-0000-4000-8000-000000000000
 using DelimitedFiles: DelimitedFiles
 
-# ╔═╡ 05487717-8249-4d89-bf94-f7e7dc379bfb
+# ╔═╡ 07010001-0000-4000-8000-000000000000
 md"""
-# GE Revolution Apex Elite — Clinical Gammex 472 Scans
+# 1. GE Revolution Apex Elite — Clinical Gammex 472 Scans
 * **Scanner:** GE Revolution Apex (S/N REV2X2300094CN, cadence\_ct\_25.68)
 * **Date:** 2026-02-23 | **Protocol:** 5.1 CHEST W/O (axial, no pitch)
 * **Phantom:** Gammex 472 multi-energy CT calibration phantom
@@ -62,63 +60,47 @@ SE folders each contain `0%/` (FBP) and `50%/` (ASiR-V 50%). CTDIvol from RDSR (
 | 7 | DE (GSI) | 80/140 | 405 | 204 | 0.5 s | 64 × 40 mm | 10.07 | 40.27 | VMI 40/70/100/140 keV all @ 0% (FBP)|
 """
 
-# ╔═╡ 2872d85c-3d09-414f-a194-4b52764fca93
+# ╔═╡ 07010005-0000-4000-8000-000000000000
 import PlutoUI as UI
 
-# ╔═╡ eff433a8-e36a-4b6f-bfb5-73664ceac2f3
+# ╔═╡ 07010006-0000-4000-8000-000000000000
 import BasisSimulator as BS
 
-# ╔═╡ 9cd57146-a7ec-4fe8-a313-4d46659d8795
+# ╔═╡ 07010007-0000-4000-8000-000000000000
 import CairoMakie as CM
 
-# ╔═╡ 6cf5c19a-88f2-4ba7-91d6-f68b4fb816e1
+# ╔═╡ 07010008-0000-4000-8000-000000000000
 import Statistics: mean, std, cor
 
-# ╔═╡ ff611999-d9e4-45e1-80e5-a46176c4845a
+# ╔═╡ 07010009-0000-4000-8000-000000000000
 import Statistics: median
 
-# ╔═╡ fb762acd-fe7f-4e9a-adb6-ad77ba81f2e1
+# ╔═╡ 07010010-0000-4000-8000-000000000000
 import XrayAttenuation as XA
 
-# ╔═╡ 0e1cad14-1b0a-421e-ab85-19e5601d63d6
+# ╔═╡ 07010016-0000-4000-8000-000000000000
 import DICOM as DCM
 
-# ╔═╡ 9dd493db-806d-474c-8352-58011ab725e7
+# ╔═╡ 07010019-0000-4000-8000-000000000000
 const FIGURES_DIR = joinpath(dirname(@__DIR__), "figures")
+const RESULTS_DIR = joinpath(dirname(@__DIR__), "results", "ge_apex_elite"); mkpath(RESULTS_DIR)
 
-# ╔═╡ 64b81aff-4ff0-4cc7-bcaa-a16162524620
+# ╔═╡ 07010020-0000-4000-8000-000000000000
 UI.TableOfContents()
 
-# ╔═╡ 6e93590f-e900-4c9e-91cb-a03db349b185
+# ╔═╡ 07020001-0000-4000-8000-000000000000
 md"""
-## 1. Single-Energy Scans — ASiR-V 0% (FBP) vs ASiR-V 50%
+## 2. Helper Functions
 
-Six axial acquisitions of the Gammex 472 phantom on the GE Revolution Apex Elite.
-Each protocol is loaded once: `_fbp` = ASiR-V 0% (pure FBP), `_ir` = ASiR-V 50%.
-DICOM pixel data is JPEG 2000 compressed; decoded via ImageMagick.jl + DICOM.jl.
-
-Three display windows per protocol:
-- **Soft tissue** W400 / L40 → (−160, 240) HU
-- **Bone** W1500 / L400 → (−350, 1150) HU
-- **Lung** W1500 / L−600 → (−1350, 150) HU
+All measurement and phantom-creation functions defined up front.
 """
 
-# ╔═╡ f466466a-c364-4841-8a38-987cbc5777c9
-rootdir = "/Users/daleblack/Desktop/SCANS"
-
-# ╔═╡ c19991fb-c50a-4e56-a3f6-bba1e41fd9c9
+# ╔═╡ 07020002-0000-4000-8000-000000000000
 """
-	load_hu_volume(dcms) → Array{Float32, 3}   (rows × cols × slices)
+	load_hu_volume(dcms) -> Array{Float32, 3}   (rows x cols x slices)
 
 Convert a pre-loaded vector of DICOM datasets into a Float32 HU volume.
 Uses ImageMagick.jl (via FileIO) for J2K decompression.
-
-GE scanners encode signed pixel values in J2K with a +32768 unsigned offset;
-the inverse transform `Int16(UInt16_value − 32768)` recovers the original stored
-pixel, which is then mapped to HU via the DICOM linear modality LUT:
-	HU = StoredPixelValue × RescaleSlope + RescaleIntercept
-
-Slices are sorted by InstanceNumber (0020,0013).
 """
 function load_hu_volume(dcms::Vector)
 	sort!(dcms; by = d -> d.meta[(0x0020, 0x0013)])
@@ -137,252 +119,12 @@ function load_hu_volume(dcms::Vector)
 	return cat(slices...; dims = 3)
 end
 
-# ╔═╡ 119755f9-4c74-4d15-89a7-793295d21441
-begin  # 120 kVp — low dose  (50 mA, 3.38 mGy)
-	dcms_120_low_fbp = DCM.dcmdir_parse(joinpath(rootdir, "120kVp_50mA_3.38mGyCTDI/0%"))
-	dcms_120_low_ir = DCM.dcmdir_parse(joinpath(rootdir, "120kVp_50mA_3.38mGyCTDI/50%"))
-	hu_120_low_fbp = load_hu_volume(dcms_120_low_fbp)
-	hu_120_low_ir = load_hu_volume(dcms_120_low_ir)
-end;
-
-# ╔═╡ bdc45741-e374-4d78-ba6b-43b5ef411f2a
-let
-	mid = size(hu_120_low_fbp, 3) ÷ 2
-	soft = (-160, 240)
-	bone = (-350, 1150)
-	lung = (-1350, 150)
-	windows = [(soft, "Soft Tissue"), (bone, "Bone"), (lung, "Lung")]
-
-	fig = CM.Figure(size = (1500, 1000))
-
-	for (col, (clim, wname)) in enumerate(windows)
-		ax = CM.Axis(fig[1, col]; title = "FBP (ASiR-V 0%) — $wname", titlesize = 12,
-			aspect = CM.DataAspect(), yreversed = true)
-		CM.heatmap!(ax, hu_120_low_fbp[:, :, mid]; colormap = :grays, colorrange = clim)
-		CM.hidedecorations!(ax)
-		CM.hidespines!(ax)
-
-		ax = CM.Axis(fig[2, col]; title = "ASiR-V 50% — $wname", titlesize = 12,
-			aspect = CM.DataAspect(), yreversed = true)
-		CM.heatmap!(ax, hu_120_low_ir[:, :, mid]; colormap = :grays, colorrange = clim)
-		CM.hidedecorations!(ax)
-		CM.hidespines!(ax)
-	end
-
-	CM.Label(fig[0, :]; text = "120 kVp · 50 mA · CTDIvol 3.38 mGy", fontsize = 16, font = :bold)
-	fig
-end
-
-# ╔═╡ 41f11735-2a1c-4d36-8a0d-3c57de9cbae0
-begin  # 120 kVp — mid dose  (150 mA, 10.16 mGy)
-	dcms_120_mid_fbp = DCM.dcmdir_parse(joinpath(rootdir, "120kVp_150mA_10.16mGyCTDI/0%"))
-	dcms_120_mid_ir = DCM.dcmdir_parse(joinpath(rootdir, "120kVp_150mA_10.16mGyCTDI/50%"))
-	hu_120_mid_fbp = load_hu_volume(dcms_120_mid_fbp)
-	hu_120_mid_ir = load_hu_volume(dcms_120_mid_ir)
-end;
-
-# ╔═╡ c0dfa3a5-88f2-47b3-94ab-0393132b0dc1
-let
-	mid = size(hu_120_mid_fbp, 3) ÷ 2
-	soft = (-160, 240)
-	bone = (-350, 1150)
-	lung = (-1350, 150)
-	windows = [(soft, "Soft Tissue"), (bone, "Bone"), (lung, "Lung")]
-
-	fig = CM.Figure(size = (1500, 1000))
-
-	for (col, (clim, wname)) in enumerate(windows)
-		ax = CM.Axis(fig[1, col]; title = "FBP (ASiR-V 0%) — $wname", titlesize = 12,
-			aspect = CM.DataAspect(), yreversed = true)
-		CM.heatmap!(ax, hu_120_mid_fbp[:, :, mid]; colormap = :grays, colorrange = clim)
-		CM.hidedecorations!(ax)
-		CM.hidespines!(ax)
-
-		ax = CM.Axis(fig[2, col]; title = "ASiR-V 50% — $wname", titlesize = 12,
-			aspect = CM.DataAspect(), yreversed = true)
-		CM.heatmap!(ax, hu_120_mid_ir[:, :, mid]; colormap = :grays, colorrange = clim)
-		CM.hidedecorations!(ax)
-		CM.hidespines!(ax)
-	end
-
-	CM.Label(fig[0, :]; text = "120 kVp · 150 mA · CTDIvol 10.16 mGy", fontsize = 16, font = :bold)
-	fig
-end
-
-# ╔═╡ fec5488f-09e4-41af-b3e3-0fef62cd2bfa
-begin  # 120 kVp — high dose  (300 mA, 20.38 mGy)
-	dcms_120_high_fbp = DCM.dcmdir_parse(joinpath(rootdir, "120kVp_300mA_20.38mGyCTDI/0%"))
-	dcms_120_high_ir = DCM.dcmdir_parse(joinpath(rootdir, "120kVp_300mA_20.38mGyCTDI/50%"))
-	hu_120_high_fbp = load_hu_volume(dcms_120_high_fbp)
-	hu_120_high_ir = load_hu_volume(dcms_120_high_ir)
-end;
-
-# ╔═╡ 042d2f32-0a93-48c9-acd1-2701263f8be9
-let
-	mid = size(hu_120_high_fbp, 3) ÷ 2
-	soft = (-160, 240)
-	bone = (-350, 1150)
-	lung = (-1350, 150)
-	windows = [(soft, "Soft Tissue"), (bone, "Bone"), (lung, "Lung")]
-
-	fig = CM.Figure(size = (1500, 1000))
-
-	for (col, (clim, wname)) in enumerate(windows)
-		ax = CM.Axis(fig[1, col]; title = "FBP (ASiR-V 0%) — $wname", titlesize = 12,
-			aspect = CM.DataAspect(), yreversed = true)
-		CM.heatmap!(ax, hu_120_high_fbp[:, :, mid]; colormap = :grays, colorrange = clim)
-		CM.hidedecorations!(ax)
-		CM.hidespines!(ax)
-
-		ax = CM.Axis(fig[2, col]; title = "ASiR-V 50% — $wname", titlesize = 12,
-			aspect = CM.DataAspect(), yreversed = true)
-		CM.heatmap!(ax, hu_120_high_ir[:, :, mid]; colormap = :grays, colorrange = clim)
-		CM.hidedecorations!(ax)
-		CM.hidespines!(ax)
-	end
-
-	CM.Label(fig[0, :]; text = "120 kVp · 300 mA · CTDIvol 20.38 mGy", fontsize = 16, font = :bold)
-
-	fig
-end
-
-# ╔═╡ 90fe8208-f128-4b59-bb14-cb3f6829d9da
-begin  # 80 kVp  (480 mA, 10.32 mGy)
-	dcms_80_fbp = DCM.dcmdir_parse(joinpath(rootdir, "80kVp_480mA_10.32mGyCTDI/0%"))
-	dcms_80_ir = DCM.dcmdir_parse(joinpath(rootdir, "80kVp_480mA_10.32mGyCTDI/50%"))
-	hu_80_fbp = load_hu_volume(dcms_80_fbp)
-	hu_80_ir = load_hu_volume(dcms_80_ir)
-end;
-
-# ╔═╡ e4d91faa-e427-48d3-9f86-fe07a33d8bff
-let
-	mid = size(hu_80_fbp, 3) ÷ 2
-	soft = (-160, 240)
-	bone = (-350, 1150)
-	lung = (-1350, 150)
-	windows = [(soft, "Soft Tissue"), (bone, "Bone"), (lung, "Lung")]
-
-	fig = CM.Figure(size = (1500, 1000))
-
-	for (col, (clim, wname)) in enumerate(windows)
-		ax = CM.Axis(fig[1, col]; title = "FBP (ASiR-V 0%) — $wname", titlesize = 12,
-			aspect = CM.DataAspect(), yreversed = true)
-		CM.heatmap!(ax, hu_80_fbp[:, :, mid]; colormap = :grays, colorrange = clim)
-		CM.hidedecorations!(ax)
-		CM.hidespines!(ax)
-
-		ax = CM.Axis(fig[2, col]; title = "ASiR-V 50% — $wname", titlesize = 12,
-			aspect = CM.DataAspect(), yreversed = true)
-		CM.heatmap!(ax, hu_80_ir[:, :, mid]; colormap = :grays, colorrange = clim)
-		CM.hidedecorations!(ax)
-		CM.hidespines!(ax)
-	end
-
-	CM.Label(fig[0, :]; text = "80 kVp · 480 mA · CTDIvol 10.32 mGy", fontsize = 16, font = :bold)
-
-	fig
-end
-
-# ╔═╡ c95c638e-60a7-4242-8c95-ee352ac96a02
-begin  # 100 kVp  (250 mA, 10.53 mGy)
-	dcms_100_fbp = DCM.dcmdir_parse(joinpath(rootdir, "100kVp_250mA_10.53mGyCTDI/0%"))
-	dcms_100_ir = DCM.dcmdir_parse(joinpath(rootdir, "100kVp_250mA_10.53mGyCTDI/50%"))
-	hu_100_fbp = load_hu_volume(dcms_100_fbp)
-	hu_100_ir = load_hu_volume(dcms_100_ir)
-end;
-
-# ╔═╡ 5d85356a-9524-4041-9c7e-5df155180f8f
-let
-	mid = size(hu_100_fbp, 3) ÷ 2
-	soft = (-160, 240)
-	bone = (-350, 1150)
-	lung = (-1350, 150)
-	windows = [(soft, "Soft Tissue"), (bone, "Bone"), (lung, "Lung")]
-
-	fig = CM.Figure(size = (1500, 1000))
-
-
-	for (col, (clim, wname)) in enumerate(windows)
-		ax = CM.Axis(fig[1, col]; title = "FBP (ASiR-V 0%) — $wname", titlesize = 12,
-			aspect = CM.DataAspect(), yreversed = true)
-		CM.heatmap!(ax, hu_100_fbp[:, :, mid]; colormap = :grays, colorrange = clim)
-		CM.hidedecorations!(ax)
-		CM.hidespines!(ax)
-
-		ax = CM.Axis(fig[2, col]; title = "ASiR-V 50% — $wname", titlesize = 12,
-			aspect = CM.DataAspect(), yreversed = true)
-		CM.heatmap!(ax, hu_100_ir[:, :, mid]; colormap = :grays, colorrange = clim)
-		CM.hidedecorations!(ax)
-		CM.hidespines!(ax)
-	end
-
-	CM.Label(fig[0, :]; text = "100 kVp · 250 mA · CTDIvol 10.53 mGy", fontsize = 16, font = :bold)
-
-	fig
-end
-
-# ╔═╡ c2b384e5-0ebd-4e32-bbcc-d7699c5bb9c8
-begin  # 140 kVp  (110 mA, 10.85 mGy)
-	dcms_140_fbp = DCM.dcmdir_parse(joinpath(rootdir, "140kVp_110mA_10.85mGyCTDI/0%"))
-	dcms_140_ir = DCM.dcmdir_parse(joinpath(rootdir, "140kVp_110mA_10.85mGyCTDI/50%"))
-	hu_140_fbp = load_hu_volume(dcms_140_fbp)
-	hu_140_ir = load_hu_volume(dcms_140_ir)
-end;
-
-# ╔═╡ 79d134f6-1a23-4c7d-af2a-4c70a57841db
-let
-	mid = size(hu_140_fbp, 3) ÷ 2
-	soft = (-160, 240)
-	bone = (-350, 1150)
-	lung = (-1350, 150)
-	windows = [(soft, "Soft Tissue"), (bone, "Bone"), (lung, "Lung")]
-
-	fig = CM.Figure(size = (1500, 1000))
-
-	for (col, (clim, wname)) in enumerate(windows)
-		ax = CM.Axis(fig[1, col]; title = "FBP (ASiR-V 0%) — $wname", titlesize = 12,
-			aspect = CM.DataAspect(), yreversed = true)
-		CM.heatmap!(ax, hu_140_fbp[:, :, mid]; colormap = :grays, colorrange = clim)
-		CM.hidedecorations!(ax)
-		CM.hidespines!(ax)
-
-		ax = CM.Axis(fig[2, col]; title = "ASiR-V 50% — $wname", titlesize = 12,
-			aspect = CM.DataAspect(), yreversed = true)
-		CM.heatmap!(ax, hu_140_ir[:, :, mid]; colormap = :grays, colorrange = clim)
-		CM.hidedecorations!(ax)
-		CM.hidespines!(ax)
-	end
-
-	CM.Label(fig[0, :]; text = "140 kVp · 110 mA · CTDIvol 10.85 mGy", fontsize = 16, font = :bold)
-
-	fig
-end
-
-# ╔═╡ 262d5985-d5fa-49f1-968d-f760ac4c6fc7
-md"""
-### 1b. Automatic Rod Segmentation — 120 kVp / ASiR-V 50% (10.16 mGy)
-
-Intensity-based segmentation of all 16 Gammex 472 insert rods from the clinical
-120 kVp mid-dose ASiR-V 50% reconstruction. The algorithm:
-1. Finds the phantom center via thresholded centroid + iterative circular refinement
-2. Detects phantom rotation by locating Ca 400 (highest HU on the outer ring)
-3. Places circular ROIs (70% of rod diameter) at all 16 known angular positions
-
-This provides ground-truth ROI measurements (mean HU, noise σ, pixel count) for
-quantitative comparison against BasisSimulator forward projections.
+# ╔═╡ 07020003-0000-4000-8000-000000000000
 """
-
-# ╔═╡ dca3c26e-3d13-407f-aa83-f8a9ce5f9d23
-"""
-	segment_gammex_rods(hu_slice; fov_cm, ...) → (mask, rod_info, center_info)
+	segment_gammex_rods(hu_slice; fov_cm, ...) -> (mask, rod_info, center_info)
 
 Segment all 16 Gammex 472 insert rods from a 2D CT slice.
 Uses known phantom geometry + intensity-based rotation detection.
-
-Returns:
-- `mask`: UInt8 2D array with rod labels (10-14=Ca, 20-26=I, 2=water, 3=SW)
-- `rod_info`: Vector of NamedTuples with per-rod measurements
-- `center_info`: NamedTuple `(cx, cy, rotation_deg)`
 """
 function segment_gammex_rods(
 	hu_slice;
@@ -404,11 +146,11 @@ function segment_gammex_rods(
 	cy = sum(Float64(j) * body[i, j] for j in 1:ny, i in 1:nx) / total
 
 	# Iterative refinement: restrict centroid to expected body circle
-	body_r² = (body_radius_cm / pixel_cm)^2
+	body_r_sq = (body_radius_cm / pixel_cm)^2
 	for _ in 1:3
 		sx, sy, cnt = 0.0, 0.0, 0.0
 		for j in 1:ny, i in 1:nx
-			if (i - cx)^2 + (j - cy)^2 <= body_r² && body[i, j]
+			if (i - cx)^2 + (j - cy)^2 <= body_r_sq && body[i, j]
 				sx += i
 				sy += j
 				cnt += 1.0
@@ -423,14 +165,14 @@ function segment_gammex_rods(
 	# Step 2: Detect rotation via outer ring angular HU profile
 	r_outer_pix = outer_ring_cm / pixel_cm
 	n_sample = 720
-	sample_angles = range(0, 2π - 2π / n_sample, length = n_sample)
+	sample_angles = range(0, 2*pi - 2*pi / n_sample, length = n_sample)
 
 	profile = zeros(Float64, n_sample)
-	for (k, θ) in enumerate(sample_angles)
+	for (k, th) in enumerate(sample_angles)
 		s, c = 0.0, 0
 		for dr in -3:3
-			xi = round(Int, cx + (r_outer_pix + dr) * cos(θ))
-			yi = round(Int, cy + (r_outer_pix + dr) * sin(θ))
+			xi = round(Int, cx + (r_outer_pix + dr) * cos(th))
+			yi = round(Int, cy + (r_outer_pix + dr) * sin(th))
 			if 1 <= xi <= nx && 1 <= yi <= ny
 				s += hu_slice[xi, yi]
 				c += 1
@@ -439,7 +181,7 @@ function segment_gammex_rods(
 		profile[k] = c > 0 ? s / c : 0.0
 	end
 
-	# Smooth with ±5° circular window
+	# Smooth with +/-5 deg circular window
 	smooth_w = max(1, round(Int, 5.0 / (360.0 / n_sample)))
 	smoothed = similar(profile)
 	for k in 1:n_sample
@@ -452,34 +194,32 @@ function segment_gammex_rods(
 	end
 
 	# Ca400 is the highest HU rod on the outer ring
-	# Sub-sample parabolic interpolation for sub-0.1° precision
 	k_max = argmax(smoothed)
 	k_prev = mod1(k_max - 1, n_sample)
 	k_next = mod1(k_max + 1, n_sample)
 	y_m, y_0, y_p = smoothed[k_prev], smoothed[k_max], smoothed[k_next]
 	denom = y_m - 2y_0 + y_p
-	δ_sub = abs(denom) > 1e-12 ? 0.5 * (y_m - y_p) / denom : 0.0
-	δ_sub = clamp(δ_sub, -0.5, 0.5)
-	θ_ca400 = sample_angles[k_max] + δ_sub * (2π / n_sample)
-	rotation = θ_ca400
+	d_sub = abs(denom) > 1e-12 ? 0.5 * (y_m - y_p) / denom : 0.0
+	d_sub = clamp(d_sub, -0.5, 0.5)
+	th_ca400 = sample_angles[k_max] + d_sub * (2*pi / n_sample)
+	rotation = th_ca400
 
 	# Step 3: Place ROIs at all 16 rod positions
-	# Clinical DICOM has CCW angular ordering (+ direction) due to image orientation
-	outer_start = θ_ca400 - 3 * π / 4  # Ca100 is 3 steps before Ca400
-	outer_angles = [outer_start + (i - 1) * π / 4 for i in 1:8]
+	outer_start = th_ca400 - 3 * pi / 4
+	outer_angles = [outer_start + (i - 1) * pi / 4 for i in 1:8]
 	outer_labels = UInt8[11, 12, 13, 14, 2, 3, 3, 10]
 	outer_names = ["Ca 100", "Ca 200", "Ca 300", "Ca 400",
 		"Water (O)", "SW ref 1", "SW ref 2", "Ca 50"]
 
-	inner_start = outer_start - π / 8  # I2.5 at gap center (π/8 before Ca100)
-	inner_angles = [inner_start + (i - 1) * π / 4 for i in 1:8]
+	inner_start = outer_start - pi / 8
+	inner_angles = [inner_start + (i - 1) * pi / 4 for i in 1:8]
 	inner_labels = UInt8[21, 22, 23, 24, 25, 26, 2, 20]
 	inner_names = ["I 2.5", "I 5.0", "I 7.5", "I 10.0",
 		"I 15.0", "I 20.0", "Water (I)", "I 2.0"]
 
 	roi_r_pix = rod_radius_cm * roi_fraction / pixel_cm
-	roi_r² = roi_r_pix^2
-	search_r_pix = rod_radius_cm / pixel_cm * 1.5  # search window slightly larger than rod
+	roi_r_sq = roi_r_pix^2
+	search_r_pix = rod_radius_cm / pixel_cm * 1.5
 
 	mask = zeros(UInt8, nx, ny)
 	rod_info = []
@@ -489,18 +229,15 @@ function segment_gammex_rods(
 		(inner_angles, inner_labels, inner_names, inner_ring_cm, :inner),
 	]
 		ring_pix = ring_cm / pixel_cm
-		for (θ, lbl, name) in zip(angles, labels, names)
-			# Expected center from hardcoded angle
-			ecx = cx + ring_pix * cos(θ)
-			ecy = cy + ring_pix * sin(θ)
+		for (th, lbl, name) in zip(angles, labels, names)
+			ecx = cx + ring_pix * cos(th)
+			ecy = cy + ring_pix * sin(th)
 
-			# Refine: find actual rod center via local centroid of distinctive pixels
 			si_lo = max(1, floor(Int, ecx - search_r_pix))
 			si_hi = min(nx, ceil(Int, ecx + search_r_pix))
 			sj_lo = max(1, floor(Int, ecy - search_r_pix))
 			sj_hi = min(ny, ceil(Int, ecy + search_r_pix))
 
-			# Collect HU in search window
 			local_vals = Float64[]
 			for sj in sj_lo:sj_hi, si in si_lo:si_hi
 				if (si - ecx)^2 + (sj - ecy)^2 <= search_r_pix^2
@@ -508,12 +245,10 @@ function segment_gammex_rods(
 				end
 			end
 
-			# Background is roughly the body mean (~0 HU for water); rod is distinct
-			# Use pixels that deviate from the median by > half the range
 			if length(local_vals) > 10
 				med = median(local_vals)
 				dev = maximum(abs.(local_vals .- med))
-				thresh = dev * 0.3  # pixels that are clearly part of the rod
+				thresh = dev * 0.3
 				wx, wy, wt = 0.0, 0.0, 0.0
 				for sj in sj_lo:sj_hi, si in si_lo:si_hi
 					if (si - ecx)^2 + (sj - ecy)^2 <= search_r_pix^2
@@ -531,7 +266,6 @@ function segment_gammex_rods(
 				rcx, rcy = ecx, ecy
 			end
 
-			# Place ROI at refined center
 			i_lo = max(1, floor(Int, rcx - roi_r_pix - 1))
 			i_hi = min(nx, ceil(Int, rcx + roi_r_pix + 1))
 			j_lo = max(1, floor(Int, rcy - roi_r_pix - 1))
@@ -539,7 +273,7 @@ function segment_gammex_rods(
 
 			vals = Float64[]
 			for j in j_lo:j_hi, i in i_lo:i_hi
-				if (i - rcx)^2 + (j - rcy)^2 <= roi_r²
+				if (i - rcx)^2 + (j - rcy)^2 <= roi_r_sq
 					mask[i, j] = lbl
 					push!(vals, Float64(hu_slice[i, j]))
 				end
@@ -548,7 +282,7 @@ function segment_gammex_rods(
 			push!(rod_info, (
 				label = lbl, name = name, ring = ring_sym,
 				cx = rcx, cy = rcy,
-				angle_deg = round(rad2deg(θ), digits = 1),
+				angle_deg = round(rad2deg(th), digits = 1),
 				mean_hu = isempty(vals) ? NaN : mean(vals),
 				std_hu = length(vals) > 1 ? std(vals) : NaN,
 				n_pixels = length(vals),
@@ -559,276 +293,11 @@ function segment_gammex_rods(
 	return mask, rod_info, (cx = cx, cy = cy, rotation_deg = round(rad2deg(rotation), digits = 2))
 end
 
-# ╔═╡ 63b0c15a-8e01-4f8b-9ff7-a9109e2b5933
-seg_result = let
-	mid_z = size(hu_120_mid_ir, 3) ÷ 2
-	hu_slice = hu_120_mid_ir[:, :, mid_z]
-	mask, rod_info, center = segment_gammex_rods(hu_slice; fov_cm = 35.0)
-	(mask = mask, rods = rod_info, center = center, slice_idx = mid_z)
-end;
-
-# ╔═╡ 451bfa43-42d9-4023-afb0-52bbf4b5a487
-let
-	hu = hu_120_mid_ir[:, :, seg_result.slice_idx]
-	rods = seg_result.rods
-	pixel_cm = 35.0 / size(hu, 1)
-	roi_r_pix = 1.4 * 0.7 / pixel_cm
-
-	fig = CM.Figure(size = (1100, 500), fontsize = 11)
-
-	# Left: CT with ROI circles
-	ax1 = CM.Axis(fig[1, 1]; title = "120 kVp ASiR-V 50% — Segmented ROIs (slice $(seg_result.slice_idx))",
-		aspect = CM.DataAspect(), yreversed = true)
-	CM.heatmap!(ax1, hu; colormap = :grays, colorrange = (-200, 500))
-
-	θ_circle = range(0, 2π, length = 61)
-	for r in rods
-		xs = r.cx .+ roi_r_pix .* cos.(θ_circle)
-		ys = r.cy .+ roi_r_pix .* sin.(θ_circle)
-		c = r.ring == :outer ? :orange : :lime
-		CM.lines!(ax1, xs, ys; color = c, linewidth = 1.5)
-		CM.text!(ax1, r.cx, r.cy + roi_r_pix + 4;
-			text = r.name, fontsize = 7, align = (:center, :bottom), color = c)
-	end
-	CM.scatter!(ax1, [seg_result.center.cx], [seg_result.center.cy];
-		color = :red, marker = :cross, markersize = 12)
-	CM.hidedecorations!(ax1)
-	CM.hidespines!(ax1)
-
-	# Right: labeled mask overlay
-	ax2 = CM.Axis(fig[1, 2]; title = "Rod Label Mask", aspect = CM.DataAspect(), yreversed = true)
-	mask_vis = Float32.(seg_result.mask)
-	mask_vis[mask_vis.==0] .= NaN
-	CM.heatmap!(ax2, hu; colormap = :grays, colorrange = (-200, 500))
-	CM.heatmap!(ax2, mask_vis; colormap = :turbo, colorrange = (1, 27), nan_color = :transparent)
-	CM.hidedecorations!(ax2)
-	CM.hidespines!(ax2)
-
-	fig
-end
-
-# ╔═╡ 04a99179-ae4f-40ba-b4bf-aa5f5276bbc1
-let
-	rods = seg_result.rods
-
-	# Reorder: outer water/SW → Ca ascending → inner water → I ascending
-	order = [
-		"Water (O)", "SW ref 1", "SW ref 2",
-		"Ca 50", "Ca 100", "Ca 200", "Ca 300", "Ca 400",
-		"Water (I)",
-		"I 2.0", "I 2.5", "I 5.0", "I 7.5", "I 10.0", "I 15.0", "I 20.0",
-	]
-	idx = [findfirst(r -> r.name == nm, rods) for nm in order]
-	rods_sorted = rods[idx]
-	n = length(rods_sorted)
-
-	names = [r.name for r in rods_sorted]
-	means = [r.mean_hu for r in rods_sorted]
-	stds = [r.std_hu for r in rods_sorted]
-
-	colors = map(rods_sorted) do r
-		r.ring == :outer ?
-		(startswith(r.name, "Ca") ? :darkorange : :steelblue) :
-		(startswith(r.name, "I") ? :forestgreen : :steelblue)
-	end
-
-	fig = CM.Figure(size = (1000, 500), fontsize = 11)
-	ax = CM.Axis(fig[1, 1];
-		title = "ROI Measurements — 120 kVp · 150 mA · ASiR-V 50% [rotation=$(seg_result.center.rotation_deg)°]",
-		ylabel = "Mean HU ± σ",
-		xticks = (1:n, names),
-		xticklabelrotation = π / 4)
-	CM.barplot!(ax, 1:n, means; color = colors)
-	CM.errorbars!(ax, 1:n, means, stds; color = :black, whiskerwidth = 4)
-
-	for (i, (m, s)) in enumerate(zip(means, stds))
-		CM.text!(ax, i, m + s + 5;
-			text = "$(round(Int, m))", fontsize = 8, align = (:center, :bottom))
-	end
-
-	fig
-end
-
-# ╔═╡ 3c0d7acf-6de3-4662-90b9-05cebcfffd1c
-md"""
-## 2. Dual-Energy 80/140 kVp — Virtual Monoenergetic Images (VMI)
-
-GE GSI (Gemstone Spectral Imaging) acquisition at 80/140 kVp rapid switching.
-CTDIvol = 10.07 mGy, DLP = 40.27 mGy·cm, 0.25 s rotation, 40 mm collimation
-(64 rows × 0.625 mm). VMI reconstructions at 40, 70, 100, and 140 keV.
-
-Same three display windows as single-energy:
-- **Soft tissue** W400 / L40
-- **Bone** W1500 / L400
-- **Lung** W1500 / L−600
+# ╔═╡ 07020004-0000-4000-8000-000000000000
 """
+	measure_nps_local(hu_slice, pixel_mm; roi_center, roi_radius_mm, ...)
 
-# ╔═╡ c7df06b6-014e-4115-a811-cb5a190cbb2a
-begin  # DE 80/140 kVp — VMI series
-	dcms_de_40keV = DCM.dcmdir_parse(joinpath(rootdir, "DE_80_140kVp_10.07mGyCTDI/40"))
-	dcms_de_70keV = DCM.dcmdir_parse(joinpath(rootdir, "DE_80_140kVp_10.07mGyCTDI/70"))
-	dcms_de_100keV = DCM.dcmdir_parse(joinpath(rootdir, "DE_80_140kVp_10.07mGyCTDI/100"))
-	dcms_de_140keV = DCM.dcmdir_parse(joinpath(rootdir, "DE_80_140kVp_10.07mGyCTDI/140"))
-	hu_de_40keV = load_hu_volume(dcms_de_40keV)
-	hu_de_70keV = load_hu_volume(dcms_de_70keV)
-	hu_de_100keV = load_hu_volume(dcms_de_100keV)
-	hu_de_140keV = load_hu_volume(dcms_de_140keV)
-end;
-
-# ╔═╡ b5a1b6ce-a719-4444-8f70-76aff9040515
-let
-	vols = [hu_de_40keV, hu_de_70keV, hu_de_100keV, hu_de_140keV]
-	labels = ["40 keV", "70 keV", "100 keV", "140 keV"]
-	mid = size(vols[1], 3) ÷ 2
-	soft = (-160, 240)
-	bone = (-350, 1150)
-	lung = (-1350, 150)
-	windows = [(soft, "Soft Tissue"), (bone, "Bone"), (lung, "Lung")]
-
-	fig = CM.Figure(size = (1500, 2000))
-
-	for (row, (vol, keV_label)) in enumerate(zip(vols, labels))
-		for (col, (clim, wname)) in enumerate(windows)
-			ax = CM.Axis(fig[row, col]; title = "$keV_label — $wname", titlesize = 12,
-				aspect = CM.DataAspect(), yreversed = true)
-			CM.heatmap!(ax, vol[:, :, mid]; colormap = :grays, colorrange = clim)
-			CM.hidedecorations!(ax)
-			CM.hidespines!(ax)
-		end
-	end
-
-	CM.Label(fig[0, :]; text = "DE 80/140 kVp — VMI (CTDIvol 10.07 mGy)", fontsize = 16, font = :bold)
-	fig
-end
-
-# ╔═╡ ead991fd-d38c-4ebe-81f8-c35c84d0df52
-md"""
-### 2b. Automatic Rod Segmentation — DE 100 keV VMI (10.07 mGy)
-
-Same `segment_gammex_rods` algorithm applied to the 100 keV virtual monoenergetic
-reconstruction from the dual-energy 80/140 kVp acquisition. At 100 keV, calcium and
-iodine rods have moderate contrast — close to conventional 120 kVp appearance — making
-it a good reference energy for ROI validation.
-"""
-
-# ╔═╡ 88990577-029e-4f3b-be94-3ac413e526fe
-seg_result_de = let
-	mid_z = size(hu_de_100keV, 3) ÷ 2
-	hu_slice = hu_de_100keV[:, :, mid_z]
-	mask, rod_info, center = segment_gammex_rods(hu_slice; fov_cm = 35.0)
-	(mask = mask, rods = rod_info, center = center, slice_idx = mid_z)
-end;
-
-# ╔═╡ ce7b3519-78ee-43e0-a8a9-5b0270a68901
-let
-	hu = hu_de_100keV[:, :, seg_result_de.slice_idx]
-	rods = seg_result_de.rods
-	pixel_cm = 35.0 / size(hu, 1)
-	roi_r_pix = 1.4 * 0.7 / pixel_cm
-
-	fig = CM.Figure(size = (1100, 500), fontsize = 11)
-
-	ax1 = CM.Axis(fig[1, 1]; title = "DE 100 keV VMI — Segmented ROIs (slice $(seg_result_de.slice_idx))",
-		aspect = CM.DataAspect(), yreversed = true)
-	CM.heatmap!(ax1, hu; colormap = :grays, colorrange = (-200, 500))
-
-	θ_circle = range(0, 2π, length = 61)
-	for r in rods
-		xs = r.cx .+ roi_r_pix .* cos.(θ_circle)
-		ys = r.cy .+ roi_r_pix .* sin.(θ_circle)
-		c = r.ring == :outer ? :orange : :lime
-		CM.lines!(ax1, xs, ys; color = c, linewidth = 1.5)
-		CM.text!(ax1, r.cx, r.cy + roi_r_pix + 4;
-			text = r.name, fontsize = 7, align = (:center, :bottom), color = c)
-	end
-	CM.scatter!(ax1, [seg_result_de.center.cx], [seg_result_de.center.cy];
-		color = :red, marker = :cross, markersize = 12)
-	CM.hidedecorations!(ax1)
-	CM.hidespines!(ax1)
-
-	ax2 = CM.Axis(fig[1, 2]; title = "Rod Label Mask", aspect = CM.DataAspect(), yreversed = true)
-	mask_vis = Float32.(seg_result_de.mask)
-	mask_vis[mask_vis.==0] .= NaN
-	CM.heatmap!(ax2, hu; colormap = :grays, colorrange = (-200, 500))
-	CM.heatmap!(ax2, mask_vis; colormap = :turbo, colorrange = (1, 27), nan_color = :transparent)
-	CM.hidedecorations!(ax2)
-	CM.hidespines!(ax2)
-
-	fig
-end
-
-# ╔═╡ e26846b8-719f-4d24-a531-7aac1fe6672a
-let
-	rods = seg_result_de.rods
-
-	# Reorder: outer water/SW → Ca ascending → inner water → I ascending
-	order = [
-		"Water (O)", "SW ref 1", "SW ref 2",
-		"Ca 50", "Ca 100", "Ca 200", "Ca 300", "Ca 400",
-		"Water (I)",
-		"I 2.0", "I 2.5", "I 5.0", "I 7.5", "I 10.0", "I 15.0", "I 20.0",
-	]
-	idx = [findfirst(r -> r.name == nm, rods) for nm in order]
-	rods_sorted = rods[idx]
-	n = length(rods_sorted)
-
-	names = [r.name for r in rods_sorted]
-	means = [r.mean_hu for r in rods_sorted]
-	stds = [r.std_hu for r in rods_sorted]
-
-	colors = map(rods_sorted) do r
-		r.ring == :outer ?
-		(startswith(r.name, "Ca") ? :darkorange : :steelblue) :
-		(startswith(r.name, "I") ? :forestgreen : :steelblue)
-	end
-
-	fig = CM.Figure(size = (1000, 500), fontsize = 11)
-	ax = CM.Axis(fig[1, 1];
-		title = "ROI Measurements — DE 100 keV VMI [rotation=$(seg_result_de.center.rotation_deg)°]",
-		ylabel = "Mean HU ± σ",
-		xticks = (1:n, names),
-		xticklabelrotation = π / 4)
-	CM.barplot!(ax, 1:n, means; color = colors)
-	CM.errorbars!(ax, 1:n, means, stds; color = :black, whiskerwidth = 4)
-
-	for (i, (m, s)) in enumerate(zip(means, stds))
-		CM.text!(ax, i, m + s + 5;
-			text = "$(round(Int, m))", fontsize = 8, align = (:center, :bottom))
-	end
-
-	fig
-end
-
-# ╔═╡ a1b2c3d4-0010-4000-8000-000000000010
-md"""
-## 3. Quantitative Measurements — Full Suite
-
-Comprehensive image quality measurements across all SE and DE reconstructions.
-For each scan we compute:
-
-| Metric | Method | Stored as |
-|--------|--------|-----------|
-| **Mean HU** per rod | ROI from `segment_gammex_rods` | 16 scalar columns |
-| **Noise σ** per rod | Std dev within each ROI | 16 scalar columns |
-| **CNR** per rod | `(HU_rod − HU_water) / σ_water` | 14 scalar columns |
-| **NPS** (radial) | AAPM TG-233, 64×64 ROIs from body center | full curve → JLD2 |
-| **MTF** (radial) | Circular-edge (body boundary) | full curve → JLD2 |
-
-Scalar summary → `clinical_measurements.csv`
-Full NPS/MTF curves → `nps_curves.jld2`, `mtf_curves.jld2`
-
-The SE segmentation mask (from 120 kVp / 150 mA / ASiR-V 50%) is reused for all
-6 SE scans × 2 recon types = 12 measurements. The DE mask (from 100 keV VMI) is
-reused for all 4 DE VMI energies.
-"""
-
-# ╔═╡ 0c47ac3f-6d83-47ac-8c94-bc9172db716d
-"""
-	measure_nps_local(hu_slice, pixel_mm; roi_center, roi_radius_mm, roi_size=64,
-	                  n_rois=64, overlap=0.5)
-
-Local NPS with quadratic detrending + Hann window (no package restart needed).
-Returns a NamedTuple matching BS.NPSResult fields used downstream.
+Local NPS with quadratic detrending + Hann window.
 """
 function measure_nps_local(
 	hu_slice::AbstractMatrix, pixel_mm::Real;
@@ -842,7 +311,6 @@ function measure_nps_local(
 	img = Array(Float64.(hu_slice))
 	ny, nx = size(img)
 
-	# Crop to circular ROI bounding box
 	cy, cx = roi_center
 	roi_radius_px = roi_radius_mm / pixel_mm
 	rows_in = [i for i in 1:ny if any(j -> sqrt((i-cy)^2 + (j-cx)^2) <= roi_radius_px, 1:nx)]
@@ -850,10 +318,9 @@ function measure_nps_local(
 	img_roi = img[minimum(rows_in):maximum(rows_in), minimum(cols_in):maximum(cols_in)]
 	ny_roi, nx_roi = size(img_roi)
 
-	# Extract ROI patches
 	step = max(round(Int, roi_size * (1 - overlap)), 1)
-	n_y = (ny_roi - roi_size) ÷ step + 1
-	n_x = (nx_roi - roi_size) ÷ step + 1
+	n_y = (ny_roi - roi_size) / step + 1 |> x -> floor(Int, x)
+	n_x = (nx_roi - roi_size) / step + 1 |> x -> floor(Int, x)
 	rois = Matrix{Float64}[]
 	for iy in 0:(n_y-1), ix in 0:(n_x-1)
 		r0 = 1 + iy * step; c0 = 1 + ix * step
@@ -866,14 +333,11 @@ function measure_nps_local(
 	end
 	actual_n = length(rois)
 
-	# Hann window
-	w1d = [0.5 * (1 - cos(2π * i / (roi_size - 1))) for i in 0:(roi_size-1)]
+	w1d = [0.5 * (1 - cos(2*pi * i / (roi_size - 1))) for i in 0:(roi_size-1)]
 	win = w1d * w1d'
 
-	# Compute NPS
 	power_sum = zeros(Float64, roi_size, roi_size)
 	for roi in rois
-		# Quadratic detrend: fit ax²+by²+cxy+dx+ey+f, subtract
 		x = Float64.(repeat(1:roi_size, 1, roi_size)')
 		y = Float64.(repeat(1:roi_size, 1, roi_size))
 		xf = vec(x); yf = vec(y); zf = vec(roi)
@@ -881,17 +345,15 @@ function measure_nps_local(
 		c = A \ zf
 		trend = c[1].*x.^2 .+ c[2].*y.^2 .+ c[3].*x.*y .+ c[4].*x .+ c[5].*y .+ c[6]
 		detrended = roi .- trend
-
 		windowed = detrended .* win
 		power_sum .+= abs2.(fft(windowed))
 	end
 
 	nps_2d = fftshift(power_sum ./ actual_n .* (pixel_mm^2 / roi_size^2))
 
-	# Radial average
 	freq_axis = fftshift(BS.fftfreq(roi_size, 1.0 / pixel_mm))
 	df = length(freq_axis) > 1 ? abs(freq_axis[2] - freq_axis[1]) : 1.0
-	n_bins = length(freq_axis) ÷ 2 + 1
+	n_bins = length(freq_axis) / 2 + 1 |> x -> round(Int, x)
 	radial_freqs = collect(range(0, stop=(n_bins-1)*df, length=n_bins))
 	nps_1d = zeros(Float64, n_bins)
 	counts = zeros(Int, n_bins)
@@ -909,17 +371,14 @@ function measure_nps_local(
 		counts[i] > 0 && (nps_1d[i] /= counts[i])
 	end
 
-	# Skip DC
 	radial_freqs = radial_freqs[2:end]
 	nps_1d = nps_1d[2:end]
 
-	# Unit conversion
 	if unit == :lp_cm
 		radial_freqs .*= 10.0
 		nps_1d ./= 100.0
 	end
 
-	# Peak
 	peak_idx = length(nps_1d) > 1 ? argmax(nps_1d[2:end]) + 1 : 1
 	peak_freq = radial_freqs[peak_idx]
 	peak_val = nps_1d[peak_idx]
@@ -934,816 +393,218 @@ function measure_nps_local(
 	)
 end
 
-# ╔═╡ a1b2c3d4-0011-4000-8000-000000000011
-begin
-	"""
-		measure_mtf_circular_edge(hu_slice, cx, cy, radius_cm; fov_cm, n_angles, oversample, margin_pix)
-
-	Circular-edge MTF from a circular boundary (rod insert or body edge).
-	Samples radial ESF profiles at `n_angles` around the edge,
-	averages them (angular super-resolution), differentiates → LSF → FFT → MTF.
-
-	Returns: (frequencies_lp_cm, mtf_curve, f50, f10)
-	"""
-	function measure_mtf_circular_edge(
-		hu_slice::AbstractMatrix,
-		cx::Float64, cy::Float64,
-		radius_cm::Float64;
-		fov_cm = 35.0,
-		n_angles = 720,
-		oversample = 4,
-		margin_inner = 15.0,   # pixels inside edge (toward body center) — generous
-		margin_outer = 5.0,    # pixels outside edge (toward air/FOV) — limited by clearance
-		fov_guard_pix = 3.0,   # skip angles where outer samples get this close to FOV edge
-	)
-		nx, ny = size(hu_slice)
-		pixel_cm = fov_cm / nx
-		pixel_mm = pixel_cm * 10.0
-		edge_r_pix = radius_cm / pixel_cm
-		fov_r_pix = nx / 2.0  # FOV radius in pixels (image center to edge)
-
-		# Image center (FOV center)
-		img_cx = (nx + 1) / 2.0
-		img_cy = (ny + 1) / 2.0
-
-		# Sample radial ESF: asymmetric margins around the edge
-		r_min = edge_r_pix - margin_inner
-		r_max = edge_r_pix + margin_outer
-		n_r = round(Int, (r_max - r_min) * oversample)
-		radii = range(r_min, r_max, length = n_r)
-		positions_mm = collect((radii .- edge_r_pix) .* pixel_mm)  # mm from edge
-
-		# Average ESF across angles, skipping those too close to FOV boundary
-		esf = zeros(Float64, n_r)
-		counts = zeros(Int, n_r)
-		angles = range(0, 2π - 2π / n_angles, length = n_angles)
-		n_used = 0
-
-		for θ in angles
-			cosθ, sinθ = cos(θ), sin(θ)
-
-			# Check: does the outermost sample point stay within FOV?
-			x_outer = cx + r_max * cosθ
-			y_outer = cy + r_max * sinθ
-			dist_from_img_center = sqrt((x_outer - img_cx)^2 + (y_outer - img_cy)^2)
-			if dist_from_img_center > fov_r_pix - fov_guard_pix
-				continue  # skip this angle — too close to FOV edge
-			end
-
-			n_used += 1
-			for (k, r) in enumerate(radii)
-				xi = cx + r * cosθ
-				yi = cy + r * sinθ
-				# Bilinear interpolation
-				x0 = floor(Int, xi)
-				y0 = floor(Int, yi)
-				x1 = x0 + 1
-				y1 = y0 + 1
-				if 1 <= x0 && x1 <= nx && 1 <= y0 && y1 <= ny
-					fx = xi - x0
-					fy = yi - y0
-					val = (1 - fx) * (1 - fy) * hu_slice[x0, y0] + fx * (1 - fy) * hu_slice[x1, y0] +
-						  (1 - fx) * fy * hu_slice[x0, y1] + fx * fy * hu_slice[x1, y1]
-					esf[k] += Float64(val)
-					counts[k] += 1
-				end
-			end
-		end
-
-		for k in 1:n_r
-			if counts[k] > 0
-				esf[k] /= counts[k]
-			end
-		end
-
-		# Ensure ESF goes from high (inside body) to low (outside / air)
-		if esf[1] < esf[end]
-			reverse!(esf)
-			reverse!(positions_mm)
-		end
-
-		# Differentiate ESF → LSF
-		dp = positions_mm[2] - positions_mm[1]  # mm spacing
-		lsf = diff(esf) ./ dp
-		lsf_pos = (positions_mm[1:end-1] .+ positions_mm[2:end]) ./ 2
-
-		# Normalize LSF peak to 1
-		lsf_max = maximum(abs.(lsf))
-		if lsf_max > 0
-			lsf ./= lsf_max
-		end
-
-		# Zero-pad and FFT
-		n_pad = nextpow(2, length(lsf) * 4)
-		lsf_padded = zeros(Float64, n_pad)
-		offset = (n_pad - length(lsf)) ÷ 2
-		lsf_padded[offset+1:offset+length(lsf)] .= lsf
-
-		mtf_complex = fft(lsf_padded)
-		mtf_vals = abs.(mtf_complex)
-		mtf_vals ./= mtf_vals[1]  # normalize DC = 1
-
-		# Frequency axis (lp/cm)
-		n_pos = n_pad ÷ 2
-		freq_lp_mm = collect(0:n_pos-1) ./ n_pad .* (1.0 / abs(dp))
-		freq_lp_cm = freq_lp_mm .* 10.0
-		mtf_curve = mtf_vals[1:n_pos]
-
-		# Trim to Nyquist of the original pixel grid
-		nyquist_lp_cm = 1.0 / (2.0 * pixel_mm) * 10.0
-		keep = freq_lp_cm .<= nyquist_lp_cm
-		freq_lp_cm = freq_lp_cm[keep]
-		mtf_curve = mtf_curve[keep]
-
-		# Find f50 and f10 by interpolation
-		function find_freq_at(level)
-			for i in 1:(length(mtf_curve)-1)
-				if mtf_curve[i] >= level && mtf_curve[i+1] < level
-					t = (level - mtf_curve[i]) / (mtf_curve[i+1] - mtf_curve[i])
-					return freq_lp_cm[i] + t * (freq_lp_cm[i+1] - freq_lp_cm[i])
-				end
-			end
-			return mtf_curve[end] >= level ? freq_lp_cm[end] : 0.0
-		end
-
-		f50 = find_freq_at(0.5)
-		f10 = find_freq_at(0.1)
-
-		return (frequencies = freq_lp_cm, mtf = mtf_curve, mtf50 = f50, mtf10 = f10,
-				n_angles_used = n_used)
-	end
-
-	"""
-		measure_scan(hu_vol, seg_mask, seg_rods, seg_center, scan_name; fov_cm) → NamedTuple
-
-	Compute full measurement suite for one reconstruction.
-	Uses the pre-computed segmentation mask from `segment_gammex_rods`.
-	"""
-	function measure_scan(
-		hu_vol::Array{Float32, 3},
-		seg_mask,
-		seg_rods,
-		seg_center,
-		scan_name::String;
-		fov_cm = 35.0,
-	)
-		nx, ny, nz = size(hu_vol)
-		mid_z = nz ÷ 2
-		hu_slice = hu_vol[:, :, mid_z]
-		pixel_mm = fov_cm / nx * 10.0  # mm
-
-		# --- Rod HU measurements (reuse mask position, sample from this scan) ---
-		rod_order = [
-			"Water (O)", "SW ref 1", "SW ref 2",
-			"Ca 50", "Ca 100", "Ca 200", "Ca 300", "Ca 400",
-			"Water (I)",
-			"I 2.0", "I 2.5", "I 5.0", "I 7.5", "I 10.0", "I 15.0", "I 20.0",
-		]
-
-		rod_means = Float64[]
-		rod_stds = Float64[]
-		rod_names = String[]
-
-		for name in rod_order
-			r = first(filter(x -> x.name == name, seg_rods))
-			roi_r_pix = 1.4 * 0.6 / (fov_cm / nx)
-			roi_r² = roi_r_pix^2
-			vals = Float64[]
-			i_lo = max(1, floor(Int, r.cx - roi_r_pix - 1))
-			i_hi = min(nx, ceil(Int, r.cx + roi_r_pix + 1))
-			j_lo = max(1, floor(Int, r.cy - roi_r_pix - 1))
-			j_hi = min(ny, ceil(Int, r.cy + roi_r_pix + 1))
-			for j in j_lo:j_hi, i in i_lo:i_hi
-				if (i - r.cx)^2 + (j - r.cy)^2 <= roi_r²
-					push!(vals, Float64(hu_slice[i, j]))
-				end
-			end
-			push!(rod_means, mean(vals))
-			push!(rod_stds, std(vals))
-			push!(rod_names, name)
-		end
-
-		# Water reference for CNR (outer ring water rod)
-		water_idx = 1  # "Water (O)"
-		μ_water = rod_means[water_idx]
-		σ_water = rod_stds[water_idx]
-
-		rod_cnr = [(rod_means[i] - μ_water) / σ_water for i in 1:length(rod_means)]
-
-		# --- NPS (uniform body center, inside inner rod ring at 5.5 cm) ---
-		center_row = round(Int, seg_center.cx)
-		center_col = round(Int, seg_center.cy)
-		# nps_result = BS.measure_nps(
-		# 	hu_slice, pixel_mm;
-		# 	config = BS.NPSConfig(roi_size = 64, n_rois = 64, overlap = 0.5, detrend = :linear, window = :hann), 
-		# 	roi_center = (center_row, center_col),
-		# 	roi_radius_mm = 45.0,
-		# 	unit = :lp_cm,
-		# )
-
-		nps_result = measure_nps_local(
-			hu_slice, pixel_mm;
-			roi_center = (center_row, center_col),
-			roi_radius_mm = 64.0,
-			unit = :lp_cm,
-			overlap = 0.25,
-		)
-
-		# --- MTF (phantom outer body / air boundary) ---
-		mtf_result = measure_mtf_circular_edge(
-			hu_slice, Float64(seg_center.cx), Float64(seg_center.cy), 16.5;
-			fov_cm = fov_cm,
-			margin_inner = 15.0,   # plenty of room inside body
-			margin_outer = 5.0,    # ~5 pixels into air (limited by FOV clearance)
-			fov_guard_pix = 3.0,
-		)
-
-		return (
-			name = scan_name,
-			rod_names = rod_names,
-			rod_means = rod_means,
-			rod_stds = rod_stds,
-			rod_cnr = rod_cnr,
-			nps = nps_result,
-			mtf = mtf_result,
-			nps_peak_freq = nps_result.peak_frequency,
-			nps_area = nps_result.integrated_nps,
-			mtf_f50 = mtf_result.mtf50,
-			mtf_f10 = mtf_result.mtf10,
-		)
-	end
-end;
-
-# ╔═╡ a1b2c3d4-0012-4000-8000-000000000012
-md"""
-### 3a. Single-Energy Measurements (12 scans)
-
-All SE scans use the segmentation mask from `seg_result` (120 kVp / 150 mA / ASiR-V 50%).
+# ╔═╡ 07020005-0000-4000-8000-000000000000
 """
+	measure_mtf_circular_edge(hu_slice, cx, cy, radius_cm; fov_cm, ...)
 
-# ╔═╡ a1b2c3d4-0013-4000-8000-000000000013
-se_measurements = let
-	se_scans = [
-		(hu_120_low_fbp, "120kVp_50mA_FBP"),
-		(hu_120_low_ir, "120kVp_50mA_ASiRV50"),
-		(hu_120_mid_fbp, "120kVp_150mA_FBP"),
-		(hu_120_mid_ir, "120kVp_150mA_ASiRV50"),
-		(hu_120_high_fbp, "120kVp_300mA_FBP"),
-		(hu_120_high_ir, "120kVp_300mA_ASiRV50"),
-		(hu_80_fbp, "80kVp_480mA_FBP"),
-		(hu_80_ir, "80kVp_480mA_ASiRV50"),
-		(hu_100_fbp, "100kVp_250mA_FBP"),
-		(hu_100_ir, "100kVp_250mA_ASiRV50"),
-		(hu_140_fbp, "140kVp_110mA_FBP"),
-		(hu_140_ir, "140kVp_110mA_ASiRV50"),
-	]
-
-	[measure_scan(vol, seg_result.mask, seg_result.rods, seg_result.center, name)
-	 for (vol, name) in se_scans]
-end;
-
-# ╔═╡ a1b2c3d4-0014-4000-8000-000000000014
-md"""
-### 3b. Dual-Energy Measurements (4 VMI energies)
-
-All DE scans use the segmentation mask from `seg_result_de` (100 keV VMI).
+Circular-edge MTF from a circular boundary.
 """
-
-# ╔═╡ a1b2c3d4-0015-4000-8000-000000000015
-de_measurements = let
-	de_scans = [
-		(hu_de_40keV, "DE_40keV"),
-		(hu_de_70keV, "DE_70keV"),
-		(hu_de_100keV, "DE_100keV"),
-		(hu_de_140keV, "DE_140keV"),
-	]
-
-	[measure_scan(vol, seg_result_de.mask, seg_result_de.rods, seg_result_de.center, name)
-	 for (vol, name) in de_scans]
-end;
-
-# ╔═╡ e6322fc0-9a18-43a6-a98d-5af80c2a5f01
-let
-	all_m = vcat(se_measurements, de_measurements)
-
-	fig = CM.Figure(size = (1200, 500), fontsize = 11)
-	ax1 = CM.Axis(fig[1, 1]; title = "NPS — Single-Energy Scans",
-		xlabel = "Spatial frequency (lp/cm)", ylabel = "NPS (HU²·cm²)",
-		yscale = log10)
-	ax2 = CM.Axis(fig[1, 2]; title = "NPS — Dual-Energy VMI",
-		xlabel = "Spatial frequency (lp/cm)", ylabel = "NPS (HU²·cm²)",
-		yscale = log10)
-
-	se_colors = CM.cgrad(:tab10, 12, categorical = true)
-	for (i, m) in enumerate(se_measurements)
-		freqs = m.nps.frequencies
-		vals = m.nps.nps_1d
-		good = vals .> 0
-		CM.lines!(ax1, freqs[good], vals[good]; label = m.name, color = se_colors[i])
-	end
-	CM.axislegend(ax1; position = :rt, labelsize = 8, nbanks = 2)
-
-	de_colors = [:purple, :teal, :darkorange, :crimson]
-	for (i, m) in enumerate(de_measurements)
-		freqs = m.nps.frequencies
-		vals = m.nps.nps_1d
-		good = vals .> 0
-		CM.lines!(ax2, freqs[good], vals[good]; label = m.name, color = de_colors[i], linewidth = 2)
-	end
-	CM.axislegend(ax2; position = :rt, labelsize = 10)
-
-	fig
-end
-
-# ╔═╡ a1b2c3d4-0016-4000-8000-000000000016
-md"""
-### 3c. NPS Curves — All Scans
-"""
-
-# ╔═╡ a1b2c3d4-0017-4000-8000-000000000017
-let
-	all_m = vcat(se_measurements, de_measurements)
-
-	fig = CM.Figure(size = (1200, 500), fontsize = 11)
-	ax1 = CM.Axis(fig[1, 1]; title = "NPS — Single-Energy Scans",
-		xlabel = "Spatial frequency (lp/cm)", ylabel = "NPS (HU²·cm²)",
-		yscale = log10)
-	ax2 = CM.Axis(fig[1, 2]; title = "NPS — Dual-Energy VMI",
-		xlabel = "Spatial frequency (lp/cm)", ylabel = "NPS (HU²·cm²)",
-		yscale = log10)
-
-	se_colors = CM.cgrad(:tab10, 12, categorical = true)
-	for (i, m) in enumerate(se_measurements)
-		freqs = m.nps.frequencies
-		vals = m.nps.nps_1d
-		good = vals .> 0
-		CM.lines!(ax1, freqs[good], vals[good]; label = m.name, color = se_colors[i])
-	end
-	CM.axislegend(ax1; position = :rt, labelsize = 8, nbanks = 2)
-
-	de_colors = [:purple, :teal, :darkorange, :crimson]
-	for (i, m) in enumerate(de_measurements)
-		freqs = m.nps.frequencies
-		vals = m.nps.nps_1d
-		good = vals .> 0
-		CM.lines!(ax2, freqs[good], vals[good]; label = m.name, color = de_colors[i], linewidth = 2)
-	end
-	CM.axislegend(ax2; position = :rt, labelsize = 10)
-
-	fig
-end
-
-# ╔═╡ a1b2c3d4-0018-4000-8000-000000000018
-md"""
-### 3d. MTF Curves — All Scans
-"""
-
-# ╔═╡ a1b2c3d4-0019-4000-8000-000000000019
-let
-	fig = CM.Figure(size = (1200, 500), fontsize = 11)
-	ax1 = CM.Axis(fig[1, 1]; title = "MTF — Single-Energy Scans",
-		xlabel = "Spatial frequency (lp/cm)", ylabel = "MTF",
-		limits = (nothing, nothing, 0, 1.05))
-	ax2 = CM.Axis(fig[1, 2]; title = "MTF — Dual-Energy VMI",
-		xlabel = "Spatial frequency (lp/cm)", ylabel = "MTF",
-		limits = (nothing, nothing, 0, 1.05))
-
-	CM.hlines!(ax1, [0.5, 0.1]; color = :gray80, linestyle = :dash, linewidth = 0.8)
-	CM.hlines!(ax2, [0.5, 0.1]; color = :gray80, linestyle = :dash, linewidth = 0.8)
-
-	se_colors = CM.cgrad(:tab10, 12, categorical = true)
-	for (i, m) in enumerate(se_measurements)
-		CM.lines!(ax1, m.mtf.frequencies, m.mtf.mtf; label = m.name, color = se_colors[i])
-	end
-	CM.axislegend(ax1; position = :rt, labelsize = 8, nbanks = 2)
-
-	de_colors = [:purple, :teal, :darkorange, :crimson]
-	for (i, m) in enumerate(de_measurements)
-		CM.lines!(ax2, m.mtf.frequencies, m.mtf.mtf; label = m.name, color = de_colors[i], linewidth = 2)
-	end
-	CM.axislegend(ax2; position = :rt, labelsize = 10)
-
-	fig
-end
-
-# ╔═╡ a1b2c3d4-0020-4000-8000-000000000020
-md"""
-### 3e. Summary Table & Export
-
-Scalar summary exported to CSV. Full NPS/MTF curves exported to JLD2.
-"""
-
-# ╔═╡ a1b2c3d4-0021-4000-8000-000000000021
-let
-	all_m = vcat(se_measurements, de_measurements)
-	outdir = joinpath(dirname(@__DIR__), "results")
-	mkpath(outdir)
-
-	# --- Build CSV rows ---
-	rod_order = all_m[1].rod_names
-	header = ["scan_name"]
-	for nm in rod_order
-		tag = replace(replace(nm, " " => "_"), "(" => "", ")" => "")
-		push!(header, "hu_mean_$tag")
-	end
-	for nm in rod_order
-		tag = replace(replace(nm, " " => "_"), "(" => "", ")" => "")
-		push!(header, "hu_std_$tag")
-	end
-	for nm in rod_order
-		tag = replace(replace(nm, " " => "_"), "(" => "", ")" => "")
-		push!(header, "cnr_$tag")
-	end
-	append!(header, ["nps_peak_freq_lp_cm", "nps_area_HU2cm2",
-		"mtf_f50_lp_cm", "mtf_f10_lp_cm"])
-
-	rows = Vector{Any}[]
-	for m in all_m
-		row = Any[m.name]
-		append!(row, round.(m.rod_means, digits = 2))
-		append!(row, round.(m.rod_stds, digits = 2))
-		append!(row, round.(m.rod_cnr, digits = 2))
-		push!(row, round(m.nps_peak_freq, digits = 3))
-		push!(row, round(m.nps_area, digits = 3))
-		push!(row, round(m.mtf_f50, digits = 3))
-		push!(row, round(m.mtf_f10, digits = 3))
-		push!(rows, row)
-	end
-
-	# Write CSV
-	csv_path = joinpath(outdir, "clinical_measurements.csv")
-	open(csv_path, "w") do io
-		println(io, join(header, ","))
-		for row in rows
-			println(io, join(row, ","))
-		end
-	end
-
-	# --- Save NPS curves to JLD2 ---
-	nps_path = joinpath(outdir, "nps_curves.jld2")
-	JLD2.jldopen(nps_path, "w") do f
-		for m in all_m
-			f[m.name] = (freq = m.nps.frequencies, nps = m.nps.nps_1d)
-		end
-	end
-
-	# --- Save MTF curves to JLD2 ---
-	mtf_path = joinpath(outdir, "mtf_curves.jld2")
-	JLD2.jldopen(mtf_path, "w") do f
-		for m in all_m
-			f[m.name] = (freq = m.mtf.frequencies, mtf = m.mtf.mtf)
-		end
-	end
-
-	md"""
-	**Exported:**
-	- `results/clinical_measurements.csv` — $(length(all_m)) rows × $(length(header)) columns
-	- `results/nps_curves.jld2` — radial NPS curves (freq + values per scan)
-	- `results/mtf_curves.jld2` — radial MTF curves (freq + values per scan)
-	"""
-end
-
-# ╔═╡ a1b2c3d4-0022-4000-8000-000000000022
-md"""
-### 3f. Scalar Summary — Quick View
-"""
-
-# ╔═╡ a1b2c3d4-0023-4000-8000-000000000023
-let
-	all_m = vcat(se_measurements, de_measurements)
-	n = length(all_m)
-
-	fig = CM.Figure(size = (1400, 400), fontsize = 10)
-
-	# NPS area (noise variance)
-	ax1 = CM.Axis(fig[1, 1]; title = "NPS Area (Noise Variance)",
-		ylabel = "NPS integral (HU²·cm²)",
-		xticks = (1:n, [m.name for m in all_m]),
-		xticklabelrotation = π / 3)
-	CM.barplot!(ax1, 1:n, [m.nps_area for m in all_m];
-		color = vcat(fill(:steelblue, length(se_measurements)),
-			fill(:darkorange, length(de_measurements))))
-
-	# MTF f50 and f10
-	ax2 = CM.Axis(fig[1, 2]; title = "MTF f₅₀ and f₁₀",
-		ylabel = "Frequency (lp/cm)",
-		xticks = (1:n, [m.name for m in all_m]),
-		xticklabelrotation = π / 3)
-	CM.barplot!(ax2, collect(1:n) .- 0.15, [m.mtf_f50 for m in all_m];
-		width = 0.3, color = :teal, label = "f₅₀")
-	CM.barplot!(ax2, collect(1:n) .+ 0.15, [m.mtf_f10 for m in all_m];
-		width = 0.3, color = :salmon, label = "f₁₀")
-	CM.axislegend(ax2; position = :rt)
-
-	fig
-end
-
-# ╔═╡ d9ad5eb6-df82-466b-a291-310417adc0bf
-md"""
-## 4. Matching Gammex 472 Phantom
-
-Digital replica of the physical Gammex 472 multi-energy CT phantom at **0.2 mm isotropic**
-resolution (1750 × 1750 × 250 voxels, 35 cm FOV × 5 cm thick). The layout uses **8 rods
-per ring** matching the actual phantom. Pure water rods have a **0.3 mm air gap**;
-all other inserts (Ca, I, SW ref) have a **0.15 mm air gap** (tighter fit).
-The mask is transposed + flipped to match the clinical DICOM display orientation.
-
-**Body:** 330 mm diameter Gammex Model 451 Solid Water (ρ = 1.02 g/cm³)
-
-**Outer ring** (R = 10.5 cm, 8 positions at 45°, gap at 12 o'clock CW):
-Ca100 → Ca200 → Ca300 → Ca400 → Water → SW ref → SW ref → Ca50
-
-**Inner ring** (R = 5.0 cm, 8 positions at 45°, starts at 12 o'clock CW):
-I2.5 → I5.0 → I7.5 → I10 → I15 → I20 → Water → I2.0
-
-**Rod diameter:** 28 mm | **Air gap:** 0.3 mm (water) / 0.15 mm (others) | **Labels:** 0 = air, 1 = solid water,
-2 = pure water, 3 = SW ref, 10–14 = Ca (50–400 mg/mL), 20–26 = I (2.0–20.0 mg/mL)
-"""
-
-# ╔═╡ 830ee323-3fd3-464d-a4bf-20348c206909
-begin
-	const GAMMEX_SOLID_WATER = XA.Materials.gammex_472_solidwater
-
-	const ALL_INSERT_MATERIALS = Dict{UInt8, XA.Material}(
-		UInt8(10) => XA.Materials.gammex_472_ca50_0,
-		UInt8(11) => XA.Materials.gammex_472_ca100_0,
-		UInt8(12) => XA.Materials.gammex_472_ca200_0,
-		UInt8(13) => XA.Materials.gammex_472_ca300_0,
-		UInt8(14) => XA.Materials.gammex_472_ca400_0,
-		UInt8(20) => XA.Materials.gammex_472_i2_0,
-		UInt8(21) => XA.Materials.gammex_472_i2_5,
-		UInt8(22) => XA.Materials.gammex_472_i5_0,
-		UInt8(23) => XA.Materials.gammex_472_i7_5,
-		UInt8(24) => XA.Materials.gammex_472_i10_0,
-		UInt8(25) => XA.Materials.gammex_472_i15_0,
-		UInt8(26) => XA.Materials.gammex_472_i20_0,
-	)
-
-	const MATERIAL_INFO = Dict(
-		UInt8(0) => (name = "Air", color = :gray15),
-		UInt8(1) => (name = "Solid Water", color = :lightskyblue),
-		UInt8(2) => (name = "Pure Water", color = :royalblue),
-		UInt8(3) => (name = "SW Reference", color = :paleturquoise),
-		UInt8(10) => (name = "Ca 50 mg/mL", color = :wheat),
-		UInt8(11) => (name = "Ca 100 mg/mL", color = :sandybrown),
-		UInt8(12) => (name = "Ca 200 mg/mL", color = :orange),
-		UInt8(13) => (name = "Ca 300 mg/mL", color = :darkorange),
-		UInt8(14) => (name = "Ca 400 mg/mL", color = :orangered),
-		UInt8(20) => (name = "I 2.0 mg/mL", color = :honeydew),
-		UInt8(21) => (name = "I 2.5 mg/mL", color = :palegreen),
-		UInt8(22) => (name = "I 5.0 mg/mL", color = :lightgreen),
-		UInt8(23) => (name = "I 7.5 mg/mL", color = :mediumseagreen),
-		UInt8(24) => (name = "I 10.0 mg/mL", color = :seagreen),
-		UInt8(25) => (name = "I 15.0 mg/mL", color = :forestgreen),
-		UInt8(26) => (name = "I 20.0 mg/mL", color = :darkgreen),
-	)
-
-	function create_custom_gammex_472(;
-		n_voxels::Int = 1750,
-		n_slices::Int = 250,
-		fov_cm::Float64 = 35.0,
-		z_cm::Float64 = 5.0,
-	)
-		dx = fov_cm / n_voxels
-		dy = fov_cm / n_voxels
-		dz = z_cm / n_slices
-
-		x = range(-fov_cm / 2 + dx / 2, fov_cm / 2 - dx / 2, length = n_voxels)
-		y = range(-fov_cm / 2 + dy / 2, fov_cm / 2 - dy / 2, length = n_voxels)
-
-		body_radius = 16.5
-		rod_radius = 1.4
-		air_gap_water = 0.03   # 0.3mm clearance for pure water rods
-		air_gap_other = 0.010  # 0.10mm clearance for all other insert rods
-		rod_radius² = rod_radius^2
-		outer_ring_R = 10.5
-		inner_ring_R = 5.5
-
-		outer_start = π / 2 - π / 8
-		outer_angles = [outer_start - (i - 1) * π / 4 for i in 1:8]
-		outer_labels = UInt8[11, 12, 13, 14, 2, 3, 3, 10]
-
-		inner_start = π / 2
-		inner_angles = [inner_start - (i - 1) * π / 4 for i in 1:8]
-		inner_labels = UInt8[21, 22, 23, 24, 25, 26, 2, 20]
-
-		# Per-rod hole radius²: water rods (label 2) get full gap, others get half
-		outer_hole_r² = [(rod_radius + (l == UInt8(2) ? air_gap_water : air_gap_other))^2 for l in outer_labels]
-		inner_hole_r² = [(rod_radius + (l == UInt8(2) ? air_gap_water : air_gap_other))^2 for l in inner_labels]
-
-		outer_cx = [outer_ring_R * cos(a) for a in outer_angles]
-		outer_cy = [outer_ring_R * sin(a) for a in outer_angles]
-		inner_cx = [inner_ring_R * cos(a) for a in inner_angles]
-		inner_cy = [inner_ring_R * sin(a) for a in inner_angles]
-
-		slice = zeros(UInt8, n_voxels, n_voxels)
-
-		for j in 1:n_voxels, i in 1:n_voxels
-			xi, yj = x[i], y[j]
-
-			if xi^2 + yj^2 <= body_radius^2
-				slice[i, j] = UInt8(1)
-
-				for idx in 1:8
-					d² = (xi - outer_cx[idx])^2 + (yj - outer_cy[idx])^2
-					if d² <= outer_hole_r²[idx]
-						slice[i, j] = d² <= rod_radius² ? outer_labels[idx] : UInt8(0)
-						@goto next_voxel
-					end
-				end
-
-				for idx in 1:8
-					d² = (xi - inner_cx[idx])^2 + (yj - inner_cy[idx])^2
-					if d² <= inner_hole_r²[idx]
-						slice[i, j] = d² <= rod_radius² ? inner_labels[idx] : UInt8(0)
-						break
-					end
-				end
-			end
-			@label next_voxel
-		end
-
-		# Flip in y to match clinical DICOM orientation
-		slice = reverse(permutedims(rot180(slice)), dims = 2)
-
-		mask = Array{UInt8, 3}(undef, n_voxels, n_voxels, n_slices)
-		@views for k in 1:n_slices
-			mask[:, :, k] .= slice
-		end
-
-		max_label = 26
-		materials_vec = Vector{XA.Material}(undef, max_label + 1)
-		fill!(materials_vec, XA.Materials.air)
-		materials_vec[1] = XA.Materials.air
-		materials_vec[2] = GAMMEX_SOLID_WATER
-		materials_vec[3] = XA.Materials.water
-		materials_vec[4] = GAMMEX_SOLID_WATER
-
-		for (lbl, mat) in ALL_INSERT_MATERIALS
-			materials_vec[Int(lbl)+1] = mat
-		end
-
-		origin = (-fov_cm / 2 + dx / 2, -fov_cm / 2 + dy / 2, -z_cm / 2 + dz / 2)
-		extent = (Float64(fov_cm), Float64(fov_cm), Float64(z_cm))
-
-		return BS.Phantom(mask, materials_vec, (dx, dy, dz), origin, extent)
-	end
-
-	phantom = create_custom_gammex_472()
-	phantom_mask = phantom.mask
-end;
-
-# ╔═╡ 0a8833cf-06c6-4777-9fe8-c17f7138e6b8
-let
-	mid = size(phantom_mask, 3) ÷ 2
-	nz = size(phantom_mask, 3)
-	slice_data = phantom_mask[:, :, mid]
-
-	unique_labels = sort(unique(slice_data))
-	n_labels = length(unique_labels)
-
-	lut = zeros(Float32, 27)
-	for (i, l) in enumerate(unique_labels)
-		lut[Int(l)+1] = Float32(i)
-	end
-	mapped = lut[Int.(slice_data).+1]
-
-	colors = [MATERIAL_INFO[l].color for l in unique_labels]
-	cmap = CM.cgrad(colors, n_labels, categorical = true)
-	names = [MATERIAL_INFO[l].name for l in unique_labels]
-
-	fig = CM.Figure(size = (1000, 850), fontsize = 12)
-	ax = CM.Axis(fig[1, 1];
-		title = "Custom Gammex 472 — Slice $mid / $nz (0.2mm voxels)",
-		aspect = CM.DataAspect())
-	hm = CM.heatmap!(ax, mapped; colormap = cmap, colorrange = (0.5, n_labels + 0.5))
-	CM.Colorbar(fig[1, 2], hm; ticks = (1:n_labels, names), ticklabelsize = 11, width = 15)
-	fig
-end
-
-# ╔═╡ a1b2c3d4-5001-4000-8000-000000000001
-md"""
-## 5. Single-kVp Simulation — GE Revolution Apex Elite
-
-BasisSimulator forward projection + FDK reconstruction matching the 6 SE clinical
-protocols. Each simulated scan uses the same scanner geometry, kVp, mA, rotation time,
-and collimation as the clinical acquisition, enabling direct clinical-vs-simulated
-comparison of HU accuracy, noise, and spatial resolution.
-
-**Phantom:** High-resolution (1750×1750×250, 0.2mm isotropic) Gammex 472 digital replica
-with z = 5 cm matching the real phantom thickness. The 80mm collimation extends beyond
-the phantom, with air above and below — exactly as in the clinical acquisition.
-The high-resolution input avoids artificial pixelation in the forward projection.
-
-**Reconstruction:** 512×512×64 at 35cm FOV / 8cm z (matching clinical 0.684mm pixels,
-1.25mm slices, STANDARD kernel).
-"""
-
-# ╔═╡ a1b2c3d4-5002-4000-8000-000000000002
-begin
-	# ─── DAS noise parameters (tune these to match GE clinical scans) ───
-	# CatSim defaults: electronic_noise=3500 e⁻, detection_gain=17 e⁻/keV
-	# BasisSimulator defaults: electronic_noise=5000 e⁻, detection_gain=15 e⁻/keV
-	# At 120kVp, mean_E ≈ 60 keV → σ_e_photon = 5000/(60×15) ≈ 5.6 photons
-	# Set electronic_noise=0 to disable (quantum-only, previous behavior)
-	# sim_electronic_noise = 1500.0  # e⁻ (std dev of DAS readout noise) — high value for noise floor matching clinical
-	sim_electronic_noise = 500.0
-	sim_detection_gain = 10.0      # e⁻/keV (scintillator + photodiode gain)
-
-	sim_scanner = BS.Scanner(
-		source_to_isocenter = 625.6,
-		source_to_detector = 1100.0,
-		detector_rows = 256,
-		detector_cols = 834,
-		detector_row_size = 0.625,
-		detector_col_size = 0.6,
-		detector_shape = BS.CURVED_DETECTOR,
-		focal_spot_width = 1.0,
-		focal_spot_length = 1.0,
-		target_angle = 10.0, # GE Quantix 160 tube: 10° anode angle
-		flat_filter_material = :aluminum, # Built-in Al inherent filtration (2.5mm)
-		flat_filter_thickness = 2.5, # Applied in spectrum domain by resolve_spectrum
-		bowtie_filter = :ge_revolution_large, # CatSim 889-point GE Revolution profile
-		detector_material = :lumex, # GE Gemstone Ce:(Tb,Lu)₃Al₅O₁₂ → MC LUT efficiency
-		detector_depth = 3.0,
-		fill_factor_row = 0.9,
-		fill_factor_col = 0.9,
-		electronic_noise = sim_electronic_noise,
-		detection_gain = sim_detection_gain,
-	)
-end
-
-# ╔═╡ a1b2c3d4-7000-4000-8000-e00000000001
-md"""
-### Noise Model
-- **Quantum noise:** Poisson statistics in intensity domain, scaled by I₀ × η\_eff
-- **Electronic noise:** Gaussian additive in intensity domain, σ\_e = electronic\_noise / (mean\_E × detection\_gain)
-- **MC LUT (Lumex):** η(E) folded into I₀\_eff — orthogonal to DAS noise
-
-**Tunable parameters** (in scanner cell above):
-- `sim_electronic_noise` — DAS readout noise floor (e⁻). CatSim default: 3500, ours: 5000. Set to 0 for quantum-only.
-- `sim_detection_gain` — scintillator gain (e⁻/keV). CatSim default: 17, ours: 15. Higher gain → smaller photon-equivalent noise.
-"""
-
-# ╔═╡ a1b2c3d4-7001-4000-8000-000000000001
-# Extra Al filtration beyond the scanner's built-in 2.5mm.
-# GE Revolution Apex has ~7-8mm Al equivalent inherent filtration total.
-# The scanner already applies 2.5mm in the spectrum domain (via resolve_spectrum),
-# so we add 4.5mm more here to reach ~7mm total.
-additional_filters = [("Al", 4.5)]
-
-# ╔═╡ a1b2c3d4-5003-4000-8000-000000000003
-begin
-	sim_rotation_time = 1.0     # seconds (clinical 1.0s rotation)
-	sim_collimation_mm = 5.0    # 8 × 0.625mm — fast single-slice dev mode
-	sim_n_views = 984           # standard GE Revolution
-
-	SE_SIM_SCANS = [
-		(name = "120kVp_50mA_FBP", kvp = 120, mA = 50.0),
-		(name = "120kVp_150mA_FBP", kvp = 120, mA = 150.0),
-		(name = "120kVp_300mA_FBP", kvp = 120, mA = 300.0),
-		(name = "80kVp_480mA_FBP", kvp = 80, mA = 480.0),
-		(name = "100kVp_250mA_FBP", kvp = 100, mA = 250.0),
-		(name = "140kVp_110mA_FBP", kvp = 140, mA = 110.0),
-	]
-end
-
-# ╔═╡ c8c50759-2b6a-453b-9a48-9dc11d4bd996
-sim_opts = BS.SimOptions(
-	fidelity = :high,
-	seed = 1234,
-	# n_energy_bins = 50
+function measure_mtf_circular_edge(
+	hu_slice::AbstractMatrix,
+	cx::Float64, cy::Float64,
+	radius_cm::Float64;
+	fov_cm = 35.0,
+	n_angles = 720,
+	oversample = 4,
+	margin_inner = 15.0,
+	margin_outer = 5.0,
+	fov_guard_pix = 3.0,
 )
+	nx, ny = size(hu_slice)
+	pixel_cm = fov_cm / nx
+	pixel_mm = pixel_cm * 10.0
+	edge_r_pix = radius_cm / pixel_cm
+	fov_r_pix = nx / 2.0
 
-# ╔═╡ 53fdf44c-c940-4f9e-9ec3-4f77748ba370
-sim_opts
+	img_cx = (nx + 1) / 2.0
+	img_cy = (ny + 1) / 2.0
 
-# ╔═╡ a1b2c3d4-5004-4000-8000-000000000004
-# Simulation options + geometry (stable — changing these re-runs simulate!)
-begin
-	sim_recon_xy = 512
-	sim_recon_fov_cm = 35.0
-	sim_slice_thickness_mm = 0.625
-	sim_recon_z_cm = sim_collimation_mm / 10.0
-	sim_n_recon_slices = round(Int, sim_collimation_mm / sim_slice_thickness_mm)
-	sim_matrix_size = (sim_recon_xy, sim_recon_xy, sim_n_recon_slices)
+	r_min = edge_r_pix - margin_inner
+	r_max = edge_r_pix + margin_outer
+	n_r = round(Int, (r_max - r_min) * oversample)
+	radii = range(r_min, r_max, length = n_r)
+	positions_mm = collect((radii .- edge_r_pix) .* pixel_mm)
 
-	# Geometry-only ReconOptions for simulate! workspace creation
-	# (does NOT affect reconstruction filter — change sim_recon_filter for that)
-	sim_recon_geom = BS.ReconOptions(
-		algorithm = :fdk,
-		matrix_size = sim_matrix_size,
-		fov_cm = sim_recon_fov_cm,
-		z_cm = sim_recon_z_cm,
+	esf = zeros(Float64, n_r)
+	counts = zeros(Int, n_r)
+	angles = range(0, 2*pi - 2*pi / n_angles, length = n_angles)
+	n_used = 0
+
+	for th in angles
+		costh, sinth = cos(th), sin(th)
+
+		x_outer = cx + r_max * costh
+		y_outer = cy + r_max * sinth
+		dist_from_img_center = sqrt((x_outer - img_cx)^2 + (y_outer - img_cy)^2)
+		if dist_from_img_center > fov_r_pix - fov_guard_pix
+			continue
+		end
+
+		n_used += 1
+		for (k, r) in enumerate(radii)
+			xi = cx + r * costh
+			yi = cy + r * sinth
+			x0 = floor(Int, xi)
+			y0 = floor(Int, yi)
+			x1 = x0 + 1
+			y1 = y0 + 1
+			if 1 <= x0 && x1 <= nx && 1 <= y0 && y1 <= ny
+				fx = xi - x0
+				fy = yi - y0
+				val = (1 - fx) * (1 - fy) * hu_slice[x0, y0] + fx * (1 - fy) * hu_slice[x1, y0] +
+					  (1 - fx) * fy * hu_slice[x0, y1] + fx * fy * hu_slice[x1, y1]
+				esf[k] += Float64(val)
+				counts[k] += 1
+			end
+		end
+	end
+
+	for k in 1:n_r
+		if counts[k] > 0
+			esf[k] /= counts[k]
+		end
+	end
+
+	if esf[1] < esf[end]
+		reverse!(esf)
+		reverse!(positions_mm)
+	end
+
+	dp = positions_mm[2] - positions_mm[1]
+	lsf = diff(esf) ./ dp
+	lsf_pos = (positions_mm[1:end-1] .+ positions_mm[2:end]) ./ 2
+
+	lsf_max = maximum(abs.(lsf))
+	if lsf_max > 0
+		lsf ./= lsf_max
+	end
+
+	n_pad = nextpow(2, length(lsf) * 4)
+	lsf_padded = zeros(Float64, n_pad)
+	offset = (n_pad - length(lsf)) / 2 |> x -> round(Int, x)
+	lsf_padded[offset+1:offset+length(lsf)] .= lsf
+
+	mtf_complex = fft(lsf_padded)
+	mtf_vals = abs.(mtf_complex)
+	mtf_vals ./= mtf_vals[1]
+
+	n_pos = n_pad / 2 |> Int
+	freq_lp_mm = collect(0:n_pos-1) ./ n_pad .* (1.0 / abs(dp))
+	freq_lp_cm = freq_lp_mm .* 10.0
+	mtf_curve = mtf_vals[1:n_pos]
+
+	nyquist_lp_cm = 1.0 / (2.0 * pixel_mm) * 10.0
+	keep = freq_lp_cm .<= nyquist_lp_cm
+	freq_lp_cm = freq_lp_cm[keep]
+	mtf_curve = mtf_curve[keep]
+
+	function find_freq_at(level)
+		for i in 1:(length(mtf_curve)-1)
+			if mtf_curve[i] >= level && mtf_curve[i+1] < level
+				t = (level - mtf_curve[i]) / (mtf_curve[i+1] - mtf_curve[i])
+				return freq_lp_cm[i] + t * (freq_lp_cm[i+1] - freq_lp_cm[i])
+			end
+		end
+		return mtf_curve[end] >= level ? freq_lp_cm[end] : 0.0
+	end
+
+	f50 = find_freq_at(0.5)
+	f10 = find_freq_at(0.1)
+
+	return (frequencies = freq_lp_cm, mtf = mtf_curve, mtf50 = f50, mtf10 = f10,
+			n_angles_used = n_used)
+end
+
+# ╔═╡ 07020006-0000-4000-8000-000000000000
+"""
+	measure_scan(hu_vol, seg_mask, seg_rods, seg_center, scan_name; fov_cm)
+
+Compute full measurement suite for one reconstruction.
+"""
+function measure_scan(
+	hu_vol::Array{Float32, 3},
+	seg_mask,
+	seg_rods,
+	seg_center,
+	scan_name::String;
+	fov_cm = 35.0,
+)
+	nx, ny, nz = size(hu_vol)
+	mid_z = nz / 2 |> x -> round(Int, x)
+	hu_slice = hu_vol[:, :, mid_z]
+	pixel_mm = fov_cm / nx * 10.0
+
+	rod_order = [
+		"Water (O)", "SW ref 1", "SW ref 2",
+		"Ca 50", "Ca 100", "Ca 200", "Ca 300", "Ca 400",
+		"Water (I)",
+		"I 2.0", "I 2.5", "I 5.0", "I 7.5", "I 10.0", "I 15.0", "I 20.0",
+	]
+
+	rod_means = Float64[]
+	rod_stds = Float64[]
+	rod_names = String[]
+
+	for name in rod_order
+		r = first(filter(x -> x.name == name, seg_rods))
+		roi_r_pix = 1.4 * 0.6 / (fov_cm / nx)
+		roi_r_sq = roi_r_pix^2
+		vals = Float64[]
+		i_lo = max(1, floor(Int, r.cx - roi_r_pix - 1))
+		i_hi = min(nx, ceil(Int, r.cx + roi_r_pix + 1))
+		j_lo = max(1, floor(Int, r.cy - roi_r_pix - 1))
+		j_hi = min(ny, ceil(Int, r.cy + roi_r_pix + 1))
+		for j in j_lo:j_hi, i in i_lo:i_hi
+			if (i - r.cx)^2 + (j - r.cy)^2 <= roi_r_sq
+				push!(vals, Float64(hu_slice[i, j]))
+			end
+		end
+		push!(rod_means, mean(vals))
+		push!(rod_stds, std(vals))
+		push!(rod_names, name)
+	end
+
+	water_idx = 1
+	mu_water = rod_means[water_idx]
+	sigma_water = rod_stds[water_idx]
+	rod_cnr = [(rod_means[i] - mu_water) / sigma_water for i in 1:length(rod_means)]
+
+	center_row = round(Int, seg_center.cx)
+	center_col = round(Int, seg_center.cy)
+
+	nps_result = measure_nps_local(
+		hu_slice, pixel_mm;
+		roi_center = (center_row, center_col),
+		roi_radius_mm = 64.0,
+		unit = :lp_cm,
+		overlap = 0.25,
+	)
+
+	mtf_result = measure_mtf_circular_edge(
+		hu_slice, Float64(seg_center.cx), Float64(seg_center.cy), 16.5;
+		fov_cm = fov_cm,
+		margin_inner = 15.0,
+		margin_outer = 5.0,
+		fov_guard_pix = 3.0,
+	)
+
+	return (
+		name = scan_name,
+		rod_names = rod_names,
+		rod_means = rod_means,
+		rod_stds = rod_stds,
+		rod_cnr = rod_cnr,
+		nps = nps_result,
+		mtf = mtf_result,
+		nps_peak_freq = nps_result.peak_frequency,
+		nps_area = nps_result.integrated_nps,
+		mtf_f50 = mtf_result.mtf50,
+		mtf_f10 = mtf_result.mtf10,
 	)
 end
 
-# ╔═╡ 96c17cb8-c478-4938-90d2-497b1e008cf0
-sim_recon_z_cm
-
-# ╔═╡ 02f63ae1-4850-4cb6-8daa-8536c3458898
+# ╔═╡ 07020007-0000-4000-8000-000000000000
 # Build a custom spatial-domain filter kernel from frequency-domain control points.
-# Exact copy of package's create_spatial_kernel + _apply_catsim_freq_window!
 function build_custom_filter_kernel(n::Int, pixel_size::Float32,
 	control_x::NTuple, control_y::NTuple)
 	T = Float32
@@ -1794,18 +655,831 @@ function build_custom_filter_kernel(n::Int, pixel_size::Float32,
 	return kernel
 end
 
-# ╔═╡ a1b2c3d4-5005-4000-8000-000000000005
+# ╔═╡ 07020008-0000-4000-8000-000000000000
 begin
-	# Real Gammex 472 is 5cm thick — sits inside the 8cm collimation window
-	# with air above/below, exactly matching the clinical acquisition geometry
-	sim_phantom_z_cm = 5.0
+	GAMMEX_SOLID_WATER = XA.Materials.gammex_472_solidwater
 
-	# High-res phantom: 0.2mm isotropic for accurate forward projection
+	ALL_INSERT_MATERIALS = Dict{UInt8, XA.Material}(
+		UInt8(10) => XA.Materials.gammex_472_ca50_0,
+		UInt8(11) => XA.Materials.gammex_472_ca100_0,
+		UInt8(12) => XA.Materials.gammex_472_ca200_0,
+		UInt8(13) => XA.Materials.gammex_472_ca300_0,
+		UInt8(14) => XA.Materials.gammex_472_ca400_0,
+		UInt8(20) => XA.Materials.gammex_472_i2_0,
+		UInt8(21) => XA.Materials.gammex_472_i2_5,
+		UInt8(22) => XA.Materials.gammex_472_i5_0,
+		UInt8(23) => XA.Materials.gammex_472_i7_5,
+		UInt8(24) => XA.Materials.gammex_472_i10_0,
+		UInt8(25) => XA.Materials.gammex_472_i15_0,
+		UInt8(26) => XA.Materials.gammex_472_i20_0,
+	)
+
+	MATERIAL_INFO = Dict(
+		UInt8(0) => (name = "Air", color = :gray15),
+		UInt8(1) => (name = "Solid Water", color = :lightskyblue),
+		UInt8(2) => (name = "Pure Water", color = :royalblue),
+		UInt8(3) => (name = "SW Reference", color = :paleturquoise),
+		UInt8(10) => (name = "Ca 50 mg/mL", color = :wheat),
+		UInt8(11) => (name = "Ca 100 mg/mL", color = :sandybrown),
+		UInt8(12) => (name = "Ca 200 mg/mL", color = :orange),
+		UInt8(13) => (name = "Ca 300 mg/mL", color = :darkorange),
+		UInt8(14) => (name = "Ca 400 mg/mL", color = :orangered),
+		UInt8(20) => (name = "I 2.0 mg/mL", color = :honeydew),
+		UInt8(21) => (name = "I 2.5 mg/mL", color = :palegreen),
+		UInt8(22) => (name = "I 5.0 mg/mL", color = :lightgreen),
+		UInt8(23) => (name = "I 7.5 mg/mL", color = :mediumseagreen),
+		UInt8(24) => (name = "I 10.0 mg/mL", color = :seagreen),
+		UInt8(25) => (name = "I 15.0 mg/mL", color = :forestgreen),
+		UInt8(26) => (name = "I 20.0 mg/mL", color = :darkgreen),
+	)
+end;
+
+# ╔═╡ 07020009-0000-4000-8000-000000000000
+function create_custom_gammex_472(;
+	n_voxels::Int = 1750,
+	n_slices::Int = 250,
+	fov_cm::Float64 = 35.0,
+	z_cm::Float64 = 5.0,
+)
+	dx = fov_cm / n_voxels
+	dy = fov_cm / n_voxels
+	dz = z_cm / n_slices
+
+	x = range(-fov_cm / 2 + dx / 2, fov_cm / 2 - dx / 2, length = n_voxels)
+	y = range(-fov_cm / 2 + dy / 2, fov_cm / 2 - dy / 2, length = n_voxels)
+
+	body_radius = 16.5
+	rod_radius = 1.4
+	air_gap_water = 0.03
+	air_gap_other = 0.010
+	rod_radius_sq = rod_radius^2
+	outer_ring_R = 10.5
+	inner_ring_R = 5.5
+
+	outer_start = pi / 2 - pi / 8
+	outer_angles = [outer_start - (i - 1) * pi / 4 for i in 1:8]
+	outer_labels = UInt8[11, 12, 13, 14, 2, 3, 3, 10]
+
+	inner_start = pi / 2
+	inner_angles = [inner_start - (i - 1) * pi / 4 for i in 1:8]
+	inner_labels = UInt8[21, 22, 23, 24, 25, 26, 2, 20]
+
+	outer_hole_r_sq = [(rod_radius + (l == UInt8(2) ? air_gap_water : air_gap_other))^2 for l in outer_labels]
+	inner_hole_r_sq = [(rod_radius + (l == UInt8(2) ? air_gap_water : air_gap_other))^2 for l in inner_labels]
+
+	outer_cx = [outer_ring_R * cos(a) for a in outer_angles]
+	outer_cy = [outer_ring_R * sin(a) for a in outer_angles]
+	inner_cx = [inner_ring_R * cos(a) for a in inner_angles]
+	inner_cy = [inner_ring_R * sin(a) for a in inner_angles]
+
+	slice = zeros(UInt8, n_voxels, n_voxels)
+
+	for j in 1:n_voxels, i in 1:n_voxels
+		xi, yj = x[i], y[j]
+
+		if xi^2 + yj^2 <= body_radius^2
+			slice[i, j] = UInt8(1)
+
+			for idx in 1:8
+				d_sq = (xi - outer_cx[idx])^2 + (yj - outer_cy[idx])^2
+				if d_sq <= outer_hole_r_sq[idx]
+					slice[i, j] = d_sq <= rod_radius_sq ? outer_labels[idx] : UInt8(0)
+					@goto next_voxel
+				end
+			end
+
+			for idx in 1:8
+				d_sq = (xi - inner_cx[idx])^2 + (yj - inner_cy[idx])^2
+				if d_sq <= inner_hole_r_sq[idx]
+					slice[i, j] = d_sq <= rod_radius_sq ? inner_labels[idx] : UInt8(0)
+					break
+				end
+			end
+		end
+		@label next_voxel
+	end
+
+	slice = reverse(permutedims(rot180(slice)), dims = 2)
+
+	mask = Array{UInt8, 3}(undef, n_voxels, n_voxels, n_slices)
+	@views for k in 1:n_slices
+		mask[:, :, k] .= slice
+	end
+
+	max_label = 26
+	materials_vec = Vector{XA.Material}(undef, max_label + 1)
+	fill!(materials_vec, XA.Materials.air)
+	materials_vec[1] = XA.Materials.air
+	materials_vec[2] = GAMMEX_SOLID_WATER
+	materials_vec[3] = XA.Materials.water
+	materials_vec[4] = GAMMEX_SOLID_WATER
+
+	for (lbl, mat) in ALL_INSERT_MATERIALS
+		materials_vec[Int(lbl)+1] = mat
+	end
+
+	origin = (-fov_cm / 2 + dx / 2, -fov_cm / 2 + dy / 2, -z_cm / 2 + dz / 2)
+	extent = (Float64(fov_cm), Float64(fov_cm), Float64(z_cm))
+
+	return BS.Phantom(mask, materials_vec, (dx, dy, dz), origin, extent)
+end
+
+# ╔═╡ 07030001-0000-4000-8000-000000000000
+md"""
+## 3. Single-Energy Scans — ASiR-V 0% (FBP) vs ASiR-V 50%
+
+Six axial acquisitions of the Gammex 472 phantom on the GE Revolution Apex Elite.
+Each protocol is loaded once: `_fbp` = ASiR-V 0% (pure FBP), `_ir` = ASiR-V 50%.
+DICOM pixel data is JPEG 2000 compressed; decoded via ImageMagick.jl + DICOM.jl.
+"""
+
+# ╔═╡ 07030002-0000-4000-8000-000000000000
+rootdir = "/Users/daleblack/Desktop/SCANS"
+
+# ╔═╡ 07030003-0000-4000-8000-000000000000
+begin  # 120 kVp / 50 mA / 3.38 mGy
+	dcms_120_low_fbp = DCM.dcmdir_parse(joinpath(rootdir, "120kVp_50mA_3.38mGyCTDI/0%"))
+	dcms_120_low_ir = DCM.dcmdir_parse(joinpath(rootdir, "120kVp_50mA_3.38mGyCTDI/50%"))
+	hu_120_low_fbp = load_hu_volume(dcms_120_low_fbp)
+	hu_120_low_ir = load_hu_volume(dcms_120_low_ir)
+end;
+
+# ╔═╡ 07030004-0000-4000-8000-000000000000
+begin  # 120 kVp / 150 mA / 10.16 mGy
+	dcms_120_mid_fbp = DCM.dcmdir_parse(joinpath(rootdir, "120kVp_150mA_10.16mGyCTDI/0%"))
+	dcms_120_mid_ir = DCM.dcmdir_parse(joinpath(rootdir, "120kVp_150mA_10.16mGyCTDI/50%"))
+	hu_120_mid_fbp = load_hu_volume(dcms_120_mid_fbp)
+	hu_120_mid_ir = load_hu_volume(dcms_120_mid_ir)
+end;
+
+# ╔═╡ 07030005-0000-4000-8000-000000000000
+begin  # 120 kVp / 300 mA / 20.38 mGy
+	dcms_120_high_fbp = DCM.dcmdir_parse(joinpath(rootdir, "120kVp_300mA_20.38mGyCTDI/0%"))
+	dcms_120_high_ir = DCM.dcmdir_parse(joinpath(rootdir, "120kVp_300mA_20.38mGyCTDI/50%"))
+	hu_120_high_fbp = load_hu_volume(dcms_120_high_fbp)
+	hu_120_high_ir = load_hu_volume(dcms_120_high_ir)
+end;
+
+# ╔═╡ 07030006-0000-4000-8000-000000000000
+begin  # 80 kVp / 480 mA / 10.32 mGy
+	dcms_80_fbp = DCM.dcmdir_parse(joinpath(rootdir, "80kVp_480mA_10.32mGyCTDI/0%"))
+	dcms_80_ir = DCM.dcmdir_parse(joinpath(rootdir, "80kVp_480mA_10.32mGyCTDI/50%"))
+	hu_80_fbp = load_hu_volume(dcms_80_fbp)
+	hu_80_ir = load_hu_volume(dcms_80_ir)
+end;
+
+# ╔═╡ 07030007-0000-4000-8000-000000000000
+begin  # 100 kVp / 250 mA / 10.53 mGy
+	dcms_100_fbp = DCM.dcmdir_parse(joinpath(rootdir, "100kVp_250mA_10.53mGyCTDI/0%"))
+	dcms_100_ir = DCM.dcmdir_parse(joinpath(rootdir, "100kVp_250mA_10.53mGyCTDI/50%"))
+	hu_100_fbp = load_hu_volume(dcms_100_fbp)
+	hu_100_ir = load_hu_volume(dcms_100_ir)
+end;
+
+# ╔═╡ 07030008-0000-4000-8000-000000000000
+begin  # 140 kVp / 110 mA / 10.85 mGy
+	dcms_140_fbp = DCM.dcmdir_parse(joinpath(rootdir, "140kVp_110mA_10.85mGyCTDI/0%"))
+	dcms_140_ir = DCM.dcmdir_parse(joinpath(rootdir, "140kVp_110mA_10.85mGyCTDI/50%"))
+	hu_140_fbp = load_hu_volume(dcms_140_fbp)
+	hu_140_ir = load_hu_volume(dcms_140_ir)
+end;
+
+# ╔═╡ 07030009-0000-4000-8000-000000000000
+let
+	mid = size(hu_120_low_fbp, 3) ÷ 2
+	soft = (-160, 240)
+	bone = (-350, 1150)
+	lung = (-1350, 150)
+	windows = [(soft, "Soft Tissue"), (bone, "Bone"), (lung, "Lung")]
+
+	fig = CM.Figure(size = (1500, 1000))
+
+	for (col, (clim, wname)) in enumerate(windows)
+		ax = CM.Axis(fig[1, col]; title = "FBP (ASiR-V 0%) — $wname", titlesize = 12,
+			aspect = CM.DataAspect(), yreversed = true)
+		CM.heatmap!(ax, hu_120_low_fbp[:, :, mid]; colormap = :grays, colorrange = clim)
+		CM.hidedecorations!(ax)
+		CM.hidespines!(ax)
+
+		ax = CM.Axis(fig[2, col]; title = "ASiR-V 50% — $wname", titlesize = 12,
+			aspect = CM.DataAspect(), yreversed = true)
+		CM.heatmap!(ax, hu_120_low_ir[:, :, mid]; colormap = :grays, colorrange = clim)
+		CM.hidedecorations!(ax)
+		CM.hidespines!(ax)
+	end
+
+	CM.Label(fig[0, :]; text = "120 kVp · 50 mA · CTDIvol 3.38 mGy", fontsize = 16, font = :bold)
+	CM.save(joinpath(RESULTS_DIR, "ge_se_clinical_120kVp_50mA.png"), fig, px_per_unit = 2)
+	fig
+end
+
+# ╔═╡ 07030010-0000-4000-8000-000000000000
+let
+	mid = size(hu_120_mid_fbp, 3) ÷ 2
+	soft = (-160, 240)
+	bone = (-350, 1150)
+	lung = (-1350, 150)
+	windows = [(soft, "Soft Tissue"), (bone, "Bone"), (lung, "Lung")]
+
+	fig = CM.Figure(size = (1500, 1000))
+
+	for (col, (clim, wname)) in enumerate(windows)
+		ax = CM.Axis(fig[1, col]; title = "FBP (ASiR-V 0%) — $wname", titlesize = 12,
+			aspect = CM.DataAspect(), yreversed = true)
+		CM.heatmap!(ax, hu_120_mid_fbp[:, :, mid]; colormap = :grays, colorrange = clim)
+		CM.hidedecorations!(ax)
+		CM.hidespines!(ax)
+
+		ax = CM.Axis(fig[2, col]; title = "ASiR-V 50% — $wname", titlesize = 12,
+			aspect = CM.DataAspect(), yreversed = true)
+		CM.heatmap!(ax, hu_120_mid_ir[:, :, mid]; colormap = :grays, colorrange = clim)
+		CM.hidedecorations!(ax)
+		CM.hidespines!(ax)
+	end
+
+	CM.Label(fig[0, :]; text = "120 kVp · 150 mA · CTDIvol 10.16 mGy", fontsize = 16, font = :bold)
+	CM.save(joinpath(RESULTS_DIR, "ge_se_clinical_120kVp_150mA.png"), fig, px_per_unit = 2)
+	fig
+end
+
+# ╔═╡ 07030011-0000-4000-8000-000000000000
+let
+	mid = size(hu_120_high_fbp, 3) ÷ 2
+	soft = (-160, 240)
+	bone = (-350, 1150)
+	lung = (-1350, 150)
+	windows = [(soft, "Soft Tissue"), (bone, "Bone"), (lung, "Lung")]
+
+	fig = CM.Figure(size = (1500, 1000))
+
+	for (col, (clim, wname)) in enumerate(windows)
+		ax = CM.Axis(fig[1, col]; title = "FBP (ASiR-V 0%) — $wname", titlesize = 12,
+			aspect = CM.DataAspect(), yreversed = true)
+		CM.heatmap!(ax, hu_120_high_fbp[:, :, mid]; colormap = :grays, colorrange = clim)
+		CM.hidedecorations!(ax)
+		CM.hidespines!(ax)
+
+		ax = CM.Axis(fig[2, col]; title = "ASiR-V 50% — $wname", titlesize = 12,
+			aspect = CM.DataAspect(), yreversed = true)
+		CM.heatmap!(ax, hu_120_high_ir[:, :, mid]; colormap = :grays, colorrange = clim)
+		CM.hidedecorations!(ax)
+		CM.hidespines!(ax)
+	end
+
+	CM.Label(fig[0, :]; text = "120 kVp · 300 mA · CTDIvol 20.38 mGy", fontsize = 16, font = :bold)
+	CM.save(joinpath(RESULTS_DIR, "ge_se_clinical_120kVp_300mA.png"), fig, px_per_unit = 2)
+	fig
+end
+
+# ╔═╡ 07030012-0000-4000-8000-000000000000
+let
+	mid = size(hu_80_fbp, 3) ÷ 2
+	soft = (-160, 240)
+	bone = (-350, 1150)
+	lung = (-1350, 150)
+	windows = [(soft, "Soft Tissue"), (bone, "Bone"), (lung, "Lung")]
+
+	fig = CM.Figure(size = (1500, 1000))
+
+	for (col, (clim, wname)) in enumerate(windows)
+		ax = CM.Axis(fig[1, col]; title = "FBP (ASiR-V 0%) — $wname", titlesize = 12,
+			aspect = CM.DataAspect(), yreversed = true)
+		CM.heatmap!(ax, hu_80_fbp[:, :, mid]; colormap = :grays, colorrange = clim)
+		CM.hidedecorations!(ax)
+		CM.hidespines!(ax)
+
+		ax = CM.Axis(fig[2, col]; title = "ASiR-V 50% — $wname", titlesize = 12,
+			aspect = CM.DataAspect(), yreversed = true)
+		CM.heatmap!(ax, hu_80_ir[:, :, mid]; colormap = :grays, colorrange = clim)
+		CM.hidedecorations!(ax)
+		CM.hidespines!(ax)
+	end
+
+	CM.Label(fig[0, :]; text = "80 kVp · 480 mA · CTDIvol 10.32 mGy", fontsize = 16, font = :bold)
+	CM.save(joinpath(RESULTS_DIR, "ge_se_clinical_80kVp_480mA.png"), fig, px_per_unit = 2)
+	fig
+end
+
+# ╔═╡ 07030013-0000-4000-8000-000000000000
+let
+	mid = size(hu_100_fbp, 3) ÷ 2
+	soft = (-160, 240)
+	bone = (-350, 1150)
+	lung = (-1350, 150)
+	windows = [(soft, "Soft Tissue"), (bone, "Bone"), (lung, "Lung")]
+
+	fig = CM.Figure(size = (1500, 1000))
+
+	for (col, (clim, wname)) in enumerate(windows)
+		ax = CM.Axis(fig[1, col]; title = "FBP (ASiR-V 0%) — $wname", titlesize = 12,
+			aspect = CM.DataAspect(), yreversed = true)
+		CM.heatmap!(ax, hu_100_fbp[:, :, mid]; colormap = :grays, colorrange = clim)
+		CM.hidedecorations!(ax)
+		CM.hidespines!(ax)
+
+		ax = CM.Axis(fig[2, col]; title = "ASiR-V 50% — $wname", titlesize = 12,
+			aspect = CM.DataAspect(), yreversed = true)
+		CM.heatmap!(ax, hu_100_ir[:, :, mid]; colormap = :grays, colorrange = clim)
+		CM.hidedecorations!(ax)
+		CM.hidespines!(ax)
+	end
+
+	CM.Label(fig[0, :]; text = "100 kVp · 250 mA · CTDIvol 10.53 mGy", fontsize = 16, font = :bold)
+	CM.save(joinpath(RESULTS_DIR, "ge_se_clinical_100kVp_250mA.png"), fig, px_per_unit = 2)
+	fig
+end
+
+# ╔═╡ 07030014-0000-4000-8000-000000000000
+let
+	mid = size(hu_140_fbp, 3) ÷ 2
+	soft = (-160, 240)
+	bone = (-350, 1150)
+	lung = (-1350, 150)
+	windows = [(soft, "Soft Tissue"), (bone, "Bone"), (lung, "Lung")]
+
+	fig = CM.Figure(size = (1500, 1000))
+
+	for (col, (clim, wname)) in enumerate(windows)
+		ax = CM.Axis(fig[1, col]; title = "FBP (ASiR-V 0%) — $wname", titlesize = 12,
+			aspect = CM.DataAspect(), yreversed = true)
+		CM.heatmap!(ax, hu_140_fbp[:, :, mid]; colormap = :grays, colorrange = clim)
+		CM.hidedecorations!(ax)
+		CM.hidespines!(ax)
+
+		ax = CM.Axis(fig[2, col]; title = "ASiR-V 50% — $wname", titlesize = 12,
+			aspect = CM.DataAspect(), yreversed = true)
+		CM.heatmap!(ax, hu_140_ir[:, :, mid]; colormap = :grays, colorrange = clim)
+		CM.hidedecorations!(ax)
+		CM.hidespines!(ax)
+	end
+
+	CM.Label(fig[0, :]; text = "140 kVp · 110 mA · CTDIvol 10.85 mGy", fontsize = 16, font = :bold)
+	CM.save(joinpath(RESULTS_DIR, "ge_se_clinical_140kVp_110mA.png"), fig, px_per_unit = 2)
+	fig
+end
+
+# ╔═╡ 07040001-0000-4000-8000-000000000000
+md"""
+## 4. Automatic Rod Segmentation — 120 kVp / ASiR-V 50% (10.16 mGy)
+
+Intensity-based segmentation of all 16 Gammex 472 insert rods.
+"""
+
+# ╔═╡ 07040002-0000-4000-8000-000000000000
+seg_result = let
+	mid_z = size(hu_120_mid_ir, 3) ÷ 2
+	hu_slice = hu_120_mid_ir[:, :, mid_z]
+	mask, rod_info, center = segment_gammex_rods(hu_slice; fov_cm = 35.0)
+	(mask = mask, rods = rod_info, center = center, slice_idx = mid_z)
+end;
+
+# ╔═╡ 07040003-0000-4000-8000-000000000000
+let
+	hu = hu_120_mid_ir[:, :, seg_result.slice_idx]
+	rods = seg_result.rods
+	pixel_cm = 35.0 / size(hu, 1)
+	roi_r_pix = 1.4 * 0.7 / pixel_cm
+
+	fig = CM.Figure(size = (1100, 500), fontsize = 11)
+
+	ax1 = CM.Axis(fig[1, 1]; title = "120 kVp ASiR-V 50% — Segmented ROIs (slice $(seg_result.slice_idx))",
+		aspect = CM.DataAspect(), yreversed = true)
+	CM.heatmap!(ax1, hu; colormap = :grays, colorrange = (-200, 500))
+
+	th_circle = range(0, 2*pi, length = 61)
+	for r in rods
+		xs = r.cx .+ roi_r_pix .* cos.(th_circle)
+		ys = r.cy .+ roi_r_pix .* sin.(th_circle)
+		c = r.ring == :outer ? :orange : :lime
+		CM.lines!(ax1, xs, ys; color = c, linewidth = 1.5)
+		CM.text!(ax1, r.cx, r.cy + roi_r_pix + 4;
+			text = r.name, fontsize = 7, align = (:center, :bottom), color = c)
+	end
+	CM.scatter!(ax1, [seg_result.center.cx], [seg_result.center.cy];
+		color = :red, marker = :cross, markersize = 12)
+	CM.hidedecorations!(ax1)
+	CM.hidespines!(ax1)
+
+	ax2 = CM.Axis(fig[1, 2]; title = "Rod Label Mask", aspect = CM.DataAspect(), yreversed = true)
+	mask_vis = Float32.(seg_result.mask)
+	mask_vis[mask_vis.==0] .= NaN
+	CM.heatmap!(ax2, hu; colormap = :grays, colorrange = (-200, 500))
+	CM.heatmap!(ax2, mask_vis; colormap = :turbo, colorrange = (1, 27), nan_color = :transparent)
+	CM.hidedecorations!(ax2)
+	CM.hidespines!(ax2)
+
+	CM.save(joinpath(RESULTS_DIR, "ge_se_segmentation_rois.png"), fig, px_per_unit = 2)
+	fig
+end
+
+# ╔═╡ 07040004-0000-4000-8000-000000000000
+let
+	rods = seg_result.rods
+	order = [
+		"Water (O)", "SW ref 1", "SW ref 2",
+		"Ca 50", "Ca 100", "Ca 200", "Ca 300", "Ca 400",
+		"Water (I)",
+		"I 2.0", "I 2.5", "I 5.0", "I 7.5", "I 10.0", "I 15.0", "I 20.0",
+	]
+	idx = [findfirst(r -> r.name == nm, rods) for nm in order]
+	rods_sorted = rods[idx]
+	n = length(rods_sorted)
+
+	names = [r.name for r in rods_sorted]
+	means = [r.mean_hu for r in rods_sorted]
+	stds = [r.std_hu for r in rods_sorted]
+
+	colors = map(rods_sorted) do r
+		r.ring == :outer ?
+		(startswith(r.name, "Ca") ? :darkorange : :steelblue) :
+		(startswith(r.name, "I") ? :forestgreen : :steelblue)
+	end
+
+	fig = CM.Figure(size = (1000, 500), fontsize = 11)
+	ax = CM.Axis(fig[1, 1];
+		title = "ROI Measurements — 120 kVp · 150 mA · ASiR-V 50% [rotation=$(seg_result.center.rotation_deg)°]",
+		ylabel = "Mean HU ± σ",
+		xticks = (1:n, names),
+		xticklabelrotation = pi / 4)
+	CM.barplot!(ax, 1:n, means; color = colors)
+	CM.errorbars!(ax, 1:n, means, stds; color = :black, whiskerwidth = 4)
+
+	for (i, (m, s)) in enumerate(zip(means, stds))
+		CM.text!(ax, i, m + s + 5;
+			text = "$(round(Int, m))", fontsize = 8, align = (:center, :bottom))
+	end
+
+	CM.save(joinpath(RESULTS_DIR, "ge_se_rod_hu_bars.png"), fig, px_per_unit = 2)
+	fig
+end
+
+# ╔═╡ 07040005-0000-4000-8000-000000000000
+se_measurements = let
+	se_scans = [
+		(hu_120_low_fbp, "120kVp_50mA_FBP"),
+		(hu_120_low_ir, "120kVp_50mA_ASiRV50"),
+		(hu_120_mid_fbp, "120kVp_150mA_FBP"),
+		(hu_120_mid_ir, "120kVp_150mA_ASiRV50"),
+		(hu_120_high_fbp, "120kVp_300mA_FBP"),
+		(hu_120_high_ir, "120kVp_300mA_ASiRV50"),
+		(hu_80_fbp, "80kVp_480mA_FBP"),
+		(hu_80_ir, "80kVp_480mA_ASiRV50"),
+		(hu_100_fbp, "100kVp_250mA_FBP"),
+		(hu_100_ir, "100kVp_250mA_ASiRV50"),
+		(hu_140_fbp, "140kVp_110mA_FBP"),
+		(hu_140_ir, "140kVp_110mA_ASiRV50"),
+	]
+
+	[measure_scan(vol, seg_result.mask, seg_result.rods, seg_result.center, name)
+	 for (vol, name) in se_scans]
+end;
+
+# ╔═╡ 07050001-0000-4000-8000-000000000000
+md"""
+## 5. Dual-Energy 80/140 kVp — Virtual Monoenergetic Images (VMI)
+
+GE GSI acquisition at 80/140 kVp rapid switching. CTDIvol = 10.07 mGy.
+VMI reconstructions at 40, 70, 100, and 140 keV.
+"""
+
+# ╔═╡ 07050002-0000-4000-8000-000000000000
+hu_de_40keV = let
+	dcms = DCM.dcmdir_parse(joinpath(rootdir, "DE_80_140kVp_10.07mGyCTDI/40"))
+	load_hu_volume(dcms)
+end;
+
+# ╔═╡ 07050003-0000-4000-8000-000000000000
+hu_de_70keV = let
+	dcms = DCM.dcmdir_parse(joinpath(rootdir, "DE_80_140kVp_10.07mGyCTDI/70"))
+	load_hu_volume(dcms)
+end;
+
+# ╔═╡ 07050004-0000-4000-8000-000000000000
+hu_de_100keV = let
+	dcms = DCM.dcmdir_parse(joinpath(rootdir, "DE_80_140kVp_10.07mGyCTDI/100"))
+	load_hu_volume(dcms)
+end;
+
+# ╔═╡ 07050005-0000-4000-8000-000000000000
+hu_de_140keV = let
+	dcms = DCM.dcmdir_parse(joinpath(rootdir, "DE_80_140kVp_10.07mGyCTDI/140"))
+	load_hu_volume(dcms)
+end;
+
+# ╔═╡ 07050006-0000-4000-8000-000000000000
+let
+	vols = [hu_de_40keV, hu_de_70keV, hu_de_100keV, hu_de_140keV]
+	labels = ["40 keV", "70 keV", "100 keV", "140 keV"]
+	mid = size(vols[1], 3) ÷ 2
+	soft = (-160, 240)
+	bone = (-350, 1150)
+	lung = (-1350, 150)
+	windows = [(soft, "Soft Tissue"), (bone, "Bone"), (lung, "Lung")]
+
+	fig = CM.Figure(size = (1500, 2000))
+
+	for (row, (vol, keV_label)) in enumerate(zip(vols, labels))
+		for (col, (clim, wname)) in enumerate(windows)
+			ax = CM.Axis(fig[row, col]; title = "$keV_label — $wname", titlesize = 12,
+				aspect = CM.DataAspect(), yreversed = true)
+			CM.heatmap!(ax, vol[:, :, mid]; colormap = :grays, colorrange = clim)
+			CM.hidedecorations!(ax)
+			CM.hidespines!(ax)
+		end
+	end
+
+	CM.Label(fig[0, :]; text = "DE 80/140 kVp — VMI (CTDIvol 10.07 mGy)", fontsize = 16, font = :bold)
+	CM.save(joinpath(RESULTS_DIR, "ge_de_clinical_vmi_grid.png"), fig, px_per_unit = 2)
+	fig
+end
+
+# ╔═╡ 07050007-0000-4000-8000-000000000000
+md"""
+### 5b. Automatic Rod Segmentation — DE 100 keV VMI
+"""
+
+# ╔═╡ 07050008-0000-4000-8000-000000000000
+seg_result_de = let
+	mid_z = size(hu_de_100keV, 3) ÷ 2
+	hu_slice = hu_de_100keV[:, :, mid_z]
+	mask, rod_info, center = segment_gammex_rods(hu_slice; fov_cm = 35.0)
+	(mask = mask, rods = rod_info, center = center, slice_idx = mid_z)
+end;
+
+# ╔═╡ 07050009-0000-4000-8000-000000000000
+let
+	hu = hu_de_100keV[:, :, seg_result_de.slice_idx]
+	rods = seg_result_de.rods
+	pixel_cm = 35.0 / size(hu, 1)
+	roi_r_pix = 1.4 * 0.7 / pixel_cm
+
+	fig = CM.Figure(size = (1100, 500), fontsize = 11)
+
+	ax1 = CM.Axis(fig[1, 1]; title = "DE 100 keV VMI — Segmented ROIs (slice $(seg_result_de.slice_idx))",
+		aspect = CM.DataAspect(), yreversed = true)
+	CM.heatmap!(ax1, hu; colormap = :grays, colorrange = (-200, 500))
+
+	th_circle = range(0, 2*pi, length = 61)
+	for r in rods
+		xs = r.cx .+ roi_r_pix .* cos.(th_circle)
+		ys = r.cy .+ roi_r_pix .* sin.(th_circle)
+		c = r.ring == :outer ? :orange : :lime
+		CM.lines!(ax1, xs, ys; color = c, linewidth = 1.5)
+		CM.text!(ax1, r.cx, r.cy + roi_r_pix + 4;
+			text = r.name, fontsize = 7, align = (:center, :bottom), color = c)
+	end
+	CM.scatter!(ax1, [seg_result_de.center.cx], [seg_result_de.center.cy];
+		color = :red, marker = :cross, markersize = 12)
+	CM.hidedecorations!(ax1)
+	CM.hidespines!(ax1)
+
+	ax2 = CM.Axis(fig[1, 2]; title = "Rod Label Mask", aspect = CM.DataAspect(), yreversed = true)
+	mask_vis = Float32.(seg_result_de.mask)
+	mask_vis[mask_vis.==0] .= NaN
+	CM.heatmap!(ax2, hu; colormap = :grays, colorrange = (-200, 500))
+	CM.heatmap!(ax2, mask_vis; colormap = :turbo, colorrange = (1, 27), nan_color = :transparent)
+	CM.hidedecorations!(ax2)
+	CM.hidespines!(ax2)
+
+	CM.save(joinpath(RESULTS_DIR, "ge_de_segmentation_rois.png"), fig, px_per_unit = 2)
+	fig
+end
+
+# ╔═╡ 07050010-0000-4000-8000-000000000000
+let
+	rods = seg_result_de.rods
+	order = [
+		"Water (O)", "SW ref 1", "SW ref 2",
+		"Ca 50", "Ca 100", "Ca 200", "Ca 300", "Ca 400",
+		"Water (I)",
+		"I 2.0", "I 2.5", "I 5.0", "I 7.5", "I 10.0", "I 15.0", "I 20.0",
+	]
+	idx = [findfirst(r -> r.name == nm, rods) for nm in order]
+	rods_sorted = rods[idx]
+	n = length(rods_sorted)
+
+	names = [r.name for r in rods_sorted]
+	means = [r.mean_hu for r in rods_sorted]
+	stds = [r.std_hu for r in rods_sorted]
+
+	colors = map(rods_sorted) do r
+		r.ring == :outer ?
+		(startswith(r.name, "Ca") ? :darkorange : :steelblue) :
+		(startswith(r.name, "I") ? :forestgreen : :steelblue)
+	end
+
+	fig = CM.Figure(size = (1000, 500), fontsize = 11)
+	ax = CM.Axis(fig[1, 1];
+		title = "ROI Measurements — DE 100 keV VMI [rotation=$(seg_result_de.center.rotation_deg)°]",
+		ylabel = "Mean HU ± σ",
+		xticks = (1:n, names),
+		xticklabelrotation = pi / 4)
+	CM.barplot!(ax, 1:n, means; color = colors)
+	CM.errorbars!(ax, 1:n, means, stds; color = :black, whiskerwidth = 4)
+
+	for (i, (m, s)) in enumerate(zip(means, stds))
+		CM.text!(ax, i, m + s + 5;
+			text = "$(round(Int, m))", fontsize = 8, align = (:center, :bottom))
+	end
+
+	CM.save(joinpath(RESULTS_DIR, "ge_de_rod_hu_bars.png"), fig, px_per_unit = 2)
+	fig
+end
+
+# ╔═╡ 07050011-0000-4000-8000-000000000000
+de_measurements = let
+	de_scans = [
+		(hu_de_40keV, "DE_40keV"),
+		(hu_de_70keV, "DE_70keV"),
+		(hu_de_100keV, "DE_100keV"),
+		(hu_de_140keV, "DE_140keV"),
+	]
+
+	[measure_scan(vol, seg_result_de.mask, seg_result_de.rods, seg_result_de.center, name)
+	 for (vol, name) in de_scans]
+end;
+
+# ╔═╡ 07060001-0000-4000-8000-000000000000
+md"""
+## 6. Quantitative Measurements — NPS, MTF, Export
+"""
+
+# ╔═╡ 07060002-0000-4000-8000-000000000000
+let
+	fig = CM.Figure(size = (1200, 500), fontsize = 11)
+	ax1 = CM.Axis(fig[1, 1]; title = "NPS — Single-Energy Scans",
+		xlabel = "Spatial frequency (lp/cm)", ylabel = "NPS (HU²·cm²)", yscale = log10)
+	ax2 = CM.Axis(fig[1, 2]; title = "NPS — Dual-Energy VMI",
+		xlabel = "Spatial frequency (lp/cm)", ylabel = "NPS (HU²·cm²)", yscale = log10)
+
+	se_colors = CM.cgrad(:tab10, 12, categorical = true)
+	for (i, m) in enumerate(se_measurements)
+		freqs = m.nps.frequencies
+		vals = m.nps.nps_1d
+		good = vals .> 0
+		CM.lines!(ax1, freqs[good], vals[good]; label = m.name, color = se_colors[i])
+	end
+	CM.axislegend(ax1; position = :rt, labelsize = 8, nbanks = 2)
+
+	de_colors = [:purple, :teal, :darkorange, :crimson]
+	for (i, m) in enumerate(de_measurements)
+		freqs = m.nps.frequencies
+		vals = m.nps.nps_1d
+		good = vals .> 0
+		CM.lines!(ax2, freqs[good], vals[good]; label = m.name, color = de_colors[i], linewidth = 2)
+	end
+	CM.axislegend(ax2; position = :rt, labelsize = 10)
+
+	CM.save(joinpath(RESULTS_DIR, "ge_clinical_nps.png"), fig, px_per_unit = 2)
+	fig
+end
+
+# ╔═╡ 07060003-0000-4000-8000-000000000000
+let
+	fig = CM.Figure(size = (1200, 500), fontsize = 11)
+	ax1 = CM.Axis(fig[1, 1]; title = "MTF — Single-Energy Scans",
+		xlabel = "Spatial frequency (lp/cm)", ylabel = "MTF",
+		limits = (nothing, nothing, 0, 1.05))
+	ax2 = CM.Axis(fig[1, 2]; title = "MTF — Dual-Energy VMI",
+		xlabel = "Spatial frequency (lp/cm)", ylabel = "MTF",
+		limits = (nothing, nothing, 0, 1.05))
+
+	CM.hlines!(ax1, [0.5, 0.1]; color = :gray80, linestyle = :dash, linewidth = 0.8)
+	CM.hlines!(ax2, [0.5, 0.1]; color = :gray80, linestyle = :dash, linewidth = 0.8)
+
+	se_colors = CM.cgrad(:tab10, 12, categorical = true)
+	for (i, m) in enumerate(se_measurements)
+		CM.lines!(ax1, m.mtf.frequencies, m.mtf.mtf; label = m.name, color = se_colors[i])
+	end
+	CM.axislegend(ax1; position = :rt, labelsize = 8, nbanks = 2)
+
+	de_colors = [:purple, :teal, :darkorange, :crimson]
+	for (i, m) in enumerate(de_measurements)
+		CM.lines!(ax2, m.mtf.frequencies, m.mtf.mtf; label = m.name, color = de_colors[i], linewidth = 2)
+	end
+	CM.axislegend(ax2; position = :rt, labelsize = 10)
+
+	CM.save(joinpath(RESULTS_DIR, "ge_clinical_mtf.png"), fig, px_per_unit = 2)
+	fig
+end
+
+# ╔═╡ 07060004-0000-4000-8000-000000000000
+let
+	all_m = vcat(se_measurements, de_measurements)
+	outdir = joinpath(dirname(@__DIR__), "results")
+	mkpath(outdir)
+
+	rod_order = all_m[1].rod_names
+	header = ["scan_name"]
+	for nm in rod_order
+		tag = replace(replace(nm, " " => "_"), "(" => "", ")" => "")
+		push!(header, "hu_mean_$tag")
+	end
+	for nm in rod_order
+		tag = replace(replace(nm, " " => "_"), "(" => "", ")" => "")
+		push!(header, "hu_std_$tag")
+	end
+	for nm in rod_order
+		tag = replace(replace(nm, " " => "_"), "(" => "", ")" => "")
+		push!(header, "cnr_$tag")
+	end
+	append!(header, ["nps_peak_freq_lp_cm", "nps_area_HU2cm2",
+		"mtf_f50_lp_cm", "mtf_f10_lp_cm"])
+
+	rows = Vector{Any}[]
+	for m in all_m
+		row = Any[m.name]
+		append!(row, round.(m.rod_means, digits = 2))
+		append!(row, round.(m.rod_stds, digits = 2))
+		append!(row, round.(m.rod_cnr, digits = 2))
+		push!(row, round(m.nps_peak_freq, digits = 3))
+		push!(row, round(m.nps_area, digits = 3))
+		push!(row, round(m.mtf_f50, digits = 3))
+		push!(row, round(m.mtf_f10, digits = 3))
+		push!(rows, row)
+	end
+
+	csv_path = joinpath(outdir, "clinical_measurements.csv")
+	open(csv_path, "w") do io
+		println(io, join(header, ","))
+		for row in rows
+			println(io, join(row, ","))
+		end
+	end
+
+	nps_path = joinpath(outdir, "nps_curves.jld2")
+	JLD2.jldopen(nps_path, "w") do f
+		for m in all_m
+			f[m.name] = (freq = m.nps.frequencies, nps = m.nps.nps_1d)
+		end
+	end
+
+	mtf_path = joinpath(outdir, "mtf_curves.jld2")
+	JLD2.jldopen(mtf_path, "w") do f
+		for m in all_m
+			f[m.name] = (freq = m.mtf.frequencies, mtf = m.mtf.mtf)
+		end
+	end
+
+	md"""
+	**Exported:**
+	- `results/clinical_measurements.csv` — $(length(all_m)) rows × $(length(header)) columns
+	- `results/nps_curves.jld2` — radial NPS curves
+	- `results/mtf_curves.jld2` — radial MTF curves
+	"""
+end
+
+# ╔═╡ 07060005-0000-4000-8000-000000000000
+md"""
+### 6b. Scalar Summary
+"""
+
+# ╔═╡ 07060006-0000-4000-8000-000000000000
+let
+	all_m = vcat(se_measurements, de_measurements)
+	n = length(all_m)
+
+	fig = CM.Figure(size = (1400, 400), fontsize = 10)
+
+	ax1 = CM.Axis(fig[1, 1]; title = "NPS Area (Noise Variance)",
+		ylabel = "NPS integral (HU²·cm²)",
+		xticks = (1:n, [m.name for m in all_m]),
+		xticklabelrotation = pi / 3)
+	CM.barplot!(ax1, 1:n, [m.nps_area for m in all_m];
+		color = vcat(fill(:steelblue, length(se_measurements)),
+			fill(:darkorange, length(de_measurements))))
+
+	ax2 = CM.Axis(fig[1, 2]; title = "MTF f50 and f10",
+		ylabel = "Frequency (lp/cm)",
+		xticks = (1:n, [m.name for m in all_m]),
+		xticklabelrotation = pi / 3)
+	CM.barplot!(ax2, collect(1:n) .- 0.15, [m.mtf_f50 for m in all_m];
+		width = 0.3, color = :teal, label = "f50")
+	CM.barplot!(ax2, collect(1:n) .+ 0.15, [m.mtf_f10 for m in all_m];
+		width = 0.3, color = :salmon, label = "f10")
+	CM.axislegend(ax2; position = :rt)
+
+	CM.save(joinpath(RESULTS_DIR, "ge_clinical_scalar_summary.png"), fig, px_per_unit = 2)
+	fig
+end
+
+# ╔═╡ 07070001-0000-4000-8000-000000000000
+md"""
+## 7. Digital Phantom — Gammex 472 Replica
+
+High-resolution (0.2mm isotropic) digital phantom for forward projection.
+Body: 330 mm diameter Gammex Model 451 Solid Water.
+Outer ring (R=10.5 cm): Ca50-Ca400, Water, SW ref.
+Inner ring (R=5.5 cm): I2.0-I20.0, Water.
+"""
+
+# ╔═╡ 07070002-0000-4000-8000-000000000000
+begin
 	sim_phantom = create_custom_gammex_472(
-		n_voxels = 1750,   # 35cm / 1750 = 0.02cm = 0.2mm xy
-		n_slices = 250,    # 5cm / 250 = 0.02cm = 0.2mm z (isotropic)
-		fov_cm = sim_recon_fov_cm,
-		z_cm = sim_phantom_z_cm,
+		n_voxels = 1750,
+		n_slices = 250,
+		fov_cm = 35.0,
+		z_cm = 5.0,
 	)
 
 	sim_phantom_gpu = BS.Phantom(
@@ -1817,29 +1491,146 @@ begin
 	)
 end;
 
-# ╔═╡ a1b2c3d4-6062-4000-8000-000000000062
+# ╔═╡ 07070003-0000-4000-8000-000000000000
+let
+	mid = size(sim_phantom.mask, 3) ÷ 2
+	nz = size(sim_phantom.mask, 3)
+	slice_data = sim_phantom.mask[:, :, mid]
+
+	unique_labels = sort(unique(slice_data))
+	n_labels = length(unique_labels)
+
+	lut = zeros(Float32, 27)
+	for (i, l) in enumerate(unique_labels)
+		lut[Int(l)+1] = Float32(i)
+	end
+	mapped = lut[Int.(slice_data).+1]
+
+	colors = [MATERIAL_INFO[l].color for l in unique_labels]
+	cmap = CM.cgrad(colors, n_labels, categorical = true)
+	names = [MATERIAL_INFO[l].name for l in unique_labels]
+
+	fig = CM.Figure(size = (1000, 850), fontsize = 12)
+	ax = CM.Axis(fig[1, 1];
+		title = "Custom Gammex 472 — Slice $mid / $nz (0.2mm voxels)",
+		aspect = CM.DataAspect())
+	hm = CM.heatmap!(ax, mapped; colormap = cmap, colorrange = (0.5, n_labels + 0.5))
+	CM.Colorbar(fig[1, 2], hm; ticks = (1:n_labels, names), ticklabelsize = 11, width = 15)
+	CM.save(joinpath(RESULTS_DIR, "ge_phantom_gammex_472.png"), fig, px_per_unit = 2)
+	fig
+end
+
+# ╔═╡ 07080001-0000-4000-8000-000000000000
 md"""
-### Two-Material Beam Hardening Correction
+## 8. Simulation Parameters [TUNE: PHYSICS]
 
-**Algorithm:** Martinez/Fessler 2022 "2DCalBH" — projection-domain, no hard segmentation.
+### ⚙️ Re-run `simulate!()` after changing any parameter in this section.
 
-1. Water-only polynomial BHC → FDK → preliminary HU image
-2. Smooth tissue fraction decomposition (C1 smoothstep, 100–500 HU)
-3. Forward-project bone image → bone/soft line integrals per ray
-4. Exact 2-material polychromatic correction from known spectrum
-5. Apply correction to raw sinogram → final FDK
-
-Toggle `bhc_enabled` above to enable/disable (does NOT re-run simulate!).
+These parameters control the forward projection physics model. Changing them
+requires re-running all 6 sinogram simulations (§9).
 """
 
-# ╔═╡ a1b2c3d4-6060-4000-8000-000000000060
-# Two-material BHC toggle — tweak freely (does NOT re-run simulate!)
-# When enabled, applies projection-domain water+bone BHC to noisy sinogram before FDK.
-# When disabled, raw polychromatic sinogram goes straight to FDK (no BHC at all).
-bhc_enabled = true
+# ╔═╡ 07080002-0000-4000-8000-000000000000
+# DAS electronic noise floor (e⁻ std dev). Set to 0 for quantum-only noise.
+# CatSim default: 3500, BasisSimulator default: 5000
+sim_electronic_noise = 0
 
-# ╔═╡ a1b2c3d4-6010-4000-8000-000000000010
-# Scan 1: 120 kVp / 50 mA — SIMULATE (GPU → ideal sinogram → free GPU)
+# ╔═╡ 07080003-0000-4000-8000-000000000000
+# Scintillator + photodiode gain (e⁻/keV). Higher → smaller photon-equivalent noise.
+# CatSim default: 17, BasisSimulator default: 15
+sim_detection_gain = 10.0
+
+# ╔═╡ 07080004-0000-4000-8000-000000000000
+# Extra Al filtration beyond the scanner's built-in 2.5mm.
+# GE Revolution Apex has ~7-8mm Al equivalent inherent filtration total.
+# Scanner applies 2.5mm in spectrum domain; we add 4.5mm more → ~7mm total.
+additional_filters = [("Al", 4.5)]
+
+# ╔═╡ 07080005-0000-4000-8000-000000000000
+sim_scanner = BS.Scanner(
+	source_to_isocenter = 625.6,
+	source_to_detector = 1100.0,
+	detector_rows = 256,
+	detector_cols = 834,
+	detector_row_size = 0.625,
+	detector_col_size = 0.6,
+	detector_shape = BS.CURVED_DETECTOR,
+	focal_spot_width = 1.0,
+	focal_spot_length = 1.0,
+	target_angle = 10.0,
+	flat_filter_material = :aluminum,
+	flat_filter_thickness = 2.5,
+	bowtie_filter = :ge_revolution_large,
+	detector_material = :lumex,
+	detector_depth = 3.0,
+	fill_factor_row = 0.9,
+	fill_factor_col = 0.9,
+	electronic_noise = sim_electronic_noise,
+	detection_gain = sim_detection_gain,
+)
+
+# ╔═╡ 07080006-0000-4000-8000-000000000000
+md"""
+### Noise Model
+- **Quantum noise:** Poisson statistics in intensity domain, scaled by I₀ × η\_eff
+- **Electronic noise:** Gaussian additive in intensity domain, σ\_e = electronic\_noise / (mean\_E × detection\_gain)
+- **MC LUT (Lumex):** η(E) folded into I₀\_eff — orthogonal to DAS noise
+
+**Tunable parameters** (in cells above):
+- `sim_electronic_noise` — DAS readout noise floor (e⁻). Set to 0 for quantum-only.
+- `sim_detection_gain` — scintillator gain (e⁻/keV). Higher gain → smaller photon-equivalent noise.
+"""
+
+# ╔═╡ 07080007-0000-4000-8000-000000000000
+sim_opts = BS.SimOptions(
+	fidelity = :high,
+	seed = 1234,
+)
+
+# ╔═╡ 07080008-0000-4000-8000-000000000000
+begin
+	sim_rotation_time = 1.0     # seconds (clinical 1.0s rotation)
+	sim_collimation_mm = 5.0    # 8 × 0.625mm — fast single-slice dev mode
+	sim_n_views = 984           # standard GE Revolution
+end
+
+# ╔═╡ 07080009-0000-4000-8000-000000000000
+SE_SIM_SCANS = [
+	(name = "120kVp_50mA_FBP", kvp = 120, mA = 50.0),
+	(name = "120kVp_150mA_FBP", kvp = 120, mA = 150.0),
+	(name = "120kVp_300mA_FBP", kvp = 120, mA = 300.0),
+	(name = "80kVp_480mA_FBP", kvp = 80, mA = 480.0),
+	(name = "100kVp_250mA_FBP", kvp = 100, mA = 250.0),
+	(name = "140kVp_110mA_FBP", kvp = 140, mA = 110.0),
+]
+
+# ╔═╡ 07080010-0000-4000-8000-000000000000
+begin
+	sim_recon_xy = 512
+	sim_recon_fov_cm = 35.0
+	sim_slice_thickness_mm = 0.625
+	sim_recon_z_cm = sim_collimation_mm / 10.0
+	sim_n_recon_slices = round(Int, sim_collimation_mm / sim_slice_thickness_mm)
+	sim_matrix_size = (sim_recon_xy, sim_recon_xy, sim_n_recon_slices)
+
+	sim_recon_geom = BS.ReconOptions(
+		algorithm = :fdk,
+		matrix_size = sim_matrix_size,
+		fov_cm = sim_recon_fov_cm,
+		z_cm = sim_recon_z_cm,
+	)
+end
+
+# ╔═╡ 07090001-0000-4000-8000-000000000000
+md"""
+## 9. SE Sinogram Simulation
+
+Forward-project the digital Gammex 472 phantom through the GE Revolution model.
+Each scan matches clinical kVp, mA, rotation time, and collimation.
+"""
+
+# ╔═╡ 07090002-0000-4000-8000-000000000000
+# Scan 1: 120 kVp / 50 mA — SIMULATE (GPU → sinogram → free GPU)
 sim_sino_1 = let
 	sc = SE_SIM_SCANS[1]
 	prot = BS.CTProtocol(
@@ -1851,31 +1642,18 @@ sim_sino_1 = let
 		additional_filters = additional_filters,
 	)
 	@info "Simulating: $(sc.name)..."
-
 	ws = BS.create_eict_workspace(
-		sim_scanner,
-		prot,
-		sim_opts,
-		sim_recon_geom,
-		sim_phantom_gpu,
+		sim_scanner, prot, sim_opts, sim_recon_geom, sim_phantom_gpu,
 	)
-	BS.simulate!(
-		ws,
-		sim_phantom_gpu,
-		sim_scanner,
-		prot,
-		sim_opts,
-		sim_recon_geom,
-	)
-
+	BS.simulate!(ws, sim_phantom_gpu, sim_scanner, prot, sim_opts, sim_recon_geom)
 	result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, name = sc.name, kvp = sc.kvp)
 	ws = nothing
 	GC.gc(true)
 	result
 end
 
-# ╔═╡ a1b2c3d4-6013-4000-8000-000000000013
-# Scan 2: 120 kVp / 150 mA — SIMULATE
+# ╔═╡ 07090003-0000-4000-8000-000000000000
+# Scan 2: 120 kVp / 150 mA — SIMULATE (GPU → sinogram → free GPU)
 sim_sino_2 = let
 	sc = SE_SIM_SCANS[2]
 	prot = BS.CTProtocol(
@@ -1888,11 +1666,7 @@ sim_sino_2 = let
 	)
 	@info "Simulating: $(sc.name)..."
 	ws = BS.create_eict_workspace(
-		sim_scanner,
-		prot,
-		sim_opts,
-		sim_recon_geom,
-		sim_phantom_gpu,
+		sim_scanner, prot, sim_opts, sim_recon_geom, sim_phantom_gpu,
 	)
 	BS.simulate!(ws, sim_phantom_gpu, sim_scanner, prot, sim_opts, sim_recon_geom)
 	result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, name = sc.name, kvp = sc.kvp)
@@ -1901,8 +1675,8 @@ sim_sino_2 = let
 	result
 end
 
-# ╔═╡ a1b2c3d4-6016-4000-8000-000000000016
-# Scan 3: 120 kVp / 300 mA — SIMULATE
+# ╔═╡ 07090004-0000-4000-8000-000000000000
+# Scan 3: 120 kVp / 300 mA — SIMULATE (GPU → sinogram → free GPU)
 sim_sino_3 = let
 	sc = SE_SIM_SCANS[3]
 	prot = BS.CTProtocol(
@@ -1915,28 +1689,17 @@ sim_sino_3 = let
 	)
 	@info "Simulating: $(sc.name)..."
 	ws = BS.create_eict_workspace(
-		sim_scanner,
-		prot,
-		sim_opts,
-		sim_recon_geom,
-		sim_phantom_gpu,
+		sim_scanner, prot, sim_opts, sim_recon_geom, sim_phantom_gpu,
 	)
-	BS.simulate!(
-		ws,
-		sim_phantom_gpu,
-		sim_scanner,
-		prot,
-		sim_opts,
-		sim_recon_geom,
-	)
+	BS.simulate!(ws, sim_phantom_gpu, sim_scanner, prot, sim_opts, sim_recon_geom)
 	result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, name = sc.name, kvp = sc.kvp)
 	ws = nothing
 	GC.gc(true)
 	result
 end
 
-# ╔═╡ a1b2c3d4-6019-4000-8000-000000000019
-# Scan 4: 80 kVp / 480 mA — SIMULATE
+# ╔═╡ 07090005-0000-4000-8000-000000000000
+# Scan 4: 80 kVp / 480 mA — SIMULATE (GPU → sinogram → free GPU)
 sim_sino_4 = let
 	sc = SE_SIM_SCANS[4]
 	prot = BS.CTProtocol(
@@ -1949,28 +1712,17 @@ sim_sino_4 = let
 	)
 	@info "Simulating: $(sc.name)..."
 	ws = BS.create_eict_workspace(
-		sim_scanner,
-		prot,
-		sim_opts,
-		sim_recon_geom,
-		sim_phantom_gpu,
+		sim_scanner, prot, sim_opts, sim_recon_geom, sim_phantom_gpu,
 	)
-	BS.simulate!(
-		ws,
-		sim_phantom_gpu,
-		sim_scanner,
-		prot,
-		sim_opts,
-		sim_recon_geom,
-	)
+	BS.simulate!(ws, sim_phantom_gpu, sim_scanner, prot, sim_opts, sim_recon_geom)
 	result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, name = sc.name, kvp = sc.kvp)
 	ws = nothing
 	GC.gc(true)
 	result
 end
 
-# ╔═╡ a1b2c3d4-6022-4000-8000-000000000022
-# Scan 5: 100 kVp / 250 mA — SIMULATE
+# ╔═╡ 07090006-0000-4000-8000-000000000000
+# Scan 5: 100 kVp / 250 mA — SIMULATE (GPU → sinogram → free GPU)
 sim_sino_5 = let
 	sc = SE_SIM_SCANS[5]
 	prot = BS.CTProtocol(
@@ -1983,11 +1735,7 @@ sim_sino_5 = let
 	)
 	@info "Simulating: $(sc.name)..."
 	ws = BS.create_eict_workspace(
-		sim_scanner,
-		prot,
-		sim_opts,
-		sim_recon_geom,
-		sim_phantom_gpu,
+		sim_scanner, prot, sim_opts, sim_recon_geom, sim_phantom_gpu,
 	)
 	BS.simulate!(ws, sim_phantom_gpu, sim_scanner, prot, sim_opts, sim_recon_geom)
 	result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, name = sc.name, kvp = sc.kvp)
@@ -1996,8 +1744,8 @@ sim_sino_5 = let
 	result
 end
 
-# ╔═╡ a1b2c3d4-6025-4000-8000-000000000025
-# Scan 6: 140 kVp / 110 mA — SIMULATE
+# ╔═╡ 07090007-0000-4000-8000-000000000000
+# Scan 6: 140 kVp / 110 mA — SIMULATE (GPU → sinogram → free GPU)
 sim_sino_6 = let
 	sc = SE_SIM_SCANS[6]
 	prot = BS.CTProtocol(
@@ -2006,327 +1754,380 @@ sim_sino_6 = let
 		views = sim_n_views,
 		rotation_time = sim_rotation_time,
 		collimation_mm = sim_collimation_mm,
-		additional_filters = additional_filters
+		additional_filters = additional_filters,
 	)
 	@info "Simulating: $(sc.name)..."
-	ws = BS.create_eict_workspace(sim_scanner, prot, sim_opts, sim_recon_geom, sim_phantom_gpu)
-	
-	BS.simulate!(
-		ws,
-		sim_phantom_gpu,
-		sim_scanner,
-		prot,
-		sim_opts,
-		sim_recon_geom
+	ws = BS.create_eict_workspace(
+		sim_scanner, prot, sim_opts, sim_recon_geom, sim_phantom_gpu,
 	)
+	BS.simulate!(ws, sim_phantom_gpu, sim_scanner, prot, sim_opts, sim_recon_geom)
 	result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, name = sc.name, kvp = sc.kvp)
 	ws = nothing
 	GC.gc(true)
 	result
 end
 
-# ╔═╡ a1b2c3d4-6061-4000-8000-000000000061
-# Calibrate two-material BHC models (one per kVp) from resolve_spectrum pipeline.
-# Reference energy = spectrum effective energy (kVp-dependent), so μ_water_ref and
-# μ_bone_ref correctly vary with tube voltage — matching clinical scanner behavior.
-bhc_models = let
+# ╔═╡ 07100001-0000-4000-8000-000000000000
+md"""
+## 10. Reconstruction Parameters [TUNE: RECON]
+
+### 🎛️ No re-simulation needed — changes only re-run FDK/HIR + HU conversion.
+
+These parameters control reconstruction filtering, noise floor, and beam hardening
+correction. Changing them does NOT re-trigger `simulate!()`.
+"""
+
+# ╔═╡ 07100002-0000-4000-8000-000000000000
+begin
+	sim_recon_filter = :standard
+	sim_recon_cutoff = 1.0  # MUST STAY at 1.0
+end
+
+# ╔═╡ 07100004-0000-4000-8000-000000000000
+# Dose-independent noise floor (σ HU) — tune to match clinical high-mA noise.
+# σ_total = √(σ_quantum² + σ_floor²). Start at 0, increase until 300mA matches.
+sim_noise_floor_hu = 20.0
+
+# ╔═╡ 07100003-0000-4000-8000-000000000000
+# Custom filter apodization — tune these control points to match GE STANDARD kernel MTF.
+# Format: (f_norm, weight) where f_norm ∈ [0,1] (fraction of Nyquist).
+custom_filter_control = (
+	x = (0.0, 0.25, 0.5, 0.75, 1.0),
+	y = (1.0, 0.962, 0.7, 0.15, 0.001),
+)
+
+# ╔═╡ 07100005-0000-4000-8000-000000000000
+# Two-material BHC toggle — tweak freely (does NOT re-run simulate!)
+# When enabled, applies projection-domain water+bone BHC to noisy sinogram before FDK.
+# When disabled, raw polychromatic sinogram goes straight to FDK (no BHC at all).
+bhc_enabled = true
+
+# ╔═╡ 07100006-0000-4000-8000-000000000000
+begin
+	# Sinogram-domain BHC parameters (Martinez/Fessler 2022)
+	sino_bhc_hu_low = 450.0
+	sino_bhc_hu_high = 600.0
+	sino_order = 2
+end
+
+# ╔═╡ 07100007-0000-4000-8000-000000000000
+begin
+	# Image-domain BHC parameters (So et al. 2009) — tune freely, no re-sim needed.
+	# hu_low/hu_high: HU threshold range for high-attenuation segmentation
+	# scale_factor: strength of error image subtraction (0.0–1.0, typical 0.2–0.7)
+	img_bhc_hu_low = 50.0
+	img_bhc_hu_high = 150.0
+	img_bhc_scale_factor = 0.2
+end
+
+# ╔═╡ 07100008-0000-4000-8000-000000000000
+md"""
+### Beam Hardening Correction (BHC)
+
+#### Stage 1 — Sinogram Domain
+A water-only polynomial BHC is applied, using a cubic fit to map polychromatic line integrals to their monochromatic equivalents (Martinez/Fessler 2022).
+
+#### Stage 2 — Image Domain
+Based on *So et al. (2009, PMB 54:3031)*:
+1. **Reconstruct:** Apply the water-BHC-corrected sinogram to generate a preliminary μ image.
+2. **Segment:** Isolate high-attenuation voxels via smoothstep weighting (`img_bhc_hu_low`–`img_bhc_hu_high`).
+3. **Forward-Project:** Generate an error sinogram from the weighted high-attenuation image.
+4. **Reconstruct Error:** Perform an FDK reconstruction to create an error image.
+5. **Correct:** Subtract the scaled error image using `img_bhc_scale_factor` (typically 0.2–0.7).
+
+Toggle `bhc_enabled` to enable or disable.
+"""
+
+# ╔═╡ 07100009-0000-4000-8000-000000000000
+# Calibrate two-material (water + bone) BHC models (one per kVp).
+bhc_models, bhc_μ_water = let
 	models = Dict{Int, BS.TwoMaterialBHC}()
+	μw = Dict{Int, Float64}()
 	for kvp in [120, 80, 100, 140]
 		prot = BS.CTProtocol(kVp = kvp, additional_filters = additional_filters)
 		e, w = BS.resolve_spectrum(sim_opts, prot; scanner = sim_scanner)
 		ref_E = sum(e .* w) / sum(w)
-		models[kvp] = BS.calibrate_bhc_two_material(e, w; order = 3, reference_energy_keV = ref_E, hu_low = 800, hu_high = 5000)
-		@info "BHC $(kvp) kVp: ref_E=$(round(ref_E, digits=1)) keV, μ_water_ref=$(round(models[kvp].μ_water_ref, digits=5)), μ_bone_ref=$(round(models[kvp].μ_bone_ref, digits=5))"
+		models[kvp] = BS.calibrate_bhc_two_material(
+			e, w;
+			order = sino_order,
+			reference_energy_keV = ref_E,
+			hu_low = sino_bhc_hu_low,
+			hu_high = sino_bhc_hu_high
+		)
+		μw[kvp] = models[kvp].μ_water_ref
+		@info "BHC $(kvp) kVp: ref_E=$(round(ref_E, digits=1)) keV, μ_water=$(round(μw[kvp], digits=5))"
 	end
-	models
+	models, μw
 end
 
-# ╔═╡ fb6cdb7c-19d0-4f86-950d-464307f0d786
-bhc_models[120].μ_water_ref
+# ╔═╡ 07110001-0000-4000-8000-000000000000
+md"""
+## 11. SE FBP Reconstruction & Comparison
 
-# ╔═╡ 4370ad68-eebd-4f09-85f0-acb556be9fe2
-begin
-	# Reconstruction filter (tweak freely — only re-runs recon + HU, NOT simulate!)
-	sim_recon_filter = :standard
-	sim_recon_cutoff = 1.0 # MUST STAY at 1.0
-	# Dose-independent noise floor (σ HU) — tune to match clinical high-mA noise
-	# σ_total = √(σ_quantum² + σ_floor²). Start at 0, increase until 300mA matches.
-	sim_noise_floor_hu = 20.0
-end
+FDK reconstruction with custom filter kernel and two-stage BHC.
+Each scan uses the correct kVp-specific BHC model.
+"""
 
-# ╔═╡ 24e12422-f5a0-4bb7-a46e-2949df45d75c
-# Custom filter apodization — tune these control points to match GE STANDARD kernel MTF.
-# Format: (f_norm, weight) where f_norm ∈ [0,1] (fraction of Nyquist).
-# Our :standard uses CatSim's [1.0, 0.934, 0.744, 0.443, 0.053].
-# GE STANDARD kernel rolls off faster — try more aggressive apodization.
-custom_filter_control = (
-	x = (0.0, 0.25, 0.5, 0.75, 1.0),
-	# y = (1.0, 0.9338, 0.7441, 0.4425, 0.0531),
-	y = (1.0, 0.962, 0.8, 0.15, 0.001),
-)
-
-# ╔═╡ a1b2c3d4-6011-4000-8000-000000000011
+# ╔═╡ 07110002-0000-4000-8000-000000000000
+# Scan 1: 120 kVp / 50 mA — FBP RECONSTRUCT (BHC → GPU FDK → CPU volume)
 sim_recon_1 = let
 	sino_gpu = MtlArray(sim_sino_1.sino)
-	sino_bhc = nothing
-	if bhc_enabled
-		sino_bhc = BS.apply_bhc_two_material(sino_gpu, bhc_models[120],
-			sim_sino_1.geom, sim_matrix_size; volume_extent = sim_phantom_gpu.extent)
-	end
-	sino_fdk = MtlArray(something(sino_bhc, sim_sino_1.sino))
 	geom = sim_sino_1.geom
 	recon_size = sim_matrix_size
+	if bhc_enabled
+		sino_corrected = BS.apply_bhc_two_material(
+			sino_gpu, bhc_models[120], geom, recon_size;
+			volume_extent = sim_phantom_gpu.extent)
+		sino_gpu = MtlArray(sino_corrected)
+	end
 	ws_fdk = BS.create_fdk_recon_workspace(
-		sino_fdk, geom, recon_size;
-		filter = sim_recon_filter, cutoff = sim_recon_cutoff,
-	)
-	# Inject custom filter kernel — overwrite workspace's pre-computed kernel
-	copyto!(ws_fdk.filter_kernel, build_custom_filter_kernel(
-		length(ws_fdk.filter_kernel), Float32(geom.pixel_size),
-		custom_filter_control.x, custom_filter_control.y))
-	vol = Array(BS.reconstruct!(ws_fdk, sino_fdk, geom, recon_size))
-	ws_fdk = nothing; sino_gpu = nothing; sino_fdk = nothing; GC.gc(true)
+		sino_gpu, geom, recon_size;
+		filter = sim_recon_filter, cutoff = sim_recon_cutoff)
+	copyto!(ws_fdk.filter_kernel,
+		build_custom_filter_kernel(
+			length(ws_fdk.filter_kernel), Float32(geom.pixel_size),
+			custom_filter_control.x, custom_filter_control.y))
+	recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, geom, recon_size)
+	if bhc_enabled
+		BS.apply_bhc_image_domain(
+			recon_μ, geom, recon_size, bhc_μ_water[120];
+			hu_low = img_bhc_hu_low, hu_high = img_bhc_hu_high,
+			scale_factor = img_bhc_scale_factor,
+			volume_extent = sim_phantom_gpu.extent)
+	end
+	vol = Array(recon_μ)
+	ws_fdk = nothing; sino_gpu = nothing; recon_μ = nothing; GC.gc(true)
 	(volume = vol, name = sim_sino_1.name, kvp = sim_sino_1.kvp)
 end
 
-# ╔═╡ a1b2c3d4-6012-4000-8000-000000000012
+# ╔═╡ 07110003-0000-4000-8000-000000000000
 # Scan 1: 120 kVp / 50 mA — HU CONVERSION (CPU only)
 sim_hu_1 = let
-	μ_w = bhc_models[120].μ_water_ref
+	μ_w = bhc_μ_water[120]
 	recon_hu = Float32.(BS.to_hounsfield(sim_recon_1.volume; μ_water = μ_w))
 	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
 	(name = sim_recon_1.name, recon = recon_hu, mu_water = μ_w)
 end
 
-# ╔═╡ 9f983faf-9ba9-49ff-84ec-dc549e697d4c
-let
-	f = CM.Figure()
-	ax = CM.Axis(f[1, 1], aspect = CM.DataAspect(), title = "120 kVp / 50 mA")
-	hm = CM.heatmap!(sim_hu_1.recon[:, :, 3]; colormap = :grays, colorrange = (-200, 500))
-	CM.Colorbar(f[1, 2], hm)
-	f
-end
-
-# ╔═╡ a1b2c3d4-6014-4000-8000-000000000014
+# ╔═╡ 07110004-0000-4000-8000-000000000000
+# Scan 2: 120 kVp / 150 mA — FBP RECONSTRUCT (BHC → GPU FDK → CPU volume)
 sim_recon_2 = let
 	sino_gpu = MtlArray(sim_sino_2.sino)
-	sino_bhc = nothing
-	if bhc_enabled
-		sino_bhc = BS.apply_bhc_two_material(sino_gpu, bhc_models[120],
-			sim_sino_2.geom, sim_matrix_size; volume_extent = sim_phantom_gpu.extent)
-	end
-	sino_fdk = MtlArray(something(sino_bhc, sim_sino_2.sino))
 	geom = sim_sino_2.geom
 	recon_size = sim_matrix_size
+	if bhc_enabled
+		sino_corrected = BS.apply_bhc_two_material(
+			sino_gpu, bhc_models[120], geom, recon_size;
+			volume_extent = sim_phantom_gpu.extent)
+		sino_gpu = MtlArray(sino_corrected)
+	end
 	ws_fdk = BS.create_fdk_recon_workspace(
-		sino_fdk,
-		geom,
-		recon_size;
-		filter = sim_recon_filter, cutoff = sim_recon_cutoff,
-	)
-	# Inject custom filter kernel — overwrite workspace's pre-computed kernel
-	copyto!(ws_fdk.filter_kernel, build_custom_filter_kernel(
-		length(ws_fdk.filter_kernel), Float32(geom.pixel_size),
-		custom_filter_control.x, custom_filter_control.y))
-	vol = Array(BS.reconstruct!(ws_fdk, sino_fdk, geom, recon_size))
-	ws_fdk = nothing
-	sino_gpu = nothing
-	sino_fdk = nothing
-	GC.gc(true)
+		sino_gpu, geom, recon_size;
+		filter = sim_recon_filter, cutoff = sim_recon_cutoff)
+	copyto!(ws_fdk.filter_kernel,
+		build_custom_filter_kernel(
+			length(ws_fdk.filter_kernel), Float32(geom.pixel_size),
+			custom_filter_control.x, custom_filter_control.y))
+	recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, geom, recon_size)
+	if bhc_enabled
+		BS.apply_bhc_image_domain(
+			recon_μ, geom, recon_size, bhc_μ_water[120];
+			hu_low = img_bhc_hu_low, hu_high = img_bhc_hu_high,
+			scale_factor = img_bhc_scale_factor,
+			volume_extent = sim_phantom_gpu.extent)
+	end
+	vol = Array(recon_μ)
+	ws_fdk = nothing; sino_gpu = nothing; recon_μ = nothing; GC.gc(true)
 	(volume = vol, name = sim_sino_2.name, kvp = sim_sino_2.kvp)
 end
 
-# ╔═╡ a1b2c3d4-6015-4000-8000-000000000015
+# ╔═╡ 07110005-0000-4000-8000-000000000000
 # Scan 2: 120 kVp / 150 mA — HU CONVERSION (CPU only)
 sim_hu_2 = let
-	μ_w = bhc_models[120].μ_water_ref
+	μ_w = bhc_μ_water[120]
 	recon_hu = Float32.(BS.to_hounsfield(sim_recon_2.volume; μ_water = μ_w))
 	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
 	(name = sim_recon_2.name, recon = recon_hu, mu_water = μ_w)
 end
 
-# ╔═╡ cbf028e3-738f-4adc-8caa-3cb14f61d16d
-let
-	f = CM.Figure()
-	ax = CM.Axis(f[1, 1], aspect = CM.DataAspect(), title = "120 kVp / 150 mA")
-	hm = CM.heatmap!(sim_hu_2.recon[:, :, 3]; colormap = :grays, colorrange = (-200, 500))
-	CM.Colorbar(f[1, 2], hm)
-	f
-end
-
-# ╔═╡ a1b2c3d4-6017-4000-8000-000000000017
-# Scan 3: 120 kVp / 300 mA — RECONSTRUCT (BHC → GPU FDK → CPU volume)
+# ╔═╡ 07110006-0000-4000-8000-000000000000
+# Scan 3: 120 kVp / 300 mA — FBP RECONSTRUCT (BHC → GPU FDK → CPU volume)
 sim_recon_3 = let
 	sino_gpu = MtlArray(sim_sino_3.sino)
-	sino_bhc = nothing
-	if bhc_enabled
-		sino_bhc = BS.apply_bhc_two_material(sino_gpu, bhc_models[120],
-			sim_sino_3.geom, sim_matrix_size; volume_extent = sim_phantom_gpu.extent)
-	end
-	sino_fdk = MtlArray(something(sino_bhc, sim_sino_3.sino))
 	geom = sim_sino_3.geom
 	recon_size = sim_matrix_size
+	if bhc_enabled
+		sino_corrected = BS.apply_bhc_two_material(
+			sino_gpu, bhc_models[120], geom, recon_size;
+			volume_extent = sim_phantom_gpu.extent)
+		sino_gpu = MtlArray(sino_corrected)
+	end
 	ws_fdk = BS.create_fdk_recon_workspace(
-		sino_fdk,
-		geom,
-		recon_size;
-		filter = sim_recon_filter, cutoff = sim_recon_cutoff,
-	)
-	# Inject custom filter kernel — overwrite workspace's pre-computed kernel
-	copyto!(ws_fdk.filter_kernel, build_custom_filter_kernel(
-		length(ws_fdk.filter_kernel), Float32(geom.pixel_size),
-		custom_filter_control.x, custom_filter_control.y))
-	vol = Array(BS.reconstruct!(ws_fdk, sino_fdk, geom, recon_size))
-	ws_fdk = nothing
-	sino_gpu = nothing
-	sino_fdk = nothing
-	GC.gc(true)
+		sino_gpu, geom, recon_size;
+		filter = sim_recon_filter, cutoff = sim_recon_cutoff)
+	copyto!(ws_fdk.filter_kernel,
+		build_custom_filter_kernel(
+			length(ws_fdk.filter_kernel), Float32(geom.pixel_size),
+			custom_filter_control.x, custom_filter_control.y))
+	recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, geom, recon_size)
+	if bhc_enabled
+		BS.apply_bhc_image_domain(
+			recon_μ, geom, recon_size, bhc_μ_water[120];
+			hu_low = img_bhc_hu_low, hu_high = img_bhc_hu_high,
+			scale_factor = img_bhc_scale_factor,
+			volume_extent = sim_phantom_gpu.extent)
+	end
+	vol = Array(recon_μ)
+	ws_fdk = nothing; sino_gpu = nothing; recon_μ = nothing; GC.gc(true)
 	(volume = vol, name = sim_sino_3.name, kvp = sim_sino_3.kvp)
 end
 
-# ╔═╡ a1b2c3d4-6018-4000-8000-000000000018
+# ╔═╡ 07110007-0000-4000-8000-000000000000
 # Scan 3: 120 kVp / 300 mA — HU CONVERSION (CPU only)
 sim_hu_3 = let
-	μ_w = bhc_models[120].μ_water_ref
+	μ_w = bhc_μ_water[120]
 	recon_hu = Float32.(BS.to_hounsfield(sim_recon_3.volume; μ_water = μ_w))
 	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
 	(name = sim_recon_3.name, recon = recon_hu, mu_water = μ_w)
 end
 
-# ╔═╡ a1b2c3d4-6020-4000-8000-000000000020
-# Scan 4: 80 kVp / 480 mA — RECONSTRUCT (BHC → GPU FDK → CPU volume)
+# ╔═╡ 07110008-0000-4000-8000-000000000000
+# Scan 4: 80 kVp / 480 mA — FBP RECONSTRUCT (BHC → GPU FDK → CPU volume)
 sim_recon_4 = let
 	sino_gpu = MtlArray(sim_sino_4.sino)
-
-	sino_bhc = nothing
-	if bhc_enabled
-		sino_bhc = BS.apply_bhc_two_material(sino_gpu, bhc_models[80],
-			sim_sino_4.geom, sim_matrix_size; volume_extent = sim_phantom_gpu.extent)
-	end
-
-	sino_fdk = MtlArray(something(sino_bhc, sim_sino_4.sino))
 	geom = sim_sino_4.geom
 	recon_size = sim_matrix_size
+	if bhc_enabled
+		sino_corrected = BS.apply_bhc_two_material(
+			sino_gpu, bhc_models[80], geom, recon_size;
+			volume_extent = sim_phantom_gpu.extent)
+		sino_gpu = MtlArray(sino_corrected)
+	end
 	ws_fdk = BS.create_fdk_recon_workspace(
-		sino_fdk,
-		geom,
-		recon_size;
-		filter = sim_recon_filter, cutoff = sim_recon_cutoff,
-	)
-	# Inject custom filter kernel — overwrite workspace's pre-computed kernel
-	copyto!(ws_fdk.filter_kernel, build_custom_filter_kernel(
-		length(ws_fdk.filter_kernel), Float32(geom.pixel_size),
-		custom_filter_control.x, custom_filter_control.y))
-	vol = Array(BS.reconstruct!(ws_fdk, sino_fdk, geom, recon_size))
-	ws_fdk = nothing
-	sino_gpu = nothing
-	sino_fdk = nothing
-	GC.gc(true)
+		sino_gpu, geom, recon_size;
+		filter = sim_recon_filter, cutoff = sim_recon_cutoff)
+	copyto!(ws_fdk.filter_kernel,
+		build_custom_filter_kernel(
+			length(ws_fdk.filter_kernel), Float32(geom.pixel_size),
+			custom_filter_control.x, custom_filter_control.y))
+	recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, geom, recon_size)
+	if bhc_enabled
+		BS.apply_bhc_image_domain(
+			recon_μ, geom, recon_size, bhc_μ_water[80];
+			hu_low = img_bhc_hu_low, hu_high = img_bhc_hu_high,
+			scale_factor = img_bhc_scale_factor,
+			volume_extent = sim_phantom_gpu.extent)
+	end
+	vol = Array(recon_μ)
+	ws_fdk = nothing; sino_gpu = nothing; recon_μ = nothing; GC.gc(true)
 	(volume = vol, name = sim_sino_4.name, kvp = sim_sino_4.kvp)
 end
 
-# ╔═╡ a1b2c3d4-6021-4000-8000-000000000021
+# ╔═╡ 07110009-0000-4000-8000-000000000000
 # Scan 4: 80 kVp / 480 mA — HU CONVERSION (CPU only)
 sim_hu_4 = let
-	μ_w = bhc_models[80].μ_water_ref
+	μ_w = bhc_μ_water[80]
 	recon_hu = Float32.(BS.to_hounsfield(sim_recon_4.volume; μ_water = μ_w))
 	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
 	(name = sim_recon_4.name, recon = recon_hu, mu_water = μ_w)
 end
 
-# ╔═╡ a1b2c3d4-6023-4000-8000-000000000023
-# Scan 5: 100 kVp / 250 mA — RECONSTRUCT (BHC → GPU FDK → CPU volume)
+# ╔═╡ 07110010-0000-4000-8000-000000000000
+# Scan 5: 100 kVp / 250 mA — FBP RECONSTRUCT (BHC → GPU FDK → CPU volume)
 sim_recon_5 = let
 	sino_gpu = MtlArray(sim_sino_5.sino)
-	sino_bhc = bhc_enabled ? BS.apply_bhc_two_material(sino_gpu, bhc_models[100],
-		sim_sino_5.geom, sim_matrix_size; volume_extent = sim_phantom_gpu.extent) : nothing
-	sino_fdk = MtlArray(something(sino_bhc, sim_sino_5.sino))
 	geom = sim_sino_5.geom
 	recon_size = sim_matrix_size
-	ws_fdk = BS.create_fdk_recon_workspace(sino_fdk, geom, recon_size; filter = sim_recon_filter, cutoff = sim_recon_cutoff)
-	# Inject custom filter kernel — overwrite workspace's pre-computed kernel
-	copyto!(ws_fdk.filter_kernel, build_custom_filter_kernel(
-		length(ws_fdk.filter_kernel), Float32(geom.pixel_size),
-		custom_filter_control.x, custom_filter_control.y))
-	vol = Array(BS.reconstruct!(ws_fdk, sino_fdk, geom, recon_size))
-	ws_fdk = nothing
-	sino_gpu = nothing
-	sino_fdk = nothing
-	GC.gc(true)
+	if bhc_enabled
+		sino_corrected = BS.apply_bhc_two_material(
+			sino_gpu, bhc_models[100], geom, recon_size;
+			volume_extent = sim_phantom_gpu.extent)
+		sino_gpu = MtlArray(sino_corrected)
+	end
+	ws_fdk = BS.create_fdk_recon_workspace(
+		sino_gpu, geom, recon_size;
+		filter = sim_recon_filter, cutoff = sim_recon_cutoff)
+	copyto!(ws_fdk.filter_kernel,
+		build_custom_filter_kernel(
+			length(ws_fdk.filter_kernel), Float32(geom.pixel_size),
+			custom_filter_control.x, custom_filter_control.y))
+	recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, geom, recon_size)
+	if bhc_enabled
+		BS.apply_bhc_image_domain(
+			recon_μ, geom, recon_size, bhc_μ_water[100];
+			hu_low = img_bhc_hu_low, hu_high = img_bhc_hu_high,
+			scale_factor = img_bhc_scale_factor,
+			volume_extent = sim_phantom_gpu.extent)
+	end
+	vol = Array(recon_μ)
+	ws_fdk = nothing; sino_gpu = nothing; recon_μ = nothing; GC.gc(true)
 	(volume = vol, name = sim_sino_5.name, kvp = sim_sino_5.kvp)
 end
 
-# ╔═╡ a1b2c3d4-6024-4000-8000-000000000024
+# ╔═╡ 07110011-0000-4000-8000-000000000000
 # Scan 5: 100 kVp / 250 mA — HU CONVERSION (CPU only)
 sim_hu_5 = let
-	μ_w = bhc_models[100].μ_water_ref
+	μ_w = bhc_μ_water[100]
 	recon_hu = Float32.(BS.to_hounsfield(sim_recon_5.volume; μ_water = μ_w))
 	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
 	(name = sim_recon_5.name, recon = recon_hu, mu_water = μ_w)
 end
 
-# ╔═╡ a1b2c3d4-6026-4000-8000-000000000026
-# Scan 6: 140 kVp / 110 mA — RECONSTRUCT (BHC → GPU FDK → CPU volume)
+# ╔═╡ 07110012-0000-4000-8000-000000000000
+# Scan 6: 140 kVp / 110 mA — FBP RECONSTRUCT (BHC → GPU FDK → CPU volume)
 sim_recon_6 = let
 	sino_gpu = MtlArray(sim_sino_6.sino)
-	sino_bhc = bhc_enabled ? BS.apply_bhc_two_material(sino_gpu, bhc_models[140],
-		sim_sino_6.geom, sim_matrix_size; volume_extent = sim_phantom_gpu.extent) : nothing
-	sino_fdk = MtlArray(something(sino_bhc, sim_sino_6.sino))
 	geom = sim_sino_6.geom
 	recon_size = sim_matrix_size
-	ws_fdk = BS.create_fdk_recon_workspace(sino_fdk, geom, recon_size; filter = sim_recon_filter, cutoff = sim_recon_cutoff)
-	# Inject custom filter kernel — overwrite workspace's pre-computed kernel
-	copyto!(ws_fdk.filter_kernel, build_custom_filter_kernel(
-		length(ws_fdk.filter_kernel), Float32(geom.pixel_size),
-		custom_filter_control.x, custom_filter_control.y))
-	vol = Array(BS.reconstruct!(ws_fdk, sino_fdk, geom, recon_size))
-	ws_fdk = nothing
-	sino_gpu = nothing
-	sino_fdk = nothing
-	GC.gc(true)
+	if bhc_enabled
+		sino_corrected = BS.apply_bhc_two_material(
+			sino_gpu, bhc_models[140], geom, recon_size;
+			volume_extent = sim_phantom_gpu.extent)
+		sino_gpu = MtlArray(sino_corrected)
+	end
+	ws_fdk = BS.create_fdk_recon_workspace(
+		sino_gpu, geom, recon_size;
+		filter = sim_recon_filter, cutoff = sim_recon_cutoff)
+	copyto!(ws_fdk.filter_kernel,
+		build_custom_filter_kernel(
+			length(ws_fdk.filter_kernel), Float32(geom.pixel_size),
+			custom_filter_control.x, custom_filter_control.y))
+	recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, geom, recon_size)
+	if bhc_enabled
+		BS.apply_bhc_image_domain(
+			recon_μ, geom, recon_size, bhc_μ_water[140];
+			hu_low = img_bhc_hu_low, hu_high = img_bhc_hu_high,
+			scale_factor = img_bhc_scale_factor,
+			volume_extent = sim_phantom_gpu.extent)
+	end
+	vol = Array(recon_μ)
+	ws_fdk = nothing; sino_gpu = nothing; recon_μ = nothing; GC.gc(true)
 	(volume = vol, name = sim_sino_6.name, kvp = sim_sino_6.kvp)
 end
 
-# ╔═╡ a1b2c3d4-6027-4000-8000-000000000027
+# ╔═╡ 07110013-0000-4000-8000-000000000000
 # Scan 6: 140 kVp / 110 mA — HU CONVERSION (CPU only)
 sim_hu_6 = let
-	μ_w = bhc_models[140].μ_water_ref
+	μ_w = bhc_μ_water[140]
 	recon_hu = Float32.(BS.to_hounsfield(sim_recon_6.volume; μ_water = μ_w))
 	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
 	(name = sim_recon_6.name, recon = recon_hu, mu_water = μ_w)
 end
 
-# ╔═╡ f28d8eb8-79a4-4e74-9672-5f773c07b818
-sim_results_fbp = [
-	sim_hu_1,
-	sim_hu_2,
-	sim_hu_3,
-	sim_hu_4,
-	sim_hu_5,
-	sim_hu_6,
-]
+# ╔═╡ 07110020-0000-4000-8000-000000000000
+sim_results_fbp = [sim_hu_1, sim_hu_2, sim_hu_3, sim_hu_4, sim_hu_5, sim_hu_6]
 
-# ╔═╡ 5dee8411-993a-41e7-bab6-717d2b78c585
+# ╔═╡ 07110021-0000-4000-8000-000000000000
 sim_oriented = let
-	# --- 1. BASE ORIENTATION (Pick one) ---
 	orient = identity
-	# orient = rotr90
-	# orient = rot180
-	# orient = rotl90
-
-	# --- 2. LAYERED MODIFIERS (Uncomment to add a flip/transpose) ---
-	# orient = (f -> s -> reverse(f(s), dims=1))(orient)  # Flip Up-Down
 	orient = (f -> s -> reverse(f(s), dims = 2))(orient)  # Flip Left-Right
-	# orient = (f -> s -> permutedims(f(s)))(orient)     # Transpose
-
-	# --- 3. EXECUTION ---
 	[(name = r.name,
 		recon = Float32.(mapslices(orient, r.recon, dims = (1, 2))),
 		mu_water = r.mu_water)
 	 for r in sim_results_fbp]
 end
 
-# ╔═╡ 625d1cf0-1bef-48b0-94d9-42f114a15640
+# ╔═╡ 07110022-0000-4000-8000-000000000000
 # Segment the simulated recon independently (finds center + Ca400 anchor in sim image)
 sim_seg_result = let
 	ref = sim_oriented[min(2, end)].recon
@@ -2335,884 +2136,18 @@ sim_seg_result = let
 	(mask = mask, rods = rods, center = center, slice_idx = mid_z)
 end;
 
-# ╔═╡ 10ecad19-13d4-43f3-b90e-f49912878838
+# ╔═╡ 07110023-0000-4000-8000-000000000000
 sim_measurements = [
 	measure_scan(r.recon, sim_seg_result.mask, sim_seg_result.rods, sim_seg_result.center, "sim_$(r.name)")
 	for r in sim_oriented
 ];
 
-# ╔═╡ 432033d0-a833-44d7-8101-0c0a632c1c7c
-let
-	base_clinical_idx = [1, 3, 5, 7, 9, 11]
-	base_scan_labels = ["120kVp 50mA", "120kVp 150mA", "120kVp 300mA",
-		"80kVp 480mA", "100kVp 250mA", "140kVp 110mA"]
-
-	n_sims = min(length(sim_measurements), length(base_clinical_idx))
-	active_clinical_idx = base_clinical_idx[1:n_sims]
-	active_labels = base_scan_labels[1:n_sims]
-	colors = CM.cgrad(:tab10, max(n_sims, 2), categorical = true)
-
-	fig = CM.Figure(size = (750, 900), fontsize = 11)
-
-	# --- Top: Calcium rods ---
-	ax_ca = CM.Axis(fig[1, 1]; title = "Calcium Rods", subtitle = "Clinical vs Simulated",
-		xlabel = "Clinical HU", ylabel = "Simulated HU")
-
-	ca_clin_all = Float64[]
-	ca_sim_all = Float64[]
-
-	for (k, (ci, sm_k)) in enumerate(zip(active_clinical_idx, sim_measurements[1:n_sims]))
-		cm = se_measurements[ci]
-		ca_idx = [i for i in 1:length(cm.rod_names) if startswith(cm.rod_names[i], "Ca")]
-		if !isempty(ca_idx)
-			CM.scatter!(ax_ca, cm.rod_means[ca_idx], sm_k.rod_means[ca_idx];
-				color = colors[k], markersize = 10, label = active_labels[k])
-			append!(ca_clin_all, cm.rod_means[ca_idx])
-			append!(ca_sim_all, sm_k.rod_means[ca_idx])
-		end
-	end
-	CM.lines!(ax_ca, [-100, 1400], [-100, 1400];
-		color = :gray60, linestyle = :dash, linewidth = 1, label = "Unity (y = x)")
-	if length(ca_clin_all) > 1
-		X_ca = hcat(ones(length(ca_clin_all)), ca_clin_all)
-		b_ca, m_ca = X_ca \ ca_sim_all
-		r_ca = cor(ca_clin_all, ca_sim_all)
-		rmse_ca = sqrt(sum((ca_sim_all .- ca_clin_all) .^ 2) / length(ca_clin_all))
-		x_fit_ca = range(extrema(ca_clin_all)..., length = 100)
-		sign_ca = b_ca >= 0 ? " + " : " - "
-		eq_ca = "y = $(round(m_ca, digits=3))x$(sign_ca)$(round(abs(b_ca), digits=1))"
-		CM.lines!(ax_ca, collect(x_fit_ca), m_ca .* collect(x_fit_ca) .+ b_ca;
-			color = :black, linewidth = 0.8, label = "Linear fit")
-		# Stats box bottom-right via poly! background + text
-		CM.poly!(ax_ca,
-			CM.Point2f[(0.60, 0.02), (0.98, 0.02), (0.98, 0.22), (0.60, 0.22)];
-			color = (:white, 0.9), strokecolor = :gray50, strokewidth = 1, space = :relative)
-		CM.text!(ax_ca, 0.62, 0.18; space = :relative, align = (:left, :top), fontsize = 10,
-			text = "$(eq_ca)\nr = $(round(r_ca, digits=4))\nRMSE = $(round(rmse_ca, digits=1)) HU")
-	end
-	CM.axislegend(ax_ca; position = :lt, labelsize = 9)
-
-	# --- Bottom: Iodine rods ---
-	ax_i = CM.Axis(fig[2, 1]; title = "Iodine Rods", subtitle = "Clinical vs Simulated",
-		xlabel = "Clinical HU", ylabel = "Simulated HU")
-
-	i_clin_all = Float64[]
-	i_sim_all = Float64[]
-
-	for (k, (ci, sm_k)) in enumerate(zip(active_clinical_idx, sim_measurements[1:n_sims]))
-		cm = se_measurements[ci]
-		i_idx = [i for i in 1:length(cm.rod_names) if startswith(cm.rod_names[i], "I ")]
-		if !isempty(i_idx)
-			CM.scatter!(ax_i, cm.rod_means[i_idx], sm_k.rod_means[i_idx];
-				color = colors[k], markersize = 10, label = active_labels[k])
-			append!(i_clin_all, cm.rod_means[i_idx])
-			append!(i_sim_all, sm_k.rod_means[i_idx])
-		end
-	end
-	CM.lines!(ax_i, [-50, 500], [-50, 500];
-		color = :gray60, linestyle = :dash, linewidth = 1, label = "Unity (y = x)")
-	if length(i_clin_all) > 1
-		X_i = hcat(ones(length(i_clin_all)), i_clin_all)
-		b_i, m_i = X_i \ i_sim_all
-		r_i = cor(i_clin_all, i_sim_all)
-		rmse_i = sqrt(sum((i_sim_all .- i_clin_all) .^ 2) / length(i_clin_all))
-		x_fit_i = range(extrema(i_clin_all)..., length = 100)
-		sign_i = b_i >= 0 ? " + " : " - "
-		eq_i = "y = $(round(m_i, digits=3))x$(sign_i)$(round(abs(b_i), digits=1))"
-		CM.lines!(ax_i, collect(x_fit_i), m_i .* collect(x_fit_i) .+ b_i;
-			color = :black, linewidth = 0.8, label = "Linear fit")
-		# Stats box bottom-right via poly! background + text
-		CM.poly!(ax_i,
-			CM.Point2f[(0.60, 0.02), (0.98, 0.02), (0.98, 0.22), (0.60, 0.22)];
-			color = (:white, 0.9), strokecolor = :gray50, strokewidth = 1, space = :relative)
-		CM.text!(ax_i, 0.62, 0.18; space = :relative, align = (:left, :top), fontsize = 10,
-			text = "$(eq_i)\nr = $(round(r_i, digits=4))\nRMSE = $(round(rmse_i, digits=1)) HU")
-	end
-	CM.axislegend(ax_i; position = :lt, labelsize = 9)
-
-	fig
-end
-
-# ╔═╡ c84b7cb9-5ce2-4d98-a636-b24413271805
-let
-	base_clinical_idx = [1, 3, 5, 7, 9, 11]
-	base_scan_labels = ["120kVp 50mA", "120kVp 150mA", "120kVp 300mA",
-		"80kVp 480mA", "100kVp 250mA", "140kVp 110mA"]
-
-	target_idx = min(2, length(sim_measurements))
-
-	cm = se_measurements[base_clinical_idx[target_idx]]
-	sm = sim_measurements[target_idx]
-	label = base_scan_labels[target_idx]
-
-	# Filter: only Ca and I rods (skip Water, SW ref)
-	keep = [i for i in 1:length(cm.rod_names)
-			if startswith(cm.rod_names[i], "Ca") || startswith(cm.rod_names[i], "I ")]
-	names = cm.rod_names[keep]
-	cm_means = cm.rod_means[keep]
-	cm_stds = cm.rod_stds[keep]
-	sm_means = sm.rod_means[keep]
-	sm_stds = sm.rod_stds[keep]
-	n = length(names)
-
-	# Color by material: Ca = blue/orange tones, I = green/red tones
-	is_ca = [startswith(nm, "Ca") for nm in names]
-	clin_colors = [c ? :steelblue : :seagreen for c in is_ca]
-	sim_colors = [c ? :darkorange : :indianred for c in is_ca]
-
-	fig = CM.Figure(size = (1100, 500), fontsize = 10)
-	ax = CM.Axis(fig[1, 1]; title = "Rod HU ($label)", subtitle = "Clinical vs Simulated", ylabel = "Mean HU", xticks = (1:n, names), xticklabelrotation = π / 4)
-
-	# Bars — Ca group
-	ca_idx = findall(is_ca)
-	if !isempty(ca_idx)
-		CM.barplot!(ax, ca_idx .- 0.2, cm_means[ca_idx]; width = 0.35,
-			color = :steelblue, label = "Clinical Ca")
-		CM.errorbars!(ax, ca_idx .- 0.2, cm_means[ca_idx], cm_stds[ca_idx];
-			color = :black, whiskerwidth = 3)
-		CM.barplot!(ax, ca_idx .+ 0.2, sm_means[ca_idx]; width = 0.35,
-			color = :darkorange, label = "Simulated Ca")
-		CM.errorbars!(ax, ca_idx .+ 0.2, sm_means[ca_idx], sm_stds[ca_idx];
-			color = :black, whiskerwidth = 3)
-	end
-
-	# Bars — I group
-	i_idx = findall(.!is_ca)
-	if !isempty(i_idx)
-		CM.barplot!(ax, i_idx .- 0.2, cm_means[i_idx]; width = 0.35,
-			color = :seagreen, label = "Clinical I")
-		CM.errorbars!(ax, i_idx .- 0.2, cm_means[i_idx], cm_stds[i_idx];
-			color = :black, whiskerwidth = 3)
-		CM.barplot!(ax, i_idx .+ 0.2, sm_means[i_idx]; width = 0.35,
-			color = :indianred, label = "Simulated I")
-		CM.errorbars!(ax, i_idx .+ 0.2, sm_means[i_idx], sm_stds[i_idx];
-			color = :black, whiskerwidth = 3)
-	end
-
-	CM.axislegend(ax; position = :lt)
-	fig
-end
-
-# ╔═╡ cc4aec8c-732e-49b9-ab94-d22a8567a435
-let
-	water_idx = 1  # "Water (O)" is first rod
-
-	# --- Top: 120 kVp dose ladder (scans 1,2,3) ---
-	dose_sim_idx = [1, 2, 3]
-	dose_clin_idx = [1, 3, 5]  # FBP indices
-	dose_labels = ["120 kVp / 50 mA\n(3.38 mGy)", "120 kVp / 150 mA\n(10.16 mGy)", "120 kVp / 300 mA\n(20.38 mGy)"]
-	n_dose = min(length(dose_sim_idx), length(sim_measurements))
-
-	dose_clin_σ = [se_measurements[dose_clin_idx[i]].rod_stds[water_idx] for i in 1:n_dose]
-	dose_sim_σ = [sim_measurements[dose_sim_idx[i]].rod_stds[water_idx] for i in 1:n_dose]
-
-	# --- Bottom: ~10 mGy kVp series (scans 4,5,2,6 → 80,100,120,140 kVp) ---
-	kvp_sim_idx = [4, 5, 2, 6]
-	kvp_clin_idx = [7, 9, 3, 11]  # FBP indices
-	kvp_labels = ["80 kVp / 480 mA\n(10.32 mGy)", "100 kVp / 250 mA\n(10.53 mGy)", "120 kVp / 150 mA\n(10.16 mGy)", "140 kVp / 110 mA\n(10.85 mGy)"]
-	n_kvp = min(length(kvp_sim_idx), length(sim_measurements))
-
-	kvp_clin_σ = [se_measurements[kvp_clin_idx[i]].rod_stds[water_idx] for i in 1:n_kvp]
-	kvp_sim_σ = [sim_measurements[kvp_sim_idx[i]].rod_stds[water_idx] for i in 1:n_kvp]
-
-	fig = CM.Figure(size = (1000, 800), fontsize = 13)
-
-	# Top panel: 120 kVp dose ladder
-	ax1 = CM.Axis(fig[1, 1]; title = "120 kVp — Dose Ladder",
-		ylabel = "Water σ (HU)", xticks = (1:n_dose, dose_labels))
-	CM.barplot!(ax1, collect(1:n_dose) .- 0.2, dose_clin_σ; width = 0.35,
-		color = :steelblue, label = "Clinical FBP")
-	CM.barplot!(ax1, collect(1:n_dose) .+ 0.2, dose_sim_σ; width = 0.35,
-		color = :darkorange, label = "Simulated FBP")
-	CM.axislegend(ax1; position = :rt)
-
-	# Bottom panel: ~10 mGy kVp series
-	ax2 = CM.Axis(fig[2, 1]; title = "~10 mGy CTDIvol — kVp Series",
-		ylabel = "Water σ (HU)", xticks = (1:n_kvp, kvp_labels))
-	CM.barplot!(ax2, collect(1:n_kvp) .- 0.2, kvp_clin_σ; width = 0.35,
-		color = :steelblue, label = "Clinical FBP")
-	CM.barplot!(ax2, collect(1:n_kvp) .+ 0.2, kvp_sim_σ; width = 0.35,
-		color = :darkorange, label = "Simulated FBP")
-	CM.axislegend(ax2; position = :rt)
-
-	# CM.Label(fig[0, :]; text = "Water ROI Noise — Clinical FBP vs Simulated FBP",
-	# 	fontsize = 14, font = :bold)
-
-	fig
-end
-
-# ╔═╡ ae3cee8f-e7e9-48a1-b58e-e598867147d8
-# Each image segmented independently — clinical uses seg_result, simulated uses sim_seg_result
-let
-	# Clinical
-	clin_hu = hu_120_low_fbp[:, :, seg_result.slice_idx]
-	clin_mask = Float32.(seg_result.mask)
-	clin_mask[clin_mask.==0] .= NaN
-
-	# Simulated
-	sim_hu = sim_oriented[1].recon[:, :, sim_seg_result.slice_idx]
-	sim_mask = Float32.(sim_seg_result.mask)
-	sim_mask[sim_mask.==0] .= NaN
-
-	fig = CM.Figure(size = (1100, 500), fontsize = 11)
-
-	ax1 = CM.Axis(fig[1, 1]; title = "Clinical",
-		aspect = CM.DataAspect(), yreversed = true)
-	CM.heatmap!(ax1, clin_hu; colormap = :grays, colorrange = (-200, 500))
-	# CM.heatmap!(ax1, clin_mask; colormap = :turbo, colorrange = (1, 27), nan_color = :transparent)
-	CM.hidedecorations!(ax1)
-	CM.hidespines!(ax1)
-
-	ax2 = CM.Axis(fig[1, 2]; title = "Simulated",
-		aspect = CM.DataAspect(), yreversed = true)
-	CM.heatmap!(ax2, sim_hu; colormap = :grays, colorrange = (-200, 500))
-	# CM.heatmap!(ax2, sim_mask; colormap = :turbo, colorrange = (1, 27), nan_color = :transparent)
-	CM.hidedecorations!(ax2)
-	CM.hidespines!(ax2)
-
-	fig
-end
-
-# ╔═╡ e0a9a826-da50-419d-ba9d-5833ad254792
-# Each image segmented independently — clinical uses seg_result, simulated uses sim_seg_result
-let
-	# Clinical
-	clin_hu = hu_120_low_fbp[:, :, seg_result.slice_idx]
-	clin_mask = Float32.(seg_result.mask)
-	clin_mask[clin_mask.==0] .= NaN
-
-	# Simulated
-	sim_hu = sim_oriented[1].recon[:, :, sim_seg_result.slice_idx]
-	sim_mask = Float32.(sim_seg_result.mask)
-	sim_mask[sim_mask.==0] .= NaN
-
-	fig = CM.Figure(size = (1100, 500), fontsize = 11)
-
-	ax1 = CM.Axis(fig[1, 1]; title = "Clinical",
-		aspect = CM.DataAspect(), yreversed = true)
-	CM.heatmap!(ax1, clin_hu; colormap = :grays, colorrange = (-200, 500))
-	CM.heatmap!(ax1, clin_mask; colormap = :turbo, colorrange = (1, 27), nan_color = :transparent)
-	CM.hidedecorations!(ax1)
-	CM.hidespines!(ax1)
-
-	ax2 = CM.Axis(fig[1, 2]; title = "Simulated",
-		aspect = CM.DataAspect(), yreversed = true)
-	CM.heatmap!(ax2, sim_hu; colormap = :grays, colorrange = (-200, 500))
-	CM.heatmap!(ax2, sim_mask; colormap = :turbo, colorrange = (1, 27), nan_color = :transparent)
-	CM.hidedecorations!(ax2)
-	CM.hidespines!(ax2)
-
-	fig
-end
-
-# ╔═╡ 6989eff6-ac59-4913-ae84-33f8e43a56d1
-# Each image segmented independently — clinical uses seg_result, simulated uses sim_seg_result
-let
-	# Clinical
-	clin_hu = hu_120_mid_fbp[:, :, seg_result.slice_idx]
-	clin_mask = Float32.(seg_result.mask)
-	clin_mask[clin_mask.==0] .= NaN
-
-	# Simulated
-	sim_hu = sim_oriented[min(2, end)].recon[:, :, sim_seg_result.slice_idx]
-	sim_mask = Float32.(sim_seg_result.mask)
-	sim_mask[sim_mask.==0] .= NaN
-
-	fig = CM.Figure(size = (1100, 500), fontsize = 11)
-
-	ax1 = CM.Axis(fig[1, 1]; title = "Clinical",
-		aspect = CM.DataAspect(), yreversed = true)
-	CM.heatmap!(ax1, clin_hu; colormap = :grays, colorrange = (-200, 500))
-	# CM.heatmap!(ax1, clin_mask; colormap = :turbo, colorrange = (1, 27), nan_color = :transparent)
-	CM.hidedecorations!(ax1)
-	CM.hidespines!(ax1)
-
-	ax2 = CM.Axis(fig[1, 2]; title = "Simulated",
-		aspect = CM.DataAspect(), yreversed = true)
-	CM.heatmap!(ax2, sim_hu; colormap = :grays, colorrange = (-200, 500))
-	# CM.heatmap!(ax2, sim_mask; colormap = :turbo, colorrange = (1, 27), nan_color = :transparent)
-	CM.hidedecorations!(ax2)
-	CM.hidespines!(ax2)
-
-	fig
-end
-
-# ╔═╡ 25b7c0b4-d08a-4b2c-9bb1-64d568ca3540
-# Each image segmented independently — clinical uses seg_result, simulated uses sim_seg_result
-let
-	# Clinical
-	clin_hu = hu_120_mid_fbp[:, :, seg_result.slice_idx]
-	clin_mask = Float32.(seg_result.mask)
-	clin_mask[clin_mask.==0] .= NaN
-
-	# Simulated
-	sim_hu = sim_oriented[min(2, end)].recon[:, :, sim_seg_result.slice_idx]
-	sim_mask = Float32.(sim_seg_result.mask)
-	sim_mask[sim_mask.==0] .= NaN
-
-	fig = CM.Figure(size = (1100, 500), fontsize = 11)
-
-	ax1 = CM.Axis(fig[1, 1]; title = "Clinical",
-		aspect = CM.DataAspect(), yreversed = true)
-	CM.heatmap!(ax1, clin_hu; colormap = :grays, colorrange = (-200, 500))
-	CM.heatmap!(ax1, clin_mask; colormap = :turbo, colorrange = (1, 27), nan_color = :transparent)
-	CM.hidedecorations!(ax1)
-	CM.hidespines!(ax1)
-
-	ax2 = CM.Axis(fig[1, 2]; title = "Simulated",
-		aspect = CM.DataAspect(), yreversed = true)
-	CM.heatmap!(ax2, sim_hu; colormap = :grays, colorrange = (-200, 500))
-	CM.heatmap!(ax2, sim_mask; colormap = :turbo, colorrange = (1, 27), nan_color = :transparent)
-	CM.hidedecorations!(ax2)
-	CM.hidespines!(ax2)
-
-	fig
-end
-
-# ╔═╡ 2276aa4f-addf-4e44-8c29-0f0f347cb839
-# Each image segmented independently — clinical uses seg_result, simulated uses sim_seg_result
-let
-	# Clinical
-	clin_hu = hu_120_high_fbp[:, :, seg_result.slice_idx]
-	clin_mask = Float32.(seg_result.mask)
-	clin_mask[clin_mask.==0] .= NaN
-
-	# Simulated
-	sim_hu = sim_oriented[3].recon[:, :, sim_seg_result.slice_idx]
-	sim_mask = Float32.(sim_seg_result.mask)
-	sim_mask[sim_mask.==0] .= NaN
-
-	fig = CM.Figure(size = (1100, 500), fontsize = 11)
-
-	ax1 = CM.Axis(fig[1, 1]; title = "Clinical",
-		aspect = CM.DataAspect(), yreversed = true)
-	CM.heatmap!(ax1, clin_hu; colormap = :grays, colorrange = (-200, 500))
-	CM.heatmap!(ax1, clin_mask; colormap = :turbo, colorrange = (1, 27), nan_color = :transparent)
-	CM.hidedecorations!(ax1)
-	CM.hidespines!(ax1)
-
-	ax2 = CM.Axis(fig[1, 2]; title = "Simulated",
-		aspect = CM.DataAspect(), yreversed = true)
-	CM.heatmap!(ax2, sim_hu; colormap = :grays, colorrange = (-200, 500))
-	CM.heatmap!(ax2, sim_mask; colormap = :turbo, colorrange = (1, 27), nan_color = :transparent)
-	CM.hidedecorations!(ax2)
-	CM.hidespines!(ax2)
-
-	fig
-end
-
-# ╔═╡ d193c4b3-c2de-494a-b0c5-6d0c2081fbf4
-# Each image segmented independently — clinical uses seg_result, simulated uses sim_seg_result
-let
-	# Clinical
-	clin_hu = hu_80_fbp[:, :, seg_result.slice_idx]
-	clin_mask = Float32.(seg_result.mask)
-	clin_mask[clin_mask.==0] .= NaN
-
-	# Simulated
-	sim_hu = sim_oriented[4].recon[:, :, sim_seg_result.slice_idx]
-	sim_mask = Float32.(sim_seg_result.mask)
-	sim_mask[sim_mask.==0] .= NaN
-
-	fig = CM.Figure(size = (1100, 500), fontsize = 11)
-
-	ax1 = CM.Axis(fig[1, 1]; title = "Clinical",
-		aspect = CM.DataAspect(), yreversed = true)
-	CM.heatmap!(ax1, clin_hu; colormap = :grays, colorrange = (-200, 500))
-	CM.heatmap!(ax1, clin_mask; colormap = :turbo, colorrange = (1, 27), nan_color = :transparent)
-	CM.hidedecorations!(ax1)
-	CM.hidespines!(ax1)
-
-	ax2 = CM.Axis(fig[1, 2]; title = "Simulated",
-		aspect = CM.DataAspect(), yreversed = true)
-	CM.heatmap!(ax2, sim_hu; colormap = :grays, colorrange = (-200, 500))
-	CM.heatmap!(ax2, sim_mask; colormap = :turbo, colorrange = (1, 27), nan_color = :transparent)
-	CM.hidedecorations!(ax2)
-	CM.hidespines!(ax2)
-
-	fig
-end
-
-# ╔═╡ a0381edb-cdd2-4d1f-8139-149b6c06bc13
-# Each image segmented independently — clinical uses seg_result, simulated uses sim_seg_result
-let
-	# Clinical
-	clin_hu = hu_120_mid_fbp[:, :, seg_result.slice_idx]
-	clin_mask = Float32.(seg_result.mask)
-	clin_mask[clin_mask.==0] .= NaN
-
-	# Simulated
-	sim_hu = sim_oriented[min(2, end)].recon[:, :, sim_seg_result.slice_idx]
-	sim_mask = Float32.(sim_seg_result.mask)
-	sim_mask[sim_mask.==0] .= NaN
-
-	fig = CM.Figure(size = (1100, 500), fontsize = 11)
-
-	ax1 = CM.Axis(fig[1, 1]; title = "Clinical",
-		aspect = CM.DataAspect(), yreversed = true)
-	CM.heatmap!(ax1, clin_hu; colormap = :grays, colorrange = (-2000, 200))
-	CM.heatmap!(ax1, clin_mask; colormap = :turbo, colorrange = (1, 27), nan_color = :transparent)
-	CM.hidedecorations!(ax1)
-	CM.hidespines!(ax1)
-
-	ax2 = CM.Axis(fig[1, 2]; title = "Simulated",
-		aspect = CM.DataAspect(), yreversed = true)
-	CM.heatmap!(ax2, sim_hu; colormap = :grays, colorrange = (-1200, 200))
-	CM.heatmap!(ax2, sim_mask; colormap = :turbo, colorrange = (1, 27), nan_color = :transparent)
-	CM.hidedecorations!(ax2)
-	CM.hidespines!(ax2)
-
-	fig
-end
-
-# ╔═╡ caeeffcb-5745-4844-aff4-8c70106e3909
-begin
-	hir_strength = 3
-	hir_lambda = 4.0f0
-	hir_nepochs = 2
-	hir_n_subsets = 12
-	hir_huber_delta = 0.06f0
-	hir_relaxation = 0.35f0   
-end
-
-# ╔═╡ b9b74387-2665-4f26-b73e-5dbe46f497c4
-# Scan 1: 120 kVp / 50 mA — HIR RECONSTRUCT (BHC → GPU HIR → CPU volume)
-sim_recon_hir_1 = let
-	sino_gpu = MtlArray(sim_sino_1.sino)
-	sino_bhc = bhc_enabled ? BS.apply_bhc_two_material(sino_gpu, bhc_models[120],
-		sim_sino_1.geom, sim_matrix_size; volume_extent = sim_phantom_gpu.extent) : nothing
-	sino_in = MtlArray(something(sino_bhc, sim_sino_1.sino))
-	geom = sim_sino_1.geom
-	recon_size = sim_matrix_size
-	ws_hir = BS.create_hir_recon_workspace(sino_in, geom, recon_size; strength = hir_strength)
-	copyto!(ws_hir.filter_kernel, build_custom_filter_kernel(
-		length(ws_hir.filter_kernel), Float32(geom.pixel_size),
-		custom_filter_control.x, custom_filter_control.y))
-	ws_hir.params = BS.HIRParams(hir_strength, hir_lambda, 30, hir_nepochs,
-		hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35))
-	BS.reconstruct!(ws_hir, sino_in, geom, recon_size)
-	vol = Array(ws_hir.volume)
-	ws_hir = nothing; sino_gpu = nothing; sino_in = nothing; GC.gc(true)
-	(volume = vol, name = replace(sim_sino_1.name, "FBP" => "HIR"), kvp = sim_sino_1.kvp)
-end
-
-# ╔═╡ 8cd81bd3-2036-4cdc-bb89-079c767306dd
-# Scan 1: 120 kVp / 50 mA — HIR HU CONVERSION (CPU only)
-sim_hu_hir_1 = let
-	μ_w = bhc_models[120].μ_water_ref
-	recon_hu = Float32.(BS.to_hounsfield(sim_recon_hir_1.volume; μ_water = μ_w))
-	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
-	(name = sim_recon_hir_1.name, recon = recon_hu, mu_water = μ_w)
-end
-
-# ╔═╡ e4643553-09c6-436f-9f5d-a2c0cd58967f
-# Scan 2: 120 kVp / 150 mA — HIR RECONSTRUCT (BHC → GPU HIR → CPU volume)
-sim_recon_hir_2 = let
-	sino_gpu = MtlArray(sim_sino_2.sino)
-	sino_bhc = bhc_enabled ? BS.apply_bhc_two_material(sino_gpu, bhc_models[120],
-		sim_sino_2.geom, sim_matrix_size; volume_extent = sim_phantom_gpu.extent) : nothing
-	sino_in = MtlArray(something(sino_bhc, sim_sino_2.sino))
-	geom = sim_sino_2.geom
-	recon_size = sim_matrix_size
-	ws_hir = BS.create_hir_recon_workspace(sino_in, geom, recon_size; strength = hir_strength)
-	copyto!(ws_hir.filter_kernel, build_custom_filter_kernel(
-		length(ws_hir.filter_kernel), Float32(geom.pixel_size),
-		custom_filter_control.x, custom_filter_control.y))
-	ws_hir.params = BS.HIRParams(hir_strength, hir_lambda, 30, hir_nepochs,
-		hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35))
-	BS.reconstruct!(ws_hir, sino_in, geom, recon_size)
-	vol = Array(ws_hir.volume)
-	ws_hir = nothing; sino_gpu = nothing; sino_in = nothing; GC.gc(true)
-	(volume = vol, name = replace(sim_sino_2.name, "FBP" => "HIR"), kvp = sim_sino_2.kvp)
-end
-
-# ╔═╡ 707e2b67-243e-4fd9-a174-84a8bd0e3258
-# Scan 2: 120 kVp / 150 mA — HIR HU CONVERSION (CPU only)
-sim_hu_hir_2 = let
-	μ_w = bhc_models[120].μ_water_ref
-	recon_hu = Float32.(BS.to_hounsfield(sim_recon_hir_2.volume; μ_water = μ_w))
-	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
-	(name = sim_recon_hir_2.name, recon = recon_hu, mu_water = μ_w)
-end
-
-# ╔═╡ dc31e62e-efaf-479a-81f8-5c3a05db204d
-# Scan 3: 120 kVp / 300 mA — HIR RECONSTRUCT (BHC → GPU HIR → CPU volume)
-sim_recon_hir_3 = let
-	sino_gpu = MtlArray(sim_sino_3.sino)
-	sino_bhc = bhc_enabled ? BS.apply_bhc_two_material(sino_gpu, bhc_models[120],
-		sim_sino_3.geom, sim_matrix_size; volume_extent = sim_phantom_gpu.extent) : nothing
-	sino_in = MtlArray(something(sino_bhc, sim_sino_3.sino))
-	geom = sim_sino_3.geom
-	recon_size = sim_matrix_size
-	ws_hir = BS.create_hir_recon_workspace(sino_in, geom, recon_size; strength = hir_strength)
-	copyto!(ws_hir.filter_kernel, build_custom_filter_kernel(
-		length(ws_hir.filter_kernel), Float32(geom.pixel_size),
-		custom_filter_control.x, custom_filter_control.y))
-	ws_hir.params = BS.HIRParams(hir_strength, hir_lambda, 30, hir_nepochs,
-		hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35))
-	BS.reconstruct!(ws_hir, sino_in, geom, recon_size)
-	vol = Array(ws_hir.volume)
-	ws_hir = nothing; sino_gpu = nothing; sino_in = nothing; GC.gc(true)
-	(volume = vol, name = replace(sim_sino_3.name, "FBP" => "HIR"), kvp = sim_sino_3.kvp)
-end
-
-# ╔═╡ 90e8d9c9-0d04-4806-9e13-702919ef9bf0
-# Scan 3: 120 kVp / 300 mA — HIR HU CONVERSION (CPU only)
-sim_hu_hir_3 = let
-	μ_w = bhc_models[120].μ_water_ref
-	recon_hu = Float32.(BS.to_hounsfield(sim_recon_hir_3.volume; μ_water = μ_w))
-	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
-	(name = sim_recon_hir_3.name, recon = recon_hu, mu_water = μ_w)
-end
-
-# ╔═╡ 797905a3-d516-41a0-b3eb-024a9b2ab63d
-# Scan 4: 80 kVp / 480 mA — HIR RECONSTRUCT (BHC → GPU HIR → CPU volume)
-sim_recon_hir_4 = let
-	sino_gpu = MtlArray(sim_sino_4.sino)
-	sino_bhc = bhc_enabled ? BS.apply_bhc_two_material(sino_gpu, bhc_models[80],
-		sim_sino_4.geom, sim_matrix_size; volume_extent = sim_phantom_gpu.extent) : nothing
-	sino_in = MtlArray(something(sino_bhc, sim_sino_4.sino))
-	geom = sim_sino_4.geom
-	recon_size = sim_matrix_size
-	ws_hir = BS.create_hir_recon_workspace(sino_in, geom, recon_size; strength = hir_strength)
-	copyto!(ws_hir.filter_kernel, build_custom_filter_kernel(
-		length(ws_hir.filter_kernel), Float32(geom.pixel_size),
-		custom_filter_control.x, custom_filter_control.y))
-	ws_hir.params = BS.HIRParams(hir_strength, hir_lambda, 30, hir_nepochs,
-		hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35))
-	BS.reconstruct!(ws_hir, sino_in, geom, recon_size)
-	vol = Array(ws_hir.volume)
-	ws_hir = nothing; sino_gpu = nothing; sino_in = nothing; GC.gc(true)
-	(volume = vol, name = replace(sim_sino_4.name, "FBP" => "HIR"), kvp = sim_sino_4.kvp)
-end
-
-# ╔═╡ fe36b139-f792-479a-b58d-e20962391a5e
-# Scan 4: 80 kVp / 480 mA — HIR HU CONVERSION (CPU only)
-sim_hu_hir_4 = let
-	μ_w = bhc_models[80].μ_water_ref
-	recon_hu = Float32.(BS.to_hounsfield(sim_recon_hir_4.volume; μ_water = μ_w))
-	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
-	(name = sim_recon_hir_4.name, recon = recon_hu, mu_water = μ_w)
-end
-
-# ╔═╡ 2cb22b66-66cd-44e3-9418-7fc8eeeb5274
-# Scan 5: 100 kVp / 250 mA — HIR RECONSTRUCT (BHC → GPU HIR → CPU volume)
-sim_recon_hir_5 = let
-	sino_gpu = MtlArray(sim_sino_5.sino)
-	sino_bhc = bhc_enabled ? BS.apply_bhc_two_material(sino_gpu, bhc_models[100],
-		sim_sino_5.geom, sim_matrix_size; volume_extent = sim_phantom_gpu.extent) : nothing
-	sino_in = MtlArray(something(sino_bhc, sim_sino_5.sino))
-	geom = sim_sino_5.geom
-	recon_size = sim_matrix_size
-	ws_hir = BS.create_hir_recon_workspace(sino_in, geom, recon_size; strength = hir_strength)
-	copyto!(ws_hir.filter_kernel, build_custom_filter_kernel(
-		length(ws_hir.filter_kernel), Float32(geom.pixel_size),
-		custom_filter_control.x, custom_filter_control.y))
-	ws_hir.params = BS.HIRParams(hir_strength, hir_lambda, 30, hir_nepochs,
-		hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35))
-	BS.reconstruct!(ws_hir, sino_in, geom, recon_size)
-	vol = Array(ws_hir.volume)
-	ws_hir = nothing; sino_gpu = nothing; sino_in = nothing; GC.gc(true)
-	(volume = vol, name = replace(sim_sino_5.name, "FBP" => "HIR"), kvp = sim_sino_5.kvp)
-end
-
-# ╔═╡ 9833c73a-556c-4957-8d73-ac0e11ce961c
-# Scan 5: 100 kVp / 250 mA — HIR HU CONVERSION (CPU only)
-sim_hu_hir_5 = let
-	μ_w = bhc_models[100].μ_water_ref
-	recon_hu = Float32.(BS.to_hounsfield(sim_recon_hir_5.volume; μ_water = μ_w))
-	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
-	(name = sim_recon_hir_5.name, recon = recon_hu, mu_water = μ_w)
-end
-
-# ╔═╡ ae8ec9e5-6138-4866-b4e8-e406a6536b4a
-# Scan 6: 140 kVp / 110 mA — HIR RECONSTRUCT (BHC → GPU HIR → CPU volume)
-sim_recon_hir_6 = let
-	sino_gpu = MtlArray(sim_sino_6.sino)
-	sino_bhc = bhc_enabled ? BS.apply_bhc_two_material(sino_gpu, bhc_models[140],
-		sim_sino_6.geom, sim_matrix_size; volume_extent = sim_phantom_gpu.extent) : nothing
-	sino_in = MtlArray(something(sino_bhc, sim_sino_6.sino))
-	geom = sim_sino_6.geom
-	recon_size = sim_matrix_size
-	ws_hir = BS.create_hir_recon_workspace(sino_in, geom, recon_size; strength = hir_strength)
-	copyto!(ws_hir.filter_kernel, build_custom_filter_kernel(
-		length(ws_hir.filter_kernel), Float32(geom.pixel_size),
-		custom_filter_control.x, custom_filter_control.y))
-	ws_hir.params = BS.HIRParams(hir_strength, hir_lambda, 30, hir_nepochs,
-		hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35))
-	BS.reconstruct!(ws_hir, sino_in, geom, recon_size)
-	vol = Array(ws_hir.volume)
-	ws_hir = nothing; sino_gpu = nothing; sino_in = nothing; GC.gc(true)
-	(volume = vol, name = replace(sim_sino_6.name, "FBP" => "HIR"), kvp = sim_sino_6.kvp)
-end
-
-# ╔═╡ 8f3ef07e-7f1e-4a94-a0b8-0404d97f23dc
-# Scan 6: 140 kVp / 110 mA — HIR HU CONVERSION (CPU only)
-sim_hu_hir_6 = let
-	μ_w = bhc_models[140].μ_water_ref
-	recon_hu = Float32.(BS.to_hounsfield(sim_recon_hir_6.volume; μ_water = μ_w))
-	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
-	(name = sim_recon_hir_6.name, recon = recon_hu, mu_water = μ_w)
-end
-
-# ╔═╡ 5364d024-e28d-4eca-be96-23b95a4bf121
-sim_results_hir = [
-	sim_hu_hir_1,
-	sim_hu_hir_2,
-	sim_hu_hir_3,
-	sim_hu_hir_4,
-	sim_hu_hir_5,
-	sim_hu_hir_6,
-]
-
-# ╔═╡ 2030fac8-4923-4d49-bd07-cb7ab4a3f8fa
-sim_oriented_hir = let
-	# Must match sim_oriented orientation exactly
-	orient = identity
-	orient = (f -> s -> reverse(f(s), dims = 2))(orient)  # Flip Left-Right
-
-	[(name = r.name,
-		recon = Float32.(mapslices(orient, r.recon, dims = (1, 2))),
-		mu_water = r.mu_water)
-	 for r in sim_results_hir]
-end
-
-# ╔═╡ da35087b-a066-4fa1-9cd7-59dbcca999d5
-# Reuse FBP segmentation (same phantom geometry) for HIR measurements
-sim_measurements_hir = [
-	measure_scan(r.recon, sim_seg_result.mask, sim_seg_result.rods, sim_seg_result.center, "sim_hir_$(r.name)")
-	for r in sim_oriented_hir
-];
-
-# ╔═╡ 54395f3b-d6ac-4429-9070-de4e6286a52b
-# NPS comparison: Simulated HIR vs Clinical ASiR-V 50%
-let
-	asirv_clinical_idx = [2, 4, 6, 8, 10, 12]
-	scan_labels = ["120kVp 50mA", "120kVp 150mA", "120kVp 300mA",
-		"80kVp 480mA", "100kVp 250mA", "140kVp 110mA"]
-
-	n_sims = min(length(sim_measurements_hir), length(asirv_clinical_idx))
-
-	fig = CM.Figure(size = (900, 900), fontsize = 11)
-
-	for i in 1:n_sims
-		row = (i - 1) ÷ 2 + 1
-		col = (i - 1) % 2 + 1
-
-		ax = CM.Axis(fig[row, col]; title = scan_labels[i],
-			subtitle = "Clinical ASiR-V 50% vs Simulated HIR",
-			xlabel = "Spatial frequency (lp/cm)", ylabel = "NPS (HU²·cm²)", yscale = log10)
-
-		cm = se_measurements[asirv_clinical_idx[i]]
-		sm = sim_measurements_hir[i]
-
-		f_c, v_c = cm.nps.frequencies, cm.nps.nps_1d
-		good_c = v_c .> 0
-		CM.lines!(ax, f_c[good_c], v_c[good_c];
-			color = :steelblue, linewidth = 1.5, label = "Clinical ASiR-V")
-
-		f_s, v_s = sm.nps.frequencies, sm.nps.nps_1d
-		good_s = v_s .> 0
-		CM.lines!(ax, f_s[good_s], v_s[good_s];
-			color = :orangered, linewidth = 1.5, linestyle = :dash, label = "Simulated HIR")
-
-		CM.axislegend(ax; position = :rt, labelsize = 8)
-	end
-
-	fig
-end
-
-# ╔═╡ 4798adbb-608d-4fc4-9429-c5a3a99d9e1b
-# MTF comparison: Simulated HIR vs Clinical ASiR-V 50%
-let
-	asirv_clinical_idx = [2, 4, 6, 8, 10, 12]
-	scan_labels = ["120kVp 50mA", "120kVp 150mA", "120kVp 300mA",
-		"80kVp 480mA", "100kVp 250mA", "140kVp 110mA"]
-
-	n_sims = min(length(sim_measurements_hir), length(asirv_clinical_idx))
-
-	fig = CM.Figure(size = (900, 900), fontsize = 11)
-
-	for i in 1:n_sims
-		row = (i - 1) ÷ 2 + 1
-		col = (i - 1) % 2 + 1
-
-		ax = CM.Axis(fig[row, col]; title = scan_labels[i],
-			subtitle = "Clinical ASiR-V 50% vs Simulated HIR",
-			xlabel = "Spatial frequency (lp/cm)", ylabel = "MTF",
-			limits = (nothing, nothing, 0, 1.05))
-		CM.hlines!(ax, [0.5, 0.1]; color = :gray80, linestyle = :dash, linewidth = 0.8)
-
-		cm = se_measurements[asirv_clinical_idx[i]]
-		sm = sim_measurements_hir[i]
-
-		CM.lines!(ax, cm.mtf.frequencies, cm.mtf.mtf;
-			color = :steelblue, linewidth = 1.5, label = "Clinical ASiR-V")
-		CM.lines!(ax, sm.mtf.frequencies, sm.mtf.mtf;
-			color = :orangered, linewidth = 1.5, linestyle = :dash, label = "Simulated HIR")
-
-		CM.axislegend(ax; position = :rt, labelsize = 8)
-	end
-
-	fig
-end
-
-# ╔═╡ 9a1404a2-c8ae-40ad-8359-3658e2eb206d
-let
-	water_idx = 1  # "Water (O)" is first rod
-
-	# --- Top: 120 kVp dose ladder (scans 1,2,3) ---
-	dose_sim_idx = [1, 2, 3]
-	dose_clin_idx = [2, 4, 6]  # ASiR-V indices
-	dose_labels = ["120 kVp / 50 mA\n(3.38 mGy)", "120 kVp / 150 mA\n(10.16 mGy)", "120 kVp / 300 mA\n(20.38 mGy)"]
-	n_dose = min(length(dose_sim_idx), length(sim_measurements_hir))
-
-	dose_clin_σ = [se_measurements[dose_clin_idx[i]].rod_stds[water_idx] for i in 1:n_dose]
-	dose_sim_σ = [sim_measurements_hir[dose_sim_idx[i]].rod_stds[water_idx] for i in 1:n_dose]
-
-	# --- Bottom: ~10 mGy kVp series (scans 4,5,2,6 → 80,100,120,140 kVp) ---
-	kvp_sim_idx = [4, 5, 2, 6]
-	kvp_clin_idx = [8, 10, 4, 12]  # ASiR-V indices
-	kvp_labels = ["80 kVp / 480 mA\n(10.32 mGy)", "100 kVp / 250 mA\n(10.53 mGy)", "120 kVp / 150 mA\n(10.16 mGy)", "140 kVp / 110 mA\n(10.85 mGy)"]
-	n_kvp = min(length(kvp_sim_idx), length(sim_measurements_hir))
-
-	kvp_clin_σ = [se_measurements[kvp_clin_idx[i]].rod_stds[water_idx] for i in 1:n_kvp]
-	kvp_sim_σ = [sim_measurements_hir[kvp_sim_idx[i]].rod_stds[water_idx] for i in 1:n_kvp]
-
-	fig = CM.Figure(size = (1000, 800), fontsize = 13)
-
-	# Top panel: 120 kVp dose ladder
-	ax1 = CM.Axis(fig[1, 1]; title = "120 kVp — Dose Ladder",
-		ylabel = "Water σ (HU)", xticks = (1:n_dose, dose_labels))
-	CM.barplot!(ax1, collect(1:n_dose) .- 0.2, dose_clin_σ; width = 0.35,
-		color = :steelblue, label = "Clinical ASiR-V 50%")
-	CM.barplot!(ax1, collect(1:n_dose) .+ 0.2, dose_sim_σ; width = 0.35,
-		color = :darkorange, label = "Simulated HIR")
-	CM.axislegend(ax1; position = :rt)
-
-	# Bottom panel: ~10 mGy kVp series
-	ax2 = CM.Axis(fig[2, 1]; title = "~10 mGy CTDIvol — kVp Series",
-		ylabel = "Water σ (HU)", xticks = (1:n_kvp, kvp_labels))
-	CM.barplot!(ax2, collect(1:n_kvp) .- 0.2, kvp_clin_σ; width = 0.35,
-		color = :steelblue, label = "Clinical ASiR-V 50%")
-	CM.barplot!(ax2, collect(1:n_kvp) .+ 0.2, kvp_sim_σ; width = 0.35,
-		color = :darkorange, label = "Simulated HIR")
-	CM.axislegend(ax2; position = :rt)
-
-	# CM.Label(fig[0, :]; text = "Water ROI Noise — Clinical ASiR-V 50% vs Simulated HIR",
-		# fontsize = 14, font = :bold)
-
-	fig
-end
-
-# ╔═╡ 378f6ea7-81c3-4f83-9f22-29c6c432dec1
-let
-	base_clinical_idx = [1, 3, 5, 7, 9, 11]
-	base_scan_labels = ["120kVp 50mA", "120kVp 150mA", "120kVp 300mA",
-		"80kVp 480mA", "100kVp 250mA", "140kVp 110mA"]
-
-	n_sims = min(length(sim_measurements), length(base_clinical_idx))
-
-	fig = CM.Figure(size = (900, 900), fontsize = 11)
-
-	for i in 1:n_sims
-		row = (i - 1) ÷ 2 + 1
-		col = (i - 1) % 2 + 1
-
-		ax = CM.Axis(fig[row, col]; title = base_scan_labels[i],
-			subtitle = "Clinical vs Simulated",
-			xlabel = "Spatial frequency (lp/cm)", ylabel = "NPS (HU²·cm²)", yscale = log10)
-
-		cm = se_measurements[base_clinical_idx[i]]
-		sm = sim_measurements[i]
-
-		f_c, v_c = cm.nps.frequencies, cm.nps.nps_1d
-		good_c = v_c .> 0
-		CM.lines!(ax, f_c[good_c], v_c[good_c];
-			color = :steelblue, linewidth = 1.5, label = "Clinical")
-
-		f_s, v_s = sm.nps.frequencies, sm.nps.nps_1d
-		good_s = v_s .> 0
-		CM.lines!(ax, f_s[good_s], v_s[good_s];
-			color = :orangered, linewidth = 1.5, linestyle = :dash, label = "Simulated")
-
-		CM.axislegend(ax; position = :rt, labelsize = 8)
-	end
-
-	fig
-end
-
-# ╔═╡ 12c2ca1a-bee0-48d5-9f8d-aa7a41478cb6
-let
-	base_clinical_idx = [1, 3, 5, 7, 9, 11]
-	base_scan_labels = ["120kVp 50mA", "120kVp 150mA", "120kVp 300mA",
-		"80kVp 480mA", "100kVp 250mA", "140kVp 110mA"]
-
-	n_sims = min(length(sim_measurements), length(base_clinical_idx))
-
-	fig = CM.Figure(size = (900, 900), fontsize = 11)
-
-	for i in 1:n_sims
-		row = (i - 1) ÷ 2 + 1
-		col = (i - 1) % 2 + 1
-
-		ax = CM.Axis(fig[row, col]; title = base_scan_labels[i],
-			subtitle = "Clinical vs Simulated",
-			xlabel = "Spatial frequency (lp/cm)", ylabel = "MTF",
-			limits = (nothing, nothing, 0, 1.05))
-		CM.hlines!(ax, [0.5, 0.1]; color = :gray80, linestyle = :dash, linewidth = 0.8)
-
-		cm = se_measurements[base_clinical_idx[i]]
-		sm = sim_measurements[i]
-
-		CM.lines!(ax, cm.mtf.frequencies, cm.mtf.mtf;
-			color = :steelblue, linewidth = 1.5, label = "Clinical")
-		CM.lines!(ax, sm.mtf.frequencies, sm.mtf.mtf;
-			color = :orangered, linewidth = 1.5, linestyle = :dash, label = "Simulated")
-
-		CM.axislegend(ax; position = :rt, labelsize = 8)
-	end
-
-	fig
-end
-
-# ╔═╡ 79294509-6f4c-4e17-87c0-b3865c76e929
-let
-	base_clinical_idx = [1, 3, 5, 7, 9, 11]
-	base_scan_labels = ["120kVp 50mA", "120kVp 150mA", "120kVp 300mA",
-		"80kVp 480mA", "100kVp 250mA", "140kVp 110mA"]
-
-	target_idx = min(2, length(sim_measurements))
-	cm = se_measurements[base_clinical_idx[target_idx]]
-	sm = sim_measurements[target_idx]
-	label = base_scan_labels[target_idx]
-
-	Δ = sm.rod_means .- cm.rod_means
-
-	fig = CM.Figure(size = (1100, 400), fontsize = 10)
-	ax = CM.Axis(fig[1, 1]; title = "HU Error", subtitle = "(Simulated − Clinical) — $label", ylabel = "ΔHU", xticks = (1:length(cm.rod_names), cm.rod_names), xticklabelrotation = π / 4)
-	CM.barplot!(ax, 1:length(Δ), Δ; color = ifelse.(Δ .> 0, :salmon, :steelblue))
-	CM.hlines!(ax, [0]; color = :black, linewidth = 0.8)
-
-	for (i, d) in enumerate(Δ)
-		CM.text!(ax, i, d + sign(d) * 3;
-			text = "$(round(d, digits=1))", fontsize = 8, align = (:center, d > 0 ? :bottom : :top))
-	end
-
-	fig
-end
-
-# ╔═╡ 829ef0b1-dc36-4a94-98fa-ed52c9e82ee2
+# ╔═╡ 07110030-0000-4000-8000-000000000000
 md"""
-### FBP vs Clinical FBP
+### FBP: Qualitative Side-by-Side
 """
 
-# ╔═╡ 10c733ff-5b31-4951-809a-2510d48155e9
-md"""
-#### FBP: Qualitative
-"""
-
-# ╔═╡ 2c08722a-16d9-43d7-8bc4-8fc568c1296e
+# ╔═╡ 07110031-0000-4000-8000-000000000000
 # FBP: 2×3 qualitative side-by-side (Clinical FBP vs Simulated FBP)
 let
 	clin_vols = [hu_120_low_fbp, hu_120_mid_fbp, hu_120_high_fbp,
@@ -3236,40 +2171,491 @@ let
 		CM.hidedecorations!(ax2); CM.hidespines!(ax2)
 	end
 
+	CM.save(joinpath(RESULTS_DIR, "ge_fbp_qualitative.png"), fig, px_per_unit = 2)
 	fig
 end
 
-# ╔═╡ 80a5049d-2772-4334-86da-0f972d376078
+# ╔═╡ 07110032-0000-4000-8000-000000000000
 md"""
-#### FBP: NPS
+### FBP: Scatter Plot (HU)
 """
 
-# ╔═╡ 9cb43aa0-29da-44eb-871b-69077b87df8f
+# ╔═╡ 07110033-0000-4000-8000-000000000000
+# FBP: Ca/I scatter — Clinical FBP vs Simulated FBP
+let
+	base_clinical_idx = [1, 3, 5, 7, 9, 11]
+	base_scan_labels = [
+		"120kVp 50mA", "120kVp 150mA", "120kVp 300mA",
+		"80kVp 480mA", "100kVp 250mA", "140kVp 110mA"
+	]
+
+	n_sims = min(length(sim_measurements), length(base_clinical_idx))
+	active_clinical_idx = base_clinical_idx[1:n_sims]
+	active_labels = base_scan_labels[1:n_sims]
+	colors = CM.cgrad(:tab10, max(n_sims, 2), categorical = true)
+
+	fig = CM.Figure(size = (750, 900), fontsize = 11)
+
+	# --- Top: Calcium rods ---
+	ax_ca = CM.Axis(fig[1, 1], title = "Calcium Rods", subtitle = "Clinical vs Simulated",
+					xlabel = "Clinical HU", ylabel = "Simulated HU")
+	ca_clin_all, ca_sim_all = Float64[], Float64[]
+
+	for (k, (ci, sm_k)) in enumerate(zip(active_clinical_idx, sim_measurements[1:n_sims]))
+		cm = se_measurements[ci]
+		ca_idx = [i for i in 1:length(cm.rod_names) if startswith(cm.rod_names[i], "Ca")]
+		if !isempty(ca_idx)
+			CM.scatter!(ax_ca, cm.rod_means[ca_idx], sm_k.rod_means[ca_idx];
+						color = colors[k], markersize = 10, label = active_labels[k])
+			append!(ca_clin_all, cm.rod_means[ca_idx])
+			append!(ca_sim_all, sm_k.rod_means[ca_idx])
+		end
+	end
+	CM.lines!(ax_ca, [-100, 1400], [-100, 1400], color = :gray60, linestyle = :dash, label = "Unity (y=x)")
+	if length(ca_clin_all) > 1
+		b_ca, m_ca = hcat(ones(length(ca_clin_all)), ca_clin_all) \ ca_sim_all
+		r_ca = cor(ca_clin_all, ca_sim_all)
+		rmse_ca = sqrt(sum((ca_sim_all .- ca_clin_all) .^ 2) / length(ca_clin_all))
+		nrmse_ca = rmse_ca / (maximum(ca_clin_all) - minimum(ca_clin_all)) * 100
+		eq_ca = "y = $(round(m_ca, digits=3))x $(b_ca >= 0 ? "+" : "-") $(round(abs(b_ca), digits=1))"
+		CM.lines!(ax_ca, [extrema(ca_clin_all)...], m_ca .* [extrema(ca_clin_all)...] .+ b_ca, color = :black, linewidth = 0.8, label = "Linear fit")
+		CM.poly!(ax_ca, CM.Point2f[(0.60, 0.02), (0.98, 0.02), (0.98, 0.22), (0.60, 0.22)], color = (:white, 0.9), strokecolor = :gray50, strokewidth = 1, space = :relative)
+		CM.text!(ax_ca, 0.62, 0.18, text = "$(eq_ca)\nr = $(round(r_ca, digits=4))\nnRMSE = $(round(nrmse_ca, digits=1))%", space = :relative, align = (:left, :top), fontsize = 10)
+	end
+	CM.axislegend(ax_ca, position = :lt, labelsize = 9)
+
+	# --- Bottom: Iodine rods ---
+	ax_i = CM.Axis(fig[2, 1], title = "Iodine Rods", subtitle = "Clinical vs Simulated",
+				   xlabel = "Clinical HU", ylabel = "Simulated HU")
+	i_clin_all, i_sim_all = Float64[], Float64[]
+
+	for (k, (ci, sm_k)) in enumerate(zip(active_clinical_idx, sim_measurements[1:n_sims]))
+		cm = se_measurements[ci]
+		i_idx = [i for i in 1:length(cm.rod_names) if startswith(cm.rod_names[i], "I ")]
+		if !isempty(i_idx)
+			CM.scatter!(ax_i, cm.rod_means[i_idx], sm_k.rod_means[i_idx];
+						color = colors[k], markersize = 10, label = active_labels[k])
+			append!(i_clin_all, cm.rod_means[i_idx])
+			append!(i_sim_all, sm_k.rod_means[i_idx])
+		end
+	end
+	CM.lines!(ax_i, [-50, 500], [-50, 500], color = :gray60, linestyle = :dash, label = "Unity (y=x)")
+	if length(i_clin_all) > 1
+		b_i, m_i = hcat(ones(length(i_clin_all)), i_clin_all) \ i_sim_all
+		r_i = cor(i_clin_all, i_sim_all)
+		rmse_i = sqrt(sum((i_sim_all .- i_clin_all) .^ 2) / length(i_clin_all))
+		nrmse_i = rmse_i / (maximum(i_clin_all) - minimum(i_clin_all)) * 100
+		eq_i = "y = $(round(m_i, digits=3))x $(b_i >= 0 ? "+" : "-") $(round(abs(b_i), digits=1))"
+		CM.lines!(ax_i, [extrema(i_clin_all)...], m_i .* [extrema(i_clin_all)...] .+ b_i, color = :black, linewidth = 0.8, label = "Linear fit")
+		CM.poly!(ax_i, CM.Point2f[(0.60, 0.02), (0.98, 0.02), (0.98, 0.22), (0.60, 0.22)], color = (:white, 0.9), strokecolor = :gray50, strokewidth = 1, space = :relative)
+		CM.text!(ax_i, 0.62, 0.18, text = "$(eq_i)\nr = $(round(r_i, digits=4))\nnRMSE = $(round(nrmse_i, digits=1))%", space = :relative, align = (:left, :top), fontsize = 10)
+	end
+	CM.axislegend(ax_i, position = :lt, labelsize = 9)
+
+	CM.save(joinpath(RESULTS_DIR, "ge_fbp_scatter_hu.png"), fig, px_per_unit = 2)
+	fig
+end
+
+# ╔═╡ 07110038-0000-4000-8000-000000000000
 md"""
-#### FBP: MTF
+### FBP: Noise
 """
 
-# ╔═╡ d0615322-2071-4734-8ff6-00a8329e849a
+# ╔═╡ 07110039-0000-4000-8000-000000000000
+let
+	water_idx = 1
+	dose_sim_idx = [1, 2, 3]
+	dose_clin_idx = [1, 3, 5]
+	dose_labels = ["120 kVp / 50 mA\n(3.38 mGy)", "120 kVp / 150 mA\n(10.16 mGy)", "120 kVp / 300 mA\n(20.38 mGy)"]
+	n_dose = min(length(dose_sim_idx), length(sim_measurements))
+
+	dose_clin_σ = [se_measurements[dose_clin_idx[i]].rod_stds[water_idx] for i in 1:n_dose]
+	dose_sim_σ = [sim_measurements[dose_sim_idx[i]].rod_stds[water_idx] for i in 1:n_dose]
+
+	kvp_sim_idx = [4, 5, 2, 6]
+	kvp_clin_idx = [7, 9, 3, 11]
+	kvp_labels = ["80 kVp / 480 mA\n(10.32 mGy)", "100 kVp / 250 mA\n(10.53 mGy)", "120 kVp / 150 mA\n(10.16 mGy)", "140 kVp / 110 mA\n(10.85 mGy)"]
+	n_kvp = min(length(kvp_sim_idx), length(sim_measurements))
+
+	kvp_clin_σ = [se_measurements[kvp_clin_idx[i]].rod_stds[water_idx] for i in 1:n_kvp]
+	kvp_sim_σ = [sim_measurements[kvp_sim_idx[i]].rod_stds[water_idx] for i in 1:n_kvp]
+
+	fig = CM.Figure(size = (1000, 800), fontsize = 13)
+
+	ax1 = CM.Axis(fig[1, 1]; title = "120 kVp — Dose Ladder",
+		ylabel = "Water σ (HU)", xticks = (1:n_dose, dose_labels))
+	CM.barplot!(ax1, collect(1:n_dose) .- 0.2, dose_clin_σ; width = 0.35,
+		color = :steelblue, label = "Clinical FBP")
+	CM.barplot!(ax1, collect(1:n_dose) .+ 0.2, dose_sim_σ; width = 0.35,
+		color = :darkorange, label = "Simulated FBP")
+	CM.axislegend(ax1; position = :rb)
+
+	ax2 = CM.Axis(fig[2, 1]; title = "~10 mGy CTDIvol — kVp Series",
+		ylabel = "Water σ (HU)", xticks = (1:n_kvp, kvp_labels))
+	CM.barplot!(ax2, collect(1:n_kvp) .- 0.2, kvp_clin_σ; width = 0.35,
+		color = :steelblue, label = "Clinical FBP")
+	CM.barplot!(ax2, collect(1:n_kvp) .+ 0.2, kvp_sim_σ; width = 0.35,
+		color = :darkorange, label = "Simulated FBP")
+	CM.axislegend(ax2; position = :rb)
+
+	CM.save(joinpath(RESULTS_DIR, "ge_fbp_noise.png"), fig, px_per_unit = 2)
+	fig
+end
+
+# ╔═╡ 07110040-0000-4000-8000-000000000000
 md"""
-#### FBP: Noise
+### FBP: NPS
 """
 
-# ╔═╡ 70e53b68-de55-4ce0-91cf-21e867710419
+# ╔═╡ 07110041-0000-4000-8000-000000000000
+let
+	base_clinical_idx = [1, 3, 5, 7, 9, 11]
+	base_scan_labels = ["120kVp 50mA", "120kVp 150mA", "120kVp 300mA",
+		"80kVp 480mA", "100kVp 250mA", "140kVp 110mA"]
+
+	n_sims = min(length(sim_measurements), length(base_clinical_idx))
+	fig = CM.Figure(size = (900, 900), fontsize = 11)
+
+	for i in 1:n_sims
+		row = (i - 1) ÷ 2 + 1
+		col = (i - 1) % 2 + 1
+		ax = CM.Axis(fig[row, col]; title = base_scan_labels[i],
+			subtitle = "Clinical vs Simulated",
+			xlabel = "Spatial frequency (lp/cm)", ylabel = "NPS (HU²·cm²)", yscale = log10)
+		cm = se_measurements[base_clinical_idx[i]]
+		sm = sim_measurements[i]
+		f_c, v_c = cm.nps.frequencies, cm.nps.nps_1d
+		good_c = v_c .> 0
+		CM.lines!(ax, f_c[good_c], v_c[good_c];
+			color = :steelblue, linewidth = 1.5, label = "Clinical")
+		f_s, v_s = sm.nps.frequencies, sm.nps.nps_1d
+		good_s = v_s .> 0
+		CM.lines!(ax, f_s[good_s], v_s[good_s];
+			color = :orangered, linewidth = 1.5, linestyle = :dash, label = "Simulated")
+		CM.axislegend(ax; position = :rt, labelsize = 8)
+	end
+	CM.save(joinpath(RESULTS_DIR, "ge_fbp_nps.png"), fig, px_per_unit = 2)
+	fig
+end
+
+# ╔═╡ 07110042-0000-4000-8000-000000000000
 md"""
-#### FBP: HU Accuracy
+### FBP: MTF
 """
 
-# ╔═╡ 376b0cbe-042d-494d-87c4-c260ec5bd734
+# ╔═╡ 07110043-0000-4000-8000-000000000000
+let
+	base_clinical_idx = [1, 3, 5, 7, 9, 11]
+	base_scan_labels = ["120kVp 50mA", "120kVp 150mA", "120kVp 300mA",
+		"80kVp 480mA", "100kVp 250mA", "140kVp 110mA"]
+
+	n_sims = min(length(sim_measurements), length(base_clinical_idx))
+	fig = CM.Figure(size = (900, 900), fontsize = 11)
+
+	for i in 1:n_sims
+		row = (i - 1) ÷ 2 + 1
+		col = (i - 1) % 2 + 1
+		ax = CM.Axis(fig[row, col]; title = base_scan_labels[i],
+			subtitle = "Clinical vs Simulated",
+			xlabel = "Spatial frequency (lp/cm)", ylabel = "MTF",
+			limits = (nothing, nothing, 0, 1.05))
+		CM.hlines!(ax, [0.5, 0.1]; color = :gray80, linestyle = :dash, linewidth = 0.8)
+		cm = se_measurements[base_clinical_idx[i]]
+		sm = sim_measurements[i]
+		CM.lines!(ax, cm.mtf.frequencies, cm.mtf.mtf;
+			color = :steelblue, linewidth = 1.5, label = "Clinical")
+		CM.lines!(ax, sm.mtf.frequencies, sm.mtf.mtf;
+			color = :orangered, linewidth = 1.5, linestyle = :dash, label = "Simulated")
+		CM.axislegend(ax; position = :rt, labelsize = 8)
+	end
+	CM.save(joinpath(RESULTS_DIR, "ge_fbp_mtf.png"), fig, px_per_unit = 2)
+	fig
+end
+
+# ╔═╡ 6f63608c-dd46-4d0a-8f1d-133dc56bc8dd
 md"""
-### HIR vs Clinical ASiR-V 50%
+## 12. SE HIR Reconstruction & Comparison
+
+Hybrid Iterative Reconstruction (HIR) — our equivalent of GE's ASiR-V.
+Comparison plots use clinical ASiR-V 50% as the reference.
 """
 
-# ╔═╡ 8e6ad3f2-9eb1-4b32-bf36-2dad1efbf623
+# ╔═╡ f61c87a4-a27e-4bc6-bc4d-502c3e3a47fe
+begin
+	hir_strength = 3
+	hir_lambda = 4.0f0
+	hir_nepochs = 2
+	hir_n_subsets = 12
+	hir_huber_delta = 0.06f0
+	hir_relaxation = 0.35f0
+end
+
+# ╔═╡ f925dafa-e0da-4673-8d84-82fe636bd6c2
+# Scan 1: 120 kVp / 50 mA — HIR RECONSTRUCT (BHC → GPU HIR → CPU volume)
+sim_recon_hir_1 = let
+	sino_gpu = MtlArray(sim_sino_1.sino)
+	geom = sim_sino_1.geom
+	recon_size = sim_matrix_size
+	if bhc_enabled
+		sino_corrected = BS.apply_bhc_two_material(
+			sino_gpu, bhc_models[120], geom, recon_size;
+			volume_extent = sim_phantom_gpu.extent)
+		sino_gpu = MtlArray(sino_corrected)
+	end
+	ws_hir = BS.create_hir_recon_workspace(sino_gpu, geom, recon_size; strength = hir_strength)
+	copyto!(ws_hir.filter_kernel, build_custom_filter_kernel(
+		length(ws_hir.filter_kernel), Float32(geom.pixel_size),
+		custom_filter_control.x, custom_filter_control.y))
+	ws_hir.params = BS.HIRParams(hir_strength, hir_lambda, 30, hir_nepochs,
+		hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35))
+	BS.reconstruct!(ws_hir, sino_gpu, geom, recon_size)
+	recon_μ = ws_hir.volume
+	if bhc_enabled
+		BS.apply_bhc_image_domain(recon_μ, geom, recon_size, bhc_μ_water[120];
+			hu_low = img_bhc_hu_low, hu_high = img_bhc_hu_high,
+			scale_factor = img_bhc_scale_factor,
+			volume_extent = sim_phantom_gpu.extent)
+	end
+	vol = Array(recon_μ)
+	ws_hir = nothing; sino_gpu = nothing; recon_μ = nothing; GC.gc(true)
+	(volume = vol, name = replace(sim_sino_1.name, "FBP" => "HIR"), kvp = sim_sino_1.kvp)
+end
+
+# ╔═╡ b84d07e5-64fd-4365-aca6-d03b4b5a1032
+# Scan 1: 120 kVp / 50 mA — HIR HU CONVERSION (CPU only)
+sim_hu_hir_1 = let
+	μ_w = bhc_μ_water[120]
+	recon_hu = Float32.(BS.to_hounsfield(sim_recon_hir_1.volume; μ_water = μ_w))
+	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
+	(name = sim_recon_hir_1.name, recon = recon_hu, mu_water = μ_w)
+end
+
+# ╔═╡ 12c84e0f-9cb4-49a0-a1fc-5cbe52b92f8a
+# Scan 2: 120 kVp / 150 mA — HIR RECONSTRUCT (BHC → GPU HIR → CPU volume)
+sim_recon_hir_2 = let
+	sino_gpu = MtlArray(sim_sino_2.sino)
+	geom = sim_sino_2.geom
+	recon_size = sim_matrix_size
+	if bhc_enabled
+		sino_corrected = BS.apply_bhc_two_material(
+			sino_gpu, bhc_models[120], geom, recon_size;
+			volume_extent = sim_phantom_gpu.extent)
+		sino_gpu = MtlArray(sino_corrected)
+	end
+	ws_hir = BS.create_hir_recon_workspace(sino_gpu, geom, recon_size; strength = hir_strength)
+	copyto!(ws_hir.filter_kernel, build_custom_filter_kernel(
+		length(ws_hir.filter_kernel), Float32(geom.pixel_size),
+		custom_filter_control.x, custom_filter_control.y))
+	ws_hir.params = BS.HIRParams(hir_strength, hir_lambda, 30, hir_nepochs,
+		hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35))
+	BS.reconstruct!(ws_hir, sino_gpu, geom, recon_size)
+	recon_μ = ws_hir.volume
+	if bhc_enabled
+		BS.apply_bhc_image_domain(recon_μ, geom, recon_size, bhc_μ_water[120];
+			hu_low = img_bhc_hu_low, hu_high = img_bhc_hu_high,
+			scale_factor = img_bhc_scale_factor,
+			volume_extent = sim_phantom_gpu.extent)
+	end
+	vol = Array(recon_μ)
+	ws_hir = nothing; sino_gpu = nothing; recon_μ = nothing; GC.gc(true)
+	(volume = vol, name = replace(sim_sino_2.name, "FBP" => "HIR"), kvp = sim_sino_2.kvp)
+end
+
+# ╔═╡ 4ca8d674-a0c1-407a-ab1d-84f06d966159
+# Scan 2: 120 kVp / 150 mA — HIR HU CONVERSION (CPU only)
+sim_hu_hir_2 = let
+	μ_w = bhc_μ_water[120]
+	recon_hu = Float32.(BS.to_hounsfield(sim_recon_hir_2.volume; μ_water = μ_w))
+	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
+	(name = sim_recon_hir_2.name, recon = recon_hu, mu_water = μ_w)
+end
+
+# ╔═╡ 6331e7a1-6dce-43bf-97b9-4ecbf766d40c
+# Scan 3: 120 kVp / 300 mA — HIR RECONSTRUCT (BHC → GPU HIR → CPU volume)
+sim_recon_hir_3 = let
+	sino_gpu = MtlArray(sim_sino_3.sino)
+	geom = sim_sino_3.geom
+	recon_size = sim_matrix_size
+	if bhc_enabled
+		sino_corrected = BS.apply_bhc_two_material(
+			sino_gpu, bhc_models[120], geom, recon_size;
+			volume_extent = sim_phantom_gpu.extent)
+		sino_gpu = MtlArray(sino_corrected)
+	end
+	ws_hir = BS.create_hir_recon_workspace(sino_gpu, geom, recon_size; strength = hir_strength)
+	copyto!(ws_hir.filter_kernel, build_custom_filter_kernel(
+		length(ws_hir.filter_kernel), Float32(geom.pixel_size),
+		custom_filter_control.x, custom_filter_control.y))
+	ws_hir.params = BS.HIRParams(hir_strength, hir_lambda, 30, hir_nepochs,
+		hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35))
+	BS.reconstruct!(ws_hir, sino_gpu, geom, recon_size)
+	recon_μ = ws_hir.volume
+	if bhc_enabled
+		BS.apply_bhc_image_domain(recon_μ, geom, recon_size, bhc_μ_water[120];
+			hu_low = img_bhc_hu_low, hu_high = img_bhc_hu_high,
+			scale_factor = img_bhc_scale_factor,
+			volume_extent = sim_phantom_gpu.extent)
+	end
+	vol = Array(recon_μ)
+	ws_hir = nothing; sino_gpu = nothing; recon_μ = nothing; GC.gc(true)
+	(volume = vol, name = replace(sim_sino_3.name, "FBP" => "HIR"), kvp = sim_sino_3.kvp)
+end
+
+# ╔═╡ 4917411f-f885-46bb-9f7e-a3de406d236c
+# Scan 3: 120 kVp / 300 mA — HIR HU CONVERSION (CPU only)
+sim_hu_hir_3 = let
+	μ_w = bhc_μ_water[120]
+	recon_hu = Float32.(BS.to_hounsfield(sim_recon_hir_3.volume; μ_water = μ_w))
+	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
+	(name = sim_recon_hir_3.name, recon = recon_hu, mu_water = μ_w)
+end
+
+# ╔═╡ cad1f6b8-66fc-47f1-8386-e10c97ce0e4a
+# Scan 4: 80 kVp / 480 mA — HIR RECONSTRUCT (BHC → GPU HIR → CPU volume)
+sim_recon_hir_4 = let
+	sino_gpu = MtlArray(sim_sino_4.sino)
+	geom = sim_sino_4.geom
+	recon_size = sim_matrix_size
+	if bhc_enabled
+		sino_corrected = BS.apply_bhc_two_material(
+			sino_gpu, bhc_models[80], geom, recon_size;
+			volume_extent = sim_phantom_gpu.extent)
+		sino_gpu = MtlArray(sino_corrected)
+	end
+	ws_hir = BS.create_hir_recon_workspace(sino_gpu, geom, recon_size; strength = hir_strength)
+	copyto!(ws_hir.filter_kernel, build_custom_filter_kernel(
+		length(ws_hir.filter_kernel), Float32(geom.pixel_size),
+		custom_filter_control.x, custom_filter_control.y))
+	ws_hir.params = BS.HIRParams(hir_strength, hir_lambda, 30, hir_nepochs,
+		hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35))
+	BS.reconstruct!(ws_hir, sino_gpu, geom, recon_size)
+	recon_μ = ws_hir.volume
+	if bhc_enabled
+		BS.apply_bhc_image_domain(recon_μ, geom, recon_size, bhc_μ_water[80];
+			hu_low = img_bhc_hu_low, hu_high = img_bhc_hu_high,
+			scale_factor = img_bhc_scale_factor,
+			volume_extent = sim_phantom_gpu.extent)
+	end
+	vol = Array(recon_μ)
+	ws_hir = nothing; sino_gpu = nothing; recon_μ = nothing; GC.gc(true)
+	(volume = vol, name = replace(sim_sino_4.name, "FBP" => "HIR"), kvp = sim_sino_4.kvp)
+end
+
+# ╔═╡ 00aeca04-810f-4543-bef1-70db235be25c
+# Scan 4: 80 kVp / 480 mA — HIR HU CONVERSION (CPU only)
+sim_hu_hir_4 = let
+	μ_w = bhc_μ_water[80]
+	recon_hu = Float32.(BS.to_hounsfield(sim_recon_hir_4.volume; μ_water = μ_w))
+	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
+	(name = sim_recon_hir_4.name, recon = recon_hu, mu_water = μ_w)
+end
+
+# ╔═╡ cf576e1e-5ef4-4478-9209-f584c373ef49
+# Scan 5: 100 kVp / 250 mA — HIR RECONSTRUCT (BHC → GPU HIR → CPU volume)
+sim_recon_hir_5 = let
+	sino_gpu = MtlArray(sim_sino_5.sino)
+	geom = sim_sino_5.geom
+	recon_size = sim_matrix_size
+	if bhc_enabled
+		sino_corrected = BS.apply_bhc_two_material(
+			sino_gpu, bhc_models[100], geom, recon_size;
+			volume_extent = sim_phantom_gpu.extent)
+		sino_gpu = MtlArray(sino_corrected)
+	end
+	ws_hir = BS.create_hir_recon_workspace(sino_gpu, geom, recon_size; strength = hir_strength)
+	copyto!(ws_hir.filter_kernel, build_custom_filter_kernel(
+		length(ws_hir.filter_kernel), Float32(geom.pixel_size),
+		custom_filter_control.x, custom_filter_control.y))
+	ws_hir.params = BS.HIRParams(hir_strength, hir_lambda, 30, hir_nepochs,
+		hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35))
+	BS.reconstruct!(ws_hir, sino_gpu, geom, recon_size)
+	recon_μ = ws_hir.volume
+	if bhc_enabled
+		BS.apply_bhc_image_domain(recon_μ, geom, recon_size, bhc_μ_water[100];
+			hu_low = img_bhc_hu_low, hu_high = img_bhc_hu_high,
+			scale_factor = img_bhc_scale_factor,
+			volume_extent = sim_phantom_gpu.extent)
+	end
+	vol = Array(recon_μ)
+	ws_hir = nothing; sino_gpu = nothing; recon_μ = nothing; GC.gc(true)
+	(volume = vol, name = replace(sim_sino_5.name, "FBP" => "HIR"), kvp = sim_sino_5.kvp)
+end
+
+# ╔═╡ 487bb689-9149-45e4-b153-2bad6138ebf5
+# Scan 5: 100 kVp / 250 mA — HIR HU CONVERSION (CPU only)
+sim_hu_hir_5 = let
+	μ_w = bhc_μ_water[100]
+	recon_hu = Float32.(BS.to_hounsfield(sim_recon_hir_5.volume; μ_water = μ_w))
+	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
+	(name = sim_recon_hir_5.name, recon = recon_hu, mu_water = μ_w)
+end
+
+# ╔═╡ 3793479d-79e9-4948-85c1-ff3c049f1cd0
+# Scan 6: 140 kVp / 110 mA — HIR RECONSTRUCT (BHC → GPU HIR → CPU volume)
+sim_recon_hir_6 = let
+	sino_gpu = MtlArray(sim_sino_6.sino)
+	geom = sim_sino_6.geom
+	recon_size = sim_matrix_size
+	if bhc_enabled
+		sino_corrected = BS.apply_bhc_two_material(
+			sino_gpu, bhc_models[140], geom, recon_size;
+			volume_extent = sim_phantom_gpu.extent)
+		sino_gpu = MtlArray(sino_corrected)
+	end
+	ws_hir = BS.create_hir_recon_workspace(sino_gpu, geom, recon_size; strength = hir_strength)
+	copyto!(ws_hir.filter_kernel, build_custom_filter_kernel(
+		length(ws_hir.filter_kernel), Float32(geom.pixel_size),
+		custom_filter_control.x, custom_filter_control.y))
+	ws_hir.params = BS.HIRParams(hir_strength, hir_lambda, 30, hir_nepochs,
+		hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35))
+	BS.reconstruct!(ws_hir, sino_gpu, geom, recon_size)
+	recon_μ = ws_hir.volume
+	if bhc_enabled
+		BS.apply_bhc_image_domain(recon_μ, geom, recon_size, bhc_μ_water[140];
+			hu_low = img_bhc_hu_low, hu_high = img_bhc_hu_high,
+			scale_factor = img_bhc_scale_factor,
+			volume_extent = sim_phantom_gpu.extent)
+	end
+	vol = Array(recon_μ)
+	ws_hir = nothing; sino_gpu = nothing; recon_μ = nothing; GC.gc(true)
+	(volume = vol, name = replace(sim_sino_6.name, "FBP" => "HIR"), kvp = sim_sino_6.kvp)
+end
+
+# ╔═╡ 903f4e17-1824-418a-b8f9-21546163d740
+# Scan 6: 140 kVp / 110 mA — HIR HU CONVERSION (CPU only)
+sim_hu_hir_6 = let
+	μ_w = bhc_μ_water[140]
+	recon_hu = Float32.(BS.to_hounsfield(sim_recon_hir_6.volume; μ_water = μ_w))
+	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
+	(name = sim_recon_hir_6.name, recon = recon_hu, mu_water = μ_w)
+end
+
+# ╔═╡ cbe20e99-ca03-4045-a898-2de307d19fce
+sim_results_hir = [sim_hu_hir_1, sim_hu_hir_2, sim_hu_hir_3, sim_hu_hir_4, sim_hu_hir_5, sim_hu_hir_6]
+
+# ╔═╡ ed7cbb89-2f22-4587-ad7f-1f3224b73f80
+sim_oriented_hir = let
+	orient = identity
+	orient = (f -> s -> reverse(f(s), dims = 2))(orient)  # Flip Left-Right
+	[(name = r.name,
+		recon = Float32.(mapslices(orient, r.recon, dims = (1, 2))),
+		mu_water = r.mu_water)
+	 for r in sim_results_hir]
+end
+
+# ╔═╡ 10a11afd-004a-467a-b808-7e761cb21678
+# Reuse FBP segmentation (same phantom geometry) for HIR measurements
+sim_measurements_hir = [
+	measure_scan(r.recon, sim_seg_result.mask, sim_seg_result.rods, sim_seg_result.center, "sim_hir_$(r.name)")
+	for r in sim_oriented_hir
+];
+
+# ╔═╡ 3924da10-33fd-415b-9666-f6022d0adaf6
 md"""
-#### HIR: Qualitative
+### HIR: Qualitative Side-by-Side
 """
 
-# ╔═╡ 9da1673e-9a2e-48ab-94e8-075489cf3b17
+# ╔═╡ ebc9865c-feed-4e79-9cac-39e583a3796d
 # HIR: 2×3 qualitative side-by-side (Clinical ASiR-V 50% vs Simulated HIR)
 let
 	clin_vols = [hu_120_low_ir, hu_120_mid_ir, hu_120_high_ir,
@@ -3293,33 +2679,16 @@ let
 		CM.hidedecorations!(ax2); CM.hidespines!(ax2)
 	end
 
+	CM.save(joinpath(RESULTS_DIR, "ge_hir_qualitative.png"), fig, px_per_unit = 2)
 	fig
 end
 
-# ╔═╡ 991085bd-defd-40e5-b426-d67cf9feddc1
-sim_seg_result.slice_idx
-
-# ╔═╡ caf044b7-1056-4b27-aaf9-961fa84e941d
+# ╔═╡ c42f625b-9db4-42a5-90c6-fa2c37fe8b18
 md"""
-#### HIR: NPS
+### HIR: Scatter Plot (HU)
 """
 
-# ╔═╡ b7b8a5e6-ed89-40d5-a065-64583a742a1a
-md"""
-#### HIR: MTF
-"""
-
-# ╔═╡ 3c4fded0-d14b-40af-9b6a-be8eaf0c4092
-md"""
-#### HIR: Noise
-"""
-
-# ╔═╡ 0bb68bed-7de0-494d-9ba4-f7f168666225
-md"""
-#### HIR: HU Accuracy
-"""
-
-# ╔═╡ ed8551f8-d7bf-4893-ab5d-2a41b65ee81b
+# ╔═╡ bfd647b4-44d7-4582-8b5b-dd5910efd729
 # HIR: Ca/I scatter — Clinical ASiR-V 50% vs Simulated HIR
 let
 	asirv_clinical_idx = [2, 4, 6, 8, 10, 12]
@@ -3333,12 +2702,9 @@ let
 
 	fig = CM.Figure(size = (750, 900), fontsize = 11)
 
-	# --- Top: Calcium rods ---
 	ax_ca = CM.Axis(fig[1, 1]; title = "Calcium Rods", subtitle = "Clinical ASiR-V vs Simulated HIR",
 		xlabel = "Clinical HU", ylabel = "Simulated HU")
-
-	ca_clin_all = Float64[]
-	ca_sim_all = Float64[]
+	ca_clin_all, ca_sim_all = Float64[], Float64[]
 
 	for (k, (ci, sm_k)) in enumerate(zip(active_clinical_idx, sim_measurements_hir[1:n_sims]))
 		cm = se_measurements[ci]
@@ -3350,32 +2716,28 @@ let
 			append!(ca_sim_all, sm_k.rod_means[ca_idx])
 		end
 	end
-	CM.lines!(ax_ca, [-100, 1400], [-100, 1400];
-		color = :gray60, linestyle = :dash, linewidth = 1, label = "Unity (y = x)")
+	CM.lines!(ax_ca, [-100, 1400], [-100, 1400]; color = :gray60, linestyle = :dash, linewidth = 1, label = "Unity (y = x)")
 	if length(ca_clin_all) > 1
 		X_ca = hcat(ones(length(ca_clin_all)), ca_clin_all)
 		b_ca, m_ca = X_ca \ ca_sim_all
 		r_ca = cor(ca_clin_all, ca_sim_all)
 		rmse_ca = sqrt(sum((ca_sim_all .- ca_clin_all) .^ 2) / length(ca_clin_all))
+		nrmse_ca = rmse_ca / (maximum(ca_clin_all) - minimum(ca_clin_all)) * 100
 		x_fit_ca = range(extrema(ca_clin_all)..., length = 100)
 		sign_ca = b_ca >= 0 ? " + " : " - "
 		eq_ca = "y = $(round(m_ca, digits=3))x$(sign_ca)$(round(abs(b_ca), digits=1))"
 		CM.lines!(ax_ca, collect(x_fit_ca), m_ca .* collect(x_fit_ca) .+ b_ca;
 			color = :black, linewidth = 0.8, label = "Linear fit")
-		CM.poly!(ax_ca,
-			CM.Point2f[(0.60, 0.02), (0.98, 0.02), (0.98, 0.22), (0.60, 0.22)];
+		CM.poly!(ax_ca, CM.Point2f[(0.60, 0.02), (0.98, 0.02), (0.98, 0.22), (0.60, 0.22)];
 			color = (:white, 0.9), strokecolor = :gray50, strokewidth = 1, space = :relative)
 		CM.text!(ax_ca, 0.62, 0.18; space = :relative, align = (:left, :top), fontsize = 10,
-			text = "$(eq_ca)\nr = $(round(r_ca, digits=4))\nRMSE = $(round(rmse_ca, digits=1)) HU")
+			text = "$(eq_ca)\nr = $(round(r_ca, digits=4))\nnRMSE = $(round(nrmse_ca, digits=1))%")
 	end
 	CM.axislegend(ax_ca; position = :lt, labelsize = 9)
 
-	# --- Bottom: Iodine rods ---
 	ax_i = CM.Axis(fig[2, 1]; title = "Iodine Rods", subtitle = "Clinical ASiR-V vs Simulated HIR",
 		xlabel = "Clinical HU", ylabel = "Simulated HU")
-
-	i_clin_all = Float64[]
-	i_sim_all = Float64[]
+	i_clin_all, i_sim_all = Float64[], Float64[]
 
 	for (k, (ci, sm_k)) in enumerate(zip(active_clinical_idx, sim_measurements_hir[1:n_sims]))
 		cm = se_measurements[ci]
@@ -3387,266 +2749,979 @@ let
 			append!(i_sim_all, sm_k.rod_means[i_idx])
 		end
 	end
-	CM.lines!(ax_i, [-50, 500], [-50, 500];
-		color = :gray60, linestyle = :dash, linewidth = 1, label = "Unity (y = x)")
+	CM.lines!(ax_i, [-50, 500], [-50, 500]; color = :gray60, linestyle = :dash, linewidth = 1, label = "Unity (y = x)")
 	if length(i_clin_all) > 1
 		X_i = hcat(ones(length(i_clin_all)), i_clin_all)
 		b_i, m_i = X_i \ i_sim_all
 		r_i = cor(i_clin_all, i_sim_all)
 		rmse_i = sqrt(sum((i_sim_all .- i_clin_all) .^ 2) / length(i_clin_all))
+		nrmse_i = rmse_i / (maximum(i_clin_all) - minimum(i_clin_all)) * 100
 		x_fit_i = range(extrema(i_clin_all)..., length = 100)
 		sign_i = b_i >= 0 ? " + " : " - "
 		eq_i = "y = $(round(m_i, digits=3))x$(sign_i)$(round(abs(b_i), digits=1))"
 		CM.lines!(ax_i, collect(x_fit_i), m_i .* collect(x_fit_i) .+ b_i;
 			color = :black, linewidth = 0.8, label = "Linear fit")
-		CM.poly!(ax_i,
-			CM.Point2f[(0.60, 0.02), (0.98, 0.02), (0.98, 0.22), (0.60, 0.22)];
+		CM.poly!(ax_i, CM.Point2f[(0.60, 0.02), (0.98, 0.02), (0.98, 0.22), (0.60, 0.22)];
 			color = (:white, 0.9), strokecolor = :gray50, strokewidth = 1, space = :relative)
 		CM.text!(ax_i, 0.62, 0.18; space = :relative, align = (:left, :top), fontsize = 10,
-			text = "$(eq_i)\nr = $(round(r_i, digits=4))\nRMSE = $(round(rmse_i, digits=1)) HU")
+			text = "$(eq_i)\nr = $(round(r_i, digits=4))\nnRMSE = $(round(nrmse_i, digits=1))%")
 	end
 	CM.axislegend(ax_i; position = :lt, labelsize = 9)
 
+	CM.save(joinpath(RESULTS_DIR, "ge_hir_scatter_hu.png"), fig, px_per_unit = 2)
 	fig
 end
 
-# ╔═╡ 58a833f1-06f6-4135-800b-a8e80b6b767c
-# HIR: Rod HU bars — Clinical ASiR-V 50% vs Simulated HIR
+# ╔═╡ 28e45f60-2542-4305-8c9c-3aecf1b3aa23
+md"""
+### HIR: Noise
+"""
+
+# ╔═╡ d35a2ac4-467a-4ade-afaf-dc668880559a
+let
+	water_idx = 1
+	dose_sim_idx = [1, 2, 3]
+	dose_clin_idx = [2, 4, 6]  # ASiR-V indices
+	dose_labels = ["120 kVp / 50 mA\n(3.38 mGy)", "120 kVp / 150 mA\n(10.16 mGy)", "120 kVp / 300 mA\n(20.38 mGy)"]
+	n_dose = min(length(dose_sim_idx), length(sim_measurements_hir))
+
+	dose_clin_σ = [se_measurements[dose_clin_idx[i]].rod_stds[water_idx] for i in 1:n_dose]
+	dose_sim_σ = [sim_measurements_hir[dose_sim_idx[i]].rod_stds[water_idx] for i in 1:n_dose]
+
+	kvp_sim_idx = [4, 5, 2, 6]
+	kvp_clin_idx = [8, 10, 4, 12]  # ASiR-V indices
+	kvp_labels = ["80 kVp / 480 mA\n(10.32 mGy)", "100 kVp / 250 mA\n(10.53 mGy)", "120 kVp / 150 mA\n(10.16 mGy)", "140 kVp / 110 mA\n(10.85 mGy)"]
+	n_kvp = min(length(kvp_sim_idx), length(sim_measurements_hir))
+
+	kvp_clin_σ = [se_measurements[kvp_clin_idx[i]].rod_stds[water_idx] for i in 1:n_kvp]
+	kvp_sim_σ = [sim_measurements_hir[kvp_sim_idx[i]].rod_stds[water_idx] for i in 1:n_kvp]
+
+	fig = CM.Figure(size = (1000, 800), fontsize = 13)
+
+	ax1 = CM.Axis(fig[1, 1]; title = "120 kVp — Dose Ladder",
+		ylabel = "Water σ (HU)", xticks = (1:n_dose, dose_labels))
+	CM.barplot!(ax1, collect(1:n_dose) .- 0.2, dose_clin_σ; width = 0.35,
+		color = :steelblue, label = "Clinical ASiR-V 50%")
+	CM.barplot!(ax1, collect(1:n_dose) .+ 0.2, dose_sim_σ; width = 0.35,
+		color = :darkorange, label = "Simulated HIR")
+	CM.axislegend(ax1; position = :rb)
+
+	ax2 = CM.Axis(fig[2, 1]; title = "~10 mGy CTDIvol — kVp Series",
+		ylabel = "Water σ (HU)", xticks = (1:n_kvp, kvp_labels))
+	CM.barplot!(ax2, collect(1:n_kvp) .- 0.2, kvp_clin_σ; width = 0.35,
+		color = :steelblue, label = "Clinical ASiR-V 50%")
+	CM.barplot!(ax2, collect(1:n_kvp) .+ 0.2, kvp_sim_σ; width = 0.35,
+		color = :darkorange, label = "Simulated HIR")
+	CM.axislegend(ax2; position = :rb)
+
+	CM.save(joinpath(RESULTS_DIR, "ge_hir_noise.png"), fig, px_per_unit = 2)
+	fig
+end
+
+# ╔═╡ 4776ad7f-edee-4c44-91bb-5ad76a63832e
+md"""
+### HIR: NPS
+"""
+
+# ╔═╡ 405ad9a1-3cac-4b19-87b3-1d041d8c0813
 let
 	asirv_clinical_idx = [2, 4, 6, 8, 10, 12]
 	scan_labels = ["120kVp 50mA", "120kVp 150mA", "120kVp 300mA",
 		"80kVp 480mA", "100kVp 250mA", "140kVp 110mA"]
 
-	target_idx = min(2, length(sim_measurements_hir))
+	n_sims = min(length(sim_measurements_hir), length(asirv_clinical_idx))
+	fig = CM.Figure(size = (900, 900), fontsize = 11)
 
-	cm = se_measurements[asirv_clinical_idx[target_idx]]
-	sm = sim_measurements_hir[target_idx]
-	label = scan_labels[target_idx]
-
-	keep = [i for i in 1:length(cm.rod_names)
-			if startswith(cm.rod_names[i], "Ca") || startswith(cm.rod_names[i], "I ")]
-	names = cm.rod_names[keep]
-	cm_means = cm.rod_means[keep]
-	cm_stds = cm.rod_stds[keep]
-	sm_means = sm.rod_means[keep]
-	sm_stds = sm.rod_stds[keep]
-	n = length(names)
-
-	is_ca = [startswith(nm, "Ca") for nm in names]
-
-	fig = CM.Figure(size = (1100, 500), fontsize = 10)
-	ax = CM.Axis(fig[1, 1]; title = "Rod HU ($label)", subtitle = "Clinical ASiR-V vs Simulated HIR", ylabel = "Mean HU", xticks = (1:n, names), xticklabelrotation = π / 4)
-
-	ca_idx = findall(is_ca)
-	if !isempty(ca_idx)
-		CM.barplot!(ax, ca_idx .- 0.2, cm_means[ca_idx]; width = 0.35,
-			color = :steelblue, label = "Clinical Ca")
-		CM.errorbars!(ax, ca_idx .- 0.2, cm_means[ca_idx], cm_stds[ca_idx];
-			color = :black, whiskerwidth = 3)
-		CM.barplot!(ax, ca_idx .+ 0.2, sm_means[ca_idx]; width = 0.35,
-			color = :darkorange, label = "Simulated Ca")
-		CM.errorbars!(ax, ca_idx .+ 0.2, sm_means[ca_idx], sm_stds[ca_idx];
-			color = :black, whiskerwidth = 3)
+	for i in 1:n_sims
+		row = (i - 1) ÷ 2 + 1
+		col = (i - 1) % 2 + 1
+		ax = CM.Axis(fig[row, col]; title = scan_labels[i],
+			subtitle = "Clinical ASiR-V 50% vs Simulated HIR",
+			xlabel = "Spatial frequency (lp/cm)", ylabel = "NPS (HU²·cm²)", yscale = log10)
+		cm = se_measurements[asirv_clinical_idx[i]]
+		sm = sim_measurements_hir[i]
+		f_c, v_c = cm.nps.frequencies, cm.nps.nps_1d
+		good_c = v_c .> 0
+		CM.lines!(ax, f_c[good_c], v_c[good_c];
+			color = :steelblue, linewidth = 1.5, label = "Clinical ASiR-V")
+		f_s, v_s = sm.nps.frequencies, sm.nps.nps_1d
+		good_s = v_s .> 0
+		CM.lines!(ax, f_s[good_s], v_s[good_s];
+			color = :orangered, linewidth = 1.5, linestyle = :dash, label = "Simulated HIR")
+		CM.axislegend(ax; position = :rt, labelsize = 8)
 	end
-
-	i_idx = findall(.!is_ca)
-	if !isempty(i_idx)
-		CM.barplot!(ax, i_idx .- 0.2, cm_means[i_idx]; width = 0.35,
-			color = :seagreen, label = "Clinical I")
-		CM.errorbars!(ax, i_idx .- 0.2, cm_means[i_idx], cm_stds[i_idx];
-			color = :black, whiskerwidth = 3)
-		CM.barplot!(ax, i_idx .+ 0.2, sm_means[i_idx]; width = 0.35,
-			color = :indianred, label = "Simulated I")
-		CM.errorbars!(ax, i_idx .+ 0.2, sm_means[i_idx], sm_stds[i_idx];
-			color = :black, whiskerwidth = 3)
-	end
-
-	CM.axislegend(ax; position = :lt)
+	CM.save(joinpath(RESULTS_DIR, "ge_hir_nps.png"), fig, px_per_unit = 2)
 	fig
 end
 
-# ╔═╡ bbccbfc6-e571-4982-9a5d-9939c45ba951
-# HIR: HU error bars — Clinical ASiR-V 50% vs Simulated HIR
+# ╔═╡ d3bd445c-ad9f-4133-93d9-8af91ed7f85d
+md"""
+### HIR: MTF
+"""
+
+# ╔═╡ 5298fd86-136b-4af3-aa0f-be0e810f5d24
 let
 	asirv_clinical_idx = [2, 4, 6, 8, 10, 12]
 	scan_labels = ["120kVp 50mA", "120kVp 150mA", "120kVp 300mA",
 		"80kVp 480mA", "100kVp 250mA", "140kVp 110mA"]
 
-	target_idx = min(2, length(sim_measurements_hir))
-	cm = se_measurements[asirv_clinical_idx[target_idx]]
-	sm = sim_measurements_hir[target_idx]
-	label = scan_labels[target_idx]
+	n_sims = min(length(sim_measurements_hir), length(asirv_clinical_idx))
+	fig = CM.Figure(size = (900, 900), fontsize = 11)
 
-	Δ = sm.rod_means .- cm.rod_means
-
-	fig = CM.Figure(size = (1100, 400), fontsize = 10)
-	ax = CM.Axis(fig[1, 1]; title = "HU Error", subtitle = "(Simulated HIR − Clinical ASiR-V) — $label", ylabel = "ΔHU", xticks = (1:length(cm.rod_names), cm.rod_names), xticklabelrotation = π / 4)
-	CM.barplot!(ax, 1:length(Δ), Δ; color = ifelse.(Δ .> 0, :salmon, :steelblue))
-	CM.hlines!(ax, [0]; color = :black, linewidth = 0.8)
-
-	for (i, d) in enumerate(Δ)
-		CM.text!(ax, i, d + sign(d) * 3;
-			text = "$(round(d, digits=1))", fontsize = 8, align = (:center, d > 0 ? :bottom : :top))
+	for i in 1:n_sims
+		row = (i - 1) ÷ 2 + 1
+		col = (i - 1) % 2 + 1
+		ax = CM.Axis(fig[row, col]; title = scan_labels[i],
+			subtitle = "Clinical ASiR-V 50% vs Simulated HIR",
+			xlabel = "Spatial frequency (lp/cm)", ylabel = "MTF",
+			limits = (nothing, nothing, 0, 1.05))
+		CM.hlines!(ax, [0.5, 0.1]; color = :gray80, linestyle = :dash, linewidth = 0.8)
+		cm = se_measurements[asirv_clinical_idx[i]]
+		sm = sim_measurements_hir[i]
+		CM.lines!(ax, cm.mtf.frequencies, cm.mtf.mtf;
+			color = :steelblue, linewidth = 1.5, label = "Clinical ASiR-V")
+		CM.lines!(ax, sm.mtf.frequencies, sm.mtf.mtf;
+			color = :orangered, linewidth = 1.5, linestyle = :dash, label = "Simulated HIR")
+		CM.axislegend(ax; position = :rt, labelsize = 8)
 	end
-
+	CM.save(joinpath(RESULTS_DIR, "ge_hir_mtf.png"), fig, px_per_unit = 2)
 	fig
 end
+
+# ╔═╡ 4f8ee88d-a948-44e7-a610-a2711e6da234
+md"""
+## 13. DE Simulation — GE GSI (Rapid kVp Switching)
+
+GE Revolution Apex GSI dual-energy uses **rapid kVp switching** (single tube, 80/140 kVp
+on alternating views) with an **additional spectral filter on the 140 kVp tube** to improve
+spectral separation.
+
+**Clinical DE protocol** (from DICOM + RDSR):
+- **kVp:** 80 / 140 alternating per view
+- **mA:** 407 (80 kVp) / 405 (140 kVp) — GE private tags `(0053,1085)` / `(0053,1083)`
+- **Gantry rotation:** 0.5 s — per-kVp effective exposure: **0.25 s** (rapid switching)
+- **Collimation:** 64 × 0.625 mm = 40 mm (half of SE 80 mm)
+- **Views/kVp/rotation:** ~984
+- **Filtration:** Large body bowtie + inherent Al + **spectral filter on 140 kVp** (empirically tuned)
+- **CTDIvol:** 10.07 mGy (32 cm body)
+- **Decomposition:** Projection-based, interleaved
+"""
+
+# ╔═╡ 6f5ce242-a5e2-4cd5-8cac-47f528dc21bb
+# DE scan parameters — matching clinical GE GSI protocol
+begin
+	de_rotation_time = 0.5        # seconds — actual gantry rotation
+	de_collimation_mm = 5.0       # dev mode — same as SE (real clinical: 40mm)
+	de_n_views = 984              # views per kVp per rotation
+
+	# mA: DICOM reports instantaneous 407/405 mA, but each kVp only fires
+	# for half the rotation (rapid switching). Effective mA = instantaneous × 0.5
+	de_mA_80  = 203.5             # 407 instantaneous × 0.5 duty cycle
+	de_mA_140 = 202.5             # 405 instantaneous × 0.5 duty cycle
+
+	DE_SIM_SCANS = [
+		(name = "DE_80kVp_204mA", kvp = 80, mA = de_mA_80),
+		(name = "DE_140kVp_203mA", kvp = 140, mA = de_mA_140),
+	]
+	DE_VMI_ENERGIES = [40, 70, 100, 140]  # keV for VMI synthesis
+end
+
+# ╔═╡ ff650b6f-76e6-491e-8076-1dd002c80d7e
+# SPECTRAL FILTRATION (140 kVp ONLY):
+# Goal: Harden the 140 kVp beam to increase spectral separation from 80 kVp.
+#
+# References:
+# 1. GE Patent US20120314834: Describes a Gd₂O₂S (Gadolinium) K-edge filter 
+#    (0.142 mm) for rapid kVp switching to reduce decomposition variance (~40%).
+# 2. Yao et al. (Med Phys 2014, doi:10.1118/1.4866381): Confirms K-edge 
+#    filtration efficacy for spectral separation.
+# 3. Proxy Material: Since Gd is often unavailable in simulation libraries, 
+#    Sn (Tin) is used as a standard proxy (Siemens uses 0.4 mm Sn on dual-source).
+
+# Empirically tuned Sn high kVp only proxy for Gd
+de_high_kvp_filters = [("Sn", 0.2)]  # mm
+
+# ╔═╡ bb68196f-26e4-41fc-85bc-203373d91b4a
+# DE recon geometry — same FOV/matrix as SE, different z for collimation
+begin
+	de_recon_z_cm = de_collimation_mm / 10.0
+	de_n_recon_slices = round(Int, de_collimation_mm / sim_slice_thickness_mm)
+	de_matrix_size = (sim_recon_xy, sim_recon_xy, de_n_recon_slices)
+
+	de_recon_geom = BS.ReconOptions(
+		algorithm = :fdk,
+		matrix_size = de_matrix_size,
+		fov_cm = sim_recon_fov_cm,
+		z_cm = de_recon_z_cm,
+	)
+end
+
+# ╔═╡ 37298bb1-4b57-4f5c-9fea-ec81dbfb3394
+# DE: 80 kVp / ~204 mA effective — SIMULATE (GPU → sinogram → free GPU)
+sim_de_sino_low = let
+	sc = DE_SIM_SCANS[1]
+	prot = BS.CTProtocol(
+		kVp = sc.kvp,
+		mA = sc.mA,
+		views = de_n_views,
+		rotation_time = de_rotation_time,
+		collimation_mm = de_collimation_mm,
+		additional_filters = additional_filters,  # same as SE (no spectral filter on low kVp)
+	)
+	@info "Simulating DE: $(sc.name)..."
+	ws = BS.create_eict_workspace(
+		sim_scanner, prot, sim_opts, de_recon_geom, sim_phantom_gpu,
+	)
+	BS.simulate!(ws, sim_phantom_gpu, sim_scanner, prot, sim_opts, de_recon_geom)
+	result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, name = sc.name, kvp = sc.kvp)
+	ws = nothing
+	GC.gc(true)
+	result
+end
+
+# ╔═╡ fd123cde-bb22-489d-a496-e00363f46157
+# DE: 140 kVp / ~203 mA effective — SIMULATE (GPU → sinogram → free GPU)
+sim_de_sino_high = let
+	sc = DE_SIM_SCANS[2]
+	# Combine SE additional_filters with DE spectral filter on high-kVp tube
+	high_kvp_filters = vcat(additional_filters, de_high_kvp_filters)
+	prot = BS.CTProtocol(
+		kVp = sc.kvp,
+		mA = sc.mA,
+		views = de_n_views,
+		rotation_time = de_rotation_time,
+		collimation_mm = de_collimation_mm,
+		additional_filters = high_kvp_filters,  # includes spectral filter
+	)
+	@info "Simulating DE: $(sc.name)..."
+	ws = BS.create_eict_workspace(
+		sim_scanner, prot, sim_opts, de_recon_geom, sim_phantom_gpu,
+	)
+	BS.simulate!(ws, sim_phantom_gpu, sim_scanner, prot, sim_opts, de_recon_geom)
+	result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, name = sc.name, kvp = sc.kvp)
+	ws = nothing
+	GC.gc(true)
+	result
+end
+
+# ╔═╡ 89c1ff84-d4bc-47ca-b08d-8ada2bd469f4
+# DE: 80 kVp — FBP RECONSTRUCT (BHC → GPU FDK → CPU volume)
+sim_de_recon_low = let
+	sino_gpu = MtlArray(sim_de_sino_low.sino)
+	geom = sim_de_sino_low.geom
+	recon_size = de_matrix_size
+	if bhc_enabled
+		sino_corrected = BS.apply_bhc_two_material(
+			sino_gpu, bhc_models[80], geom, recon_size;
+			volume_extent = sim_phantom_gpu.extent)
+		sino_gpu = MtlArray(sino_corrected)
+	end
+	ws_fdk = BS.create_fdk_recon_workspace(
+		sino_gpu, geom, recon_size;
+		filter = sim_recon_filter, cutoff = sim_recon_cutoff)
+	copyto!(ws_fdk.filter_kernel,
+		build_custom_filter_kernel(
+			length(ws_fdk.filter_kernel), Float32(geom.pixel_size),
+			custom_filter_control.x, custom_filter_control.y))
+	recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, geom, recon_size)
+	if bhc_enabled
+		BS.apply_bhc_image_domain(
+			recon_μ, geom, recon_size, bhc_μ_water[80];
+			hu_low = img_bhc_hu_low, hu_high = img_bhc_hu_high,
+			scale_factor = img_bhc_scale_factor,
+			volume_extent = sim_phantom_gpu.extent)
+	end
+	vol = Array(recon_μ)
+	ws_fdk = nothing; sino_gpu = nothing; recon_μ = nothing; GC.gc(true)
+	(volume = vol, name = sim_de_sino_low.name, kvp = sim_de_sino_low.kvp)
+end
+
+# ╔═╡ 7e06d734-4023-4078-9b8f-3b55c2e389e6
+# DE: 80 kVp — HU CONVERSION (CPU only)
+sim_de_hu_low = let
+	μ_w = bhc_μ_water[80]
+	recon_hu = Float32.(BS.to_hounsfield(sim_de_recon_low.volume; μ_water = μ_w))
+	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
+	(name = sim_de_recon_low.name, recon = recon_hu, mu_water = μ_w)
+end
+
+# ╔═╡ 36986f73-d54b-4190-a52c-f3f23e53c533
+# DE: 140 kVp — FBP RECONSTRUCT (BHC → GPU FDK → CPU volume)
+sim_de_recon_high = let
+	sino_gpu = MtlArray(sim_de_sino_high.sino)
+	geom = sim_de_sino_high.geom
+	recon_size = de_matrix_size
+	if bhc_enabled
+		sino_corrected = BS.apply_bhc_two_material(
+			sino_gpu, bhc_models[140], geom, recon_size;
+			volume_extent = sim_phantom_gpu.extent)
+		sino_gpu = MtlArray(sino_corrected)
+	end
+	ws_fdk = BS.create_fdk_recon_workspace(
+		sino_gpu, geom, recon_size;
+		filter = sim_recon_filter, cutoff = sim_recon_cutoff)
+	copyto!(ws_fdk.filter_kernel,
+		build_custom_filter_kernel(
+			length(ws_fdk.filter_kernel), Float32(geom.pixel_size),
+			custom_filter_control.x, custom_filter_control.y))
+	recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, geom, recon_size)
+	if bhc_enabled
+		BS.apply_bhc_image_domain(
+			recon_μ, geom, recon_size, bhc_μ_water[140];
+			hu_low = img_bhc_hu_low, hu_high = img_bhc_hu_high,
+			scale_factor = img_bhc_scale_factor,
+			volume_extent = sim_phantom_gpu.extent)
+	end
+	vol = Array(recon_μ)
+	ws_fdk = nothing; sino_gpu = nothing; recon_μ = nothing; GC.gc(true)
+	(volume = vol, name = sim_de_sino_high.name, kvp = sim_de_sino_high.kvp)
+end
+
+# ╔═╡ 4efd48c9-753a-4418-8095-fa12b7cc5a95
+# DE: 140 kVp — HU CONVERSION (CPU only)
+sim_de_hu_high = let
+	μ_w = bhc_μ_water[140]
+	recon_hu = Float32.(BS.to_hounsfield(sim_de_recon_high.volume; μ_water = μ_w))
+	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
+	(name = sim_de_recon_high.name, recon = recon_hu, mu_water = μ_w)
+end
+
+# ╔═╡ e8af3f62-e606-4f10-9a09-9e0620910f58
+# DE: Orient simulated images (match SE orientation)
+sim_de_oriented = let
+	orient = identity
+	orient = (f -> s -> reverse(f(s), dims = 2))(orient)  # Flip Left-Right
+	results = [sim_de_hu_low, sim_de_hu_high]
+	[(name = r.name,
+		recon = Float32.(mapslices(orient, r.recon, dims = (1, 2))),
+		mu_water = r.mu_water)
+	 for r in results]
+end
+
+# ╔═╡ 5cc1fa5c-3722-4fa1-b0f0-d816e204c8bf
+# DE: Qualitative — Low vs High kVp
+let
+	scan_labels = ["80 kVp / 204 mA eff. (no spectral filter)", "140 kVp / 203 mA eff. (+ spectral filter)"]
+	n = length(sim_de_oriented)
+	mid_z = size(sim_de_oriented[1].recon, 3) ÷ 2 + 1
+	fig = CM.Figure(size = (800, 400), fontsize = 10)
+
+	for i in 1:n
+		sim_slice = sim_de_oriented[i].recon[:, :, mid_z]
+
+		ax = CM.Axis(fig[1, i]; title = "Simulated DE — $(scan_labels[i])", yreversed = true)
+		CM.heatmap!(ax, sim_slice; colormap = :grays, colorrange = (-200, 500))
+		CM.hidedecorations!(ax); CM.hidespines!(ax)
+	end
+
+	CM.save(joinpath(RESULTS_DIR, "ge_de_sim_qualitative.png"), fig, px_per_unit = 2)
+	fig
+end
+
+# ╔═╡ 76b7a0d4-0078-49a7-8fa3-c36ffb01fee1
+md"""
+### DE: VMI Synthesis (Image-Domain)
+
+**Pipeline** (Wu et al. 2009, GE GSI fast kVp switching — Eq. 1-4, 13):
+1. Wrap raw 80/140 kVp sinograms into `DualEnergySinogram`
+2. `decompose_materials()` — 2×2 matrix inversion at effective energies
+   → material sinograms ρ₁ (water), ρ₂ (calcium) in projection domain
+3. FBP reconstruct each material sinogram → density images m₁(x,y), m₂(x,y)
+   (water ≈ 1.0, calcium ≈ 0 for water; only **2 FDK recons** total)
+4. Image-domain VMI (Eq. 4): `Im_mono = m₁ + g(E) × m₂`
+   where `g(E) = μ_calcium(E) / μ_water(E)`
+5. Noise compensation (Eq. 13): `Im_mono += (g_min − g(E)) × Δ_m₂`
+   where Δ\_m₂ = highpass(m₂) and g\_min ≈ g(70 keV) for 80/140 kVp
+6. HU = (Im\_mono − 1) × 1000
+
+No BHC applied — material decomposition inherently handles beam hardening.
+
+Ref: Wu X et al., Proc. SPIE 7258, 725845, doi:10.1117/12.811698
+"""
+
+# ╔═╡ f031a233-e560-4bb2-af00-fe255152b9e3
+# Material decomposition — projection domain (water + calcium basis)
+# Raw sinograms → DualEnergySinogram → decompose_materials → MaterialMap
+sim_de_material_map = let
+	sino_low_gpu = MtlArray(sim_de_sino_low.sino)
+	sino_high_gpu = MtlArray(sim_de_sino_high.sino)
+
+	de_sino = BS.DualEnergySinogram(
+		sino_low_gpu, sino_high_gpu;
+		low_kvp = 80, high_kvp = 140)
+
+	@info "Decomposing materials (water + calcium)..."
+	mat_map = BS.decompose_materials(de_sino; basis = (:water, :calcium))
+
+	# Copy to CPU, free GPU
+	mat_cpu = BS.MaterialMap(
+		Array(mat_map.material1), Array(mat_map.material2);
+		material1_name = mat_map.material1_name,
+		material2_name = mat_map.material2_name,
+		domain = mat_map.domain)
+	sino_low_gpu = nothing; sino_high_gpu = nothing; GC.gc(true)
+	mat_cpu
+end
+
+# ╔═╡ d706f8e1-7970-4dd7-a2b1-e07bae9373cc
+# VMI-specific FBP filter kernel control points  [TUNE: VMI RECON]
+# May differ from SE filter — material decomposition amplifies noise,
+# so VMI recons often benefit from stronger apodization.
+de_vmi_custom_filter_control = (
+	x = (0.0, 0.25, 0.5, 0.75, 1.0),
+	y = (1.0, 0.8, 0.4, 0.10, 0.001),
+)
+
+# ╔═╡ c71083a4-9c08-448d-babb-4e49314f214c
+# Image-domain VMI pipeline (Wu et al. 2009, Eq. 1–4, 13)
+#
+# 1. Projection-domain material decomposition (2×2 matrix inversion)
+# 2. FBP reconstruct material sinograms → density images m₁, m₂ (only 2 recons!)
+# 3. Image-domain VMI: Im_mono = m₁ + g(E)×m₂ where g(E) = μ₂(E)/μ_water(E)
+# 4. Optional noise compensation (Eq. 13): suppresses amplified noise at non-optimal energies
+# 5. HU = (Im_mono − 1) × 1000
+function decompose_and_reconstruct_vmi(
+		sino_low, sino_high, geom, recon_size, energies_keV;
+		scanner, sim_opts, basis = (:water, :calcium),
+		additional_filters_low, additional_filters_high,
+		E_eff_low_override = nothing,   # keV — set to override spectrum-computed value
+		E_eff_high_override = nothing,  # keV — set to override spectrum-computed value
+		custom_filter_control = nothing, # optional (x=(...), y=(...)) for FBP apodization
+		noise_compensation = true,       # Wu et al. 2009 Eq. 13
+		noise_sigma = 2.0,               # Gaussian σ (pixels) for noise map extraction
+		g_min_energy = 70.0,             # keV at which VMI noise is minimized (~70 for 80/140)
+	)
+
+	# 1. Compute effective energies from actual filtered spectra
+	prot_low = BS.CTProtocol(kVp = 80, additional_filters = additional_filters_low)
+	e_l, w_l = BS.resolve_spectrum(sim_opts, prot_low; scanner = scanner)
+	E_eff_low_auto = sum(e_l .* w_l) / sum(w_l)
+
+	prot_high = BS.CTProtocol(kVp = 140, additional_filters = additional_filters_high)
+	e_h, w_h = BS.resolve_spectrum(sim_opts, prot_high; scanner = scanner)
+	E_eff_high_auto = sum(e_h .* w_h) / sum(w_h)
+
+	E_eff_low  = E_eff_low_override  === nothing ? E_eff_low_auto  : E_eff_low_override
+	E_eff_high = E_eff_high_override === nothing ? E_eff_high_auto : E_eff_high_override
+
+	@info "Effective energies: low=$(round(E_eff_low, digits=1)) keV " *
+		  "(auto=$(round(E_eff_low_auto, digits=1))), " *
+		  "high=$(round(E_eff_high, digits=1)) keV " *
+		  "(auto=$(round(E_eff_high_auto, digits=1)))"
+
+	# 2. Decomposition matrix at (possibly tuned) effective energies
+	inv_a11, inv_a12, inv_a21, inv_a22 = BS.compute_decomposition_matrix(
+		basis, E_eff_low, E_eff_high)
+
+	# 3. Material decomposition (projection domain, on GPU)
+	sino_low_gpu = MtlArray(sino_low)
+	sino_high_gpu = MtlArray(sino_high)
+	de_sino = BS.DualEnergySinogram(sino_low_gpu, sino_high_gpu; low_kvp = 80, high_kvp = 140)
+	mat_map = BS.decompose_materials(de_sino; basis = basis,
+		ws_inv_a11 = inv_a11, ws_inv_a12 = inv_a12,
+		ws_inv_a21 = inv_a21, ws_inv_a22 = inv_a22)
+
+	# 4. FBP reconstruct each material sinogram → density images m₁(x,y), m₂(x,y)
+	#    (Wu et al. 2009: reconstruct energy-independent density images, then combine)
+	@info "  Reconstructing m₁ ($(basis[1])) density image..."
+	ws_fdk_1 = BS.create_fdk_recon_workspace(mat_map.material1, geom, recon_size)
+	if custom_filter_control !== nothing
+		copyto!(ws_fdk_1.filter_kernel,
+			build_custom_filter_kernel(
+				length(ws_fdk_1.filter_kernel), Float32(geom.pixel_size),
+				custom_filter_control.x, custom_filter_control.y))
+	end
+	m1_gpu = BS.reconstruct!(ws_fdk_1, mat_map.material1, geom, recon_size)
+	m1 = Float32.(Array(m1_gpu))
+	ws_fdk_1 = nothing; m1_gpu = nothing; GC.gc(true)
+
+	@info "  Reconstructing m₂ ($(basis[2])) density image..."
+	ws_fdk_2 = BS.create_fdk_recon_workspace(mat_map.material2, geom, recon_size)
+	if custom_filter_control !== nothing
+		copyto!(ws_fdk_2.filter_kernel,
+			build_custom_filter_kernel(
+				length(ws_fdk_2.filter_kernel), Float32(geom.pixel_size),
+				custom_filter_control.x, custom_filter_control.y))
+	end
+	m2_gpu = BS.reconstruct!(ws_fdk_2, mat_map.material2, geom, recon_size)
+	m2 = Float32.(Array(m2_gpu))
+	ws_fdk_2 = nothing; m2_gpu = nothing; GC.gc(true)
+
+	# Free GPU sinogram memory
+	sino_low_gpu = nothing; sino_high_gpu = nothing; GC.gc(true)
+
+	# 5. Noise compensation setup (Wu et al. 2009, Eq. 13)
+	#    Δ_m₂ = highpass(m₂); g_min = g(E_optimal) where noise is minimized
+	m2_noise = nothing
+	g_min = Float32(0)
+	if noise_compensation
+		@info "  Extracting noise map from m₂ (σ=$(noise_sigma) px)..."
+		m2_noise = BS.extract_noise_map(m2; sigma = noise_sigma)
+		g_min = Float32(BS.compute_vmi_g(g_min_energy, basis[2]))
+		@info "  g_min = $(round(g_min, digits=3)) at $(g_min_energy) keV"
+	end
+
+	# 6. Image-domain VMI at each energy (Eq. 4 / Eq. 13) + HU conversion
+	#    Im_mono = m₁ + g(E)×m₂ [+ (g_min − g(E))×Δ_m₂]
+	#    HU = (Im_mono − 1) × 1000
+	results = NamedTuple[]
+	for E in energies_keV
+		g_E = Float32(BS.compute_vmi_g(Float64(E), basis[2]))
+		@info "  VMI $(E) keV: g(E) = $(round(g_E, digits=3))"
+
+		im_mono = similar(m1)
+		if noise_compensation && m2_noise !== nothing
+			BS.noise_compensated_vmi!(im_mono, m1, m2, m2_noise, g_E, g_min)
+		else
+			BS.image_domain_vmi!(im_mono, m1, m2, g_E)
+		end
+
+		recon_hu = similar(im_mono)
+		BS.image_domain_vmi_to_hu!(recon_hu, im_mono)
+
+		push!(results, (name = "sim_DE_$(E)keV", recon = recon_hu, energy_keV = E))
+	end
+
+	results
+end
+
+# ╔═╡ 6879ace5-450a-430d-a3dc-b8ce66e85bc0
+# Run the full VMI pipeline
+sim_de_vmi_hu = decompose_and_reconstruct_vmi(
+	sim_de_sino_low.sino, sim_de_sino_high.sino,
+	sim_de_sino_low.geom, de_matrix_size, DE_VMI_ENERGIES;
+	scanner = sim_scanner, sim_opts = sim_opts,
+	additional_filters_low = additional_filters,
+	additional_filters_high = vcat(additional_filters, de_high_kvp_filters),
+	E_eff_low_override = 52.0,   # auto (~49 keV); push lower to help 40 keV VMI
+	# E_eff_high_override = 85.0,
+	custom_filter_control = de_vmi_custom_filter_control,
+	noise_compensation = true,    # Wu et al. 2009 Eq. 13 — suppresses noise at 40/140 keV
+	noise_sigma = 2.0,            # Gaussian σ for noise map extraction (pixels)
+	g_min_energy = 70.0,          # optimal energy for min noise (~70 keV for 80/140 kVp)
+)
+
+# ╔═╡ 09bc3072-a9cd-4be9-b277-0b455bb5e2b9
+# sim_de_vmi_hu = let
+# 	geom = sim_de_sino_low.geom
+# 	recon_size = de_matrix_size
+# 	results = NamedTuple[]
+
+# 	for E in DE_VMI_ENERGIES
+# 		@info "Reconstructing VMI at $(E) keV..."
+
+# 		# Upload material maps to GPU, synthesize VMI sinogram
+# 		mat_gpu = BS.MaterialMap(
+# 			MtlArray(sim_de_material_map.material1),
+# 			MtlArray(sim_de_material_map.material2);
+# 			material1_name = sim_de_material_map.material1_name,
+# 			material2_name = sim_de_material_map.material2_name,
+# 			domain = sim_de_material_map.domain)
+# 		vmi_sino = BS.virtual_monoenergetic(mat_gpu, Float64(E))
+
+# 		# Standard FDK reconstruction (no custom filter — VMI noise differs from SE)
+# 		ws_fdk = BS.create_fdk_recon_workspace(vmi_sino, geom, recon_size)
+# 		recon_μ = BS.reconstruct!(ws_fdk, vmi_sino, geom, recon_size)
+
+# 		# VMI HU: energy-appropriate μ_water(E) via vmi_to_hu
+# 		recon_hu = Float32.(Array(BS.vmi_to_hu(recon_μ, Float64(E))))
+
+# 		push!(results, (name = "sim_DE_$(E)keV", recon = recon_hu, energy_keV = E))
+
+# 		ws_fdk = nothing; vmi_sino = nothing; mat_gpu = nothing; recon_μ = nothing
+# 		GC.gc(true)
+# 	end
+
+# 	results
+# end
+
+# ╔═╡ 414b3f29-1a27-4839-83da-1efdc6768d65
+# Orient simulated VMI images (match clinical orientation)
+sim_de_vmi_oriented = let
+	orient = identity
+	orient = (f -> s -> reverse(f(s), dims = 2))(orient)  # Flip Left-Right
+	[(name = r.name,
+		recon = Float32.(mapslices(orient, r.recon, dims = (1, 2))),
+		energy_keV = r.energy_keV)
+	 for r in sim_de_vmi_hu]
+end
+
+# ╔═╡ 56824787-a5f9-4b05-b06c-af38d63448fc
+md"""
+### VMI: Qualitative
+"""
+
+# ╔═╡ 3dd2f8f6-8254-4563-8a4a-d99d1a557f62
+# VMI Qualitative Comparison — Clinical vs Simulated at each energy
+let
+	clinical = [hu_de_40keV, hu_de_70keV, hu_de_100keV, hu_de_140keV]
+	simulated = sim_de_vmi_oriented
+	n = length(DE_VMI_ENERGIES)
+
+	fig = CM.Figure(size = (600, 1200), fontsize = 10)
+	for (i, E) in enumerate(DE_VMI_ENERGIES)
+		clin_mid = size(clinical[i], 3) ÷ 2 + 1
+		sim_mid = size(simulated[i].recon, 3) ÷ 2 + 1
+		clin_slice = clinical[i][:, :, clin_mid]
+		sim_slice = simulated[i].recon[:, :, sim_mid]
+
+		ax1 = CM.Axis(fig[i, 1]; title = "Clinical VMI $(E) keV", yreversed = true)
+		CM.heatmap!(ax1, clin_slice; colormap = :grays, colorrange = (-200, 500))
+		CM.hidedecorations!(ax1); CM.hidespines!(ax1)
+
+		ax2 = CM.Axis(fig[i, 2]; title = "Simulated VMI $(E) keV", yreversed = true)
+		CM.heatmap!(ax2, sim_slice; colormap = :grays, colorrange = (-200, 500))
+		CM.hidedecorations!(ax2); CM.hidespines!(ax2)
+	end
+	CM.save(joinpath(RESULTS_DIR, "ge_vmi_qualitative.png"), fig, px_per_unit = 2)
+	fig
+end
+
+# ╔═╡ c944cee8-1be1-4179-abd4-33be7109646d
+md"""
+### VMI: Scatter Plot (HU)
+"""
+
+# ╔═╡ e3cfc4da-0f42-48b3-9b6f-c3828123e9fb
+sim_de_vmi_measurements = let
+	vmi_scans = [(r.recon, r.name) for r in sim_de_vmi_oriented]
+
+	# Segment on mid-slice of 100 keV VMI (index 3 in DE_VMI_ENERGIES = [40,70,100,140])
+	vmi_100 = sim_de_vmi_oriented[3].recon
+	mid_z = size(vmi_100, 3) ÷ 2 + 1
+	mask, rods, center = segment_gammex_rods(vmi_100[:, :, mid_z]; fov_cm = 35.0)
+
+	[measure_scan(vol, mask, rods, center, name)
+	 for (vol, name) in vmi_scans]
+end
+
+# ╔═╡ e4cc99de-4709-445c-9574-c2e917d49f2e
+# VMI: Ca/I scatter — Clinical VMI vs Simulated VMI across energies
+let
+	vmi_labels = ["$(E) keV" for E in DE_VMI_ENERGIES]
+	n_vmi = length(DE_VMI_ENERGIES)
+	colors = CM.cgrad(:tab10, max(n_vmi, 2), categorical = true)
+
+	fig = CM.Figure(size = (750, 900), fontsize = 11)
+
+	# --- Top: Calcium rods ---
+	ax_ca = CM.Axis(fig[1, 1], title = "Calcium Rods", subtitle = "Clinical VMI vs Simulated VMI",
+					xlabel = "Clinical HU", ylabel = "Simulated HU")
+	ca_clin_all, ca_sim_all = Float64[], Float64[]
+
+	for (k, E) in enumerate(DE_VMI_ENERGIES)
+		cm = de_measurements[k]
+		sm = sim_de_vmi_measurements[k]
+		ca_idx = [i for i in 1:length(cm.rod_names) if startswith(cm.rod_names[i], "Ca")]
+		if !isempty(ca_idx)
+			CM.scatter!(ax_ca, cm.rod_means[ca_idx], sm.rod_means[ca_idx];
+						color = colors[k], markersize = 10, label = vmi_labels[k])
+			append!(ca_clin_all, cm.rod_means[ca_idx])
+			append!(ca_sim_all, sm.rod_means[ca_idx])
+		end
+	end
+	CM.lines!(ax_ca, [-300, 3000], [-300, 3000], color = :gray60, linestyle = :dash, label = "Unity (y=x)")
+	if length(ca_clin_all) > 1
+		b_ca, m_ca = hcat(ones(length(ca_clin_all)), ca_clin_all) \ ca_sim_all
+		r_ca = cor(ca_clin_all, ca_sim_all)
+		rmse_ca = sqrt(sum((ca_sim_all .- ca_clin_all) .^ 2) / length(ca_clin_all))
+		nrmse_ca = rmse_ca / (maximum(ca_clin_all) - minimum(ca_clin_all)) * 100
+		eq_ca = "y = $(round(m_ca, digits=3))x $(b_ca >= 0 ? "+" : "-") $(round(abs(b_ca), digits=1))"
+		CM.lines!(ax_ca, [extrema(ca_clin_all)...], m_ca .* [extrema(ca_clin_all)...] .+ b_ca, color = :black, linewidth = 0.8, label = "Linear fit")
+		CM.poly!(ax_ca, CM.Point2f[(0.60, 0.02), (0.98, 0.02), (0.98, 0.22), (0.60, 0.22)], color = (:white, 0.9), strokecolor = :gray50, strokewidth = 1, space = :relative)
+		CM.text!(ax_ca, 0.62, 0.18, text = "$(eq_ca)\nr = $(round(r_ca, digits=4))\nnRMSE = $(round(nrmse_ca, digits=1))%", space = :relative, align = (:left, :top), fontsize = 10)
+	end
+	CM.axislegend(ax_ca, position = :lt, labelsize = 9)
+
+	# --- Bottom: Iodine rods ---
+	ax_i = CM.Axis(fig[2, 1], title = "Iodine Rods", subtitle = "Clinical VMI vs Simulated VMI",
+				   xlabel = "Clinical HU", ylabel = "Simulated HU")
+	i_clin_all, i_sim_all = Float64[], Float64[]
+
+	for (k, E) in enumerate(DE_VMI_ENERGIES)
+		cm = de_measurements[k]
+		sm = sim_de_vmi_measurements[k]
+		i_idx = [i for i in 1:length(cm.rod_names) if startswith(cm.rod_names[i], "I ")]
+		if !isempty(i_idx)
+			CM.scatter!(ax_i, cm.rod_means[i_idx], sm.rod_means[i_idx];
+						color = colors[k], markersize = 10, label = vmi_labels[k])
+			append!(i_clin_all, cm.rod_means[i_idx])
+			append!(i_sim_all, sm.rod_means[i_idx])
+		end
+	end
+	CM.lines!(ax_i, [-150, 1500], [-150, 1500], color = :gray60, linestyle = :dash, label = "Unity (y=x)")
+	if length(i_clin_all) > 1
+		b_i, m_i = hcat(ones(length(i_clin_all)), i_clin_all) \ i_sim_all
+		r_i = cor(i_clin_all, i_sim_all)
+		rmse_i = sqrt(sum((i_sim_all .- i_clin_all) .^ 2) / length(i_clin_all))
+		nrmse_i = rmse_i / (maximum(i_clin_all) - minimum(i_clin_all)) * 100
+		eq_i = "y = $(round(m_i, digits=3))x $(b_i >= 0 ? "+" : "-") $(round(abs(b_i), digits=1))"
+		CM.lines!(ax_i, [extrema(i_clin_all)...], m_i .* [extrema(i_clin_all)...] .+ b_i, color = :black, linewidth = 0.8, label = "Linear fit")
+		CM.poly!(ax_i, CM.Point2f[(0.60, 0.02), (0.98, 0.02), (0.98, 0.22), (0.60, 0.22)], color = (:white, 0.9), strokecolor = :gray50, strokewidth = 1, space = :relative)
+		CM.text!(ax_i, 0.62, 0.18, text = "$(eq_i)\nr = $(round(r_i, digits=4))\nnRMSE = $(round(nrmse_i, digits=1))%", space = :relative, align = (:left, :top), fontsize = 10)
+	end
+	CM.axislegend(ax_i, position = :lt, labelsize = 9)
+
+	CM.save(joinpath(RESULTS_DIR, "ge_vmi_scatter_hu.png"), fig, px_per_unit = 2)
+	fig
+end
+
+# ╔═╡ db323bb7-1cf8-469c-8015-eca39bb634b0
+md"""
+### VMI: NPS
+"""
+
+# ╔═╡ 87f16411-e437-4dcb-b193-421a74f04fb6
+# VMI NPS comparison — Clinical vs Simulated at each energy
+let
+	fig = CM.Figure(size = (900, 900), fontsize = 11)
+
+	for (i, E) in enumerate(DE_VMI_ENERGIES)
+		row = (i - 1) ÷ 2 + 1
+		col = (i - 1) % 2 + 1
+		ax = CM.Axis(fig[row, col]; title = "VMI $(E) keV",
+			subtitle = "Clinical vs Simulated",
+			xlabel = "Spatial frequency (lp/cm)", ylabel = "NPS (HU²·cm²)", yscale = log10)
+		cm = de_measurements[i]
+		sm = sim_de_vmi_measurements[i]
+		f_c, v_c = cm.nps.frequencies, cm.nps.nps_1d
+		good_c = v_c .> 0
+		CM.lines!(ax, f_c[good_c], v_c[good_c];
+			color = :steelblue, linewidth = 1.5, label = "Clinical")
+		f_s, v_s = sm.nps.frequencies, sm.nps.nps_1d
+		good_s = v_s .> 0
+		CM.lines!(ax, f_s[good_s], v_s[good_s];
+			color = :orangered, linewidth = 1.5, linestyle = :dash, label = "Simulated")
+		CM.axislegend(ax; position = :rt, labelsize = 8)
+	end
+	CM.save(joinpath(RESULTS_DIR, "ge_vmi_nps.png"), fig, px_per_unit = 2)
+	fig
+end
+
+# ╔═╡ 93f22e77-b876-42d4-bee8-63c917321d36
+md"""
+### VMI: MTF
+"""
+
+# ╔═╡ ec89a345-ca93-48dc-b149-83c9537c1335
+# VMI MTF comparison — Clinical vs Simulated at each energy
+let
+	fig = CM.Figure(size = (900, 900), fontsize = 11)
+
+	for (i, E) in enumerate(DE_VMI_ENERGIES)
+		row = (i - 1) ÷ 2 + 1
+		col = (i - 1) % 2 + 1
+		ax = CM.Axis(fig[row, col]; title = "VMI $(E) keV",
+			subtitle = "Clinical vs Simulated",
+			xlabel = "Spatial frequency (lp/cm)", ylabel = "MTF",
+			limits = (nothing, nothing, 0, 1.05))
+		CM.hlines!(ax, [0.5, 0.1]; color = :gray80, linestyle = :dash, linewidth = 0.8)
+		cm = de_measurements[i]
+		sm = sim_de_vmi_measurements[i]
+		CM.lines!(ax, cm.mtf.frequencies, cm.mtf.mtf;
+			color = :steelblue, linewidth = 1.5, label = "Clinical")
+		CM.lines!(ax, sm.mtf.frequencies, sm.mtf.mtf;
+			color = :orangered, linewidth = 1.5, linestyle = :dash, label = "Simulated")
+		CM.axislegend(ax; position = :rt, labelsize = 8)
+	end
+	CM.save(joinpath(RESULTS_DIR, "ge_vmi_mtf.png"), fig, px_per_unit = 2)
+	fig
+end
+
+# ╔═╡ 07140001-0000-4000-8000-000000000000
+md"""
+## 14. Appendix: Parameter Readout
+
+Current tuning parameter values for quick inspection.
+"""
+
+# ╔═╡ 07140002-0000-4000-8000-000000000000
+sim_electronic_noise
+
+# ╔═╡ 07140003-0000-4000-8000-000000000000
+sim_detection_gain
+
+# ╔═╡ 07140004-0000-4000-8000-000000000000
+sim_noise_floor_hu
 
 # ╔═╡ Cell order:
-# ╟─05487717-8249-4d89-bf94-f7e7dc379bfb
-# ╠═db7ada07-c245-4427-a9d8-1fa43e74e884
-# ╠═2872d85c-3d09-414f-a194-4b52764fca93
-# ╠═eff433a8-e36a-4b6f-bfb5-73664ceac2f3
-# ╠═a0839e3b-bd86-44e6-a282-046dcc6a6d39
-# ╠═1caeb654-e68e-47d8-a10d-c4020c676c7b
-# ╠═9cd57146-a7ec-4fe8-a313-4d46659d8795
-# ╠═6cf5c19a-88f2-4ba7-91d6-f68b4fb816e1
-# ╠═ff611999-d9e4-45e1-80e5-a46176c4845a
-# ╠═fb762acd-fe7f-4e9a-adb6-ad77ba81f2e1
-# ╠═9d514655-cb7c-4852-8e8e-d2a98527fe0a
-# ╠═1ce13813-fa59-43a1-9e0e-99741eeace58
-# ╠═02bf2bbb-e785-4e5f-8476-58346735b7fc
-# ╠═9636e23b-9d46-41be-988c-843c59de3cf6
-# ╠═993c7d4b-ae9d-4234-ad8d-994a904bd83c
-# ╠═0e1cad14-1b0a-421e-ab85-19e5601d63d6
-# ╠═a1b2c3d4-0001-4000-8000-000000000001
-# ╠═a1b2c3d4-0002-4000-8000-000000000002
-# ╠═9dd493db-806d-474c-8352-58011ab725e7
-# ╠═64b81aff-4ff0-4cc7-bcaa-a16162524620
-# ╟─6e93590f-e900-4c9e-91cb-a03db349b185
-# ╠═f466466a-c364-4841-8a38-987cbc5777c9
-# ╠═c19991fb-c50a-4e56-a3f6-bba1e41fd9c9
-# ╠═119755f9-4c74-4d15-89a7-793295d21441
-# ╟─bdc45741-e374-4d78-ba6b-43b5ef411f2a
-# ╠═41f11735-2a1c-4d36-8a0d-3c57de9cbae0
-# ╟─c0dfa3a5-88f2-47b3-94ab-0393132b0dc1
-# ╠═fec5488f-09e4-41af-b3e3-0fef62cd2bfa
-# ╟─042d2f32-0a93-48c9-acd1-2701263f8be9
-# ╠═90fe8208-f128-4b59-bb14-cb3f6829d9da
-# ╟─e4d91faa-e427-48d3-9f86-fe07a33d8bff
-# ╠═c95c638e-60a7-4242-8c95-ee352ac96a02
-# ╟─5d85356a-9524-4041-9c7e-5df155180f8f
-# ╠═c2b384e5-0ebd-4e32-bbcc-d7699c5bb9c8
-# ╟─79d134f6-1a23-4c7d-af2a-4c70a57841db
-# ╟─262d5985-d5fa-49f1-968d-f760ac4c6fc7
-# ╠═dca3c26e-3d13-407f-aa83-f8a9ce5f9d23
-# ╠═63b0c15a-8e01-4f8b-9ff7-a9109e2b5933
-# ╟─451bfa43-42d9-4023-afb0-52bbf4b5a487
-# ╟─04a99179-ae4f-40ba-b4bf-aa5f5276bbc1
-# ╟─3c0d7acf-6de3-4662-90b9-05cebcfffd1c
-# ╠═c7df06b6-014e-4115-a811-cb5a190cbb2a
-# ╟─b5a1b6ce-a719-4444-8f70-76aff9040515
-# ╟─ead991fd-d38c-4ebe-81f8-c35c84d0df52
-# ╠═88990577-029e-4f3b-be94-3ac413e526fe
-# ╟─ce7b3519-78ee-43e0-a8a9-5b0270a68901
-# ╟─e26846b8-719f-4d24-a531-7aac1fe6672a
-# ╟─a1b2c3d4-0010-4000-8000-000000000010
-# ╠═0c47ac3f-6d83-47ac-8c94-bc9172db716d
-# ╠═e6322fc0-9a18-43a6-a98d-5af80c2a5f01
-# ╠═a1b2c3d4-0011-4000-8000-000000000011
-# ╟─a1b2c3d4-0012-4000-8000-000000000012
-# ╠═a1b2c3d4-0013-4000-8000-000000000013
-# ╟─a1b2c3d4-0014-4000-8000-000000000014
-# ╠═a1b2c3d4-0015-4000-8000-000000000015
-# ╟─a1b2c3d4-0016-4000-8000-000000000016
-# ╟─a1b2c3d4-0017-4000-8000-000000000017
-# ╟─a1b2c3d4-0018-4000-8000-000000000018
-# ╟─a1b2c3d4-0019-4000-8000-000000000019
-# ╟─a1b2c3d4-0020-4000-8000-000000000020
-# ╠═a1b2c3d4-0021-4000-8000-000000000021
-# ╟─a1b2c3d4-0022-4000-8000-000000000022
-# ╟─a1b2c3d4-0023-4000-8000-000000000023
-# ╟─d9ad5eb6-df82-466b-a291-310417adc0bf
-# ╠═830ee323-3fd3-464d-a4bf-20348c206909
-# ╟─0a8833cf-06c6-4777-9fe8-c17f7138e6b8
-# ╟─a1b2c3d4-5001-4000-8000-000000000001
-# ╠═a1b2c3d4-5002-4000-8000-000000000002
-# ╟─a1b2c3d4-7000-4000-8000-e00000000001
-# ╠═a1b2c3d4-7001-4000-8000-000000000001
-# ╠═a1b2c3d4-5003-4000-8000-000000000003
-# ╠═53fdf44c-c940-4f9e-9ec3-4f77748ba370
-# ╠═c8c50759-2b6a-453b-9a48-9dc11d4bd996
-# ╠═a1b2c3d4-5004-4000-8000-000000000004
-# ╠═96c17cb8-c478-4938-90d2-497b1e008cf0
-# ╠═02f63ae1-4850-4cb6-8daa-8536c3458898
-# ╠═a1b2c3d4-5005-4000-8000-000000000005
-# ╟─a1b2c3d4-6062-4000-8000-000000000062
-# ╠═a1b2c3d4-6060-4000-8000-000000000060
-# ╠═a1b2c3d4-6010-4000-8000-000000000010
-# ╠═a1b2c3d4-6011-4000-8000-000000000011
-# ╠═fb6cdb7c-19d0-4f86-950d-464307f0d786
-# ╠═a1b2c3d4-6012-4000-8000-000000000012
-# ╟─9f983faf-9ba9-49ff-84ec-dc549e697d4c
-# ╠═a1b2c3d4-6013-4000-8000-000000000013
-# ╠═a1b2c3d4-6014-4000-8000-000000000014
-# ╠═a1b2c3d4-6015-4000-8000-000000000015
-# ╟─cbf028e3-738f-4adc-8caa-3cb14f61d16d
-# ╠═a1b2c3d4-6016-4000-8000-000000000016
-# ╠═a1b2c3d4-6017-4000-8000-000000000017
-# ╠═a1b2c3d4-6018-4000-8000-000000000018
-# ╠═a1b2c3d4-6019-4000-8000-000000000019
-# ╠═a1b2c3d4-6020-4000-8000-000000000020
-# ╠═a1b2c3d4-6021-4000-8000-000000000021
-# ╠═a1b2c3d4-6022-4000-8000-000000000022
-# ╠═a1b2c3d4-6023-4000-8000-000000000023
-# ╠═a1b2c3d4-6024-4000-8000-000000000024
-# ╠═a1b2c3d4-6025-4000-8000-000000000025
-# ╠═a1b2c3d4-6026-4000-8000-000000000026
-# ╠═a1b2c3d4-6027-4000-8000-000000000027
-# ╠═a1b2c3d4-6061-4000-8000-000000000061
-# ╠═4370ad68-eebd-4f09-85f0-acb556be9fe2
-# ╠═24e12422-f5a0-4bb7-a46e-2949df45d75c
-# ╠═f28d8eb8-79a4-4e74-9672-5f773c07b818
-# ╠═5dee8411-993a-41e7-bab6-717d2b78c585
-# ╠═625d1cf0-1bef-48b0-94d9-42f114a15640
-# ╠═10ecad19-13d4-43f3-b90e-f49912878838
-# ╟─432033d0-a833-44d7-8101-0c0a632c1c7c
-# ╟─c84b7cb9-5ce2-4d98-a636-b24413271805
-# ╟─cc4aec8c-732e-49b9-ab94-d22a8567a435
-# ╟─ae3cee8f-e7e9-48a1-b58e-e598867147d8
-# ╟─e0a9a826-da50-419d-ba9d-5833ad254792
-# ╟─6989eff6-ac59-4913-ae84-33f8e43a56d1
-# ╟─25b7c0b4-d08a-4b2c-9bb1-64d568ca3540
-# ╟─2276aa4f-addf-4e44-8c29-0f0f347cb839
-# ╟─d193c4b3-c2de-494a-b0c5-6d0c2081fbf4
-# ╟─a0381edb-cdd2-4d1f-8139-149b6c06bc13
-# ╠═caeeffcb-5745-4844-aff4-8c70106e3909
-# ╠═b9b74387-2665-4f26-b73e-5dbe46f497c4
-# ╠═8cd81bd3-2036-4cdc-bb89-079c767306dd
-# ╠═e4643553-09c6-436f-9f5d-a2c0cd58967f
-# ╠═707e2b67-243e-4fd9-a174-84a8bd0e3258
-# ╠═dc31e62e-efaf-479a-81f8-5c3a05db204d
-# ╠═90e8d9c9-0d04-4806-9e13-702919ef9bf0
-# ╠═797905a3-d516-41a0-b3eb-024a9b2ab63d
-# ╠═fe36b139-f792-479a-b58d-e20962391a5e
-# ╠═2cb22b66-66cd-44e3-9418-7fc8eeeb5274
-# ╠═9833c73a-556c-4957-8d73-ac0e11ce961c
-# ╠═ae8ec9e5-6138-4866-b4e8-e406a6536b4a
-# ╠═8f3ef07e-7f1e-4a94-a0b8-0404d97f23dc
-# ╠═5364d024-e28d-4eca-be96-23b95a4bf121
-# ╠═2030fac8-4923-4d49-bd07-cb7ab4a3f8fa
-# ╠═da35087b-a066-4fa1-9cd7-59dbcca999d5
-# ╠═54395f3b-d6ac-4429-9070-de4e6286a52b
-# ╠═4798adbb-608d-4fc4-9429-c5a3a99d9e1b
-# ╟─9a1404a2-c8ae-40ad-8359-3658e2eb206d
-# ╠═378f6ea7-81c3-4f83-9f22-29c6c432dec1
-# ╠═12c2ca1a-bee0-48d5-9f8d-aa7a41478cb6
-# ╠═79294509-6f4c-4e17-87c0-b3865c76e929
-# ╠═829ef0b1-dc36-4a94-98fa-ed52c9e82ee2
-# ╠═10c733ff-5b31-4951-809a-2510d48155e9
-# ╟─2c08722a-16d9-43d7-8bc4-8fc568c1296e
-# ╠═9da1673e-9a2e-48ab-94e8-075489cf3b17
-# ╠═80a5049d-2772-4334-86da-0f972d376078
-# ╠═9cb43aa0-29da-44eb-871b-69077b87df8f
-# ╠═d0615322-2071-4734-8ff6-00a8329e849a
-# ╠═70e53b68-de55-4ce0-91cf-21e867710419
-# ╠═376b0cbe-042d-494d-87c4-c260ec5bd734
-# ╠═8e6ad3f2-9eb1-4b32-bf36-2dad1efbf623
-# ╠═991085bd-defd-40e5-b426-d67cf9feddc1
-# ╠═caf044b7-1056-4b27-aaf9-961fa84e941d
-# ╠═b7b8a5e6-ed89-40d5-a065-64583a742a1a
-# ╠═3c4fded0-d14b-40af-9b6a-be8eaf0c4092
-# ╠═0bb68bed-7de0-494d-9ba4-f7f168666225
-# ╠═ed8551f8-d7bf-4893-ab5d-2a41b65ee81b
-# ╠═58a833f1-06f6-4135-800b-a8e80b6b767c
-# ╠═bbccbfc6-e571-4982-9a5d-9939c45ba951
+# ╟─07010001-0000-4000-8000-000000000000
+# ╠═07010002-0000-4000-8000-000000000000
+# ╠═07010003-0000-4000-8000-000000000000
+# ╠═07010004-0000-4000-8000-000000000000
+# ╠═07010005-0000-4000-8000-000000000000
+# ╠═07010006-0000-4000-8000-000000000000
+# ╠═07010007-0000-4000-8000-000000000000
+# ╠═07010008-0000-4000-8000-000000000000
+# ╠═07010009-0000-4000-8000-000000000000
+# ╠═07010010-0000-4000-8000-000000000000
+# ╠═07010011-0000-4000-8000-000000000000
+# ╠═07010012-0000-4000-8000-000000000000
+# ╠═07010013-0000-4000-8000-000000000000
+# ╠═07010014-0000-4000-8000-000000000000
+# ╠═07010015-0000-4000-8000-000000000000
+# ╠═07010016-0000-4000-8000-000000000000
+# ╠═07010017-0000-4000-8000-000000000000
+# ╠═07010018-0000-4000-8000-000000000000
+# ╠═07010019-0000-4000-8000-000000000000
+# ╠═07010020-0000-4000-8000-000000000000
+# ╟─07020001-0000-4000-8000-000000000000
+# ╠═07020002-0000-4000-8000-000000000000
+# ╠═07020003-0000-4000-8000-000000000000
+# ╠═07020004-0000-4000-8000-000000000000
+# ╠═07020005-0000-4000-8000-000000000000
+# ╠═07020006-0000-4000-8000-000000000000
+# ╠═07020007-0000-4000-8000-000000000000
+# ╠═07020008-0000-4000-8000-000000000000
+# ╠═07020009-0000-4000-8000-000000000000
+# ╟─07030001-0000-4000-8000-000000000000
+# ╠═07030002-0000-4000-8000-000000000000
+# ╠═07030003-0000-4000-8000-000000000000
+# ╠═07030004-0000-4000-8000-000000000000
+# ╠═07030005-0000-4000-8000-000000000000
+# ╠═07030006-0000-4000-8000-000000000000
+# ╠═07030007-0000-4000-8000-000000000000
+# ╠═07030008-0000-4000-8000-000000000000
+# ╟─07030009-0000-4000-8000-000000000000
+# ╟─07030010-0000-4000-8000-000000000000
+# ╟─07030011-0000-4000-8000-000000000000
+# ╟─07030012-0000-4000-8000-000000000000
+# ╟─07030013-0000-4000-8000-000000000000
+# ╟─07030014-0000-4000-8000-000000000000
+# ╟─07040001-0000-4000-8000-000000000000
+# ╠═07040002-0000-4000-8000-000000000000
+# ╟─07040003-0000-4000-8000-000000000000
+# ╟─07040004-0000-4000-8000-000000000000
+# ╠═07040005-0000-4000-8000-000000000000
+# ╟─07050001-0000-4000-8000-000000000000
+# ╠═07050002-0000-4000-8000-000000000000
+# ╠═07050003-0000-4000-8000-000000000000
+# ╠═07050004-0000-4000-8000-000000000000
+# ╠═07050005-0000-4000-8000-000000000000
+# ╟─07050006-0000-4000-8000-000000000000
+# ╟─07050007-0000-4000-8000-000000000000
+# ╠═07050008-0000-4000-8000-000000000000
+# ╟─07050009-0000-4000-8000-000000000000
+# ╟─07050010-0000-4000-8000-000000000000
+# ╠═07050011-0000-4000-8000-000000000000
+# ╟─07060001-0000-4000-8000-000000000000
+# ╟─07060002-0000-4000-8000-000000000000
+# ╟─07060003-0000-4000-8000-000000000000
+# ╠═07060004-0000-4000-8000-000000000000
+# ╟─07060005-0000-4000-8000-000000000000
+# ╟─07060006-0000-4000-8000-000000000000
+# ╟─07070001-0000-4000-8000-000000000000
+# ╠═07070002-0000-4000-8000-000000000000
+# ╟─07070003-0000-4000-8000-000000000000
+# ╟─07080001-0000-4000-8000-000000000000
+# ╠═07080002-0000-4000-8000-000000000000
+# ╠═07080003-0000-4000-8000-000000000000
+# ╠═07080004-0000-4000-8000-000000000000
+# ╠═07080005-0000-4000-8000-000000000000
+# ╟─07080006-0000-4000-8000-000000000000
+# ╠═07080007-0000-4000-8000-000000000000
+# ╠═07080008-0000-4000-8000-000000000000
+# ╠═07080009-0000-4000-8000-000000000000
+# ╠═07080010-0000-4000-8000-000000000000
+# ╟─07090001-0000-4000-8000-000000000000
+# ╠═07090002-0000-4000-8000-000000000000
+# ╠═07090003-0000-4000-8000-000000000000
+# ╠═07090004-0000-4000-8000-000000000000
+# ╠═07090005-0000-4000-8000-000000000000
+# ╠═07090006-0000-4000-8000-000000000000
+# ╠═07090007-0000-4000-8000-000000000000
+# ╟─07100001-0000-4000-8000-000000000000
+# ╠═07100002-0000-4000-8000-000000000000
+# ╠═07100004-0000-4000-8000-000000000000
+# ╠═07100003-0000-4000-8000-000000000000
+# ╠═07100005-0000-4000-8000-000000000000
+# ╠═07100006-0000-4000-8000-000000000000
+# ╠═07100007-0000-4000-8000-000000000000
+# ╟─07100008-0000-4000-8000-000000000000
+# ╠═07100009-0000-4000-8000-000000000000
+# ╟─07110001-0000-4000-8000-000000000000
+# ╠═07110002-0000-4000-8000-000000000000
+# ╠═07110003-0000-4000-8000-000000000000
+# ╠═07110004-0000-4000-8000-000000000000
+# ╠═07110005-0000-4000-8000-000000000000
+# ╠═07110006-0000-4000-8000-000000000000
+# ╠═07110007-0000-4000-8000-000000000000
+# ╠═07110008-0000-4000-8000-000000000000
+# ╠═07110009-0000-4000-8000-000000000000
+# ╠═07110010-0000-4000-8000-000000000000
+# ╠═07110011-0000-4000-8000-000000000000
+# ╠═07110012-0000-4000-8000-000000000000
+# ╠═07110013-0000-4000-8000-000000000000
+# ╠═07110020-0000-4000-8000-000000000000
+# ╠═07110021-0000-4000-8000-000000000000
+# ╠═07110022-0000-4000-8000-000000000000
+# ╠═07110023-0000-4000-8000-000000000000
+# ╟─07110030-0000-4000-8000-000000000000
+# ╟─07110031-0000-4000-8000-000000000000
+# ╟─07110032-0000-4000-8000-000000000000
+# ╟─07110033-0000-4000-8000-000000000000
+# ╟─07110038-0000-4000-8000-000000000000
+# ╟─07110039-0000-4000-8000-000000000000
+# ╟─07110040-0000-4000-8000-000000000000
+# ╟─07110041-0000-4000-8000-000000000000
+# ╟─07110042-0000-4000-8000-000000000000
+# ╟─07110043-0000-4000-8000-000000000000
+# ╟─6f63608c-dd46-4d0a-8f1d-133dc56bc8dd
+# ╠═f61c87a4-a27e-4bc6-bc4d-502c3e3a47fe
+# ╠═f925dafa-e0da-4673-8d84-82fe636bd6c2
+# ╠═b84d07e5-64fd-4365-aca6-d03b4b5a1032
+# ╠═12c84e0f-9cb4-49a0-a1fc-5cbe52b92f8a
+# ╠═4ca8d674-a0c1-407a-ab1d-84f06d966159
+# ╠═6331e7a1-6dce-43bf-97b9-4ecbf766d40c
+# ╠═4917411f-f885-46bb-9f7e-a3de406d236c
+# ╠═cad1f6b8-66fc-47f1-8386-e10c97ce0e4a
+# ╠═00aeca04-810f-4543-bef1-70db235be25c
+# ╠═cf576e1e-5ef4-4478-9209-f584c373ef49
+# ╠═487bb689-9149-45e4-b153-2bad6138ebf5
+# ╠═3793479d-79e9-4948-85c1-ff3c049f1cd0
+# ╠═903f4e17-1824-418a-b8f9-21546163d740
+# ╠═cbe20e99-ca03-4045-a898-2de307d19fce
+# ╠═ed7cbb89-2f22-4587-ad7f-1f3224b73f80
+# ╠═10a11afd-004a-467a-b808-7e761cb21678
+# ╟─3924da10-33fd-415b-9666-f6022d0adaf6
+# ╟─ebc9865c-feed-4e79-9cac-39e583a3796d
+# ╟─c42f625b-9db4-42a5-90c6-fa2c37fe8b18
+# ╟─bfd647b4-44d7-4582-8b5b-dd5910efd729
+# ╟─28e45f60-2542-4305-8c9c-3aecf1b3aa23
+# ╟─d35a2ac4-467a-4ade-afaf-dc668880559a
+# ╟─4776ad7f-edee-4c44-91bb-5ad76a63832e
+# ╟─405ad9a1-3cac-4b19-87b3-1d041d8c0813
+# ╟─d3bd445c-ad9f-4133-93d9-8af91ed7f85d
+# ╟─5298fd86-136b-4af3-aa0f-be0e810f5d24
+# ╟─4f8ee88d-a948-44e7-a610-a2711e6da234
+# ╠═6f5ce242-a5e2-4cd5-8cac-47f528dc21bb
+# ╠═ff650b6f-76e6-491e-8076-1dd002c80d7e
+# ╠═bb68196f-26e4-41fc-85bc-203373d91b4a
+# ╠═37298bb1-4b57-4f5c-9fea-ec81dbfb3394
+# ╠═fd123cde-bb22-489d-a496-e00363f46157
+# ╠═89c1ff84-d4bc-47ca-b08d-8ada2bd469f4
+# ╠═7e06d734-4023-4078-9b8f-3b55c2e389e6
+# ╠═36986f73-d54b-4190-a52c-f3f23e53c533
+# ╠═4efd48c9-753a-4418-8095-fa12b7cc5a95
+# ╠═e8af3f62-e606-4f10-9a09-9e0620910f58
+# ╟─5cc1fa5c-3722-4fa1-b0f0-d816e204c8bf
+# ╟─76b7a0d4-0078-49a7-8fa3-c36ffb01fee1
+# ╠═f031a233-e560-4bb2-af00-fe255152b9e3
+# ╠═d706f8e1-7970-4dd7-a2b1-e07bae9373cc
+# ╠═c71083a4-9c08-448d-babb-4e49314f214c
+# ╠═6879ace5-450a-430d-a3dc-b8ce66e85bc0
+# ╠═09bc3072-a9cd-4be9-b277-0b455bb5e2b9
+# ╠═414b3f29-1a27-4839-83da-1efdc6768d65
+# ╟─56824787-a5f9-4b05-b06c-af38d63448fc
+# ╟─3dd2f8f6-8254-4563-8a4a-d99d1a557f62
+# ╟─c944cee8-1be1-4179-abd4-33be7109646d
+# ╠═e3cfc4da-0f42-48b3-9b6f-c3828123e9fb
+# ╟─e4cc99de-4709-445c-9574-c2e917d49f2e
+# ╟─db323bb7-1cf8-469c-8015-eca39bb634b0
+# ╟─87f16411-e437-4dcb-b193-421a74f04fb6
+# ╟─93f22e77-b876-42d4-bee8-63c917321d36
+# ╟─ec89a345-ca93-48dc-b149-83c9537c1335
+# ╟─07140001-0000-4000-8000-000000000000
+# ╠═07140002-0000-4000-8000-000000000000
+# ╠═07140003-0000-4000-8000-000000000000
+# ╠═07140004-0000-4000-8000-000000000000
