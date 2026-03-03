@@ -3403,12 +3403,12 @@ let
 	fig
 end
 
-# ╔═╡ b0e1f2a3-c4d5-4e6f-8a9b-000000000001
+# ╔═╡ dedd7b4f-5b2a-49d3-8d65-56a9a6c6726c
 md"""
 ### Final Export — All Measurements (Clinical + Simulated)
 """
 
-# ╔═╡ b0e1f2a3-c4d5-4e6f-8a9b-000000000002
+# ╔═╡ 9a29ea15-24b3-4dee-b5ca-77cc8bc32006
 # Comprehensive export: all clinical + simulated measurements → CSV + JLD2
 let
 	tagged = vcat(
@@ -3673,8 +3673,8 @@ sim_noise_floor_hu
 # ╟─87f16411-e437-4dcb-b193-421a74f04fb6
 # ╟─93f22e77-b876-42d4-bee8-63c917321d36
 # ╟─ec89a345-ca93-48dc-b149-83c9537c1335
-# ╟─b0e1f2a3-c4d5-4e6f-8a9b-000000000001
-# ╠═b0e1f2a3-c4d5-4e6f-8a9b-000000000002
+# ╟─dedd7b4f-5b2a-49d3-8d65-56a9a6c6726c
+# ╠═9a29ea15-24b3-4dee-b5ca-77cc8bc32006
 # ╟─07140001-0000-4000-8000-000000000000
 # ╠═07140002-0000-4000-8000-000000000000
 # ╠═07140003-0000-4000-8000-000000000000
