@@ -91,9 +91,12 @@ export generate_water_calibration_curve
 export bhc_water_default, bhc_none
 export evaluate_bhc, get_bhc_info, get_bhc_coefficients
 
-# Two-material (water + bone) BHC exports
+# Two-material (water + bone) BHC exports [DEPRECATED — use image-domain BHC instead]
 export bone_fraction_smooth, TwoMaterialBHC
 export calibrate_bhc_two_material, apply_bhc_two_material
+
+# Image-domain BHC (So et al. 2009) exports
+export apply_bhc_image_domain
 
 # =============================================================================
 # BHC Types
@@ -581,16 +584,13 @@ function get_bhc_info(poly::BHCPolynomial)
 end
 
 # =============================================================================
-# Two-Material (Water + Bone) Beam Hardening Correction
+# Two-Material (Water + Bone) Beam Hardening Correction [DEPRECATED]
 # =============================================================================
+#
+# DEPRECATED: Use apply_bhc_image_domain instead. Kept for backward compat.
 #
 # Implements the Martinez/Fessler 2022 "2DCalBH" algorithm adapted for
 # simulation where the spectrum is exactly known.
-#
-# Algorithm (projection-domain, no hard segmentation):
-#   Pass 1: Water-only polynomial BHC → FDK → preliminary image
-#   Pass 2: Smooth tissue fraction decomposition → forward-project bone →
-#           compute exact 2D correction from known spectrum → apply → FDK
 #
 # References:
 #   1. Martinez C, Fessler JA, et al. Phys Med Biol. 2022;67(11).
@@ -606,16 +606,6 @@ Compute smooth bone fraction for tissue decomposition (Elbakri/Fessler 2003).
 Uses C1-continuous smoothstep (3t² - 2t³) to avoid hard segmentation artifacts.
 Returns 0.0 for soft tissue (≤ hu_low), 1.0 for bone (≥ hu_high), smooth
 transition between.
-
-# Arguments
-- `hu::Real`: Hounsfield Unit value of the voxel
-
-# Keyword Arguments
-- `hu_low::Real=100.0`: Below this HU, voxel is 100% soft tissue
-- `hu_high::Real=500.0`: Above this HU, voxel is 100% bone
-
-# Returns
-- `Float64`: Bone fraction in [0, 1]
 """
 function bone_fraction_smooth(hu::Real; hu_low::Real=100.0, hu_high::Real=500.0)
     hu <= hu_low && return 0.0
@@ -627,22 +617,9 @@ end
 """
     TwoMaterialBHC
 
+DEPRECATED: Use `apply_bhc_image_domain` instead.
+
 Two-material (water + bone) beam hardening correction model.
-
-Contains the water-only BHC polynomial plus spectral attenuation data for
-both water and cortical bone, enabling exact 2-material correction.
-
-# Fields
-- `water_bhc::BeamHardeningCorrection`: Water-only BHC polynomial
-- `energies::Vector{Float64}`: Spectrum energy bins (keV)
-- `w_norm::Vector{Float64}`: Normalized spectrum weights
-- `μ_water_E::Vector{Float64}`: Water attenuation at each energy (cm⁻¹)
-- `μ_bone_E::Vector{Float64}`: Bone attenuation at each energy (cm⁻¹)
-- `μ_water_ref::Float64`: Water attenuation at reference energy (cm⁻¹)
-- `μ_bone_ref::Float64`: Bone attenuation at reference energy (cm⁻¹)
-- `reference_energy_keV::Float64`: Reference energy for monochromatic model
-- `hu_low::Float64`: Soft tissue / bone boundary threshold (HU)
-- `hu_high::Float64`: Fully-bone threshold (HU)
 """
 struct TwoMaterialBHC
     water_bhc::BeamHardeningCorrection
@@ -660,25 +637,7 @@ end
 """
     calibrate_bhc_two_material(energies, weights; kwargs...) -> TwoMaterialBHC
 
-Calibrate the two-material (water + bone) BHC model.
-
-Internally calibrates water-only BHC and computes spectral attenuation data
-for both water and cortical bone.
-
-# Arguments
-- `energies::Vector`: Energy bin centers (keV)
-- `weights::Vector`: Photon fluence weights per energy bin
-
-# Keyword Arguments
-- `order::Int=5`: Polynomial order for water-only BHC
-- `max_path_cm::Real=50.0`: Maximum water path length for calibration (cm)
-- `n_points::Int=100`: Number of calibration points
-- `reference_energy_keV::Real=70.0`: Reference energy (keV)
-- `hu_low::Real=100.0`: Soft tissue / bone boundary (HU)
-- `hu_high::Real=500.0`: Fully-bone threshold (HU)
-
-# Returns
-- `TwoMaterialBHC`: Complete two-material BHC model
+DEPRECATED: Use `calibrate_bhc` + `apply_bhc_image_domain` instead.
 """
 function calibrate_bhc_two_material(
     energies::Vector,
@@ -690,12 +649,10 @@ function calibrate_bhc_two_material(
     hu_low::Real = 100.0,
     hu_high::Real = 500.0
 )
-    # 1. Calibrate water-only BHC
     water_bhc = calibrate_bhc(energies, weights;
         order=order, max_path_cm=max_path_cm,
         n_points=n_points, reference_energy_keV=reference_energy_keV)
 
-    # 2. Compute spectral attenuation data for both materials
     water_mat = XA.Materials.water
     bone_mat = XA.Materials.corticalbone
 
@@ -715,27 +672,9 @@ end
 """
     apply_bhc_two_material(sinogram_raw, bhc_2mat, geom, matrix_size; volume_extent=nothing)
 
-Apply two-material (water + bone) beam hardening correction.
+DEPRECATED: Use `apply_bhc_image_domain` instead.
 
-Implements the full Martinez/Fessler 2022 algorithm:
-1. Water-only BHC → FDK → preliminary HU image
-2. Smooth tissue fraction decomposition (no hard threshold)
-3. Forward-project bone image → compute soft/bone line integrals
-4. Exact 2-material polychromatic correction from known spectrum
-5. Apply correction to RAW sinogram
-
-# Arguments
-- `sinogram_raw::AbstractArray{T,3}`: Raw polychromatic sinogram (post-log)
-- `bhc_2mat::TwoMaterialBHC`: Two-material BHC model from `calibrate_bhc_two_material`
-- `geom`: CTGeometry
-- `matrix_size::Tuple{Int,Int,Int}`: Reconstruction matrix size (nx, ny, nz)
-
-# Keyword Arguments
-- `volume_extent::Union{Nothing,NTuple{3,Float64}}=nothing`: Physical extent of the
-  phantom volume (x, y, z) in cm. Pass `phantom.extent` for correct geometry.
-
-# Returns
-- `Array{Float32,3}`: Corrected sinogram (CPU array)
+Apply two-material (water + bone) beam hardening correction in sinogram domain.
 """
 function apply_bhc_two_material(
     sinogram_raw::AbstractArray{T, 3},
@@ -745,28 +684,21 @@ function apply_bhc_two_material(
     volume_extent=nothing
 ) where T <: AbstractFloat
 
-    # === Pass 1: Water-only BHC → FDK → preliminary HU image ===
     sino_water = similar(sinogram_raw)
     copyto!(sino_water, sinogram_raw)
     apply_bhc!(sino_water, bhc_2mat.water_bhc)
     recon_gpu = fdk_reconstruct(sino_water, geom, matrix_size)
 
-    # HU conversion on GPU
     μ_w_ref = T(bhc_2mat.μ_water_ref)
     hu_low_T = T(bhc_2mat.hu_low)
     hu_high_T = T(bhc_2mat.hu_high)
 
-    # === Pass 2: Bone correction ===
-
-    # Step 1: Smooth tissue fraction → bone-weighted μ volume (GPU)
     bone_μ_gpu = similar(recon_gpu)
     let recon_gpu = recon_gpu, bone_μ_gpu = bone_μ_gpu,
         μ_w_ref = μ_w_ref, hu_low_T = hu_low_T, hu_high_T = hu_high_T
         AK.foreachindex(recon_gpu) do idx
             μ_val = recon_gpu[idx]
             hu_val = T(1000) * (μ_val - μ_w_ref) / μ_w_ref
-
-            # Smoothstep bone fraction (inline — no function call in GPU kernel)
             bf = if hu_val <= hu_low_T
                 zero(T)
             elseif hu_val >= hu_high_T
@@ -775,15 +707,12 @@ function apply_bhc_two_material(
                 t = (hu_val - hu_low_T) / (hu_high_T - hu_low_T)
                 t * t * (T(3) - T(2) * t)
             end
-
             bone_μ_gpu[idx] = bf * μ_val
         end
     end
 
-    # Step 2: Forward-project bone image (GPU)
     p_b_gpu = siddon_forward_project(bone_μ_gpu, geom; volume_extent=volume_extent)
 
-    # Soft tissue line integral: p_s = p_water_corrected - p_b
     p_s_gpu = similar(sino_water)
     copyto!(p_s_gpu, sino_water)
     let p_s_gpu = p_s_gpu, p_b_gpu = p_b_gpu
@@ -792,8 +721,6 @@ function apply_bhc_two_material(
         end
     end
 
-    # Step 3 + 4: Material path lengths → exact 2-material correction (GPU)
-    # Transfer spectral data to GPU (small arrays — one per energy bin)
     n_e = length(bhc_2mat.w_norm)
     w_norm_cpu = T.(bhc_2mat.w_norm)
     μ_w_cpu = T.(bhc_2mat.μ_water_E)
@@ -807,7 +734,6 @@ function apply_bhc_two_material(
 
     μ_b_ref = T(bhc_2mat.μ_bone_ref)
 
-    # Output: corrected sinogram (start from raw, add correction in-place)
     sino_out = similar(sinogram_raw)
     copyto!(sino_out, sinogram_raw)
 
@@ -815,27 +741,135 @@ function apply_bhc_two_material(
         w_norm_gpu = w_norm_gpu, μ_w_gpu = μ_w_gpu, μ_b_gpu = μ_b_gpu,
         μ_w_ref = μ_w_ref, μ_b_ref = μ_b_ref, n_e = n_e
         AK.foreachindex(sino_out) do idx
-            # Path lengths (clamped ≥ 0)
             Lw = max(p_s_gpu[idx] / μ_w_ref, zero(T))
             Lb = max(p_b_gpu[idx] / μ_b_ref, zero(T))
-
-            # Skip rays with negligible material
             if Lw > T(1e-6) || Lb > T(1e-6)
-                # Polychromatic forward model: F = -log(Σ wₑ exp(-μ_w(E)Lw - μ_b(E)Lb))
                 I_poly = zero(T)
                 for e in 1:n_e
                     I_poly += w_norm_gpu[e] * exp(-μ_w_gpu[e] * Lw - μ_b_gpu[e] * Lb)
                 end
                 F_2mat = I_poly > zero(T) ? -log(I_poly) : zero(T)
-
-                # Monochromatic reference
                 p_mono = μ_w_ref * Lw + μ_b_ref * Lb
-
-                # Apply correction: p_corrected = p_raw + (p_mono - F_2mat)
                 sino_out[idx] = sino_out[idx] + (p_mono - F_2mat)
             end
         end
     end
 
     return Array(sino_out)
+end
+
+# =============================================================================
+# Image-Domain BHC (So et al. 2009)
+# =============================================================================
+#
+# Post-reconstruction beam hardening correction based on:
+#   So A, Hsieh J, Li JY, Lee TY. "Beam hardening correction in CT myocardial
+#   perfusion measurement." Phys Med Biol. 2009;54(10):3031-3050.
+#
+# Algorithm:
+#   1. Start with water-BHC-corrected reconstructed image (μ domain)
+#   2. Segment high-attenuation voxels via smoothstep threshold → weighting factor
+#   3. Forward-project the weighted high-attenuation image → ξ (error sinogram)
+#   4. Reconstruct the error sinogram via FDK → error image
+#   5. Subtract scaled error image from original: corrected = original - scale × error
+#
+# Two tunable parameters:
+#   - Threshold range [hu_low, hu_high]: what HU range counts as "high attenuation"
+#   - Scale factor (0.0–1.0): strength of correction
+#
+# The scale factor empirically absorbs all polynomial coefficient differences
+# (α_i - β_i from equation 8 in the paper) into a single tunable knob.
+# =============================================================================
+
+"""
+    apply_bhc_image_domain(recon_μ, geom, matrix_size, μ_water_ref;
+        hu_low=70.0, hu_high=150.0, scale_factor=0.5, volume_extent=nothing)
+
+Apply image-domain beam hardening correction (So et al. 2009).
+
+Corrects BH artifacts from high-attenuation materials (bone, contrast) by
+segmenting the reconstructed image, forward-projecting the dense component,
+reconstructing the resulting error sinogram, and subtracting a scaled version
+of the error image from the original.
+
+# Arguments
+- `recon_μ::AbstractArray{T,3}`: Reconstructed image in μ (linear attenuation, cm⁻¹),
+  already corrected with water-only polynomial BHC. GPU array.
+- `geom`: CTGeometry used for reconstruction
+- `matrix_size::Tuple{Int,Int,Int}`: Reconstruction matrix size (nx, ny, nz)
+- `μ_water_ref::Real`: Water linear attenuation at reference energy (cm⁻¹)
+
+# Keyword Arguments
+- `hu_low::Real=70.0`: Lower HU threshold — voxels below this are 100% soft tissue (WF=0)
+- `hu_high::Real=150.0`: Upper HU threshold — voxels above this are 100% high-atten (WF=1)
+- `scale_factor::Real=0.5`: Scaling factor for error image subtraction (0.0 = no correction,
+  1.0 = full subtraction). Typical range: 0.2–0.7.
+- `volume_extent::Union{Nothing,NTuple{3,Float64}}=nothing`: Physical extent (cm) for
+  forward projection. Pass `phantom.extent` for correct geometry.
+
+# Returns
+- `AbstractArray{T,3}`: Corrected image in μ domain (same type/device as input)
+
+# Tuning Guide
+- **hu_low/hu_high**: Use a narrow range (e.g., 70–150 or 100–200 HU) for contrast-only
+  correction. Use a wider range to include bone. Paper recommends 100–150 HU.
+- **scale_factor**: Start at 0.5. Increase if HU offset persists (under-correction).
+  Decrease if artifacts appear (over-correction). Optimal is typically 0.2–0.7.
+
+# References
+So A, Hsieh J, Li JY, Lee TY. Phys Med Biol. 2009;54(10):3031-3050.
+"""
+function apply_bhc_image_domain(
+    recon_μ::AbstractArray{T, 3},
+    geom,
+    matrix_size::Tuple{Int,Int,Int},
+    μ_water_ref::Real;
+    hu_low::Real = 70.0,
+    hu_high::Real = 150.0,
+    scale_factor::Real = 0.5,
+    volume_extent = nothing
+) where T <: AbstractFloat
+
+    μ_w_ref = T(μ_water_ref)
+    hu_low_T = T(hu_low)
+    hu_high_T = T(hu_high)
+
+    # Step 1: Segment high-attenuation voxels → weighted μ image (GPU)
+    high_atten_μ = similar(recon_μ)
+    let recon_μ = recon_μ, high_atten_μ = high_atten_μ,
+        μ_w_ref = μ_w_ref, hu_low_T = hu_low_T, hu_high_T = hu_high_T
+        AK.foreachindex(recon_μ) do idx
+            μ_val = recon_μ[idx]
+            hu_val = T(1000) * (μ_val - μ_w_ref) / μ_w_ref
+
+            # Linear interpolation weighting factor (So et al. eq. in section 2.2)
+            wf = if hu_val <= hu_low_T
+                zero(T)
+            elseif hu_val >= hu_high_T
+                one(T)
+            else
+                (hu_val - hu_low_T) / (hu_high_T - hu_low_T)
+            end
+
+            # Paper works in HU space (water=0); in μ space we must subtract
+            # the water baseline so we only capture excess attenuation above water.
+            high_atten_μ[idx] = wf * (μ_val - μ_w_ref)
+        end
+    end
+
+    # Step 2: Forward-project the high-attenuation image → ξ (error sinogram)
+    ξ_gpu = siddon_forward_project(high_atten_μ, geom; volume_extent=volume_extent)
+
+    # Step 3: Reconstruct the error sinogram → error image
+    error_image = fdk_reconstruct(ξ_gpu, geom, matrix_size)
+
+    # Step 4: Subtract scaled error image from original
+    sf = T(scale_factor)
+    let recon_μ = recon_μ, error_image = error_image, sf = sf
+        AK.foreachindex(recon_μ) do idx
+            recon_μ[idx] = recon_μ[idx] - sf * error_image[idx]
+        end
+    end
+
+    return recon_μ
 end

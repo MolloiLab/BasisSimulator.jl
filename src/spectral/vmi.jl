@@ -233,9 +233,162 @@ function vmi_to_hu(vmi_image::AbstractArray{T}, energy_keV::Float64; μ_water=no
 end
 
 # =============================================================================
+# Image-Domain VMI (Wu et al. 2009)
+#
+# Reference: Wu X, Langan DA, Xu D, Benson TM, Pack JD, Schmitz AM, Tkaczyk JE.
+# "Monochromatic CT Image Representation via Fast Switching Dual kVp."
+# Proc. SPIE 7258, Medical Imaging 2009, 725845. doi: 10.1117/12.811698
+#
+# Pipeline:
+#   1. Projection-domain decomposition → material sinograms (ρ₁, ρ₂)
+#   2. FBP reconstruct each → density images m₁(x,y), m₂(x,y)
+#   3. Image-domain VMI: Im_mono = m₁ + g(E)×m₂  where g(E) = μ₂(E)/μ_water(E)
+#   4. HU = (Im_mono − 1) × 1000
+#   5. Optional noise compensation (Eq. 13)
+# =============================================================================
+
+"""
+    compute_vmi_g(energy_keV, basis_material2) -> Float64
+
+Compute VMI weighting factor g(E) = μ₂(E) / μ_water(E) (Wu et al. 2009).
+
+In image-domain VMI with water as basis material 1:
+
+    Im_mono(x,y,E) = m₁(x,y) + g(E) × m₂(x,y)
+
+# Arguments
+- `energy_keV::Float64`: Target VMI energy in keV
+- `basis_material2::Symbol`: Second basis material (e.g., `:calcium`, `:iodine`)
+"""
+function compute_vmi_g(energy_keV::Float64, basis_material2::Symbol)
+    μ2 = get_basis_mu(basis_material2, energy_keV)
+    μw = get_basis_mu(:water, energy_keV)
+    return μ2 / μw
+end
+
+"""
+    image_domain_vmi!(output, m1, m2, g_E)
+
+Image-domain VMI synthesis (Wu et al. 2009, Eq. 4).
+
+    Im_mono[i] = m₁[i] + g(E) × m₂[i]
+
+Requires water as first basis material. `m₁`, `m₂` are reconstructed
+material density images (water density ≈ 1.0, second material density ≈ 0 for water).
+
+GPU-compatible via AcceleratedKernels.
+"""
+function image_domain_vmi!(output, m1, m2, g_E)
+    let output=output, m1=m1, m2=m2, g_E=g_E
+        AK.foreachindex(output) do idx
+            output[idx] = m1[idx] + g_E * m2[idx]
+        end
+    end
+    return output
+end
+
+"""
+    image_domain_vmi_to_hu!(output, im_mono)
+
+Convert image-domain VMI to Hounsfield Units (Wu et al. 2009):
+
+    HU = (Im_mono − 1) × 1000
+
+For water (m₁=1, m₂=0): Im_mono = 1 → HU = 0.
+
+GPU-compatible via AcceleratedKernels.
+"""
+function image_domain_vmi_to_hu!(output, im_mono)
+    T = eltype(output)
+    let output=output, src=im_mono, k=T(1000), one_val=one(T)
+        AK.foreachindex(output) do idx
+            output[idx] = (src[idx] - one_val) * k
+        end
+    end
+    return output
+end
+
+"""
+    noise_compensated_vmi!(output, m1, m2, m2_noise, g_E, g_min)
+
+Noise-compensated VMI synthesis (Wu et al. 2009, Eq. 13):
+
+    Im_mono[i] = m₁[i] + g(E)×m₂[i] + (g_min − g(E))×Δ_m₂[i]
+
+At E_optimal (g_E == g_min), the correction vanishes → standard Eq. 4.
+At other energies, it suppresses the energy-dependent noise amplified by
+material decomposition.
+
+# Arguments
+- `output`: Pre-allocated output array
+- `m1, m2`: Material density images (water, second material)
+- `m2_noise`: High-frequency noise map extracted from m₂ (Δ_m₂)
+- `g_E`: VMI weighting factor g(E) at target energy
+- `g_min`: VMI weighting factor at minimum-noise energy
+
+GPU-compatible via AcceleratedKernels.
+"""
+function noise_compensated_vmi!(output, m1, m2, m2_noise, g_E, g_min)
+    let output=output, m1=m1, m2=m2, m2n=m2_noise, g=g_E, gm=g_min
+        AK.foreachindex(output) do idx
+            output[idx] = m1[idx] + g * m2[idx] + (gm - g) * m2n[idx]
+        end
+    end
+    return output
+end
+
+"""
+    extract_noise_map(m2::AbstractArray{T,3}; sigma=2.0) -> Array{T,3}
+
+Extract high-frequency noise map Δ_m₂ from material density image m₂.
+
+    Δ_m₂ = m₂ − gaussian_lowpass(m₂)
+
+Used for noise compensation in VMI (Wu et al. 2009, Eq. 13).
+Separable 2D Gaussian blur per slice (CPU), σ in pixels.
+"""
+function extract_noise_map(m2::AbstractArray{T,3}; sigma::Float64=2.0) where T
+    m2_cpu = Array(m2)
+    nx, ny, nz = size(m2_cpu)
+
+    # 1D Gaussian kernel (truncated at 3σ)
+    r = ceil(Int, 3 * sigma)
+    kernel = T[exp(-T(i)^2 / (2 * T(sigma)^2)) for i in -r:r]
+    kernel ./= sum(kernel)
+    klen = length(kernel)
+
+    smooth = similar(m2_cpu)
+    temp = similar(m2_cpu)
+
+    # Separable 2D Gaussian: x-pass then y-pass, per-slice
+    @inbounds for z in 1:nz
+        for y in 1:ny, x in 1:nx
+            s = zero(T)
+            for k in 1:klen
+                ix = clamp(x + k - r - 1, 1, nx)
+                s += m2_cpu[ix, y, z] * kernel[k]
+            end
+            temp[x, y, z] = s
+        end
+        for y in 1:ny, x in 1:nx
+            s = zero(T)
+            for k in 1:klen
+                iy = clamp(y + k - r - 1, 1, ny)
+                s += temp[x, iy, z] * kernel[k]
+            end
+            smooth[x, y, z] = s
+        end
+    end
+
+    return m2_cpu .- smooth
+end
+
+# =============================================================================
 # Exports
 # =============================================================================
 
 export get_basis_mu, compute_decomposition_matrix
 export spectral_decompose!, spectral_vmi!, combine_pcct_bins!
 export vmi_to_hu
+export compute_vmi_g, image_domain_vmi!, image_domain_vmi_to_hu!
+export noise_compensated_vmi!, extract_noise_map
