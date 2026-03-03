@@ -81,8 +81,10 @@ import XrayAttenuation as XA
 # ╔═╡ 07010016-0000-4000-8000-000000000000
 import DICOM as DCM
 
-# ╔═╡ 07010019-0000-4000-8000-000000000000
+# ╔═╡ a13bf90b-b0a1-4786-9554-132b1a346334
 const FIGURES_DIR = joinpath(dirname(@__DIR__), "figures")
+
+# ╔═╡ 07010019-0000-4000-8000-000000000000
 const RESULTS_DIR = joinpath(dirname(@__DIR__), "results", "ge_apex_elite"); mkpath(RESULTS_DIR)
 
 # ╔═╡ 07010020-0000-4000-8000-000000000000
@@ -3401,6 +3403,82 @@ let
 	fig
 end
 
+# ╔═╡ b0e1f2a3-c4d5-4e6f-8a9b-000000000001
+md"""
+### Final Export — All Measurements (Clinical + Simulated)
+"""
+
+# ╔═╡ b0e1f2a3-c4d5-4e6f-8a9b-000000000002
+# Comprehensive export: all clinical + simulated measurements → CSV + JLD2
+let
+	tagged = vcat(
+		[(m, "clinical_SE") for m in se_measurements],
+		[(m, "clinical_DE_VMI") for m in de_measurements],
+		[(m, "sim_FBP") for m in sim_measurements],
+		[(m, "sim_HIR") for m in sim_measurements_hir],
+		[(m, "sim_DE_VMI") for m in sim_de_vmi_measurements],
+	)
+
+	rod_order = tagged[1][1].rod_names
+	header = ["scan_name", "category"]
+	for nm in rod_order
+		tag = replace(replace(nm, " " => "_"), "(" => "", ")" => "")
+		push!(header, "hu_mean_$tag")
+	end
+	for nm in rod_order
+		tag = replace(replace(nm, " " => "_"), "(" => "", ")" => "")
+		push!(header, "hu_std_$tag")
+	end
+	for nm in rod_order
+		tag = replace(replace(nm, " " => "_"), "(" => "", ")" => "")
+		push!(header, "cnr_$tag")
+	end
+	append!(header, ["nps_peak_freq_lp_cm", "nps_area_HU2cm2",
+		"mtf_f50_lp_cm", "mtf_f10_lp_cm"])
+
+	rows = Vector{Any}[]
+	for (m, cat) in tagged
+		row = Any[m.name, cat]
+		append!(row, round.(m.rod_means, digits = 2))
+		append!(row, round.(m.rod_stds, digits = 2))
+		append!(row, round.(m.rod_cnr, digits = 2))
+		push!(row, round(m.nps_peak_freq, digits = 3))
+		push!(row, round(m.nps_area, digits = 3))
+		push!(row, round(m.mtf_f50, digits = 3))
+		push!(row, round(m.mtf_f10, digits = 3))
+		push!(rows, row)
+	end
+
+	csv_path = joinpath(RESULTS_DIR, "ge_apex_elite_all_measurements.csv")
+	open(csv_path, "w") do io
+		println(io, join(header, ","))
+		for row in rows
+			println(io, join(row, ","))
+		end
+	end
+
+	nps_path = joinpath(RESULTS_DIR, "ge_apex_elite_all_nps.jld2")
+	JLD2.jldopen(nps_path, "w") do f
+		for (m, cat) in tagged
+			f["$(cat)/$(m.name)"] = (freq = m.nps.frequencies, nps = m.nps.nps_1d)
+		end
+	end
+
+	mtf_path = joinpath(RESULTS_DIR, "ge_apex_elite_all_mtf.jld2")
+	JLD2.jldopen(mtf_path, "w") do f
+		for (m, cat) in tagged
+			f["$(cat)/$(m.name)"] = (freq = m.mtf.frequencies, mtf = m.mtf.mtf)
+		end
+	end
+
+	md"""
+	**Exported (all measurements):**
+	- `ge_apex_elite_all_measurements.csv` — $(length(tagged)) rows × $(length(header)) columns
+	- `ge_apex_elite_all_nps.jld2` — NPS curves ($(length(tagged)) scans)
+	- `ge_apex_elite_all_mtf.jld2` — MTF curves ($(length(tagged)) scans)
+	"""
+end
+
 # ╔═╡ 07140001-0000-4000-8000-000000000000
 md"""
 ## 14. Appendix: Parameter Readout
@@ -3436,7 +3514,8 @@ sim_noise_floor_hu
 # ╠═07010016-0000-4000-8000-000000000000
 # ╠═07010017-0000-4000-8000-000000000000
 # ╠═07010018-0000-4000-8000-000000000000
-# ╠═07010019-0000-4000-8000-000000000000
+# ╠═a13bf90b-b0a1-4786-9554-132b1a346334
+# ╟─07010019-0000-4000-8000-000000000000
 # ╠═07010020-0000-4000-8000-000000000000
 # ╟─07020001-0000-4000-8000-000000000000
 # ╠═07020002-0000-4000-8000-000000000000
@@ -3594,6 +3673,8 @@ sim_noise_floor_hu
 # ╟─87f16411-e437-4dcb-b193-421a74f04fb6
 # ╟─93f22e77-b876-42d4-bee8-63c917321d36
 # ╟─ec89a345-ca93-48dc-b149-83c9537c1335
+# ╟─b0e1f2a3-c4d5-4e6f-8a9b-000000000001
+# ╠═b0e1f2a3-c4d5-4e6f-8a9b-000000000002
 # ╟─07140001-0000-4000-8000-000000000000
 # ╠═07140002-0000-4000-8000-000000000000
 # ╠═07140003-0000-4000-8000-000000000000
