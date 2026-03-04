@@ -405,8 +405,8 @@ Combines Fano noise + electronic noise + K-fluorescence escape + Hecht CCE into 
 
 # ╔═╡ a0000005-0081-4000-8000-000000000081
 begin
-	pcct_detector = BS.naeotom_detector_standard()
-	D_matrix = BS.compute_unified_drm(pcct_detector, 140.0; n_energy_points=500)
+	pcct_detector = BS._build_pcct_detector(BS.create_naeotom_alpha())
+	D_matrix = BS.compute_drm(pcct_detector, 140.0; n_energy_points=500)
 	E_drm = BS.drm_energy_grid(140.0; n_energy_points=500)
 end
 

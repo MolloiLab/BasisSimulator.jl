@@ -357,7 +357,7 @@ end
 
 Convert reconstruction from linear attenuation (cm⁻¹) to Hounsfield Units.
 
-This is the recommended way to convert simulate() results to HU.
+This is the recommended way to convert reconstruction results to HU.
 
 # Arguments
 - `reconstruction`: 3D array in μ (cm⁻¹) from FDK or iterative reconstruction
@@ -376,7 +376,7 @@ This is the recommended way to convert simulate() results to HU.
 
 **Option 1: Empirical calibration with water_mask (most accurate)**
 ```julia
-result = simulate(phantom, scanner, protocol, sim_opts, recon_opts)
+recon = fdk_reconstruct(sinogram, geom, matrix_size)
 
 # Create water mask from phantom
 water_mask = phantom.mask .== REGION_SOLID_WATER

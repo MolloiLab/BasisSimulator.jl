@@ -111,8 +111,22 @@ mutable struct PCCTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A1<:Abstr
     geom_detector_u::A2                      # (3, n_angles) detector u vectors
     geom_detector_v::A2                      # (3, n_angles) detector v vectors
 
+    # ─── Native-resolution buffers (for spatial binning path) ───
+    native_bins::Union{Nothing, Vector{A3}}  # per-bin at native dexel res (nothing if bf==1)
+    native_sino_buf::Union{Nothing, A3}      # Siddon scratch at native res
+    native_scratch::Union{Nothing, A3}       # charge sharing scratch at native res
+    native_total_counts::Union{Nothing, A3}  # anti-coincidence at native res
+    native_geom::Union{Nothing, CTGeometry}  # native-res geometry (nothing if bf==1)
+    native_geom_source_positions::Union{Nothing, A2}
+    native_geom_detector_centers::Union{Nothing, A2}
+    native_geom_detector_u::Union{Nothing, A2}
+    native_geom_detector_v::Union{Nothing, A2}
+
+    # ─── Tube physics scratch (for combined sinogram) ───
+    tube_physics_scratch::Union{Nothing, A3}  # sinogram-sized scratch for scatter/focal spot
+
     # ─── Pre-computed setup data (computed once, reused) ───
-    geom::CTGeometry                         # CT geometry
+    geom::CTGeometry                         # CT geometry (binned resolution)
     energies::Vector{Float64}                # downsampled spectrum energies
     weights::Vector{Float64}                 # downsampled spectrum weights
     config::PhysicsConfig                    # physics configuration
@@ -205,21 +219,20 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
 
     # Pre-compute spectral response data
     η_vec = quantum_efficiency_vector(pcct_detector.material, pcct_detector.thickness_mm, energies)
-    R_mat = compute_spectral_response_matrix(
-        pcct_detector.material, pcct_detector.thickness_mm, thresholds, kVp;
-        energy_resolution_keV=pcct_detector.energy_resolution_keV,
-        pixel_size_mm=pcct_detector.pixel_size_mm,
-        include_fluorescence=true, include_tailing=true,
-        n_energy_points=length(energies)
-    )
-    R_energies_vec = collect(range(1.0, kVp, length=n_energies))
+    R_mat = compute_drm(pcct_detector, kVp)
+    R_energies_vec = drm_energy_grid(kVp; n_energy_points=size(R_mat, 1))
 
     # Recalibrate BHC for PCCT using effective spectrum weights.
     # The PCCT combined sinogram uses effective weights w_eff = w × η × Σ_b R[E,b]
     # because the R matrix drops low-energy photons (row sum < 1.0), making the
     # effective spectrum harder. BHC must be calibrated to this harder spectrum.
     if config.bhc !== nothing
-        R_row_sums = vec(sum(R_mat; dims=2))  # Σ_b R[E,b] for each energy
+        # Map each spectrum energy to nearest DRM grid row to get R row sums
+        n_R = size(R_mat, 1)
+        R_row_sums = [begin
+            r_idx = clamp(round(Int, (Float64(E) - 1.0) / (kVp - 1.0) * (n_R - 1)) + 1, 1, n_R)
+            sum(R_mat[r_idx, :])
+        end for E in energies]
         w_eff = Float64.(weights_vec) .* Float64.(η_vec) .* R_row_sums
         ref_energy = sum(Float64.(energies) .* w_eff) / sum(w_eff)
         pcct_bhc = calibrate_bhc(energies, w_eff;
@@ -337,6 +350,55 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     _basis_2 = length(basis_tuple) >= 2 ? (basis_tuple[1], basis_tuple[2]) : (:water, :iodine)
     vmi_inv_a11, vmi_inv_a12, vmi_inv_a21, vmi_inv_a22 = compute_decomposition_matrix(_basis_2, E_low, E_high; T=T)
 
+    # --- Native-resolution geometry and buffers (for spatial binning path) ---
+    bf = scanner.binning_factor
+    if bf > 1
+        magnification = scanner.source_to_detector / scanner.source_to_isocenter
+        native_col_iso_mm = scanner.native_dexel_col_mm / magnification
+        native_row_iso_mm = scanner.native_dexel_row_mm / magnification
+        # Build native geometry directly — same source/detector positions as binned
+        # but with bf× more cols and rows at native dexel pitch
+        _native_n_cols = geom.n_cols * bf
+        _native_n_rows = geom.n_rows * bf
+        _native_pixel_size = native_col_iso_mm / 10.0  # mm → cm
+        _native_pixel_row_size = native_row_iso_mm / 10.0  # mm → cm
+        _native_geom = CTGeometry(
+            geom.SAD, geom.SDD, geom.n_angles, _native_n_rows, _native_n_cols,
+            _native_pixel_size, _native_pixel_row_size,
+            geom.angles,
+            geom.source_positions, geom.detector_centers,
+            geom.detector_u, geom.detector_v,
+            geom.fov  # same recon FOV
+        )
+        native_sino_shape = (_native_geom.n_cols, _native_geom.n_rows, _native_geom.n_angles)
+        _native_bins = [similar(ref_mask, T, native_sino_shape) for _ in 1:n_bins]
+        _native_sino_buf = similar(ref_mask, T, native_sino_shape)
+        _native_scratch = similar(ref_mask, T, native_sino_shape)
+        _native_total_counts = similar(ref_mask, T, native_sino_shape)
+        # Pre-computed geometry arrays at native resolution
+        _n_src = similar(ref_mask, T, size(_native_geom.source_positions)...)
+        copyto!(_n_src, T.(_native_geom.source_positions))
+        _n_det = similar(ref_mask, T, size(_native_geom.detector_centers)...)
+        copyto!(_n_det, T.(_native_geom.detector_centers))
+        _n_u = similar(ref_mask, T, size(_native_geom.detector_u)...)
+        copyto!(_n_u, T.(_native_geom.detector_u))
+        _n_v = similar(ref_mask, T, size(_native_geom.detector_v)...)
+        copyto!(_n_v, T.(_native_geom.detector_v))
+    else
+        _native_geom = nothing
+        _native_bins = nothing
+        _native_sino_buf = nothing
+        _native_scratch = nothing
+        _native_total_counts = nothing
+        _n_src = nothing
+        _n_det = nothing
+        _n_u = nothing
+        _n_v = nothing
+    end
+
+    # Tube physics scratch buffer (binned resolution, for scatter/focal spot on combined sinogram)
+    tube_scratch = similar(ref_mask, T, sino_shape)
+
     return PCCTWorkspace{T, typeof(sino_buf), typeof(enoise_gpu), typeof(geom_source_positions)}(
         bins, μ_volume, sino_buf, scratch, total_counts,
         combined,
@@ -352,6 +414,9 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         μ_lut_cpu, μ_lut_gpu, μ_table,
         bhc_coeffs_cpu, bhc_coeffs_gpu,
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
+        _native_bins, _native_sino_buf, _native_scratch, _native_total_counts,
+        _native_geom, _n_src, _n_det, _n_u, _n_v,
+        tube_scratch,
         geom, energies, weights_vec, config, pcct_detector, mats,
         use_detector_fx, use_corrections, kVp, basis_tuple
     )

@@ -12,7 +12,7 @@
 #   - Probability-weighted fluorescence energy for DRM integration
 #
 # DESIGN: Functions here provide physics calculations that are used by
-# the spectral response matrix (compute_spectral_response_matrix) and
+# the detector response matrix (compute_drm) and
 # could be used by apply_charge_sharing! for K-edge jumps in sharing probability.
 # =============================================================================
 

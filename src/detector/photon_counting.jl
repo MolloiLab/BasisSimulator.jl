@@ -97,7 +97,7 @@ Photon-counting detector specification for PCCT simulation.
 ## Detector Material Properties
 - `material::DetectorMaterialPCCT`: Semiconductor material (CdTe, CZT, Si)
 - `thickness_mm::T`: Sensor thickness in mm (typical: 1.5-3.0 mm)
-- `pixel_size_mm::Tuple{T,T}`: Pixel size at isocenter (row, col) in mm
+- `pixel_size_mm::Tuple{T,T}`: Native dexel size at detector face (row, col) in mm
 
 ## Energy Binning
 - `energy_thresholds_keV::Vector{T}`: Energy threshold values in keV
@@ -135,7 +135,7 @@ detector = PhotonCountingDetector(
 )
 ```
 
-See also: [`naeotom_detector_standard`](@ref), [`naeotom_detector_uhr`](@ref)
+See also: [`_build_pcct_detector`](@ref), [`create_naeotom_alpha`](@ref)
 """
 struct PhotonCountingDetector{T<:AbstractFloat}
     # Material properties
@@ -161,6 +161,9 @@ struct PhotonCountingDetector{T<:AbstractFloat}
 
     # Electronic noise
     electronic_noise_keV::T
+
+    # Spatial binning
+    binning_factor::Int         # 1=unbinned, 2=2×2 standard
 
     # Control
     seed::Union{Nothing, Int}
@@ -199,6 +202,7 @@ function PhotonCountingDetector(;
     enable_anti_coincidence::Bool=true,
     coincidence_window_ns::Float64=30.0,
     electronic_noise_keV::Float64=1.5,
+    binning_factor::Int=1,
     seed::Union{Nothing, Int}=nothing
 )
     return PhotonCountingDetector{Float64}(
@@ -207,95 +211,7 @@ function PhotonCountingDetector(;
         charge_sharing_fwhm_mm, enable_charge_sharing,
         dead_time_ns, enable_pile_up,
         enable_anti_coincidence, coincidence_window_ns,
-        electronic_noise_keV, seed
-    )
-end
-
-# =============================================================================
-# Pre-defined Detector Configurations
-# =============================================================================
-
-"""
-    naeotom_detector_standard()
-
-Create NAEOTOM Alpha-like detector in standard (binned) mode.
-
-Siemens NAEOTOM Alpha specifications:
-- CdTe detector, 1.6 mm thick
-- 144 rows × 0.4 mm (57.6 mm z-coverage)
-- 0.302 mm pixel size at isocenter (2×2 binned)
-- 4 energy thresholds: 20, 35, 55, 70 keV
-
-Reference: FDA 510(k) K201501
-"""
-function naeotom_detector_standard()
-    return PhotonCountingDetector(
-        material = CDTE_MATERIAL,
-        thickness_mm = 1.6,
-        pixel_size_mm = (0.302, 0.302),
-        energy_thresholds_keV = [20.0, 35.0, 55.0, 70.0],
-        energy_resolution_keV = 10.0,
-        charge_sharing_fwhm_mm = 0.08,
-        enable_charge_sharing = true,
-        dead_time_ns = 5.0,
-        enable_pile_up = true,
-        enable_anti_coincidence = true,
-        coincidence_window_ns = 30.0,
-        electronic_noise_keV = 1.5
-    )
-end
-
-"""
-    naeotom_detector_uhr()
-
-Create NAEOTOM Alpha-like detector in UHR (ultra-high resolution) mode.
-
-UHR mode specifications:
-- Unbinned pixels: 0.151 mm at isocenter
-- 120 rows × 0.2 mm (24 mm z-coverage)
-- Higher spatial resolution, higher dose
-- Same 4 energy thresholds
-
-Reference: FDA 510(k) K201501
-"""
-function naeotom_detector_uhr()
-    return PhotonCountingDetector(
-        material = CDTE_MATERIAL,
-        thickness_mm = 1.6,
-        pixel_size_mm = (0.151, 0.151),
-        energy_thresholds_keV = [20.0, 35.0, 55.0, 70.0],
-        energy_resolution_keV = 10.0,
-        charge_sharing_fwhm_mm = 0.08,
-        enable_charge_sharing = true,
-        dead_time_ns = 5.0,
-        enable_pile_up = true,
-        enable_anti_coincidence = true,
-        coincidence_window_ns = 30.0,
-        electronic_noise_keV = 1.5
-    )
-end
-
-"""
-    pcct_detector_ideal()
-
-Create ideal photon-counting detector with no degradation effects.
-
-Useful for validating spectral imaging algorithms without detector artifacts.
-"""
-function pcct_detector_ideal()
-    return PhotonCountingDetector(
-        material = CDTE_MATERIAL,
-        thickness_mm = 1.6,
-        pixel_size_mm = (0.302, 0.302),
-        energy_thresholds_keV = [20.0, 35.0, 55.0, 70.0],
-        energy_resolution_keV = 0.0,  # Perfect energy resolution
-        charge_sharing_fwhm_mm = 0.0, # No charge sharing
-        enable_charge_sharing = false,
-        dead_time_ns = 0.0,           # No pile-up
-        enable_pile_up = false,
-        enable_anti_coincidence = false,
-        coincidence_window_ns = 0.0,
-        electronic_noise_keV = 0.0    # No electronic noise
+        electronic_noise_keV, binning_factor, seed
     )
 end
 
@@ -462,7 +378,7 @@ end
 # =============================================================================
 
 """
-    apply_charge_sharing!(bins, detector; use_physics_model=true) -> bins
+    apply_charge_sharing!(bins, detector; scratch=nothing, ws_charge_probs=nothing) -> bins
 
 Apply charge sharing effects to energy-binned sinograms (in-place, GPU-native).
 
@@ -472,17 +388,9 @@ resulting charge cloud to split between adjacent pixels. This causes:
 - Spectral degradation (low-energy tail)
 - Spatial PSF broadening
 
-# Physics Model (Koch-Mehrin 2020)
-
-When `use_physics_model=true` (default), computes energy-dependent charge cloud
-size using the drift-diffusion ODE (Koch-Mehrin 2020, Eq. 9-14):
-- Charge cloud σ ≈ 13 μm (depth-averaged), varying with photon energy
-- Per-bin sharing probability from cloud-pixel overlap geometry
-
-# Legacy Model
-
-When `use_physics_model=false`, uses the fixed Gaussian FWHM from
-`detector.charge_sharing_fwhm_mm` (pre-v24.0 behavior, σ ≈ 34 μm).
+Uses physics-based Koch-Mehrin 2020 charge cloud transport: computes
+energy-dependent charge cloud size from drift-diffusion ODE (Eq. 9-14).
+Charge cloud σ ≈ 13 μm (depth-averaged), varying with photon energy.
 
 # References
 - Koch-Mehrin et al. 2020, NIM-A 976:164241 (charge cloud transport ODE)
@@ -491,7 +399,6 @@ When `use_physics_model=false`, uses the fixed Gaussian FWHM from
 function apply_charge_sharing!(
     bins::Vector{A},
     detector::PhotonCountingDetector;
-    use_physics_model::Bool=true,
     scratch::Union{Nothing,A}=nothing,
     ws_charge_probs::Union{Nothing, Vector{Float64}}=nothing
 ) where {T, A<:AbstractArray{T,3}}
@@ -501,13 +408,8 @@ function apply_charge_sharing!(
     end
 
     _scratch = scratch === nothing ? similar(bins[1]) : scratch
-
-    if use_physics_model && detector.material == CDTE_MATERIAL
-        return _apply_charge_sharing_physics!(bins, detector, _scratch;
-                                               ws_charge_probs=ws_charge_probs)
-    else
-        return _apply_charge_sharing_legacy!(bins, detector, _scratch)
-    end
+    return _apply_charge_sharing_physics!(bins, detector, _scratch;
+                                           ws_charge_probs=ws_charge_probs)
 end
 
 """
@@ -606,87 +508,6 @@ function _apply_charge_sharing_physics!(
         if bin_idx > 1
             let cb = bins[bin_idx], tb = bins[bin_idx - 1],
                 lf = p_share * T(0.4)
-
-                AK.foreachindex(cb) do idx
-                    transfer = cb[idx] * lf
-                    tb[idx] += transfer
-                    cb[idx] -= transfer
-                end
-            end
-        end
-    end
-
-    return bins
-end
-
-"""
-    _apply_charge_sharing_legacy!(bins, detector) -> bins
-
-Legacy charge sharing model using fixed Gaussian FWHM (pre-v24.0).
-Maintained for backward compatibility. See `apply_charge_sharing!` docs.
-"""
-function _apply_charge_sharing_legacy!(
-    bins::Vector{A},
-    detector::PhotonCountingDetector,
-    scratch::A
-) where {T, A<:AbstractArray{T,3}}
-
-    if detector.charge_sharing_fwhm_mm ≤ 0.0
-        return bins
-    end
-
-    n_bins = length(bins)
-    n_cols, n_rows, n_angles = size(bins[1])
-
-    σ_cloud = T(detector.charge_sharing_fwhm_mm) / (T(2) * sqrt(T(2) * log(T(2))))
-
-    pixel_row = T(detector.pixel_size_mm[1])
-    pixel_col = T(detector.pixel_size_mm[2])
-
-    boundary_dist_row = pixel_row / T(2)
-    boundary_dist_col = pixel_col / T(2)
-
-    z_row = boundary_dist_row / σ_cloud
-    z_col = boundary_dist_col / σ_cloud
-
-    p_share_row = T(2) / (one(T) + exp(T(1.5) * z_row))
-    p_share_col = T(2) / (one(T) + exp(T(1.5) * z_col))
-    p_share = min(p_share_row + p_share_col, T(0.5))
-
-    p_primary = one(T) - p_share
-    nw = p_share / T(8)
-    energy_loss_fraction = T(0.5)
-
-    for bin_idx in n_bins:-1:1
-        let cb = bins[bin_idx], pp = p_primary, nweight = nw,
-            nc = Int32(n_cols), nr = Int32(n_rows), out = scratch
-
-            AK.foreachindex(cb) do idx
-                ci = CartesianIndices(cb)[idx]
-                col, row, angle = Tuple(ci)
-
-                val = cb[idx] * pp
-
-                for di in Int32(-1):Int32(1)
-                    for dj in Int32(-1):Int32(1)
-                        if di == Int32(0) && dj == Int32(0)
-                            continue
-                        end
-                        src_col = clamp(col + di, Int32(1), nc)
-                        src_row = clamp(row + dj, Int32(1), nr)
-                        val += cb[src_col, src_row, angle] * nweight
-                    end
-                end
-
-                out[idx] = val
-            end
-
-            copyto!(cb, scratch)
-        end
-
-        if bin_idx > 1
-            let cb = bins[bin_idx], tb = bins[bin_idx - 1],
-                lf = p_share * energy_loss_fraction
 
                 AK.foreachindex(cb) do idx
                     transfer = cb[idx] * lf
@@ -1263,6 +1084,48 @@ function apply_pcct_electronic_noise!(
 end
 
 # =============================================================================
+# Spatial Binning (native dexel → binned pixel)
+# =============================================================================
+
+"""
+    spatial_bin!(output, input, factor)
+
+Sum `factor × factor` native dexels into one binned pixel (GPU-native).
+
+Operates on count-domain data (before log transform). The sum of independent
+Poisson counts is Poisson-distributed with rate = sum of rates, so spatial
+binning before Poisson noise is physically correct.
+
+# Arguments
+- `output::AbstractArray{T,3}`: Binned sinogram `(n_cols÷factor, n_rows÷factor, n_angles)`
+- `input::AbstractArray{T,3}`: Native-res sinogram `(n_cols, n_rows, n_angles)`
+- `factor::Int`: Binning factor (2 for 2×2)
+"""
+function spatial_bin!(output::AbstractArray{T,3}, input::AbstractArray{T,3}, factor::Int) where T
+    out_cols, out_rows, n_angles = size(output)
+    f = Int32(factor)
+
+    let inp = input, out = output, oc = Int32(out_cols), or_ = Int32(out_rows), bf = f
+        AK.foreachindex(out) do idx
+            ci = CartesianIndices(out)[idx]
+            col, row, angle = Tuple(ci)
+
+            # Sum the factor×factor block from input
+            acc = zero(T)
+            col0 = (Int32(col) - Int32(1)) * bf
+            row0 = (Int32(row) - Int32(1)) * bf
+            for dr in Int32(1):bf
+                for dc in Int32(1):bf
+                    acc += inp[col0 + dc, row0 + dr, angle]
+                end
+            end
+            out[idx] = acc
+        end
+    end
+    return output
+end
+
+# =============================================================================
 # Main PCCT Forward Projection API
 # =============================================================================
 
@@ -1309,7 +1172,7 @@ where:
 # Example
 
 ```julia
-detector = naeotom_detector_standard()
+detector = _build_pcct_detector(create_naeotom_alpha())
 energies, weights = load_spectrum(120)
 materials = get_region_materials()
 
@@ -1338,7 +1201,6 @@ function pcct_forward_project(
     apply_spectral_response::Bool = true,
     apply_detector_effects::Bool = true,
     apply_corrections::Bool = false,
-    use_unified_drm::Bool = false,
     # Workspace buffers (optional — allocate internally if not provided)
     ws_bins = nothing,
     ws_μ_volume = nothing,
@@ -1375,7 +1237,18 @@ function pcct_forward_project(
     # Pre-computed charge sharing probabilities
     ws_charge_probs = nothing,
     # Override volume bounds for phantom physical extent
-    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing
+    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
+    # Native-resolution forward projection (spatial binning)
+    native_geom = nothing,            # CTGeometry at native dexel resolution (nothing = no binning)
+    ws_native_bins = nothing,         # per-bin sinograms at native res
+    ws_native_sino_buf = nothing,     # Siddon scratch at native res
+    ws_native_scratch = nothing,      # charge sharing scratch at native res
+    ws_native_total_counts = nothing, # anti-coincidence scratch at native res
+    ws_native_μ_volume = nothing,     # μ volume (same as binned — phantom hasn't changed)
+    ws_native_source_positions = nothing,
+    ws_native_detector_centers = nothing,
+    ws_native_detector_u = nothing,
+    ws_native_detector_v = nothing
 )
     T = Float32  # Use Float32 for GPU efficiency
 
@@ -1386,61 +1259,82 @@ function pcct_forward_project(
     n_bins = length(detector.energy_thresholds_keV)
     thresholds = detector.energy_thresholds_keV
     kVp = maximum(energies)
+    bf = detector.binning_factor
+
+    # Determine whether to use native-resolution path
+    use_native = native_geom !== nothing && bf > 1
+
+    # Geometry for forward projection: native if binning, else standard
+    proj_geom = use_native ? native_geom : geom
 
     # Pre-compute quantum efficiency for all energies (CPU, scalar values)
-    # Use workspace buffer if provided to avoid allocation
     η = ws_η !== nothing ? ws_η : quantum_efficiency_vector(detector.material, detector.thickness_mm, energies)
 
-    # Pre-compute spectral response matrix if requested (CPU, precomputed once)
-    # Use workspace buffer if provided to avoid allocation
+    # Pre-compute DRM if requested (CPU, precomputed once)
     R = if ws_R !== nothing
         ws_R
     elseif apply_spectral_response
-        if use_unified_drm
-            compute_unified_drm(detector, kVp;
-                n_energy_points=n_energies,
-                use_physics_resolution=true)
-        else
-            compute_spectral_response_matrix(
-                detector.material, detector.thickness_mm, thresholds, kVp;
-                energy_resolution_keV=detector.energy_resolution_keV,
-                pixel_size_mm=detector.pixel_size_mm,
-                include_fluorescence=true,
-                include_tailing=true,
-                n_energy_points=n_energies
-            )
-        end
+        compute_drm(detector, kVp)
     else
         nothing
     end
 
-    # Energy grid for R matrix (maps energy index to row in R)
-    # Use workspace buffer if provided to avoid allocation
+    # Energy grid for R matrix (DRM's own grid, independent of spectrum)
     R_energies = if ws_R_energies !== nothing
         ws_R_energies
     elseif apply_spectral_response
-        collect(range(1.0, Float64(kVp), length=n_energies))
+        drm_energy_grid(kVp; n_energy_points=size(R, 1))
     else
         nothing
     end
 
-    # Allocate per-bin photon count sinograms (GPU-compatible)
-    # Use workspace buffers if provided, otherwise allocate
-    sino_shape = (n_cols, n_rows, n_angles)
+    # --- Allocate projection-resolution buffers (native or binned) ---
+    proj_shape = (proj_geom.n_cols, proj_geom.n_rows, proj_geom.n_angles)
+    binned_shape = (n_cols, n_rows, n_angles)
+
+    # Native-res per-bin count sinograms (for detector physics)
+    proj_bins = if use_native
+        nb = ws_native_bins !== nothing ? ws_native_bins : [similar(mask, T, proj_shape) for _ in 1:n_bins]
+        for bin in nb; fill!(bin, zero(T)); end
+        nb
+    else
+        nothing
+    end
+
+    # Binned-res per-bin sinograms (output)
     bins = if ws_bins !== nothing
         ws_bins
     else
-        [similar(mask, T, sino_shape) for _ in 1:n_bins]
+        [similar(mask, T, binned_shape) for _ in 1:n_bins]
     end
     for bin in bins
         fill!(bin, zero(T))
     end
 
-    # Temporary μ-volume (reused across energies, same device as mask)
-    μ_volume = ws_μ_volume !== nothing ? ws_μ_volume : similar(mask, T, size(mask))
+    # The bins we accumulate into during the energy loop
+    accum_bins = use_native ? proj_bins : bins
 
-    # Temporary sinogram buffer (reused across energies)
-    sino_buf = ws_sino_buf !== nothing ? ws_sino_buf : similar(mask, T, sino_shape)
+    # Temporary μ-volume (reused across energies, same device as mask)
+    μ_volume = if use_native && ws_native_μ_volume !== nothing
+        ws_native_μ_volume
+    elseif ws_μ_volume !== nothing
+        ws_μ_volume
+    else
+        similar(mask, T, size(mask))
+    end
+
+    # Temporary sinogram buffer at projection resolution
+    sino_buf = if use_native
+        ws_native_sino_buf !== nothing ? ws_native_sino_buf : similar(mask, T, proj_shape)
+    else
+        ws_sino_buf !== nothing ? ws_sino_buf : similar(mask, T, binned_shape)
+    end
+
+    # Geometry arrays for Siddon (native or binned)
+    _ws_src = use_native ? ws_native_source_positions : ws_source_positions
+    _ws_det = use_native ? ws_native_detector_centers : ws_detector_centers
+    _ws_u = use_native ? ws_native_detector_u : ws_detector_u
+    _ws_v = use_native ? ws_native_detector_v : ws_detector_v
 
     # Per-energy ray-tracing with spectral weighting
     for (e_idx, E) in enumerate(energies)
@@ -1462,45 +1356,39 @@ function pcct_forward_project(
                          ws_μ_lut_cpu=ws_μ_lut_cpu, ws_μ_lut_gpu=ws_μ_lut_gpu,
                          ws_μ_table=ws_μ_table, energy_idx=e_idx)
 
-        # Forward project at this energy (reuses existing Siddon infrastructure)
+        # Forward project at this energy (native or binned resolution)
         fill!(sino_buf, zero(T))
-        siddon_forward_project!(sino_buf, μ_volume, geom;
-            ws_source_positions=ws_source_positions,
-            ws_detector_centers=ws_detector_centers,
-            ws_detector_u=ws_detector_u,
-            ws_detector_v=ws_detector_v,
+        siddon_forward_project!(sino_buf, μ_volume, proj_geom;
+            ws_source_positions=_ws_src,
+            ws_detector_centers=_ws_det,
+            ws_detector_u=_ws_u,
+            ws_detector_v=_ws_v,
             volume_extent=volume_extent)
 
         # Weight by spectrum and quantum efficiency
-        # Photon count: N = I₀ × S(E) × η(E) × exp(-∫μ dl)
         η_E = T(η[e_idx])
         w_T = T(w)
         I0_T = T(I0)
 
         if apply_spectral_response && R !== nothing
-            # Use spectral response matrix: distribute photons across bins
-            # Find the R matrix row for this energy
-            # R is computed on a uniform grid from 1 to kVp
-            r_idx = clamp(round(Int, (E_float - 1.0) / (Float64(kVp) - 1.0) * (n_energies - 1)) + 1, 1, n_energies)
+            n_R = size(R, 1)
+            r_idx = clamp(round(Int, (E_float - 1.0) / (Float64(kVp) - 1.0) * (n_R - 1)) + 1, 1, n_R)
 
             for b in 1:n_bins
                 R_val = T(R[r_idx, b])
                 if R_val < T(1e-10)
                     continue
                 end
-                # Use let-block to avoid Core.Box capture in GPU kernel
-                let wt = I0_T * w_T * η_E * R_val, ba = bins[b]
+                let wt = I0_T * w_T * η_E * R_val, ba = accum_bins[b]
                     AK.foreachindex(sino_buf) do idx
                         ba[idx] += wt * exp(-sino_buf[idx])
                     end
                 end
             end
         else
-            # Ideal binning: photon goes to exactly one bin based on energy
             bin_idx = _find_energy_bin(E_float, thresholds, Float64(kVp))
             if bin_idx > 0
-                # Use let-block to avoid Core.Box capture in GPU kernel
-                let wt = I0_T * w_T * η_E, ba = bins[bin_idx]
+                let wt = I0_T * w_T * η_E, ba = accum_bins[bin_idx]
                     AK.foreachindex(sino_buf) do idx
                         ba[idx] += wt * exp(-sino_buf[idx])
                     end
@@ -1509,29 +1397,52 @@ function pcct_forward_project(
         end
     end
 
-    # Apply detector physics chain (charge sharing, pileup, anti-coincidence)
-    # Only when requested — these are systematic detector imperfections
-    # Reuse sino_buf as scratch buffer — it's the same size/type and no longer needed
-    # after the energy loop above. This avoids allocating a new scratch buffer.
-    # Use workspace scratch if provided, otherwise sino_buf serves as scratch
-    _scratch = ws_scratch !== nothing ? ws_scratch : sino_buf
-    if apply_detector_effects
-        apply_charge_sharing!(bins, detector; scratch=_scratch,
-                              ws_charge_probs=ws_charge_probs)
-        apply_pulse_pileup!(bins, detector, Float64(flux_rate);
-                            ws_pileup_counts=ws_pileup_counts,
-                            ws_pileup_migration=ws_pileup_migration,
-                            ws_pileup_S=ws_pileup_S,
-                            ws_pileup_thresh=ws_pileup_thresh,
-                            ws_pileup_E_low=ws_pileup_E_low,
-                            ws_pileup_E_high=ws_pileup_E_high,
-                            ws_pileup_E_centers=ws_pileup_E_centers,
-                            ws_pileup_w=ws_pileup_w)
-        apply_anti_coincidence!(bins, detector; scratch=_scratch,
-                                total_counts_buf=ws_total_counts)
+    # --- Detector physics at native resolution, then spatial bin ---
+    if use_native
+        # Detector physics at native dexel resolution (where effects are physically significant)
+        _native_scratch = ws_native_scratch !== nothing ? ws_native_scratch : sino_buf
+        if apply_detector_effects
+            apply_charge_sharing!(proj_bins, detector; scratch=_native_scratch,
+                                  ws_charge_probs=ws_charge_probs)
+            apply_pulse_pileup!(proj_bins, detector, Float64(flux_rate);
+                                ws_pileup_counts=ws_pileup_counts,
+                                ws_pileup_migration=ws_pileup_migration,
+                                ws_pileup_S=ws_pileup_S,
+                                ws_pileup_thresh=ws_pileup_thresh,
+                                ws_pileup_E_low=ws_pileup_E_low,
+                                ws_pileup_E_high=ws_pileup_E_high,
+                                ws_pileup_E_centers=ws_pileup_E_centers,
+                                ws_pileup_w=ws_pileup_w)
+            apply_anti_coincidence!(proj_bins, detector; scratch=_native_scratch,
+                                    total_counts_buf=ws_native_total_counts)
+        end
+
+        # Spatial bin: native → binned (sum counts)
+        for b in 1:n_bins
+            spatial_bin!(bins[b], proj_bins[b], bf)
+        end
+    else
+        # No binning: detector physics at binned resolution (original path)
+        _scratch = ws_scratch !== nothing ? ws_scratch : sino_buf
+        if apply_detector_effects
+            apply_charge_sharing!(bins, detector; scratch=_scratch,
+                                  ws_charge_probs=ws_charge_probs)
+            apply_pulse_pileup!(bins, detector, Float64(flux_rate);
+                                ws_pileup_counts=ws_pileup_counts,
+                                ws_pileup_migration=ws_pileup_migration,
+                                ws_pileup_S=ws_pileup_S,
+                                ws_pileup_thresh=ws_pileup_thresh,
+                                ws_pileup_E_low=ws_pileup_E_low,
+                                ws_pileup_E_high=ws_pileup_E_high,
+                                ws_pileup_E_centers=ws_pileup_E_centers,
+                                ws_pileup_w=ws_pileup_w)
+            apply_anti_coincidence!(bins, detector; scratch=_scratch,
+                                    total_counts_buf=ws_total_counts)
+        end
     end
 
-    # Apply software corrections in count domain (inverse of degradation)
+    # Apply software corrections in count domain at binned resolution
+    _binned_scratch = ws_scratch !== nothing ? ws_scratch : similar(bins[1])
     if apply_corrections
         correct_pulse_pileup!(bins, detector, Float64(flux_rate);
                               ws_correction_counts=ws_correction_counts,
@@ -1542,24 +1453,23 @@ function pcct_forward_project(
                               ws_pileup_E_high=ws_pileup_E_high,
                               ws_pileup_E_centers=ws_pileup_E_centers,
                               ws_pileup_w=ws_pileup_w)
-        correct_charge_sharing!(bins, detector; scratch=_scratch)
+        correct_charge_sharing!(bins, detector; scratch=_binned_scratch)
     end
 
     # Convert from photon counts to line-integral domain: sino = -log(N / I₀_bin)
-    eps_val = T(1e-10)  # Pre-compute to avoid capturing Type{T} in kernel
-    # Use workspace buffer if provided to avoid allocation
+    # When binning, I0 scales by bf² (sum of bf² dexels)
+    eps_val = T(1e-10)
+    I0_scale = use_native ? Float64(bf * bf) : 1.0
     I0_bins_norm = if ws_I0_bins_norm !== nothing
         ws_I0_bins_norm
     elseif apply_detector_effects && !apply_corrections
-        # Effects without corrections: use degraded I0
         _compute_degraded_I0(detector, energies, weights, η, thresholds, kVp, I0, flux_rate; R=R)
     else
-        # No effects OR effects+corrections: use theoretical I0
         [_compute_bin_I0(detector, energies, weights, η, thresholds, b,
                           Float64(kVp), Float64(I0); R=R) for b in 1:n_bins]
     end
     for b in 1:n_bins
-        let I0_bin_T = T(I0_bins_norm[b]), ba = bins[b], eps = eps_val
+        let I0_bin_T = T(I0_bins_norm[b] * I0_scale), ba = bins[b], eps = eps_val
             AK.foreachindex(ba) do idx
                 ba[idx] = -log(max(ba[idx], eps) / I0_bin_T)
             end
@@ -1567,16 +1477,12 @@ function pcct_forward_project(
     end
 
     # Post-log sinogram-domain smoothing correction
-    # Anti-coincidence creates high-frequency spatial artifacts in the detector plane.
-    # These become structured noise in the sinogram after -log conversion.
-    # A mild 1D smoothing along the detector column direction reduces these artifacts
-    # without blurring the angular structure (which carries projection information).
     if apply_corrections && apply_detector_effects
         w_side = T(0.25)
         w_center = T(0.5)
         for b in 1:n_bins
             let ba = bins[b], nc = Int32(size(bins[1], 1)),
-                ws_side = w_side, wc = w_center, out = _scratch
+                ws_side = w_side, wc = w_center, out = _binned_scratch
 
                 AK.foreachindex(ba) do idx
                     ci = CartesianIndices(ba)[idx]
@@ -1586,7 +1492,7 @@ function pcct_forward_project(
                     c_right = ba[clamp(col + Int32(1), Int32(1), nc), row, angle]
                     out[idx] = ws_side * c_left + wc * c_val + ws_side * c_right
                 end
-                copyto!(ba, _scratch)
+                copyto!(ba, _binned_scratch)
             end
         end
     end
@@ -1638,9 +1544,9 @@ Using R ensures that -log(N/I0_bin) produces the correct line integral values.
 """
 function _compute_bin_I0(detector, energies, weights, η, thresholds, bin_idx, kVp, I0; R=nothing)
     if R !== nothing
-        # Use spectral response matrix (consistent with forward projection)
-        # This matches how photons are distributed in pcct_forward_project()
+        # Use DRM (consistent with forward projection)
         n_energies = length(energies)
+        n_R = size(R, 1)
         I0_bin = 0.0
         for e_idx in 1:n_energies
             E_float = Float64(energies[e_idx])
@@ -1648,8 +1554,8 @@ function _compute_bin_I0(detector, energies, weights, η, thresholds, bin_idx, k
             if w < 1e-12
                 continue
             end
-            # Same R index calculation as forward projection
-            r_idx = clamp(round(Int, (E_float - 1.0) / (kVp - 1.0) * (n_energies - 1)) + 1, 1, n_energies)
+            # Map spectrum energy to DRM grid index
+            r_idx = clamp(round(Int, (E_float - 1.0) / (kVp - 1.0) * (n_R - 1)) + 1, 1, n_R)
             R_val = R[r_idx, bin_idx]
             I0_bin += I0 * w * η[e_idx] * R_val
         end
@@ -2581,216 +2487,11 @@ function hole_tailing_distribution(E_incident::Real, material::DetectorMaterialP
 end
 
 # =============================================================================
-# Spectral Response Matrix R(E, b)
-# =============================================================================
-
-"""
-    compute_spectral_response_matrix(material::DetectorMaterialPCCT,
-                                      thickness_mm::Real,
-                                      thresholds_keV::AbstractVector,
-                                      kVp::Real;
-                                      energy_resolution_keV::Real=10.0,
-                                      pixel_size_mm::Tuple{<:Real,<:Real}=(0.302, 0.302),
-                                      include_fluorescence::Bool=true,
-                                      include_tailing::Bool=true,
-                                      n_energy_points::Int=200) -> Matrix{Float64}
-
-Compute the spectral response matrix R(E, b) for a PCCT detector.
-
-R[i, b] = probability that a photon of true energy E_i is registered in bin b.
-
-The matrix combines three physical effects:
-1. **Gaussian energy blur**: Finite energy resolution broadens the step function
-2. **K-fluorescence escape**: Photons above K-edge may lose fluorescence energy
-3. **Hole tailing**: Incomplete charge collection creates low-energy tail
-
-# Matrix Properties
-- Size: [n_energy_points × n_bins]
-- Each row sums to ≤ 1.0 (photons below lowest threshold are lost)
-- Ideal detector: R is a block-diagonal step function
-- Realistic: R has off-diagonal entries (spectral cross-talk between bins)
-
-# Arguments
-- `material`: Detector crystal material
-- `thickness_mm`: Crystal thickness in mm
-- `thresholds_keV`: Energy thresholds defining bins
-- `kVp`: Maximum tube voltage (defines upper energy bound)
-- `energy_resolution_keV`: System FWHM in keV (default: from material properties)
-- `pixel_size_mm`: Pixel dimensions for fluorescence escape calculation
-- `include_fluorescence`: Whether to model K-fluorescence escape
-- `include_tailing`: Whether to model hole tailing
-- `n_energy_points`: Number of energy sample points
-
-# Returns
-- `Matrix{Float64}`: [n_energy_points × n_bins] response matrix
-
-# Performance Note
-This matrix is computed ONCE per detector configuration and reused for all
-projections. It does NOT need GPU acceleration (precomputed on CPU).
-
-# Example
-```julia
-R = compute_spectral_response_matrix(
-    CDTE_MATERIAL, 1.6, [20.0, 35.0, 55.0, 70.0], 120.0
-)
-# R[100, 3]  → probability that a 60 keV photon registers in bin 3
-```
-"""
-function compute_spectral_response_matrix(
-    material::DetectorMaterialPCCT,
-    thickness_mm::Real,
-    thresholds_keV::AbstractVector,
-    kVp::Real;
-    energy_resolution_keV::Real=0.0,
-    pixel_size_mm::Tuple{<:Real,<:Real}=(0.302, 0.302),
-    include_fluorescence::Bool=true,
-    include_tailing::Bool=true,
-    n_energy_points::Int=200
-)
-    props = get_detector_material_properties(material)
-    n_bins = length(thresholds_keV)
-
-    # Use material-specific resolution if not overridden
-    σ_E = if energy_resolution_keV > 0.0
-        energy_resolution_keV / (2.0 * sqrt(2.0 * log(2.0)))
-    else
-        props.energy_resolution_fwhm_keV / (2.0 * sqrt(2.0 * log(2.0)))
-    end
-
-    # Energy grid: from 1 keV to kVp
-    E_min = 1.0
-    E_max = Float64(kVp)
-    energies = range(E_min, E_max, length=n_energy_points)
-
-    # Fluorescence parameters — use extended model (Koch-Mehrin 2020, Table 1)
-    # with full Cd/Te K-shell transitions and Te→Cd cascade
-    fluor_extended = if include_fluorescence && material == CDTE_MATERIAL
-        compute_cdte_fluorescence_model(pixel_size_mm, thickness_mm)
-    else
-        nothing
-    end
-    # Legacy model fallback for non-CdTe materials
-    fluorescence = if include_fluorescence && fluor_extended === nothing
-        compute_fluorescence_escape_probability(material, thickness_mm, pixel_size_mm)
-    else
-        nothing
-    end
-
-    # Charge transport for tailing (now with small-pixel weighting potential)
-    transport_params = if include_tailing
-        get_charge_transport_params(material, thickness_mm)
-    else
-        nothing
-    end
-    mean_cce = include_tailing ? mean_charge_collection_efficiency(material, thickness_mm;
-                                    pixel_pitch_mm=pixel_size_mm) : 1.0
-
-    # Build response matrix
-    R = zeros(Float64, n_energy_points, n_bins)
-
-    for (i, E) in enumerate(energies)
-        # Threshold values
-        T_values = Float64.(thresholds_keV)
-
-        # Start with the primary photopeak at energy E
-        # Apply hole tailing: distribute E across CCE values
-        if include_tailing && transport_params !== nothing
-            tail_energies, tail_weights = hole_tailing_distribution(E, material, thickness_mm;
-                                            n_depth=20, pixel_pitch_mm=pixel_size_mm)
-        else
-            tail_energies = [E]
-            tail_weights = [1.0]
-        end
-
-        for (t_idx, E_tail) in enumerate(tail_energies)
-            w_tail = tail_weights[t_idx]
-
-            # Apply fluorescence escape: split into primary and escape peaks
-            # Extended model (Koch-Mehrin 2020 Table 1) for CdTe: full K-shell
-            # transitions, Te→Cd cascade, inter-pixel energy deposition
-            if include_fluorescence && fluor_extended !== nothing
-                p_escape, E_primary_if_esc, E_neighbor = apply_fluorescence_escape_extended(E_tail, fluor_extended)
-                # Three components:
-                # (1) No escape: full energy at E_tail
-                # (2) Escape, primary pixel: E_tail - E_fluorescence (escape peak)
-                # (3) Escape, neighbor pixel: E_fluorescence deposited in neighbor
-                # The neighbor energy appears as additional counts in the neighbor's
-                # spectral response — modeled as a separate energy component
-                energy_components = [
-                    (E_tail, 1.0 - p_escape),           # no escape: photopeak
-                    (E_primary_if_esc, p_escape * 0.5),  # escape: primary pixel sees reduced energy
-                    (E_neighbor, p_escape * 0.5),         # escape: neighbor pixel gets fluorescence energy
-                ]
-            elseif include_fluorescence && fluorescence !== nothing
-                # Legacy fallback for non-CdTe materials
-                p_escape, E_escaped = apply_fluorescence_escape(E_tail, fluorescence)
-                energy_components = [(E_tail, 1.0 - p_escape), (E_escaped, p_escape)]
-            else
-                energy_components = [(E_tail, 1.0)]
-            end
-
-            for (E_comp, w_comp) in energy_components
-                # Apply Gaussian energy blur and bin
-                for b in 1:n_bins
-                    T_low = T_values[b]
-
-                    if σ_E > 0.0
-                        z_low = (T_low - E_comp) / (σ_E * sqrt(2.0))
-                        if b == n_bins
-                            # Last bin: one-sided CDF (everything above T_low)
-                            prob = 0.5 * (1.0 - _erf_approx(z_low))
-                        else
-                            # Interior bins: two-sided CDF
-                            T_high = T_values[b + 1]
-                            z_high = (T_high - E_comp) / (σ_E * sqrt(2.0))
-                            prob = 0.5 * (_erf_approx(z_high) - _erf_approx(z_low))
-                        end
-                    else
-                        # Perfect resolution: delta function binning
-                        if b == n_bins
-                            prob = E_comp >= T_low ? 1.0 : 0.0
-                        else
-                            T_high = T_values[b + 1]
-                            prob = (E_comp >= T_low && E_comp < T_high) ? 1.0 : 0.0
-                        end
-                    end
-
-                    R[i, b] += w_tail * w_comp * max(prob, 0.0)
-                end
-            end
-        end
-    end
-
-    # Ensure no row exceeds 1.0 (physical constraint: photon counted at most once)
-    for i in 1:n_energy_points
-        row_sum = sum(R[i, :])
-        if row_sum > 1.0
-            R[i, :] ./= row_sum
-        end
-    end
-
-    return R
-end
-
-"""
-    get_spectral_response_energies(kVp::Real; n_energy_points::Int=200) -> Vector{Float64}
-
-Get the energy grid corresponding to the spectral response matrix.
-
-Returns the energy values (keV) for each row of the matrix returned by
-`compute_spectral_response_matrix`.
-"""
-function get_spectral_response_energies(kVp::Real; n_energy_points::Int=200)
-    return collect(range(1.0, Float64(kVp), length=n_energy_points))
-end
-
-# =============================================================================
 # Exports
 # =============================================================================
 
 export DetectorMaterialPCCT, CDTE_MATERIAL, CZT_MATERIAL, SI_MATERIAL
 export PhotonCountingDetector
-export naeotom_detector_standard, naeotom_detector_uhr, pcct_detector_ideal
 export EnergyResolvedSinogram, n_energy_bins
 export apply_energy_thresholds
 export apply_charge_sharing!, apply_pulse_pileup!
@@ -2805,5 +2506,4 @@ export fluorescence_escape_fraction, fluorescence_sharing_boost, apply_fluoresce
 export ChargeTransportParams, get_charge_transport_params
 export charge_collection_efficiency, mean_charge_collection_efficiency
 export hole_tailing_distribution
-export compute_spectral_response_matrix, get_spectral_response_energies
 export apply_pcct_noise!

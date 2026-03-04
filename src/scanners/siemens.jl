@@ -128,18 +128,20 @@ function SiemensNAEOTOMAlpha(mode::NAEOTOMMode)
     # CdTe photon-counting detector
     # Source: FDA K201501, PMC10321251, DukeSim validation papers
 
-    # Mode-dependent parameters
+    # Mode-dependent parameters (derived from Konrad 2025 native dexel sizes)
+    # Native dexel: 0.275 mm col × 0.322 mm row at detector face
+    # Magnification: 1085.5/595.0 = 1.824
     if mode == NAEOTOM_UHR
         n_rows = 120
-        row_size_mm = 0.2
-        z_coverage_mm = 24.0
-        col_size_mm = 0.151  # Unbinned pixel at isocenter
+        row_size_mm = 0.176   # native_row / magnification (unbinned)
+        z_coverage_mm = n_rows * row_size_mm  # ~21.2 mm
+        col_size_mm = 0.151   # native_col / magnification (unbinned)
     else
-        # Standard and QuantumPlus modes
+        # Standard and QuantumPlus modes (2×2 binned)
         n_rows = 144
-        row_size_mm = 0.4
-        z_coverage_mm = 57.6
-        col_size_mm = 0.302  # 2×2 binned pixel at isocenter
+        row_size_mm = 0.353   # native_row × 2 / magnification
+        z_coverage_mm = n_rows * row_size_mm  # ~50.8 mm
+        col_size_mm = 0.302   # native_col × 2 / magnification
     end
 
     # Detector columns: computed to cover 50 cm FOV
@@ -404,13 +406,8 @@ This creates a detector specification compatible with the PCCT forward projectio
 pipeline, with correct energy thresholds and detector physics parameters.
 """
 function get_pcct_detector(spec::SiemensNAEOTOMAlpha)
-    det = detector(spec)
-
-    if spec.mode == NAEOTOM_UHR
-        return naeotom_detector_uhr()
-    else
-        return naeotom_detector_standard()
-    end
+    scanner = create_naeotom_alpha(mode = spec.mode == NAEOTOM_UHR ? :uhr : :standard)
+    return _build_pcct_detector(scanner)
 end
 
 # =============================================================================
