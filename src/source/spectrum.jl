@@ -6,7 +6,7 @@ or raw IPEM Anode spectra with Beer-Lambert filtering for :high fidelity.
 """
 
 using DelimitedFiles
-using Unitful: ustrip, @u_str
+using Unitful: ustrip, @u_str, eV, g, cm
 import XrayAttenuation as XA
 
 # Path to spectrum data files
@@ -168,13 +168,27 @@ end
 # IPEM Anode spectra — raw (unfiltered) loading and Beer-Lambert filtering
 # =============================================================================
 
-# Map user-facing material strings to XA elements for filter μ(E) lookups
-const FILTER_ELEMENT_MAP = Dict{String, Any}(
+# Compound materials for filter μ(E) lookups
+const GD2O2S = XA.Material(
+    "Gadolinium Oxysulfide",
+    0.42174,              # Z/A ratio (weighted average)
+    493.3 * eV,           # Mean excitation energy (estimate)
+    7.44 * g/cm^3,        # Bulk density
+    Dict{Int,Float64}(    # Mass fractions from Gd₂O₂S (MW = 378.57 g/mol)
+        64 => 0.8308,     # Gd
+        8  => 0.0845,     # O
+        16 => 0.0847,     # S
+    )
+)
+
+# Map user-facing material strings to XA elements/materials for filter μ(E) lookups
+const FILTER_MATERIAL_MAP = Dict{String, Any}(
     "Al" => XA.Elements.Aluminum, "aluminum" => XA.Elements.Aluminum,
     "Cu" => XA.Elements.Copper,   "copper"   => XA.Elements.Copper,
     "Sn" => XA.Elements.Tin,      "tin"      => XA.Elements.Tin,
     "Ti" => XA.Elements.Titanium, "titanium" => XA.Elements.Titanium,
     "C"  => XA.Elements.Carbon,   "graphite" => XA.Elements.Carbon,
+    "Gd2O2S" => GD2O2S,          "gadolinium_oxysulfide" => GD2O2S,
 )
 
 """
@@ -183,16 +197,15 @@ const FILTER_ELEMENT_MAP = Dict{String, Any}(
 Return linear attenuation coefficient μ (cm⁻¹) for a filter material at the
 given energy, using XrayAttenuation.jl (NIST XCOM database).
 
-Replaces the old hand-rolled `BOWTIE_MU_DATA` table with full-resolution data.
-
 # Supported materials
-`"Al"`, `"Cu"`, `"Sn"`, `"Ti"`, `"C"` / `"graphite"` (case-sensitive).
+Elements: `"Al"`, `"Cu"`, `"Sn"`, `"Ti"`, `"C"` / `"graphite"`.
+Compounds: `"Gd2O2S"` / `"gadolinium_oxysulfide"`.
 """
 function get_filter_mu(material::String, energy_keV::Float64)
-    elem = get(FILTER_ELEMENT_MAP, material, nothing)
-    elem === nothing && error("Unknown filter material: \"$material\". " *
-        "Supported: $(join(sort(collect(keys(FILTER_ELEMENT_MAP))), ", "))")
-    return ustrip(u"cm^-1", XA.linear_attenuation_coeff(elem, energy_keV * u"keV"))
+    mat = get(FILTER_MATERIAL_MAP, material, nothing)
+    mat === nothing && error("Unknown filter material: \"$material\". " *
+        "Supported: $(join(sort(collect(keys(FILTER_MATERIAL_MAP))), ", "))")
+    return ustrip(u"cm^-1", XA.linear_attenuation_coeff(mat, energy_keV * u"keV"))
 end
 
 """
@@ -291,4 +304,4 @@ end
 
 # Exports
 export load_spectrum, spectrum_mean_energy, downsample_spectrum
-export load_spectrum_unfiltered, filter_spectrum, get_filter_mu
+export load_spectrum_unfiltered, filter_spectrum, get_filter_mu, GD2O2S

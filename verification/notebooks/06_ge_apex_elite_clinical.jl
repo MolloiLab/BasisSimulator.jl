@@ -57,7 +57,7 @@ SE folders each contain `0%/` (FBP) and `50%/` (ASiR-V 50%). CTDIvol from RDSR (
 | 4 | SE |  80 | 480 | 480 | 1.0 s | 128 × 80 mm | 10.32 |  82.58 | FBP + ASiR-V 50% |
 | 5 | SE | 100 | 250 | 250 | 1.0 s | 128 × 80 mm | 10.53 |  84.26 | FBP + ASiR-V 50% |
 | 6 | SE | 140 | 110 | 110 | 1.0 s | 128 × 80 mm | 10.85 |  86.83 | FBP + ASiR-V 50% |
-| 7 | DE (GSI) | 80/140 | 405 | 204 | 0.5 s | 64 × 40 mm | 10.07 | 40.27 | VMI 40/70/100/140 keV all @ 0% (FBP)|
+| 7 | DE (GSI) | 80/140 | 203.5/202.5 | 204 | 0.5 s | 64 × 40 mm | 10.07 | 40.27 | VMI 40/70/100/140 keV all @ 0% (FBP)|
 """
 
 # ╔═╡ 07010005-0000-4000-8000-000000000000
@@ -1777,16 +1777,19 @@ end
 md"""
 ### Beam Hardening Correction (BHC)
 
-#### Stage 1 — Sinogram Domain
-A water-only polynomial BHC is applied, using a cubic fit to map polychromatic line integrals to their monochromatic equivalents (Martinez/Fessler 2022).
+#### Stage 1 — Sinogram Domain (Two-Material Decomposition)
+Based on *Elbakri & Fessler (2003)*:
+1. Apply water-only polynomial BHC to sinogram, reconstruct preliminary image.
+2. Segment bone via smoothstep (`sino_bhc_hu_low`–`sino_bhc_hu_high`), forward-project bone-only image.
+3. Decompose each ray into water path Lw and bone path Lb.
+4. Compute polychromatic two-material line integral and correct raw sinogram to monochromatic equivalent.
 
-#### Stage 2 — Image Domain
+#### Stage 2 — Image Domain (Residual Correction)
 Based on *So et al. (2009, PMB 54:3031)*:
-1. **Reconstruct:** Apply the water-BHC-corrected sinogram to generate a preliminary μ image.
-2. **Segment:** Isolate high-attenuation voxels via smoothstep weighting (`img_bhc_hu_low`–`img_bhc_hu_high`).
-3. **Forward-Project:** Generate an error sinogram from the weighted high-attenuation image.
-4. **Reconstruct Error:** Perform an FDK reconstruction to create an error image.
-5. **Correct:** Subtract the scaled error image using `img_bhc_scale_factor` (typically 0.2–0.7).
+1. Reconstruct from Stage 1 corrected sinogram.
+2. Segment residual high-attenuation voxels via smoothstep (`img_bhc_hu_low`–`img_bhc_hu_high`).
+3. Forward-project weighted high-attenuation image, reconstruct error image.
+4. Subtract scaled error image using `img_bhc_scale_factor` (typically 0.2–0.7).
 
 Toggle `bhc_enabled` to enable or disable.
 """
@@ -1812,6 +1815,10 @@ bhc_models, bhc_μ_water = let
 	end
 	models, μw
 end
+
+# ╔═╡ d5a0ffa5-1d40-4bfc-89de-e462c5358b24
+# Radial cupping/capping correction now in BS.apply_radial_cupping_correction!
+nothing
 
 # ╔═╡ 07110001-0000-4000-8000-000000000000
 md"""
@@ -1855,6 +1862,7 @@ sim_hu_1 = let
 	μ_w = bhc_μ_water[120]
 	recon_hu = Float32.(BS.to_hounsfield(sim_recon_1.volume; μ_water = μ_w))
 	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
+	BS.apply_radial_cupping_correction!(recon_hu; fov_cm = 35.0)
 	(name = sim_recon_1.name, recon = recon_hu, mu_water = μ_w)
 end
 
@@ -1892,6 +1900,7 @@ sim_hu_2 = let
 	μ_w = bhc_μ_water[120]
 	recon_hu = Float32.(BS.to_hounsfield(sim_recon_2.volume; μ_water = μ_w))
 	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
+	BS.apply_radial_cupping_correction!(recon_hu; fov_cm = 35.0)
 	(name = sim_recon_2.name, recon = recon_hu, mu_water = μ_w)
 end
 
@@ -1929,6 +1938,7 @@ sim_hu_3 = let
 	μ_w = bhc_μ_water[120]
 	recon_hu = Float32.(BS.to_hounsfield(sim_recon_3.volume; μ_water = μ_w))
 	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
+	BS.apply_radial_cupping_correction!(recon_hu; fov_cm = 35.0)
 	(name = sim_recon_3.name, recon = recon_hu, mu_water = μ_w)
 end
 
@@ -1966,6 +1976,7 @@ sim_hu_4 = let
 	μ_w = bhc_μ_water[80]
 	recon_hu = Float32.(BS.to_hounsfield(sim_recon_4.volume; μ_water = μ_w))
 	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
+	BS.apply_radial_cupping_correction!(recon_hu; fov_cm = 35.0)
 	(name = sim_recon_4.name, recon = recon_hu, mu_water = μ_w)
 end
 
@@ -2003,6 +2014,7 @@ sim_hu_5 = let
 	μ_w = bhc_μ_water[100]
 	recon_hu = Float32.(BS.to_hounsfield(sim_recon_5.volume; μ_water = μ_w))
 	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
+	BS.apply_radial_cupping_correction!(recon_hu; fov_cm = 35.0)
 	(name = sim_recon_5.name, recon = recon_hu, mu_water = μ_w)
 end
 
@@ -2040,6 +2052,7 @@ sim_hu_6 = let
 	μ_w = bhc_μ_water[140]
 	recon_hu = Float32.(BS.to_hounsfield(sim_recon_6.volume; μ_water = μ_w))
 	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
+	BS.apply_radial_cupping_correction!(recon_hu; fov_cm = 35.0)
 	(name = sim_recon_6.name, recon = recon_hu, mu_water = μ_w)
 end
 
@@ -2101,6 +2114,66 @@ let
 	end
 
 	CM.save(joinpath(RESULTS_DIR, "ge_fbp_qualitative.png"), fig, px_per_unit = 2)
+	fig
+end
+
+# ╔═╡ 8e294031-bcdb-4424-8936-a62a802d5aa1
+md"""
+### FBP: Line Profiles (Clinical vs Simulated)
+"""
+
+# ╔═╡ 0403ce0e-1854-40e2-af6d-c53125aca803
+# Line profiles through center — 120 kVp / 150 mA and 80 kVp / 480 mA
+let
+	fig = CM.Figure(size = (1000, 700), fontsize = 11)
+
+	# --- Top: 120 kVp / 150 mA ---
+	clin_slice_1 = hu_120_mid_fbp[:, :, seg_result.slice_idx]
+	sim_slice_1 = sim_oriented[2].recon[:, :, sim_seg_result.slice_idx]
+	mid_row_c1 = size(clin_slice_1, 1) ÷ 2
+	mid_row_s1 = size(sim_slice_1, 1) ÷ 2
+
+	sim_shift_px = 5.0
+
+	pixel_mm_c1 = 350.0 / size(clin_slice_1, 2)
+	pixel_mm_s1 = 350.0 / size(sim_slice_1, 2)
+	x_c1 = range(0, step = pixel_mm_c1, length = size(clin_slice_1, 2))
+	x_s1 = range(0, step = pixel_mm_s1, length = size(sim_slice_1, 2))
+	x_s1 = range(sim_shift_px * pixel_mm_s1, step = pixel_mm_s1, length = size(sim_slice_1, 2))
+
+	ax1 = CM.Axis(fig[1, 1]; title = "120 kVp / 150 mA — Horizontal Line Profile (mid-row)", xlabel = "Position (mm)", ylabel = "HU")
+	CM.lines!(ax1, collect(x_c1), Float64.(clin_slice_1[mid_row_c1, :]);
+		color = :steelblue, linewidth = 1.2, label = "Clinical FBP")
+	CM.lines!(ax1, collect(x_s1), Float64.(sim_slice_1[mid_row_s1, :]);
+		color = :orangered, linewidth = 1.2, label = "Simulated FBP")
+	CM.hlines!(ax1, [0.0]; color = :gray70, linestyle = :dash, linewidth = 0.6)
+	CM.axislegend(ax1; position = :rt, labelsize = 9)
+
+	CM.ylims!(ax1, low = -600)
+
+	# --- Bottom: 80 kVp / 480 mA ---
+	clin_slice_2 = hu_80_fbp[:, :, seg_result.slice_idx]
+	sim_slice_2 = sim_oriented[4].recon[:, :, sim_seg_result.slice_idx]
+	mid_row_c2 = size(clin_slice_2, 1) ÷ 2
+	mid_row_s2 = size(sim_slice_2, 1) ÷ 2
+
+	pixel_mm_c2 = 350.0 / size(clin_slice_2, 2)
+	pixel_mm_s2 = 350.0 / size(sim_slice_2, 2)
+	x_c2 = range(0, step = pixel_mm_c2, length = size(clin_slice_2, 2))
+	x_s2 = range(0, step = pixel_mm_s2, length = size(sim_slice_2, 2))
+	x_s2 = range(sim_shift_px * pixel_mm_s2, step = pixel_mm_s2, length = size(sim_slice_2, 2))
+
+	ax2 = CM.Axis(fig[2, 1]; title = "80 kVp / 480 mA — Horizontal Line Profile (mid-row)",
+		xlabel = "Position (mm)", ylabel = "HU")
+	CM.lines!(ax2, collect(x_c2), Float64.(clin_slice_2[mid_row_c2, :]);
+		color = :steelblue, linewidth = 1.2, label = "Clinical FBP")
+	CM.lines!(ax2, collect(x_s2), Float64.(sim_slice_2[mid_row_s2, :]);
+		color = :orangered, linewidth = 1.2, label = "Simulated FBP")
+	CM.hlines!(ax2, [0.0]; color = :gray70, linestyle = :dash, linewidth = 0.6)
+	CM.axislegend(ax2; position = :rt, labelsize = 9)
+	CM.ylims!(ax2, low = -600)
+
+	CM.save(joinpath(RESULTS_DIR, "ge_fbp_line_profiles.png"), fig, px_per_unit = 2)
 	fig
 end
 
@@ -2355,6 +2428,7 @@ sim_hu_hir_1 = let
 	μ_w = bhc_μ_water[120]
 	recon_hu = Float32.(BS.to_hounsfield(sim_recon_hir_1.volume; μ_water = μ_w))
 	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
+	BS.apply_radial_cupping_correction!(recon_hu; fov_cm = 35.0)
 	(name = sim_recon_hir_1.name, recon = recon_hu, mu_water = μ_w)
 end
 
@@ -2394,6 +2468,7 @@ sim_hu_hir_2 = let
 	μ_w = bhc_μ_water[120]
 	recon_hu = Float32.(BS.to_hounsfield(sim_recon_hir_2.volume; μ_water = μ_w))
 	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
+	BS.apply_radial_cupping_correction!(recon_hu; fov_cm = 35.0)
 	(name = sim_recon_hir_2.name, recon = recon_hu, mu_water = μ_w)
 end
 
@@ -2433,6 +2508,7 @@ sim_hu_hir_3 = let
 	μ_w = bhc_μ_water[120]
 	recon_hu = Float32.(BS.to_hounsfield(sim_recon_hir_3.volume; μ_water = μ_w))
 	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
+	BS.apply_radial_cupping_correction!(recon_hu; fov_cm = 35.0)
 	(name = sim_recon_hir_3.name, recon = recon_hu, mu_water = μ_w)
 end
 
@@ -2472,6 +2548,7 @@ sim_hu_hir_4 = let
 	μ_w = bhc_μ_water[80]
 	recon_hu = Float32.(BS.to_hounsfield(sim_recon_hir_4.volume; μ_water = μ_w))
 	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
+	BS.apply_radial_cupping_correction!(recon_hu; fov_cm = 35.0)
 	(name = sim_recon_hir_4.name, recon = recon_hu, mu_water = μ_w)
 end
 
@@ -2511,6 +2588,7 @@ sim_hu_hir_5 = let
 	μ_w = bhc_μ_water[100]
 	recon_hu = Float32.(BS.to_hounsfield(sim_recon_hir_5.volume; μ_water = μ_w))
 	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
+	BS.apply_radial_cupping_correction!(recon_hu; fov_cm = 35.0)
 	(name = sim_recon_hir_5.name, recon = recon_hu, mu_water = μ_w)
 end
 
@@ -2550,6 +2628,7 @@ sim_hu_hir_6 = let
 	μ_w = bhc_μ_water[140]
 	recon_hu = Float32.(BS.to_hounsfield(sim_recon_hir_6.volume; μ_water = μ_w))
 	BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
+	BS.apply_radial_cupping_correction!(recon_hu; fov_cm = 35.0)
 	(name = sim_recon_hir_6.name, recon = recon_hu, mu_water = μ_w)
 end
 
@@ -2606,6 +2685,67 @@ let
 	fig
 end
 
+# ╔═╡ 1cae28b1-775a-4f4f-90d2-5ae693b7d2ac
+md"""
+### HIR: Line Profiles (Clinical vs Simulated)
+"""
+
+# ╔═╡ 681131e3-887d-4426-aefe-f904abb4667a
+# Line profiles through center — 120 kVp / 150 mA and 80 kVp / 480 mA
+let
+	fig = CM.Figure(size = (1000, 700), fontsize = 11)
+
+	# --- Top: 120 kVp / 150 mA ---
+	clin_slice_1 = hu_120_mid_ir[:, :, seg_result.slice_idx]
+	sim_slice_1 = sim_oriented_hir[2].recon[:, :, sim_seg_result.slice_idx]
+	mid_row_c1 = size(clin_slice_1, 1) ÷ 2
+	mid_row_s1 = size(sim_slice_1, 1) ÷ 2
+
+	sim_shift_px = 5.0
+
+	pixel_mm_c1 = 350.0 / size(clin_slice_1, 2)
+	pixel_mm_s1 = 350.0 / size(sim_slice_1, 2)
+	x_c1 = range(0, step = pixel_mm_c1, length = size(clin_slice_1, 2))
+	x_s1 = range(0, step = pixel_mm_s1, length = size(sim_slice_1, 2))
+	x_s1 = range(sim_shift_px * pixel_mm_s1, step = pixel_mm_s1, length = size(sim_slice_1, 2))
+	
+
+	ax1 = CM.Axis(fig[1, 1]; title = "120 kVp / 150 mA — Horizontal Line Profile (mid-row)", xlabel = "Position (mm)", ylabel = "HU")
+	CM.lines!(ax1, collect(x_c1), Float64.(clin_slice_1[mid_row_c1, :]);
+		color = :steelblue, linewidth = 1.2, label = "Clinical ASiR-V 50%")
+	CM.lines!(ax1, collect(x_s1), Float64.(sim_slice_1[mid_row_s1, :]);
+		color = :orangered, linewidth = 1.2, label = "Simulated HIR")
+	CM.hlines!(ax1, [0.0]; color = :gray70, linestyle = :dash, linewidth = 0.6)
+	CM.axislegend(ax1; position = :rt, labelsize = 9)
+
+	CM.ylims!(ax1, low = -600)
+
+	# --- Bottom: 80 kVp / 480 mA ---
+	clin_slice_2 = hu_80_ir[:, :, seg_result.slice_idx]
+	sim_slice_2 = sim_oriented_hir[4].recon[:, :, sim_seg_result.slice_idx]
+	mid_row_c2 = size(clin_slice_2, 1) ÷ 2
+	mid_row_s2 = size(sim_slice_2, 1) ÷ 2
+
+	pixel_mm_c2 = 350.0 / size(clin_slice_2, 2)
+	pixel_mm_s2 = 350.0 / size(sim_slice_2, 2)
+	x_c2 = range(0, step = pixel_mm_c2, length = size(clin_slice_2, 2))
+	x_s2 = range(0, step = pixel_mm_s2, length = size(sim_slice_2, 2))
+	x_s2 = range(sim_shift_px * pixel_mm_s2, step = pixel_mm_s2, length = size(sim_slice_2, 2))  
+
+	ax2 = CM.Axis(fig[2, 1]; title = "80 kVp / 480 mA — Horizontal Line Profile (mid-row)",
+		xlabel = "Position (mm)", ylabel = "HU")
+	CM.lines!(ax2, collect(x_c2), Float64.(clin_slice_2[mid_row_c2, :]);
+		color = :steelblue, linewidth = 1.2, label = "Clinical ASiR-V 50%")
+	CM.lines!(ax2, collect(x_s2), Float64.(sim_slice_2[mid_row_s2, :]);
+		color = :orangered, linewidth = 1.2, label = "Simulated HIR")
+	CM.hlines!(ax2, [0.0]; color = :gray70, linestyle = :dash, linewidth = 0.6)
+	CM.axislegend(ax2; position = :rt, labelsize = 9)
+	CM.ylims!(ax2, low = -600)
+
+	CM.save(joinpath(RESULTS_DIR, "ge_fbp_line_profiles.png"), fig, px_per_unit = 2)
+	fig
+end
+
 # ╔═╡ c42f625b-9db4-42a5-90c6-fa2c37fe8b18
 md"""
 ### HIR: Scatter Plot (HU)
@@ -2639,7 +2779,7 @@ let
 			append!(ca_sim_all, sm_k.rod_means[ca_idx])
 		end
 	end
-	CM.lines!(ax_ca, [-100, 1400], [-100, 1400]; color = :gray60, linestyle = :dash, linewidth = 1, label = "Unity (y = x)")
+	CM.lines!(ax_ca, [-300, 2000], [-300, 2000]; color = :gray60, linestyle = :dash, linewidth = 1, label = "Unity (y = x)")
 	if length(ca_clin_all) > 1
 		X_ca = hcat(ones(length(ca_clin_all)), ca_clin_all)
 		b_ca, m_ca = X_ca \ ca_sim_all
@@ -2672,7 +2812,7 @@ let
 			append!(i_sim_all, sm_k.rod_means[i_idx])
 		end
 	end
-	CM.lines!(ax_i, [-50, 500], [-50, 500]; color = :gray60, linestyle = :dash, linewidth = 1, label = "Unity (y = x)")
+	CM.lines!(ax_i, [-150, 1000], [-150, 1000]; color = :gray60, linestyle = :dash, linewidth = 1, label = "Unity (y = x)")
 	if length(i_clin_all) > 1
 		X_i = hcat(ones(length(i_clin_all)), i_clin_all)
 		b_i, m_i = X_i \ i_sim_all
@@ -2821,7 +2961,7 @@ spectral separation.
 
 **Clinical DE protocol** (from DICOM + RDSR):
 - **kVp:** 80 / 140 alternating per view
-- **mA:** 407 (80 kVp) / 405 (140 kVp) — GE private tags `(0053,1085)` / `(0053,1083)`
+- **mA:** 203.5 (80 kVp) / 202.5 (140 kVp) — GE private tags `(0053,1085)` / `(0053,1083)`
 - **Gantry rotation:** 0.5 s — per-kVp effective exposure: **0.25 s** (rapid switching)
 - **Collimation:** 64 × 0.625 mm = 40 mm (half of SE 80 mm)
 - **Views/kVp/rotation:** ~984
@@ -2850,19 +2990,71 @@ begin
 end
 
 # ╔═╡ ff650b6f-76e6-491e-8076-1dd002c80d7e
-# SPECTRAL FILTRATION (140 kVp ONLY):
-# Goal: Harden the 140 kVp beam to increase spectral separation from 80 kVp.
-#
-# References:
-# 1. GE Patent US20120314834: Describes a Gd₂O₂S (Gadolinium) K-edge filter 
-#    (0.142 mm) for rapid kVp switching to reduce decomposition variance (~40%).
-# 2. Yao et al. (Med Phys 2014, doi:10.1118/1.4866381): Confirms K-edge 
-#    filtration efficacy for spectral separation.
-# 3. Proxy Material: Since Gd is often unavailable in simulation libraries, 
-#    Sn (Tin) is used as a standard proxy (Siemens uses 0.4 mm Sn on dual-source).
+# SPECTRAL FILTRATION — Gd₂O₂S K-edge filter (rapid kVp switching):
+# In rapid kVp switching both beams traverse the same physical filter.
+# Clinical GE GSI has no K-edge filter; this is a research optimization:
+#   - Gd K-edge at 50.2 keV sits between 80/140 kVp spectra
+#   - Preferentially attenuates 80 kVp photons above 50 keV → better separation
+#   - Yao & Pelc (Med Phys 2014, doi:10.1118/1.4866381): 0.142–0.150 mm
+#   - Stanford patent US9435900B2; PMC11272100 (2024): 0.09 mm
+# Thickness is tunable; 0.1 mm is a conservative default.
+# de_kedge_filter = [("Gd2O2S", 0.05)]  # mm — applied to BOTH kVp tubes
+de_kedge_filter = Tuple{String,Float64}[]
 
-# Empirically tuned Sn high kVp only proxy for Gd
-de_high_kvp_filters = [("Sn", 0.2)]  # mm
+# ╔═╡ 2a6f0b64-05a7-4a01-9009-66888902edcb
+# Visualize 80 & 140 kVp spectra before/after Gd₂O₂S K-edge filtration
+let
+	# Unfiltered spectra (scanner flat filter + Al only, no K-edge)
+	prot_80_no  = BS.CTProtocol(kVp = 80,  additional_filters = additional_filters)
+	prot_140_no = BS.CTProtocol(kVp = 140, additional_filters = additional_filters)
+	e80_no,  w80_no  = BS.resolve_spectrum(sim_opts, prot_80_no;  scanner = sim_scanner)
+	e140_no, w140_no = BS.resolve_spectrum(sim_opts, prot_140_no; scanner = sim_scanner)
+
+	# Filtered spectra (scanner flat filter + Al + Gd₂O₂S)
+	de_filters = vcat(additional_filters, de_kedge_filter)
+	prot_80_gd  = BS.CTProtocol(kVp = 80,  additional_filters = de_filters)
+	prot_140_gd = BS.CTProtocol(kVp = 140, additional_filters = de_filters)
+	e80_gd,  w80_gd  = BS.resolve_spectrum(sim_opts, prot_80_gd;  scanner = sim_scanner)
+	e140_gd, w140_gd = BS.resolve_spectrum(sim_opts, prot_140_gd; scanner = sim_scanner)
+
+	# Normalize to peak for visual comparison
+	norm80  = maximum(w80_no)
+	norm140 = maximum(w140_no)
+
+	# Mean energies (fluence-weighted)
+	mean_E(e, w) = sum(e .* w) / sum(w)
+	mE_80_no  = mean_E(e80_no,  w80_no)
+	mE_140_no = mean_E(e140_no, w140_no)
+	mE_80_gd  = mean_E(e80_gd,  w80_gd)
+	mE_140_gd = mean_E(e140_gd, w140_gd)
+
+	fig = CM.Figure(size = (900, 400), fontsize = 12)
+
+	# Left: before K-edge filter
+	ax1 = CM.Axis(fig[1, 1]; title = "Before Gd₂O₂S filter",
+		xlabel = "Energy (keV)", ylabel = "Relative fluence")
+	CM.lines!(ax1, e80_no,  w80_no  ./ norm80;  color = :dodgerblue, linewidth = 1.5, label = "80 kVp")
+	CM.lines!(ax1, e140_no, w140_no ./ norm140; color = :orangered,  linewidth = 1.5, label = "140 kVp")
+	CM.vlines!(ax1, [50.2]; color = :gray50, linestyle = :dash, linewidth = 0.8, label = "Gd K-edge (50.2 keV)")
+	CM.vlines!(ax1, [mE_80_no];  color = :dodgerblue, linestyle = :dash, linewidth = 1.2, label = "⟨E⟩ 80 = $(round(mE_80_no; digits=1)) keV")
+	CM.vlines!(ax1, [mE_140_no]; color = :orangered,  linestyle = :dash, linewidth = 1.2, label = "⟨E⟩ 140 = $(round(mE_140_no; digits=1)) keV")
+	CM.axislegend(ax1; position = :rt)
+
+	# Right: after K-edge filter
+	ax2 = CM.Axis(fig[1, 2]; title = "After Gd₂O₂S filter ($(de_kedge_filter[1][2]) mm)",
+		xlabel = "Energy (keV)", ylabel = "Relative fluence")
+	CM.lines!(ax2, e80_gd,  w80_gd  ./ norm80;  color = :dodgerblue, linewidth = 1.5, label = "80 kVp")
+	CM.lines!(ax2, e140_gd, w140_gd ./ norm140; color = :orangered,  linewidth = 1.5, label = "140 kVp")
+	CM.vlines!(ax2, [50.2]; color = :gray50, linestyle = :dash, linewidth = 0.8, label = "Gd K-edge (50.2 keV)")
+	CM.vlines!(ax2, [mE_80_gd];  color = :dodgerblue, linestyle = :dash, linewidth = 1.2, label = "⟨E⟩ 80 = $(round(mE_80_gd; digits=1)) keV")
+	CM.vlines!(ax2, [mE_140_gd]; color = :orangered,  linestyle = :dash, linewidth = 1.2, label = "⟨E⟩ 140 = $(round(mE_140_gd; digits=1)) keV")
+	CM.axislegend(ax2; position = :rt)
+
+	CM.linkaxes!(ax1, ax2)
+
+	CM.save(joinpath(RESULTS_DIR, "ge_gsi_spectra_filter.png"), fig, px_per_unit = 2)
+	fig
+end
 
 # ╔═╡ bb68196f-26e4-41fc-85bc-203373d91b4a
 # DE recon geometry — same FOV/matrix as SE, different z for collimation
@@ -2883,13 +3075,15 @@ end
 # DE: 80 kVp / ~204 mA effective — SIMULATE (GPU → sinogram → free GPU)
 sim_de_sino_low = let
 	sc = DE_SIM_SCANS[1]
+	# Rapid kVp switching: both tubes see the same physical K-edge filter
+	low_kvp_filters = vcat(additional_filters, de_kedge_filter)
 	prot = BS.CTProtocol(
 		kVp = sc.kvp,
 		mA = sc.mA,
 		views = de_n_views,
 		rotation_time = de_rotation_time,
 		collimation_mm = de_collimation_mm,
-		additional_filters = additional_filters,  # same as SE (no spectral filter on low kVp)
+		additional_filters = low_kvp_filters,
 	)
 	@info "Simulating DE: $(sc.name)..."
 	ws = BS.create_eict_workspace(
@@ -2906,15 +3100,15 @@ end
 # DE: 140 kVp / ~203 mA effective — SIMULATE (GPU → sinogram → free GPU)
 sim_de_sino_high = let
 	sc = DE_SIM_SCANS[2]
-	# Combine SE additional_filters with DE spectral filter on high-kVp tube
-	high_kvp_filters = vcat(additional_filters, de_high_kvp_filters)
+	# Rapid kVp switching: both tubes see the same physical K-edge filter
+	high_kvp_filters = vcat(additional_filters, de_kedge_filter)
 	prot = BS.CTProtocol(
 		kVp = sc.kvp,
 		mA = sc.mA,
 		views = de_n_views,
 		rotation_time = de_rotation_time,
 		collimation_mm = de_collimation_mm,
-		additional_filters = high_kvp_filters,  # includes spectral filter
+		additional_filters = high_kvp_filters,
 	)
 	@info "Simulating DE: $(sc.name)..."
 	ws = BS.create_eict_workspace(
@@ -3033,156 +3227,430 @@ let
 	fig
 end
 
-# ╔═╡ 76b7a0d4-0078-49a7-8fa3-c36ffb01fee1
+# ╔═╡ 723bf88a-c4bf-4576-abba-551354d8c740
 md"""
-### DE: VMI Synthesis (Image-Domain)
+### DE: VMI Synthesis — Projection-Domain Pipeline
 
-**Pipeline** (Wu et al. 2009, GE GSI fast kVp switching — Eq. 1-4, 13):
-1. Wrap raw 80/140 kVp sinograms into `DualEnergySinogram`
-2. `decompose_materials()` — 2×2 matrix inversion at effective energies
-   → material sinograms ρ₁ (water), ρ₂ (calcium) in projection domain
-3. FBP reconstruct each material sinogram → density images m₁(x,y), m₂(x,y)
-   (water ≈ 1.0, calcium ≈ 0 for water; only **2 FDK recons** total)
-4. Image-domain VMI (Eq. 4): `Im_mono = m₁ + g(E) × m₂`
-   where `g(E) = μ_calcium(E) / μ_water(E)`
-5. Noise compensation (Eq. 13): `Im_mono += (g_min − g(E)) × Δ_m₂`
-   where Δ\_m₂ = highpass(m₂) and g\_min ≈ g(70 keV) for 80/140 kVp
-6. HU = (Im\_mono − 1) × 1000
+**Standard clinical approach** (GE GSI Xtream / PCCT / literature):
 
-No BHC applied — material decomposition inherently handles beam hardening.
+1. **Polynomial calibration** — Map polychromatic projections (p\_low, p\_high)
+   → material line integrals (L₁, L₂) using a 3rd-order polynomial fit.
+   Inherently corrects beam hardening (Stenner et al. 2007 EDEC method).
 
-Ref: Wu X et al., Proc. SPIE 7258, 725845, doi:10.1117/12.811698
+2. **VMI sinogram synthesis** — At target energy E:
+   `p\_mono(E) = μ₁(E) × L₁ + μ₂(E) × L₂`
+   This produces a synthetic monochromatic sinogram.
+
+3. **FBP reconstruction** — Standard FDK on each VMI sinogram → μ(x,y,E) in cm⁻¹.
+   One FDK per VMI energy. Standard filter (no custom apodization needed).
+
+4. **Standard HU conversion** — `HU = 1000 × (μ − μ\_water(E)) / μ\_water(E)`
+   with empirical water calibration from reconstruction.
+
+**Key advantages over image-domain approach:**
+- VMI sinogram = standard CT sinogram → standard HU conversion
+- No sensitivity to FBP scaling (empirical μ\_water absorbs any offset)
+- Standard noise properties → standard filter works
+- Matches GE GSI / PCCT clinical pipeline exactly
+
+**References:**
+- Wu et al. 2009, SPIE 725845 (original GE GSI)
+- Stenner et al. 2007, Med Phys (EDEC polynomial calibration)
+- AAPM TG-291 2020 (projection-space decomposition review)
 """
 
-# ╔═╡ f031a233-e560-4bb2-af00-fe255152b9e3
-# Material decomposition — projection domain (water + calcium basis)
-# Raw sinograms → DualEnergySinogram → decompose_materials → MaterialMap
-sim_de_material_map = let
-	sino_low_gpu = MtlArray(sim_de_sino_low.sino)
-	sino_high_gpu = MtlArray(sim_de_sino_high.sino)
+# ╔═╡ 0f18401b-8bc9-49ff-9a10-49ea2f928dec
+# (Removed: old sim_de_material_map — replaced by calibrated decomposition below)
+nothing
 
-	de_sino = BS.DualEnergySinogram(
-		sino_low_gpu, sino_high_gpu;
-		low_kvp = 80, high_kvp = 140)
+# ╔═╡ b6015330-a0ba-4378-84f0-54edeeb8c1bf
+# =============================================================================
+# Projection-Domain VMI — Helper Functions
+#
+# Standard clinical pipeline (GE GSI / PCCT / Stenner EDEC):
+#   1. Polynomial calibration: (p_low, p_high) → (L₁, L₂)
+#   2. VMI sinogram: p_mono(E) = μ₁(E)×L₁ + μ₂(E)×L₂
+#   3. FBP reconstruct → μ(x,y,E) in cm⁻¹
+#   4. Standard HU: 1000 × (μ − μ_water) / μ_water
+# =============================================================================
 
-	@info "Decomposing materials (water + calcium)..."
-	mat_map = BS.decompose_materials(de_sino; basis = (:water, :calcium))
+begin
 
-	# Copy to CPU, free GPU
-	mat_cpu = BS.MaterialMap(
-		Array(mat_map.material1), Array(mat_map.material2);
-		material1_name = mat_map.material1_name,
-		material2_name = mat_map.material2_name,
-		domain = mat_map.domain)
-	sino_low_gpu = nothing; sino_high_gpu = nothing; GC.gc(true)
-	mat_cpu
+# ── Basis material attenuation (dilute solution model) ─────────────────────
+# μ_solution = μ_water + C × (μ/ρ)_element
+# Uses same model as BS.get_iodine_solution_attenuation / get_calcium_material_attenuation
+# but with configurable concentrations.
+function de_basis_mu(material::Symbol, E_keV::Float64;
+	iodine_conc_mg_ml::Float64 = 5.0,
+	calcium_density_mg_cc::Float64 = 200.0)
+	if material == :water
+		return BS.compute_μ_at_energy(XA.Materials.water, E_keV)
+	elseif material == :iodine
+		μ_water = BS.compute_μ_at_energy(XA.Materials.water, E_keV)
+		μ_ρ_I = BS.compute_mass_μ_at_energy(XA.Elements.Iodine, E_keV)
+		return μ_water + (iodine_conc_mg_ml / 1000.0) * μ_ρ_I
+	elseif material == :calcium
+		μ_water = BS.compute_μ_at_energy(XA.Materials.water, E_keV)
+		μ_ρ_Ca = BS.compute_mass_μ_at_energy(XA.Elements.Calcium, E_keV)
+		return μ_water + (calcium_density_mg_cc / 1000.0) * μ_ρ_Ca
+	else
+		error("Unknown basis: $material. Use :water, :iodine, or :calcium")
+	end
 end
 
-# ╔═╡ d706f8e1-7970-4dd7-a2b1-e07bae9373cc
-# VMI-specific FBP filter kernel control points  [TUNE: VMI RECON]
-# May differ from SE filter — material decomposition amplifies noise,
-# so VMI recons often benefit from stronger apodization.
-de_vmi_custom_filter_control = (
-	x = (0.0, 0.25, 0.5, 0.75, 1.0),
-	y = (1.0, 0.8, 0.4, 0.10, 0.001),
-)
+# ── Polychromatic forward model ────────────────────────────────────────────
+# (L₁, L₂) → p = −log(Σ w(E) × exp(−(μ₁(E)×L₁ + μ₂(E)×L₂)))
+function de_forward_poly(L1, L2, w_norm, μ1_vec, μ2_vec)
+	I = sum(w_norm[k] * exp(-(μ1_vec[k]*L1 + μ2_vec[k]*L2))
+	        for k in eachindex(w_norm))
+	-log(max(I, 1e-30))
+end
 
-# ╔═╡ c71083a4-9c08-448d-babb-4e49314f214c
-# Image-domain VMI pipeline (Wu et al. 2009, Eq. 1–4, 13)
-#
-# 1. Projection-domain material decomposition (2×2 matrix inversion)
-# 2. FBP reconstruct material sinograms → density images m₁, m₂ (only 2 recons!)
-# 3. Image-domain VMI: Im_mono = m₁ + g(E)×m₂ where g(E) = μ₂(E)/μ_water(E)
-# 4. Optional noise compensation (Eq. 13): suppresses amplified noise at non-optimal energies
-# 5. HU = (Im_mono − 1) × 1000
-function decompose_and_reconstruct_vmi(
-		sino_low, sino_high, geom, recon_size, energies_keV;
-		scanner, sim_opts, basis = (:water, :calcium),
-		additional_filters_low, additional_filters_high,
-		E_eff_low_override = nothing,   # keV — set to override spectrum-computed value
-		E_eff_high_override = nothing,  # keV — set to override spectrum-computed value
-		filter::BS.FilterType = BS.StandardFilter(), # FBP filter for material recon
-		noise_compensation = true,       # Wu et al. 2009 Eq. 13
-		noise_sigma = 2.0,               # Gaussian σ (pixels) for noise map extraction
-		g_min_energy = 70.0,             # keV at which VMI noise is minimized (~70 for 80/140)
-	)
+# ── Build polynomial calibration table ─────────────────────────────────────
+# Maps (p_low, p_high) → (L₁, L₂) via least-squares polynomial fit
+# to a grid of analytically computed polychromatic forward projections.
+# Inherently handles beam hardening (Stenner et al. 2007 EDEC).
+function de_build_calibration(
+	e_low, w_low, e_high, w_high,
+	basis::Tuple{Symbol,Symbol};
+	L1_range, L2_range, poly_order,
+	iodine_conc_mg_ml = 5.0, calcium_density_mg_cc = 200.0)
 
-	# 1. Compute effective energies from actual filtered spectra
-	prot_low = BS.CTProtocol(kVp = 80, additional_filters = additional_filters_low)
-	e_l, w_l = BS.resolve_spectrum(sim_opts, prot_low; scanner = scanner)
-	E_eff_low_auto = sum(e_l .* w_l) / sum(w_l)
+	bmu = (mat, E) -> de_basis_mu(mat, E;
+		iodine_conc_mg_ml=iodine_conc_mg_ml,
+		calcium_density_mg_cc=calcium_density_mg_cc)
 
-	prot_high = BS.CTProtocol(kVp = 140, additional_filters = additional_filters_high)
-	e_h, w_h = BS.resolve_spectrum(sim_opts, prot_high; scanner = scanner)
-	E_eff_high_auto = sum(e_h .* w_h) / sum(w_h)
+	μ1_low  = [bmu(basis[1], E) for E in e_low]
+	μ1_high = [bmu(basis[1], E) for E in e_high]
+	μ2_low  = [bmu(basis[2], E) for E in e_low]
+	μ2_high = [bmu(basis[2], E) for E in e_high]
 
-	E_eff_low  = E_eff_low_override  === nothing ? E_eff_low_auto  : E_eff_low_override
-	E_eff_high = E_eff_high_override === nothing ? E_eff_high_auto : E_eff_high_override
+	wn_low  = w_low ./ sum(w_low)
+	wn_high = w_high ./ sum(w_high)
 
-	@info "Effective energies: low=$(round(E_eff_low, digits=1)) keV " *
-		  "(auto=$(round(E_eff_low_auto, digits=1))), " *
-		  "high=$(round(E_eff_high, digits=1)) keV " *
-		  "(auto=$(round(E_eff_high_auto, digits=1)))"
+	N = length(L1_range) * length(L2_range)
+	P1 = zeros(N); P2 = zeros(N)
+	T1 = zeros(N); T2 = zeros(N)
 
-	# 2. Decomposition matrix at (possibly tuned) effective energies
-	inv_a11, inv_a12, inv_a21, inv_a22 = BS.compute_decomposition_matrix(
-		basis, E_eff_low, E_eff_high)
-
-	# 3. Material decomposition (projection domain, on GPU)
-	sino_low_gpu = MtlArray(sino_low)
-	sino_high_gpu = MtlArray(sino_high)
-	de_sino = BS.DualEnergySinogram(sino_low_gpu, sino_high_gpu; low_kvp = 80, high_kvp = 140)
-	mat_map = BS.decompose_materials(de_sino; basis = basis,
-		ws_inv_a11 = inv_a11, ws_inv_a12 = inv_a12,
-		ws_inv_a21 = inv_a21, ws_inv_a22 = inv_a22)
-
-	# 4. FBP reconstruct each material sinogram → density images m₁(x,y), m₂(x,y)
-	#    (Wu et al. 2009: reconstruct energy-independent density images, then combine)
-	@info "  Reconstructing m₁ ($(basis[1])) density image..."
-	ws_fdk_1 = BS.create_fdk_recon_workspace(mat_map.material1, geom, recon_size;
-		filter = filter)
-	m1_gpu = BS.reconstruct!(ws_fdk_1, mat_map.material1, geom, recon_size)
-	m1 = Float32.(Array(m1_gpu))
-	ws_fdk_1 = nothing; m1_gpu = nothing; GC.gc(true)
-
-	@info "  Reconstructing m₂ ($(basis[2])) density image..."
-	ws_fdk_2 = BS.create_fdk_recon_workspace(mat_map.material2, geom, recon_size;
-		filter = filter)
-	m2_gpu = BS.reconstruct!(ws_fdk_2, mat_map.material2, geom, recon_size)
-	m2 = Float32.(Array(m2_gpu))
-	ws_fdk_2 = nothing; m2_gpu = nothing; GC.gc(true)
-
-	# Free GPU sinogram memory
-	sino_low_gpu = nothing; sino_high_gpu = nothing; GC.gc(true)
-
-	# 5. Noise compensation setup (Wu et al. 2009, Eq. 13)
-	#    Δ_m₂ = highpass(m₂); g_min = g(E_optimal) where noise is minimized
-	m2_noise = nothing
-	g_min = Float32(0)
-	if noise_compensation
-		@info "  Extracting noise map from m₂ (σ=$(noise_sigma) px)..."
-		m2_noise = BS.extract_noise_map(m2; sigma = noise_sigma)
-		g_min = Float32(BS.compute_vmi_g(g_min_energy, basis[2]))
-		@info "  g_min = $(round(g_min, digits=3)) at $(g_min_energy) keV"
+	idx = 0
+	for L1 in L1_range, L2 in L2_range
+		idx += 1
+		T1[idx] = L1; T2[idx] = L2
+		P1[idx] = de_forward_poly(L1, L2, wn_low,  μ1_low,  μ2_low)
+		P2[idx] = de_forward_poly(L1, L2, wn_high, μ1_high, μ2_high)
 	end
 
-	# 6. Image-domain VMI at each energy (Eq. 4 / Eq. 13) + HU conversion
-	#    Im_mono = m₁ + g(E)×m₂ [+ (g_min − g(E))×Δ_m₂]
-	#    HU = (Im_mono − 1) × 1000
-	results = NamedTuple[]
-	for E in energies_keV
-		g_E = Float32(BS.compute_vmi_g(Float64(E), basis[2]))
-		@info "  VMI $(E) keV: g(E) = $(round(g_E, digits=3))"
+	function poly_feats(p1, p2, order)
+		feats = Float64[]
+		for d in 0:order, j in 0:d
+			push!(feats, p1^(d-j) * p2^j)
+		end
+		feats
+	end
 
-		im_mono = similar(m1)
-		if noise_compensation && m2_noise !== nothing
-			BS.noise_compensated_vmi!(im_mono, m1, m2, m2_noise, g_E, g_min)
-		else
-			BS.image_domain_vmi!(im_mono, m1, m2, g_E)
+	nf = length(poly_feats(0.0, 0.0, poly_order))
+	A = zeros(N, nf)
+	for i in 1:N
+		A[i, :] .= poly_feats(P1[i], P2[i], poly_order)
+	end
+
+	c1 = A \ T1; c2 = A \ T2
+
+	rmse1 = sqrt(mean((A * c1 .- T1).^2))
+	rmse2 = sqrt(mean((A * c2 .- T2).^2))
+	maxe1 = maximum(abs.(A * c1 .- T1))
+	maxe2 = maximum(abs.(A * c2 .- T2))
+	@info "Calibration (order=$poly_order): " *
+		  "RMSE L₁=$(round(rmse1, digits=4)) cm, L₂=$(round(rmse2, digits=5)) cm | " *
+		  "max|err| L₁=$(round(maxe1, digits=3)) cm, L₂=$(round(maxe2, digits=4)) cm"
+
+	(c1=c1, c2=c2, order=poly_order)
+end
+
+# ── Apply polynomial decomposition ─────────────────────────────────────────
+function de_poly_decompose!(mat1, mat2, sino_low, sino_high, calib)
+	function eval_poly(p1, p2, coeffs, order)
+		val = 0.0; idx = 0
+		for d in 0:order, j in 0:d
+			idx += 1; val += coeffs[idx] * p1^(d-j) * p2^j
+		end
+		val
+	end
+	@inbounds for i in eachindex(mat1)
+		p1 = Float64(sino_low[i])
+		p2 = Float64(sino_high[i])
+		mat1[i] = eval_poly(p1, p2, calib.c1, calib.order)
+		mat2[i] = eval_poly(p1, p2, calib.c2, calib.order)
+	end
+	nothing
+end
+
+# ── Sinogram smoothing (reduces decomposition noise before FBP) ────────────
+# Clinical DE CT uses iterative/DL reconstruction to suppress decomposition
+# noise. We approximate this with 1D Gaussian smoothing along detector columns
+# (sinogram "s" axis). This targets high-frequency decomposition noise without
+# affecting angular information.
+function smooth_sino_columns!(sino::AbstractArray{T,3}, σ_pixels::Float64) where T
+	σ_pixels <= 0 && return nothing
+	r = ceil(Int, 3 * σ_pixels)
+	kernel = T[exp(-T(k)^2 / (2 * T(σ_pixels)^2)) for k in -r:r]
+	kernel ./= sum(kernel)
+	klen = length(kernel)
+
+	n_views, n_cols, n_rows = size(sino)
+	buf = Vector{T}(undef, n_cols)
+	@inbounds for iz in 1:n_rows, iv in 1:n_views
+		# Convolve along column dimension
+		for ic in 1:n_cols
+			s = zero(T)
+			for k in 1:klen
+				jc = clamp(ic + k - r - 1, 1, n_cols)
+				s += sino[iv, jc, iz] * kernel[k]
+			end
+			buf[ic] = s
+		end
+		for ic in 1:n_cols
+			sino[iv, ic, iz] = buf[ic]
+		end
+	end
+	nothing
+end
+
+end # begin
+
+# ╔═╡ 3d9d67e1-228f-4512-a7a4-9db1100c63d1
+# ═════════════════════════════════════════════════════════════════════════════
+# VMI CONFIGURATION — All tunable parameters in one place           [TUNE]
+# ═════════════════════════════════════════════════════════════════════════════
+begin
+	# --- Basis materials ---
+	de_vmi_basis = (:water, :iodine)       # TUNE: (:water, :iodine) or (:water, :calcium)
+
+	# --- Basis material concentrations (for attenuation lookup) ---
+	# These define what "1 cm of basis material 2" means in the decomposition.
+	# Dilute solutions (matching PCCT notebook / clinical convention).
+	de_vmi_iodine_conc  = 5.0              # mg/mL — reference iodine solution
+	de_vmi_calcium_dens = 200.0            # mg/cc — reference calcium material
+
+	# --- Polynomial calibration ---
+	de_vmi_poly_order = 3                  # TUNE: 2, 3, or 4 (3 = clinical standard)
+	de_vmi_L1_range = range(0.0, 50.0, length=80)   # water path range (cm)
+	de_vmi_L2_range = range(0.0, 15.0, length=60)   # material-2 path range (cm)
+	# ↑ For iodine 5 mg/mL: max ~15 cm covers I_20.0 (20 mg/mL ≈ 4× ref) through 2 cm
+	# ↑ For calcium 200 mg/cc: use ~5 cm to cover Ca_600 through 2 cm insert
+
+	# --- Post-decomposition sinogram smoothing (reduces decomposition noise) ---
+	# Material decomposition amplifies noise; clinical scanners use ASiR-V / TrueFidelity.
+	# We smooth material sinograms along detector columns before VMI synthesis.
+	de_vmi_smooth_σ = 2.0                  # TUNE: Gaussian σ in detector pixels (0=off, 1-3 typical)
+
+	# --- Noise-compensated VMI (Wu et al. 2009, Eq. 13) -----------------------
+	# At low keV (e.g., 40), μ_iodine(E) is huge (near K-edge) → decomposition
+	# noise in L₂ is amplified enormously. Noise compensation blends the target
+	# VMI sinogram with an "optimal" energy sinogram where noise is minimal.
+	#
+	# The optimal energy ≈ 65-70 keV for water/iodine at 80/140 kVp — this is
+	# where the ratio μ₂(E)/μ₁(E) is close to the effective ratio of the
+	# original polychromatic beam, so material decomposition noise cancels.
+	#
+	# blend(E) = (1 − α) × sino_vmi(E) + α × sino_vmi(E_opt)
+	# α is energy-dependent: 0 at E_opt, increasing away from E_opt.
+	de_vmi_noise_comp = true               # TUNE: enable noise compensation
+	de_vmi_E_optimal  = 68.0               # keV — minimum-noise energy
+	de_vmi_nc_strength = 0.7               # TUNE: 0=off, 1=full compensation
+
+	# --- FBP filter for VMI sinograms ---
+	# Clinical VMI uses iterative/DL → much softer than Shepp-Logan.
+	# Hamming-apodized ramp ≈ GE "Standard" kernel.
+	de_vmi_filter = BS.CustomFilter(       # TUNE: soft filter to approximate clinical noise
+	    (0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
+	    (1.0, 0.9, 0.6, 0.3, 0.1, 0.02),
+	)
+	# de_vmi_filter = BS.StandardFilter()  # TUNE: Shepp-Logan (sharper, noisier)
+
+	# --- Water calibration for HU ---
+	de_vmi_water_cal = :empirical          # TUNE: :empirical (from recon) or :nist
+	de_vmi_water_roi_r = 10                # pixel radius for empirical water ROI
+end
+
+# ╔═╡ 0c077495-a6df-433f-b510-e26d3498a703
+# ═════════════════════════════════════════════════════════════════════════════
+# PROJECTION-DOMAIN VMI PIPELINE
+#
+# Flow: BHC on each kVp sinogram → polynomial decomposition → material sinos
+#       → smooth material sinos → VMI sinogram → FBP → μ image → standard HU
+#
+# BHC is applied first (same two-material BHC as SE scans) to remove cupping/
+# scatter artifacts before the polynomial decomposition. GE's clinical system
+# bakes BHC into the polynomial calibration (trained on real phantom data);
+# we approximate this by explicitly applying BHC beforehand.
+#
+# Each step logs diagnostics. Change de_vmi_* config above to tune.
+# ═════════════════════════════════════════════════════════════════════════════
+sim_de_vmi_hu = let
+	sino_low_raw  = sim_de_sino_low.sino
+	sino_high_raw = sim_de_sino_high.sino
+	geom          = sim_de_sino_low.geom
+
+	# ── Step 0: Apply BHC to each kVp sinogram ───────────────────────
+	# Same two-material (water+bone) BHC as SE scans. Removes cupping from
+	# scatter residuals and polychromatic beam hardening BEFORE decomposition.
+	@info "Step 0 — Applying BHC to 80 kVp and 140 kVp sinograms..."
+	sino_low = if bhc_enabled && haskey(bhc_models, 80)
+		sino_gpu = MtlArray(sino_low_raw)
+		corrected = BS.apply_bhc_two_material(
+			sino_gpu, bhc_models[80], geom, de_matrix_size;
+			volume_extent = sim_phantom_gpu.extent)
+		sino_gpu = nothing; GC.gc(true)
+		@info "  80 kVp BHC applied"
+		Float32.(corrected)
+	else
+		@info "  80 kVp BHC skipped (disabled or no model)"
+		copy(sino_low_raw)
+	end
+
+	sino_high = if bhc_enabled && haskey(bhc_models, 140)
+		sino_gpu = MtlArray(sino_high_raw)
+		corrected = BS.apply_bhc_two_material(
+			sino_gpu, bhc_models[140], geom, de_matrix_size;
+			volume_extent = sim_phantom_gpu.extent)
+		sino_gpu = nothing; GC.gc(true)
+		@info "  140 kVp BHC applied"
+		Float32.(corrected)
+	else
+		@info "  140 kVp BHC skipped (disabled or no model)"
+		copy(sino_high_raw)
+	end
+
+	# ── Step 1: Resolve spectra (matching simulation spectra) ─────────
+	filters_both = vcat(additional_filters, de_kedge_filter)
+	prot_low  = BS.CTProtocol(kVp = 80,  additional_filters = filters_both)
+	prot_high = BS.CTProtocol(kVp = 140, additional_filters = filters_both)
+	e_l, w_l = BS.resolve_spectrum(sim_opts, prot_low;  scanner = sim_scanner)
+	e_h, w_h = BS.resolve_spectrum(sim_opts, prot_high; scanner = sim_scanner)
+
+	E_mean_low  = sum(e_l .* w_l) / sum(w_l)
+	E_mean_high = sum(e_h .* w_h) / sum(w_h)
+	@info "Step 1 — Spectra: ⟨E_low⟩=$(round(E_mean_low, digits=1)) keV, " *
+		  "⟨E_high⟩=$(round(E_mean_high, digits=1)) keV"
+
+	# ── Step 2: Build polynomial calibration table ────────────────────
+	@info "Step 2 — Building calibration (basis=$(de_vmi_basis), order=$(de_vmi_poly_order), " *
+		  "grid $(length(de_vmi_L1_range))×$(length(de_vmi_L2_range)))..."
+	calib = de_build_calibration(
+		e_l, w_l, e_h, w_h, de_vmi_basis;
+		L1_range = de_vmi_L1_range, L2_range = de_vmi_L2_range,
+		poly_order = de_vmi_poly_order,
+		iodine_conc_mg_ml = de_vmi_iodine_conc,
+		calcium_density_mg_cc = de_vmi_calcium_dens)
+
+	# ── Step 3: Material decomposition (projection domain) ────────────
+	@info "Step 3 — Decomposing BHC-corrected sinograms → material line integrals..."
+	mat1_sino = similar(sino_low, Float32)
+	mat2_sino = similar(sino_low, Float32)
+	de_poly_decompose!(mat1_sino, mat2_sino, sino_low, sino_high, calib)
+	@info "  L₁ ($(de_vmi_basis[1])): range [$(round(minimum(mat1_sino),digits=2)), $(round(maximum(mat1_sino),digits=2))] cm"
+	@info "  L₂ ($(de_vmi_basis[2])): range [$(round(minimum(mat2_sino),digits=3)), $(round(maximum(mat2_sino),digits=3))] cm"
+
+	# ── Step 3b: Smooth material sinograms (reduce decomposition noise) ──
+	if de_vmi_smooth_σ > 0
+		@info "Step 3b — Smoothing material sinograms (σ=$(de_vmi_smooth_σ) pixels)..."
+		smooth_sino_columns!(mat1_sino, de_vmi_smooth_σ)
+		smooth_sino_columns!(mat2_sino, de_vmi_smooth_σ)
+	end
+
+	# ── Step 4: For each VMI energy — sinogram → FBP → HU ────────────
+	# Closure for basis mu with configured concentrations
+	bmu = (mat, E) -> de_basis_mu(mat, E;
+		iodine_conc_mg_ml = de_vmi_iodine_conc,
+		calcium_density_mg_cc = de_vmi_calcium_dens)
+
+	# Pre-compute optimal-energy VMI sinogram for noise compensation
+	sino_opt = if de_vmi_noise_comp
+		μ1_opt = Float32(bmu(de_vmi_basis[1], de_vmi_E_optimal))
+		μ2_opt = Float32(bmu(de_vmi_basis[2], de_vmi_E_optimal))
+		s = similar(mat1_sino)
+		@inbounds for i in eachindex(s)
+			s[i] = μ1_opt * mat1_sino[i] + μ2_opt * mat2_sino[i]
+		end
+		@info "Step 4 — Noise compensation: E_opt=$(de_vmi_E_optimal) keV, " *
+			  "strength=$(de_vmi_nc_strength)"
+		s
+	else
+		nothing
+	end
+
+	results = NamedTuple[]
+	for E in DE_VMI_ENERGIES
+		E_f = Float64(E)
+
+		# VMI sinogram: p_mono(E) = μ₁(E) × L₁ + μ₂(E) × L₂
+		μ1_E = Float32(bmu(de_vmi_basis[1], E_f))
+		μ2_E = Float32(bmu(de_vmi_basis[2], E_f))
+		vmi_sino = similar(mat1_sino)
+		@inbounds for i in eachindex(vmi_sino)
+			vmi_sino[i] = μ1_E * mat1_sino[i] + μ2_E * mat2_sino[i]
 		end
 
-		recon_hu = similar(im_mono)
-		BS.image_domain_vmi_to_hu!(recon_hu, im_mono)
+		# Noise compensation: blend with optimal-energy sinogram
+		# α scales with distance from E_optimal — larger at extreme energies
+		g_E   = Float64(μ2_E) / Float64(μ1_E)
+		g_opt = Float64(bmu(de_vmi_basis[2], de_vmi_E_optimal)) /
+				Float64(bmu(de_vmi_basis[1], de_vmi_E_optimal))
+		if de_vmi_noise_comp && sino_opt !== nothing
+			# Energy-dependent blending: α = strength × |g(E) − g(E_opt)| / |g(E)|
+			# where g(E) = μ₂(E)/μ₁(E). At E_opt, α=0. Far from E_opt, α→strength.
+			α = de_vmi_nc_strength * clamp(abs(g_E - g_opt) / max(abs(g_E), 1e-6), 0.0, 1.0)
+			α32 = Float32(α)
+			one_minus_α = Float32(1.0 - α)
+			@inbounds for i in eachindex(vmi_sino)
+				vmi_sino[i] = one_minus_α * vmi_sino[i] + α32 * sino_opt[i]
+			end
+		end
+
+		# Energy-dependent extra smoothing on VMI sinogram
+		# Noise amplification ~ |g(E) - g_opt|. Apply extra smoothing at extreme energies.
+		noise_amp = abs(g_E - g_opt) / max(abs(g_opt), 1e-6)  # ~0 at E_opt, large at 40 keV
+		extra_σ = de_vmi_smooth_σ * noise_amp  # extra smoothing proportional to amplification
+		if extra_σ > 0.5
+			smooth_sino_columns!(vmi_sino, extra_σ)
+		end
+
+		@info "  VMI $(E) keV: g=$(round(g_E,digits=3)), g_opt=$(round(g_opt,digits=3)), " *
+			  "α=$(round(de_vmi_noise_comp ? de_vmi_nc_strength * clamp(abs(g_E - g_opt)/max(abs(g_E),1e-6),0,1) : 0.0, digits=3)), " *
+			  "extra_σ=$(round(extra_σ, digits=1))"
+
+		# FBP reconstruct VMI sinogram → μ(x,y,E) in cm⁻¹
+		vmi_gpu = MtlArray(vmi_sino)
+		ws_fdk = BS.create_fdk_recon_workspace(
+			vmi_gpu, geom, de_matrix_size; filter = de_vmi_filter)
+		recon_μ = Float32.(Array(BS.reconstruct!(ws_fdk, vmi_gpu, geom, de_matrix_size)))
+		ws_fdk = nothing; vmi_gpu = nothing; GC.gc(true)
+
+		# HU conversion: 1000 × (μ − μ_water) / μ_water
+		μ_water_nist = Float32(bmu(:water, E_f))
+		if de_vmi_water_cal == :empirical
+			# Measure μ_water from center of reconstruction (solid water region)
+			cx, cy = size(recon_μ, 1) ÷ 2, size(recon_μ, 2) ÷ 2
+			cz = size(recon_μ, 3) ÷ 2 + 1
+			r = de_vmi_water_roi_r
+			water_vals = Float32[]
+			for dy in -r:r, dx in -r:r
+				if dx^2 + dy^2 <= r^2
+					push!(water_vals, recon_μ[cx+dx, cy+dy, cz])
+				end
+			end
+			μ_w = mean(water_vals)
+			@info "  VMI $(E) keV: μ₁=$(round(μ1_E,digits=4)), μ₂=$(round(μ2_E,digits=4)) | " *
+				  "μ_water: NIST=$(round(μ_water_nist,digits=5)), meas=$(round(μ_w,digits=5)), " *
+				  "ratio=$(round(μ_w/μ_water_nist,digits=4))"
+		else
+			μ_w = μ_water_nist
+			@info "  VMI $(E) keV: μ₁=$(round(μ1_E,digits=4)), μ₂=$(round(μ2_E,digits=4)) | " *
+				  "μ_water(NIST)=$(round(μ_w,digits=5))"
+		end
+
+		recon_hu = 1000.0f0 .* (recon_μ .- μ_w) ./ μ_w
 
 		push!(results, (name = "sim_DE_$(E)keV", recon = recon_hu, energy_keV = E))
 	end
@@ -3190,27 +3658,11 @@ function decompose_and_reconstruct_vmi(
 	results
 end
 
-# ╔═╡ 6879ace5-450a-430d-a3dc-b8ce66e85bc0
-# Run the full VMI pipeline
-sim_de_vmi_hu = decompose_and_reconstruct_vmi(
-	sim_de_sino_low.sino, sim_de_sino_high.sino,
-	sim_de_sino_low.geom, de_matrix_size, DE_VMI_ENERGIES;
-	scanner = sim_scanner, sim_opts = sim_opts,
-	additional_filters_low = additional_filters,
-	additional_filters_high = vcat(additional_filters, de_high_kvp_filters),
-	E_eff_low_override = 52.0,   # auto (~49 keV); push lower to help 40 keV VMI
-	# E_eff_high_override = 85.0,
-	filter = BS.CustomFilter(de_vmi_custom_filter_control.x, de_vmi_custom_filter_control.y),
-	noise_compensation = true,    # Wu et al. 2009 Eq. 13 — suppresses noise at 40/140 keV
-	noise_sigma = 2.0,            # Gaussian σ for noise map extraction (pixels)
-	g_min_energy = 70.0,          # optimal energy for min noise (~70 keV for 80/140 kVp)
-)
-
-# ╔═╡ 09bc3072-a9cd-4be9-b277-0b455bb5e2b9
-# Old projection-domain VMI pipeline removed — replaced by image-domain (Wu et al. 2009)
+# ╔═╡ db7b88f3-f2aa-4634-aa75-e81f1722477b
+# Old pipelines removed — replaced by projection-domain VMI pipeline above
 nothing
 
-# ╔═╡ 414b3f29-1a27-4839-83da-1efdc6768d65
+# ╔═╡ 021f8a15-e345-4aa3-9737-80923ad0374a
 # Orient simulated VMI images (match clinical orientation)
 sim_de_vmi_oriented = let
 	orient = identity
@@ -3221,12 +3673,25 @@ sim_de_vmi_oriented = let
 	 for r in sim_de_vmi_hu]
 end
 
-# ╔═╡ 56824787-a5f9-4b05-b06c-af38d63448fc
+# ╔═╡ 3b02bfdc-d1ee-498a-b96f-63aae6ba2a8a
+sim_de_vmi_measurements = let
+	vmi_scans = [(r.recon, r.name) for r in sim_de_vmi_oriented]
+
+	# Segment on mid-slice of 100 keV VMI (index 3 in DE_VMI_ENERGIES = [40,70,100,140])
+	vmi_100 = sim_de_vmi_oriented[3].recon
+	mid_z = size(vmi_100, 3) ÷ 2 + 1
+	mask, rods, center = segment_gammex_rods(vmi_100[:, :, mid_z]; fov_cm = 35.0)
+
+	[measure_scan(vol, mask, rods, center, name)
+	 for (vol, name) in vmi_scans]
+end
+
+# ╔═╡ 03c1d3a1-5604-4b50-b4e9-117260a23cf4
 md"""
 ### VMI: Qualitative
 """
 
-# ╔═╡ 3dd2f8f6-8254-4563-8a4a-d99d1a557f62
+# ╔═╡ 08d5d8aa-bc95-427b-8a6a-d429881f6034
 # VMI Qualitative Comparison — Clinical vs Simulated at each energy
 let
 	clinical = [hu_de_40keV, hu_de_70keV, hu_de_100keV, hu_de_140keV]
@@ -3252,25 +3717,12 @@ let
 	fig
 end
 
-# ╔═╡ c944cee8-1be1-4179-abd4-33be7109646d
+# ╔═╡ bf457bc7-9349-4b2f-b278-ef355f98cede
 md"""
 ### VMI: Scatter Plot (HU)
 """
 
-# ╔═╡ e3cfc4da-0f42-48b3-9b6f-c3828123e9fb
-sim_de_vmi_measurements = let
-	vmi_scans = [(r.recon, r.name) for r in sim_de_vmi_oriented]
-
-	# Segment on mid-slice of 100 keV VMI (index 3 in DE_VMI_ENERGIES = [40,70,100,140])
-	vmi_100 = sim_de_vmi_oriented[3].recon
-	mid_z = size(vmi_100, 3) ÷ 2 + 1
-	mask, rods, center = segment_gammex_rods(vmi_100[:, :, mid_z]; fov_cm = 35.0)
-
-	[measure_scan(vol, mask, rods, center, name)
-	 for (vol, name) in vmi_scans]
-end
-
-# ╔═╡ e4cc99de-4709-445c-9574-c2e917d49f2e
+# ╔═╡ 8e37657c-d02f-4b74-aba8-73299fd705c9
 # VMI: Ca/I scatter — Clinical VMI vs Simulated VMI across energies
 let
 	vmi_labels = ["$(E) keV" for E in DE_VMI_ENERGIES]
@@ -3341,12 +3793,12 @@ let
 	fig
 end
 
-# ╔═╡ db323bb7-1cf8-469c-8015-eca39bb634b0
+# ╔═╡ 314c530e-caf1-4235-9985-05e1ef81ccd1
 md"""
 ### VMI: NPS
 """
 
-# ╔═╡ 87f16411-e437-4dcb-b193-421a74f04fb6
+# ╔═╡ b5c7a40b-2e23-4a85-a734-b8dc86949b7f
 # VMI NPS comparison — Clinical vs Simulated at each energy
 let
 	fig = CM.Figure(size = (900, 900), fontsize = 11)
@@ -3373,12 +3825,12 @@ let
 	fig
 end
 
-# ╔═╡ 93f22e77-b876-42d4-bee8-63c917321d36
+# ╔═╡ 6ee9f9ae-977a-4782-b435-9a28bf45346c
 md"""
 ### VMI: MTF
 """
 
-# ╔═╡ ec89a345-ca93-48dc-b149-83c9537c1335
+# ╔═╡ e6439f40-ade4-4de9-817c-96663a5ae453
 # VMI MTF comparison — Clinical vs Simulated at each energy
 let
 	fig = CM.Figure(size = (900, 900), fontsize = 11)
@@ -3403,12 +3855,12 @@ let
 	fig
 end
 
-# ╔═╡ dedd7b4f-5b2a-49d3-8d65-56a9a6c6726c
+# ╔═╡ a89fe53a-c546-4036-b7e9-1be92206cd62
 md"""
 ### Final Export — All Measurements (Clinical + Simulated)
 """
 
-# ╔═╡ 9a29ea15-24b3-4dee-b5ca-77cc8bc32006
+# ╔═╡ 8cf1b41b-105d-4dc5-952a-cedfc4c8f4ae
 # Comprehensive export: all clinical + simulated measurements → CSV + JLD2
 let
 	tagged = vcat(
@@ -3591,6 +4043,7 @@ sim_noise_floor_hu
 # ╠═07100007-0000-4000-8000-000000000000
 # ╟─07100008-0000-4000-8000-000000000000
 # ╠═07100009-0000-4000-8000-000000000000
+# ╠═d5a0ffa5-1d40-4bfc-89de-e462c5358b24
 # ╟─07110001-0000-4000-8000-000000000000
 # ╠═07110002-0000-4000-8000-000000000000
 # ╠═07110003-0000-4000-8000-000000000000
@@ -3610,6 +4063,8 @@ sim_noise_floor_hu
 # ╠═07110023-0000-4000-8000-000000000000
 # ╟─07110030-0000-4000-8000-000000000000
 # ╟─07110031-0000-4000-8000-000000000000
+# ╟─8e294031-bcdb-4424-8936-a62a802d5aa1
+# ╟─0403ce0e-1854-40e2-af6d-c53125aca803
 # ╟─07110032-0000-4000-8000-000000000000
 # ╟─07110033-0000-4000-8000-000000000000
 # ╟─07110038-0000-4000-8000-000000000000
@@ -3637,6 +4092,8 @@ sim_noise_floor_hu
 # ╠═10a11afd-004a-467a-b808-7e761cb21678
 # ╟─3924da10-33fd-415b-9666-f6022d0adaf6
 # ╟─ebc9865c-feed-4e79-9cac-39e583a3796d
+# ╟─1cae28b1-775a-4f4f-90d2-5ae693b7d2ac
+# ╟─681131e3-887d-4426-aefe-f904abb4667a
 # ╟─c42f625b-9db4-42a5-90c6-fa2c37fe8b18
 # ╟─bfd647b4-44d7-4582-8b5b-dd5910efd729
 # ╟─28e45f60-2542-4305-8c9c-3aecf1b3aa23
@@ -3648,6 +4105,7 @@ sim_noise_floor_hu
 # ╟─4f8ee88d-a948-44e7-a610-a2711e6da234
 # ╠═6f5ce242-a5e2-4cd5-8cac-47f528dc21bb
 # ╠═ff650b6f-76e6-491e-8076-1dd002c80d7e
+# ╟─2a6f0b64-05a7-4a01-9009-66888902edcb
 # ╠═bb68196f-26e4-41fc-85bc-203373d91b4a
 # ╠═37298bb1-4b57-4f5c-9fea-ec81dbfb3394
 # ╠═fd123cde-bb22-489d-a496-e00363f46157
@@ -3657,24 +4115,24 @@ sim_noise_floor_hu
 # ╠═4efd48c9-753a-4418-8095-fa12b7cc5a95
 # ╠═e8af3f62-e606-4f10-9a09-9e0620910f58
 # ╟─5cc1fa5c-3722-4fa1-b0f0-d816e204c8bf
-# ╟─76b7a0d4-0078-49a7-8fa3-c36ffb01fee1
-# ╠═f031a233-e560-4bb2-af00-fe255152b9e3
-# ╠═d706f8e1-7970-4dd7-a2b1-e07bae9373cc
-# ╠═c71083a4-9c08-448d-babb-4e49314f214c
-# ╠═6879ace5-450a-430d-a3dc-b8ce66e85bc0
-# ╠═09bc3072-a9cd-4be9-b277-0b455bb5e2b9
-# ╠═414b3f29-1a27-4839-83da-1efdc6768d65
-# ╟─56824787-a5f9-4b05-b06c-af38d63448fc
-# ╟─3dd2f8f6-8254-4563-8a4a-d99d1a557f62
-# ╟─c944cee8-1be1-4179-abd4-33be7109646d
-# ╠═e3cfc4da-0f42-48b3-9b6f-c3828123e9fb
-# ╟─e4cc99de-4709-445c-9574-c2e917d49f2e
-# ╟─db323bb7-1cf8-469c-8015-eca39bb634b0
-# ╟─87f16411-e437-4dcb-b193-421a74f04fb6
-# ╟─93f22e77-b876-42d4-bee8-63c917321d36
-# ╟─ec89a345-ca93-48dc-b149-83c9537c1335
-# ╟─dedd7b4f-5b2a-49d3-8d65-56a9a6c6726c
-# ╠═9a29ea15-24b3-4dee-b5ca-77cc8bc32006
+# ╟─723bf88a-c4bf-4576-abba-551354d8c740
+# ╠═0f18401b-8bc9-49ff-9a10-49ea2f928dec
+# ╠═b6015330-a0ba-4378-84f0-54edeeb8c1bf
+# ╠═3d9d67e1-228f-4512-a7a4-9db1100c63d1
+# ╠═0c077495-a6df-433f-b510-e26d3498a703
+# ╠═db7b88f3-f2aa-4634-aa75-e81f1722477b
+# ╠═021f8a15-e345-4aa3-9737-80923ad0374a
+# ╠═3b02bfdc-d1ee-498a-b96f-63aae6ba2a8a
+# ╟─03c1d3a1-5604-4b50-b4e9-117260a23cf4
+# ╟─08d5d8aa-bc95-427b-8a6a-d429881f6034
+# ╟─bf457bc7-9349-4b2f-b278-ef355f98cede
+# ╟─8e37657c-d02f-4b74-aba8-73299fd705c9
+# ╟─314c530e-caf1-4235-9985-05e1ef81ccd1
+# ╟─b5c7a40b-2e23-4a85-a734-b8dc86949b7f
+# ╟─6ee9f9ae-977a-4782-b435-9a28bf45346c
+# ╟─e6439f40-ade4-4de9-817c-96663a5ae453
+# ╟─a89fe53a-c546-4036-b7e9-1be92206cd62
+# ╠═8cf1b41b-105d-4dc5-952a-cedfc4c8f4ae
 # ╟─07140001-0000-4000-8000-000000000000
 # ╠═07140002-0000-4000-8000-000000000000
 # ╠═07140003-0000-4000-8000-000000000000

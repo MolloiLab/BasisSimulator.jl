@@ -103,8 +103,9 @@ phantom = Phantom(labeled_array, materials_dict, (0.1, 0.1, 0.1))
 μ_60keV = compute_μ(phantom, 60.0)
 μ_120keV = compute_μ(phantom, 120.0)
 
-# Simulate - just works (uses mask + materials internally)
-result = simulate(phantom, scanner, protocol)
+# Simulate via workspace API
+ws = create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
+simulate!(ws, phantom, scanner, protocol, sim_opts, recon_opts)
 
 # GPU workflow: mask on GPU, materials stay on CPU
 using Metal
@@ -176,9 +177,8 @@ end
 
 Create a Phantom from a labeled array with materials stored internally.
 
-This is the **unified v20.0-pivot API**: the returned Phantom contains everything needed
-for polychromatic simulation, so `simulate(phantom, scanner, protocol)` just works
-without a separate `materials` kwarg.
+This is the **unified API**: the returned Phantom contains everything needed
+for polychromatic simulation via the workspace-based `simulate!()` pipeline.
 
 **No energy_keV parameter needed!** The μ field was removed in v20.0-pivot. Use
 `compute_μ(phantom, energy_keV)` to get attenuation coefficients at any energy.
@@ -221,8 +221,9 @@ phantom = Phantom(labeled_array, materials_dict, (0.1, 0.1, 0.1))
 # Get μ at any energy when needed
 μ_60keV = compute_μ(phantom, 60.0)
 
-# Simulate - no materials kwarg needed!
-result = simulate(phantom, scanner, protocol, SimOptions(), ReconOptions())
+# Simulate via workspace API
+ws = create_eict_workspace(scanner, protocol, SimOptions(), ReconOptions(), phantom)
+simulate!(ws, phantom, scanner, protocol)
 ```
 
 See also: [`compute_μ`](@ref), [`create_phantom_from_mask`](@ref), [`create_gammex_472`](@ref)
@@ -308,8 +309,8 @@ phantom = create_gammex_472(n_voxels=128)
 μ_60 = compute_μ(phantom, 60.0)
 μ_120 = compute_μ(phantom, 120.0)
 
-# Simulate - just works
-result = simulate(phantom, scanner, protocol)
+# Forward project
+sino = forward_project(phantom.mask, geom; energies=energies, weights=weights, materials=phantom.materials)
 ```
 """
 function create_gammex_472(;
@@ -488,8 +489,9 @@ phantom = create_phantom_from_mask(xcat_mask, materials_dict, (0.1, 0.1, 0.1))
 # Get μ at any energy when needed
 μ_70 = compute_μ(phantom, 70.0)
 
-# Simulate - just works (materials stored in phantom)
-result = simulate(phantom, scanner, protocol)
+# Simulate via workspace API
+ws = create_eict_workspace(scanner, protocol, SimOptions(), ReconOptions(), phantom)
+simulate!(ws, phantom, scanner, protocol)
 ```
 
 See also: [`Phantom`](@ref), [`compute_μ`](@ref), [`create_gammex_472`](@ref)
@@ -507,7 +509,7 @@ end
 """
     build_materials_vector(materials_dict::Dict{Int, <:Any}) -> Vector{XA.Material}
 
-Build a materials vector from a materials dictionary for use with `simulate()`.
+Build a materials vector from a materials dictionary for use with the simulation pipeline.
 
 The returned vector is indexed by `mask_value + 1`, so `materials_vec[1]` corresponds
 to label 0, `materials_vec[2]` to label 1, etc.

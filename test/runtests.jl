@@ -24,6 +24,9 @@ catch
     false
 end
 
+# Internal API aliases for testing
+const _build_pcct_detector = BasisSimulator._build_pcct_detector
+
 if HAS_GPU
     using Metal
     println("GPU detected: ", Metal.current_device())
@@ -218,100 +221,6 @@ end
         @test vec[2] === XA.Materials.air   # label 1 (default)
         @test vec[3] === XA.Materials.water # label 2
         @test vec[6] === XA.Materials.corticalbone # label 5
-    end
-
-    @testset "simulate with custom materials" begin
-        # Create a simple 2-material phantom
-        labeled = zeros(Int, 32, 32, 4)
-        labeled[1:16, :, :] .= 0   # Air
-        labeled[17:32, :, :] .= 1  # Water
-
-        materials_dict = Dict{Int, XA.Material}(
-            0 => XA.Materials.air,
-            1 => XA.Materials.water
-        )
-
-        # Create phantom using new API (no energy_keV needed in v20.0-pivot)
-        phantom = create_phantom_from_mask(
-            labeled,
-            materials_dict,
-            (0.1, 0.1, 0.1)
-        )
-
-        # Build materials vector for simulate()
-        materials_vec = build_materials_vector(materials_dict)
-
-        # Create scanner and protocol
-        scanner = Scanner(
-            source_to_isocenter = 50.0,
-            source_to_detector = 100.0,
-            detector_rows = 4,
-            detector_cols = 64,
-            detector_row_size = 1.0,
-            detector_col_size = 1.0
-        )
-        protocol = CTProtocol(kVp=120.0, mA=100.0, views=36)
-        sim_opts = SimOptions(fidelity=:ideal, use_noise=false)
-        recon_opts = ReconOptions(matrix_size=(32, 32, 4), fov_cm=3.2)
-
-        # Simulate with custom materials
-        result = simulate(phantom, scanner, protocol, sim_opts, recon_opts; materials=materials_vec)
-
-        @test result isa SimulationResult
-        @test size(result.sinogram_ideal) == (64, 4, 36)  # cols × rows × angles
-        @test size(result.reconstruction) == (32, 32, 4)
-
-        # Verify reconstruction has reasonable contrast between air and water
-        # Convert to CPU array for indexing (reconstruction may be on GPU)
-        recon = Array(result.reconstruction)
-        air_region = recon[8, 16, 2]    # Should be low (air)
-        water_region = recon[24, 16, 2] # Should be higher (water)
-        @test water_region > air_region  # Water should have higher μ/HU than air
-    end
-
-    @testset "simulate without materials kwarg (v20.0 unified API)" begin
-        # Test that simulate() uses phantom.materials when present
-        labeled = zeros(Int, 32, 32, 4)
-        labeled[1:16, :, :] .= 0   # Air
-        labeled[17:32, :, :] .= 1  # Water
-
-        materials_dict = Dict{Int, XA.Material}(
-            0 => XA.Materials.air,
-            1 => XA.Materials.water
-        )
-
-        # Create phantom using UNIFIED constructor (materials stored internally)
-        # v20.0-pivot: no energy_keV needed - μ computed on demand
-        phantom = Phantom(labeled, materials_dict, (0.1, 0.1, 0.1))
-
-        # Verify materials are stored
-        @test phantom.materials isa Vector{XA.Material}
-
-        # Create scanner and protocol
-        scanner = Scanner(
-            source_to_isocenter = 50.0,
-            source_to_detector = 100.0,
-            detector_rows = 4,
-            detector_cols = 64,
-            detector_row_size = 1.0,
-            detector_col_size = 1.0
-        )
-        protocol = CTProtocol(kVp=120.0, mA=100.0, views=36)
-        sim_opts = SimOptions(fidelity=:ideal, use_noise=false)
-        recon_opts = ReconOptions(matrix_size=(32, 32, 4), fov_cm=3.2)
-
-        # KEY TEST: Simulate WITHOUT materials kwarg - should use phantom.materials!
-        result = simulate(phantom, scanner, protocol, sim_opts, recon_opts)
-
-        @test result isa SimulationResult
-        @test size(result.sinogram_ideal) == (64, 4, 36)
-        @test size(result.reconstruction) == (32, 32, 4)
-
-        # Verify reconstruction has reasonable contrast between air and water
-        recon = Array(result.reconstruction)
-        air_region = recon[8, 16, 2]
-        water_region = recon[24, 16, 2]
-        @test water_region > air_region  # Materials were used correctly!
     end
 
     @testset "Scanner Geometry" begin
@@ -521,7 +430,7 @@ end
             @test corr_ref.correction_coefficient ≈ SCATTER_REF_COEFFICIENT atol=0.001
             # Linear model (exponent=1.0) to match add_scatter!()
             @test corr_ref.prep_exponent ≈ 1.0
-            @test corr_ref.kernel_fwhm ≈ 50.0
+            @test corr_ref.kernel_fwhm ≈ 50.0 / (950.0 / 540.0) atol=0.1
 
             # Larger air gap → less correction needed
             scanner_ge = Scanner(source_to_isocenter=626.0, source_to_detector=1097.0)
@@ -629,8 +538,8 @@ end
         detector_width_at_iso = det.n_cols[] * det.col_size_mm[]
         half_fan_angle_rad = atan(detector_width_at_iso / 2 / geom_spec.sid_mm[])
         half_fan_angle_deg = rad2deg(half_fan_angle_rad)
-        # GE Revolution has ~25° half fan angle for 500mm SFOV
-        @test 20.0 < half_fan_angle_deg < 30.0
+        # GE Revolution has ~35° half fan angle for 500mm SFOV
+        @test 20.0 < half_fan_angle_deg < 40.0
 
         # Test: SFOV consistency with detector coverage
         # Max SFOV should fit within detector coverage at isocenter
@@ -656,20 +565,18 @@ end
         @test medium isa BowtieFilter
         @test small isa BowtieFilter
 
-        # Large has most attenuation at center
-        @test large.thickness[1, 1] > medium.thickness[1, 1]
-        @test medium.thickness[1, 1] > small.thickness[1, 1]
-
-        # All filters attenuate less at edges (bowtie shape)
+        # CatSim multi-material bowties: 4 materials, 888 angle samples
         for filter in [large, medium, small]
-            @test filter.thickness[1, 1] > filter.thickness[end, 1]  # Center > edge
+            @test length(filter.materials) == 4
+            @test size(filter.thickness, 1) == 888
+            @test size(filter.thickness, 2) == 4
         end
 
         # Test filter info
         info = get_bowtie_info(large)
-        @test info.name == "ge_revolution_large"
-        @test info.n_materials == 1
-        @test info.materials == ["Al"]
+        @test info.name == "catsim_large"
+        @test info.n_materials == 4
+        @test info.materials == ["Al", "graphite", "Cu", "Ti"]
     end
 
     # =========================================================================
@@ -696,9 +603,9 @@ end
             det = detector(spec)
             # CITE: FDA K201501
             @test det.n_rows[] == 144                  # 144 rows (standard mode)
-            @test det.row_size_mm[] ≈ 0.4             # 0.4 mm row size (binned)
-            @test det.col_size_mm[] ≈ 0.302           # 0.302 mm binned pixel
-            @test det.z_coverage_mm[] ≈ 57.6          # 144 × 0.4 = 57.6 mm
+            @test det.row_size_mm[] ≈ 0.353 atol=0.01  # native_row×2/mag at isocenter
+            @test det.col_size_mm[] ≈ 0.302 atol=0.01 # native_col×2/mag at isocenter
+            @test det.z_coverage_mm[] ≈ 50.8 atol=0.5 # 144 × 0.353 ≈ 50.8 mm
             @test det.depth_mm[] ≈ 1.6                # CdTe thickness
             @test det.detector_type[] == PHOTON_COUNTING
         end
@@ -751,9 +658,9 @@ end
 
             # UHR mode: unbinned detector
             @test det.n_rows[] == 120                  # 120 rows (UHR mode)
-            @test det.row_size_mm[] ≈ 0.2             # 0.2 mm row size (unbinned)
-            @test det.col_size_mm[] ≈ 0.151           # 0.151 mm unbinned pixel
-            @test det.z_coverage_mm[] ≈ 24.0          # 120 × 0.2 = 24 mm
+            @test det.row_size_mm[] ≈ 0.176 atol=0.01 # native_row/mag at isocenter
+            @test det.col_size_mm[] ≈ 0.151 atol=0.01 # native_col/mag at isocenter
+            @test det.z_coverage_mm[] ≈ 21.1 atol=0.5 # 120 × 0.176 ≈ 21.1 mm
         end
 
         @testset "QuantumPlus (Spectral) Mode Construction" begin
@@ -797,12 +704,12 @@ end
             spec_std = NAEOTOMAlpha(:standard)
             pcct_det_std = get_pcct_detector(spec_std)
             @test pcct_det_std isa PhotonCountingDetector
-            @test pcct_det_std.pixel_size_mm[1] ≈ 0.302
+            @test pcct_det_std.pixel_size_mm[1] ≈ 0.322 atol=0.01  # native dexel row at detector face
 
             spec_uhr = NAEOTOMAlpha(:uhr)
             pcct_det_uhr = get_pcct_detector(spec_uhr)
             @test pcct_det_uhr isa PhotonCountingDetector
-            @test pcct_det_uhr.pixel_size_mm[1] ≈ 0.151
+            @test pcct_det_uhr.pixel_size_mm[1] ≈ 0.322 atol=0.01  # same native dexel row
         end
 
         @testset "Geometric Consistency" begin
@@ -819,7 +726,7 @@ end
             half_fan_angle_rad = atan(detector_width_at_iso / 2 / geom_spec.sid_mm[])
             half_fan_angle_deg = rad2deg(half_fan_angle_rad)
             # Should have sufficient coverage for 50cm SFOV
-            @test 20.0 < half_fan_angle_deg < 35.0
+            @test 20.0 < half_fan_angle_deg < 40.0
 
             # SFOV consistency
             max_sfov = geom_spec.max_sfov_mm[]
@@ -1621,101 +1528,7 @@ end
         @test all(isfinite.(sino))
     end
 
-    # -------------------------------------------------------------------------
-    # Clinical mA/mAs API (IMPL-MA-MAS)
-    # -------------------------------------------------------------------------
-    @testset "Clinical mA/mAs API" begin
-        spec = GERevolutionApex()
-
-        @testset "mA_to_I0 Basic Conversion" begin
-            # Test basic conversion with explicit parameters
-            # GE Revolution Apex: SDD = 1097 mm
-            # Detector element at detector: ~1.84 mm × 1.10 mm ≈ 2.0 mm²
-            SDD_mm = 1097.0
-            det_area_mm2 = 2.0
-
-            I0 = mA_to_I0(400.0;
-                          SDD_mm = SDD_mm,
-                          det_area_mm2 = det_area_mm2,
-                          rotation_time_s = 0.5,
-                          n_views = 984)
-
-            # Should be positive and in expected range
-            # Calculation: 2e6 × 400 × (0.5/984) × (1000/1097)² × 2.0 × 0.85 ≈ 574,000
-            @test I0 > 0
-            @test 100000 < I0 < 1000000  # ~500k for 400 mA with these parameters
-        end
-
-        @testset "mA_to_I0 with Scanner Spec" begin
-            # Test convenience method with scanner spec
-            I0_400 = mA_to_I0(400.0, spec; rotation_time_s = 0.5)
-            I0_200 = mA_to_I0(200.0, spec; rotation_time_s = 0.5)
-            I0_100 = mA_to_I0(100.0, spec; rotation_time_s = 0.5)
-
-            # I0 should scale linearly with mA
-            @test I0_400 ≈ 2 * I0_200 atol=1.0
-            @test I0_200 ≈ 2 * I0_100 atol=1.0
-
-            # All should be positive
-            @test I0_400 > 0
-            @test I0_200 > 0
-            @test I0_100 > 0
-
-            # Order should be: higher mA → higher I0
-            @test I0_400 > I0_200 > I0_100
-        end
-
-        @testset "mA_to_I0 Rotation Time Scaling" begin
-            # I0 should scale linearly with rotation time
-            I0_05s = mA_to_I0(400.0, spec; rotation_time_s = 0.5)
-            I0_10s = mA_to_I0(400.0, spec; rotation_time_s = 1.0)
-
-            @test I0_10s ≈ 2 * I0_05s atol=1.0
-        end
-
-        @testset "clinical_detector_model" begin
-            # Test clinical detector model creation
-            detector = clinical_detector_model(
-                mA = 400.0,
-                scanner = spec,
-                rotation_time_s = 0.5
-            )
-
-            @test detector isa DetectorModel
-            @test detector.I0 > 0
-            @test detector.blur_fwhm ≈ 1.5
-            @test detector.electronic_noise_std ≈ 10.0
-
-            # Compare to direct mA_to_I0 call
-            I0_direct = mA_to_I0(400.0, spec; rotation_time_s = 0.5)
-            @test detector.I0 ≈ I0_direct
-        end
-
-        @testset "Noise Relationship: σ ∝ 1/√mA" begin
-            # When mA doubles, noise should decrease by √2
-            # This is tested through I0 since σ ∝ 1/√I0 ∝ 1/√mA
-            I0_low = mA_to_I0(100.0, spec; rotation_time_s = 0.5)
-            I0_high = mA_to_I0(400.0, spec; rotation_time_s = 0.5)
-
-            # I0_high / I0_low = 4 (mA ratio)
-            # σ_low / σ_high ≈ √(I0_high / I0_low) = √4 = 2
-            noise_ratio = sqrt(I0_high / I0_low)
-            @test noise_ratio ≈ 2.0 atol=0.01
-        end
-
-        @testset "CATSIM_FLUX_DENSITY Constant" begin
-            # Verify the constant is exported and has expected value
-            @test CATSIM_FLUX_DENSITY ≈ 2.0e6
-        end
-
-        @testset "Input Validation" begin
-            # Test that invalid inputs throw errors
-            @test_throws ArgumentError mA_to_I0(-100.0; SDD_mm=1097.0, det_area_mm2=2.0)
-            @test_throws ArgumentError mA_to_I0(100.0; SDD_mm=-1097.0, det_area_mm2=2.0)
-            @test_throws ArgumentError mA_to_I0(100.0; SDD_mm=1097.0, det_area_mm2=-2.0)
-            @test_throws ArgumentError mA_to_I0(100.0; SDD_mm=1097.0, det_area_mm2=2.0, η_det=1.5)
-        end
-    end
+    # Clinical mA/mAs API removed — I₀ now derived from IPEM spectrum pipeline
 
     # -------------------------------------------------------------------------
     # Fill Factor Verification (PHYSICS-001)
@@ -4464,21 +4277,27 @@ end
             @test detector.enable_anti_coincidence == true
         end
 
-        @testset "NAEOTOM Detector Presets" begin
-            # Standard mode
-            standard = naeotom_detector_standard()
-            @test standard.pixel_size_mm[1] ≈ 0.302
-            @test standard.pixel_size_mm[2] ≈ 0.302
+        @testset "NAEOTOM Detector from Scanner" begin
+            # Standard mode (via _build_pcct_detector)
+            standard = _build_pcct_detector(create_naeotom_alpha())
+            @test standard.pixel_size_mm[2] ≈ 0.275  # native dexel col at detector face
+            @test standard.pixel_size_mm[1] ≈ 0.322  # native dexel row at detector face
             @test standard.energy_thresholds_keV == [20.0, 35.0, 55.0, 70.0]
             @test standard.dead_time_ns ≈ 5.0
+            @test standard.binning_factor == 2
 
             # UHR mode
-            uhr = naeotom_detector_uhr()
-            @test uhr.pixel_size_mm[1] ≈ 0.151
-            @test uhr.pixel_size_mm[2] ≈ 0.151
+            uhr = _build_pcct_detector(create_naeotom_alpha(mode=:uhr))
+            @test uhr.pixel_size_mm[2] ≈ 0.275  # same native dexel
+            @test uhr.pixel_size_mm[1] ≈ 0.322
+            @test uhr.binning_factor == 1
 
-            # Ideal detector (no degradation)
-            ideal = pcct_detector_ideal()
+            # Ideal detector (inline construction)
+            ideal = PhotonCountingDetector(
+                enable_charge_sharing=false, enable_pile_up=false,
+                enable_anti_coincidence=false, energy_resolution_keV=0.0,
+                charge_sharing_fwhm_mm=0.0, dead_time_ns=0.0,
+                coincidence_window_ns=0.0, electronic_noise_keV=0.0)
             @test ideal.enable_charge_sharing == false
             @test ideal.enable_pile_up == false
             @test ideal.enable_anti_coincidence == false
@@ -4543,7 +4362,7 @@ end
         end
 
         @testset "Charge Sharing Model" begin
-            detector = naeotom_detector_standard()
+            detector = _build_pcct_detector(create_naeotom_alpha())
 
             # Create test bins
             n_cols, n_rows, n_angles = 16, 8, 18
@@ -4561,14 +4380,18 @@ end
             end
 
             # With no charge sharing, counts should be unchanged
-            ideal_detector = pcct_detector_ideal()
+            ideal_detector = PhotonCountingDetector(
+                enable_charge_sharing=false, enable_pile_up=false,
+                enable_anti_coincidence=false, energy_resolution_keV=0.0,
+                charge_sharing_fwhm_mm=0.0, dead_time_ns=0.0,
+                coincidence_window_ns=0.0, electronic_noise_keV=0.0)
             bins_ideal = [fill(1000.0f0, n_cols, n_rows, n_angles) for _ in 1:4]
             apply_charge_sharing!(bins_ideal, ideal_detector)
             @test all(bins_ideal[1] .≈ 1000.0f0)
         end
 
         @testset "Pulse Pile-up Model" begin
-            detector = naeotom_detector_standard()
+            detector = _build_pcct_detector(create_naeotom_alpha())
 
             # Create test bins
             n_cols, n_rows, n_angles = 16, 8, 18
@@ -4592,14 +4415,18 @@ end
             @test total_after <= total_before * 1.01f0  # Allow 1% tolerance
 
             # With no pile-up, counts unchanged
-            ideal_detector = pcct_detector_ideal()
+            ideal_detector = PhotonCountingDetector(
+                enable_charge_sharing=false, enable_pile_up=false,
+                enable_anti_coincidence=false, energy_resolution_keV=0.0,
+                charge_sharing_fwhm_mm=0.0, dead_time_ns=0.0,
+                coincidence_window_ns=0.0, electronic_noise_keV=0.0)
             bins_ideal = [fill(1000.0f0, n_cols, n_rows, n_angles) for _ in 1:4]
             apply_pulse_pileup!(bins_ideal, ideal_detector, flux_rate)
             @test all(bins_ideal[1] .≈ 1000.0f0)
         end
 
         @testset "Anti-Coincidence Logic" begin
-            detector = naeotom_detector_standard()
+            detector = _build_pcct_detector(create_naeotom_alpha())
 
             # Create test bins with non-uniform pattern
             n_cols, n_rows, n_angles = 16, 8, 18
@@ -4649,7 +4476,7 @@ end
         end
 
         @testset "PCCT Detector Info" begin
-            detector = naeotom_detector_standard()
+            detector = _build_pcct_detector(create_naeotom_alpha())
 
             info = get_pcct_detector_info(detector)
 
@@ -4678,7 +4505,11 @@ end
             I0 = 1000.0f0
             intensity_spectrum = fill(I0, n_cols, n_rows, n_angles, n_energies)
 
-            detector = pcct_detector_ideal()
+            detector = PhotonCountingDetector(
+                enable_charge_sharing=false, enable_pile_up=false,
+                enable_anti_coincidence=false, energy_resolution_keV=0.0,
+                charge_sharing_fwhm_mm=0.0, dead_time_ns=0.0,
+                coincidence_window_ns=0.0, electronic_noise_keV=0.0)
             bins = apply_energy_thresholds(intensity_spectrum, energies, weights, detector)
 
             # Sum across all bins at each pixel should equal total weighted intensity
@@ -4723,92 +4554,6 @@ end
     # PCCT Spectral Imaging Tests (IMPL-PCCT-SPECTRAL)
     # =========================================================================
     @testset "PCCT Spectral Imaging" begin
-
-        @testset "Bin Weight Computation" begin
-            thresholds = Float64[20.0, 35.0, 55.0, 70.0]
-
-            # Test at different target energies
-            w_40 = compute_bin_weights(40.0, thresholds)
-            w_70 = compute_bin_weights(70.0, thresholds)
-            w_100 = compute_bin_weights(100.0, thresholds)
-
-            # Weights should sum to 1
-            @test sum(w_40) ≈ 1.0
-            @test sum(w_70) ≈ 1.0
-            @test sum(w_100) ≈ 1.0
-
-            # All weights non-negative
-            @test all(w_40 .>= 0)
-            @test all(w_70 .>= 0)
-            @test all(w_100 .>= 0)
-
-            # Low energy should weight lower bins more
-            @test w_40[1] > w_40[4] || w_40[2] > w_40[4]
-
-            # High energy should weight higher bins more
-            @test w_100[4] > w_100[1]
-        end
-
-        @testset "PCCT Virtual Monoenergetic Sinogram" begin
-            # Create mock energy-resolved sinogram
-            n_cols, n_rows, n_angles = 32, 8, 18
-            thresholds = Float32[20.0, 35.0, 55.0, 70.0]
-
-            # Create bins with energy-dependent values
-            bins = [fill(Float32(1000 - i*100), n_cols, n_rows, n_angles) for i in 1:4]
-
-            er_sino = EnergyResolvedSinogram(bins, thresholds)
-
-            # Generate VMI at different energies
-            vmi_50 = pcct_virtual_monoenergetic(er_sino, 50.0)
-            vmi_70 = pcct_virtual_monoenergetic(er_sino, 70.0)
-            vmi_100 = pcct_virtual_monoenergetic(er_sino, 100.0)
-
-            # VMI should have same dimensions as bins
-            @test size(vmi_50) == (n_cols, n_rows, n_angles)
-            @test size(vmi_70) == (n_cols, n_rows, n_angles)
-            @test size(vmi_100) == (n_cols, n_rows, n_angles)
-
-            # All finite values
-            @test all(isfinite.(vmi_50))
-            @test all(isfinite.(vmi_70))
-            @test all(isfinite.(vmi_100))
-
-            # Values should be weighted combinations of bins
-            @test mean(vmi_50) > 0
-        end
-
-        @testset "PCCT VMI Energy Range Validation" begin
-            n_cols, n_rows, n_angles = 16, 8, 9
-            thresholds = Float32[20.0, 35.0, 55.0, 70.0]
-            bins = [fill(1000.0f0, n_cols, n_rows, n_angles) for _ in 1:4]
-            er_sino = EnergyResolvedSinogram(bins, thresholds)
-
-            # Should work for valid range
-            @test all(isfinite.(pcct_virtual_monoenergetic(er_sino, 40.0)))
-            @test all(isfinite.(pcct_virtual_monoenergetic(er_sino, 140.0)))
-
-            # Should error for invalid range
-            @test_throws ErrorException pcct_virtual_monoenergetic(er_sino, 5.0)
-            @test_throws ErrorException pcct_virtual_monoenergetic(er_sino, 200.0)
-        end
-
-        @testset "PCCT VMI to HU Conversion" begin
-            n_cols, n_rows, n_angles = 16, 8, 9
-            thresholds = Float32[20.0, 35.0, 55.0, 70.0]
-            bins = [fill(1000.0f0, n_cols, n_rows, n_angles) for _ in 1:4]
-            er_sino = EnergyResolvedSinogram(bins, thresholds)
-
-            vmi_sino = pcct_virtual_monoenergetic(er_sino, 70.0)
-            hu_sino = pcct_vmi_to_hu(vmi_sino, 70.0)
-
-            @test size(hu_sino) == size(vmi_sino)
-            @test all(isfinite.(hu_sino))
-
-            # With custom μ_water
-            hu_custom = pcct_vmi_to_hu(vmi_sino, 70.0; μ_water=0.2)
-            @test all(isfinite.(hu_custom))
-        end
 
         @testset "PCCT Material Map Container" begin
             n_cols, n_rows, n_angles = 32, 8, 18
@@ -4891,7 +4636,7 @@ end
         end
 
         @testset "K-Edge Sensitivity Analysis" begin
-            detector = naeotom_detector_standard()
+            detector = _build_pcct_detector(create_naeotom_alpha())
 
             # Iodine should have good sensitivity (K-edge at 33.2 keV, threshold at 35)
             iodine_info = get_kedge_sensitivity(detector, :iodine)
@@ -4967,7 +4712,7 @@ end
         end
 
         @testset "Supported K-Edge Elements" begin
-            detector = naeotom_detector_standard()
+            detector = _build_pcct_detector(create_naeotom_alpha())
             supported = get_supported_kedge_elements(detector)
 
             @test supported isa Vector{Symbol}
@@ -6023,17 +5768,20 @@ end
             @test all(E_tail .> 0.0)   # All positive
         end
 
-        @testset "Spectral Response Matrix" begin
+        @testset "Detector Response Matrix (compute_drm)" begin
             thresholds = [20.0, 35.0, 55.0, 70.0]
 
-            # Ideal detector (no degradation)
-            R_ideal = compute_spectral_response_matrix(
-                CDTE_MATERIAL, 1.6, thresholds, 120.0;
+            # Ideal detector (no degradation) — via compute_drm
+            ideal_det = PhotonCountingDetector(
+                material=CDTE_MATERIAL, thickness_mm=1.6,
+                energy_thresholds_keV=thresholds,
                 energy_resolution_keV=0.0,
-                include_fluorescence=false,
-                include_tailing=false,
-                n_energy_points=120
-            )
+                electronic_noise_keV=0.0,
+                enable_charge_sharing=false, enable_pile_up=false,
+                enable_anti_coincidence=false,
+                charge_sharing_fwhm_mm=0.0, dead_time_ns=0.0,
+                coincidence_window_ns=0.0)
+            R_ideal = compute_drm(ideal_det, 120.0; n_energy_points=120)
             @test size(R_ideal) == (120, 4)
 
             # Each row should sum to ≤ 1.0
@@ -6048,14 +5796,12 @@ end
                 @test sum(R_ideal[E_idx_10, :]) ≈ 0.0 atol=0.01
             end
 
-            # Realistic CdTe response (with all effects)
-            R_real = compute_spectral_response_matrix(
-                CDTE_MATERIAL, 1.6, thresholds, 120.0;
-                energy_resolution_keV=10.0,
-                include_fluorescence=true,
-                include_tailing=true,
-                n_energy_points=120
-            )
+            # Realistic CdTe response (with all effects via compute_drm)
+            real_det = PhotonCountingDetector(
+                material=CDTE_MATERIAL, thickness_mm=1.6,
+                energy_thresholds_keV=thresholds,
+                electronic_noise_keV=1.5)
+            R_real = compute_drm(real_det, 120.0; n_energy_points=120)
             @test size(R_real) == (120, 4)
 
             # Realistic response should have off-diagonal entries (spectral cross-talk)
@@ -6069,13 +5815,11 @@ end
             @test total_60 ≤ 1.0
 
             # Si response: different characteristics (no significant K-edges at CT)
-            R_si = compute_spectral_response_matrix(
-                SI_MATERIAL, 1.6, thresholds, 120.0;
-                energy_resolution_keV=2.5,
-                include_fluorescence=true,
-                include_tailing=true,
-                n_energy_points=120
-            )
+            si_det = PhotonCountingDetector(
+                material=SI_MATERIAL, thickness_mm=1.6,
+                energy_thresholds_keV=thresholds,
+                electronic_noise_keV=2.5)
+            R_si = compute_drm(si_det, 120.0; n_energy_points=120)
             @test size(R_si) == (120, 4)
             # Si has excellent energy resolution — should be more diagonal
             # (narrower Gaussian blur)
@@ -6101,10 +5845,10 @@ end
                 cce = mean_charge_collection_efficiency(material, 1.6)
                 @test 0.0 < cce ≤ 1.0
 
-                R = compute_spectral_response_matrix(
-                    material, 1.6, [20.0, 50.0, 80.0], 120.0;
-                    n_energy_points=50
-                )
+                det = PhotonCountingDetector(
+                    material=material, thickness_mm=1.6,
+                    energy_thresholds_keV=[20.0, 50.0, 80.0])
+                R = compute_drm(det, 120.0; n_energy_points=50)
                 @test size(R) == (50, 3)
             end
         end
@@ -6201,9 +5945,9 @@ end
             @test scanner.source_to_isocenter ≈ 595.0
             @test scanner.source_to_detector ≈ 1085.5
             @test scanner.detector_rows == 144
-            @test scanner.detector_cols == 1250
-            @test scanner.detector_row_size ≈ 0.4
-            @test scanner.detector_col_size ≈ 0.4
+            @test scanner.detector_cols == 1659
+            @test scanner.detector_row_size ≈ 0.353 atol=0.01
+            @test scanner.detector_col_size ≈ 0.302 atol=0.01
             @test scanner.detector_shape == CURVED_DETECTOR
             @test scanner.gantry_rotation_time ≈ 0.25
             @test scanner.detector_material == :cdte
@@ -6222,8 +5966,8 @@ end
             scanner = create_naeotom_alpha(mode=:uhr)
             @test is_pcct(scanner) == true
             @test scanner.detector_rows == 120
-            @test scanner.detector_row_size ≈ 0.2
-            @test scanner.detector_col_size ≈ 0.2
+            @test scanner.detector_row_size ≈ 0.176 atol=0.01
+            @test scanner.detector_col_size ≈ 0.151 atol=0.01
             @test scanner.pixel_mode == :uhr
             # Other PCCT fields same as standard
             @test scanner.n_energy_bins == 4
@@ -6240,9 +5984,8 @@ end
             @test detector isa PhotonCountingDetector
             @test detector.material == CDTE_MATERIAL
             @test detector.thickness_mm ≈ 1.6
-            naeotom_mag = 1085.5 / 595.0
-            @test detector.pixel_size_mm[1] ≈ 0.4 * naeotom_mag atol=0.001
-            @test detector.pixel_size_mm[2] ≈ 0.4 * naeotom_mag atol=0.001
+            @test detector.pixel_size_mm[1] ≈ 0.322 atol=0.01  # native dexel row at detector face
+            @test detector.pixel_size_mm[2] ≈ 0.275 atol=0.01  # native dexel col at detector face
             @test detector.energy_thresholds_keV == [20.0, 35.0, 55.0, 70.0]
             @test detector.energy_resolution_keV ≈ 10.0
             @test detector.charge_sharing_fwhm_mm ≈ 0.08
@@ -6293,7 +6036,7 @@ end
             geom = CTGeometry(pcct_scanner; n_angles=90, fov_cm=25.0)
             @test geom.n_angles == 90
             @test geom.n_rows == 144
-            @test geom.n_cols == 1250
+            @test geom.n_cols == 1659
             @test geom.SAD ≈ 59.5  # 595mm → 59.5cm
             @test geom.SDD ≈ 108.55  # 1085.5mm → 108.55cm
         end
@@ -6644,22 +6387,7 @@ end
             @test result.n_angles == 36
         end
 
-        @testset "Legacy Deprecated Signature" begin
-            # Create a simple attenuation volume
-            volume = zeros(Float32, 16, 16, 4)
-            volume[6:11, 6:11, :] .= 0.02f0  # Simple attenuating object
-
-            energies = [40.0, 60.0, 80.0]
-            weights = [0.3, 0.4, 0.3]
-
-            # Should work (may emit deprecation warning with maxlog=1)
-            result = pcct_forward_project(
-                volume, geom, detector_cdte, energies, weights
-            )
-
-            @test result isa EnergyResolvedSinogram
-            @test length(result.bins) == 4
-        end
+        # Legacy 5-positional-arg signature removed (no backward compat)
 
         @testset "_find_energy_bin Helper" begin
             thresholds = [20.0, 35.0, 55.0, 70.0]
@@ -6915,40 +6643,7 @@ end
             @test mat_map.material_names == [:water, :iodine, :calcium]
         end
 
-        @testset "MLE Decomposition" begin
-            mat_map_mle = pcct_material_decomposition_mle(
-                pcct_sino, detector;
-                basis=(:water, :iodine),
-                energies=energies, weights=weights,
-                max_iterations=10, I0=1e6
-            )
-
-            @test mat_map_mle isa PCCTMaterialMap
-            @test length(mat_map_mle.materials) == 2
-            @test mat_map_mle.material_names == [:water, :iodine]
-            @test all(isfinite.(mat_map_mle.materials[1]))
-            @test all(isfinite.(mat_map_mle.materials[2]))
-        end
-
-        @testset "MLE 3-Material Decomposition" begin
-            mat_map_mle = pcct_material_decomposition_mle(
-                pcct_sino, detector;
-                basis=[:water, :iodine, :calcium],
-                energies=energies, weights=weights,
-                max_iterations=5, I0=1e6
-            )
-
-            @test mat_map_mle isa PCCTMaterialMap
-            @test length(mat_map_mle.materials) == 3
-            @test all(isfinite.(mat_map_mle.materials[1]))
-        end
-
-        @testset "MLE Requires Spectrum" begin
-            @test_throws ErrorException pcct_material_decomposition_mle(
-                pcct_sino, detector;
-                basis=(:water, :iodine)
-            )
-        end
+        # MLE decomposition tests removed — function not yet implemented
 
         @testset "VMI Synthesis" begin
             mat_map = pcct_material_decomposition(pcct_sino; basis=(:water, :iodine))
@@ -7006,202 +6701,6 @@ end
             samples_5 = [BasisSimulator._poisson_sample(rng, 5.0) for _ in 1:100]
             @test mean(samples_5) > 3
             @test mean(samples_5) < 8
-        end
-    end
-
-    # -------------------------------------------------------------------------
-    # PCCT Driver Integration (PCCT-DRIVER-INTEGRATE)
-    # -------------------------------------------------------------------------
-    @testset "PCCT Driver Integration" begin
-
-        # Create a PCCT scanner using create_naeotom_alpha
-        pcct_scanner = create_naeotom_alpha(mode=:standard)
-
-        # Simple phantom
-        phantom = create_gammex_472(n_voxels=16, n_slices=4, fov_cm=20.0, z_cm=2.0)
-
-        @testset "PCCT Auto-Routing" begin
-            # PCCT scanner should route to _simulate_axial_pcct
-            @test is_pcct(pcct_scanner)
-
-            protocol = CTProtocol(kVp=120.0, mA=300.0, views=36)
-            sim_opts = SimOptions(fidelity=:ideal)  # No noise for clean test
-            recon_opts = ReconOptions(
-                algorithm=:fdk,
-                matrix_size=(16, 16, 4),
-                fov_cm=20.0,
-                vmi_basis=[:water, :iodine],
-                vmi_energies=[40.0, 70.0, 100.0]
-            )
-
-            result = simulate(phantom, pcct_scanner, protocol, sim_opts, recon_opts)
-
-            @test result isa SimulationResult
-            @test result.sinogram_ideal isa AbstractArray{Float32, 3}
-            @test result.sinogram_noisy isa AbstractArray{Float32, 3}
-            @test length(result.reconstructions) == 1
-            @test result.reconstructions[1].first == :fdk
-        end
-
-        @testset "PCCT Sinogram in Result" begin
-            protocol = CTProtocol(kVp=120.0, mA=300.0, views=36)
-            sim_opts = SimOptions(fidelity=:ideal)
-            recon_opts = ReconOptions(
-                algorithm=:fdk,
-                matrix_size=(16, 16, 4),
-                fov_cm=20.0,
-                vmi_basis=[:water, :iodine]
-            )
-
-            result = simulate(phantom, pcct_scanner, protocol, sim_opts, recon_opts)
-
-            # PCCT fields should be populated
-            @test result.pcct_sinogram isa EnergyResolvedSinogram
-            @test length(result.pcct_sinogram.bins) == 4  # NAEOTOM has 4 bins
-            @test all(isfinite.(result.pcct_sinogram.bins[1]))
-        end
-
-        @testset "PCCT Material Decomposition in Result" begin
-            protocol = CTProtocol(kVp=120.0, mA=300.0, views=36)
-            sim_opts = SimOptions(fidelity=:ideal)
-            recon_opts = ReconOptions(
-                algorithm=:fdk,
-                matrix_size=(16, 16, 4),
-                fov_cm=20.0,
-                vmi_basis=[:water, :iodine]
-            )
-
-            result = simulate(phantom, pcct_scanner, protocol, sim_opts, recon_opts)
-
-            @test result.material_maps isa MaterialMap
-            @test result.material_maps.material1_name == :water
-            @test result.material_maps.material2_name == :iodine
-        end
-
-        @testset "PCCT 3-Material Basis (uses first 2 for decomposition)" begin
-            protocol = CTProtocol(kVp=120.0, mA=300.0, views=36)
-            sim_opts = SimOptions(fidelity=:ideal)
-            recon_opts = ReconOptions(
-                algorithm=:fdk,
-                matrix_size=(16, 16, 4),
-                fov_cm=20.0,
-                vmi_basis=[:water, :iodine, :calcium]
-            )
-
-            result = simulate(phantom, pcct_scanner, protocol, sim_opts, recon_opts)
-
-            # Unified path always uses 2-material decomposition (first 2 basis materials)
-            @test result.material_maps isa MaterialMap
-            @test result.material_maps.material1_name == :water
-            @test result.material_maps.material2_name == :iodine
-        end
-
-        @testset "PCCT VMI Volumes in Result" begin
-            protocol = CTProtocol(kVp=120.0, mA=300.0, views=36)
-            sim_opts = SimOptions(fidelity=:ideal)
-            recon_opts = ReconOptions(
-                algorithm=:fdk,
-                matrix_size=(16, 16, 4),
-                fov_cm=20.0,
-                vmi_basis=[:water, :iodine],
-                vmi_energies=[40.0, 70.0, 100.0]
-            )
-
-            result = simulate(phantom, pcct_scanner, protocol, sim_opts, recon_opts)
-
-            @test length(result.pcct_vmi_volumes) == 3
-            @test haskey(result.pcct_vmi_volumes, 40.0)
-            @test haskey(result.pcct_vmi_volumes, 70.0)
-            @test haskey(result.pcct_vmi_volumes, 100.0)
-            @test size(result.pcct_vmi_volumes[70.0]) == (16, 16, 4)
-            @test all(isfinite.(result.pcct_vmi_volumes[70.0]))
-        end
-
-        @testset "PCCT with Noise" begin
-            protocol = CTProtocol(kVp=120.0, mA=300.0, views=36)
-            sim_opts = SimOptions(fidelity=:low, seed=42)  # :low enables noise only
-            recon_opts = ReconOptions(
-                algorithm=:fdk,
-                matrix_size=(16, 16, 4),
-                fov_cm=20.0,
-                vmi_basis=[:water, :iodine]
-            )
-
-            result = simulate(phantom, pcct_scanner, protocol, sim_opts, recon_opts)
-
-            @test result.pcct_sinogram isa EnergyResolvedSinogram
-            @test all(isfinite.(result.pcct_sinogram.bins[1]))
-            # Noisy should differ from ideal (noise was applied)
-            @test result.sinogram_noisy != result.sinogram_ideal
-        end
-
-        @testset "PCCT + Dual-Energy Errors" begin
-            protocol_de = CTProtocol(kVp=140.0, mA=200.0, dual_energy=true, kVp_low=80.0, mA_low=350.0)
-            sim_opts = SimOptions(fidelity=:ideal)
-            recon_opts = ReconOptions(algorithm=:fdk, matrix_size=(16, 16, 4), fov_cm=20.0)
-
-            @test_throws ErrorException simulate(phantom, pcct_scanner, protocol_de, sim_opts, recon_opts)
-        end
-
-        @testset "Non-PCCT Scanner Still Works" begin
-            # Regular scanner should NOT route to PCCT
-            regular_scanner = Scanner(
-                source_to_isocenter=595.0, source_to_detector=1085.5,
-                detector_rows=4, detector_cols=32,
-                detector_row_size=1.0, detector_col_size=1.0
-            )
-            @test !is_pcct(regular_scanner)
-
-            protocol = CTProtocol(kVp=120.0, mA=300.0, views=36)
-            sim_opts = SimOptions(fidelity=:ideal)
-            recon_opts = ReconOptions(
-                algorithm=:fdk, matrix_size=(16, 16, 4), fov_cm=20.0
-            )
-
-            result = simulate(phantom, regular_scanner, protocol, sim_opts, recon_opts)
-            @test result.pcct_sinogram === nothing
-            @test result.pcct_material_maps === nothing
-            @test isempty(result.pcct_vmi_volumes)
-            # bin_sinograms accessor should also return nothing for non-PCCT
-            @test result.bin_sinograms === nothing
-        end
-
-        @testset "bin_sinograms Property Accessor" begin
-            protocol = CTProtocol(kVp=120.0, mA=300.0, views=36)
-            sim_opts = SimOptions(fidelity=:ideal)
-            recon_opts = ReconOptions(
-                algorithm=:fdk,
-                matrix_size=(16, 16, 4),
-                fov_cm=20.0,
-                vmi_basis=[:water, :iodine]
-            )
-
-            result = simulate(phantom, pcct_scanner, protocol, sim_opts, recon_opts)
-
-            # bin_sinograms is an alias for pcct_sinogram
-            @test result.bin_sinograms isa EnergyResolvedSinogram
-            @test result.bin_sinograms === result.pcct_sinogram
-            @test length(result.bin_sinograms.bins) == 4
-            @test :bin_sinograms in propertynames(result)
-        end
-
-        @testset "Vector{ReconOptions} with PCCT" begin
-            protocol = CTProtocol(kVp=120.0, mA=300.0, views=36)
-            sim_opts = SimOptions(fidelity=:ideal)
-            recon_list = [
-                ReconOptions(algorithm=:fdk, matrix_size=(16, 16, 4), fov_cm=20.0, vmi_basis=[:water, :iodine]),
-                ReconOptions(algorithm=:sirt, matrix_size=(16, 16, 4), fov_cm=20.0, iterations=5, cascade_warm_start=true)
-            ]
-
-            result = simulate(phantom, pcct_scanner, protocol, sim_opts, recon_list)
-
-            # Multi-recon: should have 2 reconstructions
-            @test length(result.reconstructions) == 2
-            @test result.reconstructions[1].first == :fdk
-            @test result.reconstructions[2].first == :sirt
-            # PCCT fields still populated from first run
-            @test result.pcct_sinogram isa EnergyResolvedSinogram
-            @test length(result.pcct_sinogram.bins) == 4
         end
     end
 

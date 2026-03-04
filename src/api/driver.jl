@@ -4,18 +4,16 @@
 High-level driver for running end-to-end CT simulations.
 """
 
-export simulate, simulate!, SimulationResult, add_system_noise_floor!
+export simulate!, add_system_noise_floor!
 
 # =============================================================================
-# GPU Array Handling
+# Materials Resolution
 # =============================================================================
 
 """
     _resolve_materials(phantom, materials_kwarg) -> Vector{XA.Material}
 
 Resolve materials with priority: (1) explicit kwarg, (2) phantom.materials, (3) fallback.
-
-This is the v20.0 unified materials resolution logic used by all simulate() functions.
 """
 function _resolve_materials(phantom, materials_kwarg::Union{Nothing,Vector})
     if !isnothing(materials_kwarg)
@@ -30,437 +28,6 @@ function _resolve_materials(phantom, materials_kwarg::Union{Nothing,Vector})
     end
 end
 
-"""
-    _to_gpu(arr::AbstractArray)
-
-Move array to GPU if a GPU backend is available.
-Automatically detects Metal, CUDA, or AMDGPU and uses the appropriate array type.
-Falls back to CPU if no GPU backend is loaded.
-"""
-function _to_gpu(arr::AbstractArray)
-    # Check for Metal (Apple Silicon)
-    if isdefined(Main, :Metal) && isdefined(Main.Metal, :MtlArray)
-        return Main.Metal.MtlArray(arr)
-    end
-    # Check for CUDA (NVIDIA)
-    if isdefined(Main, :CUDA) && isdefined(Main.CUDA, :CuArray)
-        return Main.CUDA.CuArray(arr)
-    end
-    # Check for AMDGPU (AMD)
-    if isdefined(Main, :AMDGPU) && isdefined(Main.AMDGPU, :ROCArray)
-        return Main.AMDGPU.ROCArray(arr)
-    end
-    # No GPU backend - return as-is
-    return arr
-end
-
-"""
-    SimulationResult
-
-Container for simulation outputs. Supports single and multi-reconstruction,
-dual-energy sinograms, material maps, and VMI volumes.
-
-# Core Fields
-- `sinogram_ideal`: Noise-free sinogram (or high-kVp sinogram for DE)
-- `sinogram_noisy`: Noisy sinogram after detector simulation
-- `reconstructions`: Vector of (algorithm_name, volume) pairs
-- `geometry`: CTGeometry used for simulation
-- `physics_config`: PhysicsConfig with all enabled effects
-
-# Dual-Energy Fields
-- `de_sinogram`: DualEnergySinogram (low/high kVp pair), nothing if single-kVp
-- `material_maps`: MaterialMap from decomposition, nothing if single-kVp
-- `vmi_volumes`: Dict{Float64, Array} of VMI reconstructions by energy
-
-# PCCT Fields
-- `pcct_sinogram`: EnergyResolvedSinogram from PCCT, nothing if not PCCT
-- `pcct_material_maps`: Legacy field (always nothing — use `material_maps` for PCCT decomposition)
-- `pcct_vmi_volumes`: Dict{Float64, Array} of VMI from material synthesis
-
-# Property Aliases
-- `result.reconstruction` returns the first reconstruction volume
-- `result.bin_sinograms` is an alias for `pcct_sinogram` (PRD naming convention)
-- Single-recon calls populate `reconstructions` with one entry
-"""
-struct SimulationResult{T,G,P}
-    sinogram_ideal::AbstractArray{T,3}
-    sinogram_noisy::AbstractArray{T,3}
-    reconstructions::Vector{Pair{Symbol,AbstractArray{T,3}}}
-    geometry::G
-    physics_config::P
-    # Dual-energy fields
-    de_sinogram::Union{Nothing,DualEnergySinogram}
-    material_maps::Union{Nothing,MaterialMap}
-    vmi_volumes::Dict{Float64,AbstractArray{T,3}}
-    # PCCT fields
-    pcct_sinogram::Union{Nothing,EnergyResolvedSinogram}
-    pcct_material_maps::Union{Nothing,PCCTMaterialMap}
-    pcct_vmi_volumes::Dict{Float64,AbstractArray{T,3}}
-end
-
-# Property accessors for backward compatibility and PRD naming conventions
-function Base.getproperty(r::SimulationResult, s::Symbol)
-    if s === :reconstruction
-        recons = getfield(r, :reconstructions)
-        isempty(recons) && error("No reconstructions available")
-        return recons[1].second
-    elseif s === :bin_sinograms
-        return getfield(r, :pcct_sinogram)
-    else
-        return getfield(r, s)
-    end
-end
-
-function Base.propertynames(::SimulationResult, private::Bool=false)
-    return (:sinogram_ideal, :sinogram_noisy, :reconstruction, :reconstructions,
-        :geometry, :physics_config, :de_sinogram, :material_maps, :vmi_volumes,
-        :pcct_sinogram, :pcct_material_maps, :pcct_vmi_volumes, :bin_sinograms)
-end
-
-"""
-    simulate(phantom, scanner, protocol, sim_opts, recon_opts; materials=nothing)
-
-Run a full end-to-end CT simulation with automatic mode routing.
-
-The 4-struct API: Scanner provides hardware parameters, CTProtocol provides acquisition
-settings, SimOptions controls which physics effects are enabled, and ReconOptions
-controls image reconstruction. The driver automatically routes between 3 scan modes:
-
-1. **Axial single-kVp** (default): Standard CT acquisition
-2. **Axial dual-kVp**: Dual-energy with VMI pipeline
-3. **Axial PCCT**: Photon-counting CT with energy-resolved sinograms, N-material
-   decomposition, and material-based VMI synthesis (auto-detected via Scanner)
-
-# Arguments
-- `phantom`: Struct containing `.mask` (UInt8) and material definitions.
-- `scanner`: `Scanner` hardware definition.
-- `protocol`: `CTProtocol` acquisition settings.
-- `sim_opts`: `SimOptions` for physics fidelity (controls all 14 effects).
-- `recon_opts`: `ReconOptions` or `Vector{ReconOptions}` for multi-recon.
-
-# Keyword Arguments
-- `materials::Union{Nothing, Vector}=nothing`: Custom materials vector for arbitrary phantoms.
-  If `nothing`, uses `get_region_materials()` (Gammex 472 materials, backwards compatible).
-  For custom phantoms, provide a `Vector{XA.Material}` where `materials[mask_value + 1]`
-  returns the material for each voxel. Use `build_materials_vector(materials_dict)` to
-  create this from a Dict{Int, XA.Material}.
-
-# Returns
-`SimulationResult` containing sinograms, reconstructions, and optional DE outputs.
-
-# Examples
-```julia
-# Axial single-kVp (unchanged from before)
-result = simulate(phantom, scanner, CTProtocol(kVp=120, mA=200), SimOptions(), ReconOptions())
-
-# Dual-energy axial with VMI
-result = simulate(phantom, scanner,
-    CTProtocol(dual_energy=true, kVp=140, mA=200, kVp_low=80, mA_low=350),
-    SimOptions(), ReconOptions(vmi_energies=[50.0, 70.0, 100.0]))
-
-# Multi-recon from one scan
-recon_list = [ReconOptions(algorithm=:fdk), ReconOptions(algorithm=:sirt, iterations=50)]
-result = simulate(phantom, scanner, protocol, sim_opts, recon_list)
-
-# Custom phantom with arbitrary materials (XCAT, custom segmentation, etc.)
-import XrayAttenuation as XA
-materials_dict = Dict(0 => XA.Materials.air, 1 => XA.Materials.water, 2 => XA.Materials.corticalbone)
-phantom = create_phantom_from_mask(labeled_array, materials_dict, (0.1, 0.1, 0.1))
-materials_vec = build_materials_vector(materials_dict)
-result = simulate(phantom, scanner, protocol, sim_opts, recon_opts; materials=materials_vec)
-```
-"""
-function simulate(
-    phantom,
-    scanner::Scanner,
-    protocol::CTProtocol,
-    sim_opts::SimOptions=SimOptions(),
-    recon_opts::ReconOptions=ReconOptions();
-    materials::Union{Nothing,Vector}=nothing
-)
-    # Route based on dual_energy and PCCT
-    is_dual = protocol.dual_energy
-    _is_pcct = is_pcct(scanner)
-
-    if _is_pcct && is_dual
-        error("PCCT scanners cannot use dual_energy mode — spectral info comes from detector energy bins, not dual kVp. Set dual_energy=false.")
-    end
-
-    if _is_pcct
-        # PCCT mode: photon-counting scanner detected
-        return _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts; materials=materials)
-    elseif !is_dual
-        return _simulate_axial_single(phantom, scanner, protocol, sim_opts, recon_opts; materials=materials)
-    else
-        return _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts; materials=materials)
-    end
-end
-
-# Multi-recon dispatch: simulate() with Vector{ReconOptions}
-function simulate(
-    phantom,
-    scanner::Scanner,
-    protocol::CTProtocol,
-    sim_opts::SimOptions,
-    recon_opts_list::Vector{ReconOptions};
-    materials::Union{Nothing,Vector}=nothing
-)
-    # Run simulation with first recon option to get sinograms
-    first_result = simulate(phantom, scanner, protocol, sim_opts, recon_opts_list[1]; materials=materials)
-
-    # Reconstruct with additional options from the same sinogram
-    T = eltype(first_result.sinogram_noisy)
-    recons = copy(first_result.reconstructions)
-    geom = first_result.geometry
-
-    for i in 2:length(recon_opts_list)
-        opts = recon_opts_list[i]
-
-        # Cascading warm start: use previous reconstruction as init (opt-in)
-        # Priority: explicit warm_start > cascade_warm_start > algorithm default
-        effective_opts = if opts.cascade_warm_start && isnothing(opts.warm_start) && !isempty(recons)
-            # Create new ReconOptions with previous result as warm_start
-            prev_vol = recons[end].second
-            ReconOptions(
-                opts.algorithm, opts.matrix_size, opts.fov_cm, opts.z_cm, opts.filter, opts.iterations,
-                opts.lambda, opts.tv_weight, opts.n_subsets,
-                opts.penalty, opts.penalty_delta, opts.use_edge_weights, opts.blend_percent,
-                opts.vmi_energies, opts.vmi_basis,
-                prev_vol, opts.cascade_warm_start,
-                opts.system_noise_floor_hu
-            )
-        else
-            opts
-        end
-
-        vol = _run_reconstruction(first_result.sinogram_noisy, geom, effective_opts)
-        add_system_noise_floor!(vol, opts.system_noise_floor_hu)
-        push!(recons, opts.algorithm => vol)
-    end
-
-    return SimulationResult(
-        first_result.sinogram_ideal,
-        first_result.sinogram_noisy,
-        recons,
-        geom,
-        first_result.physics_config,
-        first_result.de_sinogram,
-        first_result.material_maps,
-        first_result.vmi_volumes,
-        first_result.pcct_sinogram,
-        first_result.pcct_material_maps,
-        first_result.pcct_vmi_volumes
-    )
-end
-
-# =============================================================================
-# Mode 1: Axial Single-kVp (DEPRECATED — use workspace-based simulate!() instead)
-# =============================================================================
-
-function _simulate_axial_single(phantom, scanner, protocol, sim_opts, recon_opts;
-    materials::Union{Nothing,Vector}=nothing)
-    # 1. Build Geometry
-    geom = CTGeometry(
-        scanner;
-        n_angles=protocol.views,
-        fov_cm=recon_opts.fov_cm,
-        z_cm=recon_opts.z_cm,
-        collimation_mm=protocol.collimation_mm
-    )
-
-    # 2. Resolve spectrum (pass scanner for :high IPEM pipeline)
-    energies, weights = resolve_spectrum(sim_opts, protocol; scanner=scanner)
-
-    # 3. Build PhysicsConfig (with phantom for size-aware scatter)
-    config = build_physics_config(scanner, sim_opts, energies, weights; phantom=phantom)
-
-    # 4. Forward Project (move mask to GPU if available)
-    # Use custom materials if provided, otherwise default to Gammex region materials
-    mats = _resolve_materials(phantom, materials)
-    mask_gpu = _to_gpu(phantom.mask)
-    sino_ideal = forward_project(
-        mask_gpu, geom;
-        energies=energies, weights=weights,
-        materials=mats, physics=config,
-        volume_extent=phantom.extent
-    )
-
-    # 5. Apply Detector Noise
-    sino_final = if sim_opts.use_noise
-        I0 = compute_detector_I0(geom, protocol, sum(weights))
-        model = DetectorModel(0.0, I0, 0.0, nothing)
-        noisy_sino = copy(sino_ideal)
-        add_quantum_noise!(noisy_sino, model)
-        noisy_sino
-    else
-        copy(sino_ideal)
-    end
-
-    # 6. Reconstruction
-    recon_vol = _run_reconstruction(sino_final, geom, recon_opts)
-    add_system_noise_floor!(recon_vol, recon_opts.system_noise_floor_hu)
-
-    T = eltype(recon_vol)
-    recons = Pair{Symbol,AbstractArray{T,3}}[recon_opts.algorithm=>recon_vol]
-    vmi_dict = Dict{Float64,AbstractArray{T,3}}()
-
-    pcct_vmi_dict = Dict{Float64,AbstractArray{T,3}}()
-    return SimulationResult(
-        sino_ideal, sino_final, recons, geom, config,
-        nothing, nothing, vmi_dict,
-        nothing, nothing, pcct_vmi_dict
-    )
-end
-
-# =============================================================================
-# Mode 2: Axial Dual-kVp (WRAPPER AROUND SINGLE-KVP)
-# =============================================================================
-#
-# v11.0 REFACTOR: Dual-energy now runs single-kVp pipeline TWICE.
-#
-# Previous implementation had wave artifacts because:
-# - Scatter was ADDED with energy-dependent coefficients (different for 80/140 kVp)
-# - Scatter was CORRECTED with joint estimate at average energy
-# - The coefficient mismatch created different residuals that amplified in decomposition
-#
-# New implementation:
-# - Run single-kVp for 80 kVp → scatter added AND corrected at 50 keV (matched!)
-# - Run single-kVp for 140 kVp → scatter added AND corrected at 70 keV (matched!)
-# - Each sinogram is fully corrected before decomposition
-# - No special dual-energy scatter handling needed
-#
-# See DESIGN-DE-WRAPPER in progress.md for full rationale.
-# =============================================================================
-
-"""
-    _forward_single_pass(phantom, scanner, protocol, sim_opts, geom; materials=nothing) -> (sinogram, config, weights)
-
-Run forward projection for a single kVp with all physics effects.
-Returns fully-corrected sinogram, physics config, and spectrum weights.
-
-This is the core building block for both single-kVp and dual-kVp simulations.
-By using this for dual-energy, we ensure scatter is properly matched.
-"""
-function _forward_single_pass(phantom, scanner, protocol, sim_opts, geom;
-    materials::Union{Nothing,Vector}=nothing)
-    # Resolve spectrum for this kVp (pass scanner for :high IPEM pipeline)
-    energies, weights = resolve_spectrum(sim_opts, protocol; scanner=scanner)
-
-    # Build PhysicsConfig (scatter add + scatter correct at SAME energy)
-    config = build_physics_config(scanner, sim_opts, energies, weights; phantom=phantom)
-
-    # Forward project with all physics
-    # Use custom materials if provided, otherwise default to Gammex region materials
-    mats = _resolve_materials(phantom, materials)
-    mask_gpu = _to_gpu(phantom.mask)
-    sinogram = forward_project(
-        mask_gpu, geom;
-        energies=energies, weights=weights,
-        materials=mats, physics=config,
-        volume_extent=phantom.extent
-    )
-
-    return sinogram, config, weights
-end
-
-function _simulate_axial_dual(phantom, scanner, protocol, sim_opts, recon_opts;
-    materials::Union{Nothing,Vector}=nothing)
-    # 1. Build Geometry (shared for both kVp)
-    # DEPRECATED: prefer workspace-based simulate!() path
-    geom = CTGeometry(
-        scanner;
-        n_angles=protocol.views,
-        fov_cm=recon_opts.fov_cm,
-        z_cm=recon_opts.z_cm,
-        collimation_mm=protocol.collimation_mm
-    )
-
-    # 2. Create single-kVp protocols for each energy level
-    # These are single-kVp protocols (dual_energy=false) so that
-    # _forward_single_pass uses the standard scatter add/correct pipeline
-    protocol_low = CTProtocol(
-        mA=protocol.mA_low > 0 ? protocol.mA_low : protocol.mA,
-        kVp=protocol.kVp_low,       # 80 kVp
-        views=protocol.views,
-        rotation_time=protocol.rotation_time,
-        spectrum_path=nothing,
-        dual_energy=false,          # Single-kVp mode for clean scatter handling
-        anode_angle=protocol.anode_angle,
-        additional_filters=protocol.additional_filters
-    )
-
-    protocol_high = CTProtocol(
-        mA=protocol.mA,
-        kVp=protocol.kVp,           # 140 kVp
-        views=protocol.views,
-        rotation_time=protocol.rotation_time,
-        spectrum_path=nothing,
-        dual_energy=false,          # Single-kVp mode for clean scatter handling
-        anode_angle=protocol.anode_angle,
-        additional_filters=protocol.additional_filters
-    )
-
-    # 3. Run single-kVp pipeline for LOW kVp (80 kVp)
-    # Scatter is added AND corrected at ~50 keV (matched coefficients!)
-    sino_low, config_low, weights_low = _forward_single_pass(phantom, scanner, protocol_low, sim_opts, geom; materials=materials)
-
-    # 4. Run single-kVp pipeline for HIGH kVp (140 kVp)
-    # Scatter is added AND corrected at ~70 keV (matched coefficients!)
-    sino_high, config_high, weights_high = _forward_single_pass(phantom, scanner, protocol_high, sim_opts, geom; materials=materials)
-
-    # 5. Apply detector noise to BOTH sinograms for realistic downstream processing
-    sino_ideal = sino_high
-    if sim_opts.use_noise
-        I0_low = compute_detector_I0(geom, protocol_low, sum(weights_low))
-        model_low = DetectorModel(0.0, I0_low, 0.0, nothing)
-        sino_low_noisy = copy(sino_low)
-        add_quantum_noise!(sino_low_noisy, model_low)
-
-        I0_high = compute_detector_I0(geom, protocol_high, sum(weights_high))
-        model_high = DetectorModel(0.0, I0_high, 0.0, nothing)
-        sino_high_noisy = copy(sino_high)
-        add_quantum_noise!(sino_high_noisy, model_high)
-    else
-        sino_low_noisy = sino_low
-        sino_high_noisy = sino_high
-    end
-    sino_final = sino_high_noisy
-
-    # 6. Create DualEnergySinogram from (potentially noisy) sinograms
-    # With use_noise=true: material decomposition sees realistic noise
-    # With use_noise=false: identical to previous behavior (clean sinograms)
-    de_sino = DualEnergySinogram(sino_low_noisy, sino_high_noisy;
-        low_kvp=Int(protocol.kVp_low),
-        high_kvp=Int(protocol.kVp)
-    )
-
-    # 7. Material decomposition (now operates on noisy sinograms when use_noise=true)
-    mat_map = decompose_materials(de_sino; basis=Tuple(recon_opts.vmi_basis[1:2]))
-
-    # 8. VMI reconstruction (if energies specified)
-    T = eltype(sino_final)
-    vmi_dict = Dict{Float64,AbstractArray{T,3}}()
-    if !isempty(recon_opts.vmi_energies)
-        for E in recon_opts.vmi_energies
-            vmi_sino = virtual_monoenergetic(mat_map, E)
-            vmi_vol = _run_reconstruction(vmi_sino, geom, recon_opts)
-            add_system_noise_floor!(vmi_vol, recon_opts.system_noise_floor_hu)
-            vmi_dict[E] = T.(vmi_vol)
-        end
-    end
-
-    # 9. Standard reconstruction from high-kVp sinogram
-    recon_vol = _run_reconstruction(sino_final, geom, recon_opts)
-    add_system_noise_floor!(recon_vol, recon_opts.system_noise_floor_hu)
-    recons = Pair{Symbol,AbstractArray{T,3}}[recon_opts.algorithm=>recon_vol]
-
-    pcct_vmi_dict = Dict{Float64,AbstractArray{T,3}}()
-    return SimulationResult(
-        sino_ideal, sino_final, recons, geom, config_high,
-        de_sino, mat_map, vmi_dict,
-        nothing, nothing, pcct_vmi_dict
-    )
-end
 
 # =============================================================================
 # PCCT Combined Sinogram Helper
@@ -502,26 +69,12 @@ function _combine_pcct_bins(pcct_sino::EnergyResolvedSinogram, detector::PhotonC
     elseif apply_detector_effects && !apply_corrections
         # Effects without corrections: use degraded I0
         η = quantum_efficiency_vector(detector.material, detector.thickness_mm, energies)
-        R = compute_spectral_response_matrix(
-            detector.material, detector.thickness_mm, thresholds, kVp;
-            energy_resolution_keV=detector.energy_resolution_keV,
-            pixel_size_mm=detector.pixel_size_mm,
-            include_fluorescence=true,
-            include_tailing=true,
-            n_energy_points=length(energies)
-        )
+        R = compute_drm(detector, kVp)
         _compute_degraded_I0(detector, energies, weights, η, thresholds, kVp, I0, flux_rate; R=R)
     else
         # No effects OR effects+corrections: use theoretical I0
         η = quantum_efficiency_vector(detector.material, detector.thickness_mm, energies)
-        R = compute_spectral_response_matrix(
-            detector.material, detector.thickness_mm, thresholds, kVp;
-            energy_resolution_keV=detector.energy_resolution_keV,
-            pixel_size_mm=detector.pixel_size_mm,
-            include_fluorescence=true,
-            include_tailing=true,
-            n_energy_points=length(energies)
-        )
+        R = compute_drm(detector, kVp)
         [_compute_bin_I0(detector, energies, weights, η, thresholds, b,
             Float64(kVp), Float64(I0); R=R) for b in 1:n_bins]
     end
@@ -552,6 +105,58 @@ function _combine_pcct_bins(pcct_sino::EnergyResolvedSinogram, detector::PhotonC
 end
 
 # =============================================================================
+# PCCT Tube Physics (applied to combined sinogram at binned resolution)
+# =============================================================================
+
+"""
+    _apply_pcct_tube_physics!(sinogram, geom, config; ws_scratch=nothing)
+
+Apply tube/geometry effects to the combined PCCT sinogram.
+
+These are tube-side effects that are skipped by the PCCT per-bin pipeline but
+affect the measured signal: heel effect, scatter, and focal spot blur.
+Applied to the **combined** (single) sinogram at binned resolution.
+
+The effects are a subset of `apply_physics_effects!` — only those that are
+tube/geometry effects (not detector-specific like noise, crosstalk, lag).
+"""
+function _apply_pcct_tube_physics!(
+    sinogram::AbstractArray{T,3},
+    geom::CTGeometry,
+    config::PhysicsConfig;
+    ws_scratch::Union{Nothing, AbstractArray{T,3}}=nothing
+) where T
+    _scratch = ws_scratch
+
+    # 1. Heel effect (intensity domain)
+    if config.heel_effect !== nothing
+        eps = T(1e-10)
+        AK.foreachindex(sinogram) do idx
+            sinogram[idx] = exp(-sinogram[idx])
+        end
+        apply_heel_effect!(sinogram, config.heel_effect, geom)
+        AK.foreachindex(sinogram) do idx
+            sinogram[idx] = -log(max(sinogram[idx], eps))
+        end
+    end
+
+    # 2. Scatter add + correct (sinogram domain)
+    if config.scatter !== nothing && _scratch !== nothing
+        add_scatter!(sinogram, config.scatter; ws_output=_scratch)
+    end
+    if config.scatter_correction !== nothing && _scratch !== nothing
+        correct_scatter!(sinogram, config.scatter_correction; ws_output=_scratch)
+    end
+
+    # 3. Focal spot blur (sinogram domain)
+    if config.focal_spot !== nothing && _scratch !== nothing
+        apply_focal_spot_blur!(sinogram, config.focal_spot, geom; ws_output=_scratch)
+    end
+
+    return sinogram
+end
+
+# =============================================================================
 # simulate!() — Zero-allocation PCCT simulation hot path
 # =============================================================================
 
@@ -566,12 +171,11 @@ workspace achieves `@allocated == 0`.
 Create the workspace with `create_workspace(scanner, protocol, sim_opts, recon_opts, phantom)`.
 
 All setup data (geometry, spectrum, physics config, detector, spectral response matrices)
-is pre-computed in the workspace by `create_workspace()`. Reconstruction is NOT included —
-it is handled by the `simulate()` wrapper or `_simulate_axial_pcct`.
+is pre-computed in the workspace by `create_workspace()`. Reconstruction is handled
+separately via `reconstruct!()`.
 
 # Returns
-`SimulationResult` with sinograms, material maps, and VMI sinograms from workspace.
-Reconstruction fields are empty (filled by wrapper).
+Named tuple with `pcct_sino` and `mat_map` fields.
 """
 function simulate!(
     ws::PCCTWorkspace{T},
@@ -593,7 +197,7 @@ function simulate!(
     use_corrections = ws.use_corrections
     kVp = ws.kVp
 
-    # Forward projection with ALL workspace buffers
+    # Forward projection with ALL workspace buffers (including native-res path)
     pcct_sino = pcct_forward_project(
         phantom.mask, geom, pcct_detector;
         energies=energies, weights=weights,
@@ -623,7 +227,17 @@ function simulate!(
         ws_detector_u=ws.geom_detector_u,
         ws_detector_v=ws.geom_detector_v,
         ws_charge_probs=ws.charge_sharing_probs,
-        volume_extent=phantom.extent
+        volume_extent=phantom.extent,
+        # Native-resolution forward projection path
+        native_geom=ws.native_geom,
+        ws_native_bins=ws.native_bins,
+        ws_native_sino_buf=ws.native_sino_buf,
+        ws_native_scratch=ws.native_scratch,
+        ws_native_total_counts=ws.native_total_counts,
+        ws_native_source_positions=ws.native_geom_source_positions,
+        ws_native_detector_centers=ws.native_geom_detector_centers,
+        ws_native_detector_u=ws.native_geom_detector_u,
+        ws_native_detector_v=ws.native_geom_detector_v
     )
 
     # Combine ideal (workspace buffer + pre-computed I0_bins)
@@ -633,6 +247,10 @@ function simulate!(
         output=ws.combined,
         ws_I0_bins=ws.I0_bins)
 
+    # Tube physics on ideal combined sinogram (scatter, focal spot, heel)
+    _apply_pcct_tube_physics!(sino_ideal_gpu, geom, config;
+        ws_scratch=ws.tube_physics_scratch)
+
     # BHC on ideal
     if config.bhc !== nothing
         apply_bhc!(sino_ideal_gpu, config.bhc; ws_coeffs_gpu=ws.bhc_coeffs_gpu)
@@ -641,7 +259,7 @@ function simulate!(
     # Save ideal to CPU workspace buffer
     copyto!(ws.sino_ideal_out, sino_ideal_gpu)
 
-    # Noise (in-place on pcct_sino.bins)
+    # Noise (in-place on pcct_sino.bins — operates at binned resolution)
     if sim_opts.use_noise
         I0_physics = compute_detector_I0(geom, protocol, sum(ws.weights))
         apply_pcct_noise!(pcct_sino, pcct_detector, protocol;
@@ -661,6 +279,10 @@ function simulate!(
         apply_corrections=use_corrections,
         output=ws.combined,
         ws_I0_bins=ws.I0_bins)
+
+    # Tube physics on noisy combined sinogram
+    _apply_pcct_tube_physics!(sino_noisy_gpu, geom, config;
+        ws_scratch=ws.tube_physics_scratch)
 
     # BHC on noisy
     if config.bhc !== nothing
@@ -1193,53 +815,6 @@ function _eict_dual_forward_pass!(
     end
 end
 
-# =============================================================================
-# Mode 5: Axial PCCT (Photon-Counting CT)
-# =============================================================================
-
-function _simulate_axial_pcct(phantom, scanner, protocol, sim_opts, recon_opts;
-    materials::Union{Nothing,Vector}=nothing)
-    T = Float32
-    # Convert mask to GPU before creating workspace so buffers match GPU backend
-    mask_gpu = _to_gpu(phantom.mask)
-    # Create a phantom wrapper with the GPU mask for consistent backend
-    gpu_phantom = Phantom(mask_gpu, phantom.materials, phantom.voxel_size,
-        phantom.origin, phantom.extent)
-    ws = create_workspace(scanner, protocol, sim_opts, recon_opts, gpu_phantom;
-        materials=materials)
-
-    # Run zero-alloc PCCT pipeline
-    result = simulate!(ws, gpu_phantom, scanner, protocol, sim_opts, recon_opts;
-        materials=materials)
-    pcct_sino = result.pcct_sino
-    mat_map = result.mat_map
-
-    # --- Post-processing (allocates — outside zero-alloc scope) ---
-    geom = ws.geom
-
-    # VMI synthesis + reconstruction (unified with dual-kVp path)
-    pcct_vmi_dict = Dict{Float64,AbstractArray{T,3}}()
-    if !isempty(recon_opts.vmi_energies) && !isnothing(mat_map)
-        for E in recon_opts.vmi_energies
-            vmi_sino = virtual_monoenergetic(mat_map, E; ws_output=ws.vmi_sino)
-            vmi_vol = _run_reconstruction(vmi_sino, geom, recon_opts)
-            add_system_noise_floor!(vmi_vol, recon_opts.system_noise_floor_hu)
-            pcct_vmi_dict[E] = vmi_vol
-        end
-    end
-
-    # Main reconstruction
-    recon_vol = _run_reconstruction(ws.sino_noisy_out, geom, recon_opts)
-    add_system_noise_floor!(recon_vol, recon_opts.system_noise_floor_hu)
-    recons = Pair{Symbol,AbstractArray{T,3}}[recon_opts.algorithm=>recon_vol]
-    vmi_dict = Dict{Float64,AbstractArray{T,3}}()
-
-    return SimulationResult(
-        ws.sino_ideal_out, ws.sino_noisy_out, recons, geom, ws.config,
-        nothing, mat_map, vmi_dict,
-        pcct_sino, nothing, pcct_vmi_dict
-    )
-end
 
 # =============================================================================
 # System Noise Floor (dose-independent)
@@ -1266,103 +841,6 @@ function add_system_noise_floor!(vol::AbstractArray{T}, sigma_hu::Real; seed::Un
     rng = isnothing(seed) ? Random.default_rng() : Random.MersenneTwister(seed + 7919)
     vol .+= T(sigma_hu) .* randn(rng, T, size(vol))
     return vol
-end
-
-# =============================================================================
-# Reconstruction Dispatcher (axial)
-# =============================================================================
-
-"""
-    _run_reconstruction(sinogram, geom, recon_opts) -> Array{T,3}
-
-Dispatch to the correct reconstruction algorithm based on ReconOptions.
-"""
-function _run_reconstruction(
-    sinogram::AbstractArray{T,3},
-    geom::CTGeometry,
-    recon_opts::ReconOptions
-) where T
-    alg = recon_opts.algorithm
-    ms = recon_opts.matrix_size
-    ws = recon_opts.warm_start
-
-    # Resolve init: warm_start array takes priority, otherwise use algorithm default
-    # SIRT/CGLS/TV-SIRT/TV-CGLS default to :zeros; MBIR defaults to :fdk
-    init_sirt = isnothing(ws) ? :zeros : ws
-    init_mbir = isnothing(ws) ? :fdk : ws
-
-    if alg == :fdk
-        return fdk_reconstruct(sinogram, geom, ms)
-    elseif alg == :sirt
-        return sirt_reconstruct(sinogram, geom, ms;
-            niter=recon_opts.iterations, lambda=recon_opts.lambda,
-            init=init_sirt)
-    elseif alg == :cgls
-        return cgls_reconstruct(sinogram, geom, ms;
-            niter=recon_opts.iterations,
-            init=init_sirt)
-    elseif alg == :tv_sirt
-        return tv_sirt_reconstruct(sinogram, geom, ms;
-            niter=recon_opts.iterations, lambda_sirt=recon_opts.lambda,
-            lambda_tv=recon_opts.tv_weight,
-            init=init_sirt)
-    elseif alg == :tv_cgls
-        return tv_cgls_reconstruct(sinogram, geom, ms;
-            niter=recon_opts.iterations, lambda_tv=recon_opts.tv_weight,
-            init=init_sirt)
-    elseif alg == :asir
-        return asir_style_reconstruct(sinogram, geom, ms;
-            niter=recon_opts.iterations, lambda=recon_opts.lambda,
-            blend_percent=recon_opts.blend_percent)
-    elseif alg == :mbir
-        penalty_type = _resolve_penalty(recon_opts.penalty, recon_opts.penalty_delta)
-        return mbir_reconstruct(sinogram, geom, ms;
-            niter=recon_opts.iterations, n_subsets=recon_opts.n_subsets,
-            lambda=recon_opts.lambda, penalty=penalty_type,
-            use_edge_weights=recon_opts.use_edge_weights,
-            init=init_mbir)
-    else
-        error("Unknown reconstruction algorithm: $alg. " *
-              "Supported: :fdk, :sirt, :cgls, :tv_sirt, :tv_cgls, :asir, :mbir")
-    end
-end
-
-# =============================================================================
-# Helper Functions
-# =============================================================================
-
-"""
-    _build_gsi_protocol(protocol::CTProtocol) -> GSIProtocol
-
-Build a GSIProtocol from CTProtocol dual-energy fields.
-"""
-function _build_gsi_protocol(protocol::CTProtocol)
-    return GSIProtocol(
-        Int(protocol.kVp_low),       # low_kvp
-        Int(protocol.kVp),           # high_kvp
-        protocol.mA_low > 0 ? protocol.mA_low : protocol.mA,  # low_mA
-        protocol.mA,                 # high_mA
-        protocol.integration_fraction,
-        protocol.rotation_time,
-        protocol.views
-    )
-end
-
-"""
-    _resolve_penalty(penalty::Symbol, delta::Float64) -> PenaltyType
-
-Convert penalty symbol to PenaltyType instance.
-"""
-function _resolve_penalty(penalty::Symbol, delta::Float64)
-    if penalty == :quadratic
-        return QuadraticPenalty()
-    elseif penalty == :huber
-        return HuberPenalty(delta)
-    elseif penalty == :hyperbola
-        return HyperbolaPenalty(delta)
-    else
-        return QuadraticPenalty()  # Default fallback
-    end
 end
 
 # -- HELPERS -- #

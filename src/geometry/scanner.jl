@@ -171,6 +171,11 @@ struct Scanner{T<:AbstractFloat}
     charge_sharing_fwhm::T      # Charge cloud FWHM mm (0.0 for EID)
     dead_time_ns::T             # Pulse dead time ns (0.0 for EID)
     pixel_mode::Symbol          # :standard, :uhr, :macro
+
+    # Native dexel parameters (PCCT only — EID ignores these)
+    native_dexel_col_mm::T      # native dexel col size at detector face (mm); 0 = infer
+    native_dexel_row_mm::T      # native dexel row size at detector face (mm); 0 = infer
+    binning_factor::Int         # spatial binning (1=unbinned, 2=2×2 standard)
 end
 
 """
@@ -276,7 +281,12 @@ function Scanner(;
     energy_resolution::Real = 0.0,
     charge_sharing_fwhm::Real = 0.0,
     dead_time_ns::Real = 0.0,
-    pixel_mode::Symbol = :standard
+    pixel_mode::Symbol = :standard,
+
+    # Native dexel parameters (PCCT only)
+    native_dexel_col_mm::Real = 0.0,
+    native_dexel_row_mm::Real = 0.0,
+    binning_factor::Int = 1
 )
     T = Float64
 
@@ -296,6 +306,25 @@ function Scanner(;
         end
     elseif detector_type != :energy_integrating
         error("detector_type must be :energy_integrating or :photon_counting (got :$detector_type)")
+    end
+
+    # Binning factor validation
+    if binning_factor < 1
+        error("binning_factor must be >= 1 (got $binning_factor)")
+    end
+
+    # Infer native dexel from binned pixel size × magnification when 0.0
+    magnification_val = Float64(source_to_detector) / Float64(source_to_isocenter)
+    _native_col = if native_dexel_col_mm > 0.0
+        native_dexel_col_mm
+    else
+        # Infer: binned pixel at iso × magnification / binning = native dexel at detector
+        detector_col_size * magnification_val / binning_factor
+    end
+    _native_row = if native_dexel_row_mm > 0.0
+        native_dexel_row_mm
+    else
+        detector_row_size * magnification_val / binning_factor
     end
 
     return Scanner{T}(
@@ -329,7 +358,10 @@ function Scanner(;
         T(energy_resolution),
         T(charge_sharing_fwhm),
         T(dead_time_ns),
-        pixel_mode
+        pixel_mode,
+        T(_native_col),
+        T(_native_row),
+        binning_factor
     )
 end
 
@@ -828,33 +860,46 @@ scanner_uhr.detector_row_size  # 0.2 mm (vs 0.4 mm standard)
 ```
 """
 function create_naeotom_alpha(; mode::Symbol=:standard)
-    # NAEOTOM Alpha has 50cm scan diameter at isocenter
-    # Pixel sizes are at isocenter (clinical convention)
+    # NAEOTOM Alpha native dexel size at detector face (Konrad 2025, PMB 70:065004)
+    native_col = 0.275   # channel direction at detector face (mm)
+    native_row = 0.322   # slice direction at detector face (mm)
+
+    # Geometry
+    sid = 595.0   # source-to-isocenter (mm)
+    sdd = 1085.5  # source-to-detector (mm)
+    magnification = sdd / sid  # ~1.824
+
     if mode == :uhr
-        pixel_size = 0.2    # Native unbinned at isocenter (120 × 0.2 mm collimation)
+        # UHR: unbinned (1×1)
+        binning = 1
+        pixel_col_iso = native_col / magnification             # ~0.151 mm at iso
+        pixel_row_iso = native_row / magnification             # ~0.176 mm at iso
         n_rows = 120
-        n_cols = ceil(Int, 500.0 / 0.2)   # 2500 cols for 50cm scan diameter
+        n_cols = ceil(Int, 500.0 / pixel_col_iso)
     elseif mode == :standard
-        pixel_size = 0.4    # 2×2 binned at isocenter (144 × 0.4 mm collimation)
+        # Standard: 2×2 binned
+        binning = 2
+        pixel_col_iso = (native_col * binning) / magnification # ~0.302 mm at iso
+        pixel_row_iso = (native_row * binning) / magnification # ~0.353 mm at iso
         n_rows = 144
-        n_cols = ceil(Int, 500.0 / 0.4)   # 1250 cols for 50cm scan diameter
+        n_cols = ceil(Int, 500.0 / pixel_col_iso)
     else
         error("mode must be :standard or :uhr (got :$mode)")
     end
 
     return Scanner(
         # Geometry (NAEOTOM Alpha specs)
-        source_to_isocenter = 595.0,
-        source_to_detector = 1085.5,
+        source_to_isocenter = sid,
+        source_to_detector = sdd,
 
         # Detector array (50cm scan diameter)
         detector_rows = n_rows,
         detector_cols = n_cols,
-        detector_row_size = pixel_size,
-        detector_col_size = pixel_size,
+        detector_row_size = pixel_row_iso,
+        detector_col_size = pixel_col_iso,
         detector_shape = CURVED_DETECTOR,
         detector_row_offset = 0.0,
-        detector_col_offset = pixel_size / 2,  # Quarter-detector offset
+        detector_col_offset = pixel_col_iso / 2,  # Quarter-detector offset
 
         # Source
         focal_spot_width = 0.4,
@@ -886,7 +931,12 @@ function create_naeotom_alpha(; mode::Symbol=:standard)
         energy_resolution = 10.0,
         charge_sharing_fwhm = 0.08,
         dead_time_ns = 5.0,
-        pixel_mode = mode
+        pixel_mode = mode,
+
+        # Native dexel parameters (Konrad 2025)
+        native_dexel_col_mm = native_col,
+        native_dexel_row_mm = native_row,
+        binning_factor = binning
     )
 end
 
@@ -904,12 +954,11 @@ function _build_pcct_detector(scanner::Scanner{T}) where T
     # Map detector_material Symbol to DetectorMaterialPCCT enum
     material = _infer_pcct_material(scanner.detector_material)
 
-    # Convert isocenter pixel sizes to detector-face sizes for PCCT physics
-    magnification = scanner.source_to_detector / scanner.source_to_isocenter
+    # Use native dexel size directly (at detector face) for PCCT physics
     return PhotonCountingDetector(
         material = material,
         thickness_mm = scanner.detector_depth,
-        pixel_size_mm = (scanner.detector_row_size * magnification, scanner.detector_col_size * magnification),
+        pixel_size_mm = (scanner.native_dexel_row_mm, scanner.native_dexel_col_mm),
         energy_thresholds_keV = Float64.(scanner.energy_thresholds),
         energy_resolution_keV = scanner.energy_resolution,
         charge_sharing_fwhm_mm = scanner.charge_sharing_fwhm,
@@ -918,7 +967,8 @@ function _build_pcct_detector(scanner::Scanner{T}) where T
         enable_pile_up = scanner.dead_time_ns > 0.0,
         enable_anti_coincidence = scanner.charge_sharing_fwhm > 0.0,
         coincidence_window_ns = scanner.dead_time_ns,
-        electronic_noise_keV = 0.0  # PCCT eliminates electronic noise via thresholding
+        electronic_noise_keV = 0.0,  # PCCT eliminates electronic noise via thresholding
+        binning_factor = scanner.binning_factor
     )
 end
 

@@ -85,17 +85,16 @@ function physics_energy_resolution_keV(E_keV::Real;
 end
 
 """
-    compute_unified_drm(detector::PhotonCountingDetector, kVp::Real;
-                         n_energy_points::Int=200,
-                         use_physics_resolution::Bool=true) -> Matrix{Float64}
+    compute_drm(detector::PhotonCountingDetector, kVp::Real;
+                n_energy_points::Int=200) -> Matrix{Float64}
 
-Compute the unified Detector Response Matrix (DRM) combining all
-energy-dependent physics effects for a PCCT detector.
+Compute the Detector Response Matrix (DRM) combining all energy-dependent
+physics effects for a PCCT detector.
 
 D[i, b] = probability that a photon of energy E_i registers in bin b.
 
 ## Physics included:
-1. **Energy resolution**: Physics-based (Fano + electronic noise) or fixed FWHM
+1. **Energy resolution**: Physics-based (Fano + electronic noise)
 2. **K-fluorescence escape**: Full Koch-Mehrin 2020 Table 1 model for CdTe
 3. **Charge collection efficiency**: Hecht relation with small-pixel weighting
 4. **Hole tailing**: Depth-dependent CCE creates low-energy tail
@@ -108,28 +107,24 @@ D[i, b] = probability that a photon of energy E_i registers in bin b.
 - Size: [n_energy_points × n_bins]
 - Each row sums to ≤ 1.0 (photons below threshold are undetected)
 - Pre-computed once per detector configuration
-- Compatible with `compute_spectral_response_matrix` interface
 
 # Arguments
 - `detector`: PhotonCountingDetector with all configuration
 - `kVp`: Maximum tube voltage [keV]
 - `n_energy_points`: Energy grid resolution (default: 200)
-- `use_physics_resolution`: If true, use Fano + electronic noise resolution;
-  if false, use detector.energy_resolution_keV (default: true)
 
 # Returns
 - `Matrix{Float64}`: [n_energy_points × n_bins] DRM
 
 # Example
 ```julia
-det = naeotom_detector_standard()
-D = compute_unified_drm(det, 120.0)
+det = _build_pcct_detector(create_naeotom_alpha())
+D = compute_drm(det, 120.0)
 # D[100, 3] → P(60 keV photon registered in bin 3)
 ```
 """
-function compute_unified_drm(detector::PhotonCountingDetector, kVp::Real;
-                              n_energy_points::Int=200,
-                              use_physics_resolution::Bool=true)
+function compute_drm(detector::PhotonCountingDetector, kVp::Real;
+                     n_energy_points::Int=200)
     material = detector.material
     thickness_mm = detector.thickness_mm
     thresholds = detector.energy_thresholds_keV
@@ -164,19 +159,11 @@ function compute_unified_drm(detector::PhotonCountingDetector, kVp::Real;
         E_f = Float64(E)
         T_values = Float64.(thresholds)
 
-        # Physics-based or fixed energy resolution
-        σ_E = if use_physics_resolution
-            physics_energy_resolution_keV(E_f;
-                fano_factor=props.fano_factor,
-                pair_creation_eV=props.pair_creation_energy_eV,
-                electronic_noise_keV=Float64(detector.electronic_noise_keV))
-        else
-            if detector.energy_resolution_keV > 0.0
-                detector.energy_resolution_keV / (2.0 * sqrt(2.0 * log(2.0)))
-            else
-                props.energy_resolution_fwhm_keV / (2.0 * sqrt(2.0 * log(2.0)))
-            end
-        end
+        # Physics-based energy resolution (Fano + electronic noise)
+        σ_E = physics_energy_resolution_keV(E_f;
+            fano_factor=props.fano_factor,
+            pair_creation_eV=props.pair_creation_energy_eV,
+            electronic_noise_keV=Float64(detector.electronic_noise_keV))
 
         # Step 1: Hole tailing — distribute energy across CCE values
         # Uses Hecht relation with small-pixel weighting potential
@@ -251,7 +238,7 @@ end
 Get the energy grid corresponding to the unified DRM.
 
 Returns energy values [keV] for each row of the matrix returned by
-`compute_unified_drm`.
+`compute_drm`.
 """
 function drm_energy_grid(kVp::Real; n_energy_points::Int=200)
     return collect(range(1.0, Float64(kVp), length=n_energy_points))
@@ -305,5 +292,5 @@ end
 # Exports
 # =============================================================================
 
-export physics_energy_resolution_keV, compute_unified_drm
+export physics_energy_resolution_keV, compute_drm
 export drm_energy_grid, drm_summary

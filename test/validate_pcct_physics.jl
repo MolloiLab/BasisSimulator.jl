@@ -24,7 +24,7 @@ const fluorescence_escape_fraction = BasisSimulator.fluorescence_escape_fraction
 const compute_cdte_fluorescence_model = BasisSimulator.compute_cdte_fluorescence_model
 const fluorescence_sharing_boost = BasisSimulator.fluorescence_sharing_boost
 const apply_fluorescence_escape_extended = BasisSimulator.apply_fluorescence_escape_extended
-const naeotom_detector_standard = BasisSimulator.naeotom_detector_standard
+const _build_pcct_detector = BasisSimulator._build_pcct_detector
 const hole_tailing_distribution = BasisSimulator.hole_tailing_distribution
 const get_detector_material_properties = BasisSimulator.get_detector_material_properties
 const _erf_approx = BasisSimulator._erf_approx
@@ -495,8 +495,8 @@ println("6. DETECTOR RESPONSE MATRIX VALIDATION")
 println("   Target: Physics-based energy resolution, escape peaks, probability conservation")
 println("─" ^ 70)
 
-det = naeotom_detector_standard()
-D = compute_unified_drm(det, 120.0; n_energy_points=200)
+det = _build_pcct_detector(create_naeotom_alpha())
+D = compute_drm(det, 120.0; n_energy_points=200)
 energies_drm = drm_energy_grid(120.0; n_energy_points=200)
 
 println("\n  6a. DRM size: $(size(D))")
@@ -670,5 +670,5 @@ println("""
     whereas in reality they are coupled (Konrad 2025)
   - DRM does not include spatial charge sharing (applied separately)
   - Electronic noise of 1.5 keV is slightly higher than Konrad's 0.6 keV
-    (the naeotom_detector_standard uses 1.5, while NAEOTOM_ALPHA uses 0.6)
+    (the _build_pcct_detector default uses 1.5, while NAEOTOM_ALPHA uses 0.6)
 """)

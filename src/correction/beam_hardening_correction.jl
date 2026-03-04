@@ -873,3 +873,94 @@ function apply_bhc_image_domain(
 
     return recon_μ
 end
+
+# =============================================================================
+# Radial Cupping / Capping Correction (Post-Reconstruction)
+# =============================================================================
+#
+# Corrects residual low-frequency radial non-uniformity in the HU image
+# after all sinogram-domain and image-domain BHC stages.
+#
+# Works by fitting a low-order even polynomial in radius to the water-like
+# background (excluding air and high-contrast inserts), then subtracting
+# the fitted offset so the background becomes flat.
+#
+# This handles both cupping (center-dark) and capping (center-bright).
+# =============================================================================
+
+export apply_radial_cupping_correction!
+
+"""
+    apply_radial_cupping_correction!(hu_vol; fov_cm, hu_lo, hu_hi, poly_order, target_hu)
+
+Post-reconstruction radial correction for residual cupping/capping artifacts.
+
+Fits a low-order even polynomial in radius to the water-like background
+(excluding air and inserts), then subtracts the fitted offset so the
+background becomes flat at `target_hu`.
+
+Operates slice-by-slice. Modifies `hu_vol` in place.
+
+# Arguments
+- `hu_vol::Array{Float32, 3}`: Reconstructed HU volume (modified in place)
+
+# Keyword Arguments
+- `fov_cm::Float64=35.0`: Field of view in cm
+- `hu_lo::Float64=-100.0`: Lower HU threshold for water-like voxels
+- `hu_hi::Float64=80.0`: Upper HU threshold for water-like voxels
+- `poly_order::Int=2`: Number of even polynomial terms (fits c₀ + c₁r² + c₂r⁴ + ...)
+- `target_hu::Float64=0.0`: Target HU for the water background after correction
+
+# Returns
+- The modified `hu_vol` array
+"""
+function apply_radial_cupping_correction!(
+    hu_vol::Array{Float32, 3};
+    fov_cm::Float64 = 35.0,
+    hu_lo::Float64 = -100.0,
+    hu_hi::Float64 = 80.0,
+    poly_order::Int = 2,
+    target_hu::Float64 = 0.0,
+)
+    nx, ny, nz = size(hu_vol)
+    pixel_cm = fov_cm / nx
+    cx = (nx + 1) / 2.0
+    cy = (ny + 1) / 2.0
+
+    for iz in 1:nz
+        slice = @view hu_vol[:, :, iz]
+
+        # Collect (radius, HU) samples from water-like voxels
+        radii = Float64[]
+        vals = Float64[]
+        for j in 1:ny, i in 1:nx
+            v = slice[i, j]
+            if hu_lo <= v <= hu_hi
+                r = sqrt(((i - cx) * pixel_cm)^2 + ((j - cy) * pixel_cm)^2)
+                push!(radii, r)
+                push!(vals, Float64(v))
+            end
+        end
+
+        length(radii) < 10 && continue
+
+        # Fit even polynomial: offset = c₀ + c₁r² + c₂r⁴ + ...
+        n_coeffs = poly_order + 1
+        A = zeros(length(radii), n_coeffs)
+        for (k, r) in enumerate(radii)
+            for p in 0:poly_order
+                A[k, p+1] = r^(2p)
+            end
+        end
+        coeffs = A \ vals
+
+        # Subtract fitted profile, shifting to target_hu
+        for j in 1:ny, i in 1:nx
+            r = sqrt(((i - cx) * pixel_cm)^2 + ((j - cy) * pixel_cm)^2)
+            fit_val = sum(coeffs[p+1] * r^(2p) for p in 0:poly_order)
+            slice[i, j] -= Float32(fit_val - target_hu)
+        end
+    end
+
+    return hu_vol
+end
