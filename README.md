@@ -294,25 +294,32 @@ GC.gc(true)
 ### EICT Dual-kVp Workflow
 
 ```julia
-# 1. Create dual workspace
-ws = BS.create_eict_dual_workspace(scanner, protocol_dual, sim_opts, recon_opts, phantom)
+# 1. Create separate workspaces for low and high kVp
+protocol_low = BS.CTProtocol(kVp=80.0, mA=350.0, views=984, rotation_time=0.5)
+protocol_high = BS.CTProtocol(kVp=140.0, mA=200.0, views=984, rotation_time=0.5)
 
-# 2. Simulate — returns material maps for VMI
-result = BS.simulate!(ws, phantom, scanner, protocol_dual, sim_opts, recon_opts)
-mat_map = result.mat_map
+ws_low = BS.create_eict_workspace(scanner, protocol_low, sim_opts, recon_opts, phantom)
+ws_high = BS.create_eict_workspace(scanner, protocol_high, sim_opts, recon_opts, phantom)
 
-# 3. Reconstruct each kVp separately
-ws_fdk_low = BS.create_fdk_recon_workspace(ws.sino_noisy_out_low, ws.geom, recon_size)
+# 2. Simulate each kVp independently
+BS.simulate!(ws_low, phantom, scanner, protocol_low, sim_opts, recon_opts)
+BS.simulate!(ws_high, phantom, scanner, protocol_high, sim_opts, recon_opts)
+
+# 3. Reconstruct each kVp
+ws_fdk_low = BS.create_fdk_recon_workspace(ws_low.sino_noisy_out, ws_low.geom, recon_size)
 fdk_80_hu = BS.to_hounsfield(
-    Array(BS.reconstruct!(ws_fdk_low, ws.sino_noisy_out_low, ws.geom, recon_size));
+    Array(BS.reconstruct!(ws_fdk_low, ws_low.sino_noisy_out, ws_low.geom, recon_size));
     μ_water = μ_water_low
 )
 
-# 4. VMI synthesis from material maps
+# 4. Material decomposition + VMI from the two sinograms
+de_sino = BS.DualEnergySinogram(ws_low.sino_noisy_out, ws_high.sino_noisy_out;
+    low_kvp=80, high_kvp=140)
+mat_map = BS.spectral_decompose(de_sino)
 for E in [40.0, 70.0, 100.0, 140.0]
     vmi_sino = BS.virtual_monoenergetic(mat_map, E)
-    ws_fdk_vmi = BS.create_fdk_recon_workspace(vmi_sino, ws.geom, recon_size)
-    vmi_vol = Array(BS.reconstruct!(ws_fdk_vmi, vmi_sino, ws.geom, recon_size))
+    ws_fdk_vmi = BS.create_fdk_recon_workspace(vmi_sino, ws_low.geom, recon_size)
+    vmi_vol = Array(BS.reconstruct!(ws_fdk_vmi, vmi_sino, ws_low.geom, recon_size))
     ws_fdk_vmi = nothing; GC.gc(true)
 end
 ```
@@ -348,7 +355,6 @@ end
 | Workspace | Creator | Use Case |
 |-----------|---------|----------|
 | `EICTWorkspace` | `create_eict_workspace(...)` | Single-kVp energy-integrating CT |
-| `EICTDualWorkspace` | `create_eict_dual_workspace(...)` | Dual-kVp (80/140 kVp, shared buffers) |
 | `PCCTWorkspace` | `create_workspace(...)` | Photon-counting CT |
 | `FDKReconWorkspace` | `create_fdk_recon_workspace(...)` | FDK reconstruction |
 | `HIRReconWorkspace` | `create_hir_recon_workspace(...)` | Hybrid IR (FDK init + PWLS refinement) |
