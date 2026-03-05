@@ -213,14 +213,26 @@ println("Water μ at 60 keV: ", μ_volume[65, 65, 16], " mm⁻¹")
 """
 function create_μ_volume!(
     μ_volume::AbstractArray{T, 3},
-    mask::AbstractArray{UInt8, 3},
+    mask::AbstractArray{<:Unsigned, 3},
     materials::Vector,
     energy_keV::Real;
     ws_μ_lut_cpu::Union{Nothing, Vector{T}} = nothing,
     ws_μ_lut_gpu = nothing,
     ws_μ_table = nothing,   # pre-computed μ[region, energy] matrix
-    energy_idx::Int = 0      # index into μ_table columns
+    energy_idx::Int = 0,     # index into μ_table columns
+    ws_μ_table_gpu = nothing # GPU copy of μ_table for zero-copy fast path
 ) where T <: AbstractFloat
+
+    # Fast path: μ_table already on GPU — skip CPU→GPU copy per energy bin
+    if ws_μ_table_gpu !== nothing && energy_idx > 0
+        let tbl = ws_μ_table_gpu, e = energy_idx
+            AK.foreachindex(mask) do idx
+                region_idx = Int(mask[idx]) + 1
+                μ_volume[idx] = tbl[region_idx, e]
+            end
+        end
+        return μ_volume
+    end
 
     # Pre-compute μ for all regions at this energy (on CPU)
     n_regions = length(materials)
@@ -242,7 +254,7 @@ function create_μ_volume!(
 
     # Use AcceleratedKernels.jl for parallel execution
     AK.foreachindex(mask) do idx
-        region_idx = mask[idx] + 1  # Convert 0-based region to 1-based array index
+        region_idx = Int(mask[idx]) + 1  # Convert 0-based region to 1-based array index
         μ_volume[idx] = μ_at_energy[region_idx]
     end
 
@@ -541,7 +553,7 @@ function forward_project!(
         # Direct volume input - simple monochromatic projection
         siddon_forward_project!(sinogram, volume_or_mask, geom; volume_extent=volume_extent)
 
-    elseif eltype(volume_or_mask) == UInt8
+    elseif eltype(volume_or_mask) <: Unsigned
         # Mask input - need energy specification
         mask = volume_or_mask
 
@@ -563,7 +575,7 @@ function forward_project!(
             error("Must specify either `energy` (single keV) or `energies` + `weights` (spectrum)")
         end
     else
-        error("volume_or_mask must be Float32/Float64 (μ volume) or UInt8 (material mask)")
+        error("volume_or_mask must be Float32/Float64 (μ volume) or Unsigned integer (material mask)")
     end
 
     # Apply physics effects if specified (but not signal chain)
@@ -767,7 +779,7 @@ function _forward_project_with_signal_chain!(
     # =========================================================================
     if eltype(volume_or_mask) <: AbstractFloat
         siddon_forward_project!(sinogram, volume_or_mask, geom; volume_extent=volume_extent)
-    elseif eltype(volume_or_mask) == UInt8
+    elseif eltype(volume_or_mask) <: Unsigned
         mask = volume_or_mask
         if materials === nothing
             error("materials must be provided when using a mask input")
@@ -782,7 +794,7 @@ function _forward_project_with_signal_chain!(
             error("Must specify either `energy` or `energies` + `weights`")
         end
     else
-        error("volume_or_mask must be Float32/Float64 or UInt8")
+        error("volume_or_mask must be Float32/Float64 or Unsigned integer")
     end
 
     # =========================================================================
@@ -982,7 +994,7 @@ end
 """Monochromatic forward projection from mask + single energy"""
 function _forward_project_mono!(
     sinogram::AbstractArray{T, 3},
-    mask::AbstractArray{UInt8, 3},
+    mask::AbstractArray{<:Unsigned, 3},
     geom::CTGeometry,
     energy_keV::T,
     materials::Vector;
@@ -1087,7 +1099,7 @@ causes beam hardening artifacts.
 """
 function _forward_project_poly!(
     sinogram::AbstractArray{T, 3},
-    mask::AbstractArray{UInt8, 3},
+    mask::AbstractArray{<:Unsigned, 3},
     geom::CTGeometry,
     energies::Vector,
     weights::Vector,
@@ -1100,6 +1112,7 @@ function _forward_project_poly!(
     ws_μ_lut_cpu::Union{Nothing, Vector{T}}=nothing,
     ws_μ_lut_gpu=nothing,
     ws_μ_table=nothing,
+    ws_μ_table_gpu=nothing,
     # Siddon geometry arrays (avoid re-allocating per energy)
     ws_source_positions=nothing,
     ws_detector_centers=nothing,
@@ -1131,7 +1144,8 @@ function _forward_project_poly!(
         # Create μ volume for this energy
         create_μ_volume!(μ_volume, mask, materials, energies[e_idx];
                          ws_μ_lut_cpu=ws_μ_lut_cpu, ws_μ_lut_gpu=ws_μ_lut_gpu,
-                         ws_μ_table=ws_μ_table, energy_idx=e_idx)
+                         ws_μ_table=ws_μ_table, energy_idx=e_idx,
+                         ws_μ_table_gpu=ws_μ_table_gpu)
 
         # Forward project at this energy
         fill!(sino_mono, zero(T))
