@@ -349,6 +349,7 @@ function simulate!(
         ws_weights_norm=ws.weights_norm,
         ws_μ_lut_cpu=ws.μ_lut_cpu, ws_μ_lut_gpu=ws.μ_lut_gpu,
         ws_μ_table=ws.μ_table,
+        ws_μ_table_gpu=ws.μ_table_gpu,
         ws_source_positions=ws.geom_source_positions,
         ws_detector_centers=ws.geom_detector_centers,
         ws_detector_u=ws.geom_detector_u,
@@ -554,7 +555,7 @@ function simulate!(
     # ═══════════════════════════════════════════════════════════════════════
     _eict_dual_forward_pass!(ws, ws.sino_low, phantom, geom, mats,
         ws.energies_low, ws.weights_low, ws.weights_norm_low,
-        ws.μ_table_low, ws.config_low,
+        ws.μ_table_low, ws.μ_table_gpu_low, ws.config_low,
         ws.flat_filter_projection_low, ws.bowtie_spectral_low, ws.bowtie_air_reference_low,
         ws.bhc_coeffs_gpu_low, ws.bhc_low,
         sim_opts, ws.η_vec_low)
@@ -564,7 +565,7 @@ function simulate!(
     # ═══════════════════════════════════════════════════════════════════════
     _eict_dual_forward_pass!(ws, ws.sino_high, phantom, geom, mats,
         ws.energies_high, ws.weights_high, ws.weights_norm_high,
-        ws.μ_table_high, ws.config_high,
+        ws.μ_table_high, ws.μ_table_gpu_high, ws.config_high,
         ws.flat_filter_projection_high, ws.bowtie_spectral_high, ws.bowtie_air_reference_high,
         ws.bhc_coeffs_gpu_high, ws.bhc_high,
         sim_opts, ws.η_vec_high)
@@ -684,7 +685,7 @@ end
 
 """
     _eict_dual_forward_pass!(ws, target_sino, phantom, geom, mats,
-        energies, weights, weights_norm, μ_table, config,
+        energies, weights, weights_norm, μ_table, μ_table_gpu, config,
         flat_filter_proj, bowtie_spectral, bowtie_air_ref, bhc_coeffs_gpu, bhc_effect,
         sim_opts, η_vec)
 
@@ -694,7 +695,7 @@ Writes result into `target_sino`.
 """
 function _eict_dual_forward_pass!(
     ws::EICTDualWorkspace{T}, target_sino, phantom, geom, mats,
-    energies, weights, weights_norm, μ_table, config,
+    energies, weights, weights_norm, μ_table, μ_table_gpu, config,
     flat_filter_proj, bowtie_spectral, bowtie_air_ref, bhc_coeffs_gpu, bhc_effect,
     sim_opts, η_vec
 ) where {T}
@@ -706,6 +707,7 @@ function _eict_dual_forward_pass!(
         ws_weights_norm=weights_norm,
         ws_μ_lut_cpu=ws.μ_lut_cpu, ws_μ_lut_gpu=ws.μ_lut_gpu,
         ws_μ_table=μ_table,
+        ws_μ_table_gpu=μ_table_gpu,
         ws_source_positions=ws.geom_source_positions,
         ws_detector_centers=ws.geom_detector_centers,
         ws_detector_u=ws.geom_detector_u,

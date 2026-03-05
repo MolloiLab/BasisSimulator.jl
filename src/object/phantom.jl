@@ -74,7 +74,7 @@ const REGION_TO_MATERIAL = Dict{RegionLabel, Symbol}(
 Digital phantom with semantic mask and materials for polychromatic simulation.
 
 # Fields (v20.0-pivot: simplified, no μ field)
-- `mask::AbstractArray{UInt8,3}`: Region labels (see `RegionLabel` enum)
+- `mask::AbstractArray{<:Unsigned,3}`: Region labels (UInt8 for ≤255, UInt16 for >255)
 - `materials::Vector{XA.Material}`: Materials for each region (indexed by mask_value + 1)
 - `voxel_size::NTuple{3,Float64}`: Voxel dimensions (cm) as (dx, dy, dz)
 - `origin::NTuple{3,Float64}`: Origin coordinates (cm) - center of first voxel
@@ -120,7 +120,7 @@ phantom_gpu = Phantom(
 
 See also: [`compute_μ`](@ref)
 """
-struct Phantom{M<:AbstractArray{UInt8,3}, Mat}
+struct Phantom{T<:Unsigned, M<:AbstractArray{T,3}, Mat}
     mask::M
     materials::Mat  # Vector{XA.Material}
     voxel_size::NTuple{3,Float64}
@@ -185,7 +185,7 @@ for polychromatic simulation via the workspace-based `simulate!()` pipeline.
 
 # Arguments
 - `labeled_array::AbstractArray{<:Integer, 3}`: Integer array where each voxel
-  contains a region label (0-255 supported via UInt8 conversion)
+  contains a region label. Auto-promotes to UInt16 when >255 labels.
 - `materials_dict::Dict{Int, <:Any}`: Mapping from label values to materials.
   Materials can be:
   - `XA.Material`: Direct XrayAttenuation.jl material
@@ -198,7 +198,7 @@ for polychromatic simulation via the workspace-based `simulate!()` pipeline.
 
 # Returns
 A `Phantom` with:
-- `mask`: UInt8 mask with original label values
+- `mask`: UInt8 mask (≤255 labels) or UInt16 mask (>255 labels)
 - `materials`: Vector{XA.Material} for polychromatic simulation
 - `voxel_size`, `origin`, `extent`: Geometry parameters
 
@@ -253,8 +253,9 @@ function Phantom(
         computed_origin = Float64.(origin)
     end
 
-    # Convert labeled array to UInt8 mask
-    mask = UInt8.(labeled_array)
+    # Convert labeled array to smallest unsigned type that fits
+    max_label = maximum(labeled_array)
+    mask = max_label > typemax(UInt8) ? UInt16.(labeled_array) : UInt8.(labeled_array)
 
     # Build materials vector (indexed by mask_value + 1)
     materials_vec = build_materials_vector(materials_dict)
@@ -445,7 +446,7 @@ Consider using `Phantom(labeled_array, materials_dict, voxel_size)` directly.
 
 # Arguments
 - `labeled_array::AbstractArray{<:Integer, 3}`: Integer array where each voxel
-  contains a region label (0-255 supported via UInt8 conversion)
+  contains a region label. Auto-promotes to UInt16 when >255 labels.
 - `materials::Dict{Int, <:Any}`: Mapping from label values to materials. Materials
   can be:
   - `XA.Material`: Direct XrayAttenuation.jl material
@@ -458,7 +459,7 @@ Consider using `Phantom(labeled_array, materials_dict, voxel_size)` directly.
 
 # Returns
 A `Phantom` struct with:
-- `mask`: UInt8 mask with original label values
+- `mask`: UInt8 mask (≤255 labels) or UInt16 mask (>255 labels)
 - `materials`: Vector{XA.Material} for polychromatic simulation
 - `voxel_size`: Physical voxel dimensions (cm)
 - `origin`: Origin coordinates (cm)
@@ -566,7 +567,7 @@ Get a boolean mask for a specific region.
 `BitArray{3}` where `true` indicates voxels belonging to the region.
 """
 function get_region_mask(phantom::Phantom, label::RegionLabel)
-    return phantom.mask .== UInt8(label)
+    return phantom.mask .== eltype(phantom.mask)(label)
 end
 
 

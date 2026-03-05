@@ -137,7 +137,7 @@ function resample_to_recon(phantom::Phantom, geom::CTGeometry, matrix_size;
     inv_pvz = 1.0 / pvz
 
     if method == :nearest
-        out = zeros(UInt8, nx, ny, nz)
+        out = zeros(eltype(mask_cpu), nx, ny, nz)
 
         @inbounds for k in 0:(nz-1)
             wz = roz + k * rvz
