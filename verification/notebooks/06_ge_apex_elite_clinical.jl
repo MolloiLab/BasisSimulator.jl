@@ -1764,13 +1764,13 @@ nothing
 # Format: (f_norm, weight) where f_norm ∈ [0,1] (fraction of Nyquist).
 custom_filter_control = (
 	x = (0.0, 0.25, 0.5, 0.75, 1.0),
-	y = (1.0, 0.90, 0.60, 0.15, 0.001),
+	y = (1.0, 0.85, 0.60, 0.15, 0.001),
 )
 
 # ╔═╡ 07100004-0000-4000-8000-000000000000
 # Dose-independent noise floor (σ HU) — tune to match clinical high-mA noise.
 # σ_total = √(σ_quantum² + σ_floor²). Start at 0, increase until 300mA matches.
-sim_noise_floor_hu = 20.0
+sim_noise_floor_hu = 28.0
 
 # ╔═╡ 07100005-0000-4000-8000-000000000000
 # Two-material BHC toggle — tweak freely (does NOT re-run simulate!)
@@ -2404,7 +2404,7 @@ Comparison plots use clinical ASiR-V 50% as the reference.
 # ╔═╡ f61c87a4-a27e-4bc6-bc4d-502c3e3a47fe
 begin
 	hir_strength = 3
-	hir_lambda = 4.0f0
+	hir_lambda = 10.0f0
 	hir_nepochs = 2
 	hir_n_subsets = 12
 	hir_huber_delta = 0.06f0
@@ -2992,10 +2992,10 @@ spectral separation.
 """
 
 # ╔═╡ f9da78c0-9c6a-4c83-9f4e-592eecca5aaf
-de_mA_80  = 407 * 0.7 # 407 instantaneous × 0.5 duty cycle
+de_mA_80  = 407 * 0.6 # 407 instantaneous × 0.5 duty cycle
 
 # ╔═╡ 3aefce3f-90e3-48fb-bae7-b7c965b7d6f8
-de_mA_140 = 405 * 0.3 # 405 instantaneous × 0.5 duty cycle
+de_mA_140 = 405 * 0.4 # 405 instantaneous × 0.5 duty cycle
 
 # ╔═╡ 6f5ce242-a5e2-4cd5-8cac-47f528dc21bb
 # DE scan parameters — matching clinical GE GSI protocol
@@ -3257,7 +3257,7 @@ let
 	fig
 end
 
-# ╔═╡ c51f59e6-860b-4687-8a3f-7298203ef050
+# ╔═╡ 82e46206-8132-4964-8802-b8989da9d690
 md"""
 ### DE: VMI Synthesis — BHC + Linear Decomposition Pipeline
 
@@ -3270,7 +3270,7 @@ Mirrors the working SE FBP path, then adds material decomposition + VMI synthesi
 5. **HU + post-processing** — NIST μ\_water(E), noise floor, cupping correction (same as SE)
 """
 
-# ╔═╡ 2470f7ba-87d5-438f-9305-481fb2eae4c5
+# ╔═╡ 8e37427e-9b6a-4aef-8aa3-dc90b1dcf562
 # Newton-Raphson Projection-Domain Material Decomposition
 # (Alvarez & Macovski 1976, Chandra & Langan 2011)
 begin
@@ -3399,14 +3399,14 @@ begin
 	end
 end
 
-# ╔═╡ c0511326-fea2-46f9-aaed-3929e6e5f9de
+# ╔═╡ bb2e0320-df31-450c-a338-5470be58046e
 # ═════════════════════════════════════════════════════════════════════════════
 # VMI CONFIGURATION                                                 [TUNE]
 # ═════════════════════════════════════════════════════════════════════════════
 begin
 	# Basis materials for decomposition
 	# de_vmi_basis = (:water, :calcium) # TUNE: (:water, :iodine) or (:water, :calcium)
-	de_vmi_basis = (:water, :iodine) # TUNE: (:water, :iodine) or (:water, :calcium)
+	de_vmi_basis = (:water, :calcium) # TUNE: (:water, :iodine) or (:water, :calcium)
 
 	# FBP filter — same as SE for fair comparison (custom_filter_control defined above)
 	de_vmi_filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y)
@@ -3419,74 +3419,172 @@ begin
 	de_vmi_water_roi_r = 10
 end
 
-# ╔═╡ c0031d96-9a8c-47ed-ae8f-22744de4d542
-# BHC models + linear decomposition matrix for DE VMI
-# Calibrated for DE spectra (with K-edge filter if active) — matches simulation
-de_decomp = let
+# ╔═╡ 25b4998e-70d6-4b68-b60d-9fac1c09f154
+# Polynomial DE Calibration functions (Stenner et al. 2007 EDEC)
+begin
+	"""
+	Generate 2D calibration grid: for each (a1, a2) pair, compute
+	polychromatic projections p_low(a1,a2) and p_high(a1,a2).
+	"""
+	function de_calibration_grid(
+		e_low, w_low, e_high, w_high,
+		basis::Tuple{Symbol,Symbol};
+		max_a1_cm=60.0, max_a2_cm=30.0,
+		n1=100, n2=60
+	)
+		μ1_low  = [BS.get_basis_mu(basis[1], Float64(e)) for e in e_low]
+		μ2_low  = [BS.get_basis_mu(basis[2], Float64(e)) for e in e_low]
+		μ1_high = [BS.get_basis_mu(basis[1], Float64(e)) for e in e_high]
+		μ2_high = [BS.get_basis_mu(basis[2], Float64(e)) for e in e_high]
+
+		wn_low  = w_low ./ sum(w_low)
+		wn_high = w_high ./ sum(w_high)
+
+		a1_vals = range(0, max_a1_cm, length=n1)
+		a2_vals = range(0, max_a2_cm, length=n2)
+
+		N = n1 * n2
+		a1_grid = zeros(N)
+		a2_grid = zeros(N)
+		p_low_grid = zeros(N)
+		p_high_grid = zeros(N)
+
+		k = 0
+		for j in 1:n2, i in 1:n1
+			k += 1
+			a1, a2 = a1_vals[i], a2_vals[j]
+			a1_grid[k] = a1
+			a2_grid[k] = a2
+			I_low  = sum(wn_low  .* exp.(-(μ1_low  .* a1 .+ μ2_low  .* a2)))
+			I_high = sum(wn_high .* exp.(-(μ1_high .* a1 .+ μ2_high .* a2)))
+			p_low_grid[k]  = -log(max(I_low, 1e-30))
+			p_high_grid[k] = -log(max(I_high, 1e-30))
+		end
+		return a1_grid, a2_grid, p_low_grid, p_high_grid
+	end
+
+	"""
+	Fit bivariate polynomial: a_m = Σ c_ij * pL^i * pH^j (i+j ≤ order).
+	"""
+	function fit_bivariate_poly(pL, pH, target; order=3)
+		terms = [(i,j) for i in 0:order for j in 0:order if i+j <= order]
+		N = length(pL)
+		V = zeros(N, length(terms))
+		for (col, (i,j)) in enumerate(terms)
+			V[:, col] .= pL.^i .* pH.^j
+		end
+		return V \ target, terms
+	end
+
+	"""
+	Evaluate bivariate polynomial at given (pL, pH) values.
+	"""
+	function eval_bivariate_poly(pL, pH, coeffs, terms)
+		result = zeros(eltype(pL), length(pL))
+		for (k, (i,j)) in enumerate(terms)
+			result .+= coeffs[k] .* pL.^i .* pH.^j
+		end
+		return result
+	end
+
+	"""
+	In-place separable Gaussian smoothing on 3D sinogram (col, view, row).
+	"""
+	function smooth_sinogram!(sino::Array{Float32,3}, σ::Real)
+		σ <= 0 && return
+		r = ceil(Int, 3σ)
+		kern = Float32[exp(-Float32(i)^2 / (2f0 * Float32(σ)^2)) for i in -r:r]
+		kern ./= sum(kern)
+		nc, nv, nr = size(sino)
+		temp = similar(sino, nc, nv)
+		@inbounds for z in 1:nr
+			for v in 1:nv, c in 1:nc
+				s = 0f0
+				for k in eachindex(kern)
+					ic = clamp(c + k - r - 1, 1, nc)
+					s += sino[ic, v, z] * kern[k]
+				end
+				temp[c, v] = s
+			end
+			for v in 1:nv, c in 1:nc
+				s = 0f0
+				for k in eachindex(kern)
+					iv = clamp(v + k - r - 1, 1, nv)
+					s += temp[c, iv] * kern[k]
+				end
+				sino[c, v, z] = s
+			end
+		end
+	end
+end
+
+# ╔═╡ 493bc7a9-9209-443e-b8d9-f09c95f837d6
+# Water BHC + Polynomial DE calibration
+# 1. Water BHC linearizes projections (removes bulk spectral hardening + bowtie effects)
+# 2. Polynomial maps BHC-corrected (p_low, p_high) → (a1, a2), handling residual nonlinearity
+de_poly_cal = let
 	de_filters = vcat(additional_filters, de_kedge_filter)
 	prot_80  = BS.CTProtocol(kVp=80,  additional_filters=de_filters)
 	prot_140 = BS.CTProtocol(kVp=140, additional_filters=de_filters)
-	e_l, w_l = BS.resolve_spectrum(sim_opts, prot_80;  scanner=sim_scanner)
-	e_h, w_h = BS.resolve_spectrum(sim_opts, prot_140; scanner=sim_scanner)
+	e_l, w_l = BS.resolve_spectrum(sim_opts, prot_80;  scanner=sim_scanner_de_80)
+	e_h, w_h = BS.resolve_spectrum(sim_opts, prot_140; scanner=sim_scanner_de_140)
 
-	# BHC calibrated for correct DE spectra
+	# Water-only BHC for each kVp (simple per-ray polynomial correction)
 	E_ref_80  = sum(e_l .* w_l) / sum(w_l)
 	E_ref_140 = sum(e_h .* w_h) / sum(w_h)
-	bhc_80 = BS.calibrate_bhc_two_material(e_l, w_l;
-		order=sino_order, reference_energy_keV=E_ref_80,
-		hu_low=sino_bhc_hu_low, hu_high=sino_bhc_hu_high)
-	bhc_140 = BS.calibrate_bhc_two_material(e_h, w_h;
-		order=sino_order, reference_energy_keV=E_ref_140,
-		hu_low=sino_bhc_hu_low, hu_high=sino_bhc_hu_high)
+	bhc_80  = BS.calibrate_bhc(e_l, w_l; order=5, reference_energy_keV=E_ref_80)
+	bhc_140 = BS.calibrate_bhc(e_h, w_h; order=5, reference_energy_keV=E_ref_140)
+	@info "DE BHC: E_ref_80=$(round(E_ref_80,digits=1)) keV, E_ref_140=$(round(E_ref_140,digits=1)) keV"
 
-	# Linear decomposition matrix at BHC reference energies
-	inv = BS.compute_decomposition_matrix(de_vmi_basis, E_ref_80, E_ref_140)
+	# Generate calibration grid (raw polychromatic projections)
+	a1, a2, pL_raw, pH_raw = de_calibration_grid(
+		e_l, w_l, e_h, w_h, de_vmi_basis;
+		max_a1_cm=60.0, max_a2_cm=30.0, n1=100, n2=60)
 
-	@info "DE VMI: E_ref_80=$(round(E_ref_80,digits=1)) keV, E_ref_140=$(round(E_ref_140,digits=1)) keV"
-	@info "  μ_water: $(round(bhc_80.μ_water_ref,digits=5)) / $(round(bhc_140.μ_water_ref,digits=5)) cm⁻¹"
+	# Apply water BHC to grid projections — polynomial is fitted on BHC-corrected input
+	pL = [BS.evaluate_bhc(p, bhc_80.polynomial) for p in pL_raw]
+	pH = [BS.evaluate_bhc(p, bhc_140.polynomial) for p in pH_raw]
 
-	(bhc_80=bhc_80, bhc_140=bhc_140,
-	 E_ref_80=E_ref_80, E_ref_140=E_ref_140,
-	 inv_matrix=inv)
+	c1, t1 = fit_bivariate_poly(pL, pH, a1; order=3)
+	c2, t2 = fit_bivariate_poly(pL, pH, a2; order=3)
+
+	# Report calibration quality
+	a1_pred = eval_bivariate_poly(pL, pH, c1, t1)
+	a2_pred = eval_bivariate_poly(pL, pH, c2, t2)
+	@info "Poly cal — a1 max error: $(round(maximum(abs.(a1_pred-a1)), digits=4)) cm"
+	@info "Poly cal — a2 max error: $(round(maximum(abs.(a2_pred-a2)), digits=4)) cm"
+
+	(c1=c1, t1=t1, c2=c2, t2=t2, bhc_80=bhc_80, bhc_140=bhc_140)
 end
 
-# ╔═╡ 120f2496-469f-450d-816b-3369fb091bdc
+# ╔═╡ cbfcf15e-6676-417a-8800-20123429de0e
 # ═════════════════════════════════════════════════════════════════════════════
-# BHC + LINEAR DECOMPOSITION VMI PIPELINE
+# WATER BHC + POLYNOMIAL DECOMPOSITION VMI PIPELINE
 #
-# Mirrors the working SE FBP path:
-#   1. Projection-domain BHC (same apply_bhc_two_material as SE)
-#   2. Linear 2×2 material decomposition at BHC reference energies
+#   1. Water BHC (per-ray polynomial — linearizes + removes bowtie spectral effects)
+#   2. Polynomial decomposition on BHC-corrected sinograms
 #   3. Optional sinogram regularization
-#   4. VMI synthesis → single FBP per energy → NIST HU
-#   5. Post-processing: noise floor + cupping correction (same as SE)
+#   4. VMI synthesis → FBP → NIST HU
+#   5. Post-processing: noise floor + cupping correction
 # ═════════════════════════════════════════════════════════════════════════════
 sim_de_vmi_hu = let
 	geom = sim_de_sino_low.geom
-	recon_size = de_matrix_size
 
-	# ── Step 1: BHC both sinograms (same as SE FBP) ──────────────────
-	@info "Step 1 — BHC (projection-domain, two-material)..."
-	sino_low_bhc = let
-		g = MtlArray(sim_de_sino_low.sino)
-		Array(BS.apply_bhc_two_material(g, de_decomp.bhc_80, geom, recon_size;
-			volume_extent=sim_phantom_gpu.extent))
-	end
-	sino_high_bhc = let
-		g = MtlArray(sim_de_sino_high.sino)
-		Array(BS.apply_bhc_two_material(g, de_decomp.bhc_140, geom, recon_size;
-			volume_extent=sim_phantom_gpu.extent))
-	end
-	GC.gc(true)
+	# ── Step 1: Water BHC on both raw sinograms ──────────────────────
+	@info "Step 1 — Water BHC (per-ray polynomial)..."
+	sino_low_bhc = Float64.(Array(BS.apply_bhc(
+		Float32.(sim_de_sino_low.sino), de_poly_cal.bhc_80)))
+	sino_high_bhc = Float64.(Array(BS.apply_bhc(
+		Float32.(sim_de_sino_high.sino), de_poly_cal.bhc_140)))
 
-	# ── Step 2: Linear material decomposition ─────────────────────────
-	@info "Step 2 — Linear decomposition ($(de_vmi_basis) at E_ref=$(round(de_decomp.E_ref_80,digits=1))/$(round(de_decomp.E_ref_140,digits=1)) keV)..."
-	inv = de_decomp.inv_matrix
-	mat1_sino = similar(sino_low_bhc, Float32)
-	mat2_sino = similar(sino_low_bhc, Float32)
-	BS.spectral_decompose!(mat1_sino, mat2_sino,
-		Float32.(sino_low_bhc), Float32.(sino_high_bhc),
-		Float32(inv[1]), Float32(inv[2]), Float32(inv[3]), Float32(inv[4]))
+	# ── Step 2: Polynomial material decomposition on BHC-corrected ───
+	@info "Step 2 — Polynomial decomposition ($(de_vmi_basis), order 3)..."
+	pL = vec(sino_low_bhc)
+	pH = vec(sino_high_bhc)
+	a1_vec = eval_bivariate_poly(pL, pH, de_poly_cal.c1, de_poly_cal.t1)
+	a2_vec = eval_bivariate_poly(pL, pH, de_poly_cal.c2, de_poly_cal.t2)
+	mat1_sino = reshape(Float32.(a1_vec), size(sino_low_bhc))
+	mat2_sino = reshape(Float32.(a2_vec), size(sino_low_bhc))
 	sino_low_bhc = nothing; sino_high_bhc = nothing
 	@info "  L₁ range: [$(round(minimum(mat1_sino),digits=2)), $(round(maximum(mat1_sino),digits=2))] cm"
 	@info "  L₂ range: [$(round(minimum(mat2_sino),digits=4)), $(round(maximum(mat2_sino),digits=4))] cm"
@@ -3494,84 +3592,45 @@ sim_de_vmi_hu = let
 	# ── Step 3: Optional sinogram regularization ──────────────────────
 	if de_sino_smooth_σ > 0
 		@info "Step 3 — Sinogram regularization (σ=$(de_sino_smooth_σ) px)..."
-		σ = de_sino_smooth_σ
-		r = ceil(Int, 3σ)
-		kernel_1d = Float32[exp(-Float32(i)^2 / (2f0 * Float32(σ)^2)) for i in -r:r]
-		kernel_1d ./= sum(kernel_1d)
-
-		function smooth_sinogram!(sino::Array{Float32,3}, kern, rad)
-			nc, nv, nr = size(sino)
-			temp = similar(sino, nc, nv)
-			@inbounds for z in 1:nr
-				for v in 1:nv, c in 1:nc
-					s = 0f0
-					for k in eachindex(kern)
-						ic = clamp(c + k - rad - 1, 1, nc)
-						s += sino[ic, v, z] * kern[k]
-					end
-					temp[c, v] = s
-				end
-				for v in 1:nv, c in 1:nc
-					s = 0f0
-					for k in eachindex(kern)
-						iv = clamp(v + k - rad - 1, 1, nv)
-						s += temp[c, iv] * kern[k]
-					end
-					sino[c, v, z] = s
-				end
-			end
-		end
-		smooth_sinogram!(mat1_sino, kernel_1d, r)
-		smooth_sinogram!(mat2_sino, kernel_1d, r)
+		smooth_sinogram!(mat1_sino, de_sino_smooth_σ)
+		smooth_sinogram!(mat2_sino, de_sino_smooth_σ)
 	end
 
-	# ── Step 4: VMI synthesis → FBP → HU ─────────────────────────────
+	# ── Step 4: VMI synthesis → FBP → NIST HU ────────────────────────
 	@info "Step 4 — VMI synthesis + FBP..."
 	results = NamedTuple[]
 	for E in DE_VMI_ENERGIES
 		E_f = Float64(E)
-
-		# VMI sinogram: p_mono(E) = μ₁(E) × L₁ + μ₂(E) × L₂
 		μ1_E = Float32(BS.get_basis_mu(de_vmi_basis[1], E_f))
 		μ2_E = Float32(BS.get_basis_mu(de_vmi_basis[2], E_f))
 		vmi_sino = similar(mat1_sino)
 		BS.spectral_vmi!(vmi_sino, mat1_sino, mat2_sino, μ1_E, μ2_E)
 
-		# FBP (same filter as SE for fair comparison)
 		vmi_gpu = MtlArray(vmi_sino)
 		ws_fdk = BS.create_fdk_recon_workspace(
-			vmi_gpu, geom, de_matrix_size; filter = de_vmi_filter)
+			vmi_gpu, geom, de_matrix_size; filter=de_vmi_filter)
 		recon_μ = Float32.(Array(BS.reconstruct!(ws_fdk, vmi_gpu, geom, de_matrix_size)))
 		ws_fdk = nothing; vmi_gpu = nothing; GC.gc(true)
 
-		# HU using NIST μ_water(E) — correct for monoenergetic sinograms
+		# NIST HU — VMI sinograms are monoenergetic after decomposition
 		μ_w = Float32(BS.get_basis_mu(:water, E_f))
 		recon_hu = 1000f0 .* (recon_μ .- μ_w) ./ μ_w
 
-		# Post-processing (same as SE FBP path)
 		BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
-		BS.apply_radial_cupping_correction!(recon_hu; fov_cm = sim_recon_fov_cm)
+		BS.apply_radial_cupping_correction!(recon_hu; fov_cm=sim_recon_fov_cm)
 
-		# Diagnostic: empirical vs NIST water (should be ratio ≈ 1.0 now)
-		cx, cy = size(recon_μ,1)÷2, size(recon_μ,2)÷2
-		cz = size(recon_μ,3)÷2 + 1
-		r_roi = de_vmi_water_roi_r
-		water_vals = [recon_μ[cx+dx,cy+dy,cz]
-			for dy in -r_roi:r_roi for dx in -r_roi:r_roi if dx^2+dy^2 <= r_roi^2]
-		μ_w_emp = sum(water_vals) / length(water_vals)
-
-		@info "  VMI $(E) keV: μ_nist=$(round(μ_w,digits=5)) μ_emp=$(round(μ_w_emp,digits=5)) ratio=$(round(μ_w_emp/μ_w,digits=4)) HU=[$(round(minimum(recon_hu),digits=0)),$(round(maximum(recon_hu),digits=0))]"
-		push!(results, (name = "sim_DE_$(E)keV", recon = recon_hu, energy_keV = E))
+		@info "  VMI $(E) keV: μ_w_nist=$(round(μ_w,digits=5)) HU=[$(round(minimum(recon_hu),digits=0)),$(round(maximum(recon_hu),digits=0))]"
+		push!(results, (name="sim_DE_$(E)keV", recon=recon_hu, energy_keV=E))
 	end
 
 	results
 end
 
-# ╔═╡ 7e2f1e9f-9e75-48d2-849e-f33847579fc5
+# ╔═╡ ae7030b9-c593-4494-8398-33d2db771ef3
 # Old pipelines removed — replaced by projection-domain VMI pipeline above
 nothing
 
-# ╔═╡ a12ae822-e233-4a76-a667-b822e6aa5076
+# ╔═╡ 8af9e49b-dc38-4a68-bd27-b6cbc0fc72a9
 # Orient simulated VMI images (match clinical orientation)
 sim_de_vmi_oriented = let
 	orient = identity
@@ -3582,7 +3641,7 @@ sim_de_vmi_oriented = let
 	 for r in sim_de_vmi_hu]
 end
 
-# ╔═╡ a302dba7-ffac-442e-8063-f9075ba77df5
+# ╔═╡ 0eb41a2c-a83e-490d-b014-44ee1423c1b5
 sim_de_vmi_measurements = let
 	vmi_scans = [(r.recon, r.name) for r in sim_de_vmi_oriented]
 
@@ -3842,9 +3901,93 @@ let
 	"""
 end
 
+# ╔═╡ e4d416cf-9085-4733-a04e-45b3a84f577e
+md"""
+## 14. Combined Analysis
+"""
+
+# ╔═╡ 79a6fd16-4c56-4bd4-98d4-889ddc2e1e01
+# Combined FBP + HIR noise bar chart
+let
+	water_idx = 1
+
+	# ── Dose Ladder data (120 kVp: 50, 150, 300 mA) ─────────────────
+	dose_labels = [
+		"120 kVp / 50 mA\n(3.38 mGy)",
+		"120 kVp / 150 mA\n(10.16 mGy)",
+		"120 kVp / 300 mA\n(20.38 mGy)"]
+	dose_sim_idx = [1, 2, 3]
+	dose_clin_fbp_idx = [1, 3, 5]
+	dose_clin_hir_idx = [2, 4, 6]
+	n_dose = length(dose_sim_idx)
+
+	dose_clin_fbp_σ = [se_measurements[dose_clin_fbp_idx[i]].rod_stds[water_idx] for i in 1:n_dose]
+	dose_sim_fbp_σ  = [sim_measurements[dose_sim_idx[i]].rod_stds[water_idx] for i in 1:n_dose]
+	dose_clin_hir_σ = [se_measurements[dose_clin_hir_idx[i]].rod_stds[water_idx] for i in 1:n_dose]
+	dose_sim_hir_σ  = [sim_measurements_hir[dose_sim_idx[i]].rod_stds[water_idx] for i in 1:n_dose]
+
+	# ── kVp Series data (~10 mGy) ───────────────────────────────────
+	kvp_labels = [
+		"80 kVp / 480 mA\n(10.32 mGy)",
+		"100 kVp / 250 mA\n(10.53 mGy)",
+		"120 kVp / 150 mA\n(10.16 mGy)",
+		"140 kVp / 110 mA\n(10.85 mGy)"]
+	kvp_sim_idx = [4, 5, 2, 6]
+	kvp_clin_fbp_idx = [7, 9, 3, 11]
+	kvp_clin_hir_idx = [8, 10, 4, 12]
+	n_kvp = length(kvp_sim_idx)
+
+	kvp_clin_fbp_σ = [se_measurements[kvp_clin_fbp_idx[i]].rod_stds[water_idx] for i in 1:n_kvp]
+	kvp_sim_fbp_σ  = [sim_measurements[kvp_sim_idx[i]].rod_stds[water_idx] for i in 1:n_kvp]
+	kvp_clin_hir_σ = [se_measurements[kvp_clin_hir_idx[i]].rod_stds[water_idx] for i in 1:n_kvp]
+	kvp_sim_hir_σ  = [sim_measurements_hir[kvp_sim_idx[i]].rod_stds[water_idx] for i in 1:n_kvp]
+
+	# ── Plot ─────────────────────────────────────────────────────────
+	fig = CM.Figure(size = (1100, 800), fontsize = 13)
+	bw = 0.18  # bar width
+	sw = 2.0   # stroke width for HIR outline bars
+
+	# Top: Dose Ladder
+	ax1 = CM.Axis(fig[1, 1]; title = "120 kVp — Dose Ladder",
+		ylabel = "Water σ (HU)", xticks = (1:n_dose, dose_labels))
+	x = collect(1:n_dose)
+	CM.barplot!(ax1, x .- 0.27, dose_clin_fbp_σ; width = bw,
+		color = :steelblue, label = "Clinical FBP")
+	CM.barplot!(ax1, x .- 0.09, dose_sim_fbp_σ; width = bw,
+		color = :darkorange, label = "Simulated FBP")
+	CM.barplot!(ax1, x .+ 0.09, dose_clin_hir_σ; width = bw,
+		color = (:steelblue, 0.15), strokecolor = :steelblue, strokewidth = sw,
+		label = "Clinical ASiR-V 50%")
+	CM.barplot!(ax1, x .+ 0.27, dose_sim_hir_σ; width = bw,
+		color = (:darkorange, 0.15), strokecolor = :darkorange, strokewidth = sw,
+		label = "Simulated HIR")
+	CM.ylims!(ax1, 0, nothing)
+	CM.axislegend(ax1; position = :rt)
+
+	# Bottom: kVp Series
+	ax2 = CM.Axis(fig[2, 1]; title = "~10 mGy CTDIvol — kVp Series",
+		ylabel = "Water σ (HU)", xticks = (1:n_kvp, kvp_labels))
+	x2 = collect(1:n_kvp)
+	CM.barplot!(ax2, x2 .- 0.27, kvp_clin_fbp_σ; width = bw,
+		color = :steelblue, label = "Clinical FBP")
+	CM.barplot!(ax2, x2 .- 0.09, kvp_sim_fbp_σ; width = bw,
+		color = :darkorange, label = "Simulated FBP")
+	CM.barplot!(ax2, x2 .+ 0.09, kvp_clin_hir_σ; width = bw,
+		color = (:steelblue, 0.15), strokecolor = :steelblue, strokewidth = sw,
+		label = "Clinical ASiR-V 50%")
+	CM.barplot!(ax2, x2 .+ 0.27, kvp_sim_hir_σ; width = bw,
+		color = (:darkorange, 0.15), strokecolor = :darkorange, strokewidth = sw,
+		label = "Simulated HIR")
+	CM.ylims!(ax2, 0, nothing)
+	CM.axislegend(ax2; position = :rt)
+
+	CM.save(joinpath(RESULTS_DIR, "ge_combined_noise.png"), fig, px_per_unit = 2)
+	fig
+end
+
 # ╔═╡ 07140001-0000-4000-8000-000000000000
 md"""
-## 14. Appendix: Parameter Readout
+## 15. Appendix: Parameter Readout
 
 Current tuning parameter values for quick inspection.
 """
@@ -4028,14 +4171,15 @@ sim_noise_floor_hu
 # ╠═4efd48c9-753a-4418-8095-fa12b7cc5a95
 # ╠═e8af3f62-e606-4f10-9a09-9e0620910f58
 # ╟─5cc1fa5c-3722-4fa1-b0f0-d816e204c8bf
-# ╟─c51f59e6-860b-4687-8a3f-7298203ef050
-# ╠═2470f7ba-87d5-438f-9305-481fb2eae4c5
-# ╠═c0511326-fea2-46f9-aaed-3929e6e5f9de
-# ╠═c0031d96-9a8c-47ed-ae8f-22744de4d542
-# ╠═120f2496-469f-450d-816b-3369fb091bdc
-# ╠═7e2f1e9f-9e75-48d2-849e-f33847579fc5
-# ╠═a12ae822-e233-4a76-a667-b822e6aa5076
-# ╠═a302dba7-ffac-442e-8063-f9075ba77df5
+# ╟─82e46206-8132-4964-8802-b8989da9d690
+# ╠═8e37427e-9b6a-4aef-8aa3-dc90b1dcf562
+# ╠═bb2e0320-df31-450c-a338-5470be58046e
+# ╠═25b4998e-70d6-4b68-b60d-9fac1c09f154
+# ╠═493bc7a9-9209-443e-b8d9-f09c95f837d6
+# ╠═cbfcf15e-6676-417a-8800-20123429de0e
+# ╠═ae7030b9-c593-4494-8398-33d2db771ef3
+# ╠═8af9e49b-dc38-4a68-bd27-b6cbc0fc72a9
+# ╠═0eb41a2c-a83e-490d-b014-44ee1423c1b5
 # ╟─03c1d3a1-5604-4b50-b4e9-117260a23cf4
 # ╟─08d5d8aa-bc95-427b-8a6a-d429881f6034
 # ╟─bf457bc7-9349-4b2f-b278-ef355f98cede
@@ -4046,6 +4190,8 @@ sim_noise_floor_hu
 # ╟─e6439f40-ade4-4de9-817c-96663a5ae453
 # ╟─a89fe53a-c546-4036-b7e9-1be92206cd62
 # ╠═8cf1b41b-105d-4dc5-952a-cedfc4c8f4ae
+# ╟─e4d416cf-9085-4733-a04e-45b3a84f577e
+# ╟─79a6fd16-4c56-4bd4-98d4-889ddc2e1e01
 # ╟─07140001-0000-4000-8000-000000000000
 # ╠═07140002-0000-4000-8000-000000000000
 # ╠═07140003-0000-4000-8000-000000000000
