@@ -3257,83 +3257,141 @@ let
 	fig
 end
 
-# ╔═╡ 82e46206-8132-4964-8802-b8989da9d690
+# ╔═╡ 03ccb4c1-47f1-4cfe-9fb0-788c820a65e6
 md"""
 ### DE: VMI Synthesis — BHC + Linear Decomposition Pipeline
 
-Mirrors the working SE FBP path, then adds material decomposition + VMI synthesis:
+VCP-constrained 3-material (water/iodine/bone) projection-domain decomposition → VMI synthesis:
 
-1. **Projection-domain BHC** — Same `apply\_bhc\_two\_material` as SE FBP, calibrated for DE spectra (with K-edge filter if active)
-2. **Linear 2×2 material decomposition** — `compute\_decomposition\_matrix` at BHC reference energies (Alvarez-Macovski 1976)
-3. **Optional sinogram regularization** — Gaussian smooth material sinograms. Tunable `de\_sino\_smooth\_σ`.
-4. **Sinogram-domain VMI** — `p\_mono(E) = μ₁(E)×L₁ + μ₂(E)×L₂` → single FBP per energy
+1. **L\_total estimation** — Water BHC on 140 kVp sinogram, then `L = p\_bhc / μ\_water(E\_eff)`
+2. **VCP Newton-Raphson decomposition** — Solves 2×2 nonlinear system per ray using VCP substitution `l\_water = L − l\_iodine − l\_bone` (Paper §4–6). Basis materials from Gammex 472 inserts (XrayAttenuation.jl).
+3. **Sinogram regularization** — Optional material-level smoothing (`de\_sino\_smooth\_σ`) + per-keV VMI smoothing (`de\_vmi\_smooth\_σ`). Low keV gets more smoothing to suppress amplified decomposition noise.
+4. **3-material VMI synthesis** — `p\_mono(E) = l\_w·μ\_w(E) + l\_i·μ\_i(E) + l\_b·μ\_b(E)` → single FBP per energy
 5. **HU + post-processing** — NIST μ\_water(E), noise floor, cupping correction (same as SE)
 """
 
-# ╔═╡ 8e37427e-9b6a-4aef-8aa3-dc90b1dcf562
-# Newton-Raphson Projection-Domain Material Decomposition
-# (Alvarez & Macovski 1976, Chandra & Langan 2011)
+# ╔═╡ d9b23496-98a7-4e96-a546-7dcaab58ecfa
+# VCP-Constrained Three-Material Projection-Domain Decomposition
+# (Paper §3–4: Beer-Lambert + Volume Conservation Principle)
+#
+# 3 materials, 2 measurements, 1 constraint:
+#   l_water + l_iodine + l_bone = L_total  (VCP, §4)
+#   l_water = L - l_iodine - l_bone        (substitution)
+# → 2×2 nonlinear system in (l_iodine, l_bone)
 begin
+	# ── VCP basis materials (solution model) ── [TUNE]
+	# Solution-model basis: μ = μ_water + conc × (μ/ρ)_element
+	# Δμ captures ONLY the contrast-agent spectral signature — no resin/base offset.
+	# Concentration scales l_m inversely; VMI result is concentration-independent.
+	#
+	# NOTE: Do NOT use solid Gammex insert materials here — their resin base ≠ water,
+	# causing a spectral offset in Δμ that inflates high-keV VMI HU.
+	const VCP_IODINE_CONC_MG_ML = 5.0     # TUNE: reference iodine conc (mg/mL)
+	const VCP_BONE_DENSITY_MG_CC = 200.0   # TUNE: reference calcium density (mg/cc)
+
+	get_bone_mu(energy_keV::Float64) = BS.get_calcium_material_attenuation(energy_keV; density_mg_cc=VCP_BONE_DENSITY_MG_CC)
+	get_iodine_mu(energy_keV::Float64) = BS.get_iodine_solution_attenuation(energy_keV; conc_mg_ml=VCP_IODINE_CONC_MG_ML)
+
+	"""Unified μ lookup for VCP basis materials."""
+	function nb_get_mu(material::Symbol, energy_keV::Float64)
+		material == :bone && return get_bone_mu(energy_keV)
+		material == :iodine && return get_iodine_mu(energy_keV)
+		material == :water && return BS.compute_μ_at_energy(XA.Materials.water, energy_keV)
+		error("Unknown VCP basis material: $material")
+	end
+	
 	"""
-	Pre-compute spectral tables for DE decomposition.
-	Returns μ vectors and normalized weights for both spectra.
+	Precomputed spectral tables for VCP 3-material decomposition.
+
+	Stores differential attenuation Δμ_m(E) = μ_m(E) − μ_water(E) (Paper §6 Phase 2).
+	The VCP substitution eliminates l_water, leaving only Δμ terms in the exponent.
 	"""
-	struct DESpectralTables
-		μ1_low::Vector{Float64}   # basis1 attenuation at each low-kVp energy bin
-		μ2_low::Vector{Float64}   # basis2 attenuation at each low-kVp energy bin
-		μ1_high::Vector{Float64}
-		μ2_high::Vector{Float64}
-		wn_low::Vector{Float64}   # normalized spectral weights (low kVp)
-		wn_high::Vector{Float64}  # normalized spectral weights (high kVp)
+	struct VCPSpectralTables
+		# Low-kVp spectrum
+		μ_water_low::Vector{Float64}    # μ_water(E) at each energy bin
+		Δμ_iodine_low::Vector{Float64}  # μ_iodine(E) - μ_water(E)
+		Δμ_bone_low::Vector{Float64}    # μ_bone(E) - μ_water(E)
+		wn_low::Vector{Float64}         # normalized spectral weights
+
+		# High-kVp spectrum
+		μ_water_high::Vector{Float64}
+		Δμ_iodine_high::Vector{Float64}
+		Δμ_bone_high::Vector{Float64}
+		wn_high::Vector{Float64}
+
+		# Reference μ_water for L_total estimation
+		μ_water_ref_high::Float64
 	end
 
-	function DESpectralTables(
-		e_low, w_low, e_high, w_high, basis::Tuple{Symbol,Symbol}
-	)
-		DESpectralTables(
-			[BS.get_basis_mu(basis[1], Float64(e)) for e in e_low],
-			[BS.get_basis_mu(basis[2], Float64(e)) for e in e_low],
-			[BS.get_basis_mu(basis[1], Float64(e)) for e in e_high],
-			[BS.get_basis_mu(basis[2], Float64(e)) for e in e_high],
-			w_low ./ sum(w_low),
-			w_high ./ sum(w_high),
+	function VCPSpectralTables(e_low, w_low, e_high, w_high)
+		# Precompute μ at each energy bin
+		μw_low  = [nb_get_mu(:water,  Float64(e)) for e in e_low]
+		μi_low  = [nb_get_mu(:iodine, Float64(e)) for e in e_low]
+		μb_low  = [get_bone_mu(Float64(e))         for e in e_low]
+		μw_high = [nb_get_mu(:water,  Float64(e)) for e in e_high]
+		μi_high = [nb_get_mu(:iodine, Float64(e)) for e in e_high]
+		μb_high = [get_bone_mu(Float64(e))         for e in e_high]
+
+		# Differential attenuation (Paper §6 Phase 2)
+		Δμi_low  = μi_low  .- μw_low
+		Δμb_low  = μb_low  .- μw_low
+		Δμi_high = μi_high .- μw_high
+		Δμb_high = μb_high .- μw_high
+
+		# μ_water at effective high-kVp energy for L_total estimation
+		wn_h = w_high ./ sum(w_high)
+		E_eff_high = sum(Float64.(e_high) .* wn_h)
+		μ_water_ref = nb_get_mu(:water, E_eff_high)
+
+		VCPSpectralTables(
+			μw_low, Δμi_low, Δμb_low, w_low ./ sum(w_low),
+			μw_high, Δμi_high, Δμb_high, wn_h,
+			μ_water_ref
 		)
 	end
 
 	"""
-	Polychromatic forward model: (a1, a2) → (p_low, p_high).
-	p = -ln[Σ wₑ exp(-μ₁(E)a₁ - μ₂(E)a₂)]
+	VCP polychromatic forward model (Paper §3 + §4 VCP substitution).
+
+	Given (l_iodine, l_bone) and fixed L_total, compute projections:
+	p = −ln[Σ_E w(E) · exp(−[μ_water(E)·L + Δμ_iodine(E)·l_i + Δμ_bone(E)·l_b])]
 	"""
-	function de_forward(a1::Float64, a2::Float64, tab::DESpectralTables)
+	function vcp_forward(l_i::Float64, l_b::Float64, L::Float64, tab::VCPSpectralTables)
 		I_low  = zero(Float64)
 		I_high = zero(Float64)
 		@inbounds for k in eachindex(tab.wn_low)
-			I_low += tab.wn_low[k] * exp(-(tab.μ1_low[k]*a1 + tab.μ2_low[k]*a2))
+			att = tab.μ_water_low[k]*L + tab.Δμ_iodine_low[k]*l_i + tab.Δμ_bone_low[k]*l_b
+			I_low += tab.wn_low[k] * exp(-att)
 		end
 		@inbounds for k in eachindex(tab.wn_high)
-			I_high += tab.wn_high[k] * exp(-(tab.μ1_high[k]*a1 + tab.μ2_high[k]*a2))
+			att = tab.μ_water_high[k]*L + tab.Δμ_iodine_high[k]*l_i + tab.Δμ_bone_high[k]*l_b
+			I_high += tab.wn_high[k] * exp(-att)
 		end
 		return -log(max(I_low, 1e-30)), -log(max(I_high, 1e-30))
 	end
 
 	"""
-	Jacobian ∂(p_low, p_high)/∂(a1, a2) for Newton-Raphson.
-	J[i,j] = Σ wₑ μⱼ(E) exp(...) / Σ wₑ exp(...)
+	VCP Jacobian: ∂(p_low, p_high)/∂(l_iodine, l_bone).
+
+	J[i,j] = Σ_E w(E) · Δμ_j(E) · exp(−att) / Σ_E w(E) · exp(−att)
+	(derivative of −ln(Σ) w.r.t. Δμ_j terms only — μ_water·L is constant)
 	"""
-	function de_jacobian(a1::Float64, a2::Float64, tab::DESpectralTables)
+	function vcp_jacobian(l_i::Float64, l_b::Float64, L::Float64, tab::VCPSpectralTables)
 		S_l = zero(Float64); j11 = zero(Float64); j12 = zero(Float64)
 		@inbounds for k in eachindex(tab.wn_low)
-			e = tab.wn_low[k] * exp(-(tab.μ1_low[k]*a1 + tab.μ2_low[k]*a2))
-			S_l  += e
-			j11  += tab.μ1_low[k] * e
-			j12  += tab.μ2_low[k] * e
+			att = tab.μ_water_low[k]*L + tab.Δμ_iodine_low[k]*l_i + tab.Δμ_bone_low[k]*l_b
+			e = tab.wn_low[k] * exp(-att)
+			S_l += e
+			j11 += tab.Δμ_iodine_low[k] * e
+			j12 += tab.Δμ_bone_low[k] * e
 		end
 		S_h = zero(Float64); j21 = zero(Float64); j22 = zero(Float64)
 		@inbounds for k in eachindex(tab.wn_high)
-			e = tab.wn_high[k] * exp(-(tab.μ1_high[k]*a1 + tab.μ2_high[k]*a2))
-			S_h  += e
-			j21  += tab.μ1_high[k] * e
-			j22  += tab.μ2_high[k] * e
+			att = tab.μ_water_high[k]*L + tab.Δμ_iodine_high[k]*l_i + tab.Δμ_bone_high[k]*l_b
+			e = tab.wn_high[k] * exp(-att)
+			S_h += e
+			j21 += tab.Δμ_iodine_high[k] * e
+			j22 += tab.Δμ_bone_high[k] * e
 		end
 		inv_Sl = 1.0 / max(S_l, 1e-30)
 		inv_Sh = 1.0 / max(S_h, 1e-30)
@@ -3341,152 +3399,112 @@ begin
 	end
 
 	"""
-	Newton-Raphson inversion for a single ray: (p_low, p_high) → (a1, a2).
+	VCP Newton-Raphson per-ray solver (Paper §4 + §6 Phase 2).
+
+	Solves for (l_iodine, l_bone) given measured (p_low, p_high) and estimated L_total.
+	Enforces non-negativity and VCP feasibility: l_i ≥ 0, l_b ≥ 0, l_i + l_b ≤ L.
+	Returns (l_water, l_iodine, l_bone).
 	"""
-	function de_decompose_ray(
-		p_low::Float64, p_high::Float64, tab::DESpectralTables;
-		max_iter::Int=15, tol::Float64=1e-8
+	function vcp_decompose_ray(
+		p_low::Float64, p_high::Float64, L::Float64, tab::VCPSpectralTables;
+		max_iter::Int=20, tol::Float64=1e-8
 	)
-		# Initial guess: use mean-energy monoenergetic approximation
-		μ1_mean_l = sum(tab.μ1_low  .* tab.wn_low)
-		μ2_mean_l = sum(tab.μ2_low  .* tab.wn_low)
-		μ1_mean_h = sum(tab.μ1_high .* tab.wn_high)
-		μ2_mean_h = sum(tab.μ2_high .* tab.wn_high)
-		det0 = μ1_mean_l * μ2_mean_h - μ2_mean_l * μ1_mean_h
-		a1 = ( μ2_mean_h * p_low - μ2_mean_l * p_high) / det0
-		a2 = (-μ1_mean_h * p_low + μ1_mean_l * p_high) / det0
-		a1 = max(a1, 0.0)
-		a2 = max(a2, 0.0)
+		# Initialize: pure water (l_iodine = 0, l_bone = 0)
+		l_i = 0.0
+		l_b = 0.0
 
 		for _ in 1:max_iter
-			f1, f2 = de_forward(a1, a2, tab)
+			f1, f2 = vcp_forward(l_i, l_b, L, tab)
 			r1, r2 = f1 - p_low, f2 - p_high
-
 			(abs(r1) < tol && abs(r2) < tol) && break
 
-			J11, J12, J21, J22 = de_jacobian(a1, a2, tab)
+			J11, J12, J21, J22 = vcp_jacobian(l_i, l_b, L, tab)
 			det_J = J11 * J22 - J12 * J21
 			abs(det_J) < 1e-30 && break
 
 			inv_det = 1.0 / det_J
-			da1 = inv_det * ( J22 * r1 - J12 * r2)
-			da2 = inv_det * (-J21 * r1 + J11 * r2)
+			dl_i = inv_det * ( J22 * r1 - J12 * r2)
+			dl_b = inv_det * (-J21 * r1 + J11 * r2)
 
-			a1 -= da1
-			a2 -= da2
-			a1 = max(a1, 0.0)
-			a2 = max(a2, 0.0)
+			l_i -= dl_i
+			l_b -= dl_b
+
+			# VCP feasibility (Paper §4: l_m ≥ 0 and Σl_m = L)
+			l_i = max(l_i, 0.0)
+			l_b = max(l_b, 0.0)
+			if l_i + l_b > L
+				scale = L / (l_i + l_b)
+				l_i *= scale
+				l_b *= scale
+			end
 		end
-		return a1, a2
+		l_w = L - l_i - l_b
+		return l_w, l_i, l_b
 	end
 
 	"""
-	Decompose full sinograms: (sino_low, sino_high) → (mat1_sino, mat2_sino).
+	Estimate total path length per ray from BHC'd high-kVp sinogram.
+	L_total ≈ p_high_bhc / μ_water(E_eff_high)
 	"""
-	function de_decompose_sinograms(
+	function estimate_L_total(sino_high_bhc::AbstractArray, tab::VCPSpectralTables)
+		return Float64.(sino_high_bhc) ./ tab.μ_water_ref_high
+	end
+
+	"""
+	Decompose full sinograms: 3-material VCP.
+	(sino_low, sino_high, L_total) → (l_water, l_iodine, l_bone)
+	"""
+	function vcp_decompose_sinograms(
 		sino_low::AbstractArray{T}, sino_high::AbstractArray{T},
-		tab::DESpectralTables
+		L_total::AbstractArray, tab::VCPSpectralTables
 	) where T
-		mat1 = similar(sino_low, Float64)
-		mat2 = similar(sino_low, Float64)
+		water  = similar(sino_low, Float64)
+		iodine = similar(sino_low, Float64)
+		bone   = similar(sino_low, Float64)
 		@inbounds Threads.@threads for i in eachindex(sino_low)
-			a1, a2 = de_decompose_ray(
-				Float64(sino_low[i]), Float64(sino_high[i]), tab)
-			mat1[i] = a1
-			mat2[i] = a2
+			l_w, l_i, l_b = vcp_decompose_ray(
+				Float64(sino_low[i]), Float64(sino_high[i]),
+				max(Float64(L_total[i]), 0.0), tab)
+			water[i]  = l_w
+			iodine[i] = l_i
+			bone[i]   = l_b
 		end
-		return Float32.(mat1), Float32.(mat2)
+		return Float32.(water), Float32.(iodine), Float32.(bone)
 	end
 end
 
-# ╔═╡ bb2e0320-df31-450c-a338-5470be58046e
+# ╔═╡ 57a3d53a-01b8-40b8-bb69-6d6ba54f7f10
 # ═════════════════════════════════════════════════════════════════════════════
 # VMI CONFIGURATION                                                 [TUNE]
 # ═════════════════════════════════════════════════════════════════════════════
 begin
-	# Basis materials for decomposition
-	# de_vmi_basis = (:water, :calcium) # TUNE: (:water, :iodine) or (:water, :calcium)
-	de_vmi_basis = (:water, :calcium) # TUNE: (:water, :iodine) or (:water, :calcium)
+	# VCP 3-material decomposition basis
+	de_vmi_basis = (:water, :iodine, :bone)
 
 	# FBP filter — same as SE for fair comparison (custom_filter_control defined above)
 	de_vmi_filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y)
 
-	# Sinogram-domain regularization σ (pixels) on material sinograms.
-	# Suppresses decomposition noise before FBP. 0 = no smoothing.
-	de_sino_smooth_σ = 0.75                  # TUNE: 0.0–4.0
+	# Material-sinogram regularization σ (pixels) — applied BEFORE VMI synthesis.
+	# Suppresses decomposition noise uniformly across all energies. 0 = off.
+	de_sino_smooth_σ = 0.0                   # TUNE: 0.0–4.0
+
+	# Per-keV VMI sinogram regularization σ (pixels) — applied AFTER VMI synthesis.
+	# Low keV amplifies decomposition noise → use larger σ.
+	# Keys must match DE_VMI_ENERGIES. 0 = no smoothing for that energy.
+	de_vmi_smooth_σ = Dict(
+		40  => 0.5,    # TUNE: most noise at low keV
+		70  => 0.5,    # TUNE
+		100 => 0.5,    # TUNE
+		140 => 0.5,    # TUNE: least noise at high keV
+	)
 
 	# Diagnostic water ROI radius (pixels) — NOT used for calibration
 	de_vmi_water_roi_r = 10
 end
 
-# ╔═╡ 25b4998e-70d6-4b68-b60d-9fac1c09f154
-# Polynomial DE Calibration functions (Stenner et al. 2007 EDEC)
+# ╔═╡ d8aa9c37-f0f9-466e-9c90-a66176021355
+# Sinogram regularization helper (used by VCP pipeline)
 begin
-	"""
-	Generate 2D calibration grid: for each (a1, a2) pair, compute
-	polychromatic projections p_low(a1,a2) and p_high(a1,a2).
-	"""
-	function de_calibration_grid(
-		e_low, w_low, e_high, w_high,
-		basis::Tuple{Symbol,Symbol};
-		max_a1_cm=60.0, max_a2_cm=30.0,
-		n1=100, n2=60
-	)
-		μ1_low  = [BS.get_basis_mu(basis[1], Float64(e)) for e in e_low]
-		μ2_low  = [BS.get_basis_mu(basis[2], Float64(e)) for e in e_low]
-		μ1_high = [BS.get_basis_mu(basis[1], Float64(e)) for e in e_high]
-		μ2_high = [BS.get_basis_mu(basis[2], Float64(e)) for e in e_high]
-
-		wn_low  = w_low ./ sum(w_low)
-		wn_high = w_high ./ sum(w_high)
-
-		a1_vals = range(0, max_a1_cm, length=n1)
-		a2_vals = range(0, max_a2_cm, length=n2)
-
-		N = n1 * n2
-		a1_grid = zeros(N)
-		a2_grid = zeros(N)
-		p_low_grid = zeros(N)
-		p_high_grid = zeros(N)
-
-		k = 0
-		for j in 1:n2, i in 1:n1
-			k += 1
-			a1, a2 = a1_vals[i], a2_vals[j]
-			a1_grid[k] = a1
-			a2_grid[k] = a2
-			I_low  = sum(wn_low  .* exp.(-(μ1_low  .* a1 .+ μ2_low  .* a2)))
-			I_high = sum(wn_high .* exp.(-(μ1_high .* a1 .+ μ2_high .* a2)))
-			p_low_grid[k]  = -log(max(I_low, 1e-30))
-			p_high_grid[k] = -log(max(I_high, 1e-30))
-		end
-		return a1_grid, a2_grid, p_low_grid, p_high_grid
-	end
-
-	"""
-	Fit bivariate polynomial: a_m = Σ c_ij * pL^i * pH^j (i+j ≤ order).
-	"""
-	function fit_bivariate_poly(pL, pH, target; order=3)
-		terms = [(i,j) for i in 0:order for j in 0:order if i+j <= order]
-		N = length(pL)
-		V = zeros(N, length(terms))
-		for (col, (i,j)) in enumerate(terms)
-			V[:, col] .= pL.^i .* pH.^j
-		end
-		return V \ target, terms
-	end
-
-	"""
-	Evaluate bivariate polynomial at given (pL, pH) values.
-	"""
-	function eval_bivariate_poly(pL, pH, coeffs, terms)
-		result = zeros(eltype(pL), length(pL))
-		for (k, (i,j)) in enumerate(terms)
-			result .+= coeffs[k] .* pL.^i .* pH.^j
-		end
-		return result
-	end
-
 	"""
 	In-place separable Gaussian smoothing on 3D sinogram (col, view, row).
 	"""
@@ -3518,93 +3536,92 @@ begin
 	end
 end
 
-# ╔═╡ 493bc7a9-9209-443e-b8d9-f09c95f837d6
-# Water BHC + Polynomial DE calibration
-# 1. Water BHC linearizes projections (removes bulk spectral hardening + bowtie effects)
-# 2. Polynomial maps BHC-corrected (p_low, p_high) → (a1, a2), handling residual nonlinearity
-de_poly_cal = let
+# ╔═╡ 9844dcfe-ed6d-4ec6-9fd9-86cc7f2a1621
+# VCP spectral tables + water BHC for L_total estimation
+de_vcp_tables = let
 	de_filters = vcat(additional_filters, de_kedge_filter)
 	prot_80  = BS.CTProtocol(kVp=80,  additional_filters=de_filters)
 	prot_140 = BS.CTProtocol(kVp=140, additional_filters=de_filters)
 	e_l, w_l = BS.resolve_spectrum(sim_opts, prot_80;  scanner=sim_scanner_de_80)
 	e_h, w_h = BS.resolve_spectrum(sim_opts, prot_140; scanner=sim_scanner_de_140)
 
-	# Water-only BHC for each kVp (simple per-ray polynomial correction)
-	E_ref_80  = sum(e_l .* w_l) / sum(w_l)
-	E_ref_140 = sum(e_h .* w_h) / sum(w_h)
-	bhc_80  = BS.calibrate_bhc(e_l, w_l; order=5, reference_energy_keV=E_ref_80)
+	# Water BHC for L_total estimation (from high-kVp BHC'd sinogram)
+	wn_h = w_h ./ sum(w_h)
+	E_ref_140 = sum(Float64.(e_h) .* wn_h)
 	bhc_140 = BS.calibrate_bhc(e_h, w_h; order=5, reference_energy_keV=E_ref_140)
-	@info "DE BHC: E_ref_80=$(round(E_ref_80,digits=1)) keV, E_ref_140=$(round(E_ref_140,digits=1)) keV"
+	@info "VCP: E_ref_140=$(round(E_ref_140,digits=1)) keV, μ_water_ref=$(round(nb_get_mu(:water, E_ref_140),digits=5))"
 
-	# Generate calibration grid (raw polychromatic projections)
-	a1, a2, pL_raw, pH_raw = de_calibration_grid(
-		e_l, w_l, e_h, w_h, de_vmi_basis;
-		max_a1_cm=60.0, max_a2_cm=30.0, n1=100, n2=60)
-
-	# Apply water BHC to grid projections — polynomial is fitted on BHC-corrected input
-	pL = [BS.evaluate_bhc(p, bhc_80.polynomial) for p in pL_raw]
-	pH = [BS.evaluate_bhc(p, bhc_140.polynomial) for p in pH_raw]
-
-	c1, t1 = fit_bivariate_poly(pL, pH, a1; order=3)
-	c2, t2 = fit_bivariate_poly(pL, pH, a2; order=3)
-
-	# Report calibration quality
-	a1_pred = eval_bivariate_poly(pL, pH, c1, t1)
-	a2_pred = eval_bivariate_poly(pL, pH, c2, t2)
-	@info "Poly cal — a1 max error: $(round(maximum(abs.(a1_pred-a1)), digits=4)) cm"
-	@info "Poly cal — a2 max error: $(round(maximum(abs.(a2_pred-a2)), digits=4)) cm"
-
-	(c1=c1, t1=t1, c2=c2, t2=t2, bhc_80=bhc_80, bhc_140=bhc_140)
+	tab = VCPSpectralTables(e_l, w_l, e_h, w_h)
+	(tab=tab, bhc_140=bhc_140)
 end
 
-# ╔═╡ cbfcf15e-6676-417a-8800-20123429de0e
+# ╔═╡ 430529c0-53b0-435a-8514-f7bbe9521e5e
 # ═════════════════════════════════════════════════════════════════════════════
-# WATER BHC + POLYNOMIAL DECOMPOSITION VMI PIPELINE
-#
-#   1. Water BHC (per-ray polynomial — linearizes + removes bowtie spectral effects)
-#   2. Polynomial decomposition on BHC-corrected sinograms
-#   3. Optional sinogram regularization
-#   4. VMI synthesis → FBP → NIST HU
-#   5. Post-processing: noise floor + cupping correction
+# VCP DECOMPOSITION (slow — run once, reuse for VMI tweaking)
+#   1. Water BHC on high-kVp sinogram → L_total estimation
+#   2. VCP Newton-Raphson decomposition → (l_water, l_iodine, l_bone)
+# ═════════════════════════════════════════════════════════════════════════════
+vcp_material_sinos = let
+	tab = de_vcp_tables.tab
+
+	# ── Step 1: L_total from BHC'd 140 kVp ──
+	@info "Step 1 — L_total estimation from BHC'd 140 kVp..."
+	sino_high_bhc = Float64.(Array(BS.apply_bhc(
+		Float32.(sim_de_sino_high.sino), de_vcp_tables.bhc_140)))
+	L_total = estimate_L_total(sino_high_bhc, tab)
+	@info "  L_total range: [$(round(minimum(L_total),digits=2)), $(round(maximum(L_total),digits=2))] cm"
+
+	# ── Step 2: VCP 3-material Newton-Raphson ──
+	@info "Step 2 — VCP 3-material decomposition (water/iodine/bone)..."
+	sino_low_raw = Float64.(sim_de_sino_low.sino)
+	sino_high_raw = Float64.(sim_de_sino_high.sino)
+	l_water, l_iodine, l_bone = vcp_decompose_sinograms(
+		sino_low_raw, sino_high_raw, L_total, tab)
+	@info "  l_water  range: [$(round(minimum(l_water),digits=2)), $(round(maximum(l_water),digits=2))]"
+	@info "  l_iodine range: [$(round(minimum(l_iodine),digits=4)), $(round(maximum(l_iodine),digits=4))]"
+	@info "  l_bone   range: [$(round(minimum(l_bone),digits=4)), $(round(maximum(l_bone),digits=4))]"
+
+	(l_water=l_water, l_iodine=l_iodine, l_bone=l_bone)
+end
+
+# ╔═╡ 1391caa3-c515-499d-b751-acb5c28f2e99
+# ═════════════════════════════════════════════════════════════════════════════
+# VMI SYNTHESIS + FBP (fast — re-run to tweak smoothing, filter, noise floor)
+#   3. Optional material-sinogram regularization
+#   4. 3-material VMI synthesis → per-keV smoothing → FBP → NIST HU
 # ═════════════════════════════════════════════════════════════════════════════
 sim_de_vmi_hu = let
 	geom = sim_de_sino_low.geom
+	l_water  = copy(vcp_material_sinos.l_water)
+	l_iodine = copy(vcp_material_sinos.l_iodine)
+	l_bone   = copy(vcp_material_sinos.l_bone)
 
-	# ── Step 1: Water BHC on both raw sinograms ──────────────────────
-	@info "Step 1 — Water BHC (per-ray polynomial)..."
-	sino_low_bhc = Float64.(Array(BS.apply_bhc(
-		Float32.(sim_de_sino_low.sino), de_poly_cal.bhc_80)))
-	sino_high_bhc = Float64.(Array(BS.apply_bhc(
-		Float32.(sim_de_sino_high.sino), de_poly_cal.bhc_140)))
-
-	# ── Step 2: Polynomial material decomposition on BHC-corrected ───
-	@info "Step 2 — Polynomial decomposition ($(de_vmi_basis), order 3)..."
-	pL = vec(sino_low_bhc)
-	pH = vec(sino_high_bhc)
-	a1_vec = eval_bivariate_poly(pL, pH, de_poly_cal.c1, de_poly_cal.t1)
-	a2_vec = eval_bivariate_poly(pL, pH, de_poly_cal.c2, de_poly_cal.t2)
-	mat1_sino = reshape(Float32.(a1_vec), size(sino_low_bhc))
-	mat2_sino = reshape(Float32.(a2_vec), size(sino_low_bhc))
-	sino_low_bhc = nothing; sino_high_bhc = nothing
-	@info "  L₁ range: [$(round(minimum(mat1_sino),digits=2)), $(round(maximum(mat1_sino),digits=2))] cm"
-	@info "  L₂ range: [$(round(minimum(mat2_sino),digits=4)), $(round(maximum(mat2_sino),digits=4))] cm"
-
-	# ── Step 3: Optional sinogram regularization ──────────────────────
+	# ── Step 3: Optional material-sinogram regularization ─────────────
 	if de_sino_smooth_σ > 0
-		@info "Step 3 — Sinogram regularization (σ=$(de_sino_smooth_σ) px)..."
-		smooth_sinogram!(mat1_sino, de_sino_smooth_σ)
-		smooth_sinogram!(mat2_sino, de_sino_smooth_σ)
+		@info "Step 3 — Material sinogram regularization (σ=$(de_sino_smooth_σ))..."
+		smooth_sinogram!(l_water, de_sino_smooth_σ)
+		smooth_sinogram!(l_iodine, de_sino_smooth_σ)
+		smooth_sinogram!(l_bone, de_sino_smooth_σ)
 	end
 
-	# ── Step 4: VMI synthesis → FBP → NIST HU ────────────────────────
+	# ── Step 4: 3-material VMI synthesis → FBP → NIST HU ────────────
+	# (Paper §6 Phase 4: μ(E) = Σ l_m · μ_m(E))
 	@info "Step 4 — VMI synthesis + FBP..."
 	results = NamedTuple[]
 	for E in DE_VMI_ENERGIES
 		E_f = Float64(E)
-		μ1_E = Float32(BS.get_basis_mu(de_vmi_basis[1], E_f))
-		μ2_E = Float32(BS.get_basis_mu(de_vmi_basis[2], E_f))
-		vmi_sino = similar(mat1_sino)
-		BS.spectral_vmi!(vmi_sino, mat1_sino, mat2_sino, μ1_E, μ2_E)
+		μw = Float32(nb_get_mu(:water, E_f))
+		μi = Float32(nb_get_mu(:iodine, E_f))
+		μb = Float32(get_bone_mu(E_f))
+
+		# 3-material sinogram-domain VMI (Paper §6 Phase 4)
+		vmi_sino = l_water .* μw .+ l_iodine .* μi .+ l_bone .* μb
+
+		# Per-keV VMI sinogram smoothing
+		σ_vmi = get(de_vmi_smooth_σ, E, 0.0)
+		if σ_vmi > 0
+			smooth_sinogram!(vmi_sino, σ_vmi)
+		end
 
 		vmi_gpu = MtlArray(vmi_sino)
 		ws_fdk = BS.create_fdk_recon_workspace(
@@ -3612,25 +3629,20 @@ sim_de_vmi_hu = let
 		recon_μ = Float32.(Array(BS.reconstruct!(ws_fdk, vmi_gpu, geom, de_matrix_size)))
 		ws_fdk = nothing; vmi_gpu = nothing; GC.gc(true)
 
-		# NIST HU — VMI sinograms are monoenergetic after decomposition
-		μ_w = Float32(BS.get_basis_mu(:water, E_f))
-		recon_hu = 1000f0 .* (recon_μ .- μ_w) ./ μ_w
+		# NIST HU (Paper §6 Phase 4)
+		μ_water_E = Float32(nb_get_mu(:water, E_f))
+		recon_hu = 1000f0 .* (recon_μ .- μ_water_E) ./ μ_water_E
 
 		BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
 		BS.apply_radial_cupping_correction!(recon_hu; fov_cm=sim_recon_fov_cm)
 
-		@info "  VMI $(E) keV: μ_w_nist=$(round(μ_w,digits=5)) HU=[$(round(minimum(recon_hu),digits=0)),$(round(maximum(recon_hu),digits=0))]"
+		@info "  VMI $(E) keV (σ=$(σ_vmi)): μ_w=$(round(μ_water_E,digits=5)) HU=[$(round(minimum(recon_hu),digits=0)),$(round(maximum(recon_hu),digits=0))]"
 		push!(results, (name="sim_DE_$(E)keV", recon=recon_hu, energy_keV=E))
 	end
-
 	results
 end
 
-# ╔═╡ ae7030b9-c593-4494-8398-33d2db771ef3
-# Old pipelines removed — replaced by projection-domain VMI pipeline above
-nothing
-
-# ╔═╡ 8af9e49b-dc38-4a68-bd27-b6cbc0fc72a9
+# ╔═╡ b8c52bf6-df6f-48ee-bd18-a926ce5d162e
 # Orient simulated VMI images (match clinical orientation)
 sim_de_vmi_oriented = let
 	orient = identity
@@ -3641,7 +3653,7 @@ sim_de_vmi_oriented = let
 	 for r in sim_de_vmi_hu]
 end
 
-# ╔═╡ 0eb41a2c-a83e-490d-b014-44ee1423c1b5
+# ╔═╡ 079a7f0c-074d-4cce-b518-298f5309cc05
 sim_de_vmi_measurements = let
 	vmi_scans = [(r.recon, r.name) for r in sim_de_vmi_oriented]
 
@@ -3668,8 +3680,8 @@ let
 
 	fig = CM.Figure(size = (600, 1200), fontsize = 10)
 	for (i, E) in enumerate(DE_VMI_ENERGIES)
-		clin_mid = size(clinical[i], 3) ÷ 2 + 1
-		sim_mid = size(simulated[i].recon, 3) ÷ 2 + 1
+		clin_mid = size(clinical[i], 3) ÷ 2 + 0
+		sim_mid = size(simulated[i].recon, 3) ÷ 2 + 0
 		clin_slice = clinical[i][:, :, clin_mid]
 		sim_slice = simulated[i].recon[:, :, sim_mid]
 
@@ -3682,6 +3694,55 @@ let
 		CM.hidedecorations!(ax2); CM.hidespines!(ax2)
 	end
 	CM.save(joinpath(RESULTS_DIR, "ge_vmi_qualitative.png"), fig, px_per_unit = 2)
+	fig
+end
+
+# ╔═╡ b922a52a-b4f8-4385-b5a0-7b8eb69e8cfe
+md"""
+### VMI: Line Profiles (Clinical vs Simulated)
+"""
+
+# ╔═╡ 157920c7-9a64-4407-8bd5-398f15e4842d
+# VMI Line Profiles — Clinical vs Simulated horizontal profile at each energy
+let
+	clinical = [hu_de_40keV, hu_de_70keV, hu_de_100keV, hu_de_140keV]
+	simulated = sim_de_vmi_oriented
+	n_vmi = length(DE_VMI_ENERGIES)
+
+	sim_shift_px = 4.0  # pixel offset to align simulated with clinical
+
+	fig = CM.Figure(size = (900, 1200), fontsize = 11)
+
+	for (i, E) in enumerate(DE_VMI_ENERGIES)
+		clin_vol = clinical[i]
+		sim_vol = simulated[i].recon
+		clin_mid_z = size(clin_vol, 3) ÷ 2
+		sim_mid_z = size(sim_vol, 3) ÷ 2 + 1
+		clin_slice = clin_vol[:, :, clin_mid_z]
+		sim_slice = sim_vol[:, :, sim_mid_z]
+
+		mid_row_c = size(clin_slice, 1) ÷ 2
+		mid_row_s = size(sim_slice, 1) ÷ 2
+
+		pixel_mm_c = 350.0 / size(clin_slice, 2)
+		pixel_mm_s = 350.0 / size(sim_slice, 2)
+		x_c = range(0, step = pixel_mm_c, length = size(clin_slice, 2))
+		x_s = range(sim_shift_px * pixel_mm_s, step = pixel_mm_s, length = size(sim_slice, 2))
+
+		ax = CM.Axis(fig[i, 1];
+			title = "VMI $(E) keV — Horizontal Line Profile",
+			xlabel = i == n_vmi ? "Position (mm)" : "",
+			ylabel = "HU")
+		CM.lines!(ax, collect(x_c), Float64.(clin_slice[mid_row_c, :]);
+			color = :steelblue, linewidth = 1.2, label = "Clinical")
+		CM.lines!(ax, collect(x_s), Float64.(sim_slice[mid_row_s, :]);
+			color = :orangered, linewidth = 1.2, label = "Simulated")
+		CM.hlines!(ax, [0.0]; color = :gray70, linestyle = :dash, linewidth = 0.6)
+		CM.axislegend(ax; position = :rt, labelsize = 8)
+		CM.ylims!(ax, low = -600)
+	end
+
+	CM.save(joinpath(RESULTS_DIR, "ge_vmi_line_profiles.png"), fig, px_per_unit = 2)
 	fig
 end
 
@@ -3758,6 +3819,43 @@ let
 	CM.axislegend(ax_i, position = :lt, labelsize = 9)
 
 	CM.save(joinpath(RESULTS_DIR, "ge_vmi_scatter_hu.png"), fig, px_per_unit = 2)
+	fig
+end
+
+# ╔═╡ 20ccfc65-0e2a-4d50-9460-bd64b29d2cc8
+md"""
+### VMI: Noise
+"""
+
+# ╔═╡ 55ba2d06-51fe-4ba3-b428-78bcf6107b9b
+# VMI Noise — Clinical vs Simulated water σ at each VMI energy
+let
+	n_vmi = length(DE_VMI_ENERGIES)
+	vmi_labels = ["$(E) keV" for E in DE_VMI_ENERGIES]
+
+	clin_σ = [de_measurements[i].rod_stds[1] for i in 1:n_vmi]  # water rod = index 1
+	sim_σ  = [sim_de_vmi_measurements[i].rod_stds[1] for i in 1:n_vmi]
+
+	fig = CM.Figure(size = (800, 400), fontsize = 13)
+
+	ax = CM.Axis(fig[1, 1]; title = "VMI Water Noise — Clinical vs Simulated",
+		ylabel = "Water σ (HU)", xlabel = "VMI Energy",
+		xticks = (1:n_vmi, vmi_labels))
+	CM.barplot!(ax, collect(1:n_vmi) .- 0.2, clin_σ; width = 0.35,
+		color = :steelblue, label = "Clinical VMI")
+	CM.barplot!(ax, collect(1:n_vmi) .+ 0.2, sim_σ; width = 0.35,
+		color = :darkorange, label = "Simulated VMI")
+
+	# Annotate bars with σ values
+	for i in 1:n_vmi
+		CM.text!(ax, i - 0.2, clin_σ[i] + 0.5;
+			text = "$(round(clin_σ[i], digits=1))", align = (:center, :bottom), fontsize = 9)
+		CM.text!(ax, i + 0.2, sim_σ[i] + 0.5;
+			text = "$(round(sim_σ[i], digits=1))", align = (:center, :bottom), fontsize = 9)
+	end
+
+	CM.axislegend(ax; position = :rt)
+	CM.save(joinpath(RESULTS_DIR, "ge_vmi_noise.png"), fig, px_per_unit = 2)
 	fig
 end
 
@@ -4171,19 +4269,23 @@ sim_noise_floor_hu
 # ╠═4efd48c9-753a-4418-8095-fa12b7cc5a95
 # ╠═e8af3f62-e606-4f10-9a09-9e0620910f58
 # ╟─5cc1fa5c-3722-4fa1-b0f0-d816e204c8bf
-# ╟─82e46206-8132-4964-8802-b8989da9d690
-# ╠═8e37427e-9b6a-4aef-8aa3-dc90b1dcf562
-# ╠═bb2e0320-df31-450c-a338-5470be58046e
-# ╠═25b4998e-70d6-4b68-b60d-9fac1c09f154
-# ╠═493bc7a9-9209-443e-b8d9-f09c95f837d6
-# ╠═cbfcf15e-6676-417a-8800-20123429de0e
-# ╠═ae7030b9-c593-4494-8398-33d2db771ef3
-# ╠═8af9e49b-dc38-4a68-bd27-b6cbc0fc72a9
-# ╠═0eb41a2c-a83e-490d-b014-44ee1423c1b5
+# ╟─03ccb4c1-47f1-4cfe-9fb0-788c820a65e6
+# ╠═d9b23496-98a7-4e96-a546-7dcaab58ecfa
+# ╠═57a3d53a-01b8-40b8-bb69-6d6ba54f7f10
+# ╠═d8aa9c37-f0f9-466e-9c90-a66176021355
+# ╠═9844dcfe-ed6d-4ec6-9fd9-86cc7f2a1621
+# ╠═430529c0-53b0-435a-8514-f7bbe9521e5e
+# ╠═1391caa3-c515-499d-b751-acb5c28f2e99
+# ╠═b8c52bf6-df6f-48ee-bd18-a926ce5d162e
+# ╠═079a7f0c-074d-4cce-b518-298f5309cc05
 # ╟─03c1d3a1-5604-4b50-b4e9-117260a23cf4
 # ╟─08d5d8aa-bc95-427b-8a6a-d429881f6034
+# ╟─b922a52a-b4f8-4385-b5a0-7b8eb69e8cfe
+# ╟─157920c7-9a64-4407-8bd5-398f15e4842d
 # ╟─bf457bc7-9349-4b2f-b278-ef355f98cede
 # ╟─8e37657c-d02f-4b74-aba8-73299fd705c9
+# ╟─20ccfc65-0e2a-4d50-9460-bd64b29d2cc8
+# ╟─55ba2d06-51fe-4ba3-b428-78bcf6107b9b
 # ╟─314c530e-caf1-4235-9985-05e1ef81ccd1
 # ╟─b5c7a40b-2e23-4a85-a734-b8dc86949b7f
 # ╟─6ee9f9ae-977a-4782-b435-9a28bf45346c
