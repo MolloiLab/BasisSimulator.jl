@@ -1,14 +1,16 @@
 name: CI
 
+# CI paused to conserve GitHub Actions minutes (1853/2000 used)
+# Uncomment triggers below to re-enable
 on:
-  push:
-    branches:
-      - main
-      - master
-      - tigre-reactant-rewrite
-    tags: ['*']
-  pull_request:
-  workflow_dispatch:
+  workflow_dispatch:  # manual-only for now
+  # push:
+  #   branches:
+  #     - main
+  #     - master
+  #     - tigre-reactant-rewrite
+  #   tags: ['*']
+  # pull_request:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
