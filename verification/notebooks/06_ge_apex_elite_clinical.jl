@@ -3257,252 +3257,316 @@ let
 	fig
 end
 
-# ╔═╡ 03ccb4c1-47f1-4cfe-9fb0-788c820a65e6
+# ╔═╡ cc86e711-59ae-40b9-9485-4eeb4ff9da5c
 md"""
-### DE: VMI Synthesis — BHC + Linear Decomposition Pipeline
+### DE: VMI Synthesis — CMBMD (Liu 2022)
 
-VCP-constrained 3-material (water/iodine/bone) projection-domain decomposition → VMI synthesis:
+**Constrained Model-Based Multi-Material Decomposition** (Liu et al. 2022, "One-step model-based ..."):
 
-1. **L\_total estimation** — Water BHC on 140 kVp sinogram, then `L = p\_bhc / μ\_water(E\_eff)`
-2. **VCP Newton-Raphson decomposition** — Solves 2×2 nonlinear system per ray using VCP substitution `l\_water = L − l\_iodine − l\_bone` (Paper §4–6). Basis materials from Gammex 472 inserts (XrayAttenuation.jl).
-3. **Sinogram regularization** — Optional material-level smoothing (`de\_sino\_smooth\_σ`) + per-keV VMI smoothing (`de\_vmi\_smooth\_σ`). Low keV gets more smoothing to suppress amplified decomposition noise.
-4. **3-material VMI synthesis** — `p\_mono(E) = l\_w·μ\_w(E) + l\_i·μ\_i(E) + l\_b·μ\_b(E)` → single FBP per energy
-5. **HU + post-processing** — NIST μ\_water(E), noise floor, cupping correction (same as SE)
+One-step iterative decomposition directly estimating 3 volume-fraction images (π\_water, π\_iodine, π\_bone) from dual-energy sinograms. No intermediate FBP — avoids noise amplification and FBP artifacts.
+
+1. **Polychromatic forward model**: `p̂(s) = −ln[Σ_ε w_s(ε)·exp(−μ_w(ε)·[A·π_w] − μ_I(ε)·[A·π_I] − μ_b(ε)·[A·π_b])]`
+2. **Volume conservation**: `π_w(j) + π_I(j) + π_b(j) = 1` inside object (simplex projection)
+3. **PWLS + regularization**: Gradient = `A^T[Σ_s μ̄^(κ,s) ⊙ r^(s)] + β_κ·∇R(π^(κ))`
+4. **VMI synthesis**: `μ(E) = π_w·μ_w(E) + π_I·μ_I(E) + π_b·μ_b(E)` — image-domain, exact.
 """
 
-# ╔═╡ d9b23496-98a7-4e96-a546-7dcaab58ecfa
-# VCP-Constrained Three-Material Projection-Domain Decomposition
-# (Paper §3–4: Beer-Lambert + Volume Conservation Principle)
-#
-# 3 materials, 2 measurements, 1 constraint:
-#   l_water + l_iodine + l_bone = L_total  (VCP, §4)
-#   l_water = L - l_iodine - l_bone        (substitution)
-# → 2×2 nonlinear system in (l_iodine, l_bone)
+# ╔═╡ 2201454f-b5e8-45c0-af9c-cfca90fd5406
+# CMBMD — Constrained Model-Based Multi-Material Decomposition (Liu 2022)
+# One-step iterative 3-material decomposition with VCP constraint
 begin
-	# ── VCP basis materials (solution model) ── [TUNE]
-	# Solution-model basis: μ = μ_water + conc × (μ/ρ)_element
-	# Δμ captures ONLY the contrast-agent spectral signature — no resin/base offset.
-	# Concentration scales l_m inversely; VMI result is concentration-independent.
-	#
-	# NOTE: Do NOT use solid Gammex insert materials here — their resin base ≠ water,
-	# causing a spectral offset in Δμ that inflates high-keV VMI HU.
-	const VCP_IODINE_CONC_MG_ML = 5.0     # TUNE: reference iodine conc (mg/mL)
-	const VCP_BONE_DENSITY_MG_CC = 200.0   # TUNE: reference calcium density (mg/cc)
-
-	get_bone_mu(energy_keV::Float64) = BS.get_calcium_material_attenuation(energy_keV; density_mg_cc=VCP_BONE_DENSITY_MG_CC)
-	get_iodine_mu(energy_keV::Float64) = BS.get_iodine_solution_attenuation(energy_keV; conc_mg_ml=VCP_IODINE_CONC_MG_ML)
-
-	"""Unified μ lookup for VCP basis materials."""
-	function nb_get_mu(material::Symbol, energy_keV::Float64)
-		material == :bone && return get_bone_mu(energy_keV)
-		material == :iodine && return get_iodine_mu(energy_keV)
-		material == :water && return BS.compute_μ_at_energy(XA.Materials.water, energy_keV)
-		error("Unknown VCP basis material: $material")
-	end
-	
 	"""
-	Precomputed spectral tables for VCP 3-material decomposition.
-
-	Stores differential attenuation Δμ_m(E) = μ_m(E) − μ_water(E) (Paper §6 Phase 2).
-	The VCP substitution eliminates l_water, leaving only Δμ terms in the exponent.
+	Precomputed spectral tables for CMBMD (water + iodine + cortical bone).
+	Linear attenuation coefficients μ(ε) in cm⁻¹ at each energy bin.
 	"""
-	struct VCPSpectralTables
-		# Low-kVp spectrum
-		μ_water_low::Vector{Float64}    # μ_water(E) at each energy bin
-		Δμ_iodine_low::Vector{Float64}  # μ_iodine(E) - μ_water(E)
-		Δμ_bone_low::Vector{Float64}    # μ_bone(E) - μ_water(E)
-		wn_low::Vector{Float64}         # normalized spectral weights
+	struct CMBMDSpectralConfig
+		μ_water_low::Vector{Float64}
+		μ_iodine_low::Vector{Float64}
+		μ_bone_low::Vector{Float64}
+		wn_low::Vector{Float64}
 
-		# High-kVp spectrum
 		μ_water_high::Vector{Float64}
-		Δμ_iodine_high::Vector{Float64}
-		Δμ_bone_high::Vector{Float64}
+		μ_iodine_high::Vector{Float64}
+		μ_bone_high::Vector{Float64}
 		wn_high::Vector{Float64}
-
-		# Reference μ_water for L_total estimation
-		μ_water_ref_high::Float64
 	end
 
-	function VCPSpectralTables(e_low, w_low, e_high, w_high)
-		# Precompute μ at each energy bin
-		μw_low  = [nb_get_mu(:water,  Float64(e)) for e in e_low]
-		μi_low  = [nb_get_mu(:iodine, Float64(e)) for e in e_low]
-		μb_low  = [get_bone_mu(Float64(e))         for e in e_low]
-		μw_high = [nb_get_mu(:water,  Float64(e)) for e in e_high]
-		μi_high = [nb_get_mu(:iodine, Float64(e)) for e in e_high]
-		μb_high = [get_bone_mu(Float64(e))         for e in e_high]
-
-		# Differential attenuation (Paper §6 Phase 2)
-		Δμi_low  = μi_low  .- μw_low
-		Δμb_low  = μb_low  .- μw_low
-		Δμi_high = μi_high .- μw_high
-		Δμb_high = μb_high .- μw_high
-
-		# μ_water at effective high-kVp energy for L_total estimation
-		wn_h = w_high ./ sum(w_high)
-		E_eff_high = sum(Float64.(e_high) .* wn_h)
-		μ_water_ref = nb_get_mu(:water, E_eff_high)
-
-		VCPSpectralTables(
-			μw_low, Δμi_low, Δμb_low, w_low ./ sum(w_low),
-			μw_high, Δμi_high, Δμb_high, wn_h,
-			μ_water_ref
+	function CMBMDSpectralConfig(e_low, w_low, e_high, w_high)
+		μ_w_l = [BS.compute_μ_at_energy(XA.Materials.water, Float64(e)) for e in e_low]
+		μ_I_l = [BS.compute_μ_at_energy(XA.Elements.Iodine, Float64(e)) for e in e_low]
+		μ_b_l = [BS.compute_μ_at_energy(XA.Materials.corticalbone, Float64(e)) for e in e_low]
+		μ_w_h = [BS.compute_μ_at_energy(XA.Materials.water, Float64(e)) for e in e_high]
+		μ_I_h = [BS.compute_μ_at_energy(XA.Elements.Iodine, Float64(e)) for e in e_high]
+		μ_b_h = [BS.compute_μ_at_energy(XA.Materials.corticalbone, Float64(e)) for e in e_high]
+		CMBMDSpectralConfig(
+			μ_w_l, μ_I_l, μ_b_l, w_low ./ sum(w_low),
+			μ_w_h, μ_I_h, μ_b_h, w_high ./ sum(w_high)
 		)
 	end
 
 	"""
-	VCP polychromatic forward model (Paper §3 + §4 VCP substitution).
+	Combined polychromatic forward model + gradient sinogram computation.
 
-	Given (l_iodine, l_bone) and fixed L_total, compute projections:
-	p = −ln[Σ_E w(E) · exp(−[μ_water(E)·L + Δμ_iodine(E)·l_i + Δμ_bone(E)·l_b])]
-	"""
-	function vcp_forward(l_i::Float64, l_b::Float64, L::Float64, tab::VCPSpectralTables)
-		I_low  = zero(Float64)
-		I_high = zero(Float64)
-		@inbounds for k in eachindex(tab.wn_low)
-			att = tab.μ_water_low[k]*L + tab.Δμ_iodine_low[k]*l_i + tab.Δμ_bone_low[k]*l_b
-			I_low += tab.wn_low[k] * exp(-att)
-		end
-		@inbounds for k in eachindex(tab.wn_high)
-			att = tab.μ_water_high[k]*L + tab.Δμ_iodine_high[k]*l_i + tab.Δμ_bone_high[k]*l_b
-			I_high += tab.wn_high[k] * exp(-att)
-		end
-		return -log(max(I_low, 1e-30)), -log(max(I_high, 1e-30))
-	end
+	For each pixel i, computes:
+	  1. p̂_s = -ln[Σ_ε w_s(ε)·exp(-μ_w(ε)·l_w - μ_I(ε)·l_I - μ_b(ε)·l_b)]
+	  2. r_s = p̂_s - p_s  (residual)
+	  3. μ̄^(κ,s) = [Σ_ε w_s(ε)·μ_κ(ε)·exp(-att_ε)] / [Σ_ε w_s(ε)·exp(-att_ε)]
+	  4. grad_κ[i] = Σ_s μ̄^(κ,s)[i] · r_s[i]
 
+	Returns total data-fidelity objective value for convergence monitoring.
 	"""
-	VCP Jacobian: ∂(p_low, p_high)/∂(l_iodine, l_bone).
-
-	J[i,j] = Σ_E w(E) · Δμ_j(E) · exp(−att) / Σ_E w(E) · exp(−att)
-	(derivative of −ln(Σ) w.r.t. Δμ_j terms only — μ_water·L is constant)
-	"""
-	function vcp_jacobian(l_i::Float64, l_b::Float64, L::Float64, tab::VCPSpectralTables)
-		S_l = zero(Float64); j11 = zero(Float64); j12 = zero(Float64)
-		@inbounds for k in eachindex(tab.wn_low)
-			att = tab.μ_water_low[k]*L + tab.Δμ_iodine_low[k]*l_i + tab.Δμ_bone_low[k]*l_b
-			e = tab.wn_low[k] * exp(-att)
-			S_l += e
-			j11 += tab.Δμ_iodine_low[k] * e
-			j12 += tab.Δμ_bone_low[k] * e
-		end
-		S_h = zero(Float64); j21 = zero(Float64); j22 = zero(Float64)
-		@inbounds for k in eachindex(tab.wn_high)
-			att = tab.μ_water_high[k]*L + tab.Δμ_iodine_high[k]*l_i + tab.Δμ_bone_high[k]*l_b
-			e = tab.wn_high[k] * exp(-att)
-			S_h += e
-			j21 += tab.Δμ_iodine_high[k] * e
-			j22 += tab.Δμ_bone_high[k] * e
-		end
-		inv_Sl = 1.0 / max(S_l, 1e-30)
-		inv_Sh = 1.0 / max(S_h, 1e-30)
-		return (j11*inv_Sl, j12*inv_Sl, j21*inv_Sh, j22*inv_Sh)
-	end
-
-	"""
-	VCP Newton-Raphson per-ray solver (Paper §4 + §6 Phase 2).
-
-	Solves for (l_iodine, l_bone) given measured (p_low, p_high) and estimated L_total.
-	Enforces non-negativity and VCP feasibility: l_i ≥ 0, l_b ≥ 0, l_i + l_b ≤ L.
-	Returns (l_water, l_iodine, l_bone).
-	"""
-	function vcp_decompose_ray(
-		p_low::Float64, p_high::Float64, L::Float64, tab::VCPSpectralTables;
-		max_iter::Int=20, tol::Float64=1e-8
+	function cmbmd_gradient_sinograms!(
+		grad_w::Array{Float32,3}, grad_I::Array{Float32,3}, grad_b::Array{Float32,3},
+		l_w::Array{Float32,3}, l_I::Array{Float32,3}, l_b::Array{Float32,3},
+		p_low::Array{Float32,3}, p_high::Array{Float32,3},
+		cfg::CMBMDSpectralConfig
 	)
-		# Initialize: pure water (l_iodine = 0, l_bone = 0)
-		l_i = 0.0
-		l_b = 0.0
+		obj_accum = Threads.Atomic{Float64}(0.0)
+		@inbounds Threads.@threads for i in eachindex(l_w)
+			lw = Float64(l_w[i])
+			lI = Float64(l_I[i])
+			lb = Float64(l_b[i])
 
-		for _ in 1:max_iter
-			f1, f2 = vcp_forward(l_i, l_b, L, tab)
-			r1, r2 = f1 - p_low, f2 - p_high
-			(abs(r1) < tol && abs(r2) < tol) && break
+			# Low-kVp forward + effective μ
+			S_l = 0.0; mbar_w_l = 0.0; mbar_I_l = 0.0; mbar_b_l = 0.0
+			for k in eachindex(cfg.wn_low)
+				att = cfg.μ_water_low[k]*lw + cfg.μ_iodine_low[k]*lI + cfg.μ_bone_low[k]*lb
+				e = cfg.wn_low[k] * exp(-att)
+				S_l += e
+				mbar_w_l += cfg.μ_water_low[k] * e
+				mbar_I_l += cfg.μ_iodine_low[k] * e
+				mbar_b_l += cfg.μ_bone_low[k] * e
+			end
+			p_hat_l = -log(max(S_l, 1e-30))
+			inv_Sl = 1.0 / max(S_l, 1e-30)
+			mbar_w_l *= inv_Sl; mbar_I_l *= inv_Sl; mbar_b_l *= inv_Sl
 
-			J11, J12, J21, J22 = vcp_jacobian(l_i, l_b, L, tab)
-			det_J = J11 * J22 - J12 * J21
-			abs(det_J) < 1e-30 && break
+			# High-kVp forward + effective μ
+			S_h = 0.0; mbar_w_h = 0.0; mbar_I_h = 0.0; mbar_b_h = 0.0
+			for k in eachindex(cfg.wn_high)
+				att = cfg.μ_water_high[k]*lw + cfg.μ_iodine_high[k]*lI + cfg.μ_bone_high[k]*lb
+				e = cfg.wn_high[k] * exp(-att)
+				S_h += e
+				mbar_w_h += cfg.μ_water_high[k] * e
+				mbar_I_h += cfg.μ_iodine_high[k] * e
+				mbar_b_h += cfg.μ_bone_high[k] * e
+			end
+			p_hat_h = -log(max(S_h, 1e-30))
+			inv_Sh = 1.0 / max(S_h, 1e-30)
+			mbar_w_h *= inv_Sh; mbar_I_h *= inv_Sh; mbar_b_h *= inv_Sh
 
-			inv_det = 1.0 / det_J
-			dl_i = inv_det * ( J22 * r1 - J12 * r2)
-			dl_b = inv_det * (-J21 * r1 + J11 * r2)
+			# Residuals
+			r_l = p_hat_l - Float64(p_low[i])
+			r_h = p_hat_h - Float64(p_high[i])
 
-			l_i -= dl_i
-			l_b -= dl_b
+			# Combined gradient sinograms
+			grad_w[i] = Float32(mbar_w_l * r_l + mbar_w_h * r_h)
+			grad_I[i] = Float32(mbar_I_l * r_l + mbar_I_h * r_h)
+			grad_b[i] = Float32(mbar_b_l * r_l + mbar_b_h * r_h)
 
-			# VCP feasibility (Paper §4: l_m ≥ 0 and Σl_m = L)
-			l_i = max(l_i, 0.0)
-			l_b = max(l_b, 0.0)
-			if l_i + l_b > L
-				scale = L / (l_i + l_b)
-				l_i *= scale
-				l_b *= scale
+			# Accumulate objective
+			Threads.atomic_add!(obj_accum, 0.5 * (r_l^2 + r_h^2))
+		end
+		return obj_accum[]
+	end
+
+	"""
+	Quadratic regularization gradient (6-connected neighbor differences).
+	Adds β * ∇R(π) to grad in-place. CPU arrays.
+	"""
+	function quadratic_reg_gradient!(grad::Array{Float32,3}, π::Array{Float32,3}, β::Float64)
+		β == 0.0 && return
+		nx, ny, nz = size(π)
+		β_f = Float32(β)
+		@inbounds for z in 1:nz, y in 1:ny, x in 1:nx
+			v = π[x, y, z]
+			g = 0f0
+			# x-neighbors
+			x > 1  && (g += v - π[x-1, y, z])
+			x < nx && (g += v - π[x+1, y, z])
+			# y-neighbors
+			y > 1  && (g += v - π[x, y-1, z])
+			y < ny && (g += v - π[x, y+1, z])
+			# z-neighbors
+			z > 1  && (g += v - π[x, y, z-1])
+			z < nz && (g += v - π[x, y, z+1])
+			grad[x, y, z] += β_f * g
+		end
+	end
+
+	"""
+	Project 3 volume-fraction images onto the probability simplex per-voxel.
+	Constrained voxels (mask==true): clamp ≥ 0, normalize to sum = 1.
+	Unconstrained voxels (mask==false): clamp ≥ 0 only.
+	"""
+	function project_simplex_3!(
+		π_w::Array{Float32,3}, π_I::Array{Float32,3}, π_b::Array{Float32,3},
+		mask::BitArray{3}
+	)
+		@inbounds for i in eachindex(π_w)
+			pw = max(π_w[i], 0f0)
+			pI = max(π_I[i], 0f0)
+			pb = max(π_b[i], 0f0)
+			if mask[i]
+				s = pw + pI + pb
+				if s > 0f0
+					inv_s = 1f0 / s
+					π_w[i] = pw * inv_s
+					π_I[i] = pI * inv_s
+					π_b[i] = pb * inv_s
+				else
+					π_w[i] = 1f0
+					π_I[i] = 0f0
+					π_b[i] = 0f0
+				end
+			else
+				π_w[i] = pw
+				π_I[i] = pI
+				π_b[i] = pb
 			end
 		end
-		l_w = L - l_i - l_b
-		return l_w, l_i, l_b
 	end
 
 	"""
-	Estimate total path length per ray from BHC'd high-kVp sinogram.
-	L_total ≈ p_high_bhc / μ_water(E_eff_high)
-	"""
-	function estimate_L_total(sino_high_bhc::AbstractArray, tab::VCPSpectralTables)
-		return Float64.(sino_high_bhc) ./ tab.μ_water_ref_high
-	end
+	CMBMD main iteration loop.
 
+	Estimates 3 volume-fraction images (π_water, π_iodine, π_bone) from
+	dual-energy sinograms using SQS updates + simplex projection (VCP).
+
+	All forward/back projections on GPU; polychromatic model on CPU.
 	"""
-	Decompose full sinograms: 3-material VCP.
-	(sino_low, sino_high, L_total) → (l_water, l_iodine, l_bone)
-	"""
-	function vcp_decompose_sinograms(
-		sino_low::AbstractArray{T}, sino_high::AbstractArray{T},
-		L_total::AbstractArray, tab::VCPSpectralTables
-	) where T
-		water  = similar(sino_low, Float64)
-		iodine = similar(sino_low, Float64)
-		bone   = similar(sino_low, Float64)
-		@inbounds Threads.@threads for i in eachindex(sino_low)
-			l_w, l_i, l_b = vcp_decompose_ray(
-				Float64(sino_low[i]), Float64(sino_high[i]),
-				max(Float64(L_total[i]), 0.0), tab)
-			water[i]  = l_w
-			iodine[i] = l_i
-			bone[i]   = l_b
+	function cmbmd_reconstruct!(
+		π_w::Array{Float32,3}, π_I::Array{Float32,3}, π_b::Array{Float32,3},
+		p_low::Array{Float32,3}, p_high::Array{Float32,3},
+		geom,
+		cfg::CMBMDSpectralConfig;
+		niter::Int = 100,
+		β_water::Float64 = 1e-3,
+		β_iodine::Float64 = 1e-4,
+		β_bone::Float64 = 1e-3,
+		relaxation::Float64 = 0.05,
+		mask_constrained::BitArray{3},
+		verbose::Bool = true
+	)
+		vol_size = size(π_w)
+
+		# ── Per-material SQS curvature (Newton-like step) ──
+		# Gradient: ∇_κ[j] = Σ_i A_{ij} · Σ_s μ̄^(κ,s)_i · r_s[i]  (∝ μ̄_κ)
+		# Hessian diagonal: H_κ[j] ≈ μ̄_κ² · n_spectra · (A^T · 1)[j]
+		# Newton step: Δπ_κ = ∇_κ/H_κ ≈ r/μ̄_κ  (independent of μ̄ magnitude!)
+		#   Water (μ̄=0.225): Δπ_w ≈ 4.4·r  → reaches target ~1.0 in O(5) iters
+		#   Iodine (μ̄=55):   Δπ_I ≈ 0.018·r → reaches target ~0.002 in O(2) iters
+		#   Bone (μ̄=0.84):   Δπ_b ≈ 1.2·r  → reaches target ~0.1 in O(5) iters
+
+		# Mean effective μ per material (averaged over both spectra)
+		μ̄_w = Float64(0.5 * (sum(cfg.μ_water_low .* cfg.wn_low) + sum(cfg.μ_water_high .* cfg.wn_high)))
+		μ̄_I = Float64(0.5 * (sum(cfg.μ_iodine_low .* cfg.wn_low) + sum(cfg.μ_iodine_high .* cfg.wn_high)))
+		μ̄_b = Float64(0.5 * (sum(cfg.μ_bone_low .* cfg.wn_low) + sum(cfg.μ_bone_high .* cfg.wn_high)))
+
+		# Geometry-dependent part: A^T · 1 (voxel sensitivity)
+		ones_sino = MtlArray(ones(Float32, size(p_low)))
+		AT1 = Array(BS.backproject(ones_sino, geom, vol_size; weighted=false))
+		ones_sino = nothing
+
+		# Clamp AT1 at 1% of max to prevent edge voxels from getting insane steps
+		AT1_max = maximum(AT1)
+		AT1_floor = Float32(0.01 * AT1_max)
+		@. AT1 = max(AT1, AT1_floor)
+
+		# Per-material step normalization (n_spectra=2)
+		D_w = similar(AT1); D_I = similar(AT1); D_b = similar(AT1)
+		scale_w = Float32(relaxation / (2.0 * μ̄_w^2))
+		scale_I = Float32(relaxation / (2.0 * μ̄_I^2))
+		scale_b = Float32(relaxation / (2.0 * μ̄_b^2))
+		@. D_w = scale_w / AT1
+		@. D_I = scale_I / AT1
+		@. D_b = scale_b / AT1
+
+		if verbose
+			@info "  CMBMD step scales: water=$(round(scale_w,sigdigits=3)), iodine=$(round(scale_I,sigdigits=3)), bone=$(round(scale_b,sigdigits=3))"
+			@info "  Mean μ̄: water=$(round(μ̄_w,digits=3)), iodine=$(round(μ̄_I,digits=1)), bone=$(round(μ̄_b,digits=3)) cm⁻¹"
+			@info "  AT1 range: [$(round(AT1_floor,digits=1)), $(round(AT1_max,digits=1))], floor=$(round(AT1_floor,digits=1))"
 		end
-		return Float32.(water), Float32.(iodine), Float32.(bone)
+
+		# Scratch buffers (CPU sinogram-sized)
+		grad_sino_w = similar(p_low)
+		grad_sino_I = similar(p_low)
+		grad_sino_b = similar(p_low)
+		l_w_cpu = similar(p_low)
+		l_I_cpu = similar(p_low)
+		l_b_cpu = similar(p_low)
+
+		# Scratch buffers (CPU volume-sized) for gradients
+		∇_w_cpu = similar(π_w)
+		∇_I_cpu = similar(π_w)
+		∇_b_cpu = similar(π_w)
+
+		for iter in 1:niter
+			# Step 1: Forward project volume fractions (GPU)
+			l_w_gpu = BS.siddon_forward_project(MtlArray(π_w), geom)
+			l_I_gpu = BS.siddon_forward_project(MtlArray(π_I), geom)
+			l_b_gpu = BS.siddon_forward_project(MtlArray(π_b), geom)
+
+			# Step 2: Copy to CPU for polychromatic computation
+			copyto!(l_w_cpu, Array(l_w_gpu))
+			copyto!(l_I_cpu, Array(l_I_gpu))
+			copyto!(l_b_cpu, Array(l_b_gpu))
+			l_w_gpu = nothing; l_I_gpu = nothing; l_b_gpu = nothing
+
+			# Step 3: Polychromatic forward + gradient sinograms (CPU, threaded)
+			obj = cmbmd_gradient_sinograms!(grad_sino_w, grad_sino_I, grad_sino_b,
+				l_w_cpu, l_I_cpu, l_b_cpu,
+				p_low, p_high, cfg)
+
+			# Step 4: Backproject gradient sinograms (GPU)
+			copyto!(∇_w_cpu, Array(BS.backproject(MtlArray(grad_sino_w), geom, vol_size; weighted=false)))
+			copyto!(∇_I_cpu, Array(BS.backproject(MtlArray(grad_sino_I), geom, vol_size; weighted=false)))
+			copyto!(∇_b_cpu, Array(BS.backproject(MtlArray(grad_sino_b), geom, vol_size; weighted=false)))
+
+			# Step 5: Add regularization gradient
+			quadratic_reg_gradient!(∇_w_cpu, π_w, β_water)
+			quadratic_reg_gradient!(∇_I_cpu, π_I, β_iodine)
+			quadratic_reg_gradient!(∇_b_cpu, π_b, β_bone)
+
+			# Step 6: SQS update — constrained voxels only (air stays at zero)
+			@inbounds for i in eachindex(π_w)
+				if mask_constrained[i]
+					π_w[i] -= D_w[i] * ∇_w_cpu[i]
+					π_I[i] -= D_I[i] * ∇_I_cpu[i]
+					π_b[i] -= D_b[i] * ∇_b_cpu[i]
+				end
+			end
+
+			# Step 7: Simplex projection (VCP constraint)
+			project_simplex_3!(π_w, π_I, π_b, mask_constrained)
+
+			if verbose && (iter % 10 == 0 || iter == 1)
+				@info "  CMBMD iter $iter: obj=$(round(obj, digits=2)), π_w=[$(round(minimum(π_w),digits=3)),$(round(maximum(π_w),digits=3))], π_I_max=$(round(maximum(π_I),digits=5))"
+			end
+		end
+		return nothing
 	end
 end
 
-# ╔═╡ 57a3d53a-01b8-40b8-bb69-6d6ba54f7f10
+# ╔═╡ db096b44-4090-4320-9fd0-acfb7c915f1d
 # ═════════════════════════════════════════════════════════════════════════════
-# VMI CONFIGURATION                                                 [TUNE]
+# VMI CONFIGURATION — CMBMD                                         [TUNE]
 # ═════════════════════════════════════════════════════════════════════════════
 begin
-	# VCP 3-material decomposition basis
-	de_vmi_basis = (:water, :iodine, :bone)
+	# CMBMD iteration parameters
+	cmbmd_niter = 150                        # TUNE: iterations (50–200)
+	cmbmd_β_water = 0.0 # TUNE: regularization per material
+	cmbmd_β_iodine = 0.0
+	cmbmd_β_bone = 0.0
+	cmbmd_relaxation = 0.1                  # TUNE: step size (0.3–0.8)
+	cmbmd_air_threshold_hu = -800.0          # TUNE: air mask threshold
 
-	# FBP filter — same as SE for fair comparison (custom_filter_control defined above)
+	# FBP filter for initialization
 	de_vmi_filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y)
-
-	# Material-sinogram regularization σ (pixels) — applied BEFORE VMI synthesis.
-	# Suppresses decomposition noise uniformly across all energies. 0 = off.
-	de_sino_smooth_σ = 0.0                   # TUNE: 0.0–4.0
-
-	# Per-keV VMI sinogram regularization σ (pixels) — applied AFTER VMI synthesis.
-	# Low keV amplifies decomposition noise → use larger σ.
-	# Keys must match DE_VMI_ENERGIES. 0 = no smoothing for that energy.
-	de_vmi_smooth_σ = Dict(
-		40  => 0.5,    # TUNE: most noise at low keV
-		70  => 0.5,    # TUNE
-		100 => 0.5,    # TUNE
-		140 => 0.5,    # TUNE: least noise at high keV
-	)
-
-	# Diagnostic water ROI radius (pixels) — NOT used for calibration
-	de_vmi_water_roi_r = 10
+	de_matrix_size_unchanged = de_matrix_size  # (512, 512, n_slices)
 end
 
-# ╔═╡ d8aa9c37-f0f9-466e-9c90-a66176021355
+# ╔═╡ 9c87032b-617b-47ec-897c-367ef300e664
 # Sinogram regularization helper (used by VCP pipeline)
 begin
 	"""
@@ -3536,113 +3600,108 @@ begin
 	end
 end
 
-# ╔═╡ 9844dcfe-ed6d-4ec6-9fd9-86cc7f2a1621
-# VCP spectral tables + water BHC for L_total estimation
-de_vcp_tables = let
+# ╔═╡ b5593370-ea10-47bb-8643-3fb514bef898
+# CMBMD spectral config + FDK initialization + object mask
+cmbmd_init = let
+	# Build spectral config
 	de_filters = vcat(additional_filters, de_kedge_filter)
 	prot_80  = BS.CTProtocol(kVp=80,  additional_filters=de_filters)
 	prot_140 = BS.CTProtocol(kVp=140, additional_filters=de_filters)
 	e_l, w_l = BS.resolve_spectrum(sim_opts, prot_80;  scanner=sim_scanner_de_80)
 	e_h, w_h = BS.resolve_spectrum(sim_opts, prot_140; scanner=sim_scanner_de_140)
+	cfg = CMBMDSpectralConfig(e_l, w_l, e_h, w_h)
 
-	# Water BHC for L_total estimation (from high-kVp BHC'd sinogram)
-	wn_h = w_h ./ sum(w_h)
-	E_ref_140 = sum(Float64.(e_h) .* wn_h)
-	bhc_140 = BS.calibrate_bhc(e_h, w_h; order=5, reference_energy_keV=E_ref_140)
-	@info "VCP: E_ref_140=$(round(E_ref_140,digits=1)) keV, μ_water_ref=$(round(nb_get_mu(:water, E_ref_140),digits=5))"
+	geom = sim_de_sino_low.geom
 
-	tab = VCPSpectralTables(e_l, w_l, e_h, w_h)
-	(tab=tab, bhc_140=bhc_140)
+	# FDK initialization — reconstruct 140 kVp for object mask
+	@info "CMBMD init: FDK of 140 kVp for object mask..."
+	gpu_high = MtlArray(Float32.(sim_de_sino_high.sino))
+	ws = BS.create_fdk_recon_workspace(gpu_high, geom, de_matrix_size; filter=de_vmi_filter)
+	fdk_high = Float32.(Array(BS.reconstruct!(ws, gpu_high, geom, de_matrix_size)))
+	ws = nothing; gpu_high = nothing; GC.gc(true)
+
+	# Convert to HU for thresholding
+	μ_water_70 = Float32(BS.compute_μ_at_energy(XA.Materials.water, 70.0))
+	fdk_hu = 1000f0 .* (fdk_high .- μ_water_70) ./ μ_water_70
+
+	# Object mask: true = inside object (VCP applies), false = air
+	mask = BitArray(fdk_hu .> Float32(cmbmd_air_threshold_hu))
+
+	# Initialize volume fractions
+	π_w = Float32.(mask)  # water = 1.0 in object, 0 in air
+	π_I = zeros(Float32, de_matrix_size...)
+	π_b = zeros(Float32, de_matrix_size...)
+
+	n_constrained = sum(mask)
+	n_total = prod(de_matrix_size)
+	@info "CMBMD init: $(n_constrained) constrained voxels ($(round(100*n_constrained/n_total,digits=1))%), $(n_total-n_constrained) unconstrained"
+	@info "  Spectral bins: low=$(length(e_l)), high=$(length(e_h))"
+
+	(cfg=cfg, π_w=π_w, π_I=π_I, π_b=π_b, mask=mask, geom=geom)
 end
 
-# ╔═╡ 430529c0-53b0-435a-8514-f7bbe9521e5e
+# ╔═╡ f8c3aded-83c7-4d7f-9c3b-f2d68fd2672a
 # ═════════════════════════════════════════════════════════════════════════════
-# VCP DECOMPOSITION (slow — run once, reuse for VMI tweaking)
-#   1. Water BHC on high-kVp sinogram → L_total estimation
-#   2. VCP Newton-Raphson decomposition → (l_water, l_iodine, l_bone)
+# CMBMD DECOMPOSITION (iterative — slow, run once)
+#   One-step model-based 3-material decomposition with VCP constraint
 # ═════════════════════════════════════════════════════════════════════════════
-vcp_material_sinos = let
-	tab = de_vcp_tables.tab
+cmbmd_result = let
+	cfg = cmbmd_init.cfg
+	geom = cmbmd_init.geom
+	p_low  = Float32.(sim_de_sino_low.sino)
+	p_high = Float32.(sim_de_sino_high.sino)
 
-	# ── Step 1: L_total from BHC'd 140 kVp ──
-	@info "Step 1 — L_total estimation from BHC'd 140 kVp..."
-	sino_high_bhc = Float64.(Array(BS.apply_bhc(
-		Float32.(sim_de_sino_high.sino), de_vcp_tables.bhc_140)))
-	L_total = estimate_L_total(sino_high_bhc, tab)
-	@info "  L_total range: [$(round(minimum(L_total),digits=2)), $(round(maximum(L_total),digits=2))] cm"
+	# Copy init to mutable arrays
+	π_w = copy(cmbmd_init.π_w)
+	π_I = copy(cmbmd_init.π_I)
+	π_b = copy(cmbmd_init.π_b)
+	mask = cmbmd_init.mask
 
-	# ── Step 2: VCP 3-material Newton-Raphson ──
-	@info "Step 2 — VCP 3-material decomposition (water/iodine/bone)..."
-	sino_low_raw = Float64.(sim_de_sino_low.sino)
-	sino_high_raw = Float64.(sim_de_sino_high.sino)
-	l_water, l_iodine, l_bone = vcp_decompose_sinograms(
-		sino_low_raw, sino_high_raw, L_total, tab)
-	@info "  l_water  range: [$(round(minimum(l_water),digits=2)), $(round(maximum(l_water),digits=2))]"
-	@info "  l_iodine range: [$(round(minimum(l_iodine),digits=4)), $(round(maximum(l_iodine),digits=4))]"
-	@info "  l_bone   range: [$(round(minimum(l_bone),digits=4)), $(round(maximum(l_bone),digits=4))]"
+	@info "Running CMBMD ($cmbmd_niter iterations)..."
+	cmbmd_reconstruct!(π_w, π_I, π_b, p_low, p_high, geom, cfg;
+		niter=cmbmd_niter, β_water=cmbmd_β_water, β_iodine=cmbmd_β_iodine,
+		β_bone=cmbmd_β_bone, relaxation=cmbmd_relaxation,
+		mask_constrained=mask, verbose=true)
 
-	(l_water=l_water, l_iodine=l_iodine, l_bone=l_bone)
+	@info "CMBMD complete:"
+	@info "  π_water  range: [$(round(minimum(π_w),digits=3)), $(round(maximum(π_w),digits=3))]"
+	@info "  π_iodine range: [$(round(minimum(π_I),digits=5)), $(round(maximum(π_I),digits=5))]"
+	@info "  π_bone   range: [$(round(minimum(π_b),digits=4)), $(round(maximum(π_b),digits=4))]"
+	(π_water=π_w, π_iodine=π_I, π_bone=π_b, mask=mask)
 end
 
-# ╔═╡ 1391caa3-c515-499d-b751-acb5c28f2e99
+# ╔═╡ 6eb98066-fdd6-456d-9709-2495b821a66b
 # ═════════════════════════════════════════════════════════════════════════════
-# VMI SYNTHESIS + FBP (fast — re-run to tweak smoothing, filter, noise floor)
-#   3. Optional material-sinogram regularization
-#   4. 3-material VMI synthesis → per-keV smoothing → FBP → NIST HU
+# VMI SYNTHESIS from CMBMD volume fractions (fast — re-run to tweak)
+#   μ(E) = π_w·μ_w(E) + π_I·μ_I(E) + π_b·μ_b(E)
 # ═════════════════════════════════════════════════════════════════════════════
 sim_de_vmi_hu = let
-	geom = sim_de_sino_low.geom
-	l_water  = copy(vcp_material_sinos.l_water)
-	l_iodine = copy(vcp_material_sinos.l_iodine)
-	l_bone   = copy(vcp_material_sinos.l_bone)
+	π_w = Float64.(cmbmd_result.π_water)
+	π_I = Float64.(cmbmd_result.π_iodine)
+	π_b = Float64.(cmbmd_result.π_bone)
 
-	# ── Step 3: Optional material-sinogram regularization ─────────────
-	if de_sino_smooth_σ > 0
-		@info "Step 3 — Material sinogram regularization (σ=$(de_sino_smooth_σ))..."
-		smooth_sinogram!(l_water, de_sino_smooth_σ)
-		smooth_sinogram!(l_iodine, de_sino_smooth_σ)
-		smooth_sinogram!(l_bone, de_sino_smooth_σ)
-	end
-
-	# ── Step 4: 3-material VMI synthesis → FBP → NIST HU ────────────
-	# (Paper §6 Phase 4: μ(E) = Σ l_m · μ_m(E))
-	@info "Step 4 — VMI synthesis + FBP..."
 	results = NamedTuple[]
 	for E in DE_VMI_ENERGIES
 		E_f = Float64(E)
-		μw = Float32(nb_get_mu(:water, E_f))
-		μi = Float32(nb_get_mu(:iodine, E_f))
-		μb = Float32(get_bone_mu(E_f))
+		μ_w = BS.compute_μ_at_energy(XA.Materials.water, E_f)
+		μ_I = BS.compute_μ_at_energy(XA.Elements.Iodine, E_f)
+		μ_b = BS.compute_μ_at_energy(XA.Materials.corticalbone, E_f)
+		μ_water_E = μ_w  # pure water reference
 
-		# 3-material sinogram-domain VMI (Paper §6 Phase 4)
-		vmi_sino = l_water .* μw .+ l_iodine .* μi .+ l_bone .* μb
-
-		# Per-keV VMI sinogram smoothing
-		σ_vmi = get(de_vmi_smooth_σ, E, 0.0)
-		if σ_vmi > 0
-			smooth_sinogram!(vmi_sino, σ_vmi)
-		end
-
-		vmi_gpu = MtlArray(vmi_sino)
-		ws_fdk = BS.create_fdk_recon_workspace(
-			vmi_gpu, geom, de_matrix_size; filter=de_vmi_filter)
-		recon_μ = Float32.(Array(BS.reconstruct!(ws_fdk, vmi_gpu, geom, de_matrix_size)))
-		ws_fdk = nothing; vmi_gpu = nothing; GC.gc(true)
-
-		# NIST HU (Paper §6 Phase 4)
-		μ_water_E = Float32(nb_get_mu(:water, E_f))
-		recon_hu = 1000f0 .* (recon_μ .- μ_water_E) ./ μ_water_E
+		# VMI: μ(E) = Σ_κ π_κ · μ_κ(E)
+		recon_μ = Float32.(π_w .* μ_w .+ π_I .* μ_I .+ π_b .* μ_b)
+		recon_hu = 1000f0 .* (recon_μ .- Float32(μ_water_E)) ./ Float32(μ_water_E)
 
 		BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
-		BS.apply_radial_cupping_correction!(recon_hu; fov_cm=sim_recon_fov_cm)
+		# BS.apply_radial_cupping_correction!(recon_hu; fov_cm=sim_recon_fov_cm)
 
-		@info "  VMI $(E) keV (σ=$(σ_vmi)): μ_w=$(round(μ_water_E,digits=5)) HU=[$(round(minimum(recon_hu),digits=0)),$(round(maximum(recon_hu),digits=0))]"
+		@info "  VMI $(E) keV: HU=[$(round(minimum(recon_hu),digits=0)),$(round(maximum(recon_hu),digits=0))]"
 		push!(results, (name="sim_DE_$(E)keV", recon=recon_hu, energy_keV=E))
 	end
 	results
 end
 
-# ╔═╡ b8c52bf6-df6f-48ee-bd18-a926ce5d162e
+# ╔═╡ 8d77f7d8-1817-4400-b8ce-cf7d38b5f518
 # Orient simulated VMI images (match clinical orientation)
 sim_de_vmi_oriented = let
 	orient = identity
@@ -3653,7 +3712,7 @@ sim_de_vmi_oriented = let
 	 for r in sim_de_vmi_hu]
 end
 
-# ╔═╡ 079a7f0c-074d-4cce-b518-298f5309cc05
+# ╔═╡ c3bafd40-fda9-4ec2-8ec3-8dc109fc4ecb
 sim_de_vmi_measurements = let
 	vmi_scans = [(r.recon, r.name) for r in sim_de_vmi_oriented]
 
@@ -4269,17 +4328,17 @@ sim_noise_floor_hu
 # ╠═4efd48c9-753a-4418-8095-fa12b7cc5a95
 # ╠═e8af3f62-e606-4f10-9a09-9e0620910f58
 # ╟─5cc1fa5c-3722-4fa1-b0f0-d816e204c8bf
-# ╟─03ccb4c1-47f1-4cfe-9fb0-788c820a65e6
-# ╠═d9b23496-98a7-4e96-a546-7dcaab58ecfa
-# ╠═57a3d53a-01b8-40b8-bb69-6d6ba54f7f10
-# ╠═d8aa9c37-f0f9-466e-9c90-a66176021355
-# ╠═9844dcfe-ed6d-4ec6-9fd9-86cc7f2a1621
-# ╠═430529c0-53b0-435a-8514-f7bbe9521e5e
-# ╠═1391caa3-c515-499d-b751-acb5c28f2e99
-# ╠═b8c52bf6-df6f-48ee-bd18-a926ce5d162e
-# ╠═079a7f0c-074d-4cce-b518-298f5309cc05
+# ╠═cc86e711-59ae-40b9-9485-4eeb4ff9da5c
+# ╠═2201454f-b5e8-45c0-af9c-cfca90fd5406
+# ╠═db096b44-4090-4320-9fd0-acfb7c915f1d
+# ╠═9c87032b-617b-47ec-897c-367ef300e664
+# ╠═b5593370-ea10-47bb-8643-3fb514bef898
+# ╠═f8c3aded-83c7-4d7f-9c3b-f2d68fd2672a
+# ╠═6eb98066-fdd6-456d-9709-2495b821a66b
+# ╠═8d77f7d8-1817-4400-b8ce-cf7d38b5f518
+# ╠═c3bafd40-fda9-4ec2-8ec3-8dc109fc4ecb
 # ╟─03c1d3a1-5604-4b50-b4e9-117260a23cf4
-# ╟─08d5d8aa-bc95-427b-8a6a-d429881f6034
+# ╠═08d5d8aa-bc95-427b-8a6a-d429881f6034
 # ╟─b922a52a-b4f8-4385-b5a0-7b8eb69e8cfe
 # ╟─157920c7-9a64-4407-8bd5-398f15e4842d
 # ╟─bf457bc7-9349-4b2f-b278-ef355f98cede
