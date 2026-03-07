@@ -15,8 +15,9 @@
 # =============================================================================
 
 import AcceleratedKernels as AK
+using FFTW
 
-export filter_sinogram!, filter_sinogram
+export filter_sinogram!, filter_sinogram, filter_sinogram_fft!
 export FilterType, RampFilter, SheppLoganFilter, CosineFilter, HammingFilter, HannFilter
 export StandardFilter, SoftFilter, BoneFilter, CustomFilter
 export create_spatial_kernel
@@ -148,66 +149,76 @@ function create_spatial_kernel(n::Int, filter_type::FilterType, pixel_size::T) w
         end
     end
 
-    # Apply window function
-    apply_spatial_window!(kernel, filter_type)
+    # Apply window function in frequency domain (more accurate than spatial approx)
+    _apply_window_freq!(kernel, filter_type)
 
     return kernel
 end
 
-"""Apply windowing to spatial domain kernel"""
-function apply_spatial_window!(kernel::Vector{T}, ::RampFilter) where T
-    # No windowing for pure ramp
-    return kernel
-end
-
-function apply_spatial_window!(kernel::Vector{T}, ::SheppLoganFilter) where T
+"""Apply window to spatial kernel in frequency domain (FFT -> multiply -> IFFT)"""
+function _apply_window_freq!(kernel::Vector{T}, filter_type::FilterType) where T
     n = length(kernel)
     center = n ÷ 2 + 1
+
+    # Shift to put DC at index 1
+    shifted = zeros(Complex{T}, n)
     for i in 1:n
-        k = i - center
-        if k != 0
-            # Shepp-Logan: multiply by sinc(k/n) in spatial domain
-            # This is approximate - exact would require convolution
-            x = T(k) / T(n)
-            kernel[i] *= sinc(x)
-        end
+        src = mod(i - center, n) + 1
+        shifted[src] = Complex{T}(kernel[i])
     end
+
+    freq = fft(shifted)
+
+    # Apply window in frequency domain
+    nyquist = n / 2
+    for k in 0:(n-1)
+        f_idx = k <= n ÷ 2 ? k : n - k
+        f_norm = T(f_idx) / T(nyquist)
+        w = evaluate_window(filter_type, f_norm)
+        freq[k+1] *= w
+    end
+
+    spatial = ifft(freq)
+
+    # Shift back
+    for i in 1:n
+        src = mod(i - center, n) + 1
+        kernel[i] = T(real(spatial[src]))
+    end
+
     return kernel
 end
 
-function apply_spatial_window!(kernel::Vector{T}, ::CosineFilter) where T
-    n = length(kernel)
-    center = n ÷ 2 + 1
-    for i in 1:n
-        k = i - center
-        # Cosine window in spatial domain
-        x = T(k) / T(n)
-        kernel[i] *= cos(T(π) * x / T(2))^2
-    end
-    return kernel
+"""Evaluate apodization window value at normalized frequency f (0 to 1)"""
+evaluate_window(::RampFilter, f) = one(f)
+evaluate_window(::SheppLoganFilter, f) = f < 1e-10 ? one(f) : sinc(f/2)
+evaluate_window(::CosineFilter, f) = cos(π * f / 2)
+evaluate_window(::HammingFilter, f) = 0.54 + 0.46 * cos(π * f)
+evaluate_window(::HannFilter, f) = 0.5 * (1 + cos(π * f))
+
+function evaluate_window(::StandardFilter, f)
+    control_x = (0.0, 0.25, 0.5, 0.75, 1.0)
+    control_y = (1.0, 0.9338, 0.7441, 0.4425, 0.0531)
+    return _catsim_apodization_window(f, control_x, control_y)
 end
 
-function apply_spatial_window!(kernel::Vector{T}, ::HammingFilter) where T
-    n = length(kernel)
-    center = n ÷ 2 + 1
-    for i in 1:n
-        k = i - center
-        x = T(k) / T(n)
-        kernel[i] *= T(0.54) + T(0.46) * cos(T(π) * x)
-    end
-    return kernel
+function evaluate_window(::SoftFilter, f)
+    control_x = (0.0, 0.25, 0.5, 0.75, 1.0)
+    control_y = (1.0, 0.815, 0.4564, 0.1636, 0.0)
+    return _catsim_apodization_window(f, control_x, control_y)
 end
 
-function apply_spatial_window!(kernel::Vector{T}, ::HannFilter) where T
-    n = length(kernel)
-    center = n ÷ 2 + 1
-    for i in 1:n
-        k = i - center
-        x = T(k) / T(n)
-        kernel[i] *= T(0.5) * (one(T) + cos(T(π) * x))
-    end
-    return kernel
+function evaluate_window(::BoneFilter, f)
+    control_x = (0.0, 0.25, 0.5, 0.75, 1.0)
+    control_y = (1.0, 1.0485, 1.17, 1.2202, 0.9201)
+    return _catsim_apodization_window(f, control_x, control_y)
 end
+
+function evaluate_window(filt::CustomFilter, f)
+    return _catsim_apodization_window(f, filt.control_x, filt.control_y)
+end
+
+# Spatial windows removed in favor of evaluate_window + _apply_window_freq!
 
 # ---------------------------------------------------------------------------
 # CatSim-compatible filters (Standard, Soft, Bone)
@@ -242,77 +253,7 @@ function _catsim_apodization_window(f_norm::T, control_x, control_y) where T
     return T(control_y[end])
 end
 
-"""
-    _apply_catsim_freq_window!(kernel, control_x, control_y)
-
-Apply a CatSim-style frequency-domain apodization window to a spatial-domain
-kernel via FFT → multiply by window → IFFT.
-
-This matches the approach in CatSim's `createHSP.py` for the 'standard', 'soft',
-and 'bone' kernel types.
-"""
-function _apply_catsim_freq_window!(kernel::Vector{T}, control_x, control_y) where T
-    n = length(kernel)
-    center = n ÷ 2 + 1
-
-    # FFT the spatial kernel (shift to put DC at index 1 first)
-    shifted = zeros(Complex{T}, n)
-    for i in 1:n
-        # fftshift: move center to index 1
-        src = mod(i - center, n) + 1
-        shifted[src] = Complex{T}(kernel[i])
-    end
-
-    freq = fft(shifted)
-
-    # Apply window in frequency domain
-    # freq[k] corresponds to frequency k/n (k = 0..n-1)
-    # Nyquist is at k = n/2
-    nyquist = n / 2
-    for k in 0:(n-1)
-        # Symmetric frequency: distance from DC
-        f_idx = k <= n ÷ 2 ? k : n - k
-        f_norm = T(f_idx) / T(nyquist)
-        w = _catsim_apodization_window(f_norm, control_x, control_y)
-        freq[k+1] *= w
-    end
-
-    # IFFT back to spatial domain
-    spatial = ifft(freq)
-
-    # Shift back and store as real
-    for i in 1:n
-        src = mod(i - center, n) + 1
-        kernel[i] = T(real(spatial[src]))
-    end
-
-    return kernel
-end
-
-function apply_spatial_window!(kernel::Vector{T}, ::StandardFilter) where T
-    # CatSim 'standard' kernel apodization (createHSP.py lines 51-61)
-    control_x = (0.0, 0.25, 0.5, 0.75, 1.0)
-    control_y = (1.0, 0.9338, 0.7441, 0.4425, 0.0531)
-    return _apply_catsim_freq_window!(kernel, control_x, control_y)
-end
-
-function apply_spatial_window!(kernel::Vector{T}, ::SoftFilter) where T
-    # CatSim 'soft' kernel apodization (createHSP.py lines 39-49)
-    control_x = (0.0, 0.25, 0.5, 0.75, 1.0)
-    control_y = (1.0, 0.815, 0.4564, 0.1636, 0.0)
-    return _apply_catsim_freq_window!(kernel, control_x, control_y)
-end
-
-function apply_spatial_window!(kernel::Vector{T}, ::BoneFilter) where T
-    # CatSim 'bone' kernel apodization (createHSP.py lines 63-73)
-    control_x = (0.0, 0.25, 0.5, 0.75, 1.0)
-    control_y = (1.0, 1.0485, 1.17, 1.2202, 0.9201)
-    return _apply_catsim_freq_window!(kernel, control_x, control_y)
-end
-
-function apply_spatial_window!(kernel::Vector{T}, f::CustomFilter) where T
-    return _apply_catsim_freq_window!(kernel, f.control_x, f.control_y)
-end
+# _apply_catsim_freq_window! and apply_spatial_window! overloads removed in favor of evaluate_window + _apply_window_freq!
 
 # =============================================================================
 # Symbol-to-FilterType conversion
@@ -398,6 +339,136 @@ function cosine_weight!(
         weight = SDD / dist
 
         sinogram[idx] *= weight
+    end
+
+    return sinogram
+end
+
+"""
+    create_frequency_kernel(n, filter_type, pixel_size)
+
+Create the frequency-domain filter (ramp × window) for FFT-based filtering.
+
+# Arguments
+- `n`: Number of detector columns
+- `filter_type`: Type of filter window
+- `pixel_size`: Detector pixel spacing
+
+# Returns
+Complex{T} array of length n representing the full filter (ramp × window).
+"""
+function create_frequency_kernel(n::Int, filter_type::FilterType, pixel_size::T) where T <: AbstractFloat
+    # The ramp filter in frequency domain is simply |f|
+    # f ranges from 0 to Nyquist (0.5/Δ)
+    
+    kernel = zeros(Complex{T}, n)
+    nyquist_idx = n ÷ 2
+    Δ = pixel_size
+    
+    # To ensure perfect agreement between spatial and FFT modes,
+    # the frequency kernel for the RampFilter should match the DFT
+    # of the discrete spatial Ram-Lak kernel h[n] * Δ.
+    if filter_type isa RampFilter
+        # Generate centered spatial kernel (with Δ factor)
+        k_spatial = create_spatial_kernel(n, filter_type, pixel_size)
+        
+        # Shift to place DC at index 1 for FFT
+        center = n ÷ 2 + 1
+        shifted = zeros(Complex{T}, n)
+        for i in 1:n
+            src = mod(i - center, n) + 1
+            shifted[src] = Complex{T}(k_spatial[i])
+        end
+        # The DFT of the spatial kernel is the frequency response
+        return fft(shifted)
+    end
+
+    for k in 0:(n-1)
+        # Periodic frequency indexing
+        f_idx = k <= nyquist_idx ? k : n - k
+        f_norm = T(f_idx) / T(nyquist_idx)
+        
+        # Physical frequency f = f_norm * (0.5 / Δ)
+        f_phys = f_norm * (T(0.5) / Δ)
+        
+        # Standard ideal ramp
+        ramp = f_phys
+        
+        window = evaluate_window(filter_type, f_norm)
+        kernel[k+1] = Complex{T}(ramp * window)
+    end
+    
+    return kernel
+end
+
+"""
+    filter_sinogram_fft!(sinogram, geom; filter=StandardFilter())
+
+High-performance FDK filtering using FFTW. O(N log N) complexity.
+
+This is significantly faster than `filter_sinogram!` (spatial convolution)
+for large detectors.
+
+# Steps
+1. Cosine weighting
+2. Row-by-row FFT along detector columns
+3. Multiply by frequency domain filter kernel
+4. Row-by-row IFFT back to spatial domain
+"""
+function filter_sinogram_fft!(
+    sinogram::AbstractArray{T, 3},
+    geom::CTGeometry;
+    filter::FilterType = StandardFilter()
+) where T <: AbstractFloat
+
+    # FFTW only works on CPU Arrays. For GPU, we would use cuFFT/MetalFFT.
+    # Since AcceleratedKernels is used elsewhere, we apply FFT row-by-row.
+    if !(sinogram isa Array)
+        # Fallback to spatial for now if not CPU, until GPU FFT is integrated
+        return filter_sinogram!(sinogram, geom; filter=filter)
+    end
+
+    n_cols = size(sinogram, 1)
+    n_rows = size(sinogram, 2)
+    n_angles = size(sinogram, 3)
+
+    # Step 1: Cosine weighting
+    cosine_weight!(sinogram, geom)
+
+    # Step 2: Create frequency domain filter with padding
+    # Padding to next power of 2 of 2*n_cols for optimal FFT performance
+    # and to avoid circular convolution artifacts.
+    n_padded = nextpow(2, 2 * n_cols)
+    pixel_size = T(geom.pixel_size)
+    h_freq = create_frequency_kernel(n_padded, filter, pixel_size)
+    
+    # Step 3: Filter row-by-row
+    # Pre-allocate padded complex row and FFT plan for efficiency
+    row_padded = zeros(Complex{T}, n_padded)
+    p = plan_fft(row_padded)
+
+    for angle in 1:n_angles
+        for row in 1:n_rows
+            # Zero-pad: fill Central part (or start)
+            fill!(row_padded, zero(Complex{T}))
+            for c in 1:n_cols
+                row_padded[c] = T(sinogram[c, row, angle])
+            end
+            
+            # FFT (in-place)
+            row_freq = p * row_padded
+            
+            # Multiply by filter
+            row_freq .*= h_freq
+            
+            # IFFT
+            row_filtered_padded = real.(p \ row_freq)
+            
+            # Store back the first n_cols (matches spatial linear convolution behavior)
+            for c in 1:n_cols
+                sinogram[c, row, angle] = T(row_filtered_padded[c])
+            end
+        end
     end
 
     return sinogram

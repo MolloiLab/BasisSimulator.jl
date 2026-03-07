@@ -142,6 +142,10 @@ Note: Uses Int32 for dimensions to ensure GPU compatibility.
     end
 
     # Scale by angle step
+    # Note on FDK Weighting (TIGRE-style):
+    # This implementation uses the distance weight w = SAD² / (SAD + s)² 
+    # where s is the signed distance from isocenter to the voxel along the source-isocenter line.
+    # This matches the "standard" FDK weight (Feldkamp 1984) for circular orbits.
     return acc * pi_over_angles
 end
 

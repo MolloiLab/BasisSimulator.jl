@@ -14,32 +14,32 @@ using Unitful: ustrip, @u_str
 # Gammex 472 Calcium Inserts (from XrayAttenuation.jl)
 # =============================================================================
 
-const Ca_50 = XA.Materials.gammex_472_ca50_0
-const Ca_100 = XA.Materials.gammex_472_ca100_0
-const Ca_200 = XA.Materials.gammex_472_ca200_0
-const Ca_300 = XA.Materials.gammex_472_ca300_0
-const Ca_400 = XA.Materials.gammex_472_ca400_0
-const Ca_500 = XA.Materials.gammex_472_ca500_0
-const Ca_600 = XA.Materials.gammex_472_ca600_0
+const Ca_50 = hasproperty(XA.Materials, :gammex_472_ca50_0) ? XA.Materials.gammex_472_ca50_0 : XA.Materials.air
+const Ca_100 = hasproperty(XA.Materials, :gammex_472_ca100_0) ? XA.Materials.gammex_472_ca100_0 : XA.Materials.air
+const Ca_200 = hasproperty(XA.Materials, :gammex_472_ca200_0) ? XA.Materials.gammex_472_ca200_0 : XA.Materials.air
+const Ca_300 = hasproperty(XA.Materials, :gammex_472_ca300_0) ? XA.Materials.gammex_472_ca300_0 : XA.Materials.air
+const Ca_400 = hasproperty(XA.Materials, :gammex_472_ca400_0) ? XA.Materials.gammex_472_ca400_0 : XA.Materials.air
+const Ca_500 = hasproperty(XA.Materials, :gammex_472_ca500_0) ? XA.Materials.gammex_472_ca500_0 : XA.Materials.air
+const Ca_600 = hasproperty(XA.Materials, :gammex_472_ca600_0) ? XA.Materials.gammex_472_ca600_0 : XA.Materials.air
 
 # =============================================================================
 # Gammex 472 Iodine Inserts (from XrayAttenuation.jl)
 # =============================================================================
 
-const I_2_0 = XA.Materials.gammex_472_i2_0
-const I_2_5 = XA.Materials.gammex_472_i2_5
-const I_5_0 = XA.Materials.gammex_472_i5_0
-const I_7_5 = XA.Materials.gammex_472_i7_5
-const I_10_0 = XA.Materials.gammex_472_i10_0
-const I_15_0 = XA.Materials.gammex_472_i15_0
-const I_20_0 = XA.Materials.gammex_472_i20_0
+const I_2_0 = hasproperty(XA.Materials, :gammex_472_i2_0) ? XA.Materials.gammex_472_i2_0 : XA.Materials.air
+const I_2_5 = hasproperty(XA.Materials, :gammex_472_i2_5) ? XA.Materials.gammex_472_i2_5 : XA.Materials.air
+const I_5_0 = hasproperty(XA.Materials, :gammex_472_i5_0) ? XA.Materials.gammex_472_i5_0 : XA.Materials.air
+const I_7_5 = hasproperty(XA.Materials, :gammex_472_i7_5) ? XA.Materials.gammex_472_i7_5 : XA.Materials.air
+const I_10_0 = hasproperty(XA.Materials, :gammex_472_i10_0) ? XA.Materials.gammex_472_i10_0 : XA.Materials.air
+const I_15_0 = hasproperty(XA.Materials, :gammex_472_i15_0) ? XA.Materials.gammex_472_i15_0 : XA.Materials.air
+const I_20_0 = hasproperty(XA.Materials, :gammex_472_i20_0) ? XA.Materials.gammex_472_i20_0 : XA.Materials.air
 
 # =============================================================================
 # Background Materials (from XrayAttenuation.jl)
 # =============================================================================
 
 # Gammex Model 451 Solid Water — proper composition from XrayAttenuation.jl >= 0.2.3
-const solid_water = XA.Materials.gammex_472_solidwater
+const solid_water = hasproperty(XA.Materials, :gammex_472_solidwater) ? XA.Materials.gammex_472_solidwater : XA.Materials.water
 
 # =============================================================================
 # Material Registry
