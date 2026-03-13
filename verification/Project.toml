@@ -19,7 +19,7 @@ XLSX = "fdbf4ff8-1666-58a4-91e7-1b58723a45e0"
 XrayAttenuation = "7811750c-a499-436e-8b04-55fc0593dd37"
 
 [sources]
-BasisSimulator = {path = "../"}
+BasisSimulator = {path = ".."}
 
 [compat]
 CairoMakie = "0.15"
