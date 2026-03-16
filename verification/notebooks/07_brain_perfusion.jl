@@ -27,6 +27,12 @@ end
 # ╔═╡ 00010002-0000-4000-8000-000000000001
 using Metal # Choose one or the other
 
+# ╔═╡ 00010008-0000-4000-8000-000000000001
+using MAT
+
+# ╔═╡ 00010009-0000-4000-8000-000000000001
+using Unitful: ustrip, @u_str
+
 # ╔═╡ 00010003-0000-4000-8000-000000000001
 # using CUDA # Choose one or the other
 
@@ -41,12 +47,6 @@ import CairoMakie as CM
 
 # ╔═╡ 00010007-0000-4000-8000-000000000001
 import XrayAttenuation as XA
-
-# ╔═╡ 00010008-0000-4000-8000-000000000001
-using MAT
-
-# ╔═╡ 00010009-0000-4000-8000-000000000001
-using Unitful: ustrip, @u_str
 
 # ╔═╡ 00010010-0000-4000-8000-000000000001
 import Statistics: mean, std
@@ -344,11 +344,23 @@ begin
 	brain_recon_fov = 40.0  # cm
 	brain_vox_cm    = 0.1   # phantom voxel size (cm)
 
-	# Auto-detect tissue extent along z from P1 phantom
+	# Scanner physical z-coverage limit
+	brain_max_collimation_mm = brain_det_rows * 0.625  # 256 × 0.625 = 160 mm
+	brain_max_z_slices = floor(Int, brain_max_collimation_mm / (brain_vox_cm * 10.0))  # max phantom slices that fit
+
+	# Auto-detect tissue extent along z from P1 phantom, clamped to scanner coverage
 	_z_any       = vec(any(P1_raw_file .!= 0, dims=(1,2)))
 	_z_first     = findfirst(_z_any)
 	_z_last      = findlast(_z_any)
-	BRAIN_Z_CROP = max(1, _z_first - 4) : min(size(P1_raw_file, 3), _z_last + 4)
+	_z_tissue    = max(1, _z_first - 4) : min(size(P1_raw_file, 3), _z_last + 4)
+	# Center-crop to scanner max if phantom z-extent exceeds detector coverage
+	if length(_z_tissue) > brain_max_z_slices
+		_z_mid   = (_z_tissue[1] + _z_tissue[end]) ÷ 2
+		_z_half  = brain_max_z_slices ÷ 2
+		BRAIN_Z_CROP = max(1, _z_mid - _z_half + 1) : min(size(P1_raw_file, 3), _z_mid + _z_half)
+	else
+		BRAIN_Z_CROP = _z_tissue
+	end
 	brain_z_cm   = length(BRAIN_Z_CROP) * brain_vox_cm
 	brain_recon_xy = 512
 	brain_n_slices = round(Int, brain_z_cm / brain_vox_cm)
