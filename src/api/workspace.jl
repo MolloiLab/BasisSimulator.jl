@@ -343,7 +343,7 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     # Pre-compute 2×2 decomposition matrix for pseudo-dual-energy VMI
     max_keV = 120.0
     _bin_energies = T.(compute_pcct_bin_energies(thresholds; max_keV=max_keV, kvp=Int(protocol.kVp)))
-    _split_bin = 2
+    _split_bin = n_bins ÷ 2   # bin 1 for 2-bin, bins 1-2 for 4-bin
     E_low = Float64(sum(_bin_energies[1:_split_bin]) / _split_bin)
     E_high = Float64(sum(_bin_energies[_split_bin+1:end]) / (n_bins - _split_bin))
     _basis_2 = length(basis_tuple) >= 2 ? (basis_tuple[1], basis_tuple[2]) : (:water, :iodine)

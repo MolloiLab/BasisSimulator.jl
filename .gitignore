@@ -2,6 +2,9 @@
 *.jl.cov
 *.jl.*.cov
 
+# Sessions.jl stuff
+**.sessions.toml
+
 # Ralph loop stuff
 ralph_loop
 ralph_loop_diagnose/outputs/*.png

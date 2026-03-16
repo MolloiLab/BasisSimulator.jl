@@ -293,7 +293,9 @@ function simulate!(
     copyto!(ws.sino_noisy_out, sino_noisy_gpu)
 
     # Combine PCCT bins into pseudo-dual-energy sinograms (GPU)
-    combine_pcct_bins!(ws.vmi_sino_low, ws.vmi_sino_high, pcct_sino.bins; split_bin=2)
+    # split_bin = floor(n_bins/2): bin 1 for 2-bin, bins 1-2 for 4-bin
+    combine_pcct_bins!(ws.vmi_sino_low, ws.vmi_sino_high, pcct_sino.bins;
+        split_bin=length(pcct_sino.bins) ÷ 2)
 
     # 2-material decomposition (same as dual-kVp, GPU)
     spectral_decompose!(ws.vmi_material1, ws.vmi_material2,
