@@ -42,6 +42,65 @@ const I_20_0 = XA.Materials.gammex_472_i20_0
 const solid_water = XA.Materials.gammex_472_solidwater
 
 # =============================================================================
+# Atomic Data (shared by brain tissue constructors and iodine_contrast_material)
+# =============================================================================
+
+"""Atomic masses (g/mol) for elements common in biological tissues."""
+const _ATOMIC_MASSES = Dict(
+    1  => 1.008,   6  => 12.011,  7  => 14.007,  8  => 15.999,
+    11 => 22.990,  12 => 24.305,  15 => 30.974,  16 => 32.06,
+    17 => 35.45,   19 => 39.098,  20 => 40.078,  26 => 55.845,
+    53 => 126.904,
+)
+
+"""Mean excitation energies I (eV) for Bethe stopping-power formula (ICRU 37)."""
+const _I_VALUES = Dict(
+    1  => 19.2,   6  => 81.0,   7  => 82.0,   8  => 95.0,
+    11 => 149.0,  12 => 156.0,  15 => 173.0,  16 => 180.0,
+    17 => 174.0,  19 => 190.0,  20 => 191.0,  26 => 286.0,
+    53 => 491.0,
+)
+
+# =============================================================================
+# Brain Tissue Materials (Woodard & White 1986 / ICRU-44)
+# =============================================================================
+
+function _zoa_ratio(comp::Dict{Int,Float64})::Float64
+    num = sum(w * Z / get(_ATOMIC_MASSES, Z, Float64(Z)*2) for (Z, w) in comp)
+    den = sum(values(comp))
+    num / den
+end
+
+function _mean_excitation(comp::Dict{Int,Float64})
+    log_I = sum(w * (Z / get(_ATOMIC_MASSES, Z, Float64(Z)*2)) * log(get(_I_VALUES, Z, 10.0*Z))
+                for (Z, w) in comp)
+    z_a  = sum(w * (Z / get(_ATOMIC_MASSES, Z, Float64(Z)*2)) for (Z, w) in comp)
+    exp(log_I / z_a) * u"eV"
+end
+
+# Gray matter: Woodard & White 1986 (mass fractions)
+const _gm_comp = Dict{Int,Float64}(
+    1 => 0.1070, 6 => 0.0955, 7 => 0.0180, 8 => 0.7620,
+    11 => 0.0020, 15 => 0.0035, 16 => 0.0020, 17 => 0.0030, 19 => 0.0070,
+)
+const gray_matter = XA.Material(
+    "Gray Matter (Woodard & White 1986)",
+    _zoa_ratio(_gm_comp), _mean_excitation(_gm_comp),
+    1.04u"g/cm^3", _gm_comp,
+)
+
+# White matter: Woodard & White 1986 (mass fractions)
+const _wm_comp = Dict{Int,Float64}(
+    1 => 0.1060, 6 => 0.1980, 7 => 0.0130, 8 => 0.6703,
+    11 => 0.0020, 15 => 0.0040, 16 => 0.0017, 17 => 0.0020, 19 => 0.0030,
+)
+const white_matter = XA.Material(
+    "White Matter (Woodard & White 1986)",
+    _zoa_ratio(_wm_comp), _mean_excitation(_wm_comp),
+    1.04u"g/cm^3", _wm_comp,
+)
+
+# =============================================================================
 # Material Registry
 # =============================================================================
 
@@ -65,6 +124,10 @@ const MATERIALS_REGISTRY = Dict{Symbol, XA.Material}(
     :lung => XA.Materials.lung,
     :adipose => XA.Materials.adipose,
     :brain => XA.Materials.brain,
+    :csf => XA.Materials.cerebrospinal_fluid,
+    :gray_matter => gray_matter,
+    :white_matter => white_matter,
+    :iodine => XA.Materials.iodine,
 )
 
 """
@@ -206,62 +269,55 @@ function create_mixture(
 end
 
 """
-    iodine_contrast_material(base_material, concentration_mg_per_mL; name="Iodine Contrast")
+    iodine_contrast_material(base_mat, conc_mg_per_mL; density_g_per_mL=nothing, name=nothing) -> XA.Material
 
-Create an iodine-doped material at a clinical concentration.
-
-Models iodinated contrast agent by mixing the base material with pure iodine
-at the specified concentration.
+Create an iodine-doped material at the given clinical concentration.
 
 # Arguments
-- `base_material::XA.Material`: Base material (typically blood or water)
-- `concentration_mg_per_mL::Float64`: Iodine concentration in mg/mL
+- `base_mat::XA.Material`: base tissue (blood, gray matter, etc.)
+- `conc_mg_per_mL::Float64`: iodine concentration in mg I/mL (= mg I/cm³)
 
 # Keyword Arguments
-- `name::String`: Name for the resulting material
-
-# Example
-```julia
-# Blood with 3 mg/mL iodine (typical arterial phase)
-contrast_blood = iodine_contrast_material(XA.Materials.blood, 3.0)
-
-# Water with 10 mg/mL iodine (phantom insert equivalent)
-contrast_water = iodine_contrast_material(XA.Materials.water, 10.0;
-    name="I 10.0 mg/mL")
-```
+- `density_g_per_mL`: override base material density (default: use base_mat.density)
+- `name::Union{Nothing,String}`: custom name for the material (default: auto-generated)
 """
 function iodine_contrast_material(
-    base_material::XA.Material,
-    concentration_mg_per_mL::Float64;
-    name::String="Iodine Contrast"
-)
-    # Iodine concentration in g/cm³
-    iodine_g_per_cm3 = concentration_mg_per_mL / 1000.0
+    base_mat::XA.Material,
+    conc_mg_per_mL::Float64;
+    density_g_per_mL::Union{Nothing,Float64}=nothing,
+    name::Union{Nothing,String}=nothing,
+)::XA.Material
+    conc_mg_per_mL < 0 && error("iodine_contrast_material: concentration must be ≥ 0")
+    conc_mg_per_mL < 1e-6 && return base_mat
 
-    # Base material density
-    base_density = ustrip(u"g/cm^3", base_material.density)
+    rho = density_g_per_mL !== nothing ? density_g_per_mL :
+          ustrip(u"g/cm^3", base_mat.density)
 
-    # Total density = base + added iodine
-    total_density = base_density + iodine_g_per_cm3
+    f_I = (conc_mg_per_mL / 1000.0) / rho
+    f_I = min(f_I, 1.0)
+    f_s = 1.0 - f_I
 
-    # Mass fractions
-    f_iodine = iodine_g_per_cm3 / total_density
-    f_base = 1.0 - f_iodine
+    base_comp = Dict{Int,Float64}(base_mat.composition)
+    new_comp  = Dict{Int,Float64}(Z => w * f_s for (Z, w) in base_comp)
+    new_comp[53] = get(new_comp, 53, 0.0) + f_I
 
-    # Combine elemental compositions
-    combined_comp = Dict{Int, Float64}()
-    for (Z, w) in base_material.composition
-        combined_comp[Z] = w * f_base
-    end
-    # Iodine (Z=53)
-    combined_comp[53] = get(combined_comp, 53, 0.0) + f_iodine
+    new_density = rho + conc_mg_per_mL / 1000.0
 
-    # Weighted properties
-    iodine = XA.Materials.iodine
-    mixed_ZA = base_material.ZA_ratio * f_base + iodine.ZA_ratio * f_iodine
-    mixed_I = ustrip(u"eV", base_material.I) * f_base + ustrip(u"eV", iodine.I) * f_iodine
+    log_I_num = sum(
+        new_comp[Z] * (Z / get(_ATOMIC_MASSES, Z, Float64(Z) * 2)) *
+        log(get(_I_VALUES, Z, 10.0 * Z))
+        for Z in keys(new_comp)
+    )
+    log_I_den = sum(
+        new_comp[Z] * (Z / get(_ATOMIC_MASSES, Z, Float64(Z) * 2))
+        for Z in keys(new_comp)
+    )
+    I_mean = exp(log_I_num / log_I_den) * u"eV"
+    ZA     = sum(w * Z / get(_ATOMIC_MASSES, Z, Float64(Z) * 2) for (Z, w) in new_comp)
 
-    return XA.Material(name, mixed_ZA, mixed_I * u"eV", total_density * u"g/cm^3", combined_comp)
+    mat_name = name !== nothing ? name :
+        "$(base_mat.name)_$(round(Int, conc_mg_per_mL))mgI_per_mL"
+    return XA.Material(mat_name, ZA, I_mean, new_density * u"g/cm^3", new_comp)
 end
 
 # =============================================================================
@@ -271,6 +327,7 @@ end
 export Ca_50, Ca_100, Ca_200, Ca_300, Ca_400, Ca_500, Ca_600
 export I_2_0, I_2_5, I_5_0, I_7_5, I_10_0, I_15_0, I_20_0
 export solid_water
+export gray_matter, white_matter
 export get_material, MATERIALS_REGISTRY, validate_material_hu
 export get_region_materials
 export create_mixture, iodine_contrast_material

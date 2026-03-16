@@ -570,6 +570,163 @@ function get_region_mask(phantom::Phantom, label::RegionLabel)
     return phantom.mask .== eltype(phantom.mask)(label)
 end
 
+# =============================================================================
+# XCAT Phantom Utilities
+# =============================================================================
+
+"""
+    relabel_zero_islands_2d!(arr::Array{Int,3}; newlabel::Int=10)
+
+For each z-slice of `arr`, find connected components of zero-valued voxels that do
+not touch the slice border (interior "islands") and relabel them to `newlabel`.
+Border-connected zeros (true background / air outside the head) are left as 0.
+
+This corrects XCAT P1 raw files where interior voxels (e.g. inside the skull) are
+stored as 0 rather than a valid tissue ID.
+"""
+function relabel_zero_islands_2d!(arr::Array{Int,3}; newlabel::Int=10)
+    nx, ny, nz = size(arr)
+    for z in 1:nz
+        slice   = view(arr, :, :, z)
+        visited = falses(nx, ny)
+        queue   = Tuple{Int,Int}[]
+
+        # Seed BFS from every border pixel that is zero
+        for x in 1:nx
+            for y in (1, ny)
+                if slice[x, y] == 0 && !visited[x, y]
+                    visited[x, y] = true
+                    push!(queue, (x, y))
+                end
+            end
+        end
+        for y in 2:ny-1
+            for x in (1, nx)
+                if slice[x, y] == 0 && !visited[x, y]
+                    visited[x, y] = true
+                    push!(queue, (x, y))
+                end
+            end
+        end
+
+        # BFS: flood-fill all border-connected zeros (O(1) dequeue via read pointer)
+        head = 1
+        while head <= length(queue)
+            cx, cy = queue[head]
+            head += 1
+            for (dx, dy) in ((-1, 0), (1, 0), (0, -1), (0, 1))
+                nx2, ny2 = cx + dx, cy + dy
+                (nx2 < 1 || nx2 > nx || ny2 < 1 || ny2 > ny) && continue
+                if slice[nx2, ny2] == 0 && !visited[nx2, ny2]
+                    visited[nx2, ny2] = true
+                    push!(queue, (nx2, ny2))
+                end
+            end
+        end
+
+        # Any zero voxel not reached from the border is an interior island
+        for x in 1:nx, y in 1:ny
+            if slice[x, y] == 0 && !visited[x, y]
+                arr[x, y, z] = newlabel
+            end
+        end
+    end
+    return arr
+end
+
+"""
+    load_structure_map(path::String) -> Dict{Int, String}
+
+Load an XCAT voxelize table (tab-separated `name\\tID` per line, no header).
+Returns a `Dict` mapping integer segment ID → segment name.
+"""
+function load_structure_map(path::String)::Dict{Int, String}
+    result = Dict{Int, String}()
+    open(path, "r") do io
+        for line in eachline(io)
+            parts = split(strip(line), '\t')
+            length(parts) == 2 || continue
+            name = strip(parts[1])
+            id   = tryparse(Int, strip(parts[2]))
+            (id === nothing || isempty(name)) && continue
+            result[id] = name
+        end
+    end
+    return result
+end
+
+"""
+    update_structures!(new_phantom_shift, structure_map, tissue_prefix,
+                       raw_file, base_sym, base_mat, info_table,
+                       iodine_matrix, t_contrast; index_map=nothing) -> Dict{Int, XA.Material}
+
+Stamp XCAT segment IDs from a reference phantom (`raw_file`) into `new_phantom_shift`,
+and build per-segment iodine-doped materials for each segment whose name starts with
+`tissue_prefix`.
+
+# Arguments
+- `new_phantom_shift::Array{Int,3}`: Target array (modified in-place).
+- `structure_map::Dict{Int,String}`: ID → name mapping from `load_structure_map`.
+- `tissue_prefix::String`: Only segments whose name starts with this string are processed.
+- `raw_file::Array{Int,3}`: Reference phantom (label source).
+- `base_sym::Symbol`: Key into MATERIALS_REGISTRY for the base tissue.
+- `base_mat::XA.Material`: Pre-resolved material for `base_sym`.
+- `info_table::Dict{String,Any}`: Must have `"name"::Vector{String}` and
+  `"volume"::Vector{Float64}` (cm³ for GM/WM, mm³ for vessels).
+- `iodine_matrix::Matrix{Float64}`: rows = segments, cols = time points; values in mg.
+- `t_contrast::Int`: Column index (1-based) for the desired contrast time point.
+
+# Returns
+`Dict{Int, XA.Material}` mapping each stamped segment ID to its iodine-doped material.
+"""
+function update_structures!(
+    new_phantom_shift::Array{Int,3},
+    structure_map::Dict{Int,String},
+    tissue_prefix::String,
+    raw_file::Array{Int,3},
+    base_sym::Symbol,
+    base_mat::XA.Material,
+    info_table::Dict{String,Any},
+    iodine_matrix::Matrix{Float64},
+    t_contrast::Int;
+    index_map::Union{Nothing, Dict{Int, Vector{CartesianIndex{3}}}} = nothing,
+)::Dict{Int, XA.Material}
+    entries = filter(kv -> startswith(kv[2], tissue_prefix), structure_map)
+    sorted_pairs = sort(collect(entries), by = kv -> kv[1])
+    ids       = [kv[1] for kv in sorted_pairs]
+    raw_names = [kv[2] for kv in sorted_pairs]
+
+    for id in ids
+        idxs = index_map !== nothing ? get(index_map, id, CartesianIndex{3}[]) :
+                                       findall(==(id), raw_file)
+        isempty(idxs) && continue
+        new_phantom_shift[idxs] .= id
+    end
+
+    seg_materials = Dict{Int, XA.Material}()
+    density   = ustrip(u"g/cm^3", base_mat.density)
+    is_vessel = (base_sym == :blood)
+    n_rows = size(iodine_matrix, 1)
+    for (id, raw_name) in zip(ids, raw_names)
+        m = match(r"^\d(\d{3})_", raw_name)
+        if m === nothing
+            @debug "update_structures!: skipping segment id=$id name=$(repr(raw_name)) — does not match expected naming pattern"
+            continue
+        end
+        row = parse(Int, m.captures[1])
+        (row < 1 || row > n_rows) && continue
+        n_info = length(info_table["volume"])
+        (row > n_info) && continue
+        raw_vol = info_table["volume"][row]
+        segment_volume_mL = is_vessel ? raw_vol / 1000.0 : raw_vol
+        segment_volume_mL <= 0 && continue
+        mass_I_mg = iodine_matrix[row, t_contrast]
+        conc_mg_per_mL = mass_I_mg / segment_volume_mL
+        seg_materials[id] = iodine_contrast_material(base_mat, conc_mg_per_mL;
+            density_g_per_mL=density)
+    end
+    return seg_materials
+end
 
 # =============================================================================
 # Exports
@@ -583,3 +740,4 @@ export REGION_TO_MATERIAL
 
 export Phantom, compute_μ, create_gammex_472, create_phantom_from_mask, build_materials_vector
 export get_region_mask
+export relabel_zero_islands_2d!, load_structure_map, update_structures!
