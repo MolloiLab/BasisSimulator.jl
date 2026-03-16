@@ -3534,16 +3534,17 @@ end
 
 # ╔═╡ cc86e711-59ae-40b9-9485-4eeb4ff9da5c
 md"""
-### DE: Sinogram-Domain VMI + Mono+ (Wu et al. 2009 / Grant et al. 2014)
+### DE: Projection-Domain 2-Material Decomposition + Mono+
 
-**Pipeline** (same as NB07 PCCT approach, adapted for dual-kVp):
+**Sinogram-domain pipeline** (Alvarez & Macovski 1976; Cardinal & Fenster 1990):
+1. Raw sinograms (no BHC — simulate!() has bhc=false for :high fidelity)
+2. Polynomial calibration using exact known spectra (bowtie, filters, etc.)
+3. Per-ray polynomial inversion → material sinograms (water, iodine area densities)
+4. Light sinogram smoothing → FBP reconstruct → density images
+5. VMI synthesis: `μ(E) = (μ/ρ)_w(E)·m₁ + (μ/ρ)_I(E)·m₂`
+6. Mono+ (Grant 2014) at ALL energies ≠ E_opt
 
-1. **Linear 2×2 decomposition** in sinogram domain → material sinograms (water, iodine)
-2. **VMI sinogram synthesis** at target energy: `sino_vmi(E) = μ_w(E)·sino_w + μ₂(E)·sino_I`
-3. **Single FBP** per VMI energy (not two FBPs then combine)
-4. **Mono+** (Grant 2014) post-reconstruction noise optimization
-
-Key: VMI sinogram is synthesized BEFORE reconstruction → single FBP → much less noise.
+No BHC anywhere. Beam hardening handled by the polyenergetic forward model in the calibration.
 """
 
 # ╔═╡ 8d77f7d8-1817-4400-b8ce-cf7d38b5f518
@@ -3588,30 +3589,68 @@ begin
 end
 
 # ╔═╡ 06126001-0000-4000-8000-000000000000
-# Effective energies for the 80/140 kVp DE spectra
-de_effective_energies = let
+# Polynomial calibration: synthetic step-wedge using exact known spectra
+de_calibration = let
+    # Get the EXACT spectra used by simulate!() — same filters, scanner, sim_opts
     de_filters = vcat(additional_filters, de_kedge_filter)
     prot_80 = BS.CTProtocol(kVp = 80, additional_filters = de_filters)
     prot_140 = BS.CTProtocol(kVp = 140, additional_filters = de_filters)
     e_l, w_l = BS.resolve_spectrum(sim_opts, prot_80; scanner = sim_scanner)
     e_h, w_h = BS.resolve_spectrum(sim_opts, prot_140; scanner = sim_scanner)
-    E_low = sum(Float64.(e_l) .* Float64.(w_l)) / sum(Float64.(w_l))
-    E_high = sum(Float64.(e_h) .* Float64.(w_h)) / sum(Float64.(w_h))
-    @info "DE effective energies: 80 kVp → $(round(E_low, digits=1)) keV, 140 kVp → $(round(E_high, digits=1)) keV"
-    (E_low = E_low, E_high = E_high)
+
+    # Basis material mass attenuation at each spectral bin
+    μρ_w_l = [BS.compute_mass_μ_at_energy(XA.Materials.water, Float64(e)) for e in e_l]
+    μρ_w_h = [BS.compute_mass_μ_at_energy(XA.Materials.water, Float64(e)) for e in e_h]
+    μρ_I_l = [BS.compute_mass_μ_at_energy(XA.Elements.Iodine, Float64(e)) for e in e_l]
+    μρ_I_h = [BS.compute_mass_μ_at_energy(XA.Elements.Iodine, Float64(e)) for e in e_h]
+
+    wn_l = Float64.(w_l) ./ sum(Float64.(w_l))
+    wn_h = Float64.(w_h) ./ sum(Float64.(w_h))
+
+    # Chebyshev-spaced calibration grid (Cardinal & Fenster 1990, Eq 22)
+    cheb(n, xmax) = [xmax / 2 * (1 - cos((2m - 1) / (2n) * π)) for m in 1:n]
+    n_w = 40; n_I = 25
+    max_w = 50.0   # cm water path
+    max_I = 0.15   # g/cm² iodine area density
+    tw_vec = vcat(0.0, cheb(n_w - 1, max_w))
+    tI_vec = vcat(0.0, cheb(n_I - 1, max_I))
+
+    # Forward model: p(kVp) = -log(Σ w(E)·exp(-(μ/ρ)_w(E)·tw - (μ/ρ)_I(E)·tI))
+    N = length(tw_vec) * length(tI_vec)
+    p_low = zeros(N); p_high = zeros(N)
+    t_water = zeros(N); t_iodine = zeros(N)
+    idx = 0
+    for tI in tI_vec, tw in tw_vec
+        idx += 1
+        t_water[idx] = tw; t_iodine[idx] = tI
+        tr_l = sum(wn_l[i] * exp(-μρ_w_l[i] * tw - μρ_I_l[i] * tI) for i in eachindex(wn_l))
+        tr_h = sum(wn_h[i] * exp(-μρ_w_h[i] * tw - μρ_I_h[i] * tI) for i in eachindex(wn_h))
+        p_low[idx] = -log(max(tr_l, 1e-30))
+        p_high[idx] = -log(max(tr_h, 1e-30))
+    end
+
+    # Fit inverse polynomial: (p_low, p_high) → (t_water, t_iodine)
+    terms = [(i, j) for i in 0:4 for j in 0:(4 - i)]
+    A_mat = hcat([p_low .^ i .* p_high .^ j for (i, j) in terms]...)
+    coeffs_w = A_mat \ t_water
+    coeffs_I = A_mat \ t_iodine
+
+    # Validation
+    pred_w = A_mat * coeffs_w; pred_I = A_mat * coeffs_I
+    rms_w = sqrt(mean((pred_w .- t_water) .^ 2))
+    rms_I = sqrt(mean((pred_I .- t_iodine) .^ 2))
+    @info "Poly calibration RMS: water=$(round(rms_w, sigdigits=3)) cm, iodine=$(round(rms_I, sigdigits=3)) g/cm²"
+
+    (coeffs_w = coeffs_w, coeffs_I = coeffs_I, terms = terms,
+     e_low = e_l, w_low = w_l, e_high = e_h, w_high = w_h)
 end
 
 # ╔═╡ 06126003-0000-4000-8000-000000000000
 begin
     # ── DE VMI tuning [TUNE: DE-VMI] ──
 
-    # Basis material 2: attenuation function E_keV → μ or (μ/ρ)
-    # Option A: Elemental iodine mass atten (standard GE GSI — m₂ in g/cm³)
-    de_basis2_μ = E -> BS.compute_mass_μ_at_energy(XA.Elements.Iodine, E)
-    # Option B: Gammex 472 I-20 insert (linear atten — m₂ in insert-equivalent density)
-    # de_basis2_μ = E -> BS.compute_μ_at_energy(XA.Materials.gammex_472_i20_0, E)
-    # Option C: Cortical bone mass atten (water+bone basis — classic Alvarez & Macovski)
-    # de_basis2_μ = E -> BS.compute_μ_at_energy(XA.Materials.corticalbone, E) / 1.92
+    # Sinogram smoothing (applied to material sinograms before FBP)
+    sino_smooth_σ = 1.5          # Gaussian σ along detector columns (pixels; 0 = off)
 
     # Mono+ (Grant et al. 2014)
     mono_plus_σ_lp_mm = 2.0     # Gaussian LP width (mm) for frequency split
@@ -3620,62 +3659,91 @@ begin
 end
 
 # ╔═╡ 06126002-0000-4000-8000-000000000000
-# Sinogram-domain VMI pipeline: decompose → VMI sinogram → single FBP per energy
+# Projection-domain decomposition → FBP → VMI (Alvarez & Macovski 1976)
 sim_de_vmi_raw = let
-    E_low = de_effective_energies.E_low
-    E_high = de_effective_energies.E_high
+    cal = de_calibration
+    terms = cal.terms
 
-    # 2×2 decomposition matrix for (water, basis2) at effective energies
-    μ1_L = BS.compute_μ_at_energy(XA.Materials.water, E_low)
-    μ1_H = BS.compute_μ_at_energy(XA.Materials.water, E_high)
-    μ2_L = de_basis2_μ(E_low)
-    μ2_H = de_basis2_μ(E_high)
-    det_A = μ1_L * μ2_H - μ2_L * μ1_H
-    inv11 = Float32(μ2_H / det_A); inv12 = Float32(-μ2_L / det_A)
-    inv21 = Float32(-μ1_H / det_A); inv22 = Float32(μ1_L / det_A)
-    @info "Decomposition det=$(round(det_A, sigdigits=3)), cond≈$(round(abs(μ1_L*μ2_H + μ2_L*μ1_H)/abs(det_A), digits=1))"
+    # ── Helper: evaluate polynomial at (pl, ph) ──
+    function eval_poly(coeffs, pl, ph)
+        s = 0.0
+        @inbounds for k in eachindex(coeffs)
+            i, j = terms[k]
+            s += coeffs[k] * pl^i * ph^j
+        end
+        s
+    end
 
-    # Upload sinograms to GPU
-    sino_low_gpu = MtlArray(sim_de_sino_low.sino)
-    sino_high_gpu = MtlArray(sim_de_sino_high.sino)
+    # ── Helper: 1D Gaussian smooth along detector columns ──
+    function smooth_cols(sino, σ)
+        σ ≤ 0 && return sino
+        r = ceil(Int, 3σ)
+        kern = Float32[exp(-Float32(k)^2 / (2f0 * Float32(σ)^2)) for k in -r:r]
+        kern ./= sum(kern)
+        nv, nr, nc = size(sino)
+        out = similar(sino)
+        @inbounds for row in 1:nr, view in 1:nv, col in 1:nc
+            s = 0.0f0
+            for (ki, k) in enumerate(-r:r)
+                c2 = clamp(col + k, 1, nc)
+                s += sino[view, row, c2] * kern[ki]
+            end
+            out[view, row, col] = s
+        end
+        out
+    end
+
+    # ── Step 1: Per-ray polynomial decomposition of raw sinograms ──
+    @info "Per-ray polynomial decomposition..."
+    sino_low = sim_de_sino_low.sino   # raw, no BHC (simulate! has bhc=false)
+    sino_high = sim_de_sino_high.sino
+    sino_w = similar(sino_low)
+    sino_I = similar(sino_low)
+    @inbounds for idx in eachindex(sino_low)
+        pl = Float64(sino_low[idx])
+        ph = Float64(sino_high[idx])
+        sino_w[idx] = Float32(eval_poly(cal.coeffs_w, pl, ph))
+        sino_I[idx] = Float32(eval_poly(cal.coeffs_I, pl, ph))
+    end
+
+    # ── Step 2: Optional light smoothing of material sinograms ──
+    if sino_smooth_σ > 0
+        @info "Smoothing material sinograms (σ=$(sino_smooth_σ) px)..."
+        sino_w = smooth_cols(sino_w, Float64(sino_smooth_σ))
+        sino_I = smooth_cols(sino_I, Float64(sino_smooth_σ))
+    end
+
     geom = sim_de_sino_low.geom
     recon_size = de_matrix_size
 
-    # Linear 2×2 decomposition → material sinograms (GPU)
-    mat1_gpu = similar(sino_low_gpu)   # water
-    mat2_gpu = similar(sino_low_gpu)   # iodine/basis2
-    BS.spectral_decompose!(mat1_gpu, mat2_gpu, sino_low_gpu, sino_high_gpu,
-        inv11, inv12, inv21, inv22)
-    sino_low_gpu = nothing; sino_high_gpu = nothing
-
-    # VMI sinogram → single FBP → HU at each energy
+    # ── Step 3: VMI sinogram synthesis THEN single FBP per energy ──
+    # Key: synthesize VMI sinogram BEFORE FBP so anti-correlated noise cancels
+    # p_vmi(E) = (μ/ρ)_w(E)·A_w + (μ/ρ)_I(E)·A_I → single FBP → clean VMI image
     orient_fn = s -> reverse(s, dims = 2)
-    vmi_sino_buf = similar(mat1_gpu)
     results = NamedTuple[]
-
     for E in DE_VMI_ENERGIES
         E_f = Float64(E)
-        μ_w_E = Float32(BS.compute_μ_at_energy(XA.Materials.water, E_f))
-        μ2_E = Float32(de_basis2_μ(E_f))
+        μρ_w_E = Float32(BS.compute_mass_μ_at_energy(XA.Materials.water, E_f))
+        μρ_I_E = Float32(BS.compute_mass_μ_at_energy(XA.Elements.Iodine, E_f))
+        μ_w_E = BS.compute_μ_at_energy(XA.Materials.water, E_f)
 
-        # Synthesize VMI sinogram: sino_vmi = μ_w(E)·mat1 + μ2(E)·mat2
-        BS.spectral_vmi!(vmi_sino_buf, mat1_gpu, mat2_gpu, μ_w_E, μ2_E)
+        # Synthesize VMI sinogram in material domain (noise cancellation happens here)
+        vmi_sino = μρ_w_E .* sino_w .+ μρ_I_E .* sino_I
 
-        # Single FBP reconstruction
-        ws_fdk = BS.create_fdk_recon_workspace(vmi_sino_buf, geom, recon_size;
+        # Single FBP reconstruction of the VMI sinogram
+        vmi_sino_gpu = MtlArray(vmi_sino)
+        ws_fdk = BS.create_fdk_recon_workspace(vmi_sino_gpu, geom, recon_size;
             filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y))
-        recon_μ = BS.reconstruct!(ws_fdk, vmi_sino_buf, geom, recon_size)
+        recon_μ = BS.reconstruct!(ws_fdk, vmi_sino_gpu, geom, recon_size)
 
-        # HU conversion using energy-specific water attenuation
-        vol_hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = Float64(μ_w_E)))
+        # HU conversion
+        vol_hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = μ_w_E))
         BS.add_system_noise_floor!(vol_hu, sim_noise_floor_hu)
 
-        vol_oriented = Float32.(mapslices(orient_fn, vol_hu, dims = (1, 2)))
-        push!(results, (name = "VMI_$(E)keV", recon = vol_oriented, energy_keV = E))
-        ws_fdk = nothing; GC.gc(true)
+        recon_oriented = Float32.(mapslices(orient_fn, vol_hu, dims = (1, 2)))
+        push!(results, (name = "VMI_$(E)keV", recon = recon_oriented, energy_keV = E))
+        ws_fdk = nothing; vmi_sino_gpu = nothing; GC.gc(true)
     end
-
-    mat1_gpu = nothing; mat2_gpu = nothing; vmi_sino_buf = nothing; GC.gc(true)
     results
 end
 
@@ -3700,16 +3768,18 @@ sim_de_mono_plus = let
     results = NamedTuple[]
 
     if opt_idx === nothing
-        # No optimal energy found — pass through raw VMI
         for r in sim_de_vmi_raw
             push!(results, (name = "mono+_$(r.energy_keV)keV", recon = copy(r.recon), energy_keV = r.energy_keV))
         end
     else
         vmi_opt = sim_de_vmi_raw[opt_idx].recon
         for r in sim_de_vmi_raw
-            if r.energy_keV >= E_opt
+            if r.energy_keV == E_opt
+                # At optimal energy: Mono+ = standard VMI (noise is already minimal)
                 push!(results, (name = "mono+_$(r.energy_keV)keV", recon = copy(r.recon), energy_keV = r.energy_keV))
             else
+                # ALL other energies (both above AND below optimal): apply Mono+
+                # LP(VMI(E)) gives target-energy contrast, HP(VMI(E_opt)) gives optimal noise
                 mp = mono_plus_vmi(r.recon, vmi_opt;
                     σ_lp_mm = mono_plus_σ_lp_mm, pixel_mm = mono_plus_pixel_mm)
                 push!(results, (name = "mono+_$(r.energy_keV)keV", recon = mp, energy_keV = r.energy_keV))
