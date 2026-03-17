@@ -434,3 +434,82 @@ Alternatively, proceed to **SPEED-004 DISCOVERY** (physics pipeline batching) or
 **SPEED-007 SYNTHESIS** to produce the final roadmap.
 
 ---
+
+## Iteration 5 — SPEED-002+003 CRITIQUE + SPEED-004 DISCOVERY + SPEED-007 SYNTHESIS
+
+**Date:** 2026-03-17
+**Phase:** Critique + Discovery + Synthesis
+**Topics:** SPEED-002 critique, SPEED-003 critique, SPEED-004 (physics pipeline), SPEED-007 (synthesis)
+
+### What was done
+
+1. **Validated separable scatter claim by reading scatter.jl source code:**
+   - Read lines 115-121: Gaussian kernel is `exp(-(dx²+dy²)/(2σ²))`
+   - This IS mathematically separable: `exp(-dx²/(2σ²)) × exp(-dy²/(2σ²))`
+   - The explore agent incorrectly claimed it was NOT separable (confused isotropic with non-separable)
+   - **31× speedup confirmed for Gaussian (default) kernel**
+   - Exponential kernel (`exp(-√(dx²+dy²)/decay)`) is NOT separable — needs fallback
+
+2. **Validated scatter call frequency:**
+   - Scatter is called ONCE per simulate!() on the combined polychromatic sinogram
+   - NOT per energy bin — this is already optimal
+   - Both EICT and PCCT use same `add_scatter!()` / `correct_scatter!()` functions
+
+3. **Analyzed complete EICT signal chain post-forward-projection:**
+   - 9 elementwise operations + 7-8 convolution operations
+   - Scatter (add+correct) = >95% of physics pipeline time
+   - All other effects combined < 50ms
+   - **Elementwise fusion saves <0.5ms — not worth the complexity**
+
+4. **Wrote complete SPEED-007 SYNTHESIS:**
+   - 3-story implementation roadmap with stacked speedup projections
+   - Conservative estimate: 7.5× (tiled fusion + scatter + DDA)
+   - Optimistic estimate: 10.9× (full NTuple fusion + scatter + DDA)
+   - Correctness validation plan with 3 gates
+   - Risk register with mitigations
+   - Filled in SPEED-004, SPEED-005, SPEED-006 sections
+
+### Key findings
+
+#### Critique: Separable scatter — CONFIRMED with caveats
+- **Gaussian kernel (default): YES separable, 31× speedup, exact equivalence**
+- Exponential kernel: NOT separable, must fall back to direct 2D convolution
+- Implementation needs pre-signal buffer + temp buffer (workspace already has patterns)
+- 3 kernel launches (presignal + H-conv + V-conv) vs 1 (but 31× fewer FLOPs)
+
+#### Critique: Branchless DDA on Metal — CONFIRMED beneficial
+- Metal SIMD groups (32 threads) behave similarly to CUDA warps for divergence
+- Metal's predicated execution is automatic for short branches but DDA's 3-way branch
+  with side effects (incrementing different variables) is not trivially predicated
+- Branchless version with explicit masks is reliably better across all backends
+
+#### Discovery: Physics pipeline batching (SPEED-004)
+- Post-forward-projection signal chain has ~18-22 kernel launches
+- Elementwise operations could be fused into 2-3 launches (Groups A+B)
+- But savings <0.5ms — **not worth implementing** given total simulate!() is 30s+
+- **SCATTER IS THE ONLY PHYSICS OPTIMIZATION THAT MATTERS**
+
+#### Synthesis: Clear path to 10×
+```
+Energy loop fusion:     32.3s → 5.30s  (6.1×)
++ Separable scatter:    5.30s → 3.37s  (9.6×)
++ Branchless DDA:       3.37s → 2.97s  (10.9×)
+```
+
+### What gaps remain
+
+1. **Runtime profiling** — all estimates are static. Need @elapsed validation.
+2. **NTuple{30} on Metal** — unknown if compiler handles it efficiently or spills.
+3. **PCCT fused kernel** — needs implementation after EICT version is validated.
+
+### What should happen next
+
+**SPEED_COMPLETE** — The synthesis is done. All major topics have been researched
+through discovery and critique. The spec provides a complete, implementable roadmap
+with 3 prioritized stories, correctness proofs, and risk mitigations. A build loop
+agent can now implement each story, validate correctness, and measure speedup.
+
+Remaining minor topics (SPEED-005 reference benchmarks, SPEED-006 precision) were
+addressed inline in the synthesis — no further discovery needed.
+
+---

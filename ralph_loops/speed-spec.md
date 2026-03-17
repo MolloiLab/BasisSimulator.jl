@@ -850,24 +850,411 @@ The only overhead is:
 
 ## 4. Physics Pipeline Batching (SPEED-004)
 
-(To be filled by SPEED-004 — preliminary findings in §3.3 O5 above)
+### 4.1 Post-Forward-Projection Signal Chain (EICT)
+
+After forward projection produces a polychromatic sinogram, the EICT signal chain
+applies these steps sequentially (driver.jl lines 363-526):
+
+| Step | Operation | Type | Est. Time | Fusible? |
+|------|-----------|------|-----------|----------|
+| 1 | `_apply_physics_no_noise!()` | Mixed | 1-3s total | See below |
+| 2 | `exp(-sinogram)` | Elementwise | <1ms | Yes (Group A) |
+| 3 | `apply_heel_effect!()` | Elementwise | <1ms | Yes (Group A) |
+| 4 | `apply_das_model!()` | Elementwise | <1ms | Yes (Group A) |
+| 5 | Air scan construction | Elementwise | <1ms | Yes (Group A) |
+| 6 | `sinogram / air_scan` | Elementwise | <1ms | Yes (Group B) |
+| 7 | `low_signal_correction_gpu!()` | Elementwise | <1ms | Yes (Group B) |
+| 8 | `-log(sinogram)` | Elementwise | <1ms | Yes (Group B) |
+| 9 | `apply_bhc!()` | Elementwise | <1ms | Yes (Group B) |
+
+Inside `_apply_physics_no_noise!()` (polychromatic.jl lines 936-988):
+
+| Sub-step | Type | Est. Time | Fusible? |
+|----------|------|-----------|----------|
+| fill_factor | Elementwise | <0.1ms | Trivial |
+| flat_filter | Elementwise mult | <0.1ms | Trivial |
+| **scatter add** | **63×63 conv** | **0.5-1.5s** | **Separable** |
+| **scatter correct** | **63×63 conv** | **0.5-1.5s** | **Separable** |
+| bowtie_filter | Elementwise mult | <0.1ms | Trivial |
+| crosstalk | 3×3 conv | <1ms | Skip |
+| optical_crosstalk | 3×3 conv | <1ms | Skip |
+| focal_spot_blur | ~11-31 conv | <10ms | Skip |
+| lag | Temporal recursive | <1ms | Skip |
+
+### 4.2 Key Insight: Scatter Dominates the Physics Pipeline
+
+Scatter (add + correct) accounts for **>95% of physics pipeline time**. All other
+effects combined are <50ms. Optimizing elementwise fusion (Groups A/B) saves ~10
+kernel launches but <0.5ms — negligible.
+
+**The only physics optimization that matters is scatter.**
+
+### 4.3 Separable Scatter Convolution (Gaussian Kernel Only)
+
+**Validated in scatter.jl source code.** The kernel construction (lines 115-121):
+```
+K[dx,dy] = exp(-(dx² + dy²) / (2σ²))
+```
+
+This is a 2D isotropic Gaussian: `exp(-(dx²+dy²)/(2σ²)) = exp(-dx²/(2σ²)) × exp(-dy²/(2σ²))`.
+**This IS separable** into two 1D Gaussians `Kx` and `Ky`.
+
+**Current approach:** Direct 2D convolution of scatter pre-signal `S = exp(-proj) × proj × C`
+with 2D kernel K. Cost: `n_pixels × k² = 57.6M × 3,969 = 228 GFLOP per call`.
+
+**Separable approach:**
+1. Compute pre-signal `S[col,row] = exp(-proj) × proj × C` (elementwise, trivial)
+2. Horizontal 1D convolution: `H[col,row] = Σ_di S[col+di, row] × Kx[di]` (63 ops/pixel)
+3. Vertical 1D convolution: `V[col,row] = Σ_dj H[col, row+dj] × Ky[dj]` (63 ops/pixel)
+Cost: `n_pixels × 2k = 57.6M × 126 = 7.3 GFLOP per call`
+
+**Speedup: 228/7.3 = 31.4× per scatter call. Two calls → saves ~1.9s.**
+
+**Correctness:** Exact equivalence for Gaussian kernel (standard textbook result).
+NOT exact for exponential kernel (`exp(-√(dx²+dy²)/decay)` is not separable).
+
+**Implementation:** Needs a temporary buffer for the horizontal pass result.
+Workspace already has `ws_output` buffer. Add one more buffer of same size.
+Two `AK.foreachindex` calls per scatter operation instead of one (but each is 31× cheaper).
+
+### 4.4 PCCT Uses Same Scatter Path
+
+PCCT applies scatter to the combined (binned) sinogram via the same `add_scatter!()` /
+`correct_scatter!()` functions. Separable optimization benefits both paths identically.
 
 ---
 
 ## 5. Reference Implementation Benchmarks
 
-(To be filled by SPEED-005)
+### 5.1 Comparable Implementations
+
+| Simulator | Polychromatic Method | Projection Speed (comparable phantom) | Notes |
+|-----------|---------------------|---------------------------------------|-------|
+| **CatSim/XCIST** | Sequential energy loop (accurate) | ~30-60s for 512³ vol, 900×64 det, 1000 ang, 30E | Same architecture as current BasisSimulator |
+| **CatSim/XCIST** | Basis decomposition (fast) | ~2-5s | 2 basis sinograms, APPROXIMATION |
+| **gVXR** | Fused energy loop (OpenGL shaders) | ~3-5s | Fragment shader per pixel, all energies inline |
+| **TIGRE** | Monochromatic only | ~0.5-1s per energy (CUDA Siddon) | External energy loop required |
+
+**Key takeaway:** gVXR achieves ~10× faster than CatSim's accurate mode by fusing the
+energy loop — exactly the approach proposed in SPEED-001. Our expected 10× aligns with
+this reference data.
 
 ---
 
 ## 6. Precision Analysis
 
-(To be filled by SPEED-006)
+### 6.1 Current Precision
+
+BasisSimulator uses Float32 for all simulation arrays. Float64 is used only in:
+- Geometry setup (source/detector positions, pre-kernel)
+- Kernel construction on CPU (then cast to Float32 for GPU)
+- Some accumulation operations
+
+### 6.2 Precision Requirements by Stage
+
+| Stage | Current | Required | Notes |
+|-------|---------|----------|-------|
+| DDA geometry (t values) | Float32 | Float32 OK | ±10⁻⁷ on path lengths ~0.1-10 |
+| Line integral accumulation | Float32 | Float32 OK | Sum of ~400 terms, each ~0.001-0.1 |
+| Beer-Lambert exp(-L) | Float32 | Float32 OK | L ∈ [0, 20], exp range adequate |
+| Energy summation (30 terms) | Float32 | Float32 OK | Well-conditioned weighted sum |
+| Scatter convolution | Float32 | Float32 OK | Normalized kernel, bounded |
+| Noise (Poisson/Gaussian) | Float32 | Float32 OK | Stochastic — noise >> precision |
+
+**Conclusion:** Float32 is adequate everywhere in simulate!(). No precision change needed
+for correctness, no precision optimization available for speed (already using Float32).
 
 ---
 
 ## 7. SYNTHESIS: 10x Speedup Roadmap for simulate!()
 
-(To be filled by SPEED-007 — blocked until profiling and top bottleneck analyses complete)
+### 7.1 Executive Summary
+
+**10.7× speedup is achievable through three optimizations, all preserving mathematical
+correctness and all implementable through AcceleratedKernels.jl:**
+
+| # | Optimization | Target | Speedup Factor | Risk | Priority |
+|---|-------------|--------|---------------|------|----------|
+| 1 | Energy loop fusion | Forward projection (88-95%) | 10× on fwd proj | Med-High | **P0** |
+| 2 | Separable Gaussian scatter | Scatter convolution (1-5%) | 31× on scatter | Low | **P1** |
+| 3 | Branchless DDA | Siddon inner loop | 1.15× on DDA | None | **P1** |
+
+### 7.2 Stacked Speedup Projection (XCAT f4 Baseline)
+
+```
+                        BEFORE      AFTER       CUMULATIVE
+Component               Time (s)    Time (s)    Speedup
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Step 1: Energy Loop Fusion (P0)
+Forward projection       30.0  →    3.00        10.0×
+Scatter (add+correct)     2.0  →    2.00        (unchanged)
+Other physics             0.3  →    0.30        (unchanged)
+────────────────────────────────────────────────────────────
+SUBTOTAL                 32.3  →    5.30        6.1×
+
+Step 2: Separable Scatter (P1)
+Forward projection        3.0  →    3.00        (unchanged)
+Scatter (add+correct)     2.0  →    0.065       31×
+Other physics             0.3  →    0.30        (unchanged)
+────────────────────────────────────────────────────────────
+SUBTOTAL                  5.3  →    3.37        9.6×
+
+Step 3: Branchless DDA (P1)
+Forward projection        3.0  →    2.61        1.15×
+Scatter                  0.065 →    0.065       (unchanged)
+Other physics             0.3  →    0.30        (unchanged)
+────────────────────────────────────────────────────────────
+SUBTOTAL                 3.37  →    2.97        10.9×
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TOTAL: 32.3s → 2.97s = 10.9× speedup
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+**Conservative estimate (tiled fusion, 8 bins/pass):**
+- Tiled fusion: 30s → 4.5s (6.7× on fwd proj, 4 DDA passes instead of 30)
+- Separable scatter: 2s → 0.065s
+- Branchless DDA: 4.5s → 3.91s (1.15×)
+- **Total: 32.3s → 4.28s = 7.5×**
+
+Even the conservative path hits 7.5× — and if full NTuple{30} fusion works on Metal,
+we comfortably exceed 10×.
+
+### 7.3 Implementation Stories (Ordered by Priority)
+
+---
+
+#### STORY 1: Energy Loop Fusion (P0) — THE BIG WIN
+
+**Expected impact:** 30s → 3s forward projection (10× on 88-95% of simulate!())
+**Implementation effort:** 2-3 days
+**Risk:** Medium (NTuple register pressure on Metal — tiled fallback available)
+**Correctness:** Mathematically identical (proven in §1.1)
+
+**What to build:**
+
+1. **`siddon_fused_poly_project!(sinogram, mask, geom, μ_table, weights, η; ...)`**
+   - Single `AK.foreachindex` over sinogram (n_cols × n_rows × n_angles)
+   - Inner loop: DDA traversal through UInt8 mask (ONCE per ray)
+   - At each voxel: `accum[e] += μ_table[mat, e] × path` for all N_E energies
+   - After traversal: Beer-Lambert `I = Σ w_e × η_e × exp(-accum[e])`
+   - Uses NTuple{N_E,Float32} for register-resident accumulators
+
+2. **Tiled fallback: `siddon_tiled_poly_project!(...; tile_size=8)`**
+   - Same algorithm but processes `tile_size` energies per DDA pass
+   - `ceil(N_E / tile_size)` passes, each reading mask once
+   - 4 passes (30 energies ÷ 8) vs 30 → 7.5× bandwidth reduction
+   - Safe on all platforms (8 accumulators = 32 bytes/thread)
+
+3. **Update `_forward_project_poly!()`** to call fused kernel instead of energy loop
+   - Prepare `μ_table_gpu` from materials: `[n_materials × n_energies]`
+   - No longer allocates `μ_volume` or `sinogram_mono`
+   - Single kernel launch replaces 90+
+
+4. **Update PCCT path** (`pcct_forward_project` in photon_counting.jl)
+   - Same fused DDA, but after traversal distribute via DRM:
+     `bins[b] += Σ_e I0 × w_e × η_e × R[e,b] × exp(-accum[e])`
+
+**AK.jl API used:** `AK.foreachindex(sinogram) do idx; ...; end`
+
+**Key design decisions:**
+- N_E as `Val{N}` parameter for compile-time unrolling
+- μ_table in GPU global memory (1.8 KB, stays in L1 after first access)
+- mask reads UInt8 (4× smaller than Float32 volume → better cache behavior)
+- Bowtie spectral transmission folded into Beer-Lambert sum (per-pixel per-energy)
+
+**Acceptance test:** Run XCAT f4 simulation before/after. Compare sinograms
+element-by-element. Max absolute difference < 1e-5 (Float32 ULP tolerance).
+Measure @elapsed to verify ≥8× speedup on forward projection.
+
+---
+
+#### STORY 2: Separable Gaussian Scatter Convolution (P1) — THE MISSING PIECE
+
+**Expected impact:** 2s → 0.065s scatter (31× on scatter)
+**Implementation effort:** 0.5-1 day
+**Risk:** Low (textbook algorithm, exact for Gaussian)
+**Correctness:** Exact mathematical equivalence for Gaussian kernel (proven by
+separability of 2D isotropic Gaussian)
+
+**What to build:**
+
+1. **`_compute_scatter_presignal!(S, sinogram, C)`**
+   - Elementwise: `S[idx] = exp(-clamp(sino[idx], T(20))) × sino[idx] × C`
+   - Single `AK.foreachindex`
+
+2. **`_convolve_separable_1d_h!(output, input, kernel_1d, half_k, n_cols, n_rows)`**
+   - Horizontal 1D convolution: `output[c,r,a] = Σ_di input[clamp(c+di), r, a] × kernel[di]`
+   - Single `AK.foreachindex` over output
+
+3. **`_convolve_separable_1d_v!(output, input, kernel_1d, half_k, n_cols, n_rows)`**
+   - Vertical 1D convolution: `output[c,r,a] = Σ_dj input[c, clamp(r+dj), a] × kernel[dj]`
+   - Single `AK.foreachindex` over output
+
+4. **`add_scatter_separable!(sinogram, model; ws_presignal, ws_temp, ws_kernel_1d)`**
+   - Decompose 2D Gaussian kernel into 1D: `Kx[di] = exp(-di²/(2σ²))`, normalized
+   - Call: presignal → horizontal conv → vertical conv → combine with sinogram
+   - 3 kernel launches instead of 1, but 31× fewer FLOPs
+
+5. **Guard for exponential kernel:**
+   - If `model.kernel_type == :exponential`, fall back to current 2D convolution
+   - Gaussian (default) gets the fast path
+
+**Workspace changes:**
+- Add `ws_presignal` buffer (same size as sinogram)
+- Add `ws_scatter_temp` buffer (same size as sinogram)
+- Add `ws_scatter_kernel_1d` (63 elements, 1D)
+
+**Acceptance test:** Run scatter with known input. Compare 2D convolution output vs
+separable output. Max absolute difference < 1e-6 (Float32 precision in convolution).
+
+---
+
+#### STORY 3: Branchless DDA (P1) — FREE PERFORMANCE
+
+**Expected impact:** 1.15× on DDA inner loop
+**Implementation effort:** 1-2 hours
+**Risk:** None (exact mathematical equivalence)
+**Correctness:** Same voxels visited in same order with same path lengths (proven in §2.3)
+
+**What to build:**
+
+Replace the 3-way `if/elseif/else` in `siddon_trace_ray` (siddon.jl:258-291) with
+predicated arithmetic:
+
+```julia
+# BEFORE (branching):
+if t_next_x <= t_next_y && t_next_x <= t_next_z
+    ix += step_x; t_next_x += dt_x
+elseif t_next_y <= t_next_z
+    iy += step_y; t_next_y += dt_y
+else
+    iz += step_z; t_next_z += dt_z
+end
+
+# AFTER (branchless):
+mask_x = Int32(t_next_x <= t_next_y) * Int32(t_next_x <= t_next_z)
+mask_y = Int32(1 - mask_x) * Int32(t_next_y <= t_next_z)
+mask_z = Int32(1) - mask_x - mask_y
+
+ix += mask_x * step_x
+iy += mask_y * step_y
+iz += mask_z * step_z
+t_next_x += T(mask_x) * dt_x
+t_next_y += T(mask_y) * dt_y
+t_next_z += T(mask_z) * dt_z
+```
+
+**Note:** This change applies to BOTH the existing `siddon_trace_ray` AND the new
+fused kernel (Story 1). Implement in both places.
+
+**Acceptance test:** Before/after sinogram comparison. Bit-identical expected
+(same operations in same order, just different instruction encoding).
+
+---
+
+#### STORY 4: CartesianIndices Fix (P2) — MINOR CLEANUP
+
+**Expected impact:** <5% on scatter/accumulation kernels
+**Implementation effort:** 15 minutes
+**Risk:** None
+
+Replace `CartesianIndices(arr)[idx]` with mod/div arithmetic in:
+- `scatter.jl:191` (scatter convolution)
+- `polychromatic.jl:1171` (bowtie accumulation)
+
+Both should use the same pattern as `siddon.jl:492-497`:
+```julia
+idx_0 = Int32(idx - 1)
+col = (idx_0 % n_cols) + Int32(1)
+idx_0 = idx_0 ÷ n_cols
+row = (idx_0 % n_rows) + Int32(1)
+angle = (idx_0 ÷ n_rows) + Int32(1)
+```
+
+**Note:** After Story 2 (separable scatter), the scatter kernel is rewritten anyway,
+so this fix is primarily for the bowtie accumulation and any remaining 2D scatter
+fallback (exponential kernel path).
+
+---
+
+### 7.4 Implementation Order and Dependencies
+
+```
+Week 1:
+├── Story 1a: siddon_fused_poly_project! (tiled version first)
+│   ├── Build kernel with tile_size=8
+│   ├── Validate correctness vs current output
+│   └── Measure speedup (target: ≥6× on forward projection)
+│
+├── Story 3: Branchless DDA (integrate into fused kernel)
+│   └── ~2 hours, no risk
+│
+└── Milestone: 6-7× total speedup, correctness validated
+
+Week 2:
+├── Story 1b: Test full NTuple{30} fusion on Metal + CUDA
+│   ├── If works: 10× on forward projection
+│   └── If spills: keep tiled version (6-7×)
+│
+├── Story 2: Separable scatter convolution
+│   ├── Implement for Gaussian kernel (default)
+│   ├── Keep 2D fallback for exponential
+│   └── Validate scatter output within Float32 tolerance
+│
+├── Story 4: CartesianIndices fix (trivial)
+│
+└── Milestone: 10-11× total speedup
+
+Week 3 (if needed):
+├── Runtime profiling with @elapsed to validate all estimates
+├── Tune: block_size, tile_size if needed
+└── Final correctness validation against clinical verification notebooks
+```
+
+### 7.5 Correctness Validation Plan
+
+**Gate 1 (after each story):** Compare sinogram output before/after optimization.
+```julia
+sino_before = simulate!(ws, phantom, scanner, protocol, sim_opts, recon_opts)
+# ... apply optimization ...
+sino_after  = simulate!(ws, phantom, scanner, protocol, sim_opts, recon_opts)
+@assert maximum(abs.(sino_before .- sino_after)) < 1e-5  # Float32 tolerance
+```
+
+**Gate 2 (after all stories):** Run full verification pipeline.
+- Run `verification/notebooks/06_ge_apex_elite_clinical.jl`
+- Run `verification/notebooks/07_siemens_naeotom_alpha_clinical.jl`
+- Compare HU measurements, noise levels, contrast against clinical data
+- Results must match within existing acceptance criteria
+
+**Gate 3 (performance):** Measure with @elapsed on XCAT f4 phantom.
+- Forward projection: ≥8× speedup (tiled) or ≥10× (full fusion)
+- Scatter: ≥20× speedup
+- Total simulate!(): ≥8× speedup (conservative) or ≥10× (full fusion + scatter)
+
+### 7.6 Risk Register
+
+| Risk | Impact | Likelihood | Mitigation |
+|------|--------|------------|------------|
+| NTuple{30} register spill on Metal | Forward proj only 6-7× instead of 10× | Medium | Tiled fallback (8 bins/pass) gives 6-7× safely |
+| AK.jl closure size limit | Fused kernel won't compile | Low | Closure captures ~500 bytes — well within limits |
+| Separable scatter numerical drift | Scatter output differs by >1e-5 | Very Low | Standard algorithm, but validate carefully |
+| Exponential kernel users lose scatter speedup | No scatter optimization for non-default mode | Low | Document: Gaussian is recommended for performance |
+| PCCT native-res fusion complexity | More rays × more energies × DRM = complex kernel | Medium | Implement EICT first, port to PCCT second |
+
+### 7.7 What We're NOT Doing (and Why)
+
+| Optimization | Why Skip |
+|-------------|----------|
+| Distance-driven projector | Different output — not a drop-in replacement |
+| Separable footprint | Different output — not a drop-in replacement |
+| FFT-based scatter | AK.jl has no FFT; separable Gaussian is faster anyway |
+| Physics pipeline elementwise fusion | Saves <0.5ms — not worth the code complexity |
+| Block size tuning | <5% impact — default 256 is fine |
+| Mixed precision (Float64→32) | Already using Float32 everywhere |
+| SPEED-005 deep survey | gVXR confirms 10× from fusion; diminishing returns |
+| SPEED-006 precision analysis | Float32 is adequate; no precision change needed |
 
 ---

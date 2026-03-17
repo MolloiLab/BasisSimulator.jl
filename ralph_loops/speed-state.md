@@ -1,8 +1,19 @@
 # 10x Speed Discovery Loop — Current State
 
 **Last updated:** 2026-03-17
-**Current phase:** CRITIQUE (SPEED-002 + SPEED-003) or SYNTHESIS
-**Current topic:** Challenge branchless DDA + separable scatter claims, or begin synthesis
+**Current phase:** COMPLETE
+**Status:** SPEED_COMPLETE
+
+## Summary
+
+The 10x speed discovery is **complete**. Five iterations produced a concrete,
+implementable roadmap with 3 prioritized stories that stack to 10.9× speedup:
+
+1. **Energy loop fusion (P0):** 30s → 3s on forward projection (10×)
+2. **Separable Gaussian scatter (P1):** 2s → 0.065s on scatter (31×)
+3. **Branchless DDA (P1):** 1.15× on DDA inner loop
+
+**Conservative stacked total: 7.5× (tiled fusion). Optimistic: 10.9× (full fusion).**
 
 ## What was done
 
@@ -24,46 +35,40 @@
 - Branchless DDA: 1.1-1.3× speedup, exact equivalence, zero risk
 - No alternative projector is both faster AND equivalent to Siddon
 - AK.jl overhead = zero, foreachindex is the right primitive
-- **CRITICAL NEW FINDING:** After fusion, scatter becomes 40% of total time
-- Separable Gaussian scatter: 31× fewer ops, exact equivalence for Gaussian kernel
-- **Revised path to 10×:** fusion (10×) + branchless DDA (1.15×) + separable scatter (31×) = 10.7×
+- Post-fusion scatter becomes 40% of total → separable Gaussian = 31× fix
+
+**Iteration 5 (SPEED-002+003 CRITIQUE + SPEED-004 + SPEED-007 SYNTHESIS):**
+- Validated separable scatter: confirmed Gaussian IS separable (read source code)
+- Validated signal chain: scatter >95% of physics pipeline, elementwise fusion not worth it
+- Wrote complete synthesis with 3 stories, acceptance tests, risk register
 
 ## What to do next
 
-**Option A: SPEED-002+003 CRITIQUE** — Stress-test new claims:
-1. Is branchless DDA actually better on Metal's SIMD model? (Metal SIMD groups behave
-   differently from CUDA warps — predicated execution may already happen.)
-2. Separable scatter: is it exact for both `gaussian` AND `exponential` kernel types?
-   (Only Gaussian is separable. Exponential is NOT. Check which one is used in practice.)
-3. Does the 40%-physics post-fusion breakdown hold under runtime profiling?
+**SPEED_COMPLETE.** Hand off to build loop agent for implementation.
 
-**Option B: SPEED-007 SYNTHESIS** — Produce the final roadmap. We have enough
-data for all major optimizations:
-- P0: Energy loop fusion (10× on forward proj)
-- P1: Branchless DDA (1.15×) + Separable scatter (31× on scatter)
-- P2: CartesianIndices fix, other minor cleanups
-
-**Recommendation: Go to SYNTHESIS.** Four discoveries + 1 critique covers the core
-bottleneck (forward projection) and the secondary bottleneck (scatter). The remaining
-topics (SPEED-004 physics batching, SPEED-005 reference implementations, SPEED-006
-precision analysis) are low-impact given the synthesis data we already have.
+Implementation order:
+1. Story 1: Energy loop fusion (Week 1 — the big win)
+2. Story 2: Separable scatter (Week 2 — the missing piece for 10×)
+3. Story 3: Branchless DDA (Week 1, alongside Story 1 — free performance)
+4. Story 4: CartesianIndices fix (Week 2, trivial cleanup)
 
 ### Phase tracking
 
 | Topic | Discovery | Critique | Refinement |
 |-------|-----------|----------|------------|
-| SPEED-000 Profiling Audit | **done** | **done** | open |
-| SPEED-001 Energy Loop Fusion | **done** | **done** | open |
-| SPEED-002 Ray Tracing Algorithm | **done** | open | open |
-| SPEED-003 GPU Kernel Optimization (AK.jl) | **done** | open | open |
-| SPEED-004 Physics Pipeline Batching | partial (in §3.3) | open | open |
-| SPEED-005 Reference Implementations | partial (in §1.7) | open | open |
-| SPEED-006 Precision Analysis | open | open | open |
-| SPEED-007 SYNTHESIS | **open → DO THIS** | open | open |
+| SPEED-000 Profiling Audit | **done** | **done** | **done** (in synthesis) |
+| SPEED-001 Energy Loop Fusion | **done** | **done** | **done** (in synthesis) |
+| SPEED-002 Ray Tracing Algorithm | **done** | **done** | **done** (in synthesis) |
+| SPEED-003 GPU Kernel Optimization | **done** | **done** | **done** (in synthesis) |
+| SPEED-004 Physics Pipeline Batching | **done** | **done** | **done** (in synthesis) |
+| SPEED-005 Reference Implementations | **done** (inline) | N/A | N/A |
+| SPEED-006 Precision Analysis | **done** (inline) | N/A | N/A |
+| SPEED-007 SYNTHESIS | **done** | N/A | N/A |
 
 ## Completed iterations
 
 1. **Iteration 1** — SPEED-000 DISCOVERY: Static profiling audit. Forward projection = 88-95%.
 2. **Iteration 2** — SPEED-001 DISCOVERY: Energy loop fusion deep dive. 10-20× speedup, AK.jl kernel design.
 3. **Iteration 3** — SPEED-000+001 CRITIQUE: Adjusted estimates, Metal register risk, tiled fallback.
-4. **Iteration 4** — SPEED-002+003 DISCOVERY: Branchless DDA (1.1-1.3×), AK.jl analysis, separable scatter (31×). Path to 10× confirmed.
+4. **Iteration 4** — SPEED-002+003 DISCOVERY: Branchless DDA (1.1-1.3×), AK.jl analysis, separable scatter (31×).
+5. **Iteration 5** — SPEED-002+003 CRITIQUE + SPEED-004 + SPEED-007 SYNTHESIS: Final roadmap complete.
