@@ -252,3 +252,99 @@ The iterative reconstruction path (SIRT, CGLS) works UNCHANGED for helical becau
 5. **PCCT + helical:** Same geometry changes apply. PCCT detector physics is angle-agnostic. Native dexel resolution path would also work unchanged.
 
 ---
+
+## Iteration 2: HELI-001 DISCOVERY — Helical CT Geometry (completed by prior agent)
+
+**Date:** 2026-03-17
+**Phase:** Discovery
+**Topic:** HELI-001 (Helical CT Geometry — Table Motion, Pitch, Coordinate Transforms)
+
+### Summary
+
+Researched helical geometry: IEC pitch definition, Z(θ) formula, multi-rotation angle generation, collimation relationships, clinical pitch values, phantom Z-coverage requirements, reconstruction Z-range (Tam-Danielsson window), and reconstruction volume Z-centering. Proposed CTGeometry constructor changes with full pseudocode.
+
+### Key Findings
+
+- **Pitch definition:** IEC 60601-2-44 standard. `pitch = table_feed_per_rotation / total_collimation_width`.
+- **Z(θ):** `Z(θ) = Z_start + (θ/2π) × pitch × total_collimation_cm`. Both source and detector share the same Z (rigid gantry).
+- **Centering:** `z_start = -z_travel/2`, scan symmetric about Z=0. For pitch=0: `z_start = 0.0` (axial degenerate case).
+- **Proposed struct additions:** `pitch`, `views_per_rotation`, `recon_center` fields to CTGeometry.
+- **Clinical pitch values:** 0.2–1.5 typical, 3.0–3.4 for dual-source cardiac.
+
+See spec section 1 for full details.
+
+---
+
+## Iteration 3: HELI-002 DISCOVERY — Forward Projection with Table Motion
+
+**Date:** 2026-03-17
+**Phase:** Discovery
+**Topic:** HELI-002 (Forward Projection — Siddon with Table Motion)
+
+### Summary
+
+Deep audit of the entire forward projection pipeline for helical compatibility: Siddon ray tracer, polychromatic Beer-Lambert, PCCT photon-counting, `simulate!()` driver, noise model, iterative reconstruction projector, GPU kernel parallelism, and memory implications.
+
+### Key Findings
+
+**The entire forward projection pipeline works UNCHANGED for helical.** This is the central finding.
+
+### Detailed Analysis
+
+#### 1. Siddon Ray Tracer (`siddon.jl:150–294`)
+
+Completely general. Takes arbitrary `(src_x, src_y, src_z, det_x, det_y, det_z)`. Uses parametric `P(t) = S + t(D-S)` with 3D-DDA. No orbit assumptions. **NO CHANGES.**
+
+#### 2. `siddon_forward_project!` (`siddon.jl:414–538`)
+
+Reads per-angle arrays from CTGeometry. Volume bounds via `volume_extent` kwarg (phantom's physical size) or `geom.fov` (recon FOV). Both are centered at origin. Phantom is stationary — source/detector Z varies — rays correctly intersect the stationary volume. **NO CHANGES** for phantom projection.
+
+**One subtlety for iterative recon:** SIRT/CGLS call `siddon_forward_project(recon_volume, geom)` without `volume_extent`, defaulting to `geom.fov` centered at origin. For helical with `recon_center_z ≠ 0`, the volume bounds need a Z offset. This is a minor change:
+```julia
+vol_min_z = T(-vol_bounds[3] / 2 + geom.recon_center[3])
+```
+This is driven by reconstruction requirements, not forward projection requirements.
+
+#### 3. Polychromatic Pipeline (`polychromatic.jl:1100–1195`)
+
+Energy loop → `create_μ_volume!` → `siddon_forward_project!` → Beer-Lambert accumulation. Passes through geometry and `volume_extent`. Orbit-agnostic. **NO CHANGES.**
+
+#### 4. PCCT Pipeline (`photon_counting.jl:1192–1440`)
+
+Same structure as polychromatic. Energy loop → Siddon → spectral binning → detector physics (charge sharing, pileup, anti-coincidence). All per-pixel operations. Native-resolution path also just reads geometry. **NO CHANGES.**
+
+#### 5. `compute_detector_I0` (`detector_noise.jl:457–473`)
+
+Uses `time_per_view = rotation_time / views_per_rotation`. This is physically correct — the per-view integration time doesn't change with helical vs axial. `protocol.views` means views per rotation. **NO CHANGES.**
+
+#### 6. GPU Kernel Parallelism
+
+AK.foreachindex parallelizes over `n_cols × n_rows × n_angles`. More angles (multi-rotation) = more work items = higher GPU utilization. Each ray is independent. **Perfect scaling.**
+
+#### 7. Memory Implications
+
+Sinogram buffers scale linearly with `n_rotations`. For 5 rotations: ~6.5 GB workspace (900×64 cols/rows). For 10 rotations: ~13 GB. Within capacity of modern GPUs but may need optimization for very long scans (>10 rotations).
+
+#### 8. Phantom Z-Coverage Validation
+
+Recommended: warn if `phantom.extent[3] < z_travel + total_collimation_cm`. Not an error — projecting through empty space produces correct zero values.
+
+### Classification
+
+| Component | Change | Status |
+|-----------|--------|--------|
+| `siddon_trace_ray` | NONE | Already general |
+| `siddon_forward_project!` | Minor: volume_center for iterative recon | Reconstruction-driven |
+| `_forward_project_poly!` | NONE | Pass-through |
+| `pcct_forward_project` | NONE | Pass-through |
+| `compute_detector_I0` | NONE | Uses views_per_rotation |
+| Noise model | NONE | Per-view, orbit-agnostic |
+| Workspace buffers | SIZE ONLY | Automatic from geom.n_angles |
+
+### Gaps for Next Iterations
+
+1. **HELI-003 (Reconstruction):** The CRITICAL unknown. Forward projection is free, but reconstruction needs helical weighting. Must research FDK+weights vs Katsevich vs rebinning.
+2. **HELI-005 (Physics Pipeline):** Partially addressed here (all physics is angle-agnostic), but a systematic audit of all 16 effects would be thorough.
+3. **Volume center for iterative recon:** The `recon_center` Z offset needs to be threaded through to `siddon_forward_project!` when called from SIRT/CGLS. Design this in HELI-004.
+
+---
