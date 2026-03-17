@@ -12,144 +12,92 @@
       "id": "HELI-000",
       "area": "current-geometry-audit",
       "title": "Current Geometry and Projection Audit — Where Z=0 Is Hardcoded",
-      "description": "FIRST TOPIC. Read through every file that touches geometry, source/detector positions, or Z-coordinates. Map exactly where the circular-orbit assumption is baked in. Files to read: geometry/scanner.jl (CTGeometry constructor), projection/siddon.jl (ray tracing), reconstruction/fbp/fdk.jl (backprojection), api/workspace.jl (buffer allocation). For each Z=0 assumption: what changes for helical? Is it a parameter addition or a structural rewrite?",
+      "description": "FIRST TOPIC. Read through every file that touches geometry, source/detector positions, or Z-coordinates. Map exactly where the circular-orbit assumption is baked in.",
       "discovery": "done",
-      "critique": "open",
+      "critique": "done",
       "refinement": "open",
-      "priority": 0,
-      "sources": [
-        "src/geometry/scanner.jl",
-        "src/projection/siddon.jl",
-        "src/projection/polychromatic.jl",
-        "src/reconstruction/fbp/fdk.jl",
-        "src/api/workspace.jl",
-        "src/api/driver.jl"
-      ]
+      "priority": 0
     },
     {
       "id": "HELI-001",
       "area": "helical-geometry",
       "title": "Helical CT Geometry — Table Motion, Pitch, and Coordinate Transforms",
-      "description": "Research helical CT geometry. Define: pitch (table distance per rotation / beam collimation), table feed per angle, interpolation requirements. How does Z(θ) = z_start + pitch × collimation × θ/(2π) map into the existing CTGeometry struct? Can we extend CTGeometry with z_positions::Vector{Float64} per angle, or do we need a new struct? What pitch values are clinically relevant (0.5-1.5)? How does the n_rotations field in CTProtocol relate? Research how CatSim and TIGRE handle helical geometry.",
+      "description": "Research helical CT geometry. Define: pitch, table feed per angle, Z(θ) formula, clinical pitch values, phantom coverage requirements.",
       "discovery": "done",
-      "critique": "open",
+      "critique": "done",
       "refinement": "open",
-      "priority": 1,
-      "sources": [
-        "CatSim helical geometry documentation",
-        "TIGRE helical CT implementation (GitHub)",
-        "Buzug: Computed Tomography (textbook, Ch. 8 Spiral CT)",
-        "Hsieh: Computed Tomography (textbook, helical chapter)"
-      ]
+      "priority": 1
     },
     {
       "id": "HELI-002",
       "area": "forward-projection",
       "title": "Helical Forward Projection — Siddon with Table Motion",
-      "description": "The current Siddon ray tracer takes source and detector positions as inputs. For helical: the source/detector Z-positions change per angle. Research: Does the Siddon algorithm need modification, or just different input positions? What about the phantom — does it need to be larger in Z to cover the helical travel? How does the polychromatic accumulation change? Does the existing GPU kernel need changes or just different position buffers?",
+      "description": "Verify Siddon ray tracer works unchanged for helical. Confirm polychromatic pipeline, GPU kernel, and PCCT path all work with helical geometry.",
       "discovery": "done",
-      "critique": "open",
+      "critique": "done",
       "refinement": "open",
-      "priority": 1,
-      "sources": [
-        "src/projection/siddon.jl",
-        "src/projection/polychromatic.jl",
-        "De Man & Basu 2002 (distance-driven projection)",
-        "TIGRE: Algorithms/OS_SART_helical.m"
-      ]
+      "priority": 1
     },
     {
       "id": "HELI-003",
       "area": "reconstruction-helical",
       "title": "Helical Reconstruction Algorithms — FDK-Helical vs Katsevich vs Rebinning",
-      "description": "The critical research topic. Current FDK assumes circular orbit. For helical there are multiple approaches: (A) Approximate FDK with helical weighting (Noo/Defrise/Clackdoyle 2003 weights, Tam-Danielsson window). (B) Exact Katsevich algorithm (2002, PI-line based). (C) Rebinning to parallel beam + 2D FBP (fastest but lowest quality). (D) ASSR (Advanced Single-Slice Rebinning). Research each: complexity, quality, which is standard in clinical scanners, which fits the existing workspace pattern. The recommendation should balance correctness with implementation effort.",
-      "discovery": "open",
-      "critique": "open",
+      "description": "Research and recommend helical reconstruction approach. WFBP recommended, Katsevich rejected. Includes GPU kernel pseudocode for weighted helical FDK.",
+      "discovery": "done",
+      "critique": "done",
       "refinement": "open",
-      "priority": 1,
-      "sources": [
-        "Katsevich 2002: Analysis of an exact inversion algorithm for spiral cone-beam CT",
-        "Noo, Defrise, Clackdoyle 2003: Single-slice rebinning with FDK weights",
-        "Turbell 2001: Cone-Beam Reconstruction Using Filtered Backprojection (PhD thesis)",
-        "Hsieh textbook Ch. 9 (Image Reconstruction: Helical CT)",
-        "TIGRE helical reconstruction source",
-        "CatSim helical reconstruction approach"
-      ]
+      "priority": 1
     },
     {
       "id": "HELI-004",
       "area": "api-integration",
       "title": "API Design — Seamless Helical in the 5-Part API",
-      "description": "Design the API changes. The user should be able to switch from axial to helical by changing ONE or TWO parameters, not by using a different code path. Research: What fields does CTProtocol need? (pitch, table_speed, n_rotations > 1). What does CTGeometry need? How does the workspace pattern adapt (larger sinogram buffers for multi-rotation)? How does simulate!() detect helical vs axial? What about PCCT + helical (dual complexity)?",
-      "discovery": "open",
-      "critique": "open",
+      "description": "CTProtocol pitch field, CTGeometry struct additions, workspace changes, dose formulas, validation rules. Complete change list (~25 sites across ~10 files).",
+      "discovery": "done",
+      "critique": "done",
       "refinement": "open",
-      "priority": 1,
-      "sources": [
-        "src/api/options.jl",
-        "src/api/workspace.jl",
-        "src/api/driver.jl",
-        "src/source/protocol.jl"
-      ]
+      "priority": 1
     },
     {
       "id": "HELI-005",
       "area": "physics-pipeline",
       "title": "Physics Pipeline Compatibility — What Changes for Helical?",
-      "description": "Audit every step of the 16-step physics pipeline for helical compatibility. Most effects (noise, scatter, crosstalk, detector efficiency) should be angle-independent and work as-is. But: does the bowtie filter change with table position? Does scatter modeling change with helical geometry? Does BHC change? Does air scan calibration need adjustment? For each of the 16 steps: works as-is / needs minor modification / needs rewrite.",
-      "discovery": "open",
-      "critique": "open",
+      "description": "Audit of all 16 physics effects. Result: ALL are helical-compatible with zero code changes. Physics is gantry-frame or element-wise.",
+      "discovery": "done",
+      "critique": "done",
       "refinement": "open",
-      "priority": 1,
-      "sources": [
-        "src/detector/physics_pipeline.jl",
-        "src/correction/bhc.jl",
-        "src/detector/scatter.jl",
-        "src/source/bowtie_filter.jl"
-      ]
+      "priority": 1
     },
     {
       "id": "HELI-006",
       "area": "reference-implementations",
       "title": "Reference Implementations — TIGRE, CatSim, ASTRA, RTK",
-      "description": "Survey how existing CT simulation frameworks implement helical scanning. For each: (A) TIGRE (MATLAB/Python, GPU-accelerated). (B) CatSim/XCIST (our parity target). (C) ASTRA Toolbox (GPU cone-beam). (D) RTK (C++, ITK-based). What reconstruction algorithms do they use? How do they handle the geometry? What are their API patterns? Which is closest to our architecture? Code citations with file paths and line numbers.",
-      "discovery": "open",
+      "description": "Survey how existing CT simulation frameworks implement helical scanning. Partially covered in HELI-003 (Section 3.7b).",
+      "discovery": "partial",
       "critique": "open",
       "refinement": "open",
-      "priority": 1,
-      "sources": [
-        "TIGRE GitHub: Algorithms/OS_SART_helical.m, Utilities/Geometry/",
-        "CatSim/XCIST GitHub or documentation",
-        "ASTRA Toolbox GitHub: astra/cones.py",
-        "RTK GitHub: src/rtkFDKConeBeamReconstructionFilter.cxx"
-      ]
+      "priority": 1
     },
     {
       "id": "HELI-007",
       "area": "validation-strategy",
       "title": "Validation and Testing — How Do We Know Helical Works?",
-      "description": "Define the test strategy. Ground truth options: (A) Compare against CatSim helical output. (B) Analytical phantoms with known helical solutions (Shepp-Logan spiral). (C) Compare helical FDK vs axial FDK on same phantom (should be similar for pitch ~1). (D) Measure artifacts: cone-beam artifacts should be REDUCED with helical. What metrics? HU accuracy, MTF, cone-beam artifact severity, z-resolution.",
+      "description": "Define test strategy: ground truth, acceptance criteria, metrics (HU accuracy, MTF, cone-beam artifacts, z-resolution).",
       "discovery": "open",
       "critique": "open",
       "refinement": "open",
-      "priority": 2,
-      "sources": [
-        "test/runtests.jl (existing test patterns)",
-        "CatSim validation methodology",
-        "Hsieh textbook (helical artifact analysis)"
-      ]
+      "priority": 2
     },
     {
       "id": "HELI-008",
       "area": "synthesis",
       "title": "SYNTHESIS: Helical CT Implementation Roadmap",
-      "description": "After all other topics complete: synthesize into a single coherent implementation plan with phased stories. Resolve the key decision: which reconstruction algorithm? Produce: API design spec, geometry changes, reconstruction algorithm pseudocode with GPU kernel design, physics pipeline compatibility matrix, test plan, story-level roadmap with dependencies.",
+      "description": "After all other topics complete: synthesize into phased implementation plan with stories and dependencies.",
       "discovery": "open",
       "critique": "open",
       "refinement": "open",
       "priority": 3,
-      "blockedBy": ["HELI-000", "HELI-001", "HELI-002", "HELI-003", "HELI-004", "HELI-005", "HELI-006"],
-      "sources": []
+      "blockedBy": ["HELI-000", "HELI-001", "HELI-002", "HELI-003", "HELI-004", "HELI-005", "HELI-006"]
     }
   ]
 }

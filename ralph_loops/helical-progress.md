@@ -717,3 +717,120 @@ This uses `geom.fov` centered at origin — correct for `recon_center = (0,0,0)`
 | C12. is_helical derivation | MINOR | Specify derivation chain |
 
 ---
+
+## Iteration 7: HELI-004 + HELI-005 CRITIQUE — API Design & Physics Pipeline
+
+**Date:** 2026-03-17
+**Phase:** Critique
+**Topics:** HELI-004 (API Design, Section 4) + HELI-005 (Physics Pipeline, Section 5)
+
+### Methodology
+
+Cross-referenced every claim in Sections 4 and 5 of `helical-spec.md` against actual source code. Verified:
+- All CTProtocol inner constructor call sites
+- All CTGeometry inner constructor call sites (re-confirmed C4)
+- `backproject!` and `backproject_voxel` code (actual `pi_over_angles` usage at `backprojection.jl:335,394`)
+- `apply_lag!` and `apply_lag_catsim!` implementations (lag loop behavior at `detector_lag.jl:236-301, 535-643`)
+- `apply_heel_effect!` implementation (fan angle from column index at `heel_effect.jl:175-196`)
+- `siddon_forward_project!` volume bounds logic (two-path: phantom vs iterative at `siddon.jl:437-445`)
+- FDK `reconstruct!` workspace path (`driver.jl:815-846`)
+- `compute_ctdi_vol` and `compute_dlp` formulas (`protocol.jl:261-300`)
+
+### New Issues Found
+
+#### C13 (IMPORTANT): `n_angles` naming ambiguity — constructor param vs struct field
+
+The CTGeometry constructor parameter `n_angles` means "views per rotation" (from `protocol.views`), but the struct field `n_angles` stores "total views" (= `views_per_rotation × n_rotations`). Example:
+
+```
+geom = CTGeometry(scanner; n_angles=984, pitch=0.8, n_rotations=3)
+# geom.n_angles == 2952  (total views, not 984!)
+# geom.views_per_rotation == 984
+```
+
+**Resolution:** Accept as design tradeoff. Add CLEAR docstring: "`n_angles` kwarg is views per rotation. The struct field `n_angles` = total views across all rotations."
+
+#### C14 (IMPORTANT): `recon_center` ONLY applies to reconstruction volume bounds, not phantom projection
+
+Spec C6 lists `siddon.jl:440-442` as needing `recon_center` offset. This is PARTIALLY correct.
+
+`siddon_forward_project!` has TWO paths (siddon.jl:437-445):
+```julia
+vol_bounds = volume_extent !== nothing ? volume_extent : geom.fov
+vol_min_z = T(-vol_bounds[3] / 2)
+```
+
+- **IF branch** (`volume_extent` provided): Phantom projection, centered at WORLD ORIGIN. NO `recon_center` offset.
+- **ELSE branch** (`geom.fov`): Iterative recon projection. NEEDS `recon_center` offset.
+
+Revised C6 site list:
+| # | File:Line | Apply recon_center? | Reason |
+|---|-----------|-------------------|--------|
+| 1 | `siddon.jl:440-442` | ONLY in `geom.fov` path | Phantom stays at origin |
+| 2 | `backprojection.jl:316-318` | YES always | FDK + matched BP use geom.fov |
+| 3 | `affine.jl:69-71` | YES | recon_to_world_affine |
+| 4 | `affine.jl:128-130` | YES | resample_to_recon |
+
+#### C15 (IMPORTANT): `create_aquilion_one` duplicates geometry loop — refactor recommended
+
+`create_aquilion_one` (scanner.jl:725-807) has its own geometry computation loop, duplicating CTGeometry constructor logic. Adding helical Z formula to BOTH places creates maintenance risk.
+
+**Recommendation:** During helical implementation, refactor to:
+```julia
+function create_aquilion_one(; kwargs...)
+    scanner = Scanner(source_to_isocenter=600.0, source_to_detector=1000.0, ...)
+    return CTGeometry(scanner; n_angles, fov_cm, pitch, n_rotations, ...)
+end
+```
+Eliminates duplicated geometry loop. Note: pixel_size derivation differs between the two functions — reconciliation needed during refactor.
+
+#### C16 (IMPORTANT): GPU memory scaling not documented in Section 4.5
+
+Section 4.5 says "No struct changes" for workspaces but doesn't note that sinogram-sized buffers scale with n_rotations. EICTWorkspace has ~8 sino-sized buffers; PCCTWorkspace has ~5 per energy bin. Practical limit: ~5 rotations on 24GB GPU for clinical geometry. Section 2.4 has memory table but Section 4.5 should cross-reference it.
+
+#### C17 (MINOR): `compute_dlp` needs `scan_length_cm` semantics clarification
+
+Spec proposes removing `* n_rotations` from DLP. Correct, but docstring should clarify:
+- Helical: `scan_length_cm` = total z-travel = `n_rotations × pitch × total_collimation_cm`
+- Axial: `scan_length_cm` = z-coverage per rotation. `n_rotations` = 1 default.
+
+#### C18 (MINOR): `fan_angle_max` in heel effect uses recon FOV, not detector fan
+
+`heel_effect.jl:176`: `fan_angle_max = atan(geom.fov[1] / 2 / geom.SAD)` — uses reconstruction FOV, not actual detector fan coverage. Pre-existing issue, not helical-specific. Doesn't affect helical compatibility.
+
+### Verified Claims (ALL CORRECT)
+
+**Section 4:**
+- ✅ CTProtocol: 3 inner constructor call sites (protocol.jl:118, 418, 461)
+- ✅ CTGeometry: 6 inner constructor call sites (scanner.jl:694,802; fdk.jl:426; workspace.jl:364; mbir.jl:434; scanners.jl:327)
+- ✅ n_angles semantics: total_views in struct, correct for backward compat
+- ✅ Workspace creation: only pitch/n_rotations kwargs needed
+- ✅ simulate!(): no changes — confirmed all paths use ws.geom
+- ✅ backproject! has access to geom.pitch and geom.views_per_rotation
+- ✅ FDK reconstruct! path flows geometry correctly
+- ✅ PCCT + helical: identical creation path, all detector physics angle-agnostic
+
+**Section 5:**
+- ✅ ALL 16 physics effects verified — zero changes needed
+- ✅ Heel effect: fan angle from column index + SAD, no Z dependency (heel_effect.jl:175-196)
+- ✅ Detector lag (apply_lag!): `prev_angle = angle - k`, clamp to frame 1 (detector_lag.jl:285-289) — correct for multi-rotation
+- ✅ Detector lag (apply_lag_catsim!): sequential IIR state across views (detector_lag.jl:602-640) — correct
+- ✅ Bowtie/flat filter: 2D maps, uniform per view
+- ✅ Scatter: convolution approximation, same quality axial/helical
+- ✅ Noise: `compute_detector_I0` uses `protocol.views` (per-rotation) — correct
+- ✅ PCCT detector physics: per-pixel, no geometry references
+
+### Summary
+
+| Issue | Severity | Section | Action |
+|-------|----------|---------|--------|
+| C13: n_angles naming | IMPORTANT | 4.2, 4.13 | Add clear docstring; accept tradeoff |
+| C14: recon_center conditional | IMPORTANT | 4.7, C6 | Clarify phantom path stays at origin |
+| C15: create_aquilion_one duplication | IMPORTANT | 4.11 | Refactor to delegate to CTGeometry(scanner;...) |
+| C16: GPU memory scaling | IMPORTANT | 4.5 | Cross-reference Section 2.4 |
+| C17: DLP scan_length semantics | MINOR | 4.9 | Clarify docstring |
+| C18: heel fan_angle uses FOV | MINOR | 5.3 | Pre-existing; note for future |
+
+**Overall: Sections 4 and 5 are SOLID.** No critical issues. API design is clean. Physics pipeline confirmed 100% helical-compatible. Important issues are clarification and code hygiene, not correctness.
+
+---

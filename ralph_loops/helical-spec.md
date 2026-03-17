@@ -242,15 +242,17 @@ vol_min_z = T(recon_center[3] - geom.fov[3] / 2)
 ```
 For axial, `recon_center = (0,0,0)` → identical to current behavior.
 
-> **⚠ CRITIQUE C6:** The `recon_center` offset must be applied at ALL 4 sites that
-> compute volume bounds from FOV:
+> **⚠ CRITIQUE C6 (refined by C14):** The `recon_center` offset applies to
+> reconstruction volume bounds, NOT phantom forward projection. The `siddon_forward_project!`
+> function has two paths: (1) `volume_extent` provided → phantom centered at origin, NO offset;
+> (2) `geom.fov` → iterative recon, NEEDS offset. Updated site list:
 >
-> | # | File:Line | Code Changed |
-> |---|-----------|-------------|
-> | 1 | `siddon.jl:440-442` | `vol_min_z` for iterative forward projector |
-> | 2 | `backprojection.jl:316-318` | `vol_min_z` for FDK + matched backprojection |
-> | 3 | `affine.jl:69-71` | `tz` in `recon_to_world_affine` |
-> | 4 | `affine.jl:128-130` | `roz` in `resample_to_recon` |
+> | # | File:Line | Apply recon_center? | Code Changed |
+> |---|-----------|-------------------|-------------|
+> | 1 | `siddon.jl:440-442` | ONLY in `geom.fov` path | `vol_min_z` for iterative forward projector |
+> | 2 | `backprojection.jl:316-318` | YES always | `vol_min_z` for FDK + matched backprojection |
+> | 3 | `affine.jl:69-71` | YES | `tz` in `recon_to_world_affine` |
+> | 4 | `affine.jl:128-130` | YES | `roz` in `resample_to_recon` |
 
 ### 1.10 CTGeometry Constructor — Proposed Changes
 
@@ -1024,13 +1026,681 @@ end
 
 ## 4. API Design — Seamless Helical in the 5-Part API
 
-(To be filled by HELI-004 research)
+**Status: COMPLETE (HELI-004 Discovery, 2026-03-17)**
+
+### 4.0 Design Principle: One-Parameter Helical Activation
+
+The user switches from axial to helical by adding **one parameter**: `pitch` in `CTProtocol`.
+Everything else follows automatically:
+
+```julia
+# AXIAL (current behavior — unchanged)
+protocol = CTProtocol(kVp=120, mA=200, views=984)
+
+# HELICAL — add pitch and n_rotations
+protocol = CTProtocol(kVp=120, mA=200, views=984, pitch=0.8, n_rotations=3)
+```
+
+The `pitch` parameter activates helical mode. When `pitch > 0`:
+- `CTGeometry` constructor generates helical Z(θ) positions
+- `fov_z` defaults to the Tam-Danielsson fully-sampled window
+- `backproject!` applies helical weighting (WFBP)
+- Dose formulas account for pitch
+
+When `pitch == 0` (default): **everything behaves identically to current code.** Zero regressions.
+
+### 4.1 CTProtocol — Add `pitch` Field
+
+**Current struct** (`protocol.jl:35–49`): 13 fields. Missing `pitch`.
+
+**Proposed struct:**
+
+```julia
+struct CTProtocol
+    mA::Float64
+    kVp::Float64
+    views::Int                    # views per rotation (UNCHANGED meaning)
+    rotation_time::Float64
+    spectrum_path::Union{String, Nothing}
+    n_rotations::Float64          # EXISTING field (default 1.0)
+    pitch::Float64                # NEW: IEC beam pitch (0.0 = axial)
+    dual_energy::Bool
+    kVp_low::Float64
+    mA_low::Float64
+    integration_fraction::Float64
+    collimation_mm::Union{Float64, Nothing}
+    anode_angle::Int
+    additional_filters::Vector{Tuple{String,Float64}}
+end
+```
+
+**Keyword constructor changes** (`protocol.jl:87–133`):
+
+```julia
+function CTProtocol(;
+    # ... existing kwargs ...
+    pitch::Real=0.0,              # NEW: IEC beam pitch (0.0 = axial)
+    # ... rest unchanged ...
+)
+    # ... existing mA/mAs logic ...
+
+    # Helical validation
+    _pitch = Float64(pitch)
+    if _pitch < 0.0
+        error("pitch must be non-negative (got $_pitch)")
+    end
+    if _pitch > 0.0 && n_rotations < 1.0
+        error("Helical scan (pitch > 0) requires n_rotations ≥ 1.0 (got $n_rotations)")
+    end
+
+    return CTProtocol(
+        final_mA, Float64(kVp), Int(views), Float64(rotation_time),
+        spectrum_path, Float64(n_rotations), _pitch,  # pitch added after n_rotations
+        dual_energy, Float64(kVp_low), Float64(mA_low),
+        Float64(integration_fraction),
+        collimation_mm === nothing ? nothing : Float64(collimation_mm),
+        anode_angle, additional_filters
+    )
+end
+```
+
+**`views` field meaning is UNCHANGED:** Views per rotation. This is the physically meaningful quantity — it determines angular sampling density, I₀ per view (via `rotation_time / views`), and reconstruction angular resolution. Total views for the full helical scan = `views × n_rotations`, computed internally by CTGeometry.
+
+**Impact on inner constructor call sites:** There are **3 call sites** using the positional inner constructor that must be updated:
+1. `protocol.jl:118-132` — Main keyword constructor
+2. `protocol.jl:418-432` — `constant_dose_protocol`
+3. `protocol.jl:461-475` — `constant_noise_protocol`
+
+All 3 must insert `_pitch` (or `base.pitch`) in the correct position after `n_rotations`.
+
+### 4.2 CTGeometry Struct — Three New Fields
+
+**Current struct** (`scanner.jl:552–566`): 13 fields.
+
+**Proposed struct:**
+
+```julia
+struct CTGeometry
+    SAD::Float64
+    SDD::Float64
+    n_angles::Int                      # total views (not per-rotation!)
+    n_rows::Int
+    n_cols::Int
+    pixel_size::Float64
+    pixel_row_size::Float64
+    angles::Vector{Float64}
+    source_positions::Matrix{Float64}
+    detector_centers::Matrix{Float64}
+    detector_u::Matrix{Float64}
+    detector_v::Matrix{Float64}
+    fov::NTuple{3, Float64}
+    # NEW fields:
+    pitch::Float64                     # IEC beam pitch (0.0 = axial)
+    views_per_rotation::Int            # views in one gantry rotation
+    recon_center::NTuple{3, Float64}   # (x, y, z) center of recon volume (cm)
+end
+```
+
+**`n_angles` is TOTAL views** (not per-rotation). This preserves backward compatibility — every piece of code that iterates `for angle in 1:geom.n_angles` works correctly because it iterates over all views. The `views_per_rotation` field is needed ONLY for the backprojection normalization factor.
+
+> **⚠ CRITIQUE C13:** The naming is ambiguous: the constructor PARAMETER `n_angles` means
+> "views per rotation" (from `protocol.views`), but the struct FIELD `n_angles` stores
+> "total views" (= views_per_rotation × n_rotations). Example:
+> `CTGeometry(scanner; n_angles=984, pitch=0.8, n_rotations=3)` → `geom.n_angles == 2952`.
+> This is correct for backward compat but confusing. **Resolution:** Accept as design
+> tradeoff; add CLEAR docstring warning in the constructor documentation.
+
+**Default values:**
+- `pitch = 0.0` → axial
+- `views_per_rotation = n_angles` → matches current behavior for axial
+- `recon_center = (0.0, 0.0, 0.0)` → centered at origin, same as current
+
+**Impact on 6 inner constructor call sites** (per CRITIQUE C4):
+
+| # | File:Line | Change |
+|---|-----------|--------|
+| 1 | `scanner.jl:694` | Main constructor — add 3 new fields |
+| 2 | `scanner.jl:802` | `create_aquilion_one` — add defaults `0.0, n_angles, (0.0,0.0,0.0)` |
+| 3 | `fdk.jl:426` | FOV-override — propagate: `geom.pitch, geom.views_per_rotation, geom.recon_center` |
+| 4 | `workspace.jl:364` | PCCT native geom — propagate: `geom.pitch, geom.views_per_rotation, geom.recon_center` |
+| 5 | `mbir.jl:434` | Ordered-subset slicing — propagate: `geom.pitch, geom.views_per_rotation, geom.recon_center` |
+| 6 | `scanners.jl:327` | Scanner factory — add defaults `0.0, n_angles, (0.0,0.0,0.0)` |
+
+For sites 3/4/5, the new fields are simply copied from the parent geometry (same pitch, same views_per_rotation, same recon_center). For sites 2/6, axial defaults are used.
+
+### 4.3 CTGeometry Constructor — Helical Keyword Arguments
+
+**Current signature** (`scanner.jl:609–616`):
+```julia
+function CTGeometry(scanner::Scanner{T};
+    n_angles::Int = 360,
+    fov_cm=nothing, z_cm=nothing,
+    n_rows=nothing, n_cols=nothing,
+    collimation_mm=nothing
+) where T
+```
+
+**Proposed signature:**
+```julia
+function CTGeometry(scanner::Scanner{T};
+    n_angles::Int = 360,              # views per rotation
+    pitch::Float64 = 0.0,            # IEC beam pitch (0.0 = axial)
+    n_rotations::Float64 = 1.0,      # gantry rotations
+    recon_center_z::Float64 = 0.0,   # recon volume Z center (cm)
+    fov_cm=nothing, z_cm=nothing,
+    n_rows=nothing, n_cols=nothing,
+    collimation_mm=nothing
+) where T
+```
+
+**Key design decisions:**
+
+1. **`n_angles` stays as views_per_rotation.** Callers (`create_eict_workspace`, `create_workspace`) pass `n_angles=protocol.views` unchanged. The constructor internally computes `total_views = round(Int, n_angles * n_rotations)` when pitch > 0. **This resolves CRITIQUE C7** — no workspace call sites need changing.
+
+2. **`pitch` and `n_rotations` come from CTProtocol.** The workspace creators thread them through:
+   ```julia
+   # In create_eict_workspace / create_workspace:
+   geom = CTGeometry(scanner;
+       n_angles=protocol.views,
+       pitch=protocol.pitch,
+       n_rotations=protocol.n_rotations,
+       fov_cm=recon_opts.fov_cm,
+       z_cm=recon_opts.z_cm,
+       collimation_mm=protocol.collimation_mm
+   )
+   ```
+
+3. **`recon_center_z` defaults to 0.0** (centered, same as current). For helical, the constructor could auto-center the recon volume, but explicit user control is preferred.
+
+4. **Helical `fov_z` auto-computation** (resolves CRITIQUE C5):
+   ```julia
+   if pitch > 0.0 && z_cm === nothing
+       z_travel = n_rotations * pitch * total_collim_cm
+       fov_z = max(z_travel - total_collim_cm, total_collim_cm)
+   end
+   ```
+   This is the Tam-Danielsson fully-sampled window. The `max(...)` ensures at least single-rotation detector coverage.
+
+### 4.4 How Pitch Flows Through the System
+
+Complete data flow from user to GPU kernel:
+
+```
+User sets:                     CTProtocol.pitch = 0.8
+                               CTProtocol.n_rotations = 3
+                                       ↓
+create_eict_workspace:         CTGeometry(scanner; pitch=0.8, n_rotations=3, ...)
+                                       ↓
+CTGeometry constructor:        total_views = round(Int, 984 * 3) = 2952
+                               z_travel = 3 * 0.8 * 5.76 = 13.82 cm
+                               z_start = -6.91 cm
+                               For each view i: Z_i = z_start + (i/984)*0.8*5.76
+                               Stores: geom.pitch=0.8, geom.views_per_rotation=984
+                                       ↓
+simulate!:                     Passes geom through — NO changes
+                               Forward projection: reads per-angle Z positions automatically
+                               Physics pipeline: angle-agnostic — NO changes
+                                       ↓
+reconstruct! / fdk_reconstruct:
+                               is_helical = geom.pitch > 0.0   (from CRITIQUE C12)
+                               if is_helical:
+                                   Use weight-normalized backprojection (WFBP)
+                                   pi_over_angles replaced by weight normalization
+                               else:
+                                   Standard FDK (unchanged)
+```
+
+### 4.5 Workspace Changes
+
+**EICTWorkspace** (`workspace.jl:441–503`): **No struct changes.** The workspace stores `geom::CTGeometry`, and all buffers derive dimensions from `geom`. When `geom` has more angles (helical), buffers are automatically larger.
+
+> **⚠ CRITIQUE C16:** While no struct changes are needed, GPU memory scales linearly with
+> `n_rotations`. EICTWorkspace has ~8 sinogram-sized buffers; PCCTWorkspace has ~5 per
+> energy bin. See Section 2.4 for the memory table. Practical limit: ~5 rotations on
+> 24GB GPU for clinical geometry (900 cols × 64 rows).
+
+The `create_eict_workspace` call site (`workspace.jl:514`) changes only to pass helical kwargs:
+```julia
+# CURRENT:
+geom = CTGeometry(scanner; n_angles=protocol.views, fov_cm=recon_opts.fov_cm,
+                  z_cm=recon_opts.z_cm, collimation_mm=protocol.collimation_mm)
+
+# HELICAL:
+geom = CTGeometry(scanner; n_angles=protocol.views,
+                  pitch=protocol.pitch, n_rotations=protocol.n_rotations,
+                  fov_cm=recon_opts.fov_cm, z_cm=recon_opts.z_cm,
+                  collimation_mm=protocol.collimation_mm)
+```
+
+**PCCTWorkspace** (`workspace.jl:32–138`): Same change at `workspace.jl:174`:
+```julia
+geom = CTGeometry(scanner; n_angles=protocol.views,
+                  pitch=protocol.pitch, n_rotations=protocol.n_rotations,
+                  fov_cm=recon_opts.fov_cm, z_cm=recon_opts.z_cm,
+                  collimation_mm=protocol.collimation_mm)
+```
+
+**FDKReconWorkspace / HIRReconWorkspace**: These take an existing `geom` and `sinogram` — no changes needed. They inherit helical properties from the geometry.
+
+### 4.6 simulate!() — No Changes Needed
+
+Both `simulate!(ws::EICTWorkspace, ...)` (`driver.jl:330`) and `simulate!(ws::PCCTWorkspace, ...)` (`driver.jl:180`) use `ws.geom` for all geometry operations. They:
+
+1. Call forward projection with `ws.geom` → positions are helical, rays trace correctly
+2. Apply physics pipeline with `ws.geom` → angle-agnostic, works unchanged
+3. Apply noise with `compute_detector_I0(geom, protocol, ...)` → uses `protocol.views` (per-rotation), correct for helical
+
+**No code changes needed in the simulate! driver.**
+
+### 4.7 reconstruct!() — Helical Detection
+
+The `reconstruct!` functions (`driver.jl:815`, `driver.jl:880`) call `fdk_reconstruct` or iterative methods. The helical path is determined by:
+
+```julia
+# In fdk_reconstruct (fdk.jl), before calling backproject!:
+is_helical = geom.pitch > 0.0
+```
+
+This flag is passed to `backproject!`, which selects the normalization strategy:
+
+```julia
+# In backproject! (backprojection.jl:296):
+function backproject!(volume, sinogram, geom; weighted=true, ...)
+    is_helical = geom.pitch > 0.0
+    views_per_rotation = Int32(geom.views_per_rotation)
+
+    if weighted
+        if is_helical
+            # Helical WFBP: weight-normalized backprojection
+            # See Section 3.9 for kernel pseudocode
+        else
+            # Axial FDK: standard pi/n_angles scaling (unchanged)
+        end
+    else
+        # Matched/unweighted: unchanged for iterative methods
+    end
+end
+```
+
+**ReconOptions does not need helical-specific fields.** The reconstruction algorithm is determined by the geometry — not by the user. Users who want iterative recon for helical just set `algorithm=:sirt`.
+
+### 4.8 ReconOptions — z_cm for Helical
+
+For helical, the reconstruction z-extent defaults to the Tam-Danielsson window (computed in CTGeometry constructor). Users can override with `z_cm`:
+
+```julia
+# Default z_cm for helical (from CTGeometry constructor):
+# fov_z = max(z_travel - total_collimation_cm, total_collimation_cm)
+
+# User override for custom z-range:
+recon_opts = ReconOptions(algorithm=:fdk, z_cm=8.0, matrix_size=(512,512,128))
+```
+
+This override is passed to `CTGeometry` via `z_cm=recon_opts.z_cm` (already the case in `create_eict_workspace`). No structural change to ReconOptions needed.
+
+### 4.9 Dose Formulas — CTDIvol and DLP with Pitch
+
+**Current bug:** `compute_ctdi_vol` docstring says `CTDIvol = C × mAs × (kVp/120)^2.5 / pitch` but the implementation **does not divide by pitch** (`protocol.jl:261-272`). This is incorrect for helical — CTDIvol is inversely proportional to pitch (lower pitch = more overlap = higher dose per unit length).
+
+**Fix:**
+```julia
+function compute_ctdi_vol(protocol::CTProtocol; phantom_diameter::Real=320.0)
+    mAs = protocol.mA * protocol.rotation_time
+    kvp_factor = (protocol.kVp / 120.0)^2.5
+    size_factor = (320.0 / phantom_diameter)^2
+    pitch_factor = protocol.pitch > 0 ? protocol.pitch : 1.0  # axial: no pitch correction
+    return _CTDI_CAL_CONSTANT * mAs * kvp_factor * size_factor / pitch_factor
+end
+```
+
+**DLP for helical:**
+```julia
+function compute_dlp(protocol::CTProtocol, scan_length_cm::Real; phantom_diameter::Real=320.0)
+    ctdi = compute_ctdi_vol(protocol; phantom_diameter)
+    return ctdi * scan_length_cm  # NOT multiplied by n_rotations — scan_length already includes all rotations
+end
+```
+
+Note: The current DLP formula multiplies by `n_rotations`, which double-counts for helical (where `scan_length_cm` already reflects the helical travel). For helical, `scan_length_cm = n_rotations * pitch * total_collimation_cm`. The fixed formula simply multiplies CTDIvol by scan length.
+
+> **⚠ CRITIQUE C17:** The `scan_length_cm` parameter semantics must be clarified in the
+> docstring. For helical: `scan_length_cm` = total z-travel = `n_rotations × pitch ×
+> total_collimation_cm`. For axial: `scan_length_cm` = z-coverage per rotation (n_rotations
+> defaults to 1).
+
+### 4.10 validate_protocol — Helical Validation Rules
+
+**Add to `validate_protocol` (`protocol.jl:160–226`):**
+
+```julia
+# Helical validation
+if protocol.pitch > 0.0
+    # Pitch range
+    if protocol.pitch > 3.5
+        push!(messages, "ERROR: pitch > 3.5 is beyond clinical range (got $(protocol.pitch)). " *
+              "Only dual-source scanners support pitch > 1.5.")
+        valid = false
+    end
+    if protocol.pitch < 0.1
+        push!(messages, "WARNING: pitch $(protocol.pitch) is very low — consider axial (pitch=0)")
+    end
+
+    # n_rotations for helical
+    if protocol.n_rotations < 1.5
+        push!(messages, "WARNING: helical with n_rotations=$(protocol.n_rotations) — " *
+              "consider at least 2 rotations for meaningful z-coverage")
+    end
+
+    # Collimation required for helical
+    if protocol.collimation_mm === nothing
+        push!(messages, "WARNING: helical scan without explicit collimation_mm — " *
+              "using full detector. Set collimation_mm for clinical realism.")
+    end
+
+    # Check z-coverage against scanner
+    total_collim_mm = if protocol.collimation_mm !== nothing
+        protocol.collimation_mm
+    else
+        scanner.detector_rows * scanner.detector_row_size
+    end
+    z_travel_mm = protocol.n_rotations * protocol.pitch * total_collim_mm
+    if z_travel_mm < total_collim_mm
+        push!(messages, "WARNING: helical z-travel ($(round(z_travel_mm, digits=1)) mm) < " *
+              "detector coverage ($(round(total_collim_mm, digits=1)) mm). " *
+              "Increase n_rotations or pitch.")
+    end
+
+    # Dual-energy + helical warning
+    if protocol.dual_energy
+        push!(messages, "WARNING: Dual-energy + helical is not validated. " *
+              "Material decomposition may have z-dependent artifacts.")
+    end
+end
+```
+
+### 4.11 `create_aquilion_one` Disposition (Resolves CRITIQUE C10)
+
+**Decision: KEEP but REFACTOR to eliminate code duplication.**
+
+> **⚠ CRITIQUE C15:** `create_aquilion_one` (`scanner.jl:725–807`) has its own independent
+> geometry computation loop (lines 773-798), duplicating the CTGeometry constructor logic.
+> Adding helical Z formula to BOTH places creates maintenance risk. **Recommended approach:**
+> Refactor `create_aquilion_one` to construct a `Scanner` and delegate to
+> `CTGeometry(scanner; ...)`, eliminating the duplicated loop entirely. This requires
+> reconciling the slightly different pixel_size derivation logic between the two functions.
+
+**Update:** Refactor to delegate, then add `pitch` and `n_rotations` kwargs:
+```julia
+function create_aquilion_one(;
+    n_angles::Int=360, n_rows::Int=64, n_cols::Int=128,
+    fov_cm=nothing, z_cm=nothing, sad=nothing, sdd=nothing,
+    pitch::Float64=0.0, n_rotations::Float64=1.0  # NEW
+)
+```
+
+The Z-position loop gains the same `z_i = z_start + (θ/(2π)) * pitch * total_collim_cm` formula as the main CTGeometry constructor. The return statement adds the 3 new fields: `pitch, n_angles, (0.0, 0.0, 0.0)`.
+
+### 4.12 User-Facing Examples
+
+#### Example 1: Simple Helical Scan (NAEOTOM Alpha)
+
+```julia
+using BasisSimulator
+
+# Scanner
+scanner = create_naeotom_alpha()
+
+# Protocol — helical with pitch 0.8, 3 rotations
+protocol = CTProtocol(
+    kVp=120, mA=200, views=720,
+    rotation_time=0.5,
+    pitch=0.8,                    # ← this activates helical
+    n_rotations=3,                # ← 3 full rotations
+    collimation_mm=57.6           # full detector
+)
+
+# Everything else is identical to axial
+sim_opts = SimOptions(fidelity=:high)
+recon_opts = ReconOptions(algorithm=:fdk, matrix_size=(512,512,128), fov_cm=25.0)
+
+# Workspace + simulate (same API as axial)
+ws = create_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
+result = simulate!(ws, phantom, scanner, protocol, sim_opts, recon_opts)
+```
+
+#### Example 2: GE Apex Elite Helical
+
+```julia
+scanner = GERevolutionApex()
+
+protocol = CTProtocol(
+    kVp=120, mA=300, views=984,
+    rotation_time=0.35,
+    pitch=0.984,
+    n_rotations=5,
+    collimation_mm=80.0           # 128 × 0.625mm
+)
+
+# Identical workflow
+ws = create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
+result = simulate!(ws, phantom, scanner, protocol, sim_opts, recon_opts)
+```
+
+#### Example 3: Axial (Unchanged — Zero Regression)
+
+```julia
+# No pitch parameter → pitch defaults to 0.0 → axial mode
+protocol = CTProtocol(kVp=120, mA=200, views=984)
+# Everything works exactly as before
+```
+
+### 4.13 `n_angles` Semantics Resolution
+
+This is a key design decision that resolves the tension identified in CRITIQUE C7.
+
+**The question:** Should `CTGeometry.n_angles` mean "total views across all rotations" or "views per rotation"?
+
+**Answer: `n_angles` = total views. `views_per_rotation` = new separate field.**
+
+**Rationale:**
+1. Every for-loop in the codebase uses `for angle in 1:n_angles` or `for angle in 1:geom.n_angles`. These must iterate over ALL views — including multi-rotation views. If `n_angles` meant "per rotation," every loop would need `n_angles * n_rotations`.
+2. Sinogram buffers are `(n_cols, n_rows, n_angles)`. The third dimension must be the total number of views.
+3. The `backproject!` inner loop iterates `for angle in 1:n_angles` — it must see all views for helical.
+
+**So:** The constructor receives `n_angles` as views_per_rotation (from `protocol.views`), internally computes `total_views = round(Int, n_angles * n_rotations)`, and stores `total_views` in `geom.n_angles` and `n_angles` in `geom.views_per_rotation`.
+
+### 4.14 PCCT + Helical Integration Path
+
+**PCCT workspace creation** (`workspace.jl:174`) uses the same `CTGeometry` constructor. Adding `pitch` and `n_rotations` kwargs is identical to the EICT path. The PCCT-specific code that follows (detector construction, DRM, charge sharing, etc.) is entirely geometry-agnostic.
+
+**Native-resolution geometry** (`workspace.jl:364`): Constructed from the binned geometry by copying all fields and overriding pixel counts. The new fields (`pitch`, `views_per_rotation`, `recon_center`) are simply propagated from the parent geometry.
+
+**PCCT + helical works with zero additional changes** beyond the 2 workspace call sites and the 6 CTGeometry constructor sites already identified.
+
+### 4.15 Summary: Complete Change List
+
+| Component | File:Line | Change Type | Description |
+|-----------|-----------|-------------|-------------|
+| **CTProtocol struct** | `protocol.jl:35-49` | Add field | `pitch::Float64` after `n_rotations` |
+| **CTProtocol kwargs** | `protocol.jl:87-133` | Add kwarg | `pitch::Real=0.0`, validation, pass to inner |
+| **CTProtocol inner call** | `protocol.jl:118-132` | Add arg | Insert `_pitch` in positional args |
+| **constant_dose_protocol** | `protocol.jl:418-432` | Add arg | Insert `base.pitch` in positional args |
+| **constant_noise_protocol** | `protocol.jl:461-475` | Add arg | Insert `base.pitch` in positional args |
+| **validate_protocol** | `protocol.jl:160-226` | Add rules | Pitch range, n_rotations, DE+helical warning |
+| **compute_ctdi_vol** | `protocol.jl:261-272` | Fix formula | Divide by pitch when pitch > 0 |
+| **compute_dlp** | `protocol.jl:297-300` | Fix formula | Remove n_rotations multiply (scan_length includes it) |
+| **CTGeometry struct** | `scanner.jl:552-566` | Add 3 fields | `pitch`, `views_per_rotation`, `recon_center` |
+| **CTGeometry constructor** | `scanner.jl:609-699` | Major change | Add pitch/n_rot/recon_center kwargs, Z(θ), fov_z |
+| **CTGeometry inner #1** | `scanner.jl:694` | Add 3 args | Main constructor return |
+| **CTGeometry inner #2** | `scanner.jl:802` | Add 3 args | `create_aquilion_one` return |
+| **CTGeometry inner #3** | `fdk.jl:426` | Add 3 args | FOV-override (propagate from parent) |
+| **CTGeometry inner #4** | `workspace.jl:364` | Add 3 args | PCCT native geom (propagate from parent) |
+| **CTGeometry inner #5** | `mbir.jl:434` | Add 3 args | Ordered-subset (propagate from parent) |
+| **CTGeometry inner #6** | `scanners.jl:327` | Add 3 args | Scanner factory (axial defaults) |
+| **create_aquilion_one** | `scanner.jl:725-807` | Add kwargs | `pitch=0.0, n_rotations=1.0` |
+| **create_eict_workspace** | `workspace.jl:514` | Pass kwargs | `pitch=protocol.pitch, n_rotations=protocol.n_rotations` |
+| **create_workspace (PCCT)** | `workspace.jl:174` | Pass kwargs | Same as EICT |
+| **backproject!** | `backprojection.jl:296-426` | Branch logic | `is_helical = geom.pitch > 0`, select normalization |
+| **backproject_voxel** | `backprojection.jl:37-146` | Add weight | W(q̂) helical weight + normalization |
+| **vol_min_z (4 sites)** | See C6 above | Add offset | `+ geom.recon_center[3]` |
+
+**Total: ~25 change sites across ~10 files.** No new files. No new structs. No new code paths for forward projection, physics, or iterative recon.
 
 ---
 
 ## 5. Physics Pipeline Compatibility
 
-(To be filled by HELI-005 research)
+**Status: COMPLETE (HELI-005 Discovery, 2026-03-17)**
+
+### 5.1 Core Finding: The Entire Physics Pipeline Works UNCHANGED for Helical
+
+All 16 physics effects (10 standard + 3 signal chain + 3 PCCT corrections) are **helical-compatible with zero code changes**. This is because the gantry is a rigid body — source, detector, bowtie filter, flat filter, and anode all rotate AND translate together. From the gantry's frame of reference, nothing changes between axial and helical scanning. All physics effects operate either:
+
+1. **Per-pixel (element-wise):** The effect operates on each sinogram element independently, with no reference to geometry. Example: fill factor, BHC, detector efficiency, noise.
+2. **In the gantry frame:** The effect computes fan/cone angles relative to the source-detector geometry, which is FIXED within the gantry regardless of Z translation. Example: bowtie filter, flat filter, heel effect.
+3. **Temporally sequential:** The effect operates on sequential views by index. Example: detector lag. For multi-rotation helical, sequential index access is correct — view N is contaminated by view N-1 regardless of rotation boundaries.
+
+### 5.2 Effect-by-Effect Audit
+
+| # | Effect | File | Geometry Usage | Helical Status | Reason |
+|---|--------|------|----------------|----------------|--------|
+| 1 | Fill factor | `fill_factor.jl` | None | ✅ UNCHANGED | Element-wise scaling by fill fraction |
+| 2 | Flat filter | `flat_filter.jl` | `geom.SDD`, `pixel_size` | ✅ UNCHANGED | Computes path length from fan/cone angle — gantry-frame quantity |
+| 3 | Bowtie filter | `bowtie_filter.jl` | `geom.SDD`, `pixel_size` | ✅ UNCHANGED | Fan angle interpolation — gantry-frame |
+| 4 | Scatter (add) | `scatter.jl` | None | ✅ UNCHANGED | Sinogram-domain convolution kernel |
+| 5 | Scatter correction | `scatter.jl` | None | ✅ UNCHANGED | Same convolution deblur kernel |
+| 6 | Crosstalk | `crosstalk.jl` | None | ✅ UNCHANGED | 3×3 spatial convolution per angle |
+| 7 | Optical crosstalk | `crosstalk.jl` | None | ✅ UNCHANGED | 3×3 spatial convolution per angle |
+| 8 | Focal spot blur | `focal_spot.jl` | `geom.SAD`, `geom.SDD` | ✅ UNCHANGED | Spatial blur kernel — gantry-frame |
+| 9 | Detector efficiency | `detector_efficiency.jl` | None | ✅ UNCHANGED | η(E) per energy — no geometry |
+| 10 | Detector noise | `detector_noise.jl` | `protocol.views` (per-rot) | ✅ UNCHANGED | I₀ from `time_per_view = rot_time / views_per_rot` |
+| 11 | Detector lag | `detector_lag.jl` | `size(sino, 3)` | ✅ UNCHANGED | Sequential index `prev_angle = angle - k` (see 5.4) |
+| 12 | Heel effect | `heel_effect.jl` | `geom.SAD`, `geom.fov` | ✅ UNCHANGED | Fan angle from column position — gantry-frame (see 5.3) |
+| 13 | DAS model | `das_model.jl` | None | ✅ UNCHANGED | Gain + electronic noise, element-wise |
+| 14 | BHC | `bhc.jl` | None | ✅ UNCHANGED | Element-wise polynomial |
+| 15 | PCCT charge sharing | `photon_counting.jl` | None | ✅ UNCHANGED | Per-pixel detector physics |
+| 16 | PCCT pileup/anti-coincidence | `photon_counting.jl` | None | ✅ UNCHANGED | Per-pixel detector physics |
+
+### 5.3 Heel Effect — Why It's Correct for Helical
+
+The heel effect (`heel_effect.jl:150–210`) computes the fan angle γ from the detector column position:
+
+```julia
+fan_angle_max = T(atan(geom.fov[1] / 2 / geom.SAD))
+γ = (T(col) - n_cols_T/T(2) - T(0.5)) / (n_cols_T/T(2)) * fan_angle_max
+θ_effective = θ_anode + γ
+```
+
+This uses `geom.SAD` (source-to-axis distance, a constant) and the column index. It does NOT use `source_positions` or any Z-coordinate. The fan angle is a gantry-frame quantity — the anode is fixed relative to the detector, so the heel pattern is identical for every view regardless of the gantry's Z position.
+
+For helical, the heel effect correctly applies the same column-dependent intensity modulation to every view. This matches physical reality: the anode self-attenuation depends only on the angle from the anode surface to each detector pixel, which doesn't change with table translation.
+
+> **⚠ CRITIQUE C18 (pre-existing, NOT helical-specific):** `fan_angle_max` uses
+> `geom.fov[1]` (reconstruction FOV) rather than detector fan coverage. For small recon FOV
+> with large detector, this underestimates heel effect at detector edges. Does not affect
+> helical compatibility. Note for future fix.
+
+### 5.4 Detector Lag — Correct Sequential Behavior for Multi-Rotation
+
+The lag model (`detector_lag.jl:236–300`) operates on sequential view indices:
+
+```julia
+for k in 0:(n_frames-1)
+    prev_angle = angle - k
+    if prev_angle >= 1
+        weighted_sum += coeffs[k+1] * intensity[col, row, prev_angle]
+    end
+end
+```
+
+For multi-rotation helical, the sinogram has `total_views = views_per_rotation × n_rotations` in the third dimension. Views are stored sequentially: view 1 (rotation 1, angle 0°), ..., view 720 (rotation 1, angle 359.5°), view 721 (rotation 2, angle 0°), etc.
+
+The lag correctly references `intensity[col, row, prev_angle]` by sequential index. View 721 is contaminated by views 720, 719, ... — which is physically correct (the lag is temporal, operating across the rotation boundary). **No changes needed.**
+
+The `n_frames = min(n_history, n_angles)` computation uses `n_angles = size(sinogram, 3) = total_views`. For helical with 3 rotations × 720 views = 2160 total views, the lag looks back at up to 20 previous frames — well within a single rotation. **Correct.**
+
+### 5.5 Bowtie and Flat Filter — Why They're Angle-Independent
+
+Both the bowtie filter (`bowtie_filter.jl`) and flat filter (`flat_filter.jl`) generate a 2D transmission map `[n_cols, n_rows]` and apply it uniformly to all views. This is correct for BOTH axial and helical because:
+
+1. The bowtie and flat filter are physically mounted on the tube assembly
+2. They rotate WITH the source and detector as a rigid unit
+3. The transmission through the filter depends on the angle from the central ray to each detector pixel — a gantry-frame geometric property
+4. This angle does NOT change with Z translation
+
+The 2D map is applied per-view using `AK.foreachindex`:
+```julia
+sino[col, row, angle] -= filter_projection[col, row]
+```
+
+This correctly adds the same filter attenuation to every view, regardless of the view's Z position. **No changes needed.**
+
+### 5.6 Scatter — Convolution Approximation Is Adequate
+
+The scatter model (`scatter.jl`) uses a convolution-based approximation:
+1. Primary sinogram → convolve with scatter kernel → scatter sinogram
+2. Add scatter sinogram to primary (or subtract for correction)
+
+This approximation does not model 3D scatter physics (which depends on the patient anatomy at each table position). For helical, the actual scatter distribution varies with Z — different anatomy produces different scatter patterns.
+
+**However:** The convolution approximation is already an approximation for axial too (it doesn't model anatomy-dependent scatter). The same level of approximation applies for helical. A future upgrade to Monte Carlo scatter would need to be Z-aware, but that's orthogonal to the helical geometry integration.
+
+**No changes needed for helical.**
+
+### 5.7 Noise — Per-View Photon Count Is Correct
+
+`compute_detector_I0` (`detector_noise.jl:438–474`) computes I₀ per pixel per view:
+
+```julia
+time_per_view = protocol.rotation_time / protocol.views
+I₀ = spectrum_flux_sum × mA × time_per_view × pixel_area_mm²
+```
+
+`protocol.views` means views per rotation. The time per view (`rotation_time / views_per_rotation`) is the correct physical integration time regardless of how many rotations occur. Each view has the same tube current and integration time in both axial and helical.
+
+For helical, the total number of views in the sinogram is larger (multi-rotation), but I₀ per view is unchanged. The noise model in `simulate!` (`driver.jl:480–520`) applies the same I₀ to all views via element-wise operations. **Correct for helical.**
+
+### 5.8 PCCT Detector Physics — Fully Angle-Agnostic
+
+The PCCT detector physics chain (charge sharing, pileup, anti-coincidence, spectral binning) operates entirely per-pixel per-energy:
+
+- `apply_charge_sharing!` — per-pixel probability based on charge cloud σ and pixel pitch
+- `apply_pileup!` — per-pixel count rate effect
+- `apply_anti_coincidence!` — per-pixel neighboring pixel logic
+- `spatial_bin!` — bins native dexels to final pixels (pure summation)
+
+None of these reference source/detector positions, angles, or orbit parameters. They process the spectral sinogram element-by-element. **Fully helical-compatible.**
+
+### 5.9 Signal Chain (CatSim Path) — All Steps Angle-Agnostic
+
+The `simulate!(ws::EICTWorkspace, ...)` driver (`driver.jl:363–470`) applies signal chain steps:
+
+1. **Physics (no noise):** Calls `_apply_physics_no_noise!` — same pipeline as Section 5.2
+2. **exp(-sino) conversion:** Element-wise
+3. **Heel effect:** Gantry-frame (Section 5.3)
+4. **DAS model:** Element-wise gain + noise
+5. **Air scan generation:** Same heel/DAS applied to ones — gantry-frame
+6. **Calibration (phantom/air):** Element-wise division
+7. **Low signal correction:** Element-wise
+8. **Log transform:** Element-wise
+9. **BHC:** Element-wise polynomial
+
+Every step is either element-wise or gantry-frame. **All steps work unchanged for helical.**
+
+### 5.10 Summary
+
+**The physics pipeline is the simplest part of helical integration.** Zero code changes are needed across ALL 16 physics effects, the signal chain, and the PCCT detector model. The architectural decision to separate physics (gantry-frame) from geometry (world-frame) made this entirely free.
+
+| Category | Components | Change Required |
+|----------|-----------|-----------------|
+| Element-wise effects | fill_factor, BHC, DAS, noise, PCCT | **NONE** |
+| Gantry-frame effects | flat_filter, bowtie, heel, focal_spot | **NONE** |
+| Sequential effects | detector lag | **NONE** |
+| Sinogram-domain effects | scatter, crosstalk | **NONE** |
+| Forward projection | Siddon, polychromatic, PCCT | **NONE** (already confirmed in Section 2) |
+| **Geometry construction** | CTGeometry constructor | **YES** (Section 1) |
+| **Reconstruction** | FDK backprojection | **YES** (Section 3) |
+| **API** | CTProtocol, workspace creation | **YES** (Section 4) |
 
 ---
 
