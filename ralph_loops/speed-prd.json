@@ -30,7 +30,7 @@
       "area": "energy-loop-fusion",
       "title": "Fuse the Sequential Energy Loop — One Ray Trace, All Energies",
       "description": "ONLY pursue this topic AFTER SPEED-000 profiling shows the energy loop is a significant bottleneck. The current polychromatic projection loops over energy bins sequentially, each doing a full ray trace. Research: Can this be fused into one trace per ray that accumulates across all energies via material-to-μ lookup? What are the memory vs compute tradeoffs? How do CatSim, TIGRE, and MC simulators handle polychromatic projection? All proposed kernels must use AK.jl primitives.",
-      "discovery": "open",
+      "discovery": "done",
       "critique": "open",
       "refinement": "open",
       "priority": 1,

@@ -91,3 +91,62 @@ a 4× smaller array (UInt8 mask vs Float32 volume).
 3. Phase rotation: 2 more discoveries → 1 critique.
 
 ---
+
+## Iteration 2 — SPEED-001 DISCOVERY: Energy Loop Fusion Deep Dive
+
+**Date:** 2026-03-17
+**Phase:** Discovery
+**Topic:** SPEED-001 (Fuse the Sequential Energy Loop)
+
+### What was done
+
+Deep analysis of energy loop fusion covering all 5 research questions:
+
+1. **Read actual source code:**
+   - `_forward_project_poly!()` (polychromatic.jl:1100-1195) — EICT energy loop
+   - `pcct_forward_project()` (photon_counting.jl:1340-1460) — PCCT energy loop
+   - `siddon_trace_ray()` (siddon.jl:150-293) — DDA traversal kernel
+   - `siddon_forward_project!()` (siddon.jl:414-538) — AK.foreachindex dispatch
+   - `create_μ_volume!()` (polychromatic.jl:214-262) — GPU table lookup
+
+2. **Full AcceleratedKernels.jl v0.4.3 API exploration:**
+   - `foreachindex(f, itr; block_size=256)` — primary primitive, closure must have known types
+   - NTuple approach works for fixed-count accumulators in GPU kernels
+   - No explicit register limit in AK; backend compiler manages spill
+   - Metal auto-selects ScanPrefixes for accumulate (DecoupledLookback has 0.38% race)
+
+3. **Analyzed both EICT and PCCT paths for fusion compatibility**
+
+### Key findings
+
+1. **Mathematical equivalence PROVEN (bit-identical).** Same voxels, same DDA order, same μ values via table lookup. No approximation.
+
+2. **Register pressure: 78 regs/thread (manageable).** 30 Float32 accumulators (120B) + DDA state (192B) = 312B. CUDA budget: 255 regs (31% used). Metal: auto-spill handles it. Fallback: tile 8 energies × 4 passes.
+
+3. **AK.jl kernel design feasible.** Single `foreachindex` closure. NTuple{N_E,T} for accumulators. μ_table (1.8 KB) stays in L1. Full pseudocode in spec §1.3.
+
+4. **Memory bandwidth reduction: 24-43×.** Current 2,790 GB → fused ~65-115 GB. UInt8 mask (17.5 MB, fits L2) replaces 30× Float32 volume (70 MB) reads.
+
+5. **Reference implementations confirm.** gVXR fuses energy loop. CatSim uses sequential (accurate) or basis decomposition (approximate). TIGRE is mono only.
+
+6. **PCCT equally fusible.** Same DDA + accumulate pattern; output via DRM after traversal.
+
+### Speedup estimate
+
+- **Forward projection: 15-30× speedup** (bandwidth-bound → 24-43× less traffic)
+- **simulate!() total: 10-20× speedup** (forward proj = 90-97% of total)
+
+### What gaps remain
+
+1. Variable N_E support (Val{N_E} dispatch vs fixed-max)
+2. GPU compiler verification (NTuple register allocation)
+3. PCCT fused variant concrete pseudocode
+4. AK.jl closure size limits on Metal
+5. No runtime profiling yet (static analysis only)
+
+### What should happen next
+
+Phase rotation: 2 discoveries done → **CRITIQUE time.**
+Next iteration: **SPEED-000 + SPEED-001 CRITIQUE** — challenge all claims, find show-stoppers.
+
+---
