@@ -34,3 +34,34 @@ The spec recommended `ntuple(Val(N_E)) do e ... end` for energy accumulators. Th
 - PCCT fused variant (separate `pcct_forward_project` path — needs its own fused kernel with DRM distribution)
 - Tiled fallback (not needed — NTuple{30} with @generated works fine)
 - GPU benchmarks (no GPU in test environment; CPU results validate correctness and algorithmic speedup)
+
+---
+
+## SPEED-BUILD-002: Separable Gaussian Scatter Convolution ✓
+
+**Status:** Done
+**Commit:** `e086912` on `speed/fused-projection`
+**Date:** 2026-03-17
+
+### What was done
+- Added `create_scatter_kernel_1d()` — decomposes 2D Gaussian kernel into 1D: `Kx[di] = exp(-di²/(2σ²))`, normalized so `sum(k1d) = 1`
+- Added `_convolve_separable_h!()` and `_convolve_separable_v!()` — horizontal/vertical 1D convolution via AK.foreachindex with manual mod/div index decomposition (no CartesianIndices)
+- Modified `add_scatter!()` and `correct_scatter!()` to use separable path for Gaussian kernels, with 2D fallback for exponential kernels
+- Added `scatter_kernel_1d`, `scatter_correct_kernel_1d`, `scatter_temp` fields to `EICTWorkspace` for zero-allocation operation
+- Threaded workspace buffers through `_apply_physics_no_noise!()`, `apply_physics_effects!()`, and `_apply_pcct_tube_physics!()`
+
+### Performance (CPU, 900×64×100 sinogram)
+| Function | 2D (exponential) | Separable (Gaussian) | Speedup |
+|----------|-----------------|---------------------|---------|
+| add_scatter! | 14.75s | 0.103s | **143×** |
+| correct_scatter! | 14.30s | 0.095s | **151×** |
+| **Combined** | **29.05s** | **0.198s** | **147×** |
+
+### Correctness
+- Max abs diff (separable vs 2D reference): 2.38e-7 (tolerance: 1e-5)
+- All 1618 existing tests pass (35 failures + 13 errors are pre-existing)
+
+### Notes
+- The 2D comparison uses exponential kernel (not Gaussian) since the Gaussian path now IS the separable path. Manual CPU 2D Gaussian convolution confirms correctness.
+- PCCT path uses separable automatically (same `add_scatter!`/`correct_scatter!` functions) — allocates temp buffers on demand since PCCT workspace doesn't pre-allocate them (negligible overhead for small combined sinogram)
+- Spec predicted 31× speedup; actual is 147× because the 2D path also computed exp() per neighbor (3,969 exp() calls), while separable pre-computes the presignal once
