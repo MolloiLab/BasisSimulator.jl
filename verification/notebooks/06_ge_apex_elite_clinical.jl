@@ -3289,67 +3289,67 @@ end
 #   - Yao & Pelc (Med Phys 2014, doi:10.1118/1.4866381): 0.142–0.150 mm
 #   - Stanford patent US9435900B2; PMC11272100 (2024): 0.09 mm
 # Thickness is tunable; 0.1 mm is a conservative default.
-de_kedge_filter = [("Gd2O2S", 0.15)]  # mm — applied to BOTH kVp tubes
-# de_kedge_filter = Tuple{String,Float64}[]
+# de_kedge_filter = [("Gd2O2S", 0.15)]  # mm — applied to BOTH kVp tubes
+de_kedge_filter = Tuple{String,Float64}[]
 
 # ╔═╡ 2a6f0b64-05a7-4a01-9009-66888902edcb
-# Visualize 80 & 140 kVp spectra before/after Gd₂O₂S K-edge filtration
-let
-    # Unfiltered spectra (scanner flat filter + Al only, no K-edge)
-    prot_80_no = BS.CTProtocol(kVp = 80, additional_filters = additional_filters)
-    prot_140_no = BS.CTProtocol(kVp = 140, additional_filters = additional_filters)
-    e80_no, w80_no = BS.resolve_spectrum(sim_opts, prot_80_no; scanner = sim_scanner_de_80)
-    e140_no, w140_no = BS.resolve_spectrum(sim_opts, prot_140_no; scanner = sim_scanner_de_140)
+# # Visualize 80 & 140 kVp spectra before/after Gd₂O₂S K-edge filtration
+# let
+    # # Unfiltered spectra (scanner flat filter + Al only, no K-edge)
+    # prot_80_no = BS.CTProtocol(kVp = 80, additional_filters = additional_filters)
+    # prot_140_no = BS.CTProtocol(kVp = 140, additional_filters = additional_filters)
+    # e80_no, w80_no = BS.resolve_spectrum(sim_opts, prot_80_no; scanner = sim_scanner_de_80)
+    # e140_no, w140_no = BS.resolve_spectrum(sim_opts, prot_140_no; scanner = sim_scanner_de_140)
 
-    # Filtered spectra (scanner flat filter + Al + Gd₂O₂S)
-    de_filters = vcat(additional_filters, de_kedge_filter)
-    prot_80_gd = BS.CTProtocol(kVp = 80, additional_filters = de_filters)
-    prot_140_gd = BS.CTProtocol(kVp = 140, additional_filters = de_filters)
-    e80_gd, w80_gd = BS.resolve_spectrum(sim_opts, prot_80_gd; scanner = sim_scanner_de_80)
-    e140_gd, w140_gd = BS.resolve_spectrum(sim_opts, prot_140_gd; scanner = sim_scanner_de_140)
+    # # Filtered spectra (scanner flat filter + Al + Gd₂O₂S)
+    # de_filters = vcat(additional_filters, de_kedge_filter)
+    # prot_80_gd = BS.CTProtocol(kVp = 80, additional_filters = de_filters)
+    # prot_140_gd = BS.CTProtocol(kVp = 140, additional_filters = de_filters)
+    # e80_gd, w80_gd = BS.resolve_spectrum(sim_opts, prot_80_gd; scanner = sim_scanner_de_80)
+    # e140_gd, w140_gd = BS.resolve_spectrum(sim_opts, prot_140_gd; scanner = sim_scanner_de_140)
 
-    # Normalize to peak for visual comparison
-    norm80 = maximum(w80_no)
-    norm140 = maximum(w140_no)
+    # # Normalize to peak for visual comparison
+    # norm80 = maximum(w80_no)
+    # norm140 = maximum(w140_no)
 
-    # Mean energies (fluence-weighted)
-    mean_E(e, w) = sum(e .* w) / sum(w)
-    mE_80_no = mean_E(e80_no, w80_no)
-    mE_140_no = mean_E(e140_no, w140_no)
-    mE_80_gd = mean_E(e80_gd, w80_gd)
-    mE_140_gd = mean_E(e140_gd, w140_gd)
+    # # Mean energies (fluence-weighted)
+    # mean_E(e, w) = sum(e .* w) / sum(w)
+    # mE_80_no = mean_E(e80_no, w80_no)
+    # mE_140_no = mean_E(e140_no, w140_no)
+    # mE_80_gd = mean_E(e80_gd, w80_gd)
+    # mE_140_gd = mean_E(e140_gd, w140_gd)
 
-    fig = CM.Figure(size = (900, 400), fontsize = 12)
+    # fig = CM.Figure(size = (900, 400), fontsize = 12)
 
-    # Left: before K-edge filter
-    ax1 = CM.Axis(
-        fig[1, 1]; title = "Before Gd₂O₂S filter",
-        xlabel = "Energy (keV)", ylabel = "Relative fluence"
-    )
-    CM.lines!(ax1, e80_no, w80_no ./ norm80; color = :dodgerblue, linewidth = 1.5, label = "80 kVp")
-    CM.lines!(ax1, e140_no, w140_no ./ norm140; color = :orangered, linewidth = 1.5, label = "140 kVp")
-    CM.vlines!(ax1, [50.2]; color = :gray50, linestyle = :dash, linewidth = 0.8, label = "Gd K-edge (50.2 keV)")
-    CM.vlines!(ax1, [mE_80_no]; color = :dodgerblue, linestyle = :dash, linewidth = 1.2, label = "⟨E⟩ 80 = $(round(mE_80_no; digits = 1)) keV")
-    CM.vlines!(ax1, [mE_140_no]; color = :orangered, linestyle = :dash, linewidth = 1.2, label = "⟨E⟩ 140 = $(round(mE_140_no; digits = 1)) keV")
-    CM.axislegend(ax1; position = :rt)
+    # # Left: before K-edge filter
+    # ax1 = CM.Axis(
+        # fig[1, 1]; title = "Before Gd₂O₂S filter",
+        # xlabel = "Energy (keV)", ylabel = "Relative fluence"
+    # )
+    # CM.lines!(ax1, e80_no, w80_no ./ norm80; color = :dodgerblue, linewidth = 1.5, label = "80 kVp")
+    # CM.lines!(ax1, e140_no, w140_no ./ norm140; color = :orangered, linewidth = 1.5, label = "140 kVp")
+    # CM.vlines!(ax1, [50.2]; color = :gray50, linestyle = :dash, linewidth = 0.8, label = "Gd K-edge (50.2 keV)")
+    # CM.vlines!(ax1, [mE_80_no]; color = :dodgerblue, linestyle = :dash, linewidth = 1.2, label = "⟨E⟩ 80 = $(round(mE_80_no; digits = 1)) keV")
+    # CM.vlines!(ax1, [mE_140_no]; color = :orangered, linestyle = :dash, linewidth = 1.2, label = "⟨E⟩ 140 = $(round(mE_140_no; digits = 1)) keV")
+    # CM.axislegend(ax1; position = :rt)
 
-    # Right: after K-edge filter
-    ax2 = CM.Axis(
-        fig[1, 2]; title = "After Gd₂O₂S filter ($(de_kedge_filter[1][2]) mm)",
-        xlabel = "Energy (keV)", ylabel = "Relative fluence"
-    )
-    CM.lines!(ax2, e80_gd, w80_gd ./ norm80; color = :dodgerblue, linewidth = 1.5, label = "80 kVp")
-    CM.lines!(ax2, e140_gd, w140_gd ./ norm140; color = :orangered, linewidth = 1.5, label = "140 kVp")
-    CM.vlines!(ax2, [50.2]; color = :gray50, linestyle = :dash, linewidth = 0.8, label = "Gd K-edge (50.2 keV)")
-    CM.vlines!(ax2, [mE_80_gd]; color = :dodgerblue, linestyle = :dash, linewidth = 1.2, label = "⟨E⟩ 80 = $(round(mE_80_gd; digits = 1)) keV")
-    CM.vlines!(ax2, [mE_140_gd]; color = :orangered, linestyle = :dash, linewidth = 1.2, label = "⟨E⟩ 140 = $(round(mE_140_gd; digits = 1)) keV")
-    CM.axislegend(ax2; position = :rt)
+    # # Right: after K-edge filter
+    # ax2 = CM.Axis(
+        # fig[1, 2]; title = "After Gd₂O₂S filter ($(de_kedge_filter[1][2]) mm)",
+        # xlabel = "Energy (keV)", ylabel = "Relative fluence"
+    # )
+    # CM.lines!(ax2, e80_gd, w80_gd ./ norm80; color = :dodgerblue, linewidth = 1.5, label = "80 kVp")
+    # CM.lines!(ax2, e140_gd, w140_gd ./ norm140; color = :orangered, linewidth = 1.5, label = "140 kVp")
+    # CM.vlines!(ax2, [50.2]; color = :gray50, linestyle = :dash, linewidth = 0.8, label = "Gd K-edge (50.2 keV)")
+    # CM.vlines!(ax2, [mE_80_gd]; color = :dodgerblue, linestyle = :dash, linewidth = 1.2, label = "⟨E⟩ 80 = $(round(mE_80_gd; digits = 1)) keV")
+    # CM.vlines!(ax2, [mE_140_gd]; color = :orangered, linestyle = :dash, linewidth = 1.2, label = "⟨E⟩ 140 = $(round(mE_140_gd; digits = 1)) keV")
+    # CM.axislegend(ax2; position = :rt)
 
-    CM.linkaxes!(ax1, ax2)
+    # CM.linkaxes!(ax1, ax2)
 
-    CM.save(joinpath(RESULTS_DIR, "ge_gsi_spectra_filter.png"), fig, px_per_unit = 2)
-    fig
-end
+    # CM.save(joinpath(RESULTS_DIR, "ge_gsi_spectra_filter.png"), fig, px_per_unit = 2)
+    # fig
+# end
 
 # ╔═╡ bb68196f-26e4-41fc-85bc-203373d91b4a
 # DE recon geometry — same FOV/matrix as SE, different z for collimation
@@ -3650,12 +3650,23 @@ begin
     # ── DE VMI tuning [TUNE: DE-VMI] ──
 
     # Sinogram smoothing (applied to material sinograms before FBP)
-    sino_smooth_σ = 1.5          # Gaussian σ along detector columns (pixels; 0 = off)
+    sino_smooth_σ = 0.0          # Gaussian σ along detector columns (pixels; 0 = off)
 
-    # Mono+ (Grant et al. 2014)
-    mono_plus_σ_lp_mm = 2.0     # Gaussian LP width (mm) for frequency split
+    # DE FBP kernel — softer than SE to tame decomposition noise
+    # (Mono+ handles resolution recovery via HP from E_opt)
+    de_filter_control = (
+        x = (0.0, 0.25, 0.5, 0.75, 1.0),
+        y = (1.0, 0.85, 0.4, 0.08, 0.001),
+    )
+
+    # Mono+ (Grant et al. 2014) — energy-dependent LP width
     mono_plus_E_optimal = 70    # optimal-noise energy (keV)
     mono_plus_pixel_mm = sim_recon_fov_cm / sim_recon_xy * 10.0
+
+    # σ_lp increases with |E - E_opt| so Mono+ is more aggressive far from optimal
+    mono_plus_σ_base_mm = 1.5   # LP width at E_opt (mm) — baseline
+    mono_plus_σ_rate = 0.02  # mm per keV away from E_opt
+    mono_plus_σ_lp(E) = mono_plus_σ_base_mm + mono_plus_σ_rate * abs(E - mono_plus_E_optimal)
 end
 
 # ╔═╡ 06126002-0000-4000-8000-000000000000
@@ -3733,11 +3744,12 @@ sim_de_vmi_raw = let
         # Single FBP reconstruction of the VMI sinogram
         vmi_sino_gpu = MtlArray(vmi_sino)
         ws_fdk = BS.create_fdk_recon_workspace(vmi_sino_gpu, geom, recon_size;
-            filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y))
+            filter = BS.CustomFilter(de_filter_control.x, de_filter_control.y))
         recon_μ = BS.reconstruct!(ws_fdk, vmi_sino_gpu, geom, recon_size)
 
-        # HU conversion
+        # HU conversion + radial cupping correction (same as SE scans)
         vol_hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = μ_w_E))
+        BS.apply_radial_cupping_correction!(vol_hu; fov_cm = 35.0)
         BS.add_system_noise_floor!(vol_hu, sim_noise_floor_hu)
 
         recon_oriented = Float32.(mapslices(orient_fn, vol_hu, dims = (1, 2)))
@@ -3745,7 +3757,7 @@ sim_de_vmi_raw = let
         ws_fdk = nothing; vmi_sino_gpu = nothing; GC.gc(true)
     end
     results
-end
+end;
 
 # ╔═╡ 06126005-0000-4000-8000-000000000000
 # Diagnostic: VMI before Mono+ at each energy
@@ -3780,8 +3792,10 @@ sim_de_mono_plus = let
             else
                 # ALL other energies (both above AND below optimal): apply Mono+
                 # LP(VMI(E)) gives target-energy contrast, HP(VMI(E_opt)) gives optimal noise
+                # σ_lp scales with |E - E_opt|: more aggressive smoothing far from optimal
+                σ_E = mono_plus_σ_lp(Float64(r.energy_keV))
                 mp = mono_plus_vmi(r.recon, vmi_opt;
-                    σ_lp_mm = mono_plus_σ_lp_mm, pixel_mm = mono_plus_pixel_mm)
+                    σ_lp_mm = σ_E, pixel_mm = mono_plus_pixel_mm)
                 push!(results, (name = "mono+_$(r.energy_keV)keV", recon = mp, energy_keV = r.energy_keV))
             end
         end
@@ -4529,7 +4543,7 @@ sim_noise_floor_hu
 # ╠═3aefce3f-90e3-48fb-bae7-b7c965b7d6f8
 # ╠═6f5ce242-a5e2-4cd5-8cac-47f528dc21bb
 # ╠═ff650b6f-76e6-491e-8076-1dd002c80d7e
-# ╟─2a6f0b64-05a7-4a01-9009-66888902edcb
+# ╠═2a6f0b64-05a7-4a01-9009-66888902edcb
 # ╠═bb68196f-26e4-41fc-85bc-203373d91b4a
 # ╠═37298bb1-4b57-4f5c-9fea-ec81dbfb3394
 # ╠═fd123cde-bb22-489d-a496-e00363f46157
