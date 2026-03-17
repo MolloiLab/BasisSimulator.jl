@@ -201,8 +201,11 @@ function apply_detector_blur!(sinogram::AbstractArray{T,3}, model::DetectorModel
 
     # GPU-native spatial convolution
     AK.foreachindex(sinogram) do idx
-        ci = CartesianIndices(sinogram)[idx]
-        col, row, angle = Tuple(ci)
+        idx_0 = Int32(idx - 1)
+        col = (idx_0 % Int32(n_cols)) + Int32(1)
+        idx_0 = idx_0 ÷ Int32(n_cols)
+        row = (idx_0 % Int32(n_rows)) + Int32(1)
+        angle = (idx_0 ÷ Int32(n_rows)) + Int32(1)
 
         # Apply kernel
         acc = zero(T)

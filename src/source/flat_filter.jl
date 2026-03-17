@@ -371,10 +371,11 @@ function apply_flat_filter!(
 
     # GPU-native element-wise operation
     # let-bind to capture with concrete type (avoids Core.Box on GPU)
-    let filter_projection = filter_projection, n_cols = n_cols
+    let filter_projection = filter_projection, n_cols = n_cols, n_rows = n_rows
         AK.foreachindex(sinogram) do idx
-            ci = CartesianIndices(sinogram)[idx]
-            col, row, _ = Tuple(ci)
+            idx_0 = Int32(idx - 1)
+            col = (idx_0 % Int32(n_cols)) + Int32(1)
+            row = ((idx_0 ÷ Int32(n_cols)) % Int32(n_rows)) + Int32(1)
             proj_idx = col + (row - 1) * n_cols
             sinogram[idx] += filter_projection[proj_idx]
         end
@@ -418,10 +419,11 @@ function apply_flat_filter_to_intensity!(
     copyto!(transmission, transmission_cpu)
 
     # GPU-native element-wise operation
-    let transmission = transmission, n_cols = n_cols
+    let transmission = transmission, n_cols = n_cols, n_rows = n_rows
         AK.foreachindex(intensity) do idx
-            ci = CartesianIndices(intensity)[idx]
-            col, row, _ = Tuple(ci)
+            idx_0 = Int32(idx - 1)
+            col = (idx_0 % Int32(n_cols)) + Int32(1)
+            row = ((idx_0 ÷ Int32(n_cols)) % Int32(n_rows)) + Int32(1)
             trans_idx = col + (row - 1) * n_cols
             intensity[idx] *= transmission[trans_idx]
         end
