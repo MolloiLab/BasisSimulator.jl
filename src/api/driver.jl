@@ -358,7 +358,8 @@ function simulate!(
         ws_detector_v=ws.geom_detector_v,
         volume_extent=phantom.extent,
         ws_η=ws.η_vec,
-        ws_bowtie_spectral=ws.bowtie_spectral)
+        ws_bowtie_spectral=ws.bowtie_spectral,
+        ws_wη_gpu=ws.wη_gpu)
 
     if ws.has_signal_chain
         # ═══════════════════════════════════════════════════════════════════

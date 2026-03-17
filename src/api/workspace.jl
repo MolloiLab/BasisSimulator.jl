@@ -476,6 +476,7 @@ mutable struct EICTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:Abstr
     μ_table::Matrix{T}         # pre-computed μ[region, energy] (n_regions × n_energies)
     μ_table_gpu::A2            # GPU copy of μ_table for zero-copy create_μ_volume!
     η_vec::Vector{Float64}     # detector efficiency η(E) per energy bin
+    wη_gpu::A1                 # Pre-computed weights_norm .* η on GPU [n_energies] (fused kernel)
     bhc_coeffs_gpu::A1         # BHC polynomial coefficients (GPU/backend)
 
     # ─── Pre-computed geometry arrays (T-typed, same backend as mask) ───
@@ -652,6 +653,11 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         ones(Float64, n_energies)
     end
 
+    # Pre-computed weights_norm .* η for fused poly projection kernel
+    wη_cpu = T.(weights_norm .* η_vec)
+    wη_gpu_buf = similar(ref, T, n_energies)
+    copyto!(wη_gpu_buf, wη_cpu)
+
     # Bowtie spectral transmission: resolve independently from PhysicsConfig
     # (config.bowtie_filter is now nothing for :high/:pcct since preset is false)
     bowtie_filter = resolve_bowtie_filter(scanner.bowtie_filter)
@@ -716,7 +722,7 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         optical_crosstalk_kernel, focal_spot_kernel, flat_filter_proj,
         bowtie_spectral_gpu, bowtie_air_ref_gpu, lag_coeffs_buf,
         noise_rand_cpu, noise_rand_gpu, enoise_rand_cpu, enoise_rand_gpu,
-        weights_norm, μ_lut_cpu, μ_lut_gpu, μ_table, μ_table_gpu, η_vec, bhc_coeffs_gpu,
+        weights_norm, μ_lut_cpu, μ_lut_gpu, μ_table, μ_table_gpu, η_vec, wη_gpu_buf, bhc_coeffs_gpu,
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
         geom, energies, weights_vec, config, mats, rng,
         heel, das, bhc_effect, has_sc,
