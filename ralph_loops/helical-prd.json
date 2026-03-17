@@ -1,6 +1,7 @@
 {
   "project": "BasisSimulator.jl Helical CT Discovery",
   "goal": "Produce a complete spec for adding helical (spiral) CT scanning to BasisSimulator.jl that integrates seamlessly with the existing volume scan, physics pipeline, workspace pattern, and GPU-native architecture. The spec must be detailed enough that AI agents can implement it without guessing.",
+  "status": "COMPLETE",
   "context": {
     "package": "BasisSimulator.jl (v0.3.0) — GPU-native polychromatic CT simulator",
     "current_state": "Axial scanning works end-to-end: forward projection (Siddon), 16-step physics chain, FDK+iterative reconstruction, PCCT support. CTProtocol already has n_rotations field (unused). CTGeometry hardcodes Z=0 for all source/detector positions.",
@@ -15,7 +16,7 @@
       "description": "FIRST TOPIC. Read through every file that touches geometry, source/detector positions, or Z-coordinates. Map exactly where the circular-orbit assumption is baked in.",
       "discovery": "done",
       "critique": "done",
-      "refinement": "open",
+      "refinement": "done",
       "priority": 0
     },
     {
@@ -25,7 +26,7 @@
       "description": "Research helical CT geometry. Define: pitch, table feed per angle, Z(θ) formula, clinical pitch values, phantom coverage requirements.",
       "discovery": "done",
       "critique": "done",
-      "refinement": "open",
+      "refinement": "done",
       "priority": 1
     },
     {
@@ -35,27 +36,27 @@
       "description": "Verify Siddon ray tracer works unchanged for helical. Confirm polychromatic pipeline, GPU kernel, and PCCT path all work with helical geometry.",
       "discovery": "done",
       "critique": "done",
-      "refinement": "open",
+      "refinement": "done",
       "priority": 1
     },
     {
       "id": "HELI-003",
       "area": "reconstruction-helical",
       "title": "Helical Reconstruction Algorithms — FDK-Helical vs Katsevich vs Rebinning",
-      "description": "Research and recommend helical reconstruction approach. WFBP recommended, Katsevich rejected. Includes GPU kernel pseudocode for weighted helical FDK.",
+      "description": "Research and recommend helical reconstruction approach. WFBP recommended, Katsevich rejected. Includes GPU kernel pseudocode for weighted helical FDK. C1 RESOLVED: normalization is 2π/views_per_rotation.",
       "discovery": "done",
       "critique": "done",
-      "refinement": "open",
+      "refinement": "done",
       "priority": 1
     },
     {
       "id": "HELI-004",
       "area": "api-integration",
       "title": "API Design — Seamless Helical in the 5-Part API",
-      "description": "CTProtocol pitch field, CTGeometry struct additions, workspace changes, dose formulas, validation rules. Complete change list (~25 sites across ~10 files).",
+      "description": "CTProtocol pitch field, CTGeometry struct additions, workspace changes, dose formulas, validation rules. Complete change list (~25 sites across ~10 files). All inner constructor diffs provided.",
       "discovery": "done",
       "critique": "done",
-      "refinement": "open",
+      "refinement": "done",
       "priority": 1
     },
     {
@@ -65,17 +66,17 @@
       "description": "Audit of all 16 physics effects. Result: ALL are helical-compatible with zero code changes. Physics is gantry-frame or element-wise.",
       "discovery": "done",
       "critique": "done",
-      "refinement": "open",
+      "refinement": "done",
       "priority": 1
     },
     {
       "id": "HELI-006",
       "area": "reference-implementations",
       "title": "Reference Implementations — TIGRE, CatSim, ASTRA, RTK",
-      "description": "Survey how existing CT simulation frameworks implement helical scanning. Partially covered in HELI-003 (Section 3.7b).",
-      "discovery": "partial",
-      "critique": "open",
-      "refinement": "open",
+      "description": "Survey how existing CT simulation frameworks implement helical scanning. Complete in Section 3.7b. XCIST and FreeCT_wFBP are the only open-source helical FBP implementations.",
+      "discovery": "done",
+      "critique": "done",
+      "refinement": "done",
       "priority": 1
     },
     {
@@ -84,20 +85,19 @@
       "title": "Validation and Testing — How Do We Know Helical Works?",
       "description": "5-tier test strategy: unit (Z(θ), W(q̂)), axial regression, helical integration, quality metrics (HU/noise/z-uniformity), cross-reference (XCIST, converged SIRT). 16 test cases with code. Section 7 in spec.",
       "discovery": "done",
-      "critique": "open",
-      "refinement": "open",
+      "critique": "done",
+      "refinement": "done",
       "priority": 2
     },
     {
       "id": "HELI-008",
       "area": "synthesis",
       "title": "SYNTHESIS: Helical CT Implementation Roadmap",
-      "description": "After all other topics complete: synthesize into phased implementation plan with stories and dependencies.",
-      "discovery": "open",
-      "critique": "open",
-      "refinement": "open",
-      "priority": 3,
-      "blockedBy": ["HELI-000", "HELI-001", "HELI-002", "HELI-003", "HELI-004", "HELI-005", "HELI-006"]
+      "description": "Complete Section 8 with 3 implementation stories, exact before/after diffs for all ~25 change sites, WFBP GPU kernel code, dependency graph, risk assessment. ~350 lines production code, ~200 lines tests.",
+      "discovery": "done",
+      "critique": "done",
+      "refinement": "done",
+      "priority": 3
     }
   ]
 }

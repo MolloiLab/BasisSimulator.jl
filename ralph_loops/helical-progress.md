@@ -913,3 +913,72 @@ Tests are ordered to match the implementation roadmap from Section 3.8:
 4. **Performance benchmarks:** No performance testing defined (e.g., helical vs axial forward projection time scaling). This is an optimization concern, not a correctness concern.
 
 ---
+
+## Iteration 9: HELI-ALL REFINEMENT + HELI-008 SYNTHESIS — Complete Implementation-Ready Spec
+
+**Date:** 2026-03-17
+**Phase:** REFINEMENT + SYNTHESIS
+**Topics:** ALL (HELI-000 through HELI-008)
+
+### Summary
+
+Comprehensive REFINEMENT pass resolving all 18 critique items (C1-C18) and producing the SYNTHESIS implementation roadmap (Section 8). This is the final iteration — the spec is now complete and implementation-ready.
+
+### Key Resolutions
+
+#### C1 (CRITICAL) — WFBP Normalization: RESOLVED
+
+**The normalization constant is `2π/views_per_rotation`**, confirmed by:
+1. FreeCT_wFBP source code (`backproject.cuh`): `output += s[k] * 2*pi / n_proj_turn`
+2. Mathematical derivation: The standard FDK integral `(1/2) ∫₀²π` has a 1/2 factor to compensate for parallel-beam data redundancy. In WFBP, the per-angular-sample weight normalization (`Σ_k W_k p_k / Σ_k W_k` across redundant half-turns) absorbs this 1/2 factor. The outer sum is a plain Riemann integral with step `Δα = 2π/N_proj`.
+3. This means the axial (`π/n_angles`) and helical (`2π/views_per_rotation × Σ/Σ_W`) paths do NOT degenerate into each other — they are separate code paths selected by `is_helical = geom.pitch > 0.0`.
+
+**Ref:** Stierstorfer 2004 (PMB 49:2209, Eq. 5); Hoffman 2016 (Med Phys 43:1411); FreeCT_wFBP `include/backproject.cuh`.
+
+#### C14 (IMPORTANT) — recon_center in Forward Projector: RESOLVED
+
+The `recon_center` offset applies CONDITIONALLY in `siddon_forward_project!`:
+- When `volume_extent` is provided (phantom projection): NO offset. Phantom is at world origin.
+- When using `geom.fov` (iterative recon path): YES offset. Recon volume centered at `recon_center`.
+
+Exact code diff provided in spec Section 8.3.
+
+#### C15 (IMPORTANT) — create_aquilion_one: RESOLVED
+
+Decision: Add helical kwargs directly to `create_aquilion_one` (no refactoring to delegate). The function has specific pixel_size logic (1.1× margin) that differs from the main CTGeometry constructor. Direct extension is simpler. Exact code diff provided in spec Section 8.4.
+
+### Implementation Roadmap (Section 8)
+
+Three stories with clear dependencies:
+
+1. **Story 1: Helical Geometry + Forward Projection** — Foundation. 13 change sites across 6 files. After this, helical forward projection works and iterative recon (SIRT/CGLS) handles helical.
+
+2. **Story 2: Naive Helical FDK** — Corrected `π/views_per_rotation` scaling + `recon_center` offset. 7 change sites across 3 files. Works for pitch ≈ 1.
+
+3. **Story 3: WFBP Helical Weighting** — Complete `backproject_voxel_helical` function with W(q̂) weight and `2π/views_per_rotation` normalization. ~120 lines new code. Clinical quality for all pitch values.
+
+Total: ~350 lines production code, ~200 lines tests, 0 new files.
+
+### Spec Sections Updated
+
+- **Section 3.3.6:** C1/C3 resolution — definitive normalization formula
+- **Section 3.7.1:** Updated normalization line
+- **Section 3.9:** GPU kernel pseudocode with correct `2π/views_per_rotation`
+- **Section 6:** Reference to Section 3.7b (complete survey already exists)
+- **Section 8 (NEW):** Complete synthesis with:
+  - 8.0: All 18 critiques resolved with status table
+  - 8.1: Three implementation stories with exact change tables
+  - 8.2: All 7 CTGeometry inner constructor sites with before/after diffs
+  - 8.3: All 5 `recon_center` offset sites with before/after diffs
+  - 8.4: `create_aquilion_one` helical extension with exact code
+  - 8.5: Complete CTGeometry constructor helical logic
+  - 8.6: Story dependencies
+  - 8.7: Files changed per story matrix
+  - 8.8: Risk assessment with mitigations
+  - 8.9: Estimated scope (~550 total lines)
+
+### Gaps Remaining
+
+**None.** All discovery, critique, and refinement phases are complete for all topics. The spec is implementation-ready. A coding agent can implement Story 1→2→3 without guessing.
+
+---

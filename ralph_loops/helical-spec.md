@@ -712,11 +712,26 @@ This simplified approach uses `v*/v_max` instead of the full q̂ formula. The fu
 
 #### 3.3.6 Integration with Existing Code
 
-> **⚠ CRITIQUE C1, C3:** The normalization formula must be derived carefully. The
-> helical weight-normalized formula does NOT degenerate to standard FDK for axial.
-> This means `is_helical` controls BOTH the W(q̂) weighting AND the normalization
-> strategy — not just one or the other. The `is_helical` flag is set from
-> `geom.pitch > 0` inside `backproject!`.
+> **✅ CRITIQUE C1, C3 — RESOLVED (REFINEMENT, 2026-03-17):**
+>
+> **The normalization constant is `2π/views_per_rotation`**, not `π/views_per_rotation`.
+>
+> **Source:** FreeCT_wFBP (`include/backproject.cuh`): `output[...] += s[k] * 2*pi / d_cg.n_proj_turn`
+>
+> **Why 2π not π:** The standard FDK integral is `(1/2) ∫₀²π ... dθ`, discretized as
+> `(π/N) Σ`. But in WFBP, the per-sample weight normalization (`Σ W_k p_k / Σ W_k`)
+> absorbs the 1/2 redundancy factor. Each angular sample contributes a weighted
+> average of its redundant half-turn copies. The outer integral is a plain Riemann sum
+> with step `Δβ = 2π/N`, giving `(2π/N) × Σ` with no extra 1/2.
+>
+> **The `is_helical` flag** (from `geom.pitch > 0`) controls BOTH the W(q̂) weighting
+> AND the normalization strategy. For axial (`is_helical=false`), the standard
+> `π/n_angles` scaling is used. For helical, the weight-normalized path uses
+> `2π/views_per_rotation`. These do NOT degenerate into each other — they are
+> separate code paths selected by the flag.
+>
+> **Ref:** Stierstorfer 2004 (PMB 49:2209); Hoffman 2016 (Med Phys 43:1411);
+> FreeCT_wFBP source `backproject.cuh`.
 
 **Changes to `backproject_voxel` (`backprojection.jl:37–146`):**
 
@@ -749,22 +764,24 @@ end
 
 **Normalization — helical path (single-pass, inline per voxel):**
 
-> **⚠ CRITIQUE C1 (RESOLUTION PENDING):** The exact normalization factor needs to
-> be derived from the WFBP integral (Stierstorfer 2004 Eq. 5) and verified
-> against FreeCT_wFBP source code. The weight accumulation is done inline per
-> voxel — NO separate `weight_sum` buffer is needed. See Section 3.9 for the
-> GPU kernel pseudocode.
+> **✅ CRITIQUE C1 — RESOLVED:** The normalization constant is **`2π/views_per_rotation`**.
+>
+> The weight accumulation is done inline per voxel — NO separate `weight_sum` buffer
+> is needed. See Section 3.9 for the GPU kernel pseudocode.
 >
 > The WFBP discretized integral is:
 > ```
-> f(x) = Δα × Σ_i [ W_norm(i,x) × w_fdk(i) × p̂(i) ]
+> f(x) = (2π / views_per_rotation) × Σ[W × w_fdk × p̂] / Σ[W × w_fdk]
 > ```
-> With total-sum normalization approximation and Δα = 2π/views_per_rotation:
-> ```
-> f(x) ≈ (2π / views_per_rotation) × Σ[W × w_fdk × p̂] / Σ[W × w_fdk]
-> ```
-> Whether this is `π` or `2π` depends on the FDK integral convention ((1/2)∫₀²π
-> vs ∫₀π) — must be resolved by checking FreeCT_wFBP.
+>
+> **Derivation:** The standard FDK integral `(1/2) ∫₀²π` has the `1/2` to handle
+> parallel-beam redundancy. In WFBP, the per-angular-sample weight normalization
+> (`Σ_k W_k p_k / Σ_k W_k` across redundant half-turns at each angle) already
+> absorbs this redundancy factor. The outer integration is a plain Riemann sum
+> with step `Δα = 2π/N_proj`, yielding `(2π/N) × Σ`. This is confirmed by
+> FreeCT_wFBP source: `output += s[k] * 2*pi / n_proj_turn`.
+>
+> **Ref:** FreeCT_wFBP `backproject.cuh`; Stierstorfer 2004, Eq. 5.
 
 ### 3.4 Katsevich Exact Algorithm (Optional — For Research)
 
@@ -866,7 +883,7 @@ W(qhat):
   0.6 ≤ |qhat| < 1.0:   W = cos²(π/2 * (|qhat| - 0.6) / 0.4)
   |qhat| ≥ 1.0:   W = 0.0
 
-Normalization: f(x) = Σ(W_i * fdk_i * p̂_i) * π / Σ(W_i * fdk_i)
+Normalization: f(x) = (2π/N_proj) * Σ(W_i * fdk_i * p̂_i) / Σ(W_i * fdk_i)
 ```
 
 **Key property:** Noise is approximately pitch-independent (< 7% variation). Dose efficiency is good at all pitch values.
@@ -993,10 +1010,11 @@ The modified `backproject_voxel` pseudocode for helical:
         wgt_acc += fdk_w * w_h  # accumulate for normalization
     end
 
-    # Normalize: divide by weight sum
-    # ⚠ CRITIQUE C1: The exact normalization constant (π vs 2π/views_per_rotation)
-    # must be resolved by checking FreeCT_wFBP source. Using π here as placeholder.
-    return wgt_acc > T(1e-10) ? val_acc * T(π) / wgt_acc : zero(T)
+    # Normalize: weight-normalized backprojection with 2π/views_per_rotation
+    # (C1 RESOLVED: FreeCT uses 2π/N, not π/N, because per-sample W normalization
+    #  absorbs the 1/2 redundancy factor from the FDK integral)
+    two_pi_over_vpr = T(2π) / T(views_per_rotation)
+    return wgt_acc > T(1e-10) ? val_acc * two_pi_over_vpr / wgt_acc : zero(T)
 end
 ```
 
@@ -2415,18 +2433,688 @@ Every step is either element-wise or gantry-frame. **All steps work unchanged fo
 
 ## 6. Reference Implementations
 
-(To be filled by HELI-006 research)
+**Status: COMPLETE (covered in Section 3.7b)**
+
+See Section 3.7b for the complete survey of XCIST/CatSim, TIGRE, ASTRA, RTK, and FreeCT_wFBP. Key finding: XCIST and FreeCT_wFBP are the only open-source frameworks with helical FBP reconstruction. BasisSimulator's approach (WFBP) aligns with FreeCT_wFBP (Siemens-style).
 
 ---
 
-## 7. Validation and Testing Strategy
-
-(To be filled by HELI-007 research)
+## [Section 7 content is above — see "7. Validation and Testing Strategy" starting at the earlier position in this file]
 
 ---
 
 ## 8. SYNTHESIS: Implementation Roadmap
 
-(To be filled by HELI-008 synthesis — blocked until all other topics complete)
+**Status: COMPLETE (HELI-008 REFINEMENT + SYNTHESIS, 2026-03-17)**
+
+### 8.0 Critique Resolution Summary
+
+All 18 critique items (C1-C18) resolved:
+
+| ID | Severity | Status | Resolution |
+|----|----------|--------|------------|
+| **C1** | CRITICAL | **✅ RESOLVED** | Normalization = `2π/views_per_rotation`. FreeCT confirms. See Section 3.3.6. |
+| **C2** | IMPORTANT | **✅ ACCEPTED** | Naive FDK at pitch<0.8 overestimates. Phase 1 for pitch≈1 only; Phase 2 WFBP fixes. |
+| **C3** | IMPORTANT | **✅ RESOLVED** | `is_helical` flag controls both W(q̂) and normalization. See Section 3.3.6. |
+| **C4** | IMPORTANT | **✅ RESOLVED** | 7 inner constructor call sites enumerated with exact changes. See Section 8.2. |
+| **C5** | IMPORTANT | **✅ RESOLVED** | Helical fov_z auto-computation in constructor. See Section 4.3. |
+| **C6** | IMPORTANT | **✅ RESOLVED** | 4 `recon_center` offset sites with exact diffs. See Section 8.3. |
+| **C7** | MINOR | **✅ RESOLVED** | `n_angles` param = views/rot, struct field = total views. See Section 4.13. |
+| **C9** | MINOR | **✅ ACCEPTED** | Dual-energy + helical deferred. See Section 2.9. |
+| **C10** | MINOR | **✅ RESOLVED** | `create_aquilion_one` kept, add helical kwargs. See Section 8.4. |
+| **C12** | MINOR | **✅ RESOLVED** | `is_helical = geom.pitch > 0.0` in `backproject!`. See Section 4.7. |
+| **C13** | MINOR | **✅ ACCEPTED** | n_angles naming ambiguity accepted with docstring. See Section 4.13. |
+| **C14** | IMPORTANT | **✅ RESOLVED** | `recon_center` conditional in forward projector. Exact diff in Section 8.3. |
+| **C15** | IMPORTANT | **✅ RESOLVED** | `create_aquilion_one` adds helical kwargs to its loop. See Section 8.4. |
+| **C16** | MINOR | **✅ ACCEPTED** | GPU memory limits for multi-rotation documented. See Section 2.4. |
+| **C17** | MINOR | **✅ RESOLVED** | `scan_length_cm` docstring clarification. See Section 4.9. |
+| **C18** | MINOR | **✅ NOTED** | Heel effect uses `geom.fov[1]` — pre-existing, not helical-specific. |
+
+### 8.1 Implementation Phases (3 Stories)
+
+#### Story 1: Helical Geometry + Forward Projection (Foundation)
+
+**Goal:** Generate helical Z(θ) positions. Forward project through helical geometry. Validate sinogram.
+
+**Changes:**
+
+| # | File | Change | Lines |
+|---|------|--------|-------|
+| 1 | `protocol.jl` | Add `pitch::Float64` field to CTProtocol struct | After `n_rotations` |
+| 2 | `protocol.jl` | Add `pitch` kwarg to keyword constructor + validation | In kwargs section |
+| 3 | `protocol.jl` | Insert `_pitch` in 3 inner constructor calls | Lines ~118, ~418, ~461 |
+| 4 | `protocol.jl` | Add helical validation rules to `validate_protocol` | Lines ~160-226 |
+| 5 | `scanner.jl` | Add 3 fields to CTGeometry struct: `pitch`, `views_per_rotation`, `recon_center` | After `fov` |
+| 6 | `scanner.jl` | Rewrite CTGeometry constructor for helical Z(θ) | Lines 609-699 |
+| 7 | `scanner.jl` | Update `create_aquilion_one` with helical kwargs + Z(θ) | Lines 725-807 |
+| 8 | `fdk.jl` | Propagate 3 new fields in FOV-override constructor | Line 426 |
+| 9 | `workspace.jl` | Propagate 3 new fields in PCCT native geom | Line 364 |
+| 10 | `workspace.jl` | Pass `pitch`, `n_rotations` to CTGeometry in create_workspace (PCCT) | Line 174 |
+| 11 | `workspace.jl` | Pass `pitch`, `n_rotations` to CTGeometry in create_eict_workspace | Line 515 |
+| 12 | `mbir.jl` | Propagate 3 new fields in ordered-subset geometry | Line 434 |
+| 13 | `scanners.jl` | Add 3 default fields in scanner factory | Line 327 |
+
+**Validation:** T1 unit tests (Z(θ), pitch=0 degeneration, protocol validation), T2 axial regression, T3 helical sinogram shape.
+
+**Pre-implementation:** Capture regression reference values from current axial tests.
+
+#### Story 2: Naive Helical FDK Reconstruction
+
+**Goal:** Reconstruct helical sinograms with corrected scaling. Validate with uniform cylinder.
+
+**Changes:**
+
+| # | File | Change |
+|---|------|--------|
+| 1 | `backprojection.jl:335` | Change `pi_over_angles = T(π) / T(n_angles)` to branch on `is_helical` |
+| 2 | `backprojection.jl:316-318` | Add `recon_center` Z offset to `vol_min_z` |
+| 3 | `siddon.jl:440-442` | Add `recon_center` Z offset for iterative recon path |
+| 4 | `affine.jl:69-71` | Add `recon_center` offset to `tz` |
+| 5 | `affine.jl:128-130` | Add `recon_center` offset to `roz` |
+| 6 | `protocol.jl` | Fix `compute_ctdi_vol` to divide by pitch |
+| 7 | `protocol.jl` | Fix `compute_dlp` to use scan_length directly |
+
+**Exact backprojection change (backprojection.jl:316-335):**
+
+```julia
+# BEFORE:
+vol_min_z = T(-geom.fov[3] / 2)
+# ...
+pi_over_angles = T(π) / T(n_angles)
+
+# AFTER:
+vol_min_z = T(-geom.fov[3] / 2 + geom.recon_center[3])
+vol_min_x = T(-geom.fov[1] / 2 + geom.recon_center[1])
+vol_min_y = T(-geom.fov[2] / 2 + geom.recon_center[2])
+# ...
+is_helical = geom.pitch > 0.0
+pi_over_angles = T(π) / T(geom.views_per_rotation)  # was: T(n_angles)
+```
+
+For axial: `recon_center = (0,0,0)` and `views_per_rotation == n_angles` → identical.
+
+**Validation:** T1 Tam-Danielsson, T2 full pipeline regression, T3 uniform cylinder, T3 SIRT convergence.
+
+#### Story 3: WFBP Helical Weighting (Clinical Quality)
+
+**Goal:** Add W(q̂) weight function to backprojection kernel for pitch-independent quality.
+
+**Changes:**
+
+| # | File | Change |
+|---|------|--------|
+| 1 | `backprojection.jl` | Add `backproject_voxel_helical` function (new, ~80 lines) |
+| 2 | `backprojection.jl` | Modify `backproject!` to select between axial and helical voxel functions |
+
+**Complete `backproject_voxel_helical` (implementation-ready):**
+
+```julia
+@inline function backproject_voxel_helical(
+    sinogram::AbstractArray{T, 3},
+    voxel_x::T, voxel_y::T, voxel_z::T,
+    source_positions::AbstractArray{T, 2},
+    detector_centers::AbstractArray{T, 2},
+    detector_u::AbstractArray{T, 2},
+    detector_v::AbstractArray{T, 2},
+    n_cols::Int32, n_rows::Int32, n_angles::Int32,
+    col_center::T, row_center::T,
+    pixel_mag::T, pixel_row_mag::T,
+    SAD::T, SAD_sq::T,
+    two_pi_over_vpr::T,     # 2π / views_per_rotation
+    Q_flat::T,              # 0.6 (flat-top width of W(q̂))
+    n_rows_half::T          # n_rows / 2 (for q̂ normalization)
+) where T
+
+    val_acc = zero(T)   # Σ(W × w_fdk × p̂)
+    wgt_acc = zero(T)   # Σ(W × w_fdk)
+
+    for angle in Int32(1):n_angles
+        # --- Geometry (IDENTICAL to backproject_voxel lines 52-110) ---
+        src_x = source_positions[1, angle]
+        src_y = source_positions[2, angle]
+        src_z = source_positions[3, angle]
+
+        dcx = detector_centers[1, angle]
+        dcy = detector_centers[2, angle]
+        dcz = detector_centers[3, angle]
+
+        dux = detector_u[1, angle]
+        duy = detector_u[2, angle]
+        duz = detector_u[3, angle]
+
+        dvx = detector_v[1, angle]
+        dvy = detector_v[2, angle]
+        dvz = detector_v[3, angle]
+
+        sv_x = voxel_x - src_x
+        sv_y = voxel_y - src_y
+        sv_z = voxel_z - src_z
+
+        sd_x = dcx - src_x
+        sd_y = dcy - src_y
+        sd_z = dcz - src_z
+
+        sd_len_sq = sd_x^2 + sd_y^2 + sd_z^2
+        sv_dot_sd = sv_x * sd_x + sv_y * sd_y + sv_z * sd_z
+
+        if abs(sv_dot_sd) < T(1e-10)
+            continue
+        end
+
+        t = sd_len_sq / sv_dot_sd
+
+        proj_x = src_x + t * sv_x
+        proj_y = src_y + t * sv_y
+        proj_z = src_z + t * sv_z
+
+        dp_x = proj_x - dcx
+        dp_y = proj_y - dcy
+        dp_z = proj_z - dcz
+
+        u = (dp_x * dux + dp_y * duy + dp_z * duz) / pixel_mag
+        v = (dp_x * dvx + dp_y * dvy + dp_z * dvz) / pixel_row_mag
+
+        col_f = u + col_center
+        row_f = v + row_center
+
+        # --- Bounds check ---
+        if col_f >= one(T) && col_f <= T(n_cols) && row_f >= one(T) && row_f <= T(n_rows)
+            # --- Bilinear interpolation (IDENTICAL to backproject_voxel lines 115-134) ---
+            col_lo = unsafe_trunc(Int32, col_f)
+            col_hi = col_lo + Int32(1)
+            row_lo = unsafe_trunc(Int32, row_f)
+            row_hi = row_lo + Int32(1)
+
+            w_col = col_f - T(col_lo)
+            w_row = row_f - T(row_lo)
+
+            col_lo = clamp(col_lo, Int32(1), n_cols)
+            col_hi = clamp(col_hi, Int32(1), n_cols)
+            row_lo = clamp(row_lo, Int32(1), n_rows)
+            row_hi = clamp(row_hi, Int32(1), n_rows)
+
+            val = (one(T) - w_col) * (one(T) - w_row) * sinogram[col_lo, row_lo, angle] +
+                  w_col * (one(T) - w_row) * sinogram[col_hi, row_lo, angle] +
+                  (one(T) - w_col) * w_row * sinogram[col_lo, row_hi, angle] +
+                  w_col * w_row * sinogram[col_hi, row_hi, angle]
+
+            # --- FDK distance weight ---
+            dist_sq = sv_x^2 + sv_y^2 + sv_z^2
+            fdk_w = SAD_sq / dist_sq
+
+            # --- WFBP helical weight W(q̂) ---
+            q_abs = abs(row_f - row_center) / n_rows_half
+            w_h = if q_abs < Q_flat
+                one(T)
+            elseif q_abs < one(T)
+                cos(T(π) / T(2) * (q_abs - Q_flat) / (one(T) - Q_flat))^2
+            else
+                zero(T)
+            end
+
+            w_total = fdk_w * w_h
+            val_acc += val * w_total
+            wgt_acc += w_total
+        end
+    end
+
+    # Weight-normalized reconstruction: (2π/N) × Σ(W·fdk·p̂) / Σ(W·fdk)
+    return wgt_acc > T(1e-10) ? val_acc * two_pi_over_vpr / wgt_acc : zero(T)
+end
+```
+
+**Modified `backproject!` dispatch (backprojection.jl:370-396):**
+
+```julia
+if weighted
+    is_helical = geom.pitch > 0.0
+    if is_helical
+        two_pi_over_vpr = T(2π) / T(geom.views_per_rotation)
+        Q_flat = T(0.6)
+        n_rows_half = T(n_rows) / T(2)
+
+        AK.foreachindex(volume) do idx
+            idx_0 = Int32(idx - 1)
+            ix = (idx_0 % nx) + Int32(1)
+            idx_0 = idx_0 ÷ nx
+            iy = (idx_0 % ny) + Int32(1)
+            iz = (idx_0 ÷ ny) + Int32(1)
+
+            voxel_x = vol_min_x + (T(ix) - half) * voxel_size_x
+            voxel_y = vol_min_y + (T(iy) - half) * voxel_size_y
+            voxel_z = vol_min_z + (T(iz) - half) * voxel_size_z
+
+            volume[idx] = backproject_voxel_helical(
+                sinogram, voxel_x, voxel_y, voxel_z,
+                source_positions, detector_centers,
+                detector_u, detector_v,
+                n_cols, n_rows, n_angles,
+                col_center, row_center,
+                pixel_mag, pixel_row_mag,
+                SAD, SAD_sq, two_pi_over_vpr, Q_flat, n_rows_half
+            )
+        end
+    else
+        # Standard axial FDK (UNCHANGED from current code)
+        AK.foreachindex(volume) do idx
+            # ... existing backproject_voxel call (unchanged) ...
+        end
+    end
+end
+```
+
+**For axial (`is_helical=false`):** The code path is IDENTICAL to current — same `backproject_voxel` function with same `pi_over_angles` constant. **Zero performance impact on axial.**
+
+**Validation:** T1 W(q̂) unit tests, T3 WFBP vs naive comparison, T4 Gammex HU/noise/z-uniformity, T4 pitch sweep.
+
+### 8.2 CTGeometry Inner Constructor — All 7 Sites (Complete Diffs)
+
+Every positional `CTGeometry(...)` call must add 3 new trailing arguments: `pitch`, `views_per_rotation`, `recon_center`.
+
+**Site 1 — `scanner.jl:694` (main constructor):**
+```julia
+# BEFORE:
+return CTGeometry(
+    SAD, SDD, n_angles, _n_rows, _n_cols, pixel_size, pixel_row_size,
+    angles, source_positions, detector_centers, detector_u, detector_v,
+    fov
+)
+
+# AFTER:
+return CTGeometry(
+    SAD, SDD, total_views, _n_rows, _n_cols, pixel_size, pixel_row_size,
+    angles, source_positions, detector_centers, detector_u, detector_v,
+    fov,
+    pitch, n_angles, (0.0, 0.0, recon_center_z)
+)
+# Note: total_views stored in n_angles field; n_angles (param) stored in views_per_rotation
+```
+
+**Site 2 — `scanner.jl:802` (`create_aquilion_one`):**
+```julia
+# BEFORE:
+return CTGeometry(
+    SAD, SDD, n_angles, n_rows, n_cols, pixel_size, pixel_row_size,
+    angles, source_positions, detector_centers, detector_u, detector_v,
+    fov
+)
+
+# AFTER:
+return CTGeometry(
+    SAD, SDD, total_views, n_rows, n_cols, pixel_size, pixel_row_size,
+    angles, source_positions, detector_centers, detector_u, detector_v,
+    fov,
+    pitch, n_angles, (0.0, 0.0, 0.0)
+)
+```
+
+**Site 3 — `fdk.jl:426` (FOV override):**
+```julia
+# BEFORE:
+geom_fov = CTGeometry(
+    geom.SAD, geom.SDD,
+    geom.n_angles, geom.n_rows, geom.n_cols, geom.pixel_size, geom.pixel_row_size,
+    geom.angles, geom.source_positions, geom.detector_centers,
+    geom.detector_u, geom.detector_v,
+    fov
+)
+
+# AFTER:
+geom_fov = CTGeometry(
+    geom.SAD, geom.SDD,
+    geom.n_angles, geom.n_rows, geom.n_cols, geom.pixel_size, geom.pixel_row_size,
+    geom.angles, geom.source_positions, geom.detector_centers,
+    geom.detector_u, geom.detector_v,
+    fov,
+    geom.pitch, geom.views_per_rotation, geom.recon_center
+)
+```
+
+**Site 4 — `workspace.jl:364` (PCCT native geometry):**
+```julia
+# BEFORE:
+_native_geom = CTGeometry(
+    geom.SAD, geom.SDD, geom.n_angles, _native_n_rows, _native_n_cols,
+    _native_pixel_size, _native_pixel_row_size,
+    geom.angles,
+    geom.source_positions, geom.detector_centers,
+    geom.detector_u, geom.detector_v,
+    geom.fov
+)
+
+# AFTER:
+_native_geom = CTGeometry(
+    geom.SAD, geom.SDD, geom.n_angles, _native_n_rows, _native_n_cols,
+    _native_pixel_size, _native_pixel_row_size,
+    geom.angles,
+    geom.source_positions, geom.detector_centers,
+    geom.detector_u, geom.detector_v,
+    geom.fov,
+    geom.pitch, geom.views_per_rotation, geom.recon_center
+)
+```
+
+**Site 5 — `mbir.jl:434` (ordered-subset slicing):**
+```julia
+# BEFORE:
+return CTGeometry(
+    geom.SAD, geom.SDD,
+    n_subset, geom.n_rows, geom.n_cols,
+    geom.pixel_size, geom.pixel_row_size,
+    angles_subset, source_positions_subset, detector_centers_subset,
+    detector_u_subset, detector_v_subset,
+    geom.fov
+)
+
+# AFTER:
+return CTGeometry(
+    geom.SAD, geom.SDD,
+    n_subset, geom.n_rows, geom.n_cols,
+    geom.pixel_size, geom.pixel_row_size,
+    angles_subset, source_positions_subset, detector_centers_subset,
+    detector_u_subset, detector_v_subset,
+    geom.fov,
+    geom.pitch, geom.views_per_rotation, geom.recon_center
+)
+# Note: views_per_rotation stays same (it's a property of the scan, not the subset)
+```
+
+**Site 6 — `scanners.jl:327` (scanner factory):**
+```julia
+# BEFORE:
+return CTGeometry(
+    sid_cm, sdd_cm, n_angles, n_rows, _n_cols, pixel_size_cm, pixel_row_size_cm,
+    angles, source_positions, detector_centers, detector_u, detector_v,
+    fov
+)
+
+# AFTER:
+return CTGeometry(
+    sid_cm, sdd_cm, n_angles, n_rows, _n_cols, pixel_size_cm, pixel_row_size_cm,
+    angles, source_positions, detector_centers, detector_u, detector_v,
+    fov,
+    0.0, n_angles, (0.0, 0.0, 0.0)  # axial defaults
+)
+```
+
+### 8.3 `recon_center` Offset — All 5 Sites (Complete Diffs)
+
+The `recon_center` field offsets the reconstruction volume origin in world coordinates.
+
+**Site 1 — `backprojection.jl:316-318` (FDK + matched backprojection):**
+```julia
+# BEFORE:
+vol_min_x = T(-geom.fov[1] / 2)
+vol_min_y = T(-geom.fov[2] / 2)
+vol_min_z = T(-geom.fov[3] / 2)
+
+# AFTER:
+vol_min_x = T(-geom.fov[1] / 2 + geom.recon_center[1])
+vol_min_y = T(-geom.fov[2] / 2 + geom.recon_center[2])
+vol_min_z = T(-geom.fov[3] / 2 + geom.recon_center[3])
+```
+For axial: `recon_center = (0,0,0)` → identical.
+
+**Site 2 — `siddon.jl:440-442` (forward projector, iterative recon path ONLY):**
+```julia
+# BEFORE:
+vol_bounds = volume_extent !== nothing ? volume_extent : geom.fov
+vol_min_x = T(-vol_bounds[1] / 2)
+vol_min_y = T(-vol_bounds[2] / 2)
+vol_min_z = T(-vol_bounds[3] / 2)
+vol_max_x = T(vol_bounds[1] / 2)
+vol_max_y = T(vol_bounds[2] / 2)
+vol_max_z = T(vol_bounds[3] / 2)
+
+# AFTER:
+vol_bounds = volume_extent !== nothing ? volume_extent : geom.fov
+# recon_center only applies when using geom.fov (iterative recon path).
+# When volume_extent is provided (phantom projection), phantom is at origin.
+_rc = volume_extent !== nothing ? (0.0, 0.0, 0.0) : geom.recon_center
+vol_min_x = T(-vol_bounds[1] / 2 + _rc[1])
+vol_min_y = T(-vol_bounds[2] / 2 + _rc[2])
+vol_min_z = T(-vol_bounds[3] / 2 + _rc[3])
+vol_max_x = T(vol_bounds[1] / 2 + _rc[1])
+vol_max_y = T(vol_bounds[2] / 2 + _rc[2])
+vol_max_z = T(vol_bounds[3] / 2 + _rc[3])
+```
+**Critical subtlety (C14):** The recon_center ONLY applies in the `geom.fov` path (iterative recon projecting the recon volume). When `volume_extent` is provided (phantom forward projection), the phantom is always centered at world origin — NO offset. This is enforced by the `_rc` conditional.
+
+**Site 3 — `affine.jl:69-71` (recon_to_world_affine):**
+```julia
+# BEFORE:
+tx = -fov_x / 2 + sx / 2
+ty = -fov_y / 2 + sy / 2
+tz = -fov_z / 2 + sz / 2
+
+# AFTER:
+rcx, rcy, rcz = geom.recon_center
+tx = -fov_x / 2 + sx / 2 + rcx
+ty = -fov_y / 2 + sy / 2 + rcy
+tz = -fov_z / 2 + sz / 2 + rcz
+```
+
+**Site 4 — `affine.jl:128-130` (resample_to_recon):**
+```julia
+# BEFORE:
+rox = -fov_x / 2 + rvx / 2
+roy = -fov_y / 2 + rvy / 2
+roz = -fov_z / 2 + rvz / 2
+
+# AFTER:
+rcx, rcy, rcz = geom.recon_center
+rox = -fov_x / 2 + rvx / 2 + rcx
+roy = -fov_y / 2 + rvy / 2 + rcy
+roz = -fov_z / 2 + rvz / 2 + rcz
+```
+
+**Site 5 — `fdk.jl:454-481` (apply_fov_mask!):**
+```julia
+# BEFORE:
+x = (T(ix) - T(0.5) - T(nx) / T(2)) * voxel_x
+y = (T(iy) - T(0.5) - T(ny) / T(2)) * voxel_y
+
+# AFTER:  (recon_center doesn't change the circular mask radius, only the center)
+# Actually, the FOV mask is always centered at isocenter regardless of recon_center,
+# so NO change is needed here. The mask checks distance from (0,0), which is correct.
+```
+**Decision: No change needed at Site 5.** The FOV mask clips based on distance from the XY origin (isocenter), not from the recon center. This is physically correct — the reconstruction circle is always centered at the scanner isocenter.
+
+### 8.4 `create_aquilion_one` Helical Extension
+
+**Decision: Add helical kwargs to `create_aquilion_one` directly (no refactoring to delegate).**
+
+Rationale: The function has specific pixel_size logic (1.1× margin for fov_cm override) that differs from the main CTGeometry constructor. Refactoring to delegate would require reconciling this, adding complexity with no benefit. Instead, simply add helical Z(θ) to the existing loop.
+
+```julia
+# CHANGE function signature (line 725):
+function create_aquilion_one(;
+    n_angles::Int=360,
+    n_rows::Int=64,
+    n_cols::Int=128,
+    fov_cm::Union{Float64,Nothing}=nothing,
+    z_cm::Union{Float64,Nothing}=nothing,
+    sad::Union{Float64,Nothing}=nothing,
+    sdd::Union{Float64,Nothing}=nothing,
+    pitch::Float64=0.0,             # NEW
+    n_rotations::Float64=1.0        # NEW
+)
+
+# ADD after z FOV computation (after line 762):
+    total_collim_cm = pixel_row_size * n_rows
+    total_views = pitch > 0.0 ? round(Int, n_angles * n_rotations) : n_angles
+    z_travel = n_rotations * pitch * total_collim_cm
+    z_start = -z_travel / 2.0
+    if pitch > 0.0 && z_cm === nothing
+        fov_z = max(z_travel - total_collim_cm, total_collim_cm)
+    end
+
+# CHANGE angles (line 765):
+    angles = collect(range(0.0, 2π * n_rotations - 2π * n_rotations / total_views,
+                           length=total_views))
+
+# CHANGE matrix allocation (lines 768-771):
+    source_positions = Matrix{Float64}(undef, 3, total_views)
+    detector_centers = Matrix{Float64}(undef, 3, total_views)
+    detector_u = Matrix{Float64}(undef, 3, total_views)
+    detector_v = Matrix{Float64}(undef, 3, total_views)
+
+# CHANGE inside loop (lines 780, 786):
+    for (i, θ) in enumerate(angles)
+        # ... existing XY computation ...
+        z_i = z_start + (θ / (2π)) * pitch * total_collim_cm  # 0.0 for axial
+        source_positions[3, i] = z_i
+        detector_centers[3, i] = z_i
+        # ... existing u,v computation ...
+    end
+
+# CHANGE return (line 802):
+    return CTGeometry(
+        SAD, SDD, total_views, n_rows, n_cols, pixel_size, pixel_row_size,
+        angles, source_positions, detector_centers, detector_u, detector_v,
+        fov,
+        pitch, n_angles, (0.0, 0.0, 0.0)
+    )
+```
+
+### 8.5 CTGeometry Constructor — Complete Helical Logic
+
+**The constructor body (`scanner.jl:617-698`) changes to:**
+
+```julia
+function CTGeometry(scanner::Scanner{T};
+    n_angles::Int = 360,              # views per rotation
+    pitch::Float64 = 0.0,            # IEC beam pitch (0.0 = axial)
+    n_rotations::Float64 = 1.0,      # gantry rotations
+    recon_center_z::Float64 = 0.0,   # recon volume Z center (cm)
+    fov_cm::Union{Float64,Nothing} = nothing,
+    z_cm::Union{Float64,Nothing} = nothing,
+    n_rows::Union{Int,Nothing} = nothing,
+    n_cols::Union{Int,Nothing} = nothing,
+    collimation_mm::Union{Float64,Nothing} = nothing
+) where T
+
+    # ... existing collimation/detector logic (lines 618-631, unchanged) ...
+    # ... existing SAD/SDD/pixel_size conversion (lines 633-639, unchanged) ...
+    # ... existing fov_xy computation (lines 641-647, unchanged) ...
+
+    # Total collimation for pitch calculation
+    total_collim_cm = _n_rows * scanner.detector_row_size / 10.0  # mm → cm
+
+    # Total views for helical
+    total_views = pitch > 0.0 ? round(Int, n_angles * n_rotations) : n_angles
+
+    # Z travel and start
+    z_travel = n_rotations * pitch * total_collim_cm
+    z_start = -z_travel / 2.0
+
+    # Z FOV — helical auto-computation (Tam-Danielsson window)
+    if z_cm !== nothing
+        fov_z = z_cm
+    elseif pitch > 0.0
+        fov_z = max(z_travel - total_collim_cm, total_collim_cm)
+    else
+        z_coverage_mm = _n_rows * scanner.detector_row_size
+        fov_z = z_coverage_mm / 10.0  # mm → cm (unchanged axial path)
+    end
+
+    # Generate angles (monotonically increasing for helical)
+    angles = collect(range(0.0,
+        2π * n_rotations - 2π * n_rotations / total_views,
+        length=total_views))
+
+    # Pre-compute all positions
+    source_positions = Matrix{Float64}(undef, 3, total_views)
+    detector_centers = Matrix{Float64}(undef, 3, total_views)
+    detector_u = Matrix{Float64}(undef, 3, total_views)
+    detector_v = Matrix{Float64}(undef, 3, total_views)
+
+    for (i, θ) in enumerate(angles)
+        cosθ = cos(θ)
+        sinθ = sin(θ)
+
+        # Z position from helical formula (0.0 for pitch=0)
+        z_i = z_start + (θ / (2π)) * pitch * total_collim_cm
+
+        source_positions[1, i] = -SAD * sinθ
+        source_positions[2, i] = -SAD * cosθ
+        source_positions[3, i] = z_i
+
+        det_dist = SDD - SAD
+        detector_centers[1, i] = det_dist * sinθ
+        detector_centers[2, i] = det_dist * cosθ
+        detector_centers[3, i] = z_i
+
+        detector_u[1, i] = cosθ
+        detector_u[2, i] = -sinθ
+        detector_u[3, i] = 0.0
+
+        detector_v[1, i] = 0.0
+        detector_v[2, i] = 0.0
+        detector_v[3, i] = 1.0
+    end
+
+    fov = (fov_xy, fov_xy, fov_z)
+
+    return CTGeometry(
+        SAD, SDD, total_views, _n_rows, _n_cols, pixel_size, pixel_row_size,
+        angles, source_positions, detector_centers, detector_u, detector_v,
+        fov,
+        pitch, n_angles, (0.0, 0.0, recon_center_z)
+    )
+end
+```
+
+### 8.6 Dependencies Between Stories
+
+```
+Story 1 (Geometry + Forward Projection)
+    │
+    ├── Story 2 (Naive Helical FDK)  ← requires helical geometry
+    │       │
+    │       └── Story 3 (WFBP)  ← requires naive FDK as baseline
+    │
+    └── (PCCT + Helical works after Story 1 with iterative recon)
+```
+
+**Story 1 is the foundation.** After Story 1, helical forward projection works, and iterative recon (SIRT/CGLS) works for helical. This is a useful checkpoint — users can do helical simulation + iterative reconstruction.
+
+**Story 2 enables FDK for helical.** Correct for pitch ≈ 1.
+
+**Story 3 enables clinical-quality FDK.** Correct for all pitch values.
+
+### 8.7 Files Changed Per Story
+
+| File | Story 1 | Story 2 | Story 3 |
+|------|---------|---------|---------|
+| `protocol.jl` | **YES** (pitch field, validation, dose) | YES (dose fix) | — |
+| `scanner.jl` | **YES** (struct + constructor + create_aquilion_one) | — | — |
+| `workspace.jl` | **YES** (2 create sites + PCCT native geom) | — | — |
+| `scanners.jl` | **YES** (factory constructor) | — | — |
+| `fdk.jl` | **YES** (FOV-override constructor) | — | — |
+| `mbir.jl` | **YES** (ordered-subset constructor) | — | — |
+| `backprojection.jl` | — | **YES** (recon_center + pi_over_angles) | **YES** (helical kernel) |
+| `siddon.jl` | — | **YES** (recon_center in iterative path) | — |
+| `affine.jl` | — | **YES** (recon_center offset) | — |
+
+**Total: ~10 files, ~25 change sites, 0 new files.**
+
+### 8.8 Risk Assessment
+
+| Risk | Impact | Mitigation |
+|------|--------|------------|
+| **Axial regression** | HIGH | T2 regression tests captured before any changes |
+| **PCCT native geom breaks** | MEDIUM | Propagate all 3 new fields (Site 4 in Section 8.2) |
+| **MBIR subset geom breaks** | MEDIUM | `views_per_rotation` stays same in subset (Site 5) |
+| **Normalization wrong** | HIGH | Uniform cylinder test catches immediately (Section 7.4.2) |
+| **GPU memory for long scans** | LOW | Warning at >5 rotations, document limit |
+| **Dual-energy + helical** | LOW | Explicitly deferred, validation warning added |
+
+### 8.9 Estimated Scope
+
+- **Story 1:** ~150 lines changed across 6 files + ~50 lines of tests
+- **Story 2:** ~30 lines changed across 3 files + ~100 lines of tests
+- **Story 3:** ~120 lines new code (helical kernel) + ~50 lines of tests
+- **Total:** ~350 lines of production code, ~200 lines of tests
 
 ---
