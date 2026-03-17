@@ -4,7 +4,7 @@
   "spec": "ralph_loops/speed-spec.md (§1, §2, §3, §7 — the complete discovery output)",
   "branch": "speed/fused-projection",
   "progress": {
-    "SPEED-BUILD-001": "open",
+    "SPEED-BUILD-001": "done",
     "SPEED-BUILD-002": "open",
     "SPEED-BUILD-003": "open",
     "SPEED-BUILD-004": "open"
@@ -13,8 +13,9 @@
     {
       "id": "SPEED-BUILD-001",
       "title": "Energy loop fusion — fused polychromatic Siddon kernel",
-      "status": "open",
+      "status": "done",
       "priority": 0,
+      "completedNote": "6.28-6.65x speedup on CPU (bit-identical). @generated NTuple helpers avoid 939x ntuple closure overhead. PCCT fused variant deferred (separate pcct_forward_project path). Tiled fallback not needed — NTuple{30} works fine with @generated.",
       "description": "Replace the sequential energy loop in _forward_project_poly!() with a single fused AK.foreachindex kernel that traces each ray ONCE through the UInt16 material mask and accumulates line integrals for all energy bins via a μ_table lookup. This is the primary optimization (10x on forward projection).",
       "requirements": [
         "ALL work on branch 'speed/fused-projection' — create it from main before any changes",
