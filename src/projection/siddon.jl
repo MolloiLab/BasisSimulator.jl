@@ -74,7 +74,7 @@
 
 import AcceleratedKernels as AK
 
-export siddon_forward_project!, siddon_forward_project
+export siddon_forward_project!, siddon_forward_project, siddon_fused_poly_project!
 
 # =============================================================================
 # Single Ray Trace (inlined into the main loop)
@@ -630,4 +630,347 @@ function siddon_forward_project(
     fill!(sinogram, zero(T))
 
     return siddon_forward_project!(sinogram, volume, geom; volume_extent=volume_extent)
+end
+
+# =============================================================================
+# Fused Polychromatic Siddon Projection (SPEED-BUILD-001)
+# =============================================================================
+#
+# Single-kernel fused polychromatic projection: traces each ray ONCE through
+# the UInt16 material mask and accumulates line integrals for ALL energy bins
+# via μ_table lookup. Replaces 90+ sequential kernel launches with 1.
+#
+# Bandwidth reduction: ~30x (reads mask once instead of Float32 volume 30x)
+# Kernel launch reduction: 90+ → 1
+#
+# Uses NTuple{N_E,T} accumulators for register-resident energy storage.
+# N_E is a compile-time constant via Val{N_E} for loop unrolling.
+#
+# IMPORTANT: Uses @generated functions for NTuple manipulation to avoid the
+# catastrophic slowdown from ntuple(f, Val(N)) closure overhead on CPU.
+# @generated expands to explicit tuple(old[1]+..., old[2]+..., ...) at compile
+# time, producing clean LLVM IR that both CPU and GPU compilers optimize well.
+# =============================================================================
+
+"""
+    _fused_accum_energies(accums, μ_tbl, mat, path_length)
+
+@generated helper: accumulate path_length × μ for all energies.
+Expands at compile time to: tuple(accums[1] + μ_tbl[mat,1]*pl, accums[2] + μ_tbl[mat,2]*pl, ...)
+"""
+@generated function _fused_accum_energies(accums::NTuple{N,T}, μ_tbl, mat::Int32, pl::T) where {N, T}
+    exprs = [:(accums[$i] + @inbounds(μ_tbl[mat, $i]) * pl) for i in 1:N]
+    return :(tuple($(exprs...)))
+end
+
+"""
+    _fused_beer_lambert(accums, wη)
+
+@generated helper: Beer-Lambert sum without bowtie.
+Returns Σ_e wη[e] * exp(-accums[e]).
+"""
+@generated function _fused_beer_lambert(accums::NTuple{N,T}, wη) where {N, T}
+    terms = [:((@inbounds wη[$i]) * exp(-accums[$i])) for i in 1:N]
+    if N == 0
+        return :(zero(T))
+    elseif N == 1
+        return terms[1]
+    else
+        return Expr(:call, :+, terms...)
+    end
+end
+
+"""
+    _fused_beer_lambert_bt(accums, wη, bt, bt_base, ncnr)
+
+@generated helper: Beer-Lambert sum with bowtie spectral transmission.
+bt_base = col + (row-1)*nc, ncnr = n_cols*n_rows.
+Returns Σ_e wη[e] * bt[bt_base + (e-1)*ncnr] * exp(-accums[e]).
+"""
+@generated function _fused_beer_lambert_bt(accums::NTuple{N,T}, wη, bt, bt_base::Int32, ncnr::Int32) where {N, T}
+    terms = [:((@inbounds wη[$i]) * (@inbounds bt[bt_base + Int32($i - 1) * ncnr]) * exp(-accums[$i])) for i in 1:N]
+    if N == 0
+        return :(zero(T))
+    elseif N == 1
+        return terms[1]
+    else
+        return Expr(:call, :+, terms...)
+    end
+end
+
+"""
+    siddon_fused_poly_project!(sinogram, mask, geom, μ_table_gpu, wη_gpu, Val(N_E); kwargs...)
+
+Fused polychromatic forward projection: single DDA pass through material mask,
+accumulating line integrals for all energy bins simultaneously.
+
+Mathematically equivalent to the unfused path (sequential energy loop), but
+traces each ray only ONCE instead of N_E times. The material mask (UInt16) is
+read once per voxel, and μ values for all energies are looked up from a
+[n_materials × n_energies] table that fits in GPU cache.
+
+# Arguments
+- `sinogram::AbstractArray{T,3}`: Output [n_cols, n_rows, n_angles]. Written in-place
+  with -log(I_total) values.
+- `mask::AbstractArray{<:Unsigned,3}`: Material index volume [nx, ny, nz]. 0-indexed
+  region indices (UInt8 or UInt16). Supports up to 65,535 materials with UInt16.
+- `geom::CTGeometry`: Scanner geometry.
+- `μ_table_gpu::AbstractArray{T,2}`: Attenuation lookup table [n_materials, n_energies]
+  on GPU. μ_table[mat+1, e] gives μ in mm⁻¹ for material `mat` at energy bin `e`.
+- `wη_gpu::AbstractArray{T,1}`: Pre-computed `weights_norm .* η` on GPU [n_energies].
+- `::Val{N_E}`: Number of energy bins as compile-time constant for loop unrolling.
+
+# Keyword Arguments
+- `volume_extent`: Override volume physical bounds (for phantoms with extent ≠ recon FOV).
+- `ws_source_positions`, `ws_detector_centers`, `ws_detector_u`, `ws_detector_v`:
+  Pre-allocated geometry arrays on GPU (avoids per-call allocation).
+- `ws_bowtie_spectral`: Per-pixel bowtie spectral transmission [n_cols, n_rows, n_energies]
+  on GPU. If nothing, no bowtie correction applied.
+"""
+function siddon_fused_poly_project!(
+    sinogram::AbstractArray{T, 3},
+    mask::AbstractArray{<:Unsigned, 3},
+    geom::CTGeometry,
+    μ_table_gpu::AbstractArray{T, 2},
+    wη_gpu::AbstractArray{T, 1},
+    ::Val{N_E};
+    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
+    ws_source_positions = nothing,
+    ws_detector_centers = nothing,
+    ws_detector_u = nothing,
+    ws_detector_v = nothing,
+    ws_bowtie_spectral = nothing
+) where {T <: AbstractFloat, N_E}
+
+    # Volume dimensions (Int32 for GPU)
+    nx = Int32(size(mask, 1))
+    ny = Int32(size(mask, 2))
+    nz = Int32(size(mask, 3))
+    n_cols = Int32(size(sinogram, 1))
+    n_rows = Int32(size(sinogram, 2))
+    n_angles = Int32(size(sinogram, 3))
+
+    # Volume bounds (use phantom extent if provided, else recon FOV)
+    vol_bounds = volume_extent !== nothing ? volume_extent : geom.fov
+    vol_min_x = T(-vol_bounds[1] / 2)
+    vol_min_y = T(-vol_bounds[2] / 2)
+    vol_min_z = T(-vol_bounds[3] / 2)
+    vol_max_x = T(vol_bounds[1] / 2)
+    vol_max_y = T(vol_bounds[2] / 2)
+    vol_max_z = T(vol_bounds[3] / 2)
+    voxel_size_x = T(vol_bounds[1]) / T(nx)
+    voxel_size_y = T(vol_bounds[2]) / T(ny)
+    voxel_size_z = T(vol_bounds[3]) / T(nz)
+
+    magnification = T(geom.SDD / geom.SAD)
+    pixel_size = T(geom.pixel_size)
+    pixel_row_size = T(geom.pixel_row_size)
+    col_center = (T(n_cols) + one(T)) / T(2)
+    row_center = (T(n_rows) + one(T)) / T(2)
+
+    # Geometry arrays on GPU (use workspace or allocate)
+    source_positions = if ws_source_positions !== nothing
+        ws_source_positions
+    else
+        _sp = similar(sinogram, T, size(geom.source_positions)...)
+        copyto!(_sp, T.(geom.source_positions))
+        _sp
+    end
+    detector_centers = if ws_detector_centers !== nothing
+        ws_detector_centers
+    else
+        _dc = similar(sinogram, T, size(geom.detector_centers)...)
+        copyto!(_dc, T.(geom.detector_centers))
+        _dc
+    end
+    detector_u = if ws_detector_u !== nothing
+        ws_detector_u
+    else
+        _du = similar(sinogram, T, size(geom.detector_u)...)
+        copyto!(_du, T.(geom.detector_u))
+        _du
+    end
+    detector_v = if ws_detector_v !== nothing
+        ws_detector_v
+    else
+        _dv = similar(sinogram, T, size(geom.detector_v)...)
+        copyto!(_dv, T.(geom.detector_v))
+        _dv
+    end
+
+    # Bowtie layout constants
+    nc_nr = n_cols * n_rows
+    has_bowtie = ws_bowtie_spectral !== nothing
+
+    # Capture all variables in let block for GPU closure correctness
+    let mask=mask, μ_tbl=μ_table_gpu, wη=wη_gpu,
+        sp=source_positions, dc=detector_centers, du=detector_u, dv=detector_v,
+        bt=ws_bowtie_spectral,
+        vmx=vol_min_x, vmy=vol_min_y, vmz=vol_min_z,
+        vMx=vol_max_x, vMy=vol_max_y, vMz=vol_max_z,
+        vsx=voxel_size_x, vsy=voxel_size_y, vsz=voxel_size_z,
+        nx=nx, ny=ny, nz=nz, nc=n_cols, nr=n_rows,
+        mag=magnification, ps=pixel_size, prs=pixel_row_size,
+        cc=col_center, rc=row_center, ncnr=nc_nr, hbt=has_bowtie
+
+        AK.foreachindex(sinogram) do idx
+            # ─── Index decomposition (mod/div, no CartesianIndices) ───
+            idx_0 = Int32(idx - 1)
+            col = (idx_0 % nc) + Int32(1)
+            idx_0 = idx_0 ÷ nc
+            row = (idx_0 % nr) + Int32(1)
+            angle = (idx_0 ÷ nr) + Int32(1)
+
+            # ─── Source position ───
+            src_x = sp[1, angle]
+            src_y = sp[2, angle]
+            src_z = sp[3, angle]
+
+            # ─── Detector pixel position ───
+            dcx = dc[1, angle]; dcy = dc[2, angle]; dcz = dc[3, angle]
+            dux = du[1, angle]; duy = du[2, angle]; duz = du[3, angle]
+            dvx = dv[1, angle]; dvy = dv[2, angle]; dvz = dv[3, angle]
+
+            u_offset = (T(col) - cc) * ps * mag
+            v_offset = (T(row) - rc) * prs * mag
+
+            det_x = dcx + u_offset * dux + v_offset * dvx
+            det_y = dcy + u_offset * duy + v_offset * dvy
+            det_z = dcz + u_offset * duz + v_offset * dvz
+
+            # ═══════════════════════════════════════════════════════════
+            # DDA SETUP (from siddon_trace_ray — identical geometry)
+            # ═══════════════════════════════════════════════════════════
+            ray_x = det_x - src_x
+            ray_y = det_y - src_y
+            ray_z = det_z - src_z
+            ray_length = sqrt(ray_x^2 + ray_y^2 + ray_z^2)
+
+            eps = T(1e-10)
+            ray_x = abs(ray_x) < eps ? (ray_x >= zero(T) ? eps : -eps) : ray_x
+            ray_y = abs(ray_y) < eps ? (ray_y >= zero(T) ? eps : -eps) : ray_y
+            ray_z = abs(ray_z) < eps ? (ray_z >= zero(T) ? eps : -eps) : ray_z
+
+            t_x_min = (vmx - src_x) / ray_x
+            t_x_max = (vMx - src_x) / ray_x
+            t_y_min = (vmy - src_y) / ray_y
+            t_y_max = (vMy - src_y) / ray_y
+            t_z_min = (vmz - src_z) / ray_z
+            t_z_max = (vMz - src_z) / ray_z
+
+            if t_x_min > t_x_max; t_x_min, t_x_max = t_x_max, t_x_min end
+            if t_y_min > t_y_max; t_y_min, t_y_max = t_y_max, t_y_min end
+            if t_z_min > t_z_max; t_z_min, t_z_max = t_z_max, t_z_min end
+
+            t_enter = max(t_x_min, t_y_min, t_z_min)
+            t_exit  = min(t_x_max, t_y_max, t_z_max)
+
+            # Ray misses volume → zero output
+            if t_enter >= t_exit || t_exit <= zero(T)
+                sinogram[idx] = zero(T)
+                return
+            end
+
+            t_enter = max(t_enter, zero(T))
+
+            entry_x = src_x + t_enter * ray_x
+            entry_y = src_y + t_enter * ray_y
+            entry_z = src_z + t_enter * ray_z
+
+            # Initial voxel (0-based, Int32)
+            ix = unsafe_trunc(Int32, floor((entry_x - vmx) / vsx))
+            iy = unsafe_trunc(Int32, floor((entry_y - vmy) / vsy))
+            iz = unsafe_trunc(Int32, floor((entry_z - vmz) / vsz))
+            ix = clamp(ix, Int32(0), nx - Int32(1))
+            iy = clamp(iy, Int32(0), ny - Int32(1))
+            iz = clamp(iz, Int32(0), nz - Int32(1))
+
+            # Step direction
+            step_x = ray_x >= zero(T) ? Int32(1) : Int32(-1)
+            step_y = ray_y >= zero(T) ? Int32(1) : Int32(-1)
+            step_z = ray_z >= zero(T) ? Int32(1) : Int32(-1)
+
+            # Delta-t per voxel
+            dt_x = abs(vsx / ray_x)
+            dt_y = abs(vsy / ray_y)
+            dt_z = abs(vsz / ray_z)
+
+            # t to next boundary
+            if ray_x >= zero(T)
+                t_next_x = t_enter + (vmx + T(ix + Int32(1)) * vsx - entry_x) / ray_x
+            else
+                t_next_x = t_enter + (vmx + T(ix) * vsx - entry_x) / ray_x
+            end
+            if ray_y >= zero(T)
+                t_next_y = t_enter + (vmy + T(iy + Int32(1)) * vsy - entry_y) / ray_y
+            else
+                t_next_y = t_enter + (vmy + T(iy) * vsy - entry_y) / ray_y
+            end
+            if ray_z >= zero(T)
+                t_next_z = t_enter + (vmz + T(iz + Int32(1)) * vsz - entry_z) / ray_z
+            else
+                t_next_z = t_enter + (vmz + T(iz) * vsz - entry_z) / ray_z
+            end
+
+            # ═══════════════════════════════════════════════════════════
+            # ENERGY ACCUMULATORS (NTuple in registers)
+            # ═══════════════════════════════════════════════════════════
+            accums = ntuple(_ -> zero(T), Val(N_E))
+
+            # ═══════════════════════════════════════════════════════════
+            # DDA TRAVERSAL — single pass, all energies accumulated
+            # ═══════════════════════════════════════════════════════════
+            t_current = t_enter
+            max_iter = nx + ny + nz + Int32(10)
+            iter = Int32(0)
+
+            while t_current < t_exit && iter < max_iter
+                iter += Int32(1)
+
+                # Bounds check
+                if ix < Int32(0) || ix >= nx || iy < Int32(0) || iy >= ny || iz < Int32(0) || iz >= nz
+                    break
+                end
+
+                t_next = min(t_next_x, t_next_y, t_next_z, t_exit)
+                path_length = (t_next - t_current) * ray_length
+
+                if path_length > eps
+                    # Read material index from mask (UInt8 or UInt16 → Int32)
+                    mat = Int32(mask[ix + Int32(1), iy + Int32(1), iz + Int32(1)]) + Int32(1)
+
+                    # Accumulate line integrals for ALL energies (@generated unroll)
+                    accums = _fused_accum_energies(accums, μ_tbl, mat, path_length)
+                end
+
+                # DDA step (branching — will be made branchless in SPEED-BUILD-003)
+                if t_next_x <= t_next_y && t_next_x <= t_next_z
+                    ix += step_x
+                    t_next_x += dt_x
+                elseif t_next_y <= t_next_z
+                    iy += step_y
+                    t_next_y += dt_y
+                else
+                    iz += step_z
+                    t_next_z += dt_z
+                end
+
+                t_current = t_next
+            end
+
+            # ═══════════════════════════════════════════════════════════
+            # BEER-LAMBERT SUMMATION (@generated unroll, replaces 30 kernels)
+            # ═══════════════════════════════════════════════════════════
+            I_total = if hbt
+                bt_base = Int32(col) + (Int32(row) - Int32(1)) * nc
+                _fused_beer_lambert_bt(accums, wη, bt, bt_base, ncnr)
+            else
+                _fused_beer_lambert(accums, wη)
+            end
+
+            sinogram[idx] = -log(max(I_total, T(1e-10)))
+        end
+    end
+
+    return sinogram
 end

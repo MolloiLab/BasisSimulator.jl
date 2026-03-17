@@ -1123,10 +1123,45 @@ function _forward_project_poly!(
     # Detector efficiency η(E) per energy bin (weights spectral sum)
     ws_η::Union{Nothing, Vector{Float64}}=nothing,
     # Bowtie spectral transmission [n_cols, n_rows, n_energies]
-    ws_bowtie_spectral=nothing
+    ws_bowtie_spectral=nothing,
+    # Fused kernel: pre-computed wη on GPU [n_energies], enables single-pass projection
+    ws_wη_gpu=nothing,
+    # Control flag: true = fused single-pass kernel, false = legacy sequential energy loop
+    fused::Bool=true
 ) where T <: AbstractFloat
 
     n_energies = length(energies)
+
+    # =========================================================================
+    # FUSED PATH: single AK.foreachindex kernel, traces mask ONCE
+    # =========================================================================
+    if fused && ws_μ_table_gpu !== nothing
+        # Build wη on GPU if not provided via workspace
+        wη_dev = if ws_wη_gpu !== nothing
+            ws_wη_gpu
+        else
+            weights_norm = ws_weights_norm !== nothing ? ws_weights_norm : T.(weights ./ sum(weights))
+            η_vec = ws_η !== nothing ? ws_η : ones(Float64, n_energies)
+            wη_cpu = T.(weights_norm .* η_vec)
+            _buf = similar(sinogram, T, n_energies)
+            copyto!(_buf, wη_cpu)
+            _buf
+        end
+
+        siddon_fused_poly_project!(sinogram, mask, geom, ws_μ_table_gpu, wη_dev, Val(n_energies);
+            volume_extent=volume_extent,
+            ws_source_positions=ws_source_positions,
+            ws_detector_centers=ws_detector_centers,
+            ws_detector_u=ws_detector_u,
+            ws_detector_v=ws_detector_v,
+            ws_bowtie_spectral=ws_bowtie_spectral)
+
+        return sinogram
+    end
+
+    # =========================================================================
+    # UNFUSED PATH: sequential energy loop (legacy, kept for A/B comparison)
+    # =========================================================================
 
     # Normalize weights (use pre-computed if available)
     weights_norm = ws_weights_norm !== nothing ? ws_weights_norm : T.(weights ./ sum(weights))
