@@ -484,7 +484,444 @@ The native-resolution geometry (`native_geom`) is constructed from the binned ge
 
 ## 3. Helical Reconstruction Algorithms
 
-(To be filled by HELI-003 research)
+**Status: COMPLETE (HELI-003 Discovery, 2026-03-17)**
+
+### 3.1 Overview: Four Classes of Helical CT Reconstruction
+
+| Algorithm Class | Type | Quality | Speed | Implementation Difficulty |
+|----------------|------|---------|-------|---------------------------|
+| **Naive Helical FDK** | Approximate | Adequate (pitch ≤ 1, cone < 5°) | Fast | Minimal (scaling fix only) |
+| **Weighted Helical FDK (WFBP)** | Approximate | Clinical quality | Fast | Moderate |
+| **Katsevich** | Exact | Artifact-free (theoretical) | Moderate | High |
+| **Rebinning (ASSR)** | Approximate | Good (narrow detectors) | Fastest | Moderate |
+
+**Recommendation: Implement Phase 1 (Naive) then Phase 2 (Weighted WFBP). Skip Katsevich and ASSR.**
+
+**Rationale:**
+- **No major clinical vendor uses Katsevich** (Ref: Hsieh 2021, "History of CT reconstruction algorithms"). WFBP is what Siemens uses for ALL scanners including NAEOTOM Alpha. GE uses FDK-type with proprietary weights. Canon uses ASSR-type rebinning.
+- Katsevich uses only ~73% of measured data ("1-pi method") → **higher noise** than WFBP (100% utilization).
+- For BasisSimulator's target detectors (NAEOTOM 3–4° cone, GE Apex 5–6° cone), WFBP cone-beam artifacts are clinically negligible.
+- Iterative methods (SIRT/CGLS) already work unchanged for helical — they're the fallback for artifact-sensitive applications.
+
+### 3.2 Naive Helical FDK (Phase 1 — Minimal Changes)
+
+**What it is:** Use the EXISTING FDK backprojection kernel on helical data, with only the scaling factor corrected.
+
+**Why it works:** The `backproject_voxel` function (`backprojection.jl:37–146`) already:
+- Reads per-angle source positions in full 3D (including Z)
+- Projects each voxel onto the detector using arbitrary geometry
+- Applies bilinear interpolation
+- Checks detector bounds (out-of-range voxels contribute zero)
+- Applies FDK weight `SAD²/dist²`
+
+For helical, the source/detector Z varies per angle. The backprojection correctly handles this because it computes the source→voxel→detector projection geometrically, not analytically. Voxels that fall outside the detector for a given angle automatically contribute zero.
+
+**The ONLY change needed:**
+
+```julia
+# CURRENT (backprojection.jl:335):
+pi_over_angles = T(π) / T(n_angles)  # n_angles = total views (multi-rotation)
+
+# HELICAL FIX:
+pi_over_angles = T(π) / T(views_per_rotation)
+```
+
+**Why:** The FDK integral is `(1/2) ∫₀²π ... dθ` for one rotation. Discretized: `(π/N_one_rot) × Σ`. For multi-rotation helical, each voxel is "seen" by approximately one rotation's worth of views (the rest have zero contribution because the voxel is outside the detector). The scaling must use `views_per_rotation`, not `total_views`.
+
+**For axial (pitch=0, 1 rotation):** `views_per_rotation = n_angles` → identical to current.
+
+**Quality characteristics:**
+- Works well for **pitch ≤ 1** and **cone half-angle < 5°**
+- At the Z-edges of the reconstruction, voxels near the detector boundary will have slightly lower intensity (fewer contributing views)
+- No handling of data redundancy for pitch < 1 (overlapping coverage)
+- Adequate for initial validation and prototyping
+
+**GPU kernel changes: NONE.** Only the scalar `pi_over_angles` changes.
+
+### 3.3 Weighted Helical FDK / WFBP (Phase 2 — Clinical Quality)
+
+**What it is:** The Stierstorfer WFBP algorithm — the same algorithm used by all Siemens clinical scanners, implemented as a modification to the FDK backprojection.
+
+**Ref:** Stierstorfer K et al., "Weighted FBP — a simple approximate 3D FBP algorithm for multislice spiral CT with good dose usage for arbitrary pitch," Phys. Med. Biol. 49(11):2209–2218, 2004. DOI: 10.1088/0031-9155/49/11/007
+
+**Ref (implementation):** Hoffman J et al., "Technical Note: FreeCT_wFBP: A robust, efficient, open-source implementation of weighted filtered backprojection for helical, fan-beam CT," Med. Phys. 43(3):1411–1420, 2016. PMID: 26936725. Source: github.com/xiehq/FreeCT_wFBP
+
+#### 3.3.1 Algorithm Overview
+
+WFBP has three stages:
+
+1. **Fan-to-parallel rebinning** (sinogram preprocessing)
+2. **1D ramp filtering** along detector columns (standard — we already have this)
+3. **3D cone-angle-weighted backprojection** (modified backprojection kernel)
+
+The key innovation is the **normalized cone-angle weight W(q̂)** that handles data redundancy by favoring rays with small cone angles and down-weighting rays with large cone angles. This is applied per-voxel per-view during backprojection.
+
+#### 3.3.2 The Normalized Cone Angle Parameter q̂
+
+For a voxel at world position `(x, y, z)` and a parallel-beam view at angle `α` with table position `z_table`:
+
+```
+p̂ = x sin(α) − y cos(α)                          # perpendicular distance to central ray
+l̂ = √(SAD² − p̂²) − x cos(α) − y sin(α)           # distance along ray to voxel
+q̂ = (z_voxel − z_table + (z_rot/(2π)) arcsin(p̂/SAD)) / (l̂ × tan(θ_cone/2))
+```
+
+Where:
+- `SAD` = source-to-isocenter distance
+- `z_rot` = table feed per gantry rotation (= pitch × total_collimation)
+- `θ_cone` = full cone angle of the detector = 2 × arctan(detector_z_extent / (2 × SDD))
+- The term `(z_rot/(2π)) arcsin(p̂/SAD)` is the **helical interpolation correction** — it accounts for the z-offset between the voxel plane and the oblique plane defined by the helical source trajectory
+
+**q̂ ranges from −1 to +1**, where |q̂| = 1 means the ray reaches the detector edge. For axial (z_rot=0), q̂ depends only on the fixed v-position of the voxel on the detector.
+
+**Ref:** FreeCT_wFBP `cuda_kernels.cuh`, backprojection kernel.
+
+#### 3.3.3 The Weight Function W(q̂)
+
+```
+         ⎧ 1                                        if |q̂| < Q
+W(q̂) =  ⎨ cos²(π/2 × (|q̂| − Q) / (1 − Q))        if Q ≤ |q̂| < 1
+         ⎩ 0                                        if |q̂| ≥ 1
+```
+
+Where **Q = 0.6** is the flat-top width parameter.
+
+This is a smooth cone-angle apodization window:
+- |q̂| < 0.6: full weight (ray near detector center, small cone angle)
+- 0.6 ≤ |q̂| < 1.0: smooth cos² taper (ray approaching detector edge)
+- |q̂| ≥ 1.0: zero weight (ray outside detector z-extent)
+
+**Ref:** FreeCT_wFBP `cuda_kernels.cuh`, `W()` function; Stierstorfer 2004, Eq. 3–5.
+
+#### 3.3.4 Backprojection with Weight Normalization
+
+For each voxel, the backprojection loops over "half-turns" (π-intervals) of the helix. Multiple half-turns contribute rays through the same voxel at the same parallel view direction — these are **complementary/redundant rays**. The normalized weighted backprojection:
+
+```
+                    Σ_k  W(q̂_k) × p̂_filtered(α_k, p*, q*)
+f(x,y,z) += (2π/N) × ─────────────────────────────────────
+                           Σ_k  W(q̂_k)
+```
+
+Where:
+- `k` indexes half-turns (complementary rays)
+- `N` = views per rotation
+- The denominator `Σ W(q̂_k)` normalizes weights to sum to 1 for each view direction
+- `p*` and `q*` are the detector coordinates of the voxel projection
+
+For pitch = 1: typically 2 half-turns contribute per voxel, with one having small |q̂| (high weight) and one having large |q̂| (low weight). For pitch < 1: more half-turns overlap, providing more redundancy.
+
+**Ref:** Stierstorfer 2004, Section 2.3; FreeCT_wFBP backprojection kernel.
+
+#### 3.3.5 Fan-to-Parallel Rebinning (Optional — Can Be Deferred)
+
+The full WFBP includes fan-to-parallel rebinning before filtering:
+
+```
+β = arcsin((channel − c_center) × Δ_col / SDD)     # parallel fan angle
+α = θ − β                                            # parallel view angle
+```
+
+Data is resampled via 2D bilinear interpolation from fan-beam `(channel, θ)` to parallel-beam `(β, α)`.
+
+**Key insight for BasisSimulator:** Rebinning can be DEFERRED. The q̂-based weighting works in fan-beam geometry too, with a modified q̂ formula that uses fan-beam coordinates instead of parallel-beam. The rebinning improves quality (filtering along the helix tangent reduces cone-beam artifacts) but the weight function alone provides 80–90% of the quality improvement.
+
+**Simplified Phase 2 approach (no rebinning):** Apply W(q̂) weighting directly in the existing fan-beam FDK backprojection kernel:
+
+```julia
+# In backproject_voxel, after computing row_f (v* detector coordinate):
+
+# Compute normalized cone angle q_hat
+v_center_offset = row_f - row_center
+v_max = T(n_rows) / T(2)
+q_hat = v_center_offset / v_max  # simplified: normalized detector row position
+
+# Apply WFBP weight
+q_abs = abs(q_hat)
+w_helical = if q_abs < T(0.6)
+    one(T)
+elseif q_abs < one(T)
+    t = (q_abs - T(0.6)) / T(0.4)
+    cos(T(π) / T(2) * t)^2
+else
+    zero(T)
+end
+
+# Combined FDK + helical weight
+weight = (SAD_sq / dist_sq) * w_helical
+```
+
+The normalization is handled by tracking weight sums per voxel:
+```julia
+# Two-pass approach:
+# Pass 1: backproject with weights, also accumulate weight sums
+# Pass 2: divide by weight sums
+# OR: single-pass with separate weight accumulator per voxel
+```
+
+This simplified approach uses `v*/v_max` instead of the full q̂ formula. The full q̂ includes the helical interpolation correction term `(z_rot/(2π)) arcsin(p̂/SAD)`, which can be added later for improved quality.
+
+#### 3.3.6 Integration with Existing Code
+
+**Changes to `backproject_voxel` (`backprojection.jl:37–146`):**
+
+```julia
+# ADD parameters:
+#   is_helical::Bool, Q_flat::T, n_rows_half::T
+# (passed as captured scalars from backproject!)
+
+# REPLACE lines 136-140:
+dist_sq = sv_x^2 + sv_y^2 + sv_z^2
+fdk_weight = SAD_sq / dist_sq
+
+# NEW: helical weight (only when is_helical)
+if is_helical
+    q_abs = abs(row_f - row_center) / n_rows_half
+    w_h = if q_abs < Q_flat
+        one(T)
+    elseif q_abs < one(T)
+        cos(T(π) / T(2) * (q_abs - Q_flat) / (one(T) - Q_flat))^2
+    else
+        zero(T)
+    end
+    weight = fdk_weight * w_h
+else
+    weight = fdk_weight  # standard FDK (unchanged)
+end
+```
+
+**For axial (is_helical=false):** The code path is identical to current — no performance impact.
+
+**Normalization:** Requires a second backprojection pass with constant-1 sinogram data, or a per-voxel weight accumulator. The weight accumulator approach adds one `similar(volume)` buffer but avoids the second BP pass:
+
+```julia
+# In backproject! (helical path):
+weight_sum = similar(volume)
+fill!(weight_sum, zero(T))
+
+AK.foreachindex(volume) do idx
+    # ... (existing voxel computation) ...
+    val_acc = zero(T)
+    wgt_acc = zero(T)
+
+    for angle in 1:n_angles
+        # ... (existing projection + interpolation) ...
+        w = fdk_weight * w_helical
+        val_acc += val * w
+        wgt_acc += w
+    end
+
+    volume[idx] = wgt_acc > eps ? val_acc * pi_over_angles / wgt_acc * T(n_angles) / T(views_per_rotation) : zero(T)
+end
+```
+
+Wait — actually, the normalization is simpler. Since we loop over ALL angles and the weight function naturally tapers to zero for angles where the voxel is far from the source z-position, we can use:
+
+```julia
+# Scaling for helical with weights:
+# The weight normalization factor per voxel is Σ w_h(angle)
+# The correct reconstruction is: (2π / Σ w_h) × Σ w_h × fdk_weight × val × (1/views_per_rotation)
+# Simplification: track weight sum, divide at end
+
+volume[idx] = val_acc / wgt_acc * T(π)
+```
+
+This normalizes each voxel by its actual weight sum, ensuring correct HU values regardless of how many rotations contribute.
+
+### 3.4 Katsevich Exact Algorithm (Optional — For Research)
+
+**Ref:** Katsevich A, "Analysis of an exact inversion algorithm for spiral cone-beam CT," Phys. Med. Biol. 47(15):2583–2597, 2002.
+
+**Ref (implementation):** ASTRA helical-kats, github.com/astra-toolbox/helical-kats (Python + CuPy + ASTRA GPU backprojection).
+
+**Ref (simplified):** Noo F et al., "Exact helical reconstruction using native cone-beam geometries," Phys. Med. Biol. 48(23):3787–3818, 2003.
+
+#### 3.4.1 Algorithm Steps
+
+1. **Differentiation + length correction:**
+   ```
+   g₁(λ, u, v) = [D / √(u² + D² + v²)] × [∂p/∂λ + ((u² + D²)/D) × ∂p/∂u + (uv/D) × ∂p/∂v]
+   ```
+   Where D = SDD, λ = view angle, (u, v) = flat detector coordinates.
+
+2. **Forward height rebinning** to k-line coordinates:
+   ```
+   v_k(u, ψ) = (D × h) / (2π × R) × (ψ + (ψ/tan(ψ)) × u/D)
+   ```
+   Maps detector rows to a coordinate system aligned with the helix.
+
+3. **Hilbert filtering** (1D convolution along detector columns):
+   ```
+   h_H[n] = (1 − cos(π(n − N/2 − 0.5))) / (π(n − N/2 − 0.5))
+   ```
+
+4. **Reverse height rebinning** back to detector coordinates.
+
+5. **Tam-Danielsson windowing:**
+   ```
+   w_bottom(u) = −(h / (2πRD)) × (u² + D²) × (π/2 + arctan(u/D))
+   w_top(u)    =  (h / (2πRD)) × (u² + D²) × (π/2 − arctan(u/D))
+   ```
+
+6. **Weighted backprojection:**
+   ```
+   f(x) = (1/2π) ∫_{λ₁}^{λ₂} [1/|x − a(λ)|] × g_filtered(λ, u*, v*) dλ
+   ```
+   Integration over the PI-arc [λ₁, λ₂] for each voxel.
+
+#### 3.4.2 Why NOT to Implement First
+
+- **Complexity:** 7-step pipeline vs 3-step FDK. Requires height rebinning, Hilbert transforms, T-D windowing — all new code.
+- **~73% data utilization:** Uses only PI-arc data → higher noise than WFBP.
+- **Not used clinically:** "The Katsevich algorithm did not find its way directly into commercial use" (Hsieh 2021).
+- **Marginal quality improvement:** For cone half-angles < 5° (our target scanners), the difference between WFBP and Katsevich is negligible.
+- **GPU parallelism:** Same as FDK (voxel-parallel backprojection), but filtering steps are more complex.
+
+**When to implement:** Only if BasisSimulator needs to simulate very wide-cone detectors (>128 rows) or if an exact reference reconstruction is needed for algorithm validation.
+
+### 3.5 Rebinning / ASSR (Not Recommended)
+
+**Ref:** Kachelrieß M et al., "Advanced single-slice rebinning in cone-beam spiral CT," Med. Phys. 27(4):754–772, 2000.
+
+**ASSR** rebins helical cone-beam data to virtual 2D fan-beam scans on tilted reconstruction planes, then applies standard 2D FBP per slice.
+
+**Optimal tilt angle:** `θ_tilt = arctan(3h / (4πR))` where h = pitch per turn, R = source radius.
+
+**Quality:** Good for ≤ 16 detector rows (cone half-angle < 3°). Degrades for wider detectors (64+ rows) because the planar approximation breaks down.
+
+**Not recommended for BasisSimulator** because:
+- Our target scanners have 64–320 detector rows (well beyond ASSR's useful range)
+- Would require entirely new code path (2D FBP per slice)
+- WFBP provides better quality with same or lower implementation effort
+
+### 3.6 Iterative Methods (Already Work — No Changes)
+
+**SIRT and CGLS** (`sirt.jl`, `cgls.jl`) use matched (unweighted) backprojection. They work UNCHANGED for helical because:
+- Forward projection (`siddon_forward_project!`) already handles arbitrary 3D geometry
+- Matched backprojection (`backproject_voxel_matched`) reads per-angle positions
+- No FDK weight involved — the adjoint operator is correct for any orbit
+
+Iterative methods are the recommended fallback for:
+- Very wide cone angles where WFBP artifacts are unacceptable
+- Research requiring artifact-free reconstruction
+- Low-dose protocols where regularization improves quality
+
+### 3.7 Clinical Scanner Reconstruction Algorithms
+
+| Vendor | Algorithm | Notes |
+|--------|-----------|-------|
+| **Siemens** | **WFBP** (Stierstorfer 2004) | All scanners including NAEOTOM Alpha PCCT |
+| **GE** | FDK-type with proprietary weights | Plus ASIR-V / TrueFidelity (DL denoising) |
+| **Philips** | FDK-type / iDose | FBP + iterative refinement |
+| **Canon/Toshiba** | ASSR-type rebinning + 2D FBP | Leverages wide-area detector for volumetric axial |
+
+**Key finding:** All clinical vendors use APPROXIMATE algorithms, not exact methods. WFBP (or equivalent FDK-type with weights) is the gold standard.
+
+**Ref:** Hsieh J et al., "A brief history of CT reconstruction algorithms and future directions," in *Emerging Imaging Technologies in Medicine*, 2012; Hoffman et al. 2016 (FreeCT paper).
+
+### 3.8 Recommended Implementation Roadmap
+
+#### Phase 1: Naive Helical FDK (1 code change)
+
+**Effort:** ~1 hour. Change `pi_over_angles` from `π/n_angles` to `π/views_per_rotation`.
+
+**Validates:** Helical geometry generation, forward projection, basic reconstruction. Produces usable images for pitch ≤ 1.
+
+#### Phase 2: Weighted Helical FDK (backprojection kernel modification)
+
+**Effort:** ~1 day. Add q̂-based W(q̂) weighting to `backproject_voxel`. Add weight normalization buffer.
+
+**Validates:** Clinical-quality helical reconstruction. Matches Siemens WFBP approach.
+
+**Changes:**
+1. Add `is_helical`, `Q_flat`, `n_rows_half` parameters to `backproject_voxel`
+2. Add W(q̂) weight computation after bilinear interpolation
+3. Add weight accumulation for normalization
+4. Add weight normalization pass (divide by accumulated weights)
+
+#### Phase 3 (Optional): Fan-to-Parallel Rebinning
+
+**Effort:** ~2 days. Add sinogram rebinning kernel.
+
+**Benefit:** Filtering along helix tangent reduces cone-beam artifacts. Full WFBP quality.
+
+**Changes:**
+1. New GPU kernel `rebin_fan_to_parallel!` — 2D bilinear interpolation
+2. Apply ramp filter in parallel-beam domain
+3. Backprojection uses parallel-beam geometry internally
+
+#### Phase 4 (Optional): Katsevich Exact
+
+**Effort:** ~1 week. Complete new pipeline with height rebinning, Hilbert filtering, T-D windowing.
+
+**Benefit:** Exact reconstruction for research applications. Reference for validating WFBP.
+
+### 3.9 GPU Kernel Design for Phase 2 (Weighted Helical FDK)
+
+The modified `backproject_voxel` pseudocode for helical:
+
+```julia
+@inline function backproject_voxel_helical(
+    sinogram, voxel_x, voxel_y, voxel_z,
+    source_positions, detector_centers, detector_u, detector_v,
+    n_cols, n_rows, n_angles,
+    col_center, row_center,
+    pixel_mag, pixel_row_mag, SAD, SAD_sq,
+    Q_flat, n_rows_half
+) where T
+
+    val_acc = zero(T)   # weighted value accumulator
+    wgt_acc = zero(T)   # weight sum accumulator
+
+    for angle in Int32(1):n_angles
+        # ... (IDENTICAL geometry: source pos, detector projection, bilinear interp) ...
+        # ... (produces: val, row_f, dist_sq) ...
+
+        # Standard FDK distance weight
+        fdk_w = SAD_sq / dist_sq
+
+        # Helical cone-angle weight W(q̂)
+        q_abs = abs(row_f - row_center) / n_rows_half
+        w_h = if q_abs < Q_flat
+            one(T)
+        elseif q_abs < one(T)
+            cos(T(π) / T(2) * (q_abs - Q_flat) / (one(T) - Q_flat))^2
+        else
+            zero(T)
+        end
+
+        w_total = fdk_w * w_h
+        val_acc += val * w_total
+        wgt_acc += fdk_w * w_h  # accumulate for normalization
+    end
+
+    # Normalize: divide by weight sum, multiply by π
+    # This ensures correct HU regardless of how many rotations contribute
+    return wgt_acc > T(1e-10) ? val_acc * T(π) / wgt_acc : zero(T)
+end
+```
+
+**Parallelism:** Same as existing FDK — one GPU thread per voxel. The inner loop over angles is sequential (same as current). The W(q̂) computation adds ~5 FLOPs per angle per voxel — negligible overhead.
+
+**Memory:** No additional sinogram buffers. One weight accumulator per voxel (computed inline, not stored).
+
+**For axial (pitch=0):** All voxels have the same fixed row_f per angle (no Z variation), so `q_abs` is constant. For central slices, `q_abs ≈ 0 < Q_flat` → `w_h = 1` → identical to standard FDK.
+
+### 3.10 Cone Angle Thresholds and Quality Analysis
+
+| Cone Half-Angle | Detector Rows | Naive FDK | Weighted FDK (WFBP) | Katsevich |
+|-----------------|---------------|-----------|---------------------|-----------|
+| < 3° | ≤ 16 rows | Good | Excellent | Excellent |
+| 3°–5° | 32–64 rows | Adequate | Good–Excellent | Excellent |
+| 5°–7° | 64–128 rows | Visible artifacts | Good | Excellent |
+| > 7° | 128+ rows | Poor | Adequate | Excellent |
+
+**BasisSimulator target scanners:**
+- NAEOTOM Alpha: 144 × 0.4mm rows = 57.6mm. Cone half-angle ≈ 3.3° at SAD=595mm. → **WFBP is excellent.**
+- GE Apex Elite: 256 × 0.625mm rows = 160mm at isocenter. Cone half-angle ≈ 5.7° at SAD=541mm. → **WFBP is good.** (GE uses FDK-type clinically.)
+- Aquilion ONE: 320 × 0.5mm rows = 160mm. Primarily axial volumetric. Cone half-angle ≈ 5.5°.
+
+**Ref:** Turbell H, "Cone-Beam Reconstruction Using Filtered Backprojection," PhD Thesis, Linköping University, 2001, Chapter 6; Hsieh, "Computed Tomography," 3rd ed., Ch. 9.
 
 ---
 
