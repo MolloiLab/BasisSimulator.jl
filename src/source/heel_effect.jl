@@ -187,8 +187,11 @@ function apply_heel_effect!(
     θ_min = θ_anode / T(3)
 
     AK.foreachindex(intensity) do idx
-        ci = CartesianIndices(intensity)[idx]
-        col, row, angle = Tuple(ci)
+        idx_0 = Int32(idx - 1)
+        col = (idx_0 % Int32(n_cols)) + Int32(1)
+        idx_0 = idx_0 ÷ Int32(n_cols)
+        row = (idx_0 % Int32(n_rows)) + Int32(1)
+        angle = (idx_0 ÷ Int32(n_rows)) + Int32(1)
 
         # Fan angle for this column (negative = anode side, positive = cathode side)
         # Convention: col=1 is anode side, col=n_cols is cathode side

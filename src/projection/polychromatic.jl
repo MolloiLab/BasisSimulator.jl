@@ -1204,12 +1204,14 @@ function _forward_project_poly!(
         if ws_bowtie_spectral !== nothing
             # Per-pixel bowtie transmission from [n_cols, n_rows, n_energies] array
             nc = size(sinogram, 1)
-            nc_nr = nc * size(sinogram, 2)
+            nr = size(sinogram, 2)
+            nc_nr = nc * nr
             bt_offset = (e_idx - 1) * nc_nr
-            let w = w, η_e = η_e, bt = ws_bowtie_spectral, bt_off = bt_offset, nc = nc
+            let w = w, η_e = η_e, bt = ws_bowtie_spectral, bt_off = bt_offset, nc = nc, nr = nr
                 AK.foreachindex(I_transmitted) do idx
-                    ci = CartesianIndices(I_transmitted)[idx]
-                    col, row, _ = Tuple(ci)
+                    idx_0 = Int32(idx - 1)
+                    col = (idx_0 % Int32(nc)) + Int32(1)
+                    row = ((idx_0 ÷ Int32(nc)) % Int32(nr)) + Int32(1)
                     bt_val = bt[col + (row - 1) * nc + bt_off]
                     I_transmitted[idx] += w * η_e * bt_val * exp(-sino_mono[idx])
                 end

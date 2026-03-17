@@ -416,10 +416,11 @@ function simulate!(
         # Air scan uses spectral bowtie air reference: I₀(col,row) = Σ w(E) × T_bt(E,col,row) × η(E)
         fill!(ws.air_scan, one(T))
         if ws.bowtie_air_reference !== nothing
-            let air = ws.air_scan, ref = ws.bowtie_air_reference, nc = size(air, 1)
+            let air = ws.air_scan, ref = ws.bowtie_air_reference, nc = size(air, 1), nr = size(air, 2)
                 AK.foreachindex(air) do idx
-                    ci = CartesianIndices(air)[idx]
-                    col, row, _ = Tuple(ci)
+                    idx_0 = Int32(idx - 1)
+                    col = (idx_0 % Int32(nc)) + Int32(1)
+                    row = ((idx_0 ÷ Int32(nc)) % Int32(nr)) + Int32(1)
                     ref_idx = col + (row - 1) * nc
                     air[idx] *= ref[ref_idx]
                 end

@@ -327,8 +327,11 @@ function add_scatter!(sinogram::AbstractArray{T,3}, model::ScatterModel;
 
     let kernel = kernel, output = output, half_k = half_k, n_cols = n_cols, n_rows = n_rows, C = C
         AK.foreachindex(sinogram) do idx
-            ci = CartesianIndices(sinogram)[idx]
-            col, row, angle = Tuple(ci)
+            idx_0 = Int32(idx - 1)
+            col = (idx_0 % Int32(n_cols)) + Int32(1)
+            idx_0 = idx_0 ÷ Int32(n_cols)
+            row = (idx_0 % Int32(n_rows)) + Int32(1)
+            angle = (idx_0 ÷ Int32(n_rows)) + Int32(1)
 
             proj = sinogram[idx]
             clamped_proj = min(proj, T(20))
@@ -549,8 +552,11 @@ function correct_scatter!(sinogram::AbstractArray{T,3}, model::ScatterCorrection
 
     let kernel = kernel, output = output, half_k = half_k, n_cols = n_cols, n_rows = n_rows, C = C, scatter_damping = scatter_damping, eps = eps
         AK.foreachindex(sinogram) do idx
-            ci = CartesianIndices(sinogram)[idx]
-            col, row, angle = Tuple(ci)
+            idx_0 = Int32(idx - 1)
+            col = (idx_0 % Int32(n_cols)) + Int32(1)
+            idx_0 = idx_0 ÷ Int32(n_cols)
+            row = (idx_0 % Int32(n_rows)) + Int32(1)
+            angle = (idx_0 ÷ Int32(n_rows)) + Int32(1)
 
             prep = sinogram[idx]
             clamped_prep = min(max(prep, T(0)), T(20))
@@ -1134,8 +1140,11 @@ function estimate_scatter_joint(
     w_high = T(high_weight)
 
     AK.foreachindex(scatter_estimate) do idx
-        ci = CartesianIndices(scatter_estimate)[idx]
-        col, row, angle = Tuple(ci)
+        idx_0 = Int32(idx - 1)
+        col = (idx_0 % Int32(n_cols)) + Int32(1)
+        idx_0 = idx_0 ÷ Int32(n_cols)
+        row = (idx_0 % Int32(n_rows)) + Int32(1)
+        angle = (idx_0 ÷ Int32(n_rows)) + Int32(1)
 
         # Scatter estimate via convolution on COMBINED signal
         scatter_acc = zero(T)

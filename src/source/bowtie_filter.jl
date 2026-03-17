@@ -889,11 +889,12 @@ function apply_bowtie_filter!(
 
     # GPU-native element-wise operation
     # let-bind to capture with concrete type (avoids Core.Box on GPU)
-    let bowtie_projection = bowtie_projection, n_cols = n_cols
+    let bowtie_projection = bowtie_projection, n_cols = Int32(n_cols), n_rows = Int32(n_rows)
         AK.foreachindex(sinogram) do idx
-            ci = CartesianIndices(sinogram)[idx]
-            col, row, _ = Tuple(ci)
-            proj_idx = col + (row - 1) * n_cols
+            idx_0 = Int32(idx - 1)
+            col = (idx_0 % n_cols) + Int32(1)
+            row = ((idx_0 ÷ n_cols) % n_rows) + Int32(1)
+            proj_idx = col + (row - Int32(1)) * n_cols
             sinogram[idx] += bowtie_projection[proj_idx]
         end
     end
@@ -940,11 +941,12 @@ function apply_bowtie_to_intensity!(
     copyto!(transmission, transmission_cpu)
 
     # GPU-native element-wise operation
-    let transmission = transmission, n_cols = n_cols
+    let transmission = transmission, n_cols = Int32(n_cols), n_rows = Int32(n_rows)
         AK.foreachindex(intensity) do idx
-            ci = CartesianIndices(intensity)[idx]
-            col, row, _ = Tuple(ci)
-            trans_idx = col + (row - 1) * n_cols
+            idx_0 = Int32(idx - 1)
+            col = (idx_0 % n_cols) + Int32(1)
+            row = ((idx_0 ÷ n_cols) % n_rows) + Int32(1)
+            trans_idx = col + (row - Int32(1)) * n_cols
             intensity[idx] *= transmission[trans_idx]
         end
     end
