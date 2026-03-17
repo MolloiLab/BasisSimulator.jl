@@ -348,3 +348,372 @@ Recommended: warn if `phantom.extent[3] < z_travel + total_collimation_cm`. Not 
 3. **Volume center for iterative recon:** The `recon_center` Z offset needs to be threaded through to `siddon_forward_project!` when called from SIRT/CGLS. Design this in HELI-004.
 
 ---
+
+## Iteration 4: HELI-003 DISCOVERY — Helical Reconstruction Algorithms
+
+**Date:** 2026-03-17
+**Phase:** Discovery
+**Topic:** HELI-003 (Helical Reconstruction Algorithms — FDK-Helical vs Katsevich vs Rebinning)
+
+### Summary
+
+Deep research into helical CT reconstruction algorithms via web search, reference implementation analysis, and clinical scanner vendor surveys. Produced comprehensive analysis of four algorithm classes with exact mathematical formulations, GPU implementation feasibility, clinical usage, and quality comparisons.
+
+### Key Findings
+
+#### 1. ALGORITHM RECOMMENDATION: Two-Phase Approach Confirmed
+
+**Phase 1 — Naive Helical FDK:** Change only `pi_over_angles = π/views_per_rotation`. The existing backprojection kernel naturally handles helical geometry because voxels outside the detector cone contribute zero. Works for pitch ≤ 1.
+
+**Phase 2 — Weighted Helical FDK (WFBP-style):** Add z-distance-based W(q̂) weighting to the backprojection kernel. The weight function:
+```
+W(q̂) = 1                                    if |q̂| < 0.6
+W(q̂) = cos²(π/2 × (|q̂| − 0.6) / 0.4)      if 0.6 ≤ |q̂| < 1.0
+W(q̂) = 0                                    if |q̂| ≥ 1.0
+```
+Normalization: `f(x) = π × Σ(w_h × w_fdk × val) / Σ(w_h × w_fdk)`. For axial (pitch=0), w_h=1 for all, reduces to standard FDK.
+
+#### 2. CLINICAL SCANNER ALGORITHMS (Detailed)
+
+**Siemens (WFBP — Stierstorfer 2004, PMID 15248573):**
+- Fan-to-parallel rebinning → ramp filter → 3D backprojection with z-distance cos² taper (Q=0.6)
+- Key property: noise approximately pitch-independent (< 7% variation)
+- Open-source: FreeCT_wFBP (github.com/xiehq/FreeCT_wFBP, PMID 26936725)
+- All Siemens scanners including NAEOTOM Alpha use WFBP as base; SAFIRE/ADMIRE refine on top
+
+**GE (3D CB-FBP — Tang/Hsieh 2006, PMID 16467583):**
+- Row-wise fan-to-parallel rebinning ("tilted cone-beam reconstruction")
+- Cone-angle-based conjugate ray weighting: w₁ = κ₂²/(κ₁²+κ₂²) for conjugate pair
+- "Comparable to exact CB reconstruction under moderate cone angle (4°)"
+- ASiR-V / TrueFidelity applied post-reconstruction
+
+**Key: NO vendor uses Katsevich.** All use approximate weighted cone-beam FBP. DL reconstruction (TrueFidelity, AiCE) largely masks remaining cone-beam artifacts.
+
+#### 3. KATSEVICH — NOT RECOMMENDED
+
+- Theoretically exact FBP-type for helical cone-beam (Katsevich 2002, SIAM J. Appl. Math.)
+- PI-line based: f(x) = -(1/2π²) ∫ [1/|x-y(s)|²] × Hilbert_filtered dq ds
+- Filtering along oblique "K-lines" on detector (not rows) — requires interpolation to/from K-line coordinates
+- Uses only PI-arc data (~73% of measurements) → **higher noise** than WFBP (100%)
+- **NO open-source GPU implementation exists** (confirmed: TIGRE, RTK, ASTRA all lack it)
+- Only published GPU paper: Yan et al. 2010 (PMID 20007041) — 16-year-old CUDA 2.x, no public code
+- Estimated 3-5x computational cost vs FDK, ~1500-3000 lines of code
+- Katsevich algorithm was patented (filed ~2002, expired ~2022)
+- Only matters at cone angles > 5° — our target scanners are 1.6-3.3°
+
+#### 4. REFERENCE IMPLEMENTATION SURVEY
+
+- **XCIST/CatSim**: ONLY framework with complete helical FBP. Key file: `Parallel_FDK_Helical_3DWeighting.c`. Uses cos² view window + conjugate-ray Gamma^k1 weighting. Separate code path from axial.
+- **TIGRE**: No helical FDK. Uses per-angle `offOrigin[z]` for helical geometry. Only iterative recon (SIRT, CGLS) works for helical. Confirmed by maintainer: "we don't have the Katsevich algorithm implemented."
+- **ASTRA**: FDK explicitly blocked for non-circular geometry (`fdk.cu` line 420: "we don't support arbitrary cone_vec geometries here"). Iterative works via `cone_vec`.
+- **RTK**: No helical support. Zero references to Katsevich in entire repository.
+- **FreeCT_wFBP**: Complete open-source WFBP (Siemens-style). Best reference for our implementation.
+
+#### 5. GPU KERNEL DESIGN
+
+The modified `backproject_voxel` for helical needs:
+- **2 new parameters:** `half_collimation_iso` (T), `is_helical` (Bool)
+- **Replace** `pi_over_angles` accumulation with dual-accumulator (weighted values + weight sums)
+- **Add** ~10 lines of helical weight computation per angle
+- **Normalization:** `π × acc_val / acc_wt` (degenerates to `π/n_angles × acc` for axial)
+- **No new buffers** — weight accumulator is per-voxel inline, not stored
+
+Iterative recon (SIRT, CGLS) needs NO changes — matched backprojection is already orbit-agnostic.
+
+#### 6. CONE ANGLE QUALITY ANALYSIS
+
+From Tan et al. 2012 (PMID 28519621), Catphan 600 phantom at 360° helical:
+- Katsevich noise σ = 28.07 HU vs FDK noise σ = 44.64 HU (37% improvement)
+- But this was CBCT at cone half-angle ~8° — far beyond our target scanners
+
+Clinical CT cone half-angles:
+- NAEOTOM Alpha: ~1.6° (57.6mm/2 at SAD=595mm × SDD/SAD)
+- GE Apex Elite: ~2.3° (80mm effective at isocenter)
+- At these angles, WFBP artifacts are below the noise floor
+
+### Normalization Analysis for Axial-Helical Seamlessness
+
+**Critical subtlety identified:** For axial (pitch=0), a z-distance-based weight (using source_z - voxel_z) would cause problems because all source_z = 0, and voxels near the z-edges of the recon volume could have large |Δz|. The existing spec correctly uses **detector row position** (q̂ = v*/v_max) instead of z-distance — this naturally degenerates to constant weight for axial since the detector projection doesn't change shape.
+
+However, for axial FDK the detector row projection `row_f` of a voxel at z=z_max relative to row_center IS nonzero (it's the cone-beam projection). So for a 64-row detector with a recon volume spanning the full z-extent, voxels at the z-edges would have |q̂| approaching ~1 even in axial mode. The W(q̂) weight would taper their contributions, which is **undesirable** for axial.
+
+**Solution:** Use `is_helical` flag. For axial (pitch=0), skip helical weighting entirely (w_h=1 for all). For helical (pitch>0), compute W(q̂). Since this is a scene-wide constant (not per-voxel), all GPU threads take the same branch — zero performance cost.
+
+### Open Questions for Future Iterations
+
+1. **Fan-to-parallel rebinning (Phase 3):** Worth implementing? XCIST and FreeCT both use it. Improves filtering accuracy. But adds a preprocessing GPU kernel. Defer to HELI-004 API design.
+2. **GE conjugate-ray approach vs Siemens z-distance approach:** The Tang/Hsieh cone-angle weighting (κ₂²/(κ₁²+κ₂²)) is more physically motivated than the cos² taper. Consider as an enhancement.
+3. **PCCT + helical:** The PCCT workspace uses the same geometry → same helical changes apply. But multi-energy binning + helical is a combined complexity. Verify in HELI-005.
+
+---
+
+## Iteration 5: CRITIQUE of HELI-000 through HELI-003
+
+**Date:** 2026-03-17
+**Phase:** Critique
+**Topics:** HELI-000 (Geometry Audit), HELI-001 (Helical Geometry), HELI-002 (Forward Projection), HELI-003 (Reconstruction Algorithms)
+
+### Method
+
+Cross-referenced every claim in `helical-spec.md` sections 0–3 against the actual BasisSimulator source code. Verified line numbers, tested mathematical formulas for self-consistency and axial degeneration, checked all function signatures and call sites, and tested integration concerns.
+
+---
+
+### CRITICAL Issues (Must Fix Before Implementation)
+
+#### C1. Inconsistent normalization formulas in Section 3.3.6
+
+The spec provides THREE different normalization formulas that give different results:
+
+1. **Line 714:** `val_acc * pi_over_angles / wgt_acc * T(n_angles) / T(views_per_rotation)`
+   - Expanding: `val_acc * (π/n_angles) / wgt_acc * (n_angles/views_per_rotation)` = `val_acc * π / (wgt_acc * views_per_rotation)`
+2. **Line 726:** `val_acc / wgt_acc * T(π)`
+   - This is: `val_acc * π / wgt_acc`
+3. **Section 3.9, line 960:** `val_acc * T(π) / wgt_acc`
+   - Same as formula 2.
+
+Formula 1 differs from formulas 2/3 by a factor of `1/views_per_rotation`. These cannot all be correct. **The spec must settle on ONE formula and derive it from first principles.**
+
+The correct WFBP formula (Stierstorfer 2004, Eq. 5) is:
+```
+f(x) = Δα × Σ_i [ W_norm(i,x) × w_fdk(i) × p̂(i, u*, v*) ]
+```
+where `Δα = 2π / views_per_rotation` is the angular step, and `W_norm(i,x) = W(q̂_i) / Σ_k W(q̂_{i+kπ})` is the group-normalized weight. For a simplified version using total-sum normalization:
+```
+f(x) = (2π / views_per_rotation) × Σ[ W × w_fdk × p̂ ] / Σ[ W × w_fdk ]
+```
+This simplifies to `val_acc * (2π / views_per_rotation) / wgt_acc`. Neither formula 1, 2, nor 3 matches this exactly.
+
+**Action needed:** Derive the correct normalization from the WFBP integral and verify against FreeCT_wFBP source code (`cuda_kernels.cuh`, backprojection kernel). The factor of 2 (from 2π vs π) needs to be resolved by checking whether the FDK integral convention uses (1/2)∫₀²π or ∫₀π.
+
+#### C2. Naive FDK fix (Section 3.2) only works for pitch ≈ 1, not pitch ≤ 1
+
+The spec claims (line 534): "Works well for **pitch ≤ 1** and cone half-angle < 5°"
+
+This is incorrect for pitch significantly below 1. Analysis:
+
+- For pitch < 1, detector cones overlap — multiple rotations contribute data for the same voxel
+- A central voxel sees approximately `1/pitch` rotations of data (e.g., ~2 rotations for pitch=0.5)
+- With `pi_over_angles = π / views_per_rotation`, the sum of `~2N` non-zero terms × `π/N` = `~2× correct value`
+- **Result: Voxels are ~(1/pitch)× too bright for pitch < 1**
+
+Example: pitch=0.5, 3 rotations → central voxels see ~2 rotations → ~2× overestimation.
+
+**Action needed:** Change claim to "Works well for **pitch ≈ 1** (±0.1). For pitch < 0.8, expect overestimation by a factor approaching 1/pitch due to unhandled data redundancy. Use Phase 2 (weighted WFBP) for pitch < 0.8."
+
+#### C3. The normalized formula does NOT degenerate to standard FDK for axial
+
+The spec claims (or implies) that the weighted helical formula degenerates to standard FDK when W(q̂)=1 for all angles. This is false.
+
+**Standard axial FDK:**
+```
+f(x) = (π/N) × Σ_{i=1}^{N} [SAD²/dist²_i] × p̂_i
+```
+
+**Helical normalized (with W=1):**
+```
+f(x) = π × [Σ (SAD²/dist²_i) × p̂_i] / [Σ (SAD²/dist²_i)]
+```
+
+These are equivalent ONLY if `Σ(SAD²/dist²_i) = N`, which is true only at the isocenter (where dist = SAD for all angles). For off-center voxels, the FDK weight `SAD²/dist²` varies per angle, so `Σ w_fdk ≠ N`.
+
+**Consequence:** The `is_helical` flag is necessary not just for the W(q̂) weighting but for the ENTIRELY DIFFERENT normalization strategy. For axial, use the existing `π/N × Σ(w×p̂)`. For helical, use the weight-normalized form. **The spec already proposes the `is_helical` flag (good), but the reasoning should be corrected — it's not just about cone-edge tapering in axial mode.**
+
+#### C4. Adding fields to CTGeometry breaks 6 inner constructor call sites (spec lists only 2)
+
+The spec proposes adding `pitch`, `views_per_rotation`, and `recon_center` to the `CTGeometry` struct. Julia's default inner constructor requires ALL fields in positional order. The spec identifies changes to `scanner.jl` and `workspace.jl`, but there are **6 call sites** using the positional inner constructor:
+
+| # | File:Line | What It Does |
+|---|-----------|-------------|
+| 1 | `scanner.jl:694` | Main CTGeometry constructor return |
+| 2 | `scanner.jl:802` | `create_aquilion_one` return |
+| 3 | `fdk.jl:426` | FOV-override variant of `fdk_reconstruct` |
+| 4 | `workspace.jl:364` | PCCT native-resolution geometry |
+| 5 | `mbir.jl:434` | Ordered-subset geometry slicing |
+| 6 | `scanners.jl:327` | Scanner factory function (`create_geometry`) |
+
+All 6 must be updated when fields are added. The MBIR site (#5) is particularly subtle — it creates a geometry subset for ordered-subset iteration. The new fields (`pitch`, `views_per_rotation`, `recon_center`) must be propagated: `geom.pitch`, `geom.views_per_rotation`, `geom.recon_center`.
+
+**Action needed:** List ALL 6 sites in the spec. For site #5 (MBIR), note that `views_per_rotation` stays the same even though `n_angles` changes (it's a subset of a single rotation).
+
+#### C5. Helical `fov_z` computation not specified in constructor
+
+The current CTGeometry constructor computes `fov_z` from single-rotation detector coverage:
+```julia
+# scanner.jl:653-655
+z_coverage_mm = _n_rows * scanner.detector_row_size
+fov_z = z_coverage_mm / 10.0  # mm → cm
+```
+
+For helical, the reconstruction z-FOV should be the **Tam-Danielsson window** (fully-sampled z-range):
+```
+z_recon = z_travel - total_collimation_cm
+       = (n_rotations × pitch × collim) - collim
+       = collim × (n_rotations × pitch - 1)
+```
+
+The proposed constructor changes (Section 1.10) modify the angle generation and Z-positions but do NOT change the `fov_z` computation. A helical scan with 3 rotations at pitch=0.8 on NAEOTOM (collim=5.76cm) should have:
+```
+z_recon = 5.76 × (3 × 0.8 - 1) = 5.76 × 1.4 = 8.06 cm
+```
+But the current code would give `fov_z = 5.76 cm` (single-rotation coverage).
+
+**Action needed:** Add helical-aware `fov_z` computation to the constructor:
+```julia
+if pitch > 0 && z_cm === nothing
+    total_collim_cm = _n_rows * scanner.detector_row_size / 10.0
+    z_travel = n_rotations * pitch * total_collim_cm
+    fov_z = z_travel - total_collim_cm  # Tam-Danielsson window
+    fov_z = max(fov_z, total_collim_cm)  # At least single-rotation coverage
+end
+```
+
+---
+
+### IMPORTANT Issues (Should Fix)
+
+#### C6. `recon_center` Z-offset needed in BOTH forward projector AND backprojection
+
+The spec shows the forward projector change (Section 2.2):
+```julia
+vol_min_z = T(-vol_bounds[3] / 2 + geom.recon_center[3])
+```
+
+But the SAME offset must be added to `backproject!` (backprojection.jl:316-318):
+```julia
+vol_min_z = T(-geom.fov[3] / 2)  →  T(-geom.fov[3] / 2 + geom.recon_center[3])
+```
+
+Section 1.9 mentions this conceptually but doesn't list backprojection.jl as a change site. The `resample_to_recon` affine (affine.jl:69-71) also needs the same offset:
+```julia
+tz = -fov_z / 2 + sz / 2  →  -fov_z / 2 + sz / 2 + recon_center_z
+```
+
+**Action needed:** Explicitly list ALL sites needing the recon_center offset:
+1. `siddon_forward_project!` (siddon.jl:440-442) — for iterative recon path
+2. `backproject!` (backprojection.jl:316-318) — for FDK and matched BP
+3. `recon_to_world_affine` (affine.jl:69-71) — for label resampling
+4. `resample_to_recon` (affine.jl:128-130) — for phantom-to-recon mapping
+
+#### C7. PCCT workspace has same `n_angles=protocol.views` issue
+
+The spec identifies `create_eict_workspace` (workspace.jl:514) as needing `n_angles = views × n_rotations`. But `create_workspace` (PCCT, workspace.jl:174) has the IDENTICAL pattern:
+```julia
+geom = CTGeometry(scanner; n_angles=protocol.views, ...)
+```
+
+**Both** must pass helical-aware n_angles. The fix is in the CTGeometry constructor (compute total_views internally from pitch and n_rotations), NOT in each workspace function. The constructor should treat `n_angles` as views_per_rotation when pitch > 0.
+
+**Action needed:** Clarify that the `n_angles` parameter to CTGeometry should retain its current meaning (views per rotation). The constructor internally computes `total_views = round(Int, n_angles * n_rotations)` when `pitch > 0`. This means NO changes to workspace call sites — the constructor handles it.
+
+#### C8. Weight accumulator buffer contradiction
+
+Section 3.3.6 (line 699) says:
+```julia
+weight_sum = similar(volume)
+fill!(weight_sum, zero(T))
+```
+
+But Section 3.9 pseudocode (line 960) computes normalization inline:
+```julia
+return wgt_acc > T(1e-10) ? val_acc * T(π) / wgt_acc : zero(T)
+```
+
+The inline approach is correct and sufficient — the weight accumulator is per-voxel and computed in the inner loop, not stored as a separate buffer. **Remove the `weight_sum` buffer from section 3.3.6** to avoid confusion.
+
+#### C9. Dual-energy + helical not addressed
+
+The spec doesn't mention dual-energy helical at all. For dual-kVp mode, views alternate between high and low kVp. For helical, each view is at a different z-position, so the kVp alternation creates an interleaved z-coverage pattern. Material decomposition would need to handle the z-dependent alternation.
+
+**Action needed:** Add a note to the spec: "Dual-energy + helical is out of initial scope. The current dual-kVp alternation pattern works geometrically (views at different z-positions have alternating kVp), but material decomposition validation is deferred."
+
+#### C10. `create_aquilion_one` disposition unclear
+
+The spec says "Same Z(θ) pattern (or deprecate)" for `create_aquilion_one`. Given the project policy (NO backward compatibility), this should be a clear decision:
+- If `create_aquilion_one` is still used: update it to support helical parameters
+- If it's superseded by the CTGeometry constructor: delete it
+
+**Action needed:** Check whether `create_aquilion_one` is used anywhere outside tests. If not, mark it for deletion. If yes, update it to accept `pitch` and `n_rotations` kwargs.
+
+---
+
+### MINOR Issues
+
+#### C11. Simplified q̂ is acknowledged as approximate but should be more explicit
+
+The spec uses `q_hat = (row_f - row_center) / (n_rows/2)` as a simplified proxy for the full WFBP q̂ formula which includes the helical interpolation correction:
+```
+q̂ = (z_voxel − z_table + (z_rot/(2π)) arcsin(p̂/SAD)) / (l̂ × tan(θ_cone/2))
+```
+
+The simplified version ignores the `(z_rot/(2π)) arcsin(p̂/SAD)` term, which corrects for the oblique intersection of the helix. This matters more at high pitch and large fan angles. For our target scanners (pitch ≤ 1.5, fan angle ~25°), the correction is ~0.5° — likely below noise.
+
+**Action needed:** Add a note that the full q̂ formula should be the Phase 2b target, and that the simplified version is explicitly chosen for Phase 2a to reduce implementation risk.
+
+#### C12. `is_helical` derivation chain not specified
+
+The spec says `is_helical` is a parameter to `backproject_voxel` but doesn't specify who computes it. It should be:
+```
+geom.pitch > 0  →  is_helical = true  (in backproject!)
+```
+Not a user-settable parameter.
+
+---
+
+### Internal Consistency Check
+
+#### Line numbers: VERIFIED ✓
+
+All spec line numbers were checked against actual source code (as of this iteration):
+- `scanner.jl:673` = `source_positions[3, i] = 0.0` ✓
+- `scanner.jl:679` = `detector_centers[3, i] = 0.0` ✓
+- `scanner.jl:658` = angles range ✓
+- `backprojection.jl:335` = `pi_over_angles = T(π) / T(n_angles)` ✓
+- `backprojection.jl:137-138` = `dist_sq` and FDK weight ✓
+- `siddon.jl:440-445` = volume bounds computation ✓
+
+#### Angle formula consistency: VERIFIED ✓
+
+Section 1.4 formula `angles = [2π × i / V for i in 0:total_views-1]` is equivalent to Section 1.10 range formula. Both give last_angle = `2πR - 2π/V`. For R=1, degenerates to current `2π - 2π/N` ✓
+
+#### Forward projection claims: VERIFIED ✓
+
+- Siddon ray tracer (siddon.jl:150-294): confirmed fully 3D, no orbit assumptions ✓
+- `siddon_forward_project!`: reads all 3 components of per-angle arrays ✓
+- Volume bounds centered at origin via `volume_extent` ✓
+- PCCT path: same geometry pass-through ✓
+- Physics pipeline: all effects are angle-agnostic ✓
+
+#### Iterative recon: VERIFIED with NUANCE
+
+SIRT/CGLS call `siddon_forward_project(recon, geom)` without `volume_extent` ✓
+This uses `geom.fov` centered at origin — correct for `recon_center = (0,0,0)` but needs offset for non-zero recon_center (captured in C6 above).
+
+---
+
+### Cross-Section Contradictions
+
+1. Section 0.4 says "BP scaling `π/n_angles` → `π/views_per_rotation`" but Section 3.3 says to use weight normalization instead. These are two DIFFERENT approaches (Phase 1 vs Phase 2). The spec should make clear that Section 0.4 describes the Phase 1 fix only.
+
+2. Section 0.2 lists workspace.jl:514 as a change site, but Section 1.10 proposes handling n_angles→total_views computation INSIDE the CTGeometry constructor. If the constructor computes total_views internally, workspace.jl:514 needs NO change — `n_angles=protocol.views` stays as-is and the constructor handles the multiplication. These are contradictory approaches. Must pick one.
+
+---
+
+### Summary of Required Actions
+
+| Issue | Severity | Action |
+|-------|----------|--------|
+| C1. Three normalization formulas | CRITICAL | Derive correct formula from WFBP integral, pick one |
+| C2. Naive FDK pitch ≤ 1 claim | CRITICAL | Change to "pitch ≈ 1"; document overestimation for pitch < 0.8 |
+| C3. Normalized ≠ standard FDK | CRITICAL | Correct reasoning; `is_helical` needed for normalization too |
+| C4. 6 inner constructor sites | CRITICAL | List all 6 in spec |
+| C5. Helical fov_z | CRITICAL | Add Tam-Danielsson fov_z computation to constructor |
+| C6. recon_center in BP + affine | IMPORTANT | List all 4 offset sites |
+| C7. PCCT workspace n_angles | IMPORTANT | Clarify constructor handles total_views |
+| C8. Buffer contradiction | IMPORTANT | Remove weight_sum buffer from 3.3.6 |
+| C9. Dual-energy + helical | IMPORTANT | Add out-of-scope note |
+| C10. create_aquilion_one | IMPORTANT | Decide: update or delete |
+| C11. Simplified q̂ | MINOR | Add Phase 2a/2b note |
+| C12. is_helical derivation | MINOR | Specify derivation chain |
+
+---

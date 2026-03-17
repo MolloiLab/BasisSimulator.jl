@@ -242,6 +242,16 @@ vol_min_z = T(recon_center[3] - geom.fov[3] / 2)
 ```
 For axial, `recon_center = (0,0,0)` → identical to current behavior.
 
+> **⚠ CRITIQUE C6:** The `recon_center` offset must be applied at ALL 4 sites that
+> compute volume bounds from FOV:
+>
+> | # | File:Line | Code Changed |
+> |---|-----------|-------------|
+> | 1 | `siddon.jl:440-442` | `vol_min_z` for iterative forward projector |
+> | 2 | `backprojection.jl:316-318` | `vol_min_z` for FDK + matched backprojection |
+> | 3 | `affine.jl:69-71` | `tz` in `recon_to_world_affine` |
+> | 4 | `affine.jl:128-130` | `roz` in `resample_to_recon` |
+
 ### 1.10 CTGeometry Constructor — Proposed Changes
 
 The constructor needs THREE new keyword arguments:
@@ -315,6 +325,25 @@ end
 
 **Key insight:** For pitch=0 (axial), `z_i = 0.0` for all angles → identical to current behavior.
 
+> **⚠ CRITIQUE C5:** The proposed constructor changes above do NOT modify the `fov_z`
+> computation for helical. Currently `fov_z = n_rows × row_size` (single-rotation
+> detector coverage). For helical, the reconstruction z-FOV should default to the
+> Tam-Danielsson window: `fov_z = collim × (n_rotations × pitch - 1)`. Add:
+> ```julia
+> if pitch > 0 && z_cm === nothing
+>     z_travel = n_rotations * pitch * total_collim_cm
+>     fov_z = max(z_travel - total_collim_cm, total_collim_cm)
+> end
+> ```
+
+> **⚠ CRITIQUE C7:** The `n_angles` parameter should retain its meaning as
+> views_per_rotation. The constructor internally computes
+> `total_views = round(Int, n_angles * n_rotations)` when pitch > 0. This means
+> workspace call sites (`create_eict_workspace`, `create_workspace`) need NO changes
+> — they continue passing `n_angles=protocol.views` and the constructor handles
+> the multiplication. The spec currently says workspace.jl:514 needs changing,
+> but if the constructor handles it internally, this is unnecessary.
+
 ### 1.11 CTGeometry Struct — Proposed Additions
 
 ```julia
@@ -329,6 +358,21 @@ end
 ```
 
 `views_per_rotation` is needed by the backprojection for the correct scaling factor (`π / views_per_rotation` instead of `π / n_angles`).
+
+> **⚠ CRITIQUE C4:** Adding fields to CTGeometry breaks **6 inner constructor call sites**
+> (not just 2). All must be updated to pass the new fields:
+>
+> | # | File:Line | Context |
+> |---|-----------|---------|
+> | 1 | `scanner.jl:694` | Main CTGeometry constructor return |
+> | 2 | `scanner.jl:802` | `create_aquilion_one` return |
+> | 3 | `fdk.jl:426` | FOV-override variant (copies all fields) |
+> | 4 | `workspace.jl:364` | PCCT native-resolution geometry |
+> | 5 | `mbir.jl:434` | Ordered-subset geometry slicing |
+> | 6 | `scanners.jl:327` | Scanner factory `create_geometry` |
+>
+> Site #5 (MBIR) is subtle: `views_per_rotation` stays the same when subsetting
+> angles. Site #4 (PCCT native geom) copies pitch/views_per_rotation from parent.
 
 ### 1.12 Comparison with Reference Implementations
 
@@ -480,6 +524,14 @@ The native-resolution geometry (`native_geom`) is constructed from the binned ge
 
 **The forward projection is the easiest part of helical CT integration.** The architecture decision to pre-compute per-angle position matrices made this essentially free.
 
+### 2.9 Dual-Energy + Helical (Out of Scope)
+
+> **⚠ CRITIQUE C9:** Dual-energy (dual-kVp alternation) + helical is not addressed in
+> the initial implementation. The kVp alternation pattern works geometrically (views at
+> different z-positions have alternating kVp). Forward projection and noise model are
+> unaffected. However, material decomposition validation with z-varying kVp alternation
+> is deferred to a future iteration. For initial helical work, assume single-kVp only.
+
 ---
 
 ## 3. Helical Reconstruction Algorithms
@@ -531,10 +583,11 @@ pi_over_angles = T(π) / T(views_per_rotation)
 **For axial (pitch=0, 1 rotation):** `views_per_rotation = n_angles` → identical to current.
 
 **Quality characteristics:**
-- Works well for **pitch ≤ 1** and **cone half-angle < 5°**
+- Works well for **pitch ≈ 1** (within ±0.1) and **cone half-angle < 5°**
+- **⚠ CRITIQUE C2:** For pitch < 0.8, voxels see >1 rotation of data → overestimation by ~1/pitch. For pitch=0.5, expect ~2× overbrightness. Use Phase 2 (WFBP) for pitch < 0.8.
 - At the Z-edges of the reconstruction, voxels near the detector boundary will have slightly lower intensity (fewer contributing views)
 - No handling of data redundancy for pitch < 1 (overlapping coverage)
-- Adequate for initial validation and prototyping
+- Adequate for initial validation and prototyping at pitch ≈ 1
 
 **GPU kernel changes: NONE.** Only the scalar `pi_over_angles` changes.
 
@@ -651,17 +704,17 @@ end
 weight = (SAD_sq / dist_sq) * w_helical
 ```
 
-The normalization is handled by tracking weight sums per voxel:
-```julia
-# Two-pass approach:
-# Pass 1: backproject with weights, also accumulate weight sums
-# Pass 2: divide by weight sums
-# OR: single-pass with separate weight accumulator per voxel
-```
+The normalization is handled by tracking weight sums per voxel inline (no separate buffer needed — see Section 3.9).
 
-This simplified approach uses `v*/v_max` instead of the full q̂ formula. The full q̂ includes the helical interpolation correction term `(z_rot/(2π)) arcsin(p̂/SAD)`, which can be added later for improved quality.
+This simplified approach uses `v*/v_max` instead of the full q̂ formula. The full q̂ includes the helical interpolation correction term `(z_rot/(2π)) arcsin(p̂/SAD)`, which can be added in Phase 2b for improved quality at high pitch and large fan angles.
 
 #### 3.3.6 Integration with Existing Code
+
+> **⚠ CRITIQUE C1, C3:** The normalization formula must be derived carefully. The
+> helical weight-normalized formula does NOT degenerate to standard FDK for axial.
+> This means `is_helical` controls BOTH the W(q̂) weighting AND the normalization
+> strategy — not just one or the other. The `is_helical` flag is set from
+> `geom.pitch > 0` inside `backproject!`.
 
 **Changes to `backproject_voxel` (`backprojection.jl:37–146`):**
 
@@ -692,41 +745,24 @@ end
 
 **For axial (is_helical=false):** The code path is identical to current — no performance impact.
 
-**Normalization:** Requires a second backprojection pass with constant-1 sinogram data, or a per-voxel weight accumulator. The weight accumulator approach adds one `similar(volume)` buffer but avoids the second BP pass:
+**Normalization — helical path (single-pass, inline per voxel):**
 
-```julia
-# In backproject! (helical path):
-weight_sum = similar(volume)
-fill!(weight_sum, zero(T))
-
-AK.foreachindex(volume) do idx
-    # ... (existing voxel computation) ...
-    val_acc = zero(T)
-    wgt_acc = zero(T)
-
-    for angle in 1:n_angles
-        # ... (existing projection + interpolation) ...
-        w = fdk_weight * w_helical
-        val_acc += val * w
-        wgt_acc += w
-    end
-
-    volume[idx] = wgt_acc > eps ? val_acc * pi_over_angles / wgt_acc * T(n_angles) / T(views_per_rotation) : zero(T)
-end
-```
-
-Wait — actually, the normalization is simpler. Since we loop over ALL angles and the weight function naturally tapers to zero for angles where the voxel is far from the source z-position, we can use:
-
-```julia
-# Scaling for helical with weights:
-# The weight normalization factor per voxel is Σ w_h(angle)
-# The correct reconstruction is: (2π / Σ w_h) × Σ w_h × fdk_weight × val × (1/views_per_rotation)
-# Simplification: track weight sum, divide at end
-
-volume[idx] = val_acc / wgt_acc * T(π)
-```
-
-This normalizes each voxel by its actual weight sum, ensuring correct HU values regardless of how many rotations contribute.
+> **⚠ CRITIQUE C1 (RESOLUTION PENDING):** The exact normalization factor needs to
+> be derived from the WFBP integral (Stierstorfer 2004 Eq. 5) and verified
+> against FreeCT_wFBP source code. The weight accumulation is done inline per
+> voxel — NO separate `weight_sum` buffer is needed. See Section 3.9 for the
+> GPU kernel pseudocode.
+>
+> The WFBP discretized integral is:
+> ```
+> f(x) = Δα × Σ_i [ W_norm(i,x) × w_fdk(i) × p̂(i) ]
+> ```
+> With total-sum normalization approximation and Δα = 2π/views_per_rotation:
+> ```
+> f(x) ≈ (2π / views_per_rotation) × Σ[W × w_fdk × p̂] / Σ[W × w_fdk]
+> ```
+> Whether this is `π` or `2π` depends on the FDK integral convention ((1/2)∫₀²π
+> vs ∫₀π) — must be resolved by checking FreeCT_wFBP.
 
 ### 3.4 Katsevich Exact Algorithm (Optional — For Research)
 
@@ -808,16 +844,76 @@ Iterative methods are the recommended fallback for:
 
 ### 3.7 Clinical Scanner Reconstruction Algorithms
 
-| Vendor | Algorithm | Notes |
-|--------|-----------|-------|
-| **Siemens** | **WFBP** (Stierstorfer 2004) | All scanners including NAEOTOM Alpha PCCT |
-| **GE** | FDK-type with proprietary weights | Plus ASIR-V / TrueFidelity (DL denoising) |
-| **Philips** | FDK-type / iDose | FBP + iterative refinement |
-| **Canon/Toshiba** | ASSR-type rebinning + 2D FBP | Leverages wide-area detector for volumetric axial |
+| Vendor | Base Algorithm | Weight Scheme | Iterative Layer | DL Layer |
+|--------|---------------|---------------|----------------|----------|
+| **Siemens** | **WFBP** (Stierstorfer 2004) | cos² z-distance taper (Q=0.6) | SAFIRE → ADMIRE | — |
+| **GE** | **3D CB-FBP** (Tang/Hsieh 2006) | Cone-angle conjugate ray: κ₂²/(κ₁²+κ₂²) | ASiR → ASiR-V | TrueFidelity |
+| **Philips** | FDK-variant (unpublished) | Unknown | iDose4 → IMR | Precise Image |
+| **Canon** | FDK-variant / ASSR | Unknown | AIDR 3D → FIRST | AiCE |
 
-**Key finding:** All clinical vendors use APPROXIMATE algorithms, not exact methods. WFBP (or equivalent FDK-type with weights) is the gold standard.
+#### 3.7.1 Siemens WFBP (Detailed)
 
-**Ref:** Hsieh J et al., "A brief history of CT reconstruction algorithms and future directions," in *Emerging Imaging Technologies in Medicine*, 2012; Hoffman et al. 2016 (FreeCT paper).
+**Pipeline:** Fan-to-parallel rebinning → ramp filter (parallel geometry) → 3D backprojection with z-dependent W(q̂) weights.
+
+**Weight from FreeCT_wFBP (open-source Siemens WFBP):**
+```
+qhat = (z_voxel - z_table + (z_rot/(2π)) * arcsin(p̂/SAD)) / (l̂ * tan(cone_half_angle))
+
+W(qhat):
+  |qhat| < 0.6:   W = 1.0
+  0.6 ≤ |qhat| < 1.0:   W = cos²(π/2 * (|qhat| - 0.6) / 0.4)
+  |qhat| ≥ 1.0:   W = 0.0
+
+Normalization: f(x) = Σ(W_i * fdk_i * p̂_i) * π / Σ(W_i * fdk_i)
+```
+
+**Key property:** Noise is approximately pitch-independent (< 7% variation). Dose efficiency is good at all pitch values.
+
+**Ref:** Stierstorfer 2004 (PMID 15248573); Flohr 2005 (PMID 16193784); Hoffman et al. 2016 (FreeCT, PMID 26936725).
+
+#### 3.7.2 GE 3D CB-FBP (Detailed)
+
+**Pipeline:** Row-wise fan-to-parallel rebinning ("tilted cone-beam reconstruction") → ramp filter → backprojection with cone-angle-based conjugate ray weighting.
+
+**Key innovation (Tang/Hsieh 2006, PMID 16467583):** Out of conjugate ray pairs, the ray with the smaller cone angle gets larger weight:
+```
+For conjugate rays with cone angles κ₁ and κ₂:
+  w₁ = κ₂² / (κ₁² + κ₂²)
+  w₂ = κ₁² / (κ₁² + κ₂²)
+```
+This ensures: w₁ + w₂ = 1 (normalized), smaller cone angle → larger weight.
+
+**Performance:** "Comparable to exact CB reconstruction algorithms, such as the Katsevich algorithm, under a moderate cone angle (4 degrees)" — Tang/Hsieh 2006.
+
+**Ref:** Tang/Hsieh 2006 (PMID 16467583); Tang/Hsieh 2007 (PMID 17654902); Hsieh/Tang 2006 (PMID 17019037).
+
+#### 3.7.3 Key Finding: NO Vendor Uses Katsevich
+
+All clinical vendors use APPROXIMATE algorithms:
+- Katsevich was patented (~2002, 20-year term → expired ~2022) which limited adoption
+- Katsevich uses ~73% of data (PI window) → higher noise than WFBP (100% data)
+- GE collaborated with Katsevich (2004, PMID 15357183) but published approximate CB-FBP as their clinical algorithm
+- Deep learning reconstruction (TrueFidelity, AiCE, Precise Image) applied post-reconstruction largely masks remaining cone-beam artifacts from approximate methods
+
+**Ref:** Hsieh J et al., "A brief history of CT reconstruction algorithms and future directions," 2012; Hoffman et al. 2016.
+
+### 3.7b Reference Implementations Survey
+
+| Framework | Helical FDK/FBP | Helical Iterative | Weighting | Key Mechanism |
+|-----------|----------------|-------------------|-----------|---------------|
+| **XCIST/CatSim** | **YES (complete)** | No | cos² view window + 3D conjugate ray Gamma^k1 | Fan-to-parallel rebinning + dedicated C library |
+| **TIGRE** | No | Yes (SIRT, CGLS, OS-SART) | None (circular 1/U² only) | Per-angle `offOrigin[z]` offset |
+| **ASTRA** | No (explicitly blocked) | Yes (SIRT, CGLS via cone_vec) | None for FDK | 12-element `cone_vec` per angle |
+| **RTK** | No | No helical | Circular FDK weights only | Per-projection geometry parameters |
+| **FreeCT_wFBP** | **YES (complete)** | No | WFBP cos² taper (Q=0.6) | Fan-to-parallel + z-distance weights |
+
+**XCIST is the only CT simulator framework with helical FBP.** Key file: `gecatsim/reconstruction/src/Parallel_FDK_Helical_3DWeighting.c` — complete helical FBP with cos² view window and 3D cone-beam redundancy weighting via conjugate ray Gamma^k1 formula.
+
+**TIGRE and ASTRA** handle helical via per-angle geometry offsets → iterative algorithms work, but their FDK kernels have NO helical weights. TIGRE's helical demo (`Python/demos/d13_HelicalGeometry.py`) only uses iterative algorithms.
+
+**FreeCT_wFBP** (open-source WFBP) is the best reference for the Siemens-style algorithm. Source: `github.com/xiehq/FreeCT_wFBP`.
+
+**NO open-source GPU Katsevich implementation exists as of 2026.** The only published GPU paper (Yan et al. 2010, PMID 20007041) used 16-year-old CUDA 2.x architecture with no public code.
 
 ### 3.8 Recommended Implementation Roadmap
 
@@ -895,8 +991,9 @@ The modified `backproject_voxel` pseudocode for helical:
         wgt_acc += fdk_w * w_h  # accumulate for normalization
     end
 
-    # Normalize: divide by weight sum, multiply by π
-    # This ensures correct HU regardless of how many rotations contribute
+    # Normalize: divide by weight sum
+    # ⚠ CRITIQUE C1: The exact normalization constant (π vs 2π/views_per_rotation)
+    # must be resolved by checking FreeCT_wFBP source. Using π here as placeholder.
     return wgt_acc > T(1e-10) ? val_acc * T(π) / wgt_acc : zero(T)
 end
 ```
