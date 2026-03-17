@@ -151,11 +151,12 @@ The energy-sequential architecture causes **30× redundant work**:
    with new μ values for each energy bin, even though the mapping is a simple
    table lookup (material_id → μ_at_energy).
 
-**The material mask (UInt8) is the invariant.** The phantom is stored as a UInt8 mask
-(17.5M bytes = 17.5 MB). The μ_table mapping materials to energies is tiny
-(15 materials × 30 energies × 4 bytes = 1.8 KB). A fused kernel that traces
-through the mask ONCE and looks up μ for all energies at each voxel would
-eliminate all four sources of redundancy.
+**The material mask (UInt16) is the invariant.** The phantom is stored as a UInt16 mask
+(17.5M × 2 bytes = 35 MB) to support up to 4,000+ unique material regions.
+The μ_table mapping materials to energies is (up to 4000 materials × 30 energies
+× 4 bytes = 480 KB — fits in L2 cache). A fused kernel that traces through the
+mask ONCE and looks up μ for all energies at each voxel would eliminate all four
+sources of redundancy.
 
 ### 0.5 Preliminary Optimization Opportunity Ranking
 
