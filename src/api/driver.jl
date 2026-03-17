@@ -192,8 +192,20 @@ function simulate!(
     weights = ws.weights
     config = ws.config
     pcct_detector = ws.pcct_detector
-    mats = ws.mats
     use_detector_fx = ws.use_detector_fx
+
+    # Update materials if the phantom has new materials (e.g., dynamic contrast)
+    mats = _resolve_materials(phantom, materials)
+    if mats !== ws.mats
+        ws.mats = mats
+        n_regions = length(mats)
+        for (e_idx, E) in enumerate(energies)
+            for r in 1:n_regions
+                ws.μ_table[r, e_idx] = T(compute_μ_at_energy(mats[r], Float64(E)))
+            end
+        end
+        copyto!(ws.μ_lut_gpu, ws.μ_lut_cpu)  # PCCT workspace uses μ_lut path
+    end
     use_corrections = ws.use_corrections
     kVp = ws.kVp
 
@@ -336,8 +348,20 @@ function simulate!(
 ) where {T}
     geom = ws.geom
     energies = ws.energies
-    mats = ws.mats
     config = ws.config
+
+    # Update materials if the phantom has new materials (e.g., dynamic contrast)
+    mats = _resolve_materials(phantom, materials)
+    if mats !== ws.mats
+        ws.mats = mats
+        n_regions = length(mats)
+        for (e_idx, E) in enumerate(energies)
+            for r in 1:n_regions
+                ws.μ_table[r, e_idx] = T(compute_μ_at_energy(mats[r], Float64(E)))
+            end
+        end
+        copyto!(ws.μ_table_gpu, ws.μ_table)
+    end
 
     # ═══════════════════════════════════════════════════════════════════════
     # STEP 1: Polychromatic forward projection (Beer-Lambert)
