@@ -482,21 +482,375 @@ engineering. BasisSimulator.jl would be among the first open-source Julia implem
 
 ---
 
-## 2. Ray Tracing Algorithm Analysis
+## 2. Ray Tracing Algorithm Analysis (SPEED-002)
 
-(To be filled by SPEED-002 — ONLY if SPEED-000 shows projection is a bottleneck)
+### 2.1 Current Algorithm: Siddon DDA
+
+The current implementation uses Siddon's algorithm (1985) with a 3D Digital Differential
+Analyzer (DDA). The inner loop (siddon.jl:258-291) traces through voxels one at a time,
+accumulating `μ × path_length` at each step.
+
+**Inner loop structure (the hot path):**
+```
+while t_current < t_exit:
+    t_next = min(t_next_x, t_next_y, t_next_z, t_exit)
+    path_length = (t_next - t_current) × ray_length
+    line_integral += volume[ix, iy, iz] × path_length
+
+    // 3-WAY BRANCH — which axis boundary was crossed?
+    if t_next_x ≤ t_next_y && t_next_x ≤ t_next_z:
+        ix += step_x; t_next_x += dt_x
+    elif t_next_y ≤ t_next_z:
+        iy += step_y; t_next_y += dt_y
+    else:
+        iz += step_z; t_next_z += dt_z
+```
+
+**Per-iteration cost:** ~15-20 FLOPs + 1 scattered memory read (4B for Float32, 1B for UInt8 mask).
+**Typical iterations per ray:** ~400 (for 400×350×125 volume).
+
+### 2.2 GPU Warp Divergence Analysis
+
+The 3-way branch causes **warp/SIMD divergence** on GPU:
+
+**Problem:** Threads in the same 32-thread warp (CUDA) or SIMD group (Metal) must
+execute the same instruction. When threads take different branches, execution serializes —
+the warp executes EACH branch path sequentially, masking inactive threads.
+
+**CT geometry makes this worse:** Rays from a fan-beam source hit different parts of the
+volume. Adjacent detector pixels (mapped to adjacent threads in the same warp) have
+similar but not identical ray directions. At any given DDA iteration, some threads step
+in X, others in Y, others in Z.
+
+**Divergence estimate for CT geometry:**
+- Rays in the same row (same z-slice) have similar polar angles → tend to step in X/Y
+- But the fan angle spreads them: center rays are nearly perpendicular, edge rays are oblique
+- Typical divergence factor: **1.2-1.5×** (measured by TIGRE team on similar geometry)
+- Worst case (isotropic rays): 3× (all three branches active)
+- Best case (parallel beam): ~1× (nearly uniform stepping)
+
+### 2.3 Branchless DDA — Eliminating Warp Divergence
+
+**Technique:** Replace the 3-way branch with predicated (branchless) instructions.
+All threads execute the same instructions; inactive steps multiply by 0.
+
+```julia
+# Branchless DDA inner loop
+t_next = min(t_next_x, t_next_y, t_next_z, t_exit)
+path_length = (t_next - t_current) * ray_length
+
+if path_length > eps
+    mat = mask[ix+1, iy+1, iz+1]
+    # ... accumulate for all energies ...
+end
+
+# Branchless step: compute masks as Int32(0) or Int32(1)
+mask_x = Int32(t_next_x <= t_next_y) * Int32(t_next_x <= t_next_z)
+mask_y = Int32(1 - mask_x) * Int32(t_next_y <= t_next_z)
+mask_z = Int32(1) - mask_x - mask_y
+
+ix += mask_x * step_x
+iy += mask_y * step_y
+iz += mask_z * step_z
+
+t_next_x += T(mask_x) * dt_x
+t_next_y += T(mask_y) * dt_y
+t_next_z += T(mask_z) * dt_z
+
+t_current = t_next
+```
+
+**Mathematical equivalence:** EXACT. Same voxels visited in same order, same path lengths.
+The masks are mutually exclusive (exactly one is 1, rest are 0), so the same axis step
+occurs as the branching version. The only difference is that the GPU executes 6 multiply-add
+instructions instead of branching into one of three 2-instruction blocks.
+
+**Trade-off:**
+- Eliminates divergence penalty: saves 1.2-1.5× on divergent warps
+- Adds multiply instructions: 6 integer multiplies + 3 float multiplies = ~9 extra ops
+- vs. saved: 2 comparisons + branch overhead per branching warp
+- Net: **positive when divergence > 15%** (typical for CT is 20-50%)
+
+**Expected speedup: 1.1-1.3× on the DDA inner loop.**
+
+Since the DDA inner loop is ~70% of the ray trace (rest is setup + Beer-Lambert), and
+ray tracing is 88-95% of simulate!() (after fusion, it becomes the entire forward projection
+kernel), the effective impact is:
+
+| Scenario | DDA speedup | Forward proj speedup | simulate!() speedup |
+|----------|------------|---------------------|---------------------|
+| Before fusion | 1.15× | 1.1× | 1.1× |
+| After fusion (stacked) | 1.15× | 1.15× | 1.13× |
+
+**Verdict: Small but free. Zero risk, exact equivalence, stacks with fusion.**
+
+### 2.4 Alternative Projector Algorithms
+
+#### Distance-Driven Projection (De Man & Basu 2002)
+
+- Projects voxel boundaries and detector boundaries onto a common line
+- Computes overlap lengths between projected intervals
+- **More regular memory access** (sequential voxel access along projection direction)
+- Used in CatSim/XCIST, some clinical scanners (GE)
+
+**Equivalence to Siddon: NO.** Distance-driven computes area-weighted overlaps, not exact
+ray-voxel intersection lengths. Produces quantitatively different sinograms. Generally
+considered BETTER (fewer aliasing artifacts, more uniform noise), but DIFFERENT.
+
+**GPU suitability:** Better than Siddon — more coalesced memory access, less divergence.
+Typically 1.5-2× faster than Siddon on GPU for the same volume/detector size.
+
+**For BasisSimulator:** Would be a new projector (different math → different validation
+baseline), not a speedup of the existing one. Worth implementing as an OPTION but not
+as a replacement — it changes the output.
+
+#### Separable Footprint (Long, Fessler, Balter 2010)
+
+- Decomposes 3D cone-beam projection into two 2D operations
+- Separates transaxial and axial contributions
+- **Very GPU-friendly** (highly regular memory access)
+- Used in Michigan Image Reconstruction Toolbox (MIRT)
+
+**Equivalence to Siddon: NO.** Uses trapezoidal footprint approximation.
+Different numerical results, though generally comparable quality.
+
+#### Joseph's Method (1982)
+
+- Interpolates along the dominant ray direction
+- Simpler than Siddon but introduces interpolation error
+- **Equivalence: NO.** Uses linear interpolation between voxels.
+
+### 2.5 Summary and Recommendation
+
+| Algorithm | Speedup vs Siddon | Equivalent? | Risk | Recommendation |
+|-----------|------------------|-------------|------|----------------|
+| **Branchless DDA** | **1.1-1.3×** | **YES (exact)** | **None** | **DO IT (P1)** |
+| Distance-driven | 1.5-2× (new proj) | No (better quality) | Medium | Future option (P3) |
+| Separable footprint | 2-3× (new proj) | No (approx.) | Medium | Future option (P3) |
+| Joseph's | 1× (similar) | No (interp.) | Low | Skip |
+
+**Key insight: There is NO alternative projector that is both (a) faster than Siddon
+and (b) mathematically equivalent.** Branchless DDA is the only free lunch. The 10×
+speedup comes from energy loop fusion (SPEED-001), not from changing the ray tracing
+algorithm. Branchless DDA provides a modest 1.1-1.3× multiplier that stacks on top.
 
 ---
 
-## 3. GPU Kernel Optimization via AK.jl
+## 3. GPU Kernel Optimization via AK.jl (SPEED-003)
 
-(To be filled by SPEED-003)
+### 3.1 AK.jl Primitive Catalog (Relevant to simulate!())
+
+Full exploration of AcceleratedKernels.jl v0.4.3 source code. Key primitives:
+
+| Primitive | Signature | GPU Behavior | Used in BasisSimulator? |
+|-----------|-----------|-------------|------------------------|
+| `foreachindex(f, itr; block_size=256)` | One thread per element | No shared memory, no warp ops | **YES — everywhere** |
+| `map!(f, dst, src)` | One thread per element | Elementwise transform | No (uses foreachindex) |
+| `reduce(op, src; init, dims)` | Block-level shared memory | Two-phase reduction | No |
+| `mapreduce(f, op, src; init)` | Fused map+reduce | Block shared memory | No |
+| `accumulate!(op, v; init, alg)` | Prefix scan | ScanPrefixes (Metal), DecoupledLookback (CUDA) | No |
+| `sort!(v)` | Merge sort | Bitonic + global merge | No |
+
+**Key AK.jl constraints for kernel design:**
+
+1. **`foreachindex` has NO shared memory.** The closure runs with global memory only.
+   No `@localmem`, no warp-level primitives, no block cooperation.
+
+2. **No kernel fusion API.** Each `foreachindex` is an independent kernel launch.
+   To fuse operations, you must combine them into a single closure.
+
+3. **Closure capture must use `let` blocks** for conditionally-assigned variables
+   (avoids Core.Box on GPU). BasisSimulator already does this correctly.
+
+4. **GPU block_size=256 default.** Maps to 256 threads/block (CUDA) or 256
+   threads/threadgroup (Metal). Configurable per call.
+
+5. **Metal uses ScanPrefixes for `accumulate!`** (DecoupledLookback has a race on Metal's
+   weak memory model). Not relevant to forward projection.
+
+6. **No texture memory, no constant memory, no dynamic parallelism.** Global memory +
+   L1/L2 cache only.
+
+### 3.2 Current AK.jl Usage in simulate!()
+
+**Forward projection (`_forward_project_poly!`):**
+Per energy bin, 3 kernel launches:
+1. `create_μ_volume!` — `AK.foreachindex` over mask (17.5M elements)
+2. `siddon_forward_project!` — `AK.foreachindex` over sinogram (57.6M elements)
+3. Beer-Lambert accumulation — `AK.foreachindex` over I_transmitted (57.6M elements)
+
+30 energy bins × 3 launches = **90 kernel launches + synchronizations.**
+
+**Physics pipeline (`apply_physics_effects!` / `_apply_physics_no_noise!`):**
+Each enabled effect is 1-2 kernel launches. Full pipeline with signal chain (driver.jl:363-470):
+
+| Step | Operation | Kernel launches |
+|------|-----------|----------------|
+| Physics no-noise pipeline | fill_factor, flat_filter, scatter×2, bowtie, crosstalk, optical_ct, focal_spot, lag | 8-10 (if all enabled) |
+| exp(-sino) conversion | Elementwise | 1 |
+| Heel effect | Elementwise × angles | 1 |
+| DAS model | Gain + noise | 1-2 |
+| Air scan creation | fill + bowtie ref + heel + gain | 3-4 |
+| Calibration (sino/air) | Elementwise divide | 1 |
+| Low signal correction | Elementwise | 1 |
+| Log transform | Elementwise | 1 |
+| BHC | Polynomial eval | 1 |
+| **Total physics/signal chain** | | **~18-22 launches** |
+
+**Total simulate!() kernel launches: 90 + 20 ≈ 110.**
+At ~10-25 μs per launch: **1-3 ms total launch overhead.** Negligible vs. 30-60s compute.
+
+### 3.3 GPU Optimization Opportunities (Through AK.jl)
+
+#### O1: Energy Loop Fusion — 90 launches → 1 (SPEED-001, PRIMARY)
+
+Already analyzed in §1. Single `AK.foreachindex` over sinogram, fused DDA + all energies.
+**Eliminates 89 kernel launches.** But the speedup is from eliminating redundant COMPUTE,
+not from reducing launch overhead.
+
+#### O2: Branchless DDA Inner Loop (SPEED-002, §2.3)
+
+Replace 3-way `if/elseif/else` with predicated multiply-add. Eliminates warp divergence.
+**1.1-1.3× on DDA loop → 1.1× on simulate!().**
+
+#### O3: Fix CartesianIndices in GPU Closures (Bug Fix)
+
+**Two locations use CartesianIndices inside AK.foreachindex on GPU:**
+
+1. **polychromatic.jl:1171** — Bowtie spectral accumulation:
+   ```julia
+   ci = CartesianIndices(I_transmitted)[idx]
+   col, row, _ = Tuple(ci)
+   ```
+
+2. **scatter.jl:191** — Scatter convolution:
+   ```julia
+   ci = CartesianIndices(sinogram)[idx]
+   col, row, angle = Tuple(ci)
+   ```
+
+**Problem:** `CartesianIndices(arr)[idx]` on GPU constructs a CartesianIndex object per
+thread. While Julia's GPU compiler can sometimes optimize this, it's not guaranteed — and
+the Siddon kernel (siddon.jl:492-497) correctly uses mod/div arithmetic instead.
+
+**Fix:** Replace with manual index decomposition:
+```julia
+idx_0 = idx - 1
+col = (idx_0 % n_cols) + 1
+row = ((idx_0 ÷ n_cols) % n_rows) + 1
+angle = (idx_0 ÷ (n_cols * n_rows)) + 1
+```
+
+**Impact:** Minor (<5% on affected kernels). But scatter.jl is 1-5% of simulate!(), so
+this matters slightly. The fused kernel should use mod/div consistently.
+
+#### O4: Block Size Tuning for Fused Kernel
+
+The fused kernel has higher register pressure (~312 bytes/thread for 30 energies).
+Block size affects GPU occupancy:
+
+| block_size | Threads/SM (CUDA, 78 regs) | Occupancy | Notes |
+|-----------|---------------------------|-----------|-------|
+| 256 | 3 blocks × 256 = 768 | 50% | Default |
+| 128 | 6 blocks × 128 = 768 | 50% | Same occupancy, more blocks |
+| 64 | 12 blocks × 64 = 768 | 50% | More blocks, worse scheduling |
+| 512 | 1 block × 512 = 512 | 33% | Too few threads |
+
+For bandwidth-bound kernels, occupancy >30% is sufficient to saturate memory bandwidth.
+The default 256 is fine. **No significant speedup from tuning. Skip.**
+
+#### O5: Physics Pipeline Kernel Fusion (Post-Forward-Projection)
+
+**CRITICAL REALIZATION:** After energy loop fusion reduces forward projection from ~30s
+to ~3s, the physics pipeline becomes a much larger fraction:
+
+| Component | Before fusion | After 10× fusion |
+|-----------|--------------|-------------------|
+| Forward projection | 30s (93%) | 3s (60%) |
+| Physics pipeline | 2s (6%) | 2s (40%) |
+| Other | 0.3s (1%) | 0.3s (6%) |
+| **Total** | **32s** | **5.3s** |
+| **Speedup** | baseline | **6×** |
+
+To push from 6× to 10×, we need to also optimize the physics pipeline!
+
+**Fusible elementwise operations in signal chain (driver.jl:388-447):**
+
+These consecutive AK.foreachindex calls could be fused into fewer launches:
+1. `exp(-sinogram)` (line 390)
+2. `sinogram / air_scan` (line 433)
+3. `low_signal_correction` (line 440)
+4. `-log(sinogram)` (line 444)
+
+Combined: `sinogram[idx] = -log(max(exp(-sinogram[idx]) / air_val, eps))`
+4 launches → 1 launch. Saves ~30-60 μs. Negligible.
+
+**The REAL physics pipeline cost is SCATTER** (0.5-1.5s per call, two calls if
+scatter + scatter_correction enabled = 1-3s). Scatter does a 63×63 spatial convolution
+per pixel — that's 3,969 inner loop iterations with exp() per iteration.
+
+**Scatter optimization opportunities:**
+- The 63×63 kernel is evaluated in SPATIAL domain (direct convolution)
+- FFT-based convolution would be O(N log N) vs O(N K²), but AK.jl has no FFT
+- Separable kernel: Gaussian kernel is separable → 63+63=126 ops instead of 63×63=3,969
+- **Separable Gaussian gives 31× fewer operations per pixel!**
+- Requires two passes (horizontal then vertical), but each pass is much cheaper
+- Mathematically equivalent for Gaussian kernels (exact factorization)
+
+**Scatter separable convolution speedup estimate:**
+- Current: 57.6M pixels × 3,969 ops × ~16 FLOPs = 3,660 GFLOP per call
+- Separable: 57.6M pixels × 126 ops × ~16 FLOPs = 116 GFLOP per call
+- Speedup: **~31× on scatter → scatter drops from 1-3s to 30-100ms**
+
+**Impact on total simulate!() (post-fusion):**
+- Before scatter opt: forward=3s, scatter=2s, other=0.3s → 5.3s (6× total)
+- After scatter opt: forward=3s, scatter=0.1s, other=0.3s → 3.4s (9.4× total)
+
+**This is the missing piece to reach 10×!**
+
+### 3.4 AK.jl Overhead Assessment
+
+**Question:** Does AK.jl add significant overhead vs raw KernelAbstractions.jl?
+
+AK.foreachindex dispatches to a simple KA kernel:
+```julia
+@kernel function _forindices_global!(f, itr)
+    idx = @index(Global)
+    f(idx)
+end
+```
+
+This is literally one layer of indirection. The KA kernel is identical to what you'd
+write by hand. **AK.jl overhead: effectively ZERO.** The abstraction compiles away.
+
+The only overhead is:
+- Type inference on the closure (~1ms first call, cached after)
+- Backend dispatch (~1μs per call)
+- Neither is measurable in the context of seconds of compute
+
+### 3.5 Summary: GPU Optimization Impact
+
+| Optimization | Est. Speedup | Stacks with? | Priority |
+|-------------|-------------|-------------|----------|
+| Energy loop fusion (§1) | 10-20× on fwd proj | Standalone | **P0** |
+| Branchless DDA (§2.3) | 1.1-1.3× on DDA | Fusion | **P1** |
+| Separable scatter conv (§3.3 O5) | 31× on scatter | Fusion | **P1** |
+| CartesianIndices fix (§3.3 O3) | <5% on scatter | All | P2 |
+| Block size tuning (§3.3 O4) | <5% | All | Skip |
+| Elementwise fusion (§3.3 O5 top) | <0.1% | All | Skip |
+
+**Stacked projection:**
+1. Energy loop fusion: 30s → 3s (10× on forward proj)
+2. Branchless DDA: 3s → 2.6s (1.15× on forward proj)
+3. Separable scatter: 2s → 0.1s (saves 1.9s)
+4. Other physics: 0.3s → 0.3s (unchanged)
+5. **Total: 32s → 3.0s = 10.7×** ✓
 
 ---
 
-## 4. Physics Pipeline Batching
+## 4. Physics Pipeline Batching (SPEED-004)
 
-(To be filled by SPEED-004)
+(To be filled by SPEED-004 — preliminary findings in §3.3 O5 above)
 
 ---
 

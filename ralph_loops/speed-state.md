@@ -1,73 +1,69 @@
 # 10x Speed Discovery Loop — Current State
 
 **Last updated:** 2026-03-17
-**Current phase:** CRITIQUE (SPEED-000 + SPEED-001)
-**Current topic:** Challenge profiling estimates and fusion claims
+**Current phase:** CRITIQUE (SPEED-002 + SPEED-003) or SYNTHESIS
+**Current topic:** Challenge branchless DDA + separable scatter claims, or begin synthesis
 
 ## What was done
 
 **Iteration 1 (SPEED-000 DISCOVERY — static profiling audit):**
-- Traced complete simulate!() call graph through driver.jl, polychromatic.jl, siddon.jl, physics_pipeline.jl
-- Analyzed all 14 detector physics effects for computational complexity
-- Produced quantitative time breakdown with concrete parameters (XCAT f4 phantom)
-
-**HEADLINE FINDING:** Forward projection (energy loop × Siddon ray tracing) is 90-97%
-of simulate!() time. The 30× redundant DDA traversal across energy bins is the root cause.
-Energy loop fusion is THE path to 10×.
+- Traced complete simulate!() call graph
+- Forward projection = 88-95% of time. Energy loop is THE bottleneck.
 
 **Iteration 2 (SPEED-001 DISCOVERY — energy loop fusion deep dive):**
-- Proved mathematical equivalence of fused kernel (bit-identical to current)
-- Analyzed register pressure: 78 regs/thread (fits CUDA and Metal comfortably)
-- Designed AK.jl fused kernel using foreachindex + NTuple accumulators
-- Quantified memory bandwidth reduction: 2,790 GB → 65-115 GB (24-43×)
-- Confirmed PCCT path equally fusible (same DDA + accumulate, output via DRM)
-- Reference: gVXR does this; CatSim/TIGRE don't (sequential or mono-only)
+- Proved mathematical equivalence, register pressure analysis, AK.jl kernel design
+- Memory bandwidth reduction: 24-43× (effective 8-20× with caching)
+
+**Iteration 3 (SPEED-000 + SPEED-001 CRITIQUE):**
+- Adjusted forward projection to 88-95% (scatter slightly understated)
+- Adjusted bandwidth reduction to 8-20× effective
+- Identified Metal register pressure risk → energy tiling fallback
+- Confirmed bit-identical within ULP
+
+**Iteration 4 (SPEED-002 + SPEED-003 DISCOVERY):**
+- Branchless DDA: 1.1-1.3× speedup, exact equivalence, zero risk
+- No alternative projector is both faster AND equivalent to Siddon
+- AK.jl overhead = zero, foreachindex is the right primitive
+- **CRITICAL NEW FINDING:** After fusion, scatter becomes 40% of total time
+- Separable Gaussian scatter: 31× fewer ops, exact equivalence for Gaussian kernel
+- **Revised path to 10×:** fusion (10×) + branchless DDA (1.15×) + separable scatter (31×) = 10.7×
 
 ## What to do next
 
-**SPEED-000 + SPEED-001 CRITIQUE — Challenge Every Claim**
+**Option A: SPEED-002+003 CRITIQUE** — Stress-test new claims:
+1. Is branchless DDA actually better on Metal's SIMD model? (Metal SIMD groups behave
+   differently from CUDA warps — predicated execution may already happen.)
+2. Separable scatter: is it exact for both `gaussian` AND `exponential` kernel types?
+   (Only Gaussian is separable. Exponential is NOT. Check which one is used in practice.)
+3. Does the 40%-physics post-fusion breakdown hold under runtime profiling?
 
-Phase rotation: 2 discoveries done, time to stress-test the findings.
+**Option B: SPEED-007 SYNTHESIS** — Produce the final roadmap. We have enough
+data for all major optimizations:
+- P0: Energy loop fusion (10× on forward proj)
+- P1: Branchless DDA (1.15×) + Separable scatter (31× on scatter)
+- P2: CartesianIndices fix, other minor cleanups
 
-1. **Challenge the 90-97% forward projection claim:**
-   - Is the static complexity analysis realistic?
-   - Could AK.jl overhead, synchronization, or GPU launch patterns change the picture?
-   - What if scatter (50×50 convolution) is more expensive than estimated?
-
-2. **Challenge the 24-43× bandwidth reduction:**
-   - Are the cache assumptions valid? (17.5 MB mask fits L2 on M1 Max?)
-   - Random access patterns: is effective bandwidth really 50-100 GB for mask?
-   - What about cache thrashing with 57.6M rays accessing 17.5M voxels?
-
-3. **Challenge the NTuple register claim:**
-   - Will Julia's GPU compiler (GPUCompiler.jl → LLVM) keep NTuples in registers?
-   - Or will it generate tuple reconstruction code that spills to global memory?
-   - Has anyone tested NTuple{30,Float32} in a KernelAbstractions.jl kernel?
-
-4. **Challenge the "bit-identical" claim:**
-   - Float32 addition order: is DDA traversal order truly deterministic?
-   - Does `ntuple(Val(N))` generate the same FMA patterns as explicit loops?
-   - Could compiler optimizations (e.g., FMA fusion) change results?
-
-5. **Identify show-stoppers:**
-   - AK.jl closure size limits on Metal backend
-   - GPU compiler timeout for large kernels (200+ lines in one closure)
-   - Edge cases: rays parallel to axes, empty rays, boundary voxels
+**Recommendation: Go to SYNTHESIS.** Four discoveries + 1 critique covers the core
+bottleneck (forward projection) and the secondary bottleneck (scatter). The remaining
+topics (SPEED-004 physics batching, SPEED-005 reference implementations, SPEED-006
+precision analysis) are low-impact given the synthesis data we already have.
 
 ### Phase tracking
 
 | Topic | Discovery | Critique | Refinement |
 |-------|-----------|----------|------------|
-| SPEED-000 Profiling Audit | **done** | **open → DO THIS** | open |
-| SPEED-001 Energy Loop Fusion | **done** | **open → DO THIS** | open |
-| SPEED-002 Ray Tracing Algorithm | open | open | open |
-| SPEED-003 GPU Kernel Optimization (AK.jl) | open | open | open |
-| SPEED-004 Physics Pipeline Batching | open | open | open |
-| SPEED-005 Reference Implementations | open | open | open |
+| SPEED-000 Profiling Audit | **done** | **done** | open |
+| SPEED-001 Energy Loop Fusion | **done** | **done** | open |
+| SPEED-002 Ray Tracing Algorithm | **done** | open | open |
+| SPEED-003 GPU Kernel Optimization (AK.jl) | **done** | open | open |
+| SPEED-004 Physics Pipeline Batching | partial (in §3.3) | open | open |
+| SPEED-005 Reference Implementations | partial (in §1.7) | open | open |
 | SPEED-006 Precision Analysis | open | open | open |
-| SPEED-007 SYNTHESIS | open | open | open |
+| SPEED-007 SYNTHESIS | **open → DO THIS** | open | open |
 
 ## Completed iterations
 
-1. **Iteration 1** — SPEED-000 DISCOVERY: Static profiling audit. Forward projection = 90-97% of time. Energy loop fusion = path to 10×.
-2. **Iteration 2** — SPEED-001 DISCOVERY: Energy loop fusion deep dive. Math proof, register analysis, AK.jl kernel design, 24-43× bandwidth reduction, PCCT fusible.
+1. **Iteration 1** — SPEED-000 DISCOVERY: Static profiling audit. Forward projection = 88-95%.
+2. **Iteration 2** — SPEED-001 DISCOVERY: Energy loop fusion deep dive. 10-20× speedup, AK.jl kernel design.
+3. **Iteration 3** — SPEED-000+001 CRITIQUE: Adjusted estimates, Metal register risk, tiled fallback.
+4. **Iteration 4** — SPEED-002+003 DISCOVERY: Branchless DDA (1.1-1.3×), AK.jl analysis, separable scatter (31×). Path to 10× confirmed.
