@@ -1647,6 +1647,715 @@ This approximation does not model 3D scatter physics (which depends on the patie
 
 **No changes needed for helical.**
 
+---
+
+## 7. Validation and Testing Strategy
+
+**Status: COMPLETE (HELI-007 Discovery, 2026-03-17)**
+
+### 7.0 Validation Philosophy
+
+Helical validation follows the same principle as the helical implementation itself: **generalize, don't duplicate.** The existing axial test infrastructure (Gammex 472, `small_test_setup()`, HU/CNR/NPS/MTF metrics) must continue to work unchanged. Helical tests extend this infrastructure with pitch-aware geometry, multi-rotation sinograms, and z-axis quality metrics.
+
+**Three validation goals:**
+1. **Axial regression** — pitch=0 produces bit-identical results to the current code
+2. **Helical correctness** — geometry, forward projection, and reconstruction produce physically correct results
+3. **Clinical quality** — HU accuracy, noise, and spatial resolution meet clinical standards at various pitch values
+
+### 7.1 Testing Tiers
+
+| Tier | Scope | Speed | Where | What It Validates |
+|------|-------|-------|-------|-------------------|
+| **T1: Unit** | Single function | < 1s | `test/runtests.jl` | Z(θ) formula, W(q̂) weights, pitch validation, struct fields |
+| **T2: Axial Regression** | Full pipeline pitch=0 | ~5s | `test/runtests.jl` | Zero regressions — identical outputs to current code |
+| **T3: Helical Integration** | Forward proj + recon | ~30s | `test/runtests.jl` | Geometry → sinogram → reconstruction produces valid images |
+| **T4: Quality Metrics** | HU/noise/resolution | ~2min | `verification/notebooks/` | Quantitative clinical quality at various pitch values |
+| **T5: Cross-Reference** | Comparison to XCIST | ~10min | `verification/notebooks/` | Absolute accuracy against independent reference |
+
+### 7.2 Tier 1: Unit Tests
+
+#### 7.2.1 Z(θ) Position Computation
+
+```julia
+@testset "Helical Z(θ) positions" begin
+    scanner = create_naeotom_alpha()
+    geom = CTGeometry(scanner; n_angles=720, pitch=1.0, n_rotations=3,
+                      collimation_mm=57.6)
+
+    total_collim_cm = 57.6 / 10.0  # 5.76 cm
+    z_travel = 3 * 1.0 * total_collim_cm  # 17.28 cm
+    z_start = -z_travel / 2  # -8.64 cm
+
+    # Total views
+    @test geom.n_angles == 720 * 3  # = 2160
+    @test geom.views_per_rotation == 720
+
+    # Z positions monotonically increase
+    z_source = geom.source_positions[3, :]
+    @test all(diff(z_source) .> 0)  # strictly increasing
+
+    # First and last Z positions
+    @test z_source[1] ≈ z_start atol=0.01
+    @test z_source[end] ≈ -z_start - z_travel/geom.n_angles atol=0.01
+
+    # Source and detector at same Z for each view
+    z_det = geom.detector_centers[3, :]
+    @test z_source ≈ z_det atol=1e-12
+
+    # Z travel covers expected range
+    @test z_source[end] - z_source[1] ≈ z_travel * (1 - 1/geom.n_angles) atol=0.01
+
+    # Pitch stored correctly
+    @test geom.pitch == 1.0
+    @test geom.recon_center == (0.0, 0.0, 0.0)
+end
+```
+
+**Ground truth:** Analytical formula `Z_i = z_start + (i/V) × pitch × collimation_cm`. No external reference needed — this is a coordinate computation with an exact answer.
+
+#### 7.2.2 Axial Degeneration (pitch=0)
+
+```julia
+@testset "Pitch=0 degenerates to axial" begin
+    scanner = create_naeotom_alpha()
+
+    # Axial geometry (current code path)
+    geom_axial = CTGeometry(scanner; n_angles=720)
+
+    # Helical with pitch=0 (should be identical)
+    geom_helical = CTGeometry(scanner; n_angles=720, pitch=0.0, n_rotations=1.0)
+
+    # All position arrays must match exactly
+    @test geom_axial.source_positions == geom_helical.source_positions
+    @test geom_axial.detector_centers == geom_helical.detector_centers
+    @test geom_axial.detector_u == geom_helical.detector_u
+    @test geom_axial.detector_v == geom_helical.detector_v
+    @test geom_axial.angles == geom_helical.angles
+    @test geom_axial.n_angles == geom_helical.n_angles
+
+    # Z=0 for all views
+    @test all(geom_helical.source_positions[3, :] .== 0.0)
+    @test all(geom_helical.detector_centers[3, :] .== 0.0)
+end
+```
+
+**This is the most important unit test.** If pitch=0 doesn't produce identical geometry, the integration has a bug.
+
+#### 7.2.3 CTProtocol Pitch Validation
+
+```julia
+@testset "CTProtocol pitch validation" begin
+    # Default pitch is 0.0 (axial)
+    p = CTProtocol(kVp=120, mA=200, views=720)
+    @test p.pitch == 0.0
+
+    # Valid helical
+    p = CTProtocol(kVp=120, mA=200, views=720, pitch=0.8, n_rotations=3)
+    @test p.pitch == 0.8
+    @test p.n_rotations == 3.0
+
+    # Negative pitch rejected
+    @test_throws ErrorException CTProtocol(kVp=120, mA=200, views=720, pitch=-0.5)
+
+    # Helical with n_rotations < 1 rejected
+    @test_throws ErrorException CTProtocol(kVp=120, mA=200, views=720,
+                                           pitch=0.8, n_rotations=0.5)
+end
+```
+
+#### 7.2.4 W(q̂) Helical Weight Function
+
+```julia
+@testset "WFBP weight function W(q̂)" begin
+    Q = 0.6  # flat-top width
+
+    # Compute W(q_abs) inline (matches Section 3.3.3)
+    function W(q_abs, Q=0.6)
+        if q_abs < Q
+            return 1.0
+        elseif q_abs < 1.0
+            t = (q_abs - Q) / (1.0 - Q)
+            return cos(π/2 * t)^2
+        else
+            return 0.0
+        end
+    end
+
+    # Known values
+    @test W(0.0) == 1.0              # center → full weight
+    @test W(0.3) == 1.0              # within flat region
+    @test W(0.6) == 1.0              # boundary of flat region
+    @test W(0.8) ≈ cos(π/2 * 0.5)^2 # = cos(π/4)² = 0.5
+    @test W(1.0) == 0.0              # detector edge → zero
+    @test W(1.5) == 0.0              # outside detector → zero
+
+    # Symmetry: W is applied to |q̂|, so negative values behave identically
+    # (tested via abs() in the kernel)
+
+    # Monotonic decrease in taper region
+    qs = range(0.6, 1.0, length=100)
+    ws = W.(qs)
+    @test all(diff(ws) .<= 0)  # non-increasing
+
+    # Smooth transition (no jump at Q boundary)
+    @test W(0.6 + 1e-6) ≈ 1.0 atol=1e-4
+end
+```
+
+**Ground truth:** Analytical formula from Stierstorfer 2004, Eq. 3–5. No ambiguity.
+
+#### 7.2.5 Tam-Danielsson Window (fov_z Auto-Computation)
+
+```julia
+@testset "Helical fov_z defaults to Tam-Danielsson window" begin
+    scanner = create_naeotom_alpha()
+
+    # pitch=0.8, 3 rotations, collimation 57.6mm = 5.76cm
+    geom = CTGeometry(scanner; n_angles=720, pitch=0.8, n_rotations=3,
+                      collimation_mm=57.6)
+
+    total_collim_cm = 5.76
+    z_travel = 3 * 0.8 * total_collim_cm  # = 13.824 cm
+    expected_fov_z = z_travel - total_collim_cm  # = 8.064 cm
+
+    @test geom.fov[3] ≈ expected_fov_z atol=0.01
+
+    # With explicit z_cm, override takes effect
+    geom2 = CTGeometry(scanner; n_angles=720, pitch=0.8, n_rotations=3,
+                       collimation_mm=57.6, z_cm=5.0)
+    @test geom2.fov[3] ≈ 5.0 atol=0.01
+end
+```
+
+#### 7.2.6 Dose Formulas with Pitch
+
+```julia
+@testset "CTDIvol and DLP with pitch" begin
+    p_axial = CTProtocol(kVp=120, mA=200, views=720, rotation_time=0.5)
+    p_helical = CTProtocol(kVp=120, mA=200, views=720, rotation_time=0.5,
+                           pitch=0.8, n_rotations=3)
+
+    ctdi_axial = compute_ctdi_vol(p_axial)
+    ctdi_helical = compute_ctdi_vol(p_helical)
+
+    # CTDIvol inversely proportional to pitch
+    @test ctdi_helical ≈ ctdi_axial / 0.8 atol=ctdi_axial * 0.01
+
+    # DLP = CTDIvol × scan_length
+    # For helical: scan_length = n_rot × pitch × collimation
+    collim_cm = 5.76
+    scan_length = 3 * 0.8 * collim_cm
+    dlp = compute_dlp(p_helical, scan_length)
+    @test dlp ≈ ctdi_helical * scan_length atol=0.1
+end
+```
+
+### 7.3 Tier 2: Axial Regression Tests
+
+These tests confirm that the helical modifications do not change ANY existing behavior when pitch=0.
+
+#### 7.3.1 Forward Projection Regression
+
+```julia
+@testset "Axial forward projection unchanged after helical modification" begin
+    phantom, geom = small_test_setup()
+    # small_test_setup uses create_aquilion_one which has pitch=0.0
+
+    # Monochromatic forward projection
+    sino = forward_project(compute_μ(phantom, 60.0), geom)
+
+    # Save reference values BEFORE helical implementation.
+    # After implementation, these must still match.
+    @test size(sino) == (64, 8, 36)
+    @test sino[32, 4, 18] ≈ SAVED_REFERENCE_VALUE atol=1e-6
+    # (SAVED_REFERENCE_VALUE captured from current code)
+end
+```
+
+**Implementation note:** Before implementing helical, run the existing test suite and save key sinogram/reconstruction values as reference constants. After implementation, verify bit-for-bit (or atol=1e-6) agreement.
+
+**Key regression points to capture (before helical implementation):**
+1. `forward_project(compute_μ(phantom, 60.0), geom)` — central element
+2. `fdk_reconstruct(sino, geom, size(phantom.mask))` — center voxel HU
+3. `sirt_reconstruct(sino, geom, size(phantom.mask); iterations=10)` — center voxel
+4. Full `simulate!` pipeline with `SimOptions(fidelity=:high)` — center sinogram element
+
+#### 7.3.2 Full Pipeline Regression
+
+```julia
+@testset "Full simulate! pipeline regression (pitch=0)" begin
+    scanner = create_naeotom_alpha()
+    phantom = create_gammex_472(n_voxels=64, n_slices=16, fov_cm=35.0, z_cm=4.0)
+    protocol = CTProtocol(kVp=120, mA=200, views=360, rotation_time=0.5)
+    # pitch defaults to 0.0 — must produce identical result to pre-helical code
+
+    sim_opts = SimOptions(fidelity=:high)
+    recon_opts = ReconOptions(algorithm=:fdk, matrix_size=(64,64,16), fov_cm=35.0)
+
+    ws = create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
+    result = simulate!(ws, phantom, scanner, protocol, sim_opts, recon_opts)
+
+    # Central slice water region should be ~0 HU
+    center = result.reconstruction[32, 32, 8]
+    @test -50 < center < 50  # water ≈ 0 HU
+
+    # Compare to saved reference (captured before helical changes)
+    @test center ≈ SAVED_AXIAL_CENTER_HU atol=1.0
+end
+```
+
+### 7.4 Tier 3: Helical Integration Tests
+
+#### 7.4.1 Helical Forward Projection — Sinogram Shape and Content
+
+```julia
+@testset "Helical forward projection" begin
+    scanner = create_naeotom_alpha()
+    phantom = create_gammex_472(n_voxels=64, n_slices=64, fov_cm=35.0, z_cm=10.0)
+
+    # Helical geometry: 3 rotations, pitch 0.8
+    geom = CTGeometry(scanner; n_angles=360, pitch=0.8, n_rotations=3,
+                      collimation_mm=57.6, n_rows=16, n_cols=128, fov_cm=35.0)
+
+    μ_vol = compute_μ(phantom, 60.0)
+    sino = forward_project(μ_vol, geom; volume_extent=phantom.extent)
+
+    # Shape: n_cols × n_rows × total_views
+    @test size(sino, 3) == 360 * 3  # = 1080 total views
+
+    # Non-zero: phantom is large enough to intercept rays
+    @test maximum(sino) > 0.0
+
+    # Z-varying content: sinogram should change across rotations
+    # because the source moves through different z-levels of the phantom
+    mean_rot1 = mean(sino[:, :, 1:360])
+    mean_rot2 = mean(sino[:, :, 361:720])
+    mean_rot3 = mean(sino[:, :, 721:1080])
+    # For a cylindrical phantom, means should be similar
+    @test abs(mean_rot1 - mean_rot2) / mean_rot1 < 0.1  # < 10% variation
+end
+```
+
+#### 7.4.2 Helical Naive FDK Reconstruction — Uniform Cylinder
+
+This is the key correctness test for Phase 1 (naive helical FDK).
+
+```julia
+@testset "Helical FDK — uniform water cylinder" begin
+    scanner = create_naeotom_alpha()
+
+    # Create uniform water cylinder phantom (large z-extent)
+    n = 64
+    mask = zeros(UInt8, n, n, n)
+    center = n ÷ 2
+    radius = n ÷ 3
+    for i in 1:n, j in 1:n, k in 1:n
+        if (i - center)^2 + (j - center)^2 < radius^2
+            mask[i, j, k] = UInt8(3)  # REGION_WATER
+        end
+    end
+    phantom = Phantom(mask, Dict(3 => :water), (0.05, 0.05, 0.05))
+    # extent: 3.2 × 3.2 × 3.2 cm
+
+    # Helical geometry
+    geom = CTGeometry(scanner; n_angles=360, pitch=1.0, n_rotations=2,
+                      n_rows=16, n_cols=128, fov_cm=3.2, collimation_mm=6.4)
+
+    # Forward project + reconstruct
+    energies, weights = load_spectrum(120)
+    energies, weights = downsample_spectrum(energies, weights, 10)
+    materials = get_region_materials()
+    sino = forward_project_poly(phantom, geom, energies, weights, materials)
+    recon = fdk_reconstruct(sino, geom, (n, n, n))
+
+    # Convert to HU
+    μ_water = compute_μ_water(60.0)
+    hu = (recon .- μ_water) ./ μ_water .* 1000
+
+    # Central axial slice — water region should be ~0 HU
+    central_slice = hu[:, :, n÷2]
+    water_mask_2d = mask[:, :, n÷2] .== 3
+    water_hu = central_slice[water_mask_2d]
+
+    @test abs(mean(water_hu)) < 30     # mean HU accuracy < 30 HU from 0
+    @test std(water_hu) < 100          # noise < 100 HU (coarse phantom, few views)
+
+    # Z-uniformity: compare central slice to off-center slices
+    # (within Tam-Danielsson window)
+    for z_offset in [-8, -4, 4, 8]
+        z_slice = n÷2 + z_offset
+        if 1 <= z_slice <= n
+            off_slice = hu[:, :, z_slice]
+            off_water = off_slice[mask[:, :, z_slice] .== 3]
+            if length(off_water) > 10
+                @test abs(mean(off_water) - mean(water_hu)) < 50  # z-uniformity
+            end
+        end
+    end
+end
+```
+
+**Ground truth:** A uniform water cylinder must reconstruct to ~0 HU everywhere, regardless of pitch. Deviations indicate incorrect normalization (C1), incorrect scaling (π vs 2π), or geometry errors.
+
+**Acceptance criteria:**
+- Mean HU within ±30 of 0 (relaxed for coarse phantom)
+- Z-uniformity: slice-to-slice mean variation < 50 HU within Tam-Danielsson window
+- No systematic z-trend (rules out incorrect normalization)
+
+#### 7.4.3 Helical WFBP vs Naive FDK — Quality Comparison
+
+```julia
+@testset "WFBP vs Naive FDK at low pitch" begin
+    # At pitch=0.5, naive FDK over-estimates by ~2× due to data redundancy.
+    # WFBP should produce correct values.
+    scanner = create_naeotom_alpha()
+    phantom = create_uniform_water_cylinder(...)  # helper
+
+    geom_low = CTGeometry(scanner; n_angles=360, pitch=0.5, n_rotations=3, ...)
+
+    sino = forward_project_poly(phantom, geom_low, ...)
+    recon_naive = fdk_reconstruct(sino, geom_low, ...; helical_weights=false)
+    recon_wfbp  = fdk_reconstruct(sino, geom_low, ...; helical_weights=true)
+
+    # Naive should over-estimate (redundant data at low pitch)
+    hu_naive = to_hu(recon_naive)
+    hu_wfbp  = to_hu(recon_wfbp)
+
+    mean_naive = mean(hu_naive[water_mask])
+    mean_wfbp  = mean(hu_wfbp[water_mask])
+
+    # WFBP should be closer to 0 HU than naive
+    @test abs(mean_wfbp) < abs(mean_naive)
+    @test abs(mean_wfbp) < 30  # WFBP should be accurate
+end
+```
+
+#### 7.4.4 Helical Iterative Reconstruction (SIRT) — Reference
+
+Iterative recon (SIRT/CGLS) with matched backprojection is the **gold standard reference** for helical because it doesn't use FDK weights — the forward/adjoint pair is exact. This provides ground truth for validating WFBP.
+
+```julia
+@testset "Helical SIRT convergence" begin
+    scanner = create_naeotom_alpha()
+    phantom = create_gammex_472(n_voxels=32, n_slices=32, fov_cm=35.0, z_cm=6.0)
+
+    geom = CTGeometry(scanner; n_angles=180, pitch=0.8, n_rotations=2,
+                      n_rows=8, n_cols=64, fov_cm=35.0, collimation_mm=57.6)
+
+    μ_vol = compute_μ(phantom, 60.0)
+    sino = forward_project(μ_vol, geom; volume_extent=phantom.extent)
+
+    # SIRT reconstruction (matched backprojection, no FDK weight)
+    recon_sirt = sirt_reconstruct(sino, geom, size(phantom.mask); iterations=50)
+
+    # Should converge to something reasonable
+    @test !any(isnan, recon_sirt)
+    @test !any(isinf, recon_sirt)
+    @test maximum(recon_sirt) > 0  # non-trivial reconstruction
+
+    # Compare to FDK
+    recon_fdk = fdk_reconstruct(sino, geom, size(phantom.mask))
+
+    # Both should reconstruct water region similarly
+    # (SIRT converges to correct answer; FDK approximate but close for pitch≈1)
+    center_sirt = recon_sirt[16, 16, 16]
+    center_fdk  = recon_fdk[16, 16, 16]
+    # Both should be in the same ballpark
+    @test abs(center_sirt - center_fdk) < 0.05 * abs(center_sirt + 1e-6)
+end
+```
+
+#### 7.4.5 PCCT + Helical
+
+```julia
+@testset "PCCT + Helical integration" begin
+    scanner = create_naeotom_alpha()
+    phantom = create_gammex_472(n_voxels=32, n_slices=32, fov_cm=35.0, z_cm=6.0)
+
+    protocol = CTProtocol(kVp=120, mA=200, views=360, rotation_time=0.5,
+                          pitch=0.8, n_rotations=2, collimation_mm=57.6)
+    sim_opts = SimOptions(fidelity=:pcct)
+    recon_opts = ReconOptions(algorithm=:fdk, matrix_size=(32,32,32), fov_cm=35.0)
+
+    ws = create_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
+
+    # Should not throw
+    result = simulate!(ws, phantom, scanner, protocol, sim_opts, recon_opts)
+
+    # Basic sanity: reconstruction is non-trivial
+    @test size(result.reconstruction) == (32, 32, 32)
+    @test maximum(result.reconstruction) > 0
+    @test !any(isnan, result.reconstruction)
+end
+```
+
+### 7.5 Tier 4: Quality Metrics (Verification Notebook)
+
+These tests belong in a verification notebook (e.g., `verification/notebooks/08_helical_validation.jl`) and use the same metrics infrastructure as notebooks 06 and 07.
+
+#### 7.5.1 Helical Gammex 472 — HU Accuracy
+
+**Test setup:**
+- Scanner: NAEOTOM Alpha (or GE Apex Elite)
+- Phantom: Gammex 472 at XCAT resolution (factor 2: 800×700×250, 0.04cm voxels)
+- Protocol: 120 kVp, 200 mA, pitch=0.8, 3 rotations
+- Reconstruction: FDK with WFBP weights, 512×512 matrix
+
+**Metrics and acceptance criteria:**
+
+| Metric | Target | Tolerance | How Measured |
+|--------|--------|-----------|-------------|
+| **Water HU** | 0 HU | ±10 HU | Mean HU in 2 water ROIs |
+| **Ca_50 HU** | ~50 HU | ±15 HU | Mean HU in Ca_50 rod ROI |
+| **Ca_100 HU** | ~100 HU | ±20 HU | Mean HU in Ca_100 rod ROI |
+| **Ca_200 HU** | ~200 HU | ±30 HU | Mean HU in Ca_200 rod ROI |
+| **I_5.0 HU** | ~250 HU | ±30 HU | Mean HU in Iodine 5.0 rod ROI |
+| **σ_water (noise)** | Comparable to axial | <1.5× axial noise | Std of water ROI |
+| **CNR (Ca_200)** | >5 | >3 minimum | (HU_rod − HU_water) / σ_water |
+| **MTF50** | >2 lp/cm | >1.5 lp/cm | Circular edge method |
+| **NPS peak** | ~1.5 lp/cm | 0.5–3.0 lp/cm | Local NPS radial average |
+
+**Key comparison:** Run the same phantom/scanner/protocol in axial mode (pitch=0, 1 rotation, same total mAs). Helical metrics should be within 20% of axial metrics. If noise is significantly higher or HU accuracy degrades, the helical weighting has a bug.
+
+**Ref:** Existing notebook `06_ge_apex_elite_clinical.jl` uses `segment_gammex_rods()` for automated ROI extraction and `measure_nps_local()` / `measure_mtf_circular_edge()` for image quality metrics.
+
+#### 7.5.2 Z-Uniformity Test
+
+**Purpose:** Verify that reconstruction quality is uniform along the z-axis within the Tam-Danielsson window.
+
+**Method:** Reconstruct with 128+ z-slices. For each slice, measure water ROI mean HU and noise (σ). Plot mean(HU) and σ vs z.
+
+**Acceptance criteria:**
+- Mean HU variation < ±15 HU across all slices within Tam-Danielsson window
+- No systematic z-trend (linear fit slope < 2 HU/cm)
+- Noise variation < 20% across slices (√(σ_max/σ_min) < 1.2)
+- Edge slices (outside Tam-Danielsson window) may have degraded quality — document but don't fail
+
+**This is the single most diagnostic test for helical reconstruction.** Incorrect normalization (C1) manifests as z-dependent HU drift. Incorrect scaling manifests as global offset. Incorrect W(q̂) manifests as noise variation.
+
+#### 7.5.3 Pitch Sweep
+
+**Purpose:** Verify correct behavior across the clinical pitch range.
+
+**Method:** Run identical phantom/scanner with pitch ∈ {0.5, 0.8, 1.0, 1.2, 1.5}. For each, measure:
+1. Mean HU (water) — should be ~0 for all pitch values
+2. Noise (σ_water) — should be approximately pitch-independent for WFBP (< 7% variation per Stierstorfer 2004)
+3. CNR — should scale inversely with σ (higher pitch → higher CTDIvol-normalized noise)
+
+**Acceptance criteria:**
+- Mean HU within ±10 of 0 for all pitch values (WFBP)
+- Noise ratio max/min across pitch values < 1.15 (WFBP)
+- For naive FDK (Phase 1): mean HU may deviate at pitch < 0.8 (expected — see Section 3.2)
+
+**Ref:** Stierstorfer 2004, Figure 3: noise vs pitch for WFBP shows < 5% variation for pitch 0.5–1.5 with 32-row detector.
+
+#### 7.5.4 Cone-Beam Artifact Assessment
+
+**Purpose:** Quantify remaining cone-beam artifacts in WFBP reconstruction.
+
+**Method:** Use a phantom with a sharp planar interface (e.g., a slab of bone within water, perpendicular to the z-axis). Reconstruct and measure artifact magnitude near the interface.
+
+**Metric:** Deviation from expected HU in regions adjacent to the slab boundary.
+
+**Expected behavior:**
+- NAEOTOM Alpha (3.3° cone half-angle): Artifacts < 5 HU
+- GE Apex Elite (5.7° cone half-angle): Artifacts < 15 HU
+- Naive FDK at high pitch: Artifacts may exceed 30 HU
+
+**This test is informational (documenting limitations), not pass/fail.** Cone-beam artifacts are inherent to approximate algorithms.
+
+### 7.6 Tier 5: Cross-Reference Validation
+
+#### 7.6.1 XCIST/CatSim Helical Comparison
+
+**Purpose:** Absolute validation against an independent helical CT simulator.
+
+**Method:** Run identical helical scan parameters in BasisSimulator and XCIST. Compare:
+1. Sinograms (line profiles through matching views)
+2. Reconstructed HU values
+3. Noise properties
+
+**XCIST setup** (from existing notebook `01_single_kvp_verification.jl` pattern):
+```python
+# XCIST helical configuration
+cfg.protocol.viewsPerRotation = 720
+cfg.protocol.viewCount = 720 * 3  # 3 rotations
+cfg.protocol.scanType = "helical"
+cfg.protocol.pitch = 0.8
+```
+
+**Acceptance criteria:**
+- HU agreement within ±20 HU for all Gammex rods (same tolerance as axial XCIST comparison)
+- Sinogram central profile correlation > 0.95
+
+**Dependencies:** XCIST must be accessible via PythonCall (existing infrastructure in notebook 01). XCIST helical reconstruction uses `helical_equiAngle` rebinning + FBP — a different algorithm than WFBP, so perfect agreement is not expected. The comparison validates the forward model (which should match closely) and confirms reconstruction is in the right ballpark.
+
+#### 7.6.2 Self-Consistency Check: SIRT as Reference
+
+Since iterative methods (SIRT, CGLS) with matched backprojection are mathematically correct for any geometry, a converged SIRT reconstruction serves as an internal ground truth:
+
+```julia
+# Run enough iterations for convergence
+recon_sirt = sirt_reconstruct(sino, geom, vol_size; iterations=200)
+recon_wfbp = fdk_reconstruct(sino, geom, vol_size)  # WFBP
+
+# WFBP should approximate SIRT result
+hu_sirt = to_hu(recon_sirt)
+hu_wfbp = to_hu(recon_wfbp)
+
+# Per-rod HU comparison
+for rod in rods
+    hu_s = mean(hu_sirt[rod.mask])
+    hu_w = mean(hu_wfbp[rod.mask])
+    @test abs(hu_s - hu_w) < 30  # WFBP vs converged SIRT < 30 HU
+end
+```
+
+**This is the strongest internal validation** because it compares two independent reconstruction algorithms operating on the same helical sinogram data. SIRT is provably correct for the geometry; WFBP should approximate it.
+
+### 7.7 Edge Cases and Error Handling
+
+#### 7.7.1 Phantom Smaller Than Scan Range
+
+```julia
+@testset "Small phantom + helical warning" begin
+    scanner = create_naeotom_alpha()
+    phantom = create_gammex_472(n_voxels=32, n_slices=8, fov_cm=35.0, z_cm=2.0)
+    # z_cm=2.0 cm phantom, helical travel = 3*0.8*5.76 = 13.82 cm → phantom too small
+
+    protocol = CTProtocol(kVp=120, mA=200, views=360, pitch=0.8, n_rotations=3,
+                          collimation_mm=57.6)
+    recon_opts = ReconOptions(algorithm=:fdk, matrix_size=(32,32,8), fov_cm=35.0)
+
+    # Should produce a warning about phantom z-extent but NOT error
+    @test_logs (:warn,) create_eict_workspace(
+        scanner, protocol, SimOptions(), recon_opts, phantom)
+
+    # Sinogram should have mostly-zero regions (views outside phantom)
+    # This is physically correct — air projects as zero attenuation
+end
+```
+
+#### 7.7.2 Single Rotation with Pitch > 0
+
+```julia
+@testset "Single rotation helical" begin
+    # pitch > 0 with n_rotations=1 — valid but minimal z-coverage
+    scanner = create_naeotom_alpha()
+    geom = CTGeometry(scanner; n_angles=360, pitch=0.8, n_rotations=1.0,
+                      n_rows=8, n_cols=64, collimation_mm=57.6)
+
+    @test geom.n_angles == 360  # single rotation
+    @test geom.pitch == 0.8
+
+    # Z should vary within single rotation
+    z_range = geom.source_positions[3, end] - geom.source_positions[3, 1]
+    expected_travel = 0.8 * 5.76  # ~4.6 cm within one rotation
+    @test z_range ≈ expected_travel * (1 - 1/360) atol=0.1
+end
+```
+
+#### 7.7.3 Very High Pitch (Cardiac/Dual-Source)
+
+```julia
+@testset "High pitch (dual-source style)" begin
+    protocol = CTProtocol(kVp=120, mA=200, views=720, pitch=3.0, n_rotations=1)
+    # pitch=3.0 valid (dual-source Flash mode)
+
+    valid, msgs = validate_protocol(protocol, scanner)
+    # Should produce a validation message but not error
+    @test valid  # pitch ≤ 3.5 is accepted
+end
+```
+
+#### 7.7.4 Reconstruction Center Z Offset
+
+```julia
+@testset "Recon center Z offset" begin
+    scanner = create_naeotom_alpha()
+    geom = CTGeometry(scanner; n_angles=360, pitch=0.8, n_rotations=3,
+                      recon_center_z=2.0, n_rows=16, n_cols=128)
+
+    @test geom.recon_center == (0.0, 0.0, 2.0)
+
+    # Reconstruction should be centered at Z=2cm, not Z=0
+    # Verify by checking that the recon volume's Z-bounds are offset
+    fov_z = geom.fov[3]
+    vol_min_z = geom.recon_center[3] - fov_z / 2
+    vol_max_z = geom.recon_center[3] + fov_z / 2
+    @test vol_min_z ≈ 2.0 - fov_z/2
+    @test vol_max_z ≈ 2.0 + fov_z/2
+end
+```
+
+### 7.8 Ground Truth Summary
+
+| Source | What It Validates | Strength | Limitation |
+|--------|-------------------|----------|------------|
+| **Analytical formulas** | Z(θ), W(q̂), pitch, dose | Exact | Only validates math, not integration |
+| **Axial regression** | No regressions from helical code | Complete | Only validates pitch=0 path |
+| **Uniform cylinder** | HU accuracy, normalization | Simple, unambiguous | Insensitive to spatial resolution |
+| **Converged SIRT** | FDK/WFBP correctness | Independent internal reference | Slow, limited by convergence |
+| **XCIST/CatSim** | Absolute forward model accuracy | Independent external reference | Different recon algorithm |
+| **Gammex 472** | Multi-material HU accuracy | Clinical relevance, existing infrastructure | Limited z-information |
+| **Pitch sweep** | Weight normalization, dose efficiency | Exposes scaling bugs | Requires multiple runs |
+| **Z-uniformity** | Helical normalization, weight correctness | Most diagnostic for helical bugs | Requires large phantom |
+
+### 7.9 Recommended Test Implementation Order
+
+1. **Before any helical code changes:** Capture regression reference values from current axial tests (sinogram elements, reconstruction center voxels). Store as constants in `test/runtests.jl`.
+
+2. **Phase 1 (Geometry + Forward Projection):**
+   - T1: Z(θ) computation (7.2.1)
+   - T1: Axial degeneration (7.2.2)
+   - T1: Protocol validation (7.2.3)
+   - T2: Axial regression sinogram (7.3.1)
+   - T3: Helical sinogram shape and content (7.4.1)
+
+3. **Phase 2 (Naive Helical FDK):**
+   - T1: Tam-Danielsson window (7.2.5)
+   - T2: Full pipeline regression (7.3.2)
+   - T3: Uniform cylinder HU (7.4.2)
+   - T3: Helical SIRT convergence (7.4.4)
+
+4. **Phase 3 (WFBP):**
+   - T1: W(q̂) weight function (7.2.4)
+   - T3: WFBP vs naive FDK (7.4.3)
+   - T4: Gammex 472 HU accuracy (7.5.1)
+   - T4: Z-uniformity (7.5.2)
+   - T4: Pitch sweep (7.5.3)
+
+5. **Phase 4 (Integration):**
+   - T3: PCCT + helical (7.4.5)
+   - T1: Dose formulas (7.2.6)
+   - T5: XCIST cross-reference (7.6.1)
+   - T5: SIRT self-consistency (7.6.2)
+   - Edge cases (7.7.*)
+
+### 7.10 Test Phantom Requirements
+
+| Phantom | Purpose | Minimum Size | Notes |
+|---------|---------|-------------|-------|
+| **Gammex 472** (existing) | Multi-material HU, CNR, MTF | `n_slices≥32, z_cm≥6` for helical | Existing `create_gammex_472()` with larger z |
+| **Uniform water cylinder** | Z-uniformity, normalization | `z_cm ≥ z_travel + collimation_cm` | Simple cylindrical mask, water material |
+| **small_test_setup()** (existing) | Fast unit/regression | Existing 32×32×8 | Used only for axial regression |
+| **XCAT** (existing) | Clinical realism | Factor 2 (800×700×250) | Existing phantom, z_extent=10cm |
+
+**No new phantom types are needed.** The existing Gammex 472 with increased z-extent and a simple uniform cylinder (constructible from `Phantom()` with a cylindrical mask) cover all test scenarios.
+
+### 7.11 Failure Mode Diagnosis Guide
+
+| Symptom | Likely Cause | Diagnostic Test |
+|---------|-------------|-----------------|
+| **Global HU offset in helical** | Wrong normalization constant (π vs 2π) | Uniform cylinder (7.4.2): compare mean HU vs expected 0 |
+| **HU drift along z** | Normalization depends on view count not weight sum | Z-uniformity (7.5.2): plot mean HU per slice |
+| **HU correct at pitch=1, wrong at pitch=0.5** | Naive FDK (no weight normalization for redundancy) | Pitch sweep (7.5.3): should motivate WFBP |
+| **Noise varies with pitch** | Weight normalization incorrect | Pitch sweep (7.5.3): σ should be ~constant for WFBP |
+| **Axial results changed** | Helical code affects pitch=0 path | Axial regression (7.3.*): bit-exact comparison |
+| **Streaks at z-edges** | Insufficient angular coverage (voxels outside Tam-Danielsson window) | Extend fov_z to full range and observe edge quality |
+| **PCCT crash or NaN** | New CTGeometry fields not propagated to native-res geometry | PCCT + helical (7.4.5): check workspace.jl:364 |
+| **SIRT diverges for helical** | Forward/adjoint mismatch (recon_center not applied symmetrically) | Check vol_min_z offset in both siddon and backprojection |
+
 ### 5.7 Noise — Per-View Photon Count Is Correct
 
 `compute_detector_I0` (`detector_noise.jl:438–474`) computes I₀ per pixel per view:

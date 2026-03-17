@@ -1,8 +1,8 @@
 # Helical CT Discovery Loop — Current State
 
 **Last updated:** 2026-03-17
-**Current phase:** CRITIQUE of HELI-004 + HELI-005 complete → next: HELI-007 DISCOVERY or REFINEMENT
-**Current topic:** Choose between HELI-007 DISCOVERY (Validation) or REFINEMENT (resolve all critique issues)
+**Current phase:** HELI-007 DISCOVERY complete → next: REFINEMENT pass (all sections) or HELI-008 SYNTHESIS
+**Current topic:** All discovery and critique phases complete. Ready for comprehensive REFINEMENT.
 
 ## What was done
 
@@ -14,31 +14,27 @@
 **HELI-004 DISCOVERY (Iteration 6a):** API design — CTProtocol pitch field, CTGeometry struct additions, workspace changes, dose formulas, validation.
 **HELI-005 DISCOVERY (Iteration 6b):** Physics pipeline audit — confirmed all 16 effects are helical-compatible with zero changes.
 **HELI-004+005 CRITIQUE (Iteration 7):** Cross-referenced sections 4-5 against source code. 4 important + 2 minor issues found (C13-C18). No critical issues.
+**HELI-007 DISCOVERY (Iteration 8):** Validation strategy — 5-tier testing plan with test code, acceptance criteria, ground truth sources, failure mode diagnosis.
 
-### Key findings from Iteration 7 (HELI-004+005 Critique)
+### Key findings from Iteration 8 (HELI-007 Discovery)
 
-**4 IMPORTANT issues:**
-1. **C13:** `n_angles` naming ambiguity (constructor param = views_per_rotation, struct field = total_views). Accept as tradeoff, add clear docs.
-2. **C14:** `recon_center` offset must NOT apply to phantom forward projection (only iterative recon). Refines C6 site #1.
-3. **C15:** `create_aquilion_one` duplicates geometry loop — refactor to delegate to `CTGeometry(scanner; ...)` instead of maintaining two copies of helical Z formula.
-4. **C16:** GPU memory scaling (n_rotations × buffer sizes) not documented in Section 4.5. Cross-reference Section 2.4.
-
-**2 MINOR issues:**
-5. **C17:** `compute_dlp` fix needs `scan_length_cm` semantics clarification.
-6. **C18:** Heel effect `fan_angle_max` uses recon FOV not detector fan (pre-existing, not helical).
-
-**Overall: Sections 4 and 5 are SOLID.** No critical issues. API design is clean and physics pipeline is 100% helical-compatible.
+1. **Existing test infrastructure is sufficient** — no new test utilities needed. Gammex 472, small_test_setup(), HU/CNR/NPS/MTF metrics, XCIST integration all reusable.
+2. **5-tier validation:** Unit → Axial Regression → Helical Integration → Quality Metrics → Cross-Reference.
+3. **Most diagnostic test:** Z-uniformity (mean HU per slice should be flat within Tam-Danielsson window). Catches normalization, scaling, and weight bugs.
+4. **Strongest internal reference:** Converged SIRT with matched backprojection — provably correct for any geometry, serves as ground truth for WFBP validation.
+5. **Pre-implementation step required:** Capture axial regression reference values before any code changes.
+6. **16 specific test cases** with Julia code ready to implement, organized by coding phase.
 
 ## What to do next
 
-**RECOMMENDED: HELI-007 DISCOVERY (Validation Strategy)** — define test cases, acceptance criteria, ground truth sources. This is the last major discovery topic before REFINEMENT and SYNTHESIS.
+**RECOMMENDED: Comprehensive REFINEMENT pass** — Resolve all open critique items (C1-C18) with implementation-ready detail. Most urgent:
+- **C1 (CRITICAL):** WFBP normalization formula — must read FreeCT_wFBP source to determine π vs 2π constant. This is the single biggest unresolved question in the spec.
+- **C15 (IMPORTANT):** `create_aquilion_one` refactoring to eliminate duplicated geometry loop.
+- **C14 (IMPORTANT):** `recon_center` conditional in forward projector — needs exact code diff.
 
-**ALTERNATIVE: REFINEMENT of Sections 0-4** — resolve all C1-C18 critique issues with implementation-ready detail. The most urgent unresolved items are:
-- C1 (normalization formula) — requires reading FreeCT_wFBP source
-- C15 (create_aquilion_one refactor) — straightforward but needs pixel_size reconciliation
-- C14 (recon_center conditional) — needs exact code diff
+**ALTERNATIVE: HELI-008 SYNTHESIS** — Create phased implementation roadmap with stories and dependencies. Could proceed now since all discovery topics are complete, but REFINEMENT would make the implementation more precise.
 
-**Suggested path:** HELI-007 DISCOVERY next, then a comprehensive REFINEMENT pass across all sections, then HELI-008 SYNTHESIS.
+**Suggested path:** One REFINEMENT pass resolving C1 + other open issues → HELI-008 SYNTHESIS → HELI_COMPLETE.
 
 ### Phase rotation plan
 
@@ -46,12 +42,12 @@
 HELI-000 (priority 0): Discovery ✓ → Critique ✓ → Refinement
 HELI-001 (priority 1): Discovery ✓ → Critique ✓ → Refinement
 HELI-002 (priority 1): Discovery ✓ → Critique ✓ → Refinement
-HELI-003 (priority 1): Discovery ✓ → Critique ✓ → Refinement (needs C1 resolution)
+HELI-003 (priority 1): Discovery ✓ → Critique ✓ → Refinement (NEEDS C1 resolution)
 HELI-004 (priority 1): Discovery ✓ → Critique ✓ → Refinement
 HELI-005 (priority 1): Discovery ✓ → Critique ✓ → Refinement (minimal — physics confirmed unchanged)
 HELI-006 (priority 1): Discovery ✓ (partial, via HELI-003) → Critique → Refinement
-HELI-007 (priority 2): Discovery [NEXT] → Critique → Refinement
-HELI-008 (priority 3, SYNTHESIS): Blocked until P0+P1 topics complete
+HELI-007 (priority 2): Discovery ✓ → Critique → Refinement
+HELI-008 (priority 3, SYNTHESIS): All discovery complete → ready when refinement done
 ```
 
 ### Phase tracking
@@ -65,7 +61,7 @@ HELI-008 (priority 3, SYNTHESIS): Blocked until P0+P1 topics complete
 | HELI-004 API Integration | **DONE** | **DONE** | open |
 | HELI-005 Physics Pipeline Compat | **DONE** | **DONE** | open (minimal) |
 | HELI-006 Reference Implementations | **DONE** (partial) | open | open |
-| HELI-007 Validation Strategy | **NEXT** | open | open |
+| HELI-007 Validation Strategy | **DONE** | open | open |
 | HELI-008 SYNTHESIS | open | open | open |
 
 ## Completed iterations
@@ -77,3 +73,4 @@ HELI-008 (priority 3, SYNTHESIS): Blocked until P0+P1 topics complete
 5. **HELI-000–003 Critique** (2026-03-17) — 5 critical + 5 important issues found. All annotated in spec.
 6. **HELI-004+005 Discovery** (2026-03-17) — API design + physics pipeline. Complete sections 4 and 5 in spec.
 7. **HELI-004+005 Critique** (2026-03-17) — 4 important + 2 minor issues (C13-C18). No critical issues. Sections 4 and 5 confirmed solid.
+8. **HELI-007 Discovery** (2026-03-17) — Validation strategy: 5-tier plan, 16 test cases, ground truth sources, failure mode diagnosis. Section 7 added to spec.

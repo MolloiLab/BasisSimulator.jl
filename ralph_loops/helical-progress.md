@@ -834,3 +834,82 @@ Spec proposes removing `* n_rotations` from DLP. Correct, but docstring should c
 **Overall: Sections 4 and 5 are SOLID.** No critical issues. API design is clean. Physics pipeline confirmed 100% helical-compatible. Important issues are clarification and code hygiene, not correctness.
 
 ---
+
+## Iteration 8: HELI-007 DISCOVERY — Validation and Testing Strategy
+
+**Date:** 2026-03-17
+**Phase:** Discovery
+**Topic:** HELI-007 (Validation Strategy)
+
+### Summary
+
+Designed a comprehensive 5-tier validation strategy for helical CT, leveraging the existing test infrastructure (Gammex 472, `small_test_setup()`, HU/CNR/NPS/MTF metrics from verification notebooks). The strategy covers unit tests through cross-reference validation, with specific test code, acceptance criteria, ground truth sources, and a failure mode diagnosis guide.
+
+### Key Findings
+
+#### 1. Existing Test Infrastructure Is Sufficient
+
+The codebase already has everything needed for helical validation:
+- **`small_test_setup()`** (runtests.jl:48) — fast Gammex 472 + Aquilion ONE geometry for unit tests
+- **`create_gammex_472()`** — configurable voxel count and z-extent (just increase `n_slices` and `z_cm`)
+- **`segment_gammex_rods()`** — automated ROI extraction for all 16 Gammex inserts
+- **`measure_nps_local()`** / **`measure_mtf_circular_edge()`** — clinical image quality metrics
+- **`resample_to_recon()`** (affine.jl) — phantom labels → recon grid for automated ROI masking
+- **XCIST/CatSim integration** via PythonCall (notebook 01 pattern)
+- **70+ existing test suites** with `@testset` patterns for FDK, SIRT, CGLS, PCCT
+
+**No new test utilities need to be created.** Only a uniform water cylinder helper and increased z-extent for existing phantoms.
+
+#### 2. Five Testing Tiers
+
+| Tier | Tests | Purpose |
+|------|-------|---------|
+| **T1: Unit** | Z(θ), W(q̂), pitch validation, Tam-Danielsson, dose formulas | Mathematical correctness |
+| **T2: Axial Regression** | Forward projection + full pipeline with pitch=0 | Zero regressions |
+| **T3: Helical Integration** | Sinogram shape, uniform cylinder HU, SIRT convergence, PCCT+helical | Basic helical correctness |
+| **T4: Quality Metrics** | Gammex HU accuracy, z-uniformity, pitch sweep, cone-beam artifacts | Clinical quality |
+| **T5: Cross-Reference** | XCIST comparison, converged SIRT as reference | Absolute accuracy |
+
+#### 3. Most Important Tests Identified
+
+1. **Axial degeneration (7.2.2):** pitch=0 must produce bit-identical geometry to current code. If this fails, everything downstream is wrong.
+2. **Uniform water cylinder (7.4.2):** Water must reconstruct to ~0 HU regardless of pitch. This catches normalization bugs (C1).
+3. **Z-uniformity (7.5.2):** Mean HU per slice should be flat within Tam-Danielsson window. This is the most diagnostic test for helical-specific bugs.
+4. **Converged SIRT self-consistency (7.6.2):** WFBP should approximate converged SIRT. This is the strongest internal reference since SIRT matched backprojection is provably correct for any geometry.
+
+#### 4. Ground Truth Strategy
+
+- **No external helical ground truth data needed** for initial validation. Internal self-consistency (SIRT reference) + axial regression + analytical formulas provide sufficient coverage.
+- XCIST cross-reference is a bonus validation but not a blocking dependency.
+- Existing Gammex 472 clinical measurements (verification/results/) serve as axial ground truth.
+
+#### 5. Pre-Implementation Step Required
+
+**Before writing any helical code:** run the existing test suite and capture reference values (specific sinogram elements, reconstruction center voxels) as constants. These become the axial regression targets.
+
+#### 6. Test Implementation Aligned with Coding Phases
+
+Tests are ordered to match the implementation roadmap from Section 3.8:
+- Phase 1 (Geometry + Forward Projection) → T1 + T2 + T3 sinogram tests
+- Phase 2 (Naive FDK) → T3 reconstruction tests
+- Phase 3 (WFBP) → T1 weight function + T4 quality metrics
+- Phase 4 (Integration) → T3 PCCT + T5 cross-reference
+
+### What Was Added to the Spec
+
+- **Section 7** (16 subsections, 7.0–7.11): Complete validation strategy with:
+  - Specific Julia test code for all tiers (ready to copy into runtests.jl)
+  - Quantitative acceptance criteria (HU tolerances, noise ratios, MTF thresholds)
+  - 8 ground truth sources with strengths and limitations
+  - 5-phase test implementation order aligned with coding roadmap
+  - Phantom requirements table (no new phantom types needed)
+  - Failure mode diagnosis guide (8 symptoms → likely causes → diagnostic tests)
+
+### Gaps Remaining
+
+1. **Regression reference values:** Must be captured before implementation. Cannot be known until code is run.
+2. **XCIST helical configuration details:** Need to verify XCIST supports the exact scanner models and pitch values. May need adaptation of notebook 01.
+3. **GPU-specific test considerations:** Metal vs CUDA numerical precision may cause slight differences in helical weight computation. Consider platform-specific tolerances.
+4. **Performance benchmarks:** No performance testing defined (e.g., helical vs axial forward projection time scaling). This is an optimization concern, not a correctness concern.
+
+---

@@ -82,8 +82,8 @@
       "id": "HELI-007",
       "area": "validation-strategy",
       "title": "Validation and Testing — How Do We Know Helical Works?",
-      "description": "Define test strategy: ground truth, acceptance criteria, metrics (HU accuracy, MTF, cone-beam artifacts, z-resolution).",
-      "discovery": "open",
+      "description": "5-tier test strategy: unit (Z(θ), W(q̂)), axial regression, helical integration, quality metrics (HU/noise/z-uniformity), cross-reference (XCIST, converged SIRT). 16 test cases with code. Section 7 in spec.",
+      "discovery": "done",
       "critique": "open",
       "refinement": "open",
       "priority": 2
