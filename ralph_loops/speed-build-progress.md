@@ -65,3 +65,24 @@ The spec recommended `ntuple(Val(N_E)) do e ... end` for energy accumulators. Th
 - The 2D comparison uses exponential kernel (not Gaussian) since the Gaussian path now IS the separable path. Manual CPU 2D Gaussian convolution confirms correctness.
 - PCCT path uses separable automatically (same `add_scatter!`/`correct_scatter!` functions) — allocates temp buffers on demand since PCCT workspace doesn't pre-allocate them (negligible overhead for small combined sinogram)
 - Spec predicted 31× speedup; actual is 147× because the 2D path also computed exp() per neighbor (3,969 exp() calls), while separable pre-computes the presignal once
+
+---
+
+## SPEED-BUILD-003: Branchless DDA Inner Loop ✓
+
+**Status:** Done
+**Commit:** `54d7520` on `speed/fused-projection`
+**Date:** 2026-03-17
+
+### What was done
+- Replaced 3-way `if/elseif/else` branch in DDA inner loop with Int32 mask predicated arithmetic
+- Applied to both `siddon_trace_ray` (unfused fallback) and `siddon_fused_poly_project!` (fused kernel)
+- Pattern: `mx = Int32(cond_x) * Int32(cond_xz); my = Int32(1-mx) * Int32(cond_yz); mz = 1-mx-my`
+
+### Performance
+- CPU: minimal measurable difference (branch prediction is good on CPU)
+- GPU expected: eliminates warp divergence in DDA inner loop (~1.15× on ray tracing)
+- No GPU benchmark available in this environment
+
+### Correctness
+- All 1618 existing tests pass (35 failures + 13 errors are pre-existing)
