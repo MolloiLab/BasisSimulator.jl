@@ -275,17 +275,16 @@ The algorithm computes the line integral L = Σᵢ μᵢ × lᵢ by:
             line_integral += voxel_val * path_length
         end
 
-        # Step to next voxel (TIGRE style comparison)
-        if t_next_x <= t_next_y && t_next_x <= t_next_z
-            ix += step_x
-            t_next_x += dt_x
-        elseif t_next_y <= t_next_z
-            iy += step_y
-            t_next_y += dt_y
-        else
-            iz += step_z
-            t_next_z += dt_z
-        end
+        # Branchless DDA step (SPEED-BUILD-003)
+        mx = Int32(t_next_x <= t_next_y) * Int32(t_next_x <= t_next_z)
+        my = Int32(Int32(1) - mx) * Int32(t_next_y <= t_next_z)
+        mz = Int32(1) - mx - my
+        ix += mx * step_x
+        iy += my * step_y
+        iz += mz * step_z
+        t_next_x += T(mx) * dt_x
+        t_next_y += T(my) * dt_y
+        t_next_z += T(mz) * dt_z
 
         t_current = t_next
     end
@@ -943,17 +942,16 @@ function siddon_fused_poly_project!(
                     accums = _fused_accum_energies(accums, μ_tbl, mat, path_length)
                 end
 
-                # DDA step (branching — will be made branchless in SPEED-BUILD-003)
-                if t_next_x <= t_next_y && t_next_x <= t_next_z
-                    ix += step_x
-                    t_next_x += dt_x
-                elseif t_next_y <= t_next_z
-                    iy += step_y
-                    t_next_y += dt_y
-                else
-                    iz += step_z
-                    t_next_z += dt_z
-                end
+                # Branchless DDA step (SPEED-BUILD-003)
+                mx = Int32(t_next_x <= t_next_y) * Int32(t_next_x <= t_next_z)
+                my = Int32(Int32(1) - mx) * Int32(t_next_y <= t_next_z)
+                mz = Int32(1) - mx - my
+                ix += mx * step_x
+                iy += my * step_y
+                iz += mz * step_z
+                t_next_x += T(mx) * dt_x
+                t_next_y += T(my) * dt_y
+                t_next_z += T(mz) * dt_z
 
                 t_current = t_next
             end
