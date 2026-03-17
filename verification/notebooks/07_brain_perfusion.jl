@@ -580,12 +580,12 @@ begin
 
 				sino_gpu = to_gpu(ws.sino_noisy_out)
 
-				# Two-stage BHC (following notebook 00)
+				# Water-only polynomial BHC (sinogram domain)
+				# Note: two-material sinogram BHC (apply_bhc_two_material) is disabled
+				# for brain — its intermediate FDK fails at wide cone angles (7.3° with
+				# 160 mm collimation). Image-domain BHC handles residual bone correction.
 				if bhc_enabled
-					sino_corrected = BS.apply_bhc_two_material(
-						sino_gpu, bhc_model, geom, recon_size;
-						volume_extent = phantom_t.extent)
-					sino_gpu = to_gpu(sino_corrected)
+					BS.apply_bhc!(sino_gpu, bhc_model.water_bhc)
 				end
 
 				# FDK reconstruction (with custom filter — matching notebook 00)
@@ -605,7 +605,9 @@ begin
 
 				recon_hu = Float32.(BS.to_hounsfield(vol; μ_water = μ_water_brain))
 				BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
-				BS.apply_radial_cupping_correction!(recon_hu; fov_cm = brain_recon_fov)
+				# Note: radial cupping correction is disabled for brain — the polynomial
+				# extrapolates catastrophically beyond the skull (brain tissue at r=2-8 cm
+				# in a 40 cm FOV). BHC already corrects beam-hardening cupping.
 				all_fdk_hu[i] = reverse(recon_hu, dims=3)
 
 				ws_fdk = nothing; sino_gpu = nothing; recon_μ = nothing; vol = nothing
