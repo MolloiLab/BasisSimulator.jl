@@ -187,6 +187,7 @@ const FILTER_MATERIAL_MAP = Dict{String, Any}(
     "Cu" => XA.Elements.Copper,   "copper"   => XA.Elements.Copper,
     "Sn" => XA.Elements.Tin,      "tin"      => XA.Elements.Tin,
     "Ti" => XA.Elements.Titanium, "titanium" => XA.Elements.Titanium,
+    "W"  => XA.Elements.Tungsten, "tungsten" => XA.Elements.Tungsten,
     "C"  => XA.Elements.Carbon,   "graphite" => XA.Elements.Carbon,
     "Gd2O2S" => GD2O2S,          "gadolinium_oxysulfide" => GD2O2S,
 )
@@ -198,7 +199,7 @@ Return linear attenuation coefficient μ (cm⁻¹) for a filter material at the
 given energy, using XrayAttenuation.jl (NIST XCOM database).
 
 # Supported materials
-Elements: `"Al"`, `"Cu"`, `"Sn"`, `"Ti"`, `"C"` / `"graphite"`.
+Elements: `"Al"`, `"Cu"`, `"Sn"`, `"Ti"`, `"W"` / `"tungsten"`, `"C"` / `"graphite"`.
 Compounds: `"Gd2O2S"` / `"gadolinium_oxysulfide"`.
 """
 function get_filter_mu(material::String, energy_keV::Float64)
