@@ -142,6 +142,103 @@ function create_scatter_kernel_spatial(model::ScatterModel)
     return kernel
 end
 
+# =============================================================================
+# Separable 1D Scatter Kernel (SPEED-BUILD-002)
+# =============================================================================
+
+"""
+    create_scatter_kernel_1d(model::ScatterModel) -> Vector{Float64}
+
+Create 1D Gaussian scatter kernel for separable convolution.
+
+For Gaussian kernels: exp(-(dx²+dy²)/(2σ²)) = exp(-dx²/(2σ²)) × exp(-dy²/(2σ²)).
+The 2D kernel is the outer product of two identical 1D kernels.
+
+Returns nothing for non-Gaussian kernels (fall back to 2D).
+"""
+function create_scatter_kernel_1d(model::ScatterModel)
+    model.kernel_type == :gaussian || return nothing
+
+    sigma = model.kernel_fwhm / (2 * sqrt(2 * log(2)))
+    extent = min(MAX_SCATTER_KERNEL_SIZE ÷ 2, ceil(Int, 3 * sigma))
+    kernel_size = 2 * extent + 1
+
+    kernel_1d = zeros(Float64, kernel_size)
+    center = extent + 1
+    for dx in -extent:extent
+        kernel_1d[center + dx] = exp(-dx^2 / (2 * sigma^2))
+    end
+    # Normalize the 1D kernel so that outer_product sums to 1
+    # Since 2D kernel = k1d ⊗ k1d, normalize so sum(k1d)² = 1 → sum(k1d) = 1
+    kernel_1d ./= sum(kernel_1d)
+
+    return kernel_1d
+end
+
+"""
+    _convolve_separable_h!(output, input, kernel_1d, n_cols, n_rows)
+
+Horizontal 1D convolution pass via AK.foreachindex.
+Convolves each row of each angle slice with the 1D kernel.
+"""
+function _convolve_separable_h!(
+    output::AbstractArray{T,3},
+    input::AbstractArray{T,3},
+    kernel_1d,
+    n_cols::Int, n_rows::Int
+) where T
+    half_k = size(kernel_1d, 1) ÷ 2
+    let inp = input, out = output, k1d = kernel_1d, nc = Int32(n_cols), nr = Int32(n_rows), hk = Int32(half_k)
+        AK.foreachindex(output) do idx
+            idx_0 = Int32(idx - 1)
+            col = (idx_0 % nc) + Int32(1)
+            idx_0 = idx_0 ÷ nc
+            row = (idx_0 % nr) + Int32(1)
+            angle = (idx_0 ÷ nr) + Int32(1)
+
+            acc = zero(T)
+            for di in -hk:hk
+                src_col = clamp(col + di, Int32(1), nc)
+                @inbounds acc += inp[src_col, row, angle] * k1d[di + hk + Int32(1)]
+            end
+            @inbounds out[idx] = acc
+        end
+    end
+    return output
+end
+
+"""
+    _convolve_separable_v!(output, input, kernel_1d, n_cols, n_rows)
+
+Vertical 1D convolution pass via AK.foreachindex.
+Convolves each column of each angle slice with the 1D kernel.
+"""
+function _convolve_separable_v!(
+    output::AbstractArray{T,3},
+    input::AbstractArray{T,3},
+    kernel_1d,
+    n_cols::Int, n_rows::Int
+) where T
+    half_k = size(kernel_1d, 1) ÷ 2
+    let inp = input, out = output, k1d = kernel_1d, nc = Int32(n_cols), nr = Int32(n_rows), hk = Int32(half_k)
+        AK.foreachindex(output) do idx
+            idx_0 = Int32(idx - 1)
+            col = (idx_0 % nc) + Int32(1)
+            idx_0 = idx_0 ÷ nc
+            row = (idx_0 % nr) + Int32(1)
+            angle = (idx_0 ÷ nr) + Int32(1)
+
+            acc = zero(T)
+            for dj in -hk:hk
+                src_row = clamp(row + dj, Int32(1), nr)
+                @inbounds acc += inp[col, src_row, angle] * k1d[dj + hk + Int32(1)]
+            end
+            @inbounds out[idx] = acc
+        end
+    end
+    return output
+end
+
 """
     add_scatter!(sinogram, model::ScatterModel) -> sinogram
 
@@ -161,14 +258,62 @@ The scatter contribution is computed as (Ohnesorge et al., 1999; XCIST):
 Modified sinogram with scatter added.
 """
 function add_scatter!(sinogram::AbstractArray{T,3}, model::ScatterModel;
-                      ws_output=nothing, ws_kernel=nothing) where T
+                      ws_output=nothing, ws_kernel=nothing,
+                      ws_scatter_temp=nothing, ws_kernel_1d=nothing) where T
     n_cols = size(sinogram, 1)
     n_rows = size(sinogram, 2)
 
     # Combined scatter coefficient
     C = T(model.scatter_coefficient * model.scale_factor)
 
-    # Create scatter kernel on CPU (or use pre-computed workspace kernel)
+    # Output buffer (use workspace or allocate)
+    output = ws_output !== nothing ? ws_output : similar(sinogram)
+
+    # ─── SEPARABLE PATH (Gaussian kernels only) ────────────────────────
+    if model.kernel_type == :gaussian
+        # Get or create 1D kernel on GPU
+        kernel_1d = if ws_kernel_1d !== nothing
+            ws_kernel_1d
+        else
+            k1d_cpu = T.(create_scatter_kernel_1d(model))
+            k1d = similar(sinogram, T, length(k1d_cpu))
+            copyto!(k1d, k1d_cpu)
+            k1d
+        end
+
+        # Temp buffer for intermediate separable convolution result
+        scatter_temp = ws_scatter_temp !== nothing ? ws_scatter_temp : similar(sinogram)
+
+        # Step 1: Compute pre-signal into output buffer (reuse as scratch)
+        let sino = sinogram, pre = output, c = C
+            AK.foreachindex(sino) do idx
+                proj = sino[idx]
+                clamped = min(proj, T(20))
+                @inbounds pre[idx] = exp(-clamped) * proj * c
+            end
+        end
+
+        # Step 2: Horizontal 1D convolution: output(pre-signal) → scatter_temp
+        _convolve_separable_h!(scatter_temp, output, kernel_1d, n_cols, n_rows)
+
+        # Step 3: Vertical 1D convolution: scatter_temp → output (now contains scatter)
+        _convolve_separable_v!(output, scatter_temp, kernel_1d, n_cols, n_rows)
+
+        # Step 4: Apply scatter to sinogram: intensity + scatter → log domain
+        let sino = sinogram, scatter = output
+            AK.foreachindex(sino) do idx
+                proj = sino[idx]
+                clamped = min(proj, T(20))
+                intensity = exp(-clamped)
+                total_intensity = intensity + max(scatter[idx], zero(T))
+                @inbounds sino[idx] = -log(max(total_intensity, T(1e-10)))
+            end
+        end
+
+        return sinogram
+    end
+
+    # ─── FALLBACK: 2D convolution (non-Gaussian kernels) ──────────────
     if ws_kernel !== nothing
         kernel = ws_kernel
         kernel_size = size(kernel, 1)
@@ -180,58 +325,38 @@ function add_scatter!(sinogram::AbstractArray{T,3}, model::ScatterModel;
     end
     half_k = kernel_size ÷ 2
 
-    # Output buffer (use workspace or allocate)
-    output = ws_output !== nothing ? ws_output : similar(sinogram)
-
-    # GPU-native scatter computation
-    # For each pixel: compute scatter pre-signal, convolve, add to intensity
-    # let-bind to capture with concrete type (avoids Core.Box on GPU)
     let kernel = kernel, output = output, half_k = half_k, n_cols = n_cols, n_rows = n_rows, C = C
         AK.foreachindex(sinogram) do idx
             ci = CartesianIndices(sinogram)[idx]
             col, row, angle = Tuple(ci)
 
-            # Current projection value
             proj = sinogram[idx]
-
-            # Convert to intensity (clamp projection to avoid overflow)
             clamped_proj = min(proj, T(20))
             intensity = exp(-clamped_proj)
 
-            # Compute scatter contribution via spatial convolution
-            # scatter = convolve(intensity × projection × C, kernel)
             scatter_acc = zero(T)
             for dj in -half_k:half_k
                 for di in -half_k:half_k
                     src_col = clamp(col + di, 1, n_cols)
                     src_row = clamp(row + dj, 1, n_rows)
 
-                    # Source projection
                     src_proj = sinogram[src_col, src_row, angle]
                     src_clamped = min(src_proj, T(20))
                     src_intensity = exp(-src_clamped)
-
-                    # Scatter pre-signal at source pixel
                     scatter_pre = src_intensity * src_proj * C
 
-                    # Kernel weight
                     ki = di + half_k + 1
                     kj = dj + half_k + 1
-
                     scatter_acc += scatter_pre * kernel[ki, kj]
                 end
             end
 
-            # Add scatter to intensity
             total_intensity = intensity + max(scatter_acc, T(0))
-
-            # Clamp and convert back to projection domain
             output[idx] = -log(max(total_intensity, T(1e-10)))
         end
     end
 
     copyto!(sinogram, output)
-
     return sinogram
 end
 
@@ -352,26 +477,69 @@ Modified sinogram with scatter correction applied.
   in favor of linear (exponent=1.0) model matching scatter addition.
 """
 function correct_scatter!(sinogram::AbstractArray{T,3}, model::ScatterCorrectionModel;
-                          ws_output=nothing, ws_kernel=nothing) where T
+                          ws_output=nothing, ws_kernel=nothing,
+                          ws_scatter_temp=nothing, ws_kernel_1d=nothing) where T
     n_cols = size(sinogram, 1)
     n_rows = size(sinogram, 2)
     n_angles = size(sinogram, 3)
 
     # Combined correction coefficient
     C = T(model.correction_coefficient * model.scale_factor)
-    # NOTE: prep_exponent is now ignored - we use linear model to match add_scatter!()
+    scatter_damping = T(0.85)
+    eps = T(1e-10)
 
-    # Create scatter kernel (or use pre-computed workspace kernel)
+    # Output buffer (use workspace or allocate)
+    output = ws_output !== nothing ? ws_output : similar(sinogram)
+
+    # ─── SEPARABLE PATH (Gaussian kernels only) ────────────────────────
+    if model.kernel_type == :gaussian
+        kernel_1d = if ws_kernel_1d !== nothing
+            ws_kernel_1d
+        else
+            scatter_model_temp = ScatterModel(model.correction_coefficient, model.scale_factor, model.kernel_fwhm, model.kernel_type)
+            k1d_cpu = T.(create_scatter_kernel_1d(scatter_model_temp))
+            k1d = similar(sinogram, T, length(k1d_cpu))
+            copyto!(k1d, k1d_cpu)
+            k1d
+        end
+
+        scatter_temp = ws_scatter_temp !== nothing ? ws_scatter_temp : similar(sinogram)
+
+        # Step 1: Compute pre-signal into output buffer
+        let sino = sinogram, pre = output, c = C, eps = eps
+            AK.foreachindex(sino) do idx
+                prep = sino[idx]
+                clamped = min(max(prep, eps), T(20))
+                @inbounds pre[idx] = exp(-clamped) * clamped * c
+            end
+        end
+
+        # Step 2: Horizontal convolution → scatter_temp
+        _convolve_separable_h!(scatter_temp, output, kernel_1d, n_cols, n_rows)
+
+        # Step 3: Vertical convolution → output (scatter estimate)
+        _convolve_separable_v!(output, scatter_temp, kernel_1d, n_cols, n_rows)
+
+        # Step 4: Subtract damped scatter from intensity
+        let sino = sinogram, scatter = output, damp = scatter_damping, eps = eps
+            AK.foreachindex(sino) do idx
+                prep = sino[idx]
+                clamped = min(max(prep, zero(T)), T(20))
+                intensity = exp(-clamped)
+                corrected = max(intensity - scatter[idx] * damp, eps)
+                @inbounds sino[idx] = -log(corrected)
+            end
+        end
+
+        return sinogram
+    end
+
+    # ─── FALLBACK: 2D convolution (non-Gaussian kernels) ──────────────
     if ws_kernel !== nothing
         kernel = ws_kernel
         kernel_size = size(kernel, 1)
     else
-        scatter_model_temp = ScatterModel(
-            model.correction_coefficient,
-            model.scale_factor,
-            model.kernel_fwhm,
-            model.kernel_type
-        )
+        scatter_model_temp = ScatterModel(model.correction_coefficient, model.scale_factor, model.kernel_fwhm, model.kernel_type)
         kernel_cpu = T.(create_scatter_kernel_spatial(scatter_model_temp))
         kernel_size = size(kernel_cpu, 1)
         kernel = similar(sinogram, size(kernel_cpu)...)
@@ -379,74 +547,39 @@ function correct_scatter!(sinogram::AbstractArray{T,3}, model::ScatterCorrection
     end
     half_k = kernel_size ÷ 2
 
-    # Output buffer (use workspace or allocate)
-    output = ws_output !== nothing ? ws_output : similar(sinogram)
-
-    eps = T(1e-10)
-
-    # GPU-native scatter correction with damping to prevent over-correction
-    #
-    # ISSUE: When scatter was added, projection values were HIGHER.
-    # After scatter addition, projection decreases. For p > 1, the function
-    # f(p) = exp(-p) × p INCREASES as p DECREASES, so estimating scatter
-    # from the current (lower) projection values OVER-estimates scatter by ~15-20%.
-    #
-    # FIX: Apply a damping factor to reduce the scatter estimate.
-    # The damping factor is designed to compensate for the nonlinear bias
-    # that arises from estimating scatter on already-scattered data.
-    # Empirically, ~0.85 damping compensates for the ~17% over-estimation.
-    scatter_damping = T(0.85)
-
-    # let-bind to capture with concrete type (avoids Core.Box on GPU)
     let kernel = kernel, output = output, half_k = half_k, n_cols = n_cols, n_rows = n_rows, C = C, scatter_damping = scatter_damping, eps = eps
         AK.foreachindex(sinogram) do idx
             ci = CartesianIndices(sinogram)[idx]
             col, row, angle = Tuple(ci)
 
-            # Current value (log domain = line integral)
             prep = sinogram[idx]
-
-            # Convert to intensity
             clamped_prep = min(max(prep, T(0)), T(20))
             intensity = exp(-clamped_prep)
 
-            # Compute scatter estimate via spatial convolution
             scatter_est = zero(T)
             for dj in -half_k:half_k
                 for di in -half_k:half_k
                     src_col = clamp(col + di, 1, n_cols)
                     src_row = clamp(row + dj, 1, n_rows)
 
-                    # Source prep value
                     src_prep = sinogram[src_col, src_row, angle]
                     src_clamped = min(max(src_prep, eps), T(20))
                     src_intensity = exp(-src_clamped)
-
-                    # Scatter pre-signal: intensity × prep × C
                     scatter_pre = src_intensity * src_clamped * C
 
-                    # Kernel weight
                     ki = di + half_k + 1
                     kj = dj + half_k + 1
-
                     scatter_est += scatter_pre * kernel[ki, kj]
                 end
             end
 
-            # Apply damping to prevent over-correction
             scatter_est_damped = scatter_est * scatter_damping
-
-            # Subtract scatter estimate from intensity
-            # Ensure result is positive
             corrected_intensity = max(intensity - scatter_est_damped, eps)
-
-            # Convert back to log domain
             output[idx] = -log(corrected_intensity)
         end
     end
 
     copyto!(sinogram, output)
-
     return sinogram
 end
 

@@ -910,7 +910,10 @@ function _apply_physics_no_noise!(
     ws_bowtie_projection=nothing,        # pre-computed bowtie 2D projection (GPU)
     ws_lag_output=nothing,         # sinogram-sized scratch for lag (needs separate from ws_output)
     ws_lag_intensity=nothing,      # sinogram-sized intensity scratch for lag
-    ws_lag_coeffs=nothing          # pre-computed lag coefficients (GPU)
+    ws_lag_coeffs=nothing,         # pre-computed lag coefficients (GPU)
+    ws_scatter_temp=nothing,       # sinogram-sized scratch for separable scatter (SPEED-BUILD-002)
+    ws_scatter_kernel_1d=nothing,  # 1D Gaussian scatter kernel (separable path)
+    ws_scatter_correct_kernel_1d=nothing  # 1D Gaussian scatter correction kernel (separable path)
 ) where T
 
     # Apply deterministic physics effects only
@@ -937,14 +940,16 @@ function _apply_physics_no_noise!(
     # Scatter operates on raw projection values without bowtie distortion
     if config.scatter !== nothing
         add_scatter!(sinogram, config.scatter;
-                     ws_output=ws_output, ws_kernel=ws_scatter_kernel)
+                     ws_output=ws_output, ws_kernel=ws_scatter_kernel,
+                     ws_scatter_temp=ws_scatter_temp, ws_kernel_1d=ws_scatter_kernel_1d)
     end
 
     # Scatter CORRECTION (immediately after scatter addition, BEFORE bowtie)
     # CRITICAL: Must apply before bowtie filter modifies the signal
     if config.scatter_correction !== nothing
         correct_scatter!(sinogram, config.scatter_correction;
-                         ws_output=ws_output, ws_kernel=ws_scatter_correct_kernel)
+                         ws_output=ws_output, ws_kernel=ws_scatter_correct_kernel,
+                         ws_scatter_temp=ws_scatter_temp, ws_kernel_1d=ws_scatter_correct_kernel_1d)
     end
 
     # Bowtie filter (AFTER scatter add/correct)

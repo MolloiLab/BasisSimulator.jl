@@ -124,7 +124,10 @@ function _apply_pcct_tube_physics!(
     sinogram::AbstractArray{T,3},
     geom::CTGeometry,
     config::PhysicsConfig;
-    ws_scratch::Union{Nothing, AbstractArray{T,3}}=nothing
+    ws_scratch::Union{Nothing, AbstractArray{T,3}}=nothing,
+    ws_scatter_temp=nothing,
+    ws_scatter_kernel_1d=nothing,
+    ws_scatter_correct_kernel_1d=nothing
 ) where T
     _scratch = ws_scratch
 
@@ -142,10 +145,12 @@ function _apply_pcct_tube_physics!(
 
     # 2. Scatter add + correct (sinogram domain)
     if config.scatter !== nothing && _scratch !== nothing
-        add_scatter!(sinogram, config.scatter; ws_output=_scratch)
+        add_scatter!(sinogram, config.scatter; ws_output=_scratch,
+                     ws_scatter_temp=ws_scatter_temp, ws_kernel_1d=ws_scatter_kernel_1d)
     end
     if config.scatter_correction !== nothing && _scratch !== nothing
-        correct_scatter!(sinogram, config.scatter_correction; ws_output=_scratch)
+        correct_scatter!(sinogram, config.scatter_correction; ws_output=_scratch,
+                         ws_scatter_temp=ws_scatter_temp, ws_kernel_1d=ws_scatter_correct_kernel_1d)
     end
 
     # 3. Focal spot blur (sinogram domain)
@@ -376,6 +381,9 @@ function simulate!(
             ws_output=ws.physics_output,
             ws_scatter_kernel=ws.scatter_kernel,
             ws_scatter_correct_kernel=ws.scatter_correct_kernel,
+            ws_scatter_temp=ws.scatter_temp,
+            ws_scatter_kernel_1d=ws.scatter_kernel_1d,
+            ws_scatter_correct_kernel_1d=ws.scatter_correct_kernel_1d,
             ws_crosstalk_kernel=ws.crosstalk_kernel,
             ws_optical_crosstalk_kernel=ws.optical_crosstalk_kernel,
             ws_focal_spot_kernel=ws.focal_spot_kernel,
