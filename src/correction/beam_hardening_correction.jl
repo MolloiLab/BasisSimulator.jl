@@ -86,16 +86,14 @@ import XrayAttenuation as XA
 using Unitful: ustrip, @u_str
 
 export BeamHardeningCorrection, BHCPolynomial
-export calibrate_bhc, apply_bhc!, apply_bhc
-export generate_water_calibration_curve
-export bhc_water_default, bhc_none
-export evaluate_bhc, get_bhc_info, get_bhc_coefficients
+export calibrate_bhc, apply_bhc!
+export get_bhc_coefficients
 
-# Two-material (water + bone) BHC exports [DEPRECATED — use image-domain BHC instead]
+# Two-material (water + bone) sinogram-domain BHC
 export bone_fraction_smooth, TwoMaterialBHC
 export calibrate_bhc_two_material, apply_bhc_two_material
 
-# Image-domain BHC (So et al. 2009) exports
+# Image-domain BHC (So et al. 2009)
 export apply_bhc_image_domain
 
 # =============================================================================
@@ -168,19 +166,6 @@ bhc = calibrate_bhc(energies, weights; order=5)
 apply_bhc!(sinogram, bhc)
 ```
 
-# Assessing Fit Quality
-
-The calibration data can be used to assess polynomial fit quality:
-
-```julia
-info = get_bhc_info(bhc)
-println("Max correction: ", info.max_correction)  # Maximum BH effect
-
-# Compute residual
-corrected = [evaluate_bhc(m, bhc.polynomial) for m in bhc.calibration_measured]
-residual = bhc.calibration_true .- corrected
-println("RMS residual: ", sqrt(mean(residual.^2)))
-```
 """
 struct BeamHardeningCorrection
     polynomial::BHCPolynomial
@@ -196,35 +181,6 @@ Extract polynomial coefficients from either BHCPolynomial or BeamHardeningCorrec
 """
 get_bhc_coefficients(poly::BHCPolynomial) = poly.coefficients
 get_bhc_coefficients(bhc::BeamHardeningCorrection) = bhc.polynomial.coefficients
-
-# =============================================================================
-# Default BHC Models
-# =============================================================================
-
-"""
-    bhc_none()
-
-No beam hardening correction (identity mapping).
-"""
-function bhc_none()
-    return BHCPolynomial([0.0, 1.0], 1, 70.0)  # p_corrected = p
-end
-
-"""
-    bhc_water_default(; reference_energy_keV=70.0)
-
-Default water-based BHC for 120 kVp spectrum.
-
-These coefficients are typical for clinical CT and provide
-approximate correction. For best results, use `calibrate_bhc`
-to generate coefficients specific to your spectrum.
-"""
-function bhc_water_default(; reference_energy_keV::Real = 70.0)
-    # Typical coefficients for 120 kVp tungsten spectrum
-    # Derived from water phantom calibration
-    coefficients = [0.0, 1.05, -0.02, 0.001]  # 3rd order polynomial
-    return BHCPolynomial(coefficients, 3, Float64(reference_energy_keV))
-end
 
 # =============================================================================
 # Water Calibration Curve Generation
@@ -351,16 +307,8 @@ bhc = calibrate_bhc(energies, weights; order=5, reference_energy_keV=70.0)
 # Apply to polychromatic sinogram (post-log transform)
 apply_bhc!(sinogram, bhc)
 
-# Inspect calibration quality
-info = get_bhc_info(bhc)
-println("Calibration range: ", info.calibration_range)
-println("Max BH correction: ", info.max_correction)
+apply_bhc!(sinogram, bhc)
 ```
-
-# See Also
-- [`apply_bhc!`](@ref): Apply BHC to sinogram
-- [`generate_water_calibration_curve`](@ref): Generate calibration data
-- [`bhc_water_default`](@ref): Pre-computed default coefficients
 """
 function calibrate_bhc(
     energies::Vector,
@@ -463,21 +411,10 @@ which is GPU-efficient and numerically stable.
 # Example
 
 ```julia
-# Method 1: Pre-calibrated BHC
 energies, weights = load_spectrum(120)
 bhc = calibrate_bhc(energies, weights; order=5)
 apply_bhc!(sinogram, bhc)
-
-# Method 2: Default coefficients (approximate, no calibration)
-apply_bhc!(sinogram, bhc_water_default())
-
-# Method 3: Disable BHC (identity)
-apply_bhc!(sinogram, bhc_none())  # p_out = p_in
 ```
-
-# See Also
-- [`apply_bhc`](@ref): Non-mutating version
-- [`calibrate_bhc`](@ref): Generate calibrated BHC from spectrum
 """
 function apply_bhc!(
     sinogram::AbstractArray{T, 3},
@@ -525,69 +462,9 @@ function apply_bhc!(
     return sinogram
 end
 
-"""
-    apply_bhc(sinogram, bhc)
-
-Non-mutating version of apply_bhc!.
-"""
-function apply_bhc(
-    sinogram::AbstractArray{T, 3},
-    bhc::Union{BeamHardeningCorrection, BHCPolynomial}
-) where T <: AbstractFloat
-    result = similar(sinogram)
-    copyto!(result, sinogram)
-    return apply_bhc!(result, bhc)
-end
-
 # =============================================================================
-# BHC Utilities
+# Two-Material (Water + Bone) Beam Hardening Correction
 # =============================================================================
-
-"""
-    evaluate_bhc(p, bhc)
-
-Evaluate BHC polynomial at a single value.
-"""
-function evaluate_bhc(p::Real, poly::BHCPolynomial)
-    coeffs = poly.coefficients
-    result = coeffs[1]
-    p_power = 1.0
-    for i in 1:poly.order
-        p_power *= p
-        result += coeffs[i+1] * p_power
-    end
-    return result
-end
-
-"""
-    get_bhc_info(bhc)
-
-Get information about BHC model.
-"""
-function get_bhc_info(bhc::BeamHardeningCorrection)
-    poly = bhc.polynomial
-    return (
-        order = poly.order,
-        reference_energy_keV = poly.reference_energy_keV,
-        coefficients = poly.coefficients,
-        calibration_range = (minimum(bhc.calibration_measured), maximum(bhc.calibration_measured)),
-        max_correction = maximum(abs.(bhc.calibration_true .- bhc.calibration_measured))
-    )
-end
-
-function get_bhc_info(poly::BHCPolynomial)
-    return (
-        order = poly.order,
-        reference_energy_keV = poly.reference_energy_keV,
-        coefficients = poly.coefficients
-    )
-end
-
-# =============================================================================
-# Two-Material (Water + Bone) Beam Hardening Correction [DEPRECATED]
-# =============================================================================
-#
-# DEPRECATED: Use apply_bhc_image_domain instead. Kept for backward compat.
 #
 # Implements the Martinez/Fessler 2022 "2DCalBH" algorithm adapted for
 # simulation where the spectrum is exactly known.
@@ -617,8 +494,6 @@ end
 """
     TwoMaterialBHC
 
-DEPRECATED: Use `apply_bhc_image_domain` instead.
-
 Two-material (water + bone) beam hardening correction model.
 """
 struct TwoMaterialBHC
@@ -637,7 +512,7 @@ end
 """
     calibrate_bhc_two_material(energies, weights; kwargs...) -> TwoMaterialBHC
 
-DEPRECATED: Use `calibrate_bhc` + `apply_bhc_image_domain` instead.
+Calibrate two-material BHC from spectrum.
 """
 function calibrate_bhc_two_material(
     energies::Vector,
@@ -671,8 +546,6 @@ end
 
 """
     apply_bhc_two_material(sinogram_raw, bhc_2mat, geom, matrix_size; volume_extent=nothing)
-
-DEPRECATED: Use `apply_bhc_image_domain` instead.
 
 Apply two-material (water + bone) beam hardening correction in sinogram domain.
 """
