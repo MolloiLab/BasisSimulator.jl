@@ -1131,8 +1131,10 @@ function _forward_project_poly!(
     ws_bowtie_spectral=nothing,
     # Fused kernel: pre-computed wη on GPU [n_energies], enables single-pass projection
     ws_wη_gpu=nothing,
-    # Control flag: true = fused single-pass kernel, false = legacy sequential energy loop
-    fused::Bool=true
+    # Control flag: true = fused single-pass kernel, false = sequential energy loop
+    # Default false: 234-bin fused kernel causes massive register spilling on GPU (3.5× slower).
+    # Tiled fusion (K=16) will replace this — see SPEED-BUILD-V2-002.
+    fused::Bool=false
 ) where T <: AbstractFloat
 
     n_energies = length(energies)
@@ -1141,6 +1143,7 @@ function _forward_project_poly!(
     # FUSED PATH: single AK.foreachindex kernel, traces mask ONCE
     # =========================================================================
     if fused && ws_μ_table_gpu !== nothing
+        @info "FUSED PATH: n_energies=$n_energies, mask=$(size(mask)), sino=$(size(sinogram))" maxlog=1
         # Build wη on GPU if not provided via workspace
         wη_dev = if ws_wη_gpu !== nothing
             ws_wη_gpu
