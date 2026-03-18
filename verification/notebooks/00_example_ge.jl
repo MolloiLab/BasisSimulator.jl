@@ -5,8 +5,21 @@
 begin
     using Pkg: Pkg
     Pkg.activate(dirname(@__DIR__))
-    Pkg.instantiate()
+    # Pkg.resolve()
+    # Pkg.instantiate()
     using Revise
+
+    # This Pluto notebook uses @bind for interactivity. When running this notebook outside of Pluto, the following 'mock version' of @bind gives bound variables a default value (instead of an error).
+    macro bind(def, element)
+        #! format: off
+        return quote
+            local iv = try Base.loaded_modules[Base.PkgId(Base.UUID("6e696c72-6542-2067-7265-42206c756150"), "AbstractPlutoDingetjes")].Bonds.initial_value catch; b -> missing; end
+            local el = $(esc(element))
+            global $(esc(def)) = Core.applicable(Base.get, el) ? Base.get(el) : iv(el)
+            el
+        end
+        #! format: on
+    end
 end
 
 # ╔═╡ 14530566-ecaa-4345-9115-e75981f3837c
@@ -453,7 +466,7 @@ md"""
 
 # ╔═╡ 00070002-0000-4000-8000-000000000000
 sim_sino = let
-    @info "Simulating 120 kVp / 150 mA / 80 mm collimation..."
+    @info "Simulating 120 kVp / 150 mA / $(sim_collimation_mm) mm collimation..."
     ws = BS.create_eict_workspace(
         sim_scanner, sim_protocol, sim_opts, sim_recon_geom, sim_phantom_gpu
     )

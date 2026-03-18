@@ -269,28 +269,33 @@ function apply_crosstalk_intensity!(
     output = similar(intensity)
 
     # GPU-native spatial convolution
-    AK.foreachindex(intensity) do idx
-        ci = CartesianIndices(intensity)[idx]
-        col, row, angle = Tuple(ci)
+    let kernel = kernel, output = output, n_cols = n_cols, n_rows = n_rows
+        AK.foreachindex(intensity) do idx
+            idx_0 = Int32(idx - 1)
+            col = (idx_0 % Int32(n_cols)) + Int32(1)
+            idx_0 = idx_0 ÷ Int32(n_cols)
+            row = (idx_0 % Int32(n_rows)) + Int32(1)
+            angle = (idx_0 ÷ Int32(n_rows)) + Int32(1)
 
-        # Apply 3x3 convolution
-        acc = zero(T)
-        for di in -1:1
-            for dj in -1:1
-                # Clamp to valid range (edge handling)
-                src_col = clamp(col + di, 1, n_cols)
-                src_row = clamp(row + dj, 1, n_rows)
+            # Apply 3x3 convolution
+            acc = zero(T)
+            for di in -1:1
+                for dj in -1:1
+                    # Clamp to valid range (edge handling)
+                    src_col = clamp(col + di, Int32(1), Int32(n_cols))
+                    src_row = clamp(row + dj, Int32(1), Int32(n_rows))
 
-                # Kernel indexing: di,dj ∈ [-1,1] → ki,kj ∈ [1,3]
-                ki = di + 2
-                kj = dj + 2
+                    # Kernel indexing: di,dj ∈ [-1,1] → ki,kj ∈ [1,3]
+                    ki = di + 2
+                    kj = dj + 2
 
-                acc += intensity[src_col, src_row, angle] * kernel[ki, kj]
+                    acc += intensity[src_col, src_row, angle] * kernel[ki, kj]
+                end
             end
-        end
 
-        # Ensure positive (crosstalk shouldn't create negative values)
-        output[idx] = max(acc, T(1e-10))
+            # Ensure positive (crosstalk shouldn't create negative values)
+            output[idx] = max(acc, T(1e-10))
+        end
     end
 
     # Copy result back
@@ -342,15 +347,18 @@ function apply_crosstalk!(
     # let-bind to capture with concrete type (avoids Core.Box on GPU)
     let kernel = kernel, output = output, n_cols = n_cols, n_rows = n_rows
         AK.foreachindex(sinogram) do idx
-            ci = CartesianIndices(sinogram)[idx]
-            col, row, angle = Tuple(ci)
+            idx_0 = Int32(idx - 1)
+            col = (idx_0 % Int32(n_cols)) + Int32(1)
+            idx_0 = idx_0 ÷ Int32(n_cols)
+            row = (idx_0 % Int32(n_rows)) + Int32(1)
+            angle = (idx_0 ÷ Int32(n_rows)) + Int32(1)
 
             # Apply 3x3 convolution in intensity domain
             acc = zero(T)
             for di in -1:1
                 for dj in -1:1
-                    src_col = clamp(col + di, 1, n_cols)
-                    src_row = clamp(row + dj, 1, n_rows)
+                    src_col = clamp(col + di, Int32(1), Int32(n_cols))
+                    src_row = clamp(row + dj, Int32(1), Int32(n_rows))
 
                     ki = di + 2
                     kj = dj + 2
@@ -565,15 +573,18 @@ function apply_optical_crosstalk_intensity!(
     # GPU-native spatial convolution
     let kernel = kernel, output = output, n_cols = n_cols, n_rows = n_rows
         AK.foreachindex(intensity) do idx
-            ci = CartesianIndices(intensity)[idx]
-            col, row, angle = Tuple(ci)
+            idx_0 = Int32(idx - 1)
+            col = (idx_0 % Int32(n_cols)) + Int32(1)
+            idx_0 = idx_0 ÷ Int32(n_cols)
+            row = (idx_0 % Int32(n_rows)) + Int32(1)
+            angle = (idx_0 ÷ Int32(n_rows)) + Int32(1)
 
             # Apply 3x3 convolution
             acc = zero(T)
             for di in -1:1
                 for dj in -1:1
-                    src_col = clamp(col + di, 1, n_cols)
-                    src_row = clamp(row + dj, 1, n_rows)
+                    src_col = clamp(col + di, Int32(1), Int32(n_cols))
+                    src_row = clamp(row + dj, Int32(1), Int32(n_rows))
 
                     ki = di + 2
                     kj = dj + 2
@@ -626,15 +637,18 @@ function apply_optical_crosstalk!(
     # let-bind to capture with concrete type (avoids Core.Box on GPU)
     let kernel = kernel, output = output, n_cols = n_cols, n_rows = n_rows
         AK.foreachindex(sinogram) do idx
-            ci = CartesianIndices(sinogram)[idx]
-            col, row, angle = Tuple(ci)
+            idx_0 = Int32(idx - 1)
+            col = (idx_0 % Int32(n_cols)) + Int32(1)
+            idx_0 = idx_0 ÷ Int32(n_cols)
+            row = (idx_0 % Int32(n_rows)) + Int32(1)
+            angle = (idx_0 ÷ Int32(n_rows)) + Int32(1)
 
             # Apply 3x3 convolution in intensity domain
             acc = zero(T)
             for di in -1:1
                 for dj in -1:1
-                    src_col = clamp(col + di, 1, n_cols)
-                    src_row = clamp(row + dj, 1, n_rows)
+                    src_col = clamp(col + di, Int32(1), Int32(n_cols))
+                    src_row = clamp(row + dj, Int32(1), Int32(n_rows))
 
                     ki = di + 2
                     kj = dj + 2

@@ -411,6 +411,7 @@ function apply_physics_effects!(
     # Workspace kwargs for zero-allocation path (all default to nothing for backwards compat)
     ws_output=nothing,
     ws_scatter_kernel=nothing, ws_scatter_correct_kernel=nothing,
+    ws_scatter_temp=nothing, ws_scatter_kernel_1d=nothing, ws_scatter_correct_kernel_1d=nothing,
     ws_crosstalk_kernel=nothing, ws_optical_crosstalk_kernel=nothing,
     ws_focal_spot_kernel=nothing,
     ws_flat_filter_projection=nothing, ws_bowtie_projection=nothing,
@@ -472,7 +473,8 @@ function apply_physics_effects!(
     # Scatter operates on raw projection values without bowtie distortion
     if config.scatter !== nothing
         add_scatter!(sinogram, config.scatter;
-                     ws_output=ws_output, ws_kernel=ws_scatter_kernel)
+                     ws_output=ws_output, ws_kernel=ws_scatter_kernel,
+                     ws_scatter_temp=ws_scatter_temp, ws_kernel_1d=ws_scatter_kernel_1d)
     end
 
     # 3b. Scatter CORRECTION (immediately after scatter addition, BEFORE bowtie)
@@ -480,7 +482,8 @@ function apply_physics_effects!(
     # The scatter estimate must see the same signal that scatter was added to.
     if config.scatter_correction !== nothing
         correct_scatter!(sinogram, config.scatter_correction;
-                         ws_output=ws_output, ws_kernel=ws_scatter_correct_kernel)
+                         ws_output=ws_output, ws_kernel=ws_scatter_correct_kernel,
+                         ws_scatter_temp=ws_scatter_temp, ws_kernel_1d=ws_scatter_correct_kernel_1d)
     end
 
     # 4. Bowtie filter (AFTER scatter add/correct)

@@ -335,8 +335,11 @@ function apply_energy_thresholds(
         output_bin = bins[bin_idx]
 
         AK.foreachindex(output_bin) do idx
-            ci = CartesianIndices(output_bin)[idx]
-            col, row, angle = Tuple(ci)
+            idx_0 = Int32(idx - 1)
+            col = (idx_0 % Int32(n_cols)) + Int32(1)
+            idx_0 = idx_0 ÷ Int32(n_cols)
+            row = (idx_0 % Int32(n_rows)) + Int32(1)
+            angle = (idx_0 ÷ Int32(n_rows)) + Int32(1)
 
             acc = zero(T)
             for e_idx in 1:n_energies
@@ -480,8 +483,11 @@ function _apply_charge_sharing_physics!(
             nc = Int32(n_cols), nr = Int32(n_rows), out = scratch
 
             AK.foreachindex(cb) do idx
-                ci = CartesianIndices(cb)[idx]
-                col, row, angle = Tuple(ci)
+                idx_0 = Int32(idx - 1)
+                col = (idx_0 % nc) + Int32(1)
+                idx_0 = idx_0 ÷ nc
+                row = (idx_0 % nr) + Int32(1)
+                angle = (idx_0 ÷ nr) + Int32(1)
 
                 val = cb[idx] * pp
 
@@ -593,8 +599,11 @@ function correct_charge_sharing!(
             nc = Int32(n_cols), nr = Int32(n_rows), out = _scratch
 
             AK.foreachindex(b) do idx
-                ci = CartesianIndices(b)[idx]
-                col, row, angle = Tuple(ci)
+                idx_0 = Int32(idx - 1)
+                col = (idx_0 % nc) + Int32(1)
+                idx_0 = idx_0 ÷ nc
+                row = (idx_0 % nr) + Int32(1)
+                angle = (idx_0 ÷ nr) + Int32(1)
 
                 val = b[col, row, angle] * cw
 
@@ -975,8 +984,11 @@ function apply_anti_coincidence!(
             nc = Int32(n_cols), nr = Int32(n_rows), z = zero_T, out = _scratch
 
             AK.foreachindex(cb) do idx
-                ci = CartesianIndices(cb)[idx]
-                col, row, angle = Tuple(ci)
+                idx_0 = Int32(idx - 1)
+                col = (idx_0 % nc) + Int32(1)
+                idx_0 = idx_0 ÷ nc
+                row = (idx_0 % nr) + Int32(1)
+                angle = (idx_0 ÷ nr) + Int32(1)
 
                 val = cb[idx]
                 my_total = tc[idx]
@@ -1107,8 +1119,11 @@ function spatial_bin!(output::AbstractArray{T,3}, input::AbstractArray{T,3}, fac
 
     let inp = input, out = output, oc = Int32(out_cols), or_ = Int32(out_rows), bf = f
         AK.foreachindex(out) do idx
-            ci = CartesianIndices(out)[idx]
-            col, row, angle = Tuple(ci)
+            idx_0 = Int32(idx - 1)
+            col = (idx_0 % oc) + Int32(1)
+            idx_0 = idx_0 ÷ oc
+            row = (idx_0 % or_) + Int32(1)
+            angle = (idx_0 ÷ or_) + Int32(1)
 
             # Sum the factor×factor block from input
             acc = zero(T)
@@ -1482,11 +1497,15 @@ function pcct_forward_project(
         w_center = T(0.5)
         for b in 1:n_bins
             let ba = bins[b], nc = Int32(size(bins[1], 1)),
+                nr = Int32(size(bins[1], 2)),
                 ws_side = w_side, wc = w_center, out = _binned_scratch
 
                 AK.foreachindex(ba) do idx
-                    ci = CartesianIndices(ba)[idx]
-                    col, row, angle = Tuple(ci)
+                    idx_0 = Int32(idx - 1)
+                    col = (idx_0 % nc) + Int32(1)
+                    idx_0 = idx_0 ÷ nc
+                    row = (idx_0 % nr) + Int32(1)
+                    angle = (idx_0 ÷ nr) + Int32(1)
                     c_val = ba[col, row, angle]
                     c_left = ba[clamp(col - Int32(1), Int32(1), nc), row, angle]
                     c_right = ba[clamp(col + Int32(1), Int32(1), nc), row, angle]

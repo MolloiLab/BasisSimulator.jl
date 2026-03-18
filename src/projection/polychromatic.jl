@@ -910,7 +910,10 @@ function _apply_physics_no_noise!(
     ws_bowtie_projection=nothing,        # pre-computed bowtie 2D projection (GPU)
     ws_lag_output=nothing,         # sinogram-sized scratch for lag (needs separate from ws_output)
     ws_lag_intensity=nothing,      # sinogram-sized intensity scratch for lag
-    ws_lag_coeffs=nothing          # pre-computed lag coefficients (GPU)
+    ws_lag_coeffs=nothing,         # pre-computed lag coefficients (GPU)
+    ws_scatter_temp=nothing,       # sinogram-sized scratch for separable scatter (SPEED-BUILD-002)
+    ws_scatter_kernel_1d=nothing,  # 1D Gaussian scatter kernel (separable path)
+    ws_scatter_correct_kernel_1d=nothing  # 1D Gaussian scatter correction kernel (separable path)
 ) where T
 
     # Apply deterministic physics effects only
@@ -937,14 +940,16 @@ function _apply_physics_no_noise!(
     # Scatter operates on raw projection values without bowtie distortion
     if config.scatter !== nothing
         add_scatter!(sinogram, config.scatter;
-                     ws_output=ws_output, ws_kernel=ws_scatter_kernel)
+                     ws_output=ws_output, ws_kernel=ws_scatter_kernel,
+                     ws_scatter_temp=ws_scatter_temp, ws_kernel_1d=ws_scatter_kernel_1d)
     end
 
     # Scatter CORRECTION (immediately after scatter addition, BEFORE bowtie)
     # CRITICAL: Must apply before bowtie filter modifies the signal
     if config.scatter_correction !== nothing
         correct_scatter!(sinogram, config.scatter_correction;
-                         ws_output=ws_output, ws_kernel=ws_scatter_correct_kernel)
+                         ws_output=ws_output, ws_kernel=ws_scatter_correct_kernel,
+                         ws_scatter_temp=ws_scatter_temp, ws_kernel_1d=ws_scatter_correct_kernel_1d)
     end
 
     # Bowtie filter (AFTER scatter add/correct)
@@ -1123,10 +1128,112 @@ function _forward_project_poly!(
     # Detector efficiency η(E) per energy bin (weights spectral sum)
     ws_η::Union{Nothing, Vector{Float64}}=nothing,
     # Bowtie spectral transmission [n_cols, n_rows, n_energies]
-    ws_bowtie_spectral=nothing
+    ws_bowtie_spectral=nothing,
+    # Fused kernel: pre-computed wη on GPU [n_energies], enables single-pass projection
+    ws_wη_gpu=nothing,
+    # Control flag: true = fused single-pass kernel, false = sequential energy loop
+    # Default false: 234-bin fused kernel causes massive register spilling on GPU (3.5× slower).
+    # Tiled fusion (K=16) will replace this — see SPEED-BUILD-V2-002.
+    fused::Bool=false
 ) where T <: AbstractFloat
 
     n_energies = length(energies)
+
+    # =========================================================================
+    # FUSED PATH: single AK.foreachindex kernel, traces mask ONCE
+    # =========================================================================
+    if fused && ws_μ_table_gpu !== nothing
+        @info "FUSED PATH: n_energies=$n_energies, mask=$(size(mask)), sino=$(size(sinogram))" maxlog=1
+        # Build wη on GPU if not provided via workspace
+        wη_dev = if ws_wη_gpu !== nothing
+            ws_wη_gpu
+        else
+            weights_norm = ws_weights_norm !== nothing ? ws_weights_norm : T.(weights ./ sum(weights))
+            η_vec = ws_η !== nothing ? ws_η : ones(Float64, n_energies)
+            wη_cpu = T.(weights_norm .* η_vec)
+            _buf = similar(sinogram, T, n_energies)
+            copyto!(_buf, wη_cpu)
+            _buf
+        end
+
+        siddon_fused_poly_project!(sinogram, mask, geom, ws_μ_table_gpu, wη_dev, Val(n_energies);
+            volume_extent=volume_extent,
+            ws_source_positions=ws_source_positions,
+            ws_detector_centers=ws_detector_centers,
+            ws_detector_u=ws_detector_u,
+            ws_detector_v=ws_detector_v,
+            ws_bowtie_spectral=ws_bowtie_spectral)
+
+        return sinogram
+    end
+
+    # =========================================================================
+    # TILED PATH (SPEED-BUILD-V2-002): K=16 per tile, 15 tiles for 234 bins
+    # Default when μ_table_gpu + wη_gpu available. 3.66× faster than unfused.
+    # =========================================================================
+    if ws_μ_table_gpu !== nothing && ws_wη_gpu !== nothing
+        @info "TILED PATH: K=16, n_energies=$n_energies, mask=$(size(mask)), sino=$(size(sinogram))" maxlog=1
+
+        # Tile parameters — use proven-fast siddon_fused_poly_project! with Val(16)
+        # + subset copies per tile. Avoids runtime offset arithmetic that causes
+        # 71% GPU slowdown vs compile-time constant indices.
+        TILE_K = 16
+        n_energies_padded = cld(n_energies, TILE_K) * TILE_K
+        n_tiles = n_energies_padded ÷ TILE_K
+
+        # Use I_transmitted buffer for accumulation
+        I_transmitted = ws_I_transmitted !== nothing ? ws_I_transmitted : similar(sinogram)
+        fill!(I_transmitted, zero(T))
+
+        # Subset buffers (small allocations: μ=1.7KB, wη=64B, bt=512KB)
+        n_regions = size(ws_μ_table_gpu, 1)
+        μ_sub = similar(sinogram, T, n_regions, TILE_K)
+        wη_sub = similar(sinogram, T, TILE_K)
+        has_bt = ws_bowtie_spectral !== nothing
+        bt_sub = has_bt ? similar(sinogram, T, size(sinogram, 1), size(sinogram, 2), TILE_K) : nothing
+
+        for tile_idx in 1:n_tiles
+            ts = (tile_idx - 1) * TILE_K + 1
+            te = ts + TILE_K - 1
+
+            # Copy subset of μ_table and wη for this tile
+            copyto!(μ_sub, @view ws_μ_table_gpu[:, ts:te])
+            copyto!(wη_sub, @view ws_wη_gpu[ts:te])
+            if has_bt
+                copyto!(bt_sub, @view ws_bowtie_spectral[:, :, ts:te])
+            end
+
+            # Use proven-fast fused kernel with Val(16) — 95ms/tile on Metal
+            siddon_fused_poly_project!(sinogram, mask, geom,
+                μ_sub, wη_sub, Val(TILE_K);
+                volume_extent=volume_extent,
+                ws_source_positions=ws_source_positions,
+                ws_detector_centers=ws_detector_centers,
+                ws_detector_u=ws_detector_u,
+                ws_detector_v=ws_detector_v,
+                ws_bowtie_spectral=bt_sub)
+
+            # Accumulate: undo -log, add partial Beer-Lambert sum
+            let I_trans = I_transmitted
+                AK.foreachindex(sinogram) do idx
+                    I_trans[idx] += exp(-sinogram[idx])
+                end
+            end
+        end
+
+        # Final -log
+        let I_trans = I_transmitted, eps_val = T(1e-10)
+            AK.foreachindex(sinogram) do idx
+                sinogram[idx] = -log(max(I_trans[idx], eps_val))
+            end
+        end
+
+        return sinogram
+    end
+
+    # =========================================================================
+    # UNFUSED PATH: sequential energy loop (fallback when no μ_table_gpu)
+    # =========================================================================
 
     # Normalize weights (use pre-computed if available)
     weights_norm = ws_weights_norm !== nothing ? ws_weights_norm : T.(weights ./ sum(weights))
@@ -1164,31 +1271,33 @@ function _forward_project_poly!(
         if ws_bowtie_spectral !== nothing
             # Per-pixel bowtie transmission from [n_cols, n_rows, n_energies] array
             nc = size(sinogram, 1)
-            nc_nr = nc * size(sinogram, 2)
+            nr = size(sinogram, 2)
+            nc_nr = nc * nr
             bt_offset = (e_idx - 1) * nc_nr
-            let w = w, η_e = η_e, bt = ws_bowtie_spectral, bt_off = bt_offset, nc = nc
-                AK.foreachindex(I_transmitted) do idx
-                    ci = CartesianIndices(I_transmitted)[idx]
-                    col, row, _ = Tuple(ci)
+            let w = w, η_e = η_e, bt = ws_bowtie_spectral, bt_off = bt_offset, nc = nc, nr = nr, I_trans = I_transmitted, sm = sino_mono
+                AK.foreachindex(I_trans) do idx
+                    idx_0 = Int32(idx - 1)
+                    col = (idx_0 % Int32(nc)) + Int32(1)
+                    row = ((idx_0 ÷ Int32(nc)) % Int32(nr)) + Int32(1)
                     bt_val = bt[col + (row - 1) * nc + bt_off]
-                    I_transmitted[idx] += w * η_e * bt_val * exp(-sino_mono[idx])
+                    I_trans[idx] += w * η_e * bt_val * exp(-sm[idx])
                 end
             end
         else
             # Scalar-weight path (no bowtie)
-            let w_eff = w * η_e
-                AK.foreachindex(I_transmitted) do idx
-                    I_transmitted[idx] += w_eff * exp(-sino_mono[idx])
+            let w_eff = w * η_e, I_trans = I_transmitted, sm = sino_mono
+                AK.foreachindex(I_trans) do idx
+                    I_trans[idx] += w_eff * exp(-sm[idx])
                 end
             end
         end
     end
 
     # Convert back to line integral: sinogram = -log(I / I₀)
-    eps = T(1e-10)
-
-    AK.foreachindex(sinogram) do idx
-        sinogram[idx] = -log(max(I_transmitted[idx], eps))
+    let I_trans = I_transmitted, eps_val = T(1e-10)
+        AK.foreachindex(sinogram) do idx
+            sinogram[idx] = -log(max(I_trans[idx], eps_val))
+        end
     end
 
     return sinogram

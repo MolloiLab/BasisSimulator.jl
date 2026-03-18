@@ -453,8 +453,11 @@ mutable struct EICTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:Abstr
     lag_intensity::A3     # sinogram-sized scratch for lag intensity computation
 
     # ─── Pre-computed physics kernels (GPU-side) ───
-    scatter_kernel::Union{Nothing, A2}          # scatter convolution kernel
-    scatter_correct_kernel::Union{Nothing, A2}  # scatter correction kernel
+    scatter_kernel::Union{Nothing, A2}          # scatter convolution kernel (2D fallback)
+    scatter_correct_kernel::Union{Nothing, A2}  # scatter correction kernel (2D fallback)
+    scatter_kernel_1d::Union{Nothing, A1}       # 1D Gaussian scatter kernel (separable path)
+    scatter_correct_kernel_1d::Union{Nothing, A1} # 1D correction kernel (separable path)
+    scatter_temp::A3                            # sinogram-shaped scratch for separable convolution
     crosstalk_kernel::Union{Nothing, A2}        # 3×3 crosstalk kernel
     optical_crosstalk_kernel::Union{Nothing, A2} # 3×3 optical crosstalk kernel
     focal_spot_kernel::Union{Nothing, A2}       # focal spot blur kernel
@@ -476,6 +479,7 @@ mutable struct EICTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:Abstr
     μ_table::Matrix{T}         # pre-computed μ[region, energy] (n_regions × n_energies)
     μ_table_gpu::A2            # GPU copy of μ_table for zero-copy create_μ_volume!
     η_vec::Vector{Float64}     # detector efficiency η(E) per energy bin
+    wη_gpu::A1                 # Pre-computed weights_norm .* η on GPU [n_energies] (fused kernel)
     bhc_coeffs_gpu::A1         # BHC polynomial coefficients (GPU/backend)
 
     # ─── Pre-computed geometry arrays (T-typed, same backend as mask) ───
@@ -569,6 +573,42 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         nothing
     end
 
+    # 1D scatter kernels for separable Gaussian convolution (SPEED-BUILD-002)
+    scatter_kernel_1d = if config.scatter !== nothing
+        k1d_cpu = create_scatter_kernel_1d(config.scatter)
+        if k1d_cpu !== nothing
+            k1d = similar(ref, T, length(k1d_cpu))
+            copyto!(k1d, T.(k1d_cpu))
+            k1d
+        else
+            nothing
+        end
+    else
+        nothing
+    end
+
+    scatter_correct_kernel_1d = if config.scatter_correction !== nothing
+        sc_temp2 = ScatterModel(
+            config.scatter_correction.correction_coefficient,
+            config.scatter_correction.scale_factor,
+            config.scatter_correction.kernel_fwhm,
+            config.scatter_correction.kernel_type
+        )
+        k1d_cpu = create_scatter_kernel_1d(sc_temp2)
+        if k1d_cpu !== nothing
+            k1d = similar(ref, T, length(k1d_cpu))
+            copyto!(k1d, T.(k1d_cpu))
+            k1d
+        else
+            nothing
+        end
+    else
+        nothing
+    end
+
+    # Scratch buffer for separable scatter convolution intermediate results
+    scatter_temp = similar(ref, T, sino_shape)
+
     crosstalk_kernel = if config.crosstalk !== nothing
         k_cpu = T.(create_crosstalk_kernel_3x3(config.crosstalk))
         k_gpu = similar(ref, T, 3, 3)
@@ -641,9 +681,12 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         end
     end
 
-    # Upload μ_table to GPU for zero-copy fast path in create_μ_volume!
-    μ_table_gpu = similar(ref, T, n_regions, n_energies)
-    copyto!(μ_table_gpu, μ_table)
+    # Upload μ_table to GPU, padded to multiple of 16 for tiled projection (SPEED-BUILD-V2-002)
+    # Extra columns are zero-filled — zero wη weights ensure they contribute nothing.
+    n_energies_padded = cld(n_energies, 16) * 16
+    μ_table_gpu = similar(ref, T, n_regions, n_energies_padded)
+    fill!(μ_table_gpu, zero(T))
+    copyto!(view(μ_table_gpu, :, 1:n_energies), μ_table)
 
     # Detector efficiency η(E) per energy bin
     η_vec = if config.detector_efficiency !== nothing
@@ -652,6 +695,12 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         ones(Float64, n_energies)
     end
 
+    # Pre-computed weights_norm .* η, padded to match μ_table (tiled projection)
+    wη_cpu = zeros(T, n_energies_padded)
+    wη_cpu[1:n_energies] .= T.(weights_norm .* η_vec)
+    wη_gpu_buf = similar(ref, T, n_energies_padded)
+    copyto!(wη_gpu_buf, wη_cpu)
+
     # Bowtie spectral transmission: resolve independently from PhysicsConfig
     # (config.bowtie_filter is now nothing for :high/:pcct since preset is false)
     bowtie_filter = resolve_bowtie_filter(scanner.bowtie_filter)
@@ -659,8 +708,11 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     bowtie_air_ref_gpu = nothing
     if bowtie_filter !== nothing && bowtie_filter.name != "none"
         trans_cpu = compute_bowtie_attenuation_spectral(bowtie_filter, geom, Float64.(energies))
-        bt_gpu = similar(ref, T, size(trans_cpu)...)
-        copyto!(bt_gpu, T.(trans_cpu))
+        # Pad bowtie spectral to n_energies_padded (zero-fill extra energy slices)
+        bt_padded_cpu = zeros(T, size(trans_cpu, 1), size(trans_cpu, 2), n_energies_padded)
+        bt_padded_cpu[:, :, 1:n_energies] .= T.(trans_cpu)
+        bt_gpu = similar(ref, T, size(bt_padded_cpu)...)
+        copyto!(bt_gpu, bt_padded_cpu)
         bowtie_spectral_gpu = bt_gpu
 
         # Air reference: I₀(col,row) = Σ w_norm(E) × T_bt(E,col,row) × η(E)
@@ -712,11 +764,13 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     return EICTWorkspace{T, typeof(sinogram), typeof(geom_source_positions), typeof(noise_rand_gpu)}(
         sinogram, μ_volume, sino_mono, I_transmitted, air_scan,
         physics_output, lag_intensity,
-        scatter_kernel, scatter_correct_kernel, crosstalk_kernel,
+        scatter_kernel, scatter_correct_kernel,
+        scatter_kernel_1d, scatter_correct_kernel_1d, scatter_temp,
+        crosstalk_kernel,
         optical_crosstalk_kernel, focal_spot_kernel, flat_filter_proj,
         bowtie_spectral_gpu, bowtie_air_ref_gpu, lag_coeffs_buf,
         noise_rand_cpu, noise_rand_gpu, enoise_rand_cpu, enoise_rand_gpu,
-        weights_norm, μ_lut_cpu, μ_lut_gpu, μ_table, μ_table_gpu, η_vec, bhc_coeffs_gpu,
+        weights_norm, μ_lut_cpu, μ_lut_gpu, μ_table, μ_table_gpu, η_vec, wη_gpu_buf, bhc_coeffs_gpu,
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
         geom, energies, weights_vec, config, mats, rng,
         heel, das, bhc_effect, has_sc,

@@ -779,7 +779,7 @@ DICOM pixel data is JPEG 2000 compressed; decoded via ImageMagick.jl + DICOM.jl.
 """
 
 # ╔═╡ 07030002-0000-4000-8000-000000000000
-rootdir = "/Users/daleblack/Desktop/SCANS"
+rootdir = "/Users/daleblack/Desktop/SCANS/02232026 (revolution)"
 
 # ╔═╡ 07030003-0000-4000-8000-000000000000
 begin  # 120 kVp / 50 mA / 3.38 mGy

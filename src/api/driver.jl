@@ -124,7 +124,10 @@ function _apply_pcct_tube_physics!(
     sinogram::AbstractArray{T,3},
     geom::CTGeometry,
     config::PhysicsConfig;
-    ws_scratch::Union{Nothing, AbstractArray{T,3}}=nothing
+    ws_scratch::Union{Nothing, AbstractArray{T,3}}=nothing,
+    ws_scatter_temp=nothing,
+    ws_scatter_kernel_1d=nothing,
+    ws_scatter_correct_kernel_1d=nothing
 ) where T
     _scratch = ws_scratch
 
@@ -142,10 +145,12 @@ function _apply_pcct_tube_physics!(
 
     # 2. Scatter add + correct (sinogram domain)
     if config.scatter !== nothing && _scratch !== nothing
-        add_scatter!(sinogram, config.scatter; ws_output=_scratch)
+        add_scatter!(sinogram, config.scatter; ws_output=_scratch,
+                     ws_scatter_temp=ws_scatter_temp, ws_kernel_1d=ws_scatter_kernel_1d)
     end
     if config.scatter_correction !== nothing && _scratch !== nothing
-        correct_scatter!(sinogram, config.scatter_correction; ws_output=_scratch)
+        correct_scatter!(sinogram, config.scatter_correction; ws_output=_scratch,
+                         ws_scatter_temp=ws_scatter_temp, ws_kernel_1d=ws_scatter_correct_kernel_1d)
     end
 
     # 3. Focal spot blur (sinogram domain)
@@ -358,7 +363,8 @@ function simulate!(
         ws_detector_v=ws.geom_detector_v,
         volume_extent=phantom.extent,
         ws_η=ws.η_vec,
-        ws_bowtie_spectral=ws.bowtie_spectral)
+        ws_bowtie_spectral=ws.bowtie_spectral,
+        ws_wη_gpu=ws.wη_gpu)
 
     if ws.has_signal_chain
         # ═══════════════════════════════════════════════════════════════════
@@ -375,6 +381,9 @@ function simulate!(
             ws_output=ws.physics_output,
             ws_scatter_kernel=ws.scatter_kernel,
             ws_scatter_correct_kernel=ws.scatter_correct_kernel,
+            ws_scatter_temp=ws.scatter_temp,
+            ws_scatter_kernel_1d=ws.scatter_kernel_1d,
+            ws_scatter_correct_kernel_1d=ws.scatter_correct_kernel_1d,
             ws_crosstalk_kernel=ws.crosstalk_kernel,
             ws_optical_crosstalk_kernel=ws.optical_crosstalk_kernel,
             ws_focal_spot_kernel=ws.focal_spot_kernel,
@@ -407,10 +416,11 @@ function simulate!(
         # Air scan uses spectral bowtie air reference: I₀(col,row) = Σ w(E) × T_bt(E,col,row) × η(E)
         fill!(ws.air_scan, one(T))
         if ws.bowtie_air_reference !== nothing
-            let air = ws.air_scan, ref = ws.bowtie_air_reference, nc = size(air, 1)
+            let air = ws.air_scan, ref = ws.bowtie_air_reference, nc = size(air, 1), nr = size(air, 2)
                 AK.foreachindex(air) do idx
-                    ci = CartesianIndices(air)[idx]
-                    col, row, _ = Tuple(ci)
+                    idx_0 = Int32(idx - 1)
+                    col = (idx_0 % Int32(nc)) + Int32(1)
+                    row = ((idx_0 ÷ Int32(nc)) % Int32(nr)) + Int32(1)
                     ref_idx = col + (row - 1) * nc
                     air[idx] *= ref[ref_idx]
                 end
