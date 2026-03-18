@@ -74,7 +74,7 @@
 
 import AcceleratedKernels as AK
 
-export siddon_forward_project!, siddon_forward_project, siddon_fused_poly_project!
+export siddon_forward_project!, siddon_forward_project, siddon_fused_poly_project!, siddon_tiled_poly_project!
 
 # =============================================================================
 # Single Ray Trace (inlined into the main loop)
@@ -669,14 +669,15 @@ end
 Returns Σ_e wη[e] * exp(-accums[e]).
 """
 @generated function _fused_beer_lambert(accums::NTuple{N,T}, wη) where {N, T}
-    terms = [:((@inbounds wη[$i]) * exp(-accums[$i])) for i in 1:N]
     if N == 0
         return :(zero(T))
-    elseif N == 1
-        return terms[1]
-    else
-        return Expr(:call, :+, terms...)
     end
+    # Chain binary + to avoid varargs allocation on GPU
+    ex = :((@inbounds wη[1]) * exp(-accums[1]))
+    for i in 2:N
+        ex = :($ex + (@inbounds wη[$i]) * exp(-accums[$i]))
+    end
+    return ex
 end
 
 """
@@ -687,14 +688,15 @@ bt_base = col + (row-1)*nc, ncnr = n_cols*n_rows.
 Returns Σ_e wη[e] * bt[bt_base + (e-1)*ncnr] * exp(-accums[e]).
 """
 @generated function _fused_beer_lambert_bt(accums::NTuple{N,T}, wη, bt, bt_base::Int32, ncnr::Int32) where {N, T}
-    terms = [:((@inbounds wη[$i]) * (@inbounds bt[bt_base + Int32($i - 1) * ncnr]) * exp(-accums[$i])) for i in 1:N]
     if N == 0
         return :(zero(T))
-    elseif N == 1
-        return terms[1]
-    else
-        return Expr(:call, :+, terms...)
     end
+    # Chain binary + to avoid varargs allocation on GPU
+    ex = :((@inbounds wη[1]) * (@inbounds bt[bt_base + Int32(0) * ncnr]) * exp(-accums[1]))
+    for i in 2:N
+        ex = :($ex + (@inbounds wη[$i]) * (@inbounds bt[bt_base + Int32($(i - 1)) * ncnr]) * exp(-accums[$i]))
+    end
+    return ex
 end
 
 """
@@ -971,4 +973,619 @@ function siddon_fused_poly_project!(
     end
 
     return sinogram
+end
+
+# =============================================================================
+# Tiled Polychromatic Siddon Projection (SPEED-BUILD-V2-002)
+# =============================================================================
+#
+# Tiled variant of the fused kernel: processes K energy bins per tile (K=16).
+# Each tile traces DDA once through the material mask and accumulates K energy
+# bins. Multiple tiles are called sequentially to cover all 234 energy bins.
+#
+# Why K=16: 16 Float32 accumulators = 64 bytes — fits in GPU registers without
+# spilling. Val(234) requires 936 bytes → massive register spilling on Metal.
+# K=16 × 15 tiles = 240 bins (234 real + 6 zero-padded).
+#
+# Key difference from fused kernel:
+# - Outputs partial Beer-Lambert sum ADDED to I_buffer (not -log to sinogram)
+# - Takes tile_start offset for μ_table/wη/bowtie indexing
+# - After all tiles, caller applies -log(I_buffer) to get sinogram
+# =============================================================================
+
+"""
+    _tiled_accum_energies(accums, μ_tbl, mat, path_length, ts)
+
+@generated helper: accumulate path_length × μ for K energies starting at column `ts`.
+Expands to: tuple(accums[1] + μ_tbl[mat, ts+0]*pl, accums[2] + μ_tbl[mat, ts+1]*pl, ...)
+"""
+@generated function _tiled_accum_energies(accums::NTuple{K,T}, μ_tbl, mat::Int32, pl::T, ts::Int32) where {K, T}
+    exprs = [:(accums[$i] + @inbounds(μ_tbl[mat, ts + Int32($(i - 1))]) * pl) for i in 1:K]
+    return :(tuple($(exprs...)))
+end
+
+"""
+    _tiled_beer_lambert(accums, wη, ts)
+
+@generated helper: partial Beer-Lambert sum without bowtie, starting at index `ts`.
+Returns Σ_e wη[ts+e-1] * exp(-accums[e]) for e=1:K.
+"""
+@generated function _tiled_beer_lambert(accums::NTuple{K,T}, wη, ts::Int32) where {K, T}
+    if K == 0
+        return :(zero(T))
+    end
+    ex = :((@inbounds wη[ts]) * exp(-accums[1]))
+    for i in 2:K
+        ex = :($ex + (@inbounds wη[ts + Int32($(i - 1))]) * exp(-accums[$i]))
+    end
+    return ex
+end
+
+"""
+    _tiled_beer_lambert_bt(accums, wη, bt, bt_base, ncnr, ts)
+
+@generated helper: partial Beer-Lambert sum with bowtie, starting at index `ts`.
+Bowtie layout: bt[col + (row-1)*nc + (energy-1)*nc*nr], energy 1-based global index.
+For tile starting at `ts`, global energy index = ts + e - 1.
+"""
+@generated function _tiled_beer_lambert_bt(accums::NTuple{K,T}, wη, bt, bt_base::Int32, ncnr::Int32, ts::Int32) where {K, T}
+    if K == 0
+        return :(zero(T))
+    end
+    # e=1: global energy = ts, bowtie offset = (ts-1)*ncnr
+    ex = :((@inbounds wη[ts]) * (@inbounds bt[bt_base + (ts - Int32(1)) * ncnr]) * exp(-accums[1]))
+    for i in 2:K
+        # e=i: global energy = ts+i-1, bowtie offset = (ts+i-2)*ncnr
+        ex = :($ex + (@inbounds wη[ts + Int32($(i - 1))]) * (@inbounds bt[bt_base + (ts + Int32($(i - 2))) * ncnr]) * exp(-accums[$i]))
+    end
+    return ex
+end
+
+"""
+    siddon_tiled_poly_project!(I_buffer, mask, geom, μ_table_gpu, wη_gpu, Val(K), tile_start; kwargs...)
+
+Tiled polychromatic forward projection: single DDA pass through material mask,
+accumulating K energy bins (starting at `tile_start`) and ADDING partial
+Beer-Lambert sum to `I_buffer`.
+
+Called in a loop over tiles to process all energy bins. After all tiles,
+the caller applies `-log(I_buffer)` to get the sinogram.
+
+# Arguments
+- `I_buffer::AbstractArray{T,3}`: Output [n_cols, n_rows, n_angles]. Partial
+  Beer-Lambert sum is ADDED to existing values (must be zero-initialized before first tile).
+- `mask::AbstractArray{<:Unsigned,3}`: Material index volume [nx, ny, nz].
+- `geom::CTGeometry`: Scanner geometry.
+- `μ_table_gpu::AbstractArray{T,2}`: Attenuation lookup table [n_materials, n_energies_padded].
+- `wη_gpu::AbstractArray{T,1}`: Pre-computed `weights_norm .* η` [n_energies_padded].
+- `::Val{K}`: Tile size (compile-time constant, typically 16).
+- `tile_start::Int32`: 1-based start index into energy dimension for this tile.
+
+# Keyword Arguments
+- `volume_extent`: Override volume physical bounds.
+- `ws_source_positions`, `ws_detector_centers`, `ws_detector_u`, `ws_detector_v`:
+  Pre-allocated geometry arrays on GPU.
+- `ws_bowtie_spectral`: Per-pixel bowtie spectral transmission [n_cols, n_rows, n_energies_padded].
+"""
+function siddon_tiled_poly_project!(
+    I_buffer::AbstractArray{T, 3},
+    mask::AbstractArray{<:Unsigned, 3},
+    geom::CTGeometry,
+    μ_table_gpu::AbstractArray{T, 2},
+    wη_gpu::AbstractArray{T, 1},
+    ::Val{K},
+    tile_start::Int32;
+    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
+    ws_source_positions = nothing,
+    ws_detector_centers = nothing,
+    ws_detector_u = nothing,
+    ws_detector_v = nothing,
+    ws_bowtie_spectral = nothing
+) where {T <: AbstractFloat, K}
+
+    # Volume dimensions (Int32 for GPU)
+    nx = Int32(size(mask, 1))
+    ny = Int32(size(mask, 2))
+    nz = Int32(size(mask, 3))
+    n_cols = Int32(size(I_buffer, 1))
+    n_rows = Int32(size(I_buffer, 2))
+    n_angles = Int32(size(I_buffer, 3))
+
+    # Volume bounds
+    vol_bounds = volume_extent !== nothing ? volume_extent : geom.fov
+    vol_min_x = T(-vol_bounds[1] / 2)
+    vol_min_y = T(-vol_bounds[2] / 2)
+    vol_min_z = T(-vol_bounds[3] / 2)
+    vol_max_x = T(vol_bounds[1] / 2)
+    vol_max_y = T(vol_bounds[2] / 2)
+    vol_max_z = T(vol_bounds[3] / 2)
+    voxel_size_x = T(vol_bounds[1]) / T(nx)
+    voxel_size_y = T(vol_bounds[2]) / T(ny)
+    voxel_size_z = T(vol_bounds[3]) / T(nz)
+
+    magnification = T(geom.SDD / geom.SAD)
+    pixel_size = T(geom.pixel_size)
+    pixel_row_size = T(geom.pixel_row_size)
+    col_center = (T(n_cols) + one(T)) / T(2)
+    row_center = (T(n_rows) + one(T)) / T(2)
+
+    # Geometry arrays on GPU (use workspace or allocate)
+    source_positions = if ws_source_positions !== nothing
+        ws_source_positions
+    else
+        _sp = similar(I_buffer, T, size(geom.source_positions)...)
+        copyto!(_sp, T.(geom.source_positions))
+        _sp
+    end
+    detector_centers = if ws_detector_centers !== nothing
+        ws_detector_centers
+    else
+        _dc = similar(I_buffer, T, size(geom.detector_centers)...)
+        copyto!(_dc, T.(geom.detector_centers))
+        _dc
+    end
+    detector_u = if ws_detector_u !== nothing
+        ws_detector_u
+    else
+        _du = similar(I_buffer, T, size(geom.detector_u)...)
+        copyto!(_du, T.(geom.detector_u))
+        _du
+    end
+    detector_v = if ws_detector_v !== nothing
+        ws_detector_v
+    else
+        _dv = similar(I_buffer, T, size(geom.detector_v)...)
+        copyto!(_dv, T.(geom.detector_v))
+        _dv
+    end
+
+    # Bowtie layout constants
+    nc_nr = n_cols * n_rows
+    has_bowtie = ws_bowtie_spectral !== nothing
+
+    # Capture all variables in let block for GPU closure correctness
+    let mask=mask, μ_tbl=μ_table_gpu, wη=wη_gpu,
+        sp=source_positions, dc=detector_centers, du=detector_u, dv=detector_v,
+        bt=ws_bowtie_spectral, ts=tile_start,
+        vmx=vol_min_x, vmy=vol_min_y, vmz=vol_min_z,
+        vMx=vol_max_x, vMy=vol_max_y, vMz=vol_max_z,
+        vsx=voxel_size_x, vsy=voxel_size_y, vsz=voxel_size_z,
+        nx=nx, ny=ny, nz=nz, nc=n_cols, nr=n_rows,
+        mag=magnification, ps=pixel_size, prs=pixel_row_size,
+        cc=col_center, rc=row_center, ncnr=nc_nr, hbt=has_bowtie
+
+        AK.foreachindex(I_buffer) do idx
+            # ─── Index decomposition ───
+            idx_0 = Int32(idx - 1)
+            col = (idx_0 % nc) + Int32(1)
+            idx_0 = idx_0 ÷ nc
+            row = (idx_0 % nr) + Int32(1)
+            angle = (idx_0 ÷ nr) + Int32(1)
+
+            # ─── Source position ───
+            src_x = sp[1, angle]
+            src_y = sp[2, angle]
+            src_z = sp[3, angle]
+
+            # ─── Detector pixel position ───
+            dcx = dc[1, angle]; dcy = dc[2, angle]; dcz = dc[3, angle]
+            dux = du[1, angle]; duy = du[2, angle]; duz = du[3, angle]
+            dvx = dv[1, angle]; dvy = dv[2, angle]; dvz = dv[3, angle]
+
+            u_offset = (T(col) - cc) * ps * mag
+            v_offset = (T(row) - rc) * prs * mag
+
+            det_x = dcx + u_offset * dux + v_offset * dvx
+            det_y = dcy + u_offset * duy + v_offset * dvy
+            det_z = dcz + u_offset * duz + v_offset * dvz
+
+            # ═══════════════════════════════════════════════════════════
+            # DDA SETUP
+            # ═══════════════════════════════════════════════════════════
+            ray_x = det_x - src_x
+            ray_y = det_y - src_y
+            ray_z = det_z - src_z
+            ray_length = sqrt(ray_x^2 + ray_y^2 + ray_z^2)
+
+            eps = T(1e-10)
+            ray_x = abs(ray_x) < eps ? (ray_x >= zero(T) ? eps : -eps) : ray_x
+            ray_y = abs(ray_y) < eps ? (ray_y >= zero(T) ? eps : -eps) : ray_y
+            ray_z = abs(ray_z) < eps ? (ray_z >= zero(T) ? eps : -eps) : ray_z
+
+            t_x_min = (vmx - src_x) / ray_x
+            t_x_max = (vMx - src_x) / ray_x
+            t_y_min = (vmy - src_y) / ray_y
+            t_y_max = (vMy - src_y) / ray_y
+            t_z_min = (vmz - src_z) / ray_z
+            t_z_max = (vMz - src_z) / ray_z
+
+            if t_x_min > t_x_max; t_x_min, t_x_max = t_x_max, t_x_min end
+            if t_y_min > t_y_max; t_y_min, t_y_max = t_y_max, t_y_min end
+            if t_z_min > t_z_max; t_z_min, t_z_max = t_z_max, t_z_min end
+
+            t_enter = max(t_x_min, t_y_min, t_z_min)
+            t_exit  = min(t_x_max, t_y_max, t_z_max)
+
+            # ═══════════════════════════════════════════════════════════
+            # ENERGY ACCUMULATORS (K registers — fits without spilling)
+            # ═══════════════════════════════════════════════════════════
+            accums = ntuple(_ -> zero(T), Val(K))
+
+            # ═══════════════════════════════════════════════════════════
+            # DDA TRAVERSAL (skip if ray misses — accums stay zero)
+            # ═══════════════════════════════════════════════════════════
+            if t_enter < t_exit && t_exit > zero(T)
+                t_enter = max(t_enter, zero(T))
+
+                entry_x = src_x + t_enter * ray_x
+                entry_y = src_y + t_enter * ray_y
+                entry_z = src_z + t_enter * ray_z
+
+                ix = unsafe_trunc(Int32, floor((entry_x - vmx) / vsx))
+                iy = unsafe_trunc(Int32, floor((entry_y - vmy) / vsy))
+                iz = unsafe_trunc(Int32, floor((entry_z - vmz) / vsz))
+                ix = clamp(ix, Int32(0), nx - Int32(1))
+                iy = clamp(iy, Int32(0), ny - Int32(1))
+                iz = clamp(iz, Int32(0), nz - Int32(1))
+
+                step_x = ray_x >= zero(T) ? Int32(1) : Int32(-1)
+                step_y = ray_y >= zero(T) ? Int32(1) : Int32(-1)
+                step_z = ray_z >= zero(T) ? Int32(1) : Int32(-1)
+
+                dt_x = abs(vsx / ray_x)
+                dt_y = abs(vsy / ray_y)
+                dt_z = abs(vsz / ray_z)
+
+                if ray_x >= zero(T)
+                    t_next_x = t_enter + (vmx + T(ix + Int32(1)) * vsx - entry_x) / ray_x
+                else
+                    t_next_x = t_enter + (vmx + T(ix) * vsx - entry_x) / ray_x
+                end
+                if ray_y >= zero(T)
+                    t_next_y = t_enter + (vmy + T(iy + Int32(1)) * vsy - entry_y) / ray_y
+                else
+                    t_next_y = t_enter + (vmy + T(iy) * vsy - entry_y) / ray_y
+                end
+                if ray_z >= zero(T)
+                    t_next_z = t_enter + (vmz + T(iz + Int32(1)) * vsz - entry_z) / ray_z
+                else
+                    t_next_z = t_enter + (vmz + T(iz) * vsz - entry_z) / ray_z
+                end
+
+                t_current = t_enter
+                max_iter = nx + ny + nz + Int32(10)
+                iter = Int32(0)
+
+                while t_current < t_exit && iter < max_iter
+                    iter += Int32(1)
+
+                    if ix < Int32(0) || ix >= nx || iy < Int32(0) || iy >= ny || iz < Int32(0) || iz >= nz
+                        break
+                    end
+
+                    t_next = min(t_next_x, t_next_y, t_next_z, t_exit)
+                    path_length = (t_next - t_current) * ray_length
+
+                    if path_length > eps
+                        mat = Int32(mask[ix + Int32(1), iy + Int32(1), iz + Int32(1)]) + Int32(1)
+                        accums = _tiled_accum_energies(accums, μ_tbl, mat, path_length, ts)
+                    end
+
+                    # Branchless DDA step
+                    mx = Int32(t_next_x <= t_next_y) * Int32(t_next_x <= t_next_z)
+                    my = Int32(Int32(1) - mx) * Int32(t_next_y <= t_next_z)
+                    mz = Int32(1) - mx - my
+                    ix += mx * step_x
+                    iy += my * step_y
+                    iz += mz * step_z
+                    t_next_x += T(mx) * dt_x
+                    t_next_y += T(my) * dt_y
+                    t_next_z += T(mz) * dt_z
+
+                    t_current = t_next
+                end
+            end
+
+            # ═══════════════════════════════════════════════════════════
+            # PARTIAL BEER-LAMBERT SUM — ADD to I_buffer
+            # (accums are zero if ray missed → adds wη partial sum correctly)
+            # ═══════════════════════════════════════════════════════════
+            I_partial = if hbt
+                bt_base = Int32(col) + (Int32(row) - Int32(1)) * nc
+                _tiled_beer_lambert_bt(accums, wη, bt, bt_base, ncnr, ts)
+            else
+                _tiled_beer_lambert(accums, wη, ts)
+            end
+
+            I_buffer[idx] += I_partial
+        end
+    end
+
+    return I_buffer
+end
+
+# =============================================================================
+# Single-Kernel Multi-Tile Projection (SPEED-BUILD-V2-002 optimization)
+# =============================================================================
+#
+# All tiles processed in ONE kernel launch. Each thread:
+# 1. Sets up DDA once
+# 2. Re-traverses voxels for each tile, accumulating K=16 energies per tile
+# 3. Writes I_buffer once (not 15 times)
+#
+# Saves: 14 kernel launch overheads, 14 I_buffer read-modify-writes,
+# 14 DDA setup repetitions, Metal command buffer barriers.
+# =============================================================================
+
+"""
+    siddon_multitile_poly_project!(I_buffer, mask, geom, μ_table_gpu, wη_gpu, Val(K), n_tiles; kwargs...)
+
+Multi-tile polychromatic forward projection in a single kernel launch.
+Each thread traces DDA once per tile (re-traversing same voxels), accumulating
+K energy bins per tile. All tiles processed per thread, I_buffer written once.
+
+# Arguments
+- `I_buffer::AbstractArray{T,3}`: Output [n_cols, n_rows, n_angles]. Written with
+  total Beer-Lambert sum (not -log; caller applies -log after).
+- `mask::AbstractArray{<:Unsigned,3}`: Material index volume [nx, ny, nz].
+- `geom::CTGeometry`: Scanner geometry.
+- `μ_table_gpu::AbstractArray{T,2}`: Attenuation lookup table [n_materials, n_energies_padded].
+- `wη_gpu::AbstractArray{T,1}`: Pre-computed `weights_norm .* η` [n_energies_padded].
+- `::Val{K}`: Tile size (compile-time, typically 16).
+- `n_tiles::Int32`: Number of tiles (runtime).
+"""
+function siddon_multitile_poly_project!(
+    I_buffer::AbstractArray{T, 3},
+    mask::AbstractArray{<:Unsigned, 3},
+    geom::CTGeometry,
+    μ_table_gpu::AbstractArray{T, 2},
+    wη_gpu::AbstractArray{T, 1},
+    ::Val{K},
+    n_tiles::Int32;
+    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
+    ws_source_positions = nothing,
+    ws_detector_centers = nothing,
+    ws_detector_u = nothing,
+    ws_detector_v = nothing,
+    ws_bowtie_spectral = nothing
+) where {T <: AbstractFloat, K}
+
+    nx = Int32(size(mask, 1))
+    ny = Int32(size(mask, 2))
+    nz = Int32(size(mask, 3))
+    n_cols = Int32(size(I_buffer, 1))
+    n_rows = Int32(size(I_buffer, 2))
+    n_angles = Int32(size(I_buffer, 3))
+
+    vol_bounds = volume_extent !== nothing ? volume_extent : geom.fov
+    vol_min_x = T(-vol_bounds[1] / 2)
+    vol_min_y = T(-vol_bounds[2] / 2)
+    vol_min_z = T(-vol_bounds[3] / 2)
+    vol_max_x = T(vol_bounds[1] / 2)
+    vol_max_y = T(vol_bounds[2] / 2)
+    vol_max_z = T(vol_bounds[3] / 2)
+    voxel_size_x = T(vol_bounds[1]) / T(nx)
+    voxel_size_y = T(vol_bounds[2]) / T(ny)
+    voxel_size_z = T(vol_bounds[3]) / T(nz)
+
+    magnification = T(geom.SDD / geom.SAD)
+    pixel_size = T(geom.pixel_size)
+    pixel_row_size = T(geom.pixel_row_size)
+    col_center = (T(n_cols) + one(T)) / T(2)
+    row_center = (T(n_rows) + one(T)) / T(2)
+
+    source_positions = if ws_source_positions !== nothing
+        ws_source_positions
+    else
+        _sp = similar(I_buffer, T, size(geom.source_positions)...)
+        copyto!(_sp, T.(geom.source_positions))
+        _sp
+    end
+    detector_centers = if ws_detector_centers !== nothing
+        ws_detector_centers
+    else
+        _dc = similar(I_buffer, T, size(geom.detector_centers)...)
+        copyto!(_dc, T.(geom.detector_centers))
+        _dc
+    end
+    detector_u = if ws_detector_u !== nothing
+        ws_detector_u
+    else
+        _du = similar(I_buffer, T, size(geom.detector_u)...)
+        copyto!(_du, T.(geom.detector_u))
+        _du
+    end
+    detector_v = if ws_detector_v !== nothing
+        ws_detector_v
+    else
+        _dv = similar(I_buffer, T, size(geom.detector_v)...)
+        copyto!(_dv, T.(geom.detector_v))
+        _dv
+    end
+
+    nc_nr = n_cols * n_rows
+    has_bowtie = ws_bowtie_spectral !== nothing
+    tile_K = Int32(K)
+
+    let mask=mask, μ_tbl=μ_table_gpu, wη=wη_gpu,
+        sp=source_positions, dc=detector_centers, du=detector_u, dv=detector_v,
+        bt=ws_bowtie_spectral, ntiles=n_tiles, tK=tile_K,
+        vmx=vol_min_x, vmy=vol_min_y, vmz=vol_min_z,
+        vMx=vol_max_x, vMy=vol_max_y, vMz=vol_max_z,
+        vsx=voxel_size_x, vsy=voxel_size_y, vsz=voxel_size_z,
+        nx=nx, ny=ny, nz=nz, nc=n_cols, nr=n_rows,
+        mag=magnification, ps=pixel_size, prs=pixel_row_size,
+        cc=col_center, rc=row_center, ncnr=nc_nr, hbt=has_bowtie
+
+        AK.foreachindex(I_buffer) do idx
+            # ─── Index decomposition ───
+            idx_0 = Int32(idx - 1)
+            col = (idx_0 % nc) + Int32(1)
+            idx_0 = idx_0 ÷ nc
+            row = (idx_0 % nr) + Int32(1)
+            angle = (idx_0 ÷ nr) + Int32(1)
+
+            # ─── Source position ───
+            src_x = sp[1, angle]
+            src_y = sp[2, angle]
+            src_z = sp[3, angle]
+
+            # ─── Detector pixel position ───
+            dcx = dc[1, angle]; dcy = dc[2, angle]; dcz = dc[3, angle]
+            dux = du[1, angle]; duy = du[2, angle]; duz = du[3, angle]
+            dvx = dv[1, angle]; dvy = dv[2, angle]; dvz = dv[3, angle]
+
+            u_offset = (T(col) - cc) * ps * mag
+            v_offset = (T(row) - rc) * prs * mag
+
+            det_x = dcx + u_offset * dux + v_offset * dvx
+            det_y = dcy + u_offset * duy + v_offset * dvy
+            det_z = dcz + u_offset * duz + v_offset * dvz
+
+            # ═══════════════════════════════════════════════════════════
+            # DDA SETUP (once per ray, shared across all tiles)
+            # ═══════════════════════════════════════════════════════════
+            ray_x = det_x - src_x
+            ray_y = det_y - src_y
+            ray_z = det_z - src_z
+            ray_length = sqrt(ray_x^2 + ray_y^2 + ray_z^2)
+
+            eps = T(1e-10)
+            ray_x = abs(ray_x) < eps ? (ray_x >= zero(T) ? eps : -eps) : ray_x
+            ray_y = abs(ray_y) < eps ? (ray_y >= zero(T) ? eps : -eps) : ray_y
+            ray_z = abs(ray_z) < eps ? (ray_z >= zero(T) ? eps : -eps) : ray_z
+
+            t_x_min = (vmx - src_x) / ray_x
+            t_x_max = (vMx - src_x) / ray_x
+            t_y_min = (vmy - src_y) / ray_y
+            t_y_max = (vMy - src_y) / ray_y
+            t_z_min = (vmz - src_z) / ray_z
+            t_z_max = (vMz - src_z) / ray_z
+
+            if t_x_min > t_x_max; t_x_min, t_x_max = t_x_max, t_x_min end
+            if t_y_min > t_y_max; t_y_min, t_y_max = t_y_max, t_y_min end
+            if t_z_min > t_z_max; t_z_min, t_z_max = t_z_max, t_z_min end
+
+            t_enter = max(t_x_min, t_y_min, t_z_min)
+            t_exit  = min(t_x_max, t_y_max, t_z_max)
+
+            # Ray misses volume → I_buffer = sum of all wη (exp(0)=1)
+            if t_enter >= t_exit || t_exit <= zero(T)
+                I_sum = zero(T)
+                for tile_idx in Int32(1):ntiles
+                    ts = (tile_idx - Int32(1)) * tK + Int32(1)
+                    accums_miss = ntuple(_ -> zero(T), Val(K))
+                    I_sum += if hbt
+                        bt_base = Int32(col) + (Int32(row) - Int32(1)) * nc
+                        _tiled_beer_lambert_bt(accums_miss, wη, bt, bt_base, ncnr, ts)
+                    else
+                        _tiled_beer_lambert(accums_miss, wη, ts)
+                    end
+                end
+                I_buffer[idx] = I_sum
+                return
+            end
+
+            t_enter = max(t_enter, zero(T))
+
+            # Save DDA start state for re-traversal
+            entry_x = src_x + t_enter * ray_x
+            entry_y = src_y + t_enter * ray_y
+            entry_z = src_z + t_enter * ray_z
+
+            ix_start = clamp(unsafe_trunc(Int32, floor((entry_x - vmx) / vsx)), Int32(0), nx - Int32(1))
+            iy_start = clamp(unsafe_trunc(Int32, floor((entry_y - vmy) / vsy)), Int32(0), ny - Int32(1))
+            iz_start = clamp(unsafe_trunc(Int32, floor((entry_z - vmz) / vsz)), Int32(0), nz - Int32(1))
+
+            step_x = ray_x >= zero(T) ? Int32(1) : Int32(-1)
+            step_y = ray_y >= zero(T) ? Int32(1) : Int32(-1)
+            step_z = ray_z >= zero(T) ? Int32(1) : Int32(-1)
+
+            dt_x = abs(vsx / ray_x)
+            dt_y = abs(vsy / ray_y)
+            dt_z = abs(vsz / ray_z)
+
+            t_next_x_start = if ray_x >= zero(T)
+                t_enter + (vmx + T(ix_start + Int32(1)) * vsx - entry_x) / ray_x
+            else
+                t_enter + (vmx + T(ix_start) * vsx - entry_x) / ray_x
+            end
+            t_next_y_start = if ray_y >= zero(T)
+                t_enter + (vmy + T(iy_start + Int32(1)) * vsy - entry_y) / ray_y
+            else
+                t_enter + (vmy + T(iy_start) * vsy - entry_y) / ray_y
+            end
+            t_next_z_start = if ray_z >= zero(T)
+                t_enter + (vmz + T(iz_start + Int32(1)) * vsz - entry_z) / ray_z
+            else
+                t_enter + (vmz + T(iz_start) * vsz - entry_z) / ray_z
+            end
+
+            max_iter = nx + ny + nz + Int32(10)
+
+            # Bowtie base (computed once, used in all tiles)
+            bt_base = if hbt
+                Int32(col) + (Int32(row) - Int32(1)) * nc
+            else
+                Int32(0)
+            end
+
+            # ═══════════════════════════════════════════════════════════
+            # TILE LOOP — re-traverse DDA for each tile
+            # ═══════════════════════════════════════════════════════════
+            I_sum = zero(T)
+
+            for tile_idx in Int32(1):ntiles
+                ts = (tile_idx - Int32(1)) * tK + Int32(1)
+                accums = ntuple(_ -> zero(T), Val(K))
+
+                # Restore DDA state
+                ix = ix_start; iy = iy_start; iz = iz_start
+                t_current = t_enter
+                t_next_x = t_next_x_start
+                t_next_y = t_next_y_start
+                t_next_z = t_next_z_start
+                iter = Int32(0)
+
+                while t_current < t_exit && iter < max_iter
+                    iter += Int32(1)
+
+                    if ix < Int32(0) || ix >= nx || iy < Int32(0) || iy >= ny || iz < Int32(0) || iz >= nz
+                        break
+                    end
+
+                    t_next = min(t_next_x, t_next_y, t_next_z, t_exit)
+                    path_length = (t_next - t_current) * ray_length
+
+                    if path_length > eps
+                        mat = Int32(mask[ix + Int32(1), iy + Int32(1), iz + Int32(1)]) + Int32(1)
+                        accums = _tiled_accum_energies(accums, μ_tbl, mat, path_length, ts)
+                    end
+
+                    mx = Int32(t_next_x <= t_next_y) * Int32(t_next_x <= t_next_z)
+                    my = Int32(Int32(1) - mx) * Int32(t_next_y <= t_next_z)
+                    mz = Int32(1) - mx - my
+                    ix += mx * step_x
+                    iy += my * step_y
+                    iz += mz * step_z
+                    t_next_x += T(mx) * dt_x
+                    t_next_y += T(my) * dt_y
+                    t_next_z += T(mz) * dt_z
+
+                    t_current = t_next
+                end
+
+                # Partial Beer-Lambert sum for this tile
+                I_sum += if hbt
+                    _tiled_beer_lambert_bt(accums, wη, bt, bt_base, ncnr, ts)
+                else
+                    _tiled_beer_lambert(accums, wη, ts)
+                end
+            end
+
+            I_buffer[idx] = I_sum
+        end
+    end
+
+    return I_buffer
 end

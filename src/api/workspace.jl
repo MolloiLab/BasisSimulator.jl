@@ -681,9 +681,12 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         end
     end
 
-    # Upload μ_table to GPU for zero-copy fast path in create_μ_volume!
-    μ_table_gpu = similar(ref, T, n_regions, n_energies)
-    copyto!(μ_table_gpu, μ_table)
+    # Upload μ_table to GPU, padded to multiple of 16 for tiled projection (SPEED-BUILD-V2-002)
+    # Extra columns are zero-filled — zero wη weights ensure they contribute nothing.
+    n_energies_padded = cld(n_energies, 16) * 16
+    μ_table_gpu = similar(ref, T, n_regions, n_energies_padded)
+    fill!(μ_table_gpu, zero(T))
+    copyto!(view(μ_table_gpu, :, 1:n_energies), μ_table)
 
     # Detector efficiency η(E) per energy bin
     η_vec = if config.detector_efficiency !== nothing
@@ -692,9 +695,10 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         ones(Float64, n_energies)
     end
 
-    # Pre-computed weights_norm .* η for fused poly projection kernel
-    wη_cpu = T.(weights_norm .* η_vec)
-    wη_gpu_buf = similar(ref, T, n_energies)
+    # Pre-computed weights_norm .* η, padded to match μ_table (tiled projection)
+    wη_cpu = zeros(T, n_energies_padded)
+    wη_cpu[1:n_energies] .= T.(weights_norm .* η_vec)
+    wη_gpu_buf = similar(ref, T, n_energies_padded)
     copyto!(wη_gpu_buf, wη_cpu)
 
     # Bowtie spectral transmission: resolve independently from PhysicsConfig
@@ -704,8 +708,11 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     bowtie_air_ref_gpu = nothing
     if bowtie_filter !== nothing && bowtie_filter.name != "none"
         trans_cpu = compute_bowtie_attenuation_spectral(bowtie_filter, geom, Float64.(energies))
-        bt_gpu = similar(ref, T, size(trans_cpu)...)
-        copyto!(bt_gpu, T.(trans_cpu))
+        # Pad bowtie spectral to n_energies_padded (zero-fill extra energy slices)
+        bt_padded_cpu = zeros(T, size(trans_cpu, 1), size(trans_cpu, 2), n_energies_padded)
+        bt_padded_cpu[:, :, 1:n_energies] .= T.(trans_cpu)
+        bt_gpu = similar(ref, T, size(bt_padded_cpu)...)
+        copyto!(bt_gpu, bt_padded_cpu)
         bowtie_spectral_gpu = bt_gpu
 
         # Air reference: I₀(col,row) = Σ w_norm(E) × T_bt(E,col,row) × η(E)
