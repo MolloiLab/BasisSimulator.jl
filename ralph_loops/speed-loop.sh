@@ -50,7 +50,11 @@ check_files() {
 
 count_phases() {
     local status="$1"
-    grep -c "\"$status\"" "$PRD_FILE" 2>/dev/null || echo "0"
+    grep -co "\"$status\"" "$PRD_FILE" 2>/dev/null || echo "0"
+}
+
+count_todo() {
+    grep -co '"todo"' "$PRD_FILE" 2>/dev/null || echo "0"
 }
 
 get_current_phase() {
@@ -62,15 +66,15 @@ get_current_phase() {
 cd "$PROJECT_DIR"
 check_files
 
-OPEN=$(count_phases "open")
+OPEN=$(count_todo)
 DONE=$(count_phases "done")
 PHASE=$(get_current_phase)
 
 echo ""
 echo -e "${CYAN}╔════════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║${NC}  ${BOLD}BasisSimulator.jl — 10x Speed Discovery Loop${NC}               ${CYAN}║${NC}"
-echo -e "${CYAN}║${NC}  Profile → Research → Critique → Optimize Spec               ${CYAN}║${NC}"
-echo -e "${CYAN}║${NC}  Goal: 10x speedup with identical physics                    ${CYAN}║${NC}"
+echo -e "${CYAN}║${NC}  ${BOLD}BasisSimulator.jl — 10x Speed Discovery Loop (v2 GPU-First)${NC} ${CYAN}║${NC}"
+echo -e "${CYAN}║${NC}  GPU Profile → Research → Critique → Build Stories            ${CYAN}║${NC}"
+echo -e "${CYAN}║${NC}  Goal: 10x speedup — Metal GPU benchmarks required            ${CYAN}║${NC}"
 echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "  Max iterations: $MAX_ITERATIONS | Timeout: ${TIMEOUT}s | Cooldown: ${COOLDOWN}s"
@@ -84,7 +88,7 @@ iteration=0
 while [ $iteration -lt $MAX_ITERATIONS ]; do
     iteration=$((iteration + 1))
 
-    OPEN=$(count_phases "open")
+    OPEN=$(count_todo)
     DONE=$(count_phases "done")
     PHASE=$(get_current_phase)
 

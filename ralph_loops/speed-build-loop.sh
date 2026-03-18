@@ -51,7 +51,8 @@ count_done() {
 }
 
 count_open() {
-    grep -c '"open"' "$PRD_FILE" 2>/dev/null || echo "0"
+    # v2: stories are created with status "ready" by the discovery loop
+    grep -c '"ready"' "$PRD_FILE" 2>/dev/null || echo "0"
 }
 
 ensure_branch() {
@@ -81,9 +82,9 @@ OPEN=$(count_open)
 
 echo ""
 echo -e "${CYAN}╔════════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║${NC}  ${BOLD}BasisSimulator.jl — 10x Speed Build Loop${NC}                    ${CYAN}║${NC}"
+echo -e "${CYAN}║${NC}  ${BOLD}BasisSimulator.jl — 10x Speed Build Loop (v2 GPU-First)${NC}     ${CYAN}║${NC}"
 echo -e "${CYAN}║${NC}  Branch: speed/fused-projection (main is SAFE)                ${CYAN}║${NC}"
-echo -e "${CYAN}║${NC}  UInt16 mask | AK.jl only | 4 stories                        ${CYAN}║${NC}"
+echo -e "${CYAN}║${NC}  GPU benchmarks required | Stories from discovery loop        ${CYAN}║${NC}"
 echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "  Stories: ${GREEN}$DONE done${NC} / ${YELLOW}$OPEN open${NC}"

@@ -76,8 +76,8 @@ Adapt this template to benchmark individual components (forward projection, scat
 - Mixed precision where physically justified (e.g., Float32 for noise)
 - Smarter ray tracing algorithms (distance-driven, separable footprint)
 
-**NOT legitimate (cheating):**
-- Reducing the number of energy bins (that changes physics)
+**NOT legitimate (cheating — DO NOT PROPOSE THESE):**
+- **Reducing the number of energy bins / spectrum downsampling / bin merging** — The IPEM spectrum at `:high` fidelity produces 234 bins at 0.5 keV resolution. ALL 234 bins must be computed. This is the physics. You cannot "downsample to 30 bins" or "merge adjacent bins" or "use fewer energy samples." The number of energy bins is set by the spectrum and is NOT negotiable.
 - Skipping physics effects (that changes fidelity)
 - Lowering spatial resolution (that changes the simulation)
 - Using lookup tables that sacrifice accuracy beyond measurement noise
