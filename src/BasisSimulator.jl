@@ -201,20 +201,6 @@ include("reconstruction/hybrid_ir/hybrid_ir.jl")
 include("reconstruction/mbir/mbir.jl")
 
 # =============================================================================
-# Clinical Scanner Configurations
-# =============================================================================
-
-# Scanner specifications (GE, Siemens, Canon, etc.)
-include("scanners/scanners.jl")
-
-# =============================================================================
-# Spectral Imaging (Dual-Energy + PCCT)
-# =============================================================================
-
-# Dual kVp (GSI) forward projection, material decomposition, VMI
-include("spectral/dual_energy.jl")
-
-# =============================================================================
 # Photon-Counting CT (Spectral Imaging)
 # =============================================================================
 
@@ -230,19 +216,6 @@ include("spectral/pcct_spectral.jl")
 
 # Unified VMI pipeline (shared by dual-kVp and PCCT)
 include("spectral/vmi.jl")
-
-# =============================================================================
-# Image Quality Metrics (AAPM TG-233)
-# =============================================================================
-
-# Modulation Transfer Function (MTF) - spatial resolution
-include("metrics/mtf.jl")
-
-# Noise Power Spectrum (NPS) - noise texture characterization
-include("metrics/nps.jl")
-
-# Point Spread Function (PSF) - spatial resolution in real space
-include("metrics/psf.jl")
 
 # =============================================================================
 # API (top-level orchestration)
