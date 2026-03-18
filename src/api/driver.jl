@@ -381,7 +381,6 @@ function simulate!(
         ws_scatter_temp=ws.scatter_temp,
         ws_scatter_kernel_1d=ws.scatter_kernel_1d,
         ws_scatter_correct_kernel_1d=ws.scatter_correct_kernel_1d,
-        ws_crosstalk_kernel=ws.crosstalk_kernel,
         ws_optical_crosstalk_kernel=ws.optical_crosstalk_kernel,
         ws_focal_spot_kernel=ws.focal_spot_kernel,
         ws_flat_filter_projection=ws.flat_filter_projection,
@@ -586,11 +585,11 @@ Build a complete PhysicsConfig from Scanner hardware fields and SimOptions toggl
 
 For effects with Scanner fields (focal_spot, flat_filter, fill_factor, detector_efficiency,
 heel_effect), the Scanner hardware parameters are used to construct the effect structs.
-For effects without Scanner fields (scatter, scatter_correction, crosstalk, optical_crosstalk,
+For effects without Scanner fields (scatter, scatter_correction, optical_crosstalk,
 bowtie, lag, bhc), factory function defaults are used.
 
-Noise is ALWAYS `nothing` in the returned PhysicsConfig — noise is applied externally
-via `compute_detector_I0()` + `add_quantum_noise!()` when `sim_opts.use_noise == true`.
+Noise is not part of PhysicsConfig — it is applied externally via
+`compute_detector_I0()` + quantum noise when `sim_opts.use_noise == true`.
 
 # Arguments
 - `scanner`: Scanner hardware definition (provides physical parameters)
@@ -618,7 +617,6 @@ function build_physics_config(
     # --- Common settings ---
     kwargs[:energy_keV] = sum(energies .* weights) / sum(weights)
     kwargs[:noise_seed] = sim_opts.seed
-    kwargs[:noise] = nothing  # Noise is handled externally via compute_detector_I0 + add_quantum_noise!
 
     # --- Physics Pipeline effects (from Scanner fields where available) ---
 
@@ -685,11 +683,6 @@ function build_physics_config(
     # Scatter correction: use geometry-aware correction scaled for this scanner
     if sim_opts.use_scatter_correction
         kwargs[:scatter_correction] = geometry_aware_scatter_correction(scanner; phantom_diameter_cm=phantom_diameter_cm)
-    end
-
-    # Crosstalk (electronic): no Scanner field, use factory default
-    if sim_opts.use_crosstalk
-        kwargs[:crosstalk] = crosstalk_medium()
     end
 
     # Optical crosstalk: no Scanner field, use factory default

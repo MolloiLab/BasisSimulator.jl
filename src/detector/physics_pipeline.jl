@@ -26,11 +26,9 @@ All fields are optional - set to `nothing` to skip that effect.
 - `bowtie_filter`: BowtieFilter for angle-dependent filtration
 - `scatter`: ScatterModel for patient scatter (adds scatter)
 - `scatter_correction`: ScatterCorrectionModel for scatter correction (removes scatter)
-- `crosstalk`: CrosstalkModel for detector pixel coupling
 - `optical_crosstalk`: OpticalCrosstalkModel for optical crosstalk
 - `focal_spot`: FocalSpot for geometric blur
 - `detector_efficiency`: DetectorEfficiency for scintillator response
-- `noise`: DetectorModel for noise parameters
 - `lag`: LagModel for temporal persistence
 - `noise_seed`: Random seed for noise (for reproducibility)
 - `energy_keV`: X-ray energy for filter calculations (default: 60.0)
@@ -45,11 +43,9 @@ struct PhysicsConfig
     bowtie_filter::Union{Nothing, BowtieFilter}
     scatter::Union{Nothing, ScatterModel}
     scatter_correction::Union{Nothing, ScatterCorrectionModel}
-    crosstalk::Union{Nothing, CrosstalkModel}
     optical_crosstalk::Union{Nothing, OpticalCrosstalkModel}
     focal_spot::Union{Nothing, FocalSpot}
     detector_efficiency::Union{Nothing, DetectorEfficiency}
-    noise::Union{Nothing, DetectorModel}
     lag::Union{Nothing, LagModel}
     noise_seed::Union{Nothing, Int}
     energy_keV::Float64
@@ -72,11 +68,9 @@ function default_physics_config(;
     bowtie_filter::Union{Nothing, BowtieFilter}=nothing,
     scatter::Union{Nothing, ScatterModel}=nothing,
     scatter_correction::Union{Nothing, ScatterCorrectionModel}=nothing,
-    crosstalk::Union{Nothing, CrosstalkModel}=nothing,
     optical_crosstalk::Union{Nothing, OpticalCrosstalkModel}=nothing,
     focal_spot::Union{Nothing, FocalSpot}=nothing,
     detector_efficiency::Union{Nothing, DetectorEfficiency}=nothing,
-    noise::Union{Nothing, DetectorModel}=nothing,
     lag::Union{Nothing, LagModel}=nothing,
     noise_seed::Union{Nothing, Int}=nothing,
     energy_keV::Float64=60.0,
@@ -90,11 +84,9 @@ function default_physics_config(;
         bowtie_filter,
         scatter,
         scatter_correction,
-        crosstalk,
         optical_crosstalk,
         focal_spot,
         detector_efficiency,
-        noise,
         lag,
         noise_seed,
         energy_keV,

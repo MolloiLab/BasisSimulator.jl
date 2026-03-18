@@ -95,8 +95,6 @@ include("detector/scatter.jl")
 # Protocol definitions
 include("source/protocol.jl")
 
-# Detector response and noise modeling
-include("detector/detector_noise.jl")
 
 # Detector absorption efficiency and DQE
 include("detector/detector_efficiency.jl")
@@ -110,8 +108,8 @@ include("source/flat_filter.jl")
 # Finite focal spot modeling
 include("source/focal_spot.jl")
 
-# Detector crosstalk modeling (electronic and optical)
-include("detector/crosstalk.jl")
+# Detector optical crosstalk modeling
+include("detector/optical_crosstalk.jl")
 
 # Detector lag (afterglow) modeling
 include("detector/detector_lag.jl")

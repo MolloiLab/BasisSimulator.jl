@@ -458,7 +458,6 @@ mutable struct EICTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:Abstr
     scatter_kernel_1d::Union{Nothing, A1}       # 1D Gaussian scatter kernel (separable path)
     scatter_correct_kernel_1d::Union{Nothing, A1} # 1D correction kernel (separable path)
     scatter_temp::A3                            # sinogram-shaped scratch for separable convolution
-    crosstalk_kernel::Union{Nothing, A2}        # 3×3 crosstalk kernel
     optical_crosstalk_kernel::Union{Nothing, A2} # 3×3 optical crosstalk kernel
     focal_spot_kernel::Union{Nothing, A2}       # focal spot blur kernel
     flat_filter_projection::Union{Nothing, A2}  # 2D flat filter projection (n_cols × n_rows)
@@ -607,15 +606,6 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     # Scratch buffer for separable scatter convolution intermediate results
     scatter_temp = similar(ref, T, sino_shape)
 
-    crosstalk_kernel = if config.crosstalk !== nothing
-        k_cpu = T.(create_crosstalk_kernel_3x3(config.crosstalk))
-        k_gpu = similar(ref, T, 3, 3)
-        copyto!(k_gpu, k_cpu)
-        k_gpu
-    else
-        nothing
-    end
-
     optical_crosstalk_kernel = if config.optical_crosstalk !== nothing
         k_cpu = T.(create_optical_crosstalk_kernel(config.optical_crosstalk))
         k_gpu = similar(ref, T, 3, 3)
@@ -762,7 +752,6 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         physics_output, lag_intensity,
         scatter_kernel, scatter_correct_kernel,
         scatter_kernel_1d, scatter_correct_kernel_1d, scatter_temp,
-        crosstalk_kernel,
         optical_crosstalk_kernel, focal_spot_kernel, flat_filter_proj,
         bowtie_spectral_gpu, bowtie_air_ref_gpu, lag_coeffs_buf,
         noise_rand_cpu, noise_rand_gpu, enoise_rand_cpu, enoise_rand_gpu,

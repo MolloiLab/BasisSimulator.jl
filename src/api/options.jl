@@ -21,7 +21,6 @@ These are resolved from fidelity presets and user overrides at construction time
 - `use_detector_efficiency::Bool`: Enable energy-dependent detector efficiency.
 - `use_scatter::Bool`: Enable scatter simulation.
 - `use_scatter_correction::Bool`: Enable scatter correction in signal chain.
-- `use_crosstalk::Bool`: Enable electronic detector crosstalk.
 - `use_optical_crosstalk::Bool`: Enable optical crosstalk.
 - `use_focal_spot::Bool`: Enable focal spot blur.
 - `use_noise::Bool`: Enable quantum/electronic noise.
@@ -40,14 +39,13 @@ These are resolved from fidelity presets and user overrides at construction time
 struct SimOptions
     fidelity::Symbol
 
-    # --- Physics Pipeline (10 effects) ---
+    # --- Physics Pipeline (9 effects) ---
     use_fill_factor::Bool
     use_flat_filter::Bool
     use_bowtie_filter::Bool
     use_detector_efficiency::Bool
     use_scatter::Bool
     use_scatter_correction::Bool
-    use_crosstalk::Bool
     use_optical_crosstalk::Bool
     use_focal_spot::Bool
     use_noise::Bool
@@ -97,7 +95,6 @@ function SimOptions(;
     use_detector_efficiency::Union{Bool,Nothing}=nothing,
     use_scatter::Union{Bool,Nothing}=nothing,
     use_scatter_correction::Union{Bool,Nothing}=nothing,
-    use_crosstalk::Union{Bool,Nothing}=nothing,
     use_optical_crosstalk::Union{Bool,Nothing}=nothing,
     use_focal_spot::Union{Bool,Nothing}=nothing,
     use_noise::Union{Bool,Nothing}=nothing,
@@ -116,15 +113,14 @@ function SimOptions(;
         # flat_filter=false: flat filter is applied in spectrum domain by resolve_spectrum()
         # bowtie_filter=false: bowtie is folded into spectral projector (per-energy transmission)
         (fill_factor=true, flat_filter=false, bowtie_filter=false, detector_efficiency=true,
-            scatter=true, scatter_correction=true, crosstalk=false, optical_crosstalk=true,
+            scatter=true, scatter_correction=true, optical_crosstalk=true,
             focal_spot=true, noise=true, lag=true,
             heel_effect=true, bhc=false, pcct_corrections=true)
     elseif fidelity == :eict
         # flat_filter=false: flat filter is applied in spectrum domain by resolve_spectrum()
         # bowtie_filter=false: bowtie is folded into spectral projector (per-energy transmission)
-        # crosstalk=false: electronic crosstalk disabled (optical_crosstalk handles this correctly)
         (fill_factor=true, flat_filter=false, bowtie_filter=false, detector_efficiency=true,
-            scatter=true, scatter_correction=true, crosstalk=false, optical_crosstalk=true,
+            scatter=true, scatter_correction=true, optical_crosstalk=true,
             focal_spot=true, noise=true, lag=true,
             heel_effect=true, bhc=false, pcct_corrections=false)
     else
@@ -138,7 +134,6 @@ function SimOptions(;
     _detector_efficiency = isnothing(use_detector_efficiency) ? defaults.detector_efficiency : use_detector_efficiency
     _scatter = isnothing(use_scatter) ? defaults.scatter : use_scatter
     _scatter_correction = isnothing(use_scatter_correction) ? defaults.scatter_correction : use_scatter_correction
-    _crosstalk = isnothing(use_crosstalk) ? defaults.crosstalk : use_crosstalk
     _optical_crosstalk = isnothing(use_optical_crosstalk) ? defaults.optical_crosstalk : use_optical_crosstalk
     _focal_spot = isnothing(use_focal_spot) ? defaults.focal_spot : use_focal_spot
     _noise = isnothing(use_noise) ? defaults.noise : use_noise
@@ -150,7 +145,7 @@ function SimOptions(;
     return SimOptions(
         fidelity,
         _fill_factor, _flat_filter, _bowtie_filter, _detector_efficiency,
-        _scatter, _scatter_correction, _crosstalk, _optical_crosstalk,
+        _scatter, _scatter_correction, _optical_crosstalk,
         _focal_spot, _noise, _lag,
         _heel_effect, _bhc,
         _pcct_corrections,

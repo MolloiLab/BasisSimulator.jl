@@ -547,7 +547,6 @@ function _apply_physics_no_noise!(
     ws_output=nothing,             # sinogram-sized scratch (shared by convolution effects)
     ws_scatter_kernel=nothing,     # pre-computed scatter kernel (GPU)
     ws_scatter_correct_kernel=nothing, # pre-computed scatter correction kernel (GPU)
-    ws_crosstalk_kernel=nothing,   # pre-computed crosstalk 3x3 kernel (GPU)
     ws_optical_crosstalk_kernel=nothing, # pre-computed optical crosstalk 3x3 kernel (GPU)
     ws_focal_spot_kernel=nothing,  # pre-computed focal spot kernel (GPU)
     ws_flat_filter_projection=nothing,   # pre-computed flat filter 2D projection (GPU)
@@ -601,12 +600,6 @@ function _apply_physics_no_noise!(
         apply_bowtie_filter!(sinogram, config.bowtie_filter, geom;
                              energy_keV=config.energy_keV,
                              ws_bowtie_projection=ws_bowtie_projection)
-    end
-
-    # Crosstalk
-    if config.crosstalk !== nothing
-        apply_crosstalk!(sinogram, config.crosstalk;
-                         ws_output=ws_output, ws_kernel=ws_crosstalk_kernel)
     end
 
     # Optical crosstalk
