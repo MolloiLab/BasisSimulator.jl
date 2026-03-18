@@ -76,23 +76,26 @@ ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom_g
 println("\nPhantom: $(size(phantom_cpu.mask)), extent=$(phantom_cpu.extent) cm")
 println("Sinogram: $(size(ws.sinogram))")
 println("Energies: $(length(ws.energies)) bins")
+println("μ_table_gpu: $(size(ws.μ_table_gpu)) (padded for K=16 tiling)")
+println("wη_gpu: $(length(ws.wη_gpu)) (padded)")
+println("Has bowtie: $(ws.bowtie_spectral !== nothing)")
 println("Has signal chain: $(ws.has_signal_chain)")
 
 # =============================================================================
-# Warmup
+# Warmup (includes JIT for tiled kernel Val(16))
 # =============================================================================
-println("\nWarming up...")
+println("\nWarming up (JIT compilation for tiled kernel)...")
 Metal.@sync BS.simulate!(ws, phantom_gpu, scanner, protocol, sim_opts, recon_opts)
 println("Warmup done.")
 
 # =============================================================================
-# Benchmark default path (should now be UNFUSED due to V2-001 change)
+# Benchmark: Full simulate!() with tiled projection
 # =============================================================================
-println("\n--- Default path (unfused after V2-001) ---")
-t_default = gpu_time(5) do
+println("\n--- Tiled path (K=16, V2-002) ---")
+t_tiled = gpu_time(5) do
     BS.simulate!(ws, phantom_gpu, scanner, protocol, sim_opts, recon_opts)
 end
-println("Default simulate!() median: $(round(t_default * 1000, digits=1)) ms")
+println("Tiled simulate!() median: $(round(t_tiled * 1000, digits=1)) ms")
 
 # =============================================================================
 # Results
@@ -100,12 +103,12 @@ println("Default simulate!() median: $(round(t_default * 1000, digits=1)) ms")
 println("\n" * "=" ^ 60)
 println("RESULTS")
 println("=" ^ 60)
-println("Default median: $(round(t_default * 1000, digits=1)) ms")
-println("Discovery fused baseline: 19,182 ms")
-println("Speedup vs fused default: $(round(19.182 / t_default, digits=2))×")
-println("Target: < 6,500 ms (3× minimum)")
-if t_default < 6.5
-    println("✓ PASS — V2-001 acceptance criteria met")
-else
-    println("✗ FAIL — V2-001 acceptance criteria NOT met")
-end
+println("Tiled (V2-002) median:    $(round(t_tiled * 1000, digits=1)) ms")
+println("Unfused (V2-001):         5,259 ms")
+println("Fused baseline:           19,182 ms")
+println("Speedup vs unfused:       $(round(5.259 / t_tiled, digits=2))×")
+println("Speedup vs fused default: $(round(19.182 / t_tiled, digits=2))×")
+println("\nTargets:")
+println("  Forward proj < 1,800 ms (3.0× min): $(t_tiled < 1.8 ? "likely ✓" : "check forward proj separately")")
+println("  simulate!()  < 2,000 ms:            $(t_tiled < 2.0 ? "✓ PASS" : "✗ FAIL")")
+println("  10× target   < 1,918 ms:            $(t_tiled < 1.918 ? "✓ PASS" : "✗ FAIL")")

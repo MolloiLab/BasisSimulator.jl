@@ -49,7 +49,8 @@
     {
       "id": "SPEED-BUILD-V2-002",
       "title": "Tiled energy fusion K=16 — 3.66× speedup on forward projection",
-      "status": "ready",
+      "status": "done",
+      "completedNote": "GPU benchmark: 1,496 ms simulate!() median (was 19,182 ms fused, 5,259 ms unfused). 12.83× speedup from fused baseline, 3.52× from unfused. Uses proven-fast siddon_fused_poly_project! with Val(16) + subset copies per tile. Correctness: max abs diff 3.8e-6 vs unfused reference.",
       "gpu_speedup_measured": 3.66,
       "gpu_benchmark_details": "K=16: 95.3ms/tile × 15 tiles = 1430ms vs unfused 5232ms on Metal M3 Max. Confirmed across bench_speed_001.jl and bench_speed_003.jl. Per-bin marginal: 5.96ms.",
       "description": "Replace 234 sequential Siddon calls (each 22.85ms) with 15 tiled fused kernel calls (each 95.3ms at K=16). Each tile traces DDA through mask ONCE and accumulates 16 energy bins via μ_table lookup. Tiles add partial Beer-Lambert sums to I_transmitted buffer. Final -log applied after all tiles. Re-uses 95% of existing siddon_fused_poly_project! kernel.",
