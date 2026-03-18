@@ -1,86 +1,72 @@
 {
-  "project": "BasisSimulator.jl 10x Speed Discovery",
-  "status": "SPEED_COMPLETE",
-  "goal": "Find a path to 10x or greater speedup of simulate!() while preserving mathematical correctness, physical fidelity, and API flexibility. No cheating — no skipping energy bins, no reducing physics effects, no lowering precision below what's physically meaningful. All GPU code MUST use AcceleratedKernels.jl.",
-  "result": "10.9x speedup achievable via 3 stacked optimizations: energy loop fusion (10x on forward proj), separable Gaussian scatter (31x on scatter), branchless DDA (1.15x). Conservative estimate with tiled fusion: 7.5x.",
+  "project": "BasisSimulator.jl 10x Speed Discovery (v2 — GPU-First)",
+  "status": "IN_PROGRESS",
+  "version": 2,
+  "goal": "Find a path to 10x or greater speedup of simulate!() while preserving mathematical correctness, physical fidelity, and API flexibility. All GPU code MUST use AcceleratedKernels.jl. ALL speedup claims MUST be backed by Metal GPU benchmarks.",
+  "v1_lesson": "v1 spent 5 iterations on static analysis and CPU benchmarks. The resulting optimizations produced ZERO speedup on Metal GPU. v2 requires GPU benchmarks for every claim.",
   "context": {
     "package": "BasisSimulator.jl (v0.3.0) — GPU-native polychromatic CT simulator",
-    "scope": "simulate!() ONLY — forward projection + detector physics pipeline. Reconstruction (reconstruct!) is a SEPARATE function and is OUT OF SCOPE.",
+    "scope": "simulate!() ONLY — forward projection + detector physics pipeline. Reconstruction (reconstruct!) is OUT OF SCOPE.",
     "architecture": "AcceleratedKernels.jl (AK.jl) for GPU-agnostic execution (Metal/CUDA/ROCm/CPU). Zero-allocation workspace pattern. Polychromatic via sequential energy bin loop.",
     "hard_constraint": "AcceleratedKernels.jl is NON-NEGOTIABLE. All GPU compute must go through AK.jl. No backend-specific kernels.",
-    "math_constraint": "Same mathematical results (within floating-point tolerance). Same API. Same physics fidelity. The improvement must come from BETTER algorithms or BETTER parallelism, not from doing LESS physics."
+    "math_constraint": "Same mathematical results (within floating-point tolerance). Same API. Same physics fidelity.",
+    "gpu_constraint": "ALL performance measurements on Metal GPU with Metal.@sync + @elapsed. CPU-only benchmarks are NOT acceptable evidence."
   },
   "topics": [
     {
       "id": "SPEED-000",
-      "area": "profiling-audit",
-      "title": "Profile simulate!() — Where Does the Time Actually Go?",
-      "discovery": "done",
-      "critique": "done",
-      "refinement": "done",
-      "priority": 0
+      "area": "gpu-profiling-baseline",
+      "title": "GPU Profiling Baseline — Metal @elapsed on every component of simulate!()",
+      "discovery": "todo",
+      "critique": "todo",
+      "refinement": "todo",
+      "priority": 0,
+      "notes": "MUST be done first. Also profile v1 changes (fused vs unfused, separable vs 2D scatter) to see what actually helps on GPU."
     },
     {
       "id": "SPEED-001",
       "area": "energy-loop-fusion",
-      "title": "Fuse the Sequential Energy Loop — One Ray Trace, All Energies",
-      "discovery": "done",
-      "critique": "done",
-      "refinement": "done",
-      "priority": 1
+      "title": "Energy Loop Fusion — validate on Metal GPU (v1 showed 6.5x on CPU, 0x on GPU)",
+      "discovery": "todo",
+      "critique": "todo",
+      "refinement": "todo",
+      "priority": 1,
+      "notes": "v1 implemented this but never tested on GPU. May need completely different approach for Metal."
     },
     {
       "id": "SPEED-002",
       "area": "ray-tracing-algorithm",
-      "title": "Siddon vs Distance-Driven vs Separable Footprint — Algorithm-Level Speedup",
-      "discovery": "done",
-      "critique": "done",
-      "refinement": "done",
+      "title": "Ray Tracing Algorithm — GPU-validated alternatives to Siddon",
+      "discovery": "todo",
+      "critique": "todo",
+      "refinement": "todo",
       "priority": 1
     },
     {
       "id": "SPEED-003",
       "area": "gpu-parallelism",
-      "title": "GPU Kernel Optimization via AK.jl — Occupancy, Memory, Divergence",
-      "discovery": "done",
-      "critique": "done",
-      "refinement": "done",
+      "title": "GPU Kernel Optimization — occupancy, memory coalescing, launch overhead on Metal",
+      "discovery": "todo",
+      "critique": "todo",
+      "refinement": "todo",
       "priority": 1
     },
     {
       "id": "SPEED-004",
-      "area": "physics-pipeline-batching",
-      "title": "Physics Pipeline — Batch Effects, Fuse Kernels, Reduce Launches",
-      "discovery": "done",
-      "critique": "done",
-      "refinement": "done",
-      "priority": 1
-    },
-    {
-      "id": "SPEED-005",
-      "area": "reference-implementations",
-      "title": "What Do Fast CT Simulators Do? — CatSim, TIGRE, gVXR",
-      "discovery": "done",
-      "critique": "done",
-      "refinement": "done",
-      "priority": 1
-    },
-    {
-      "id": "SPEED-006",
-      "area": "data-type-precision",
-      "title": "Float32 vs Float64 — Where Can We Use Lower Precision Without Losing Physics?",
-      "discovery": "done",
-      "critique": "done",
-      "refinement": "done",
+      "area": "physics-pipeline",
+      "title": "Physics Pipeline — scatter and other effects GPU profiling",
+      "discovery": "todo",
+      "critique": "todo",
+      "refinement": "todo",
       "priority": 1
     },
     {
       "id": "SPEED-007",
       "area": "synthesis",
-      "title": "SYNTHESIS: 10x Speedup Roadmap for simulate!()",
-      "discovery": "done",
-      "critique": "done",
-      "refinement": "done",
+      "title": "SYNTHESIS: GPU-validated 10x speedup roadmap with build stories",
+      "discovery": "todo",
+      "critique": "todo",
+      "refinement": "todo",
       "priority": 3
     }
   ]

@@ -1,4 +1,4 @@
-# BasisSimulator.jl — 10x Speed Specification
+# BasisSimulator.jl — 10x Speed Specification (v2 — GPU-First)
 
 > **Goal:** 10x or greater speedup of simulate!() with identical mathematical
 > results. No cheating — same physics, same fidelity, same flexibility.
@@ -9,15 +9,21 @@
 > **Hard constraint:** All GPU code MUST use AcceleratedKernels.jl (AK.jl).
 > No backend-specific kernels. Metal/CUDA/ROCm/CPU portability is non-negotiable.
 >
-> **Method:** Profile first, optimize what matters, verify correctness after
-> each change.
+> **Method:** Profile on Metal GPU first, optimize what the DATA shows, verify
+> correctness and GPU speedup after each change.
+>
+> **v2 WARNING:** Everything below section 0 is from v1 (static analysis + CPU
+> benchmarks only). ALL speedup claims are UNVALIDATED on GPU and may be wrong.
+> v2 discovery will overwrite these sections with GPU-measured data.
 
 ---
 
 ## 0. Profiling Baseline — Where Does the Time Go?
 
-**Method:** Static analysis of source code call graph + computational complexity estimation.
-Runtime profiling recommended as follow-up to validate these estimates.
+**v1 method (INVALID):** Static analysis of source code call graph + computational
+complexity estimation. Never measured on GPU. Claims below are UNVALIDATED.
+
+**v2 method (REQUIRED):** `@elapsed` + `Metal.@sync` on actual GPU arrays. Real numbers only.
 
 ### 0.1 simulate!() Call Graph
 

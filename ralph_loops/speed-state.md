@@ -1,74 +1,61 @@
-# 10x Speed Discovery Loop — Current State
+# 10x Speed Loop — Current State (v2 — GPU-First, Discovery+Build)
 
-**Last updated:** 2026-03-17
-**Current phase:** COMPLETE
-**Status:** SPEED_COMPLETE
+**Last updated:** 2026-03-18
+**Current phase:** RESET — Starting over with GPU-first approach
+**Status:** IN PROGRESS
 
-## Summary
+## v2 Design: Discovery Creates Build Stories
 
-The 10x speed discovery is **complete**. Five iterations produced a concrete,
-implementable roadmap with 3 prioritized stories that stack to 10.9× speedup:
+The loop is now unified:
+1. **Discovery** profiles on Metal GPU, finds real optimizations, writes GPU-validated build stories
+2. **Critique** re-measures on GPU, invalidates bogus claims, updates/removes stories
+3. **Refinement** finalizes implementation details with GPU prototype benchmarks
+4. **After discovery completes:** `speed-build-prd.json` has a complete set of GPU-validated stories
+5. **Build loop** picks up those stories and implements them, verifying GPU speedup at each step
 
-1. **Energy loop fusion (P0):** 30s → 3s on forward projection (10×)
-2. **Separable Gaussian scatter (P1):** 2s → 0.065s on scatter (31×)
-3. **Branchless DDA (P1):** 1.15× on DDA inner loop
+## Why v2?
 
-**Conservative stacked total: 7.5× (tiled fusion). Optimistic: 10.9× (full fusion).**
+v1 discovery (5 iterations) + v1 build (4 stories) produced ZERO GPU speedup despite
+claiming 6-10x. Everything was CPU benchmarks and "static analysis." GPU performance
+is fundamentally different from CPU. v2 requires Metal GPU measurements for every claim.
 
-## What was done
+## What exists from v1 (ON THE BRANCH speed/fused-projection)
 
-**Iteration 1 (SPEED-000 DISCOVERY — static profiling audit):**
-- Traced complete simulate!() call graph
-- Forward projection = 88-95% of time. Energy loop is THE bottleneck.
+The v1 build loop committed 4 changes. These are implemented but **GPU-unvalidated**:
+1. `siddon_fused_poly_project!()` — energy loop fusion (6.5x on CPU, unknown on GPU)
+2. Separable Gaussian scatter convolution (147x on CPU, unknown on GPU)
+3. Branchless DDA inner loop (no measured effect on CPU)
+4. CartesianIndices → mod/div in 24 GPU closures
 
-**Iteration 2 (SPEED-001 DISCOVERY — energy loop fusion deep dive):**
-- Proved mathematical equivalence, register pressure analysis, AK.jl kernel design
-- Memory bandwidth reduction: 24-43× (effective 8-20× with caching)
-
-**Iteration 3 (SPEED-000 + SPEED-001 CRITIQUE):**
-- Adjusted forward projection to 88-95% (scatter slightly understated)
-- Adjusted bandwidth reduction to 8-20× effective
-- Identified Metal register pressure risk → energy tiling fallback
-- Confirmed bit-identical within ULP
-
-**Iteration 4 (SPEED-002 + SPEED-003 DISCOVERY):**
-- Branchless DDA: 1.1-1.3× speedup, exact equivalence, zero risk
-- No alternative projector is both faster AND equivalent to Siddon
-- AK.jl overhead = zero, foreachindex is the right primitive
-- Post-fusion scatter becomes 40% of total → separable Gaussian = 31× fix
-
-**Iteration 5 (SPEED-002+003 CRITIQUE + SPEED-004 + SPEED-007 SYNTHESIS):**
-- Validated separable scatter: confirmed Gaussian IS separable (read source code)
-- Validated signal chain: scatter >95% of physics pipeline, elementwise fusion not worth it
-- Wrote complete synthesis with 3 stories, acceptance tests, risk register
+**These may be net-negative on GPU.** SPEED-000 must profile them on Metal
+and determine what's actually helping vs hurting.
 
 ## What to do next
 
-**SPEED_COMPLETE.** Hand off to build loop agent for implementation.
+**SPEED-000 DISCOVERY: GPU Profiling Baseline**
 
-Implementation order:
-1. Story 1: Energy loop fusion (Week 1 — the big win)
-2. Story 2: Separable scatter (Week 2 — the missing piece for 10×)
-3. Story 3: Branchless DDA (Week 1, alongside Story 1 — free performance)
-4. Story 4: CartesianIndices fix (Week 2, trivial cleanup)
+This is the ONLY acceptable starting point. You must:
+
+1. Run `simulate!()` on Metal GPU with `@elapsed` + `Metal.@sync`
+2. Profile individual components: forward projection, scatter, each physics effect
+3. Establish REAL timing baseline on GPU
+4. Compare the CURRENT branch code (with v1 optimizations) against `fused=false` path
+5. Determine which v1 changes actually help or hurt on GPU
+6. **Write the first build stories if any v1 changes show real GPU speedup**
+
+**DO NOT proceed to any other topic until SPEED-000 has real GPU numbers.**
 
 ### Phase tracking
 
-| Topic | Discovery | Critique | Refinement |
-|-------|-----------|----------|------------|
-| SPEED-000 Profiling Audit | **done** | **done** | **done** (in synthesis) |
-| SPEED-001 Energy Loop Fusion | **done** | **done** | **done** (in synthesis) |
-| SPEED-002 Ray Tracing Algorithm | **done** | **done** | **done** (in synthesis) |
-| SPEED-003 GPU Kernel Optimization | **done** | **done** | **done** (in synthesis) |
-| SPEED-004 Physics Pipeline Batching | **done** | **done** | **done** (in synthesis) |
-| SPEED-005 Reference Implementations | **done** (inline) | N/A | N/A |
-| SPEED-006 Precision Analysis | **done** (inline) | N/A | N/A |
-| SPEED-007 SYNTHESIS | **done** | N/A | N/A |
+| Topic | Discovery | Critique | Refinement | Build Stories |
+|-------|-----------|----------|------------|---------------|
+| SPEED-000 GPU Profiling Baseline | **TODO** | — | — | — |
+| SPEED-001 Energy Loop Fusion | **TODO** | — | — | — |
+| SPEED-002 Ray Tracing Algorithm | **TODO** | — | — | — |
+| SPEED-003 GPU Kernel Optimization | **TODO** | — | — | — |
+| SPEED-004 Physics Pipeline | **TODO** | — | — | — |
+| SPEED-007 SYNTHESIS | **TODO** | — | — | — |
 
 ## Completed iterations
 
-1. **Iteration 1** — SPEED-000 DISCOVERY: Static profiling audit. Forward projection = 88-95%.
-2. **Iteration 2** — SPEED-001 DISCOVERY: Energy loop fusion deep dive. 10-20× speedup, AK.jl kernel design.
-3. **Iteration 3** — SPEED-000+001 CRITIQUE: Adjusted estimates, Metal register risk, tiled fallback.
-4. **Iteration 4** — SPEED-002+003 DISCOVERY: Branchless DDA (1.1-1.3×), AK.jl analysis, separable scatter (31×).
-5. **Iteration 5** — SPEED-002+003 CRITIQUE + SPEED-004 + SPEED-007 SYNTHESIS: Final roadmap complete.
+None yet for v2. (v1 archived in speed-progress-v1.md)
