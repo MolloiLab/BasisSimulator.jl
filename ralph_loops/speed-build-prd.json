@@ -25,7 +25,8 @@
     {
       "id": "SPEED-BUILD-V2-001",
       "title": "Disable fused path as default — immediate 3.5× speedup",
-      "status": "ready",
+      "status": "done",
+      "completedNote": "GPU benchmark: 5,259 ms median (was 19,182 ms fused). 3.65× speedup on Metal M4 Max AGXG16G. Changed fused::Bool default from true to false in _forward_project_poly!.",
       "gpu_speedup_measured": 3.54,
       "gpu_benchmark_details": "Fused: 19.16s, Unfused: 5.43s on Metal M3 Max. Gammex 472 128^3, 256×32×360 sinogram, 234 energy bins.",
       "description": "The v1 fused kernel (siddon_fused_poly_project!) is 3.5× slower than the unfused sequential path on Metal GPU because 234 energy accumulators (936 bytes) cause massive register spilling. Change the default from fused=true to fused=false in _forward_project_poly!. Keep fused code for tiled approach.",

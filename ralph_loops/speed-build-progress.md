@@ -8,4 +8,17 @@ Branch: `speed/fused-projection`
 
 ---
 
-(v2 build stories will be logged below as the discovery loop creates them)
+## SPEED-BUILD-V2-001: Disable fused path as default (DONE)
+
+**Date:** 2026-03-18
+
+**Change:** `fused::Bool=true` → `fused::Bool=false` in `_forward_project_poly!` (polychromatic.jl:1135)
+
+**Why:** The fused kernel with 234 energy bins (NTuple{234,Float32} = 936 bytes of accumulators) causes massive register spilling on Metal GPU, making it 3.65× slower than the unfused sequential energy loop.
+
+**GPU Benchmark (Metal M4 Max, AGXG16G):**
+- Fused baseline (discovery): 19,182 ms
+- Unfused (V2-001): **5,259 ms** (3.65× speedup)
+- Target: < 6,500 ms ✓ PASS
+
+**Fused kernel code preserved** for tiled fusion (V2-002).
