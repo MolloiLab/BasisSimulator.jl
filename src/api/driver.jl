@@ -383,8 +383,6 @@ function simulate!(
         ws_scatter_correct_kernel_1d=ws.scatter_correct_kernel_1d,
         ws_optical_crosstalk_kernel=ws.optical_crosstalk_kernel,
         ws_focal_spot_kernel=ws.focal_spot_kernel,
-        ws_flat_filter_projection=ws.flat_filter_projection,
-        ws_bowtie_projection=nothing,
         ws_lag_output=ws.physics_output,
         ws_lag_intensity=ws.lag_intensity,
         ws_lag_coeffs=ws.lag_coeffs)
@@ -583,10 +581,10 @@ end
 
 Build a complete PhysicsConfig from Scanner hardware fields and SimOptions toggles.
 
-For effects with Scanner fields (focal_spot, flat_filter, fill_factor, detector_efficiency,
+For effects with Scanner fields (focal_spot, fill_factor, detector_efficiency,
 heel_effect), the Scanner hardware parameters are used to construct the effect structs.
 For effects without Scanner fields (scatter, scatter_correction, optical_crosstalk,
-bowtie, lag, bhc), factory function defaults are used.
+lag, bhc), factory function defaults are used.
 
 Noise is not part of PhysicsConfig — it is applied externally via
 `compute_detector_I0()` + quantum noise when `sim_opts.use_noise == true`.
@@ -629,22 +627,6 @@ function build_physics_config(
         else
             kwargs[:fill_factor] = fill_factor_standard()
         end
-    end
-
-    # Flat filter: use Scanner's material and thickness
-    if sim_opts.use_flat_filter
-        thickness = scanner.flat_filter_thickness
-        material = scanner.flat_filter_material
-        if thickness > 0
-            kwargs[:flat_filter] = FlatFilter([String(material)], [thickness], "scanner_$(material)_$(thickness)mm")
-        else
-            kwargs[:flat_filter] = flat_filter_al()
-        end
-    end
-
-    # Bowtie filter: resolve from Scanner's bowtie_filter symbol
-    if sim_opts.use_bowtie_filter
-        kwargs[:bowtie_filter] = resolve_bowtie_filter(scanner.bowtie_filter)
     end
 
     # Detector efficiency: use Scanner's material and depth

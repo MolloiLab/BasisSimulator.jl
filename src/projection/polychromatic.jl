@@ -549,8 +549,6 @@ function _apply_physics_no_noise!(
     ws_scatter_correct_kernel=nothing, # pre-computed scatter correction kernel (GPU)
     ws_optical_crosstalk_kernel=nothing, # pre-computed optical crosstalk 3x3 kernel (GPU)
     ws_focal_spot_kernel=nothing,  # pre-computed focal spot kernel (GPU)
-    ws_flat_filter_projection=nothing,   # pre-computed flat filter 2D projection (GPU)
-    ws_bowtie_projection=nothing,        # pre-computed bowtie 2D projection (GPU)
     ws_lag_output=nothing,         # sinogram-sized scratch for lag (needs separate from ws_output)
     ws_lag_intensity=nothing,      # sinogram-sized intensity scratch for lag
     ws_lag_coeffs=nothing,         # pre-computed lag coefficients (GPU)
@@ -561,45 +559,24 @@ function _apply_physics_no_noise!(
 
     # Apply deterministic physics effects only
     # Skip noise since DAS model handles it
-    #
-    # CRITICAL ORDER: Scatter add/correct MUST come BEFORE bowtie filter!
-    # The bowtie filter dramatically modifies projection values (especially at edges),
-    # which breaks scatter estimation if scatter operates on bowtie-filtered data.
-    # See SCATTER-V3-REORDER story for details.
 
     # Fill factor
     if config.fill_factor !== nothing
         apply_fill_factor!(sinogram, config.fill_factor)
     end
 
-    # Flat filter
-    if config.flat_filter !== nothing
-        apply_flat_filter!(sinogram, config.flat_filter, geom;
-                           energy_keV=config.energy_keV,
-                           ws_filter_projection=ws_flat_filter_projection)
-    end
-
-    # Scatter (BEFORE bowtie filter!)
-    # Scatter operates on raw projection values without bowtie distortion
+    # Scatter
     if config.scatter !== nothing
         add_scatter!(sinogram, config.scatter;
                      ws_output=ws_output, ws_kernel=ws_scatter_kernel,
                      ws_scatter_temp=ws_scatter_temp, ws_kernel_1d=ws_scatter_kernel_1d)
     end
 
-    # Scatter CORRECTION (immediately after scatter addition, BEFORE bowtie)
-    # CRITICAL: Must apply before bowtie filter modifies the signal
+    # Scatter correction
     if config.scatter_correction !== nothing
         correct_scatter!(sinogram, config.scatter_correction;
                          ws_output=ws_output, ws_kernel=ws_scatter_correct_kernel,
                          ws_scatter_temp=ws_scatter_temp, ws_kernel_1d=ws_scatter_correct_kernel_1d)
-    end
-
-    # Bowtie filter (AFTER scatter add/correct)
-    if config.bowtie_filter !== nothing
-        apply_bowtie_filter!(sinogram, config.bowtie_filter, geom;
-                             energy_keV=config.energy_keV,
-                             ws_bowtie_projection=ws_bowtie_projection)
     end
 
     # Optical crosstalk

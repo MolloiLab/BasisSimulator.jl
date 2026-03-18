@@ -22,8 +22,6 @@ All fields are optional - set to `nothing` to skip that effect.
 
 # Fields (Standard Physics)
 - `fill_factor`: FillFactorModel for detector active area
-- `flat_filter`: FlatFilter for uniform beam filtration
-- `bowtie_filter`: BowtieFilter for angle-dependent filtration
 - `scatter`: ScatterModel for patient scatter (adds scatter)
 - `scatter_correction`: ScatterCorrectionModel for scatter correction (removes scatter)
 - `optical_crosstalk`: OpticalCrosstalkModel for optical crosstalk
@@ -39,8 +37,6 @@ All fields are optional - set to `nothing` to skip that effect.
 """
 struct PhysicsConfig
     fill_factor::Union{Nothing, FillFactorModel}
-    flat_filter::Union{Nothing, FlatFilter}
-    bowtie_filter::Union{Nothing, BowtieFilter}
     scatter::Union{Nothing, ScatterModel}
     scatter_correction::Union{Nothing, ScatterCorrectionModel}
     optical_crosstalk::Union{Nothing, OpticalCrosstalkModel}
@@ -64,8 +60,6 @@ specific effects with their models.
 """
 function default_physics_config(;
     fill_factor::Union{Nothing, FillFactorModel}=nothing,
-    flat_filter::Union{Nothing, FlatFilter}=nothing,
-    bowtie_filter::Union{Nothing, BowtieFilter}=nothing,
     scatter::Union{Nothing, ScatterModel}=nothing,
     scatter_correction::Union{Nothing, ScatterCorrectionModel}=nothing,
     optical_crosstalk::Union{Nothing, OpticalCrosstalkModel}=nothing,
@@ -80,8 +74,6 @@ function default_physics_config(;
 )
     return PhysicsConfig(
         fill_factor,
-        flat_filter,
-        bowtie_filter,
         scatter,
         scatter_correction,
         optical_crosstalk,

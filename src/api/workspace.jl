@@ -151,7 +151,7 @@ spectral response matrices) so that `simulate!()` has zero allocations.
 # Arguments
 - `scanner`: Scanner specification (provides detector geometry)
 - `protocol`: CT protocol (provides number of views)
-- `sim_opts`: Simulation options (provides n_energy_bins)
+- `sim_opts`: Simulation options (provides fidelity and effect toggles)
 - `recon_opts`: Reconstruction options (provides vmi_basis for n_materials)
 - `phantom`: Phantom struct (provides mask for backend detection and volume shape)
 - `T`: Element type, default Float32
@@ -237,10 +237,10 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         pcct_bhc = calibrate_bhc(energies, w_eff;
                                   order=5, reference_energy_keV=ref_energy)
         config = PhysicsConfig(
-            config.fill_factor, config.flat_filter, config.bowtie_filter,
-            config.scatter, config.scatter_correction, config.crosstalk,
+            config.fill_factor,
+            config.scatter, config.scatter_correction,
             config.optical_crosstalk, config.focal_spot, config.detector_efficiency,
-            config.noise, config.lag, config.noise_seed, config.energy_keV,
+            config.lag, config.noise_seed, config.energy_keV,
             config.heel_effect, pcct_bhc)
     end
 
@@ -460,7 +460,6 @@ mutable struct EICTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:Abstr
     scatter_temp::A3                            # sinogram-shaped scratch for separable convolution
     optical_crosstalk_kernel::Union{Nothing, A2} # 3×3 optical crosstalk kernel
     focal_spot_kernel::Union{Nothing, A2}       # focal spot blur kernel
-    flat_filter_projection::Union{Nothing, A2}  # 2D flat filter projection (n_cols × n_rows)
     bowtie_spectral::Union{Nothing, A3}         # [n_cols, n_rows, n_energies] spectral transmission
     bowtie_air_reference::Union{Nothing, A2}    # [n_cols, n_rows] spectral air I₀
     lag_coeffs::Union{Nothing, A1}              # lag coefficients (n_frames)
@@ -629,16 +628,6 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         nothing
     end
 
-    flat_filter_proj = if config.flat_filter !== nothing
-        transmission_cpu = compute_flat_filter_attenuation(config.flat_filter, geom; energy_keV=config.energy_keV)
-        fp_cpu = T.(-log.(transmission_cpu))
-        fp_gpu = similar(ref, T, sino_shape[1], sino_shape[2])
-        copyto!(fp_gpu, fp_cpu)
-        fp_gpu
-    else
-        nothing
-    end
-
     lag_coeffs_buf = if config.lag !== nothing && !isempty(config.lag.amplitudes)
         n_frames = min(20, sino_shape[3])
         c_cpu = T.(compute_lag_coefficients(config.lag, n_frames))
@@ -689,8 +678,7 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     wη_gpu_buf = similar(ref, T, n_energies_padded)
     copyto!(wη_gpu_buf, wη_cpu)
 
-    # Bowtie spectral transmission: resolve independently from PhysicsConfig
-    # (config.bowtie_filter is now nothing for :eict/:pcct since preset is false)
+    # Bowtie spectral transmission: resolved directly from scanner (not via PhysicsConfig)
     bowtie_filter = resolve_bowtie_filter(scanner.bowtie_filter)
     bowtie_spectral_gpu = nothing
     bowtie_air_ref_gpu = nothing
@@ -752,7 +740,7 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         physics_output, lag_intensity,
         scatter_kernel, scatter_correct_kernel,
         scatter_kernel_1d, scatter_correct_kernel_1d, scatter_temp,
-        optical_crosstalk_kernel, focal_spot_kernel, flat_filter_proj,
+        optical_crosstalk_kernel, focal_spot_kernel,
         bowtie_spectral_gpu, bowtie_air_ref_gpu, lag_coeffs_buf,
         noise_rand_cpu, noise_rand_gpu, enoise_rand_cpu, enoise_rand_gpu,
         weights_norm, μ_lut_cpu, μ_lut_gpu, μ_table, μ_table_gpu, η_vec, wη_gpu_buf, bhc_coeffs_gpu,

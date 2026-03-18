@@ -16,8 +16,6 @@ These are resolved from fidelity presets and user overrides at construction time
 # Fields
 - `fidelity::Symbol`: Preset level (:eict, :pcct). Default :eict.
 - `use_fill_factor::Bool`: Enable detector fill factor.
-- `use_flat_filter::Bool`: Enable flat (inherent) filtration.
-- `use_bowtie_filter::Bool`: Enable bowtie filter.
 - `use_detector_efficiency::Bool`: Enable energy-dependent detector efficiency.
 - `use_scatter::Bool`: Enable scatter simulation.
 - `use_scatter_correction::Bool`: Enable scatter correction in signal chain.
@@ -31,7 +29,6 @@ These are resolved from fidelity presets and user overrides at construction time
 - `pcct_noise_reduction::Float64`: PCCT noise reduction factor (0.0–1.0). Approximates clinical
   vendor reconstruction (e.g., Siemens QIR). 0.0 = raw physics (default), 0.7 = 70% noise reduction
   (~QIR-3). Only affects PCCT sinogram noise; EICT noise is unaffected.
-- `n_energy_bins::Int`: Number of spectrum bins for polychromatic mode. Default 30.
 - `seed::Union{Int, Nothing}`: Random seed for reproducibility. Default 42.
 - `detector_efficiency_mode::Symbol`: Override detector efficiency calculation mode.
   `:auto` (default) = let driver decide; `:mc_lut` = force MC LUT; `:beer_lambert` = force analytical.
@@ -39,10 +36,8 @@ These are resolved from fidelity presets and user overrides at construction time
 struct SimOptions
     fidelity::Symbol
 
-    # --- Physics Pipeline (9 effects) ---
+    # --- Physics Pipeline (7 effects) ---
     use_fill_factor::Bool
-    use_flat_filter::Bool
-    use_bowtie_filter::Bool
     use_detector_efficiency::Bool
     use_scatter::Bool
     use_scatter_correction::Bool
@@ -61,7 +56,6 @@ struct SimOptions
 
     # --- General ---
     seed::Union{Int,Nothing}
-    n_energy_bins::Int
     detector_efficiency_mode::Symbol   # :auto, :mc_lut, :beer_lambert
 end
 
@@ -90,8 +84,6 @@ SimOptions(fidelity=:pcct)                          # PCCT mode
 function SimOptions(;
     fidelity::Symbol=:eict,
     use_fill_factor::Union{Bool,Nothing}=nothing,
-    use_flat_filter::Union{Bool,Nothing}=nothing,
-    use_bowtie_filter::Union{Bool,Nothing}=nothing,
     use_detector_efficiency::Union{Bool,Nothing}=nothing,
     use_scatter::Union{Bool,Nothing}=nothing,
     use_scatter_correction::Union{Bool,Nothing}=nothing,
@@ -103,23 +95,18 @@ function SimOptions(;
     use_bhc::Union{Bool,Nothing}=nothing,
     use_pcct_corrections::Union{Bool,Nothing}=nothing,
     pcct_noise_reduction::Float64=0.0,
-    n_energy_bins::Int=30,
     seed::Union{Int,Nothing}=42,
     detector_efficiency_mode::Symbol=:auto
 )
     # Fidelity preset defaults
     # :eict = all EICT effects ON; :pcct = :eict + PCCT corrections
     defaults = if fidelity == :pcct
-        # flat_filter=false: flat filter is applied in spectrum domain by resolve_spectrum()
-        # bowtie_filter=false: bowtie is folded into spectral projector (per-energy transmission)
-        (fill_factor=true, flat_filter=false, bowtie_filter=false, detector_efficiency=true,
+        (fill_factor=true, detector_efficiency=true,
             scatter=true, scatter_correction=true, optical_crosstalk=true,
             focal_spot=true, noise=true, lag=true,
             heel_effect=true, bhc=false, pcct_corrections=true)
     elseif fidelity == :eict
-        # flat_filter=false: flat filter is applied in spectrum domain by resolve_spectrum()
-        # bowtie_filter=false: bowtie is folded into spectral projector (per-energy transmission)
-        (fill_factor=true, flat_filter=false, bowtie_filter=false, detector_efficiency=true,
+        (fill_factor=true, detector_efficiency=true,
             scatter=true, scatter_correction=true, optical_crosstalk=true,
             focal_spot=true, noise=true, lag=true,
             heel_effect=true, bhc=false, pcct_corrections=false)
@@ -129,8 +116,6 @@ function SimOptions(;
 
     # Resolve each toggle: user override wins, otherwise use preset default
     _fill_factor = isnothing(use_fill_factor) ? defaults.fill_factor : use_fill_factor
-    _flat_filter = isnothing(use_flat_filter) ? defaults.flat_filter : use_flat_filter
-    _bowtie_filter = isnothing(use_bowtie_filter) ? defaults.bowtie_filter : use_bowtie_filter
     _detector_efficiency = isnothing(use_detector_efficiency) ? defaults.detector_efficiency : use_detector_efficiency
     _scatter = isnothing(use_scatter) ? defaults.scatter : use_scatter
     _scatter_correction = isnothing(use_scatter_correction) ? defaults.scatter_correction : use_scatter_correction
@@ -144,13 +129,13 @@ function SimOptions(;
 
     return SimOptions(
         fidelity,
-        _fill_factor, _flat_filter, _bowtie_filter, _detector_efficiency,
+        _fill_factor, _detector_efficiency,
         _scatter, _scatter_correction, _optical_crosstalk,
         _focal_spot, _noise, _lag,
         _heel_effect, _bhc,
         _pcct_corrections,
         clamp(pcct_noise_reduction, 0.0, 1.0),
-        seed, n_energy_bins,
+        seed,
         detector_efficiency_mode
     )
 end

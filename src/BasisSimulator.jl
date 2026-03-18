@@ -102,8 +102,6 @@ include("detector/detector_efficiency.jl")
 # Bowtie filter modeling
 include("source/bowtie_filter.jl")
 
-# Flat (inherent) filter modeling
-include("source/flat_filter.jl")
 
 # Finite focal spot modeling
 include("source/focal_spot.jl")
