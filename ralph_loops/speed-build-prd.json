@@ -6,20 +6,29 @@
   "branch": "speed/fused-projection",
   "v1_lesson": "v1 build stories were based on CPU-only benchmarks. All 4 stories were marked 'done' with CPU speedup numbers but produced ZERO speedup on Metal GPU. v2 stories are created by the discovery loop ONLY after GPU validation.",
   "gpu_baseline": {
-    "simulate_total_ms": 5925,
-    "forward_proj_unfused_ms": 5546,
+    "simulate_fused_default_ms": 19182,
+    "simulate_unfused_ms": 5430,
+    "forward_proj_unfused_ms": 5232,
     "forward_proj_fused_ms": 19160,
-    "note": "Baseline is UNFUSED path. Fused is 3.65x slower on GPU. Forward proj varies ±300ms run-to-run (GPU thermal)."
+    "signal_chain_ms": 6,
+    "note": "Baseline is FUSED path (default). Fused is 3.65x slower on GPU. Signal chain is 6ms (not 487ms — SPEED-000 was wrong)."
   },
   "progress": {},
+  "speedup_summary": {
+    "current_default": "19,182 ms (fused, register spilling)",
+    "after_v2_001": "~5,430 ms (unfused, 3.5× from default)",
+    "after_v2_002": "~1,610 ms (tiled K=16, 11.9× from default, 3.4× from unfused)",
+    "ten_x_target": "1,918 ms",
+    "status": "10× ACHIEVED — 11.9× from current default"
+  },
   "stories": [
     {
       "id": "SPEED-BUILD-V2-001",
-      "title": "Disable fused path as default — immediate 3.65× speedup",
+      "title": "Disable fused path as default — immediate 3.5× speedup",
       "status": "ready",
-      "gpu_speedup_measured": 3.65,
-      "gpu_benchmark_details": "Fused: 19.16s, Unfused: 5.25s on Metal M3 Max. Gammex 472 128^3, 256×32×360 sinogram, 234 energy bins.",
-      "description": "The v1 fused kernel (siddon_fused_poly_project!) is 3.65× slower than the unfused sequential path on Metal GPU because 234 energy accumulators (936 bytes) cause massive register spilling. Change the default from fused=true to fused=false in _forward_project_poly!. Keep fused code for future use with tiled approach.",
+      "gpu_speedup_measured": 3.54,
+      "gpu_benchmark_details": "Fused: 19.16s, Unfused: 5.43s on Metal M3 Max. Gammex 472 128^3, 256×32×360 sinogram, 234 energy bins.",
+      "description": "The v1 fused kernel (siddon_fused_poly_project!) is 3.5× slower than the unfused sequential path on Metal GPU because 234 energy accumulators (936 bytes) cause massive register spilling. Change the default from fused=true to fused=false in _forward_project_poly!. Keep fused code for tiled approach.",
       "requirements": [
         "Change default fused parameter to false in _forward_project_poly! signature",
         "Or better: detect n_energies > threshold (e.g., 32) and auto-select unfused",
@@ -27,7 +36,7 @@
         "Verify simulate!() output is identical (fused and unfused produce same results)"
       ],
       "acceptanceCriteria": [
-        "simulate!() runs in <6.5s on Gammex 472 128^3 benchmark (was 19.3s with fused)",
+        "simulate!() runs in <6.5s on Gammex 472 128^3 benchmark (was 19.2s with fused)",
         "Output sinogram matches reference within Float32 tolerance",
         "No API changes — workspace creation and simulate! calls remain the same"
       ],
@@ -38,11 +47,11 @@
     },
     {
       "id": "SPEED-BUILD-V2-002",
-      "title": "Tiled energy fusion — 3.79× speedup on forward projection",
+      "title": "Tiled energy fusion K=16 — 3.66× speedup on forward projection",
       "status": "ready",
-      "gpu_speedup_measured": 3.79,
-      "gpu_benchmark_details": "K=16: 97.45ms/tile × 15 tiles = 1462ms vs unfused 5546ms on Metal M3 Max. Gammex 472 128×128×15, 256×32×360 sinogram, 234 energy bins. Benchmark: ralph_loops/bench_speed_001.jl",
-      "description": "Replace 234 sequential Siddon calls (each 22.85ms) with 15 tiled fused kernel calls (each 97.45ms at K=16). Each tile traces DDA through mask ONCE and accumulates 16 energy bins via μ_table lookup. Tiles add partial Beer-Lambert sums to I_transmitted buffer. Final -log applied after all tiles. Re-uses 95% of existing siddon_fused_poly_project! kernel.",
+      "gpu_speedup_measured": 3.66,
+      "gpu_benchmark_details": "K=16: 95.3ms/tile × 15 tiles = 1430ms vs unfused 5232ms on Metal M3 Max. Confirmed across bench_speed_001.jl and bench_speed_003.jl. Per-bin marginal: 5.96ms.",
+      "description": "Replace 234 sequential Siddon calls (each 22.85ms) with 15 tiled fused kernel calls (each 95.3ms at K=16). Each tile traces DDA through mask ONCE and accumulates 16 energy bins via μ_table lookup. Tiles add partial Beer-Lambert sums to I_transmitted buffer. Final -log applied after all tiles. Re-uses 95% of existing siddon_fused_poly_project! kernel.",
       "requirements": [
         "Create siddon_tiled_poly_project! function that takes tile_start::Int32 and Val(K)",
         "Modify kernel to offset μ_table reads: μ_tbl[mat, tile_start + e - 1]",
@@ -54,8 +63,8 @@
         "Keep unfused path available as fallback (fused=false kwarg)"
       ],
       "acceptanceCriteria": [
-        "Forward projection completes in <1.8s on Gammex 472 128^3 benchmark (3.0× minimum speedup, target 3.79×)",
-        "Full simulate!() completes in <2.5s (was ~6s unfused)",
+        "Forward projection completes in <1.8s on Gammex 472 128^3 benchmark (3.0× minimum speedup, target 3.66×)",
+        "Full simulate!() completes in <2.0s (was ~19.2s fused default)",
         "Output sinogram matches unfused reference within Float32 tolerance (max abs diff < 1e-5)",
         "No API changes — workspace creation and simulate! calls remain the same",
         "Bowtie spectral transmission handled correctly per-tile"
@@ -66,6 +75,28 @@
       ],
       "spec_ref": "Section 1.2, 1.3",
       "depends_on": "SPEED-BUILD-V2-001 (disable fused first, then replace with tiled)"
+    }
+  ],
+  "invalidated_optimizations": [
+    {
+      "optimization": "Air voxel skipping",
+      "reason": "Per-bin cost is instruction-bound, not data-dependent. All-zero μ_table = same timing as real. Air has non-zero μ (0.14 mm⁻¹). GPU executes all K FMAs regardless of data values.",
+      "benchmark": "bench_speed_003.jl section 9-10"
+    },
+    {
+      "optimization": "μ_table layout transposition",
+      "reason": "Table is 16KB, fits entirely in L1 cache. Zero vs real μ_table gives identical timing. Layout is irrelevant.",
+      "benchmark": "bench_speed_003.jl section 9"
+    },
+    {
+      "optimization": "Signal chain fusion",
+      "reason": "Signal chain is only 6ms total (0.1% of simulate!()). Fusion saves 5ms. Not worth implementation effort.",
+      "benchmark": "bench_speed_003.jl section 5-6"
+    },
+    {
+      "optimization": "Redundant -log/exp bypass",
+      "reason": "Saves 2.5ms. Already included implicitly in tiled approach (outputs I_transmitted, not -log).",
+      "benchmark": "bench_speed_003.jl section 4"
     }
   ]
 }

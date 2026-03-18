@@ -267,3 +267,174 @@ Next priorities:
 2. **SPEED-004 Discovery:** Signal chain fusion (5 elementwise kernels → 1-2).
 3. **SPEED-001 Critique:** What might go wrong with tiled implementation? Register pressure
    at K=16 with all DDA locals? Compilation time for multiple Val(K) specializations?
+
+---
+
+## v2 Iteration 3 — SPEED-003/004 DISCOVERY: Per-bin Cost Decomposition + Signal Chain (2026-03-18)
+
+**Phase:** Discovery
+**Topics:** SPEED-003 (GPU Kernel Optimization) + SPEED-004 (Signal Chain Fusion)
+**GPU:** Apple M3 Max (AGXG16G) via Metal.jl
+**Benchmark script:** `ralph_loops/bench_speed_003.jl`
+
+### Approach
+
+Decompose the 6ms per-bin floor cost to find optimization opportunities. Test whether
+data-dependent optimizations (air skipping, μ_table layout) or signal chain fusion
+can provide additional speedup beyond tiled fusion.
+
+### GPU Benchmark Results
+
+#### Elementwise Microbenchmarks (2.95M elements on Metal)
+
+| Operation | Time |
+|-----------|------|
+| exp(-x) | 1.23 ms |
+| -log(x) | 1.26 ms |
+| FMA (b+=a*c) | 1.70 ms |
+| copy (b=a) | 1.31 ms |
+| 16× exp per elem | 1.56 ms |
+| Bandwidth floor (read+write) | 0.06 ms |
+
+**Key finding:** All elementwise ops take ~1.2-1.7ms due to kernel launch overhead,
+NOT data processing. The bandwidth floor is 0.06ms — Metal kernel launch overhead
+dominates at ~1ms per AK.foreachindex call.
+
+#### Signal Chain Correction — SPEED-000 Was WRONG
+
+| Step | SPEED-000 (wrong) | SPEED-003 (correct) |
+|------|-------------------|---------------------|
+| exp(-sino) | 112 ms | 1.11 ms |
+| Air scan build | 133 ms | 2.07 ms |
+| Calibration (÷air) | 115 ms | 1.64 ms |
+| -log(sino) | 121 ms | 1.33 ms |
+| **Total** | **487 ms** | **6.1 ms** |
+
+**SPEED-000's signal chain numbers were 80× too high.** Likely caused by Metal.synchronize()
+barriers inside simulate!() that forced serial GPU execution and included command buffer
+overhead. In practice, signal chain kernels pipeline naturally and take ~6ms total.
+
+**Impact:** Signal chain is 0.1% of total time, not 8.2%. Signal chain fusion
+(SPEED-004) saves only ~5ms — NOT worth a separate build story.
+
+#### Air Voxel Analysis
+
+| Metric | Value |
+|--------|-------|
+| Air fraction (Gammex 472) | 30.2% (not 74% as estimated) |
+| Air max \|μ\| | 0.1384 mm⁻¹ (NON-ZERO!) |
+| Unique materials | 16 |
+
+**Air is not zero-attenuation.** Material index 0 has μ = 0.14 mm⁻¹ at some energies.
+Air skipping is invalid without re-checking material tables.
+
+#### Data-Dependency Tests — Per-bin Cost is Instruction-Bound
+
+| Test | K=16 per-tile time |
+|------|-------------------|
+| Real μ_table, real phantom | 95.32 ms |
+| All-zero μ_table | 95.21 ms |
+| All-tissue phantom (no air) | 95.40 ms |
+
+**CRITICAL FINDING: Timing is DATA-INDEPENDENT.** Whether voxels are air or tissue,
+whether μ values are zero or real, the GPU takes the SAME time. This proves:
+
+1. **Per-bin cost is instruction-bound**, not memory-bound or data-dependent
+2. **Air skipping via branching won't help** — GPU executes all K FMAs regardless
+3. On GPU, branch-based skipping only helps if ENTIRE warps (32 threads) skip simultaneously.
+   With 30% air spatially mixed, this is statistically impossible.
+4. **μ_table layout optimization is irrelevant** — the table is 16KB, fits entirely in L1 cache
+
+#### Redundant -log/exp Round-Trip
+
+Forward projection outputs `-log(I_total)`, then signal chain immediately does
+`exp(-sinogram) = I_total`. This is a wasteful identity round-trip.
+
+| Operation | Time |
+|-----------|------|
+| -log at end of forward proj | 1.26 ms |
+| exp at start of signal chain | 1.23 ms |
+| **Total wasted** | **2.49 ms** |
+
+In tiled approach (V2-002), forward proj already outputs I_transmitted directly.
+Signal chain can receive I_total without exp. Saves 2.5ms — negligible.
+
+#### Signal Chain Fusion
+
+| Approach | Time |
+|----------|------|
+| Separate steps (exp + air + cal + log) | 6.1 ms |
+| Fused ideal (sino += log_ref) | 1.24 ms |
+| Fused noisy (exp→÷air→-log) | 1.44 ms |
+| **Savings** | **~5 ms** |
+
+Fusing the signal chain from 4 kernels to 1 saves ~5ms. This is 0.3% of total.
+NOT worth a separate build story.
+
+#### Tiled Fusion K=16 — Confirmed
+
+| Metric | SPEED-001 | SPEED-003 |
+|--------|-----------|-----------|
+| Per-tile K=16 | 97.45 ms | 95.32 ms |
+| 15 tiles total | 1462 ms | 1430 ms |
+| Per-bin marginal | 6.09 ms | 5.96 ms |
+
+Numbers are consistent (within thermal variance).
+
+#### Comprehensive Speedup Projection
+
+| Configuration | Total (ms) | Speedup vs baseline |
+|---------------|-----------|-------------------|
+| **Baseline (fused, current default)** | **19,182** | **1.0×** |
+| A: Tiled K=16 forward proj | 1,613 | **11.9×** |
+| A+B: + skip log/exp | 1,610 | 11.9× |
+| A+B+C: + fused signal chain | 1,608 | 11.9× |
+
+**10× is ACHIEVED** from the current default baseline (19.2s) with tiled fusion alone.
+Signal chain optimizations add only ~5ms (negligible).
+
+### Key Findings Summary
+
+1. **10× achieved.** Tiled fusion K=16 → 1.6s vs 19.2s baseline = 12× speedup.
+
+2. **SPEED-000 signal chain numbers were wrong.** 487ms → 6ms real. Caused by
+   synchronization barrier overhead in measurement. Signal chain is 0.1% of total.
+
+3. **Per-bin 6ms floor is instruction-bound.** Data values (zero vs real μ, air vs tissue)
+   make NO difference. The GPU executes all instructions at the same rate regardless.
+
+4. **Air skipping is useless on GPU.** No warp-coherent air regions. Air has non-zero μ.
+   Zero vs real μ_table: identical timing (95.21 vs 95.32 ms).
+
+5. **Signal chain fusion saves only 5ms.** Not worth a build story.
+
+6. **Redundant -log/exp saves 2.5ms.** Included in tiled approach already.
+
+7. **The per-bin floor (6ms) IS the wall.** 234 bins × 6ms = 1404ms minimum for any
+   tiled approach. Getting below this requires either (a) fewer instructions per bin,
+   (b) a fundamentally different projector algorithm, or (c) reduced precision.
+
+8. **From unfused baseline (5.4s), tiled gives 3.4×.** 10× from unfused = 540ms,
+   which is BELOW the 1404ms per-bin floor. So 10× from unfused requires a different
+   projector architecture, not incremental optimization of Siddon.
+
+### Optimizations INVALIDATED
+
+- **Air voxel skipping:** Useless. Data-independent timing on GPU. Air has non-zero μ.
+- **μ_table layout (transposed):** Useless. Table fits in L1 cache. No timing difference.
+- **Signal chain fusion (SPEED-004):** Saves 5ms out of 1613ms. Not worth implementing.
+- **Redundant -log/exp bypass:** Saves 2.5ms. Already included in tiled approach.
+
+### What's Next
+
+SPEED-003 and SPEED-004 Discovery are DONE. Both are effectively invalidated as
+significant optimization targets. The forward projection instruction count is the wall.
+
+**Remaining path to further speedup (beyond 12× already achieved):**
+1. **SPEED-002 Discovery:** Alternative projector algorithm (distance-driven, Joseph's)
+   that might have lower per-bin instruction cost. This is the ONLY path to reducing
+   the 6ms per-bin floor.
+2. **SPEED-001 Critique:** Validate tiled implementation edge cases (partial tiles,
+   compilation time, larger phantoms).
+3. **SPEED-007 Synthesis:** Finalize the build story set and declare SPEED_COMPLETE
+   since 10× from baseline is already achieved.

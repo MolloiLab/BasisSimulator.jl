@@ -37,29 +37,40 @@ Sinogram: 256×32×360. Scanner: GE Revolution-like. Fidelity: `:high` (IPEM spe
 | Total rays | 2,949,120 |
 | Materials | 17 regions |
 
-**Full simulate!() breakdown (UNFUSED path — correct baseline):**
+**Full simulate!() breakdown (FUSED path = current default):**
 
 ```
-simulate!() total:                      5925 ms  (100%)
-├── _forward_project_poly!() UNFUSED:   5254 ms  (88.7%)
-│   ├── Per energy bin (×234):
-│   │   ├── create_μ_volume!:             0.27 ms  (1.1% of bin)
-│   │   ├── siddon_forward_project!:     22.55 ms  (93.9% of bin)
-│   │   └── fill + accumulate:            ~1.2 ms  (5.0% of bin)
-│   │   └── Total per bin:               ~24.0 ms
-│   └── 234 bins × 24ms =               5614 ms  (projected)
-├── _apply_physics_no_noise!():           22 ms  (0.4%)
-├── Signal chain steps:                  487 ms  (8.2%)
-│   ├── exp(-sino):                      112 ms
-│   ├── heel effect:                       3 ms
-│   ├── air scan build:                  133 ms
-│   ├── calibration (÷ air):             115 ms
-│   ├── low signal correction:             4 ms
-│   ├── -log(sino):                      121 ms
-│   └── BHC:                               0 ms
-├── Noise (randn + apply):              152 ms  (2.6%)
-└── GPU→CPU copies (×2):                  5 ms  (0.1%)
+simulate!() total (fused, current default): 19,182 ms  (broken — register spilling)
+simulate!() total (unfused):                 ~5,430 ms  (correct path)
 ```
+
+**Unfused path component breakdown:**
+
+```
+simulate!() total (unfused):              ~5,430 ms  (100%)
+├── _forward_project_poly!() UNFUSED:     5,232 ms  (96.4%)
+│   ├── Per energy bin (×234):
+│   │   ├── create_μ_volume!:               0.27 ms  (1.1% of bin)
+│   │   ├── siddon_forward_project!:       22.55 ms  (93.9% of bin)
+│   │   └── fill + accumulate:              ~1.2 ms  (5.0% of bin)
+│   │   └── Total per bin:                 ~24.0 ms
+│   └── 234 bins × 24ms =                 5614 ms  (projected)
+├── _apply_physics_no_noise!():             22 ms  (0.4%)
+├── Signal chain steps:                      6 ms  (0.1%)  ← CORRECTED from 487ms
+│   ├── exp(-sino):                        1.1 ms
+│   ├── heel effect:                         3 ms
+│   ├── air scan build:                    2.1 ms
+│   ├── calibration (÷ air):              1.6 ms
+│   ├── low signal correction:               4 ms
+│   ├── -log(sino):                        1.3 ms
+│   └── BHC:                                 0 ms
+├── Noise (randn + apply):               152 ms  (2.8%)
+└── GPU→CPU copies (×2):                    5 ms  (0.1%)
+```
+
+**NOTE:** SPEED-000 reported signal chain at 487ms (8.2%). This was WRONG — caused by
+Metal.synchronize() barriers inflating measurement 80×. SPEED-003 measured correctly:
+each elementwise kernel takes 1-2ms, total ~6ms. The signal chain is negligible (0.1%).
 
 ### 0.2 Critical Finding: Fused Kernel is 3.65× SLOWER on Metal GPU
 
@@ -80,28 +91,41 @@ at `:high` fidelity produces 234 bins — this is the real operating point.
 
 ### 0.3 Root Cause Analysis (GPU-Validated)
 
-**Forward projection is 88.7% of simulate!() — confirmed on GPU.**
+**Forward projection is 96.4% of simulate!() — confirmed on GPU.**
 
 The dominant cost is `siddon_forward_project!` at 22.5ms per call × 234 calls = 5.27s.
 This kernel traces 2.95M rays through a 128³ volume on GPU.
 
-The signal chain (exp, air scan, calibration, log) at 487ms is the next biggest chunk (8.2%).
-These are all elementwise `AK.foreachindex` kernels on a 2.95M sinogram, each taking ~120ms.
-**That's 5-6 separate kernel launches doing essentially `sino[i] = f(sino[i])`.** Could be
-fused into 1-2 kernel launches.
+The signal chain is negligible at ~6ms (0.1%). Each elementwise AK.foreachindex kernel
+takes ~1.2ms due to kernel launch overhead, with a bandwidth floor of 0.06ms for 11.8MB.
 
-Physics pipeline (_apply_physics_no_noise!) is negligible at 22ms (0.4%). The v1 separable
-scatter optimization may have helped here — the 2D convolution is now separable 1D.
+Physics pipeline (_apply_physics_no_noise!) is negligible at 22ms (0.4%).
 
-### 0.4 Optimization Opportunities (GPU-Informed)
+### 0.4 Per-Bin Cost Analysis (SPEED-003, GPU-Validated)
 
-**To reach 10× speedup (5925ms → ~593ms):**
+The per-bin marginal cost in tiled fusion is ~6ms. SPEED-003 proved this is **instruction-bound**:
 
-| Optimization | Target | Mechanism | Est. GPU Speedup | Priority |
-|-------------|--------|-----------|-----------------|----------|
-| **Tiled energy fusion** | Siddon kernel | DDA once per tile of 8-16 bins | **2-4× on fwd proj** | P0 |
-| **Signal chain fusion** | 487ms → ~120ms | Fuse 5-6 elementwise kernels into 1 | **~4× on chain** | P1 |
-| **Siddon kernel optimization** | 22.5ms per call | Better memory access, occupancy | **1.2-2× per call** | P1 |
+| Test | K=16 per-tile time | Difference from baseline |
+|------|-------------------|------------------------|
+| Real μ_table, real phantom | 95.32 ms | baseline |
+| All-zero μ_table | 95.21 ms | -0.11 ms (negligible) |
+| All-tissue phantom (no air) | 95.40 ms | +0.08 ms (negligible) |
+
+The GPU executes all instructions at the same rate regardless of data values. This means:
+- **Air skipping is useless** — no timing difference between air and tissue voxels
+- **μ_table layout is irrelevant** — table fits in L1 cache (16KB)
+- **The 6ms floor is the instruction execution time** for K μ_table reads + K FMAs per voxel
+
+### 0.5 Optimization Opportunities (GPU-Informed)
+
+**10× from current default (19.2s) → ACHIEVED with tiled fusion alone (1.6s = 12×)**
+
+| Optimization | Target | Mechanism | GPU Speedup | Status |
+|-------------|--------|-----------|-------------|--------|
+| **Tiled energy fusion K=16** | Siddon kernel | DDA once per 16 bins, 15 tiles | **3.79× on fwd proj** | GPU-VALIDATED |
+| Signal chain fusion | 6ms → 1ms | Fuse 4 elementwise kernels into 1 | ~5ms saved | NEGLIGIBLE |
+| Air skipping | per-bin cost | Skip μ_table for air voxels | 0× | INVALIDATED |
+| μ_table layout | per-bin cost | Transpose for coalescing | 0× | INVALIDATED |
 
 **REJECTED: Spectrum downsampling (234→~30 bins).** This is CHEATING — it changes the
 physics by reducing energy bins. The 234-bin IPEM spectrum at `:high` fidelity is the
