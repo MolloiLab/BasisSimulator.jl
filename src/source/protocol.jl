@@ -9,40 +9,23 @@ Protocol definitions for CT simulation.
 
 Scan protocol parameters for physical simulation.
 
-Supports two scan modes via `dual_energy`:
-- Axial single-kVp: `dual_energy=false` (default)
-- Axial dual-kVp: `dual_energy=true`
-
-For dual-energy, `kVp` and `mA` are the HIGH energy settings.
-`kVp_low` and `mA_low` are the LOW energy settings.
-
 # Fields
-- `mA`: Tube current (milliamperes) — high energy for dual-kVp
-- `kVp`: Tube peak voltage (kV) — high energy for dual-kVp
+- `mA`: Tube current (milliamperes)
+- `kVp`: Tube peak voltage (kV)
 - `views`: Number of projections per rotation
 - `rotation_time`: Gantry rotation time in seconds
-- `spectrum_path`: Optional path to spectrum file
 - `n_rotations`: Number of gantry rotations
-- `dual_energy`: Whether this is a dual-kVp scan
-- `kVp_low`: Low tube voltage for dual-energy (0.0 if single)
-- `mA_low`: Low tube current for dual-energy (0.0 if single)
-- `integration_fraction`: Fraction of views at low kVp (0.5 default)
 - `collimation_mm`: Detector z-collimation in mm (nothing = use full detector)
-- `anode_angle`: IPEM anode angle in degrees (8 or 10). Used by :eict fidelity.
+- `anode_angle`: IPEM anode angle in degrees (8 or 10)
 - `additional_filters`: Extra filter layers `[(material, thickness_mm), ...]` applied
   on top of the scanner's built-in flat filter in the spectrum domain.
 """
 struct CTProtocol
-    mA::Float64            # Tube current (high energy for DE)
-    kVp::Float64           # Tube voltage (high energy for DE)
+    mA::Float64            # Tube current
+    kVp::Float64           # Tube voltage
     views::Int             # Number of projections per rotation
     rotation_time::Float64 # Rotation time
-    spectrum_path::Union{String, Nothing}
     n_rotations::Float64   # Number of gantry rotations
-    dual_energy::Bool      # Dual-kVp scan flag
-    kVp_low::Float64       # Low kVp for dual-energy
-    mA_low::Float64        # Low mA for dual-energy
-    integration_fraction::Float64  # Fraction of views at low kVp
     collimation_mm::Union{Float64, Nothing}  # Detector z-collimation (mm), nothing = full detector
     anode_angle::Int       # IPEM anode angle (8 or 10 degrees)
     additional_filters::Vector{Tuple{String,Float64}}  # Extra filter layers [(material, thickness_mm)]
@@ -54,17 +37,12 @@ end
 Create a CT protocol. You must provide either `mA` OR `mAs`.
 
 # Arguments
-- `mA`: Tube current (e.g., 200.0) — high energy for dual-kVp
+- `mA`: Tube current (e.g., 200.0)
 - `mAs`: Total mAs (e.g., 200.0). If provided, `mA` is calculated as `mAs / rotation_time`.
-- `kVp`: Tube voltage (default: 120.0) — high energy for dual-kVp
+- `kVp`: Tube voltage (default: 120.0)
 - `views`: Projections per rotation (default: 984)
 - `rotation_time`: Rotation time in seconds (default: 1.0)
-- `spectrum_path`: Custom spectrum file (default: nothing)
 - `n_rotations`: Number of gantry rotations (default: 1.0)
-- `dual_energy`: Enable dual-kVp mode (default: false)
-- `kVp_low`: Low tube voltage for DE (default: 0.0, required > 0 when dual_energy=true)
-- `mA_low`: Low tube current for DE (default: 0.0)
-- `integration_fraction`: Fraction of views at low kVp (default: 0.5)
 - `collimation_mm`: Detector z-collimation in mm (default: nothing = full detector)
 - `anode_angle`: IPEM anode angle, 8 or 10 degrees (default: 10)
 - `additional_filters`: Extra filter layers `[(material, thickness_mm), ...]` (default: empty)
@@ -77,10 +55,7 @@ CTProtocol(kVp=120, mA=200, views=984)
 # With collimation (128×0.625mm = 80mm)
 CTProtocol(kVp=120, mA=200, views=984, collimation_mm=80.0)
 
-# Dual-energy axial
-CTProtocol(dual_energy=true, kVp=140, mA=200, kVp_low=80, mA_low=350, views=984)
-
-# Extra filtration (clinical tube with 4.5mm Al on top of scanner's built-in filter)
+# Extra filtration
 CTProtocol(kVp=120, mA=200, additional_filters=[("Al", 4.5)])
 ```
 """
@@ -90,12 +65,7 @@ function CTProtocol(;
     kVp=120.0,
     views=984,
     rotation_time=1.0,
-    spectrum_path=nothing,
     n_rotations::Real=1.0,
-    dual_energy::Bool=false,
-    kVp_low::Real=0.0,
-    mA_low::Real=0.0,
-    integration_fraction::Real=0.5,
     collimation_mm::Union{Real, Nothing}=nothing,
     anode_angle::Int=10,
     additional_filters::Vector{Tuple{String,Float64}}=Tuple{String,Float64}[]
@@ -106,13 +76,7 @@ function CTProtocol(;
     elseif !isnothing(mAs)
         Float64(mAs) / Float64(rotation_time)
     else
-        # Default fallback if neither provided
         200.0
-    end
-
-    # Validate dual-energy requirements
-    if dual_energy && kVp_low <= 0.0
-        error("Dual-energy mode requires kVp_low > 0 (got $kVp_low)")
     end
 
     return CTProtocol(
@@ -120,12 +84,7 @@ function CTProtocol(;
         Float64(kVp),
         Int(views),
         Float64(rotation_time),
-        spectrum_path,
         Float64(n_rotations),
-        dual_energy,
-        Float64(kVp_low),
-        Float64(mA_low),
-        Float64(integration_fraction),
         collimation_mm === nothing ? nothing : Float64(collimation_mm),
         anode_angle,
         additional_filters
@@ -142,74 +101,31 @@ export CTProtocol
     validate_protocol(protocol::CTProtocol, scanner::Scanner) -> (valid::Bool, messages::Vector{String})
 
 Validate CT protocol parameters against physical constraints and scanner limits.
-
-# Checks
-- kVp in valid range (70-150 kVp)
-- mA in valid range (10-1000 mA)
-- rotation_time in valid range (0.2-5.0 s)
-- views in valid range (100-5000)
-- Warnings for unusual values (views < 500, views > 3000)
-
-# Example
-```julia
-protocol = CTProtocol(kVp=120, mA=200, views=984)
-scanner = Scanner()
-valid, msgs = validate_protocol(protocol, scanner)
-```
 """
 function validate_protocol(protocol::CTProtocol, scanner::Scanner)
     messages = String[]
     valid = true
 
-    # kVp range
     if !(70.0 ≤ protocol.kVp ≤ 150.0)
         push!(messages, "ERROR: kVp must be in [70, 150] (got $(protocol.kVp))")
         valid = false
     end
 
-    # mA range
     if !(10.0 ≤ protocol.mA ≤ 1000.0)
         push!(messages, "ERROR: mA must be in [10, 1000] (got $(protocol.mA))")
         valid = false
     end
 
-    # rotation_time range
     if !(0.2 ≤ protocol.rotation_time ≤ 5.0)
         push!(messages, "ERROR: rotation_time must be in [0.2, 5.0] s (got $(protocol.rotation_time))")
         valid = false
     end
 
-    # views range
     if !(100 ≤ protocol.views ≤ 5000)
         push!(messages, "ERROR: views must be in [100, 5000] (got $(protocol.views))")
         valid = false
     end
 
-    # Warnings for unusual views
-    if 100 ≤ protocol.views < 500
-        push!(messages, "WARNING: views=$(protocol.views) may be undersampled (< 500)")
-    end
-    if protocol.views > 3000
-        push!(messages, "WARNING: views=$(protocol.views) is unusually high (> 3000)")
-    end
-
-    # Dual-energy low kVp validation
-    if protocol.dual_energy
-        if !(40.0 ≤ protocol.kVp_low ≤ 100.0)
-            push!(messages, "ERROR: kVp_low must be in [40, 100] for dual-energy (got $(protocol.kVp_low))")
-            valid = false
-        end
-        if protocol.kVp_low ≥ protocol.kVp
-            push!(messages, "ERROR: kVp_low ($(protocol.kVp_low)) must be < kVp ($(protocol.kVp))")
-            valid = false
-        end
-        if !(10.0 ≤ protocol.mA_low ≤ 1000.0)
-            push!(messages, "ERROR: mA_low must be in [10, 1000] for dual-energy (got $(protocol.mA_low))")
-            valid = false
-        end
-    end
-
-    # Collimation validation
     if protocol.collimation_mm !== nothing
         if protocol.collimation_mm <= 0
             push!(messages, "ERROR: collimation_mm must be positive (got $(protocol.collimation_mm))")
@@ -217,7 +133,7 @@ function validate_protocol(protocol::CTProtocol, scanner::Scanner)
         end
         max_mm = scanner.detector_rows * scanner.detector_row_size
         if protocol.collimation_mm > max_mm
-            push!(messages, "ERROR: collimation_mm ($(protocol.collimation_mm)) exceeds scanner max ($max_mm mm = $(scanner.detector_rows) × $(scanner.detector_row_size) mm)")
+            push!(messages, "ERROR: collimation_mm ($(protocol.collimation_mm)) exceeds scanner max ($max_mm mm)")
             valid = false
         end
     end
@@ -229,45 +145,17 @@ end
 # Dose Estimation (CTDI / DLP)
 # =============================================================================
 
-# Scanner-specific CTDI calibration constants (mGy per mAs at 120 kVp, 32cm phantom)
-# These are approximate values for estimation purposes.
 const _CTDI_CAL_CONSTANT = 0.05  # mGy/mAs at 120 kVp (generic scanner)
 
 """
     compute_ctdi_vol(protocol::CTProtocol; phantom_diameter::Real=320.0) -> Float64
 
 Estimate CTDIvol (Volume CT Dose Index) in mGy.
-
-Uses the empirical formula:
-    CTDIvol = C × mAs × (kVp/120)^2.5 / pitch
-
-where C is a scanner-specific calibration constant (default: generic research scanner).
-
-# Arguments
-- `protocol`: CT protocol with mA, kVp, rotation_time
-
-# Keyword Arguments
-- `phantom_diameter`: Phantom diameter in mm (320 for body, 160 for head). Default: 320.
-
-# Returns
-CTDIvol estimate in mGy.
-
-# Example
-```julia
-protocol = CTProtocol(kVp=120, mA=200, views=984, rotation_time=1.0)
-ctdi = compute_ctdi_vol(protocol)  # ~10 mGy
-```
 """
 function compute_ctdi_vol(protocol::CTProtocol; phantom_diameter::Real=320.0)
     mAs = protocol.mA * protocol.rotation_time
-
-    # kVp scaling: dose scales approximately as (kVp/120)^2.5
     kvp_factor = (protocol.kVp / 120.0)^2.5
-
-    # Phantom size correction: smaller phantom → higher dose per mAs
-    # Body (320mm) = reference, Head (160mm) ≈ 2× body CTDIvol
     size_factor = (320.0 / phantom_diameter)^2
-
     return _CTDI_CAL_CONSTANT * mAs * kvp_factor * size_factor
 end
 
@@ -275,24 +163,6 @@ end
     compute_dlp(protocol::CTProtocol, scan_length_cm::Real; phantom_diameter::Real=320.0) -> Float64
 
 Compute Dose-Length Product (DLP) in mGy·cm.
-
-    DLP = CTDIvol × scan_length × n_rotations
-
-# Arguments
-- `protocol`: CT protocol
-- `scan_length_cm`: Scan length in cm
-
-# Keyword Arguments
-- `phantom_diameter`: Phantom diameter in mm (320 body, 160 head). Default: 320.
-
-# Returns
-DLP in mGy·cm.
-
-# Example
-```julia
-protocol = CTProtocol(kVp=120, mA=200, rotation_time=1.0)
-dlp = compute_dlp(protocol, 30.0)  # 30 cm scan
-```
 """
 function compute_dlp(protocol::CTProtocol, scan_length_cm::Real; phantom_diameter::Real=320.0)
     ctdi = compute_ctdi_vol(protocol; phantom_diameter)
@@ -303,82 +173,29 @@ end
     dose_report(protocol::CTProtocol, geom::CTGeometry, spectrum_flux_sum::Float64; ...) -> NamedTuple
 
 Generate a dose report for the given protocol and geometry.
-
-# Arguments
-- `protocol`: CT protocol
-- `geom`: Scanner geometry (for I0 calculation)
-- `spectrum_flux_sum`: Sum of unnormalized spectrum weights from `resolve_spectrum`
-  (photons/mAs/mm² at scanner SDD)
-
-# Keyword Arguments
-- `phantom_diameter`: Phantom diameter in mm (default: 320)
-- `scan_length_cm`: Scan length in cm (default: computed from geometry z-coverage)
-
-# Returns
-Named tuple with fields: `ctdi_vol`, `dlp`, `I0_per_view`, `total_photons`, `mAs`, `kVp`, `views`
-
-Also prints a formatted summary.
-
-# Example
-```julia
-protocol = CTProtocol(kVp=120, mA=200, views=984, rotation_time=1.0)
-geom = create_aquilion_one(n_angles=984)
-report = dose_report(protocol, geom, sum(spectrum_weights))
-```
 """
 function dose_report(protocol::CTProtocol, geom::CTGeometry, spectrum_flux_sum::Float64;
     phantom_diameter::Real=320.0,
     scan_length_cm::Union{Real,Nothing}=nothing
 )
-    # Compute I0 per pixel per view
     I0 = compute_detector_I0(geom, protocol, spectrum_flux_sum)
-
-    # mAs
     mAs = protocol.mA * protocol.rotation_time
-
-    # Dose metrics
     ctdi = compute_ctdi_vol(protocol; phantom_diameter)
-
-    # Scan length from z-coverage if not provided
     sl = scan_length_cm !== nothing ? Float64(scan_length_cm) : geom.fov[3]
     dlp = compute_dlp(protocol, sl; phantom_diameter)
-
-    # Total photons (across all pixels, all views)
     total_photons = I0 * geom.n_cols * geom.n_rows * protocol.views
 
-    # Print formatted report
     println("=" ^ 50)
     println("CT Dose Report")
     println("=" ^ 50)
-    println("Protocol:")
-    println("  kVp:            $(protocol.kVp)")
-    println("  mA:             $(protocol.mA)")
-    println("  mAs:            $(round(mAs, digits=1))")
-    println("  Views:          $(protocol.views)")
-    println("  Rotation time:  $(protocol.rotation_time) s")
-    if protocol.dual_energy
-        println("  Dual-energy:    kVp_low=$(protocol.kVp_low), mA_low=$(protocol.mA_low)")
-    end
-    println()
-    println("Dose Estimates:")
-    println("  CTDIvol:        $(round(ctdi, digits=2)) mGy")
-    println("  DLP:            $(round(dlp, digits=2)) mGy·cm")
-    println("  (phantom:       $(Int(phantom_diameter)) mm, scan: $(round(sl, digits=1)) cm)")
-    println()
-    println("Photon Statistics:")
-    println("  I₀/pixel/view:  $(round(I0, sigdigits=4))")
-    println("  Total photons:  $(round(total_photons, sigdigits=4))")
+    println("  kVp: $(protocol.kVp), mA: $(protocol.mA), mAs: $(round(mAs, digits=1))")
+    println("  Views: $(protocol.views), Rotation: $(protocol.rotation_time) s")
+    println("  CTDIvol: $(round(ctdi, digits=2)) mGy, DLP: $(round(dlp, digits=2)) mGy·cm")
+    println("  I₀/pixel/view: $(round(I0, sigdigits=4))")
     println("=" ^ 50)
 
-    return (
-        ctdi_vol = ctdi,
-        dlp = dlp,
-        I0_per_view = I0,
-        total_photons = total_photons,
-        mAs = mAs,
-        kVp = protocol.kVp,
-        views = protocol.views
-    )
+    return (ctdi_vol=ctdi, dlp=dlp, I0_per_view=I0, total_photons=total_photons,
+            mAs=mAs, kVp=protocol.kVp, views=protocol.views)
 end
 
 export validate_protocol, compute_ctdi_vol, compute_dlp, dose_report
@@ -390,44 +207,12 @@ export validate_protocol, compute_ctdi_vol, compute_dlp, dose_report
 """
     constant_dose_protocol(base::CTProtocol, new_views::Int) -> CTProtocol
 
-Create a new protocol with adjusted mA to maintain constant total dose when views change.
-
-Total dose ∝ mA × rotation_time (mAs). When views change, mA is adjusted so that
-mAs stays constant. This means each view gets fewer photons (more noise per view)
-but total dose to the patient is unchanged.
-
-# Formula
-    new_mA = base_mA  (unchanged — dose is mAs, independent of views)
-
-Since I₀ ∝ mA × rotation_time / views, changing views changes per-view noise
-but NOT total dose. So this function simply returns a protocol with new_views
-and the same mA.
-
-# Arguments
-- `base`: Base protocol to modify
-- `new_views`: New number of views
-
-# Example
-```julia
-base = CTProtocol(kVp=120, mA=200, views=984, rotation_time=1.0)
-proto_2000 = constant_dose_protocol(base, 2000)
-# Same CTDIvol, more angular samples, noisier per view
-```
+Create a new protocol with same mA (same dose) but different view count.
 """
 function constant_dose_protocol(base::CTProtocol, new_views::Int)
     return CTProtocol(
-        base.mA,            # Same mA → same mAs → same dose
-        base.kVp,
-        new_views,
-        base.rotation_time,
-        base.spectrum_path,
-        base.n_rotations,
-        base.dual_energy,
-        base.kVp_low,
-        base.mA_low,
-        base.integration_fraction,
-        base.collimation_mm,
-        base.anode_angle,
+        base.mA, base.kVp, new_views, base.rotation_time,
+        base.n_rotations, base.collimation_mm, base.anode_angle,
         base.additional_filters
     )
 end
@@ -435,42 +220,14 @@ end
 """
     constant_noise_protocol(base::CTProtocol, new_views::Int) -> CTProtocol
 
-Create a new protocol with adjusted mA to maintain constant noise per view when views change.
-
-Noise per view ∝ 1/√I₀, where I₀ ∝ mA × rotation_time / views.
-To keep I₀ per view constant when views changes, mA must scale with views.
-
-# Formula
-    new_mA = base_mA × (new_views / base_views)
-
-This means total dose scales linearly with views (more views = more dose).
-
-# Arguments
-- `base`: Base protocol to modify
-- `new_views`: New number of views
-
-# Example
-```julia
-base = CTProtocol(kVp=120, mA=200, views=984, rotation_time=1.0)
-proto_2000 = constant_noise_protocol(base, 2000)
-# Same noise per view, ~2× total dose, ~2× mA
-```
+Create a new protocol with adjusted mA to maintain constant noise per view.
+new_mA = base_mA × (new_views / base_views).
 """
 function constant_noise_protocol(base::CTProtocol, new_views::Int)
     new_mA = base.mA * (new_views / base.views)
     return CTProtocol(
-        new_mA,
-        base.kVp,
-        new_views,
-        base.rotation_time,
-        base.spectrum_path,
-        base.n_rotations,
-        base.dual_energy,
-        base.kVp_low,
-        base.mA_low,
-        base.integration_fraction,
-        base.collimation_mm,
-        base.anode_angle,
+        new_mA, base.kVp, new_views, base.rotation_time,
+        base.n_rotations, base.collimation_mm, base.anode_angle,
         base.additional_filters
     )
 end

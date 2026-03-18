@@ -162,8 +162,7 @@ struct Scanner{T<:AbstractFloat}
     electronic_noise::T         # electrons
 
     # === PCCT Fields (flat kwargs, defaults = conventional EID behavior) ===
-    # Same pattern as dual_energy fields in CTProtocol:
-    # ignored when detector_type == :energy_integrating
+    # Ignored when detector_type == :energy_integrating
     detector_type::Symbol       # :energy_integrating (default) or :photon_counting
     n_energy_bins::Int          # 1 (EID) or 2-8 (PCCT)
     energy_thresholds::Vector{T}  # Energy thresholds keV (empty for EID)

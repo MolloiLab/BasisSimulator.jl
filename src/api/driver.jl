@@ -525,26 +525,7 @@ function add_system_noise_floor!(vol::AbstractArray{T}, sigma_hu::Real; seed::Un
     return vol
 end
 
-# -- HELPERS -- #
-"""
-    get_spectrum(protocol::CTProtocol)
-
-Helper to extract the exact energy/weight vectors the simulator will use 
-for a given protocol. Useful for verification and plotting.
-"""
-function get_spectrum(protocol::CTProtocol)
-    # 1. Priority: Explicit Path
-    if !isnothing(protocol.spectrum_path) && isfile(protocol.spectrum_path)
-        data = readdlm(protocol.spectrum_path)
-        return data[:, 1], data[:, 2] # energies, weights
-    end
-
-    # 2. Priority: Auto-Lookup via kVp
-    # This confirms the simulator can find the library file
-    return load_spectrum(Int(protocol.kVp))
-end
-
-export get_spectrum, resolve_spectrum
+export resolve_spectrum
 
 """
     resolve_spectrum(sim_opts, protocol; scanner=nothing) -> (energies, weights)
