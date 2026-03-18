@@ -505,9 +505,9 @@ protocol_pcct = BS.CTProtocol(
 )
 
 # ╔═╡ bb6f40e3-ef82-4c0c-80a8-121a6019ecec
-# Matches notebook 06: fidelity=:high, pcct_noise_reduction=0.60
+# Matches notebook 06: fidelity=:eict, pcct_noise_reduction=0.60
 sim_opts_pcct = BS.SimOptions(
-	fidelity = :high,
+	fidelity = :eict,
 	pcct_noise_reduction = 0.60,
 	seed = 42
 )
@@ -798,7 +798,7 @@ md"## 15. Summary"
 # This notebook uses the **same scanner/protocol/SimOptions as notebook 06** (XCAT):
 # - **Scanner**: NAEOTOM Alpha (SID=595, SDD=1085.5, CdTe 0.4mm dexels, 4 energy bins)
 # - **Protocol**: 140 kVp, 300 mA, 984 views
-# - **SimOptions**: `fidelity=:high`, `pcct_noise_reduction=0.60`
+# - **SimOptions**: `fidelity=:eict`, `pcct_noise_reduction=0.60`
 # - **Phantom**: Gammex 472 ($(SIM_CONFIG.imageSize)×$(SIM_CONFIG.imageSize)×$(SIM_CONFIG.sliceCount))
 
 # ### Workspace API Pattern (matches notebook 06)

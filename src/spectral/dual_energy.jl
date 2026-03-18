@@ -28,12 +28,8 @@ projections that are sorted into separate low/high energy sinograms.
 # Example
 
 ```julia
-# After dual-energy forward projection
-de_sino = forward_project_dual_energy(phantom.mask, geom; ...)
-
-# Access individual sinograms
-sino_low = de_sino.low   # 80 kVp sinogram
-sino_high = de_sino.high  # 140 kVp sinogram
+# Construct from two separate forward projections
+de_sino = DualEnergySinogram(sino_low, sino_high; low_kvp=80, high_kvp=140)
 
 # Material decomposition
 materials = decompose_materials(de_sino; basis=(:water, :iodine))
@@ -48,7 +44,7 @@ For GE Revolution Apex GSI:
 - Angular offset between adjacent views: <0.18°
 - Integration time split: ~65% low kVp, ~35% high kVp
 
-See also: [`forward_project_dual_energy`](@ref), [`decompose_materials`](@ref)
+See also: [`decompose_materials`](@ref)
 """
 struct DualEnergySinogram{T<:AbstractFloat, A<:AbstractArray{T,3}}
     low::A
@@ -143,7 +139,7 @@ GE GSI uses fixed mA for each kVp level (no angular modulation).
 The integration time is split approximately 65%/35% between low/high kVp
 to balance photon flux at each energy.
 
-See also: [`forward_project_dual_energy`](@ref)
+See also: [`DualEnergySinogram`](@ref)
 """
 struct GSIProtocol
     low_kvp::Int
@@ -192,231 +188,6 @@ function default_gsi_protocol(;
                        low_integration_fraction, rotation_time_s, n_views)
 end
 
-"""
-    forward_project_dual_energy(mask, geom, protocol::GSIProtocol;
-                                materials, physics=nothing,
-                                scanner=nothing) -> DualEnergySinogram
-
-Perform dual-energy forward projection using rapid kVp switching protocol.
-
-This simulates a dual-energy CT acquisition where the X-ray tube alternates
-between low and high kVp settings. Both sinograms are computed using the
-full polychromatic physics model with appropriate spectra for each kVp.
-
-# Arguments
-- `mask::AbstractArray{UInt8,3}`: Material mask (region IDs)
-- `geom::CTGeometry`: CT geometry
-- `protocol::GSIProtocol`: GSI acquisition protocol
-
-# Keyword Arguments
-- `materials::Vector`: Vector of materials for each region ID
-- `physics::Union{Nothing,PhysicsConfig}=nothing`: Physics effects to apply
-- `scanner::Union{Nothing,AbstractScannerSpec}=nothing`: Scanner for mA→I0 conversion
-
-# Returns
-`DualEnergySinogram` with low and high energy sinograms.
-
-# Example
-
-```julia
-spec = GERevolutionApex()
-protocol = default_gsi_protocol(low_mA=400.0, high_mA=400.0)
-
-phantom = create_gammex_472(n_voxels=256)
-geom = create_geometry(spec; n_angles=984, n_rows=64)
-materials = get_region_materials()
-
-de_sino = forward_project_dual_energy(
-    phantom.mask, geom, protocol;
-    materials = materials,
-    scanner = spec
-)
-```
-
-# Technical Notes
-
-For GE GSI, the low kVp views receive ~65% of the integration time to
-compensate for lower photon flux at 80 kVp. This is handled internally
-when computing I0 from mA using the protocol's integration fraction.
-
-See also: [`GSIProtocol`](@ref), [`DualEnergySinogram`](@ref)
-"""
-function forward_project_dual_energy(
-    mask::AbstractArray{<:Unsigned,3},
-    geom::CTGeometry,
-    protocol::GSIProtocol;
-    materials::Vector,
-    physics::Union{Nothing,PhysicsConfig}=nothing,
-    scanner=nothing
-)
-    # Load spectra for both kVp levels
-    e_low, w_low = load_spectrum(protocol.low_kvp)
-    e_high, w_high = load_spectrum(protocol.high_kvp)
-
-    # Downsample spectra for efficiency
-    n_bins = 30
-    e_low, w_low = downsample_spectrum(e_low, w_low, n_bins)
-    e_high, w_high = downsample_spectrum(e_high, w_high, n_bins)
-
-    # Compute mean energies for physics config
-    mean_e_low = sum(e_low .* w_low) / sum(w_low)
-    mean_e_high = sum(e_high .* w_high) / sum(w_high)
-
-    # Setup physics configs for low and high kVp
-    physics_low = physics
-    physics_high = physics
-
-    # Get Scanner geometry for energy-dependent scatter
-    # geometry_aware_scatter_model requires a Scanner object, not a GeometrySpecification
-    scanner_geom = if scanner isa Scanner
-        scanner
-    elseif scanner !== nothing && hasmethod(geometry, Tuple{typeof(scanner)})
-        # AbstractScannerSpec - extract geometry and create a Scanner with those values
-        geom_spec = geometry(scanner)
-        det_spec = detector(scanner)
-        Scanner(
-            source_to_isocenter = geom_spec.sid_mm.value,
-            source_to_detector = geom_spec.sdd_mm.value,
-            detector_cols = det_spec.n_cols.value,
-            detector_rows = det_spec.n_rows.value,
-            detector_col_size = det_spec.col_size_mm.value,
-            detector_row_size = det_spec.row_size_mm.value
-        )
-    else
-        nothing
-    end
-
-    # Initialize flag for joint scatter correction (applied after both sinograms generated)
-    apply_joint_scatter_correction = false
-
-    if physics !== nothing
-        # Create ENERGY-DEPENDENT scatter models if scatter is enabled AND we have scanner geometry
-        # See SCATTER-ENERGY-RESEARCH: Lower kVp (80) has higher SPR than higher kVp (140)
-        # Using mean_energy_keV ensures scatter coefficient scales appropriately for each energy
-        scatter_low = physics.scatter
-        scatter_correction_low = physics.scatter_correction
-        scatter_high = physics.scatter
-        scatter_correction_high = physics.scatter_correction
-
-        if scanner_geom !== nothing && physics.scatter !== nothing
-            phantom_diameter_cm = nothing  # Will use reference size if not estimable
-
-            scatter_low = geometry_aware_scatter_model(scanner_geom;
-                scale_factor=physics.scatter.scale_factor,
-                kernel_type=physics.scatter.kernel_type,
-                phantom_diameter_cm=phantom_diameter_cm,
-                mean_energy_keV=mean_e_low)  # Energy-dependent scaling for 80 kVp
-            scatter_high = geometry_aware_scatter_model(scanner_geom;
-                scale_factor=physics.scatter.scale_factor,
-                kernel_type=physics.scatter.kernel_type,
-                phantom_diameter_cm=phantom_diameter_cm,
-                mean_energy_keV=mean_e_high)  # Energy-dependent scaling for 140 kVp
-        end
-
-        if scanner_geom !== nothing && physics.scatter_correction !== nothing
-            # Use JOINT scatter correction instead of per-sinogram correction
-            #
-            # Per-sinogram scatter correction causes wave artifacts in material
-            # decomposition because:
-            # 1. 80 kVp and 140 kVp have different SPR (up to 5x difference per PMC3097788)
-            # 2. Different energy-dependent coefficients → different estimation residuals
-            # 3. Material decomposition takes a weighted DIFFERENCE of sinograms
-            # 4. Different residual errors get AMPLIFIED in the decomposition
-            #
-            # Joint scatter correction uses a single scatter estimate for BOTH sinograms:
-            # - Combines sinograms to create average signal
-            # - Estimates scatter from combined signal at average energy
-            # - Applies SAME scatter estimate to BOTH sinograms
-            # - Results in identical residual patterns that DON'T amplify in decomposition
-            #
-            # See DE-CROSS-SCATTER-RESEARCH in progress.md for full analysis with citations.
-            @info "Using joint scatter correction for dual-energy (avoids decomposition artifacts)" maxlog=1
-
-            # Disable per-sinogram scatter correction (will use joint correction instead)
-            scatter_correction_low = nothing
-            scatter_correction_high = nothing
-
-            # Flag to apply joint correction after both sinograms are generated
-            apply_joint_scatter_correction = true
-        end
-
-        # Use noise from physics config directly
-        noise_low = physics.noise
-        noise_high = physics.noise
-
-        # Create PhysicsConfig with correct field order matching struct definition
-        # Scatter ADDITION is energy-dependent, but scatter CORRECTION is disabled
-        # (correction causes wave artifacts in decomposition - see DE-SCATTER-RESEARCH)
-        physics_low = PhysicsConfig(
-            physics.fill_factor,        # 1. fill_factor
-            physics.flat_filter,        # 2. flat_filter
-            physics.bowtie_filter,      # 3. bowtie_filter
-            scatter_low,                # 4. scatter (energy-dependent for 80 kVp)
-            scatter_correction_low,     # 5. scatter_correction (=nothing, disabled for DE)
-            physics.crosstalk,          # 6. crosstalk
-            physics.optical_crosstalk,  # 7. optical_crosstalk
-            physics.focal_spot,         # 8. focal_spot
-            physics.detector_efficiency,# 9. detector_efficiency
-            noise_low,                  # 10. noise
-            physics.lag,                # 11. lag
-            physics.noise_seed,         # 12. noise_seed
-            mean_e_low,                 # 13. energy_keV
-            physics.heel_effect,        # 14. heel_effect
-            physics.das_model,          # 15. das_model
-            physics.bhc                 # 16. bhc
-        )
-        physics_high = PhysicsConfig(
-            physics.fill_factor,        # 1. fill_factor
-            physics.flat_filter,        # 2. flat_filter
-            physics.bowtie_filter,      # 3. bowtie_filter
-            scatter_high,               # 4. scatter (energy-dependent for 140 kVp)
-            scatter_correction_high,    # 5. scatter_correction (=nothing, disabled for DE)
-            physics.crosstalk,          # 6. crosstalk
-            physics.optical_crosstalk,  # 7. optical_crosstalk
-            physics.focal_spot,         # 8. focal_spot
-            physics.detector_efficiency,# 9. detector_efficiency
-            noise_high,                 # 10. noise
-            physics.lag,                # 11. lag
-            physics.noise_seed,         # 12. noise_seed
-            mean_e_high,                # 13. energy_keV
-            physics.heel_effect,        # 14. heel_effect
-            physics.das_model,          # 15. das_model
-            physics.bhc                 # 16. bhc
-        )
-    end
-
-    # Forward project low kVp
-    sino_low = forward_project(mask, geom;
-        energies = e_low,
-        weights = w_low,
-        materials = materials,
-        physics = physics_low
-    )
-
-    # Forward project high kVp
-    sino_high = forward_project(mask, geom;
-        energies = e_high,
-        weights = w_high,
-        materials = materials,
-        physics = physics_high
-    )
-
-    # Apply joint scatter correction if enabled
-    # This uses a single scatter estimate for BOTH sinograms to ensure identical
-    # residual patterns that don't amplify in material decomposition
-    if physics !== nothing && apply_joint_scatter_correction && scanner_geom !== nothing
-        correct_scatter_dual_energy!(sino_low, sino_high, scanner_geom;
-            mean_energy_low_keV = mean_e_low,
-            mean_energy_high_keV = mean_e_high
-        )
-    end
-
-    # Keep arrays on same device as input (GPU-native)
-    # No forced CPU transfer - preserves GPU arrays if input was GPU
-    return DualEnergySinogram(sino_low, sino_high;
-                              low_kvp=protocol.low_kvp,
-                              high_kvp=protocol.high_kvp)
-end
 
 """
     decompose_materials(sino::DualEnergySinogram;
@@ -545,7 +316,7 @@ to ensure consistency between projection and material decomposition.
 """
 function get_effective_energy(kvp::Int)
     # Compute mean energy from actual spectrum for accurate decomposition
-    # These match the spectra used in forward_project_dual_energy()
+    # These match the spectra used for dual-energy simulation
     energies, weights = load_spectrum(kvp)
     return sum(energies .* weights) / sum(weights)
 end
@@ -732,7 +503,6 @@ end
 
 export DualEnergySinogram, MaterialMap
 export GSIProtocol, default_gsi_protocol
-export forward_project_dual_energy
 export decompose_materials, virtual_monoenergetic
 export get_water_attenuation_vmi
 export get_material_attenuation, get_iodine_solution_attenuation, get_calcium_material_attenuation

@@ -359,32 +359,10 @@ When signal chain parameters are provided, applies clinical CT pipeline:
   each region in the mask. From `get_region_materials()`. Required when using
   mask input.
 
-## Physics Effects
+## Volume Bounds
 
-- `physics::Union{Nothing,PhysicsConfig}=nothing`: Physics configuration from:
-  - `realistic_physics_config()`: Common clinical effects
-  - `minimal_physics_config()`: Noise only
-  - `full_physics_config()`: All 13 effects
-  - `default_physics_config(...)`: Custom via kwargs
-
-## Signal Chain Parameters
-
-- `heel_effect::Union{Nothing,HeelEffect}=nothing`: Anode heel effect model.
-  From `default_heel_effect(anode_angle_deg=7.0)`.
-
-- `das_model::Union{Nothing,DASModel}=nothing`: Data acquisition system model
-  with gain and electronic noise. From `default_das_model(gain=1.0, ...)`.
-
-- `bhc::Union{Nothing,Union{BHCPolynomial,BeamHardeningCorrection}}=nothing`:
-  Beam hardening correction polynomial. From `bhc_water_default()`.
-
-- `calibrate::Bool=true`: Enable full CatSim calibration when signal chain
-  parameters are provided. Set to `false` for raw projections.
-
-- `max_prep::Union{Nothing,Real}=nothing`: Maximum projection value for clamping.
-  Prevents extreme values from saturation/negative values.
-
-- `noise_seed::Union{Nothing,Int}=nothing`: Random seed for reproducible noise.
+- `volume_extent::Union{Nothing,NTuple{3,Float64}}=nothing`: Override volume
+  bounds for phantoms with extent different from reconstruction FOV.
 
 # Returns
 
@@ -436,35 +414,10 @@ forward_project!(sinogram, phantom.mask, geom;
 )
 ```
 
-## Full Clinical Simulation (CatSim Signal Chain)
+# Notes
 
-```julia
-using Metal  # GPU acceleration
-
-# GPU arrays
-mask_gpu = MtlArray(phantom.mask)
-sinogram_gpu = MtlArray(zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles))
-
-# Full physics + signal chain
-forward_project!(sinogram_gpu, mask_gpu, geom;
-    energies=energies,
-    weights=weights,
-    materials=materials,
-    physics=full_physics_config(energy_keV=65.0, noise_seed=42),
-    heel_effect=default_heel_effect(anode_angle_deg=7.0),
-    das_model=default_das_model(gain=1.0, electronic_noise_sigma=100.0),
-    bhc=bhc_water_default(reference_energy_keV=65.0)
-)
-
-# sinogram_gpu now contains calibrated, BHC-corrected projections
-```
-
-# Performance Notes
-
-- **Memory**: O(volume_size) working memory for μ-volume at each energy
-- **Time complexity**: O(N_energies × N_rays × N_voxels_per_ray)
-- **Bottleneck**: Ray tracing (GPU) or memory bandwidth (CPU)
-- For repeated projections, prefer in-place version to avoid allocations
+For full clinical simulation with physics effects, use the workspace+simulate! API:
+`create_eict_workspace()` + `simulate!()`.
 
 # References
 
@@ -497,56 +450,9 @@ function forward_project!(
     energies::Union{Nothing, Vector} = nothing,
     weights::Union{Nothing, Vector} = nothing,
     materials::Union{Nothing, Vector} = nothing,
-    # Physics pipeline
-    physics::Union{Nothing, PhysicsConfig} = nothing,
-    # CatSim signal chain (can override PhysicsConfig values)
-    heel_effect::Union{Nothing, HeelEffect} = nothing,
-    das_model::Union{Nothing, DASModel} = nothing,
-    bhc::Union{Nothing, Union{BHCPolynomial, BeamHardeningCorrection}} = nothing,
-    calibrate::Bool = true,
-    max_prep::Union{Nothing, Real} = nothing,
-    noise_seed::Union{Nothing, Int} = nothing,
     # Volume bounds override (for phantoms with extent different from recon FOV)
     volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing
 ) where T <: AbstractFloat
-
-    # Get signal chain effects from PhysicsConfig if not provided as kwargs
-    # This allows full_physics_config() to include everything
-    effective_heel = heel_effect
-    effective_das = das_model
-    effective_bhc = bhc
-    effective_seed = noise_seed
-
-    if physics !== nothing
-        if effective_heel === nothing && physics.heel_effect !== nothing
-            effective_heel = physics.heel_effect
-        end
-        if effective_das === nothing && physics.das_model !== nothing
-            effective_das = physics.das_model
-        end
-        if effective_bhc === nothing && physics.bhc !== nothing
-            effective_bhc = physics.bhc
-        end
-        if effective_seed === nothing && physics.noise_seed !== nothing
-            effective_seed = physics.noise_seed
-        end
-    end
-
-    # Check if CatSim signal chain is requested (from kwargs OR PhysicsConfig)
-    has_signal_chain = effective_heel !== nothing || effective_das !== nothing || effective_bhc !== nothing
-
-    if has_signal_chain && calibrate
-        # === FULL CatSim SIGNAL CHAIN ===
-        return _forward_project_with_signal_chain!(
-            sinogram, volume_or_mask, geom;
-            energy=energy, energies=energies, weights=weights, materials=materials,
-            physics=physics, heel_effect=effective_heel, das_model=effective_das,
-            bhc=effective_bhc, max_prep=max_prep, noise_seed=effective_seed,
-            volume_extent=volume_extent
-        )
-    end
-
-    # === STANDARD PROJECTION (no signal chain) ===
 
     # Determine mode based on input type and kwargs
     if eltype(volume_or_mask) <: AbstractFloat
@@ -578,16 +484,6 @@ function forward_project!(
         error("volume_or_mask must be Float32/Float64 (μ volume) or Unsigned integer (material mask)")
     end
 
-    # Apply physics effects if specified (but not signal chain)
-    if physics !== nothing
-        apply_physics_effects!(sinogram, geom, physics)
-    end
-
-    # Apply BHC separately if signal chain not used but BHC provided
-    if effective_bhc !== nothing && !has_signal_chain
-        apply_bhc!(sinogram, effective_bhc)
-    end
-
     return sinogram
 end
 
@@ -597,15 +493,8 @@ end
 Compute forward projection and return a newly allocated sinogram array.
 This is the allocating version of [`forward_project!`](@ref).
 
-# Algorithm
-
-Implements polychromatic X-ray projection via Beer-Lambert law:
-
-    I_total = Σₑ wₑ × exp(-Lₑ)
-    p = -log(I_total)
-
-where wₑ are spectral weights and Lₑ are energy-specific line integrals.
-See [`forward_project!`](@ref) for detailed algorithm description.
+Pure ray tracing only — no physics effects. For full simulation with
+physics, use `create_eict_workspace()` + `simulate!()`.
 
 # Arguments
 
@@ -617,10 +506,9 @@ See [`forward_project!`](@ref) for detailed algorithm description.
 
 # Keyword Arguments
 
-See [`forward_project!`](@ref) for complete list. Key parameters:
+- `energy`: Single energy (keV) for monochromatic mode
 - `energies`, `weights`, `materials`: For polychromatic mode
-- `physics`: PhysicsConfig for detector effects
-- `heel_effect`, `das_model`, `bhc`: CatSim signal chain
+- `volume_extent`: Override volume bounds
 
 # Returns
 
@@ -628,95 +516,10 @@ See [`forward_project!`](@ref) for complete list. Key parameters:
   `[n_cols, n_rows, n_angles]`. The array is allocated on the same device
   as `volume_or_mask` (CPU or GPU).
 
-# GPU Compatibility
-
-The returned sinogram is allocated on the same device as input:
-
-```julia
-μ = compute_μ(phantom, 60.0)  # Get μ at desired energy
-
-# CPU
-sinogram = forward_project(μ, geom)              # returns Array
-
-# Metal (Apple Silicon)
-sinogram = forward_project(MtlArray(μ), geom)   # returns MtlArray
-
-# CUDA (NVIDIA)
-sinogram = forward_project(CuArray(μ), geom)    # returns CuArray
-```
-
-# Examples
-
-## Simple Monochromatic Projection
-
-```julia
-using BasisSimulator
-
-scanner = GERevolutionApex()
-geom = CTGeometry(scanner; n_angles=180, fov=(300.0, 300.0, 32.0))
-
-# Create uniform water phantom (μ ≈ 0.02 mm⁻¹ at 60 keV)
-phantom_μ = fill(0.02f0, 128, 128, 32)
-
-# Forward projection - sinogram auto-allocated
-sinogram = forward_project(phantom_μ, geom)
-println("Sinogram size: ", size(sinogram))  # (n_cols, n_rows, 180)
-```
-
-## Polychromatic with GPU
-
-```julia
-using Metal
-
-# Load spectrum and materials
-energies, weights = load_spectrum(120)
-materials = get_region_materials()
-
-# GPU phantom mask
-mask_gpu = MtlArray(phantom.mask)
-
-# Polychromatic projection on GPU
-sinogram_gpu = forward_project(mask_gpu, geom;
-    energies=energies,
-    weights=weights,
-    materials=materials
-)
-```
-
-## Full Clinical Pipeline
-
-```julia
-# Complete CatSim-exact simulation
-sinogram = forward_project(phantom.mask, geom;
-    energies=energies,
-    weights=weights,
-    materials=materials,
-    physics=full_physics_config(energy_keV=65.0),
-    heel_effect=default_heel_effect(anode_angle_deg=7.0),
-    das_model=default_das_model(gain=1.0, electronic_noise_sigma=100.0),
-    bhc=bhc_water_default()
-)
-```
-
-# Performance Notes
-
-For iterative algorithms or repeated projections, prefer [`forward_project!`](@ref)
-to avoid allocation overhead. This function allocates O(n_cols × n_rows × n_angles)
-elements for the output sinogram.
-
-# References
-
-1. Hsieh J. "Computed Tomography: Principles, Design, Artifacts, and Recent
-   Advances." 3rd ed. SPIE Press; 2015. doi:10.1117/3.2197756
-
-2. Buzug TM. "Computed Tomography: From Photon Statistics to Modern Cone-Beam
-   CT." Springer; 2008. doi:10.1007/978-3-540-39408-2
-
 # See Also
 
 - [`forward_project!`](@ref): In-place version (avoids allocation)
 - [`siddon_forward_project`](@ref): Low-level allocating ray tracing
-- [`fdk_reconstruct`](@ref): Filtered backprojection reconstruction
 """
 function forward_project(
     volume_or_mask::AbstractArray{T},
@@ -733,167 +536,8 @@ function forward_project(
     return forward_project!(sinogram, volume_or_mask, geom; kwargs...)
 end
 
-# =============================================================================
-# Internal: Full CatSim Signal Chain Implementation
-# =============================================================================
-
 """
-Internal function implementing full CatSim-exact signal chain.
-
-Pipeline:
-1. Polychromatic forward projection (Beer-Lambert) -> returns INTENSITY
-2. Apply physics pipeline in sinogram domain (scatter, noise, etc.)
-3. Convert to intensity domain
-4. Apply heel effect
-5. Apply DAS model (gain + noise to phantom only)
-6. Create noise-free air scan (CatSim-exact)
-7. Calibrate: prep = phantom / air
-8. Low signal correction
-9. Log transform
-10. BHC
-"""
-function _forward_project_with_signal_chain!(
-    sinogram::AbstractArray{T, 3},
-    volume_or_mask::AbstractArray,
-    geom::CTGeometry;
-    energy::Union{Nothing, Real},
-    energies::Union{Nothing, Vector},
-    weights::Union{Nothing, Vector},
-    materials::Union{Nothing, Vector},
-    physics::Union{Nothing, PhysicsConfig},
-    heel_effect::Union{Nothing, HeelEffect},
-    das_model::Union{Nothing, DASModel},
-    bhc::Union{Nothing, Union{BHCPolynomial, BeamHardeningCorrection}},
-    max_prep::Union{Nothing, Real},
-    noise_seed::Union{Nothing, Int},
-    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing
-) where T <: AbstractFloat
-
-    # =========================================================================
-    # LOG SIGNAL CHAIN CONFIGURATION
-    # =========================================================================
-    _log_signal_chain_config(physics, heel_effect, das_model, bhc, max_prep, noise_seed)
-
-    # =========================================================================
-    # STEP 1: Get raw sinogram (line integrals)
-    # =========================================================================
-    if eltype(volume_or_mask) <: AbstractFloat
-        siddon_forward_project!(sinogram, volume_or_mask, geom; volume_extent=volume_extent)
-    elseif eltype(volume_or_mask) <: Unsigned
-        mask = volume_or_mask
-        if materials === nothing
-            error("materials must be provided when using a mask input")
-        end
-        if energy !== nothing
-            _forward_project_mono!(sinogram, mask, geom, T(energy), materials;
-                                   volume_extent=volume_extent)
-        elseif energies !== nothing && weights !== nothing
-            _forward_project_poly!(sinogram, mask, geom, energies, weights, materials;
-                                   volume_extent=volume_extent)
-        else
-            error("Must specify either `energy` or `energies` + `weights`")
-        end
-    else
-        error("volume_or_mask must be Float32/Float64 or Unsigned integer")
-    end
-
-    # =========================================================================
-    # STEP 2: Apply physics pipeline (in sinogram domain EXCEPT noise/DAS)
-    # =========================================================================
-    if physics !== nothing
-        # Apply deterministic physics effects only (not noise - that's in DAS)
-        # Create modified physics config without noise since DAS handles it
-        _apply_physics_no_noise!(sinogram, geom, physics)
-    end
-
-    # =========================================================================
-    # STEP 3: Convert to intensity domain
-    # =========================================================================
-    eps = T(1e-10)
-
-    # Clamp sinogram to reasonable range before exp (avoid extreme intensities)
-    AK.foreachindex(sinogram) do idx
-        sinogram[idx] = exp(-clamp(sinogram[idx], T(-1), T(15)))
-    end
-
-    # Now sinogram contains INTENSITY values
-
-    # =========================================================================
-    # STEP 4: Apply heel effect to phantom intensity
-    # =========================================================================
-    if heel_effect !== nothing
-        apply_heel_effect!(sinogram, heel_effect, geom)
-    end
-
-    # =========================================================================
-    # STEP 5: Apply DAS model (gain + noise) to phantom
-    # =========================================================================
-    if das_model !== nothing
-        apply_das_model!(sinogram, das_model; seed=noise_seed)
-    end
-
-    # =========================================================================
-    # STEP 6: Create noise-free air scan (CatSim-exact)
-    # =========================================================================
-    # Air scan has same deterministic effects but NO noise
-    air_scan = similar(sinogram)
-    fill!(air_scan, one(T))
-
-    if heel_effect !== nothing
-        apply_heel_effect!(air_scan, heel_effect, geom)
-    end
-
-    if das_model !== nothing
-        # Apply gain ONLY (no noise) - CatSim exact
-        gain = T(das_model.gain)
-        AK.foreachindex(air_scan) do idx
-            air_scan[idx] *= gain
-        end
-    end
-
-    # =========================================================================
-    # STEP 7: Calibration (prep = phantom / air)
-    # =========================================================================
-    AK.foreachindex(sinogram) do idx
-        air_val = max(air_scan[idx], eps)
-        sinogram[idx] = sinogram[idx] / air_val
-    end
-
-    # =========================================================================
-    # STEP 8: Low signal correction (CatSim-exact)
-    # =========================================================================
-    low_signal_correction_gpu!(sinogram)
-
-    # =========================================================================
-    # STEP 9: Log transform
-    # =========================================================================
-    if max_prep !== nothing
-        max_val = T(max_prep)
-        AK.foreachindex(sinogram) do idx
-            val = -log(max(sinogram[idx], eps))
-            sinogram[idx] = min(val, max_val)
-        end
-    else
-        AK.foreachindex(sinogram) do idx
-            sinogram[idx] = -log(max(sinogram[idx], eps))
-        end
-    end
-
-    # =========================================================================
-    # STEP 10: Beam hardening correction
-    # =========================================================================
-    # NOTE: Scatter correction is now applied in step 2 (_apply_physics_no_noise!)
-    # immediately after scatter addition, BEFORE any other effects modify the signal.
-    # This ensures the correction estimates scatter from the same signal it was added to.
-    if bhc !== nothing
-        apply_bhc!(sinogram, bhc)
-    end
-
-    return sinogram
-end
-
-"""
-Apply physics effects except noise (which is handled by DAS model).
+Apply physics effects except noise (used by simulate! signal chain).
 """
 function _apply_physics_no_noise!(
     sinogram::AbstractArray{T,3},
@@ -1303,109 +947,3 @@ function _forward_project_poly!(
     return sinogram
 end
 
-# =============================================================================
-# Signal Chain Logging
-# =============================================================================
-
-"""
-Log CatSim signal chain configuration with scanner-specific notes.
-
-SCANNER-SPECIFIC parameters (vary by manufacturer/model):
-- Flat filter (material, thickness)
-- Bowtie filter (profile shape)
-- Detector efficiency (scintillator type, thickness)
-- Fill factor (detector geometry)
-- Heel effect (anode angle, target material)
-- DAS model (gain, noise characteristics)
-- BHC coefficients (calibration-dependent)
-
-PHYSICS parameters (generally applicable):
-- Scatter (depends on patient size, not scanner)
-- Crosstalk (optional, can be disabled)
-- Focal spot blur (optional, can be disabled)
-- Detector lag (optional, can be disabled)
-"""
-function _log_signal_chain_config(
-    physics::Union{Nothing, PhysicsConfig},
-    heel_effect::Union{Nothing, HeelEffect},
-    das_model::Union{Nothing, DASModel},
-    bhc,
-    max_prep::Union{Nothing, Real},
-    noise_seed::Union{Nothing, Int}
-)
-    println("\n" * "=" ^ 60)
-    println("CATSIM SIGNAL CHAIN ACTIVE")
-    println("=" ^ 60)
-
-    # --- Physics Pipeline ---
-    if physics !== nothing
-        info = get_physics_config_info(physics)
-        println("\n[PHYSICS PIPELINE] $(info.n_enabled) effects enabled:")
-
-        # CatSim ESSENTIAL (scanner-specific)
-        scanner_specific = ["fill_factor", "flat_filter", "bowtie_filter", "detector_efficiency"]
-        optional = ["scatter", "crosstalk", "optical_crosstalk", "focal_spot", "lag", "noise"]
-
-        for effect in info.enabled_effects
-            if effect in scanner_specific
-                println("  ✓ $effect  [SCANNER-SPECIFIC]")
-            elseif effect in optional
-                println("  ✓ $effect  [OPTIONAL]")
-            else
-                println("  ✓ $effect")
-            end
-        end
-    else
-        println("\n[PHYSICS PIPELINE] DISABLED")
-    end
-
-    # --- Heel Effect ---
-    println("\n[HEEL EFFECT]")
-    if heel_effect !== nothing
-        info = get_heel_effect_info(heel_effect)
-        println("  ✓ ENABLED  [SCANNER-SPECIFIC: anode geometry]")
-        println("    Anode angle: $(info.anode_angle_deg)°")
-        println("    Target: $(info.target_material)")
-    else
-        println("  ✗ DISABLED")
-    end
-
-    # --- DAS Model ---
-    println("\n[DAS MODEL]")
-    if das_model !== nothing
-        info = get_das_info(das_model)
-        println("  ✓ ENABLED  [SCANNER-SPECIFIC: electronics]")
-        println("    Gain: $(info.gain)")
-        println("    Electronic noise σ: $(info.electronic_noise_sigma)")
-        if noise_seed !== nothing
-            println("    Noise seed: $noise_seed (reproducible)")
-        end
-    else
-        println("  ✗ DISABLED")
-    end
-
-    # --- Air Scan Calibration ---
-    println("\n[AIR SCAN CALIBRATION]")
-    println("  ✓ ENABLED  [CATSIM-EXACT: air scan has NO noise]")
-    println("    Low signal correction: replace negatives with smoothed neighbors")
-    if max_prep !== nothing
-        println("    Max prep clamp: $max_prep")
-    end
-
-    # --- BHC ---
-    println("\n[BEAM HARDENING CORRECTION]")
-    if bhc !== nothing
-        if hasproperty(bhc, :coefficients)
-            order = length(bhc.coefficients) - 1
-            println("  ✓ ENABLED  [SCANNER-SPECIFIC: calibration-dependent]")
-            println("    Polynomial order: $order")
-        else
-            println("  ✓ ENABLED")
-        end
-    else
-        println("  ✗ DISABLED")
-    end
-
-    println("\n" * "=" ^ 60)
-    println()
-end

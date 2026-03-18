@@ -128,9 +128,6 @@ include("detector/fill_factor.jl")
 # Heel effect (anode self-attenuation)
 include("source/heel_effect.jl")
 
-# Data Acquisition System model (signal chain, noise, quantization)
-include("detector/das_model.jl")
-
 # Beam hardening correction (water-based polynomial)
 include("correction/beam_hardening_correction.jl")
 

@@ -193,7 +193,7 @@ Reconstruction geometry is derived from scanner + collimation.
 """
 
 # ╔═╡ b0000001-0006-0001-0004-000000000002
-sim_opts = BS.SimOptions(fidelity = :high, seed = 1234)
+sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234)
 
 # ╔═╡ b0000001-0006-0001-0004-000000000003
 begin

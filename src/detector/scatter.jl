@@ -1110,7 +1110,7 @@ correct_scatter_with_estimate!(sino_low, scatter_est)
 correct_scatter_with_estimate!(sino_high, scatter_est)
 ```
 
-See also: [`correct_scatter_with_estimate!`](@ref), [`correct_scatter_dual_energy!`](@ref)
+See also: [`correct_scatter_with_estimate!`](@ref)
 """
 function estimate_scatter_joint(
     sino_low::AbstractArray{T,3},
@@ -1207,7 +1207,7 @@ correct_scatter_with_estimate!(sino_low, scatter_est)
 correct_scatter_with_estimate!(sino_high, scatter_est)
 ```
 
-See also: [`estimate_scatter_joint`](@ref), [`correct_scatter_dual_energy!`](@ref)
+See also: [`estimate_scatter_joint`](@ref)
 """
 function correct_scatter_with_estimate!(
     sinogram::AbstractArray{T,3},
@@ -1233,78 +1233,6 @@ function correct_scatter_with_estimate!(
     return sinogram
 end
 
-"""
-    correct_scatter_dual_energy!(sino_low, sino_high, scanner;
-                                  phantom_diameter_cm=nothing,
-                                  mean_energy_low_keV=50.0,
-                                  mean_energy_high_keV=70.0) -> (sino_low, sino_high)
-
-Apply joint scatter correction to dual-energy sinograms (in-place).
-
-Uses a single scatter estimate from the combined signal to ensure identical
-residual patterns that cancel in material decomposition. This avoids the
-wave artifacts caused by per-sinogram scatter correction.
-
-# Why Joint Correction
-Per-sinogram scatter correction creates different residuals at 80 kVp vs 140 kVp
-because:
-1. SPR is ~5× higher at 80 kVp than 140 kVp
-2. Different energy-dependent coefficients → different estimation errors
-3. Material decomposition: material = a × sino_low + b × sino_high (b is NEGATIVE)
-4. Different residuals get AMPLIFIED → wave artifacts
-
-Joint correction ensures:
-- Same scatter estimate → same residual pattern for both energies
-- Decomposition: a × ε + b × ε = (a+b) × ε (single pattern, not amplified difference)
-
-# Arguments
-- `sino_low`: Low-kVp sinogram (modified in-place)
-- `sino_high`: High-kVp sinogram (modified in-place)
-- `scanner::Scanner`: Scanner geometry for scatter model
-
-# Keyword Arguments
-- `phantom_diameter_cm`: Phantom diameter for size scaling (nothing = reference)
-- `mean_energy_low_keV`: Mean energy of low-kVp acquisition (default 50.0)
-- `mean_energy_high_keV`: Mean energy of high-kVp acquisition (default 70.0)
-
-# Returns
-Tuple of modified sinograms `(sino_low, sino_high)`.
-
-# Example
-```julia
-scanner = Scanner(source_to_isocenter=626.0, source_to_detector=1097.0, ...)
-correct_scatter_dual_energy!(sino_low, sino_high, scanner)
-```
-
-See also: [`estimate_scatter_joint`](@ref), [`correct_scatter_with_estimate!`](@ref)
-"""
-function correct_scatter_dual_energy!(
-    sino_low::AbstractArray{T,3},
-    sino_high::AbstractArray{T,3},
-    scanner::Scanner;
-    phantom_diameter_cm::Union{Nothing,Real} = nothing,
-    mean_energy_low_keV::Real = 50.0,
-    mean_energy_high_keV::Real = 70.0
-) where T
-    # Use average energy for joint model
-    mean_energy_joint = 0.5 * mean_energy_low_keV + 0.5 * mean_energy_high_keV
-
-    # Create scatter model at joint (average) energy
-    scatter_model = geometry_aware_scatter_model(scanner;
-        phantom_diameter_cm = phantom_diameter_cm,
-        mean_energy_keV = mean_energy_joint
-    )
-
-    # Estimate scatter jointly from both sinograms
-    scatter_estimate = estimate_scatter_joint(sino_low, sino_high, scatter_model)
-
-    # Apply SAME scatter estimate to BOTH sinograms
-    # This ensures identical residual patterns that cancel in decomposition
-    correct_scatter_with_estimate!(sino_low, scatter_estimate)
-    correct_scatter_with_estimate!(sino_high, scatter_estimate)
-
-    return (sino_low, sino_high)
-end
 
 
 # =============================================================================
@@ -1336,4 +1264,3 @@ export SCATTER_REF_ENERGY_KEV, SCATTER_ENERGY_EXPONENT
 
 # Dual-energy joint scatter correction API
 export estimate_scatter_joint, correct_scatter_with_estimate!
-export correct_scatter_dual_energy!

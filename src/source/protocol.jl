@@ -28,7 +28,7 @@ For dual-energy, `kVp` and `mA` are the HIGH energy settings.
 - `mA_low`: Low tube current for dual-energy (0.0 if single)
 - `integration_fraction`: Fraction of views at low kVp (0.5 default)
 - `collimation_mm`: Detector z-collimation in mm (nothing = use full detector)
-- `anode_angle`: IPEM anode angle in degrees (8 or 10). Used by :high fidelity.
+- `anode_angle`: IPEM anode angle in degrees (8 or 10). Used by :eict fidelity.
 - `additional_filters`: Extra filter layers `[(material, thickness_mm), ...]` applied
   on top of the scanner's built-in flat filter in the spectrum domain.
 """

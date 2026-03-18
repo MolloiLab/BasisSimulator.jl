@@ -1,8 +1,7 @@
 """
     Physics/Spectrum.jl
 
-Load X-ray spectra: pre-filtered CatSim .dat files for :medium fidelity,
-or raw IPEM Anode spectra with Beer-Lambert filtering for :high fidelity.
+Load X-ray spectra: raw IPEM Anode spectra with Beer-Lambert filtering for :eict fidelity.
 """
 
 using DelimitedFiles

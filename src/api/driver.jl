@@ -117,7 +117,7 @@ These are tube-side effects that are skipped by the PCCT per-bin pipeline but
 affect the measured signal: heel effect, scatter, and focal spot blur.
 Applied to the **combined** (single) sinogram at binned resolution.
 
-The effects are a subset of `apply_physics_effects!` — only those that are
+The effects are a subset of the physics pipeline — only those that are
 tube/geometry effects (not detector-specific like noise, crosstalk, lag).
 """
 function _apply_pcct_tube_physics!(
@@ -366,117 +366,83 @@ function simulate!(
         ws_bowtie_spectral=ws.bowtie_spectral,
         ws_wη_gpu=ws.wη_gpu)
 
-    if ws.has_signal_chain
-        # ═══════════════════════════════════════════════════════════════════
-        # CatSim signal chain — inlined from _forward_project_with_signal_chain!
-        # Uses workspace buffers to avoid allocations
-        # ═══════════════════════════════════════════════════════════════════
+    # ═══════════════════════════════════════════════════════════════════════
+    # STEP 2: Signal chain (always active)
+    # ═══════════════════════════════════════════════════════════════════════
 
-        heel_effect = ws.heel_effect
-        das_model = ws.das_model
-        bhc_eff = ws.bhc
+    heel_effect = ws.heel_effect
+    bhc_eff = ws.bhc
 
-        # STEP 2: Apply physics pipeline (sinogram domain, no noise)
-        _apply_physics_no_noise!(ws.sinogram, geom, config;
-            ws_output=ws.physics_output,
-            ws_scatter_kernel=ws.scatter_kernel,
-            ws_scatter_correct_kernel=ws.scatter_correct_kernel,
-            ws_scatter_temp=ws.scatter_temp,
-            ws_scatter_kernel_1d=ws.scatter_kernel_1d,
-            ws_scatter_correct_kernel_1d=ws.scatter_correct_kernel_1d,
-            ws_crosstalk_kernel=ws.crosstalk_kernel,
-            ws_optical_crosstalk_kernel=ws.optical_crosstalk_kernel,
-            ws_focal_spot_kernel=ws.focal_spot_kernel,
-            ws_flat_filter_projection=ws.flat_filter_projection,
-            ws_bowtie_projection=nothing,
-            ws_lag_output=ws.physics_output,
-            ws_lag_intensity=ws.lag_intensity,
-            ws_lag_coeffs=ws.lag_coeffs)
+    # Apply physics pipeline (sinogram domain, no noise)
+    _apply_physics_no_noise!(ws.sinogram, geom, config;
+        ws_output=ws.physics_output,
+        ws_scatter_kernel=ws.scatter_kernel,
+        ws_scatter_correct_kernel=ws.scatter_correct_kernel,
+        ws_scatter_temp=ws.scatter_temp,
+        ws_scatter_kernel_1d=ws.scatter_kernel_1d,
+        ws_scatter_correct_kernel_1d=ws.scatter_correct_kernel_1d,
+        ws_crosstalk_kernel=ws.crosstalk_kernel,
+        ws_optical_crosstalk_kernel=ws.optical_crosstalk_kernel,
+        ws_focal_spot_kernel=ws.focal_spot_kernel,
+        ws_flat_filter_projection=ws.flat_filter_projection,
+        ws_bowtie_projection=nothing,
+        ws_lag_output=ws.physics_output,
+        ws_lag_intensity=ws.lag_intensity,
+        ws_lag_coeffs=ws.lag_coeffs)
 
-        # STEP 3: Convert to intensity domain
-        eps = T(1e-10)
-        let sino = ws.sinogram
-            AK.foreachindex(sino) do idx
-                sino[idx] = exp(-clamp(sino[idx], T(-1), T(15)))
+    # Convert to intensity domain
+    eps = T(1e-10)
+    let sino = ws.sinogram
+        AK.foreachindex(sino) do idx
+            sino[idx] = exp(-clamp(sino[idx], T(-1), T(15)))
+        end
+    end
+
+    # Apply heel effect to phantom intensity
+    if heel_effect !== nothing
+        apply_heel_effect!(ws.sinogram, heel_effect, geom)
+    end
+
+    # Create noise-free air scan (workspace buffer)
+    # Clinical scanners calibrate with bowtie in beam, so air scan includes bowtie
+    # Air scan uses spectral bowtie air reference: I₀(col,row) = Σ w(E) × T_bt(E,col,row) × η(E)
+    fill!(ws.air_scan, one(T))
+    if ws.bowtie_air_reference !== nothing
+        let air = ws.air_scan, ref = ws.bowtie_air_reference, nc = size(air, 1), nr = size(air, 2)
+            AK.foreachindex(air) do idx
+                idx_0 = Int32(idx - 1)
+                col = (idx_0 % Int32(nc)) + Int32(1)
+                row = ((idx_0 ÷ Int32(nc)) % Int32(nr)) + Int32(1)
+                ref_idx = col + (row - 1) * nc
+                air[idx] *= ref[ref_idx]
             end
         end
+    end
+    if heel_effect !== nothing
+        apply_heel_effect!(ws.air_scan, heel_effect, geom)
+    end
 
-        # STEP 4: Apply heel effect to phantom intensity
-        if heel_effect !== nothing
-            apply_heel_effect!(ws.sinogram, heel_effect, geom)
+    # Calibration (prep = phantom / air)
+    let sino = ws.sinogram, air = ws.air_scan
+        AK.foreachindex(sino) do idx
+            air_val = max(air[idx], eps)
+            sino[idx] = sino[idx] / air_val
         end
+    end
 
-        # STEP 5: Apply DAS model (gain + noise) to phantom
-        if das_model !== nothing
-            apply_das_model!(ws.sinogram, das_model; seed=config.noise_seed)
-        end
+    # Low signal correction
+    low_signal_correction_gpu!(ws.sinogram)
 
-        # STEP 6: Create noise-free air scan (workspace buffer)
-        # Clinical scanners calibrate with bowtie in beam, so air scan includes bowtie
-        # Air scan uses spectral bowtie air reference: I₀(col,row) = Σ w(E) × T_bt(E,col,row) × η(E)
-        fill!(ws.air_scan, one(T))
-        if ws.bowtie_air_reference !== nothing
-            let air = ws.air_scan, ref = ws.bowtie_air_reference, nc = size(air, 1), nr = size(air, 2)
-                AK.foreachindex(air) do idx
-                    idx_0 = Int32(idx - 1)
-                    col = (idx_0 % Int32(nc)) + Int32(1)
-                    row = ((idx_0 ÷ Int32(nc)) % Int32(nr)) + Int32(1)
-                    ref_idx = col + (row - 1) * nc
-                    air[idx] *= ref[ref_idx]
-                end
-            end
+    # Log transform
+    let sino = ws.sinogram
+        AK.foreachindex(sino) do idx
+            sino[idx] = -log(max(sino[idx], eps))
         end
-        if heel_effect !== nothing
-            apply_heel_effect!(ws.air_scan, heel_effect, geom)
-        end
-        if das_model !== nothing
-            gain = T(das_model.gain)
-            let air = ws.air_scan
-                AK.foreachindex(air) do idx
-                    air[idx] *= gain
-                end
-            end
-        end
+    end
 
-        # STEP 7: Calibration (prep = phantom / air)
-        let sino = ws.sinogram, air = ws.air_scan
-            AK.foreachindex(sino) do idx
-                air_val = max(air[idx], eps)
-                sino[idx] = sino[idx] / air_val
-            end
-        end
-
-        # STEP 8: Low signal correction
-        low_signal_correction_gpu!(ws.sinogram)
-
-        # STEP 9: Log transform
-        let sino = ws.sinogram
-            AK.foreachindex(sino) do idx
-                sino[idx] = -log(max(sino[idx], eps))
-            end
-        end
-
-        # STEP 10: Beam hardening correction
-        if bhc_eff !== nothing
-            apply_bhc!(ws.sinogram, bhc_eff; ws_coeffs_gpu=ws.bhc_coeffs_gpu)
-        end
-    else
-        # Standard path (no signal chain) — apply physics + BHC separately
-        if config !== nothing
-            apply_physics_effects!(ws.sinogram, geom, config;
-                ws_output=ws.physics_output,
-                ws_scatter_kernel=ws.scatter_kernel,
-                ws_scatter_correct_kernel=ws.scatter_correct_kernel,
-                ws_crosstalk_kernel=ws.crosstalk_kernel,
-                ws_optical_crosstalk_kernel=ws.optical_crosstalk_kernel,
-                ws_focal_spot_kernel=ws.focal_spot_kernel,
-                ws_flat_filter_projection=ws.flat_filter_projection,
-                ws_bowtie_projection=nothing,
-                ws_lag_output=ws.physics_output,
-                ws_lag_intensity=ws.lag_intensity,
-                ws_lag_coeffs=ws.lag_coeffs,
-                ws_bhc_coeffs_gpu=ws.bhc_coeffs_gpu)
-        end
+    # Beam hardening correction
+    if bhc_eff !== nothing
+        apply_bhc!(ws.sinogram, bhc_eff; ws_coeffs_gpu=ws.bhc_coeffs_gpu)
     end
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -588,61 +554,29 @@ export get_spectrum, resolve_spectrum
 
 Determine the energy spectrum for simulation.
 
-For `:high` / `:pcct` fidelity: loads a raw IPEM Anode spectrum and applies
-Beer-Lambert filtering (scanner flat filter + protocol additional_filters) plus
-inverse-square-law distance scaling.  Full resolution (~160-280 bins), no
-downsampling.
+Loads a raw IPEM Anode spectrum and applies Beer-Lambert filtering
+(scanner flat filter + protocol additional_filters) plus inverse-square-law
+distance scaling. Full resolution (~160-280 bins), no downsampling.
 
-For `:medium`: loads a pre-filtered CatSim spectrum (legacy path).
-
-For `:low` / `:ideal`: monochromatic at kVp/2.
-
-Pass `scanner` so that `:high` can read `flat_filter_material`,
+Pass `scanner` so the pipeline can read `flat_filter_material`,
 `flat_filter_thickness`, and `source_to_detector` from the hardware spec.
 """
 function resolve_spectrum(sim_opts::SimOptions, protocol::CTProtocol; scanner=nothing)
-    fidelity = sim_opts.fidelity
+    # Physics-based: raw IPEM spectrum + Beer-Lambert filtering
+    e, w = load_spectrum_unfiltered(Int(protocol.kVp); anode_angle=protocol.anode_angle)
 
-    if fidelity in (:high, :pcct)
-        # --- Physics-based: raw IPEM spectrum + Beer-Lambert filtering ---
-        e, w = load_spectrum_unfiltered(Int(protocol.kVp); anode_angle=protocol.anode_angle)
-
-        # Build filter list: scanner's built-in flat filter + protocol extras
-        filters = Tuple{String, Float64}[]
-        if scanner !== nothing && scanner.flat_filter_thickness > 0
-            push!(filters, (String(scanner.flat_filter_material), Float64(scanner.flat_filter_thickness)))
-        end
-        append!(filters, protocol.additional_filters)
-
-        # Apply Beer-Lambert filtering + inverse-square-law distance scaling
-        sdd_mm = scanner !== nothing ? Float64(scanner.source_to_detector) : 750.0
-        e, w = filter_spectrum(e, w; filters=filters, sdd_mm=sdd_mm)
-
-        return e, w
-
-    elseif needs_polychromatic(sim_opts)
-        # --- Legacy CatSim pre-filtered spectrum for :medium ---
-        e_full, w_full = get_spectrum(protocol)
-        return e_full, w_full
-
-    else
-        # --- Monochromatic for :low / :ideal ---
-        return [Float64(protocol.kVp) * 0.5], [1.0]
+    # Build filter list: scanner's built-in flat filter + protocol extras
+    filters = Tuple{String, Float64}[]
+    if scanner !== nothing && scanner.flat_filter_thickness > 0
+        push!(filters, (String(scanner.flat_filter_material), Float64(scanner.flat_filter_thickness)))
     end
-end
+    append!(filters, protocol.additional_filters)
 
-"""
-    needs_polychromatic(sim_opts::SimOptions) -> Bool
+    # Apply Beer-Lambert filtering + inverse-square-law distance scaling
+    sdd_mm = scanner !== nothing ? Float64(scanner.source_to_detector) : 750.0
+    e, w = filter_spectrum(e, w; filters=filters, sdd_mm=sdd_mm)
 
-Determine if polychromatic spectrum is needed based on enabled effects.
-Returns true if any energy-dependent effect is ON: flat_filter, bowtie_filter,
-detector_efficiency, or bhc.
-"""
-function needs_polychromatic(sim_opts::SimOptions)::Bool
-    return sim_opts.use_flat_filter ||
-           sim_opts.use_bowtie_filter ||
-           sim_opts.use_detector_efficiency ||
-           sim_opts.use_bhc
+    return e, w
 end
 
 """
@@ -790,10 +724,6 @@ function build_physics_config(
             kwargs[:heel_effect] = default_heel_effect()
         end
     end
-
-    # DAS electronic noise is now handled inline in the noise kernel.
-    # Scanner.electronic_noise and Scanner.detection_gain control the noise floor.
-    # The signal chain path (ws.has_signal_chain) remains unused.
 
     # BHC: calibrate polynomial from actual spectrum (not hardcoded defaults)
     # The calibration generates a water-based BHC that properly maps polychromatic
