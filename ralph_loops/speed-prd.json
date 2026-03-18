@@ -18,15 +18,17 @@
     "sinogram": "256x32x360 (2.95M elements)",
     "energy_bins": 234,
     "simulate_total_ms": 5925,
-    "forward_proj_unfused_ms": 5254,
+    "forward_proj_unfused_ms": 5546,
     "forward_proj_fused_ms": 19160,
     "physics_pipeline_ms": 22,
     "signal_chain_ms": 487,
     "noise_ms": 152,
     "gpu_copies_ms": 5,
-    "siddon_per_bin_ms": 22.55,
+    "siddon_per_bin_ms": 22.85,
     "create_mu_per_bin_ms": 0.27,
-    "fused_vs_unfused": "Fused is 3.65x SLOWER on Metal GPU (register spill at 234 bins)"
+    "fused_vs_unfused": "Fused is 3.65x SLOWER on Metal GPU (register spill at 234 bins)",
+    "tiled_per_bin_marginal_ms": 6.09,
+    "tiled_k16_total_ms": 1462
   },
   "topics": [
     {
@@ -42,12 +44,12 @@
     {
       "id": "SPEED-001",
       "area": "energy-loop-fusion",
-      "title": "Tiled Energy Fusion — 8-16 bins per DDA pass (v1 fused BROKEN at 234 bins)",
-      "discovery": "todo",
+      "title": "Tiled Energy Fusion — K=16 bins per DDA pass, 3.79× GPU-validated",
+      "discovery": "done",
       "critique": "todo",
       "refinement": "todo",
       "priority": 1,
-      "notes": "v1 fused kernel is 3.65x slower on GPU at 234 bins (register spill). Spectrum downsampling REJECTED (changes physics). Must tile energy loop: trace DDA once per tile of 8-16 bins, repeat for 234/tile_size passes. Need GPU prototype on Metal via AK.jl."
+      "notes": "GPU VALIDATED: K=16 → 97.45ms/tile × 15 tiles = 1462ms (3.79× vs unfused 5546ms). Per-bin marginal cost = 6ms (constant). Theoretical minimum 1404ms. K=16 is 96% of optimum. Build story SPEED-BUILD-V2-002 created. Benchmark: ralph_loops/bench_speed_001.jl"
     },
     {
       "id": "SPEED-002",
@@ -57,17 +59,17 @@
       "critique": "todo",
       "refinement": "todo",
       "priority": 2,
-      "notes": "Current Siddon: 22.5ms per call for 2.95M rays through 128^3 volume. Is this optimal for Metal? Distance-driven, Joseph's method alternatives?"
+      "notes": "Current Siddon: 22.85ms per call for 2.95M rays through 128^3 volume. Tiled per-bin cost is 6ms (the new bottleneck). Could a different projector (distance-driven, Joseph's) reduce this? Key: must work through AK.jl."
     },
     {
       "id": "SPEED-003",
       "area": "gpu-parallelism",
-      "title": "GPU Kernel Optimization — tiled energy fusion prototype on Metal",
+      "title": "GPU Kernel Optimization — reduce per-bin 6ms floor cost",
       "discovery": "todo",
       "critique": "todo",
       "refinement": "todo",
       "priority": 1,
-      "notes": "Need to prototype tiled energy fusion: trace mask ONCE, accumulate 8-16 bins per pass. 234/8=30 passes vs 234 full Siddon calls. Must test register pressure and occupancy on Metal via AK.jl."
+      "notes": "Tiled fusion revealed 6ms per-bin marginal cost as the new bottleneck. Can we reduce this via: (a) better μ_table layout, (b) reduced-precision accumulation, (c) empty-space skipping, (d) fewer exp() calls? Must measure on Metal."
     },
     {
       "id": "SPEED-004",
@@ -77,7 +79,7 @@
       "critique": "todo",
       "refinement": "todo",
       "priority": 2,
-      "notes": "Signal chain is 487ms (8.2%) — five AK.foreachindex kernels each ~120ms. Fusing exp→heel→air→cal→log→BHC into 1-2 kernels could save ~367ms. Low-hanging fruit."
+      "notes": "Signal chain is 487ms (8.2%) — five AK.foreachindex kernels each ~120ms. Fusing exp→heel→air→cal→log→BHC into 1-2 kernels could save ~287ms. Not enough for 10× alone but contributes."
     },
     {
       "id": "SPEED-007",
@@ -86,7 +88,8 @@
       "discovery": "todo",
       "critique": "todo",
       "refinement": "todo",
-      "priority": 3
+      "priority": 3,
+      "notes": "Current best projection: tiled fusion (3.79× on fwd proj) + signal chain fusion (~1.5× on chain) → ~3.4× total. 10× requires ~3× more from SPEED-002/003. Need to evaluate whether 10× is achievable or if SPEED_BLOCKED is the right call."
     }
   ]
 }

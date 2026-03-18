@@ -7,9 +7,9 @@
   "v1_lesson": "v1 build stories were based on CPU-only benchmarks. All 4 stories were marked 'done' with CPU speedup numbers but produced ZERO speedup on Metal GPU. v2 stories are created by the discovery loop ONLY after GPU validation.",
   "gpu_baseline": {
     "simulate_total_ms": 5925,
-    "forward_proj_unfused_ms": 5254,
+    "forward_proj_unfused_ms": 5546,
     "forward_proj_fused_ms": 19160,
-    "note": "Baseline is UNFUSED path. Fused is 3.65x slower on GPU."
+    "note": "Baseline is UNFUSED path. Fused is 3.65x slower on GPU. Forward proj varies ±300ms run-to-run (GPU thermal)."
   },
   "progress": {},
   "stories": [
@@ -35,6 +35,37 @@
         "src/projection/polychromatic.jl"
       ],
       "spec_ref": "Section 0.2"
+    },
+    {
+      "id": "SPEED-BUILD-V2-002",
+      "title": "Tiled energy fusion — 3.79× speedup on forward projection",
+      "status": "ready",
+      "gpu_speedup_measured": 3.79,
+      "gpu_benchmark_details": "K=16: 97.45ms/tile × 15 tiles = 1462ms vs unfused 5546ms on Metal M3 Max. Gammex 472 128×128×15, 256×32×360 sinogram, 234 energy bins. Benchmark: ralph_loops/bench_speed_001.jl",
+      "description": "Replace 234 sequential Siddon calls (each 22.85ms) with 15 tiled fused kernel calls (each 97.45ms at K=16). Each tile traces DDA through mask ONCE and accumulates 16 energy bins via μ_table lookup. Tiles add partial Beer-Lambert sums to I_transmitted buffer. Final -log applied after all tiles. Re-uses 95% of existing siddon_fused_poly_project! kernel.",
+      "requirements": [
+        "Create siddon_tiled_poly_project! function that takes tile_start::Int32 and Val(K)",
+        "Modify kernel to offset μ_table reads: μ_tbl[mat, tile_start + e - 1]",
+        "Modify kernel to offset bowtie reads: bt[bt_base + (tile_start+e-2)*ncnr]",
+        "Kernel ADDS partial Beer-Lambert sum to I_buffer (not -log to sinogram)",
+        "Pad μ_table and wη to 240 = 15×16 (zero-pad last 6 bins) for even tiling",
+        "Only compile Val(16) — last tile uses zero-padded weights, no extra specialization",
+        "Update _forward_project_poly! to use tiled loop instead of sequential energy loop",
+        "Keep unfused path available as fallback (fused=false kwarg)"
+      ],
+      "acceptanceCriteria": [
+        "Forward projection completes in <1.8s on Gammex 472 128^3 benchmark (3.0× minimum speedup, target 3.79×)",
+        "Full simulate!() completes in <2.5s (was ~6s unfused)",
+        "Output sinogram matches unfused reference within Float32 tolerance (max abs diff < 1e-5)",
+        "No API changes — workspace creation and simulate! calls remain the same",
+        "Bowtie spectral transmission handled correctly per-tile"
+      ],
+      "files": [
+        "src/projection/siddon.jl",
+        "src/projection/polychromatic.jl"
+      ],
+      "spec_ref": "Section 1.2, 1.3",
+      "depends_on": "SPEED-BUILD-V2-001 (disable fused first, then replace with tiled)"
     }
   ]
 }

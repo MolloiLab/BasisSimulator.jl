@@ -180,122 +180,100 @@ of `photon_counting.jl`) has the same structure. Instead of accumulating a singl
 The fused kernel computes the same `L_e = accum[e]` values, then applies the DRM after
 traversal. Mathematically identical.
 
-### 1.2 Register Pressure Analysis
+### 1.2 GPU-Validated Register Pressure & Tile Size Analysis
 
-**Registers needed per GPU thread (fused kernel):**
+> **v2 UPDATE (2026-03-18): GPU benchmarks overwrite v1 estimates.**
+> Benchmark script: `ralph_loops/bench_speed_001.jl`
 
-| Component | Count | Bytes | Notes |
-|-----------|-------|-------|-------|
-| DDA state (ix, iy, iz, step_x/y/z) | 6 Int32 | 24 | Mutable traversal state |
-| DDA timing (t_next_x/y/z, t_current, dt_x/y/z) | 7 Float32 | 28 | DDA step parameters |
-| Ray geometry (ray_x/y/z, ray_length) | 4 Float32 | 16 | Per-ray constants |
-| Volume params (captured in closure) | ~16 Float32 | 64 | vol_min/max, voxel_size, etc. |
-| Index decomposition | 3 Int32 | 12 | col, row, angle |
-| Detector geometry | 9 Float32 | 36 | src, det_center, u, v per angle |
-| **Energy accumulators** | **30 Float32** | **120** | **One per energy bin** |
-| Per-voxel temporaries | 3 | 12 | mat, path, t_next |
-| **Total** | **~78** | **~312 bytes** |
+**The full-fuse approach (Val(234), v1) FAILS on Metal GPU — 3.65× SLOWER.**
+234 accumulators = 936 bytes → massive register spilling to device memory.
 
-**Platform register budgets:**
+**Tiled fusion at small K WORKS — GPU-measured per-tile costs:**
 
-| GPU | Max registers/thread | 78 regs = | Occupancy estimate |
-|-----|---------------------|-----------|-------------------|
-| CUDA (Ampere) | 255 | 31% used | ~48% occupancy (limited by blocks/SM) |
-| CUDA (Ada) | 255 | 31% used | ~48% occupancy |
-| Metal (M1 Max) | Automatic spill | N/A | Compiler manages; 312B reasonable |
-| Metal (M3 Max) | Automatic spill | N/A | Should fit in register file |
+| K (tile size) | Per-tile time | Per-bin cost | N tiles for 234 bins | Total fwd proj | Speedup |
+|--------------|--------------|-------------|---------------------|---------------|---------|
+| 1 (unfused) | 22.85 ms | 22.85 ms | 234 | 5546 ms | 1.00× |
+| 8 | 51.95 ms | 6.49 ms | 30 | 1558 ms | **3.56×** |
+| **16** | **97.45 ms** | **6.09 ms** | **15** | **1462 ms** | **3.79×** |
+| 32 | 195.23 ms | 6.10 ms | 8 | 1562 ms | 3.55× |
+| 234 (full fuse) | 19160 ms | 81.88 ms | 1 | 19160 ms | 0.29× |
 
-**Verdict: 30 accumulators fit comfortably on all targets.**
+**Key finding: per-bin marginal cost is ~6ms (constant for K ≥ 8).**
+- Single Siddon call: 22.85ms = 6ms per-bin compute + ~17ms DDA overhead
+- Tiled approach shares the DDA overhead across K bins
+- At K=16, DDA overhead is <2ms per tile — negligible
+- Theoretical minimum: 234 × 6ms = 1404ms. K=16 at 1462ms is 96% of optimum.
 
-Apple Metal GPUs use a register spill model — the compiler automatically spills to
-threadgroup memory if registers are exhausted. 312 bytes/thread is well within typical
-limits. CUDA GPUs have 255 registers (1020 bytes) per thread, and 78 registers leaves
-ample headroom.
+**Register budget at K=16:**
 
-**Fallback: energy tiling.** If register pressure becomes an issue on some backend:
-- Tile energy dimension: process 8-10 energies per DDA traversal pass
-- 4 passes × 8 energies = 32 (only 8 accumulators per pass = 32 bytes)
-- Still reads mask 4× (not 30×): 4 × 17.5 MB = 70 MB vs. current 30 × 70 MB = 2.1 GB
-- 7.5× bandwidth reduction even with tiling
+| Component | Bytes | Notes |
+|-----------|-------|-------|
+| 16 Float32 accumulators | 64 | Fits in registers on Metal |
+| DDA state + geometry | ~180 | Same as monochromatic kernel |
+| **Total** | **~244 bytes** | Well under 1024B Metal limit |
 
-### 1.3 AK.jl Fused Kernel Design
+**Verdict: K=16 is optimal.** K=8 and K=32 are within 7% but K=16 minimizes total
+DDA overhead × number of tiles. Increasing K beyond 32 yields zero benefit because
+the ~6ms per-bin cost dominates.
 
-**Primary entry point: `siddon_fused_poly_project!`**
+### 1.3 Tiled Fusion Implementation Design (GPU-Validated)
+
+> **v2 UPDATE (2026-03-18): Tiled approach validated on Metal GPU.**
+> Re-uses 95% of existing `siddon_fused_poly_project!` kernel code.
+
+**Strategy:** Call the fused kernel ceil(234/16) = 15 times, each processing a tile
+of 16 energy bins. The existing kernel at Val(16) compiles cleanly on Metal (no register
+spill) and each tile costs ~97ms. Total: 15 × 97 = 1462ms vs 5546ms unfused = **3.79×**.
+
+**Implementation: Modified driver in `_forward_project_poly!`**
 
 ```julia
-function siddon_fused_poly_project!(
-    sinogram::AbstractArray{T,3},
-    mask::AbstractArray{UInt8,3},
-    geom::CTGeometry,
-    μ_table_gpu,          # [n_materials, n_energies] on GPU
-    weights_gpu,          # [n_energies] on GPU (normalized)
-    η_gpu;                # [n_energies] on GPU
-    volume_extent = nothing,
-    ws_source_positions = nothing,
-    ws_detector_centers = nothing,
-    ws_detector_u = nothing,
-    ws_detector_v = nothing,
-    ws_bowtie_spectral = nothing   # [n_cols, n_rows, n_energies] or nothing
-) where T
+function _forward_project_poly!(sinogram, mask, geom, energies, weights, materials; kwargs...)
+    n_energies = length(energies)
+    K = 16  # tile size — GPU-validated optimal
 
-    n_energies = Int32(size(μ_table_gpu, 2))
-    # ... volume bounds, geometry setup identical to current siddon_forward_project! ...
+    # Initialize transmitted intensity buffer
+    fill!(I_transmitted, zero(T))
 
-    AK.foreachindex(sinogram) do idx
-        # --- Index decomposition (same as current) ---
-        idx_0 = Int32(idx - 1)
-        col = (idx_0 % n_cols) + Int32(1)
-        idx_0 = idx_0 ÷ n_cols
-        row = (idx_0 % n_rows) + Int32(1)
-        angle = (idx_0 ÷ n_rows) + Int32(1)
+    # Loop over tiles of K energies
+    for tile_start in 1:K:n_energies
+        tile_end = min(tile_start + K - 1, n_energies)
+        actual_K = tile_end - tile_start + 1
 
-        # --- Source/detector geometry (same as current) ---
-        # src_x, src_y, src_z, det_x, det_y, det_z from geometry arrays
+        # Extract sub-table and sub-weights for this tile
+        # (or offset into full arrays — see implementation notes)
 
-        # --- DDA setup (same as siddon_trace_ray) ---
-        # ray direction, t_enter/t_exit, initial ix/iy/iz, step/dt/t_next
-
-        # --- Initialize energy accumulators ---
-        # Option A: NTuple (immutable, compiler optimizes to registers)
-        accums = ntuple(_ -> zero(T), Val(N_E))  # N_E = compile-time constant
-
-        # --- DDA traversal (same loop structure as current) ---
-        while t_current < t_exit && iter < max_iter
-            iter += Int32(1)
-            if ix < Int32(0) || ix >= nx || ...
-                break
-            end
-
-            t_next = min(t_next_x, t_next_y, t_next_z, t_exit)
-            path_length = (t_next - t_current) * ray_length
-
-            if path_length > eps
-                mat = Int32(mask[ix+1, iy+1, iz+1]) + Int32(1)
-
-                # INNER ENERGY LOOP: accumulate line integrals
-                accums = ntuple(Val(N_E)) do e
-                    accums[e] + μ_table_gpu[mat, e] * path_length
-                end
-            end
-
-            # Step to next voxel (same as current)
-            # ...
-        end
-
-        # --- Beer-Lambert summation (replaces separate accumulation kernel) ---
-        I_total = zero(T)
-        for e in 1:N_E
-            w_η = weights_gpu[e] * η_gpu[e]
-            if ws_bowtie_spectral !== nothing
-                bt_val = ws_bowtie_spectral[col + (row-1)*n_cols + (e-1)*n_cols*n_rows]
-                I_total += w_η * bt_val * exp(-accums[e])
-            else
-                I_total += w_η * exp(-accums[e])
-            end
-        end
-
-        sinogram[idx] = -log(max(I_total, T(1e-10)))
+        # Call existing fused kernel with Val(actual_K)
+        # Modified to ADD partial Beer-Lambert sum to I_transmitted
+        # instead of writing -log() to sinogram
+        siddon_tiled_poly_project!(
+            I_transmitted, mask, geom,
+            μ_table_gpu, wη_gpu, Val(actual_K),
+            tile_start;  # offset into μ_table columns
+            volume_extent, ws_source_positions, ...
+        )
     end
+
+    # Final: convert I_transmitted to sinogram
+    AK.foreachindex(sinogram) do idx
+        sinogram[idx] = -log(max(I_transmitted[idx], T(1e-10)))
+    end
+end
+```
+
+**Key changes from existing fused kernel (`siddon_fused_poly_project!`):**
+
+1. **`tile_start` offset:** μ_table reads become `μ_tbl[mat, tile_start + e - 1]`
+   instead of `μ_tbl[mat, e]`. Same for bowtie: `bt[bt_base + (tile_start+e-2)*ncnr]`.
+
+2. **Accumulate, don't -log:** Kernel writes `I_buffer[idx] += partial_sum`
+   (partial Beer-Lambert) instead of `sinogram[idx] = -log(I_total)`.
+
+3. **Pad for divisibility:** If 234 % 16 ≠ 0 (234 = 14×16 + 10), pad μ_table and wη
+   with zeros to 240 (15 × 16). Last tile's extra 6 bins have w=0, contributing nothing.
+
+4. **Single Val(K) compilation:** Only compile for Val(16). The last partial tile uses
+   the same Val(16) kernel with zero-padded weights — no extra specialization needed.
 end
 ```
 
