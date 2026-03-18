@@ -12,26 +12,42 @@
     "math_constraint": "Same mathematical results (within floating-point tolerance). Same API. Same physics fidelity.",
     "gpu_constraint": "ALL performance measurements on Metal GPU with Metal.@sync + @elapsed. CPU-only benchmarks are NOT acceptable evidence."
   },
+  "gpu_baseline": {
+    "measured_on": "Apple M3 Max (AGXG16G) via Metal.jl",
+    "phantom": "Gammex 472 128x128x15, 35cm FOV",
+    "sinogram": "256x32x360 (2.95M elements)",
+    "energy_bins": 234,
+    "simulate_total_ms": 5925,
+    "forward_proj_unfused_ms": 5254,
+    "forward_proj_fused_ms": 19160,
+    "physics_pipeline_ms": 22,
+    "signal_chain_ms": 487,
+    "noise_ms": 152,
+    "gpu_copies_ms": 5,
+    "siddon_per_bin_ms": 22.55,
+    "create_mu_per_bin_ms": 0.27,
+    "fused_vs_unfused": "Fused is 3.65x SLOWER on Metal GPU (register spill at 234 bins)"
+  },
   "topics": [
     {
       "id": "SPEED-000",
       "area": "gpu-profiling-baseline",
       "title": "GPU Profiling Baseline — Metal @elapsed on every component of simulate!()",
-      "discovery": "todo",
-      "critique": "todo",
-      "refinement": "todo",
+      "discovery": "done",
+      "critique": "not-needed",
+      "refinement": "not-needed",
       "priority": 0,
-      "notes": "MUST be done first. Also profile v1 changes (fused vs unfused, separable vs 2D scatter) to see what actually helps on GPU."
+      "notes": "Baseline established. Fused kernel 3.65x SLOWER on GPU. Forward proj 88.7% of time. 234 energy bins (not 30). Signal chain 8.2%. Physics pipeline 0.4%."
     },
     {
       "id": "SPEED-001",
       "area": "energy-loop-fusion",
-      "title": "Energy Loop Fusion — validate on Metal GPU (v1 showed 6.5x on CPU, 0x on GPU)",
+      "title": "Tiled Energy Fusion — 8-16 bins per DDA pass (v1 fused BROKEN at 234 bins)",
       "discovery": "todo",
       "critique": "todo",
       "refinement": "todo",
       "priority": 1,
-      "notes": "v1 implemented this but never tested on GPU. May need completely different approach for Metal."
+      "notes": "v1 fused kernel is 3.65x slower on GPU at 234 bins (register spill). Spectrum downsampling REJECTED (changes physics). Must tile energy loop: trace DDA once per tile of 8-16 bins, repeat for 234/tile_size passes. Need GPU prototype on Metal via AK.jl."
     },
     {
       "id": "SPEED-002",
@@ -40,25 +56,28 @@
       "discovery": "todo",
       "critique": "todo",
       "refinement": "todo",
-      "priority": 1
+      "priority": 2,
+      "notes": "Current Siddon: 22.5ms per call for 2.95M rays through 128^3 volume. Is this optimal for Metal? Distance-driven, Joseph's method alternatives?"
     },
     {
       "id": "SPEED-003",
       "area": "gpu-parallelism",
-      "title": "GPU Kernel Optimization — occupancy, memory coalescing, launch overhead on Metal",
+      "title": "GPU Kernel Optimization — tiled energy fusion prototype on Metal",
       "discovery": "todo",
       "critique": "todo",
       "refinement": "todo",
-      "priority": 1
+      "priority": 1,
+      "notes": "Need to prototype tiled energy fusion: trace mask ONCE, accumulate 8-16 bins per pass. 234/8=30 passes vs 234 full Siddon calls. Must test register pressure and occupancy on Metal via AK.jl."
     },
     {
       "id": "SPEED-004",
       "area": "physics-pipeline",
-      "title": "Physics Pipeline — scatter and other effects GPU profiling",
+      "title": "Signal Chain Fusion — fuse 5-6 elementwise kernels into 1-2",
       "discovery": "todo",
       "critique": "todo",
       "refinement": "todo",
-      "priority": 1
+      "priority": 2,
+      "notes": "Signal chain is 487ms (8.2%) — five AK.foreachindex kernels each ~120ms. Fusing exp→heel→air→cal→log→BHC into 1-2 kernels could save ~367ms. Low-hanging fruit."
     },
     {
       "id": "SPEED-007",

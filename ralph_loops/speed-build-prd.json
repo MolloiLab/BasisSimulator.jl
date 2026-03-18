@@ -5,6 +5,36 @@
   "spec": "ralph_loops/speed-spec.md",
   "branch": "speed/fused-projection",
   "v1_lesson": "v1 build stories were based on CPU-only benchmarks. All 4 stories were marked 'done' with CPU speedup numbers but produced ZERO speedup on Metal GPU. v2 stories are created by the discovery loop ONLY after GPU validation.",
+  "gpu_baseline": {
+    "simulate_total_ms": 5925,
+    "forward_proj_unfused_ms": 5254,
+    "forward_proj_fused_ms": 19160,
+    "note": "Baseline is UNFUSED path. Fused is 3.65x slower on GPU."
+  },
   "progress": {},
-  "stories": []
+  "stories": [
+    {
+      "id": "SPEED-BUILD-V2-001",
+      "title": "Disable fused path as default — immediate 3.65× speedup",
+      "status": "ready",
+      "gpu_speedup_measured": 3.65,
+      "gpu_benchmark_details": "Fused: 19.16s, Unfused: 5.25s on Metal M3 Max. Gammex 472 128^3, 256×32×360 sinogram, 234 energy bins.",
+      "description": "The v1 fused kernel (siddon_fused_poly_project!) is 3.65× slower than the unfused sequential path on Metal GPU because 234 energy accumulators (936 bytes) cause massive register spilling. Change the default from fused=true to fused=false in _forward_project_poly!. Keep fused code for future use with tiled approach.",
+      "requirements": [
+        "Change default fused parameter to false in _forward_project_poly! signature",
+        "Or better: detect n_energies > threshold (e.g., 32) and auto-select unfused",
+        "Keep fused kernel code intact for future tiled fusion work",
+        "Verify simulate!() output is identical (fused and unfused produce same results)"
+      ],
+      "acceptanceCriteria": [
+        "simulate!() runs in <6.5s on Gammex 472 128^3 benchmark (was 19.3s with fused)",
+        "Output sinogram matches reference within Float32 tolerance",
+        "No API changes — workspace creation and simulate! calls remain the same"
+      ],
+      "files": [
+        "src/projection/polychromatic.jl"
+      ],
+      "spec_ref": "Section 0.2"
+    }
+  ]
 }

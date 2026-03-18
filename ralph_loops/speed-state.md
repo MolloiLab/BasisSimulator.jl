@@ -1,61 +1,70 @@
 # 10x Speed Loop — Current State (v2 — GPU-First, Discovery+Build)
 
 **Last updated:** 2026-03-18
-**Current phase:** RESET — Starting over with GPU-first approach
+**Current phase:** DISCOVERY — SPEED-001 next
 **Status:** IN PROGRESS
 
-## v2 Design: Discovery Creates Build Stories
+## GPU Baseline Established (Iteration 1)
 
-The loop is now unified:
-1. **Discovery** profiles on Metal GPU, finds real optimizations, writes GPU-validated build stories
-2. **Critique** re-measures on GPU, invalidates bogus claims, updates/removes stories
-3. **Refinement** finalizes implementation details with GPU prototype benchmarks
-4. **After discovery completes:** `speed-build-prd.json` has a complete set of GPU-validated stories
-5. **Build loop** picks up those stories and implements them, verifying GPU speedup at each step
+Real Metal GPU measurements on Apple M3 Max (AGXG16G):
 
-## Why v2?
+| Component | Time | % |
+|-----------|------|---|
+| **simulate!() total (unfused)** | **5925 ms** | **100%** |
+| Forward projection (unfused) | 5254 ms | 88.7% |
+| Signal chain (exp, air, cal, log, etc.) | 487 ms | 8.2% |
+| Noise (randn + apply) | 152 ms | 2.6% |
+| Physics pipeline | 22 ms | 0.4% |
+| GPU→CPU copies | 5 ms | 0.1% |
 
-v1 discovery (5 iterations) + v1 build (4 stories) produced ZERO GPU speedup despite
-claiming 6-10x. Everything was CPU benchmarks and "static analysis." GPU performance
-is fundamentally different from CPU. v2 requires Metal GPU measurements for every claim.
+**CRITICAL:** Fused kernel is **3.65× SLOWER** on GPU (19.16s vs 5.25s).
+234 energy bins causes register spilling on Metal.
 
-## What exists from v1 (ON THE BRANCH speed/fused-projection)
-
-The v1 build loop committed 4 changes. These are implemented but **GPU-unvalidated**:
-1. `siddon_fused_poly_project!()` — energy loop fusion (6.5x on CPU, unknown on GPU)
-2. Separable Gaussian scatter convolution (147x on CPU, unknown on GPU)
-3. Branchless DDA inner loop (no measured effect on CPU)
-4. CartesianIndices → mod/div in 24 GPU closures
-
-**These may be net-negative on GPU.** SPEED-000 must profile them on Metal
-and determine what's actually helping vs hurting.
+**Per Siddon call:** 22.5ms for 2.95M rays through 128³ volume.
 
 ## What to do next
 
-**SPEED-000 DISCOVERY: GPU Profiling Baseline**
+**SPEED-001 DISCOVERY: Energy Loop Optimization**
 
-This is the ONLY acceptable starting point. You must:
+The dominant cost is 234 × siddon_forward_project! at 22.5ms each = 5.27s.
+Two approaches to research:
 
-1. Run `simulate!()` on Metal GPU with `@elapsed` + `Metal.@sync`
-2. Profile individual components: forward projection, scatter, each physics effect
-3. Establish REAL timing baseline on GPU
-4. Compare the CURRENT branch code (with v1 optimizations) against `fused=false` path
-5. Determine which v1 changes actually help or hurt on GPU
-6. **Write the first build stories if any v1 changes show real GPU speedup**
+### ~~Approach A: Spectrum Downsampling~~ — REJECTED (cheating, changes physics)
 
-**DO NOT proceed to any other topic until SPEED-000 has real GPU numbers.**
+### Approach A: Tiled Energy Fusion (8-16 bins per DDA pass) — PRIMARY PATH
+- Process 8-16 energy bins per DDA traversal of the mask
+- 234/8 = 30 passes (vs 234 full Siddon calls)
+- Each pass reads mask once, looks up μ for 8 energies at each voxel
+- 8 accumulators = 32 bytes (fits in registers, unlike 234 = 936 bytes)
+- **Must prototype on Metal GPU via AK.jl and measure**
+
+### Approach B: Signal Chain Fusion
+- 5-6 elementwise AK.foreachindex kernels → 1 fused kernel
+- exp(-sino) → heel → air/cal → -log → BHC
+- Each is ~120ms launch overhead on 2.95M elements
+- Fusing saves ~367ms (6.2% of total)
+- Low-hanging fruit, but won't reach 10× alone
+
+### Priority:
+1. Prototype tiled energy fusion on Metal GPU (SPEED-001/003) — highest leverage
+2. Signal chain fusion (SPEED-004) — easy win, saves ~367ms
+3. Siddon kernel optimization (SPEED-002) — if tiled fusion alone isn't enough
+
+### Build stories created:
+- SPEED-BUILD-V2-001: Disable fused path (3.65× speedup, ready to implement)
 
 ### Phase tracking
 
 | Topic | Discovery | Critique | Refinement | Build Stories |
 |-------|-----------|----------|------------|---------------|
-| SPEED-000 GPU Profiling Baseline | **TODO** | — | — | — |
-| SPEED-001 Energy Loop Fusion | **TODO** | — | — | — |
-| SPEED-002 Ray Tracing Algorithm | **TODO** | — | — | — |
+| SPEED-000 GPU Profiling Baseline | **DONE** | N/A | N/A | V2-001 (disable fused) |
+| SPEED-001 Energy Loop Optimization | **TODO** | — | — | — |
+| SPEED-002 Ray Tracing Algorithm | TODO | — | — | — |
 | SPEED-003 GPU Kernel Optimization | **TODO** | — | — | — |
-| SPEED-004 Physics Pipeline | **TODO** | — | — | — |
-| SPEED-007 SYNTHESIS | **TODO** | — | — | — |
+| SPEED-004 Signal Chain Fusion | **TODO** | — | — | — |
+| SPEED-007 SYNTHESIS | TODO | — | — | — |
 
 ## Completed iterations
 
-None yet for v2. (v1 archived in speed-progress-v1.md)
+1. **v2 Iter 1 (2026-03-18):** SPEED-000 Discovery. GPU baseline established.
+   Fused 3.65× slower. Forward proj 88.7%. 234 energy bins. Signal chain 8.2%.

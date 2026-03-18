@@ -20,175 +20,108 @@
 
 ## 0. Profiling Baseline — Where Does the Time Go?
 
-**v1 method (INVALID):** Static analysis of source code call graph + computational
-complexity estimation. Never measured on GPU. Claims below are UNVALIDATED.
+**Method:** `time_ns()` + `Metal.synchronize()` on actual Metal GPU (AGXG16G — Apple M3 Max).
+Benchmark script: `ralph_loops/bench_speed.jl`. Phantom: Gammex 472, 128×128×15, 35cm FOV.
+Sinogram: 256×32×360. Scanner: GE Revolution-like. Fidelity: `:high` (IPEM spectrum).
 
-**v2 method (REQUIRED):** `@elapsed` + `Metal.@sync` on actual GPU arrays. Real numbers only.
+### 0.1 GPU-Measured Timing Breakdown
 
-### 0.1 simulate!() Call Graph
-
-Both EICT and PCCT paths share the same bottleneck structure:
-
-```
-simulate!(ws, phantom, scanner, protocol, sim_opts, recon_opts)
-│
-├── STEP 1: _forward_project_poly!()                    ← 90-97% of time
-│   │
-│   └── for e_idx in 1:n_energies (~30 bins):           ← Sequential loop
-│       ├── create_μ_volume!(μ_vol, mask, mats, E)      ← Elementwise GPU lookup (<1%)
-│       ├── fill!(sino_mono, 0)                         ← Memset (<0.1%)
-│       ├── siddon_forward_project!(sino_mono, μ_vol)   ← FULL ray trace (85-95%)
-│       └── AK.foreachindex: I += w*η*exp(-sino_mono)   ← Elementwise accumulate (<1%)
-│
-├── STEP 2: apply_physics_effects!() / signal chain      ← 3-8% of time
-│   ├── fill_factor          (elementwise add)           ← <0.001%
-│   ├── flat_filter           (elementwise mult)         ← <0.01%
-│   ├── scatter add          (2D conv, kernel ~50×50)    ← 1-3% (if enabled)
-│   ├── scatter correct      (2D conv, kernel ~50×50)    ← 1-3% (if enabled)
-│   ├── bowtie_filter        (elementwise mult)          ← <0.01%
-│   ├── crosstalk            (3×3 conv)                  ← <0.01%
-│   ├── optical_crosstalk    (3×3 conv)                  ← <0.01%
-│   ├── focal_spot_blur      (small 2D conv)             ← <0.1%
-│   ├── noise                (elementwise + blur)        ← <0.5%
-│   ├── lag                  (temporal weighted sum)      ← <0.1%
-│   └── bhc                  (polynomial eval)           ← <0.01%
-│
-├── STEP 3: Noise application (quantum + electronic)     ← <1%
-│   ├── randn!() on CPU + copyto!() to GPU               ← CPU-bound
-│   └── AK.foreachindex: Poisson + Gaussian noise         ← Elementwise
-│
-└── STEP 4: copyto!(cpu_output, gpu_sinogram)            ← <1%
-```
-
-### 0.2 Quantitative Complexity Analysis
-
-**Reference parameters (XCAT factor-4 phantom, GE Apex Elite-like scanner):**
+**Test parameters:**
 
 | Parameter | Value |
 |-----------|-------|
-| Volume (XCAT f4) | 400 × 350 × 125 = 17.5M voxels |
-| Volume (XCAT f2) | 800 × 700 × 250 = 140M voxels |
-| Detector | 900 cols × 64 rows = 57,600 pixels |
-| Angles | 1,000 views |
-| **Total rays** | **57.6M** |
-| Energy bins | ~30 |
-| Avg voxels traversed/ray | ~400 (for 400×350 volume) |
-| Materials (XCAT) | ~15 tissue types |
+| Phantom | 128 × 128 × 15 = 245,760 voxels (Gammex 472) |
+| Sinogram | 256 × 32 × 360 = 2,949,120 elements |
+| Energy bins | **234** (IPEM 0.5 keV resolution, 120 kVp) |
+| Rays/view | 8,192 (256 × 32) |
+| Total rays | 2,949,120 |
+| Materials | 17 regions |
 
-#### Forward Projection (per energy bin)
+**Full simulate!() breakdown (UNFUSED path — correct baseline):**
 
-| Sub-step | Operations | Est. GFLOP | Notes |
-|----------|-----------|------------|-------|
-| create_μ_volume! | 17.5M lookups | 0.02 | GPU table lookup, trivial |
-| fill!(sino_mono) | 57.6M × 4B | 0.0 | memset, <1ms |
-| **siddon_forward_project!** | **57.6M rays × 400 vox × 15 FLOP** | **345** | **Memory-bandwidth bound** |
-| Beer-Lambert accumulate | 57.6M × (exp + mult + add) | 1.7 | Elementwise, trivial |
-| **Subtotal per bin** | | **~347** | |
+```
+simulate!() total:                      5925 ms  (100%)
+├── _forward_project_poly!() UNFUSED:   5254 ms  (88.7%)
+│   ├── Per energy bin (×234):
+│   │   ├── create_μ_volume!:             0.27 ms  (1.1% of bin)
+│   │   ├── siddon_forward_project!:     22.55 ms  (93.9% of bin)
+│   │   └── fill + accumulate:            ~1.2 ms  (5.0% of bin)
+│   │   └── Total per bin:               ~24.0 ms
+│   └── 234 bins × 24ms =               5614 ms  (projected)
+├── _apply_physics_no_noise!():           22 ms  (0.4%)
+├── Signal chain steps:                  487 ms  (8.2%)
+│   ├── exp(-sino):                      112 ms
+│   ├── heel effect:                       3 ms
+│   ├── air scan build:                  133 ms
+│   ├── calibration (÷ air):             115 ms
+│   ├── low signal correction:             4 ms
+│   ├── -log(sino):                      121 ms
+│   └── BHC:                               0 ms
+├── Noise (randn + apply):              152 ms  (2.6%)
+└── GPU→CPU copies (×2):                  5 ms  (0.1%)
+```
 
-**30 energy bins total: ~10,400 GFLOP** ← but bandwidth-bound, not compute-bound.
+### 0.2 Critical Finding: Fused Kernel is 3.65× SLOWER on Metal GPU
 
-#### Memory Bandwidth Analysis (THE Real Bottleneck)
+| Path | Time | vs Unfused |
+|------|------|-----------|
+| `_forward_project_poly!()` **UNFUSED** | **5.25s** | 1.00× (baseline) |
+| `_forward_project_poly!()` **FUSED** | **19.16s** | **0.27× (3.65× slower!)** |
+| Fused vs Unfused max abs diff | 1.0e-6 | (mathematically equivalent) |
 
-Siddon is **memory-bandwidth bound** due to scattered volume access:
+**Why fused is slower with 234 bins:** The fused kernel needs 234 Float32 accumulators
+per thread = 936 bytes of register state. On Metal, this causes massive register spilling
+to device memory. The unfused path uses simple kernels with high occupancy — the 234
+separate kernel launches are cheap (~0.1ms each) compared to the register pressure penalty.
 
-| Metric | Value |
-|--------|-------|
-| Volume size (f4, Float32) | 17.5M × 4B = 70 MB |
-| Volume reads per bin | 57.6M rays × 400 vox × 4B = 92 GB |
-| **Volume reads for 30 bins** | **2,760 GB** |
-| Apple M1 Max bandwidth | ~400 GB/s (peak), ~50-100 GB/s (random access) |
-| **Est. time for ray tracing** | **27-55 seconds** |
-| μ-volume writes per bin | 17.5M × 4B = 70 MB |
-| μ-volume writes for 30 bins | 2.1 GB (negligible) |
+**v1 analysis assumed ~30 energy bins.** At 30 bins (120 bytes), the fused kernel would
+likely be faster. At 234 bins (936 bytes), it's catastrophically slower. The IPEM spectrum
+at `:high` fidelity produces 234 bins — this is the real operating point.
 
-**Key insight:** The volume is re-read 30 times (once per energy bin), but with DIFFERENT
-μ values each time. The ray geometry (DDA traversal) is computed 30× redundantly — same
-source, same detector, same phantom shape, only the attenuation coefficients change.
+### 0.3 Root Cause Analysis (GPU-Validated)
 
-#### Physics Pipeline
+**Forward projection is 88.7% of simulate!() — confirmed on GPU.**
 
-| Effect | Ops/element | Total GFLOP | Est. time | % of simulate!() |
-|--------|-------------|-------------|-----------|-------------------|
-| Scatter add | 3,136 (50×50 kernel) | 181 | 0.5-1s | 1-3% |
-| Scatter correct | 3,136 | 181 | 0.5-1s | 1-3% |
-| Detector blur | 225 (15×15 kernel) | 13 | <0.1s | <0.5% |
-| Focal spot | ~100 | 5.8 | <0.05s | <0.2% |
-| Lag (weighted) | 20 | 1.2 | <10ms | <0.1% |
-| Crosstalk | 9 | 0.5 | <1ms | <0.01% |
-| BHC polynomial | 5 | 0.3 | <1ms | <0.01% |
-| Fill factor | 1 | 0.06 | <1ms | <0.001% |
-| Noise (elem.) | 3 | 0.17 | <1ms | <0.01% |
+The dominant cost is `siddon_forward_project!` at 22.5ms per call × 234 calls = 5.27s.
+This kernel traces 2.95M rays through a 128³ volume on GPU.
 
-### 0.3 Time Breakdown Summary
+The signal chain (exp, air scan, calibration, log) at 487ms is the next biggest chunk (8.2%).
+These are all elementwise `AK.foreachindex` kernels on a 2.95M sinogram, each taking ~120ms.
+**That's 5-6 separate kernel launches doing essentially `sino[i] = f(sino[i])`.** Could be
+fused into 1-2 kernel launches.
 
-| Component | Est. Time (XCAT f4) | % of simulate!() |
-|-----------|---------------------|-------------------|
-| **Forward projection total** | **28-56s** | **90-97%** |
-| ├── Siddon ray tracing (30×) | 27-55s | 85-95% |
-| ├── create_μ_volume! (30×) | <0.3s | <1% |
-| ├── Beer-Lambert accumulate (30×) | <0.3s | <1% |
-| └── Kernel launch overhead (90+ launches) | 0.5-1s | 1-2% |
-| **Physics pipeline** | **1-3s** | **3-8%** |
-| ├── Scatter (if enabled) | 1-2s | 3-5% |
-| └── All other effects | <0.5s | <2% |
-| **Noise application** | <0.1s | <1% |
-| **GPU↔CPU copies** | <0.1s | <1% |
-| **TOTAL** | **~30-60s** | **100%** |
+Physics pipeline (_apply_physics_no_noise!) is negligible at 22ms (0.4%). The v1 separable
+scatter optimization may have helped here — the 2D convolution is now separable 1D.
 
-### 0.4 Root Cause Analysis
+### 0.4 Optimization Opportunities (GPU-Informed)
 
-**Why is forward projection 90-97% of simulate!()?**
+**To reach 10× speedup (5925ms → ~593ms):**
 
-The energy-sequential architecture causes **30× redundant work**:
+| Optimization | Target | Mechanism | Est. GPU Speedup | Priority |
+|-------------|--------|-----------|-----------------|----------|
+| **Tiled energy fusion** | Siddon kernel | DDA once per tile of 8-16 bins | **2-4× on fwd proj** | P0 |
+| **Signal chain fusion** | 487ms → ~120ms | Fuse 5-6 elementwise kernels into 1 | **~4× on chain** | P1 |
+| **Siddon kernel optimization** | 22.5ms per call | Better memory access, occupancy | **1.2-2× per call** | P1 |
 
-1. **30× redundant DDA traversal.** Every ray computes the same geometric path
-   (entry point, voxel stepping, exit point) 30 times. The phantom geometry doesn't
-   change between energies — only μ values change.
+**REJECTED: Spectrum downsampling (234→~30 bins).** This is CHEATING — it changes the
+physics by reducing energy bins. The 234-bin IPEM spectrum at `:high` fidelity is the
+correct operating point. Optimizations must work WITH all 234 bins, not skip them.
 
-2. **30× redundant volume reads.** Each Siddon trace reads ~400 voxels from a 70MB
-   volume. 30 bins × 92 GB/bin = 2.76 TB of memory traffic. The bottleneck is
-   GPU memory bandwidth, not compute.
+**Key insight:** The number of energy bins (234) is the dominant scaling factor.
+Tiling the energy loop (trace DDA once, accumulate 8-16 bins per tile, repeat for all
+tiles) avoids the register pressure problem while eliminating redundant DDA traversals.
+The Siddon kernel itself is reasonably efficient — 22.5ms for 2.95M rays through 128³ volume.
 
-3. **30 separate kernel launches.** Each siddon_forward_project! call dispatches
-   a fresh AK.foreachindex kernel. Plus 30 create_μ_volume! launches and 30
-   accumulation launches = 90+ GPU kernel launches with synchronization.
+### 0.5 What v1 Got Wrong
 
-4. **30× μ-volume creation.** The entire volume (17.5M voxels) is overwritten
-   with new μ values for each energy bin, even though the mapping is a simple
-   table lookup (material_id → μ_at_energy).
-
-**The material mask (UInt16) is the invariant.** The phantom is stored as a UInt16 mask
-(17.5M × 2 bytes = 35 MB) to support up to 4,000+ unique material regions.
-The μ_table mapping materials to energies is (up to 4000 materials × 30 energies
-× 4 bytes = 480 KB — fits in L2 cache). A fused kernel that traces through the
-mask ONCE and looks up μ for all energies at each voxel would eliminate all four
-sources of redundancy.
-
-### 0.5 Preliminary Optimization Opportunity Ranking
-
-| Optimization | Target | Est. Speedup | Effort | Priority |
-|-------------|--------|-------------|--------|----------|
-| **Energy loop fusion** | Forward proj (90-97%) | **10-20×** | High | **P0** |
-| Branchless DDA | Siddon kernel | 1.2-1.5× | Medium | P1 |
-| Mixed precision geometry | Siddon kernel | up to 2× (if Float64→32) | Low | P1 |
-| Physics pipeline fusion | Detector chain (3-8%) | 2× on pipeline | Low | P2 |
-| Scatter kernel optimization | Scatter (1-3%) | 2-3× | Medium | P2 |
-
-**Energy loop fusion alone can hit 10×.** Other optimizations stack multiplicatively
-but have diminishing returns since they target the remaining 3-10%.
-
-### 0.6 Validation: Must Confirm With Runtime Profiling
-
-These are **static estimates** based on complexity analysis. Before implementing:
-
-1. **Instrument with @elapsed** around each step of simulate!() to get wall-clock times
-2. **Measure GPU utilization** — is Siddon actually bandwidth-bound or compute-bound?
-3. **Count actual kernel launches** — AK.jl may batch/fuse internally
-4. **Profile XCAT f2 vs f4** — does scaling match O(volume × rays × energies)?
-5. **Measure scatter cost** — is the 50×50 kernel estimate correct?
-
-**Action: Next iteration should run an instrumented simulation to validate or
-correct these estimates.**
+| v1 Claim | GPU Reality |
+|----------|------------|
+| ~30 energy bins | **234 bins** (IPEM :high) |
+| Fused gives 10-20× speedup | **Fused is 3.65× SLOWER** (register spill at 234 bins) |
+| Physics pipeline 3-8% | **0.4%** (separable scatter is fast) |
+| Scatter 1-3% | **<0.1%** (separable 1D, not 2D) |
+| Forward proj 28-56s | **5.25s** (smaller phantom, but ratio is right) |
+| Branchless DDA helps | **Not measured yet** (likely negligible on GPU) |
 
 ---
 
