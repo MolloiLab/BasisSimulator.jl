@@ -227,7 +227,7 @@ function simulate!(
     use_corrections = ws.use_corrections
     kVp = ws.kVp
 
-    # Forward projection with workspace buffers (including native-res path)
+    # Forward projection with workspace buffers (including native-res path + tiled spectral)
     pcct_sino = pcct_forward_project(
         phantom.mask, geom, pcct_detector;
         energies=energies, weights=weights,
@@ -254,7 +254,12 @@ function simulate!(
         ws_native_source_positions=ws.native_geom_source_positions,
         ws_native_detector_centers=ws.native_geom_detector_centers,
         ws_native_detector_u=ws.native_geom_detector_u,
-        ws_native_detector_v=ws.native_geom_detector_v
+        ws_native_detector_v=ws.native_geom_detector_v,
+        # Tiled spectral projection buffers (fused PCCT path)
+        ws_μ_table_gpu=ws.μ_table_gpu,
+        ws_W_matrix_gpu=ws.W_matrix_gpu,
+        ws_outputs_flat=ws.outputs_flat,
+        ws_native_outputs_flat=ws.native_outputs_flat
     )
 
     # Combine ideal (workspace buffer + pre-computed I0_bins)

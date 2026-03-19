@@ -402,6 +402,11 @@ function pcct_forward_project(
     ws_native_detector_centers = nothing,
     ws_native_detector_u = nothing,
     ws_native_detector_v = nothing,
+    # Tiled spectral projection buffers (optional — enables fused PCCT path)
+    ws_μ_table_gpu = nothing,         # GPU [n_regions, n_energies_padded]
+    ws_W_matrix_gpu = nothing,        # GPU [n_energies_padded, n_bins]
+    ws_outputs_flat = nothing,        # GPU [n_elements * n_bins]
+    ws_native_outputs_flat = nothing, # GPU [native_n_elements * n_bins] (for bf>1)
     # Ignored kwargs for backward compat with callers that still pass them
     kwargs...
 )
@@ -447,15 +452,6 @@ function pcct_forward_project(
     proj_shape = (proj_geom.n_cols, proj_geom.n_rows, proj_geom.n_angles)
     binned_shape = (n_cols, n_rows, n_angles)
 
-    # Native-res per-bin count sinograms (for spatial binning)
-    proj_bins = if use_native
-        nb = ws_native_bins !== nothing ? ws_native_bins : [similar(mask, T, proj_shape) for _ in 1:n_bins]
-        for bin in nb; fill!(bin, zero(T)); end
-        nb
-    else
-        nothing
-    end
-
     # Binned-res per-bin sinograms (output)
     bins = if ws_bins !== nothing
         ws_bins
@@ -464,6 +460,139 @@ function pcct_forward_project(
     end
     for bin in bins
         fill!(bin, zero(T))
+    end
+
+    # =========================================================================
+    # TILED SPECTRAL PATH: fused DDA with multi-output (K=16 per tile)
+    # Requires: μ_table_gpu + W_matrix_gpu + outputs_flat + spectral response
+    # =========================================================================
+    if ws_μ_table_gpu !== nothing && ws_W_matrix_gpu !== nothing && ws_outputs_flat !== nothing && apply_spectral_response && R !== nothing
+        @info "PCCT TILED PATH: K=16, n_energies=$n_energies, n_bins=$n_bins, mask=$(size(mask))" maxlog=1
+
+        TILE_K = 16
+        n_energies_padded = size(ws_μ_table_gpu, 2)
+        n_tiles = n_energies_padded ÷ TILE_K
+
+        # Select geometry arrays (native or binned)
+        _ws_src = use_native ? ws_native_source_positions : ws_source_positions
+        _ws_det = use_native ? ws_native_detector_centers : ws_detector_centers
+        _ws_u = use_native ? ws_native_detector_u : ws_detector_u
+        _ws_v = use_native ? ws_native_detector_v : ws_detector_v
+
+        # Select outputs_flat buffer (native or binned)
+        _outputs_flat = use_native ? ws_native_outputs_flat : ws_outputs_flat
+        _proj_geom = use_native ? native_geom : geom
+        _proj_n_elements = prod(proj_shape)
+
+        # Zero-initialize outputs_flat
+        fill!(_outputs_flat, zero(T))
+
+        # Pilot array for AK.foreachindex (sinogram-shaped, provides iteration count)
+        _pilot = if use_native
+            ws_native_sino_buf !== nothing ? ws_native_sino_buf : similar(mask, T, proj_shape)
+        else
+            ws_sino_buf !== nothing ? ws_sino_buf : similar(mask, T, binned_shape)
+        end
+
+        # Per-tile subset copy + kernel call (same approach as EICT tiled path)
+        n_regions = size(ws_μ_table_gpu, 1)
+        μ_sub = similar(mask, T, n_regions, TILE_K)
+        W_sub = similar(mask, T, TILE_K, n_bins)
+
+        for tile_idx in 1:n_tiles
+            ts = (tile_idx - 1) * TILE_K + 1
+            te = ts + TILE_K - 1
+
+            # Copy subset of μ_table and W for this tile
+            copyto!(μ_sub, @view ws_μ_table_gpu[:, ts:te])
+            copyto!(W_sub, @view ws_W_matrix_gpu[ts:te, :])
+
+            # Call tiled spectral kernel with tile_start=1 (subset already offset)
+            siddon_fused_spectral_project!(
+                _pilot, _outputs_flat, Int32(n_bins), mask, _proj_geom,
+                μ_sub, W_sub, Val(TILE_K), Int32(1);
+                volume_extent=volume_extent,
+                ws_source_positions=_ws_src,
+                ws_detector_centers=_ws_det,
+                ws_detector_u=_ws_u,
+                ws_detector_v=_ws_v)
+        end
+
+        # Unpack outputs_flat → bins (or native_bins if spatial binning)
+        if use_native
+            # Native-res: unpack to native_bins, then spatial_bin → bins
+            proj_bins = if ws_native_bins !== nothing
+                ws_native_bins
+            else
+                [similar(mask, T, proj_shape) for _ in 1:n_bins]
+            end
+            for b in 1:n_bins
+                # Copy from flat buffer to 3D bin array
+                offset = (b - 1) * _proj_n_elements
+                let pbin = proj_bins[b], oflat = _outputs_flat, off = offset
+                    AK.foreachindex(pbin) do idx
+                        pbin[idx] = oflat[idx + off]
+                    end
+                end
+            end
+            for b in 1:n_bins
+                spatial_bin!(bins[b], proj_bins[b], bf)
+            end
+        else
+            # Direct: unpack flat buffer → bins
+            n_elements = prod(binned_shape)
+            for b in 1:n_bins
+                offset = (b - 1) * n_elements
+                let ba = bins[b], oflat = _outputs_flat, off = offset
+                    AK.foreachindex(ba) do idx
+                        ba[idx] = oflat[idx + off]
+                    end
+                end
+            end
+        end
+
+        # Convert from photon counts to line-integral domain: sino = -log(N / I₀_bin)
+        eps_val = T(1e-10)
+        I0_scale = use_native ? Float64(bf * bf) : 1.0
+        I0_bins_norm = if ws_I0_bins_norm !== nothing
+            ws_I0_bins_norm
+        else
+            [_compute_bin_I0(detector, energies, weights, η, thresholds, b,
+                              Float64(kVp), Float64(I0); R=R) for b in 1:n_bins]
+        end
+        for b in 1:n_bins
+            let I0_bin_T = T(I0_bins_norm[b] * I0_scale), ba = bins[b], eps = eps_val
+                AK.foreachindex(ba) do idx
+                    ba[idx] = -log(max(ba[idx], eps) / I0_bin_T)
+                end
+            end
+        end
+
+        # Thresholds
+        thresh_T = if ws_thresholds_T !== nothing
+            for i in eachindex(ws_thresholds_T)
+                ws_thresholds_T[i] = T(detector.energy_thresholds_keV[i])
+            end
+            ws_thresholds_T
+        else
+            T.(detector.energy_thresholds_keV)
+        end
+        return EnergyResolvedSinogram(bins, thresh_T)
+    end
+
+    # =========================================================================
+    # SEQUENTIAL FALLBACK: per-energy ray-tracing (original path)
+    # Used when tiled buffers are not provided (standalone calls without workspace)
+    # =========================================================================
+    @info "PCCT SEQUENTIAL PATH: n_energies=$n_energies, n_bins=$n_bins" maxlog=1
+
+    # Native-res per-bin count sinograms (for spatial binning)
+    proj_bins = if use_native
+        nb = ws_native_bins !== nothing ? ws_native_bins : [similar(mask, T, proj_shape) for _ in 1:n_bins]
+        for bin in nb; fill!(bin, zero(T)); end
+        nb
+    else
+        nothing
     end
 
     # The bins we accumulate into during the energy loop

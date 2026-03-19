@@ -98,6 +98,12 @@ mutable struct PCCTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A1<:Abstr
     # ─── Tube physics scratch (for combined sinogram) ───
     tube_physics_scratch::Union{Nothing, A3}  # sinogram-sized scratch for scatter/focal spot
 
+    # ─── Tiled spectral projection (fused PCCT forward projection) ───
+    μ_table_gpu::A2                          # GPU copy of μ_table [n_regions, n_energies_padded]
+    W_matrix_gpu::A2                         # spectral weight matrix [n_energies_padded, n_bins] on GPU
+    outputs_flat::A1                         # flattened output buffer [n_elements * n_bins] on GPU
+    native_outputs_flat::Union{Nothing, A1}  # native-res flattened output (nothing if bf==1)
+
     # ─── Pre-computed setup data (computed once, reused) ───
     geom::CTGeometry                         # CT geometry (binned resolution)
     energies::Vector{Float64}                # downsampled spectrum energies
@@ -314,6 +320,44 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     # Tube physics scratch buffer (binned resolution, for scatter/focal spot on combined sinogram)
     tube_scratch = similar(ref_mask, T, sino_shape)
 
+    # ─── Tiled spectral projection buffers (fused PCCT forward projection) ───
+    # Pad μ_table to multiple of 16 for tiled projection (same as EICT path)
+    TILE_K = 16
+    n_energies_padded = cld(n_energies, TILE_K) * TILE_K
+    _μ_table_gpu = similar(ref_mask, T, n_regions, n_energies_padded)
+    fill!(_μ_table_gpu, zero(T))
+    copyto!(view(_μ_table_gpu, :, 1:n_energies), μ_table)
+
+    # Build W matrix: W[e, b] = I0 * w[e] * η[e] * R[e, b]
+    # Uses I0=1e6 consistent with pcct_forward_project default
+    _I0 = 1e6
+    n_R = size(R_mat, 1)
+    W_cpu = zeros(T, n_energies_padded, n_bins)
+    for e_idx in 1:n_energies
+        E_float = Float64(energies[e_idx])
+        w = Float64(weights_vec[e_idx])
+        if w < 1e-12
+            continue
+        end
+        r_idx = clamp(round(Int, (E_float - 1.0) / (kVp - 1.0) * (n_R - 1)) + 1, 1, n_R)
+        for b in 1:n_bins
+            W_cpu[e_idx, b] = T(_I0 * w * η_vec[e_idx] * R_mat[r_idx, b])
+        end
+    end
+    _W_matrix_gpu = similar(ref_mask, T, n_energies_padded, n_bins)
+    copyto!(_W_matrix_gpu, W_cpu)
+
+    # Flattened output buffer for spectral projection
+    _outputs_flat = similar(ref_mask, T, n_elements * n_bins)
+
+    # Native-resolution flattened output (for spatial binning path)
+    _native_outputs_flat = if bf > 1
+        native_n_elements = prod(native_sino_shape)
+        similar(ref_mask, T, native_n_elements * n_bins)
+    else
+        nothing
+    end
+
     return PCCTWorkspace{T, typeof(sino_buf), typeof(enoise_gpu), typeof(geom_source_positions)}(
         bins, μ_volume, sino_buf, scratch,
         combined,
@@ -327,6 +371,7 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         _native_bins, _native_sino_buf, _native_scratch,
         _native_geom, _n_src, _n_det, _n_u, _n_v,
         tube_scratch,
+        _μ_table_gpu, _W_matrix_gpu, _outputs_flat, _native_outputs_flat,
         geom, energies, weights_vec, config, pcct_detector, mats,
         use_detector_fx, use_corrections, kVp
     )
