@@ -191,7 +191,8 @@ function compute_image_weights(
     ::Type{T}
 ) where T <: AbstractFloat
     ones_sino = ones(T, geom.n_cols, geom.n_rows, geom.n_angles)
-    voxel_sums = backproject(ones_sino, geom, volume_size)
+    # CRITICAL: Use matched/unweighted backprojection, NOT FDK-weighted!
+    voxel_sums = backproject(ones_sino, geom, volume_size; weighted=false)
     eps = T(1e-8)
     AK.foreachindex(voxel_sums) do idx
         val = voxel_sums[idx]
