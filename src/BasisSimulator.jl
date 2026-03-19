@@ -151,8 +151,7 @@ include("correction/calibration.jl")
 include("projection/polychromatic.jl")
 
 # =============================================================================
-# Reconstruction (TIGRE port via AcceleratedKernels.jl)
-# Organized by clinical terminology: FBP, Hybrid IR, MBIR
+# Reconstruction
 # =============================================================================
 
 # --- Core Components ---
@@ -167,34 +166,14 @@ include("reconstruction/core/filtering.jl")
 # FDK reconstruction (filter + backproject)
 include("reconstruction/fbp/fdk.jl")
 
-# --- Classic Iterative Reconstruction ---
-# SIRT iterative reconstruction
-# Reference: CERN/TIGRE/MATLAB/Algorithms/SIRT.m
-include("reconstruction/ir/sirt.jl")
+# --- Penalties ---
+# Regularization penalties (Huber edge-preserving)
+include("reconstruction/penalties.jl")
 
-# CGLS iterative reconstruction
-# Reference: CERN/TIGRE/MATLAB/Algorithms/CGLS.m
-include("reconstruction/ir/cgls.jl")
-
-# --- Regularization ---
-# Total Variation regularization for iterative reconstruction
-# Reference: Rudin-Osher-Fatemi (ROF) model
-include("reconstruction/regularization/tv_regularization.jl")
-
-# --- Statistical IR (PWLS core) ---
-# Statistical Iterative Reconstruction (ASIR-style)
-# Reference: GE ASIR/ASIR-V, Penalized Weighted Least Squares
-include("reconstruction/statistical_ir.jl")
-
-# --- Hybrid IR (TRUE Hybrid IR) ---
+# --- Hybrid IR ---
 # Vendor-general Hybrid IR with PWLS refinement
-# Reference: Geyer et al. 2015, Willemink & Noël 2019, SAFIRE clinical studies
+# Reference: Geyer et al. 2015, Willemink & Noel 2019, SAFIRE clinical studies
 include("reconstruction/hybrid_ir/hybrid_ir.jl")
-
-# --- Model-Based IR ---
-# Model-Based Iterative Reconstruction (TrueFidelity/ADMIRE/QIR-style)
-# Reference: Thibault et al. Med Phys 2007, Siemens ADMIRE/QIR
-include("reconstruction/mbir/mbir.jl")
 
 # =============================================================================
 # Photon-Counting CT (Spectral Imaging)
@@ -211,7 +190,7 @@ include("detector/pcct/detector_response.jl")
 include("spectral/pcct_spectral.jl")
 
 # Unified VMI pipeline (shared by dual-kVp and PCCT)
-include("spectral/vmi.jl")
+include("reconstruction/vmi/vmi.jl")
 
 # =============================================================================
 # API (top-level orchestration)

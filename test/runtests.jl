@@ -1061,6 +1061,8 @@ end
     # -------------------------------------------------------------------------
     # Total Variation Regularization
     # -------------------------------------------------------------------------
+    # TODO: fix — tv_regularization.jl deleted in reconstruction cleanup
+    #=
     @testset "TV Regularization Types" begin
         @test IsotropicTV() isa TVType
         @test AnisotropicTV() isa TVType
@@ -1159,6 +1161,7 @@ end
         @test !isapprox(x, x_copy, rtol=0.01)
         @test all(isfinite.(x))
     end
+    =#
 
     # TODO: fix
     #=
@@ -1352,11 +1355,14 @@ end
     # -------------------------------------------------------------------------
 
     @testset "Penalty Types" begin
-        @test QuadraticPenalty() isa PenaltyType
+        # TODO: fix — QuadraticPenalty deleted in reconstruction cleanup
+        #= @test QuadraticPenalty() isa PenaltyType =#
         @test HuberPenalty() isa PenaltyType
         @test HuberPenalty(0.05f0).delta == 0.05f0
     end
 
+    # TODO: fix — QuadraticPenalty/compute_quadratic_* deleted in reconstruction cleanup
+    #=
     @testset "Quadratic Penalty" begin
         # Constant image should have zero penalty
         x_const = ones(Float32, 8, 8, 4)
@@ -1377,6 +1383,7 @@ end
         # Gradient should be non-zero at the edge
         @test grad[4, 4, 2] != 0.0f0 || grad[5, 4, 2] != 0.0f0
     end
+    =#
 
     @testset "Huber Penalty" begin
         # Test Huber with edge
@@ -1531,6 +1538,8 @@ end
     end
     =#
 
+    # TODO: fix — IRStrengthLevel/get_ir_strength_params deleted in reconstruction cleanup
+    #=
     @testset "IR Strength Levels" begin
         # Test IRStrengthLevel struct
         @test IRStrengthLevel(1).level == 1
@@ -1556,6 +1565,7 @@ end
         @test params5.lambda > params1.lambda
         @test params5.niter > params1.niter
     end
+    =#
 
     # TODO: fix
     #=
@@ -4912,6 +4922,8 @@ end
     # =========================================================================
     # Model-Based Iterative Reconstruction (MBIR)
     # =========================================================================
+    # TODO: fix — mbir.jl deleted in reconstruction cleanup
+    #=
     @testset "MBIR - Model-Based Iterative Reconstruction" begin
 
         @testset "Hyperbola Penalty" begin
@@ -5298,6 +5310,7 @@ end
         end
         =#
     end
+    =#
 
     # =========================================================================
     # Enzyme.jl Differentiable CT Tests — REMOVED (Enzyme extension deleted)
