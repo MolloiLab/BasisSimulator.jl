@@ -14,6 +14,7 @@ import AcceleratedKernels as AK
 export PenaltyType, HuberPenalty
 export compute_huber_penalty, compute_huber_gradient!
 export compute_projection_weights, compute_image_weights
+export create_ordered_subsets, create_subset_geometry, extract_subset_sinogram
 
 # =============================================================================
 # Huber Penalty
@@ -197,4 +198,58 @@ function compute_image_weights(
         voxel_sums[idx] = val > eps ? one(T) / val : zero(T)
     end
     return voxel_sums
+end
+
+# =============================================================================
+# Ordered Subsets
+# =============================================================================
+
+"""
+    create_ordered_subsets(n_angles, n_subsets) -> Vector{Vector{Int}}
+
+Distribute angles across subsets for maximum angular separation.
+"""
+function create_ordered_subsets(n_angles::Int, n_subsets::Int)
+    subsets = [Int[] for _ in 1:n_subsets]
+    for i in 1:n_angles
+        subset_idx = mod1(i, n_subsets)
+        push!(subsets[subset_idx], i)
+    end
+    return subsets
+end
+
+"""
+    create_subset_geometry(geom, angle_indices) -> CTGeometry
+
+Create geometry for a subset of projection angles.
+"""
+function create_subset_geometry(geom::CTGeometry, angle_indices::Vector{Int})
+    n_subset = length(angle_indices)
+    return CTGeometry(
+        geom.SAD, geom.SDD, n_subset, geom.n_rows, geom.n_cols,
+        geom.pixel_size, geom.pixel_row_size,
+        geom.angles[angle_indices],
+        geom.source_positions[:, angle_indices],
+        geom.detector_centers[:, angle_indices],
+        geom.detector_u[:, angle_indices],
+        geom.detector_v[:, angle_indices],
+        geom.fov
+    )
+end
+
+"""
+    extract_subset_sinogram(sinogram, angle_indices) -> subset sinogram
+
+Extract sinogram views for given angle indices.
+"""
+function extract_subset_sinogram(
+    sinogram::AbstractArray{T, 3},
+    angle_indices::Vector{Int}
+) where T <: AbstractFloat
+    n_cols, n_rows, _ = size(sinogram)
+    subset = similar(sinogram, T, n_cols, n_rows, length(angle_indices))
+    for (i, idx) in enumerate(angle_indices)
+        subset[:, :, i] = sinogram[:, :, idx]
+    end
+    return subset
 end
