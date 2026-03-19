@@ -17,11 +17,10 @@ Implementation follows CatSim/XCIST approach:
 - Cone angle geometric correction
 - File-based profile loading
 
-GPU-native implementation using AcceleratedKernels.jl.
+Spectral-domain bowtie attenuation is applied during spectrum weighting,
+not as a sinogram-domain post-processing step.
 """
 
-import AcceleratedKernels as AK
-using Statistics
 using DelimitedFiles
 
 # =============================================================================
@@ -339,7 +338,7 @@ generic factory functions.
 - `kVp::Int`: Tube voltage (unused — CatSim profiles are physical thickness, not kVp-dependent)
 
 # Returns
-`BowtieFilter` ready for use with `apply_bowtie_filter!()`.
+`BowtieFilter` ready for use with spectral bowtie attenuation computation.
 
 # Example
 ```julia
@@ -455,7 +454,7 @@ filter = load_catsim_bowtie("/path/to/gecatsim/bowtie/medium.txt", name="catsim_
 # Implementation Notes
 - CatSim bowtie files are pre-computed for specific fan angle ranges
 - Angles are NOT symmetric; negative angles are included explicitly
-- For verification, compare profiles using [`compare_bowtie_profiles`](@ref)
+- For verification, compare profiles using `interpolate_thickness` and manual checks
 """
 function load_catsim_bowtie(filepath::String; name::String="catsim")
     # Read file, skipping comment lines
@@ -482,190 +481,6 @@ function load_catsim_bowtie(filepath::String; name::String="catsim")
     return BowtieFilter(angles_rad, thickness, materials[1:n_materials], name)
 end
 
-"""
-    compare_bowtie_profiles(filter1::BowtieFilter, filter2::BowtieFilter;
-                            n_points::Int=100,
-                            angle_range_rad::Tuple{Float64,Float64}=(-0.45, 0.45),
-                            energy_keV::Float64=60.0) -> NamedTuple
-
-Compare two bowtie filter profiles.
-
-Returns comparison metrics:
-- `max_thickness_diff_pct`: Maximum percentage difference in total thickness
-- `mean_thickness_diff_pct`: Mean percentage difference
-- `max_transmission_diff_pct`: Maximum percentage difference in transmission
-- `mean_transmission_diff_pct`: Mean percentage difference
-- `correlation`: Pearson correlation between profiles
-- `passes_3pct`: Whether profiles match within 3% (PHYSICS-003 requirement)
-
-# Arguments
-- `filter1`, `filter2`: Bowtie filters to compare
-- `n_points`: Number of comparison points (default: 100)
-- `angle_range_rad`: Range of fan angles to compare (default: ±0.45 rad ≈ ±25.8°)
-- `energy_keV`: Energy for transmission calculation (default: 60 keV)
-"""
-function compare_bowtie_profiles(
-    filter1::BowtieFilter,
-    filter2::BowtieFilter;
-    n_points::Int=100,
-    angle_range_rad::Tuple{Float64,Float64}=(-0.45, 0.45),
-    energy_keV::Float64=60.0
-)
-    angles = range(angle_range_rad[1], angle_range_rad[2], length=n_points)
-
-    # Get thickness profiles
-    t1 = [sum(interpolate_thickness(filter1, θ)) for θ in angles]
-    t2 = [sum(interpolate_thickness(filter2, θ)) for θ in angles]
-
-    # Get μ values for transmission calculation
-    μ_al = get_bowtie_mu("Al", energy_keV)
-
-    # Compute transmission (using Al-equivalent)
-    trans1 = exp.(-μ_al .* t1)
-    trans2 = exp.(-μ_al .* t2)
-
-    # Compute percentage differences (relative to filter1)
-    t1_safe = max.(t1, 1e-6)  # Avoid division by zero
-    thickness_diff_pct = abs.(t1 .- t2) ./ t1_safe .* 100
-
-    trans1_safe = max.(trans1, 1e-6)
-    transmission_diff_pct = abs.(trans1 .- trans2) ./ trans1_safe .* 100
-
-    # Correlation
-    correlation = cor(t1, t2)
-
-    return (
-        max_thickness_diff_pct = maximum(thickness_diff_pct),
-        mean_thickness_diff_pct = mean(thickness_diff_pct),
-        max_transmission_diff_pct = maximum(transmission_diff_pct),
-        mean_transmission_diff_pct = mean(transmission_diff_pct),
-        correlation = correlation,
-        passes_3pct = maximum(transmission_diff_pct) < 3.0,
-        angles_rad = collect(angles),
-        thickness1 = t1,
-        thickness2 = t2,
-        transmission1 = trans1,
-        transmission2 = trans2
-    )
-end
-
-"""
-    verify_bowtie_physics(filter::BowtieFilter; verbose::Bool=true) -> NamedTuple
-
-Verify bowtie filter satisfies physical requirements.
-
-Checks:
-1. Peripheral dose reduction (center has higher transmission than edge, OR
-   edge has higher transmission than center - both are valid conventions)
-2. Reasonable thickness range for CT applications
-3. Monotonic profile (thickness increases or decreases from center to edge)
-
-Note: Two conventions exist for bowtie profiles:
-- Physical shape: center thicker than edge (BasisSimulator built-in filters)
-- Attenuation profile: edge thicker than center (CatSim format)
-
-Both are valid! The key physics requirement is that the filter produces
-a meaningful transmission gradient across the field of view.
-
-# Returns
-NamedTuple with pass/fail status and diagnostic info.
-"""
-function verify_bowtie_physics(filter::BowtieFilter; verbose::Bool=true)
-    info = get_bowtie_info(filter)
-
-    # Get thickness at center (angle ≈ 0) and edges
-    t_center = sum(interpolate_thickness(filter, 0.0))
-
-    # Find maximum absolute angle for edge
-    abs_angles = abs.(filter.angles)
-    max_angle_idx = argmax(abs_angles)
-    edge_angle = filter.angles[max_angle_idx]
-    t_edge = sum(interpolate_thickness(filter, edge_angle))
-
-    # Compute transmission at 60 keV
-    μ_al = get_bowtie_mu("Al", 60.0)
-    trans_center = exp(-μ_al * t_center)
-    trans_edge = exp(-μ_al * t_edge)
-
-    # Check 1: Physical shape - either convention is valid
-    # Convention A (BasisSimulator): center thicker than edge
-    # Convention B (CatSim): edge thicker than center
-    is_convention_a = t_center > t_edge  # Physical bowtie shape
-    is_convention_b = t_edge > t_center  # Attenuation profile
-
-    # Check 2: Peripheral dose reduction - meaningful transmission gradient
-    # In both conventions, there should be a significant gradient
-    transmission_ratio = max(trans_center, trans_edge) / min(trans_center, trans_edge)
-    has_meaningful_gradient = transmission_ratio > 1.1  # At least 10% difference
-
-    # Determine dose reduction direction
-    if trans_edge > trans_center
-        dose_reduction_factor = trans_edge / trans_center
-        has_dose_reduction = true  # Convention A: center attenuates more
-    elseif trans_center > trans_edge
-        dose_reduction_factor = trans_center / trans_edge
-        has_dose_reduction = true  # Convention B: edge attenuates more
-    else
-        dose_reduction_factor = 1.0
-        has_dose_reduction = false
-    end
-
-    # Check 3: Reasonable thickness range (0 to 50 mm typical)
-    max_thickness = max(t_center, t_edge)
-    min_thickness = min(t_center, t_edge)
-    reasonable_thickness = min_thickness >= 0.0 && max_thickness <= 5.0
-
-    # Check 4: Monotonic profile (in either direction)
-    # Sample at positive angles only
-    test_angles = sort(filter.angles[filter.angles .>= 0])
-    if length(test_angles) > 1
-        thicknesses = [sum(interpolate_thickness(filter, θ)) for θ in test_angles]
-        is_monotonic_increasing = issorted(thicknesses)
-        is_monotonic_decreasing = issorted(thicknesses, rev=true)
-        is_monotonic = is_monotonic_increasing || is_monotonic_decreasing
-    else
-        is_monotonic = true
-    end
-
-    # Pass if filter has valid physics properties
-    passes_all = (is_convention_a || is_convention_b) &&
-                 has_meaningful_gradient &&
-                 reasonable_thickness &&
-                 is_monotonic
-
-    if verbose
-        println("\n=== Bowtie Filter Physics Verification ===")
-        println("Filter: $(filter.name)")
-        println("Materials: $(info.materials)")
-        println("\nThickness profile:")
-        println("  Center: $(round(t_center * 10, digits=2)) mm")
-        println("  Edge:   $(round(t_edge * 10, digits=2)) mm")
-        println("  Convention: $(is_convention_a ? "Physical (center>edge)" : is_convention_b ? "Attenuation (edge>center)" : "Unknown")")
-        println("\nTransmission at 60 keV:")
-        println("  Center: $(round(trans_center * 100, digits=1))%")
-        println("  Edge:   $(round(trans_edge * 100, digits=1))%")
-        println("  Transmission ratio: $(round(transmission_ratio, digits=2))×")
-        println("\nVerification checks:")
-        println("  ✓ Valid convention:             $(is_convention_a || is_convention_b ? "PASS" : "FAIL")")
-        println("  ✓ Meaningful gradient (>10%):   $(has_meaningful_gradient ? "PASS" : "FAIL")")
-        println("  ✓ Reasonable thickness range:   $(reasonable_thickness ? "PASS" : "FAIL")")
-        println("  ✓ Monotonic profile:            $(is_monotonic ? "PASS" : "FAIL")")
-        println("\nOverall: $(passes_all ? "PASS" : "FAIL")")
-    end
-
-    return (
-        passes = passes_all,
-        is_bowtie_shape = is_convention_a,  # Legacy field
-        has_dose_reduction = has_dose_reduction,
-        reasonable_thickness = reasonable_thickness,
-        is_monotonic = is_monotonic,
-        t_center_cm = t_center,
-        t_edge_cm = t_edge,
-        trans_center = trans_center,
-        trans_edge = trans_edge,
-        dose_reduction_factor = dose_reduction_factor
-    )
-end
 
 # =============================================================================
 # Material Attenuation Coefficients
@@ -844,170 +659,6 @@ function compute_bowtie_attenuation_spectral(
     return transmission
 end
 
-"""
-    apply_bowtie_filter!(sinogram, filter::BowtieFilter, geom::CTGeometry;
-                         energy_keV::Float64=60.0) -> sinogram
-
-Apply bowtie filter attenuation to sinogram (in-place, GPU-native).
-
-In projection domain, bowtie adds to the line integral:
-    p_total = p_patient + p_bowtie
-
-# Arguments
-- `sinogram`: Sinogram [n_cols, n_rows, n_angles]
-- `filter::BowtieFilter`: Bowtie filter specification
-- `geom::CTGeometry`: Scanner geometry
-- `energy_keV`: Reference energy (default: 60 keV)
-
-# Returns
-Modified sinogram with bowtie filter effect added.
-"""
-function apply_bowtie_filter!(
-    sinogram::AbstractArray{T,3},
-    filter::BowtieFilter,
-    geom::CTGeometry;
-    energy_keV::Float64=60.0,
-    ws_bowtie_projection=nothing
-) where T
-    # Skip if no filter
-    if filter.name == "none"
-        return sinogram
-    end
-
-    n_cols = size(sinogram, 1)
-    n_rows = size(sinogram, 2)
-
-    # Use pre-computed bowtie projection or compute on the fly
-    if ws_bowtie_projection !== nothing
-        bowtie_projection = ws_bowtie_projection
-    else
-        transmission_cpu = compute_bowtie_attenuation(filter, geom; energy_keV=energy_keV)
-        bowtie_projection_cpu = T.(-log.(transmission_cpu))
-        bowtie_projection = similar(sinogram, n_cols, n_rows)
-        copyto!(bowtie_projection, bowtie_projection_cpu)
-    end
-
-    # GPU-native element-wise operation
-    # let-bind to capture with concrete type (avoids Core.Box on GPU)
-    let bowtie_projection = bowtie_projection, n_cols = Int32(n_cols), n_rows = Int32(n_rows)
-        AK.foreachindex(sinogram) do idx
-            idx_0 = Int32(idx - 1)
-            col = (idx_0 % n_cols) + Int32(1)
-            row = ((idx_0 ÷ n_cols) % n_rows) + Int32(1)
-            proj_idx = col + (row - Int32(1)) * n_cols
-            sinogram[idx] += bowtie_projection[proj_idx]
-        end
-    end
-
-    return sinogram
-end
-
-"""
-    apply_bowtie_to_intensity!(intensity, filter::BowtieFilter, geom::CTGeometry;
-                               energy_keV::Float64=60.0) -> intensity
-
-Apply bowtie filter to intensity-domain data (in-place, GPU-native).
-
-This is the physically correct approach: bowtie attenuates the beam
-before it reaches the patient.
-
-# Arguments
-- `intensity`: Intensity data [n_cols, n_rows, n_angles] (pre-log)
-- `filter::BowtieFilter`: Bowtie filter specification
-- `geom::CTGeometry`: Scanner geometry
-- `energy_keV`: Reference energy (default: 60 keV)
-
-# Returns
-Modified attenuated intensity data.
-"""
-function apply_bowtie_to_intensity!(
-    intensity::AbstractArray{T,3},
-    filter::BowtieFilter,
-    geom::CTGeometry;
-    energy_keV::Float64=60.0
-) where T
-    if filter.name == "none"
-        return intensity
-    end
-
-    n_cols = size(intensity, 1)
-    n_rows = size(intensity, 2)
-
-    # Compute transmission on CPU (done once)
-    transmission_cpu = T.(compute_bowtie_attenuation(filter, geom; energy_keV=energy_keV))
-
-    # Transfer to GPU (same type as intensity)
-    transmission = similar(intensity, n_cols, n_rows)
-    copyto!(transmission, transmission_cpu)
-
-    # GPU-native element-wise operation
-    let transmission = transmission, n_cols = Int32(n_cols), n_rows = Int32(n_rows)
-        AK.foreachindex(intensity) do idx
-            idx_0 = Int32(idx - 1)
-            col = (idx_0 % n_cols) + Int32(1)
-            row = ((idx_0 ÷ n_cols) % n_rows) + Int32(1)
-            trans_idx = col + (row - Int32(1)) * n_cols
-            intensity[idx] *= transmission[trans_idx]
-        end
-    end
-
-    return intensity
-end
-
-# Convenience wrappers that allocate (for backward compatibility during transition)
-function apply_bowtie_filter(
-    sinogram::AbstractArray{T,3},
-    filter::BowtieFilter,
-    geom::CTGeometry;
-    energy_keV::Float64=60.0
-) where T
-    result = copy(sinogram)
-    return apply_bowtie_filter!(result, filter, geom; energy_keV=energy_keV)
-end
-
-function apply_bowtie_to_intensity(
-    intensity::AbstractArray{T,3},
-    filter::BowtieFilter,
-    geom::CTGeometry;
-    energy_keV::Float64=60.0
-) where T
-    result = copy(intensity)
-    return apply_bowtie_to_intensity!(result, filter, geom; energy_keV=energy_keV)
-end
-
-"""
-    get_bowtie_profile(filter::BowtieFilter, geom::CTGeometry;
-                       energy_keV::Float64=60.0) -> Vector{Float64}
-
-Get the 1D bowtie transmission profile across detector columns.
-
-Returns transmission at the central row.
-"""
-function get_bowtie_profile(filter::BowtieFilter, geom::CTGeometry;
-                            energy_keV::Float64=60.0)
-    transmission = compute_bowtie_attenuation(filter, geom; energy_keV=energy_keV)
-    mid_row = geom.n_rows ÷ 2 + 1
-    return transmission[:, mid_row]
-end
-
-"""
-    get_bowtie_info(filter::BowtieFilter) -> NamedTuple
-
-Get diagnostic information about bowtie filter.
-"""
-function get_bowtie_info(filter::BowtieFilter)
-    max_thickness = maximum(sum(filter.thickness, dims=2))
-    min_thickness = minimum(sum(filter.thickness, dims=2))
-
-    return (
-        name = filter.name,
-        n_materials = length(filter.materials),
-        materials = filter.materials,
-        angle_range_deg = (rad2deg(filter.angles[1]), rad2deg(filter.angles[end])),
-        thickness_range_cm = (min_thickness, max_thickness),
-        n_angles = length(filter.angles)
-    )
-end
 
 # =============================================================================
 # Exports
@@ -1021,8 +672,4 @@ export ge_revolution_bowtie_large, ge_revolution_bowtie_medium, ge_revolution_bo
 export load_builtin_bowtie, resolve_bowtie_filter, bowtie_filter_supergaussian
 export interpolate_thickness
 export compute_bowtie_attenuation, compute_bowtie_attenuation_spectral
-export apply_bowtie_filter!, apply_bowtie_to_intensity!
-export apply_bowtie_filter, apply_bowtie_to_intensity
-export get_bowtie_profile, get_bowtie_info
 export get_bowtie_mu, get_bowtie_mu_reference
-export compare_bowtie_profiles, verify_bowtie_physics
