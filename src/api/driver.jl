@@ -4,7 +4,32 @@
 High-level driver for running end-to-end CT simulations.
 """
 
-export simulate!, add_system_noise_floor!
+export simulate!, add_system_noise_floor!, compute_detector_I0
+
+# =============================================================================
+# Detector I0 Computation
+# =============================================================================
+
+"""
+    compute_detector_I0(geom, protocol, spectrum_flux_sum) -> Float64
+
+Compute the expected photon count per detector pixel per view.
+
+I₀ = spectrum_flux_sum × mA × time_per_view × pixel_area_mm²
+
+where `spectrum_flux_sum` is the integrated spectral flux from `resolve_spectrum`
+(units: photons/mAs/mm² at scanner SDD).
+"""
+function compute_detector_I0(geom::CTGeometry, protocol::CTProtocol, spectrum_flux_sum::Float64)
+    SDD_mm = geom.SDD * 10.0
+    SAD_mm = geom.SAD * 10.0
+    magnification = SDD_mm / SAD_mm
+    pixel_col_det_mm = (geom.pixel_size * 10.0) * magnification
+    pixel_row_det_mm = (geom.pixel_row_size * 10.0) * magnification
+    pixel_area_mm2 = pixel_col_det_mm * pixel_row_det_mm
+    time_per_view = protocol.rotation_time / protocol.views
+    return spectrum_flux_sum * protocol.mA * time_per_view * pixel_area_mm2
+end
 
 # =============================================================================
 # Materials Resolution
