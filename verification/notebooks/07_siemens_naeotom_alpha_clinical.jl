@@ -1040,15 +1040,11 @@ function create_custom_gammex_472(;
     outer_ring_R = 10.5
     inner_ring_R = 5.5
 
-    # Rotation offset to match NAEOTOM Alpha clinical scan orientation
-    # (different from GE due to scanner/table coordinate convention)
-    rot_offset = -pi / 2
-
-    outer_start = pi / 2 - pi / 8 + rot_offset
+    outer_start = pi / 2 - pi / 8
     outer_angles = [outer_start - (i - 1) * pi / 4 for i in 1:8]
     outer_labels = UInt8[11, 12, 13, 14, 2, 3, 3, 10]
 
-    inner_start = pi / 2 + rot_offset
+    inner_start = pi / 2
     inner_angles = [inner_start - (i - 1) * pi / 4 for i in 1:8]
     inner_labels = UInt8[21, 22, 23, 24, 25, 26, 2, 20]
 
