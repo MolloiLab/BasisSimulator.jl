@@ -1048,9 +1048,13 @@ function create_custom_gammex_472(;
     outer_angles = [outer_start - (i - 1) * pi / 4 for i in 1:8]
     outer_labels = UInt8[11, 12, 13, 14, 2, 3, 3, 10]
 
+    # WARNING: I 15.0 (label 25) and I 20.0 (label 26) are SWAPPED relative to the
+    # standard Gammex 472 layout. Clinical HU measurements on the UCI NAEOTOM Alpha
+    # confirm the physical rods were inserted in swapped positions. The digital phantom
+    # matches the actual clinical configuration, NOT the nominal datasheet order.
     inner_start = pi / 2
     inner_angles = [inner_start - (i - 1) * pi / 4 for i in 1:8]
-    inner_labels = UInt8[21, 22, 23, 24, 25, 26, 2, 20]
+    inner_labels = UInt8[21, 22, 23, 24, 26, 25, 2, 20]
 
     outer_hole_r_sq = [(rod_radius + (l == UInt8(2) ? air_gap_water : air_gap_other))^2 for l in outer_labels]
     inner_hole_r_sq = [(rod_radius + (l == UInt8(2) ? air_gap_water : air_gap_other))^2 for l in inner_labels]
