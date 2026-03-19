@@ -860,6 +860,7 @@ function apply_pcct_noise!(
     ws_rng = nothing,
     ws_noise_I0 = nothing,
     ws_η = nothing,
+    ws_R = nothing,
     noise_reduction::Float64 = 0.0
 ) where {T, A}
 
@@ -873,8 +874,9 @@ function apply_pcct_noise!(
     thresholds = sino.thresholds_keV
 
     # Compute per-bin I₀ values (into workspace buffer if provided)
+    # Pass R matrix for DRM-consistent bin distribution
     I0_per_bin = _compute_pcct_noise_I0(detector, n_bins, thresholds, I0, energies, weights;
-                                         output=ws_noise_I0, ws_η=ws_η)
+                                         output=ws_noise_I0, ws_η=ws_η, ws_R=ws_R)
 
     # Pre-allocate reusable CPU buffers (one-time allocation, reused across all bins)
     # Use workspace buffers if provided
@@ -932,7 +934,7 @@ The spectrum weights may be unnormalized (raw tube output), so we compute the
 fractional bin distribution using a unit I0, then scale by the actual I0.
 """
 function _compute_pcct_noise_I0(detector, n_bins, thresholds, I0, energies, weights;
-                                output=nothing, ws_η=nothing)
+                                output=nothing, ws_η=nothing, ws_R=nothing)
     if isnothing(energies) || isnothing(weights)
         # Fallback: uniform distribution across bins
         if output !== nothing
@@ -947,10 +949,11 @@ function _compute_pcct_noise_I0(detector, n_bins, thresholds, I0, energies, weig
     kVp = maximum(energies)
 
     # Compute per-bin contributions with unit I0 to get relative fractions
+    # Use MC DRM (R matrix) for consistency with forward projection
     raw_per_bin = output !== nothing ? output : zeros(Float64, n_bins)
     fill!(raw_per_bin, 0.0)
     for b in 1:n_bins
-        raw_per_bin[b] = _compute_bin_I0(detector, energies, weights, η, thresholds, b, Float64(kVp), 1.0)
+        raw_per_bin[b] = _compute_bin_I0(detector, energies, weights, η, thresholds, b, Float64(kVp), 1.0; R=ws_R)
     end
 
     # Normalize to get fractional distribution, then scale by physics I0

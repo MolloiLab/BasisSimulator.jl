@@ -292,6 +292,7 @@ function simulate!(
             ws_rng=ws.rng,
             ws_noise_I0=ws.noise_I0,
             ws_η=ws.η,
+            ws_R=ws.R,
             noise_reduction=sim_opts.pcct_noise_reduction)
     end
 
