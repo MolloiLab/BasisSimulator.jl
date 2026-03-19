@@ -137,6 +137,7 @@ function segment_gammex_rods(
         inner_ring_cm = 5.5,
         rod_radius_cm = 1.4,
         roi_fraction = 0.6,
+        clockwise = true,
     )
     nx, ny = size(hu_slice)
     pixel_cm = fov_cm / nx
@@ -199,16 +200,19 @@ function segment_gammex_rods(
     rotation = th_ca400
 
     # Step 3: Place ROIs at all 16 rod positions
-    outer_start = th_ca400 - 3 * pi / 4
-    outer_angles = [outer_start + (i - 1) * pi / 4 for i in 1:8]
+    # clockwise=true: clinical scan convention (CW from Ca400)
+    # clockwise=false: simulated phantom convention (CCW, mirrored by permutedims)
+    dir = clockwise ? 1 : -1
+    outer_start = th_ca400 - dir * 3 * pi / 4
+    outer_angles = [outer_start + dir * (i - 1) * pi / 4 for i in 1:8]
     outer_labels = UInt8[11, 12, 13, 14, 2, 3, 3, 10]
     outer_names = [
         "Ca 100", "Ca 200", "Ca 300", "Ca 400",
         "Water (O)", "SW ref 1", "SW ref 2", "Ca 50",
     ]
 
-    inner_start = outer_start - pi / 8 + deg2rad(inner_ring_offset_deg)
-    inner_angles = [inner_start + (i - 1) * pi / 4 for i in 1:8]
+    inner_start = outer_start - dir * pi / 8 + deg2rad(inner_ring_offset_deg)
+    inner_angles = [inner_start + dir * (i - 1) * pi / 4 for i in 1:8]
     inner_labels = UInt8[21, 22, 23, 24, 25, 26, 2, 20]
     inner_names = [
         "I 2.5", "I 5.0", "I 7.5", "I 10.0",
@@ -1783,7 +1787,7 @@ Segment Scan 2 FBP reconstruction, then measure.
 sim_seg_result = let
     ref = sim_scan2_poly_fbp
     mid_z = size(ref, 3) ÷ 2
-    mask, rods, center = segment_gammex_rods(ref[:, :, mid_z]; fov_cm = sim_fov_cm)
+    mask, rods, center = segment_gammex_rods(ref[:, :, mid_z]; fov_cm = sim_fov_cm, clockwise = false)
     (mask = mask, rods = rods, center = center)
 end
 
