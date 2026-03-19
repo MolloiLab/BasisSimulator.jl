@@ -66,7 +66,7 @@ All functions are GPU-native via AcceleratedKernels.jl:
 
 5. DukeSim v1.2: https://cvit.duke.edu/resource/dukesim-v1-2/
 
-See also: [`DetectorModel`](@ref), [`CrosstalkModel`](@ref)
+See also: [`OpticalCrosstalkModel`](@ref)
 """
 
 import AcceleratedKernels as AK

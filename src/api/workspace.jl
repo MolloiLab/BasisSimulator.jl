@@ -151,7 +151,7 @@ spectral response matrices) so that `simulate!()` has zero allocations.
 # Arguments
 - `scanner`: Scanner specification (provides detector geometry)
 - `protocol`: CT protocol (provides number of views)
-- `sim_opts`: Simulation options (provides n_energy_bins)
+- `sim_opts`: Simulation options (provides fidelity and effect toggles)
 - `recon_opts`: Reconstruction options (provides vmi_basis for n_materials)
 - `phantom`: Phantom struct (provides mask for backend detection and volume shape)
 - `T`: Element type, default Float32
@@ -210,7 +210,7 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     config = build_physics_config(scanner, sim_opts, energies, weights_vec; phantom=phantom)
     pcct_detector = _build_pcct_detector(scanner)
     mats = _resolve_materials(phantom, materials)
-    use_detector_fx = sim_opts.fidelity in (:medium, :high, :pcct)
+    use_detector_fx = sim_opts.fidelity in (:eict, :pcct)
     use_corrections = sim_opts.use_pcct_corrections
     kVp = Float64(maximum(energies))
     thresholds = pcct_detector.energy_thresholds_keV
@@ -237,11 +237,11 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         pcct_bhc = calibrate_bhc(energies, w_eff;
                                   order=5, reference_energy_keV=ref_energy)
         config = PhysicsConfig(
-            config.fill_factor, config.flat_filter, config.bowtie_filter,
-            config.scatter, config.scatter_correction, config.crosstalk,
+            config.fill_factor,
+            config.scatter, config.scatter_correction,
             config.optical_crosstalk, config.focal_spot, config.detector_efficiency,
-            config.noise, config.lag, config.noise_seed, config.energy_keV,
-            config.heel_effect, config.das_model, pcct_bhc)
+            config.lag, config.noise_seed, config.energy_keV,
+            config.heel_effect, pcct_bhc)
     end
 
     # Pre-compute I0_bins for normalization (forward projection)
@@ -458,10 +458,8 @@ mutable struct EICTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:Abstr
     scatter_kernel_1d::Union{Nothing, A1}       # 1D Gaussian scatter kernel (separable path)
     scatter_correct_kernel_1d::Union{Nothing, A1} # 1D correction kernel (separable path)
     scatter_temp::A3                            # sinogram-shaped scratch for separable convolution
-    crosstalk_kernel::Union{Nothing, A2}        # 3×3 crosstalk kernel
     optical_crosstalk_kernel::Union{Nothing, A2} # 3×3 optical crosstalk kernel
     focal_spot_kernel::Union{Nothing, A2}       # focal spot blur kernel
-    flat_filter_projection::Union{Nothing, A2}  # 2D flat filter projection (n_cols × n_rows)
     bowtie_spectral::Union{Nothing, A3}         # [n_cols, n_rows, n_energies] spectral transmission
     bowtie_air_reference::Union{Nothing, A2}    # [n_cols, n_rows] spectral air I₀
     lag_coeffs::Union{Nothing, A1}              # lag coefficients (n_frames)
@@ -497,9 +495,7 @@ mutable struct EICTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:Abstr
     rng::MersenneTwister
     # Signal chain config (extracted from PhysicsConfig for zero-alloc)
     heel_effect::Union{Nothing, HeelEffect}
-    das_model::Union{Nothing, DASModel}
     bhc::Union{Nothing, Union{BHCPolynomial, BeamHardeningCorrection}}
-    has_signal_chain::Bool
 
     # ─── Result staging (CPU) ───
     sino_ideal_out::Array{T,3}
@@ -517,7 +513,7 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     # Geometry
     geom = CTGeometry(scanner; n_angles=protocol.views, fov_cm=recon_opts.fov_cm, z_cm=recon_opts.z_cm, collimation_mm=protocol.collimation_mm)
 
-    # Spectrum (pass scanner for :high IPEM pipeline)
+    # Spectrum (pass scanner for IPEM pipeline)
     energies, weights_vec = resolve_spectrum(sim_opts, protocol; scanner=scanner)
     n_energies = length(energies)
 
@@ -609,15 +605,6 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     # Scratch buffer for separable scatter convolution intermediate results
     scatter_temp = similar(ref, T, sino_shape)
 
-    crosstalk_kernel = if config.crosstalk !== nothing
-        k_cpu = T.(create_crosstalk_kernel_3x3(config.crosstalk))
-        k_gpu = similar(ref, T, 3, 3)
-        copyto!(k_gpu, k_cpu)
-        k_gpu
-    else
-        nothing
-    end
-
     optical_crosstalk_kernel = if config.optical_crosstalk !== nothing
         k_cpu = T.(create_optical_crosstalk_kernel(config.optical_crosstalk))
         k_gpu = similar(ref, T, 3, 3)
@@ -637,16 +624,6 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         else
             nothing
         end
-    else
-        nothing
-    end
-
-    flat_filter_proj = if config.flat_filter !== nothing
-        transmission_cpu = compute_flat_filter_attenuation(config.flat_filter, geom; energy_keV=config.energy_keV)
-        fp_cpu = T.(-log.(transmission_cpu))
-        fp_gpu = similar(ref, T, sino_shape[1], sino_shape[2])
-        copyto!(fp_gpu, fp_cpu)
-        fp_gpu
     else
         nothing
     end
@@ -701,8 +678,7 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     wη_gpu_buf = similar(ref, T, n_energies_padded)
     copyto!(wη_gpu_buf, wη_cpu)
 
-    # Bowtie spectral transmission: resolve independently from PhysicsConfig
-    # (config.bowtie_filter is now nothing for :high/:pcct since preset is false)
+    # Bowtie spectral transmission: resolved directly from scanner (not via PhysicsConfig)
     bowtie_filter = resolve_bowtie_filter(scanner.bowtie_filter)
     bowtie_spectral_gpu = nothing
     bowtie_air_ref_gpu = nothing
@@ -740,9 +716,7 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
 
     # Extract signal chain config from PhysicsConfig (pre-computed)
     heel = config.heel_effect
-    das = config.das_model
     bhc_effect = config.bhc
-    has_sc = heel !== nothing || das !== nothing || bhc_effect !== nothing
 
     # Pre-computed geometry arrays (T-typed, same backend as mask) for siddon_forward_project!
     geom_source_positions = similar(ref, T, size(geom.source_positions)...)
@@ -766,14 +740,13 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         physics_output, lag_intensity,
         scatter_kernel, scatter_correct_kernel,
         scatter_kernel_1d, scatter_correct_kernel_1d, scatter_temp,
-        crosstalk_kernel,
-        optical_crosstalk_kernel, focal_spot_kernel, flat_filter_proj,
+        optical_crosstalk_kernel, focal_spot_kernel,
         bowtie_spectral_gpu, bowtie_air_ref_gpu, lag_coeffs_buf,
         noise_rand_cpu, noise_rand_gpu, enoise_rand_cpu, enoise_rand_gpu,
         weights_norm, μ_lut_cpu, μ_lut_gpu, μ_table, μ_table_gpu, η_vec, wη_gpu_buf, bhc_coeffs_gpu,
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
         geom, energies, weights_vec, config, mats, rng,
-        heel, das, bhc_effect, has_sc,
+        heel, bhc_effect,
         sino_ideal_out, sino_noisy_out
     )
 end

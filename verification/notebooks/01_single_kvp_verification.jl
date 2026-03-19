@@ -572,14 +572,14 @@ scanner = BS.Scanner(
 #   :ideal  → monochromatic, no noise, no physics effects
 #   :low    → monochromatic + noise
 #   :medium → noise + focal_spot + crosstalk + flat_filter + bhc (polychromatic)
-#   :high   → all 14 effects ON except DAS (polychromatic, full physics)
+#   :eict   → all 14 effects ON except DAS (polychromatic, full physics)
 #
-# :high enables all physics for realistic comparison against CatSim:
+# :eict enables all physics for realistic comparison against CatSim:
 #   fill_factor, flat_filter, bowtie_filter, detector_efficiency, scatter,
 #   scatter_correction, crosstalk, optical_crosstalk, focal_spot, noise,
 #   lag, heel_effect, bhc. Spectrum auto-loaded from protocol.kVp.
 sim_opts = BS.SimOptions(
-	fidelity = :high,
+	fidelity = :eict,
 	# use_scatter_correction = true,
 	# use_scatter_correction = false,
 	seed = 1234,
@@ -598,7 +598,7 @@ recon_opts = BS.ReconOptions(
 );
 
 # ╔═╡ e9425189-6734-4b69-8251-4e093c09367c
-# Note: simulate!() internally loads the spectrum from protocol.kVp when fidelity=:high.
+# Note: simulate!() internally loads the spectrum from protocol.kVp when fidelity=:eict.
 # We load it here explicitly for reference and verification against CatSim's spectrum.
 begin
 	energies_raw, weights_raw = BS.load_spectrum(SIM_CONFIG.kvp)

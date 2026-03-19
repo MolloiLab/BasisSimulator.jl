@@ -187,7 +187,7 @@ md"""
 """
 
 # ╔═╡ d190489f-d0ec-4428-81a6-6bff43be401c
-sim_opts = BS.SimOptions(fidelity = :high, seed = 1234)
+sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234)
 
 # ╔═╡ 286bb6a0-ce50-4370-a4f0-1f5c8f62f60c
 begin

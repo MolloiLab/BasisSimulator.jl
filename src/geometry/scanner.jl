@@ -162,8 +162,7 @@ struct Scanner{T<:AbstractFloat}
     electronic_noise::T         # electrons
 
     # === PCCT Fields (flat kwargs, defaults = conventional EID behavior) ===
-    # Same pattern as dual_energy fields in CTProtocol:
-    # ignored when detector_type == :energy_integrating
+    # Ignored when detector_type == :energy_integrating
     detector_type::Symbol       # :energy_integrating (default) or :photon_counting
     n_energy_bins::Int          # 1 (EID) or 2-8 (PCCT)
     energy_thresholds::Vector{T}  # Energy thresholds keV (empty for EID)
@@ -698,115 +697,6 @@ function CTGeometry(scanner::Scanner{T};
     )
 end
 
-"""
-    create_aquilion_one(; n_angles=360, n_rows=64, n_cols=128, fov_cm=nothing, z_cm=nothing, sad=nothing, sdd=nothing)
-
-Create CT scanner geometry (defaults to Canon Aquilion ONE specifications).
-
-# Canon Aquilion ONE Specifications (defaults)
-- SAD: 600 mm (source-to-axis distance)
-- SDD: 1000 mm (source-to-detector distance)
-- Detector: 320 rows × 896 columns (full)
-- Pixel pitch: 0.5 mm at isocenter
-- Z-coverage: 16 cm (320 × 0.5 mm)
-
-# Arguments
-- `n_angles::Int`: Number of projection angles (default 360)
-- `n_rows::Int`: Detector rows, reduced for fast iteration (default 64)
-- `n_cols::Int`: Detector columns, reduced for fast iteration (default 128)
-- `fov_cm::Union{Float64,Nothing}`: XY field of view in cm. If nothing, compute from pixel size.
-- `z_cm::Union{Float64,Nothing}`: Z field of view in cm. If nothing, compute from pixel size and n_rows.
-- `sad::Union{Float64,Nothing}`: Source-to-axis distance in cm (default 60.0 cm / 600 mm)
-- `sdd::Union{Float64,Nothing}`: Source-to-detector distance in cm (default 100.0 cm / 1000 mm)
-
-# Returns
-`CTGeometry` with pre-computed source/detector positions.
-"""
-function create_aquilion_one(;
-    n_angles::Int=360,
-    n_rows::Int=64,
-    n_cols::Int=128,
-    fov_cm::Union{Float64,Nothing}=nothing,
-    z_cm::Union{Float64,Nothing}=nothing,
-    sad::Union{Float64,Nothing}=nothing,
-    sdd::Union{Float64,Nothing}=nothing
-)
-    # Canon Aquilion ONE specifications (defaults)
-    SAD_mm = 600.0   # Source-to-axis distance (mm)
-    SDD_mm = 1000.0  # Source-to-detector distance (mm)
-    pixel_pitch_mm = 0.5  # At isocenter (mm)
-
-    # Use custom SAD/SDD if provided (input in cm), otherwise use defaults
-    SAD = sad !== nothing ? sad : SAD_mm / 10.0
-    SDD = sdd !== nothing ? sdd : SDD_mm / 10.0
-
-    # Row pixel size (z-direction) — always native detector pitch
-    pixel_row_size = pixel_pitch_mm / 10.0
-
-    # Determine column pixel size and XY FOV
-    if fov_cm === nothing
-        pixel_size = pixel_pitch_mm / 10.0
-        fov_xy = pixel_size * n_cols  # FOV from detector size
-    else
-        # Compute pixel size to cover the specified FOV
-        # Add some margin (1.1x) to ensure full coverage
-        pixel_size = (fov_cm * 1.1) / n_cols
-        fov_xy = fov_cm
-    end
-
-    # Z FOV — uses row pixel size (native detector pitch), not column pixel size
-    if z_cm === nothing
-        fov_z = pixel_row_size * n_rows
-    else
-        fov_z = z_cm
-    end
-
-    # Generate angles (full 360° rotation)
-    angles = collect(range(0.0, 2π - 2π/n_angles, length=n_angles))
-
-    # Pre-compute all positions
-    source_positions = Matrix{Float64}(undef, 3, n_angles)
-    detector_centers = Matrix{Float64}(undef, 3, n_angles)
-    detector_u = Matrix{Float64}(undef, 3, n_angles)
-    detector_v = Matrix{Float64}(undef, 3, n_angles)
-
-    for (i, θ) in enumerate(angles)
-        cosθ = cos(θ)
-        sinθ = sin(θ)
-
-        # Source position: starts at (0, -SAD, 0), rotates around Z
-        source_positions[1, i] = -SAD * sinθ
-        source_positions[2, i] = -SAD * cosθ
-        source_positions[3, i] = 0.0
-
-        # Detector center: opposite side of source
-        det_dist = SDD - SAD  # Distance from isocenter to detector
-        detector_centers[1, i] = det_dist * sinθ
-        detector_centers[2, i] = det_dist * cosθ
-        detector_centers[3, i] = 0.0
-
-        # Detector u-axis (column direction): perpendicular to source-detector line, in XY plane
-        # Points in the direction of increasing column index
-        detector_u[1, i] = cosθ
-        detector_u[2, i] = -sinθ
-        detector_u[3, i] = 0.0
-
-        # Detector v-axis (row direction): always points in +Z
-        detector_v[1, i] = 0.0
-        detector_v[2, i] = 0.0
-        detector_v[3, i] = 1.0
-    end
-
-    fov = (fov_xy, fov_xy, fov_z)
-
-    return CTGeometry(
-        SAD, SDD, n_angles, n_rows, n_cols, pixel_size, pixel_row_size,
-        angles, source_positions, detector_centers, detector_u, detector_v,
-        fov
-    )
-end
-
-
 # =============================================================================
 # PCCT Scanner Helpers (PCCT-SCANNER-BRIDGE)
 # =============================================================================
@@ -815,130 +705,8 @@ end
     is_pcct(scanner::Scanner) -> Bool
 
 Check if scanner is configured for photon-counting CT mode.
-
-# Example
-```julia
-scanner = Scanner(detector_type = :photon_counting, n_energy_bins=4, energy_thresholds=[20,35,55,70])
-is_pcct(scanner)  # true
-
-scanner = Scanner()  # Default EID
-is_pcct(scanner)  # false
-```
 """
 is_pcct(scanner::Scanner) = scanner.detector_type == :photon_counting
-
-"""
-    create_naeotom_alpha(; mode::Symbol=:standard) -> Scanner
-
-Create a Siemens NAEOTOM Alpha-like PCCT scanner configuration.
-
-The NAEOTOM Alpha is the first clinical photon-counting CT system (FDA cleared 2021).
-Uses CdTe detector crystal with 4 energy thresholds.
-
-# Keyword Arguments
-- `mode::Symbol = :standard`: Detector mode
-  - `:standard` — 2×2 binned pixels (0.4 mm), 144 rows, 57.6 mm z-coverage
-  - `:uhr` — Unbinned pixels (0.2 mm), 120 rows, UHR spatial resolution
-
-# Scanner Specifications (FDA 510(k) K201501)
-- Source-to-isocenter: 595 mm
-- Source-to-detector: 1085.5 mm
-- Detector: CdTe, 1.6 mm thick
-- 4 energy bins: 20, 35, 55, 70 keV thresholds
-- Energy resolution: ~10 keV FWHM at 60 keV
-- Min rotation time: 0.25 s
-
-# Example
-```julia
-scanner = create_naeotom_alpha()
-is_pcct(scanner)  # true
-scanner.n_energy_bins  # 4
-
-# UHR mode for high-resolution imaging
-scanner_uhr = create_naeotom_alpha(mode=:uhr)
-scanner_uhr.detector_row_size  # 0.2 mm (vs 0.4 mm standard)
-```
-"""
-function create_naeotom_alpha(; mode::Symbol=:standard)
-    # NAEOTOM Alpha native dexel size at detector face (Konrad 2025, PMB 70:065004)
-    native_col = 0.275   # channel direction at detector face (mm)
-    native_row = 0.322   # slice direction at detector face (mm)
-
-    # Geometry
-    sid = 595.0   # source-to-isocenter (mm)
-    sdd = 1085.5  # source-to-detector (mm)
-    magnification = sdd / sid  # ~1.824
-
-    if mode == :uhr
-        # UHR: unbinned (1×1)
-        binning = 1
-        pixel_col_iso = native_col / magnification             # ~0.151 mm at iso
-        pixel_row_iso = native_row / magnification             # ~0.176 mm at iso
-        n_rows = 120
-        n_cols = ceil(Int, 500.0 / pixel_col_iso)
-    elseif mode == :standard
-        # Standard: 2×2 binned
-        binning = 2
-        pixel_col_iso = (native_col * binning) / magnification # ~0.302 mm at iso
-        pixel_row_iso = (native_row * binning) / magnification # ~0.353 mm at iso
-        n_rows = 144
-        n_cols = ceil(Int, 500.0 / pixel_col_iso)
-    else
-        error("mode must be :standard or :uhr (got :$mode)")
-    end
-
-    return Scanner(
-        # Geometry (NAEOTOM Alpha specs)
-        source_to_isocenter = sid,
-        source_to_detector = sdd,
-
-        # Detector array (50cm scan diameter)
-        detector_rows = n_rows,
-        detector_cols = n_cols,
-        detector_row_size = pixel_row_iso,
-        detector_col_size = pixel_col_iso,
-        detector_shape = CURVED_DETECTOR,
-        detector_row_offset = 0.0,
-        detector_col_offset = pixel_col_iso / 2,  # Quarter-detector offset
-
-        # Source
-        focal_spot_width = 0.4,
-        focal_spot_length = 0.5,
-        target_angle = 7.0,
-
-        # Gantry
-        gantry_rotation_time = 0.25,
-        scan_diameter = 500.0,
-        gantry_aperture = 820.0,
-
-        # Filters
-        flat_filter_material = :aluminum,
-        flat_filter_thickness = 2.5,
-        bowtie_filter = :large_body,
-
-        # Detection (CdTe direct-conversion)
-        detector_material = :cdte,
-        detector_depth = 1.6,
-        fill_factor_row = 0.95,
-        fill_factor_col = 0.95,
-        detection_gain = 1.0,       # Direct conversion (no scintillator gain)
-        electronic_noise = 0.0,     # PCCT has no electronic noise (threshold eliminates it)
-
-        # PCCT fields
-        detector_type = :photon_counting,
-        n_energy_bins = 4,
-        energy_thresholds = [20.0, 35.0, 55.0, 70.0],
-        energy_resolution = 10.0,
-        charge_sharing_fwhm = 0.08,
-        dead_time_ns = 5.0,
-        pixel_mode = mode,
-
-        # Native dexel parameters (Konrad 2025)
-        native_dexel_col_mm = native_col,
-        native_dexel_row_mm = native_row,
-        binning_factor = binning
-    )
-end
 
 """
     _build_pcct_detector(scanner::Scanner) -> PhotonCountingDetector
@@ -997,7 +765,7 @@ end
 # Scanner definition
 export Scanner, DetectorShape, CURVED_DETECTOR, FLAT_DETECTOR
 export validate_scanner, print_scanner_summary
-export is_pcct, create_naeotom_alpha
+export is_pcct
 
 # CTGeometry (computed positions for simulation)
-export CTGeometry, create_aquilion_one
+export CTGeometry

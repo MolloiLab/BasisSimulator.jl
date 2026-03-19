@@ -1642,7 +1642,7 @@ md"""
 
 # ╔═╡ 07080007-0000-4000-8000-000000000000
 sim_opts = BS.SimOptions(
-    fidelity = :high,
+    fidelity = :eict,
     seed = 1234,
 )
 
@@ -2847,7 +2847,7 @@ sim_hu_hir_6 = let
 end
 
 # ╔═╡ cbe20e99-ca03-4045-a898-2de307d19fce
-sim_results_hir = [sim_hu_hir_1, sim_hu_hir_2, sim_hu_hir_3, sim_hu_hir_4, sim_hu_hir_5, sim_hu_hir_6]
+sim_results_hir = [sim_hu_hir_1, sim_hu_hir_2, sim_hu_hir_3, sim_hu_hir_4, sim_hu_hir_5, sim_hu_hir_6];
 
 # ╔═╡ ed7cbb89-2f22-4587-ad7f-1f3224b73f80
 sim_oriented_hir = let
@@ -2861,7 +2861,7 @@ sim_oriented_hir = let
             )
             for r in sim_results_hir
     ]
-end
+end;
 
 # ╔═╡ 10a11afd-004a-467a-b808-7e761cb21678
 # Reuse FBP segmentation (same phantom geometry) for HIR measurements
@@ -3537,7 +3537,7 @@ md"""
 ### DE: Projection-Domain 2-Material Decomposition + Mono+
 
 **Sinogram-domain pipeline** (Alvarez & Macovski 1976; Cardinal & Fenster 1990):
-1. Raw sinograms (no BHC — simulate!() has bhc=false for :high fidelity)
+1. Raw sinograms (no BHC — simulate!() has bhc=false for :eict fidelity)
 2. Polynomial calibration using exact known spectra (bowtie, filters, etc.)
 3. Per-ray polynomial inversion → material sinograms (water, iodine area densities)
 4. Light sinogram smoothing → FBP reconstruct → density images

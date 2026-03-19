@@ -14,26 +14,21 @@ Each `use_*` field is `Bool`: `true` = effect ON, `false` = effect OFF.
 These are resolved from fidelity presets and user overrides at construction time.
 
 # Fields
-- `fidelity::Symbol`: Preset level (:pcct, :high, :medium, :low, :ideal). Default :high.
+- `fidelity::Symbol`: Preset level (:eict, :pcct). Default :eict.
 - `use_fill_factor::Bool`: Enable detector fill factor.
-- `use_flat_filter::Bool`: Enable flat (inherent) filtration.
-- `use_bowtie_filter::Bool`: Enable bowtie filter.
 - `use_detector_efficiency::Bool`: Enable energy-dependent detector efficiency.
 - `use_scatter::Bool`: Enable scatter simulation.
 - `use_scatter_correction::Bool`: Enable scatter correction in signal chain.
-- `use_crosstalk::Bool`: Enable electronic detector crosstalk.
 - `use_optical_crosstalk::Bool`: Enable optical crosstalk.
 - `use_focal_spot::Bool`: Enable focal spot blur.
 - `use_noise::Bool`: Enable quantum/electronic noise.
 - `use_lag::Bool`: Enable detector lag (afterglow).
 - `use_heel_effect::Bool`: Enable anode heel effect.
-- `use_das::Bool`: Enable DAS model (BROKEN — always false).
 - `use_bhc::Bool`: Enable beam hardening correction.
 - `use_pcct_corrections::Bool`: Enable PCCT detector corrections (inverse pileup, inverse charge sharing).
 - `pcct_noise_reduction::Float64`: PCCT noise reduction factor (0.0–1.0). Approximates clinical
   vendor reconstruction (e.g., Siemens QIR). 0.0 = raw physics (default), 0.7 = 70% noise reduction
   (~QIR-3). Only affects PCCT sinogram noise; EICT noise is unaffected.
-- `n_energy_bins::Int`: Number of spectrum bins for polychromatic mode. Default 30.
 - `seed::Union{Int, Nothing}`: Random seed for reproducibility. Default 42.
 - `detector_efficiency_mode::Symbol`: Override detector efficiency calculation mode.
   `:auto` (default) = let driver decide; `:mc_lut` = force MC LUT; `:beer_lambert` = force analytical.
@@ -41,22 +36,18 @@ These are resolved from fidelity presets and user overrides at construction time
 struct SimOptions
     fidelity::Symbol
 
-    # --- Physics Pipeline (10 effects) ---
+    # --- Physics Pipeline (7 effects) ---
     use_fill_factor::Bool
-    use_flat_filter::Bool
-    use_bowtie_filter::Bool
     use_detector_efficiency::Bool
     use_scatter::Bool
     use_scatter_correction::Bool
-    use_crosstalk::Bool
     use_optical_crosstalk::Bool
     use_focal_spot::Bool
     use_noise::Bool
     use_lag::Bool
 
-    # --- Signal Chain (3 effects) ---
+    # --- Signal Chain (2 effects) ---
     use_heel_effect::Bool
-    use_das::Bool
     use_bhc::Bool
 
     # --- PCCT Corrections ---
@@ -65,7 +56,6 @@ struct SimOptions
 
     # --- General ---
     seed::Union{Int,Nothing}
-    n_energy_bins::Int
     detector_efficiency_mode::Symbol   # :auto, :mc_lut, :beer_lambert
 end
 
@@ -75,11 +65,8 @@ end
 Create simulation options with fidelity presets and per-effect overrides.
 
 # Presets (via `fidelity`)
-- `:ideal`: All effects OFF — geometric ray tracing only.
-- `:low`: Noise only.
-- `:medium`: Noise + focal_spot + crosstalk + flat_filter + bhc (polychromatic).
-- `:high`: All effects ON except DAS (BROKEN).
-- `:pcct`: Same as :high but with PCCT detector corrections enabled.
+- `:eict`: All EICT effects ON (polychromatic, full physics).
+- `:pcct`: Same as :eict but with PCCT detector corrections enabled.
 
 # Keyword Overrides
 Pass `use_*=true/false` to override the fidelity preset for individual effects.
@@ -89,96 +76,66 @@ Pass `use_*=true/false` to override the fidelity preset for individual effects.
 
 # Examples
 ```julia
-SimOptions(fidelity=:high)                         # Full physics
-SimOptions(fidelity=:high, use_scatter=false)       # Everything except scatter
-SimOptions(fidelity=:ideal, use_noise=true)         # Noise only (like old :low)
-SimOptions(fidelity=:medium, use_bowtie_filter=true) # Medium + bowtie
+SimOptions(fidelity=:eict)                         # Full physics
+SimOptions(fidelity=:eict, use_scatter=false)       # Everything except scatter
+SimOptions(fidelity=:pcct)                          # PCCT mode
 ```
 """
 function SimOptions(;
-    fidelity::Symbol=:high,
+    fidelity::Symbol=:eict,
     use_fill_factor::Union{Bool,Nothing}=nothing,
-    use_flat_filter::Union{Bool,Nothing}=nothing,
-    use_bowtie_filter::Union{Bool,Nothing}=nothing,
     use_detector_efficiency::Union{Bool,Nothing}=nothing,
     use_scatter::Union{Bool,Nothing}=nothing,
     use_scatter_correction::Union{Bool,Nothing}=nothing,
-    use_crosstalk::Union{Bool,Nothing}=nothing,
     use_optical_crosstalk::Union{Bool,Nothing}=nothing,
     use_focal_spot::Union{Bool,Nothing}=nothing,
     use_noise::Union{Bool,Nothing}=nothing,
     use_lag::Union{Bool,Nothing}=nothing,
     use_heel_effect::Union{Bool,Nothing}=nothing,
-    use_das::Union{Bool,Nothing}=nothing,
     use_bhc::Union{Bool,Nothing}=nothing,
     use_pcct_corrections::Union{Bool,Nothing}=nothing,
     pcct_noise_reduction::Float64=0.0,
-    n_energy_bins::Int=30,
     seed::Union{Int,Nothing}=42,
     detector_efficiency_mode::Symbol=:auto
 )
-    # Fidelity preset defaults for all 15 effects
-    # :ideal = all OFF; :low = noise only; :medium = polychromatic subset; :high = all ON except DAS; :pcct = :high + corrections
+    # Fidelity preset defaults
+    # :eict = all EICT effects ON; :pcct = :eict + PCCT corrections
     defaults = if fidelity == :pcct
-        # Same as :high but with PCCT corrections enabled
-        # flat_filter=false: flat filter is applied in spectrum domain by resolve_spectrum()
-        # bowtie_filter=false: bowtie is folded into spectral projector (per-energy transmission)
-        (fill_factor=true, flat_filter=false, bowtie_filter=false, detector_efficiency=true,
-            scatter=true, scatter_correction=true, crosstalk=true, optical_crosstalk=true,
+        (fill_factor=true, detector_efficiency=true,
+            scatter=true, scatter_correction=true, optical_crosstalk=true,
             focal_spot=true, noise=true, lag=true,
-            heel_effect=true, das=false, bhc=false, pcct_corrections=true)
-    elseif fidelity == :high
-        # flat_filter=false: flat filter is applied in spectrum domain by resolve_spectrum()
-        # bowtie_filter=false: bowtie is folded into spectral projector (per-energy transmission)
-        (fill_factor=true, flat_filter=false, bowtie_filter=false, detector_efficiency=true,
-            scatter=true, scatter_correction=true, crosstalk=true, optical_crosstalk=true,
+            heel_effect=true, bhc=false, pcct_corrections=true)
+    elseif fidelity == :eict
+        (fill_factor=true, detector_efficiency=true,
+            scatter=true, scatter_correction=true, optical_crosstalk=true,
             focal_spot=true, noise=true, lag=true,
-            heel_effect=true, das=false, bhc=false, pcct_corrections=false)  # das=false: DAS model is BROKEN; bhc=false: use two-material BHC post-simulation
-    elseif fidelity == :medium
-        (fill_factor=false, flat_filter=true, bowtie_filter=false, detector_efficiency=false,
-            scatter=false, scatter_correction=false, crosstalk=true, optical_crosstalk=false,
-            focal_spot=true, noise=true, lag=false,
-            heel_effect=false, das=false, bhc=false, pcct_corrections=false)
-    elseif fidelity == :low
-        (fill_factor=false, flat_filter=false, bowtie_filter=false, detector_efficiency=false,
-            scatter=false, scatter_correction=false, crosstalk=false, optical_crosstalk=false,
-            focal_spot=false, noise=true, lag=false,
-            heel_effect=false, das=false, bhc=false, pcct_corrections=false)
-    elseif fidelity == :ideal
-        (fill_factor=false, flat_filter=false, bowtie_filter=false, detector_efficiency=false,
-            scatter=false, scatter_correction=false, crosstalk=false, optical_crosstalk=false,
-            focal_spot=false, noise=false, lag=false,
-            heel_effect=false, das=false, bhc=false, pcct_corrections=false)
+            heel_effect=true, bhc=false, pcct_corrections=false)
     else
-        error("Unknown fidelity preset: $fidelity. Use :pcct, :high, :medium, :low, or :ideal.")
+        error("Unknown fidelity preset: $fidelity. Use :eict or :pcct.")
     end
 
     # Resolve each toggle: user override wins, otherwise use preset default
     _fill_factor = isnothing(use_fill_factor) ? defaults.fill_factor : use_fill_factor
-    _flat_filter = isnothing(use_flat_filter) ? defaults.flat_filter : use_flat_filter
-    _bowtie_filter = isnothing(use_bowtie_filter) ? defaults.bowtie_filter : use_bowtie_filter
     _detector_efficiency = isnothing(use_detector_efficiency) ? defaults.detector_efficiency : use_detector_efficiency
     _scatter = isnothing(use_scatter) ? defaults.scatter : use_scatter
     _scatter_correction = isnothing(use_scatter_correction) ? defaults.scatter_correction : use_scatter_correction
-    _crosstalk = isnothing(use_crosstalk) ? defaults.crosstalk : use_crosstalk
     _optical_crosstalk = isnothing(use_optical_crosstalk) ? defaults.optical_crosstalk : use_optical_crosstalk
     _focal_spot = isnothing(use_focal_spot) ? defaults.focal_spot : use_focal_spot
     _noise = isnothing(use_noise) ? defaults.noise : use_noise
     _lag = isnothing(use_lag) ? defaults.lag : use_lag
     _heel_effect = isnothing(use_heel_effect) ? defaults.heel_effect : use_heel_effect
-    _das = isnothing(use_das) ? defaults.das : use_das
     _bhc = isnothing(use_bhc) ? defaults.bhc : use_bhc
     _pcct_corrections = isnothing(use_pcct_corrections) ? defaults.pcct_corrections : use_pcct_corrections
 
     return SimOptions(
         fidelity,
-        _fill_factor, _flat_filter, _bowtie_filter, _detector_efficiency,
-        _scatter, _scatter_correction, _crosstalk, _optical_crosstalk,
+        _fill_factor, _detector_efficiency,
+        _scatter, _scatter_correction, _optical_crosstalk,
         _focal_spot, _noise, _lag,
-        _heel_effect, _das, _bhc,
+        _heel_effect, _bhc,
         _pcct_corrections,
         clamp(pcct_noise_reduction, 0.0, 1.0),
-        seed, n_energy_bins,
+        seed,
         detector_efficiency_mode
     )
 end

@@ -512,7 +512,7 @@ Clinical-quality simulation with full physics:
 
 # ╔═╡ a70bc722-e769-4132-b082-b0e89a6822b1
 sim_opts_eict = BS.SimOptions(
-	fidelity = :high,
+	fidelity = :eict,
 	# n_energy_bins = 100,
 	# n_energy_bins = 1,
 	
@@ -537,7 +537,7 @@ sim_opts_eict = BS.SimOptions(
 
 # ╔═╡ a70bc722-e769-4132-b082-b0e89a6822b2
 sim_opts_pcct = BS.SimOptions(
-	fidelity = :high,
+	fidelity = :eict,
 	pcct_noise_reduction = 0.60,
 	# n_energy_bins = 100,
 	# n_energy_bins = 2,

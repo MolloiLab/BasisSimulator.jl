@@ -321,7 +321,7 @@ begin
 end
 
 # ╔═╡ 00040004-0000-4000-8000-000000000000
-sim_opts = BS.SimOptions(fidelity = :high, seed = 1234)
+sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234)
 
 # ╔═╡ 00040005-0000-4000-8000-000000000000
 # X-ray spectrum: raw tube output vs filtered (flat filter + additional Al)

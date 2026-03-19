@@ -1207,8 +1207,8 @@ sim_scanner = let
         detector_type = :photon_counting,
         n_energy_bins = 4,
         energy_thresholds = [20.0, 35.0, 55.0, 70.0],  # 4-threshold clinical config
-        energy_resolution = 10.0,              # keV FWHM (superseded by DRM at :high)
-        charge_sharing_fwhm = 0.08,            # mm (superseded by Koch-Mehrin at :high)
+        energy_resolution = 10.0,              # keV FWHM (superseded by DRM at :eict)
+        charge_sharing_fwhm = 0.08,            # mm (superseded by Koch-Mehrin at :eict)
         dead_time_ns = 5.0,                    # ns (Yang 2025 pileup)
         pixel_mode = :standard,
 
@@ -1251,7 +1251,7 @@ end
 
 # ╔═╡ 08090005-0000-4000-8000-000000000000
 sim_opts = BS.SimOptions(
-    fidelity = :high,
+    fidelity = :eict,
     seed = 1234,
 )
 

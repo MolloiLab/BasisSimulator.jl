@@ -65,7 +65,7 @@ md"""
 
 **Background**: Dual-energy CT enables Virtual Monoenergetic Imaging (VMI), which synthesizes images at any X-ray energy from a dual-kVp acquisition. VMI provides energy-dependent contrast optimization and quantitative material characterization.
 
-**Purpose**: This notebook validates BasisSimulator.jl's complete dual-kVp VMI pipeline using full polychromatic physics (`SimOptions(fidelity=:high)`) and clinical scanner parameters. We verify that VMI HU values follow expected energy-dependent trends and correlate strongly with NIST reference attenuation data.
+**Purpose**: This notebook validates BasisSimulator.jl's complete dual-kVp VMI pipeline using full polychromatic physics (`SimOptions(fidelity=:eict)`) and clinical scanner parameters. We verify that VMI HU values follow expected energy-dependent trends and correlate strongly with NIST reference attenuation data.
 
 **Methods**:
 1. Dual-kVp acquisition (80/140 kVp) of a Gammex 472 phantom with full physics
@@ -145,7 +145,7 @@ begin
 end
 
 # ╔═╡ a0000001-0001-0001-0001-000000000013
-sim_opts = BS.SimOptions(fidelity=:high, seed=42)
+sim_opts = BS.SimOptions(fidelity=:eict, seed=42)
 
 # ╔═╡ a0000001-0001-0001-0001-000000000014
 recon_opts = BS.ReconOptions(

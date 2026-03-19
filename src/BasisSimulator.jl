@@ -95,8 +95,6 @@ include("detector/scatter.jl")
 # Protocol definitions
 include("source/protocol.jl")
 
-# Detector response and noise modeling
-include("detector/detector_noise.jl")
 
 # Detector absorption efficiency and DQE
 include("detector/detector_efficiency.jl")
@@ -104,14 +102,12 @@ include("detector/detector_efficiency.jl")
 # Bowtie filter modeling
 include("source/bowtie_filter.jl")
 
-# Flat (inherent) filter modeling
-include("source/flat_filter.jl")
 
 # Finite focal spot modeling
 include("source/focal_spot.jl")
 
-# Detector crosstalk modeling (electronic and optical)
-include("detector/crosstalk.jl")
+# Detector optical crosstalk modeling
+include("detector/optical_crosstalk.jl")
 
 # Detector lag (afterglow) modeling
 include("detector/detector_lag.jl")
@@ -127,9 +123,6 @@ include("detector/fill_factor.jl")
 
 # Heel effect (anode self-attenuation)
 include("source/heel_effect.jl")
-
-# Data Acquisition System model (signal chain, noise, quantization)
-include("detector/das_model.jl")
 
 # Beam hardening correction (water-based polynomial)
 include("correction/beam_hardening_correction.jl")
@@ -158,8 +151,7 @@ include("correction/calibration.jl")
 include("projection/polychromatic.jl")
 
 # =============================================================================
-# Reconstruction (TIGRE port via AcceleratedKernels.jl)
-# Organized by clinical terminology: FBP, Hybrid IR, MBIR
+# Reconstruction
 # =============================================================================
 
 # --- Core Components ---
@@ -174,48 +166,14 @@ include("reconstruction/core/filtering.jl")
 # FDK reconstruction (filter + backproject)
 include("reconstruction/fbp/fdk.jl")
 
-# --- Classic Iterative Reconstruction ---
-# SIRT iterative reconstruction
-# Reference: CERN/TIGRE/MATLAB/Algorithms/SIRT.m
-include("reconstruction/ir/sirt.jl")
+# --- Iterative Reconstruction Utilities ---
+# Huber penalty, projection/image weights (shared by HIR)
+include("reconstruction/ir/utils.jl")
 
-# CGLS iterative reconstruction
-# Reference: CERN/TIGRE/MATLAB/Algorithms/CGLS.m
-include("reconstruction/ir/cgls.jl")
-
-# --- Regularization ---
-# Total Variation regularization for iterative reconstruction
-# Reference: Rudin-Osher-Fatemi (ROF) model
-include("reconstruction/regularization/tv_regularization.jl")
-
-# --- Statistical IR (PWLS core) ---
-# Statistical Iterative Reconstruction (ASIR-style)
-# Reference: GE ASIR/ASIR-V, Penalized Weighted Least Squares
-include("reconstruction/statistical_ir.jl")
-
-# --- Hybrid IR (TRUE Hybrid IR) ---
+# --- Hybrid IR ---
 # Vendor-general Hybrid IR with PWLS refinement
-# Reference: Geyer et al. 2015, Willemink & Noël 2019, SAFIRE clinical studies
+# Reference: Geyer et al. 2015, Willemink & Noel 2019, SAFIRE clinical studies
 include("reconstruction/hybrid_ir/hybrid_ir.jl")
-
-# --- Model-Based IR ---
-# Model-Based Iterative Reconstruction (TrueFidelity/ADMIRE/QIR-style)
-# Reference: Thibault et al. Med Phys 2007, Siemens ADMIRE/QIR
-include("reconstruction/mbir/mbir.jl")
-
-# =============================================================================
-# Clinical Scanner Configurations
-# =============================================================================
-
-# Scanner specifications (GE, Siemens, Canon, etc.)
-include("scanners/scanners.jl")
-
-# =============================================================================
-# Spectral Imaging (Dual-Energy + PCCT)
-# =============================================================================
-
-# Dual kVp (GSI) forward projection, material decomposition, VMI
-include("spectral/dual_energy.jl")
 
 # =============================================================================
 # Photon-Counting CT (Spectral Imaging)
@@ -232,20 +190,7 @@ include("detector/pcct/detector_response.jl")
 include("spectral/pcct_spectral.jl")
 
 # Unified VMI pipeline (shared by dual-kVp and PCCT)
-include("spectral/vmi.jl")
-
-# =============================================================================
-# Image Quality Metrics (AAPM TG-233)
-# =============================================================================
-
-# Modulation Transfer Function (MTF) - spatial resolution
-include("metrics/mtf.jl")
-
-# Noise Power Spectrum (NPS) - noise texture characterization
-include("metrics/nps.jl")
-
-# Point Spread Function (PSF) - spatial resolution in real space
-include("metrics/psf.jl")
+include("reconstruction/vmi/vmi.jl")
 
 # =============================================================================
 # API (top-level orchestration)
