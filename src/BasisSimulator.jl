@@ -166,9 +166,9 @@ include("reconstruction/core/filtering.jl")
 # FDK reconstruction (filter + backproject)
 include("reconstruction/fbp/fdk.jl")
 
-# --- Penalties ---
-# Regularization penalties (Huber edge-preserving)
-include("reconstruction/penalties.jl")
+# --- Iterative Reconstruction Utilities ---
+# Huber penalty, projection/image weights (shared by HIR)
+include("reconstruction/ir/utils.jl")
 
 # --- Hybrid IR ---
 # Vendor-general Hybrid IR with PWLS refinement

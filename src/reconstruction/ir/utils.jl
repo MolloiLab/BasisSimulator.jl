@@ -1,22 +1,22 @@
 # =============================================================================
-# Regularization Penalties
+# Iterative Reconstruction Utilities
 # =============================================================================
 #
-# Edge-preserving penalty functions for iterative reconstruction.
+# Shared components for iterative reconstruction algorithms (HIR, etc.):
+#   - Huber penalty (edge-preserving regularization)
+#   - Projection/image domain weight computation
 #
-# Currently provides:
-#   - HuberPenalty: quadratic/linear hybrid, controlled by delta threshold
-#
-# GPU-native via AcceleratedKernels.jl foreachindex.
+# GPU-native via AcceleratedKernels.jl.
 # =============================================================================
 
 import AcceleratedKernels as AK
 
 export PenaltyType, HuberPenalty
 export compute_huber_penalty, compute_huber_gradient!
+export compute_projection_weights, compute_image_weights
 
 # =============================================================================
-# Abstract Type
+# Huber Penalty
 # =============================================================================
 
 """
@@ -26,10 +26,6 @@ Abstract type for regularization penalties.
 """
 abstract type PenaltyType end
 
-# =============================================================================
-# Huber Penalty
-# =============================================================================
-
 """
     HuberPenalty <: PenaltyType
 
@@ -37,18 +33,12 @@ Huber penalty: edge-preserving quadratic/linear hybrid.
 
 ψ(t) = t²/2           if |t| ≤ δ
 ψ(t) = δ|t| - δ²/2    if |t| > δ
-
-The δ parameter controls the edge threshold.
 """
 struct HuberPenalty <: PenaltyType
-    delta::Float32  # Edge threshold
+    delta::Float32
 end
 
 HuberPenalty() = HuberPenalty(0.01f0)
-
-# =============================================================================
-# Huber Penalty Computation
-# =============================================================================
 
 @inline function _huber(t::T, δ::T) where T
     abs_t = abs(t)
@@ -71,10 +61,7 @@ end
 """
     compute_huber_penalty(x, delta)
 
-Compute Huber penalty value.
-
-ψ(t) = t²/2           if |t| ≤ δ
-ψ(t) = δ|t| - δ²/2    if |t| > δ
+Compute Huber penalty value over 3D volume with 6-connected neighborhood.
 """
 function compute_huber_penalty(
     x::AbstractArray{T, 3},
@@ -94,7 +81,6 @@ function compute_huber_penalty(
         val = x[i, j, k]
         penalty = zero(T)
 
-        # Apply Huber to each neighbor difference
         if i < nx
             diff = x[i+1, j, k] - val
             penalty += _huber(diff, δ)
@@ -117,10 +103,7 @@ end
 """
     compute_huber_gradient!(grad, x, delta)
 
-Compute gradient of Huber penalty in-place.
-
-ψ'(t) = t        if |t| ≤ δ
-ψ'(t) = δ·sign(t) if |t| > δ
+Compute gradient of Huber penalty in-place (6-connected neighborhood).
 """
 function compute_huber_gradient!(
     grad::AbstractArray{T, 3},
@@ -140,7 +123,6 @@ function compute_huber_gradient!(
         val = x[i, j, k]
         g = zero(T)
 
-        # Forward differences
         if i < nx
             diff = x[i+1, j, k] - val
             g -= _huber_deriv(diff, δ)
@@ -154,7 +136,6 @@ function compute_huber_gradient!(
             g -= _huber_deriv(diff, δ)
         end
 
-        # Backward differences
         if i > 1
             diff = val - x[i-1, j, k]
             g += _huber_deriv(diff, δ)
@@ -172,4 +153,48 @@ function compute_huber_gradient!(
     end
 
     return grad
+end
+
+# =============================================================================
+# Projection / Image Domain Weights
+# =============================================================================
+
+"""
+    compute_projection_weights(geom, volume_size, T) -> sinogram-shaped weights
+
+Compute W = 1 / (A · 1). Normalizes for ray length differences.
+"""
+function compute_projection_weights(
+    geom::CTGeometry,
+    volume_size::NTuple{3, Int},
+    ::Type{T}
+) where T <: AbstractFloat
+    ones_volume = ones(T, volume_size...)
+    ray_sums = siddon_forward_project(ones_volume, geom)
+    eps = T(1e-8)
+    AK.foreachindex(ray_sums) do idx
+        val = ray_sums[idx]
+        ray_sums[idx] = val > eps ? one(T) / val : zero(T)
+    end
+    return ray_sums
+end
+
+"""
+    compute_image_weights(geom, volume_size, T) -> volume-shaped weights
+
+Compute V = 1 / (Aᵀ · 1). Accounts for non-uniform voxel sensitivity.
+"""
+function compute_image_weights(
+    geom::CTGeometry,
+    volume_size::NTuple{3, Int},
+    ::Type{T}
+) where T <: AbstractFloat
+    ones_sino = ones(T, geom.n_cols, geom.n_rows, geom.n_angles)
+    voxel_sums = backproject(ones_sino, geom, volume_size)
+    eps = T(1e-8)
+    AK.foreachindex(voxel_sums) do idx
+        val = voxel_sums[idx]
+        voxel_sums[idx] = val > eps ? one(T) / val : zero(T)
+    end
+    return voxel_sums
 end
