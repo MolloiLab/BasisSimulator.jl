@@ -1251,7 +1251,7 @@ end
 
 # ╔═╡ 08090005-0000-4000-8000-000000000000
 sim_opts = BS.SimOptions(
-    fidelity = :eict,
+    fidelity = :pcct,
     seed = 1234,
 )
 
@@ -1341,22 +1341,15 @@ sim_scan2 = let
 
     geom = ws.geom
     combined_sino = ws.combined
-    mat_map = result.mat_map
     pcct_sino = result.pcct_sino
 
-    # Save I0 values for notebook-level combine debugging
+    # Save I0 values for notebook-level combine
     I0_bins_combine = copy(ws.I0_bins)
     I0_bins_norm = copy(ws.I0_bins_norm)
 
     # Copy to CPU — 4 bins
     combined_cpu = Array(combined_sino)
     bins_cpu = [Array(pcct_sino.bins[i]) for i in 1:length(pcct_sino.bins)]
-
-    # Save material map components for VMI (need GPU re-upload later)
-    mat1_cpu = mat_map !== nothing ? Array(mat_map.material1) : nothing
-    mat2_cpu = mat_map !== nothing ? Array(mat_map.material2) : nothing
-    mat1_name = mat_map !== nothing ? mat_map.material1_name : :water
-    mat2_name = mat_map !== nothing ? mat_map.material2_name : :iodine
 
     # Cleanup
     ws = nothing; result = nothing; GC.gc(true)
@@ -1366,10 +1359,6 @@ sim_scan2 = let
         bins = bins_cpu,
         I0_bins = I0_bins_combine,
         I0_bins_norm = I0_bins_norm,
-        mat1 = mat1_cpu,
-        mat2 = mat2_cpu,
-        mat1_name = mat1_name,
-        mat2_name = mat2_name,
         geom = geom,
     )
 end
