@@ -30,6 +30,7 @@ using LinearAlgebra
 using Statistics
 using Random
 using DelimitedFiles
+using Serialization
 using Unitful
 using FFTW
 import AcceleratedKernels as AK
@@ -55,13 +56,6 @@ include("object/materials.jl")
 # Attenuation coefficient computation
 include("object/attenuation.jl")
 
-# PCCT detector physics: CdTe material constants, charge transport, fluorescence
-# Reference: Koch-Mehrin 2020 (NIM-A 976:164241), Konrad 2025 (PMB 70:065004)
-include("detector/pcct/cdte_constants.jl")
-include("detector/pcct/charge_transport.jl")
-include("detector/pcct/k_fluorescence.jl")
-include("detector/pcct/charge_collection.jl")
-include("detector/pcct/pileup_model.jl")
 
 # =============================================================================
 # Geometry
@@ -179,18 +173,20 @@ include("reconstruction/hybrid_ir/hybrid_ir.jl")
 # Photon-Counting CT (Spectral Imaging)
 # =============================================================================
 
-# Photon-counting detector model: energy binning, charge sharing, pile-up
+# Photon-counting detector model: energy binning, forward projection
 include("detector/photon_counting.jl")
 
-# Unified Detector Response Matrix (DRM) combining all energy-dependent physics
-# Must be after photon_counting.jl (uses get_detector_material_properties, etc.)
-include("detector/pcct/detector_response.jl")
+# MC-based detector response matrix (replaces analytical DRM)
+include("detector/pcct/mc_response.jl")
 
-# PCCT spectral imaging: native VMI, K-edge, effective Z, multi-material decomposition
+# MC-based pulse pileup model (replaces analytical Taguchi model)
+include("detector/pcct/mc_pileup.jl")
+
+# Cumulative threshold sinograms (T1/T4 clinical readouts)
+include("detector/pcct/pcct_cumulative.jl")
+
+# PCCT spectral imaging: K-edge, effective Z, multi-material decomposition
 include("spectral/pcct_spectral.jl")
-
-# Unified VMI pipeline (shared by dual-kVp and PCCT)
-include("reconstruction/vmi/vmi.jl")
 
 # =============================================================================
 # API (top-level orchestration)

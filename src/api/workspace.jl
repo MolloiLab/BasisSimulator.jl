@@ -36,22 +36,10 @@ mutable struct PCCTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A1<:Abstr
     sino_buf::A3               # forward projection scratch, reused per energy
 
     # ─── Spatial kernel scratch (GPU-side) ───
-    scratch::A3                # ONE buffer for all neighbor kernels
-    total_counts::A3           # for anti-coincidence (sum across bins)
+    scratch::A3                # ONE buffer for spatial kernels
 
     # ─── Combine (GPU-side) ───
     combined::A3               # _combine_pcct_bins output (reused ideal + noisy)
-
-    # ─── VMI decomposition (GPU-side, unified with dual-kVp) ───
-    vmi_sino_low::A3           # combined low-energy sinogram (bins 1:2 averaged)
-    vmi_sino_high::A3          # combined high-energy sinogram (bins 3:4 averaged)
-    vmi_material1::A3          # first basis material map (GPU)
-    vmi_material2::A3          # second basis material map (GPU)
-    vmi_inv_a11::T             # pre-computed 2×2 inverse decomposition matrix
-    vmi_inv_a12::T
-    vmi_inv_a21::T
-    vmi_inv_a22::T
-    vmi_sino::A3               # VMI synthesis output (GPU, reused across energies)
 
     # ─── Noise CPU staging (Phase 1: CPU RNG) ───
     noise_staging::Array{T,3}  # CPU buffer for GPU↔CPU noise transfer
@@ -77,23 +65,10 @@ mutable struct PCCTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A1<:Abstr
     rng::MersenneTwister        # pre-allocated RNG (reset with seed each call)
 
     # ─── Detector physics precomputed (small buffers) ───
-    charge_sharing_probs::Vector{Float64}     # per-bin charge sharing probabilities
-    pileup_counts::Vector{Float64}            # per-bin mean counts for pileup
-    pileup_migration::Matrix{Float64}         # spectral migration matrix (n_bins × n_bins)
-    correction_pileup_counts::Vector{Float64} # correction path counts
-    correction_migration::Matrix{Float64}     # correction migration matrix
     μ_values::Vector{T}                       # VMI attenuation coefficients (n_materials)
 
     # ─── Noise I0 ───
     noise_I0::Vector{Float64}   # per-bin I0 for noise model (n_bins)
-
-    # ─── Pileup scratch buffers (for compute_spectral_migration_matrix) ───
-    pileup_S::Matrix{Float64}           # migration matrix scratch (n_bins × n_bins)
-    pileup_thresh::Vector{Float64}      # Float64 copy of thresholds (n_bins)
-    pileup_E_low::Vector{Float64}       # bin lower edges (n_bins)
-    pileup_E_high::Vector{Float64}      # bin upper edges (n_bins)
-    pileup_E_centers::Vector{Float64}   # bin center energies (n_bins)
-    pileup_w::Vector{Float64}           # normalized bin weights (n_bins)
 
     # ─── μ lookup table (pre-computed for all energies × materials) ───
     μ_lut_cpu::Vector{T}                     # μ LUT CPU buffer (n_regions)
@@ -113,8 +88,7 @@ mutable struct PCCTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A1<:Abstr
     # ─── Native-resolution buffers (for spatial binning path) ───
     native_bins::Union{Nothing, Vector{A3}}  # per-bin at native dexel res (nothing if bf==1)
     native_sino_buf::Union{Nothing, A3}      # Siddon scratch at native res
-    native_scratch::Union{Nothing, A3}       # charge sharing scratch at native res
-    native_total_counts::Union{Nothing, A3}  # anti-coincidence at native res
+    native_scratch::Union{Nothing, A3}       # scratch at native res
     native_geom::Union{Nothing, CTGeometry}  # native-res geometry (nothing if bf==1)
     native_geom_source_positions::Union{Nothing, A2}
     native_geom_detector_centers::Union{Nothing, A2}
@@ -134,7 +108,6 @@ mutable struct PCCTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A1<:Abstr
     use_detector_fx::Bool                    # whether detector effects are applied
     use_corrections::Bool                    # whether corrections are applied
     kVp::Float64                             # max energy (kVp)
-    basis_tuple::Tuple                       # VMI basis materials tuple
 end
 
 """
@@ -188,16 +161,10 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     μ_volume = similar(ref_mask, T, vol_shape)
     sino_buf = similar(ref_mask, T, sino_shape)
     scratch = similar(ref_mask, T, sino_shape)
-    total_counts = similar(ref_mask, T, sino_shape)
     combined = similar(ref_mask, T, sino_shape)
     enoise_gpu = similar(ref_mask, T, n_elements)
 
     # VMI decomposition buffers (GPU-side, unified with dual-kVp)
-    vmi_sino_low = similar(ref_mask, T, sino_shape)
-    vmi_sino_high = similar(ref_mask, T, sino_shape)
-    vmi_material1 = similar(ref_mask, T, sino_shape)
-    vmi_material2 = similar(ref_mask, T, sino_shape)
-    vmi_sino = similar(ref_mask, T, sino_shape)
 
     # CPU-side buffers
     noise_staging = zeros(T, sino_shape)
@@ -214,12 +181,10 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     use_corrections = sim_opts.use_pcct_corrections
     kVp = Float64(maximum(energies))
     thresholds = pcct_detector.energy_thresholds_keV
-    basis_tuple = Tuple(recon_opts.vmi_basis)
-
     # Pre-compute spectral response data
     η_vec = quantum_efficiency_vector(pcct_detector.material, pcct_detector.thickness_mm, energies)
-    R_mat = compute_drm(pcct_detector, kVp)
-    R_energies_vec = drm_energy_grid(kVp; n_energy_points=size(R_mat, 1))
+    R_mat = compute_mc_drm(pcct_detector, kVp)
+    R_energies_vec = collect(range(1.0, Float64(kVp), length=size(R_mat, 1)))
 
     # Recalibrate BHC for PCCT using effective spectrum weights.
     # The PCCT combined sinogram uses effective weights w_eff = w × η × Σ_b R[E,b]
@@ -266,28 +231,8 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     rng = MersenneTwister(0)
 
     # Detector physics precomputed buffers
-    charge_sharing_probs = zeros(Float64, n_bins)
-    pileup_counts = zeros(Float64, n_bins)
-    pileup_migration = zeros(Float64, n_bins, n_bins)
-    correction_pileup_counts = zeros(Float64, n_bins)
-    correction_migration = zeros(Float64, n_bins, n_bins)
     μ_values = zeros(T, n_materials)
     noise_I0 = zeros(Float64, n_bins)
-
-    # Pileup scratch buffers (for compute_spectral_migration_matrix)
-    pileup_S = zeros(Float64, n_bins, n_bins)
-    pileup_thresh = Float64.(thresholds)
-    pileup_E_low = zeros(Float64, n_bins)
-    pileup_E_high = zeros(Float64, n_bins)
-    for b in 1:n_bins
-        pileup_E_low[b] = pileup_thresh[b]
-        pileup_E_high[b] = b < n_bins ? pileup_thresh[b+1] : Float64(kVp)
-    end
-    pileup_E_centers = zeros(Float64, n_bins)
-    for b in 1:n_bins
-        pileup_E_centers[b] = (pileup_E_low[b] + pileup_E_high[b]) / 2.0
-    end
-    pileup_w = zeros(Float64, n_bins)
 
     # μ lookup table — pre-compute μ for all regions × all energies
     n_regions = length(mats)
@@ -320,35 +265,8 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     geom_detector_v = similar(ref_mask, T, size(geom.detector_v)...)
     copyto!(geom_detector_v, T.(geom.detector_v))
 
-    # Pre-compute charge sharing probabilities (avoid re-computing each call)
-    if use_detector_fx && pcct_detector.enable_charge_sharing && pcct_detector.material == CDTE_MATERIAL
-        _cs_geom = PCCTDetectorGeometry(
-            "runtime",
-            Float64.(pcct_detector.pixel_size_mm),
-            Float64(pcct_detector.thickness_mm),
-            800.0, 680.0, 1.5, 3.0
-        )
-        _cs_fluor = compute_cdte_fluorescence_model(pcct_detector.pixel_size_mm, pcct_detector.thickness_mm)
-        for b in 1:n_bins
-            E_low = thresholds[b]
-            E_high = b < n_bins ? thresholds[b+1] : 140.0
-            E_center = (E_low + E_high) / 2.0
-            σ = mean_charge_cloud_sigma_mm(E_center, _cs_geom)
-            p_cloud = charge_sharing_probability(σ, pcct_detector.pixel_size_mm)
-            p_fluor = fluorescence_sharing_boost(E_center, _cs_fluor)
-            charge_sharing_probs[b] = min(p_cloud + p_fluor, 0.7)
-        end
-    end
-
     # Pre-compute 2×2 decomposition matrix for pseudo-dual-energy VMI
     max_keV = 120.0
-    _bin_energies = T.(compute_pcct_bin_energies(thresholds; max_keV=max_keV, kvp=Int(protocol.kVp)))
-    _split_bin = n_bins ÷ 2   # bin 1 for 2-bin, bins 1-2 for 4-bin
-    E_low = Float64(sum(_bin_energies[1:_split_bin]) / _split_bin)
-    E_high = Float64(sum(_bin_energies[_split_bin+1:end]) / (n_bins - _split_bin))
-    _basis_2 = length(basis_tuple) >= 2 ? (basis_tuple[1], basis_tuple[2]) : (:water, :iodine)
-    vmi_inv_a11, vmi_inv_a12, vmi_inv_a21, vmi_inv_a22 = compute_decomposition_matrix(_basis_2, E_low, E_high; T=T)
-
     # --- Native-resolution geometry and buffers (for spatial binning path) ---
     bf = scanner.binning_factor
     if bf > 1
@@ -373,7 +291,6 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         _native_bins = [similar(ref_mask, T, native_sino_shape) for _ in 1:n_bins]
         _native_sino_buf = similar(ref_mask, T, native_sino_shape)
         _native_scratch = similar(ref_mask, T, native_sino_shape)
-        _native_total_counts = similar(ref_mask, T, native_sino_shape)
         # Pre-computed geometry arrays at native resolution
         _n_src = similar(ref_mask, T, size(_native_geom.source_positions)...)
         copyto!(_n_src, T.(_native_geom.source_positions))
@@ -388,7 +305,6 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         _native_bins = nothing
         _native_sino_buf = nothing
         _native_scratch = nothing
-        _native_total_counts = nothing
         _n_src = nothing
         _n_det = nothing
         _n_u = nothing
@@ -399,25 +315,20 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     tube_scratch = similar(ref_mask, T, sino_shape)
 
     return PCCTWorkspace{T, typeof(sino_buf), typeof(enoise_gpu), typeof(geom_source_positions)}(
-        bins, μ_volume, sino_buf, scratch, total_counts,
+        bins, μ_volume, sino_buf, scratch,
         combined,
-        vmi_sino_low, vmi_sino_high, vmi_material1, vmi_material2,
-        vmi_inv_a11, vmi_inv_a12, vmi_inv_a21, vmi_inv_a22,
-        vmi_sino,
         noise_staging, noise_buf, enoise_cpu, enoise_gpu,
         sino_ideal_out, sino_noisy_out,
         η_vec, R_mat, R_energies_vec, I0_bins_combine, I0_bins_norm_vec, thresholds_T_vec, rng,
-        charge_sharing_probs, pileup_counts, pileup_migration,
-        correction_pileup_counts, correction_migration, μ_values, noise_I0,
-        pileup_S, pileup_thresh, pileup_E_low, pileup_E_high, pileup_E_centers, pileup_w,
+        μ_values, noise_I0,
         μ_lut_cpu, μ_lut_gpu, μ_table,
         bhc_coeffs_cpu, bhc_coeffs_gpu,
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
-        _native_bins, _native_sino_buf, _native_scratch, _native_total_counts,
+        _native_bins, _native_sino_buf, _native_scratch,
         _native_geom, _n_src, _n_det, _n_u, _n_v,
         tube_scratch,
         geom, energies, weights_vec, config, pcct_detector, mats,
-        use_detector_fx, use_corrections, kVp, basis_tuple
+        use_detector_fx, use_corrections, kVp
     )
 end
 

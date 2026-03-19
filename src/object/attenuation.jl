@@ -428,8 +428,36 @@ function to_hounsfield(reconstruction::AbstractArray{T};
     return μ_to_HU(reconstruction, μ_cal)
 end
 
+# =============================================================================
+# Basis Material Attenuation (for VMI / spectral decomposition)
+# =============================================================================
+
+"""
+    get_basis_mu(material::Symbol, energy_keV::Float64) -> Float64
+
+Get linear attenuation coefficient for a basis material at the given energy.
+
+Supports: `:water`, `:iodine` (5 mg/mL solution), `:calcium` (200 mg/cc equivalent).
+"""
+function get_basis_mu(material::Symbol, energy_keV::Float64)
+    if material == :water
+        return compute_μ_at_energy(XA.Materials.water, energy_keV)
+    elseif material == :iodine
+        μ_water = compute_μ_at_energy(XA.Materials.water, energy_keV)
+        μ_ρ_I = compute_mass_μ_at_energy(XA.Elements.Iodine, energy_keV)
+        return μ_water + (5.0 / 1000.0) * μ_ρ_I
+    elseif material == :calcium
+        μ_water = compute_μ_at_energy(XA.Materials.water, energy_keV)
+        μ_ρ_Ca = compute_mass_μ_at_energy(XA.Elements.Calcium, energy_keV)
+        return μ_water + (200.0 / 1000.0) * μ_ρ_Ca
+    else
+        error("Unknown basis material: $material. Use :water, :iodine, or :calcium")
+    end
+end
+
 # Exports
 export compute_μ_matrix, compute_μ_at_energy, compute_mass_μ_at_energy
 export μ_to_HU, HU_to_μ, get_reference_μ_water, to_hounsfield
 export compute_effective_μ_material, compute_expected_hu_spectrum
 export NistExpectedHU, get_nist_expected_hu_table
+export get_basis_mu

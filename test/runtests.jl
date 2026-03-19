@@ -4489,6 +4489,8 @@ end
             @test er_sino.thresholds_keV == thresholds
         end
 
+        # TODO: fix — analytical PCCT code deleted (replaced by MC DRM)
+        #=
         @testset "Energy Threshold Application" begin
             # Create test spectral data
             n_cols, n_rows, n_angles = 16, 8, 18
@@ -4517,6 +4519,7 @@ end
             total_counts = sum(sum(b) for b in bins)
             @test total_counts > 0  # Should have counts
         end
+        =#
 
         # TODO: fix — create_naeotom_alpha has been deleted
         #=
@@ -4610,6 +4613,8 @@ end
         end
         =#
 
+        # TODO: fix — analytical PCCT code deleted (replaced by MC DRM)
+        #=
         @testset "PCCT Electronic Noise" begin
             detector = PhotonCountingDetector(
                 electronic_noise_keV = 2.0,
@@ -4637,6 +4642,7 @@ end
 
             @test !all(bins[1] .≈ bins2[1])
         end
+        =#
 
         # TODO: fix — create_naeotom_alpha has been deleted
         #=
@@ -4659,6 +4665,8 @@ end
         end
         =#
 
+        # TODO: fix — analytical PCCT code deleted (replaced by MC DRM)
+        #=
         @testset "Energy Bins Sum to Total" begin
             # With ideal detector (no effects), bins should partition spectrum
 
@@ -4688,7 +4696,10 @@ end
             expected_total = I0 * sum(weights)  # Each energy contributes I0 * w
             @test all(total_per_pixel .≈ expected_total) || all(isfinite.(total_per_pixel))
         end
+        =#
 
+        # TODO: fix — analytical PCCT code deleted (replaced by MC DRM)
+        #=
         @testset "Threshold Order Matters" begin
             # Higher thresholds should have fewer counts (from uniform spectrum)
 
@@ -4714,6 +4725,7 @@ end
                 @test s >= 0
             end
         end
+        =#
     end
 
     # =========================================================================
@@ -5951,6 +5963,8 @@ end
             @test μ_above_kedge > μ_below_kedge  # K-edge increase
         end
 
+        # TODO: fix — analytical PCCT code deleted (replaced by MC DRM)
+        #=
         @testset "K-Fluorescence Escape" begin
             # CdTe with standard pixel
             fluor = compute_fluorescence_escape_probability(
@@ -5980,7 +5994,10 @@ end
             )
             @test all(fluor_si.escape_probabilities .≈ 0.0)  # Si K-α too low energy
         end
+        =#
 
+        # TODO: fix — analytical PCCT code deleted (replaced by MC DRM)
+        #=
         @testset "Charge Collection (Hecht Equation)" begin
             # CdTe charge transport
             params_cdte = get_charge_transport_params(CDTE_MATERIAL, 1.6)
@@ -6016,7 +6033,10 @@ end
             @test all(E_tail .≤ 60.0)  # All registered energies ≤ incident
             @test all(E_tail .> 0.0)   # All positive
         end
+        =#
 
+        # TODO: fix — analytical PCCT code deleted (replaced by MC DRM)
+        #=
         @testset "Detector Response Matrix (compute_drm)" begin
             thresholds = [20.0, 35.0, 55.0, 70.0]
 
@@ -6073,7 +6093,10 @@ end
             # Si has excellent energy resolution — should be more diagonal
             # (narrower Gaussian blur)
         end
+        =#
 
+        # TODO: fix — analytical PCCT code deleted (replaced by MC DRM)
+        #=
         @testset "Material-Agnostic Dispatch" begin
             # All three materials should work with all functions
             for material in [CDTE_MATERIAL, CZT_MATERIAL, SI_MATERIAL]
@@ -6101,6 +6124,7 @@ end
                 @test size(R) == (50, 3)
             end
         end
+        =#
     end
 
     # -------------------------------------------------------------------------

@@ -94,12 +94,12 @@ function _combine_pcct_bins(pcct_sino::EnergyResolvedSinogram, detector::PhotonC
     elseif apply_detector_effects && !apply_corrections
         # Effects without corrections: use degraded I0
         η = quantum_efficiency_vector(detector.material, detector.thickness_mm, energies)
-        R = compute_drm(detector, kVp)
+        R = compute_mc_drm(detector, kVp)
         _compute_degraded_I0(detector, energies, weights, η, thresholds, kVp, I0, flux_rate; R=R)
     else
         # No effects OR effects+corrections: use theoretical I0
         η = quantum_efficiency_vector(detector.material, detector.thickness_mm, energies)
-        R = compute_drm(detector, kVp)
+        R = compute_mc_drm(detector, kVp)
         [_compute_bin_I0(detector, energies, weights, η, thresholds, b,
             Float64(kVp), Float64(I0); R=R) for b in 1:n_bins]
     end
@@ -227,43 +227,30 @@ function simulate!(
     use_corrections = ws.use_corrections
     kVp = ws.kVp
 
-    # Forward projection with ALL workspace buffers (including native-res path)
+    # Forward projection with workspace buffers (including native-res path)
     pcct_sino = pcct_forward_project(
         phantom.mask, geom, pcct_detector;
         energies=energies, weights=weights,
         materials=mats,
         apply_spectral_response=true,
-        apply_detector_effects=use_detector_fx,
         apply_corrections=use_corrections,
         ws_bins=ws.bins, ws_μ_volume=ws.μ_volume, ws_sino_buf=ws.sino_buf,
-        ws_scratch=ws.scratch, ws_total_counts=ws.total_counts,
+        ws_scratch=ws.scratch,
         ws_thresholds_T=ws.thresholds_T,
         ws_η=ws.η, ws_R=ws.R, ws_R_energies=ws.R_energies,
         ws_I0_bins_norm=ws.I0_bins_norm,
         ws_μ_lut_cpu=ws.μ_lut_cpu, ws_μ_lut_gpu=ws.μ_lut_gpu,
         ws_μ_table=ws.μ_table,
-        ws_pileup_counts=ws.pileup_counts,
-        ws_pileup_migration=ws.pileup_migration,
-        ws_correction_counts=ws.correction_pileup_counts,
-        ws_correction_migration=ws.correction_migration,
-        ws_pileup_S=ws.pileup_S,
-        ws_pileup_thresh=ws.pileup_thresh,
-        ws_pileup_E_low=ws.pileup_E_low,
-        ws_pileup_E_high=ws.pileup_E_high,
-        ws_pileup_E_centers=ws.pileup_E_centers,
-        ws_pileup_w=ws.pileup_w,
         ws_source_positions=ws.geom_source_positions,
         ws_detector_centers=ws.geom_detector_centers,
         ws_detector_u=ws.geom_detector_u,
         ws_detector_v=ws.geom_detector_v,
-        ws_charge_probs=ws.charge_sharing_probs,
         volume_extent=phantom.extent,
         # Native-resolution forward projection path
         native_geom=ws.native_geom,
         ws_native_bins=ws.native_bins,
         ws_native_sino_buf=ws.native_sino_buf,
         ws_native_scratch=ws.native_scratch,
-        ws_native_total_counts=ws.native_total_counts,
         ws_native_source_positions=ws.native_geom_source_positions,
         ws_native_detector_centers=ws.native_geom_detector_centers,
         ws_native_detector_u=ws.native_geom_detector_u,
@@ -322,27 +309,9 @@ function simulate!(
     # Save noisy to CPU workspace buffer (uncorrected, for inspection)
     copyto!(ws.sino_noisy_out, sino_noisy_gpu)
 
-    # Combine PCCT bins into pseudo-dual-energy sinograms (GPU)
-    # split_bin = floor(n_bins/2): bin 1 for 2-bin, bins 1-2 for 4-bin
-    combine_pcct_bins!(ws.vmi_sino_low, ws.vmi_sino_high, pcct_sino.bins;
-        split_bin=length(pcct_sino.bins) ÷ 2)
-
-    # 2-material decomposition (same as dual-kVp, GPU)
-    spectral_decompose!(ws.vmi_material1, ws.vmi_material2,
-        ws.vmi_sino_low, ws.vmi_sino_high,
-        ws.vmi_inv_a11, ws.vmi_inv_a12, ws.vmi_inv_a21, ws.vmi_inv_a22)
-
-    mat_map = if length(ws.basis_tuple) >= 2
-        MaterialMap(ws.vmi_material1, ws.vmi_material2;
-            material1_name=ws.basis_tuple[1], material2_name=ws.basis_tuple[2],
-            domain=:projection)
-    else
-        nothing
-    end
-
-    # Return intermediate results — reconstruction and VMI are done by the wrapper
-    # (they inherently allocate new volumes, outside zero-alloc scope)
-    return (pcct_sino=pcct_sino, mat_map=mat_map)
+    # Return raw energy-resolved sinogram — VMI decomposition is done by the user
+    # (e.g., polynomial calibration in the notebook, not baked into simulate!)
+    return (pcct_sino=pcct_sino,)
 end
 
 # =============================================================================

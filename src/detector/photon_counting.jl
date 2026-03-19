@@ -13,43 +13,21 @@ energy-integrating detectors that sum all absorbed energy, PCDs:
 2. **Measure photon energy** - pulse height proportional to deposited energy
 3. **Apply energy thresholds** - classify photons into energy bins
 
-## Key Physical Effects
+## Detector Response Model
 
-### Energy Threshold Binning
-PCDs use comparators to classify photons into bins based on energy thresholds.
-For N thresholds {T₁, T₂, ..., Tₙ}, counts in bin i are:
-    C_i = counts with T_i ≤ E < T_{i+1}
-
-### Charge Sharing
-When X-ray absorption occurs near pixel boundaries, the charge cloud may split
-between adjacent pixels, causing:
-- Single high-energy photon counted as multiple lower-energy photons
-- Degraded energy resolution (spectral blurring)
-- Spatial PSF broadening
-
-### K-Fluorescence Escape
-In high-Z detectors (CdTe/CZT), photoelectric absorption can eject K-shell
-electrons. The resulting fluorescent X-rays (Cd K-α: 23.2 keV, Te K-α: 27.4 keV)
-can travel ~100 μm, depositing energy in neighboring pixels.
-
-### Pulse Pile-up
-At high photon flux rates, multiple photons may arrive within the detector
-dead time, causing:
-- Count rate saturation
-- Incorrect (summed) energy registration
-- Spectral distortion
-
-### Anti-Coincidence Logic
-Simultaneous signals in adjacent pixels within a coincidence window are summed
-and assigned to the primary pixel, correcting for charge sharing.
+All detector physics (charge sharing, fluorescence escape, pulse pileup,
+anti-coincidence) are handled by the Monte Carlo detector response matrix (DRM)
+computed in `mc_response.jl` and MC pileup in `mc_pileup.jl`. The DRM R(E,b)
+maps incident photon energy E to probability of registration in bin b,
+incorporating all physical effects in a single matrix.
 
 # GPU Compatibility
 
 All functions are GPU-native via AcceleratedKernels.jl:
-- ✅ Metal (Apple Silicon)
-- ✅ CUDA (NVIDIA)
-- ✅ ROCm (AMD)
-- ✅ CPU fallback
+- Metal (Apple Silicon)
+- CUDA (NVIDIA)
+- ROCm (AMD)
+- CPU fallback
 
 # References
 
@@ -59,14 +37,9 @@ All functions are GPU-native via AcceleratedKernels.jl:
 2. Taguchi K, Iwanczyk JS. "Vision 20/20: Single photon counting x-ray detectors
    in medical imaging." Med Phys. 2013;40(10):100901. doi:10.1118/1.4820371
 
-3. Flohr T, et al. "First performance evaluation of a dual-source CT (DSCT)
-   system." Eur Radiol. 2006;16:256-268.
+3. FDA 510(k) K201501 - Siemens NAEOTOM Alpha
 
-4. FDA 510(k) K201501 - Siemens NAEOTOM Alpha
-
-5. DukeSim v1.2: https://cvit.duke.edu/resource/dukesim-v1-2/
-
-See also: [`OpticalCrosstalkModel`](@ref)
+See also: [`compute_mc_drm`](@ref), [`mc_pileup_response`](@ref)
 """
 
 import AcceleratedKernels as AK
@@ -277,825 +250,6 @@ Base.eltype(::EnergyResolvedSinogram{T}) where T = T
 n_energy_bins(es::EnergyResolvedSinogram) = length(es.bins)
 
 # =============================================================================
-# Energy Threshold Model (GPU-native)
-# =============================================================================
-
-"""
-    apply_energy_thresholds(intensity_spectrum, energies, weights, detector) -> Vector{Array}
-
-Apply energy thresholds to spectral data to produce energy-binned counts.
-
-This is the core PCCT physics: photons are counted in bins based on their
-deposited energy relative to the threshold settings.
-
-# Arguments
-- `intensity_spectrum::AbstractArray{T,4}`: Spectral intensity [n_cols, n_rows, n_angles, n_energies]
-- `energies::Vector{T}`: Energy values in keV
-- `weights::Vector{T}`: Spectral weights (normalized)
-- `detector::PhotonCountingDetector`: Detector specification
-
-# Returns
-Vector of 3D arrays, one per energy bin, containing photon counts.
-
-# Physics
-
-For each energy threshold Tᵢ, photons with E ≥ Tᵢ contribute to that bin's count.
-The energy-resolved counts are:
-
-    C_bin(i) = Σ{E ≥ Tᵢ} N(E) × w(E)
-
-where N(E) is the photon count at energy E and w(E) is the spectral weight.
-
-Energy resolution blurring (if enabled) spreads counts between adjacent bins.
-"""
-function apply_energy_thresholds(
-    intensity_spectrum::AbstractArray{T,4},
-    energies::AbstractVector,
-    weights::AbstractVector,
-    detector::PhotonCountingDetector
-) where T
-
-    n_cols, n_rows, n_angles, n_energies = size(intensity_spectrum)
-    n_bins = length(detector.energy_thresholds_keV)
-    thresholds = detector.energy_thresholds_keV
-
-    # Allocate output bins on same device as input
-    bins = [similar(intensity_spectrum, n_cols, n_rows, n_angles) for _ in 1:n_bins]
-    for bin in bins
-        fill!(bin, zero(T))
-    end
-
-    # Energy resolution: sigma from FWHM
-    σ_E = detector.energy_resolution_keV / (2 * sqrt(2 * log(T(2))))
-
-    # GPU-native threshold application
-    for bin_idx in 1:n_bins
-        threshold = T(thresholds[bin_idx])
-        upper_threshold = bin_idx < n_bins ? T(thresholds[bin_idx + 1]) : T(Inf)
-        output_bin = bins[bin_idx]
-
-        AK.foreachindex(output_bin) do idx
-            idx_0 = Int32(idx - 1)
-            col = (idx_0 % Int32(n_cols)) + Int32(1)
-            idx_0 = idx_0 ÷ Int32(n_cols)
-            row = (idx_0 % Int32(n_rows)) + Int32(1)
-            angle = (idx_0 ÷ Int32(n_rows)) + Int32(1)
-
-            acc = zero(T)
-            for e_idx in 1:n_energies
-                E = energies[e_idx]
-                w = weights[e_idx]
-                I = intensity_spectrum[col, row, angle, e_idx]
-
-                # Apply energy resolution blurring if enabled
-                if σ_E > zero(T)
-                    # Gaussian probability that photon of energy E is registered in this bin
-                    # P(T_low ≤ E_registered < T_high)
-                    # Using cumulative distribution function approximation
-                    z_low = (threshold - E) / σ_E
-                    z_high = (upper_threshold - E) / σ_E
-
-                    # Approximate erf using sigmoid for GPU compatibility
-                    # erf(x) ≈ 2 * sigmoid(sqrt(π) * x) - 1
-                    sqrt_pi = T(1.7724538509055159)
-                    sigmoid_low = one(T) / (one(T) + exp(-sqrt_pi * z_low))
-                    sigmoid_high = one(T) / (one(T) + exp(-sqrt_pi * z_high))
-                    prob = sigmoid_high - sigmoid_low
-                else
-                    # Perfect energy resolution: binary assignment
-                    prob = (E >= threshold && E < upper_threshold) ? one(T) : zero(T)
-                end
-
-                acc += I * w * prob
-            end
-
-            output_bin[idx] = acc
-        end
-    end
-
-    return bins
-end
-
-# =============================================================================
-# Charge Sharing Model (GPU-native)
-# =============================================================================
-
-"""
-    apply_charge_sharing!(bins, detector; scratch=nothing, ws_charge_probs=nothing) -> bins
-
-Apply charge sharing effects to energy-binned sinograms (in-place, GPU-native).
-
-Charge sharing occurs when X-ray absorption near pixel boundaries causes the
-resulting charge cloud to split between adjacent pixels. This causes:
-- High-energy photons to be registered as multiple lower-energy counts
-- Spectral degradation (low-energy tail)
-- Spatial PSF broadening
-
-Uses physics-based Koch-Mehrin 2020 charge cloud transport: computes
-energy-dependent charge cloud size from drift-diffusion ODE (Eq. 9-14).
-Charge cloud σ ≈ 13 μm (depth-averaged), varying with photon energy.
-
-# References
-- Koch-Mehrin et al. 2020, NIM-A 976:164241 (charge cloud transport ODE)
-- Konrad et al. 2025, PMB 70:065004 (PCCT detector validation)
-"""
-function apply_charge_sharing!(
-    bins::Vector{A},
-    detector::PhotonCountingDetector;
-    scratch::Union{Nothing,A}=nothing,
-    ws_charge_probs::Union{Nothing, Vector{Float64}}=nothing
-) where {T, A<:AbstractArray{T,3}}
-
-    if !detector.enable_charge_sharing
-        return bins
-    end
-
-    _scratch = scratch === nothing ? similar(bins[1]) : scratch
-    return _apply_charge_sharing_physics!(bins, detector, _scratch;
-                                           ws_charge_probs=ws_charge_probs)
-end
-
-"""
-    _apply_charge_sharing_physics!(bins, detector) -> bins
-
-Physics-based charge sharing using Koch-Mehrin 2020 charge cloud transport.
-Computes per-bin σ from drift-diffusion ODE, then applies energy-dependent
-spatial redistribution and spectral downshift.
-"""
-function _apply_charge_sharing_physics!(
-    bins::Vector{A},
-    detector::PhotonCountingDetector,
-    scratch::A;
-    ws_charge_probs::Union{Nothing, Vector{Float64}}=nothing
-) where {T, A<:AbstractArray{T,3}}
-
-    n_bins = length(bins)
-    n_cols, n_rows, n_angles = size(bins[1])
-
-    # Use pre-computed probabilities if provided, otherwise compute
-    bin_p_share = if ws_charge_probs !== nothing
-        ws_charge_probs
-    else
-        # Build PCCTDetectorGeometry from detector parameters
-        geom = PCCTDetectorGeometry(
-            "runtime",
-            Float64.(detector.pixel_size_mm),
-            Float64(detector.thickness_mm),
-            800.0,   # bias voltage [V] — NAEOTOM default
-            680.0,   # effective voltage [V] — ~85% of applied
-            1.5,     # electronic noise σ [keV]
-            3.0      # noise threshold [keV]
-        )
-
-        thresholds = detector.energy_thresholds_keV
-        pixel_pitch = detector.pixel_size_mm
-
-        # Pre-compute fluorescence model for K-edge sharing boosts
-        fluor_model = compute_cdte_fluorescence_model(pixel_pitch, detector.thickness_mm)
-
-        # Compute per-bin charge cloud σ and sharing probability on CPU
-        _bin_p_share = Vector{Float64}(undef, n_bins)
-
-        for b in 1:n_bins
-            E_low = thresholds[b]
-            E_high = b < n_bins ? thresholds[b+1] : 140.0
-            E_center = (E_low + E_high) / 2.0
-
-            # Depth-averaged σ at bin-center energy (Koch-Mehrin 2020 ODE)
-            σ = mean_charge_cloud_sigma_mm(E_center, geom)
-
-            # Charge sharing = cloud overlap + fluorescence escape
-            p_cloud = charge_sharing_probability(σ, pixel_pitch)
-            p_fluor = fluorescence_sharing_boost(E_center, fluor_model)
-            _bin_p_share[b] = min(p_cloud + p_fluor, 0.7)
-        end
-        _bin_p_share
-    end
-
-    # Process each bin: spatial redistribution + energy downshift
-    for bin_idx in n_bins:-1:1
-        p_share = T(min(bin_p_share[bin_idx], 0.5))
-        p_primary = one(T) - p_share
-        nw = p_share / T(8)
-
-        # Spatial redistribution: 8-neighbor kernel
-        let cb = bins[bin_idx], pp = p_primary, nweight = nw,
-            nc = Int32(n_cols), nr = Int32(n_rows), out = scratch
-
-            AK.foreachindex(cb) do idx
-                idx_0 = Int32(idx - 1)
-                col = (idx_0 % nc) + Int32(1)
-                idx_0 = idx_0 ÷ nc
-                row = (idx_0 % nr) + Int32(1)
-                angle = (idx_0 ÷ nr) + Int32(1)
-
-                val = cb[idx] * pp
-
-                for di in Int32(-1):Int32(1)
-                    for dj in Int32(-1):Int32(1)
-                        if di == Int32(0) && dj == Int32(0)
-                            continue
-                        end
-                        src_col = clamp(col + di, Int32(1), nc)
-                        src_row = clamp(row + dj, Int32(1), nr)
-                        val += cb[src_col, src_row, angle] * nweight
-                    end
-                end
-
-                out[idx] = val
-            end
-
-            copyto!(cb, scratch)
-        end
-
-        # Energy redistribution: shared charge deposits less energy → counts
-        # shift to lower bins. Fraction scales with sharing probability.
-        # Physics: split charge cloud means primary pixel sees reduced energy.
-        if bin_idx > 1
-            let cb = bins[bin_idx], tb = bins[bin_idx - 1],
-                lf = p_share * T(0.4)
-
-                AK.foreachindex(cb) do idx
-                    transfer = cb[idx] * lf
-                    tb[idx] += transfer
-                    cb[idx] -= transfer
-                end
-            end
-        end
-    end
-
-    return bins
-end
-
-# =============================================================================
-# Charge Sharing Correction (GPU-native)
-# =============================================================================
-
-"""
-    correct_charge_sharing!(bins, detector) -> bins
-
-Apply charge sharing correction to energy-binned counts (in-place, GPU-native).
-
-This correction reduces spatial artifacts from the charge sharing + anti-coincidence
-pipeline by applying a mild spatial smoothing filter that suppresses high-frequency
-artifacts, followed by reversing the energy redistribution.
-
-# Algorithm
-1. Apply spatial smoothing filter to reduce anti-coincidence artifacts
-   The anti-coincidence algorithm creates high-frequency spatial noise by
-   redistributing counts from lower-signal to higher-signal neighboring pixels.
-   A mild 3x3 weighted average smooths these artifacts.
-2. Reverse energy redistribution (low→high bins, opposite of forward high→low)
-
-# Arguments
-- `bins::Vector{Array}`: Energy-binned counts (modified in-place)
-- `detector::PhotonCountingDetector`: Detector specification
-"""
-function correct_charge_sharing!(
-    bins::Vector{A},
-    detector::PhotonCountingDetector;
-    scratch::Union{Nothing,A}=nothing
-) where {T, A<:AbstractArray{T,3}}
-
-    if !detector.enable_charge_sharing || detector.charge_sharing_fwhm_mm ≤ 0.0
-        return bins
-    end
-
-    n_bins = length(bins)
-    n_cols, n_rows, n_angles = size(bins[1])
-
-    # Cast all detector parameters to T (same computation as forward model)
-    σ_cloud = T(detector.charge_sharing_fwhm_mm) / (T(2) * sqrt(T(2) * log(T(2))))
-
-    pixel_row = T(detector.pixel_size_mm[1])
-    pixel_col = T(detector.pixel_size_mm[2])
-
-    boundary_dist_row = pixel_row / T(2)
-    boundary_dist_col = pixel_col / T(2)
-
-    z_row = boundary_dist_row / σ_cloud
-    z_col = boundary_dist_col / σ_cloud
-
-    p_share_row = T(2) / (one(T) + exp(T(1.5) * z_row))
-    p_share_col = T(2) / (one(T) + exp(T(1.5) * z_col))
-    p_share = min(p_share_row + p_share_col, T(0.5))
-
-    energy_loss_fraction = T(0.5)
-
-    # Step 1: Spatial smoothing to reduce anti-coincidence artifacts
-    # Anti-coincidence creates high-frequency spatial noise by redistributing
-    # counts between neighboring pixels. A smoothing filter suppresses this.
-    # The smoothing strength is based on charge sharing probability scaled up
-    # to compensate for anti-coincidence artifacts (which are larger than
-    # the original charge sharing blur).
-    smooth_weight = min(p_share * T(3.0), T(0.5))  # Scaled up to counter AC artifacts
-    center_weight = one(T) - smooth_weight
-    neighbor_weight = smooth_weight / T(8)
-
-    _scratch = scratch === nothing ? similar(bins[1]) : scratch
-
-    for bin in bins
-        let b = bin, cw = center_weight, nwt = neighbor_weight,
-            nc = Int32(n_cols), nr = Int32(n_rows), out = _scratch
-
-            AK.foreachindex(b) do idx
-                idx_0 = Int32(idx - 1)
-                col = (idx_0 % nc) + Int32(1)
-                idx_0 = idx_0 ÷ nc
-                row = (idx_0 % nr) + Int32(1)
-                angle = (idx_0 ÷ nr) + Int32(1)
-
-                val = b[col, row, angle] * cw
-
-                for di in Int32(-1):Int32(1)
-                    for dj in Int32(-1):Int32(1)
-                        (di == Int32(0) && dj == Int32(0)) && continue
-                        r2 = clamp(row + dj, Int32(1), nr)
-                        c2 = clamp(col + di, Int32(1), nc)
-                        val += b[c2, r2, angle] * nwt
-                    end
-                end
-
-                out[idx] = val
-            end
-
-            copyto!(b, _scratch)
-        end
-    end
-
-    # Step 2: Reverse energy redistribution (low→high, opposite of forward high→low)
-    # Forward transfers from higher bins to lower bins; inverse transfers from lower to higher
-    for bin_idx in 1:(n_bins-1)
-        let lb = bins[bin_idx], hb = bins[bin_idx + 1],
-            lf = p_share * energy_loss_fraction
-
-            AK.foreachindex(lb) do idx
-                transfer = lb[idx] * lf
-                hb[idx] += transfer
-                lb[idx] -= transfer
-            end
-        end
-    end
-
-    return bins
-end
-
-# =============================================================================
-# Pulse Pile-up Model (GPU-native)
-# =============================================================================
-
-"""
-    apply_pulse_pileup!(bins, detector, flux_rate) -> bins
-
-Apply pulse pile-up effects to energy-binned counts (in-place, GPU-native).
-
-Pulse pile-up occurs when photons arrive faster than the detector can process
-them (within the dead time). Effects include:
-- Count rate saturation (recorded counts < true counts)
-- Spectral migration (piled-up pulses shift counts from low to high thresholds)
-- Sub-Poisson statistics (VMR < 1 at high flux)
-
-# Dead Time Model: Seminonparalyzable (Yang 2025)
-
-Uses a seminonparalyzable model where dead time is retriggered by pulses
-during the dead time period, giving stronger count loss than pure
-nonparalyzable at high flux. This is more realistic for modern PCCT detectors.
-
-    N_recorded = N_true × seminonparalyzable_count_factor(aτ)
-
-# Spectral Migration (Taguchi 2010)
-
-Pileup-order probability P(m) follows a shifted Poisson distribution.
-For order m, the recorded energy is the sum of m photon energies.
-The spectral migration matrix S maps true bin counts to recorded bin counts,
-weighted by the actual incident spectrum shape.
-
-# Arguments
-- `bins::Vector{Array}`: Energy-binned counts
-- `detector::PhotonCountingDetector`: Detector specification
-- `flux_rate::Float64`: Photon flux rate in photons/s/mm² (at detector)
-
-# References
-- Taguchi et al 2010, Med Phys 37:3957-3969
-- Yang et al 2025, Med Phys 52:3658-3674
-- Grönberg et al 2018, Med Phys 45:3800-3811
-"""
-function apply_pulse_pileup!(
-    bins::Vector{A},
-    detector::PhotonCountingDetector,
-    flux_rate::Real;
-    ws_pileup_counts=nothing,
-    ws_pileup_migration=nothing,
-    ws_pileup_S=nothing,
-    ws_pileup_thresh=nothing,
-    ws_pileup_E_low=nothing,
-    ws_pileup_E_high=nothing,
-    ws_pileup_E_centers=nothing,
-    ws_pileup_w=nothing
-) where {T, A<:AbstractArray{T,3}}
-
-    if !detector.enable_pile_up || detector.dead_time_ns ≤ 0.0
-        return bins
-    end
-
-    # Cast all to T (Float32 for GPU compatibility)
-    τ = T(detector.dead_time_ns) * T(1e-9)
-    pixel_area = T(detector.pixel_size_mm[1]) * T(detector.pixel_size_mm[2])
-    count_rate = T(flux_rate) * pixel_area
-
-    # aτ product: key parameter for pileup severity (Taguchi 2010)
-    aτ = Float64(count_rate * τ)
-
-    # Count-loss factor: seminonparalyzable model (Yang 2025)
-    pile_up_factor = T(seminonparalyzable_count_factor(aτ))
-
-    # Apply count rate reduction to all bins
-    for bin in bins
-        let pf = pile_up_factor, b = bin
-            AK.foreachindex(b) do idx
-                b[idx] *= pf
-            end
-        end
-    end
-
-    # Physics-based spectral migration (Taguchi 2010, Section II.B)
-    n_bins = length(bins)
-    if n_bins >= 2 && aτ > 0.001
-        # Estimate bin weights from current counts
-        bin_weights = ws_pileup_counts !== nothing ? ws_pileup_counts : zeros(Float64, n_bins)
-        for i in 1:n_bins
-            bin_weights[i] = Float64(sum(bins[i])) / max(Float64(length(bins[i])), 1.0)
-        end
-        total_w = sum(bin_weights)
-        if total_w > 0.0
-            bin_weights ./= total_w
-        else
-            bin_weights .= 1.0 / n_bins
-        end
-
-        S = compute_spectral_migration_matrix(
-            detector.energy_thresholds_keV, aτ;
-            max_pileup_order=6, kVp=140.0,
-            bin_weights=bin_weights,
-            ws_S=ws_pileup_S,
-            ws_thresh=ws_pileup_thresh,
-            ws_E_low=ws_pileup_E_low,
-            ws_E_high=ws_pileup_E_high,
-            ws_E_centers=ws_pileup_E_centers,
-            ws_w=ws_pileup_w
-        )
-
-        # Extract off-diagonal transfer fractions from S
-        transfer_fracs = ws_pileup_migration !== nothing ? ws_pileup_migration : zeros(Float64, n_bins, n_bins)
-        fill!(transfer_fracs, 0.0)
-        for i in 1:n_bins
-            diag_val = S[i, i]
-            col_sum = sum(S[:, i])
-            if col_sum > 0.0 && diag_val < col_sum
-                for j in 1:n_bins
-                    if j != i
-                        transfer_fracs[j, i] = S[j, i] / col_sum
-                    end
-                end
-            end
-        end
-
-        # Apply spectral migration via GPU-compatible kernels
-        for src_bin in 1:n_bins
-            for dst_bin in 1:n_bins
-                if dst_bin == src_bin
-                    continue
-                end
-                frac = T(transfer_fracs[dst_bin, src_bin])
-                if frac > T(1e-6)
-                    let cb = bins[src_bin], db = bins[dst_bin], f = frac
-                        AK.foreachindex(cb) do idx
-                            transfer = cb[idx] * f
-                            db[idx] += transfer
-                            cb[idx] -= transfer
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    return bins
-end
-
-# =============================================================================
-# Pulse Pile-up Correction (GPU-native)
-# =============================================================================
-
-"""
-    correct_pulse_pileup!(bins, detector, flux_rate) -> bins
-
-Apply inverse pulse pile-up correction to energy-binned counts (in-place, GPU-native).
-
-This is the approximate inverse of `apply_pulse_pileup!`. It recovers the original
-count rates from pileup-degraded measurements.
-
-# Forward model (seminonparalyzable, Yang 2025):
-    N_recorded = N_true × seminonparalyzable_count_factor(aτ)
-
-# Inverse correction:
-    N_corrected = N_recorded / seminonparalyzable_count_factor(aτ)
-
-The spectral migration reversal iterates bins in reverse order (high→low) to
-undo the forward model's low→high energy shifting.
-
-# Arguments
-- `bins::Vector{Array}`: Energy-binned counts (modified in-place)
-- `detector::PhotonCountingDetector`: Detector specification
-- `flux_rate::Float64`: Photon flux rate in photons/s/mm² (at detector)
-"""
-function correct_pulse_pileup!(
-    bins::Vector{A},
-    detector::PhotonCountingDetector,
-    flux_rate::Real;
-    ws_correction_counts=nothing,
-    ws_correction_migration=nothing,
-    ws_pileup_S=nothing,
-    ws_pileup_thresh=nothing,
-    ws_pileup_E_low=nothing,
-    ws_pileup_E_high=nothing,
-    ws_pileup_E_centers=nothing,
-    ws_pileup_w=nothing
-) where {T, A<:AbstractArray{T,3}}
-
-    if !detector.enable_pile_up || detector.dead_time_ns ≤ 0.0
-        return bins
-    end
-
-    # Cast all to T (Float32 for GPU compatibility)
-    τ = T(detector.dead_time_ns) * T(1e-9)
-    pixel_area = T(detector.pixel_size_mm[1]) * T(detector.pixel_size_mm[2])
-    count_rate = T(flux_rate) * pixel_area
-
-    # aτ product
-    aτ = Float64(count_rate * τ)
-
-    # Inverse of seminonparalyzable count factor (Yang 2025)
-    correction_factor = T(1.0 / seminonparalyzable_count_factor(aτ))
-
-    # Reverse spectral migration (approximate inverse: transfer back high→low)
-    n_bins = length(bins)
-    if n_bins >= 2 && aτ > 0.001
-        # Estimate bin weights from current (degraded) counts
-        bin_weights = ws_correction_counts !== nothing ? ws_correction_counts : zeros(Float64, n_bins)
-        for i in 1:n_bins
-            bin_weights[i] = Float64(sum(bins[i])) / max(Float64(length(bins[i])), 1.0)
-        end
-        total_w = sum(bin_weights)
-        if total_w > 0.0
-            bin_weights ./= total_w
-        else
-            bin_weights .= 1.0 / n_bins
-        end
-
-        S = compute_spectral_migration_matrix(
-            detector.energy_thresholds_keV, aτ;
-            max_pileup_order=6, kVp=140.0,
-            bin_weights=bin_weights,
-            ws_S=ws_pileup_S,
-            ws_thresh=ws_pileup_thresh,
-            ws_E_low=ws_pileup_E_low,
-            ws_E_high=ws_pileup_E_high,
-            ws_E_centers=ws_pileup_E_centers,
-            ws_w=ws_pileup_w
-        )
-
-        # Compute transfer fractions (same normalization as forward model)
-        transfer_fracs = ws_correction_migration !== nothing ? ws_correction_migration : zeros(Float64, n_bins, n_bins)
-        fill!(transfer_fracs, 0.0)
-        for i in 1:n_bins
-            col_sum = sum(S[:, i])
-            if col_sum > 0.0
-                for j in 1:n_bins
-                    if j != i
-                        transfer_fracs[j, i] = S[j, i] / col_sum
-                    end
-                end
-            end
-        end
-
-        # Reverse the spectral migration: transfer from higher bins back to lower
-        for dst_bin in n_bins:-1:1
-            for src_bin in n_bins:-1:1
-                if src_bin == dst_bin
-                    continue
-                end
-                frac = T(transfer_fracs[dst_bin, src_bin])
-                if frac > T(1e-6)
-                    let db = bins[dst_bin], sb = bins[src_bin], f = frac
-                        AK.foreachindex(db) do idx
-                            transfer = db[idx] * f
-                            sb[idx] += transfer
-                            db[idx] -= transfer
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    # Apply inverse count rate correction to all bins
-    for bin in bins
-        let cf = correction_factor, b = bin
-            AK.foreachindex(b) do idx
-                b[idx] *= cf
-            end
-        end
-    end
-
-    return bins
-end
-
-# =============================================================================
-# Anti-Coincidence Logic (GPU-native)
-# =============================================================================
-
-"""
-    apply_anti_coincidence!(bins, detector) -> bins
-
-Apply anti-coincidence correction to energy-binned counts (in-place, GPU-native).
-
-Anti-coincidence (charge sharing correction) detects simultaneous signals in
-adjacent pixels and sums them to the primary pixel, partially correcting for
-charge sharing effects.
-
-# Algorithm
-
-1. Detect coincident events (signals in neighboring pixels within time window)
-2. Sum energies: E_total = E_pixel1 + E_pixel2 + ...
-3. Assign total to primary pixel (highest signal)
-
-# Performance Impact
-
-Anti-coincidence improves:
-- Energy resolution: 20-40% reduction in spectral tails
-- Spatial resolution: reduced cross-pixel PSF spread
-
-Trade-offs:
-- Reduced count rate capability
-- May cause count loss at very high flux
-
-Reference: PMC5975362
-"""
-function apply_anti_coincidence!(
-    bins::Vector{A},
-    detector::PhotonCountingDetector;
-    scratch::Union{Nothing,A}=nothing,
-    total_counts_buf::Union{Nothing,A}=nothing
-) where {T, A<:AbstractArray{T,3}}
-
-    if !detector.enable_anti_coincidence
-        return bins
-    end
-
-    n_bins = length(bins)
-    n_cols, n_rows, n_angles = size(bins[1])
-
-    _scratch = scratch === nothing ? similar(bins[1]) : scratch
-
-    # Anti-coincidence recovers some charge-shared events
-    # by summing coincident signals in adjacent pixels
-
-    # Compute total counts per pixel (across all energy bins)
-    # Use pre-allocated buffer if provided, otherwise allocate
-    total_counts = total_counts_buf !== nothing ? total_counts_buf : similar(bins[1])
-    fill!(total_counts, zero(T))
-    for bin in bins
-        let tc = total_counts, b = bin
-            AK.foreachindex(tc) do idx
-                tc[idx] += b[idx]
-            end
-        end
-    end
-
-    # Correction factor: fraction of charge-shared events recovered
-    rf = T(0.3)  # 30% recovery
-    rf8 = rf / T(8)  # Pre-divide by 8 neighbors
-    zero_T = T(0)  # Pre-compute to avoid Type capture in kernel
-
-    # For each pixel, look for coincident neighbors and redistribute
-    for bin_idx in 1:n_bins
-        let cb = bins[bin_idx], tc = total_counts, recovery_per_neighbor = rf8,
-            nc = Int32(n_cols), nr = Int32(n_rows), z = zero_T, out = _scratch
-
-            AK.foreachindex(cb) do idx
-                idx_0 = Int32(idx - 1)
-                col = (idx_0 % nc) + Int32(1)
-                idx_0 = idx_0 ÷ nc
-                row = (idx_0 % nr) + Int32(1)
-                angle = (idx_0 ÷ nr) + Int32(1)
-
-                val = cb[idx]
-                my_total = tc[idx]
-
-                if my_total > z
-                    for di in Int32(-1):Int32(1)
-                        for dj in Int32(-1):Int32(1)
-                            if di == Int32(0) && dj == Int32(0)
-                                continue
-                            end
-
-                            src_col = clamp(col + di, Int32(1), nc)
-                            src_row = clamp(row + dj, Int32(1), nr)
-
-                            neighbor_total = tc[src_col, src_row, angle]
-
-                            if my_total > neighbor_total && neighbor_total > z
-                                neighbor_val = cb[src_col, src_row, angle]
-                                val += neighbor_val * recovery_per_neighbor
-                            end
-                        end
-                    end
-                end
-
-                out[idx] = val
-            end
-
-            copyto!(cb, _scratch)
-        end
-    end
-
-    return bins
-end
-
-# =============================================================================
-# Electronic Noise Model for PCCT (GPU-native)
-# =============================================================================
-
-"""
-    apply_pcct_electronic_noise!(bins, detector) -> bins
-
-Apply electronic noise to energy-binned counts (in-place, GPU-native).
-
-Unlike energy-integrating detectors, PCCT electronic noise affects:
-1. Energy discrimination: noise causes threshold jitter
-2. Count registration: sub-threshold signals may be missed or false-triggered
-
-For PCCT, electronic noise is typically 1-2 keV RMS, much lower than the
-~20 keV lowest threshold, so false triggering is rare.
-
-# Physics
-
-Electronic noise in PCCT manifests as:
-- Gaussian jitter on energy measurement (handled in threshold application)
-- Additive noise on registered counts (Gaussian, small magnitude)
-
-The count-level noise is much lower than in energy-integrating detectors
-because individual photons are counted rather than integrated.
-"""
-function apply_pcct_electronic_noise!(
-    bins::Vector{A},
-    detector::PhotonCountingDetector;
-    # Workspace buffers (optional — allocate internally if not provided)
-    ws_enoise_cpu = nothing,
-    ws_enoise_gpu = nothing,
-    ws_rng = nothing
-) where {T, A<:AbstractArray{T,3}}
-
-    if detector.electronic_noise_keV ≤ zero(T)
-        return bins
-    end
-
-    rng = if ws_rng !== nothing
-        Random.seed!(ws_rng, isnothing(detector.seed) ? 0 : detector.seed)
-        ws_rng
-    else
-        isnothing(detector.seed) ? Random.default_rng() : MersenneTwister(detector.seed)
-    end
-
-    # Electronic noise effect on counts is small for PCCT
-    # Model as additive Gaussian noise scaled by count level
-    noise_scale = detector.electronic_noise_keV / T(60)  # Relative to 60 keV
-
-    # Pre-allocate reusable noise buffers (one-time, reused across bins)
-    n_elements = length(bins[1])
-    rand_cpu = ws_enoise_cpu !== nothing ? ws_enoise_cpu : Vector{T}(undef, n_elements)
-    rand_gpu = ws_enoise_gpu !== nothing ? ws_enoise_gpu : similar(bins[1], n_elements)
-
-    for (bin_idx, bin) in enumerate(bins)
-        # Fill pre-allocated CPU noise buffer (same RNG sequence as before)
-        randn!(rng, rand_cpu)
-        copyto!(rand_gpu, rand_cpu)
-
-        let rg = rand_gpu, ns = noise_scale
-            AK.foreachindex(bin) do idx
-                # Noise proportional to sqrt(counts) - Poisson-like
-                noise_sigma = sqrt(max(bin[idx], one(T))) * ns
-                bin[idx] += noise_sigma * rg[idx]
-                bin[idx] = max(bin[idx], zero(T))  # Ensure non-negative
-            end
-        end
-    end
-
-    return bins
-end
-
-# =============================================================================
 # Spatial Binning (native dexel → binned pixel)
 # =============================================================================
 
@@ -1147,15 +301,18 @@ end
 """
     pcct_forward_project(mask, geom, detector; energies, weights, materials, kwargs...) -> EnergyResolvedSinogram
 
-Perform polychromatic photon-counting CT forward projection with full detector physics.
+Perform polychromatic photon-counting CT forward projection with MC DRM spectral response.
 
 This is the main PCCT forward projection API. It:
 1. Computes energy-dependent μ-volumes from mask + materials (per energy)
 2. Forward projects at each energy using Siddon ray-tracing
 3. Applies quantum efficiency η(E) weighting (material-dependent)
-4. Applies spectral response matrix R(E,b) for realistic energy binning
-5. Applies detector physics chain (charge sharing, pileup, anti-coincidence)
+4. Applies spectral response matrix R(E,b) from MC DRM for realistic energy binning
+5. Applies spatial binning if native dexel resolution is used
 6. Returns energy-resolved sinograms in line-integral domain
+
+All detector physics (charge sharing, fluorescence escape, pileup, anti-coincidence)
+are encoded in the MC DRM R matrix. No separate analytical detector effects are applied.
 
 # Arguments
 - `mask::AbstractArray{UInt8,3}`: Material mask (region indices)
@@ -1166,7 +323,6 @@ This is the main PCCT forward projection API. It:
 - `energies::AbstractVector`: Spectral energies in keV
 - `weights::AbstractVector`: Spectral weights (normalized photon fluence)
 - `materials::Vector`: Material vector (from get_region_materials())
-- `flux_rate::Real=1e8`: Photon flux rate in photons/s/mm² (for pile-up)
 - `I0::Real=1e6`: Reference photon count per detector element
 - `apply_spectral_response::Bool=true`: Whether to use spectral response matrix R(E,b)
 
@@ -1175,11 +331,11 @@ This is the main PCCT forward projection API. It:
 
 # Physics
 
-The per-bin photon count (before detector effects) is:
+The per-bin photon count is:
     N_b = Σ_E R(E,b) × S(E) × η(E) × exp(-∫μ(x,E)dl)
 
 where:
-- R(E,b) = spectral response matrix entry (probability E registers in bin b)
+- R(E,b) = MC DRM spectral response matrix entry (probability E registers in bin b)
 - S(E) = normalized tube spectrum weight
 - η(E) = quantum detection efficiency of detector crystal
 - ∫μ(x,E)dl = line integral of energy-dependent attenuation
@@ -1211,17 +367,14 @@ function pcct_forward_project(
     energies::AbstractVector,
     weights::AbstractVector,
     materials::Vector = get_region_materials(),
-    flux_rate::Real = 1e8,
     I0::Real = 1e6,
     apply_spectral_response::Bool = true,
-    apply_detector_effects::Bool = true,
     apply_corrections::Bool = false,
     # Workspace buffers (optional — allocate internally if not provided)
     ws_bins = nothing,
     ws_μ_volume = nothing,
     ws_sino_buf = nothing,
     ws_scratch = nothing,
-    ws_total_counts = nothing,
     ws_thresholds_T = nothing,
     # Pre-computed spectral data (optional — compute internally if not provided)
     ws_η = nothing,           # quantum efficiency vector (n_energies)
@@ -1232,38 +385,25 @@ function pcct_forward_project(
     ws_μ_lut_cpu = nothing,   # Vector{T}(n_regions) CPU
     ws_μ_lut_gpu = nothing,   # similar(mask, T, n_regions) GPU-side
     ws_μ_table = nothing,     # Matrix{T}(n_regions, n_energies) pre-computed μ table
-    # Pre-allocated pileup buffers
-    ws_pileup_counts = nothing,    # Vector{Float64}(n_bins) for bin weights
-    ws_pileup_migration = nothing, # Matrix{Float64}(n_bins, n_bins) for transfer fracs
-    ws_correction_counts = nothing,    # Vector{Float64}(n_bins) for correction bin weights
-    ws_correction_migration = nothing,  # Matrix{Float64}(n_bins, n_bins) for correction transfer fracs
-    # Pre-allocated pileup migration scratch buffers
-    ws_pileup_S = nothing,
-    ws_pileup_thresh = nothing,
-    ws_pileup_E_low = nothing,
-    ws_pileup_E_high = nothing,
-    ws_pileup_E_centers = nothing,
-    ws_pileup_w = nothing,
     # Pre-allocated geometry arrays for siddon_forward_project!
     ws_source_positions = nothing,
     ws_detector_centers = nothing,
     ws_detector_u = nothing,
     ws_detector_v = nothing,
-    # Pre-computed charge sharing probabilities
-    ws_charge_probs = nothing,
     # Override volume bounds for phantom physical extent
     volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
     # Native-resolution forward projection (spatial binning)
     native_geom = nothing,            # CTGeometry at native dexel resolution (nothing = no binning)
     ws_native_bins = nothing,         # per-bin sinograms at native res
     ws_native_sino_buf = nothing,     # Siddon scratch at native res
-    ws_native_scratch = nothing,      # charge sharing scratch at native res
-    ws_native_total_counts = nothing, # anti-coincidence scratch at native res
+    ws_native_scratch = nothing,      # scratch at native res
     ws_native_μ_volume = nothing,     # μ volume (same as binned — phantom hasn't changed)
     ws_native_source_positions = nothing,
     ws_native_detector_centers = nothing,
     ws_native_detector_u = nothing,
-    ws_native_detector_v = nothing
+    ws_native_detector_v = nothing,
+    # Ignored kwargs for backward compat with callers that still pass them
+    kwargs...
 )
     T = Float32  # Use Float32 for GPU efficiency
 
@@ -1289,7 +429,7 @@ function pcct_forward_project(
     R = if ws_R !== nothing
         ws_R
     elseif apply_spectral_response
-        compute_drm(detector, kVp)
+        compute_mc_drm(detector, kVp)
     else
         nothing
     end
@@ -1298,7 +438,7 @@ function pcct_forward_project(
     R_energies = if ws_R_energies !== nothing
         ws_R_energies
     elseif apply_spectral_response
-        drm_energy_grid(kVp; n_energy_points=size(R, 1))
+        collect(range(1.0, Float64(kVp), length=size(R, 1)))
     else
         nothing
     end
@@ -1307,7 +447,7 @@ function pcct_forward_project(
     proj_shape = (proj_geom.n_cols, proj_geom.n_rows, proj_geom.n_angles)
     binned_shape = (n_cols, n_rows, n_angles)
 
-    # Native-res per-bin count sinograms (for detector physics)
+    # Native-res per-bin count sinograms (for spatial binning)
     proj_bins = if use_native
         nb = ws_native_bins !== nothing ? ws_native_bins : [similar(mask, T, proj_shape) for _ in 1:n_bins]
         for bin in nb; fill!(bin, zero(T)); end
@@ -1412,63 +552,11 @@ function pcct_forward_project(
         end
     end
 
-    # --- Detector physics at native resolution, then spatial bin ---
+    # --- Spatial binning (native → binned) if applicable ---
     if use_native
-        # Detector physics at native dexel resolution (where effects are physically significant)
-        _native_scratch = ws_native_scratch !== nothing ? ws_native_scratch : sino_buf
-        if apply_detector_effects
-            apply_charge_sharing!(proj_bins, detector; scratch=_native_scratch,
-                                  ws_charge_probs=ws_charge_probs)
-            apply_pulse_pileup!(proj_bins, detector, Float64(flux_rate);
-                                ws_pileup_counts=ws_pileup_counts,
-                                ws_pileup_migration=ws_pileup_migration,
-                                ws_pileup_S=ws_pileup_S,
-                                ws_pileup_thresh=ws_pileup_thresh,
-                                ws_pileup_E_low=ws_pileup_E_low,
-                                ws_pileup_E_high=ws_pileup_E_high,
-                                ws_pileup_E_centers=ws_pileup_E_centers,
-                                ws_pileup_w=ws_pileup_w)
-            apply_anti_coincidence!(proj_bins, detector; scratch=_native_scratch,
-                                    total_counts_buf=ws_native_total_counts)
-        end
-
-        # Spatial bin: native → binned (sum counts)
         for b in 1:n_bins
             spatial_bin!(bins[b], proj_bins[b], bf)
         end
-    else
-        # No binning: detector physics at binned resolution (original path)
-        _scratch = ws_scratch !== nothing ? ws_scratch : sino_buf
-        if apply_detector_effects
-            apply_charge_sharing!(bins, detector; scratch=_scratch,
-                                  ws_charge_probs=ws_charge_probs)
-            apply_pulse_pileup!(bins, detector, Float64(flux_rate);
-                                ws_pileup_counts=ws_pileup_counts,
-                                ws_pileup_migration=ws_pileup_migration,
-                                ws_pileup_S=ws_pileup_S,
-                                ws_pileup_thresh=ws_pileup_thresh,
-                                ws_pileup_E_low=ws_pileup_E_low,
-                                ws_pileup_E_high=ws_pileup_E_high,
-                                ws_pileup_E_centers=ws_pileup_E_centers,
-                                ws_pileup_w=ws_pileup_w)
-            apply_anti_coincidence!(bins, detector; scratch=_scratch,
-                                    total_counts_buf=ws_total_counts)
-        end
-    end
-
-    # Apply software corrections in count domain at binned resolution
-    _binned_scratch = ws_scratch !== nothing ? ws_scratch : similar(bins[1])
-    if apply_corrections
-        correct_pulse_pileup!(bins, detector, Float64(flux_rate);
-                              ws_correction_counts=ws_correction_counts,
-                              ws_correction_migration=ws_correction_migration,
-                              ws_pileup_S=ws_pileup_S,
-                              ws_pileup_thresh=ws_pileup_thresh,
-                              ws_pileup_E_low=ws_pileup_E_low,
-                              ws_pileup_E_high=ws_pileup_E_high,
-                              ws_pileup_E_centers=ws_pileup_E_centers,
-                              ws_pileup_w=ws_pileup_w)
-        correct_charge_sharing!(bins, detector; scratch=_binned_scratch)
     end
 
     # Convert from photon counts to line-integral domain: sino = -log(N / I₀_bin)
@@ -1477,8 +565,6 @@ function pcct_forward_project(
     I0_scale = use_native ? Float64(bf * bf) : 1.0
     I0_bins_norm = if ws_I0_bins_norm !== nothing
         ws_I0_bins_norm
-    elseif apply_detector_effects && !apply_corrections
-        _compute_degraded_I0(detector, energies, weights, η, thresholds, kVp, I0, flux_rate; R=R)
     else
         [_compute_bin_I0(detector, energies, weights, η, thresholds, b,
                           Float64(kVp), Float64(I0); R=R) for b in 1:n_bins]
@@ -1487,31 +573,6 @@ function pcct_forward_project(
         let I0_bin_T = T(I0_bins_norm[b] * I0_scale), ba = bins[b], eps = eps_val
             AK.foreachindex(ba) do idx
                 ba[idx] = -log(max(ba[idx], eps) / I0_bin_T)
-            end
-        end
-    end
-
-    # Post-log sinogram-domain smoothing correction
-    if apply_corrections && apply_detector_effects
-        w_side = T(0.25)
-        w_center = T(0.5)
-        for b in 1:n_bins
-            let ba = bins[b], nc = Int32(size(bins[1], 1)),
-                nr = Int32(size(bins[1], 2)),
-                ws_side = w_side, wc = w_center, out = _binned_scratch
-
-                AK.foreachindex(ba) do idx
-                    idx_0 = Int32(idx - 1)
-                    col = (idx_0 % nc) + Int32(1)
-                    idx_0 = idx_0 ÷ nc
-                    row = (idx_0 % nr) + Int32(1)
-                    angle = (idx_0 ÷ nr) + Int32(1)
-                    c_val = ba[col, row, angle]
-                    c_left = ba[clamp(col - Int32(1), Int32(1), nc), row, angle]
-                    c_right = ba[clamp(col + Int32(1), Int32(1), nc), row, angle]
-                    out[idx] = ws_side * c_left + wc * c_val + ws_side * c_right
-                end
-                copyto!(ba, _binned_scratch)
             end
         end
     end
@@ -1553,11 +614,8 @@ This is the unattenuated count expected in this bin (for -log normalization).
 When `R` (spectral response matrix) is provided, uses consistent calculation with forward projection.
 When `R` is nothing, falls back to ideal binning (photon goes to exactly one bin based on energy).
 
-The spectral response matrix R accounts for:
-- Detector energy resolution (Gaussian blurring)
-- Charge sharing between pixels
-- K-fluorescence escape/reabsorption
-- Electronic noise
+The spectral response matrix R accounts for all detector physics effects
+(charge sharing, fluorescence, pileup, anti-coincidence) via MC simulation.
 
 Using R ensures that -log(N/I0_bin) produces the correct line integral values.
 """
@@ -1605,82 +663,16 @@ end
 """
     _compute_degraded_I0(detector, energies, weights, η, thresholds, kVp, I0, flux_rate; R=nothing)
 
-Compute per-bin I0 values with detector degradation applied, for correct -log(N/I0)
-normalization in `pcct_forward_project`.
+Compute per-bin I0 values for correct -log(N/I0) normalization in `pcct_forward_project`.
 
-Models the same effects as the detector physics chain for a uniform (air) field:
-1. Charge sharing energy redistribution (higher bins → lower bins)
-2. Pulse pileup (count rate reduction + energy upshift)
-
-Spatial effects (charge sharing spatial, anti-coincidence) have no net effect on
-a uniform field (inflow = outflow for all interior pixels).
+Since detector physics are now handled by the MC DRM, this simply computes the
+theoretical per-bin I0 values. The DRM already encodes all degradation effects
+(charge sharing, pileup, etc.) in the R matrix used during forward projection.
 """
 function _compute_degraded_I0(detector, energies, weights, η, thresholds, kVp, I0, flux_rate; R=nothing)
     n_bins = length(thresholds)
-
-    # Start with theoretical I0 per bin
-    I0_bins = [_compute_bin_I0(detector, energies, weights, η, thresholds, b,
-                                Float64(kVp), Float64(I0); R=R) for b in 1:n_bins]
-
-    # 1. Charge sharing energy redistribution (mirrors apply_charge_sharing! energy part)
-    # Spatial redistribution is a no-op for uniform fields (all neighbors equal).
-    # But energy redistribution transfers counts from higher bins to lower bins.
-    if detector.enable_charge_sharing && detector.charge_sharing_fwhm_mm > 0.0
-        σ_cloud = detector.charge_sharing_fwhm_mm / (2.0 * sqrt(2.0 * log(2.0)))
-        pixel_row = detector.pixel_size_mm[1]
-        pixel_col = detector.pixel_size_mm[2]
-        z_row = (pixel_row / 2.0) / σ_cloud
-        z_col = (pixel_col / 2.0) / σ_cloud
-        p_share_row = 2.0 / (1.0 + exp(1.5 * z_row))
-        p_share_col = 2.0 / (1.0 + exp(1.5 * z_col))
-        p_share = min(p_share_row + p_share_col, 0.5)
-        energy_loss_fraction = 0.5
-
-        # Process from highest to lowest bin (same order as apply_charge_sharing!)
-        for b in n_bins:-1:2
-            transfer = I0_bins[b] * p_share * energy_loss_fraction
-            I0_bins[b] -= transfer
-            I0_bins[b-1] += transfer
-        end
-    end
-
-    # 2. Pulse pileup (mirrors apply_pulse_pileup!, Yang 2025 seminonparalyzable)
-    if detector.enable_pile_up && detector.dead_time_ns > 0.0
-        τ = detector.dead_time_ns * 1e-9
-        pixel_area = detector.pixel_size_mm[1] * detector.pixel_size_mm[2]
-        count_rate = Float64(flux_rate) * pixel_area
-        aτ = count_rate * τ
-
-        # Seminonparalyzable count-loss factor (Yang 2025)
-        pile_up_factor = seminonparalyzable_count_factor(aτ)
-        I0_bins .*= pile_up_factor
-
-        # Spectral migration via migration matrix (Taguchi 2010)
-        if n_bins >= 2 && aτ > 0.001
-            bin_weights = I0_bins ./ max(sum(I0_bins), 1e-30)
-            S = compute_spectral_migration_matrix(
-                Float64.(detector.energy_thresholds_keV), aτ;
-                max_pileup_order=6, kVp=140.0,
-                bin_weights=bin_weights
-            )
-
-            # Apply off-diagonal transfers
-            new_I0 = zeros(Float64, n_bins)
-            for j in 1:n_bins
-                for i in 1:n_bins
-                    col_sum = sum(S[:, i])
-                    frac = col_sum > 0.0 ? S[j, i] / col_sum : (j == i ? 1.0 : 0.0)
-                    new_I0[j] += I0_bins[i] * frac
-                end
-            end
-            I0_bins .= new_I0
-        end
-    end
-
-    # Anti-coincidence: no net effect on uniform field (all neighbors equal,
-    # condition my_total > neighbor_total is never true)
-
-    return I0_bins
+    return [_compute_bin_I0(detector, energies, weights, η, thresholds, b,
+                             Float64(kVp), Float64(I0); R=R) for b in 1:n_bins]
 end
 
 # =============================================================================
@@ -1924,7 +916,7 @@ function print_pcct_detector_info(detector::PhotonCountingDetector)
     println("Thresholds (keV):   $(info.thresholds_keV)")
     println("Energy resolution:  $(info.energy_resolution_keV) keV FWHM")
     println()
-    println("DETECTOR EFFECTS")
+    println("DETECTOR EFFECTS (via MC DRM)")
     println("-" ^ 40)
     println("Charge sharing:     $(info.charge_sharing_enabled ? "ON" : "OFF") (FWHM=$(info.charge_sharing_fwhm_mm) mm)")
     println("Pulse pile-up:      $(info.pile_up_enabled ? "ON" : "OFF") (τ=$(info.dead_time_ns) ns)")
@@ -1940,26 +932,6 @@ end
 # Material-agnostic architecture: ALL physics functions dispatch on
 # DetectorMaterialPCCT enum. CZT and Si work by adding entries to
 # get_detector_material_properties() — no other code changes needed.
-
-# Abramowitz & Stegun erf approximation (accuracy ~1.5×10⁻⁷)
-# Used for spectral response matrix (CPU precomputation, not in GPU hot path)
-function _erf_approx(x::Float64)
-    # Handle sign
-    sign_x = x < 0.0 ? -1.0 : 1.0
-    x = abs(x)
-
-    # Constants (Abramowitz & Stegun 7.1.26)
-    a1 = 0.254829592
-    a2 = -0.284496736
-    a3 = 1.421413741
-    a4 = -1.453152027
-    a5 = 1.061405429
-    p = 0.3275911
-
-    t = 1.0 / (1.0 + p * x)
-    y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * exp(-x * x)
-    return sign_x * y
-end
 
 """
     get_detector_material_properties(material::DetectorMaterialPCCT) -> NamedTuple
@@ -2174,355 +1146,15 @@ function quantum_efficiency_vector(material::DetectorMaterialPCCT, thickness_mm:
 end
 
 # =============================================================================
-# K-Fluorescence Escape Model
-# =============================================================================
-
-"""
-    KFluorescenceParams{T<:AbstractFloat}
-
-Parameters for K-fluorescence escape modeling in PCCT detectors.
-
-When a photon is absorbed above a material's K-edge, a K-shell vacancy is created.
-This can lead to fluorescence X-ray emission that may escape the pixel, causing:
-- Primary pixel: registers E_photon - E_fluorescence
-- Neighbor pixel: registers E_fluorescence (if absorbed there)
-- Net effect: spectral distortion near K-edges
-
-# Fields
-- `n_lines`: Number of K-fluorescence lines for this material
-- `k_edge_energies`: K-edge energies [keV] (absorption threshold)
-- `fluorescence_energies`: K-α emission line energies [keV]
-- `fluorescence_yields`: ω_K (probability of fluorescence vs Auger)
-- `escape_probabilities`: P_escape (fraction of fluorescence X-rays leaving pixel)
-"""
-struct KFluorescenceParams{T<:AbstractFloat}
-    n_lines::Int
-    k_edge_energies::Vector{T}
-    fluorescence_energies::Vector{T}
-    fluorescence_yields::Vector{T}
-    escape_probabilities::Vector{T}
-end
-
-"""
-    compute_fluorescence_escape_probability(material::DetectorMaterialPCCT,
-                                             thickness_mm::Real,
-                                             pixel_size_mm::Tuple{<:Real,<:Real}) -> KFluorescenceParams
-
-Compute K-fluorescence escape parameters for a given detector geometry.
-
-Escape probability depends on:
-1. Mean free path of fluorescence X-ray in crystal (material-dependent)
-2. Pixel dimensions (smaller pixels → more escapes)
-3. Absorption depth distribution (shallower → more escape from top/bottom)
-
-The model computes P_escape as the fraction of fluorescence photons whose
-mean free path exceeds half the pixel dimension (simplified geometric model).
-
-# Arguments
-- `material`: Detector material
-- `thickness_mm`: Crystal thickness in mm
-- `pixel_size_mm`: Pixel dimensions (row, col) in mm
-
-# References
-- Cammin et al, "A cascaded model for spectral response of PCCT detectors"
-  Med Phys 2014;41:041905
-"""
-function compute_fluorescence_escape_probability(
-    material::DetectorMaterialPCCT,
-    thickness_mm::Real,
-    pixel_size_mm::Tuple{<:Real,<:Real}
-)
-    props = get_detector_material_properties(material)
-    T = Float64
-
-    n_lines = length(props.k_edges_keV)
-    k_edges = T.(props.k_edges_keV)
-    k_alphas = T.(props.k_alpha_keV)
-    yields = T.(props.k_yields)
-    ranges = T.(props.k_fluorescence_range_mm)
-
-    # Compute escape probability for each fluorescence line
-    # Geometric model: fraction of isotropically emitted photons that
-    # travel far enough to leave the pixel
-    escape_probs = zeros(T, n_lines)
-    pixel_half_size = min(T(pixel_size_mm[1]), T(pixel_size_mm[2])) / 2.0
-    half_thickness = T(thickness_mm) / 2.0
-
-    for i in 1:n_lines
-        # Skip lines below useful CT energy range (e.g., Si K-α at 1.74 keV)
-        if k_alphas[i] < 5.0
-            escape_probs[i] = 0.0
-            continue
-        end
-
-        # Mean free path of fluorescence X-ray in crystal
-        λ = ranges[i]  # mm
-
-        # Probability of escape: P ≈ 1 - (1 - exp(-d/2λ))
-        # where d is the smaller of pixel_size and thickness
-        # This is a simplified solid-angle model
-        # Lateral escape (out sides of pixel):
-        p_lateral = exp(-pixel_half_size / λ)
-        # Axial escape (out top/bottom of crystal):
-        p_axial = exp(-half_thickness / λ)
-
-        # Combined: fraction of fluorescence that escapes the pixel
-        # Weight lateral more (4 sides vs 2 faces), but solid angle matters
-        # Simplified: P_escape ≈ (4 × p_lateral + 2 × p_axial) / 6
-        # but capped to reasonable values
-        escape_probs[i] = min((4.0 * p_lateral + 2.0 * p_axial) / 6.0, 0.95)
-    end
-
-    return KFluorescenceParams{T}(n_lines, k_edges, k_alphas, yields, escape_probs)
-end
-
-"""
-    apply_fluorescence_escape(E_incident::Real, fluorescence::KFluorescenceParams) -> Tuple{Float64, Float64}
-
-Compute the probability and energy shift from K-fluorescence escape.
-
-For incident photon energy E, returns:
-- `p_escape`: Total probability of fluorescence escape event
-- `E_registered`: Energy registered in primary pixel (E - E_fluorescence)
-
-If E is below all K-edges, p_escape = 0 (no fluorescence possible).
-If E is above multiple K-edges, the dominant (highest probability) line is used.
-"""
-function apply_fluorescence_escape(E_incident::Real, fluorescence::KFluorescenceParams{T}) where T
-    E = T(E_incident)
-    p_escape_total = zero(T)
-    E_lost = zero(T)
-
-    for i in 1:fluorescence.n_lines
-        if E > fluorescence.k_edge_energies[i]
-            # Photon energy is above this K-edge → fluorescence possible
-            p_this = fluorescence.fluorescence_yields[i] * fluorescence.escape_probabilities[i]
-            p_escape_total += p_this
-            E_lost += p_this * fluorescence.fluorescence_energies[i]
-        end
-    end
-
-    # Cap total escape probability
-    p_escape_total = min(p_escape_total, 0.5)
-
-    if p_escape_total > zero(T)
-        E_registered = E - E_lost / p_escape_total  # Average energy if escape occurs
-        return (Float64(p_escape_total), Float64(E_registered))
-    else
-        return (0.0, Float64(E))
-    end
-end
-
-# =============================================================================
-# Charge Collection Efficiency — Hecht Equation
-# =============================================================================
-
-"""
-    ChargeTransportParams{T<:AbstractFloat}
-
-Charge transport parameters for Hecht equation modeling.
-
-# Fields
-- `mu_e_tau_e`: Electron mobility-lifetime product (cm²/V)
-- `mu_h_tau_h`: Hole mobility-lifetime product (cm²/V)
-- `bias_voltage`: Applied voltage (V)
-- `thickness_cm`: Crystal thickness (cm)
-"""
-struct ChargeTransportParams{T<:AbstractFloat}
-    mu_e_tau_e::T
-    mu_h_tau_h::T
-    bias_voltage::T
-    thickness_cm::T
-end
-
-"""
-    get_charge_transport_params(material::DetectorMaterialPCCT, thickness_mm::Real) -> ChargeTransportParams
-
-Get charge transport parameters for Hecht equation calculation.
-"""
-function get_charge_transport_params(material::DetectorMaterialPCCT, thickness_mm::Real)
-    props = get_detector_material_properties(material)
-    return ChargeTransportParams{Float64}(
-        props.mu_e_tau_e,
-        props.mu_h_tau_h,
-        props.bias_voltage_V,
-        Float64(thickness_mm) / 10.0
-    )
-end
-
-"""
-    charge_collection_efficiency(x_cm::Real, params::ChargeTransportParams;
-                                  pixel_pitch_mm::Tuple{<:Real,<:Real}=(0.0, 0.0)) -> Float64
-
-Compute charge collection efficiency (CCE) at absorption depth x using the Hecht
-equation with optional small-pixel weighting potential (Koch-Mehrin 2020, Eq. 15).
-
-    CCE(x) = (λ_e/L) × (1-ψ(z)) × [1 - exp(-(L-x)/λ_e)]  (electron contrib)
-           + (λ_h/L) × ψ(z) × [1 - exp(-x/λ_h)]          (hole contrib)
-
-where ψ(z) is the small-pixel weighting potential. For planar geometry (or when
-pixel_pitch_mm is not provided), ψ(z) = z/L (linear, standard Hecht).
-
-# Physics
-
-In CdTe/CZT:
-- Electrons (good mobility μₑτₑ ≈ 3.3×10⁻³): collected efficiently from anywhere
-- Holes (poor mobility μₕτₕ ≈ 2×10⁻⁴): trapped if generated far from anode
-- Small-pixel effect (w/L < 0.5): reduces hole-trapping impact on signal
-
-# Arguments
-- `x_cm::Real`: Absorption depth from cathode in cm (0 ≤ x ≤ thickness)
-- `params::ChargeTransportParams`: Transport parameters
-- `pixel_pitch_mm`: Pixel dimensions (row, col) [mm] for small-pixel effect.
-  If (0,0) or not provided, uses standard Hecht (linear weighting potential).
-
-# Returns
-- `Float64`: Charge collection efficiency in [0, 1]
-
-# References
-- Koch-Mehrin 2020, Eq. 15
-- Barrett et al. 1995, NIM-A 380:131 (small-pixel weighting potential)
-"""
-function charge_collection_efficiency(x_cm::Real, params::ChargeTransportParams{T};
-                                       pixel_pitch_mm::Tuple{<:Real,<:Real}=(0.0, 0.0)) where T
-    d = params.thickness_cm
-    V = params.bias_voltage
-    x = clamp(T(x_cm), zero(T), d)
-
-    # Compute w/L ratio for small-pixel weighting potential
-    w_mm = min(Float64(pixel_pitch_mm[1]), Float64(pixel_pitch_mm[2]))
-    L_mm = d * 10.0  # cm to mm
-    wL_ratio = w_mm > 0.0 ? w_mm / L_mm : 100.0  # large value → planar limit
-
-    # Use improved Hecht with weighting potential from charge_collection.jl
-    return hecht_cce_weighted(Float64(x), Float64(d), Float64(V),
-                              Float64(params.mu_e_tau_e), Float64(params.mu_h_tau_h),
-                              wL_ratio)
-end
-
-"""
-    mean_charge_collection_efficiency(material::DetectorMaterialPCCT,
-                                       thickness_mm::Real;
-                                       n_points::Int=50,
-                                       E_keV::Real=60.0,
-                                       pixel_pitch_mm::Tuple{<:Real,<:Real}=(0.0,0.0)) -> Float64
-
-Compute depth-averaged charge collection efficiency for a detector crystal.
-
-When `pixel_pitch_mm` is provided (non-zero), uses Beer-Lambert absorption
-weighting and small-pixel weighting potential (physics-based model from
-Koch-Mehrin 2020). Otherwise falls back to uniform depth averaging with
-standard Hecht equation.
-
-# Returns
-Mean CCE in [0, 1]. For CdTe: ~0.90-0.95. For Si: ~0.99+.
-
-# References
-- Koch-Mehrin 2020, Eq. 15 (Hecht with weighting potential)
-"""
-function mean_charge_collection_efficiency(material::DetectorMaterialPCCT,
-                                            thickness_mm::Real;
-                                            n_points::Int=50,
-                                            E_keV::Real=60.0,
-                                            pixel_pitch_mm::Tuple{<:Real,<:Real}=(0.0,0.0))
-    props = get_detector_material_properties(material)
-    w_mm = min(Float64(pixel_pitch_mm[1]), Float64(pixel_pitch_mm[2]))
-
-    if w_mm > 0.0
-        # Physics-based: Beer-Lambert weighting + small-pixel potential
-        wL = w_mm / Float64(thickness_mm)
-        return mean_cce_beer_lambert(E_keV, thickness_mm, props.bias_voltage_V,
-                                     props.mu_e_tau_e, props.mu_h_tau_h, wL;
-                                     n_depth=n_points)
-    else
-        # Legacy: uniform depth averaging, standard Hecht
-        params = get_charge_transport_params(material, thickness_mm)
-        d = params.thickness_cm
-        cce_sum = 0.0
-        for i in 1:n_points
-            x = d * (i - 0.5) / n_points
-            cce_sum += charge_collection_efficiency(x, params)
-        end
-        return cce_sum / n_points
-    end
-end
-
-"""
-    hole_tailing_distribution(E_incident::Real, material::DetectorMaterialPCCT,
-                               thickness_mm::Real;
-                               n_depth::Int=20,
-                               pixel_pitch_mm::Tuple{<:Real,<:Real}=(0.0,0.0))
-        -> Tuple{Vector{Float64}, Vector{Float64}}
-
-Compute the energy distribution due to incomplete charge collection (hole tailing).
-
-Returns (energies, probabilities) representing the distribution of registered
-energies for a photon of true energy E_incident.
-
-When `pixel_pitch_mm` is provided (non-zero), uses Beer-Lambert absorption
-weighting and small-pixel weighting potential (Koch-Mehrin 2020, Eq. 15).
-Otherwise falls back to uniform absorption with standard Hecht equation.
-
-The distribution has:
-- A peak near E_incident × mean_CCE (most photons)
-- A low-energy tail from deep absorption events (poor hole collection)
-
-# Returns
-- `energies`: Registered energy values
-- `weights`: Probability weights (sum to 1.0)
-"""
-function hole_tailing_distribution(E_incident::Real, material::DetectorMaterialPCCT,
-                                    thickness_mm::Real;
-                                    n_depth::Int=20,
-                                    pixel_pitch_mm::Tuple{<:Real,<:Real}=(0.0,0.0))
-    props = get_detector_material_properties(material)
-    w_mm = min(Float64(pixel_pitch_mm[1]), Float64(pixel_pitch_mm[2]))
-
-    if w_mm > 0.0
-        # Physics-based: Beer-Lambert weighting + small-pixel potential
-        wL = w_mm / Float64(thickness_mm)
-        return hole_tailing_beer_lambert(Float64(E_incident), Float64(E_incident),
-                                         Float64(thickness_mm), props.bias_voltage_V,
-                                         props.mu_e_tau_e, props.mu_h_tau_h, wL;
-                                         n_depth=n_depth)
-    else
-        # Legacy: uniform absorption, standard Hecht
-        params = get_charge_transport_params(material, thickness_mm)
-        d = params.thickness_cm
-        E = Float64(E_incident)
-
-        energies = zeros(Float64, n_depth)
-        weights = zeros(Float64, n_depth)
-
-        for i in 1:n_depth
-            x = d * (i - 0.5) / n_depth
-            cce = charge_collection_efficiency(x, params)
-            energies[i] = E * cce
-            weights[i] = 1.0 / n_depth
-        end
-
-        return (energies, weights)
-    end
-end
-
-# =============================================================================
 # Exports
 # =============================================================================
 
 export DetectorMaterialPCCT, CDTE_MATERIAL, CZT_MATERIAL, SI_MATERIAL
 export PhotonCountingDetector
 export EnergyResolvedSinogram, n_energy_bins
-export apply_energy_thresholds
-export apply_charge_sharing!, apply_pulse_pileup!
-export apply_anti_coincidence!, apply_pcct_electronic_noise!
 export pcct_forward_project
 export get_pcct_detector_info, print_pcct_detector_info
 export get_detector_material_properties, get_detector_material_attenuation
 export quantum_efficiency, quantum_efficiency_vector
-export KFluorescenceParams, compute_fluorescence_escape_probability, apply_fluorescence_escape
-export CdTeFluorescenceModel, compute_cdte_fluorescence_model
-export fluorescence_escape_fraction, fluorescence_sharing_boost, apply_fluorescence_escape_extended
-export ChargeTransportParams, get_charge_transport_params
-export charge_collection_efficiency, mean_charge_collection_efficiency
-export hole_tailing_distribution
+export spatial_bin!
 export apply_pcct_noise!
