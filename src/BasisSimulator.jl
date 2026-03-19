@@ -186,6 +186,17 @@ include("detector/photon_counting.jl")
 # Must be after photon_counting.jl (uses get_detector_material_properties, etc.)
 include("detector/pcct/detector_response.jl")
 
+# MC-simulated detector response matrix (loads pre-computed R(E,t) from NPZ)
+# Replaces analytical DRM with full MC transport physics (Stierstorfer 2018)
+include("detector/pcct/mc_response.jl")
+
+# Monte Carlo pulse pileup model (MC pulse train → spectral migration matrix)
+# Replaces analytical Taguchi model with seminonparalyzable MC simulation
+include("detector/pcct/mc_pileup.jl")
+
+# Cumulative threshold sinograms: T1 (≥20 keV) / T4 (≥70 keV) for clinical PCCT
+include("detector/pcct/pcct_cumulative.jl")
+
 # PCCT spectral imaging: native VMI, K-edge, effective Z, multi-material decomposition
 include("spectral/pcct_spectral.jl")
 
