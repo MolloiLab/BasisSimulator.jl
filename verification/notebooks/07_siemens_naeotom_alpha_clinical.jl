@@ -1278,7 +1278,7 @@ sim_recon_opts = BS.ReconOptions(
 # Control points: (normalized_freq, amplitude) — tune to match clinical Br36
 sim_custom_filter = BS.CustomFilter(
     (0.0, 0.25, 0.5, 0.75, 1.0),
-    (1.0, 0.9, 0.65, 0.25, 0.001),
+    (1.0, 0.7, 0.45, 0.15, 0.001),
 )
 
 # ╔═╡ 08090008-0000-4000-8000-000000000000
@@ -1371,6 +1371,45 @@ sim_scan2 = let
     )
 end
 
+# ╔═╡ 08120002-b000-4000-8000-000000000001
+# Diagnostic: I0 values and ws.combined vs notebook combine
+let
+    I0 = sim_scan2.I0_bins
+    I0_norm = sim_scan2.I0_bins_norm
+    bins = sim_scan2.bins
+    ws_comb = sim_scan2.combined
+
+    println("I0 per bin combine: ", round.(I0, sigdigits=4))
+    println("I0 per bin norm:    ", round.(I0_norm, sigdigits=4))
+    println("I0 total: ", round(sum(I0), sigdigits=4))
+    println("Ratio (element-wise): ", round.(I0 ./ I0_norm, sigdigits=4))
+    println()
+
+    # Redo notebook combine
+    I0_total = Float32(sum(I0))
+    nb_comb = zeros(Float32, size(bins[1]))
+    for (b, sino_b) in enumerate(bins)
+        nb_comb .+= Float32(I0[b]) .* exp.(.-sino_b)
+    end
+    nb_comb .= .-log.(max.(nb_comb, Float32(1e-10)) ./ I0_total)
+
+    diff = ws_comb .- nb_comb
+
+    println("Notebook combine: min=", round(minimum(nb_comb), digits=4),
+            " max=", round(maximum(nb_comb), digits=4),
+            " mean=", round(mean(nb_comb), digits=4))
+    println("ws.combined:      min=", round(minimum(ws_comb), digits=4),
+            " max=", round(maximum(ws_comb), digits=4),
+            " mean=", round(mean(ws_comb), digits=4))
+    println("Diff (ws - nb):   max_abs=", round(maximum(abs.(diff)), digits=6),
+            " mean_abs=", round(mean(abs.(diff)), digits=6))
+    println()
+
+    # Per-bin sinogram stats
+    bin_stats = ["Bin $b: min=$(round(minimum(s), digits=4)) max=$(round(maximum(s), digits=4)) mean=$(round(mean(s), digits=4)) I0=$(round(I0[b], sigdigits=4))" for (b, s) in enumerate(bins)]
+    println(join(bin_stats, "\n"))
+end
+
 # ╔═╡ 08120001-0000-4000-8000-000000000000
 md"""
 ## 12. Scan 2 Reconstructions
@@ -1417,45 +1456,6 @@ sim_scan2_poly_fbp = let
     recon_hu
 end
 
-# ╔═╡ 08120002-b000-4000-8000-000000000001
-# Diagnostic: I0 values and ws.combined vs notebook combine
-let
-    I0 = sim_scan2.I0_bins
-    I0_norm = sim_scan2.I0_bins_norm
-    bins = sim_scan2.bins
-    ws_comb = sim_scan2.combined
-
-    println("I0 per bin combine: ", round.(I0, sigdigits=4))
-    println("I0 per bin norm:    ", round.(I0_norm, sigdigits=4))
-    println("I0 total: ", round(sum(I0), sigdigits=4))
-    println("Ratio (element-wise): ", round.(I0 ./ I0_norm, sigdigits=4))
-    println()
-
-    # Redo notebook combine
-    I0_total = Float32(sum(I0))
-    nb_comb = zeros(Float32, size(bins[1]))
-    for (b, sino_b) in enumerate(bins)
-        nb_comb .+= Float32(I0[b]) .* exp.(.-sino_b)
-    end
-    nb_comb .= .-log.(max.(nb_comb, Float32(1e-10)) ./ I0_total)
-
-    diff = ws_comb .- nb_comb
-
-    println("Notebook combine: min=", round(minimum(nb_comb), digits=4),
-            " max=", round(maximum(nb_comb), digits=4),
-            " mean=", round(mean(nb_comb), digits=4))
-    println("ws.combined:      min=", round(minimum(ws_comb), digits=4),
-            " max=", round(maximum(ws_comb), digits=4),
-            " mean=", round(mean(ws_comb), digits=4))
-    println("Diff (ws - nb):   max_abs=", round(maximum(abs.(diff)), digits=6),
-            " mean_abs=", round(mean(abs.(diff)), digits=6))
-    println()
-
-    # Per-bin sinogram stats
-    bin_stats = ["Bin $b: min=$(round(minimum(s), digits=4)) max=$(round(maximum(s), digits=4)) mean=$(round(mean(s), digits=4)) I0=$(round(I0[b], sigdigits=4))" for (b, s) in enumerate(bins)]
-    println(join(bin_stats, "\n"))
-end
-
 # ╔═╡ 08120003-0000-4000-8000-000000000000
 md"### 12b. Polyenergetic HIR (strength=3)"
 
@@ -1476,45 +1476,6 @@ md"### 12b. Polyenergetic HIR (strength=3)"
 #     ws_hir = nothing; sino_gpu = nothing; GC.gc(true)
 #     recon_hu
 # end
-
-# ╔═╡ 08120004-a000-4000-8000-000000000000
-# Segmentation overlay + debug print
-let
-    # Print inner ring rod positions and HU
-    inner_rods = [r for r in seg_result.rods if r.ring == :inner]
-    rod_strs = ["$(r.name): cx=$(round(r.cx,digits=1)) cy=$(round(r.cy,digits=1)) ang=$(r.angle_deg)° hu=$(round(r.mean_hu,digits=1))" for r in inner_rods]
-    println(join(rod_strs, "\n"))
-
-    fig = CM.Figure(size = (1200, 550), fontsize = 11)
-
-    # Clinical segmentation
-    clin_slice = hu_140_mid_fbp[:, :, seg_result.slice_idx]
-    ax1 = CM.Axis(fig[1, 1], title = "Clinical Segmentation", subtitle = "140 kVp FBP", aspect = CM.DataAspect(), yreversed = true)
-    CM.heatmap!(ax1, clin_slice, colormap = :grays, colorrange = (-200, 500))
-    for r in seg_result.rods
-        th = range(0, 2π, length = 60)
-        rpx = 1.4 * 0.6 / (35.0 / size(clin_slice, 1))
-        CM.lines!(ax1, r.cx .+ rpx .* cos.(th), r.cy .+ rpx .* sin.(th), color = :red, linewidth = 1.5)
-        CM.text!(ax1, r.cx, r.cy - rpx - 2, text = r.name, fontsize = 6, align = (:center, :bottom), color = :yellow)
-    end
-    CM.hidedecorations!(ax1); CM.hidespines!(ax1)
-
-    # Simulated segmentation
-    mid_z = sim_n_recon_slices ÷ 2
-    sim_slice = sim_scan2_poly_fbp[:, :, mid_z]
-    ax2 = CM.Axis(fig[1, 2], title = "Simulated Segmentation", subtitle = "140 kVp Poly FBP", aspect = CM.DataAspect())
-    CM.heatmap!(ax2, sim_slice, colormap = :grays, colorrange = (-200, 500))
-    for r in sim_seg_result.rods
-        th = range(0, 2π, length = 60)
-        rpx = 1.4 * 0.6 / (sim_fov_cm / size(sim_slice, 1))
-        CM.lines!(ax2, r.cx .+ rpx .* cos.(th), r.cy .+ rpx .* sin.(th), color = :red, linewidth = 1.5)
-        CM.text!(ax2, r.cx, r.cy - rpx - 2, text = r.name, fontsize = 6, align = (:center, :bottom), color = :yellow)
-    end
-    CM.hidedecorations!(ax2); CM.hidespines!(ax2)
-
-    CM.save(joinpath(RESULTS_DIR, "alpha_segmentation_overlay.png"), fig, px_per_unit = 2)
-    fig
-end
 
 # ╔═╡ 08120004-a000-4000-8000-000000000001
 md"### 12b½. Clinical vs Simulated Poly FBP (Scan 2, 140 kVp)"
@@ -1795,6 +1756,45 @@ sim_seg_result = let
     (mask = mask, rods = rods, center = center)
 end
 
+# ╔═╡ 08120004-a000-4000-8000-000000000000
+# Segmentation overlay + debug print
+let
+    # Print inner ring rod positions and HU
+    inner_rods = [r for r in seg_result.rods if r.ring == :inner]
+    rod_strs = ["$(r.name): cx=$(round(r.cx,digits=1)) cy=$(round(r.cy,digits=1)) ang=$(r.angle_deg)° hu=$(round(r.mean_hu,digits=1))" for r in inner_rods]
+    println(join(rod_strs, "\n"))
+
+    fig = CM.Figure(size = (1200, 550), fontsize = 11)
+
+    # Clinical segmentation
+    clin_slice = hu_140_mid_fbp[:, :, seg_result.slice_idx]
+    ax1 = CM.Axis(fig[1, 1], title = "Clinical Segmentation", subtitle = "140 kVp FBP", aspect = CM.DataAspect(), yreversed = true)
+    CM.heatmap!(ax1, clin_slice, colormap = :grays, colorrange = (-200, 500))
+    for r in seg_result.rods
+        th = range(0, 2π, length = 60)
+        rpx = 1.4 * 0.6 / (35.0 / size(clin_slice, 1))
+        CM.lines!(ax1, r.cx .+ rpx .* cos.(th), r.cy .+ rpx .* sin.(th), color = :red, linewidth = 1.5)
+        CM.text!(ax1, r.cx, r.cy - rpx - 2, text = r.name, fontsize = 6, align = (:center, :bottom), color = :yellow)
+    end
+    CM.hidedecorations!(ax1); CM.hidespines!(ax1)
+
+    # Simulated segmentation
+    mid_z = sim_n_recon_slices ÷ 2
+    sim_slice = sim_scan2_poly_fbp[:, :, mid_z]
+    ax2 = CM.Axis(fig[1, 2], title = "Simulated Segmentation", subtitle = "140 kVp Poly FBP", aspect = CM.DataAspect())
+    CM.heatmap!(ax2, sim_slice, colormap = :grays, colorrange = (-200, 500))
+    for r in sim_seg_result.rods
+        th = range(0, 2π, length = 60)
+        rpx = 1.4 * 0.6 / (sim_fov_cm / size(sim_slice, 1))
+        CM.lines!(ax2, r.cx .+ rpx .* cos.(th), r.cy .+ rpx .* sin.(th), color = :red, linewidth = 1.5)
+        CM.text!(ax2, r.cx, r.cy - rpx - 2, text = r.name, fontsize = 6, align = (:center, :bottom), color = :yellow)
+    end
+    CM.hidedecorations!(ax2); CM.hidespines!(ax2)
+
+    CM.save(joinpath(RESULTS_DIR, "alpha_segmentation_overlay.png"), fig, px_per_unit = 2)
+    fig
+end
+
 # ╔═╡ 08160003-0000-4000-8000-000000000000
 # Measurements: Poly FBP only (expand later with HIR, bins, VMI)
 sim_measurements_scan2 = let
@@ -1887,16 +1887,100 @@ let
 end
 
 # ╔═╡ 08170003-0000-4000-8000-000000000000
-# TODO: NPS comparison FBP vs HIR — uncomment when HIR is enabled
-# nothing
+# Noise bar chart: Clinical FBP vs Simulated Poly FBP (water σ)
+let
+    cm = clinical_measurements[2]  # 140kVp_174mA_FBP
+    sm = sim_measurements_scan2[1]
+    water_idx = findfirst(n -> startswith(n, "Water"), cm.rod_names)
+
+    fig = CM.Figure(size = (500, 350), fontsize = 11)
+    ax = CM.Axis(fig[1, 1]; title = "Water ROI Noise — 140 kVp / 10 mGy",
+        xlabel = "Reconstruction", ylabel = "Water σ (HU)",
+        xticks = (1:2, ["Clinical FBP\n(Br36)", "Simulated\nPoly FBP"]))
+
+    clin_σ = water_idx !== nothing ? cm.rod_stds[water_idx] : NaN
+    sim_σ = water_idx !== nothing ? sm.rod_stds[water_idx] : NaN
+    CM.barplot!(ax, [1, 2], [clin_σ, sim_σ]; width = 0.5, color = [:steelblue, :coral])
+    for (xi, v) in zip([1, 2], [clin_σ, sim_σ])
+        CM.text!(ax, xi, v + 0.5; text = "$(round(v, digits = 1))", align = (:center, :bottom), fontsize = 10)
+    end
+
+    CM.save(joinpath(RESULTS_DIR, "alpha_fbp_noise.png"), fig, px_per_unit = 2)
+    fig
+end
 
 # ╔═╡ 08170004-0000-4000-8000-000000000000
-# TODO: MTF comparison FBP vs HIR — uncomment when HIR is enabled
-# nothing
+# NPS comparison: Clinical FBP vs Simulated Poly FBP
+let
+    cm = clinical_measurements[2]
+    sm = sim_measurements_scan2[1]
+
+    fig = CM.Figure(size = (600, 400), fontsize = 11)
+    ax = CM.Axis(fig[1, 1]; title = "NPS — Clinical vs Simulated FBP (140 kVp / 10 mGy)",
+        xlabel = "Spatial Frequency (lp/mm)", ylabel = "NPS (HU² mm²)")
+
+    if hasproperty(cm, :nps) && cm.nps !== nothing
+        CM.lines!(ax, cm.nps.frequencies, cm.nps.nps_1d; color = :steelblue, linewidth = 2, label = "Clinical FBP (Br36)")
+    end
+    if hasproperty(sm, :nps) && sm.nps !== nothing
+        CM.lines!(ax, sm.nps.frequencies, sm.nps.nps_1d; color = :coral, linewidth = 2, label = "Simulated Poly FBP")
+    end
+    CM.axislegend(ax; position = :rt, labelsize = 9)
+
+    CM.save(joinpath(RESULTS_DIR, "alpha_fbp_nps.png"), fig, px_per_unit = 2)
+    fig
+end
 
 # ╔═╡ 08170005-0000-4000-8000-000000000000
-# TODO: Line profiles FBP vs HIR — uncomment when HIR is enabled
-# nothing
+# MTF comparison: Clinical FBP vs Simulated Poly FBP
+let
+    cm = clinical_measurements[2]
+    sm = sim_measurements_scan2[1]
+
+    fig = CM.Figure(size = (600, 400), fontsize = 11)
+    ax = CM.Axis(fig[1, 1]; title = "MTF — Clinical vs Simulated FBP (140 kVp / 10 mGy)",
+        xlabel = "Spatial Frequency (lp/mm)", ylabel = "MTF")
+
+    if hasproperty(cm, :mtf) && cm.mtf !== nothing
+        CM.lines!(ax, cm.mtf.frequencies, cm.mtf.mtf; color = :steelblue, linewidth = 2, label = "Clinical FBP (Br36)")
+    end
+    if hasproperty(sm, :mtf) && sm.mtf !== nothing
+        CM.lines!(ax, sm.mtf.frequencies, sm.mtf.mtf; color = :coral, linewidth = 2, label = "Simulated Poly FBP")
+    end
+    CM.hlines!(ax, [0.5, 0.1]; color = :gray60, linestyle = :dash, linewidth = 0.5)
+    CM.axislegend(ax; position = :rt, labelsize = 9)
+
+    CM.save(joinpath(RESULTS_DIR, "alpha_fbp_mtf.png"), fig, px_per_unit = 2)
+    fig
+end
+
+# ╔═╡ 08170006-0000-4000-8000-000000000000
+# Line profiles: Clinical FBP vs Simulated Poly FBP (horizontal through center)
+let
+    cm_vol = hu_140_mid_fbp
+    sm_vol = sim_scan2_poly_fbp
+    cm_seg = seg_result
+    sm_seg = sim_seg_result
+
+    fig = CM.Figure(size = (700, 350), fontsize = 11)
+    ax = CM.Axis(fig[1, 1]; title = "Horizontal Line Profile — 140 kVp / 10 mGy",
+        xlabel = "Pixel", ylabel = "HU")
+
+    cm_mid_z = cm_seg.slice_idx
+    sm_mid_z = size(sm_vol, 3) ÷ 2
+    cm_row = round(Int, cm_seg.center.cy)
+    sm_row = round(Int, sm_seg.center.cy)
+
+    cm_line = cm_vol[:, cm_row, cm_mid_z]
+    sm_line = sm_vol[:, sm_row, sm_mid_z]
+
+    CM.lines!(ax, 1:length(cm_line), cm_line; color = :steelblue, linewidth = 1, label = "Clinical FBP (Br36)")
+    CM.lines!(ax, 1:length(sm_line), sm_line; color = :coral, linewidth = 1, label = "Simulated Poly FBP")
+    CM.axislegend(ax; position = :rt, labelsize = 9)
+
+    CM.save(joinpath(RESULTS_DIR, "alpha_fbp_line_profiles.png"), fig, px_per_unit = 2)
+    fig
+end
 
 # ╔═╡ 08180001-0000-4000-8000-000000000000
 md"""
