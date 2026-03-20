@@ -55,138 +55,6 @@ end
 
 
 # =============================================================================
-# PCCT Combined Sinogram Helper
-# =============================================================================
-
-"""
-    _combine_pcct_bins(pcct_sino, detector, energies, weights, kVp; I0=1e6,
-                        apply_detector_effects=false, apply_corrections=false, flux_rate=1e8)
-
-Combine energy-resolved PCCT sinogram bins into a single conventional-equivalent
-sinogram using correct physics.
-
-The bins are in line-integral domain: sino_bin = -log(N_bin / I0_bin).
-To combine correctly, the SAME I0 used for normalization must be used here:
-1. Convert back to counts: N_bin = I0_bin × exp(-sino_bin)
-2. Sum counts: N_total = Σ N_bin
-3. Sum reference: I0_total = Σ I0_bin
-4. Combined: sino = -log(N_total / I0_total)
-
-When `apply_detector_effects=true` and `apply_corrections=false`, uses degraded I0
-(consistent with `pcct_forward_project` normalization when detector effects are applied
-without corrections). When corrections are applied, uses theoretical I0.
-
-Returns a GPU array (same device as input bins).
-"""
-function _combine_pcct_bins(pcct_sino::EnergyResolvedSinogram, detector::PhotonCountingDetector,
-    energies, weights, kVp; I0=1e6,
-    apply_detector_effects::Bool=false, apply_corrections::Bool=false,
-    flux_rate::Real=1e8,
-    output=nothing,
-    ws_I0_bins=nothing)
-    T = Float32
-    n_bins = length(pcct_sino.bins)
-    thresholds = detector.energy_thresholds_keV
-
-    # Compute per-bin I0 values — MUST match what pcct_forward_project used for normalization
-    I0_bins = if ws_I0_bins !== nothing
-        ws_I0_bins  # Pre-computed by caller (zero-alloc path)
-    elseif apply_detector_effects && !apply_corrections
-        # Effects without corrections: use degraded I0
-        η = quantum_efficiency_vector(detector.material, detector.thickness_mm, energies)
-        R = compute_mc_drm(detector, kVp)
-        _compute_degraded_I0(detector, energies, weights, η, thresholds, kVp, I0, flux_rate; R=R)
-    else
-        # No effects OR effects+corrections: use theoretical I0
-        η = quantum_efficiency_vector(detector.material, detector.thickness_mm, energies)
-        R = compute_mc_drm(detector, kVp)
-        [_compute_bin_I0(detector, energies, weights, η, thresholds, b,
-            Float64(kVp), Float64(I0); R=R) for b in 1:n_bins]
-    end
-    I0_total = T(sum(I0_bins))
-
-    # Accumulate total photon counts: N_total = Σ I0_bin × exp(-sino_bin)
-    # Reuse pre-allocated output buffer if provided
-    N_total_gpu = output === nothing ? similar(pcct_sino.bins[1]) : output
-    fill!(N_total_gpu, zero(T))
-
-    eps_val = T(1e-10)
-    for (b, bin_sino) in enumerate(pcct_sino.bins)
-        let I0b = T(I0_bins[b]), bs = bin_sino, nt = N_total_gpu
-            AK.foreachindex(bs) do idx
-                nt[idx] += I0b * exp(-bs[idx])
-            end
-        end
-    end
-
-    # Combined sinogram = -log(N_total / I0_total)
-    let nt = N_total_gpu, I0t = I0_total, eps = eps_val
-        AK.foreachindex(nt) do idx
-            nt[idx] = -log(max(nt[idx], eps) / I0t)
-        end
-    end
-
-    return N_total_gpu
-end
-
-# =============================================================================
-# PCCT Tube Physics (applied to combined sinogram at binned resolution)
-# =============================================================================
-
-"""
-    _apply_pcct_tube_physics!(sinogram, geom, config; ws_scratch=nothing)
-
-Apply tube/geometry effects to the combined PCCT sinogram.
-
-These are tube-side effects that are skipped by the PCCT per-bin pipeline but
-affect the measured signal: heel effect, scatter, and focal spot blur.
-Applied to the **combined** (single) sinogram at binned resolution.
-
-The effects are a subset of the physics pipeline — only those that are
-tube/geometry effects (not detector-specific like noise, crosstalk, lag).
-"""
-function _apply_pcct_tube_physics!(
-    sinogram::AbstractArray{T,3},
-    geom::CTGeometry,
-    config::PhysicsConfig;
-    ws_scratch::Union{Nothing, AbstractArray{T,3}}=nothing,
-    ws_scatter_temp=nothing,
-    ws_scatter_kernel_1d=nothing,
-    ws_scatter_correct_kernel_1d=nothing
-) where T
-    _scratch = ws_scratch
-
-    # 1. Heel effect (intensity domain)
-    if config.heel_effect !== nothing
-        eps = T(1e-10)
-        AK.foreachindex(sinogram) do idx
-            sinogram[idx] = exp(-sinogram[idx])
-        end
-        apply_heel_effect!(sinogram, config.heel_effect, geom)
-        AK.foreachindex(sinogram) do idx
-            sinogram[idx] = -log(max(sinogram[idx], eps))
-        end
-    end
-
-    # 2. Scatter add + correct (sinogram domain)
-    if config.scatter !== nothing && _scratch !== nothing
-        add_scatter!(sinogram, config.scatter; ws_output=_scratch,
-                     ws_scatter_temp=ws_scatter_temp, ws_kernel_1d=ws_scatter_kernel_1d)
-    end
-    if config.scatter_correction !== nothing && _scratch !== nothing
-        correct_scatter!(sinogram, config.scatter_correction; ws_output=_scratch,
-                         ws_scatter_temp=ws_scatter_temp, ws_kernel_1d=ws_scatter_correct_kernel_1d)
-    end
-
-    # 3. Focal spot blur (sinogram domain)
-    if config.focal_spot !== nothing && _scratch !== nothing
-        apply_focal_spot_blur!(sinogram, config.focal_spot, geom; ws_output=_scratch)
-    end
-
-    return sinogram
-end
-
-# =============================================================================
 # simulate!() — Zero-allocation PCCT simulation hot path
 # =============================================================================
 
@@ -345,10 +213,10 @@ function simulate!(
     # STEP 2: Signal chain (always active)
     # ═══════════════════════════════════════════════════════════════════════
 
-    heel_effect = ws.heel_effect
     bhc_eff = ws.bhc
 
     # Apply physics pipeline (sinogram domain, no noise)
+    # Note: heel effect is now in spectral domain (folded into bowtie_spectral)
     _apply_physics_no_noise!(ws.sinogram, geom, config;
         ws_output=ws.physics_output,
         ws_scatter_kernel=ws.scatter_kernel,
@@ -370,14 +238,9 @@ function simulate!(
         end
     end
 
-    # Apply heel effect to phantom intensity
-    if heel_effect !== nothing
-        apply_heel_effect!(ws.sinogram, heel_effect, geom)
-    end
-
     # Create noise-free air scan (workspace buffer)
-    # Clinical scanners calibrate with bowtie in beam, so air scan includes bowtie
-    # Air scan uses spectral bowtie air reference: I₀(col,row) = Σ w(E) × T_bt(E,col,row) × η(E)
+    # Air reference includes bowtie × heel spectral effects:
+    # I₀(col,row) = Σ w(E) × T_source(E,col,row) × η(E)
     fill!(ws.air_scan, one(T))
     if ws.bowtie_air_reference !== nothing
         let air = ws.air_scan, ref = ws.bowtie_air_reference, nc = size(air, 1), nr = size(air, 2)
@@ -389,9 +252,6 @@ function simulate!(
                 air[idx] *= ref[ref_idx]
             end
         end
-    end
-    if heel_effect !== nothing
-        apply_heel_effect!(ws.air_scan, heel_effect, geom)
     end
 
     # Calibration (prep = phantom / air)

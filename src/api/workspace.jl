@@ -477,7 +477,6 @@ mutable struct EICTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:Abstr
     mats::Vector
     rng::MersenneTwister
     # Signal chain config (extracted from PhysicsConfig for zero-alloc)
-    heel_effect::Union{Nothing, HeelEffect}
     bhc::Union{Nothing, Union{BHCPolynomial, BeamHardeningCorrection}}
 
     # ─── Result staging (CPU) ───
@@ -661,20 +660,45 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     wη_gpu_buf = similar(ref, T, n_energies_padded)
     copyto!(wη_gpu_buf, wη_cpu)
 
-    # Bowtie spectral transmission: resolved directly from scanner (not via PhysicsConfig)
+    # Source spectral transmission: bowtie × heel effect (both per-pixel, per-energy)
+    # These are pre-patient source effects applied during spectral forward projection.
     bowtie_filter = resolve_bowtie_filter(scanner.bowtie_filter)
     bowtie_spectral_gpu = nothing
     bowtie_air_ref_gpu = nothing
-    if bowtie_filter !== nothing && bowtie_filter.name != "none"
-        trans_cpu = compute_bowtie_attenuation_spectral(bowtie_filter, geom, Float64.(energies))
-        # Pad bowtie spectral to n_energies_padded (zero-fill extra energy slices)
+
+    # Start with heel effect spectral transmission (energy-dependent, per-column)
+    heel_trans = if config.heel_effect !== nothing
+        compute_heel_spectral(config.heel_effect, geom, Float64.(energies))
+    else
+        nothing
+    end
+
+    # Bowtie spectral transmission (energy-dependent, per-pixel)
+    bowtie_trans = if bowtie_filter !== nothing && bowtie_filter.name != "none"
+        compute_bowtie_attenuation_spectral(bowtie_filter, geom, Float64.(energies))
+    else
+        nothing
+    end
+
+    # Combine: source_transmission = bowtie × heel (both are [n_cols, n_rows, n_energies])
+    has_source_spectral = bowtie_trans !== nothing || heel_trans !== nothing
+    if has_source_spectral
+        if bowtie_trans !== nothing && heel_trans !== nothing
+            trans_cpu = bowtie_trans .* heel_trans  # Element-wise multiply
+        elseif bowtie_trans !== nothing
+            trans_cpu = bowtie_trans
+        else
+            trans_cpu = heel_trans
+        end
+
+        # Pad to n_energies_padded
         bt_padded_cpu = zeros(T, size(trans_cpu, 1), size(trans_cpu, 2), n_energies_padded)
         bt_padded_cpu[:, :, 1:n_energies] .= T.(trans_cpu)
         bt_gpu = similar(ref, T, size(bt_padded_cpu)...)
         copyto!(bt_gpu, bt_padded_cpu)
         bowtie_spectral_gpu = bt_gpu
 
-        # Air reference: I₀(col,row) = Σ w_norm(E) × T_bt(E,col,row) × η(E)
+        # Air reference: I₀(col,row) = Σ w_norm(E) × T_source(E,col,row) × η(E)
         w_norm = weights_vec ./ sum(weights_vec)
         air_ref_cpu = zeros(T, sino_shape[1], sino_shape[2])
         for e in 1:n_energies
@@ -698,7 +722,7 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     copyto!(bhc_coeffs_gpu, bhc_coeffs_cpu)
 
     # Extract signal chain config from PhysicsConfig (pre-computed)
-    heel = config.heel_effect
+    # Note: heel_effect is now in spectral domain (folded into bowtie_spectral above)
     bhc_effect = config.bhc
 
     # Pre-computed geometry arrays (T-typed, same backend as mask) for siddon_forward_project!
@@ -729,7 +753,7 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         weights_norm, μ_lut_cpu, μ_lut_gpu, μ_table, μ_table_gpu, η_vec, wη_gpu_buf, bhc_coeffs_gpu,
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
         geom, energies, weights_vec, config, mats, rng,
-        heel, bhc_effect,
+        bhc_effect,
         sino_ideal_out, sino_noisy_out
     )
 end

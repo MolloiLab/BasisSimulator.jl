@@ -296,3 +296,75 @@ function get_heel_effect_info(heel::HeelEffect)
         expected_variation = "~$(round(Int, central_atten * 100))% intensity drop at central ray"
     )
 end
+
+# =============================================================================
+# Spectral Heel Effect (energy-dependent, per-column transmission)
+# =============================================================================
+
+"""
+    compute_heel_spectral(heel, geom, energies_keV) -> Array{Float64, 3}
+
+Compute per-column, per-energy heel effect transmission: [n_cols, n_rows, n_energies].
+
+Models anode self-attenuation with energy-dependent tungsten μ(E):
+    T(col, E) = exp(-μ_W(E) × d × cos(θ_anode) / sin(θ_anode + γ(col)))
+normalized to central ray.
+
+This is the spectral-domain heel effect, analogous to bowtie spectral transmission.
+Applied during forward projection by multiplying into the spectral weight matrix.
+"""
+function compute_heel_spectral(
+    heel::HeelEffect,
+    geom::CTGeometry,
+    energies_keV::Vector{Float64}
+)
+    if !heel.enabled || heel.effective_thickness_mm <= 0
+        return ones(Float64, geom.n_cols, geom.n_rows, length(energies_keV))
+    end
+
+    n_cols = geom.n_cols
+    n_rows = geom.n_rows
+    n_energies = length(energies_keV)
+
+    θ_anode = heel.anode_angle_deg * π / 180.0
+    d_cm = heel.effective_thickness_mm / 10.0
+    cos_θ = cos(θ_anode)
+    fan_max = atan(geom.fov[1] / 2 / geom.SAD)
+    θ_min = θ_anode / 3.0
+
+    # Get energy-dependent μ for target material
+    target_mat = if heel.target_material == :tungsten
+        XA.Elements.Tungsten
+    elseif heel.target_material == :molybdenum
+        XA.Elements.Molybdenum
+    else
+        XA.Elements.Tungsten
+    end
+
+    transmission = ones(Float64, n_cols, n_rows, n_energies)
+
+    for (e_idx, E) in enumerate(energies_keV)
+        # Energy-dependent linear attenuation of target material
+        μ_E = compute_μ_at_energy(target_mat, E)
+
+        # Reference attenuation at central ray
+        sin_ref = max(sin(θ_anode), 0.01)
+        I_ref = exp(-μ_E * d_cm * cos_θ / sin_ref)
+
+        for col in 1:n_cols
+            γ = (col - n_cols / 2.0 - 0.5) / (n_cols / 2.0) * fan_max
+            θ_eff = max(θ_anode + γ, θ_min)
+            sin_eff = max(sin(θ_eff), 0.01)
+            I_col = exp(clamp(-μ_E * d_cm * cos_θ / sin_eff, -700.0, 700.0))
+            ratio = I_col / I_ref  # Normalized to central ray
+
+            for row in 1:n_rows
+                transmission[col, row, e_idx] = ratio
+            end
+        end
+    end
+
+    return transmission
+end
+
+export compute_heel_spectral
