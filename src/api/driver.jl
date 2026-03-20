@@ -127,7 +127,8 @@ function simulate!(
         ws_μ_table_gpu=ws.μ_table_gpu,
         ws_W_matrix_gpu=ws.W_matrix_gpu,
         ws_outputs_flat=ws.outputs_flat,
-        ws_native_outputs_flat=ws.native_outputs_flat
+        ws_native_outputs_flat=ws.native_outputs_flat,
+        ws_source_spectral=ws.source_spectral_gpu
     )
 
     # ─── Noise (in-place on pcct_sino.bins — operates at binned resolution) ───

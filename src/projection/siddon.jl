@@ -1631,6 +1631,23 @@ Returns Σ_e W[ts+e-1, b] * exp(-accums[e]) for e=1:K.
 end
 
 """
+    _tiled_beer_lambert_col_bt(accums, W, b, ts, bt, bt_base, ncnr)
+
+@generated helper: multi-output Beer-Lambert sum with source spectral modulation.
+Returns Σ_e W[ts+e-1, b] * bt[bt_base + (ts+e-2)*ncnr] * exp(-accums[e]).
+"""
+@generated function _tiled_beer_lambert_col_bt(accums::NTuple{K,T}, W, b::Int32, ts::Int32, bt, bt_base::Int32, ncnr::Int32) where {K, T}
+    if K == 0
+        return :(zero(T))
+    end
+    ex = :((@inbounds W[ts, b]) * (@inbounds bt[bt_base + (ts - Int32(1)) * ncnr]) * exp(-accums[1]))
+    for i in 2:K
+        ex = :($ex + (@inbounds W[ts + Int32($(i - 1)), b]) * (@inbounds bt[bt_base + (ts + Int32($(i - 2))) * ncnr]) * exp(-accums[$i]))
+    end
+    return ex
+end
+
+"""
     siddon_fused_spectral_project!(pilot, outputs_flat, n_bins, mask, geom,
         μ_table_gpu, W_gpu, Val(K), tile_start; kwargs...)
 
@@ -1676,7 +1693,8 @@ function siddon_fused_spectral_project!(
     ws_source_positions = nothing,
     ws_detector_centers = nothing,
     ws_detector_u = nothing,
-    ws_detector_v = nothing
+    ws_detector_v = nothing,
+    ws_bowtie_spectral = nothing
 ) where {T <: AbstractFloat, K}
 
     # Volume dimensions (Int32 for GPU)
@@ -1736,6 +1754,10 @@ function siddon_fused_spectral_project!(
         _dv
     end
 
+    # Bowtie/heel spectral layout constants
+    nc_nr = n_cols * n_rows
+    has_source_spectral = ws_bowtie_spectral !== nothing
+
     # Capture all variables in let block for GPU closure correctness
     let mask=mask, μ_tbl=μ_table_gpu, W=W_gpu, ts=tile_start,
         sp=source_positions, dc=detector_centers, du=detector_u, dv=detector_v,
@@ -1745,7 +1767,8 @@ function siddon_fused_spectral_project!(
         nx=nx, ny=ny, nz=nz, nc=n_cols, nr=n_rows, na=n_angles,
         mag=magnification, ps=pixel_size, prs=pixel_row_size,
         cc=col_center, rc=row_center,
-        ne=n_elem, nb=n_bins, oflat=outputs_flat
+        ne=n_elem, nb=n_bins, oflat=outputs_flat,
+        bt=ws_bowtie_spectral, ncnr=nc_nr, hbt=has_source_spectral
 
         AK.foreachindex(pilot) do idx
             # ─── Index decomposition (mod/div, no CartesianIndices) ───
@@ -1881,11 +1904,19 @@ function siddon_fused_spectral_project!(
 
             # ═══════════════════════════════════════════════════════════
             # MULTI-OUTPUT BEER-LAMBERT — ADD partial sum to each bin
-            # (accums are zero if ray missed → adds air contribution)
+            # With optional source spectral modulation (heel × bowtie)
             # ═══════════════════════════════════════════════════════════
-            for b in Int32(1):nb
-                I_partial = _tiled_beer_lambert_col(accums, W, b, ts)
-                oflat[idx + (b - Int32(1)) * ne] += I_partial
+            if hbt
+                bt_base = Int32(col) + (Int32(row) - Int32(1)) * nc
+                for b in Int32(1):nb
+                    I_partial = _tiled_beer_lambert_col_bt(accums, W, b, ts, bt, bt_base, ncnr)
+                    oflat[idx + (b - Int32(1)) * ne] += I_partial
+                end
+            else
+                for b in Int32(1):nb
+                    I_partial = _tiled_beer_lambert_col(accums, W, b, ts)
+                    oflat[idx + (b - Int32(1)) * ne] += I_partial
+                end
             end
         end
     end

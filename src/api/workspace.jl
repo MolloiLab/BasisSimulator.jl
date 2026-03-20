@@ -103,6 +103,7 @@ mutable struct PCCTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A1<:Abstr
     W_matrix_gpu::A2                         # spectral weight matrix [n_energies_padded, n_bins] on GPU
     outputs_flat::A1                         # flattened output buffer [n_elements * n_bins] on GPU
     native_outputs_flat::Union{Nothing, A1}  # native-res flattened output (nothing if bf==1)
+    source_spectral_gpu::Union{Nothing, A3}  # heel × bowtie [n_cols, n_rows, n_energies_padded]
 
     # ─── Pre-computed pileup LUT ───
     pileup_S::Matrix{Float64}               # spectral migration matrix S[n_bins, n_bins]
@@ -351,6 +352,35 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     _W_matrix_gpu = similar(ref_mask, T, n_energies_padded, n_bins)
     copyto!(_W_matrix_gpu, W_cpu)
 
+    # Source spectral transmission: heel × bowtie (same as EICT path)
+    bowtie_filter = resolve_bowtie_filter(scanner.bowtie_filter)
+    heel_trans = if config.heel_effect !== nothing
+        compute_heel_spectral(config.heel_effect, geom, Float64.(energies))
+    else
+        nothing
+    end
+    bowtie_trans = if bowtie_filter !== nothing && bowtie_filter.name != "none"
+        compute_bowtie_attenuation_spectral(bowtie_filter, geom, Float64.(energies))
+    else
+        nothing
+    end
+    _source_spectral_gpu = if heel_trans !== nothing || bowtie_trans !== nothing
+        if heel_trans !== nothing && bowtie_trans !== nothing
+            src_cpu = heel_trans .* bowtie_trans
+        elseif bowtie_trans !== nothing
+            src_cpu = bowtie_trans
+        else
+            src_cpu = heel_trans
+        end
+        src_padded = ones(T, sino_shape[1], sino_shape[2], n_energies_padded)
+        src_padded[:, :, 1:n_energies] .= T.(src_cpu)
+        src_gpu = similar(ref_mask, T, size(src_padded)...)
+        copyto!(src_gpu, src_padded)
+        src_gpu
+    else
+        nothing
+    end
+
     # Flattened output buffer for spectral projection
     _outputs_flat = similar(ref_mask, T, n_elements * n_bins)
 
@@ -397,7 +427,7 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         _native_bins, _native_sino_buf, _native_scratch,
         _native_geom, _n_src, _n_det, _n_u, _n_v,
         tube_scratch,
-        _μ_table_gpu, _W_matrix_gpu, _outputs_flat, _native_outputs_flat,
+        _μ_table_gpu, _W_matrix_gpu, _outputs_flat, _native_outputs_flat, _source_spectral_gpu,
         _pileup_S, _pileup_cf,
         geom, energies, weights_vec, config, pcct_detector, mats,
         use_detector_fx, use_corrections, kVp

@@ -407,6 +407,7 @@ function pcct_forward_project(
     ws_W_matrix_gpu = nothing,        # GPU [n_energies_padded, n_bins]
     ws_outputs_flat = nothing,        # GPU [n_elements * n_bins]
     ws_native_outputs_flat = nothing, # GPU [native_n_elements * n_bins] (for bf>1)
+    ws_source_spectral = nothing,    # GPU [n_cols, n_rows, n_energies_padded] heel × bowtie
     # Ignored kwargs for backward compat with callers that still pass them
     kwargs...
 )
@@ -498,6 +499,8 @@ function pcct_forward_project(
         n_regions = size(ws_μ_table_gpu, 1)
         μ_sub = similar(mask, T, n_regions, TILE_K)
         W_sub = similar(mask, T, TILE_K, n_bins)
+        has_src = ws_source_spectral !== nothing
+        bt_sub = has_src ? similar(mask, T, size(_pilot, 1), size(_pilot, 2), TILE_K) : nothing
 
         for tile_idx in 1:n_tiles
             ts = (tile_idx - 1) * TILE_K + 1
@@ -506,6 +509,9 @@ function pcct_forward_project(
             # Copy subset of μ_table and W for this tile
             copyto!(μ_sub, @view ws_μ_table_gpu[:, ts:te])
             copyto!(W_sub, @view ws_W_matrix_gpu[ts:te, :])
+            if has_src
+                copyto!(bt_sub, @view ws_source_spectral[:, :, ts:te])
+            end
 
             # Call tiled spectral kernel with tile_start=1 (subset already offset)
             siddon_fused_spectral_project!(
@@ -515,7 +521,8 @@ function pcct_forward_project(
                 ws_source_positions=_ws_src,
                 ws_detector_centers=_ws_det,
                 ws_detector_u=_ws_u,
-                ws_detector_v=_ws_v)
+                ws_detector_v=_ws_v,
+                ws_bowtie_spectral=bt_sub)
         end
 
         # Unpack outputs_flat → bins (or native_bins if spatial binning)
