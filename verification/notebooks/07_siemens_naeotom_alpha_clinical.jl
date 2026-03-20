@@ -1349,9 +1349,8 @@ sim_scan2 = let
 
     geom = ws.geom
     pcct_sino = result.pcct_sino
-    I0_bins_result = result.I0_bins
-
-    # Copy bins to CPU
+    I0_bins_cpu = copy(result.I0_bins)
+    combined_cpu = copy(result.combined)
     bins_cpu = [Array(pcct_sino.bins[i]) for i in 1:length(pcct_sino.bins)]
 
     # Cleanup GPU
@@ -1359,7 +1358,8 @@ sim_scan2 = let
 
     (
         bins = bins_cpu,
-        I0_bins = copy(I0_bins_result),
+        I0_bins = I0_bins_cpu,
+        combined = combined_cpu,
         geom = geom,
     )
 end
@@ -1395,23 +1395,9 @@ md"""
 sim_scan2_poly_fbp = let
     geom = sim_scan2.geom
     recon_size = sim_matrix_size
-    bins = sim_scan2.bins
-    I0 = sim_scan2.I0_bins  # per-bin I0 from workspace
 
-    # ── Notebook-level proper combine ──
-    # N_b = I0_b × exp(-sino_b)   (recover raw photon counts)
-    # N_total = Σ N_b              (sum counts — noise reduces as √N)
-    # sino = -log(N_total / I0_total)
-    I0_total = Float32(sum(I0))
-    combined = zeros(Float32, size(bins[1]))
-    for (b, sino_b) in enumerate(bins)
-        I0b = Float32(I0[b])
-        combined .+= I0b .* exp.(.-sino_b)
-    end
-    combined .= .-log.(max.(combined, Float32(1e-10)) ./ I0_total)
-
-    # Use the notebook combine (known correct math)
-    sino_gpu = MtlArray(combined)
+    # Use combined sinogram from simulate! (includes scatter add + correct)
+    sino_gpu = MtlArray(sim_scan2.combined)
 
     ws_fdk = BS.create_fdk_recon_workspace(
         sino_gpu, geom, recon_size;

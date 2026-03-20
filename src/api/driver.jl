@@ -147,21 +147,58 @@ function simulate!(
     end
 
     # ─── MC pulse pileup (pre-computed at workspace creation) ───
-    # Applied in COUNT domain: N_new = N_old × cf, in log domain: sino += -log(cf)
+    # Applied in count domain: N_new = N_old × cf
+    # sino = -log(N/I0), so N = I0 × exp(-sino), N_new = cf × N, sino_new = -log(cf × N / I0)
+    # = -log(cf) + sino  WRONG for air (sino≈0 → N≈I0, but we want N_air_new = cf × I0)
+    # Correct: convert to counts, scale, convert back
     if ws.pileup_count_factor < 0.999
-        log_cf = T(-log(ws.pileup_count_factor))  # Positive: increases line integral (fewer counts)
-        for bin in pcct_sino.bins
-            let lcf = log_cf, b = bin
+        cf = T(ws.pileup_count_factor)
+        for (b_idx, bin) in enumerate(pcct_sino.bins)
+            I0b = T(ws.I0_bins[b_idx])
+            let cf=cf, I0b=I0b, b=bin, eps=T(1e-10)
                 AK.foreachindex(b) do idx
-                    b[idx] += lcf
+                    N = I0b * exp(-b[idx])       # Convert to counts
+                    N_pileup = cf * N             # Apply count loss
+                    b[idx] = -log(max(N_pileup, eps) / I0b)  # Back to line integral
                 end
             end
         end
     end
 
-    # Return raw energy-resolved bins + I0 per bin for notebook-level combining
-    # Combining, tube physics, BHC, and reconstruction are done by the notebook
-    return (pcct_sino=pcct_sino, I0_bins=ws.I0_bins)
+    # ─── Combine bins → single sinogram for scatter (same math as notebook) ───
+    I0_bins = ws.I0_bins
+    I0_total = T(sum(I0_bins))
+    combined_gpu = ws.combined
+    fill!(combined_gpu, zero(T))
+    eps_combine = T(1e-10)
+    for (b, bin_sino) in enumerate(pcct_sino.bins)
+        let I0b = T(I0_bins[b]), bs = bin_sino, comb = combined_gpu
+            AK.foreachindex(bs) do idx
+                comb[idx] += I0b * exp(-bs[idx])
+            end
+        end
+    end
+    let comb = combined_gpu, I0t = I0_total, eps = eps_combine
+        AK.foreachindex(comb) do idx
+            comb[idx] = -log(max(comb[idx], eps) / I0t)
+        end
+    end
+
+    # ─── Scatter add + correct (same physics as EICT) ───
+    if config.scatter !== nothing
+        add_scatter!(combined_gpu, config.scatter;
+            ws_output=ws.tube_physics_scratch)
+    end
+    if config.scatter_correction !== nothing
+        correct_scatter!(combined_gpu, config.scatter_correction;
+            ws_output=ws.tube_physics_scratch)
+    end
+
+    # Save combined to CPU
+    copyto!(ws.sino_noisy_out, combined_gpu)
+
+    # Return bins + combined sinogram (with scatter)
+    return (pcct_sino=pcct_sino, I0_bins=I0_bins, combined=Array(combined_gpu))
 end
 
 # =============================================================================

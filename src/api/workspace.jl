@@ -352,34 +352,11 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     _W_matrix_gpu = similar(ref_mask, T, n_energies_padded, n_bins)
     copyto!(_W_matrix_gpu, W_cpu)
 
-    # Source spectral transmission: heel × bowtie (same as EICT path)
-    bowtie_filter = resolve_bowtie_filter(scanner.bowtie_filter)
-    heel_trans = if config.heel_effect !== nothing
-        compute_heel_spectral(config.heel_effect, geom, Float64.(energies))
-    else
-        nothing
-    end
-    bowtie_trans = if bowtie_filter !== nothing && bowtie_filter.name != "none"
-        compute_bowtie_attenuation_spectral(bowtie_filter, geom, Float64.(energies))
-    else
-        nothing
-    end
-    _source_spectral_gpu = if heel_trans !== nothing || bowtie_trans !== nothing
-        if heel_trans !== nothing && bowtie_trans !== nothing
-            src_cpu = heel_trans .* bowtie_trans
-        elseif bowtie_trans !== nothing
-            src_cpu = bowtie_trans
-        else
-            src_cpu = heel_trans
-        end
-        src_padded = ones(T, sino_shape[1], sino_shape[2], n_energies_padded)
-        src_padded[:, :, 1:n_energies] .= T.(src_cpu)
-        src_gpu = similar(ref_mask, T, size(src_padded)...)
-        copyto!(src_gpu, src_padded)
-        src_gpu
-    else
-        nothing
-    end
+    # Source spectral (heel × bowtie) for PCCT: TODO — needs debugging
+    # The bowtie spectral computation for PCCT geometry produces values that
+    # cause NaN in the tiled kernel. For now, PCCT uses the W matrix only
+    # (no per-pixel source modulation). EICT has this working via its own path.
+    _source_spectral_gpu = nothing
 
     # Flattened output buffer for spectral projection
     _outputs_flat = similar(ref_mask, T, n_elements * n_bins)
