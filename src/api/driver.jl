@@ -282,8 +282,8 @@ function simulate!(
     copyto!(ws.sino_ideal_out, sino_ideal_gpu)
 
     # Noise (in-place on pcct_sino.bins — operates at binned resolution)
+    I0_physics = compute_detector_I0(geom, protocol, sum(ws.weights))
     if sim_opts.use_noise
-        I0_physics = compute_detector_I0(geom, protocol, sum(ws.weights))
         apply_pcct_noise!(pcct_sino, pcct_detector, protocol;
             seed=sim_opts.seed, I0=I0_physics,
             energies=energies, weights=weights,
@@ -295,6 +295,12 @@ function simulate!(
             ws_R=ws.R,
             noise_reduction=sim_opts.pcct_noise_reduction)
     end
+
+    # TODO: MC pulse pileup LUT integration
+    # Pileup is count-rate-dependent (varies with mA and patient attenuation).
+    # Requires pre-computed migration matrix S(flux_rate) interpolated from a
+    # LUT generated at workspace creation. Currently disabled — the MC DRM
+    # handles energy-dependent effects; pileup needs a separate flux-dependent LUT.
 
     # Combine noisy (reuse workspace buffer + pre-computed I0_bins)
     sino_noisy_gpu = _combine_pcct_bins(pcct_sino, pcct_detector, energies, weights, kVp;
