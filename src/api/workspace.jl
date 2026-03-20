@@ -104,6 +104,10 @@ mutable struct PCCTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A1<:Abstr
     outputs_flat::A1                         # flattened output buffer [n_elements * n_bins] on GPU
     native_outputs_flat::Union{Nothing, A1}  # native-res flattened output (nothing if bf==1)
 
+    # ─── Pre-computed pileup LUT ───
+    pileup_S::Matrix{Float64}               # spectral migration matrix S[n_bins, n_bins]
+    pileup_count_factor::Float64            # count-loss factor (N_recorded / N_true)
+
     # ─── Pre-computed setup data (computed once, reused) ───
     geom::CTGeometry                         # CT geometry (binned resolution)
     energies::Vector{Float64}                # downsampled spectrum energies
@@ -358,6 +362,28 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         nothing
     end
 
+    # ─── Pre-compute pileup migration matrix (MC-based, one-time cost) ───
+    # Pileup is per native dexel (not per binned pixel).
+    # I0 from compute_detector_I0 is per binned pixel per view.
+    # Count rate per dexel = (I0 / bf²) / time_per_view  [photons/s]
+    _I0_physics = compute_detector_I0(geom, protocol, sum(weights_vec))
+    _time_per_view = protocol.rotation_time / protocol.views
+    _count_rate_per_dexel = (_I0_physics / Float64(bf * bf)) / _time_per_view
+    _τ_ns = Float64(pcct_detector.dead_time_ns)
+    _aτ = _count_rate_per_dexel * _τ_ns * 1e-9
+
+    _pileup_S = if pcct_detector.dead_time_ns > 0 && _aτ > 0.01
+        w_norm = Float64.(weights_vec) ./ sum(Float64.(weights_vec))
+        compute_mc_pileup_matrix(
+            pcct_detector.energy_thresholds_keV,
+            w_norm, Float64.(energies),
+            _count_rate_per_dexel, _τ_ns;
+            n_trials=5000, seed=42)
+    else
+        Matrix{Float64}(I, n_bins, n_bins)  # Identity = no pileup
+    end
+    _pileup_cf = seminonparalyzable_count_factor(_aτ)
+
     return PCCTWorkspace{T, typeof(sino_buf), typeof(enoise_gpu), typeof(geom_source_positions)}(
         bins, μ_volume, sino_buf, scratch,
         combined,
@@ -372,6 +398,7 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         _native_geom, _n_src, _n_det, _n_u, _n_v,
         tube_scratch,
         _μ_table_gpu, _W_matrix_gpu, _outputs_flat, _native_outputs_flat,
+        _pileup_S, _pileup_cf,
         geom, energies, weights_vec, config, pcct_detector, mats,
         use_detector_fx, use_corrections, kVp
     )

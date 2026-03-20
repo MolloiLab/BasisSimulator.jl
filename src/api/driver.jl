@@ -296,11 +296,44 @@ function simulate!(
             noise_reduction=sim_opts.pcct_noise_reduction)
     end
 
-    # TODO: MC pulse pileup LUT integration
-    # Pileup is count-rate-dependent (varies with mA and patient attenuation).
-    # Requires pre-computed migration matrix S(flux_rate) interpolated from a
-    # LUT generated at workspace creation. Currently disabled — the MC DRM
-    # handles energy-dependent effects; pileup needs a separate flux-dependent LUT.
+    # MC pulse pileup: count-loss + spectral migration (pre-computed at workspace creation)
+    # Uses per-native-dexel count rate (not per binned pixel)
+    if ws.pileup_count_factor < 0.999  # Skip if negligible pileup
+        S = ws.pileup_S
+        cf = T(ws.pileup_count_factor)
+        n_bins_pu = length(pcct_sino.bins)
+
+        # Apply count-loss factor
+        for bin in pcct_sino.bins
+            let pf = cf, b = bin
+                AK.foreachindex(b) do idx
+                    b[idx] *= pf
+                end
+            end
+        end
+
+        # Apply spectral migration from pre-computed S matrix
+        if n_bins_pu >= 2
+            for src in 1:n_bins_pu
+                for dst in 1:n_bins_pu
+                    dst == src && continue
+                    diag_val = S[src, src]
+                    off_diag = S[dst, src]
+                    off_diag < 1e-6 && continue
+                    col_sum = sum(S[j, src] for j in 1:n_bins_pu if j != src)
+                    transfer_frac = T(col_sum > 0 ? off_diag / (diag_val + col_sum) : 0)
+                    transfer_frac < T(1e-6) && continue
+                    let cb = pcct_sino.bins[src], db = pcct_sino.bins[dst], f = transfer_frac
+                        AK.foreachindex(cb) do idx
+                            transfer = cb[idx] * f
+                            db[idx] += transfer
+                            cb[idx] -= transfer
+                        end
+                    end
+                end
+            end
+        end
+    end
 
     # Combine noisy (reuse workspace buffer + pre-computed I0_bins)
     sino_noisy_gpu = _combine_pcct_bins(pcct_sino, pcct_detector, energies, weights, kVp;
