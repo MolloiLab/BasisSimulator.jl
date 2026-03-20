@@ -262,26 +262,7 @@ function simulate!(
         ws_native_outputs_flat=ws.native_outputs_flat
     )
 
-    # Combine ideal (workspace buffer + pre-computed I0_bins)
-    sino_ideal_gpu = _combine_pcct_bins(pcct_sino, pcct_detector, energies, weights, kVp;
-        apply_detector_effects=use_detector_fx,
-        apply_corrections=use_corrections,
-        output=ws.combined,
-        ws_I0_bins=ws.I0_bins)
-
-    # Tube physics on ideal combined sinogram (scatter, focal spot, heel)
-    _apply_pcct_tube_physics!(sino_ideal_gpu, geom, config;
-        ws_scratch=ws.tube_physics_scratch)
-
-    # BHC on ideal
-    if config.bhc !== nothing
-        apply_bhc!(sino_ideal_gpu, config.bhc; ws_coeffs_gpu=ws.bhc_coeffs_gpu)
-    end
-
-    # Save ideal to CPU workspace buffer
-    copyto!(ws.sino_ideal_out, sino_ideal_gpu)
-
-    # Noise (in-place on pcct_sino.bins — operates at binned resolution)
+    # ─── Noise (in-place on pcct_sino.bins — operates at binned resolution) ───
     I0_physics = compute_detector_I0(geom, protocol, sum(ws.weights))
     if sim_opts.use_noise
         apply_pcct_noise!(pcct_sino, pcct_detector, protocol;
@@ -296,67 +277,22 @@ function simulate!(
             noise_reduction=sim_opts.pcct_noise_reduction)
     end
 
-    # MC pulse pileup: count-loss + spectral migration (pre-computed at workspace creation)
-    # Uses per-native-dexel count rate (not per binned pixel)
-    if ws.pileup_count_factor < 0.999  # Skip if negligible pileup
-        S = ws.pileup_S
-        cf = T(ws.pileup_count_factor)
-        n_bins_pu = length(pcct_sino.bins)
-
-        # Apply count-loss factor
+    # ─── MC pulse pileup (pre-computed at workspace creation) ───
+    # Applied in COUNT domain: N_new = N_old × cf, in log domain: sino += -log(cf)
+    if ws.pileup_count_factor < 0.999
+        log_cf = T(-log(ws.pileup_count_factor))  # Positive: increases line integral (fewer counts)
         for bin in pcct_sino.bins
-            let pf = cf, b = bin
+            let lcf = log_cf, b = bin
                 AK.foreachindex(b) do idx
-                    b[idx] *= pf
-                end
-            end
-        end
-
-        # Apply spectral migration from pre-computed S matrix
-        if n_bins_pu >= 2
-            for src in 1:n_bins_pu
-                for dst in 1:n_bins_pu
-                    dst == src && continue
-                    diag_val = S[src, src]
-                    off_diag = S[dst, src]
-                    off_diag < 1e-6 && continue
-                    col_sum = sum(S[j, src] for j in 1:n_bins_pu if j != src)
-                    transfer_frac = T(col_sum > 0 ? off_diag / (diag_val + col_sum) : 0)
-                    transfer_frac < T(1e-6) && continue
-                    let cb = pcct_sino.bins[src], db = pcct_sino.bins[dst], f = transfer_frac
-                        AK.foreachindex(cb) do idx
-                            transfer = cb[idx] * f
-                            db[idx] += transfer
-                            cb[idx] -= transfer
-                        end
-                    end
+                    b[idx] += lcf
                 end
             end
         end
     end
 
-    # Combine noisy (reuse workspace buffer + pre-computed I0_bins)
-    sino_noisy_gpu = _combine_pcct_bins(pcct_sino, pcct_detector, energies, weights, kVp;
-        apply_detector_effects=use_detector_fx,
-        apply_corrections=use_corrections,
-        output=ws.combined,
-        ws_I0_bins=ws.I0_bins)
-
-    # Tube physics on noisy combined sinogram
-    _apply_pcct_tube_physics!(sino_noisy_gpu, geom, config;
-        ws_scratch=ws.tube_physics_scratch)
-
-    # BHC on noisy
-    if config.bhc !== nothing
-        apply_bhc!(sino_noisy_gpu, config.bhc; ws_coeffs_gpu=ws.bhc_coeffs_gpu)
-    end
-
-    # Save noisy to CPU workspace buffer (uncorrected, for inspection)
-    copyto!(ws.sino_noisy_out, sino_noisy_gpu)
-
-    # Return raw energy-resolved sinogram — VMI decomposition is done by the user
-    # (e.g., polynomial calibration in the notebook, not baked into simulate!)
-    return (pcct_sino=pcct_sino,)
+    # Return raw energy-resolved bins + I0 per bin for notebook-level combining
+    # Combining, tube physics, BHC, and reconstruction are done by the notebook
+    return (pcct_sino=pcct_sino, I0_bins=ws.I0_bins)
 end
 
 # =============================================================================

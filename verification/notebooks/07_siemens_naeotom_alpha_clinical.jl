@@ -1348,66 +1348,36 @@ sim_scan2 = let
     result = BS.simulate!(ws, sim_phantom_gpu, sim_scanner, prot, sim_opts, sim_recon_opts)
 
     geom = ws.geom
-    combined_sino = ws.combined
     pcct_sino = result.pcct_sino
+    I0_bins_result = result.I0_bins
 
-    # Save I0 values for notebook-level combine
-    I0_bins_combine = copy(ws.I0_bins)
-    I0_bins_norm = copy(ws.I0_bins_norm)
-
-    # Copy to CPU — 4 bins
-    combined_cpu = Array(combined_sino)
+    # Copy bins to CPU
     bins_cpu = [Array(pcct_sino.bins[i]) for i in 1:length(pcct_sino.bins)]
 
-    # Cleanup
+    # Cleanup GPU
     ws = nothing; result = nothing; GC.gc(true)
 
     (
-        combined = combined_cpu,
         bins = bins_cpu,
-        I0_bins = I0_bins_combine,
-        I0_bins_norm = I0_bins_norm,
+        I0_bins = copy(I0_bins_result),
         geom = geom,
     )
 end
 
 # ╔═╡ 08120002-b000-4000-8000-000000000001
-# Diagnostic: I0 values and ws.combined vs notebook combine
+# Diagnostic: I0 values and per-bin sinogram stats
 let
     I0 = sim_scan2.I0_bins
-    I0_norm = sim_scan2.I0_bins_norm
     bins = sim_scan2.bins
-    ws_comb = sim_scan2.combined
 
-    println("I0 per bin combine: ", round.(I0, sigdigits=4))
-    println("I0 per bin norm:    ", round.(I0_norm, sigdigits=4))
+    println("I0 per bin: ", round.(I0, sigdigits=4))
     println("I0 total: ", round(sum(I0), sigdigits=4))
-    println("Ratio (element-wise): ", round.(I0 ./ I0_norm, sigdigits=4))
-    println()
-
-    # Redo notebook combine
-    I0_total = Float32(sum(I0))
-    nb_comb = zeros(Float32, size(bins[1]))
-    for (b, sino_b) in enumerate(bins)
-        nb_comb .+= Float32(I0[b]) .* exp.(.-sino_b)
-    end
-    nb_comb .= .-log.(max.(nb_comb, Float32(1e-10)) ./ I0_total)
-
-    diff = ws_comb .- nb_comb
-
-    println("Notebook combine: min=", round(minimum(nb_comb), digits=4),
-            " max=", round(maximum(nb_comb), digits=4),
-            " mean=", round(mean(nb_comb), digits=4))
-    println("ws.combined:      min=", round(minimum(ws_comb), digits=4),
-            " max=", round(maximum(ws_comb), digits=4),
-            " mean=", round(mean(ws_comb), digits=4))
-    println("Diff (ws - nb):   max_abs=", round(maximum(abs.(diff)), digits=6),
-            " mean_abs=", round(mean(abs.(diff)), digits=6))
     println()
 
     # Per-bin sinogram stats
-    bin_stats = ["Bin $b: min=$(round(minimum(s), digits=4)) max=$(round(maximum(s), digits=4)) mean=$(round(mean(s), digits=4)) I0=$(round(I0[b], sigdigits=4))" for (b, s) in enumerate(bins)]
-    println(join(bin_stats, "\n"))
+    for (b, s) in enumerate(bins)
+        println("Bin $b: min=$(round(minimum(s), digits=4)) max=$(round(maximum(s), digits=4)) mean=$(round(mean(s), digits=4)) I0=$(round(I0[b], sigdigits=4))")
+    end
 end
 
 # ╔═╡ 08120001-0000-4000-8000-000000000000
