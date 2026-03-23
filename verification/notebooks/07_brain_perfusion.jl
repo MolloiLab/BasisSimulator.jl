@@ -726,27 +726,6 @@ let
 	f
 end
 
-# ╔═╡ 00120008-0000-4000-8000-000000000001
-let
-	fdk_hu = all_fdk_hu[t_idx]
-	t_s    = CONTRAST_TIME_S[t_idx]
-
-	f = CM.Figure(size=(500, 480))
-
-	ax = CM.Axis(f[1, 1],
-		title  = "FDK: Bone Window (W=2000, L=500)  t=$(t_s)s  z=$mid_Z",
-		aspect = CM.DataAspect(),
-		xticksvisible = false, yticksvisible = false,
-		xticklabelsvisible = false, yticklabelsvisible = false,
-	)
-	hm = CM.heatmap!(ax, fdk_hu[:, :, mid_Z];
-		colormap = :grays, colorrange = (-500, 1500))
-	CM.Colorbar(f[1, 2], hm; label = "HU")
-
-	CM.save(joinpath(RESULTS_DIR, "brain_bone_window.png"), f, px_per_unit=2)
-	f
-end
-
 # ╔═╡ 00120009-0000-4000-8000-000000000001
 md"""
 ### 9.3 Time-Series Montage
@@ -775,331 +754,17 @@ end
 
 # ╔═╡ 00130001-0000-4000-8000-000000000001
 md"""
-## 10. Perfusion Analysis (Julia Native)
+## 10. Next Steps
 
-Extract AIF from known ICA segments in P2, compute per-voxel CBF/CBV/MTT maps
-using the maximum slope method.
+Perfusion analysis (AIF extraction, SVD deconvolution, CBF/CBV/MTT maps) is in a
+separate notebook: `08_brain_perfusion_analysis.jl`. It loads the .raw files saved
+above and requires no re-simulation.
+
+**Requirements for accurate perfusion (per Divel et al. 2021):**
+- 50 timepoints at 1s intervals (0–49s) — current 5-point/5s sampling is too coarse
+- SVD-based deconvolution (not maximum slope)
+- Automatic AIF selection from brightest arterial voxels (not anatomical mask)
 """
-
-# ╔═╡ 00130002-0000-4000-8000-000000000001
-md"""
-### 10.1 Extract AIF from Known Artery Segments
-"""
-
-# ╔═╡ 00130003-0000-4000-8000-000000000001
-begin
-	# Identify ICA segment IDs from P2 structure map
-	ica_segment_ids = Int[]
-	for (id, name) in P2_structure_map
-		if occursin(r"carotid|ICA"i, name) && startswith(name, "5")
-			push!(ica_segment_ids, id)
-		end
-	end
-
-	# If no ICA found, fall back to first few artery segments
-	if isempty(ica_segment_ids)
-		artery_ids = sort([id for (id, name) in P2_structure_map if startswith(name, "5")])
-		ica_segment_ids = artery_ids[1:min(5, length(artery_ids))]
-	end
-
-	P2_crop_for_perf = P2_raw_file[:, :, BRAIN_Z_CROP]
-	ica_mask_phantom = falses(size(P2_crop_for_perf))
-	for id in ica_segment_ids
-		ica_mask_phantom .|= (P2_crop_for_perf .== id)
-	end
-
-	@info "ICA segments: $(length(ica_segment_ids)) segments, $(sum(ica_mask_phantom)) phantom voxels"
-end
-
-# ╔═╡ 00130004-0000-4000-8000-000000000001
-begin
-	P1_crop_for_perf = P1_raw_file[:, :, BRAIN_Z_CROP]
-	brain_tissue_mask_phantom = (P1_crop_for_perf .== 18) .| (P1_crop_for_perf .== 19)
-
-	# Map phantom (400×400) to recon (512×512) coordinates
-	scale_factor = brain_recon_xy / 400.0
-	recon_nz = size(all_fdk_hu[1], 3)
-
-	function phantom_to_recon_idx(px, py, pz)
-		rx = clamp(round(Int, (px - 0.5) * scale_factor + 0.5), 1, brain_recon_xy)
-		ry = clamp(round(Int, (py - 0.5) * scale_factor + 0.5), 1, brain_recon_xy)
-		rz = clamp(pz, 1, recon_nz)
-		return (rx, ry, rz)
-	end
-
-	ica_mask_recon = falses(brain_recon_xy, brain_recon_xy, recon_nz)
-	brain_mask_recon = falses(brain_recon_xy, brain_recon_xy, recon_nz)
-
-	for idx in CartesianIndices(ica_mask_phantom)
-		if ica_mask_phantom[idx]
-			rx, ry, rz = phantom_to_recon_idx(idx[1], idx[2], idx[3])
-			ica_mask_recon[rx, ry, rz] = true
-		end
-	end
-
-	for idx in CartesianIndices(brain_tissue_mask_phantom)
-		if brain_tissue_mask_phantom[idx]
-			rx, ry, rz = phantom_to_recon_idx(idx[1], idx[2], idx[3])
-			brain_mask_recon[rx, ry, rz] = true
-		end
-	end
-
-	@info "Recon-space masks: ICA=$(sum(ica_mask_recon)) voxels, Brain=$(sum(brain_mask_recon)) voxels"
-end
-
-# ╔═╡ 00130005-0000-4000-8000-000000000001
-begin
-	times_s = Float64.(CONTRAST_TIME_S)
-	n_timepoints = length(CONTRAST_TIME_S)
-
-	aif_fdk = [mean(all_fdk_hu[t][ica_mask_recon]) for t in 1:n_timepoints]
-	aif_enhancement_fdk = aif_fdk .- aif_fdk[1]
-
-	@info "AIF peak enhancement (FDK): $(round(maximum(aif_enhancement_fdk), digits=1)) HU"
-	@info "AIF baseline HU (FDK): $(round(aif_fdk[1], digits=1)) HU"
-end
-
-# ╔═╡ 00130006-0000-4000-8000-000000000001
-let
-	f = CM.Figure(size=(800, 420))
-	ax = CM.Axis(f[1, 1],
-		title  = "Arterial Input Function (AIF) from ICA Segments",
-		xlabel = "Time (s)",
-		ylabel = "Enhancement (HU)",
-	)
-	CM.scatterlines!(ax, times_s, aif_enhancement_fdk; color=:steelblue, linewidth=2,
-		markersize=8, label="FDK AIF")
-	CM.hlines!(ax, [0]; color=:gray, linestyle=:dash, linewidth=1)
-	CM.axislegend(ax; position=:rt)
-	CM.save(joinpath(RESULTS_DIR, "aif_curves.png"), f, px_per_unit=2)
-	f
-end
-
-# ╔═╡ 00140001-0000-4000-8000-000000000001
-md"""
-### 10.2 Compute Perfusion Maps: Maximum Slope Method
-
-Per brain voxel:
-- **CBF** = max\_slope(tissue\_curve) / max(AIF)  (mL/min/100g)
-- **CBV** = tissue\_area / AIF\_area  (mL/100g)
-- **MTT** = CBV / CBF  (seconds, central volume principle)
-"""
-
-# ╔═╡ 00140002-0000-4000-8000-000000000001
-"""Trapezoidal integration."""
-function trapz(x::AbstractVector, y::AbstractVector)
-	s = 0.0
-	for i in 2:length(x)
-		s += 0.5 * (x[i] - x[i-1]) * (y[i] + y[i-1])
-	end
-	return s
-end
-
-# ╔═╡ 00140003-0000-4000-8000-000000000001
-function compute_perfusion_maps(hu_volumes, times, aif_curve, brain_mask)
-	n_t = length(times)
-	baseline = hu_volumes[1]
-
-	enhancement = [vol .- baseline for vol in hu_volumes]
-
-	aif_enhancement = aif_curve .- aif_curve[1]
-	aif_peak = maximum(aif_enhancement)
-	aif_auc = trapz(times, aif_enhancement)
-
-	if aif_peak <= 0 || aif_auc <= 0
-		@warn "AIF peak ($aif_peak) or AUC ($aif_auc) is non-positive, returning zero maps"
-		z = zeros(Float32, size(baseline))
-		return z, copy(z), copy(z), copy(z)
-	end
-
-	cbf_map  = zeros(Float32, size(baseline))
-	cbv_map  = zeros(Float32, size(baseline))
-	mtt_map  = zeros(Float32, size(baseline))
-	tmax_map = zeros(Float32, size(baseline))
-
-	dt = diff(times)
-
-	for idx in CartesianIndices(baseline)
-		brain_mask[idx] || continue
-
-		tissue_curve = Float64[enhancement[t][idx] for t in 1:n_t]
-
-		slopes = diff(tissue_curve) ./ dt
-		max_slope = maximum(slopes)
-		cbf_map[idx] = Float32((max_slope / aif_peak) * 100.0 * 60.0)
-
-		tissue_auc = trapz(times, tissue_curve)
-		cbv_map[idx] = Float32((tissue_auc / aif_auc) * 100.0)
-
-		if cbf_map[idx] > 0
-			mtt_map[idx] = Float32(cbv_map[idx] / cbf_map[idx] * 60.0)
-		end
-
-		_, peak_idx = findmax(tissue_curve)
-		tmax_map[idx] = Float32(times[peak_idx])
-	end
-
-	return cbf_map, cbv_map, mtt_map, tmax_map
-end
-
-# ╔═╡ 00140004-0000-4000-8000-000000000001
-(cbf_fdk, cbv_fdk, mtt_fdk, tmax_fdk) = compute_perfusion_maps(
-	[all_fdk_hu[i] for i in 1:n_timepoints],
-	times_s, aif_fdk, brain_mask_recon)
-
-# ╔═╡ 00150001-0000-4000-8000-000000000001
-md"""
-### 10.3 Perfusion Map Visualization
-"""
-
-# ╔═╡ 00150002-0000-4000-8000-000000000001
-md"""Select perfusion map z slice:"""
-
-# ╔═╡ 00150003-0000-4000-8000-000000000001
-@bind z_perf UI.Slider(1:recon_nz; default=recon_nz÷2, show_value=true)
-
-# ╔═╡ 00150004-0000-4000-8000-000000000001
-let
-	f = CM.Figure(size=(1400, 500), fontsize=12)
-
-	for (col, map, title, crange, cmap) in [
-		(1, cbf_fdk, "CBF (mL/min/100g)", (0, 80), :jet),
-		(2, cbv_fdk, "CBV (mL/100g)", (0, 8), :jet),
-		(3, mtt_fdk, "MTT (s)", (0, 15), :jet),
-		(4, tmax_fdk, "Tmax (s)", (0, maximum(times_s)), :jet),
-	]
-		ax = CM.Axis(f[1, col], title=title, aspect=CM.DataAspect(),
-			xticksvisible=false, yticksvisible=false,
-			xticklabelsvisible=false, yticklabelsvisible=false)
-		slice = map[:, :, z_perf]
-		display_slice = copy(slice)
-		display_slice[.!brain_mask_recon[:, :, z_perf]] .= NaN32
-		hm = CM.heatmap!(ax, display_slice; colormap=cmap, colorrange=crange, nan_color=:black)
-		CM.Colorbar(f[1, col+4], hm; width=10)
-	end
-
-	CM.Label(f[0, 1:4], "FDK Perfusion Maps (z = $z_perf)", fontsize=16)
-
-	CM.save(joinpath(RESULTS_DIR, "perfusion_maps.png"), f, px_per_unit=2)
-	f
-end
-
-# ╔═╡ 00160001-0000-4000-8000-000000000001
-md"""
-### 10.4 Ground Truth Comparison
-
-Compare computed perfusion values against Divel et al. 2021 ground truth.
-Uses P1 labels (18=GM, 19=WM) for tissue type and a CBF threshold to separate
-healthy vs ischemic territory (L-M1 MCA occlusion).
-"""
-
-# ╔═╡ 00160002-0000-4000-8000-000000000001
-begin
-	gm_mask_recon = falses(brain_recon_xy, brain_recon_xy, recon_nz)
-	wm_mask_recon = falses(brain_recon_xy, brain_recon_xy, recon_nz)
-
-	for idx in CartesianIndices(P1_crop_for_perf)
-		rx, ry, rz = phantom_to_recon_idx(idx[1], idx[2], idx[3])
-		if P1_crop_for_perf[idx] == 18
-			gm_mask_recon[rx, ry, rz] = true
-		elseif P1_crop_for_perf[idx] == 19
-			wm_mask_recon[rx, ry, rz] = true
-		end
-	end
-
-	cbf_ischemic_threshold = 32.7  # mL/min/100g
-
-	gm_healthy_mask = gm_mask_recon .& (cbf_fdk .>= cbf_ischemic_threshold)
-	gm_ischemic_mask = gm_mask_recon .& (cbf_fdk .> 0) .& (cbf_fdk .< cbf_ischemic_threshold)
-	wm_healthy_mask = wm_mask_recon .& (cbf_fdk .>= cbf_ischemic_threshold)
-	wm_ischemic_mask = wm_mask_recon .& (cbf_fdk .> 0) .& (cbf_fdk .< cbf_ischemic_threshold)
-
-	healthy_gm_cbf = cbf_fdk[gm_healthy_mask]
-	healthy_gm_cbv = cbv_fdk[gm_healthy_mask]
-	healthy_gm_mtt = mtt_fdk[gm_healthy_mask .& (mtt_fdk .> 0)]
-	ischemic_gm_cbf = cbf_fdk[gm_ischemic_mask]
-	ischemic_gm_cbv = cbv_fdk[gm_ischemic_mask]
-	ischemic_gm_mtt = mtt_fdk[gm_ischemic_mask .& (mtt_fdk .> 0)]
-
-	healthy_wm_cbf = cbf_fdk[wm_healthy_mask]
-	healthy_wm_cbv = cbv_fdk[wm_healthy_mask]
-	healthy_wm_mtt = mtt_fdk[wm_healthy_mask .& (mtt_fdk .> 0)]
-	ischemic_wm_cbf = cbf_fdk[wm_ischemic_mask]
-	ischemic_wm_cbv = cbv_fdk[wm_ischemic_mask]
-	ischemic_wm_mtt = mtt_fdk[wm_ischemic_mask .& (mtt_fdk .> 0)]
-
-	_fmt(vals) = isempty(vals) ? "N/A" : "$(round(mean(vals), digits=2)) ± $(round(std(vals), digits=2))"
-
-	md"""
-	### Computed Perfusion Values (FDK) — Healthy vs Ischemic
-
-	| Tissue | CBF (mL/min/100g) | CBV (mL/100g) | MTT (s) |
-	|--------|-------------------|---------------|---------|
-	| Healthy GM (n=$(length(healthy_gm_cbf))) | $(_fmt(healthy_gm_cbf)) | $(_fmt(healthy_gm_cbv)) | $(_fmt(healthy_gm_mtt)) |
-	| Ischemic GM (n=$(length(ischemic_gm_cbf))) | $(_fmt(ischemic_gm_cbf)) | $(_fmt(ischemic_gm_cbv)) | $(_fmt(ischemic_gm_mtt)) |
-	| Healthy WM (n=$(length(healthy_wm_cbf))) | $(_fmt(healthy_wm_cbf)) | $(_fmt(healthy_wm_cbv)) | $(_fmt(healthy_wm_mtt)) |
-	| Ischemic WM (n=$(length(ischemic_wm_cbf))) | $(_fmt(ischemic_wm_cbf)) | $(_fmt(ischemic_wm_cbv)) | $(_fmt(ischemic_wm_mtt)) |
-
-	### Divel Ground Truth (Table I)
-
-	| Tissue | CBF | CBV | MTT |
-	|--------|-----|-----|-----|
-	| Healthy GM | 54.50 | 5.20 | 5.72 |
-	| Ischemic GM | 10.90 | 1.77 | 9.72 |
-	| Healthy WM | 22.20 | 2.70 | 7.30 |
-	| Ischemic WM | 4.44 | 0.84 | 11.30 |
-	"""
-end
-
-# ╔═╡ 00160003-0000-4000-8000-000000000001
-let
-	ground_truth = Dict(
-		"Healthy GM" => (cbf=54.50, cbv=5.20, mtt=5.72),
-		"Healthy WM" => (cbf=22.20, cbv=2.70, mtt=7.30),
-		"Ischemic GM" => (cbf=10.90, cbv=1.77, mtt=9.72),
-		"Ischemic WM" => (cbf=4.44, cbv=0.84, mtt=11.30),
-	)
-
-	_m(v) = isempty(v) ? 0.0 : mean(v)
-	computed = Dict(
-		"Healthy GM"  => (cbf=_m(healthy_gm_cbf),  cbv=_m(healthy_gm_cbv),  mtt=_m(healthy_gm_mtt)),
-		"Ischemic GM" => (cbf=_m(ischemic_gm_cbf), cbv=_m(ischemic_gm_cbv), mtt=_m(ischemic_gm_mtt)),
-		"Healthy WM"  => (cbf=_m(healthy_wm_cbf),  cbv=_m(healthy_wm_cbv),  mtt=_m(healthy_wm_mtt)),
-		"Ischemic WM" => (cbf=_m(ischemic_wm_cbf), cbv=_m(ischemic_wm_cbv), mtt=_m(ischemic_wm_mtt)),
-	)
-
-	f = CM.Figure(size=(1100, 450), fontsize=12)
-
-	labels = ["Healthy\nGM\n(GT)", "Healthy\nGM\n(Sim)", "Ischemic\nGM\n(GT)", "Ischemic\nGM\n(Sim)",
-	          "Healthy\nWM\n(GT)", "Healthy\nWM\n(Sim)", "Ischemic\nWM\n(GT)", "Ischemic\nWM\n(Sim)"]
-	colors = [:steelblue, :darkorange, :steelblue, :darkorange,
-	          :steelblue, :darkorange, :steelblue, :darkorange]
-
-	ax1 = CM.Axis(f[1, 1], title="CBF (mL/min/100g)", xticks=(1:8, labels), xticklabelrotation=0.0, xticklabelsize=9)
-	CM.barplot!(ax1, 1:8, [
-		ground_truth["Healthy GM"].cbf, computed["Healthy GM"].cbf,
-		ground_truth["Ischemic GM"].cbf, computed["Ischemic GM"].cbf,
-		ground_truth["Healthy WM"].cbf, computed["Healthy WM"].cbf,
-		ground_truth["Ischemic WM"].cbf, computed["Ischemic WM"].cbf]; color=colors)
-
-	ax2 = CM.Axis(f[1, 2], title="CBV (mL/100g)", xticks=(1:8, labels), xticklabelrotation=0.0, xticklabelsize=9)
-	CM.barplot!(ax2, 1:8, [
-		ground_truth["Healthy GM"].cbv, computed["Healthy GM"].cbv,
-		ground_truth["Ischemic GM"].cbv, computed["Ischemic GM"].cbv,
-		ground_truth["Healthy WM"].cbv, computed["Healthy WM"].cbv,
-		ground_truth["Ischemic WM"].cbv, computed["Ischemic WM"].cbv]; color=colors)
-
-	ax3 = CM.Axis(f[1, 3], title="MTT (s)", xticks=(1:8, labels), xticklabelrotation=0.0, xticklabelsize=9)
-	CM.barplot!(ax3, 1:8, [
-		ground_truth["Healthy GM"].mtt, computed["Healthy GM"].mtt,
-		ground_truth["Ischemic GM"].mtt, computed["Ischemic GM"].mtt,
-		ground_truth["Healthy WM"].mtt, computed["Healthy WM"].mtt,
-		ground_truth["Ischemic WM"].mtt, computed["Ischemic WM"].mtt]; color=colors)
-
-	CM.Label(f[0, 1:3], "Ground Truth (blue) vs Simulated (orange)", fontsize=14)
-	CM.save(joinpath(RESULTS_DIR, "perfusion_vs_ground_truth.png"), f, px_per_unit=2)
-	f
-end
 
 # ╔═╡ 00170001-0000-4000-8000-000000000001
 md"""
@@ -1136,10 +801,9 @@ md"""
 | Detector | $(brain_det_rows) rows × $(brain_det_cols) cols, 0.625 mm rows, 1.0 mm cols |
 | Recon FOV | $(brain_recon_fov) cm, $(brain_recon_xy)×$(brain_recon_xy)×$(brain_n_slices) matrix |
 | μ\_water (120 kVp) | $(round(μ_water_brain, sigdigits=4)) cm⁻¹ (spectrum-analytical BHC) |
-| BHC | Two-stage: sinogram-domain + image-domain (notebook 00 pattern) |
+| BHC | Water polynomial + image-domain (bone residual, scale=0.2) |
 | Pre-computed time points | $(join(CONTRAST_TIME_S, ", ")) s |
 | Reconstruction | FDK with custom filter (matching notebook 00) |
-| Perfusion method | Maximum slope (CBF), area ratio (CBV), central volume (MTT) |
 
 **Physics (fidelity=:high):** fill factor, detector efficiency, scatter + scatter correction, crosstalk, focal spot, Poisson noise, lag, heel effect, bowtie filter
 """
@@ -1214,26 +878,9 @@ md"""
 # ╟─00120005-0000-4000-8000-000000000001
 # ╟─00120006-0000-4000-8000-000000000001
 # ╟─00120007-0000-4000-8000-000000000001
-# ╟─00120008-0000-4000-8000-000000000001
 # ╟─00120009-0000-4000-8000-000000000001
 # ╠═00120010-0000-4000-8000-000000000001
 # ╟─00130001-0000-4000-8000-000000000001
-# ╟─00130002-0000-4000-8000-000000000001
-# ╠═00130003-0000-4000-8000-000000000001
-# ╠═00130004-0000-4000-8000-000000000001
-# ╠═00130005-0000-4000-8000-000000000001
-# ╟─00130006-0000-4000-8000-000000000001
-# ╟─00140001-0000-4000-8000-000000000001
-# ╟─00140002-0000-4000-8000-000000000001
-# ╟─00140003-0000-4000-8000-000000000001
-# ╠═00140004-0000-4000-8000-000000000001
-# ╟─00150001-0000-4000-8000-000000000001
-# ╟─00150002-0000-4000-8000-000000000001
-# ╟─00150003-0000-4000-8000-000000000001
-# ╟─00150004-0000-4000-8000-000000000001
-# ╟─00160001-0000-4000-8000-000000000001
-# ╟─00160002-0000-4000-8000-000000000001
-# ╟─00160003-0000-4000-8000-000000000001
 # ╟─00170001-0000-4000-8000-000000000001
 # ╟─00170002-0000-4000-8000-000000000001
 # ╟─00180001-0000-4000-8000-000000000001
