@@ -569,6 +569,11 @@ begin
 		# Warmup run
 		BS.simulate!(ws, phantom_t_0, scanner_brain, protocol_brain, sim_opts_brain, recon_opts_brain)
 
+		# Pre-allocate FDK workspace once (reused across all timepoints)
+		sino_gpu = to_gpu(ws.sino_noisy_out)
+		ws_fdk = BS.create_fdk_recon_workspace(sino_gpu, geom, recon_size;
+			filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y))
+
 		for (i, t_contrast) in enumerate(CONTRAST_INDICES)
 			println("▶ Time point $i/$(length(CONTRAST_INDICES)): t = $(CONTRAST_TIME_S[i]) s  (index $t_contrast)")
 
@@ -580,7 +585,7 @@ begin
 					sim_opts_brain, recon_opts_brain
 				)
 
-				sino_gpu = to_gpu(ws.sino_noisy_out)
+				copyto!(sino_gpu, ws.sino_noisy_out)
 
 				# Water-only polynomial BHC (sinogram domain)
 				# Note: two-material sinogram BHC (apply_bhc_two_material) is disabled
@@ -590,9 +595,7 @@ begin
 					BS.apply_bhc!(sino_gpu, bhc_model.water_bhc)
 				end
 
-				# FDK reconstruction (with custom filter — matching notebook 00)
-				ws_fdk = BS.create_fdk_recon_workspace(sino_gpu, geom, recon_size;
-					filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y))
+				# FDK reconstruction (reuses pre-allocated workspace)
 				recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, geom, recon_size)
 
 				# Image-domain BHC (residual high-Z correction)
@@ -612,7 +615,7 @@ begin
 				# in a 40 cm FOV). BHC already corrects beam-hardening cupping.
 				all_fdk_hu[i] = reverse(recon_hu, dims=3)
 
-				ws_fdk = nothing; sino_gpu = nothing; recon_μ = nothing; vol = nothing
+				vol = nothing; recon_μ = nothing
 				phantom_t = nothing
 			end
 			println("   done t=$(CONTRAST_TIME_S[i]) s")
