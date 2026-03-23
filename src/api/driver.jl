@@ -194,17 +194,17 @@ function simulate!(
     pcct_detector = ws.pcct_detector
     use_detector_fx = ws.use_detector_fx
 
-    # Update materials if the phantom has new materials (e.g., dynamic contrast)
+    # Re-resolve materials from the incoming phantom each call.
     mats = _resolve_materials(phantom, materials)
-    if mats !== ws.mats
-        ws.mats = mats
-        n_regions = length(mats)
-        for (e_idx, E) in enumerate(energies)
-            for r in 1:n_regions
+    if length(mats) == length(ws.mats)
+        for r in 1:length(mats)
+            ws.mats[r].name === mats[r].name && continue
+            for (e_idx, E) in enumerate(energies)
                 ws.μ_table[r, e_idx] = T(compute_μ_at_energy(mats[r], Float64(E)))
             end
+            ws.mats[r] = mats[r]
         end
-        copyto!(ws.μ_lut_gpu, ws.μ_lut_cpu)  # PCCT workspace uses μ_lut path
+        copyto!(ws.μ_table_gpu, ws.μ_table)
     end
     use_corrections = ws.use_corrections
     kVp = ws.kVp
@@ -350,15 +350,20 @@ function simulate!(
     energies = ws.energies
     config = ws.config
 
-    # Update materials if the phantom has new materials (e.g., dynamic contrast)
+    # Re-resolve materials from the incoming phantom each call.
+    # Supports dynamic phantoms (e.g. time-varying iodine contrast) where
+    # phantom.materials changes between simulate! calls on the same workspace.
     mats = _resolve_materials(phantom, materials)
-    if mats !== ws.mats
-        ws.mats = mats
-        n_regions = length(mats)
-        for (e_idx, E) in enumerate(energies)
-            for r in 1:n_regions
+
+    # Recompute μ-table in-place for any changed materials.
+    # Element-wise name comparison avoids redundant NIST lookups for unchanged regions.
+    if length(mats) == length(ws.mats)
+        for r in 1:length(mats)
+            ws.mats[r].name === mats[r].name && continue
+            for (e_idx, E) in enumerate(energies)
                 ws.μ_table[r, e_idx] = T(compute_μ_at_energy(mats[r], Float64(E)))
             end
+            ws.mats[r] = mats[r]
         end
         copyto!(ws.μ_table_gpu, ws.μ_table)
     end
