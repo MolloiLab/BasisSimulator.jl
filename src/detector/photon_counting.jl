@@ -506,23 +506,26 @@ function pcct_forward_project(
             ts = (tile_idx - 1) * TILE_K + 1
             te = ts + TILE_K - 1
 
-            # Copy subset of μ_table and W for this tile
             copyto!(μ_sub, @view ws_μ_table_gpu[:, ts:te])
             copyto!(W_sub, @view ws_W_matrix_gpu[ts:te, :])
+
             if has_src
                 copyto!(bt_sub, @view ws_source_spectral[:, :, ts:te])
+                siddon_fused_spectral_project!(
+                    _pilot, _outputs_flat, Int32(n_bins), mask, _proj_geom,
+                    μ_sub, W_sub, Val(TILE_K), Int32(1);
+                    volume_extent=volume_extent,
+                    ws_source_positions=_ws_src, ws_detector_centers=_ws_det,
+                    ws_detector_u=_ws_u, ws_detector_v=_ws_v,
+                    ws_bowtie_spectral=bt_sub)
+            else
+                siddon_fused_spectral_project!(
+                    _pilot, _outputs_flat, Int32(n_bins), mask, _proj_geom,
+                    μ_sub, W_sub, Val(TILE_K), Int32(1);
+                    volume_extent=volume_extent,
+                    ws_source_positions=_ws_src, ws_detector_centers=_ws_det,
+                    ws_detector_u=_ws_u, ws_detector_v=_ws_v)
             end
-
-            # Call tiled spectral kernel with tile_start=1 (subset already offset)
-            siddon_fused_spectral_project!(
-                _pilot, _outputs_flat, Int32(n_bins), mask, _proj_geom,
-                μ_sub, W_sub, Val(TILE_K), Int32(1);
-                volume_extent=volume_extent,
-                ws_source_positions=_ws_src,
-                ws_detector_centers=_ws_det,
-                ws_detector_u=_ws_u,
-                ws_detector_v=_ws_v,
-                ws_bowtie_spectral=bt_sub)
         end
 
         # Unpack outputs_flat → bins (or native_bins if spatial binning)
