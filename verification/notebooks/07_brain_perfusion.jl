@@ -65,7 +65,7 @@ phantoms, with Julia-native perfusion analysis (CBF/CBV/MTT maps).
 1. Load P1/P2 XCAT brain phantom (400×400×400, UInt16)
 2. Apply time-varying iodine contrast via `update_structures!`
 3. BHC calibration → spectrum-analytical μ\_water (no water phantom needed)
-4. CT simulation (fidelity=:high) → two-stage BHC → FDK (custom filter) → HU → noise floor → cupping
+4. CT simulation (fidelity=:high) → water BHC → FDK (custom filter) → image-domain BHC → HU → noise floor
 5. Perfusion analysis: AIF extraction, CBF/CBV/MTT maps
 6. Ground truth comparison (Divel et al. 2021)
 
@@ -484,8 +484,10 @@ md"""
 ## 8. Pre-compute: All Time Points
 
 Runs all contrast time points upfront. Reconstruction pipeline is **identical to
-notebook 00**: `simulate!` → `apply_bhc_two_material` → FDK (custom filter) →
-`apply_bhc_image_domain` → `to_hounsfield` → noise floor → cupping correction.
+notebook 00**: `simulate!` → water polynomial BHC → FDK (custom filter) →
+`apply_bhc_image_domain` → `to_hounsfield` → noise floor.
+Note: two-material sinogram BHC and cupping correction are disabled for brain
+(cone-beam artifacts at 160mm collimation; polynomial extrapolation in 40cm FOV).
 """
 
 # ╔═╡ 00100002-0000-4000-8000-000000000001

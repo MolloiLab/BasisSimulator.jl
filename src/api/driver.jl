@@ -204,7 +204,7 @@ function simulate!(
             end
             ws.mats[r] = mats[r]
         end
-        copyto!(ws.μ_table_gpu, ws.μ_table)
+        # PCCT workspace has no μ_table_gpu — μ_lut is refreshed per-energy in pcct_forward_project
     end
     use_corrections = ws.use_corrections
     kVp = ws.kVp
