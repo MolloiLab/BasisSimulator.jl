@@ -196,15 +196,26 @@ function simulate!(
 
     # Re-resolve materials from the incoming phantom each call.
     mats = _resolve_materials(phantom, materials)
-    if length(mats) == length(ws.mats)
-        for r in 1:length(mats)
+    n_regions = length(mats)
+    n_energies = length(energies)
+    if n_regions == length(ws.mats)
+        for r in 1:n_regions
             ws.mats[r].name === mats[r].name && continue
             for (e_idx, E) in enumerate(energies)
                 ws.μ_table[r, e_idx] = T(compute_μ_at_energy(mats[r], Float64(E)))
             end
             ws.mats[r] = mats[r]
         end
-        # PCCT workspace has no μ_table_gpu — μ_lut is refreshed per-energy in pcct_forward_project
+    else
+        ws.mats = mats
+        ws.μ_table = zeros(T, n_regions, n_energies)
+        for (e_idx, E) in enumerate(energies)
+            for r in 1:n_regions
+                ws.μ_table[r, e_idx] = T(compute_μ_at_energy(mats[r], Float64(E)))
+            end
+        end
+        ws.μ_lut_cpu = Vector{T}(undef, n_regions)
+        ws.μ_lut_gpu = similar(ws.μ_lut_gpu, T, n_regions)
     end
     use_corrections = ws.use_corrections
     kVp = ws.kVp
@@ -355,18 +366,32 @@ function simulate!(
     # phantom.materials changes between simulate! calls on the same workspace.
     mats = _resolve_materials(phantom, materials)
 
-    # Recompute μ-table in-place for any changed materials.
-    # Element-wise name comparison avoids redundant NIST lookups for unchanged regions.
-    if length(mats) == length(ws.mats)
-        for r in 1:length(mats)
+    # Recompute μ-table for any changed materials.
+    n_regions = length(mats)
+    n_energies = length(energies)
+    if n_regions == length(ws.mats)
+        # Same region count — update in-place, skip unchanged materials by name
+        for r in 1:n_regions
             ws.mats[r].name === mats[r].name && continue
             for (e_idx, E) in enumerate(energies)
                 ws.μ_table[r, e_idx] = T(compute_μ_at_energy(mats[r], Float64(E)))
             end
             ws.mats[r] = mats[r]
         end
-        copyto!(ws.μ_table_gpu, ws.μ_table)
+    else
+        # Region count changed — reallocate μ_table and buffers
+        ws.mats = mats
+        ws.μ_table = zeros(T, n_regions, n_energies)
+        for (e_idx, E) in enumerate(energies)
+            for r in 1:n_regions
+                ws.μ_table[r, e_idx] = T(compute_μ_at_energy(mats[r], Float64(E)))
+            end
+        end
+        ws.μ_lut_cpu = Vector{T}(undef, n_regions)
+        ws.μ_lut_gpu = similar(ws.μ_table_gpu, T, n_regions)
+        ws.μ_table_gpu = similar(ws.μ_table_gpu, T, n_regions, n_energies)
     end
+    copyto!(ws.μ_table_gpu, ws.μ_table)
 
     # ═══════════════════════════════════════════════════════════════════════
     # STEP 1: Polychromatic forward projection (Beer-Lambert)
