@@ -352,11 +352,25 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     _W_matrix_gpu = similar(ref_mask, T, n_energies_padded, n_bins)
     copyto!(_W_matrix_gpu, W_cpu)
 
-    # Source spectral (heel × bowtie) for PCCT: TODO — needs debugging
-    # The bowtie spectral computation for PCCT geometry produces values that
-    # cause NaN in the tiled kernel. For now, PCCT uses the W matrix only
-    # (no per-pixel source modulation). EICT has this working via its own path.
-    _source_spectral_gpu = nothing
+    # Source spectral: fold center-pixel bowtie into W matrix
+    # The bowtie's dominant effect is spectral hardening (energy-dependent), which is
+    # nearly uniform across the detector. The per-pixel spatial variation (~5-10%) is
+    # secondary. By folding center-pixel bowtie into W, we capture the hardening
+    # without the GPU Float32 precision issues of the per-pixel spectral path.
+    bowtie_filter_pcct = resolve_bowtie_filter(scanner.bowtie_filter)
+    if bowtie_filter_pcct !== nothing && bowtie_filter_pcct.name != "none"
+        bt_cpu = compute_bowtie_attenuation_spectral(bowtie_filter_pcct, geom, Float64.(energies))
+        center_col = sino_shape[1] ÷ 2
+        center_row = sino_shape[2] ÷ 2
+        for e_idx in 1:n_energies
+            bt_center = Float64(bt_cpu[center_col, center_row, e_idx])
+            for b in 1:n_bins
+                W_cpu[e_idx, b] *= T(bt_center)
+            end
+        end
+        copyto!(_W_matrix_gpu, W_cpu)
+    end
+    _source_spectral_gpu = nothing  # Not needed — bowtie folded into W
 
     # Flattened output buffer for spectral projection
     _outputs_flat = similar(ref_mask, T, n_elements * n_bins)

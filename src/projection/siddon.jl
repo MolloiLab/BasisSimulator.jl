@@ -1640,9 +1640,10 @@ Returns Σ_e W[ts+e-1, b] * bt[bt_base + (ts+e-2)*ncnr] * exp(-accums[e]).
     if K == 0
         return :(zero(T))
     end
-    ex = :((@inbounds W[ts, b]) * (@inbounds bt[bt_base + (ts - Int32(1)) * ncnr]) * exp(-accums[1]))
+    # Clamp exp(-accum) to avoid Inf × 0 = NaN when bt ≈ 0 in Float32
+    ex = :((@inbounds W[ts, b]) * (@inbounds bt[bt_base + (ts - Int32(1)) * ncnr]) * min(exp(-accums[1]), T(1e30)))
     for i in 2:K
-        ex = :($ex + (@inbounds W[ts + Int32($(i - 1)), b]) * (@inbounds bt[bt_base + (ts + Int32($(i - 2))) * ncnr]) * exp(-accums[$i]))
+        ex = :($ex + (@inbounds W[ts + Int32($(i - 1)), b]) * (@inbounds bt[bt_base + (ts + Int32($(i - 2))) * ncnr]) * min(exp(-accums[$i]), T(1e30)))
     end
     return ex
 end

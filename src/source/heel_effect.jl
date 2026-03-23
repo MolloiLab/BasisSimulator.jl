@@ -356,7 +356,11 @@ function compute_heel_spectral(
             θ_eff = max(θ_anode + γ, θ_min)
             sin_eff = max(sin(θ_eff), 0.01)
             I_col = exp(clamp(-μ_E * d_cm * cos_θ / sin_eff, -700.0, 700.0))
-            ratio = I_col / I_ref  # Normalized to central ray
+            # When I_ref is vanishingly small (e.g., < 1e-30 at very low energies),
+            # both I_col and I_ref are essentially zero — no photons survive at any
+            # angle. The ratio is numerically meaningless. Set to 1.0 (no modulation)
+            # since the spectral weight at these energies is also ~0.
+            ratio = I_ref > 1e-30 ? I_col / I_ref : 1.0
 
             for row in 1:n_rows
                 transmission[col, row, e_idx] = ratio

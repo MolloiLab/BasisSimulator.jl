@@ -1365,7 +1365,7 @@ sim_scan2 = let
         combined = combined_cpu,
         geom = geom,
     )
-end
+end;
 
 # ╔═╡ 08120002-b000-4000-8000-000000000001
 # Diagnostic: I0 values and per-bin sinogram stats
@@ -1413,7 +1413,7 @@ sim_scan2_poly_fbp = let
 
     ws_fdk = nothing; sino_gpu = nothing; GC.gc(true)
     recon_hu
-end
+end;
 
 # ╔═╡ 08120003-0000-4000-8000-000000000000
 md"### 12b. Polyenergetic HIR (strength=3)"
