@@ -4,7 +4,7 @@
 # ╔═╡ 08010001-0000-4000-8000-000000000000
 begin
     using Pkg: Pkg
-    Pkg.activate(dirname(@__DIR__))
+    Pkg.activate(dirname(pwd()))
     Pkg.resolve()
     Pkg.instantiate()
     using Revise
@@ -62,6 +62,9 @@ Four axial acquisitions. Each has Poly FBP, Poly QIR3, and VMI at 40/70/100/140 
 
 Common: Axial, 0.5 s rotation, 144 × 0.4 mm collimation, W1 (Tungsten) filter, 512 × 512, 350 mm FOV
 """
+
+# ╔═╡ b629dcd4-fe9a-4ddd-8f45-0a74918f0093
+pwd()
 
 # ╔═╡ 08010012-0000-4000-8000-000000000000
 import PlutoUI as UI
@@ -1910,34 +1913,6 @@ let
     fig
 end
 
-# ╔═╡ 08170006-0000-4000-8000-000000000000
-# Line profiles: Clinical FBP vs Simulated Poly FBP (horizontal through center)
-let
-    cm_vol = hu_140_mid_fbp
-    sm_vol = sim_scan2_poly_fbp
-    cm_seg = seg_result
-    sm_seg = sim_seg_result
-
-    fig = CM.Figure(size = (700, 350), fontsize = 11)
-    ax = CM.Axis(fig[1, 1]; title = "Horizontal Line Profile — 140 kVp / 10 mGy",
-        xlabel = "Pixel", ylabel = "HU")
-
-    cm_mid_z = cm_seg.slice_idx
-    sm_mid_z = size(sm_vol, 3) ÷ 2
-    cm_row = round(Int, cm_seg.center.cy)
-    sm_row = round(Int, sm_seg.center.cy)
-
-    cm_line = cm_vol[:, cm_row, cm_mid_z]
-    sm_line = sm_vol[:, sm_row, sm_mid_z]
-
-    CM.lines!(ax, 1:length(cm_line), cm_line; color = :steelblue, linewidth = 1, label = "Clinical FBP (Br36)")
-    CM.lines!(ax, 1:length(sm_line), sm_line; color = :coral, linewidth = 1, label = "Simulated Poly FBP")
-    CM.axislegend(ax; position = :rt, labelsize = 9)
-
-    CM.save(joinpath(RESULTS_DIR, "alpha_fbp_line_profiles.png"), fig, px_per_unit = 2)
-    fig
-end
-
 # ╔═╡ 08180001-0000-4000-8000-000000000000
 md"""
 ## 18. Export Results
@@ -2052,6 +2027,7 @@ md"""
 # ╔═╡ Cell order:
 # ╟─08010030-0000-4000-8000-000000000000
 # ╠═08010001-0000-4000-8000-000000000000
+# ╠═b629dcd4-fe9a-4ddd-8f45-0a74918f0093
 # ╠═08010002-0000-4000-8000-000000000000
 # ╠═08010003-0000-4000-8000-000000000000
 # ╠═08010004-0000-4000-8000-000000000000

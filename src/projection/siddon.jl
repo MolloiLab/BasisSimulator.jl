@@ -1754,9 +1754,11 @@ function siddon_fused_spectral_project!(
         _dv
     end
 
-    # Bowtie/heel spectral layout constants
+    # Bowtie/heel spectral: use a dummy array when nothing to avoid Nothing type in GPU closure
     nc_nr = n_cols * n_rows
     has_source_spectral = ws_bowtie_spectral !== nothing
+    # GPU closures can't branch on Nothing — pass a concrete-typed dummy if absent
+    _bt = has_source_spectral ? ws_bowtie_spectral : similar(μ_table_gpu, T, 1, 1, 1)
 
     # Capture all variables in let block for GPU closure correctness
     let mask=mask, μ_tbl=μ_table_gpu, W=W_gpu, ts=tile_start,
@@ -1768,7 +1770,7 @@ function siddon_fused_spectral_project!(
         mag=magnification, ps=pixel_size, prs=pixel_row_size,
         cc=col_center, rc=row_center,
         ne=n_elem, nb=n_bins, oflat=outputs_flat,
-        bt=ws_bowtie_spectral, ncnr=nc_nr, hbt=has_source_spectral
+        bt=_bt, ncnr=nc_nr, hbt=has_source_spectral
 
         AK.foreachindex(pilot) do idx
             # ─── Index decomposition (mod/div, no CartesianIndices) ───
