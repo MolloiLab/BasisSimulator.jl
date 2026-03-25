@@ -3762,7 +3762,7 @@ end;
 # ╔═╡ 06126005-0000-4000-8000-000000000000
 # Diagnostic: VMI before Mono+ at each energy
 let
-    fig = CM.Figure(size = (800, 200), fontsize = 10)
+    fig = CM.Figure(size = (1000, 300), fontsize = 10)
     for (i, r) in enumerate(sim_de_vmi_raw)
         mid_z = size(r.recon, 3) ÷ 2 + 1
         ax = CM.Axis(fig[1, i]; title = "VMI $(r.energy_keV) keV", yreversed = true)
@@ -3901,7 +3901,7 @@ let
     simulated = sim_de_mono_plus
     n = length(DE_VMI_ENERGIES)
 
-    fig = CM.Figure(size = (300, 600), fontsize = 10)
+    fig = CM.Figure(size = (500, 1000), fontsize = 10)
     for (i, E) in enumerate(DE_VMI_ENERGIES)
         clin_mid = size(clinical[i], 3) ÷ 2 + 0
         sim_mid = size(simulated[i].recon, 3) ÷ 2 + 0
