@@ -1,0 +1,86 @@
+{
+  "project": "PCCT VMI Algorithm Discovery",
+  "goal": "Find the exact algorithm that clinical PCCT (Siemens NAEOTOM Alpha) uses to produce VMI from threshold bin data, such that noise DECREASES with increasing keV and HU accuracy is maintained",
+  "topics": [
+    {
+      "id": "VMI-000",
+      "area": "current-implementation-audit",
+      "title": "Audit Current BasisSimulator VMI Implementation",
+      "description": "Read the current VMI code in verification/notebooks/07_siemens_naeotom_alpha_clinical.jl. Document: (1) how bins are combined into low/high, (2) the polynomial calibration, (3) VMI sinogram synthesis formula, (4) FBP reconstruction. Also read the nb06 dual-energy VMI for comparison. Key fact: material decomposition produces CORRECT HU values but noise is 5-19x worse than clinical. Noiseless VMI is perfect. The problem is purely in how noise propagates through the algorithm.",
+      "discovery": "done",
+      "critique": "open",
+      "refinement": "open",
+      "priority": 0,
+      "sources": [
+        "verification/notebooks/07_siemens_naeotom_alpha_clinical.jl",
+        "verification/notebooks/06_ge_apex_elite_clinical.jl",
+        "src/detector/photon_counting.jl",
+        "src/api/driver.jl"
+      ],
+      "findings": "Three compounding problems: (1) 4->2 bin collapsing discards noise-opt DOF, (2) sinogram-domain 4th-order polynomial amplifies noise catastrophically, (3) FBP ramp filter further amplifies noisy material sinograms. Both nb06 and nb07 use identical algorithm; GE works better due to 80/140 kVp spectral separation."
+    },
+    {
+      "id": "VMI-001",
+      "area": "clinical-noise-pattern",
+      "title": "Why Clinical VMI Noise Decreases 40->140 keV",
+      "description": "Clinical NAEOTOM Alpha VMI FBP noise: 40keV=56.4, 70keV=35.2, 100keV=32.5, 140keV=31.8 HU. Our simulated: 40keV=1063, 70keV=124, 100keV=201, 140keV=297. Clinical noise DECREASES monotonically. Ours increases away from 70 keV. Find the physical/algorithmic explanation.",
+      "discovery": "done",
+      "critique": "open",
+      "refinement": "open",
+      "priority": 1,
+      "sources": [
+        "Gilat Schmidt TG, Med Phys 2009;36(7):3018-27",
+        "Leng S et al., Med Phys 2011;38(9):4946-57",
+        "Yu L, Leng S, McCollough CH, AJR 2012;199:S9-S15",
+        "Yang et al., Med Phys 2025, doi:10.1002/mp.17489",
+        "Roessl E, Herrmann C, Phys Med Biol 2009;54(5):1307-18"
+      ],
+      "findings": "CMV (constrained minimum-variance) bin weighting explains the pattern. With K>M bins, extra DOF enable noise below poly FBP. At high keV, target attenuation values converge -> easy constraint -> low noise. Anti-correlated PCCT noise provides additional cancellation."
+    },
+    {
+      "id": "VMI-002",
+      "area": "siemens-vmi-algorithm",
+      "title": "Exact Siemens NAEOTOM VMI Algorithm",
+      "description": "Find the EXACT algorithm Siemens uses.",
+      "discovery": "done",
+      "critique": "open",
+      "refinement": "open",
+      "priority": 1,
+      "sources": [
+        "US7856134B2 (Stierstorfer/Ruhrnschopf, Siemens)",
+        "Grant KL et al., Invest Radiol 2014;49(9):586-92",
+        "Rajendran K et al., Radiology 2022;303(1):130-8"
+      ],
+      "findings": "Siemens patent US7856134B2 confirms image-domain approach with pre-computed weight LUTs. Mono+ (Grant et al. 2014, Siemens co-authors) is built into clinical VMI. Clinical NAEOTOM uses 2 thresholds (not 4) in standard mode. No fundamentally different PCD-CT algorithm vs DECT — same Mono+ with better spectral data."
+    },
+    {
+      "id": "VMI-003",
+      "area": "reference-implementations",
+      "title": "Find Reference VMI Implementations",
+      "description": "Search GitHub, arxiv, SPIE proceedings for any open-source PCCT VMI implementation.",
+      "discovery": "done",
+      "critique": "open",
+      "refinement": "open",
+      "priority": 2,
+      "sources": [
+        "SPRAY (github.com/nducros/SPRAY) — MATLAB, regularized projection-domain",
+        "spectral_ct_examples (github.com/adler-j/spectral_ct_examples) — Python/ODL, CRLB-based",
+        "mr-bmd (github.com/francescobrun/mr-bmd) — Python, minimum residual + Noise2Noise",
+        "XCIST (github.com/xcist/main) — CT simulation",
+        "LEAP/XrayPhysics (github.com/LLNL/LEAP) — C++/Python, DE decomposition"
+      ],
+      "findings": "No open-source CMV VMI implementation found. Closest: spectral_ct_examples uses CRLB-based preconditioning. SPRAY uses regularized decomposition. No end-to-end PCCT VMI pipeline reproducing clinical noise levels publicly available. Mono+ filter specifics remain proprietary."
+    },
+    {
+      "id": "VMI-004",
+      "area": "proposed-fix",
+      "title": "Synthesize Findings into Implementation Spec",
+      "description": "Based on VMI-001 through VMI-003, write the exact algorithm to implement in BasisSimulator.jl. Include: equations, code pseudocode, expected noise levels, and citations.",
+      "discovery": "open",
+      "critique": "open",
+      "refinement": "open",
+      "priority": 3,
+      "sources": []
+    }
+  ]
+}
