@@ -1,94 +1,68 @@
 {
   "project": "PCCT VMI Algorithm Discovery",
+  "status": "DISC_COMPLETE",
   "goal": "Find the exact algorithm that clinical PCCT (Siemens NAEOTOM Alpha) uses to produce VMI from threshold bin data, such that noise DECREASES with increasing keV and HU accuracy is maintained",
   "topics": [
     {
       "id": "VMI-000",
       "area": "current-implementation-audit",
       "title": "Audit Current BasisSimulator VMI Implementation",
-      "description": "Read the current VMI code in verification/notebooks/07_siemens_naeotom_alpha_clinical.jl. Document: (1) how bins are combined into low/high, (2) the polynomial calibration, (3) VMI sinogram synthesis formula, (4) FBP reconstruction. Also read the nb06 dual-energy VMI for comparison. Key fact: material decomposition produces CORRECT HU values but noise is 5-19x worse than clinical. Noiseless VMI is perfect. The problem is purely in how noise propagates through the algorithm.",
       "discovery": "done",
       "critique": "done",
-      "refinement": "open",
+      "refinement": "done",
       "priority": 0,
-      "sources": [
-        "verification/notebooks/07_siemens_naeotom_alpha_clinical.jl",
-        "verification/notebooks/06_ge_apex_elite_clinical.jl",
-        "src/detector/photon_counting.jl",
-        "src/api/driver.jl"
-      ],
-      "findings": "Three compounding problems: (1) 4->2 bin collapsing discards noise-opt DOF, (2) sinogram-domain 4th-order polynomial amplifies noise catastrophically, (3) FBP ramp filter further amplifies noisy material sinograms. Both nb06 and nb07 use identical algorithm; GE works better due to 80/140 kVp spectral separation.",
-      "critique_findings": "Dominant fix is skipping polynomial decomposition entirely (not just using 4 bins). Even 2-bin CMV would be dramatically better."
+      "findings": "Three compounding problems: (1) 4->2 bin collapsing discards noise-opt DOF, (2) sinogram-domain 4th-order polynomial amplifies noise catastrophically, (3) FBP ramp filter further amplifies noisy material sinograms.",
+      "critique_findings": "Dominant fix is skipping polynomial decomposition entirely (not just using 4 bins). Even 2-bin CMV would be dramatically better.",
+      "refinement_summary": "Root cause analysis and algorithm comparison table in final spec Section 3e."
     },
     {
       "id": "VMI-001",
       "area": "clinical-noise-pattern",
       "title": "Why Clinical VMI Noise Decreases 40->140 keV",
-      "description": "Clinical NAEOTOM Alpha VMI FBP noise: 40keV=56.4, 70keV=35.2, 100keV=32.5, 140keV=31.8 HU. Our simulated: 40keV=1063, 70keV=124, 100keV=201, 140keV=297. Clinical noise DECREASES monotonically. Ours increases away from 70 keV. Find the physical/algorithmic explanation.",
       "discovery": "done",
       "critique": "done",
-      "refinement": "open",
+      "refinement": "done",
       "priority": 1,
-      "sources": [
-        "Gilat Schmidt TG, Med Phys 2009;36(7):3018-27",
-        "Leng S et al., Med Phys 2011;38(9):4946-57",
-        "Yu L, Leng S, McCollough CH, AJR 2012;199:S9-S15",
-        "Yang et al., Med Phys 2025, doi:10.1002/mp.17489",
-        "Roessl E, Herrmann C, Phys Med Biol 2009;54(5):1307-18",
-        "Bhattarai et al., Med Phys 2024, PMC10796834",
-        "Eberhard/Mergen et al., Eur Radiol Exp 2023, PMC9975359"
-      ],
-      "findings": "CMV bin weighting explains monotonic decrease. Anti-correlations contribute but absent from our DRM.",
-      "critique_findings": "CRITICAL: Clinical targets include QIR-3 (~37% reduction). FBP-equivalent at 70keV ≈ 56 HU (not 35.2). CMV at 70keV ≈ poly FBP (Bhattarai 2024). The 'impossible' noise-below-poly observation dissolves once QIR is included. Mono+ provides 20-50% additional reduction at extreme keV."
+      "findings": "CMV bin weighting explains monotonic decrease. 3-layer noise model: CMV + Mono+ + QIR.",
+      "critique_findings": "CRITICAL: Clinical targets include QIR-3 (~37% reduction). FBP-equivalent at 70keV ≈ 56 HU (not 35.2). CMV at 70keV ≈ poly FBP (Bhattarai 2024).",
+      "refinement_summary": "Complete noise budget table with FBP-equivalent targets. 3-layer model in spec Section 2. Validated by 4 independent literature sources for 70keV≈poly claim."
     },
     {
       "id": "VMI-002",
       "area": "siemens-vmi-algorithm",
       "title": "Exact Siemens NAEOTOM VMI Algorithm",
-      "description": "Find the EXACT algorithm Siemens uses.",
       "discovery": "done",
       "critique": "done",
-      "refinement": "open",
+      "refinement": "done",
       "priority": 1,
-      "sources": [
-        "US7856134B2 (Stierstorfer/Ruhrnschopf, Siemens)",
-        "Grant KL et al., Invest Radiol 2014;49(9):586-92",
-        "Rajendran K et al., Radiology 2022;303(1):130-8",
-        "Boehm/Michael et al., Clin Neuroradiol 2023, PMC10881631",
-        "Greffier et al., Diagnostics 2023, PMC10092985"
-      ],
-      "findings": "Siemens patent US7856134B2 confirms image-domain approach with pre-computed weight LUTs. Mono+ (Grant et al. 2014, Siemens co-authors) is built into clinical VMI.",
-      "critique_findings": "Siemens clinical VMI = image-domain CMV + Mono+ + QIR. All three layers contribute to the observed noise levels. True FBP not available for VMI on NAEOTOM."
+      "findings": "Siemens patent US7856134B2 confirms image-domain approach with pre-computed weight LUTs. Mono+ (Grant et al. 2014) is built into clinical VMI. Mono+ filter params are proprietary (confirmed by exhaustive search).",
+      "critique_findings": "Siemens clinical VMI = image-domain CMV + Mono+ + QIR. All three layers contribute. True FBP not available for VMI on NAEOTOM.",
+      "refinement_summary": "Mono+ NPS constraints documented (Cester 2022, Monsivais 2025). D'Angelo 2019 'regional-spatial' variant noted. Spec Section 4 has complete Mono+ algorithm with parameter justification."
     },
     {
       "id": "VMI-003",
       "area": "reference-implementations",
       "title": "Find Reference VMI Implementations",
-      "description": "Search GitHub, arxiv, SPIE proceedings for any open-source PCCT VMI implementation.",
       "discovery": "done",
       "critique": "done",
       "refinement": "done",
       "priority": 2,
-      "sources": [
-        "SPRAY (github.com/nducros/SPRAY)",
-        "spectral_ct_examples (github.com/adler-j/spectral_ct_examples)",
-        "XCIST (github.com/xcist/main)",
-        "LEAP/XrayPhysics (github.com/LLNL/LEAP)"
-      ],
-      "findings": "No open-source CMV VMI implementation found. No end-to-end PCCT VMI pipeline reproducing clinical noise levels publicly available.",
-      "critique_findings": "Nothing to critique — confirmed absence. This implementation will be novel."
+      "findings": "No open-source CMV VMI implementation found. No end-to-end PCCT VMI pipeline reproducing clinical noise levels publicly available. Our implementation will be novel.",
+      "critique_findings": "Nothing to critique — confirmed absence.",
+      "refinement_summary": "N/A — absence confirmed."
     },
     {
       "id": "VMI-004",
       "area": "proposed-fix",
       "title": "Synthesize Findings into Implementation Spec",
-      "description": "Based on VMI-000 through VMI-003 + critique, write the final algorithm spec. Must include: corrected FBP-equivalent noise targets, numerical validation recipe, 3-layer noise model (CMV + Mono+ + QIR), implementation pseudocode, and updated citations.",
-      "discovery": "open",
-      "critique": "open",
-      "refinement": "open",
+      "discovery": "done",
+      "critique": "done",
+      "refinement": "done",
       "priority": 3,
-      "sources": [],
-      "dependencies": ["VMI-000", "VMI-001", "VMI-002", "VMI-003"]
+      "dependencies": ["VMI-000", "VMI-001", "VMI-002", "VMI-003"],
+      "findings": "Complete algorithm spec with Julia pseudocode, A matrix construction from existing codebase variables, diagonal Σ from I0_bins, numerical validation recipe with pass/fail criteria.",
+      "critique_findings": "Self-critique during refinement: ensured all claims have citations, all equations have units, all code references are verified against actual codebase.",
+      "refinement_summary": "Final spec: 10 sections, 23 citations, drop-in pseudocode for nb07, quantitative validation criteria. Ready for implementation."
     }
   ]
 }

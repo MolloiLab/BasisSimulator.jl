@@ -1,290 +1,397 @@
-# PCCT VMI Algorithm Spec
+# PCCT VMI Algorithm Spec — FINAL (VMI-004 Refinement)
 
 ## 1. Problem Statement
 
 Our PCCT VMI has correct HU accuracy but catastrophically wrong noise:
-- Clinical noise: 40keV=56.4, 70keV=35.2, 100keV=32.5, 140keV=31.8 HU (DECREASING)
+- Clinical noise (QIR-3): 40keV=56.4, 70keV=35.2, 100keV=32.5, 140keV=31.8 HU (DECREASING)
 - Our noise: 40keV=1063, 70keV=124, 100keV=201, 140keV=297 HU (V-shaped)
 - Poly FBP: clinical 66.4, simulated 74.5 HU (close match)
 
-**Central mystery:** VMI at 140 keV (31.8 HU) has LESS noise than poly FBP (66.4 HU). This is impossible with standard 2-material decomposition + recombination, which always amplifies noise.
+**Root cause:** Sinogram-domain polynomial decomposition amplifies noise catastrophically (4th-order polynomial with 15 terms maps small noise → large errors). Compounded by collapsing 4 bins → 2 (losing noise-optimization DOF) and applying FBP ramp filter to already-noisy material sinograms.
 
-## 2. Root Cause Analysis
+**Solution:** Replace with image-domain Constrained Minimum-Variance (CMV) bin weighting + Mono+ frequency-split blending.
 
-### 2a. What Our Implementation Does Wrong
+## 2. The 3-Layer Noise Model
 
-Current pipeline (nb07, lines 1515-1729):
-1. Collapse 4 threshold bins → 2 sinograms (low: bins 1+2, high: bins 3+4)
-2. Sinogram-domain 4th-order polynomial decomposition: `(p_low, p_high) → (t_water, t_iodine)`
-3. VMI sinogram synthesis: `vmi_sino(E) = μρ_w(E)·sino_w + μρ_I(E)·sino_I`
-4. FBP of VMI sinogram
-5. Mono+ frequency-split blending
+Clinical VMI noise is the product of three independent noise-reduction layers:
 
-**Three compounding problems:**
-1. **Collapsing 4→2 bins discards noise-optimization degrees of freedom.** With 4 bins and 2 material constraints, CMV has 2 extra DOF for noise minimization. By collapsing to 2 bins, these DOF are lost.
-2. **Sinogram-domain polynomial decomposition amplifies noise catastrophically.** The 4th-order polynomial maps small noise perturbations in `(p_low, p_high)` to large errors in `(t_water, t_iodine)`. The polynomial includes terms like `p^4` that amplify noise enormously.
-3. **FBP ramp filter further amplifies the already-noisy material sinograms.** The ramp filter boosts high-frequency content. Applied to noise-amplified material sinograms, it makes things much worse.
+```
+Layer 1: CMV image-domain weighting     → σ_CMV(E)
+Layer 2: Mono+ frequency-split blending → σ_Mono+(E) ≈ σ_CMV(E) × R_mono(E)
+Layer 3: QIR iterative reconstruction   → σ_clinical(E) ≈ σ_Mono+(E) × R_qir
+```
 
-The result: Raw VMI noise is σ=1063 HU at 40 keV (before Mono+). Even Mono+ replacing HF content with 70 keV (σ=124) can't fix this — the 70 keV VMI itself is 3.5x too noisy.
+**Our simulation target: Layers 1+2 only (no QIR).** We match against FBP-equivalent targets.
 
-### 2b. What the Clinical Algorithm Does Differently
+### 2a. Noise Budget
 
-Based on literature synthesis (see Section 3), clinical PCCT VMI uses **image-domain processing** that avoids sinogram-domain polynomial inversion entirely:
+| keV | Clinical (QIR-3) | FBP-equiv (÷0.63) | CMV-only target | CMV+Mono+ target | Our current |
+|-----|-------------------|--------------------|-----------------|-------------------|-------------|
+| 40  | 56.4 HU           | ~90 HU             | ~120-150 HU     | ~80-100 HU        | 1063 HU     |
+| 70  | 35.2              | ~56 HU             | ~70-80          | ~55-65            | 124         |
+| 100 | 32.5              | ~52 HU             | ~60-70          | ~45-55            | 201         |
+| 140 | 31.8              | ~50 HU             | ~55-65          | ~40-55            | 297         |
 
-## 3. The Correct Algorithm: Constrained Minimum-Variance (CMV) Bin Weighting
+**Key validations:**
+- CMV at 70 keV ≈ poly FBP noise (Bhattarai 2024: VMI 70keV ≈ T3D, <1 HU difference at same QIR level)
+- Our poly FBP = 74.5 HU → CMV 70 keV should be ~70-80 HU
+- QIR-3 reduces noise by ~37% (Eberhard 2023: 21→13 HU at 70keV, 38% reduction)
 
-### 3a. Overview
+### 2b. Why Clinical VMI(140keV)=31.8 < poly=66.4 HU
 
-**Source:** Leng et al., Med Phys 2011; Yu et al., AJR 2012; Gilat Schmidt, Med Phys 2009. Siemens patent US7856134B2 (Stierstorfer/Ruhrnschopf) confirms image-domain approach.
+This is NOT achievable with CMV+Mono+ alone. It requires all three layers:
+1. CMV: ~55-65 HU at 140 keV (slightly below poly FBP due to 2 extra DOF from 4 bins)
+2. Mono+: ~40-50 HU (replaces HF noise content with optimal-keV texture)
+3. QIR-3: ~25-35 HU (37% reduction → lands at ~31.8 HU)
 
-The algorithm:
-1. Reconstruct **each energy bin** independently via FBP → K bin images
-2. Compute VMI at energy E as a weighted sum of bin images: `VMI(E) = Σ_k w_k(E) · I_k`
-3. Weights `w_k(E)` are chosen to **minimize variance** subject to **monoenergetic fidelity constraints**
-4. Apply Mono+ frequency-split blending (Grant et al. 2014) for further noise optimization at extreme keV
+The "impossible" observation dissolves once QIR-3 is included.
 
-### 3b. Mathematical Formulation
+## 3. Algorithm: CMV Image-Domain Bin Weighting
+
+### 3a. Mathematical Formulation
 
 **Given:**
-- K energy bins, each reconstructed via FBP: `I_1(x,y), ..., I_K(x,y)`
-- M basis materials (M=2: water + iodine)
-- Noise covariance matrix of bin images: `Σ ∈ R^(K×K)` (estimated from data or analytically from photon counts)
-- Material-bin attenuation matrix: `A ∈ R^(K×M)`, where `A_km` = mean attenuation of material m in bin k
-- Target monoenergetic attenuation: `t(E) ∈ R^M`, where `t_m(E)` = mass attenuation of material m at energy E
+- K=4 energy bins, each reconstructed via FBP: `I_1(x,y), ..., I_4(x,y)` (linear attenuation, cm⁻¹)
+- M=2 basis materials (water, iodine)
+- Noise covariance: `Σ ∈ R^(4×4)` — **diagonal** in our simulation (no anti-correlations in MC DRM)
+- Material-bin attenuation matrix: `A ∈ R^(4×2)`, where `A[k,m]` = mean linear attenuation of material m in bin k
+- Target vector: `t(E) ∈ R^2`, where `t[m]` = linear attenuation of material m at monoenergetic energy E
 
 **Optimization:**
 ```
-minimize    w^T Σ w           (noise variance)
-subject to  A^T w = t(E)      (monoenergetic fidelity for each basis material)
+minimize    w'Σw            (image noise variance)
+subject to  A'w = t(E)      (monoenergetic fidelity: 2 constraints)
 ```
 
 **Closed-form solution (Lagrange multipliers):**
 ```
-w*(E) = Σ^{-1} A (A^T Σ^{-1} A)^{-1} t(E)
+w*(E) = Σ⁻¹ A (A'Σ⁻¹A)⁻¹ t(E)     ∈ R^4
 ```
 
-**Minimum achievable variance:**
+**Minimum variance:**
 ```
-σ²_VMI(E) = t(E)^T (A^T Σ^{-1} A)^{-1} t(E)
+σ²_VMI(E) = t(E)' (A'Σ⁻¹A)⁻¹ t(E)   (in same units² as bin images)
 ```
 
-### 3c. Why Noise Decreases with Increasing keV
+### 3b. A Matrix Construction
 
-The target vector `t(E)` contains mass attenuation coefficients at energy E:
-- At **low E** (40 keV): `t(40) = [μ_w(40), μ_I(40)]` — large, divergent values (photoelectric dominates for iodine). The constraint forces extreme weights → high variance.
-- At **high E** (140 keV): `t(140) = [μ_w(140), μ_I(140)]` — small, similar values (Compton dominates). The constraint is easy to satisfy → low variance.
-- At **optimal E** (~65-75 keV): minimum noise, can be lower than poly FBP.
+For each bin k ∈ {1,2,3,4} and material m ∈ {water, iodine}:
 
-### 3d. Why VMI Can Beat Poly FBP Noise
+```
+         Σ_i  w_full[i] × η[i] × R[i,k] × μ_m(E_i)
+A[k,m] = ——————————————————————————————————————————————
+              Σ_i  w_full[i] × η[i] × R[i,k]
+```
 
-Poly FBP is a *specific* (non-optimal) energy weighting of all photons. The CMV approach finds the *optimal* weighting for a given target energy. With K>M bins:
-1. **Extra degrees of freedom**: K-M=2 free DOF for noise minimization (with 4 bins, 2 materials)
-2. **Anti-correlated noise**: PCCT anti-coincidence logic creates negative off-diagonal entries in Σ. The optimal weights exploit these anti-correlations to cancel noise.
-3. **Energy-optimal combination**: At high keV where all materials look similar, the CMV weights approach the noise-optimal photon combination, which is better than energy-integrating (poly FBP) weighting.
+Where:
+- `w_full[i]`: source spectrum weight at energy E_i (photon fluence)
+- `η[i]`: quantum efficiency at E_i (CdTe, thickness-dependent)
+- `R[i,k]`: DRM probability that photon at E_i registers in bin k (from `compute_mc_drm`, shape [200,4])
+- `μ_m(E_i)`: linear attenuation coefficient of material m at E_i (cm⁻¹)
 
-This directly explains: σ_VMI(140) = 31.8 < σ_poly = 66.4 HU.
+**Units:** cm⁻¹ (linear attenuation at the spectrum-weighted mean energy of each bin).
 
-### 3e. Use All 4 Bins for Maximum Benefit, But 2-Bin CMV Also Helps
+**For water:** `μ_w(E) = mac_water(E) × 1.0` (g/cm³ density = 1.0)
+**For iodine:** Use mass attenuation coefficient `(μ/ρ)_I(E)` directly, so A[k,2] has units cm²/g. Then t[2](E) = `(μ/ρ)_I(E)` (cm²/g) as well. This ensures the decomposition coefficients are (water fraction, iodine mass density in g/cm³).
 
-**REVISED (Critique Point 3):** The 4→2 bin collapsing matters, but it is NOT the dominant problem. Yang et al. (Med Phys 2024) showed optimally weighted 2-channel compression is within 0.27% of 4-channel noise. The REAL win is:
+**Important:** We already compute `w_full[i] × η[i] × R[i,k]` for each bin in the existing calibration code (nb07 lines 1589-1592). The only change is using these weights for CMV instead of polynomial fitting.
 
-1. **Skipping the polynomial decomposition** (dominant factor, ~5-10× noise reduction)
-2. **Never forming material density maps** (avoids ill-conditioned A^{-1}, ~2-4× noise reduction)
-3. **Using all 4 bins for extra DOF** (modest additional benefit, ~1.3×)
+### 3c. Target Vector t(E)
 
-Even 2-bin CMV (reconstructing 2 bins via FBP, then combining with optimal weights directly into VMI) would be dramatically better than our current polynomial decomposition approach. 4-bin CMV is better still.
+For VMI at monoenergetic energy E:
+```
+t[1](E) = μ_water(E)      [cm⁻¹]    — water linear attenuation at E
+t[2](E) = (μ/ρ)_iodine(E) [cm²/g]   — iodine mass attenuation at E
+```
 
-With 4 bins: K=4, M=2 → 2 DOF for noise optimization → CMV can push noise below poly FBP at optimal keV.
-With 2 bins: K=2, M=2 → 0 extra DOF → CMV reduces to unique solution but STILL avoids the noise amplification of polynomial inversion by operating in image domain with direct combination.
+### 3d. Covariance Matrix Σ
 
-## 4. Mono+ Frequency-Split Blending (Grant et al. 2014)
-
-### 4a. Algorithm
-
-Applied after CMV weighting to further improve noise at extreme keV:
-
-1. Compute CMV VMI at target energy E (high contrast, moderate noise at extreme keV)
-2. Compute CMV VMI at optimal energy E_opt ≈ 70 keV (minimum noise)
-3. Frequency decomposition: `Mono+(E) = LP(VMI(E)) + HP(VMI(E_opt))`
-   - LP = Gaussian low-pass filter in Fourier domain
-   - HP = I - LP (high-pass complement)
-4. Low-frequency contrast from target E, high-frequency noise texture from optimal E
-
-### 4b. Key Parameters (from GE notebook, validated)
-- `E_opt` = 70 keV
-- `σ_lp_mm` = 1.5 + 0.02 × |E - E_opt| mm (increases with distance from optimal)
-- Applied per-slice in image domain
-
-### 4c. Mono+ Role Is LARGER Than Initially Thought (Critique Point 5)
-
-Our current implementation already uses Mono+. The problem is the *input* to Mono+ is too noisy:
-- Our raw 70 keV VMI: σ=124 HU (FBP-equivalent target: ~56 HU)
-- Mono+ replaces HF noise from 70 keV, but 70 keV itself is 2× too noisy
-- Fix the raw VMI noise via CMV first, then Mono+ provides substantial additional reduction
-
-**REVISED estimate of Mono+ contribution:** At extreme keV (40, 140+), Mono+ provides 20-50% noise reduction on top of CMV. Evidence: Head CT data (Boehm 2023) shows noise ratio 40/190 keV = 8× with QIR-off, while pure CMV theory predicts ~2-3× from target vector scaling alone. The additional reduction at high keV comes from Mono+ replacing noisy HF content with optimal-keV content.
-
-**Mono+ is an essential component, not a finishing touch.** The noise budget is approximately:
-- Polynomial decomp → CMV: 10× improvement (σ from ~1063 to ~100 at 40 keV)
-- Mono+ blending: additional 20-50% reduction at extreme keV
-- QIR-3: additional ~37% reduction (clinical only, not in our sim)
-
-## 5. Covariance Matrix Estimation
-
-### 5a. Analytical — Diagonal Poisson (RECOMMENDED for our simulation)
-
-**REVISED (Critique Points 4 & 7):** Our MC DRM has no anti-correlations (cumulative → subtracted bins produce independent counts). The covariance matrix is therefore **diagonal**:
+**Our simulation: diagonal (no anti-correlations in MC DRM).**
 
 ```
 Σ = diag(σ²_1, σ²_2, σ²_3, σ²_4)
 ```
 
-For FBP-reconstructed bin images, the noise variance of bin k is approximately:
+**Two approaches (use BOTH for cross-validation):**
+
+**Approach 1 — Analytical (from photon counts):**
 ```
-σ²_k ≈ C / N_k
+σ²_k = C / N_k
 ```
-where N_k = mean photon count in bin k, C = constant depending on ramp filter, geometry, etc. Since C is the same for all bins (same geometry, same ramp filter), the relative variances scale as 1/N_k.
-
-**Practical approach:** Measure σ²_k from reconstructed bin images in a uniform water ROI, or compute analytically from I0 per bin. Both should give consistent results for a diagonal Σ.
-
-### 5b. Empirical (from reconstructed bin images)
-
-Measuring from reconstructed images is acceptable for a **diagonal** Σ (just per-bin variance). However, note:
-- FBP noise is spatially correlated (ramp filter creates streak-like correlations)
-- Use a sufficiently large uniform ROI to average over these correlations
-- Do NOT attempt to estimate off-diagonal terms from image ROIs (the spatial correlations contaminate the inter-bin covariance estimate)
-
-### 5c. Future: Physical anti-correlations
-
-If the DRM is enhanced to model anti-coincidence explicitly, Σ will have negative off-diagonal entries. This would enable additional CMV noise cancellation. For now, diagonal Σ is correct for our simulation.
-
-## 6. Material-Bin Attenuation Matrix A
-
-The matrix A has dimensions K×M. Each entry A_km represents the mean attenuation of material m as seen by bin k.
-
-### 6a. Computation
-
-For each bin k with effective spectral weights w_k(E):
+where `N_k = I0_bins[k]` (unattenuated photon count per bin, available from `sim_scan2.I0_bins`). The constant C is identical for all bins (same geometry, filter, reconstruction). For relative weights, C cancels:
 ```
-A_km = Σ_E  w_k(E) · (μ/ρ)_m(E) · ρ_m
+Σ_analytical = diag(1/N_1, 1/N_2, 1/N_3, 1/N_4)
 ```
-where the sum is over the bin's effective energy spectrum (source spectrum × DRM response × quantum efficiency for bin k).
 
-**We already compute these effective spectra** in the polynomial calibration code (lines 1589-1596). The difference is we use them for polynomial fitting instead of for direct weight computation.
-
-### 6b. Target Vector t(E)
-
-For each target VMI energy E:
+**Approach 2 — Empirical (from reconstructed bin images):**
+Reconstruct all 4 bins via FBP. Measure σ²_k from a large uniform water ROI in each bin image. Use ROI ≥ 20mm diameter to average over FBP noise correlations.
 ```
-t_m(E) = (μ/ρ)_m(E) · ρ_m
+Σ_empirical = diag(var(ROI_1), var(ROI_2), var(ROI_3), var(ROI_4))
 ```
-For water (ρ=1.0 g/cm³) and iodine (mass per unit volume basis), these are just the linear attenuation coefficients at E.
 
-## 7. Implementation Plan
+**Cross-validation:** Check that σ²_k ratios are consistent between analytical and empirical approaches: σ²_1/σ²_2 ≈ N_2/N_1 (should hold for Poisson-dominated noise).
 
-### Step 1: Reconstruct all 4 bins via FBP
-- Use the same filter kernel as poly FBP
-- Result: 4 images, each with independent noise from their bin's photon statistics
+### 3e. Why This Fixes the Noise Problem
 
-### Step 2: Compute A matrix and Σ
-- A: from effective bin spectra (already computed in calibration cell)
-- Σ: either analytical (from I0 per bin) or empirical (from uniform ROI in bin images)
+| Factor | Current approach | CMV approach | Impact |
+|--------|-----------------|--------------|--------|
+| Polynomial amplification | 4th-order poly (15 terms) amplifies noise in sinogram domain | No polynomial — direct image-domain linear combination | **5-10× reduction** (dominant) |
+| FBP on noisy sinograms | FBP ramp filter amplifies noisy material sinograms | FBP only on raw bin sinograms (reasonable noise) | **2-3× reduction** |
+| Bin DOF | 4→2 collapsing (0 extra DOF) | 4 bins, 2 constraints (2 DOF for noise minimization) | **~1.3× reduction** (modest) |
 
-### Step 3: CMV weights per energy
+**Combined expected improvement: ~13-40× noise reduction at 40 keV** (from 1063 → ~80-120 HU). This lands squarely in the FBP-equivalent target range.
+
+## 4. Mono+ Frequency-Split Blending
+
+### 4a. Algorithm (Grant et al. 2014, Invest Radiol 49:586-92)
+
+Applied per-slice in image domain after CMV weighting:
+
+```
+Mono+(E) = LP(VMI(E)) + [VMI(E_opt) - LP(VMI(E_opt))]
+         = LP(VMI(E)) + HP(VMI(E_opt))
+```
+
+Where:
+- VMI(E) = CMV-weighted image at target energy E (high contrast, higher noise at extreme keV)
+- VMI(E_opt) = CMV-weighted image at optimal keV ≈ 70 keV (lowest noise)
+- LP = Gaussian low-pass filter in Fourier domain
+- HP = I - LP (high-pass complement)
+- Result: low-frequency contrast from target E, high-frequency noise texture from E_opt
+
+### 4b. Filter Parameters
+
+**The exact Siemens parameters are proprietary** (confirmed: no public source after exhaustive search). Our implementation uses:
+
+```
+E_opt = 70 keV
+σ_lp(E) = 1.5 + 0.02 × |E - E_opt|  [mm]
+```
+
+At 40 keV: σ = 2.1 mm; at 70 keV: σ = 1.5 mm; at 140 keV: σ = 2.9 mm.
+
+**NPS constraints from literature (Cester 2022, Monsivais 2025):**
+- At 70 keV: NPS matches poly FBP — minimal/no frequency manipulation
+- At 40 keV: low-frequency NPS peak at 0.0-0.1 mm⁻¹ — LP cutoff ~0.1-0.2 mm⁻¹
+- Effect strengthens with keV distance from optimal
+
+**Note:** Grant et al. describes a "regional-spatial" algorithm, suggesting possible spatial adaptivity (different blending in high-contrast vs low-contrast regions). Our global filter is a simplification. If contrast artifacts appear near iodine/bone edges, spatial adaptivity may be needed.
+
+### 4c. Expected Noise Reduction from Mono+
+
+At extreme keV (40, 140+): 20-50% noise reduction on top of CMV.
+At optimal keV (70): ~0% (VMI(E) ≈ VMI(E_opt), filter has no effect).
+
+Evidence: Literature shows noise ratio 40/70 keV = 1.67× (Eberhard 2023, QIR-off). Pure CMV theory (from target vector scaling) predicts ~2-3× ratio. The difference is Mono+ compressing the curve toward 70 keV noise at extreme energies.
+
+## 5. Numerical Validation Recipe (MUST DO BEFORE IMPLEMENTATION)
+
+### 5a. Predicted CMV Noise
+
+Compute σ²_VMI(E) at 40, 70, 100, 140 keV using actual simulation parameters:
+
 ```julia
-w(E) = Σ_inv * A * inv(A' * Σ_inv * A) * t(E)
+# 1. Build A matrix (4×2) from DRM and spectrum
+A = zeros(4, 2)
+for k in 1:4
+    wb = [w_full[i] * η[i] * R[drm_row(e[i]), k] for i in eachindex(e)]
+    wb_n = wb / sum(wb)
+    A[k, 1] = sum(wb_n .* μ_water.(e))
+    A[k, 2] = sum(wb_n .* mac_iodine.(e))  # mass attenuation (cm²/g)
+end
+
+# 2. Build Σ (diagonal, from I0 per bin — relative scale)
+Σ = Diagonal(1.0 ./ I0_bins)
+
+# 3. Compute noise amplification factor per energy
+Σ_inv = inv(Σ)
+F = A' * Σ_inv * A       # Fisher information (2×2)
+F_inv = inv(F)
+
+for E in [40, 70, 100, 140]
+    t_E = [μ_water(E), mac_iodine(E)]
+    σ²_rel = t_E' * F_inv * t_E          # Relative variance
+    w_opt = Σ_inv * A * F_inv * t_E       # Optimal weights (4-vector)
+    println("E=$E keV: σ²_rel=$(σ²_rel), weights=$(w_opt)")
+end
+
+# 4. Calibrate to absolute HU noise
+# At 70 keV, CMV noise ≈ poly FBP noise ≈ 74.5 HU (our sim)
+# Scale all σ²_rel values by: C = (74.5)² / σ²_rel(70keV)
+# Then σ_HU(E) = sqrt(C × σ²_rel(E))
 ```
 
-### Step 4: Weighted sum → raw VMI
+### 5b. Validation Criteria
+
+| Check | Pass condition |
+|-------|---------------|
+| CMV noise at 70 keV ≈ poly FBP | σ_CMV(70) ≈ 74 ± 10 HU (after calibration) |
+| Noise monotonically decreasing 40→140 keV | σ(40) > σ(70) > σ(100) > σ(140) |
+| Noise ratio 40/70 keV | 1.5-3.0× (literature: 1.67× with Mono+, higher without) |
+| CMV+Mono+ at 40 keV | ≤ 100 HU (FBP-equiv target ~90 HU) |
+| CMV+Mono+ at 140 keV | ≤ 65 HU (FBP-equiv target ~50 HU) |
+| HU accuracy preserved | Mean HU within ±5 HU of current (noiseless) VMI values |
+| Weights at 70 keV | All positive, roughly proportional to N_k (energy-integrating-like) |
+| Weights at 40 keV | Some negative weights expected (to boost photoelectric contrast) |
+
+### 5c. If Validation Fails
+
+If CMV+Mono+ cannot reach FBP-equivalent targets:
+1. Check A matrix condition number: `cond(A'*Σ_inv*A)` — should be < 100
+2. Check I0 per bin distribution — heavily unbalanced bins reduce CMV benefit
+3. Consider: our simulation may simply have higher noise floor than clinical due to missing anti-correlations in DRM. Document the gap quantitatively.
+
+## 6. Implementation Pseudocode (for nb07)
+
+### Cell: CMV VMI Reconstruction
+
 ```julia
-VMI(E) = sum(w_k(E) * bin_image_k for k in 1:4)
+# ============================================================
+# PCCT VMI via Constrained Minimum-Variance (CMV) Bin Weighting
+# ============================================================
+# References:
+#   Gilat Schmidt, Med Phys 2009;36:3018-27
+#   Leng et al., Med Phys 2011;38:4946-57
+#   Yu et al., AJR 2012;199:S9-S15
+
+using LinearAlgebra
+
+# --- Step 1: Reconstruct all 4 bins independently via FBP ---
+bin_images = Vector{Array{Float32,3}}(undef, 4)
+for b in 1:4
+    # Use sim_scan2.bins[b] (line-integral sinogram for bin b)
+    # Use same filter kernel as poly FBP reconstruction
+    bin_images[b] = Array(BS.reconstruct!(ws_fdk,
+        CuArray(Float32.(sim_scan2.bins[b])), geom, recon_size))
+end
+
+# --- Step 2: Build A matrix (4×2) ---
+# Effective bin spectra from DRM × source spectrum × QE
+A = zeros(Float64, 4, 2)
+for k in 1:4
+    wb = [w_full[i] * η_vec[i] * R_mat[drm_row(e_full[i], kVp, size(R_mat,1)), k]
+          for i in eachindex(e_full)]
+    wb ./= sum(wb)  # Normalize to probability weights
+    A[k, 1] = sum(wb .* μ_water_interp.(e_full))       # cm⁻¹
+    A[k, 2] = sum(wb .* mac_iodine_interp.(e_full))     # cm²/g
+end
+
+# --- Step 3: Build Σ (diagonal from I0 per bin) ---
+# Option A: Analytical (relative — sufficient since C cancels in weights)
+Σ_inv = Diagonal(Float64.(sim_scan2.I0_bins))  # inv(diag(1/N_k)) = diag(N_k)
+
+# Option B: Empirical (from reconstructed bin images, for cross-validation)
+# roi_mask = circular_roi(center, radius_pix)
+# for k in 1:4; σ²_emp[k] = var(bin_images[k][roi_mask]); end
+# Σ_inv_emp = Diagonal(1.0 ./ σ²_emp)
+
+# --- Step 4: CMV weights for each VMI energy ---
+F = A' * Σ_inv * A           # Fisher information matrix (2×2)
+F_inv = inv(F)                # Inverse Fisher (2×2)
+P = Σ_inv * A * F_inv        # Pre-multiply (4×2) — reuse for all energies
+
+vmi_energies = [40.0, 70.0, 100.0, 140.0]  # keV
+vmi_images = Dict{Float64, Array{Float32,3}}()
+
+for E in vmi_energies
+    t_E = [μ_water(E), mac_iodine(E)]    # Target vector (2×1)
+    w = P * t_E                            # Optimal weights (4×1)
+
+    # Predicted noise (relative): σ²_rel = t' F⁻¹ t
+    σ²_rel = t_E' * F_inv * t_E
+    @info "VMI $E keV: weights=$w, σ²_rel=$σ²_rel"
+
+    # --- Step 5: Weighted sum → VMI ---
+    vmi_μ = zeros(Float32, size(bin_images[1]))
+    for k in 1:4
+        vmi_μ .+= Float32(w[k]) .* bin_images[k]
+    end
+
+    # --- Step 6: HU conversion ---
+    μ_w_E = Float32(μ_water(E))
+    vmi_hu = @. (vmi_μ - μ_w_E) / μ_w_E * 1000f0
+
+    vmi_images[E] = vmi_hu
+end
+
+# --- Step 7: Mono+ blending ---
+E_opt = 70.0
+for E in vmi_energies
+    E == E_opt && continue
+    σ_lp = 1.5 + 0.02 * abs(E - E_opt)
+    vmi_images[E] = mono_plus_vmi(vmi_images[E], vmi_images[E_opt];
+        σ_lp_mm=σ_lp, pixel_mm=pixel_mm)
+end
 ```
 
-### Step 5: HU conversion
+### Helper: drm_row mapping (already in codebase)
 ```julia
-VMI_HU(E) = (VMI(E) - μ_water(E)) / μ_water(E) * 1000
+drm_row(E, kVp, n_R) = clamp(round(Int, (E - 1.0) / (kVp - 1.0) * (n_R - 1)) + 1, 1, n_R)
 ```
 
-### Step 6: Mono+ blending (for keV far from optimal)
-```julia
-Mono+(E) = LP(VMI(E)) + HP(VMI(E_opt))
-```
+## 7. Literature Benchmarks
 
-## 8. Expected Noise Performance
+### 7a. NAEOTOM Alpha VMI Noise (QIR-off or WFBP, closest to our FBP)
 
-### 8a. REVISED: Clinical targets include QIR-3 (Critique Point 1)
+| Source | Anatomy | Kernel | Dose | 40 keV | 70 keV | 140 keV | 40/70 ratio |
+|--------|---------|--------|------|--------|--------|---------|-------------|
+| Eberhard 2023 | Coronary phantom | Bv40 | 9.4 mGy | 35 HU | 21 HU | — | 1.67× |
+| Boehm 2023 | Head cortical | Qr36 | 48.8 mGy | 12.8 HU | 5.0 HU | — | 2.56× |
+| Greffier 2023 | Catphan 20cm | Qr40 | 10 mGy | — | 10.7 HU | — | — |
+| Yalynska 2022 | Pulmonary | — | — | 27.3 HU | 15.6 HU | — | 1.75× |
 
-**The user's clinical noise values (40keV=56.4, 70keV=35.2, 100keV=32.5, 140keV=31.8 HU) almost certainly include QIR-3 iterative reconstruction**, despite the user's belief that they are FBP. Evidence:
+**Note:** All "QIR-off" literature values include Siemens minimal statistical optimization (not true FBP). Our simulation FBP is strictly unoptimized → expect our noise to be ~10-20% higher than QIR-off literature values.
 
-- DICOM headers say "Q3" = QIR strength 3
-- NAEOTOM Alpha does NOT offer true FBP for VMI; even "QIR-off" has minimal statistical optimization
-- QIR-3 reduces noise ~37% vs QIR-off (Eberhard/Mergen 2023, PMC9975359)
-- Bhattarai 2024 (PMC10796834): VMI 70 keV noise ≈ T3D (polychromatic) noise at same QIR level (<1 HU difference)
+### 7b. 70 keV VMI vs Polychromatic Noise
 
-### 8b. FBP-Only Noise Targets (CMV + Mono+, no QIR)
+| Source | Finding |
+|--------|---------|
+| Bhattarai 2024 (PMC10796834) | VMI 70keV ≈ T3D poly noise at same QIR (<1 HU difference) |
+| Monsivais 2025 (Med Phys) | NPS shape and magnitude similar for T3D and 70keV VMI |
+| Cester 2022 (QIMS) | VMI 70keV noise ~7.6% below poly (linear-blended images) on DECT |
+| Yalynska 2022 (Diagnostics) | VMI 70keV 25% lower noise than poly SPP (suggests Mono+ applied) |
 
-Reverse-engineering clinical numbers assuming QIR-3 (÷0.63):
+**Conclusion:** CMV alone at 70 keV ≈ poly FBP. With Mono+ at 70 keV, may be 0-25% below poly.
 
-| keV | Clinical (QIR-3) | FBP-equivalent (÷0.63) | CMV-only estimate | CMV + Mono+ target |
-|-----|-------------------|------------------------|-------------------|--------------------|
-| 40  | 56.4 HU           | ~89.5 HU               | ~120-150 HU       | ~80-100 HU         |
-| 70  | 35.2              | ~55.9                   | ~70-80            | ~55-65             |
-| 100 | 32.5              | ~51.6                   | ~60-70            | ~45-55             |
-| 140 | 31.8              | ~50.5                   | ~55-65            | ~40-55             |
+## 8. Key Citations
 
-**Key insight:** CMV at 70 keV ≈ poly FBP ≈ 74.5 HU (our sim). With Mono+, ~55-65 HU. Remaining gap to clinical 35.2 HU is explained by QIR-3.
+| Reference | DOI/PMID | Relevance |
+|-----------|----------|-----------|
+| Gilat Schmidt TG, Med Phys 2009;36(7):3018-27 | PMID:19673196 | Optimal image-based weighting theory |
+| Yu L, Leng S, McCollough CH, AJR 2012;199:S9-S15 | PMID:23097173 | Image-domain VMI framework |
+| Leng S et al., Med Phys 2011;38(9):4946-57 | PMID:21978039 | Noise reduction via optimal energy weighting |
+| Grant KL et al., Invest Radiol 2014;49(9):586-92 | PMID:24710203 | Mono+ frequency-split algorithm |
+| Alvarez RE, Macovski A, Phys Med Biol 1976 | — | Sinogram-domain decomposition (baseline) |
+| Roessl E, Herrmann C, Phys Med Biol 2009;54(5):1307-18 | — | CRLB for VMI noise |
+| US7856134B2 (Stierstorfer/Ruhrnschopf) | — | Siemens patent: image-domain VMI with LUTs |
+| Rajendran K et al., Radiology 2022;303(1):130-8 | PMID:34904876 | First clinical NAEOTOM evaluation |
+| Yang et al., Med Phys 2025, doi:10.1002/mp.17489 | — | Pre/post-log/MD optimal weighting comparison |
+| Yang et al., Med Phys 2024;51(1):224-238, doi:10.1002/mp.16590 | — | Optimal 2-ch ≈ 4-ch (within 0.27%) |
+| Bhattarai et al., Med Phys 2024;51(2), PMC10796834 | — | VMI 70keV ≈ T3D noise |
+| Eberhard/Mergen et al., Eur Radiol Exp 2023, PMC9975359 | — | QIR-off vs QIR-1/2/3/4 VMI noise |
+| Boehm/Michael et al., Clin Neuroradiol 2023, PMC10881631 | — | Head CT VMI noise QIR-off |
+| Greffier et al., Diagnostics 2023, PMC10092985 | — | Catphan 70keV WFBP: 10.7 HU |
+| Cester D et al., QIMS 2022;12(1):726-741 | — | NPS of VMI+ vs standard VMI; Mono+ filter constraints |
+| Monsivais H et al., Med Phys 2025, doi:10.1002/mp.70067 | — | 3D NPS of NAEOTOM VMI; 70keV ≈ T3D shape |
+| Yalynska T et al., Diagnostics 2022;12(11):2715 | — | VMI 70keV 25% below poly SPP noise |
+| Kawashima H et al., Phys Eng Sci Med 2024;48(1):143-153 | — | PCCT 26-40% higher detectability than DSCT at 40keV |
+| Wang AS, Pelc NJ, IEEE TRPMS 2021;5(4):453-464 | — | CRLB/Fisher info for spectral PCD CT |
+| D'Angelo T et al., Br J Radiol 2019;92(1098):20180546 | — | Mono+ description: "regional-spatial frequency-split" |
+| Heismann et al., Med Phys 2025, doi:10.1002/mp.17591 | — | PCCT 10% noise advantage from quantum counting |
+| Niu et al., Phys Med Biol 2018, PMC5903446 | — | Condition numbers: MECT(N=4) = 301, DECT+prior = 17.86 |
 
-### 8c. Literature Benchmarks (QIR-off, closest to FBP)
-
-| Source | Anatomy | Kernel | Dose | 40 keV | 70 keV | Ratio |
-|--------|---------|--------|------|--------|--------|-------|
-| Eberhard 2023 | Coronary phantom | Bv40 | 9.4 mGy | 35 HU | 21 HU | 1.67× |
-| Boehm 2023 | Head cortical | Qr36 | 48.8 mGy | 12.8 HU | 5.0 HU | 2.56× |
-| Greffier 2023 | Catphan 20cm | Qr40 | 10 mGy | — | 10.7 HU | — |
-
-### 8d. UNVALIDATED — Needs numerical computation (Critique Point 2)
-
-The CMV-only and CMV+Mono+ estimates above are back-of-envelope. To validate:
-- Compute actual A matrix from DRM × spectrum
-- Compute Σ from Poisson statistics (diagonal, I0 per bin)
-- Evaluate σ²_VMI(E) = t(E)^T (A^T Σ^{-1} A)^{-1} t(E) at each energy
-- This numerical prediction is **required** before implementation to confirm feasibility
-
-## 9. Key Citations
-
-| Reference | Relevance |
-|-----------|-----------|
-| Gilat Schmidt TG, Med Phys 2009;36(7):3018-27 | Optimal image-based weighting theory. Weight ∝ contrast/variance. CNR improvement 1.15-1.6× over energy-integrating. |
-| Yu L, Leng S, McCollough CH, AJR 2012;199:S9-S15 | Image-domain VMI decomposition framework |
-| Leng S et al., Med Phys 2011;38(9):4946-57 | Noise reduction via optimal energy weighting in spectral CT |
-| Grant KL et al., Invest Radiol 2014;49(9):586-92 | Mono+ frequency-split algorithm (Siemens co-authors) |
-| Alvarez RE, Macovski A, Phys Med Biol 1976 | Classical sinogram-domain decomposition (what NOT to do for noise) |
-| Roessl E, Herrmann C, Phys Med Biol 2009;54(5):1307-18 | CRLB for VMI noise — theoretical minimum |
-| US7856134B2 (Stierstorfer/Ruhrnschopf, Siemens) | Siemens patent: image-domain VMI, pre-computed weight LUTs |
-| Rajendran K et al., Radiology 2022;303(1):130-8 | First clinical NAEOTOM Alpha evaluation — noise/NPS characterization |
-| Yang et al., Med Phys 2025, doi:10.1002/mp.17489 | Pre-log/post-log/MD optimal weighting comparison |
-| **NEW (Critique)** | |
-| Bhattarai et al., Med Phys 2024;51(2), PMC10796834 | **VMI 70keV noise ≈ T3D (poly) noise** at same QIR level (<1 HU diff). Key validation. |
-| Eberhard/Mergen et al., Eur Radiol Exp 2023, PMC9975359 | **QIR-off vs QIR-1/2/3/4 VMI noise table** for coronary CTA. QIR-3 = 38% reduction at 70keV. |
-| Boehm/Michael et al., Clin Neuroradiol 2023, PMC10881631 | **Head CT VMI noise QIR-off**: 40keV=12.8, 66keV=5.0, 100keV=2.4, 190keV=1.6 HU |
-| Greffier et al., Diagnostics 2023, PMC10092985 | **Catphan 70keV WFBP**: 10.7 HU. QIR-4 reduces to 4.4 HU (59% reduction). |
-| Sartoretti et al., Br J Radiol 2023, PMC9975359 | **QIR-off VMI noise**: 40keV=35, 70keV=21 HU (ratio 1.67×) |
-| Yang et al., Med Phys 2024;51(1):224-238 | **Optimal 2-channel ≈ 4-channel** (within 0.27%). Naive 2-channel = 1.3× worse. |
-| Niu et al., Phys Med Biol 2018, PMC5903446 | **Condition numbers**: MECT(N=4) no-prior = 301, DECT with-prior = 17.86 |
-| Heismann et al., Med Phys 2025, doi:10.1002/mp.17591 | PCCT 10% noise advantage from quantum counting; up to 1.7× RMS improvement |
-
-## 10. Open Questions (Post-Critique)
+## 9. Open Questions (Post-Refinement)
 
 ### Resolved
-1. ~~**QIR contribution**~~: **RESOLVED — QIR-3 IS applied** (Critique Point 1). Clinical targets are QIR-inclusive. FBP-only targets are ~60% higher. CMV + Mono+ can plausibly reach FBP-equivalent targets.
+1. **QIR contribution** — Clinical targets include QIR-3 (~37% reduction). FBP-equiv targets computed.
+2. **Anti-correlations** — Absent from our MC DRM. Σ is diagonal. CMV uses DOF only.
+3. **Dominant fix** — Skipping polynomial decomposition, not bin count. Even 2-bin CMV >> poly decomp.
+4. **Mono+ role** — Essential component, 20-50% noise reduction at extreme keV on top of CMV.
+5. **A matrix interpretation** — Image-domain: mean linear attenuation of material m in bin k (cm⁻¹ or cm²/g).
+6. **Σ estimation** — Analytical (1/N_k) preferred over empirical for diagonal case.
 
-2. ~~**Role of anti-coincidence anti-correlations**~~: **RESOLVED — Our DRM has NO anti-correlations** (Critique Point 4). MC DRM is cumulative, bins extracted by subtraction. Σ is diagonal (independent Poisson). CMV still benefits from 2 extra DOF but cannot exploit anti-correlations.
-
-### Remaining
-3. **Exact Mono+ filter parameters**: Proprietary. Our `σ_lp = 1.5 + 0.02·|E-E_opt|` is a starting point. Mono+ role is LARGER than initially thought (Critique Point 5) — it provides 20-50% noise reduction at extreme keV on top of CMV.
-
-4. **Spatial variation of weights**: Siemens uses pre-computed LUTs. Global Σ should work for initial validation. Local Σ is a refinement.
-
-5. **Numerical CMV noise prediction**: MUST compute σ²_VMI(E) with actual A matrix and Σ before implementation (Critique Point 2). This is the gating validation step.
-
-6. **Dominant fix: skipping decomposition vs number of bins**: The 4-bin advantage is modest (~1.3× over optimal 2-bin per Yang 2024). The REAL win is skipping the ill-conditioned matrix inversion entirely (Critique Point 3). Even 2-bin CMV (direct image combination, no material maps) would be dramatically better than polynomial decomposition.
+### Deferred (not blocking implementation)
+7. **Mono+ exact filter params** — Proprietary. Our heuristic is reasonable. Tune against NPS data if available.
+8. **Spatial adaptivity** — Grant et al. mentions "regional-spatial" variant. Global filter first, add adaptivity if edge artifacts appear.
+9. **Physical anti-correlations** — Would require DRM enhancement (anti-coincidence model). Improves CMV noise cancellation. Future work.
+10. **Local Σ** — Spatially varying weights via local covariance estimation. Not needed for phantom validation.

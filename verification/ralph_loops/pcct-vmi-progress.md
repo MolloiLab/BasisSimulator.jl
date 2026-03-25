@@ -276,3 +276,84 @@ The "impossible" observation (σ_VMI(140)=31.8 < σ_poly=66.4) is now explained 
 3. **Mono+:** Additional 20-30% reduction at extreme keV by replacing HF noise content
 
 None of these alone explains the clinical numbers. All three together do.
+
+---
+
+## Iteration 3 — VMI-004 REFINEMENT (2026-03-24)
+
+### Phase: C (REFINEMENT) — Final synthesis into implementation spec
+
+### Additional Research Conducted
+
+Before writing the final spec, targeted web research was performed to fill remaining gaps:
+
+**1. Mono+ filter parameters — CONFIRMED PROPRIETARY**
+Exhaustive search found no public disclosure of exact Siemens Mono+ filter parameters (Gaussian sigma, cutoff frequency). Every paper (Grant 2014, D'Angelo 2019, Cester 2022) uses vague "frequency-split" language. Likely protected as trade secret.
+
+**NPS-derived constraints (Cester 2022, Monsivais 2025):**
+- At 70 keV: NPS matches poly FBP → minimal/no frequency manipulation
+- At 40 keV: low-frequency NPS peak at 0.0-0.1 mm⁻¹ → LP cutoff ~0.1-0.2 mm⁻¹
+- D'Angelo 2019 describes "regional-spatial" variant → possible spatial adaptivity
+
+**2. 70 keV VMI ≈ poly FBP — CONFIRMED by multiple sources**
+- Bhattarai 2024: VMI 70keV ≈ T3D (<1 HU diff at same QIR)
+- Monsivais 2025: NPS shape+magnitude similar for T3D and 70keV VMI
+- Cester 2022: VMI 70keV ~7.6% below poly on DECT
+- Yalynska 2022: VMI 70keV 25% below poly SPP (with Mono+)
+
+**3. Recent (2024-2025) PCCT VMI papers found:**
+- Yang et al. 2025 (Med Phys, doi:10.1002/mp.17489): Generalized eigenvalue formulation for max-CNR weights. Pre-log ≈ post-log ≈ MD weighting (within 2%).
+- Kawashima et al. 2024 (Phys Eng Sci Med 48:143-153): PCCT 26-40% higher detectability than DSCT at 40keV.
+- Monsivais et al. 2025 (Med Phys, doi:10.1002/mp.70067): 3D NPS characterization of NAEOTOM VMI.
+- Wang & Pelc 2021 (IEEE TRPMS 5:453-464): Fisher information matrix formalism for PCD CT noise bounds.
+
+**4. Code review of existing calibration pipeline:**
+- Effective bin spectra: `w_full[i] × η_vec[i] × R_mat[drm_row(e), k]` per bin k (nb07 lines 1589-1592)
+- Per-bin I0 available from `sim_scan2.I0_bins` (computed in photon_counting.jl lines 748-815)
+- DRM shape: [200, 4] after `compute_mc_drm()` — cumulative→differential bins (independent Poisson)
+- Mono+ already implemented (nb07 lines 1812-1869) with σ_lp = 1.5 + 0.02·|E-70| mm
+
+### Refinement Actions Taken
+
+**1. Rewrote noise budget (Section 2):**
+- Clear 3-layer model: CMV → Mono+ → QIR
+- FBP-equivalent targets computed (clinical ÷ 0.63)
+- Explicit explanation of why VMI(140)=31.8 < poly=66.4 requires all 3 layers
+
+**2. Added numerical validation recipe (Section 5):**
+- Concrete Julia code for computing A matrix, Σ, σ²_VMI(E)
+- Calibration: anchor CMV σ(70keV) to poly FBP σ=74.5 HU
+- Pass/fail criteria table with literature-backed thresholds
+- Failure investigation checklist
+
+**3. Precise A matrix specification (Section 3b):**
+- Explicit formula with variable names matching codebase
+- Units clarified: cm⁻¹ for water, cm²/g for iodine mass attenuation
+- Cross-reference to existing code (nb07 lines 1589-1592)
+
+**4. Σ estimation dual approach (Section 3d):**
+- Analytical (from I0_bins) and empirical (from ROI) with cross-validation recipe
+- Explicit note: Σ_inv = Diagonal(I0_bins) for analytical case (no need to invert separately)
+
+**5. Complete implementation pseudocode (Section 6):**
+- Drop-in replacement for nb07 VMI cell
+- Uses actual variable names from codebase (ws_fdk, geom, R_mat, etc.)
+- Includes Step 7 Mono+ integration
+- Pre-multiplication optimization: P = Σ_inv × A × F_inv computed once, reused per energy
+
+**6. Updated citations (Section 8):**
+- Added 7 new references from targeted research
+- All citations now have DOI/PMID where available
+- Organized by relevance
+
+**7. Resolved all open questions except deferred items:**
+- 6 questions resolved (QIR, anti-correlations, dominant fix, Mono+ role, A matrix, Σ estimation)
+- 4 questions deferred (not blocking implementation): exact Mono+ params, spatial adaptivity, physical anti-correlations, local Σ
+
+### Key Insight from Refinement
+
+The spec is now **implementation-ready**. The algorithm is mathematically precise, the pseudocode maps to actual codebase variables, and the validation criteria are quantitative. The only remaining step before coding is the numerical validation (Section 5): compute σ²_VMI with actual A and Σ to confirm the predicted noise levels are in the target range.
+
+### Status: DISC_COMPLETE
+
+All topics in the PRD have discovery + critique + refinement = "done". The spec is ready for implementation.
