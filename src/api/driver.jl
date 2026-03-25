@@ -652,21 +652,26 @@ function reconstruct!(
     geom::CTGeometry,
     volume_size::NTuple{3,Int};
     filter::FilterType=StandardFilter(),
-    cutoff::Float64=1.0
+    cutoff::Float64=1.0,
+    init_volume::Union{Nothing, AbstractArray{T,3}}=nothing
 ) where T<:AbstractFloat
 
-    # ─── Step 1: FDK initialization (same as FDKReconWorkspace) ───
-    copyto!(ws.filtered, sinogram)
-    filter_sinogram!(ws.filtered, geom; filter=filter, cutoff=cutoff,
-        ws_conv_scratch=ws.conv_scratch,
-        ws_filter_kernel=ws.filter_kernel)
-    fill!(ws.volume, zero(T))
-    backproject!(ws.volume, ws.filtered, geom;
-        weighted=true,
-        ws_source_positions=ws.geom_source_positions,
-        ws_detector_centers=ws.geom_detector_centers,
-        ws_detector_u=ws.geom_detector_u,
-        ws_detector_v=ws.geom_detector_v)
+    # ─── Step 1: FDK initialization (or warm-start from provided volume) ───
+    if init_volume === nothing
+        copyto!(ws.filtered, sinogram)
+        filter_sinogram!(ws.filtered, geom; filter=filter, cutoff=cutoff,
+            ws_conv_scratch=ws.conv_scratch,
+            ws_filter_kernel=ws.filter_kernel)
+        fill!(ws.volume, zero(T))
+        backproject!(ws.volume, ws.filtered, geom;
+            weighted=true,
+            ws_source_positions=ws.geom_source_positions,
+            ws_detector_centers=ws.geom_detector_centers,
+            ws_detector_u=ws.geom_detector_u,
+            ws_detector_v=ws.geom_detector_v)
+    else
+        copyto!(ws.volume, init_volume)
+    end
 
     # ─── Step 2: PWLS refinement with Huber regularization ───
     params = ws.params
