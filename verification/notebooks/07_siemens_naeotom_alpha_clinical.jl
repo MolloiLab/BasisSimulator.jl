@@ -907,27 +907,6 @@ md"""
 ## 6e. Clinical Noise — VMI Energy Dependence (140 kVp / 10 mGy)
 """
 
-# ╔═╡ 08070017-0000-4000-8000-000000000000
-# VMI noise vs energy bar chart
-let
-    water_idx = 1
-    vmi_idx = [9, 10, 11, 12]  # VMI 40/70/100/140 in clinical_measurements
-    energies = [40, 70, 100, 140]
-    vmi_σ = [clinical_measurements[vmi_idx[i]].rod_stds[water_idx] for i in 1:4]
-
-    fig = CM.Figure(size = (600, 350), fontsize = 13)
-    ax = CM.Axis(fig[1, 1]; title = "VMI Water Noise — 140 kVp / 10.12 mGy (QIR3)",
-        xlabel = "VMI Energy (keV)", ylabel = "Water σ (HU)",
-        xticks = (1:4, string.(energies)))
-    CM.barplot!(ax, 1:4, vmi_σ; width = 0.6, color = :steelblue)
-    for (xi, v) in zip(1:4, vmi_σ)
-        CM.text!(ax, xi, v + 0.5; text = "$(round(v, digits=1))", fontsize = 10, align = (:center, :bottom))
-    end
-    CM.ylims!(ax, 0, nothing)
-    CM.save(joinpath(RESULTS_DIR, "alpha_vmi_noise.png"), fig, px_per_unit = 2)
-    fig
-end
-
 # ╔═╡ 08070018-0000-4000-8000-000000000000
 md"""
 ## 6f. Clinical HU Scatter — Poly FBP (140 kVp Dose Ladder)
@@ -1787,49 +1766,43 @@ end;
 
 # ╔═╡ 08120009-0000-4000-8000-000000000000
 md"""
-### 12e. VMI Reconstruction — Development Log
+### 12e. VMI Reconstruction
 
-**Approach 1 (12d above): 2-bin polynomial decomposition (Alvarez & Macovski 1976)**
-- Collapse 4 bins → 2 (lo/hi), polynomial calibration on step-wedge, VMI sinogram → FBP → Mono+
-- ✅ HU accuracy: perfect (nonlinear forward model handles beam hardening)
-- ❌ Noise: catastrophic (polynomial amplifies noise 10-20×, FBP ramp filter compounds it)
-- Result: 40 keV σ=1467 HU, 70 keV σ=176 HU (vs clinical QIR3: 56/35 HU)
+**Pipeline: RWLS-GN → HIR → (Mono+)**
 
-**Approach 2: CMV image-domain bin weighting (Gilat Schmidt 2009)**
-- FBP all 4 bins → CMV weighted sum `w*(E) = Σ⁻¹A(A'Σ⁻¹A)⁻¹t(E)` → Mono+
-- ✅ Noise: good (~92 HU flat with Mono+, ~25 HU with HIR+Mono+)
-- ❌ HU accuracy: broken (CMV assumes linearity, beam hardening in bin FBP violates this)
+Based on Ducros et al., "Regularization of Nonlinear Decomposition of Spectral X-ray
+Projection Images," *Med Phys* 44(9), 2017.
 
-**Approach 3: CMV sinogram-domain weighting → HIR**
-- Combine bin sinograms with CMV weights → HIR reconstruct → Mono+
-- ✅ Noise: excellent (~25 HU with HIR strength 3)
-- ❌ HU accuracy: still broken (sinogram-domain CMV still assumes linear bin response)
+**Step 1 — RWLS-GN material decomposition** (sinogram domain):
+- 3-bin approach: merge bins 1+2 (degenerate ~60 keV), keep bin 3 and bin 4 separate
+- Nonlinear forward model: `F_i(a) = I0_i Σ_E wn_i(E) exp(-a_w τ_w(E) - a_I τ_I(E))`
+- Cost: `C(a) = ½||s - F(a)||²_W + α R(a)` with Poisson weights `W = diag(1/F)`
+- Gauss-Newton solver: per-pixel 2×2 normal equations (3 bins → overdetermined)
+- Spatial regularization: FFT quadratic proximal per sinogram slice
+- Initialize from polynomial decomp (cell 12d) for fast convergence (~3 iterations)
+- Output: regularized material sinograms `sino_w`, `sino_I` (correct HU + reduced noise)
 
-**Root cause of HU failure:** CMV linearly combines polychromatic bin sinograms, but the
-relationship between material thickness and bin sinogram value is nonlinear (beam hardening).
-The polynomial approach handles this via step-wedge calibration. CMV skips it.
+**Step 2 — VMI sinogram synthesis + HIR per energy**:
+- `vmi_sino(E) = μ_w(E) · sino_w + μρ_I(E) · sino_I`
+- HIR reconstruction with Huber edge-preserving regularization
+- Matches clinical QIR noise level
 
-**Approach 4 (REMOVED): 4-bin WLS material decomposition**
-- Gauss-Newton per ray, nonlinear forward model with all 4 bins — completely broken, nuked
+**Step 3 — Mono+** (optional):
+- Frequency-split blending (Grant et al. 2014)
+- Converges extreme-keV noise toward 70 keV optimal level
 
-**Approach 5 (current): Sinogram-domain BHC-CMV + HIR + Mono+**
-- Key insight: beam hardening (BH) is **smooth/low-frequency** → can be corrected separately from noise
-- CMV: noise-optimal 4-bin weighting (linear combination → good noise, wrong HU from BH)
-- Polynomial calibration (cell 12d): correct HU via step-wedge (noisy, but we only need the smooth part)
-- Blend in sinogram domain: `corrected = CMV_sino + LP(poly_sino − CMV_sino)`
-  - High-frequency content (noise, edges) from CMV → optimal
-  - Low-frequency content (HU accuracy) from polynomial → correct
-- HIR → QIR3 noise level
-- Mono+ → flatten extreme-keV noise
+**Previous approaches tried** (for reference):
+1. 2-bin polynomial + FBP: correct HU, catastrophic noise (10-20×)
+2. CMV image-domain: good noise, wrong HU (beam hardening)
+3. CMV sinogram-domain: good noise, wrong HU
+4. Image-domain linear decomp: good noise, compressed HU slope
+5. Various hybrid blending (BHC-CMV, quadratic calibration): partial improvement
 """
 
 # ╔═╡ 08120010-0000-4000-8000-000000000000
-# Step 1: RWLS-GN material decomposition (Ducros et al., Med Phys 2017)
-# Regularized nonlinear decomposition in sinogram domain:
-# - Nonlinear forward model handles beam hardening → correct HU
-# - Spatial regularization couples neighboring rays → reduced noise
-# - Initialize from polynomial decomp for fast convergence
-vmi_cmv_bins = let
+# 12e-1a: RWLS-GN shared setup + solver function
+# Spectral data, polynomial init, and run_gn() used by per-energy cells below
+vmi_decomp_setup = let
     # ── Spectral setup ──
     prot = BS.CTProtocol(kVp = 140.0, additional_filters = [("Ti", 0.9)])
     e_full, w_full = BS.resolve_spectrum(sim_opts, prot; scanner = sim_scanner)
@@ -1842,20 +1815,17 @@ vmi_cmv_bins = let
     e = Float64.(e_full)
     n_bins = size(R_mat, 2)
 
-    # 3-bin approach: merge bins 1+2 (degenerate), keep bins 3 and 4 separate
-    # 3 measurements × 2 materials → overdetermined → WLS noise reduction
+    # 3-bin approach: merge bins 1+2 (degenerate ~60 keV), keep bins 3 and 4
     τ_w = [BS.compute_mass_μ_at_energy(XA.Materials.water, E) for E in e]
     τ_I = [BS.compute_mass_μ_at_energy(XA.Elements.Iodine, E) for E in e]
 
-    # Per-bin un-normalized spectral weights
     w_A_raw = [Float64(w_full[i]) * Float64(η_vec[i]) * (R_mat[drm_row(e[i]), 1] + R_mat[drm_row(e[i]), 2])
-               for i in eachindex(e)]  # bins 1+2 merged
+               for i in eachindex(e)]
     w_B_raw = [Float64(w_full[i]) * Float64(η_vec[i]) * R_mat[drm_row(e[i]), 3]
-               for i in eachindex(e)]  # bin 3 alone
+               for i in eachindex(e)]
     w_C_raw = [Float64(w_full[i]) * Float64(η_vec[i]) * R_mat[drm_row(e[i]), min(4, n_bins)]
-               for i in eachindex(e)]  # bin 4 alone
+               for i in eachindex(e)]
 
-    # Normalize to probability weights, scale by simulation I0
     wn_A = w_A_raw ./ sum(w_A_raw)
     wn_B = w_B_raw ./ sum(w_B_raw)
     wn_C = w_C_raw ./ sum(w_C_raw)
@@ -1865,18 +1835,15 @@ vmi_cmv_bins = let
     I0_A = Float64(I0_bins[1] + I0_bins[2])
     I0_B = Float64(I0_bins[3])
     I0_C = Float64(I0_bins[min(4, length(I0_bins))])
-    @info "3-bin I0 (sim): A=$(round(I0_A, sigdigits=4)), B=$(round(I0_B, sigdigits=4)), C=$(round(I0_C, sigdigits=4))"
+    @info "3-bin I0: A=$(round(I0_A, sigdigits=4)), B=$(round(I0_B, sigdigits=4)), C=$(round(I0_C, sigdigits=4))"
 
-    # Measured counts
+    # Measured counts per merged bin (scatter-free — scatter only on combined sinogram)
     s_A = Float64.(I0_bins[1] .* exp.(-bins[1]) .+ I0_bins[2] .* exp.(-bins[2]))
     s_B = Float64.(I0_bins[3] .* exp.(-bins[3]))
     s_C = Float64.(I0_bins[min(4, length(bins))] .* exp.(-bins[min(4, length(bins))]))
 
-    # Also need lo/hi sinograms for polynomial init
     sl = sim_scan2_lohi.sino_low
     sh = sim_scan2_lohi.sino_high
-
-    # ── Initialize from polynomial decomp ──
     coeffs_w = pcct_vmi_calibration.coeffs_w
     coeffs_I = pcct_vmi_calibration.coeffs_I
     terms = pcct_vmi_calibration.terms
@@ -1888,150 +1855,460 @@ vmi_cmv_bins = let
         end
         s
     end
-    a_w = zeros(Float64, size(sl))
-    a_I = zeros(Float64, size(sl))
+    a_w_init = zeros(Float64, size(sl))
+    a_I_init = zeros(Float64, size(sl))
     @inbounds Threads.@threads for idx in eachindex(sl)
         pl = Float64(sl[idx]); ph = Float64(sh[idx])
-        a_w[idx] = max(_eval_poly(coeffs_w, terms, pl, ph), 0.0)
-        a_I[idx] = max(_eval_poly(coeffs_I, terms, pl, ph), 0.0)
+        a_w_init[idx] = max(_eval_poly(coeffs_w, terms, pl, ph), 0.0)
+        a_I_init[idx] = max(_eval_poly(coeffs_I, terms, pl, ph), 0.0)
     end
-    @info "Init from polynomial — water: $(round(mean(a_w), digits=3)), iodine: $(round(mean(a_I), sigdigits=3))"
+    @info "Poly init — water: $(round(mean(a_w_init), digits=3)), iodine: $(round(mean(a_I_init), sigdigits=3))"
 
-    # ── RWLS-GN iterations ──
-    n_iter = 3
-    α = 1.0        # global regularization strength (paper: log(α)∈[-2,2])
-    β_w = 1.0      # water regularization weight
-    β_I = 1.0      # iodine regularization weight
-    n_E = length(e)
-
-    # Pre-compute FFT frequency grid (once, not per-iter)
-    nx, nv, nr = size(a_w)
+    nx, nv, nr = size(a_w_init)
     freq2 = [Float64(2 - 2cos(2π*(i-1)/nx) + 2 - 2cos(2π*(j-1)/nv))
              for i in 1:nx, j in 1:nv]
+    n_E = length(e)
 
-    for iter in 1:n_iter
-        # Forward model + Jacobian for 3 bins (vectorized over pixels)
-        F_A = zeros(Float64, size(a_w)); F_B = zeros(Float64, size(a_w)); F_C = zeros(Float64, size(a_w))
-        J_Aw = zeros(Float64, size(a_w)); J_AI = zeros(Float64, size(a_w))
-        J_Bw = zeros(Float64, size(a_w)); J_BI = zeros(Float64, size(a_w))
-        J_Cw = zeros(Float64, size(a_w)); J_CI = zeros(Float64, size(a_w))
+    # ── RWLS-GN solver (GPU-accelerated via Metal) ──
+    # All broadcasts run on GPU. FFT transfers to CPU per slice.
+    freq2_f32 = MtlArray(Float32.(freq2))
+    s_Ag = MtlArray(Float32.(s_A)); s_Bg = MtlArray(Float32.(s_B)); s_Cg = MtlArray(Float32.(s_C))
+    init_w_g = MtlArray(Float32.(a_w_init)); init_I_g = MtlArray(Float32.(a_I_init))
 
-        for j in 1:n_E
-            exp_term = @. exp(-a_w * τ_w[j] - a_I * τ_I[j])
-            @. F_A += I0_A * wn_A[j] * exp_term
-            @. F_B += I0_B * wn_B[j] * exp_term
-            @. F_C += I0_C * wn_C[j] * exp_term
-            @. J_Aw -= I0_A * wn_A[j] * τ_w[j] * exp_term
-            @. J_AI -= I0_A * wn_A[j] * τ_I[j] * exp_term
-            @. J_Bw -= I0_B * wn_B[j] * τ_w[j] * exp_term
-            @. J_BI -= I0_B * wn_B[j] * τ_I[j] * exp_term
-            @. J_Cw -= I0_C * wn_C[j] * τ_w[j] * exp_term
-            @. J_CI -= I0_C * wn_C[j] * τ_I[j] * exp_term
+    function run_gn(E_target; n_iter=3, α=0.3, β_w=1.0, β_I=1.0)
+        @info "── $(Int(E_target)) keV: α=$α, β_w=$β_w, β_I=$β_I ──"
+
+        a_w = copy(init_w_g)
+        a_I = copy(init_I_g)
+        F_A = similar(a_w); F_B = similar(a_w); F_C = similar(a_w)
+        J_Aw = similar(a_w); J_AI = similar(a_w)
+        J_Bw = similar(a_w); J_BI = similar(a_w)
+        J_Cw = similar(a_w); J_CI = similar(a_w)
+        et = similar(a_w)
+        rA = similar(a_w); rB = similar(a_w); rC = similar(a_w)
+        wtA = similar(a_w); wtB = similar(a_w); wtC = similar(a_w)
+        H11 = similar(a_w); H12 = similar(a_w); H22 = similar(a_w)
+        g1 = similar(a_w); g2 = similar(a_w)
+        det_H = similar(a_w); δ_wg = similar(a_w); δ_Ig = similar(a_w)
+        I0Af = Float32(I0_A); I0Bf = Float32(I0_B); I0Cf = Float32(I0_C)
+        α_bw = Float32(2 * α * β_w); α_bI = Float32(2 * α * β_I)
+
+        for iter in 1:n_iter
+            # ── Forward model + Jacobian (GPU broadcasts) ──
+            fill!(F_A, 0f0); fill!(F_B, 0f0); fill!(F_C, 0f0)
+            fill!(J_Aw, 0f0); fill!(J_AI, 0f0)
+            fill!(J_Bw, 0f0); fill!(J_BI, 0f0)
+            fill!(J_Cw, 0f0); fill!(J_CI, 0f0)
+            for j in 1:n_E
+                tw = Float32(τ_w[j]); tI = Float32(τ_I[j])
+                wA = Float32(wn_A[j]); wB = Float32(wn_B[j]); wC = Float32(wn_C[j])
+                @. et = exp(-a_w * tw - a_I * tI)
+                @. F_A += wA * et; @. F_B += wB * et; @. F_C += wC * et
+                @. J_Aw -= wA * tw * et; @. J_AI -= wA * tI * et
+                @. J_Bw -= wB * tw * et; @. J_BI -= wB * tI * et
+                @. J_Cw -= wC * tw * et; @. J_CI -= wC * tI * et
+            end
+            @. F_A *= I0Af; @. F_B *= I0Bf; @. F_C *= I0Cf
+            @. J_Aw *= I0Af; @. J_AI *= I0Af
+            @. J_Bw *= I0Bf; @. J_BI *= I0Bf
+            @. J_Cw *= I0Cf; @. J_CI *= I0Cf
+
+            # ── Normal equations + GN update (GPU) ──
+            @. rA = s_Ag - F_A; @. rB = s_Bg - F_B; @. rC = s_Cg - F_C
+            @. wtA = 1f0 / max(F_A, 1f0)
+            @. wtB = 1f0 / max(F_B, 1f0)
+            @. wtC = 1f0 / max(F_C, 1f0)
+            @. H11 = J_Aw^2*wtA + J_Bw^2*wtB + J_Cw^2*wtC
+            @. H12 = J_Aw*J_AI*wtA + J_Bw*J_BI*wtB + J_Cw*J_CI*wtC
+            @. H22 = J_AI^2*wtA + J_BI^2*wtB + J_CI^2*wtC
+            @. g1 = J_Aw*wtA*rA + J_Bw*wtB*rB + J_Cw*wtC*rC
+            @. g2 = J_AI*wtA*rA + J_BI*wtB*rB + J_CI*wtC*rC
+            @. det_H = max(abs(H11 * H22 - H12^2), 1f-30)
+            @. δ_wg = clamp((H22 * g1 - H12 * g2) / det_H, -5f0, 5f0)
+            @. δ_Ig = clamp((H11 * g2 - H12 * g1) / det_H, -0.5f0, 0.5f0)
+            @. a_w = max(a_w + 0.5f0 * δ_wg, 0f0)
+            @. a_I = max(a_I + 0.5f0 * δ_Ig, 0f0)
+
+            # ── Spatial regularization (CPU FFT per slice) ──
+            aw_cpu = Array(a_w); aI_cpu = Array(a_I)
+            denom_w = 1.0 .+ Float64(α_bw) .* freq2
+            denom_I = 1.0 .+ Float64(α_bI) .* freq2
+            for k in 1:nr
+                sw = Float64.(aw_cpu[:, :, k])
+                sI = Float64.(aI_cpu[:, :, k])
+                aw_cpu[:, :, k] .= Float32.(real.(ifft(fft(sw) ./ denom_w)))
+                aI_cpu[:, :, k] .= Float32.(real.(ifft(fft(sI) ./ denom_I)))
+            end
+            copyto!(a_w, MtlArray(aw_cpu))
+            copyto!(a_I, MtlArray(aI_cpu))
+            @info "  iter $iter done"
         end
 
-        # Residuals and Poisson weights (1/expected counts, paper Eq. 16)
-        r_A = s_A .- F_A; r_B = s_B .- F_B; r_C = s_C .- F_C
-        wt_A = 1.0 ./ max.(F_A, 1.0)
-        wt_B = 1.0 ./ max.(F_B, 1.0)
-        wt_C = 1.0 ./ max.(F_C, 1.0)
+        # ── Final residuals for diagnostics ──
+        F_A_cpu = Array(F_A); F_B_cpu = Array(F_B); F_C_cpu = Array(F_C)
+        s_A_cpu = Array(s_Ag); s_B_cpu = Array(s_Bg); s_C_cpu = Array(s_Cg)
+        res_A = s_A_cpu .- F_A_cpu
+        res_B = s_B_cpu .- F_B_cpu
+        res_C = s_C_cpu .- F_C_cpu
+        # Relative residual (% of expected)
+        relres_A = res_A ./ max.(F_A_cpu, 1f0)
+        relres_B = res_B ./ max.(F_B_cpu, 1f0)
+        relres_C = res_C ./ max.(F_C_cpu, 1f0)
+        @info "  Residuals — A: $(round(mean(abs.(relres_A))*100, digits=2))%, B: $(round(mean(abs.(relres_B))*100, digits=2))%, C: $(round(mean(abs.(relres_C))*100, digits=2))%"
+        @info "  Max |relres| — A: $(round(maximum(abs.(relres_A))*100, digits=1))%, B: $(round(maximum(abs.(relres_B))*100, digits=1))%, C: $(round(maximum(abs.(relres_C))*100, digits=1))%"
 
-        # J^T W J (2×2 normal equations, paper Eq. 25 data term)
-        H11 = @. J_Aw^2*wt_A + J_Bw^2*wt_B + J_Cw^2*wt_C
-        H12 = @. J_Aw*J_AI*wt_A + J_Bw*J_BI*wt_B + J_Cw*J_CI*wt_C
-        H22 = @. J_AI^2*wt_A + J_BI^2*wt_B + J_CI^2*wt_C
-        # J^T W r (paper Eq. 26 data term)
-        g1 = @. J_Aw*wt_A*r_A + J_Bw*wt_B*r_B + J_Cw*wt_C*r_C
-        g2 = @. J_AI*wt_A*r_A + J_BI*wt_B*r_B + J_CI*wt_C*r_C
-
-        det_H = @. H11 * H22 - H12^2
-        @. det_H = max(abs(det_H), 1e-30)
-        δ_w = @. (H22 * g1 - H12 * g2) / det_H
-        δ_I = @. (H11 * g2 - H12 * g1) / det_H
-
-        # Clamp step to prevent streak artifacts from extreme rays
-        @. δ_w = clamp(δ_w, -5.0, 5.0)
-        @. δ_I = clamp(δ_I, -0.01, 0.01)
-
-        @. a_w = max(a_w + 0.5 * δ_w, 0.0)
-        @. a_I = max(a_I + 0.5 * δ_I, 0.0)
-
-        # Spatial regularization: per-slice FFT quadratic proximal
-        for k in 1:nr
-            a_w[:, :, k] .= real.(ifft(fft(a_w[:, :, k]) ./ (1.0 .+ 2 * α * β_w .* freq2)))
-            a_I[:, :, k] .= real.(ifft(fft(a_I[:, :, k]) ./ (1.0 .+ 2 * α * β_I .* freq2)))
-        end
-
-        cost = mean(wt_A .* r_A.^2) + mean(wt_B .* r_B.^2) + mean(wt_C .* r_C.^2)
-        @info "RWLS-GN iter $iter: cost=$(round(cost, sigdigits=4)), mean |δ_w|=$(round(mean(abs.(δ_w)), sigdigits=3)), mean |δ_I|=$(round(mean(abs.(δ_I)), sigdigits=3))"
+        (sino_w = Float32.(Array(a_w)), sino_I = Float32.(Array(a_I)),
+         residuals = (A = res_A, B = res_B, C = res_C,
+                      relA = relres_A, relB = relres_B, relC = relres_C,
+                      F_A = F_A_cpu, F_B = F_B_cpu, F_C = F_C_cpu))
     end
 
-    # ── FBP material sinograms → material images ──
-    geom = sim_scan2.geom
-    recon_size = sim_matrix_size
-    mid_z = recon_size[3] ÷ 2
+    # ── ACNR: Anti-Correlated Noise Reduction (Kalender, IEEE TMI 1988) ──
+    # Material sinogram noise is anti-correlated (positive water ↔ negative iodine).
+    # ACNR projects out the noise component orthogonal to E_ref in material space.
+    # Preserves VMI at E_ref exactly; reduces noise at all other energies.
+    function apply_acnr(sino_w, sino_I; E_ref=70.0, σ_acnr=3.0, γ=1.0)
+        c_w = Float64(BS.compute_mass_μ_at_energy(XA.Materials.water, E_ref))
+        c_I = Float64(BS.compute_mass_μ_at_energy(XA.Elements.Iodine, E_ref))
+        c2 = c_w^2 + c_I^2
 
-    img_w = let g = MtlArray(Float32.(a_w))
-        ws = BS.create_fdk_recon_workspace(g, geom, recon_size; filter = sim_vmi_filter)
-        BS.reconstruct!(ws, g, geom, recon_size); r = Array(ws.volume)
-        ws = nothing; g = nothing; GC.gc(true); r end
-    img_I = let g = MtlArray(Float32.(a_I))
-        ws = BS.create_fdk_recon_workspace(g, geom, recon_size; filter = sim_vmi_filter)
-        BS.reconstruct!(ws, g, geom, recon_size); r = Array(ws.volume)
-        ws = nothing; g = nothing; GC.gc(true); r end
+        aw = Float64.(sino_w)
+        aI = Float64.(sino_I)
 
-    roi_w = img_w[200:300, 200:300, mid_z]
-    roi_I = img_I[200:300, 200:300, mid_z]
-    @info "RWLS-GN water image — mean=$(round(mean(roi_w), digits=4)), σ=$(round(std(roi_w), digits=4))"
-    @info "RWLS-GN iodine image — mean=$(round(mean(roi_I), sigdigits=3)), σ=$(round(std(roi_I), sigdigits=3))"
+        # Orthogonal combination in material space (noise-dominated for E_ref)
+        s_orth = @. -c_I * aw + c_w * aI
 
-    (img_w = img_w, img_I = img_I)
+        # FFT Gaussian smooth per sinogram slice to estimate signal in orthogonal dir
+        nx_s, nv_s, nr_s = size(s_orth)
+        gauss_k = [let fi = min(i-1, nx_s-(i-1)); fj = min(j-1, nv_s-(j-1))
+                       exp(-2π^2 * σ_acnr^2 * (fi^2/nx_s^2 + fj^2/nv_s^2))
+                   end for i in 1:nx_s, j in 1:nv_s]
+
+        s_orth_smooth = similar(s_orth)
+        for k in 1:nr_s
+            s_orth_smooth[:, :, k] .= real.(ifft(fft(s_orth[:, :, k]) .* gauss_k))
+        end
+
+        # Anti-correlated noise = high-freq part of orthogonal component
+        n_orth = s_orth .- s_orth_smooth
+
+        # Subtract noise projection from material sinograms
+        # Math: VMI(E_ref) = c_w*a_w + c_I*a_I is unchanged (cross terms cancel)
+        aw_corr = @. aw + γ * c_I / c2 * n_orth
+        aI_corr = @. aI - γ * c_w / c2 * n_orth
+
+        @info "ACNR: |n_orth|=$(round(std(n_orth), sigdigits=3)), γ=$γ, σ_smooth=$σ_acnr"
+        (sino_w = Float32.(aw_corr), sino_I = Float32.(aI_corr))
+    end
+
+    (run_gn = run_gn, apply_acnr = apply_acnr)
+end;
+
+# ╔═╡ 08120010-0000-4000-8000-000000000040
+# 12e-1b: RWLS-GN — 40 keV
+vmi_decomp_40 = let
+    n_iter = 3
+    α = 0.3
+    β_w = 1.0
+    β_I = 1.0
+    vmi_decomp_setup.run_gn(40.0; n_iter, α, β_w, β_I)
+end;
+
+# ╔═╡ 08120010-0000-4000-8000-000000000070
+# 12e-1c: RWLS-GN — 70 keV
+vmi_decomp_70 = let
+    n_iter = 3
+    α = 0.3
+    β_w = 1.0
+    β_I = 1.0
+    vmi_decomp_setup.run_gn(70.0; n_iter, α, β_w, β_I)
+end;
+
+# ╔═╡ 08120010-0000-4000-8000-000000000100
+# 12e-1d: RWLS-GN — 100 keV
+vmi_decomp_100 = let
+    n_iter = 3
+    α = 0.3
+    β_w = 1.0
+    β_I = 1.0
+    vmi_decomp_setup.run_gn(100.0; n_iter, α, β_w, β_I)
+end;
+
+# ╔═╡ 08120010-0000-4000-8000-000000000140
+# 12e-1e: RWLS-GN — 140 keV
+vmi_decomp_140 = let
+    n_iter = 3
+    α = 0.3
+    β_w = 1.0
+    β_I = 1.0
+    vmi_decomp_setup.run_gn(140.0; n_iter, α, β_w, β_I)
+end;
+
+# ╔═╡ 08120010-0000-4000-8000-000000000300
+# 12e-1f: RWLS-GN residual diagnostics — are streaks from forward model mismatch?
+let
+    # Use 70 keV decomposition (cleanest energy, streaks still subtly visible)
+    res = vmi_decomp_70.residuals
+    mid_z = size(res.A, 3) ÷ 2
+
+    fig = CM.Figure(size = (1200, 900), fontsize = 12)
+
+    # Row 1: Absolute residuals (measured - predicted) per bin, mid slice
+    for (col, (label, r)) in enumerate(zip(["Bin A (1+2)", "Bin B (3)", "Bin C (4)"], [res.A, res.B, res.C]))
+        ax = CM.Axis(fig[1, col]; title = "Residual: $label", xlabel = "ray", ylabel = "view")
+        sl = r[:, :, mid_z]
+        lim = Float32(3 * std(sl))
+        CM.heatmap!(ax, sl; colormap = :RdBu, colorrange = (-lim, lim))
+    end
+
+    # Row 2: Relative residuals (% of expected counts)
+    for (col, (label, rr)) in enumerate(zip(["Bin A rel%", "Bin B rel%", "Bin C rel%"], [res.relA, res.relB, res.relC]))
+        ax = CM.Axis(fig[2, col]; title = "$label", xlabel = "ray", ylabel = "view")
+        sl = rr[:, :, mid_z] .* 100
+        CM.heatmap!(ax, sl; colormap = :RdBu, colorrange = (-10, 10))
+    end
+
+    # Row 3: Line profiles through dense inserts (one view angle)
+    view_mid = size(res.A, 2) ÷ 4  # pick a view where rays cross inserts
+    ax3 = CM.Axis(fig[3, 1:2]; title = "Residual line profile (view $view_mid, slice $mid_z)",
+        xlabel = "ray index", ylabel = "residual (counts)")
+    CM.lines!(ax3, res.A[:, view_mid, mid_z]; label = "Bin A", color = :red)
+    CM.lines!(ax3, res.B[:, view_mid, mid_z]; label = "Bin B", color = :blue)
+    CM.lines!(ax3, res.C[:, view_mid, mid_z]; label = "Bin C", color = :green)
+    CM.axislegend(ax3; position = :rt)
+
+    # Row 3 right: Histogram of relative residuals
+    ax4 = CM.Axis(fig[3, 3]; title = "Relative residual distribution",
+        xlabel = "residual (%)", ylabel = "count")
+    rr_flat = vec(res.relA[:, :, mid_z]) .* 100
+    CM.hist!(ax4, Float64.(rr_flat[abs.(rr_flat) .< 50]); bins = 100, color = (:red, 0.4), label = "Bin A")
+    rr_flat_b = vec(res.relB[:, :, mid_z]) .* 100
+    CM.hist!(ax4, Float64.(rr_flat_b[abs.(rr_flat_b) .< 50]); bins = 100, color = (:blue, 0.4), label = "Bin B")
+    CM.axislegend(ax4; position = :rt)
+
+    CM.save(joinpath(RESULTS_DIR, "alpha_rwls_residuals.png"), fig, px_per_unit = 2)
+    fig
+end
+
+# ╔═╡ 08120010-0000-4000-8000-000000000200
+# 12e-1g: ACNR — Anti-Correlated Noise Reduction (Kalender, IEEE TMI 1988)
+# Projects out noise orthogonal to E_ref in material space. Zero blur.
+# VMI at E_ref preserved exactly; noise reduced at all other energies.
+vmi_acnr = let
+    use_acnr = true    # ← toggle to compare with/without
+    E_ref = 70.0       # reference energy (VMI preserved exactly here)
+    σ_acnr = 8.0       # smoothing width for noise estimation (larger = more noise removed)
+    γ_acnr = 1.0       # correction strength (0=off, 1=full, >1=overcorrect)
+
+    per_energy_raw = Dict(
+        40.0 => vmi_decomp_40, 70.0 => vmi_decomp_70,
+        100.0 => vmi_decomp_100, 140.0 => vmi_decomp_140,
+    )
+
+    if !use_acnr
+        per_energy_raw
+    else
+        corrected = Dict{Float64, NamedTuple}()
+        for (E, sinos) in per_energy_raw
+            corrected[E] = vmi_decomp_setup.apply_acnr(
+                sinos.sino_w, sinos.sino_I;
+                E_ref, σ_acnr, γ=γ_acnr)
+        end
+        corrected
+    end
 end;
 
 # ╔═╡ 08120010-a000-4000-8000-000000000001
-# Step 2: VMI synthesis from HIR material images
-vmi_calibrated = let
+# 12e-2: VMI sinogram synthesis → FBP per energy (no HIR, fast baseline)
+vmi_fbp = let
+    geom = sim_scan2.geom
     recon_size = sim_matrix_size
     vmi_energies = [40.0, 70.0, 100.0, 140.0]
     mid_z = recon_size[3] ÷ 2
 
-    img_w = vmi_cmv_bins.img_w  # water fraction (≈1.0 for water)
-    img_I = vmi_cmv_bins.img_I  # iodine concentration (g/cm³)
+    per_energy_sinos = vmi_acnr
 
     raw_vmi = Dict{Float64, Array{Float32, 3}}()
     for E in vmi_energies
-        μ_w_E = Float32(BS.compute_μ_at_energy(XA.Materials.water, E))
+        sino_w = per_energy_sinos[E].sino_w
+        sino_I = per_energy_sinos[E].sino_I
+        μ_w_E = BS.compute_μ_at_energy(XA.Materials.water, E)
+        μρ_w_E = Float32(BS.compute_mass_μ_at_energy(XA.Materials.water, E))
         μρ_I_E = Float32(BS.compute_mass_μ_at_energy(XA.Elements.Iodine, E))
 
-        μ_mono = @. img_w * μ_w_E + img_I * μρ_I_E
-        vmi_hu = @. Float32((μ_mono - μ_w_E) / μ_w_E * 1000.0f0)
-        raw_vmi[E] = vmi_hu
+        vmi_sino = @. μρ_w_E * sino_w + μρ_I_E * sino_I
 
+        vmi_sino_gpu = MtlArray(vmi_sino)
+        ws_fdk = BS.create_fdk_recon_workspace(vmi_sino_gpu, geom, recon_size; filter = sim_vmi_filter)
+        BS.reconstruct!(ws_fdk, vmi_sino_gpu, geom, recon_size)
+        recon_μ = Array(ws_fdk.volume)
+
+        vmi_hu = Float32.(BS.to_hounsfield(recon_μ; μ_water = μ_w_E))
+        raw_vmi[E] = vmi_hu
         roi = vmi_hu[200:300, 200:300, mid_z]
-        @info "VMI $(Int(E)) keV — water σ=$(round(std(roi), digits=1)) HU, mean=$(round(mean(roi), digits=1)) HU"
+        @info "FBP VMI $(Int(E)) keV — water σ=$(round(std(roi), digits=1)) HU, mean=$(round(mean(roi), digits=1)) HU"
+        ws_fdk = nothing; vmi_sino_gpu = nothing; GC.gc(true)
     end
 
     (vmi = raw_vmi, energies = vmi_energies)
 end;
 
 # ╔═╡ 08120010-a000-4000-8000-000000000002
-# Step 3: Mono+ (disabled for testing)
-vmi_mono_plus = vmi_calibrated.vmi;
+# 12e-3: HIR on VMI sinograms (tune HIR params here, or set use_hir=false to skip)
+vmi_hir = let
+    use_hir = false  # ← toggle to compare FBP vs HIR
+
+    if !use_hir
+        vmi_fbp
+    else
+        geom = sim_scan2.geom
+        recon_size = sim_matrix_size
+        vmi_energies = vmi_fbp.energies
+        mid_z = recon_size[3] ÷ 2
+
+        per_sinos = vmi_acnr
+
+        # ── HIR params (tune here — only this cell reruns) ──
+        hir_strength = 3
+        hir_lambda = 10.0f0
+        hir_nepochs = 2
+        hir_n_subsets = 12
+        hir_huber_delta = 0.06f0
+        hir_relaxation = 0.35f0
+
+        raw_vmi = Dict{Float64, Array{Float32, 3}}()
+        for E in vmi_energies
+            μ_w_E = BS.compute_μ_at_energy(XA.Materials.water, E)
+            μρ_w_E = Float32(BS.compute_mass_μ_at_energy(XA.Materials.water, E))
+            μρ_I_E = Float32(BS.compute_mass_μ_at_energy(XA.Elements.Iodine, E))
+
+            sino_w_E = per_sinos[E].sino_w
+            sino_I_E = per_sinos[E].sino_I
+            vmi_sino = @. μρ_w_E * sino_w_E + μρ_I_E * sino_I_E
+
+            vmi_sino_gpu = MtlArray(vmi_sino)
+            ws_hir = BS.create_hir_recon_workspace(
+                vmi_sino_gpu, geom, recon_size;
+                strength = hir_strength, filter = sim_vmi_filter)
+            ws_hir.params = BS.HIRParams(
+                hir_strength, hir_lambda, 30, hir_nepochs,
+                hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35))
+            BS.reconstruct!(ws_hir, vmi_sino_gpu, geom, recon_size)
+            recon_μ = Array(ws_hir.volume)
+
+            vmi_hu = Float32.(BS.to_hounsfield(recon_μ; μ_water = μ_w_E))
+            raw_vmi[E] = vmi_hu
+            roi = vmi_hu[200:300, 200:300, mid_z]
+            roi_fbp = vmi_fbp.vmi[E][200:300, 200:300, mid_z]
+            @info "VMI $(Int(E)) keV — FBP σ=$(round(std(roi_fbp), digits=1)) → HIR σ=$(round(std(roi), digits=1)) HU, mean=$(round(mean(roi), digits=1)) HU"
+            ws_hir = nothing; vmi_sino_gpu = nothing; GC.gc(true)
+        end
+
+        (vmi = raw_vmi, energies = vmi_energies)
+    end
+end;
 
 # ╔═╡ 08120010-b000-4000-8000-000000000001
-# Step 4: placeholder (pass-through)
-sim_scan2_vmi = vmi_mono_plus;
+# 12e-4: Mono+ (40 keV only) → final output
+sim_scan2_vmi = let
+    use_mono_plus = false  # ← toggle Mono+ on/off
+
+    vmi = Dict{Float64, Array{Float32, 3}}(E => vmi_hir.vmi[E] for E in vmi_hir.energies)
+    recon_size = sim_matrix_size
+    mid_z = recon_size[3] ÷ 2
+
+    if use_mono_plus
+        E_opt = 70.0
+        vmi_opt = vmi[E_opt]
+        pixel_mm = sim_fov_cm / recon_size[1] * 10.0
+
+        E = 40.0
+        σ_lp_mm = 1.5 + 0.02 * abs(E - E_opt)
+        mp = mono_plus_vmi(vmi[E], vmi_opt; σ_lp_mm = σ_lp_mm, pixel_mm = pixel_mm)
+        roi_before = vmi[E][200:300, 200:300, mid_z]
+        vmi[E] = mp
+        roi_after = mp[200:300, 200:300, mid_z]
+        @info "Mono+ 40 keV: σ=$(round(std(roi_before), digits=1)) → $(round(std(roi_after), digits=1)) HU"
+    else
+        @info "Mono+ disabled — passing through HIR output"
+    end
+
+    vmi
+end;
+
+# ╔═╡ 08070017-0000-4000-8000-000000000000
+# VMI noise vs energy: Clinical QIR3, Sim FBP, Sim HIR
+let
+    water_idx = 1
+    vmi_idx = [9, 10, 11, 12]  # VMI 40/70/100/140 in clinical_measurements
+    energies = [40, 70, 100, 140]
+    energy_labels = ["40 keV", "70 keV", "100 keV", "140 keV"]
+    mid_z = sim_matrix_size[3] ÷ 2
+
+    # Clinical VMI noise (ALL clinical VMI is QIR3 — no VMI FBP available)
+    clin_σ = [clinical_measurements[vmi_idx[i]].rod_stds[water_idx] for i in 1:4]
+
+    # Simulated VMI noise: FBP and HIR
+    sim_fbp_σ = [std(vmi_fbp.vmi[Float64(energies[i])][200:300, 200:300, mid_z]) for i in 1:4]
+    sim_hir_σ = [std(sim_scan2_vmi[Float64(energies[i])][200:300, 200:300, mid_z]) for i in 1:4]
+
+    fig = CM.Figure(size = (700, 420), fontsize = 13)
+    ax = CM.Axis(fig[1, 1];
+        title = "VMI Water Noise — 140 kVp / 10 mGy\n(No clinical VMI FBP available)",
+        xlabel = "VMI Energy (keV)", ylabel = "Water σ (HU)",
+        xticks = (1:4, energy_labels))
+
+    bw = 0.22
+    sw = 2.0
+    x = collect(1:4)
+
+    # Solid bar: Simulated FBP
+    CM.barplot!(ax, x .- 0.24, sim_fbp_σ; width = bw,
+        color = :darkorange, label = "Simulated (FBP)")
+
+    # Outline bars: iterative (QIR3 / HIR)
+    CM.barplot!(ax, x, clin_σ; width = bw,
+        color = (:steelblue, 0.15), strokecolor = :steelblue, strokewidth = sw,
+        label = "Clinical (QIR3)")
+    CM.barplot!(ax, x .+ 0.24, sim_hir_σ; width = bw,
+        color = (:darkorange, 0.15), strokecolor = :darkorange, strokewidth = sw,
+        label = "Simulated (HIR)")
+
+    CM.ylims!(ax, 0, nothing)
+    CM.axislegend(ax; position = :rt)
+    CM.save(joinpath(RESULTS_DIR, "alpha_vmi_noise.png"), fig, px_per_unit = 2)
+    fig
+end
 
 # ╔═╡ 08120011-0000-4000-8000-000000000000
-# VMI qualitative montage
+# VMI qualitative montage — Sim FBP / Clinical QIR3 / Sim HIR
 let
     energies = [40.0, 70.0, 100.0, 140.0]
-    mid_z = sim_matrix_size[3] ÷ 2
-    fig = CM.Figure(size = (1000, 300), fontsize = 10)
+    clin_vols = [hu_140_mid_vmi40, hu_140_mid_vmi70, hu_140_mid_vmi100, hu_140_mid_vmi140]
+    clin_mid_z = seg_result.slice_idx
+    sim_mid_z = sim_matrix_size[3] ÷ 2
+    cr = (-200, 500)
+    fig = CM.Figure(size = (1000, 800), fontsize = 10)
+
     for (i, E) in enumerate(energies)
-        ax = CM.Axis(fig[1, i]; title = "VMI $(Int(E)) keV", aspect = CM.DataAspect())
-        CM.heatmap!(ax, sim_scan2_vmi[E][:, :, mid_z]; colormap = :grays, colorrange = (-200, 500))
-        CM.hidedecorations!(ax); CM.hidespines!(ax)
+        mono_tag = E == 40.0 ? " & Mono+" : ""
+
+        # Row 1: Simulated FBP
+        ax1 = CM.Axis(fig[1, i]; title = "Sim FBP$(mono_tag) $(Int(E)) keV", aspect = CM.DataAspect())
+        CM.heatmap!(ax1, vmi_fbp.vmi[E][:, :, sim_mid_z]; colormap = :grays, colorrange = cr)
+        CM.hidedecorations!(ax1); CM.hidespines!(ax1)
+
+        # Row 2: Clinical QIR3
+        ax2 = CM.Axis(fig[2, i]; title = "Clinical QIR3 $(Int(E)) keV", aspect = CM.DataAspect(), yreversed = true)
+        CM.heatmap!(ax2, clin_vols[i][:, :, clin_mid_z]; colormap = :grays, colorrange = cr)
+        CM.hidedecorations!(ax2); CM.hidespines!(ax2)
+
+        # Row 3: Simulated HIR
+        ax3 = CM.Axis(fig[3, i]; title = "Sim HIR$(mono_tag) $(Int(E)) keV", aspect = CM.DataAspect())
+        CM.heatmap!(ax3, sim_scan2_vmi[E][:, :, sim_mid_z]; colormap = :grays, colorrange = cr)
+        CM.hidedecorations!(ax3); CM.hidespines!(ax3)
     end
+
     CM.save(joinpath(RESULTS_DIR, "alpha_pcct_vmi_montage.png"), fig, px_per_unit = 2)
     fig
 end
@@ -2811,21 +3088,21 @@ md"""
 # ╠═08070002-0000-4000-8000-000000000000
 # ╟─08070003-0000-4000-8000-000000000000
 # ╠═08070004-0000-4000-8000-000000000000
-# ╠═08070005-0000-4000-8000-000000000000
+# ╟─08070005-0000-4000-8000-000000000000
 # ╟─08070006-0000-4000-8000-000000000000
 # ╠═08070007-0000-4000-8000-000000000000
 # ╟─08070008-0000-4000-8000-000000000000
-# ╠═08070009-0000-4000-8000-000000000000
+# ╟─08070009-0000-4000-8000-000000000000
 # ╟─08070010-0000-4000-8000-000000000000
-# ╠═08070011-0000-4000-8000-000000000000
+# ╟─08070011-0000-4000-8000-000000000000
 # ╟─08070012-0000-4000-8000-000000000000
-# ╠═08070013-0000-4000-8000-000000000000
+# ╟─08070013-0000-4000-8000-000000000000
 # ╟─08070014-0000-4000-8000-000000000000
-# ╠═08070015-0000-4000-8000-000000000000
+# ╟─08070015-0000-4000-8000-000000000000
 # ╟─08070016-0000-4000-8000-000000000000
-# ╠═08070017-0000-4000-8000-000000000000
+# ╟─08070017-0000-4000-8000-000000000000
 # ╟─08070018-0000-4000-8000-000000000000
-# ╠═08070019-0000-4000-8000-000000000000
+# ╟─08070019-0000-4000-8000-000000000000
 # ╟─08080001-0000-4000-8000-000000000000
 # ╠═08080002-0000-4000-8000-000000000000
 # ╠═08080003-0000-4000-8000-000000000000
@@ -2852,13 +3129,13 @@ md"""
 # ╠═08120002-0000-4000-8000-000000000000
 # ╟─08120003-0000-4000-8000-000000000000
 # ╠═08120004-0000-4000-8000-000000000000
-# ╠═08120004-a000-4000-8000-000000000000
+# ╟─08120004-a000-4000-8000-000000000000
 # ╟─08120004-a000-4000-8000-000000000001
-# ╠═08120004-a000-4000-8000-000000000002
+# ╟─08120004-a000-4000-8000-000000000002
 # ╟─08120004-b000-4000-8000-000000000001
-# ╠═08120004-b000-4000-8000-000000000002
+# ╟─08120004-b000-4000-8000-000000000002
 # ╟─08120004-b000-4000-8000-000000000003
-# ╠═08120004-b000-4000-8000-000000000004
+# ╟─08120004-b000-4000-8000-000000000004
 # ╟─08120005-0000-4000-8000-000000000000
 # ╠═08120006-0000-4000-8000-000000000000
 # ╠═08120006-b000-4000-8000-000000000001
@@ -2868,24 +3145,30 @@ md"""
 # ╠═08120008-b000-4000-8000-000000000001
 # ╟─08120009-0000-4000-8000-000000000000
 # ╠═08120010-0000-4000-8000-000000000000
+# ╠═08120010-0000-4000-8000-000000000040
+# ╠═08120010-0000-4000-8000-000000000070
+# ╠═08120010-0000-4000-8000-000000000100
+# ╠═08120010-0000-4000-8000-000000000140
+# ╠═08120010-0000-4000-8000-000000000300
+# ╠═08120010-0000-4000-8000-000000000200
 # ╠═08120010-a000-4000-8000-000000000001
 # ╠═08120010-a000-4000-8000-000000000002
 # ╠═08120010-b000-4000-8000-000000000001
-# ╠═08120011-0000-4000-8000-000000000000
+# ╟─08120011-0000-4000-8000-000000000000
 # ╟─08120012-0000-4000-8000-000000000000
 # ╠═08120013-0000-4000-8000-000000000000
-# ╟─08120014-0000-4000-8000-000000000000
-# ╟─08120015-0000-4000-8000-000000000000
-# ╟─08120016-0000-4000-8000-000000000000
+# ╠═08120014-0000-4000-8000-000000000000
+# ╠═08120015-0000-4000-8000-000000000000
+# ╠═08120016-0000-4000-8000-000000000000
 # ╟─08126001-0000-4000-8000-000000000000
 # ╠═08126002-0000-4000-8000-000000000000
 # ╠═285deb3d-9c3b-4fe2-8640-ac286f37ae47
 # ╠═08126003-0000-4000-8000-000000000000
 # ╠═08126004-0000-4000-8000-000000000000
-# ╟─08126005-0000-4000-8000-000000000000
-# ╟─08126006-0000-4000-8000-000000000000
-# ╟─08126007-0000-4000-8000-000000000000
-# ╟─08126008-0000-4000-8000-000000000000
+# ╠═08126005-0000-4000-8000-000000000000
+# ╠═08126006-0000-4000-8000-000000000000
+# ╠═08126007-0000-4000-8000-000000000000
+# ╠═08126008-0000-4000-8000-000000000000
 # ╟─08130001-0000-4000-8000-000000000000
 # ╠═08130002-0000-4000-8000-000000000000
 # ╠═08130003-0000-4000-8000-000000000000
