@@ -75,10 +75,6 @@ mutable struct PCCTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A1<:Abstr
     μ_lut_gpu::A1                            # μ LUT GPU buffer (n_regions, matches mask backend)
     μ_table::Matrix{T}                       # pre-computed μ[region, energy] (n_regions × n_energies)
 
-    # ─── BHC coefficients (pre-allocated, small) ───
-    bhc_coeffs_cpu::Vector{T}                # BHC polynomial coefficients (CPU)
-    bhc_coeffs_gpu::A1                       # BHC polynomial coefficients (GPU/backend)
-
     # ─── Pre-computed geometry arrays (T-typed, same backend as mask) ───
     geom_source_positions::A2                # (3, n_angles) source positions
     geom_detector_centers::A2                # (3, n_angles) detector centers
@@ -197,28 +193,7 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     R_mat = compute_mc_drm(pcct_detector, kVp)
     R_energies_vec = collect(range(1.0, Float64(kVp), length=size(R_mat, 1)))
 
-    # Recalibrate BHC for PCCT using effective spectrum weights.
-    # The PCCT combined sinogram uses effective weights w_eff = w × η × Σ_b R[E,b]
-    # because the R matrix drops low-energy photons (row sum < 1.0), making the
-    # effective spectrum harder. BHC must be calibrated to this harder spectrum.
-    if config.bhc !== nothing
-        # Map each spectrum energy to nearest DRM grid row to get R row sums
-        n_R = size(R_mat, 1)
-        R_row_sums = [begin
-            r_idx = clamp(round(Int, (Float64(E) - 1.0) / (kVp - 1.0) * (n_R - 1)) + 1, 1, n_R)
-            sum(R_mat[r_idx, :])
-        end for E in energies]
-        w_eff = Float64.(weights_vec) .* Float64.(η_vec) .* R_row_sums
-        ref_energy = sum(Float64.(energies) .* w_eff) / sum(w_eff)
-        pcct_bhc = calibrate_bhc(energies, w_eff;
-                                  order=5, reference_energy_keV=ref_energy)
-        config = PhysicsConfig(
-            config.fill_factor,
-            config.scatter,
-            config.optical_crosstalk, config.focal_spot, config.detector_efficiency,
-            config.lag, config.noise_seed, config.energy_keV,
-            config.heel_effect, pcct_bhc)
-    end
+    # BHC is decoupled — applied at notebook level
 
     # Pre-compute I0_bins for normalization (forward projection)
     I0_bins_norm_vec = if use_detector_fx && !use_corrections
@@ -255,16 +230,6 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
             μ_table[r, e_idx] = T(compute_μ_at_energy(mats[r], Float64(E)))
         end
     end
-
-    # BHC coefficients pre-allocated
-    bhc_n_coeffs = config.bhc !== nothing ? length(get_bhc_coefficients(config.bhc)) : 1
-    bhc_coeffs_cpu = if config.bhc !== nothing
-        T.(get_bhc_coefficients(config.bhc))
-    else
-        zeros(T, 1)
-    end
-    bhc_coeffs_gpu = similar(ref_mask, T, length(bhc_coeffs_cpu))
-    copyto!(bhc_coeffs_gpu, bhc_coeffs_cpu)
 
     # Pre-computed geometry arrays (T-typed, same backend as mask) for siddon_forward_project!
     geom_source_positions = similar(ref_mask, T, size(geom.source_positions)...)
@@ -416,7 +381,6 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         η_vec, R_mat, R_energies_vec, I0_bins_combine, I0_bins_norm_vec, thresholds_T_vec, rng,
         μ_values, noise_I0,
         μ_lut_cpu, μ_lut_gpu, μ_table,
-        bhc_coeffs_cpu, bhc_coeffs_gpu,
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
         _native_bins, _native_sino_buf, _native_scratch,
         _native_geom, _n_src, _n_det, _n_u, _n_v,
@@ -483,7 +447,6 @@ mutable struct EICTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:Abstr
     μ_table_gpu::A2            # GPU copy of μ_table for zero-copy create_μ_volume!
     η_vec::Vector{Float64}     # detector efficiency η(E) per energy bin
     wη_gpu::A1                 # Pre-computed weights_norm .* η on GPU [n_energies] (fused kernel)
-    bhc_coeffs_gpu::A1         # BHC polynomial coefficients (GPU/backend)
 
     # ─── Pre-computed geometry arrays (T-typed, same backend as mask) ───
     geom_source_positions::A2      # (3, n_angles) source positions
@@ -498,8 +461,6 @@ mutable struct EICTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:Abstr
     config::PhysicsConfig
     mats::Vector
     rng::MersenneTwister
-    # Signal chain config (extracted from PhysicsConfig for zero-alloc)
-    bhc::Union{Nothing, Union{BHCPolynomial, BeamHardeningCorrection}}
 
     # ─── Result staging (CPU) ───
     sino_ideal_out::Array{T,3}
@@ -700,18 +661,7 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         bowtie_air_ref_gpu = ar_gpu
     end
 
-    # BHC coefficients
-    bhc_coeffs_cpu = if config.bhc !== nothing
-        T.(get_bhc_coefficients(config.bhc))
-    else
-        zeros(T, 1)
-    end
-    bhc_coeffs_gpu = similar(ref, T, length(bhc_coeffs_cpu))
-    copyto!(bhc_coeffs_gpu, bhc_coeffs_cpu)
-
-    # Extract signal chain config from PhysicsConfig (pre-computed)
-    # Note: heel_effect is now in spectral domain (folded into bowtie_spectral above)
-    bhc_effect = config.bhc
+    # BHC is decoupled — applied at notebook level
 
     # Pre-computed geometry arrays (T-typed, same backend as mask) for siddon_forward_project!
     geom_source_positions = similar(ref, T, size(geom.source_positions)...)
@@ -738,10 +688,9 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         optical_crosstalk_kernel, focal_spot_kernel,
         bowtie_spectral_gpu, bowtie_air_ref_gpu, lag_coeffs_buf,
         noise_rand_cpu, noise_rand_gpu, enoise_rand_cpu, enoise_rand_gpu,
-        weights_norm, μ_lut_cpu, μ_lut_gpu, μ_table, μ_table_gpu, η_vec, wη_gpu_buf, bhc_coeffs_gpu,
+        weights_norm, μ_lut_cpu, μ_lut_gpu, μ_table, μ_table_gpu, η_vec, wη_gpu_buf,
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
         geom, energies, weights_vec, config, mats, rng,
-        bhc_effect,
         sino_ideal_out, sino_noisy_out
     )
 end

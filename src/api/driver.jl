@@ -288,8 +288,6 @@ function simulate!(
     # STEP 2: Signal chain (always active)
     # ═══════════════════════════════════════════════════════════════════════
 
-    bhc_eff = ws.bhc
-
     # Apply physics pipeline (sinogram domain, no noise, no scatter)
     # Note: scatter is now applied separately below (unified per-energy model)
     _apply_physics_no_noise!(ws.sinogram, geom, config;
@@ -435,10 +433,7 @@ function simulate!(
         end
     end
 
-    # Beam hardening correction
-    if bhc_eff !== nothing
-        apply_bhc!(ws.sinogram, bhc_eff; ws_coeffs_gpu=ws.bhc_coeffs_gpu)
-    end
+    # BHC is decoupled — applied at notebook level (same as scatter correction + HU calibration)
 
     # ═══════════════════════════════════════════════════════════════════════
     # Save ideal + noisy sinograms to CPU
@@ -516,8 +511,8 @@ Build a complete PhysicsConfig from Scanner hardware fields and SimOptions toggl
 
 For effects with Scanner fields (focal_spot, fill_factor, detector_efficiency,
 heel_effect), the Scanner hardware parameters are used to construct the effect structs.
-For effects without Scanner fields (scatter, scatter_correction, optical_crosstalk,
-lag, bhc), factory function defaults are used.
+For effects without Scanner fields (scatter, optical_crosstalk, lag),
+factory function defaults are used.
 
 Noise is not part of PhysicsConfig — it is applied externally via
 `compute_detector_I0()` + quantum noise when `sim_opts.use_noise == true`.
@@ -627,14 +622,7 @@ function build_physics_config(
         end
     end
 
-    # BHC: calibrate polynomial from actual spectrum (not hardcoded defaults)
-    # The calibration generates a water-based BHC that properly maps polychromatic
-    # line integrals to monochromatic-equivalent values at the reference energy.
-    if sim_opts.use_bhc
-        ref_energy = sum(energies .* weights) / sum(weights)
-        kwargs[:bhc] = calibrate_bhc(energies, weights;
-            order=5, reference_energy_keV=ref_energy)
-    end
+    # BHC is decoupled — applied at notebook level using calibrate_bhc() + apply_bhc_*()
 
     return default_physics_config(; kwargs...)
 end

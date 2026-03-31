@@ -5,6 +5,9 @@ Physics configuration for CT simulation effects pipeline.
 
 The PhysicsConfig struct holds all optional physics effect models.
 Effects are applied by simulate!() via the workspace pathway.
+
+Corrections (scatter correction, BHC) are DECOUPLED from simulate! and
+applied at the notebook level, matching the pattern used for HU calibration.
 """
 
 import AcceleratedKernels as AK
@@ -20,20 +23,16 @@ Configuration for physics effects pipeline.
 
 All fields are optional - set to `nothing` to skip that effect.
 
-# Fields (Standard Physics)
+# Fields
 - `fill_factor`: FillFactorModel for detector active area
-- `scatter`: ScatterModel for patient scatter (adds scatter)
-- `scatter_correction`: ScatterCorrectionModel for scatter correction (removes scatter)
+- `scatter`: ScatterModel for patient scatter (correction decoupled to notebook level)
 - `optical_crosstalk`: OpticalCrosstalkModel for optical crosstalk
 - `focal_spot`: FocalSpot for geometric blur
 - `detector_efficiency`: DetectorEfficiency for scintillator response
 - `lag`: LagModel for temporal persistence
 - `noise_seed`: Random seed for noise (for reproducibility)
 - `energy_keV`: X-ray energy for filter calculations (default: 60.0)
-
-# Fields (Signal Chain)
 - `heel_effect`: HeelEffect for anode self-attenuation (intensity domain)
-- `bhc`: BHCPolynomial or BeamHardeningCorrection for beam hardening correction
 """
 struct PhysicsConfig
     fill_factor::Union{Nothing, FillFactorModel}
@@ -44,9 +43,7 @@ struct PhysicsConfig
     lag::Union{Nothing, LagModel}
     noise_seed::Union{Nothing, Int}
     energy_keV::Float64
-    # Signal chain effects
     heel_effect::Union{Nothing, HeelEffect}
-    bhc::Union{Nothing, BHCPolynomial, BeamHardeningCorrection}
 end
 
 """
@@ -66,9 +63,7 @@ function default_physics_config(;
     lag::Union{Nothing, LagModel}=nothing,
     noise_seed::Union{Nothing, Int}=nothing,
     energy_keV::Float64=60.0,
-    # Signal chain effects
-    heel_effect::Union{Nothing, HeelEffect}=nothing,
-    bhc::Union{Nothing, BHCPolynomial, BeamHardeningCorrection}=nothing
+    heel_effect::Union{Nothing, HeelEffect}=nothing
 )
     return PhysicsConfig(
         fill_factor,
@@ -79,8 +74,7 @@ function default_physics_config(;
         lag,
         noise_seed,
         energy_keV,
-        heel_effect,
-        bhc
+        heel_effect
     )
 end
 
