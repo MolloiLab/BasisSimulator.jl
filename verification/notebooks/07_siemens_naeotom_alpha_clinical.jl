@@ -1479,6 +1479,87 @@ md"### 12b¾. MTF Measurement Diagnostic"
 # ╔═╡ 08120004-b000-4000-8000-000000000003
 md"### 12b⅞. NPS Measurement Diagnostic"
 
+# ╔═╡ 08120005-a000-4000-8000-000000000001
+md"""
+### 12b⁹⁄₁₀. Per-Bin Scatter Correction (Combined-Based)
+
+`simulate!` injects scatter into per-bin sinograms (correct for Poisson noise statistics)
+but only corrects scatter on the **combined** sinogram. The per-bin sinograms returned
+to us still contain scatter. Applying `correct_scatter!` per bin doesn't work because
+it re-estimates scatter from each bin's own signal — wrong signal level and physics.
+
+**Fix:** Reproduce the exact inverse of what `simulate!` does during scatter injection:
+1. Reconstruct the combined sinogram from bins (same math as driver.jl)
+2. Estimate scatter field from combined signal (same `geometry_aware_scatter_model`)
+3. Compute per-bin scatter fractions (same `compute_scatter_bin_fractions`)
+4. Subtract per-bin scatter counts from each bin
+
+This matches how real PCCT scanners (including NAEOTOM) handle scatter: estimate from
+total counts, distribute to thresholds, subtract before material decomposition.
+"""
+
+# ╔═╡ 08120005-a000-4000-8000-000000000002
+# Per-bin scatter correction: estimate from combined, subtract from each bin
+sim_scan2_bins_corrected = let
+    bins_raw = sim_scan2.bins
+    I0_bins = sim_scan2.I0_bins
+    I0_total = Float32(sum(I0_bins))
+    eps = Float32(1e-10)
+
+    # Step 1: Reconstruct combined primary sinogram from bins
+    # (same math as driver.jl lines 143-157)
+    combined = zeros(Float32, size(bins_raw[1]))
+    for (b, bin_sino) in enumerate(bins_raw)
+        I0b = Float32(I0_bins[b])
+        @. combined += I0b * exp(-bin_sino)
+    end
+    @. combined = -log(max(combined, eps) / I0_total)
+
+    # Step 2: Estimate scatter field from combined signal
+    # (same model as simulate! uses internally)
+    voxel_size_mm = sim_phantom_cpu.voxel_size .* 10.0
+    phantom_diam_cm = BS.estimate_phantom_diameter_cm(sim_phantom_cpu.mask, voxel_size_mm)
+    scatter_model = BS.geometry_aware_scatter_model(sim_scanner; phantom_diameter_cm=phantom_diam_cm)
+
+    scatter_field = similar(combined)
+    BS.estimate_scatter_field!(scatter_field, combined, scatter_model)
+
+    @info "Scatter field: mean=$(round(mean(scatter_field), sigdigits=3)), max=$(round(maximum(scatter_field), sigdigits=3))"
+
+    # Step 3: Get per-bin scatter fractions (same as workspace pre-computation)
+    prot = BS.CTProtocol(kVp = 140.0, additional_filters = [("Ti", 0.9)])
+    e_full, w_full = BS.resolve_spectrum(sim_opts, prot; scanner = sim_scanner)
+    pcct_det = BS._build_pcct_detector(sim_scanner)
+    kVp_val = Float64(maximum(e_full))
+    R_mat = BS.compute_mc_drm(pcct_det, kVp_val)
+    η_vec = BS.quantum_efficiency_vector(pcct_det.material, pcct_det.thickness_mm, e_full)
+    scatter_fracs = BS.compute_scatter_bin_fractions(
+        Float64.(e_full), Float64.(w_full), Float64.(η_vec), R_mat, kVp_val)
+
+    @info "Scatter bin fractions: $(round.(scatter_fracs, digits=3))"
+
+    # Step 4: Subtract per-bin scatter (exact inverse of injection in driver.jl lines 167-177)
+    bins_corrected = [copy(Float32.(b)) for b in bins_raw]
+    for (b, bin_sino) in enumerate(bins_corrected)
+        I0b = Float32(I0_bins[b])
+        frac = Float32(scatter_fracs[b])
+        for idx in eachindex(bin_sino)
+            N_measured = I0b * exp(-bin_sino[idx])
+            N_scatter = scatter_field[idx] * I0_total * frac
+            N_corrected = N_measured - max(N_scatter, Float32(0))
+            bin_sino[idx] = -log(max(N_corrected, eps) / I0b)
+        end
+    end
+
+    # Diagnostic: compare per-bin scatter magnitude
+    for b in 1:length(bins_raw)
+        Δ = mean(Float64.(bins_corrected[b]) .- Float64.(bins_raw[b]))
+        @info "Bin $b scatter correction: Δmean_p=$(round(Δ, sigdigits=3)), frac=$(round(scatter_fracs[b], digits=3))"
+    end
+
+    bins_corrected
+end;
+
 # ╔═╡ 08120005-0000-4000-8000-000000000000
 md"""
 ### 12c. Low/High Bin Combination
@@ -1494,23 +1575,8 @@ Count-domain combination (same math as polychromatic combine in `simulate!`):
 # ╔═╡ 08120006-0000-4000-8000-000000000000
 # Combine bins → low (20–55 keV) and high (>55 keV) sinograms
 sim_scan2_lohi = let
-    bins_raw = sim_scan2.bins
+    bins = sim_scan2_bins_corrected   # ← use scatter-corrected bins
     I0 = sim_scan2.I0_bins
-
-    # Apply same scatter correction as RWLS-GN setup cell for consistency
-    scatter_scale_lohi = 0.5   # ← must match scatter_scale in RWLS-GN setup cell
-    _bm = BS.geometry_aware_scatter_correction(sim_scanner)
-    _scm = BS.ScatterCorrectionModel(
-        _bm.correction_coefficient,
-        scatter_scale_lohi * _bm.scale_factor,
-        _bm.prep_exponent,
-        _bm.kernel_fwhm,
-        _bm.kernel_type
-    )
-    bins = [copy(Float32.(b)) for b in bins_raw]
-    for b in bins
-        BS.correct_scatter!(b, _scm)
-    end
 
     function combine_bins(bin_indices, bins, I0)
         I0_sum = sum(I0[b] for b in bin_indices)
@@ -1845,37 +1911,15 @@ vmi_decomp_setup = let
     wn_B = w_B_raw ./ sum(w_B_raw)
     wn_C = w_C_raw ./ sum(w_C_raw)
 
-    bins_raw = sim_scan2.bins
+    # Use scatter-corrected bins from cell 12b⁹⁄₁₀ (combined-based correction)
+    bins = sim_scan2_bins_corrected
     I0_bins = sim_scan2.I0_bins
     I0_A = Float64(I0_bins[1] + I0_bins[2])
     I0_B = Float64(I0_bins[3])
     I0_C = Float64(I0_bins[min(4, length(I0_bins))])
     @info "3-bin I0: A=$(round(I0_A, sigdigits=4)), B=$(round(I0_B, sigdigits=4)), C=$(round(I0_C, sigdigits=4))"
 
-    # ── Per-bin scatter correction (bins now include scatter from simulation) ──
-    use_scatter_correction = true  # ← toggle off to see raw scatter effect
-    scatter_scale = 0.5            # ← tune: 1.0 = full geometry-aware correction, lower = less aggressive
-    _base_model = BS.geometry_aware_scatter_correction(sim_scanner)
-    scatter_corr_model = BS.ScatterCorrectionModel(
-        _base_model.correction_coefficient,
-        scatter_scale * _base_model.scale_factor,  # ← scaled down
-        _base_model.prep_exponent,
-        _base_model.kernel_fwhm,
-        _base_model.kernel_type
-    )
-    bins = if use_scatter_correction
-        corrected = [copy(Float32.(b)) for b in bins_raw]
-        for (i, b) in enumerate(corrected)
-            BS.correct_scatter!(b, scatter_corr_model)
-            @info "Scatter correction bin $i: Δmean=$(round(mean(Float64.(b) .- Float64.(bins_raw[i])), sigdigits=3))"
-        end
-        corrected
-    else
-        @info "Scatter correction disabled — using raw bins with scatter"
-        bins_raw
-    end
-
-    # Measured counts per merged bin (scatter-corrected)
+    # Measured counts per merged bin (scatter-corrected via combined-based method)
     s_A = Float64.(I0_bins[1] .* exp.(-bins[1]) .+ I0_bins[2] .* exp.(-bins[2]))
     s_B = Float64.(I0_bins[3] .* exp.(-bins[3]))
     s_C = Float64.(I0_bins[min(4, length(bins))] .* exp.(-bins[min(4, length(bins))]))
@@ -3192,6 +3236,8 @@ md"""
 # ╟─08120004-b000-4000-8000-000000000002
 # ╟─08120004-b000-4000-8000-000000000003
 # ╟─08120004-b000-4000-8000-000000000004
+# ╟─08120005-a000-4000-8000-000000000001
+# ╠═08120005-a000-4000-8000-000000000002
 # ╟─08120005-0000-4000-8000-000000000000
 # ╠═08120006-0000-4000-8000-000000000000
 # ╠═08120006-b000-4000-8000-000000000001
