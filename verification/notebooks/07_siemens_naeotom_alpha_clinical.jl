@@ -1383,17 +1383,33 @@ md"""
 """
 
 # ╔═╡ 08120002-0000-4000-8000-000000000000
-# Poly FBP — notebook-level I0-weighted combine + diagnostic
-#
-# Proper T3D combine: recover raw counts per bin, sum, normalize.
-# Compare against ws.combined to find the bug.
+# Poly FBP — scatter correction (decoupled) + FDK reconstruction
+# Combined sinogram from simulate! has scatter but no correction applied.
+# Exact model subtraction using returned scatter_field + bin_weights.
 sim_scan2_poly_fbp = let
     geom = sim_scan2.geom
     recon_size = sim_matrix_size
 
-    # Use combined sinogram from simulate! (includes scatter add + correct)
-    sino_gpu = MtlArray(sim_scan2.combined)
+    # Combined sinogram from simulate! has scatter but is NOT corrected
+    # (scatter correction is decoupled). Apply exact model subtraction using
+    # the returned scatter artifacts before poly FBP reconstruction.
+    combined = copy(sim_scan2.combined)
+    if sim_scan2.scatter_field !== nothing
+        sf = sim_scan2.scatter_field
+        bw = sim_scan2.scatter_bin_weights
+        I0 = sim_scan2.I0_bins
+        I0_total = sum(I0)
+        # Total scatter weight for combined sinogram = Σ(I0_b × frac_b) / I0_total
+        total_weight = sum(I0[b] * bw[b] for b in eachindex(bw)) / I0_total
+        eps = Float32(1e-10)
+        for idx in eachindex(combined)
+            intensity = exp(-combined[idx])
+            scatter = sf[idx] * Float32(total_weight)
+            combined[idx] = -log(max(intensity - scatter, eps))
+        end
+    end
 
+    sino_gpu = MtlArray(combined)
     ws_fdk = BS.create_fdk_recon_workspace(
         sino_gpu, geom, recon_size;
         filter = sim_custom_filter
@@ -1481,21 +1497,20 @@ md"### 12b⅞. NPS Measurement Diagnostic"
 
 # ╔═╡ 08120005-a000-4000-8000-000000000001
 md"""
-### 12b⁹⁄₁₀. Per-Bin Scatter Correction (Combined-Based)
+### 12b⁹⁄₁₀. Per-Bin Scatter Correction (Decoupled)
 
-`simulate!` injects scatter into per-bin sinograms (correct for Poisson noise statistics)
-but only corrects scatter on the **combined** sinogram. The per-bin sinograms returned
-to us still contain scatter. Applying `correct_scatter!` per bin doesn't work because
-it re-estimates scatter from each bin's own signal — wrong signal level and physics.
+`simulate!` injects scatter into per-bin sinograms (for correct Poisson noise statistics)
+and returns the scatter field + per-bin weights for exact model-based subtraction.
+Scatter correction is decoupled from the simulator — same pattern as HU calibration.
 
-**Fix:** Reproduce the exact inverse of what `simulate!` does during scatter injection:
-1. Reconstruct the combined sinogram from bins (same math as driver.jl)
-2. Estimate scatter field from combined signal (same `geometry_aware_scatter_model`)
-3. Compute per-energy scatter weights + per-bin weights via DRM (`compute_scatter_energy_weights` + `compute_scatter_bin_weights`)
+**Pipeline (same model as injection, applied in reverse):**
+1. Reconstruct combined sinogram from bins (for spatial scatter estimation)
+2. `estimate_scatter_field!` → spatial scatter distribution (Ohnesorge et al., Eur Radiol 1999)
+3. `compute_scatter_energy_weights` + `compute_scatter_bin_weights` → per-bin fractions via DRM
 4. Subtract per-bin scatter counts from each bin
 
-This matches how real PCCT scanners (including NAEOTOM) handle scatter: estimate from
-total counts, distribute to thresholds, subtract before material decomposition.
+This matches how real PCCT scanners handle scatter: estimate from total counts,
+distribute to thresholds, subtract before material decomposition.
 """
 
 # ╔═╡ 08120005-a000-4000-8000-000000000002

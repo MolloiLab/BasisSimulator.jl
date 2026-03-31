@@ -3555,45 +3555,7 @@ No BHC anywhere. Beam hardening handled by the polyenergetic forward model in th
 """
 
 # ╔═╡ 8d77f7d8-1817-4400-b8ce-cf7d38b5f518
-# Mono+ function definitions (Grant et al. 2014)
-begin
-    """Mono+ algorithm (Grant et al., Invest Radiol 2014;49:586–592).
-    Frequency-split: LP(VMI(E)) + HP(VMI(E_opt))."""
-    function mono_plus_vmi(
-            vmi_target::Array{T}, vmi_optimal::Array{T};
-            σ_lp_mm::Float64 = 2.0, pixel_mm::Float64 = 0.684,
-        ) where {T <: AbstractFloat}
-        σ_pix = σ_lp_mm / pixel_mm
-        if ndims(vmi_target) == 2
-            return _mono_plus_slice(vmi_target, vmi_optimal, σ_pix)
-        end
-        nx, ny, nz = size(vmi_target)
-        result = similar(vmi_target)
-        for k in 1:nz
-            result[:, :, k] = _mono_plus_slice(vmi_target[:, :, k], vmi_optimal[:, :, k], σ_pix)
-        end
-        result
-    end
-
-    function _mono_plus_slice(target::AbstractMatrix{T}, optimal::AbstractMatrix{T}, σ_pix::Float64) where {T}
-        nx, ny = size(target)
-        coeff = -2.0 * π^2 * σ_pix^2
-        H = Matrix{Float64}(undef, nx, ny)
-        for j in 1:ny
-            fy = j - 1 <= ny ÷ 2 ? (j - 1) / ny : (j - 1 - ny) / ny
-            fy2 = fy^2
-            for i in 1:nx
-                fx = i - 1 <= nx ÷ 2 ? (i - 1) / nx : (i - 1 - nx) / nx
-                H[i, j] = exp(coeff * (fx^2 + fy2))
-            end
-        end
-        F_target = fft(Float64.(target))
-        F_optimal = fft(Float64.(optimal))
-        LP_target = real(ifft(F_target .* H))
-        LP_optimal = real(ifft(F_optimal .* H))
-        T.(LP_target .+ Float64.(optimal) .- LP_optimal)
-    end
-end
+# (Mono+ removed — ACNR handles noise reduction in the VMI pipeline)
 
 # ╔═╡ 06126001-0000-4000-8000-000000000000
 # Polynomial calibration: synthetic step-wedge using exact known spectra
