@@ -109,9 +109,6 @@ mutable struct PCCTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A1<:Abstr
     pileup_S::Matrix{Float64}               # spectral migration matrix S[n_bins, n_bins]
     pileup_count_factor::Float64            # count-loss factor (N_recorded / N_true)
 
-    # ─── Pre-computed scatter bin fractions (energy-resolved scatter) ───
-    scatter_bin_fractions::Vector{Float64}   # fractional scatter per bin (sums to 1.0)
-
     # ─── Pre-computed setup data (computed once, reused) ───
     geom::CTGeometry                         # CT geometry (binned resolution)
     energies::Vector{Float64}                # downsampled spectrum energies
@@ -217,7 +214,7 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
                                   order=5, reference_energy_keV=ref_energy)
         config = PhysicsConfig(
             config.fill_factor,
-            config.scatter, config.scatter_correction,
+            config.scatter,
             config.optical_crosstalk, config.focal_spot, config.detector_efficiency,
             config.lag, config.noise_seed, config.energy_keV,
             config.heel_effect, pcct_bhc)
@@ -408,13 +405,8 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     end
     _pileup_cf = seminonparalyzable_count_factor(_aτ)
 
-    # Pre-compute scatter bin fractions (how scatter distributes across PCCT bins)
-    _scatter_bin_fracs = if config.scatter !== nothing
-        compute_scatter_bin_fractions(Float64.(energies), Float64.(weights_vec),
-                                      Float64.(η_vec), R_mat, kVp)
-    else
-        fill(1.0 / n_bins, n_bins)
-    end
+    # Scatter bin fractions are now computed on-the-fly in simulate!() using
+    # compute_scatter_energy_weights() + compute_scatter_bin_weights() (unified per-energy model)
 
     return PCCTWorkspace{T, typeof(sino_buf), typeof(enoise_gpu), typeof(geom_source_positions)}(
         bins, μ_volume, sino_buf, scratch,
@@ -431,7 +423,6 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         tube_scratch,
         _μ_table_gpu, _W_matrix_gpu, _outputs_flat, _native_outputs_flat, _source_spectral_gpu,
         _pileup_S, _pileup_cf,
-        _scatter_bin_fracs,
         geom, energies, weights_vec, config, pcct_detector, mats,
         use_detector_fx, use_corrections, kVp
     )
@@ -470,9 +461,7 @@ mutable struct EICTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:Abstr
 
     # ─── Pre-computed physics kernels (GPU-side) ───
     scatter_kernel::Union{Nothing, A2}          # scatter convolution kernel (2D fallback)
-    scatter_correct_kernel::Union{Nothing, A2}  # scatter correction kernel (2D fallback)
     scatter_kernel_1d::Union{Nothing, A1}       # 1D Gaussian scatter kernel (separable path)
-    scatter_correct_kernel_1d::Union{Nothing, A1} # 1D correction kernel (separable path)
     scatter_temp::A3                            # sinogram-shaped scratch for separable convolution
     optical_crosstalk_kernel::Union{Nothing, A2} # 3×3 optical crosstalk kernel
     focal_spot_kernel::Union{Nothing, A2}       # focal spot blur kernel
@@ -569,43 +558,9 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         nothing
     end
 
-    scatter_correct_kernel = if config.scatter_correction !== nothing
-        sc_temp = ScatterModel(
-            config.scatter_correction.correction_coefficient,
-            config.scatter_correction.scale_factor,
-            config.scatter_correction.kernel_fwhm,
-            config.scatter_correction.kernel_type
-        )
-        k_cpu = T.(create_scatter_kernel_spatial(sc_temp))
-        k_gpu = similar(ref, T, size(k_cpu)...)
-        copyto!(k_gpu, k_cpu)
-        k_gpu
-    else
-        nothing
-    end
-
     # 1D scatter kernels for separable Gaussian convolution (SPEED-BUILD-002)
     scatter_kernel_1d = if config.scatter !== nothing
         k1d_cpu = create_scatter_kernel_1d(config.scatter)
-        if k1d_cpu !== nothing
-            k1d = similar(ref, T, length(k1d_cpu))
-            copyto!(k1d, T.(k1d_cpu))
-            k1d
-        else
-            nothing
-        end
-    else
-        nothing
-    end
-
-    scatter_correct_kernel_1d = if config.scatter_correction !== nothing
-        sc_temp2 = ScatterModel(
-            config.scatter_correction.correction_coefficient,
-            config.scatter_correction.scale_factor,
-            config.scatter_correction.kernel_fwhm,
-            config.scatter_correction.kernel_type
-        )
-        k1d_cpu = create_scatter_kernel_1d(sc_temp2)
         if k1d_cpu !== nothing
             k1d = similar(ref, T, length(k1d_cpu))
             copyto!(k1d, T.(k1d_cpu))
@@ -778,8 +733,8 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     return EICTWorkspace{T, typeof(sinogram), typeof(geom_source_positions), typeof(noise_rand_gpu)}(
         sinogram, μ_volume, sino_mono, I_transmitted, air_scan,
         physics_output, lag_intensity,
-        scatter_kernel, scatter_correct_kernel,
-        scatter_kernel_1d, scatter_correct_kernel_1d, scatter_temp,
+        scatter_kernel,
+        scatter_kernel_1d, scatter_temp,
         optical_crosstalk_kernel, focal_spot_kernel,
         bowtie_spectral_gpu, bowtie_air_ref_gpu, lag_coeffs_buf,
         noise_rand_cpu, noise_rand_gpu, enoise_rand_cpu, enoise_rand_gpu,

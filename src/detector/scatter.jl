@@ -239,361 +239,16 @@ function _convolve_separable_v!(
     return output
 end
 
-"""
-    add_scatter!(sinogram, model::ScatterModel) -> sinogram
-
-Add scatter to sinogram (in-place, GPU-native).
-
-Uses spatial domain convolution with truncated kernel for GPU compatibility.
-
-The scatter contribution is computed as (Ohnesorge et al., 1999; XCIST):
-    scatter_pre = intensity × path_length × C × scale_factor
-    scatter = convolve(scatter_pre, kernel)
-
-# Arguments
-- `sinogram`: Primary sinogram [n_cols × n_rows × n_angles] (line integrals)
-- `model::ScatterModel`: Scatter model parameters
-
-# Returns
-Modified sinogram with scatter added.
-"""
-function add_scatter!(sinogram::AbstractArray{T,3}, model::ScatterModel;
-                      ws_output=nothing, ws_kernel=nothing,
-                      ws_scatter_temp=nothing, ws_kernel_1d=nothing) where T
-    n_cols = size(sinogram, 1)
-    n_rows = size(sinogram, 2)
-
-    # Combined scatter coefficient
-    C = T(model.scatter_coefficient * model.scale_factor)
-
-    # Output buffer (use workspace or allocate)
-    output = ws_output !== nothing ? ws_output : similar(sinogram)
-
-    # ─── SEPARABLE PATH (Gaussian kernels only) ────────────────────────
-    if model.kernel_type == :gaussian
-        # Get or create 1D kernel on GPU
-        kernel_1d = if ws_kernel_1d !== nothing
-            ws_kernel_1d
-        else
-            k1d_cpu = T.(create_scatter_kernel_1d(model))
-            k1d = similar(sinogram, T, length(k1d_cpu))
-            copyto!(k1d, k1d_cpu)
-            k1d
-        end
-
-        # Temp buffer for intermediate separable convolution result
-        scatter_temp = ws_scatter_temp !== nothing ? ws_scatter_temp : similar(sinogram)
-
-        # Step 1: Compute pre-signal into output buffer (reuse as scratch)
-        let sino = sinogram, pre = output, c = C
-            AK.foreachindex(sino) do idx
-                proj = sino[idx]
-                clamped = min(proj, T(20))
-                @inbounds pre[idx] = exp(-clamped) * proj * c
-            end
-        end
-
-        # Step 2: Horizontal 1D convolution: output(pre-signal) → scatter_temp
-        _convolve_separable_h!(scatter_temp, output, kernel_1d, n_cols, n_rows)
-
-        # Step 3: Vertical 1D convolution: scatter_temp → output (now contains scatter)
-        _convolve_separable_v!(output, scatter_temp, kernel_1d, n_cols, n_rows)
-
-        # Step 4: Apply scatter to sinogram: intensity + scatter → log domain
-        let sino = sinogram, scatter = output
-            AK.foreachindex(sino) do idx
-                proj = sino[idx]
-                clamped = min(proj, T(20))
-                intensity = exp(-clamped)
-                total_intensity = intensity + max(scatter[idx], zero(T))
-                @inbounds sino[idx] = -log(max(total_intensity, T(1e-10)))
-            end
-        end
-
-        return sinogram
-    end
-
-    # ─── FALLBACK: 2D convolution (non-Gaussian kernels) ──────────────
-    if ws_kernel !== nothing
-        kernel = ws_kernel
-        kernel_size = size(kernel, 1)
-    else
-        kernel_cpu = T.(create_scatter_kernel_spatial(model))
-        kernel_size = size(kernel_cpu, 1)
-        kernel = similar(sinogram, size(kernel_cpu)...)
-        copyto!(kernel, kernel_cpu)
-    end
-    half_k = kernel_size ÷ 2
-
-    let kernel = kernel, output = output, half_k = half_k, n_cols = n_cols, n_rows = n_rows, C = C
-        AK.foreachindex(sinogram) do idx
-            idx_0 = Int32(idx - 1)
-            col = (idx_0 % Int32(n_cols)) + Int32(1)
-            idx_0 = idx_0 ÷ Int32(n_cols)
-            row = (idx_0 % Int32(n_rows)) + Int32(1)
-            angle = (idx_0 ÷ Int32(n_rows)) + Int32(1)
-
-            proj = sinogram[idx]
-            clamped_proj = min(proj, T(20))
-            intensity = exp(-clamped_proj)
-
-            scatter_acc = zero(T)
-            for dj in -half_k:half_k
-                for di in -half_k:half_k
-                    src_col = clamp(col + di, 1, n_cols)
-                    src_row = clamp(row + dj, 1, n_rows)
-
-                    src_proj = sinogram[src_col, src_row, angle]
-                    src_clamped = min(src_proj, T(20))
-                    src_intensity = exp(-src_clamped)
-                    scatter_pre = src_intensity * src_proj * C
-
-                    ki = di + half_k + 1
-                    kj = dj + half_k + 1
-                    scatter_acc += scatter_pre * kernel[ki, kj]
-                end
-            end
-
-            total_intensity = intensity + max(scatter_acc, T(0))
-            output[idx] = -log(max(total_intensity, T(1e-10)))
-        end
-    end
-
-    copyto!(sinogram, output)
-    return sinogram
-end
-
-# Convenience wrapper that allocates
-function add_scatter(sinogram::AbstractArray{T,3}, model::ScatterModel) where T
-    result = copy(sinogram)
-    return add_scatter!(result, model)
-end
-
-
-# =============================================================================
-# Scatter Correction
-# =============================================================================
-
-"""
-    ScatterCorrectionModel
-
-Parameters for scatter correction using CatSim-style convolution-based estimation.
-
-The estimated scatter at each detector pixel is computed as:
-    scatter_est = convolve(intensity × prep^α × C × scale, kernel)
-
-where:
-- intensity = measured intensity (after calibration)
-- prep = -log(calibrated_ratio), the line integral estimate
-- α = 0.9 (empirical exponent from CatSim)
-- C = base correction coefficient (~0.0268)
-- scale = configurable scale factor
-- kernel = scatter point spread function
-
-This scatter estimate is then subtracted from the measured intensity.
-
-Reference: CatSim Scatter_Correction.py
-"""
-struct ScatterCorrectionModel
-    # Base correction coefficient (CatSim uses 0.0268)
-    correction_coefficient::Float64
-
-    # User-adjustable scale factor (1.0 = nominal correction)
-    scale_factor::Float64
-
-    # Exponent for prep term (CatSim uses 0.9)
-    prep_exponent::Float64
-
-    # Scatter kernel FWHM (in detector pixels)
-    kernel_fwhm::Float64
-
-    # Scatter kernel type (:gaussian or :exponential)
-    kernel_type::Symbol
-end
-
-"""
-    default_scatter_correction(; scale_factor=1.0, kernel_fwhm=50.0)
-
-Create a scatter correction model with default CatSim parameters.
-
-# Parameters
-- `scale_factor`: Multiplier for correction magnitude (1.0 = nominal)
-- `kernel_fwhm`: Full-width half-maximum of scatter kernel in pixels
-
-# Notes
-Uses CatSim-exact parameters:
-- correction_coefficient = 0.0268
-- prep_exponent = 0.9
-
-Adjust scale_factor to fine-tune correction strength:
-- scale_factor < 1.0: Under-correction (residual cupping)
-- scale_factor = 1.0: Nominal correction
-- scale_factor > 1.0: Over-correction (may cause ring artifacts)
-"""
-function default_scatter_correction(;
-    scale_factor::Float64=1.0,
-    kernel_fwhm::Float64=50.0,
-    kernel_type::Symbol=:gaussian
-)
-    # CatSim-exact parameters
-    correction_coefficient = 0.0268
-    prep_exponent = 0.9
-
-    return ScatterCorrectionModel(
-        correction_coefficient,
-        scale_factor,
-        prep_exponent,
-        kernel_fwhm,
-        kernel_type
-    )
-end
-
-"""
-    correct_scatter!(sinogram, model::ScatterCorrectionModel) -> sinogram
-
-Apply scatter correction to sinogram (in-place, GPU-native).
-
-Uses convolution-based scatter estimation and subtraction. The algorithm matches
-`add_scatter!()` to ensure consistent scatter estimation for simulation scenarios.
-
-The algorithm (per view):
-1. Compute prep = sinogram value (already in log domain)
-2. Compute scatter_pre = exp(-prep) × prep × C × scale
-3. Scatter estimate = convolve(scatter_pre, kernel)
-4. Convert sinogram to intensity: I = exp(-sinogram)
-5. Subtract scatter: I_corrected = I - scatter_estimate
-6. Convert back: sinogram = -log(I_corrected)
-
-# Arguments
-- `sinogram`: Sinogram [n_cols × n_rows × n_angles] (line integrals, log domain)
-- `model::ScatterCorrectionModel`: Correction model parameters
-
-# Returns
-Modified sinogram with scatter correction applied.
-
-# Notes
-- Reduces cupping artifacts in uniform phantoms
-- Center-to-edge HU difference should be < 20 HU after correction
-- Works in log domain (takes sinogram, applies correction, returns sinogram)
-- Algorithm matches `add_scatter!()` for consistent simulation behavior.
-  The `prep_exponent` field is kept for API compatibility but is now ignored
-  in favor of linear (exponent=1.0) model matching scatter addition.
-"""
-function correct_scatter!(sinogram::AbstractArray{T,3}, model::ScatterCorrectionModel;
-                          ws_output=nothing, ws_kernel=nothing,
-                          ws_scatter_temp=nothing, ws_kernel_1d=nothing) where T
-    n_cols = size(sinogram, 1)
-    n_rows = size(sinogram, 2)
-    n_angles = size(sinogram, 3)
-
-    # Combined correction coefficient
-    C = T(model.correction_coefficient * model.scale_factor)
-    scatter_damping = T(0.85)
-    eps = T(1e-10)
-
-    # Output buffer (use workspace or allocate)
-    output = ws_output !== nothing ? ws_output : similar(sinogram)
-
-    # ─── SEPARABLE PATH (Gaussian kernels only) ────────────────────────
-    if model.kernel_type == :gaussian
-        kernel_1d = if ws_kernel_1d !== nothing
-            ws_kernel_1d
-        else
-            scatter_model_temp = ScatterModel(model.correction_coefficient, model.scale_factor, model.kernel_fwhm, model.kernel_type)
-            k1d_cpu = T.(create_scatter_kernel_1d(scatter_model_temp))
-            k1d = similar(sinogram, T, length(k1d_cpu))
-            copyto!(k1d, k1d_cpu)
-            k1d
-        end
-
-        scatter_temp = ws_scatter_temp !== nothing ? ws_scatter_temp : similar(sinogram)
-
-        # Step 1: Compute pre-signal into output buffer
-        let sino = sinogram, pre = output, c = C, eps = eps
-            AK.foreachindex(sino) do idx
-                prep = sino[idx]
-                clamped = min(max(prep, eps), T(20))
-                @inbounds pre[idx] = exp(-clamped) * clamped * c
-            end
-        end
-
-        # Step 2: Horizontal convolution → scatter_temp
-        _convolve_separable_h!(scatter_temp, output, kernel_1d, n_cols, n_rows)
-
-        # Step 3: Vertical convolution → output (scatter estimate)
-        _convolve_separable_v!(output, scatter_temp, kernel_1d, n_cols, n_rows)
-
-        # Step 4: Subtract damped scatter from intensity
-        let sino = sinogram, scatter = output, damp = scatter_damping, eps = eps
-            AK.foreachindex(sino) do idx
-                prep = sino[idx]
-                clamped = min(max(prep, zero(T)), T(20))
-                intensity = exp(-clamped)
-                corrected = max(intensity - scatter[idx] * damp, eps)
-                @inbounds sino[idx] = -log(corrected)
-            end
-        end
-
-        return sinogram
-    end
-
-    # ─── FALLBACK: 2D convolution (non-Gaussian kernels) ──────────────
-    if ws_kernel !== nothing
-        kernel = ws_kernel
-        kernel_size = size(kernel, 1)
-    else
-        scatter_model_temp = ScatterModel(model.correction_coefficient, model.scale_factor, model.kernel_fwhm, model.kernel_type)
-        kernel_cpu = T.(create_scatter_kernel_spatial(scatter_model_temp))
-        kernel_size = size(kernel_cpu, 1)
-        kernel = similar(sinogram, size(kernel_cpu)...)
-        copyto!(kernel, kernel_cpu)
-    end
-    half_k = kernel_size ÷ 2
-
-    let kernel = kernel, output = output, half_k = half_k, n_cols = n_cols, n_rows = n_rows, C = C, scatter_damping = scatter_damping, eps = eps
-        AK.foreachindex(sinogram) do idx
-            idx_0 = Int32(idx - 1)
-            col = (idx_0 % Int32(n_cols)) + Int32(1)
-            idx_0 = idx_0 ÷ Int32(n_cols)
-            row = (idx_0 % Int32(n_rows)) + Int32(1)
-            angle = (idx_0 ÷ Int32(n_rows)) + Int32(1)
-
-            prep = sinogram[idx]
-            clamped_prep = min(max(prep, T(0)), T(20))
-            intensity = exp(-clamped_prep)
-
-            scatter_est = zero(T)
-            for dj in -half_k:half_k
-                for di in -half_k:half_k
-                    src_col = clamp(col + di, 1, n_cols)
-                    src_row = clamp(row + dj, 1, n_rows)
-
-                    src_prep = sinogram[src_col, src_row, angle]
-                    src_clamped = min(max(src_prep, eps), T(20))
-                    src_intensity = exp(-src_clamped)
-                    scatter_pre = src_intensity * src_clamped * C
-
-                    ki = di + half_k + 1
-                    kj = dj + half_k + 1
-                    scatter_est += scatter_pre * kernel[ki, kj]
-                end
-            end
-
-            scatter_est_damped = scatter_est * scatter_damping
-            corrected_intensity = max(intensity - scatter_est_damped, eps)
-            output[idx] = -log(corrected_intensity)
-        end
-    end
-
-    copyto!(sinogram, output)
-    return sinogram
-end
-
-# Convenience wrapper that allocates
-function correct_scatter(sinogram::AbstractArray{T,3}, model::ScatterCorrectionModel) where T
-    result = copy(sinogram)
-    return correct_scatter!(result, model)
-end
+# add_scatter! / add_scatter DELETED — replaced by unified per-energy scatter path:
+# - estimate_scatter_field!() for spatial distribution (shared EICT + PCCT)
+# - compute_scatter_energy_weights() for per-energy Compton fractions
+# - inject_scatter!() for EICT, inject_scatter_bins!() for PCCT
+
+
+# ScatterCorrectionModel / correct_scatter! / correct_scatter DELETED.
+# Scatter correction is now decoupled from simulate!. The known scatter field
+# and weights are returned from simulate!() for exact model-based subtraction
+# at the notebook level (same pattern as HU calibration via μ_water).
 
 
 # =============================================================================
@@ -621,8 +276,6 @@ const SCATTER_REF_COEFFICIENT = 0.025
 """Physical scatter kernel FWHM at detector (mm) - approximately constant."""
 const SCATTER_PHYSICAL_KERNEL_FWHM_MM = 50.0
 
-"""Reference scatter correction coefficient (CatSim-exact)."""
-const SCATTER_REF_CORRECTION_COEFFICIENT = 0.0268
 
 # =============================================================================
 # Phantom Size Scaling Constants
@@ -635,22 +288,175 @@ const SCATTER_REF_PHANTOM_DIAMETER_CM = 30.0
 const SCATTER_SIZE_SCALING_EXPONENT = 1.5
 
 # =============================================================================
-# Energy-Dependent Scatter Constants
+# Per-Energy Scatter Weights (unified EICT + PCCT interface)
+# =============================================================================
+#
+# Energy-dependent scatter is computed per-energy at the tube spectrum level.
+# The analytical model uses the Compton scatter fraction; a future MC LUT
+# implementation would replace this with pre-computed per-energy data.
+#
+# References:
+# - NIST XCOM photon cross-section database
+# - Klein-Nishina formula (theoretical Compton scattering cross-section)
 # =============================================================================
 
-"""Reference mean photon energy (keV) for scatter calibration (corresponds to ~120 kVp)."""
-const SCATTER_REF_ENERGY_KEV = 60.0
+"""
+    compute_scatter_energy_weights(energies::Vector{Float64}) -> Vector{Float64}
+
+Compute per-energy Compton scatter fractions for the tube spectrum.
+
+Returns a weight for each energy representing the probability that a photon
+at that energy contributes to scatter (vs photoelectric absorption). This is
+the **pluggable interface** for the scatter energy model:
+- **Analytical (current):** `1 / (1 + (20/E)³)` — empirical Compton fraction
+  matching NIST XCOM within 5% for 20–140 keV diagnostic range.
+- **MC LUT (future):** Load pre-computed per-energy scatter data from table.
+
+These weights are combined with the spatial scatter field to produce the
+full per-energy scatter contribution. The detector model (EICT integration
+or PCCT DRM binning) then determines how scatter enters the measured signal.
+
+# Returns
+`Vector{Float64}` of length `length(energies)`, values in [0, 1].
+
+# References
+- NIST XCOM: Photon cross-section database (physics.nist.gov/xcom)
+- Klein-Nishina formula: Compton scattering cross-section vs energy
+"""
+function compute_scatter_energy_weights(energies::Vector{Float64})
+    return [1.0 / (1.0 + (20.0 / max(E, 1.0))^3) for E in energies]
+end
 
 """
-SPR energy scaling exponent (empirical, 0.5-1.0 range).
+    inject_scatter!(sinogram, scatter_field, scatter_weight)
 
-Derived from literature:
-- At 80 kVp (~50 keV mean): SPR is ~1.2-1.5× higher than at 120 kVp
-- At 140 kVp (~70 keV mean): SPR is ~0.85-0.9× of 120 kVp
+Add scatter to a single polychromatic sinogram (EICT path).
 
-Conservative value of 0.6 balances physics (Klein-Nishina) with empirical observations.
+The scatter contribution at each pixel is `scatter_field × scatter_weight`,
+added in intensity domain. `scatter_weight` is the spectrum-integrated
+Compton fraction: `Σ(w_E × ew_E) / Σ(w_E)` where `ew_E` are per-energy
+weights from `compute_scatter_energy_weights`.
+
+Matches the physics of `inject_scatter_bins!` (PCCT) — same spatial field,
+same per-energy model — but integrated over the full spectrum since an
+energy-integrating detector sums all energies.
+
+# References
+- Ohnesorge B et al., Eur Radiol 1999 (convolution scatter model)
 """
-const SCATTER_ENERGY_EXPONENT = 0.6
+function inject_scatter!(
+    sinogram::AbstractArray{T,3},
+    scatter_field::AbstractArray{T,3},
+    scatter_weight::Real
+) where T
+    sw = T(scatter_weight)
+    let sino = sinogram, sf = scatter_field, w = sw
+        AK.foreachindex(sino) do idx
+            proj = sino[idx]
+            clamped = min(proj, T(20))
+            intensity = exp(-clamped)
+            scatter_intensity = sf[idx] * w
+            total = intensity + max(scatter_intensity, zero(T))
+            @inbounds sino[idx] = -log(max(total, T(1e-10)))
+        end
+    end
+    return sinogram
+end
+
+"""
+    inject_scatter_bins!(bins, scatter_field, I0_bins, I0_total, bin_scatter_weights)
+
+Add scatter to per-bin sinograms (PCCT path).
+
+For each bin `b`, adds `scatter_field × I0_total × bin_weight_b` scatter
+counts, where `bin_weight_b` is from `compute_scatter_bin_weights` (per-energy
+weights convolved through the DRM). This is the exact per-energy scatter model
+applied through the photon-counting detector response.
+
+Matches the physics of `inject_scatter!` (EICT) — same spatial field,
+same per-energy model — but distributed across energy bins via the DRM.
+
+# References
+- Ohnesorge B et al., Eur Radiol 1999 (convolution scatter model)
+"""
+function inject_scatter_bins!(
+    bins::Vector{<:AbstractArray{T,3}},
+    scatter_field::AbstractArray{T,3},
+    I0_bins::Vector{<:Real},
+    I0_total::Real,
+    bin_scatter_weights::Vector{Float64}
+) where T
+    eps = T(1e-10)
+    for (b, bin_sino) in enumerate(bins)
+        let I0b = T(I0_bins[b]), frac = T(bin_scatter_weights[b]),
+            I0t = T(I0_total), bs = bin_sino, sf = scatter_field
+            AK.foreachindex(bs) do idx
+                N_primary = I0b * exp(-bs[idx])
+                N_scatter = sf[idx] * I0t * frac
+                N_total = N_primary + max(N_scatter, zero(T))
+                bs[idx] = -log(max(N_total, eps) / I0b)
+            end
+        end
+    end
+    return bins
+end
+
+"""
+    compute_scatter_bin_weights(energies, weights, energy_weights, η, R) -> Vector{Float64}
+
+Compute per-bin scatter weights from per-energy weights convolved through the DRM.
+
+This replaces the old `compute_scatter_bin_fractions` with an explicit energy_weights
+input, making the per-energy scatter model visible and pluggable.
+
+The per-bin weight for bin `b` is:
+    `w_b = Σ_E  weights[E] × energy_weights[E] × η[E] × R[E, b]`
+normalized to sum to 1.0.
+
+# Arguments
+- `energies`: Photon energies (keV)
+- `weights`: Tube spectrum weights (photons per energy bin)
+- `energy_weights`: Per-energy Compton scatter fractions from `compute_scatter_energy_weights`
+- `η`: Quantum detection efficiency per energy
+- `R`: Detector response matrix (n_energies × n_bins)
+
+# Returns
+`Vector{Float64}` of length `n_bins`, summing to 1.0.
+"""
+function compute_scatter_bin_weights(
+    energies::Vector{Float64},
+    weights::Vector{Float64},
+    energy_weights::Vector{Float64},
+    η::Vector{Float64},
+    R::Matrix{Float64},
+    kVp::Float64
+)
+    n_bins = size(R, 2)
+    n_R = size(R, 1)
+    scatter_I0_per_bin = zeros(Float64, n_bins)
+
+    for (e_idx, E) in enumerate(energies)
+        w = weights[e_idx]
+        ew = energy_weights[e_idx]
+        w * ew < 1e-12 && continue
+
+        # Map spectrum energy to DRM grid
+        r_idx = clamp(round(Int, (E - 1.0) / (kVp - 1.0) * (n_R - 1)) + 1, 1, n_R)
+
+        for b in 1:n_bins
+            scatter_I0_per_bin[b] += w * ew * η[e_idx] * R[r_idx, b]
+        end
+    end
+
+    total = sum(scatter_I0_per_bin)
+    if total > 0
+        scatter_I0_per_bin ./= total
+    else
+        fill!(scatter_I0_per_bin, 1.0 / n_bins)
+    end
+
+    return scatter_I0_per_bin
+end
 
 """
     estimate_phantom_diameter_cm(mask::AbstractArray{<:Unsigned,3}, voxel_size_mm) -> Float64
@@ -755,48 +561,6 @@ function compute_scatter_size_scale(phantom_diameter_cm::Real)
 end
 
 """
-    compute_scatter_energy_scale(mean_energy_keV::Real) -> Float64
-
-Compute scatter scaling factor based on mean photon energy.
-
-Lower energies have higher scatter (more Compton interactions relative to primary,
-and photoelectric absorption decreases as 1/E³).
-
-# Scaling Formula
-scale = (SCATTER_REF_ENERGY_KEV / mean_energy_keV)^SCATTER_ENERGY_EXPONENT
-      = (60 / mean_energy_keV)^0.6
-
-# Typical Values
-| Mean Energy | Scale | Description |
-|-------------|-------|-------------|
-| 45 keV | 1.20 | ~80 kVp (high scatter) |
-| 50 keV | 1.13 | ~80 kVp |
-| 60 keV | 1.00 | ~120 kVp (reference) |
-| 70 keV | 0.91 | ~140 kVp |
-| 75 keV | 0.87 | ~140 kVp (low scatter) |
-
-# Example
-```julia
-scale = compute_scatter_energy_scale(50.0)  # 80 kVp → 1.13
-scale = compute_scatter_energy_scale(70.0)  # 140 kVp → 0.91
-```
-
-# References
-- PMC2674384: SPR decreases when x-ray kVp increases
-- PMC8611284: SPRmax inversely proportional to beam energy
-- Klein-Nishina formula: Compton cross-section slowly decreases with energy
-"""
-function compute_scatter_energy_scale(mean_energy_keV::Real)
-    ratio = SCATTER_REF_ENERGY_KEV / mean_energy_keV
-    scale = ratio ^ SCATTER_ENERGY_EXPONENT
-
-    # Clamp to reasonable range (0.5 to 2.0)
-    # Prevents extreme values at very low or high energies
-    return clamp(scale, 0.5, 2.0)
-end
-
-
-"""
     compute_scatter_geometry_scale(scanner::Scanner) -> Float64
 
 Compute scatter scaling factor based on scanner geometry relative to reference.
@@ -860,79 +624,41 @@ function compute_scatter_kernel_fwhm_pixels(scanner::Scanner)
 end
 
 """
-    geometry_aware_scatter_model(scanner::Scanner; scale_factor=1.0, kernel_type=:gaussian, phantom_diameter_cm=nothing, mean_energy_keV=nothing)
+    geometry_aware_scatter_model(scanner::Scanner; scale_factor=1.0, kernel_type=:gaussian, phantom_diameter_cm=nothing)
 
-Create a scatter model with parameters automatically scaled for scanner geometry,
-phantom/patient size, and beam energy.
+Create a **spatial-only** scatter model scaled for scanner geometry and phantom size.
 
-This function computes appropriate scatter parameters based on the scanner's
-physical geometry, ensuring consistent SPR (~15% for 30cm body at 120 kVp) regardless of
-scanner configuration.
-
-# Arguments
-- `scanner::Scanner`: Scanner definition with geometry parameters
-
-# Keyword Arguments
-- `scale_factor::Float64 = 1.0`: Additional user multiplier for scatter magnitude
-- `kernel_type::Symbol = :gaussian`: Kernel shape (:gaussian or :exponential)
-- `phantom_diameter_cm::Union{Nothing, Real} = nothing`: Effective phantom diameter (cm).
-  If `nothing`, uses reference diameter (30 cm). Smaller phantoms get less scatter,
-  larger phantoms get more scatter.
-- `mean_energy_keV::Union{Nothing, Real} = nothing`: Mean photon energy (keV).
-  If `nothing`, uses reference energy (60 keV, ~120 kVp). Lower energies get more scatter,
-  higher energies get less scatter. For dual-energy CT, use different values for each kVp.
-
-# Returns
-`ScatterModel` with geometry, size, and energy-appropriate parameters.
+Energy dependence is handled separately by `compute_scatter_energy_weights()`, which
+returns per-energy Compton fractions. This separation enables pluggable energy models
+(analytical Compton fraction now, MC LUT in future).
 
 # Scaling Behavior
-- Geometry: Scatter coefficient scales with (air_gap_ref / air_gap)²
-- Size: Scatter coefficient scales with (diameter / 30)^1.5
-- Energy: Scatter coefficient scales with (60 / mean_energy_keV)^0.6
-- Kernel FWHM scales with physical_fwhm_mm / detector_pixel_pitch_mm
+- Geometry: `SCATTER_REF_COEFFICIENT × (air_gap_ref / air_gap)²`
+- Size: `× (diameter / 30)^1.5`
+- Kernel FWHM: `physical_fwhm_mm / detector_pixel_pitch_mm`
 - `scale_factor` applies on top of all automatic scaling
-
-# Energy Scaling (for Dual-Energy CT)
-| Mean Energy | Scale | Description |
-|-------------|-------|-------------|
-| 45 keV | 1.20 | ~80 kVp (high scatter) |
-| 50 keV | 1.13 | ~80 kVp |
-| 60 keV | 1.00 | ~120 kVp (reference) |
-| 70 keV | 0.91 | ~140 kVp |
-| 75 keV | 0.87 | ~140 kVp (low scatter) |
 
 # Example
 ```julia
-# Default scanner (reference geometry), reference phantom and energy
 scanner = Scanner()
 model = geometry_aware_scatter_model(scanner)
-# model.scatter_coefficient ≈ 0.025
+# model.scatter_coefficient ≈ 0.025 × geometry_scale × size_scale
 
-# With energy for dual-energy low-kVp acquisition (80 kVp, mean ~50 keV)
-model_low = geometry_aware_scatter_model(scanner; mean_energy_keV=50.0)
-# energy_scale = 1.13, so coefficient ≈ 0.025 * 1.13 ≈ 0.028
-
-# With energy for dual-energy high-kVp acquisition (140 kVp, mean ~70 keV)
-model_high = geometry_aware_scatter_model(scanner; mean_energy_keV=70.0)
-# energy_scale = 0.91, so coefficient ≈ 0.025 * 0.91 ≈ 0.023
-
-# GE Revolution + large patient + low kVp
+# GE Revolution + large patient
 scanner = Scanner(source_to_isocenter=626.0, source_to_detector=1097.0)
-model = geometry_aware_scatter_model(scanner; phantom_diameter_cm=40.0, mean_energy_keV=50.0)
-# geometry_scale ≈ 0.76, size_scale ≈ 1.54, energy_scale ≈ 1.13
-# model.scatter_coefficient ≈ 0.025 * 0.76 * 1.54 * 1.13 ≈ 0.033
+model = geometry_aware_scatter_model(scanner; phantom_diameter_cm=40.0)
+# geometry_scale ≈ 0.76, size_scale ≈ 1.54
+# model.scatter_coefficient ≈ 0.025 * 0.76 * 1.54 ≈ 0.029
 ```
 
-See also: [`default_scatter_model`](@ref), [`geometry_aware_scatter_correction`](@ref),
-[`estimate_phantom_diameter_cm`](@ref), [`compute_scatter_size_scale`](@ref),
-[`compute_scatter_energy_scale`](@ref)
+See also: [`default_scatter_model`](@ref), [`compute_scatter_energy_weights`](@ref)
 """
 function geometry_aware_scatter_model(
     scanner::Scanner;
     scale_factor::Float64 = 1.0,
     kernel_type::Symbol = :gaussian,
     phantom_diameter_cm::Union{Nothing, Real} = nothing,
-    mean_energy_keV::Union{Nothing, Real} = nothing
+    mean_energy_keV::Union{Nothing, Real} = nothing  # IGNORED — kept for API compat during transition
 )
     # Compute geometry-based scaling (air gap)
     geometry_scale = compute_scatter_geometry_scale(scanner)
@@ -944,119 +670,20 @@ function geometry_aware_scatter_model(
         1.0  # Use reference size (30 cm body)
     end
 
-    # Compute energy-based scaling (mean photon energy)
-    energy_scale = if mean_energy_keV !== nothing
-        compute_scatter_energy_scale(mean_energy_keV)
-    else
-        1.0  # Use reference energy (60 keV, ~120 kVp)
-    end
-
-    # Scale the base coefficient by geometry, size, AND energy
-    scatter_coefficient = SCATTER_REF_COEFFICIENT * geometry_scale * size_scale * energy_scale
+    # Energy scaling is now handled per-energy via compute_scatter_energy_weights(),
+    # NOT baked into the spatial coefficient. This enables per-energy scatter models
+    # (analytical Compton fraction now, MC LUT in future).
+    scatter_coefficient = SCATTER_REF_COEFFICIENT * geometry_scale * size_scale
 
     # Compute kernel FWHM in pixels for this detector
     kernel_fwhm = compute_scatter_kernel_fwhm_pixels(scanner)
 
-    # Return model with combined scale_factor
     return ScatterModel(scatter_coefficient, scale_factor, kernel_fwhm, kernel_type)
 end
 
-"""
-    geometry_aware_scatter_correction(scanner::Scanner; scale_factor=1.0, kernel_type=:gaussian, phantom_diameter_cm=nothing, mean_energy_keV=nothing)
 
-Create a scatter correction model with parameters automatically scaled for scanner geometry,
-phantom/patient size, and beam energy.
-
-Uses the same geometry, size, and energy scaling AND base coefficient as `geometry_aware_scatter_model`
-for consistent scatter estimation and correction in simulation scenarios.
-
-# Arguments
-- `scanner::Scanner`: Scanner definition with geometry parameters
-
-# Keyword Arguments
-- `scale_factor::Float64 = 1.0`: Additional user multiplier for correction strength
-- `kernel_type::Symbol = :gaussian`: Kernel shape (:gaussian or :exponential)
-- `phantom_diameter_cm::Union{Nothing, Real} = nothing`: Effective phantom diameter (cm).
-  If `nothing`, uses reference diameter (30 cm). Must match the value used in
-  `geometry_aware_scatter_model()` for consistent correction.
-- `mean_energy_keV::Union{Nothing, Real} = nothing`: Mean photon energy (keV).
-  If `nothing`, uses reference energy (60 keV, ~120 kVp). Must match the value used in
-  `geometry_aware_scatter_model()` for consistent correction.
-
-# Returns
-`ScatterCorrectionModel` with geometry, size, and energy-appropriate parameters.
-
-# Notes
-The correction uses the SAME coefficient and scaling as scatter addition
-(SCATTER_REF_COEFFICIENT × geometry_scale × size_scale × energy_scale) to ensure consistent behavior.
-The `prep_exponent` field is set to 1.0 (linear model) to match the `add_scatter!()`
-algorithm.
-
-**CRITICAL for Dual-Energy:** The `mean_energy_keV` parameter MUST match the value used in
-`geometry_aware_scatter_model()` for the same acquisition. Using mismatched energy values
-will cause wave artifacts in material decomposition.
-
-For CatSim-exact correction parameters, use `default_scatter_correction()` instead.
-
-# Example
-```julia
-scanner = Scanner(source_to_isocenter=626.0, source_to_detector=1097.0)
-
-# Reference size and energy correction
-correction = geometry_aware_scatter_correction(scanner)
-
-# With phantom size and energy (must match scatter model parameters)
-correction_low = geometry_aware_scatter_correction(scanner;
-    phantom_diameter_cm=30.0, mean_energy_keV=50.0)  # 80 kVp
-correction_high = geometry_aware_scatter_correction(scanner;
-    phantom_diameter_cm=30.0, mean_energy_keV=70.0)  # 140 kVp
-```
-
-See also: [`default_scatter_correction`](@ref), [`geometry_aware_scatter_model`](@ref),
-[`estimate_phantom_diameter_cm`](@ref), [`compute_scatter_energy_scale`](@ref)
-"""
-function geometry_aware_scatter_correction(
-    scanner::Scanner;
-    scale_factor::Float64 = 1.0,
-    kernel_type::Symbol = :gaussian,
-    phantom_diameter_cm::Union{Nothing, Real} = nothing,
-    mean_energy_keV::Union{Nothing, Real} = nothing
-)
-    # Same geometry scaling as scatter model
-    geometry_scale = compute_scatter_geometry_scale(scanner)
-
-    # Same size scaling as scatter model
-    size_scale = if phantom_diameter_cm !== nothing
-        compute_scatter_size_scale(phantom_diameter_cm)
-    else
-        1.0  # Use reference size (30 cm body)
-    end
-
-    # Same energy scaling as scatter model
-    energy_scale = if mean_energy_keV !== nothing
-        compute_scatter_energy_scale(mean_energy_keV)
-    else
-        1.0  # Use reference energy (60 keV, ~120 kVp)
-    end
-
-    # Use SAME coefficient and scaling as scatter addition for consistent simulation
-    correction_coefficient = SCATTER_REF_COEFFICIENT * geometry_scale * size_scale * energy_scale
-
-    # Compute kernel FWHM in pixels
-    kernel_fwhm = compute_scatter_kernel_fwhm_pixels(scanner)
-
-    # Linear model (exponent = 1.0) to match add_scatter!()
-    # The prep_exponent field is kept for API compatibility but is ignored by correct_scatter!()
-    prep_exponent = 1.0
-
-    return ScatterCorrectionModel(
-        correction_coefficient,
-        scale_factor,
-        prep_exponent,
-        kernel_fwhm,
-        kernel_type
-    )
-end
+# geometry_aware_scatter_correction DELETED — scatter correction is now decoupled.
+# simulate!() returns scatter_field + weights for exact model-based subtraction.
 
 
 
@@ -1068,41 +695,34 @@ end
 
 export ScatterModel, default_scatter_model
 export create_scatter_kernel_spatial
-export add_scatter!, add_scatter
-export ScatterCorrectionModel, default_scatter_correction
-export correct_scatter!, correct_scatter
-
 # Geometry-aware scatter API
-export geometry_aware_scatter_model, geometry_aware_scatter_correction
+export geometry_aware_scatter_model
 export compute_scatter_geometry_scale, compute_scatter_kernel_fwhm_pixels
 
 # Reference constants for scatter calibration
 export SCATTER_REF_SID_MM, SCATTER_REF_SDD_MM, SCATTER_REF_AIR_GAP_MM
 export SCATTER_REF_PIXEL_PITCH_MM, SCATTER_REF_COEFFICIENT
-export SCATTER_PHYSICAL_KERNEL_FWHM_MM, SCATTER_REF_CORRECTION_COEFFICIENT
+export SCATTER_PHYSICAL_KERNEL_FWHM_MM
 
 # Phantom size-aware scatter API
 export estimate_phantom_diameter_cm, compute_scatter_size_scale
 export SCATTER_REF_PHANTOM_DIAMETER_CM, SCATTER_SIZE_SCALING_EXPONENT
 
-# Energy-dependent scatter API
-export compute_scatter_energy_scale
-export SCATTER_REF_ENERGY_KEV, SCATTER_ENERGY_EXPONENT
-
-# PCCT per-bin scatter API
-export estimate_scatter_field!, compute_scatter_bin_fractions
+# Unified per-energy scatter API (shared EICT + PCCT)
+export estimate_scatter_field!
+export compute_scatter_energy_weights
+export inject_scatter!, inject_scatter_bins!
+export compute_scatter_bin_weights
 
 
 # =============================================================================
-# PCCT Energy-Resolved Scatter
+# Spatial Scatter Field Estimation (shared EICT + PCCT)
 # =============================================================================
-# For PCCT, scatter must be distributed to individual energy bins before noise.
-# Scatter photons have a softer spectrum than primary (Compton energy loss),
-# so they distribute differently across bins via the DRM.
+# The spatial scatter distribution is estimated from the combined polyenergetic
+# sinogram using the Ohnesorge convolution model. Per-energy variation is handled
+# separately by compute_scatter_energy_weights().
 #
-# Two functions:
-# 1. estimate_scatter_field! — spatial scatter map (same physics as add_scatter!)
-# 2. compute_scatter_bin_fractions — how scatter distributes across PCCT bins
+# Ohnesorge B et al., Eur Radiol 1999 — convolution-based scatter model
 # =============================================================================
 
 """
@@ -1110,8 +730,8 @@ export estimate_scatter_field!, compute_scatter_bin_fractions
 
 Compute the scatter intensity spatial distribution WITHOUT modifying the input sinogram.
 
-Same physics as `add_scatter!` (Ohnesorge convolution model) but returns only the
-scatter intensity field. The output is in intensity units relative to I0=1.
+Ohnesorge convolution model — returns only the spatial scatter intensity field.
+The output is in intensity units relative to I0=1. Used by both EICT and PCCT paths.
 
 # Returns
 `output` filled with scatter intensity at each detector pixel.
@@ -1192,57 +812,6 @@ function estimate_scatter_field!(
     return output
 end
 
-"""
-    compute_scatter_bin_fractions(energies, weights, η, R, kVp) -> Vector{Float64}
-
-Compute fractional distribution of scatter across PCCT energy bins.
-
-Scatter has a softer spectrum than the primary beam because Compton scattering
-loses energy. This function weights the primary spectrum by the scatter fraction
-at each energy, then passes through the DRM to get per-bin scatter I0.
-
-The scatter fraction approximation `1/(1+(20/E)³)` for water matches NIST XCOM
-data within 5% for 20-140 keV. It captures: photoelectric dominates at low E
-(less scatter), Compton dominates at high E (more scatter).
-
-# Returns
-`Vector{Float64}` of length `n_bins`, summing to 1.0.
-"""
-function compute_scatter_bin_fractions(
-    energies::Vector{Float64},
-    weights::Vector{Float64},
-    η::Vector{Float64},
-    R::Matrix{Float64},
-    kVp::Float64
-)
-    n_bins = size(R, 2)
-    n_R = size(R, 1)
-    scatter_I0_per_bin = zeros(Float64, n_bins)
-
-    for (e_idx, E) in enumerate(energies)
-        w = weights[e_idx]
-        w < 1e-12 && continue
-
-        # Scatter fraction for water (empirical, matches NIST XCOM within 5%)
-        # At 20 keV: ~0.5 (PE still significant), at 80 keV: ~0.99 (Compton dominates)
-        scatter_frac = 1.0 / (1.0 + (20.0 / max(E, 1.0))^3)
-
-        # Map spectrum energy to DRM grid
-        r_idx = clamp(round(Int, (E - 1.0) / (kVp - 1.0) * (n_R - 1)) + 1, 1, n_R)
-
-        # Accumulate scatter-weighted I0 per bin
-        for b in 1:n_bins
-            scatter_I0_per_bin[b] += w * scatter_frac * η[e_idx] * R[r_idx, b]
-        end
-    end
-
-    total = sum(scatter_I0_per_bin)
-    if total > 0
-        scatter_I0_per_bin ./= total
-    else
-        fill!(scatter_I0_per_bin, 1.0 / n_bins)
-    end
-
-    return scatter_I0_per_bin
-end
+# compute_scatter_bin_fractions DELETED — replaced by compute_scatter_bin_weights()
+# which takes explicit per-energy weights from compute_scatter_energy_weights().
 

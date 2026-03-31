@@ -1491,7 +1491,7 @@ it re-estimates scatter from each bin's own signal — wrong signal level and ph
 **Fix:** Reproduce the exact inverse of what `simulate!` does during scatter injection:
 1. Reconstruct the combined sinogram from bins (same math as driver.jl)
 2. Estimate scatter field from combined signal (same `geometry_aware_scatter_model`)
-3. Compute per-bin scatter fractions (same `compute_scatter_bin_fractions`)
+3. Compute per-energy scatter weights + per-bin weights via DRM (`compute_scatter_energy_weights` + `compute_scatter_bin_weights`)
 4. Subtract per-bin scatter counts from each bin
 
 This matches how real PCCT scanners (including NAEOTOM) handle scatter: estimate from
@@ -1526,15 +1526,16 @@ sim_scan2_bins_corrected = let
 
     @info "Scatter field: mean=$(round(mean(scatter_field), sigdigits=3)), max=$(round(maximum(scatter_field), sigdigits=3))"
 
-    # Step 3: Get per-bin scatter fractions (same as workspace pre-computation)
+    # Step 3: Per-energy scatter weights → per-bin via DRM (unified API)
     prot = BS.CTProtocol(kVp = 140.0, additional_filters = [("Ti", 0.9)])
     e_full, w_full = BS.resolve_spectrum(sim_opts, prot; scanner = sim_scanner)
     pcct_det = BS._build_pcct_detector(sim_scanner)
     kVp_val = Float64(maximum(e_full))
     R_mat = BS.compute_mc_drm(pcct_det, kVp_val)
     η_vec = BS.quantum_efficiency_vector(pcct_det.material, pcct_det.thickness_mm, e_full)
-    scatter_fracs = BS.compute_scatter_bin_fractions(
-        Float64.(e_full), Float64.(w_full), Float64.(η_vec), R_mat, kVp_val)
+    ew = BS.compute_scatter_energy_weights(Float64.(e_full))
+    scatter_fracs = BS.compute_scatter_bin_weights(
+        Float64.(e_full), Float64.(w_full), ew, Float64.(η_vec), R_mat, kVp_val)
 
     @info "Scatter bin fractions: $(round.(scatter_fracs, digits=3))"
 

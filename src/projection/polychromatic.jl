@@ -546,15 +546,13 @@ function _apply_physics_no_noise!(
     # Workspace kwargs for zero-allocation path
     ws_output=nothing,             # sinogram-sized scratch (shared by convolution effects)
     ws_scatter_kernel=nothing,     # pre-computed scatter kernel (GPU)
-    ws_scatter_correct_kernel=nothing, # pre-computed scatter correction kernel (GPU)
     ws_optical_crosstalk_kernel=nothing, # pre-computed optical crosstalk 3x3 kernel (GPU)
     ws_focal_spot_kernel=nothing,  # pre-computed focal spot kernel (GPU)
     ws_lag_output=nothing,         # sinogram-sized scratch for lag (needs separate from ws_output)
     ws_lag_intensity=nothing,      # sinogram-sized intensity scratch for lag
     ws_lag_coeffs=nothing,         # pre-computed lag coefficients (GPU)
     ws_scatter_temp=nothing,       # sinogram-sized scratch for separable scatter (SPEED-BUILD-002)
-    ws_scatter_kernel_1d=nothing,  # 1D Gaussian scatter kernel (separable path)
-    ws_scatter_correct_kernel_1d=nothing  # 1D Gaussian scatter correction kernel (separable path)
+    ws_scatter_kernel_1d=nothing   # 1D Gaussian scatter kernel (separable path)
 ) where T
 
     # Apply deterministic physics effects only
@@ -565,19 +563,11 @@ function _apply_physics_no_noise!(
         apply_fill_factor!(sinogram, config.fill_factor)
     end
 
-    # Scatter
-    if config.scatter !== nothing
-        add_scatter!(sinogram, config.scatter;
-                     ws_output=ws_output, ws_kernel=ws_scatter_kernel,
-                     ws_scatter_temp=ws_scatter_temp, ws_kernel_1d=ws_scatter_kernel_1d)
-    end
-
-    # Scatter correction
-    if config.scatter_correction !== nothing
-        correct_scatter!(sinogram, config.scatter_correction;
-                         ws_output=ws_output, ws_kernel=ws_scatter_correct_kernel,
-                         ws_scatter_temp=ws_scatter_temp, ws_kernel_1d=ws_scatter_correct_kernel_1d)
-    end
+    # NOTE: Scatter injection and correction are now handled in simulate!() using
+    # the unified per-energy scatter model (compute_scatter_energy_weights +
+    # inject_scatter!/inject_scatter_bins!). Scatter is added BEFORE noise and
+    # corrected AFTER noise, matching the clinical scanner signal chain.
+    # See: driver.jl simulate!(ws::EICTWorkspace) and simulate!(ws::PCCTWorkspace)
 
     # Optical crosstalk
     if config.optical_crosstalk !== nothing

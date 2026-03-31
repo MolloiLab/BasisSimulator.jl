@@ -132,15 +132,22 @@ function simulate!(
     )
 
     # ─── Energy-resolved scatter injection (BEFORE noise) ───
-    # Scatter photons arrive at the detector with a softer spectrum (Compton energy loss)
-    # and are binned by the DRM just like primary photons. Must be added before noise
-    # so Poisson statistics are on total counts (primary + scatter).
+    # Unified per-energy scatter model (shared with EICT):
+    # 1. Spatial distribution: Ohnesorge convolution on combined sinogram
+    # 2. Per-energy weights: Compton fraction 1/(1+(20/E)³) (NIST XCOM)
+    # 3. Detector response: weights convolved through DRM → per-bin scatter
+    # Must be added before noise so Poisson statistics are on total counts.
+    #
+    # References:
+    # - Ohnesorge B et al., Eur Radiol 1999 (spatial scatter model)
+    # - NIST XCOM (per-energy Compton fractions)
     I0_bins = ws.I0_bins
     I0_total = T(sum(I0_bins))
     eps_combine = T(1e-10)
+    bin_weights_out = nothing  # saved for decoupled scatter correction
 
     if config.scatter !== nothing
-        # Step 1: Combine primary bins → combined_primary (temporary, for scatter estimation)
+        # Step 1: Combine primary bins → combined_primary (for scatter spatial estimation)
         combined_primary = ws.combined
         fill!(combined_primary, zero(T))
         for (b, bin_sino) in enumerate(pcct_sino.bins)
@@ -156,25 +163,20 @@ function simulate!(
             end
         end
 
-        # Step 2: Estimate scatter spatial distribution (same Ohnesorge model as EICT)
+        # Step 2: Spatial scatter field (Ohnesorge convolution model)
         scatter_field = ws.tube_physics_scratch
         estimate_scatter_field!(scatter_field, combined_primary, config.scatter;
             ws_scatter_temp=ws.scratch)
 
-        # Step 3: Distribute scatter to each bin using pre-computed spectral fractions
-        # scatter_field contains scatter intensity (relative to I0_total)
-        scatter_fracs = ws.scatter_bin_fractions
-        for (b, bin_sino) in enumerate(pcct_sino.bins)
-            let I0b = T(I0_bins[b]), frac = T(scatter_fracs[b]),
-                I0t = I0_total, bs = bin_sino, sf = scatter_field, eps = eps_combine
-                AK.foreachindex(bs) do idx
-                    N_primary = I0b * exp(-bs[idx])
-                    N_scatter = sf[idx] * I0t * frac
-                    N_total = N_primary + max(N_scatter, zero(T))
-                    bs[idx] = -log(max(N_total, eps) / I0b)
-                end
-            end
-        end
+        # Step 3: Per-energy scatter weights → per-bin via DRM
+        ew = compute_scatter_energy_weights(Float64.(energies))
+        bin_weights = compute_scatter_bin_weights(
+            Float64.(energies), Float64.(weights),
+            ew, Float64.(ws.η), ws.R, ws.kVp)
+
+        # Step 4: Inject scatter into each bin
+        inject_scatter_bins!(pcct_sino.bins, scatter_field, I0_bins, I0_total, bin_weights)
+        bin_weights_out = bin_weights
     end
 
     # ─── Noise (in-place on pcct_sino.bins — now includes scatter in counts) ───
@@ -207,7 +209,7 @@ function simulate!(
         end
     end
 
-    # ─── Combine bins → single sinogram (scatter now naturally included) ───
+    # ─── Combine bins → single sinogram (scatter included, NOT corrected) ───
     combined_gpu = ws.combined
     fill!(combined_gpu, zero(T))
     for (b, bin_sino) in enumerate(pcct_sino.bins)
@@ -223,17 +225,17 @@ function simulate!(
         end
     end
 
-    # ─── Scatter correction on combined (for conventional recon output) ───
-    if config.scatter_correction !== nothing
-        correct_scatter!(combined_gpu, config.scatter_correction;
-            ws_output=ws.tube_physics_scratch)
-    end
+    # Scatter correction is DECOUPLED — done at notebook level using the returned
+    # scatter_field + bin_weights for exact known-model subtraction. No blind
+    # re-estimation needed for simulated data.
 
     # Save combined to CPU
     copyto!(ws.sino_noisy_out, combined_gpu)
 
-    # Return bins + combined sinogram
-    return (pcct_sino=pcct_sino, I0_bins=I0_bins, combined=Array(combined_gpu))
+    # Return bins + combined + scatter artifacts for decoupled correction
+    scatter_field_cpu = config.scatter !== nothing ? Array(ws.tube_physics_scratch) : nothing
+    return (pcct_sino=pcct_sino, I0_bins=I0_bins, combined=Array(combined_gpu),
+            scatter_field=scatter_field_cpu, scatter_bin_weights=bin_weights_out)
 end
 
 # =============================================================================
@@ -288,32 +290,121 @@ function simulate!(
 
     bhc_eff = ws.bhc
 
-    # Apply physics pipeline (sinogram domain, no noise)
-    # Note: heel effect is now in spectral domain (folded into bowtie_spectral)
+    # Apply physics pipeline (sinogram domain, no noise, no scatter)
+    # Note: scatter is now applied separately below (unified per-energy model)
     _apply_physics_no_noise!(ws.sinogram, geom, config;
         ws_output=ws.physics_output,
         ws_scatter_kernel=ws.scatter_kernel,
-        ws_scatter_correct_kernel=ws.scatter_correct_kernel,
         ws_scatter_temp=ws.scatter_temp,
         ws_scatter_kernel_1d=ws.scatter_kernel_1d,
-        ws_scatter_correct_kernel_1d=ws.scatter_correct_kernel_1d,
         ws_optical_crosstalk_kernel=ws.optical_crosstalk_kernel,
         ws_focal_spot_kernel=ws.focal_spot_kernel,
         ws_lag_output=ws.physics_output,
         ws_lag_intensity=ws.lag_intensity,
         ws_lag_coeffs=ws.lag_coeffs)
 
-    # Convert to intensity domain
+    # ─── Energy-resolved scatter injection (unified with PCCT) ───
+    # Same per-energy scatter model as PCCT, integrated over the full spectrum
+    # since an energy-integrating detector sums all energies.
+    # 1. Spatial field: Ohnesorge convolution (Ohnesorge et al., Eur Radiol 1999)
+    # 2. Per-energy weights: Compton fraction 1/(1+(20/E)³) (NIST XCOM)
+    # 3. Detector response: spectrum-weighted integration
+    #
+    # Scatter field + weight are saved for decoupled correction (notebook-level).
+    scatter_field_cpu = nothing
+    scatter_total_weight = 0.0
+    if config.scatter !== nothing
+        scatter_field = ws.physics_output  # reuse scratch buffer
+        estimate_scatter_field!(scatter_field, ws.sinogram, config.scatter;
+            ws_scatter_temp=ws.scatter_temp, ws_kernel_1d=ws.scatter_kernel_1d)
+        ew = compute_scatter_energy_weights(Float64.(ws.energies))
+        wn = Float64.(ws.weights_norm)
+        η = ws.η_vec
+        scatter_total_weight = sum(wn[i] * ew[i] * η[i] for i in eachindex(wn)) /
+                               max(sum(wn[i] * η[i] for i in eachindex(wn)), 1e-30)
+        # Save scatter artifacts for notebook-level correction
+        scatter_field_cpu = Array(scatter_field)
+        inject_scatter!(ws.sinogram, scatter_field, scatter_total_weight)
+    end
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # STEP 3: Noise (on raw signal WITH scatter — correct Poisson stats)
+    # Applied BEFORE calibration/BHC, matching real scanner signal chain:
+    # detect → noise → DAS → scatter_correct → calibrate → BHC → recon
+    # ═══════════════════════════════════════════════════════════════════════
+    if sim_opts.use_noise
+        I0_raw = compute_detector_I0(geom, protocol, sum(ws.weights))
+        η_eff = sum(ws.weights_norm[i] * ws.η_vec[i] for i in 1:length(ws.η_vec))
+        I0_T = T(I0_raw * η_eff)
+
+        randn!(ws.noise_rand_cpu)
+        copyto!(ws.noise_rand_gpu, ws.noise_rand_cpu)
+
+        mean_E_keV = sum(ws.weights_norm[i] * ws.energies[i] for i in 1:length(ws.energies))
+        σ_e_photon = T(scanner.electronic_noise / (mean_E_keV * scanner.detection_gain))
+
+        if σ_e_photon > T(0)
+            randn!(ws.enoise_rand_cpu)
+            copyto!(ws.enoise_rand_gpu, ws.enoise_rand_cpu)
+
+            let sino = ws.sinogram, rg = ws.noise_rand_gpu, eg = ws.enoise_rand_gpu,
+                    I0v = I0_T, σ_e = σ_e_photon
+                AK.foreachindex(sino) do idx
+                    λ = I0v * exp(-sino[idx])
+                    λ_noisy = λ + sqrt(max(λ, T(1))) * rg[idx]
+                    λ_noisy += σ_e * eg[idx]
+                    λ_noisy = max(λ_noisy, T(1))
+                    sino[idx] = -log(λ_noisy / I0v)
+                end
+            end
+        else
+            let sino = ws.sinogram, rg = ws.noise_rand_gpu, I0v = I0_T
+                AK.foreachindex(sino) do idx
+                    λ = I0v * exp(-sino[idx])
+                    λ_noisy = λ + sqrt(max(λ, T(1))) * rg[idx]
+                    λ_noisy = max(λ_noisy, T(1))
+                    sino[idx] = -log(λ_noisy / I0v)
+                end
+            end
+        end
+    end
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # STEP 4: Exact known-model scatter subtraction (same domain as injection)
+    # Decoupled from blind estimation — uses the SAME scatter field that was
+    # injected. Notebook can skip this and do its own correction instead.
+    # ═══════════════════════════════════════════════════════════════════════
+    if config.scatter !== nothing
+        # Reload scatter_field to GPU for subtraction (physics_output was reused by noise)
+        scatter_field_gpu = similar(ws.sinogram)
+        copyto!(scatter_field_gpu, scatter_field_cpu)
+        let sino = ws.sinogram, sf = scatter_field_gpu, w = T(scatter_total_weight)
+            eps_sc = T(1e-10)
+            AK.foreachindex(sino) do idx
+                proj = sino[idx]
+                clamped = min(proj, T(20))
+                total_intensity = exp(-clamped)
+                scatter_intensity = sf[idx] * w
+                primary = max(total_intensity - scatter_intensity, eps_sc)
+                @inbounds sino[idx] = -log(primary)
+            end
+        end
+        scatter_field_gpu = nothing
+    end
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # STEP 5: Calibration + BHC (on scatter-corrected noisy sinogram)
+    # ═══════════════════════════════════════════════════════════════════════
     eps = T(1e-10)
+
+    # Convert to intensity domain
     let sino = ws.sinogram
         AK.foreachindex(sino) do idx
             sino[idx] = exp(-clamp(sino[idx], T(-1), T(15)))
         end
     end
 
-    # Create noise-free air scan (workspace buffer)
-    # Air reference includes bowtie × heel spectral effects:
-    # I₀(col,row) = Σ w(E) × T_source(E,col,row) × η(E)
+    # Air scan calibration
     fill!(ws.air_scan, one(T))
     if ws.bowtie_air_reference !== nothing
         let air = ws.air_scan, ref = ws.bowtie_air_reference, nc = size(air, 1), nr = size(air, 2)
@@ -327,7 +418,6 @@ function simulate!(
         end
     end
 
-    # Calibration (prep = phantom / air)
     let sino = ws.sinogram, air = ws.air_scan
         AK.foreachindex(sino) do idx
             air_val = max(air[idx], eps)
@@ -351,59 +441,13 @@ function simulate!(
     end
 
     # ═══════════════════════════════════════════════════════════════════════
-    # Save ideal sinogram to CPU
+    # Save ideal + noisy sinograms to CPU
     # ═══════════════════════════════════════════════════════════════════════
     copyto!(ws.sino_ideal_out, ws.sinogram)
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # Apply quantum noise (in-place using workspace buffers)
-    # ═══════════════════════════════════════════════════════════════════════
-    if sim_opts.use_noise
-        I0_raw = compute_detector_I0(geom, protocol, sum(ws.weights))
-        # Scale by spectrum-weighted average efficiency: η_eff = Σ wₑ × η(E)
-        η_eff = sum(ws.weights_norm[i] * ws.η_vec[i] for i in 1:length(ws.η_vec))
-        I0_T = T(I0_raw * η_eff)
-
-        # Quantum noise random numbers
-        randn!(ws.noise_rand_cpu)
-        copyto!(ws.noise_rand_gpu, ws.noise_rand_cpu)
-
-        # Electronic noise: convert from electron domain to photon-equivalent
-        # σ_e_photon = σ_e_electrons / (mean_E_keV × gain_e_per_keV)
-        mean_E_keV = sum(ws.weights_norm[i] * ws.energies[i] for i in 1:length(ws.energies))
-        σ_e_photon = T(scanner.electronic_noise / (mean_E_keV * scanner.detection_gain))
-
-        if σ_e_photon > T(0)
-            randn!(ws.enoise_rand_cpu)
-            copyto!(ws.enoise_rand_gpu, ws.enoise_rand_cpu)
-
-            let sino = ws.sinogram, rg = ws.noise_rand_gpu, eg = ws.enoise_rand_gpu,
-                    I0v = I0_T, σ_e = σ_e_photon
-                AK.foreachindex(sino) do idx
-                    λ = I0v * exp(-sino[idx])
-                    λ_noisy = λ + sqrt(max(λ, T(1))) * rg[idx]  # Quantum (Poisson)
-                    λ_noisy += σ_e * eg[idx]                      # Electronic (Gaussian)
-                    λ_noisy = max(λ_noisy, T(1))
-                    sino[idx] = -log(λ_noisy / I0v)
-                end
-            end
-        else
-            # No electronic noise (e.g., PCCT with thresholding) — quantum only
-            let sino = ws.sinogram, rg = ws.noise_rand_gpu, I0v = I0_T
-                AK.foreachindex(sino) do idx
-                    λ = I0v * exp(-sino[idx])
-                    λ_noisy = λ + sqrt(max(λ, T(1))) * rg[idx]
-                    λ_noisy = max(λ_noisy, T(1))
-                    sino[idx] = -log(λ_noisy / I0v)
-                end
-            end
-        end
-    end
-
-    # Save noisy sinogram to CPU
     copyto!(ws.sino_noisy_out, ws.sinogram)
 
-    return (sino_ideal=ws.sino_ideal_out, sino_noisy=ws.sino_noisy_out)
+    return (sino_ideal=ws.sino_ideal_out, sino_noisy=ws.sino_noisy_out,
+            scatter_field=scatter_field_cpu, scatter_weight=scatter_total_weight)
 end
 
 # =============================================================================
@@ -539,21 +583,15 @@ function build_physics_config(
 
     # Scatter: use geometry-aware model scaled for this scanner and phantom size
     # If phantom is provided, estimate diameter from mask for size-aware scatter scaling
-    phantom_diameter_cm = if phantom !== nothing && (sim_opts.use_scatter || sim_opts.use_scatter_correction)
-        # Convert voxel_size from cm to mm for estimate_phantom_diameter_cm
+    phantom_diameter_cm = if phantom !== nothing && sim_opts.use_scatter
         voxel_size_mm = phantom.voxel_size .* 10.0
         estimate_phantom_diameter_cm(phantom.mask, voxel_size_mm)
     else
-        nothing  # Use default reference diameter (30 cm)
+        nothing
     end
 
     if sim_opts.use_scatter
         kwargs[:scatter] = geometry_aware_scatter_model(scanner; phantom_diameter_cm=phantom_diameter_cm)
-    end
-
-    # Scatter correction: use geometry-aware correction scaled for this scanner
-    if sim_opts.use_scatter_correction
-        kwargs[:scatter_correction] = geometry_aware_scatter_correction(scanner; phantom_diameter_cm=phantom_diameter_cm)
     end
 
     # Optical crosstalk: no Scanner field, use factory default

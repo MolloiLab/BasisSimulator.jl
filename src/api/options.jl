@@ -40,7 +40,6 @@ struct SimOptions
     use_fill_factor::Bool
     use_detector_efficiency::Bool
     use_scatter::Bool
-    use_scatter_correction::Bool
     use_optical_crosstalk::Bool
     use_focal_spot::Bool
     use_noise::Bool
@@ -86,7 +85,6 @@ function SimOptions(;
     use_fill_factor::Union{Bool,Nothing}=nothing,
     use_detector_efficiency::Union{Bool,Nothing}=nothing,
     use_scatter::Union{Bool,Nothing}=nothing,
-    use_scatter_correction::Union{Bool,Nothing}=nothing,
     use_optical_crosstalk::Union{Bool,Nothing}=nothing,
     use_focal_spot::Union{Bool,Nothing}=nothing,
     use_noise::Union{Bool,Nothing}=nothing,
@@ -102,12 +100,12 @@ function SimOptions(;
     # :eict = all EICT effects ON; :pcct = :eict + PCCT corrections
     defaults = if fidelity == :pcct
         (fill_factor=true, detector_efficiency=true,
-            scatter=true, scatter_correction=true, optical_crosstalk=true,
+            scatter=true, optical_crosstalk=true,
             focal_spot=true, noise=true, lag=true,
             heel_effect=true, bhc=false, pcct_corrections=true)
     elseif fidelity == :eict
         (fill_factor=true, detector_efficiency=true,
-            scatter=true, scatter_correction=true, optical_crosstalk=true,
+            scatter=true, optical_crosstalk=true,
             focal_spot=true, noise=true, lag=true,
             heel_effect=true, bhc=false, pcct_corrections=false)
     else
@@ -118,7 +116,6 @@ function SimOptions(;
     _fill_factor = isnothing(use_fill_factor) ? defaults.fill_factor : use_fill_factor
     _detector_efficiency = isnothing(use_detector_efficiency) ? defaults.detector_efficiency : use_detector_efficiency
     _scatter = isnothing(use_scatter) ? defaults.scatter : use_scatter
-    _scatter_correction = isnothing(use_scatter_correction) ? defaults.scatter_correction : use_scatter_correction
     _optical_crosstalk = isnothing(use_optical_crosstalk) ? defaults.optical_crosstalk : use_optical_crosstalk
     _focal_spot = isnothing(use_focal_spot) ? defaults.focal_spot : use_focal_spot
     _noise = isnothing(use_noise) ? defaults.noise : use_noise
@@ -130,7 +127,7 @@ function SimOptions(;
     return SimOptions(
         fidelity,
         _fill_factor, _detector_efficiency,
-        _scatter, _scatter_correction, _optical_crosstalk,
+        _scatter, _optical_crosstalk,
         _focal_spot, _noise, _lag,
         _heel_effect, _bhc,
         _pcct_corrections,

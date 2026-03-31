@@ -38,7 +38,6 @@ All fields are optional - set to `nothing` to skip that effect.
 struct PhysicsConfig
     fill_factor::Union{Nothing, FillFactorModel}
     scatter::Union{Nothing, ScatterModel}
-    scatter_correction::Union{Nothing, ScatterCorrectionModel}
     optical_crosstalk::Union{Nothing, OpticalCrosstalkModel}
     focal_spot::Union{Nothing, FocalSpot}
     detector_efficiency::Union{Nothing, DetectorEfficiency}
@@ -61,7 +60,6 @@ specific effects with their models.
 function default_physics_config(;
     fill_factor::Union{Nothing, FillFactorModel}=nothing,
     scatter::Union{Nothing, ScatterModel}=nothing,
-    scatter_correction::Union{Nothing, ScatterCorrectionModel}=nothing,
     optical_crosstalk::Union{Nothing, OpticalCrosstalkModel}=nothing,
     focal_spot::Union{Nothing, FocalSpot}=nothing,
     detector_efficiency::Union{Nothing, DetectorEfficiency}=nothing,
@@ -75,7 +73,6 @@ function default_physics_config(;
     return PhysicsConfig(
         fill_factor,
         scatter,
-        scatter_correction,
         optical_crosstalk,
         focal_spot,
         detector_efficiency,

@@ -3534,15 +3534,22 @@ end
 
 # ╔═╡ cc86e711-59ae-40b9-9485-4eeb4ff9da5c
 md"""
-### DE: Projection-Domain 2-Material Decomposition + Mono+
+### DE: Projection-Domain 2-Material Decomposition
 
-**Sinogram-domain pipeline** (Alvarez & Macovski 1976; Cardinal & Fenster 1990):
-1. Raw sinograms (no BHC — simulate!() has bhc=false for :eict fidelity)
-2. Polynomial calibration using exact known spectra (bowtie, filters, etc.)
-3. Per-ray polynomial inversion → material sinograms (water, iodine area densities)
-4. Light sinogram smoothing → FBP reconstruct → density images
-5. VMI synthesis: `μ(E) = (μ/ρ)_w(E)·m₁ + (μ/ρ)_I(E)·m₂`
-6. Mono+ (Grant 2014) at ALL energies ≠ E_opt
+**Sinogram-domain pipeline** (dual-kVp variant of the PCCT VMI pipeline):
+
+1. **Scatter correction** — handled internally by `simulate!()` at the detector level
+   (no per-bin distribution needed; each kVp is a single polychromatic sinogram)
+2. **Two sinograms directly** — 80 kVp and 140 kVp acquisitions. No bin merging needed;
+   spectral separation comes from different tube voltages, not energy-discriminating thresholds.
+3. **RWLS-GN material decomposition** (Ducros et al., Med Phys 2017) — same constrained
+   optimization as PCCT, but on 2 sinograms instead of 3. The system is exactly determined
+   (2 measurements, 2 unknowns) rather than overdetermined — spatial regularization carries
+   more burden for noise reduction. Initialized from polynomial calibration (Alvarez & Macovski
+   1976) for fast convergence.
+4. **ACNR — Anti-Correlated Noise Reduction** (Kalender, IEEE TMI 1988) — identical to PCCT.
+   Projects out noise orthogonal to 70 keV reference in material space.
+5. **VMI sinogram synthesis + FBP** — `VMI(E) = μ/ρ_water(E)·sino_w + μ/ρ_iodine(E)·sino_I`
 
 No BHC anywhere. Beam hardening handled by the polyenergetic forward model in the calibration.
 """
@@ -3649,28 +3656,18 @@ end
 begin
     # ── DE VMI tuning [TUNE: DE-VMI] ──
 
-    # Sinogram smoothing (applied to material sinograms before FBP)
-    sino_smooth_σ = 0.0          # Gaussian σ along detector columns (pixels; 0 = off)
-
     # DE FBP kernel — softer than SE to tame decomposition noise
-    # (Mono+ handles resolution recovery via HP from E_opt)
     de_filter_control = (
         x = (0.0, 0.25, 0.5, 0.75, 1.0),
         y = (1.0, 0.85, 0.4, 0.08, 0.001),
     )
-
-    # Mono+ (Grant et al. 2014) — energy-dependent LP width
-    mono_plus_E_optimal = 70    # optimal-noise energy (keV)
-    mono_plus_pixel_mm = sim_recon_fov_cm / sim_recon_xy * 10.0
-
-    # σ_lp increases with |E - E_opt| so Mono+ is more aggressive far from optimal
-    mono_plus_σ_base_mm = 1.5   # LP width at E_opt (mm) — baseline
-    mono_plus_σ_rate = 0.02  # mm per keV away from E_opt
-    mono_plus_σ_lp(E) = mono_plus_σ_base_mm + mono_plus_σ_rate * abs(E - mono_plus_E_optimal)
 end
 
 # ╔═╡ 06126002-0000-4000-8000-000000000000
-# Projection-domain decomposition → FBP → VMI (Alvarez & Macovski 1976)
+# RWLS-GN material decomposition + ACNR + VMI synthesis (Ducros et al., Med Phys 2017)
+# 2-sinogram variant: exactly determined (2 measurements, 2 unknowns).
+# Same algorithm as PCCT notebook 07, but without the third overdetermined bin.
+# Polynomial calibration (above) provides initialization.
 sim_de_vmi_raw = let
     cal = de_calibration
     terms = cal.terms
@@ -3685,69 +3682,228 @@ sim_de_vmi_raw = let
         s
     end
 
-    # ── Helper: 1D Gaussian smooth along detector columns ──
-    function smooth_cols(sino, σ)
-        σ ≤ 0 && return sino
-        r = ceil(Int, 3σ)
-        kern = Float32[exp(-Float32(k)^2 / (2f0 * Float32(σ)^2)) for k in -r:r]
-        kern ./= sum(kern)
-        nv, nr, nc = size(sino)
-        out = similar(sino)
-        @inbounds for row in 1:nr, view in 1:nv, col in 1:nc
-            s = 0.0f0
-            for (ki, k) in enumerate(-r:r)
-                c2 = clamp(col + k, 1, nc)
-                s += sino[view, row, c2] * kern[ki]
-            end
-            out[view, row, col] = s
-        end
-        out
-    end
+    # ── Spectral setup ──
+    de_filters = vcat(additional_filters, de_kedge_filter)
+    prot_80 = BS.CTProtocol(kVp = 80, additional_filters = de_filters)
+    prot_140 = BS.CTProtocol(kVp = 140, additional_filters = de_filters)
+    e_l, w_l = BS.resolve_spectrum(sim_opts, prot_80; scanner = sim_scanner)
+    e_h, w_h = BS.resolve_spectrum(sim_opts, prot_140; scanner = sim_scanner)
 
-    # ── Step 1: Per-ray polynomial decomposition of raw sinograms ──
-    @info "Per-ray polynomial decomposition..."
-    sino_low = sim_de_sino_low.sino   # raw, no BHC (simulate! has bhc=false)
+    # Basis material mass attenuation at each spectral energy
+    τ_w_l = [BS.compute_mass_μ_at_energy(XA.Materials.water, Float64(e)) for e in e_l]
+    τ_I_l = [BS.compute_mass_μ_at_energy(XA.Elements.Iodine, Float64(e)) for e in e_l]
+    τ_w_h = [BS.compute_mass_μ_at_energy(XA.Materials.water, Float64(e)) for e in e_h]
+    τ_I_h = [BS.compute_mass_μ_at_energy(XA.Elements.Iodine, Float64(e)) for e in e_h]
+
+    wn_l = Float64.(w_l) ./ sum(Float64.(w_l))
+    wn_h = Float64.(w_h) ./ sum(Float64.(w_h))
+    n_E_l = length(e_l)
+    n_E_h = length(e_h)
+
+    # ── Measured sinograms ──
+    sino_low = sim_de_sino_low.sino
     sino_high = sim_de_sino_high.sino
-    sino_w = similar(sino_low)
-    sino_I = similar(sino_low)
-    @inbounds for idx in eachindex(sino_low)
-        pl = Float64(sino_low[idx])
-        ph = Float64(sino_high[idx])
-        sino_w[idx] = Float32(eval_poly(cal.coeffs_w, pl, ph))
-        sino_I[idx] = Float32(eval_poly(cal.coeffs_I, pl, ph))
-    end
 
-    # ── Step 2: Optional light smoothing of material sinograms ──
-    if sino_smooth_σ > 0
-        @info "Smoothing material sinograms (σ=$(sino_smooth_σ) px)..."
-        sino_w = smooth_cols(sino_w, Float64(sino_smooth_σ))
-        sino_I = smooth_cols(sino_I, Float64(sino_smooth_σ))
-    end
-
+    # I0 from spectrum (counts per pixel per view, same as simulate! uses)
     geom = sim_de_sino_low.geom
-    recon_size = de_matrix_size
+    I0_L = BS.compute_detector_I0(geom,
+        BS.CTProtocol(kVp = 80, mA = de_mA_80, views = de_n_views,
+            rotation_time = de_rotation_time, collimation_mm = de_collimation_mm,
+            additional_filters = vcat(additional_filters, de_kedge_filter)),
+        sum(Float64.(w_l)))
+    I0_H = BS.compute_detector_I0(geom,
+        BS.CTProtocol(kVp = 140, mA = de_mA_140, views = de_n_views,
+            rotation_time = de_rotation_time, collimation_mm = de_collimation_mm,
+            additional_filters = vcat(additional_filters, de_kedge_filter)),
+        sum(Float64.(w_h)))
+    @info "DE I0: low=$(round(I0_L, sigdigits=4)), high=$(round(I0_H, sigdigits=4))"
 
-    # ── Step 3: VMI sinogram synthesis THEN single FBP per energy ──
-    # Key: synthesize VMI sinogram BEFORE FBP so anti-correlated noise cancels
-    # p_vmi(E) = (μ/ρ)_w(E)·A_w + (μ/ρ)_I(E)·A_I → single FBP → clean VMI image
+    # Measured counts (intensity domain)
+    s_L = Float64.(Float64(I0_L) .* exp.(-sino_low))
+    s_H = Float64.(Float64(I0_H) .* exp.(-sino_high))
+
+    # ── Polynomial initialization ──
+    a_w_init = similar(sino_low, Float64)
+    a_I_init = similar(sino_low, Float64)
+    @inbounds Threads.@threads for idx in eachindex(sino_low)
+        pl = Float64(sino_low[idx]); ph = Float64(sino_high[idx])
+        a_w_init[idx] = max(eval_poly(cal.coeffs_w, pl, ph), 0.0)
+        a_I_init[idx] = max(eval_poly(cal.coeffs_I, pl, ph), 0.0)
+    end
+    @info "Poly init — water: $(round(mean(a_w_init), digits=3)), iodine: $(round(mean(a_I_init), sigdigits=3))"
+
+    nx, nv, nr = size(a_w_init)
+    freq2 = [Float64(2 - 2cos(2π*(i-1)/nx) + 2 - 2cos(2π*(j-1)/nv))
+             for i in 1:nx, j in 1:nv]
+
+    # ── RWLS-GN solver (GPU-accelerated via Metal) ──
+    # 2-bin variant: exactly determined (2 measurements, 2 unknowns)
+    # Regularization carries more burden than PCCT's overdetermined 3-bin system.
+    freq2_f32 = MtlArray(Float32.(freq2))
+    s_Lg = MtlArray(Float32.(s_L)); s_Hg = MtlArray(Float32.(s_H))
+    init_w_g = MtlArray(Float32.(a_w_init)); init_I_g = MtlArray(Float32.(a_I_init))
+
+    function run_gn(E_target; n_iter=3, α=0.5, β_w=1.0, β_I=1.0)
+        @info "── DE $(Int(E_target)) keV: α=$α, β_w=$β_w, β_I=$β_I ──"
+
+        a_w = copy(init_w_g)
+        a_I = copy(init_I_g)
+        F_L = similar(a_w); F_H = similar(a_w)
+        J_Lw = similar(a_w); J_LI = similar(a_w)
+        J_Hw = similar(a_w); J_HI = similar(a_w)
+        et = similar(a_w)
+        rL = similar(a_w); rH = similar(a_w)
+        wtL = similar(a_w); wtH = similar(a_w)
+        H11 = similar(a_w); H12 = similar(a_w); H22 = similar(a_w)
+        g1 = similar(a_w); g2 = similar(a_w)
+        det_H = similar(a_w); δ_wg = similar(a_w); δ_Ig = similar(a_w)
+        I0Lf = Float32(I0_L); I0Hf = Float32(I0_H)
+        α_bw = Float32(2 * α * β_w); α_bI = Float32(2 * α * β_I)
+
+        for iter in 1:n_iter
+            # ── Forward model + Jacobian (GPU broadcasts) ──
+            fill!(F_L, 0f0); fill!(F_H, 0f0)
+            fill!(J_Lw, 0f0); fill!(J_LI, 0f0)
+            fill!(J_Hw, 0f0); fill!(J_HI, 0f0)
+
+            # Low-kVp spectrum
+            for j in 1:n_E_l
+                tw = Float32(τ_w_l[j]); tI = Float32(τ_I_l[j])
+                wL = Float32(wn_l[j])
+                @. et = exp(-a_w * tw - a_I * tI)
+                @. F_L += wL * et
+                @. J_Lw -= wL * tw * et; @. J_LI -= wL * tI * et
+            end
+            # High-kVp spectrum
+            for j in 1:n_E_h
+                tw = Float32(τ_w_h[j]); tI = Float32(τ_I_h[j])
+                wH = Float32(wn_h[j])
+                @. et = exp(-a_w * tw - a_I * tI)
+                @. F_H += wH * et
+                @. J_Hw -= wH * tw * et; @. J_HI -= wH * tI * et
+            end
+            @. F_L *= I0Lf; @. F_H *= I0Hf
+            @. J_Lw *= I0Lf; @. J_LI *= I0Lf
+            @. J_Hw *= I0Hf; @. J_HI *= I0Hf
+
+            # ── Normal equations + GN update (GPU) ──
+            @. rL = s_Lg - F_L; @. rH = s_Hg - F_H
+            @. wtL = 1f0 / max(F_L, 1f0)
+            @. wtH = 1f0 / max(F_H, 1f0)
+            @. H11 = J_Lw^2*wtL + J_Hw^2*wtH
+            @. H12 = J_Lw*J_LI*wtL + J_Hw*J_HI*wtH
+            @. H22 = J_LI^2*wtL + J_HI^2*wtH
+            @. g1 = J_Lw*wtL*rL + J_Hw*wtH*rH
+            @. g2 = J_LI*wtL*rL + J_HI*wtH*rH
+            @. det_H = max(abs(H11 * H22 - H12^2), 1f-30)
+            @. δ_wg = clamp((H22 * g1 - H12 * g2) / det_H, -5f0, 5f0)
+            @. δ_Ig = clamp((H11 * g2 - H12 * g1) / det_H, -0.75f0, 0.75f0)
+            @. a_w = max(a_w + 0.5f0 * δ_wg, 0f0)
+            @. a_I = max(a_I + 0.5f0 * δ_Ig, 0f0)
+
+            # ── Spatial regularization (CPU FFT per slice) ──
+            aw_cpu = Array(a_w); aI_cpu = Array(a_I)
+            denom_w = 1.0 .+ Float64(α_bw) .* freq2
+            denom_I = 1.0 .+ Float64(α_bI) .* freq2
+            for k in 1:nr
+                sw = Float64.(aw_cpu[:, :, k])
+                sI = Float64.(aI_cpu[:, :, k])
+                aw_cpu[:, :, k] .= Float32.(real.(ifft(fft(sw) ./ denom_w)))
+                aI_cpu[:, :, k] .= Float32.(real.(ifft(fft(sI) ./ denom_I)))
+            end
+            copyto!(a_w, MtlArray(aw_cpu))
+            copyto!(a_I, MtlArray(aI_cpu))
+            @info "  iter $iter done"
+        end
+
+        # ── Final residuals for diagnostics ──
+        F_L_cpu = Array(F_L); F_H_cpu = Array(F_H)
+        s_L_cpu = Array(s_Lg); s_H_cpu = Array(s_Hg)
+        relres_L = (s_L_cpu .- F_L_cpu) ./ max.(F_L_cpu, 1f0)
+        relres_H = (s_H_cpu .- F_H_cpu) ./ max.(F_H_cpu, 1f0)
+        @info "  Residuals — L: $(round(mean(abs.(relres_L))*100, digits=2))%, H: $(round(mean(abs.(relres_H))*100, digits=2))%"
+
+        (sino_w = Float32.(Array(a_w)), sino_I = Float32.(Array(a_I)))
+    end
+
+    # ── ACNR: Anti-Correlated Noise Reduction (Kalender, IEEE TMI 1988) ──
+    # Identical to PCCT — material sinogram noise is anti-correlated regardless
+    # of whether spectral measurements came from energy bins or kVp switching.
+    function apply_acnr(sino_w, sino_I; E_ref=70.0, σ_acnr=3.0, γ=1.0)
+        c_w = Float64(BS.compute_mass_μ_at_energy(XA.Materials.water, E_ref))
+        c_I = Float64(BS.compute_mass_μ_at_energy(XA.Elements.Iodine, E_ref))
+        c2 = c_w^2 + c_I^2
+
+        aw = Float64.(sino_w)
+        aI = Float64.(sino_I)
+
+        s_orth = @. -c_I * aw + c_w * aI
+
+        nx_s, nv_s, nr_s = size(s_orth)
+        gauss_k = [let fi = min(i-1, nx_s-(i-1)); fj = min(j-1, nv_s-(j-1))
+                       exp(-2π^2 * σ_acnr^2 * (fi^2/nx_s^2 + fj^2/nv_s^2))
+                   end for i in 1:nx_s, j in 1:nv_s]
+
+        s_orth_smooth = similar(s_orth)
+        for k in 1:nr_s
+            s_orth_smooth[:, :, k] .= real.(ifft(fft(s_orth[:, :, k]) .* gauss_k))
+        end
+
+        n_orth = s_orth .- s_orth_smooth
+        aw_corr = @. aw + γ * c_I / c2 * n_orth
+        aI_corr = @. aI - γ * c_w / c2 * n_orth
+
+        @info "ACNR: |n_orth|=$(round(std(n_orth), sigdigits=3)), γ=$γ, σ_smooth=$σ_acnr"
+        (sino_w = Float32.(aw_corr), sino_I = Float32.(aI_corr))
+    end
+
+    # ── Run pipeline for each VMI energy ──
+    recon_size = de_matrix_size
     orient_fn = s -> reverse(s, dims = 2)
+
+    # RWLS-GN tuning
+    gn_n_iter = 3
+    gn_α = 0.5     # higher than PCCT (0.3) — 2-bin system needs more regularization
+    gn_β_w = 1.0
+    gn_β_I = 1.0
+
+    # ACNR tuning
+    use_acnr = true
+    acnr_E_ref = 70.0
+    acnr_σ = 2.0
+    acnr_γ_per_energy = Dict(
+        40 => 0.95,    # aggressive (40 keV needs most help)
+        70 => 0.0,     # reference — no correction
+        100 => 0.5,    # light
+        140 => 0.60,   # light
+    )
+
     results = NamedTuple[]
     for E in DE_VMI_ENERGIES
         E_f = Float64(E)
+
+        # Step 1: RWLS-GN material decomposition
+        decomp = run_gn(E_f; n_iter=gn_n_iter, α=gn_α, β_w=gn_β_w, β_I=gn_β_I)
+        sw, sI = decomp.sino_w, decomp.sino_I
+
+        # Step 2: ACNR (skip at reference energy)
+        γ_E = get(acnr_γ_per_energy, E, 1.0)
+        if use_acnr && γ_E > 0
+            acnr_result = apply_acnr(sw, sI; E_ref=acnr_E_ref, σ_acnr=acnr_σ, γ=γ_E)
+            sw, sI = acnr_result.sino_w, acnr_result.sino_I
+        end
+
+        # Step 3: VMI sinogram synthesis + FBP
         μρ_w_E = Float32(BS.compute_mass_μ_at_energy(XA.Materials.water, E_f))
         μρ_I_E = Float32(BS.compute_mass_μ_at_energy(XA.Elements.Iodine, E_f))
         μ_w_E = BS.compute_μ_at_energy(XA.Materials.water, E_f)
 
-        # Synthesize VMI sinogram in material domain (noise cancellation happens here)
-        vmi_sino = μρ_w_E .* sino_w .+ μρ_I_E .* sino_I
-
-        # Single FBP reconstruction of the VMI sinogram
+        vmi_sino = @. μρ_w_E * sw + μρ_I_E * sI
         vmi_sino_gpu = MtlArray(vmi_sino)
         ws_fdk = BS.create_fdk_recon_workspace(vmi_sino_gpu, geom, recon_size;
             filter = BS.CustomFilter(de_filter_control.x, de_filter_control.y))
         recon_μ = BS.reconstruct!(ws_fdk, vmi_sino_gpu, geom, recon_size)
 
-        # HU conversion + radial cupping correction (same as SE scans)
         vol_hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = μ_w_E))
         BS.apply_radial_cupping_correction!(vol_hu; fov_cm = 35.0)
         BS.add_system_noise_floor!(vol_hu, sim_noise_floor_hu)
@@ -3760,7 +3916,7 @@ sim_de_vmi_raw = let
 end;
 
 # ╔═╡ 06126005-0000-4000-8000-000000000000
-# Diagnostic: VMI before Mono+ at each energy
+# Diagnostic: VMI at each energy (RWLS-GN + ACNR output)
 let
     fig = CM.Figure(size = (1000, 300), fontsize = 10)
     for (i, r) in enumerate(sim_de_vmi_raw)
@@ -3773,41 +3929,18 @@ let
 end
 
 # ╔═╡ 06126004-0000-4000-8000-000000000000
-# Apply Mono+ (Grant et al. 2014) → sim_de_mono_plus
+# Pass-through: RWLS-GN + ACNR output is the final VMI (no Mono+ needed).
+# Kept as sim_de_mono_plus for downstream cell compatibility.
 sim_de_mono_plus = let
-    E_opt = mono_plus_E_optimal
-    opt_idx = findfirst(r -> r.energy_keV == E_opt, sim_de_vmi_raw)
-    results = NamedTuple[]
-
-    if opt_idx === nothing
-        for r in sim_de_vmi_raw
-            push!(results, (name = "mono+_$(r.energy_keV)keV", recon = copy(r.recon), energy_keV = r.energy_keV))
-        end
-    else
-        vmi_opt = sim_de_vmi_raw[opt_idx].recon
-        for r in sim_de_vmi_raw
-            if r.energy_keV == E_opt
-                # At optimal energy: Mono+ = standard VMI (noise is already minimal)
-                push!(results, (name = "mono+_$(r.energy_keV)keV", recon = copy(r.recon), energy_keV = r.energy_keV))
-            else
-                # ALL other energies (both above AND below optimal): apply Mono+
-                # LP(VMI(E)) gives target-energy contrast, HP(VMI(E_opt)) gives optimal noise
-                # σ_lp scales with |E - E_opt|: more aggressive smoothing far from optimal
-                σ_E = mono_plus_σ_lp(Float64(r.energy_keV))
-                mp = mono_plus_vmi(r.recon, vmi_opt;
-                    σ_lp_mm = σ_E, pixel_mm = mono_plus_pixel_mm)
-                push!(results, (name = "mono+_$(r.energy_keV)keV", recon = mp, energy_keV = r.energy_keV))
-            end
-        end
-    end
-    results
+    [(name = "VMI_$(r.energy_keV)keV", recon = r.recon, energy_keV = r.energy_keV)
+     for r in sim_de_vmi_raw]
 end;
 
 # ╔═╡ c3bafd40-fda9-4ec2-8ec3-8dc109fc4ecb
 sim_de_vmi_measurements = let
     vmi_scans = [(r.recon, r.name) for r in sim_de_mono_plus]
 
-    # Segment on mid-slice of 100 keV Mono+ VMI (index 3 = 100 keV)
+    # Segment on mid-slice of 100 keV Sim VMI (index 3 = 100 keV)
     vmi_100 = sim_de_mono_plus[3].recon
     mid_z = size(vmi_100, 3) ÷ 2 + 1
     mask, rods, center = segment_gammex_rods(vmi_100[:, :, mid_z]; fov_cm = 35.0)
@@ -3827,7 +3960,7 @@ let
     clin_slice = clin_vol[:, :, clin_mid_z]
     clin_mask, clin_rods, clin_center = segment_gammex_rods(clin_slice; fov_cm = 35.0)
 
-    # Simulated: segment on Mono+ DE 100 keV VMI
+    # Simulated: segment on DE 100 keV VMI
     sim_vol = sim_de_mono_plus[3].recon  # index 3 = 100 keV
     sim_mid_z = size(sim_vol, 3) ÷ 2 + 1
     sim_slice = sim_vol[:, :, sim_mid_z]
@@ -3865,7 +3998,7 @@ let
 
     # Simulated with ROIs
     ax2 = CM.Axis(
-        fig[1, 2]; title = "Mono+ VMI 100 keV — Segmentation",
+        fig[1, 2]; title = "Sim VMI 100 keV — Segmentation",
         aspect = CM.DataAspect(), yreversed = true
     )
     CM.heatmap!(ax2, sim_slice; colormap = :grays, colorrange = (-200, 500))
@@ -3891,11 +4024,11 @@ end
 
 # ╔═╡ 03c1d3a1-5604-4b50-b4e9-117260a23cf4
 md"""
-### VMI: Qualitative (Clinical vs Mono+)
+### VMI: Qualitative (Clinical vs Simulated)
 """
 
 # ╔═╡ 08d5d8aa-bc95-427b-8a6a-d429881f6034
-# VMI Qualitative Comparison — Clinical vs Mono+ at each energy
+# VMI Qualitative Comparison — Clinical vs Simulated VMI at each energy
 let
     clinical = [hu_de_40keV, hu_de_70keV, hu_de_100keV, hu_de_140keV]
     simulated = sim_de_mono_plus
@@ -3912,7 +4045,7 @@ let
         CM.heatmap!(ax1, clin_slice; colormap = :grays, colorrange = (-200, 500))
         CM.hidedecorations!(ax1); CM.hidespines!(ax1)
 
-        ax2 = CM.Axis(fig[i, 2]; title = "Mono+ $(E) keV", yreversed = true)
+        ax2 = CM.Axis(fig[i, 2]; title = "Sim VMI $(E) keV", yreversed = true)
         CM.heatmap!(ax2, sim_slice; colormap = :grays, colorrange = (-200, 500))
         CM.hidedecorations!(ax2); CM.hidespines!(ax2)
     end
@@ -3922,11 +4055,11 @@ end
 
 # ╔═╡ b922a52a-b4f8-4385-b5a0-7b8eb69e8cfe
 md"""
-### VMI: Line Profiles (Clinical vs Mono+)
+### VMI: Line Profiles (Clinical vs Simulated VMI)
 """
 
 # ╔═╡ 157920c7-9a64-4407-8bd5-398f15e4842d
-# VMI Line Profiles — Clinical vs Mono+ horizontal profile at each energy
+# VMI Line Profiles — Clinical vs Simulated VMI horizontal profile at each energy
 let
     clinical = [hu_de_40keV, hu_de_70keV, hu_de_100keV, hu_de_140keV]
     simulated = sim_de_mono_plus
@@ -3964,7 +4097,7 @@ let
         )
         CM.lines!(
             ax, collect(x_s), Float64.(sim_slice[mid_row_s, :]);
-            color = :orangered, linewidth = 1.2, label = "Mono+"
+            color = :orangered, linewidth = 1.2, label = "Sim VMI"
         )
         CM.hlines!(ax, [0.0]; color = :gray70, linestyle = :dash, linewidth = 0.6)
         CM.axislegend(ax; position = :rt, labelsize = 8)
@@ -3977,11 +4110,11 @@ end
 
 # ╔═╡ bf457bc7-9349-4b2f-b278-ef355f98cede
 md"""
-### VMI: Scatter Plot (Clinical vs Mono+)
+### VMI: Scatter Plot (Clinical vs Simulated VMI)
 """
 
 # ╔═╡ 8e37657c-d02f-4b74-aba8-73299fd705c9
-# VMI: Ca/I scatter — Clinical VMI vs Mono+ VMI across energies
+# VMI: Ca/I scatter — Clinical VMI vs Simulated VMI across energies
 let
     vmi_labels = ["$(E) keV" for E in DE_VMI_ENERGIES]
     n_vmi = length(DE_VMI_ENERGIES)
@@ -3991,8 +4124,8 @@ let
 
     # --- Top: Calcium rods ---
     ax_ca = CM.Axis(
-        fig[1, 1], title = "Calcium Rods", subtitle = "Clinical VMI vs Mono+",
-        xlabel = "Clinical HU", ylabel = "Mono+ HU"
+        fig[1, 1], title = "Calcium Rods", subtitle = "Clinical VMI vs Simulated",
+        xlabel = "Clinical HU", ylabel = "Sim VMI HU"
     )
     ca_clin_all, ca_sim_all = Float64[], Float64[]
 
@@ -4024,8 +4157,8 @@ let
 
     # --- Bottom: Iodine rods ---
     ax_i = CM.Axis(
-        fig[2, 1], title = "Iodine Rods", subtitle = "Clinical VMI vs Mono+",
-        xlabel = "Clinical HU", ylabel = "Mono+ HU"
+        fig[2, 1], title = "Iodine Rods", subtitle = "Clinical VMI vs Simulated",
+        xlabel = "Clinical HU", ylabel = "Sim VMI HU"
     )
     i_clin_all, i_sim_all = Float64[], Float64[]
 
@@ -4061,11 +4194,11 @@ end
 
 # ╔═╡ 20ccfc65-0e2a-4d50-9460-bd64b29d2cc8
 md"""
-### VMI: Noise (Clinical vs Mono+)
+### VMI: Noise (Clinical vs Simulated VMI)
 """
 
 # ╔═╡ 55ba2d06-51fe-4ba3-b428-78bcf6107b9b
-# VMI Noise — Clinical vs Mono+ water σ at each VMI energy
+# VMI Noise — Clinical vs Simulated VMI water σ at each VMI energy
 let
     n_vmi = length(DE_VMI_ENERGIES)
     vmi_labels = ["$(E) keV" for E in DE_VMI_ENERGIES]
@@ -4076,7 +4209,7 @@ let
     fig = CM.Figure(size = (800, 400), fontsize = 13)
 
     ax = CM.Axis(
-        fig[1, 1]; title = "VMI Water Noise — Clinical vs Mono+",
+        fig[1, 1]; title = "VMI Water Noise — Clinical vs Simulated",
         ylabel = "Water σ (HU)", xlabel = "VMI Energy",
         xticks = (1:n_vmi, vmi_labels)
     )
@@ -4086,7 +4219,7 @@ let
     )
     CM.barplot!(
         ax, collect(1:n_vmi) .+ 0.2, sim_σ; width = 0.35,
-        color = :darkorange, label = "Mono+ VMI"
+        color = :darkorange, label = "Sim VMI"
     )
 
     # Annotate bars with σ values
@@ -4108,11 +4241,11 @@ end
 
 # ╔═╡ 314c530e-caf1-4235-9985-05e1ef81ccd1
 md"""
-### VMI: NPS (Clinical vs Mono+)
+### VMI: NPS (Clinical vs Simulated VMI)
 """
 
 # ╔═╡ b5c7a40b-2e23-4a85-a734-b8dc86949b7f
-# VMI NPS comparison — Clinical vs Mono+ at each energy
+# VMI NPS comparison — Clinical vs Simulated VMI at each energy
 let
     fig = CM.Figure(size = (900, 900), fontsize = 11)
 
@@ -4121,7 +4254,7 @@ let
         col = (i - 1) % 2 + 1
         ax = CM.Axis(
             fig[row, col]; title = "VMI $(E) keV",
-            subtitle = "Clinical vs Mono+",
+            subtitle = "Clinical vs Simulated VMI",
             xlabel = "Spatial frequency (lp/cm)", ylabel = "nNPS (A.U.)"
         )
         cm = de_measurements[i]
@@ -4136,7 +4269,7 @@ let
         good_s = v_s .> 0
         CM.lines!(
             ax, sm.nps.frequencies, sm.nps.nnps_1d;
-            color = :orangered, linewidth = 1.5, linestyle = :dash, label = "Mono+"
+            color = :orangered, linewidth = 1.5, linestyle = :dash, label = "Sim VMI"
         )
         CM.axislegend(ax; position = :rt, labelsize = 8)
     end
@@ -4146,11 +4279,11 @@ end
 
 # ╔═╡ 6ee9f9ae-977a-4782-b435-9a28bf45346c
 md"""
-### VMI: MTF (Clinical vs Mono+)
+### VMI: MTF (Clinical vs Simulated VMI)
 """
 
 # ╔═╡ e6439f40-ade4-4de9-817c-96663a5ae453
-# VMI MTF comparison — Clinical vs Mono+ at each energy
+# VMI MTF comparison — Clinical vs Simulated VMI at each energy
 let
     fig = CM.Figure(size = (900, 900), fontsize = 11)
 
@@ -4159,7 +4292,7 @@ let
         col = (i - 1) % 2 + 1
         ax = CM.Axis(
             fig[row, col]; title = "VMI $(E) keV",
-            subtitle = "Clinical vs Mono+",
+            subtitle = "Clinical vs Simulated VMI",
             xlabel = "Spatial frequency (lp/cm)", ylabel = "MTF",
             limits = (nothing, nothing, 0, 1.05)
         )
@@ -4172,7 +4305,7 @@ let
         )
         CM.lines!(
             ax, sm.mtf.frequencies, sm.mtf.mtf;
-            color = :orangered, linewidth = 1.5, linestyle = :dash, label = "Mono+"
+            color = :orangered, linewidth = 1.5, linestyle = :dash, label = "Sim VMI"
         )
         CM.axislegend(ax; position = :rt, labelsize = 8)
     end
@@ -4182,7 +4315,7 @@ end
 
 # ╔═╡ a89fe53a-c546-4036-b7e9-1be92206cd62
 md"""
-### Final Export — All Measurements (Clinical + Mono+)
+### Final Export — All Measurements (Clinical + Simulated VMI)
 """
 
 # ╔═╡ 8cf1b41b-105d-4dc5-952a-cedfc4c8f4ae
