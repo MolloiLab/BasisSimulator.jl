@@ -1494,8 +1494,23 @@ Count-domain combination (same math as polychromatic combine in `simulate!`):
 # ╔═╡ 08120006-0000-4000-8000-000000000000
 # Combine bins → low (20–55 keV) and high (>55 keV) sinograms
 sim_scan2_lohi = let
-    bins = sim_scan2.bins      # Vector of 4 arrays (line-integral sinograms)
-    I0 = sim_scan2.I0_bins     # Vector of 4 scalars
+    bins_raw = sim_scan2.bins
+    I0 = sim_scan2.I0_bins
+
+    # Apply same scatter correction as RWLS-GN setup cell for consistency
+    scatter_scale_lohi = 0.5   # ← must match scatter_scale in RWLS-GN setup cell
+    _bm = BS.geometry_aware_scatter_correction(sim_scanner)
+    _scm = BS.ScatterCorrectionModel(
+        _bm.correction_coefficient,
+        scatter_scale_lohi * _bm.scale_factor,
+        _bm.prep_exponent,
+        _bm.kernel_fwhm,
+        _bm.kernel_type
+    )
+    bins = [copy(Float32.(b)) for b in bins_raw]
+    for b in bins
+        BS.correct_scatter!(b, _scm)
+    end
 
     function combine_bins(bin_indices, bins, I0)
         I0_sum = sum(I0[b] for b in bin_indices)
@@ -1830,14 +1845,37 @@ vmi_decomp_setup = let
     wn_B = w_B_raw ./ sum(w_B_raw)
     wn_C = w_C_raw ./ sum(w_C_raw)
 
-    bins = sim_scan2.bins
+    bins_raw = sim_scan2.bins
     I0_bins = sim_scan2.I0_bins
     I0_A = Float64(I0_bins[1] + I0_bins[2])
     I0_B = Float64(I0_bins[3])
     I0_C = Float64(I0_bins[min(4, length(I0_bins))])
     @info "3-bin I0: A=$(round(I0_A, sigdigits=4)), B=$(round(I0_B, sigdigits=4)), C=$(round(I0_C, sigdigits=4))"
 
-    # Measured counts per merged bin (scatter-free — scatter only on combined sinogram)
+    # ── Per-bin scatter correction (bins now include scatter from simulation) ──
+    use_scatter_correction = true  # ← toggle off to see raw scatter effect
+    scatter_scale = 0.5            # ← tune: 1.0 = full geometry-aware correction, lower = less aggressive
+    _base_model = BS.geometry_aware_scatter_correction(sim_scanner)
+    scatter_corr_model = BS.ScatterCorrectionModel(
+        _base_model.correction_coefficient,
+        scatter_scale * _base_model.scale_factor,  # ← scaled down
+        _base_model.prep_exponent,
+        _base_model.kernel_fwhm,
+        _base_model.kernel_type
+    )
+    bins = if use_scatter_correction
+        corrected = [copy(Float32.(b)) for b in bins_raw]
+        for (i, b) in enumerate(corrected)
+            BS.correct_scatter!(b, scatter_corr_model)
+            @info "Scatter correction bin $i: Δmean=$(round(mean(Float64.(b) .- Float64.(bins_raw[i])), sigdigits=3))"
+        end
+        corrected
+    else
+        @info "Scatter correction disabled — using raw bins with scatter"
+        bins_raw
+    end
+
+    # Measured counts per merged bin (scatter-corrected)
     s_A = Float64.(I0_bins[1] .* exp.(-bins[1]) .+ I0_bins[2] .* exp.(-bins[2]))
     s_B = Float64.(I0_bins[3] .* exp.(-bins[3]))
     s_C = Float64.(I0_bins[min(4, length(bins))] .* exp.(-bins[min(4, length(bins))]))
@@ -3167,7 +3205,7 @@ md"""
 # ╠═08120010-0000-4000-8000-000000000070
 # ╠═08120010-0000-4000-8000-000000000100
 # ╠═08120010-0000-4000-8000-000000000140
-# ╠═08120010-0000-4000-8000-000000000300
+# ╟─08120010-0000-4000-8000-000000000300
 # ╠═08120010-0000-4000-8000-000000000200
 # ╠═08120010-a000-4000-8000-000000000001
 # ╠═08120010-a000-4000-8000-000000000002
