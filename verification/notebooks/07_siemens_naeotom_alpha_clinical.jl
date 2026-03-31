@@ -1925,7 +1925,7 @@ vmi_decomp_setup = let
             @. g2 = J_AI*wtA*rA + J_BI*wtB*rB + J_CI*wtC*rC
             @. det_H = max(abs(H11 * H22 - H12^2), 1f-30)
             @. δ_wg = clamp((H22 * g1 - H12 * g2) / det_H, -5f0, 5f0)
-            @. δ_Ig = clamp((H11 * g2 - H12 * g1) / det_H, -0.5f0, 0.5f0)
+            @. δ_Ig = clamp((H11 * g2 - H12 * g1) / det_H, -0.75f0, 0.75f0)
             @. a_w = max(a_w + 0.5f0 * δ_wg, 0f0)
             @. a_I = max(a_I + 0.5f0 * δ_Ig, 0f0)
 
@@ -2094,11 +2094,19 @@ end
 # 12e-1g: ACNR — Anti-Correlated Noise Reduction (Kalender, IEEE TMI 1988)
 # Projects out noise orthogonal to E_ref in material space. Zero blur.
 # VMI at E_ref preserved exactly; noise reduced at all other energies.
-vmi_acnr = let
+vmi_acnr, acnr_on = let
     use_acnr = true    # ← toggle to compare with/without
     E_ref = 70.0       # reference energy (VMI preserved exactly here)
-    σ_acnr = 8.0       # smoothing width for noise estimation (larger = more noise removed)
-    γ_acnr = 1.0       # correction strength (0=off, 1=full, >1=overcorrect)
+    σ_acnr = 2.0       # smoothing width for noise estimation
+
+    # Per-energy correction strength (tune independently)
+    # Higher γ = more noise removed. 70 keV = 0 (reference, preserved exactly)
+    γ_per_energy = Dict(
+        40.0 => 0.95,   # ← aggressive (40 keV needs most help)
+        70.0 => 0.0,   # reference — no correction
+        100.0 => 0.5,  # lightest
+        140.0 => 0.60,  # light
+    )
 
     per_energy_raw = Dict(
         40.0 => vmi_decomp_40, 70.0 => vmi_decomp_70,
@@ -2106,15 +2114,20 @@ vmi_acnr = let
     )
 
     if !use_acnr
-        per_energy_raw
+        per_energy_raw, false
     else
         corrected = Dict{Float64, NamedTuple}()
-        for (E, sinos) in per_energy_raw
-            corrected[E] = vmi_decomp_setup.apply_acnr(
-                sinos.sino_w, sinos.sino_I;
-                E_ref, σ_acnr, γ=γ_acnr)
+        for (E, s) in per_energy_raw
+            γ_E = get(γ_per_energy, E, 1.0)
+            if γ_E ≈ 0.0
+                corrected[E] = s  # skip correction at reference
+            else
+                corrected[E] = vmi_decomp_setup.apply_acnr(
+                    s.sino_w, s.sino_I;
+                    E_ref, σ_acnr, γ=γ_E)
+            end
         end
-        corrected
+        corrected, true
     end
 end;
 
@@ -2155,10 +2168,10 @@ end;
 
 # ╔═╡ 08120010-a000-4000-8000-000000000002
 # 12e-3: HIR on VMI sinograms (tune HIR params here, or set use_hir=false to skip)
-vmi_hir = let
+vmi_hir, hir_on = let
     use_hir = false  # ← toggle to compare FBP vs HIR
 
-    if !use_hir
+    result = if !use_hir
         vmi_fbp
     else
         geom = sim_scan2.geom
@@ -2206,11 +2219,12 @@ vmi_hir = let
 
         (vmi = raw_vmi, energies = vmi_energies)
     end
+    result, use_hir
 end;
 
 # ╔═╡ 08120010-b000-4000-8000-000000000001
 # 12e-4: Mono+ (40 keV only) → final output
-sim_scan2_vmi = let
+sim_scan2_vmi, mono_on = let
     use_mono_plus = false  # ← toggle Mono+ on/off
 
     vmi = Dict{Float64, Array{Float32, 3}}(E => vmi_hir.vmi[E] for E in vmi_hir.energies)
@@ -2218,22 +2232,22 @@ sim_scan2_vmi = let
     mid_z = recon_size[3] ÷ 2
 
     if use_mono_plus
-        E_opt = 70.0
-        vmi_opt = vmi[E_opt]
+        E_opt = 70.0           # optimal energy (lowest noise VMI)
+        σ_lp_mm = 0.8         # ← LP cutoff (mm). Lower = preserve more 40 keV detail. Try 0.5-2.0
         pixel_mm = sim_fov_cm / recon_size[1] * 10.0
+        vmi_opt = vmi[E_opt]
 
         E = 40.0
-        σ_lp_mm = 1.5 + 0.02 * abs(E - E_opt)
         mp = mono_plus_vmi(vmi[E], vmi_opt; σ_lp_mm = σ_lp_mm, pixel_mm = pixel_mm)
         roi_before = vmi[E][200:300, 200:300, mid_z]
         vmi[E] = mp
         roi_after = mp[200:300, 200:300, mid_z]
-        @info "Mono+ 40 keV: σ=$(round(std(roi_before), digits=1)) → $(round(std(roi_after), digits=1)) HU"
+        @info "Mono+ 40 keV (σ_lp=$(σ_lp_mm)mm): σ=$(round(std(roi_before), digits=1)) → $(round(std(roi_after), digits=1)) HU"
     else
         @info "Mono+ disabled — passing through HIR output"
     end
 
-    vmi
+    vmi, use_mono_plus
 end;
 
 # ╔═╡ 08070017-0000-4000-8000-000000000000
@@ -2281,20 +2295,24 @@ let
 end
 
 # ╔═╡ 08120011-0000-4000-8000-000000000000
-# VMI qualitative montage — Sim FBP / Clinical QIR3 / Sim HIR
+# VMI qualitative montage — Sim FBP / Clinical QIR3 / Sim HIR+Mono+
 let
     energies = [40.0, 70.0, 100.0, 140.0]
     clin_vols = [hu_140_mid_vmi40, hu_140_mid_vmi70, hu_140_mid_vmi100, hu_140_mid_vmi140]
     clin_mid_z = seg_result.slice_idx
     sim_mid_z = sim_matrix_size[3] ÷ 2
     cr = (-200, 500)
+
+    acnr_tag = acnr_on ? " +ACNR" : ""
+    row1_label = "Sim FBP$(acnr_tag)"
+    row3_label = hir_on ? "Sim HIR$(acnr_tag)" : "Sim FBP$(acnr_tag)"
+    mono_tag(E) = (mono_on && E == 40.0) ? " +Mono+" : ""
+
     fig = CM.Figure(size = (1000, 800), fontsize = 10)
 
     for (i, E) in enumerate(energies)
-        mono_tag = E == 40.0 ? " & Mono+" : ""
-
         # Row 1: Simulated FBP
-        ax1 = CM.Axis(fig[1, i]; title = "Sim FBP$(mono_tag) $(Int(E)) keV", aspect = CM.DataAspect())
+        ax1 = CM.Axis(fig[1, i]; title = "$row1_label $(Int(E)) keV", aspect = CM.DataAspect())
         CM.heatmap!(ax1, vmi_fbp.vmi[E][:, :, sim_mid_z]; colormap = :grays, colorrange = cr)
         CM.hidedecorations!(ax1); CM.hidespines!(ax1)
 
@@ -2303,8 +2321,8 @@ let
         CM.heatmap!(ax2, clin_vols[i][:, :, clin_mid_z]; colormap = :grays, colorrange = cr)
         CM.hidedecorations!(ax2); CM.hidespines!(ax2)
 
-        # Row 3: Simulated HIR
-        ax3 = CM.Axis(fig[3, i]; title = "Sim HIR$(mono_tag) $(Int(E)) keV", aspect = CM.DataAspect())
+        # Row 3: Final pipeline output (HIR/FBP + Mono+)
+        ax3 = CM.Axis(fig[3, i]; title = "$row3_label$(mono_tag(E)) $(Int(E)) keV", aspect = CM.DataAspect())
         CM.heatmap!(ax3, sim_scan2_vmi[E][:, :, sim_mid_z]; colormap = :grays, colorrange = cr)
         CM.hidedecorations!(ax3); CM.hidespines!(ax3)
     end

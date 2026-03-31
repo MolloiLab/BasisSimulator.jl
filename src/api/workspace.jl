@@ -109,6 +109,9 @@ mutable struct PCCTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A1<:Abstr
     pileup_S::Matrix{Float64}               # spectral migration matrix S[n_bins, n_bins]
     pileup_count_factor::Float64            # count-loss factor (N_recorded / N_true)
 
+    # ─── Pre-computed scatter bin fractions (energy-resolved scatter) ───
+    scatter_bin_fractions::Vector{Float64}   # fractional scatter per bin (sums to 1.0)
+
     # ─── Pre-computed setup data (computed once, reused) ───
     geom::CTGeometry                         # CT geometry (binned resolution)
     energies::Vector{Float64}                # downsampled spectrum energies
@@ -405,6 +408,14 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     end
     _pileup_cf = seminonparalyzable_count_factor(_aτ)
 
+    # Pre-compute scatter bin fractions (how scatter distributes across PCCT bins)
+    _scatter_bin_fracs = if config.scatter !== nothing
+        compute_scatter_bin_fractions(Float64.(energies), Float64.(weights_vec),
+                                      Float64.(η_vec), R_mat, kVp)
+    else
+        fill(1.0 / n_bins, n_bins)
+    end
+
     return PCCTWorkspace{T, typeof(sino_buf), typeof(enoise_gpu), typeof(geom_source_positions)}(
         bins, μ_volume, sino_buf, scratch,
         combined,
@@ -420,6 +431,7 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         tube_scratch,
         _μ_table_gpu, _W_matrix_gpu, _outputs_flat, _native_outputs_flat, _source_spectral_gpu,
         _pileup_S, _pileup_cf,
+        _scatter_bin_fracs,
         geom, energies, weights_vec, config, pcct_detector, mats,
         use_detector_fx, use_corrections, kVp
     )

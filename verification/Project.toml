@@ -9,6 +9,7 @@ FileIO = "5789e2e9-d7fb-5bc7-8068-2c6fae9b9549"
 ImageMagick = "6218d12a-5da1-5696-b52f-db25d2ecc6d1"
 JLD2 = "033835bb-8acc-5ee8-8aae-3f567f8a3819"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+MAT = "23992714-dd62-5051-b70f-ba57cb901cac"
 Metal = "dde4c033-4e86-420c-a63e-0dd931031962"
 Pluto = "c3e4b0f8-55cb-11ea-2926-15256bba5781"
 PlutoUI = "7f904dfe-b85e-4ff6-b463-dae2292396a8"
@@ -22,19 +23,3 @@ XrayAttenuation = "7811750c-a499-436e-8b04-55fc0593dd37"
 
 [sources]
 BasisSimulator = {path = ".."}
-
-# [compat]
-# CairoMakie = "0.15"
-# DICOM = "0.11.0"
-# FFTW = "1"
-# FileIO = "1.18.0"
-# ImageMagick = "1.4.2"
-# JLD2 = "0.5"
-# Metal = "1.9.1"
-# Pluto = "0.20"
-# PlutoUI = "0.7"
-# Revise = "3.13.1"
-# Unitful = "1.28.0"
-# XLSX = "0.10.4"
-# XrayAttenuation = "0.2.0"
-# julia = "1.11"

@@ -131,7 +131,53 @@ function simulate!(
         ws_source_spectral=ws.source_spectral_gpu
     )
 
-    # ─── Noise (in-place on pcct_sino.bins — operates at binned resolution) ───
+    # ─── Energy-resolved scatter injection (BEFORE noise) ───
+    # Scatter photons arrive at the detector with a softer spectrum (Compton energy loss)
+    # and are binned by the DRM just like primary photons. Must be added before noise
+    # so Poisson statistics are on total counts (primary + scatter).
+    I0_bins = ws.I0_bins
+    I0_total = T(sum(I0_bins))
+    eps_combine = T(1e-10)
+
+    if config.scatter !== nothing
+        # Step 1: Combine primary bins → combined_primary (temporary, for scatter estimation)
+        combined_primary = ws.combined
+        fill!(combined_primary, zero(T))
+        for (b, bin_sino) in enumerate(pcct_sino.bins)
+            let I0b = T(I0_bins[b]), bs = bin_sino, comb = combined_primary
+                AK.foreachindex(bs) do idx
+                    comb[idx] += I0b * exp(-bs[idx])
+                end
+            end
+        end
+        let comb = combined_primary, I0t = I0_total, eps = eps_combine
+            AK.foreachindex(comb) do idx
+                comb[idx] = -log(max(comb[idx], eps) / I0t)
+            end
+        end
+
+        # Step 2: Estimate scatter spatial distribution (same Ohnesorge model as EICT)
+        scatter_field = ws.tube_physics_scratch
+        estimate_scatter_field!(scatter_field, combined_primary, config.scatter;
+            ws_scatter_temp=ws.scratch)
+
+        # Step 3: Distribute scatter to each bin using pre-computed spectral fractions
+        # scatter_field contains scatter intensity (relative to I0_total)
+        scatter_fracs = ws.scatter_bin_fractions
+        for (b, bin_sino) in enumerate(pcct_sino.bins)
+            let I0b = T(I0_bins[b]), frac = T(scatter_fracs[b]),
+                I0t = I0_total, bs = bin_sino, sf = scatter_field, eps = eps_combine
+                AK.foreachindex(bs) do idx
+                    N_primary = I0b * exp(-bs[idx])
+                    N_scatter = sf[idx] * I0t * frac
+                    N_total = N_primary + max(N_scatter, zero(T))
+                    bs[idx] = -log(max(N_total, eps) / I0b)
+                end
+            end
+        end
+    end
+
+    # ─── Noise (in-place on pcct_sino.bins — now includes scatter in counts) ───
     I0_physics = compute_detector_I0(geom, protocol, sum(ws.weights))
     if sim_opts.use_noise
         apply_pcct_noise!(pcct_sino, pcct_detector, protocol;
@@ -147,30 +193,23 @@ function simulate!(
     end
 
     # ─── MC pulse pileup (pre-computed at workspace creation) ───
-    # Applied in count domain: N_new = N_old × cf
-    # sino = -log(N/I0), so N = I0 × exp(-sino), N_new = cf × N, sino_new = -log(cf × N / I0)
-    # = -log(cf) + sino  WRONG for air (sino≈0 → N≈I0, but we want N_air_new = cf × I0)
-    # Correct: convert to counts, scale, convert back
     if ws.pileup_count_factor < 0.999
         cf = T(ws.pileup_count_factor)
         for (b_idx, bin) in enumerate(pcct_sino.bins)
             I0b = T(ws.I0_bins[b_idx])
             let cf=cf, I0b=I0b, b=bin, eps=T(1e-10)
                 AK.foreachindex(b) do idx
-                    N = I0b * exp(-b[idx])       # Convert to counts
-                    N_pileup = cf * N             # Apply count loss
-                    b[idx] = -log(max(N_pileup, eps) / I0b)  # Back to line integral
+                    N = I0b * exp(-b[idx])
+                    N_pileup = cf * N
+                    b[idx] = -log(max(N_pileup, eps) / I0b)
                 end
             end
         end
     end
 
-    # ─── Combine bins → single sinogram for scatter (same math as notebook) ───
-    I0_bins = ws.I0_bins
-    I0_total = T(sum(I0_bins))
+    # ─── Combine bins → single sinogram (scatter now naturally included) ───
     combined_gpu = ws.combined
     fill!(combined_gpu, zero(T))
-    eps_combine = T(1e-10)
     for (b, bin_sino) in enumerate(pcct_sino.bins)
         let I0b = T(I0_bins[b]), bs = bin_sino, comb = combined_gpu
             AK.foreachindex(bs) do idx
@@ -184,11 +223,7 @@ function simulate!(
         end
     end
 
-    # ─── Scatter add + correct (same physics as EICT) ───
-    if config.scatter !== nothing
-        add_scatter!(combined_gpu, config.scatter;
-            ws_output=ws.tube_physics_scratch)
-    end
+    # ─── Scatter correction on combined (for conventional recon output) ───
     if config.scatter_correction !== nothing
         correct_scatter!(combined_gpu, config.scatter_correction;
             ws_output=ws.tube_physics_scratch)
@@ -197,7 +232,7 @@ function simulate!(
     # Save combined to CPU
     copyto!(ws.sino_noisy_out, combined_gpu)
 
-    # Return bins + combined sinogram (with scatter)
+    # Return bins + combined sinogram
     return (pcct_sino=pcct_sino, I0_bins=I0_bins, combined=Array(combined_gpu))
 end
 

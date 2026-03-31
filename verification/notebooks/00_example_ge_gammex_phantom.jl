@@ -5,21 +5,7 @@
 begin
     using Pkg: Pkg
     Pkg.activate(dirname(@__DIR__))
-    # Pkg.resolve()
-    # Pkg.instantiate()
     using Revise
-
-    # This Pluto notebook uses @bind for interactivity. When running this notebook outside of Pluto, the following 'mock version' of @bind gives bound variables a default value (instead of an error).
-    macro bind(def, element)
-        #! format: off
-        return quote
-            local iv = try Base.loaded_modules[Base.PkgId(Base.UUID("6e696c72-6542-2067-7265-42206c756150"), "AbstractPlutoDingetjes")].Bonds.initial_value catch; b -> missing; end
-            local el = $(esc(element))
-            global $(esc(def)) = Core.applicable(Base.get, el) ? Base.get(el) : iv(el)
-            el
-        end
-        #! format: on
-    end
 end
 
 # ╔═╡ 14530566-ecaa-4345-9115-e75981f3837c
@@ -41,7 +27,7 @@ using Markdown
 # using CUDA # Choose one or the other
 
 # ╔═╡ 00010002-0000-4000-8000-000000000000
-import PlutoUI as UI
+# PlutoUI removed — slice params defined directly below
 
 # ╔═╡ 00010006-0000-4000-8000-000000000000
 import BasisSimulator as BS
@@ -56,7 +42,7 @@ import Statistics: mean, std
 import XrayAttenuation as XA
 
 # ╔═╡ e32e62a8-ecc2-4f64-8edd-bed87b14d2ba
-UI.TableOfContents()
+# (table of contents removed — was PlutoUI-specific)
 
 # ╔═╡ 00010010-0000-4000-8000-000000000000
 const RESULTS_DIR = joinpath(dirname(@__DIR__), "results", "example_ge"); mkpath(RESULTS_DIR)
@@ -457,7 +443,7 @@ bhc_model, μ_water_ref = let
     )
     @info "BHC 120 kVp: E_ref=$(round(ref_E, digits = 1)) keV, μ_water=$(round(model.μ_water_ref, digits = 5)) cm⁻¹"
     model, model.μ_water_ref
-end
+end;
 
 # ╔═╡ 00070001-0000-4000-8000-000000000000
 md"""
@@ -474,7 +460,7 @@ sim_sino = let
     result = (sino = Array(ws.sino_noisy_out), geom = ws.geom)
     ws = nothing; clear_gpu!()
     result
-end
+end;
 
 # ╔═╡ 00070003-0000-4000-8000-000000000000
 # Sinogram mid-view visualization
@@ -540,22 +526,32 @@ sim_fbp = let
     vol = Array(recon_μ)
     ws_fdk = nothing; sino_gpu = nothing; recon_μ = nothing; clear_gpu!()
     vol
-end
+end;
 
 # ╔═╡ 00080003-0000-4000-8000-000000000000
-# HU conversion + post-processing
+# HU conversion + post-processing + FOV mask
 sim_fbp_hu = let
     recon_hu = Float32.(BS.to_hounsfield(sim_fbp; μ_water = μ_water_ref))
     BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
     BS.apply_radial_cupping_correction!(recon_hu; fov_cm = sim_recon_fov_cm)
+
+    # Mask outside circular FOV to -2048 (distinct from true air ≈ -1000)
+    nx, ny, nz = size(recon_hu)
+    cx, cy = (nx + 1) / 2, (ny + 1) / 2
+    r_fov = nx / 2  # FOV radius in pixels
+    for k in 1:nz, j in 1:ny, i in 1:nx
+        if (i - cx)^2 + (j - cy)^2 > r_fov^2
+            recon_hu[i, j, k] = -2048f0
+        end
+    end
     recon_hu
-end
+end;
 
 # ╔═╡ 096ba509-c17b-4d01-97b0-1ce75df58fc0
 mid_z = size(sim_fbp_hu, 3) ÷ 2
 
 # ╔═╡ e7d41653-97f9-4f14-b3dc-510492ea11e5
-@bind z_fbp UI.Slider(axes(sim_fbp_hu, 3); show_value = true, default = mid_z)
+z_fbp = mid_z  # tweak this to view different slices
 
 # ╔═╡ 00080004-0000-4000-8000-000000000000
 # FBP mid-slice visualization
@@ -632,19 +628,29 @@ sim_hir = let
     vol = Array(recon_μ)
     ws_hir = nothing; sino_gpu = nothing; recon_μ = nothing; clear_gpu!()
     vol
-end
+end;
 
 # ╔═╡ 00090004-0000-4000-8000-000000000000
-# HU conversion + post-processing
+# HU conversion + post-processing + FOV mask
 sim_hir_hu = let
     recon_hu = Float32.(BS.to_hounsfield(sim_hir; μ_water = μ_water_ref))
     BS.add_system_noise_floor!(recon_hu, sim_noise_floor_hu)
     BS.apply_radial_cupping_correction!(recon_hu; fov_cm = sim_recon_fov_cm)
+
+    # Mask outside circular FOV to -2048 (distinct from true air ≈ -1000)
+    nx, ny, nz = size(recon_hu)
+    cx, cy = (nx + 1) / 2, (ny + 1) / 2
+    r_fov = nx / 2
+    for k in 1:nz, j in 1:ny, i in 1:nx
+        if (i - cx)^2 + (j - cy)^2 > r_fov^2
+            recon_hu[i, j, k] = -2048f0
+        end
+    end
     recon_hu
-end
+end;
 
 # ╔═╡ 2a0ceae5-6706-4336-9952-b120fc508c60
-@bind z_hir UI.Slider(axes(sim_fbp_hu, 3); show_value = true, default = mid_z)
+z_hir = mid_z  # tweak this to view different slices
 
 # ╔═╡ 00090005-0000-4000-8000-000000000000
 # HIR mid-slice visualization
@@ -669,7 +675,7 @@ md"""
 """
 
 # ╔═╡ 13043885-3fcc-439c-878c-91c663efcd5f
-@bind z_combo UI.Slider(axes(sim_fbp_hu, 3); show_value = true, default = mid_z)
+z_combo = mid_z  # tweak this to view different slices
 
 # ╔═╡ 00100002-0000-4000-8000-000000000000
 # Side-by-side: FBP vs HIR (soft tissue window)
@@ -706,6 +712,25 @@ let
 
     CM.Colorbar(fig[1, 3], hm; label = "HU", width = 12)
     CM.save(joinpath(RESULTS_DIR, "fbp_vs_hir_bone.png"), fig, px_per_unit = 2)
+    fig
+end
+
+# ╔═╡ bdf07ebe-9a31-4cac-9a61-09aa7489a272
+# Side-by-side: FBP vs HIR (lung window)
+let
+    fbp_slice = sim_fbp_hu[:, :, z_combo]
+    hir_slice = sim_hir_hu[:, :, z_combo]
+
+    fig = CM.Figure(size = (1100, 500), fontsize = 13)
+
+    ax1 = CM.Axis(fig[1, 1]; title = "FBP — Lung Window", aspect = CM.DataAspect())
+    CM.heatmap!(ax1, fbp_slice; colormap = :grays, colorrange = (-1500, 200))
+
+    ax2 = CM.Axis(fig[1, 2]; title = "HIR — lung Window", aspect = CM.DataAspect())
+    hm = CM.heatmap!(ax2, hir_slice; colormap = :grays, colorrange = (-1500, 200))
+
+    CM.Colorbar(fig[1, 3], hm; label = "HU", width = 12)
+    CM.save(joinpath(RESULTS_DIR, "fbp_vs_hir_lung.png"), fig, px_per_unit = 2)
     fig
 end
 
@@ -793,7 +818,7 @@ end
 # ╠═e32e62a8-ecc2-4f64-8edd-bed87b14d2ba
 # ╠═00010010-0000-4000-8000-000000000000
 # ╠═00010011-0000-4000-8000-000000000000
-# ╠═00020001-0000-4000-8000-000000000000
+# ╟─00020001-0000-4000-8000-000000000000
 # ╟─00030001-0000-4000-8000-000000000000
 # ╠═00030002-0000-4000-8000-000000000000
 # ╠═00030003-0000-4000-8000-000000000000
@@ -820,17 +845,18 @@ end
 # ╠═00080002-0000-4000-8000-000000000000
 # ╠═00080003-0000-4000-8000-000000000000
 # ╠═096ba509-c17b-4d01-97b0-1ce75df58fc0
-# ╟─e7d41653-97f9-4f14-b3dc-510492ea11e5
+# ╠═e7d41653-97f9-4f14-b3dc-510492ea11e5
 # ╟─00080004-0000-4000-8000-000000000000
 # ╟─00090001-0000-4000-8000-000000000000
 # ╠═00090002-0000-4000-8000-000000000000
 # ╠═00090003-0000-4000-8000-000000000000
 # ╠═00090004-0000-4000-8000-000000000000
-# ╟─2a0ceae5-6706-4336-9952-b120fc508c60
+# ╠═2a0ceae5-6706-4336-9952-b120fc508c60
 # ╟─00090005-0000-4000-8000-000000000000
 # ╟─00100001-0000-4000-8000-000000000000
-# ╟─13043885-3fcc-439c-878c-91c663efcd5f
+# ╠═13043885-3fcc-439c-878c-91c663efcd5f
 # ╟─00100002-0000-4000-8000-000000000000
 # ╟─00100003-0000-4000-8000-000000000000
+# ╟─bdf07ebe-9a31-4cac-9a61-09aa7489a272
 # ╟─00100004-0000-4000-8000-000000000000
 # ╟─00100005-0000-4000-8000-000000000000

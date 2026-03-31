@@ -63,3 +63,4 @@ verification/figures/
 verification/catsim_work/
 verification/notebooks/catsim_work/
 verification/data/xcat/*.bin
+verification/data/brain_perfusion/
