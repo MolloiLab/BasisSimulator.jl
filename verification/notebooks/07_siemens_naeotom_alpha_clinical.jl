@@ -2103,7 +2103,7 @@ vmi_decomp_setup = let
 end;
 
 # ╔═╡ 08120010-0000-4000-8000-000000000040
-# 12e-1b: RWLS-GN — 40 keV
+# 12e-1b: RWLS-GN — 40 keV [TUNE: α, β per energy — no re-simulation needed]
 vmi_decomp_40 = let
     n_iter = 3
     α = 0.3
@@ -2113,7 +2113,7 @@ vmi_decomp_40 = let
 end;
 
 # ╔═╡ 08120010-0000-4000-8000-000000000070
-# 12e-1c: RWLS-GN — 70 keV
+# 12e-1c: RWLS-GN — 70 keV [TUNE: α, β per energy — no re-simulation needed]
 vmi_decomp_70 = let
     n_iter = 3
     α = 0.3
@@ -2123,7 +2123,7 @@ vmi_decomp_70 = let
 end;
 
 # ╔═╡ 08120010-0000-4000-8000-000000000100
-# 12e-1d: RWLS-GN — 100 keV
+# 12e-1d: RWLS-GN — 100 keV [TUNE: α, β per energy — no re-simulation needed]
 vmi_decomp_100 = let
     n_iter = 3
     α = 0.3
@@ -2133,7 +2133,7 @@ vmi_decomp_100 = let
 end;
 
 # ╔═╡ 08120010-0000-4000-8000-000000000140
-# 12e-1e: RWLS-GN — 140 keV
+# 12e-1e: RWLS-GN — 140 keV [TUNE: α, β per energy — no re-simulation needed]
 vmi_decomp_140 = let
     n_iter = 3
     α = 0.3

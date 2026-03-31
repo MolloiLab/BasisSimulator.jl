@@ -3626,11 +3626,12 @@ begin
 end
 
 # ╔═╡ 06126002-0000-4000-8000-000000000000
-# RWLS-GN material decomposition + ACNR + VMI synthesis (Ducros et al., Med Phys 2017)
+# RWLS-GN setup (Ducros et al., Med Phys 2017) — EXPENSIVE, cached.
 # 2-sinogram variant: exactly determined (2 measurements, 2 unknowns).
 # Same algorithm as PCCT notebook 07, but without the third overdetermined bin.
 # Polynomial calibration (above) provides initialization.
-sim_de_vmi_raw = let
+# Per-energy RWLS-GN + ACNR + VMI FBP are in separate cells below (tunable per energy).
+sim_de_vmi_setup = let
     cal = de_calibration
     terms = cal.terms
 
@@ -3819,63 +3820,95 @@ sim_de_vmi_raw = let
         (sino_w = Float32.(aw_corr), sino_I = Float32.(aI_corr))
     end
 
-    # ── Run pipeline for each VMI energy ──
-    recon_size = de_matrix_size
-    orient_fn = s -> reverse(s, dims = 2)
-
-    # RWLS-GN tuning
-    gn_n_iter = 3
-    gn_α = 0.5     # higher than PCCT (0.3) — 2-bin system needs more regularization
-    gn_β_w = 1.0
-    gn_β_I = 1.0
-
-    # ACNR tuning
-    use_acnr = true
-    acnr_E_ref = 70.0
-    acnr_σ = 2.0
-    acnr_γ_per_energy = Dict(
-        40 => 0.95,    # aggressive (40 keV needs most help)
-        70 => 0.0,     # reference — no correction
-        100 => 0.5,    # light
-        140 => 0.60,   # light
-    )
-
-    results = NamedTuple[]
-    for E in DE_VMI_ENERGIES
-        E_f = Float64(E)
-
-        # Step 1: RWLS-GN material decomposition
-        decomp = run_gn(E_f; n_iter=gn_n_iter, α=gn_α, β_w=gn_β_w, β_I=gn_β_I)
-        sw, sI = decomp.sino_w, decomp.sino_I
-
-        # Step 2: ACNR (skip at reference energy)
-        γ_E = get(acnr_γ_per_energy, E, 1.0)
-        if use_acnr && γ_E > 0
-            acnr_result = apply_acnr(sw, sI; E_ref=acnr_E_ref, σ_acnr=acnr_σ, γ=γ_E)
-            sw, sI = acnr_result.sino_w, acnr_result.sino_I
-        end
-
-        # Step 3: VMI sinogram synthesis + FBP
-        μρ_w_E = Float32(BS.compute_mass_μ_at_energy(XA.Materials.water, E_f))
-        μρ_I_E = Float32(BS.compute_mass_μ_at_energy(XA.Elements.Iodine, E_f))
-        μ_w_E = BS.compute_μ_at_energy(XA.Materials.water, E_f)
-
-        vmi_sino = @. μρ_w_E * sw + μρ_I_E * sI
-        vmi_sino_gpu = MtlArray(vmi_sino)
-        ws_fdk = BS.create_fdk_recon_workspace(vmi_sino_gpu, geom, recon_size;
-            filter = BS.CustomFilter(de_filter_control.x, de_filter_control.y))
-        recon_μ = BS.reconstruct!(ws_fdk, vmi_sino_gpu, geom, recon_size)
-
-        vol_hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = μ_w_E))
-        BS.apply_radial_cupping_correction!(vol_hu; fov_cm = 35.0)
-        BS.add_system_noise_floor!(vol_hu, sim_noise_floor_hu)
-
-        recon_oriented = Float32.(mapslices(orient_fn, vol_hu, dims = (1, 2)))
-        push!(results, (name = "VMI_$(E)keV", recon = recon_oriented, energy_keV = E))
-        ws_fdk = nothing; vmi_sino_gpu = nothing; GC.gc(true)
-    end
-    results
+    (run_gn = run_gn, apply_acnr = apply_acnr, geom = geom)
 end;
+
+# ╔═╡ 06126002-0000-4000-8000-000000000040
+# DE VMI — 40 keV [TUNE: α, β, ACNR γ per energy — no re-simulation needed]
+sim_de_vmi_40 = let
+    E = 40; E_f = Float64(E)
+    decomp = sim_de_vmi_setup.run_gn(E_f; n_iter=3, α=0.5, β_w=1.0, β_I=1.0)
+    sw, sI = decomp.sino_w, decomp.sino_I
+    acnr_result = sim_de_vmi_setup.apply_acnr(sw, sI; E_ref=70.0, σ_acnr=2.0, γ=0.95)
+    sw, sI = acnr_result.sino_w, acnr_result.sino_I
+    μρ_w = Float32(BS.compute_mass_μ_at_energy(XA.Materials.water, E_f))
+    μρ_I = Float32(BS.compute_mass_μ_at_energy(XA.Elements.Iodine, E_f))
+    μ_w = BS.compute_μ_at_energy(XA.Materials.water, E_f)
+    vmi_sino_gpu = MtlArray(@. μρ_w * sw + μρ_I * sI)
+    ws_fdk = BS.create_fdk_recon_workspace(vmi_sino_gpu, sim_de_vmi_setup.geom, de_matrix_size;
+        filter = BS.CustomFilter(de_filter_control.x, de_filter_control.y))
+    vol_hu = Float32.(BS.to_hounsfield(Array(BS.reconstruct!(ws_fdk, vmi_sino_gpu, sim_de_vmi_setup.geom, de_matrix_size)); μ_water = μ_w))
+    BS.apply_radial_cupping_correction!(vol_hu; fov_cm = 35.0)
+    BS.add_system_noise_floor!(vol_hu, sim_noise_floor_hu)
+    orient_fn = s -> reverse(s, dims = 2)
+    (name = "VMI_$(E)keV", recon = Float32.(mapslices(orient_fn, vol_hu, dims = (1, 2))), energy_keV = E)
+end;
+
+# ╔═╡ 06126002-0000-4000-8000-000000000070
+# DE VMI — 70 keV [TUNE: α, β — no ACNR at reference energy]
+sim_de_vmi_70 = let
+    E = 70; E_f = Float64(E)
+    decomp = sim_de_vmi_setup.run_gn(E_f; n_iter=3, α=0.5, β_w=1.0, β_I=1.0)
+    sw, sI = decomp.sino_w, decomp.sino_I
+    # No ACNR at reference energy (γ=0)
+    μρ_w = Float32(BS.compute_mass_μ_at_energy(XA.Materials.water, E_f))
+    μρ_I = Float32(BS.compute_mass_μ_at_energy(XA.Elements.Iodine, E_f))
+    μ_w = BS.compute_μ_at_energy(XA.Materials.water, E_f)
+    vmi_sino_gpu = MtlArray(@. μρ_w * sw + μρ_I * sI)
+    ws_fdk = BS.create_fdk_recon_workspace(vmi_sino_gpu, sim_de_vmi_setup.geom, de_matrix_size;
+        filter = BS.CustomFilter(de_filter_control.x, de_filter_control.y))
+    vol_hu = Float32.(BS.to_hounsfield(Array(BS.reconstruct!(ws_fdk, vmi_sino_gpu, sim_de_vmi_setup.geom, de_matrix_size)); μ_water = μ_w))
+    BS.apply_radial_cupping_correction!(vol_hu; fov_cm = 35.0)
+    BS.add_system_noise_floor!(vol_hu, sim_noise_floor_hu)
+    orient_fn = s -> reverse(s, dims = 2)
+    (name = "VMI_$(E)keV", recon = Float32.(mapslices(orient_fn, vol_hu, dims = (1, 2))), energy_keV = E)
+end;
+
+# ╔═╡ 06126002-0000-4000-8000-000000000100
+# DE VMI — 100 keV [TUNE: α, β, ACNR γ per energy — no re-simulation needed]
+sim_de_vmi_100 = let
+    E = 100; E_f = Float64(E)
+    decomp = sim_de_vmi_setup.run_gn(E_f; n_iter=3, α=0.5, β_w=1.0, β_I=1.0)
+    sw, sI = decomp.sino_w, decomp.sino_I
+    acnr_result = sim_de_vmi_setup.apply_acnr(sw, sI; E_ref=70.0, σ_acnr=2.0, γ=0.5)
+    sw, sI = acnr_result.sino_w, acnr_result.sino_I
+    μρ_w = Float32(BS.compute_mass_μ_at_energy(XA.Materials.water, E_f))
+    μρ_I = Float32(BS.compute_mass_μ_at_energy(XA.Elements.Iodine, E_f))
+    μ_w = BS.compute_μ_at_energy(XA.Materials.water, E_f)
+    vmi_sino_gpu = MtlArray(@. μρ_w * sw + μρ_I * sI)
+    ws_fdk = BS.create_fdk_recon_workspace(vmi_sino_gpu, sim_de_vmi_setup.geom, de_matrix_size;
+        filter = BS.CustomFilter(de_filter_control.x, de_filter_control.y))
+    vol_hu = Float32.(BS.to_hounsfield(Array(BS.reconstruct!(ws_fdk, vmi_sino_gpu, sim_de_vmi_setup.geom, de_matrix_size)); μ_water = μ_w))
+    BS.apply_radial_cupping_correction!(vol_hu; fov_cm = 35.0)
+    BS.add_system_noise_floor!(vol_hu, sim_noise_floor_hu)
+    orient_fn = s -> reverse(s, dims = 2)
+    (name = "VMI_$(E)keV", recon = Float32.(mapslices(orient_fn, vol_hu, dims = (1, 2))), energy_keV = E)
+end;
+
+# ╔═╡ 06126002-0000-4000-8000-000000000140
+# DE VMI — 140 keV [TUNE: α, β, ACNR γ per energy — no re-simulation needed]
+sim_de_vmi_140 = let
+    E = 140; E_f = Float64(E)
+    decomp = sim_de_vmi_setup.run_gn(E_f; n_iter=3, α=0.5, β_w=1.0, β_I=1.0)
+    sw, sI = decomp.sino_w, decomp.sino_I
+    acnr_result = sim_de_vmi_setup.apply_acnr(sw, sI; E_ref=70.0, σ_acnr=2.0, γ=0.60)
+    sw, sI = acnr_result.sino_w, acnr_result.sino_I
+    μρ_w = Float32(BS.compute_mass_μ_at_energy(XA.Materials.water, E_f))
+    μρ_I = Float32(BS.compute_mass_μ_at_energy(XA.Elements.Iodine, E_f))
+    μ_w = BS.compute_μ_at_energy(XA.Materials.water, E_f)
+    vmi_sino_gpu = MtlArray(@. μρ_w * sw + μρ_I * sI)
+    ws_fdk = BS.create_fdk_recon_workspace(vmi_sino_gpu, sim_de_vmi_setup.geom, de_matrix_size;
+        filter = BS.CustomFilter(de_filter_control.x, de_filter_control.y))
+    vol_hu = Float32.(BS.to_hounsfield(Array(BS.reconstruct!(ws_fdk, vmi_sino_gpu, sim_de_vmi_setup.geom, de_matrix_size)); μ_water = μ_w))
+    BS.apply_radial_cupping_correction!(vol_hu; fov_cm = 35.0)
+    BS.add_system_noise_floor!(vol_hu, sim_noise_floor_hu)
+    orient_fn = s -> reverse(s, dims = 2)
+    (name = "VMI_$(E)keV", recon = Float32.(mapslices(orient_fn, vol_hu, dims = (1, 2))), energy_keV = E)
+end;
+
+# ╔═╡ 06126002-0000-4000-8000-000000000200
+# Collect per-energy results into array (for downstream cells that expect sim_de_vmi_raw)
+sim_de_vmi_raw = [sim_de_vmi_40, sim_de_vmi_70, sim_de_vmi_100, sim_de_vmi_140];
 
 # ╔═╡ 06126005-0000-4000-8000-000000000000
 # Diagnostic: VMI at each energy (RWLS-GN + ACNR output)
@@ -4653,6 +4686,11 @@ sim_noise_floor_hu
 # ╠═06126001-0000-4000-8000-000000000000
 # ╠═06126002-0000-4000-8000-000000000000
 # ╠═06126003-0000-4000-8000-000000000000
+# ╠═06126002-0000-4000-8000-000000000040
+# ╠═06126002-0000-4000-8000-000000000070
+# ╠═06126002-0000-4000-8000-000000000100
+# ╠═06126002-0000-4000-8000-000000000140
+# ╠═06126002-0000-4000-8000-000000000200
 # ╠═06126005-0000-4000-8000-000000000000
 # ╠═06126004-0000-4000-8000-000000000000
 # ╠═c3bafd40-fda9-4ec2-8ec3-8dc109fc4ecb
