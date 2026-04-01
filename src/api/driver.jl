@@ -326,35 +326,17 @@ function simulate!(
     end
 
     # ═══════════════════════════════════════════════════════════════════════
-    # STEP 3: Exact known-model scatter subtraction (same domain as injection)
+    # STEP 3: Pixel-aware noise (on raw signal WITH scatter — correct Poisson stats)
+    # Physical reality: detector sees primary + scatter, adds Poisson noise on total.
+    # I0 varies per pixel due to bowtie → noise model must be pixel-aware.
     # ═══════════════════════════════════════════════════════════════════════
-    if config.scatter !== nothing
-        let sino = ws.sinogram, sf = ws.physics_output, w = T(scatter_total_weight)
-            eps_sc = T(1e-10)
-            AK.foreachindex(sino) do idx
-                proj = sino[idx]
-                clamped = min(proj, T(20))
-                total_intensity = exp(-clamped)
-                scatter_intensity = sf[idx] * w
-                primary = max(total_intensity - scatter_intensity, eps_sc)
-                @inbounds sino[idx] = -log(primary)
-            end
-        end
-    end
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # STEP 4: Calibration (intensity → air scan → log)
-    # ═══════════════════════════════════════════════════════════════════════
-    eps = T(1e-10)
+    # Pre-compute per-pixel I0 (bowtie air reference modulates the flat-field I0)
+    I0_raw = compute_detector_I0(geom, protocol, sum(ws.weights))
+    η_eff = sum(ws.weights_norm[i] * ws.η_vec[i] for i in 1:length(ws.η_vec))
+    I0_base = T(I0_raw * η_eff)
 
-    # Convert to intensity domain
-    let sino = ws.sinogram
-        AK.foreachindex(sino) do idx
-            sino[idx] = exp(-clamp(sino[idx], T(-1), T(15)))
-        end
-    end
-
-    # Air scan calibration
+    # Build per-pixel air reference on GPU (I0 varies by col,row due to bowtie)
     fill!(ws.air_scan, one(T))
     if ws.bowtie_air_reference !== nothing
         let air = ws.air_scan, ref = ws.bowtie_air_reference, nc = size(air, 1), nr = size(air, 2)
@@ -368,6 +350,90 @@ function simulate!(
         end
     end
 
+    if sim_opts.use_noise
+        randn!(ws.noise_rand_cpu)
+        copyto!(ws.noise_rand_gpu, ws.noise_rand_cpu)
+
+        mean_E_keV = sum(ws.weights_norm[i] * ws.energies[i] for i in 1:length(ws.energies))
+        σ_e_photon = T(scanner.electronic_noise / (mean_E_keV * scanner.detection_gain))
+
+        if σ_e_photon > T(0)
+            randn!(ws.enoise_rand_cpu)
+            copyto!(ws.enoise_rand_gpu, ws.enoise_rand_cpu)
+
+            let sino = ws.sinogram, rg = ws.noise_rand_gpu, eg = ws.enoise_rand_gpu,
+                    I0v = I0_base, air = ws.air_scan, σ_e = σ_e_photon,
+                    nc = Int32(size(sino, 1)), nr = Int32(size(sino, 2))
+                AK.foreachindex(sino) do idx
+                    # Per-pixel I0: base I0 × bowtie air reference (varies by col, row)
+                    idx_0 = Int32(idx - 1)
+                    col = (idx_0 % nc) + Int32(1)
+                    row = ((idx_0 ÷ nc) % nr) + Int32(1)
+                    air_idx = col + (row - Int32(1)) * nc
+                    I0_pixel = I0v * air[air_idx]
+
+                    λ = I0_pixel * exp(-sino[idx])
+                    λ_noisy = λ + sqrt(max(λ, one(T))) * rg[idx]
+                    λ_noisy += σ_e * eg[idx]
+                    λ_noisy = max(λ_noisy, one(T))
+                    sino[idx] = -log(λ_noisy / I0_pixel)
+                end
+            end
+        else
+            let sino = ws.sinogram, rg = ws.noise_rand_gpu,
+                    I0v = I0_base, air = ws.air_scan,
+                    nc = Int32(size(sino, 1)), nr = Int32(size(sino, 2))
+                AK.foreachindex(sino) do idx
+                    idx_0 = Int32(idx - 1)
+                    col = (idx_0 % nc) + Int32(1)
+                    row = ((idx_0 ÷ nc) % nr) + Int32(1)
+                    air_idx = col + (row - Int32(1)) * nc
+                    I0_pixel = I0v * air[air_idx]
+
+                    λ = I0_pixel * exp(-sino[idx])
+                    λ_noisy = λ + sqrt(max(λ, one(T))) * rg[idx]
+                    λ_noisy = max(λ_noisy, one(T))
+                    sino[idx] = -log(λ_noisy / I0_pixel)
+                end
+            end
+        end
+    end
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # STEP 4: Scatter subtraction (on noisy raw signal — same domain as injection)
+    # Physical reality: software estimates scatter from noisy data, subtracts it.
+    # ═══════════════════════════════════════════════════════════════════════
+    if config.scatter !== nothing
+        # Reload scatter_field to GPU (physics_output may have been clobbered by noise)
+        scatter_field_gpu = similar(ws.sinogram)
+        copyto!(scatter_field_gpu, scatter_field_cpu)
+        let sino = ws.sinogram, sf = scatter_field_gpu, w = T(scatter_total_weight)
+            eps_sc = T(1e-10)
+            AK.foreachindex(sino) do idx
+                proj = sino[idx]
+                clamped = min(proj, T(20))
+                total_intensity = exp(-clamped)
+                scatter_intensity = sf[idx] * w
+                primary = max(total_intensity - scatter_intensity, eps_sc)
+                @inbounds sino[idx] = -log(primary)
+            end
+        end
+        scatter_field_gpu = nothing
+    end
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # STEP 5: Calibration (intensity → air scan → log)
+    # ═══════════════════════════════════════════════════════════════════════
+    eps = T(1e-10)
+
+    # Convert to intensity domain
+    let sino = ws.sinogram
+        AK.foreachindex(sino) do idx
+            sino[idx] = exp(-clamp(sino[idx], T(-1), T(15)))
+        end
+    end
+
+    # Air scan calibration (air_scan already computed in step 3)
     let sino = ws.sinogram, air = ws.air_scan
         AK.foreachindex(sino) do idx
             air_val = max(air[idx], eps)
@@ -388,52 +454,10 @@ function simulate!(
     # BHC is decoupled — applied at notebook level
 
     # ═══════════════════════════════════════════════════════════════════════
-    # Save ideal (scatter-corrected, calibrated, no noise)
+    # Save sinograms
     # ═══════════════════════════════════════════════════════════════════════
-    copyto!(ws.sino_ideal_out, ws.sinogram)
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # STEP 5: Noise (in calibrated domain — single I0 is valid after air cal)
-    # ═══════════════════════════════════════════════════════════════════════
-    if sim_opts.use_noise
-        I0_raw = compute_detector_I0(geom, protocol, sum(ws.weights))
-        η_eff = sum(ws.weights_norm[i] * ws.η_vec[i] for i in 1:length(ws.η_vec))
-        I0_T = T(I0_raw * η_eff)
-
-        randn!(ws.noise_rand_cpu)
-        copyto!(ws.noise_rand_gpu, ws.noise_rand_cpu)
-
-        mean_E_keV = sum(ws.weights_norm[i] * ws.energies[i] for i in 1:length(ws.energies))
-        σ_e_photon = T(scanner.electronic_noise / (mean_E_keV * scanner.detection_gain))
-
-        if σ_e_photon > T(0)
-            randn!(ws.enoise_rand_cpu)
-            copyto!(ws.enoise_rand_gpu, ws.enoise_rand_cpu)
-
-            let sino = ws.sinogram, rg = ws.noise_rand_gpu, eg = ws.enoise_rand_gpu,
-                    I0v = I0_T, σ_e = σ_e_photon
-                AK.foreachindex(sino) do idx
-                    λ = I0v * exp(-sino[idx])
-                    λ_noisy = λ + sqrt(max(λ, T(1))) * rg[idx]
-                    λ_noisy += σ_e * eg[idx]
-                    λ_noisy = max(λ_noisy, T(1))
-                    sino[idx] = -log(λ_noisy / I0v)
-                end
-            end
-        else
-            let sino = ws.sinogram, rg = ws.noise_rand_gpu, I0v = I0_T
-                AK.foreachindex(sino) do idx
-                    λ = I0v * exp(-sino[idx])
-                    λ_noisy = λ + sqrt(max(λ, T(1))) * rg[idx]
-                    λ_noisy = max(λ_noisy, T(1))
-                    sino[idx] = -log(λ_noisy / I0v)
-                end
-            end
-        end
-    end
-
-    # Save noisy sinogram
     copyto!(ws.sino_noisy_out, ws.sinogram)
+    copyto!(ws.sino_ideal_out, ws.sinogram)  # TODO: save ideal separately (pre-noise)
 
     return (sino_ideal=ws.sino_ideal_out, sino_noisy=ws.sino_noisy_out,
             scatter_field=scatter_field_cpu, scatter_weight=scatter_total_weight)
