@@ -326,30 +326,15 @@ function simulate!(
     end
 
     # ═══════════════════════════════════════════════════════════════════════
-    # STEP 3: Fused noise + scatter subtraction (counts domain)
-    #
-    # Physical reality:
-    #   1. Detector sees primary + scatter → total counts
-    #   2. Poisson noise on total counts
-    #   3. Software subtracts known scatter counts
-    #   4. Result: noisy primary counts
-    #
-    # Fused into one step to avoid intermediate log/exp round-trips that
-    # amplify noise into extreme line integrals (which break HIR).
+    # STEP 3: Noise (on raw signal WITH scatter — correct Poisson stats)
+    # Physical reality: detector sees primary + scatter, adds Poisson noise.
+    # Bowtie spectral effects are ALREADY in the sinogram from forward projection
+    # (via bowtie_spectral weighting), so I0_base × exp(-sino) gives correct
+    # expected counts without additional per-pixel scaling.
     # ═══════════════════════════════════════════════════════════════════════
     I0_raw = compute_detector_I0(geom, protocol, sum(ws.weights))
     η_eff = sum(ws.weights_norm[i] * ws.η_vec[i] for i in 1:length(ws.η_vec))
     I0_T = T(I0_raw * η_eff)
-
-    # Scatter counts per pixel (0 if scatter disabled)
-    has_scatter = config.scatter !== nothing
-    scatter_field_gpu = if has_scatter
-        sf_gpu = similar(ws.sinogram)
-        copyto!(sf_gpu, scatter_field_cpu)
-        sf_gpu
-    else
-        nothing
-    end
 
     if sim_opts.use_noise
         randn!(ws.noise_rand_cpu)
@@ -363,49 +348,48 @@ function simulate!(
             copyto!(ws.enoise_rand_gpu, ws.enoise_rand_cpu)
 
             let sino = ws.sinogram, rg = ws.noise_rand_gpu, eg = ws.enoise_rand_gpu,
-                    I0v = I0_T, σ_e = σ_e_photon,
-                    sf = scatter_field_gpu, sw = T(scatter_total_weight), do_sc = has_scatter
+                    I0v = I0_T, σ_e = σ_e_photon
                 AK.foreachindex(sino) do idx
-                    # Total counts at detector (primary + scatter)
-                    λ_total = I0v * exp(-sino[idx])
-                    # Poisson noise on total counts
-                    λ_noisy = λ_total + sqrt(max(λ_total, one(T))) * rg[idx]
+                    λ = I0v * exp(-sino[idx])
+                    λ_noisy = λ + sqrt(max(λ, one(T))) * rg[idx]
                     λ_noisy += σ_e * eg[idx]
-                    # Subtract known scatter counts
-                    λ_primary = if do_sc
-                        max(λ_noisy - I0v * sf[idx] * sw, one(T))
-                    else
-                        max(λ_noisy, one(T))
-                    end
-                    sino[idx] = -log(λ_primary / I0v)
+                    λ_noisy = max(λ_noisy, one(T))
+                    sino[idx] = -log(λ_noisy / I0v)
                 end
             end
         else
-            let sino = ws.sinogram, rg = ws.noise_rand_gpu, I0v = I0_T,
-                    sf = scatter_field_gpu, sw = T(scatter_total_weight), do_sc = has_scatter
+            let sino = ws.sinogram, rg = ws.noise_rand_gpu, I0v = I0_T
                 AK.foreachindex(sino) do idx
-                    λ_total = I0v * exp(-sino[idx])
-                    λ_noisy = λ_total + sqrt(max(λ_total, one(T))) * rg[idx]
-                    λ_primary = if do_sc
-                        max(λ_noisy - I0v * sf[idx] * sw, one(T))
-                    else
-                        max(λ_noisy, one(T))
-                    end
-                    sino[idx] = -log(λ_primary / I0v)
+                    λ = I0v * exp(-sino[idx])
+                    λ_noisy = λ + sqrt(max(λ, one(T))) * rg[idx]
+                    λ_noisy = max(λ_noisy, one(T))
+                    sino[idx] = -log(λ_noisy / I0v)
                 end
             end
         end
-    elseif has_scatter
-        # No noise, but scatter subtraction still needed
-        let sino = ws.sinogram, sf = scatter_field_gpu, sw = T(scatter_total_weight), I0v = I0_T
+    end
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # STEP 4: Scatter subtraction (on noisy raw signal — same domain as injection)
+    # Physical reality: software estimates scatter from noisy data, subtracts it.
+    # ═══════════════════════════════════════════════════════════════════════
+    if config.scatter !== nothing
+        # Reload scatter_field to GPU (physics_output was clobbered by noise randn)
+        scatter_field_gpu = similar(ws.sinogram)
+        copyto!(scatter_field_gpu, scatter_field_cpu)
+        let sino = ws.sinogram, sf = scatter_field_gpu, w = T(scatter_total_weight)
+            eps_sc = T(1e-10)
             AK.foreachindex(sino) do idx
-                λ_total = I0v * exp(-sino[idx])
-                λ_primary = max(λ_total - I0v * sf[idx] * sw, one(T))
-                sino[idx] = -log(λ_primary / I0v)
+                proj = sino[idx]
+                clamped = min(proj, T(20))
+                total_intensity = exp(-clamped)
+                scatter_intensity = sf[idx] * w
+                primary = max(total_intensity - scatter_intensity, eps_sc)
+                @inbounds sino[idx] = -log(primary)
             end
         end
+        scatter_field_gpu = nothing
     end
-    scatter_field_gpu = nothing
 
     # ═══════════════════════════════════════════════════════════════════════
     # STEP 5: Calibration (intensity → air scan → log)
