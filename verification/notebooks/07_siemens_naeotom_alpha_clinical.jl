@@ -1347,6 +1347,8 @@ sim_scan2 = let
     I0_bins_cpu = copy(result.I0_bins)
     combined_cpu = copy(result.combined)
     bins_cpu = [Array(pcct_sino.bins[i]) for i in 1:length(pcct_sino.bins)]
+    result_scatter_field = result.scatter_field
+    result_scatter_bin_weights = result.scatter_bin_weights
 
     # Cleanup GPU
     ws = nothing; result = nothing; GC.gc(true)
@@ -1356,6 +1358,8 @@ sim_scan2 = let
         I0_bins = I0_bins_cpu,
         combined = combined_cpu,
         geom = geom,
+        scatter_field = result_scatter_field,
+        scatter_bin_weights = result_scatter_bin_weights,
     )
 end;
 
