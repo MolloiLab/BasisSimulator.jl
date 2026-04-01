@@ -1705,7 +1705,8 @@ sim_sino_1 = let
         sim_scanner, prot, sim_opts, sim_recon_geom, sim_phantom_gpu,
     )
     BS.simulate!(ws, sim_phantom_gpu, sim_scanner, prot, sim_opts, sim_recon_geom)
-    result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, name = sc.name, kvp = sc.kvp)
+    air_ref = ws.bowtie_air_reference !== nothing ? Array(ws.bowtie_air_reference) : nothing
+    result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, air_ref = air_ref, name = sc.name, kvp = sc.kvp)
     ws = nothing
     GC.gc(true)
     result
@@ -1728,7 +1729,8 @@ sim_sino_2 = let
         sim_scanner, prot, sim_opts, sim_recon_geom, sim_phantom_gpu,
     )
     BS.simulate!(ws, sim_phantom_gpu, sim_scanner, prot, sim_opts, sim_recon_geom)
-    result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, name = sc.name, kvp = sc.kvp)
+    air_ref = ws.bowtie_air_reference !== nothing ? Array(ws.bowtie_air_reference) : nothing
+    result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, air_ref = air_ref, name = sc.name, kvp = sc.kvp)
     ws = nothing
     GC.gc(true)
     result
@@ -1751,7 +1753,8 @@ sim_sino_3 = let
         sim_scanner, prot, sim_opts, sim_recon_geom, sim_phantom_gpu,
     )
     BS.simulate!(ws, sim_phantom_gpu, sim_scanner, prot, sim_opts, sim_recon_geom)
-    result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, name = sc.name, kvp = sc.kvp)
+    air_ref = ws.bowtie_air_reference !== nothing ? Array(ws.bowtie_air_reference) : nothing
+    result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, air_ref = air_ref, name = sc.name, kvp = sc.kvp)
     ws = nothing
     GC.gc(true)
     result
@@ -1774,7 +1777,8 @@ sim_sino_4 = let
         sim_scanner, prot, sim_opts, sim_recon_geom, sim_phantom_gpu,
     )
     BS.simulate!(ws, sim_phantom_gpu, sim_scanner, prot, sim_opts, sim_recon_geom)
-    result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, name = sc.name, kvp = sc.kvp)
+    air_ref = ws.bowtie_air_reference !== nothing ? Array(ws.bowtie_air_reference) : nothing
+    result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, air_ref = air_ref, name = sc.name, kvp = sc.kvp)
     ws = nothing
     GC.gc(true)
     result
@@ -1797,7 +1801,8 @@ sim_sino_5 = let
         sim_scanner, prot, sim_opts, sim_recon_geom, sim_phantom_gpu,
     )
     BS.simulate!(ws, sim_phantom_gpu, sim_scanner, prot, sim_opts, sim_recon_geom)
-    result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, name = sc.name, kvp = sc.kvp)
+    air_ref = ws.bowtie_air_reference !== nothing ? Array(ws.bowtie_air_reference) : nothing
+    result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, air_ref = air_ref, name = sc.name, kvp = sc.kvp)
     ws = nothing
     GC.gc(true)
     result
@@ -1820,7 +1825,8 @@ sim_sino_6 = let
         sim_scanner, prot, sim_opts, sim_recon_geom, sim_phantom_gpu,
     )
     BS.simulate!(ws, sim_phantom_gpu, sim_scanner, prot, sim_opts, sim_recon_geom)
-    result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, name = sc.name, kvp = sc.kvp)
+    air_ref = ws.bowtie_air_reference !== nothing ? Array(ws.bowtie_air_reference) : nothing
+    result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, air_ref = air_ref, name = sc.name, kvp = sc.kvp)
     ws = nothing
     GC.gc(true)
     result
@@ -2568,6 +2574,7 @@ end
 # Scan 1: 120 kVp / 50 mA — HIR RECONSTRUCT (BHC → GPU HIR → CPU volume)
 sim_recon_hir_1 = let
     sino_gpu = MtlArray(sim_sino_1.sino)
+    air_ref_gpu = sim_sino_1.air_ref !== nothing ? MtlArray(Float32.(sim_sino_1.air_ref)) : nothing
     geom = sim_sino_1.geom
     recon_size = sim_matrix_size
     if bhc_enabled
@@ -2586,7 +2593,7 @@ sim_recon_hir_1 = let
         hir_strength, hir_lambda, 30, hir_nepochs,
         hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35)
     )
-    BS.reconstruct!(ws_hir, sino_gpu, geom, recon_size)
+    BS.reconstruct!(ws_hir, sino_gpu, geom, recon_size; air_reference = air_ref_gpu)
     recon_μ = ws_hir.volume
     if bhc_enabled
         BS.apply_bhc_image_domain(
@@ -2615,6 +2622,7 @@ end
 # Scan 2: 120 kVp / 150 mA — HIR RECONSTRUCT (BHC → GPU HIR → CPU volume)
 sim_recon_hir_2 = let
     sino_gpu = MtlArray(sim_sino_2.sino)
+    air_ref_gpu = sim_sino_2.air_ref !== nothing ? MtlArray(Float32.(sim_sino_2.air_ref)) : nothing
     geom = sim_sino_2.geom
     recon_size = sim_matrix_size
     if bhc_enabled
@@ -2633,7 +2641,7 @@ sim_recon_hir_2 = let
         hir_strength, hir_lambda, 30, hir_nepochs,
         hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35)
     )
-    BS.reconstruct!(ws_hir, sino_gpu, geom, recon_size)
+    BS.reconstruct!(ws_hir, sino_gpu, geom, recon_size; air_reference = air_ref_gpu)
     recon_μ = ws_hir.volume
     if bhc_enabled
         BS.apply_bhc_image_domain(
@@ -2662,6 +2670,7 @@ end
 # Scan 3: 120 kVp / 300 mA — HIR RECONSTRUCT (BHC → GPU HIR → CPU volume)
 sim_recon_hir_3 = let
     sino_gpu = MtlArray(sim_sino_3.sino)
+    air_ref_gpu = sim_sino_3.air_ref !== nothing ? MtlArray(Float32.(sim_sino_3.air_ref)) : nothing
     geom = sim_sino_3.geom
     recon_size = sim_matrix_size
     if bhc_enabled
@@ -2680,7 +2689,7 @@ sim_recon_hir_3 = let
         hir_strength, hir_lambda, 30, hir_nepochs,
         hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35)
     )
-    BS.reconstruct!(ws_hir, sino_gpu, geom, recon_size)
+    BS.reconstruct!(ws_hir, sino_gpu, geom, recon_size; air_reference = air_ref_gpu)
     recon_μ = ws_hir.volume
     if bhc_enabled
         BS.apply_bhc_image_domain(
@@ -2709,6 +2718,7 @@ end
 # Scan 4: 80 kVp / 480 mA — HIR RECONSTRUCT (BHC → GPU HIR → CPU volume)
 sim_recon_hir_4 = let
     sino_gpu = MtlArray(sim_sino_4.sino)
+    air_ref_gpu = sim_sino_4.air_ref !== nothing ? MtlArray(Float32.(sim_sino_4.air_ref)) : nothing
     geom = sim_sino_4.geom
     recon_size = sim_matrix_size
     if bhc_enabled
@@ -2727,7 +2737,7 @@ sim_recon_hir_4 = let
         hir_strength, hir_lambda, 30, hir_nepochs,
         hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35)
     )
-    BS.reconstruct!(ws_hir, sino_gpu, geom, recon_size)
+    BS.reconstruct!(ws_hir, sino_gpu, geom, recon_size; air_reference = air_ref_gpu)
     recon_μ = ws_hir.volume
     if bhc_enabled
         BS.apply_bhc_image_domain(
@@ -2756,6 +2766,7 @@ end
 # Scan 5: 100 kVp / 250 mA — HIR RECONSTRUCT (BHC → GPU HIR → CPU volume)
 sim_recon_hir_5 = let
     sino_gpu = MtlArray(sim_sino_5.sino)
+    air_ref_gpu = sim_sino_5.air_ref !== nothing ? MtlArray(Float32.(sim_sino_5.air_ref)) : nothing
     geom = sim_sino_5.geom
     recon_size = sim_matrix_size
     if bhc_enabled
@@ -2774,7 +2785,7 @@ sim_recon_hir_5 = let
         hir_strength, hir_lambda, 30, hir_nepochs,
         hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35)
     )
-    BS.reconstruct!(ws_hir, sino_gpu, geom, recon_size)
+    BS.reconstruct!(ws_hir, sino_gpu, geom, recon_size; air_reference = air_ref_gpu)
     recon_μ = ws_hir.volume
     if bhc_enabled
         BS.apply_bhc_image_domain(
@@ -2803,6 +2814,7 @@ end
 # Scan 6: 140 kVp / 110 mA — HIR RECONSTRUCT (BHC → GPU HIR → CPU volume)
 sim_recon_hir_6 = let
     sino_gpu = MtlArray(sim_sino_6.sino)
+    air_ref_gpu = sim_sino_6.air_ref !== nothing ? MtlArray(Float32.(sim_sino_6.air_ref)) : nothing
     geom = sim_sino_6.geom
     recon_size = sim_matrix_size
     if bhc_enabled
@@ -2821,7 +2833,7 @@ sim_recon_hir_6 = let
         hir_strength, hir_lambda, 30, hir_nepochs,
         hir_n_subsets, hir_huber_delta, hir_relaxation, (25, 35)
     )
-    BS.reconstruct!(ws_hir, sino_gpu, geom, recon_size)
+    BS.reconstruct!(ws_hir, sino_gpu, geom, recon_size; air_reference = air_ref_gpu)
     recon_μ = ws_hir.volume
     if bhc_enabled
         BS.apply_bhc_image_domain(
@@ -3384,7 +3396,8 @@ sim_de_sino_low = let
         sim_scanner_de_80, prot, sim_opts, de_recon_geom, sim_phantom_gpu,
     )
     BS.simulate!(ws, sim_phantom_gpu, sim_scanner_de_80, prot, sim_opts, de_recon_geom)
-    result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, name = sc.name, kvp = sc.kvp)
+    air_ref = ws.bowtie_air_reference !== nothing ? Array(ws.bowtie_air_reference) : nothing
+    result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, air_ref = air_ref, name = sc.name, kvp = sc.kvp)
     ws = nothing
     GC.gc(true)
     result
@@ -3408,7 +3421,8 @@ sim_de_sino_high = let
         sim_scanner_de_140, prot, sim_opts, de_recon_geom, sim_phantom_gpu,
     )
     BS.simulate!(ws, sim_phantom_gpu, sim_scanner_de_140, prot, sim_opts, de_recon_geom)
-    result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, name = sc.name, kvp = sc.kvp)
+    air_ref = ws.bowtie_air_reference !== nothing ? Array(ws.bowtie_air_reference) : nothing
+    result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, air_ref = air_ref, name = sc.name, kvp = sc.kvp)
     ws = nothing
     GC.gc(true)
     result

@@ -326,15 +326,29 @@ function simulate!(
     end
 
     # ═══════════════════════════════════════════════════════════════════════
-    # STEP 3: Noise (on raw signal WITH scatter — correct Poisson stats)
-    # Physical reality: detector sees primary + scatter, adds Poisson noise.
-    # Bowtie spectral effects are ALREADY in the sinogram from forward projection
-    # (via bowtie_spectral weighting), so I0_base × exp(-sino) gives correct
-    # expected counts without additional per-pixel scaling.
+    # STEP 3: Fused noise + scatter subtraction (counts domain)
+    #
+    # Physical reality (DAS signal chain):
+    #   1. Detector sees primary + scatter → total counts
+    #   2. Poisson noise on total counts
+    #   3. DAS subtracts estimated scatter counts
+    #   4. Clamp at 1 count (DAS hardware minimum)
+    #
+    # Fused into one kernel to avoid intermediate log/exp round-trips.
+    # Scatter_field + weight still returned for notebook custom processing.
     # ═══════════════════════════════════════════════════════════════════════
     I0_raw = compute_detector_I0(geom, protocol, sum(ws.weights))
     η_eff = sum(ws.weights_norm[i] * ws.η_vec[i] for i in 1:length(ws.η_vec))
     I0_T = T(I0_raw * η_eff)
+
+    has_scatter = config.scatter !== nothing
+    scatter_field_gpu = if has_scatter
+        sf_gpu = similar(ws.sinogram)
+        copyto!(sf_gpu, scatter_field_cpu)
+        sf_gpu
+    else
+        nothing
+    end
 
     if sim_opts.use_noise
         randn!(ws.noise_rand_cpu)
@@ -348,51 +362,49 @@ function simulate!(
             copyto!(ws.enoise_rand_gpu, ws.enoise_rand_cpu)
 
             let sino = ws.sinogram, rg = ws.noise_rand_gpu, eg = ws.enoise_rand_gpu,
-                    I0v = I0_T, σ_e = σ_e_photon
+                    I0v = I0_T, σ_e = σ_e_photon,
+                    sf = scatter_field_gpu, sw = T(scatter_total_weight), do_sc = has_scatter
                 AK.foreachindex(sino) do idx
-                    λ = I0v * exp(-sino[idx])
-                    λ_noisy = λ + sqrt(max(λ, one(T))) * rg[idx]
+                    λ_total = I0v * exp(-sino[idx])
+                    λ_noisy = λ_total + sqrt(max(λ_total, one(T))) * rg[idx]
                     λ_noisy += σ_e * eg[idx]
-                    λ_noisy = max(λ_noisy, one(T))
-                    sino[idx] = -log(λ_noisy / I0v)
+                    λ_primary = if do_sc
+                        max(λ_noisy - I0v * sf[idx] * sw, one(T))
+                    else
+                        max(λ_noisy, one(T))
+                    end
+                    sino[idx] = -log(λ_primary / I0v)
                 end
             end
         else
-            let sino = ws.sinogram, rg = ws.noise_rand_gpu, I0v = I0_T
+            let sino = ws.sinogram, rg = ws.noise_rand_gpu, I0v = I0_T,
+                    sf = scatter_field_gpu, sw = T(scatter_total_weight), do_sc = has_scatter
                 AK.foreachindex(sino) do idx
-                    λ = I0v * exp(-sino[idx])
-                    λ_noisy = λ + sqrt(max(λ, one(T))) * rg[idx]
-                    λ_noisy = max(λ_noisy, one(T))
-                    sino[idx] = -log(λ_noisy / I0v)
+                    λ_total = I0v * exp(-sino[idx])
+                    λ_noisy = λ_total + sqrt(max(λ_total, one(T))) * rg[idx]
+                    λ_primary = if do_sc
+                        max(λ_noisy - I0v * sf[idx] * sw, one(T))
+                    else
+                        max(λ_noisy, one(T))
+                    end
+                    sino[idx] = -log(λ_primary / I0v)
                 end
             end
         end
-    end
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # STEP 4: Scatter subtraction (on noisy raw signal — same domain as injection)
-    # Physical reality: software estimates scatter from noisy data, subtracts it.
-    # ═══════════════════════════════════════════════════════════════════════
-    if config.scatter !== nothing
-        # Reload scatter_field to GPU (physics_output was clobbered by noise randn)
-        scatter_field_gpu = similar(ws.sinogram)
-        copyto!(scatter_field_gpu, scatter_field_cpu)
-        let sino = ws.sinogram, sf = scatter_field_gpu, w = T(scatter_total_weight)
-            eps_sc = T(1e-10)
+    elseif has_scatter
+        # No noise but scatter subtraction still needed (noise-free sim)
+        let sino = ws.sinogram, sf = scatter_field_gpu, sw = T(scatter_total_weight), I0v = I0_T
             AK.foreachindex(sino) do idx
-                proj = sino[idx]
-                clamped = min(proj, T(20))
-                total_intensity = exp(-clamped)
-                scatter_intensity = sf[idx] * w
-                primary = max(total_intensity - scatter_intensity, eps_sc)
-                @inbounds sino[idx] = -log(primary)
+                λ_total = I0v * exp(-sino[idx])
+                λ_primary = max(λ_total - I0v * sf[idx] * sw, one(T))
+                sino[idx] = -log(λ_primary / I0v)
             end
         end
-        scatter_field_gpu = nothing
     end
+    scatter_field_gpu = nothing
 
     # ═══════════════════════════════════════════════════════════════════════
-    # STEP 5: Calibration (intensity → air scan → log)
+    # STEP 4: Calibration (intensity → air scan → log)
     # ═══════════════════════════════════════════════════════════════════════
     eps = T(1e-10)
 
@@ -698,7 +710,7 @@ function _copy_subset_into_buffer!(
 end
 
 """
-    reconstruct!(ws::HIRReconWorkspace, sinogram, geom, volume_size; filter=StandardFilter(), cutoff=1.0)
+    reconstruct!(ws::HIRReconWorkspace, sinogram, geom, volume_size; filter=StandardFilter(), cutoff=1.0, air_reference=nothing)
 
 Zero-allocation Hybrid IR reconstruction using pre-allocated workspace buffers.
 
@@ -707,6 +719,11 @@ When `n_subsets > 0`, uses Ordered Subsets PWLS (OS-PWLS) for ~10-25x speedup.
 All iteration buffers are pre-allocated in the workspace.
 
 Create the workspace with `create_hir_recon_workspace(sinogram, geom, volume_size; strength=3)`.
+
+# Keyword Arguments
+- `air_reference`: Optional 2D array [n_cols, n_rows] of bowtie air reference values.
+  When provided, stat_weights are scaled by air_ref to account for position-dependent
+  noise from the bowtie filter (edge pixels have fewer counts → more noise → lower weight).
 """
 function reconstruct!(
     ws::HIRReconWorkspace{T},
@@ -715,7 +732,8 @@ function reconstruct!(
     volume_size::NTuple{3,Int};
     filter::FilterType=StandardFilter(),
     cutoff::Float64=1.0,
-    init_volume::Union{Nothing, AbstractArray{T,3}}=nothing
+    init_volume::Union{Nothing, AbstractArray{T,3}}=nothing,
+    air_reference::Union{Nothing, AbstractArray}=nothing
 ) where T<:AbstractFloat
 
     # ─── Step 1: FDK initialization (or warm-start from provided volume) ───
@@ -750,12 +768,28 @@ function reconstruct!(
         n_subsets = params.n_subsets
         subset_scale = T(n_subsets)
 
-        # Initialize statistical weights once from sinogram: w ≈ exp(-y)
-        let sw = ws.stat_weights, ε = T(1e-6)
-            AK.foreachindex(sw, backend) do idx
-                y_val = sinogram[idx]
-                y_clipped = clamp(y_val, T(-10), T(10))
-                sw[idx] = exp(-y_clipped) + ε
+        # Initialize statistical weights: w = air_ref(col,row) × exp(-y)
+        # air_ref accounts for bowtie-modulated I0 (edge pixels → fewer counts → lower weight)
+        if air_reference !== nothing
+            let sw = ws.stat_weights, ε = T(1e-6), aref = air_reference,
+                    nc = Int32(size(sinogram, 1)), nr = Int32(size(sinogram, 2))
+                AK.foreachindex(sw, backend) do idx
+                    idx_0 = Int32(idx - 1)
+                    col = (idx_0 % nc) + Int32(1)
+                    row = ((idx_0 ÷ nc) % nr) + Int32(1)
+                    ref_idx = col + (row - Int32(1)) * nc
+                    y_val = sinogram[idx]
+                    y_clipped = clamp(y_val, T(-10), T(10))
+                    sw[idx] = T(aref[ref_idx]) * exp(-y_clipped) + ε
+                end
+            end
+        else
+            let sw = ws.stat_weights, ε = T(1e-6)
+                AK.foreachindex(sw, backend) do idx
+                    y_val = sinogram[idx]
+                    y_clipped = clamp(y_val, T(-10), T(10))
+                    sw[idx] = exp(-y_clipped) + ε
+                end
             end
         end
 
@@ -822,12 +856,27 @@ function reconstruct!(
         # ═══════════════════════════════════════════════════════════════
         niter = params.niter
 
-        # Initialize simple statistical weights from sinogram: w ≈ exp(-y)
-        let sw = ws.stat_weights, ε = T(1e-6)
-            AK.foreachindex(sw, backend) do idx
-                y_val = sinogram[idx]
-                y_clipped = clamp(y_val, T(-10), T(10))
-                sw[idx] = exp(-y_clipped) + ε
+        # Initialize statistical weights: w = air_ref(col,row) × exp(-y)
+        if air_reference !== nothing
+            let sw = ws.stat_weights, ε = T(1e-6), aref = air_reference,
+                    nc = Int32(size(sinogram, 1)), nr = Int32(size(sinogram, 2))
+                AK.foreachindex(sw, backend) do idx
+                    idx_0 = Int32(idx - 1)
+                    col = (idx_0 % nc) + Int32(1)
+                    row = ((idx_0 ÷ nc) % nr) + Int32(1)
+                    ref_idx = col + (row - Int32(1)) * nc
+                    y_val = sinogram[idx]
+                    y_clipped = clamp(y_val, T(-10), T(10))
+                    sw[idx] = T(aref[ref_idx]) * exp(-y_clipped) + ε
+                end
+            end
+        else
+            let sw = ws.stat_weights, ε = T(1e-6)
+                AK.foreachindex(sw, backend) do idx
+                    y_val = sinogram[idx]
+                    y_clipped = clamp(y_val, T(-10), T(10))
+                    sw[idx] = exp(-y_clipped) + ε
+                end
             end
         end
 
@@ -841,11 +890,26 @@ function reconstruct!(
                     ws_detector_u=ws.geom_detector_u,
                     ws_detector_v=ws.geom_detector_v)
 
-                let sw = ws.stat_weights, ax = ws.Ax
-                    AK.foreachindex(sw, backend) do idx
-                        ax_val = ax[idx]
-                        ax_clipped = clamp(ax_val, T(-10), T(10))
-                        sw[idx] = exp(-ax_clipped)
+                if air_reference !== nothing
+                    let sw = ws.stat_weights, ax = ws.Ax, aref = air_reference,
+                            nc = Int32(size(sinogram, 1)), nr = Int32(size(sinogram, 2))
+                        AK.foreachindex(sw, backend) do idx
+                            idx_0 = Int32(idx - 1)
+                            col = (idx_0 % nc) + Int32(1)
+                            row = ((idx_0 ÷ nc) % nr) + Int32(1)
+                            ref_idx = col + (row - Int32(1)) * nc
+                            ax_val = ax[idx]
+                            ax_clipped = clamp(ax_val, T(-10), T(10))
+                            sw[idx] = T(aref[ref_idx]) * exp(-ax_clipped)
+                        end
+                    end
+                else
+                    let sw = ws.stat_weights, ax = ws.Ax
+                        AK.foreachindex(sw, backend) do idx
+                            ax_val = ax[idx]
+                            ax_clipped = clamp(ax_val, T(-10), T(10))
+                            sw[idx] = exp(-ax_clipped)
+                        end
                     end
                 end
                 max_w = maximum(ws.stat_weights)
