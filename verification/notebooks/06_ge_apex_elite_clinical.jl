@@ -3628,17 +3628,6 @@ de_calibration = let
      e_low = e_l, w_low = w_l, e_high = e_h, w_high = w_h)
 end
 
-# ╔═╡ 06126003-0000-4000-8000-000000000000
-begin
-    # ── DE VMI tuning [TUNE: DE-VMI] ──
-
-    # DE FBP kernel — softer than SE to tame decomposition noise
-    de_filter_control = (
-        x = (0.0, 0.25, 0.5, 0.75, 1.0),
-        y = (1.0, 0.85, 0.4, 0.08, 0.001),
-    )
-end
-
 # ╔═╡ 06126002-0000-4000-8000-000000000000
 # RWLS-GN setup (Ducros et al., Med Phys 2017) — EXPENSIVE, cached.
 # 2-sinogram variant: exactly determined (2 measurements, 2 unknowns).
@@ -3836,6 +3825,17 @@ sim_de_vmi_setup = let
 
     (run_gn = run_gn, apply_acnr = apply_acnr, geom = geom)
 end;
+
+# ╔═╡ 06126003-0000-4000-8000-000000000000
+begin
+    # ── DE VMI tuning [TUNE: DE-VMI] ──
+
+    # DE FBP kernel — softer than SE to tame decomposition noise
+    de_filter_control = (
+        x = (0.0, 0.25, 0.5, 0.75, 1.0),
+        y = (1.0, 0.85, 0.4, 0.08, 0.001),
+    )
+end
 
 # ╔═╡ 06126002-0000-4000-8000-000000000040
 # DE VMI — 40 keV [TUNE: α, β, ACNR γ per energy — no re-simulation needed]
