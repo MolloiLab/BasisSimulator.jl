@@ -2,6 +2,7 @@
 # v0.19.0
 
 # ╔═╡ 07010002-0000-4000-8000-000000000000
+# ╠═╡ show_logs = false
 begin
     using Pkg: Pkg
     Pkg.activate(dirname(@__DIR__))
@@ -14,30 +15,37 @@ end
 using Markdown
 
 # ╔═╡ 07010003-0000-4000-8000-000000000000
+# ╠═╡ show_logs = false
 using FileIO
 
 # ╔═╡ 07010004-0000-4000-8000-000000000000
+# ╠═╡ show_logs = false
 using ImageMagick
 
 # ╔═╡ 07010011-0000-4000-8000-000000000000
+# ╠═╡ show_logs = false
 using Unitful: @u_str
 
 # ╔═╡ 07010012-0000-4000-8000-000000000000
 using LinearAlgebra
 
 # ╔═╡ 07010013-0000-4000-8000-000000000000
+# ╠═╡ show_logs = false
 using FFTW
 
 # ╔═╡ 07010014-0000-4000-8000-000000000000
 using Random
 
 # ╔═╡ 07010015-0000-4000-8000-000000000000
+# ╠═╡ show_logs = false
 using Metal
 
 # ╔═╡ 07010017-0000-4000-8000-000000000000
+# ╠═╡ show_logs = false
 using JLD2: JLD2
 
 # ╔═╡ 07010018-0000-4000-8000-000000000000
+# ╠═╡ show_logs = false
 using DelimitedFiles: DelimitedFiles
 
 # ╔═╡ 07010001-0000-4000-8000-000000000000
@@ -62,12 +70,15 @@ SE folders each contain `0%/` (FBP) and `50%/` (ASiR-V 50%). CTDIvol from RDSR (
 """
 
 # ╔═╡ 07010005-0000-4000-8000-000000000000
+# ╠═╡ show_logs = false
 import PlutoUI as UI
 
 # ╔═╡ 07010006-0000-4000-8000-000000000000
+# ╠═╡ show_logs = false
 import BasisSimulator as BS
 
 # ╔═╡ 07010007-0000-4000-8000-000000000000
+# ╠═╡ show_logs = false
 import CairoMakie as CM
 
 # ╔═╡ 07010008-0000-4000-8000-000000000000
@@ -80,6 +91,7 @@ import Statistics: median
 import XrayAttenuation as XA
 
 # ╔═╡ 07010016-0000-4000-8000-000000000000
+# ╠═╡ show_logs = false
 import DICOM as DCM
 
 # ╔═╡ a13bf90b-b0a1-4786-9554-132b1a346334
@@ -1724,11 +1736,12 @@ sim_sino_2 = let
         collimation_mm = sim_collimation_mm,
         additional_filters = additional_filters,
     )
+    opts = sim_opts
     @info "Simulating: $(sc.name)..."
     ws = BS.create_eict_workspace(
-        sim_scanner, prot, sim_opts, sim_recon_geom, sim_phantom_gpu,
+        sim_scanner, prot, opts, sim_recon_geom, sim_phantom_gpu,
     )
-    BS.simulate!(ws, sim_phantom_gpu, sim_scanner, prot, sim_opts, sim_recon_geom)
+    BS.simulate!(ws, sim_phantom_gpu, sim_scanner, prot, opts, sim_recon_geom)
     air_ref = ws.bowtie_air_reference !== nothing ? Array(ws.bowtie_air_reference) : nothing
     result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, air_ref = air_ref, name = sc.name, kvp = sc.kvp)
     ws = nothing
@@ -1832,6 +1845,7 @@ sim_sino_6 = let
     result
 end
 
+
 # ╔═╡ 07100001-0000-4000-8000-000000000000
 md"""
 ## 10. Reconstruction Parameters [TUNE: RECON]
@@ -1853,6 +1867,7 @@ custom_filter_control = (
     x = (0.0, 0.25, 0.5, 0.75, 1.0),
     y = (1.0, 0.85, 0.6, 0.15, 0.001),
 )
+
 
 # ╔═╡ 07100004-0000-4000-8000-000000000000
 # Dose-independent noise floor (σ HU) — tune to match clinical high-mA noise.
@@ -4705,22 +4720,22 @@ sim_noise_floor_hu
 # ╠═06126002-0000-4000-8000-000000000100
 # ╠═06126002-0000-4000-8000-000000000140
 # ╠═06126002-0000-4000-8000-000000000200
-# ╠═06126005-0000-4000-8000-000000000000
+# ╟─06126005-0000-4000-8000-000000000000
 # ╠═06126004-0000-4000-8000-000000000000
 # ╠═c3bafd40-fda9-4ec2-8ec3-8dc109fc4ecb
-# ╠═3a1f9c02-de47-4a8b-b1e3-f8c7d2e10a01
+# ╟─3a1f9c02-de47-4a8b-b1e3-f8c7d2e10a01
 # ╟─03c1d3a1-5604-4b50-b4e9-117260a23cf4
-# ╠═08d5d8aa-bc95-427b-8a6a-d429881f6034
+# ╟─08d5d8aa-bc95-427b-8a6a-d429881f6034
 # ╟─b922a52a-b4f8-4385-b5a0-7b8eb69e8cfe
-# ╠═157920c7-9a64-4407-8bd5-398f15e4842d
+# ╟─157920c7-9a64-4407-8bd5-398f15e4842d
 # ╟─bf457bc7-9349-4b2f-b278-ef355f98cede
-# ╠═8e37657c-d02f-4b74-aba8-73299fd705c9
+# ╟─8e37657c-d02f-4b74-aba8-73299fd705c9
 # ╟─20ccfc65-0e2a-4d50-9460-bd64b29d2cc8
-# ╠═55ba2d06-51fe-4ba3-b428-78bcf6107b9b
+# ╟─55ba2d06-51fe-4ba3-b428-78bcf6107b9b
 # ╟─314c530e-caf1-4235-9985-05e1ef81ccd1
-# ╠═b5c7a40b-2e23-4a85-a734-b8dc86949b7f
+# ╟─b5c7a40b-2e23-4a85-a734-b8dc86949b7f
 # ╟─6ee9f9ae-977a-4782-b435-9a28bf45346c
-# ╠═e6439f40-ade4-4de9-817c-96663a5ae453
+# ╟─e6439f40-ade4-4de9-817c-96663a5ae453
 # ╟─a89fe53a-c546-4036-b7e9-1be92206cd62
 # ╠═8cf1b41b-105d-4dc5-952a-cedfc4c8f4ae
 # ╟─e4d416cf-9085-4733-a04e-45b3a84f577e

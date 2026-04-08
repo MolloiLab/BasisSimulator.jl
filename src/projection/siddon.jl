@@ -866,9 +866,18 @@ function siddon_fused_poly_project!(
             t_enter = max(t_x_min, t_y_min, t_z_min)
             t_exit  = min(t_x_max, t_y_max, t_z_max)
 
-            # Ray misses volume → zero output
+            # Ray misses volume → air Beer-Lambert (no attenuation, L_E = 0)
+            # Must compute Σ wη×bt×exp(0) = Σ wη×bt so the tiled accumulation
+            # recovers the correct air intensity (not 1.0 per tile).
             if t_enter >= t_exit || t_exit <= zero(T)
-                sinogram[idx] = zero(T)
+                air_accums = ntuple(_ -> zero(T), Val(N_E))
+                I_air = if hbt
+                    bt_base = Int32(col) + (Int32(row) - Int32(1)) * nc
+                    _fused_beer_lambert_bt(air_accums, wη, bt, bt_base, ncnr)
+                else
+                    _fused_beer_lambert(air_accums, wη)
+                end
+                sinogram[idx] = -log(max(I_air, T(1e-10)))
                 return
             end
 
