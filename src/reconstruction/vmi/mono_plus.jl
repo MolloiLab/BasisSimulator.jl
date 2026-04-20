@@ -65,28 +65,30 @@ function apply_mono_plus(
     fy = [min(j - 1, ny - (j - 1)) / ny for j in 1:ny]
     kernel = [exp(-2π^2 * σ² * (fx[i]^2 + fy[j]^2)) for i in 1:nx, j in 1:ny]
 
-    # 2D Gaussian LP via FFT (exact, one-shot per slice).
+    # 2D Gaussian LP via FFT (exact, one-shot per slice).  Local name
+    # `buf` (not `out`) so the outer `out` vector below cannot be
+    # shadowed by type inference on the closure capture.
     gaussian_lp_2d_fft = function (img::AbstractArray{Float32, 3})
         nxl, nyl, nzl = size(img)
-        out = similar(img)
+        buf = similar(img)
         Threads.@threads for k in 1:nzl
             slice = Float64.(@view img[:, :, k])
-            out[:, :, k] .= Float32.(real.(FFTW.ifft(FFTW.fft(slice) .* kernel)))
+            buf[:, :, k] .= Float32.(real.(FFTW.ifft(FFTW.fft(slice) .* kernel)))
         end
-        out
+        buf
     end
 
     t0 = time()
     lp_opt = gaussian_lp_2d_fft(vmi_opt)
     hp_opt = vmi_opt .- lp_opt
 
-    out = Vector{Array{Float32, 3}}(undef, length(energies))
-    for (i, E) in enumerate(energies)
+    mono_plus_vols = Vector{Array{Float32, 3}}(undef, length(energies))
+    for (i, _E) in enumerate(energies)
         if i == i_opt
-            out[i] = copy(vmi_opt)
+            mono_plus_vols[i] = copy(vmi_opt)
         else
             lp_E = gaussian_lp_2d_fft(volumes[i])
-            out[i] = lp_E .+ hp_opt
+            mono_plus_vols[i] = lp_E .+ hp_opt
         end
     end
     dt = time() - t0
@@ -98,7 +100,7 @@ function apply_mono_plus(
         @info "  sanity: Mono+(E_opt) = VMI_opt identically  (identity at i_opt=$(i_opt))"
     end
 
-    (energies = collect(energies), volumes = out,
+    (energies = collect(energies), volumes = mono_plus_vols,
      σ_lp_px = σ_lp, E_noise_opt = Float64(E_noise_opt))
 end
 
