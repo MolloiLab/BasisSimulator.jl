@@ -58,6 +58,11 @@ end
 # Core Tests
 # =============================================================================
 
+# VMI Brent-parity tests: verify the GPU-safe Brent port matches
+# Roots.jl bit-for-bit (within 4 ULP) on bracketed problems.  Uses
+# Roots.jl from [extras] — no runtime dep on Roots.
+include("vmi_brent_parity.jl")
+
 @testset "BasisSimulator.jl" begin
 
     # -------------------------------------------------------------------------

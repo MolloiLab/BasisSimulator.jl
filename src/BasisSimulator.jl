@@ -208,6 +208,10 @@ include("api/driver.jl")
 # Photoelectric + Compton physical basis tables (Cong 2022 Eqs 3a-3e, 4)
 include("reconstruction/vmi/basis.jl")
 
+# GPU-safe 1:1 port of Roots.jl Brent + helper kernels (consumed by Cong).
+# Parity against Roots.jl verified in test/vmi/test_brent_parity.jl.
+include("reconstruction/vmi/roots_kernels.jl")
+
 # Per-ray Cong 2022 analytic dual-energy decomposition
 include("reconstruction/vmi/cong.jl")
 
