@@ -1253,109 +1253,137 @@ streaks and Poisson noise per-basis.
 
 # ╔═╡ 00080006-0000-4000-8000-000000000004
 # ── ACNR hyperparameters [TUNE: sinogram-domain anti-correlated noise reduction] ──
+# Smoother on s_⊥ is a Tikhonov solver in the Fourier domain — exact one-shot
+# solve of (I + λ·D'D)·s = s_⊥ via FFT. ACNR's projection preserves μ(E_ref)
+# exactly regardless of smoother choice; all tuning lives in acnr_λ.
 #
-#   acnr_enable — master switch; false = pass raw decomp through untouched
+#   acnr_enable — master switch; false = pass PWLS output straight through.
 #   acnr_E_ref  — reference energy (keV) at which signal direction is preserved.
 #                 VMI at this energy has ZERO resolution loss from ACNR; other
 #                 energies get small 1st-order bias + big noise reduction.
-#                 Default 70 keV: the noise-optimal VMI anchor used by Mono+ too.
-#   acnr_σ      — Gaussian σ (pixels) for smoothing the s_⊥ channel in
-#                 (detector-col × view) plane. Controls noise-reduction strength.
-#                   • 0.5–1.5 px — gentle, low-frequency noise only
-#                   • 2–3 px    — moderate (clinical default-ish)
-#                   • 4+        — aggressive; may blur fine features at off-ref E
-#   acnr_γ      — projection strength ∈ [0, 1]. γ=0 is off, γ=1 is full ACNR.
-#                 Use γ<1 to leave some anti-correlated noise if the bias at
-#                 off-ref energies becomes visible.
+#                 Default 70 keV: noise-optimal VMI anchor used by Mono+ too.
+#   acnr_λ      — Tikhonov strength on s_⊥. Effective smoothing radius ≈ √λ px.
+#                 Exact FFT solve ⇒ λ has MONOTONIC effect at every magnitude
+#                 (no iterative-solver saturation). Tune on a log grid:
+#                   • 0.5–1    — gentle (~1 px)
+#                   • 2–8      — moderate (~1.5–3 px)
+#                   • 16–100   — aggressive (~4–10 px); kills iodine streaks
+#                   • ≥1000    — nearly-constant smoothing (mean of s_⊥)
+#   acnr_γ      — projection strength ∈ [0, 1]. γ=0 off, γ=1 full ACNR.
+#                 Leave at 1.0 unless off-ref VMI bias becomes visible.
 begin
-    acnr_enable = false     # disabled while focusing on PWLS; PWLS Fisher-info
-                            # off-diagonals (Noh Eq 23) already handle anti-corr
-                            # noise at the source. Flip to true for ablation.
-    acnr_E_ref  = 70.0
-    acnr_σ      = 1.0
-    acnr_γ      = 0.9
+    acnr_enable = true
+    acnr_E_ref  = 100.0
+    acnr_λ      = 2.0
+    acnr_γ      = 1.0
 end
 
 # ╔═╡ 00080007-0000-4000-8000-000000000004
-# Sinogram-domain ACNR on the PWLS-restored photo/Compton basis pair.
-# Reads from sim_de_decomp_pwls. Note: PWLS already handles anti-correlated
-# noise statistically through the off-diagonal D_12 blocks of the Fisher
-# information matrix (Noh 2009 Eq 23), so in principle ACNR on top of PWLS
-# is redundant. Left wired here for ablation — default-disabled.
+# Sinogram-domain ACNR (Kalender/Klotz/Kostaridou 1988) on the PWLS-restored
+# photo/Compton basis pair. Reads from sim_de_decomp_pwls.
+#
+# Framework (unchanged from classical ACNR):
+#     s_⊥(r) = −q(E_ref)·a(r) + p(E_ref)·c(r)          (anti-corr noise channel)
+#     n_⊥    = s_⊥ − smooth(s_⊥)                       (noise estimate)
+#     a_cln  = a + γ·q(E_ref)/|u|² · n_⊥
+#     c_cln  = c − γ·p(E_ref)/|u|² · n_⊥
+# Identity: p·a_cln + q·c_cln = p·a + q·c  ⇒  μ(E_ref) unchanged per pixel,
+# for ANY smoother choice. Zero resolution loss at E_ref is structural.
+#
+# Smoother = FFT-BASED TIKHONOV (exact one-shot solve). Per-slice (detector-col
+# × view plane), solve:
+#     min_s   ½‖s − s_⊥‖²  +  λ · ½·‖D·s‖²      ⇒   (I + λ·D'D)·s = s_⊥
+# where D'D is the 4-neighbor discrete Laplacian with implicit periodic BC
+# from the FFT. Exact Fourier diagonalization:
+#     ŝ_smooth[p,q] = ŝ_⊥[p,q] / (1 + λ · μ_{p,q})
+#     μ_{p,q}       = 4·(sin²(πp/nx) + sin²(πq/nv))       [L eigenvalues]
+# → one FFT + pointwise divide + one inverse FFT per slice. No iteration,
+# so λ has MONOTONIC effect at any magnitude (no SPS-style saturation).
+# Effective smoothing radius ≈ √λ px; at λ→∞, s_smooth → mean(s_⊥).
 sim_de_decomp_clean = let
-    # ── Default = pass-through of the PWLS output ──
-    # To disable ACNR permanently: comment out the entire `if … end` block below.
-    # To toggle at runtime: set `acnr_enable = false` in the hyperparameters cell.
     a_out    = sim_de_decomp_pwls.sino_photo
     c_out    = sim_de_decomp_pwls.sino_compton
     geom     = sim_de_decomp_pwls.geom
     n_orth_σ = 0f0
     acnr_on  = false
 
-    # ═════════════════════════════════════════════════════════════════════
-    # BEGIN ACNR — comment out this whole `if … end` block to disable ACNR
-    # # # ═════════════════════════════════════════════════════════════════════
-    # a_raw, c_raw = a_out, c_out
+    if acnr_enable
+        a_raw, c_raw = a_out, c_out
 
-    # # Recompute p, q at scalar E_ref — same physical basis as de_basis.
-    # N_A        = 6.02214076e23
-    # α_fs       = 7.2973525693e-3
-    # r_e_cm     = 2.8179403262e-13
-    # m_e_c2_keV = 510.99895
-    # ε = acnr_E_ref / m_e_c2_keV
-    # p_E = Float32(N_A * α_fs^4 * (8/3) * π * r_e_cm^2 * sqrt(32 / ε^7))
-    # q_E = Float32(let A_ = (1 + ε)/ε^2, B_ = 2*(1 + ε)/(1 + 2ε),
-    #                   C_ = (1/ε)*log(1 + 2ε), D_ = (1/(2ε))*log(1 + 2ε),
-    #                   E_ = (1 + 3ε)/(1 + 2ε)^2
-    #     N_A * 2π * r_e_cm^2 * (A_*(B_ - C_) + D_ - E_)
-    # end)
-    # u_sq = p_E^2 + q_E^2  # |u_sig|²
+        # Recompute p, q at scalar E_ref — same physical basis as de_basis.
+        N_A        = 6.02214076e23
+        α_fs       = 7.2973525693e-3
+        r_e_cm     = 2.8179403262e-13
+        m_e_c2_keV = 510.99895
+        ε = acnr_E_ref / m_e_c2_keV
+        p_E = Float32(N_A * α_fs^4 * (8/3) * π * r_e_cm^2 * sqrt(32 / ε^7))
+        q_E = Float32(let A_ = (1 + ε)/ε^2, B_ = 2*(1 + ε)/(1 + 2ε),
+                          C_ = (1/ε)*log(1 + 2ε), D_ = (1/(2ε))*log(1 + 2ε),
+                          E_ = (1 + 3ε)/(1 + 2ε)^2
+            N_A * 2π * r_e_cm^2 * (A_*(B_ - C_) + D_ - E_)
+        end)
+        u_sq = p_E^2 + q_E^2  # |u_sig|²
 
-    # # Orthogonal-to-signal channel: anti-correlated noise lives here.
-    # s_orth = @. -q_E * a_raw + p_E * c_raw  # shape (nx, nv, nr)
+        # s_⊥ = anti-correlated noise channel (Float64 for FFT precision).
+        s_orth = @. Float64(-q_E * a_raw + p_E * c_raw)         # (nx, nv, nr)
+        nx, nv, nr = size(s_orth)
 
-    # # 2D Fourier Gaussian over (detector-col × view), per detector row.
-    # nx, nv, nr = size(s_orth)
-    # σ2 = Float64(acnr_σ)^2
-    # gauss_k = [let fi = min(i - 1, nx - (i - 1)), fj = min(j - 1, nv - (j - 1))
-    #                exp(-2π^2 * σ2 * (fi^2 / nx^2 + fj^2 / nv^2))
-    #            end for i in 1:nx, j in 1:nv]
+        # Fourier Tikhonov denominator: 1 + λ·μ_{p,q}. Built once, reused
+        # across all detector-row slices.
+        λ = Float64(acnr_λ)
+        kx_sq = [4 * sin(π * (i - 1) / nx)^2 for i in 1:nx]
+        ky_sq = [4 * sin(π * (j - 1) / nv)^2 for j in 1:nv]
+        denom = [1.0 + λ * (kx_sq[i] + ky_sq[j]) for i in 1:nx, j in 1:nv]
 
-    # s_orth_smooth = similar(s_orth)
-    # Threads.@threads for k in 1:nr
-    #     sl = Float64.(s_orth[:, :, k])
-    #     s_orth_smooth[:, :, k] .= Float32.(real.(ifft(fft(sl) .* gauss_k)))
-    # end
+        t0 = time()
+        s_smooth = similar(s_orth)
+        Threads.@threads for k in 1:nr
+            s_k = Float64.(@view s_orth[:, :, k])
+            s_smooth[:, :, k] .= real.(ifft(fft(s_k) ./ denom))
+        end
+        dt = time() - t0
 
-    # # Residual = noise removed; project back into basis pair.
-    # n_orth = s_orth .- s_orth_smooth
-    # γ = Float32(acnr_γ)
-    # a_clean = @. a_raw + γ * q_E / u_sq * n_orth
-    # c_clean = @. c_raw - γ * p_E / u_sq * n_orth
+        # Residual = noise removed; project back into basis pair.
+        n_orth  = Float32.(s_orth .- s_smooth)
+        γ = Float32(acnr_γ)
+        a_clean = @. a_raw + γ * q_E / u_sq * n_orth
+        c_clean = @. c_raw - γ * p_E / u_sq * n_orth
 
-    # σ_n = std(n_orth)
-    # @info "ACNR sinogram smoother: E_ref=$(Int(acnr_E_ref)) keV, σ=$(acnr_σ) px, γ=$γ"
-    # @info "  |n_⊥| = $(round(σ_n, sigdigits=3))   (noise magnitude along anti-corr axis)"
-    # @info "  Δa range: [$(round(minimum(a_clean - a_raw), sigdigits=3)), $(round(maximum(a_clean - a_raw), sigdigits=3))]"
-    # @info "  Δc range: [$(round(minimum(c_clean - c_raw), sigdigits=3)), $(round(maximum(c_clean - c_raw), sigdigits=3))]"
-    # @info "  μ(E_ref) preserved per-pixel by construction (signal-direction correction = 0)."
+        # ── Diagnostic scales — tells you whether ACNR is doing anything, ──
+        # ── and if not, why (orthogonal channel too small? scale factor   ──
+        # ── q/|u|² too small?)                                            ──
+        σ_sorth  = std(s_orth)
+        σ_smooth = std(s_smooth)
+        σ_n      = std(n_orth)
+        σ_a      = std(a_raw)
+        σ_c      = std(c_raw)
+        Δa_all   = a_clean .- a_raw
+        Δc_all   = c_clean .- c_raw
+        σ_Δa     = std(Δa_all)
+        σ_Δc     = std(Δc_all)
 
-    # a_out    = Float32.(a_clean)
-    # c_out    = Float32.(c_clean)
-    # n_orth_σ = Float32(σ_n)
-    # acnr_on  = true
-    # ═════════════════════════════════════════════════════════════════════
-    # END ACNR
-    # ═════════════════════════════════════════════════════════════════════
+        @info "ACNR (FFT Tikhonov smoother): E_ref=$(Int(acnr_E_ref)) keV, λ=$(acnr_λ) (radius ≈ $(round(sqrt(λ); digits=2)) px), γ=$γ, $(Threads.nthreads()) threads, $(round(dt*1000; digits=1)) ms"
+        @info "  spectral weights @E_ref:  p=$(round(Float64(p_E); sigdigits=3))  q=$(round(Float64(q_E); sigdigits=3))  |u|²=$(round(Float64(u_sq); sigdigits=3))  q/|u|²=$(round(Float64(q_E/u_sq); sigdigits=3))  p/|u|²=$(round(Float64(p_E/u_sq); sigdigits=3))"
+        @info "  orthogonal channel:       std(s_⊥)=$(round(σ_sorth; sigdigits=3))"
+        @info "  smoother kept (signal):   std(s_smooth)=$(round(σ_smooth; sigdigits=3))   ($(round(100*σ_smooth/max(σ_sorth,eps()); digits=1))% of s_⊥ retained)"
+        @info "  smoother removed (noise): std(n_⊥)=$(round(σ_n; sigdigits=3))           ($(round(100*σ_n/max(σ_sorth,eps()); digits=1))% of s_⊥ extracted as noise)"
+        @info "  correction vs raw image:  std(Δa)=$(round(σ_Δa; sigdigits=3))  std(a_raw)=$(round(σ_a; sigdigits=3))  →  ACNR moves a by $(round(100*σ_Δa/max(σ_a,eps()); digits=3))%"
+        @info "                            std(Δc)=$(round(σ_Δc; sigdigits=3))  std(c_raw)=$(round(σ_c; sigdigits=3))  →  ACNR moves c by $(round(100*σ_Δc/max(σ_c,eps()); digits=3))%"
+        @info "  Δa range: [$(round(minimum(Δa_all); sigdigits=3)), $(round(maximum(Δa_all); sigdigits=3))]    Δc range: [$(round(minimum(Δc_all); sigdigits=3)), $(round(maximum(Δc_all); sigdigits=3))]"
+        @info "  μ(E_ref) preserved per-pixel by construction (correction ⊥ signal direction)."
 
-    if !acnr_on
+        a_out    = Float32.(a_clean)
+        c_out    = Float32.(c_clean)
+        n_orth_σ = Float32(σ_n)
+        acnr_on  = true
+    else
         @info "ACNR sinogram smoother: DISABLED (pass-through of PWLS output)"
     end
 
     (sino_photo = a_out, sino_compton = c_out, geom = geom,
      n_orth_σ = n_orth_σ,
      params = (acnr_enable = acnr_on, acnr_E_ref = acnr_E_ref,
-               acnr_σ = acnr_σ, acnr_γ = acnr_γ))
+               acnr_λ = acnr_λ, acnr_γ = acnr_γ))
 end;
 
 # ╔═╡ 00080019-0000-4000-8000-000000000004
@@ -1434,6 +1462,57 @@ sim_recon_photo_compton = let
     (a = a_img, c = c_img)
 end;
 
+# ╔═╡ fd9969e0-415f-409d-8672-fe2d963b6486
+# Cong-only FBP mid-slice — streaks from per-ray analytic decomp should be visible.
+let
+    a_img = sim_recon_cong.a
+    c_img = sim_recon_cong.c
+    mid   = size(a_img, 3) ÷ 2
+    a_slice = a_img[:, :, mid]
+    c_slice = c_img[:, :, mid]
+
+    a_lo, a_hi = quantile(vec(a_slice), 0.01), quantile(vec(a_slice), 0.995)
+    c_lo, c_hi = quantile(vec(c_slice), 0.01), quantile(vec(c_slice), 0.995)
+
+    fig = CM.Figure(size = (1250, 570), fontsize = 13)
+    ax1 = CM.Axis(fig[1, 1]; title = "Photoelectric  a(r)", subtitle = "Cong only  (slice $mid)", aspect = CM.DataAspect())
+    hm1 = CM.heatmap!(ax1, a_slice; colormap = :viridis, colorrange = (a_lo, a_hi))
+    CM.Colorbar(fig[1, 2], hm1; width = 12)
+
+    ax2 = CM.Axis(fig[1, 3]; title = "Compton  c(r)", subtitle = "Cong only  (slice $mid)", aspect = CM.DataAspect())
+    hm2 = CM.heatmap!(ax2, c_slice; colormap = :viridis, colorrange = (c_lo, c_hi))
+    CM.Colorbar(fig[1, 4], hm2; width = 12)
+
+    CM.save(joinpath(RESULTS_DIR, "recon_photo_compton_cong.png"), fig, px_per_unit = 2)
+    fig
+end
+
+# ╔═╡ 2b6fd506-c624-4be3-9a71-1d366ae58ada
+# Cong + PWLS FBP mid-slice — noise floor should drop vs. Cong-only, rods
+# preserved (quadratic penalty is only radial 2nd-order diff, minimal blur).
+let
+    a_img = sim_recon_pwls.a
+    c_img = sim_recon_pwls.c
+    mid   = size(a_img, 3) ÷ 2
+    a_slice = a_img[:, :, mid]
+    c_slice = c_img[:, :, mid]
+
+    a_lo, a_hi = quantile(vec(a_slice), 0.01), quantile(vec(a_slice), 0.995)
+    c_lo, c_hi = quantile(vec(c_slice), 0.01), quantile(vec(c_slice), 0.995)
+
+    fig = CM.Figure(size = (1250, 570), fontsize = 13)
+    ax1 = CM.Axis(fig[1, 1]; title = "Photoelectric  a(r)", subtitle = "Cong+PWLS  (slice $mid)", aspect = CM.DataAspect())
+    hm1 = CM.heatmap!(ax1, a_slice; colormap = :viridis, colorrange = (a_lo, a_hi))
+    CM.Colorbar(fig[1, 2], hm1; width = 12)
+
+    ax2 = CM.Axis(fig[1, 3]; title = "Compton  c(r)", subtitle = "Cong+PWLS  (slice $mid)", aspect = CM.DataAspect())
+    hm2 = CM.heatmap!(ax2, c_slice; colormap = :viridis, colorrange = (c_lo, c_hi))
+    CM.Colorbar(fig[1, 4], hm2; width = 12)
+
+    CM.save(joinpath(RESULTS_DIR, "recon_photo_compton_pwls.png"), fig, px_per_unit = 2)
+    fig
+end
+
 # ╔═╡ 00090003-0000-4000-8000-000000000004
 # Mid-slice of both basis images, robust percentile color range.
 let
@@ -1449,14 +1528,14 @@ let
     fig = CM.Figure(size = (1250, 570), fontsize = 13)
 
     ax1 = CM.Axis(
-        fig[1, 1]; title = "Photoelectric  a(r) = ρ·⟨Z⁴/A⟩  (slice $mid)",
+        fig[1, 1]; title = "Photoelectric a(r)", subtitle = "Cong + PWLS + ACNR (slice $mid)",
         aspect = CM.DataAspect()
     )
     hm1 = CM.heatmap!(ax1, a_slice; colormap = :viridis, colorrange = (a_lo, a_hi))
     CM.Colorbar(fig[1, 2], hm1; width = 12)
 
     ax2 = CM.Axis(
-        fig[1, 3]; title = "Compton  c(r) = ρ·⟨Z/A⟩  (slice $mid)",
+        fig[1, 3]; title = "Compton  c(r)", subtitle = "Cong + PWLS + ACNR (slice $mid)",
         aspect = CM.DataAspect()
     )
     hm2 = CM.heatmap!(ax2, c_slice; colormap = :viridis, colorrange = (c_lo, c_hi))
@@ -1654,7 +1733,7 @@ sim_vmi_plus = let
     guide_ε     = 5f0
 
     # Pass 2 — per-energy LP hyperparams
-    radius      = 8
+    radius      = 2
     ε           = 50_000f0
 
     E_noise_opt = 70.0
@@ -1873,6 +1952,8 @@ end
 # ╟─00080019-0000-4000-8000-000000000004
 # ╟─00080020-0000-4000-8000-000000000004
 # ╠═00090002-0000-4000-8000-000000000004
+# ╟─fd9969e0-415f-409d-8672-fe2d963b6486
+# ╟─2b6fd506-c624-4be3-9a71-1d366ae58ada
 # ╟─00090003-0000-4000-8000-000000000004
 # ╟─000a0001-0000-4000-8000-000000000004
 # ╠═000a0002-0000-4000-8000-000000000004
