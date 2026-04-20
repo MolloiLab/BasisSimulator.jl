@@ -422,49 +422,61 @@ sinogram per kVp for EICT.
 """
 
 # ╔═╡ 00070002-0000-4000-8000-000000000004
-# 80 kVp sinogram — simulate + scatter-correct.
-sim_sino_low = let
+# 80 kVp sinogram — raw polychromatic simulation (scatter INJECTED for
+# correct Poisson noise stats).  Scatter subtraction happens in a
+# separate downstream cell so toggling `scatter_enable` doesn't force
+# a re-simulation.
+sim_sino_low_raw = let
     @info "Simulating 80 kVp / $(round(de_mA_80, digits = 1)) mA / $(de_collimation_mm) mm collimation..."
     ws = BS.create_eict_workspace(
         sim_scanner, protocol_low, sim_opts, sim_recon_geom, sim_phantom_gpu
     )
     BS.simulate!(ws, sim_phantom_gpu, sim_scanner, protocol_low, sim_opts, sim_recon_geom)
-
-    sino = ws.sino_noisy_out     # still on GPU
-    if scatter_enable
-        t0 = time()
-        sino = _subtract_scatter_eict(sino, sim_scatter_model.model)
-        @info "  Scatter-corrected 80 kVp in $(round(time() - t0; digits = 2)) s"
-    else
-        @info "  Scatter correction: DISABLED (raw sino)"
-    end
-
-    result = (sino = Array(sino), geom = ws.geom, kvp = 80)
-    ws = nothing; sino = nothing; clear_gpu!()
+    result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, kvp = 80)
+    ws = nothing; clear_gpu!()
     result
 end;
 
 # ╔═╡ 00070003-0000-4000-8000-000000000004
-# 140 kVp sinogram — simulate + scatter-correct.
-sim_sino_high = let
+# 140 kVp sinogram — raw polychromatic simulation (same as above, 140 kVp).
+sim_sino_high_raw = let
     @info "Simulating 140 kVp / $(round(de_mA_140, digits = 1)) mA / $(de_collimation_mm) mm collimation..."
     ws = BS.create_eict_workspace(
         sim_scanner, protocol_high, sim_opts, sim_recon_geom, sim_phantom_gpu
     )
     BS.simulate!(ws, sim_phantom_gpu, sim_scanner, protocol_high, sim_opts, sim_recon_geom)
+    result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, kvp = 140)
+    ws = nothing; clear_gpu!()
+    result
+end;
 
-    sino = ws.sino_noisy_out
+# ╔═╡ 00070008-0000-4000-8000-000000000004
+# 80 kVp scatter-corrected sinogram (the one §5 Cong sees).  Pure
+# intensity-domain Ohnesorge subtraction on top of sim_sino_low_raw.
+sim_sino_low = let
     if scatter_enable
         t0 = time()
-        sino = _subtract_scatter_eict(sino, sim_scatter_model.model)
-        @info "  Scatter-corrected 140 kVp in $(round(time() - t0; digits = 2)) s"
+        sino_corr = _subtract_scatter_eict(sim_sino_low_raw.sino, sim_scatter_model.model)
+        @info "Scatter-corrected 80 kVp in $(round(time() - t0; digits = 2)) s"
+        (sino = sino_corr, geom = sim_sino_low_raw.geom, kvp = sim_sino_low_raw.kvp)
     else
-        @info "  Scatter correction: DISABLED (raw sino)"
+        @info "Scatter correction: DISABLED (pass-through of sim_sino_low_raw)"
+        sim_sino_low_raw
     end
+end;
 
-    result = (sino = Array(sino), geom = ws.geom, kvp = 140)
-    ws = nothing; sino = nothing; clear_gpu!()
-    result
+# ╔═╡ 00070009-0000-4000-8000-000000000004
+# 140 kVp scatter-corrected sinogram — same treatment as low kVp.
+sim_sino_high = let
+    if scatter_enable
+        t0 = time()
+        sino_corr = _subtract_scatter_eict(sim_sino_high_raw.sino, sim_scatter_model.model)
+        @info "Scatter-corrected 140 kVp in $(round(time() - t0; digits = 2)) s"
+        (sino = sino_corr, geom = sim_sino_high_raw.geom, kvp = sim_sino_high_raw.kvp)
+    else
+        @info "Scatter correction: DISABLED (pass-through of sim_sino_high_raw)"
+        sim_sino_high_raw
+    end
 end;
 
 # ╔═╡ 00070004-0000-4000-8000-000000000004
@@ -1521,7 +1533,8 @@ end;
 
 # ╔═╡ 00070007-0000-4000-8000-000000000004
 # Intensity-domain scatter subtraction on a polychromatic EICT sinogram.
-# Works on the same backend as the input (CPU Array, MtlArray, CuArray).
+# Works on the same backend as the input (CPU Array, MtlArray, CuArray)
+# — pure broadcast, no AK.foreachindex needed (AK is internal to BS).
 #
 #   N_measured  = I0·exp(−sino)            measured counts (inc. scatter)
 #   N_scatter   = scatter_field · I0       Ohnesorge estimate (I0=1 units)
@@ -1529,17 +1542,12 @@ end;
 #   sino_corr   = −log(max(N_primary, eps) / I0)      =  −log(max(exp(−sino) − scatter_field, eps))
 #
 # The I0 cancels when we work in the relative-intensity domain, so no
-# explicit I0 is needed — only `scatter_field` (which is already
-# I0=1-relative).
+# explicit I0 is needed — `scatter_field` is already I0=1-relative.
 function _subtract_scatter_eict(sino::AbstractArray{T, 3}, model) where {T <: AbstractFloat}
     scatter_field = similar(sino)
     BS.estimate_scatter_field!(scatter_field, sino, model)
-    sino_corr = similar(sino)
-    AK.foreachindex(sino) do idx
-        primary = exp(-sino[idx]) - scatter_field[idx]
-        sino_corr[idx] = -log(max(primary, eps(T)))
-    end
-    sino_corr
+    floor_T = eps(T)
+    @. -log(max(exp(-sino) - scatter_field, floor_T))
 end
 
 # ╔═╡ Cell order:
@@ -1580,6 +1588,8 @@ end
 # ╠═00070007-0000-4000-8000-000000000004
 # ╠═00070002-0000-4000-8000-000000000004
 # ╠═00070003-0000-4000-8000-000000000004
+# ╠═00070008-0000-4000-8000-000000000004
+# ╠═00070009-0000-4000-8000-000000000004
 # ╟─00070004-0000-4000-8000-000000000004
 # ╟─00080001-0000-4000-8000-000000000004
 # ╠═00080002-0000-4000-8000-000000000004
