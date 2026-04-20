@@ -3625,177 +3625,41 @@ high-attenuation rods. §5.2 cleans those up.
 """
 
 # ╔═╡ 00080002-0000-4000-8000-000000000004
-# Physical basis functions p(ε), q(ε) + precomputed arrays on both kVp grids.
-# No material data — these are universal.
-de_basis = let
-    N_A        = 6.02214076e23      # Avogadro's number, 1/mol
-    α_fs       = 7.2973525693e-3    # fine-structure constant
-    r_e_cm     = 2.8179403262e-13   # classical electron radius, cm
-    m_e_c2_keV = 510.99895          # electron rest energy, keV
-
-    # Eq 3c
-    p_photo(E_keV) = begin
-        ε = E_keV / m_e_c2_keV
-        N_A * α_fs^4 * (8/3) * π * r_e_cm^2 * sqrt(32 / ε^7)
-    end
-
-    # Eq 3e — Klein-Nishina total cross section per electron (cm²)
-    f_kn(ε) = begin
-        A_ = (1 + ε) / ε^2
-        B_ = 2*(1 + ε) / (1 + 2ε)
-        C_ = (1/ε) * log(1 + 2ε)
-        D_ = (1/(2ε)) * log(1 + 2ε)
-        E_ = (1 + 3ε) / (1 + 2ε)^2
-        2π * r_e_cm^2 * (A_*(B_ - C_) + D_ - E_)
-    end
-
-    # Eq 3d
-    q_compton(E_keV) = begin
-        ε = E_keV / m_e_c2_keV
-        N_A * f_kn(ε)
-    end
-
-    prot_L = BS.CTProtocol(kVp = 80,  additional_filters = additional_filters)
-    prot_H = BS.CTProtocol(kVp = 140, additional_filters = additional_filters)
-    e_L, w_L = BS.resolve_spectrum(sim_opts, prot_L; scanner = sim_scanner)
-    e_H, w_H = BS.resolve_spectrum(sim_opts, prot_H; scanner = sim_scanner)
-
-    ŵ_L = Float64.(w_L) ./ sum(Float64.(w_L))
-    ŵ_H = Float64.(w_H) ./ sum(Float64.(w_H))
-
-    p_L = Float64[p_photo(Float64(e))    for e in e_L]
-    q_L = Float64[q_compton(Float64(e))  for e in e_L]
-    p_H = Float64[p_photo(Float64(e))    for e in e_H]
-    q_H = Float64[q_compton(Float64(e))  for e in e_H]
-
-    @info "Photo/Compton basis: n_E_L=$(length(e_L)), n_E_H=$(length(e_H))"
-    @info "  p(ε): L range [$(round(minimum(p_L); sigdigits=3)), $(round(maximum(p_L); sigdigits=3))],  H range [$(round(minimum(p_H); sigdigits=3)), $(round(maximum(p_H); sigdigits=3))]"
-    @info "  q(ε): L range [$(round(minimum(q_L); sigdigits=3)), $(round(maximum(q_L); sigdigits=3))],  H range [$(round(minimum(q_H); sigdigits=3)), $(round(maximum(q_H); sigdigits=3))]"
-
-    (ŵ_L = ŵ_L, p_L = p_L, q_L = q_L,
-     ŵ_H = ŵ_H, p_H = p_H, q_H = q_H)
-end;
+# Photo/Compton physical basis tables (Cong 2022 Eqs 3a–3e, 4).
+de_basis = BS.compute_photo_compton_basis(
+    BS.CTProtocol(kVp = 80,  additional_filters = additional_filters),
+    BS.CTProtocol(kVp = 140, additional_filters = additional_filters);
+    sim_opts = sim_opts, scanner = sim_scanner,
+)
 
 # ╔═╡ 00080003-0000-4000-8000-000000000004
-# Water basis constants (Eqs 3a–3b) for the initial estimate c̄ — NOT a calibration.
-# a_water = ρ·Σ(mᵢ·Zᵢ⁴/Aᵢ), c_water = ρ·Σ(mᵢ·Zᵢ/Aᵢ) for H₂O.
-water_basis = let
-    ρ_w = 1.0
-    Z_H, A_H = 1.0, 1.008
-    Z_O, A_O = 8.0, 15.999
-    M_H2O = 2*A_H + A_O
-    m_H = 2*A_H / M_H2O
-    m_O =   A_O / M_H2O
-
-    a_w = ρ_w * (m_H * Z_H^4 / A_H + m_O * Z_O^4 / A_O)
-    c_w = ρ_w * (m_H * Z_H   / A_H + m_O * Z_O   / A_O)
-
-    @info "Water basis (ρ=1 g/cm³): a_water=$(round(a_w, digits=3)), c_water=$(round(c_w, digits=4))"
-    (a = a_w, c = c_w)
-end;
+# Water basis constants (Eqs 3a–3b): a_water = ρ·Σ(mᵢ·Zᵢ⁴/Aᵢ), c_water = ρ·Σ(mᵢ·Zᵢ/Aᵢ).
+# Physical constant for H₂O — NOT a scanner calibration.
+water_basis = BS.water_basis_constants()
 
 # ╔═╡ 00080004-0000-4000-8000-000000000004
-# Per-ray CDW22 decomposition: Roots.Brent (water-L) → Newton (quintic h(y)) → Roots.Brent (y).
+# Per-ray Cong 2022 decomposition: Brent(water-L) → Newton(quintic h(y)) → Brent(y).
+# Runs via BS.apply_cong! which dispatches through AK.foreachindex, so Metal
+# or CUDA arrays execute the same kernel on the GPU without a separate code
+# path.  Brent is a 1:1 port of Roots.Brent (test/vmi_brent_parity.jl).
 sim_de_decomp = let
-    ŵ_L, p_L_bin, q_L_bin = de_basis.ŵ_L, de_basis.p_L, de_basis.q_L
-    ŵ_H, p_H_bin, q_H_bin = de_basis.ŵ_H, de_basis.p_H, de_basis.q_H
-    nE_L, nE_H = length(ŵ_L), length(ŵ_H)
-    a_w, c_w   = water_basis.a, water_basis.c
-    p_L_min    = minimum(p_L_bin)
-
-    # Water-only predicted transmission at low-kVp for path L.
-    function water_T_L(L::Float64)
-        T = 0.0
-        @inbounds for i in 1:nE_L
-            T += ŵ_L[i] * exp(-(p_L_bin[i]*a_w + q_L_bin[i]*c_w) * L)
-        end
-        T
-    end
-
-    # Solve Eq 8 quintic for x = h(y) given (y, c̄) against T_L_meas. Newton from x=0.
-    function solve_quintic(y::Float64, c̄::Float64, T_L_meas::Float64)
-        P0 = 0.0; P1 = 0.0; P2 = 0.0; P3 = 0.0; P4 = 0.0; P5 = 0.0
-        @inbounds for i in 1:nE_L
-            q_i  = q_L_bin[i]
-            q2   = q_i*q_i; q3 = q2*q_i; q4 = q3*q_i; q5 = q4*q_i
-            wexp = ŵ_L[i] * exp(-p_L_bin[i]*y - q_i*c̄)
-            P0 += wexp
-            P1 -= wexp * q_i
-            P2 += wexp * q2 * 0.5
-            P3 -= wexp * q3 * (1.0/6.0)
-            P4 += wexp * q4 * (1.0/24.0)
-            P5 -= wexp * q5 * (1.0/120.0)
-        end
-        x = 0.0
-        for _ in 1:12
-            F  = (P0 - T_L_meas) + x*(P1 + x*(P2 + x*(P3 + x*(P4 + x*P5))))
-            dF = P1 + x*(2P2 + x*(3P3 + x*(4P4 + x*5P5)))
-            abs(dF) < 1e-30 && break
-            Δ = F / dF
-            x -= Δ
-            abs(Δ) < 1e-14 && break
-        end
-        x
-    end
-
-    # Exact high-kVp transmission prediction (Eq 9).
-    function T_H_pred(y::Float64, C::Float64)
-        T = 0.0
-        @inbounds for i in 1:nE_H
-            T += ŵ_H[i] * exp(-p_H_bin[i]*y - q_H_bin[i]*C)
-        end
-        T
-    end
-
-    function decompose_ray(p_L_meas::Float64, p_H_meas::Float64)
-        # Skip air rays.
-        if p_L_meas < 1.0e-6 && p_H_meas < 1.0e-6
-            return (0.0, 0.0)
-        end
-        T_L_meas = exp(-p_L_meas)
-        T_H_meas = exp(-p_H_meas)
-
-        # Step 1 — water-equivalent path L via Brent.
-        L_water = try
-            Roots.find_zero(L -> water_T_L(L) - T_L_meas, (0.0, 60.0), Roots.Brent())
-        catch
-            return (0.0, 0.0)
-        end
-        c̄ = c_w * L_water
-
-        # Step 3 — outer Brent on y.  Physical upper bound: C ≥ 0 ⇒ p_L_meas ≥ p_L_min·y.
-        y_max = min(0.99 * p_L_meas / max(p_L_min, eps()), 1.0e7)
-        if y_max <= 0.0
-            return (0.0, c̄)
-        end
-
-        G(y) = T_H_pred(y, c̄ + solve_quintic(y, c̄, T_L_meas)) - T_H_meas
-
-        y_opt = try
-            Roots.find_zero(G, (0.0, y_max), Roots.Brent())
-        catch
-            # Fallback to water-only estimate if bracketing/convergence fails.
-            return (a_w * L_water, c_w * L_water)
-        end
-        x_final = solve_quintic(y_opt, c̄, T_L_meas)
-        (max(y_opt, 0.0), max(c̄ + x_final, 0.0))
-    end
-
-    sino_L = sim_de_sino_low.sino
-    sino_H = sim_de_sino_high.sino
-    sino_photo   = similar(sino_L, Float32)
-    sino_compton = similar(sino_L, Float32)
+    # Stage sinograms onto GPU (MtlArray) — Metal is the GE Apex target.
+    sino_L_gpu = MtlArray(Float32.(sim_de_sino_low.sino))
+    sino_H_gpu = MtlArray(Float32.(sim_de_sino_high.sino))
 
     t1 = time()
-    @inbounds Threads.@threads for idx in eachindex(sino_L)
-        p_L = Float64(sino_L[idx])
-        p_H = Float64(sino_H[idx])
-        (y, C) = decompose_ray(p_L, p_H)
-        sino_photo[idx]   = Float32(y)
-        sino_compton[idx] = Float32(C)
-    end
+    sino_y_gpu, sino_c_gpu = BS.apply_cong(sino_L_gpu, sino_H_gpu;
+                                           basis = de_basis,
+                                           water_basis = water_basis)
     dt = time() - t1
-    @info "[CDW22] decomp done in $(round(dt, digits=1)) s  ($(Threads.nthreads()) threads)"
+
+    sino_photo   = Array(sino_y_gpu)
+    sino_compton = Array(sino_c_gpu)
+    sino_L_gpu = nothing; sino_H_gpu = nothing
+    sino_y_gpu = nothing; sino_c_gpu = nothing
+    GC.gc(true)
+
+    @info "[CDW22] apply_cong done in $(round(dt, digits=1)) s  [backend: GPU]"
     @info "  ⟨y⟩ = $(round(mean(sino_photo),   sigdigits=4))   photoelectric line integral"
     @info "  ⟨C⟩ = $(round(mean(sino_compton), sigdigits=4))   Compton line integral"
 
@@ -4012,202 +3876,24 @@ sim_de_decomp_pwls = let
         (sino_photo   = sim_de_decomp.sino_photo,
          sino_compton = sim_de_decomp.sino_compton,
          geom         = sim_de_decomp.geom,
-         n_iter       = 0,
-         γ_photo      = 0.0, γ_compton = 0.0,
-         relax        = 0.0,
-         cost_history = Float64[])
+         n_iter       = 0, γ_photo = 0.0, γ_compton = 0.0,
+         relax        = 0.0, cost_history = Float64[])
     else
-        ŵ_L, p_L_bin, q_L_bin = de_basis.ŵ_L, de_basis.p_L, de_basis.q_L
-        ŵ_H, p_H_bin, q_H_bin = de_basis.ŵ_H, de_basis.p_H, de_basis.q_H
-        nE_L, nE_H = length(ŵ_L), length(ŵ_H)
-
-        # ── Precomputed separable curvature (MIRT de_wls_dercurv.m) ──
-        # Spectral-averaged MAC matrix M[m, l] = Σ_k ŵ_m[k]·c_l[k]
-        M_Ly = sum(ŵ_L .* p_L_bin);  M_LC = sum(ŵ_L .* q_L_bin)
-        M_Hy = sum(ŵ_H .* p_H_bin);  M_HC = sum(ŵ_H .* q_H_bin)
-        row_sum_L = abs(M_Ly) + abs(M_LC)
-        row_sum_H = abs(M_Hy) + abs(M_HC)
-        curv_geom_y = abs(M_Ly) * row_sum_L + abs(M_Hy) * row_sum_H
-        curv_geom_C = abs(M_LC) * row_sum_L + abs(M_HC) * row_sum_H
-
-        # Warm-start from Cong
-        y_all = Float64.(sim_de_decomp.sino_photo)
-        C_all = Float64.(sim_de_decomp.sino_compton)
-        geom  = sim_de_decomp.geom
-        nx, nv, nr = size(y_all)
-
-        # Measurements (log line integrals) + Poisson-approximate weights.
-        # w_{mi} ∝ y_{mi} = I_m·exp(−h_{mi}); I_m cancels in num/den of the
-        # SQS update (assumes I_L ≈ I_H — good for GE fast-kVp switching;
-        # would need per-spectrum I if that assumption breaks).
-        h_L_all = Float64.(sim_de_sino_low.sino)
-        h_H_all = Float64.(sim_de_sino_high.sino)
-        w_L_all = @. exp(-h_L_all)
-        w_H_all = @. exp(-h_H_all)
-
-        γy    = Float64(pwls_γ_photo)
-        γC    = Float64(pwls_γ_compton)
-        relax = Float64(pwls_relax)
-
-        # Per-pixel curvatures (constant across iterations).
-        # γ·32 is the De Pierro row-sum majorant for |Cx'Cx + Cy'Cy| (2D 2nd-order
-        # diff, 16 per axis × 2 axes).
-        w_max_all = @. max(w_L_all, w_H_all)
-        curv_y_all = @. w_max_all * curv_geom_y + γy * 32.0
-        curv_C_all = @. w_max_all * curv_geom_C + γC * 32.0
-
-        # Per-ray polychromatic forward + Jacobian.
-        # MIRT's fit.fmfun + fit.fgrad play the same role.
-        @inline function ray_fj(y_r::Float64, C_r::Float64)
-            T_L = 0.0; nLy = 0.0; nLC = 0.0
-            @inbounds for i in 1:nE_L
-                e = ŵ_L[i] * exp(-p_L_bin[i]*y_r - q_L_bin[i]*C_r)
-                T_L += e; nLy += e*p_L_bin[i]; nLC += e*q_L_bin[i]
-            end
-            T_H = 0.0; nHy = 0.0; nHC = 0.0
-            @inbounds for i in 1:nE_H
-                e = ŵ_H[i] * exp(-p_H_bin[i]*y_r - q_H_bin[i]*C_r)
-                T_H += e; nHy += e*p_H_bin[i]; nHC += e*q_H_bin[i]
-            end
-            T_L = max(T_L, 1e-30); T_H = max(T_H, 1e-30)
-            (-log(T_L), -log(T_H), nLy/T_L, nLC/T_L, nHy/T_H, nHC/T_H)
-        end
-
-        # 2D 2nd-order difference (MIRT Cdiffs pattern — Cx stacked with Cy).
-        # Cx acts along detector-col axis (i):  (Cx z)[i,j] = z[i−1,j] − 2z[i,j] + z[i+1,j]
-        # Cy acts along view axis (j):          (Cy z)[i,j] = z[i,j−1] − 2z[i,j] + z[i,j+1]
-        # Both use Neumann BC (zero at boundary rows/cols); transposes then have
-        # the same tridiagonal-along-axis stencil with Neumann zeros implicit.
-        # Output: out = Cx'Cx·z + Cy'Cy·z. Also fills cx_buf = Cx·z and
-        # cy_buf = Cy·z so the caller can evaluate ‖Cx·z‖² + ‖Cy·z‖² for the cost.
-        function apply_CtC!(out::AbstractMatrix{Float64},
-                            cx_buf::AbstractMatrix{Float64},
-                            cy_buf::AbstractMatrix{Float64},
-                            z::AbstractMatrix{Float64})
-            nxl, nvl = size(z)
-            # Cx·z → cx_buf (Neumann zero at i=1, i=nxl)
-            @inbounds for j in 1:nvl
-                cx_buf[1, j]   = 0.0
-                cx_buf[nxl, j] = 0.0
-                for i in 2:nxl-1
-                    cx_buf[i, j] = z[i-1, j] - 2.0*z[i, j] + z[i+1, j]
-                end
-            end
-            # Cy·z → cy_buf (Neumann zero at j=1, j=nvl)
-            @inbounds for i in 1:nxl
-                cy_buf[i, 1]   = 0.0
-                cy_buf[i, nvl] = 0.0
-            end
-            @inbounds for j in 2:nvl-1, i in 1:nxl
-                cy_buf[i, j] = z[i, j-1] - 2.0*z[i, j] + z[i, j+1]
-            end
-            # out = Cx'·cx_buf + Cy'·cy_buf
-            # (Cx'v)[i,j] = v[i−1,j] − 2v[i,j] + v[i+1,j] (cx_buf endpoints are 0)
-            # (Cy'v)[i,j] = v[i,j−1] − 2v[i,j] + v[i,j+1] (cy_buf endpoints are 0)
-            @inbounds for j in 1:nvl, i in 1:nxl
-                left  = (i > 1)   ? cx_buf[i-1, j] : 0.0
-                right = (i < nxl) ? cx_buf[i+1, j] : 0.0
-                below = (j > 1)   ? cy_buf[i, j-1] : 0.0
-                above = (j < nvl) ? cy_buf[i, j+1] : 0.0
-                out[i, j] = (left  - 2.0*cx_buf[i, j] + right) +
-                            (below - 2.0*cy_buf[i, j] + above)
-            end
-        end
-
-        # Per-slice buffers (allocated once, reused across all SQS iterations).
-        # cx_*/cy_* hold Cx·s and Cy·s separately so the cost term can accumulate
-        # ‖Cx·s‖² + ‖Cy·s‖² in one pass without re-applying the operators.
-        grad_y_bufs = [zeros(Float64, nx, nv) for _ in 1:nr]
-        grad_C_bufs = [zeros(Float64, nx, nv) for _ in 1:nr]
-        reg_y_bufs  = [zeros(Float64, nx, nv) for _ in 1:nr]
-        reg_C_bufs  = [zeros(Float64, nx, nv) for _ in 1:nr]
-        cx_y_bufs   = [zeros(Float64, nx, nv) for _ in 1:nr]
-        cy_y_bufs   = [zeros(Float64, nx, nv) for _ in 1:nr]
-        cx_C_bufs   = [zeros(Float64, nx, nv) for _ in 1:nr]
-        cy_C_bufs   = [zeros(Float64, nx, nv) for _ in 1:nr]
-
-        # cost_history[k] = Φ(s) BEFORE iteration k (or AFTER iter k−1).
-        # Length = n_iter + 1: entry 1 is initial cost, entry end is final.
-        cost_history = zeros(Float64, pwls_n_iter + 1)
-
-        t0 = time()
-        for k_iter in 1:(pwls_n_iter + 1)
-            is_final_eval = (k_iter == pwls_n_iter + 1)
-            cost_total = Threads.Atomic{Float64}(0.0)
-
-            Threads.@threads for k_sl in 1:nr
-                y_sl = @view y_all[:, :, k_sl]
-                C_sl = @view C_all[:, :, k_sl]
-                hLs  = @view h_L_all[:, :, k_sl]
-                hHs  = @view h_H_all[:, :, k_sl]
-                wLs  = @view w_L_all[:, :, k_sl]
-                wHs  = @view w_H_all[:, :, k_sl]
-                cvy  = @view curv_y_all[:, :, k_sl]
-                cvC  = @view curv_C_all[:, :, k_sl]
-
-                grad_y = grad_y_bufs[k_sl]
-                grad_C = grad_C_bufs[k_sl]
-                reg_y  = reg_y_bufs[k_sl]
-                reg_C  = reg_C_bufs[k_sl]
-                cx_y   = cx_y_bufs[k_sl]
-                cy_y   = cy_y_bufs[k_sl]
-                cx_C   = cx_C_bufs[k_sl]
-                cy_C   = cy_C_bufs[k_sl]
-
-                # Data term: cost + gradient at current iterate
-                cost_sl = 0.0
-                @inbounds for idx in eachindex(y_sl)
-                    pL, pH, jLy, jLC, jHy, jHC = ray_fj(y_sl[idx], C_sl[idx])
-                    errL = pL - hLs[idx]
-                    errH = pH - hHs[idx]
-                    wL   = wLs[idx]
-                    wH   = wHs[idx]
-                    cost_sl += 0.5 * (wL*errL*errL + wH*errH*errH)
-                    grad_y[idx] = wL*errL*jLy + wH*errH*jHy
-                    grad_C[idx] = wL*errL*jLC + wH*errH*jHC
-                end
-
-                # Regularizer: 2D penalty cost + (Cx'Cx + Cy'Cy)·s at current iterate
-                apply_CtC!(reg_y, cx_y, cy_y, y_sl)
-                apply_CtC!(reg_C, cx_C, cy_C, C_sl)
-                @inbounds for idx in eachindex(cx_y)
-                    cost_sl += 0.5 * γy * (cx_y[idx]*cx_y[idx] + cy_y[idx]*cy_y[idx])
-                    cost_sl += 0.5 * γC * (cx_C[idx]*cx_C[idx] + cy_C[idx]*cy_C[idx])
-                end
-
-                Threads.atomic_add!(cost_total, cost_sl)
-
-                # SQS update (skipped on the final cost-only pass)
-                if !is_final_eval
-                    @inbounds for idx in eachindex(y_sl)
-                        dy = (grad_y[idx] + γy * reg_y[idx]) / cvy[idx]
-                        dC = (grad_C[idx] + γC * reg_C[idx]) / cvC[idx]
-                        y_sl[idx] = max(y_sl[idx] - relax * dy, 0.0)
-                        C_sl[idx] = max(C_sl[idx] - relax * dC, 0.0)
-                    end
-                end
-            end
-
-            cost_history[k_iter] = cost_total[]
-            if k_iter > 1 && cost_history[k_iter] > cost_history[k_iter-1] * (1 + 1e-9)
-                @warn "PWLS cost INCREASED iter $(k_iter-1)→$(k_iter): $(cost_history[k_iter-1]) → $(cost_history[k_iter]).  (sign bug? relax too large?)"
-            end
-        end
-
-        dt = time() - t0
-        @info "PWLS-SQS restoration: $(pwls_n_iter) iters, $(Threads.nthreads()) threads, $(round(dt, digits=1)) s"
-        @info "  γ_photo=$(γy), γ_compton=$(γC), relax=$(relax)"
-        @info "  Φ(s): initial=$(round(cost_history[1]; sigdigits=5)), final=$(round(cost_history[end]; sigdigits=5))   [SPS monotonic descent guaranteed by MIRT pwls_sqs_os.m]"
-        @info "  Total decrease: $(round((cost_history[1] - cost_history[end]) / abs(cost_history[1] + eps()) * 100, digits=2))%"
-
-        (sino_photo   = Float32.(y_all),
-         sino_compton = Float32.(C_all),
-         geom         = geom,
-         n_iter       = pwls_n_iter,
-         γ_photo      = γy,
-         γ_compton    = γC,
-         relax        = relax,
-         cost_history = cost_history)
+        sino_y = copy(sim_de_decomp.sino_photo)     # Cong warm start
+        sino_c = copy(sim_de_decomp.sino_compton)
+        info = BS.apply_pwls!(sino_y, sino_c;
+                              h_low     = sim_de_sino_low.sino,
+                              h_high    = sim_de_sino_high.sino,
+                              basis     = de_basis,
+                              γ_photo   = pwls_γ_photo,
+                              γ_compton = pwls_γ_compton,
+                              n_iter    = pwls_n_iter,
+                              relax     = pwls_relax)
+        (sino_photo = sino_y, sino_compton = sino_c,
+         geom = sim_de_decomp.geom,
+         n_iter = info.n_iter,
+         γ_photo = info.γ_photo, γ_compton = info.γ_compton,
+         relax = info.relax, cost_history = info.cost_history)
     end
 end;
 
@@ -4406,86 +4092,23 @@ end
 # so λ has MONOTONIC effect at any magnitude (no SPS-style saturation).
 # Effective smoothing radius ≈ √λ px; at λ→∞, s_smooth → mean(s_⊥).
 sim_de_decomp_clean = let
-    a_out    = sim_de_decomp_pwls.sino_photo
-    c_out    = sim_de_decomp_pwls.sino_compton
-    geom     = sim_de_decomp_pwls.geom
+    sino_y = copy(sim_de_decomp_pwls.sino_photo)
+    sino_c = copy(sim_de_decomp_pwls.sino_compton)
     n_orth_σ = 0f0
     acnr_on  = false
 
     if acnr_enable
-        a_raw, c_raw = a_out, c_out
-
-        # Recompute p, q at scalar E_ref — same physical basis as de_basis.
-        N_A        = 6.02214076e23
-        α_fs       = 7.2973525693e-3
-        r_e_cm     = 2.8179403262e-13
-        m_e_c2_keV = 510.99895
-        ε = acnr_E_ref / m_e_c2_keV
-        p_E = Float32(N_A * α_fs^4 * (8/3) * π * r_e_cm^2 * sqrt(32 / ε^7))
-        q_E = Float32(let A_ = (1 + ε)/ε^2, B_ = 2*(1 + ε)/(1 + 2ε),
-                          C_ = (1/ε)*log(1 + 2ε), D_ = (1/(2ε))*log(1 + 2ε),
-                          E_ = (1 + 3ε)/(1 + 2ε)^2
-            N_A * 2π * r_e_cm^2 * (A_*(B_ - C_) + D_ - E_)
-        end)
-        u_sq = p_E^2 + q_E^2  # |u_sig|²
-
-        # s_⊥ = anti-correlated noise channel (Float64 for FFT precision).
-        s_orth = @. Float64(-q_E * a_raw + p_E * c_raw)         # (nx, nv, nr)
-        nx, nv, nr = size(s_orth)
-
-        # Fourier Tikhonov denominator: 1 + λ·μ_{p,q}. Built once, reused
-        # across all detector-row slices.
-        λ = Float64(acnr_λ)
-        kx_sq = [4 * sin(π * (i - 1) / nx)^2 for i in 1:nx]
-        ky_sq = [4 * sin(π * (j - 1) / nv)^2 for j in 1:nv]
-        denom = [1.0 + λ * (kx_sq[i] + ky_sq[j]) for i in 1:nx, j in 1:nv]
-
-        t0 = time()
-        s_smooth = similar(s_orth)
-        Threads.@threads for k in 1:nr
-            s_k = Float64.(@view s_orth[:, :, k])
-            s_smooth[:, :, k] .= real.(ifft(fft(s_k) ./ denom))
-        end
-        dt = time() - t0
-
-        # Residual = noise removed; project back into basis pair.
-        n_orth  = Float32.(s_orth .- s_smooth)
-        γ = Float32(acnr_γ)
-        a_clean = @. a_raw + γ * q_E / u_sq * n_orth
-        c_clean = @. c_raw - γ * p_E / u_sq * n_orth
-
-        # ── Diagnostic scales — tells you whether ACNR is doing anything, ──
-        # ── and if not, why (orthogonal channel too small? scale factor   ──
-        # ── q/|u|² too small?)                                            ──
-        σ_sorth  = std(s_orth)
-        σ_smooth = std(s_smooth)
-        σ_n      = std(n_orth)
-        σ_a      = std(a_raw)
-        σ_c      = std(c_raw)
-        Δa_all   = a_clean .- a_raw
-        Δc_all   = c_clean .- c_raw
-        σ_Δa     = std(Δa_all)
-        σ_Δc     = std(Δc_all)
-
-        @info "ACNR (FFT Tikhonov smoother): E_ref=$(Int(acnr_E_ref)) keV, λ=$(acnr_λ) (radius ≈ $(round(sqrt(λ); digits=2)) px), γ=$γ, $(Threads.nthreads()) threads, $(round(dt*1000; digits=1)) ms"
-        @info "  spectral weights @E_ref:  p=$(round(Float64(p_E); sigdigits=3))  q=$(round(Float64(q_E); sigdigits=3))  |u|²=$(round(Float64(u_sq); sigdigits=3))  q/|u|²=$(round(Float64(q_E/u_sq); sigdigits=3))  p/|u|²=$(round(Float64(p_E/u_sq); sigdigits=3))"
-        @info "  orthogonal channel:       std(s_⊥)=$(round(σ_sorth; sigdigits=3))"
-        @info "  smoother kept (signal):   std(s_smooth)=$(round(σ_smooth; sigdigits=3))   ($(round(100*σ_smooth/max(σ_sorth,eps()); digits=1))% of s_⊥ retained)"
-        @info "  smoother removed (noise): std(n_⊥)=$(round(σ_n; sigdigits=3))           ($(round(100*σ_n/max(σ_sorth,eps()); digits=1))% of s_⊥ extracted as noise)"
-        @info "  correction vs raw image:  std(Δa)=$(round(σ_Δa; sigdigits=3))  std(a_raw)=$(round(σ_a; sigdigits=3))  →  ACNR moves a by $(round(100*σ_Δa/max(σ_a,eps()); digits=3))%"
-        @info "                            std(Δc)=$(round(σ_Δc; sigdigits=3))  std(c_raw)=$(round(σ_c; sigdigits=3))  →  ACNR moves c by $(round(100*σ_Δc/max(σ_c,eps()); digits=3))%"
-        @info "  Δa range: [$(round(minimum(Δa_all); sigdigits=3)), $(round(maximum(Δa_all); sigdigits=3))]    Δc range: [$(round(minimum(Δc_all); sigdigits=3)), $(round(maximum(Δc_all); sigdigits=3))]"
-        @info "  μ(E_ref) preserved per-pixel by construction (correction ⊥ signal direction)."
-
-        a_out    = Float32.(a_clean)
-        c_out    = Float32.(c_clean)
-        n_orth_σ = Float32(σ_n)
+        info = BS.apply_acnr!(sino_y, sino_c;
+                              E_ref = acnr_E_ref,
+                              λ     = acnr_λ,
+                              γ     = acnr_γ)
+        n_orth_σ = Float32(info.σ_n_orth)
         acnr_on  = true
     else
         @info "ACNR sinogram smoother: DISABLED (pass-through of PWLS output)"
     end
 
-    (sino_photo = a_out, sino_compton = c_out, geom = geom,
+    (sino_photo = sino_y, sino_compton = sino_c, geom = sim_de_decomp_pwls.geom,
      n_orth_σ = n_orth_σ,
      params = (acnr_enable = acnr_on, acnr_E_ref = acnr_E_ref,
                acnr_λ = acnr_λ, acnr_γ = acnr_γ))
@@ -4629,100 +4252,23 @@ end;
 # Input:  sim_recon_photo_compton.a, .c   (raw FBP of ACNR-clean sinograms)
 # Output: sim_recon_photo_compton_flat    (same shape, radial profile flat)
 sim_recon_photo_compton_flat = let
-    a_in = sim_recon_photo_compton.a
-    c_in = sim_recon_photo_compton.c
-
     if !cap_enable
         @info "Radial capping correction: DISABLED (pass-through)"
-        (a = a_in, c = c_in, coeffs_a = Float64[], coeffs_c = Float64[])
+        (a = sim_recon_photo_compton.a, c = sim_recon_photo_compton.c,
+         coeffs_a = Float64[], coeffs_c = Float64[])
     else
-        a_out = copy(a_in)
-        c_out = copy(c_in)
-
-        nx, ny, nz = size(a_out)
-        pixel_cm = Float64(cap_fov_cm) / nx
-        cx = (nx + 1) / 2
-        cy = (ny + 1) / 2
-        r_fov_sq = (nx / 2 - 2)^2   # slight inset from bore edge
-        poly_order = Int(cap_poly_order)
-        q_lo = Float64(cap_q_lo)
-        q_hi = Float64(cap_q_hi)
-
-        # Correct one basis in place; returns (mean |c_k| for k≥1) as a
-        # single scalar diagnostic of how much radial drift was removed.
-        function correct_basis!(vol::Array{Float32, 3}, label::String)
-            coeffs_all = zeros(Float64, poly_order + 1, nz)
-            for iz in 1:nz
-                slice = @view vol[:, :, iz]
-
-                # Quantile thresholds over in-FOV voxels only.
-                in_fov = Float64[]
-                for j in 1:ny, i in 1:nx
-                    if (i - cx)^2 + (j - cy)^2 <= r_fov_sq
-                        push!(in_fov, Float64(slice[i, j]))
-                    end
-                end
-                isempty(in_fov) && continue
-                lo = quantile(in_fov, q_lo)
-                hi = quantile(in_fov, q_hi)
-
-                # Collect (r, v) samples from background voxels.
-                radii = Float64[]
-                vals  = Float64[]
-                for j in 1:ny, i in 1:nx
-                    if (i - cx)^2 + (j - cy)^2 <= r_fov_sq
-                        v = Float64(slice[i, j])
-                        if lo <= v <= hi
-                            r_cm = sqrt(((i - cx)*pixel_cm)^2 + ((j - cy)*pixel_cm)^2)
-                            push!(radii, r_cm)
-                            push!(vals, v)
-                        end
-                    end
-                end
-                length(radii) < 10 && continue
-
-                # Even-polynomial fit: offset(r) = Σₚ cₚ·r^(2p), p = 0..poly_order
-                n_coeffs = poly_order + 1
-                A = zeros(length(radii), n_coeffs)
-                for (k, r_cm) in enumerate(radii), p in 0:poly_order
-                    A[k, p+1] = r_cm^(2p)
-                end
-                coeffs = A \ vals
-                coeffs_all[:, iz] .= coeffs
-
-                # Subtract offset − c₀ ⇒ keep DC (r=0), flatten curvature.
-                target = coeffs[1]
-                for j in 1:ny, i in 1:nx
-                    r_cm   = sqrt(((i - cx)*pixel_cm)^2 + ((j - cy)*pixel_cm)^2)
-                    offset = sum(coeffs[p+1] * r_cm^(2p) for p in 0:poly_order)
-                    slice[i, j] -= Float32(offset - target)
-                end
-            end
-            coeffs_all
-        end
-
-        t0 = time()
-        coeffs_a = correct_basis!(a_out, "a")
-        coeffs_c = correct_basis!(c_out, "c")
-        dt = time() - t0
-
-        # Report curvature coefficients averaged over slices. c₀ is the DC
-        # value (not removed); c₁·r²max is how much cupping was removed at
-        # the FOV edge.
-        r_max_cm = (nx / 2) * pixel_cm
-        mean_c1_a = poly_order >= 1 ? mean(coeffs_a[2, :]) : 0.0
-        mean_c1_c = poly_order >= 1 ? mean(coeffs_c[2, :]) : 0.0
-        drop_a = mean_c1_a * r_max_cm^2
-        drop_c = mean_c1_c * r_max_cm^2
-
-        @info "Radial capping correction: fov=$(cap_fov_cm) cm, poly_order=$(poly_order), q=[$(q_lo), $(q_hi)], $(round(dt, digits=2)) s"
-        @info "  a(r): mean c₁=$(round(mean_c1_a; sigdigits=3))/cm²   → edge drop ≈ $(round(drop_a; sigdigits=3))  (on std(a)=$(round(std(a_in); sigdigits=3)))"
-        @info "  c(r): mean c₁=$(round(mean_c1_c; sigdigits=3))/cm²   → edge drop ≈ $(round(drop_c; sigdigits=3))  (on std(c)=$(round(std(c_in); sigdigits=3)))"
-        @info "  Output: sim_recon_photo_compton_flat.a/.c  —  consumed by §6 VMI synthesis"
-
-        (a = a_out, c = c_out, coeffs_a = coeffs_a, coeffs_c = coeffs_c)
+        a_out = copy(sim_recon_photo_compton.a)
+        c_out = copy(sim_recon_photo_compton.c)
+        info = BS.apply_radial_capping_basis!(a_out, c_out;
+                                              fov_cm     = cap_fov_cm,
+                                              poly_order = cap_poly_order,
+                                              q_lo       = cap_q_lo,
+                                              q_hi       = cap_q_hi)
+        (a = a_out, c = c_out,
+         coeffs_a = info.coeffs_a, coeffs_c = info.coeffs_c)
     end
 end;
+
 
 # ╔═╡ fd9969e0-415f-409d-8672-fe2d963b6486
 # Cong-only FBP mid-slice — streaks from per-ray analytic decomp should be visible.
@@ -4838,62 +4384,14 @@ These are the inputs to Mono+ below.
 """
 
 # ╔═╡ 000a0002-0000-4000-8000-000000000004
-# VMI at 40 / 70 / 100 / 140 keV. Image-domain only, no FBP per energy.
-sim_vmi = let
-    N_A        = 6.02214076e23
-    α_fs       = 7.2973525693e-3
-    r_e_cm     = 2.8179403262e-13
-    m_e_c2_keV = 510.99895
-
-    # Same p, q as de_basis (Eqs 3c, 3e), re-declared so they're in scope here.
-    p_photo(E_keV) = begin
-        ε = E_keV / m_e_c2_keV
-        N_A * α_fs^4 * (8/3) * π * r_e_cm^2 * sqrt(32 / ε^7)
-    end
-    f_kn(ε) = begin
-        A_ = (1 + ε) / ε^2
-        B_ = 2*(1 + ε) / (1 + 2ε)
-        C_ = (1/ε) * log(1 + 2ε)
-        D_ = (1/(2ε)) * log(1 + 2ε)
-        E_ = (1 + 3ε) / (1 + 2ε)^2
-        2π * r_e_cm^2 * (A_*(B_ - C_) + D_ - E_)
-    end
-    q_compton(E_keV) = begin
-        ε = E_keV / m_e_c2_keV
-        N_A * f_kn(ε)
-    end
-
-    a_img = sim_recon_photo_compton_flat.a
-    c_img = sim_recon_photo_compton_flat.c
-    nx, ny, nz = size(a_img)
-    cx, cy = (nx + 1)/2, (ny + 1)/2
-    r_fov_sq = (nx/2)^2
-
-    function synth_hu(E_keV::Float64)
-        p_E = Float32(p_photo(E_keV))
-        q_E = Float32(q_compton(E_keV))
-        μ_vol = @. p_E * a_img + q_E * c_img                       # cm⁻¹
-        μ_w   = Float64(BS.compute_μ_at_energy(XA.Materials.water, E_keV))
-        hu    = Float32.(BS.to_hounsfield(μ_vol; μ_water = μ_w))
-        @inbounds for k in 1:nz, j in 1:ny, i in 1:nx
-            if (i - cx)^2 + (j - cy)^2 > r_fov_sq
-                hu[i, j, k] = -1000f0
-            end
-        end
-        hu
-    end
-
-    energies = [40.0, 70.0, 100.0, 140.0]
-    volumes  = [synth_hu(E) for E in energies]
-
-    @info "VMI synthesis at $(Int.(energies)) keV — done"
-    for (E, vol) in zip(energies, volumes)
-        mid = size(vol, 3) ÷ 2
-        inner = vol[128:384, 128:384, mid]  # rough body ROI
-        @info "  $(Int(E)) keV: body-ROI HU range [$(round(quantile(vec(inner), 0.01); digits=1)), $(round(quantile(vec(inner), 0.99); digits=1))]"
-    end
-    (energies = energies, volumes = volumes)
-end;
+# VMI synthesis at 40 / 70 / 100 / 140 keV.
+# μ(E) = p(E)·a + q(E)·c → HU via water reference at each energy.
+sim_vmi = BS.synth_vmi_hu(
+    sim_recon_photo_compton_flat.a,
+    sim_recon_photo_compton_flat.c,
+    [40.0, 70.0, 100.0, 140.0];
+    fov_mask_radius_frac = 0.5,
+)
 
 # ╔═╡ 000a0004-0000-4000-8000-000000000004
 # Plain VMI at 40 / 70 / 100 / 140 keV — soft-tissue window.
@@ -5000,76 +4498,13 @@ begin
 end
 
 # ╔═╡ 000b0002-0000-4000-8000-000000000004
-sim_vmi_plus = let
-    # ── 2D Gaussian LP via FFT (exact, one-shot per slice) ──
-    # Kernel in Fourier: ĝ(k) = exp(−2π²σ²·(fx² + fy²)), fx,fy ∈ [0,1/2]
-    # with wrap-around (FFT periodic convention). Applying to FFT(slice)
-    # and inverting gives a pure linear LP — exactly what [G14]'s "frequency
-    # split" language describes.
-    function gaussian_lp_2d_fft(img::Array{Float32, 3}, σ_px::Float64)
-        nx, ny, nz = size(img)
-        σ² = σ_px^2
-        # Physical (wrap-around) frequency index in [0, 0.5]:
-        fx = [min(i - 1, nx - (i - 1)) / nx for i in 1:nx]
-        fy = [min(j - 1, ny - (j - 1)) / ny for j in 1:ny]
-        kernel = [exp(-2π^2 * σ² * (fx[i]^2 + fy[j]^2)) for i in 1:nx, j in 1:ny]
-
-        out = similar(img)
-        Threads.@threads for k in 1:nz
-            slice = Float64.(@view img[:, :, k])
-            out[:, :, k] .= Float32.(real.(ifft(fft(slice) .* kernel)))
-        end
-        out
-    end
-
-    # Central-water-ROI std (HU), used for the diagnostic log only.
-    function water_σ_mid(vol::Array{Float32, 3})
-        mid = size(vol, 3) ÷ 2
-        nx, ny = size(vol, 1), size(vol, 2)
-        cx, cy = nx ÷ 2, ny ÷ 2; rr = 15
-        vals = [vol[cx + dx, cy + dy, mid] for dy in -rr:rr, dx in -rr:rr if dx^2 + dy^2 <= rr^2]
-        std(vals)
-    end
-
-    # Locate the noise-optimal VMI.
-    i_opt = findfirst(==(vmip_E_noise_opt), sim_vmi.energies)
-    i_opt === nothing && error("vmip_E_noise_opt=$vmip_E_noise_opt keV not in sim_vmi.energies=$(sim_vmi.energies)")
-    vmi_opt = sim_vmi.volumes[i_opt]
-
-    t0 = time()
-    σ_lp = Float64(vmip_σ_lp_px)
-
-    # HP(VMI_opt) = VMI_opt − LP(VMI_opt), shared across all target energies.
-    lp_opt = gaussian_lp_2d_fft(vmi_opt, σ_lp)
-    hp_opt = vmi_opt .- lp_opt
-
-    # Mono+(E_target) = LP(VMI_E_target) + HP(VMI_opt).  At E_target = E_opt,
-    # LP(VMI_opt) + HP(VMI_opt) = VMI_opt → identity (sanity-check anchor).
-    volumes = Vector{Array{Float32, 3}}(undef, length(sim_vmi.energies))
-    for (i, E) in enumerate(sim_vmi.energies)
-        if i == i_opt
-            volumes[i] = copy(vmi_opt)
-        else
-            vmi_E      = sim_vmi.volumes[i]
-            lp_E       = gaussian_lp_2d_fft(vmi_E, σ_lp)
-            volumes[i] = lp_E .+ hp_opt
-        end
-    end
-    dt = time() - t0
-
-    σ_vmi_opt     = water_σ_mid(vmi_opt)
-    σ_vmi_plus_lo = water_σ_mid(volumes[1])     # Mono+ at the lowest energy in the list
-    E_lo          = sim_vmi.energies[1]
-
-    @info "VMI+ / Mono+ (Grant 2014 [G14] §Technique — 1:1 parity): σ_LP=$(σ_lp) px, E_opt=$(Int(vmip_E_noise_opt)) keV, $(round(dt*1000; digits=1)) ms"
-    @info "  LP = 2D Gaussian, FFT periodic BC, per-slice  [BEST GUESS — paper unspecified]"
-    @info "  HP = (VMI_opt − LP(VMI_opt)), SAME LP applied to each VMI_E, identical σ."
-    @info "  sanity: Mono+(E_opt) = VMI_opt identically  (identity at i_opt=$(i_opt))"
-    @info "  σ(water ROI): VMI_$(Int(vmip_E_noise_opt)) = $(round(σ_vmi_opt; digits=1)) HU  |  Mono+_$(Int(E_lo)) = $(round(σ_vmi_plus_lo; digits=1)) HU"
-
-    (energies = sim_vmi.energies, volumes = volumes,
-     σ_lp_px = σ_lp, E_noise_opt = vmip_E_noise_opt)
-end;
+# Mono+ frequency-split via FFT Gaussian LP — Grant 2014 1:1 parity.
+# Mono+(E) = LP_σ(VMI_E) + VMI_opt − LP_σ(VMI_opt). Identity at E_opt.
+sim_vmi_plus = BS.apply_mono_plus(
+    sim_vmi.volumes, sim_vmi.energies;
+    E_noise_opt = vmip_E_noise_opt,
+    σ_lp_px     = vmip_σ_lp_px,
+)
 
 # ╔═╡ 000b0003-0000-4000-8000-000000000004
 # VMI vs VMI+ side-by-side at each energy — soft tissue window.
