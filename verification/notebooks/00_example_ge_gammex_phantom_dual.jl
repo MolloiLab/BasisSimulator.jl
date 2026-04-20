@@ -411,22 +411,12 @@ protocol_high = BS.CTProtocol(
 md"""
 ## 4. Forward Projection — Both kVps
 
-Two independent polychromatic forward projections through the digital
-phantom.  `simulate!` **injects** scatter into the raw sinograms (for
-correct Poisson noise statistics); scatter is then **subtracted** from
-each raw sinogram below via the Ohnesorge convolution model
-(`BS.estimate_scatter_field!`) before the dual-energy decomposition
-in §5 sees them.  Same intensity-domain subtraction pattern that the
-PCCT notebook (07) uses per-bin, collapsed to a single polychromatic
-sinogram per kVp for EICT.
+Two independent polychromatic forward projections through the digital phantom.
 """
 
 # ╔═╡ 00070002-0000-4000-8000-000000000004
-# 80 kVp sinogram — raw polychromatic simulation (scatter INJECTED for
-# correct Poisson noise stats).  Scatter subtraction happens in a
-# separate downstream cell so toggling `scatter_enable` doesn't force
-# a re-simulation.
-sim_sino_low_raw = let
+# 80 kVp sinogram
+sim_sino_low = let
     @info "Simulating 80 kVp / $(round(de_mA_80, digits = 1)) mA / $(de_collimation_mm) mm collimation..."
     ws = BS.create_eict_workspace(
         sim_scanner, protocol_low, sim_opts, sim_recon_geom, sim_phantom_gpu
@@ -438,8 +428,8 @@ sim_sino_low_raw = let
 end;
 
 # ╔═╡ 00070003-0000-4000-8000-000000000004
-# 140 kVp sinogram — raw polychromatic simulation (same as above, 140 kVp).
-sim_sino_high_raw = let
+# 140 kVp sinogram
+sim_sino_high = let
     @info "Simulating 140 kVp / $(round(de_mA_140, digits = 1)) mA / $(de_collimation_mm) mm collimation..."
     ws = BS.create_eict_workspace(
         sim_scanner, protocol_high, sim_opts, sim_recon_geom, sim_phantom_gpu
@@ -448,35 +438,6 @@ sim_sino_high_raw = let
     result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, kvp = 140)
     ws = nothing; clear_gpu!()
     result
-end;
-
-# ╔═╡ 00070008-0000-4000-8000-000000000004
-# 80 kVp scatter-corrected sinogram (the one §5 Cong sees).  Pure
-# intensity-domain Ohnesorge subtraction on top of sim_sino_low_raw.
-sim_sino_low = let
-    if scatter_enable
-        t0 = time()
-        sino_corr = _subtract_scatter_eict(sim_sino_low_raw.sino, sim_scatter_model.model)
-        @info "Scatter-corrected 80 kVp in $(round(time() - t0; digits = 2)) s"
-        (sino = sino_corr, geom = sim_sino_low_raw.geom, kvp = sim_sino_low_raw.kvp)
-    else
-        @info "Scatter correction: DISABLED (pass-through of sim_sino_low_raw)"
-        sim_sino_low_raw
-    end
-end;
-
-# ╔═╡ 00070009-0000-4000-8000-000000000004
-# 140 kVp scatter-corrected sinogram — same treatment as low kVp.
-sim_sino_high = let
-    if scatter_enable
-        t0 = time()
-        sino_corr = _subtract_scatter_eict(sim_sino_high_raw.sino, sim_scatter_model.model)
-        @info "Scatter-corrected 140 kVp in $(round(time() - t0; digits = 2)) s"
-        (sino = sino_corr, geom = sim_sino_high_raw.geom, kvp = sim_sino_high_raw.kvp)
-    else
-        @info "Scatter correction: DISABLED (pass-through of sim_sino_high_raw)"
-        sim_sino_high_raw
-    end
 end;
 
 # ╔═╡ 00070004-0000-4000-8000-000000000004
@@ -1502,54 +1463,6 @@ let
     fig
 end
 
-# ╔═╡ 00070005-0000-4000-8000-000000000004
-# ── Scatter-correction hyperparameters [TUNE: post-simulation scatter subtraction] ──
-#
-#   scatter_enable  — master switch; false = pass raw sinogram through
-#   scatter_scale   — multiplicative scale on the Ohnesorge coefficient.
-#                     1.0 = calibrated default (SPR ≈ 15% at reference 30-cm
-#                     body); bump up if residual cupping persists in the
-#                     FBP, down if high-density rods darken unnaturally.
-begin
-    scatter_enable = true
-    scatter_scale  = 1.0
-end
-
-# ╔═╡ 00070006-0000-4000-8000-000000000004
-# Scatter model shared between both kVps.  The geometry-based Ohnesorge
-# kernel depends on scanner SID/SDD + phantom diameter — NOT on kVp
-# (energy variation is handled separately in compute_scatter_energy_weights,
-# which for EICT single-polychromatic sinograms collapses to a single
-# fraction ≈ 1.0).  Phantom diameter is estimated from the digital mask.
-sim_scatter_model = let
-    voxel_size_mm = sim_phantom_gpu.voxel_size .* 10.0
-    diameter_cm = BS.estimate_phantom_diameter_cm(sim_phantom_gpu.mask, voxel_size_mm)
-    model = BS.geometry_aware_scatter_model(sim_scanner;
-                                            phantom_diameter_cm = diameter_cm,
-                                            scale_factor = scatter_scale)
-    @info "Scatter model (Ohnesorge): diameter=$(round(diameter_cm; digits = 1)) cm, coef=$(round(model.scatter_coefficient; sigdigits = 3)), kernel FWHM=$(round(model.kernel_fwhm; digits = 1)) px"
-    (model = model, diameter_cm = diameter_cm)
-end;
-
-# ╔═╡ 00070007-0000-4000-8000-000000000004
-# Intensity-domain scatter subtraction on a polychromatic EICT sinogram.
-# Works on the same backend as the input (CPU Array, MtlArray, CuArray)
-# — pure broadcast, no AK.foreachindex needed (AK is internal to BS).
-#
-#   N_measured  = I0·exp(−sino)            measured counts (inc. scatter)
-#   N_scatter   = scatter_field · I0       Ohnesorge estimate (I0=1 units)
-#   N_primary   = N_measured − N_scatter
-#   sino_corr   = −log(max(N_primary, eps) / I0)      =  −log(max(exp(−sino) − scatter_field, eps))
-#
-# The I0 cancels when we work in the relative-intensity domain, so no
-# explicit I0 is needed — `scatter_field` is already I0=1-relative.
-function _subtract_scatter_eict(sino::AbstractArray{T, 3}, model) where {T <: AbstractFloat}
-    scatter_field = similar(sino)
-    BS.estimate_scatter_field!(scatter_field, sino, model)
-    floor_T = eps(T)
-    @. -log(max(exp(-sino) - scatter_field, floor_T))
-end
-
 # ╔═╡ Cell order:
 # ╠═00010001-0000-4000-8000-000000000004
 # ╠═14530566-ecaa-4345-9115-e75981f3837d
@@ -1583,13 +1496,8 @@ end
 # ╠═00050004-0000-4000-8000-000000000004
 # ╠═00050005-0000-4000-8000-000000000004
 # ╟─00070001-0000-4000-8000-000000000004
-# ╠═00070005-0000-4000-8000-000000000004
-# ╠═00070006-0000-4000-8000-000000000004
-# ╠═00070007-0000-4000-8000-000000000004
 # ╠═00070002-0000-4000-8000-000000000004
 # ╠═00070003-0000-4000-8000-000000000004
-# ╠═00070008-0000-4000-8000-000000000004
-# ╠═00070009-0000-4000-8000-000000000004
 # ╟─00070004-0000-4000-8000-000000000004
 # ╟─00080001-0000-4000-8000-000000000004
 # ╠═00080002-0000-4000-8000-000000000004
