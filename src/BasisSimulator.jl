@@ -196,4 +196,34 @@ include("api/options.jl")
 include("api/workspace.jl")
 include("api/driver.jl")
 
+# =============================================================================
+# Dual-Energy VMI Pipeline
+# Photo/Compton basis decomp → PWLS restoration → ACNR → capping → VMI → Mono+
+#
+# Each stage is a `BS.apply_*!` entry point with every hyperparameter as a
+# kwarg.  See `verification/notebooks/00_example_ge_gammex_phantom_dual.jl`
+# for a reference wiring across §5-§6.
+# =============================================================================
+
+# Photoelectric + Compton physical basis tables (Cong 2022 Eqs 3a-3e, 4)
+include("reconstruction/vmi/basis.jl")
+
+# Per-ray Cong 2022 analytic dual-energy decomposition
+include("reconstruction/vmi/cong.jl")
+
+# Noh/Fessler/Kinahan 2009 PWLS-SQS sinogram restoration (MIRT port)
+include("reconstruction/vmi/pwls.jl")
+
+# Kalender/Klotz/Kostaridou 1988 ACNR (FFT Tikhonov smoother on s_⊥)
+include("reconstruction/vmi/acnr.jl")
+
+# Per-basis radial capping correction (even-polynomial fit)
+include("reconstruction/vmi/capping.jl")
+
+# VMI synthesis — μ(E) = p(E)·a + q(E)·c → HU
+include("reconstruction/vmi/vmi_synth.jl")
+
+# Mono+ frequency-split — Grant 2014 1:1 parity (FFT Gaussian LP)
+include("reconstruction/vmi/mono_plus.jl")
+
 end # module
