@@ -66,11 +66,29 @@ before launch.
 function apply_cong!(
         sino_y::AbstractArray{Float32, 3},
         sino_c::AbstractArray{Float32, 3},
-        sino_low::AbstractArray,
-        sino_high::AbstractArray;
+        sino_low::AbstractArray{Float32, 3},
+        sino_high::AbstractArray{Float32, 3};
         basis,
         water_basis,
     )
+    # Enforce Float32 basis + water_basis up-front.  The kernel runs
+    # entirely in Float32 (Metal can't allocate Float64 arrays), so any
+    # Float64 input would silently upcast inside the closure and crash
+    # on GPU with a confusing "Metal does not support Float64" error
+    # deep in the similar() call chain.  Fail loud here with the fix.
+    for (name, arr) in ((:ŵ_L, basis.ŵ_L), (:p_L, basis.p_L), (:q_L, basis.q_L),
+                        (:ŵ_H, basis.ŵ_H), (:p_H, basis.p_H), (:q_H, basis.q_H))
+        eltype(arr) === Float32 || error(
+            "apply_cong!: basis.$(name) has eltype $(eltype(arr)); Float32 required. " *
+            "Call BS.compute_photo_compton_basis(...) to rebuild the basis " *
+            "(it returns Float32 vectors), or convert your basis vectors manually."
+        )
+    end
+    (water_basis.a isa Float32 && water_basis.c isa Float32) || error(
+        "apply_cong!: water_basis has $(typeof(water_basis.a))/$(typeof(water_basis.c)); " *
+        "Float32/Float32 required.  Call BS.water_basis_constants() (returns Float32)."
+    )
+
     # Stage spectral tables (Float32) onto the sinogram's backend.  All
     # internal kernel math runs in Float32 so Metal / CUDA execute
     # natively without a Float64 fallback.  Float32 ULP ≈ 1.2e-7 around
