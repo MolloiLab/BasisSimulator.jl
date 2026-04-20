@@ -23,25 +23,6 @@ Reference:
 
 import FFTW
 
-# Per-slice 2D Gaussian LP via FFT (exact, one-shot).  Top-level helper
-# so there's no inner-closure capture of the outer function's scope.
-#
-#   img     : Array{Float32, 3}  — input volume (3D)
-#   kernel  : Matrix{Float64}    — Fourier-space Gaussian kernel,
-#                                  size (nx, ny) matching img[:,:,k].
-#   → returns a fresh Array{Float32, 3} with the LP-filtered result.
-function _gaussian_lp_2d_fft(img::AbstractArray{Float32, 3},
-                             kernel::AbstractMatrix{Float64})
-    nx, ny, nz = size(img)
-    result = Array{Float32, 3}(undef, nx, ny, nz)
-    Threads.@threads for k in 1:nz
-        slice_f64 = Float64.(view(img, :, :, k))
-        lp_slice  = Float32.(real.(FFTW.ifft(FFTW.fft(slice_f64) .* kernel)))
-        @inbounds @views result[:, :, k] .= lp_slice
-    end
-    return result
-end
-
 """
     apply_mono_plus(volumes, energies;
                     E_noise_opt=70.0, σ_lp_px=2.0, verbose=true)
@@ -76,7 +57,7 @@ function apply_mono_plus(
 
     σ_lp = Float64(σ_lp_px)
     vmi_opt = volumes[i_opt]
-    nx, ny, _ = size(vmi_opt)
+    nx, ny, nz = size(vmi_opt)
 
     # Fourier periodic Gaussian kernel (same math as 00 §6.2).
     σ² = σ_lp^2
@@ -84,17 +65,37 @@ function apply_mono_plus(
     fy = [min(j - 1, ny - (j - 1)) / ny for j in 1:ny]
     kernel = [exp(-2π^2 * σ² * (fx[i]^2 + fy[j]^2)) for i in 1:nx, j in 1:ny]
 
+    # 2D Gaussian LP via FFT (exact, one-shot per slice).
+    # NOTE: the inner buffer is named `lp_buf` (not `out`) because the
+    # outer loop below also uses `out` for the result vector.  Inside a
+    # top-level `function ... end`, Julia's scope analysis unifies
+    # same-named variables between an anonymous closure and its
+    # enclosing function, so using `out` in both places causes the
+    # outer `out[i] = ...` to try setindex! on the inner 3D array
+    # instead of the outer Vector.  (The notebook's `let ... end`
+    # version uses a different outer name (`volumes`) so the clash
+    # never surfaced there.)
+    gaussian_lp_2d_fft = function (img::AbstractArray{Float32, 3})
+        nxl, nyl, nzl = size(img)
+        lp_buf = similar(img)
+        Threads.@threads for k in 1:nzl
+            slice = Float64.(@view img[:, :, k])
+            lp_buf[:, :, k] .= Float32.(real.(FFTW.ifft(FFTW.fft(slice) .* kernel)))
+        end
+        lp_buf
+    end
+
     t0 = time()
-    lp_opt = _gaussian_lp_2d_fft(vmi_opt, kernel)
+    lp_opt = gaussian_lp_2d_fft(vmi_opt)
     hp_opt = vmi_opt .- lp_opt
 
-    result_vols = Vector{Array{Float32, 3}}(undef, length(energies))
-    @inbounds for i in 1:length(energies)
+    out = Vector{Array{Float32, 3}}(undef, length(energies))
+    for (i, E) in enumerate(energies)
         if i == i_opt
-            result_vols[i] = copy(vmi_opt)
+            out[i] = copy(vmi_opt)
         else
-            lp_E = _gaussian_lp_2d_fft(volumes[i], kernel)
-            result_vols[i] = Array{Float32, 3}(lp_E .+ hp_opt)
+            lp_E = gaussian_lp_2d_fft(volumes[i])
+            out[i] = lp_E .+ hp_opt
         end
     end
     dt = time() - t0
@@ -106,7 +107,7 @@ function apply_mono_plus(
         @info "  sanity: Mono+(E_opt) = VMI_opt identically  (identity at i_opt=$(i_opt))"
     end
 
-    (energies = collect(energies), volumes = result_vols,
+    (energies = collect(energies), volumes = out,
      σ_lp_px = σ_lp, E_noise_opt = Float64(E_noise_opt))
 end
 
