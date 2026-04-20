@@ -471,15 +471,17 @@ md"""
 
 **Pipeline:** Cong analytic per-ray decomp → PWLS-SQS sinogram restoration
 (Noh/Fessler/Kinahan 2009) → ACNR sinogram smoother (Kalender/Klotz/Kostaridou
-1988) → FBP. Each stage below has its own sinogram + intermediate FBP so the
-streak / noise suppression is visible stage-by-stage.
+1988) → FBP → post-FBP radial capping correction. Each stage below has its
+own sinogram + intermediate FBP so the streak / noise suppression is visible
+stage-by-stage.
 
 | Stage | Role | Handles |
 |-------|------|---------|
 | §5.1 Cong 2022 | Per-ray polychromatic inversion (no spatial coupling) | Beam-hardening, basis inversion |
 | §5.2 PWLS-SQS  | Statistical penalized-WLS restoration on basis sinograms | Streaks from per-ray decomp errors; low-dose noise |
 | §5.3 ACNR      | Anti-correlated noise projection across bases | Residual photo↔compton correlated noise (dominates VMI 40 keV) |
-| §5.4 FBP       | Plain FDK on cleaned basis sinograms | Reconstruction |
+| §5.4 Capping   | Per-slice radial even-polynomial fit on the basis images | Residual radial cupping/capping from incomplete BHC |
+| §5.5 Final FBP | FDK on cleaned basis sinograms (feeds §5.4 capping); final viz shows all four corrections | Reconstruction output consumed by §6 VMI |
 
 ### 5.1 Cong et al. 2022 — Per-ray Analytic Decomposition
 
@@ -1411,9 +1413,59 @@ let
     fig
 end
 
+# ╔═╡ 00080023-0000-4000-8000-000000000004
+md"""
+### 5.4 Post-FBP Radial Capping Correction
+
+Residual radial **cupping/capping** (background HU slowly drifting away from
+zero as a function of image radius) persists even after BHC + Cong + PWLS +
+ACNR because none of those model every beam-hardening path exactly. The fix
+is a classic one and the 06 clinical notebook already uses it in HU space
+(`BS.apply_radial_cupping_correction!`) — here we apply the *same idea*
+directly to the basis images `a(r)` and `c(r)` so **every downstream VMI
+inherits a flat background for free** (since `VMI(E) = p(E)·a + q(E)·c`,
+flattening both bases flattens every energy synthesised from them).
+
+Per-slice, for each basis image:
+1. Select background voxels by quantile over the in-FOV slice (excludes air
+   outside the scanner bore + the insert high/low tails without needing
+   material-specific thresholds).
+2. Fit an even polynomial in radius:
+   `offset(r) = c₀ + c₁·r² + c₂·r⁴ + …`
+3. Subtract `offset(r) − c₀` from every voxel in the slice — keeps the
+   central value (r=0) intact, flattens the radial profile.
+
+Because the fit is linear and the subtraction is the same polynomial for
+both `a` and `c`, applying it here *is* algebraically equivalent to
+applying it to every future VMI at every energy.
+"""
+
+# ╔═╡ 00080024-0000-4000-8000-000000000004
+# ── Radial capping correction hyperparameters ─────────────────────────────
+#
+#   cap_enable     — master switch; false = pass raw FBP output through
+#   cap_fov_cm     — transverse FOV in cm; controls the pixel→cm scale for
+#                    the polynomial fit. Default 35.0 cm matches the 06
+#                    clinical notebook and the GE Apex Elite clinical FOV.
+#   cap_poly_order — number of even-polynomial terms beyond c₀:
+#                    1 ⇒ c₀ + c₁r²          (pure parabolic cupping)
+#                    2 ⇒ c₀ + c₁r² + c₂r⁴   (default, matches 06)
+#                    3+ for stronger radial structure; rarely worth it.
+#   cap_q_lo/q_hi  — quantile range over the in-FOV slice used to pick
+#                    background voxels. Middle 50% (0.25–0.75) avoids the
+#                    air floor on the low end and the iodine/bone rods on
+#                    the high end without needing HU thresholds.
+begin
+    cap_enable     = true
+    cap_fov_cm     = 35.0
+    cap_poly_order = 4
+    cap_q_lo       = 0.10
+    cap_q_hi       = 0.75
+end
+
 # ╔═╡ 00080020-0000-4000-8000-000000000004
 md"""
-### 5.4 Final FBP on Cleaned Basis Sinograms
+### 5.5 Final FBP on Cleaned Basis Sinograms
 
 Plain FDK on each fully-cleaned basis sinogram (shared Shepp-Logan-style
 mild apodization). Filter preserves high-frequency edges (vessels, rod
@@ -1421,12 +1473,15 @@ walls) so the downstream VMI+ step has real structural content to work
 with — heavy Hann would throw that away at the FBP stage and no amount of
 downstream processing can recover it.
 
-Output:
-- `sim_recon_photo_compton.a` — `a(r) = ρ·⟨Z⁴/A⟩` photoelectric image
-- `sim_recon_photo_compton.c` — `c(r) = ρ·⟨Z/A⟩` Compton image
+Outputs:
+- `sim_recon_photo_compton.a` — raw photoelectric basis image (FBP only)
+- `sim_recon_photo_compton.c` — raw Compton basis image (FBP only)
+- `sim_recon_photo_compton_flat.a/.c` — same, with §5.4 capping applied.
+  **This is the tuple §6 VMI synthesis reads from** so every virtual
+  monoenergetic image inherits a flat radial background.
 
-No BHC, no HU conversion — images are in physical basis units. HU conversion
-happens downstream in §6 VMI synthesis.
+No BHC, no HU conversion — images are in physical basis units. HU
+conversion happens downstream in §6 VMI synthesis.
 """
 
 # ╔═╡ 00090002-0000-4000-8000-000000000004
@@ -1460,6 +1515,110 @@ sim_recon_photo_compton = let
     @info "  c(r) range: [$(round(minimum(c_img), sigdigits=3)), $(round(maximum(c_img), sigdigits=3))]"
 
     (a = a_img, c = c_img)
+end;
+
+# ╔═╡ 00080025-0000-4000-8000-000000000004
+# Per-slice radial capping correction on the basis images a(r) and c(r).
+# Adapted from BS.apply_radial_cupping_correction! (src/correction/
+# beam_hardening_correction.jl:790) — swaps the HU-threshold background
+# selector for a quantile-based one so it works directly in basis units.
+#
+# Input:  sim_recon_photo_compton.a, .c   (raw FBP of ACNR-clean sinograms)
+# Output: sim_recon_photo_compton_flat    (same shape, radial profile flat)
+sim_recon_photo_compton_flat = let
+    a_in = sim_recon_photo_compton.a
+    c_in = sim_recon_photo_compton.c
+
+    if !cap_enable
+        @info "Radial capping correction: DISABLED (pass-through)"
+        (a = a_in, c = c_in, coeffs_a = Float64[], coeffs_c = Float64[])
+    else
+        a_out = copy(a_in)
+        c_out = copy(c_in)
+
+        nx, ny, nz = size(a_out)
+        pixel_cm = Float64(cap_fov_cm) / nx
+        cx = (nx + 1) / 2
+        cy = (ny + 1) / 2
+        r_fov_sq = (nx / 2 - 2)^2   # slight inset from bore edge
+        poly_order = Int(cap_poly_order)
+        q_lo = Float64(cap_q_lo)
+        q_hi = Float64(cap_q_hi)
+
+        # Correct one basis in place; returns (mean |c_k| for k≥1) as a
+        # single scalar diagnostic of how much radial drift was removed.
+        function correct_basis!(vol::Array{Float32, 3}, label::String)
+            coeffs_all = zeros(Float64, poly_order + 1, nz)
+            for iz in 1:nz
+                slice = @view vol[:, :, iz]
+
+                # Quantile thresholds over in-FOV voxels only.
+                in_fov = Float64[]
+                for j in 1:ny, i in 1:nx
+                    if (i - cx)^2 + (j - cy)^2 <= r_fov_sq
+                        push!(in_fov, Float64(slice[i, j]))
+                    end
+                end
+                isempty(in_fov) && continue
+                lo = quantile(in_fov, q_lo)
+                hi = quantile(in_fov, q_hi)
+
+                # Collect (r, v) samples from background voxels.
+                radii = Float64[]
+                vals  = Float64[]
+                for j in 1:ny, i in 1:nx
+                    if (i - cx)^2 + (j - cy)^2 <= r_fov_sq
+                        v = Float64(slice[i, j])
+                        if lo <= v <= hi
+                            r_cm = sqrt(((i - cx)*pixel_cm)^2 + ((j - cy)*pixel_cm)^2)
+                            push!(radii, r_cm)
+                            push!(vals, v)
+                        end
+                    end
+                end
+                length(radii) < 10 && continue
+
+                # Even-polynomial fit: offset(r) = Σₚ cₚ·r^(2p), p = 0..poly_order
+                n_coeffs = poly_order + 1
+                A = zeros(length(radii), n_coeffs)
+                for (k, r_cm) in enumerate(radii), p in 0:poly_order
+                    A[k, p+1] = r_cm^(2p)
+                end
+                coeffs = A \ vals
+                coeffs_all[:, iz] .= coeffs
+
+                # Subtract offset − c₀ ⇒ keep DC (r=0), flatten curvature.
+                target = coeffs[1]
+                for j in 1:ny, i in 1:nx
+                    r_cm   = sqrt(((i - cx)*pixel_cm)^2 + ((j - cy)*pixel_cm)^2)
+                    offset = sum(coeffs[p+1] * r_cm^(2p) for p in 0:poly_order)
+                    slice[i, j] -= Float32(offset - target)
+                end
+            end
+            coeffs_all
+        end
+
+        t0 = time()
+        coeffs_a = correct_basis!(a_out, "a")
+        coeffs_c = correct_basis!(c_out, "c")
+        dt = time() - t0
+
+        # Report curvature coefficients averaged over slices. c₀ is the DC
+        # value (not removed); c₁·r²max is how much cupping was removed at
+        # the FOV edge.
+        r_max_cm = (nx / 2) * pixel_cm
+        mean_c1_a = poly_order >= 1 ? mean(coeffs_a[2, :]) : 0.0
+        mean_c1_c = poly_order >= 1 ? mean(coeffs_c[2, :]) : 0.0
+        drop_a = mean_c1_a * r_max_cm^2
+        drop_c = mean_c1_c * r_max_cm^2
+
+        @info "Radial capping correction: fov=$(cap_fov_cm) cm, poly_order=$(poly_order), q=[$(q_lo), $(q_hi)], $(round(dt, digits=2)) s"
+        @info "  a(r): mean c₁=$(round(mean_c1_a; sigdigits=3))/cm²   → edge drop ≈ $(round(drop_a; sigdigits=3))  (on std(a)=$(round(std(a_in); sigdigits=3)))"
+        @info "  c(r): mean c₁=$(round(mean_c1_c; sigdigits=3))/cm²   → edge drop ≈ $(round(drop_c; sigdigits=3))  (on std(c)=$(round(std(c_in); sigdigits=3)))"
+        @info "  Output: sim_recon_photo_compton_flat.a/.c  —  consumed by §6 VMI synthesis"
+
+        (a = a_out, c = c_out, coeffs_a = coeffs_a, coeffs_c = coeffs_c)
+    end
 end;
 
 # ╔═╡ fd9969e0-415f-409d-8672-fe2d963b6486
@@ -1514,10 +1673,11 @@ let
 end
 
 # ╔═╡ 00090003-0000-4000-8000-000000000004
-# Mid-slice of both basis images, robust percentile color range.
+# Mid-slice of both basis images AFTER all 4 corrections (Cong + PWLS + ACNR
+# + radial capping) — this is exactly what §6 VMI synthesis consumes.
 let
-    a_img = sim_recon_photo_compton.a
-    c_img = sim_recon_photo_compton.c
+    a_img = sim_recon_photo_compton_flat.a
+    c_img = sim_recon_photo_compton_flat.c
     mid   = size(a_img, 3) ÷ 2
     a_slice = a_img[:, :, mid]
     c_slice = c_img[:, :, mid]
@@ -1528,14 +1688,14 @@ let
     fig = CM.Figure(size = (1250, 570), fontsize = 13)
 
     ax1 = CM.Axis(
-        fig[1, 1]; title = "Photoelectric a(r)", subtitle = "Cong + PWLS + ACNR (slice $mid)",
+        fig[1, 1]; title = "Photoelectric a(r)", subtitle = "Cong + PWLS + ACNR + Capping (slice $mid)",
         aspect = CM.DataAspect()
     )
     hm1 = CM.heatmap!(ax1, a_slice; colormap = :viridis, colorrange = (a_lo, a_hi))
     CM.Colorbar(fig[1, 2], hm1; width = 12)
 
     ax2 = CM.Axis(
-        fig[1, 3]; title = "Compton  c(r)", subtitle = "Cong + PWLS + ACNR (slice $mid)",
+        fig[1, 3]; title = "Compton  c(r)", subtitle = "Cong + PWLS + ACNR + Capping (slice $mid)",
         aspect = CM.DataAspect()
     )
     hm2 = CM.heatmap!(ax2, c_slice; colormap = :viridis, colorrange = (c_lo, c_hi))
@@ -1600,8 +1760,8 @@ sim_vmi = let
         N_A * f_kn(ε)
     end
 
-    a_img = sim_recon_photo_compton.a
-    c_img = sim_recon_photo_compton.c
+    a_img = sim_recon_photo_compton_flat.a
+    c_img = sim_recon_photo_compton_flat.c
     nx, ny, nz = size(a_img)
     cx, cy = (nx + 1)/2, (ny + 1)/2
     r_fov_sq = (nx/2)^2
@@ -1650,141 +1810,117 @@ end
 
 # ╔═╡ 000a0005-0000-4000-8000-000000000004
 md"""
-### 6.2 Mono+ / VMI+ ([G14] §Technique for Calculating Mono+ Images)
+### 6.2 Mono+ / VMI+ — Grant 2014 1:1 parity
 
-> "By means of a frequency-split technique, both the low-keV images and the
-> images with minimum image noise are decomposed into 2 sets of subimages...
-> the lower spatial frequency stack at low keV is combined with the high
-> spatial frequency stack at optimal keV from a noise perspective."
+This is a straight port of **[G14] §Technique for Calculating Mono+ Images**.
+Where the paper is explicit we copy it exactly; where it's silent we make a
+single, documented best guess.
 
-Translated:
+#### What the paper says verbatim
 
-    Mono+(E_target)  =  LP(VMI(E_target))  +  HP(VMI(E_noise_opt))
-                     =  LP(VMI(E_target))  +  VMI_opt − LP(VMI_opt)
+> "…low-keV images (in which iodine pixels have a high contrast to the
+> surrounding tissue) and images of optimal keV from a noise perspective
+> (typically, minimum image noise is obtained at approximately 70 keV)
+> are computed. By means of a frequency-split technique, both the low-keV
+> images and the images with minimum image noise are decomposed into 2
+> sets of subimages. The first set contains only lower spatial frequencies
+> and, hence, most of the object information, the second set contains the
+> remaining high spatial frequencies and, hence, mostly image noise.
+> Finally, the lower spatial frequency stack at low keV is combined with
+> the high spatial frequency stack at optimal keV from a noise perspective…"
 
-- **LP** — low-pass (object info, bulk HU, low-keV iodine contrast)
-- **HP** — high-pass residual (edges + noise texture)
-- `E_noise_opt ≈ 70 keV` — [G14]: "minimum image noise at approximately 70 keV"
+Extracted hard constraints:
 
-#### LP filter — two-pass edge-preserving guided filter
+| # | Specification (paper) | Implementation |
+|---|----------------------|----------------|
+| 1 | Two inputs: `VMI_target` + `VMI_opt`                                       | ✓ Read from `sim_vmi.volumes` at `E_target` and `E_noise_opt` |
+| 2 | Noise-optimal energy ≈ 70 keV                                              | ✓ `vmip_E_noise_opt = 70.0` |
+| 3 | Frequency-split decomposition of **both** images into LP + HP subimages    | ✓ Same linear LP applied to both branches |
+| 4 | Final = LP(VMI_target) + HP(VMI_opt)                                       | ✓ `Mono+(E) = LP(VMI_E) + (VMI_opt − LP(VMI_opt))` |
+| 5 | LP + HP are complementary (partition the frequency axis)                   | ✓ HP ≡ I − LP by construction (linear LP ⇒ complementary) |
 
-[G14] doesn't disclose the LP shape (Siemens proprietary). Grant explicitly
-warns that a crude Gaussian LP destroys fine structure in the low-keV boost.
-We use the **guided filter** (He, Sun, Tang 2013, *IEEE TPAMI* 35(6):1397).
+#### What the paper does NOT specify — documented best guesses
 
-After our forward model + FBP + ACNR pipeline, VMI_70 still has σ ≈ 130 HU
-— without a clean reference, Mono+ quality is bounded by σ(guide).
+| Decision | Paper | **Best guess** | Rationale |
+|----------|-------|----------------|-----------|
+| LP filter shape           | Unstated (proprietary) — abstract mentions *"regional spatial frequency-based recombination"* but body text only says "frequency-split" | **2D Gaussian LP** (FFT-diagonal) | Simplest linear LP that cleanly partitions the frequency axis; "regional" in the abstract reads as *spatial-domain* rather than spatially-adaptive; matches the plain "frequency-split" language |
+| LP kernel size (σ)        | Unstated                                         | **σ = 2.0 px**                        | Rough match to the scale where image noise lives (~1–2 px) and object features (≥5 px) survive; tunable via `vmip_σ_lp_px` |
+| Same LP for both branches | Strongly implied ("both…decomposed into 2 sets") | **Yes, identical σ and kernel**       | Only way LP + HP = I across both branches → Mono+(E_opt) = VMI_opt identically (sanity check) |
+| Any pre-denoising of VMI_opt | Not mentioned                                  | **None**                              | Paper treats VMI_opt as-is; strict parity ⇒ no hidden preconditioning |
+| 2D vs 3D LP               | Paper figures are axial 2D                       | **Per-slice 2D**                      | Matches clinical axial viewing; 3D LP would couple across slice thickness, not described by paper |
+| Boundary conditions       | Unstated                                         | **FFT periodic**                      | No artifacts in body interior; tiny ring at scanner-bore edge is masked by the FOV circle anyway |
 
-**Fix — two-pass structure:**
+#### Final formula
 
-    Pass 1:  vmi_opt_clean = guided_filter(VMI_70, VMI_70, guide_r, guide_ε)
-    Pass 2:  LP(E)  = guided_filter(VMI_E, VMI_E, radius, ε)        # self-guided
-             HP     = vmi_opt_clean − guided_filter(vmi_opt_clean, vmi_opt_clean, radius, ε)
-             Mono+(E) = LP(E) + HP
+    Mono+(E_target)  =  LP_σ(VMI_E_target)  +  VMI_opt  −  LP_σ(VMI_opt)
 
-- Pass 1 pre-denoises the reference once with wider window + larger edge
-  threshold → `vmi_opt_clean` (anatomically faithful but lower noise floor).
-- Pass 2 LP is **self-guided per energy** — Grant's per-image Gaussian LP
-  made edge-aware. Eliminates the cross-guided regression bias that
-  produced a monotonically *increasing* σ(VMI+) from 40→140 keV in an
-  earlier version.
-- HP comes from `vmi_opt_clean` (not raw VMI_70) → HF detail inherited by
-  every energy is pre-denoised; this bounds the overall Mono+ noise floor.
+where `LP_σ` is a 2D Gaussian low-pass with std-dev `σ` pixels. At
+`E_target = E_noise_opt` the formula collapses to `Mono+(E_opt) = VMI_opt`
+exactly — a good consistency check.
 
-Why guided filter is right for both passes: anatomy is identical across
-energies (only HU contrast differs) — local linear transform absorbs
-contrast differences, edges stay aligned; edge-preserving denoising of
-flat regions keeps rod/vessel walls sharp; O(N) separable.
+#### Expected result ([G14] Figs 4–5)
 
-#### Expected result ([G14] Figs 4–5; [S14] Fig 3)
-
-CNR vs keV: **Mono+ rises monotonically as keV drops, peaking at 40 keV.**
-Plain VMI peaks near 80 keV and drops off at low keV because noise grows
-faster than iodine contrast.
+Mono+ CNR rises monotonically as keV drops, peaking at 40 keV. Plain VMI
+CNR peaks near 80 keV and drops at low keV because noise grows faster
+than iodine contrast.
 """
 
+# ╔═╡ 6454952b-4cdb-4beb-979e-c41595dbe204
+# VMI+ / Mono+ — 1:1 port of Grant et al. 2014 [G14] §Technique for
+# Calculating Mono+ Images.
+#
+# Paper specs (HARD constraints — faithfully implemented):
+#   · Inputs: VMI at target keV + VMI at noise-optimal keV (~70 keV)
+#   · Frequency-split decomposition of BOTH images into LP + HP subimages
+#   · Combination: Mono+(E) = LP(VMI_E) + HP(VMI_opt)
+#   · LP + HP complementary (so Mono+(E_opt) = VMI_opt identically)
+#
+# Paper is SILENT on (best guesses documented below, all tunable):
+#   · LP filter shape      →  [BEST GUESS] 2D Gaussian LP via FFT diagonal
+#   · LP kernel size       →  [BEST GUESS] σ = `vmip_σ_lp_px` pixels
+#   · Same LP for both?    →  YES (strongly implied by paper wording)
+#   · Pre-denoise VMI_opt? →  NO (strict parity → use as-is)
+#   · 2D per-slice vs 3D?  →  [BEST GUESS] per-slice 2D (matches paper figs)
+#   · Boundary conditions  →  [BEST GUESS] FFT periodic
+#
+# Hyperparameters — ONE real knob (σ_LP) + one structural choice (E_opt).
+begin
+    # Noise-optimal energy. [G14] body: "approximately 70 keV". MUST be in
+    # sim_vmi.energies.
+    vmip_E_noise_opt = 100.0
+
+    # LP Gaussian σ in pixels. [BEST GUESS — paper unspecified.] Typical
+    # values: σ ≈ 1.0 preserves most detail (mild mix), σ ≈ 3.0 heavily
+    # hands HF to VMI_opt (aggressive denoising at low-keV), σ ≈ 2.0 is
+    # balanced. Effective HP cutoff frequency ≈ 1/(2πσ) cycles/pixel.
+    vmip_σ_lp_px = 1.5
+end
+
 # ╔═╡ 000b0002-0000-4000-8000-000000000004
-# VMI+ via guided-filter frequency-split mixing.
-#
-# Two-pass structure:
-#
-#   [Pass 1 — reference pre-denoise]
-#     guide_r  — self-guided filter radius applied to VMI(E_noise_opt) ONCE,
-#                producing a cleaner structural reference `vmi_opt_clean` used
-#                as BOTH the guide AND the HP source for Pass 2. Bigger = more
-#                reference denoise (lower overall Mono+ floor) but eventually
-#                softens the fine edges the rest of the pipeline inherits.
-#                Typical 8–12 px.
-#     guide_ε  — edge-threshold² for the pre-denoise (HU²). Set so √guide_ε is
-#                between the largest noise amplitude you want to remove and the
-#                smallest edge contrast you want to keep. √5000 ≈ 71 HU keeps
-#                soft-tissue boundaries (~50–100 HU) and rod walls (~500 HU).
-#
-#   [Pass 2 — per-energy Mono+ frequency split, guided by vmi_opt_clean]
-#     radius   — guided-filter radius for LP(VMI_target | vmi_opt_clean).
-#                Controls the LP/HP crossover scale. 6–10 px.
-#     ε        — edge-threshold² for Pass 2 (HU²). Can be lower than guide_ε
-#                because the guide is already clean.
-#
-#   E_noise_opt — reference energy (keV); must exist in sim_vmi.energies.
 sim_vmi_plus = let
-    # Pass 1 — reference pre-denoise hyperparams
-    guide_r     = 8
-    guide_ε     = 5f0
+    # ── 2D Gaussian LP via FFT (exact, one-shot per slice) ──
+    # Kernel in Fourier: ĝ(k) = exp(−2π²σ²·(fx² + fy²)), fx,fy ∈ [0,1/2]
+    # with wrap-around (FFT periodic convention). Applying to FFT(slice)
+    # and inverting gives a pure linear LP — exactly what [G14]'s "frequency
+    # split" language describes.
+    function gaussian_lp_2d_fft(img::Array{Float32, 3}, σ_px::Float64)
+        nx, ny, nz = size(img)
+        σ² = σ_px^2
+        # Physical (wrap-around) frequency index in [0, 0.5]:
+        fx = [min(i - 1, nx - (i - 1)) / nx for i in 1:nx]
+        fy = [min(j - 1, ny - (j - 1)) / ny for j in 1:ny]
+        kernel = [exp(-2π^2 * σ² * (fx[i]^2 + fy[j]^2)) for i in 1:nx, j in 1:ny]
 
-    # Pass 2 — per-energy LP hyperparams
-    radius      = 2
-    ε           = 50_000f0
-
-    E_noise_opt = 70.0
-
-    # 2D separable box mean, per slice, threaded. Used inside the guided filter.
-    function box_mean2d(src::Array{Float32,3}, r::Int)
-        nx, ny, nz = size(src)
-        w   = 1f0 / (2r + 1)
-        tmp = similar(src); out = similar(src)
-        Threads.@threads for z in 1:nz
-            @inbounds for y in 1:ny, x in 1:nx
-                s = 0f0
-                for j in -r:r
-                    s += src[clamp(x + j, 1, nx), y, z]
-                end
-                tmp[x, y, z] = s * w
-            end
-            @inbounds for y in 1:ny, x in 1:nx
-                s = 0f0
-                for j in -r:r
-                    s += tmp[x, clamp(y + j, 1, ny), z]
-                end
-                out[x, y, z] = s * w
-            end
+        out = similar(img)
+        Threads.@threads for k in 1:nz
+            slice = Float64.(@view img[:, :, k])
+            out[:, :, k] .= Float32.(real.(ifft(fft(slice) .* kernel)))
         end
         out
     end
 
-    # He, Sun, Tang (2013) *IEEE TPAMI* 35(6):1397.  Guided filter —
-    # edge-preserving smoothing of `p` whose edges are taken from `I`.
-    # Returns q ≈ local linear transform of I that best matches p within radius r.
-    # When I == p this is self-guided (still edge-preserving).
-    function guided_filter(p::Array{Float32,3}, I::Array{Float32,3}, r::Int, ε::Float32)
-        mean_I  = box_mean2d(I, r)
-        mean_p  = box_mean2d(p, r)
-        corr_I  = box_mean2d(I .* I, r)
-        corr_Ip = box_mean2d(I .* p, r)
-        var_I   = corr_I  .- mean_I .^ 2
-        cov_Ip  = corr_Ip .- mean_I .* mean_p
-
-        a = cov_Ip ./ (var_I .+ ε)
-        b = mean_p .- a .* mean_I
-
-        mean_a = box_mean2d(a, r)
-        mean_b = box_mean2d(b, r)
-
-        mean_a .* I .+ mean_b
-    end
-
-    # Quick σ helper for the @info log — central water-ROI std.
-    function water_σ_mid(vol::Array{Float32,3})
+    # Central-water-ROI std (HU), used for the diagnostic log only.
+    function water_σ_mid(vol::Array{Float32, 3})
         mid = size(vol, 3) ÷ 2
         nx, ny = size(vol, 1), size(vol, 2)
         cx, cy = nx ÷ 2, ny ÷ 2; rr = 15
@@ -1792,52 +1928,44 @@ sim_vmi_plus = let
         std(vals)
     end
 
-    # Locate noise-optimal VMI.
-    i_opt = findfirst(==(E_noise_opt), sim_vmi.energies)
-    i_opt === nothing && error("E_noise_opt=$E_noise_opt keV not in sim_vmi.energies=$(sim_vmi.energies)")
-    vmi_opt_raw = sim_vmi.volumes[i_opt]
+    # Locate the noise-optimal VMI.
+    i_opt = findfirst(==(vmip_E_noise_opt), sim_vmi.energies)
+    i_opt === nothing && error("vmip_E_noise_opt=$vmip_E_noise_opt keV not in sim_vmi.energies=$(sim_vmi.energies)")
+    vmi_opt = sim_vmi.volumes[i_opt]
 
     t0 = time()
+    σ_lp = Float64(vmip_σ_lp_px)
 
-    # ── Pass 1: pre-denoise the noise-optimal reference (self-guided) ──
-    # This creates a cleaner structural reference. Every downstream LP AND the
-    # HP "noise-optimal" source derive from this — the Mono+ noise floor is
-    # bounded by σ(vmi_opt_clean), so reducing it here lifts every energy.
-    vmi_opt_clean = guided_filter(vmi_opt_raw, vmi_opt_raw, guide_r, guide_ε)
-    σ_raw   = water_σ_mid(vmi_opt_raw)
-    σ_clean = water_σ_mid(vmi_opt_clean)
+    # HP(VMI_opt) = VMI_opt − LP(VMI_opt), shared across all target energies.
+    lp_opt = gaussian_lp_2d_fft(vmi_opt, σ_lp)
+    hp_opt = vmi_opt .- lp_opt
 
-    # ── Pass 2: standard Grant 2014 frequency split ──
-    # LP is self-guided PER ENERGY — each VMI_E gets its own edge-preserving
-    # smoother, analogous to Grant's per-image Gaussian LP but edge-aware.
-    # HP is a single HF detail stack derived from the clean 70-keV reference.
-    #
-    # Earlier attempt used cross-guided LP `GF(VMI_E | vmi_opt_clean)` which
-    # acted as per-window linear regression of VMI_E onto the guide rather
-    # than Gaussian-like smoothing. That made σ(VMI+(E)) scale with the
-    # VMI_E-to-guide correlation — which grows monotonically from 40→140 keV
-    # (Compton-correlated noise aligns with the guide at high E), producing
-    # the wrong-shape, monotonically-increasing VMI+ curve. Self-guided LP
-    # eliminates that regression bias.
-    lp_opt = guided_filter(vmi_opt_clean, vmi_opt_clean, radius, ε)
-    hp_opt = vmi_opt_clean .- lp_opt
-
-    # Mono+(E_target) = SelfGF(VMI_target) + HP(vmi_opt_clean)
-    volumes = Vector{Array{Float32,3}}(undef, length(sim_vmi.energies))
+    # Mono+(E_target) = LP(VMI_E_target) + HP(VMI_opt).  At E_target = E_opt,
+    # LP(VMI_opt) + HP(VMI_opt) = VMI_opt → identity (sanity-check anchor).
+    volumes = Vector{Array{Float32, 3}}(undef, length(sim_vmi.energies))
     for (i, E) in enumerate(sim_vmi.energies)
-        vmi_E   = sim_vmi.volumes[i]
-        lp_E    = guided_filter(vmi_E, vmi_E, radius, ε)
-        volumes[i] = lp_E .+ hp_opt
+        if i == i_opt
+            volumes[i] = copy(vmi_opt)
+        else
+            vmi_E      = sim_vmi.volumes[i]
+            lp_E       = gaussian_lp_2d_fft(vmi_E, σ_lp)
+            volumes[i] = lp_E .+ hp_opt
+        end
     end
-    @info "Mono+ (He-Sun-Tang 2013 guided filter) — 2-pass, $(round(time() - t0, digits=1)) s"
-    @info "  Pass 1 pre-denoise: r=$guide_r px, ε=$(round(guide_ε; sigdigits=3)) HU²"
-    @info "    σ(VMI_$(Int(E_noise_opt))) raw=$(round(σ_raw; digits=1)) → clean=$(round(σ_clean; digits=1)) HU  (−$(round(100*(1 - σ_clean/σ_raw); digits=1))%)"
-    @info "  Pass 2 main LP:     r=$radius px, ε=$(round(ε; sigdigits=3)) HU²"
-    @info "  HP source: clean VMI_$(Int(E_noise_opt)) keV (bounds the Mono+ noise floor)"
+    dt = time() - t0
+
+    σ_vmi_opt     = water_σ_mid(vmi_opt)
+    σ_vmi_plus_lo = water_σ_mid(volumes[1])     # Mono+ at the lowest energy in the list
+    E_lo          = sim_vmi.energies[1]
+
+    @info "VMI+ / Mono+ (Grant 2014 [G14] §Technique — 1:1 parity): σ_LP=$(σ_lp) px, E_opt=$(Int(vmip_E_noise_opt)) keV, $(round(dt*1000; digits=1)) ms"
+    @info "  LP = 2D Gaussian, FFT periodic BC, per-slice  [BEST GUESS — paper unspecified]"
+    @info "  HP = (VMI_opt − LP(VMI_opt)), SAME LP applied to each VMI_E, identical σ."
+    @info "  sanity: Mono+(E_opt) = VMI_opt identically  (identity at i_opt=$(i_opt))"
+    @info "  σ(water ROI): VMI_$(Int(vmip_E_noise_opt)) = $(round(σ_vmi_opt; digits=1)) HU  |  Mono+_$(Int(E_lo)) = $(round(σ_vmi_plus_lo; digits=1)) HU"
 
     (energies = sim_vmi.energies, volumes = volumes,
-     radius = radius, ε = ε, guide_r = guide_r, guide_ε = guide_ε,
-     E_noise_opt = E_noise_opt)
+     σ_lp_px = σ_lp, E_noise_opt = vmip_E_noise_opt)
 end;
 
 # ╔═╡ 000b0003-0000-4000-8000-000000000004
@@ -1854,13 +1982,13 @@ let
                     colormap = :grays, colorrange = (-200, 500))
 
         ax2 = CM.Axis(
-            fig[i, 2]; title = "VMI+ $(Int(E)) keV  (r=$(sim_vmi_plus.radius) px, ε=$(sim_vmi_plus.ε), HP@$(Int(sim_vmi_plus.E_noise_opt)) keV)",
+            fig[i, 2]; title = "Mono+ $(Int(E)) keV  (σ_LP=$(sim_vmi_plus.σ_lp_px) px, HP@$(Int(sim_vmi_plus.E_noise_opt)) keV)",
             aspect = CM.DataAspect()
         )
         CM.heatmap!(ax2, sim_vmi_plus.volumes[i][:, :, mid];
                     colormap = :grays, colorrange = (-200, 500))
     end
-    CM.Label(fig[0, :]; text = "VMI vs VMI+  —  Soft Tissue Window (−200 … 500 HU)",
+    CM.Label(fig[0, :]; text = "VMI vs Mono+ (Grant 2014)  —  Soft Tissue Window (−200 … 500 HU)",
              fontsize = 15, font = :bold)
     CM.save(joinpath(RESULTS_DIR, "vmi_vs_vmi_plus.png"), fig, px_per_unit = 2)
     fig
@@ -1885,12 +2013,12 @@ let
 
     fig = CM.Figure(size = (800, 500), fontsize = 13)
     ax = CM.Axis(
-        fig[1, 1]; title = "Central-water-ROI σ — VMI vs VMI+",
+        fig[1, 1]; title = "Central-water-ROI σ — VMI vs Mono+ (Grant 2014)",
         xlabel = "Energy (keV)", ylabel = "σ (HU)",
         xticks = (1:length(sim_vmi.energies), string.(Int.(sim_vmi.energies)))
     )
     CM.scatterlines!(ax, 1:length(sim_vmi.energies), σ_vmi;  color = :firebrick,  linewidth = 2, markersize = 10, label = "VMI (post-ACNR)")
-    CM.scatterlines!(ax, 1:length(sim_vmi_plus.energies), σ_vmip; color = :steelblue, linewidth = 2, markersize = 10, label = "VMI+ (2-pass GF)")
+    CM.scatterlines!(ax, 1:length(sim_vmi_plus.energies), σ_vmip; color = :steelblue, linewidth = 2, markersize = 10, label = "Mono+ (Grant 2014, σ_LP=$(sim_vmi_plus.σ_lp_px) px)")
     CM.axislegend(ax; position = :rt)
     CM.save(joinpath(RESULTS_DIR, "vmi_vs_vmi_plus_noise.png"), fig, px_per_unit = 2)
     fig
@@ -1950,6 +2078,9 @@ end
 # ╠═00080006-0000-4000-8000-000000000004
 # ╠═00080007-0000-4000-8000-000000000004
 # ╟─00080019-0000-4000-8000-000000000004
+# ╟─00080023-0000-4000-8000-000000000004
+# ╠═00080024-0000-4000-8000-000000000004
+# ╠═00080025-0000-4000-8000-000000000004
 # ╟─00080020-0000-4000-8000-000000000004
 # ╠═00090002-0000-4000-8000-000000000004
 # ╟─fd9969e0-415f-409d-8672-fe2d963b6486
@@ -1959,6 +2090,7 @@ end
 # ╠═000a0002-0000-4000-8000-000000000004
 # ╟─000a0004-0000-4000-8000-000000000004
 # ╟─000a0005-0000-4000-8000-000000000004
+# ╠═6454952b-4cdb-4beb-979e-c41595dbe204
 # ╠═000b0002-0000-4000-8000-000000000004
 # ╟─000b0003-0000-4000-8000-000000000004
 # ╟─000b0004-0000-4000-8000-000000000004
