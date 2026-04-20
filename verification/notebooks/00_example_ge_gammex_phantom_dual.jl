@@ -411,32 +411,59 @@ protocol_high = BS.CTProtocol(
 md"""
 ## 4. Forward Projection — Both kVps
 
-Two independent polychromatic forward projections through the digital phantom.
+Two independent polychromatic forward projections through the digital
+phantom.  `simulate!` **injects** scatter into the raw sinograms (for
+correct Poisson noise statistics); scatter is then **subtracted** from
+each raw sinogram below via the Ohnesorge convolution model
+(`BS.estimate_scatter_field!`) before the dual-energy decomposition
+in §5 sees them.  Same intensity-domain subtraction pattern that the
+PCCT notebook (07) uses per-bin, collapsed to a single polychromatic
+sinogram per kVp for EICT.
 """
 
 # ╔═╡ 00070002-0000-4000-8000-000000000004
-# 80 kVp sinogram
+# 80 kVp sinogram — simulate + scatter-correct.
 sim_sino_low = let
     @info "Simulating 80 kVp / $(round(de_mA_80, digits = 1)) mA / $(de_collimation_mm) mm collimation..."
     ws = BS.create_eict_workspace(
         sim_scanner, protocol_low, sim_opts, sim_recon_geom, sim_phantom_gpu
     )
     BS.simulate!(ws, sim_phantom_gpu, sim_scanner, protocol_low, sim_opts, sim_recon_geom)
-    result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, kvp = 80)
-    ws = nothing; clear_gpu!()
+
+    sino = ws.sino_noisy_out     # still on GPU
+    if scatter_enable
+        t0 = time()
+        sino = _subtract_scatter_eict(sino, sim_scatter_model.model)
+        @info "  Scatter-corrected 80 kVp in $(round(time() - t0; digits = 2)) s"
+    else
+        @info "  Scatter correction: DISABLED (raw sino)"
+    end
+
+    result = (sino = Array(sino), geom = ws.geom, kvp = 80)
+    ws = nothing; sino = nothing; clear_gpu!()
     result
 end;
 
 # ╔═╡ 00070003-0000-4000-8000-000000000004
-# 140 kVp sinogram
+# 140 kVp sinogram — simulate + scatter-correct.
 sim_sino_high = let
     @info "Simulating 140 kVp / $(round(de_mA_140, digits = 1)) mA / $(de_collimation_mm) mm collimation..."
     ws = BS.create_eict_workspace(
         sim_scanner, protocol_high, sim_opts, sim_recon_geom, sim_phantom_gpu
     )
     BS.simulate!(ws, sim_phantom_gpu, sim_scanner, protocol_high, sim_opts, sim_recon_geom)
-    result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, kvp = 140)
-    ws = nothing; clear_gpu!()
+
+    sino = ws.sino_noisy_out
+    if scatter_enable
+        t0 = time()
+        sino = _subtract_scatter_eict(sino, sim_scatter_model.model)
+        @info "  Scatter-corrected 140 kVp in $(round(time() - t0; digits = 2)) s"
+    else
+        @info "  Scatter correction: DISABLED (raw sino)"
+    end
+
+    result = (sino = Array(sino), geom = ws.geom, kvp = 140)
+    ws = nothing; sino = nothing; clear_gpu!()
     result
 end;
 
@@ -545,9 +572,13 @@ sim_de_decomp = let
     sino_H_gpu = to_gpu(Float32.(sim_sino_high.sino))
 
     t1 = time()
-    sino_y_gpu, sino_c_gpu = BS.apply_cong(sino_L_gpu, sino_H_gpu;
-                                           basis = de_basis,
-                                           water_basis = water_basis)
+    sino_y_gpu, sino_c_gpu = BS.apply_cong(
+        Float32.(sino_L_gpu),
+        Float32.(sino_H_gpu);
+        basis = de_basis,
+        water_basis = water_basis
+    )
+    
     dt = time() - t1
 
     sino_photo   = Array(sino_y_gpu)
@@ -962,9 +993,9 @@ streaks and Poisson noise per-basis.
 #                 Leave at 1.0 unless off-ref VMI bias becomes visible.
 begin
     acnr_enable = true
-    acnr_E_ref  = 100.0
+    acnr_E_ref  = 140.0
     acnr_λ      = 2.0
-    acnr_γ      = 1.0
+    acnr_γ      = 0.9
 end
 
 # ╔═╡ 00080007-0000-4000-8000-000000000004
@@ -1385,13 +1416,13 @@ than iodine contrast.
 begin
     # Noise-optimal energy. [G14] body: "approximately 70 keV". MUST be in
     # sim_vmi.energies.
-    vmip_E_noise_opt = 100.0
+    vmip_E_noise_opt = 70.0
 
     # LP Gaussian σ in pixels. [BEST GUESS — paper unspecified.] Typical
     # values: σ ≈ 1.0 preserves most detail (mild mix), σ ≈ 3.0 heavily
     # hands HF to VMI_opt (aggressive denoising at low-keV), σ ≈ 2.0 is
     # balanced. Effective HP cutoff frequency ≈ 1/(2πσ) cycles/pixel.
-    vmip_σ_lp_px = 1.5
+    vmip_σ_lp_px = 1.0
 end
 
 # ╔═╡ 000b0002-0000-4000-8000-000000000004
@@ -1459,6 +1490,58 @@ let
     fig
 end
 
+# ╔═╡ 00070005-0000-4000-8000-000000000004
+# ── Scatter-correction hyperparameters [TUNE: post-simulation scatter subtraction] ──
+#
+#   scatter_enable  — master switch; false = pass raw sinogram through
+#   scatter_scale   — multiplicative scale on the Ohnesorge coefficient.
+#                     1.0 = calibrated default (SPR ≈ 15% at reference 30-cm
+#                     body); bump up if residual cupping persists in the
+#                     FBP, down if high-density rods darken unnaturally.
+begin
+    scatter_enable = true
+    scatter_scale  = 1.0
+end
+
+# ╔═╡ 00070006-0000-4000-8000-000000000004
+# Scatter model shared between both kVps.  The geometry-based Ohnesorge
+# kernel depends on scanner SID/SDD + phantom diameter — NOT on kVp
+# (energy variation is handled separately in compute_scatter_energy_weights,
+# which for EICT single-polychromatic sinograms collapses to a single
+# fraction ≈ 1.0).  Phantom diameter is estimated from the digital mask.
+sim_scatter_model = let
+    voxel_size_mm = sim_phantom_gpu.voxel_size .* 10.0
+    diameter_cm = BS.estimate_phantom_diameter_cm(sim_phantom_gpu.mask, voxel_size_mm)
+    model = BS.geometry_aware_scatter_model(sim_scanner;
+                                            phantom_diameter_cm = diameter_cm,
+                                            scale_factor = scatter_scale)
+    @info "Scatter model (Ohnesorge): diameter=$(round(diameter_cm; digits = 1)) cm, coef=$(round(model.scatter_coefficient; sigdigits = 3)), kernel FWHM=$(round(model.kernel_fwhm; digits = 1)) px"
+    (model = model, diameter_cm = diameter_cm)
+end;
+
+# ╔═╡ 00070007-0000-4000-8000-000000000004
+# Intensity-domain scatter subtraction on a polychromatic EICT sinogram.
+# Works on the same backend as the input (CPU Array, MtlArray, CuArray).
+#
+#   N_measured  = I0·exp(−sino)            measured counts (inc. scatter)
+#   N_scatter   = scatter_field · I0       Ohnesorge estimate (I0=1 units)
+#   N_primary   = N_measured − N_scatter
+#   sino_corr   = −log(max(N_primary, eps) / I0)      =  −log(max(exp(−sino) − scatter_field, eps))
+#
+# The I0 cancels when we work in the relative-intensity domain, so no
+# explicit I0 is needed — only `scatter_field` (which is already
+# I0=1-relative).
+function _subtract_scatter_eict(sino::AbstractArray{T, 3}, model) where {T <: AbstractFloat}
+    scatter_field = similar(sino)
+    BS.estimate_scatter_field!(scatter_field, sino, model)
+    sino_corr = similar(sino)
+    AK.foreachindex(sino) do idx
+        primary = exp(-sino[idx]) - scatter_field[idx]
+        sino_corr[idx] = -log(max(primary, eps(T)))
+    end
+    sino_corr
+end
+
 # ╔═╡ Cell order:
 # ╠═00010001-0000-4000-8000-000000000004
 # ╠═14530566-ecaa-4345-9115-e75981f3837d
@@ -1492,6 +1575,9 @@ end
 # ╠═00050004-0000-4000-8000-000000000004
 # ╠═00050005-0000-4000-8000-000000000004
 # ╟─00070001-0000-4000-8000-000000000004
+# ╠═00070005-0000-4000-8000-000000000004
+# ╠═00070006-0000-4000-8000-000000000004
+# ╠═00070007-0000-4000-8000-000000000004
 # ╠═00070002-0000-4000-8000-000000000004
 # ╠═00070003-0000-4000-8000-000000000004
 # ╟─00070004-0000-4000-8000-000000000004

@@ -71,8 +71,11 @@ function apply_cong!(
         basis,
         water_basis,
     )
-    # Stage spectral tables onto the sinogram's backend.  Small arrays
-    # (~100 bins each) so the copy is negligible relative to the kernel.
+    # Stage spectral tables (Float32) onto the sinogram's backend.  All
+    # internal kernel math runs in Float32 so Metal / CUDA execute
+    # natively without a Float64 fallback.  Float32 ULP ≈ 1.2e-7 around
+    # 1.0 — plenty for the physical line-integral range Cong operates on
+    # (0–10 cm·g/cm²).
     ŵ_L = _match_backend(basis.ŵ_L, sino_low)
     p_L = _match_backend(basis.p_L, sino_low)
     q_L = _match_backend(basis.q_L, sino_low)
@@ -82,16 +85,16 @@ function apply_cong!(
     nE_L = length(ŵ_L)
     nE_H = length(ŵ_H)
 
-    a_w = Float64(water_basis.a)
-    c_w = Float64(water_basis.c)
-    p_L_min = Float64(minimum(basis.p_L))
+    a_w     = Float32(water_basis.a)
+    c_w     = Float32(water_basis.c)
+    p_L_min = Float32(minimum(basis.p_L))
 
     AK.foreachindex(sino_low) do idx
-        p_L_meas = Float64(sino_low[idx])
-        p_H_meas = Float64(sino_high[idx])
+        p_L_meas = Float32(sino_low[idx])
+        p_H_meas = Float32(sino_high[idx])
 
         # Skip air rays.
-        if p_L_meas < 1.0e-6 && p_H_meas < 1.0e-6
+        if p_L_meas < 1f-6 && p_H_meas < 1f-6
             sino_y[idx] = 0f0
             sino_c[idx] = 0f0
             return
@@ -100,15 +103,15 @@ function apply_cong!(
         T_H_meas = exp(-p_H_meas)
 
         # ── Step 1 — Brent on water-equivalent path L (Cong Eq 7) ──
-        water_T_L = function (L::Float64)
-            T = 0.0
+        water_T_L = function (L::Float32)
+            T = 0f0
             @inbounds for i in 1:nE_L
                 T += ŵ_L[i] * exp(-(p_L[i] * a_w + q_L[i] * c_w) * L)
             end
             T - T_L_meas
         end
 
-        L_water, ok_L = brent_solve(water_T_L, 0.0, 60.0)
+        L_water, ok_L = brent_solve(water_T_L, 0f0, 60f0)
         if !ok_L
             sino_y[idx] = 0f0
             sino_c[idx] = 0f0
@@ -116,66 +119,67 @@ function apply_cong!(
         end
         c̄ = c_w * L_water
 
-        y_max = min(0.99 * p_L_meas / max(p_L_min, eps()), 1.0e7)
-        if y_max <= 0.0
+        y_max = min(0.99f0 * p_L_meas / max(p_L_min, eps(Float32)), 1f7)
+        if y_max <= 0f0
             sino_y[idx] = 0f0
-            sino_c[idx] = Float32(c̄)
+            sino_c[idx] = c̄
             return
         end
 
         # ── Step 2 — Newton on Eq 8 quintic for x = h(y) ──
-        solve_quintic = function (y::Float64, c̄_::Float64)
-            P0 = 0.0; P1 = 0.0; P2 = 0.0
-            P3 = 0.0; P4 = 0.0; P5 = 0.0
+        # Newton tolerance ≈ eps(Float32) ≈ 1.2e-7 (was 1e-14 for Float64).
+        solve_quintic = function (y::Float32, c̄_::Float32)
+            P0 = 0f0; P1 = 0f0; P2 = 0f0
+            P3 = 0f0; P4 = 0f0; P5 = 0f0
             @inbounds for i in 1:nE_L
                 q_i  = q_L[i]
-                q2   = q_i * q_i; q3 = q2 * q_i
-                q4   = q3 * q_i;  q5 = q4 * q_i
+                q2   = q_i * q_i;  q3 = q2 * q_i
+                q4   = q3 * q_i;   q5 = q4 * q_i
                 wexp = ŵ_L[i] * exp(-p_L[i] * y - q_i * c̄_)
                 P0 += wexp
                 P1 -= wexp * q_i
-                P2 += wexp * q2 * 0.5
-                P3 -= wexp * q3 * (1.0 / 6.0)
-                P4 += wexp * q4 * (1.0 / 24.0)
-                P5 -= wexp * q5 * (1.0 / 120.0)
+                P2 += wexp * q2 * 0.5f0
+                P3 -= wexp * q3 * (1f0 / 6f0)
+                P4 += wexp * q4 * (1f0 / 24f0)
+                P5 -= wexp * q5 * (1f0 / 120f0)
             end
-            x = 0.0
+            x = 0f0
             for _ in 1:12
                 F  = (P0 - T_L_meas) +
                      x * (P1 + x * (P2 + x * (P3 + x * (P4 + x * P5))))
-                dF = P1 + x * (2P2 + x * (3P3 + x * (4P4 + x * 5P5)))
-                abs(dF) < 1e-30 && break
+                dF = P1 + x * (2f0*P2 + x * (3f0*P3 + x * (4f0*P4 + x * 5f0*P5)))
+                abs(dF) < 1f-30 && break
                 Δ = F / dF
                 x -= Δ
-                abs(Δ) < 1e-14 && break
+                abs(Δ) < eps(Float32) && break
             end
             x
         end
 
         # ── Step 3 — Outer Brent on y via G(y) = T_H_pred − T_H_meas ──
-        T_H_pred = function (y::Float64, C::Float64)
-            T = 0.0
+        T_H_pred = function (y::Float32, C::Float32)
+            T = 0f0
             @inbounds for i in 1:nE_H
                 T += ŵ_H[i] * exp(-p_H[i] * y - q_H[i] * C)
             end
             T
         end
 
-        G = function (y::Float64)
+        G = function (y::Float32)
             x = solve_quintic(y, c̄)
             T_H_pred(y, c̄ + x) - T_H_meas
         end
 
-        y_opt, ok_y = brent_solve(G, 0.0, y_max)
+        y_opt, ok_y = brent_solve(G, 0f0, y_max)
         if !ok_y
             # Fall back to water-only estimate (matches CPU reference).
-            sino_y[idx] = Float32(a_w * L_water)
-            sino_c[idx] = Float32(c_w * L_water)
+            sino_y[idx] = a_w * L_water
+            sino_c[idx] = c_w * L_water
             return
         end
         x_final = solve_quintic(y_opt, c̄)
-        sino_y[idx] = Float32(max(y_opt, 0.0))
-        sino_c[idx] = Float32(max(c̄ + x_final, 0.0))
+        sino_y[idx] = max(y_opt, 0f0)
+        sino_c[idx] = max(c̄ + x_final, 0f0)
     end
 
     (sino_y, sino_c)

@@ -52,6 +52,9 @@ end
 Water basis constants `(a_water, c_water)` for Cong's initial L estimate.
 Derived from the H₂O composition (ρ = 1 g/cm³).  This is NOT a calibration
 — it's a physical constant, identical across all scanners.
+
+Returned as `Float32` scalars so the downstream kernels (GPU-compatible)
+run natively without Float64 fallback on Metal / CUDA.
 """
 function water_basis_constants()
     ρ_w = 1.0
@@ -63,7 +66,7 @@ function water_basis_constants()
 
     a_w = ρ_w * (m_H * Z_H^4 / A_H + m_O * Z_O^4 / A_O)
     c_w = ρ_w * (m_H * Z_H / A_H + m_O * Z_O / A_O)
-    (a = a_w, c = c_w)
+    (a = Float32(a_w), c = Float32(c_w))
 end
 
 """
@@ -72,26 +75,29 @@ end
 Build the per-spectral-bin photoelectric + Compton basis tables for a
 dual-kVp protocol pair.
 
-Returns a NamedTuple:
+Returns a NamedTuple of **Float32** vectors so the downstream `apply_cong!`
+kernel runs natively on Metal / CUDA without a Float64 fallback:
+
 - `ŵ_L, ŵ_H`  : normalized spectral weights (sum to 1) at low / high kVp
 - `p_L, p_H`  : `p(ε)` at each bin of the resolved spectrum
 - `q_L, q_H`  : `q(ε)` at each bin of the resolved spectrum
 
 These tables are the only inputs Cong's per-ray decomposition and the
 downstream PWLS / ACNR / VMI stages need to know about the physics of
-the scan.
+the scan.  Float32 precision (~7 decimal digits) is more than enough for
+the physical line-integral ranges (0–10 cm·g/cm²) that Cong operates on.
 """
 function compute_photo_compton_basis(prot_low, prot_high; sim_opts, scanner)
     e_L, w_L = resolve_spectrum(sim_opts, prot_low;  scanner = scanner)
     e_H, w_H = resolve_spectrum(sim_opts, prot_high; scanner = scanner)
 
-    ŵ_L = Float64.(w_L) ./ sum(Float64.(w_L))
-    ŵ_H = Float64.(w_H) ./ sum(Float64.(w_H))
+    ŵ_L = Float32.(Float64.(w_L) ./ sum(Float64.(w_L)))
+    ŵ_H = Float32.(Float64.(w_H) ./ sum(Float64.(w_H)))
 
-    p_L = Float64[p_photoelectric(Float64(e)) for e in e_L]
-    q_L = Float64[q_compton(Float64(e))       for e in e_L]
-    p_H = Float64[p_photoelectric(Float64(e)) for e in e_H]
-    q_H = Float64[q_compton(Float64(e))       for e in e_H]
+    p_L = Float32[Float32(p_photoelectric(Float64(e))) for e in e_L]
+    q_L = Float32[Float32(q_compton(Float64(e)))       for e in e_L]
+    p_H = Float32[Float32(p_photoelectric(Float64(e))) for e in e_H]
+    q_H = Float32[Float32(q_compton(Float64(e)))       for e in e_H]
 
     (ŵ_L = ŵ_L, p_L = p_L, q_L = q_L,
      ŵ_H = ŵ_H, p_H = p_H, q_H = q_H)
