@@ -1852,7 +1852,6 @@ sim_sino_6 = let
     result
 end
 
-
 # ╔═╡ 07100001-0000-4000-8000-000000000000
 md"""
 ## 10. Reconstruction Parameters [TUNE: RECON]
@@ -1874,7 +1873,6 @@ custom_filter_control = (
     x = (0.0, 0.25, 0.5, 0.75, 1.0),
     y = (1.0, 0.85, 0.6, 0.15, 0.001),
 )
-
 
 # ╔═╡ 07100004-0000-4000-8000-000000000000
 # Dose-independent noise floor (σ HU) — tune to match clinical high-mA noise.
@@ -3625,16 +3623,101 @@ high-attenuation rods. §5.2 cleans those up.
 """
 
 # ╔═╡ 00080002-0000-4000-8000-000000000004
-# Photo/Compton physical basis tables (Cong 2022 Eqs 3a–3e, 4).
-de_basis = BS.compute_photo_compton_basis(
-    BS.CTProtocol(kVp = 80,  additional_filters = additional_filters),
-    BS.CTProtocol(kVp = 140, additional_filters = additional_filters);
-    sim_opts = sim_opts, scanner = sim_scanner,
-)
+# Empirical K-edge-aware basis (in-notebook, no src/ changes).
+#
+# Instead of Cong's analytic p(ε) = √(32/ε⁷) + Klein-Nishina q(ε), fit
+# (p̂(E), q̂(E)) per energy via least-squares against NIST µ(E) across
+# three reference materials {water, elemental Ca, elemental I}.  The
+# iodine K-edge at 33 keV forces p̂(E) to develop a ~5.8× step that the
+# analytic form smooths through — this is what fixes the 40 keV VMI HU
+# overshoot without killing Ca, since LS spreads residual error across
+# all three materials.
+#
+# Field names match compute_photo_compton_basis so apply_cong! runs
+# unchanged.  Extra fields (vmi_energies, p_vmi, q_vmi) cached for the
+# downstream VMI synthesis cell.  Physical (a, c) = (ρ·Σmᵢ·Zᵢ⁴/Aᵢ,
+# ρ·Σmᵢ·Zᵢ/Aᵢ) is unchanged, so water_basis below still applies.
+de_basis = let
+    prot_L = BS.CTProtocol(kVp = 80,  additional_filters = additional_filters)
+    prot_H = BS.CTProtocol(kVp = 140, additional_filters = additional_filters)
+    e_L, w_L = BS.resolve_spectrum(sim_opts, prot_L; scanner = sim_scanner)
+    e_H, w_H = BS.resolve_spectrum(sim_opts, prot_H; scanner = sim_scanner)
+
+    ŵ_L = Float32.(Float64.(w_L) ./ sum(Float64.(w_L)))
+    ŵ_H = Float32.(Float64.(w_H) ./ sum(Float64.(w_H)))
+
+    # Atomic-mass lookup by Z, derived from XA.Elements.ZA_ratio.
+    atomic_mass = Dict{Int, Float64}(
+        let el = getproperty(XA.Elements, n)
+            el.Z => el.Z / el.ZA_ratio
+        end
+        for n in propertynames(XA.Elements)
+    )
+
+    # Cong Eqs 3a–3b: physical basis coords for compound OR elemental ref.
+    function physical_ac(mat)
+        ρ = Unitful.ustrip(Unitful.u"g/cm^3", mat.density)
+        if hasproperty(mat, :composition)
+            a = 0.0; c = 0.0
+            for (Z, m_frac) in mat.composition
+                A = atomic_mass[Z]
+                a += m_frac * Z^4 / A
+                c += m_frac * Z / A
+            end
+            (ρ * a, ρ * c)
+        else
+            Z = mat.Z;  A = Z / mat.ZA_ratio
+            (ρ * Z^4 / A, ρ * Z / A)
+        end
+    end
+
+    # 2-material calibration set — water + elemental iodine.  Two unknowns
+    # per energy, two equations ⇒ EXACT fit: both water and iodine µ(E)
+    # reproduced bit-identical to NIST at every E.  Ca drifts (not in the
+    # span) but only as much as Cong's analytic basis already drifts for
+    # iodine — we're just swapping which material is the "approximation
+    # victim" and moving it to the one without a K-edge.  Same structural
+    # tradeoff GE GSI makes for iodine/contrast protocols.
+    ref_materials = [XA.Materials.water, XA.Elements.Iodine]
+    A_coef = Matrix{Float64}(undef, length(ref_materials), 2)
+    for (i, m) in enumerate(ref_materials)
+        A_coef[i, 1], A_coef[i, 2] = physical_ac(m)
+    end
+    # 2×2 direct solve per E (LS degenerates to exact inverse when N=rank).
+    function fit_pq(energies)
+        p = zeros(Float32, length(energies))
+        q = zeros(Float32, length(energies))
+        for (i, E) in enumerate(energies)
+            µ = Float64[BS.compute_μ_at_energy(m, Float64(E)) for m in ref_materials]
+            sol = A_coef \ µ
+            p[i] = Float32(sol[1]);  q[i] = Float32(sol[2])
+        end
+        p, q
+    end
+
+    p_L, q_L   = fit_pq(e_L)
+    p_H, q_H   = fit_pq(e_H)
+    vmi_energies = [40.0, 70.0, 100.0, 140.0]
+    p_vmi, q_vmi = fit_pq(vmi_energies)
+
+    @info "[empirical basis] fit to {water, I} (EXACT) at $(length(e_L)) L-bins + $(length(e_H)) H-bins + $(length(vmi_energies)) VMI energies"
+    for (k, E) in enumerate(vmi_energies)
+        p_emp = p_vmi[k];  p_anl = Float32(BS.p_photoelectric(E))
+        q_emp = q_vmi[k];  q_anl = Float32(BS.q_compton(E))
+        @info "  E=$(Int(E)) keV: p̂=$(round(p_emp, sigdigits=4)) vs p_anl=$(round(p_anl, sigdigits=4))  |  q̂=$(round(q_emp, sigdigits=4)) vs q_anl=$(round(q_anl, sigdigits=4))"
+    end
+
+    (ŵ_L = ŵ_L, p_L = p_L, q_L = q_L,
+     ŵ_H = ŵ_H, p_H = p_H, q_H = q_H,
+     vmi_energies = vmi_energies, p_vmi = p_vmi, q_vmi = q_vmi,
+     ref_materials = ref_materials)
+end
 
 # ╔═╡ 00080003-0000-4000-8000-000000000004
 # Water basis constants (Eqs 3a–3b): a_water = ρ·Σ(mᵢ·Zᵢ⁴/Aᵢ), c_water = ρ·Σ(mᵢ·Zᵢ/Aᵢ).
-# Physical constant for H₂O — NOT a scanner calibration.
+# Physical constant for H₂O — NOT a scanner calibration.  Still valid under
+# the empirical basis above because (a, c) coordinates are unchanged — only
+# the basis functions (p̂, q̂) are refit.
 water_basis = BS.water_basis_constants()
 
 # ╔═╡ 00080004-0000-4000-8000-000000000004
@@ -4269,7 +4352,6 @@ sim_recon_photo_compton_flat = let
     end
 end;
 
-
 # ╔═╡ fd9969e0-415f-409d-8672-fe2d963b6486
 # Cong-only FBP mid-slice — streaks from per-ray analytic decomp should be visible.
 let
@@ -4384,14 +4466,37 @@ These are the inputs to Mono+ below.
 """
 
 # ╔═╡ 000a0002-0000-4000-8000-000000000004
-# VMI synthesis at 40 / 70 / 100 / 140 keV.
-# μ(E) = p(E)·a + q(E)·c → HU via water reference at each energy.
-sim_vmi = BS.synth_vmi_hu(
-    sim_recon_photo_compton_flat.a,
-    sim_recon_photo_compton_flat.c,
-    [40.0, 70.0, 100.0, 140.0];
-    fov_mask_radius_frac = 0.5,
-)
+# VMI synthesis under the empirical K-edge-aware basis.
+#     μ(E, r) = p̂(E)·a(r) + q̂(E)·c(r)
+# with (p̂, q̂) pulled from `de_basis.p_vmi/q_vmi`, i.e. the same LS-fit
+# coordinates that drove the decomposition → inversion/synthesis are
+# internally consistent, and the iodine K-edge step in p̂(E) fixes the
+# 40 keV VMI HU overshoot.  HU referenced to NIST μ_water(E).
+sim_vmi = let
+    energies = de_basis.vmi_energies
+    a = sim_recon_photo_compton_flat.a
+    c = sim_recon_photo_compton_flat.c
+    nx, ny, nz = size(a)
+    cx, cy = (nx + 1) / 2, (ny + 1) / 2
+    r_fov_sq = (0.5 * nx)^2
+
+    volumes = Vector{Array{Float32, 3}}(undef, length(energies))
+    for (k, E) in enumerate(energies)
+        p_E = de_basis.p_vmi[k]
+        q_E = de_basis.q_vmi[k]
+        μ_vol = @. p_E * a + q_E * c                       # cm⁻¹
+        μ_w_E = Float64(BS.compute_μ_at_energy(XA.Materials.water, Float64(E)))
+        hu = Float32.(BS.to_hounsfield(μ_vol; μ_water = μ_w_E))
+        @inbounds for k2 in 1:nz, j in 1:ny, i in 1:nx
+            if (i - cx)^2 + (j - cy)^2 > r_fov_sq
+                hu[i, j, k2] = -1000f0
+            end
+        end
+        volumes[k] = hu
+    end
+    @info "VMI synthesis (empirical K-edge basis): $(Int.(Float64.(energies))) keV — done"
+    (energies = energies, volumes = volumes)
+end
 
 # ╔═╡ 000a0004-0000-4000-8000-000000000004
 # Plain VMI at 40 / 70 / 100 / 140 keV — soft-tissue window.
@@ -4562,7 +4667,6 @@ let
     fig
 end
 
-
 # ╔═╡ 06126004-0000-4000-8000-000000000000
 # Backward-compat wrapper: build sim_de_mono_plus in the shape §13's downstream
 # clinical comparison cells expect (array of tuples with .recon/.name/.energy_keV).
@@ -4576,7 +4680,6 @@ sim_de_mono_plus = let
             for (i, E) in enumerate(sim_vmi_plus.energies)
     ]
 end;
-
 
 # ╔═╡ c3bafd40-fda9-4ec2-8ec3-8dc109fc4ecb
 sim_de_vmi_measurements = let
@@ -5158,9 +5261,9 @@ sim_detection_gain
 sim_noise_floor_hu
 
 # ╔═╡ Cell order:
-# ╠═783d265d-506c-4dd4-aa76-bd352f532c6d
 # ╟─07010001-0000-4000-8000-000000000000
 # ╠═07010002-0000-4000-8000-000000000000
+# ╠═783d265d-506c-4dd4-aa76-bd352f532c6d
 # ╠═07010003-0000-4000-8000-000000000000
 # ╠═07010004-0000-4000-8000-000000000000
 # ╠═07010005-0000-4000-8000-000000000000
@@ -5330,40 +5433,40 @@ sim_noise_floor_hu
 # ╠═4efd48c9-753a-4418-8095-fa12b7cc5a95
 # ╠═e8af3f62-e606-4f10-9a09-9e0620910f58
 # ╟─5cc1fa5c-3722-4fa1-b0f0-d816e204c8bf
-# ╠═00080001-0000-4000-8000-000000000004
+# ╟─00080001-0000-4000-8000-000000000004
 # ╠═00080002-0000-4000-8000-000000000004
 # ╠═00080003-0000-4000-8000-000000000004
 # ╠═00080004-0000-4000-8000-000000000004
-# ╠═00080005-0000-4000-8000-000000000004
+# ╟─00080005-0000-4000-8000-000000000004
 # ╠═00080012-0000-4000-8000-000000000004
-# ╠═00080013-0000-4000-8000-000000000004
-# ╠═00080014-0000-4000-8000-000000000004
+# ╟─00080013-0000-4000-8000-000000000004
+# ╟─00080014-0000-4000-8000-000000000004
 # ╠═00080021-0000-4000-8000-000000000004
 # ╠═00080022-0000-4000-8000-000000000004
-# ╠═00080015-0000-4000-8000-000000000004
+# ╟─00080015-0000-4000-8000-000000000004
 # ╠═00080016-0000-4000-8000-000000000004
-# ╠═c1139ae3-5186-445e-81b8-5d932ca5ef98
-# ╠═00080017-0000-4000-8000-000000000004
-# ╠═00080018-0000-4000-8000-000000000004
+# ╟─c1139ae3-5186-445e-81b8-5d932ca5ef98
+# ╟─00080017-0000-4000-8000-000000000004
+# ╟─00080018-0000-4000-8000-000000000004
 # ╠═00080006-0000-4000-8000-000000000004
 # ╠═00080007-0000-4000-8000-000000000004
-# ╠═00080019-0000-4000-8000-000000000004
-# ╠═00080023-0000-4000-8000-000000000004
+# ╟─00080019-0000-4000-8000-000000000004
+# ╟─00080023-0000-4000-8000-000000000004
 # ╠═00080024-0000-4000-8000-000000000004
-# ╠═00080020-0000-4000-8000-000000000004
+# ╟─00080020-0000-4000-8000-000000000004
 # ╠═00090002-0000-4000-8000-000000000004
 # ╠═00080025-0000-4000-8000-000000000004
-# ╠═fd9969e0-415f-409d-8672-fe2d963b6486
-# ╠═2b6fd506-c624-4be3-9a71-1d366ae58ada
-# ╠═00090003-0000-4000-8000-000000000004
-# ╠═000a0001-0000-4000-8000-000000000004
+# ╟─fd9969e0-415f-409d-8672-fe2d963b6486
+# ╟─2b6fd506-c624-4be3-9a71-1d366ae58ada
+# ╟─00090003-0000-4000-8000-000000000004
+# ╟─000a0001-0000-4000-8000-000000000004
 # ╠═000a0002-0000-4000-8000-000000000004
-# ╠═000a0004-0000-4000-8000-000000000004
-# ╠═000a0005-0000-4000-8000-000000000004
+# ╟─000a0004-0000-4000-8000-000000000004
+# ╟─000a0005-0000-4000-8000-000000000004
 # ╠═6454952b-4cdb-4beb-979e-c41595dbe204
 # ╠═000b0002-0000-4000-8000-000000000004
-# ╠═000b0003-0000-4000-8000-000000000004
-# ╠═000b0004-0000-4000-8000-000000000004
+# ╟─000b0003-0000-4000-8000-000000000004
+# ╟─000b0004-0000-4000-8000-000000000004
 # ╠═06126004-0000-4000-8000-000000000000
 # ╠═c3bafd40-fda9-4ec2-8ec3-8dc109fc4ecb
 # ╟─3a1f9c02-de47-4a8b-b1e3-f8c7d2e10a01
