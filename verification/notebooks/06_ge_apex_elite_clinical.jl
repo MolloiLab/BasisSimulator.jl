@@ -55,6 +55,9 @@ using JLD2: JLD2
 # ╠═╡ show_logs = false
 using DelimitedFiles: DelimitedFiles
 
+# ╔═╡ f3a91573-63b4-40df-8a9a-3a44d390bc79
+using Unitful
+
 # ╔═╡ 07010001-0000-4000-8000-000000000000
 md"""
 # 1. GE Revolution Apex Elite — Clinical Gammex 472 Scans
@@ -3893,66 +3896,60 @@ code and the hyperparameter cell above it for `γ_photo`, `γ_compton`,
 """
 
 # ╔═╡ 00080021-0000-4000-8000-000000000004
-# ── PWLS sinogram restoration hyperparameters (Noh, Fessler, Kinahan 2009) ─
-# 1:1 port of MIRT ct/de_wls_dercurv.m + wls/pwls_sqs_os.m; warm-started from
-# Cong; operates in the sinogram domain, per-slice threaded.
+# ── PWLS-L₂ sinogram restoration hyperparameters (Noh 2009 cost + Long/Fessler
+# 2014 §IV-B 2×2 matrix curvature; implementation in cell below). ─────────────
+#
+# Reparameterization: γ in the Noh/Fessler cost is FIXED to 1 here.  At finite
+# iteration counts (we run 20–40, not to convergence), SQS with the De Pierro
+# row-sum bound saturates on γ — the per-iter smoothing step reduces to
+# Δ_smooth ≈ (CᵀC·s)/κ, with γ canceling out.  So γ was a decoy knob; the real
+# practical knob was the `32f0` De Pierro constant hiding inside.  κ below is
+# that constant exposed directly.
 #
 #   pwls_enable     — master switch; false = pass-through Cong
-#   pwls_n_iter     — SQS iterations (MIRT examples use 20–30; monotonic
-#                       descent is guaranteed so more is safe)
-#   pwls_γ_photo    — regularization strength on the photo basis (Noh Eq 14 γ_l)
-#   pwls_γ_compton  — regularization strength on the Compton basis
-#                       Noh 2009 Sec V uses γ = 2⁻⁸ ≈ 0.0039 at very low dose.
-#                       Higher → smoother; lower → closer to Cong.
-#                       Tune on a log grid [1e-5, 1e-1]; doubling/halving is
-#                       a fine step size.
-#   pwls_relax      — SQS relaxation (MIRT default 1.0 = unrelaxed); drop to
-#                       0.5 if the monotonicity check in the main cell fires.
+#   pwls_n_iter     — SQS iterations
+#   pwls_κ_photo    — per-iter regularizer step damping on photo basis.
+#   pwls_κ_compton  —   … on Compton basis.
+#                       Smaller κ = bigger smoothing step per iter = more
+#                       total smoothing at fixed n_iter.
+#                       Stability: κ ≥ ‖CᵀC‖_op/2 ≈ 8 guarantees monotonic
+#                       descent (biharmonic in 2D).  Below 8 the @warn check
+#                       in the main cell will fire.
+#                       Practical range: [8, 64].  Start at 12.
+#   pwls_relax      — SQS relaxation (default 1.0 = unrelaxed).
 #
-# Paper: Noh, Fessler, Kinahan. IEEE TMI 28(11):1688–1702, 2009.
-# Code:  github.com/JeffFessler/mirt (ct/de_wls_dercurv.m + wls/pwls_sqs_os.m)
+# Paper: Noh, Fessler, Kinahan. IEEE TMI 28(11):1688–1702, 2009 (cost).
+#        Long, Fessler.     IEEE TMI 33(8):1614–1626, 2014 (L₂ surrogate).
 begin
     pwls_enable    = true
     pwls_n_iter    = 20
-    pwls_γ_photo   = 2.0^(-8)
-    pwls_γ_compton = 2.0^(-8)
+    pwls_κ_photo   = 24.0 # default 32
+    pwls_κ_compton = 24.0 # default 32
     pwls_relax     = 1.0
 end
 
 # ╔═╡ 00080022-0000-4000-8000-000000000004
-# Fessler/Noh 2009 PWLS-SQS sinogram restoration — 1:1 port of MIRT's
-# ct/de_wls_dercurv.m (per-ray WLS gradient + Fessler-Erdogan precomputed
-# separable curvature) + wls/pwls_sqs_os.m (SQS update loop).
+# PWLS-SQS sinogram restoration — Noh 2009 COST with Long & Fessler 2014 §IV-B
+# L₂ SURROGATE (per-ray 2×2 matrix curvature, eq 26-28) instead of MIRT's
+# diagonal scalar bound (which is L₃ collapsed to L₀=1).  Stays in sinogram
+# domain; same SQS outer loop; same γ/n_iter/relax hyperparameters.  The only
+# change is the curvature: off-diagonal data-term GN term now captures the
+# photo↔Compton coupling that the diagonal majorant drops.  Published per
+# Niu 2014 / Zhang 2014 / Persson-Adler 2017: ~2× noise-variance reduction at
+# matched resolution + suppression of the anti-correlated artifacts that ACNR
+# used to clean up post-hoc.
 #
-# Cost (Noh 2009 Eq 12):
+# Cost (unchanged, Noh 2009 Eq 12):
 #     Φ(s) = ½·Σ_{i,m} w_{mi}·(h_{mi} − f_m(s_i))²  +  Σ_l ½·γ_l·‖C·s_l‖²
-#   where
-#     h_{mi}  = −log(y_{mi}/I_m)  — measured line integrals (sim_sino_{low,high}.sino)
-#     f_m(s_i) = −log Σ_k ŵ_m[k]·exp(−p_m[k]·y − q_m[k]·C)    (polychromatic fwd)
-#     w_{mi}  ≈ y_{mi} ∝ exp(−h_{mi})                         (Poisson inv-var, Eq 13)
-#     ‖C·s_l‖² = ‖Cx·s_l‖² + ‖Cy·s_l‖²                        — 2D 2nd-order diff
-#                  (detector-col AND view axes), Neumann BC on each. Extends
-#                  Noh 2009 §III.B (1D radial) using the MIRT Cdiffs pattern:
-#                  stack independent Cdiff1 operators per axis. One γ per basis
-#                  controls both directions equally — no extra hyperparam.
 #
-# Fessler-Erdogan precomputed curvature (MIRT de_wls_dercurv.m lines 131–133):
-#     M[m, l]          = Σ_k ŵ_m[k]·c_l[k]   — spectral-weighted MAC, 2×2
-#     curv_geom[l]     = Σ_m |M[m, l]| · Σ_{l'} |M[m, l']|
-#     curv_data_l[i]   = max_m(w_{mi}) · curv_geom[l]
-#     curv_R_l         = γ_l · 32            — De Pierro row-sum bound for
-#                          |Cx'Cx + Cy'Cy|: each axis has stencil [1,−4,6,−4,1]
-#                          with row-sum 16; two axes ⇒ 32.
-#     curv_l[i]        = curv_data_l[i] + curv_R_l         (constant, one-time)
+# Per-ray update (Long & Fessler 2014 eq 26-28 in sino domain, L_0 = 2 basis):
+#     J_m,i = (⟨p_m⟩_β, ⟨q_m⟩_β)ᵀ        — 2-vector, β = current Beer-weighted spectrum
+#     C̈_i  = Σ_m w_{mi} · J_m,i · J_m,iᵀ — 2×2 PSD data curvature (GN matrix)
+#     M_i  = C̈_i + diag(κ_photo, κ_compton)  — reg curvature (γ=1 folded into κ)
+#     g_i  = Σ_m w_{mi}·(f_m(s_i) − h_{mi})·J_m,i  +  ((CᵀC·s_y)_i, (CᵀC·s_C)_i)
+#     s_i ← max( s_i − relax · M_i⁻¹ · g_i , 0 )    — closed-form 2×2 inverse
 #
-# SQS update (pwls_sqs_os.m lines 135–158, adapted: G=I for sinogram domain):
-#     grad_l[i]   = Σ_m w_{mi} · (f_m(s_i) − h_{mi}) · ∂f_m/∂s_l
-#     grad_R_l[i] = γ_l · (CᵀC · s_l)[i]
-#     s_l[i] ← max( s_l[i] − relax · (grad_l[i] + grad_R_l[i]) / curv_l[i], 0 )
-#
-# SQS guarantees monotonic decrease of Φ(s) (Fessler 2000). We log Φ per iter
-# and WARN if it increases — catches any sign or curvature-bound bug
-# immediately.
+# Inline implementation below (not in src/ yet — verify first).
 sim_de_decomp_pwls = let
     if !pwls_enable
         @info "PWLS restoration: DISABLED (pass-through Cong)"
@@ -3964,19 +3961,160 @@ sim_de_decomp_pwls = let
     else
         sino_y = copy(sim_de_decomp.sino_photo)     # Cong warm start
         sino_c = copy(sim_de_decomp.sino_compton)
-        info = BS.apply_pwls!(sino_y, sino_c;
-                              h_low     = sim_de_sino_low.sino,
-                              h_high    = sim_de_sino_high.sino,
-                              basis     = de_basis,
-                              γ_photo   = pwls_γ_photo,
-                              γ_compton = pwls_γ_compton,
-                              n_iter    = pwls_n_iter,
-                              relax     = pwls_relax)
+        h_low  = sim_de_sino_low.sino
+        h_high = sim_de_sino_high.sino
+
+        ŵ_L = de_basis.ŵ_L;  p_L = de_basis.p_L;  q_L = de_basis.q_L
+        ŵ_H = de_basis.ŵ_H;  p_H = de_basis.p_H;  q_H = de_basis.q_H
+        nE_L = length(ŵ_L);  nE_H = length(ŵ_H)
+
+        n_col, n_view, n_row = size(sino_y)
+        κ_p        = Float32(pwls_κ_photo)     # regularizer step damping
+        κ_c        = Float32(pwls_κ_compton)
+        relax_f    = Float32(pwls_relax)
+        reg_curv_p = κ_p                        # SQS step = reg_grad / κ
+        reg_curv_c = κ_c
+
+        # Per-slice 2D Laplacian (CᵀC·s) — two passes of the 3-stencil C = [1,-2,1]
+        # with Neumann BC, applied along col AND view axes then summed.  C is
+        # symmetric ⇒ CᵀC = C·C.  Same regularizer as the original Noh port.
+        apply_CtC_slice! = function (out::AbstractArray{Float32, 2},
+                                     s  ::AbstractArray{Float32, 2},
+                                     tmp::AbstractArray{Float32, 2})
+            nc, nv = size(s)
+            # x-axis: tmp = Cx·s, then out = Cx·tmp
+            @inbounds for v in 1:nv, c in 1:nc
+                sl = c == 1  ? s[c, v] : s[c-1, v]
+                sr = c == nc ? s[c, v] : s[c+1, v]
+                tmp[c, v] = sl - 2f0*s[c, v] + sr
+            end
+            @inbounds for v in 1:nv, c in 1:nc
+                tl = c == 1  ? tmp[c, v] : tmp[c-1, v]
+                tr = c == nc ? tmp[c, v] : tmp[c+1, v]
+                out[c, v] = tl - 2f0*tmp[c, v] + tr
+            end
+            # y-axis: tmp = Cy·s, then out += Cy·tmp
+            @inbounds for v in 1:nv, c in 1:nc
+                su = v == 1  ? s[c, v] : s[c, v-1]
+                sd = v == nv ? s[c, v] : s[c, v+1]
+                tmp[c, v] = su - 2f0*s[c, v] + sd
+            end
+            @inbounds for v in 1:nv, c in 1:nc
+                tu = v == 1  ? tmp[c, v] : tmp[c, v-1]
+                td = v == nv ? tmp[c, v] : tmp[c, v+1]
+                out[c, v] += tu - 2f0*tmp[c, v] + td
+            end
+        end
+
+        cost_history = Float64[]
+
+        t0 = time()
+        for iter in 1:pwls_n_iter
+            Φ_total = Threads.Atomic{Float64}(0.0)
+
+            Threads.@threads for r in 1:n_row
+                # Per-thread slice-sized scratch; re-used within the slice.
+                reg_y = zeros(Float32, n_col, n_view)
+                reg_c = zeros(Float32, n_col, n_view)
+                tmp_b = zeros(Float32, n_col, n_view)
+
+                # Snapshot regularizer gradients (Jacobi SQS): fixed within iter.
+                apply_CtC_slice!(reg_y, @view(sino_y[:, :, r]), tmp_b)
+                apply_CtC_slice!(reg_c, @view(sino_c[:, :, r]), tmp_b)
+
+                Φ_slice = 0.0
+
+                @inbounds for v in 1:n_view, c in 1:n_col
+                    y  = sino_y[c, v, r]
+                    Cv = sino_c[c, v, r]
+
+                    # Low-kVp spectral Beer moments.
+                    Z_L = 0f0;  Z_Lp = 0f0;  Z_Lq = 0f0
+                    for k in 1:nE_L
+                        wk = ŵ_L[k] * exp(-p_L[k]*y - q_L[k]*Cv)
+                        Z_L  += wk;  Z_Lp += p_L[k]*wk;  Z_Lq += q_L[k]*wk
+                    end
+                    invZ_L = 1f0 / max(Z_L, 1f-20)
+                    P_L = Z_Lp * invZ_L;  Q_L = Z_Lq * invZ_L
+                    f_L = -log(max(Z_L, 1f-20))
+
+                    # High-kVp spectral Beer moments.
+                    Z_H = 0f0;  Z_Hp = 0f0;  Z_Hq = 0f0
+                    for k in 1:nE_H
+                        wk = ŵ_H[k] * exp(-p_H[k]*y - q_H[k]*Cv)
+                        Z_H  += wk;  Z_Hp += p_H[k]*wk;  Z_Hq += q_H[k]*wk
+                    end
+                    invZ_H = 1f0 / max(Z_H, 1f-20)
+                    P_H = Z_Hp * invZ_H;  Q_H = Z_Hq * invZ_H
+                    f_H = -log(max(Z_H, 1f-20))
+
+                    h_L = h_low[c, v, r];  h_H = h_high[c, v, r]
+                    res_L = f_L - h_L
+                    res_H = f_H - h_H
+                    w_L = exp(-h_L)     # Poisson inv-var (Noh 2009 Eq 13)
+                    w_H = exp(-h_H)
+
+                    # Cost accumulation (data term only; reg term below).
+                    Φ_slice += 0.5 * (w_L * res_L * res_L + w_H * res_H * res_H)
+
+                    # Data gradient (2-vector).
+                    g_d_y = w_L*res_L*P_L + w_H*res_H*P_H
+                    g_d_c = w_L*res_L*Q_L + w_H*res_H*Q_H
+
+                    # Data curvature (Long/Fessler eq 27 GN form, symmetric 2×2 PSD).
+                    cd_yy = w_L*P_L*P_L + w_H*P_H*P_H
+                    cd_yc = w_L*P_L*Q_L + w_H*P_H*Q_H
+                    cd_cc = w_L*Q_L*Q_L + w_H*Q_H*Q_H
+
+                    # Regularizer contribution: grad via CᵀC, curv = κ.  γ=1 is
+                    # folded into κ (see hyperparam cell), so no γ multiplier here.
+                    rg_y = reg_y[c, v]
+                    rg_c = reg_c[c, v]
+
+                    # Total gradient + total 2×2 curvature.
+                    gy = g_d_y + rg_y
+                    gc = g_d_c + rg_c
+                    m_yy = cd_yy + reg_curv_p
+                    m_yc = cd_yc
+                    m_cc = cd_cc + reg_curv_c
+
+                    # Closed-form 2×2 solve: Δ = M⁻¹·g.
+                    det_m   = m_yy*m_cc - m_yc*m_yc
+                    inv_det = 1f0 / max(det_m, 1f-20)
+                    Δy = inv_det * (m_cc*gy - m_yc*gc)
+                    Δc = inv_det * (m_yy*gc - m_yc*gy)
+
+                    # SQS update with non-neg clip (matches Noh behaviour).
+                    sino_y[c, v, r] = max(y  - relax_f * Δy, 0f0)
+                    sino_c[c, v, r] = max(Cv - relax_f * Δc, 0f0)
+                end
+
+                # Regularizer cost: ½ γ_l · s_lᵀ · (CᵀC·s_l) — use snapshot reg_l.
+                @inbounds for v in 1:n_view, c in 1:n_col
+                    Φ_slice += 0.5 * sino_y[c, v, r] * reg_y[c, v]   # γ=1
+                    Φ_slice += 0.5 * sino_c[c, v, r] * reg_c[c, v]
+                end
+
+                Threads.atomic_add!(Φ_total, Φ_slice)
+            end
+
+            push!(cost_history, Φ_total[])
+
+            if iter > 1 && cost_history[iter] > cost_history[iter-1]
+                @warn "PWLS-L₂: cost increased at iter $iter  (Φ_prev=$(cost_history[iter-1]), Φ_curr=$(cost_history[iter])).  Monotonicity violated — consider smaller relax."
+            end
+        end
+        dt = time() - t0
+
+        @info "[PWLS-L₂] 2×2 matrix curvature, $(pwls_n_iter) iters × $(n_row) slices in $(round(dt, digits=1)) s  ($(round(1000*dt/pwls_n_iter, digits=0)) ms/iter)  |  κ_p=$(κ_p), κ_c=$(κ_c), Φ: $(round(cost_history[1], sigdigits=4)) → $(round(cost_history[end], sigdigits=4))"
+
         (sino_photo = sino_y, sino_compton = sino_c,
          geom = sim_de_decomp.geom,
-         n_iter = info.n_iter,
-         γ_photo = info.γ_photo, γ_compton = info.γ_compton,
-         relax = info.relax, cost_history = info.cost_history)
+         n_iter = pwls_n_iter,
+         κ_photo = pwls_κ_photo, κ_compton = pwls_κ_compton,
+         γ_photo = pwls_κ_photo, γ_compton = pwls_κ_compton,   # back-compat aliases for display cells
+         relax = pwls_relax,
+         cost_history = cost_history)
     end
 end;
 
@@ -3990,7 +4128,7 @@ let
     mid_row  = size(sino_p, 3) ÷ 2
 
     fig = CM.Figure(size = (1400, 800), fontsize = 13)
-    tag = "γ_p=$(sim_de_decomp_pwls.γ_photo), γ_C=$(sim_de_decomp_pwls.γ_compton), k=$(sim_de_decomp_pwls.n_iter)"
+    tag = "κ_p=$(sim_de_decomp_pwls.κ_photo), κ_C=$(sim_de_decomp_pwls.κ_compton), k=$(sim_de_decomp_pwls.n_iter)"
     for (row, name, sino) in [(1, "Photoelectric y — post-PWLS ($tag)", sino_p),
                               (2, "Compton C — post-PWLS ($tag)",       sino_c)]
         ax1 = CM.Axis(fig[row, 1]; title = "$name — mid-view (view $mid_view)",
@@ -4146,10 +4284,10 @@ streaks and Poisson noise per-basis.
 #   acnr_γ      — projection strength ∈ [0, 1]. γ=0 off, γ=1 full ACNR.
 #                 Leave at 1.0 unless off-ref VMI bias becomes visible.
 begin
-    acnr_enable = true
+    acnr_enable = false
     acnr_E_ref  = 100.0
     acnr_λ      = 2.0
-    acnr_γ      = 1.0
+    acnr_γ      = 0
 end
 
 # ╔═╡ 00080007-0000-4000-8000-000000000004
@@ -4268,7 +4406,7 @@ begin
     cap_enable     = true
     cap_fov_cm     = 35.0
     cap_poly_order = 4
-    cap_q_lo       = 0.10
+    cap_q_lo       = 0.15
     cap_q_hi       = 0.75
 end
 
@@ -4593,7 +4731,7 @@ than iodine contrast.
 begin
     # Noise-optimal energy. [G14] body: "approximately 70 keV". MUST be in
     # sim_vmi.energies.
-    vmip_E_noise_opt = 100.0
+    vmip_E_noise_opt = 70.0
 
     # LP Gaussian σ in pixels. [BEST GUESS — paper unspecified.] Typical
     # values: σ ≈ 1.0 preserves most detail (mild mix), σ ≈ 3.0 heavily
@@ -5434,6 +5572,7 @@ sim_noise_floor_hu
 # ╠═e8af3f62-e606-4f10-9a09-9e0620910f58
 # ╟─5cc1fa5c-3722-4fa1-b0f0-d816e204c8bf
 # ╟─00080001-0000-4000-8000-000000000004
+# ╠═f3a91573-63b4-40df-8a9a-3a44d390bc79
 # ╠═00080002-0000-4000-8000-000000000004
 # ╠═00080003-0000-4000-8000-000000000004
 # ╠═00080004-0000-4000-8000-000000000004
