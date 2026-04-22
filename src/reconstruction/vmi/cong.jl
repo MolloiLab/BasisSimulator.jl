@@ -43,7 +43,7 @@ Reference:
 end
 
 """
-    apply_cong!(sino_y, sino_c, sino_low, sino_high; basis, water_basis)
+    apply_cong!(sino_y, sino_c, sino_low, sino_high; basis, water_basis, ...)
 
 Per-ray Cong 2022 decomposition, writing results into `sino_y` and
 `sino_c`.  All four arrays share the same shape (nx, nv, nr) and element
@@ -62,6 +62,20 @@ before launch.
 # Keyword arguments
 - `basis`       : NamedTuple from `compute_photo_compton_basis`
 - `water_basis` : NamedTuple from `water_basis_constants()`
+
+# Tuning knobs (per-ray solver tolerances; exposed for residual beam-hardening tuning)
+- `newton_max_iter::Int = 12` — inner Newton iterations on the Eq 8
+  quintic.  Raise for dense iodine rays where Newton bails before the
+  root is tight (e.g. try 20 if residual 40 keV iodine HU slope > 1.03).
+- `newton_tol::Real = eps(Float32) ≈ 1.2e-7` — |Δ| break tolerance for
+  the Newton inner loop.  Loosen (e.g. 5e-7) for noise-limited rays if
+  Newton is spinning; tighten for precision tuning.
+- `y_max_factor::Real = 0.99` — safety factor on the outer Brent upper
+  bound `y_max = factor · p_L_meas / min(p_L)`.  K-edge basis functions
+  have very low `min(p_L)` near the iodine K-edge → widening this
+  factor (e.g. 2.0) helps dense-iodine rays converge.
+- `y_max_cap::Real = 1e7` — hard ceiling on `y_max`; only relevant if
+  the ratio above overflows for air-adjacent rays.
 """
 function apply_cong!(
         sino_y::AbstractArray{Float32, 3},
@@ -70,6 +84,10 @@ function apply_cong!(
         sino_high::AbstractArray{Float32, 3};
         basis,
         water_basis,
+        newton_max_iter::Int = 12,
+        newton_tol::Real     = eps(Float32),
+        y_max_factor::Real   = 0.99,
+        y_max_cap::Real      = 1f7,
     )
     # Enforce Float32 basis + water_basis up-front.  The kernel runs
     # entirely in Float32 (Metal can't allocate Float64 arrays), so any
@@ -107,6 +125,13 @@ function apply_cong!(
     c_w     = Float32(water_basis.c)
     p_L_min = Float32(minimum(basis.p_L))
 
+    # Capture tuning knobs as plain locals so the AK closure can see them
+    # on every backend (kwargs aren't visible inside the do-block).
+    nm_iter = newton_max_iter
+    n_tol   = Float32(newton_tol)
+    y_fac   = Float32(y_max_factor)
+    y_cap   = Float32(y_max_cap)
+
     AK.foreachindex(sino_low) do idx
         p_L_meas = Float32(sino_low[idx])
         p_H_meas = Float32(sino_high[idx])
@@ -137,7 +162,7 @@ function apply_cong!(
         end
         c̄ = c_w * L_water
 
-        y_max = min(0.99f0 * p_L_meas / max(p_L_min, eps(Float32)), 1f7)
+        y_max = min(y_fac * p_L_meas / max(p_L_min, eps(Float32)), y_cap)
         if y_max <= 0f0
             sino_y[idx] = 0f0
             sino_c[idx] = c̄
@@ -162,14 +187,14 @@ function apply_cong!(
                 P5 -= wexp * q5 * (1f0 / 120f0)
             end
             x = 0f0
-            for _ in 1:12
+            for _ in 1:nm_iter
                 F  = (P0 - T_L_meas) +
                      x * (P1 + x * (P2 + x * (P3 + x * (P4 + x * P5))))
                 dF = P1 + x * (2f0*P2 + x * (3f0*P3 + x * (4f0*P4 + x * 5f0*P5)))
                 abs(dF) < 1f-30 && break
                 Δ = F / dF
                 x -= Δ
-                abs(Δ) < eps(Float32) && break
+                abs(Δ) < n_tol && break
             end
             x
         end
@@ -204,21 +229,24 @@ function apply_cong!(
 end
 
 """
-    apply_cong(sino_low, sino_high; basis, water_basis) -> (sino_y, sino_c)
+    apply_cong(sino_low, sino_high; basis, water_basis, ...) -> (sino_y, sino_c)
 
 Allocating wrapper around `apply_cong!`.  Returns a fresh `(sino_y,
-sino_c)` pair on the same backend as the inputs.
+sino_c)` pair on the same backend as the inputs.  Forwards all
+`apply_cong!` tuning kwargs (`newton_max_iter`, `newton_tol`,
+`y_max_factor`, `y_max_cap`).
 """
 function apply_cong(
         sino_low::AbstractArray,
         sino_high::AbstractArray;
         basis,
         water_basis,
+        kwargs...,
     )
     sino_y = similar(sino_low, Float32)
     sino_c = similar(sino_low, Float32)
     apply_cong!(sino_y, sino_c, sino_low, sino_high;
-                basis = basis, water_basis = water_basis)
+                basis = basis, water_basis = water_basis, kwargs...)
     (sino_y, sino_c)
 end
 

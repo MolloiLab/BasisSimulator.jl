@@ -3573,19 +3573,17 @@ end
 md"""
 ## 5. Photoelectric + Compton Basis Decomposition
 
-**Pipeline:** Cong analytic per-ray decomp → PWLS-SQS sinogram restoration
-(Noh/Fessler/Kinahan 2009) → ACNR sinogram smoother (Kalender/Klotz/Kostaridou
-1988) → FBP → post-FBP radial capping correction. Each stage below has its
-own sinogram + intermediate FBP so the streak / noise suppression is visible
-stage-by-stage.
+**Pipeline:** Cong analytic per-ray decomp → PWLS-L₂ sinogram restoration
+(Noh 2009 cost + Long/Fessler 2014 2×2 matrix curvature) → FBP → post-FBP
+radial capping correction. Each stage below has its own sinogram +
+intermediate FBP so the streak / noise suppression is visible stage-by-stage.
 
 | Stage | Role | Handles |
 |-------|------|---------|
 | §5.1 Cong 2022 | Per-ray polychromatic inversion (no spatial coupling) | Beam-hardening, basis inversion |
-| §5.2 PWLS-SQS  | Statistical penalized-WLS restoration on basis sinograms | Streaks from per-ray decomp errors; low-dose noise |
-| §5.3 ACNR      | Anti-correlated noise projection across bases | Residual photo↔compton correlated noise (dominates VMI 40 keV) |
-| §5.4 Capping   | Per-slice radial even-polynomial fit on the basis images | Residual radial cupping/capping from incomplete BHC |
-| §5.5 Final FBP | FDK on cleaned basis sinograms (feeds §5.4 capping); final viz shows all four corrections | Reconstruction output consumed by §6 VMI |
+| §5.2 PWLS-L₂   | Statistical penalized-WLS with 2×2 per-ray matrix curvature | Streaks from per-ray decomp errors; iodine↔water anti-correlated noise |
+| §5.3 Capping   | Per-slice radial even-polynomial fit on the basis images | Residual radial cupping/capping from incomplete BHC |
+| §5.4 Final FBP | FDK on cleaned basis sinograms (feeds §5.3 capping); final viz shows all three corrections | Reconstruction output consumed by §6 VMI |
 
 ### 5.1 Cong et al. 2022 — Per-ray Analytic Decomposition
 
@@ -3617,8 +3615,15 @@ spectrum (`BS.resolve_spectrum`, which contains source × bowtie × detector).
    monotonic on `[0, τ_L/min(p_L))`. `Roots.find_zero(G, (0, y_max), Brent())`.
 
 **Sinogram outputs (line integrals, per ray):**
-- `sim_de_decomp.sino_photo   = y = ∫a(r)·dr`
-- `sim_de_decomp.sino_compton = C = ∫c(r)·dr = c̄ + h(y)`
+- `sim_de_decomp.sino_iodine = y = ∫ρ_I(r)·dr`       (g/cm²)
+- `sim_de_decomp.sino_water  = W = ∫ρ_W(r)·dr`       (g/cm²)
+
+Cong runs in the **direct (iodine, water) basis** defined by §0 —
+NIST mass-atten tables at each spectral bin, `water_basis = (0, 1)`.
+Forward-model Jacobian has κ ≈ 160 (vs. κ ≈ 110 k for the (Z⁴/A, Z/A)
+photo/Compton basis), so post-decomposition noise in `(sino_I, sino_W)`
+is well-conditioned and balanced — prerequisite for the monotonic σ(E)
+trend in §6 VMI.
 
 The intermediate FBP below shows **raw Cong output** — no spatial coupling
 yet, so per-ray decomposition errors show up as coherent streaks through
@@ -3626,20 +3631,30 @@ high-attenuation rods. §5.2 cleans those up.
 """
 
 # ╔═╡ 00080002-0000-4000-8000-000000000004
-# Empirical K-edge-aware basis (in-notebook, no src/ changes).
+# Direct (water, iodine) basis tables for Cong's per-ray decomposition.
 #
-# Instead of Cong's analytic p(ε) = √(32/ε⁷) + Klein-Nishina q(ε), fit
-# (p̂(E), q̂(E)) per energy via least-squares against NIST µ(E) across
-# three reference materials {water, elemental Ca, elemental I}.  The
-# iodine K-edge at 33 keV forces p̂(E) to develop a ~5.8× step that the
-# analytic form smooths through — this is what fixes the 40 keV VMI HU
-# overshoot without killing Ca, since LS spreads residual error across
-# all three materials.
+# No (Z⁴/A, Z/A) intermediate, no LS fit.  We feed apply_cong! the NIST
+# mass-attenuation coefficients (cm²/g) of iodine and water sampled at
+# every spectral bin of the resolved 80/140 kVp beams:
 #
-# Field names match compute_photo_compton_basis so apply_cong! runs
-# unchanged.  Extra fields (vmi_energies, p_vmi, q_vmi) cached for the
-# downstream VMI synthesis cell.  Physical (a, c) = (ρ·Σmᵢ·Zᵢ⁴/Aᵢ,
-# ρ·Σmᵢ·Zᵢ/Aᵢ) is unchanged, so water_basis below still applies.
+#   p_L,H[k] = (μ/ρ)_iodine(ε_k)       ← iodine mass atten
+#   q_L,H[k] = (μ/ρ)_water(ε_k)        ← water  mass atten
+#
+# Cong's kernel is basis-agnostic: it solves a 2-unknown nonlinear system
+# per ray for whatever (a_line, c_line) its `p, q` tables describe.  With
+# the tables above + `water_basis = (0, 1)` (§0b), apply_cong! directly
+# outputs `(sino_iodine, sino_water)` = (∫ρ_I·dr, ∫ρ_W·dr) — material
+# line integrals in g/cm².  No change-of-basis needed downstream.
+#
+# Why this conditioning is better than (photoelectric, Compton):
+#   · Forward-model Jacobian at working point is the spectrum-effective
+#     mass-atten matrix M = [μρ_W_L μρ_I_L; μρ_W_H μρ_I_H],  κ(M) ≈ 160.
+#   · The (a, c) = (Z⁴/A, Z/A) basis has C = [a_W a_I; c_W c_I] with
+#     κ(C) ≈ 112 000 because water and iodine are almost parallel in the
+#     Z/A direction.  That's what we're avoiding.
+#
+# K-edge fidelity: iodine's 33 keV jump in (μ/ρ)(ε) is captured natively
+# by every spectral bin above the edge (NIST tables).
 de_basis = let
     prot_L = BS.CTProtocol(kVp = 80,  additional_filters = additional_filters)
     prot_H = BS.CTProtocol(kVp = 140, additional_filters = additional_filters)
@@ -3649,79 +3664,42 @@ de_basis = let
     ŵ_L = Float32.(Float64.(w_L) ./ sum(Float64.(w_L)))
     ŵ_H = Float32.(Float64.(w_H) ./ sum(Float64.(w_H)))
 
-    # Atomic-mass lookup by Z, derived from XA.Elements.ZA_ratio.
-    atomic_mass = Dict{Int, Float64}(
-        let el = getproperty(XA.Elements, n)
-            el.Z => el.Z / el.ZA_ratio
-        end
-        for n in propertynames(XA.Elements)
-    )
+    μρ_iodine(E) = BS.compute_mass_μ_at_energy(XA.Elements.Iodine, Float64(E))
+    μρ_water(E)  = BS.compute_mass_μ_at_energy(XA.Materials.water,  Float64(E))
 
-    # Cong Eqs 3a–3b: physical basis coords for compound OR elemental ref.
-    function physical_ac(mat)
-        ρ = Unitful.ustrip(Unitful.u"g/cm^3", mat.density)
-        if hasproperty(mat, :composition)
-            a = 0.0; c = 0.0
-            for (Z, m_frac) in mat.composition
-                A = atomic_mass[Z]
-                a += m_frac * Z^4 / A
-                c += m_frac * Z / A
-            end
-            (ρ * a, ρ * c)
-        else
-            Z = mat.Z;  A = Z / mat.ZA_ratio
-            (ρ * Z^4 / A, ρ * Z / A)
-        end
-    end
+    p_L = Float32[Float32(μρ_iodine(e)) for e in e_L]   # iodine  mass atten over low-kVp spectral bins
+    q_L = Float32[Float32(μρ_water(e))  for e in e_L]   # water   mass atten
+    p_H = Float32[Float32(μρ_iodine(e)) for e in e_H]
+    q_H = Float32[Float32(μρ_water(e))  for e in e_H]
 
-    # 2-material calibration set — water + elemental iodine.  Two unknowns
-    # per energy, two equations ⇒ EXACT fit: both water and iodine µ(E)
-    # reproduced bit-identical to NIST at every E.  Ca drifts (not in the
-    # span) but only as much as Cong's analytic basis already drifts for
-    # iodine — we're just swapping which material is the "approximation
-    # victim" and moving it to the one without a K-edge.  Same structural
-    # tradeoff GE GSI makes for iodine/contrast protocols.
-    ref_materials = [XA.Materials.water, XA.Elements.Iodine]
-    A_coef = Matrix{Float64}(undef, length(ref_materials), 2)
-    for (i, m) in enumerate(ref_materials)
-        A_coef[i, 1], A_coef[i, 2] = physical_ac(m)
-    end
-    # 2×2 direct solve per E (LS degenerates to exact inverse when N=rank).
-    function fit_pq(energies)
-        p = zeros(Float32, length(energies))
-        q = zeros(Float32, length(energies))
-        for (i, E) in enumerate(energies)
-            µ = Float64[BS.compute_μ_at_energy(m, Float64(E)) for m in ref_materials]
-            sol = A_coef \ µ
-            p[i] = Float32(sol[1]);  q[i] = Float32(sol[2])
-        end
-        p, q
-    end
-
-    p_L, q_L   = fit_pq(e_L)
-    p_H, q_H   = fit_pq(e_H)
+    # Cache VMI target-E mass atten (cm²/g) for §6 VMI synthesis.
     vmi_energies = [40.0, 70.0, 100.0, 140.0]
-    p_vmi, q_vmi = fit_pq(vmi_energies)
+    μρ_I_vmi     = Float32[Float32(μρ_iodine(E)) for E in vmi_energies]
+    μρ_W_vmi     = Float32[Float32(μρ_water(E))  for E in vmi_energies]
 
-    @info "[empirical basis] fit to {water, I} (EXACT) at $(length(e_L)) L-bins + $(length(e_H)) H-bins + $(length(vmi_energies)) VMI energies"
+    @info "[direct (W, I) basis] NIST mass atten at $(length(e_L)) L-bins + $(length(e_H)) H-bins"
+    @info "  p_L = μρ_iodine range: [$(round(minimum(p_L), sigdigits=3)), $(round(maximum(p_L), sigdigits=3))]  cm²/g"
+    @info "  q_L = μρ_water  range: [$(round(minimum(q_L), sigdigits=3)), $(round(maximum(q_L), sigdigits=3))]  cm²/g"
     for (k, E) in enumerate(vmi_energies)
-        p_emp = p_vmi[k];  p_anl = Float32(BS.p_photoelectric(E))
-        q_emp = q_vmi[k];  q_anl = Float32(BS.q_compton(E))
-        @info "  E=$(Int(E)) keV: p̂=$(round(p_emp, sigdigits=4)) vs p_anl=$(round(p_anl, sigdigits=4))  |  q̂=$(round(q_emp, sigdigits=4)) vs q_anl=$(round(q_anl, sigdigits=4))"
+        @info "  E=$(Int(E)) keV (VMI target):  μρ_I=$(round(μρ_I_vmi[k], sigdigits=4))   μρ_W=$(round(μρ_W_vmi[k], sigdigits=4)) cm²/g"
     end
 
     (ŵ_L = ŵ_L, p_L = p_L, q_L = q_L,
      ŵ_H = ŵ_H, p_H = p_H, q_H = q_H,
-     vmi_energies = vmi_energies, p_vmi = p_vmi, q_vmi = q_vmi,
-     ref_materials = ref_materials)
+     vmi_energies = vmi_energies,
+     μρ_I_vmi     = μρ_I_vmi,
+     μρ_W_vmi     = μρ_W_vmi)
 end
 
 # ╔═╡ 00080003-0000-4000-8000-000000000004
-# Water basis constants (Eqs 3a–3b): a_water = ρ·Σ(mᵢ·Zᵢ⁴/Aᵢ), c_water = ρ·Σ(mᵢ·Zᵢ/Aᵢ).
-# Physical constant for H₂O — NOT a scanner calibration.  Still valid under
-# the empirical basis above because (a, c) coordinates are unchanged — only
-# the basis functions (p̂, q̂) are refit.
-water_basis = BS.water_basis_constants()
+# Cong's step-1 Brent solve is on a "pure-reference column" whose
+# (a_ref, c_ref) in the BASIS we've chosen describe the material.  We
+# picked (iodine, water) and want the reference column to be pure water
+# at 1 g/cm³ (the medical DECT-appropriate "dominant material" seed).
+# In (iodine, water) coords that is (0, 1) ⇒ Cong's step-1 Brent
+# solves  ∫ Ŝ_L(ε) exp(−μρ_water(ε)·L) dε = T_L_meas  → `L` IS the
+# water line integral directly (no `c_w` scale factor needed).
+water_basis = (a = 0.0f0, c = 1.0f0)
 
 # ╔═╡ 00080004-0000-4000-8000-000000000004
 # Per-ray Cong 2022 decomposition: Brent(water-L) → Newton(quintic h(y)) → Brent(y).
@@ -3734,36 +3712,44 @@ sim_de_decomp = let
     sino_H_gpu = MtlArray(Float32.(sim_de_sino_high.sino))
 
     t1 = time()
-    sino_y_gpu, sino_c_gpu = BS.apply_cong(sino_L_gpu, sino_H_gpu;
-                                           basis = de_basis,
-                                           water_basis = water_basis)
+    sino_I_gpu, sino_W_gpu = BS.apply_cong(
+        sino_L_gpu, sino_H_gpu;
+        basis  = de_basis,
+        water_basis = water_basis,
+
+        # ── Per-ray solver tuning (defaults below) ──
+        newton_max_iter = 5,              # default = 12; try 20 for dense iodine
+        newton_tol      = eps(Float32),   # try 5f-7 if Newton spins
+        y_max_factor    = 0.2,            # default = 0.99; try 2.0 to widen Brent bracket
+        y_max_cap       = 1f7,            # overflow guard; rarely relevant
+    )
     dt = time() - t1
 
-    sino_photo   = Array(sino_y_gpu)
-    sino_compton = Array(sino_c_gpu)
+    sino_iodine = Array(sino_I_gpu)       # ∫ρ_I·dr   (g/cm²)
+    sino_water  = Array(sino_W_gpu)       # ∫ρ_W·dr   (g/cm²)
     sino_L_gpu = nothing; sino_H_gpu = nothing
-    sino_y_gpu = nothing; sino_c_gpu = nothing
+    sino_I_gpu = nothing; sino_W_gpu = nothing
     GC.gc(true)
 
-    @info "[CDW22] apply_cong done in $(round(dt, digits=1)) s  [backend: GPU]"
-    @info "  ⟨y⟩ = $(round(mean(sino_photo),   sigdigits=4))   photoelectric line integral"
-    @info "  ⟨C⟩ = $(round(mean(sino_compton), sigdigits=4))   Compton line integral"
+    @info "[CDW22] apply_cong in (W, I) basis done in $(round(dt, digits=1)) s"
+    @info "  ⟨∫ρ_I·dr⟩ = $(round(mean(sino_iodine), sigdigits=4))   iodine line integral  (g/cm²)"
+    @info "  ⟨∫ρ_W·dr⟩ = $(round(mean(sino_water),  sigdigits=4))   water  line integral  (g/cm²)"
 
-    (sino_photo = sino_photo, sino_compton = sino_compton, geom = sim_de_sino_low.geom)
+    (sino_iodine = sino_iodine, sino_water = sino_water, geom = sim_de_sino_low.geom)
 end;
 
 # ╔═╡ 00080005-0000-4000-8000-000000000004
-# Photoelectric and Compton sinograms — mid-view and mid-row.
+# Iodine + water sinograms — mid-view and mid-row.
 let
-    sino_p = sim_de_decomp.sino_photo
-    sino_c = sim_de_decomp.sino_compton
-    mid_view = size(sino_p, 2) ÷ 2
-    mid_row  = size(sino_p, 3) ÷ 2
+    sino_I = sim_de_decomp.sino_iodine
+    sino_W = sim_de_decomp.sino_water
+    mid_view = size(sino_I, 2) ÷ 2
+    mid_row  = size(sino_I, 3) ÷ 2
 
     fig = CM.Figure(size = (1400, 800), fontsize = 13)
 
-    for (row, name, sino) in [(1, "Photoelectric  y = ∫a(r)dr",  sino_p),
-                              (2, "Compton  C = ∫c(r)dr",        sino_c)]
+    for (row, name, sino) in [(1, "Iodine  y = ∫ρ_I(r)dr  (g/cm²)",  sino_I),
+                              (2, "Water  W = ∫ρ_W(r)dr  (g/cm²)",   sino_W)]
         ax1 = CM.Axis(
             fig[row, 1]; title = "$name — mid-view (view $mid_view)",
             xlabel = "Detector column", ylabel = "Detector row",
@@ -3780,12 +3766,12 @@ let
         CM.Colorbar(fig[row, 4], hm2; width = 12)
     end
 
-    CM.save(joinpath(RESULTS_DIR, "sinogram_photo_compton.png"), fig, px_per_unit = 2)
+    CM.save(joinpath(RESULTS_DIR, "sinogram_iodine_water.png"), fig, px_per_unit = 2)
     fig
 end
 
 # ╔═╡ 00080012-0000-4000-8000-000000000004
-# Intermediate FBP of RAW Cong output — NO Tikhonov, NO ACNR yet.
+# Intermediate FBP of RAW Cong output — no sinogram restoration yet.
 # Shows the per-ray decomposition streaks §5.2 PWLS-SQS will clean up.
 sim_recon_cong = let
     filter_ctrl = (
@@ -3805,34 +3791,34 @@ sim_recon_cong = let
     end
 
     t1 = time()
-    a_img = _fbp(sim_de_decomp.sino_photo)
-    c_img = _fbp(sim_de_decomp.sino_compton)
+    ρ_I_img = _fbp(sim_de_decomp.sino_iodine)
+    ρ_W_img = _fbp(sim_de_decomp.sino_water)
     @info "Intermediate FBP (Cong only, no smoothing) done in $(round(time() - t1, digits=1)) s"
-    (a = a_img, c = c_img)
+    (iodine = ρ_I_img, water = ρ_W_img)
 end;
 
 # ╔═╡ 00080013-0000-4000-8000-000000000004
 # Cong-only FBP mid-slice — streaks from per-ray analytic decomp should be visible.
 let
-    a_img = sim_recon_cong.a
-    c_img = sim_recon_cong.c
-    mid   = size(a_img, 3) ÷ 2
-    a_slice = a_img[:, :, mid]
-    c_slice = c_img[:, :, mid]
+    ρ_I = sim_recon_cong.iodine
+    ρ_W = sim_recon_cong.water
+    mid = size(ρ_I, 3) ÷ 2
+    ρ_I_slice = ρ_I[:, :, mid]
+    ρ_W_slice = ρ_W[:, :, mid]
 
-    a_lo, a_hi = quantile(vec(a_slice), 0.01), quantile(vec(a_slice), 0.995)
-    c_lo, c_hi = quantile(vec(c_slice), 0.01), quantile(vec(c_slice), 0.995)
+    I_lo, I_hi = quantile(vec(ρ_I_slice), 0.01), quantile(vec(ρ_I_slice), 0.995)
+    W_lo, W_hi = quantile(vec(ρ_W_slice), 0.01), quantile(vec(ρ_W_slice), 0.995)
 
     fig = CM.Figure(size = (1250, 570), fontsize = 13)
-    ax1 = CM.Axis(fig[1, 1]; title = "Photoelectric  a(r) — Cong only  (slice $mid)", aspect = CM.DataAspect())
-    hm1 = CM.heatmap!(ax1, a_slice; colormap = :viridis, colorrange = (a_lo, a_hi))
+    ax1 = CM.Axis(fig[1, 1]; title = "Iodine  ρ_I(r)  (g/cm³) — Cong only  (slice $mid)", aspect = CM.DataAspect())
+    hm1 = CM.heatmap!(ax1, ρ_I_slice; colormap = :viridis, colorrange = (I_lo, I_hi))
     CM.Colorbar(fig[1, 2], hm1; width = 12)
 
-    ax2 = CM.Axis(fig[1, 3]; title = "Compton  c(r) — Cong only  (slice $mid)", aspect = CM.DataAspect())
-    hm2 = CM.heatmap!(ax2, c_slice; colormap = :viridis, colorrange = (c_lo, c_hi))
+    ax2 = CM.Axis(fig[1, 3]; title = "Water  ρ_W(r)  (g/cm³) — Cong only  (slice $mid)", aspect = CM.DataAspect())
+    hm2 = CM.heatmap!(ax2, ρ_W_slice; colormap = :viridis, colorrange = (W_lo, W_hi))
     CM.Colorbar(fig[1, 4], hm2; width = 12)
 
-    CM.save(joinpath(RESULTS_DIR, "recon_photo_compton_cong.png"), fig, px_per_unit = 2)
+    CM.save(joinpath(RESULTS_DIR, "recon_iodine_water_cong.png"), fig, px_per_unit = 2)
     fig
 end
 
@@ -3854,7 +3840,7 @@ domain by minimizing a penalized weighted least-squares cost:
     Φ(s) = ½·Σ_{i,m} w_{mi}·(h_{mi} − f_m(s_i))²  +  Σ_l ½·γ_l·‖C·s_l‖²   [NFK09 Eq 12]
 
 where
-- `s = (s_y, s_C)` — basis-sinogram state (photo + Compton line integrals)
+- `s = (s_I, s_W)` — basis-sinogram state (iodine + water line integrals, g/cm²)
 - `h_{mi}` — measured polychromatic transmissions (`−log y_{mi}/I_m`)
 - `f_m(s_i) = −log Σ_k ŵ_m[k]·exp(−p_m[k]·s_y − q_m[k]·s_C)` — **same**
   polychromatic forward model used in §5.1
@@ -3891,7 +3877,7 @@ or curvature-bound bug immediately.
 **Implementation.** 1:1 port of MIRT's `ct/de_wls_dercurv.m` (data-term
 gradient + precomputed curvature) and `wls/pwls_sqs_os.m` (SQS loop).
 Per-slice threading over detector rows. See cell §5.2 body below for the
-code and the hyperparameter cell above it for `γ_photo`, `γ_compton`,
+code and the hyperparameter cell above it for `κ_iodine`, `κ_water`,
 `n_iter`, `relax`.
 """
 
@@ -3899,33 +3885,39 @@ code and the hyperparameter cell above it for `γ_photo`, `γ_compton`,
 # ── PWLS-L₂ sinogram restoration hyperparameters (Noh 2009 cost + Long/Fessler
 # 2014 §IV-B 2×2 matrix curvature; implementation in cell below). ─────────────
 #
-# Reparameterization: γ in the Noh/Fessler cost is FIXED to 1 here.  At finite
-# iteration counts (we run 20–40, not to convergence), SQS with the De Pierro
-# row-sum bound saturates on γ — the per-iter smoothing step reduces to
-# Δ_smooth ≈ (CᵀC·s)/κ, with γ canceling out.  So γ was a decoy knob; the real
-# practical knob was the `32f0` De Pierro constant hiding inside.  κ below is
-# that constant exposed directly.
+# Reparameterization: γ in the Noh/Fessler cost is FIXED to 1 here.  κ below
+# is the De Pierro row-sum bound on the reg Hessian, exposed directly.  Smaller
+# κ = bigger smoothing step per iter = more total smoothing at fixed n_iter.
+# Stability: κ ≥ ‖CᵀC‖_op/2 ≈ 8 (biharmonic in 2D) guarantees monotonic
+# descent of the pure-reg SQS step; in the full M_i = C̈_data + diag(κ) matrix
+# the data curvature adds to the diagonal and only raises the M_i spectrum,
+# so the stability bound on κ stays the same regardless of basis.
 #
-#   pwls_enable     — master switch; false = pass-through Cong
-#   pwls_n_iter     — SQS iterations
-#   pwls_κ_photo    — per-iter regularizer step damping on photo basis.
-#   pwls_κ_compton  —   … on Compton basis.
-#                       Smaller κ = bigger smoothing step per iter = more
-#                       total smoothing at fixed n_iter.
-#                       Stability: κ ≥ ‖CᵀC‖_op/2 ≈ 8 guarantees monotonic
-#                       descent (biharmonic in 2D).  Below 8 the @warn check
-#                       in the main cell will fire.
-#                       Practical range: [8, 64].  Start at 12.
-#   pwls_relax      — SQS relaxation (default 1.0 = unrelaxed).
+# ── Scale asymmetry in the (W, I) basis ──────────────────────────────────────
+# Data curvature per-ray is cd_II = Σ_m w_m · ⟨μρ_I⟩²_m, cd_WW = Σ_m w_m · ⟨μρ_W⟩²_m.
+# With ⟨μρ_I⟩ ≈ 5–10 cm²/g (iodine, spectrum-weighted) and ⟨μρ_W⟩ ≈ 0.2 cm²/g
+# (water), cd_II / cd_WW ≈ (5/0.2)² ≈ 625×.  So iodine is strongly data-
+# constrained, water is reg-constrained unless κ_water is scaled down.
+# Starting point: κ_iodine = 32, κ_water = 1.0.  With κ_water = 32 (same as
+# in the old (photo, Compton) basis), the water updates are reg-dominated
+# and smooth aggressively — OK for clean recon but can over-blur water.
+# Tune κ_water down to 0.1 for more data-driven water updates, or up to 32
+# to match the old behavior.
+#
+#   pwls_enable   — master switch; false = pass-through Cong
+#   pwls_n_iter   — SQS iterations
+#   pwls_κ_iodine — iodine-direction reg damping  (scale-matched to cd_II ≈ 25–100)
+#   pwls_κ_water  — water-direction reg damping   (scale-matched to cd_WW ≈ 0.04)
+#   pwls_relax    — SQS relaxation (default 1.0 = unrelaxed).
 #
 # Paper: Noh, Fessler, Kinahan. IEEE TMI 28(11):1688–1702, 2009 (cost).
 #        Long, Fessler.     IEEE TMI 33(8):1614–1626, 2014 (L₂ surrogate).
 begin
-    pwls_enable    = true
-    pwls_n_iter    = 20
-    pwls_κ_photo   = 24.0 # default 32
-    pwls_κ_compton = 24.0 # default 32
-    pwls_relax     = 1.0
+    pwls_enable   = true
+    pwls_n_iter   = 20
+    pwls_κ_iodine = 32.0     # default 32  — matched to cd_II ~ O(25–100)
+    pwls_κ_water  = 32.0      # default 1.0 — matched to cd_WW ~ O(0.04); start here, retune if needed
+    pwls_relax    = 1.0
 end
 
 # ╔═╡ 00080022-0000-4000-8000-000000000004
@@ -3934,46 +3926,50 @@ end
 # diagonal scalar bound (which is L₃ collapsed to L₀=1).  Stays in sinogram
 # domain; same SQS outer loop; same γ/n_iter/relax hyperparameters.  The only
 # change is the curvature: off-diagonal data-term GN term now captures the
-# photo↔Compton coupling that the diagonal majorant drops.  Published per
-# Niu 2014 / Zhang 2014 / Persson-Adler 2017: ~2× noise-variance reduction at
-# matched resolution + suppression of the anti-correlated artifacts that ACNR
-# used to clean up post-hoc.
+# iodine↔water anti-correlation that the diagonal majorant drops.  Published
+# per Niu 2014 / Zhang 2014 / Persson-Adler 2017: ~2× noise-variance reduction
+# at matched resolution + suppression of the anti-correlated artifacts, which
+# is why the post-hoc ACNR smoother (Kalender 1988) is no longer needed.
 #
 # Cost (unchanged, Noh 2009 Eq 12):
 #     Φ(s) = ½·Σ_{i,m} w_{mi}·(h_{mi} − f_m(s_i))²  +  Σ_l ½·γ_l·‖C·s_l‖²
 #
 # Per-ray update (Long & Fessler 2014 eq 26-28 in sino domain, L_0 = 2 basis):
-#     J_m,i = (⟨p_m⟩_β, ⟨q_m⟩_β)ᵀ        — 2-vector, β = current Beer-weighted spectrum
+#     J_m,i = (⟨μρ_I⟩_β, ⟨μρ_W⟩_β)ᵀ     — 2-vector, β = current Beer-weighted spectrum
+#                                          p_L[k] = μρ_iodine(ε_k), q_L[k] = μρ_water(ε_k)
 #     C̈_i  = Σ_m w_{mi} · J_m,i · J_m,iᵀ — 2×2 PSD data curvature (GN matrix)
-#     M_i  = C̈_i + diag(κ_photo, κ_compton)  — reg curvature (γ=1 folded into κ)
-#     g_i  = Σ_m w_{mi}·(f_m(s_i) − h_{mi})·J_m,i  +  ((CᵀC·s_y)_i, (CᵀC·s_C)_i)
+#     M_i  = C̈_i + diag(κ_iodine, κ_water)   — reg curvature (γ=1 folded into κ)
+#     g_i  = Σ_m w_{mi}·(f_m(s_i) − h_{mi})·J_m,i  +  ((CᵀC·s_I)_i, (CᵀC·s_W)_i)
 #     s_i ← max( s_i − relax · M_i⁻¹ · g_i , 0 )    — closed-form 2×2 inverse
 #
-# Inline implementation below (not in src/ yet — verify first).
+# Forward model is physically correct Beer-Lambert under the (W, I) basis:
+#     f_m(s_I, s_W) = −log Σ_k ŵ_m[k] · exp(−μρ_iodine(ε_k)·s_I − μρ_water(ε_k)·s_W)
+# i.e. exp sum of negative atten-length = polychromatic transmission for a
+# ray containing s_I g/cm² iodine and s_W g/cm² water.
 sim_de_decomp_pwls = let
     if !pwls_enable
         @info "PWLS restoration: DISABLED (pass-through Cong)"
-        (sino_photo   = sim_de_decomp.sino_photo,
-         sino_compton = sim_de_decomp.sino_compton,
-         geom         = sim_de_decomp.geom,
-         n_iter       = 0, γ_photo = 0.0, γ_compton = 0.0,
-         relax        = 0.0, cost_history = Float64[])
+        (sino_iodine = sim_de_decomp.sino_iodine,
+         sino_water  = sim_de_decomp.sino_water,
+         geom        = sim_de_decomp.geom,
+         n_iter      = 0, κ_iodine = 0.0, κ_water = 0.0,
+         relax       = 0.0, cost_history = Float64[])
     else
-        sino_y = copy(sim_de_decomp.sino_photo)     # Cong warm start
-        sino_c = copy(sim_de_decomp.sino_compton)
+        sino_I = copy(sim_de_decomp.sino_iodine)    # Cong warm start (iodine line integrals, g/cm²)
+        sino_W = copy(sim_de_decomp.sino_water)     # Cong warm start (water  line integrals, g/cm²)
         h_low  = sim_de_sino_low.sino
         h_high = sim_de_sino_high.sino
 
-        ŵ_L = de_basis.ŵ_L;  p_L = de_basis.p_L;  q_L = de_basis.q_L
+        ŵ_L = de_basis.ŵ_L;  p_L = de_basis.p_L;  q_L = de_basis.q_L    # p_L = μρ_iodine, q_L = μρ_water
         ŵ_H = de_basis.ŵ_H;  p_H = de_basis.p_H;  q_H = de_basis.q_H
         nE_L = length(ŵ_L);  nE_H = length(ŵ_H)
 
-        n_col, n_view, n_row = size(sino_y)
-        κ_p        = Float32(pwls_κ_photo)     # regularizer step damping
-        κ_c        = Float32(pwls_κ_compton)
+        n_col, n_view, n_row = size(sino_I)
+        κ_I        = Float32(pwls_κ_iodine)    # regularizer step damping, iodine
+        κ_W        = Float32(pwls_κ_water)     #   … water
         relax_f    = Float32(pwls_relax)
-        reg_curv_p = κ_p                        # SQS step = reg_grad / κ
-        reg_curv_c = κ_c
+        reg_curv_I = κ_I                        # SQS step = reg_grad / κ
+        reg_curv_W = κ_W
 
         # Per-slice 2D Laplacian (CᵀC·s) — two passes of the 3-stencil C = [1,-2,1]
         # with Neumann BC, applied along col AND view axes then summed.  C is
@@ -4014,24 +4010,26 @@ sim_de_decomp_pwls = let
 
             Threads.@threads for r in 1:n_row
                 # Per-thread slice-sized scratch; re-used within the slice.
-                reg_y = zeros(Float32, n_col, n_view)
-                reg_c = zeros(Float32, n_col, n_view)
+                reg_I = zeros(Float32, n_col, n_view)
+                reg_W = zeros(Float32, n_col, n_view)
                 tmp_b = zeros(Float32, n_col, n_view)
 
                 # Snapshot regularizer gradients (Jacobi SQS): fixed within iter.
-                apply_CtC_slice!(reg_y, @view(sino_y[:, :, r]), tmp_b)
-                apply_CtC_slice!(reg_c, @view(sino_c[:, :, r]), tmp_b)
+                apply_CtC_slice!(reg_I, @view(sino_I[:, :, r]), tmp_b)
+                apply_CtC_slice!(reg_W, @view(sino_W[:, :, r]), tmp_b)
 
                 Φ_slice = 0.0
 
                 @inbounds for v in 1:n_view, c in 1:n_col
-                    y  = sino_y[c, v, r]
-                    Cv = sino_c[c, v, r]
+                    Iv = sino_I[c, v, r]
+                    Wv = sino_W[c, v, r]
 
-                    # Low-kVp spectral Beer moments.
+                    # Low-kVp spectral Beer moments.  p_L[k] = μρ_iodine(ε_k),
+                    # q_L[k] = μρ_water(ε_k), so P_L = ⟨μρ_I⟩_β, Q_L = ⟨μρ_W⟩_β
+                    # under the current Beer-weighted spectrum β.
                     Z_L = 0f0;  Z_Lp = 0f0;  Z_Lq = 0f0
                     for k in 1:nE_L
-                        wk = ŵ_L[k] * exp(-p_L[k]*y - q_L[k]*Cv)
+                        wk = ŵ_L[k] * exp(-p_L[k]*Iv - q_L[k]*Wv)
                         Z_L  += wk;  Z_Lp += p_L[k]*wk;  Z_Lq += q_L[k]*wk
                     end
                     invZ_L = 1f0 / max(Z_L, 1f-20)
@@ -4041,7 +4039,7 @@ sim_de_decomp_pwls = let
                     # High-kVp spectral Beer moments.
                     Z_H = 0f0;  Z_Hp = 0f0;  Z_Hq = 0f0
                     for k in 1:nE_H
-                        wk = ŵ_H[k] * exp(-p_H[k]*y - q_H[k]*Cv)
+                        wk = ŵ_H[k] * exp(-p_H[k]*Iv - q_H[k]*Wv)
                         Z_H  += wk;  Z_Hp += p_H[k]*wk;  Z_Hq += q_H[k]*wk
                     end
                     invZ_H = 1f0 / max(Z_H, 1f-20)
@@ -4057,42 +4055,42 @@ sim_de_decomp_pwls = let
                     # Cost accumulation (data term only; reg term below).
                     Φ_slice += 0.5 * (w_L * res_L * res_L + w_H * res_H * res_H)
 
-                    # Data gradient (2-vector).
-                    g_d_y = w_L*res_L*P_L + w_H*res_H*P_H
-                    g_d_c = w_L*res_L*Q_L + w_H*res_H*Q_H
+                    # Data gradient (2-vector): first slot = iodine, second = water.
+                    g_d_I = w_L*res_L*P_L + w_H*res_H*P_H
+                    g_d_W = w_L*res_L*Q_L + w_H*res_H*Q_H
 
                     # Data curvature (Long/Fessler eq 27 GN form, symmetric 2×2 PSD).
-                    cd_yy = w_L*P_L*P_L + w_H*P_H*P_H
-                    cd_yc = w_L*P_L*Q_L + w_H*P_H*Q_H
-                    cd_cc = w_L*Q_L*Q_L + w_H*Q_H*Q_H
+                    cd_II = w_L*P_L*P_L + w_H*P_H*P_H
+                    cd_IW = w_L*P_L*Q_L + w_H*P_H*Q_H
+                    cd_WW = w_L*Q_L*Q_L + w_H*Q_H*Q_H
 
                     # Regularizer contribution: grad via CᵀC, curv = κ.  γ=1 is
                     # folded into κ (see hyperparam cell), so no γ multiplier here.
-                    rg_y = reg_y[c, v]
-                    rg_c = reg_c[c, v]
+                    rg_I = reg_I[c, v]
+                    rg_W = reg_W[c, v]
 
                     # Total gradient + total 2×2 curvature.
-                    gy = g_d_y + rg_y
-                    gc = g_d_c + rg_c
-                    m_yy = cd_yy + reg_curv_p
-                    m_yc = cd_yc
-                    m_cc = cd_cc + reg_curv_c
+                    gI = g_d_I + rg_I
+                    gW = g_d_W + rg_W
+                    m_II = cd_II + reg_curv_I
+                    m_IW = cd_IW
+                    m_WW = cd_WW + reg_curv_W
 
                     # Closed-form 2×2 solve: Δ = M⁻¹·g.
-                    det_m   = m_yy*m_cc - m_yc*m_yc
+                    det_m   = m_II*m_WW - m_IW*m_IW
                     inv_det = 1f0 / max(det_m, 1f-20)
-                    Δy = inv_det * (m_cc*gy - m_yc*gc)
-                    Δc = inv_det * (m_yy*gc - m_yc*gy)
+                    ΔI = inv_det * (m_WW*gI - m_IW*gW)
+                    ΔW = inv_det * (m_II*gW - m_IW*gI)
 
                     # SQS update with non-neg clip (matches Noh behaviour).
-                    sino_y[c, v, r] = max(y  - relax_f * Δy, 0f0)
-                    sino_c[c, v, r] = max(Cv - relax_f * Δc, 0f0)
+                    sino_I[c, v, r] = max(Iv - relax_f * ΔI, 0f0)
+                    sino_W[c, v, r] = max(Wv - relax_f * ΔW, 0f0)
                 end
 
                 # Regularizer cost: ½ γ_l · s_lᵀ · (CᵀC·s_l) — use snapshot reg_l.
                 @inbounds for v in 1:n_view, c in 1:n_col
-                    Φ_slice += 0.5 * sino_y[c, v, r] * reg_y[c, v]   # γ=1
-                    Φ_slice += 0.5 * sino_c[c, v, r] * reg_c[c, v]
+                    Φ_slice += 0.5 * sino_I[c, v, r] * reg_I[c, v]   # γ=1
+                    Φ_slice += 0.5 * sino_W[c, v, r] * reg_W[c, v]
                 end
 
                 Threads.atomic_add!(Φ_total, Φ_slice)
@@ -4106,31 +4104,30 @@ sim_de_decomp_pwls = let
         end
         dt = time() - t0
 
-        @info "[PWLS-L₂] 2×2 matrix curvature, $(pwls_n_iter) iters × $(n_row) slices in $(round(dt, digits=1)) s  ($(round(1000*dt/pwls_n_iter, digits=0)) ms/iter)  |  κ_p=$(κ_p), κ_c=$(κ_c), Φ: $(round(cost_history[1], sigdigits=4)) → $(round(cost_history[end], sigdigits=4))"
+        @info "[PWLS-L₂] 2×2 matrix curvature, $(pwls_n_iter) iters × $(n_row) slices in $(round(dt, digits=1)) s  ($(round(1000*dt/pwls_n_iter, digits=0)) ms/iter)  |  κ_I=$(κ_I), κ_W=$(κ_W), Φ: $(round(cost_history[1], sigdigits=4)) → $(round(cost_history[end], sigdigits=4))"
 
-        (sino_photo = sino_y, sino_compton = sino_c,
+        (sino_iodine = sino_I, sino_water = sino_W,
          geom = sim_de_decomp.geom,
          n_iter = pwls_n_iter,
-         κ_photo = pwls_κ_photo, κ_compton = pwls_κ_compton,
-         γ_photo = pwls_κ_photo, γ_compton = pwls_κ_compton,   # back-compat aliases for display cells
+         κ_iodine = pwls_κ_iodine, κ_water = pwls_κ_water,
          relax = pwls_relax,
          cost_history = cost_history)
     end
 end;
 
 # ╔═╡ 00080015-0000-4000-8000-000000000004
-# Photo + Compton sinograms AFTER PWLS-SQS restoration — should look smoother
+# Iodine + water sinograms AFTER PWLS-SQS restoration — should look smoother
 # (with streaks suppressed) compared to the raw Cong output in §5.1.
 let
-    sino_p = sim_de_decomp_pwls.sino_photo
-    sino_c = sim_de_decomp_pwls.sino_compton
-    mid_view = size(sino_p, 2) ÷ 2
-    mid_row  = size(sino_p, 3) ÷ 2
+    sino_I = sim_de_decomp_pwls.sino_iodine
+    sino_W = sim_de_decomp_pwls.sino_water
+    mid_view = size(sino_I, 2) ÷ 2
+    mid_row  = size(sino_I, 3) ÷ 2
 
     fig = CM.Figure(size = (1400, 800), fontsize = 13)
-    tag = "κ_p=$(sim_de_decomp_pwls.κ_photo), κ_C=$(sim_de_decomp_pwls.κ_compton), k=$(sim_de_decomp_pwls.n_iter)"
-    for (row, name, sino) in [(1, "Photoelectric y — post-PWLS ($tag)", sino_p),
-                              (2, "Compton C — post-PWLS ($tag)",       sino_c)]
+    tag = "κ_I=$(sim_de_decomp_pwls.κ_iodine), κ_W=$(sim_de_decomp_pwls.κ_water), k=$(sim_de_decomp_pwls.n_iter)"
+    for (row, name, sino) in [(1, "Iodine y — post-PWLS ($tag)", sino_I),
+                              (2, "Water  W — post-PWLS ($tag)", sino_W)]
         ax1 = CM.Axis(fig[row, 1]; title = "$name — mid-view (view $mid_view)",
                       xlabel = "Detector column", ylabel = "Detector row", aspect = CM.DataAspect())
         hm1 = CM.heatmap!(ax1, sino[:, mid_view, :]'; colormap = :viridis)
@@ -4140,16 +4137,15 @@ let
         hm2 = CM.heatmap!(ax2, sino[:, :, mid_row]'; colormap = :viridis)
         CM.Colorbar(fig[row, 4], hm2; width = 12)
     end
-    CM.save(joinpath(RESULTS_DIR, "sinogram_photo_compton_pwls.png"), fig, px_per_unit = 2)
+    CM.save(joinpath(RESULTS_DIR, "sinogram_iodine_water_pwls.png"), fig, px_per_unit = 2)
     fig
 end
 
 # ╔═╡ 00080016-0000-4000-8000-000000000004
-# Intermediate FBP with PWLS-SQS restoration applied but NOT ACNR yet.
-# Compare to sim_recon_cong above: basis-sinogram noise should be suppressed
-# by the statistical weighting (D_12 off-diagonals of the Fisher info handle
-# anti-correlation at the source) + 2D quadratic roughness penalty (radial
-# AND view directions, MIRT Cdiffs pattern).
+# Intermediate FBP with PWLS-L₂ restoration applied.  Compare to sim_recon_cong
+# above: basis-sinogram noise should be suppressed by the 2×2 matrix curvature
+# (captures the iodine↔water anti-correlation in the update step itself) +
+# 2D quadratic roughness penalty (radial and view directions).
 sim_recon_pwls = let
     filter_ctrl = (
         x = (0.0, 0.25, 0.5, 0.75, 1.0),
@@ -4168,34 +4164,34 @@ sim_recon_pwls = let
     end
 
     t1 = time()
-    a_img = _fbp(sim_de_decomp_pwls.sino_photo)
-    c_img = _fbp(sim_de_decomp_pwls.sino_compton)
+    ρ_I = _fbp(sim_de_decomp_pwls.sino_iodine)
+    ρ_W = _fbp(sim_de_decomp_pwls.sino_water)
     @info "Intermediate FBP (Cong + PWLS) done in $(round(time() - t1, digits=1)) s"
-    (a = a_img, c = c_img)
+    (iodine = ρ_I, water = ρ_W)
 end;
 
 # ╔═╡ c1139ae3-5186-445e-81b8-5d932ca5ef98
 # Cong-only FBP mid-slice — streaks from per-ray analytic decomp should be visible.
 let
-    a_img = sim_recon_cong.a
-    c_img = sim_recon_cong.c
-    mid   = size(a_img, 3) ÷ 2
-    a_slice = a_img[:, :, mid]
-    c_slice = c_img[:, :, mid]
+    ρ_I = sim_recon_cong.iodine
+    ρ_W = sim_recon_cong.water
+    mid = size(ρ_I, 3) ÷ 2
+    ρ_I_slice = ρ_I[:, :, mid]
+    ρ_W_slice = ρ_W[:, :, mid]
 
-    a_lo, a_hi = quantile(vec(a_slice), 0.01), quantile(vec(a_slice), 0.995)
-    c_lo, c_hi = quantile(vec(c_slice), 0.01), quantile(vec(c_slice), 0.995)
+    I_lo, I_hi = quantile(vec(ρ_I_slice), 0.01), quantile(vec(ρ_I_slice), 0.995)
+    W_lo, W_hi = quantile(vec(ρ_W_slice), 0.01), quantile(vec(ρ_W_slice), 0.995)
 
     fig = CM.Figure(size = (1250, 570), fontsize = 13)
-    ax1 = CM.Axis(fig[1, 1]; title = "Photoelectric  a(r) — Cong only  (slice $mid)", aspect = CM.DataAspect())
-    hm1 = CM.heatmap!(ax1, a_slice; colormap = :viridis, colorrange = (a_lo, a_hi))
+    ax1 = CM.Axis(fig[1, 1]; title = "Iodine  ρ_I(r)  (g/cm³) — Cong only  (slice $mid)", aspect = CM.DataAspect())
+    hm1 = CM.heatmap!(ax1, ρ_I_slice; colormap = :viridis, colorrange = (I_lo, I_hi))
     CM.Colorbar(fig[1, 2], hm1; width = 12)
 
-    ax2 = CM.Axis(fig[1, 3]; title = "Compton  c(r) — Cong only  (slice $mid)", aspect = CM.DataAspect())
-    hm2 = CM.heatmap!(ax2, c_slice; colormap = :viridis, colorrange = (c_lo, c_hi))
+    ax2 = CM.Axis(fig[1, 3]; title = "Water  ρ_W(r)  (g/cm³) — Cong only  (slice $mid)", aspect = CM.DataAspect())
+    hm2 = CM.heatmap!(ax2, ρ_W_slice; colormap = :viridis, colorrange = (W_lo, W_hi))
     CM.Colorbar(fig[1, 4], hm2; width = 12)
 
-    CM.save(joinpath(RESULTS_DIR, "recon_photo_compton_cong.png"), fig, px_per_unit = 2)
+    CM.save(joinpath(RESULTS_DIR, "recon_iodine_water_cong.png"), fig, px_per_unit = 2)
     fig
 end
 
@@ -4203,216 +4199,31 @@ end
 # Cong + PWLS FBP mid-slice — noise floor should drop vs. Cong-only, rods
 # preserved (quadratic penalty is only radial 2nd-order diff, minimal blur).
 let
-    a_img = sim_recon_pwls.a
-    c_img = sim_recon_pwls.c
-    mid   = size(a_img, 3) ÷ 2
-    a_slice = a_img[:, :, mid]
-    c_slice = c_img[:, :, mid]
+    ρ_I = sim_recon_pwls.iodine
+    ρ_W = sim_recon_pwls.water
+    mid = size(ρ_I, 3) ÷ 2
+    ρ_I_slice = ρ_I[:, :, mid]
+    ρ_W_slice = ρ_W[:, :, mid]
 
-    a_lo, a_hi = quantile(vec(a_slice), 0.01), quantile(vec(a_slice), 0.995)
-    c_lo, c_hi = quantile(vec(c_slice), 0.01), quantile(vec(c_slice), 0.995)
+    I_lo, I_hi = quantile(vec(ρ_I_slice), 0.01), quantile(vec(ρ_I_slice), 0.995)
+    W_lo, W_hi = quantile(vec(ρ_W_slice), 0.01), quantile(vec(ρ_W_slice), 0.995)
 
     fig = CM.Figure(size = (1250, 570), fontsize = 13)
-    ax1 = CM.Axis(fig[1, 1]; title = "Photoelectric  a(r) — Cong+PWLS  (slice $mid)", aspect = CM.DataAspect())
-    hm1 = CM.heatmap!(ax1, a_slice; colormap = :viridis, colorrange = (a_lo, a_hi))
+    ax1 = CM.Axis(fig[1, 1]; title = "Iodine  ρ_I(r)  (g/cm³) — Cong+PWLS  (slice $mid)", aspect = CM.DataAspect())
+    hm1 = CM.heatmap!(ax1, ρ_I_slice; colormap = :viridis, colorrange = (I_lo, I_hi))
     CM.Colorbar(fig[1, 2], hm1; width = 12)
 
-    ax2 = CM.Axis(fig[1, 3]; title = "Compton  c(r) — Cong+PWLS  (slice $mid)", aspect = CM.DataAspect())
-    hm2 = CM.heatmap!(ax2, c_slice; colormap = :viridis, colorrange = (c_lo, c_hi))
+    ax2 = CM.Axis(fig[1, 3]; title = "Water  ρ_W(r)  (g/cm³) — Cong+PWLS  (slice $mid)", aspect = CM.DataAspect())
+    hm2 = CM.heatmap!(ax2, ρ_W_slice; colormap = :viridis, colorrange = (W_lo, W_hi))
     CM.Colorbar(fig[1, 4], hm2; width = 12)
 
-    CM.save(joinpath(RESULTS_DIR, "recon_photo_compton_pwls.png"), fig, px_per_unit = 2)
+    CM.save(joinpath(RESULTS_DIR, "recon_iodine_water_pwls.png"), fig, px_per_unit = 2)
     fig
-end
-
-# ╔═╡ 00080018-0000-4000-8000-000000000004
-md"""
-### 5.3 Sinogram-Domain ACNR — Anti-Correlated Noise Reduction
-
-**[KKK88] Kalender, Klotz, Kostaridou (1988)** *IEEE Trans Med Imaging*
-7(3):218–224. *"An algorithm for noise suppression in dual energy CT
-material density images."* DOI 10.1109/42.7784.
-
-**Why here, not after FBP?** DE basis decomposition is ill-conditioned:
-photo-basis and Compton-basis sinogram noise are strongly anti-correlated
-(ρ ≈ −1). Photo-basis noise magnitude is typically 5–10× larger than
-Compton's — this drives the VMI_40 noise explosion (`|w_p(40)|·σ_a`
-dominates). Exploiting the anti-correlation in the sinogram domain,
-*before* FBP amplifies it, recovers more per unit resolution than any
-post-FBP filter.
-
-**Mechanism ([KKK88]).**
-At reference energy `E_ref`, signal direction is `u_sig = (p(E_ref), q(E_ref))`.
-The orthogonal direction carries anti-correlated noise:
-
-    s_⊥(r)  =  −q(E_ref)·a(r) + p(E_ref)·c(r)
-
-Smooth `s_⊥`, take residual `n_⊥`, project out of the basis pair:
-
-    a_clean  =  a  +  γ · q(E_ref)/|u_sig|² · n_⊥
-    c_clean  =  c  −  γ · p(E_ref)/|u_sig|² · n_⊥
-
-By construction `p(E_ref)·Δa + q(E_ref)·Δc = 0` — correction lives entirely
-in the anti-correlated subspace, so `μ(E_ref)` at every pixel is exactly
-unchanged ⇒ **zero resolution loss at E_ref**. Other-energy VMIs inherit a
-small, smooth 1st-order bias invisible in soft-tissue windows but benefit
-from dramatically reduced photo-basis noise.
-
-Runs on the PWLS-restored basis sinograms (§5.2 output), so residual
-anti-correlated noise is what remains after PWLS has already suppressed
-streaks and Poisson noise per-basis.
-"""
-
-# ╔═╡ 00080006-0000-4000-8000-000000000004
-# ── ACNR hyperparameters [TUNE: sinogram-domain anti-correlated noise reduction] ──
-# Smoother on s_⊥ is a Tikhonov solver in the Fourier domain — exact one-shot
-# solve of (I + λ·D'D)·s = s_⊥ via FFT. ACNR's projection preserves μ(E_ref)
-# exactly regardless of smoother choice; all tuning lives in acnr_λ.
-#
-#   acnr_enable — master switch; false = pass PWLS output straight through.
-#   acnr_E_ref  — reference energy (keV) at which signal direction is preserved.
-#                 VMI at this energy has ZERO resolution loss from ACNR; other
-#                 energies get small 1st-order bias + big noise reduction.
-#                 Default 70 keV: noise-optimal VMI anchor used by Mono+ too.
-#   acnr_λ      — Tikhonov strength on s_⊥. Effective smoothing radius ≈ √λ px.
-#                 Exact FFT solve ⇒ λ has MONOTONIC effect at every magnitude
-#                 (no iterative-solver saturation). Tune on a log grid:
-#                   • 0.5–1    — gentle (~1 px)
-#                   • 2–8      — moderate (~1.5–3 px)
-#                   • 16–100   — aggressive (~4–10 px); kills iodine streaks
-#                   • ≥1000    — nearly-constant smoothing (mean of s_⊥)
-#   acnr_γ      — projection strength ∈ [0, 1]. γ=0 off, γ=1 full ACNR.
-#                 Leave at 1.0 unless off-ref VMI bias becomes visible.
-begin
-    acnr_enable = false
-    acnr_E_ref  = 100.0
-    acnr_λ      = 2.0
-    acnr_γ      = 0
-end
-
-# ╔═╡ 00080007-0000-4000-8000-000000000004
-# Sinogram-domain ACNR (Kalender/Klotz/Kostaridou 1988) on the PWLS-restored
-# photo/Compton basis pair. Reads from sim_de_decomp_pwls.
-#
-# Framework (unchanged from classical ACNR):
-#     s_⊥(r) = −q(E_ref)·a(r) + p(E_ref)·c(r)          (anti-corr noise channel)
-#     n_⊥    = s_⊥ − smooth(s_⊥)                       (noise estimate)
-#     a_cln  = a + γ·q(E_ref)/|u|² · n_⊥
-#     c_cln  = c − γ·p(E_ref)/|u|² · n_⊥
-# Identity: p·a_cln + q·c_cln = p·a + q·c  ⇒  μ(E_ref) unchanged per pixel,
-# for ANY smoother choice. Zero resolution loss at E_ref is structural.
-#
-# Smoother = FFT-BASED TIKHONOV (exact one-shot solve). Per-slice (detector-col
-# × view plane), solve:
-#     min_s   ½‖s − s_⊥‖²  +  λ · ½·‖D·s‖²      ⇒   (I + λ·D'D)·s = s_⊥
-# where D'D is the 4-neighbor discrete Laplacian with implicit periodic BC
-# from the FFT. Exact Fourier diagonalization:
-#     ŝ_smooth[p,q] = ŝ_⊥[p,q] / (1 + λ · μ_{p,q})
-#     μ_{p,q}       = 4·(sin²(πp/nx) + sin²(πq/nv))       [L eigenvalues]
-# → one FFT + pointwise divide + one inverse FFT per slice. No iteration,
-# so λ has MONOTONIC effect at any magnitude (no SPS-style saturation).
-# Effective smoothing radius ≈ √λ px; at λ→∞, s_smooth → mean(s_⊥).
-sim_de_decomp_clean = let
-    sino_y = copy(sim_de_decomp_pwls.sino_photo)
-    sino_c = copy(sim_de_decomp_pwls.sino_compton)
-    n_orth_σ = 0f0
-    acnr_on  = false
-
-    if acnr_enable
-        info = BS.apply_acnr!(sino_y, sino_c;
-                              E_ref = acnr_E_ref,
-                              λ     = acnr_λ,
-                              γ     = acnr_γ)
-        n_orth_σ = Float32(info.σ_n_orth)
-        acnr_on  = true
-    else
-        @info "ACNR sinogram smoother: DISABLED (pass-through of PWLS output)"
-    end
-
-    (sino_photo = sino_y, sino_compton = sino_c, geom = sim_de_decomp_pwls.geom,
-     n_orth_σ = n_orth_σ,
-     params = (acnr_enable = acnr_on, acnr_E_ref = acnr_E_ref,
-               acnr_λ = acnr_λ, acnr_γ = acnr_γ))
-end;
-
-# ╔═╡ 00080019-0000-4000-8000-000000000004
-# Photo + Compton sinograms AFTER ACNR — residual anti-correlated noise
-# projected out. Photo-basis should look noticeably cleaner than post-Tikhonov.
-let
-    sino_p = sim_de_decomp_clean.sino_photo
-    sino_c = sim_de_decomp_clean.sino_compton
-    mid_view = size(sino_p, 2) ÷ 2
-    mid_row  = size(sino_p, 3) ÷ 2
-
-    fig = CM.Figure(size = (1400, 800), fontsize = 13)
-    for (row, name, sino) in [(1, "Photoelectric y — post-ACNR", sino_p),
-                              (2, "Compton C — post-ACNR",        sino_c)]
-        ax1 = CM.Axis(fig[row, 1]; title = "$name — mid-view (view $mid_view)",
-                      xlabel = "Detector column", ylabel = "Detector row", aspect = CM.DataAspect())
-        hm1 = CM.heatmap!(ax1, sino[:, mid_view, :]'; colormap = :viridis)
-        CM.Colorbar(fig[row, 2], hm1; width = 12)
-        ax2 = CM.Axis(fig[row, 3]; title = "$name — mid-row (row $mid_row)",
-                      xlabel = "Detector column", ylabel = "View angle")
-        hm2 = CM.heatmap!(ax2, sino[:, :, mid_row]'; colormap = :viridis)
-        CM.Colorbar(fig[row, 4], hm2; width = 12)
-    end
-    CM.save(joinpath(RESULTS_DIR, "sinogram_photo_compton_acnr.png"), fig, px_per_unit = 2)
-    fig
-end
-
-# ╔═╡ 00080023-0000-4000-8000-000000000004
-md"""
-### 5.4 Post-FBP Radial Capping Correction
-
-Residual radial **cupping/capping** (background HU slowly drifting away from
-zero as a function of image radius) persists even after BHC + Cong + PWLS +
-ACNR because none of those model every beam-hardening path exactly. The fix
-is a classic one and the 06 clinical notebook already uses it in HU space
-(`BS.apply_radial_cupping_correction!`) — here we apply the *same idea*
-directly to the basis images `a(r)` and `c(r)` so **every downstream VMI
-inherits a flat background for free** (since `VMI(E) = p(E)·a + q(E)·c`,
-flattening both bases flattens every energy synthesised from them).
-
-Per-slice, for each basis image:
-1. Select background voxels by quantile over the in-FOV slice (excludes air
-   outside the scanner bore + the insert high/low tails without needing
-   material-specific thresholds).
-2. Fit an even polynomial in radius:
-   `offset(r) = c₀ + c₁·r² + c₂·r⁴ + …`
-3. Subtract `offset(r) − c₀` from every voxel in the slice — keeps the
-   central value (r=0) intact, flattens the radial profile.
-
-Because the fit is linear and the subtraction is the same polynomial for
-both `a` and `c`, applying it here *is* algebraically equivalent to
-applying it to every future VMI at every energy.
-"""
-
-# ╔═╡ 00080024-0000-4000-8000-000000000004
-# ── Radial capping correction hyperparameters ─────────────────────────────
-#
-#   cap_enable     — master switch; false = pass raw FBP output through
-#   cap_fov_cm     — transverse FOV in cm; controls the pixel→cm scale for
-#                    the polynomial fit. Default 35.0 cm matches the 06
-#                    clinical notebook and the GE Apex Elite clinical FOV.
-#   cap_poly_order — number of even-polynomial terms beyond c₀:
-#                    1 ⇒ c₀ + c₁r²          (pure parabolic cupping)
-#                    2 ⇒ c₀ + c₁r² + c₂r⁴   (default, matches 06)
-#                    3+ for stronger radial structure; rarely worth it.
-#   cap_q_lo/q_hi  — quantile range over the in-FOV slice used to pick
-#                    background voxels. Middle 50% (0.25–0.75) avoids the
-#                    air floor on the low end and the iodine/bone rods on
-#                    the high end without needing HU thresholds.
-begin
-    cap_enable     = true
-    cap_fov_cm     = 35.0
-    cap_poly_order = 4
-    cap_q_lo       = 0.15
-    cap_q_hi       = 0.75
 end
 
 # ╔═╡ 00080020-0000-4000-8000-000000000004
 md"""
-### 5.5 Final FBP on Cleaned Basis Sinograms
+### 5.3 Final FBP on Cleaned Basis Sinograms
 
 Plain FDK on each fully-cleaned basis sinogram (shared Shepp-Logan-style
 mild apodization). Filter preserves high-frequency edges (vessels, rod
@@ -4420,20 +4231,22 @@ walls) so the downstream VMI+ step has real structural content to work
 with — heavy Hann would throw that away at the FBP stage and no amount of
 downstream processing can recover it.
 
-Outputs:
-- `sim_recon_photo_compton.a` — raw photoelectric basis image (FBP only)
-- `sim_recon_photo_compton.c` — raw Compton basis image (FBP only)
-- `sim_recon_photo_compton_flat.a/.c` — same, with §5.4 capping applied.
-  **This is the tuple §6 VMI synthesis reads from** so every virtual
-  monoenergetic image inherits a flat radial background.
+Output:
+- `sim_recon_iodine_water.iodine/.water` — (ρ_I, ρ_W) density maps in
+  g/cm³ straight out of FBP.  No capping on the density images — residual
+  radial cupping is corrected downstream on the VMI HU output (see §6.2).
 
-No BHC, no HU conversion — images are in physical basis units. HU
-conversion happens downstream in §6 VMI synthesis.
+Cong outputs (W, I) directly from §5.1 (no photo/Compton intermediate), so
+FBPing each sinogram produces a density map in g/cm³ immediately — no
+basis inversion anywhere in §5.
+
+HU conversion happens downstream in §6 VMI via the NIST mass-atten tables:
+`μ(E) = μρ_I(E)·ρ_I + μρ_W(E)·ρ_W`.
 """
 
 # ╔═╡ 00090002-0000-4000-8000-000000000004
 # FBP each CLEANED basis sinogram on GPU. Shared smooth apodization filter.
-sim_recon_photo_compton = let
+sim_recon_iodine_water = let
     # Shepp-Logan-style mild apodization.  Preserves high-frequency edges
     # (vessels, rod walls) so the downstream guided-filter Mono+ step has real
     # structural content to work with — heavy Hann would throw that away at the
@@ -4446,72 +4259,46 @@ sim_recon_photo_compton = let
     function _fbp(sino::Array{Float32, 3})
         sino_gpu = MtlArray(sino)
         ws = BS.create_fdk_recon_workspace(
-            sino_gpu, sim_de_decomp_clean.geom, de_matrix_size;
+            sino_gpu, sim_de_decomp_pwls.geom, de_matrix_size;
             filter = BS.CustomFilter(filter_ctrl.x, filter_ctrl.y)
         )
-        vol = Array(BS.reconstruct!(ws, sino_gpu, sim_de_decomp_clean.geom, de_matrix_size))
+        vol = Array(BS.reconstruct!(ws, sino_gpu, sim_de_decomp_pwls.geom, de_matrix_size))
         ws = nothing; sino_gpu = nothing; GC.gc(true)
         Float32.(vol)
     end
 
     t1 = time()
-    a_img = _fbp(sim_de_decomp_clean.sino_photo)
-    c_img = _fbp(sim_de_decomp_clean.sino_compton)
-    @info "FBP photoelectric + Compton done in $(round(time() - t1, digits=1)) s"
-    @info "  a(r) range: [$(round(minimum(a_img), sigdigits=3)), $(round(maximum(a_img), sigdigits=3))]"
-    @info "  c(r) range: [$(round(minimum(c_img), sigdigits=3)), $(round(maximum(c_img), sigdigits=3))]"
+    ρ_I = _fbp(sim_de_decomp_pwls.sino_iodine)
+    ρ_W = _fbp(sim_de_decomp_pwls.sino_water)
+    @info "FBP iodine + water done in $(round(time() - t1, digits=1)) s"
+    @info "  ρ_I(r) range: [$(round(minimum(ρ_I), sigdigits=3)), $(round(maximum(ρ_I), sigdigits=3))]  g/cm³"
+    @info "  ρ_W(r) range: [$(round(minimum(ρ_W), sigdigits=3)), $(round(maximum(ρ_W), sigdigits=3))]  g/cm³"
 
-    (a = a_img, c = c_img)
-end;
-
-# ╔═╡ 00080025-0000-4000-8000-000000000004
-# Per-slice radial capping correction on the basis images a(r) and c(r).
-# Adapted from BS.apply_radial_cupping_correction! (src/correction/
-# beam_hardening_correction.jl:790) — swaps the HU-threshold background
-# selector for a quantile-based one so it works directly in basis units.
-#
-# Input:  sim_recon_photo_compton.a, .c   (raw FBP of ACNR-clean sinograms)
-# Output: sim_recon_photo_compton_flat    (same shape, radial profile flat)
-sim_recon_photo_compton_flat = let
-    if !cap_enable
-        @info "Radial capping correction: DISABLED (pass-through)"
-        (a = sim_recon_photo_compton.a, c = sim_recon_photo_compton.c,
-         coeffs_a = Float64[], coeffs_c = Float64[])
-    else
-        a_out = copy(sim_recon_photo_compton.a)
-        c_out = copy(sim_recon_photo_compton.c)
-        info = BS.apply_radial_capping_basis!(a_out, c_out;
-                                              fov_cm     = cap_fov_cm,
-                                              poly_order = cap_poly_order,
-                                              q_lo       = cap_q_lo,
-                                              q_hi       = cap_q_hi)
-        (a = a_out, c = c_out,
-         coeffs_a = info.coeffs_a, coeffs_c = info.coeffs_c)
-    end
+    (iodine = ρ_I, water = ρ_W)
 end;
 
 # ╔═╡ fd9969e0-415f-409d-8672-fe2d963b6486
 # Cong-only FBP mid-slice — streaks from per-ray analytic decomp should be visible.
 let
-    a_img = sim_recon_cong.a
-    c_img = sim_recon_cong.c
-    mid   = size(a_img, 3) ÷ 2
-    a_slice = a_img[:, :, mid]
-    c_slice = c_img[:, :, mid]
+    ρ_I = sim_recon_cong.iodine
+    ρ_W = sim_recon_cong.water
+    mid = size(ρ_I, 3) ÷ 2
+    ρ_I_slice = ρ_I[:, :, mid]
+    ρ_W_slice = ρ_W[:, :, mid]
 
-    a_lo, a_hi = quantile(vec(a_slice), 0.01), quantile(vec(a_slice), 0.995)
-    c_lo, c_hi = quantile(vec(c_slice), 0.01), quantile(vec(c_slice), 0.995)
+    I_lo, I_hi = quantile(vec(ρ_I_slice), 0.01), quantile(vec(ρ_I_slice), 0.995)
+    W_lo, W_hi = quantile(vec(ρ_W_slice), 0.01), quantile(vec(ρ_W_slice), 0.995)
 
     fig = CM.Figure(size = (1250, 570), fontsize = 13)
-    ax1 = CM.Axis(fig[1, 1]; title = "Photoelectric  a(r)", subtitle = "Cong only  (slice $mid)", aspect = CM.DataAspect())
-    hm1 = CM.heatmap!(ax1, a_slice; colormap = :viridis, colorrange = (a_lo, a_hi))
+    ax1 = CM.Axis(fig[1, 1]; title = "Iodine  ρ_I(r)  (g/cm³)", subtitle = "Cong only  (slice $mid)", aspect = CM.DataAspect())
+    hm1 = CM.heatmap!(ax1, ρ_I_slice; colormap = :viridis, colorrange = (I_lo, I_hi))
     CM.Colorbar(fig[1, 2], hm1; width = 12)
 
-    ax2 = CM.Axis(fig[1, 3]; title = "Compton  c(r)", subtitle = "Cong only  (slice $mid)", aspect = CM.DataAspect())
-    hm2 = CM.heatmap!(ax2, c_slice; colormap = :viridis, colorrange = (c_lo, c_hi))
+    ax2 = CM.Axis(fig[1, 3]; title = "Water  ρ_W(r)  (g/cm³)", subtitle = "Cong only  (slice $mid)", aspect = CM.DataAspect())
+    hm2 = CM.heatmap!(ax2, ρ_W_slice; colormap = :viridis, colorrange = (W_lo, W_hi))
     CM.Colorbar(fig[1, 4], hm2; width = 12)
 
-    CM.save(joinpath(RESULTS_DIR, "recon_photo_compton_cong.png"), fig, px_per_unit = 2)
+    CM.save(joinpath(RESULTS_DIR, "recon_iodine_water_cong.png"), fig, px_per_unit = 2)
     fig
 end
 
@@ -4519,58 +4306,58 @@ end
 # Cong + PWLS FBP mid-slice — noise floor should drop vs. Cong-only, rods
 # preserved (quadratic penalty is only radial 2nd-order diff, minimal blur).
 let
-    a_img = sim_recon_pwls.a
-    c_img = sim_recon_pwls.c
-    mid   = size(a_img, 3) ÷ 2
-    a_slice = a_img[:, :, mid]
-    c_slice = c_img[:, :, mid]
+    ρ_I = sim_recon_pwls.iodine
+    ρ_W = sim_recon_pwls.water
+    mid = size(ρ_I, 3) ÷ 2
+    ρ_I_slice = ρ_I[:, :, mid]
+    ρ_W_slice = ρ_W[:, :, mid]
 
-    a_lo, a_hi = quantile(vec(a_slice), 0.01), quantile(vec(a_slice), 0.995)
-    c_lo, c_hi = quantile(vec(c_slice), 0.01), quantile(vec(c_slice), 0.995)
+    I_lo, I_hi = quantile(vec(ρ_I_slice), 0.01), quantile(vec(ρ_I_slice), 0.995)
+    W_lo, W_hi = quantile(vec(ρ_W_slice), 0.01), quantile(vec(ρ_W_slice), 0.995)
 
     fig = CM.Figure(size = (1250, 570), fontsize = 13)
-    ax1 = CM.Axis(fig[1, 1]; title = "Photoelectric  a(r)", subtitle = "Cong+PWLS  (slice $mid)", aspect = CM.DataAspect())
-    hm1 = CM.heatmap!(ax1, a_slice; colormap = :viridis, colorrange = (a_lo, a_hi))
+    ax1 = CM.Axis(fig[1, 1]; title = "Iodine  ρ_I(r)  (g/cm³)", subtitle = "Cong+PWLS  (slice $mid)", aspect = CM.DataAspect())
+    hm1 = CM.heatmap!(ax1, ρ_I_slice; colormap = :viridis, colorrange = (I_lo, I_hi))
     CM.Colorbar(fig[1, 2], hm1; width = 12)
 
-    ax2 = CM.Axis(fig[1, 3]; title = "Compton  c(r)", subtitle = "Cong+PWLS  (slice $mid)", aspect = CM.DataAspect())
-    hm2 = CM.heatmap!(ax2, c_slice; colormap = :viridis, colorrange = (c_lo, c_hi))
+    ax2 = CM.Axis(fig[1, 3]; title = "Water  ρ_W(r)  (g/cm³)", subtitle = "Cong+PWLS  (slice $mid)", aspect = CM.DataAspect())
+    hm2 = CM.heatmap!(ax2, ρ_W_slice; colormap = :viridis, colorrange = (W_lo, W_hi))
     CM.Colorbar(fig[1, 4], hm2; width = 12)
 
-    CM.save(joinpath(RESULTS_DIR, "recon_photo_compton_pwls.png"), fig, px_per_unit = 2)
+    CM.save(joinpath(RESULTS_DIR, "recon_iodine_water_pwls.png"), fig, px_per_unit = 2)
     fig
 end
 
 # ╔═╡ 00090003-0000-4000-8000-000000000004
-# Mid-slice of both basis images AFTER all 4 corrections (Cong + PWLS + ACNR
-# + radial capping) — this is exactly what §6 VMI synthesis consumes.
+# Mid-slice of both density images — this is what §6 VMI synthesis consumes
+# (sinogram-domain, so these images are just for inspection / ROI work).
 let
-    a_img = sim_recon_photo_compton_flat.a
-    c_img = sim_recon_photo_compton_flat.c
-    mid   = size(a_img, 3) ÷ 2
-    a_slice = a_img[:, :, mid]
-    c_slice = c_img[:, :, mid]
+    ρ_I = sim_recon_iodine_water.iodine
+    ρ_W = sim_recon_iodine_water.water
+    mid = size(ρ_I, 3) ÷ 2
+    ρ_I_slice = ρ_I[:, :, mid]
+    ρ_W_slice = ρ_W[:, :, mid]
 
-    a_lo, a_hi = quantile(vec(a_slice), 0.01), quantile(vec(a_slice), 0.995)
-    c_lo, c_hi = quantile(vec(c_slice), 0.01), quantile(vec(c_slice), 0.995)
+    I_lo, I_hi = quantile(vec(ρ_I_slice), 0.01), quantile(vec(ρ_I_slice), 0.995)
+    W_lo, W_hi = quantile(vec(ρ_W_slice), 0.01), quantile(vec(ρ_W_slice), 0.995)
 
     fig = CM.Figure(size = (1250, 570), fontsize = 13)
 
     ax1 = CM.Axis(
-        fig[1, 1]; title = "Photoelectric a(r)", subtitle = "Cong + PWLS + ACNR + Capping (slice $mid)",
+        fig[1, 1]; title = "Iodine ρ_I(r) (g/cm³)", subtitle = "Cong + PWLS-L₂ (slice $mid)",
         aspect = CM.DataAspect()
     )
-    hm1 = CM.heatmap!(ax1, a_slice; colormap = :viridis, colorrange = (a_lo, a_hi))
+    hm1 = CM.heatmap!(ax1, ρ_I_slice; colormap = :viridis, colorrange = (I_lo, I_hi))
     CM.Colorbar(fig[1, 2], hm1; width = 12)
 
     ax2 = CM.Axis(
-        fig[1, 3]; title = "Compton  c(r)", subtitle = "Cong + PWLS + ACNR + Capping (slice $mid)",
+        fig[1, 3]; title = "Water  ρ_W(r) (g/cm³)", subtitle = "Cong + PWLS-L₂ (slice $mid)",
         aspect = CM.DataAspect()
     )
-    hm2 = CM.heatmap!(ax2, c_slice; colormap = :viridis, colorrange = (c_lo, c_hi))
+    hm2 = CM.heatmap!(ax2, ρ_W_slice; colormap = :viridis, colorrange = (W_lo, W_hi))
     CM.Colorbar(fig[1, 4], hm2; width = 12)
 
-    CM.save(joinpath(RESULTS_DIR, "recon_photo_compton.png"), fig, px_per_unit = 2)
+    CM.save(joinpath(RESULTS_DIR, "recon_iodine_water.png"), fig, px_per_unit = 2)
     fig
 end
 
@@ -4587,57 +4374,97 @@ md"""
 - **[S14] Schabel et al. (2014)** *Fortschr Röntgenstr* 186:591–597.
   DOI: 10.1055/s-0034-1366423 — clinical evaluation.
 
-### 6.1 Plain VMI (baseline)
+### 6.1 Plain VMI (sinogram-domain synthesis + single FBP)
 
-Image-domain linear combination ([CDW22] Eq 4):
+For each target energy E, form the VMI **sinogram** directly from the
+post-PWLS basis-material sinograms (§5.2 `sim_de_decomp_pwls`):
 
-    μ(E, r) = p(E)·a(r) + q(E)·c(r)
+    VMI_sino(E)[i, v, r] = (μ/ρ)_I(E)·sino_I[i, v, r] + (μ/ρ)_W(E)·sino_W[i, v, r]
 
-Uses the **same** analytic `p(ε), q(ε)` (Eqs 3c, 3e) that drove the
-decomposition → synthesis is internally consistent with the inversion, so
-water voxels synthesize back to XA's water μ(E) within ~1% across the
-diagnostic range. HU referenced to XA's linear μ of water at each target
-energy (`BS.compute_μ_at_energy(XA.Materials.water, E)`).
+then run a single FBP per target E to get the linear-μ VMI image,
+converting to HU via NIST water linear atten at E:
+
+    VMI_μ(E, r)  = FBP( VMI_sino(E) )
+    VMI_HU(E, r) = 1000 · (VMI_μ(E, r) / μ_water(E) − 1)
+
+(μ/ρ)_I and (μ/ρ)_W are the NIST MASS attenuation coefficients (cm²/g)
+of elemental iodine and water at the target energy, cached in
+`de_basis.μρ_I_vmi / μρ_W_vmi`. Multiplying by our (ρ_I, ρ_W) line
+integrals in g/cm² gives linear-μ line integrals in cm⁻¹ — exactly
+what FBP wants.
+
+HU referenced to `BS.compute_μ_at_energy(XA.Materials.water, E)`.
 
 Output: `sim_vmi.volumes` — VMI HU stacks at 40 / 70 / 100 / 140 keV.
-These are the inputs to Mono+ below.
 """
 
 # ╔═╡ 000a0002-0000-4000-8000-000000000004
-# VMI synthesis under the empirical K-edge-aware basis.
-#     μ(E, r) = p̂(E)·a(r) + q̂(E)·c(r)
-# with (p̂, q̂) pulled from `de_basis.p_vmi/q_vmi`, i.e. the same LS-fit
-# coordinates that drove the decomposition → inversion/synthesis are
-# internally consistent, and the iodine K-edge step in p̂(E) fixes the
-# 40 keV VMI HU overshoot.  HU referenced to NIST μ_water(E).
+# Plain VMI synthesis — sinogram domain, single FBP per target energy.
+#
+#     VMI_sino(E) = μρ_I(E)·sino_I + μρ_W(E)·sino_W           [cm²/g × g/cm² = cm⁻¹·cm]
+#     VMI_μ(E)    = FBP( VMI_sino(E) )                         [cm⁻¹]
+#     VMI_HU(E)   = 1000·(VMI_μ(E)/μ_water_lin(E) − 1)
+#
+# Inputs: `sim_de_decomp_pwls.{sino_iodine, sino_water}` (post-PWLS
+# (W, I) basis sinograms straight out of §5.2 — Cong decomposes directly
+# into (W, I), so NO image-domain basis inversion anywhere).  FBP uses
+# the same Shepp-Logan-style mild apodization as the intermediate recons.
 sim_vmi = let
     energies = de_basis.vmi_energies
-    a = sim_recon_photo_compton_flat.a
-    c = sim_recon_photo_compton_flat.c
-    nx, ny, nz = size(a)
-    cx, cy = (nx + 1) / 2, (ny + 1) / 2
-    r_fov_sq = (0.5 * nx)^2
+    sino_I   = sim_de_decomp_pwls.sino_iodine
+    sino_W   = sim_de_decomp_pwls.sino_water
+
+    filter_ctrl = (
+        x = (0.0, 0.25, 0.5, 0.75, 1.0),
+        y = (1.0, 0.95, 0.85, 0.65, 0.4),
+    )
+
+    # Shared FBP workspace: allocate once, reuse across energies (same
+    # geometry, same matrix size, same filter).
+    sino_gpu = MtlArray(similar(sino_I))
+    ws = BS.create_fdk_recon_workspace(
+        sino_gpu, sim_de_decomp_pwls.geom, de_matrix_size;
+        filter = BS.CustomFilter(filter_ctrl.x, filter_ctrl.y)
+    )
+
+    # FOV mask geometry
+    nx_img = de_matrix_size[1]
+    ny_img = de_matrix_size[2]
+    nz_img = de_matrix_size[3]
+    cx, cy = (nx_img + 1) / 2, (ny_img + 1) / 2
+    r_fov_sq = (0.5 * nx_img)^2
 
     volumes = Vector{Array{Float32, 3}}(undef, length(energies))
+    t0 = time()
     for (k, E) in enumerate(energies)
-        p_E = de_basis.p_vmi[k]
-        q_E = de_basis.q_vmi[k]
-        μ_vol = @. p_E * a + q_E * c                       # cm⁻¹
+        μρ_I_E = de_basis.μρ_I_vmi[k]       # cm²/g
+        μρ_W_E = de_basis.μρ_W_vmi[k]
+
+        # Linear combine in sinogram domain.
+        sino_host = @. μρ_I_E * sino_I + μρ_W_E * sino_W    # cm⁻¹·cm  (Float32)
+        copyto!(sino_gpu, sino_host)
+
+        μ_vol = Array(BS.reconstruct!(ws, sino_gpu, sim_de_decomp_pwls.geom, de_matrix_size))   # cm⁻¹
+
         μ_w_E = Float64(BS.compute_μ_at_energy(XA.Materials.water, Float64(E)))
         hu = Float32.(BS.to_hounsfield(μ_vol; μ_water = μ_w_E))
-        @inbounds for k2 in 1:nz, j in 1:ny, i in 1:nx
+
+        @inbounds for k2 in 1:nz_img, j in 1:ny_img, i in 1:nx_img
             if (i - cx)^2 + (j - cy)^2 > r_fov_sq
                 hu[i, j, k2] = -1000f0
             end
         end
         volumes[k] = hu
     end
-    @info "VMI synthesis (empirical K-edge basis): $(Int.(Float64.(energies))) keV — done"
+    ws = nothing; sino_gpu = nothing; GC.gc(true)
+    dt = time() - t0
+
+    @info "VMI (sino-domain synthesis + 1× FBP per E): $(Int.(Float64.(energies))) keV — $(length(energies)) energies in $(round(dt, digits=1)) s"
     (energies = energies, volumes = volumes)
 end
 
 # ╔═╡ 000a0004-0000-4000-8000-000000000004
-# Plain VMI at 40 / 70 / 100 / 140 keV — soft-tissue window.
+# Plain VMI (raw, no capping) at 40 / 70 / 100 / 140 keV — soft-tissue window.
 let
     fig = CM.Figure(size = (1400, 400), fontsize = 13)
     mid = size(sim_vmi.volumes[1], 3) ÷ 2
@@ -4646,15 +4473,111 @@ let
         CM.heatmap!(ax, sim_vmi.volumes[i][:, :, mid];
                     colormap = :grays, colorrange = (-200, 500))
     end
-    CM.Label(fig[0, :]; text = "Plain VMI — Soft Tissue Window (−200 … 500 HU)",
+    CM.Label(fig[0, :]; text = "Plain VMI (raw) — Soft Tissue Window (−200 … 500 HU)",
              fontsize = 15, font = :bold)
     CM.save(joinpath(RESULTS_DIR, "vmi_all_energies.png"), fig, px_per_unit = 2)
     fig
 end
 
+# ╔═╡ 000a0010-0000-4000-8000-000000000004
+md"""
+### 6.2 Post-VMI Radial Capping Correction
+
+Residual radial **cupping/capping** (background HU slowly drifting away from
+zero as a function of image radius) persists in the raw VMI because Cong +
+PWLS-L₂ don't model every beam-hardening path exactly.  We apply a per-slice
+even-polynomial radial correction directly on each HU volume.
+
+For each target energy E and each slice:
+1. Select water-like voxels (`hu_lo ≤ v ≤ hu_hi`) — excludes air and the
+   high-contrast inserts without needing material-specific thresholds.
+2. Fit an even polynomial in radius:  `offset(r) = c₀ + c₁·r² + c₂·r⁴ + …`
+3. Subtract `offset(r) − target_hu` from every voxel in the slice, so the
+   water background sits at `target_hu = 0` HU.
+
+Runs via `BS.apply_radial_cupping_correction!` (src/correction/
+beam_hardening_correction.jl:790).  Applied per-energy because each VMI
+has its own HU scaling — a single basis-image correction wouldn't
+generalise cleanly to every target E.
+
+Output: `sim_vmi_flat.volumes` — capping-corrected HU stacks, same shape /
+indexing as `sim_vmi.volumes`.  Downstream Mono+ / ROI / comparison cells
+consume `sim_vmi_flat` so the flat background propagates.
+"""
+
+# ╔═╡ 000a0011-0000-4000-8000-000000000004
+# ── Post-VMI radial capping hyperparameters ──────────────────────────────────
+#
+#   vmi_cap_enable    — master switch; false = pass raw VMI through
+#   vmi_cap_fov_cm    — transverse FOV in cm (pixel→cm scale for the fit)
+#   vmi_cap_hu_lo/hi  — HU range for water-like background voxels
+#                        [-100, 80] excludes air (~-1000) + inserts (≫100)
+#   vmi_cap_poly_order — even-polynomial terms beyond c₀
+#                        1 ⇒ c₀ + c₁r²       (pure parabolic cupping)
+#                        2 ⇒ c₀ + c₁r² + c₂r⁴  (default, matches clinical 06)
+#                        3+ for stronger radial structure
+#   vmi_cap_target_hu — target HU for water background after correction (0.0)
+begin
+    vmi_cap_enable     = true
+    vmi_cap_fov_cm     = 35.0
+    vmi_cap_hu_lo      = -100.0
+    vmi_cap_hu_hi      = 80.0
+    vmi_cap_poly_order = 2
+    vmi_cap_target_hu  = 0.0
+end
+
+# ╔═╡ 000a0012-0000-4000-8000-000000000004
+# Apply radial cupping correction to each VMI HU volume.
+#   sim_vmi_flat.volumes[k] = capping(sim_vmi.volumes[k])   per energy
+sim_vmi_flat = let
+    if !vmi_cap_enable
+        @info "Post-VMI radial capping: DISABLED (pass-through)"
+        (energies = sim_vmi.energies,
+         volumes  = [copy(v) for v in sim_vmi.volumes])
+    else
+        t0 = time()
+        vols = Vector{Array{Float32, 3}}(undef, length(sim_vmi.volumes))
+        for (k, v) in enumerate(sim_vmi.volumes)
+            vols[k] = copy(v)
+            BS.apply_radial_cupping_correction!(vols[k];
+                fov_cm     = Float64(vmi_cap_fov_cm),
+                hu_lo      = Float64(vmi_cap_hu_lo),
+                hu_hi      = Float64(vmi_cap_hu_hi),
+                poly_order = Int(vmi_cap_poly_order),
+                target_hu  = Float64(vmi_cap_target_hu),
+            )
+        end
+        dt = time() - t0
+        @info "Post-VMI radial capping: $(length(vols)) energies in $(round(dt, digits=1)) s  [fov=$(vmi_cap_fov_cm) cm, HU ∈ [$(vmi_cap_hu_lo), $(vmi_cap_hu_hi)], poly=$(vmi_cap_poly_order), target=$(vmi_cap_target_hu)]"
+        (energies = sim_vmi.energies, volumes = vols)
+    end
+end
+
+# ╔═╡ 000a0013-0000-4000-8000-000000000004
+# VMI (raw) vs VMI (capping-corrected) side-by-side at each energy.
+let
+    energies = sim_vmi.energies
+    fig = CM.Figure(size = (1100, 1900), fontsize = 13)
+    mid = size(sim_vmi.volumes[1], 3) ÷ 2
+    for (i, E) in enumerate(energies)
+        ax1 = CM.Axis(fig[i, 1]; title = "VMI raw  $(Int(E)) keV", aspect = CM.DataAspect())
+        CM.heatmap!(ax1, sim_vmi.volumes[i][:, :, mid];
+                    colormap = :grays, colorrange = (-200, 500))
+
+        ax2 = CM.Axis(fig[i, 2]; title = "VMI + capping  $(Int(E)) keV  (poly=$(vmi_cap_poly_order))",
+                      aspect = CM.DataAspect())
+        CM.heatmap!(ax2, sim_vmi_flat.volumes[i][:, :, mid];
+                    colormap = :grays, colorrange = (-200, 500))
+    end
+    CM.Label(fig[0, :]; text = "VMI raw vs VMI + radial capping  —  Soft Tissue Window (−200 … 500 HU)",
+             fontsize = 15, font = :bold)
+    CM.save(joinpath(RESULTS_DIR, "vmi_raw_vs_capped.png"), fig, px_per_unit = 2)
+    fig
+end
+
 # ╔═╡ 000a0005-0000-4000-8000-000000000004
 md"""
-### 6.2 Mono+ / VMI+ — Grant 2014 1:1 parity
+### 6.3 Mono+ / VMI+ — Grant 2014 1:1 parity
 
 This is a straight port of **[G14] §Technique for Calculating Mono+ Images**.
 Where the paper is explicit we copy it exactly; where it's silent we make a
@@ -4727,10 +4650,11 @@ than iodine contrast.
 #   · 2D per-slice vs 3D?  →  [BEST GUESS] per-slice 2D (matches paper figs)
 #   · Boundary conditions  →  [BEST GUESS] FFT periodic
 #
-# Hyperparameters — ONE real knob (σ_LP) + one structural choice (E_opt).
+# Input: sim_vmi_flat (capping-corrected VMI) — Mono+ inherits the flat
+# radial background from §6.2 so downstream bias stays zero.
 begin
     # Noise-optimal energy. [G14] body: "approximately 70 keV". MUST be in
-    # sim_vmi.energies.
+    # sim_vmi_flat.energies.
     vmip_E_noise_opt = 70.0
 
     # LP Gaussian σ in pixels. [BEST GUESS — paper unspecified.] Typical
@@ -4744,22 +4668,22 @@ end
 # Mono+ frequency-split via FFT Gaussian LP — Grant 2014 1:1 parity.
 # Mono+(E) = LP_σ(VMI_E) + VMI_opt − LP_σ(VMI_opt). Identity at E_opt.
 sim_vmi_plus = BS.apply_mono_plus(
-    sim_vmi.volumes, sim_vmi.energies;
+    sim_vmi_flat.volumes, sim_vmi_flat.energies;
     E_noise_opt = vmip_E_noise_opt,
     σ_lp_px     = vmip_σ_lp_px,
 )
 
 # ╔═╡ 000b0003-0000-4000-8000-000000000004
-# VMI vs VMI+ side-by-side at each energy — soft tissue window.
+# VMI (capping-corrected) vs Mono+ side-by-side at each energy — soft tissue window.
 let
     fig = CM.Figure(size = (1100, 1900), fontsize = 13)
-    mid = size(sim_vmi.volumes[1], 3) ÷ 2
-    for (i, E) in enumerate(sim_vmi.energies)
+    mid = size(sim_vmi_flat.volumes[1], 3) ÷ 2
+    for (i, E) in enumerate(sim_vmi_flat.energies)
         ax1 = CM.Axis(
-            fig[i, 1]; title = "VMI  $(Int(E)) keV",
+            fig[i, 1]; title = "VMI + capping  $(Int(E)) keV",
             aspect = CM.DataAspect()
         )
-        CM.heatmap!(ax1, sim_vmi.volumes[i][:, :, mid];
+        CM.heatmap!(ax1, sim_vmi_flat.volumes[i][:, :, mid];
                     colormap = :grays, colorrange = (-200, 500))
 
         ax2 = CM.Axis(
@@ -4769,14 +4693,16 @@ let
         CM.heatmap!(ax2, sim_vmi_plus.volumes[i][:, :, mid];
                     colormap = :grays, colorrange = (-200, 500))
     end
-    CM.Label(fig[0, :]; text = "VMI vs Mono+ (Grant 2014)  —  Soft Tissue Window (−200 … 500 HU)",
+    CM.Label(fig[0, :]; text = "VMI + capping vs Mono+ (Grant 2014)  —  Soft Tissue Window (−200 … 500 HU)",
              fontsize = 15, font = :bold)
     CM.save(joinpath(RESULTS_DIR, "vmi_vs_vmi_plus.png"), fig, px_per_unit = 2)
     fig
 end
 
 # ╔═╡ 000b0004-0000-4000-8000-000000000004
-# Water-ROI noise: VMI vs VMI+ at each energy. Expect VMI+ noise ≈ const low.
+# Water-ROI noise — VMI raw vs VMI + capping vs Mono+.  All three curves
+# should decrease monotonically with keV; Mono+ should sit ~flat after
+# frequency-split against the 70 keV noise-optimal energy.
 let
     mid = size(sim_vmi.volumes[1], 3) ÷ 2
     nx, ny = size(sim_vmi.volumes[1], 1), size(sim_vmi.volumes[1], 2)
@@ -4789,25 +4715,29 @@ let
         std(vals)
     end
 
-    σ_vmi   = [water_σ(v) for v in sim_vmi.volumes]
-    σ_vmip  = [water_σ(v) for v in sim_vmi_plus.volumes]
+    σ_raw    = [water_σ(v) for v in sim_vmi.volumes]
+    σ_capped = [water_σ(v) for v in sim_vmi_flat.volumes]
+    σ_plus   = [water_σ(v) for v in sim_vmi_plus.volumes]
 
     fig = CM.Figure(size = (800, 500), fontsize = 13)
     ax = CM.Axis(
-        fig[1, 1]; title = "Central-water-ROI σ — VMI vs Mono+ (Grant 2014)",
+        fig[1, 1]; title = "Central-water-ROI σ — VMI raw vs VMI + capping vs Mono+",
         xlabel = "Energy (keV)", ylabel = "σ (HU)",
         xticks = (1:length(sim_vmi.energies), string.(Int.(sim_vmi.energies)))
     )
-    CM.scatterlines!(ax, 1:length(sim_vmi.energies), σ_vmi;  color = :firebrick,  linewidth = 2, markersize = 10, label = "VMI (post-ACNR)")
-    CM.scatterlines!(ax, 1:length(sim_vmi_plus.energies), σ_vmip; color = :steelblue, linewidth = 2, markersize = 10, label = "Mono+ (Grant 2014, σ_LP=$(sim_vmi_plus.σ_lp_px) px)")
+    CM.scatterlines!(ax, 1:length(sim_vmi.energies), σ_raw;    color = :firebrick,  linewidth = 2, markersize = 10, label = "VMI raw")
+    CM.scatterlines!(ax, 1:length(sim_vmi.energies), σ_capped; color = :darkorange, linewidth = 2, markersize = 10, label = "VMI + capping")
+    CM.scatterlines!(ax, 1:length(sim_vmi.energies), σ_plus;   color = :steelblue,  linewidth = 2, markersize = 10, label = "Mono+ (σ_LP=$(sim_vmi_plus.σ_lp_px) px)")
     CM.axislegend(ax; position = :rt)
-    CM.save(joinpath(RESULTS_DIR, "vmi_vs_vmi_plus_noise.png"), fig, px_per_unit = 2)
+    CM.save(joinpath(RESULTS_DIR, "vmi_noise.png"), fig, px_per_unit = 2)
     fig
 end
 
 # ╔═╡ 06126004-0000-4000-8000-000000000000
 # Backward-compat wrapper: build sim_de_mono_plus in the shape §13's downstream
 # clinical comparison cells expect (array of tuples with .recon/.name/.energy_keV).
+# Uses the Mono+ output (sim_vmi_plus) so ROI / HU scatter / line profiles
+# inherit the frequency-split noise shaping on top of the flat-background VMI.
 # Applies the same orientation transform used on SE/DE recons (sim_de_oriented).
 sim_de_mono_plus = let
     orient_fn = s -> reverse(s, dims = 2)
@@ -4930,6 +4860,7 @@ let
 
         ax2 = CM.Axis(fig[i, 2]; title = "Sim VMI $(E) keV", yreversed = true)
         CM.heatmap!(ax2, sim_slice; colormap = :grays, colorrange = (-200, 500))
+        # CM.heatmap!(ax2, sim_slice; colormap = :grays)
         CM.hidedecorations!(ax2); CM.hidespines!(ax2)
     end
     CM.save(joinpath(RESULTS_DIR, "ge_vmi_qualitative.png"), fig, px_per_unit = 2)
@@ -5586,21 +5517,18 @@ sim_noise_floor_hu
 # ╠═00080016-0000-4000-8000-000000000004
 # ╟─c1139ae3-5186-445e-81b8-5d932ca5ef98
 # ╟─00080017-0000-4000-8000-000000000004
-# ╟─00080018-0000-4000-8000-000000000004
-# ╠═00080006-0000-4000-8000-000000000004
-# ╠═00080007-0000-4000-8000-000000000004
-# ╟─00080019-0000-4000-8000-000000000004
-# ╟─00080023-0000-4000-8000-000000000004
-# ╠═00080024-0000-4000-8000-000000000004
 # ╟─00080020-0000-4000-8000-000000000004
 # ╠═00090002-0000-4000-8000-000000000004
-# ╠═00080025-0000-4000-8000-000000000004
 # ╟─fd9969e0-415f-409d-8672-fe2d963b6486
 # ╟─2b6fd506-c624-4be3-9a71-1d366ae58ada
 # ╟─00090003-0000-4000-8000-000000000004
 # ╟─000a0001-0000-4000-8000-000000000004
 # ╠═000a0002-0000-4000-8000-000000000004
 # ╟─000a0004-0000-4000-8000-000000000004
+# ╟─000a0010-0000-4000-8000-000000000004
+# ╠═000a0011-0000-4000-8000-000000000004
+# ╠═000a0012-0000-4000-8000-000000000004
+# ╟─000a0013-0000-4000-8000-000000000004
 # ╟─000a0005-0000-4000-8000-000000000004
 # ╠═6454952b-4cdb-4beb-979e-c41595dbe204
 # ╠═000b0002-0000-4000-8000-000000000004
