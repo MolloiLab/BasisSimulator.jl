@@ -212,11 +212,24 @@ include("reconstruction/vmi/basis.jl")
 # Parity against Roots.jl verified in test/vmi/test_brent_parity.jl.
 include("reconstruction/vmi/roots_kernels.jl")
 
+# Linear 2×2 DE (Constant Material Value) decomposition — cheap baseline
+include("reconstruction/vmi/cmv.jl")
+
 # Per-ray Cong 2022 analytic dual-energy decomposition
 include("reconstruction/vmi/cong.jl")
 
-# Noh/Fessler/Kinahan 2009 PWLS-SQS sinogram restoration (MIRT port)
+# Ducros 2017 RWLS-GN DE decomp (count-domain GN + FFT proximal prior)
+include("reconstruction/vmi/rwls.jl")
+
+# Noh/Fessler 2009 + Long/Fessler 2014 PWLS-L₂ 2×2-curvature SQS
 include("reconstruction/vmi/pwls.jl")
+
+# PCCT per-bin basis + count-combine helpers (shared by CMV/RWLS/PWLS).
+include("reconstruction/vmi/pcct_basis.jl")
+
+# PCCT polynomial calibration: (p_low, p_high) → (t_water, t_iodine)
+# Alvarez/Macovski 1976 sinogram-domain decomposition.
+include("reconstruction/vmi/pcct_calibration.jl")
 
 # Kalender/Klotz/Kostaridou 1988 ACNR (FFT Tikhonov smoother on s_⊥)
 include("reconstruction/vmi/acnr.jl")
@@ -229,5 +242,13 @@ include("reconstruction/vmi/vmi_synth.jl")
 
 # Mono+ frequency-split — Grant 2014 1:1 parity (FFT Gaussian LP)
 include("reconstruction/vmi/mono_plus.jl")
+
+# =============================================================================
+# Scanner-specific constants
+# =============================================================================
+# Named FBP apodization filters + scanner-specific presets (bowtie, geometry)
+# per scanner-variant.  Notebooks pick via `BS.<SCANNER>_FILTERS[:kernel]`.
+
+include("scanners/ge_apex_elite.jl")
 
 end # module

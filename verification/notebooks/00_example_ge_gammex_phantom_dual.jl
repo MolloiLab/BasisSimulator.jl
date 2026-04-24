@@ -323,7 +323,7 @@ let
         all_filters = vcat([("Al", 2.5)], additional_filters)
         _, w_filt = BS.filter_spectrum(e_raw, w_raw; filters = all_filters, sdd_mm = 1100.0)
         prot = BS.CTProtocol(kVp = kVp, additional_filters = additional_filters)
-        e_res, w_res = BS.resolve_spectrum(sim_opts, prot; scanner = sim_scanner)
+        e_res, w_res = BS.resolve_source_spectrum_without_bowtie(sim_opts, prot; scanner = sim_scanner)
         E_eff = sum(e_res .* w_res) / sum(w_res)
 
         ax = CM.Axis(
@@ -537,8 +537,8 @@ collapses that transient.
 mech_de_basis = let
     prot_L = BS.CTProtocol(kVp = 80,  additional_filters = additional_filters)
     prot_H = BS.CTProtocol(kVp = 140, additional_filters = additional_filters)
-    e_L, w_L = BS.resolve_spectrum(sim_opts, prot_L; scanner = sim_scanner)
-    e_H, w_H = BS.resolve_spectrum(sim_opts, prot_H; scanner = sim_scanner)
+    e_L, w_L = BS.resolve_source_spectrum_without_bowtie(sim_opts, prot_L; scanner = sim_scanner)
+    e_H, w_H = BS.resolve_source_spectrum_without_bowtie(sim_opts, prot_H; scanner = sim_scanner)
 
     ŵ_L = Float32.(Float64.(w_L) ./ sum(Float64.(w_L)))
     ŵ_H = Float32.(Float64.(w_H) ./ sum(Float64.(w_H)))
@@ -823,8 +823,8 @@ begin
     # we wire up real Gammex counts. Used here only for the forward-model
     # parity test, where the scale is arbitrary.
     mech_S_L, mech_S_H = let
-        eL, wL = BS.resolve_spectrum(sim_opts, protocol_low;  scanner = sim_scanner)
-        eH, wH = BS.resolve_spectrum(sim_opts, protocol_high; scanner = sim_scanner)
+        eL, wL = BS.resolve_source_spectrum_without_bowtie(sim_opts, protocol_low;  scanner = sim_scanner)
+        eH, wH = BS.resolve_source_spectrum_without_bowtie(sim_opts, protocol_high; scanner = sim_scanner)
 
         interp = function (e_src, w_src, e_target)
             w_out = zeros(Float32, length(e_target))
@@ -1038,7 +1038,7 @@ returns expected counts directly.
 # ╔═╡ 00090011-0000-4000-8000-000000000004
 begin
     function mech_compute_I0(geom, protocol, sim_opts, scanner)
-        _, w_src = BS.resolve_spectrum(sim_opts, protocol; scanner = scanner)
+        _, w_src = BS.resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner = scanner)
         Float32(BS.compute_detector_I0(geom, protocol, sum(w_src)))
     end
 

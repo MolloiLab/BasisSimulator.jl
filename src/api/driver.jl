@@ -17,7 +17,7 @@ Compute the expected photon count per detector pixel per view.
 
 I₀ = spectrum_flux_sum × mA × time_per_view × pixel_area_mm²
 
-where `spectrum_flux_sum` is the integrated spectral flux from `resolve_spectrum`
+where `spectrum_flux_sum` is the integrated spectral flux from `resolve_source_spectrum_without_bowtie`
 (units: photons/mAs/mm² at scanner SDD).
 """
 function compute_detector_I0(geom::CTGeometry, protocol::CTProtocol, spectrum_flux_sum::Float64)
@@ -485,21 +485,33 @@ function add_system_noise_floor!(vol::AbstractArray{T}, sigma_hu::Real; seed::Un
     return vol
 end
 
-export resolve_spectrum
+export resolve_source_spectrum_without_bowtie
+export resolve_source_spectrum_with_bowtie, apply_bowtie_to_spectrum
 
 """
-    resolve_spectrum(sim_opts, protocol; scanner=nothing) -> (energies, weights)
+    resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner=nothing) -> (energies, weights)
 
-Determine the energy spectrum for simulation.
+**1D centered spectrum** — tube × flat filter × additional filter, NO bowtie.
 
-Loads a raw IPEM Anode spectrum and applies Beer-Lambert filtering
-(scanner flat filter + protocol additional_filters) plus inverse-square-law
-distance scaling. Full resolution (~160-280 bins), no downsampling.
+Returns the source-side spectrum along the centered reference ray.  This is
+what leaves the tube and passes through the fixed filtration (flat filter +
+any `additional_filters` in the protocol) at the source-to-detector distance.
+It does NOT include:
+- **Bowtie filter** — rays at the fan edge see more filtration than center.
+  Use `resolve_source_spectrum_with_bowtie` when bowtie matters (basis
+  decomposition, beam hardening correction, etc.).
+- **Detector response** (QE, energy-resolving DRM) — callers apply these
+  separately when needed (see PCCT basis construction in `src/scanners/`).
+
+Suitable for: quick mean-energy diagnostics, global BHC calibration (when
+bowtie is ignored), scatter estimation, and Monte-Carlo source spectra.
+Not suitable for: per-ray polychromatic forward modelling when the scanner
+has a bowtie — use the `_with_bowtie` variant.
 
 Pass `scanner` so the pipeline can read `flat_filter_material`,
 `flat_filter_thickness`, and `source_to_detector` from the hardware spec.
 """
-function resolve_spectrum(sim_opts::SimOptions, protocol::CTProtocol; scanner=nothing)
+function resolve_source_spectrum_without_bowtie(sim_opts::SimOptions, protocol::CTProtocol; scanner=nothing)
     # Physics-based: raw IPEM spectrum + Beer-Lambert filtering
     e, w = load_spectrum_unfiltered(Int(protocol.kVp); anode_angle=protocol.anode_angle)
 
@@ -515,6 +527,115 @@ function resolve_spectrum(sim_opts::SimOptions, protocol::CTProtocol; scanner=no
     e, w = filter_spectrum(e, w; filters=filters, sdd_mm=sdd_mm)
 
     return e, w
+end
+
+"""
+    apply_bowtie_to_spectrum(w_1d, e, scanner, geom, protocol; include_bowtie=true, label="") -> ŵ
+
+Inject the bowtie transmission into a 1D source spectrum → per-ray 3D `ŵ`.
+
+Given a 1D centered spectrum `w_1d` (from
+`resolve_source_spectrum_without_bowtie`) and its energy grid `e`, multiplies
+by the bowtie attenuation `B[col, row, e]` pixel-by-pixel and renormalizes so
+`Σ_k ŵ[col, row, k] = 1` per ray.  Returns:
+- `ŵ::Array{Float32,3}` of shape `[n_col, n_row, n_E]` when bowtie is present.
+- `Float32` vector (normalized `w_1d`) unchanged when `include_bowtie == false`
+  OR the scanner has no bowtie configured (`bowtie_filter` property absent,
+  `:none`, or `nothing`).
+
+This is the low-level primitive.  Most callers should use
+`resolve_source_spectrum_with_bowtie(...)`, which composes the two steps.
+
+# Arguments
+- `w_1d`, `e` — 1D spectrum + its energy grid (from `_without_bowtie`).
+- `scanner`, `geom`, `protocol` — passed to `resolve_bowtie_filter` and
+  `compute_bowtie_attenuation_spectral` to assemble `B[col, row, e]`.
+
+# Keyword Arguments
+- `include_bowtie::Bool = true` — set `false` to bypass and return a 1D
+  normalized spectrum, useful as a runtime toggle.
+- `label::String = ""` — prefix for the `@info` diagnostic line (e.g. `"low"`,
+  `"high"`) so multi-bin pipelines label their logs.
+"""
+function apply_bowtie_to_spectrum(
+        w_1d::AbstractVector,
+        e::AbstractVector{<:Real},
+        scanner,
+        geom,
+        protocol;
+        include_bowtie::Bool = true,
+        label::String = "",
+    )
+    n_E = length(e)
+    bowtie_present = include_bowtie &&
+                     hasproperty(scanner, :bowtie_filter) &&
+                     scanner.bowtie_filter !== :none &&
+                     scanner.bowtie_filter !== nothing
+    if !bowtie_present
+        w_norm = Float32.(Float64.(w_1d) ./ sum(Float64.(w_1d)))
+        @info "[apply_bowtie_to_spectrum$(isempty(label) ? "" : " ("*label*")")] bowtie OFF → 1D centered spectrum"
+        return w_norm
+    end
+    bowtie = resolve_bowtie_filter(scanner.bowtie_filter; kVp = Int(protocol.kVp))
+    B = compute_bowtie_attenuation_spectral(bowtie, geom, Float64.(e))
+    n_col, n_row = size(B, 1), size(B, 2)
+    w_pr = Array{Float32, 3}(undef, n_col, n_row, n_E)
+    @inbounds for k in 1:n_E
+        wk = Float32(w_1d[k])
+        for row in 1:n_row, col in 1:n_col
+            w_pr[col, row, k] = wk * Float32(B[col, row, k])
+        end
+    end
+    # Per-ray normalization so Σ_k ŵ = 1 per (col, row).
+    @inbounds for row in 1:n_row, col in 1:n_col
+        tot = 0f0
+        for k in 1:n_E
+            tot += w_pr[col, row, k]
+        end
+        inv_tot = 1f0 / max(tot, 1f-20)
+        for k in 1:n_E
+            w_pr[col, row, k] *= inv_tot
+        end
+    end
+    mid_c = n_col ÷ 2 + 1
+    mid_r = n_row ÷ 2 + 1
+    mean_E_center = sum(Float64(e[k]) * w_pr[mid_c, mid_r, k] for k in 1:n_E)
+    mean_E_edge1  = sum(Float64(e[k]) * w_pr[1,     mid_r, k] for k in 1:n_E)
+    @info "[apply_bowtie_to_spectrum$(isempty(label) ? "" : " ("*label*")")] bowtie ON → per-ray 3D ŵ  [$(n_col) × $(n_row) × $(n_E)]"
+    @info "  center-ray mean E = $(round(mean_E_center, digits = 1)) keV"
+    @info "  edge-ray   mean E = $(round(mean_E_edge1,  digits = 1)) keV   (Δ = $(round(mean_E_edge1 - mean_E_center, digits = 1)) keV ← bowtie hardening)"
+    return w_pr
+end
+
+"""
+    resolve_source_spectrum_with_bowtie(sim_opts, protocol; scanner, geom, include_bowtie=true, label="") -> (e, ŵ)
+
+**Bowtie-aware spectrum** — `resolve_source_spectrum_without_bowtie` composed
+with `apply_bowtie_to_spectrum`.
+
+Convenience wrapper: returns the 1D energy grid `e` and a per-ray spectrum
+`ŵ`.  When bowtie is present AND `include_bowtie == true`, `ŵ` is 3D
+`[n_col, n_row, n_E]` with the bowtie transmission baked in and each ray
+normalized to `Σ_k ŵ = 1`.  When bowtie is absent or disabled, `ŵ` collapses
+to a 1D `[n_E]` vector (the same as `_without_bowtie` output, just
+normalized).  Downstream code should dispatch on `ndims(ŵ)`.
+
+Use this instead of calling the two primitives yourself whenever you want
+basis decomposition, per-ray BHC, or any other forward-model step that
+needs the exact spectrum each ray saw.
+"""
+function resolve_source_spectrum_with_bowtie(
+        sim_opts::SimOptions,
+        protocol::CTProtocol;
+        scanner,
+        geom,
+        include_bowtie::Bool = true,
+        label::String = "",
+    )
+    e, w_1d = resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner = scanner)
+    ŵ = apply_bowtie_to_spectrum(w_1d, e, scanner, geom, protocol;
+                                  include_bowtie = include_bowtie, label = label)
+    return e, ŵ
 end
 
 """

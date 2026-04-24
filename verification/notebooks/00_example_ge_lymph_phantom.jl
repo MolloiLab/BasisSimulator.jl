@@ -319,7 +319,7 @@ let
     all_filters = vcat([("Al", 2.5)], additional_filters)
     _, w_filt = BS.filter_spectrum(e_raw, w_raw; filters = all_filters, sdd_mm = 1100.0)
     prot = BS.CTProtocol(kVp = kVp, additional_filters = additional_filters)
-    e_res, w_res = BS.resolve_spectrum(sim_opts, prot; scanner = sim_scanner)
+    e_res, w_res = BS.resolve_source_spectrum_without_bowtie(sim_opts, prot; scanner = sim_scanner)
     E_eff = sum(e_res .* w_res) / sum(w_res)
 
     fig = CM.Figure(size = (900, 500), fontsize = 13)
@@ -394,7 +394,7 @@ end
 # ╔═╡ 00060005-0000-4000-8000-000000000003
 bhc_model, μ_water_ref = let
     prot = BS.CTProtocol(kVp = 120, additional_filters = additional_filters)
-    e, w = BS.resolve_spectrum(sim_opts, prot; scanner = sim_scanner)
+    e, w = BS.resolve_source_spectrum_without_bowtie(sim_opts, prot; scanner = sim_scanner)
     ref_E = sum(e .* w) / sum(w)
     model = BS.calibrate_bhc_two_material(e, w; order = sino_order, reference_energy_keV = ref_E, hu_low = sino_bhc_hu_low, hu_high = sino_bhc_hu_high)
     @info "BHC 120 kVp: E_ref=$(round(ref_E, digits=1)) keV, μ_water=$(round(model.μ_water_ref, digits=5)) cm⁻¹"

@@ -90,8 +90,9 @@ export calibrate_bhc, apply_bhc!
 export get_bhc_coefficients
 
 # Two-material (water + bone) sinogram-domain BHC
-export bone_fraction_smooth, TwoMaterialBHC
+export bone_fraction_smooth, TwoMaterialBHC, TwoMaterialBHCPerColumn
 export calibrate_bhc_two_material, apply_bhc_two_material
+export bhc_spectrum_per_column
 
 # Image-domain BHC (So et al. 2009)
 export apply_bhc_image_domain
@@ -462,6 +463,86 @@ function apply_bhc!(
     return sinogram
 end
 
+"""
+    apply_bhc!(sinogram, bhcs_per_col::AbstractVector{BeamHardeningCorrection}; ws_coeffs_gpu=nothing)
+
+Per-column BHC (bowtie-aware), convenience wrapper that unwraps the
+`BeamHardeningCorrection` objects and delegates to the `BHCPolynomial`-vector
+method below.
+"""
+function apply_bhc!(
+    sinogram::AbstractArray{T, 3},
+    bhcs_per_col::AbstractVector{BeamHardeningCorrection};
+    ws_coeffs_gpu=nothing
+) where T <: AbstractFloat
+    polys = [b.polynomial for b in bhcs_per_col]
+    return apply_bhc!(sinogram, polys; ws_coeffs_gpu=ws_coeffs_gpu)
+end
+
+"""
+    apply_bhc!(sinogram, polys_per_col; ws_coeffs_gpu=nothing) -> sinogram
+
+Per-column (bowtie-aware) BHC: applies a different polynomial to each detector
+column, indexed off the sinogram's BS storage `[n_col, n_row, n_view]` layout.
+
+Each `polys_per_col[c]` is a `BHCPolynomial` fit from the spectrum that column
+actually saw (tube × filters × bowtie at fan angle `c`).  Coefficients are
+stacked into a `(order+1) × n_col` matrix on the backend once, then the kernel
+indexes `c = (idx-1) % n_col + 1` per ray.
+
+All polynomials must share the same `order`.  Falls back to the single-poly
+method automatically via multiple dispatch.
+"""
+function apply_bhc!(
+    sinogram::AbstractArray{T, 3},
+    polys_per_col::AbstractVector{BHCPolynomial};
+    ws_coeffs_gpu=nothing
+) where T <: AbstractFloat
+
+    n_col = size(sinogram, 1)
+    length(polys_per_col) == n_col ||
+        error("apply_bhc!: polys_per_col length $(length(polys_per_col)) ≠ n_col $n_col")
+    order = polys_per_col[1].order
+    for c in 2:n_col
+        polys_per_col[c].order == order ||
+            error("apply_bhc!: polynomial orders must match across columns (col $c has order $(polys_per_col[c].order), expected $order)")
+    end
+
+    # Stack coefficients into a [order+1, n_col] matrix on the device.
+    coeffs_cpu = zeros(T, order + 1, n_col)
+    for col_idx in 1:n_col
+        coeffs_cpu[:, col_idx] .= T.(polys_per_col[col_idx].coefficients)
+    end
+    coeffs = if ws_coeffs_gpu !== nothing
+        copyto!(ws_coeffs_gpu, coeffs_cpu)
+        ws_coeffs_gpu
+    else
+        cbuf = similar(sinogram, T, order + 1, n_col)
+        copyto!(cbuf, coeffs_cpu)
+        cbuf
+    end
+
+    # NOTE: renamed the local `col` to avoid collision with any outer `c`
+    # scoped variable — same-name assignments in closures trigger Julia's
+    # Core.Box heuristic and break GPU kernel compile with "non-bitstype
+    # argument" errors.
+    let coeffs = coeffs, order = order, n_col = n_col
+        AK.foreachindex(sinogram) do idx
+            col = ((idx - 1) % n_col) + 1
+            p = sinogram[idx]
+            p_corrected = coeffs[1, col]
+            p_power = one(T)
+            for i in 1:order
+                p_power *= p
+                p_corrected += coeffs[i+1, col] * p_power
+            end
+            sinogram[idx] = p_corrected
+        end
+    end
+
+    return sinogram
+end
+
 # =============================================================================
 # Two-Material (Water + Bone) Beam Hardening Correction
 # =============================================================================
@@ -495,6 +576,10 @@ end
     TwoMaterialBHC
 
 Two-material (water + bone) beam hardening correction model.
+
+Single-spectrum variant: one polynomial, one mean spectrum.  Assumes every
+ray sees the same spectrum (valid when there's no bowtie, or when bowtie
+is ignored).  Use `TwoMaterialBHCPerColumn` for bowtie-aware correction.
 """
 struct TwoMaterialBHC
     water_bhc::BeamHardeningCorrection
@@ -510,9 +595,55 @@ struct TwoMaterialBHC
 end
 
 """
-    calibrate_bhc_two_material(energies, weights; kwargs...) -> TwoMaterialBHC
+    TwoMaterialBHCPerColumn
 
-Calibrate two-material BHC from spectrum.
+Bowtie-aware two-material BHC: one polynomial per detector column, each fit
+from the spectrum that column actually saw (tube × filters × bowtie at that
+fan angle).  Eliminates the residual radial cupping that a single global
+polynomial leaves behind when a bowtie is present.
+
+- `water_bhc_per_col[c]` — `BeamHardeningCorrection` fit for column `c`.
+  Length equals the sinogram's `n_col`.
+- `w_norm_per_col` — normalized spectrum per column, `[n_E × n_col]`.  Used
+  by the second-stage bone correction for the per-column polychromatic forward.
+- `μ_water_ref`, `μ_bone_ref` — **scalar** global refs, same as `TwoMaterialBHC`.
+  The mono-equivalent sinogram produced by the per-column polynomials targets
+  this single global reference energy so FBP downstream remains physically
+  consistent.
+
+Share the same HU thresholds (`hu_low`, `hu_high`) and material μ(E) tables
+as `TwoMaterialBHC`.
+"""
+struct TwoMaterialBHCPerColumn
+    water_bhc_per_col::Vector{BeamHardeningCorrection}
+    energies::Vector{Float64}
+    w_norm_per_col::Matrix{Float64}      # [n_E, n_col]
+    μ_water_E::Vector{Float64}
+    μ_bone_E::Vector{Float64}
+    μ_water_ref::Float64
+    μ_bone_ref::Float64
+    reference_energy_keV::Float64
+    hu_low::Float64
+    hu_high::Float64
+end
+
+"""
+    calibrate_bhc_two_material(energies, weights; kwargs...) -> TwoMaterialBHC
+    calibrate_bhc_two_material(energies, weights_per_col; kwargs...) -> TwoMaterialBHCPerColumn
+
+Calibrate two-material BHC from a spectrum.
+
+- Passing `weights::Vector` returns a single-polynomial `TwoMaterialBHC`.
+- Passing `weights::Matrix` of shape `[n_E, n_col]` returns a
+  `TwoMaterialBHCPerColumn` with one polynomial fit per column — that's the
+  bowtie-aware path.  Build the matrix from
+  `resolve_source_spectrum_with_bowtie(...)` output (collapse the row axis
+  first — bowtie varies primarily with fan angle, not row).
+
+The material μ(E) tables, HU thresholds, and the global `μ_water_ref` /
+`μ_bone_ref` at `reference_energy_keV` are shared across all columns in the
+bowtie-aware case — only the polynomial coefficients and per-column
+normalized spectrum differ.
 """
 function calibrate_bhc_two_material(
     energies::Vector,
@@ -544,10 +675,99 @@ function calibrate_bhc_two_material(
                           Float64(hu_low), Float64(hu_high))
 end
 
+function calibrate_bhc_two_material(
+    energies::Vector,
+    weights_per_col::AbstractMatrix;
+    order::Int = 5,
+    max_path_cm::Real = 50.0,
+    n_points::Int = 100,
+    reference_energy_keV::Real = 70.0,
+    hu_low::Real = 100.0,
+    hu_high::Real = 500.0
+)
+    n_E, n_col = size(weights_per_col)
+    length(energies) == n_E ||
+        error("calibrate_bhc_two_material: energies length $(length(energies)) ≠ weights_per_col n_E $n_E")
+
+    # Fit one water-BHC polynomial per column using that column's spectrum.
+    water_bhc_per_col = Vector{BeamHardeningCorrection}(undef, n_col)
+    w_norm_per_col = zeros(Float64, n_E, n_col)
+    for c in 1:n_col
+        w_c = Float64.(@view weights_per_col[:, c])
+        w_norm_per_col[:, c] .= w_c ./ sum(w_c)
+        water_bhc_per_col[c] = calibrate_bhc(energies, w_c;
+            order=order, max_path_cm=max_path_cm,
+            n_points=n_points, reference_energy_keV=reference_energy_keV)
+    end
+
+    water_mat = XA.Materials.water
+    bone_mat = XA.Materials.corticalbone
+    E_vec = Float64.(energies)
+    μ_water_E = [ustrip(u"cm^-1", XA.linear_attenuation_coeff(water_mat, E * u"keV")) for E in E_vec]
+    μ_bone_E = [ustrip(u"cm^-1", XA.linear_attenuation_coeff(bone_mat, E * u"keV")) for E in E_vec]
+    μ_water_ref = ustrip(u"cm^-1", XA.linear_attenuation_coeff(water_mat, reference_energy_keV * u"keV"))
+    μ_bone_ref = ustrip(u"cm^-1", XA.linear_attenuation_coeff(bone_mat, reference_energy_keV * u"keV"))
+
+    @info "[calibrate_bhc_two_material] bowtie-aware: $n_col columns × order-$order polynomials, ref_E = $reference_energy_keV keV"
+    return TwoMaterialBHCPerColumn(water_bhc_per_col, E_vec, w_norm_per_col,
+                                    μ_water_E, μ_bone_E,
+                                    μ_water_ref, μ_bone_ref,
+                                    Float64(reference_energy_keV),
+                                    Float64(hu_low), Float64(hu_high))
+end
+
+"""
+    bhc_spectrum_per_column(e, w) -> (e, w_per_col)
+
+Reduce a bowtie-aware 3D `ŵ[n_col, n_row, n_E]` (from
+`resolve_source_spectrum_with_bowtie`) to 2D `w[n_E, n_col]` by taking the
+centered detector row.  Bowtie variation is primarily in-plane (fan angle);
+row-direction variation is small, so a center-row slice is an excellent
+approximation for BHC calibration.
+
+If `w` is already 1D or 2D, it's returned as-is (after transpose if 2D comes
+in as `[n_col, n_E]` rather than `[n_E, n_col]`).
+
+Usage:
+```julia
+e, ŵ = BS.resolve_source_spectrum_with_bowtie(sim_opts, prot; scanner, geom)
+e, w_col = BS.bhc_spectrum_per_column(e, ŵ)
+bhc = BS.calibrate_bhc_two_material(e, w_col; ...)
+```
+"""
+function bhc_spectrum_per_column(e::AbstractVector, w::AbstractArray)
+    if ndims(w) == 1
+        return e, w
+    elseif ndims(w) == 2
+        # Accept either [n_E, n_col] or [n_col, n_E] and normalize to [n_E, n_col].
+        size(w, 1) == length(e) && return e, w
+        size(w, 2) == length(e) && return e, permutedims(w)
+        error("bhc_spectrum_per_column: 2D spectrum shape $(size(w)) doesn't match energies length $(length(e))")
+    elseif ndims(w) == 3
+        # 3D bowtie-aware: [n_col, n_row, n_E] → take center row → [n_E, n_col]
+        n_col, n_row, n_E = size(w)
+        n_E == length(e) ||
+            error("bhc_spectrum_per_column: 3D spectrum last-dim $n_E ≠ energies length $(length(e))")
+        mid_r = n_row ÷ 2 + 1
+        out = Array{Float64}(undef, n_E, n_col)
+        @inbounds for c in 1:n_col, k in 1:n_E
+            out[k, c] = Float64(w[c, mid_r, k])
+        end
+        return e, out
+    else
+        error("bhc_spectrum_per_column: unsupported ndims $(ndims(w))")
+    end
+end
+
 """
     apply_bhc_two_material(sinogram_raw, bhc_2mat, geom, matrix_size; volume_extent=nothing)
 
 Apply two-material (water + bone) beam hardening correction in sinogram domain.
+
+Dispatches on the BHC type:
+- `TwoMaterialBHC` — single polynomial water stage (1D spectrum).
+- `TwoMaterialBHCPerColumn` — per-column polynomial water stage (bowtie-aware).
+  Bone stage uses per-column spectrum + global μ refs.
 """
 function apply_bhc_two_material(
     sinogram_raw::AbstractArray{T, 3},
@@ -620,6 +840,101 @@ function apply_bhc_two_material(
                 I_poly = zero(T)
                 for e in 1:n_e
                     I_poly += w_norm_gpu[e] * exp(-μ_w_gpu[e] * Lw - μ_b_gpu[e] * Lb)
+                end
+                F_2mat = I_poly > zero(T) ? -log(I_poly) : zero(T)
+                p_mono = μ_w_ref * Lw + μ_b_ref * Lb
+                sino_out[idx] = sino_out[idx] + (p_mono - F_2mat)
+            end
+        end
+    end
+
+    return Array(sino_out)
+end
+
+"""
+    apply_bhc_two_material(sinogram_raw, bhc::TwoMaterialBHCPerColumn, geom, matrix_size; volume_extent=nothing)
+
+Bowtie-aware two-material BHC.  Water stage uses the per-column polynomial;
+bone stage uses per-column normalized spectrum for the polychromatic forward
+model.  Global `μ_water_ref` / `μ_bone_ref` keep the mono-equivalent target
+consistent across columns so downstream FBP sees a single effective energy.
+"""
+function apply_bhc_two_material(
+    sinogram_raw::AbstractArray{T, 3},
+    bhc::TwoMaterialBHCPerColumn,
+    geom,
+    matrix_size::Tuple{Int,Int,Int};
+    volume_extent=nothing
+) where T <: AbstractFloat
+
+    n_col = size(sinogram_raw, 1)
+    length(bhc.water_bhc_per_col) == n_col ||
+        error("apply_bhc_two_material(PerColumn): polys $(length(bhc.water_bhc_per_col)) ≠ sino n_col $n_col")
+
+    # Stage 1 — per-column polynomial water BHC.
+    sino_water = similar(sinogram_raw)
+    copyto!(sino_water, sinogram_raw)
+    apply_bhc!(sino_water, bhc.water_bhc_per_col)
+    recon_gpu = fdk_reconstruct(sino_water, geom, matrix_size)
+
+    μ_w_ref   = T(bhc.μ_water_ref)
+    μ_b_ref   = T(bhc.μ_bone_ref)
+    hu_low_T  = T(bhc.hu_low)
+    hu_high_T = T(bhc.hu_high)
+
+    # Stage 2 — bone-fraction segmentation in image domain.
+    bone_μ_gpu = similar(recon_gpu)
+    let recon_gpu = recon_gpu, bone_μ_gpu = bone_μ_gpu,
+        μ_w_ref = μ_w_ref, hu_low_T = hu_low_T, hu_high_T = hu_high_T
+        AK.foreachindex(recon_gpu) do idx
+            μ_val = recon_gpu[idx]
+            hu_val = T(1000) * (μ_val - μ_w_ref) / μ_w_ref
+            bf = if hu_val <= hu_low_T
+                zero(T)
+            elseif hu_val >= hu_high_T
+                one(T)
+            else
+                t = (hu_val - hu_low_T) / (hu_high_T - hu_low_T)
+                t * t * (T(3) - T(2) * t)
+            end
+            bone_μ_gpu[idx] = bf * μ_val
+        end
+    end
+
+    p_b_gpu = siddon_forward_project(bone_μ_gpu, geom; volume_extent=volume_extent)
+
+    p_s_gpu = similar(sino_water)
+    copyto!(p_s_gpu, sino_water)
+    let p_s_gpu = p_s_gpu, p_b_gpu = p_b_gpu
+        AK.foreachindex(p_s_gpu) do idx
+            p_s_gpu[idx] = p_s_gpu[idx] - p_b_gpu[idx]
+        end
+    end
+
+    # Stage 3 — per-column polychromatic forward correction.  The w_norm matrix
+    # is [n_E, n_col]; kernel indexes w_norm[e, c] for col c.
+    n_e = length(bhc.energies)
+    μ_w_cpu      = T.(bhc.μ_water_E)
+    μ_b_cpu      = T.(bhc.μ_bone_E)
+    w_norm_cpu   = T.(bhc.w_norm_per_col)  # [n_E, n_col]
+    μ_w_gpu      = similar(sinogram_raw, T, n_e);           copyto!(μ_w_gpu,      μ_w_cpu)
+    μ_b_gpu      = similar(sinogram_raw, T, n_e);           copyto!(μ_b_gpu,      μ_b_cpu)
+    w_norm_gpu   = similar(sinogram_raw, T, n_e, n_col);    copyto!(w_norm_gpu,   w_norm_cpu)
+
+    sino_out = similar(sinogram_raw)
+    copyto!(sino_out, sinogram_raw)
+
+    let sino_out = sino_out, p_s_gpu = p_s_gpu, p_b_gpu = p_b_gpu,
+        w_norm_gpu = w_norm_gpu, μ_w_gpu = μ_w_gpu, μ_b_gpu = μ_b_gpu,
+        μ_w_ref = μ_w_ref, μ_b_ref = μ_b_ref, n_e = n_e, n_col = n_col
+        AK.foreachindex(sino_out) do idx
+            col = ((idx - 1) % n_col) + 1
+            Lw = max(p_s_gpu[idx] / μ_w_ref, zero(T))
+            Lb = max(p_b_gpu[idx] / μ_b_ref, zero(T))
+            if Lw > T(1e-6) || Lb > T(1e-6)
+                I_poly = zero(T)
+                for e in 1:n_e
+                    I_poly += w_norm_gpu[e, col] * exp(-μ_w_gpu[e] * Lw - μ_b_gpu[e] * Lb)
                 end
                 F_2mat = I_poly > zero(T) ? -log(I_poly) : zero(T)
                 p_mono = μ_w_ref * Lw + μ_b_ref * Lb

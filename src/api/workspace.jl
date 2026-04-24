@@ -158,7 +158,7 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     n_bins = length(scanner.energy_thresholds)
     n_materials = length(recon_opts.vmi_basis)
     n_elements = prod(sino_shape)
-    # n_energies is set after resolve_spectrum below
+    # n_energies is set after resolve_source_spectrum_without_bowtie below
 
     # GPU-side buffers — similar() matches the provided mask's backend
     # If mask kwarg is provided (e.g. GPU-converted mask), use it for similar();
@@ -179,7 +179,7 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     enoise_cpu = Vector{T}(undef, n_elements)
     sino_ideal_out = zeros(T, sino_shape)
     sino_noisy_out = zeros(T, sino_shape)
-    energies, weights_vec = resolve_spectrum(sim_opts, protocol; scanner=scanner)
+    energies, weights_vec = resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner=scanner)
     n_energies = length(energies)
     config = build_physics_config(scanner, sim_opts, energies, weights_vec; phantom=phantom)
     pcct_detector = _build_pcct_detector(scanner)
@@ -479,7 +479,7 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     geom = CTGeometry(scanner; n_angles=protocol.views, fov_cm=recon_opts.fov_cm, z_cm=recon_opts.z_cm, collimation_mm=protocol.collimation_mm)
 
     # Spectrum (pass scanner for IPEM pipeline)
-    energies, weights_vec = resolve_spectrum(sim_opts, protocol; scanner=scanner)
+    energies, weights_vec = resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner=scanner)
     n_energies = length(energies)
 
     # Physics config

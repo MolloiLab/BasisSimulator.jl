@@ -88,8 +88,8 @@ the scan.  Float32 precision (~7 decimal digits) is more than enough for
 the physical line-integral ranges (0–10 cm·g/cm²) that Cong operates on.
 """
 function compute_photo_compton_basis(prot_low, prot_high; sim_opts, scanner)
-    e_L, w_L = resolve_spectrum(sim_opts, prot_low;  scanner = scanner)
-    e_H, w_H = resolve_spectrum(sim_opts, prot_high; scanner = scanner)
+    e_L, w_L = resolve_source_spectrum_without_bowtie(sim_opts, prot_low;  scanner = scanner)
+    e_H, w_H = resolve_source_spectrum_without_bowtie(sim_opts, prot_high; scanner = scanner)
 
     ŵ_L = Float32.(Float64.(w_L) ./ sum(Float64.(w_L)))
     ŵ_H = Float32.(Float64.(w_H) ./ sum(Float64.(w_H)))

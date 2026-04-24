@@ -5,7 +5,7 @@ Given measured line integrals at low and high kVp, invert the
 polychromatic forward model **ray by ray** to recover the photoelectric
 (`y = ∫a(r)dr`) and Compton (`C = ∫c(r)dr`) basis sinograms.  Zero
 calibration required — only the resolved x-ray spectra
-(`resolve_spectrum`) and the physical `p(ε), q(ε)` basis (see `basis.jl`).
+(`resolve_source_spectrum_without_bowtie`) and the physical `p(ε), q(ε)` basis (see `basis.jl`).
 
 Algorithm (Cong Eqs 6–10):
   1. **Outer Brent on water-equivalent path `L`**
@@ -60,7 +60,11 @@ before launch.
 - `sino_high`         : measured high-kVp sinogram (log line integrals)
 
 # Keyword arguments
-- `basis`       : NamedTuple from `compute_photo_compton_basis`
+- `basis`       : NamedTuple from `compute_photo_compton_basis` (or a
+  direct material basis).  `basis.ŵ_L` / `basis.ŵ_H` may be 1D
+  `[n_E]` (centered spectrum, legacy) or 3D `[n_col, n_row, n_E]`
+  for per-ray bowtie-aware inversion — both paths run the same
+  algorithm, only the spectral lookup differs.
 - `water_basis` : NamedTuple from `water_basis_constants()`
 
 # Tuning knobs (per-ray solver tolerances; exposed for residual beam-hardening tuning)
@@ -107,6 +111,13 @@ function apply_cong!(
         "Float32/Float32 required.  Call BS.water_basis_constants() (returns Float32)."
     )
 
+    # `basis.ŵ_*` is either 1D (centered spectrum) or 3D
+    # [n_col, n_row, n_E] for per-ray bowtie-aware inversion.  Both ŵ_L
+    # and ŵ_H must share dimensionality.
+    per_ray = ndims(basis.ŵ_L) == 3
+    per_ray == (ndims(basis.ŵ_H) == 3) ||
+        error("apply_cong!: basis.ŵ_L and basis.ŵ_H must share ndims (both 1D or both 3D).")
+
     # Stage spectral tables (Float32) onto the sinogram's backend.  All
     # internal kernel math runs in Float32 so Metal / CUDA execute
     # natively without a Float64 fallback.  Float32 ULP ≈ 1.2e-7 around
@@ -118,8 +129,8 @@ function apply_cong!(
     ŵ_H = _match_backend(basis.ŵ_H, sino_low)
     p_H = _match_backend(basis.p_H, sino_low)
     q_H = _match_backend(basis.q_H, sino_low)
-    nE_L = length(ŵ_L)
-    nE_H = length(ŵ_H)
+    nE_L = per_ray ? size(ŵ_L, 3) : length(ŵ_L)
+    nE_H = per_ray ? size(ŵ_H, 3) : length(ŵ_H)
 
     a_w     = Float32(water_basis.a)
     c_w     = Float32(water_basis.c)
@@ -132,7 +143,16 @@ function apply_cong!(
     y_fac   = Float32(y_max_factor)
     y_cap   = Float32(y_max_cap)
 
+    # BS sinogram layout [n_col, n_row, n_view]; bowtie ŵ only varies in
+    # (col, row) so we decode (col, row) from the linear kernel index.
+    n_col = Int(size(sino_low, 1))
+    n_row = Int(size(sino_low, 2))
+
     AK.foreachindex(sino_low) do idx
+        i0  = idx - 1
+        col = (i0 % n_col) + 1
+        row = ((i0 ÷ n_col) % n_row) + 1
+
         p_L_meas = Float32(sino_low[idx])
         p_H_meas = Float32(sino_high[idx])
 
@@ -148,8 +168,14 @@ function apply_cong!(
         # ── Step 1 — Brent on water-equivalent path L (Cong Eq 7) ──
         water_T_L = function (L::Float32)
             T = 0f0
-            @inbounds for i in 1:nE_L
-                T += ŵ_L[i] * exp(-(p_L[i] * a_w + q_L[i] * c_w) * L)
+            if per_ray
+                @inbounds for i in 1:nE_L
+                    T += ŵ_L[col, row, i] * exp(-(p_L[i] * a_w + q_L[i] * c_w) * L)
+                end
+            else
+                @inbounds for i in 1:nE_L
+                    T += ŵ_L[i] * exp(-(p_L[i] * a_w + q_L[i] * c_w) * L)
+                end
             end
             T - T_L_meas
         end
@@ -174,17 +200,32 @@ function apply_cong!(
         solve_quintic = function (y::Float32, c̄_::Float32)
             P0 = 0f0; P1 = 0f0; P2 = 0f0
             P3 = 0f0; P4 = 0f0; P5 = 0f0
-            @inbounds for i in 1:nE_L
-                q_i  = q_L[i]
-                q2   = q_i * q_i;  q3 = q2 * q_i
-                q4   = q3 * q_i;   q5 = q4 * q_i
-                wexp = ŵ_L[i] * exp(-p_L[i] * y - q_i * c̄_)
-                P0 += wexp
-                P1 -= wexp * q_i
-                P2 += wexp * q2 * 0.5f0
-                P3 -= wexp * q3 * (1f0 / 6f0)
-                P4 += wexp * q4 * (1f0 / 24f0)
-                P5 -= wexp * q5 * (1f0 / 120f0)
+            if per_ray
+                @inbounds for i in 1:nE_L
+                    q_i  = q_L[i]
+                    q2   = q_i * q_i;  q3 = q2 * q_i
+                    q4   = q3 * q_i;   q5 = q4 * q_i
+                    wexp = ŵ_L[col, row, i] * exp(-p_L[i] * y - q_i * c̄_)
+                    P0 += wexp
+                    P1 -= wexp * q_i
+                    P2 += wexp * q2 * 0.5f0
+                    P3 -= wexp * q3 * (1f0 / 6f0)
+                    P4 += wexp * q4 * (1f0 / 24f0)
+                    P5 -= wexp * q5 * (1f0 / 120f0)
+                end
+            else
+                @inbounds for i in 1:nE_L
+                    q_i  = q_L[i]
+                    q2   = q_i * q_i;  q3 = q2 * q_i
+                    q4   = q3 * q_i;   q5 = q4 * q_i
+                    wexp = ŵ_L[i] * exp(-p_L[i] * y - q_i * c̄_)
+                    P0 += wexp
+                    P1 -= wexp * q_i
+                    P2 += wexp * q2 * 0.5f0
+                    P3 -= wexp * q3 * (1f0 / 6f0)
+                    P4 += wexp * q4 * (1f0 / 24f0)
+                    P5 -= wexp * q5 * (1f0 / 120f0)
+                end
             end
             x = 0f0
             for _ in 1:nm_iter
@@ -202,8 +243,14 @@ function apply_cong!(
         # ── Step 3 — Outer Brent on y via G(y) = T_H_pred − T_H_meas ──
         T_H_pred = function (y::Float32, C::Float32)
             T = 0f0
-            @inbounds for i in 1:nE_H
-                T += ŵ_H[i] * exp(-p_H[i] * y - q_H[i] * C)
+            if per_ray
+                @inbounds for i in 1:nE_H
+                    T += ŵ_H[col, row, i] * exp(-p_H[i] * y - q_H[i] * C)
+                end
+            else
+                @inbounds for i in 1:nE_H
+                    T += ŵ_H[i] * exp(-p_H[i] * y - q_H[i] * C)
+                end
             end
             T
         end

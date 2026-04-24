@@ -1,249 +1,317 @@
 """
-PWLS-SQS sinogram restoration for dual-energy basis sinograms.
+PWLS-L₂ sinogram restoration for dual-energy basis sinograms.
 
-1:1 port of MIRT's `ct/de_wls_dercurv.m` (per-ray WLS gradient +
-Fessler-Erdogan precomputed separable curvature) and
-`wls/pwls_sqs_os.m` (SQS update loop).
+1:1 port of Long & Fessler (2014) §IV-B 2×2 matrix-curvature SQS on the
+Noh-Fessler-Kinahan (2009) cost, with an optional bowtie-aware per-ray
+spectrum.  Dispatches on `ndims(basis.ŵ_L)`:
+
+  • `ŵ_L[n_E]`                 → centered-spectrum (legacy, uniform rays)
+  • `ŵ_L[n_col, n_row, n_E]`   → per-ray bowtie spectrum (3D)
 
 Cost (Noh 2009 Eq 12):
 
-    Φ(s) = ½·Σ_{i,m} w_{mi}·(h_{mi} − f_m(s_i))² + Σ_l ½·γ_l·‖C·s_l‖²
+    Φ(s) = ½·Σ_{i,m} w_{mi}·(h_{mi} − f_m(s_i))² + ½·Σ_l κ_l·‖C·s_l‖²
 
 where
-- `s = (s_y, s_C)`  — basis-sinogram state (photo + Compton line integrals)
-- `h_{mi}`          — measured polychromatic transmissions (−log y_{mi}/I_m)
-- `f_m(s_i)`        — polychromatic forward model (same as Cong)
-- `w_{mi} ≈ y_{mi}` — Poisson inverse-variance weights (Eq 13)
-- `‖C·s_l‖²`        — 2D 2nd-order difference (detector-col + view axes,
-                       Neumann BC) — MIRT Cdiffs pattern
+  - `s = (s_I, s_W)` — iodine + water basis-sinogram state (g/cm²)
+  - `h_{mi}`         — measured −log(y_{mi}/I_m) at kVp m
+  - `f_m(s_i)`       — polychromatic forward model  (−log Σ_k ŵ_m[k]·exp(…))
+  - `w_{mi} ≈ y_{mi}` — Poisson-approximate inverse-variance weights
+  - `‖C·s_l‖²`       — 2D 2nd-order difference (col + row axes, Neumann BC)
 
-Fessler-Erdogan precomputed curvature (MIRT de_wls_dercurv.m 131–133):
+Per-ray update (Long/Fessler 2014 §IV-B GN form):
 
-    M[m, l]      = Σ_k ŵ_m[k]·c_l[k]
-    curv_geom[l] = Σ_m |M[m, l]| · Σ_{l'} |M[m, l']|
-    curv_data_l[i] = max_m(w_{mi}) · curv_geom[l]
-    curv_R_l       = γ_l · 32
-    curv_l[i]      = curv_data_l[i] + curv_R_l
+    Δs = M⁻¹ · g,    M = data_curv(2×2) + diag(κ_I, κ_W),
+                      g = data_grad + κ_l · C·s
 
-SQS guarantees monotonic decrease of Φ(s) (Fessler 2000).
+The 2×2 M captures the iodine↔water anti-correlation that diagonal-SQS
+majorants miss, which is why this form dominates diagonal PWLS in DE.
+
+Runs on whatever backend the sinograms live on (CPU `Array`, Metal
+`MtlArray`, CUDA `CuArray`, …) via `AK.foreachindex`.
 
 Reference:
-  Noh, Fessler, Kinahan (2009) *"Statistical Sinogram Restoration in
-  Dual-Energy CT for PET Attenuation Correction."*
-  IEEE Trans Med Imaging 28(11):1688–1702.  DOI 10.1109/TMI.2009.2023988.
+  Noh, Fessler, Kinahan (2009) IEEE TMI 28(11):1688–1702 (cost).
+  Long, Fessler       (2014)  IEEE TMI 33(8):1614–1626 (2×2 curvature).
 """
 
 """
-    apply_pwls!(sino_y, sino_c;
-                h_low, h_high, basis,
-                γ_photo=2.0^-8, γ_compton=2.0^-8,
-                n_iter=20, relax=1.0,
-                verbose=true)
+    apply_pwls!(sino_iodine, sino_water, h_low, h_high;
+                basis,
+                κ_iodine = 32.0f0, κ_water = 32.0f0,
+                n_iter = 20, relax = 1.0f0,
+                verbose = true) -> NamedTuple
 
-PWLS-SQS restoration of dual-energy basis sinograms.  Mutates `sino_y`
-and `sino_c` in place — call with Cong-warm-started arrays.
+2×2 matrix-curvature PWLS-L₂ on the DE basis-sinogram pair.  Mutates
+`sino_iodine` and `sino_water` in place — call with a Cong/CMV/RWLS warm
+start.
 
-Returns a NamedTuple with diagnostic info:
-- `cost_history` : Φ(s) at each iteration (length = n_iter + 1)
-- `n_iter`       : iterations run
-- `γ_photo`, `γ_compton`, `relax` : echoed inputs
+# Arguments
+- `sino_iodine`, `sino_water` : Float32 sinograms (g/cm²), shape
+  `[n_col, n_row, n_view]`.  Mutated in place.
+- `h_low`, `h_high`           : Float32 measured log line integrals at
+  low/high kVp, same shape.
 
-Emits a `@warn` if Φ ever increases — monotonic descent is guaranteed
-by the De Pierro row-sum bound built into `curv_l[i]`, so any increase
-indicates a numerical bug or a curvature-bound violation.
+# Keyword arguments
+- `basis`       : NamedTuple with `ŵ_bins::Vector` of length 2 (low + high
+  bin-group spectral weights, each `[n_E]` or `[n_col, n_row, n_E]`) plus
+  `p::Vector{Float32}` (iodine μρ) and `q::Vector{Float32}` (water μρ) shared
+  across bins.  Same structure `apply_rwls!` uses.  Build with
+  `BS.pcct_pwls_basis(scanner, protocol; sim_opts, low_bins, high_bins)`.
+- `κ_iodine`, `κ_water` : De Pierro row-sum bounds on the regularizer
+  curvature (per-basis).  Larger → more smoothing per iter.
+- `n_iter`      : SQS iterations.
+- `relax`       : SQS relaxation (1.0 = unrelaxed; 0.5–1.0 typical).
+- `verbose`     : log cost decrease per iter summary.
+
+Returns a NamedTuple `(cost_history, n_iter, κ_iodine, κ_water, relax)`.
 """
 function apply_pwls!(
-        sino_y::AbstractArray{Float32, 3},
-        sino_c::AbstractArray{Float32, 3};
-        h_low::AbstractArray,
-        h_high::AbstractArray,
+        sino_iodine::AbstractArray{Float32, 3},
+        sino_water::AbstractArray{Float32, 3},
+        h_low::AbstractArray{Float32, 3},
+        h_high::AbstractArray{Float32, 3};
         basis,
-        γ_photo::Real  = 2.0^(-8),
-        γ_compton::Real = 2.0^(-8),
+        κ_iodine::Real = 32.0f0,
+        κ_water::Real  = 32.0f0,
         n_iter::Integer = 20,
-        relax::Real    = 1.0,
-        verbose::Bool  = true,
+        relax::Real     = 1.0f0,
+        verbose::Bool   = true,
     )
-    ŵ_L, p_L_bin, q_L_bin = basis.ŵ_L, basis.p_L, basis.q_L
-    ŵ_H, p_H_bin, q_H_bin = basis.ŵ_H, basis.p_H, basis.q_H
-    nE_L, nE_H = length(ŵ_L), length(ŵ_H)
-
-    # ── Precomputed separable curvature (MIRT de_wls_dercurv.m) ──
-    # Spectral-averaged MAC matrix M[m, l] = Σ_k ŵ_m[k]·c_l[k]
-    M_Ly = sum(ŵ_L .* p_L_bin);  M_LC = sum(ŵ_L .* q_L_bin)
-    M_Hy = sum(ŵ_H .* p_H_bin);  M_HC = sum(ŵ_H .* q_H_bin)
-    row_sum_L = abs(M_Ly) + abs(M_LC)
-    row_sum_H = abs(M_Hy) + abs(M_HC)
-    curv_geom_y = abs(M_Ly) * row_sum_L + abs(M_Hy) * row_sum_H
-    curv_geom_C = abs(M_LC) * row_sum_L + abs(M_HC) * row_sum_H
-
-    y_all = Float64.(sino_y)
-    C_all = Float64.(sino_c)
-    nx, nv, nr = size(y_all)
-
-    # Measurements (log line integrals) + Poisson-approximate weights.
-    # w_{mi} ∝ y_{mi} = I_m·exp(−h_{mi}); I_m cancels in num/den of the
-    # SQS update (assumes I_L ≈ I_H — good for GE fast-kVp switching).
-    h_L_all = Float64.(h_low)
-    h_H_all = Float64.(h_high)
-    w_L_all = @. exp(-h_L_all)
-    w_H_all = @. exp(-h_H_all)
-
-    γy    = Float64(γ_photo)
-    γC    = Float64(γ_compton)
-    relax_f = Float64(relax)
-
-    # Per-pixel curvatures (constant across iterations).
-    # γ·32 is the De Pierro row-sum majorant for |Cx'Cx + Cy'Cy| (2D
-    # 2nd-order diff, 16 per axis × 2 axes).
-    w_max_all  = @. max(w_L_all, w_H_all)
-    curv_y_all = @. w_max_all * curv_geom_y + γy * 32.0
-    curv_C_all = @. w_max_all * curv_geom_C + γC * 32.0
-
-    # Per-ray polychromatic forward + Jacobian.
-    # MIRT's fit.fmfun + fit.fgrad play the same role.
-    @inline ray_fj = function (y_r::Float64, C_r::Float64)
-        T_L = 0.0; nLy = 0.0; nLC = 0.0
-        @inbounds for i in 1:nE_L
-            e = ŵ_L[i] * exp(-p_L_bin[i] * y_r - q_L_bin[i] * C_r)
-            T_L += e; nLy += e * p_L_bin[i]; nLC += e * q_L_bin[i]
-        end
-        T_H = 0.0; nHy = 0.0; nHC = 0.0
-        @inbounds for i in 1:nE_H
-            e = ŵ_H[i] * exp(-p_H_bin[i] * y_r - q_H_bin[i] * C_r)
-            T_H += e; nHy += e * p_H_bin[i]; nHC += e * q_H_bin[i]
-        end
-        T_L = max(T_L, 1e-30); T_H = max(T_H, 1e-30)
-        (-log(T_L), -log(T_H), nLy / T_L, nLC / T_L, nHy / T_H, nHC / T_H)
-    end
-
-    # 2D 2nd-order difference (MIRT Cdiffs pattern — Cx stacked with Cy).
-    # Both axes use Neumann BC (zero at boundary rows/cols).  Output:
-    # `out = Cx'Cx·z + Cy'Cy·z`; `cx_buf = Cx·z`, `cy_buf = Cy·z`.
-    apply_CtC! = function (
-            out::AbstractMatrix{Float64},
-            cx_buf::AbstractMatrix{Float64},
-            cy_buf::AbstractMatrix{Float64},
-            z::AbstractMatrix{Float64},
+    # Unified basis form shared with `apply_rwls!`: (ŵ_bins, p, q).  Exactly
+    # two bin-groups expected (low/high).  All bins share the energy grid and
+    # therefore the p(E), q(E) tables.
+    length(basis.ŵ_bins) == 2 ||
+        error("apply_pwls!: 2×2 matrix curvature requires exactly 2 bins; got $(length(basis.ŵ_bins)).")
+    for (name, arr) in ((:p, basis.p), (:q, basis.q),
+                        (Symbol("ŵ_bins[1]"), basis.ŵ_bins[1]),
+                        (Symbol("ŵ_bins[2]"), basis.ŵ_bins[2]))
+        eltype(arr) === Float32 || error(
+            "apply_pwls!: basis.$(name) has eltype $(eltype(arr)); Float32 required."
         )
-        nxl, nvl = size(z)
-        @inbounds for j in 1:nvl
-            cx_buf[1, j]   = 0.0
-            cx_buf[nxl, j] = 0.0
-            for i in 2:nxl-1
-                cx_buf[i, j] = z[i-1, j] - 2.0 * z[i, j] + z[i+1, j]
-            end
-        end
-        @inbounds for i in 1:nxl
-            cy_buf[i, 1]   = 0.0
-            cy_buf[i, nvl] = 0.0
-        end
-        @inbounds for j in 2:nvl-1, i in 1:nxl
-            cy_buf[i, j] = z[i, j-1] - 2.0 * z[i, j] + z[i, j+1]
-        end
-        @inbounds for j in 1:nvl, i in 1:nxl
-            left  = (i > 1)   ? cx_buf[i-1, j] : 0.0
-            right = (i < nxl) ? cx_buf[i+1, j] : 0.0
-            below = (j > 1)   ? cy_buf[i, j-1] : 0.0
-            above = (j < nvl) ? cy_buf[i, j+1] : 0.0
-            out[i, j] = (left  - 2.0 * cx_buf[i, j] + right) +
-                        (below - 2.0 * cy_buf[i, j] + above)
-        end
     end
 
-    # Per-slice buffers (allocated once, reused across all SQS iterations).
-    grad_y_bufs = [zeros(Float64, nx, nv) for _ in 1:nr]
-    grad_C_bufs = [zeros(Float64, nx, nv) for _ in 1:nr]
-    reg_y_bufs  = [zeros(Float64, nx, nv) for _ in 1:nr]
-    reg_C_bufs  = [zeros(Float64, nx, nv) for _ in 1:nr]
-    cx_y_bufs   = [zeros(Float64, nx, nv) for _ in 1:nr]
-    cy_y_bufs   = [zeros(Float64, nx, nv) for _ in 1:nr]
-    cx_C_bufs   = [zeros(Float64, nx, nv) for _ in 1:nr]
-    cy_C_bufs   = [zeros(Float64, nx, nv) for _ in 1:nr]
+    # 1D vs 3D dispatch flag (fails loud if mixed).
+    per_ray = ndims(basis.ŵ_bins[1]) == 3
+    per_ray == (ndims(basis.ŵ_bins[2]) == 3) ||
+        error("apply_pwls!: basis.ŵ_bins[1] and basis.ŵ_bins[2] must share ndims (both 1D or both 3D).")
 
-    cost_history = zeros(Float64, n_iter + 1)
-
-    t0 = time()
-    for k_iter in 1:(n_iter + 1)
-        is_final_eval = (k_iter == n_iter + 1)
-        cost_total = Threads.Atomic{Float64}(0.0)
-
-        Threads.@threads for k_sl in 1:nr
-            y_sl = @view y_all[:, :, k_sl]
-            C_sl = @view C_all[:, :, k_sl]
-            hLs  = @view h_L_all[:, :, k_sl]
-            hHs  = @view h_H_all[:, :, k_sl]
-            wLs  = @view w_L_all[:, :, k_sl]
-            wHs  = @view w_H_all[:, :, k_sl]
-            cvy  = @view curv_y_all[:, :, k_sl]
-            cvC  = @view curv_C_all[:, :, k_sl]
-
-            grad_y = grad_y_bufs[k_sl]
-            grad_C = grad_C_bufs[k_sl]
-            reg_y  = reg_y_bufs[k_sl]
-            reg_C  = reg_C_bufs[k_sl]
-            cx_y   = cx_y_bufs[k_sl]
-            cy_y   = cy_y_bufs[k_sl]
-            cx_C   = cx_C_bufs[k_sl]
-            cy_C   = cy_C_bufs[k_sl]
-
-            # Data term: cost + gradient at current iterate.
-            cost_sl = 0.0
-            @inbounds for idx in eachindex(y_sl)
-                pL, pH, jLy, jLC, jHy, jHC = ray_fj(y_sl[idx], C_sl[idx])
-                errL = pL - hLs[idx]
-                errH = pH - hHs[idx]
-                wL   = wLs[idx]
-                wH   = wHs[idx]
-                cost_sl += 0.5 * (wL * errL * errL + wH * errH * errH)
-                grad_y[idx] = wL * errL * jLy + wH * errH * jHy
-                grad_C[idx] = wL * errL * jLC + wH * errH * jHC
-            end
-
-            # Regularizer: 2D penalty cost + (Cx'Cx + Cy'Cy)·s.
-            apply_CtC!(reg_y, cx_y, cy_y, y_sl)
-            apply_CtC!(reg_C, cx_C, cy_C, C_sl)
-            @inbounds for idx in eachindex(cx_y)
-                cost_sl += 0.5 * γy * (cx_y[idx]*cx_y[idx] + cy_y[idx]*cy_y[idx])
-                cost_sl += 0.5 * γC * (cx_C[idx]*cx_C[idx] + cy_C[idx]*cy_C[idx])
-            end
-
-            Threads.atomic_add!(cost_total, cost_sl)
-
-            # SQS update (skipped on the final cost-only pass).
-            if !is_final_eval
-                @inbounds for idx in eachindex(y_sl)
-                    dy = (grad_y[idx] + γy * reg_y[idx]) / cvy[idx]
-                    dC = (grad_C[idx] + γC * reg_C[idx]) / cvC[idx]
-                    y_sl[idx] = max(y_sl[idx] - relax_f * dy, 0.0)
-                    C_sl[idx] = max(C_sl[idx] - relax_f * dC, 0.0)
+    # Normalize each bin's spectrum so Σ_k ŵ = 1 (per-ray when 3D bowtie).
+    # Forward model assumes this: at an air ray f_m = −log(Σ ŵ_m) = 0.
+    # `pcct_pwls_basis` already normalizes 1D; this is a defensive check.
+    function _normalize_ŵ(ŵ_raw)
+        ŵ = Float32.(Array(ŵ_raw))
+        if ndims(ŵ) == 1
+            ŵ ./= sum(ŵ)
+        else  # 3D [n_col, n_row, n_E] — renormalize per-ray
+            nc, nr, nE = size(ŵ)
+            @inbounds for r in 1:nr, c in 1:nc
+                s = 0f0
+                for k in 1:nE; s += ŵ[c, r, k]; end
+                if s > 0f0
+                    inv_s = 1f0 / s
+                    for k in 1:nE; ŵ[c, r, k] *= inv_s; end
                 end
             end
         end
+        ŵ
+    end
+    ŵ_L_cpu = _normalize_ŵ(basis.ŵ_bins[1])
+    ŵ_H_cpu = _normalize_ŵ(basis.ŵ_bins[2])
 
-        cost_history[k_iter] = cost_total[]
-        if k_iter > 1 && cost_history[k_iter] > cost_history[k_iter-1] * (1 + 1e-9)
-            @warn "PWLS cost INCREASED iter $(k_iter-1)→$(k_iter): $(cost_history[k_iter-1]) → $(cost_history[k_iter]).  (sign bug? relax too large?)"
+    # Stage spectral tables onto the sinogram's backend.
+    ŵ_L = _match_backend(ŵ_L_cpu, sino_iodine)
+    ŵ_H = _match_backend(ŵ_H_cpu, sino_iodine)
+    p_L = _match_backend(basis.p, sino_iodine)
+    q_L = _match_backend(basis.q, sino_iodine)
+    p_H = p_L
+    q_H = q_L
+
+    nE_L = per_ray ? size(ŵ_L, 3) : length(ŵ_L)
+    nE_H = per_ray ? size(ŵ_H, 3) : length(ŵ_H)
+
+    n_col  = Int(size(sino_iodine, 1))
+    n_row  = Int(size(sino_iodine, 2))
+
+    κ_I_f   = Float32(κ_iodine)
+    κ_W_f   = Float32(κ_water)
+    relax_f = Float32(relax)
+    n_it    = Int(n_iter)
+
+    # Scratch buffers on the sinogram's backend (single alloc, reused per iter).
+    reg_I     = similar(sino_iodine)
+    reg_W     = similar(sino_iodine)
+    tmp_buf   = similar(sino_iodine)
+    cost_data = similar(sino_iodine)
+
+    # ── 2D 2nd-order difference (C = Cx ⊕ Cy, Neumann BC) — GPU-friendly
+    # 4-pass formulation (two for the x-axis, two for the y-axis).
+    lapl_x! = function (out, s, nc, nr)
+        AK.foreachindex(out) do idx
+            i0 = idx - 1
+            c = (i0 % nc) + 1
+            r = ((i0 ÷ nc) % nr) + 1
+            v = ((i0 ÷ (nc * nr))) + 1
+            cl = c == 1  ? c : c - 1
+            cr = c == nc ? c : c + 1
+            out[c, r, v] = s[cl, r, v] - 2f0 * s[c, r, v] + s[cr, r, v]
+        end
+        return
+    end
+    lapl_y! = function (out, s, nc, nr, accum::Bool)
+        AK.foreachindex(out) do idx
+            i0 = idx - 1
+            c = (i0 % nc) + 1
+            r = ((i0 ÷ nc) % nr) + 1
+            v = ((i0 ÷ (nc * nr))) + 1
+            ru = r == 1  ? r : r - 1
+            rd = r == nr ? r : r + 1
+            val = s[c, ru, v] - 2f0 * s[c, r, v] + s[c, rd, v]
+            out[c, r, v] = accum ? out[c, r, v] + val : val
+        end
+        return
+    end
+    apply_CtC! = function (out, s, tmp)
+        lapl_x!(tmp, s,   n_col, n_row)           # tmp = Cx·s
+        lapl_x!(out, tmp, n_col, n_row)           # out = Cx·tmp = Cx²·s
+        lapl_y!(tmp, s,   n_col, n_row, false)    # tmp = Cy·s
+        lapl_y!(out, tmp, n_col, n_row, true)     # out += Cy·tmp = Cx²·s + Cy²·s
+        return
+    end
+
+    cost_history = Float64[]
+
+    t0 = time()
+    for iter in 1:n_it
+        # Jacobi SQS: snapshot regularizer gradients at the current iterate.
+        apply_CtC!(reg_I, sino_iodine, tmp_buf)
+        apply_CtC!(reg_W, sino_water,  tmp_buf)
+
+        AK.foreachindex(sino_iodine) do idx
+            Iv = sino_iodine[idx]
+            Wv = sino_water[idx]
+
+            # Decode (col, row) for per-ray spectrum lookup.
+            i0    = idx - 1
+            col_k = (i0 % n_col) + 1
+            row_k = ((i0 ÷ n_col) % n_row) + 1
+
+            # ── Low-kVp spectral Beer moments.
+            Z_L = 0f0;  Z_Lp = 0f0;  Z_Lq = 0f0
+            if per_ray
+                for k in 1:nE_L
+                    wk = ŵ_L[col_k, row_k, k] * exp(-p_L[k] * Iv - q_L[k] * Wv)
+                    Z_L += wk;  Z_Lp += p_L[k] * wk;  Z_Lq += q_L[k] * wk
+                end
+            else
+                for k in 1:nE_L
+                    wk = ŵ_L[k] * exp(-p_L[k] * Iv - q_L[k] * Wv)
+                    Z_L += wk;  Z_Lp += p_L[k] * wk;  Z_Lq += q_L[k] * wk
+                end
+            end
+            invZ_L = 1f0 / max(Z_L, 1f-20)
+            P_L = Z_Lp * invZ_L;  Q_L = Z_Lq * invZ_L
+            f_L = -log(max(Z_L, 1f-20))
+
+            # ── High-kVp spectral Beer moments.
+            Z_H = 0f0;  Z_Hp = 0f0;  Z_Hq = 0f0
+            if per_ray
+                for k in 1:nE_H
+                    wk = ŵ_H[col_k, row_k, k] * exp(-p_H[k] * Iv - q_H[k] * Wv)
+                    Z_H += wk;  Z_Hp += p_H[k] * wk;  Z_Hq += q_H[k] * wk
+                end
+            else
+                for k in 1:nE_H
+                    wk = ŵ_H[k] * exp(-p_H[k] * Iv - q_H[k] * Wv)
+                    Z_H += wk;  Z_Hp += p_H[k] * wk;  Z_Hq += q_H[k] * wk
+                end
+            end
+            invZ_H = 1f0 / max(Z_H, 1f-20)
+            P_H = Z_Hp * invZ_H;  Q_H = Z_Hq * invZ_H
+            f_H = -log(max(Z_H, 1f-20))
+
+            h_Lv = h_low[idx]
+            h_Hv = h_high[idx]
+            res_L = f_L - h_Lv
+            res_H = f_H - h_Hv
+            wL = exp(-h_Lv)
+            wH = exp(-h_Hv)
+
+            cost_data[idx] = 0.5f0 * (wL * res_L * res_L + wH * res_H * res_H)
+
+            # Data gradient + 2×2 data curvature (Long/Fessler eq 27).
+            g_d_I = wL * res_L * P_L + wH * res_H * P_H
+            g_d_W = wL * res_L * Q_L + wH * res_H * Q_H
+            cd_II = wL * P_L * P_L   + wH * P_H * P_H
+            cd_IW = wL * P_L * Q_L   + wH * P_H * Q_H
+            cd_WW = wL * Q_L * Q_L   + wH * Q_H * Q_H
+
+            rg_I = reg_I[idx]
+            rg_W = reg_W[idx]
+            gI = g_d_I + rg_I
+            gW = g_d_W + rg_W
+            m_II = cd_II + κ_I_f
+            m_IW = cd_IW
+            m_WW = cd_WW + κ_W_f
+
+            det_m   = m_II * m_WW - m_IW * m_IW
+            inv_det = 1f0 / max(det_m, 1f-20)
+            ΔI = inv_det * (m_WW * gI - m_IW * gW)
+            ΔW = inv_det * (m_II * gW - m_IW * gI)
+
+            sino_iodine[idx] = max(Iv - relax_f * ΔI, 0f0)
+            sino_water[idx]  = max(Wv - relax_f * ΔW, 0f0)
+        end
+
+        # Backend-native reductions for cost tracking.
+        Φ_data = Float64(sum(cost_data))
+        Φ_reg  = 0.5 * Float64(sum(sino_iodine .* reg_I) + sum(sino_water .* reg_W))
+        push!(cost_history, Φ_data + Φ_reg)
+
+        if iter > 1 && cost_history[iter] > cost_history[iter-1]
+            @warn "apply_pwls!: cost increased iter $(iter-1)→$iter  ($(cost_history[iter-1]) → $(cost_history[iter])).  relax too large?"
         end
     end
     dt = time() - t0
 
-    # Copy refined values back into caller's Float32 arrays.
-    sino_y .= Float32.(y_all)
-    sino_c .= Float32.(C_all)
-
     if verbose
-        @info "PWLS-SQS restoration: $(n_iter) iters, $(Threads.nthreads()) threads, $(round(dt, digits = 1)) s"
-        @info "  γ_photo=$(γy), γ_compton=$(γC), relax=$(relax_f)"
-        @info "  Φ(s): initial=$(round(cost_history[1]; sigdigits = 5)), final=$(round(cost_history[end]; sigdigits = 5))   [SPS monotonic descent]"
-        @info "  Total decrease: $(round((cost_history[1] - cost_history[end]) / abs(cost_history[1] + eps()) * 100, digits = 2))%"
+        basis_mode = per_ray ? "per-ray bowtie" : "centered (1D)"
+        @info "[apply_pwls! ($basis_mode ŵ)] $(n_it) iters, $(round(dt, digits = 1)) s, $(round(1000 * dt / max(n_it, 1), digits = 0)) ms/iter"
+        @info "  κ_I=$(κ_I_f), κ_W=$(κ_W_f), relax=$(relax_f)"
+        @info "  Φ: $(round(cost_history[1], sigdigits = 5)) → $(round(cost_history[end], sigdigits = 5))   ($(round(100 * (cost_history[1] - cost_history[end]) / abs(cost_history[1] + eps()), digits = 2))% decrease)"
     end
 
     (cost_history = cost_history,
-     n_iter       = n_iter,
-     γ_photo      = γy,
-     γ_compton    = γC,
+     n_iter       = n_it,
+     κ_iodine     = κ_I_f,
+     κ_water      = κ_W_f,
      relax        = relax_f)
 end
 
-export apply_pwls!
+"""
+    apply_pwls(h_low, h_high, sino_iodine_init, sino_water_init; kwargs...)
+        -> (sino_iodine, sino_water, info)
+
+Allocating wrapper: deep-copies the warm-start pair on the measurements'
+backend and runs `apply_pwls!` in place.  Returns the refined
+`(sino_iodine, sino_water)` along with the diagnostic NamedTuple from
+`apply_pwls!`.
+"""
+function apply_pwls(
+        h_low::AbstractArray,
+        h_high::AbstractArray,
+        sino_iodine_init::AbstractArray,
+        sino_water_init::AbstractArray;
+        kwargs...,
+    )
+    sino_iodine = similar(h_low, Float32)
+    sino_water  = similar(h_low, Float32)
+    copyto!(sino_iodine, sino_iodine_init)
+    copyto!(sino_water,  sino_water_init)
+    h_L = eltype(h_low)  === Float32 ? h_low  : Float32.(h_low)
+    h_H = eltype(h_high) === Float32 ? h_high : Float32.(h_high)
+    info = apply_pwls!(sino_iodine, sino_water, h_L, h_H; kwargs...)
+    (sino_iodine, sino_water, info)
+end
+
+export apply_pwls!, apply_pwls

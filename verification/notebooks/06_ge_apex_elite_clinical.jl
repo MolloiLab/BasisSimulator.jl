@@ -14,6 +14,9 @@ end
 # ╔═╡ 783d265d-506c-4dd4-aa76-bd352f532c6d
 using Markdown
 
+# ╔═╡ f3a91573-63b4-40df-8a9a-3a44d390bc79
+using Unitful
+
 # ╔═╡ 07010003-0000-4000-8000-000000000000
 # ╠═╡ show_logs = false
 using FileIO
@@ -54,9 +57,6 @@ using JLD2: JLD2
 # ╔═╡ 07010018-0000-4000-8000-000000000000
 # ╠═╡ show_logs = false
 using DelimitedFiles: DelimitedFiles
-
-# ╔═╡ f3a91573-63b4-40df-8a9a-3a44d390bc79
-using Unitful
 
 # ╔═╡ 07010001-0000-4000-8000-000000000000
 md"""
@@ -103,6 +103,10 @@ import XrayAttenuation as XA
 # ╔═╡ 07010016-0000-4000-8000-000000000000
 # ╠═╡ show_logs = false
 import DICOM as DCM
+
+# ╔═╡ 07010022-0000-4000-8000-000000000000
+# ╠═╡ show_logs = false
+import AcceleratedKernels as AK
 
 # ╔═╡ a13bf90b-b0a1-4786-9554-132b1a346334
 const FIGURES_DIR = joinpath(dirname(@__DIR__), "figures")
@@ -1605,7 +1609,7 @@ end
 md"""
 ## 8. Simulation Parameters [TUNE: PHYSICS]
 
-### ⚙️ Re-run `simulate!()` after changing any parameter in this section.
+### Re-run `simulate!()` after changing any parameter in this section.
 
 These parameters control the forward projection physics model. Changing them
 requires re-running all 6 sinogram simulations (§9).
@@ -1859,7 +1863,7 @@ end
 md"""
 ## 10. Reconstruction Parameters [TUNE: RECON]
 
-### 🎛️ No re-simulation needed — changes only re-run FDK/HIR + HU conversion.
+### No re-simulation needed — changes only re-run FDK/HIR + HU conversion.
 
 These parameters control reconstruction filtering, noise floor, and beam hardening
 correction. Changing them does NOT re-trigger `simulate!()`.
@@ -1870,12 +1874,16 @@ correction. Changing them does NOT re-trigger `simulate!()`.
 nothing
 
 # ╔═╡ 07100003-0000-4000-8000-000000000000
-# Custom filter apodization — tune these control points to match GE STANDARD kernel MTF.
-# Format: (f_norm, weight) where f_norm ∈ [0,1] (fraction of Nyquist).
-custom_filter_control = (
-    x = (0.0, 0.25, 0.5, 0.75, 1.0),
-    y = (1.0, 0.85, 0.6, 0.15, 0.001),
-)
+# FBP apodization filter — pulled from `BS.GE_APEX_ELITE_FILTERS` (src/scanners/
+# ge_apex_elite.jl).  Select the GE kernel you want here; downstream recon
+# cells consume `custom_filter` uniformly.
+#
+# Available kernels (grow as src/ adds them):
+#   :standard — GE STANDARD (balanced soft-tissue)
+#
+# To swap kernel: change the key (e.g. `:soft`, `:detail`) without touching
+# any downstream cell.  To tune control points, edit the dict in src/.
+custom_filter = BS.GE_APEX_ELITE_FILTERS[:standard]
 
 # ╔═╡ 07100004-0000-4000-8000-000000000000
 # Dose-independent noise floor (σ HU) — tune to match clinical high-mA noise.
@@ -1927,28 +1935,6 @@ Based on *So et al. (2009, PMB 54:3031)*:
 Toggle `bhc_enabled` to enable or disable.
 """
 
-# ╔═╡ 07100009-0000-4000-8000-000000000000
-# Calibrate two-material (water + bone) BHC models (one per kVp).
-bhc_models, bhc_μ_water = let
-    models = Dict{Int, BS.TwoMaterialBHC}()
-    μw = Dict{Int, Float64}()
-    for kvp in [120, 80, 100, 140]
-        prot = BS.CTProtocol(kVp = kvp, additional_filters = additional_filters)
-        e, w = BS.resolve_spectrum(sim_opts, prot; scanner = sim_scanner)
-        ref_E = sum(e .* w) / sum(w)
-        models[kvp] = BS.calibrate_bhc_two_material(
-            e, w;
-            order = sino_order,
-            reference_energy_keV = ref_E,
-            hu_low = sino_bhc_hu_low,
-            hu_high = sino_bhc_hu_high
-        )
-        μw[kvp] = models[kvp].μ_water_ref
-        @info "BHC $(kvp) kVp: ref_E=$(round(ref_E, digits = 1)) keV, μ_water=$(round(μw[kvp], digits = 5))"
-    end
-    models, μw
-end
-
 # ╔═╡ d5a0ffa5-1d40-4bfc-89de-e462c5358b24
 # Radial cupping/capping correction now in BS.apply_radial_cupping_correction!
 nothing
@@ -1960,6 +1946,297 @@ md"""
 FDK reconstruction with custom filter kernel and two-stage BHC.
 Each scan uses the correct kVp-specific BHC model.
 """
+
+# ╔═╡ 07110030-0000-4000-8000-000000000000
+md"""
+### FBP: Qualitative Side-by-Side
+"""
+
+# ╔═╡ 8e294031-bcdb-4424-8936-a62a802d5aa1
+md"""
+### FBP: Line Profiles (Clinical vs Simulated)
+"""
+
+# ╔═╡ 07110032-0000-4000-8000-000000000000
+md"""
+### FBP: Scatter Plot (HU)
+"""
+
+# ╔═╡ 07110038-0000-4000-8000-000000000000
+md"""
+### FBP: Noise
+"""
+
+# ╔═╡ 07110040-0000-4000-8000-000000000000
+md"""
+### FBP: NPS
+"""
+
+# ╔═╡ 07110042-0000-4000-8000-000000000000
+md"""
+### FBP: MTF
+"""
+
+# ╔═╡ 6f63608c-dd46-4d0a-8f1d-133dc56bc8dd
+md"""
+## 12. SE HIR Reconstruction & Comparison
+
+Hybrid Iterative Reconstruction (HIR) — our equivalent of GE's ASiR-V.
+Comparison plots use clinical ASiR-V 50% as the reference.
+"""
+
+# ╔═╡ f61c87a4-a27e-4bc6-bc4d-502c3e3a47fe
+begin
+    hir_strength = 3
+    hir_lambda = 10.0f0
+    hir_nepochs = 2
+    hir_n_subsets = 12
+    hir_huber_delta = 0.06f0
+    hir_relaxation = 0.35f0
+end
+
+# ╔═╡ 3924da10-33fd-415b-9666-f6022d0adaf6
+md"""
+### HIR: Qualitative Side-by-Side
+"""
+
+# ╔═╡ 1cae28b1-775a-4f4f-90d2-5ae693b7d2ac
+md"""
+### HIR: Line Profiles (Clinical vs Simulated)
+"""
+
+# ╔═╡ c42f625b-9db4-42a5-90c6-fa2c37fe8b18
+md"""
+### HIR: Scatter Plot (HU)
+"""
+
+# ╔═╡ 28e45f60-2542-4305-8c9c-3aecf1b3aa23
+md"""
+### HIR: Noise
+"""
+
+# ╔═╡ 4776ad7f-edee-4c44-91bb-5ad76a63832e
+md"""
+### HIR: NPS
+"""
+
+# ╔═╡ d3bd445c-ad9f-4133-93d9-8af91ed7f85d
+md"""
+### HIR: MTF
+"""
+
+# ╔═╡ 4f8ee88d-a948-44e7-a610-a2711e6da234
+md"""
+## 13. DE Simulation — GE GSI (Rapid kVp Switching)
+
+GE Revolution Apex GSI dual-energy uses **rapid kVp switching** (single tube, 80/140 kVp
+on alternating views) with an **additional spectral filter on the 140 kVp tube** to improve
+spectral separation.
+
+**Clinical DE protocol** (from DICOM + RDSR):
+- **kVp:** 80 / 140 alternating per view
+- **mA:** 203.5 (80 kVp) / 202.5 (140 kVp) — GE private tags `(0053,1085)` / `(0053,1083)`
+- **Gantry rotation:** 0.5 s — per-kVp effective exposure: **0.25 s** (rapid switching)
+- **Collimation:** 64 × 0.625 mm = 40 mm (half of SE 80 mm)
+- **Views/kVp/rotation:** ~984
+- **Filtration:** Large body bowtie + inherent Al + **spectral filter on 140 kVp** (empirically tuned)
+- **CTDIvol:** 10.07 mGy (32 cm body)
+- **Decomposition:** Projection-based, interleaved
+"""
+
+# ╔═╡ f9da78c0-9c6a-4c83-9f4e-592eecca5aaf
+de_mA_80 = 407 * 0.65 # 407 instantaneous × 0.5 duty cycle
+
+# ╔═╡ 3aefce3f-90e3-48fb-bae7-b7c965b7d6f8
+de_mA_140 = 405 * 0.35 # 405 instantaneous × 0.5 duty cycle
+
+# ╔═╡ 6f5ce242-a5e2-4cd5-8cac-47f528dc21bb
+# DE scan parameters — matching clinical GE GSI protocol
+begin
+    de_rotation_time = 0.5        # seconds — actual gantry rotation
+    de_collimation_mm = 5.0       # dev mode — same as SE (real clinical: 40mm)
+    de_n_views = 984              # views per kVp per rotation
+
+    # mA: DICOM reports instantaneous 407/405 mA, but each kVp only fires
+    # for half the rotation (rapid switching). Effective mA = instantaneous × 0.5
+
+    DE_SIM_SCANS = [
+        (name = "DE_80kVp_204mA", kvp = 80, mA = de_mA_80),
+        (name = "DE_140kVp_203mA", kvp = 140, mA = de_mA_140),
+    ]
+    DE_VMI_ENERGIES = [40, 70, 100, 140]  # keV for VMI synthesis
+
+    # Two separate scanner references for DE — same physical hardware (rapid kVp switching)
+    # but having named references makes the simulation flow clearer.
+    sim_scanner_de_80 = sim_scanner
+    sim_scanner_de_140 = sim_scanner
+end
+
+# ╔═╡ ff650b6f-76e6-491e-8076-1dd002c80d7e
+# SPECTRAL FILTRATION — Gd₂O₂S K-edge filter (rapid kVp switching):
+# In rapid kVp switching both beams traverse the same physical filter.
+# Clinical GE GSI has no K-edge filter; this is a research optimization:
+#   - Gd K-edge at 50.2 keV sits between 80/140 kVp spectra
+#   - Preferentially attenuates 80 kVp photons above 50 keV → better separation
+#   - Yao & Pelc (Med Phys 2014, doi:10.1118/1.4866381): 0.142–0.150 mm
+#   - Stanford patent US9435900B2; PMC11272100 (2024): 0.09 mm
+# Thickness is tunable; 0.1 mm is a conservative default.
+# de_kedge_filter = [("Gd2O2S", 0.15)]  # mm — applied to BOTH kVp tubes
+de_kedge_filter = Tuple{String,Float64}[]
+
+# ╔═╡ 2a6f0b64-05a7-4a01-9009-66888902edcb
+# # Visualize 80 & 140 kVp spectra before/after Gd₂O₂S K-edge filtration
+# let
+    # # Unfiltered spectra (scanner flat filter + Al only, no K-edge)
+    # prot_80_no = BS.CTProtocol(kVp = 80, additional_filters = additional_filters)
+    # prot_140_no = BS.CTProtocol(kVp = 140, additional_filters = additional_filters)
+    # e80_no, w80_no = BS.resolve_source_spectrum_without_bowtie(sim_opts, prot_80_no; scanner = sim_scanner_de_80)
+    # e140_no, w140_no = BS.resolve_source_spectrum_without_bowtie(sim_opts, prot_140_no; scanner = sim_scanner_de_140)
+
+    # # Filtered spectra (scanner flat filter + Al + Gd₂O₂S)
+    # de_filters = vcat(additional_filters, de_kedge_filter)
+    # prot_80_gd = BS.CTProtocol(kVp = 80, additional_filters = de_filters)
+    # prot_140_gd = BS.CTProtocol(kVp = 140, additional_filters = de_filters)
+    # e80_gd, w80_gd = BS.resolve_source_spectrum_without_bowtie(sim_opts, prot_80_gd; scanner = sim_scanner_de_80)
+    # e140_gd, w140_gd = BS.resolve_source_spectrum_without_bowtie(sim_opts, prot_140_gd; scanner = sim_scanner_de_140)
+
+    # # Normalize to peak for visual comparison
+    # norm80 = maximum(w80_no)
+    # norm140 = maximum(w140_no)
+
+    # # Mean energies (fluence-weighted)
+    # mean_E(e, w) = sum(e .* w) / sum(w)
+    # mE_80_no = mean_E(e80_no, w80_no)
+    # mE_140_no = mean_E(e140_no, w140_no)
+    # mE_80_gd = mean_E(e80_gd, w80_gd)
+    # mE_140_gd = mean_E(e140_gd, w140_gd)
+
+    # fig = CM.Figure(size = (900, 400), fontsize = 12)
+
+    # # Left: before K-edge filter
+    # ax1 = CM.Axis(
+        # fig[1, 1]; title = "Before Gd₂O₂S filter",
+        # xlabel = "Energy (keV)", ylabel = "Relative fluence"
+    # )
+    # CM.lines!(ax1, e80_no, w80_no ./ norm80; color = :dodgerblue, linewidth = 1.5, label = "80 kVp")
+    # CM.lines!(ax1, e140_no, w140_no ./ norm140; color = :orangered, linewidth = 1.5, label = "140 kVp")
+    # CM.vlines!(ax1, [50.2]; color = :gray50, linestyle = :dash, linewidth = 0.8, label = "Gd K-edge (50.2 keV)")
+    # CM.vlines!(ax1, [mE_80_no]; color = :dodgerblue, linestyle = :dash, linewidth = 1.2, label = "⟨E⟩ 80 = $(round(mE_80_no; digits = 1)) keV")
+    # CM.vlines!(ax1, [mE_140_no]; color = :orangered, linestyle = :dash, linewidth = 1.2, label = "⟨E⟩ 140 = $(round(mE_140_no; digits = 1)) keV")
+    # CM.axislegend(ax1; position = :rt)
+
+    # # Right: after K-edge filter
+    # ax2 = CM.Axis(
+        # fig[1, 2]; title = "After Gd₂O₂S filter ($(de_kedge_filter[1][2]) mm)",
+        # xlabel = "Energy (keV)", ylabel = "Relative fluence"
+    # )
+    # CM.lines!(ax2, e80_gd, w80_gd ./ norm80; color = :dodgerblue, linewidth = 1.5, label = "80 kVp")
+    # CM.lines!(ax2, e140_gd, w140_gd ./ norm140; color = :orangered, linewidth = 1.5, label = "140 kVp")
+    # CM.vlines!(ax2, [50.2]; color = :gray50, linestyle = :dash, linewidth = 0.8, label = "Gd K-edge (50.2 keV)")
+    # CM.vlines!(ax2, [mE_80_gd]; color = :dodgerblue, linestyle = :dash, linewidth = 1.2, label = "⟨E⟩ 80 = $(round(mE_80_gd; digits = 1)) keV")
+    # CM.vlines!(ax2, [mE_140_gd]; color = :orangered, linestyle = :dash, linewidth = 1.2, label = "⟨E⟩ 140 = $(round(mE_140_gd; digits = 1)) keV")
+    # CM.axislegend(ax2; position = :rt)
+
+    # CM.linkaxes!(ax1, ax2)
+
+    # CM.save(joinpath(RESULTS_DIR, "ge_gsi_spectra_filter.png"), fig, px_per_unit = 2)
+    # fig
+# end
+
+# ╔═╡ bb68196f-26e4-41fc-85bc-203373d91b4a
+# DE recon geometry — same FOV/matrix as SE, different z for collimation
+begin
+    de_recon_z_cm = de_collimation_mm / 10.0
+    de_n_recon_slices = round(Int, de_collimation_mm / sim_slice_thickness_mm)
+    de_matrix_size = (sim_recon_xy, sim_recon_xy, de_n_recon_slices)
+
+    de_recon_geom = BS.ReconOptions(
+        algorithm = :fdk,
+        matrix_size = de_matrix_size,
+        fov_cm = sim_recon_fov_cm,
+        z_cm = de_recon_z_cm,
+    )
+end
+
+# ╔═╡ 37298bb1-4b57-4f5c-9fea-ec81dbfb3394
+# DE: 80 kVp / ~204 mA effective — SIMULATE (GPU → sinogram → free GPU)
+sim_de_sino_low = let
+    sc = DE_SIM_SCANS[1]
+    low_kvp_filters = vcat(additional_filters, de_kedge_filter)
+    prot = BS.CTProtocol(
+        kVp = sc.kvp,
+        mA = sc.mA,
+        views = de_n_views,
+        rotation_time = de_rotation_time,
+        collimation_mm = de_collimation_mm,
+        additional_filters = low_kvp_filters,
+    )
+    @info "Simulating DE: $(sc.name)..."
+    ws = BS.create_eict_workspace(
+        sim_scanner_de_80, prot, sim_opts, de_recon_geom, sim_phantom_gpu,
+    )
+    BS.simulate!(ws, sim_phantom_gpu, sim_scanner_de_80, prot, sim_opts, de_recon_geom)
+    air_ref = ws.bowtie_air_reference !== nothing ? Array(ws.bowtie_air_reference) : nothing
+    result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, air_ref = air_ref, name = sc.name, kvp = sc.kvp)
+    ws = nothing
+    GC.gc(true)
+    result
+end
+
+# ╔═╡ 07100009-0000-4000-8000-000000000000
+# Calibrate two-material (water + bone) BHC models, one per kVp.
+#
+# Bowtie-aware path (default): per-detector-column polynomial fit from that
+# column's actual bowtie-hardened spectrum.  Edge rays see a harder beam than
+# center rays, so each column's polynomial differs.  Returns a
+# `BS.TwoMaterialBHCPerColumn`; dispatch picks the right `apply_bhc_two_material`
+# method downstream.  The global `μ_water_ref` stays a scalar.
+#
+# With bowtie-aware BHC, residual radial cupping should largely vanish, making
+# the post-FBP `apply_radial_cupping_correction!` mostly redundant.
+#
+# Toggle `bhc_include_bowtie = false` to fall back to the legacy single-
+# polynomial path (every ray assumed centered spectrum).
+bhc_include_bowtie = true
+
+bhc_models, bhc_μ_water = let
+    models = Dict{Int, Any}()
+    μw = Dict{Int, Float64}()
+    geom_for_bhc = sim_de_sino_low.geom   # all kVp scans share this geometry
+    for kvp in [120, 80, 100, 140]
+        prot = BS.CTProtocol(kVp = kvp, additional_filters = additional_filters)
+        if bhc_include_bowtie
+            # Bowtie-aware: per-ray 3D ŵ → collapse rows to per-column spectrum.
+            e, ŵ = BS.resolve_source_spectrum_with_bowtie(sim_opts, prot;
+                        scanner = sim_scanner, geom = geom_for_bhc,
+                        include_bowtie = true, label = "BHC $(kvp) kVp")
+            _, w_per_col = BS.bhc_spectrum_per_column(e, ŵ)  # [n_E, n_col]
+            mid_c = size(w_per_col, 2) ÷ 2 + 1
+            w_center = Float64.(@view w_per_col[:, mid_c])
+            ref_E = sum(e .* w_center) / sum(w_center)
+            models[kvp] = BS.calibrate_bhc_two_material(
+                e, w_per_col;
+                order = sino_order,
+                reference_energy_keV = ref_E,
+                hu_low = sino_bhc_hu_low,
+                hu_high = sino_bhc_hu_high,
+            )
+        else
+            e, w = BS.resolve_source_spectrum_without_bowtie(sim_opts, prot; scanner = sim_scanner)
+            ref_E = sum(e .* w) / sum(w)
+            models[kvp] = BS.calibrate_bhc_two_material(
+                e, w;
+                order = sino_order,
+                reference_energy_keV = ref_E,
+                hu_low = sino_bhc_hu_low,
+                hu_high = sino_bhc_hu_high,
+            )
+        end
+        μw[kvp] = models[kvp].μ_water_ref
+        @info "BHC $(kvp) kVp ($(bhc_include_bowtie ? "per-column" : "centered")): ref_E=$(round(ref_E, digits = 1)) keV, μ_water=$(round(μw[kvp], digits = 5))"
+    end
+    models, μw
+end;
 
 # ╔═╡ 07110002-0000-4000-8000-000000000000
 # Scan 1: 120 kVp / 50 mA — FBP RECONSTRUCT (BHC → GPU FDK → CPU volume)
@@ -1976,7 +2253,7 @@ sim_recon_1 = let
     end
     ws_fdk = BS.create_fdk_recon_workspace(
         sino_gpu, geom, recon_size;
-        filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y)
+        filter = custom_filter
     )
     recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, geom, recon_size)
     if bhc_enabled
@@ -2017,7 +2294,7 @@ sim_recon_2 = let
     end
     ws_fdk = BS.create_fdk_recon_workspace(
         sino_gpu, geom, recon_size;
-        filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y)
+        filter = custom_filter
     )
     recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, geom, recon_size)
     if bhc_enabled
@@ -2058,7 +2335,7 @@ sim_recon_3 = let
     end
     ws_fdk = BS.create_fdk_recon_workspace(
         sino_gpu, geom, recon_size;
-        filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y)
+        filter = custom_filter
     )
     recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, geom, recon_size)
     if bhc_enabled
@@ -2099,7 +2376,7 @@ sim_recon_4 = let
     end
     ws_fdk = BS.create_fdk_recon_workspace(
         sino_gpu, geom, recon_size;
-        filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y)
+        filter = custom_filter
     )
     recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, geom, recon_size)
     if bhc_enabled
@@ -2140,7 +2417,7 @@ sim_recon_5 = let
     end
     ws_fdk = BS.create_fdk_recon_workspace(
         sino_gpu, geom, recon_size;
-        filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y)
+        filter = custom_filter
     )
     recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, geom, recon_size)
     if bhc_enabled
@@ -2181,7 +2458,7 @@ sim_recon_6 = let
     end
     ws_fdk = BS.create_fdk_recon_workspace(
         sino_gpu, geom, recon_size;
-        filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y)
+        filter = custom_filter
     )
     recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, geom, recon_size)
     if bhc_enabled
@@ -2208,7 +2485,7 @@ sim_hu_6 = let
 end
 
 # ╔═╡ 07110020-0000-4000-8000-000000000000
-sim_results_fbp = [sim_hu_1, sim_hu_2, sim_hu_3, sim_hu_4, sim_hu_5, sim_hu_6]
+sim_results_fbp = [sim_hu_1, sim_hu_2, sim_hu_3, sim_hu_4, sim_hu_5, sim_hu_6];
 
 # ╔═╡ 07110021-0000-4000-8000-000000000000
 sim_oriented = let
@@ -2222,7 +2499,7 @@ sim_oriented = let
             )
             for r in sim_results_fbp
     ]
-end
+end;
 
 # ╔═╡ 07110022-0000-4000-8000-000000000000
 # Segment the simulated recon independently (finds center + Ca400 anchor in sim image)
@@ -2238,118 +2515,6 @@ sim_measurements = [
     measure_scan(r.recon, sim_seg_result.mask, sim_seg_result.rods, sim_seg_result.center, "sim_$(r.name)")
         for r in sim_oriented
 ];
-
-# ╔═╡ 07110030-0000-4000-8000-000000000000
-md"""
-### FBP: Qualitative Side-by-Side
-"""
-
-# ╔═╡ 07110031-0000-4000-8000-000000000000
-# FBP: 2×3 qualitative side-by-side (Clinical FBP vs Simulated FBP)
-let
-    clin_vols = [
-        hu_120_low_fbp, hu_120_mid_fbp, hu_120_high_fbp,
-        hu_80_fbp, hu_100_fbp, hu_140_fbp,
-    ]
-    scan_labels = [
-        "120kVp 50mA", "120kVp 150mA", "120kVp 300mA",
-        "80kVp 480mA", "100kVp 250mA", "140kVp 110mA",
-    ]
-
-    n = min(length(clin_vols), length(sim_oriented))
-    fig = CM.Figure(size = (800, n * 400), fontsize = 10)
-
-    for i in 1:n
-        clin_slice = clin_vols[i][:, :, seg_result.slice_idx]
-        sim_slice = sim_oriented[i].recon[:, :, sim_seg_result.slice_idx]
-
-        ax1 = CM.Axis(fig[i, 1]; title = "Clinical — $(scan_labels[i])", yreversed = true)
-        CM.heatmap!(ax1, clin_slice; colormap = :grays, colorrange = (-200, 500))
-        CM.hidedecorations!(ax1); CM.hidespines!(ax1)
-
-        ax2 = CM.Axis(fig[i, 2]; title = "Simulated FBP — $(scan_labels[i])", yreversed = true)
-        CM.heatmap!(ax2, sim_slice; colormap = :grays, colorrange = (-200, 500))
-        CM.hidedecorations!(ax2); CM.hidespines!(ax2)
-    end
-
-    CM.save(joinpath(RESULTS_DIR, "ge_fbp_qualitative.png"), fig, px_per_unit = 2)
-    fig
-end
-
-# ╔═╡ 8e294031-bcdb-4424-8936-a62a802d5aa1
-md"""
-### FBP: Line Profiles (Clinical vs Simulated)
-"""
-
-# ╔═╡ 0403ce0e-1854-40e2-af6d-c53125aca803
-# Line profiles through center — 120 kVp / 150 mA and 80 kVp / 480 mA
-let
-    fig = CM.Figure(size = (1000, 700), fontsize = 11)
-
-    # --- Top: 120 kVp / 150 mA ---
-    clin_slice_1 = hu_120_mid_fbp[:, :, seg_result.slice_idx]
-    sim_slice_1 = sim_oriented[2].recon[:, :, sim_seg_result.slice_idx]
-    mid_row_c1 = size(clin_slice_1, 1) ÷ 2
-    mid_row_s1 = size(sim_slice_1, 1) ÷ 2
-
-    sim_shift_px = 4.0
-
-    pixel_mm_c1 = 350.0 / size(clin_slice_1, 2)
-    pixel_mm_s1 = 350.0 / size(sim_slice_1, 2)
-    x_c1 = range(0, step = pixel_mm_c1, length = size(clin_slice_1, 2))
-    x_s1 = range(0, step = pixel_mm_s1, length = size(sim_slice_1, 2))
-    x_s1 = range(sim_shift_px * pixel_mm_s1, step = pixel_mm_s1, length = size(sim_slice_1, 2))
-
-    ax1 = CM.Axis(fig[1, 1]; title = "120 kVp / 150 mA — Horizontal Line Profile (mid-row)", xlabel = "Position (mm)", ylabel = "HU")
-    CM.lines!(
-        ax1, collect(x_c1), Float64.(clin_slice_1[mid_row_c1, :]);
-        color = :steelblue, linewidth = 1.2, label = "Clinical FBP"
-    )
-    CM.lines!(
-        ax1, collect(x_s1), Float64.(sim_slice_1[mid_row_s1, :]);
-        color = :orangered, linewidth = 1.2, label = "Simulated FBP"
-    )
-    CM.hlines!(ax1, [0.0]; color = :gray70, linestyle = :dash, linewidth = 0.6)
-    CM.axislegend(ax1; position = :rt, labelsize = 9)
-
-    CM.ylims!(ax1, low = -600)
-
-    # --- Bottom: 80 kVp / 480 mA ---
-    clin_slice_2 = hu_80_fbp[:, :, seg_result.slice_idx]
-    sim_slice_2 = sim_oriented[4].recon[:, :, sim_seg_result.slice_idx]
-    mid_row_c2 = size(clin_slice_2, 1) ÷ 2
-    mid_row_s2 = size(sim_slice_2, 1) ÷ 2
-
-    pixel_mm_c2 = 350.0 / size(clin_slice_2, 2)
-    pixel_mm_s2 = 350.0 / size(sim_slice_2, 2)
-    x_c2 = range(0, step = pixel_mm_c2, length = size(clin_slice_2, 2))
-    x_s2 = range(0, step = pixel_mm_s2, length = size(sim_slice_2, 2))
-    x_s2 = range(sim_shift_px * pixel_mm_s2, step = pixel_mm_s2, length = size(sim_slice_2, 2))
-
-    ax2 = CM.Axis(
-        fig[2, 1]; title = "80 kVp / 480 mA — Horizontal Line Profile (mid-row)",
-        xlabel = "Position (mm)", ylabel = "HU"
-    )
-    CM.lines!(
-        ax2, collect(x_c2), Float64.(clin_slice_2[mid_row_c2, :]);
-        color = :steelblue, linewidth = 1.2, label = "Clinical FBP"
-    )
-    CM.lines!(
-        ax2, collect(x_s2), Float64.(sim_slice_2[mid_row_s2, :]);
-        color = :orangered, linewidth = 1.2, label = "Simulated FBP"
-    )
-    CM.hlines!(ax2, [0.0]; color = :gray70, linestyle = :dash, linewidth = 0.6)
-    CM.axislegend(ax2; position = :rt, labelsize = 9)
-    CM.ylims!(ax2, low = -600)
-
-    CM.save(joinpath(RESULTS_DIR, "ge_fbp_line_profiles.png"), fig, px_per_unit = 2)
-    fig
-end
-
-# ╔═╡ 07110032-0000-4000-8000-000000000000
-md"""
-### FBP: Scatter Plot (HU)
-"""
 
 # ╔═╡ 07110033-0000-4000-8000-000000000000
 # FBP: Ca/I scatter — Clinical FBP vs Simulated FBP
@@ -2435,11 +2600,6 @@ let
     fig
 end
 
-# ╔═╡ 07110038-0000-4000-8000-000000000000
-md"""
-### FBP: Noise
-"""
-
 # ╔═╡ 07110039-0000-4000-8000-000000000000
 let
     water_idx = 1
@@ -2493,11 +2653,6 @@ let
     fig
 end
 
-# ╔═╡ 07110040-0000-4000-8000-000000000000
-md"""
-### FBP: NPS
-"""
-
 # ╔═╡ e85ee5fb-67f6-43b8-91fd-6018bfc1535a
 let
     base_clinical_idx = [1, 3, 5, 7, 9, 11]
@@ -2532,11 +2687,6 @@ let
     CM.save(joinpath(RESULTS_DIR, "ge_fbp_nps.png"), fig, px_per_unit = 2)
     fig
 end
-
-# ╔═╡ 07110042-0000-4000-8000-000000000000
-md"""
-### FBP: MTF
-"""
 
 # ╔═╡ 07110043-0000-4000-8000-000000000000
 let
@@ -2575,22 +2725,101 @@ let
     fig
 end
 
-# ╔═╡ 6f63608c-dd46-4d0a-8f1d-133dc56bc8dd
-md"""
-## 12. SE HIR Reconstruction & Comparison
+# ╔═╡ 07110031-0000-4000-8000-000000000000
+# FBP: 2×3 qualitative side-by-side (Clinical FBP vs Simulated FBP)
+let
+    clin_vols = [
+        hu_120_low_fbp, hu_120_mid_fbp, hu_120_high_fbp,
+        hu_80_fbp, hu_100_fbp, hu_140_fbp,
+    ]
+    scan_labels = [
+        "120kVp 50mA", "120kVp 150mA", "120kVp 300mA",
+        "80kVp 480mA", "100kVp 250mA", "140kVp 110mA",
+    ]
 
-Hybrid Iterative Reconstruction (HIR) — our equivalent of GE's ASiR-V.
-Comparison plots use clinical ASiR-V 50% as the reference.
-"""
+    n = min(length(clin_vols), length(sim_oriented))
+    fig = CM.Figure(size = (800, n * 400), fontsize = 10)
 
-# ╔═╡ f61c87a4-a27e-4bc6-bc4d-502c3e3a47fe
-begin
-    hir_strength = 3
-    hir_lambda = 10.0f0
-    hir_nepochs = 2
-    hir_n_subsets = 12
-    hir_huber_delta = 0.06f0
-    hir_relaxation = 0.35f0
+    for i in 1:n
+        clin_slice = clin_vols[i][:, :, seg_result.slice_idx]
+        sim_slice = sim_oriented[i].recon[:, :, sim_seg_result.slice_idx]
+
+        ax1 = CM.Axis(fig[i, 1]; title = "Clinical — $(scan_labels[i])", yreversed = true)
+        CM.heatmap!(ax1, clin_slice; colormap = :grays, colorrange = (-200, 500))
+        CM.hidedecorations!(ax1); CM.hidespines!(ax1)
+
+        ax2 = CM.Axis(fig[i, 2]; title = "Simulated FBP — $(scan_labels[i])", yreversed = true)
+        CM.heatmap!(ax2, sim_slice; colormap = :grays, colorrange = (-200, 500))
+        CM.hidedecorations!(ax2); CM.hidespines!(ax2)
+    end
+
+    CM.save(joinpath(RESULTS_DIR, "ge_fbp_qualitative.png"), fig, px_per_unit = 2)
+    fig
+end
+
+# ╔═╡ 0403ce0e-1854-40e2-af6d-c53125aca803
+# Line profiles through center — 120 kVp / 150 mA and 80 kVp / 480 mA
+let
+    fig = CM.Figure(size = (1000, 700), fontsize = 11)
+
+    # --- Top: 120 kVp / 150 mA ---
+    clin_slice_1 = hu_120_mid_fbp[:, :, seg_result.slice_idx]
+    sim_slice_1 = sim_oriented[2].recon[:, :, sim_seg_result.slice_idx]
+    mid_row_c1 = size(clin_slice_1, 1) ÷ 2
+    mid_row_s1 = size(sim_slice_1, 1) ÷ 2
+
+    sim_shift_px = 4.0
+
+    pixel_mm_c1 = 350.0 / size(clin_slice_1, 2)
+    pixel_mm_s1 = 350.0 / size(sim_slice_1, 2)
+    x_c1 = range(0, step = pixel_mm_c1, length = size(clin_slice_1, 2))
+    x_s1 = range(0, step = pixel_mm_s1, length = size(sim_slice_1, 2))
+    x_s1 = range(sim_shift_px * pixel_mm_s1, step = pixel_mm_s1, length = size(sim_slice_1, 2))
+
+    ax1 = CM.Axis(fig[1, 1]; title = "120 kVp / 150 mA — Horizontal Line Profile (mid-row)", xlabel = "Position (mm)", ylabel = "HU")
+    CM.lines!(
+        ax1, collect(x_c1), Float64.(clin_slice_1[mid_row_c1, :]);
+        color = :steelblue, linewidth = 1.2, label = "Clinical FBP"
+    )
+    CM.lines!(
+        ax1, collect(x_s1), Float64.(sim_slice_1[mid_row_s1, :]);
+        color = :orangered, linewidth = 1.2, label = "Simulated FBP"
+    )
+    CM.hlines!(ax1, [0.0]; color = :gray70, linestyle = :dash, linewidth = 0.6)
+    CM.axislegend(ax1; position = :rt, labelsize = 9)
+
+    CM.ylims!(ax1, low = -600)
+
+    # --- Bottom: 80 kVp / 480 mA ---
+    clin_slice_2 = hu_80_fbp[:, :, seg_result.slice_idx]
+    sim_slice_2 = sim_oriented[4].recon[:, :, sim_seg_result.slice_idx]
+    mid_row_c2 = size(clin_slice_2, 1) ÷ 2
+    mid_row_s2 = size(sim_slice_2, 1) ÷ 2
+
+    pixel_mm_c2 = 350.0 / size(clin_slice_2, 2)
+    pixel_mm_s2 = 350.0 / size(sim_slice_2, 2)
+    x_c2 = range(0, step = pixel_mm_c2, length = size(clin_slice_2, 2))
+    x_s2 = range(0, step = pixel_mm_s2, length = size(sim_slice_2, 2))
+    x_s2 = range(sim_shift_px * pixel_mm_s2, step = pixel_mm_s2, length = size(sim_slice_2, 2))
+
+    ax2 = CM.Axis(
+        fig[2, 1]; title = "80 kVp / 480 mA — Horizontal Line Profile (mid-row)",
+        xlabel = "Position (mm)", ylabel = "HU"
+    )
+    CM.lines!(
+        ax2, collect(x_c2), Float64.(clin_slice_2[mid_row_c2, :]);
+        color = :steelblue, linewidth = 1.2, label = "Clinical FBP"
+    )
+    CM.lines!(
+        ax2, collect(x_s2), Float64.(sim_slice_2[mid_row_s2, :]);
+        color = :orangered, linewidth = 1.2, label = "Simulated FBP"
+    )
+    CM.hlines!(ax2, [0.0]; color = :gray70, linestyle = :dash, linewidth = 0.6)
+    CM.axislegend(ax2; position = :rt, labelsize = 9)
+    CM.ylims!(ax2, low = -600)
+
+    CM.save(joinpath(RESULTS_DIR, "ge_fbp_line_profiles.png"), fig, px_per_unit = 2)
+    fig
 end
 
 # ╔═╡ f925dafa-e0da-4673-8d84-82fe636bd6c2
@@ -2610,7 +2839,7 @@ sim_recon_hir_1 = let
     ws_hir = BS.create_hir_recon_workspace(
         sino_gpu, geom, recon_size;
         strength = hir_strength,
-        filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y)
+        filter = custom_filter
     )
     ws_hir.params = BS.HIRParams(
         hir_strength, hir_lambda, 30, hir_nepochs,
@@ -2658,7 +2887,7 @@ sim_recon_hir_2 = let
     ws_hir = BS.create_hir_recon_workspace(
         sino_gpu, geom, recon_size;
         strength = hir_strength,
-        filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y)
+        filter = custom_filter
     )
     ws_hir.params = BS.HIRParams(
         hir_strength, hir_lambda, 30, hir_nepochs,
@@ -2706,7 +2935,7 @@ sim_recon_hir_3 = let
     ws_hir = BS.create_hir_recon_workspace(
         sino_gpu, geom, recon_size;
         strength = hir_strength,
-        filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y)
+        filter = custom_filter
     )
     ws_hir.params = BS.HIRParams(
         hir_strength, hir_lambda, 30, hir_nepochs,
@@ -2754,7 +2983,7 @@ sim_recon_hir_4 = let
     ws_hir = BS.create_hir_recon_workspace(
         sino_gpu, geom, recon_size;
         strength = hir_strength,
-        filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y)
+        filter = custom_filter
     )
     ws_hir.params = BS.HIRParams(
         hir_strength, hir_lambda, 30, hir_nepochs,
@@ -2802,7 +3031,7 @@ sim_recon_hir_5 = let
     ws_hir = BS.create_hir_recon_workspace(
         sino_gpu, geom, recon_size;
         strength = hir_strength,
-        filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y)
+        filter = custom_filter
     )
     ws_hir.params = BS.HIRParams(
         hir_strength, hir_lambda, 30, hir_nepochs,
@@ -2850,7 +3079,7 @@ sim_recon_hir_6 = let
     ws_hir = BS.create_hir_recon_workspace(
         sino_gpu, geom, recon_size;
         strength = hir_strength,
-        filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y)
+        filter = custom_filter
     )
     ws_hir.params = BS.HIRParams(
         hir_strength, hir_lambda, 30, hir_nepochs,
@@ -2904,119 +3133,6 @@ sim_measurements_hir = [
     measure_scan(r.recon, sim_seg_result.mask, sim_seg_result.rods, sim_seg_result.center, "sim_hir_$(r.name)")
         for r in sim_oriented_hir
 ];
-
-# ╔═╡ 3924da10-33fd-415b-9666-f6022d0adaf6
-md"""
-### HIR: Qualitative Side-by-Side
-"""
-
-# ╔═╡ ebc9865c-feed-4e79-9cac-39e583a3796d
-# HIR: 2×3 qualitative side-by-side (Clinical ASiR-V 50% vs Simulated HIR)
-let
-    clin_vols = [
-        hu_120_low_ir, hu_120_mid_ir, hu_120_high_ir,
-        hu_80_ir, hu_100_ir, hu_140_ir,
-    ]
-    scan_labels = [
-        "120kVp 50mA", "120kVp 150mA", "120kVp 300mA",
-        "80kVp 480mA", "100kVp 250mA", "140kVp 110mA",
-    ]
-
-    n = min(length(clin_vols), length(sim_oriented_hir))
-    fig = CM.Figure(size = (800, n * 400), fontsize = 10)
-
-    for i in 1:n
-        clin_slice = clin_vols[i][:, :, seg_result.slice_idx]
-        sim_slice = sim_oriented_hir[i].recon[:, :, sim_seg_result.slice_idx]
-
-        ax1 = CM.Axis(fig[i, 1]; title = "Clinical ASiR-V — $(scan_labels[i])", yreversed = true)
-        CM.heatmap!(ax1, clin_slice; colormap = :grays, colorrange = (-200, 500))
-        CM.hidedecorations!(ax1); CM.hidespines!(ax1)
-
-        ax2 = CM.Axis(fig[i, 2]; title = "Simulated HIR — $(scan_labels[i])", yreversed = true)
-        CM.heatmap!(ax2, sim_slice; colormap = :grays, colorrange = (-200, 500))
-        CM.hidedecorations!(ax2); CM.hidespines!(ax2)
-    end
-
-    CM.save(joinpath(RESULTS_DIR, "ge_hir_qualitative.png"), fig, px_per_unit = 2)
-    fig
-end
-
-# ╔═╡ 1cae28b1-775a-4f4f-90d2-5ae693b7d2ac
-md"""
-### HIR: Line Profiles (Clinical vs Simulated)
-"""
-
-# ╔═╡ 681131e3-887d-4426-aefe-f904abb4667a
-# Line profiles through center — 120 kVp / 150 mA and 80 kVp / 480 mA
-let
-    fig = CM.Figure(size = (1000, 700), fontsize = 11)
-
-    # --- Top: 120 kVp / 150 mA ---
-    clin_slice_1 = hu_120_mid_ir[:, :, seg_result.slice_idx]
-    sim_slice_1 = sim_oriented_hir[2].recon[:, :, sim_seg_result.slice_idx]
-    mid_row_c1 = size(clin_slice_1, 1) ÷ 2
-    mid_row_s1 = size(sim_slice_1, 1) ÷ 2
-
-    sim_shift_px = 4.0
-
-    pixel_mm_c1 = 350.0 / size(clin_slice_1, 2)
-    pixel_mm_s1 = 350.0 / size(sim_slice_1, 2)
-    x_c1 = range(0, step = pixel_mm_c1, length = size(clin_slice_1, 2))
-    x_s1 = range(0, step = pixel_mm_s1, length = size(sim_slice_1, 2))
-    x_s1 = range(sim_shift_px * pixel_mm_s1, step = pixel_mm_s1, length = size(sim_slice_1, 2))
-
-
-    ax1 = CM.Axis(fig[1, 1]; title = "120 kVp / 150 mA — Horizontal Line Profile (mid-row)", xlabel = "Position (mm)", ylabel = "HU")
-    CM.lines!(
-        ax1, collect(x_c1), Float64.(clin_slice_1[mid_row_c1, :]);
-        color = :steelblue, linewidth = 1.2, label = "Clinical ASiR-V 50%"
-    )
-    CM.lines!(
-        ax1, collect(x_s1), Float64.(sim_slice_1[mid_row_s1, :]);
-        color = :orangered, linewidth = 1.2, label = "Simulated HIR"
-    )
-    CM.hlines!(ax1, [0.0]; color = :gray70, linestyle = :dash, linewidth = 0.6)
-    CM.axislegend(ax1; position = :rt, labelsize = 9)
-
-    CM.ylims!(ax1, low = -600)
-
-    # --- Bottom: 80 kVp / 480 mA ---
-    clin_slice_2 = hu_80_ir[:, :, seg_result.slice_idx]
-    sim_slice_2 = sim_oriented_hir[4].recon[:, :, sim_seg_result.slice_idx]
-    mid_row_c2 = size(clin_slice_2, 1) ÷ 2
-    mid_row_s2 = size(sim_slice_2, 1) ÷ 2
-
-    pixel_mm_c2 = 350.0 / size(clin_slice_2, 2)
-    pixel_mm_s2 = 350.0 / size(sim_slice_2, 2)
-    x_c2 = range(0, step = pixel_mm_c2, length = size(clin_slice_2, 2))
-    x_s2 = range(0, step = pixel_mm_s2, length = size(sim_slice_2, 2))
-    x_s2 = range(sim_shift_px * pixel_mm_s2, step = pixel_mm_s2, length = size(sim_slice_2, 2))
-
-    ax2 = CM.Axis(
-        fig[2, 1]; title = "80 kVp / 480 mA — Horizontal Line Profile (mid-row)",
-        xlabel = "Position (mm)", ylabel = "HU"
-    )
-    CM.lines!(
-        ax2, collect(x_c2), Float64.(clin_slice_2[mid_row_c2, :]);
-        color = :steelblue, linewidth = 1.2, label = "Clinical ASiR-V 50%"
-    )
-    CM.lines!(
-        ax2, collect(x_s2), Float64.(sim_slice_2[mid_row_s2, :]);
-        color = :orangered, linewidth = 1.2, label = "Simulated HIR"
-    )
-    CM.hlines!(ax2, [0.0]; color = :gray70, linestyle = :dash, linewidth = 0.6)
-    CM.axislegend(ax2; position = :rt, labelsize = 9)
-    CM.ylims!(ax2, low = -600)
-
-    CM.save(joinpath(RESULTS_DIR, "ge_hir_line_profiles.png"), fig, px_per_unit = 2)
-    fig
-end
-
-# ╔═╡ c42f625b-9db4-42a5-90c6-fa2c37fe8b18
-md"""
-### HIR: Scatter Plot (HU)
-"""
 
 # ╔═╡ bfd647b4-44d7-4582-8b5b-dd5910efd729
 # HIR: Ca/I scatter — Clinical ASiR-V 50% vs Simulated HIR
@@ -3124,11 +3240,6 @@ let
     fig
 end
 
-# ╔═╡ 28e45f60-2542-4305-8c9c-3aecf1b3aa23
-md"""
-### HIR: Noise
-"""
-
 # ╔═╡ d35a2ac4-467a-4ade-afaf-dc668880559a
 let
     water_idx = 1
@@ -3182,11 +3293,6 @@ let
     fig
 end
 
-# ╔═╡ 4776ad7f-edee-4c44-91bb-5ad76a63832e
-md"""
-### HIR: NPS
-"""
-
 # ╔═╡ 405ad9a1-3cac-4b19-87b3-1d041d8c0813
 let
     asirv_clinical_idx = [2, 4, 6, 8, 10, 12]
@@ -3226,11 +3332,6 @@ let
     fig
 end
 
-# ╔═╡ d3bd445c-ad9f-4133-93d9-8af91ed7f85d
-md"""
-### HIR: MTF
-"""
-
 # ╔═╡ 5298fd86-136b-4af3-aa0f-be0e810f5d24
 let
     asirv_clinical_idx = [2, 4, 6, 8, 10, 12]
@@ -3268,162 +3369,102 @@ let
     fig
 end
 
-# ╔═╡ 4f8ee88d-a948-44e7-a610-a2711e6da234
-md"""
-## 13. DE Simulation — GE GSI (Rapid kVp Switching)
-
-GE Revolution Apex GSI dual-energy uses **rapid kVp switching** (single tube, 80/140 kVp
-on alternating views) with an **additional spectral filter on the 140 kVp tube** to improve
-spectral separation.
-
-**Clinical DE protocol** (from DICOM + RDSR):
-- **kVp:** 80 / 140 alternating per view
-- **mA:** 203.5 (80 kVp) / 202.5 (140 kVp) — GE private tags `(0053,1085)` / `(0053,1083)`
-- **Gantry rotation:** 0.5 s — per-kVp effective exposure: **0.25 s** (rapid switching)
-- **Collimation:** 64 × 0.625 mm = 40 mm (half of SE 80 mm)
-- **Views/kVp/rotation:** ~984
-- **Filtration:** Large body bowtie + inherent Al + **spectral filter on 140 kVp** (empirically tuned)
-- **CTDIvol:** 10.07 mGy (32 cm body)
-- **Decomposition:** Projection-based, interleaved
-"""
-
-# ╔═╡ f9da78c0-9c6a-4c83-9f4e-592eecca5aaf
-de_mA_80 = 407 * 0.65 # 407 instantaneous × 0.5 duty cycle
-
-# ╔═╡ 3aefce3f-90e3-48fb-bae7-b7c965b7d6f8
-de_mA_140 = 405 * 0.35 # 405 instantaneous × 0.5 duty cycle
-
-# ╔═╡ 6f5ce242-a5e2-4cd5-8cac-47f528dc21bb
-# DE scan parameters — matching clinical GE GSI protocol
-begin
-    de_rotation_time = 0.5        # seconds — actual gantry rotation
-    de_collimation_mm = 5.0       # dev mode — same as SE (real clinical: 40mm)
-    de_n_views = 984              # views per kVp per rotation
-
-    # mA: DICOM reports instantaneous 407/405 mA, but each kVp only fires
-    # for half the rotation (rapid switching). Effective mA = instantaneous × 0.5
-
-    DE_SIM_SCANS = [
-        (name = "DE_80kVp_204mA", kvp = 80, mA = de_mA_80),
-        (name = "DE_140kVp_203mA", kvp = 140, mA = de_mA_140),
+# ╔═╡ ebc9865c-feed-4e79-9cac-39e583a3796d
+# HIR: 2×3 qualitative side-by-side (Clinical ASiR-V 50% vs Simulated HIR)
+let
+    clin_vols = [
+        hu_120_low_ir, hu_120_mid_ir, hu_120_high_ir,
+        hu_80_ir, hu_100_ir, hu_140_ir,
     ]
-    DE_VMI_ENERGIES = [40, 70, 100, 140]  # keV for VMI synthesis
+    scan_labels = [
+        "120kVp 50mA", "120kVp 150mA", "120kVp 300mA",
+        "80kVp 480mA", "100kVp 250mA", "140kVp 110mA",
+    ]
 
-    # Two separate scanner references for DE — same physical hardware (rapid kVp switching)
-    # but having named references makes the simulation flow clearer.
-    sim_scanner_de_80 = sim_scanner
-    sim_scanner_de_140 = sim_scanner
+    n = min(length(clin_vols), length(sim_oriented_hir))
+    fig = CM.Figure(size = (800, n * 400), fontsize = 10)
+
+    for i in 1:n
+        clin_slice = clin_vols[i][:, :, seg_result.slice_idx]
+        sim_slice = sim_oriented_hir[i].recon[:, :, sim_seg_result.slice_idx]
+
+        ax1 = CM.Axis(fig[i, 1]; title = "Clinical ASiR-V — $(scan_labels[i])", yreversed = true)
+        CM.heatmap!(ax1, clin_slice; colormap = :grays, colorrange = (-200, 500))
+        CM.hidedecorations!(ax1); CM.hidespines!(ax1)
+
+        ax2 = CM.Axis(fig[i, 2]; title = "Simulated HIR — $(scan_labels[i])", yreversed = true)
+        CM.heatmap!(ax2, sim_slice; colormap = :grays, colorrange = (-200, 500))
+        CM.hidedecorations!(ax2); CM.hidespines!(ax2)
+    end
+
+    CM.save(joinpath(RESULTS_DIR, "ge_hir_qualitative.png"), fig, px_per_unit = 2)
+    fig
 end
 
-# ╔═╡ ff650b6f-76e6-491e-8076-1dd002c80d7e
-# SPECTRAL FILTRATION — Gd₂O₂S K-edge filter (rapid kVp switching):
-# In rapid kVp switching both beams traverse the same physical filter.
-# Clinical GE GSI has no K-edge filter; this is a research optimization:
-#   - Gd K-edge at 50.2 keV sits between 80/140 kVp spectra
-#   - Preferentially attenuates 80 kVp photons above 50 keV → better separation
-#   - Yao & Pelc (Med Phys 2014, doi:10.1118/1.4866381): 0.142–0.150 mm
-#   - Stanford patent US9435900B2; PMC11272100 (2024): 0.09 mm
-# Thickness is tunable; 0.1 mm is a conservative default.
-# de_kedge_filter = [("Gd2O2S", 0.15)]  # mm — applied to BOTH kVp tubes
-de_kedge_filter = Tuple{String,Float64}[]
+# ╔═╡ 681131e3-887d-4426-aefe-f904abb4667a
+# Line profiles through center — 120 kVp / 150 mA and 80 kVp / 480 mA
+let
+    fig = CM.Figure(size = (1000, 700), fontsize = 11)
 
-# ╔═╡ 2a6f0b64-05a7-4a01-9009-66888902edcb
-# # Visualize 80 & 140 kVp spectra before/after Gd₂O₂S K-edge filtration
-# let
-    # # Unfiltered spectra (scanner flat filter + Al only, no K-edge)
-    # prot_80_no = BS.CTProtocol(kVp = 80, additional_filters = additional_filters)
-    # prot_140_no = BS.CTProtocol(kVp = 140, additional_filters = additional_filters)
-    # e80_no, w80_no = BS.resolve_spectrum(sim_opts, prot_80_no; scanner = sim_scanner_de_80)
-    # e140_no, w140_no = BS.resolve_spectrum(sim_opts, prot_140_no; scanner = sim_scanner_de_140)
+    # --- Top: 120 kVp / 150 mA ---
+    clin_slice_1 = hu_120_mid_ir[:, :, seg_result.slice_idx]
+    sim_slice_1 = sim_oriented_hir[2].recon[:, :, sim_seg_result.slice_idx]
+    mid_row_c1 = size(clin_slice_1, 1) ÷ 2
+    mid_row_s1 = size(sim_slice_1, 1) ÷ 2
 
-    # # Filtered spectra (scanner flat filter + Al + Gd₂O₂S)
-    # de_filters = vcat(additional_filters, de_kedge_filter)
-    # prot_80_gd = BS.CTProtocol(kVp = 80, additional_filters = de_filters)
-    # prot_140_gd = BS.CTProtocol(kVp = 140, additional_filters = de_filters)
-    # e80_gd, w80_gd = BS.resolve_spectrum(sim_opts, prot_80_gd; scanner = sim_scanner_de_80)
-    # e140_gd, w140_gd = BS.resolve_spectrum(sim_opts, prot_140_gd; scanner = sim_scanner_de_140)
+    sim_shift_px = 4.0
 
-    # # Normalize to peak for visual comparison
-    # norm80 = maximum(w80_no)
-    # norm140 = maximum(w140_no)
+    pixel_mm_c1 = 350.0 / size(clin_slice_1, 2)
+    pixel_mm_s1 = 350.0 / size(sim_slice_1, 2)
+    x_c1 = range(0, step = pixel_mm_c1, length = size(clin_slice_1, 2))
+    x_s1 = range(0, step = pixel_mm_s1, length = size(sim_slice_1, 2))
+    x_s1 = range(sim_shift_px * pixel_mm_s1, step = pixel_mm_s1, length = size(sim_slice_1, 2))
 
-    # # Mean energies (fluence-weighted)
-    # mean_E(e, w) = sum(e .* w) / sum(w)
-    # mE_80_no = mean_E(e80_no, w80_no)
-    # mE_140_no = mean_E(e140_no, w140_no)
-    # mE_80_gd = mean_E(e80_gd, w80_gd)
-    # mE_140_gd = mean_E(e140_gd, w140_gd)
 
-    # fig = CM.Figure(size = (900, 400), fontsize = 12)
-
-    # # Left: before K-edge filter
-    # ax1 = CM.Axis(
-        # fig[1, 1]; title = "Before Gd₂O₂S filter",
-        # xlabel = "Energy (keV)", ylabel = "Relative fluence"
-    # )
-    # CM.lines!(ax1, e80_no, w80_no ./ norm80; color = :dodgerblue, linewidth = 1.5, label = "80 kVp")
-    # CM.lines!(ax1, e140_no, w140_no ./ norm140; color = :orangered, linewidth = 1.5, label = "140 kVp")
-    # CM.vlines!(ax1, [50.2]; color = :gray50, linestyle = :dash, linewidth = 0.8, label = "Gd K-edge (50.2 keV)")
-    # CM.vlines!(ax1, [mE_80_no]; color = :dodgerblue, linestyle = :dash, linewidth = 1.2, label = "⟨E⟩ 80 = $(round(mE_80_no; digits = 1)) keV")
-    # CM.vlines!(ax1, [mE_140_no]; color = :orangered, linestyle = :dash, linewidth = 1.2, label = "⟨E⟩ 140 = $(round(mE_140_no; digits = 1)) keV")
-    # CM.axislegend(ax1; position = :rt)
-
-    # # Right: after K-edge filter
-    # ax2 = CM.Axis(
-        # fig[1, 2]; title = "After Gd₂O₂S filter ($(de_kedge_filter[1][2]) mm)",
-        # xlabel = "Energy (keV)", ylabel = "Relative fluence"
-    # )
-    # CM.lines!(ax2, e80_gd, w80_gd ./ norm80; color = :dodgerblue, linewidth = 1.5, label = "80 kVp")
-    # CM.lines!(ax2, e140_gd, w140_gd ./ norm140; color = :orangered, linewidth = 1.5, label = "140 kVp")
-    # CM.vlines!(ax2, [50.2]; color = :gray50, linestyle = :dash, linewidth = 0.8, label = "Gd K-edge (50.2 keV)")
-    # CM.vlines!(ax2, [mE_80_gd]; color = :dodgerblue, linestyle = :dash, linewidth = 1.2, label = "⟨E⟩ 80 = $(round(mE_80_gd; digits = 1)) keV")
-    # CM.vlines!(ax2, [mE_140_gd]; color = :orangered, linestyle = :dash, linewidth = 1.2, label = "⟨E⟩ 140 = $(round(mE_140_gd; digits = 1)) keV")
-    # CM.axislegend(ax2; position = :rt)
-
-    # CM.linkaxes!(ax1, ax2)
-
-    # CM.save(joinpath(RESULTS_DIR, "ge_gsi_spectra_filter.png"), fig, px_per_unit = 2)
-    # fig
-# end
-
-# ╔═╡ bb68196f-26e4-41fc-85bc-203373d91b4a
-# DE recon geometry — same FOV/matrix as SE, different z for collimation
-begin
-    de_recon_z_cm = de_collimation_mm / 10.0
-    de_n_recon_slices = round(Int, de_collimation_mm / sim_slice_thickness_mm)
-    de_matrix_size = (sim_recon_xy, sim_recon_xy, de_n_recon_slices)
-
-    de_recon_geom = BS.ReconOptions(
-        algorithm = :fdk,
-        matrix_size = de_matrix_size,
-        fov_cm = sim_recon_fov_cm,
-        z_cm = de_recon_z_cm,
+    ax1 = CM.Axis(fig[1, 1]; title = "120 kVp / 150 mA — Horizontal Line Profile (mid-row)", xlabel = "Position (mm)", ylabel = "HU")
+    CM.lines!(
+        ax1, collect(x_c1), Float64.(clin_slice_1[mid_row_c1, :]);
+        color = :steelblue, linewidth = 1.2, label = "Clinical ASiR-V 50%"
     )
-end
+    CM.lines!(
+        ax1, collect(x_s1), Float64.(sim_slice_1[mid_row_s1, :]);
+        color = :orangered, linewidth = 1.2, label = "Simulated HIR"
+    )
+    CM.hlines!(ax1, [0.0]; color = :gray70, linestyle = :dash, linewidth = 0.6)
+    CM.axislegend(ax1; position = :rt, labelsize = 9)
 
-# ╔═╡ 37298bb1-4b57-4f5c-9fea-ec81dbfb3394
-# DE: 80 kVp / ~204 mA effective — SIMULATE (GPU → sinogram → free GPU)
-sim_de_sino_low = let
-    sc = DE_SIM_SCANS[1]
-    low_kvp_filters = vcat(additional_filters, de_kedge_filter)
-    prot = BS.CTProtocol(
-        kVp = sc.kvp,
-        mA = sc.mA,
-        views = de_n_views,
-        rotation_time = de_rotation_time,
-        collimation_mm = de_collimation_mm,
-        additional_filters = low_kvp_filters,
+    CM.ylims!(ax1, low = -600)
+
+    # --- Bottom: 80 kVp / 480 mA ---
+    clin_slice_2 = hu_80_ir[:, :, seg_result.slice_idx]
+    sim_slice_2 = sim_oriented_hir[4].recon[:, :, sim_seg_result.slice_idx]
+    mid_row_c2 = size(clin_slice_2, 1) ÷ 2
+    mid_row_s2 = size(sim_slice_2, 1) ÷ 2
+
+    pixel_mm_c2 = 350.0 / size(clin_slice_2, 2)
+    pixel_mm_s2 = 350.0 / size(sim_slice_2, 2)
+    x_c2 = range(0, step = pixel_mm_c2, length = size(clin_slice_2, 2))
+    x_s2 = range(0, step = pixel_mm_s2, length = size(sim_slice_2, 2))
+    x_s2 = range(sim_shift_px * pixel_mm_s2, step = pixel_mm_s2, length = size(sim_slice_2, 2))
+
+    ax2 = CM.Axis(
+        fig[2, 1]; title = "80 kVp / 480 mA — Horizontal Line Profile (mid-row)",
+        xlabel = "Position (mm)", ylabel = "HU"
     )
-    @info "Simulating DE: $(sc.name)..."
-    ws = BS.create_eict_workspace(
-        sim_scanner_de_80, prot, sim_opts, de_recon_geom, sim_phantom_gpu,
+    CM.lines!(
+        ax2, collect(x_c2), Float64.(clin_slice_2[mid_row_c2, :]);
+        color = :steelblue, linewidth = 1.2, label = "Clinical ASiR-V 50%"
     )
-    BS.simulate!(ws, sim_phantom_gpu, sim_scanner_de_80, prot, sim_opts, de_recon_geom)
-    air_ref = ws.bowtie_air_reference !== nothing ? Array(ws.bowtie_air_reference) : nothing
-    result = (sino = Array(ws.sino_noisy_out), geom = ws.geom, air_ref = air_ref, name = sc.name, kvp = sc.kvp)
-    ws = nothing
-    GC.gc(true)
-    result
+    CM.lines!(
+        ax2, collect(x_s2), Float64.(sim_slice_2[mid_row_s2, :]);
+        color = :orangered, linewidth = 1.2, label = "Simulated HIR"
+    )
+    CM.hlines!(ax2, [0.0]; color = :gray70, linestyle = :dash, linewidth = 0.6)
+    CM.axislegend(ax2; position = :rt, labelsize = 9)
+    CM.ylims!(ax2, low = -600)
+
+    CM.save(joinpath(RESULTS_DIR, "ge_hir_line_profiles.png"), fig, px_per_unit = 2)
+    fig
 end
 
 # ╔═╡ fd123cde-bb22-489d-a496-e00363f46157
@@ -3466,7 +3507,7 @@ sim_de_recon_low = let
     end
     ws_fdk = BS.create_fdk_recon_workspace(
         sino_gpu, geom, recon_size;
-        filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y)
+        filter = custom_filter
     )
     recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, geom, recon_size)
     if bhc_enabled
@@ -3507,7 +3548,7 @@ sim_de_recon_high = let
     end
     ws_fdk = BS.create_fdk_recon_workspace(
         sino_gpu, geom, recon_size;
-        filter = BS.CustomFilter(custom_filter_control.x, custom_filter_control.y)
+        filter = custom_filter
     )
     recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, geom, recon_size)
     if bhc_enabled
@@ -3571,98 +3612,51 @@ end
 
 # ╔═╡ 00080001-0000-4000-8000-000000000004
 md"""
-## 5. Photoelectric + Compton Basis Decomposition
+### 13.1 Material Decomposition
 
-**Pipeline:** Cong analytic per-ray decomp → PWLS-L₂ sinogram restoration
-(Noh 2009 cost + Long/Fessler 2014 2×2 matrix curvature) → FBP → post-FBP
-radial capping correction. Each stage below has its own sinogram +
-intermediate FBP so the streak / noise suppression is visible stage-by-stage.
-
-| Stage | Role | Handles |
-|-------|------|---------|
-| §5.1 Cong 2022 | Per-ray polychromatic inversion (no spatial coupling) | Beam-hardening, basis inversion |
-| §5.2 PWLS-L₂   | Statistical penalized-WLS with 2×2 per-ray matrix curvature | Streaks from per-ray decomp errors; iodine↔water anti-correlated noise |
-| §5.3 Capping   | Per-slice radial even-polynomial fit on the basis images | Residual radial cupping/capping from incomplete BHC |
-| §5.4 Final FBP | FDK on cleaned basis sinograms (feeds §5.3 capping); final viz shows all three corrections | Reconstruction output consumed by §6 VMI |
-
-### 5.1 Cong et al. 2022 — Per-ray Analytic Decomposition
-
-**[CDW22] Cong, De Man, Wang (2022)** *J X-Ray Sci Technol* 30:725–736,
-*"Projection decomposition via univariate optimization for dual-energy CT."*
-DOI 10.3233/XST-221153.
-
-Invert the polychromatic dual-energy forward model per ray. **No calibration
-scan required** — only physical constants and the already-resolved x-ray
-spectrum (`BS.resolve_spectrum`, which contains source × bowtie × detector).
-
-#### Physical basis ([CDW22] Eqs 3a–3e, 4)
-
-- `μ(r, ε) = p(ε)·a(r) + q(ε)·c(r)`
-- `a(r) = ρ·⟨Z⁴/A⟩` — photoelectric spatial component
-- `c(r) = ρ·⟨Z/A⟩` — Compton spatial component
-- `p(ε) = N_A·α⁴·(8/3)π·r_e²·√(32/ε⁷)`,  `ε = E / m_e c²`
-- `q(ε) = N_A·f_kn(ε)` — Klein-Nishina (Eq 3e)
-
-#### Per-ray sinogram decomposition (Eqs 6–10, three Roots.jl calls)
-
-1. **Water-based 1D Brent inversion** for water-equivalent path `L`:
-   `∫Ŝ_L(ε)·exp(−(p(ε)·a_w + q(ε)·c_w)·L) dε = T_L_meas`, then `c̄ = c_w·L`.
-   Absorbs the water beam-hardening exactly, so the Taylor-5 residual
-   `x = C − c̄` carries only Ca/I/air deviations from water — bounded, small.
-2. **Inner Newton on Eq 8 quintic** for `x = h(y)` — strictly convex ⇒ unique
-   real root. Newton from `x = 0` converges in ≤ 8 iterations.
-3. **Outer Roots.Brent on Eq 10.** `G(y) = T_H_pred(y, c̄+h(y)) − T_H_meas` is
-   monotonic on `[0, τ_L/min(p_L))`. `Roots.find_zero(G, (0, y_max), Brent())`.
-
-**Sinogram outputs (line integrals, per ray):**
-- `sim_de_decomp.sino_iodine = y = ∫ρ_I(r)·dr`       (g/cm²)
-- `sim_de_decomp.sino_water  = W = ∫ρ_W(r)·dr`       (g/cm²)
-
-Cong runs in the **direct (iodine, water) basis** defined by §0 —
-NIST mass-atten tables at each spectral bin, `water_basis = (0, 1)`.
-Forward-model Jacobian has κ ≈ 160 (vs. κ ≈ 110 k for the (Z⁴/A, Z/A)
-photo/Compton basis), so post-decomposition noise in `(sino_I, sino_W)`
-is well-conditioned and balanced — prerequisite for the monotonic σ(E)
-trend in §6 VMI.
-
-The intermediate FBP below shows **raw Cong output** — no spatial coupling
-yet, so per-ray decomposition errors show up as coherent streaks through
-high-attenuation rods. §5.2 cleans those up.
+Chain: **Cong → PWLS → basis FBP**.  PWLS is toggleable via its config
+cell and passes through when off.  Intermediate viz cells show the
+(sino_I, sino_W) sinograms + quick FBP so the denoising progression is
+visible.
 """
+
+# ╔═╡ 00080001-a000-4000-8000-000000000004
+# ── Bowtie-aware source spectrum toggle ─────────────────────────────────────
+# When true, `de_basis` below builds a PER-RAY spectrum (3D [n_col × n_row × n_E])
+# that includes the bowtie transmission.  apply_cong_per_ray! then uses the
+# correct ray-dependent spectrum, eliminating the radial capping caused by
+# applying a centered spectrum to edge rays.  When false, falls back to the
+# original centered 1D spectrum (legacy behavior).
+de_basis_include_bowtie = true
 
 # ╔═╡ 00080002-0000-4000-8000-000000000004
 # Direct (water, iodine) basis tables for Cong's per-ray decomposition.
 #
-# No (Z⁴/A, Z/A) intermediate, no LS fit.  We feed apply_cong! the NIST
-# mass-attenuation coefficients (cm²/g) of iodine and water sampled at
-# every spectral bin of the resolved 80/140 kVp beams:
+# The ŵ_L / ŵ_H spectral weights come from `resolve_source_spectrum` above,
+# which bundles tube + flat filter + additional filter + BOWTIE into a
+# per-ray 3D array (when `de_basis_include_bowtie = true`).  The material
+# mass-atten tables (p, q) remain 1D since they only depend on energy,
+# not on ray position.
 #
-#   p_L,H[k] = (μ/ρ)_iodine(ε_k)       ← iodine mass atten
-#   q_L,H[k] = (μ/ρ)_water(ε_k)        ← water  mass atten
-#
-# Cong's kernel is basis-agnostic: it solves a 2-unknown nonlinear system
-# per ray for whatever (a_line, c_line) its `p, q` tables describe.  With
-# the tables above + `water_basis = (0, 1)` (§0b), apply_cong! directly
-# outputs `(sino_iodine, sino_water)` = (∫ρ_I·dr, ∫ρ_W·dr) — material
-# line integrals in g/cm².  No change-of-basis needed downstream.
-#
-# Why this conditioning is better than (photoelectric, Compton):
-#   · Forward-model Jacobian at working point is the spectrum-effective
-#     mass-atten matrix M = [μρ_W_L μρ_I_L; μρ_W_H μρ_I_H],  κ(M) ≈ 160.
-#   · The (a, c) = (Z⁴/A, Z/A) basis has C = [a_W a_I; c_W c_I] with
-#     κ(C) ≈ 112 000 because water and iodine are almost parallel in the
-#     Z/A direction.  That's what we're avoiding.
+# Why per-ray ŵ (bowtie) is important:
+#   · Cong inverts the polychromatic forward model per ray.
+#   · Without bowtie in ŵ, edge rays are fit with a centered (softer)
+#     spectrum than they actually saw → smooth radial bias → capping.
+#   · With bowtie: each ray's inversion uses the spectrum that ray saw.
 #
 # K-edge fidelity: iodine's 33 keV jump in (μ/ρ)(ε) is captured natively
 # by every spectral bin above the edge (NIST tables).
 de_basis = let
     prot_L = BS.CTProtocol(kVp = 80,  additional_filters = additional_filters)
     prot_H = BS.CTProtocol(kVp = 140, additional_filters = additional_filters)
-    e_L, w_L = BS.resolve_spectrum(sim_opts, prot_L; scanner = sim_scanner)
-    e_H, w_H = BS.resolve_spectrum(sim_opts, prot_H; scanner = sim_scanner)
 
-    ŵ_L = Float32.(Float64.(w_L) ./ sum(Float64.(w_L)))
-    ŵ_H = Float32.(Float64.(w_H) ./ sum(Float64.(w_H)))
+    # Per-ray source spectrum (3D if bowtie is on, else 1D centered).
+    e_L, ŵ_L = BS.resolve_source_spectrum_with_bowtie(sim_opts, prot_L;
+                    scanner = sim_scanner, geom = sim_de_sino_low.geom,
+                    include_bowtie = de_basis_include_bowtie, label = "low")
+    e_H, ŵ_H = BS.resolve_source_spectrum_with_bowtie(sim_opts, prot_H;
+                    scanner = sim_scanner, geom = sim_de_sino_high.geom,
+                    include_bowtie = de_basis_include_bowtie, label = "high")
 
     μρ_iodine(E) = BS.compute_mass_μ_at_energy(XA.Elements.Iodine, Float64(E))
     μρ_water(E)  = BS.compute_mass_μ_at_energy(XA.Materials.water,  Float64(E))
@@ -3701,39 +3695,52 @@ end
 # water line integral directly (no `c_w` scale factor needed).
 water_basis = (a = 0.0f0, c = 1.0f0)
 
+# ╔═╡ 00080e02-0000-4000-8000-000000000001
+md"""
+**Cong 2022 (Per-ray Analytic)** — Brent→Newton(quintic)→Brent ray-by-ray
+inversion.  Bowtie-aware when `de_basis_include_bowtie = true`.  Output:
+`sim_de_decomp`.
+"""
+
+# ╔═╡ 00080001-b000-4000-8000-000000000004
+# ── Cong 2022 (per-ray analytic) config ─────────────────────────────────────
+# Brent → Newton(quintic) → Brent ray-by-ray inversion (BS.apply_cong).  Uses
+# de_basis directly — when ŵ is 3D (bowtie on), src dispatches the per-ray
+# path internally; when 1D (centered), it's the classic Cong.
+begin
+    cong_newton_max_iter = 5          # default 12; raise for dense iodine
+    cong_newton_tol      = eps(Float32)
+    cong_y_max_factor    = 0.2        # default 0.99; widen if Brent fails
+    cong_y_max_cap       = 1f7
+end
+
 # ╔═╡ 00080004-0000-4000-8000-000000000004
-# Per-ray Cong 2022 decomposition: Brent(water-L) → Newton(quintic h(y)) → Brent(y).
-# Runs via BS.apply_cong! which dispatches through AK.foreachindex, so Metal
-# or CUDA arrays execute the same kernel on the GPU without a separate code
-# path.  Brent is a 1:1 port of Roots.Brent (test/vmi_brent_parity.jl).
+# Per-ray Cong 2022 decomp — src BS.apply_cong.  Dispatches on ndims(ŵ): 3D
+# ŵ → per-ray bowtie path, 1D ŵ → legacy centered.  Runs on Metal (MtlArray)
 sim_de_decomp = let
-    # Stage sinograms onto GPU (MtlArray) — Metal is the GE Apex target.
     sino_L_gpu = MtlArray(Float32.(sim_de_sino_low.sino))
     sino_H_gpu = MtlArray(Float32.(sim_de_sino_high.sino))
 
     t1 = time()
     sino_I_gpu, sino_W_gpu = BS.apply_cong(
         sino_L_gpu, sino_H_gpu;
-        basis  = de_basis,
-        water_basis = water_basis,
-
-        # ── Per-ray solver tuning (defaults below) ──
-        newton_max_iter = 5,              # default = 12; try 20 for dense iodine
-        newton_tol      = eps(Float32),   # try 5f-7 if Newton spins
-        y_max_factor    = 0.2,            # default = 0.99; try 2.0 to widen Brent bracket
-        y_max_cap       = 1f7,            # overflow guard; rarely relevant
+        basis           = de_basis,
+        water_basis     = water_basis,
+        newton_max_iter = cong_newton_max_iter,
+        newton_tol      = cong_newton_tol,
+        y_max_factor    = cong_y_max_factor,
+        y_max_cap       = cong_y_max_cap,
     )
     dt = time() - t1
 
-    sino_iodine = Array(sino_I_gpu)       # ∫ρ_I·dr   (g/cm²)
-    sino_water  = Array(sino_W_gpu)       # ∫ρ_W·dr   (g/cm²)
+    sino_iodine = Array(sino_I_gpu)       # ∫ρ_I·dr  (g/cm²)
+    sino_water  = Array(sino_W_gpu)       # ∫ρ_W·dr  (g/cm²)
     sino_L_gpu = nothing; sino_H_gpu = nothing
     sino_I_gpu = nothing; sino_W_gpu = nothing
     GC.gc(true)
 
-    @info "[CDW22] apply_cong in (W, I) basis done in $(round(dt, digits=1)) s"
-    @info "  ⟨∫ρ_I·dr⟩ = $(round(mean(sino_iodine), sigdigits=4))   iodine line integral  (g/cm²)"
-    @info "  ⟨∫ρ_W·dr⟩ = $(round(mean(sino_water),  sigdigits=4))   water  line integral  (g/cm²)"
+    basis_mode = ndims(de_basis.ŵ_L) == 3 ? "per-ray bowtie" : "centered (legacy)"
+    @info "[Cong ($basis_mode ŵ)] $(round(dt, digits = 1)) s  ⟨∫ρ_I⟩ = $(round(mean(sino_iodine), sigdigits = 4))   ⟨∫ρ_W⟩ = $(round(mean(sino_water), sigdigits = 4))  (g/cm²)"
 
     (sino_iodine = sino_iodine, sino_water = sino_water, geom = sim_de_sino_low.geom)
 end;
@@ -3824,61 +3831,10 @@ end
 
 # ╔═╡ 00080014-0000-4000-8000-000000000004
 md"""
-### 5.2 PWLS-SQS Sinogram Restoration — Noh, Fessler, Kinahan 2009
-
-**[NFK09] Noh, Fessler, Kinahan (2009)** *IEEE Trans Med Imaging* 28(11):
-1688–1702. *"Statistical Sinogram Restoration in Dual-Energy CT for PET
-Attenuation Correction."* DOI 10.1109/TMI.2009.2023988.
-
-Cong 2022 (§5.1) gives a per-ray analytic decomposition with **zero spatial
-coupling** — each detector column/view is solved in isolation. At low dose
-or through high-attenuation rods, per-ray decomposition errors + Poisson
-measurement noise stack up as coherent streaks in the intermediate FBP
-above. NFK09 instead jointly denoises both basis sinograms in the sinogram
-domain by minimizing a penalized weighted least-squares cost:
-
-    Φ(s) = ½·Σ_{i,m} w_{mi}·(h_{mi} − f_m(s_i))²  +  Σ_l ½·γ_l·‖C·s_l‖²   [NFK09 Eq 12]
-
-where
-- `s = (s_I, s_W)` — basis-sinogram state (iodine + water line integrals, g/cm²)
-- `h_{mi}` — measured polychromatic transmissions (`−log y_{mi}/I_m`)
-- `f_m(s_i) = −log Σ_k ŵ_m[k]·exp(−p_m[k]·s_y − q_m[k]·s_C)` — **same**
-  polychromatic forward model used in §5.1
-- `w_{mi} ≈ y_{mi} ∝ exp(−h_{mi})` — Poisson inverse-variance weights
-  (NFK09 Eq 13); high-attenuation rays get low weight so their residuals
-  don't dominate the fit
-- `C` — 2D 2nd-order difference operator (detector-col + view axes), Neumann
-  BC; γ_l controls smoothness per basis
-
-**Why warm-start from Cong?** The data-fit landscape is nonconvex (because
-`f_m` is nonlinear), but Cong already sits in the right basin — starting
-there skips the global-descent phase, letting a handful of SQS iterations
-denoise without introducing its own bias.
-
-Solved via **Separable Paraboloidal Surrogates (SPS)** with Fessler-Erdogan
-precomputed curvature (MIRT `de_wls_dercurv.m`):
-
-    M[m, l]        = Σ_k ŵ_m[k]·c_l[k]                  — spectral MAC matrix, 2×2
-    curv_geom[l]   = Σ_m |M[m, l]| · Σ_{l'} |M[m, l']|  — data-term majorant
-    curv_R_l       = γ_l · 32                           — De Pierro row-sum bound
-                                                          for |C'C| in 2D
-    curv_l[i]      = max_m(w_{mi}) · curv_geom[l] + curv_R_l   — per-pixel, constant
-
-SQS update (MIRT `pwls_sqs_os.m`, adapted: G = I for sinogram domain):
-
-    grad_l[i]    = Σ_m w_{mi}·(f_m(s_i) − h_{mi})·∂f_m/∂s_l
-    grad_R_l[i]  = γ_l·(C'C·s_l)[i]
-    s_l[i] ← max( s_l[i] − relax·(grad_l[i] + grad_R_l[i]) / curv_l[i], 0 )
-
-SPS guarantees **monotonic descent of Φ(s)** at every iteration (Fessler
-2000). We log Φ per iter and warn if it ever increases — catches any sign
-or curvature-bound bug immediately.
-
-**Implementation.** 1:1 port of MIRT's `ct/de_wls_dercurv.m` (data-term
-gradient + precomputed curvature) and `wls/pwls_sqs_os.m` (SQS loop).
-Per-slice threading over detector rows. See cell §5.2 body below for the
-code and the hyperparameter cell above it for `κ_iodine`, `κ_water`,
-`n_iter`, `relax`.
+**PWLS-L₂ (Noh 2009 + Long/Fessler 2014)** — sinogram-domain denoising via
+2×2 matrix-curvature GN: captures iodine↔water anti-correlated noise that
+diagonal majorants miss.  Warm start = Cong.  Output: `sim_de_decomp_pwls`.
+Pass-through when `pwls_enable = false`.
 """
 
 # ╔═╡ 00080021-0000-4000-8000-000000000004
@@ -3948,155 +3904,170 @@ end
 # ray containing s_I g/cm² iodine and s_W g/cm² water.
 sim_de_decomp_pwls = let
     if !pwls_enable
-        @info "PWLS restoration: DISABLED (pass-through Cong)"
+        @info "PWLS restoration: DISABLED (pass-through Cong-smoothed)"
         (sino_iodine = sim_de_decomp.sino_iodine,
          sino_water  = sim_de_decomp.sino_water,
          geom        = sim_de_decomp.geom,
          n_iter      = 0, κ_iodine = 0.0, κ_water = 0.0,
          relax       = 0.0, cost_history = Float64[])
     else
-        sino_I = copy(sim_de_decomp.sino_iodine)    # Cong warm start (iodine line integrals, g/cm²)
-        sino_W = copy(sim_de_decomp.sino_water)     # Cong warm start (water  line integrals, g/cm²)
-        h_low  = sim_de_sino_low.sino
-        h_high = sim_de_sino_high.sino
+        # ── Stage ALL inputs on the same backend.  AK.foreachindex dispatches
+        # to CUDA / ROCm / Metal / oneAPI / CPU-threads depending on the array
+        # type — MtlArray here (Apple) matches the rest of the notebook.
+        # Warm start: Cong output.  Measured sinograms h_low / h_high stay RAW
+        # (never smooth the data term).
+        sino_I = MtlArray(copy(sim_de_decomp.sino_iodine))
+        sino_W = MtlArray(copy(sim_de_decomp.sino_water))
+        h_low  = MtlArray(Float32.(sim_de_sino_low.sino))
+        h_high = MtlArray(Float32.(sim_de_sino_high.sino))
 
-        ŵ_L = de_basis.ŵ_L;  p_L = de_basis.p_L;  q_L = de_basis.q_L    # p_L = μρ_iodine, q_L = μρ_water
-        ŵ_H = de_basis.ŵ_H;  p_H = de_basis.p_H;  q_H = de_basis.q_H
-        nE_L = length(ŵ_L);  nE_H = length(ŵ_H)
+        ŵ_L = MtlArray(de_basis.ŵ_L);  p_L = MtlArray(de_basis.p_L);  q_L = MtlArray(de_basis.q_L)
+        ŵ_H = MtlArray(de_basis.ŵ_H);  p_H = MtlArray(de_basis.p_H);  q_H = MtlArray(de_basis.q_H)
+        # ŵ is 3D [n_col, n_row, n_E] when de_basis_include_bowtie = true,
+        # else 1D [n_E].  Kernel dispatches on ndims below.
+        per_ray_L = ndims(de_basis.ŵ_L) == 3
+        per_ray_H = ndims(de_basis.ŵ_H) == 3
+        nE_L = per_ray_L ? size(de_basis.ŵ_L, 3) : length(de_basis.ŵ_L)
+        nE_H = per_ray_H ? size(de_basis.ŵ_H, 3) : length(de_basis.ŵ_H)
 
         n_col, n_view, n_row = size(sino_I)
-        κ_I        = Float32(pwls_κ_iodine)    # regularizer step damping, iodine
-        κ_W        = Float32(pwls_κ_water)     #   … water
-        relax_f    = Float32(pwls_relax)
-        reg_curv_I = κ_I                        # SQS step = reg_grad / κ
-        reg_curv_W = κ_W
+        κ_I = Float32(pwls_κ_iodine)
+        κ_W = Float32(pwls_κ_water)
+        relax_f = Float32(pwls_relax)
 
-        # Per-slice 2D Laplacian (CᵀC·s) — two passes of the 3-stencil C = [1,-2,1]
-        # with Neumann BC, applied along col AND view axes then summed.  C is
-        # symmetric ⇒ CᵀC = C·C.  Same regularizer as the original Noh port.
-        apply_CtC_slice! = function (out::AbstractArray{Float32, 2},
-                                     s  ::AbstractArray{Float32, 2},
-                                     tmp::AbstractArray{Float32, 2})
-            nc, nv = size(s)
-            # x-axis: tmp = Cx·s, then out = Cx·tmp
-            @inbounds for v in 1:nv, c in 1:nc
-                sl = c == 1  ? s[c, v] : s[c-1, v]
-                sr = c == nc ? s[c, v] : s[c+1, v]
-                tmp[c, v] = sl - 2f0*s[c, v] + sr
-            end
-            @inbounds for v in 1:nv, c in 1:nc
-                tl = c == 1  ? tmp[c, v] : tmp[c-1, v]
-                tr = c == nc ? tmp[c, v] : tmp[c+1, v]
-                out[c, v] = tl - 2f0*tmp[c, v] + tr
-            end
-            # y-axis: tmp = Cy·s, then out += Cy·tmp
-            @inbounds for v in 1:nv, c in 1:nc
-                su = v == 1  ? s[c, v] : s[c, v-1]
-                sd = v == nv ? s[c, v] : s[c, v+1]
-                tmp[c, v] = su - 2f0*s[c, v] + sd
-            end
-            @inbounds for v in 1:nv, c in 1:nc
-                tu = v == 1  ? tmp[c, v] : tmp[c, v-1]
-                td = v == nv ? tmp[c, v] : tmp[c, v+1]
-                out[c, v] += tu - 2f0*tmp[c, v] + td
-            end
-        end
+        # ── Scratch buffers (on-device, persist across iters).
+        reg_I     = similar(sino_I)
+        reg_W     = similar(sino_I)
+        tmp_buf   = similar(sino_I)            # shared scratch for the two-pass Laplacian
+        cost_data = similar(sino_I)            # per-ray data-cost contribution for GPU reduction
 
         cost_history = Float64[]
 
+        # Helper: 3-point 1D Laplacian along col axis, Neumann BC, per-slice.
+        # `out[c,v,r] = s[c-1,v,r] - 2·s[c,v,r] + s[c+1,v,r]` with clamp at c=1, nc.
+        lapl_x! = function (out, s, nc, nv)
+            AK.foreachindex(out) do idx
+                c = ((idx - 1) % nc) + 1
+                v = (((idx - 1) ÷ nc) % nv) + 1
+                r = ((idx - 1) ÷ (nc * nv)) + 1
+                cl = c == 1  ? c : c - 1
+                cr = c == nc ? c : c + 1
+                out[c, v, r] = s[cl, v, r] - 2f0*s[c, v, r] + s[cr, v, r]
+            end
+            return
+        end
+
+        # 3-point 1D Laplacian along view axis, Neumann BC.  `mode == :assign`
+        # writes `out`; `mode == :accum` adds to `out` (used in the y-axis pass
+        # to form `out += Cy²·s`).
+        lapl_y! = function (out, s, nc, nv, accum::Bool)
+            AK.foreachindex(out) do idx
+                c = ((idx - 1) % nc) + 1
+                v = (((idx - 1) ÷ nc) % nv) + 1
+                r = ((idx - 1) ÷ (nc * nv)) + 1
+                vu = v == 1  ? v : v - 1
+                vd = v == nv ? v : v + 1
+                val = s[c, vu, r] - 2f0*s[c, v, r] + s[c, vd, r]
+                out[c, v, r] = accum ? out[c, v, r] + val : val
+            end
+            return
+        end
+
+        # CᵀC·s = Cx²·s + Cy²·s — same two-pass 3-stencil structure as the
+        # original CPU port, now expressed as four AK.foreachindex passes.
+        apply_CtC! = function (out, s, tmp)
+            lapl_x!(tmp, s,   n_col, n_view)          # tmp = Cx·s
+            lapl_x!(out, tmp, n_col, n_view)          # out = Cx·tmp = Cx²·s
+            lapl_y!(tmp, s,   n_col, n_view, false)   # tmp = Cy·s
+            lapl_y!(out, tmp, n_col, n_view, true)    # out += Cy·tmp = Cx²·s + Cy²·s
+            return
+        end
+
         t0 = time()
         for iter in 1:pwls_n_iter
-            Φ_total = Threads.Atomic{Float64}(0.0)
+            # ── Snapshot regularizer gradients (Jacobi SQS): fixed within iter.
+            apply_CtC!(reg_I, sino_I, tmp_buf)
+            apply_CtC!(reg_W, sino_W, tmp_buf)
 
-            Threads.@threads for r in 1:n_row
-                # Per-thread slice-sized scratch; re-used within the slice.
-                reg_I = zeros(Float32, n_col, n_view)
-                reg_W = zeros(Float32, n_col, n_view)
-                tmp_b = zeros(Float32, n_col, n_view)
+            # ── Per-ray 2×2 PWLS update (Long/Fessler 2014 L₂ surrogate).
+            # Each thread handles one (c, v, r) index; no cross-ray deps.
+            AK.foreachindex(sino_I) do idx
+                Iv = sino_I[idx];  Wv = sino_W[idx]
 
-                # Snapshot regularizer gradients (Jacobi SQS): fixed within iter.
-                apply_CtC_slice!(reg_I, @view(sino_I[:, :, r]), tmp_b)
-                apply_CtC_slice!(reg_W, @view(sino_W[:, :, r]), tmp_b)
+                # (col, row) for indexing 3D per-ray ŵ.  Sinogram storage is
+                # [n_col, n_row, n_view] (BS convention); the notebook var
+                # `n_view` here equals size(sino_I, 2) = n_row in BS terms.
+                i0 = idx - 1
+                col_k = (i0 % n_col) + 1
+                row_k = ((i0 ÷ n_col) % n_view) + 1
 
-                Φ_slice = 0.0
-
-                @inbounds for v in 1:n_view, c in 1:n_col
-                    Iv = sino_I[c, v, r]
-                    Wv = sino_W[c, v, r]
-
-                    # Low-kVp spectral Beer moments.  p_L[k] = μρ_iodine(ε_k),
-                    # q_L[k] = μρ_water(ε_k), so P_L = ⟨μρ_I⟩_β, Q_L = ⟨μρ_W⟩_β
-                    # under the current Beer-weighted spectrum β.
-                    Z_L = 0f0;  Z_Lp = 0f0;  Z_Lq = 0f0
+                # Low-kVp spectral Beer moments (P_L, Q_L = ⟨μρ_I⟩_β, ⟨μρ_W⟩_β).
+                Z_L = 0f0;  Z_Lp = 0f0;  Z_Lq = 0f0
+                if per_ray_L
+                    for k in 1:nE_L
+                        wk = ŵ_L[col_k, row_k, k] * exp(-p_L[k]*Iv - q_L[k]*Wv)
+                        Z_L  += wk;  Z_Lp += p_L[k]*wk;  Z_Lq += q_L[k]*wk
+                    end
+                else
                     for k in 1:nE_L
                         wk = ŵ_L[k] * exp(-p_L[k]*Iv - q_L[k]*Wv)
                         Z_L  += wk;  Z_Lp += p_L[k]*wk;  Z_Lq += q_L[k]*wk
                     end
-                    invZ_L = 1f0 / max(Z_L, 1f-20)
-                    P_L = Z_Lp * invZ_L;  Q_L = Z_Lq * invZ_L
-                    f_L = -log(max(Z_L, 1f-20))
+                end
+                invZ_L = 1f0 / max(Z_L, 1f-20)
+                P_L = Z_Lp * invZ_L;  Q_L = Z_Lq * invZ_L
+                f_L = -log(max(Z_L, 1f-20))
 
-                    # High-kVp spectral Beer moments.
-                    Z_H = 0f0;  Z_Hp = 0f0;  Z_Hq = 0f0
+                # High-kVp spectral Beer moments.
+                Z_H = 0f0;  Z_Hp = 0f0;  Z_Hq = 0f0
+                if per_ray_H
+                    for k in 1:nE_H
+                        wk = ŵ_H[col_k, row_k, k] * exp(-p_H[k]*Iv - q_H[k]*Wv)
+                        Z_H  += wk;  Z_Hp += p_H[k]*wk;  Z_Hq += q_H[k]*wk
+                    end
+                else
                     for k in 1:nE_H
                         wk = ŵ_H[k] * exp(-p_H[k]*Iv - q_H[k]*Wv)
                         Z_H  += wk;  Z_Hp += p_H[k]*wk;  Z_Hq += q_H[k]*wk
                     end
-                    invZ_H = 1f0 / max(Z_H, 1f-20)
-                    P_H = Z_Hp * invZ_H;  Q_H = Z_Hq * invZ_H
-                    f_H = -log(max(Z_H, 1f-20))
-
-                    h_L = h_low[c, v, r];  h_H = h_high[c, v, r]
-                    res_L = f_L - h_L
-                    res_H = f_H - h_H
-                    w_L = exp(-h_L)     # Poisson inv-var (Noh 2009 Eq 13)
-                    w_H = exp(-h_H)
-
-                    # Cost accumulation (data term only; reg term below).
-                    Φ_slice += 0.5 * (w_L * res_L * res_L + w_H * res_H * res_H)
-
-                    # Data gradient (2-vector): first slot = iodine, second = water.
-                    g_d_I = w_L*res_L*P_L + w_H*res_H*P_H
-                    g_d_W = w_L*res_L*Q_L + w_H*res_H*Q_H
-
-                    # Data curvature (Long/Fessler eq 27 GN form, symmetric 2×2 PSD).
-                    cd_II = w_L*P_L*P_L + w_H*P_H*P_H
-                    cd_IW = w_L*P_L*Q_L + w_H*P_H*Q_H
-                    cd_WW = w_L*Q_L*Q_L + w_H*Q_H*Q_H
-
-                    # Regularizer contribution: grad via CᵀC, curv = κ.  γ=1 is
-                    # folded into κ (see hyperparam cell), so no γ multiplier here.
-                    rg_I = reg_I[c, v]
-                    rg_W = reg_W[c, v]
-
-                    # Total gradient + total 2×2 curvature.
-                    gI = g_d_I + rg_I
-                    gW = g_d_W + rg_W
-                    m_II = cd_II + reg_curv_I
-                    m_IW = cd_IW
-                    m_WW = cd_WW + reg_curv_W
-
-                    # Closed-form 2×2 solve: Δ = M⁻¹·g.
-                    det_m   = m_II*m_WW - m_IW*m_IW
-                    inv_det = 1f0 / max(det_m, 1f-20)
-                    ΔI = inv_det * (m_WW*gI - m_IW*gW)
-                    ΔW = inv_det * (m_II*gW - m_IW*gI)
-
-                    # SQS update with non-neg clip (matches Noh behaviour).
-                    sino_I[c, v, r] = max(Iv - relax_f * ΔI, 0f0)
-                    sino_W[c, v, r] = max(Wv - relax_f * ΔW, 0f0)
                 end
+                invZ_H = 1f0 / max(Z_H, 1f-20)
+                P_H = Z_Hp * invZ_H;  Q_H = Z_Hq * invZ_H
+                f_H = -log(max(Z_H, 1f-20))
 
-                # Regularizer cost: ½ γ_l · s_lᵀ · (CᵀC·s_l) — use snapshot reg_l.
-                @inbounds for v in 1:n_view, c in 1:n_col
-                    Φ_slice += 0.5 * sino_I[c, v, r] * reg_I[c, v]   # γ=1
-                    Φ_slice += 0.5 * sino_W[c, v, r] * reg_W[c, v]
-                end
+                h_L = h_low[idx];  h_H = h_high[idx]
+                res_L = f_L - h_L;  res_H = f_H - h_H
+                w_L = exp(-h_L);   w_H = exp(-h_H)
 
-                Threads.atomic_add!(Φ_total, Φ_slice)
+                # Data-term cost (reduced to scalar via sum() below).
+                cost_data[idx] = 0.5f0 * (w_L*res_L*res_L + w_H*res_H*res_H)
+
+                # Data gradient + 2×2 data curvature (Long/Fessler eq 27 GN form).
+                g_d_I = w_L*res_L*P_L + w_H*res_H*P_H
+                g_d_W = w_L*res_L*Q_L + w_H*res_H*Q_H
+                cd_II = w_L*P_L*P_L + w_H*P_H*P_H
+                cd_IW = w_L*P_L*Q_L + w_H*P_H*Q_H
+                cd_WW = w_L*Q_L*Q_L + w_H*Q_H*Q_H
+
+                rg_I = reg_I[idx];  rg_W = reg_W[idx]
+                gI = g_d_I + rg_I;  gW = g_d_W + rg_W
+                m_II = cd_II + κ_I
+                m_IW = cd_IW
+                m_WW = cd_WW + κ_W
+
+                det_m   = m_II*m_WW - m_IW*m_IW
+                inv_det = 1f0 / max(det_m, 1f-20)
+                ΔI = inv_det * (m_WW*gI - m_IW*gW)
+                ΔW = inv_det * (m_II*gW - m_IW*gI)
+
+                sino_I[idx] = max(Iv - relax_f * ΔI, 0f0)
+                sino_W[idx] = max(Wv - relax_f * ΔW, 0f0)
             end
 
-            push!(cost_history, Φ_total[])
+            # ── Φ = data term + ½ · Σ (s·CᵀC·s) reg term, both via GPU reductions.
+            Φ_data = Float64(sum(cost_data))
+            Φ_reg  = 0.5 * Float64(sum(sino_I .* reg_I) + sum(sino_W .* reg_W))
+            push!(cost_history, Φ_data + Φ_reg)
 
             if iter > 1 && cost_history[iter] > cost_history[iter-1]
                 @warn "PWLS-L₂: cost increased at iter $iter  (Φ_prev=$(cost_history[iter-1]), Φ_curr=$(cost_history[iter])).  Monotonicity violated — consider smaller relax."
@@ -4104,9 +4075,18 @@ sim_de_decomp_pwls = let
         end
         dt = time() - t0
 
-        @info "[PWLS-L₂] 2×2 matrix curvature, $(pwls_n_iter) iters × $(n_row) slices in $(round(dt, digits=1)) s  ($(round(1000*dt/pwls_n_iter, digits=0)) ms/iter)  |  κ_I=$(κ_I), κ_W=$(κ_W), Φ: $(round(cost_history[1], sigdigits=4)) → $(round(cost_history[end], sigdigits=4))"
+        # Pull results back to the CPU for downstream cells (FBP restages to GPU anyway).
+        # NOTE: don't reassign captured variables (e.g. `sino_I = nothing`) inside this
+        # `let` — Julia's scope analysis boxes them into Core.Box and the AK GPU
+        # kernel compile fails with "passing non-bitstype argument".  Scope-exit
+        # GC after the block handles the memory release.
+        sino_I_cpu = Array(sino_I)
+        sino_W_cpu = Array(sino_W)
+        GC.gc(true)
 
-        (sino_iodine = sino_I, sino_water = sino_W,
+        @info "[PWLS-L₂ AK] 2×2 matrix curvature, $(pwls_n_iter) iters in $(round(dt, digits=1)) s  ($(round(1000*dt/pwls_n_iter, digits=0)) ms/iter)  |  κ_I=$(κ_I), κ_W=$(κ_W), Φ: $(round(cost_history[1], sigdigits=4)) → $(round(cost_history[end], sigdigits=4))"
+
+        (sino_iodine = sino_I_cpu, sino_water = sino_W_cpu,
          geom = sim_de_decomp.geom,
          n_iter = pwls_n_iter,
          κ_iodine = pwls_κ_iodine, κ_water = pwls_κ_water,
@@ -4171,29 +4151,6 @@ sim_recon_pwls = let
 end;
 
 # ╔═╡ c1139ae3-5186-445e-81b8-5d932ca5ef98
-# Cong-only FBP mid-slice — streaks from per-ray analytic decomp should be visible.
-let
-    ρ_I = sim_recon_cong.iodine
-    ρ_W = sim_recon_cong.water
-    mid = size(ρ_I, 3) ÷ 2
-    ρ_I_slice = ρ_I[:, :, mid]
-    ρ_W_slice = ρ_W[:, :, mid]
-
-    I_lo, I_hi = quantile(vec(ρ_I_slice), 0.01), quantile(vec(ρ_I_slice), 0.995)
-    W_lo, W_hi = quantile(vec(ρ_W_slice), 0.01), quantile(vec(ρ_W_slice), 0.995)
-
-    fig = CM.Figure(size = (1250, 570), fontsize = 13)
-    ax1 = CM.Axis(fig[1, 1]; title = "Iodine  ρ_I(r)  (g/cm³) — Cong only  (slice $mid)", aspect = CM.DataAspect())
-    hm1 = CM.heatmap!(ax1, ρ_I_slice; colormap = :viridis, colorrange = (I_lo, I_hi))
-    CM.Colorbar(fig[1, 2], hm1; width = 12)
-
-    ax2 = CM.Axis(fig[1, 3]; title = "Water  ρ_W(r)  (g/cm³) — Cong only  (slice $mid)", aspect = CM.DataAspect())
-    hm2 = CM.heatmap!(ax2, ρ_W_slice; colormap = :viridis, colorrange = (W_lo, W_hi))
-    CM.Colorbar(fig[1, 4], hm2; width = 12)
-
-    CM.save(joinpath(RESULTS_DIR, "recon_iodine_water_cong.png"), fig, px_per_unit = 2)
-    fig
-end
 
 # ╔═╡ 00080017-0000-4000-8000-000000000004
 # Cong + PWLS FBP mid-slice — noise floor should drop vs. Cong-only, rods
@@ -4223,25 +4180,9 @@ end
 
 # ╔═╡ 00080020-0000-4000-8000-000000000004
 md"""
-### 5.3 Final FBP on Cleaned Basis Sinograms
-
-Plain FDK on each fully-cleaned basis sinogram (shared Shepp-Logan-style
-mild apodization). Filter preserves high-frequency edges (vessels, rod
-walls) so the downstream VMI+ step has real structural content to work
-with — heavy Hann would throw that away at the FBP stage and no amount of
-downstream processing can recover it.
-
-Output:
-- `sim_recon_iodine_water.iodine/.water` — (ρ_I, ρ_W) density maps in
-  g/cm³ straight out of FBP.  No capping on the density images — residual
-  radial cupping is corrected downstream on the VMI HU output (see §6.2).
-
-Cong outputs (W, I) directly from §5.1 (no photo/Compton intermediate), so
-FBPing each sinogram produces a density map in g/cm³ immediately — no
-basis inversion anywhere in §5.
-
-HU conversion happens downstream in §6 VMI via the NIST mass-atten tables:
-`μ(E) = μρ_I(E)·ρ_I + μρ_W(E)·ρ_W`.
+**Final basis FBP** — FDK on cleaned `(sino_I, sino_W)` → `(ρ_I, ρ_W)`
+density volumes (g/cm³).  No HU conversion here; VMI synthesis below
+combines the densities at each target energy.
 """
 
 # ╔═╡ 00090002-0000-4000-8000-000000000004
@@ -4361,41 +4302,103 @@ let
     fig
 end
 
+# ╔═╡ 00080f00-0000-4000-8000-000000000001
+
+# ╔═╡ 00080f01-0000-4000-8000-000000000001
+
+# ╔═╡ 000de107-0000-4000-8000-000000000001
+# ### 5.4 ACNR (Kalender 1988) — Anti-Correlated Noise Reduction, per-energy.
+# Takes the single post-PWLS material decomp (`sim_de_decomp_pwls`) and
+# produces a per-energy `Dict{Float64, NamedTuple}` where each E gets its own
+# ACNR correction tuned to preserve VMI at `acnr_E_ref` (γ = 0 ⇒ identity at
+# that energy).  When `use_acnr = false`, broadcasts the single decomp to a
+# per-energy dict unchanged.
+begin
+    use_acnr   = true
+    acnr_E_ref = 70.0   # reference E preserved exactly
+    acnr_σ     = 1.5    # Gaussian σ for noise estimation (sinogram pixels)
+    acnr_γ_per_energy = Dict(
+        40.0  => 0.60,
+        70.0  => 0.0,
+        100.0 => 0.50,
+        140.0 => 0.60,
+    )
+end
+
+# ╔═╡ 000de107-0000-4000-8000-000000000002
+# ACNR per-energy cell.  Input: single `sim_de_decomp_pwls.(sino_iodine, sino_water)`.
+# Output: `Dict{Float64, NamedTuple}` keyed by VMI target energy, feeds §6 VMI synth.
+acnr_decomp = let
+    base_w = Float32.(sim_de_decomp_pwls.sino_water)
+    base_I = Float32.(sim_de_decomp_pwls.sino_iodine)
+    base = (sino_water = base_w, sino_iodine = base_I)
+    energies = [40.0, 70.0, 100.0, 140.0]
+    if !use_acnr
+        @info "[ACNR] DISABLED — broadcasting sim_de_decomp_pwls to per-energy dict"
+        Dict{Float64, NamedTuple}(E => base for E in energies)
+    else
+        # Apply orthogonal-projection noise reduction per energy in material space.
+        # Math: s_orth = -c_I·a_w + c_w·a_I where c_m = μρ_m(E_ref) — this is the
+        # "noise direction" orthogonal to VMI(E_ref) in material space.  Gaussian-
+        # smooth s_orth (sinogram domain) to estimate its low-freq signal, subtract
+        # the high-freq component from material sinograms so VMI(E_ref) stays put.
+        function _apply_acnr(sino_w, sino_I; E_ref, σ, γ)
+            c_w = Float64(BS.compute_mass_μ_at_energy(XA.Materials.water,  E_ref))
+            c_I = Float64(BS.compute_mass_μ_at_energy(XA.Elements.Iodine, E_ref))
+            c2  = c_w^2 + c_I^2
+            aw_f64 = Float64.(sino_w);  ai_f64 = Float64.(sino_I)
+            s_orth = @. -c_I * aw_f64 + c_w * ai_f64
+            nx_s, nv_s, nr_s = size(s_orth)
+            gauss_k = [let fi = min(i-1, nx_s-(i-1)); fj = min(j-1, nv_s-(j-1))
+                           exp(-2π^2 * σ^2 * (fi^2/nx_s^2 + fj^2/nv_s^2))
+                       end for i in 1:nx_s, j in 1:nv_s]
+            s_orth_smooth = similar(s_orth)
+            for k in 1:nr_s
+                s_orth_smooth[:, :, k] .= real.(FFTW.ifft(FFTW.fft(s_orth[:, :, k]) .* gauss_k))
+            end
+            n_orth = s_orth .- s_orth_smooth
+            aw_corr = @. aw_f64 + γ * c_I / c2 * n_orth
+            ai_corr = @. ai_f64 - γ * c_w / c2 * n_orth
+            (sino_water = Float32.(aw_corr), sino_iodine = Float32.(ai_corr))
+        end
+
+        corrected = Dict{Float64, NamedTuple}()
+        for E in energies
+            γ_E = get(acnr_γ_per_energy, E, 1.0)
+            if γ_E ≈ 0.0
+                corrected[E] = base
+                @info "[ACNR] $(Int(E)) keV: γ=0 → identity"
+            else
+                corrected[E] = _apply_acnr(base.sino_water, base.sino_iodine;
+                                             E_ref = acnr_E_ref, σ = acnr_σ, γ = γ_E)
+                @info "[ACNR] $(Int(E)) keV: γ=$(γ_E), σ=$(acnr_σ)"
+            end
+        end
+        corrected
+    end
+end;
+
 # ╔═╡ 000a0001-0000-4000-8000-000000000004
 md"""
-## 6. Virtual Monoenergetic Imaging — Mono+ / VMI+
+### 13.2 VMI
 
-### References
+Consumes the single post-decomp `(sino_I, sino_W)` from §13.1, applies
+optional ACNR (per-energy γ), then synthesizes VMI sinograms and FBPs
+per target keV.  Optional radial-capping + Mono+ post-processing.
 
-- **[G14] Grant, Flohr, Krauss, Sedlmair, Thomas, Schmidt (2014)** *Invest Radiol*
-  49(9):586–592. DOI: 10.1097/RLI.0000000000000060 · PMID: 24710203.
-  Siemens Healthcare DE CT team — reference paper for the syngo.via "Mono+"
-  prototype (later VMI+).
-- **[S14] Schabel et al. (2014)** *Fortschr Röntgenstr* 186:591–597.
-  DOI: 10.1055/s-0034-1366423 — clinical evaluation.
+**ACNR (Kalender 1988)** — per-energy anti-correlated noise reduction
+in (W, I) material space.  Preserves VMI at `acnr_E_ref` exactly.
 
-### 6.1 Plain VMI (sinogram-domain synthesis + single FBP)
+**Plain VMI** — `VMI_sino(E) = μρ_W(E)·sino_W + μρ_I(E)·sino_I` → FBP →
+HU via `to_hounsfield`.  Output: `sim_vmi.volumes` at 40/70/100/140 keV.
 
-For each target energy E, form the VMI **sinogram** directly from the
-post-PWLS basis-material sinograms (§5.2 `sim_de_decomp_pwls`):
+**Radial Capping** — per-slice even-polynomial radial fit on water-like
+voxels.  Post-hoc fix for residual BHC cupping; should be near-zero with
+bowtie-aware BHC enabled upstream.
 
-    VMI_sino(E)[i, v, r] = (μ/ρ)_I(E)·sino_I[i, v, r] + (μ/ρ)_W(E)·sino_W[i, v, r]
-
-then run a single FBP per target E to get the linear-μ VMI image,
-converting to HU via NIST water linear atten at E:
-
-    VMI_μ(E, r)  = FBP( VMI_sino(E) )
-    VMI_HU(E, r) = 1000 · (VMI_μ(E, r) / μ_water(E) − 1)
-
-(μ/ρ)_I and (μ/ρ)_W are the NIST MASS attenuation coefficients (cm²/g)
-of elemental iodine and water at the target energy, cached in
-`de_basis.μρ_I_vmi / μρ_W_vmi`. Multiplying by our (ρ_I, ρ_W) line
-integrals in g/cm² gives linear-μ line integrals in cm⁻¹ — exactly
-what FBP wants.
-
-HU referenced to `BS.compute_μ_at_energy(XA.Materials.water, E)`.
-
-Output: `sim_vmi.volumes` — VMI HU stacks at 40 / 70 / 100 / 140 keV.
+**Mono+ / VMI+ (Grant 2014)** — frequency-split polish: low-freq from
+target-keV VMI + high-freq from noise-optimal keV.  Identity at
+`vmip_E_noise_opt`.
 """
 
 # ╔═╡ 000a0002-0000-4000-8000-000000000004
@@ -4411,8 +4414,9 @@ Output: `sim_vmi.volumes` — VMI HU stacks at 40 / 70 / 100 / 140 keV.
 # the same Shepp-Logan-style mild apodization as the intermediate recons.
 sim_vmi = let
     energies = de_basis.vmi_energies
-    sino_I   = sim_de_decomp_pwls.sino_iodine
-    sino_W   = sim_de_decomp_pwls.sino_water
+    # Per-energy material decomp from §5.4 ACNR.  When use_acnr = false this is
+    # just the single sim_de_decomp_pwls broadcast to all 4 energies (identity).
+    per_energy = acnr_decomp
 
     filter_ctrl = (
         x = (0.0, 0.25, 0.5, 0.75, 1.0),
@@ -4420,8 +4424,10 @@ sim_vmi = let
     )
 
     # Shared FBP workspace: allocate once, reuse across energies (same
-    # geometry, same matrix size, same filter).
-    sino_gpu = MtlArray(similar(sino_I))
+    # geometry, same matrix size, same filter).  Size templated on any
+    # per-energy sinogram (they all share shape).
+    sino_template = first(values(per_energy)).sino_iodine
+    sino_gpu = MtlArray(similar(sino_template))
     ws = BS.create_fdk_recon_workspace(
         sino_gpu, sim_de_decomp_pwls.geom, de_matrix_size;
         filter = BS.CustomFilter(filter_ctrl.x, filter_ctrl.y)
@@ -4440,8 +4446,12 @@ sim_vmi = let
         μρ_I_E = de_basis.μρ_I_vmi[k]       # cm²/g
         μρ_W_E = de_basis.μρ_W_vmi[k]
 
+        # Per-energy material sinograms from ACNR (single decomp if use_acnr=false).
+        sino_I_E = per_energy[Float64(E)].sino_iodine
+        sino_W_E = per_energy[Float64(E)].sino_water
+
         # Linear combine in sinogram domain.
-        sino_host = @. μρ_I_E * sino_I + μρ_W_E * sino_W    # cm⁻¹·cm  (Float32)
+        sino_host = @. μρ_I_E * sino_I_E + μρ_W_E * sino_W_E    # cm⁻¹·cm  (Float32)
         copyto!(sino_gpu, sino_host)
 
         μ_vol = Array(BS.reconstruct!(ws, sino_gpu, sim_de_decomp_pwls.geom, de_matrix_size))   # cm⁻¹
@@ -4481,28 +4491,11 @@ end
 
 # ╔═╡ 000a0010-0000-4000-8000-000000000004
 md"""
-### 6.2 Post-VMI Radial Capping Correction
-
-Residual radial **cupping/capping** (background HU slowly drifting away from
-zero as a function of image radius) persists in the raw VMI because Cong +
-PWLS-L₂ don't model every beam-hardening path exactly.  We apply a per-slice
-even-polynomial radial correction directly on each HU volume.
-
-For each target energy E and each slice:
-1. Select water-like voxels (`hu_lo ≤ v ≤ hu_hi`) — excludes air and the
-   high-contrast inserts without needing material-specific thresholds.
-2. Fit an even polynomial in radius:  `offset(r) = c₀ + c₁·r² + c₂·r⁴ + …`
-3. Subtract `offset(r) − target_hu` from every voxel in the slice, so the
-   water background sits at `target_hu = 0` HU.
-
-Runs via `BS.apply_radial_cupping_correction!` (src/correction/
-beam_hardening_correction.jl:790).  Applied per-energy because each VMI
-has its own HU scaling — a single basis-image correction wouldn't
-generalise cleanly to every target E.
-
-Output: `sim_vmi_flat.volumes` — capping-corrected HU stacks, same shape /
-indexing as `sim_vmi.volumes`.  Downstream Mono+ / ROI / comparison cells
-consume `sim_vmi_flat` so the flat background propagates.
+**Radial Capping (per-slice even-polynomial radial fit)** — water-like
+voxels in `[vmi_cap_hu_lo, vmi_cap_hu_hi]` feed `c₀ + c₁r² + c₂r⁴ + …`;
+each slice is flattened to `vmi_cap_target_hu = 0` HU background.
+Output: `sim_vmi_flat.volumes` (same shape as `sim_vmi.volumes`).
+With bowtie-aware BHC upstream this stage should be near-identity.
 """
 
 # ╔═╡ 000a0011-0000-4000-8000-000000000004
@@ -4520,8 +4513,8 @@ consume `sim_vmi_flat` so the flat background propagates.
 begin
     vmi_cap_enable     = true
     vmi_cap_fov_cm     = 35.0
-    vmi_cap_hu_lo      = -100.0
-    vmi_cap_hu_hi      = 80.0
+    vmi_cap_hu_lo      = -10.0
+    vmi_cap_hu_hi      = 100.0
     vmi_cap_poly_order = 2
     vmi_cap_target_hu  = 0.0
 end
@@ -4577,59 +4570,10 @@ end
 
 # ╔═╡ 000a0005-0000-4000-8000-000000000004
 md"""
-### 6.3 Mono+ / VMI+ — Grant 2014 1:1 parity
-
-This is a straight port of **[G14] §Technique for Calculating Mono+ Images**.
-Where the paper is explicit we copy it exactly; where it's silent we make a
-single, documented best guess.
-
-#### What the paper says verbatim
-
-> "…low-keV images (in which iodine pixels have a high contrast to the
-> surrounding tissue) and images of optimal keV from a noise perspective
-> (typically, minimum image noise is obtained at approximately 70 keV)
-> are computed. By means of a frequency-split technique, both the low-keV
-> images and the images with minimum image noise are decomposed into 2
-> sets of subimages. The first set contains only lower spatial frequencies
-> and, hence, most of the object information, the second set contains the
-> remaining high spatial frequencies and, hence, mostly image noise.
-> Finally, the lower spatial frequency stack at low keV is combined with
-> the high spatial frequency stack at optimal keV from a noise perspective…"
-
-Extracted hard constraints:
-
-| # | Specification (paper) | Implementation |
-|---|----------------------|----------------|
-| 1 | Two inputs: `VMI_target` + `VMI_opt`                                       | ✓ Read from `sim_vmi.volumes` at `E_target` and `E_noise_opt` |
-| 2 | Noise-optimal energy ≈ 70 keV                                              | ✓ `vmip_E_noise_opt = 70.0` |
-| 3 | Frequency-split decomposition of **both** images into LP + HP subimages    | ✓ Same linear LP applied to both branches |
-| 4 | Final = LP(VMI_target) + HP(VMI_opt)                                       | ✓ `Mono+(E) = LP(VMI_E) + (VMI_opt − LP(VMI_opt))` |
-| 5 | LP + HP are complementary (partition the frequency axis)                   | ✓ HP ≡ I − LP by construction (linear LP ⇒ complementary) |
-
-#### What the paper does NOT specify — documented best guesses
-
-| Decision | Paper | **Best guess** | Rationale |
-|----------|-------|----------------|-----------|
-| LP filter shape           | Unstated (proprietary) — abstract mentions *"regional spatial frequency-based recombination"* but body text only says "frequency-split" | **2D Gaussian LP** (FFT-diagonal) | Simplest linear LP that cleanly partitions the frequency axis; "regional" in the abstract reads as *spatial-domain* rather than spatially-adaptive; matches the plain "frequency-split" language |
-| LP kernel size (σ)        | Unstated                                         | **σ = 2.0 px**                        | Rough match to the scale where image noise lives (~1–2 px) and object features (≥5 px) survive; tunable via `vmip_σ_lp_px` |
-| Same LP for both branches | Strongly implied ("both…decomposed into 2 sets") | **Yes, identical σ and kernel**       | Only way LP + HP = I across both branches → Mono+(E_opt) = VMI_opt identically (sanity check) |
-| Any pre-denoising of VMI_opt | Not mentioned                                  | **None**                              | Paper treats VMI_opt as-is; strict parity ⇒ no hidden preconditioning |
-| 2D vs 3D LP               | Paper figures are axial 2D                       | **Per-slice 2D**                      | Matches clinical axial viewing; 3D LP would couple across slice thickness, not described by paper |
-| Boundary conditions       | Unstated                                         | **FFT periodic**                      | No artifacts in body interior; tiny ring at scanner-bore edge is masked by the FOV circle anyway |
-
-#### Final formula
-
-    Mono+(E_target)  =  LP_σ(VMI_E_target)  +  VMI_opt  −  LP_σ(VMI_opt)
-
-where `LP_σ` is a 2D Gaussian low-pass with std-dev `σ` pixels. At
-`E_target = E_noise_opt` the formula collapses to `Mono+(E_opt) = VMI_opt`
-exactly — a good consistency check.
-
-#### Expected result ([G14] Figs 4–5)
-
-Mono+ CNR rises monotonically as keV drops, peaking at 40 keV. Plain VMI
-CNR peaks near 80 keV and drops at low keV because noise grows faster
-than iodine contrast.
+**Mono+ / VMI+ (Grant 2014)** — frequency-split:
+`Mono+(E) = LP_σ(VMI_E) + (VMI_opt − LP_σ(VMI_opt))` with `LP_σ` a 2D
+Gaussian low-pass (per-slice, FFT).  Identity at `E = vmip_E_noise_opt`.
+Per-energy σ in `vmip_σ_lp_px` (all zeros = effective pass-through).
 """
 
 # ╔═╡ 6454952b-4cdb-4beb-979e-c41595dbe204
@@ -4653,25 +4597,63 @@ than iodine contrast.
 # Input: sim_vmi_flat (capping-corrected VMI) — Mono+ inherits the flat
 # radial background from §6.2 so downstream bias stays zero.
 begin
+    # Master Mono+ toggle.  When false, `sim_vmi_plus` passes `sim_vmi_flat`
+    # through unchanged (identity) so the chain stays intact.
+    use_mono_plus = true
+
     # Noise-optimal energy. [G14] body: "approximately 70 keV". MUST be in
     # sim_vmi_flat.energies.
     vmip_E_noise_opt = 70.0
 
-    # LP Gaussian σ in pixels. [BEST GUESS — paper unspecified.] Typical
-    # values: σ ≈ 1.0 preserves most detail (mild mix), σ ≈ 3.0 heavily
-    # hands HF to VMI_opt (aggressive denoising at low-keV), σ ≈ 2.0 is
-    # balanced. Effective HP cutoff frequency ≈ 1/(2πσ) cycles/pixel.
-    vmip_σ_lp_px = 1.5
+    # Per-energy LP Gaussian σ in pixels, aligned with `sim_vmi_flat.energies`
+    # (= `de_basis.vmi_energies` = [40, 70, 100, 140] keV).  Larger σ → more
+    # denoising (more HF content borrowed from VMI_opt); smaller σ → preserve
+    # more own-VMI detail.  σ at E_noise_opt is an identity — Mono+(E_opt)
+    # = VMI_opt regardless of σ.
+    #
+    # Typical values: σ ≈ 1.0 mild, σ ≈ 2.0 balanced, σ ≈ 3.0 aggressive.
+    # Effective HP cutoff frequency ≈ 1/(2πσ) cycles/pixel.
+    # vmip_σ_lp_px = Float32[1.5, 0.0, 2.5, 3.0]
+    vmip_σ_lp_px = Float32[1.5, 0.0, 0.0, 1.0]
 end
 
 # ╔═╡ 000b0002-0000-4000-8000-000000000004
 # Mono+ frequency-split via FFT Gaussian LP — Grant 2014 1:1 parity.
-# Mono+(E) = LP_σ(VMI_E) + VMI_opt − LP_σ(VMI_opt). Identity at E_opt.
-sim_vmi_plus = BS.apply_mono_plus(
-    sim_vmi_flat.volumes, sim_vmi_flat.energies;
-    E_noise_opt = vmip_E_noise_opt,
-    σ_lp_px     = vmip_σ_lp_px,
-)
+# Mono+(E) = LP_σ(E)(VMI_E) + VMI_opt − LP_σ(E)(VMI_opt). Identity at E_opt.
+#
+# Per-energy σ: we call BS.apply_mono_plus once per target energy with that
+# energy's σ, then take only that energy's slot from each call.  Extra cost
+# is length(E)−1 redundant LP(VMI_opt) computations, which is negligible vs
+# the FBP / PWLS upstream.  Output matches the single-σ version's shape
+# (NamedTuple with .energies, .volumes) but adds a .σ_lp_px Vector.
+sim_vmi_plus = let
+    energies = sim_vmi_flat.energies
+    vols_in  = sim_vmi_flat.volumes
+
+    if !use_mono_plus
+        @info "[Mono+] DISABLED — passing sim_vmi_flat through unchanged"
+        (energies = energies, volumes = vols_in,
+         σ_lp_px  = zeros(Float64, length(energies)),
+         E_noise_opt = Float64(vmip_E_noise_opt))
+    else
+        length(vmip_σ_lp_px) == length(energies) ||
+            error("vmip_σ_lp_px length $(length(vmip_σ_lp_px)) ≠ energies length $(length(energies))")
+
+        σ_effective = Float64.(vmip_σ_lp_px)
+        out_vols = Vector{Array{Float32, 3}}(undef, length(energies))
+        for (i, σ_i) in enumerate(σ_effective)
+            result_i = BS.apply_mono_plus(vols_in, energies;
+                E_noise_opt = vmip_E_noise_opt,
+                σ_lp_px     = σ_i,
+                verbose     = false)
+            out_vols[i] = result_i.volumes[i]
+        end
+
+        (energies = energies, volumes = out_vols,
+         σ_lp_px  = σ_effective,
+         E_noise_opt = Float64(vmip_E_noise_opt))
+    end
+end
 
 # ╔═╡ 000b0003-0000-4000-8000-000000000004
 # VMI (capping-corrected) vs Mono+ side-by-side at each energy — soft tissue window.
@@ -4687,7 +4669,7 @@ let
                     colormap = :grays, colorrange = (-200, 500))
 
         ax2 = CM.Axis(
-            fig[i, 2]; title = "Mono+ $(Int(E)) keV  (σ_LP=$(sim_vmi_plus.σ_lp_px) px, HP@$(Int(sim_vmi_plus.E_noise_opt)) keV)",
+            fig[i, 2]; title = "Mono+ $(Int(E)) keV  (σ_LP=$(sim_vmi_plus.σ_lp_px[i]) px, HP@$(Int(sim_vmi_plus.E_noise_opt)) keV)",
             aspect = CM.DataAspect()
         )
         CM.heatmap!(ax2, sim_vmi_plus.volumes[i][:, :, mid];
@@ -4727,10 +4709,55 @@ let
     )
     CM.scatterlines!(ax, 1:length(sim_vmi.energies), σ_raw;    color = :firebrick,  linewidth = 2, markersize = 10, label = "VMI raw")
     CM.scatterlines!(ax, 1:length(sim_vmi.energies), σ_capped; color = :darkorange, linewidth = 2, markersize = 10, label = "VMI + capping")
-    CM.scatterlines!(ax, 1:length(sim_vmi.energies), σ_plus;   color = :steelblue,  linewidth = 2, markersize = 10, label = "Mono+ (σ_LP=$(sim_vmi_plus.σ_lp_px) px)")
+    CM.scatterlines!(ax, 1:length(sim_vmi.energies), σ_plus;   color = :steelblue,  linewidth = 2, markersize = 10, label = "Mono+ (σ_LP = [$(join(string.(sim_vmi_plus.σ_lp_px), ", "))] px)")
     CM.axislegend(ax; position = :rt)
     CM.save(joinpath(RESULTS_DIR, "vmi_noise.png"), fig, px_per_unit = 2)
     fig
+end
+
+# ╔═╡ 00080e00-0000-4000-8000-000000000001
+# Shared viz helper for per-stage material decomp intermediate viz.
+# 2×2 panel: (∫ρ_I·dr, ∫ρ_W·dr) sinogram mid-view + (ρ_I, ρ_W) FBP mid-slice.
+function _decomp_viz06(sino_I, sino_W, stage_name)
+    geom = sim_de_sino_low.geom
+    recon_size = de_matrix_size
+    filter_ctrl = (x = (0.0, 0.25, 0.5, 0.75, 1.0),
+                   y = (1.0, 0.95, 0.85, 0.65, 0.4))
+    function _fbp(s)
+        g = MtlArray(Float32.(s))
+        ws = BS.create_fdk_recon_workspace(g, geom, recon_size;
+                                           filter = BS.CustomFilter(filter_ctrl.x, filter_ctrl.y))
+        v = Array(BS.reconstruct!(ws, g, geom, recon_size))
+        ws = nothing; g = nothing; GC.gc(true)
+        Float32.(v)
+    end
+    fbp_I = _fbp(sino_I);  fbp_W = _fbp(sino_W)
+    mid_v = size(sino_I, 2) ÷ 2
+    mid_z = size(fbp_I, 3) ÷ 2
+
+    I_lo, I_hi = quantile(vec(sino_I[:, mid_v, :]), 0.01), quantile(vec(sino_I[:, mid_v, :]), 0.995)
+    W_lo, W_hi = quantile(vec(sino_W[:, mid_v, :]), 0.01), quantile(vec(sino_W[:, mid_v, :]), 0.995)
+    fI_lo, fI_hi = quantile(vec(fbp_I[:, :, mid_z]), 0.01), quantile(vec(fbp_I[:, :, mid_z]), 0.995)
+    fW_lo, fW_hi = quantile(vec(fbp_W[:, :, mid_z]), 0.01), quantile(vec(fbp_W[:, :, mid_z]), 0.995)
+
+    fig = CM.Figure(size = (1100, 700), fontsize = 11)
+    ax1 = CM.Axis(fig[1, 1]; title = "$stage_name — ∫ρ_I·dr (sino mid-view)", aspect = CM.DataAspect())
+    CM.heatmap!(ax1, sino_I[:, mid_v, :]; colormap = :viridis, colorrange = (I_lo, I_hi))
+    ax2 = CM.Axis(fig[1, 2]; title = "$stage_name — ∫ρ_W·dr (sino mid-view)", aspect = CM.DataAspect())
+    CM.heatmap!(ax2, sino_W[:, mid_v, :]; colormap = :viridis, colorrange = (W_lo, W_hi))
+    ax3 = CM.Axis(fig[2, 1]; title = "$stage_name — ρ_I FBP (slice $mid_z) [g/cm³]", aspect = CM.DataAspect())
+    CM.heatmap!(ax3, fbp_I[:, :, mid_z]; colormap = :viridis, colorrange = (fI_lo, fI_hi))
+    ax4 = CM.Axis(fig[2, 2]; title = "$stage_name — ρ_W FBP (slice $mid_z) [g/cm³]", aspect = CM.DataAspect())
+    CM.heatmap!(ax4, fbp_W[:, :, mid_z]; colormap = :viridis, colorrange = (fW_lo, fW_hi))
+    fig
+end
+
+# ╔═╡ 00080f01-0000-4000-8000-000000000002
+# ACNR viz — 40 keV where γ is largest so the effect is most visible.
+let
+    E_viz = 40.0
+    s = acnr_decomp[E_viz]
+    _decomp_viz06(s.sino_iodine, s.sino_water, "ACNR ($(Int(E_viz)) keV)")
 end
 
 # ╔═╡ 06126004-0000-4000-8000-000000000000
@@ -4837,7 +4864,9 @@ end
 
 # ╔═╡ 03c1d3a1-5604-4b50-b4e9-117260a23cf4
 md"""
-### VMI: Qualitative (Clinical vs Simulated)
+### 13.3 VMI: Visualizations
+
+**VMI: Qualitative (Clinical vs Simulated)**
 """
 
 # ╔═╡ 08d5d8aa-bc95-427b-8a6a-d429881f6034
@@ -4869,7 +4898,7 @@ end
 
 # ╔═╡ b922a52a-b4f8-4385-b5a0-7b8eb69e8cfe
 md"""
-### VMI: Line Profiles (Clinical vs Simulated VMI)
+**VMI: Line Profiles (Clinical vs Simulated VMI)**
 """
 
 # ╔═╡ 157920c7-9a64-4407-8bd5-398f15e4842d
@@ -4924,7 +4953,7 @@ end
 
 # ╔═╡ bf457bc7-9349-4b2f-b278-ef355f98cede
 md"""
-### VMI: Scatter Plot (Clinical vs Simulated VMI)
+**VMI: Scatter Plot (Clinical vs Simulated VMI)**
 """
 
 # ╔═╡ 8e37657c-d02f-4b74-aba8-73299fd705c9
@@ -5008,7 +5037,7 @@ end
 
 # ╔═╡ 20ccfc65-0e2a-4d50-9460-bd64b29d2cc8
 md"""
-### VMI: Noise (Clinical vs Simulated VMI)
+**VMI: Noise (Clinical vs Simulated VMI)**
 """
 
 # ╔═╡ 55ba2d06-51fe-4ba3-b428-78bcf6107b9b
@@ -5055,7 +5084,7 @@ end
 
 # ╔═╡ 314c530e-caf1-4235-9985-05e1ef81ccd1
 md"""
-### VMI: NPS (Clinical vs Simulated VMI)
+**VMI: NPS (Clinical vs Simulated VMI)**
 """
 
 # ╔═╡ b5c7a40b-2e23-4a85-a734-b8dc86949b7f
@@ -5093,7 +5122,7 @@ end
 
 # ╔═╡ 6ee9f9ae-977a-4782-b435-9a28bf45346c
 md"""
-### VMI: MTF (Clinical vs Simulated VMI)
+**VMI: MTF (Clinical vs Simulated VMI)**
 """
 
 # ╔═╡ e6439f40-ade4-4de9-817c-96663a5ae453
@@ -5125,86 +5154,6 @@ let
     end
     CM.save(joinpath(RESULTS_DIR, "ge_vmi_mtf.png"), fig, px_per_unit = 2)
     fig
-end
-
-# ╔═╡ a89fe53a-c546-4036-b7e9-1be92206cd62
-md"""
-### Final Export — All Measurements (Clinical + Simulated VMI)
-"""
-
-# ╔═╡ 8cf1b41b-105d-4dc5-952a-cedfc4c8f4ae
-# Comprehensive export: all clinical + simulated measurements → CSV + JLD2
-let
-    tagged = vcat(
-        [(m, "clinical_SE") for m in se_measurements],
-        [(m, "clinical_DE_VMI") for m in de_measurements],
-        [(m, "sim_FBP") for m in sim_measurements],
-        [(m, "sim_HIR") for m in sim_measurements_hir],
-        [(m, "sim_DE_VMI") for m in sim_de_vmi_measurements],
-    )
-
-    rod_order = tagged[1][1].rod_names
-    header = ["scan_name", "category"]
-    for nm in rod_order
-        tag = replace(replace(nm, " " => "_"), "(" => "", ")" => "")
-        push!(header, "hu_mean_$tag")
-    end
-    for nm in rod_order
-        tag = replace(replace(nm, " " => "_"), "(" => "", ")" => "")
-        push!(header, "hu_std_$tag")
-    end
-    for nm in rod_order
-        tag = replace(replace(nm, " " => "_"), "(" => "", ")" => "")
-        push!(header, "cnr_$tag")
-    end
-    append!(
-        header, [
-            "nps_peak_freq_lp_cm", "nps_area_HU2cm2",
-            "mtf_f50_lp_cm", "mtf_f10_lp_cm",
-        ]
-    )
-
-    rows = Vector{Any}[]
-    for (m, cat) in tagged
-        row = Any[m.name, cat]
-        append!(row, round.(m.rod_means, digits = 2))
-        append!(row, round.(m.rod_stds, digits = 2))
-        append!(row, round.(m.rod_cnr, digits = 2))
-        push!(row, round(m.nps_peak_freq, digits = 3))
-        push!(row, round(m.nps_area, digits = 3))
-        push!(row, round(m.mtf_f50, digits = 3))
-        push!(row, round(m.mtf_f10, digits = 3))
-        push!(rows, row)
-    end
-
-    csv_path = joinpath(RESULTS_DIR, "ge_apex_elite_all_measurements.csv")
-    open(csv_path, "w") do io
-        println(io, join(header, ","))
-        for row in rows
-            println(io, join(row, ","))
-        end
-    end
-
-    nps_path = joinpath(RESULTS_DIR, "ge_apex_elite_all_nps.jld2")
-    JLD2.jldopen(nps_path, "w") do f
-        for (m, cat) in tagged
-            f["$(cat)/$(m.name)"] = (freq = m.nps.frequencies, nps = m.nps.nps_1d)
-        end
-    end
-
-    mtf_path = joinpath(RESULTS_DIR, "ge_apex_elite_all_mtf.jld2")
-    JLD2.jldopen(mtf_path, "w") do f
-        for (m, cat) in tagged
-            f["$(cat)/$(m.name)"] = (freq = m.mtf.frequencies, mtf = m.mtf.mtf)
-        end
-    end
-
-    md"""
-    **Exported (all measurements):**
-    - `ge_apex_elite_all_measurements.csv` — $(length(tagged)) rows × $(length(header)) columns
-    - `ge_apex_elite_all_nps.jld2` — NPS curves ($(length(tagged)) scans)
-    - `ge_apex_elite_all_mtf.jld2` — MTF curves ($(length(tagged)) scans)
-    """
 end
 
 # ╔═╡ e4d416cf-9085-4733-a04e-45b3a84f577e
@@ -5313,9 +5262,89 @@ let
     fig
 end
 
+# ╔═╡ a89fe53a-c546-4036-b7e9-1be92206cd62
+md"""
+## 15. Final Export — All Measurements (Clinical + Simulated VMI)
+"""
+
+# ╔═╡ 8cf1b41b-105d-4dc5-952a-cedfc4c8f4ae
+# Comprehensive export: all clinical + simulated measurements → CSV + JLD2
+let
+    tagged = vcat(
+        [(m, "clinical_SE") for m in se_measurements],
+        [(m, "clinical_DE_VMI") for m in de_measurements],
+        [(m, "sim_FBP") for m in sim_measurements],
+        [(m, "sim_HIR") for m in sim_measurements_hir],
+        [(m, "sim_DE_VMI") for m in sim_de_vmi_measurements],
+    )
+
+    rod_order = tagged[1][1].rod_names
+    header = ["scan_name", "category"]
+    for nm in rod_order
+        tag = replace(replace(nm, " " => "_"), "(" => "", ")" => "")
+        push!(header, "hu_mean_$tag")
+    end
+    for nm in rod_order
+        tag = replace(replace(nm, " " => "_"), "(" => "", ")" => "")
+        push!(header, "hu_std_$tag")
+    end
+    for nm in rod_order
+        tag = replace(replace(nm, " " => "_"), "(" => "", ")" => "")
+        push!(header, "cnr_$tag")
+    end
+    append!(
+        header, [
+            "nps_peak_freq_lp_cm", "nps_area_HU2cm2",
+            "mtf_f50_lp_cm", "mtf_f10_lp_cm",
+        ]
+    )
+
+    rows = Vector{Any}[]
+    for (m, cat) in tagged
+        row = Any[m.name, cat]
+        append!(row, round.(m.rod_means, digits = 2))
+        append!(row, round.(m.rod_stds, digits = 2))
+        append!(row, round.(m.rod_cnr, digits = 2))
+        push!(row, round(m.nps_peak_freq, digits = 3))
+        push!(row, round(m.nps_area, digits = 3))
+        push!(row, round(m.mtf_f50, digits = 3))
+        push!(row, round(m.mtf_f10, digits = 3))
+        push!(rows, row)
+    end
+
+    csv_path = joinpath(RESULTS_DIR, "ge_apex_elite_all_measurements.csv")
+    open(csv_path, "w") do io
+        println(io, join(header, ","))
+        for row in rows
+            println(io, join(row, ","))
+        end
+    end
+
+    nps_path = joinpath(RESULTS_DIR, "ge_apex_elite_all_nps.jld2")
+    JLD2.jldopen(nps_path, "w") do f
+        for (m, cat) in tagged
+            f["$(cat)/$(m.name)"] = (freq = m.nps.frequencies, nps = m.nps.nps_1d)
+        end
+    end
+
+    mtf_path = joinpath(RESULTS_DIR, "ge_apex_elite_all_mtf.jld2")
+    JLD2.jldopen(mtf_path, "w") do f
+        for (m, cat) in tagged
+            f["$(cat)/$(m.name)"] = (freq = m.mtf.frequencies, mtf = m.mtf.mtf)
+        end
+    end
+
+    md"""
+    **Exported (all measurements):**
+    - `ge_apex_elite_all_measurements.csv` — $(length(tagged)) rows × $(length(header)) columns
+    - `ge_apex_elite_all_nps.jld2` — NPS curves ($(length(tagged)) scans)
+    - `ge_apex_elite_all_mtf.jld2` — MTF curves ($(length(tagged)) scans)
+    """
+end
+
 # ╔═╡ 07140001-0000-4000-8000-000000000000
 md"""
-## 15. Appendix: Parameter Readout
+## 16. Appendix: Parameter Readout
 
 Current tuning parameter values for quick inspection.
 """
@@ -5333,6 +5362,7 @@ sim_noise_floor_hu
 # ╟─07010001-0000-4000-8000-000000000000
 # ╠═07010002-0000-4000-8000-000000000000
 # ╠═783d265d-506c-4dd4-aa76-bd352f532c6d
+# ╠═f3a91573-63b4-40df-8a9a-3a44d390bc79
 # ╠═07010003-0000-4000-8000-000000000000
 # ╠═07010004-0000-4000-8000-000000000000
 # ╠═07010005-0000-4000-8000-000000000000
@@ -5349,6 +5379,7 @@ sim_noise_floor_hu
 # ╠═07010014-0000-4000-8000-000000000000
 # ╠═07010015-0000-4000-8000-000000000000
 # ╠═07010016-0000-4000-8000-000000000000
+# ╠═07010022-0000-4000-8000-000000000000
 # ╠═07010017-0000-4000-8000-000000000000
 # ╠═07010018-0000-4000-8000-000000000000
 # ╠═a13bf90b-b0a1-4786-9554-132b1a346334
@@ -5503,9 +5534,11 @@ sim_noise_floor_hu
 # ╠═e8af3f62-e606-4f10-9a09-9e0620910f58
 # ╟─5cc1fa5c-3722-4fa1-b0f0-d816e204c8bf
 # ╟─00080001-0000-4000-8000-000000000004
-# ╠═f3a91573-63b4-40df-8a9a-3a44d390bc79
+# ╠═00080001-a000-4000-8000-000000000004
 # ╠═00080002-0000-4000-8000-000000000004
 # ╠═00080003-0000-4000-8000-000000000004
+# ╟─00080e02-0000-4000-8000-000000000001
+# ╠═00080001-b000-4000-8000-000000000004
 # ╠═00080004-0000-4000-8000-000000000004
 # ╟─00080005-0000-4000-8000-000000000004
 # ╠═00080012-0000-4000-8000-000000000004
@@ -5522,6 +5555,11 @@ sim_noise_floor_hu
 # ╟─fd9969e0-415f-409d-8672-fe2d963b6486
 # ╟─2b6fd506-c624-4be3-9a71-1d366ae58ada
 # ╟─00090003-0000-4000-8000-000000000004
+# ╟─00080f00-0000-4000-8000-000000000001
+# ╟─00080f01-0000-4000-8000-000000000001
+# ╠═000de107-0000-4000-8000-000000000001
+# ╠═000de107-0000-4000-8000-000000000002
+# ╟─00080f01-0000-4000-8000-000000000002
 # ╟─000a0001-0000-4000-8000-000000000004
 # ╠═000a0002-0000-4000-8000-000000000004
 # ╟─000a0004-0000-4000-8000-000000000004
@@ -5534,6 +5572,7 @@ sim_noise_floor_hu
 # ╠═000b0002-0000-4000-8000-000000000004
 # ╟─000b0003-0000-4000-8000-000000000004
 # ╟─000b0004-0000-4000-8000-000000000004
+# ╟─00080e00-0000-4000-8000-000000000001
 # ╠═06126004-0000-4000-8000-000000000000
 # ╠═c3bafd40-fda9-4ec2-8ec3-8dc109fc4ecb
 # ╟─3a1f9c02-de47-4a8b-b1e3-f8c7d2e10a01
@@ -5549,10 +5588,10 @@ sim_noise_floor_hu
 # ╟─b5c7a40b-2e23-4a85-a734-b8dc86949b7f
 # ╟─6ee9f9ae-977a-4782-b435-9a28bf45346c
 # ╟─e6439f40-ade4-4de9-817c-96663a5ae453
-# ╟─a89fe53a-c546-4036-b7e9-1be92206cd62
-# ╠═8cf1b41b-105d-4dc5-952a-cedfc4c8f4ae
 # ╟─e4d416cf-9085-4733-a04e-45b3a84f577e
 # ╟─79a6fd16-4c56-4bd4-98d4-889ddc2e1e01
+# ╟─a89fe53a-c546-4036-b7e9-1be92206cd62
+# ╠═8cf1b41b-105d-4dc5-952a-cedfc4c8f4ae
 # ╟─07140001-0000-4000-8000-000000000000
 # ╠═07140002-0000-4000-8000-000000000000
 # ╠═07140003-0000-4000-8000-000000000000

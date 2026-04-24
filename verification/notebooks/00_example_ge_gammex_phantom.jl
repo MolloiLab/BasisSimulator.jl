@@ -323,7 +323,7 @@ let
 
     # Fully resolved spectrum (includes flat filter, bowtie center, detector response)
     prot = BS.CTProtocol(kVp = kVp, additional_filters = additional_filters)
-    e_res, w_res = BS.resolve_spectrum(sim_opts, prot; scanner = sim_scanner)
+    e_res, w_res = BS.resolve_source_spectrum_without_bowtie(sim_opts, prot; scanner = sim_scanner)
     E_eff = sum(e_res .* w_res) / sum(w_res)
 
     fig = CM.Figure(size = (900, 500), fontsize = 13)
@@ -432,7 +432,7 @@ end
 # Calibrate two-material BHC model for 120 kVp
 bhc_model, μ_water_ref = let
     prot = BS.CTProtocol(kVp = 120, additional_filters = additional_filters)
-    e, w = BS.resolve_spectrum(sim_opts, prot; scanner = sim_scanner)
+    e, w = BS.resolve_source_spectrum_without_bowtie(sim_opts, prot; scanner = sim_scanner)
     ref_E = sum(e .* w) / sum(w)
     model = BS.calibrate_bhc_two_material(
         e, w;
