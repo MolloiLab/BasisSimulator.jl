@@ -2336,8 +2336,8 @@ end;
 # Smaller h_param / fewer n_iter ⇒ less denoising (more residual noise).
 # Larger h_param / more n_iter   ⇒ more denoising (smoother volumes).
 begin
-    rskr_n_iter_s1   = 2         # Bregman iters (paper §2.5: 3-4 typical)
-    rskr_h_param_s1  = 0.5       # range-kernel scale (paper Fig 1d: 1.2-1.5 typical)
+    rskr_n_iter_s1   = 10         # Bregman iters (paper §2.5: 3-4 typical)
+    rskr_h_param_s1  = 2.0       # range-kernel scale (paper Fig 1d: 1.2-1.5 typical)
     rskr_radius_s1   = 2         # spatial kernel half-radius
     rskr_γ_s1        = 0.5       # rank-sparse h scaling exponent
 end
@@ -2380,6 +2380,8 @@ begin
     ring_rad_s1            = 7
 end;
 
+# ╔═╡ 08131d15-0000-4000-8000-000000000002
+
 # ╔═╡ 08131f00-0000-4000-8000-000000000001
 md"""
 **VMI synthesis.** Per-energy HIR recon + Mono+ polish, fused into one cell.
@@ -2389,6 +2391,28 @@ Config: `vmi_energies_s1` selects synthesis energies; `hir_*_s1` controls HIR; `
 # ╔═╡ 08131009-a000-4000-8000-000000000001
 # ── Scan 1 VMI target energies ────────────────────────────────────────────
 vmi_energies_s1 = [40.0, 70.0, 100.0, 140.0];
+
+# ╔═╡ 08131f02-0000-4000-8000-000000000001
+md"""
+**VMI synthesis (Scan 1, image-domain).** Per-energy synthesis from `c_iodine` map.
+1. Reads `c_iodine` (mg/mL) and `vol_low_HU` from `sim_scan1_imdomain_decomp_s1`.
+2. For each `E ∈ vmi_energies_s1`: swap iodine HU contribution at low bin for iodine HU contribution at E.
+   `HU_E[v] = HU_low[v] + c_iodine[v] · (α_iod_E_phys − α_iod_low_cal)`
+   where `α_iod_E_phys = μρ_iodine(E) / μρ_water(E)` (HU per mg/mL).
+3. Optional Mono+ (frequency-split polish across energies) on top.
+"""
+
+# ╔═╡ 08131009-a000-4000-8000-000000000006
+# ── Scan 1 HIR config ─────────────────────────────────────────────────────
+begin
+    use_hir_s1         = true
+    hir_strength_s1    = 2
+    hir_lambda_s1      = 5.0f0
+    hir_nepochs_s1     = 2
+    hir_n_subsets_s1   = 12
+    hir_huber_delta_s1 = 0.06f0
+    hir_relaxation_s1  = 0.35f0
+end
 
 # ╔═╡ 08131009-a000-4000-8000-000000000007
 # ── STAGE 8 — Mono+ config (per-keV LP sigma) ──
@@ -2407,31 +2431,9 @@ begin
     vmip_σ_per_E_s1      = Dict{Float64, Float64}(
         40.0  => 1.5,    # px σ at 40 keV  — high (low-E VMI is noisiest)
         70.0  => 0.0,    # px σ at 70 keV  — reference, no smoothing
-        100.0 => 0.0,    # px σ at 100 keV — moderate
-        140.0 => 0.0,    # px σ at 140 keV — low (high-E VMI is cleaner)
+        100.0 => 1.5,    # px σ at 100 keV — moderate
+        140.0 => 1.5,    # px σ at 140 keV — low (high-E VMI is cleaner)
     )
-end
-
-# ╔═╡ 08131f02-0000-4000-8000-000000000001
-md"""
-**VMI synthesis (Scan 1, image-domain).** Per-energy synthesis from `c_iodine` map.
-1. Reads `c_iodine` (mg/mL) and `vol_low_HU` from `sim_scan1_imdomain_decomp_s1`.
-2. For each `E ∈ vmi_energies_s1`: swap iodine HU contribution at low bin for iodine HU contribution at E.
-   `HU_E[v] = HU_low[v] + c_iodine[v] · (α_iod_E_phys − α_iod_low_cal)`
-   where `α_iod_E_phys = μρ_iodine(E) / μρ_water(E)` (HU per mg/mL).
-3. Optional Mono+ (frequency-split polish across energies) on top.
-"""
-
-# ╔═╡ 08131009-a000-4000-8000-000000000006
-# ── Scan 1 HIR config ─────────────────────────────────────────────────────
-begin
-    use_hir_s1         = true
-    hir_strength_s1    = 3
-    hir_lambda_s1      = 10.0f0
-    hir_nepochs_s1     = 2
-    hir_n_subsets_s1   = 12
-    hir_huber_delta_s1 = 0.06f0
-    hir_relaxation_s1  = 0.35f0
 end
 
 # ╔═╡ 08135000-0000-4000-8000-000000000001
@@ -2479,6 +2481,145 @@ sim_scan1_combined_bin_volumes_ring_s1 = let
 
         (vol_low = vol_low, vol_high = vol_high)
     end
+end;
+
+# ╔═╡ 08131d15-0000-4000-8000-000000000001
+# ── STAGE 5 — Image-domain decomp calibration (Ding 2012, Eq 3) ──
+# Linear 3-parameter fit per material:
+#   c_iodine  = a₀ + a₁·HU_low + a₂·HU_high      (mg/mL)
+# Calibration ROIs: water rod (c=0) + 7 iodine rods (c = 2.0..20.0 mg/mL).
+# 8 calibration points → over-determined LSQ for 3 unknowns → robust fit.
+#
+# Also fits the iodine HU sensitivity at each bin:
+#   α_iod_low_cal  = mean rod-HU per (mg/mL) at low bin
+#   α_iod_high_cal = mean rod-HU per (mg/mL) at high bin
+# These are needed for VMI synthesis to subtract iodine contribution from
+# HU_low and add iodine contribution at the target energy.
+sim_scan1_imdomain_cal_s1 = let
+    seg = sim_seg_result_s1
+    μ_w_low, μ_w_high = sim_scan1_M_matrix_s1.μ_water_combined
+    vol_low_HU  = @. (sim_scan1_combined_bin_volumes_ring_s1.vol_low  - μ_w_low ) / μ_w_low  * 1000f0
+    vol_high_HU = @. (sim_scan1_combined_bin_volumes_ring_s1.vol_high - μ_w_high) / μ_w_high * 1000f0
+
+    nx = size(vol_low_HU, 1)
+    nz = size(vol_low_HU, 3)
+    mid_z = round(Int, nz / 2)
+    slice_low  = vol_low_HU[:, :, mid_z]
+    slice_high = vol_high_HU[:, :, mid_z]
+
+    roi_r_pix = 1.4 * 0.6 / (sim_fov_cm / nx)
+    roi_r_sq  = roi_r_pix ^ 2
+    function _rod_mean(slice, rod)
+        i_lo = max(1, floor(Int, rod.cx - roi_r_pix - 1))
+        i_hi = min(nx, ceil(Int, rod.cx + roi_r_pix + 1))
+        j_lo = max(1, floor(Int, rod.cy - roi_r_pix - 1))
+        j_hi = min(nx, ceil(Int, rod.cy + roi_r_pix + 1))
+        s = 0.0; n = 0
+        @inbounds for j in j_lo:j_hi, i in i_lo:i_hi
+            if (i - rod.cx)^2 + (j - rod.cy)^2 <= roi_r_sq
+                s += slice[i, j]; n += 1
+            end
+        end
+        s / n
+    end
+
+    # Calibration rods: water rod + 7 iodine rods.  Iodine concentrations
+    # are encoded in the rod names (e.g. "I 5.0" → 5.0 mg/mL).
+    cal_rods_s1 = [
+        ("Water (O)",  0.0),
+        ("I 2.0",      2.0),
+        ("I 2.5",      2.5),
+        ("I 5.0",      5.0),
+        ("I 7.5",      7.5),
+        ("I 10.0",    10.0),
+        ("I 15.0",    15.0),
+        ("I 20.0",    20.0),
+    ]
+    rods_by_name = Dict(r.name => r for r in seg.rods)
+
+    HU_low_cal  = Float64[]
+    HU_high_cal = Float64[]
+    c_iod_cal   = Float64[]
+    for (nm, c) in cal_rods_s1
+        r = rods_by_name[nm]
+        push!(HU_low_cal,  _rod_mean(slice_low,  r))
+        push!(HU_high_cal, _rod_mean(slice_high, r))
+        push!(c_iod_cal,   c)
+    end
+    n_cal = length(c_iod_cal)
+
+    # Ding Eq 3 LSQ: solve for (a_0, a_1, a_2) via normal equations.
+    # design matrix A = [1, HU_low, HU_high], target = c_iodine.
+    A_design = hcat(ones(n_cal), HU_low_cal, HU_high_cal)
+    coeffs_iod = A_design \ c_iod_cal     # 3-vec [a_0, a_1, a_2]
+    pred_c     = A_design * coeffs_iod
+    rms_c      = sqrt(mean((pred_c .- c_iod_cal) .^ 2))
+
+    # Iodine HU-per-(mg/mL) sensitivity at each bin (slope through origin
+    # since pure water rod has HU≈0 and c=0).
+    # Use simple LSQ slope: slope = Σ(c·HU) / Σ(c²)
+    # Skipping water rod (c=0) for slope fit; iodine rods only.
+    iod_idx = findall(c -> c > 0, c_iod_cal)
+    α_iod_low_cal  = sum(c_iod_cal[iod_idx] .* HU_low_cal[iod_idx])  / sum(c_iod_cal[iod_idx] .^ 2)
+    α_iod_high_cal = sum(c_iod_cal[iod_idx] .* HU_high_cal[iod_idx]) / sum(c_iod_cal[iod_idx] .^ 2)
+
+    @info "[image-domain decomp cal] $(n_cal) ROIs (1 water + 7 iodine):"
+    for i in 1:n_cal
+        @info "  $(rpad(cal_rods_s1[i][1], 10))  c=$(c_iod_cal[i])  HU_low=$(round(HU_low_cal[i], digits=1))  HU_high=$(round(HU_high_cal[i], digits=1))  → c_pred=$(round(pred_c[i], digits=2))"
+    end
+    @info "  Ding Eq 3 fit:  a₀=$(round(coeffs_iod[1], digits=3))  a₁=$(round(coeffs_iod[2], sigdigits=4))  a₂=$(round(coeffs_iod[3], sigdigits=4))   RMS=$(round(rms_c, digits=3)) mg/mL"
+    @info "  Iodine HU-per-(mg/mL) at bins:  α_low=$(round(α_iod_low_cal, digits=2))   α_high=$(round(α_iod_high_cal, digits=2))"
+
+    (coeffs_iod      = Float32.(coeffs_iod),
+     α_iod_low_cal   = Float32(α_iod_low_cal),
+     α_iod_high_cal  = Float32(α_iod_high_cal),
+     cal_rods        = cal_rods_s1,
+     HU_low_cal      = HU_low_cal,
+     HU_high_cal     = HU_high_cal,
+     c_iod_cal       = c_iod_cal,
+     pred_c          = pred_c,
+     rms_c           = rms_c)
+end;
+
+# ╔═╡ 08131d15-0000-4000-8000-000000000004
+sim_scan1_imdomain_decomp_s1 = let
+    cal = sim_scan1_imdomain_cal_s1
+    μ_w_low, μ_w_high = sim_scan1_M_matrix_s1.μ_water_combined
+    vol_low_HU  = @. (sim_scan1_combined_bin_volumes_ring_s1.vol_low  - μ_w_low ) / μ_w_low  * 1000f0
+    vol_high_HU = @. (sim_scan1_combined_bin_volumes_ring_s1.vol_high - μ_w_high) / μ_w_high * 1000f0
+
+    a0, a1, a2 = cal.coeffs_iod
+    c_iodine_map = @. a0 + a1 * vol_low_HU + a2 * vol_high_HU
+
+    @info "[image-domain decomp]  c_iodine map (raw)  range=[$(round(minimum(c_iodine_map), digits=2)), $(round(maximum(c_iodine_map), digits=2))] mg/mL   mean=$(round(mean(c_iodine_map), digits=3))"
+
+    # ── Optional FFT low-pass on c_iodine (per-slice) ──
+    # Spatial σ in px → FFT-domain Gaussian transfer  H(k) = exp(-2π²σ²|k|²)
+    # where k is in cycles/pixel.  Identity at σ = 0.
+    if use_c_iodine_lp_s1 && c_iodine_lp_σ_s1 > 0
+        σ_f  = Float64(c_iodine_lp_σ_s1)
+        n_col, n_row, n_z = size(c_iodine_map)
+        fx = [min(i - 1, n_col - (i - 1)) / n_col for i in 1:n_col]
+        fy = [min(j - 1, n_row - (j - 1)) / n_row for j in 1:n_row]
+        H  = [exp(-2π^2 * σ_f^2 * (fx[i]^2 + fy[j]^2)) for i in 1:n_col, j in 1:n_row]
+
+        smoothed = similar(c_iodine_map)
+        Threads.@threads for k in 1:n_z
+            slice_c = ComplexF64.(@view c_iodine_map[:, :, k])
+            slice_c .= FFTW.fft(slice_c) .* H
+            smoothed[:, :, k] .= Float32.(real.(FFTW.ifft(slice_c)))
+        end
+        Δrms = sqrt(mean((smoothed .- c_iodine_map) .^ 2))
+        c_iodine_map = smoothed
+        @info "[image-domain decomp]  FFT LP applied (σ=$(σ_f) px)  →  c_iodine smoothed.  RMS Δ = $(round(Δrms, digits=3)) mg/mL"
+    else
+        @info "[image-domain decomp]  FFT LP DISABLED — c_iodine returned as-is"
+    end
+
+    (c_iodine = c_iodine_map,
+     vol_low_HU  = vol_low_HU,
+     vol_high_HU = vol_high_HU,
+     geom = sim_scan1.geom)
 end;
 
 # ╔═╡ 08131d00-0000-4000-8000-000000000008
@@ -2573,6 +2714,43 @@ sim_scan1_vmi_hir = let
     end
     final
 end;
+
+# ╔═╡ 08131d15-0000-4000-8000-000000000003
+# ── Image-domain decomp viz: c_iodine map + rod HUs at calibration ROIs ──
+let
+    cal    = sim_scan1_imdomain_cal_s1
+    decomp = sim_scan1_imdomain_decomp_s1
+    seg    = sim_seg_result_s1
+
+    mid_z = size(decomp.c_iodine, 3) ÷ 2
+    c_slice = decomp.c_iodine[:, :, mid_z]
+    lo_c, hi_c = quantile(vec(c_slice), 0.01), quantile(vec(c_slice), 0.99)
+
+    fig = CM.Figure(size = (1400, 760), fontsize = 11)
+    CM.Label(fig[0, 1:4], "STAGE 5/6 — Image-domain decomp:  c_iodine map (mg/mL)";
+        fontsize = 14, halign = :left)
+
+    ax_c = CM.Axis(fig[1, 1:2]; title = "c_iodine (mid-z)", aspect = CM.DataAspect())
+    hm_c = CM.heatmap!(ax_c, c_slice; colormap = :magma, colorrange = (lo_c, hi_c))
+    CM.hidedecorations!(ax_c); CM.hidespines!(ax_c)
+    for r in seg.rods
+        CM.scatter!(ax_c, [r.cx], [r.cy]; markersize = 4, color = :cyan)
+    end
+    CM.Colorbar(fig[1, 3], hm_c; label = "c_iodine [mg/mL]", width = 18)
+
+    # Calibration rod fit chart: known c vs predicted c, with linear fit.
+    ax_fit = CM.Axis(fig[2, 1:2]; title = "Calibration fit",
+        xlabel = "Known c_iodine [mg/mL]", ylabel = "Predicted c_iodine [mg/mL]",
+        aspect = 1.0)
+    CM.scatter!(ax_fit, cal.c_iod_cal, cal.pred_c; markersize = 10, color = :steelblue)
+    cmax = maximum(cal.c_iod_cal) + 1
+    CM.lines!(ax_fit, [0.0, cmax], [0.0, cmax]; color = (:gray60, 0.7), linestyle = :dash, label = "Unity")
+    CM.text!(ax_fit, 0.05 * cmax, 0.85 * cmax;
+        text = "RMS = $(round(cal.rms_c, digits=3)) mg/mL\nα_iod_low = $(round(cal.α_iod_low_cal, digits=2)) HU/(mg/mL)\nα_iod_high = $(round(cal.α_iod_high_cal, digits=2)) HU/(mg/mL)",
+        fontsize = 11, align = (:left, :top))
+
+    fig
+end
 
 # ╔═╡ 08135010-0000-4000-8000-000000000003
 let
@@ -3429,160 +3607,6 @@ let
         "STAGE 4 — Ring-corrected";
         clim_HU = Float64.(rskr_viz_hu_clim_s1),
     )
-end
-
-# ╔═╡ 08131d15-0000-4000-8000-000000000001
-# ── STAGE 5 — Image-domain decomp calibration (Ding 2012, Eq 3) ──
-# Linear 3-parameter fit per material:
-#   c_iodine  = a₀ + a₁·HU_low + a₂·HU_high      (mg/mL)
-# Calibration ROIs: water rod (c=0) + 7 iodine rods (c = 2.0..20.0 mg/mL).
-# 8 calibration points → over-determined LSQ for 3 unknowns → robust fit.
-#
-# Also fits the iodine HU sensitivity at each bin:
-#   α_iod_low_cal  = mean rod-HU per (mg/mL) at low bin
-#   α_iod_high_cal = mean rod-HU per (mg/mL) at high bin
-# These are needed for VMI synthesis to subtract iodine contribution from
-# HU_low and add iodine contribution at the target energy.
-sim_scan1_imdomain_cal_s1 = let
-    seg = sim_seg_result_s1
-    μ_w_low, μ_w_high = sim_scan1_M_matrix_s1.μ_water_combined
-    vol_low_HU  = @. (sim_scan1_combined_bin_volumes_ring_s1.vol_low  - μ_w_low ) / μ_w_low  * 1000f0
-    vol_high_HU = @. (sim_scan1_combined_bin_volumes_ring_s1.vol_high - μ_w_high) / μ_w_high * 1000f0
-
-    nx = size(vol_low_HU, 1)
-    nz = size(vol_low_HU, 3)
-    mid_z = round(Int, nz / 2)
-    slice_low  = vol_low_HU[:, :, mid_z]
-    slice_high = vol_high_HU[:, :, mid_z]
-
-    roi_r_pix = 1.4 * 0.6 / (sim_fov_cm / nx)
-    roi_r_sq  = roi_r_pix ^ 2
-    function _rod_mean(slice, rod)
-        i_lo = max(1, floor(Int, rod.cx - roi_r_pix - 1))
-        i_hi = min(nx, ceil(Int, rod.cx + roi_r_pix + 1))
-        j_lo = max(1, floor(Int, rod.cy - roi_r_pix - 1))
-        j_hi = min(nx, ceil(Int, rod.cy + roi_r_pix + 1))
-        s = 0.0; n = 0
-        @inbounds for j in j_lo:j_hi, i in i_lo:i_hi
-            if (i - rod.cx)^2 + (j - rod.cy)^2 <= roi_r_sq
-                s += slice[i, j]; n += 1
-            end
-        end
-        s / n
-    end
-
-    # Calibration rods: water rod + 7 iodine rods.  Iodine concentrations
-    # are encoded in the rod names (e.g. "I 5.0" → 5.0 mg/mL).
-    cal_rods_s1 = [
-        ("Water (O)",  0.0),
-        ("I 2.0",      2.0),
-        ("I 2.5",      2.5),
-        ("I 5.0",      5.0),
-        ("I 7.5",      7.5),
-        ("I 10.0",    10.0),
-        ("I 15.0",    15.0),
-        ("I 20.0",    20.0),
-    ]
-    rods_by_name = Dict(r.name => r for r in seg.rods)
-
-    HU_low_cal  = Float64[]
-    HU_high_cal = Float64[]
-    c_iod_cal   = Float64[]
-    for (nm, c) in cal_rods_s1
-        r = rods_by_name[nm]
-        push!(HU_low_cal,  _rod_mean(slice_low,  r))
-        push!(HU_high_cal, _rod_mean(slice_high, r))
-        push!(c_iod_cal,   c)
-    end
-    n_cal = length(c_iod_cal)
-
-    # Ding Eq 3 LSQ: solve for (a_0, a_1, a_2) via normal equations.
-    # design matrix A = [1, HU_low, HU_high], target = c_iodine.
-    A_design = hcat(ones(n_cal), HU_low_cal, HU_high_cal)
-    coeffs_iod = A_design \ c_iod_cal     # 3-vec [a_0, a_1, a_2]
-    pred_c     = A_design * coeffs_iod
-    rms_c      = sqrt(mean((pred_c .- c_iod_cal) .^ 2))
-
-    # Iodine HU-per-(mg/mL) sensitivity at each bin (slope through origin
-    # since pure water rod has HU≈0 and c=0).
-    # Use simple LSQ slope: slope = Σ(c·HU) / Σ(c²)
-    # Skipping water rod (c=0) for slope fit; iodine rods only.
-    iod_idx = findall(c -> c > 0, c_iod_cal)
-    α_iod_low_cal  = sum(c_iod_cal[iod_idx] .* HU_low_cal[iod_idx])  / sum(c_iod_cal[iod_idx] .^ 2)
-    α_iod_high_cal = sum(c_iod_cal[iod_idx] .* HU_high_cal[iod_idx]) / sum(c_iod_cal[iod_idx] .^ 2)
-
-    @info "[image-domain decomp cal] $(n_cal) ROIs (1 water + 7 iodine):"
-    for i in 1:n_cal
-        @info "  $(rpad(cal_rods_s1[i][1], 10))  c=$(c_iod_cal[i])  HU_low=$(round(HU_low_cal[i], digits=1))  HU_high=$(round(HU_high_cal[i], digits=1))  → c_pred=$(round(pred_c[i], digits=2))"
-    end
-    @info "  Ding Eq 3 fit:  a₀=$(round(coeffs_iod[1], digits=3))  a₁=$(round(coeffs_iod[2], sigdigits=4))  a₂=$(round(coeffs_iod[3], sigdigits=4))   RMS=$(round(rms_c, digits=3)) mg/mL"
-    @info "  Iodine HU-per-(mg/mL) at bins:  α_low=$(round(α_iod_low_cal, digits=2))   α_high=$(round(α_iod_high_cal, digits=2))"
-
-    (coeffs_iod      = Float32.(coeffs_iod),
-     α_iod_low_cal   = Float32(α_iod_low_cal),
-     α_iod_high_cal  = Float32(α_iod_high_cal),
-     cal_rods        = cal_rods_s1,
-     HU_low_cal      = HU_low_cal,
-     HU_high_cal     = HU_high_cal,
-     c_iod_cal       = c_iod_cal,
-     pred_c          = pred_c,
-     rms_c           = rms_c)
-end;
-
-# ╔═╡ 08131d15-0000-4000-8000-000000000002
-# ── STAGE 6 — Apply image-domain decomp per voxel → c_iodine map (mg/mL) ──
-sim_scan1_imdomain_decomp_s1 = let
-    cal = sim_scan1_imdomain_cal_s1
-    μ_w_low, μ_w_high = sim_scan1_M_matrix_s1.μ_water_combined
-    vol_low_HU  = @. (sim_scan1_combined_bin_volumes_ring_s1.vol_low  - μ_w_low ) / μ_w_low  * 1000f0
-    vol_high_HU = @. (sim_scan1_combined_bin_volumes_ring_s1.vol_high - μ_w_high) / μ_w_high * 1000f0
-
-    a0, a1, a2 = cal.coeffs_iod
-    c_iodine_map = @. a0 + a1 * vol_low_HU + a2 * vol_high_HU
-
-    @info "[image-domain decomp]  c_iodine map  range=[$(round(minimum(c_iodine_map), digits=2)), $(round(maximum(c_iodine_map), digits=2))] mg/mL   mean=$(round(mean(c_iodine_map), digits=3))"
-
-    (c_iodine = c_iodine_map,
-     vol_low_HU  = vol_low_HU,
-     vol_high_HU = vol_high_HU,
-     geom = sim_scan1.geom)
-end;
-
-# ╔═╡ 08131d15-0000-4000-8000-000000000003
-# ── Image-domain decomp viz: c_iodine map + rod HUs at calibration ROIs ──
-let
-    cal    = sim_scan1_imdomain_cal_s1
-    decomp = sim_scan1_imdomain_decomp_s1
-    seg    = sim_seg_result_s1
-
-    mid_z = size(decomp.c_iodine, 3) ÷ 2
-    c_slice = decomp.c_iodine[:, :, mid_z]
-    lo_c, hi_c = quantile(vec(c_slice), 0.01), quantile(vec(c_slice), 0.99)
-
-    fig = CM.Figure(size = (1400, 760), fontsize = 11)
-    CM.Label(fig[0, 1:4], "STAGE 5/6 — Image-domain decomp:  c_iodine map (mg/mL)";
-        fontsize = 14, halign = :left)
-
-    ax_c = CM.Axis(fig[1, 1:2]; title = "c_iodine (mid-z)", aspect = CM.DataAspect())
-    hm_c = CM.heatmap!(ax_c, c_slice; colormap = :magma, colorrange = (lo_c, hi_c))
-    CM.hidedecorations!(ax_c); CM.hidespines!(ax_c)
-    for r in seg.rods
-        CM.scatter!(ax_c, [r.cx], [r.cy]; markersize = 4, color = :cyan)
-    end
-    CM.Colorbar(fig[1, 3], hm_c; label = "c_iodine [mg/mL]", width = 18)
-
-    # Calibration rod fit chart: known c vs predicted c, with linear fit.
-    ax_fit = CM.Axis(fig[2, 1:2]; title = "Calibration fit",
-        xlabel = "Known c_iodine [mg/mL]", ylabel = "Predicted c_iodine [mg/mL]",
-        aspect = 1.0)
-    CM.scatter!(ax_fit, cal.c_iod_cal, cal.pred_c; markersize = 10, color = :steelblue)
-    cmax = maximum(cal.c_iod_cal) + 1
-    CM.lines!(ax_fit, [0.0, cmax], [0.0, cmax]; color = (:gray60, 0.7), linestyle = :dash, label = "Unity")
-    CM.text!(ax_fit, 0.05 * cmax, 0.85 * cmax;
-        text = "RMS = $(round(cal.rms_c, digits=3)) mg/mL\nα_iod_low = $(round(cal.α_iod_low_cal, digits=2)) HU/(mg/mL)\nα_iod_high = $(round(cal.α_iod_high_cal, digits=2)) HU/(mg/mL)",
-        fontsize = 11, align = (:left, :top))
-
-    fig
 end
 
 # ╔═╡ 08131f02-0000-4000-8000-000000000002
@@ -4815,6 +4839,18 @@ md"""
 - **Custom filter (Br36 approx):** $(sim_custom_filter.control_x) → $(sim_custom_filter.control_y)
 """
 
+# ╔═╡ a4a1ff64-2559-4b13-93f0-a953d33fc1b2
+# ── STAGE 6 — Apply image-domain decomp per voxel → c_iodine map (mg/mL) ──
+# Optional FFT low-pass on c_iodine is applied here (pre-VMI) so the
+# spatial detail of `vol_low_HU` is preserved at full resolution while
+# the iodine *contrast contribution* is smoothed.  Set
+# `use_c_iodine_lp_s1 = true` to enable; `c_iodine_lp_σ_s1` controls
+# the spatial-domain Gaussian σ (in pixels).  Larger σ ⇒ stronger LP.
+begin
+    use_c_iodine_lp_s1 = false
+    c_iodine_lp_σ_s1   = 1.5     # spatial-domain Gaussian σ in pixels
+end;
+
 # ╔═╡ Cell order:
 # ╠═08010001-0000-4000-8000-000000000000
 # ╠═a129a323-d627-4272-934c-5b4734286f37
@@ -4915,17 +4951,18 @@ md"""
 # ╠═0cbcb5fe-7e29-48fc-9d68-ab7cb05ac3c4
 # ╠═08131d00-0000-4000-8000-000000000003
 # ╠═08131d00-0000-4000-8000-000000000010
-# ╠═08131d10-0000-4000-8000-000000000001
+# ╟─08131d10-0000-4000-8000-000000000001
 # ╠═08131d00-0000-4000-8000-000000000006
 # ╠═08131d00-0000-4000-8000-000000000002
 # ╠═08131d00-0000-4000-8000-000000000009
-# ╠═08131d10-0000-4000-8000-000000000002
+# ╟─08131d10-0000-4000-8000-000000000002
 # ╠═08131d11-0000-4000-8000-000000000001
 # ╠═08131d11-0000-4000-8000-000000000002
-# ╠═08131d11-0000-4000-8000-000000000003
+# ╟─08131d11-0000-4000-8000-000000000003
 # ╠═08131d15-0000-4000-8000-000000000001
-# ╠═08131d15-0000-4000-8000-000000000002
-# ╠═08131d15-0000-4000-8000-000000000003
+# ╠═a4a1ff64-2559-4b13-93f0-a953d33fc1b2
+# ╠═08131d15-0000-4000-8000-000000000004
+# ╟─08131d15-0000-4000-8000-000000000003
 # ╟─08131f00-0000-4000-8000-000000000001
 # ╠═08131009-a000-4000-8000-000000000001
 # ╟─08131f02-0000-4000-8000-000000000001
@@ -5022,3 +5059,4 @@ md"""
 # ╠═08180002-0000-4000-8000-000000000000
 # ╟─08190001-0000-4000-8000-000000000000
 # ╟─08190002-0000-4000-8000-000000000000
+# ╠═08131d15-0000-4000-8000-000000000002
