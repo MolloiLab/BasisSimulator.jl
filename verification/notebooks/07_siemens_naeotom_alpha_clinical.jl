@@ -93,6 +93,9 @@ import XrayAttenuation as XA
 # ╔═╡ 08010018-0000-4000-8000-000000000000
 import DICOM as DCM
 
+# ╔═╡ 08010018-a000-4000-8000-000000000000
+import AcceleratedKernels as AK
+
 # ╔═╡ 08010019-0000-4000-8000-000000000000
 const FIGURES_DIR = joinpath(dirname(@__DIR__), "figures"); mkpath(FIGURES_DIR)
 
@@ -1289,12 +1292,14 @@ sim_recon_opts = BS.ReconOptions(
 )
 
 # ╔═╡ 08090007-0000-4000-8000-000000000000
-# Br36 kernel approximation — medium-sharp body kernel (Siemens)
-# Control points: (normalized_freq, amplitude) — tune to match clinical Br36
+# Br36-ish (sharper) kernel approximation — used for VMI / bin FBP.
+# Control points: (normalized_freq, amplitude) — higher amplitudes at
+# mid/high frequencies = more spatial-resolution preservation, more noise.
+# Previous (softer) profile preserved in comment for easy reverting.
 sim_custom_filter = BS.CustomFilter(
   (0.0, 0.25, 0.5, 0.75, 1.0),
-  (1.0, 0.75, 0.6, 0.2, 0.001),
-  # (1.0, 0.70, 0.08, 0.002, 0.0001),
+  # (1.0, 0.75, 0.6,  0.2,  0.001),   # original Br36-ish (softer)
+  (1.0,  0.92, 0.82, 0.55, 0.10),     # sharper variant for testing
 )
 
 # ╔═╡ 8d4be3af-9475-4378-a318-0fbe03f07663
@@ -1592,6 +1597,28 @@ let
     @info "sino_high: $(n_neg_high)/$(n_total) negative ($(round(100*n_neg_high/n_total, digits=2))%), min=$(round(min_high, digits=4))"
 end
 
+# ╔═╡ 08131006-d000-4000-8000-000000000001
+# ── STAGE 1 — 4-bin → 2-bin combined sinograms (mid-view heatmaps) ──
+let
+    sl = sim_scan1_lohi.sino_low
+    sh = sim_scan1_lohi.sino_high
+    mid_v = size(sl, 2) ÷ 2
+
+    cr_l = (quantile(vec(sl[:, mid_v, :]), 0.01), quantile(vec(sl[:, mid_v, :]), 0.995))
+    cr_h = (quantile(vec(sh[:, mid_v, :]), 0.01), quantile(vec(sh[:, mid_v, :]), 0.995))
+
+    fig = CM.Figure(size = (1300, 480), fontsize = 11)
+    CM.Label(fig[0, 1:2], "STAGE 1 — 4-bin → 2-bin combined sinograms (mid-view) — bins 1+2 (low) / 3+4 (high)";
+        fontsize = 14, halign = :left)
+    ax_l = CM.Axis(fig[1, 1]; title = "sino_low (bins 1+2)",  aspect = CM.DataAspect())
+    CM.heatmap!(ax_l, sl[:, mid_v, :]; colormap = :viridis, colorrange = cr_l)
+    CM.hidedecorations!(ax_l); CM.hidespines!(ax_l)
+    ax_h = CM.Axis(fig[1, 2]; title = "sino_high (bins 3+4)", aspect = CM.DataAspect())
+    CM.heatmap!(ax_h, sh[:, mid_v, :]; colormap = :viridis, colorrange = cr_h)
+    CM.hidedecorations!(ax_h); CM.hidespines!(ax_h)
+    fig
+end
+
 # ╔═╡ 08131005-a000-4000-8000-000000000001
 md"""
 ### VMI
@@ -1603,1319 +1630,754 @@ and returns the scatter field + per-bin weights for exact model-based subtractio
 
 # ╔═╡ 08131009-0000-4000-8000-000000000000
 md"""
-**Material decomposition + VMI synthesis (Scan 1).** Active chain: **bin grouping → Cong → PWLS-L₂ → VMI(per-E FBP apod) → Mono+ → HIR (optional)**.
+**Material decomposition + VMI synthesis (Scan 1).** Pipeline: **4-bin → 2-bin combine → FBP → RSKR-2ch → image-domain decomp via M_cal⁻¹ → VMI**.
 
-Cong (per-ray analytic decomp on the 2-bin lo/hi grouping) is the canonical `(sino_iodine, sino_water)` pair — fed directly into PWLS as warm start.  PWLS-L₂ (Long/Fessler 2014, 2×2 matrix curvature) polishes the basis sinograms.  Per-energy VMI synthesis runs FBP with a per-energy apodization curve, then Mono+ frequency-split polish, then optional HIR warm-started from Mono+ output.
+The 4 PCCT bins are combined via Beer's law into low/high effective sinos (bins 1+2 and 3+4).  Each is FBP-reconstructed independently, then jointly denoised by RSKR-2ch (SVD + bilateral filter on U-vectors).  A 2×2 path-effective calibrated `M_cal` matrix maps the denoised `(vol_low, vol_high)` pair to material-density volumes `(ρ_water, ρ_iodine)`.  Per-energy VMI synthesis evaluates `μ_E = ρ_w·μρ_w(E) + ρ_I·μρ_I(E)` in image domain.
 """
 
-# ╔═╡ 08131e02-0000-4000-8000-000000000001
+# ╔═╡ 08131d00-0000-4000-8000-000000000001
 md"""
-**Cong 2022 (inline).** Per-ray analytic DE decomposition in a **photoelectric + Compton** basis.  `μ(E) = p(E)·a(r) + q(E)·c(r)` where `(a, c)` are the two basis paths and `p(E), q(E)` are shared tables.
+### RSKR pipeline (Clark & Badea 2023, MCR Toolkit) — Scan 1
 
-⚠ **Why empirical p/q, not the Cong Eq 3c/3d closed forms?**  The analytical `BS.p_photoelectric(E)` / `BS.q_compton(E)` formulas are schematic — they underpredict real water μ(E) by ~60 % at 40 keV.  Cong's outer Brent on water path `L` then never hits `T_L_meas` and every ray falls through to the `(0, 0)` failure branch → decomp returns identically zero.  Fix: fit `(p_L, q_L)` and `(p_H, q_H)` per spectral bin by least-squares so `p·a_w + q·c_w = μ_water(E)` and `p·a_I + q·c_I = μ_iodine(E)` **exactly**.  Same trick as `00_example_ge_gammex_phantom_dual.jl`.
+Replaces sino-domain CMV/ACNR with the Duke MCR Toolkit's image-domain
+post-reconstruction architecture:
 
-Inline so we can tweak rigorously:
-1. **PCCT Cong basis (empirical p/q)** — low = bins 1+2 (20–55 keV), high = bins 3+4 (>55 keV).  Per-bin spectrum from `BS.pcct_effective_spectrum`; `p(E), q(E)` from the 2×2 fit against (water, iodine).
-2. **`BS.apply_cong!`** — outer Brent on water-L → inner Newton on Eq 8 quintic → outer Brent on `y`.  Output: (sino_y, sino_c) = `(∫a·dr, ∫c·dr)`.
-3. **Exact basis change (y, c) → (t_I, t_W)** — because p/q were fit to reproduce (water, iodine) exactly, the mapping is the physical 2×2 `[a_I a_W; c_I c_W]^-1` (no reference-energy tradeoff).
+1. **Per-bin FBP** — reconstruct each of the 4 PCCT bin sinograms separately
+   into 4 bin volumes (`vol_b[v] ≈ ⟨μ⟩_b` at voxel v).
+2. **RSKR (Rank-Sparse Kernel Regression)** — joint denoise the 4 bin volumes
+   via SVD-decomposed channel space + joint bilateral filter on left singular
+   vectors with **adaptive σ from MAD-Haar** (no manual tuning).
+3. **Image-domain material decomposition** — per-voxel LSQ:
+   `vol_b[v] = Σ_m M[b, m] · ρ_m[v]`  →  `ρ[v] = M_pinv · vol[v]`
+   where `M[b, m] = Σ_E ŵ_b(E) · μρ_m(E)` is the bin-averaged mass attenuation.
+4. **VMI resynthesis** (image-domain): `μ(E)[v] = Σ_m ρ_m[v] · μρ_m(E)`,
+   then convert to HU.
 
-`cong_decomp_s1` is the canonical (sino_iodine, sino_water) for Scan 1 — fed directly into RWLS as warm start.
+This is the architecturally correct Duke pipeline (Clark/Badea 2023).
+Inlined here to verify-and-iterate freely (no `src/` edits).
+Reference: https://gitlab.oit.duke.edu/dpc18/mcr-toolkit-public
 """
 
-# ╔═╡ 08131e02-0000-4000-8000-000000000002
-# Cong config — all hyperparams exposed for tuning.
+# ╔═╡ 0cbcb5fe-7e29-48fc-9d68-ab7cb05ac3c4
+# HU window for all polychromatic-bin viz cells (raw FBP / RSKR / combined).
+# All FBP-stage volumes are HU-converted per-bin before display so a single
+# window applies uniformly across plots.
+rskr_viz_hu_clim_s1 = (-200.0, 500.0)
+
+# ╔═╡ 08131d00-0000-4000-8000-000000000003
+# Helper functions for RSKR pipeline (all inlined in this section).
+#   _mad_haar_σ        — adaptive σ estimator from Haar wavelet high-pass MAD
+#   _joint_bf_4ch_gpu! — joint bilateral filter on 4 channels (Metal GPU)
+#   _rskr_4ch          — RSKR driver: SVD → per-SV jBF → reconstitute, iterated
 begin
-    cong_run_on_cpu        = false      # true → run apply_cong! on CPU (isolates Metal issues)
-    cong_use_bowtie        = true       # true → per-ray 3D ŵ[col,row,E] (bowtie-aware); false → 1D centered
-    cong_low_bins          = [1, 2]     # low PCCT channel
-    cong_high_bins         = [3, 4]     # high PCCT channel
-    cong_newton_max_iter   = 5          # inner Newton iters (match notebook 00's working setup)
-    cong_newton_tol        = eps(Float32)
-    cong_y_max_factor      = 0.25       # safety factor on outer Brent y_max
-    cong_y_max_cap         = Float32(1e7)
-end
+    # ── MAD-Haar adaptive σ (paper Eq 7) ──
+    # σ_e = 1.4826 · median(|∇χ_e(n)|) where ∇ = Haar high-pass (cross-diff approx).
+    # Computed on mid-z axial slice for efficiency (paper §2.2).
+    function _mad_haar_σ(vol::AbstractArray{Float32, 3})
+        n_col, n_row, n_z = size(vol)
+        mid_z = max(1, n_z ÷ 2 + 1)
+        slice = @view vol[:, :, mid_z]
+        # 2D Haar HH-component: ∇²(i,j) = x(i+1,j+1) - x(i+1,j) - x(i,j+1) + x(i,j)
+        n_pairs = (n_col - 1) * (n_row - 1)
+        absvec  = Vector{Float32}(undef, n_pairs)
+        idx = 0
+        @inbounds for j in 1:n_row-1, i in 1:n_col-1
+            v = slice[i+1, j+1] - slice[i+1, j] - slice[i, j+1] + slice[i, j]
+            idx += 1
+            absvec[idx] = abs(v)
+        end
+        Float32(1.4826) * Float32(median(absvec))
+    end
 
-# ╔═╡ 08131e02-0000-4000-8000-000000000003
-# Cong PCCT basis — per-bin-group spectrum × DIRECT material mass attenuation
-# (p = μρ_iodine, q = μρ_water).  Same setup as notebook 06's working DE-kVp
-# Cong: the basis IS material, so apply_cong! outputs land directly in
-# (sino_iodine, sino_water) line integrals (g/cm²) — no A_coef / M_inv
-# transform.  The earlier photo/Compton LSQ fit (`fit_pq` + `A_coef`) cannot
-# represent iodine's K-edge discontinuity at 33.2 keV with a smooth (p, q)
-# pair; the residual was exponentially amplified by ∫ŵ·exp(-p·a-q·c)·dE,
-# Brent/Newton converged to wrong roots, and M_inv smeared the error across
-# iodine — exactly the body-envelope-shaped iodine noise we kept seeing.
-cong_basis_s1 = let
-    prot = BS.CTProtocol(kVp = 140.0, additional_filters = [("Ti", 0.9)])
-    e_full, ŵ_bins = BS.pcct_effective_spectrum(
-        sim_scanner, prot;
-        sim_opts   = sim_opts,
-        bin_groups = [cong_low_bins, cong_high_bins],
-    )
+    # ── Joint bilateral filter, hardcoded for N=4 channels (PCCT bins) ──
+    # Operates on Metal GPU.  Spherical spatial mask of radius `r`, joint range
+    # kernel = product over channels (paper Eq 6).  No spatial Gaussian — paper
+    # uses uniform spherical D (kernel diameter 13 = radius 6).
+    function _joint_bf_4ch_gpu!(
+            out1::AbstractArray{Float32, 3},
+            out2::AbstractArray{Float32, 3},
+            out3::AbstractArray{Float32, 3},
+            out4::AbstractArray{Float32, 3},
+            in1::AbstractArray{Float32, 3},
+            in2::AbstractArray{Float32, 3},
+            in3::AbstractArray{Float32, 3},
+            in4::AbstractArray{Float32, 3},
+            σ1::Float32, σ2::Float32, σ3::Float32, σ4::Float32,
+            h::Float32, radius::Int,
+        )
+        n_col, n_row, n_z = size(in1)
+        # Precompute inverse 2(h·σ)² per channel (Float32, captured by closure).
+        inv_2hσ²_1 = 1f0 / (2f0 * (h * σ1) * (h * σ1) + 1f-30)
+        inv_2hσ²_2 = 1f0 / (2f0 * (h * σ2) * (h * σ2) + 1f-30)
+        inv_2hσ²_3 = 1f0 / (2f0 * (h * σ3) * (h * σ3) + 1f-30)
+        inv_2hσ²_4 = 1f0 / (2f0 * (h * σ4) * (h * σ4) + 1f-30)
+        radius² = Int32(radius * radius)
+        r_i32   = Int32(radius)
 
-    μρ_iodine(E) = BS.compute_mass_μ_at_energy(XA.Elements.Iodine, Float64(E))
-    μρ_water(E)  = BS.compute_mass_μ_at_energy(XA.Materials.water,  Float64(E))
-    p_L = Float32[Float32(μρ_iodine(e)) for e in e_full]   # iodine mass atten
-    q_L = Float32[Float32(μρ_water(e))  for e in e_full]   # water  mass atten
-    p_H = p_L                                               # same energy grid
-    q_H = q_L
+        AK.foreachindex(in1) do idx
+            i0 = idx - 1
+            ci = (i0 % n_col) + 1
+            ri = ((i0 ÷ n_col) % n_row) + 1
+            zi = ((i0 ÷ (n_col * n_row)) % n_z) + 1
 
-    # ── Assemble spectral weights (1D centered or 3D bowtie-aware) ──
-    # `cong_use_bowtie = true` replaces the centered 1D ŵ with a per-ray 3D
-    # ŵ[col, row, E] = w_src(E) · B(col, row, E) · η(E) · Σ_{b∈grp} DRM(E → b),
-    # normalized Σ_E ŵ = 1 per ray.  This matches what every ray actually saw
-    # through the bowtie — removing a systematic bias at off-iso voxels where
-    # the centered spectrum is too soft.  apply_cong! dispatches on ndims(ŵ).
-    if !cong_use_bowtie
-        # Centered 1D — identical to before.  Defensive renormalization stays.
-        ŵ_L = Float32.(Float64.(ŵ_bins[1]) ./ sum(Float64.(ŵ_bins[1])))
-        ŵ_H = Float32.(Float64.(ŵ_bins[2]) ./ sum(Float64.(ŵ_bins[2])))
-        @info "[Cong basis]  1D centered spectrum (no bowtie)   nE=$(length(e_full))"
-    else
-        # Bowtie-aware 3D.  Build ŵ_src×B per ray (Σ_E = 1), then fold in
-        # detector QE × DRM column sum per bin group, then renormalize per ray.
-        _, w_src = BS.resolve_source_spectrum_without_bowtie(sim_opts, prot; scanner = sim_scanner)
-        ŵ_srcB   = BS.apply_bowtie_to_spectrum(w_src, e_full, sim_scanner, sim_scan1.geom, prot;
-                                                include_bowtie = true, label = "Cong")
-        pcct_det = BS._build_pcct_detector(sim_scanner)
-        kVp      = Float64(maximum(e_full))
-        R_mat    = BS.compute_mc_drm(pcct_det, kVp)
-        η_vec    = BS.quantum_efficiency_vector(pcct_det.material, pcct_det.thickness_mm, e_full)
-        n_R      = size(R_mat, 1)
-        drm_row(E) = clamp(round(Int, (Float64(E) - 1.0) / (kVp - 1.0) * (n_R - 1)) + 1, 1, n_R)
-        n_E      = length(e_full)
-        drm_col_sum = [sum(R_mat[drm_row(e_full[i]), b] for b in cong_low_bins)  for i in 1:n_E]
-        drm_col_sum_H = [sum(R_mat[drm_row(e_full[i]), b] for b in cong_high_bins) for i in 1:n_E]
+            v1 = in1[ci, ri, zi]
+            v2 = in2[ci, ri, zi]
+            v3 = in3[ci, ri, zi]
+            v4 = in4[ci, ri, zi]
 
-        function _bake_3d(drm_col)
-            if ndims(ŵ_srcB) == 3
-                n_col, n_row = size(ŵ_srcB, 1), size(ŵ_srcB, 2)
-                out = Array{Float32, 3}(undef, n_col, n_row, n_E)
-                @inbounds for ci in 1:n_col, ri in 1:n_row
-                    s = 0.0
-                    for Ei in 1:n_E
-                        w = Float64(ŵ_srcB[ci, ri, Ei]) * Float64(η_vec[Ei]) * Float64(drm_col[Ei])
-                        out[ci, ri, Ei] = Float32(w)
-                        s += w
-                    end
-                    inv_s = Float32(1.0 / max(s, 1e-20))
-                    for Ei in 1:n_E
-                        out[ci, ri, Ei] *= inv_s
+            sum_1 = 0f0; sum_2 = 0f0; sum_3 = 0f0; sum_4 = 0f0
+            wtot  = 0f0
+
+            for dz in -r_i32:r_i32
+                zi2 = zi + dz
+                (zi2 < 1 || zi2 > n_z) && continue
+                dz² = Int32(dz) * Int32(dz)
+                for dr in -r_i32:r_i32
+                    ri2 = ri + dr
+                    (ri2 < 1 || ri2 > n_row) && continue
+                    dr² = Int32(dr) * Int32(dr)
+                    drz² = dz² + dr²
+                    drz² > radius² && continue
+                    for dc in -r_i32:r_i32
+                        ci2 = ci + dc
+                        (ci2 < 1 || ci2 > n_col) && continue
+                        dist² = drz² + Int32(dc) * Int32(dc)
+                        dist² > radius² && continue
+
+                        nv1 = in1[ci2, ri2, zi2]
+                        nv2 = in2[ci2, ri2, zi2]
+                        nv3 = in3[ci2, ri2, zi2]
+                        nv4 = in4[ci2, ri2, zi2]
+
+                        d1 = nv1 - v1
+                        d2 = nv2 - v2
+                        d3 = nv3 - v3
+                        d4 = nv4 - v4
+
+                        log_w = -d1 * d1 * inv_2hσ²_1 -
+                                 d2 * d2 * inv_2hσ²_2 -
+                                 d3 * d3 * inv_2hσ²_3 -
+                                 d4 * d4 * inv_2hσ²_4
+                        w = exp(log_w)
+
+                        sum_1 += w * nv1
+                        sum_2 += w * nv2
+                        sum_3 += w * nv3
+                        sum_4 += w * nv4
+                        wtot  += w
                     end
                 end
-                out
-            else
-                # No bowtie on scanner; emit 1D vector so apply_cong! stays 1D.
-                w1d = [Float64(ŵ_srcB[i]) * Float64(η_vec[i]) * Float64(drm_col[i]) for i in 1:n_E]
-                Float32.(w1d ./ sum(w1d))
+            end
+
+            inv_w = 1f0 / max(wtot, 1f-30)
+            out1[ci, ri, zi] = sum_1 * inv_w
+            out2[ci, ri, zi] = sum_2 * inv_w
+            out3[ci, ri, zi] = sum_3 * inv_w
+            out4[ci, ri, zi] = sum_4 * inv_w
+        end
+        nothing
+    end
+
+    # ── RSKR driver for 4 channels (paper §2.2 + Fig 1b, simplified for static data) ──
+    # 1. SVD of (n_voxels × 4) matrix → U (n_voxels × 4), Σ (4×4), V₀ (4×4)
+    # 2. Compute per-SV adaptive σ from MAD-Haar of each U column reshaped to volume
+    # 3. Apply joint bilateral filter to U columns (rank-sparse h scaling: smaller
+    #    SVs get larger h → more smoothing, paper Fig 1d step 4.3)
+    # 4. Reconstitute V_denoised = U' · Σ · V₀'
+    # 5. Iterate `n_iter` times (re-SVD each round to re-balance noise across channels)
+    function _rskr_4ch(
+            bin_vols::Vector{Array{Float32, 3}};
+            n_iter::Int    = 4,
+            h_param::Real  = 1.0,
+            radius::Int    = 6,
+            γ::Real        = 0.5,
+            verbose::Bool  = true,
+        )
+        length(bin_vols) == 4 || error("_rskr_4ch: requires exactly 4 bin volumes (PCCT)")
+        sz = size(bin_vols[1])
+        n_vox = prod(sz)
+        # Stack (n_voxels × 4) for SVD
+        V_mat = Matrix{Float32}(undef, n_vox, 4)
+        for b in 1:4
+            V_mat[:, b] .= vec(bin_vols[b])
+        end
+        h_f = Float32(h_param)
+        γ_f = Float32(γ)
+
+        for iter in 1:n_iter
+            t0 = time()
+            # ── SVD ──
+            F = svd(V_mat; full = false)
+            U = F.U                  # (n_vox × 4)
+            Σ = F.S                  # 4-vec
+            V₀ = F.V                 # (4 × 4)
+
+            # ── Adaptive σ + rank-sparse h per SV ──
+            # h_e = h_0 · (Σ_1/Σ_e)^γ → smaller SVs get more smoothing.
+            σ_per_sv = Vector{Float32}(undef, 4)
+            h_per_sv = Vector{Float32}(undef, 4)
+            U_vols   = [reshape(U[:, e], sz) for e in 1:4]
+            for e in 1:4
+                σ_per_sv[e] = _mad_haar_σ(U_vols[e])
+                h_per_sv[e] = h_f * (Float32(Σ[1]) / max(Float32(Σ[e]), 1f-12)) ^ γ_f
+            end
+
+            # ── Joint bilateral filter on U columns ──
+            in1 = MtlArray(U_vols[1])
+            in2 = MtlArray(U_vols[2])
+            in3 = MtlArray(U_vols[3])
+            in4 = MtlArray(U_vols[4])
+            out1 = similar(in1); out2 = similar(in2); out3 = similar(in3); out4 = similar(in4)
+            # h common across SVs is captured globally; per-SV σ varies.  We pass the
+            # max h across SVs and let σ-scaling adjust per channel — equivalent to per-channel h.
+            # Effective range scale = h_per_sv[e] · σ_per_sv[e].
+            σ_eff_1 = h_per_sv[1] * σ_per_sv[1]
+            σ_eff_2 = h_per_sv[2] * σ_per_sv[2]
+            σ_eff_3 = h_per_sv[3] * σ_per_sv[3]
+            σ_eff_4 = h_per_sv[4] * σ_per_sv[4]
+            _joint_bf_4ch_gpu!(out1, out2, out3, out4,
+                               in1,  in2,  in3,  in4,
+                               σ_eff_1, σ_eff_2, σ_eff_3, σ_eff_4,
+                               1f0, radius)
+            U_denoised = hcat(vec(Array(out1)), vec(Array(out2)),
+                              vec(Array(out3)), vec(Array(out4)))
+            in1 = nothing; in2 = nothing; in3 = nothing; in4 = nothing
+            out1 = nothing; out2 = nothing; out3 = nothing; out4 = nothing
+            GC.gc(true)
+
+            # ── Reconstitute V = U_denoised · diag(Σ) · V₀' ──
+            V_mat = U_denoised * Diagonal(Σ) * V₀'
+
+            dt = time() - t0
+            verbose && @info "[RSKR iter $(iter)/$(n_iter)] $(round(dt, digits=2))s   σ_per_SV = $(round.(σ_per_sv, sigdigits=3))   h_per_SV = $(round.(h_per_sv, sigdigits=3))   Σ = $(round.(Σ, sigdigits=3))"
+        end
+
+        # Unstack
+        out_vols = [reshape(V_mat[:, b], sz) for b in 1:4]
+        out_vols
+    end
+
+    # ── Joint bilateral filter, 2-channel variant for IBHC + RSKR pipeline ──
+    function _joint_bf_2ch_gpu!(
+            out1::AbstractArray{Float32, 3},
+            out2::AbstractArray{Float32, 3},
+            in1::AbstractArray{Float32, 3},
+            in2::AbstractArray{Float32, 3},
+            σ1::Float32, σ2::Float32,
+            h::Float32, radius::Int,
+        )
+        n_col, n_row, n_z = size(in1)
+        inv_2hσ²_1 = 1f0 / (2f0 * (h * σ1) * (h * σ1) + 1f-30)
+        inv_2hσ²_2 = 1f0 / (2f0 * (h * σ2) * (h * σ2) + 1f-30)
+        radius² = Int32(radius * radius)
+        r_i32   = Int32(radius)
+
+        AK.foreachindex(in1) do idx
+            i0 = idx - 1
+            ci = (i0 % n_col) + 1
+            ri = ((i0 ÷ n_col) % n_row) + 1
+            zi = ((i0 ÷ (n_col * n_row)) % n_z) + 1
+
+            v1 = in1[ci, ri, zi]
+            v2 = in2[ci, ri, zi]
+
+            sum_1 = 0f0; sum_2 = 0f0
+            wtot  = 0f0
+
+            for dz in -r_i32:r_i32
+                zi2 = zi + dz
+                (zi2 < 1 || zi2 > n_z) && continue
+                dz² = Int32(dz) * Int32(dz)
+                for dr in -r_i32:r_i32
+                    ri2 = ri + dr
+                    (ri2 < 1 || ri2 > n_row) && continue
+                    dr² = Int32(dr) * Int32(dr)
+                    drz² = dz² + dr²
+                    drz² > radius² && continue
+                    for dc in -r_i32:r_i32
+                        ci2 = ci + dc
+                        (ci2 < 1 || ci2 > n_col) && continue
+                        dist² = drz² + Int32(dc) * Int32(dc)
+                        dist² > radius² && continue
+
+                        nv1 = in1[ci2, ri2, zi2]
+                        nv2 = in2[ci2, ri2, zi2]
+
+                        d1 = nv1 - v1
+                        d2 = nv2 - v2
+
+                        log_w = -d1 * d1 * inv_2hσ²_1 -
+                                 d2 * d2 * inv_2hσ²_2
+                        w = exp(log_w)
+
+                        sum_1 += w * nv1
+                        sum_2 += w * nv2
+                        wtot  += w
+                    end
+                end
+            end
+
+            inv_w = 1f0 / max(wtot, 1f-30)
+            out1[ci, ri, zi] = sum_1 * inv_w
+            out2[ci, ri, zi] = sum_2 * inv_w
+        end
+        nothing
+    end
+
+    # ── RSKR driver for 2 channels (low/high combined PCCT bins) ──
+    function _rskr_2ch(
+            bin_vols::Vector{Array{Float32, 3}};
+            n_iter::Int    = 4,
+            h_param::Real  = 1.0,
+            radius::Int    = 6,
+            γ::Real        = 0.5,
+            verbose::Bool  = true,
+        )
+        length(bin_vols) == 2 || error("_rskr_2ch: requires exactly 2 bin volumes (low, high)")
+        sz = size(bin_vols[1])
+        n_vox = prod(sz)
+        V_mat = Matrix{Float32}(undef, n_vox, 2)
+        for b in 1:2
+            V_mat[:, b] .= vec(bin_vols[b])
+        end
+        h_f = Float32(h_param)
+        γ_f = Float32(γ)
+
+        for iter in 1:n_iter
+            t0 = time()
+            F = svd(V_mat; full = false)
+            U = F.U; Σ = F.S; V₀ = F.V
+
+            σ_per_sv = Vector{Float32}(undef, 2)
+            h_per_sv = Vector{Float32}(undef, 2)
+            U_vols   = [reshape(U[:, e], sz) for e in 1:2]
+            for e in 1:2
+                σ_per_sv[e] = _mad_haar_σ(U_vols[e])
+                h_per_sv[e] = h_f * (Float32(Σ[1]) / max(Float32(Σ[e]), 1f-12)) ^ γ_f
+            end
+
+            in1 = MtlArray(U_vols[1])
+            in2 = MtlArray(U_vols[2])
+            out1 = similar(in1); out2 = similar(in2)
+            σ_eff_1 = h_per_sv[1] * σ_per_sv[1]
+            σ_eff_2 = h_per_sv[2] * σ_per_sv[2]
+            _joint_bf_2ch_gpu!(out1, out2, in1, in2,
+                               σ_eff_1, σ_eff_2,
+                               1f0, radius)
+            U_denoised = hcat(vec(Array(out1)), vec(Array(out2)))
+            in1 = nothing; in2 = nothing
+            out1 = nothing; out2 = nothing
+            GC.gc(true)
+
+            V_mat = U_denoised * Diagonal(Σ) * V₀'
+
+            dt = time() - t0
+            verbose && @info "[RSKR-2ch iter $(iter)/$(n_iter)] $(round(dt, digits=2))s   σ_per_SV = $(round.(σ_per_sv, sigdigits=3))   h_per_SV = $(round.(h_per_sv, sigdigits=3))   Σ = $(round.(Σ, sigdigits=3))"
+        end
+
+        out_vols = [reshape(V_mat[:, b], sz) for b in 1:2]
+        out_vols
+    end
+
+    # ── Image-domain ring correction (port of MCR Toolkit `suppress_rings.m`) ──
+    # The MCR algorithm operates on sinograms:
+    #   Ymv = mean along view-axis at each (det_row, det_col)
+    #   Ymr = 2D median filter on each (det_row, det_col) slice
+    #   diff = Ymv - Ymr  (persistent-in-views, high-freq-in-detector → ring offset)
+    #   Y -= clamp(diff, |Y|)
+    #
+    # In image domain after FBP, ring artifacts are concentric circles around
+    # the scan center.  In polar coords (r, θ) around that center:
+    #   - Rings are CONSTANT IN θ at each fixed r          (≡ persistent in views)
+    #   - Rings are HIGH-FREQUENCY IN r                    (≡ high-freq in detector)
+    # So the algorithm becomes:
+    #   1. Cartesian → polar (bilinear interp, around `center`)
+    #   2. mean_along_θ[r] = mean(polar[r, :])             ← Ymv equivalent
+    #   3. smoothed_r[r] = box-smooth mean_along_θ in r    ← Ymr equivalent
+    #   4. ring_per_r[r] = mean_along_θ[r] - smoothed_r[r] ← ring estimate per r
+    #   5. ring_polar[r, θ] = ring_per_r[r]                (constant in θ)
+    #   6. Clamp: |ring_polar| ≤ |polar|
+    #   7. Inverse polar → ring_cartesian
+    #   8. Subtract from slice
+    #
+    # `rad_smooth` plays the role of MCR's `rad` (default 7).  Larger ⇒ more
+    # aggressive ring removal (smooths over a wider r window).
+    function _suppress_rings_image!(
+            vol::AbstractArray{Float32, 3},
+            center::NTuple{2, <:Real};
+            rad_smooth::Int = 7,
+            n_θ::Int = 720,
+            verbose::Bool = false,
+        )
+        n_col, n_row, n_z = size(vol)
+        cx = Float32(center[1])
+        cy = Float32(center[2])
+        n_r = ceil(Int, hypot(max(cx - 1, n_col - cx), max(cy - 1, n_row - cy))) + 2
+
+        polar    = Array{Float32}(undef, n_r, n_θ)
+        ring_pol = Array{Float32}(undef, n_r, n_θ)
+        cosθ = [cos(2π * (j - 1) / n_θ) for j in 1:n_θ]
+        sinθ = [sin(2π * (j - 1) / n_θ) for j in 1:n_θ]
+
+        function _box_smooth_1d(x::Vector{Float32}, rad::Int)
+            n = length(x)
+            out = similar(x)
+            w = 2 * rad + 1
+            @inbounds for i in 1:n
+                lo = max(1, i - rad); hi = min(n, i + rad)
+                s = 0.0; c = 0
+                for k in lo:hi
+                    s += x[k]; c += 1
+                end
+                out[i] = Float32(s / c)
+            end
+            out
+        end
+
+        t0 = time()
+        for k in 1:n_z
+            slice = @view vol[:, :, k]
+
+            # 1. Cartesian → polar (bilinear interp).
+            @inbounds Threads.@threads for jθ in 1:n_θ
+                cθ = cosθ[jθ]; sθ = sinθ[jθ]
+                for ir in 1:n_r
+                    r = Float32(ir - 1)
+                    x = cx + r * cθ
+                    y = cy + r * sθ
+                    if 1f0 ≤ x ≤ Float32(n_col) && 1f0 ≤ y ≤ Float32(n_row)
+                        i0 = floor(Int, x); j0 = floor(Int, y)
+                        fx = x - i0; fy = y - j0
+                        i1 = clamp(i0 + 1, 1, n_col); j1 = clamp(j0 + 1, 1, n_row)
+                        i0 = clamp(i0, 1, n_col); j0 = clamp(j0, 1, n_row)
+                        polar[ir, jθ] = (1f0-fx)*(1f0-fy)*slice[i0, j0] +
+                                        fx     *(1f0-fy)*slice[i1, j0] +
+                                        (1f0-fx)*fy     *slice[i0, j1] +
+                                        fx     *fy     *slice[i1, j1]
+                    else
+                        polar[ir, jθ] = 0f0
+                    end
+                end
+            end
+
+            # 2. Mean along θ at each radius (Ymv equivalent).
+            mean_per_r = Vector{Float32}(undef, n_r)
+            @inbounds for ir in 1:n_r
+                s = 0.0
+                for jθ in 1:n_θ
+                    s += polar[ir, jθ]
+                end
+                mean_per_r[ir] = Float32(s / n_θ)
+            end
+
+            # 3. Box-smooth mean_per_r in r (Ymr equivalent).
+            smoothed_per_r = _box_smooth_1d(mean_per_r, rad_smooth)
+
+            # 4. ring_per_r = mean_per_r - smoothed_per_r (HF-in-r component).
+            ring_per_r = mean_per_r .- smoothed_per_r
+
+            # 5. Build ring map (constant in θ at each r) and clamp by |polar|.
+            @inbounds for jθ in 1:n_θ, ir in 1:n_r
+                d = ring_per_r[ir]
+                v = polar[ir, jθ]
+                if abs(d) > abs(v)
+                    d = sign(d) * abs(v)
+                end
+                ring_pol[ir, jθ] = d
+            end
+
+            # 6. Polar → Cartesian (inverse bilinear interp), subtract from slice.
+            @inbounds Threads.@threads for jy in 1:n_row
+                for ix in 1:n_col
+                    dx = Float32(ix) - cx
+                    dy = Float32(jy) - cy
+                    r  = hypot(dx, dy)
+                    θ  = atan(dy, dx)
+                    if θ < 0f0
+                        θ += Float32(2π)
+                    end
+                    rf = r + 1f0
+                    θf = θ * Float32(n_θ) / Float32(2π) + 1f0
+                    r0 = floor(Int, rf); θ0 = floor(Int, θf)
+                    fr = rf - r0; fθ = θf - θ0
+                    r0 = clamp(r0, 1, n_r - 1)
+                    θ0 = ((θ0 - 1) % n_θ) + 1
+                    θ1 = (θ0 % n_θ) + 1
+                    ring_val = (1f0-fr)*(1f0-fθ)*ring_pol[r0,   θ0] +
+                               fr     *(1f0-fθ)*ring_pol[r0+1, θ0] +
+                               (1f0-fr)*fθ     *ring_pol[r0,   θ1] +
+                               fr     *fθ     *ring_pol[r0+1, θ1]
+                    vol[ix, jy, k] -= ring_val
+                end
             end
         end
 
-        ŵ_L = _bake_3d(drm_col_sum)
-        ŵ_H = _bake_3d(drm_col_sum_H)
-
-        if ndims(ŵ_L) == 3
-            # Diagnostic: mean E at center vs edge ray to see the bowtie shift.
-            mid_c = size(ŵ_L, 1) ÷ 2 + 1
-            mid_r = size(ŵ_L, 2) ÷ 2 + 1
-            e_ctr_L = sum(Float64(e_full[k]) * ŵ_L[mid_c, mid_r, k] for k in 1:n_E)
-            e_ctr_H = sum(Float64(e_full[k]) * ŵ_H[mid_c, mid_r, k] for k in 1:n_E)
-            e_edg_L = sum(Float64(e_full[k]) * ŵ_L[1,     mid_r, k] for k in 1:n_E)
-            e_edg_H = sum(Float64(e_full[k]) * ŵ_H[1,     mid_r, k] for k in 1:n_E)
-            @info "[Cong basis]  3D bowtie-aware   size=$(size(ŵ_L))   ⟨E⟩_L: ctr=$(round(e_ctr_L,digits=2)) edge=$(round(e_edg_L,digits=2)) keV (Δ=$(round(e_edg_L-e_ctr_L,digits=2)))"
-            @info "[Cong basis]                                      ⟨E⟩_H: ctr=$(round(e_ctr_H,digits=2)) edge=$(round(e_edg_H,digits=2)) keV (Δ=$(round(e_edg_H-e_ctr_H,digits=2)))"
-        else
-            e_m_L = sum(Float64.(e_full) .* Float64.(ŵ_L))
-            e_m_H = sum(Float64.(e_full) .* Float64.(ŵ_H))
-            @info "[Cong basis]  scanner has no bowtie — fell back to 1D   ⟨E⟩_L=$(round(e_m_L,digits=2)) ⟨E⟩_H=$(round(e_m_H,digits=2)) keV"
+        if verbose
+            @info "[ring-suppress] $(round(time()-t0, digits=2))s   $(n_z) slices   center=($(round(cx, digits=1)), $(round(cy, digits=1)))   rad=$(rad_smooth)   nr×nθ=$(n_r)×$(n_θ)"
         end
-    end
-
-    (ŵ_L = ŵ_L, ŵ_H = ŵ_H,
-     p_L = p_L, p_H = p_H,
-     q_L = q_L, q_H = q_H)
-end;
-
-# ╔═╡ 08131e02-0000-4000-8000-000000000033
-# DIAGNOSTIC: Sample Cong's per-ray spectrum at 3 radial positions and show
-# effective μρ for water and iodine.  This tests whether the bowtie / DRM
-# modeling produces physically sensible per-ray spectra — if effective μρ
-let
-    ŵ_L = cong_basis_s1.ŵ_L;  ŵ_H = cong_basis_s1.ŵ_H
-    if ndims(ŵ_L) != 3
-        @info "[Cong bowtie diagnostic] scanner has no bowtie (1D ŵ); skipping per-ray sampling"
-    else
-        n_col, n_row, n_E = size(ŵ_L)
-        # Need e_full to compute mean energy.  Recompute (matches cong_basis_s1).
-        prot   = BS.CTProtocol(kVp = 140.0, additional_filters = [("Ti", 0.9)])
-        e_full, _ = BS.pcct_effective_spectrum(sim_scanner, prot;
-                                                sim_opts = sim_opts,
-                                                bin_groups = [cong_low_bins, cong_high_bins])
-
-        # Sample at 3 radial positions: edge (col=1), mid (col=n_col/4), center (col=n_col/2+1)
-        r_mid = n_row ÷ 2 + 1
-        positions = [
-            ("edge",   1),
-            ("mid",    n_col ÷ 4),
-            ("center", n_col ÷ 2 + 1),
-        ]
-
-        @info "[Cong bowtie diagnostic] per-ray spectrum @ row=$(r_mid), n_E=$(n_E)"
-        @info "                              kVp=140, low_bins=$(cong_low_bins), high_bins=$(cong_high_bins)"
-
-        # Material μρ tables (cm²/g), used for effective μρ at each ray.
-        μρ_W_vec = Float64[BS.compute_mass_μ_at_energy(XA.Materials.water,   Float64(E)) for E in e_full]
-        μρ_I_vec = Float64[BS.compute_mass_μ_at_energy(XA.Elements.Iodine,   Float64(E)) for E in e_full]
-
-        for (label, c) in positions
-            ŵ_L_ray = Float64.(Array(ŵ_L)[c, r_mid, :])
-            ŵ_H_ray = Float64.(Array(ŵ_H)[c, r_mid, :])
-            ŵ_L_sum = sum(ŵ_L_ray);  ŵ_H_sum = sum(ŵ_H_ray)
-            ŵ_L_norm = ŵ_L_ray ./ max(ŵ_L_sum, 1e-30)
-            ŵ_H_norm = ŵ_H_ray ./ max(ŵ_H_sum, 1e-30)
-            mean_E_L = sum(Float64.(e_full) .* ŵ_L_norm)
-            mean_E_H = sum(Float64.(e_full) .* ŵ_H_norm)
-            μρ_W_L_eff = sum(μρ_W_vec .* ŵ_L_norm)   # effective water μρ in low bin at this ray
-            μρ_W_H_eff = sum(μρ_W_vec .* ŵ_H_norm)
-            μρ_I_L_eff = sum(μρ_I_vec .* ŵ_L_norm)
-            μρ_I_H_eff = sum(μρ_I_vec .* ŵ_H_norm)
-
-            @info "[$(rpad(label, 6))]  col=$(c)  <E>=( L:$(round(mean_E_L, digits=1)),  H:$(round(mean_E_H, digits=1))) keV"
-            @info "         μρ_water  eff = ( L:$(round(μρ_W_L_eff, sigdigits=3)),  H:$(round(μρ_W_H_eff, sigdigits=3))) cm²/g"
-            @info "         μρ_iodine eff = ( L:$(round(μρ_I_L_eff, sigdigits=3)),  H:$(round(μρ_I_H_eff, sigdigits=3))) cm²/g"
-            @info "         L/H μρ ratio  = ( water: $(round(μρ_W_L_eff/μρ_W_H_eff, digits=2))×,  iodine: $(round(μρ_I_L_eff/μρ_I_H_eff, digits=2))×)"
-        end
-
-        @info "─── interpretation ────────────────────────────────────────────────"
-        @info "  Bowtie hardens spectrum at edge → <E> at edge > center."
-        @info "  Iodine L/H ratio drops at edge (less K-edge contrast).  This is what"
-        @info "  the per-ray Cong solver sees.  If center vs edge values look wrong"
-        @info "  (e.g., μρ_W differs by >50%, or iodine L/H ratio < 1.5 anywhere),"
-        @info "  there's a bowtie/DRM modeling bug."
+        nothing
     end
 end;
 
-# ╔═╡ 08131e02-0000-4000-8000-000000000004
-# Cong per-ray decomp (GPU).  Basis is material-direct (p=μρ_iodine,
-# q=μρ_water), so apply_cong! writes directly into sino_iodine / sino_water
-# (g/cm² line integrals).  water_basis = (a=0, c=1): "water in this basis"
-# is (0, 1), i.e. Cong's outer water-path Brent solves
-# ∫Ŝ_L(ε)·exp(-μρ_water(ε)·L) dε = T_L_meas → L is the water line integral.
-cong_decomp_s1 = let
-    # ── Diagnostic: inputs Cong will see ──
-    sl_cpu = Float32.(sim_scan1_lohi.sino_low)
-    sh_cpu = Float32.(sim_scan1_lohi.sino_high)
-    n_air_low  = count(<(1f-6), sl_cpu)
-    n_air_high = count(<(1f-6), sh_cpu)
-    @info "[Cong inputs]  sino_low  min=$(round(minimum(sl_cpu),digits=4)) max=$(round(maximum(sl_cpu),digits=4)) mean=$(round(mean(sl_cpu),digits=4))  n<1e-6=$(n_air_low)/$(length(sl_cpu))"
-    @info "[Cong inputs]  sino_high min=$(round(minimum(sh_cpu),digits=4)) max=$(round(maximum(sh_cpu),digits=4)) mean=$(round(mean(sh_cpu),digits=4))  n<1e-6=$(n_air_high)/$(length(sh_cpu))"
-
-    # ── Diagnostic: basis tables ──
-    p_L = Float64.(cong_basis_s1.p_L);  q_L = Float64.(cong_basis_s1.q_L)
-    @info "[Cong basis]  nE=$(length(p_L))   p_L (μρ_iodine) range=[$(round(minimum(p_L),sigdigits=3)), $(round(maximum(p_L),sigdigits=3))] cm²/g   q_L (μρ_water) range=[$(round(minimum(q_L),sigdigits=3)), $(round(maximum(q_L),sigdigits=3))] cm²/g"
-    let ŵ = cong_basis_s1.ŵ_L
-        if ndims(ŵ) == 3
-            rs = dropdims(sum(Float64.(ŵ); dims = 3); dims = 3)
-            @info "[Cong basis]  ŵ_L per-ray Σ range = [$(round(minimum(rs), digits=6)), $(round(maximum(rs), digits=6))]  (3D, should all be ~1.0)"
-        else
-            @info "[Cong basis]  ŵ_L Σ = $(round(sum(ŵ), digits=6))  (1D, should be ~1.0)"
-        end
-    end
-
-    # water_basis = (0, 1) because the Cong basis IS (iodine, water): the
-    # 'a' coordinate selects iodine, 'c' coordinate selects water.
-    water_basis = (a = 0.0f0, c = 1.0f0)
-
-    # ── Run apply_cong! (CPU or GPU based on toggle) ──
-    if cong_run_on_cpu
-        @info "[Cong] running on CPU (cong_run_on_cpu = true)"
-        sino_iodine = similar(sl_cpu);  fill!(sino_iodine, 0f0)
-        sino_water  = similar(sh_cpu);  fill!(sino_water,  0f0)
-        ws_cong_s1 = BS.create_cong_workspace(sl_cpu, cong_basis_s1)
-        t0 = time()
-        BS.apply_cong!(
-            ws_cong_s1, sino_iodine, sino_water, sl_cpu, sh_cpu;
-            water_basis      = water_basis,
-            newton_max_iter  = cong_newton_max_iter,
-            newton_tol       = cong_newton_tol,
-            y_max_factor     = cong_y_max_factor,
-            y_max_cap        = cong_y_max_cap,
-        )
-        @info "[Cong] CPU apply_cong! done in $(round(time()-t0, digits=1)) s"
-    else
-        @info "[Cong] running on Metal GPU"
-        sl_gpu = MtlArray(sl_cpu)
-        sh_gpu = MtlArray(sh_cpu)
-        sI_gpu = similar(sl_gpu);  fill!(sI_gpu, 0f0)
-        sW_gpu = similar(sl_gpu);  fill!(sW_gpu, 0f0)
-        ws_cong_s1 = BS.create_cong_workspace(sl_gpu, cong_basis_s1)
-        t0 = time()
-        BS.apply_cong!(
-            ws_cong_s1, sI_gpu, sW_gpu, sl_gpu, sh_gpu;
-            water_basis      = water_basis,
-            newton_max_iter  = cong_newton_max_iter,
-            newton_tol       = cong_newton_tol,
-            y_max_factor     = cong_y_max_factor,
-            y_max_cap        = cong_y_max_cap,
-        )
-        @info "[Cong] GPU apply_cong! done in $(round(time()-t0, digits=1)) s"
-        sino_iodine = Array(sI_gpu)
-        sino_water  = Array(sW_gpu)
-        sl_gpu = nothing; sh_gpu = nothing; sI_gpu = nothing; sW_gpu = nothing
-        ws_cong_s1 = nothing
-        GC.gc(true)
-    end
-
-    n_I_zero = count(iszero, sino_iodine)
-    n_W_zero = count(iszero, sino_water)
-    @info "[Cong out]   sino_iodine min=$(round(minimum(sino_iodine),sigdigits=4)) max=$(round(maximum(sino_iodine),sigdigits=4)) mean=$(round(mean(sino_iodine),sigdigits=4))  nzero=$(n_I_zero)/$(length(sino_iodine))"
-    @info "[Cong out]   sino_water  min=$(round(minimum(sino_water), sigdigits=4)) max=$(round(maximum(sino_water), sigdigits=4)) mean=$(round(mean(sino_water), sigdigits=4))  nzero=$(n_W_zero)/$(length(sino_water))"
-    @info "[Cong decomp]  ⟨∫ρ_I·dr⟩ = $(round(mean(sino_iodine), sigdigits=4)) g/cm²   ⟨∫ρ_W·dr⟩ = $(round(mean(sino_water), sigdigits=4)) g/cm²"
-
-    (sino_iodine = sino_iodine,
-     sino_water  = sino_water,
-     geom        = sim_scan1.geom)
-end;
-
-# ╔═╡ 08131e02-1000-4000-8000-000000000001
-md"""
-### Cong-PCCT (this paper) — replaces Cong for downstream
-
-Cong et al. 2022 generalized to PCCT with N≥3 effective spectral channels merged from native PCCT bins.  Two-material (water, iodine) decomposition.  Per-ray algorithm:
-
-1. **2×2 linearization** at (0, 0) gives initial `(y₀, z₀)` and sets `z̄ = z₀` (paper §2.3).
-2. **Anchor channel** `b*` selected per-ray by spectral leverage `m_{b,1}² / Σ_{bb}` (Eq 22).
-3. **Polynomial residual** `T_{b*,K}(x; y) = I_{b*}` solved via Newton; `K = 7` (handles iodine K-edge per §2.4 Table — relative error ≤ 3×10⁻³ at clinical iodine concentrations).
-4. **Mahalanobis fit** on the remaining `N − 1` channels: `Φ(y) = Σ_{b≠b*} (I_b − F_b(y))² / σ²_b` with diagonal `Σ` (no pile-up coupling in our simulator).
-5. **Brent root-find** on `dΦ/dy = 0` over `[0, y_max]` with closed-form analytic gradient (Eq 27–30, implicit `dh/dy`).
-
-Replaces `cong_decomp_s1` for downstream consumption.  Existing 2-bin Cong cells (`cong_basis_s1`, `cong_decomp_s1`) kept around but unconsumed (idle).
-"""
-
-# ╔═╡ 08131e02-1000-4000-8000-000000000002
-# Cong-PCCT config — N=3 channel merging (canonical clinical low/mid/high) + tuning knobs.
-begin
-    cong_pcct_bin_groups_s1     = [[1, 2], [3], [4]]   # N=3 channels: low/mid/high
-    cong_pcct_newton_iter_s1    = 6                    # inner Newton on T(x; y) = I_{b*}
-    cong_pcct_brent_max_iter_s1 = 100
-    cong_pcct_y_max_factor_s1   = 1.5                  # bracket safety factor (paper §2.7)
-    cong_pcct_run_on_cpu_s1     = false                # GPU by default
-    cong_pcct_use_bowtie_s1     = true                 # 3D ŵ_bins[k][col,row,E] when bowtie present
-end
-
-# ╔═╡ 08131e02-1000-4000-8000-000000000003
-# Cong-PCCT basis: per-channel bowtie-aware ŵ_bins[k] + material μρ tables.
-# Hardcodes K = 7 universally (paper §2.4: K=7 handles iodine K-edge with
-# relative error ≤ 3×10⁻³ at clinical concentrations; cost over K=5 is
-# negligible since spectral moments are computed once per Brent eval).
-cong_pcct_basis_s1 = let
-    prot = BS.CTProtocol(kVp = 140.0, additional_filters = [("Ti", 0.9)])
-    e_full, ŵ_bins_centered = BS.pcct_effective_spectrum(
-        sim_scanner, prot;
-        sim_opts   = sim_opts,
-        bin_groups = cong_pcct_bin_groups_s1,
-    )
-
-    μρ_water  = Float32[Float32(BS.compute_mass_μ_at_energy(XA.Materials.water,  Float64(E))) for E in e_full]
-    μρ_iodine = Float32[Float32(BS.compute_mass_μ_at_energy(XA.Elements.Iodine, Float64(E))) for E in e_full]
-
-    n_E = length(e_full)
-    if !cong_pcct_use_bowtie_s1
-        ŵ_bins = [Float32.(Float64.(ŵ) ./ sum(Float64.(ŵ))) for ŵ in ŵ_bins_centered]
-        @info "[Cong-PCCT basis]  1D centered spectrum   N=$(length(ŵ_bins)) channels   nE=$n_E"
-    else
-        # 3D bowtie-aware: per-ray ŵ_bins[k][col, row, E] = source × bowtie × η × DRM_col_sum, normalized.
-        _, w_src = BS.resolve_source_spectrum_without_bowtie(sim_opts, prot; scanner = sim_scanner)
-        ŵ_srcB   = BS.apply_bowtie_to_spectrum(w_src, e_full, sim_scanner, sim_scan1.geom, prot;
-                                                include_bowtie = true, label = "Cong-PCCT")
-        pcct_det = BS._build_pcct_detector(sim_scanner)
-        kVp_max  = Float64(maximum(e_full))
-        R_mat    = BS.compute_mc_drm(pcct_det, kVp_max)
-        η_vec    = BS.quantum_efficiency_vector(pcct_det.material, pcct_det.thickness_mm, e_full)
-        n_R      = size(R_mat, 1)
-        drm_row(E) = clamp(round(Int, (Float64(E) - 1.0) / (kVp_max - 1.0) * (n_R - 1)) + 1, 1, n_R)
-
-        function _bake_3d(grp)
-            drm_col = [sum(R_mat[drm_row(e_full[i]), b] for b in grp) for i in 1:n_E]
-            if ndims(ŵ_srcB) == 3
-                n_col, n_row = size(ŵ_srcB, 1), size(ŵ_srcB, 2)
-                out = Array{Float32, 3}(undef, n_col, n_row, n_E)
-                @inbounds for ci in 1:n_col, ri in 1:n_row
-                    s = 0.0
-                    for Ei in 1:n_E
-                        w = Float64(ŵ_srcB[ci, ri, Ei]) * Float64(η_vec[Ei]) * Float64(drm_col[Ei])
-                        out[ci, ri, Ei] = Float32(w)
-                        s += w
-                    end
-                    inv_s = Float32(1.0 / max(s, 1e-20))
-                    for Ei in 1:n_E
-                        out[ci, ri, Ei] *= inv_s
-                    end
-                end
-                out
-            else
-                # Scanner has no bowtie — emit 1D normalized vector.
-                w1d = [Float64(ŵ_srcB[i]) * Float64(η_vec[i]) * Float64(drm_col[i]) for i in 1:n_E]
-                Float32.(w1d ./ sum(w1d))
-            end
-        end
-
-        ŵ_bins = [_bake_3d(grp) for grp in cong_pcct_bin_groups_s1]
-        @info "[Cong-PCCT basis]  bowtie-aware ŵ_bins   N=$(length(ŵ_bins)) channels   ŵ shape=$(size(ŵ_bins[1]))"
-    end
-
-    @info "  bin groups: $(cong_pcct_bin_groups_s1)   K = 7 (paper §2.4 universal-safe)"
-
-    (ŵ_bins    = ŵ_bins,
-     e         = e_full,
-     μρ_water  = μρ_water,
-     μρ_iodine = μρ_iodine,
-     bin_groups = cong_pcct_bin_groups_s1)
-end;
-
-# ╔═╡ 08131e02-1000-4000-8000-000000000004
-# N-channel sino builder: combine scatter-corrected per-bin sinos into N
-# effective channel line integrals (one per bin group), with per-channel I0.
-sim_scan1_n_channel_s1 = let
-    bins = sim_scan1_bins_corrected
+# ╔═╡ 08131d00-0000-4000-8000-000000000010
+# Sino-domain bin combination + per-channel FBP — RSKR bypassed.
+# Combines bin sinograms via I0-weighted Beer's law (proper polychromatic
+# wide-bin measurement; equivalent to scanning at the I0-weighted combined
+# spectrum):
+#   N_grp(ray)  = Σ_{b∈grp} I0_b · exp(-p_b(ray))
+#   p_grp(ray)  = -log( N_grp / Σ_{b∈grp} I0_b )
+# Then FBP each combined sinogram → (vol_low, vol_high) in cm⁻¹.
+# This is the canonical input for image-domain DECT material decomp
+# (McCollough 2015, Yu 2012).
+sim_scan1_combined_bin_volumes_s1 = let
+    bins = sim_scan1_bins_corrected               # 4 corrected bin sinos (post-log)
     I0   = sim_scan1.I0_bins
+    grp_low  = [1, 2]                              # 20-35 + 35-55 keV
+    grp_high = [3, 4]                              # 55-70 + 70-140 keV
+    eps_f    = Float32(1e-10)
 
-    function combine_bins_n(grp, bins, I0)
-        I0_sum = sum(I0[b] for b in grp)
-        counts = zeros(Float32, size(bins[1]))
+    function _combine_sino(grp)
+        I0_sum = Float32(sum(Float64.(I0[grp])))
+        N = zeros(Float32, size(bins[1]))
         for b in grp
-            @. counts += Float32(I0[b]) * exp(-bins[b])
+            I0b = Float32(I0[b])
+            @. N += I0b * exp(-bins[b])
         end
-        @. -log(max(counts, Float32(1e-10)) / Float32(I0_sum))
+        @. -log(max(N, eps_f) / I0_sum)
     end
+    sino_low  = _combine_sino(grp_low)
+    sino_high = _combine_sino(grp_high)
 
-    h_channels  = [combine_bins_n(grp, bins, I0) for grp in cong_pcct_bin_groups_s1]
-    I0_channels = [Float64(sum(I0[b] for b in grp)) for grp in cong_pcct_bin_groups_s1]
-
-    @info "[Cong-PCCT inputs]  N=$(length(h_channels)) channels   sino shape=$(size(h_channels[1]))"
-    for k in 1:length(h_channels)
-        @info "  channel $k (bins $(cong_pcct_bin_groups_s1[k])):  I0=$(round(I0_channels[k], sigdigits=4))   mean(h)=$(round(mean(h_channels[k]), digits=3))"
-    end
-
-    (h_channels = h_channels, I0_channels = I0_channels)
-end;
-
-# ╔═╡ 08131e02-1000-4000-8000-000000000005
-# Cong-PCCT 3-channel per-ray decomposition kernel (paper §2.3-§2.7).
-#
-# Per-pixel algorithm:
-#   Step 1 (linearize):  ⟨μ_w⟩_b = Σ_E ŵ_b·μ_w,  ⟨μ_I⟩_b = Σ_E ŵ_b·μ_I.  Solve
-#       [⟨μ_w⟩_1 ⟨μ_I⟩_1 ; ⟨μ_w⟩_3 ⟨μ_I⟩_3] · (y, z)ᵀ = (h_1, h_3)ᵀ.
-#       Set z̄ = max(z_lin, 0).
-#
-#   Step 2 (anchor):  m_{b,1}(y_lin) = Σ_E ŵ_b·μ_I·exp(-μ_w·y_lin - μ_I·z_lin).
-#       σ²_b = I_b/I0_b (Poisson on counts; diagonal Σ — no pile-up coupling).
-#       b* = argmax_b m_{b,1}² / σ²_b.
-#
-#   Step 3 (Brent root):  G(y) = dΦ/dy = -2·Σ_{b≠b*}(I_b - F_b(y))·dF_b/dy / σ²_b.
-#       Per y eval (single E-pass at anchor + single E-pass at residuals):
-#         (a) m_k = Σ_E ŵ_{b*}·μ_I^k·e_yz̄,  n_k = Σ_E ŵ_{b*}·μ_w·μ_I^k·e_yz̄  for k=0..7
-#             (e_yz̄ = exp(-μ_w·y - μ_I·z̄))
-#         (b) c_k = (-1)^k/k! · m_k,  dc_k/dy = -(-1)^k/k! · n_k  (Eq 30)
-#         (c) Newton on T(x) = Σ_k c_k·x^k = I_{b*}  → x = h_{b*}(y; K=7)
-#         (d) F_b = Σ_E ŵ_b·exp(-μ_w·y - μ_I·(z̄+x)),  A_b = +μ_w-weighted,  B_b = +μ_I-weighted
-#         (e) dh/dy = -dT/dy / dT/dx;  dF_b/dy = -(A_b + B_b·dh/dy)
-#         (f) G(y) = -2·Σ(I_b-F_b)·dF_b/dy/σ²_b
-#       Brent finds root y_opt; recover x_opt via Newton at y_opt; output (z̄+x_opt, y_opt).
-#
-# Hardcoded N=3 (paper canonical worked instance).  K=7 universal (handles K-edge).
-function _apply_cong_pcct_s1!(
-        sino_iodine::AbstractArray{Float32, 3},
-        sino_water::AbstractArray{Float32, 3},
-        h_channels::AbstractVector,
-        I0_channels::AbstractVector{Float64};
-        basis,
-        newton_iter::Integer    = 6,
-        brent_max_iter::Integer = 100,
-        y_max_factor::Real      = 1.5,
-        verbose::Bool           = true,
-    )
-    length(h_channels) == length(I0_channels) ||
-        error("_apply_cong_pcct_s1!: h_channels/I0_channels length mismatch.")
-    length(h_channels) == 3 ||
-        error("_apply_cong_pcct_s1!: this implementation hardcodes N=3 (got $(length(h_channels))).")
-    sino_shape = size(sino_iodine)
-    sino_shape == size(sino_water) == size(h_channels[1]) ||
-        error("_apply_cong_pcct_s1!: sino / h_channels[1] must share shape.")
-    n_col = Int(sino_shape[1])
-    n_row = Int(sino_shape[2])
-
-    # Stage to backend.
-    h1 = BS._match_backend(h_channels[1], sino_iodine)
-    h2 = BS._match_backend(h_channels[2], sino_iodine)
-    h3 = BS._match_backend(h_channels[3], sino_iodine)
-    ŵ1 = BS._match_backend(Float32.(basis.ŵ_bins[1]), sino_iodine)
-    ŵ2 = BS._match_backend(Float32.(basis.ŵ_bins[2]), sino_iodine)
-    ŵ3 = BS._match_backend(Float32.(basis.ŵ_bins[3]), sino_iodine)
-    μρ_w = BS._match_backend(Float32.(basis.μρ_water),  sino_iodine)
-    μρ_I = BS._match_backend(Float32.(basis.μρ_iodine), sino_iodine)
-
-    per_ray = ndims(ŵ1) == 3
-    nE = per_ray ? size(ŵ1, 3) : length(ŵ1)
-
-    # Capture invariants as locals (avoid Core.Box on AK closure).
-    I0_1 = Float32(I0_channels[1]); I0_2 = Float32(I0_channels[2]); I0_3 = Float32(I0_channels[3])
-    n_iter_inner = Int(newton_iter)
-    brent_iter   = Int(brent_max_iter)
-    y_fac        = Float32(y_max_factor)
-
-    t0 = time()
-    AK.foreachindex(sino_iodine) do idx
-        i0  = idx - 1
-        col = (i0 % n_col) + 1
-        row = ((i0 ÷ n_col) % n_row) + 1
-
-        h1v = h1[idx];  h2v = h2[idx];  h3v = h3[idx]
-
-        # Air gate.
-        if h1v < 1f-6 && h2v < 1f-6 && h3v < 1f-6
-            sino_water[idx]  = 0f0
-            sino_iodine[idx] = 0f0
-            return
-        end
-
-        I_1 = exp(-h1v);  I_2 = exp(-h2v);  I_3 = exp(-h3v)
-        # σ²_b = Var(I_b) = I_b / I0_b (Poisson on counts → relative variance, diagonal Σ).
-        # Floor I_b at 1/I0_b (= 1-photon transmission), which caps inv_σ²_b at I0_b²
-        # so a single-photon-starved pixel doesn't get infinite weight in the Mahalanobis fit.
-        inv_σ²_1 = I0_1 / max(I_1, 1f0 / I0_1)
-        inv_σ²_2 = I0_2 / max(I_2, 1f0 / I0_2)
-        inv_σ²_3 = I0_3 / max(I_3, 1f0 / I0_3)
-
-        # ── Step 1: spectral averages + 2×2 linearization ──
-        # ⟨μ_w⟩_b, ⟨μ_I⟩_b at zero attenuation — used both for linearization and y_max bracket.
-        a11 = 0f0; a12 = 0f0; a21 = 0f0; a31 = 0f0; a32 = 0f0
-        if per_ray
-            @inbounds for k in 1:nE
-                w1k = ŵ1[col, row, k]; w2k = ŵ2[col, row, k]; w3k = ŵ3[col, row, k]
-                μw = μρ_w[k]; μI = μρ_I[k]
-                a11 += w1k * μw;  a12 += w1k * μI
-                a21 += w2k * μw                                     # only μ_w needed for y_max
-                a31 += w3k * μw;  a32 += w3k * μI
-            end
-        else
-            @inbounds for k in 1:nE
-                w1k = ŵ1[k]; w2k = ŵ2[k]; w3k = ŵ3[k]
-                μw = μρ_w[k]; μI = μρ_I[k]
-                a11 += w1k * μw;  a12 += w1k * μI
-                a21 += w2k * μw
-                a31 += w3k * μw;  a32 += w3k * μI
-            end
-        end
-        det_2x2 = a11 * a32 - a12 * a31
-        if abs(det_2x2) < 1f-12
-            # Singular linearization → fallback: water-only.
-            sino_water[idx]  = max(h1v / max(a11, 1f-12), 0f0)
-            sino_iodine[idx] = 0f0
-            return
-        end
-        y_lin = (a32 * h1v - a12 * h3v) / det_2x2
-        z_lin = (a11 * h3v - a31 * h1v) / det_2x2
-        y_lin = max(y_lin, 0f0)
-        z_lin = max(z_lin, 0f0)
-        z_bar = z_lin
-
-        # ── Step 2: anchor selection (Eq 22) — score_b = m_{b,1}(y_lin)² / σ²_b ──
-        m1_1 = 0f0; m1_2 = 0f0; m1_3 = 0f0
-        if per_ray
-            @inbounds for k in 1:nE
-                eYZ = exp(-μρ_w[k]*y_lin - μρ_I[k]*z_lin)
-                μI_eYZ = μρ_I[k] * eYZ
-                m1_1 += ŵ1[col, row, k] * μI_eYZ
-                m1_2 += ŵ2[col, row, k] * μI_eYZ
-                m1_3 += ŵ3[col, row, k] * μI_eYZ
-            end
-        else
-            @inbounds for k in 1:nE
-                eYZ = exp(-μρ_w[k]*y_lin - μρ_I[k]*z_lin)
-                μI_eYZ = μρ_I[k] * eYZ
-                m1_1 += ŵ1[k] * μI_eYZ
-                m1_2 += ŵ2[k] * μI_eYZ
-                m1_3 += ŵ3[k] * μI_eYZ
-            end
-        end
-        score_1 = m1_1 * m1_1 * inv_σ²_1
-        score_2 = m1_2 * m1_2 * inv_σ²_2
-        score_3 = m1_3 * m1_3 * inv_σ²_3
-        b_star = (score_1 ≥ score_2 && score_1 ≥ score_3) ? 1 :
-                 (score_2 ≥ score_3 ? 2 : 3)
-
-        # y_max bracket per §2.7: y_max = y_fac · max_b(h_b) / min_b(⟨μ_w⟩_b)
-        min_μw = min(a11, min(a21, a31))
-        max_h  = max(h1v, max(h2v, h3v))
-        y_max  = y_fac * max_h / max(min_μw, 1f-12)
-
-        # ── Pre-bind anchor and residual channel arrays/scalars via ternary ──
-        # Each variable is assigned exactly ONCE syntactically (no if/elseif/else
-        # multi-branch assignment, which can trip Julia's Core.Box heuristic on
-        # closure-captured variables → break Metal compile).
-        I_star    = b_star == 1 ? I_1       : (b_star == 2 ? I_2       : I_3)
-        ŵ_r1      = b_star == 1 ? ŵ2        : ŵ1
-        ŵ_r2      = b_star == 1 ? ŵ3        : (b_star == 2 ? ŵ3        : ŵ2)
-        I_r1      = b_star == 1 ? I_2       : I_1
-        I_r2      = b_star == 1 ? I_3       : (b_star == 2 ? I_3       : I_2)
-        inv_σ²_r1 = b_star == 1 ? inv_σ²_2  : inv_σ²_1
-        inv_σ²_r2 = b_star == 1 ? inv_σ²_3  : (b_star == 2 ? inv_σ²_3  : inv_σ²_2)
-
-        # G(y) = dΦ/dy.  Single flat closure (cong.jl solve_quintic pattern):
-        # one E-loop for anchor moments, inline Newton on T(x; y) = I_star,
-        # one E-loop for residual channels, return G_val::Float32.
-        # Capture: ŵ1/ŵ2/ŵ3, μρ_w, μρ_I, z_bar, b_star, I_star, ŵ_r1/ŵ_r2,
-        # I_r1/I_r2, inv_σ²_r1/inv_σ²_r2, n_iter_inner, n_col, n_row, nE, per_ray, col, row.
-        G = function (y::Float32)
-            # ── Step A: anchor channel — accumulate m_k = Σ ŵ_b*·μ_I^k·e_yz̄  and
-            #            n_k = Σ ŵ_b*·μ_w·μ_I^k·e_yz̄  for k=0..7  in ONE E-pass.
-            m0 = 0f0; m1 = 0f0; m2 = 0f0; m3 = 0f0
-            m4 = 0f0; m5 = 0f0; m6 = 0f0; m7 = 0f0
-            n0 = 0f0; n1 = 0f0; n2 = 0f0; n3 = 0f0
-            n4 = 0f0; n5 = 0f0; n6 = 0f0; n7 = 0f0
-            if per_ray
-                @inbounds for kk in 1:nE
-                    μw = μρ_w[kk]; μI = μρ_I[kk]
-                    ŵv = b_star == 1 ? ŵ1[col, row, kk] :
-                         b_star == 2 ? ŵ2[col, row, kk] :
-                                       ŵ3[col, row, kk]
-                    we = ŵv * exp(-μw*y - μI*z_bar)
-                    μw_we = μw * we
-                    pp = 1f0
-                    m0 += we;             n0 += μw_we
-                    pp *= μI; m1 += pp*we; n1 += pp*μw_we
-                    pp *= μI; m2 += pp*we; n2 += pp*μw_we
-                    pp *= μI; m3 += pp*we; n3 += pp*μw_we
-                    pp *= μI; m4 += pp*we; n4 += pp*μw_we
-                    pp *= μI; m5 += pp*we; n5 += pp*μw_we
-                    pp *= μI; m6 += pp*we; n6 += pp*μw_we
-                    pp *= μI; m7 += pp*we; n7 += pp*μw_we
-                end
-            else
-                @inbounds for kk in 1:nE
-                    μw = μρ_w[kk]; μI = μρ_I[kk]
-                    ŵv = b_star == 1 ? ŵ1[kk] :
-                         b_star == 2 ? ŵ2[kk] :
-                                       ŵ3[kk]
-                    we = ŵv * exp(-μw*y - μI*z_bar)
-                    μw_we = μw * we
-                    pp = 1f0
-                    m0 += we;             n0 += μw_we
-                    pp *= μI; m1 += pp*we; n1 += pp*μw_we
-                    pp *= μI; m2 += pp*we; n2 += pp*μw_we
-                    pp *= μI; m3 += pp*we; n3 += pp*μw_we
-                    pp *= μI; m4 += pp*we; n4 += pp*μw_we
-                    pp *= μI; m5 += pp*we; n5 += pp*μw_we
-                    pp *= μI; m6 += pp*we; n6 += pp*μw_we
-                    pp *= μI; m7 += pp*we; n7 += pp*μw_we
-                end
-            end
-
-            # ── Step B: c_k = (-1)^k/k! · m_k ; dc_k/dy = -(-1)^k/k! · n_k (Eq 30) ──
-            c0 =  m0;                  dc0 = -n0
-            c1 = -m1;                  dc1 =  n1
-            c2 =  m2 * 0.5f0;          dc2 = -n2 * 0.5f0
-            c3 = -m3 * (1f0/6f0);      dc3 =  n3 * (1f0/6f0)
-            c4 =  m4 * (1f0/24f0);     dc4 = -n4 * (1f0/24f0)
-            c5 = -m5 * (1f0/120f0);    dc5 =  n5 * (1f0/120f0)
-            c6 =  m6 * (1f0/720f0);    dc6 = -n6 * (1f0/720f0)
-            c7 = -m7 * (1f0/5040f0);   dc7 =  n7 * (1f0/5040f0)
-
-            # ── Step C: Newton on T(x) = c0 + c1·x + ... + c7·x^7 = I_star  for x ──
-            x = 0f0
-            for _ in 1:n_iter_inner
-                T_  = c0 + x*(c1 + x*(c2 + x*(c3 + x*(c4 + x*(c5 + x*(c6 + x*c7))))))
-                dT_ = c1 + x*(2f0*c2 + x*(3f0*c3 + x*(4f0*c4 + x*(5f0*c5 + x*(6f0*c6 + x*7f0*c7)))))
-                if abs(dT_) < 1f-30
-                    break
-                end
-                Δ = (T_ - I_star) / dT_
-                x -= Δ
-                if abs(Δ) < 1f-7
-                    break
-                end
-            end
-
-            # ── Step D: dT/dx, dT/dy at x; dh/dy via implicit derivative (Eq 29) ──
-            dT_dx = c1 + x*(2f0*c2 + x*(3f0*c3 + x*(4f0*c4 + x*(5f0*c5 + x*(6f0*c6 + x*7f0*c7)))))
-            dT_dy = dc0 + x*(dc1 + x*(dc2 + x*(dc3 + x*(dc4 + x*(dc5 + x*(dc6 + x*dc7))))))
-            dh_dy = abs(dT_dx) < 1f-30 ? 0f0 : -dT_dy / dT_dx
-
-            # ── Step E: residual channels' F_b, A_b, B_b at (y, z̄+x) — single E-pass ──
-            zarg = z_bar + x
-            F_r1 = 0f0; A_r1 = 0f0; B_r1 = 0f0
-            F_r2 = 0f0; A_r2 = 0f0; B_r2 = 0f0
-            if per_ray
-                @inbounds for kk in 1:nE
-                    μw = μρ_w[kk]; μI = μρ_I[kk]
-                    eYZ = exp(-μw*y - μI*zarg)
-                    we1 = ŵ_r1[col, row, kk] * eYZ
-                    we2 = ŵ_r2[col, row, kk] * eYZ
-                    F_r1 += we1;  A_r1 += we1*μw;  B_r1 += we1*μI
-                    F_r2 += we2;  A_r2 += we2*μw;  B_r2 += we2*μI
-                end
-            else
-                @inbounds for kk in 1:nE
-                    μw = μρ_w[kk]; μI = μρ_I[kk]
-                    eYZ = exp(-μw*y - μI*zarg)
-                    we1 = ŵ_r1[kk] * eYZ
-                    we2 = ŵ_r2[kk] * eYZ
-                    F_r1 += we1;  A_r1 += we1*μw;  B_r1 += we1*μI
-                    F_r2 += we2;  A_r2 += we2*μw;  B_r2 += we2*μI
-                end
-            end
-            dF_r1 = -(A_r1 + B_r1 * dh_dy)
-            dF_r2 = -(A_r2 + B_r2 * dh_dy)
-
-            # ── Step F: G(y) = dΦ/dy — single Float32 return ──
-            -2f0 * (I_r1 - F_r1) * dF_r1 * inv_σ²_r1 -
-                2f0 * (I_r2 - F_r2) * dF_r2 * inv_σ²_r2
-        end
-
-        # Brent root-find on G ∈ [0, y_max] with explicit Float32 tolerances.
-        y_opt, ok_y = BS.brent_solve(G, 0f0, y_max;
-                                     xabstol = 1f-7, xreltol = 1f-5,
-                                     maxiters = brent_iter)
-        if !ok_y
-            sino_water[idx]  = y_lin
-            sino_iodine[idx] = z_lin
-            return
-        end
-
-        # Recover x_opt = h_{b*}(y_opt) via inline Newton (parallel structure to G).
-        # Same anchor-moment + Newton block; we don't need n_k or derivatives here.
-        let y = y_opt
-            m0 = 0f0; m1 = 0f0; m2 = 0f0; m3 = 0f0
-            m4 = 0f0; m5 = 0f0; m6 = 0f0; m7 = 0f0
-            if per_ray
-                @inbounds for kk in 1:nE
-                    μw = μρ_w[kk]; μI = μρ_I[kk]
-                    ŵv = b_star == 1 ? ŵ1[col, row, kk] :
-                         b_star == 2 ? ŵ2[col, row, kk] :
-                                       ŵ3[col, row, kk]
-                    we = ŵv * exp(-μw*y - μI*z_bar)
-                    pp = 1f0
-                    m0 += we
-                    pp *= μI; m1 += pp*we
-                    pp *= μI; m2 += pp*we
-                    pp *= μI; m3 += pp*we
-                    pp *= μI; m4 += pp*we
-                    pp *= μI; m5 += pp*we
-                    pp *= μI; m6 += pp*we
-                    pp *= μI; m7 += pp*we
-                end
-            else
-                @inbounds for kk in 1:nE
-                    μw = μρ_w[kk]; μI = μρ_I[kk]
-                    ŵv = b_star == 1 ? ŵ1[kk] :
-                         b_star == 2 ? ŵ2[kk] :
-                                       ŵ3[kk]
-                    we = ŵv * exp(-μw*y - μI*z_bar)
-                    pp = 1f0
-                    m0 += we
-                    pp *= μI; m1 += pp*we
-                    pp *= μI; m2 += pp*we
-                    pp *= μI; m3 += pp*we
-                    pp *= μI; m4 += pp*we
-                    pp *= μI; m5 += pp*we
-                    pp *= μI; m6 += pp*we
-                    pp *= μI; m7 += pp*we
-                end
-            end
-            c0 =  m0
-            c1 = -m1
-            c2 =  m2 * 0.5f0
-            c3 = -m3 * (1f0/6f0)
-            c4 =  m4 * (1f0/24f0)
-            c5 = -m5 * (1f0/120f0)
-            c6 =  m6 * (1f0/720f0)
-            c7 = -m7 * (1f0/5040f0)
-            x = 0f0
-            for _ in 1:n_iter_inner
-                T_  = c0 + x*(c1 + x*(c2 + x*(c3 + x*(c4 + x*(c5 + x*(c6 + x*c7))))))
-                dT_ = c1 + x*(2f0*c2 + x*(3f0*c3 + x*(4f0*c4 + x*(5f0*c5 + x*(6f0*c6 + x*7f0*c7)))))
-                if abs(dT_) < 1f-30
-                    break
-                end
-                Δ = (T_ - I_star) / dT_
-                x -= Δ
-                if abs(Δ) < 1f-7
-                    break
-                end
-            end
-            sino_water[idx]  = max(y_opt, 0f0)
-            sino_iodine[idx] = max(z_bar + x, 0f0)
-        end
-    end
-    dt = time() - t0
-
-    if verbose
-        basis_mode = per_ray ? "bowtie ŵ" : "centered ŵ"
-        @info "[Cong-PCCT (3-channel, $basis_mode)] $(round(dt, digits=2)) s"
-    end
-    nothing
-end
-
-# ╔═╡ 08131e02-1000-4000-8000-000000000006
-# Cong-PCCT decomposition runner — calls the kernel + post-staging.
-cong_pcct_decomp_s1 = let
-    sino_shape = size(sim_scan1_n_channel_s1.h_channels[1])
-
-    if cong_pcct_run_on_cpu_s1
-        @info "[Cong-PCCT] running on CPU (cong_pcct_run_on_cpu_s1 = true)"
-        sino_iodine = zeros(Float32, sino_shape)
-        sino_water  = zeros(Float32, sino_shape)
-        h_chs       = [Float32.(h) for h in sim_scan1_n_channel_s1.h_channels]
-    else
-        @info "[Cong-PCCT] running on Metal GPU"
-        sino_iodine = MtlArray(zeros(Float32, sino_shape))
-        sino_water  = MtlArray(zeros(Float32, sino_shape))
-        h_chs       = [MtlArray(Float32.(h)) for h in sim_scan1_n_channel_s1.h_channels]
+    geom       = sim_scan1.geom
+    recon_size = sim_matrix_size
+    function _fbp_one(s_cpu)
+        g  = MtlArray(Float32.(s_cpu))
+        ws = BS.create_fdk_recon_workspace(g, geom, recon_size; filter = sim_vmi_filter)
+        v  = Array(BS.reconstruct!(ws, g, geom, recon_size))
+        ws = nothing; g = nothing
+        Float32.(v)
     end
 
     t0 = time()
-    _apply_cong_pcct_s1!(
-        sino_iodine, sino_water,
-        h_chs,
-        sim_scan1_n_channel_s1.I0_channels;
-        basis           = cong_pcct_basis_s1,
-        newton_iter     = cong_pcct_newton_iter_s1,
-        brent_max_iter  = cong_pcct_brent_max_iter_s1,
-        y_max_factor    = cong_pcct_y_max_factor_s1,
-        verbose         = true,
-    )
-    @info "[Cong-PCCT decomp] total $(round(time()-t0, digits=1)) s"
-
-    sino_I_cpu = Array(sino_iodine)
-    sino_W_cpu = Array(sino_water)
-    sino_iodine = nothing; sino_water = nothing; h_chs = nothing
+    vol_low  = _fbp_one(sino_low)
+    vol_high = _fbp_one(sino_high)
     GC.gc(true)
 
-    n_I_zero = count(iszero, sino_I_cpu)
-    n_W_zero = count(iszero, sino_W_cpu)
-    @info "[Cong-PCCT out]  sino_iodine min=$(round(minimum(sino_I_cpu),sigdigits=4)) max=$(round(maximum(sino_I_cpu),sigdigits=4)) mean=$(round(mean(sino_I_cpu),sigdigits=4))  nzero=$(n_I_zero)/$(length(sino_I_cpu))"
-    @info "[Cong-PCCT out]  sino_water  min=$(round(minimum(sino_W_cpu), sigdigits=4)) max=$(round(maximum(sino_W_cpu), sigdigits=4)) mean=$(round(mean(sino_W_cpu), sigdigits=4))  nzero=$(n_W_zero)/$(length(sino_W_cpu))"
+    @info "[Sino-combine + FBP]  $(round(time()-t0, digits=2))s   (RSKR bypassed)"
+    @info "  vol_low  (bins $(grp_low)):  μ=[$(round(minimum(vol_low),  sigdigits=3)), $(round(maximum(vol_low),  sigdigits=3))]  mean=$(round(mean(vol_low),  sigdigits=3)) cm⁻¹"
+    @info "  vol_high (bins $(grp_high)): μ=[$(round(minimum(vol_high), sigdigits=3)), $(round(maximum(vol_high), sigdigits=3))]  mean=$(round(mean(vol_high), sigdigits=3)) cm⁻¹"
 
-    (sino_iodine = sino_I_cpu, sino_water = sino_W_cpu, geom = sim_scan1.geom)
+    (vol_low  = vol_low,  vol_high = vol_high,
+     sino_low = sino_low, sino_high = sino_high,
+     grp_low  = grp_low,  grp_high = grp_high)
 end;
 
-# ╔═╡ 08131e03-0000-4000-8000-000000000001
-md"""
-**PWLS-L₂ (Long/Fessler 2014).** 2-bin (low, high) sinogram-domain restoration via
-2×2 matrix-curvature SQS.  Warm-started from Cong; uses the same 2-bin basis
-Cong already built (`cong_basis_s1.{ŵ_L, ŵ_H, p_L, p_H, q_L, q_H}`).  Tune via
-Scan 1's `use_pwls_s1`, `pwls_*_s1` config cell.
-"""
+# ╔═╡ 08131d00-0000-4000-8000-000000000006
+# 2×2 image-domain sensitivity matrices M for (water, iodine) decomp.
+# After sino-domain combination, the effective spectrum for each combined
+# channel is the I0-weighted average of per-bin spectra:
+#   ŵ_X(E) = Σ_{b∈grp_X} (I0_b / Σ I0_b) · ŵ_b(E)
+#
+# Three flavors exposed:
+#   M           — spectrum-averaged ⟨μρ⟩_X (Yu 2012 Eq 2, naive linearization)
+#   M_mono      — μρ at equivalent monoenergy E_mono = ⟨E⟩_X (IBHC limit)
+#   M_cal       — path-effective μ̄_X(t) at representative material thicknesses,
+#                 i.e. μ̄_X_b(t) = -log(∫ŵ_b·exp(-μρ_X·ρ_X·t)dE) / (ρ_X·t).
+#                 Linearizes the polychromatic forward model around clinical
+#                 paths (chest water + typical iodine contrast), giving a
+#                 single-shot M with much smaller BH residual than naive M.
+#
+# Per-voxel decomp: vol_X(v) = M[X,w]·ρ_w(v) + M[X,I]·ρ_I(v).
+# K-edge integral is exact because we sum the full μρ_I(E) curve (project
+# memory `project_cong_basis_photo_compton.md`).
+sim_scan1_M_matrix_s1 = let
+    prot = BS.CTProtocol(kVp = 140.0, additional_filters = [("Ti", 0.9)])
+    e_full, w_full = BS.resolve_source_spectrum_without_bowtie(sim_opts, prot; scanner = sim_scanner)
+    pcct_det = BS._build_pcct_detector(sim_scanner)
+    kVp      = Float64(maximum(e_full))
+    R_mat    = BS.compute_mc_drm(pcct_det, kVp)
+    η_vec    = BS.quantum_efficiency_vector(pcct_det.material, pcct_det.thickness_mm, e_full)
+    n_R      = size(R_mat, 1)
+    drm_row(E) = clamp(round(Int, (Float64(E) - 1.0) / (kVp - 1.0) * (n_R - 1)) + 1, 1, n_R)
 
-# ╔═╡ 08131010-0000-4000-8000-000000000041
-# PWLS basis = Cong basis (material-direct now).  cong_basis_s1.{p,q} are
-# already (μρ_iodine, μρ_water), so PWLS's `exp(-p·s_I − q·s_W)` forward
-# matches without any A_coef transform.
-pwls_basis_s1 = let
-    @info "[PWLS basis]  μρ_iodine(low) range=[$(round(minimum(cong_basis_s1.p_L), sigdigits=3)), $(round(maximum(cong_basis_s1.p_L), sigdigits=3))] cm²/g"
-    @info "[PWLS basis]  μρ_water(low)  range=[$(round(minimum(cong_basis_s1.q_L), sigdigits=3)), $(round(maximum(cong_basis_s1.q_L), sigdigits=3))] cm²/g"
-    cong_basis_s1
+    e = Float64.(e_full)
+    μρ_w = [BS.compute_mass_μ_at_energy(XA.Materials.water, E) for E in e]
+    μρ_I = [BS.compute_mass_μ_at_energy(XA.Elements.Iodine, E) for E in e]
+
+    grp_low  = sim_scan1_combined_bin_volumes_s1.grp_low
+    grp_high = sim_scan1_combined_bin_volumes_s1.grp_high
+    I0       = sim_scan1.I0_bins
+
+    function _eff_spectrum(grp)
+        I0_sum = sum(Float64.(I0[grp]))
+        wc = zeros(Float64, length(e))
+        for b in grp
+            wb = [Float64(w_full[i]) * Float64(η_vec[i]) * Float64(R_mat[drm_row(e[i]), b]) for i in eachindex(e)]
+            sb = sum(wb)
+            sb > 0 || error("_eff_spectrum: bin $b has zero spectral weight")
+            wbn = wb ./ sb
+            weight = Float64(I0[b]) / I0_sum
+            wc .+= weight .* wbn
+        end
+        wc ./= sum(wc)
+        wc
+    end
+
+    w_low  = _eff_spectrum(grp_low)
+    w_high = _eff_spectrum(grp_high)
+
+    μρ_w_low  = Float32(sum(w_low  .* μρ_w))    # cm²/g (spectrum-averaged)
+    μρ_I_low  = Float32(sum(w_low  .* μρ_I))
+    μρ_w_high = Float32(sum(w_high .* μρ_w))
+    μρ_I_high = Float32(sum(w_high .* μρ_I))
+
+    # Equivalent monoenergies (Fan et al. 2025 IBHC: spectrum-weighted mean).
+    E_mono_low  = sum(e .* w_low)
+    E_mono_high = sum(e .* w_high)
+
+    # Mass attenuations evaluated AT the equivalent monoenergies.  After IBHC
+    # convergence the corrected sinos are linearized to mono behaviour, so
+    # decomp uses these (not the spectrum-averaged ⟨μρ⟩ above).
+    μρ_w_mono_low  = Float32(BS.compute_mass_μ_at_energy(XA.Materials.water, E_mono_low))
+    μρ_I_mono_low  = Float32(BS.compute_mass_μ_at_energy(XA.Elements.Iodine, E_mono_low))
+    μρ_w_mono_high = Float32(BS.compute_mass_μ_at_energy(XA.Materials.water, E_mono_high))
+    μρ_I_mono_high = Float32(BS.compute_mass_μ_at_energy(XA.Elements.Iodine, E_mono_high))
+
+    # 2×2 spectrum-averaged M (legacy / reference).
+    M = Float32[
+        μρ_w_low   μρ_I_low  ;
+        μρ_w_high  μρ_I_high ;
+    ]
+    M_inv = inv(M)
+
+    # 2×2 monoenergetic M used by IBHC (Fan 2025 Eqs 13–14).
+    M_mono = Float32[
+        μρ_w_mono_low   μρ_I_mono_low  ;
+        μρ_w_mono_high  μρ_I_mono_high ;
+    ]
+    M_mono_inv = inv(M_mono)
+
+    # ── Path-effective calibrated M ──
+    # μ̄_X_b(t) = -log(∫ŵ_b(E)·exp(-μρ_X(E)·ρ_X·t)dE) / (ρ_X·t)
+    # Reference paths chosen for clinical chest/abdomen + typical iodine
+    # contrast.  These are the BH-aware effective mass attenuations a beam
+    # would experience after passing through ρ·t mass-density of the material.
+    t_water_ref_g_cm2_s1  = 25.0    # 25 cm of water (clinical chest path)
+    t_iodine_ref_g_cm2_s1 = 0.05    # typical clinical iodine path
+    function _μ̄_path(w_eff::Vector{Float64}, μρ_curve::Vector{Float64}, ρt::Float64)
+        ρt > 0 || error("_μ̄_path: ρt must be positive")
+        trans = sum(w_eff[i] * exp(-μρ_curve[i] * ρt) for i in eachindex(w_eff))
+        -log(max(trans, 1e-30)) / ρt
+    end
+    μ̄_w_low_cal  = Float32(_μ̄_path(w_low,  μρ_w, t_water_ref_g_cm2_s1))
+    μ̄_I_low_cal  = Float32(_μ̄_path(w_low,  μρ_I, t_iodine_ref_g_cm2_s1))
+    μ̄_w_high_cal = Float32(_μ̄_path(w_high, μρ_w, t_water_ref_g_cm2_s1))
+    μ̄_I_high_cal = Float32(_μ̄_path(w_high, μρ_I, t_iodine_ref_g_cm2_s1))
+    M_cal = Float32[
+        μ̄_w_low_cal   μ̄_I_low_cal  ;
+        μ̄_w_high_cal  μ̄_I_high_cal ;
+    ]
+    M_cal_inv = inv(M_cal)
+
+    # Per-bin (4-vector) μ_water for HU-conversion of per-bin viz.
+    function _bin_μρ_w(b::Int)
+        wb = [Float64(w_full[i]) * Float64(η_vec[i]) * Float64(R_mat[drm_row(e[i]), b]) for i in eachindex(e)]
+        sb = sum(wb); sb > 0 || error("_bin_μρ_w: bin $b has zero spectral weight")
+        wbn = wb ./ sb
+        Float32(sum(wbn .* μρ_w))
+    end
+    μ_water_per_bin  = Float32[_bin_μρ_w(b) for b in 1:4]   # cm⁻¹ at ρ_water = 1
+    μ_water_combined = Float32[μρ_w_low, μρ_w_high]         # cm⁻¹ at ρ_water = 1
+
+    # Per-energy spectra (normalized — sum = 1) and material mass attenuation
+    # curves for IBHC's polychromatic forward sino prediction (Fan 2025 Eqs 22-23).
+    e_grid       = Float32.(e)              # n_E
+    S_low_arr    = Float32.(w_low)           # n_E, sums to 1
+    S_high_arr   = Float32.(w_high)          # n_E, sums to 1
+    μρ_w_curve   = Float32.(μρ_w)            # n_E
+    μρ_I_curve   = Float32.(μρ_I)            # n_E
+
+    @info "[M (2×2, spectrum-averaged)]:"
+    @info "  low  (bins $(grp_low)):   μρ_water=$(round(μρ_w_low,  sigdigits=4))   μρ_iodine=$(round(μρ_I_low,  sigdigits=4))   E_eff≈$(round(E_mono_low,  digits=1)) keV"
+    @info "  high (bins $(grp_high)):   μρ_water=$(round(μρ_w_high, sigdigits=4))   μρ_iodine=$(round(μρ_I_high, sigdigits=4))   E_eff≈$(round(E_mono_high, digits=1)) keV"
+    @info "  cond(M) = $(round(cond(M), sigdigits=4))"
+    @info "[M_mono (2×2, IBHC monoenergetic at E_mono)]:"
+    @info "  low  E_mono=$(round(E_mono_low, digits=1)) keV: μρ_water=$(round(μρ_w_mono_low, sigdigits=4))  μρ_iodine=$(round(μρ_I_mono_low, sigdigits=4))"
+    @info "  high E_mono=$(round(E_mono_high, digits=1)) keV: μρ_water=$(round(μρ_w_mono_high, sigdigits=4))  μρ_iodine=$(round(μρ_I_mono_high, sigdigits=4))"
+    @info "  cond(M_mono) = $(round(cond(M_mono), sigdigits=4))"
+    @info "[M_cal (2×2, path-effective at t_w=$(t_water_ref_g_cm2_s1) cm, t_I=$(t_iodine_ref_g_cm2_s1) g/cm²)]:"
+    @info "  low :  μ̄_water=$(round(μ̄_w_low_cal,  sigdigits=4))   μ̄_iodine=$(round(μ̄_I_low_cal,  sigdigits=4))"
+    @info "  high:  μ̄_water=$(round(μ̄_w_high_cal, sigdigits=4))   μ̄_iodine=$(round(μ̄_I_high_cal, sigdigits=4))"
+    @info "  cond(M_cal) = $(round(cond(M_cal), sigdigits=4))"
+
+    (M = M, M_inv = M_inv,
+     M_mono = M_mono, M_mono_inv = M_mono_inv,
+     M_cal  = M_cal,  M_cal_inv  = M_cal_inv,
+     t_water_ref_g_cm2 = Float32(t_water_ref_g_cm2_s1),
+     t_iodine_ref_g_cm2 = Float32(t_iodine_ref_g_cm2_s1),
+     grp_low = grp_low, grp_high = grp_high,
+     μ_water_per_bin   = μ_water_per_bin,
+     μ_water_combined  = μ_water_combined,
+     E_mono_low  = Float32(E_mono_low),
+     E_mono_high = Float32(E_mono_high),
+     μρ_w_mono_low  = μρ_w_mono_low,
+     μρ_I_mono_low  = μρ_I_mono_low,
+     μρ_w_mono_high = μρ_w_mono_high,
+     μρ_I_mono_high = μρ_I_mono_high,
+     e_grid     = e_grid,
+     S_low      = S_low_arr,
+     S_high     = S_high_arr,
+     μρ_w_curve = μρ_w_curve,
+     μρ_I_curve = μρ_I_curve)
 end;
 
-# ╔═╡ 08131010-0000-4000-8000-000000000042
-# Separable 2D Gaussian smoothing on (col, row) plane, per-view independent.
-# CPU-side, threaded over views.  Applied to Cong warm start before PWLS to
-# replace white per-pixel noise with bandlimited noise that hyper3's wpot
-# can actually smooth (MIRT pwls_example.m:36 init-smoothing pattern).
-function _gauss_smooth_2d!(
-        arr::AbstractArray{Float32, 3},
-        σ::Real,
-        scratch::AbstractArray{Float32, 3},
-    )
-    σ_f = Float32(σ)
-    σ_f <= 0f0 && return arr
-    radius = max(1, ceil(Int, 3 * σ_f))
-    n_col, n_row, n_view = size(arr)
-    inv_2σ²  = 1f0 / (2f0 * σ_f * σ_f)
-    weights  = Float32[exp(-(Float32(i)^2) * inv_2σ²) for i in -radius:radius]
-    weights ./= sum(weights)
-
-    # x-pass:  arr → scratch
-    Threads.@threads for v in 1:n_view
-        @inbounds for r in 1:n_row, c in 1:n_col
-            s = 0f0
-            for k in -radius:radius
-                cc = clamp(c + k, 1, n_col)
-                s += arr[cc, r, v] * weights[k + radius + 1]
-            end
-            scratch[c, r, v] = s
-        end
-    end
-    # y-pass:  scratch → arr
-    Threads.@threads for v in 1:n_view
-        @inbounds for r in 1:n_row, c in 1:n_col
-            s = 0f0
-            for k in -radius:radius
-                rr = clamp(r + k, 1, n_row)
-                s += scratch[c, rr, v] * weights[k + radius + 1]
-            end
-            arr[c, r, v] = s
-        end
-    end
-    return arr
-end
-
-# ╔═╡ 08131010-0000-4000-8000-000000000045
-# ── Scan 1 QPWLS via Preconditioned CG — 1:1 port of MIRT qpwls_pcg1.m ──
-# https://github.com/JeffFessler/mirt/blob/main/wls/qpwls_pcg1.m
-# (Jeff Fessler 1998).  Quadratic penalized weighted least squares with PCG.
-#
-# MIRT cost:
-#     Φ(x) = ½ (y − A·x)' W (y − A·x)  +  ½ x' C'C x
-#
-# Mapped to 2-bin material PCCT (per pixel, 2-channel):
-#     x      = (s_I, s_W)             stacked iodine/water sino
-#     y      = (h_low, h_high)         measured bin line integrals
-#     A·x    = J·x  per pixel          linearized polychromatic Jacobian
-#                                      J = [P_L Q_L; P_H Q_H] frozen at s_Cong
-#     W      = diag(w_L, w_H)          Poisson weights  w_b = I0_b·exp(−h_b_meas)
-#     C      = β · ∇                   1st-order forward difference, periodic
-#                                      (β factored INTO C so qpwls_pcg1 uses raw ‖Cx‖²)
-#
-# Linearization at Cong (one-shot Gauss-Newton):
-#     F_b(s)        ≈  F_b(s_Cong) + J_b·(s − s_Cong)
-#     ⇒  effective y_b  =  h_b − F_b(s_Cong) + J_b·s_Cong
-#     residual = y_b − A·s = h_b − F_b(s)  (linearized)
-#     where F_b(s) = -log( ∫ ŵ_b(E)·exp(−p(E)·s_I − q(E)·s_W) dE )
-#
-# Algorithm (qpwls_pcg1.m lines 79-153 — Fletcher-Reeves CG with exact step):
-#     init:   Ax = A·x;  Cx = C·x
-#     loop:
-#         g          = A'·W·(y − Ax) − C'·Cx                   (negative gradient)
-#         M·g        = preconditioner (we use M = I)
-#         γ          = (g'·M·g) / (oldg'·M·oldg)               (FR; γ=0 first iter)
-#         d          = M·g + γ·d                               (search direction)
-#         Ad         = A·d;  Cd = C·d
-#         denom      = Ad'·W·Ad + Cd'·Cd
-#         α          = (d'·g) / denom                          (exact line search)
-#         x         += α·d;  Ax += α·Ad;  Cx += α·Cd
-#
-# Why PCG > SQS for QUADRATIC cost: exact line search (no step-limit knob),
-# Fletcher-Reeves momentum (faster convergence than SQS row-sum bound), no
-# `relax`, no `step_lim_*`, no body mask, no air threshold.  Fewer knobs.
-function _apply_mirt_qpwls_pcg1_s1!(
-        sino_iodine::AbstractArray{Float32, 3},     # IN: Cong warm start; OUT: PWLS-polished
-        sino_water::AbstractArray{Float32, 3},
-        h_low::AbstractArray{Float32, 3},           # measured bin line integrals
-        h_high::AbstractArray{Float32, 3};
-        cong_basis,                                  # NamedTuple: .ŵ_L, .ŵ_H, .p_L, .q_L, .p_H, .q_H
-        I0_low::Real, I0_high::Real,
-        β_iodine::Real = 1.0f0,                      # √ folded into C — auto-scaled by mean(D_II)/8
-        β_water::Real  = 1.0f0,                      # √ folded into C — auto-scaled by mean(D_WW)/8
-        n_iter::Integer = 30,
-        verbose::Bool   = true,
-    )
-    sino_shape = size(sino_iodine)
-    sino_shape == size(sino_water) == size(h_low) == size(h_high) ||
-        error("_apply_mirt_qpwls_pcg1_s1!: sino / h_low / h_high must share shape.")
-    n_col, n_row, n_view = Int(sino_shape[1]), Int(sino_shape[2]), Int(sino_shape[3])
-
-    # ── Stage basis to backend (per-bin Σ_E ŵ = 1 normalization) ──
-    function _norm_ŵ(ŵ_raw)
-        ŵ = Float32.(Array(ŵ_raw))
-        if ndims(ŵ) == 1
-            ŵ ./= sum(ŵ)
-        else
-            nc, nr, nE = size(ŵ)
-            @inbounds for r in 1:nr, c in 1:nc
-                s = 0f0
-                for k in 1:nE; s += ŵ[c, r, k]; end
-                if s > 0f0
-                    inv_s = 1f0 / s
-                    for k in 1:nE; ŵ[c, r, k] *= inv_s; end
-                end
-            end
-        end
-        ŵ
-    end
-    ŵ_L = BS._match_backend(_norm_ŵ(cong_basis.ŵ_L), sino_iodine)
-    ŵ_H = BS._match_backend(_norm_ŵ(cong_basis.ŵ_H), sino_iodine)
-    p_L = BS._match_backend(Float32.(cong_basis.p_L), sino_iodine)
-    q_L = BS._match_backend(Float32.(cong_basis.q_L), sino_iodine)
-    p_H = BS._match_backend(Float32.(cong_basis.p_H), sino_iodine)
-    q_H = BS._match_backend(Float32.(cong_basis.q_H), sino_iodine)
-    per_ray = ndims(ŵ_L) == 3
-    nE_L = per_ray ? size(ŵ_L, 3) : length(ŵ_L)
-    nE_H = per_ray ? size(ŵ_H, 3) : length(ŵ_H)
-
-    I0_L = Float32(I0_low);  I0_H = Float32(I0_high)
-
-    # ── Step 1: linearize forward at Cong's (s_I, s_W) ──
-    # Compute per pixel: J = [P_L Q_L; P_H Q_H], h_b_pred = -log(Z_b),
-    # and W = diag(w_b) where w_b = I0_b·exp(-h_b_meas) (Poisson).
-    P_L = similar(sino_iodine);  Q_L = similar(sino_iodine)
-    P_H = similar(sino_iodine);  Q_H = similar(sino_iodine)
-    h_L_pred = similar(sino_iodine);  h_H_pred = similar(sino_iodine)
-    w_L = similar(sino_iodine);  w_H = similar(sino_iodine)
-
-    AK.foreachindex(sino_iodine) do idx
-        Iv = sino_iodine[idx];  Wv = sino_water[idx]
-        i0 = idx - 1
-        c = (i0 % n_col) + 1
-        r = ((i0 ÷ n_col) % n_row) + 1
-
-        # Bin L: Z_L = Σ ŵ·exp(-p·sI - q·sW),  ZpL = Σ p·ŵ·exp(...),  ZqL = Σ q·ŵ·exp(...)
-        Z_L = 0f0;  ZpL = 0f0;  ZqL = 0f0
-        if per_ray
-            for k in 1:nE_L
-                wk = ŵ_L[c, r, k] * exp(-p_L[k]*Iv - q_L[k]*Wv)
-                Z_L += wk;  ZpL += p_L[k]*wk;  ZqL += q_L[k]*wk
-            end
-        else
-            for k in 1:nE_L
-                wk = ŵ_L[k] * exp(-p_L[k]*Iv - q_L[k]*Wv)
-                Z_L += wk;  ZpL += p_L[k]*wk;  ZqL += q_L[k]*wk
-            end
-        end
-        invZ_L = 1f0 / max(Z_L, 1f-20)
-        P_L[idx] = ZpL * invZ_L              # ∂h_L/∂s_I
-        Q_L[idx] = ZqL * invZ_L              # ∂h_L/∂s_W
-        h_L_pred[idx] = -log(max(Z_L, 1f-20))
-
-        # Bin H
-        Z_H = 0f0;  ZpH = 0f0;  ZqH = 0f0
-        if per_ray
-            for k in 1:nE_H
-                wk = ŵ_H[c, r, k] * exp(-p_H[k]*Iv - q_H[k]*Wv)
-                Z_H += wk;  ZpH += p_H[k]*wk;  ZqH += q_H[k]*wk
-            end
-        else
-            for k in 1:nE_H
-                wk = ŵ_H[k] * exp(-p_H[k]*Iv - q_H[k]*Wv)
-                Z_H += wk;  ZpH += p_H[k]*wk;  ZqH += q_H[k]*wk
-            end
-        end
-        invZ_H = 1f0 / max(Z_H, 1f-20)
-        P_H[idx] = ZpH * invZ_H
-        Q_H[idx] = ZqH * invZ_H
-        h_H_pred[idx] = -log(max(Z_H, 1f-20))
-
-        # Poisson weights: w_b = N_b = I0_b·exp(-h_b_meas)
-        w_L[idx] = I0_L * exp(-h_low[idx])
-        w_H[idx] = I0_H * exp(-h_high[idx])
-    end
-
-    # ── β scaling: auto-scale so β_user=1 ≈ "reg row-sum ≈ data row-sum" ──
-    # Diagonal data Hessian D_diag = w_L·P_b² + w_H·P_b²  per channel.
-    # Laplacian row-sum bound = 8 (4 in 2D × 2 sides).  β_eff = β_user·D_typ/8.
-    D_II_mean = Float32(mean(@. w_L*P_L*P_L + w_H*P_H*P_H))
-    D_WW_mean = Float32(mean(@. w_L*Q_L*Q_L + w_H*Q_H*Q_H))
-    β_I_eff   = Float32(β_iodine) * max(D_II_mean, 1f-20) / 8f0
-    β_W_eff   = Float32(β_water)  * max(D_WW_mean, 1f-20) / 8f0
-    s_β_I     = sqrt(β_I_eff)               # √β folded into C: ‖Cx‖² = β·‖∇x‖²
-    s_β_W     = sqrt(β_W_eff)
-
-    # ── Build effective y: ỹ_b = h_b_meas − h_b_pred + (P_b·sI_C + Q_b·sW_C) ──
-    # qpwls_pcg1 minimizes ‖y − Ax‖²_W; with A·x = J·x and linearization at s_Cong:
-    #     residual = ỹ_b − (P_b·s_I + Q_b·s_W)  =  h_b_meas − F_b(s)  (linearized)
-    s_Cong_I = copy(sino_iodine)
-    s_Cong_W = copy(sino_water)
-    ỹ_L = similar(sino_iodine);  ỹ_H = similar(sino_iodine)
-    AK.foreachindex(ỹ_L) do idx
-        ỹ_L[idx] = h_low[idx]  - h_L_pred[idx] + P_L[idx]*s_Cong_I[idx] + Q_L[idx]*s_Cong_W[idx]
-        ỹ_H[idx] = h_high[idx] - h_H_pred[idx] + P_H[idx]*s_Cong_I[idx] + Q_H[idx]*s_Cong_W[idx]
-    end
-
-    # ── PCG state (qpwls_pcg1.m lines 71-77, 80-95) ──
-    # x is implicit in (sino_iodine, sino_water).  Track Ax (= predicted h_b
-    # under linearized A) and Cx (= ∇x scaled by √β) in pre-allocated buffers.
-    Ax_L = similar(sino_iodine);  Ax_H = similar(sino_iodine)
-    Cx_I_h = similar(sino_iodine);  Cx_I_v = similar(sino_iodine)
-    Cx_W_h = similar(sino_iodine);  Cx_W_v = similar(sino_iodine)
-
-    # Compute initial Ax = J·x_init, Cx = √β·∇x_init
-    AK.foreachindex(Ax_L) do idx
-        Ax_L[idx] = P_L[idx]*sino_iodine[idx] + Q_L[idx]*sino_water[idx]
-        Ax_H[idx] = P_H[idx]*sino_iodine[idx] + Q_H[idx]*sino_water[idx]
-    end
-    function _apply_C!(out_h, out_v, x, β_sqrt)
-        AK.foreachindex(out_h) do idx
-            i0 = idx - 1
-            c  = (i0 % n_col) + 1
-            r  = ((i0 ÷ n_col) % n_row) + 1
-            v  = ((i0 ÷ (n_col * n_row))) + 1
-            cp1 = c == n_col ? 1 : c + 1
-            rp1 = r == n_row ? 1 : r + 1
-            out_h[idx] = β_sqrt * (x[cp1, r, v] - x[c, r, v])
-            out_v[idx] = β_sqrt * (x[c, rp1, v] - x[c, r, v])
-        end
-    end
-    function _apply_Ct!(out, in_h, in_v, β_sqrt)
-        AK.foreachindex(out) do idx
-            i0 = idx - 1
-            c  = (i0 % n_col) + 1
-            r  = ((i0 ÷ n_col) % n_row) + 1
-            v  = ((i0 ÷ (n_col * n_row))) + 1
-            cm1 = c == 1 ? n_col : c - 1
-            rm1 = r == 1 ? n_row : r - 1
-            out[idx] = β_sqrt * ((in_h[c, r, v] - in_h[cm1, r, v]) +
-                                 (in_v[c, r, v] - in_v[c, rm1, v]))
-        end
-    end
-    _apply_C!(Cx_I_h, Cx_I_v, sino_iodine, s_β_I)
-    _apply_C!(Cx_W_h, Cx_W_v, sino_water,  s_β_W)
-
-    # PCG buffers — gradient g, search direction d, Ad, Cd
-    g_I = similar(sino_iodine);  g_W = similar(sino_iodine)
-    d_I = similar(sino_iodine);  d_W = similar(sino_iodine)
-    Ad_L = similar(sino_iodine); Ad_H = similar(sino_iodine)
-    Cd_I_h = similar(sino_iodine); Cd_I_v = similar(sino_iodine)
-    Cd_W_h = similar(sino_iodine); Cd_W_v = similar(sino_iodine)
-    Ctc_I = similar(sino_iodine);  Ctc_W = similar(sino_iodine)
-
-    oldinprod = 0f0
-    t0 = time()
-    for iter in 1:Int(n_iter)
-        # negative gradient g = A'·W·(y − Ax) − C'·Cx
-        # A'·W·r per pixel (2-vec output): (P_L·w_L·r_L + P_H·w_H·r_H, Q_L·w_L·r_L + Q_H·w_H·r_H)
-        AK.foreachindex(g_I) do idx
-            r_L = ỹ_L[idx] - Ax_L[idx]
-            r_H = ỹ_H[idx] - Ax_H[idx]
-            g_I[idx] = P_L[idx]*w_L[idx]*r_L + P_H[idx]*w_H[idx]*r_H
-            g_W[idx] = Q_L[idx]*w_L[idx]*r_L + Q_H[idx]*w_H[idx]*r_H
-        end
-        _apply_Ct!(Ctc_I, Cx_I_h, Cx_I_v, s_β_I)
-        _apply_Ct!(Ctc_W, Cx_W_h, Cx_W_v, s_β_W)
-        AK.foreachindex(g_I) do idx
-            g_I[idx] -= Ctc_I[idx]
-            g_W[idx] -= Ctc_W[idx]
-        end
-
-        # Fletcher-Reeves CG (precon = I): inprod = g'·g
-        newinprod = Float32(sum(@. g_I*g_I + g_W*g_W))
-        if iter == 1
-            d_I .= g_I;  d_W .= g_W
-        else
-            γ = oldinprod > 0f0 ? newinprod / oldinprod : 0f0
-            AK.foreachindex(d_I) do idx
-                d_I[idx] = g_I[idx] + γ * d_I[idx]
-                d_W[idx] = g_W[idx] + γ * d_W[idx]
-            end
-        end
-        oldinprod = newinprod
-
-        # Ad = A·d, Cd = √β·∇d
-        AK.foreachindex(Ad_L) do idx
-            Ad_L[idx] = P_L[idx]*d_I[idx] + Q_L[idx]*d_W[idx]
-            Ad_H[idx] = P_H[idx]*d_I[idx] + Q_H[idx]*d_W[idx]
-        end
-        _apply_C!(Cd_I_h, Cd_I_v, d_I, s_β_I)
-        _apply_C!(Cd_W_h, Cd_W_v, d_W, s_β_W)
-
-        # denom = Ad'·W·Ad + Cd'·Cd
-        denom = Float32(sum(@. w_L*Ad_L*Ad_L + w_H*Ad_H*Ad_H)) +
-                Float32(sum(@. Cd_I_h*Cd_I_h + Cd_I_v*Cd_I_v +
-                              Cd_W_h*Cd_W_h + Cd_W_v*Cd_W_v))
-        # exact step α = (d'·g) / denom
-        dg = Float32(sum(@. d_I*g_I + d_W*g_W))
-        α  = denom > 0f0 ? dg / denom : 0f0
-
-        # x += α·d, Ax += α·Ad, Cx += α·Cd
-        AK.foreachindex(sino_iodine) do idx
-            sino_iodine[idx] += α * d_I[idx]
-            sino_water[idx]  += α * d_W[idx]
-            Ax_L[idx]        += α * Ad_L[idx]
-            Ax_H[idx]        += α * Ad_H[idx]
-            Cx_I_h[idx]      += α * Cd_I_h[idx]
-            Cx_I_v[idx]      += α * Cd_I_v[idx]
-            Cx_W_h[idx]      += α * Cd_W_h[idx]
-            Cx_W_v[idx]      += α * Cd_W_v[idx]
-        end
-
-        if verbose && (iter == 1 || iter % 10 == 0 || iter == n_iter)
-            @info "[QPWLS-PCG1] iter $(iter)/$(n_iter)  α=$(round(α, sigdigits=3))  ‖g‖²=$(round(newinprod, sigdigits=3))"
-        end
-    end
-    dt = time() - t0
-
-    if verbose
-        basis_mode = per_ray ? "per-ray bowtie ŵ" : "centered (1D) ŵ"
-        @info "[QPWLS-PCG1 (MIRT-style, $basis_mode)] $(n_iter) iter, $(round(dt, digits=1)) s"
-        @info "  β_user (I, W) = ($(β_iodine), $(β_water))   β_eff = ($(round(β_I_eff, sigdigits=3)), $(round(β_W_eff, sigdigits=3)))"
-        @info "  D_typical: I=$(round(D_II_mean, sigdigits=3))  W=$(round(D_WW_mean, sigdigits=3))"
-    end
-
-    (n_iter = Int(n_iter), β_iodine = Float64(β_iodine), β_water = Float64(β_water),
-     β_iodine_eff = Float64(β_I_eff), β_water_eff = Float64(β_W_eff))
-end
-
-
-# ╔═╡ 08131010-0000-4000-8000-000000000080
-# ── Scan 1 post-Cong denoising via ACNR (BS.apply_acnr! — Kalender 1988) ──
-# https://github.com/MolloiLab/BasisSimulator.jl  src/reconstruction/vmi/acnr.jl
-#
-# THIS IS THE RIGHT TOOL.  apply_acnr! already exists and does exactly what
-# the user described: post-processing, multi-material aware, anti-correlation
-# preserving by construction.  Kalender et al. 1988 IEEE TMI 7(3):218-224.
-#
-# Algorithm (fully detailed in acnr.jl docstring):
-#   Pick reference energy E_ref where VMI synthesis is most important (E_opt).
-#   Define signal direction (c_a, c_b) = (μρ_iodine, μρ_water) at E_ref.
-#   Decompose:
-#     s_∥ = (c_a·s_I + c_b·s_W) / √(c_a² + c_b²)      ∝ VMI at E_ref (signal)
-#     s_⊥ = -c_b·s_I + c_a·s_W                          orthogonal (anti-corr noise)
-#   Smooth ONLY s_⊥ via FFT Gaussian:
-#     s_⊥_smooth = LP(s_⊥)
-#     n_⊥        = s_⊥ - s_⊥_smooth                    extracted noise
-#   Project back with opposite signs (preserves signal direction):
-#     s_I' = s_I + γ·c_b·n_⊥ / (c_a² + c_b²)
-#     s_W' = s_W - γ·c_a·n_⊥ / (c_a² + c_b²)
-#   ⇒ c_a·s_I' + c_b·s_W' = c_a·s_I + c_b·s_W          ← PIXEL-PERFECT preservation
-#
-# Why this beats every PWLS variant we tried:
-#   • Pure post-processor (no data-fit iteration → no envelope-ray amplification)
-#   • Anti-correlation preserved BY CONSTRUCTION (signal direction guaranteed intact)
-#   • VMI at E_ref has ZERO resolution loss (structural guarantee)
-#   • No per-pixel eigendecomp / rotation needed (single global signal direction)
-#
-# Optional post-Gaussian per material for residual cleanup of signal-direction
-# noise that ACNR by construction doesn't touch.  Mild σ_post (~1-2 px).
-function _apply_pwls_acnr_s1!(
-        sino_iodine::AbstractArray{Float32, 3},      # mutated in place
-        sino_water::AbstractArray{Float32, 3};       # mutated in place
-        E_ref::Real     = 70.0,                      # keV; typically VMI E_opt
-        σ_acnr::Real    = 5.0,                       # FFT Gaussian px on s_⊥ (anti-corr noise)
-        σ_post::Real    = 0.0,                       # mild per-material Gaussian; 0 = disable
-        γ_acnr::Real    = 1.0,                       # ACNR correction strength ∈ [0, 1]
-        verbose::Bool   = true,
-    )
-    # Stage to CPU (BS.apply_acnr! uses FFTW; cheap on Apple unified memory).
-    s_I_cpu = sino_iodine isa Array ? sino_iodine : Array(sino_iodine)
-    s_W_cpu = sino_water  isa Array ? sino_water  : Array(sino_water)
-
-    # Lookup material μρ at reference energy (cm²/g).
-    μρ_iodine = BS.compute_mass_μ_at_energy(XA.Elements.Iodine,  Float64(E_ref))
-    μρ_water  = BS.compute_mass_μ_at_energy(XA.Materials.water,  Float64(E_ref))
-
-    # ── Step 1: ACNR (anti-correlated noise reduction) ──
-    # For (sino_iodine, sino_water) → c_a = μρ_iodine, c_b = μρ_water.
-    # Signal direction (c_a, c_b) gets pixel-perfect preserved.
-    info_acnr = BS.apply_acnr!(
-        s_I_cpu, s_W_cpu;
-        c_a     = μρ_iodine,
-        c_b     = μρ_water,
-        σ       = σ_acnr,
-        γ       = γ_acnr,
-        verbose = verbose,
-    )
-
-    # ── Step 2: Optional per-material Gaussian post-smoothing ──
-    # ACNR preserves the signal direction perfectly.  Any noise along that
-    # direction (the "co-correlated" component) is untouched.  Mild Gaussian
-    # cleans up the residual without significantly distorting the signal
-    # direction (since both materials are smoothed by the same kernel).
-    info_post = (σ_post = 0.0,)
-    if σ_post > 0
-        scratch = similar(s_I_cpu)
-        _gauss_smooth_2d!(s_I_cpu, σ_post, scratch)
-        _gauss_smooth_2d!(s_W_cpu, σ_post, scratch)
-        info_post = (σ_post = Float64(σ_post),)
-        verbose && @info "[ACNR + post-Gauss] applied σ_post=$(σ_post) px to each material"
-    end
-
-    # Copy back to GPU input arrays if needed.
-    if !(sino_iodine isa Array)
-        copyto!(sino_iodine, s_I_cpu)
-        copyto!(sino_water,  s_W_cpu)
-    end
-
-    if verbose
-        @info "[_apply_pwls_acnr_s1!] E_ref = $(E_ref) keV"
-        @info "  μρ_iodine(E_ref) = $(round(μρ_iodine, sigdigits=3)) cm²/g  (c_a)"
-        @info "  μρ_water(E_ref)  = $(round(μρ_water,  sigdigits=3)) cm²/g  (c_b)"
-    end
-
-    (acnr   = info_acnr,
-     post   = info_post,
-     E_ref  = Float64(E_ref),
-     σ_acnr = Float64(σ_acnr),
-     σ_post = Float64(σ_post),
-     γ_acnr = Float64(γ_acnr))
-end
-
-# ╔═╡ 08131009-a000-4000-8000-000000000011
-# ── Scan 1 post-Cong polish config — two paths only ──
-#   :mirt_pwls — MIRT qpwls_pcg1.m 1:1 port (QPWLS via PCG, exact line search)
-#   :acnr      — BS.apply_acnr! anti-correlated noise reduction (Kalender 1988)
+# ╔═╡ 08131d00-0000-4000-8000-000000000002
+# ── STAGE 3 — RSKR config (hyperparams for the cell directly below) ──
+# Smaller h_param / fewer n_iter ⇒ less denoising (more residual noise).
+# Larger h_param / more n_iter   ⇒ more denoising (smoother volumes).
 begin
-    use_pwls_s1                   = true
-    pwls_path_s1                  = :acnr
-
-    # ── MIRT QPWLS-PCG1 knobs (path = :mirt_pwls) ──
-    # Pure quadratic PWLS via Fletcher-Reeves PCG with exact line search.
-    # β auto-scales to mean(D)/8 internally so β_user = 1 ≈ "reg row-sum ≈
-    # data row-sum at typical pixel" — scale-free convention.
-    #   β ≈ 0.1  → barely smooth (almost Cong)
-    #   β ≈ 1    → moderate smoothing
-    #   β ≈ 10   → aggressive
-    pwls_β_iodine_mirt_s1         = 1.0
-    pwls_β_water_mirt_s1          = 1.0
-    pwls_n_iter_mirt_s1           = 30
-
-    # ── ACNR knobs (path = :acnr) — BS.apply_acnr! Kalender 1988 ──
-    # Pixel-perfect preserves VMI(E_ref).  Smooths ONLY the anti-correlated
-    # noise direction.  Optional mild post-Gaussian for signal-direction cleanup.
-    pwls_E_ref_acnr_s1            = 70.0    # keV — typically VMI E_opt
-    pwls_σ_acnr_s1                = 5.0     # FFT Gaussian px on s_⊥
-    pwls_σ_post_acnr_s1           = 1.5     # per-material post-Gaussian (0 = disable)
-    pwls_γ_acnr_s1                = 1.0     # correction strength ∈ [0, 1]
+    rskr_n_iter_s1   = 2         # Bregman iters (paper §2.5: 3-4 typical)
+    rskr_h_param_s1  = 0.5       # range-kernel scale (paper Fig 1d: 1.2-1.5 typical)
+    rskr_radius_s1   = 2         # spatial kernel half-radius
+    rskr_γ_s1        = 0.5       # rank-sparse h scaling exponent
 end
 
-# ╔═╡ 08131010-0000-4000-8000-000000000040
-# Scan 1 post-Cong polish — dispatcher.  Two paths:
-#   :mirt_pwls — MIRT qpwls_pcg1.m 1:1 port (cell 0045)
-#   :acnr      — Kalender 1988 anti-correlated noise reduction (cell 0080)
-pwls_decomp_s1 = let
-    path = pwls_path_s1
-    @info "[PWLS s1] entering cell.  use_pwls_s1=$(use_pwls_s1), path=$(path)"
-    if !use_pwls_s1
-        @info "[PWLS s1] DISABLED — passing through Cong-PCCT warm start"
-        (sino_w = Float32.(cong_pcct_decomp_s1.sino_water),
-         sino_I = Float32.(cong_pcct_decomp_s1.sino_iodine))
-    else
-        sino_I_gpu = MtlArray(copy(cong_pcct_decomp_s1.sino_iodine))
-        sino_W_gpu = MtlArray(copy(cong_pcct_decomp_s1.sino_water))
+# ╔═╡ 08131d00-0000-4000-8000-000000000009
+# RSKR-2ch denoising on the combined (vol_low, vol_high) pair.
+# Joint SVD + bilateral filter on the U-vectors preserves the anti-correlated
+# (water ↔ iodine) noise structure by construction (Clark/Badea 2023).
+sim_scan1_combined_bin_volumes_rskr_s1 = let
+    vol_low  = sim_scan1_combined_bin_volumes_s1.vol_low
+    vol_high = sim_scan1_combined_bin_volumes_s1.vol_high
 
-        if path == :acnr
-            _apply_pwls_acnr_s1!(
-                sino_I_gpu, sino_W_gpu;
-                E_ref   = pwls_E_ref_acnr_s1,
-                σ_acnr  = pwls_σ_acnr_s1,
-                σ_post  = pwls_σ_post_acnr_s1,
-                γ_acnr  = pwls_γ_acnr_s1,
-                verbose = true,
-            )
-        elseif path == :mirt_pwls
-            h_lo_gpu = MtlArray(Float32.(sim_scan1_lohi.sino_low))
-            h_hi_gpu = MtlArray(Float32.(sim_scan1_lohi.sino_high))
-            _apply_mirt_qpwls_pcg1_s1!(
-                sino_I_gpu, sino_W_gpu, h_lo_gpu, h_hi_gpu;
-                cong_basis = pwls_basis_s1,
-                I0_low     = sim_scan1_lohi.I0_low,
-                I0_high    = sim_scan1_lohi.I0_high,
-                β_iodine   = pwls_β_iodine_mirt_s1,
-                β_water    = pwls_β_water_mirt_s1,
-                n_iter     = pwls_n_iter_mirt_s1,
-                verbose    = true,
-            )
-            h_lo_gpu = nothing;  h_hi_gpu = nothing
-        else
-            error("pwls_decomp_s1: unknown pwls_path_s1 = $(path).  Use :acnr or :mirt_pwls.")
-        end
+    t0 = time()
+    out = _rskr_2ch([vol_low, vol_high];
+        n_iter  = rskr_n_iter_s1,
+        h_param = rskr_h_param_s1,
+        radius  = rskr_radius_s1,
+        γ       = rskr_γ_s1,
+        verbose = true,
+    )
+    @info "[RSKR-2ch on combined low/high] $(round(time()-t0, digits=1))s"
+    @info "  vol_low  σ_in=$(round(_mad_haar_σ(vol_low),  sigdigits=3))  →  σ_out=$(round(_mad_haar_σ(out[1]), sigdigits=3))   (mean: $(round(mean(vol_low),  sigdigits=4)) → $(round(mean(out[1]), sigdigits=4)))"
+    @info "  vol_high σ_in=$(round(_mad_haar_σ(vol_high), sigdigits=3))  →  σ_out=$(round(_mad_haar_σ(out[2]), sigdigits=3))   (mean: $(round(mean(vol_high), sigdigits=4)) → $(round(mean(out[2]), sigdigits=4)))"
 
-        sino_I_cpu = Array(sino_I_gpu)
-        sino_W_cpu = Array(sino_W_gpu)
-        sino_I_gpu = nothing;  sino_W_gpu = nothing
-        GC.gc(true)
+    (vol_low = out[1], vol_high = out[2])
+end;
 
-        (sino_w = sino_W_cpu, sino_I = sino_I_cpu, path = path)
-    end
+# ╔═╡ 08131d11-0000-4000-8000-000000000001
+# ── STAGE 4 — Ring artifact correction (port of MCR `suppress_rings.m`) ──
+# Image-domain implementation via polar transform: at each radial bin r,
+# subtract the high-frequency-in-r component of the per-r mean.  Done
+# AFTER RSKR per the user's pipeline so denoising can't smear ring offsets
+# into surrounding voxels.
+#
+# `ring_rad_s1` plays the role of MCR's `rad` (default 7).  Larger ⇒ more
+# aggressive (smooths over wider r window).  `use_ring_correction_s1 = false`
+# passes (vol_low, vol_high) through unchanged.
+begin
+    use_ring_correction_s1 = false
+    ring_rad_s1            = 7
 end;
 
 # ╔═╡ 08131f00-0000-4000-8000-000000000001
@@ -2929,152 +2391,48 @@ Config: `vmi_energies_s1` selects synthesis energies; `hir_*_s1` controls HIR; `
 vmi_energies_s1 = [40.0, 70.0, 100.0, 140.0];
 
 # ╔═╡ 08131009-a000-4000-8000-000000000007
-# ── Scan 1 Mono+ config ───────────────────────────────────────────────────
+# ── STAGE 8 — Mono+ config (per-keV LP sigma) ──
+# `vmip_σ_per_E_s1`: Dict{E (keV) => σ_lp (px)}.  σ=0 → no smoothing at that
+# energy (preserves spatial detail).  σ>0 → Gaussian LP at that energy
+# extracts low-frequency content from `vmip_E_noise_opt_s1` (reference E)
+# and replaces the high-frequency band of the target energy with its own
+# noisy detail.  Higher σ at noisier energies (e.g. 40 keV) ⇒ more
+# noise-suppression there.
+#
+# Typical Siemens Mono+ behavior: moderate σ at low E (40 keV is noisiest),
+# zero at the reference E (70 keV — preserved as-is).
 begin
     use_mono_plus_s1     = true
-    vmip_E_noise_opt_s1  = 70.0
-    vmip_σ_lp_px_s1      = Float64[1.5, 0.0, 1.5, 3.0]
+    vmip_E_noise_opt_s1  = 70.0    # reference energy (preserved noise-wise)
+    vmip_σ_per_E_s1      = Dict{Float64, Float64}(
+        40.0  => 1.5,    # px σ at 40 keV  — high (low-E VMI is noisiest)
+        70.0  => 0.0,    # px σ at 70 keV  — reference, no smoothing
+        100.0 => 0.0,    # px σ at 100 keV — moderate
+        140.0 => 0.0,    # px σ at 140 keV — low (high-E VMI is cleaner)
+    )
 end
 
 # ╔═╡ 08131f02-0000-4000-8000-000000000001
 md"""
-**VMI pipeline (Scan 1).** Mirrors notebook 06's tuned chain:
-1. Reads `(sino_w, sino_I)` from `pwls_decomp_s1`.
-2. For each `E ∈ vmi_energies_s1`: synth `vmi_sino(E) = μρ_W·sino_w + μρ_I·sino_I` → **per-E FBP apod** → HU.
-3. **Mono+** frequency-split polish across all energies (LP from `vmip_E_noise_opt_s1`, HP from each target, σ in `vmip_σ_lp_px_s1`).
-4. **HIR** (optional) per-E, warm-started from the Mono+ output for that energy.
-
-`use_hir_s1 = false` → return Mono+ output as final.  `use_mono_plus_s1 = false` → skip Mono+, optionally still HIR on raw FBP.
-Tune via Scan 1's own `use_hir_s1` / `hir_*_s1` and `use_mono_plus_s1` / `vmip_*_s1` config cells, plus `vmi_apod_y_per_E_s1` inside the cell.
+**VMI synthesis (Scan 1, image-domain).** Per-energy synthesis from `c_iodine` map.
+1. Reads `c_iodine` (mg/mL) and `vol_low_HU` from `sim_scan1_imdomain_decomp_s1`.
+2. For each `E ∈ vmi_energies_s1`: swap iodine HU contribution at low bin for iodine HU contribution at E.
+   `HU_E[v] = HU_low[v] + c_iodine[v] · (α_iod_E_phys − α_iod_low_cal)`
+   where `α_iod_E_phys = μρ_iodine(E) / μρ_water(E)` (HU per mg/mL).
+3. Optional Mono+ (frequency-split polish across energies) on top.
 """
 
 # ╔═╡ 08131009-a000-4000-8000-000000000006
 # ── Scan 1 HIR config ─────────────────────────────────────────────────────
 begin
     use_hir_s1         = true
-    hir_strength_s1    = 2
-    hir_lambda_s1      = 5.0f0
+    hir_strength_s1    = 3
+    hir_lambda_s1      = 10.0f0
     hir_nepochs_s1     = 2
     hir_n_subsets_s1   = 12
     hir_huber_delta_s1 = 0.06f0
     hir_relaxation_s1  = 0.35f0
 end
-
-# ╔═╡ 08131010-a000-4000-8000-000000000002
-# ── Scan 1 VMI pipeline: PWLS → VMI(per-E FBP apod) → Mono+ → HIR(optional) ──
-# Mirrors nb 06's tuned chain.  Variable name `sim_scan1_vmi_hir` preserved
-# for downstream consumers (Dict{Float64, Array{Float32, 3}} of HU volumes).
-sim_scan1_vmi_hir = let
-    geom       = sim_scan1.geom
-    recon_size = sim_matrix_size
-    sino_w     = pwls_decomp_s1.sino_w
-    sino_I     = pwls_decomp_s1.sino_I
-    energies   = Float64.(vmi_energies_s1)
-    mid_z      = recon_size[3] ÷ 2
-
-    # ── Per-E FBP apodization (mirrors nb 06's tuned per-energy filter) ──
-    vmi_apod_x = (0.0, 0.25, 0.5, 0.75, 1.0)
-    vmi_apod_y_per_E_s1 = [
-        (1.0, 0.72, 0.45, 0.20, 0.05),    # 40 keV  — aggressive, HF replaced by VMI_70 via Mono+
-        (1.0, 0.85, 0.65, 0.40, 0.15),    # 70 keV  — calibration anchor
-        (1.0, 0.70, 0.42, 0.18, 0.04),    # 100 keV — Mono+ identity here, NPS softer than 70
-        (1.0, 0.50, 0.30, 0.12, 0.03),    # 140 keV — LF tightened, HF replaced by VMI_70
-    ]
-    length(vmi_apod_y_per_E_s1) == length(energies) ||
-        error("vmi_apod_y_per_E_s1 must have one entry per VMI energy ($(length(energies)))")
-
-    # ── Step 1: VMI synthesis with per-E FBP apod (no HIR here) ──
-    raw_fbp = Dict{Float64, Array{Float32, 3}}()
-    for (k, E) in enumerate(energies)
-        μ_w_E  = BS.compute_μ_at_energy(XA.Materials.water, E)
-        μρ_w_E = Float32(BS.compute_mass_μ_at_energy(XA.Materials.water,  E))
-        μρ_I_E = Float32(BS.compute_mass_μ_at_energy(XA.Elements.Iodine, E))
-
-        vmi_sino = @. μρ_w_E * sino_w + μρ_I_E * sino_I
-        sino_gpu = MtlArray(vmi_sino)
-        ws_fdk   = BS.create_fdk_recon_workspace(
-            sino_gpu, geom, recon_size;
-            filter = BS.CustomFilter(vmi_apod_x, vmi_apod_y_per_E_s1[k]),
-        )
-        recon_μ  = Array(BS.reconstruct!(ws_fdk, sino_gpu, geom, recon_size))
-        sino_gpu = nothing; ws_fdk = nothing
-
-        recon_hu = Float32.(BS.to_hounsfield(recon_μ; μ_water = μ_w_E))
-        raw_fbp[E] = recon_hu
-
-        roi = recon_hu[200:300, 200:300, mid_z]
-        @info "[scan 1 VMI FBP] $(Int(E)) keV (Nyquist apod=$(vmi_apod_y_per_E_s1[k][end])): σ=$(round(std(roi), digits=1)) HU, mean=$(round(mean(roi), digits=1)) HU"
-    end
-    GC.gc(true)
-
-    # ── Step 2: Mono+ frequency-split polish (per-E σ from vmip_σ_lp_px_s1) ──
-    mono_out = if !use_mono_plus_s1
-        @info "[scan 1 Mono+] DISABLED — passing raw FBP VMIs through"
-        raw_fbp
-    else
-        haskey(raw_fbp, vmip_E_noise_opt_s1) ||
-            error("Mono+ reference vmip_E_noise_opt_s1=$(vmip_E_noise_opt_s1) keV not in vmi_energies_s1=$energies")
-
-        vols_in   = [raw_fbp[E] for E in energies]
-        ws_mono_s1 = BS.create_mono_plus_workspace(vols_in[1]; n_energies = length(energies))
-        res = BS.apply_mono_plus!(ws_mono_s1, vols_in, energies;
-            E_noise_opt = vmip_E_noise_opt_s1,
-            σ_lp_px     = Float64.(vmip_σ_lp_px_s1),
-            verbose     = true)
-
-        out = Dict{Float64, Array{Float32, 3}}()
-        for (i, E) in enumerate(energies)
-            mp = copy(res.volumes[i])
-            roi_before = vols_in[i][200:300, 200:300, mid_z]
-            roi_after  = mp[200:300, 200:300, mid_z]
-            @info "[scan 1 Mono+] $(Int(E)) keV (σ_lp=$(res.σ_lp_px[i]) px): σ=$(round(std(roi_before), digits=1)) → $(round(std(roi_after), digits=1)) HU"
-            out[E] = mp
-        end
-        ws_mono_s1 = nothing; GC.gc(true)
-        out
-    end
-
-    # ── Step 3: HIR per E (optional), warm-started from Mono+ output ──
-    if !use_hir_s1
-        @info "[scan 1 HIR] DISABLED — returning Mono+ output as final VMI"
-        mono_out
-    else
-        out = Dict{Float64, Array{Float32, 3}}()
-        ws_hir = nothing
-        for E in energies
-            μ_w_E  = BS.compute_μ_at_energy(XA.Materials.water, E)
-            μρ_w_E = Float32(BS.compute_mass_μ_at_energy(XA.Materials.water,  E))
-            μρ_I_E = Float32(BS.compute_mass_μ_at_energy(XA.Elements.Iodine, E))
-
-            vmi_sino = @. μρ_w_E * sino_w + μρ_I_E * sino_I
-            sino_gpu = MtlArray(vmi_sino)
-
-            if ws_hir === nothing
-                ws_hir = BS.create_hir_recon_workspace(sino_gpu, geom, recon_size;
-                    strength = hir_strength_s1, filter = sim_vmi_filter)
-                ws_hir.params = BS.HIRParams(hir_strength_s1, hir_lambda_s1, 30, hir_nepochs_s1,
-                                              hir_n_subsets_s1, hir_huber_delta_s1, hir_relaxation_s1, (25, 35))
-            end
-
-            init_hu  = mono_out[E]
-            init_μ   = Float32.(Float64(μ_w_E) .* (Float64.(init_hu) ./ 1000.0 .+ 1.0))
-            init_gpu = MtlArray(init_μ)
-
-            BS.reconstruct!(ws_hir, sino_gpu, geom, recon_size; init_volume = init_gpu)
-            recon_μ  = Array(ws_hir.volume)
-            recon_hu = Float32.(BS.to_hounsfield(recon_μ; μ_water = μ_w_E))
-            out[E]   = recon_hu
-
-            roi_in  = init_hu[200:300, 200:300, mid_z]
-            roi_out = recon_hu[200:300, 200:300, mid_z]
-            @info "[scan 1 HIR  init=Mono+] $(Int(E)) keV: σ $(round(std(roi_in), digits=1)) → $(round(std(roi_out), digits=1)) HU"
-
-            sino_gpu = nothing; init_gpu = nothing
-        end
-        ws_hir = nothing; GC.gc(true)
-        out
-    end
-end;
 
 # ╔═╡ 08135000-0000-4000-8000-000000000001
 md"""
@@ -3097,6 +2455,123 @@ sim_seg_result_s1 = let
     mid_z = size(ref, 3) ÷ 2
     mask, rods, center = segment_gammex_rods(ref[:, :, mid_z]; fov_cm = sim_fov_cm, clockwise = false)
     (mask = mask, rods = rods, center = center)
+end;
+
+# ╔═╡ 08131d11-0000-4000-8000-000000000002
+sim_scan1_combined_bin_volumes_ring_s1 = let
+    if !use_ring_correction_s1
+        @info "[ring-correct] DISABLED — passing RSKR (vol_low, vol_high) through unchanged"
+        (vol_low  = sim_scan1_combined_bin_volumes_rskr_s1.vol_low,
+         vol_high = sim_scan1_combined_bin_volumes_rskr_s1.vol_high)
+    else
+        seg = sim_seg_result_s1
+        cx, cy = Float64(seg.center.cx), Float64(seg.center.cy)
+
+        vol_low  = copy(sim_scan1_combined_bin_volumes_rskr_s1.vol_low)
+        vol_high = copy(sim_scan1_combined_bin_volumes_rskr_s1.vol_high)
+
+        _suppress_rings_image!(vol_low,  (cx, cy); rad_smooth = Int(ring_rad_s1), verbose = true)
+        _suppress_rings_image!(vol_high, (cx, cy); rad_smooth = Int(ring_rad_s1), verbose = true)
+
+        Δ_low  = mean(abs.(vol_low  .- sim_scan1_combined_bin_volumes_rskr_s1.vol_low))
+        Δ_high = mean(abs.(vol_high .- sim_scan1_combined_bin_volumes_rskr_s1.vol_high))
+        @info "[ring-correct] mean |Δμ| removed:  low=$(round(Δ_low, sigdigits=3)) cm⁻¹   high=$(round(Δ_high, sigdigits=3)) cm⁻¹"
+
+        (vol_low = vol_low, vol_high = vol_high)
+    end
+end;
+
+# ╔═╡ 08131d00-0000-4000-8000-000000000008
+# ── STAGE 7 — Image-domain VMI synthesis ──
+# At each voxel:
+#   HU_E[v] = HU_low[v] + c_iodine[v] · (α_iod_E_phys − α_iod_low_cal)
+# where:
+#   α_iod_E_phys      = μρ_iodine(E) / μρ_water(E)   (HU per mg/mL at E, physics)
+#   α_iod_low_cal     = empirical iodine HU sensitivity at the low bin
+#                      (fitted in Stage 5 from rod measurements)
+#
+# Intuition:  HU_low already contains the iodine contribution at the low-bin
+# response (= c_iodine · α_iod_low_cal).  To get the VMI at energy E, swap
+# that contribution for c_iodine · α_iod_E_phys.
+# Output: `sim_scan1_vmi_rskr_s1` = Dict{Float64, Array{Float32, 3}} of HU volumes.
+sim_scan1_vmi_rskr_s1 = let
+    cal      = sim_scan1_imdomain_cal_s1
+    decomp   = sim_scan1_imdomain_decomp_s1
+    HU_low   = decomp.vol_low_HU
+    c_iod    = decomp.c_iodine
+    α_low_cal = Float32(cal.α_iod_low_cal)
+    energies = Float64.(vmi_energies_s1)
+
+    out = Dict{Float64, Array{Float32, 3}}()
+    for E in energies
+        μρ_w_E = BS.compute_mass_μ_at_energy(XA.Materials.water,  E)
+        μρ_I_E = BS.compute_mass_μ_at_energy(XA.Elements.Iodine, E)
+        α_E_phys = Float32(μρ_I_E / μρ_w_E)   # HU per (mg/mL) at energy E
+
+        Δα = α_E_phys - α_low_cal
+        hu_vol = @. HU_low + c_iod * Δα
+        out[E] = Float32.(hu_vol)
+
+        mid_z = size(hu_vol, 3) ÷ 2
+        roi   = hu_vol[200:300, 200:300, mid_z]
+        @info "[VMI image-domain $(Int(E)) keV]  α_phys=$(round(α_E_phys, digits=2))  Δα=$(round(Δα, digits=2))  →  σ=$(round(std(roi), digits=1)) HU   mean=$(round(mean(roi), digits=1)) HU"
+    end
+    out
+end;
+
+# ╔═╡ 08131010-a000-4000-8000-000000000002
+# ── Scan 1 VMI final pipeline: RSKR (image-domain) → optional Mono+ → final ──
+# The RSKR pipeline (cells 08131d00-…) does the heavy lifting: per-bin FBP,
+# joint denoising on the SVD of bin volumes, image-domain material decomp, and
+# image-domain VMI resynthesis from material maps.  This cell just optionally
+# applies Mono+ frequency-split polish on top.  HIR is not applicable to the
+# image-domain pipeline (it's iterative recon on sinograms, which we no longer
+# produce as basis sinos).  Variable name `sim_scan1_vmi_hir` preserved for
+# downstream consumers (Dict{Float64, Array{Float32, 3}} of HU volumes).
+sim_scan1_vmi_hir = let
+    energies = Float64.(vmi_energies_s1)
+    mid_z    = size(sim_scan1_vmi_rskr_s1[energies[1]], 3) ÷ 2
+
+    raw_vmi = sim_scan1_vmi_rskr_s1   # Dict{Float64, Array{Float32, 3}} from RSKR pipeline
+
+    # ── Optional Mono+ frequency-split polish on top of RSKR-denoised VMIs ──
+    final = if !use_mono_plus_s1
+        @info "[scan 1 Mono+] DISABLED — returning RSKR VMI volumes as final"
+        raw_vmi
+    else
+        haskey(raw_vmi, vmip_E_noise_opt_s1) ||
+            error("Mono+ reference vmip_E_noise_opt_s1=$(vmip_E_noise_opt_s1) keV not in vmi_energies_s1=$energies")
+        for E in energies
+            haskey(vmip_σ_per_E_s1, E) ||
+                error("vmip_σ_per_E_s1 missing key for $(E) keV — define σ for every energy in vmi_energies_s1")
+        end
+
+        vols_in = [raw_vmi[E] for E in energies]
+        σ_vec   = Float64[vmip_σ_per_E_s1[E] for E in energies]    # ordered to match `energies`
+        ws_mono = BS.create_mono_plus_workspace(vols_in[1]; n_energies = length(energies))
+        res = BS.apply_mono_plus!(ws_mono, vols_in, energies;
+            E_noise_opt = vmip_E_noise_opt_s1,
+            σ_lp_px     = σ_vec,
+            verbose     = true)
+
+        out = Dict{Float64, Array{Float32, 3}}()
+        for (i, E) in enumerate(energies)
+            mp = copy(res.volumes[i])
+            roi_before = vols_in[i][200:300, 200:300, mid_z]
+            roi_after  = mp[200:300, 200:300, mid_z]
+            @info "[scan 1 Mono+] $(Int(E)) keV (σ_lp=$(σ_vec[i]) px): σ=$(round(std(roi_before), digits=1)) → $(round(std(roi_after), digits=1)) HU"
+            out[E] = mp
+        end
+        ws_mono = nothing; GC.gc(true)
+        out
+    end
+
+    # HIR is incompatible with image-domain VMI (it's sinogram-domain iterative recon).
+    # If user has use_hir_s1=true, log and skip cleanly.
+    if use_hir_s1
+        @info "[scan 1 HIR] SKIPPED — incompatible with RSKR image-domain VMI pipeline"
+    end
+    final
 end;
 
 # ╔═╡ 08135010-0000-4000-8000-000000000003
@@ -3834,14 +3309,280 @@ function _vmi_row_viz(vmi_dict, stage_name; clim = (-200, 500))
     fig
 end
 
-# ╔═╡ 08131e02-0000-4000-8000-000000000005
-let
-    _decomp_viz(cong_decomp_s1.sino_iodine, cong_decomp_s1.sino_water, "Cong (inline)"; geom = sim_scan1.geom)
+# _lohi_stage_viz — used by per-stage scan-1 intermediate viz cells
+# (FBP, RSKR, ring-corrected).  Takes (vol_low, vol_high) in cm⁻¹, converts
+# to HU using each bin's water reference μ, draws low/high heatmaps and a
+# bar chart of rod HUs at the calcium + iodine inserts.  Logs rod HUs too.
+function _lohi_stage_viz(
+        vol_low::AbstractArray{Float32, 3},
+        vol_high::AbstractArray{Float32, 3},
+        μ_w_low::Real,
+        μ_w_high::Real,
+        stage_name::String;
+        seg = sim_seg_result_s1,
+        fov_cm::Real = sim_fov_cm,
+        clim_HU = (-200.0, 1500.0),
+    )
+    μ_w_low_f  = Float32(μ_w_low)
+    μ_w_high_f = Float32(μ_w_high)
+    mid_z = size(vol_low, 3) ÷ 2
+    slice_low  = @. (vol_low[:, :, mid_z]  - μ_w_low_f ) / μ_w_low_f  * 1000f0
+    slice_high = @. (vol_high[:, :, mid_z] - μ_w_high_f) / μ_w_high_f * 1000f0
+
+    nx, ny = size(slice_low)
+    roi_r_pix = 1.4 * 0.6 / (fov_cm / nx)
+    roi_r_sq  = roi_r_pix ^ 2
+    function _rod_mean(slice, rod)
+        i_lo = max(1, floor(Int, rod.cx - roi_r_pix - 1))
+        i_hi = min(nx, ceil(Int, rod.cx + roi_r_pix + 1))
+        j_lo = max(1, floor(Int, rod.cy - roi_r_pix - 1))
+        j_hi = min(ny, ceil(Int, rod.cy + roi_r_pix + 1))
+        s = 0.0; n = 0
+        @inbounds for j in j_lo:j_hi, i in i_lo:i_hi
+            if (i - rod.cx)^2 + (j - rod.cy)^2 <= roi_r_sq
+                s += slice[i, j]; n += 1
+            end
+        end
+        s / n
+    end
+
+    rod_names = ["Ca 50", "Ca 100", "Ca 200", "Ca 300", "Ca 400",
+                 "I 2.0", "I 2.5", "I 5.0", "I 7.5", "I 10.0", "I 15.0", "I 20.0"]
+    rods_by_name = Dict(r.name => r for r in seg.rods)
+    HU_low_rod  = Float64[_rod_mean(slice_low,  rods_by_name[nm]) for nm in rod_names]
+    HU_high_rod = Float64[_rod_mean(slice_high, rods_by_name[nm]) for nm in rod_names]
+
+    fig = CM.Figure(size = (1400, 760), fontsize = 11)
+    CM.Label(fig[0, 1:4], "$(stage_name) — (vol_low, vol_high) HU + rod means";
+        fontsize = 14, halign = :left)
+
+    ax_l = CM.Axis(fig[1, 1:2]; title = "Low bin (HU, slice $mid_z)", aspect = CM.DataAspect())
+    CM.heatmap!(ax_l, slice_low; colormap = :grays, colorrange = clim_HU)
+    CM.hidedecorations!(ax_l); CM.hidespines!(ax_l)
+    for r in seg.rods
+        CM.scatter!(ax_l, [r.cx], [r.cy]; markersize = 4, color = :red)
+    end
+
+    ax_h = CM.Axis(fig[1, 3:4]; title = "High bin (HU, slice $mid_z)", aspect = CM.DataAspect())
+    CM.heatmap!(ax_h, slice_high; colormap = :grays, colorrange = clim_HU)
+    CM.hidedecorations!(ax_h); CM.hidespines!(ax_h)
+    for r in seg.rods
+        CM.scatter!(ax_h, [r.cx], [r.cy]; markersize = 4, color = :red)
+    end
+
+    n_rods = length(rod_names)
+    xs = collect(1:n_rods)
+    ax_b = CM.Axis(fig[2, 1:4];
+        title = "Rod HUs",
+        xlabel = "Rod", ylabel = "HU",
+        xticks = (xs, rod_names),
+        xticklabelrotation = π/4)
+    CM.barplot!(ax_b, xs .- 0.2, HU_low_rod; width = 0.4, color = :steelblue, label = "Low bin")
+    CM.barplot!(ax_b, xs .+ 0.2, HU_high_rod; width = 0.4, color = :darkorange, label = "High bin")
+    CM.hlines!(ax_b, [0.0]; color = :gray, linestyle = :dash, linewidth = 0.8)
+    CM.axislegend(ax_b; position = :lt)
+
+    @info "[$(stage_name)] rod HUs:"
+    for (i, nm) in enumerate(rod_names)
+        @info "  $(rpad(nm, 7))  low=$(round(HU_low_rod[i], digits=1)) HU   high=$(round(HU_high_rod[i], digits=1)) HU"
+    end
+
+    fig
 end
 
-# ╔═╡ 08131e03-0000-4000-8000-000000000002
+# ╔═╡ 08131d10-0000-4000-8000-000000000001
+# ── STAGE 2 — FBP rod measurements (intermediate viz) ──
+# `sim_scan1_combined_bin_volumes_s1` has the raw FBP (vol_low, vol_high) in
+# cm⁻¹.  Convert to HU per bin, measure rod means, plot.
 let
-    _decomp_viz(pwls_decomp_s1.sino_I, pwls_decomp_s1.sino_w, "PWLS-L₂"; geom = sim_scan1.geom)
+    μ_w_low, μ_w_high = sim_scan1_M_matrix_s1.μ_water_combined
+    _lohi_stage_viz(
+        sim_scan1_combined_bin_volumes_s1.vol_low,
+        sim_scan1_combined_bin_volumes_s1.vol_high,
+        μ_w_low, μ_w_high,
+        "STAGE 2 — FBP (raw)";
+        clim_HU = Float64.(rskr_viz_hu_clim_s1),
+    )
+end
+
+# ╔═╡ 08131d10-0000-4000-8000-000000000002
+# ── RSKR-stage rod measurements (intermediate viz) ──
+let
+    μ_w_low, μ_w_high = sim_scan1_M_matrix_s1.μ_water_combined
+    _lohi_stage_viz(
+        sim_scan1_combined_bin_volumes_rskr_s1.vol_low,
+        sim_scan1_combined_bin_volumes_rskr_s1.vol_high,
+        μ_w_low, μ_w_high,
+        "STAGE 3 — RSKR (denoised)";
+        clim_HU = Float64.(rskr_viz_hu_clim_s1),
+    )
+end
+
+# ╔═╡ 08131d11-0000-4000-8000-000000000003
+# ── Ring-corrected stage rod measurements (intermediate viz) ──
+let
+    μ_w_low, μ_w_high = sim_scan1_M_matrix_s1.μ_water_combined
+    _lohi_stage_viz(
+        sim_scan1_combined_bin_volumes_ring_s1.vol_low,
+        sim_scan1_combined_bin_volumes_ring_s1.vol_high,
+        μ_w_low, μ_w_high,
+        "STAGE 4 — Ring-corrected";
+        clim_HU = Float64.(rskr_viz_hu_clim_s1),
+    )
+end
+
+# ╔═╡ 08131d15-0000-4000-8000-000000000001
+# ── STAGE 5 — Image-domain decomp calibration (Ding 2012, Eq 3) ──
+# Linear 3-parameter fit per material:
+#   c_iodine  = a₀ + a₁·HU_low + a₂·HU_high      (mg/mL)
+# Calibration ROIs: water rod (c=0) + 7 iodine rods (c = 2.0..20.0 mg/mL).
+# 8 calibration points → over-determined LSQ for 3 unknowns → robust fit.
+#
+# Also fits the iodine HU sensitivity at each bin:
+#   α_iod_low_cal  = mean rod-HU per (mg/mL) at low bin
+#   α_iod_high_cal = mean rod-HU per (mg/mL) at high bin
+# These are needed for VMI synthesis to subtract iodine contribution from
+# HU_low and add iodine contribution at the target energy.
+sim_scan1_imdomain_cal_s1 = let
+    seg = sim_seg_result_s1
+    μ_w_low, μ_w_high = sim_scan1_M_matrix_s1.μ_water_combined
+    vol_low_HU  = @. (sim_scan1_combined_bin_volumes_ring_s1.vol_low  - μ_w_low ) / μ_w_low  * 1000f0
+    vol_high_HU = @. (sim_scan1_combined_bin_volumes_ring_s1.vol_high - μ_w_high) / μ_w_high * 1000f0
+
+    nx = size(vol_low_HU, 1)
+    nz = size(vol_low_HU, 3)
+    mid_z = round(Int, nz / 2)
+    slice_low  = vol_low_HU[:, :, mid_z]
+    slice_high = vol_high_HU[:, :, mid_z]
+
+    roi_r_pix = 1.4 * 0.6 / (sim_fov_cm / nx)
+    roi_r_sq  = roi_r_pix ^ 2
+    function _rod_mean(slice, rod)
+        i_lo = max(1, floor(Int, rod.cx - roi_r_pix - 1))
+        i_hi = min(nx, ceil(Int, rod.cx + roi_r_pix + 1))
+        j_lo = max(1, floor(Int, rod.cy - roi_r_pix - 1))
+        j_hi = min(nx, ceil(Int, rod.cy + roi_r_pix + 1))
+        s = 0.0; n = 0
+        @inbounds for j in j_lo:j_hi, i in i_lo:i_hi
+            if (i - rod.cx)^2 + (j - rod.cy)^2 <= roi_r_sq
+                s += slice[i, j]; n += 1
+            end
+        end
+        s / n
+    end
+
+    # Calibration rods: water rod + 7 iodine rods.  Iodine concentrations
+    # are encoded in the rod names (e.g. "I 5.0" → 5.0 mg/mL).
+    cal_rods_s1 = [
+        ("Water (O)",  0.0),
+        ("I 2.0",      2.0),
+        ("I 2.5",      2.5),
+        ("I 5.0",      5.0),
+        ("I 7.5",      7.5),
+        ("I 10.0",    10.0),
+        ("I 15.0",    15.0),
+        ("I 20.0",    20.0),
+    ]
+    rods_by_name = Dict(r.name => r for r in seg.rods)
+
+    HU_low_cal  = Float64[]
+    HU_high_cal = Float64[]
+    c_iod_cal   = Float64[]
+    for (nm, c) in cal_rods_s1
+        r = rods_by_name[nm]
+        push!(HU_low_cal,  _rod_mean(slice_low,  r))
+        push!(HU_high_cal, _rod_mean(slice_high, r))
+        push!(c_iod_cal,   c)
+    end
+    n_cal = length(c_iod_cal)
+
+    # Ding Eq 3 LSQ: solve for (a_0, a_1, a_2) via normal equations.
+    # design matrix A = [1, HU_low, HU_high], target = c_iodine.
+    A_design = hcat(ones(n_cal), HU_low_cal, HU_high_cal)
+    coeffs_iod = A_design \ c_iod_cal     # 3-vec [a_0, a_1, a_2]
+    pred_c     = A_design * coeffs_iod
+    rms_c      = sqrt(mean((pred_c .- c_iod_cal) .^ 2))
+
+    # Iodine HU-per-(mg/mL) sensitivity at each bin (slope through origin
+    # since pure water rod has HU≈0 and c=0).
+    # Use simple LSQ slope: slope = Σ(c·HU) / Σ(c²)
+    # Skipping water rod (c=0) for slope fit; iodine rods only.
+    iod_idx = findall(c -> c > 0, c_iod_cal)
+    α_iod_low_cal  = sum(c_iod_cal[iod_idx] .* HU_low_cal[iod_idx])  / sum(c_iod_cal[iod_idx] .^ 2)
+    α_iod_high_cal = sum(c_iod_cal[iod_idx] .* HU_high_cal[iod_idx]) / sum(c_iod_cal[iod_idx] .^ 2)
+
+    @info "[image-domain decomp cal] $(n_cal) ROIs (1 water + 7 iodine):"
+    for i in 1:n_cal
+        @info "  $(rpad(cal_rods_s1[i][1], 10))  c=$(c_iod_cal[i])  HU_low=$(round(HU_low_cal[i], digits=1))  HU_high=$(round(HU_high_cal[i], digits=1))  → c_pred=$(round(pred_c[i], digits=2))"
+    end
+    @info "  Ding Eq 3 fit:  a₀=$(round(coeffs_iod[1], digits=3))  a₁=$(round(coeffs_iod[2], sigdigits=4))  a₂=$(round(coeffs_iod[3], sigdigits=4))   RMS=$(round(rms_c, digits=3)) mg/mL"
+    @info "  Iodine HU-per-(mg/mL) at bins:  α_low=$(round(α_iod_low_cal, digits=2))   α_high=$(round(α_iod_high_cal, digits=2))"
+
+    (coeffs_iod      = Float32.(coeffs_iod),
+     α_iod_low_cal   = Float32(α_iod_low_cal),
+     α_iod_high_cal  = Float32(α_iod_high_cal),
+     cal_rods        = cal_rods_s1,
+     HU_low_cal      = HU_low_cal,
+     HU_high_cal     = HU_high_cal,
+     c_iod_cal       = c_iod_cal,
+     pred_c          = pred_c,
+     rms_c           = rms_c)
+end;
+
+# ╔═╡ 08131d15-0000-4000-8000-000000000002
+# ── STAGE 6 — Apply image-domain decomp per voxel → c_iodine map (mg/mL) ──
+sim_scan1_imdomain_decomp_s1 = let
+    cal = sim_scan1_imdomain_cal_s1
+    μ_w_low, μ_w_high = sim_scan1_M_matrix_s1.μ_water_combined
+    vol_low_HU  = @. (sim_scan1_combined_bin_volumes_ring_s1.vol_low  - μ_w_low ) / μ_w_low  * 1000f0
+    vol_high_HU = @. (sim_scan1_combined_bin_volumes_ring_s1.vol_high - μ_w_high) / μ_w_high * 1000f0
+
+    a0, a1, a2 = cal.coeffs_iod
+    c_iodine_map = @. a0 + a1 * vol_low_HU + a2 * vol_high_HU
+
+    @info "[image-domain decomp]  c_iodine map  range=[$(round(minimum(c_iodine_map), digits=2)), $(round(maximum(c_iodine_map), digits=2))] mg/mL   mean=$(round(mean(c_iodine_map), digits=3))"
+
+    (c_iodine = c_iodine_map,
+     vol_low_HU  = vol_low_HU,
+     vol_high_HU = vol_high_HU,
+     geom = sim_scan1.geom)
+end;
+
+# ╔═╡ 08131d15-0000-4000-8000-000000000003
+# ── Image-domain decomp viz: c_iodine map + rod HUs at calibration ROIs ──
+let
+    cal    = sim_scan1_imdomain_cal_s1
+    decomp = sim_scan1_imdomain_decomp_s1
+    seg    = sim_seg_result_s1
+
+    mid_z = size(decomp.c_iodine, 3) ÷ 2
+    c_slice = decomp.c_iodine[:, :, mid_z]
+    lo_c, hi_c = quantile(vec(c_slice), 0.01), quantile(vec(c_slice), 0.99)
+
+    fig = CM.Figure(size = (1400, 760), fontsize = 11)
+    CM.Label(fig[0, 1:4], "STAGE 5/6 — Image-domain decomp:  c_iodine map (mg/mL)";
+        fontsize = 14, halign = :left)
+
+    ax_c = CM.Axis(fig[1, 1:2]; title = "c_iodine (mid-z)", aspect = CM.DataAspect())
+    hm_c = CM.heatmap!(ax_c, c_slice; colormap = :magma, colorrange = (lo_c, hi_c))
+    CM.hidedecorations!(ax_c); CM.hidespines!(ax_c)
+    for r in seg.rods
+        CM.scatter!(ax_c, [r.cx], [r.cy]; markersize = 4, color = :cyan)
+    end
+    CM.Colorbar(fig[1, 3], hm_c; label = "c_iodine [mg/mL]", width = 18)
+
+    # Calibration rod fit chart: known c vs predicted c, with linear fit.
+    ax_fit = CM.Axis(fig[2, 1:2]; title = "Calibration fit",
+        xlabel = "Known c_iodine [mg/mL]", ylabel = "Predicted c_iodine [mg/mL]",
+        aspect = 1.0)
+    CM.scatter!(ax_fit, cal.c_iod_cal, cal.pred_c; markersize = 10, color = :steelblue)
+    cmax = maximum(cal.c_iod_cal) + 1
+    CM.lines!(ax_fit, [0.0, cmax], [0.0, cmax]; color = (:gray60, 0.7), linestyle = :dash, label = "Unity")
+    CM.text!(ax_fit, 0.05 * cmax, 0.85 * cmax;
+        text = "RMS = $(round(cal.rms_c, digits=3)) mg/mL\nα_iod_low = $(round(cal.α_iod_low_cal, digits=2)) HU/(mg/mL)\nα_iod_high = $(round(cal.α_iod_high_cal, digits=2)) HU/(mg/mL)",
+        fontsize = 11, align = (:left, :top))
+
+    fig
 end
 
 # ╔═╡ 08131f02-0000-4000-8000-000000000002
@@ -5096,6 +4837,7 @@ md"""
 # ╠═08010016-0000-4000-8000-000000000000
 # ╠═08010017-0000-4000-8000-000000000000
 # ╠═08010018-0000-4000-8000-000000000000
+# ╠═08010018-a000-4000-8000-000000000000
 # ╠═08010019-0000-4000-8000-000000000000
 # ╠═08010020-0000-4000-8000-000000000000
 # ╠═08010021-0000-4000-8000-000000000000
@@ -5165,34 +4907,31 @@ md"""
 # ╠═08131006-a000-4000-8000-000000000001
 # ╠═08131006-0000-4000-8000-000000000000
 # ╠═08131006-b000-4000-8000-000000000001
+# ╠═08131006-d000-4000-8000-000000000001
 # ╟─08131005-a000-4000-8000-000000000001
 # ╟─08131009-0000-4000-8000-000000000000
-# ╟─08131e02-0000-4000-8000-000000000001
-# ╠═08131e02-0000-4000-8000-000000000002
 # ╠═d335e1a7-cb56-44a9-ad4a-c54f3e1fc280
-# ╠═08131e02-0000-4000-8000-000000000003
-# ╠═08131e02-0000-4000-8000-000000000033
-# ╠═08131e02-0000-4000-8000-000000000004
-# ╟─08131e02-1000-4000-8000-000000000001
-# ╠═08131e02-1000-4000-8000-000000000002
-# ╠═08131e02-1000-4000-8000-000000000003
-# ╠═08131e02-1000-4000-8000-000000000004
-# ╠═08131e02-1000-4000-8000-000000000005
-# ╠═08131e02-1000-4000-8000-000000000006
-# ╟─08131e02-0000-4000-8000-000000000005
-# ╟─08131e03-0000-4000-8000-000000000001
-# ╠═08131010-0000-4000-8000-000000000041
-# ╠═08131010-0000-4000-8000-000000000042
-# ╠═08131010-0000-4000-8000-000000000045
-# ╠═08131010-0000-4000-8000-000000000080
-# ╠═08131009-a000-4000-8000-000000000011
-# ╠═08131010-0000-4000-8000-000000000040
-# ╟─08131e03-0000-4000-8000-000000000002
+# ╟─08131d00-0000-4000-8000-000000000001
+# ╠═0cbcb5fe-7e29-48fc-9d68-ab7cb05ac3c4
+# ╠═08131d00-0000-4000-8000-000000000003
+# ╠═08131d00-0000-4000-8000-000000000010
+# ╠═08131d10-0000-4000-8000-000000000001
+# ╠═08131d00-0000-4000-8000-000000000006
+# ╠═08131d00-0000-4000-8000-000000000002
+# ╠═08131d00-0000-4000-8000-000000000009
+# ╠═08131d10-0000-4000-8000-000000000002
+# ╠═08131d11-0000-4000-8000-000000000001
+# ╠═08131d11-0000-4000-8000-000000000002
+# ╠═08131d11-0000-4000-8000-000000000003
+# ╠═08131d15-0000-4000-8000-000000000001
+# ╠═08131d15-0000-4000-8000-000000000002
+# ╠═08131d15-0000-4000-8000-000000000003
 # ╟─08131f00-0000-4000-8000-000000000001
 # ╠═08131009-a000-4000-8000-000000000001
-# ╠═08131009-a000-4000-8000-000000000007
 # ╟─08131f02-0000-4000-8000-000000000001
 # ╠═08131009-a000-4000-8000-000000000006
+# ╠═08131d00-0000-4000-8000-000000000008
+# ╠═08131009-a000-4000-8000-000000000007
 # ╠═08131010-a000-4000-8000-000000000002
 # ╟─08131f02-0000-4000-8000-000000000002
 # ╟─08135000-0000-4000-8000-000000000001
