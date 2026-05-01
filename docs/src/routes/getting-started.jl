@@ -1,4 +1,5 @@
-() -> begin
+let BASE = get(ENV, "BASISSIM_BASE", "")
+    () -> begin
     Div(:class => "max-w-3xl mx-auto space-y-8",
         H1("Getting Started"),
         P(:class => "text-warm-600 dark:text-warm-400 leading-relaxed",
@@ -65,10 +66,10 @@ hu = BS.to_hounsfield(
 
         H2("What's next"),
         P("Worked examples — including the four notebooks that produce the figures in the SoftwareX paper — live on the ",
-          A(:href => "/BasisSimulator.jl/examples/",
+          A(:href => "$(BASE)/examples/",
             :class => "text-accent-500 hover:text-accent-600 underline no-underline", "Examples"),
           " page. The full API reference is at ",
-          A(:href => "/BasisSimulator.jl/api/",
+          A(:href => "$(BASE)/api/",
             :class => "text-accent-500 hover:text-accent-600 underline no-underline", "API"),
           "."
         ),
@@ -78,4 +79,5 @@ hu = BS.to_hounsfield(
           "."
         )
     )
+    end
 end

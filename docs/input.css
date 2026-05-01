@@ -83,10 +83,10 @@ html {
 
   /* Heading spacing and underlines — scoped to page content */
   #page-content h1:not(.no-rule) { padding-top: 1.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--color-warm-200); margin-bottom: 1rem; }
-  #page-content h2 { padding-top: 1.25rem; padding-bottom: 0.375rem; border-bottom: 1px solid var(--color-warm-200); margin-bottom: 0.75rem; }
-  #page-content h3 { padding-top: 1rem; padding-bottom: 0.25rem; border-bottom: 1px solid var(--color-warm-100); margin-bottom: 0.5rem; }
-  .dark #page-content h1:not(.no-rule), .dark #page-content h2 { border-bottom-color: var(--color-warm-800); }
-  .dark #page-content h3 { border-bottom-color: var(--color-warm-900); }
+  #page-content h2:not(.no-rule) { padding-top: 1.25rem; padding-bottom: 0.375rem; border-bottom: 1px solid var(--color-warm-200); margin-bottom: 0.75rem; }
+  #page-content h3:not(.no-rule) { padding-top: 1rem; padding-bottom: 0.25rem; border-bottom: 1px solid var(--color-warm-100); margin-bottom: 0.5rem; }
+  .dark #page-content h1:not(.no-rule), .dark #page-content h2:not(.no-rule) { border-bottom-color: var(--color-warm-800); }
+  .dark #page-content h3:not(.no-rule) { border-bottom-color: var(--color-warm-900); }
 
   :root {
     /* Shared neutrals */
