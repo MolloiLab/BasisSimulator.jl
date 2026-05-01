@@ -1,5 +1,8 @@
 ### A Pluto.jl notebook ###
-# v0.19.0
+# v0.20.24
+
+using Markdown
+using InteractiveUtils
 
 # ╔═╡ 02000003-0000-4000-8000-000000000001
 begin
@@ -54,6 +57,9 @@ import BasisSimulator as BS
 
 # ╔═╡ 02000003-0000-4000-8000-000000000003
 import CairoMakie as CM
+
+# ╔═╡ 05000003-0000-4000-8000-000000000003
+import Unitful: ustrip, uconvert
 
 # ╔═╡ 02000004-0000-4000-8000-000000000001
 md"""
@@ -244,6 +250,11 @@ let
         hm = CM.heatmap!(ax, Float32.(slice); colormap = :tab20)
         CM.hidedecorations!(ax)
         CM.Colorbar(fig[1, 2], hm; label = "label", width = 14)
+
+        CM.save(
+            joinpath(@__DIR__, "..", "assets", "xcat_phantom.png"),
+            fig; px_per_unit = 2
+        )
         fig
     end
 end
@@ -317,9 +328,6 @@ bolus.  We start from `ncat_blood`'s composition and add elemental iodine.
     other elements proportionally so the new composition still sums to 1.
 """
 
-# ╔═╡ 05000003-0000-4000-8000-000000000003
-import Unitful: ustrip, uconvert
-
 # ╔═╡ 05000003-0000-4000-8000-000000000002
 function build_iodine_blood(iodine_mg_per_mL::Real)
     base = BS.XA.Materials.ncat_blood
@@ -348,54 +356,130 @@ iodine_blood = build_iodine_blood(5.0)
 
 # ╔═╡ 05000004-0000-4000-8000-000000000001
 md"""
-### 3c. Assemble the materials Dict
+### 3c. Load the canonical mapping from XCAT's xlsx
 
-Map every label that appears in the mask to a `Material`.  We use a small
-hand-curated table for canonical XCAT tissues + the iodine blood for a
-designated label, and default everything else to `XA.Materials.water`.
+XCAT v_male_50 ships with material spreadsheets — one row per organ, with
+the elemental mass-fraction columns, density, and the integer label that
+appears in the mask.  Three variants in `Material_Spreadsheets/`:
+`heart_high_contrast`, `heart_low_contrast`, `heart_non_contrast` —
+differing only in the iodine concentration in the blood pool labels.
 
-!!! info "Label IDs are XCAT-version specific"
-    XCAT label IDs vary between releases.  The Dict below is keyed on the
-    `vmale_50` defaults; if you load a different XCAT instance, inspect
-    `unique(phantom_labeled)` and edit the mapping accordingly.  Anything
-    not listed silently falls back to water — `simulate!` won't crash, the
-    region just won't have its true attenuation.
+Reading the xlsx (33 organs × 13 elements) into a `Dict{Int, XA.Material}`
+is straightforward: parse each row, build a composition dict, derive
+`ZA_ratio` and the mean excitation energy `I` from the composition, then
+construct the `XA.Material`.
+
+!!! info "Why ZA and I are computed, not stored"
+    The xlsx ships only the elemental mass fractions + density.  ZA_ratio
+    and I (mean excitation energy) are derived quantities the simulator
+    needs but the spreadsheet doesn't carry — we compute them from the
+    composition using the textbook Bethe formulas.
 """
 
 # ╔═╡ 05000004-0000-4000-8000-000000000002
-const IODINE_BLOOD_LABEL = 6   # contrast-enhanced left-ventricle blood pool
+import XLSX
 
 # ╔═╡ 05000004-0000-4000-8000-000000000003
-function build_xcat_materials(
-        mask, iodine_blood::BS.XA.Material;
-        iodine_label::Int = IODINE_BLOOD_LABEL
-    )
-    explicit = Dict{Int, BS.XA.Material}(
-        0 => BS.XA.Materials.water,            # background (will be air-replaced via density in real XCAT runs)
-        1 => BS.XA.Materials.ncat_lung,        # air-filled lung
-        2 => BS.XA.Materials.ncat_muscle,      # body envelope
-        3 => BS.XA.Materials.ncat_heart,       # myocardium
-        4 => BS.XA.Materials.ncat_lung,        # lung parenchyma
-        5 => BS.XA.Materials.ncat_blood,       # generic blood pool
-        7 => BS.XA.Materials.ncat_liver,       # liver
-        8 => BS.XA.Materials.ncat_kidney,      # kidney
-        9 => BS.XA.Materials.ncat_fat,         # adipose
-        10 => BS.XA.Materials.ncat_muscle,      # skeletal muscle
-        11 => BS.XA.Materials.ncat_bone,         # rib / cortical bone
-    )
-    explicit[iodine_label] = iodine_blood       # contrast bolus
+const MATERIAL_XLSX_PATH = joinpath(
+    XCAT_DIR, "Material_Spreadsheets",
+    "vmale_50_materials_heart_high_contrast.xlsx"
+)
 
+# ╔═╡ 20ce81a0-4eed-4b58-9123-efd38b978e54
+# Atomic masses + I-values for the elements present in XCAT compositions.
+const _ATOMIC_MASSES = Dict(
+    1 => 1.008, 6 => 12.011, 7 => 14.007, 8 => 15.999, 11 => 22.99, 12 => 24.305,
+    15 => 30.974, 16 => 32.06, 17 => 35.45, 19 => 39.098, 20 => 40.078, 26 => 55.845, 53 => 126.904,
+)
+
+# ╔═╡ 05000004-0000-4000-8000-000000000004
+const _I_VALUES_EV = Dict(
+    1 => 19.2, 6 => 81.0, 7 => 82.0, 8 => 95.0, 11 => 149.0, 12 => 156.0,
+    15 => 173.0, 16 => 180.0, 17 => 174.0, 19 => 190.0, 20 => 191.0, 26 => 286.0, 53 => 491.0,
+)
+
+# ╔═╡ 05000004-0000-4000-8000-000000000005
+"""Bethe ⟨Z/A⟩ from a `composition::Dict{Z=>mass_fraction}`."""
+function compute_ZA_ratio(comp::Dict{Int, Float64})
+    Z_sum = sum(w * Z / get(_ATOMIC_MASSES, Z, Float64(Z) * 2) for (Z, w) in comp)
+    A_sum = sum(values(comp))
+    return Z_sum / A_sum
+end
+
+# ╔═╡ 05000004-0000-4000-8000-000000000006
+"""Bethe mean excitation energy from a composition (returns Unitful eV)."""
+function compute_mean_excitation_energy(comp::Dict{Int, Float64})
+    log_I_sum = 0.0
+    Z_A_sum = 0.0
+    for (Z, w) in comp
+        A = get(_ATOMIC_MASSES, Z, Float64(Z) * 2)
+        I = get(_I_VALUES_EV, Z, 10.0 * Z)
+        Z_A = w * Z / A
+        log_I_sum += Z_A * log(I)
+        Z_A_sum += Z_A
+    end
+    return exp(log_I_sum / Z_A_sum) * u"eV"
+end
+
+# ╔═╡ 05000004-0000-4000-8000-000000000007
+"""Load every organ from the XCAT material spreadsheet → `Dict{organ_id, XA.Material}`."""
+function load_materials_from_xlsx(xlsx_path::AbstractString)
+    sheet = XLSX.readxlsx(xlsx_path)["Sheet1"]
+    data = sheet["A2:P34"]                                   # 33 organ rows
     out = Dict{Int, BS.XA.Material}()
-    for l in unique(mask)
-        out[Int(l)] = get(explicit, Int(l), BS.XA.Materials.water)
+
+    # Element atomic numbers in xlsx columns 2..14 (header row 1 confirms order)
+    Z_cols = (1, 6, 7, 8, 11, 12, 15, 16, 17, 19, 20, 26, 53)
+
+    for r in 1:size(data, 1)
+        name = data[r, 1]
+        oid = data[r, 16]
+        ρ = data[r, 15]
+        (name === nothing || oid === nothing || ρ === nothing) && continue
+
+        comp = Dict{Int, Float64}()
+        for (k, Z) in enumerate(Z_cols)
+            v = data[r, k + 1]
+            v isa Number && v > 0 && (comp[Z] = Float64(v))
+        end
+        isempty(comp) && continue
+
+        out[Int(oid)] = BS.XA.Material(
+            String(name),
+            compute_ZA_ratio(comp),
+            compute_mean_excitation_energy(comp),
+            Float64(ρ) * u"g/cm^3",
+            comp,
+        )
     end
     return out
 end
 
-# ╔═╡ 05000004-0000-4000-8000-000000000004
-materials = phantom_labeled === nothing ?
-    nothing :
-    build_xcat_materials(phantom_labeled, iodine_blood);
+# ╔═╡ 05000004-0000-4000-8000-000000000008
+md"""
+### 3d. Assemble the final dict
+
+Load the xlsx, then ensure every label that actually appears in the mask
+has a fallback (water) — `simulate!` will error if any label is missing.
+
+!!! info "Override pattern"
+    To swap a single label for your own custom material, just reassign in
+    the returned dict:
+    `materials[19] = iodine_blood` — replaces the LV blood pool with the
+    5 mg/mL `iodine_blood` we built in §3b.  Comment that line out and
+    you'll get the xlsx's default contrast level instead.
+"""
+
+# ╔═╡ 05000004-0000-4000-8000-000000000009
+materials = if phantom_labeled === nothing
+    nothing
+else
+    base = load_materials_from_xlsx(MATERIAL_XLSX_PATH)
+    for l in unique(phantom_labeled)
+        haskey(base, Int(l)) || (base[Int(l)] = BS.XA.Materials.water)
+    end
+    base
+end;
 
 # ╔═╡ 06000001-0000-4000-8000-000000000001
 md"""
@@ -499,23 +583,106 @@ end;
 
 # ╔═╡ 09000001-0000-4000-8000-000000000001
 md"""
-## 7. FBP reconstruction (FDK)
+## 7. Postprocessing (The Full Correction Pipeline)
 
-The reference baseline — filtered back-projection with the vendor-tuned
-`:standard` apodization filter.  μ → HU using the 70 keV NIST water reference.
+A raw FDK or HIR recon doesn't ship as a clinical image.  Real CT vendors
+apply a stack of corrections after the simulator's forward model:
+
+| Stage | Function                              | What it does                                                                             |
+|-------|---------------------------------------|------------------------------------------------------------------------------------------|
+| 1.    | `calibrate_bhc_two_material`          | Fits a (water + bone) polynomial from the source spectrum once, returns a BHC model      |
+| 2.    | `apply_bhc_two_material`              | Sinogram-domain beam-hardening correction — runs *before* FDK, removes the bulk poly bias |
+| 3.    | `reconstruct!` (FDK or Hybrid IR)     | Filtered back-projection / iterative reconstruction on the corrected sinogram            |
+| 4.    | `apply_bhc_image_domain`              | Image-domain BHC refinement — bone-region smoothstep + scaled error subtraction          |
+| 5.    | `to_hounsfield` (with BHC μ_water)    | Convert μ → HU using the BHC model's calibrated reference (not the 70 keV NIST value)    |
+| 6.    | `add_system_noise_floor!`             | Add dose-independent DAS Gaussian σ ≈ 28 HU                                              |
+| 7.    | `apply_radial_cupping_correction!`    | Residual even-polynomial cup correction on water-like voxels (mostly cosmetic after BHC) |
+
+The same pipeline applies to both FBP and HIR — only the recon workspace
+inside the let block differs (`create_fdk_recon_workspace` vs
+`create_hir_recon_workspace`). See notebook 01 §9 for the same pattern on
+the Gammex 472 phantom.
+"""
+
+# ╔═╡ 09000003-0000-4000-8000-000000000001
+md"""
+#### 7a. Calibrate the BHC model
+
+One-time spectrum fit at 120 kVp + 7 mm Al filtration. Returns a
+`TwoMaterialBHC` polynomial model + the calibrated `μ_water_ref` used by
+both FBP and HIR pipelines below for `to_hounsfield`.
+"""
+
+# ╔═╡ 09000004-0000-4000-8000-000000000001
+bhc_calibration = let
+    prot_for_bhc = BS.CTProtocol(kVp = 120, additional_filters = [("Al", 4.5)])
+    e, w = BS.resolve_source_spectrum_without_bowtie(
+        sim_opts, prot_for_bhc;
+        scanner = scanner
+    )
+    ref_E = sum(e .* w) / sum(w)
+
+    model = BS.calibrate_bhc_two_material(
+        e, w;
+        order = 2,
+        reference_energy_keV = ref_E,
+        hu_low = 450.0,
+        hu_high = 600.0,
+    )
+
+    (model = model, μ_water = model.μ_water_ref, ref_E_keV = ref_E)
+end;
+
+# ╔═╡ 09000005-0000-4000-8000-000000000001
+md"""
+**Calibrated:**
+* ref energy = $(round(bhc_calibration.ref_E_keV, digits = 1)) keV,
+* lac water = $(round(bhc_calibration.μ_water, digits = 5)) cm⁻¹.
+"""
+
+# ╔═╡ 09000010-0000-4000-8000-000000000001
+md"""
+## 8. FBP with the full correction pipeline
+
+Same `let ... end` shape as notebook 01 — sino BHC → FDK → image BHC →
+HU → noise floor → cupping, with explicit GPU cleanup at the end.
 """
 
 # ╔═╡ 09000002-0000-4000-8000-000000000001
 hu_fbp = sim === nothing ? nothing : let
         matrix_size = recon_opts.matrix_size
 
+        # 1. Sinogram-domain BHC (returns a CPU array)
         sino_gpu = to_gpu(sim.sino)
+        sino_bhc = BS.apply_bhc_two_material(
+            sino_gpu, bhc_calibration.model, sim.geom, matrix_size;
+            volume_extent = phantom.extent,
+        )
+        sino_gpu = to_gpu(sino_bhc)
+
+        # 2. FDK on the corrected sinogram
         ws_fdk = BS.create_fdk_recon_workspace(sino_gpu, sim.geom, matrix_size)
         recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, sim.geom, matrix_size)
 
-        μ_water = BS.get_reference_μ_water(70.0)
-        hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = μ_water))
+        # 3. Image-domain BHC refinement (in-place on GPU)
+        BS.apply_bhc_image_domain(
+            recon_μ, sim.geom, matrix_size, bhc_calibration.μ_water;
+            hu_low = 50.0,
+            hu_high = 150.0,
+            scale_factor = 0.2,
+            volume_extent = phantom.extent,
+        )
 
+        # 4. μ → HU using BHC's calibrated μ_water (Float32 for cupping correction)
+        hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc_calibration.μ_water))
+
+        # 5. Dose-independent DAS noise floor
+        BS.add_system_noise_floor!(hu, 28.0; seed = 1234)
+
+        # 6. Residual radial cupping correction
+        BS.apply_radial_cupping_correction!(hu; fov_cm = 35.0)
+
+        # GPU cleanup
         ws_fdk = nothing
         sino_gpu = nothing
         recon_μ = nothing
@@ -526,32 +693,60 @@ end;
 
 # ╔═╡ 10000001-0000-4000-8000-000000000001
 md"""
-## 8. Hybrid IR reconstruction
+## 9. Hybrid IR with the full correction pipeline
 
-`BS.create_hir_recon_workspace(...; strength = 3)` allocates a Hybrid IR
-workspace — same FDK initialization, but adds a PWLS refinement pass with
-a Huber prior to suppress noise while preserving edges.  `strength`
-controls the regularization weight (1 = mild, 5 = aggressive — vendor
-naming convention).
+Identical pipeline to §8 — sino BHC → recon → image BHC → HU → noise
+floor → cupping — with `create_hir_recon_workspace(...; strength = 3)`
+swapped in for the FDK workspace.
 
 !!! info "What HIR adds over FBP"
     Hybrid IR is the clinical workhorse: vendors call it ASIR, AIDR3D,
-    iDose⁴, SAFIRE depending on brand.  All share the same architecture —
-    FDK init + iterative PWLS refinement.  It costs ~5–15× FBP runtime
-    but returns ~30 % lower pixel σ at matched resolution.
+    iDose⁴, SAFIRE depending on brand. All share the same architecture —
+    FDK init + iterative PWLS refinement with a Huber prior. It costs
+    ~5–15× FBP runtime but returns ~30 % lower pixel σ at matched
+    resolution.
 """
 
 # ╔═╡ 10000002-0000-4000-8000-000000000001
 hu_hir = sim === nothing ? nothing : let
         matrix_size = recon_opts.matrix_size
 
+        # 1. Sinogram-domain BHC
         sino_gpu = to_gpu(sim.sino)
+        sino_bhc = BS.apply_bhc_two_material(
+            sino_gpu, bhc_calibration.model, sim.geom, matrix_size;
+            volume_extent = phantom.extent,
+        )
+        sino_gpu = to_gpu(sino_bhc)
+
+        # 2. Hybrid IR (FBP init + PWLS refinement, strength = 3)
         ws_hir = BS.create_hir_recon_workspace(sino_gpu, sim.geom, matrix_size; strength = 3)
         recon_μ = BS.reconstruct!(ws_hir, sino_gpu, sim.geom, matrix_size)
 
-        μ_water = BS.get_reference_μ_water(70.0)
-        hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = μ_water))
+        # FBP's `reconstruct!` masks voxels outside the inscribed scan FOV
+        # (`apply_fov_mask!`); HIR doesn't, so the iterative refinement
+        # leaves garbage in the corners.  Apply the same mask for parity.
+        BS.apply_fov_mask!(recon_μ, sim.geom)
 
+        # 3. Image-domain BHC refinement
+        BS.apply_bhc_image_domain(
+            recon_μ, sim.geom, matrix_size, bhc_calibration.μ_water;
+            hu_low = 50.0,
+            hu_high = 150.0,
+            scale_factor = 0.2,
+            volume_extent = phantom.extent,
+        )
+
+        # 4. μ → HU
+        hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc_calibration.μ_water))
+
+        # 5. Noise floor (different seed so noise pattern doesn't match FBP)
+        BS.add_system_noise_floor!(hu, 28.0; seed = 5678)
+
+        # 6. Cupping correction
+        BS.apply_radial_cupping_correction!(hu; fov_cm = 35.0)
+
+        # GPU cleanup
         ws_hir = nothing
         sino_gpu = nothing
         recon_μ = nothing
@@ -562,11 +757,12 @@ end;
 
 # ╔═╡ 11000001-0000-4000-8000-000000000001
 md"""
-## 9. Compare FBP vs Hybrid IR
+## 10. Compare FBP vs Hybrid IR
 
-Same scan, two reconstructions.  Soft-tissue window (W = 400, L = 40) shows
-both the iodine-enhanced blood pool (label $(IODINE_BLOOD_LABEL)) and the
-texture / noise contrast between the two algorithms.
+Both reconstructions go through the identical correction pipeline (sino
+BHC + image BHC + noise floor + cupping). Soft-tissue window shows the
+iodine-enhanced blood pools (XCAT labels 19–22 = `bldplLV/RV/LA/RA`) and
+the texture / noise contrast between the two algorithms.
 """
 
 # ╔═╡ 11000002-0000-4000-8000-000000000001
@@ -581,7 +777,7 @@ let
         mid = size(hu_fbp, 3) ÷ 2
         img_fbp = hu_fbp[:, :, mid]
         img_hir = hu_hir[:, :, mid]
-        colorrng = (-160, 240)   # soft-tissue window: W=400, L=40
+        colorrng = (-300, 550)   # soft-tissue window: W=400, L=40
 
         ax_fbp = CM.Axis(
             fig[1, 1];
@@ -603,6 +799,10 @@ let
         CM.hidedecorations!(ax_hir)
         CM.Colorbar(fig[1, 3], hm; label = "HU", width = 14)
 
+        CM.save(
+            joinpath(@__DIR__, "..", "assets", "xcat_fbp_vs_hir.png"),
+            fig; px_per_unit = 2
+        )
         fig
     end
 end
@@ -664,6 +864,7 @@ correction pipeline from §9 of notebook 01 — carries over unchanged.
 # ╠═02000003-0000-4000-8000-000000000004
 # ╠═02000003-0000-4000-8000-000000000005
 # ╠═02000003-0000-4000-8000-000000000006
+# ╠═05000003-0000-4000-8000-000000000003
 # ╟─02000004-0000-4000-8000-000000000001
 # ╠═02000005-0000-4000-8000-000000000001
 # ╟─02000007-0000-4000-8000-000000000001
@@ -683,12 +884,17 @@ correction pipeline from §9 of notebook 01 — carries over unchanged.
 # ╟─05000002-0000-4000-8000-000000000002
 # ╟─05000003-0000-4000-8000-000000000001
 # ╠═05000003-0000-4000-8000-000000000002
-# ╠═05000003-0000-4000-8000-000000000003
 # ╠═05000003-0000-4000-8000-000000000004
 # ╟─05000004-0000-4000-8000-000000000001
 # ╠═05000004-0000-4000-8000-000000000002
 # ╠═05000004-0000-4000-8000-000000000003
+# ╠═20ce81a0-4eed-4b58-9123-efd38b978e54
 # ╠═05000004-0000-4000-8000-000000000004
+# ╠═05000004-0000-4000-8000-000000000005
+# ╠═05000004-0000-4000-8000-000000000006
+# ╠═05000004-0000-4000-8000-000000000007
+# ╟─05000004-0000-4000-8000-000000000008
+# ╠═05000004-0000-4000-8000-000000000009
 # ╟─06000001-0000-4000-8000-000000000001
 # ╠═06000002-0000-4000-8000-000000000001
 # ╠═06000003-0000-4000-8000-000000000001
@@ -700,6 +906,10 @@ correction pipeline from §9 of notebook 01 — carries over unchanged.
 # ╟─08000001-0000-4000-8000-000000000001
 # ╠═08000002-0000-4000-8000-000000000001
 # ╟─09000001-0000-4000-8000-000000000001
+# ╟─09000003-0000-4000-8000-000000000001
+# ╠═09000004-0000-4000-8000-000000000001
+# ╟─09000005-0000-4000-8000-000000000001
+# ╟─09000010-0000-4000-8000-000000000001
 # ╠═09000002-0000-4000-8000-000000000001
 # ╟─10000001-0000-4000-8000-000000000001
 # ╠═10000002-0000-4000-8000-000000000001

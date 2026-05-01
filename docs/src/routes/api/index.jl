@@ -10,23 +10,23 @@
         H2("Core types"),
         P("The five structs every simulation specifies:"),
         Div(:class => "grid grid-cols-1 sm:grid-cols-2 gap-4 not-prose",
-            Div(:class => "border border-warm-200 dark:border-warm-800 rounded-lg p-4 bg-warm-100/50 dark:bg-warm-900/50",
+            Div(:class => "border border-warm-200 dark:border-warm-800 rounded-lg p-4 bg-warm-50 dark:bg-warm-900/50",
                 H3(:class => "no-rule font-mono text-base mb-1", "Phantom"),
                 P(:class => "text-sm text-warm-600 dark:text-warm-400", "Labeled 3D mask + materials dictionary + voxel size.")
             ),
-            Div(:class => "border border-warm-200 dark:border-warm-800 rounded-lg p-4 bg-warm-100/50 dark:bg-warm-900/50",
+            Div(:class => "border border-warm-200 dark:border-warm-800 rounded-lg p-4 bg-warm-50 dark:bg-warm-900/50",
                 H3(:class => "no-rule font-mono text-base mb-1", "Scanner"),
                 P(:class => "text-sm text-warm-600 dark:text-warm-400", "Geometry, source, detector array, filtration. Switches between EICT and PCCT via ", Code(:class => "text-xs", "detector_type"), ".")
             ),
-            Div(:class => "border border-warm-200 dark:border-warm-800 rounded-lg p-4 bg-warm-100/50 dark:bg-warm-900/50",
+            Div(:class => "border border-warm-200 dark:border-warm-800 rounded-lg p-4 bg-warm-50 dark:bg-warm-900/50",
                 H3(:class => "no-rule font-mono text-base mb-1", "CTProtocol"),
                 P(:class => "text-sm text-warm-600 dark:text-warm-400", "kVp, mA, views, rotation time, dual-energy switches.")
             ),
-            Div(:class => "border border-warm-200 dark:border-warm-800 rounded-lg p-4 bg-warm-100/50 dark:bg-warm-900/50",
+            Div(:class => "border border-warm-200 dark:border-warm-800 rounded-lg p-4 bg-warm-50 dark:bg-warm-900/50",
                 H3(:class => "no-rule font-mono text-base mb-1", "SimOptions"),
                 P(:class => "text-sm text-warm-600 dark:text-warm-400", "Fidelity preset (", Code(:class => "text-xs", ":eict"), " | ", Code(:class => "text-xs", ":pcct"), ") and per-effect toggles.")
             ),
-            Div(:class => "border border-warm-200 dark:border-warm-800 rounded-lg p-4 bg-warm-100/50 dark:bg-warm-900/50",
+            Div(:class => "border border-warm-200 dark:border-warm-800 rounded-lg p-4 bg-warm-50 dark:bg-warm-900/50",
                 H3(:class => "no-rule font-mono text-base mb-1", "ReconOptions"),
                 P(:class => "text-sm text-warm-600 dark:text-warm-400", "Output matrix, FOV, algorithm (", Code(:class => "text-xs", ":fdk"), "), VMI energies and basis materials.")
             ),

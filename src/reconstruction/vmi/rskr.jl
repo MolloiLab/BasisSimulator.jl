@@ -17,9 +17,11 @@ Pipeline (per iteration):
 # Public API
 - [`apply_rskr`](@ref) — driver; auto-dispatches on `length(vols) ∈ {2, 4}`.
 
-GPU: the joint bilateral filter runs on Metal/CUDA/ROCm via
-`AcceleratedKernels.foreachindex` — `vols` are CPU arrays on input/output;
-the BF moves U columns to GPU, applies the kernel, copies back.
+Backend: the joint bilateral filter is written against
+`AcceleratedKernels.foreachindex`, so it dispatches on the array type
+of the U columns — Metal/CUDA/ROCm when `gpu_arr_type` is the matching
+device constructor, threaded CPU when `gpu_arr_type = identity` (the
+default).  `vols` are CPU arrays on input/output regardless.
 
 All hyperparameters are explicit kwargs with defaults — see
 [`apply_rskr`](@ref) docstring for tuning guidance.
@@ -216,7 +218,7 @@ end
                h_param::Real  = 1.0,
                radius::Int    = 6,
                γ::Real        = 0.5,
-               gpu_arr_type::Type = MtlArray,
+               gpu_arr_type   = identity,
                verbose::Bool  = true)
         -> Vector{Array{Float32, 3}}
 
@@ -239,7 +241,10 @@ or PCCT 4-bin set (`length(vols) == 4`).
 - `γ`            : rank-sparse h-scaling exponent.  `0.5` default;
                    higher → smaller SVs get *more* smoothing.
 - `gpu_arr_type` : array constructor for the BF backend.  Default
-                   `MtlArray` (Metal); for CUDA use `CuArray`, etc.
+                   `identity` (CPU — `AK.foreachindex` falls back to
+                   threaded loops over `Array{Float32, 3}`).  Pass
+                   `MtlArray` / `CuArray` / `ROCArray` to dispatch the
+                   kernel onto the corresponding device.
 - `verbose`      : per-iteration timing + σ/h/Σ logging.
 
 # Returns
@@ -257,7 +262,7 @@ function apply_rskr(
         h_param::Real     = 1.0,
         radius::Int       = 6,
         γ::Real           = 0.5,
-        gpu_arr_type      = nothing,
+        gpu_arr_type      = identity,
         verbose::Bool     = true,
     )
     nch = length(vols)
@@ -288,11 +293,11 @@ function apply_rskr(
             h_per_sv[e] = h_f * (Float32(Σ[1]) / max(Float32(Σ[e]), 1f-12)) ^ γ_f
         end
 
-        # Move U columns to GPU, run jBF, copy back.
-        if gpu_arr_type === nothing
-            error("apply_rskr: pass `gpu_arr_type = MtlArray` (or CuArray, etc.).  " *
-                  "RSKR's joint bilateral filter requires GPU acceleration.")
-        end
+        # Upload U columns onto whichever array backend `gpu_arr_type`
+        # selects (`identity` keeps them on CPU; `MtlArray`/`CuArray`/
+        # `ROCArray` ship them to the device).  AK.foreachindex inside
+        # `joint_bf_*ch_gpu!` dispatches accordingly — same source, any
+        # backend.
 
         if nch == 2
             in1 = gpu_arr_type(U_vols[1]); in2 = gpu_arr_type(U_vols[2])

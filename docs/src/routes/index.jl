@@ -2,12 +2,38 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
     () -> begin
     Div(
         # ═══════════════════════════════════════════════════════════════════
-        # HERO — two columns, natural height (no flex-stretch, no min-h)
+        # HERO + STATS — single viewport-fit container on medium+ screens.
+        # `md:h-[calc(100vh-10rem)]` forces an exact height that fills the
+        # available viewport space, accounting for:
+        #   • 4rem  — sticky nav (Layout.jl <Nav> h-16)
+        #   • 6rem  — MainEl's `py-12` (3rem top + 3rem bottom)
+        # The hero child takes `flex-1 min-h-0` so it MECHANICALLY fills
+        # all leftover vertical space — pushing the stats row to the
+        # actual bottom on tall viewports (where `justify-between` proved
+        # unreliable).  `min-h-0` is critical: it overrides flex's default
+        # `min-height: auto` so the 640px collage can be clipped by the
+        # parent's `overflow-y-clip` instead of forcing the section taller.
+        # `overflow-x-visible` lets cards bleed editorially past the page
+        # max-width on the right.
         # ═══════════════════════════════════════════════════════════════════
-        Div(:class => "grid grid-cols-1 lg:grid-cols-12 gap-12 lg:gap-8 pt-4 lg:pt-8",
+        Div(:class => "relative md:h-[calc(100vh-10rem)] flex flex-col overflow-y-clip overflow-x-visible",
 
-            # ─── Left: copy ─────────────────────────────────────────────────
-            Div(:class => "lg:col-span-7 space-y-8",
+        # ─── Hero (text + images) — flex-1 fills remaining space ───────
+        # `flex-1 min-h-0` makes this child grow to fill all available
+        # vertical space inside the section, which is what actually pins
+        # the stats row to the bottom regardless of viewport size.
+        # `overflow-y-clip overflow-x-visible` clips card bleed at the
+        # vertical boundaries (so cards never reach the stats line) but
+        # lets them spill horizontally — past the page max-width on the
+        # right (editorial bleed) and under the text column on the left.
+        Div(:class => "flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 gap-12 lg:gap-8 pt-4 lg:pt-8 overflow-y-clip overflow-x-visible",
+
+            # ─── Left: copy ─────────────────────────────────────────────
+            # `relative z-[35]` puts text ABOVE the floating image cards
+            # (z-10/20/30); `backdrop-blur-md` blurs anything bleeding
+            # behind the text — so card overflow into the text area
+            # reads as a soft background rather than competing for focus.
+            Div(:class => "lg:col-span-7 space-y-8 relative z-[35] backdrop-blur-md",
                 Div(:class => "flex flex-wrap items-center gap-3 text-[10px] tracking-[0.2em] uppercase font-mono",
                     Span(:class => "px-3 py-1 rounded-full bg-accent-600 text-white",
                         RawHtml("""<span class="opacity-80">●</span>&nbsp; Open Source · MIT""")
@@ -43,39 +69,48 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
             ),
 
             # ─── Right: bounded image-card collage ──────────────────────────
-            Div(:class => "lg:col-span-5 relative h-[480px] lg:h-[560px] mt-4 lg:mt-0",
-                # OPEN SOURCE orb badge — z-30 keeps it above the floating
+            Div(:class => "lg:col-span-5 relative h-[520px] lg:h-[640px] mt-4 lg:mt-0 overflow-visible",
+                # OPEN SOURCE orb badge — z-[35] keeps it above ALL floating
                 # image cards (z-10/20/30) but BELOW the sticky nav (z-40 in
                 # Layout.jl), so scrolling doesn't push it over the header.
-                Div(:class => "absolute top-2 right-2 z-30 w-16 h-16 rounded-full flex items-center justify-center text-[9px] tracking-[0.15em] uppercase font-mono text-white text-center leading-tight shadow-lg",
+                Div(:class => "absolute top-2 right-2 z-[35] w-16 h-16 rounded-full flex items-center justify-center text-[9px] tracking-[0.15em] uppercase font-mono text-white text-center leading-tight shadow-lg",
                     :style => "background:radial-gradient(circle at 30% 30%, var(--color-accent-400), var(--color-accent-600) 70%, var(--color-accent-700));",
                     RawHtml("Open<br/>Source")
                 ),
-                # Card 1 — top, slight CCW (Gammex 472 phantom)
-                Div(:class => "absolute top-4 left-2 lg:left-0 w-[78%] aspect-[16/10] rounded-xl border border-warm-300 dark:border-warm-800 bg-warm-50 dark:bg-warm-900 shadow-2xl overflow-hidden -rotate-3 z-10",
-                    Img(:src => "$(BASE)/assets/gammex_472_phantom.png",
-                        :alt => "Gammex Model 472 phantom",
-                        :class => "w-full h-full object-contain")
-                ),
-                # Card 2 — middle-right, light CW (standard-dose sinogram)
-                Div(:class => "absolute top-[34%] right-2 lg:right-[-6%] w-[64%] aspect-[4/5] rounded-xl border border-warm-300 dark:border-warm-800 bg-warm-50 dark:bg-warm-900 shadow-2xl overflow-hidden rotate-[4deg] z-20",
-                    Img(:src => "$(BASE)/assets/sinogram_standard.png",
-                        :alt => "Standard-dose sinogram (central detector row)",
-                        :class => "w-full h-full object-contain")
-                ),
-                # Card 3 — bottom-left, larger CCW (recon comparison: dose × correction)
-                Div(:class => "absolute bottom-2 left-4 lg:left-[-2%] w-[62%] aspect-[6/5] rounded-xl border border-warm-300 dark:border-warm-800 bg-warm-50 dark:bg-warm-900 shadow-2xl overflow-hidden -rotate-[6deg] z-30",
-                    Img(:src => "$(BASE)/assets/recon_compare_4panel.png",
-                        :alt => "Standard vs low-dose reconstruction, raw vs corrected",
-                        :class => "w-full h-full object-contain")
-                )
+                # Big, heavily-overlapping collage — cards intentionally
+                # spill past the column edges (overflow-visible on parent)
+                # so the layered editorial look reads at full scale.
+
+                # Card 1 — Gammex (1640×1080, 1.52:1) — top, slight CCW
+                Img(:src   => "$(BASE)/assets/gammex_472_phantom.png",
+                    :alt   => "Gammex Model 472 phantom",
+                    :class => "absolute top-[-3%] left-[-4%] w-[82%] h-auto block " *
+                              "rounded-xl border border-warm-300 dark:border-warm-800 " *
+                              "shadow-2xl -rotate-3 z-10"),
+
+                # Card 2 — Sinogram (1960×1240, 1.58:1) — middle-right, slight CW
+                Img(:src   => "$(BASE)/assets/sinogram_standard.png",
+                    :alt   => "Standard-dose sinogram (central detector row)",
+                    :class => "absolute top-[30%] right-[-12%] w-[78%] h-auto block " *
+                              "rounded-xl border border-warm-300 dark:border-warm-800 " *
+                              "shadow-2xl rotate-[3deg] z-20"),
+
+                # Card 3 — Recon 4-panel (2200×2000, ~square) — bottom, slight CCW
+                Img(:src   => "$(BASE)/assets/recon_compare_4panel.png",
+                    :alt   => "Standard vs low-dose reconstruction, raw vs corrected",
+                    :class => "absolute bottom-[-4%] left-[-3%] w-[80%] h-auto block " *
+                              "rounded-xl border border-warm-300 dark:border-warm-800 " *
+                              "shadow-2xl -rotate-[5deg] z-30")
             )
         ),
 
-        # ═══════════════════════════════════════════════════════════════════
-        # STATS — full-width row, own block, clear separation from hero
-        # ═══════════════════════════════════════════════════════════════════
-        Div(:class => "mt-24 lg:mt-32 pt-10 border-t border-warm-300 dark:border-warm-800",
+        # ─── Stats — pinned to bottom of viewport ──────────────────────
+        # `shrink-0` keeps the stats row at its natural height; the
+        # `flex-1 min-h-0` sibling above absorbs all remaining space, so
+        # this row sits flush at the bottom of the viewport-fit section.
+        # `relative z-[35]` keeps stats text above any image overflow;
+        # `backdrop-blur-md` blurs whatever sits behind them.
+        Div(:class => "shrink-0 mt-16 lg:mt-0 pt-8 lg:pt-10 pb-2 border-t border-warm-300 dark:border-warm-800 relative z-[35] backdrop-blur-md",
             Div(:class => "grid grid-cols-2 md:grid-cols-4 gap-y-8 gap-x-6",
                 Div(
                     Div(:class => "font-serif text-5xl md:text-6xl text-warm-900 dark:text-warm-100 leading-none", "02"),
@@ -99,6 +134,7 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                 )
             )
         ),
+        ),  # closes the viewport-fit hero+stats wrapper
 
         # ═══════════════════════════════════════════════════════════════════
         # §02 — THE WORKFLOW (code preview)
@@ -175,21 +211,21 @@ hu = BS.to_hounsfield(
             ),
 
             Div(:class => "grid grid-cols-1 md:grid-cols-3 gap-6 lg:gap-8",
-                Div(:class => "border border-warm-200 dark:border-warm-800 rounded-xl p-8 bg-warm-100/40 dark:bg-warm-900/40 hover:bg-warm-100 dark:hover:bg-warm-900/70 transition-colors",
+                Div(:class => "border border-warm-200 dark:border-warm-800 rounded-xl p-8 bg-warm-50 dark:bg-warm-900/40 hover:bg-white dark:hover:bg-warm-900/70 transition-colors",
                     Div(:class => "text-[10px] tracking-[0.2em] uppercase font-mono text-accent-600 dark:text-accent-400 mb-4", "Physics"),
                     H3(:class => "no-rule font-serif text-2xl mb-3 text-warm-900 dark:text-warm-100 leading-snug", "Polychromatic & Spectral"),
                     P(:class => "text-warm-600 dark:text-warm-400 text-sm leading-relaxed",
                         "Beer-Lambert across the full source spectrum. Energy-integrating detection or CdTe photon-counting with Koch-Mehrin charge transport, K-fluorescence, pileup, and an MC-derived DRM."
                     )
                 ),
-                Div(:class => "border border-warm-200 dark:border-warm-800 rounded-xl p-8 bg-warm-100/40 dark:bg-warm-900/40 hover:bg-warm-100 dark:hover:bg-warm-900/70 transition-colors",
+                Div(:class => "border border-warm-200 dark:border-warm-800 rounded-xl p-8 bg-warm-50 dark:bg-warm-900/40 hover:bg-white dark:hover:bg-warm-900/70 transition-colors",
                     Div(:class => "text-[10px] tracking-[0.2em] uppercase font-mono text-accent-600 dark:text-accent-400 mb-4", "Reconstruction"),
                     H3(:class => "no-rule font-serif text-2xl mb-3 text-warm-900 dark:text-warm-100 leading-snug", "FBP · IR · VMI"),
                     P(:class => "text-warm-600 dark:text-warm-400 text-sm leading-relaxed",
                         "FBP (FDK), Hybrid Iterative Reconstruction (PWLS + Huber), and material-basis Virtual Monoenergetic Imaging — all GPU-resident with a zero-allocation workspace pattern."
                     )
                 ),
-                Div(:class => "border border-warm-200 dark:border-warm-800 rounded-xl p-8 bg-warm-100/40 dark:bg-warm-900/40 hover:bg-warm-100 dark:hover:bg-warm-900/70 transition-colors",
+                Div(:class => "border border-warm-200 dark:border-warm-800 rounded-xl p-8 bg-warm-50 dark:bg-warm-900/40 hover:bg-white dark:hover:bg-warm-900/70 transition-colors",
                     Div(:class => "text-[10px] tracking-[0.2em] uppercase font-mono text-accent-600 dark:text-accent-400 mb-4", "Portability"),
                     H3(:class => "no-rule font-serif text-2xl mb-3 text-warm-900 dark:text-warm-100 leading-snug", "Backend-Agnostic GPU"),
                     P(:class => "text-warm-600 dark:text-warm-400 text-sm leading-relaxed",

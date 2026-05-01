@@ -24,8 +24,17 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
             summary   = "Load a high-resolution XCAT voxel phantom and assign each region a " *
                         "tissue-specific XrayAttenuation.Material — including a custom iodinated " *
                         "blood mixture built inline. FBP vs Hybrid IR side-by-side.",
-            thumbnail = nothing,
+            thumbnail = "xcat_fbp_vs_hir.png",
             tags      = ["EICT", "FBP", "Hybrid IR", "XCAT"],
+        ),
+        "03_dual_kvp_vmi" => (
+            index     = "03",
+            title     = "Dual-kVp VMI on Gammex 472",
+            summary   = "Image-domain dual-energy pipeline (Ding 2012) — RSKR joint denoise, " *
+                        "clinical-calibrated decomposition, Mono+ VMI at 40/70/100/140 keV, " *
+                        "verified per-rod against XrayAttenuation theory.",
+            thumbnail = "vmi_regression.png",
+            tags      = ["EICT", "Dual-kVp", "VMI", "Mono+"],
         ),
     )
 
@@ -42,7 +51,7 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
 
         A(:href => "$(BASE)/examples/$(slug)/",
             :class => "block group no-underline",
-            Div(:class => "h-full border border-warm-200 dark:border-warm-800 rounded-xl overflow-hidden bg-warm-100/40 dark:bg-warm-900/40 hover:bg-warm-100 dark:hover:bg-warm-900/70 hover:border-accent-400 dark:hover:border-accent-600 transition-colors",
+            Div(:class => "h-full border border-warm-200 dark:border-warm-800 rounded-xl overflow-hidden bg-warm-50 dark:bg-warm-900/40 hover:bg-white dark:hover:bg-warm-900/70 hover:border-accent-400 dark:hover:border-accent-600 transition-colors",
 
                 # Thumbnail (asset PNG) — falls back to a tinted accent block
                 if meta.thumbnail !== nothing

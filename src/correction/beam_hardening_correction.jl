@@ -92,7 +92,7 @@ export get_bhc_coefficients
 # Two-material (water + bone) sinogram-domain BHC
 export bone_fraction_smooth, TwoMaterialBHC, TwoMaterialBHCPerColumn
 export calibrate_bhc_two_material, apply_bhc_two_material
-export bhc_spectrum_per_column
+export bhc_spectrum_per_column, compute_polychromatic_μ_water
 
 # Image-domain BHC (So et al. 2009)
 export apply_bhc_image_domain
@@ -758,6 +758,71 @@ function bhc_spectrum_per_column(e::AbstractVector, w::AbstractArray)
         error("bhc_spectrum_per_column: unsupported ndims $(ndims(w))")
     end
 end
+
+"""
+    compute_polychromatic_μ_water(sim_opts, protocol;
+                                  scanner, geom, water_path_cm) -> Float64
+
+Spectrum-analytic polychromatic-effective `μ_water` for an in-phantom
+voxel — the analytic counterpart to "average μ in a solid-water ROI of
+the FBP volume".  Use this as the HU-conversion reference for image-
+domain pipelines that don't run BHC.
+
+Pipeline:
+1. Resolve the bowtie-aware source spectrum via
+   [`resolve_source_spectrum_with_bowtie`](@ref) — picks up the scanner
+   flat filter, `protocol.additional_filters`, and the bowtie attenuation.
+2. Collapse the per-ray ŵ to the central-column 1D fluence profile via
+   [`bhc_spectrum_per_column`](@ref).
+3. **Pre-harden** the spectrum by `water_path_cm` of solid water at each
+   energy bin via Beer-Lambert (low-E photons drop out preferentially,
+   raising the mean energy — same effect a center-of-phantom voxel sees).
+4. Return the fluence-weighted μ_water on the hardened spectrum.
+
+# Arguments
+- `sim_opts::SimOptions`
+- `protocol::CTProtocol`
+
+# Keyword arguments
+- `scanner::Scanner` — flat filter + bowtie geometry
+- `geom::CTGeometry` — for bowtie attenuation per column
+- `water_path_cm::Real` — total chord-length of solid water seen by an
+  FBP line integral through the reference voxel.  For a center voxel,
+  the chord crosses the **full phantom diameter** (one entry + one exit
+  half), so pass the phantom *diameter*, e.g. `33.0` for a Gammex 472
+  (33 cm body), not the radius.
+
+# Returns
+- `μ_water::Float64` — linear attenuation coefficient (cm⁻¹), suitable
+  for `to_hounsfield(...; μ_water = μ_water)`.
+
+# Example
+```julia
+μw_80 = BS.compute_polychromatic_μ_water(sim_opts, protocol_low;
+    scanner = scanner, geom = sim_low.geom, water_path_cm = 33.0)
+hu = BS.to_hounsfield(vol_low_μ; μ_water = μw_80)
+```
+"""
+function compute_polychromatic_μ_water(
+        sim_opts,
+        protocol;
+        scanner,
+        geom,
+        water_path_cm::Real,
+    )
+    e, ŵ = resolve_source_spectrum_with_bowtie(
+        sim_opts, protocol;
+        scanner = scanner, geom = geom, include_bowtie = true,
+        label = "compute_polychromatic_μ_water $(Int(protocol.kVp)) kVp",
+    )
+    _, w_per_col = bhc_spectrum_per_column(e, ŵ)
+    mid_c   = size(w_per_col, 2) ÷ 2 + 1
+    w_entr  = Float64.(@view w_per_col[:, mid_c])
+    μ_per_E = Float64[compute_μ_at_energy(XA.Materials.water, Float64(eᵢ)) for eᵢ in e]
+    w_hard  = w_entr .* exp.(-μ_per_E .* Float64(water_path_cm))
+    return sum(w_hard .* μ_per_E) / sum(w_hard)
+end
+
 
 """
     apply_bhc_two_material(sinogram_raw, bhc_2mat, geom, matrix_size; volume_extent=nothing)

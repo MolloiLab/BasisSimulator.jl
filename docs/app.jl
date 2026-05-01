@@ -122,7 +122,44 @@ let host = isdefined(Main, :TherapyApp) ? getfield(Main, :TherapyApp) : Main
 end
 
 # =============================================================================
+# Favicon — mounted at root URL so browsers auto-discover /favicon.ico in dev,
+# and copied to dist/favicon.ico in build.  The post-build pass below also
+# injects an explicit <link rel="icon"> into every emitted HTML file so the
+# favicon resolves under GH Pages' /BasisSimulator.jl/ subpath (where the
+# browser's automatic /favicon.ico probe hits the wrong host root).
+# =============================================================================
+
+let favicon = joinpath(@__DIR__, "assets", "favicon.ico")
+    if isfile(favicon)
+        hdrs = Pair{String,String}["Cache-Control" => "public, max-age=86400"]
+        push!(app.static_mounts, Therapy.StaticMount(
+            "/favicon.ico", favicon, hdrs, nothing, true,
+            Therapy.file(favicon; headers=hdrs)
+        ))
+        println("  Mounted: /favicon.ico  → $(favicon)")
+    end
+end
+
+# =============================================================================
 # Run - dev or build based on args
 # =============================================================================
 
 Therapy.run(app)
+
+# =============================================================================
+# Post-build: inject favicon <link> into every dist/**/*.html so GH Pages
+# (served under /BasisSimulator.jl/) actually finds the icon.  No-op in dev.
+# =============================================================================
+
+if IS_BUILD && isdir(app.output_dir)
+    favicon_link = "<link rel=\"icon\" type=\"image/x-icon\" href=\"$(ENV["BASISSIM_BASE"])/favicon.ico\">"
+    for (root, _, files) in walkdir(app.output_dir)
+        for f in files
+            endswith(f, ".html") || continue
+            path = joinpath(root, f)
+            content = read(path, String)
+            (occursin(favicon_link, content) || !occursin("</head>", content)) && continue
+            write(path, replace(content, "</head>" => "    $(favicon_link)\n</head>"; count=1))
+        end
+    end
+end

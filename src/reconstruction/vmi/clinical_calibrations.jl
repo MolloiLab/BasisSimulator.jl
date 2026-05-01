@@ -11,7 +11,7 @@ name (e.g. `"I 5.0"`, `"Ca 200"`, `"Water (O)"`).  Per entry:
   (e.g. `HU_80kVp`, `HU_140kVp` for DE; `HU_low_bin`, `HU_high_bin` for PCCT).
 
 Available constants:
-- [`GE_REVOLUTION_APEX_ELITE_DE_CAL`](@ref) — DE 80 + 140 kVp clinical FBP
+- [`GE_REVOLUTION_APEX_ELITE_DE_CAL`](@ref) — DE 80 + 140 kVp sim post-RSKR (iodine + water; calcium rows still clinical DICOM)
 - [`SIEMENS_NAEOTOM_ALPHA_140KVP_CAL`](@ref) — PCCT sim post-RSKR (140 kVp)
 - [`SIEMENS_NAEOTOM_ALPHA_120KVP_CAL`](@ref) — PCCT sim post-RSKR (120 kVp)
 
@@ -36,30 +36,40 @@ Generated from the in-notebook calibration cells:
 """
     GE_REVOLUTION_APEX_ELITE_DE_CAL :: Dict{String, NamedTuple}
 
-Per-rod HU at clinical 80 kVp + 140 kVp polychromatic FBP, ~10 mGy CTDI
-(Gammex 472).  Source DICOM series:
-- 80 kVp / 480 mA / 10.32 mGy CTDI / FBP (0%)
-- 140 kVp / 110 mA / 10.85 mGy CTDI / FBP (0%)
+Per-rod HU on the simulated 80 kVp + 140 kVp DE FBP (Gammex 472 phantom)
+after **RSKR-2ch joint denoising** at the μ-domain stage.  Same flow the
+image-domain Ding decomp consumes downstream, so the cal is fit on the
+exact spectral conditions the synthesis sees (matches the convention
+used by `SIEMENS_NAEOTOM_ALPHA_*` constants).
+
+Calcium rod values come from real clinical GE Apex Elite GSI DICOMs at
+~10 mGy CTDI; iodine + water rod values were re-derived from the
+simulated post-RSKR FBP HU on a 512²×16 Gammex 472 — the cal then
+matches the simulator's polychromatic HU baseline by construction
+(slopes ≈ 1 in measured-vs-theoretical regression at every VMI energy).
 
 Fields per rod: `material`, `mg_per_mL`, `HU_80kVp`, `HU_140kVp`.
 """
 const GE_REVOLUTION_APEX_ELITE_DE_CAL = Dict{String, NamedTuple}(
-    "Water (O)" => (material = :water,        mg_per_mL =   0.0, HU_80kVp =  -14.1f0, HU_140kVp =  -13.4f0),
-    "SW ref 1"  => (material = :solid_water,  mg_per_mL =   0.0, HU_80kVp =    1.4f0, HU_140kVp =   -5.5f0),
-    "SW ref 2"  => (material = :solid_water,  mg_per_mL =   0.0, HU_80kVp =    1.0f0, HU_140kVp =   -5.8f0),
+    # Water + solid water — sim post-RSKR (phantom-center 30-px ROI)
+    "Water (O)" => (material = :water,        mg_per_mL =   0.0, HU_80kVp =    9.5f0, HU_140kVp =   33.7f0),
+    "Water (I)" => (material = :water,        mg_per_mL =   0.0, HU_80kVp =    9.5f0, HU_140kVp =   33.7f0),
+    "SW ref 1"  => (material = :solid_water,  mg_per_mL =   0.0, HU_80kVp =    9.5f0, HU_140kVp =   33.7f0),
+    "SW ref 2"  => (material = :solid_water,  mg_per_mL =   0.0, HU_80kVp =    9.5f0, HU_140kVp =   33.7f0),
+    # Calcium rods — clinical FBP DICOM (preserved from prior version)
     "Ca 50"     => (material = :calcium,      mg_per_mL =  50.0, HU_80kVp =  213.7f0, HU_140kVp =  181.6f0),
     "Ca 100"    => (material = :calcium,      mg_per_mL = 100.0, HU_80kVp =  390.4f0, HU_140kVp =  302.4f0),
     "Ca 200"    => (material = :calcium,      mg_per_mL = 200.0, HU_80kVp =  764.6f0, HU_140kVp =  539.4f0),
     "Ca 300"    => (material = :calcium,      mg_per_mL = 300.0, HU_80kVp = 1132.4f0, HU_140kVp =  779.0f0),
     "Ca 400"    => (material = :calcium,      mg_per_mL = 400.0, HU_80kVp = 1459.4f0, HU_140kVp =  995.6f0),
-    "Water (I)" => (material = :water,        mg_per_mL =   0.0, HU_80kVp =  -14.0f0, HU_140kVp =  -15.5f0),
-    "I 2.0"     => (material = :iodine,       mg_per_mL =   2.0, HU_80kVp =   69.5f0, HU_140kVp =   31.5f0),
-    "I 2.5"     => (material = :iodine,       mg_per_mL =   2.5, HU_80kVp =   88.7f0, HU_140kVp =   41.8f0),
-    "I 5.0"     => (material = :iodine,       mg_per_mL =   5.0, HU_80kVp =  178.2f0, HU_140kVp =   83.0f0),
-    "I 7.5"     => (material = :iodine,       mg_per_mL =   7.5, HU_80kVp =  271.8f0, HU_140kVp =  122.2f0),
-    "I 10.0"    => (material = :iodine,       mg_per_mL =  10.0, HU_80kVp =  365.0f0, HU_140kVp =  184.4f0),
-    "I 15.0"    => (material = :iodine,       mg_per_mL =  15.0, HU_80kVp =  537.4f0, HU_140kVp =  263.9f0),
-    "I 20.0"    => (material = :iodine,       mg_per_mL =  20.0, HU_80kVp =  732.2f0, HU_140kVp =  365.3f0),
+    # Iodine rods — sim post-RSKR (8-px core ROI per rod)
+    "I 2.0"     => (material = :iodine,       mg_per_mL =   2.0, HU_80kVp =    4.8f0, HU_140kVp =    4.4f0),
+    "I 2.5"     => (material = :iodine,       mg_per_mL =   2.5, HU_80kVp =   25.0f0, HU_140kVp =   13.7f0),
+    "I 5.0"     => (material = :iodine,       mg_per_mL =   5.0, HU_80kVp =  107.6f0, HU_140kVp =   56.3f0),
+    "I 7.5"     => (material = :iodine,       mg_per_mL =   7.5, HU_80kVp =  180.0f0, HU_140kVp =   94.9f0),
+    "I 10.0"    => (material = :iodine,       mg_per_mL =  10.0, HU_80kVp =  264.1f0, HU_140kVp =  135.4f0),
+    "I 15.0"    => (material = :iodine,       mg_per_mL =  15.0, HU_80kVp =  426.6f0, HU_140kVp =  212.7f0),
+    "I 20.0"    => (material = :iodine,       mg_per_mL =  20.0, HU_80kVp =  587.6f0, HU_140kVp =  300.2f0),
 )
 
 
