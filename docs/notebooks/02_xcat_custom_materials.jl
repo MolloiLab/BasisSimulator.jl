@@ -640,12 +640,54 @@ md"""
 * lac water = $(round(bhc_calibration.μ_water, digits = 5)) cm⁻¹.
 """
 
+# ╔═╡ 09000006-0000-4000-8000-000000000001
+md"""
+#### 7b. Polychromatic `μ_water` from the XCAT body
+
+The BHC's `μ_water_ref` above is the monoenergetic μ_water at the
+spectrum-mean energy.  For the final `to_hounsfield` step (§8 + §9),
+we use the **polychromatic-effective** μ_water instead — the value
+the FBP recon actually produces for solid water, accounting for
+beam hardening through the body.
+
+[`BS.compute_polychromatic_μ_water`](@ref) does the spectrum + Beer-
+Lambert hardening analytically; [`BS.estimate_phantom_diameter_cm`](@ref)
+reads the body's chord length straight off the **XCAT mask**, so the
+calibration scales naturally if you swap phantoms (vmale_50 →
+vfemale_50, etc.) without hardcoding any cm.
+"""
+
+# ╔═╡ 09000006-0000-4000-8000-000000000010
+μ_water_recon = phantom === nothing ? nothing : let
+        voxel_size_mm = VOXEL_SIZE_CM .* 10.0
+        body_diameter_cm = BS.estimate_phantom_diameter_cm(
+            phantom_labeled, voxel_size_mm
+        )
+        BS.compute_polychromatic_μ_water(
+            sim_opts, protocol;
+            scanner = scanner,
+            geom = sim.geom,
+            water_path_cm = body_diameter_cm,
+        )
+end;
+
+# ╔═╡ 09000006-0000-4000-8000-000000000020
+md"""
+**Analytic poly μ_water** (XCAT body chord through the center voxel):
+
+* `μ_water_recon = ` $(μ_water_recon === nothing ? "—" : "$(round(μ_water_recon, digits = 5)) cm⁻¹")
+"""
+
 # ╔═╡ 09000010-0000-4000-8000-000000000001
 md"""
 ## 8. FBP with the full correction pipeline
 
 Same `let ... end` shape as notebook 01 — sino BHC → FDK → image BHC →
 HU → noise floor → cupping, with explicit GPU cleanup at the end.
+HU conversion uses `μ_water_recon` (the XCAT-derived analytic
+poly-effective value from §7b), which makes solid water read ≈ 0 HU
+under our polychromatic FBP without monoenergetic-equivalent BHC
+post-correction.
 """
 
 # ╔═╡ 09000002-0000-4000-8000-000000000001
@@ -674,7 +716,7 @@ hu_fbp = sim === nothing ? nothing : let
         )
 
         # 4. μ → HU using BHC's calibrated μ_water (Float32 for cupping correction)
-        hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc_calibration.μ_water))
+        hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = μ_water_recon))
 
         # 5. Dose-independent DAS noise floor
         BS.add_system_noise_floor!(hu, 28.0; seed = 1234)
@@ -738,7 +780,7 @@ hu_hir = sim === nothing ? nothing : let
         )
 
         # 4. μ → HU
-        hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc_calibration.μ_water))
+        hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = μ_water_recon))
 
         # 5. Noise floor (different seed so noise pattern doesn't match FBP)
         BS.add_system_noise_floor!(hu, 28.0; seed = 5678)
@@ -909,6 +951,9 @@ correction pipeline from §9 of notebook 01 — carries over unchanged.
 # ╟─09000003-0000-4000-8000-000000000001
 # ╠═09000004-0000-4000-8000-000000000001
 # ╟─09000005-0000-4000-8000-000000000001
+# ╟─09000006-0000-4000-8000-000000000001
+# ╠═09000006-0000-4000-8000-000000000010
+# ╟─09000006-0000-4000-8000-000000000020
 # ╟─09000010-0000-4000-8000-000000000001
 # ╠═09000002-0000-4000-8000-000000000001
 # ╟─10000001-0000-4000-8000-000000000001

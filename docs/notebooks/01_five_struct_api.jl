@@ -493,9 +493,33 @@ md"""
 
 Same pattern: allocate an FDK workspace, run `reconstruct!`, copy the volume
 off the device, drop GPU references, GC. The output is in linear attenuation
-units (cm⁻¹), which we convert to Hounsfield Units using a 70 keV reference
-μ_water (the spectral mean of a typical filtered 120 kVp beam).
+units (cm⁻¹), which we convert to Hounsfield Units using a **polychromatic
+effective μ_water** for our 120 kVp spectrum + Gammex 472 body
+(33 cm diameter chord through the center voxel).
+
+[`BS.compute_polychromatic_μ_water`](@ref) resolves the bowtie-aware source
+spectrum (flat filter + protocol filters + bowtie all included), pre-hardens
+it through `water_path_cm` of solid water via Beer-Lambert (mimicking the
+hardening a center-of-phantom ray sees), then integrates μ_water(E) against
+the hardened spectrum.  The result matches what the FBP recon actually
+produces for solid water — so by construction the phantom-center voxel
+reads ≈ 0 HU, instead of ≈ −150 HU you'd get with a monoenergetic
+`get_reference_μ_water(70.0)`.
+
+Both protocols share the same kVp + filtration, so we compute the
+reference once and reuse it across §7 and §8.
 """
+
+# ╔═╡ 07000020-0000-4000-8000-000000000005
+μ_water_recon = let
+    body_radius_cm = 16.5   # Gammex 472 body
+    BS.compute_polychromatic_μ_water(
+        sim_opts, protocol_standard;
+        scanner = scanner,
+        geom = sim_std.geom,
+        water_path_cm = body_radius_cm * 2,   # full chord through center voxel
+    )
+end;
 
 # ╔═╡ 07000021-0000-4000-8000-000000000001
 hu_std = let
@@ -509,8 +533,7 @@ hu_std = let
     # is intentional (not redundant): `BS.μ_to_HU` widens to Float64 due to
     # an internal `1000.0` literal, but `apply_radial_cupping_correction!`
     # (used in section 9) only has a method for `Array{Float32, 3}`.
-    μ_water = BS.get_reference_μ_water(70.0)
-    hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = μ_water))
+    hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = μ_water_recon))
 
     # Drop every GPU ref before exiting
     ws_fdk = nothing
@@ -554,8 +577,8 @@ hu_low = let
     ws_fdk = BS.create_fdk_recon_workspace(sino_gpu, sim_low.geom, matrix_size)
     recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, sim_low.geom, matrix_size)
 
-    μ_water = BS.get_reference_μ_water(70.0)
-    hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = μ_water))
+    # Same polychromatic μ_water as §7 (shared 120 kVp spectrum + Gammex body)
+    hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = μ_water_recon))
 
     ws_fdk = nothing
     sino_gpu = nothing
@@ -873,6 +896,7 @@ result, `nothing` + `GC.gc(true)`, return.
 # ╠═07000010-0000-4000-8000-000000000001
 # ╟─07000015-0000-4000-8000-000000000001
 # ╟─07000020-0000-4000-8000-000000000001
+# ╠═07000020-0000-4000-8000-000000000005
 # ╠═07000021-0000-4000-8000-000000000001
 # ╟─08000001-0000-4000-8000-000000000001
 # ╠═08000010-0000-4000-8000-000000000001
