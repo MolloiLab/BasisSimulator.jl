@@ -11,7 +11,7 @@ const dark_mode = create_signal(0)
 
     # Sync signal with actual DOM state on hydration
     # (head script already set 'dark' class from localStorage/OS preference)
-    js("if(document.documentElement.classList.contains('dark'))$1(1)", set_dark)
+    js("if(document.documentElement.classList.contains('dark'))\$1(1)", set_dark)
 
     return Button(
         :on_click => () -> begin
