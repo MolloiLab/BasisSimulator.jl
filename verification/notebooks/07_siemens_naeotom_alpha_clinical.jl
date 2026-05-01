@@ -730,6 +730,234 @@ seg_result = let
     (mask = mask, rods = rod_info, center = center, slice_idx = mid_z)
 end;
 
+# ╔═╡ 08070100-0000-4000-8000-00000000000a
+md"""
+### 🧪 PCCT Rod-HU Calibration Extraction (run once → paste into src)
+
+Extracts per-rod HU from the **simulated** post-RSKR low/high-bin volumes
+on the **simulated** Gammex 472 + the **simulated** Naeotom Alpha geometry.
+This is the input the image-domain Ding decomp consumes (`HU_low_bin`,
+`HU_high_bin`), so calibrating against simulation-domain data is the right
+move.
+
+Emits two constants:
+- `SIEMENS_NAEOTOM_ALPHA_140KVP_CAL` — from `sim_scan2_combined_bin_volumes_ring_s2`
+  (140 kVp / 174 mA / 10 mGy / scan 2 — already-built pipeline).
+- `SIEMENS_NAEOTOM_ALPHA_120KVP_CAL` — built INLINE from `sim_scan4` bins
+  (120 kVp / 253 mA / 10 mGy / scan 4) by mirroring scan 2's bin-recon →
+  RSKR-2ch pipeline (no ring correction since `use_ring_correction_s2 = false`).
+
+Paste both printed blocks into `src/reconstruction/vmi/clinical_calibrations.jl`.
+"""
+
+# ╔═╡ 08070100-0000-4000-8000-000000000000
+let
+    sim_seg = sim_seg_result_s1   # ground-truth Gammex seg on the sim grid
+    nx       = size(sim_scan2_combined_bin_volumes_ring_s2.vol_low, 1)
+    fov_cm   = sim_fov_cm
+    pixel_cm = fov_cm / nx
+    roi_r_pix = 1.4 * 0.6 / pixel_cm
+    roi_r_sq  = roi_r_pix ^ 2
+
+    function _rod_mean(slice, rod)
+        i_lo = max(1, floor(Int, rod.cx - roi_r_pix - 1))
+        i_hi = min(nx, ceil(Int, rod.cx + roi_r_pix + 1))
+        j_lo = max(1, floor(Int, rod.cy - roi_r_pix - 1))
+        j_hi = min(nx, ceil(Int, rod.cy + roi_r_pix + 1))
+        s = 0.0; n = 0
+        @inbounds for j in j_lo:j_hi, i in i_lo:i_hi
+            if (i - rod.cx)^2 + (j - rod.cy)^2 ≤ roi_r_sq
+                s += slice[i, j]; n += 1
+            end
+        end
+        s / n
+    end
+
+    rod_concentrations = Dict(
+        "Water (O)" => (mat = :water,        mg_per_mL =   0.0),
+        "SW ref 1"  => (mat = :solid_water,  mg_per_mL =   0.0),
+        "SW ref 2"  => (mat = :solid_water,  mg_per_mL =   0.0),
+        "Ca 50"     => (mat = :calcium,      mg_per_mL =  50.0),
+        "Ca 100"    => (mat = :calcium,      mg_per_mL = 100.0),
+        "Ca 200"    => (mat = :calcium,      mg_per_mL = 200.0),
+        "Ca 300"    => (mat = :calcium,      mg_per_mL = 300.0),
+        "Ca 400"    => (mat = :calcium,      mg_per_mL = 400.0),
+        "Water (I)" => (mat = :water,        mg_per_mL =   0.0),
+        "I 2.0"     => (mat = :iodine,       mg_per_mL =   2.0),
+        "I 2.5"     => (mat = :iodine,       mg_per_mL =   2.5),
+        "I 5.0"     => (mat = :iodine,       mg_per_mL =   5.0),
+        "I 7.5"     => (mat = :iodine,       mg_per_mL =   7.5),
+        "I 10.0"    => (mat = :iodine,       mg_per_mL =  10.0),
+        "I 15.0"    => (mat = :iodine,       mg_per_mL =  15.0),
+        "I 20.0"    => (mat = :iodine,       mg_per_mL =  20.0),
+    )
+    rod_order = [
+        "Water (O)", "SW ref 1", "SW ref 2",
+        "Ca 50", "Ca 100", "Ca 200", "Ca 300", "Ca 400",
+        "Water (I)",
+        "I 2.0", "I 2.5", "I 5.0", "I 7.5", "I 10.0", "I 15.0", "I 20.0",
+    ]
+    rods_by_name = Dict(r.name => r for r in sim_seg.rods)
+
+    function _print_const(const_name, header, slice_low, slice_high)
+        println("# $(header)")
+        println("const $(const_name) = Dict{String, NamedTuple}(")
+        for nm in rod_order
+            r  = rods_by_name[nm]
+            cc = rod_concentrations[nm]
+            h_low  = _rod_mean(slice_low,  r)
+            h_high = _rod_mean(slice_high, r)
+            @info "  $(rpad(nm, 12))  $(rpad(string(cc.mat), 14)) $(rpad(string(cc.mg_per_mL), 10)) $(rpad(string(round(h_low,  digits=1)), 10)) $(rpad(string(round(h_high, digits=1)), 10))  $(round(h_low - h_high, digits=1))"
+            println("    \"$(nm)\" => (material = :$(cc.mat),  mg_per_mL = $(cc.mg_per_mL),  HU_low_bin = $(round(h_low, digits=1))f0,  HU_high_bin = $(round(h_high, digits=1))f0),")
+        end
+        println(")")
+        println()
+    end
+
+    println()
+    println("# Auto-generated from notebook 07 calibration cell (08070010-…).")
+    println("# Siemens Naeotom Alpha — sim post-RSKR low/high-bin rod HUs (Gammex 472).")
+    println()
+
+    # ──────────────────────────────────────────────────────────────────────
+    # 140 kVp — already-built scan 2 pipeline (post-RSKR/ring)
+    # ──────────────────────────────────────────────────────────────────────
+    μ_w_low_140,  μ_w_high_140 = sim_scan2_M_matrix_s2.μ_water_combined
+    mid_z_140 = size(sim_scan2_combined_bin_volumes_ring_s2.vol_low, 3) ÷ 2
+    vol_low_HU_140  = @. (sim_scan2_combined_bin_volumes_ring_s2.vol_low  - μ_w_low_140 ) / μ_w_low_140  * 1000f0
+    vol_high_HU_140 = @. (sim_scan2_combined_bin_volumes_ring_s2.vol_high - μ_w_high_140) / μ_w_high_140 * 1000f0
+    slice_low_140   = vol_low_HU_140[:, :, mid_z_140]
+    slice_high_140  = vol_high_HU_140[:, :, mid_z_140]
+
+    @info "── PCCT 140 kVp sim rod-HU calibration ──"
+    @info "Source: sim_scan2_combined_bin_volumes_ring_s2 (140 kVp / 174 mA / 10 mGy)"
+    @info "  μ_water_low_bin=$(round(μ_w_low_140,  sigdigits=4)) cm⁻¹   μ_water_high_bin=$(round(μ_w_high_140, sigdigits=4)) cm⁻¹"
+    @info "$(rpad("Rod", 12))  $(rpad("Material", 14)) $(rpad("c (mg/mL)", 10)) $(rpad("HU_low", 10)) $(rpad("HU_high", 10))  ΔHU"
+    _print_const("SIEMENS_NAEOTOM_ALPHA_140KVP_CAL",
+        "Source: sim_scan2_combined_bin_volumes_ring_s2  (140 kVp / 174 mA / 10.12 mGy CTDI, post-RSKR).",
+        slice_low_140, slice_high_140)
+
+    # ──────────────────────────────────────────────────────────────────────
+    # 120 kVp — INLINE bin-recon → RSKR-2ch pipeline mirroring scan 2
+    # ──────────────────────────────────────────────────────────────────────
+    @info "── PCCT 120 kVp sim rod-HU calibration (inline build of scan-4 bin pipeline) ──"
+
+    # ── Scatter correction on raw bins (mirrors sim_scan2_bins_corrected) ──
+    bins_raw_120 = sim_scan4.bins
+    I0_bins_120  = sim_scan4.I0_bins
+    I0_total_120 = Float32(sum(I0_bins_120))
+    eps_f = Float32(1e-10)
+
+    combined_120 = zeros(Float32, size(bins_raw_120[1]))
+    for (b, bs) in enumerate(bins_raw_120)
+        I0b = Float32(I0_bins_120[b])
+        @. combined_120 += I0b * exp(-bs)
+    end
+    @. combined_120 = -log(max(combined_120, eps_f) / I0_total_120)
+
+    voxel_size_mm   = sim_phantom_cpu.voxel_size .* 10.0
+    phantom_diam_cm = BS.estimate_phantom_diameter_cm(sim_phantom_cpu.mask, voxel_size_mm)
+    scatter_model   = BS.geometry_aware_scatter_model(sim_scanner; phantom_diameter_cm = phantom_diam_cm)
+    scatter_field_120 = similar(combined_120)
+    BS.estimate_scatter_field!(scatter_field_120, combined_120, scatter_model)
+
+    prot_120 = BS.CTProtocol(kVp = 120.0, additional_filters = [("Ti", 0.9)])
+    e_full_120, w_full_120 = BS.resolve_source_spectrum_without_bowtie(sim_opts, prot_120; scanner = sim_scanner)
+    pcct_det_120 = BS._build_pcct_detector(sim_scanner)
+    kVp_val_120  = Float64(maximum(e_full_120))
+    R_mat_120    = BS.compute_mc_drm(pcct_det_120, kVp_val_120)
+    η_vec_120    = BS.quantum_efficiency_vector(pcct_det_120.material, pcct_det_120.thickness_mm, e_full_120)
+    ew_120       = BS.compute_scatter_energy_weights(Float64.(e_full_120))
+    scatter_fracs_120 = BS.compute_scatter_bin_weights(
+        Float64.(e_full_120), Float64.(w_full_120), ew_120, Float64.(η_vec_120),
+        R_mat_120, kVp_val_120)
+
+    bins_corrected_120 = [copy(Float32.(b)) for b in bins_raw_120]
+    for (b, bs) in enumerate(bins_corrected_120)
+        I0b  = Float32(I0_bins_120[b])
+        frac = Float32(scatter_fracs_120[b])
+        for idx in eachindex(bs)
+            N_meas = I0b * exp(-bs[idx])
+            N_scat = scatter_field_120[idx] * I0_total_120 * frac
+            N_corr = N_meas - max(N_scat, Float32(0))
+            bs[idx] = -log(max(N_corr, eps_f) / I0b)
+        end
+    end
+
+    # ── Combine bins → low (1+2) / high (3+4) ──
+    grp_low_120, grp_high_120 = [1, 2], [3, 4]
+    function _combine_120(grp)
+        I0_sum = Float32(sum(Float64.(I0_bins_120[grp])))
+        N = zeros(Float32, size(bins_corrected_120[1]))
+        for b in grp
+            I0b = Float32(I0_bins_120[b])
+            @. N += I0b * exp(-bins_corrected_120[b])
+        end
+        @. -log(max(N, eps_f) / I0_sum)
+    end
+    sino_low_120  = _combine_120(grp_low_120)
+    sino_high_120 = _combine_120(grp_high_120)
+
+    # ── FBP each → vol_low/vol_high in μ ──
+    geom_120       = sim_scan4.geom
+    recon_size_120 = sim_matrix_size
+    function _fbp_one_120(s_cpu)
+        g  = MtlArray(Float32.(s_cpu))
+        ws = BS.create_fdk_recon_workspace(g, geom_120, recon_size_120; filter = sim_vmi_filter)
+        v  = Array(BS.reconstruct!(ws, g, geom_120, recon_size_120))
+        ws = nothing; g = nothing
+        Float32.(v)
+    end
+    t_fbp_120 = time()
+    vol_low_120  = _fbp_one_120(sino_low_120)
+    vol_high_120 = _fbp_one_120(sino_high_120)
+    GC.gc(true)
+    @info "[Scan 4 sino-combine + FBP]  $(round(time()-t_fbp_120, digits=2)) s"
+
+    # ── M-matrix at 120 kVp → μ_water_combined ──
+    drm_row_120(E) = clamp(round(Int, (Float64(E) - 1.0) / (kVp_val_120 - 1.0) * (size(R_mat_120, 1) - 1)) + 1, 1, size(R_mat_120, 1))
+    e_120 = Float64.(e_full_120)
+    μρ_w_120 = [BS.compute_mass_μ_at_energy(XA.Materials.water, E) for E in e_120]
+    function _eff_spectrum_120(grp)
+        I0_sum = sum(Float64.(I0_bins_120[grp]))
+        wc = zeros(Float64, length(e_120))
+        for b in grp
+            wb = [Float64(w_full_120[i]) * Float64(η_vec_120[i]) * Float64(R_mat_120[drm_row_120(e_120[i]), b]) for i in eachindex(e_120)]
+            sb = sum(wb); sb > 0 || error("_eff_spectrum_120: bin $b has zero spectral weight")
+            wbn = wb ./ sb
+            wc .+= (Float64(I0_bins_120[b]) / I0_sum) .* wbn
+        end
+        wc ./= sum(wc); wc
+    end
+    w_low_120  = _eff_spectrum_120(grp_low_120)
+    w_high_120 = _eff_spectrum_120(grp_high_120)
+    μρ_w_low_120  = Float32(sum(w_low_120  .* μρ_w_120))
+    μρ_w_high_120 = Float32(sum(w_high_120 .* μρ_w_120))
+    @info "  μ_water_low_bin=$(round(μρ_w_low_120,  sigdigits=4)) cm⁻¹   μ_water_high_bin=$(round(μρ_w_high_120, sigdigits=4)) cm⁻¹"
+
+    # ── RSKR-2ch denoise (mirrors scan 2 hyperparams) ──
+    t_rskr_120 = time()
+    rskr_120 = _rskr_2ch([vol_low_120, vol_high_120];
+        n_iter  = rskr_n_iter_s2,
+        h_param = rskr_h_param_s2,
+        radius  = rskr_radius_s2,
+        γ       = rskr_γ_s2,
+        verbose = true)
+    @info "[Scan 4 RSKR-2ch] $(round(time()-t_rskr_120, digits=1)) s"
+
+    # ── Convert μ → HU + extract rod HUs ──
+    mid_z_120 = size(rskr_120[1], 3) ÷ 2
+    vol_low_HU_120  = @. (rskr_120[1] - μρ_w_low_120 ) / μρ_w_low_120  * 1000f0
+    vol_high_HU_120 = @. (rskr_120[2] - μρ_w_high_120) / μρ_w_high_120 * 1000f0
+    slice_low_120   = vol_low_HU_120[:, :, mid_z_120]
+    slice_high_120  = vol_high_HU_120[:, :, mid_z_120]
+
+    @info "$(rpad("Rod", 12))  $(rpad("Material", 14)) $(rpad("c (mg/mL)", 10)) $(rpad("HU_low", 10)) $(rpad("HU_high", 10))  ΔHU"
+    _print_const("SIEMENS_NAEOTOM_ALPHA_120KVP_CAL",
+        "Source: sim_scan4 bins → bin-combine → FBP → RSKR-2ch (120 kVp / 253 mA / 10.15 mGy CTDI).",
+        slice_low_120, slice_high_120)
+end
+
 # ╔═╡ 08070005-0000-4000-8000-000000000000
 # Segmentation overlay visualization
 let
@@ -4130,7 +4358,7 @@ begin
     use_mono_plus_s2     = true
     vmip_E_noise_opt_s2  = 70.0
     vmip_σ_per_E_s2      = Dict{Float64, Float64}(
-        40.0  => 2.0,
+        40.0  => 3.0,
         70.0  => 0.0,
         100.0 => 2.0,
         140.0 => 2.0,
@@ -4141,7 +4369,7 @@ end
 # ── Scan 2 Mono+ edge-mask config ──────────────────────────────────────
 begin
     use_mono_plus_edge_mask_s2 = true
-    mono_plus_edge_erode_px_s2 = 8.0   # ≥ 3·max(σ_lp_px) recommended
+    mono_plus_edge_erode_px_s2 = 2.0   # ≥ 3·max(σ_lp_px) recommended
 end
 
 # ╔═╡ 08120d05-0000-4000-8000-000000000002
@@ -5309,6 +5537,8 @@ md"""
 # ╠═08070002-0000-4000-8000-000000000000
 # ╟─08070003-0000-4000-8000-000000000000
 # ╠═08070004-0000-4000-8000-000000000000
+# ╟─08070100-0000-4000-8000-00000000000a
+# ╠═08070100-0000-4000-8000-000000000000
 # ╟─08070005-0000-4000-8000-000000000000
 # ╟─08070006-0000-4000-8000-000000000000
 # ╠═08070007-0000-4000-8000-000000000000
@@ -5410,7 +5640,7 @@ md"""
 # ╟─08135050-0000-4000-8000-000000000001
 # ╟─08135050-0000-4000-8000-000000000002
 # ╟─08135060-0000-4000-8000-000000000001
-# ╠═08135060-0000-4000-8000-000000000002
+# ╟─08135060-0000-4000-8000-000000000002
 # ╟─08110001-0000-4000-8000-000000000000
 # ╠═08110002-0000-4000-8000-000000000000
 # ╟─08120002-b000-4000-8000-000000000001
@@ -5430,14 +5660,14 @@ md"""
 # ╠═08120e00-0000-4000-8000-000000000001
 # ╟─08120009-0000-4000-8000-000000000001
 # ╠═08120d00-0000-4000-8000-000000000010
-# ╠═08120d10-0000-4000-8000-000000000001
+# ╟─08120d10-0000-4000-8000-000000000001
 # ╠═08120d00-0000-4000-8000-000000000006
 # ╠═08120d00-0000-4000-8000-000000000002
 # ╠═08120d00-0000-4000-8000-000000000009
-# ╠═08120d10-0000-4000-8000-000000000002
+# ╟─08120d10-0000-4000-8000-000000000002
 # ╠═08120d11-0000-4000-8000-000000000001
 # ╠═08120d11-0000-4000-8000-000000000002
-# ╠═08120d11-0000-4000-8000-000000000003
+# ╟─08120d11-0000-4000-8000-000000000003
 # ╠═08120d15-0000-4000-8000-000000000001
 # ╠═08120d15-0000-4000-8000-000000000002
 # ╠═08120d15-0000-4000-8000-000000000004
