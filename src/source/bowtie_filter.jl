@@ -594,11 +594,28 @@ const BOWTIE_MU_DATA = Dict{String, Tuple{Vector{Float64}, Vector{Float64}}}(
     "Ti" => (
         [20.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0, 120.0, 150.0],
         [17.0, 5.75, 2.74, 1.56, 1.02, 0.54, 0.37, 0.30, 0.25]
+    ),
+    # Tin (ρ = 7.29 g/cm³, Z=50)
+    # K-edge at 29.2 keV — sharp jump just above 29 keV
+    # NIST XCOM-derived linear attenuation coefficients (cm⁻¹)
+    # Source: photon cross-section tables, ρ × (μ/ρ) for elemental Sn
+    # Used as Siemens NAEOTOM Alpha "W12" / "Sn140" pre-filter material —
+    # 0.6 mm Sn shifts mean photon energy from ~70 keV (Al-only) to ~85 keV.
+    "Sn" => (
+        [20.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0, 120.0, 150.0],
+        [41.1, 130.0, 60.5, 33.7, 20.5, 9.3,  5.0,  3.1,  1.8]
     )
 )
 
 # Alias for carbon
 BOWTIE_MU_DATA["C"] = BOWTIE_MU_DATA["graphite"]
+# Aliases for tin (so :tin Symbol → "tin" String resolves correctly)
+BOWTIE_MU_DATA["tin"] = BOWTIE_MU_DATA["Sn"]
+BOWTIE_MU_DATA["Tin"] = BOWTIE_MU_DATA["Sn"]
+# Aliases for aluminum and copper full names
+BOWTIE_MU_DATA["aluminum"] = BOWTIE_MU_DATA["Al"]
+BOWTIE_MU_DATA["copper"] = BOWTIE_MU_DATA["Cu"]
+BOWTIE_MU_DATA["titanium"] = BOWTIE_MU_DATA["Ti"]
 
 """
     get_bowtie_mu(material::String, energy_keV::Float64) -> Float64
