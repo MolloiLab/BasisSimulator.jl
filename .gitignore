@@ -55,13 +55,3 @@ test/output/*.pdf
 *.offset
 *.scan
 *.prep
-
-# Verification environment (generated/transient files)
-verification/.CondaPkg/
-verification/Manifest.toml
-verification/figures/
-verification/catsim_work/
-verification/notebooks/catsim_work/
-verification/data/xcat/*.bin
-verification/data/brain_perfusion/
-verification/data/lymph_flow/

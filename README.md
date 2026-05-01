@@ -579,49 +579,9 @@ When `fidelity=:high` or `:pcct` with a photon-counting scanner, the full CdTe d
 
 ---
 
-## Verification Notebooks
+## Verification & Examples
 
-The `verification/` directory contains 5 Pluto notebooks that validate BasisSimulator against reference data and demonstrate the full API. Each notebook is self-contained and produces publication-quality figures.
-
-### [01 -- Single-kVp Verification Against CatSim](verification/notebooks/01_single_kvp_verification.jl)
-
-Head-to-head comparison of BasisSimulator and GE CatSim/XCIST using identical Gammex 472 phantom configurations at 120 kVp. Validates the entire pipeline: forward projection, FDK reconstruction, HU accuracy, NPS noise texture, MTF spatial resolution, and CNR.
-
-**What it demonstrates**: That BasisSimulator produces clinically equivalent results to the established CatSim framework on standard quality assurance metrics.
-
-### [02 -- Multi-Protocol Physics & Hybrid IR](verification/notebooks/02_multi_dose_and_iterative_reconstruction.jl)
-
-Dose scaling across three protocols (80 kVp/50 mA, 120 kVp/200 mA, 140 kVp/400 mA) with water-based HU calibration. Then applies Hybrid IR at strengths 1, 3, and 5 to low-dose data to show noise reduction while preserving spatial resolution.
-
-**What it demonstrates**: Spectral sensitivity (iodine HU changes with kVp), dose-proportional noise behavior, and the Hybrid IR noise-resolution tradeoff at each strength level.
-
-### [03 -- Dual-kVp VMI Validation](verification/notebooks/03_dual_kvp_vmi_verification.jl)
-
-Complete dual-energy VMI pipeline: 80/140 kVp acquisition, sinogram-domain material decomposition, and VMI synthesis at 8 energies (40-140 keV). Validates against NIST XCOM reference attenuation data.
-
-**What it demonstrates**: VMI energy-dependent contrast behavior, water HU stability across all energies, iodine linearity, and quantitative agreement with NIST reference values (R^2 > 0.95).
-
-### [04 -- PCCT Detector Physics](verification/notebooks/04_pcct_demonstration.jl)
-
-Physics-based CdTe detector simulation on the Siemens NAEOTOM Alpha: charge cloud transport, K-fluorescence cascade, charge collection efficiency, pileup modeling, and unified detector response matrix. Reconstructs 4-bin energy-resolved data with FDK and Hybrid IR, then synthesizes VMI and K-edge images.
-
-**What it demonstrates**: Each component of the PCCT detector model individually (with visualizations), then the complete pipeline from energy-resolved sinograms through material decomposition to VMI and K-edge imaging.
-
-### [05 -- Full XCAT Clinical Workflow](verification/notebooks/05_xcat_full.jl)
-
-Three-scanner comparison on a large (1600x1400x500) XCAT anthropomorphic phantom: GE Revolution Apex (single-kVp EICT), GE Revolution GSI (dual-kVp), and Siemens NAEOTOM Alpha (PCCT). Each scanner runs the full clinical pipeline from forward projection through reconstruction and VMI.
-
-**What it demonstrates**: Complete clinical workflow at scale with realistic anatomy, comparing image quality and spectral capabilities across scanner architectures.
-
-### Running the Notebooks
-
-```bash
-cd BasisSimulator.jl/verification
-julia --project=. -e 'using Pkg; Pkg.instantiate()'
-julia --project=. -e 'using Pluto; Pluto.run()'
-```
-
-Then open any notebook in the Pluto browser interface. Notebooks require an Apple Silicon Mac with Metal.jl for GPU execution (or adapt to CUDA).
+Verification notebooks (CatSim baseline, dual-kVp VMI vs NIST, PCCT physics, XCAT clinical workflows) live in the companion repo [**MolloiLab/basis-verification**](https://github.com/MolloiLab/basis-verification). It carries its own `Project.toml` and pulls `BasisSimulator` directly from this GitHub URL via `[sources]`, so no sibling-checkout is required.
 
 ---
 
