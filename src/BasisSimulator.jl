@@ -205,6 +205,11 @@ include("api/driver.jl")
 # for a reference wiring across §5-§6.
 # =============================================================================
 
+# Memory-budget probe + tile-loop helpers for VMI workspaces.
+# Free utility functions (suggest_tile_size, tile_ranges, with_oom_retry)
+# consumed by RwlsWorkspace / PwlsWorkspace / CongWorkspace / MonoPlusWorkspace.
+include("reconstruction/workspace/memory_budget.jl")
+
 # Photoelectric + Compton physical basis tables (Cong 2022 Eqs 3a-3e, 4)
 include("reconstruction/vmi/basis.jl")
 
@@ -240,8 +245,35 @@ include("reconstruction/vmi/capping.jl")
 # VMI synthesis — μ(E) = p(E)·a + q(E)·c → HU
 include("reconstruction/vmi/vmi_synth.jl")
 
-# Mono+ frequency-split — Grant 2014 1:1 parity (FFT Gaussian LP)
+# Mono+ frequency-split — Grant 2014 1:1 parity (FFT Gaussian LP).
+# Optional `phantom_mask` kwarg masks the phantom-air ring artifact.
 include("reconstruction/vmi/mono_plus.jl")
+
+# Z-direction median filter — edge-preserving impulse-noise removal that
+# exploits z-axis correlation in z-invariant phantoms (Gammex 472).
+include("reconstruction/vmi/median_filter.jl")
+
+# RSKR (Rank-Sparse Kernel Regression) — joint multi-channel basis-pair
+# denoiser (Clark/Badea 2023).  2-channel + 4-channel variants.
+include("reconstruction/vmi/rskr.jl")
+
+# Phantom-mask helpers — recon-space resample + FFT-Gaussian erosion.
+# Used by Mono+ phantom_mask kwarg + edge-mask post-processing.
+include("reconstruction/vmi/phantom_mask.jl")
+
+# Image-domain Ding 2012 DE decomp — fit (a₀, a₁, a₂) coeffs from rod
+# HUs, apply to (HU_low, HU_high) → c_iodine, synth per-energy VMI.
+include("reconstruction/vmi/image_domain_decomp.jl")
+
+# HIR-on-Mono+ wrapper — per-energy GPU forward-project + HIR with
+# Mono+ warm start.  Produces the "HIR equivalent" output of the
+# image-domain VMI pipeline.
+include("reconstruction/vmi/hir_on_mono.jl")
+
+# Clinical rod-HU calibration constants (image-domain Ding fits).  Per-
+# scanner Dicts of measured rod HUs at relevant kVp / VMI energies, plus
+# iodine_calibration_rods / calcium_calibration_rods helpers.
+include("reconstruction/vmi/clinical_calibrations.jl")
 
 # =============================================================================
 # Scanner-specific constants

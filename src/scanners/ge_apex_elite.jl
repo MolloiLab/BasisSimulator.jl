@@ -27,3 +27,5 @@ const GE_APEX_ELITE_FILTERS = Dict{Symbol, CustomFilter}(
         (1.0, 0.85, 0.6,  0.15, 0.001),
     ),
 )
+
+export GE_APEX_ELITE_FILTERS

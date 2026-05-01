@@ -4,8 +4,8 @@ Cong 2022 per-ray analytic dual-energy basis decomposition.
 Given measured line integrals at low and high kVp, invert the
 polychromatic forward model **ray by ray** to recover the photoelectric
 (`y = ∫a(r)dr`) and Compton (`C = ∫c(r)dr`) basis sinograms.  Zero
-calibration required — only the resolved x-ray spectra
-(`resolve_source_spectrum_without_bowtie`) and the physical `p(ε), q(ε)` basis (see `basis.jl`).
+calibration required — only the resolved x-ray spectra and a physical
+`p(ε), q(ε)` basis (see `basis.jl`).
 
 Algorithm (Cong Eqs 6–10):
   1. **Outer Brent on water-equivalent path `L`**
@@ -20,20 +20,25 @@ Algorithm (Cong Eqs 6–10):
 Parallelized via `AK.foreachindex` — same kernel body compiles for CPU
 / Metal / CUDA automatically.  Each root-find uses `brent_solve`
 (see `roots_kernels.jl`), a 1:1 line-for-line port of Roots.jl's
-`Brent()` that runs inside GPU kernels without allocations.  Parity vs
-Roots.jl is continuously verified by `test/vmi_brent_parity.jl`.
+`Brent()` that runs inside GPU kernels without allocations.
+
+# Workspace
+
+The kernel writes per-pixel directly to the user-provided `sino_y` and
+`sino_c` outputs — there is no per-tile sino-shape scratch.  The
+workspace owns the **staged spectral basis** (six backend arrays
+matching the sinogram's backend) so repeated calls don't re-stage CPU
+basis tables to GPU each time.  No `tile_size`, no auto-tiling.
 
 Reference:
   Cong, De Man, Wang (2022) *"Projection decomposition via univariate
-  optimization for dual-energy CT."* *J X-Ray Sci Technol* 30:725–736.
+  optimization for dual-energy CT."*  *J X-Ray Sci Technol* 30:725–736.
   DOI 10.3233/XST-221153.
 """
 
 # ─────────────────────────────────────────────────────────────────────
-# Backend helper — move a CPU Vector{Float64} onto whatever device
-# `ref` lives on.  Used to stage the small spectral tables onto the
-# sinogram's backend before we launch the kernel.
-# ─────────────────────────────────────────────────────────────────────
+# Backend helper — copy a CPU array onto whatever device `ref` lives on.
+# Already used by other VMI algorithms; defined once here, reused.
 
 @inline function _match_backend(arr::AbstractArray, ref::AbstractArray)
     ref isa Array && return arr
@@ -42,109 +47,145 @@ Reference:
     out
 end
 
+# ════════════════════════════════════════════════════════════════════════
+#  Workspace
+# ════════════════════════════════════════════════════════════════════════
+
 """
-    apply_cong!(sino_y, sino_c, sino_low, sino_high; basis, water_basis, ...)
+    CongWorkspace{T, AŴ_L, AŴ_H, A1}
 
-Per-ray Cong 2022 decomposition, writing results into `sino_y` and
-`sino_c`.  All four arrays share the same shape (nx, nv, nr) and element
-type `Float32`.
+Pre-staged spectral basis on the sinogram's backend.  Cong is per-pixel
+parallel and writes directly to the user's outputs, so the workspace has
+no sino-shape scratch — only the six basis tables.
 
-Runs on whatever backend the sinograms live on (CPU `Array`, Metal
-`MtlArray`, CUDA `CuArray`, …) via `AK.foreachindex`.  The spectral
-tables from `basis` are automatically staged onto the matching backend
-before launch.
+Type parameters:
+  • `T`     — element type (Float32 enforced).
+  • `AŴ_L`  — type of staged `ŵ_L` (1D `Vector{Float32}` for centered
+              spectrum, 3D `[n_col,n_row,n_E]` for per-ray bowtie).
+  • `AŴ_H`  — same for `ŵ_H` (must share dimensionality with `AŴ_L`).
+  • `A1`    — type of staged `p_L`/`q_L`/`p_H`/`q_H` (always 1D Vector).
+
+Construct with [`create_cong_workspace`](@ref).
+"""
+struct CongWorkspace{T <: AbstractFloat,
+                      AŴ_L <: AbstractArray{T},
+                      AŴ_H <: AbstractArray{T},
+                      A1   <: AbstractVector{T}}
+    ŵ_L::AŴ_L; p_L::A1; q_L::A1
+    ŵ_H::AŴ_H; p_H::A1; q_H::A1
+end
+
+"""
+    create_cong_workspace(sino_template, basis) -> CongWorkspace
+
+Stage the Cong basis (`ŵ_L`, `p_L`, `q_L`, `ŵ_H`, `p_H`, `q_H`) onto the
+same backend as `sino_template`.
+
+Cong is per-pixel parallel with no per-tile scratch, so this workspace's
+sole purpose is amortizing the basis-staging cost across repeated
+`apply_cong!` calls (e.g., hyperparameter sweeps, multiple scans sharing
+the same basis).
 
 # Arguments
-- `sino_y`, `sino_c`  : output photoelectric and Compton line integrals
-- `sino_low`          : measured low-kVp sinogram (log line integrals)
-- `sino_high`         : measured high-kVp sinogram (log line integrals)
+- `sino_template` : witness for the target backend.
+- `basis`         : NamedTuple with `ŵ_L`, `p_L`, `q_L`, `ŵ_H`, `p_H`,
+  `q_H`, all `Float32` — built by your basis-construction cell (see
+  notebook 06 / 07 for the canonical setup).
+
+`ŵ_L` / `ŵ_H` may be 1D `[n_E]` (centered spectrum) or 3D
+`[n_col, n_row, n_E]` (per-ray bowtie).  Both must share dimensionality.
+"""
+function create_cong_workspace(
+        sino_template::AbstractArray{<:AbstractFloat, 3},
+        basis,
+    )
+    for (name, arr) in ((:ŵ_L, basis.ŵ_L), (:p_L, basis.p_L), (:q_L, basis.q_L),
+                        (:ŵ_H, basis.ŵ_H), (:p_H, basis.p_H), (:q_H, basis.q_H))
+        eltype(arr) === Float32 ||
+            error("create_cong_workspace: basis.$(name) has eltype $(eltype(arr)); Float32 required.")
+    end
+    ndims(basis.ŵ_L) == ndims(basis.ŵ_H) ||
+        error("create_cong_workspace: basis.ŵ_L and basis.ŵ_H must share ndims.")
+
+    ŵ_L = _match_backend(basis.ŵ_L, sino_template)
+    p_L = _match_backend(basis.p_L, sino_template)
+    q_L = _match_backend(basis.q_L, sino_template)
+    ŵ_H = _match_backend(basis.ŵ_H, sino_template)
+    p_H = _match_backend(basis.p_H, sino_template)
+    q_H = _match_backend(basis.q_H, sino_template)
+
+    CongWorkspace{Float32, typeof(ŵ_L), typeof(ŵ_H), typeof(p_L)}(
+        ŵ_L, p_L, q_L, ŵ_H, p_H, q_H,
+    )
+end
+
+# ════════════════════════════════════════════════════════════════════════
+#  Public API
+# ════════════════════════════════════════════════════════════════════════
+
+"""
+    apply_cong!(ws, sino_y, sino_c, sino_low, sino_high;
+                water_basis,
+                newton_max_iter = 12,
+                newton_tol      = eps(Float32),
+                y_max_factor    = 0.99,
+                y_max_cap       = 1f7) -> (sino_y, sino_c)
+
+Per-ray Cong 2022 decomposition, writing results into `sino_y` and
+`sino_c`.  All four sino arrays share shape `(nx, nv, nr)` and `Float32`.
+
+# Arguments
+- `ws`         : `CongWorkspace` from `create_cong_workspace(...)`.
+  REQUIRED — no internal allocation path.
+- `sino_y`,
+  `sino_c`     : output photoelectric and Compton line integrals,
+  mutated in place.
+- `sino_low`,
+  `sino_high`  : measured low- / high-kVp sinograms (log line integrals).
 
 # Keyword arguments
-- `basis`       : NamedTuple from `compute_photo_compton_basis` (or a
-  direct material basis).  `basis.ŵ_L` / `basis.ŵ_H` may be 1D
-  `[n_E]` (centered spectrum, legacy) or 3D `[n_col, n_row, n_E]`
-  for per-ray bowtie-aware inversion — both paths run the same
-  algorithm, only the spectral lookup differs.
-- `water_basis` : NamedTuple from `water_basis_constants()`
-
-# Tuning knobs (per-ray solver tolerances; exposed for residual beam-hardening tuning)
-- `newton_max_iter::Int = 12` — inner Newton iterations on the Eq 8
-  quintic.  Raise for dense iodine rays where Newton bails before the
-  root is tight (e.g. try 20 if residual 40 keV iodine HU slope > 1.03).
-- `newton_tol::Real = eps(Float32) ≈ 1.2e-7` — |Δ| break tolerance for
-  the Newton inner loop.  Loosen (e.g. 5e-7) for noise-limited rays if
-  Newton is spinning; tighten for precision tuning.
-- `y_max_factor::Real = 0.99` — safety factor on the outer Brent upper
-  bound `y_max = factor · p_L_meas / min(p_L)`.  K-edge basis functions
-  have very low `min(p_L)` near the iodine K-edge → widening this
-  factor (e.g. 2.0) helps dense-iodine rays converge.
-- `y_max_cap::Real = 1e7` — hard ceiling on `y_max`; only relevant if
-  the ratio above overflows for air-adjacent rays.
+- `water_basis`        : NamedTuple from `water_basis_constants()`.
+- `newton_max_iter`    : inner Newton iterations on the Eq 8 quintic.
+- `newton_tol`         : `|Δ|` break tolerance for the Newton inner loop.
+- `y_max_factor`       : safety factor on the outer Brent upper bound
+  `y_max = factor · p_L_meas / min(p_L)`.
+- `y_max_cap`          : hard ceiling on `y_max`.
 """
 function apply_cong!(
+        ws::CongWorkspace,
         sino_y::AbstractArray{Float32, 3},
         sino_c::AbstractArray{Float32, 3},
         sino_low::AbstractArray{Float32, 3},
         sino_high::AbstractArray{Float32, 3};
-        basis,
         water_basis,
         newton_max_iter::Int = 12,
         newton_tol::Real     = eps(Float32),
         y_max_factor::Real   = 0.99,
         y_max_cap::Real      = 1f7,
     )
-    # Enforce Float32 basis + water_basis up-front.  The kernel runs
-    # entirely in Float32 (Metal can't allocate Float64 arrays), so any
-    # Float64 input would silently upcast inside the closure and crash
-    # on GPU with a confusing "Metal does not support Float64" error
-    # deep in the similar() call chain.  Fail loud here with the fix.
-    for (name, arr) in ((:ŵ_L, basis.ŵ_L), (:p_L, basis.p_L), (:q_L, basis.q_L),
-                        (:ŵ_H, basis.ŵ_H), (:p_H, basis.p_H), (:q_H, basis.q_H))
-        eltype(arr) === Float32 || error(
-            "apply_cong!: basis.$(name) has eltype $(eltype(arr)); Float32 required. " *
-            "Call BS.compute_photo_compton_basis(...) to rebuild the basis " *
-            "(it returns Float32 vectors), or convert your basis vectors manually."
-        )
-    end
     (water_basis.a isa Float32 && water_basis.c isa Float32) || error(
         "apply_cong!: water_basis has $(typeof(water_basis.a))/$(typeof(water_basis.c)); " *
         "Float32/Float32 required.  Call BS.water_basis_constants() (returns Float32)."
     )
+    size(sino_y) == size(sino_c) == size(sino_low) == size(sino_high) ||
+        error("apply_cong!: sino_y / sino_c / sino_low / sino_high must share shape.")
 
-    # `basis.ŵ_*` is either 1D (centered spectrum) or 3D
-    # [n_col, n_row, n_E] for per-ray bowtie-aware inversion.  Both ŵ_L
-    # and ŵ_H must share dimensionality.
-    per_ray = ndims(basis.ŵ_L) == 3
-    per_ray == (ndims(basis.ŵ_H) == 3) ||
-        error("apply_cong!: basis.ŵ_L and basis.ŵ_H must share ndims (both 1D or both 3D).")
-
-    # Stage spectral tables (Float32) onto the sinogram's backend.  All
-    # internal kernel math runs in Float32 so Metal / CUDA execute
-    # natively without a Float64 fallback.  Float32 ULP ≈ 1.2e-7 around
-    # 1.0 — plenty for the physical line-integral range Cong operates on
-    # (0–10 cm·g/cm²).
-    ŵ_L = _match_backend(basis.ŵ_L, sino_low)
-    p_L = _match_backend(basis.p_L, sino_low)
-    q_L = _match_backend(basis.q_L, sino_low)
-    ŵ_H = _match_backend(basis.ŵ_H, sino_low)
-    p_H = _match_backend(basis.p_H, sino_low)
-    q_H = _match_backend(basis.q_H, sino_low)
+    ŵ_L = ws.ŵ_L;  p_L = ws.p_L;  q_L = ws.q_L
+    ŵ_H = ws.ŵ_H;  p_H = ws.p_H;  q_H = ws.q_H
+    per_ray = ndims(ŵ_L) == 3
     nE_L = per_ray ? size(ŵ_L, 3) : length(ŵ_L)
     nE_H = per_ray ? size(ŵ_H, 3) : length(ŵ_H)
 
     a_w     = Float32(water_basis.a)
     c_w     = Float32(water_basis.c)
-    p_L_min = Float32(minimum(basis.p_L))
+    p_L_min = Float32(minimum(p_L))
 
-    # Capture tuning knobs as plain locals so the AK closure can see them
-    # on every backend (kwargs aren't visible inside the do-block).
+    # Capture tuning knobs as locals so the AK closure sees them on every backend.
     nm_iter = newton_max_iter
     n_tol   = Float32(newton_tol)
     y_fac   = Float32(y_max_factor)
     y_cap   = Float32(y_max_cap)
 
-    # BS sinogram layout [n_col, n_row, n_view]; bowtie ŵ only varies in
-    # (col, row) so we decode (col, row) from the linear kernel index.
     n_col = Int(size(sino_low, 1))
     n_row = Int(size(sino_low, 2))
 
@@ -156,7 +197,6 @@ function apply_cong!(
         p_L_meas = Float32(sino_low[idx])
         p_H_meas = Float32(sino_high[idx])
 
-        # Skip air rays.
         if p_L_meas < 1f-6 && p_H_meas < 1f-6
             sino_y[idx] = 0f0
             sino_c[idx] = 0f0
@@ -165,7 +205,7 @@ function apply_cong!(
         T_L_meas = exp(-p_L_meas)
         T_H_meas = exp(-p_H_meas)
 
-        # ── Step 1 — Brent on water-equivalent path L (Cong Eq 7) ──
+        # Step 1 — Brent on water-equivalent path L (Cong Eq 7).
         water_T_L = function (L::Float32)
             T = 0f0
             if per_ray
@@ -195,8 +235,7 @@ function apply_cong!(
             return
         end
 
-        # ── Step 2 — Newton on Eq 8 quintic for x = h(y) ──
-        # Newton tolerance ≈ eps(Float32) ≈ 1.2e-7 (was 1e-14 for Float64).
+        # Step 2 — Newton on Eq 8 quintic for x = h(y).
         solve_quintic = function (y::Float32, c̄_::Float32)
             P0 = 0f0; P1 = 0f0; P2 = 0f0
             P3 = 0f0; P4 = 0f0; P5 = 0f0
@@ -240,7 +279,7 @@ function apply_cong!(
             x
         end
 
-        # ── Step 3 — Outer Brent on y via G(y) = T_H_pred − T_H_meas ──
+        # Step 3 — Outer Brent on y via G(y) = T_H_pred − T_H_meas.
         T_H_pred = function (y::Float32, C::Float32)
             T = 0f0
             if per_ray
@@ -262,7 +301,6 @@ function apply_cong!(
 
         y_opt, ok_y = brent_solve(G, 0f0, y_max)
         if !ok_y
-            # Fall back to water-only estimate (matches CPU reference).
             sino_y[idx] = a_w * L_water
             sino_c[idx] = c_w * L_water
             return
@@ -275,26 +313,4 @@ function apply_cong!(
     (sino_y, sino_c)
 end
 
-"""
-    apply_cong(sino_low, sino_high; basis, water_basis, ...) -> (sino_y, sino_c)
-
-Allocating wrapper around `apply_cong!`.  Returns a fresh `(sino_y,
-sino_c)` pair on the same backend as the inputs.  Forwards all
-`apply_cong!` tuning kwargs (`newton_max_iter`, `newton_tol`,
-`y_max_factor`, `y_max_cap`).
-"""
-function apply_cong(
-        sino_low::AbstractArray,
-        sino_high::AbstractArray;
-        basis,
-        water_basis,
-        kwargs...,
-    )
-    sino_y = similar(sino_low, Float32)
-    sino_c = similar(sino_low, Float32)
-    apply_cong!(sino_y, sino_c, sino_low, sino_high;
-                basis = basis, water_basis = water_basis, kwargs...)
-    (sino_y, sino_c)
-end
-
-export apply_cong!, apply_cong
+export CongWorkspace, create_cong_workspace, apply_cong!
