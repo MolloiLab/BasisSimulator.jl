@@ -28,12 +28,12 @@ using Serialization
 """
     default_mc_drm_path() -> String
 
-Return the path to the bundled MC detector response file.
-This is the default file shipped with BasisSimulator.jl, located at
-`data/mc_detector_response/cdte_response_v4.jls`.
+Return the path to the bundled MC detector response file
+(`cdte_response_v4.jls`, co-located with this source file in
+`src/detector/pcct/`).
 """
 function default_mc_drm_path()
-    return joinpath(pkgdir(@__MODULE__), "data", "mc_detector_response", "cdte_response_v4.jls")
+    return joinpath(@__DIR__, "cdte_response_v4.jls")
 end
 
 """
