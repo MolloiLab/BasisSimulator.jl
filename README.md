@@ -58,11 +58,6 @@ hu = BS.to_hounsfield(
 Full API reference, physics overview, and worked examples: **docs link TBD** (Documenter site
 in preparation). Until then, see docstrings via `?Function` in the Julia REPL.
 
-## Verification & examples
-
-Verification notebooks and clinical-data benchmarks live in the companion repo
-**[MolloiLab/basis-verification](https://github.com/MolloiLab/basis-verification)**.
-
 ## Citation
 
 A SoftwareX manuscript describing BasisSimulator.jl is in preparation. A BibTeX entry

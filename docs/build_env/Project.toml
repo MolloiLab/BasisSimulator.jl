@@ -1,0 +1,11 @@
+# Sidecar environment for the notebook export pipeline.  Lives separate
+# from docs/Project.toml so the heavy doc deps (CairoMakie etc) don't
+# weigh on the export driver, and so notebook-runtime workers always
+# resolve their packages against docs/Project.toml itself.
+#
+# We use Pluto directly (not PlutoStaticHTML) so the rendered output is
+# a full standalone HTML page with Pluto's CDN-loaded CSS/JS — the same
+# thing File → Export → HTML produces inside the Pluto IDE.
+
+[deps]
+Pluto = "c3e4b0f8-55cb-11ea-2926-15256bba5781"

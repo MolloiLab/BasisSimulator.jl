@@ -1,61 +1,118 @@
-() -> begin
-    Div(:class => "max-w-3xl mx-auto space-y-8",
-        H1("Examples"),
-        P(:class => "text-warm-600 dark:text-warm-400 leading-relaxed",
-            "Worked examples that double as the figure sources for the SoftwareX paper. Each example is a ",
-            "Pluto notebook that runs end-to-end against a simulated phantom and renders publication-quality figures. ",
-            "Notebooks will be embedded as static HTML once rendered."
-        ),
+# Examples gallery — auto-discovers Pluto notebooks from docs/notebooks/.
+# Each card links to /examples/<slug>/, which is registered programmatically
+# in docs/app.jl and served via NotebookPage(slug).
+#
+# Notebook metadata (title, summary, thumbnail) is hardcoded in this file for
+# now.  When a new notebook is dropped in docs/notebooks/, add an entry to
+# `NOTEBOOK_META` below and restart — no other code changes needed.
 
-        Div(:class => "grid grid-cols-1 gap-4",
-            Div(:class => "border border-warm-200 dark:border-warm-800 rounded-lg p-6 bg-warm-100/50 dark:bg-warm-900/50",
-                Div(:class => "flex items-baseline gap-3 mb-2",
-                    Span(:class => "text-xs font-mono px-2 py-0.5 rounded bg-accent-100 dark:bg-accent-900/50 text-accent-700 dark:text-accent-300", "01"),
-                    H3(:class => "no-rule font-semibold m-0", "Single-kVp verification against CatSim/XCIST")
-                ),
-                P(:class => "text-sm text-warm-600 dark:text-warm-400 leading-relaxed",
-                    "Head-to-head comparison on identical Gammex 472 configurations at 120 kVp. Validates ",
-                    "the full pipeline — forward projection, FDK reconstruction, HU accuracy, NPS, MTF, CNR — against the established CatSim framework."
-                )
-            ),
-            Div(:class => "border border-warm-200 dark:border-warm-800 rounded-lg p-6 bg-warm-100/50 dark:bg-warm-900/50",
-                Div(:class => "flex items-baseline gap-3 mb-2",
-                    Span(:class => "text-xs font-mono px-2 py-0.5 rounded bg-accent-100 dark:bg-accent-900/50 text-accent-700 dark:text-accent-300", "02"),
-                    H3(:class => "no-rule font-semibold m-0", "Multi-protocol dose & Hybrid IR")
-                ),
-                P(:class => "text-sm text-warm-600 dark:text-warm-400 leading-relaxed",
-                    "Three protocols (80 / 120 / 140 kVp at proportional mA) demonstrate spectral sensitivity and ",
-                    "dose-proportional noise behavior. Hybrid IR at strengths 1, 3, 5 then maps the noise–resolution tradeoff."
-                )
-            ),
-            Div(:class => "border border-warm-200 dark:border-warm-800 rounded-lg p-6 bg-warm-100/50 dark:bg-warm-900/50",
-                Div(:class => "flex items-baseline gap-3 mb-2",
-                    Span(:class => "text-xs font-mono px-2 py-0.5 rounded bg-accent-100 dark:bg-accent-900/50 text-accent-700 dark:text-accent-300", "03"),
-                    H3(:class => "no-rule font-semibold m-0", "Dual-kVp VMI vs NIST XCOM")
-                ),
-                P(:class => "text-sm text-warm-600 dark:text-warm-400 leading-relaxed",
-                    "Complete dual-energy VMI pipeline: 80/140 kVp acquisition, sinogram-domain photo/Compton ",
-                    "decomposition, VMI synthesis at 40–140 keV, validated against NIST XCOM reference attenuation."
-                )
-            ),
-            Div(:class => "border border-warm-200 dark:border-warm-800 rounded-lg p-6 bg-warm-100/50 dark:bg-warm-900/50",
-                Div(:class => "flex items-baseline gap-3 mb-2",
-                    Span(:class => "text-xs font-mono px-2 py-0.5 rounded bg-accent-100 dark:bg-accent-900/50 text-accent-700 dark:text-accent-300", "04"),
-                    H3(:class => "no-rule font-semibold m-0", "PCCT detector physics")
-                ),
-                P(:class => "text-sm text-warm-600 dark:text-warm-400 leading-relaxed",
-                    "Physics-based CdTe simulation: charge cloud transport (Koch-Mehrin), K-fluorescence cascade, ",
-                    "Hecht charge collection efficiency, pileup, and unified detector response matrix. Reconstructs ",
-                    "4-bin energy-resolved data with FDK and Hybrid IR, then synthesizes VMI and K-edge images."
-                )
-            ),
+let BASE          = get(ENV, "BASISSIM_BASE", ""),
+    notebooks_dir = joinpath(@__DIR__, "..", "..", "..", "notebooks"),
+    NOTEBOOK_META = Dict(
+        "01_five_struct_api" => (
+            index     = "01",
+            title     = "The Five-Struct API",
+            summary   = "Walk the entire BasisSimulator surface — Phantom, Scanner, " *
+                        "CTProtocol, SimOptions, ReconOptions — on the GE Revolution Apex Elite, " *
+                        "with the full clinical correction pipeline (BHC + noise floor + cupping).",
+            thumbnail = "recon_compare_4panel.png",
+            tags      = ["EICT", "FBP", "GE Apex Elite"],
         ),
-
-        P(:class => "text-sm text-warm-500 dark:text-warm-500 pt-4",
-            "Verification notebooks against CatSim and clinical-data benchmarks live in ",
-            A(:href => "https://github.com/MolloiLab/basis-verification", :target => "_blank",
-              :class => "text-accent-500 hover:text-accent-600 underline no-underline", "MolloiLab/basis-verification"),
-            "."
-        )
+        "02_xcat_custom_materials" => (
+            index     = "02",
+            title     = "XCAT Phantom + Custom Materials",
+            summary   = "Load a high-resolution XCAT voxel phantom and assign each region a " *
+                        "tissue-specific XrayAttenuation.Material — including a custom iodinated " *
+                        "blood mixture built inline. FBP vs Hybrid IR side-by-side.",
+            thumbnail = nothing,
+            tags      = ["EICT", "FBP", "Hybrid IR", "XCAT"],
+        ),
     )
+
+    # Card builder — defined inside the `let` so Therapy's file-based router
+    # doesn't try to register it as a `/examples/_NotebookCard/` route.
+    notebook_card = function(slug::AbstractString)
+        meta = get(NOTEBOOK_META, slug, (
+            index     = "—",
+            title     = replace(slug, "_" => " "),
+            summary   = "",
+            thumbnail = nothing,
+            tags      = String[],
+        ))
+
+        A(:href => "$(BASE)/examples/$(slug)/",
+            :class => "block group no-underline",
+            Div(:class => "h-full border border-warm-200 dark:border-warm-800 rounded-xl overflow-hidden bg-warm-100/40 dark:bg-warm-900/40 hover:bg-warm-100 dark:hover:bg-warm-900/70 hover:border-accent-400 dark:hover:border-accent-600 transition-colors",
+
+                # Thumbnail (asset PNG) — falls back to a tinted accent block
+                if meta.thumbnail !== nothing
+                    Img(:src => "$(BASE)/assets/$(meta.thumbnail)",
+                        :alt => meta.title,
+                        :class => "w-full aspect-[16/10] object-cover bg-warm-200 dark:bg-warm-800")
+                else
+                    Div(:class => "w-full aspect-[16/10] bg-accent-100/50 dark:bg-accent-900/30")
+                end,
+
+                # Body
+                Div(:class => "p-6 space-y-3",
+                    Div(:class => "flex items-center gap-2 text-[10px] tracking-[0.2em] uppercase font-mono",
+                        Span(:class => "px-2 py-0.5 rounded bg-accent-100 dark:bg-accent-900/50 text-accent-700 dark:text-accent-300",
+                            meta.index),
+                        [Span(:class => "px-2 py-0.5 rounded border border-warm-300 dark:border-warm-700 text-warm-600 dark:text-warm-400",
+                            tag) for tag in meta.tags]...
+                    ),
+                    H3(:class => "no-rule font-serif font-semibold text-xl text-warm-900 dark:text-warm-100 leading-snug group-hover:text-accent-600 dark:group-hover:text-accent-400 transition-colors",
+                        meta.title),
+                    P(:class => "text-sm text-warm-600 dark:text-warm-400 leading-relaxed",
+                        meta.summary),
+                    Div(:class => "pt-2 text-xs font-mono text-warm-500 dark:text-warm-500 group-hover:text-accent-600 dark:group-hover:text-accent-400 transition-colors",
+                        "Open notebook →")
+                )
+            )
+        )
+    end
+
+    () -> begin
+        # Discover slugs at render time so a fresh notebook drop shows up
+        # without code changes here (other than its NOTEBOOK_META entry).
+        slugs = isdir(notebooks_dir) ?
+            sort([
+                splitext(f)[1] for f in readdir(notebooks_dir)
+                if endswith(f, ".jl") && !endswith(f, ".sessions.toml")
+            ]) :
+            String[]
+
+        Div(:class => "max-w-5xl mx-auto space-y-12",
+
+            # Page header
+            Div(:class => "space-y-4",
+                Div(:class => "text-[10px] tracking-[0.2em] uppercase font-mono text-warm-500 dark:text-warm-500",
+                    RawHtml("""<span style="color:var(--color-accent-500)">●</span>&nbsp; Pluto notebooks · auto-rendered""")
+                ),
+                H1(:class => "no-rule font-serif font-medium text-warm-900 dark:text-warm-100 text-4xl md:text-5xl leading-[1.05] tracking-tight",
+                    "Examples"
+                ),
+                P(:class => "max-w-2xl text-warm-600 dark:text-warm-400 leading-relaxed text-base",
+                    "Worked examples that double as the figure sources for the SoftwareX paper. ",
+                    "Each notebook runs end-to-end against a simulated phantom and renders ",
+                    "publication-quality figures. Pluto-rendered, statically embedded — open one ",
+                    "to see the full code, prose, and outputs in place."
+                )
+            ),
+
+            # Notebook grid
+            if isempty(slugs)
+                Div(:class => "py-16 border border-dashed border-warm-300 dark:border-warm-700 rounded-xl text-center",
+                    P(:class => "text-warm-500 dark:text-warm-500 text-sm",
+                        "No notebooks yet. Drop a .jl in ",
+                        Code(:class => "font-mono text-accent-600 dark:text-accent-400", "docs/notebooks/"),
+                        " and rebuild.")
+                )
+            else
+                Div(:class => "grid grid-cols-1 md:grid-cols-2 gap-6",
+                    [notebook_card(slug) for slug in slugs]...
+                )
+            end
+        )
+    end
 end

@@ -44,43 +44,30 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
 
             # ─── Right: bounded image-card collage ──────────────────────────
             Div(:class => "lg:col-span-5 relative h-[480px] lg:h-[560px] mt-4 lg:mt-0",
-                # OPEN SOURCE orb badge
-                Div(:class => "absolute top-2 right-2 z-40 w-16 h-16 rounded-full flex items-center justify-center text-[9px] tracking-[0.15em] uppercase font-mono text-white text-center leading-tight shadow-lg",
+                # OPEN SOURCE orb badge — z-30 keeps it above the floating
+                # image cards (z-10/20/30) but BELOW the sticky nav (z-40 in
+                # Layout.jl), so scrolling doesn't push it over the header.
+                Div(:class => "absolute top-2 right-2 z-30 w-16 h-16 rounded-full flex items-center justify-center text-[9px] tracking-[0.15em] uppercase font-mono text-white text-center leading-tight shadow-lg",
                     :style => "background:radial-gradient(circle at 30% 30%, var(--color-accent-400), var(--color-accent-600) 70%, var(--color-accent-700));",
                     RawHtml("Open<br/>Source")
                 ),
-                # Card 1 — top, slight CCW (Phantom)
+                # Card 1 — top, slight CCW (Gammex 472 phantom)
                 Div(:class => "absolute top-4 left-2 lg:left-0 w-[78%] aspect-[16/10] rounded-xl border border-warm-300 dark:border-warm-800 bg-warm-50 dark:bg-warm-900 shadow-2xl overflow-hidden -rotate-3 z-10",
-                    Div(:class => "absolute top-3 left-3 right-3 flex items-center justify-between text-[9px] tracking-[0.2em] uppercase font-mono text-warm-500 dark:text-warm-400 z-10",
-                        Span(RawHtml("""<span style="color:var(--color-accent-500)">●</span>&nbsp; Phantom · Gammex 472""")),
-                        Span("EICT · 120 kVp")
-                    ),
-                    Div(:class => "absolute inset-0 flex items-center justify-center text-warm-400 dark:text-warm-600 text-xs font-mono pt-8",
-                        :style => "background-image: linear-gradient(135deg, transparent 0%, transparent 49%, rgba(124,58,237,0.04) 50%, transparent 51%, transparent 100%), repeating-linear-gradient(45deg, transparent 0 12px, rgba(124,58,237,0.04) 12px 13px);",
-                        "[ phantom render placeholder ]"
-                    )
+                    Img(:src => "$(BASE)/assets/gammex_472_phantom.png",
+                        :alt => "Gammex Model 472 phantom",
+                        :class => "w-full h-full object-contain")
                 ),
-                # Card 2 — middle-right, light CW (VMI)
+                # Card 2 — middle-right, light CW (standard-dose sinogram)
                 Div(:class => "absolute top-[34%] right-2 lg:right-[-6%] w-[64%] aspect-[4/5] rounded-xl border border-warm-300 dark:border-warm-800 bg-warm-50 dark:bg-warm-900 shadow-2xl overflow-hidden rotate-[4deg] z-20",
-                    Div(:class => "absolute top-3 left-3 right-3 flex items-center justify-between text-[9px] tracking-[0.2em] uppercase font-mono text-warm-500 dark:text-warm-400 z-10",
-                        Span(RawHtml("""<span style="color:var(--color-accent-500)">●</span>&nbsp; VMI · 70 keV""")),
-                        Span("Mono+")
-                    ),
-                    Div(:class => "absolute inset-0 flex items-center justify-center text-warm-400 dark:text-warm-600 text-xs font-mono pt-8",
-                        :style => "background:radial-gradient(ellipse at 50% 55%, rgba(124,58,237,0.10), transparent 60%);",
-                        "[ VMI slice placeholder ]"
-                    )
+                    Img(:src => "$(BASE)/assets/sinogram_standard.png",
+                        :alt => "Standard-dose sinogram (central detector row)",
+                        :class => "w-full h-full object-contain")
                 ),
-                # Card 3 — bottom-left, larger CCW (PCCT)
-                Div(:class => "absolute bottom-2 left-4 lg:left-[-2%] w-[60%] aspect-[16/9] rounded-xl border border-warm-300 dark:border-warm-800 bg-warm-50 dark:bg-warm-900 shadow-2xl overflow-hidden -rotate-[6deg] z-30",
-                    Div(:class => "absolute top-3 left-3 right-3 flex items-center justify-between text-[9px] tracking-[0.2em] uppercase font-mono text-warm-500 dark:text-warm-400 z-10",
-                        Span(RawHtml("""<span style="color:var(--color-accent-500)">●</span>&nbsp; PCCT · 5-bin spectral""")),
-                        Span("CdTe")
-                    ),
-                    Div(:class => "absolute inset-0 flex items-center justify-center text-warm-400 dark:text-warm-600 text-xs font-mono pt-8",
-                        :style => "background-image:repeating-linear-gradient(90deg, rgba(124,58,237,0.05) 0 14%, transparent 14% 20%);",
-                        "[ spectral bin placeholder ]"
-                    )
+                # Card 3 — bottom-left, larger CCW (recon comparison: dose × correction)
+                Div(:class => "absolute bottom-2 left-4 lg:left-[-2%] w-[62%] aspect-[6/5] rounded-xl border border-warm-300 dark:border-warm-800 bg-warm-50 dark:bg-warm-900 shadow-2xl overflow-hidden -rotate-[6deg] z-30",
+                    Img(:src => "$(BASE)/assets/recon_compare_4panel.png",
+                        :alt => "Standard vs low-dose reconstruction, raw vs corrected",
+                        :class => "w-full h-full object-contain")
                 )
             )
         ),

@@ -1,5 +1,8 @@
 ### A Pluto.jl notebook ###
-# v0.19.0
+# v0.20.24
+
+using Markdown
+using InteractiveUtils
 
 # ╔═╡ 01000003-0000-4000-8000-000000000001
 begin
@@ -401,7 +404,7 @@ md"""
 
 # ╔═╡ 07000001-0000-4000-8000-000000000001
 md"""
-## 6. Forward Project — Standard Dose
+## 6. Forward Project (Standard Dose)
 
 Time to actually scan the phantom. Each "phase" of GPU work — forward
 projection, reconstruction — lives inside its own `let ... end` block. The
@@ -424,7 +427,7 @@ output_cpu = let
 end
 ```
 
-!!! warning "Why `let` + `GC.gc(true)` matter"
+!!! warning "Why `let` + `GC.gc(true)` matters"
     Each EICT workspace holds spectrum-binned forward buffers, scatter
     kernels, bowtie air references, and a full sinogram on the device —
     easily several hundred MB per protocol. On a 16 GB unified-memory
@@ -457,9 +460,36 @@ sim_std = let
     result
 end;
 
+# ╔═╡ 07000015-0000-4000-8000-000000000001
+let
+    sino = sim_std.sino                  # (n_col, n_row, n_view), already −log(I/I₀)
+    n_col, n_row, n_view = size(sino)
+    mid_row = n_row ÷ 2 + 1
+
+    fig = CM.Figure(size = (980, 620))
+    ax = CM.Axis(
+        fig[1, 1];
+        title = "Standard-dose sinogram",
+        subtitle = "Central detector row · 120 kVp / 200 mA · $n_view views",
+        xlabel = "View",
+        ylabel = "Detector column",
+    )
+    hm = CM.heatmap!(
+        ax, 1:n_view, 1:n_col, permutedims(sino[:, mid_row, :]);
+        colormap = :viridis,
+    )
+    CM.Colorbar(fig[1, 2], hm; label = "Line integral  −log(I / I₀)", width = 14)
+
+    CM.save(
+        joinpath(@__DIR__, "..", "assets", "sinogram_standard.png"),
+        fig; px_per_unit = 2
+    )
+    fig
+end
+
 # ╔═╡ 07000020-0000-4000-8000-000000000001
 md"""
-## 7. Reconstruct — Standard Dose (FBP)
+## 7. Reconstruct (Standard Dose: FBP)
 
 Same pattern: allocate an FDK workspace, run `reconstruct!`, copy the volume
 off the device, drop GPU references, GC. The output is in linear attenuation
@@ -493,7 +523,7 @@ end;
 
 # ╔═╡ 08000001-0000-4000-8000-000000000001
 md"""
-## 8. Repeat — Low Dose
+## 8. Repeat (Low Dose)
 
 Same two `let ... end` blocks, only `protocol_lowdose` swapped in. Everything
 else (scanner, sim_opts, recon_opts, phantom) is reused unchanged — that's
@@ -537,7 +567,7 @@ end;
 
 # ╔═╡ 09000001-0000-4000-8000-000000000001
 md"""
-## 9. Postprocessing — The Full Correction Pipeline
+## 9. Postprocessing: The Full Correction Pipeline
 
 A raw FBP recon (`hu_std`, `hu_low` above) is what comes out of the FDK
 kernel with no clinical corrections. Real CT vendors apply a stack of
@@ -841,6 +871,7 @@ result, `nothing` + `GC.gc(true)`, return.
 # ╟─06000003-0000-4000-8000-000000000001
 # ╟─07000001-0000-4000-8000-000000000001
 # ╠═07000010-0000-4000-8000-000000000001
+# ╟─07000015-0000-4000-8000-000000000001
 # ╟─07000020-0000-4000-8000-000000000001
 # ╠═07000021-0000-4000-8000-000000000001
 # ╟─08000001-0000-4000-8000-000000000001
