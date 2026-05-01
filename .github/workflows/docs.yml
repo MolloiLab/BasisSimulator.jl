@@ -38,6 +38,14 @@ jobs:
           '
 
       - name: Build docs
+        # `BASISSIM_SKIP_NB_EXPORT` short-circuits the Pluto notebook
+        # render in `docs/app.jl` — CI can't run our Metal/CUDA kernels
+        # so we never attempt re-rendering on the runner.  Notebooks are
+        # rendered locally (Apple Silicon Metal GPU), and the resulting
+        # HTML is committed under `docs/notebooks-static/` and tracked
+        # in the repo.  CI just mounts those HTML files into `dist/`.
+        env:
+          BASISSIM_SKIP_NB_EXPORT: "1"
         run: |
           julia --project=docs --optimize=3 docs/app.jl build
 
