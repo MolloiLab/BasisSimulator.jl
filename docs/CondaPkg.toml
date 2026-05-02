@@ -1,0 +1,11 @@
+# Python deps for notebook 06 (CatSim vs BasisSim comparison).
+# Other docs notebooks don't import Python — this env is only built
+# when the user runs `Pkg.instantiate()` inside `docs/` and is otherwise
+# inert.  CI doesn't render nb06, so CI doesn't pay this cost.
+
+[deps]
+numpy = ""
+pydicom = ""
+
+[pip.deps]
+gecatsim = "@ git+https://github.com/MolloiLab/main"

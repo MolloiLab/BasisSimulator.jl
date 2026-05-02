@@ -1,28 +1,40 @@
 let BASE = get(ENV, "BASISSIM_BASE", "")
     () -> begin
-    Div(:class => "max-w-3xl mx-auto space-y-8",
-        H1("Getting Started"),
+    code_block = "bg-warm-900 dark:bg-warm-950 text-warm-200 p-6 rounded-lg overflow-x-auto border border-warm-800"
+
+    sections = [
+        ("install",         "Install"),
+        ("first-simulation", "First simulation"),
+        ("whats-next",       "What's next"),
+    ]
+
+    PageWithTOC(sections, Div(:class => "max-w-3xl mx-auto space-y-10",
+        H1(:class => "text-3xl font-serif font-bold text-warm-900 dark:text-warm-100",
+            "Getting Started"),
         P(:class => "text-warm-600 dark:text-warm-400 leading-relaxed",
             "BasisSimulator.jl runs on Julia 1.11+ and is GPU-backend-agnostic. Pick the backend that matches your hardware ",
             "(Metal for Apple Silicon, CUDA for NVIDIA, AMDGPU for AMD), or omit it entirely to run on CPU."
         ),
 
-        H2("Install"),
-        P("From the Julia REPL:"),
-        Pre(:class => "bg-warm-900 dark:bg-warm-950 text-warm-200 p-6 rounded-lg overflow-x-auto border border-warm-800",
+        H2(:id => "install", :class => "text-xl font-semibold text-warm-800 dark:text-warm-200",
+            "Install"),
+        P(:class => "text-warm-600 dark:text-warm-400", "From the Julia REPL:"),
+        Pre(:class => code_block,
             Code(:class => "language-julia text-sm font-mono", """using Pkg
 Pkg.add(url=\"https://github.com/MolloiLab/BasisSimulator.jl\")""")
         ),
-        P("Then add your GPU backend (skip for CPU-only):"),
-        Pre(:class => "bg-warm-900 dark:bg-warm-950 text-warm-200 p-6 rounded-lg overflow-x-auto border border-warm-800",
+        P(:class => "text-warm-600 dark:text-warm-400", "Then add your GPU backend (skip for CPU-only):"),
+        Pre(:class => code_block,
             Code(:class => "language-julia text-sm font-mono", """Pkg.add(\"Metal\")     # Apple Silicon
 Pkg.add(\"CUDA\")      # NVIDIA
 Pkg.add(\"AMDGPU\")    # AMD""")
         ),
 
-        H2("First simulation"),
-        P("The five-struct API maps to the five things every CT simulation needs to specify: what to scan, the scanner, the acquisition, simulation fidelity, and the reconstruction output."),
-        Pre(:class => "bg-warm-900 dark:bg-warm-950 text-warm-200 p-6 rounded-lg overflow-x-auto border border-warm-800",
+        H2(:id => "first-simulation", :class => "text-xl font-semibold text-warm-800 dark:text-warm-200",
+            "First simulation"),
+        P(:class => "text-warm-600 dark:text-warm-400",
+            "The five-struct API maps to the five things every CT simulation needs to specify: what to scan, the scanner, the acquisition, simulation fidelity, and the reconstruction output."),
+        Pre(:class => code_block,
             Code(:class => "language-julia text-sm font-mono", """import BasisSimulator as BS
 using Metal  # or CUDA / AMDGPU; omit for CPU
 
@@ -51,9 +63,11 @@ sim_opts = BS.SimOptions(fidelity=:eict, seed=42)
 # 5. ReconOptions — output matrix, FOV, algorithm
 rec_opts = BS.ReconOptions(matrix_size=(512, 512, 64), fov_cm=35.0)""")
         ),
-        P("Allocate a workspace once and reuse it on subsequent calls — ", Code(:class => "text-accent-500 font-mono", "simulate!"),
+        P(:class => "text-warm-600 dark:text-warm-400",
+          "Allocate a workspace once and reuse it on subsequent calls — ",
+          Code(:class => "text-accent-500 font-mono", "simulate!"),
           " writes into pre-allocated buffers and runs zero-allocation after JIT warm-up."),
-        Pre(:class => "bg-warm-900 dark:bg-warm-950 text-warm-200 p-6 rounded-lg overflow-x-auto border border-warm-800",
+        Pre(:class => code_block,
             Code(:class => "language-julia text-sm font-mono", """ws = BS.create_eict_workspace(scanner, protocol, sim_opts, rec_opts, phantom)
 BS.simulate!(ws, phantom, scanner, protocol, sim_opts, rec_opts)
 
@@ -64,20 +78,17 @@ hu = BS.to_hounsfield(
 )""")
         ),
 
-        H2("What's next"),
-        P("Worked examples — including the four notebooks that produce the figures in the SoftwareX paper — live on the ",
+        H2(:id => "whats-next", :class => "text-xl font-semibold text-warm-800 dark:text-warm-200",
+            "What's next"),
+        P(:class => "text-warm-600 dark:text-warm-400",
+          "Worked examples covering the five-struct API, dual-kVp VMI, PCCT, XCAT phantoms, and a CatSim runtime comparison live on the ",
           A(:href => "$(BASE)/examples/",
             :class => "text-accent-500 hover:text-accent-600 underline no-underline", "Examples"),
           " page. The full API reference is at ",
           A(:href => "$(BASE)/api/",
             :class => "text-accent-500 hover:text-accent-600 underline no-underline", "API"),
           "."
-        ),
-        P("Verification notebooks against CatSim and clinical-data benchmarks live in the companion repo ",
-          A(:href => "https://github.com/MolloiLab/basis-verification", :target => "_blank",
-            :class => "text-accent-500 hover:text-accent-600 underline no-underline", "MolloiLab/basis-verification"),
-          "."
         )
-    )
+    ))
     end
 end

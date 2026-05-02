@@ -80,11 +80,26 @@ function render_notebook!(session::Pluto.ServerSession,
     end
 end
 
+"""Set of slugs the user wants to skip entirely (no render, not in the route
+list).  Comma-separated env var.  Example:
+    BASISSIM_SKIP_NOTEBOOKS=06_catsim_vs_basissim julia --project=docs docs/app.jl build
+"""
+function skipped_slugs()
+    Set(strip.(split(get(ENV, "BASISSIM_SKIP_NOTEBOOKS", ""), ","; keepempty = false)))
+end
+
 """Walk every notebook, rendering only those whose source hash doesn't
 match the cached hash.  Returns the full list of slugs (cached + freshly
 rendered) so callers can register routes for all of them."""
 function export_notebooks()
     slugs = notebook_slugs()
+    skip = skipped_slugs()
+    if !isempty(skip)
+        kept = filter(s -> !(s in skip), slugs)
+        dropped = filter(s -> s in skip, slugs)
+        isempty(dropped) || println("[notebooks] BASISSIM_SKIP_NOTEBOOKS → skipping $(join(dropped, ", "))")
+        slugs = kept
+    end
     isempty(slugs) && (println("[notebooks] no .jl files in $(NOTEBOOKS_DIR)"); return slugs)
 
     isdir(STATIC_OUT) || mkpath(STATIC_OUT)

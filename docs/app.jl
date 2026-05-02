@@ -49,13 +49,21 @@ let build_env = joinpath(@__DIR__, "build_env"),
     end
 end
 
-const NOTEBOOK_SLUGS = let dir = joinpath(@__DIR__, "notebooks")
-    isdir(dir) ?
+const NOTEBOOK_SLUGS = let dir = joinpath(@__DIR__, "notebooks"),
+    skip = Set(strip.(split(get(ENV, "BASISSIM_SKIP_NOTEBOOKS", ""), ","; keepempty = false)))
+
+    all_slugs = isdir(dir) ?
         sort([
             splitext(f)[1] for f in readdir(dir)
             if endswith(f, ".jl") && !endswith(f, ".sessions.toml")
         ]) :
         String[]
+    kept = filter(s -> !(s in skip), all_slugs)
+    if !isempty(skip)
+        dropped = filter(s -> s in skip, all_slugs)
+        isempty(dropped) || println("[app] BASISSIM_SKIP_NOTEBOOKS → skipping $(join(dropped, ", "))")
+    end
+    kept
 end
 
 # =============================================================================

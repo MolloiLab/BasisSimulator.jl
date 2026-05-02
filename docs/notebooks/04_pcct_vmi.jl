@@ -20,10 +20,9 @@ using Statistics: mean, std
 md"""
 # 04 · PCCT VMI on Gammex 472 (Siemens Naeotom Alpha)
 
-!!! warning "🚧 IN PROGRESS — not yet matched to nb07"
-    This notebook is **work in progress**.  Known gaps vs the clinical
-    verification reference (`basis-verification/notebooks/07_siemens_naeotom_alpha_clinical.jl`,
-    Scan 2 path):
+!!! warning "🚧 IN PROGRESS — known gaps below"
+    This notebook is **work in progress**.  Known gaps versus the
+    clinical-fidelity Siemens Naeotom Alpha pipeline:
 
     - **Memory approximations** in §2 / §3: `scan_diameter = 360 mm`
       (clinical Naeotom is 500 mm) and `views = 600` (clinical is 1200

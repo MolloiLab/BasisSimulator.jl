@@ -115,6 +115,9 @@ html {
 
   html {
     scroll-behavior: smooth;
+    /* Sticky navbar is `h-16` (4rem); add ~1rem breathing room above the
+       targeted heading so ToC anchor clicks don't land flush under the bar. */
+    scroll-padding-top: 5rem;
     background-color: var(--bg-primary);
   }
 

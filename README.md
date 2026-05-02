@@ -58,11 +58,6 @@ hu = BS.to_hounsfield(
 Full API reference, physics overview, and worked examples: **docs link TBD** (Documenter site
 in preparation). Until then, see docstrings via `?Function` in the Julia REPL.
 
-## Citation
-
-A SoftwareX manuscript describing BasisSimulator.jl is in preparation. A BibTeX entry
-will be posted here on publication.
-
 ## License
 
 MIT. Core ray tracing ported from [TIGRE](https://github.com/CERN/TIGRE);

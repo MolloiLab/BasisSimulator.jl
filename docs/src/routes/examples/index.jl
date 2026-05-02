@@ -55,6 +55,16 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
             thumbnail = "xcat_grid_overlay.png",
             tags      = ["EICT", "XCAT", "Affine", "Resampling"],
         ),
+        "06_catsim_vs_basissim" => (
+            index     = "06",
+            title     = "CatSim vs BasisSimulator (CPU + GPU) — qualitative + runtime",
+            summary   = "Same Gammex 472 phantom (heavily downsampled), same GE Apex Elite scanner, three " *
+                        "forward-projection + FDK pipelines: XCIST/CatSim (Python reference), BasisSim CPU, " *
+                        "BasisSim GPU.  Side-by-side mid-slice mosaic + wallclock table — " *
+                        "BasisSim matches the physics and lands well ahead on time.",
+            thumbnail = "catsim_vs_basissim_mosaic.png",
+            tags      = ["EICT", "CatSim", "GPU", "Benchmark"],
+        ),
     )
 
     # Card builder — defined inside the `let` so Therapy's file-based router
@@ -103,10 +113,13 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
     () -> begin
         # Discover slugs at render time so a fresh notebook drop shows up
         # without code changes here (other than its NOTEBOOK_META entry).
+        # Honor BASISSIM_SKIP_NOTEBOOKS so cards don't 404 when a notebook
+        # was skipped during render.
+        skip = Set(strip.(split(get(ENV, "BASISSIM_SKIP_NOTEBOOKS", ""), ","; keepempty = false)))
         slugs = isdir(notebooks_dir) ?
             sort([
                 splitext(f)[1] for f in readdir(notebooks_dir)
-                if endswith(f, ".jl") && !endswith(f, ".sessions.toml")
+                if endswith(f, ".jl") && !endswith(f, ".sessions.toml") && !(splitext(f)[1] in skip)
             ]) :
             String[]
 
@@ -121,7 +134,7 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
                     "Examples"
                 ),
                 P(:class => "max-w-2xl text-warm-600 dark:text-warm-400 leading-relaxed text-base",
-                    "Worked examples that double as the figure sources for the SoftwareX paper. ",
+                    "Worked examples covering the full BasisSimulator.jl pipeline. ",
                     "Each notebook runs end-to-end against a simulated phantom and renders ",
                     "publication-quality figures. Pluto-rendered, statically embedded — open one ",
                     "to see the full code, prose, and outputs in place."
