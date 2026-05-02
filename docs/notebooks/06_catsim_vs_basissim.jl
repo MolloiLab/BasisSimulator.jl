@@ -144,7 +144,6 @@ HAS_GECATSIM ? md"""
 # Self-healing patch for the MolloiLab gecatsim fork.
 #
 # The fork ships `C_DD3Back_mm.py` and `C_DD3WBack_mm.py` (the "_mm" mm-units
-# variants) but is missing the legacy `C_DD3Back.py` and `C_DD3WBack.py` modules
 # that `gecatsim.reconstruction.pyfiles.{art,sirt,cgls}_equiAngle` import at
 # module load time.  Without those files, `pyimport("gecatsim.reconstruction.
 # pyfiles.recon")` blows up at import time even though we only ever call FDK
@@ -194,6 +193,74 @@ gecatsim_patched = !HAS_GECATSIM ? false : let
     else
         @info "[gecatsim patch] all stubs already present at $(pyfiles_dir) — no-op"
     end
+    true
+end;
+
+# ╔═╡ 06000001-0000-4000-8000-000000000090
+# Speed patch for gecatsim's FDK recon.
+#
+# `gecatsim.reconstruction.pyfiles.fdk_equiAngle` ships two helper functions —
+# `float3Darray2pointer` (numpy → C triple-pointer) and `float3Dpointer2array`
+# (the inverse) — that walk the array element-by-element in pure Python.  For a
+# 834×6×500 sinogram that's 2.5 M Python-level ctypes assignments before the
+# C `fbp` even starts; on a 128³ Gammex 472 run it dominates wallclock by
+# 60–90 minutes.  The recon does eventually finish — but you'd never know,
+# because Python `print()`s from inside Pluto/PythonCall don't show up in the
+# cell.
+#
+# Fix: monkey-patch both helpers to use one row-pointer per slice (driven by
+# `arr.ctypes.data_as`) and a single `ctypes.memmove` per slice on the way back.
+# Same C ABI, ~1000× fewer Python iterations.  Also enable line-buffered
+# stdout so the upstream `print("* In C...")` lines flush to your terminal.
+gecatsim_fdk_patched = !HAS_GECATSIM ? false : let
+    PC.pyexec(
+        """
+        import ctypes, sys
+        import numpy as np
+        import gecatsim.reconstruction.pyfiles.fdk_equiAngle as _fdk
+
+        FLOAT       = ctypes.c_float
+        PtrFLOAT    = ctypes.POINTER(FLOAT)
+        PtrPtrFLOAT = ctypes.POINTER(PtrFLOAT)
+
+        def _fast_arr2ptr(arr):
+            arr = np.ascontiguousarray(arr, dtype=np.float32)
+            n0, n1, _ = arr.shape
+            out = (PtrPtrFLOAT * n0)()
+            for i in range(n0):
+                row = (PtrFLOAT * n1)()
+                for j in range(n1):
+                    row[j] = arr[i, j].ctypes.data_as(PtrFLOAT)
+                out[i] = row
+            # Keep `arr` alive — the row pointers alias into its buffer.
+            out._keepalive_ = arr
+            return out
+
+        def _fast_ptr2arr(ptr, n, m, o):
+            out = np.empty((n, m, o), dtype=np.float32)
+            nbytes = o * ctypes.sizeof(FLOAT)
+            for i in range(n):
+                for j in range(m):
+                    ctypes.memmove(
+                        out[i, j].ctypes.data_as(PtrFLOAT),
+                        ptr[i][j],
+                        nbytes,
+                    )
+            return out
+
+        _fdk.float3Darray2pointer = _fast_arr2ptr
+        _fdk.float3Dpointer2array = _fast_ptr2arr
+
+        # Stream upstream `print()`s to the terminal as they happen so a long
+        # recon run isn't a black box.
+        try:
+            sys.stdout.reconfigure(line_buffering=True)
+        except Exception:
+            pass
+        """,
+        Main,
+    )
+    @info "[gecatsim FDK patch] vectorized float3D{array2pointer,pointer2array} installed"
     true
 end;
 
@@ -294,8 +361,10 @@ const _cfg_path_ref = Ref("");
 
 # ╔═╡ 06000004-0000-4000-8000-000000000020
 function catsim_init()
-    # Force-reference the patch flag so Pluto runs the stub-writer before us.
-    gecatsim_patched || error("gecatsim patch did not run — see §0")
+    # Force-reference both patch flags so Pluto runs the stub-writer AND the
+    # FDK speed patch before us.
+    gecatsim_patched     || error("gecatsim patch did not run — see §0")
+    gecatsim_fdk_patched || error("gecatsim FDK speed patch did not run — see §0")
 
     if !isassigned(_catsim_ref)
         _catsim_ref[]    = PC.pyimport("gecatsim")
@@ -598,7 +667,11 @@ md"""
 
 All three pipelines use the same per-kVp μ_water reference so HU
 baselines line up.  `BS.compute_polychromatic_μ_water` returns a
-spectrum-weighted, phantom-hardened μ — same formula as nb02 / nb05.
+spectrum-weighted, phantom-hardened μ — the **resolved source spectrum**
+(post-bowtie, post-flat-filter) is integrated against `exp(-μ_water · L)`
+for `L = ` the actual phantom diameter.  Diameter `L` is pulled from the
+voxelized phantom via [`BS.estimate_phantom_diameter_cm`](@ref) — same
+approach as nb04, no hardcoded 33 cm.
 """
 
 # ╔═╡ 06000007-0000-4000-8000-000000000010
@@ -612,13 +685,18 @@ geom_inspect = BS.CTGeometry(
 
 # ╔═╡ 06000007-0000-4000-8000-000000000020
 μ_water_120 = let
+    # Phantom-hardened μ_water: pull the *actual* body diameter from the
+    # voxelized phantom (no hardcoded 33 cm) so μ_water tracks any change to
+    # `n_voxels` / `fov_cm` automatically.  Same approach as nb04.
+    voxel_size_mm   = phantom_cpu.voxel_size .* 10.0
+    phantom_diam_cm = BS.estimate_phantom_diameter_cm(phantom_cpu.mask, voxel_size_mm)
     μ = BS.compute_polychromatic_μ_water(
         sim_opts, protocol;
         scanner       = scanner,
         geom          = geom_inspect,
-        water_path_cm = 33.0,             # Gammex 472 body diameter
+        water_path_cm = phantom_diam_cm,
     )
-    @info "μ_water (120 kVp, 33 cm hardening) = $(round(μ, digits = 5)) cm⁻¹"
+    @info "μ_water (120 kVp, $(round(phantom_diam_cm, digits = 1)) cm hardening) = $(round(μ, digits = 5)) cm⁻¹"
     μ
 end;
 
@@ -752,93 +830,165 @@ three panels.
 
 # ╔═╡ 0600000b-0000-4000-8000-000000000010
 let
-    if catsim_result === nothing
-        # CatSim disabled — just show the two BasisSim panels.
-        fig = CM.Figure(size = (1080, 540))
+    fmt_s(x)        = @sprintf("%.2f s", x)
+    fmt_speedup(s)  = @sprintf("%.1f× faster", s)
+    ref_t           = catsim_result === nothing ? nothing : catsim_result.elapsed
 
-        z_cpu = size(basissim_cpu_result.recon, 3) ÷ 2 + 1
-        z_gpu = size(basissim_gpu_result.recon, 3) ÷ 2 + 1
+    cpu_sub = ref_t === nothing ?
+        "Julia · $(fmt_s(basissim_cpu_result.elapsed))" :
+        "Julia · $(fmt_s(basissim_cpu_result.elapsed)) · $(fmt_speedup(ref_t / basissim_cpu_result.elapsed))"
+    gpu_sub = ref_t === nothing ?
+        "$(GPU_BACKEND.name) · $(fmt_s(basissim_gpu_result.elapsed))" :
+        "$(GPU_BACKEND.name) · $(fmt_s(basissim_gpu_result.elapsed)) · $(fmt_speedup(ref_t / basissim_gpu_result.elapsed))"
 
-        ax2 = CM.Axis(
-            fig[1, 1];
-            title = "BasisSim CPU",
-            subtitle = "$(round(basissim_cpu_result.elapsed, digits=2)) s",
+    n_panels = catsim_result === nothing ? 2 : 3
+    fig = CM.Figure(size = (n_panels * 540 + 90, 600))
+
+    title_kwargs = (titlesize = 28, subtitlesize = 20)
+
+    col = 1
+    last_hm = nothing
+    if catsim_result !== nothing
+        ax = CM.Axis(
+            fig[1, col];
+            title = "CatSim",
+            subtitle = "Python · $(fmt_s(catsim_result.elapsed)) · reference",
             aspect = CM.DataAspect(), yreversed = true,
+            title_kwargs...,
         )
-        CM.heatmap!(ax2, basissim_cpu_result.recon[:, :, z_cpu];
-            colormap = :grays, colorrange = (-200, 600))
-        CM.hidedecorations!(ax2)
-
-        ax3 = CM.Axis(
-            fig[1, 2];
-            title = "BasisSim $(GPU_BACKEND.name)",
-            subtitle = "$(round(basissim_gpu_result.elapsed, digits=2)) s",
-            aspect = CM.DataAspect(), yreversed = true,
+        last_hm = CM.heatmap!(
+            ax, catsim_result.recon[:, :, size(catsim_result.recon, 3) ÷ 2 + 1];
+            colormap = :grays, colorrange = (-200, 600),
         )
-        hm3 = CM.heatmap!(ax3, basissim_gpu_result.recon[:, :, z_gpu];
-            colormap = :grays, colorrange = (-200, 600))
-        CM.hidedecorations!(ax3)
-        CM.Colorbar(fig[1, 3], hm3; label = "HU", width = 14)
-
-        CM.save(
-            joinpath(@__DIR__, "..", "assets", "catsim_vs_basissim_mosaic.png"),
-            fig; px_per_unit = 2,
-        )
-        fig
-    else
-        fig = CM.Figure(size = (1620, 600))
-        z_cs  = size(catsim_result.recon, 3) ÷ 2 + 1
-        z_cpu = size(basissim_cpu_result.recon, 3) ÷ 2 + 1
-        z_gpu = size(basissim_gpu_result.recon, 3) ÷ 2 + 1
-
-        ax1 = CM.Axis(
-            fig[1, 1];
-            title = "(1) CatSim (Python)",
-            subtitle = "$(round(catsim_result.elapsed, digits=2)) s",
-            aspect = CM.DataAspect(), yreversed = true,
-        )
-        CM.heatmap!(ax1, catsim_result.recon[:, :, z_cs];
-            colormap = :grays, colorrange = (-200, 600))
-        CM.hidedecorations!(ax1)
-
-        ax2 = CM.Axis(
-            fig[1, 2];
-            title = "(2) BasisSim CPU",
-            subtitle = "$(round(basissim_cpu_result.elapsed, digits=2)) s",
-            aspect = CM.DataAspect(), yreversed = true,
-        )
-        CM.heatmap!(ax2, basissim_cpu_result.recon[:, :, z_cpu];
-            colormap = :grays, colorrange = (-200, 600))
-        CM.hidedecorations!(ax2)
-
-        ax3 = CM.Axis(
-            fig[1, 3];
-            title = "(3) BasisSim $(GPU_BACKEND.name)",
-            subtitle = "$(round(basissim_gpu_result.elapsed, digits=2)) s",
-            aspect = CM.DataAspect(), yreversed = true,
-        )
-        hm3 = CM.heatmap!(ax3, basissim_gpu_result.recon[:, :, z_gpu];
-            colormap = :grays, colorrange = (-200, 600))
-        CM.hidedecorations!(ax3)
-        CM.Colorbar(fig[1, 4], hm3; label = "HU", width = 14)
-
-        CM.save(
-            joinpath(@__DIR__, "..", "assets", "catsim_vs_basissim_mosaic.png"),
-            fig; px_per_unit = 2,
-        )
-        fig
+        CM.hidedecorations!(ax)
+        col += 1
     end
+
+    ax_cpu = CM.Axis(
+        fig[1, col];
+        title    = "BasisSimulator.jl (CPU)",
+        subtitle = cpu_sub,
+        aspect = CM.DataAspect(), yreversed = true,
+        title_kwargs...,
+    )
+    last_hm = CM.heatmap!(
+        ax_cpu, basissim_cpu_result.recon[:, :, size(basissim_cpu_result.recon, 3) ÷ 2 + 1];
+        colormap = :grays, colorrange = (-200, 600),
+    )
+    CM.hidedecorations!(ax_cpu)
+    col += 1
+
+    ax_gpu = CM.Axis(
+        fig[1, col];
+        title    = "BasisSimulator.jl ($(GPU_BACKEND.name))",
+        subtitle = gpu_sub,
+        aspect = CM.DataAspect(), yreversed = true,
+        title_kwargs...,
+    )
+    last_hm = CM.heatmap!(
+        ax_gpu, basissim_gpu_result.recon[:, :, size(basissim_gpu_result.recon, 3) ÷ 2 + 1];
+        colormap = :grays, colorrange = (-200, 600),
+    )
+    CM.hidedecorations!(ax_gpu)
+
+    CM.Colorbar(fig[1, col + 1], last_hm; label = "HU", width = 14, labelsize = 18)
+
+    CM.save(
+        joinpath(@__DIR__, "..", "assets", "catsim_vs_basissim_mosaic.png"),
+        fig; px_per_unit = 2,
+    )
+    fig
 end
 
 # ╔═╡ 0600000c-0000-4000-8000-000000000001
 md"""
-## 10. Runtime table
+## 10. Runtime — bar chart and numerical table
 
-End-to-end **forward projection + FBP** wallclock for each pipeline,
-plus speedups against the CatSim reference.  The CPU vs CatSim row is
-the apples-to-apples comparison (both single-threaded-ish, both on the
-host); the GPU row is what BasisSim is actually built for.
+End-to-end **forward projection + FBP** wallclock for each pipeline.
+Log-y so the GPU bar doesn't disappear next to the CatSim bar.  The
+CPU bar is the apples-to-apples comparison (both run on the host
+CPU); the GPU bar is what BasisSim is actually built for.
 """
+
+# ╔═╡ 0600000c-0000-4000-8000-000000000005
+let
+    rows = NamedTuple[]
+    push!(rows, (
+        label = "CatSim\n(Python)",
+        seconds = catsim_result === nothing ? NaN : catsim_result.elapsed,
+        color = CM.RGBf(0.40, 0.40, 0.45),
+    ))
+    push!(rows, (
+        label = "BasisSimulator.jl\nCPU",
+        seconds = basissim_cpu_result.elapsed,
+        color = CM.RGBf(0.95, 0.55, 0.10),
+    ))
+    push!(rows, (
+        label = "BasisSimulator.jl\n$(GPU_BACKEND.name)",
+        seconds = basissim_gpu_result.elapsed,
+        color = CM.RGBf(0.13, 0.59, 0.85),
+    ))
+
+    valid_idx = findall(r -> !isnan(r.seconds), rows)
+    xs = collect(1:length(rows))
+    ys = [isnan(r.seconds) ? 1.0 : r.seconds for r in rows]
+    cs = [r.color for r in rows]
+
+    ref_t = catsim_result === nothing ? nothing : catsim_result.elapsed
+
+    fig = CM.Figure(size = (1180, 620))
+    ax = CM.Axis(
+        fig[1, 1];
+        title = "End-to-End Timing (Forward projection + FBP)",
+        subtitle = "120 kVp · 200 mA · 500 views · 128³ Gammex 472",
+        xlabel = "",
+        ylabel = "Timing (s)",
+        xticks = (xs, [r.label for r in rows]),
+        yscale = log10,
+        titlesize = 32,
+        subtitlesize = 24,
+        ylabelsize = 22,
+        xlabelsize = 22,
+        xticklabelsize = 20,
+        yticklabelsize = 16,
+    )
+
+    CM.barplot!(
+        ax, xs[valid_idx], ys[valid_idx];
+        color = cs[valid_idx],
+        strokecolor = :black, strokewidth = 1,
+        width = 0.65,
+    )
+
+    # annotate each bar with elapsed time + speedup vs CatSim
+    for i in valid_idx
+        r = rows[i]
+        time_txt = @sprintf("%.2f s", r.seconds)
+        annot = if ref_t === nothing
+            time_txt
+        elseif r.seconds == ref_t
+            "$time_txt\n(reference)"
+        else
+            @sprintf("%s\n(%.1f× faster)", time_txt, ref_t / r.seconds)
+        end
+        CM.text!(
+            ax, i, r.seconds * 1.18;
+            text = annot, align = (:center, :bottom),
+            fontsize = 20, font = :bold,
+        )
+    end
+
+    # pad the y-range so the bold text annotations don't clip
+    y_hi = maximum(ys[valid_idx]) * 3.5
+    y_lo = minimum(ys[valid_idx]) * 0.7
+    CM.ylims!(ax, y_lo, y_hi)
+
+    CM.save(
+        joinpath(@__DIR__, "..", "assets", "catsim_vs_basissim_runtime_bar.png"),
+        fig; px_per_unit = 2,
+    )
+    fig
+end
 
 # ╔═╡ 0600000c-0000-4000-8000-000000000010
 let
@@ -935,6 +1085,7 @@ md"""
 # ╠═06000001-0000-4000-8000-000000000060
 # ╟─06000001-0000-4000-8000-000000000070
 # ╠═06000001-0000-4000-8000-000000000080
+# ╠═06000001-0000-4000-8000-000000000090
 # ╟─06000002-0000-4000-8000-000000000001
 # ╠═06000002-0000-4000-8000-000000000010
 # ╟─06000003-0000-4000-8000-000000000001
@@ -974,6 +1125,7 @@ md"""
 # ╟─0600000b-0000-4000-8000-000000000001
 # ╟─0600000b-0000-4000-8000-000000000010
 # ╟─0600000c-0000-4000-8000-000000000001
+# ╟─0600000c-0000-4000-8000-000000000005
 # ╟─0600000c-0000-4000-8000-000000000010
 # ╟─0600000d-0000-4000-8000-000000000001
 # ╟─0600000e-0000-4000-8000-000000000001

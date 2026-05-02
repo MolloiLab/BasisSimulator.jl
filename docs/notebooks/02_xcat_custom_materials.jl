@@ -238,7 +238,7 @@ let
         n_lbl = length(unique(phantom_labeled))
         slice = phantom_labeled[:, :, mid]
 
-        fig = CM.Figure(size = (760, 540))
+        fig = CM.Figure(size = (900, 600))
         ax = CM.Axis(
             fig[1, 1];
             title = "XCAT v_male_50",
@@ -246,10 +246,11 @@ let
                 " · $(size(phantom_labeled, 1))×$(size(phantom_labeled, 2))" *
                 " · $(n_lbl) unique labels",
             aspect = CM.DataAspect(),
+            titlesize = 28, subtitlesize = 20,
         )
         hm = CM.heatmap!(ax, Float32.(slice); colormap = :tab20)
         CM.hidedecorations!(ax)
-        CM.Colorbar(fig[1, 2], hm; label = "label", width = 14)
+        CM.Colorbar(fig[1, 2], hm; label = "label", width = 14, labelsize = 18)
 
         CM.save(
             joinpath(@__DIR__, "..", "assets", "xcat_phantom.png"),
@@ -814,24 +815,27 @@ let
         !!! warning "Skipped — see 1 for XCAT setup"
         """
     else
-        fig = CM.Figure(size = (1100, 600))
+        fig = CM.Figure(size = (1200, 660))
 
         mid = size(hu_fbp, 3) ÷ 2
         img_fbp = hu_fbp[:, :, mid]
         img_hir = hu_hir[:, :, mid]
         colorrng = (-300, 550)   # soft-tissue window: W=400, L=40
+        title_kwargs = (titlesize = 28, subtitlesize = 20)
 
         ax_fbp = CM.Axis(
             fig[1, 1];
             title = "FBP (FDK)",
             subtitle = "120 kVp / 250 mA · :standard filter",
             aspect = CM.DataAspect(),
+            title_kwargs...,
         )
         ax_hir = CM.Axis(
             fig[1, 2];
             title = "Hybrid IR",
             subtitle = "120 kVp / 250 mA · strength = 3",
             aspect = CM.DataAspect(),
+            title_kwargs...,
         )
 
         CM.heatmap!(ax_fbp, img_fbp; colormap = :grays, colorrange = colorrng)
@@ -839,7 +843,7 @@ let
 
         CM.hidedecorations!(ax_fbp)
         CM.hidedecorations!(ax_hir)
-        CM.Colorbar(fig[1, 3], hm; label = "HU", width = 14)
+        CM.Colorbar(fig[1, 3], hm; label = "HU", width = 14, labelsize = 18)
 
         CM.save(
             joinpath(@__DIR__, "..", "assets", "xcat_fbp_vs_hir.png"),

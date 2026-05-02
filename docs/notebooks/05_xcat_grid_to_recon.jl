@@ -456,7 +456,8 @@ let
         z_full = clamp((b.k_lo + b.k_hi) ÷ 2, 1, nz)
         z_crop = z_full - b.k_lo + 1
 
-        fig = CM.Figure(size = (1080, 540))
+        fig = CM.Figure(size = (1200, 600))
+        title_kwargs = (titlesize = 28, subtitlesize = 20)
 
         ax_l = CM.Axis(
             fig[1, 1];
@@ -464,6 +465,7 @@ let
             subtitle = "$(size(phantom_full_uhr, 1))×$(size(phantom_full_uhr, 2)) @ $(round.(VOXEL_SIZE_CM .* 10, digits = 2)) mm",
             aspect = CM.DataAspect(),
             yreversed = true,
+            title_kwargs...,
         )
         CM.heatmap!(ax_l, Float32.(phantom_full_uhr[:, :, z_full]); colormap = :tab20)
         # Bbox rectangle (note: x-axis is dim 1, y-axis is dim 2)
@@ -480,6 +482,7 @@ let
             subtitle = "$(size(phantom_cropped, 1))×$(size(phantom_cropped, 2)) (same voxel size — only the extent changed)",
             aspect = CM.DataAspect(),
             yreversed = true,
+            title_kwargs...,
         )
         CM.heatmap!(ax_r, Float32.(phantom_cropped[:, :, z_crop]); colormap = :tab20)
         CM.hidedecorations!(ax_r)
@@ -951,15 +954,17 @@ let
             out
         end
 
-        fig = CM.Figure(size = (1300, 1220))
+        fig = CM.Figure(size = (1400, 1320))
         hu_kwargs = (colormap = :grays, colorrange = (-300, 700))
+        title_kwargs = (titlesize = 28, subtitlesize = 20)
 
         # Top-left: raw HU recon.
         ax_tl = CM.Axis(
             fig[1, 1];
-            title = "(top-left) HU recon",
+            title = "HU recon",
             subtitle = "z=$(z) of $(size(recon_HU, 3)) · centered FOV $(recon_opts.fov_cm) cm",
             aspect = CM.DataAspect(), yreversed = true,
+            title_kwargs...,
         )
         CM.heatmap!(ax_tl, hu_slice; hu_kwargs...)
         CM.hidedecorations!(ax_tl)
@@ -967,9 +972,10 @@ let
         # Top-right: ALL structures — full multi-label resample, no masking.
         ax_tr = CM.Axis(
             fig[1, 2];
-            title = "(top-right) all structures (`:nearest`, no overlay)",
+            title = "All structures (`:nearest`, no overlay)",
             subtitle = "$(length(unique(gt_resampled_nn))) labels resampled onto recon grid",
             aspect = CM.DataAspect(), yreversed = true,
+            title_kwargs...,
         )
         CM.heatmap!(
             ax_tr, Float32.(gt_resampled_nn[:, :, z]);
@@ -980,9 +986,10 @@ let
         # Bottom-left: HU + cardiac labels overlay.
         ax_bl = CM.Axis(
             fig[2, 1];
-            title = "(bottom-left) HU + cardiac labels",
+            title = "HU + cardiac labels",
             subtitle = "α=0.6 over HU — alignment check",
             aspect = CM.DataAspect(), yreversed = true,
+            title_kwargs...,
         )
         CM.heatmap!(ax_bl, hu_slice; hu_kwargs...)
         CM.heatmap!(
@@ -994,9 +1001,10 @@ let
         # Bottom-right: HU + fractional cardiac coverage overlay.
         ax_br = CM.Axis(
             fig[2, 2];
-            title = "(bottom-right) HU + cardiac coverage (`:linear`, binary mask)",
+            title = "HU + cardiac coverage (`:linear`, binary mask)",
             subtitle = "fractional ∈ [0.05, 1] · α=0.7 over HU",
             aspect = CM.DataAspect(), yreversed = true,
+            title_kwargs...,
         )
         CM.heatmap!(ax_br, hu_slice; hu_kwargs...)
         hm_br = CM.heatmap!(
@@ -1005,7 +1013,7 @@ let
             alpha = 0.7, nan_color = (:white, 0.0),
         )
         CM.hidedecorations!(ax_br)
-        CM.Colorbar(fig[2, 3], hm_br; label = "cardiac fraction", width = 14)
+        CM.Colorbar(fig[2, 3], hm_br; label = "cardiac fraction", width = 14, labelsize = 18)
 
         CM.save(
             joinpath(@__DIR__, "..", "assets", "xcat_grid_overlay.png"),

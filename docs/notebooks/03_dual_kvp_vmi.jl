@@ -609,10 +609,11 @@ so iodine boost vs. soft-tissue baseline is comparable side-by-side.
 
 # ╔═╡ 03000017-0000-4000-8000-000000000010
 let
-    fig = CM.Figure(size = (1100, 1080))
+    fig = CM.Figure(size = (1200, 1180))
 
     mid = size(de_vmi_mono[de_vmi_energies[1]], 3) ÷ 2
     colorrng = (-200, 500)
+    title_kwargs = (titlesize = 28, subtitlesize = 20)
 
     grid_pos = [(1, 1), (1, 2), (2, 1), (2, 2)]
     hms = nothing
@@ -623,6 +624,7 @@ let
             title = "VMI $(Int(E)) keV",
             subtitle = i == 1 ? "Mono+ post-processed · 80/140 kVp · GE Apex Elite GSI" : "Mono+ post-processed",
             aspect = CM.DataAspect(),
+            title_kwargs...,
         )
         hm = CM.heatmap!(
             ax, de_vmi_mono[E][:, :, mid];
@@ -634,7 +636,7 @@ let
         end
     end
 
-    CM.Colorbar(fig[1:2, 3], hms; label = "HU", width = 14)
+    CM.Colorbar(fig[1:2, 3], hms; label = "HU", width = 14, labelsize = 18)
 
     CM.save(
         joinpath(@__DIR__, "..", "assets", "vmi_4panel.png"),
@@ -843,6 +845,9 @@ let
             xlabel = "VMI energy (keV)",
             ylabel = "HU",
             xticks = de_vmi_energies,
+            titlesize = 32, subtitlesize = 24,
+            xlabelsize = 22, ylabelsize = 22,
+            xticklabelsize = 18, yticklabelsize = 16,
         )
         CM.ylims!(ax, p.ylim...)
 
@@ -878,7 +883,7 @@ let
             ax,
             vcat([style_meas, style_theo], rod_lines),
             vcat(["Measured (Mono+ VMI)", "Theoretical (XA)"], collect(d.names));
-            position = :rt, framevisible = true, labelsize = 9,
+            position = :rt, framevisible = true, labelsize = 18,
             rowgap = 1, padding = (6, 6, 6, 6),
         )
     end
@@ -934,18 +939,19 @@ let
         return (slope = β, intercept = α, r² = r²)
     end
 
-    panels = ((:Ca, "Calcium Rods"), (:I, "Iodine Rods"))
-    for (col, (group, title)) in pairs(panels)
+    panels = ((:Ca, "Calcium Rods", "50–600 mg/mL"), (:I, "Iodine Rods", "2–20 mg/mL"))
+    for (col, (group, title, subtitle)) in pairs(panels)
         d = rod_data[group]
         ax = CM.Axis(
             fig[1, col];
             title = title,
+            subtitle = subtitle,
             xlabel = "Theoretical HU",
             ylabel = "Measured HU",
             aspect = CM.AxisAspect(1),
-            titlesize = 32,
-            ylabelsize = 22,
-            xlabelsize = 22,
+            titlesize = 32, subtitlesize = 24,
+            xlabelsize = 22, ylabelsize = 22,
+            xticklabelsize = 16, yticklabelsize = 16,
         )
 
         # y = x identity reference — drawn FIRST so the per-energy fits

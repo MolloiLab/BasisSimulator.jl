@@ -200,11 +200,13 @@ let
     names = [info[l][1] for l in labels]
     cmap = CM.cgrad(colors, n; categorical = true)
 
-    fig = CM.Figure(size = (820, 540))
+    fig = CM.Figure(size = (900, 600))
     ax = CM.Axis(
         fig[1, 1];
-        title = "Gammex Model 472", subtitle = "Slice $mid / $(size(phantom_cpu.mask, 3))",
+        title = "Gammex Model 472",
+        subtitle = "Slice $mid / $(size(phantom_cpu.mask, 3))",
         aspect = CM.DataAspect(),
+        titlesize = 28, subtitlesize = 20,
     )
     CM.heatmap!(ax, mapped; colormap = cmap, colorrange = (0.5, n + 0.5))
     CM.hidedecorations!(ax)
@@ -213,7 +215,7 @@ let
         colormap = cmap,
         colorrange = (0.5, n + 0.5),
         ticks = (1:n, names),
-        ticklabelsize = 10,
+        ticklabelsize = 12,
         width = 16,
     )
 
@@ -466,19 +468,22 @@ let
     n_col, n_row, n_view = size(sino)
     mid_row = n_row ÷ 2 + 1
 
-    fig = CM.Figure(size = (980, 620))
+    fig = CM.Figure(size = (1100, 660))
     ax = CM.Axis(
         fig[1, 1];
         title = "Standard-dose sinogram",
         subtitle = "Central detector row · 120 kVp / 200 mA · $n_view views",
         xlabel = "View",
         ylabel = "Detector column",
+        titlesize = 32, subtitlesize = 24,
+        xlabelsize = 22, ylabelsize = 22,
+        xticklabelsize = 16, yticklabelsize = 16,
     )
     hm = CM.heatmap!(
         ax, 1:n_view, 1:n_col, permutedims(sino[:, mid_row, :]);
         colormap = :viridis,
     )
-    CM.Colorbar(fig[1, 2], hm; label = "Line integral  −log(I / I₀)", width = 14)
+    CM.Colorbar(fig[1, 2], hm; label = "Line integral  −log(I / I₀)", width = 14, labelsize = 18)
 
     CM.save(
         joinpath(@__DIR__, "..", "assets", "sinogram_standard.png"),
@@ -765,34 +770,39 @@ noise floor — visible mostly in the rim region.
 
 # ╔═╡ 10000002-0000-4000-8000-000000000001
 let
-    fig = CM.Figure(size = (1100, 1000))
+    fig = CM.Figure(size = (1200, 1100))
 
     mid = size(hu_std, 3) ÷ 2
     colorrng = (-200, 500)
+    title_kwargs = (titlesize = 28, subtitlesize = 20)
 
     ax_std_raw = CM.Axis(
         fig[1, 1];
         title = "Standard dose (120 kVp / 200 mA)",
         subtitle = "Raw",
         aspect = CM.DataAspect(),
+        title_kwargs...,
     )
     ax_std_corr = CM.Axis(
         fig[1, 2];
         title = "Standard dose (120 kVp / 200 mA)",
         subtitle = "BHC (sino + image) · Noise Floor · Cupping",
         aspect = CM.DataAspect(),
+        title_kwargs...,
     )
     ax_low_raw = CM.Axis(
         fig[2, 1];
         title = "Low dose (120 kVp / 50 mA)",
         subtitle = "Raw",
         aspect = CM.DataAspect(),
+        title_kwargs...,
     )
     ax_low_corr = CM.Axis(
         fig[2, 2];
         title = "Low dose (120 kVp / 50 mA)",
         subtitle = "BHC (sino + image) · Noise Floor · Cupping",
         aspect = CM.DataAspect(),
+        title_kwargs...,
     )
 
     CM.heatmap!(ax_std_raw, hu_std[:, :, mid]; colormap = :grays, colorrange = colorrng)
@@ -804,7 +814,7 @@ let
         CM.hidedecorations!(ax)
     end
 
-    CM.Colorbar(fig[1:2, 3], hm; label = "HU", width = 14)
+    CM.Colorbar(fig[1:2, 3], hm; label = "HU", width = 14, labelsize = 18)
 
     CM.save(
         joinpath(@__DIR__, "..", "assets", "recon_compare_4panel.png"),

@@ -1094,10 +1094,11 @@ side-by-side.
 
 # ╔═╡ 04000011-0000-4000-8000-000000000010
 let
-    fig = CM.Figure(size = (1100, 1080))
+    fig = CM.Figure(size = (1200, 1180))
 
     mid = size(de_vmi_mono[de_vmi_energies[1]], 3) ÷ 2
     colorrng = (-200, 500)
+    title_kwargs = (titlesize = 28, subtitlesize = 20)
 
     grid_pos = [(1, 1), (1, 2), (2, 1), (2, 2)]
     hms = nothing
@@ -1108,6 +1109,7 @@ let
             title = "VMI $(Int(E)) keV",
             subtitle = i == 1 ? "Mono+ post-processed · 140 kVp PCCT · Naeotom Alpha" : "Mono+ post-processed",
             aspect = CM.DataAspect(),
+            title_kwargs...,
         )
         hm = CM.heatmap!(
             ax, de_vmi_mono[E][:, :, mid];
@@ -1119,7 +1121,7 @@ let
         end
     end
 
-    CM.Colorbar(fig[1:2, 3], hms; label = "HU", width = 14)
+    CM.Colorbar(fig[1:2, 3], hms; label = "HU", width = 14, labelsize = 18)
 
     CM.save(
         joinpath(@__DIR__, "..", "assets", "pcct_vmi_4panel.png"),
@@ -1222,10 +1224,9 @@ let
             xlabel = "VMI energy (keV)",
             ylabel = "HU",
             xticks = de_vmi_energies,
-            titlesize = 32,
-            subtitlesize = 24,
-            ylabelsize = 22,
-            xlabelsize = 22,
+            titlesize = 32, subtitlesize = 24,
+            xlabelsize = 22, ylabelsize = 22,
+            xticklabelsize = 18, yticklabelsize = 16,
         )
         CM.ylims!(ax, p.ylim...)
 
@@ -1322,10 +1323,9 @@ let
             xlabel = "Theoretical HU",
             ylabel = "Measured HU",
             aspect = CM.AxisAspect(1),
-            titlesize = 32,
-            subtitlesize = 24,
-            ylabelsize = 22,
-            xlabelsize = 22,
+            titlesize = 32, subtitlesize = 24,
+            xlabelsize = 22, ylabelsize = 22,
+            xticklabelsize = 16, yticklabelsize = 16,
         )
 
         lim_lo = min(0.0, minimum(d.measured), minimum(d.theoretical))
