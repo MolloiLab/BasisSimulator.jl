@@ -15,6 +15,7 @@ function _notebook_display_title(slug::AbstractString)
         "02_xcat_custom_materials"  => "02 · XCAT Phantom + Custom Materials",
         "03_dual_kvp_vmi"           => "03 · Dual-kVp VMI on Gammex 472",
         "04_pcct_vmi"               => "04 · PCCT VMI on Gammex 472",
+        "05_xcat_grid_to_recon"     => "05 · XCAT UHR → CT Scan: Affine Round-Trip",
     )
     get(overrides, slug, replace(slug, "_" => " "))
 end

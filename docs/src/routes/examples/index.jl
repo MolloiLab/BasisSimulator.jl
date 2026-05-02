@@ -45,6 +45,16 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
             thumbnail = "pcct_vmi_regression.png",
             tags      = ["PCCT", "Naeotom Alpha", "VMI", "Mono+"],
         ),
+        "05_xcat_grid_to_recon" => (
+            index     = "05",
+            title     = "XCAT UHR → CT Scan: Phantom Grids and the Affine Round-Trip",
+            summary   = "Crop a 0.4 mm UHR XCAT down to a cardiac sub-region (the simulator's " *
+                        "memory-efficient equivalent of scanner SFOV), then use phantom_to_world_affine + " *
+                        "recon_to_world_affine + resample_to_recon to overlay ground-truth labels onto " *
+                        "the HU recon — pixel-perfect, with :nearest / :linear / bring-your-own interpolation.",
+            thumbnail = "xcat_grid_overlay.png",
+            tags      = ["EICT", "XCAT", "Affine", "Resampling"],
+        ),
     )
 
     # Card builder — defined inside the `let` so Therapy's file-based router
