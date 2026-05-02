@@ -14,6 +14,7 @@ function _notebook_display_title(slug::AbstractString)
         "01_five_struct_api"        => "01 · The Five-Struct API",
         "02_xcat_custom_materials"  => "02 · XCAT Phantom + Custom Materials",
         "03_dual_kvp_vmi"           => "03 · Dual-kVp VMI on Gammex 472",
+        "04_pcct_vmi"               => "04 · PCCT VMI on Gammex 472",
     )
     get(overrides, slug, replace(slug, "_" => " "))
 end

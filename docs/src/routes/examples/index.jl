@@ -36,6 +36,15 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
             thumbnail = "vmi_regression.png",
             tags      = ["EICT", "Dual-kVp", "VMI", "Mono+"],
         ),
+        "04_pcct_vmi" => (
+            index     = "04",
+            title     = "PCCT VMI on Gammex 472",
+            summary   = "Photon-counting CT image-domain pipeline on a Siemens Naeotom Alpha — " *
+                        "4-bin sim → low/high recombine → RSKR-2ch denoise → self-cal Ding decomp → " *
+                        "Mono+ VMI at 40/70/100/140 keV, verified per-rod against XrayAttenuation theory.",
+            thumbnail = "pcct_vmi_regression.png",
+            tags      = ["PCCT", "Naeotom Alpha", "VMI", "Mono+"],
+        ),
     )
 
     # Card builder — defined inside the `let` so Therapy's file-based router
