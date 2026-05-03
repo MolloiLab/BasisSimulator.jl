@@ -241,10 +241,12 @@ include("spectral/vmi.jl")
 # Image-domain dual-kVp VMI pipeline (BasisSimulator notebook 03 idiom):
 # RSKR joint denoise + Ding regression + image-domain VMI synth + Mono+
 # noise shaping + bundled clinical calibration tables. Vendored from canonical
-# BasisSimulator.jl@main (commit d328e79) — five self-contained files that
+# BasisSimulator.jl@main (commit d328e79) — six self-contained files that
 # add `apply_rskr`, `fit_ding_coeffs`, `apply_ding_decomp`, `apply_median_z`,
 # `synth_vmi_image_domain`, `apply_mono_plus!`, `create_mono_plus_workspace`,
 # and `GE_REVOLUTION_APEX_ELITE_DE_CAL` / `iodine_calibration_rods`.
+# `memory_budget.jl` provides the OOM-retry tile-loop helpers Mono+ needs.
+include("reconstruction/workspace/memory_budget.jl")
 include("reconstruction/vmi/rskr.jl")
 include("reconstruction/vmi/median_filter.jl")
 include("reconstruction/vmi/image_domain_decomp.jl")
