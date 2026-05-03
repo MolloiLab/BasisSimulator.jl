@@ -252,6 +252,9 @@ include("reconstruction/vmi/median_filter.jl")
 include("reconstruction/vmi/image_domain_decomp.jl")
 include("reconstruction/vmi/mono_plus.jl")
 include("reconstruction/vmi/clinical_calibrations.jl")
+# Naeotom Alpha PCCT VMI calibration (locked-in 120 / 140 kVp Ding coefficients)
+include("reconstruction/vmi/pcct_basis.jl")
+include("reconstruction/vmi/pcct_calibration.jl")
 
 # =============================================================================
 # Image Quality Metrics (AAPM TG-233)
