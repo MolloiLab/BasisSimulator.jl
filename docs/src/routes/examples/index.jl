@@ -42,7 +42,7 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
             summary   = "Photon-counting CT image-domain pipeline on a Siemens Naeotom Alpha — " *
                         "4-bin sim → low/high recombine → RSKR-2ch denoise → self-cal Ding decomp → " *
                         "Mono+ VMI at 40/70/100/140 keV, verified per-rod against XrayAttenuation theory.",
-            thumbnail = "pcct_vmi_regression.png",
+            thumbnail = "pcct_vmi_vs_theoretical.png",
             tags      = ["PCCT", "Naeotom Alpha", "VMI", "Mono+"],
         ),
         "05_xcat_grid_to_recon" => (

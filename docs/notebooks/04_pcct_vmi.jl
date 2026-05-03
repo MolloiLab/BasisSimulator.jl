@@ -205,45 +205,45 @@ scanner = let
 
     BS.Scanner(
         source_to_isocenter = sid,
-        source_to_detector  = sdd,
+        source_to_detector = sdd,
 
-        detector_rows       = 144,
-        detector_cols       = n_cols,
-        detector_row_size   = pixel_row_iso,
-        detector_col_size   = pixel_col_iso,
-        detector_shape      = BS.CURVED_DETECTOR,
+        detector_rows = 144,
+        detector_cols = n_cols,
+        detector_row_size = pixel_row_iso,
+        detector_col_size = pixel_col_iso,
+        detector_shape = BS.CURVED_DETECTOR,
         detector_row_offset = 0.0,
         detector_col_offset = pixel_col_iso / 2,
 
-        focal_spot_width    = 0.4,
-        focal_spot_length   = 0.5,
-        target_angle        = 7.0,
+        focal_spot_width = 0.4,
+        focal_spot_length = 0.5,
+        target_angle = 7.0,
 
         gantry_rotation_time = 0.5,
-        scan_diameter        = 360.0,           # APPROX — clinical Naeotom is 500 mm; see warning above
-        gantry_aperture      = 820.0,
+        scan_diameter = 360.0,           # APPROX — clinical Naeotom is 500 mm; see warning above
+        gantry_aperture = 820.0,
 
-        flat_filter_material  = :aluminum,
+        flat_filter_material = :aluminum,
         flat_filter_thickness = 3.0,
 
-        detector_material  = :cdte,
-        detector_depth     = 1.6,
-        fill_factor_row    = 0.95,
-        fill_factor_col    = 0.95,
-        detection_gain     = 1.0,
-        electronic_noise   = 0.0,
+        detector_material = :cdte,
+        detector_depth = 1.6,
+        fill_factor_row = 0.95,
+        fill_factor_col = 0.95,
+        detection_gain = 1.0,
+        electronic_noise = 0.0,
 
-        detector_type        = :photon_counting,
-        n_energy_bins        = 4,
-        energy_thresholds    = [20.0, 35.0, 55.0, 70.0],
-        energy_resolution    = 10.0,
-        charge_sharing_fwhm  = 0.08,
-        dead_time_ns         = 5.0,
-        pixel_mode           = :standard,
+        detector_type = :photon_counting,
+        n_energy_bins = 4,
+        energy_thresholds = [20.0, 35.0, 55.0, 70.0],
+        energy_resolution = 10.0,
+        charge_sharing_fwhm = 0.08,
+        dead_time_ns = 5.0,
+        pixel_mode = :standard,
 
         native_dexel_col_mm = native_col_mm,
         native_dexel_row_mm = native_row_mm,
-        binning_factor      = bf,
+        binning_factor = bf,
     )
 end;
 
@@ -286,12 +286,15 @@ matching nb03's exact runtime here.
 """
 
 # ╔═╡ 04000004-0000-4000-8000-000000000010
+# Naeotom Alpha runs at either 120 or 140 kVp.  Switch `kVp` here to
+# re-derive calibration values for the other tube voltage.  mA is bumped
+# proportionally for similar noise budget at 120 kVp (softer spectrum).
 protocol = BS.CTProtocol(
     kVp = 140,
-    mA = 174.0,
-    views = 600,                       # APPROX — clinical Naeotom single-tube equiv is 1200 (see warning above)
-    rotation_time = 0.5,
-    collimation_mm = 5.0,              # matches nb07 Scan 2 — recon slab ~12 slices @ 0.4 mm
+    mA = 174.0,                        # matches nb07 Scan 2 (clinical 140 kVp / 174 mA / 10.12 mGy CTDIvol)
+    views = 1200,                      # matches nb07 Scan 2 — clinical Naeotom single-tube equivalent
+    rotation_time = 0.5,               # matches nb07 Scan 2
+    collimation_mm = 5.0,              # matches nb07 Scan 2 dev-mode (clinical 144×0.4mm ≈ 57.6mm)
     additional_filters = [("Ti", 0.9)],
 );
 
@@ -321,12 +324,12 @@ recon_opts = let
     slice_thickness_mm = 0.4    # native PCCT detector element (standard mode)
     n_recon_slices = max(1, round(Int, protocol.collimation_mm / slice_thickness_mm))
     BS.ReconOptions(
-        algorithm    = :fdk,
-        matrix_size  = (512, 512, n_recon_slices),
-        fov_cm       = 35.0,
-        z_cm         = protocol.collimation_mm / 10.0,
-        filter       = :standard,
-        vmi_basis    = [:water, :iodine],
+        algorithm = :fdk,
+        matrix_size = (512, 512, n_recon_slices),
+        fov_cm = 35.0,
+        z_cm = protocol.collimation_mm / 10.0,
+        filter = :standard,
+        vmi_basis = [:water, :iodine],
         vmi_energies = [40.0, 70.0, 100.0, 140.0],
     )
 end;
@@ -409,12 +412,12 @@ I0-weighted average spectrum of its bin group.
 
 # ╔═╡ 04000009-0000-4000-8000-000000000010
 sim_lohi = let
-    @info "Simulating: 140 kVp / $(round(protocol.mA, digits = 1)) mA (PCCT 4-bin)…"
+    @info "Simulating: $(Int(protocol.kVp)) kVp / $(round(protocol.mA, digits = 1)) mA (PCCT 4-bin)…"
     ws = BS.create_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
     result = BS.simulate!(ws, phantom, scanner, protocol, sim_opts, recon_opts)
 
-    geom    = ws.geom
-    bins    = [Array(b) for b in result.pcct_sino.bins]   # Float32 already
+    geom = ws.geom
+    bins = [Array(b) for b in result.pcct_sino.bins]   # Float32 already
     I0_bins = copy(result.I0_bins)
 
     ws = nothing; result = nothing
@@ -431,7 +434,7 @@ sim_lohi = let
     # simulator's known-injection state.  Keeping nb04 ↔ nb07 1:1.
     let
         I0_total = Float32(sum(I0_bins))
-        eps_f = Float32(1e-10)
+        eps_f = Float32(1.0e-10)
 
         # Step 1: combined primary
         combined = zeros(Float32, size(bins[1]))
@@ -452,21 +455,22 @@ sim_lohi = let
         # Step 3: per-bin scatter fractions (spectrum × η × DRM)
         e_full, w_full = BS.resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner = scanner)
         pcct_det = BS._build_pcct_detector(scanner)
-        kVp_val  = Float64(maximum(e_full))
-        R_mat    = BS.compute_mc_drm(pcct_det, kVp_val)
-        η_vec    = BS.quantum_efficiency_vector(pcct_det.material, pcct_det.thickness_mm, e_full)
-        ew       = BS.compute_scatter_energy_weights(Float64.(e_full))
+        kVp_val = Float64(maximum(e_full))
+        R_mat = BS.compute_mc_drm(pcct_det, kVp_val)
+        η_vec = BS.quantum_efficiency_vector(pcct_det.material, pcct_det.thickness_mm, e_full)
+        ew = BS.compute_scatter_energy_weights(Float64.(e_full))
         scatter_fracs = BS.compute_scatter_bin_weights(
-            Float64.(e_full), Float64.(w_full), ew, Float64.(η_vec), R_mat, kVp_val)
+            Float64.(e_full), Float64.(w_full), ew, Float64.(η_vec), R_mat, kVp_val
+        )
         @info "[scatter] bin fractions: $(round.(scatter_fracs, digits = 3))"
 
         # Step 4: in-place per-bin subtraction
         for (b, bin_sino) in enumerate(bins)
-            I0b  = Float32(I0_bins[b])
+            I0b = Float32(I0_bins[b])
             frac = Float32(scatter_fracs[b])
             for idx in eachindex(bin_sino)
-                N_measured  = I0b * exp(-bin_sino[idx])
-                N_scatter   = scatter_field[idx] * I0_total * frac
+                N_measured = I0b * exp(-bin_sino[idx])
+                N_scatter = scatter_field[idx] * I0_total * frac
                 N_corrected = N_measured - max(N_scatter, Float32(0))
                 bin_sino[idx] = -log(max(N_corrected, eps_f) / I0b)
             end
@@ -485,13 +489,13 @@ sim_lohi = let
             I0b = Float32(I0_bins[b])
             @. N += I0b * exp(-bins[b])
         end
-        @. -log(max(N, Float32(1e-10)) / I0_sum)
+        return @. -log(max(N, Float32(1.0e-10)) / I0_sum)
     end
 
-    sino_low  = _combine([1, 2])
+    sino_low = _combine([1, 2])
     sino_high = _combine([3, 4])
 
-    @info "[bin combine]  low  bins=[1, 2]:  mean p=$(round(mean(sino_low),  digits = 3))"
+    @info "[bin combine]  low  bins=[1, 2]:  mean p=$(round(mean(sino_low), digits = 3))"
     @info "[bin combine]  high bins=[3, 4]:  mean p=$(round(mean(sino_high), digits = 3))"
 
     I0_out = copy(I0_bins)   # tiny (4 floats) — needed by the M-matrix μ_water cell
@@ -521,8 +525,8 @@ de_lohi_μ = let
     geom = sim_lohi.geom
 
     fdk_filter = BS.CustomFilter(
-        (0.0, 0.25, 0.5,  0.75, 1.0),
-        (1.0, 0.75, 0.6,  0.2,  0.001),
+        (0.0, 0.25, 0.5, 0.75, 1.0),
+        (1.0, 0.75, 0.6, 0.2, 0.001),
     )
 
     function _fbp_to_μ(sino_cpu)
@@ -536,7 +540,7 @@ de_lohi_μ = let
         return Float32.(recon_μ)
     end
 
-    vol_low_μ  = _fbp_to_μ(sim_lohi.sino_low)
+    vol_low_μ = _fbp_to_μ(sim_lohi.sino_low)
     vol_high_μ = _fbp_to_μ(sim_lohi.sino_high)
 
     (vol_low_μ = vol_low_μ, vol_high_μ = vol_high_μ, geom = geom)
@@ -560,21 +564,106 @@ structure between iodine-rich (high in low-bin HU) and iodine-poor
 
 Hyperparameters match nb03's Gammex DE settings — `n_iter = 2`, `h_param = 2.0`, `radius = 2` — light-touch denoising that knocks down the
 basis-pair noise without over-smoothing the iodine contrast.
+
+**Knob below** lets you sweep `h_param` (smoothing strength) without
+touching the call site — useful for testing whether under- or
+over-smoothing is biasing calcium VMI HU at high keV.  Larger `h_param`
+≈ stronger denoise; `h_param = 0` ≈ pass-through.
 """
+
+# ╔═╡ 0400000b-0000-4000-8000-000000000005
+rskr_knob = (
+    n_iter = 2,
+    h_param = 2,
+    radius = 3,
+    γ = 0.5,
+);
+
+# ╔═╡ 0400000b-0000-4000-8000-000000000007
+# Source for downstream HU conversion + rod measurement (§11 onward):
+#   :rskr  → use the post-RSKR μ-volumes  (default; matches nb07)
+#   :raw   → use the raw FBP μ-volumes    (bypass RSKR entirely — useful
+#            for isolating whether RSKR is biasing calcium VMI HU)
+rod_source = :rskr;
 
 # ╔═╡ 0400000b-0000-4000-8000-000000000010
 de_lohi_rskr = let
     out = BS.apply_rskr(
         [de_lohi_μ.vol_low_μ, de_lohi_μ.vol_high_μ];
-        n_iter = 2,
-        h_param = 2.0,
-        radius = 2,
-        γ = 0.5,
+        n_iter = rskr_knob.n_iter,
+        h_param = rskr_knob.h_param,
+        radius = rskr_knob.radius,
+        γ = rskr_knob.γ,
         gpu_arr_type = GPU_BACKEND.to_gpu,
         verbose = true,
     )
     (vol_low_μ = out[1], vol_high_μ = out[2], geom = de_lohi_μ.geom)
 end;
+
+# ╔═╡ 0400000b-0000-4000-8000-000000000020
+md"""
+### RSKR before/after — μ-domain inspection
+
+2×2 grid: rows are **raw FBP** (top) vs **post-RSKR** (bottom), columns
+are **low-bin** (1+2) vs **high-bin** (3+4).  Each column shares its
+own window so the raw → RSKR change is the only visual delta.
+
+Look for:
+* **Calcium rods (inner ring)** flattening in the high bin — RSKR
+  collapsing the calcium-direction signal would manifest here as
+  reduced rod-vs-water contrast in the high panel.
+* **Iodine rods (outer ring)** retaining contrast (iodine's
+  anti-correlated noise is what RSKR is built to preserve).
+"""
+
+# ╔═╡ 0400000b-0000-4000-8000-000000000030
+let
+    mid = size(de_lohi_μ.vol_low_μ, 3) ÷ 2
+
+    raw_low = de_lohi_μ.vol_low_μ[:, :, mid]
+    raw_high = de_lohi_μ.vol_high_μ[:, :, mid]
+    rskr_low = de_lohi_rskr.vol_low_μ[:, :, mid]
+    rskr_high = de_lohi_rskr.vol_high_μ[:, :, mid]
+
+    # Fixed physical windows (cm⁻¹) so RSKR knob sweeps stay visually comparable.
+    # Low bin (~50 keV eff): water ≈ 0.21, iodine 20 mg/mL ≈ 0.30, calcium 600 ≈ 0.55.
+    # High bin (~80 keV eff): water ≈ 0.18, iodine 20 mg/mL ≈ 0.22, calcium 600 ≈ 0.27.
+    win_low = (0.15, 0.3)
+    win_high = (0.15, 0.3)
+
+    title_kwargs = (titlesize = 28, subtitlesize = 20)
+
+    fig = CM.Figure(size = (1200, 1100))
+    CM.Label(
+        fig[0, :],
+        "RSKR effect (h_param = $(rskr_knob.h_param), n_iter = $(rskr_knob.n_iter))";
+        fontsize = 26, font = :bold, padding = (0, 0, 8, 0),
+    )
+
+    panels = (
+        (1, 1, raw_low, win_low, "Low bin · raw FBP", "μ (cm⁻¹)"),
+        (1, 2, raw_high, win_high, "High bin · raw FBP", "μ (cm⁻¹)"),
+        (2, 1, rskr_low, win_low, "Low bin · post-RSKR", "μ (cm⁻¹)"),
+        (2, 2, rskr_high, win_high, "High bin · post-RSKR", "μ (cm⁻¹)"),
+    )
+
+    for (r, c, img, win, ttl, cblbl) in panels
+        ax = CM.Axis(
+            fig[r, 2c - 1];
+            title = ttl, aspect = CM.DataAspect(),
+            xticksvisible = false, yticksvisible = false,
+            xticklabelsvisible = false, yticklabelsvisible = false,
+            title_kwargs...,
+        )
+        CM.heatmap!(ax, img; colormap = :grays, colorrange = win)
+        CM.Colorbar(
+            fig[r, 2c]; colormap = :grays, colorrange = win,
+            label = cblbl, width = 14, labelsize = 18, ticklabelsize = 12
+        )
+    end
+
+    fig
+end
 
 # ╔═╡ 04000006-0000-4000-8000-000000000001
 md"""
@@ -643,7 +732,7 @@ end
     body_radius_cm = 16.5      # Gammex 472 body — 33 cm diameter / 2
     water_path = body_radius_cm * 2
     (
-        low  = _per_bin_μ_water_analytic([1, 2]; water_path_cm = water_path),
+        low = _per_bin_μ_water_analytic([1, 2]; water_path_cm = water_path),
         high = _per_bin_μ_water_analytic([3, 4]; water_path_cm = water_path),
     )
 end;
@@ -671,11 +760,13 @@ end;
         for z in 1:nz, ci in roi
             s += vol[ci, z]; n += 1
         end
-        s / n
+        return s / n
     end
 
-    (low = _mean_μ(de_lohi_rskr.vol_low_μ),
-     high = _mean_μ(de_lohi_rskr.vol_high_μ))
+    (
+        low = _mean_μ(de_lohi_rskr.vol_low_μ),
+        high = _mean_μ(de_lohi_rskr.vol_high_μ),
+    )
 end;
 
 # ╔═╡ 04000006-0000-4000-8000-000000000014
@@ -688,23 +779,23 @@ end;
 μ_water_per_bin_m_matrix = let
     e_full, w_full = BS.resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner = scanner)
     pcct_det = BS._build_pcct_detector(scanner)
-    kVp_val  = Float64(maximum(e_full))
-    R_mat    = BS.compute_mc_drm(pcct_det, kVp_val)
-    η_vec    = BS.quantum_efficiency_vector(pcct_det.material, pcct_det.thickness_mm, e_full)
-    n_R      = size(R_mat, 1)
+    kVp_val = Float64(maximum(e_full))
+    R_mat = BS.compute_mc_drm(pcct_det, kVp_val)
+    η_vec = BS.quantum_efficiency_vector(pcct_det.material, pcct_det.thickness_mm, e_full)
+    n_R = size(R_mat, 1)
     drm_row(E) = clamp(round(Int, (Float64(E) - 1.0) / (kVp_val - 1.0) * (n_R - 1)) + 1, 1, n_R)
 
-    e    = Float64.(e_full)
+    e = Float64.(e_full)
     μρ_w = Float64[BS.compute_mass_μ_at_energy(BS.XA.Materials.water, Eᵢ) for Eᵢ in e]
-    μ_w  = Float64[BS.compute_μ_at_energy(BS.XA.Materials.water,      Eᵢ) for Eᵢ in e]
-    I0   = sim_lohi.I0_bins
+    μ_w = Float64[BS.compute_μ_at_energy(BS.XA.Materials.water, Eᵢ) for Eᵢ in e]
+    I0 = sim_lohi.I0_bins
 
     # Phantom-hardening path = full chord through the actual phantom (≈ diameter
     # for a center ray on a body cylinder).  Mirrors the scatter correction's
     # phantom-diameter estimation so both stay consistent.
-    voxel_size_mm   = phantom_cpu.voxel_size .* 10.0
+    voxel_size_mm = phantom_cpu.voxel_size .* 10.0
     phantom_diam_cm = BS.estimate_phantom_diameter_cm(phantom_cpu.mask, voxel_size_mm)
-    water_path_cm   = phantom_diam_cm
+    water_path_cm = phantom_diam_cm
 
     function _eff_spectrum(grp::Vector{Int})
         I0_sum = sum(Float64.(I0[grp]))
@@ -717,23 +808,25 @@ end;
             wc .+= (Float64(I0[b]) / I0_sum) .* (wb ./ sb)
         end
         wc ./= sum(wc)
-        wc
+        return wc
     end
 
-    w_low  = _eff_spectrum([1, 2])
+    w_low = _eff_spectrum([1, 2])
     w_high = _eff_spectrum([3, 4])
 
     @info "[μ_water m_matrix]  phantom_diam=$(round(phantom_diam_cm, digits = 1)) cm  (used as water-path for hardening)"
-    @info "  low  = $(round(sum(w_low  .* μρ_w), sigdigits = 4)) cm⁻¹   (mean E = $(round(sum(w_low  .* e), digits = 1)) keV)"
+    @info "  low  = $(round(sum(w_low .* μρ_w), sigdigits = 4)) cm⁻¹   (mean E = $(round(sum(w_low .* e), digits = 1)) keV)"
     @info "  high = $(round(sum(w_high .* μρ_w), sigdigits = 4)) cm⁻¹   (mean E = $(round(sum(w_high .* e), digits = 1)) keV)"
 
-    (low  = sum(w_low  .* μρ_w),
-     high = sum(w_high .* μρ_w))
+    (
+        low = sum(w_low .* μρ_w),
+        high = sum(w_high .* μρ_w),
+    )
 end;
 
 # ╔═╡ 04000006-0000-4000-8000-000000000016
-# SELECTOR — pick which of the four feeds HU conversion.
-# Set to one of: `:analytic`, `:measured`, `:manual`, `:m_matrix`.
+# SELECTOR — pick which of the three feeds HU conversion.
+# Set to one of: `:analytic`, `:measured`, `:m_matrix`.
 # `:m_matrix` is the canonical nb07 reference — use it unless you need to A/B.
 μ_water_source = :m_matrix;
 
@@ -744,12 +837,10 @@ end;
         μ_water_per_bin_analytic
     elseif src === :measured
         μ_water_per_bin_measured
-    elseif src === :manual
-        μ_water_per_bin_manual
     elseif src === :m_matrix
         μ_water_per_bin_m_matrix
     else
-        error("μ_water_source must be :analytic, :measured, :manual, or :m_matrix (got $(src))")
+        error("μ_water_source must be :analytic, :measured, or :m_matrix (got $(src))")
     end
 end;
 
@@ -761,7 +852,6 @@ md"""
 |---|---|---|
 | analytic (bin-spec + 33 cm hardening)              | $(round(μ_water_per_bin_analytic.low, digits = 5)) | $(round(μ_water_per_bin_analytic.high, digits = 5)) |
 | measured (FBP center, post-RSKR)                   | $(round(μ_water_per_bin_measured.low, digits = 5)) | $(round(μ_water_per_bin_measured.high, digits = 5)) |
-| manual                                             | $(round(μ_water_per_bin_manual.low,   digits = 5)) | $(round(μ_water_per_bin_manual.high,   digits = 5)) |
 | m_matrix (bin-effective + measured-phantom hardening) | $(round(μ_water_per_bin_m_matrix.low, digits = 5)) | $(round(μ_water_per_bin_m_matrix.high, digits = 5)) |
 | **active** (:$(μ_water_source))                    | **$(round(μ_water_per_bin.low,  digits = 5))** | **$(round(μ_water_per_bin.high, digits = 5))** |
 """
@@ -778,11 +868,15 @@ Applies the dose-independent DAS Gaussian noise floor afterwards.
 
 # ╔═╡ 0400000c-0000-4000-8000-000000000010
 de_lohi_HU = let
-    vol_low_HU  = Float32.(BS.to_hounsfield(de_lohi_rskr.vol_low_μ;  μ_water = μ_water_per_bin.low))
-    vol_high_HU = Float32.(BS.to_hounsfield(de_lohi_rskr.vol_high_μ; μ_water = μ_water_per_bin.high))
-    BS.add_system_noise_floor!(vol_low_HU,  15.0; seed = 1234)
+    src = rod_source == :rskr ? de_lohi_rskr :
+        rod_source == :raw ? de_lohi_μ :
+        error("rod_source must be :rskr or :raw (got $(rod_source))")
+    @info "[de_lohi_HU] sourcing rod measurements from :$(rod_source) volumes"
+    vol_low_HU = Float32.(BS.to_hounsfield(src.vol_low_μ; μ_water = μ_water_per_bin.low))
+    vol_high_HU = Float32.(BS.to_hounsfield(src.vol_high_μ; μ_water = μ_water_per_bin.high))
+    BS.add_system_noise_floor!(vol_low_HU, 15.0; seed = 1234)
     BS.add_system_noise_floor!(vol_high_HU, 15.0; seed = 5678)
-    (vol_low_HU = vol_low_HU, vol_high_HU = vol_high_HU, geom = de_lohi_rskr.geom)
+    (vol_low_HU = vol_low_HU, vol_high_HU = vol_high_HU, geom = src.geom)
 end;
 
 # ╔═╡ 0400000d-0000-4000-8000-000000000001
@@ -883,107 +977,50 @@ function _measure_rod_hu(vol::AbstractArray, label::UInt8, roi_dict)
     return s / n
 end
 
-# ╔═╡ 0400000d-0000-4000-8000-000000000070
-de_cal = let
-    iod_labels = collect(ROD_LABELS.I)
-    iod_concs  = collect(ROD_C_IODINE.I)
+# ╔═╡ 0400000d-0000-4000-8000-000000000063
+md"""
+## 12. Calibration
 
-    # Water anchor: 8-px circular ROI at the phantom geometric center (the
-    # Gammex 472 body's solid-water region, label 3, fills the body cylinder
-    # with the Ca/I rods inset on inner / outer rings).  The center is well
-    # away from any rod so a center ROI samples pure solid water.
-    nx = size(de_lohi_HU.vol_low_HU, 1)
-    ny = size(de_lohi_HU.vol_low_HU, 2)
-    cx_water = nx / 2 + 0.5
-    cy_water = ny / 2 + 0.5
-    ROI_RADIUS_PX = 8
-    water_roi = let
-        roi = CartesianIndex{2}[]
-        i_lo = max(1, floor(Int, cx_water - ROI_RADIUS_PX))
-        i_hi = min(nx, ceil(Int, cx_water + ROI_RADIUS_PX))
-        j_lo = max(1, floor(Int, cy_water - ROI_RADIUS_PX))
-        j_hi = min(ny, ceil(Int, cy_water + ROI_RADIUS_PX))
-        r² = Float64(ROI_RADIUS_PX)^2
-        for j in j_lo:j_hi, i in i_lo:i_hi
-            ((i - cx_water)^2 + (j - cy_water)^2) ≤ r² && push!(roi, CartesianIndex(i, j))
-        end
-        roi
-    end
+Image-domain Ding decomposition + VMI synthesis:
+```
+c_iodine(voxel) = a₀ + a₁·HU_low(voxel) + a₂·HU_high(voxel)
+HU_E(voxel)     = HU_low(voxel) + c_iodine(voxel)·(μρ_I(E)/μρ_water(E) − α_iod_low_cal)
+```
 
-    function _mean_at_roi(vol, roi)
-        n_z = size(vol, 3)
-        s = 0.0; n = 0
-        for z in 1:n_z, ci in roi
-            s += vol[ci, z]; n += 1
-        end
-        s / n
-    end
+The four parameters `(a₀, a₁, a₂, α_iod_low_cal)` were optimized in this
+notebook (per-rod relative-error nRMSE across all 4 VMI energies and all
+14 Gammex 472 rods) and are stored permanently in
+`src/reconstruction/vmi/pcct_calibration.jl` as
+[`SIEMENS_NAEOTOM_120KVP_VMI_CAL`](@ref) and
+[`SIEMENS_NAEOTOM_140KVP_VMI_CAL`](@ref).  We just look them up by `kVp`.
+"""
 
-    rod_HU_low_water  = _mean_at_roi(de_lohi_HU.vol_low_HU,  water_roi)
-    rod_HU_high_water = _mean_at_roi(de_lohi_HU.vol_high_HU, water_roi)
-
-    HU_low_cal  = vcat(rod_HU_low_water,  [_measure_rod_hu(de_lohi_HU.vol_low_HU,  lab, rod_rois) for lab in iod_labels])
-    HU_high_cal = vcat(rod_HU_high_water, [_measure_rod_hu(de_lohi_HU.vol_high_HU, lab, rod_rois) for lab in iod_labels])
-    c_iod_cal   = vcat(0.0,               iod_concs)
-
-    fit = BS.fit_ding_coeffs(HU_low_cal, HU_high_cal, c_iod_cal)
-    rod_names = vcat("Water (center)", collect(ROD_NAMES.I))
-
-    (
-        coeffs = fit.coeffs,
-        α_iod_low = fit.α_low,
-        α_iod_high = fit.α_high,
-        rms_c = fit.rms,
-        rod_names = rod_names,
-        rod_HU_low = HU_low_cal,
-        rod_HU_high = HU_high_cal,
-        rod_c_iodine = c_iod_cal,
-        pred_c = fit.pred_c,
-        water_roi = water_roi,
-    )
-end;
+# ╔═╡ 0400000d-0000-4000-8000-000000000074
+# Look up the optimized calibration constant for this protocol's kVp.
+# Constants live in src/reconstruction/vmi/pcct_calibration.jl —
+# 120 kVp and 140 kVp are calibrated; other kVps will throw.
+de_cal = BS.pcct_vmi_cal_for(protocol.kVp);
 
 # ╔═╡ 0400000d-0000-4000-8000-000000000080
 let
-    # Look up water mask voxel count to add a sanity hint to the table
-    water_label = UInt8(1)
-
-    rows = [
-        "| $(de_cal.rod_names[i]) | $(de_cal.rod_c_iodine[i]) | " *
-        "$(round(de_cal.rod_HU_low[i],  digits = 1)) | " *
-        "$(round(de_cal.rod_HU_high[i], digits = 1)) | " *
-        "$(round(de_cal.pred_c[i],       digits = 2)) |"
-            for i in eachindex(de_cal.rod_names)
-    ]
-
     body = """
-    **Self-cal rod ROIs** — 8-px core circular ROI at each rod's
-    centroid, broadcast across all $(size(de_lohi_HU.vol_low_HU, 3)) recon slices:
+    **Loaded calibration** (`pcct_vmi_cal_for($(Int(protocol.kVp)))` from `src/`):
 
-    | Rod | c (mg/mL) | HU low (1+2) | HU high (3+4) | pred c |
-    |-----|---|---|---|---|
-    $(join(rows, "\n"))
+    | Param | Value |
+    |---|---|
+    | a₀                | $(round(Float64(de_cal.coeffs[1]), digits = 5)) |
+    | a₁                | $(round(Float64(de_cal.coeffs[2]), sigdigits = 5)) |
+    | a₂                | $(round(Float64(de_cal.coeffs[3]), sigdigits = 5)) |
+    | α_iod_low_cal     | $(round(Float64(de_cal.α_iod_low_cal), digits = 4)) |
 
-    **Ding fit:**
-
-    * a₀ = $(round(de_cal.coeffs[1], digits = 3))
-    * a₁ = $(round(de_cal.coeffs[2], sigdigits = 4))
-    * a₂ = $(round(de_cal.coeffs[3], sigdigits = 4))
-    * α_iodine (low / high) = $(round(de_cal.α_iod_low, digits = 2)) / $(round(de_cal.α_iod_high, digits = 2)) HU per (mg/mL)
-    * RMS calibration error = $(round(de_cal.rms_c, digits = 3)) mg/mL
+    Synthesis equation:
+    `HU_E = HU_low + (a₀ + a₁·HU_low + a₂·HU_high) · (μρ_I(E)/μρ_water(E) − α_iod_low_cal)`
     """
     Markdown.parse(body)
 end
 
 # ╔═╡ 0400000e-0000-4000-8000-000000000001
-md"""
-## 13. Apply Ding decomposition + z-median speckle removal
 
-[`BS.apply_ding_decomp`](@ref) is a per-voxel evaluation of the Ding
-equation, returning a `c_iodine` map in mg/mL.  A 3-slice
-[`BS.apply_median_z`](@ref) (radius = 1, axial-only) wipes single-voxel
-xy impulse noise without any in-plane blurring.
-"""
 
 # ╔═╡ 0400000e-0000-4000-8000-000000000010
 de_decomp = let
@@ -1001,25 +1038,14 @@ end;
 
 # ╔═╡ 0400000f-0000-4000-8000-000000000001
 md"""
-## 14. VMI synthesis at 40 / 70 / 100 / 140 keV
+## 13. VMI synthesis at 40 / 70 / 100 / 140 keV
 
 [`BS.synth_vmi_image_domain`](@ref) implements
-
 ```
-HU_E[v] = HU_low[v] + c_iodine[v] · (αᴱ_phys − α_low_cal)
+HU_E[v] = HU_low[v] + c_iodine[v] · (μρ_I(E)/μρ_water(E) − α_iod_low_cal)
 ```
-
-where `αᴱ_phys = (μ/ρ)_iodine(E) / (μ/ρ)_water(E)` is the pure-physics
-HU sensitivity at the target energy (computed internally from
-XrayAttenuation), and `α_low_cal` is the empirical low-bin sensitivity
-returned by `fit_ding_coeffs`.
-
-| keV | What it shows                                            |
-|-----|----------------------------------------------------------|
-| 40  | Maximum iodine contrast (≈ K-edge boost)                 |
-| 70  | ≈ standard 120 kVp HU baseline                           |
-| 100 | Beam-hardening robust, low metal artifact                |
-| 140 | Quasi-monochromatic high-energy reference                |
+where the calibration coefficients come from `de_cal` (loaded from
+`src/reconstruction/vmi/pcct_calibration.jl` per §12).
 """
 
 # ╔═╡ 0400000f-0000-4000-8000-000000000010
@@ -1032,36 +1058,20 @@ de_vmi_raw = let
         out[E] = BS.synth_vmi_image_domain(
             de_decomp.vol_low_HU, de_decomp.c_iodine;
             energy_keV = E,
-            α_iod_low_cal = de_cal.α_iod_low,
+            α_iod_low_cal = de_cal.α_iod_low_cal,
+            iodine_material = BS.XA.Elements.Iodine,
         )
     end
     out
 end;
 
 # ╔═╡ 04000010-0000-4000-8000-000000000001
-md"""
-## 15. Mono+ post-processing + FOV mask
 
-[`BS.apply_mono_plus!`](@ref) sharpens the contrast at the noise-quiet
-anchor energy (70 keV here) and slightly low-passes the others.  Per-energy
-σ in pixels (matches nb07's Scan 2 settings):
-
-| keV | σ_lp (px) | What happens                                     |
-|-----|-----------|--------------------------------------------------|
-| 40  | 2.0       | Noisiest VMI — strongest LP                      |
-| 70  | 0.0       | Anchor energy — left untouched                   |
-| 100 | 2.0       | Modest LP                                        |
-| 140 | 2.0       | Modest LP                                        |
-
-After Mono+, [`BS.apply_fov_mask!`](@ref) zeros out-of-FOV voxels to
-−1024 HU (air) so downstream display, ROI stats, and tables don't see
-recon-circle ringing.
-"""
 
 # ╔═╡ 04000010-0000-4000-8000-000000000010
 de_vmi_mono = let
     vols_in = [de_vmi_raw[E] for E in de_vmi_energies]
-    σ_vec = Float64[2.0, 0.0, 2.0, 2.0]   # paired with de_vmi_energies
+    σ_vec = Float64[1.0, 0.0, 1.0, 1.0]   # paired with de_vmi_energies
 
     ws = BS.create_mono_plus_workspace(vols_in[1]; n_energies = length(de_vmi_energies))
     res = BS.apply_mono_plus!(
@@ -1084,13 +1094,7 @@ de_vmi_mono = let
 end;
 
 # ╔═╡ 04000011-0000-4000-8000-000000000001
-md"""
-## 16. The four VMI images
 
-Mid-slice mosaic of all four energies, shared HU window (-200 to 500
-HU) so iodine boost vs. soft-tissue baseline is comparable
-side-by-side.
-"""
 
 # ╔═╡ 04000011-0000-4000-8000-000000000010
 let
@@ -1131,16 +1135,7 @@ let
 end
 
 # ╔═╡ 04000012-0000-4000-8000-000000000001
-md"""
-## 17. Per-rod readout: measured HU vs theoretical HU
 
-Same flow as nb03.  For each rod *r* and each VMI energy *E*:
-
-* **Measured HU** = mean of the **8-px core circular ROI** (same ROIs
-  used for self-calibration in §12) broadcast across every recon slice.
-* **Theoretical HU** = `1000 · (μ_r(E) − μ_water(E)) / μ_water(E)` from
-  XrayAttenuation directly via [`BS.compute_μ_at_energy`](@ref).
-"""
 
 # ╔═╡ 04000012-0000-4000-8000-000000000010
 rod_data = let
@@ -1178,30 +1173,62 @@ rod_data = let
     out
 end;
 
+# ╔═╡ 04000012-0000-4000-8000-000000000020
+# Water readout per VMI keV — 8-px circular ROI at the phantom geometric
+# center on each post-Mono+ VMI volume.  Theoretical water HU is 0 by
+# definition, so any reading IS the residual.
+let
+    nx = size(de_vmi_mono[de_vmi_energies[1]], 1)
+    ny = size(de_vmi_mono[de_vmi_energies[1]], 2)
+    cx = nx / 2 + 0.5
+    cy = ny / 2 + 0.5
+    R = 8
+    water_roi = let
+        roi = CartesianIndex{2}[]
+        i_lo = max(1, floor(Int, cx - R)); i_hi = min(nx, ceil(Int, cx + R))
+        j_lo = max(1, floor(Int, cy - R)); j_hi = min(ny, ceil(Int, cy + R))
+        r² = Float64(R)^2
+        for j in j_lo:j_hi, i in i_lo:i_hi
+            ((i - cx)^2 + (j - cy)^2) ≤ r² && push!(roi, CartesianIndex(i, j))
+        end
+        roi
+    end
+
+    function _mean_at_water_roi(vol)
+        n_z = size(vol, 3)
+        s = 0.0; n = 0
+        for z in 1:n_z, ci in water_roi
+            s += vol[ci, z]; n += 1
+        end
+        return s / n
+    end
+
+    rows = String[]
+    for E in de_vmi_energies
+        hu = _mean_at_water_roi(de_vmi_mono[E])
+        push!(rows, "| $(Int(E)) keV | $(round(hu, digits = 2)) HU |")
+    end
+
+    body = """
+    **Water region — VMI HU per energy** (theoretical = 0 HU at all keV;
+    each entry is the residual after the full pipeline: synthesis → Mono+ → FOV mask).
+
+    | Energy | Water HU |
+    |---|---|
+    $(join(rows, "\n"))
+    """
+    Markdown.parse(body)
+end
+
 # ╔═╡ 04000013-0000-4000-8000-000000000001
-md"""
-## 18. The verification plot — measured vs theoretical, per rod
 
-**Solid line** = measured HU at each VMI energy.
-**Dashed line** = theoretical HU from XrayAttenuation directly.
-
-The Ca rods (left panel) follow a smooth roll-off as keV increases —
-calcium attenuates predominantly through Compton scatter at clinical
-energies, so its HU above water decreases monotonically.
-
-The I rods (right panel) show the iodine **K-edge boost at 40 keV** —
-iodine's K-edge sits at 33.2 keV, so a 40 keV VMI catches the
-photoelectric edge and amplifies iodine HU dramatically (200–500 HU per
-mg/mL) compared to the ≈70 keV plateau.  Above the K-edge the rolloff
-is steep until 100+ keV where iodine looks soft-tissue-like.
-"""
 
 # ╔═╡ 04000013-0000-4000-8000-000000000010
 let
     fig = CM.Figure(size = (1180, 580))
 
     cmap_ca = CM.cgrad(:Oranges, 7; categorical = true)
-    cmap_i  = CM.cgrad(:GnBu,    7; categorical = true)
+    cmap_i = CM.cgrad(:GnBu, 7; categorical = true)
 
     panels = (
         (
@@ -1269,35 +1296,23 @@ let
 end
 
 # ╔═╡ 04000014-0000-4000-8000-000000000001
-md"""
-## 19. Linear regression: measured vs theoretical
 
-Same data, different cut.  Every (rod, energy) pair scatters as
-**measured HU on y vs theoretical HU on x**, with a per-energy line
-fit and the y = x identity overlaid.  Slope ≈ 1, intercept ≈ 0,
-R² ≈ 1 → the pipeline recovers physics.
-"""
 
 # ╔═╡ 7b51f797-15cc-408d-a7a8-2fdb8df3f5ba
-# # OPTION 3 — MANUAL μ_water override.  Edit these two numbers freely; this
-# # cell is the only thing that needs reactive re-evaluation when you tweak.
-# # Sensible starting values to iterate around:
-# #   • spectrum-averaged 45 keV (low bin equiv): ~0.247 cm⁻¹
-# #   • spectrum-averaged 85 keV (high bin equiv): ~0.180 cm⁻¹
-# μ_water_per_bin_manual = (
-#     low  = 0.035,
-#     high = 0.115,
-# );
+
+
+# ╔═╡ 82f8e413-935f-4823-99cb-23467cfba6eb
+
 
 # ╔═╡ 04000014-0000-4000-8000-000000000010
 let
     fig = CM.Figure(size = (1180, 620))
 
     energy_colors = Dict(
-        40.0  => CM.RGBf(0.85, 0.27, 0.10),
-        70.0  => CM.RGBf(0.95, 0.65, 0.13),
+        40.0 => CM.RGBf(0.85, 0.27, 0.1),
+        70.0 => CM.RGBf(0.95, 0.65, 0.13),
         100.0 => CM.RGBf(0.13, 0.59, 0.85),
-        140.0 => CM.RGBf(0.10, 0.27, 0.65),
+        140.0 => CM.RGBf(0.1, 0.27, 0.65),
     )
 
     function fit_lr(x::Vector{Float64}, y::Vector{Float64})
@@ -1313,7 +1328,7 @@ let
         return (slope = β, intercept = α, r² = r²)
     end
 
-    panels = ((:Ca, "Calcium Rods", "50–600 mg/mL",), (:I, "Iodine Rods", "2–20 mg/mL"))
+    panels = ((:Ca, "Calcium Rods", "50–600 mg/mL"), (:I, "Iodine Rods", "2–20 mg/mL"))
     for (col, (group, title, subtitle)) in pairs(panels)
         d = rod_data[group]
         ax = CM.Axis(
@@ -1443,22 +1458,22 @@ of re-extracting it.
 # ╔═╡ 04000016-0000-4000-8000-000000000010
 let
     rod_concentrations = Dict(
-        "Water (O)" => (mat = :water,        mg_per_mL =   0.0, label = UInt8(1)),
-        "SW ref 1"  => (mat = :solid_water,  mg_per_mL =   0.0, label = UInt8(2)),
-        "SW ref 2"  => (mat = :solid_water,  mg_per_mL =   0.0, label = UInt8(3)),
-        "Ca 50"     => (mat = :calcium,      mg_per_mL =  50.0, label = ROD_LABELS.Ca[1]),
-        "Ca 100"    => (mat = :calcium,      mg_per_mL = 100.0, label = ROD_LABELS.Ca[2]),
-        "Ca 200"    => (mat = :calcium,      mg_per_mL = 200.0, label = ROD_LABELS.Ca[3]),
-        "Ca 300"    => (mat = :calcium,      mg_per_mL = 300.0, label = ROD_LABELS.Ca[4]),
-        "Ca 400"    => (mat = :calcium,      mg_per_mL = 400.0, label = ROD_LABELS.Ca[5]),
-        "Water (I)" => (mat = :water,        mg_per_mL =   0.0, label = UInt8(4)),
-        "I 2.0"     => (mat = :iodine,       mg_per_mL =   2.0, label = ROD_LABELS.I[1]),
-        "I 2.5"     => (mat = :iodine,       mg_per_mL =   2.5, label = ROD_LABELS.I[2]),
-        "I 5.0"     => (mat = :iodine,       mg_per_mL =   5.0, label = ROD_LABELS.I[3]),
-        "I 7.5"     => (mat = :iodine,       mg_per_mL =   7.5, label = ROD_LABELS.I[4]),
-        "I 10.0"    => (mat = :iodine,       mg_per_mL =  10.0, label = ROD_LABELS.I[5]),
-        "I 15.0"    => (mat = :iodine,       mg_per_mL =  15.0, label = ROD_LABELS.I[6]),
-        "I 20.0"    => (mat = :iodine,       mg_per_mL =  20.0, label = ROD_LABELS.I[7]),
+        "Water (O)" => (mat = :water, mg_per_mL = 0.0, label = UInt8(1)),
+        "SW ref 1" => (mat = :solid_water, mg_per_mL = 0.0, label = UInt8(2)),
+        "SW ref 2" => (mat = :solid_water, mg_per_mL = 0.0, label = UInt8(3)),
+        "Ca 50" => (mat = :calcium, mg_per_mL = 50.0, label = ROD_LABELS.Ca[1]),
+        "Ca 100" => (mat = :calcium, mg_per_mL = 100.0, label = ROD_LABELS.Ca[2]),
+        "Ca 200" => (mat = :calcium, mg_per_mL = 200.0, label = ROD_LABELS.Ca[3]),
+        "Ca 300" => (mat = :calcium, mg_per_mL = 300.0, label = ROD_LABELS.Ca[4]),
+        "Ca 400" => (mat = :calcium, mg_per_mL = 400.0, label = ROD_LABELS.Ca[5]),
+        "Water (I)" => (mat = :water, mg_per_mL = 0.0, label = UInt8(4)),
+        "I 2.0" => (mat = :iodine, mg_per_mL = 2.0, label = ROD_LABELS.I[1]),
+        "I 2.5" => (mat = :iodine, mg_per_mL = 2.5, label = ROD_LABELS.I[2]),
+        "I 5.0" => (mat = :iodine, mg_per_mL = 5.0, label = ROD_LABELS.I[3]),
+        "I 7.5" => (mat = :iodine, mg_per_mL = 7.5, label = ROD_LABELS.I[4]),
+        "I 10.0" => (mat = :iodine, mg_per_mL = 10.0, label = ROD_LABELS.I[5]),
+        "I 15.0" => (mat = :iodine, mg_per_mL = 15.0, label = ROD_LABELS.I[6]),
+        "I 20.0" => (mat = :iodine, mg_per_mL = 20.0, label = ROD_LABELS.I[7]),
     )
     rod_order = [
         "Water (O)", "SW ref 1", "SW ref 2",
@@ -1495,7 +1510,7 @@ let
         for j in j_lo:j_hi, i in i_lo:i_hi
             ((i - cx)^2 + (j - cy)^2) ≤ r² && push!(roi, CartesianIndex(i, j))
         end
-        Dict{UInt8, Vector{CartesianIndex{2}}}(lab => roi)
+        return Dict{UInt8, Vector{CartesianIndex{2}}}(lab => roi)
     end
 
     println("# Auto-generated from notebook 04 §21 calibration cell.")
@@ -1504,8 +1519,8 @@ let
     println()
     println("const SIEMENS_NAEOTOM_ALPHA_140KVP_CAL = Dict{String, NamedTuple}(")
     for nm in rod_order
-        cc  = rod_concentrations[nm]
-        h_low  = _safe_mean(de_lohi_HU.vol_low_HU,  cc.label)
+        cc = rod_concentrations[nm]
+        h_low = _safe_mean(de_lohi_HU.vol_low_HU, cc.label)
         h_high = _safe_mean(de_lohi_HU.vol_high_HU, cc.label)
         if ismissing(h_low) || ismissing(h_high)
             println("    # \"$(nm)\"  — label $(cc.label) not present in mask, skipped")
@@ -1579,7 +1594,11 @@ acquisition's rod HUs.
 # ╟─0400000a-0000-4000-8000-000000000001
 # ╠═0400000a-0000-4000-8000-000000000010
 # ╟─0400000b-0000-4000-8000-000000000001
+# ╠═0400000b-0000-4000-8000-000000000005
+# ╠═0400000b-0000-4000-8000-000000000007
 # ╠═0400000b-0000-4000-8000-000000000010
+# ╟─0400000b-0000-4000-8000-000000000020
+# ╟─0400000b-0000-4000-8000-000000000030
 # ╟─04000006-0000-4000-8000-000000000001
 # ╠═04000006-0000-4000-8000-000000000005
 # ╠═04000006-0000-4000-8000-000000000010
@@ -1597,7 +1616,8 @@ acquisition's rod HUs.
 # ╟─0400000d-0000-4000-8000-000000000040
 # ╠═0400000d-0000-4000-8000-000000000050
 # ╠═0400000d-0000-4000-8000-000000000060
-# ╠═0400000d-0000-4000-8000-000000000070
+# ╟─0400000d-0000-4000-8000-000000000063
+# ╠═0400000d-0000-4000-8000-000000000074
 # ╟─0400000d-0000-4000-8000-000000000080
 # ╟─0400000e-0000-4000-8000-000000000001
 # ╠═0400000e-0000-4000-8000-000000000010
@@ -1610,10 +1630,12 @@ acquisition's rod HUs.
 # ╟─04000011-0000-4000-8000-000000000010
 # ╟─04000012-0000-4000-8000-000000000001
 # ╠═04000012-0000-4000-8000-000000000010
+# ╟─04000012-0000-4000-8000-000000000020
 # ╟─04000013-0000-4000-8000-000000000001
 # ╟─04000013-0000-4000-8000-000000000010
 # ╟─04000014-0000-4000-8000-000000000001
 # ╠═7b51f797-15cc-408d-a7a8-2fdb8df3f5ba
+# ╠═82f8e413-935f-4823-99cb-23467cfba6eb
 # ╟─04000014-0000-4000-8000-000000000010
 # ╟─04000015-0000-4000-8000-000000000001
 # ╟─04000015-0000-4000-8000-000000000010

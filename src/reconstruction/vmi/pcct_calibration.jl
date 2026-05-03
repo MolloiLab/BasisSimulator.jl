@@ -211,3 +211,75 @@ function apply_pcct_vmi_poly(
 end
 
 export calibrate_pcct_vmi_poly, apply_pcct_vmi_poly!, apply_pcct_vmi_poly
+
+
+# =============================================================================
+# Image-domain VMI calibration constants — Siemens Naeotom Alpha
+# =============================================================================
+#
+# Each constant encodes the four parameters of the iodine-basis Ding image-
+# domain decomposition + VMI synthesis:
+#
+#     c_iodine[v]  = a₀ + a₁·HU_low[v] + a₂·HU_high[v]                    (mg/mL)
+#     HU_E[v]      = HU_low[v] + c_iodine[v] · (μρ_I(E)/μρ_water(E) − α_iod_low_cal)
+#
+# Values were derived in `docs/notebooks/04_pcct_vmi.jl` by alternating-LSQ
+# minimization of per-rod relative-error nRMSE across all 4 VMI energies
+# (40 / 70 / 100 / 140 keV) and all 14 Gammex 472 rods (water + 7 I + 7 Ca),
+# with material/energy weights all 1.0 and `nrmse_floor = 100 HU`.
+#
+# Scope of validity per const:
+#   - Scanner    : Siemens Naeotom Alpha PCCT (DRM / bowtie / bin layout)
+#   - Bin pair   : (1+2) low / (3+4) high
+#   - Body size  : ~30–40 cm water-path hardening (Gammex 472 body cylinder)
+#   - Recon      : FBP, RSKR-2ch (n_iter=2, h_param=2, radius=3, γ=0.5),
+#                  system noise floor 15 HU
+#   - Synthesis  : iodine basis (XA.Elements.Iodine vs XA.Materials.water)
+#
+# For other scanners / kVp / bin configs, re-derive in nb04.
+
+"""
+    SIEMENS_NAEOTOM_120KVP_VMI_CAL
+
+Image-domain VMI calibration for Siemens Naeotom Alpha PCCT @ 120 kVp.
+
+Source: nb04 protocol matching nb07 Scan 4 (120 kVp / 253 mA / 10.15 mGy
+CTDIvol / 1200 views / Ti 0.9 filter).
+"""
+const SIEMENS_NAEOTOM_120KVP_VMI_CAL = (
+    coeffs        = Float32[-3.163543, 0.1017283, -0.08860295],
+    α_iod_low_cal = 23.99152f0,
+)
+
+"""
+    SIEMENS_NAEOTOM_140KVP_VMI_CAL
+
+Image-domain VMI calibration for Siemens Naeotom Alpha PCCT @ 140 kVp.
+
+Source: nb04 protocol matching nb07 Scan 2 (140 kVp / 174 mA / 10.12 mGy
+CTDIvol / 1200 views / Ti 0.9 filter).
+"""
+const SIEMENS_NAEOTOM_140KVP_VMI_CAL = (
+    coeffs        = Float32[-3.649788, 0.1073481, -0.09363888],
+    α_iod_low_cal = 22.013601f0,
+)
+
+"""
+    pcct_vmi_cal_for(kVp::Real)
+
+Look up the image-domain VMI calibration constant for a given Siemens
+Naeotom Alpha tube voltage.  Throws if the kVp isn't calibrated here.
+"""
+function pcct_vmi_cal_for(kVp::Real)
+    k = Int(round(kVp))
+    if k == 120
+        return SIEMENS_NAEOTOM_120KVP_VMI_CAL
+    elseif k == 140
+        return SIEMENS_NAEOTOM_140KVP_VMI_CAL
+    else
+        error("pcct_vmi_cal_for: no calibration available for $(k) kVp " *
+              "(have: 120, 140). Re-derive in docs/notebooks/04_pcct_vmi.jl.")
+    end
+end
+
+export SIEMENS_NAEOTOM_120KVP_VMI_CAL, SIEMENS_NAEOTOM_140KVP_VMI_CAL, pcct_vmi_cal_for
