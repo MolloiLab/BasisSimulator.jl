@@ -273,8 +273,8 @@ Source: nb03 protocol matching the clinical Apex Elite GSI acquisition
 rotation, 5 mm collimation, 2.5 mm Al flat filter + 4.5 mm Al additional).
 """
 const GE_REVOLUTION_APEX_ELITE_80_140KVP_DE_VMI_CAL = (
-    coeffs        = Float32[-0.217, 0.06409, -0.06977],
-    α_iod_low_cal = 25.01f0,
+    coeffs        = Float32[-0.015, 0.04588, -0.05301],
+    α_iod_low_cal = 45.09f0,
 )
 
 """
