@@ -231,3 +231,70 @@ export GE_REVOLUTION_APEX_ELITE_DE_CAL,
        SIEMENS_NAEOTOM_ALPHA_120KVP_CAL,
        iodine_calibration_rods,
        calcium_calibration_rods
+
+
+# =============================================================================
+# Image-domain DE VMI optimized hyperparameters — GE Revolution Apex Elite GSI
+# =============================================================================
+#
+# Each const encodes the four parameters of the iodine-basis Ding image-
+# domain decomposition + VMI synthesis:
+#
+#     c_iodine[v]  = a₀ + a₁·HU_low[v] + a₂·HU_high[v]                  (mg/mL)
+#     HU_E[v]      = HU_low[v] + c_iodine[v] · (μρ_I(E)/μρ_water(E) − α_iod_low_cal)
+#
+# Values were derived in `docs/notebooks/03_dual_kvp_vmi.jl` §11 by BFGS
+# minimization (Optim.jl, analytical gradient) of per-rod relative-error
+# nRMSE across all 4 VMI energies (40 / 70 / 100 / 140 keV) and all 14
+# Gammex 472 rods (water + 7 I + 7 Ca), with material/energy weights all
+# 1.0 and `nrmse_floor = 100 HU`.  Corresponding nb04 PCCT cal in
+# `src/reconstruction/vmi/pcct_calibration.jl`.
+#
+# Pipeline scope per const:
+#   - Scanner    : GE Revolution Apex Elite (large bowtie / Lumex detector)
+#   - kVp pair   : rapid-switching GSI (low / high listed below)
+#   - Body size  : ~33 cm water-path hardening (Gammex 472 body cylinder)
+#   - Recon      : sino-BHC (per-column, bowtie-aware) → FBP → RSKR-2ch
+#                  (n_iter=2, h_param=2, radius=3, γ=0.5) → radial cupping
+#                  → measured center-ROI μ_water → to_hounsfield + 28 HU
+#                  noise floor → Ding decomp + 7-slice z-median
+#   - Synthesis  : iodine basis (XA.Elements.Iodine vs XA.Materials.water)
+#
+# For other scanners / kVp pairs / body sizes, re-derive in nb03 §11.
+
+"""
+    GE_REVOLUTION_APEX_ELITE_80_140KVP_DE_VMI_CAL :: NamedTuple
+
+Image-domain DE VMI calibration for GE Revolution Apex Elite GSI at the
+80 / 140 kVp rapid-switching pair.
+
+Source: nb03 protocol matching the clinical Apex Elite GSI acquisition
+(80 kVp / 264.55 mA-eff, 140 kVp / 141.75 mA-eff, 984 views, 0.5 s
+rotation, 5 mm collimation, 2.5 mm Al flat filter + 4.5 mm Al additional).
+"""
+const GE_REVOLUTION_APEX_ELITE_80_140KVP_DE_VMI_CAL = (
+    coeffs        = Float32[-0.217, 0.06409, -0.06977],
+    α_iod_low_cal = 25.01f0,
+)
+
+"""
+    de_vmi_cal_for(scanner::Symbol, low_kVp::Real, high_kVp::Real)
+        -> NamedTuple
+
+Lookup helper for image-domain DE VMI calibrations.  Throws if no cal is
+registered for the requested `(scanner, low_kVp, high_kVp)` combo —
+re-derive in `docs/notebooks/03_dual_kvp_vmi.jl` §11 with
+`optim_knob.enabled = true`.
+"""
+function de_vmi_cal_for(scanner::Symbol, low_kVp::Real, high_kVp::Real)
+    klo = round(Int, low_kVp)
+    khi = round(Int, high_kVp)
+    if scanner == :ge_revolution_apex_elite && klo == 80 && khi == 140
+        return GE_REVOLUTION_APEX_ELITE_80_140KVP_DE_VMI_CAL
+    else
+        error("de_vmi_cal_for: no calibration available for scanner=$(scanner), " *
+              "($(klo), $(khi)) kVp pair.  Re-derive in nb03 §11 (see docstring above).")
+    end
+end
+
+export GE_REVOLUTION_APEX_ELITE_80_140KVP_DE_VMI_CAL, de_vmi_cal_for

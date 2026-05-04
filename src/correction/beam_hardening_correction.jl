@@ -628,23 +628,80 @@ struct TwoMaterialBHCPerColumn
 end
 
 """
-    calibrate_bhc_two_material(energies, weights; kwargs...) -> TwoMaterialBHC
-    calibrate_bhc_two_material(energies, weights_per_col; kwargs...) -> TwoMaterialBHCPerColumn
+    calibrate_bhc_two_material(sim_opts, protocol; scanner, geom, kwargs...)
+        -> TwoMaterialBHCPerColumn
 
-Calibrate two-material BHC from a spectrum.
+**Recommended high-level entry — bowtie-aware by construction.**
+Auto-resolves the bowtie-hardened source spectrum via
+[`resolve_source_spectrum_with_bowtie`](@ref), collapses to per-column
+weights via [`bhc_spectrum_per_column`](@ref), and dispatches to the
+per-column polynomial fit (`TwoMaterialBHCPerColumn`).  This captures
+the column-dependent spectral shaping that any modern bowtie filter
+imposes — a single global polynomial leaves residual radial cupping
+behind that this path eliminates.
 
-- Passing `weights::Vector` returns a single-polynomial `TwoMaterialBHC`.
-- Passing `weights::Matrix` of shape `[n_E, n_col]` returns a
-  `TwoMaterialBHCPerColumn` with one polynomial fit per column — that's the
-  bowtie-aware path.  Build the matrix from
-  `resolve_source_spectrum_with_bowtie(...)` output (collapse the row axis
-  first — bowtie varies primarily with fan angle, not row).
+If `reference_energy_keV` is `nothing` (default), it's set to the
+column-mean spectrum's mean energy so all columns share a single
+mono-equivalent target after BHC.
 
-The material μ(E) tables, HU thresholds, and the global `μ_water_ref` /
-`μ_bone_ref` at `reference_energy_keV` are shared across all columns in the
-bowtie-aware case — only the polynomial coefficients and per-column
-normalized spectrum differ.
+# Example
+```julia
+bhc = calibrate_bhc_two_material(
+    sim_opts, protocol;
+    scanner = scanner, geom = ws.geom,
+    order   = 2,
+    hu_low  = 450.0,
+    hu_high = 600.0,
+)
+```
+
+    calibrate_bhc_two_material(energies, weights_per_col::AbstractMatrix; kwargs...)
+        -> TwoMaterialBHCPerColumn
+
+Lower-level variant when you already have a per-column 2-D spectrum
+matrix (`[n_E, n_col]`) — same path the high-level method dispatches
+into.
+
+    calibrate_bhc_two_material(energies, weights::Vector; kwargs...)  [DEPRECATED]
+        -> TwoMaterialBHC
+
+Single-spectrum variant — bowtie-naïve.  Emits a deprecation warning;
+the bowtie-aware variants are objectively more accurate when any bowtie
+is present (which is almost always).
 """
+function calibrate_bhc_two_material(
+    sim_opts,
+    protocol;
+    scanner,
+    geom,
+    order::Int = 5,
+    max_path_cm::Real = 50.0,
+    n_points::Int = 100,
+    reference_energy_keV::Union{Nothing, Real} = nothing,
+    hu_low::Real = 100.0,
+    hu_high::Real = 500.0,
+)
+    e, ŵ = resolve_source_spectrum_with_bowtie(
+        sim_opts, protocol; scanner = scanner, geom = geom,
+    )
+    e, w_col = bhc_spectrum_per_column(e, ŵ)
+
+    ref_E = reference_energy_keV === nothing ? begin
+        w_mean = vec(sum(w_col; dims = 2)) ./ size(w_col, 2)
+        sum(e .* w_mean) / sum(w_mean)
+    end : Float64(reference_energy_keV)
+
+    return calibrate_bhc_two_material(
+        e, w_col;
+        order = order,
+        max_path_cm = max_path_cm,
+        n_points = n_points,
+        reference_energy_keV = ref_E,
+        hu_low = hu_low,
+        hu_high = hu_high,
+    )
+end
+
 function calibrate_bhc_two_material(
     energies::Vector,
     weights::Vector;
@@ -655,6 +712,14 @@ function calibrate_bhc_two_material(
     hu_low::Real = 100.0,
     hu_high::Real = 500.0
 )
+    Base.depwarn(
+        "calibrate_bhc_two_material(energies, weights::Vector; ...) is deprecated " *
+        "(bowtie-naïve).  Use the bowtie-aware variants instead:\n" *
+        "  • High-level: calibrate_bhc_two_material(sim_opts, protocol; scanner, geom, ...)\n" *
+        "  • Lower-level: calibrate_bhc_two_material(energies, w_col::Matrix; ...) " *
+        "where w_col comes from bhc_spectrum_per_column(resolve_source_spectrum_with_bowtie(...)).",
+        :calibrate_bhc_two_material,
+    )
     water_bhc = calibrate_bhc(energies, weights;
         order=order, max_path_cm=max_path_cm,
         n_points=n_points, reference_energy_keV=reference_energy_keV)

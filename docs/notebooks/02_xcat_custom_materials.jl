@@ -615,41 +615,46 @@ both FBP and HIR pipelines below for `to_hounsfield`.
 """
 
 # ╔═╡ 09000004-0000-4000-8000-000000000001
-bhc_calibration = let
+bhc_calibration = sim === nothing ? nothing : let
     prot_for_bhc = BS.CTProtocol(kVp = 120, additional_filters = [("Al", 4.5)])
-    e, w = BS.resolve_source_spectrum_without_bowtie(
-        sim_opts, prot_for_bhc;
-        scanner = scanner
-    )
-    ref_E = sum(e .* w) / sum(w)
 
+    # Bowtie-aware high-level API: auto-resolves the bowtie-hardened spectrum,
+    # collapses to per-column weights, and dispatches to TwoMaterialBHCPerColumn.
     model = BS.calibrate_bhc_two_material(
-        e, w;
-        order = 2,
-        reference_energy_keV = ref_E,
-        hu_low = 450.0,
+        sim_opts, prot_for_bhc;
+        scanner = scanner, geom = sim.geom,
+        order   = 2,
+        hu_low  = 450.0,
         hu_high = 600.0,
     )
 
-    (model = model, μ_water = model.μ_water_ref, ref_E_keV = ref_E)
+    (
+        model     = model,
+        μ_water   = model.μ_water_ref,
+        ref_E_keV = model.reference_energy_keV,
+    )
 end;
 
 # ╔═╡ 09000005-0000-4000-8000-000000000001
 md"""
 **Calibrated:**
-* ref energy = $(round(bhc_calibration.ref_E_keV, digits = 1)) keV,
-* lac water = $(round(bhc_calibration.μ_water, digits = 5)) cm⁻¹.
+* ref energy = $(bhc_calibration === nothing ? "—" : round(bhc_calibration.ref_E_keV, digits = 1)) keV,
+* lac water = $(bhc_calibration === nothing ? "—" : round(bhc_calibration.μ_water, digits = 5)) cm⁻¹.
 """
 
 # ╔═╡ 09000006-0000-4000-8000-000000000001
 md"""
-#### 7b. Polychromatic `μ_water` from the XCAT body
+#### 7b. Polychromatic `μ_water` from the XCAT body — *informational*
 
-The BHC's `μ_water_ref` above is the monoenergetic μ_water at the
-spectrum-mean energy.  For the final `to_hounsfield` step (§8 + §9),
-we use the **polychromatic-effective** μ_water instead — the value
-the FBP recon actually produces for solid water, accounting for
-beam hardening through the body.
+The BHC's `μ_water_ref` above (the monoenergetic μ_water at the
+spectrum-mean energy) is what §8 + §9 use as the HU divisor — that's
+the right reference *post-BHC*, where the recon reads as approximately
+monochromatic at `ref_E_keV`.
+
+For comparison, here's what the **polychromatic-effective** μ_water
+would be — the value an *uncorrected* polychromatic FBP would land on
+for solid water at this body chord.  Useful as a sanity check; not
+plumbed into `to_hounsfield`.
 
 [`BS.compute_polychromatic_μ_water`](@ref) does the spectrum + Beer-
 Lambert hardening analytically; [`BS.estimate_phantom_diameter_cm`](@ref)
@@ -659,7 +664,7 @@ vfemale_50, etc.) without hardcoding any cm.
 """
 
 # ╔═╡ 09000006-0000-4000-8000-000000000010
-μ_water_recon = phantom === nothing ? nothing : let
+μ_water_poly_uncorrected = phantom === nothing ? nothing : let
         voxel_size_mm = VOXEL_SIZE_CM .* 10.0
         body_diameter_cm = BS.estimate_phantom_diameter_cm(
             phantom_labeled, voxel_size_mm
@@ -674,9 +679,10 @@ end;
 
 # ╔═╡ 09000006-0000-4000-8000-000000000020
 md"""
-**Analytic poly μ_water** (XCAT body chord through the center voxel):
+**Analytic poly μ_water** (XCAT body chord, no-BHC reference for comparison):
 
-* `μ_water_recon = ` $(μ_water_recon === nothing ? "—" : "$(round(μ_water_recon, digits = 5)) cm⁻¹")
+* `μ_water_poly_uncorrected = ` $(μ_water_poly_uncorrected === nothing ? "—" : "$(round(μ_water_poly_uncorrected, digits = 5)) cm⁻¹")
+* `bhc_calibration.μ_water = ` $(bhc_calibration === nothing ? "—" : "$(round(bhc_calibration.μ_water, digits = 5)) cm⁻¹") *(used downstream)*
 """
 
 # ╔═╡ 09000010-0000-4000-8000-000000000001
@@ -685,10 +691,9 @@ md"""
 
 Same `let ... end` shape as notebook 01 — sino BHC → FDK → image BHC →
 HU → noise floor → cupping, with explicit GPU cleanup at the end.
-HU conversion uses `μ_water_recon` (the XCAT-derived analytic
-poly-effective value from §7b), which makes solid water read ≈ 0 HU
-under our polychromatic FBP without monoenergetic-equivalent BHC
-post-correction.
+HU conversion uses `bhc_calibration.μ_water` (the BHC's calibrated
+`μ_water_ref` at the spectrum-mean energy), since the post-BHC recon
+reads as approximately monochromatic at that reference.
 """
 
 # ╔═╡ 09000002-0000-4000-8000-000000000001
@@ -716,8 +721,8 @@ hu_fbp = sim === nothing ? nothing : let
             volume_extent = phantom.extent,
         )
 
-        # 4. μ → HU using BHC's calibrated μ_water (Float32 for cupping correction)
-        hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = μ_water_recon))
+        # 4. μ → HU using BHC's calibrated μ_water_ref (Float32 for cupping correction)
+        hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc_calibration.μ_water))
 
         # 5. Dose-independent DAS noise floor
         BS.add_system_noise_floor!(hu, 28.0; seed = 1234)
@@ -780,8 +785,8 @@ hu_hir = sim === nothing ? nothing : let
             volume_extent = phantom.extent,
         )
 
-        # 4. μ → HU
-        hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = μ_water_recon))
+        # 4. μ → HU using BHC's calibrated μ_water_ref
+        hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc_calibration.μ_water))
 
         # 5. Noise floor (different seed so noise pattern doesn't match FBP)
         BS.add_system_noise_floor!(hu, 28.0; seed = 5678)

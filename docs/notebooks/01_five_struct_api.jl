@@ -632,21 +632,22 @@ becomes our reference for `to_hounsfield`).
 # ╔═╡ 09000006-0000-4000-8000-000000000001
 bhc_calibration = let
     prot_for_bhc = BS.CTProtocol(kVp = 120, additional_filters = [("Al", 4.5)])
-    e, w = BS.resolve_source_spectrum_without_bowtie(
-        sim_opts, prot_for_bhc;
-        scanner = scanner
-    )
-    ref_E = sum(e .* w) / sum(w)
 
+    # Bowtie-aware high-level API: auto-resolves the bowtie-hardened spectrum,
+    # collapses to per-column weights, and dispatches to TwoMaterialBHCPerColumn.
     model = BS.calibrate_bhc_two_material(
-        e, w;
-        order = 2,
-        reference_energy_keV = ref_E,
-        hu_low = 450.0,   # bone-segmentation lower threshold (HU)
+        sim_opts, prot_for_bhc;
+        scanner = scanner, geom = sim_std.geom,
+        order   = 2,
+        hu_low  = 450.0,   # bone-segmentation lower threshold (HU)
         hu_high = 600.0,   # bone-segmentation upper threshold (HU)
     )
 
-    (model = model, μ_water = model.μ_water_ref, ref_E_keV = ref_E)
+    (
+        model     = model,
+        μ_water   = model.μ_water_ref,
+        ref_E_keV = model.reference_energy_keV,
+    )
 end;
 
 # ╔═╡ 09000007-0000-4000-8000-000000000001

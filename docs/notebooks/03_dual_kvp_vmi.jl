@@ -1,8 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.20.24
-
-using Markdown
-using InteractiveUtils
+# v0.19.0
 
 # ╔═╡ 03000001-0000-4000-8000-000000000001
 begin
@@ -58,6 +55,9 @@ import BasisSimulator as BS
 
 # ╔═╡ 03000001-0000-4000-8000-000000000031
 import CairoMakie as CM
+
+# ╔═╡ 03000001-0000-4000-8000-000000000032
+import Optim
 
 # ╔═╡ 03000001-0000-4000-8000-000000000040
 begin
@@ -263,26 +263,124 @@ end;
 
 # ╔═╡ 03000009-0000-4000-8000-000000000001
 md"""
-## 7. FBP per kVp → μ-domain volumes
+## 7. Per-kVp sino BHC + FBP → μ-domain volumes
 
-The image-domain pipeline reconstructs **each kVp into its own μ-volume
-(cm⁻¹)** with the GE-tuned apodization filter
-`(0.0, 0.25, 0.5, 0.75, 1.0) → (1.0, 0.95, 0.85, 0.65, 0.4)`.  HU
-conversion is **deferred** to after RSKR (§9) so the joint denoiser
-operates on the raw μ pair — that's where iodine and water noise are
-maximally anti-correlated, which RSKR exploits.
+Two stages, per kVp:
 
-No BHC is applied here — the spectrum stays polychromatic so the Ding
-calibration's cross-spectrum coefficients (§11) can absorb the
-beam-hardening implicitly.
+1. **Sinogram-domain BHC** ([`BS.calibrate_bhc_two_material`](@ref) →
+   [`BS.apply_bhc_two_material`](@ref)) — water+bone polynomial fit
+   from the per-kVp source spectrum, applied to each line integral.
+   Removes the bulk polychromatic bias before reconstruction.
+2. **FDK** with the GE-tuned apodization filter
+   `(0.0, 0.25, 0.5, 0.75, 1.0) → (1.0, 0.95, 0.85, 0.65, 0.4)`.
+
+We deliberately stop after sino BHC — no image-domain BHC refinement,
+no cupping correction (yet) — to keep the pipeline μ-domain-only between
+here and §10's HU conversion.  HU conversion is still **deferred** until
+after RSKR (§9) so the joint denoiser operates on the raw μ pair where
+iodine and water noise are maximally anti-correlated.
+
+The §11 Ding calibration table (`GE_REVOLUTION_APEX_ELITE_DE_CAL`) was
+measured on *uncorrected* polychromatic post-RSKR HU.  With sino BHC
+inserted here the rod HU baselines shift slightly, so the cal will be
+mildly off until it's recalibrated against this notebook's actual rod
+HUs — the §16 regression will tell us how much.
+"""
+
+# ╔═╡ 03000009-0000-4000-8000-000000000003
+# Sinogram-BHC toggle.  `enabled = true`  ⇒ apply per-column BHC pre-FDK
+# and use BHC's mono `μ_water_ref` as the HU divisor in §10 (recon reads
+# as approximately monochromatic at ref_E).  `enabled = false` ⇒ pass
+# the raw sinogram straight to FDK and use a phantom-hardened
+# polychromatic μ_water as the HU divisor (the OLD nb03 behavior).
+# Cupping/RSKR/decomp/VMI/Mono+ are unaffected — they consume whatever
+# μ/HU volumes come out of the upstream stages.
+bhc_knob = (
+    enabled = true,
+);
+
+# ╔═╡ 03000009-0000-4000-8000-000000000004
+md"""
+### 7a. Per-kVp BHC calibration (bowtie-aware)
+
+One BHC model per kVp via the high-level
+[`BS.calibrate_bhc_two_material(sim_opts, protocol; scanner, geom, …)`](@ref)
+entry — auto-resolves the bowtie-hardened source spectrum, collapses to
+per-column weights, and fits one polynomial per detector column
+(`TwoMaterialBHCPerColumn`).  This captures the GE Revolution large
+bowtie's column-dependent spectral shaping exactly; a single global
+polynomial would leave residual radial cupping behind that no amount of
+downstream correction recovers cleanly.
+
+We always compute both:
+* `μ_water_mono` — BHC's calibrated `μ_water_ref` at the column-mean
+  spectrum's mean energy.  HU divisor when `bhc_knob.enabled = true`.
+* `μ_water_poly` — phantom-hardened polychromatic-effective μ_water from
+  [`BS.compute_polychromatic_μ_water`](@ref), with `water_path_cm` pulled
+  from the actual phantom mask.  HU divisor when `bhc_knob.enabled = false`.
+
+§8 picks whichever matches the active toggle.
+"""
+
+# ╔═╡ 03000009-0000-4000-8000-000000000007
+bhc_cal = let
+    body_diameter_cm = BS.estimate_phantom_diameter_cm(
+        phantom_cpu.mask, phantom_cpu.voxel_size .* 10.0,
+    )
+
+    function _calibrate(protocol, geom)
+        model = BS.calibrate_bhc_two_material(
+            sim_opts, protocol;
+            scanner = scanner, geom = geom,
+            order   = 5,
+            hu_low  = 450.0,
+            hu_high = 600.0,
+        )
+        μ_water_poly = BS.compute_polychromatic_μ_water(
+            sim_opts, protocol;
+            scanner = scanner, geom = geom,
+            water_path_cm = body_diameter_cm,
+        )
+        (
+            model         = model,
+            μ_water_mono  = model.μ_water_ref,       # post-BHC HU divisor
+            μ_water_poly  = μ_water_poly,            # no-BHC HU divisor
+            ref_E_keV     = model.reference_energy_keV,
+        )
+    end
+    Dict(
+        80  => _calibrate(protocol_low,  sim_low.geom),
+        140 => _calibrate(protocol_high, sim_high.geom),
+    )
+end;
+
+# ╔═╡ 03000009-0000-4000-8000-000000000008
+md"""
+**Calibrated:**  *(active divisor highlighted by the toggle)*
+
+* 80 kVp:  ref energy = $(round(bhc_cal[80].ref_E_keV,  digits = 1)) keV  ·  μ_water_mono = $(round(bhc_cal[80].μ_water_mono,  digits = 5))  ·  μ_water_poly = $(round(bhc_cal[80].μ_water_poly,  digits = 5)) cm⁻¹
+* 140 kVp: ref energy = $(round(bhc_cal[140].ref_E_keV, digits = 1)) keV  ·  μ_water_mono = $(round(bhc_cal[140].μ_water_mono, digits = 5))  ·  μ_water_poly = $(round(bhc_cal[140].μ_water_poly, digits = 5)) cm⁻¹
+
+**`bhc_knob.enabled = $(bhc_knob.enabled)`** → §10 uses **`μ_water_$(bhc_knob.enabled ? "mono" : "poly")`**.
 """
 
 # ╔═╡ 03000009-0000-4000-8000-000000000010
-de_lohi_μ = let
+de_lohi_μ_raw = let
     matrix_size = recon_opts.matrix_size
 
-    function _fbp_to_μ(sino_cpu, geom)
+    function _bhc_fbp_to_μ(sino_cpu, geom, bhc)
         sino_gpu = to_gpu(Float32.(sino_cpu))
+
+        # 1. Sinogram-domain BHC — gated by `bhc_knob.enabled`.
+        if bhc_knob.enabled
+            sino_bhc = BS.apply_bhc_two_material(
+                sino_gpu, bhc.model, geom, matrix_size;
+                volume_extent = phantom.extent,
+            )
+            sino_gpu = to_gpu(sino_bhc)
+        end
+
+        # 2. FDK with the GE-tuned apodization
         ws = BS.create_fdk_recon_workspace(
             sino_gpu, geom, matrix_size;
             filter = BS.CustomFilter(
@@ -291,68 +389,148 @@ de_lohi_μ = let
             ),
         )
         recon_μ = Array(BS.reconstruct!(ws, sino_gpu, geom, matrix_size))
+
         ws = nothing; sino_gpu = nothing
         GC.gc(true)
         return Float32.(recon_μ)
     end
 
-    vol_low_μ = _fbp_to_μ(sim_low.sino, sim_low.geom)
-    vol_high_μ = _fbp_to_μ(sim_high.sino, sim_high.geom)
+    vol_low_μ  = _bhc_fbp_to_μ(sim_low.sino,  sim_low.geom,  bhc_cal[80])
+    vol_high_μ = _bhc_fbp_to_μ(sim_high.sino, sim_high.geom, bhc_cal[140])
 
     (
-        vol_low_μ = vol_low_μ,
+        vol_low_μ  = vol_low_μ,
         vol_high_μ = vol_high_μ,
         geom = sim_low.geom,
     )
 end;
 
+# ╔═╡ 03000009-0000-4000-8000-000000000015
+md"""
+### 7c. Per-kVp radial cupping correction (μ-domain) — POST-RSKR
+
+Sino BHC removes the bulk polychromatic bias but leaves a residual
+radial cup/halo around the rod cluster.  RSKR (§9) denoises the μ pair
+first — operating on noisy data, the joint SVD + bilateral filter is
+where it should be — and **then** [`BS.apply_radial_capping_basis!`](@ref)
+flattens the radial profile per slice with an even polynomial in `r`,
+fit on **quantile-IQR background voxels** (so rods are excluded
+automatically — no HU thresholds, no hand-tuned masks).
+
+Runs in **μ-domain** so the cupping-corrected pair (`de_lohi_μ`) drives
+every downstream stage (HU → Ding decomp → VMI → Mono+) without any
+μ↔HU back-and-forth.  We `deepcopy` the RSKR volumes first so
+`de_lohi_rskr` stays available for inspection.
+"""
+
+# ╔═╡ 03000009-0000-4000-8000-000000000017
+# Radial cupping correction kwargs — play with these.
+#   fov_cm     ⇒ in-plane FOV (cm); pixel scale = fov_cm / nx
+#   poly_order ⇒ even-poly terms beyond c₀ (1=parabolic, 2=+r⁴, 3=+r⁶ stiffer)
+#   q_lo,q_hi  ⇒ in-FOV quantile range used as the "background" sample
+#                (defaults exclude the ~25% brightest + ~25% darkest voxels,
+#                which is enough to skip Gammex 472's rods + air ring)
+#   enabled    ⇒ flip to `false` to bypass cupping entirely (sets
+#                de_lohi_μ ≡ de_lohi_rskr)
+cupping_knob = (
+    enabled    = true,
+    fov_cm     = 35.0,
+    poly_order = 2,
+    q_lo       = 0.25,
+    q_hi       = 0.75,
+);
+
+# ╔═╡ 03000009-0000-4000-8000-000000000020
+de_lohi_μ = let
+    if !cupping_knob.enabled
+        de_lohi_rskr
+    else
+        vol_low_μ  = deepcopy(de_lohi_rskr.vol_low_μ)
+        vol_high_μ = deepcopy(de_lohi_rskr.vol_high_μ)
+        BS.apply_radial_capping_basis!(
+            vol_low_μ, vol_high_μ;
+            fov_cm     = cupping_knob.fov_cm,
+            poly_order = cupping_knob.poly_order,
+            q_lo       = cupping_knob.q_lo,
+            q_hi       = cupping_knob.q_hi,
+            verbose    = true,
+        )
+        (
+            vol_low_μ  = vol_low_μ,
+            vol_high_μ = vol_high_μ,
+            geom       = de_lohi_rskr.geom,
+        )
+    end
+end;
+
+# ╔═╡ 03000009-0000-4000-8000-000000000025
+# RSKR hyperparameters — play with these.  Drives §9's joint denoise (the
+# bottom row of the figure below).  Defaults match notebook 04 (Naeotom
+# Alpha PCCT VMI) exactly so cross-notebook noise behavior is directly
+# comparable.
+#   n_iter   ⇒ outer-loop iterations of the joint SVD + bilateral
+#   h_param  ⇒ bilateral filter strength (lower = less smoothing)
+#   radius   ⇒ neighborhood half-width in voxels
+#   γ        ⇒ singular-value soft-thresholding factor
+rskr_knob = (
+    n_iter  = 2,
+    h_param = 2,
+    radius  = 3,
+    γ       = 0.5,
+);
+
 # ╔═╡ 03000006-0000-4000-8000-000000000001
 md"""
-## 8. Per-kVp `μ_water` — analytic from source spectrum + phantom size
+## 8. Per-kVp `μ_water` — measured from the post-RSKR FBP
 
-We *don't* run BHC on the DE pipeline.  The image-domain Ding
-decomposition (§11) is fed polychromatic FBP HU; applying BHC first would
-"monoenergeticize" our HU volumes and break the spectral conditions the
-calibration is fit under.
+Forget analytic μ_water for now.  Just **measure** it: take an 8-px
+circular ROI at the phantom center of the post-RSKR μ-volume and use
+the mean as the HU divisor.  By construction this makes solid water
+read at exactly 0 HU after §10's `to_hounsfield` step — independent of
+any upstream BHC / cupping residuals.
 
-But that means we can't use a spectrum-mean monoenergetic μ_water as the
-HU reference: the polychromatic FBP produces an *effective* μ that's
-biased away from μ(mean_E) by beam hardening, so dividing by μ(mean_E)
-would make solid water read at ≈ −150 HU instead of 0.
+The center ROI is safely inside the 50 mm Ca inner ring + 105 mm I
+outer ring of the Gammex 472, so the sample is pure solid water.
+Summing across all z slices (rods are z-invariant cylinders) reduces
+noise without diluting signal.
 
-[`BS.compute_polychromatic_μ_water`](@ref) computes the right reference
-analytically: it resolves the bowtie-aware source spectrum (flat filter
-+ protocol filters + bowtie all included), pre-hardens it through
-`water_path_cm` of solid water via Beer-Lambert (the phantom radius is
-the typical one-way path length to a center voxel), then integrates
-μ_water(E) against the hardened spectrum.  Result: the same μ_water
-the FBP recon would estimate at phantom center, **without needing the
-recon volume**.
-
-For our Gammex 472 body (33 cm diameter), the relevant path is
-`water_path_cm = 16.5`.
+Both `bhc_cal[kVp].μ_water_mono` (BHC's mono-ref) and
+`bhc_cal[kVp].μ_water_poly` (phantom-hardened polychromatic) are still
+computed and available for inspection; they're just not what §10 uses
+right now.
 """
 
 # ╔═╡ 03000006-0000-4000-8000-000000000010
 kVp_μ_water = let
-    body_radius_cm = 16.5   # Gammex 472 body — 33 cm diameter / 2
+    nx, ny, nz = size(de_lohi_μ.vol_low_μ)
+    cx, cy     = nx / 2 + 0.5, ny / 2 + 0.5
+    ROI_R      = 8.0
+    r²         = ROI_R^2
+
+    roi = CartesianIndex{2}[]
+    i_lo = max(1, floor(Int, cx - ROI_R)); i_hi = min(nx, ceil(Int, cx + ROI_R))
+    j_lo = max(1, floor(Int, cy - ROI_R)); j_hi = min(ny, ceil(Int, cy + ROI_R))
+    for j in j_lo:j_hi, i in i_lo:i_hi
+        ((i - cx)^2 + (j - cy)^2) ≤ r² && push!(roi, CartesianIndex(i, j))
+    end
+
+    function _mean_μ(vol)
+        s = 0.0; n = 0
+        for z in 1:nz, ci in roi
+            s += vol[ci, z]; n += 1
+        end
+        s / n
+    end
+
     Dict(
-        80 => BS.compute_polychromatic_μ_water(
-            sim_opts, protocol_low;
-            scanner = scanner, geom = sim_low.geom,
-            water_path_cm = body_radius_cm * 2
-        ),
-        140 => BS.compute_polychromatic_μ_water(
-            sim_opts, protocol_high;
-            scanner = scanner, geom = sim_high.geom,
-            water_path_cm = body_radius_cm * 2
-        ),
+        80  => Float64(_mean_μ(de_lohi_μ.vol_low_μ)),
+        140 => Float64(_mean_μ(de_lohi_μ.vol_high_μ)),
     )
 end;
 
 # ╔═╡ 03000006-0000-4000-8000-000000000020
 md"""
-lac water (80 kVp) = $(round(kVp_μ_water[80],  digits = 5)) cm⁻¹  || 
+lac water (80 kVp) = $(round(kVp_μ_water[80],  digits = 5)) cm⁻¹  ||
 lac water (140 kVp) = $(round(kVp_μ_water[140], digits = 5)) cm⁻¹
 """
 
@@ -384,20 +562,67 @@ de_lohi_rskr = let
     # ROCm kernels on a GPU, threaded CPU loops with `identity`.  Same
     # source, any backend.
     out = BS.apply_rskr(
-        [de_lohi_μ.vol_low_μ, de_lohi_μ.vol_high_μ];
-        n_iter = 2,
-        h_param = 2.0,
-        radius = 2,
-        γ = 0.5,
+        [de_lohi_μ_raw.vol_low_μ, de_lohi_μ_raw.vol_high_μ];
+        n_iter  = rskr_knob.n_iter,
+        h_param = rskr_knob.h_param,
+        radius  = rskr_knob.radius,
+        γ       = rskr_knob.γ,
         gpu_arr_type = GPU_BACKEND.to_gpu,
         verbose = true,
     )
     (
         vol_low_μ = out[1],
         vol_high_μ = out[2],
-        geom = de_lohi_μ.geom,
+        geom = de_lohi_μ_raw.geom,
     )
 end;
+
+# ╔═╡ 03000009-0000-4000-8000-000000000030
+let
+    HU_window = (-200, 500)
+
+    fig = CM.Figure(size = (1100, 1080))
+    title_kwargs = (titlesize = 28, subtitlesize = 20)
+
+    mid = size(de_lohi_μ_raw.vol_low_μ, 3) ÷ 2
+
+    # RSKR runs in μ (joint covariance lives there), but display in HU since
+    # that's the unit §12's Ding decomp consumes.  Slice-only conversion
+    # keeps the cell's residency small.  No system noise floor here — that
+    # gets added in §10.  Top row reads `de_lohi_μ_raw` (sino-BHC + FBP,
+    # PRE radial cupping); bottom row reads `de_lohi_μ` (post-RSKR + post-
+    # cupping — the final μ-volume that §10 converts to HU).  The figure
+    # shows the full cumulative transformation BHC+FBP → RSKR → cupping.
+    to_HU_slice(vol, kVp) = let μw = kVp_μ_water[kVp]
+        @. 1000.0f0 * (vol[:, :, mid] - μw) / μw
+    end
+
+    panels = (
+        (1, 1, "80 kVp",  "BHC + FBP — raw",     to_HU_slice(de_lohi_μ_raw.vol_low_μ,  80)),
+        (1, 2, "140 kVp", "BHC + FBP — raw",     to_HU_slice(de_lohi_μ_raw.vol_high_μ, 140)),
+        (2, 1, "80 kVp",  "post-RSKR + cupping", to_HU_slice(de_lohi_μ.vol_low_μ,      80)),
+        (2, 2, "140 kVp", "post-RSKR + cupping", to_HU_slice(de_lohi_μ.vol_high_μ,     140)),
+    )
+
+    hms = nothing
+    for (r, c, ttl, sub, slice) in panels
+        ax = CM.Axis(
+            fig[r, c];
+            title = ttl, subtitle = sub,
+            aspect = CM.DataAspect(),
+            title_kwargs...,
+        )
+        hms = CM.heatmap!(
+            ax, slice;
+            colormap = :grays, colorrange = HU_window,
+        )
+        CM.hidedecorations!(ax)
+    end
+
+    CM.Colorbar(fig[1:2, 3], hms; label = "HU", width = 14, labelsize = 18)
+
+    fig
+end
 
 # ╔═╡ 03000011-0000-4000-8000-000000000001
 md"""
@@ -410,11 +635,11 @@ pipeline in notebook 01).
 
 # ╔═╡ 03000011-0000-4000-8000-000000000010
 de_lohi_HU = let
-    vol_low_HU = Float32.(BS.to_hounsfield(de_lohi_rskr.vol_low_μ; μ_water = kVp_μ_water[80]))
-    vol_high_HU = Float32.(BS.to_hounsfield(de_lohi_rskr.vol_high_μ; μ_water = kVp_μ_water[140]))
+    vol_low_HU = Float32.(BS.to_hounsfield(de_lohi_μ.vol_low_μ; μ_water = kVp_μ_water[80]))
+    vol_high_HU = Float32.(BS.to_hounsfield(de_lohi_μ.vol_high_μ; μ_water = kVp_μ_water[140]))
     BS.add_system_noise_floor!(vol_low_HU, 28.0; seed = 1234)
     BS.add_system_noise_floor!(vol_high_HU, 28.0; seed = 5678)
-    (vol_low_HU = vol_low_HU, vol_high_HU = vol_high_HU, geom = de_lohi_rskr.geom)
+    (vol_low_HU = vol_low_HU, vol_high_HU = vol_high_HU, geom = de_lohi_μ.geom)
 end;
 
 # ╔═╡ 03000012-0000-4000-8000-000000000001
@@ -428,87 +653,240 @@ linear function of the two HU volumes:
 c_iodine[v] = a₀ + a₁ · HU_80[v] + a₂ · HU_140[v]    [mg/mL]
 ```
 
-`(a₀, a₁, a₂)` are LSQ-fit from a calibration table of known rods
-(water + 7 iodine concentrations).  The constant
-[`BS.GE_REVOLUTION_APEX_ELITE_DE_CAL`](@ref) ships with per-rod HU
-measured on simulated 80/140 kVp **post-RSKR** FBP for exactly this
-phantom + scanner combo, so the cal coefficients absorb our simulator's
-polychromatic HU baseline by construction.
+Two paths, gated by `optim_knob.enabled`:
 
-[`BS.iodine_calibration_rods`](@ref) extracts the
-(HU_80, HU_140, mg/mL) tuples; [`BS.fit_ding_coeffs`](@ref) does the fit.
+* **`enabled = false`** — classic LSQ on iodine concentration via
+  [`BS.fit_ding_coeffs`](@ref), anchored on the
+  [`BS.GE_REVOLUTION_APEX_ELITE_DE_CAL`](@ref) cal-table HUs (frozen
+  values measured on the *uncorrected* polychromatic post-RSKR pipeline).
+  Coefficients absorb the polychromatic baseline by construction, but the
+  table doesn't track upstream pipeline changes (BHC / cupping / etc.).
+
+* **`enabled = true`** — direct optimization that finds `(a₀, a₁, a₂,
+  α_iod_low_cal)` minimizing **per-rod relative-error nRMSE between
+  measured VMI HU and theoretical** across all 4 VMI energies and all 14
+  Gammex 472 rods + water (the same loss nb04's PCCT cal optimizer used).
+  Solver is **BFGS** (`Optim.jl`) with closed-form analytical gradient —
+  the loss is smooth and bilinear in 4 params, so Newton-step search
+  handles the joint optimization in one shot.  Initial guess seeded from
+  `BS.fit_ding_coeffs` on iodine + water rods.  Self-calibrates against
+  this run's actual recon, so it picks up every upstream change
+  automatically.
 """
 
-# ╔═╡ 03000012-0000-4000-8000-000000000010
-de_cal = let
-    rods = BS.iodine_calibration_rods(
-        BS.GE_REVOLUTION_APEX_ELITE_DE_CAL;
-        hu_low_field = :HU_80kVp,
-        hu_high_field = :HU_140kVp,
+# ╔═╡ 03000012-0000-4000-8000-000000000005
+# # Calibration optimizer knobs — flip `enabled` to switch between the
+# # table-fit and the BFGS optimizer.
+# #   max_iter, tol     ⇒ BFGS stopping criteria (iterations cap, |Δf|/|Δx|/|∇| tols)
+# #   iodine_weight     ⇒ relative emphasis on the 7 iodine rods (2.0–20.0 mg/mL)
+# #   calcium_weight    ⇒ relative emphasis on the 7 calcium rods (50–600 mg/mL)
+# #   water_weight      ⇒ relative emphasis on the center-ROI water sample
+# #                       (set to 0 to remove water from the fit entirely;
+# #                       useful when BHC residual leaves water at a non-zero
+# #                       baseline that the iodine basis can't absorb)
+# #   energy_weights    ⇒ paired one-to-one with `de_vmi_energies`
+# #                       (40 / 70 / 100 / 140 keV) — bump the keV you most
+# #                       care about, e.g. (2.0, 1.0, 1.0, 0.5) prioritizes
+# #                       40 keV iodine contrast and de-emphasizes 140 keV
+# #   nrmse_floor       ⇒ HU floor on the relative-error denominator: a (rod,
+# #                       energy) loss term is `((HU_synth - HU_theo) /
+# #                       max(|HU_theo|, nrmse_floor))²`.  Without a floor,
+# #                       low-|HU_theo| rods (water, low-c iodine at high keV)
+# #                       blow up the loss and dominate the fit.  100 HU
+# #                       matches the d328e79 src comment for nb04's PCCT cal.
+# optim_knob = (
+#     enabled        = true,
+#     max_iter       = 200,
+#     tol            = 1.0e-8,
+#     iodine_weight  = 1.0,
+#     calcium_weight = 1.0,
+#     water_weight   = 1.0,
+#     energy_weights = (1.0, 1.0, 1.0, 1.0),   # ↔ (40, 70, 100, 140) keV
+#     nrmse_floor    = 100.0,
+# );
+
+# ╔═╡ 03000012-0000-4000-8000-000000000030
+md"""
+### 11b. Re-measure rod HUs from this run (cal-table refresh)
+
+The §11 fit is still anchored on `BS.GE_REVOLUTION_APEX_ELITE_DE_CAL`,
+which holds rod HUs measured against the **uncorrected** polychromatic
+post-RSKR pipeline.  Now that we run sino BHC + bowtie-aware + cupping
++ z-denoise upstream, the rod HU baselines have shifted.
+
+This cell re-measures the iodine + water rods straight off
+`de_lohi_HU.vol_*_HU` (post-RSKR + system noise floor — the volumes
+that §12's Ding decomp consumes), using the same **8-px-radius core
+ROI** pattern the source const documents.  Compare against the const,
+then drop the new values into
+`src/reconstruction/vmi/clinical_calibrations.jl` so the cal stays
+self-consistent with the corrected pipeline.
+
+The Ca rows in the const are clinical FBP DICOM and aren't measured
+here — leave them as-is when refreshing.
+"""
+
+# ╔═╡ 03000012-0000-4000-8000-000000000040
+new_cal_measurements = let
+    mask_2d = phantom_cpu.mask[:, :, size(phantom_cpu.mask, 3) ÷ 2]
+    nx, ny = size(mask_2d)
+    ROI_RADIUS_PX = 8
+    r² = Float64(ROI_RADIUS_PX)^2
+
+    function _circular_roi(cx::Real, cy::Real)
+        i_lo = max(1, floor(Int, cx - ROI_RADIUS_PX))
+        i_hi = min(nx, ceil(Int, cx + ROI_RADIUS_PX))
+        j_lo = max(1, floor(Int, cy - ROI_RADIUS_PX))
+        j_hi = min(ny, ceil(Int, cy + ROI_RADIUS_PX))
+        roi = CartesianIndex{2}[]
+        for j in j_lo:j_hi, i in i_lo:i_hi
+            ((i - cx)^2 + (j - cy)^2) ≤ r² && push!(roi, CartesianIndex(i, j))
+        end
+        roi
+    end
+
+    # Per-label rod ROI (centroid of the mask label, 8-px core).
+    function _rod_roi(label::UInt8)
+        idx = findall(==(label), mask_2d)
+        isempty(idx) && error("rod_roi: no voxels with label $label")
+        cx = sum(ci -> Float64(ci[1]), idx) / length(idx)
+        cy = sum(ci -> Float64(ci[2]), idx) / length(idx)
+        _circular_roi(cx, cy)
+    end
+
+    # Mean over (ROI × all z slices) — rods are z-invariant, so summing
+    # across z averages the noise without diluting the rod signal.
+    function _mean_HU(vol, roi)
+        s = 0.0; n = 0
+        for z in 1:size(vol, 3), ci in roi
+            s += vol[ci, z]; n += 1
+        end
+        s / n
+    end
+
+    # Iodine rods (label 20–26 → 2.0…20.0 mg/mL)
+    I_rod_specs = (
+        ("I 2.0",  UInt8(20),  2.0),
+        ("I 2.5",  UInt8(21),  2.5),
+        ("I 5.0",  UInt8(22),  5.0),
+        ("I 7.5",  UInt8(23),  7.5),
+        ("I 10.0", UInt8(24), 10.0),
+        ("I 15.0", UInt8(25), 15.0),
+        ("I 20.0", UInt8(26), 20.0),
     )
-    fit = BS.fit_ding_coeffs(rods.HU_low, rods.HU_high, rods.mg_per_mL)
+
+    iodine_rows = [
+        let roi = _rod_roi(lab)
+            (
+                name      = name,
+                material  = :iodine,
+                mg_per_mL = mgml,
+                HU_80kVp  = Float32(_mean_HU(de_lohi_HU.vol_low_HU,  roi)),
+                HU_140kVp = Float32(_mean_HU(de_lohi_HU.vol_high_HU, roi)),
+            )
+        end
+        for (name, lab, mgml) in I_rod_specs
+    ]
+
+    # Water — center 8-px ROI (rod-free zone, same trick as §7d).
+    water_roi = _circular_roi(nx / 2 + 0.5, ny / 2 + 0.5)
+    water_HU_low  = Float32(_mean_HU(de_lohi_HU.vol_low_HU,  water_roi))
+    water_HU_high = Float32(_mean_HU(de_lohi_HU.vol_high_HU, water_roi))
+
     (
-        coeffs = fit.coeffs,
-        α_iod_low = fit.α_low,
-        α_iod_high = fit.α_high,
-        rms_c = fit.rms,
-        rod_names = rods.names,
-        rod_HU_low = rods.HU_low,
-        rod_HU_high = rods.HU_high,
-        rod_c_iodine = rods.mg_per_mL,
+        water = (HU_80kVp = water_HU_low, HU_140kVp = water_HU_high),
+        iodine = iodine_rows,
     )
 end;
 
-# ╔═╡ 03000012-0000-4000-8000-000000000020
+# ╔═╡ 03000012-0000-4000-8000-000000000050
 let
-    rows = [
-        "| $(de_cal.rod_names[i]) | $(de_cal.rod_c_iodine[i]) | " *
-            "$(round(de_cal.rod_HU_low[i], digits = 1)) | " *
-            "$(round(de_cal.rod_HU_high[i], digits = 1)) |"
-            for i in eachindex(de_cal.rod_names)
-    ]
+    # Helper to format a HU value with right-padded width for source code.
+    fmt(x) = lpad(string(round(Float64(x), digits = 1)), 7, " ") * "f0"
+
+    w = new_cal_measurements.water
+
+    # Inspection table — old (const) vs new (this run) side-by-side.
+    old_rods = BS.iodine_calibration_rods(
+        BS.GE_REVOLUTION_APEX_ELITE_DE_CAL;
+        hu_low_field = :HU_80kVp, hu_high_field = :HU_140kVp,
+    )
+    name_to_old = Dict(zip(old_rods.names, zip(old_rods.HU_low, old_rods.HU_high)))
+
+    diff_rows = String[]
+    push!(diff_rows,
+        "| Water (center ROI) | 0.0 | — | — | $(round(w.HU_80kVp, digits=1)) | $(round(w.HU_140kVp, digits=1)) |",
+    )
+    for r in new_cal_measurements.iodine
+        old_lo, old_hi = get(name_to_old, r.name, (NaN, NaN))
+        push!(diff_rows,
+            "| $(r.name) | $(r.mg_per_mL) | " *
+            "$(isnan(old_lo) ? "—" : round(old_lo, digits=1)) | " *
+            "$(isnan(old_hi) ? "—" : round(old_hi, digits=1)) | " *
+            "$(round(r.HU_80kVp, digits=1)) | " *
+            "$(round(r.HU_140kVp, digits=1)) |",
+        )
+    end
+
+    # Copy-paste-ready Julia source.
+    src_lines = String[]
+    push!(src_lines,
+        "    \"Water (O)\" => (material = :water,        mg_per_mL =   0.0, HU_80kVp = $(fmt(w.HU_80kVp)), HU_140kVp = $(fmt(w.HU_140kVp))),")
+    push!(src_lines,
+        "    \"Water (I)\" => (material = :water,        mg_per_mL =   0.0, HU_80kVp = $(fmt(w.HU_80kVp)), HU_140kVp = $(fmt(w.HU_140kVp))),")
+    push!(src_lines,
+        "    \"SW ref 1\"  => (material = :solid_water,  mg_per_mL =   0.0, HU_80kVp = $(fmt(w.HU_80kVp)), HU_140kVp = $(fmt(w.HU_140kVp))),")
+    push!(src_lines,
+        "    \"SW ref 2\"  => (material = :solid_water,  mg_per_mL =   0.0, HU_80kVp = $(fmt(w.HU_80kVp)), HU_140kVp = $(fmt(w.HU_140kVp))),")
+    for r in new_cal_measurements.iodine
+        name_padded = rpad("\"$(r.name)\"", 9, " ")
+        mgml_padded = lpad(string(round(r.mg_per_mL, digits=1)), 5, " ")
+        push!(src_lines,
+            "    $(name_padded)   => (material = :iodine,       mg_per_mL = $(mgml_padded), HU_80kVp = $(fmt(r.HU_80kVp)), HU_140kVp = $(fmt(r.HU_140kVp))),")
+    end
+
     body = """
-    **Calibration rods** from `BS.GE_REVOLUTION_APEX_ELITE_DE_CAL`
-    (post-RSKR sim FBP, 8-px core ROI per rod):
+    **Old (const) vs new (this run) iodine + water HUs:**
 
-    | Rod | c (mg/mL) | HU @ 80 kVp | HU @ 140 kVp |
-    |-----|---|---|---|
-    $(join(rows, "\n"))
+    | Rod | mg/mL | old HU 80 | old HU 140 | **new HU 80** | **new HU 140** |
+    |-----|---|---|---|---|---|
+    $(join(diff_rows, "\n"))
 
-    **Ding fit:**
+    **Copy-paste into `src/reconstruction/vmi/clinical_calibrations.jl`** — replace the water + iodine rows in `GE_REVOLUTION_APEX_ELITE_DE_CAL` (leave the Ca rows untouched, they're clinical reference values):
 
-    * a₀ = $(round(de_cal.coeffs[1], digits = 3))
-    * a₁ = $(round(de_cal.coeffs[2], sigdigits = 4))
-    * a₂ = $(round(de_cal.coeffs[3], sigdigits = 4))
-    * α_iodine (low / high) = $(round(de_cal.α_iod_low, digits = 2)) / $(round(de_cal.α_iod_high, digits = 2)) HU per (mg/mL)
-    * RMS calibration error = $(round(de_cal.rms_c, digits = 3)) mg/mL
+    ```julia
+    $(join(src_lines, "\n"))
+    ```
     """
     Markdown.parse(body)
 end
 
 # ╔═╡ 03000013-0000-4000-8000-000000000001
 md"""
-## 12. Apply Ding decomposition + z-median speckle removal
+## 12. Apply Ding decomposition + z-direction denoising
 
 [`BS.apply_ding_decomp`](@ref) is a per-voxel evaluation of the Ding
-equation, returning a `c_iodine` map in mg/mL.  A 3-slice
-[`BS.apply_median_z`](@ref) (radius = 1, axial-only) wipes single-voxel xy
-impulse noise without any in-plane blurring.
+equation, returning a `c_iodine` map in mg/mL.  We pair it inline with a
+water-equivalent density map `c_water` (g/mL — solid water ≈ 1, calcium
+rods read higher) so both bases are visible in §12b.
+
+Both basis maps + the post-RSKR HU pair then go through
+[`BS.apply_median_z`](@ref), an axial-only running median that exploits
+the phantom's z-invariance: Gammex 472 rods are cylinders extruded along
+z, so any slice-to-slice variation is pure recon/sim noise.  Knobs live
+in the dedicated kwargs cell below — see §12b for the row-by-row visual
+(post-RSKR HU → raw decomp → z-denoised decomp).
 """
 
-# ╔═╡ 03000013-0000-4000-8000-000000000010
-de_decomp = let
-    c_iodine = BS.apply_ding_decomp(
-        de_lohi_HU.vol_low_HU, de_lohi_HU.vol_high_HU, de_cal.coeffs
-    )
-    c_iodine = BS.apply_median_z(c_iodine; radius = 1)
-    (
-        c_iodine = c_iodine,
-        vol_low_HU = de_lohi_HU.vol_low_HU,
-        vol_high_HU = de_lohi_HU.vol_high_HU,
-        geom = de_lohi_HU.geom,
-    )
-end;
+# ╔═╡ 03000013-0000-4000-8000-000000000005
+# z-direction denoising kwargs — play with these.
+# `radius` ⇒ z-window = (2 · radius + 1) slices, shrunk at z boundaries
+# (no padding bias).  Set `radius = 0` to disable z-denoising entirely.
+# The Gammex 472 phantom is z-invariant in the rod cores, so larger radii
+# are essentially lossless there; aggressive defaults are fine.
+z_denoise_kwargs = (
+    radius = 3,    # 7-slice window on the 8-slice z stack
+)
 
 # ╔═╡ 03000014-0000-4000-8000-000000000001
 md"""
@@ -537,6 +915,366 @@ We pick the standard four:
 
 # ╔═╡ 03000014-0000-4000-8000-000000000010
 de_vmi_energies = [40.0, 70.0, 100.0, 140.0];
+
+# ╔═╡ 03000012-0000-4000-8000-000000000010
+de_cal = let
+    if !optim_knob.enabled
+        # ─── Path A: classic table-fit on iodine + water rods ──────────
+        rods = BS.iodine_calibration_rods(
+            BS.GE_REVOLUTION_APEX_ELITE_DE_CAL;
+            hu_low_field = :HU_80kVp,
+            hu_high_field = :HU_140kVp,
+        )
+        fit = BS.fit_ding_coeffs(rods.HU_low, rods.HU_high, rods.mg_per_mL)
+        (
+            coeffs       = fit.coeffs,
+            α_iod_low    = fit.α_low,
+            α_iod_high   = fit.α_high,
+            rms_c        = fit.rms,
+            rod_names    = rods.names,
+            rod_HU_low   = rods.HU_low,
+            rod_HU_high  = rods.HU_high,
+            rod_c_iodine = rods.mg_per_mL,
+            method       = :table_fit,
+            n_iter       = 0,
+            converged    = true,
+            nrmse_HU     = NaN,
+        )
+    else
+        # ─── Path B: direct VMI-HU-vs-theoretical optimizer ────────────
+
+        # 1. Per-rod 8-px circular ROIs in xy (rods are z-invariant).
+        mask_2d = phantom_cpu.mask[:, :, size(phantom_cpu.mask, 3) ÷ 2]
+        nx, ny  = size(mask_2d)
+        ROI_R   = 8
+        r²      = Float64(ROI_R)^2
+
+        function _circular_roi(cx::Real, cy::Real)
+            roi = CartesianIndex{2}[]
+            i_lo = max(1, floor(Int, cx - ROI_R)); i_hi = min(nx, ceil(Int, cx + ROI_R))
+            j_lo = max(1, floor(Int, cy - ROI_R)); j_hi = min(ny, ceil(Int, cy + ROI_R))
+            for j in j_lo:j_hi, i in i_lo:i_hi
+                ((i - cx)^2 + (j - cy)^2) ≤ r² && push!(roi, CartesianIndex(i, j))
+            end
+            roi
+        end
+        function _rod_roi(label::UInt8)
+            idx = findall(==(label), mask_2d)
+            cx = sum(ci -> Float64(ci[1]), idx) / length(idx)
+            cy = sum(ci -> Float64(ci[2]), idx) / length(idx)
+            _circular_roi(cx, cy)
+        end
+        function _mean_HU(vol, roi)
+            s = 0.0; n = 0
+            for z in 1:size(vol, 3), ci in roi
+                s += vol[ci, z]; n += 1
+            end
+            s / n
+        end
+
+        # 2. Rod specs — all 14 Gammex rods + 1 center-ROI water sample.
+        rod_specs = (
+            ("Water",  UInt8(0),  0.0, :water),
+            ("Ca 50",  UInt8(10), 0.0, :calcium),
+            ("Ca 100", UInt8(11), 0.0, :calcium),
+            ("Ca 200", UInt8(12), 0.0, :calcium),
+            ("Ca 300", UInt8(13), 0.0, :calcium),
+            ("Ca 400", UInt8(14), 0.0, :calcium),
+            ("Ca 500", UInt8(15), 0.0, :calcium),
+            ("Ca 600", UInt8(16), 0.0, :calcium),
+            ("I 2.0",  UInt8(20), 2.0, :iodine),
+            ("I 2.5",  UInt8(21), 2.5, :iodine),
+            ("I 5.0",  UInt8(22), 5.0, :iodine),
+            ("I 7.5",  UInt8(23), 7.5, :iodine),
+            ("I 10.0", UInt8(24), 10.0, :iodine),
+            ("I 15.0", UInt8(25), 15.0, :iodine),
+            ("I 20.0", UInt8(26), 20.0, :iodine),
+        )
+
+        materials = phantom_cpu.materials
+        μ_water_E = Dict(
+            E => BS.compute_μ_at_energy(BS.XA.Materials.water, E)
+                for E in de_vmi_energies
+        )
+
+        rod_data = NamedTuple[]
+        for (name, lab, c_known, kind) in rod_specs
+            roi = name == "Water" ?
+                _circular_roi(nx / 2 + 0.5, ny / 2 + 0.5) :
+                _rod_roi(lab)
+            material = name == "Water" ?
+                BS.XA.Materials.water :
+                materials[Int(lab) + 1]
+            HU_low_r  = _mean_HU(de_lohi_HU.vol_low_HU,  roi)
+            HU_high_r = _mean_HU(de_lohi_HU.vol_high_HU, roi)
+            HU_theo   = Float64[
+                let μ_r = BS.compute_μ_at_energy(material, E)
+                    1000.0 * (μ_r - μ_water_E[E]) / μ_water_E[E]
+                end
+                    for E in de_vmi_energies
+            ]
+            push!(rod_data, (
+                name = name, kind = kind, c_known = c_known,
+                HU_low = HU_low_r, HU_high = HU_high_r, HU_theo = HU_theo,
+            ))
+        end
+
+        # 3. αᴱ_phys = (μ/ρ)_iodine(E) / (μ/ρ)_water(E) at each VMI energy.
+        α_phys_E = Float64[
+            BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine, E) /
+            BS.compute_mass_μ_at_energy(BS.XA.Materials.water,  E)
+                for E in de_vmi_energies
+        ]
+
+        N = length(rod_data)
+        M = length(de_vmi_energies)
+
+        # Per-(rod, energy) weight: rod-family weight × energy weight ×
+        # 1/max(|HU_theo|, 1)² (relative-error scaling).
+        rod_family_w = [
+            r.kind == :iodine  ? Float64(optim_knob.iodine_weight)  :
+            r.kind == :calcium ? Float64(optim_knob.calcium_weight) :
+                                 Float64(optim_knob.water_weight)
+                for r in rod_data
+        ]
+        e_weights   = collect(Float64.(optim_knob.energy_weights))
+        nrmse_floor = Float64(optim_knob.nrmse_floor)
+        function _w(r_idx, e_idx)
+            ht = rod_data[r_idx].HU_theo[e_idx]
+            rod_family_w[r_idx] * e_weights[e_idx] / max(abs(ht), nrmse_floor)^2
+        end
+
+        # 4. Initial guess from BS.fit_ding_coeffs on iodine + water only.
+        iod_water_idx = findall(r -> r.kind in (:iodine, :water), rod_data)
+        fit_init = BS.fit_ding_coeffs(
+            [rod_data[i].HU_low  for i in iod_water_idx],
+            [rod_data[i].HU_high for i in iod_water_idx],
+            [rod_data[i].c_known for i in iod_water_idx],
+        )
+        params0 = [Float64.(fit_init.coeffs)..., Float64(fit_init.α_low)]
+
+        # 5. BFGS via Optim.jl with analytical gradient.
+        #
+        # Loss   L(a₀, a₁, a₂, α_low) = Σ_(r,E) w_rE · (HU_synth_rE − HU_theo_rE)²
+        # where  HU_synth = hl + (a₀ + a₁·hl + a₂·hh) · (αᴱ − α_low)
+        #
+        # The bilinear (a × α_low) coupling that breaks alternating LSQ
+        # is just Newton-step territory for BFGS — single-start usually
+        # finds the joint optimum directly.
+        function _resid_and_grad_terms(params, r_idx, e_idx)
+            a₀, a₁, a₂, α_low = params
+            hl    = rod_data[r_idx].HU_low
+            hh    = rod_data[r_idx].HU_high
+            ht    = rod_data[r_idx].HU_theo[e_idx]
+            γ     = α_phys_E[e_idx] - α_low
+            c_iod = a₀ + a₁ * hl + a₂ * hh
+            HU_synth = hl + c_iod * γ
+            resid = HU_synth - ht
+            w     = _w(r_idx, e_idx)
+            (resid = resid, w = w, γ = γ, c_iod = c_iod, hl = hl, hh = hh)
+        end
+
+        function loss_fn(params)
+            total = 0.0
+            for r_idx in 1:N, e_idx in 1:M
+                t = _resid_and_grad_terms(params, r_idx, e_idx)
+                total += t.w * t.resid^2
+            end
+            total
+        end
+
+        function grad_fn!(g, params)
+            fill!(g, 0.0)
+            for r_idx in 1:N, e_idx in 1:M
+                t = _resid_and_grad_terms(params, r_idx, e_idx)
+                two_w_r = 2.0 * t.w * t.resid
+                g[1] += two_w_r * t.γ              # ∂L/∂a₀
+                g[2] += two_w_r * t.γ * t.hl       # ∂L/∂a₁
+                g[3] += two_w_r * t.γ * t.hh       # ∂L/∂a₂
+                g[4] -= two_w_r * t.c_iod          # ∂L/∂α_low
+            end
+        end
+
+        opt_options = Optim.Options(
+            iterations = optim_knob.max_iter,
+            f_abstol   = optim_knob.tol,
+            g_abstol   = optim_knob.tol,
+            x_abstol   = optim_knob.tol,
+        )
+        opt_result = Optim.optimize(
+            loss_fn, grad_fn!, params0, Optim.BFGS(), opt_options,
+        )
+
+        a₀, a₁, a₂, α_low_cal = Optim.minimizer(opt_result)
+        converged = Optim.converged(opt_result)
+        n_iter    = Optim.iterations(opt_result)
+
+        # 6. Diagnostics — final nRMSE_HU + iodine-rod RMS_c (mg/mL).
+        sq_err, n_pairs = 0.0, 0
+        for r_idx in 1:N, e_idx in 1:M
+            hl    = rod_data[r_idx].HU_low
+            hh    = rod_data[r_idx].HU_high
+            c_iod = a₀ + a₁ * hl + a₂ * hh
+            HU_E_synth = hl + c_iod * (α_phys_E[e_idx] - α_low_cal)
+            ht         = rod_data[r_idx].HU_theo[e_idx]
+            sq_err  += ((HU_E_synth - ht) / max(abs(ht), nrmse_floor))^2
+            n_pairs += 1
+        end
+        nrmse_HU = sqrt(sq_err / n_pairs)
+
+        iod_idx  = findall(r -> r.kind == :iodine, rod_data)
+        rms_c    = let
+            sq = 0.0
+            for i in iod_idx
+                c_pred = a₀ + a₁ * rod_data[i].HU_low + a₂ * rod_data[i].HU_high
+                sq += (c_pred - rod_data[i].c_known)^2
+            end
+            sqrt(sq / length(iod_idx))
+        end
+
+        # α_high — slope-through-origin on iodine rods at high kVp (matches
+        # fit_ding_coeffs convention; only used for diagnostics, synth uses α_low_cal).
+        Σc²    = sum(rod_data[i].c_known^2 for i in iod_idx)
+        α_high = sum(rod_data[i].c_known * rod_data[i].HU_high for i in iod_idx) / Σc²
+
+        @info "[Ding optimizer · BFGS] $(converged ? "converged in" : "stopped at") $(n_iter) iter · loss = $(round(Optim.minimum(opt_result), digits = 4)) · nRMSE_HU = $(round(nrmse_HU, digits = 4)) · RMS_c (I rods) = $(round(rms_c, digits = 3)) mg/mL"
+
+        (
+            coeffs       = (Float32(a₀), Float32(a₁), Float32(a₂)),
+            α_iod_low    = Float32(α_low_cal),
+            α_iod_high   = Float32(α_high),
+            rms_c        = rms_c,
+            rod_names    = [r.name    for r in rod_data],
+            rod_HU_low   = [r.HU_low  for r in rod_data],
+            rod_HU_high  = [r.HU_high for r in rod_data],
+            rod_c_iodine = [r.c_known for r in rod_data],
+            method       = :optimized,
+            n_iter       = n_iter,
+            converged    = converged,
+            nrmse_HU     = nrmse_HU,
+        )
+    end
+end;
+
+# ╔═╡ 03000012-0000-4000-8000-000000000020
+let
+    rows = [
+        "| $(de_cal.rod_names[i]) | $(de_cal.rod_c_iodine[i]) | " *
+            "$(round(de_cal.rod_HU_low[i], digits = 1)) | " *
+            "$(round(de_cal.rod_HU_high[i], digits = 1)) |"
+            for i in eachindex(de_cal.rod_names)
+    ]
+    src_label = de_cal.method == :optimized ?
+        "this run's de_lohi_HU (BHC + cupping + RSKR + noise floor), 8-px core ROI per rod" :
+        "BS.GE_REVOLUTION_APEX_ELITE_DE_CAL (frozen const, post-RSKR sim FBP)"
+
+    optim_block = de_cal.method == :optimized ?
+        """
+        * **method = :optimized** ($(de_cal.converged ? "converged in" : "stopped at") $(de_cal.n_iter) iter)
+        * **nRMSE_HU = $(round(de_cal.nrmse_HU, digits = 4))** (relative VMI HU error vs theory, all rods × all energies)
+        """ :
+        "* **method = :table_fit**"
+
+    body = """
+    **Calibration rods** — $(src_label):
+
+    | Rod | c (mg/mL) | HU @ 80 kVp | HU @ 140 kVp |
+    |-----|---|---|---|
+    $(join(rows, "\n"))
+
+    **Ding fit:**
+
+    * a₀ = $(round(de_cal.coeffs[1], digits = 3))
+    * a₁ = $(round(de_cal.coeffs[2], sigdigits = 4))
+    * a₂ = $(round(de_cal.coeffs[3], sigdigits = 4))
+    * α_iodine (low / high) = $(round(de_cal.α_iod_low, digits = 2)) / $(round(de_cal.α_iod_high, digits = 2)) HU per (mg/mL)
+    * RMS calibration error (iodine rods) = $(round(de_cal.rms_c, digits = 3)) mg/mL
+    $(optim_block)
+    """
+    Markdown.parse(body)
+end
+
+# ╔═╡ 03000013-0000-4000-8000-000000000010
+de_decomp = let
+    α_low_f32 = Float32(de_cal.α_iod_low)
+
+    # Raw decomposition outputs (per-voxel Ding + analytic c_water proxy)
+    c_iodine_raw = BS.apply_ding_decomp(
+        de_lohi_HU.vol_low_HU, de_lohi_HU.vol_high_HU, de_cal.coeffs
+    )
+    c_water_raw  = @. (de_lohi_HU.vol_low_HU - α_low_f32 * c_iodine_raw) /
+                      1000.0f0 + 1.0f0
+
+    # z-direction denoise — both basis maps + the HU pair (the latter is
+    # what §13's VMI synth uses as its low-energy baseline; un-denoised
+    # HU_low leaks its noise into every output VMI).
+    radius = z_denoise_kwargs.radius
+    c_iodine    = BS.apply_median_z(c_iodine_raw;          radius = radius)
+    c_water     = BS.apply_median_z(c_water_raw;           radius = radius)
+    vol_low_HU  = BS.apply_median_z(de_lohi_HU.vol_low_HU;  radius = radius)
+    vol_high_HU = BS.apply_median_z(de_lohi_HU.vol_high_HU; radius = radius)
+
+    (
+        # Raw — for the §12b before/after figure
+        c_iodine_raw    = c_iodine_raw,
+        c_water_raw     = c_water_raw,
+        vol_low_HU_raw  = de_lohi_HU.vol_low_HU,
+        vol_high_HU_raw = de_lohi_HU.vol_high_HU,
+
+        # z-denoised — feeds §13 VMI synth
+        c_iodine    = c_iodine,
+        c_water     = c_water,
+        vol_low_HU  = vol_low_HU,
+        vol_high_HU = vol_high_HU,
+        geom        = de_lohi_HU.geom,
+    )
+end;
+
+# ╔═╡ 03000013-0000-4000-8000-000000000030
+let
+    HU_window      = (-200, 500)     # HU input panels
+    c_iod_window   = (-2.0, 22.0)    # mg/mL — covers 2–20 mg/mL iodine rods
+    c_water_window = (0.5, 2.0)      # g/mL — water ≈ 1, calcium rods reach ~2
+
+    fig = CM.Figure(size = (1400, 1700))
+    title_kwargs = (titlesize = 28, subtitlesize = 20)
+
+    mid = size(de_decomp.c_iodine, 3) ÷ 2
+
+    function panel!(r, c, slice2d, ttl, sub, cmap, crng, label)
+        ax = CM.Axis(fig[r, c]; title = ttl, subtitle = sub,
+            aspect = CM.DataAspect(), title_kwargs...)
+        hm = CM.heatmap!(ax, slice2d; colormap = cmap, colorrange = crng)
+        CM.hidedecorations!(ax)
+        CM.Colorbar(fig[r, c, CM.Right()], hm;
+            label = label, width = 14, labelsize = 18)
+    end
+
+    # Row 1 — post-RSKR HU pair (the inputs to the Ding decomp in §12)
+    panel!(1, 1, de_decomp.vol_low_HU_raw[:, :, mid],
+        "HU @ 80 kVp", "post-RSKR — low energy",
+        :grays, HU_window, "HU")
+    panel!(1, 2, de_decomp.vol_high_HU_raw[:, :, mid],
+        "HU @ 140 kVp", "post-RSKR — high energy",
+        :grays, HU_window, "HU")
+
+    # Row 2 — raw decomposition outputs (BEFORE z-direction denoising)
+    panel!(2, 1, de_decomp.c_iodine_raw[:, :, mid],
+        "c_iodine", "post image-decomp · pre z-denoise",
+        :viridis, c_iod_window, "mg/mL")
+    panel!(2, 2, de_decomp.c_water_raw[:, :, mid],
+        "c_water", "post image-decomp · pre z-denoise",
+        :viridis, c_water_window, "g/mL")
+
+    # Row 3 — z-direction-denoised outputs (this pair feeds §13 VMI synth)
+    sub3 = "post z-denoise (radius = $(z_denoise_kwargs.radius))"
+    panel!(3, 1, de_decomp.c_iodine[:, :, mid],
+        "c_iodine", sub3, :viridis, c_iod_window, "mg/mL")
+    panel!(3, 2, de_decomp.c_water[:, :, mid],
+        "c_water", sub3, :viridis, c_water_window, "g/mL")
+
+    fig
+end
 
 # ╔═╡ 03000014-0000-4000-8000-000000000020
 de_vmi_raw = let
@@ -598,6 +1336,77 @@ de_vmi_mono = let
     GC.gc(true)
     out
 end;
+
+# ╔═╡ 03000016-0000-4000-8000-000000000020
+let
+    # Mean water HU per VMI energy — sanity check on the Mono+ output.
+    # 8-px-radius circular ROI at the volume center, safely inside the
+    # 50 mm Ca inner ring + 105 mm I outer ring, so the sample is pure
+    # solid water.  After the corrections + decomp + Mono+ pipeline,
+    # water should read ≈ 0 HU at every VMI energy by construction.
+    nx = size(de_vmi_mono[de_vmi_energies[1]], 1)
+    ny = size(de_vmi_mono[de_vmi_energies[1]], 2)
+    nz = size(de_vmi_mono[de_vmi_energies[1]], 3)
+    cx = nx / 2 + 0.5
+    cy = ny / 2 + 0.5
+    ROI_R = 8.0
+
+    roi = CartesianIndex{2}[]
+    r² = ROI_R^2
+    i_lo = max(1, floor(Int, cx - ROI_R)); i_hi = min(nx, ceil(Int, cx + ROI_R))
+    j_lo = max(1, floor(Int, cy - ROI_R)); j_hi = min(ny, ceil(Int, cy + ROI_R))
+    for j in j_lo:j_hi, i in i_lo:i_hi
+        ((i - cx)^2 + (j - cy)^2) ≤ r² && push!(roi, CartesianIndex(i, j))
+    end
+
+    function _mean_HU(vol)
+        s = 0.0; n = 0
+        for z in 1:nz, ci in roi
+            s += vol[ci, z]; n += 1
+        end
+        s / n
+    end
+
+    energies = de_vmi_energies
+    mean_HU  = [_mean_HU(de_vmi_mono[E]) for E in energies]
+
+    fig = CM.Figure(size = (900, 540))
+    ax = CM.Axis(
+        fig[1, 1];
+        title = "Mean water HU per VMI energy",
+        subtitle = "Mono+ post-processed · 8-px center ROI · target = 0 HU",
+        xlabel = "VMI energy (keV)", ylabel = "Mean HU",
+        xticks = (1:length(energies), ["$(Int(E))" for E in energies]),
+        titlesize = 32, subtitlesize = 24,
+        xlabelsize = 22, ylabelsize = 22,
+        xticklabelsize = 18, yticklabelsize = 16,
+    )
+
+    bar_colors = [
+        CM.RGBf(0.85, 0.32, 0.20),   # 40 keV — warm
+        CM.RGBf(0.92, 0.65, 0.20),
+        CM.RGBf(0.45, 0.65, 0.85),
+        CM.RGBf(0.20, 0.30, 0.65),   # 140 keV — cool
+    ]
+
+    CM.barplot!(
+        ax, 1:length(energies), Float64.(mean_HU);
+        color = bar_colors[1:length(energies)],
+        strokecolor = :black, strokewidth = 1,
+    )
+    CM.hlines!(ax, [0.0]; color = :black, linestyle = :dash, linewidth = 2)
+
+    for (i, hu) in enumerate(mean_HU)
+        CM.text!(ax, i, hu;
+            text = "$(round(hu, digits = 1)) HU",
+            align = (:center, hu < 0 ? :top : :bottom),
+            offset = (0, hu < 0 ? -4 : 4),
+            fontsize = 16,
+        )
+    end
+
+    fig
+end
 
 # ╔═╡ 03000017-0000-4000-8000-000000000001
 md"""
@@ -882,7 +1691,7 @@ let
         CM.axislegend(
             ax,
             vcat([style_meas, style_theo], rod_lines),
-            vcat(["Measured (Mono+ VMI)", "Theoretical (XA)"], collect(d.names));
+            vcat(["Measured", "Theoretical"], collect(d.names));
             position = :rt, framevisible = true, labelsize = 18,
             rowgap = 1, padding = (6, 6, 6, 6),
         )
@@ -1080,6 +1889,37 @@ acquisition (e.g. Siemens Naeotom Alpha) by re-running the
 self-calibration cell against that scanner's rod HU.
 """
 
+# ╔═╡ bc0b9af2-d4d0-44c5-8f93-62dc9ca5d6bd
+# Calibration optimizer knobs — flip `enabled` to switch between the
+# table-fit and the BFGS optimizer.
+#   max_iter, tol     ⇒ BFGS stopping criteria (iterations cap, |Δf|/|Δx|/|∇| tols)
+#   iodine_weight     ⇒ relative emphasis on the 7 iodine rods (2.0–20.0 mg/mL)
+#   calcium_weight    ⇒ relative emphasis on the 7 calcium rods (50–600 mg/mL)
+#   water_weight      ⇒ relative emphasis on the center-ROI water sample
+#                       (set to 0 to remove water from the fit entirely;
+#                       useful when BHC residual leaves water at a non-zero
+#                       baseline that the iodine basis can't absorb)
+#   energy_weights    ⇒ paired one-to-one with `de_vmi_energies`
+#                       (40 / 70 / 100 / 140 keV) — bump the keV you most
+#                       care about, e.g. (2.0, 1.0, 1.0, 0.5) prioritizes
+#                       40 keV iodine contrast and de-emphasizes 140 keV
+#   nrmse_floor       ⇒ HU floor on the relative-error denominator: a (rod,
+#                       energy) loss term is `((HU_synth - HU_theo) /
+#                       max(|HU_theo|, nrmse_floor))²`.  Without a floor,
+#                       low-|HU_theo| rods (water, low-c iodine at high keV)
+#                       blow up the loss and dominate the fit.  100 HU
+#                       matches the d328e79 src comment for nb04's PCCT cal.
+optim_knob = (
+    enabled        = true,
+    max_iter       = 200,
+    tol            = 1.0e-8,
+    iodine_weight  = 1.0,
+    calcium_weight = 1.0,
+    water_weight   = 1.0,
+    energy_weights = (1.0, 1.0, 1.0, 1.0),   # ↔ (40, 70, 100, 140) keV
+    nrmse_floor    = 100.0,
+);
+
 # ╔═╡ Cell order:
 # ╟─03000001-0000-4000-8000-000000000010
 # ╟─03000001-0000-4000-8000-000000000020
@@ -1088,6 +1928,7 @@ self-calibration cell against that scanner's rod HU.
 # ╠═03000001-0000-4000-8000-000000000003
 # ╠═03000001-0000-4000-8000-000000000030
 # ╠═03000001-0000-4000-8000-000000000031
+# ╠═03000001-0000-4000-8000-000000000032
 # ╠═03000001-0000-4000-8000-000000000040
 # ╟─03000001-0000-4000-8000-000000000050
 # ╟─03000002-0000-4000-8000-000000000001
@@ -1106,24 +1947,40 @@ self-calibration cell against that scanner's rod HU.
 # ╟─03000008-0000-4000-8000-000000000001
 # ╠═03000008-0000-4000-8000-000000000010
 # ╟─03000009-0000-4000-8000-000000000001
+# ╠═03000009-0000-4000-8000-000000000003
+# ╟─03000009-0000-4000-8000-000000000004
+# ╠═03000009-0000-4000-8000-000000000007
+# ╟─03000009-0000-4000-8000-000000000008
 # ╠═03000009-0000-4000-8000-000000000010
+# ╠═03000009-0000-4000-8000-000000000025
+# ╟─03000010-0000-4000-8000-000000000001
+# ╠═03000010-0000-4000-8000-000000000010
+# ╟─03000009-0000-4000-8000-000000000015
+# ╠═03000009-0000-4000-8000-000000000017
+# ╠═03000009-0000-4000-8000-000000000020
+# ╟─03000009-0000-4000-8000-000000000030
 # ╟─03000006-0000-4000-8000-000000000001
 # ╠═03000006-0000-4000-8000-000000000010
 # ╟─03000006-0000-4000-8000-000000000020
-# ╟─03000010-0000-4000-8000-000000000001
-# ╠═03000010-0000-4000-8000-000000000010
 # ╟─03000011-0000-4000-8000-000000000001
 # ╠═03000011-0000-4000-8000-000000000010
 # ╟─03000012-0000-4000-8000-000000000001
+# ╠═03000012-0000-4000-8000-000000000005
 # ╠═03000012-0000-4000-8000-000000000010
 # ╟─03000012-0000-4000-8000-000000000020
+# ╟─03000012-0000-4000-8000-000000000030
+# ╠═03000012-0000-4000-8000-000000000040
+# ╟─03000012-0000-4000-8000-000000000050
 # ╟─03000013-0000-4000-8000-000000000001
+# ╠═03000013-0000-4000-8000-000000000005
 # ╠═03000013-0000-4000-8000-000000000010
+# ╟─03000013-0000-4000-8000-000000000030
 # ╟─03000014-0000-4000-8000-000000000001
 # ╠═03000014-0000-4000-8000-000000000010
 # ╠═03000014-0000-4000-8000-000000000020
 # ╟─03000016-0000-4000-8000-000000000001
 # ╠═03000016-0000-4000-8000-000000000010
+# ╟─03000016-0000-4000-8000-000000000020
 # ╟─03000017-0000-4000-8000-000000000001
 # ╟─03000017-0000-4000-8000-000000000010
 # ╟─03000018-0000-4000-8000-000000000001
@@ -1134,6 +1991,7 @@ self-calibration cell against that scanner's rod HU.
 # ╟─03000019-0000-4000-8000-000000000001
 # ╟─03000019-0000-4000-8000-000000000010
 # ╟─0300001a-0000-4000-8000-000000000001
+# ╠═bc0b9af2-d4d0-44c5-8f93-62dc9ca5d6bd
 # ╟─0300001a-0000-4000-8000-000000000010
 # ╟─03000020-0000-4000-8000-000000000001
 # ╟─03000020-0000-4000-8000-000000000010
