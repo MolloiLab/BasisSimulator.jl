@@ -405,6 +405,65 @@ de_lohi_μ_raw = let
     )
 end;
 
+# ╔═╡ 03000009-0000-4000-8000-000000000025
+# RSKR hyperparameters — play with these.  Drives §9's joint denoise (the
+# bottom row of the figure below).  Defaults match notebook 04 (Naeotom
+# Alpha PCCT VMI) exactly so cross-notebook noise behavior is directly
+# comparable.
+#   n_iter   ⇒ outer-loop iterations of the joint SVD + bilateral
+#   h_param  ⇒ bilateral filter strength (lower = less smoothing)
+#   radius   ⇒ neighborhood half-width in voxels
+#   γ        ⇒ singular-value soft-thresholding factor
+rskr_knob = (
+    n_iter  = 2,
+    h_param = 2,
+    radius  = 3,
+    γ       = 0.1,
+);
+
+# ╔═╡ 03000010-0000-4000-8000-000000000001
+md"""
+## 9. RSKR-2ch joint denoising (μ-domain)
+
+[`apply_rskr`](@ref) runs a **joint SVD + bilateral filter** on the
+`(vol_low_μ, vol_high_μ)` pair (Clark & Badea 2023).  Operating on the
+μ-pair *before* HU conversion preserves the anti-correlated noise structure
+between iodine-rich (high in 80 kVp HU) and iodine-poor (high in 140 kVp HU)
+regions.  Net effect: the noise drops by 2–3× without smearing the iodine
+contrast.
+
+!!! info "Why μ-domain, not HU-domain"
+    HU conversion is a per-kVp linear scaling, so it shifts each volume's
+    statistics independently and breaks the joint covariance that RSKR
+    exploits.  Always denoise *before* HU conversion when both volumes share
+    a noise basis.
+"""
+
+# ╔═╡ 03000010-0000-4000-8000-000000000010
+de_lohi_rskr = let
+    # `GPU_BACKEND.to_gpu` is the unparameterized array constructor
+    # (`MtlArray` / `CuArray` / `ROCArray` on a GPU host, plain
+    # `identity` on CPU).  `apply_rskr` calls `gpu_arr_type(U_vols[i])`
+    # on the 3-D U-columns; AcceleratedKernels then dispatches the joint
+    # bilateral filter on whatever array type comes back — Metal/CUDA/
+    # ROCm kernels on a GPU, threaded CPU loops with `identity`.  Same
+    # source, any backend.
+    out = BS.apply_rskr(
+        [de_lohi_μ_raw.vol_low_μ, de_lohi_μ_raw.vol_high_μ];
+        n_iter  = rskr_knob.n_iter,
+        h_param = rskr_knob.h_param,
+        radius  = rskr_knob.radius,
+        γ       = rskr_knob.γ,
+        gpu_arr_type = GPU_BACKEND.to_gpu,
+        verbose = true,
+    )
+    (
+        vol_low_μ = out[1],
+        vol_high_μ = out[2],
+        geom = de_lohi_μ_raw.geom,
+    )
+end;
+
 # ╔═╡ 03000009-0000-4000-8000-000000000015
 md"""
 ### 7c. Per-kVp radial cupping correction (μ-domain) — POST-RSKR
@@ -435,9 +494,9 @@ every downstream stage (HU → Ding decomp → VMI → Mono+) without any
 cupping_knob = (
     enabled    = true,
     fov_cm     = 35.0,
-    poly_order = 2,
-    q_lo       = 0.25,
-    q_hi       = 0.75,
+    poly_order = 3,
+    q_lo       = 0.50,
+    q_hi       = 0.80,
 );
 
 # ╔═╡ 03000009-0000-4000-8000-000000000020
@@ -462,22 +521,6 @@ de_lohi_μ = let
         )
     end
 end;
-
-# ╔═╡ 03000009-0000-4000-8000-000000000025
-# RSKR hyperparameters — play with these.  Drives §9's joint denoise (the
-# bottom row of the figure below).  Defaults match notebook 04 (Naeotom
-# Alpha PCCT VMI) exactly so cross-notebook noise behavior is directly
-# comparable.
-#   n_iter   ⇒ outer-loop iterations of the joint SVD + bilateral
-#   h_param  ⇒ bilateral filter strength (lower = less smoothing)
-#   radius   ⇒ neighborhood half-width in voxels
-#   γ        ⇒ singular-value soft-thresholding factor
-rskr_knob = (
-    n_iter  = 2,
-    h_param = 2,
-    radius  = 3,
-    γ       = 0.5,
-);
 
 # ╔═╡ 03000006-0000-4000-8000-000000000001
 md"""
@@ -528,55 +571,6 @@ kVp_μ_water = let
     )
 end;
 
-# ╔═╡ 03000006-0000-4000-8000-000000000020
-md"""
-lac water (80 kVp) = $(round(kVp_μ_water[80],  digits = 5)) cm⁻¹  ||
-lac water (140 kVp) = $(round(kVp_μ_water[140], digits = 5)) cm⁻¹
-"""
-
-# ╔═╡ 03000010-0000-4000-8000-000000000001
-md"""
-## 9. RSKR-2ch joint denoising (μ-domain)
-
-[`apply_rskr`](@ref) runs a **joint SVD + bilateral filter** on the
-`(vol_low_μ, vol_high_μ)` pair (Clark & Badea 2023).  Operating on the
-μ-pair *before* HU conversion preserves the anti-correlated noise structure
-between iodine-rich (high in 80 kVp HU) and iodine-poor (high in 140 kVp HU)
-regions.  Net effect: the noise drops by 2–3× without smearing the iodine
-contrast.
-
-!!! info "Why μ-domain, not HU-domain"
-    HU conversion is a per-kVp linear scaling, so it shifts each volume's
-    statistics independently and breaks the joint covariance that RSKR
-    exploits.  Always denoise *before* HU conversion when both volumes share
-    a noise basis.
-"""
-
-# ╔═╡ 03000010-0000-4000-8000-000000000010
-de_lohi_rskr = let
-    # `GPU_BACKEND.to_gpu` is the unparameterized array constructor
-    # (`MtlArray` / `CuArray` / `ROCArray` on a GPU host, plain
-    # `identity` on CPU).  `apply_rskr` calls `gpu_arr_type(U_vols[i])`
-    # on the 3-D U-columns; AcceleratedKernels then dispatches the joint
-    # bilateral filter on whatever array type comes back — Metal/CUDA/
-    # ROCm kernels on a GPU, threaded CPU loops with `identity`.  Same
-    # source, any backend.
-    out = BS.apply_rskr(
-        [de_lohi_μ_raw.vol_low_μ, de_lohi_μ_raw.vol_high_μ];
-        n_iter  = rskr_knob.n_iter,
-        h_param = rskr_knob.h_param,
-        radius  = rskr_knob.radius,
-        γ       = rskr_knob.γ,
-        gpu_arr_type = GPU_BACKEND.to_gpu,
-        verbose = true,
-    )
-    (
-        vol_low_μ = out[1],
-        vol_high_μ = out[2],
-        geom = de_lohi_μ_raw.geom,
-    )
-end;
-
 # ╔═╡ 03000009-0000-4000-8000-000000000030
 let
     HU_window = (-200, 500)
@@ -624,21 +618,36 @@ let
     fig
 end
 
+# ╔═╡ 03000006-0000-4000-8000-000000000020
+md"""
+lac water (80 kVp) = $(round(kVp_μ_water[80],  digits = 5)) cm⁻¹  ||
+lac water (140 kVp) = $(round(kVp_μ_water[140], digits = 5)) cm⁻¹
+"""
+
 # ╔═╡ 03000011-0000-4000-8000-000000000001
 md"""
-## 10. HU conversion + system noise floor
+## 10. HU conversion
 
-Per-kVp `to_hounsfield` using each spectrum's own calibrated `μ_water_ref`,
-then add the dose-independent DAS Gaussian noise floor (matches the SE
-pipeline in notebook 01).
+Per-kVp `to_hounsfield` using the measured `kVp_μ_water` from §8 (so
+solid water reads exactly 0 HU by construction).
+
+We deliberately **do not** call `add_system_noise_floor!` here — that's
+the pattern nb01 / nb02 use to model DAS readout noise *after* a
+non-iterative FBP, but in this notebook RSKR (§9) has already denoised
+the μ pair, so adding a 28 HU Gaussian floor on top would just defeat
+RSKR's job and inject noise into the §11 calibration baseline.  Quantum
++ electronic noise at sim time (via `simulate!` and the scanner's
+`electronic_noise` field) feeds RSKR with realistic noise structure;
+RSKR removes most of it; the result is the cleanest possible reference
+for the Ding optimizer to fit against.  Real-world DAS readout floor is
+a downstream concern — apply it on the *deployed* cal at use time, not
+during cal derivation.
 """
 
 # ╔═╡ 03000011-0000-4000-8000-000000000010
 de_lohi_HU = let
-    vol_low_HU = Float32.(BS.to_hounsfield(de_lohi_μ.vol_low_μ; μ_water = kVp_μ_water[80]))
+    vol_low_HU  = Float32.(BS.to_hounsfield(de_lohi_μ.vol_low_μ;  μ_water = kVp_μ_water[80]))
     vol_high_HU = Float32.(BS.to_hounsfield(de_lohi_μ.vol_high_μ; μ_water = kVp_μ_water[140]))
-    BS.add_system_noise_floor!(vol_low_HU, 28.0; seed = 1234)
-    BS.add_system_noise_floor!(vol_high_HU, 28.0; seed = 5678)
     (vol_low_HU = vol_low_HU, vol_high_HU = vol_high_HU, geom = de_lohi_μ.geom)
 end;
 
@@ -885,7 +894,7 @@ in the dedicated kwargs cell below — see §12b for the row-by-row visual
 # The Gammex 472 phantom is z-invariant in the rod cores, so larger radii
 # are essentially lossless there; aggressive defaults are fine.
 z_denoise_kwargs = (
-    radius = 3,    # 7-slice window on the 8-slice z stack
+    radius = 2,    # 7-slice window on the 8-slice z stack
 )
 
 # ╔═╡ 03000014-0000-4000-8000-000000000001
@@ -915,6 +924,150 @@ We pick the standard four:
 
 # ╔═╡ 03000014-0000-4000-8000-000000000010
 de_vmi_energies = [40.0, 70.0, 100.0, 140.0];
+
+# ╔═╡ 03000016-0000-4000-8000-000000000001
+md"""
+## 14. Mono+ post-processing (FBP-equivalent noise shaping)
+
+[`BS.apply_mono_plus!`](@ref) sharpens the contrast at the noise-quiet
+anchor energy (70 keV here) and slightly low-passes the others.  Per-energy
+σ in pixels:
+
+| keV | σ_lp (px) | What happens                                         |
+|-----|-----------|------------------------------------------------------|
+| 40  | 1.5       | Noisiest VMI — strongest LP                          |
+| 70  | 0.0       | Anchor energy — left untouched                       |
+| 100 | 1.0       | Modest LP                                            |
+| 140 | 1.0       | Modest LP                                            |
+
+Workspace allocates once for the whole sweep; the call mutates `vols` in
+place but copies are returned so each energy is independent.
+"""
+
+# ╔═╡ 03000017-0000-4000-8000-000000000001
+md"""
+## 15. The four VMI images
+
+Mid-slice mosaic of all four energies, shared HU window (-200 to 1000 HU)
+so iodine boost vs. soft-tissue baseline is comparable side-by-side.
+"""
+
+# ╔═╡ 03000018-0000-4000-8000-000000000001
+md"""
+## 16. Per-rod readout: measured HU vs theoretical HU
+
+Now the unique plot of this notebook.  The Gammex 472 phantom has 14 rods
+of clinical interest — 7 calcium concentrations (50–600 mg/mL) and 7 iodine
+concentrations (2.0–20.0 mg/mL) — each occupying its own labeled region of
+the phantom mask.
+
+For each rod *r* and each VMI energy *E*:
+
+* **Measured HU** = mean of an **8-pixel-radius circular ROI at the rod's
+  centroid** (well inside the 21-px-radius rod core), broadcast across
+  every recon slice.  The full-mask average would mix in partial-volume
+  edge voxels that Mono+'s per-energy LP filter blurs differently at each
+  keV — injecting an *energy-dependent* bias that flips the iodine HU
+  ordering between 70 and 100 keV.  A small core ROI dodges that.
+* **Theoretical HU** = `1000 · (μ_r(E) − μ_water(E)) / μ_water(E)` from
+  XrayAttenuation directly, via [`BS.compute_μ_at_energy`](@ref).
+
+The phantom's `materials` vector already has each rod's `XA.Material`
+indexed by `mask_value + 1` — so the theoretical HU is a one-liner per
+rod, no fitting, no calibration assumption.
+"""
+
+# ╔═╡ 03000018-0000-4000-8000-000000000010
+ROD_LABELS = (
+    Ca = (UInt8(10), UInt8(11), UInt8(12), UInt8(13), UInt8(14), UInt8(15), UInt8(16)),
+    I = (UInt8(20), UInt8(21), UInt8(22), UInt8(23), UInt8(24), UInt8(25), UInt8(26)),
+);
+
+# ╔═╡ 03000018-0000-4000-8000-000000000020
+ROD_NAMES = (
+    Ca = ("50 mg/mL", "100 mg/mL", "200 mg/mL", "300 mg/mL", "400 mg/mL", "500 mg/mL", "600 mg/mL"),
+    I = ("2.0 mg/mL", "2.5 mg/mL", "5.0 mg/mL", "7.5 mg/mL", "10.0 mg/mL", "15.0 mg/mL", "20.0 mg/mL"),
+);
+
+# ╔═╡ 03000018-0000-4000-8000-000000000030
+md"""
+We do the per-rod measurement on the **CPU** mask (cheaper than copying the
+GPU mask back, and the mask is small).  `phantom_cpu.mask` is the canonical
+labeled-region array.
+"""
+
+# ╔═╡ 03000019-0000-4000-8000-000000000001
+md"""
+## 17. The verification plot — measured vs theoretical, per rod
+
+**Solid line** = measured HU at each VMI energy.
+**Dashed line** = theoretical HU from XrayAttenuation directly (no
+calibration, no recon — pure physics).
+
+The Ca rods (left panel) follow a smooth roll-off as keV increases —
+calcium attenuates predominantly through Compton scatter at clinical
+energies, so its HU above water decreases monotonically.
+
+The I rods (right panel) show the iodine **K-edge boost at 40 keV** —
+iodine's K-edge sits at 33.2 keV, so a 40 keV VMI catches the
+photoelectric edge and amplifies iodine HU dramatically (200–500 HU per
+mg/mL) compared to the ≈70 keV plateau.  Above the K-edge the rolloff is
+steep until 100+ keV where iodine looks soft-tissue-like.
+
+If solid and dashed agree well, the simulator + decomposition + Mono+
+pipeline are recovering the underlying physics.
+"""
+
+# ╔═╡ 0300001a-0000-4000-8000-000000000001
+md"""
+## 18. Linear regression: measured vs theoretical
+
+Same data, different cut.  We scatter every (rod, energy) pair as
+**measured HU on the y-axis vs theoretical HU on the x-axis**, then fit a
+per-energy line and overlay the y = x identity.  Reading the plot:
+
+* Slope close to **1**, intercept close to **0**, R² close to **1** → the
+  pipeline recovers physics.
+* Slope ≠ 1 → multiplicative calibration mismatch (clinical Ding
+  coefficients vs simulator's polychromatic HU baseline).
+* Intercept ≠ 0 → additive offset (residual cup, water-baseline shift).
+* Low R² → non-linear distortion (partial volume, decomp non-linearity).
+
+The Ca and I panels are split because Ca lives at much higher HU values
+than I and would otherwise dominate a shared-axis fit.
+"""
+
+# ╔═╡ bc0b9af2-d4d0-44c5-8f93-62dc9ca5d6bd
+# Calibration optimizer knobs — flip `enabled` to switch between the
+# table-fit and the BFGS optimizer.
+#   max_iter, tol     ⇒ BFGS stopping criteria (iterations cap, |Δf|/|Δx|/|∇| tols)
+#   iodine_weight     ⇒ relative emphasis on the 7 iodine rods (2.0–20.0 mg/mL)
+#   calcium_weight    ⇒ relative emphasis on the 7 calcium rods (50–600 mg/mL)
+#   water_weight      ⇒ relative emphasis on the center-ROI water sample
+#                       (set to 0 to remove water from the fit entirely;
+#                       useful when BHC residual leaves water at a non-zero
+#                       baseline that the iodine basis can't absorb)
+#   energy_weights    ⇒ paired one-to-one with `de_vmi_energies`
+#                       (40 / 70 / 100 / 140 keV) — bump the keV you most
+#                       care about, e.g. (2.0, 1.0, 1.0, 0.5) prioritizes
+#                       40 keV iodine contrast and de-emphasizes 140 keV
+#   nrmse_floor       ⇒ HU floor on the relative-error denominator: a (rod,
+#                       energy) loss term is `((HU_synth - HU_theo) /
+#                       max(|HU_theo|, nrmse_floor))²`.  Without a floor,
+#                       low-|HU_theo| rods (water, low-c iodine at high keV)
+#                       blow up the loss and dominate the fit.  100 HU
+#                       matches the d328e79 src comment for nb04's PCCT cal.
+optim_knob = (
+    enabled        = true,
+    max_iter       = 200,
+    tol            = 1.0e-8,
+    loss_metric    = :rmse,                 # :nrmse | :rmse
+    iodine_weight  = 1.0,
+    calcium_weight = 1.0,
+    water_weight   = 3.0,
+    energy_weights = (1.0, 1.0, 0.0, 0.0),   # ↔ (40, 70, 100, 140) keV
+    nrmse_floor    = 100.0,
+);
 
 # ╔═╡ 03000012-0000-4000-8000-000000000010
 de_cal = let
@@ -1306,29 +1459,11 @@ de_vmi_raw = let
     out
 end;
 
-# ╔═╡ 03000016-0000-4000-8000-000000000001
-md"""
-## 14. Mono+ post-processing (FBP-equivalent noise shaping)
-
-[`BS.apply_mono_plus!`](@ref) sharpens the contrast at the noise-quiet
-anchor energy (70 keV here) and slightly low-passes the others.  Per-energy
-σ in pixels:
-
-| keV | σ_lp (px) | What happens                                         |
-|-----|-----------|------------------------------------------------------|
-| 40  | 1.5       | Noisiest VMI — strongest LP                          |
-| 70  | 0.0       | Anchor energy — left untouched                       |
-| 100 | 1.0       | Modest LP                                            |
-| 140 | 1.0       | Modest LP                                            |
-
-Workspace allocates once for the whole sweep; the call mutates `vols` in
-place but copies are returned so each energy is independent.
-"""
-
 # ╔═╡ 03000016-0000-4000-8000-000000000010
 de_vmi_mono = let
     vols_in = [de_vmi_raw[E] for E in de_vmi_energies]
-    σ_vec = Float64[1.5, 0.0, 1.0, 1.0]   # paired with de_vmi_energies
+    σ_vec = Float64[2.0, 0.0, 2.0, 2.0]   # paired with de_vmi_energies
+    # σ_vec = Float64[0.0, 0.0, 0.0, 0.0]   # paired with de_vmi_energies
 
     ws = BS.create_mono_plus_workspace(vols_in[1]; n_energies = length(de_vmi_energies))
     res = BS.apply_mono_plus!(
@@ -1425,14 +1560,6 @@ let
     fig
 end
 
-# ╔═╡ 03000017-0000-4000-8000-000000000001
-md"""
-## 15. The four VMI images
-
-Mid-slice mosaic of all four energies, shared HU window (-200 to 1000 HU)
-so iodine boost vs. soft-tissue baseline is comparable side-by-side.
-"""
-
 # ╔═╡ 03000017-0000-4000-8000-000000000010
 let
     fig = CM.Figure(size = (1200, 1180))
@@ -1470,50 +1597,6 @@ let
     )
     fig
 end
-
-# ╔═╡ 03000018-0000-4000-8000-000000000001
-md"""
-## 16. Per-rod readout: measured HU vs theoretical HU
-
-Now the unique plot of this notebook.  The Gammex 472 phantom has 14 rods
-of clinical interest — 7 calcium concentrations (50–600 mg/mL) and 7 iodine
-concentrations (2.0–20.0 mg/mL) — each occupying its own labeled region of
-the phantom mask.
-
-For each rod *r* and each VMI energy *E*:
-
-* **Measured HU** = mean of an **8-pixel-radius circular ROI at the rod's
-  centroid** (well inside the 21-px-radius rod core), broadcast across
-  every recon slice.  The full-mask average would mix in partial-volume
-  edge voxels that Mono+'s per-energy LP filter blurs differently at each
-  keV — injecting an *energy-dependent* bias that flips the iodine HU
-  ordering between 70 and 100 keV.  A small core ROI dodges that.
-* **Theoretical HU** = `1000 · (μ_r(E) − μ_water(E)) / μ_water(E)` from
-  XrayAttenuation directly, via [`BS.compute_μ_at_energy`](@ref).
-
-The phantom's `materials` vector already has each rod's `XA.Material`
-indexed by `mask_value + 1` — so the theoretical HU is a one-liner per
-rod, no fitting, no calibration assumption.
-"""
-
-# ╔═╡ 03000018-0000-4000-8000-000000000010
-ROD_LABELS = (
-    Ca = (UInt8(10), UInt8(11), UInt8(12), UInt8(13), UInt8(14), UInt8(15), UInt8(16)),
-    I = (UInt8(20), UInt8(21), UInt8(22), UInt8(23), UInt8(24), UInt8(25), UInt8(26)),
-);
-
-# ╔═╡ 03000018-0000-4000-8000-000000000020
-ROD_NAMES = (
-    Ca = ("50 mg/mL", "100 mg/mL", "200 mg/mL", "300 mg/mL", "400 mg/mL", "500 mg/mL", "600 mg/mL"),
-    I = ("2.0 mg/mL", "2.5 mg/mL", "5.0 mg/mL", "7.5 mg/mL", "10.0 mg/mL", "15.0 mg/mL", "20.0 mg/mL"),
-);
-
-# ╔═╡ 03000018-0000-4000-8000-000000000030
-md"""
-We do the per-rod measurement on the **CPU** mask (cheaper than copying the
-GPU mask back, and the mask is small).  `phantom_cpu.mask` is the canonical
-labeled-region array.
-"""
 
 # ╔═╡ 03000018-0000-4000-8000-000000000040
 rod_data = let
@@ -1621,28 +1704,6 @@ rod_data = let
     out
 end;
 
-# ╔═╡ 03000019-0000-4000-8000-000000000001
-md"""
-## 17. The verification plot — measured vs theoretical, per rod
-
-**Solid line** = measured HU at each VMI energy.
-**Dashed line** = theoretical HU from XrayAttenuation directly (no
-calibration, no recon — pure physics).
-
-The Ca rods (left panel) follow a smooth roll-off as keV increases —
-calcium attenuates predominantly through Compton scatter at clinical
-energies, so its HU above water decreases monotonically.
-
-The I rods (right panel) show the iodine **K-edge boost at 40 keV** —
-iodine's K-edge sits at 33.2 keV, so a 40 keV VMI catches the
-photoelectric edge and amplifies iodine HU dramatically (200–500 HU per
-mg/mL) compared to the ≈70 keV plateau.  Above the K-edge the rolloff is
-steep until 100+ keV where iodine looks soft-tissue-like.
-
-If solid and dashed agree well, the simulator + decomposition + Mono+
-pipeline are recovering the underlying physics.
-"""
-
 # ╔═╡ 03000019-0000-4000-8000-000000000010
 let
     fig = CM.Figure(size = (1180, 580))
@@ -1720,25 +1781,6 @@ let
     )
     fig
 end
-
-# ╔═╡ 0300001a-0000-4000-8000-000000000001
-md"""
-## 18. Linear regression: measured vs theoretical
-
-Same data, different cut.  We scatter every (rod, energy) pair as
-**measured HU on the y-axis vs theoretical HU on the x-axis**, then fit a
-per-energy line and overlay the y = x identity.  Reading the plot:
-
-* Slope close to **1**, intercept close to **0**, R² close to **1** → the
-  pipeline recovers physics.
-* Slope ≠ 1 → multiplicative calibration mismatch (clinical Ding
-  coefficients vs simulator's polychromatic HU baseline).
-* Intercept ≠ 0 → additive offset (residual cup, water-baseline shift).
-* Low R² → non-linear distortion (partial volume, decomp non-linearity).
-
-The Ca and I panels are split because Ca lives at much higher HU values
-than I and would otherwise dominate a shared-axis fit.
-"""
 
 # ╔═╡ 0300001a-0000-4000-8000-000000000010
 let
@@ -1905,38 +1947,6 @@ The same image-domain pipeline can be repointed at any other dual-kVp
 acquisition (e.g. Siemens Naeotom Alpha) by re-running the
 self-calibration cell against that scanner's rod HU.
 """
-
-# ╔═╡ bc0b9af2-d4d0-44c5-8f93-62dc9ca5d6bd
-# Calibration optimizer knobs — flip `enabled` to switch between the
-# table-fit and the BFGS optimizer.
-#   max_iter, tol     ⇒ BFGS stopping criteria (iterations cap, |Δf|/|Δx|/|∇| tols)
-#   iodine_weight     ⇒ relative emphasis on the 7 iodine rods (2.0–20.0 mg/mL)
-#   calcium_weight    ⇒ relative emphasis on the 7 calcium rods (50–600 mg/mL)
-#   water_weight      ⇒ relative emphasis on the center-ROI water sample
-#                       (set to 0 to remove water from the fit entirely;
-#                       useful when BHC residual leaves water at a non-zero
-#                       baseline that the iodine basis can't absorb)
-#   energy_weights    ⇒ paired one-to-one with `de_vmi_energies`
-#                       (40 / 70 / 100 / 140 keV) — bump the keV you most
-#                       care about, e.g. (2.0, 1.0, 1.0, 0.5) prioritizes
-#                       40 keV iodine contrast and de-emphasizes 140 keV
-#   nrmse_floor       ⇒ HU floor on the relative-error denominator: a (rod,
-#                       energy) loss term is `((HU_synth - HU_theo) /
-#                       max(|HU_theo|, nrmse_floor))²`.  Without a floor,
-#                       low-|HU_theo| rods (water, low-c iodine at high keV)
-#                       blow up the loss and dominate the fit.  100 HU
-#                       matches the d328e79 src comment for nb04's PCCT cal.
-optim_knob = (
-    enabled        = true,
-    max_iter       = 200,
-    tol            = 1.0e-8,
-    loss_metric    = :nrmse,                 # :nrmse | :rmse
-    iodine_weight  = 1.0,
-    calcium_weight = 1.0,
-    water_weight   = 1.0,
-    energy_weights = (1.0, 1.0, 1.0, 1.0),   # ↔ (40, 70, 100, 140) keV
-    nrmse_floor    = 100.0,
-);
 
 # ╔═╡ Cell order:
 # ╟─03000001-0000-4000-8000-000000000010

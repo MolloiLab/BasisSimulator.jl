@@ -258,8 +258,10 @@ export GE_REVOLUTION_APEX_ELITE_DE_CAL,
 #   - Body size  : ~33 cm water-path hardening (Gammex 472 body cylinder)
 #   - Recon      : sino-BHC (per-column, bowtie-aware) → FBP → RSKR-2ch
 #                  (n_iter=2, h_param=2, radius=3, γ=0.5) → radial cupping
-#                  → measured center-ROI μ_water → to_hounsfield + 28 HU
-#                  noise floor → Ding decomp + 7-slice z-median
+#                  → measured center-ROI μ_water → to_hounsfield (no
+#                  post-RSKR noise floor — would defeat RSKR's denoising
+#                  and inject spurious noise into the optimizer baseline)
+#                  → Ding decomp + 7-slice z-median
 #   - Synthesis  : iodine basis (XA.Elements.Iodine vs XA.Materials.water)
 #
 # For other scanners / kVp pairs / body sizes, re-derive in nb03 §11.
@@ -275,7 +277,7 @@ Source: nb03 protocol matching the clinical Apex Elite GSI acquisition
 rotation, 5 mm collimation, 2.5 mm Al flat filter + 4.5 mm Al additional).
 """
 const GE_REVOLUTION_APEX_ELITE_80_140KVP_DE_VMI_CAL = (
-    coeffs        = Float32[0.417, 0.05059, -0.0546],
+    coeffs        = Float32[0.43, 0.0506, -0.05464],
     α_iod_low_cal = 39.86f0,
 )
 
