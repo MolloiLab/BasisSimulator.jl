@@ -938,7 +938,9 @@ de_cal = let
             method       = :table_fit,
             n_iter       = 0,
             converged    = true,
+            loss_metric  = :nrmse,
             nrmse_HU     = NaN,
+            rmse_HU      = NaN,
         )
     else
         # ─── Path B: direct VMI-HU-vs-theoretical optimizer ────────────
@@ -1039,9 +1041,17 @@ de_cal = let
         ]
         e_weights   = collect(Float64.(optim_knob.energy_weights))
         nrmse_floor = Float64(optim_knob.nrmse_floor)
+        loss_metric = optim_knob.loss_metric
+        loss_metric in (:nrmse, :rmse) ||
+            error("optim_knob.loss_metric must be :nrmse or :rmse, got $(loss_metric)")
         function _w(r_idx, e_idx)
-            ht = rod_data[r_idx].HU_theo[e_idx]
-            rod_family_w[r_idx] * e_weights[e_idx] / max(abs(ht), nrmse_floor)^2
+            base = rod_family_w[r_idx] * e_weights[e_idx]
+            if loss_metric == :rmse
+                base                                           # absolute squared error
+            else
+                ht = rod_data[r_idx].HU_theo[e_idx]
+                base / max(abs(ht), nrmse_floor)^2             # relative squared error (with floor)
+            end
         end
 
         # 4. Initial guess from BS.fit_ding_coeffs on iodine + water only.
@@ -1109,18 +1119,22 @@ de_cal = let
         converged = Optim.converged(opt_result)
         n_iter    = Optim.iterations(opt_result)
 
-        # 6. Diagnostics — final nRMSE_HU + iodine-rod RMS_c (mg/mL).
-        sq_err, n_pairs = 0.0, 0
+        # 6. Diagnostics — both metrics computed regardless of which drove
+        # the loss, so you can compare across :nrmse / :rmse runs.
+        sq_rel, sq_abs, n_pairs = 0.0, 0.0, 0
         for r_idx in 1:N, e_idx in 1:M
             hl    = rod_data[r_idx].HU_low
             hh    = rod_data[r_idx].HU_high
             c_iod = a₀ + a₁ * hl + a₂ * hh
             HU_E_synth = hl + c_iod * (α_phys_E[e_idx] - α_low_cal)
             ht         = rod_data[r_idx].HU_theo[e_idx]
-            sq_err  += ((HU_E_synth - ht) / max(abs(ht), nrmse_floor))^2
+            resid      = HU_E_synth - ht
+            sq_rel  += (resid / max(abs(ht), nrmse_floor))^2
+            sq_abs  += resid^2
             n_pairs += 1
         end
-        nrmse_HU = sqrt(sq_err / n_pairs)
+        nrmse_HU = sqrt(sq_rel / n_pairs)
+        rmse_HU  = sqrt(sq_abs / n_pairs)
 
         iod_idx  = findall(r -> r.kind == :iodine, rod_data)
         rms_c    = let
@@ -1137,7 +1151,7 @@ de_cal = let
         Σc²    = sum(rod_data[i].c_known^2 for i in iod_idx)
         α_high = sum(rod_data[i].c_known * rod_data[i].HU_high for i in iod_idx) / Σc²
 
-        @info "[Ding optimizer · BFGS] $(converged ? "converged in" : "stopped at") $(n_iter) iter · loss = $(round(Optim.minimum(opt_result), digits = 4)) · nRMSE_HU = $(round(nrmse_HU, digits = 4)) · RMS_c (I rods) = $(round(rms_c, digits = 3)) mg/mL"
+        @info "[Ding optimizer · BFGS · loss=$(loss_metric)] $(converged ? "converged in" : "stopped at") $(n_iter) iter · loss = $(round(Optim.minimum(opt_result), digits = 4)) · nRMSE_HU = $(round(nrmse_HU, digits = 4)) · RMSE_HU = $(round(rmse_HU, digits = 1)) HU · RMS_c (I rods) = $(round(rms_c, digits = 3)) mg/mL"
 
         (
             coeffs       = (Float32(a₀), Float32(a₁), Float32(a₂)),
@@ -1151,7 +1165,9 @@ de_cal = let
             method       = :optimized,
             n_iter       = n_iter,
             converged    = converged,
+            loss_metric  = loss_metric,
             nrmse_HU     = nrmse_HU,
+            rmse_HU      = rmse_HU,
         )
     end
 end;
@@ -1170,8 +1186,9 @@ let
 
     optim_block = de_cal.method == :optimized ?
         """
-        * **method = :optimized** ($(de_cal.converged ? "converged in" : "stopped at") $(de_cal.n_iter) iter)
-        * **nRMSE_HU = $(round(de_cal.nrmse_HU, digits = 4))** (relative VMI HU error vs theory, all rods × all energies)
+        * **method = :optimized** · loss = `:$(de_cal.loss_metric)` · ($(de_cal.converged ? "converged in" : "stopped at") $(de_cal.n_iter) iter)
+        * **nRMSE_HU = $(round(de_cal.nrmse_HU, digits = 4))** (relative VMI HU error vs theory, floored at `nrmse_floor`)
+        * **RMSE_HU = $(round(de_cal.rmse_HU, digits = 1)) HU** (absolute VMI HU error vs theory)
         """ :
         "* **method = :table_fit**"
 
@@ -1913,6 +1930,7 @@ optim_knob = (
     enabled        = true,
     max_iter       = 200,
     tol            = 1.0e-8,
+    loss_metric    = :nrmse,                 # :nrmse | :rmse
     iodine_weight  = 1.0,
     calcium_weight = 1.0,
     water_weight   = 1.0,

@@ -244,10 +244,12 @@ export GE_REVOLUTION_APEX_ELITE_DE_CAL,
 #     HU_E[v]      = HU_low[v] + c_iodine[v] · (μρ_I(E)/μρ_water(E) − α_iod_low_cal)
 #
 # Values were derived in `docs/notebooks/03_dual_kvp_vmi.jl` §11 by BFGS
-# minimization (Optim.jl, analytical gradient) of per-rod relative-error
-# nRMSE across all 4 VMI energies (40 / 70 / 100 / 140 keV) and all 14
-# Gammex 472 rods (water + 7 I + 7 Ca), with material/energy weights all
-# 1.0 and `nrmse_floor = 100 HU`.  Corresponding nb04 PCCT cal in
+# minimization (Optim.jl, analytical gradient) of per-(rod, energy)
+# **absolute squared HU error** (`loss_metric = :rmse`) across all 4 VMI
+# energies (40 / 70 / 100 / 140 keV) and all 14 Gammex 472 rods (water +
+# 7 I + 7 Ca), with material/energy weights all 1.0.  RMSE outperformed
+# nRMSE for this scanner+kVp pair (RMSE-mode nRMSE_HU = 0.31 vs
+# nRMSE-mode nRMSE_HU = 0.60).  Corresponding nb04 PCCT cal in
 # `src/reconstruction/vmi/pcct_calibration.jl`.
 #
 # Pipeline scope per const:
@@ -273,8 +275,8 @@ Source: nb03 protocol matching the clinical Apex Elite GSI acquisition
 rotation, 5 mm collimation, 2.5 mm Al flat filter + 4.5 mm Al additional).
 """
 const GE_REVOLUTION_APEX_ELITE_80_140KVP_DE_VMI_CAL = (
-    coeffs        = Float32[-0.015, 0.04588, -0.05301],
-    α_iod_low_cal = 45.09f0,
+    coeffs        = Float32[0.417, 0.05059, -0.0546],
+    α_iod_low_cal = 39.86f0,
 )
 
 """
