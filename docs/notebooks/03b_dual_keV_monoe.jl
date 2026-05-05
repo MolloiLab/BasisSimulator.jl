@@ -29,7 +29,8 @@ polychromatic 80 / 140 kVp.
 
 ```
 mono FBP per energy (μ-domain)
-   → HU = 1000·(μ − μ_water_NIST(E)) / μ_water_NIST(E)
+   → measured μ_water at center ROI (absorbs FBP/scatter bias)
+   → HU = 1000·(μ − μ_water_measured) / μ_water_measured
    → 2-panel display + per-rod regression vs XrayAttenuation theory
 ```
 
@@ -40,11 +41,14 @@ Because the inputs are intrinsically monoenergetic:
 | Sino-domain BHC                            | dropped — no beam hardening on mono input |
 | RSKR-2ch joint denoise                     | dropped — no anti-correlated spectral noise to exploit |
 | Radial cupping correction                  | dropped — no spectral cup |
-| Measured μ_water from center ROI           | dropped — `BS.compute_μ_at_energy(water, E)` is exact |
+| Measured μ_water from center ROI           | **kept** — absorbs ~12 % multiplicative recon-side bias from finite-FOV FDK / scatter / detector response |
 | 2-basis Ding decomp + VMI synth + Mono+    | dropped — recon @ E_mono IS the E_mono image |
 
-What's left: forward-project, FBP, divide by NIST μ_water at the chosen
-energy.  That's the entire pipeline.
+The measured μ_water step is the one piece of nb03's machinery that
+*does* need to stay — even with mono input, FBP through a finite-size
+phantom doesn't return exactly NIST μ_water at the center, and that
+bias is material-independent so a single per-energy μ_water divisor
+zeros out water and aligns every rod with theory.
 
 Source-spectrum injection happens via
 [`BS.create_eict_workspace(...; spectrum_override = ([E_mono], [1.0]))`](@ref).
@@ -336,26 +340,63 @@ end;
 
 # ╔═╡ 030b0009-0000-4000-8000-000000000001
 md"""
-## 8. NIST `μ_water` lookup — exact at the mono energy
+## 8. Per-energy `μ_water` — measured from the FBP center ROI
 
-For a truly monoenergetic beam, μ_water is just whatever
-`XrayAttenuation` returns at that energy — no center-ROI measurement,
-no calibration tricks.  This is the single biggest simplification the
-mono pipeline gets vs nb03's polychromatic flow.
+Even with a strictly monoenergetic input, the recon's water-region μ
+isn't *exactly* the NIST analytic value at that energy — finite-FOV
+cone-beam FDK normalization, residual scatter, detector response, and
+phantom-size-dependent edge effects all contribute a small consistent
+bias (empirically about a 12 % multiplicative offset on this Gammex
+472 / Apex Elite setup).  That bias is **material-independent** —
+every voxel shifts by the same factor — so we absorb it into the HU
+divisor by **measuring** μ_water from an 8-px circular ROI at the
+phantom center of the post-FBP μ-volume, exact same trick as nb03 §8.
+
+Compared to using `BS.compute_μ_at_energy(water, E)` directly, this
+shifts solid water from ≈ −110 HU to exactly 0 HU at both energies
+(and shifts every Ca / I rod by the same offset), so the regression
+in §13 collapses cleanly to the y = x identity.
+
+The center ROI is well inside the 50 mm Ca inner ring + 105 mm I
+outer ring of the Gammex 472, so the sample is pure solid water.
 """
 
 # ╔═╡ 030b0009-0000-4000-8000-000000000010
-keV_μ_water = Dict(
-    de_mono_energies.low  => BS.compute_μ_at_energy(BS.XA.Materials.water, de_mono_energies.low),
-    de_mono_energies.high => BS.compute_μ_at_energy(BS.XA.Materials.water, de_mono_energies.high),
-);
+keV_μ_water = let
+    nx, ny, nz = size(de_lohi_μ.vol_low_μ)
+    cx, cy     = nx / 2 + 0.5, ny / 2 + 0.5
+    ROI_R      = 8.0
+    r²         = ROI_R^2
+
+    roi = CartesianIndex{2}[]
+    i_lo = max(1, floor(Int, cx - ROI_R)); i_hi = min(nx, ceil(Int, cx + ROI_R))
+    j_lo = max(1, floor(Int, cy - ROI_R)); j_hi = min(ny, ceil(Int, cy + ROI_R))
+    for j in j_lo:j_hi, i in i_lo:i_hi
+        ((i - cx)^2 + (j - cy)^2) ≤ r² && push!(roi, CartesianIndex(i, j))
+    end
+
+    function _mean_μ(vol)
+        s = 0.0; n = 0
+        for z in 1:nz, ci in roi
+            s += vol[ci, z]; n += 1
+        end
+        s / n
+    end
+
+    Dict(
+        de_mono_energies.low  => Float64(_mean_μ(de_lohi_μ.vol_low_μ)),
+        de_mono_energies.high => Float64(_mean_μ(de_lohi_μ.vol_high_μ)),
+    )
+end;
 
 # ╔═╡ 030b0009-0000-4000-8000-000000000020
 md"""
-**μ_water** (NIST analytical):
+**Measured μ_water** (post-FBP, 8-px center ROI · all-z mean):
 
-* $(de_mono_energies.low) keV: $(round(keV_μ_water[de_mono_energies.low], digits = 5)) cm⁻¹
-* $(de_mono_energies.high) keV: $(round(keV_μ_water[de_mono_energies.high], digits = 5)) cm⁻¹
+* $(de_mono_energies.low) keV: $(round(keV_μ_water[de_mono_energies.low], digits = 5)) cm⁻¹  *(NIST: $(round(BS.compute_μ_at_energy(BS.XA.Materials.water, de_mono_energies.low), digits = 5)))*
+* $(de_mono_energies.high) keV: $(round(keV_μ_water[de_mono_energies.high], digits = 5)) cm⁻¹  *(NIST: $(round(BS.compute_μ_at_energy(BS.XA.Materials.water, de_mono_energies.high), digits = 5)))*
+
+The gap between measured and NIST is the recon-side bias the measurement absorbs.
 """
 
 # ╔═╡ 030b000a-0000-4000-8000-000000000001
@@ -382,9 +423,6 @@ no synthesis pass, no Mono+ noise shaping.  The two recons already
 satisfy `μ(E) = c_water · μρ_water(E) + c_iodine · 1e-3 · μρ_I(E)`
 exactly at the chosen E because there's only one E.
 """
-
-# ╔═╡ 94aff346-7b58-4206-9cb9-5322046a750a
-de_lohi_HU.vol_low_HU[:, :, 4]
 
 # ╔═╡ 030b000b-0000-4000-8000-000000000010
 let
@@ -870,8 +908,7 @@ cost of polychromatic input.
 # ╟─030b000a-0000-4000-8000-000000000001
 # ╠═030b000a-0000-4000-8000-000000000010
 # ╟─030b000b-0000-4000-8000-000000000001
-# ╠═94aff346-7b58-4206-9cb9-5322046a750a
-# ╠═030b000b-0000-4000-8000-000000000010
+# ╟─030b000b-0000-4000-8000-000000000010
 # ╟─030b000c-0000-4000-8000-000000000001
 # ╟─030b000c-0000-4000-8000-000000000010
 # ╟─030b000d-0000-4000-8000-000000000001
