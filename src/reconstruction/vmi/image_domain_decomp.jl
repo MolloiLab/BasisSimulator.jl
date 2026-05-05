@@ -225,3 +225,166 @@ end
 export fit_ding_coeffs,
        apply_ding_decomp, apply_ding_decomp!,
        synth_vmi_image_domain, synth_vmi_image_domain!
+
+
+# =============================================================================
+# 2-basis (water + iodine) μ-domain VMI pipeline — selectable Ding form
+# =============================================================================
+
+"""
+    eval_cal(L, H, c, form::Symbol)
+
+Scalar calibration evaluator — maps a single `(HU_low, HU_high)` pair to
+a basis fraction (typically `c_iodine` in mg/mL).  Two forms supported:
+
+- `:linear` (Ding-2012, 3 params):   `c[1] + c[2]·L + c[3]·H`
+- `:rational_quadratic` (Ding-2020, 8 params):
+        `(c[1] + c[2]·L + c[3]·H + c[4]·L² + c[5]·L·H + c[6]·H²)
+       / (1 + c[7]·L + c[8]·H)`
+
+The denominator should stay strictly positive over the HU range covered
+by the calibration data — the BFGS optimizer doesn't enforce this, so
+sanity-check post-fit if you're rolling your own.
+"""
+@inline function eval_cal(L, H, c, form::Symbol)
+    if form === :linear
+        return c[1] + c[2]*L + c[3]*H
+    elseif form === :rational_quadratic
+        num = c[1] + c[2]*L + c[3]*H + c[4]*L*L + c[5]*L*H + c[6]*H*H
+        den = oneunit(c[1]) + c[7]*L + c[8]*H
+        return num / den
+    else
+        error("eval_cal: unknown form $(form) — expected :linear or :rational_quadratic")
+    end
+end
+
+
+"""
+    apply_cal!(out, HU_low, HU_high, coeffs; form = :linear) -> out
+    apply_cal(HU_low, HU_high, coeffs; form = :linear)        -> Array{Float32, 3}
+
+Voxel-wise calibration: writes `eval_cal(HU_low[v], HU_high[v], coeffs;
+form)` into every voxel of `out`.  Useful for both `c_iodine` and any
+other Ding-style basis fraction map.
+"""
+function apply_cal!(
+        out::AbstractArray{Float32, 3},
+        HU_low::AbstractArray{Float32, 3},
+        HU_high::AbstractArray{Float32, 3},
+        coeffs;
+        form::Symbol = :linear,
+    )
+    size(out) == size(HU_low) == size(HU_high) ||
+        error("apply_cal!: shapes must match")
+    if form === :linear
+        a0 = Float32(coeffs[1]); a1 = Float32(coeffs[2]); a2 = Float32(coeffs[3])
+        @. out = a0 + a1 * HU_low + a2 * HU_high
+    elseif form === :rational_quadratic
+        a0 = Float32(coeffs[1]); a1 = Float32(coeffs[2]); a2 = Float32(coeffs[3])
+        a3 = Float32(coeffs[4]); a4 = Float32(coeffs[5]); a5 = Float32(coeffs[6])
+        b1 = Float32(coeffs[7]); b2 = Float32(coeffs[8])
+        @. out = (a0 + a1*HU_low + a2*HU_high +
+                  a3*HU_low*HU_low + a4*HU_low*HU_high + a5*HU_high*HU_high) /
+                 (1.0f0 + b1*HU_low + b2*HU_high)
+    else
+        error("apply_cal!: unknown form $(form) — expected :linear or :rational_quadratic")
+    end
+    out
+end
+
+apply_cal(HU_low::AbstractArray{Float32, 3},
+          HU_high::AbstractArray{Float32, 3},
+          coeffs;
+          form::Symbol = :linear) =
+    apply_cal!(similar(HU_low), HU_low, HU_high, coeffs; form = form)
+
+
+"""
+    synth_vmi_2basis!(HU_E, c_water, c_iodine; energy_keV,
+                      water_material  = XA.Materials.water,
+                      iodine_material = XA.Elements.Iodine)
+        -> HU_E
+    synth_vmi_2basis(c_water, c_iodine; ...)
+        -> Array{Float32, 3}
+
+Per-energy VMI synthesis from a 2-basis (water + iodine) image-domain
+decomposition (McCollough 2015 / Yu 2012 textbook form):
+
+    μ(E)  = c_water · μρ_water(E) + c_iodine · 1e-3 · μρ_iodine(E)
+    HU(E) = 1000·(μ(E) − μρ_water(E)) / μρ_water(E)
+          = 1000·(c_water − 1) + c_iodine · α_phys(E)
+
+where `α_phys(E) = μρ_iodine(E) / μρ_water(E)`.  Replaces the
+iodine-only perturbation form `HU_low + c_iod·(α_E − α_low_cal)` —
+mathematically equivalent when `c_water = 1 + (HU_low − α_low_cal·c_iod)/1000`
+(the algebraic identity used in nb03 / nb04 §13's `de_decomp`), but
+makes the basis-pair structure explicit.
+
+`c_water` is in g/mL (≈1 for water, ≈1.5–2 for calcium-equivalent rods).
+`c_iodine` is in mg/mL.
+"""
+function synth_vmi_2basis!(
+        HU_E::AbstractArray{Float32, 3},
+        c_water::AbstractArray{Float32, 3},
+        c_iodine::AbstractArray{Float32, 3};
+        energy_keV::Real,
+        water_material  = XA.Materials.water,
+        iodine_material = XA.Elements.Iodine,
+    )
+    size(HU_E) == size(c_water) == size(c_iodine) ||
+        error("synth_vmi_2basis!: shapes must match")
+    μρ_w = compute_mass_μ_at_energy(water_material,  Float64(energy_keV))
+    μρ_I = compute_mass_μ_at_energy(iodine_material, Float64(energy_keV))
+    α_E  = Float32(μρ_I / μρ_w)
+    @. HU_E = 1.0f3 * (c_water - 1.0f0) + c_iodine * α_E
+    HU_E
+end
+
+function synth_vmi_2basis(
+        c_water::AbstractArray{Float32, 3},
+        c_iodine::AbstractArray{Float32, 3};
+        energy_keV::Real,
+        water_material  = XA.Materials.water,
+        iodine_material = XA.Elements.Iodine,
+    )
+    out = similar(c_water)
+    synth_vmi_2basis!(out, c_water, c_iodine;
+        energy_keV      = energy_keV,
+        water_material  = water_material,
+        iodine_material = iodine_material,
+    )
+end
+
+
+"""
+    decomp_2basis(HU_low, HU_high, cal) -> NamedTuple{(:c_iodine, :c_water)}
+
+Convenience wrapper that runs the 2-basis decomposition for a calibration
+NamedTuple as returned by [`de_vmi_cal_2basis_for`](@ref) /
+[`pcct_vmi_cal_2basis_for`](@ref).  Equivalent to:
+
+```julia
+c_iodine = apply_cal(HU_low, HU_high, cal.coeffs_iodine; form = cal.cal_form)
+c_water  = @. 1f0 + (HU_low − cal.α_iod_low_cal · c_iodine) / 1000f0
+```
+
+The `c_water` identity ties basis-fraction noise to ONE HU term
+(`HU_low`), preserving the iodine-perturbation form's noise behavior
+while still feeding the proper textbook 2-basis μ-domain synth via
+[`synth_vmi_2basis`](@ref).
+"""
+function decomp_2basis(
+        HU_low::AbstractArray{Float32, 3},
+        HU_high::AbstractArray{Float32, 3},
+        cal::NamedTuple,
+    )
+    c_iodine = apply_cal(HU_low, HU_high, cal.coeffs_iodine; form = cal.cal_form)
+    α_low_f32 = Float32(cal.α_iod_low_cal)
+    c_water = @. 1.0f0 + (HU_low - α_low_f32 * c_iodine) / 1000.0f0
+    (c_iodine = c_iodine, c_water = c_water)
+end
+
+
+export eval_cal, apply_cal!, apply_cal,
+       synth_vmi_2basis!, synth_vmi_2basis,
+       decomp_2basis

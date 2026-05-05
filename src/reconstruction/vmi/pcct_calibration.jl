@@ -283,3 +283,72 @@ function pcct_vmi_cal_for(kVp::Real)
 end
 
 export SIEMENS_NAEOTOM_120KVP_VMI_CAL, SIEMENS_NAEOTOM_140KVP_VMI_CAL, pcct_vmi_cal_for
+
+
+# =============================================================================
+# 2-basis (water + iodine) PCCT VMI calibration — Ding-2020 rational quadratic
+# =============================================================================
+
+"""
+Calibration constant for the **2-basis (water + iodine) μ-domain PCCT VMI
+pipeline** on the Siemens Naeotom Alpha at 140 kVp (low/high bin pair
+recombination).  Companion to `SIEMENS_NAEOTOM_140KVP_VMI_CAL` (the
+older Ding-2012 linear form) — this is the **Ding-2020 rational
+quadratic** form for `c_iodine`, paired with a single
+`α_iod_low_cal` anchor that drives the algebraic `c_water` identity in
+[`decomp_2basis`](@ref).
+
+NamedTuple fields:
+
+- `cal_form::Symbol = :rational_quadratic` — selector for [`apply_cal`](@ref).
+- `coeffs_iodine::Vector{Float32}` (length 8) — `(a₀, a₁, a₂, a₃, a₄, a₅, b₁, b₂)`.
+- `α_iod_low_cal::Float32` — low-bin iodine HU/(mg/mL) anchor.
+- `μ_water_low::Float32`, `μ_water_high::Float32` — per-bin μ_water for
+  HU conversion (cm⁻¹), measured from an 8-px-radius center ROI of the
+  post-RSKR + post-cupping FBP recon.
+
+Derivation: BFGS over `[θ_I; α_low_cal]` (Ding-2020 RQ form, 8+1 params)
+minimizing per-(rod, energy) squared HU error across all 14 Gammex 472
+rods × 4 VMI energies (40 / 70 / 100 / 140 keV).  No BHC needed — PCCT
+bins absorb polychromatic effects via the per-bin μ_water.  See
+`docs/notebooks/04_pcct_vmi.jl` §12 for the recalibration procedure +
+pseudocode.
+"""
+const SIEMENS_NAEOTOM_ALPHA_140KVP_PCCT_2BASIS_VMI_CAL = (
+    cal_form      = :rational_quadratic,
+    coeffs_iodine = Float32[
+        -0.3761f0,
+         0.08502f0, -0.06843f0,
+         0.0006391f0, -0.001326f0, 0.0006849f0,
+         0.004734f0, -0.005450f0,
+    ],
+    α_iod_low_cal = 18.182f0,
+    μ_water_low   = 0.19910f0,
+    μ_water_high  = 0.18127f0,
+)
+
+"""
+    pcct_vmi_cal_2basis_for(scanner::Symbol, kVp::Real)
+        -> NamedTuple
+
+Lookup helper for the 2-basis PCCT VMI calibration constants.  Returns
+the NamedTuple with `cal_form`, `coeffs_iodine` (8-vector for RQ form),
+`α_iod_low_cal`, and `μ_water_low/high`.
+
+Companion to [`pcct_vmi_cal_for`](@ref) (which returns the older
+Ding-2012 linear-form constant).  Throws if no 2-basis cal is registered
+for the requested `(scanner, kVp)` combo — re-derive in
+`docs/notebooks/04_pcct_vmi.jl` §12 (see the recalibration pseudocode
+markdown there).
+"""
+function pcct_vmi_cal_2basis_for(scanner::Symbol, kVp::Real)
+    k = round(Int, kVp)
+    if scanner == :siemens_naeotom_alpha && k == 140
+        return SIEMENS_NAEOTOM_ALPHA_140KVP_PCCT_2BASIS_VMI_CAL
+    else
+        error("pcct_vmi_cal_2basis_for: no 2-basis calibration available for " *
+              "scanner=$(scanner), $(k) kVp.  Re-derive in nb04 §12 (see docstring above).")
+    end
+end
+
+export SIEMENS_NAEOTOM_ALPHA_140KVP_PCCT_2BASIS_VMI_CAL, pcct_vmi_cal_2basis_for

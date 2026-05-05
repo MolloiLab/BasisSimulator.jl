@@ -321,3 +321,76 @@ function de_vmi_cal_for(scanner::Symbol, low_kVp::Real, high_kVp::Real)
 end
 
 export GE_REVOLUTION_APEX_ELITE_80_140KVP_DE_VMI_CAL, de_vmi_cal_for
+
+
+# =============================================================================
+# 2-basis (water + iodine) DE VMI calibration — Ding-2020 rational quadratic
+# =============================================================================
+
+"""
+Calibration constant for the **2-basis (water + iodine) μ-domain DE VMI
+pipeline** on the GE Revolution Apex Elite at 80 / 140 kVp dual-source
+GSI.  Companion to `GE_REVOLUTION_APEX_ELITE_80_140KVP_DE_VMI_CAL` (the
+older Ding-2012 linear form) — this is the **Ding-2020 rational
+quadratic** form for `c_iodine`, paired with a single
+`α_iod_low_cal` anchor that drives the algebraic `c_water` identity in
+[`decomp_2basis`](@ref).
+
+NamedTuple fields:
+
+- `cal_form::Symbol = :rational_quadratic` — selector for [`apply_cal`](@ref).
+- `coeffs_iodine::Vector{Float32}` (length 8) — `(a₀, a₁, a₂, a₃, a₄, a₅, b₁, b₂)`
+  for `c_iodine = (a₀ + a₁L + a₂H + a₃L² + a₄LH + a₅H²) / (1 + b₁L + b₂H)`.
+- `α_iod_low_cal::Float32` — low-effective-energy iodine HU/(mg/mL) anchor.
+- `μ_water_low::Float32`, `μ_water_high::Float32` — per-kVp μ_water for HU
+  conversion (cm⁻¹), measured from an 8-px-radius center ROI of the
+  post-RSKR + post-cupping FBP recon (same procedure as the 80/140 kVp
+  μ_water in nb03 §8).
+
+Derivation: BFGS over `[θ_I; α_low_cal]` (Ding-2020 RQ form, 8+1 params
+total) minimizing per-(rod, energy) squared HU error across all 14
+Gammex 472 rods × 4 VMI energies (40 / 70 / 100 / 140 keV), with
+calcium-rod-family weighting `0.1` so the (water, iodine) coefficients
+are picked as the best W+I compromise that ALSO fits Ca well.  See
+`docs/notebooks/03_dual_kvp_vmi.jl` §12 for the recalibration procedure
++ pseudocode.
+"""
+const GE_REVOLUTION_APEX_ELITE_80_140KVP_2BASIS_VMI_CAL = (
+    cal_form      = :rational_quadratic,
+    coeffs_iodine = Float32[
+        -15.77f0,
+         5.52f5,  -1.906f6,
+         7.92f5,  -2.202f6,  1.471f6,
+         1.558f7, -2.598f7,
+    ],
+    α_iod_low_cal = 39.108f0,
+    μ_water_low   = 0.19768f0,
+    μ_water_high  = 0.17380f0,
+)
+
+"""
+    de_vmi_cal_2basis_for(scanner::Symbol, low_kVp::Real, high_kVp::Real)
+        -> NamedTuple
+
+Lookup helper for the 2-basis DE VMI calibration constants.  Returns the
+NamedTuple with `cal_form`, `coeffs_iodine` (8-vector for RQ form),
+`α_iod_low_cal`, and `μ_water_low/high`.
+
+Companion to [`de_vmi_cal_for`](@ref) (which returns the older Ding-2012
+linear-form constant).  Throws if no 2-basis cal is registered for the
+requested `(scanner, low_kVp, high_kVp)` combo — re-derive in
+`docs/notebooks/03_dual_kvp_vmi.jl` §12 (see the recalibration pseudocode
+markdown there).
+"""
+function de_vmi_cal_2basis_for(scanner::Symbol, low_kVp::Real, high_kVp::Real)
+    klo = round(Int, low_kVp)
+    khi = round(Int, high_kVp)
+    if scanner == :ge_revolution_apex_elite && klo == 80 && khi == 140
+        return GE_REVOLUTION_APEX_ELITE_80_140KVP_2BASIS_VMI_CAL
+    else
+        error("de_vmi_cal_2basis_for: no 2-basis calibration available for scanner=$(scanner), " *
+              "($(klo), $(khi)) kVp pair.  Re-derive in nb03 §12 (see docstring above).")
+    end
+end
+
+export GE_REVOLUTION_APEX_ELITE_80_140KVP_2BASIS_VMI_CAL, de_vmi_cal_2basis_for
