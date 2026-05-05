@@ -87,6 +87,9 @@ import BasisSimulator as BS
 # ╔═╡ 04000001-0000-4000-8000-000000000031
 import CairoMakie as CM
 
+# ╔═╡ 04000001-0000-4000-8000-000000000032
+import Optim
+
 # ╔═╡ 04000001-0000-4000-8000-000000000040
 begin
     GPU_BACKEND = let
@@ -520,7 +523,7 @@ notebook for VMI bins.
 """
 
 # ╔═╡ 0400000a-0000-4000-8000-000000000010
-de_lohi_μ = let
+de_lohi_μ_raw = let
     matrix_size = recon_opts.matrix_size
     geom = sim_lohi.geom
 
@@ -579,17 +582,10 @@ rskr_knob = (
     γ = 0.5,
 );
 
-# ╔═╡ 0400000b-0000-4000-8000-000000000007
-# Source for downstream HU conversion + rod measurement (§11 onward):
-#   :rskr  → use the post-RSKR μ-volumes  (default; matches nb07)
-#   :raw   → use the raw FBP μ-volumes    (bypass RSKR entirely — useful
-#            for isolating whether RSKR is biasing calcium VMI HU)
-rod_source = :rskr;
-
 # ╔═╡ 0400000b-0000-4000-8000-000000000010
 de_lohi_rskr = let
     out = BS.apply_rskr(
-        [de_lohi_μ.vol_low_μ, de_lohi_μ.vol_high_μ];
+        [de_lohi_μ_raw.vol_low_μ, de_lohi_μ_raw.vol_high_μ];
         n_iter = rskr_knob.n_iter,
         h_param = rskr_knob.h_param,
         radius = rskr_knob.radius,
@@ -597,7 +593,7 @@ de_lohi_rskr = let
         gpu_arr_type = GPU_BACKEND.to_gpu,
         verbose = true,
     )
-    (vol_low_μ = out[1], vol_high_μ = out[2], geom = de_lohi_μ.geom)
+    (vol_low_μ = out[1], vol_high_μ = out[2], geom = de_lohi_μ_raw.geom)
 end;
 
 # ╔═╡ 0400000b-0000-4000-8000-000000000020
@@ -618,10 +614,10 @@ Look for:
 
 # ╔═╡ 0400000b-0000-4000-8000-000000000030
 let
-    mid = size(de_lohi_μ.vol_low_μ, 3) ÷ 2
+    mid = size(de_lohi_μ_raw.vol_low_μ, 3) ÷ 2
 
-    raw_low = de_lohi_μ.vol_low_μ[:, :, mid]
-    raw_high = de_lohi_μ.vol_high_μ[:, :, mid]
+    raw_low = de_lohi_μ_raw.vol_low_μ[:, :, mid]
+    raw_high = de_lohi_μ_raw.vol_high_μ[:, :, mid]
     rskr_low = de_lohi_rskr.vol_low_μ[:, :, mid]
     rskr_high = de_lohi_rskr.vol_high_μ[:, :, mid]
 
@@ -665,90 +661,88 @@ let
     fig
 end
 
-# ╔═╡ 04000006-0000-4000-8000-000000000001
+# ╔═╡ 0400000b-0000-4000-8000-000000000040
 md"""
-## 9. Per-bin `μ_water` — three options + a selector
+### 10c. Per-bin radial cupping correction (μ-domain) — POST-RSKR
 
-Three independent estimators for the per-bin water lac.  We compute
-all three and let `μ_water_source` pick which one feeds the HU
-conversion.  This makes it easy to A/B test how each choice ripples
-into the verification regression.
+PCCT skips sino BHC (bin-effective μ_water from the M-matrix already
+absorbs the bulk polychromatic bias per bin), but the FBP recon still
+shows a residual radial cup/halo around the rod cluster.  RSKR (§10)
+denoises the μ pair first; **then** [`BS.apply_radial_capping_basis!`](@ref)
+flattens the radial profile per slice with an even polynomial in `r`,
+fit on **quantile-IQR background voxels** (rods are excluded
+automatically — no HU thresholds, no hand-tuned masks).
 
-| Option | What it does | Pros | Cons |
-|---|---|---|---|
-| `:analytic` | Bowtie-aware spectrum × QE × DRM[:, b], phantom-hardened through 33 cm of water | Clean physics, no recon noise | Doesn't see RSKR / cupping / iodine-rod neighborhood effects |
-| `:measured` | Mean of 8-px ROI at phantom center on post-RSKR `vol_*_μ` | Anchors water HU = 0 by construction at that voxel | Captures cupping (center is most-hardened) → rods at outer ring read negative |
-| `:manual` | User-set `Float64` literal | Lets us dial in a value where the iodine rod HUs land where we expect | Trial-and-error |
-
-After the three values are computed, a comparison table prints all
-three so you can see which one is closest to a sensible iodine HU
-landing.
+Runs in **μ-domain** so the cupping-corrected pair (`de_lohi_μ`) drives
+every downstream stage (HU → Ding decomp → VMI → Mono+) without any
+μ↔HU back-and-forth.  We `deepcopy` the RSKR volumes first so
+`de_lohi_rskr` stays available for the §10b before/after figure.
 """
 
-# ╔═╡ 04000006-0000-4000-8000-000000000005
-function _per_bin_μ_water_analytic(
-        bin_group::Vector{Int};
-        water_path_cm::Real,
-    )
-    e, ŵ = BS.resolve_source_spectrum_with_bowtie(
-        sim_opts, protocol;
-        scanner = scanner, geom = sim_lohi.geom,
-        include_bowtie = true,
-        label = "bin grp $(bin_group)",
-    )
-    # Center-ray entrance spectrum — matches `compute_polychromatic_μ_water`'s
-    # mid-column convention.  `ŵ` is 3D when bowtie is present, 1D otherwise.
-    w_entr = if ndims(ŵ) == 3
-        n_col = size(ŵ, 1); n_row = size(ŵ, 2)
-        mid_c = n_col ÷ 2 + 1; mid_r = n_row ÷ 2 + 1
-        Float64[Float64(ŵ[mid_c, mid_r, k]) for k in eachindex(e)]
+# ╔═╡ 0400000b-0000-4000-8000-000000000045
+# Radial cupping correction kwargs — play with these.
+#   fov_cm     ⇒ in-plane FOV (cm); pixel scale = fov_cm / nx
+#   poly_order ⇒ even-poly terms beyond c₀ (1=parabolic, 2=+r⁴, 3=+r⁶ stiffer)
+#   q_lo,q_hi  ⇒ in-FOV quantile range used as the "background" sample
+#                (defaults exclude the ~25% brightest + ~25% darkest voxels,
+#                which is enough to skip Gammex 472's rods + air ring)
+#   enabled    ⇒ flip to `false` to bypass cupping entirely (sets
+#                de_lohi_μ ≡ de_lohi_rskr)
+cupping_knob = (
+    enabled    = true,
+    fov_cm     = 35.0,
+    poly_order = 2,
+    q_lo       = 0.25,
+    q_hi       = 0.75,
+);
+
+# ╔═╡ 0400000b-0000-4000-8000-000000000050
+de_lohi_μ = let
+    if !cupping_knob.enabled
+        de_lohi_rskr
     else
-        Float64.(ŵ)
+        vol_low_μ  = deepcopy(de_lohi_rskr.vol_low_μ)
+        vol_high_μ = deepcopy(de_lohi_rskr.vol_high_μ)
+        BS.apply_radial_capping_basis!(
+            vol_low_μ, vol_high_μ;
+            fov_cm     = cupping_knob.fov_cm,
+            poly_order = cupping_knob.poly_order,
+            q_lo       = cupping_knob.q_lo,
+            q_hi       = cupping_knob.q_hi,
+            verbose    = true,
+        )
+        (
+            vol_low_μ  = vol_low_μ,
+            vol_high_μ = vol_high_μ,
+            geom       = de_lohi_rskr.geom,
+        )
     end
-
-    # Per-bin detector response (QE × DRM[:, b]) weighting.
-    detector = BS._build_pcct_detector(scanner)
-    kVp_val = Float64(maximum(e))
-    R_mat = BS.compute_mc_drm(detector, kVp_val)
-    η_vec = BS.quantum_efficiency_vector(detector.material, detector.thickness_mm, e)
-    n_R = size(R_mat, 1)
-    drm_row(E) = clamp(round(Int, (Float64(E) - 1.0) / (kVp_val - 1.0) * (n_R - 1)) + 1, 1, n_R)
-
-    w_bin = zeros(Float64, length(e))
-    for b in bin_group, i in eachindex(e)
-        w_bin[i] += w_entr[i] * Float64(η_vec[i]) * Float64(R_mat[drm_row(e[i]), b])
-    end
-    w_bin ./= sum(w_bin)
-
-    # Phantom hardening through `water_path_cm` of water + integrate.
-    μ_per_E = Float64[BS.compute_μ_at_energy(BS.XA.Materials.water, Float64(eᵢ)) for eᵢ in e]
-    w_hard = w_bin .* exp.(-μ_per_E .* Float64(water_path_cm))
-    return sum(w_hard .* μ_per_E) / sum(w_hard)
-end
-
-# ╔═╡ 04000006-0000-4000-8000-000000000010
-# OPTION 1 — ANALYTIC per-bin μ_water (bin-effective spectrum + 33 cm phantom hardening).
-μ_water_per_bin_analytic = let
-    body_radius_cm = 16.5      # Gammex 472 body — 33 cm diameter / 2
-    water_path = body_radius_cm * 2
-    (
-        low = _per_bin_μ_water_analytic([1, 2]; water_path_cm = water_path),
-        high = _per_bin_μ_water_analytic([3, 4]; water_path_cm = water_path),
-    )
 end;
 
-# ╔═╡ 04000006-0000-4000-8000-000000000012
-# OPTION 2 — MEASURED μ_water from post-RSKR FBP (8-px ROI at phantom center, mean over slices).
-μ_water_per_bin_measured = let
-    nx = size(de_lohi_rskr.vol_low_μ, 1)
-    ny = size(de_lohi_rskr.vol_low_μ, 2)
-    nz = size(de_lohi_rskr.vol_low_μ, 3)
-    cx = nx / 2 + 0.5
-    cy = ny / 2 + 0.5
-    ROI_R = 8
+# ╔═╡ 04000006-0000-4000-8000-000000000001
+md"""
+## 9. Per-bin `μ_water` — measured from the post-cupping FBP
+
+Forget analytic μ_water for now.  Just **measure** it: take an 8-px
+circular ROI at the phantom center of the post-RSKR + post-cupping
+μ-volume and use the mean as the HU divisor.  By construction this
+makes solid water read at exactly 0 HU after §11's `to_hounsfield` step
+— independent of any upstream RSKR / cupping residuals.
+
+The center ROI is safely inside the 50 mm Ca inner ring + 105 mm I
+outer ring of the Gammex 472, so the sample is pure solid water.
+Summing across all z slices (rods are z-invariant cylinders) reduces
+noise without diluting signal.
+"""
+
+# ╔═╡ 04000006-0000-4000-8000-000000000010
+μ_water_per_bin = let
+    nx, ny, nz = size(de_lohi_μ.vol_low_μ)
+    cx, cy     = nx / 2 + 0.5, ny / 2 + 0.5
+    ROI_R      = 8.0
+    r²         = ROI_R^2
 
     roi = CartesianIndex{2}[]
-    r² = Float64(ROI_R)^2
     i_lo = max(1, floor(Int, cx - ROI_R)); i_hi = min(nx, ceil(Int, cx + ROI_R))
     j_lo = max(1, floor(Int, cy - ROI_R)); j_hi = min(ny, ceil(Int, cy + ROI_R))
     for j in j_lo:j_hi, i in i_lo:i_hi
@@ -760,123 +754,48 @@ end;
         for z in 1:nz, ci in roi
             s += vol[ci, z]; n += 1
         end
-        return s / n
+        s / n
     end
 
     (
-        low = _mean_μ(de_lohi_rskr.vol_low_μ),
-        high = _mean_μ(de_lohi_rskr.vol_high_μ),
+        low  = Float64(_mean_μ(de_lohi_μ.vol_low_μ)),
+        high = Float64(_mean_μ(de_lohi_μ.vol_high_μ)),
     )
-end;
-
-# ╔═╡ 04000006-0000-4000-8000-000000000014
-# OPTION 4 — M-MATRIX per-bin μ_water with phantom hardening.
-# Hybrid of nb07 `sim_scan2_M_matrix_s2` (per-bin spectrum × η × DRM, I0-weighted
-# across the bin group) and nb04's `:analytic` phantom-hardening, but with the
-# water path taken from the **actual phantom diameter** (`estimate_phantom_diameter_cm`
-# on the mask — same call the scatter correction uses) rather than a hardcoded
-# 33 cm body cylinder.
-μ_water_per_bin_m_matrix = let
-    e_full, w_full = BS.resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner = scanner)
-    pcct_det = BS._build_pcct_detector(scanner)
-    kVp_val = Float64(maximum(e_full))
-    R_mat = BS.compute_mc_drm(pcct_det, kVp_val)
-    η_vec = BS.quantum_efficiency_vector(pcct_det.material, pcct_det.thickness_mm, e_full)
-    n_R = size(R_mat, 1)
-    drm_row(E) = clamp(round(Int, (Float64(E) - 1.0) / (kVp_val - 1.0) * (n_R - 1)) + 1, 1, n_R)
-
-    e = Float64.(e_full)
-    μρ_w = Float64[BS.compute_mass_μ_at_energy(BS.XA.Materials.water, Eᵢ) for Eᵢ in e]
-    μ_w = Float64[BS.compute_μ_at_energy(BS.XA.Materials.water, Eᵢ) for Eᵢ in e]
-    I0 = sim_lohi.I0_bins
-
-    # Phantom-hardening path = full chord through the actual phantom (≈ diameter
-    # for a center ray on a body cylinder).  Mirrors the scatter correction's
-    # phantom-diameter estimation so both stay consistent.
-    voxel_size_mm = phantom_cpu.voxel_size .* 10.0
-    phantom_diam_cm = BS.estimate_phantom_diameter_cm(phantom_cpu.mask, voxel_size_mm)
-    water_path_cm = phantom_diam_cm
-
-    function _eff_spectrum(grp::Vector{Int})
-        I0_sum = sum(Float64.(I0[grp]))
-        wc = zeros(Float64, length(e))
-        for b in grp
-            wb = [Float64(w_full[i]) * Float64(η_vec[i]) * Float64(R_mat[drm_row(e[i]), b]) for i in eachindex(e)]
-            wb .*= exp.(-μ_w .* water_path_cm)         # phantom hardening per energy
-            sb = sum(wb)
-            sb > 0 || error("_eff_spectrum: bin $b has zero spectral weight")
-            wc .+= (Float64(I0[b]) / I0_sum) .* (wb ./ sb)
-        end
-        wc ./= sum(wc)
-        return wc
-    end
-
-    w_low = _eff_spectrum([1, 2])
-    w_high = _eff_spectrum([3, 4])
-
-    @info "[μ_water m_matrix]  phantom_diam=$(round(phantom_diam_cm, digits = 1)) cm  (used as water-path for hardening)"
-    @info "  low  = $(round(sum(w_low .* μρ_w), sigdigits = 4)) cm⁻¹   (mean E = $(round(sum(w_low .* e), digits = 1)) keV)"
-    @info "  high = $(round(sum(w_high .* μρ_w), sigdigits = 4)) cm⁻¹   (mean E = $(round(sum(w_high .* e), digits = 1)) keV)"
-
-    (
-        low = sum(w_low .* μρ_w),
-        high = sum(w_high .* μρ_w),
-    )
-end;
-
-# ╔═╡ 04000006-0000-4000-8000-000000000016
-# SELECTOR — pick which of the three feeds HU conversion.
-# Set to one of: `:analytic`, `:measured`, `:m_matrix`.
-# `:m_matrix` is the canonical nb07 reference — use it unless you need to A/B.
-μ_water_source = :m_matrix;
-
-# ╔═╡ 04000006-0000-4000-8000-000000000018
-μ_water_per_bin = let
-    src = μ_water_source
-    if src === :analytic
-        μ_water_per_bin_analytic
-    elseif src === :measured
-        μ_water_per_bin_measured
-    elseif src === :m_matrix
-        μ_water_per_bin_m_matrix
-    else
-        error("μ_water_source must be :analytic, :measured, or :m_matrix (got $(src))")
-    end
 end;
 
 # ╔═╡ 04000006-0000-4000-8000-000000000020
 md"""
-### μ_water comparison
+**Measured μ_water (post-RSKR + post-cupping center ROI):**
 
-| source | low (cm⁻¹) | high (cm⁻¹) |
-|---|---|---|
-| analytic (bin-spec + 33 cm hardening)              | $(round(μ_water_per_bin_analytic.low, digits = 5)) | $(round(μ_water_per_bin_analytic.high, digits = 5)) |
-| measured (FBP center, post-RSKR)                   | $(round(μ_water_per_bin_measured.low, digits = 5)) | $(round(μ_water_per_bin_measured.high, digits = 5)) |
-| m_matrix (bin-effective + measured-phantom hardening) | $(round(μ_water_per_bin_m_matrix.low, digits = 5)) | $(round(μ_water_per_bin_m_matrix.high, digits = 5)) |
-| **active** (:$(μ_water_source))                    | **$(round(μ_water_per_bin.low,  digits = 5))** | **$(round(μ_water_per_bin.high, digits = 5))** |
+* low  bin = $(round(μ_water_per_bin.low,  digits = 5)) cm⁻¹
+* high bin = $(round(μ_water_per_bin.high, digits = 5)) cm⁻¹
 """
 
 # ╔═╡ 0400000c-0000-4000-8000-000000000001
 md"""
-## 11. HU conversion + system noise floor
+## 11. HU conversion
 
-Per-bin `to_hounsfield` against the **per-bin** `μ_water_per_bin` from §9 —
-each bin uses its own bin-effective μ_water reference so water reads ≈ 0
-HU at *both* low and high before any self-cal absorbs residuals.
-Applies the dose-independent DAS Gaussian noise floor afterwards.
+Per-bin `to_hounsfield` using the measured `μ_water_per_bin` from §9 (so
+solid water reads exactly 0 HU by construction at both bins).
+
+We deliberately **do not** call `add_system_noise_floor!` here — that's
+the pattern nb01 / nb02 use to model DAS readout noise *after* a
+non-iterative FBP, but in this notebook RSKR (§10) has already denoised
+the bin pair, so adding a Gaussian floor on top would just defeat
+RSKR's job and inject noise into the §12 calibration baseline.  Quantum
++ pileup + charge-sharing + electronic noise at sim time (via PCCT
+forward model + scanner.electronic_noise) feeds RSKR with realistic
+noise structure; RSKR removes most of it; the result is the cleanest
+possible reference for the Ding optimizer to fit against.  Real-world
+DAS readout floor is a downstream concern — apply it on the *deployed*
+cal at use time, not during cal derivation.
 """
 
 # ╔═╡ 0400000c-0000-4000-8000-000000000010
 de_lohi_HU = let
-    src = rod_source == :rskr ? de_lohi_rskr :
-        rod_source == :raw ? de_lohi_μ :
-        error("rod_source must be :rskr or :raw (got $(rod_source))")
-    @info "[de_lohi_HU] sourcing rod measurements from :$(rod_source) volumes"
-    vol_low_HU = Float32.(BS.to_hounsfield(src.vol_low_μ; μ_water = μ_water_per_bin.low))
-    vol_high_HU = Float32.(BS.to_hounsfield(src.vol_high_μ; μ_water = μ_water_per_bin.high))
-    BS.add_system_noise_floor!(vol_low_HU, 15.0; seed = 1234)
-    BS.add_system_noise_floor!(vol_high_HU, 15.0; seed = 5678)
-    (vol_low_HU = vol_low_HU, vol_high_HU = vol_high_HU, geom = src.geom)
+    vol_low_HU  = Float32.(BS.to_hounsfield(de_lohi_μ.vol_low_μ;  μ_water = μ_water_per_bin.low))
+    vol_high_HU = Float32.(BS.to_hounsfield(de_lohi_μ.vol_high_μ; μ_water = μ_water_per_bin.high))
+    (vol_low_HU = vol_low_HU, vol_high_HU = vol_high_HU, geom = de_lohi_μ.geom)
 end;
 
 # ╔═╡ 0400000d-0000-4000-8000-000000000001
@@ -987,24 +906,278 @@ c_iodine(voxel) = a₀ + a₁·HU_low(voxel) + a₂·HU_high(voxel)
 HU_E(voxel)     = HU_low(voxel) + c_iodine(voxel)·(μρ_I(E)/μρ_water(E) − α_iod_low_cal)
 ```
 
-The four parameters `(a₀, a₁, a₂, α_iod_low_cal)` were optimized in this
-notebook (per-rod relative-error nRMSE across all 4 VMI energies and all
-14 Gammex 472 rods) and are stored permanently in
-`src/reconstruction/vmi/pcct_calibration.jl` as
-[`SIEMENS_NAEOTOM_120KVP_VMI_CAL`](@ref) and
-[`SIEMENS_NAEOTOM_140KVP_VMI_CAL`](@ref).  We just look them up by `kVp`.
+Two paths, gated by `optim_knob.enabled` (mirrors nb03 §11):
+
+* **`enabled = true`** — direct optimization: BFGS (`Optim.jl`) with
+  closed-form analytical gradient, minimizing per-(rod, energy)
+  squared-error loss across all 4 VMI energies × all 14 Gammex 472 rods
+  + center-ROI water.  Self-calibrates against this run's actual recon,
+  so any upstream tweak (RSKR knobs, cupping, μ_water source) is
+  picked up automatically.  `loss_metric = :rmse` works empirically
+  better than `:nrmse` for this scanner — Ca rods anchor the fit and
+  the iodine fit comes along for the ride.
+
+* **`enabled = false`** — load the pre-optimized const from
+  [`BS.pcct_vmi_cal_for(protocol.kVp)`](@ref).  Use this when you don't
+  want to re-fit (e.g. running against a clinical scan where rod
+  measurements aren't available).
 """
 
+# ╔═╡ 0400000d-0000-4000-8000-000000000067
+# Calibration optimizer knobs — flip `enabled` to switch between the
+# src cal const and the BFGS optimizer.
+#   max_iter, tol     ⇒ BFGS stopping criteria
+#   loss_metric       ⇒ :nrmse (relative-error²) | :rmse (absolute-error²)
+#   *_weight          ⇒ relative emphasis per rod family in the loss
+#   energy_weights    ⇒ paired with `de_vmi_energies` (40 / 70 / 100 / 140 keV)
+#   nrmse_floor       ⇒ HU floor on the relative-error denom (only used
+#                       when loss_metric = :nrmse)
+optim_knob = (
+    enabled        = true,
+    max_iter       = 200,
+    tol            = 1.0e-8,
+    loss_metric    = :rmse,                  # :nrmse | :rmse
+    iodine_weight  = 1.0,
+    calcium_weight = 1.0,
+    water_weight   = 1.0,
+    energy_weights = (1.0, 1.0, 1.0, 1.0),   # ↔ (40, 70, 100, 140) keV
+    nrmse_floor    = 100.0,
+);
+
 # ╔═╡ 0400000d-0000-4000-8000-000000000074
-# Look up the optimized calibration constant for this protocol's kVp.
-# Constants live in src/reconstruction/vmi/pcct_calibration.jl —
-# 120 kVp and 140 kVp are calibrated; other kVps will throw.
-de_cal = BS.pcct_vmi_cal_for(protocol.kVp);
+de_cal = let
+    if !optim_knob.enabled
+        # ─── Path A: load pre-optimized const from src ────────────────────
+        cal = BS.pcct_vmi_cal_for(protocol.kVp)
+        (
+            coeffs        = cal.coeffs,
+            α_iod_low_cal = cal.α_iod_low_cal,
+            μ_water_low   = Float32(μ_water_per_bin.low),
+            μ_water_high  = Float32(μ_water_per_bin.high),
+            method        = :src_const,
+            n_iter        = 0,
+            converged     = true,
+            loss_metric   = :unknown,
+            nrmse_HU      = NaN,
+            rmse_HU       = NaN,
+            rms_c         = NaN,
+        )
+    else
+        # ─── Path B: BFGS optimizer ───────────────────────────────────────
+
+        # 1. Per-rod 8-px ROI measurements (rods are z-invariant cylinders).
+        mask_2d = phantom_cpu.mask[:, :, size(phantom_cpu.mask, 3) ÷ 2]
+        nx, ny  = size(mask_2d)
+        ROI_R   = 8
+        r²      = Float64(ROI_R)^2
+
+        function _circular_roi(cx::Real, cy::Real)
+            roi = CartesianIndex{2}[]
+            i_lo = max(1, floor(Int, cx - ROI_R)); i_hi = min(nx, ceil(Int, cx + ROI_R))
+            j_lo = max(1, floor(Int, cy - ROI_R)); j_hi = min(ny, ceil(Int, cy + ROI_R))
+            for j in j_lo:j_hi, i in i_lo:i_hi
+                ((i - cx)^2 + (j - cy)^2) ≤ r² && push!(roi, CartesianIndex(i, j))
+            end
+            roi
+        end
+        function _rod_roi(label::UInt8)
+            idx = findall(==(label), mask_2d)
+            cx = sum(ci -> Float64(ci[1]), idx) / length(idx)
+            cy = sum(ci -> Float64(ci[2]), idx) / length(idx)
+            _circular_roi(cx, cy)
+        end
+        function _mean_HU(vol, roi)
+            s = 0.0; n = 0
+            for z in 1:size(vol, 3), ci in roi
+                s += vol[ci, z]; n += 1
+            end
+            s / n
+        end
+
+        # 2. All 14 Gammex rods + center-ROI water (mirrors nb03).
+        rod_specs = (
+            ("Water",  UInt8(0),  0.0, :water),
+            ("Ca 50",  UInt8(10), 0.0, :calcium),
+            ("Ca 100", UInt8(11), 0.0, :calcium),
+            ("Ca 200", UInt8(12), 0.0, :calcium),
+            ("Ca 300", UInt8(13), 0.0, :calcium),
+            ("Ca 400", UInt8(14), 0.0, :calcium),
+            ("Ca 500", UInt8(15), 0.0, :calcium),
+            ("Ca 600", UInt8(16), 0.0, :calcium),
+            ("I 2.0",  UInt8(20), 2.0, :iodine),
+            ("I 2.5",  UInt8(21), 2.5, :iodine),
+            ("I 5.0",  UInt8(22), 5.0, :iodine),
+            ("I 7.5",  UInt8(23), 7.5, :iodine),
+            ("I 10.0", UInt8(24), 10.0, :iodine),
+            ("I 15.0", UInt8(25), 15.0, :iodine),
+            ("I 20.0", UInt8(26), 20.0, :iodine),
+        )
+
+        materials = phantom_cpu.materials
+        μ_water_E = Dict(
+            E => BS.compute_μ_at_energy(BS.XA.Materials.water, E)
+                for E in de_vmi_energies
+        )
+
+        rod_data = NamedTuple[]
+        for (name, lab, c_known, kind) in rod_specs
+            roi = name == "Water" ?
+                _circular_roi(nx / 2 + 0.5, ny / 2 + 0.5) :
+                _rod_roi(lab)
+            material = name == "Water" ?
+                BS.XA.Materials.water :
+                materials[Int(lab) + 1]
+            HU_low_r  = _mean_HU(de_lohi_HU.vol_low_HU,  roi)
+            HU_high_r = _mean_HU(de_lohi_HU.vol_high_HU, roi)
+            HU_theo   = Float64[
+                let μ_r = BS.compute_μ_at_energy(material, E)
+                    1000.0 * (μ_r - μ_water_E[E]) / μ_water_E[E]
+                end
+                    for E in de_vmi_energies
+            ]
+            push!(rod_data, (
+                name = name, kind = kind, c_known = c_known,
+                HU_low = HU_low_r, HU_high = HU_high_r, HU_theo = HU_theo,
+            ))
+        end
+
+        # 3. αᴱ_phys per VMI energy.
+        α_phys_E = Float64[
+            BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine, E) /
+            BS.compute_mass_μ_at_energy(BS.XA.Materials.water,  E)
+                for E in de_vmi_energies
+        ]
+
+        N = length(rod_data)
+        M = length(de_vmi_energies)
+
+        rod_family_w = [
+            r.kind == :iodine  ? Float64(optim_knob.iodine_weight)  :
+            r.kind == :calcium ? Float64(optim_knob.calcium_weight) :
+                                 Float64(optim_knob.water_weight)
+                for r in rod_data
+        ]
+        e_weights   = collect(Float64.(optim_knob.energy_weights))
+        nrmse_floor = Float64(optim_knob.nrmse_floor)
+        loss_metric = optim_knob.loss_metric
+        loss_metric in (:nrmse, :rmse) ||
+            error("optim_knob.loss_metric must be :nrmse or :rmse, got $(loss_metric)")
+        function _w(r_idx, e_idx)
+            base = rod_family_w[r_idx] * e_weights[e_idx]
+            if loss_metric == :rmse
+                base
+            else
+                ht = rod_data[r_idx].HU_theo[e_idx]
+                base / max(abs(ht), nrmse_floor)^2
+            end
+        end
+
+        # 4. Initial guess from BS.fit_ding_coeffs on iodine + water only.
+        iod_water_idx = findall(r -> r.kind in (:iodine, :water), rod_data)
+        fit_init = BS.fit_ding_coeffs(
+            [rod_data[i].HU_low  for i in iod_water_idx],
+            [rod_data[i].HU_high for i in iod_water_idx],
+            [rod_data[i].c_known for i in iod_water_idx],
+        )
+        params0 = [Float64.(fit_init.coeffs)..., Float64(fit_init.α_low)]
+
+        # 5. BFGS via Optim.jl with analytical gradient.
+        function _resid_and_grad_terms(params, r_idx, e_idx)
+            a₀, a₁, a₂, α_low = params
+            hl    = rod_data[r_idx].HU_low
+            hh    = rod_data[r_idx].HU_high
+            ht    = rod_data[r_idx].HU_theo[e_idx]
+            γ     = α_phys_E[e_idx] - α_low
+            c_iod = a₀ + a₁ * hl + a₂ * hh
+            HU_synth = hl + c_iod * γ
+            (resid = HU_synth - ht, w = _w(r_idx, e_idx),
+             γ = γ, c_iod = c_iod, hl = hl, hh = hh)
+        end
+        function loss_fn(params)
+            total = 0.0
+            for r_idx in 1:N, e_idx in 1:M
+                t = _resid_and_grad_terms(params, r_idx, e_idx)
+                total += t.w * t.resid^2
+            end
+            total
+        end
+        function grad_fn!(g, params)
+            fill!(g, 0.0)
+            for r_idx in 1:N, e_idx in 1:M
+                t = _resid_and_grad_terms(params, r_idx, e_idx)
+                two_w_r = 2.0 * t.w * t.resid
+                g[1] += two_w_r * t.γ
+                g[2] += two_w_r * t.γ * t.hl
+                g[3] += two_w_r * t.γ * t.hh
+                g[4] -= two_w_r * t.c_iod
+            end
+        end
+        opt_options = Optim.Options(
+            iterations = optim_knob.max_iter,
+            f_abstol   = optim_knob.tol,
+            g_abstol   = optim_knob.tol,
+            x_abstol   = optim_knob.tol,
+        )
+        opt_result = Optim.optimize(loss_fn, grad_fn!, params0, Optim.BFGS(), opt_options)
+        a₀, a₁, a₂, α_low_cal = Optim.minimizer(opt_result)
+        converged = Optim.converged(opt_result)
+        n_iter    = Optim.iterations(opt_result)
+
+        # 6. Diagnostics — both metrics for cross-mode comparison.
+        sq_rel, sq_abs, n_pairs = 0.0, 0.0, 0
+        for r_idx in 1:N, e_idx in 1:M
+            hl    = rod_data[r_idx].HU_low
+            hh    = rod_data[r_idx].HU_high
+            c_iod = a₀ + a₁ * hl + a₂ * hh
+            HU_E_synth = hl + c_iod * (α_phys_E[e_idx] - α_low_cal)
+            ht         = rod_data[r_idx].HU_theo[e_idx]
+            resid      = HU_E_synth - ht
+            sq_rel  += (resid / max(abs(ht), nrmse_floor))^2
+            sq_abs  += resid^2
+            n_pairs += 1
+        end
+        nrmse_HU = sqrt(sq_rel / n_pairs)
+        rmse_HU  = sqrt(sq_abs / n_pairs)
+
+        iod_idx = findall(r -> r.kind == :iodine, rod_data)
+        rms_c   = let
+            sq = 0.0
+            for i in iod_idx
+                c_pred = a₀ + a₁ * rod_data[i].HU_low + a₂ * rod_data[i].HU_high
+                sq += (c_pred - rod_data[i].c_known)^2
+            end
+            sqrt(sq / length(iod_idx))
+        end
+
+        @info "[Ding optimizer · BFGS · loss=$(loss_metric)] $(converged ? "converged in" : "stopped at") $(n_iter) iter · loss = $(round(Optim.minimum(opt_result), digits = 4)) · nRMSE_HU = $(round(nrmse_HU, digits = 4)) · RMSE_HU = $(round(rmse_HU, digits = 1)) HU · RMS_c (I rods) = $(round(rms_c, digits = 3)) mg/mL"
+
+        (
+            coeffs        = Float32[a₀, a₁, a₂],
+            α_iod_low_cal = Float32(α_low_cal),
+            μ_water_low   = Float32(μ_water_per_bin.low),
+            μ_water_high  = Float32(μ_water_per_bin.high),
+            method        = :optimized,
+            n_iter        = n_iter,
+            converged     = converged,
+            loss_metric   = loss_metric,
+            nrmse_HU      = nrmse_HU,
+            rmse_HU       = rmse_HU,
+            rms_c         = rms_c,
+        )
+    end
+end;
 
 # ╔═╡ 0400000d-0000-4000-8000-000000000080
 let
+    optim_block = de_cal.method == :optimized ?
+        """
+        * **method = :optimized** · loss = `:$(de_cal.loss_metric)` · ($(de_cal.converged ? "converged in" : "stopped at") $(de_cal.n_iter) iter)
+        * **nRMSE_HU = $(round(de_cal.nrmse_HU, digits = 4))** · **RMSE_HU = $(round(de_cal.rmse_HU, digits = 1)) HU** · RMS_c (I rods) = $(round(de_cal.rms_c, digits = 3)) mg/mL
+        """ :
+        "* **method = :src_const** (loaded from `BS.pcct_vmi_cal_for($(Int(protocol.kVp)))`)"
+
     body = """
-    **Loaded calibration** (`pcct_vmi_cal_for($(Int(protocol.kVp)))` from `src/`):
+    **Active calibration:**
 
     | Param | Value |
     |---|---|
@@ -1012,6 +1185,10 @@ let
     | a₁                | $(round(Float64(de_cal.coeffs[2]), sigdigits = 5)) |
     | a₂                | $(round(Float64(de_cal.coeffs[3]), sigdigits = 5)) |
     | α_iod_low_cal     | $(round(Float64(de_cal.α_iod_low_cal), digits = 4)) |
+    | μ_water_low       | $(round(Float64(de_cal.μ_water_low),  digits = 5)) cm⁻¹ |
+    | μ_water_high      | $(round(Float64(de_cal.μ_water_high), digits = 5)) cm⁻¹ |
+
+    $(optim_block)
 
     Synthesis equation:
     `HU_E = HU_low + (a₀ + a₁·HU_low + a₂·HU_high) · (μρ_I(E)/μρ_water(E) − α_iod_low_cal)`
@@ -1019,20 +1196,49 @@ let
     Markdown.parse(body)
 end
 
-# ╔═╡ 0400000e-0000-4000-8000-000000000001
-
+# ╔═╡ 0400000e-0000-4000-8000-000000000005
+# z-direction denoising kwargs — play with these.
+# `radius` ⇒ z-window = (2 · radius + 1) slices, shrunk at z boundaries
+# (no padding bias).  Set `radius = 0` to disable z-denoising entirely.
+# The Gammex 472 phantom is z-invariant in the rod cores, so larger radii
+# are essentially lossless there; aggressive defaults are fine.
+z_denoise_kwargs = (
+    radius = 3,    # 7-slice window
+)
 
 # ╔═╡ 0400000e-0000-4000-8000-000000000010
 de_decomp = let
-    c_iodine = BS.apply_ding_decomp(
+    α_low_f32 = Float32(de_cal.α_iod_low_cal)
+
+    # Raw decomposition outputs (per-voxel Ding + analytic c_water proxy)
+    c_iodine_raw = BS.apply_ding_decomp(
         de_lohi_HU.vol_low_HU, de_lohi_HU.vol_high_HU, de_cal.coeffs
     )
-    c_iodine = BS.apply_median_z(c_iodine; radius = 1)
+    c_water_raw  = @. (de_lohi_HU.vol_low_HU - α_low_f32 * c_iodine_raw) /
+                      1000.0f0 + 1.0f0
+
+    # z-direction denoise — both basis maps + the HU pair (the latter is
+    # what §13's VMI synth uses as its low-energy baseline; un-denoised
+    # HU_low leaks its noise into every output VMI).
+    radius = z_denoise_kwargs.radius
+    c_iodine    = BS.apply_median_z(c_iodine_raw;          radius = radius)
+    c_water     = BS.apply_median_z(c_water_raw;           radius = radius)
+    vol_low_HU  = BS.apply_median_z(de_lohi_HU.vol_low_HU;  radius = radius)
+    vol_high_HU = BS.apply_median_z(de_lohi_HU.vol_high_HU; radius = radius)
+
     (
-        c_iodine = c_iodine,
-        vol_low_HU = de_lohi_HU.vol_low_HU,
-        vol_high_HU = de_lohi_HU.vol_high_HU,
-        geom = de_lohi_HU.geom,
+        # Raw — for the §12b before/after figure
+        c_iodine_raw    = c_iodine_raw,
+        c_water_raw     = c_water_raw,
+        vol_low_HU_raw  = de_lohi_HU.vol_low_HU,
+        vol_high_HU_raw = de_lohi_HU.vol_high_HU,
+
+        # z-denoised — feeds §13 VMI synth
+        c_iodine    = c_iodine,
+        c_water     = c_water,
+        vol_low_HU  = vol_low_HU,
+        vol_high_HU = vol_high_HU,
+        geom        = de_lohi_HU.geom,
     )
 end;
 
@@ -1575,6 +1781,7 @@ acquisition's rod HUs.
 # ╠═04000001-0000-4000-8000-000000000003
 # ╠═04000001-0000-4000-8000-000000000030
 # ╠═04000001-0000-4000-8000-000000000031
+# ╠═04000001-0000-4000-8000-000000000032
 # ╠═04000001-0000-4000-8000-000000000040
 # ╟─04000001-0000-4000-8000-000000000050
 # ╟─04000002-0000-4000-8000-000000000001
@@ -1595,17 +1802,14 @@ acquisition's rod HUs.
 # ╠═0400000a-0000-4000-8000-000000000010
 # ╟─0400000b-0000-4000-8000-000000000001
 # ╠═0400000b-0000-4000-8000-000000000005
-# ╠═0400000b-0000-4000-8000-000000000007
 # ╠═0400000b-0000-4000-8000-000000000010
 # ╟─0400000b-0000-4000-8000-000000000020
 # ╟─0400000b-0000-4000-8000-000000000030
+# ╟─0400000b-0000-4000-8000-000000000040
+# ╠═0400000b-0000-4000-8000-000000000045
+# ╠═0400000b-0000-4000-8000-000000000050
 # ╟─04000006-0000-4000-8000-000000000001
-# ╠═04000006-0000-4000-8000-000000000005
 # ╠═04000006-0000-4000-8000-000000000010
-# ╠═04000006-0000-4000-8000-000000000012
-# ╠═04000006-0000-4000-8000-000000000014
-# ╠═04000006-0000-4000-8000-000000000016
-# ╠═04000006-0000-4000-8000-000000000018
 # ╟─04000006-0000-4000-8000-000000000020
 # ╟─0400000c-0000-4000-8000-000000000001
 # ╠═0400000c-0000-4000-8000-000000000010
@@ -1617,9 +1821,10 @@ acquisition's rod HUs.
 # ╠═0400000d-0000-4000-8000-000000000050
 # ╠═0400000d-0000-4000-8000-000000000060
 # ╟─0400000d-0000-4000-8000-000000000063
+# ╠═0400000d-0000-4000-8000-000000000067
 # ╠═0400000d-0000-4000-8000-000000000074
 # ╟─0400000d-0000-4000-8000-000000000080
-# ╟─0400000e-0000-4000-8000-000000000001
+# ╠═0400000e-0000-4000-8000-000000000005
 # ╠═0400000e-0000-4000-8000-000000000010
 # ╟─0400000f-0000-4000-8000-000000000001
 # ╠═0400000f-0000-4000-8000-000000000010
