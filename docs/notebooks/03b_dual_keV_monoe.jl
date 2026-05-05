@@ -18,33 +18,35 @@ md"""
 # 03b · Dual-keV Monoenergetic on Gammex 472
 
 **The physical ceiling for what `nb03`'s polychromatic dual-kVp + VMI
-pipeline is trying to approximate.**  Mirrors `03_dual_kvp_vmi.jl`
-end-to-end with one swap: the source X-ray spectra are **monoenergetic**
-at 70 keV (low) and 150 keV (high), instead of polychromatic 80 / 140
-kVp.  Every other physical effect (scatter, electronic + Poisson noise,
-focal-spot blur, bowtie attenuation, detector response) is left in place.
+pipeline is trying to approximate** — and a demonstration that with
+monoenergetic input the entire post-FBP processing chain collapses to
+**just `to_hounsfield`**.
 
-Because the inputs are intrinsically monoenergetic, the
-**post-VMI-synthesis half of nb03 disappears**:
+Mirrors `03_dual_kvp_vmi.jl` for setup (phantom, scanner, protocol flux
+budget, sim opts, recon opts) but the source spectra are
+**monoenergetic** at 70 keV (low) and 150 keV (high) instead of
+polychromatic 80 / 140 kVp.
 
-| nb03 stage                       | nb03b status |
-|----------------------------------|--------------|
-| Sino-domain BHC                  | **dropped** — beam hardening is purely polychromatic |
-| FBP per kVp → μ-domain pair      | **kept**     |
-| RSKR-2ch joint denoise           | **kept**     |
-| Radial cupping (μ-domain)        | **kept**     — useful for residual non-spectral cup |
-| Per-kVp `μ_water` from center ROI| **kept**     — measured value matches NIST mono μ_water |
-| HU conversion                    | **kept**     |
-| Ding c_iodine fit                | **dropped** — no decomp needed; outputs are already mono |
-| 2-basis decomp (`c_iodine`, `c_water`) | **dropped** — same reason |
-| Per-energy VMI synthesis         | **dropped** — recon at E_mono **is** the E_mono VMI |
-| Mono+ post-processing            | **dropped** — no per-energy LP shaping needed |
+```
+mono FBP per energy (μ-domain)
+   → HU = 1000·(μ − μ_water_NIST(E)) / μ_water_NIST(E)
+   → 2-panel display + per-rod regression vs XrayAttenuation theory
+```
 
-The §-N rod-by-rod regression should collapse to ≈ y = x identity at
-both 70 and 150 keV with nothing more than RSKR + cupping — because
-there's no beam hardening to compensate for in the first place.
+Because the inputs are intrinsically monoenergetic:
 
-Source-spectrum monoenergetic injection happens via
+| nb03 stage                                 | nb03b |
+|--------------------------------------------|-------|
+| Sino-domain BHC                            | dropped — no beam hardening on mono input |
+| RSKR-2ch joint denoise                     | dropped — no anti-correlated spectral noise to exploit |
+| Radial cupping correction                  | dropped — no spectral cup |
+| Measured μ_water from center ROI           | dropped — `BS.compute_μ_at_energy(water, E)` is exact |
+| 2-basis Ding decomp + VMI synth + Mono+    | dropped — recon @ E_mono IS the E_mono image |
+
+What's left: forward-project, FBP, divide by NIST μ_water at the chosen
+energy.  That's the entire pipeline.
+
+Source-spectrum injection happens via
 [`BS.create_eict_workspace(...; spectrum_override = ([E_mono], [1.0]))`](@ref).
 """
 
@@ -119,9 +121,10 @@ phantom = BS.Phantom(
 md"""
 ## 2. `Scanner` — GE Revolution Apex Elite
 
-Identical to `nb03 §2`.  Bowtie + heel + electronic noise all retained;
-the source spectrum's mono-energy gets evaluated through them in
-`create_eict_workspace`.
+Identical to `nb03 §2`.  Bowtie + heel + detector response still
+evaluate at the override's mono energy, so the non-spectral physics
+stays faithful — there's just no photon-energy variation across the
+spectrum to make BHC / Ding decomp / VMI relevant.
 """
 
 # ╔═╡ 030b0003-0000-4000-8000-000000000010
@@ -157,12 +160,9 @@ md"""
 ## 3. Mono energies + dual-acquisition `CTProtocol`s
 
 Two true monoenergetic beams: **70 keV (low)** and **150 keV (high)**.
-The `kVp` field on each `CTProtocol` is now just a flux-calibration
-proxy — it drives `compute_detector_I0`'s photon flux but is otherwise
-irrelevant since `spectrum_override` (§5/§6) fully replaces the
-polychromatic IPEM lookup.  We use `kVp = 80` for the low scan and
-`kVp = 140` for the high scan so the I0 calibration matches `nb03`'s
-flux budget exactly.
+The `kVp` field is just a flux-calibration proxy now — it drives
+`compute_detector_I0` so total photon flux matches nb03's, but the
+spectrum itself comes entirely from `spectrum_override` (§5).
 
 Same `mA × duty_cycle` effective tube current as nb03 (rapid-kVp
 switching duty-cycle math) — even though there's no actual
@@ -271,15 +271,15 @@ end;
 
 # ╔═╡ 030b0008-0000-4000-8000-000000000001
 md"""
-## 7. FBP per energy → μ-domain pair (no BHC)
+## 7. FBP per energy → μ-domain pair
 
-Direct FDK with the GE-tuned apodization filter — **no sino BHC**, no
-image-domain BHC.  Beam hardening is a polychromatic effect; with
-monoenergetic input there's nothing to correct.
+Direct FDK with the GE-tuned apodization filter.  No BHC, no RSKR, no
+cupping correction — none of those are needed when the input is
+already monoenergetic.
 """
 
 # ╔═╡ 030b0008-0000-4000-8000-000000000010
-de_lohi_μ_raw = let
+de_lohi_μ = let
     matrix_size = recon_opts.matrix_size
 
     function _fbp_to_μ(sino_cpu, geom)
@@ -305,152 +305,54 @@ end;
 
 # ╔═╡ 030b0009-0000-4000-8000-000000000001
 md"""
-## 8. RSKR-2ch joint denoising (μ-domain)
+## 8. NIST `μ_water` lookup — exact at the mono energy
 
-Identical hyperparameters to nb03 §9 — the joint SVD + bilateral filter
-still helps even with mono input because Poisson + electronic noise
-introduce anti-correlated noise structure between the two energies.
+For a truly monoenergetic beam, μ_water is just whatever
+`XrayAttenuation` returns at that energy — no center-ROI measurement,
+no calibration tricks.  This is the single biggest simplification the
+mono pipeline gets vs nb03's polychromatic flow.
 """
 
 # ╔═╡ 030b0009-0000-4000-8000-000000000010
-rskr_knob = (
-    n_iter  = 2,
-    h_param = 2,
-    radius  = 3,
-    γ       = 0.1,
+keV_μ_water = Dict(
+    de_mono_energies.low  => BS.compute_μ_at_energy(BS.XA.Materials.water, de_mono_energies.low),
+    de_mono_energies.high => BS.compute_μ_at_energy(BS.XA.Materials.water, de_mono_energies.high),
 );
 
 # ╔═╡ 030b0009-0000-4000-8000-000000000020
-de_lohi_rskr = let
-    out = BS.apply_rskr(
-        [de_lohi_μ_raw.vol_low_μ, de_lohi_μ_raw.vol_high_μ];
-        n_iter       = rskr_knob.n_iter,
-        h_param      = rskr_knob.h_param,
-        radius       = rskr_knob.radius,
-        γ            = rskr_knob.γ,
-        gpu_arr_type = GPU_BACKEND.to_gpu,
-        verbose      = true,
-    )
-    (vol_low_μ = out[1], vol_high_μ = out[2], geom = de_lohi_μ_raw.geom)
-end;
+md"""
+**μ_water** (NIST analytical):
+
+* $(de_mono_energies.low) keV: $(round(keV_μ_water[de_mono_energies.low], digits = 5)) cm⁻¹
+* $(de_mono_energies.high) keV: $(round(keV_μ_water[de_mono_energies.high], digits = 5)) cm⁻¹
+"""
 
 # ╔═╡ 030b000a-0000-4000-8000-000000000001
 md"""
-## 9. Radial cupping correction (μ-domain, post-RSKR)
+## 9. HU conversion
 
-Same `BS.apply_radial_capping_basis!` pass as nb03 §7c.  With mono
-input there's no spectral cupping per se, but residual radial bias
-from the bowtie + scatter approximation still benefits from a flat-
-profile correction.  The even-poly fit on quantile-IQR background
-voxels is the same procedure either way.
+`BS.to_hounsfield` per energy with the NIST μ_water from §8.  This is
+the entire post-FBP pipeline.
 """
 
 # ╔═╡ 030b000a-0000-4000-8000-000000000010
-cupping_knob = (
-    enabled    = true,
-    fov_cm     = 35.0,
-    poly_order = 3,
-    q_lo       = 0.50,
-    q_hi       = 0.80,
-);
-
-# ╔═╡ 030b000a-0000-4000-8000-000000000020
-de_lohi_μ = let
-    if !cupping_knob.enabled
-        de_lohi_rskr
-    else
-        vol_low_μ  = deepcopy(de_lohi_rskr.vol_low_μ)
-        vol_high_μ = deepcopy(de_lohi_rskr.vol_high_μ)
-        BS.apply_radial_capping_basis!(
-            vol_low_μ, vol_high_μ;
-            fov_cm     = cupping_knob.fov_cm,
-            poly_order = cupping_knob.poly_order,
-            q_lo       = cupping_knob.q_lo,
-            q_hi       = cupping_knob.q_hi,
-            verbose    = true,
-        )
-        (vol_low_μ = vol_low_μ, vol_high_μ = vol_high_μ, geom = de_lohi_rskr.geom)
-    end
-end;
-
-# ╔═╡ 030b000b-0000-4000-8000-000000000001
-md"""
-## 10. Per-energy `μ_water` — measured from the post-cupping FBP
-
-Same procedure as nb03 §8: 8-px circular ROI at the phantom center on
-the post-RSKR + post-cupping μ-volume, mean across all z slices.
-
-For a *truly* monoenergetic beam this measured value also matches the
-NIST analytic μ_water at the same energy to <1 % — `XrayAttenuation`'s
-`compute_μ_at_energy(water, 70.0) ≈ 0.193` cm⁻¹ and the measured value
-should agree.  We measure rather than hardcode so any pipeline-specific
-biases (residual scatter, RSKR scale, cupping correction offset) get
-absorbed into the HU divisor — same trick that makes water read at
-exactly 0 HU by construction in nb03.
-"""
-
-# ╔═╡ 030b000b-0000-4000-8000-000000000010
-keV_μ_water = let
-    nx, ny, nz = size(de_lohi_μ.vol_low_μ)
-    cx, cy     = nx / 2 + 0.5, ny / 2 + 0.5
-    ROI_R      = 8.0
-    r²         = ROI_R^2
-
-    roi = CartesianIndex{2}[]
-    i_lo = max(1, floor(Int, cx - ROI_R)); i_hi = min(nx, ceil(Int, cx + ROI_R))
-    j_lo = max(1, floor(Int, cy - ROI_R)); j_hi = min(ny, ceil(Int, cy + ROI_R))
-    for j in j_lo:j_hi, i in i_lo:i_hi
-        ((i - cx)^2 + (j - cy)^2) ≤ r² && push!(roi, CartesianIndex(i, j))
-    end
-
-    function _mean_μ(vol)
-        s = 0.0; n = 0
-        for z in 1:nz, ci in roi
-            s += vol[ci, z]; n += 1
-        end
-        s / n
-    end
-
-    Dict(
-        de_mono_energies.low  => Float64(_mean_μ(de_lohi_μ.vol_low_μ)),
-        de_mono_energies.high => Float64(_mean_μ(de_lohi_μ.vol_high_μ)),
-    )
-end;
-
-# ╔═╡ 030b000b-0000-4000-8000-000000000020
-md"""
-**Measured μ_water** (post-RSKR + post-cupping center ROI):
-
-* $(de_mono_energies.low) keV: $(round(keV_μ_water[de_mono_energies.low], digits = 5)) cm⁻¹  *(NIST: $(round(BS.compute_μ_at_energy(BS.XA.Materials.water, de_mono_energies.low), digits = 5)))*
-* $(de_mono_energies.high) keV: $(round(keV_μ_water[de_mono_energies.high], digits = 5)) cm⁻¹  *(NIST: $(round(BS.compute_μ_at_energy(BS.XA.Materials.water, de_mono_energies.high), digits = 5)))*
-"""
-
-# ╔═╡ 030b000c-0000-4000-8000-000000000001
-md"""
-## 11. HU conversion
-
-Per-energy `BS.to_hounsfield` using the measured `keV_μ_water` from §10.
-Solid water reads exactly 0 HU at both basis channels by construction.
-"""
-
-# ╔═╡ 030b000c-0000-4000-8000-000000000010
 de_lohi_HU = let
     vol_low_HU  = Float32.(BS.to_hounsfield(de_lohi_μ.vol_low_μ;  μ_water = keV_μ_water[de_mono_energies.low]))
     vol_high_HU = Float32.(BS.to_hounsfield(de_lohi_μ.vol_high_μ; μ_water = keV_μ_water[de_mono_energies.high]))
     (vol_low_HU = vol_low_HU, vol_high_HU = vol_high_HU, geom = de_lohi_μ.geom)
 end;
 
-# ╔═╡ 030b000d-0000-4000-8000-000000000001
+# ╔═╡ 030b000b-0000-4000-8000-000000000001
 md"""
-## 12. Final 2-panel display — HU at 70 keV vs HU at 150 keV
+## 10. 2-panel display — HU at 70 keV vs HU at 150 keV
 
-These ARE the monoenergetic "VMI" outputs by construction — no Ding
-decomp, no synthesis pass, no Mono+ noise shaping.  The two recons
-**already** satisfy `μ(E) = c_water · μρ_water(E) + c_iodine · 1e-3 · μρ_I(E)`
+These ARE the monoenergetic outputs by construction — no Ding decomp,
+no synthesis pass, no Mono+ noise shaping.  The two recons already
+satisfy `μ(E) = c_water · μρ_water(E) + c_iodine · 1e-3 · μρ_I(E)`
 exactly at the chosen E because there's only one E.
 """
 
-# ╔═╡ 030b000d-0000-4000-8000-000000000010
+# ╔═╡ 030b000b-0000-4000-8000-000000000010
 let
     HU_window = (-200, 500)
 
@@ -461,10 +363,10 @@ let
 
     panels = (
         (1, 1, "HU @ $(Int(de_mono_energies.low)) keV",
-                "monoenergetic input · post-RSKR + cupping",
+                "monoenergetic input · FBP only",
                 de_lohi_HU.vol_low_HU[:, :, mid]),
         (1, 2, "HU @ $(Int(de_mono_energies.high)) keV",
-                "monoenergetic input · post-RSKR + cupping",
+                "monoenergetic input · FBP only",
                 de_lohi_HU.vol_high_HU[:, :, mid]),
     )
 
@@ -489,17 +391,16 @@ let
     fig
 end
 
-# ╔═╡ 030b000e-0000-4000-8000-000000000001
+# ╔═╡ 030b000c-0000-4000-8000-000000000001
 md"""
-## 13. Mean water HU per energy — sanity check
+## 11. Mean water HU per energy — sanity check
 
-The HU divisor in §11 was measured directly at the phantom center, so
-solid water should read **exactly 0 HU** at both energies after
-`to_hounsfield`.  Any deviation is residual RSKR / cupping bias —
-flagged here for inspection.
+Center-ROI water HU should land near 0 at both energies — `to_hounsfield`
+divided by the exact NIST μ_water, so any deviation is residual noise
+(no bias from polychromatic averaging).
 """
 
-# ╔═╡ 030b000e-0000-4000-8000-000000000010
+# ╔═╡ 030b000c-0000-4000-8000-000000000010
 let
     nx, ny, nz = size(de_lohi_HU.vol_low_HU)
     cx, cy = nx / 2 + 0.5, ny / 2 + 0.5
@@ -528,7 +429,7 @@ let
     ax = CM.Axis(
         fig[1, 1];
         title = "Mean water HU per energy",
-        subtitle = "8-px center ROI · target = 0 HU by construction",
+        subtitle = "8-px center ROI · target = 0 HU",
         xlabel = "Beam energy (keV)", ylabel = "Mean HU",
         xticks = (1:length(energies), ["$(Int(E))" for E in energies]),
         titlesize = 30, subtitlesize = 22,
@@ -560,35 +461,30 @@ let
     fig
 end
 
-# ╔═╡ 030b000f-0000-4000-8000-000000000001
+# ╔═╡ 030b000d-0000-4000-8000-000000000001
 md"""
-## 14. Per-rod measured vs theoretical HU at 70 + 150 keV
+## 12. Per-rod measured vs theoretical HU at 70 + 150 keV
 
-The unique verification check of this notebook: per-rod measured HU
-straight off `de_lohi_HU` versus theoretical HU computed from
-`XrayAttenuation`'s monoenergetic `μ(E)` — using the **same** 8-px
-core-ROI sampling pattern as nb03 §16, since the rods are z-invariant
-cylinders and edge voxels add partial-volume bias.
+Per-rod measured HU (8-px core ROI × all z slices) versus theoretical
+HU computed from `XrayAttenuation`'s monoenergetic μ(E).
 
-**Solid line** = measured HU.  **Dashed line** = `1000·(μ_rod(E) − μ_water(E)) / μ_water(E)`
-with `μ` from XrayAttenuation directly (no calibration, no recon —
-pure NIST physics).  In a clean mono pipeline these should overlap to
-single-digit HU; any residual gap is RSKR / cupping bias.
+**Solid line** = measured.  **Dashed line** = `1000·(μ_rod(E) − μ_water(E)) / μ_water(E)`
+straight from XrayAttenuation — pure NIST physics, no calibration.
 """
 
-# ╔═╡ 030b000f-0000-4000-8000-000000000010
+# ╔═╡ 030b000d-0000-4000-8000-000000000010
 const ROD_LABELS = (
     Ca = (UInt8(10), UInt8(11), UInt8(12), UInt8(13), UInt8(14), UInt8(15), UInt8(16)),
     I  = (UInt8(20), UInt8(21), UInt8(22), UInt8(23), UInt8(24), UInt8(25), UInt8(26)),
 );
 
-# ╔═╡ 030b000f-0000-4000-8000-000000000020
+# ╔═╡ 030b000d-0000-4000-8000-000000000020
 const ROD_NAMES = (
     Ca = ("50 mg/mL", "100 mg/mL", "200 mg/mL", "300 mg/mL", "400 mg/mL", "500 mg/mL", "600 mg/mL"),
     I  = ("2.0 mg/mL", "2.5 mg/mL", "5.0 mg/mL", "7.5 mg/mL", "10.0 mg/mL", "15.0 mg/mL", "20.0 mg/mL"),
 );
 
-# ╔═╡ 030b000f-0000-4000-8000-000000000030
+# ╔═╡ 030b000d-0000-4000-8000-000000000030
 rod_data = let
     materials = phantom_cpu.materials
     mask_2d = phantom_cpu.mask[:, :, size(phantom_cpu.mask, 3) ÷ 2]
@@ -670,7 +566,7 @@ rod_data = let
     out
 end;
 
-# ╔═╡ 030b000f-0000-4000-8000-000000000040
+# ╔═╡ 030b000d-0000-4000-8000-000000000040
 let
     fig = CM.Figure(size = (1180, 580))
 
@@ -739,9 +635,9 @@ let
     fig
 end
 
-# ╔═╡ 030b0010-0000-4000-8000-000000000001
+# ╔═╡ 030b000e-0000-4000-8000-000000000001
 md"""
-## 15. Linear regression — measured vs theoretical (per energy)
+## 13. Linear regression — measured vs theoretical (per energy)
 
 Every (rod, energy) pair scattered with measured HU on the y-axis vs
 theoretical HU on the x-axis, fit per-energy and overlaid against the
@@ -751,7 +647,7 @@ calibration tricks needed because there's no spectral compromise to
 make.
 """
 
-# ╔═╡ 030b0010-0000-4000-8000-000000000010
+# ╔═╡ 030b000e-0000-4000-8000-000000000010
 let
     fig = CM.Figure(size = (1180, 620))
 
@@ -826,17 +722,17 @@ let
     fig
 end
 
-# ╔═╡ 030b0011-0000-4000-8000-000000000001
+# ╔═╡ 030b000f-0000-4000-8000-000000000001
 md"""
-## 16. Quantitative agreement table
+## 14. Quantitative agreement table
 
 Compact `(measured / theoretical / Δ)` for every (rod, energy) pair.
-At true mono input we expect single-digit HU agreement everywhere — no
-K-edge boost to amplify residual mismatches because the K-edge boost
-is *itself* a polychromatic averaging artifact.
+At true mono input we expect single-digit HU agreement everywhere —
+no K-edge boost to amplify residual mismatches because the K-edge
+boost is *itself* a polychromatic averaging artifact.
 """
 
-# ╔═╡ 030b0011-0000-4000-8000-000000000010
+# ╔═╡ 030b000f-0000-4000-8000-000000000010
 let
     energies = [de_mono_energies.low, de_mono_energies.high]
 
@@ -878,43 +774,32 @@ let
     Markdown.parse(md_str)
 end
 
-# ╔═╡ 030b0012-0000-4000-8000-000000000001
+# ╔═╡ 030b0010-0000-4000-8000-000000000001
 md"""
 ## Summary
 
-This notebook is the **monoenergetic-input reference** for nb03's
-polychromatic dual-kVp + Ding-decomp + VMI-synth pipeline.  Every
-upstream stage — phantom, scanner, protocol flux budget, sim options,
-recon options, RSKR knobs, cupping knobs, μ_water-from-recon
-measurement — is identical to nb03; the **single change** is
+The whole notebook is `simulate! → FBP → to_hounsfield`.  No BHC, no
+RSKR, no cupping, no 2-basis decomp, no VMI synthesis, no Mono+ —
+every one of those exists in nb03 to fight a problem that
+**doesn't exist** when the source spectrum is monoenergetic.
+
+The only structural change vs nb03 is
 
 ```julia
 spectrum_override = ([E_mono], [1.0])
 ```
 
 passed into `BS.create_eict_workspace(...)`, which bypasses the IPEM
-polychromatic lookup and injects a delta-function spectrum at
-`E_mono`.  Bowtie + heel + detector response still get evaluated at
-the override's energy grid, so all the per-pixel attenuation /
-scatter / noise physics still runs faithfully — there's just no
-photon-energy variation across the spectrum.
+polychromatic lookup.  Bowtie + heel + detector response still
+evaluate at the override's energy grid, so per-pixel attenuation /
+scatter / noise physics still runs faithfully.
 
-Because the inputs are intrinsically monoenergetic:
-
-- **No BHC** — beam hardening is a polychromatic effect, full stop.
-- **No image-domain Ding decomposition** — the recon AT 70 keV is
-  the 70 keV "VMI" by construction, ditto 150 keV.
-- **No VMI synthesis pass** at 40 / 70 / 100 / 140 keV — same
-  reasoning; nothing to synthesize when the source is already mono.
-- **No Mono+ post-processing** — there's no per-energy LP-shaping
-  problem to solve when there's only one energy.
-
-The §15 regression should land at slope ≈ 1, intercept ≈ 0, R² ≈ 1
-on **both** the Ca and I panels at **both** 70 and 150 keV — that's
-the physical ceiling that nb03's polychromatic pipeline is trying
-to recover via its 2-basis decomposition.  Any gap nb03's regression
-shows over this notebook's regression IS the cost of polychromatic
-input.
+The §13 regression should land at slope ≈ 1.0 / R² ≈ 1.0 on **both**
+the Ca and I panels at **both** 70 and 150 keV.  That's the physical
+ceiling that nb03's polychromatic 2-basis pipeline is trying to
+recover via Ding-2020 RQ + algebraic c_water + per-energy synth — any
+gap between nb03's regression and this notebook's regression IS the
+cost of polychromatic input.
 """
 
 # ╔═╡ Cell order:
@@ -947,26 +832,20 @@ input.
 # ╠═030b0008-0000-4000-8000-000000000010
 # ╟─030b0009-0000-4000-8000-000000000001
 # ╠═030b0009-0000-4000-8000-000000000010
-# ╠═030b0009-0000-4000-8000-000000000020
+# ╟─030b0009-0000-4000-8000-000000000020
 # ╟─030b000a-0000-4000-8000-000000000001
 # ╠═030b000a-0000-4000-8000-000000000010
-# ╠═030b000a-0000-4000-8000-000000000020
 # ╟─030b000b-0000-4000-8000-000000000001
 # ╠═030b000b-0000-4000-8000-000000000010
-# ╟─030b000b-0000-4000-8000-000000000020
 # ╟─030b000c-0000-4000-8000-000000000001
 # ╠═030b000c-0000-4000-8000-000000000010
 # ╟─030b000d-0000-4000-8000-000000000001
 # ╠═030b000d-0000-4000-8000-000000000010
+# ╠═030b000d-0000-4000-8000-000000000020
+# ╠═030b000d-0000-4000-8000-000000000030
+# ╠═030b000d-0000-4000-8000-000000000040
 # ╟─030b000e-0000-4000-8000-000000000001
 # ╠═030b000e-0000-4000-8000-000000000010
 # ╟─030b000f-0000-4000-8000-000000000001
-# ╠═030b000f-0000-4000-8000-000000000010
-# ╠═030b000f-0000-4000-8000-000000000020
-# ╠═030b000f-0000-4000-8000-000000000030
-# ╠═030b000f-0000-4000-8000-000000000040
+# ╟─030b000f-0000-4000-8000-000000000010
 # ╟─030b0010-0000-4000-8000-000000000001
-# ╠═030b0010-0000-4000-8000-000000000010
-# ╟─030b0011-0000-4000-8000-000000000001
-# ╟─030b0011-0000-4000-8000-000000000010
-# ╟─030b0012-0000-4000-8000-000000000001
