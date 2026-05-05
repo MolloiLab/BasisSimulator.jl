@@ -321,10 +321,11 @@ de_lohi_μ = let
         sino_gpu = to_gpu(Float32.(sino_cpu))
         ws = BS.create_fdk_recon_workspace(
             sino_gpu, geom, matrix_size;
-            filter = BS.CustomFilter(
-                (0.0, 0.25, 0.5, 0.75, 1.0),
-                (1.0, 0.95, 0.85, 0.65, 0.4),
-            ),
+            # filter = BS.CustomFilter(
+            #     (0.0, 0.25, 0.5, 0.75, 1.0),
+            #     (1.0, 0.95, 0.85, 0.65, 0.4),
+            # ),
+            filter = BS.SoftFilter()
         )
         recon_μ = Array(BS.reconstruct!(ws, sino_gpu, geom, matrix_size))
         ws = nothing; sino_gpu = nothing
@@ -504,10 +505,12 @@ let
         subtitle = "8-px center ROI · target = 0 HU",
         xlabel = "Beam energy (keV)", ylabel = "Mean HU",
         xticks = (1:length(energies), ["$(Int(E))" for E in energies]),
+        yticks = -15:5:15,
         titlesize = 30, subtitlesize = 22,
         xlabelsize = 22, ylabelsize = 22,
         xticklabelsize = 18, yticklabelsize = 16,
     )
+    CM.ylims!(ax, -15, 15)
 
     bar_colors = [
         CM.RGBf(0.92, 0.65, 0.20),   # 70  keV — warm
