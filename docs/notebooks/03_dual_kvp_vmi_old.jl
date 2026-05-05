@@ -494,6 +494,20 @@ md"""
 equation, returning a `c_iodine` map in mg/mL.  A 3-slice
 [`BS.apply_median_z`](@ref) (radius = 1, axial-only) wipes single-voxel xy
 impulse noise without any in-plane blurring.
+
+We z-median **two** volumes here: the decomp output `c_iodine` AND the
+post-RSKR `vol_low_HU` (NOT `vol_high_HU`).  Why this asymmetric pair:
+the §13 VMI synth uses the iodine-perturbation form
+
+```
+HU_E = HU_low + c_iod · (α_phys(E) − α_low_cal)
+```
+
+so `vol_low_HU` is the *baseline* every per-energy VMI is built on top
+of — single-voxel speckle in it leaks into all 4 outputs.  In
+contrast, `vol_high_HU` was only an input to `apply_ding_decomp` (its
+information is now encoded in `c_iodine`) and is never read again,
+so denoising it would be wasted compute.
 """
 
 # ╔═╡ 030c0013-0000-4000-8000-000000000010
@@ -501,12 +515,16 @@ de_decomp = let
     c_iodine = BS.apply_ding_decomp(
         de_lohi_HU.vol_low_HU, de_lohi_HU.vol_high_HU, de_cal.coeffs
     )
-    c_iodine = BS.apply_median_z(c_iodine; radius = 1)
+
+    radius = 1   # 3-slice z-median window
+    c_iodine   = BS.apply_median_z(c_iodine;                radius = radius)
+    vol_low_HU = BS.apply_median_z(de_lohi_HU.vol_low_HU;   radius = radius)
+
     (
-        c_iodine = c_iodine,
-        vol_low_HU = de_lohi_HU.vol_low_HU,
-        vol_high_HU = de_lohi_HU.vol_high_HU,
-        geom = de_lohi_HU.geom,
+        c_iodine    = c_iodine,
+        vol_low_HU  = vol_low_HU,
+        vol_high_HU = de_lohi_HU.vol_high_HU,   # passed through; not used by §13 synth
+        geom        = de_lohi_HU.geom,
     )
 end;
 
