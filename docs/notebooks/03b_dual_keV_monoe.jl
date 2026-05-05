@@ -223,19 +223,39 @@ end;
 md"""
 ## 5. Forward project — 70 keV mono
 
-`spectrum_override = ([70.0], [1.0])` bypasses the IPEM polychromatic
-lookup and injects a delta-function spectrum.  Bowtie + heel + detector
-response still get evaluated at the override's energy grid, so the
-non-spectral physics (per-pixel attenuation, scatter, noise) all run
-faithfully.
+`spectrum_override = ([70.0], [flux_total])` bypasses the IPEM
+polychromatic lookup and injects a single-energy spectrum.  The weight
+value is the **absolute photon flux** (photons / mAs / mm² at 750 mm),
+not a normalized weight — `compute_detector_I0` reads `sum(weights)` to
+size the per-pixel I0 budget, and a value like `[1.0]` would floor the
+recon into the noise clamp (~1 photon / pixel after Beer-Lambert
+through the phantom).
+
+To get a realistic photon budget, we **match the total flux of the
+polychromatic protocol** at this kVp by fetching the IPEM-filtered
+spectrum, summing it, and putting all that flux at the mono energy.
+This gives the same SNR ceiling that nb03's 80 kVp scan operates at,
+so the noise comparison is apples-to-apples.
+
+Bowtie + heel + detector response still get evaluated at the
+override's energy grid, so the non-spectral physics (per-pixel
+attenuation, scatter, noise) all run faithfully.
 """
 
 # ╔═╡ 030b0006-0000-4000-8000-000000000010
 sim_low = let
-    @info "Simulating: 70 keV mono / $(round(protocol_low.mA, digits = 1)) mA-eff (DE low)…"
+    # Match the absolute flux of the polychromatic 80 kVp protocol so the
+    # noise budget is identical to nb03's low-kVp scan.  All that flux
+    # gets concentrated at 70 keV in the override.
+    _, w_poly_low = BS.resolve_source_spectrum_without_bowtie(
+        sim_opts, protocol_low; scanner = scanner,
+    )
+    flux_low = sum(Float64.(w_poly_low))
+
+    @info "Simulating: 70 keV mono / $(round(protocol_low.mA, digits = 1)) mA-eff (DE low) · flux=$(round(flux_low, sigdigits = 3))…"
     ws = BS.create_eict_workspace(
         scanner, protocol_low, sim_opts, recon_opts, phantom;
-        spectrum_override = ([de_mono_energies.low], [1.0]),
+        spectrum_override = ([de_mono_energies.low], [flux_low]),
     )
     BS.simulate!(ws, phantom, scanner, protocol_low, sim_opts, recon_opts)
 
@@ -250,15 +270,26 @@ end;
 md"""
 ## 6. Forward project — 150 keV mono
 
-Same pattern; only the override and the protocol change.
+Same pattern; only the override and the protocol change.  Note that
+the polychromatic IPEM table only goes up to 140 kVp, so we use
+`protocol_high.kVp = 140` purely for flux calibration — the 150 keV
+mono photons themselves come from `spectrum_override`, not from the
+IPEM table.
 """
 
 # ╔═╡ 030b0007-0000-4000-8000-000000000010
 sim_high = let
-    @info "Simulating: 150 keV mono / $(round(protocol_high.mA, digits = 1)) mA-eff (DE high)…"
+    # Match the absolute flux of the polychromatic 140 kVp protocol —
+    # same matched-flux trick as the low scan.
+    _, w_poly_high = BS.resolve_source_spectrum_without_bowtie(
+        sim_opts, protocol_high; scanner = scanner,
+    )
+    flux_high = sum(Float64.(w_poly_high))
+
+    @info "Simulating: 150 keV mono / $(round(protocol_high.mA, digits = 1)) mA-eff (DE high) · flux=$(round(flux_high, sigdigits = 3))…"
     ws = BS.create_eict_workspace(
         scanner, protocol_high, sim_opts, recon_opts, phantom;
-        spectrum_override = ([de_mono_energies.high], [1.0]),
+        spectrum_override = ([de_mono_energies.high], [flux_high]),
     )
     BS.simulate!(ws, phantom, scanner, protocol_high, sim_opts, recon_opts)
 
@@ -351,6 +382,9 @@ no synthesis pass, no Mono+ noise shaping.  The two recons already
 satisfy `μ(E) = c_water · μρ_water(E) + c_iodine · 1e-3 · μρ_I(E)`
 exactly at the chosen E because there's only one E.
 """
+
+# ╔═╡ 94aff346-7b58-4206-9cb9-5322046a750a
+de_lohi_HU.vol_low_HU[:, :, 4]
 
 # ╔═╡ 030b000b-0000-4000-8000-000000000010
 let
@@ -836,16 +870,17 @@ cost of polychromatic input.
 # ╟─030b000a-0000-4000-8000-000000000001
 # ╠═030b000a-0000-4000-8000-000000000010
 # ╟─030b000b-0000-4000-8000-000000000001
+# ╠═94aff346-7b58-4206-9cb9-5322046a750a
 # ╠═030b000b-0000-4000-8000-000000000010
 # ╟─030b000c-0000-4000-8000-000000000001
-# ╠═030b000c-0000-4000-8000-000000000010
+# ╟─030b000c-0000-4000-8000-000000000010
 # ╟─030b000d-0000-4000-8000-000000000001
 # ╠═030b000d-0000-4000-8000-000000000010
 # ╠═030b000d-0000-4000-8000-000000000020
 # ╠═030b000d-0000-4000-8000-000000000030
-# ╠═030b000d-0000-4000-8000-000000000040
+# ╟─030b000d-0000-4000-8000-000000000040
 # ╟─030b000e-0000-4000-8000-000000000001
-# ╠═030b000e-0000-4000-8000-000000000010
+# ╟─030b000e-0000-4000-8000-000000000010
 # ╟─030b000f-0000-4000-8000-000000000001
 # ╟─030b000f-0000-4000-8000-000000000010
 # ╟─030b0010-0000-4000-8000-000000000001

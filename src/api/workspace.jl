@@ -477,14 +477,27 @@ Create a pre-allocated workspace for zero-allocation EICT single-kVp `simulate!(
 # Keyword arguments
 - `spectrum_override::Union{Nothing, Tuple{Vector{Float64}, Vector{Float64}}} = nothing` —
   bypass the polychromatic IPEM lookup and use a custom `(energies, weights)` pair
-  for the source spectrum.  Set to e.g. `([70.0], [1.0])` for a monoenergetic 70 keV
-  beam.  When `nothing` (default), the spectrum is loaded from the IPEM tables via
-  `resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner)`.
+  for the source spectrum.  When `nothing` (default), the spectrum is loaded from
+  the IPEM tables via `resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner)`.
 
-  When supplied, `protocol.kVp` is still used by downstream flux calibration
-  (`compute_detector_I0`) and by the bowtie filter (which evaluates its
-  attenuation at the override's actual energy grid, so the bowtie still applies
-  correctly).  See `docs/notebooks/03b_dual_kvp_monoe.jl` for an example.
+  **Important — `weights` is ABSOLUTE photon flux** (photons / mAs / mm² at 750 mm),
+  matching what `load_spectrum_unfiltered` returns.  `compute_detector_I0` reads
+  `sum(weights)` to size the per-pixel I0 budget, so passing `[1.0]` yields ~1
+  photon / mAs / mm² total — far below the noise clamp, leading to a uniform
+  saturated recon.
+
+  For a monoenergetic injection at `E_mono` with the same flux budget as a
+  polychromatic protocol at the same kVp, fetch the polychromatic flux total and
+  put it all at the mono bin:
+
+  ```julia
+  _, w_poly = BS.resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner)
+  spectrum_override = ([E_mono], [sum(Float64.(w_poly))])
+  ```
+
+  Bowtie + heel + detector response evaluate at the override's actual energy
+  grid, so per-ray spectral physics still runs.  See
+  `docs/notebooks/03b_dual_keV_monoe.jl` for the complete monoenergetic example.
 """
 function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
                                 T::Type{<:AbstractFloat}=Float32,
