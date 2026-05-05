@@ -275,10 +275,29 @@ Image-domain DE VMI calibration for GE Revolution Apex Elite GSI at the
 Source: nb03 protocol matching the clinical Apex Elite GSI acquisition
 (80 kVp / 264.55 mA-eff, 140 kVp / 141.75 mA-eff, 984 views, 0.5 s
 rotation, 5 mm collimation, 2.5 mm Al flat filter + 4.5 mm Al additional).
+
+Fields:
+- `coeffs::Vector{Float32}` — Ding `(a₀, a₁, a₂)` for `c_iodine = a₀ +
+  a₁·HU_low + a₂·HU_high`.
+- `α_iod_low_cal::Float32` — empirical low-basis HU sensitivity per
+  (mg/mL) of iodine, used by `synth_vmi_image_domain`.
+- `μ_water_low::Float32`, `μ_water_high::Float32` — per-kVp μ_water for
+  HU conversion (cm⁻¹).  Measured directly from an 8-px-radius circular
+  ROI at the volume center of the post-RSKR + post-cupping FBP recon
+  (the same volume `to_hounsfield` divides), summed across all z slices.
+  By construction this makes solid water read at exactly 0 HU in the
+  derivation pipeline; downstream consumers using these values as the
+  HU divisor on a similar pipeline will land water near 0 HU as well.
+  Closely matches the analytic polychromatic-effective μ_water from
+  `compute_polychromatic_μ_water(...; water_path_cm = 33.0)` (≤ ~1 %
+  difference) — use that as a phantom-free fallback when no recon is
+  available to measure from.
 """
 const GE_REVOLUTION_APEX_ELITE_80_140KVP_DE_VMI_CAL = (
     coeffs        = Float32[0.43, 0.0506, -0.05464],
     α_iod_low_cal = 39.86f0,
+    μ_water_low   = 0.19768f0,
+    μ_water_high  = 0.17380f0,
 )
 
 """

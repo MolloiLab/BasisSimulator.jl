@@ -1083,6 +1083,8 @@ de_cal = let
             coeffs       = fit.coeffs,
             α_iod_low    = fit.α_low,
             α_iod_high   = fit.α_high,
+            μ_water_low  = Float32(kVp_μ_water[80]),
+            μ_water_high = Float32(kVp_μ_water[140]),
             rms_c        = fit.rms,
             rod_names    = rods.names,
             rod_HU_low   = rods.HU_low,
@@ -1310,6 +1312,8 @@ de_cal = let
             coeffs       = (Float32(a₀), Float32(a₁), Float32(a₂)),
             α_iod_low    = Float32(α_low_cal),
             α_iod_high   = Float32(α_high),
+            μ_water_low  = Float32(kVp_μ_water[80]),
+            μ_water_high = Float32(kVp_μ_water[140]),
             rms_c        = rms_c,
             rod_names    = [r.name    for r in rod_data],
             rod_HU_low   = [r.HU_low  for r in rod_data],
@@ -1358,6 +1362,7 @@ let
     * a₁ = $(round(de_cal.coeffs[2], sigdigits = 4))
     * a₂ = $(round(de_cal.coeffs[3], sigdigits = 4))
     * α_iodine (low / high) = $(round(de_cal.α_iod_low, digits = 2)) / $(round(de_cal.α_iod_high, digits = 2)) HU per (mg/mL)
+    * μ_water (80 / 140 kVp) = $(round(de_cal.μ_water_low, digits = 5)) / $(round(de_cal.μ_water_high, digits = 5)) cm⁻¹
     * RMS calibration error (iodine rods) = $(round(de_cal.rms_c, digits = 3)) mg/mL
     $(optim_block)
     """
@@ -1462,7 +1467,7 @@ end;
 # ╔═╡ 03000016-0000-4000-8000-000000000010
 de_vmi_mono = let
     vols_in = [de_vmi_raw[E] for E in de_vmi_energies]
-    σ_vec = Float64[2.0, 0.0, 2.0, 2.0]   # paired with de_vmi_energies
+    σ_vec = Float64[1.0, 0.0, 1.0, 1.0]   # paired with de_vmi_energies
     # σ_vec = Float64[0.0, 0.0, 0.0, 0.0]   # paired with de_vmi_energies
 
     ws = BS.create_mono_plus_workspace(vols_in[1]; n_energies = length(de_vmi_energies))
