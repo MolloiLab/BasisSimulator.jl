@@ -1,8 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.20.24
-
-using Markdown
-using InteractiveUtils
+# v0.19.0
 
 # ╔═╡ 04000001-0000-4000-8000-000000000001
 begin
@@ -579,7 +576,7 @@ rskr_knob = (
     n_iter = 2,
     h_param = 2,
     radius = 3,
-    γ = 0.5,
+    γ = 0.1,
 );
 
 # ╔═╡ 0400000b-0000-4000-8000-000000000010
@@ -898,303 +895,105 @@ end
 
 # ╔═╡ 0400000d-0000-4000-8000-000000000063
 md"""
-## 12. Calibration
+## 12. Calibration — 2-basis (W+I) joint BFGS, mirrors nb03 §12
 
-Image-domain Ding decomposition + VMI synthesis:
+Image-domain decomposition + VMI synthesis:
+
 ```
-c_iodine(voxel) = a₀ + a₁·HU_low(voxel) + a₂·HU_high(voxel)
-HU_E(voxel)     = HU_low(voxel) + c_iodine(voxel)·(μρ_I(E)/μρ_water(E) − α_iod_low_cal)
+c_iodine = eval_cal(HU_low, HU_high; θ_I, cal_form)        — Ding-style fit
+c_water  = 1 + (HU_low − α_low_cal · c_iodine)/1000        — algebraic identity
+HU(E)    = 1000(c_water − 1) + c_iodine · α_phys(E)        — textbook 2-basis μ-domain
+       ≡ HU_low + c_iodine · (α_phys(E) − α_low_cal)       — equivalent old form
 ```
 
-Two paths, gated by `optim_knob.enabled` (mirrors nb03 §11):
+Same hyperparameters as `03_dual_kvp_vmi.jl §12` — the **only difference
+is no BHC**.  PCCT bins are already polychromatic-aware via the
+per-bin μ_water from §9 (effective ⟨μ⟩ on each bin's spectrum),
+so the BFGS calibration absorbs whatever residual non-linearity there
+is into the rational-quadratic c_iodine fit.
 
-* **`enabled = true`** — direct optimization: BFGS (`Optim.jl`) with
-  closed-form analytical gradient, minimizing per-(rod, energy)
-  squared-error loss across all 4 VMI energies × all 14 Gammex 472 rods
-  + center-ROI water.  Self-calibrates against this run's actual recon,
-  so any upstream tweak (RSKR knobs, cupping, μ_water source) is
-  picked up automatically.  `loss_metric = :rmse` works empirically
-  better than `:nrmse` for this scanner — Ca rods anchor the fit and
-  the iodine fit comes along for the ride.
+BFGS (`Optim.jl`) jointly optimizes `[θ_I; α_low_cal]`:
 
-* **`enabled = false`** — load the pre-optimized const from
-  [`BS.pcct_vmi_cal_for(protocol.kVp)`](@ref).  Use this when you don't
-  want to re-fit (e.g. running against a clinical scan where rod
-  measurements aren't available).
+* `cal_form = :linear` — Ding-2012, 3 c_iodine params + α_low_cal = 4 total.
+* `cal_form = :rational_quadratic` — Ding-2020, 8 c_iodine params + α_low_cal = 9 total.
+
+Loss runs across all rod families (W + I + Ca).  The 2-basis (W+I)
+model can't lie exactly on Ca's K-edge structure, but Ca rods still
+drive the fit so the (water, iodine) coefficients are picked as the
+best COMPROMISE that ALSO fits Ca well.  Per-family RMSE in the
+diagnostics shows the inherent W+I-vs-Ca residual — that's the floor
+you can't beat without a 3-basis decomp.
 """
 
-# ╔═╡ 0400000d-0000-4000-8000-000000000067
-# Calibration optimizer knobs — flip `enabled` to switch between the
-# src cal const and the BFGS optimizer.
-#   max_iter, tol     ⇒ BFGS stopping criteria
-#   loss_metric       ⇒ :nrmse (relative-error²) | :rmse (absolute-error²)
-#   *_weight          ⇒ relative emphasis per rod family in the loss
-#   energy_weights    ⇒ paired with `de_vmi_energies` (40 / 70 / 100 / 140 keV)
-#   nrmse_floor       ⇒ HU floor on the relative-error denom (only used
-#                       when loss_metric = :nrmse)
-optim_knob = (
-    enabled        = true,
-    max_iter       = 200,
-    tol            = 1.0e-8,
-    loss_metric    = :rmse,                  # :nrmse | :rmse
-    iodine_weight  = 1.0,
-    calcium_weight = 1.0,
-    water_weight   = 1.0,
-    energy_weights = (1.0, 1.0, 1.0, 1.0),   # ↔ (40, 70, 100, 140) keV
-    nrmse_floor    = 100.0,
-);
-
-# ╔═╡ 0400000d-0000-4000-8000-000000000074
-de_cal = let
-    if !optim_knob.enabled
-        # ─── Path A: load pre-optimized const from src ────────────────────
-        cal = BS.pcct_vmi_cal_for(protocol.kVp)
-        (
-            coeffs        = cal.coeffs,
-            α_iod_low_cal = cal.α_iod_low_cal,
-            μ_water_low   = Float32(μ_water_per_bin.low),
-            μ_water_high  = Float32(μ_water_per_bin.high),
-            method        = :src_const,
-            n_iter        = 0,
-            converged     = true,
-            loss_metric   = :unknown,
-            nrmse_HU      = NaN,
-            rmse_HU       = NaN,
-            rms_c         = NaN,
-        )
-    else
-        # ─── Path B: BFGS optimizer ───────────────────────────────────────
-
-        # 1. Per-rod 8-px ROI measurements (rods are z-invariant cylinders).
-        mask_2d = phantom_cpu.mask[:, :, size(phantom_cpu.mask, 3) ÷ 2]
-        nx, ny  = size(mask_2d)
-        ROI_R   = 8
-        r²      = Float64(ROI_R)^2
-
-        function _circular_roi(cx::Real, cy::Real)
-            roi = CartesianIndex{2}[]
-            i_lo = max(1, floor(Int, cx - ROI_R)); i_hi = min(nx, ceil(Int, cx + ROI_R))
-            j_lo = max(1, floor(Int, cy - ROI_R)); j_hi = min(ny, ceil(Int, cy + ROI_R))
-            for j in j_lo:j_hi, i in i_lo:i_hi
-                ((i - cx)^2 + (j - cy)^2) ≤ r² && push!(roi, CartesianIndex(i, j))
-            end
-            roi
+# ╔═╡ 04000011-0000-4000-8000-000000000050
+# Inline 2-basis decomp + VMI-synth helpers — lifted verbatim from
+# BasisSimulator nb03 §11.  Will move to src once the notebook is happy.
+# Pipeline:
+#
+#   c_iod   = eval_cal(L, H, θ_I; form)             — Ding-style fit
+#   c_water = 1 + (HU_low − α_low_cal · c_iod)/1000 — algebraic identity
+#   μ(E)    = c_water · μ_w_mono(E) + c_iod · 1e-3 · μρ_I(E)
+#   HU_E    = 1000(c_water − 1) + c_iod · α_phys(E)
+#
+# Calibration form selectable per de_cal.cal_form:
+#   :linear              — Ding-2012, 3 params:  a₀ + a₁L + a₂H
+#   :rational_quadratic  — Ding-2020, 8 params:  (a₀+a₁L+a₂H+a₃L²+a₄LH+a₅H²)
+#                                                / (1 + b₁L + b₂H)
+begin
+    @inline function eval_cal(L, H, c, form::Symbol)
+        if form === :linear
+            return c[1] + c[2]*L + c[3]*H
+        elseif form === :rational_quadratic
+            num = c[1] + c[2]*L + c[3]*H + c[4]*L*L + c[5]*L*H + c[6]*H*H
+            den = oneunit(c[1]) + c[7]*L + c[8]*H
+            return num / den
+        else
+            error("eval_cal: unknown form $(form)")
         end
-        function _rod_roi(label::UInt8)
-            idx = findall(==(label), mask_2d)
-            cx = sum(ci -> Float64(ci[1]), idx) / length(idx)
-            cy = sum(ci -> Float64(ci[2]), idx) / length(idx)
-            _circular_roi(cx, cy)
-        end
-        function _mean_HU(vol, roi)
-            s = 0.0; n = 0
-            for z in 1:size(vol, 3), ci in roi
-                s += vol[ci, z]; n += 1
-            end
-            s / n
-        end
-
-        # 2. All 14 Gammex rods + center-ROI water (mirrors nb03).
-        rod_specs = (
-            ("Water",  UInt8(0),  0.0, :water),
-            ("Ca 50",  UInt8(10), 0.0, :calcium),
-            ("Ca 100", UInt8(11), 0.0, :calcium),
-            ("Ca 200", UInt8(12), 0.0, :calcium),
-            ("Ca 300", UInt8(13), 0.0, :calcium),
-            ("Ca 400", UInt8(14), 0.0, :calcium),
-            ("Ca 500", UInt8(15), 0.0, :calcium),
-            ("Ca 600", UInt8(16), 0.0, :calcium),
-            ("I 2.0",  UInt8(20), 2.0, :iodine),
-            ("I 2.5",  UInt8(21), 2.5, :iodine),
-            ("I 5.0",  UInt8(22), 5.0, :iodine),
-            ("I 7.5",  UInt8(23), 7.5, :iodine),
-            ("I 10.0", UInt8(24), 10.0, :iodine),
-            ("I 15.0", UInt8(25), 15.0, :iodine),
-            ("I 20.0", UInt8(26), 20.0, :iodine),
-        )
-
-        materials = phantom_cpu.materials
-        μ_water_E = Dict(
-            E => BS.compute_μ_at_energy(BS.XA.Materials.water, E)
-                for E in de_vmi_energies
-        )
-
-        rod_data = NamedTuple[]
-        for (name, lab, c_known, kind) in rod_specs
-            roi = name == "Water" ?
-                _circular_roi(nx / 2 + 0.5, ny / 2 + 0.5) :
-                _rod_roi(lab)
-            material = name == "Water" ?
-                BS.XA.Materials.water :
-                materials[Int(lab) + 1]
-            HU_low_r  = _mean_HU(de_lohi_HU.vol_low_HU,  roi)
-            HU_high_r = _mean_HU(de_lohi_HU.vol_high_HU, roi)
-            HU_theo   = Float64[
-                let μ_r = BS.compute_μ_at_energy(material, E)
-                    1000.0 * (μ_r - μ_water_E[E]) / μ_water_E[E]
-                end
-                    for E in de_vmi_energies
-            ]
-            push!(rod_data, (
-                name = name, kind = kind, c_known = c_known,
-                HU_low = HU_low_r, HU_high = HU_high_r, HU_theo = HU_theo,
-            ))
-        end
-
-        # 3. αᴱ_phys per VMI energy.
-        α_phys_E = Float64[
-            BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine, E) /
-            BS.compute_mass_μ_at_energy(BS.XA.Materials.water,  E)
-                for E in de_vmi_energies
-        ]
-
-        N = length(rod_data)
-        M = length(de_vmi_energies)
-
-        rod_family_w = [
-            r.kind == :iodine  ? Float64(optim_knob.iodine_weight)  :
-            r.kind == :calcium ? Float64(optim_knob.calcium_weight) :
-                                 Float64(optim_knob.water_weight)
-                for r in rod_data
-        ]
-        e_weights   = collect(Float64.(optim_knob.energy_weights))
-        nrmse_floor = Float64(optim_knob.nrmse_floor)
-        loss_metric = optim_knob.loss_metric
-        loss_metric in (:nrmse, :rmse) ||
-            error("optim_knob.loss_metric must be :nrmse or :rmse, got $(loss_metric)")
-        function _w(r_idx, e_idx)
-            base = rod_family_w[r_idx] * e_weights[e_idx]
-            if loss_metric == :rmse
-                base
-            else
-                ht = rod_data[r_idx].HU_theo[e_idx]
-                base / max(abs(ht), nrmse_floor)^2
-            end
-        end
-
-        # 4. Initial guess from BS.fit_ding_coeffs on iodine + water only.
-        iod_water_idx = findall(r -> r.kind in (:iodine, :water), rod_data)
-        fit_init = BS.fit_ding_coeffs(
-            [rod_data[i].HU_low  for i in iod_water_idx],
-            [rod_data[i].HU_high for i in iod_water_idx],
-            [rod_data[i].c_known for i in iod_water_idx],
-        )
-        params0 = [Float64.(fit_init.coeffs)..., Float64(fit_init.α_low)]
-
-        # 5. BFGS via Optim.jl with analytical gradient.
-        function _resid_and_grad_terms(params, r_idx, e_idx)
-            a₀, a₁, a₂, α_low = params
-            hl    = rod_data[r_idx].HU_low
-            hh    = rod_data[r_idx].HU_high
-            ht    = rod_data[r_idx].HU_theo[e_idx]
-            γ     = α_phys_E[e_idx] - α_low
-            c_iod = a₀ + a₁ * hl + a₂ * hh
-            HU_synth = hl + c_iod * γ
-            (resid = HU_synth - ht, w = _w(r_idx, e_idx),
-             γ = γ, c_iod = c_iod, hl = hl, hh = hh)
-        end
-        function loss_fn(params)
-            total = 0.0
-            for r_idx in 1:N, e_idx in 1:M
-                t = _resid_and_grad_terms(params, r_idx, e_idx)
-                total += t.w * t.resid^2
-            end
-            total
-        end
-        function grad_fn!(g, params)
-            fill!(g, 0.0)
-            for r_idx in 1:N, e_idx in 1:M
-                t = _resid_and_grad_terms(params, r_idx, e_idx)
-                two_w_r = 2.0 * t.w * t.resid
-                g[1] += two_w_r * t.γ
-                g[2] += two_w_r * t.γ * t.hl
-                g[3] += two_w_r * t.γ * t.hh
-                g[4] -= two_w_r * t.c_iod
-            end
-        end
-        opt_options = Optim.Options(
-            iterations = optim_knob.max_iter,
-            f_abstol   = optim_knob.tol,
-            g_abstol   = optim_knob.tol,
-            x_abstol   = optim_knob.tol,
-        )
-        opt_result = Optim.optimize(loss_fn, grad_fn!, params0, Optim.BFGS(), opt_options)
-        a₀, a₁, a₂, α_low_cal = Optim.minimizer(opt_result)
-        converged = Optim.converged(opt_result)
-        n_iter    = Optim.iterations(opt_result)
-
-        # 6. Diagnostics — both metrics for cross-mode comparison.
-        sq_rel, sq_abs, n_pairs = 0.0, 0.0, 0
-        for r_idx in 1:N, e_idx in 1:M
-            hl    = rod_data[r_idx].HU_low
-            hh    = rod_data[r_idx].HU_high
-            c_iod = a₀ + a₁ * hl + a₂ * hh
-            HU_E_synth = hl + c_iod * (α_phys_E[e_idx] - α_low_cal)
-            ht         = rod_data[r_idx].HU_theo[e_idx]
-            resid      = HU_E_synth - ht
-            sq_rel  += (resid / max(abs(ht), nrmse_floor))^2
-            sq_abs  += resid^2
-            n_pairs += 1
-        end
-        nrmse_HU = sqrt(sq_rel / n_pairs)
-        rmse_HU  = sqrt(sq_abs / n_pairs)
-
-        iod_idx = findall(r -> r.kind == :iodine, rod_data)
-        rms_c   = let
-            sq = 0.0
-            for i in iod_idx
-                c_pred = a₀ + a₁ * rod_data[i].HU_low + a₂ * rod_data[i].HU_high
-                sq += (c_pred - rod_data[i].c_known)^2
-            end
-            sqrt(sq / length(iod_idx))
-        end
-
-        @info "[Ding optimizer · BFGS · loss=$(loss_metric)] $(converged ? "converged in" : "stopped at") $(n_iter) iter · loss = $(round(Optim.minimum(opt_result), digits = 4)) · nRMSE_HU = $(round(nrmse_HU, digits = 4)) · RMSE_HU = $(round(rmse_HU, digits = 1)) HU · RMS_c (I rods) = $(round(rms_c, digits = 3)) mg/mL"
-
-        (
-            coeffs        = Float32[a₀, a₁, a₂],
-            α_iod_low_cal = Float32(α_low_cal),
-            μ_water_low   = Float32(μ_water_per_bin.low),
-            μ_water_high  = Float32(μ_water_per_bin.high),
-            method        = :optimized,
-            n_iter        = n_iter,
-            converged     = converged,
-            loss_metric   = loss_metric,
-            nrmse_HU      = nrmse_HU,
-            rmse_HU       = rmse_HU,
-            rms_c         = rms_c,
-        )
     end
-end;
 
-# ╔═╡ 0400000d-0000-4000-8000-000000000080
-let
-    optim_block = de_cal.method == :optimized ?
-        """
-        * **method = :optimized** · loss = `:$(de_cal.loss_metric)` · ($(de_cal.converged ? "converged in" : "stopped at") $(de_cal.n_iter) iter)
-        * **nRMSE_HU = $(round(de_cal.nrmse_HU, digits = 4))** · **RMSE_HU = $(round(de_cal.rmse_HU, digits = 1)) HU** · RMS_c (I rods) = $(round(de_cal.rms_c, digits = 3)) mg/mL
-        """ :
-        "* **method = :src_const** (loaded from `BS.pcct_vmi_cal_for($(Int(protocol.kVp)))`)"
+    function apply_cal!(out::AbstractArray{Float32, 3},
+                        HU_low::AbstractArray{Float32, 3},
+                        HU_high::AbstractArray{Float32, 3},
+                        coeffs; form::Symbol = :linear)
+        size(out) == size(HU_low) == size(HU_high) ||
+            error("apply_cal!: shapes must match")
+        if form === :linear
+            a0 = Float32(coeffs[1]); a1 = Float32(coeffs[2]); a2 = Float32(coeffs[3])
+            @. out = a0 + a1 * HU_low + a2 * HU_high
+        elseif form === :rational_quadratic
+            a0 = Float32(coeffs[1]); a1 = Float32(coeffs[2]); a2 = Float32(coeffs[3])
+            a3 = Float32(coeffs[4]); a4 = Float32(coeffs[5]); a5 = Float32(coeffs[6])
+            b1 = Float32(coeffs[7]); b2 = Float32(coeffs[8])
+            @. out = (a0 + a1*HU_low + a2*HU_high +
+                      a3*HU_low*HU_low + a4*HU_low*HU_high + a5*HU_high*HU_high) /
+                     (1.0f0 + b1*HU_low + b2*HU_high)
+        else
+            error("apply_cal!: unknown form $(form)")
+        end
+        out
+    end
 
-    body = """
-    **Active calibration:**
+    apply_cal(HU_low, HU_high, coeffs; form::Symbol = :linear) =
+        apply_cal!(similar(HU_low), HU_low, HU_high, coeffs; form = form)
 
-    | Param | Value |
-    |---|---|
-    | a₀                | $(round(Float64(de_cal.coeffs[1]), digits = 5)) |
-    | a₁                | $(round(Float64(de_cal.coeffs[2]), sigdigits = 5)) |
-    | a₂                | $(round(Float64(de_cal.coeffs[3]), sigdigits = 5)) |
-    | α_iod_low_cal     | $(round(Float64(de_cal.α_iod_low_cal), digits = 4)) |
-    | μ_water_low       | $(round(Float64(de_cal.μ_water_low),  digits = 5)) cm⁻¹ |
-    | μ_water_high      | $(round(Float64(de_cal.μ_water_high), digits = 5)) cm⁻¹ |
-
-    $(optim_block)
-
-    Synthesis equation:
-    `HU_E = HU_low + (a₀ + a₁·HU_low + a₂·HU_high) · (μρ_I(E)/μρ_water(E) − α_iod_low_cal)`
-    """
-    Markdown.parse(body)
+    function synth_vmi_2basis(c_water::AbstractArray{Float32, 3},
+                              c_iodine::AbstractArray{Float32, 3};
+                              energy_keV::Real,
+                              water_material  = BS.XA.Materials.water,
+                              iodine_material = BS.XA.Elements.Iodine)
+        size(c_water) == size(c_iodine) ||
+            error("synth_vmi_2basis: shapes must match")
+        μρ_w = BS.compute_mass_μ_at_energy(water_material,  Float64(energy_keV))
+        μρ_I = BS.compute_mass_μ_at_energy(iodine_material, Float64(energy_keV))
+        α_E  = Float32(μρ_I / μρ_w)
+        out  = similar(c_water)
+        @. out = 1.0f3 * (c_water - 1.0f0) + c_iodine * α_E
+        out
+    end
 end
+
+# ╔═╡ 0400000d-0000-4000-8000-000000000067
 
 # ╔═╡ 0400000e-0000-4000-8000-000000000005
 # z-direction denoising kwargs — play with these.
@@ -1203,23 +1002,391 @@ end
 # The Gammex 472 phantom is z-invariant in the rod cores, so larger radii
 # are essentially lossless there; aggressive defaults are fine.
 z_denoise_kwargs = (
-    radius = 3,    # 7-slice window
+    radius = 2,    # 7-slice window
 )
+
+# ╔═╡ 0400000f-0000-4000-8000-000000000001
+md"""
+## 13. VMI synthesis at 40 / 70 / 100 / 140 keV
+
+`synth_vmi_2basis` (inlined helper) per energy:
+
+```
+μ(E)  = c_water · μ_w_mono(E) + c_iodine · 1e-3 · μρ_I(E)
+HU(E) = 1000(c_water − 1) + c_iodine · α_phys(E)
+```
+
+with `α_phys(E) = μρ_I(E) / μρ_w(E)` from XrayAttenuation.
+Mathematically identical to the iodine-perturbation form `HU_low +
+c_iod·(α_phys(E) − α_low_cal)` once c_water is tied to HU_low via the
+algebraic identity in §12 — this just consumes both bases explicitly,
+which is the textbook 2-basis μ-domain VMI form.
+
+Standard four energies: 40 (max iodine contrast), 70 (≈ standard 120
+kVp), 100 (BH-robust), 140 keV (quasi-mono high-E reference).
+"""
+
+# ╔═╡ 0400000f-0000-4000-8000-000000000010
+de_vmi_energies = [40.0, 70.0, 100.0, 140.0];
+
+# ╔═╡ 04000010-0000-4000-8000-000000000001
+
+# ╔═╡ 04000011-0000-4000-8000-000000000001
+
+# ╔═╡ 04000012-0000-4000-8000-000000000001
+
+# ╔═╡ 04000013-0000-4000-8000-000000000001
+
+# ╔═╡ 04000014-0000-4000-8000-000000000001
+
+# ╔═╡ 7b51f797-15cc-408d-a7a8-2fdb8df3f5ba
+# 2-basis BFGS calibration knobs — fits θ_I (Ding-style, linear or RQ)
+# + α_low_cal jointly to minimize HU error vs theory across (rod × E).
+# Hyperparams match BasisSimulator nb03 §12 verbatim.  PCCT bins are
+# already polychromatic-aware via per-bin μ_water (no BHC needed) — that
+# is the ONLY difference from nb03's 80/140 kVp dual-source flow.
+#
+#   cal_form          ⇒ :linear (Ding-2012, 3 params for c_iodine + 1 α_low_cal) |
+#                       :rational_quadratic (Ding-2020, 8 params for c_iodine + 1 α_low_cal)
+#   max_iter, tol     ⇒ BFGS stopping criteria
+#   loss_metric       ⇒ :rmse (absolute HU error²) | :nrmse (relative, w/ floor)
+#   iodine_weight     ⇒ relative emphasis on the 7 iodine rods
+#   calcium_weight    ⇒ relative emphasis on the 7 calcium rods.  Ca rods can't
+#                       lie exactly on the 2-basis (W+I) manifold, but we still
+#                       include them so the (water, iodine) coefficients are
+#                       picked as the best COMPROMISE that ALSO fits Ca well.
+#   water_weight      ⇒ relative emphasis on the center-ROI water sample
+#   energy_weights    ⇒ paired with `de_vmi_energies` (40/70/100/140 keV)
+#   nrmse_floor       ⇒ HU floor for nrmse-loss denominator (unused for :rmse)
+optim_knob = (
+    cal_form       = :rational_quadratic,    # :linear | :rational_quadratic
+    max_iter       = 500,
+    tol            = 1.0e-9,
+    loss_metric    = :rmse,                  # :nrmse | :rmse
+    iodine_weight  = 1.0,
+    calcium_weight = 10.0,
+    water_weight   = 1.0,
+    energy_weights = (1.0, 1.0, 1.0, 1.0),   # ↔ (40, 70, 100, 140) keV
+    nrmse_floor    = 85.0,
+);
+
+# ╔═╡ 0400000d-0000-4000-8000-000000000074
+de_cal = let
+    cal_form = optim_knob.cal_form
+    cal_form in (:linear, :rational_quadratic) ||
+        error("optim_knob.cal_form must be :linear or :rational_quadratic, got $(cal_form)")
+    n_per = cal_form === :linear ? 3 : 8
+
+    # 1. Per-rod 8-px circular ROIs in xy (rods are z-invariant cylinders).
+    mask_2d = phantom_cpu.mask[:, :, size(phantom_cpu.mask, 3) ÷ 2]
+    nx, ny  = size(mask_2d)
+    ROI_R   = 8
+    r²      = Float64(ROI_R)^2
+
+    function _circular_roi(cx::Real, cy::Real)
+        roi = CartesianIndex{2}[]
+        i_lo = max(1, floor(Int, cx - ROI_R)); i_hi = min(nx, ceil(Int, cx + ROI_R))
+        j_lo = max(1, floor(Int, cy - ROI_R)); j_hi = min(ny, ceil(Int, cy + ROI_R))
+        for j in j_lo:j_hi, i in i_lo:i_hi
+            ((i - cx)^2 + (j - cy)^2) ≤ r² && push!(roi, CartesianIndex(i, j))
+        end
+        roi
+    end
+    function _rod_roi(label::UInt8)
+        idx = findall(==(label), mask_2d)
+        cx = sum(ci -> Float64(ci[1]), idx) / length(idx)
+        cy = sum(ci -> Float64(ci[2]), idx) / length(idx)
+        _circular_roi(cx, cy)
+    end
+    function _mean_HU(vol, roi)
+        s = 0.0; n = 0
+        for z in 1:size(vol, 3), ci in roi
+            s += vol[ci, z]; n += 1
+        end
+        s / n
+    end
+
+    # 2. All 14 Gammex rods + center-ROI water (mirrors nb03 §12).
+    rod_specs = (
+        ("Water",  UInt8(0),  0.0, :water),
+        ("Ca 50",  UInt8(10), 0.0, :calcium),
+        ("Ca 100", UInt8(11), 0.0, :calcium),
+        ("Ca 200", UInt8(12), 0.0, :calcium),
+        ("Ca 300", UInt8(13), 0.0, :calcium),
+        ("Ca 400", UInt8(14), 0.0, :calcium),
+        ("Ca 500", UInt8(15), 0.0, :calcium),
+        ("Ca 600", UInt8(16), 0.0, :calcium),
+        ("I 2.0",  UInt8(20), 2.0, :iodine),
+        ("I 2.5",  UInt8(21), 2.5, :iodine),
+        ("I 5.0",  UInt8(22), 5.0, :iodine),
+        ("I 7.5",  UInt8(23), 7.5, :iodine),
+        ("I 10.0", UInt8(24), 10.0, :iodine),
+        ("I 15.0", UInt8(25), 15.0, :iodine),
+        ("I 20.0", UInt8(26), 20.0, :iodine),
+    )
+
+    materials = phantom_cpu.materials
+    μ_water_E = Dict(
+        E => BS.compute_μ_at_energy(BS.XA.Materials.water, E)
+            for E in de_vmi_energies
+    )
+
+    rod_data = NamedTuple[]
+    for (name, lab, c_iod_known, kind) in rod_specs
+        roi = name == "Water" ?
+            _circular_roi(nx / 2 + 0.5, ny / 2 + 0.5) :
+            _rod_roi(lab)
+        material = name == "Water" ?
+            BS.XA.Materials.water :
+            materials[Int(lab) + 1]
+        HU_low_r  = _mean_HU(de_lohi_HU.vol_low_HU,  roi)
+        HU_high_r = _mean_HU(de_lohi_HU.vol_high_HU, roi)
+        HU_theo   = Float64[
+            let μ_r = BS.compute_μ_at_energy(material, E)
+                1000.0 * (μ_r - μ_water_E[E]) / μ_water_E[E]
+            end
+                for E in de_vmi_energies
+        ]
+        push!(rod_data, (
+            name = name, kind = kind, c_iod_known = c_iod_known,
+            HU_low = HU_low_r, HU_high = HU_high_r, HU_theo = HU_theo,
+        ))
+    end
+
+    # 3. α_phys(E) = μρ_I(E) / μρ_w(E) at each VMI energy.
+    α_phys_E = Float64[
+        BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine, E) /
+        BS.compute_mass_μ_at_energy(BS.XA.Materials.water,  E)
+            for E in de_vmi_energies
+    ]
+
+    N = length(rod_data)
+    M = length(de_vmi_energies)
+
+    # Per-(rod, energy) loss weight.
+    rod_family_w = [
+        r.kind == :iodine  ? Float64(optim_knob.iodine_weight)  :
+        r.kind == :calcium ? Float64(optim_knob.calcium_weight) :
+                             Float64(optim_knob.water_weight)
+            for r in rod_data
+    ]
+    e_weights   = collect(Float64.(optim_knob.energy_weights))
+    nrmse_floor = Float64(optim_knob.nrmse_floor)
+    loss_metric = optim_knob.loss_metric
+    loss_metric in (:nrmse, :rmse) ||
+        error("optim_knob.loss_metric must be :nrmse or :rmse, got $(loss_metric)")
+    function _w(r_idx, e_idx)
+        base = rod_family_w[r_idx] * e_weights[e_idx]
+        if loss_metric == :rmse
+            base
+        else
+            ht = rod_data[r_idx].HU_theo[e_idx]
+            base / max(abs(ht), nrmse_floor)^2
+        end
+    end
+
+    # 4. Init: c_iodine LSQ on iodine + water rods + α_low_cal from
+    # iodine-rod slope-through-origin in HU_low.  RQ form pads a₃..a₅,
+    # b₁, b₂ with zeros so the initial fit reduces to linear Ding-2012.
+    iod_water_idx = findall(r -> r.kind in (:iodine, :water), rod_data)
+    fit_init = BS.fit_ding_coeffs(
+        [rod_data[i].HU_low      for i in iod_water_idx],
+        [rod_data[i].HU_high     for i in iod_water_idx],
+        [rod_data[i].c_iod_known for i in iod_water_idx],
+    )
+    θ_I0_lin   = Float64.(fit_init.coeffs)
+    α_low_init = Float64(fit_init.α_low)
+    if cal_form === :linear
+        params0 = vcat(θ_I0_lin, α_low_init)
+    else  # :rational_quadratic — pad a₃..a₅, b₁, b₂ with zeros
+        params0 = vcat(θ_I0_lin, zeros(5), α_low_init)
+    end
+
+    # 5. Joint BFGS over [θ_I; α_low_cal].
+    #
+    # Synth (mathematically identical to the textbook 2-basis form):
+    #   c_iod   = eval_cal(L, H, θ_I; form)            — Ding-style fit
+    #   c_water = 1 + (HU_low − α_low_cal · c_iod)/1000  (algebraic identity)
+    #   HU(E)   = 1000(c_water − 1) + c_iod · α_phys(E)
+    #         ≡ HU_low + c_iod · (α_phys(E) − α_low_cal)
+    #
+    # The c_water identity ties basis-fraction noise to ONE HU term
+    # (HU_low) instead of two — preserves the iodine-perturbation form's
+    # noise behavior while feeding the proper textbook 2-basis μ-domain
+    # synth in §13.
+    function loss_fn(params)
+        θ_I       = view(params, 1:n_per)
+        α_low_cal = params[n_per + 1]
+        total = 0.0
+        for r_idx in 1:N
+            L = rod_data[r_idx].HU_low
+            H = rod_data[r_idx].HU_high
+            c_iod = eval_cal(L, H, θ_I, cal_form)
+            for e_idx in 1:M
+                HU_pred = L + c_iod * (α_phys_E[e_idx] - α_low_cal)
+                ht      = rod_data[r_idx].HU_theo[e_idx]
+                resid   = HU_pred - ht
+                total  += _w(r_idx, e_idx) * resid^2
+            end
+        end
+        total
+    end
+
+    opt_options = Optim.Options(
+        iterations = optim_knob.max_iter,
+        f_abstol   = optim_knob.tol,
+        g_abstol   = optim_knob.tol,
+        x_abstol   = optim_knob.tol,
+    )
+    opt_result = Optim.optimize(loss_fn, params0, Optim.BFGS(), opt_options)
+    params_opt = Optim.minimizer(opt_result)
+    converged  = Optim.converged(opt_result)
+    n_iter     = Optim.iterations(opt_result)
+
+    θ_I       = params_opt[1:n_per]
+    α_low_cal = params_opt[n_per + 1]
+
+    # 6. Diagnostics — overall + per-family RMSE (water / iodine / calcium),
+    # iodine c_iodine RMS at optimum.  Per-family breakdown is the honest
+    # read on how the W+I 2-basis compromise fares on Ca (which it can't
+    # represent exactly, but still drives the fit to be Ca-robust).
+    sq_rel, sq_abs, n_pairs = 0.0, 0.0, 0
+    sq_per_kind = Dict(:water => 0.0, :iodine => 0.0, :calcium => 0.0)
+    n_per_kind  = Dict(:water => 0,   :iodine => 0,   :calcium => 0)
+    sq_c_iod, n_iod_pairs = 0.0, 0
+    for r_idx in 1:N
+        L = rod_data[r_idx].HU_low
+        H = rod_data[r_idx].HU_high
+        c_iod = eval_cal(L, H, θ_I, cal_form)
+        kind  = rod_data[r_idx].kind
+        for e_idx in 1:M
+            HU_pred = L + c_iod * (α_phys_E[e_idx] - α_low_cal)
+            ht      = rod_data[r_idx].HU_theo[e_idx]
+            resid   = HU_pred - ht
+            sq_rel  += (resid / max(abs(ht), nrmse_floor))^2
+            sq_abs  += resid^2
+            sq_per_kind[kind] += resid^2
+            n_per_kind[kind]  += 1
+            n_pairs += 1
+        end
+        if kind == :iodine
+            sq_c_iod    += (c_iod - rod_data[r_idx].c_iod_known)^2
+            n_iod_pairs += 1
+        end
+    end
+    nrmse_HU     = sqrt(sq_rel / n_pairs)
+    rmse_HU      = sqrt(sq_abs / n_pairs)
+    rmse_water   = n_per_kind[:water]   > 0 ? sqrt(sq_per_kind[:water]   / n_per_kind[:water])   : NaN
+    rmse_iodine  = n_per_kind[:iodine]  > 0 ? sqrt(sq_per_kind[:iodine]  / n_per_kind[:iodine])  : NaN
+    rmse_calcium = n_per_kind[:calcium] > 0 ? sqrt(sq_per_kind[:calcium] / n_per_kind[:calcium]) : NaN
+    rms_c        = sqrt(sq_c_iod / max(n_iod_pairs, 1))
+
+    @info "[2-basis · cal_form=$(cal_form) · BFGS · loss=$(loss_metric)] $(converged ? "converged in" : "stopped at") $(n_iter) iter · α_low_cal = $(round(α_low_cal, digits = 3)) · RMSE_HU all = $(round(rmse_HU, digits = 1)) (W=$(round(rmse_water, digits = 1)) | I=$(round(rmse_iodine, digits = 1)) | Ca=$(round(rmse_calcium, digits = 1))) · nRMSE_HU = $(round(nrmse_HU, digits = 4)) · RMS_c (I rods) = $(round(rms_c, digits = 3)) mg/mL"
+
+    (
+        cal_form        = cal_form,
+        coeffs_iodine   = Float32.(θ_I),
+        α_iod_low_cal   = Float32(α_low_cal),
+        μ_water_low     = Float32(μ_water_per_bin.low),
+        μ_water_high    = Float32(μ_water_per_bin.high),
+        rms_c           = rms_c,
+        rod_names       = [r.name        for r in rod_data],
+        rod_HU_low      = [r.HU_low      for r in rod_data],
+        rod_HU_high     = [r.HU_high     for r in rod_data],
+        rod_c_iodine    = [r.c_iod_known for r in rod_data],
+        method          = :optimized_2basis,
+        n_iter          = n_iter,
+        converged       = converged,
+        loss_metric     = loss_metric,
+        nrmse_HU        = nrmse_HU,
+        rmse_HU         = rmse_HU,
+        rmse_HU_water   = rmse_water,
+        rmse_HU_iodine  = rmse_iodine,
+        rmse_HU_calcium = rmse_calcium,
+    )
+end;
+
+# ╔═╡ 0400000d-0000-4000-8000-000000000080
+let
+    rows = [
+        "| $(de_cal.rod_names[i]) | $(de_cal.rod_c_iodine[i]) | " *
+            "$(round(de_cal.rod_HU_low[i], digits = 1)) | " *
+            "$(round(de_cal.rod_HU_high[i], digits = 1)) |"
+            for i in eachindex(de_cal.rod_names)
+    ]
+
+    function fmt_coeffs(c, form)
+        if form === :linear
+            """
+            * **c_iodine = f_I(HU_low, HU_high)** — `:linear` (Ding-2012):
+                * a₀ = $(round(c[1], sigdigits = 4))
+                * a₁ = $(round(c[2], sigdigits = 4))
+                * a₂ = $(round(c[3], sigdigits = 4))
+            """
+        else
+            """
+            * **c_iodine = f_I(HU_low, HU_high)** — `:rational_quadratic` (Ding-2020):
+                * a₀..a₂ = $(round(c[1], sigdigits = 4)), $(round(c[2], sigdigits = 4)), $(round(c[3], sigdigits = 4))
+                * a₃..a₅ = $(round(c[4], sigdigits = 4)), $(round(c[5], sigdigits = 4)), $(round(c[6], sigdigits = 4))
+                * b₁, b₂ = $(round(c[7], sigdigits = 4)), $(round(c[8], sigdigits = 4))
+            """
+        end
+    end
+
+    body = """
+    **Calibration rods** — this run's `de_lohi_HU` (PCCT bins · RSKR + cupping, no BHC), 8-px core ROI per rod:
+
+    | Rod | c_iodine (mg/mL) | HU @ low bin | HU @ high bin |
+    |-----|------|------|------|
+    $(join(rows, "\n"))
+
+    **2-basis fit** ($(de_cal.method) · $(de_cal.converged ? "converged in" : "stopped at") $(de_cal.n_iter) iter · loss = `:$(de_cal.loss_metric)`):
+
+    $(fmt_coeffs(de_cal.coeffs_iodine, de_cal.cal_form))
+
+    * **α_iod_low_cal = $(round(de_cal.α_iod_low_cal, digits = 3))** (low-bin iodine HU/(mg/mL)) — c_water = `1 + (HU_low − α_low_cal · c_iodine)/1000` (algebraic, ties basis-fraction noise to one HU term)
+    * μ_water (low / high bin) = $(round(de_cal.μ_water_low, digits = 5)) / $(round(de_cal.μ_water_high, digits = 5)) cm⁻¹
+
+    **VMI HU error vs theory** (loss drove the fit; per-family is honest read on W+I-vs-Ca residual):
+
+    * **RMSE_HU all rods = $(round(de_cal.rmse_HU, digits = 1)) HU**, **nRMSE_HU = $(round(de_cal.nrmse_HU, digits = 4))**
+        * water    = $(round(de_cal.rmse_HU_water,   digits = 1)) HU
+        * iodine   = $(round(de_cal.rmse_HU_iodine,  digits = 1)) HU
+        * calcium  = $(round(de_cal.rmse_HU_calcium, digits = 1)) HU  *(W+I model can't represent Ca's K-edge structure exactly)*
+    * RMS error on c_iodine (iodine rods) = $(round(de_cal.rms_c, digits = 3)) mg/mL
+    """
+    Markdown.parse(body)
+end
 
 # ╔═╡ 0400000e-0000-4000-8000-000000000010
 de_decomp = let
-    α_low_f32 = Float32(de_cal.α_iod_low_cal)
-
-    # Raw decomposition outputs (per-voxel Ding + analytic c_water proxy)
-    c_iodine_raw = BS.apply_ding_decomp(
-        de_lohi_HU.vol_low_HU, de_lohi_HU.vol_high_HU, de_cal.coeffs
+    # Voxel-wise c_iodine via Ding fit (linear or rational_quadratic per
+    # de_cal.cal_form) — Path B preserved.
+    c_iodine_raw = apply_cal(
+        de_lohi_HU.vol_low_HU, de_lohi_HU.vol_high_HU,
+        de_cal.coeffs_iodine; form = de_cal.cal_form,
     )
-    c_water_raw  = @. (de_lohi_HU.vol_low_HU - α_low_f32 * c_iodine_raw) /
-                      1000.0f0 + 1.0f0
 
-    # z-direction denoise — both basis maps + the HU pair (the latter is
-    # what §13's VMI synth uses as its low-energy baseline; un-denoised
-    # HU_low leaks its noise into every output VMI).
+    # c_water from the algebraic identity that ties the synth to HU_low:
+    #   HU(E) = HU_low + c_iod·(α_phys(E) − α_low_cal)
+    #         ≡ 1000(c_water − 1) + c_iod·α_phys(E)
+    #   ⇒ c_water = 1 + (HU_low − α_low_cal·c_iodine)/1000
+    # ONE HU term carrying noise into c_water (vs two for an independent
+    # 2-coeff fit) → ~half the noise on water-rod c_water.
+    α_low_f32   = Float32(de_cal.α_iod_low_cal)
+    c_water_raw = @. 1.0f0 + (de_lohi_HU.vol_low_HU - α_low_f32 * c_iodine_raw) / 1000.0f0
+
+    # FOV mask: outside the recon circle, basis fits extrapolate wildly
+    # (esp. RQ form on air at HU ≈ -1000).  Force air voxels to
+    # c_iodine = 0, c_water = 0 → 2-basis synth gives HU(E) = -1000 (air)
+    # at every keV, and the §12b decomp display doesn't get a yellow
+    # halo from out-of-domain extrapolation.
+    BS.apply_fov_mask!(c_iodine_raw, de_lohi_HU.geom; sentinel_μ = 0.0f0)
+    BS.apply_fov_mask!(c_water_raw,  de_lohi_HU.geom; sentinel_μ = 0.0f0)
+
+    # z-direction denoise — both basis maps + the HU pair (the HU pair
+    # is carried for the §12b before/after figure; VMI synth consumes
+    # (c_water, c_iodine) directly).
     radius = z_denoise_kwargs.radius
     c_iodine    = BS.apply_median_z(c_iodine_raw;          radius = radius)
     c_water     = BS.apply_median_z(c_water_raw;           radius = radius)
@@ -1227,7 +1394,7 @@ de_decomp = let
     vol_high_HU = BS.apply_median_z(de_lohi_HU.vol_high_HU; radius = radius)
 
     (
-        # Raw — for the §12b before/after figure
+        # Raw (FOV-masked) — for the §12b before/after figure
         c_iodine_raw    = c_iodine_raw,
         c_water_raw     = c_water_raw,
         vol_low_HU_raw  = de_lohi_HU.vol_low_HU,
@@ -1242,42 +1409,27 @@ de_decomp = let
     )
 end;
 
-# ╔═╡ 0400000f-0000-4000-8000-000000000001
-md"""
-## 13. VMI synthesis at 40 / 70 / 100 / 140 keV
-
-[`BS.synth_vmi_image_domain`](@ref) implements
-```
-HU_E[v] = HU_low[v] + c_iodine[v] · (μρ_I(E)/μρ_water(E) − α_iod_low_cal)
-```
-where the calibration coefficients come from `de_cal` (loaded from
-`src/reconstruction/vmi/pcct_calibration.jl` per §12).
-"""
-
-# ╔═╡ 0400000f-0000-4000-8000-000000000010
-de_vmi_energies = [40.0, 70.0, 100.0, 140.0];
-
 # ╔═╡ 0400000f-0000-4000-8000-000000000020
 de_vmi_raw = let
+    # 2-basis (water + iodine) μ-domain VMI synth:
+    #   μ(E)  = c_water · μ_w_mono(E) + c_iodine · 1e-3 · μρ_I(E)
+    #   HU(E) = 1000(c_water − 1) + c_iodine · α_phys(E)
+    # Replaces the iodine-only perturbation `HU_E = HU_low + c_iod·Δα`.
     out = Dict{Float64, Array{Float32, 3}}()
     for E in de_vmi_energies
-        out[E] = BS.synth_vmi_image_domain(
-            de_decomp.vol_low_HU, de_decomp.c_iodine;
+        out[E] = synth_vmi_2basis(
+            de_decomp.c_water, de_decomp.c_iodine;
             energy_keV = E,
-            α_iod_low_cal = de_cal.α_iod_low_cal,
-            iodine_material = BS.XA.Elements.Iodine,
         )
     end
     out
 end;
 
-# ╔═╡ 04000010-0000-4000-8000-000000000001
-
-
 # ╔═╡ 04000010-0000-4000-8000-000000000010
 de_vmi_mono = let
     vols_in = [de_vmi_raw[E] for E in de_vmi_energies]
     σ_vec = Float64[1.0, 0.0, 1.0, 1.0]   # paired with de_vmi_energies
+    # σ_vec = Float64[0.0, 0.0, 0.0, 0.0]   # paired with de_vmi_energies
 
     ws = BS.create_mono_plus_workspace(vols_in[1]; n_energies = length(de_vmi_energies))
     res = BS.apply_mono_plus!(
@@ -1299,8 +1451,76 @@ de_vmi_mono = let
     out
 end;
 
-# ╔═╡ 04000011-0000-4000-8000-000000000001
+# ╔═╡ 04000010-0000-4000-8000-000000000020
+let
+    # Mean water HU per VMI energy — sanity check on the Mono+ output.
+    # 8-px-radius circular ROI at the volume center, safely inside the
+    # 50 mm Ca inner ring + 105 mm I outer ring, so the sample is pure
+    # solid water.  After the corrections + decomp + Mono+ pipeline,
+    # water should read ≈ 0 HU at every VMI energy by construction.
+    nx = size(de_vmi_mono[de_vmi_energies[1]], 1)
+    ny = size(de_vmi_mono[de_vmi_energies[1]], 2)
+    nz = size(de_vmi_mono[de_vmi_energies[1]], 3)
+    cx = nx / 2 + 0.5
+    cy = ny / 2 + 0.5
+    ROI_R = 8.0
 
+    roi = CartesianIndex{2}[]
+    r² = ROI_R^2
+    i_lo = max(1, floor(Int, cx - ROI_R)); i_hi = min(nx, ceil(Int, cx + ROI_R))
+    j_lo = max(1, floor(Int, cy - ROI_R)); j_hi = min(ny, ceil(Int, cy + ROI_R))
+    for j in j_lo:j_hi, i in i_lo:i_hi
+        ((i - cx)^2 + (j - cy)^2) ≤ r² && push!(roi, CartesianIndex(i, j))
+    end
+
+    function _mean_HU(vol)
+        s = 0.0; n = 0
+        for z in 1:nz, ci in roi
+            s += vol[ci, z]; n += 1
+        end
+        s / n
+    end
+
+    energies = de_vmi_energies
+    mean_HU  = [_mean_HU(de_vmi_mono[E]) for E in energies]
+
+    fig = CM.Figure(size = (900, 540))
+    ax = CM.Axis(
+        fig[1, 1];
+        title = "Mean water HU per VMI energy",
+        subtitle = "Mono+ post-processed · 8-px center ROI · target = 0 HU",
+        xlabel = "VMI energy (keV)", ylabel = "Mean HU",
+        xticks = (1:length(energies), ["$(Int(E))" for E in energies]),
+        titlesize = 32, subtitlesize = 24,
+        xlabelsize = 22, ylabelsize = 22,
+        xticklabelsize = 18, yticklabelsize = 16,
+    )
+
+    bar_colors = [
+        CM.RGBf(0.85, 0.32, 0.20),   # 40 keV — warm
+        CM.RGBf(0.92, 0.65, 0.20),
+        CM.RGBf(0.45, 0.65, 0.85),
+        CM.RGBf(0.20, 0.30, 0.65),   # 140 keV — cool
+    ]
+
+    CM.barplot!(
+        ax, 1:length(energies), Float64.(mean_HU);
+        color = bar_colors[1:length(energies)],
+        strokecolor = :black, strokewidth = 1,
+    )
+    CM.hlines!(ax, [0.0]; color = :black, linestyle = :dash, linewidth = 2)
+
+    for (i, hu) in enumerate(mean_HU)
+        CM.text!(ax, i, hu;
+            text = "$(round(hu, digits = 1)) HU",
+            align = (:center, hu < 0 ? :top : :bottom),
+            offset = (0, hu < 0 ? -4 : 4),
+            fontsize = 16,
+        )
+    end
+
+    fig
+end
 
 # ╔═╡ 04000011-0000-4000-8000-000000000010
 let
@@ -1340,9 +1560,6 @@ let
     fig
 end
 
-# ╔═╡ 04000012-0000-4000-8000-000000000001
-
-
 # ╔═╡ 04000012-0000-4000-8000-000000000010
 rod_data = let
     materials = phantom_cpu.materials
@@ -1378,56 +1595,6 @@ rod_data = let
     end
     out
 end;
-
-# ╔═╡ 04000012-0000-4000-8000-000000000020
-# Water readout per VMI keV — 8-px circular ROI at the phantom geometric
-# center on each post-Mono+ VMI volume.  Theoretical water HU is 0 by
-# definition, so any reading IS the residual.
-let
-    nx = size(de_vmi_mono[de_vmi_energies[1]], 1)
-    ny = size(de_vmi_mono[de_vmi_energies[1]], 2)
-    cx = nx / 2 + 0.5
-    cy = ny / 2 + 0.5
-    R = 8
-    water_roi = let
-        roi = CartesianIndex{2}[]
-        i_lo = max(1, floor(Int, cx - R)); i_hi = min(nx, ceil(Int, cx + R))
-        j_lo = max(1, floor(Int, cy - R)); j_hi = min(ny, ceil(Int, cy + R))
-        r² = Float64(R)^2
-        for j in j_lo:j_hi, i in i_lo:i_hi
-            ((i - cx)^2 + (j - cy)^2) ≤ r² && push!(roi, CartesianIndex(i, j))
-        end
-        roi
-    end
-
-    function _mean_at_water_roi(vol)
-        n_z = size(vol, 3)
-        s = 0.0; n = 0
-        for z in 1:n_z, ci in water_roi
-            s += vol[ci, z]; n += 1
-        end
-        return s / n
-    end
-
-    rows = String[]
-    for E in de_vmi_energies
-        hu = _mean_at_water_roi(de_vmi_mono[E])
-        push!(rows, "| $(Int(E)) keV | $(round(hu, digits = 2)) HU |")
-    end
-
-    body = """
-    **Water region — VMI HU per energy** (theoretical = 0 HU at all keV;
-    each entry is the residual after the full pipeline: synthesis → Mono+ → FOV mask).
-
-    | Energy | Water HU |
-    |---|---|
-    $(join(rows, "\n"))
-    """
-    Markdown.parse(body)
-end
-
-# ╔═╡ 04000013-0000-4000-8000-000000000001
-
 
 # ╔═╡ 04000013-0000-4000-8000-000000000010
 let
@@ -1501,14 +1668,52 @@ let
     fig
 end
 
-# ╔═╡ 04000014-0000-4000-8000-000000000001
+# ╔═╡ 04000012-0000-4000-8000-000000000020
+# Water readout per VMI keV — 8-px circular ROI at the phantom geometric
+# center on each post-Mono+ VMI volume.  Theoretical water HU is 0 by
+# definition, so any reading IS the residual.
+let
+    nx = size(de_vmi_mono[de_vmi_energies[1]], 1)
+    ny = size(de_vmi_mono[de_vmi_energies[1]], 2)
+    cx = nx / 2 + 0.5
+    cy = ny / 2 + 0.5
+    R = 8
+    water_roi = let
+        roi = CartesianIndex{2}[]
+        i_lo = max(1, floor(Int, cx - R)); i_hi = min(nx, ceil(Int, cx + R))
+        j_lo = max(1, floor(Int, cy - R)); j_hi = min(ny, ceil(Int, cy + R))
+        r² = Float64(R)^2
+        for j in j_lo:j_hi, i in i_lo:i_hi
+            ((i - cx)^2 + (j - cy)^2) ≤ r² && push!(roi, CartesianIndex(i, j))
+        end
+        roi
+    end
 
+    function _mean_at_water_roi(vol)
+        n_z = size(vol, 3)
+        s = 0.0; n = 0
+        for z in 1:n_z, ci in water_roi
+            s += vol[ci, z]; n += 1
+        end
+        return s / n
+    end
 
-# ╔═╡ 7b51f797-15cc-408d-a7a8-2fdb8df3f5ba
+    rows = String[]
+    for E in de_vmi_energies
+        hu = _mean_at_water_roi(de_vmi_mono[E])
+        push!(rows, "| $(Int(E)) keV | $(round(hu, digits = 2)) HU |")
+    end
 
+    body = """
+    **Water region — VMI HU per energy** (theoretical = 0 HU at all keV;
+    each entry is the residual after the full pipeline: synthesis → Mono+ → FOV mask).
 
-# ╔═╡ 82f8e413-935f-4823-99cb-23467cfba6eb
-
+    | Energy | Water HU |
+    |---|---|
+    $(join(rows, "\n"))
+    """
+    Markdown.parse(body)
+end
 
 # ╔═╡ 04000014-0000-4000-8000-000000000010
 let
@@ -1821,6 +2026,7 @@ acquisition's rod HUs.
 # ╠═0400000d-0000-4000-8000-000000000050
 # ╠═0400000d-0000-4000-8000-000000000060
 # ╟─0400000d-0000-4000-8000-000000000063
+# ╠═04000011-0000-4000-8000-000000000050
 # ╠═0400000d-0000-4000-8000-000000000067
 # ╠═0400000d-0000-4000-8000-000000000074
 # ╟─0400000d-0000-4000-8000-000000000080
@@ -1831,6 +2037,7 @@ acquisition's rod HUs.
 # ╠═0400000f-0000-4000-8000-000000000020
 # ╟─04000010-0000-4000-8000-000000000001
 # ╠═04000010-0000-4000-8000-000000000010
+# ╟─04000010-0000-4000-8000-000000000020
 # ╟─04000011-0000-4000-8000-000000000001
 # ╟─04000011-0000-4000-8000-000000000010
 # ╟─04000012-0000-4000-8000-000000000001
@@ -1840,7 +2047,6 @@ acquisition's rod HUs.
 # ╟─04000013-0000-4000-8000-000000000010
 # ╟─04000014-0000-4000-8000-000000000001
 # ╠═7b51f797-15cc-408d-a7a8-2fdb8df3f5ba
-# ╠═82f8e413-935f-4823-99cb-23467cfba6eb
 # ╟─04000014-0000-4000-8000-000000000010
 # ╟─04000015-0000-4000-8000-000000000001
 # ╟─04000015-0000-4000-8000-000000000010

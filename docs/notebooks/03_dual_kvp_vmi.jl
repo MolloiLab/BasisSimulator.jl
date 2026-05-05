@@ -1133,8 +1133,8 @@ optim_knob = (
     tol            = 1.0e-9,
     loss_metric    = :rmse,                  # :nrmse | :rmse
     iodine_weight  = 1.0,
-    calcium_weight = 1.0,
-    water_weight   = 3.0,
+    calcium_weight = 0.1,
+    water_weight   = 1.0,
     energy_weights = (1.0, 1.0, 1.0, 1.0),   # ↔ (40, 70, 100, 140) keV
     nrmse_floor    = 100.0,
 );
