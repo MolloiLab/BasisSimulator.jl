@@ -468,18 +468,42 @@ mutable struct EICTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:Abstr
 end
 
 """
-    create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom; T=Float32, materials=nothing)
+    create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
+                          T=Float32, materials=nothing,
+                          spectrum_override=nothing)
 
 Create a pre-allocated workspace for zero-allocation EICT single-kVp `simulate!()`.
+
+# Keyword arguments
+- `spectrum_override::Union{Nothing, Tuple{Vector{Float64}, Vector{Float64}}} = nothing` —
+  bypass the polychromatic IPEM lookup and use a custom `(energies, weights)` pair
+  for the source spectrum.  Set to e.g. `([70.0], [1.0])` for a monoenergetic 70 keV
+  beam.  When `nothing` (default), the spectrum is loaded from the IPEM tables via
+  `resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner)`.
+
+  When supplied, `protocol.kVp` is still used by downstream flux calibration
+  (`compute_detector_I0`) and by the bowtie filter (which evaluates its
+  attenuation at the override's actual energy grid, so the bowtie still applies
+  correctly).  See `docs/notebooks/03b_dual_kvp_monoe.jl` for an example.
 """
 function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
                                 T::Type{<:AbstractFloat}=Float32,
-                                materials::Union{Nothing, Vector}=nothing)
+                                materials::Union{Nothing, Vector}=nothing,
+                                spectrum_override::Union{Nothing, Tuple{Vector{Float64}, Vector{Float64}}}=nothing)
     # Geometry
     geom = CTGeometry(scanner; n_angles=protocol.views, fov_cm=recon_opts.fov_cm, z_cm=recon_opts.z_cm, collimation_mm=protocol.collimation_mm)
 
-    # Spectrum (pass scanner for IPEM pipeline)
-    energies, weights_vec = resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner=scanner)
+    # Spectrum — IPEM polychromatic by default; spectrum_override lets a
+    # caller inject a custom (energies, weights) pair (e.g. `([70.0], [1.0])`
+    # for a monoenergetic 70 keV beam).
+    energies, weights_vec = if spectrum_override === nothing
+        resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner=scanner)
+    else
+        e_override, w_override = spectrum_override
+        length(e_override) == length(w_override) ||
+            error("create_eict_workspace: spectrum_override (energies, weights) must have matching length, got $(length(e_override)) vs $(length(w_override))")
+        copy(e_override), copy(w_override)
+    end
     n_energies = length(energies)
 
     # Physics config
