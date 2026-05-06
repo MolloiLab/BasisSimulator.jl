@@ -131,6 +131,76 @@ end
 
 
 # =============================================================================
+# Mixture builder
+# =============================================================================
+# Element tables for Z/A and Bethe mean-excitation, used so create_mixture can
+# synthesize an XA.Material from an arbitrary composition Dict (Z → mass
+# fraction) without depending on a precomputed `entries` vector.
+
+const _MIX_ATOMIC_MASS = Dict{Int,Float64}(
+    1=>1.008, 6=>12.011, 7=>14.007, 8=>15.999, 11=>22.990,
+    12=>24.305, 15=>30.974, 16=>32.06, 17=>35.45, 19=>39.098, 20=>40.078,
+    26=>55.845, 53=>126.904,
+)
+const _MIX_MEAN_EXCITATION_EV = Dict{Int,Float64}(
+    1=>19.2, 6=>81.0, 7=>82.0, 8=>95.0, 11=>149.0, 12=>156.0,
+    15=>173.0, 16=>180.0, 17=>174.0, 19=>190.0, 20=>191.0, 26=>286.0, 53=>491.0,
+)
+
+_zoa_ratio(comp::Dict{Int,Float64}) =
+    sum(w * Z / get(_MIX_ATOMIC_MASS, Z, Float64(Z)*2) for (Z, w) in comp) /
+    sum(values(comp))
+
+function _mean_excitation(comp::Dict{Int,Float64})
+    log_I = sum(w * (Z / get(_MIX_ATOMIC_MASS, Z, Float64(Z)*2)) *
+                log(get(_MIX_MEAN_EXCITATION_EV, Z, 10.0*Z)) for (Z, w) in comp)
+    z_a   = sum(w * (Z / get(_MIX_ATOMIC_MASS, Z, Float64(Z)*2)) for (Z, w) in comp)
+    exp(log_I / z_a) * u"eV"
+end
+
+"""
+    create_mixture(materials, fractions; by_volume=true, name="mixture") -> XA.Material
+
+Mix `materials` by volume (default) or mass fractions; fractions must sum to 1.
+"""
+function create_mixture(
+    materials::Vector{<:XA.Material},
+    fractions::Vector{Float64};
+    by_volume::Bool=true,
+    name::String="mixture",
+)::XA.Material
+    length(materials) == length(fractions) ||
+        throw(ArgumentError("create_mixture: length(materials)=$(length(materials)) != length(fractions)=$(length(fractions))"))
+    isapprox(sum(fractions), 1.0; atol=1e-6) ||
+        throw(ArgumentError("create_mixture: fractions must sum to 1.0 (got $(sum(fractions)))"))
+
+    densities    = [ustrip(u"g/cm^3", m.density) for m in materials]
+    compositions = [m.composition for m in materials]
+
+    if by_volume
+        ρ_mix      = sum(fractions .* densities)
+        masses     = fractions .* densities
+        mass_fracs = masses ./ sum(masses)
+    else
+        mass_fracs = fractions
+        ρ_mix      = 1.0 / sum(fractions ./ densities)
+    end
+
+    elements = Dict{Int, Float64}()
+    for (i, comp) in enumerate(compositions)
+        for (Z, wf) in comp
+            elements[Z] = get(elements, Z, 0.0) + mass_fracs[i] * wf
+        end
+    end
+    s    = sum(values(elements))
+    comp = Dict{Int,Float64}(Z => w/s for (Z, w) in elements)
+
+    return XA.Material(name, _zoa_ratio(comp), _mean_excitation(comp),
+                       ρ_mix * u"g/cm^3", comp)
+end
+
+
+# =============================================================================
 # Exports
 # =============================================================================
 
@@ -139,3 +209,4 @@ export I_2_0, I_2_5, I_5_0, I_7_5, I_10_0, I_15_0, I_20_0
 export solid_water
 export get_material, MATERIALS_REGISTRY
 export get_region_materials
+export create_mixture
