@@ -27,20 +27,22 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
             thumbnail = "xcat_fbp_vs_hir.png",
             tags      = ["EICT", "FBP", "Hybrid IR", "XCAT"],
         ),
-        "03_dual_kvp_vmi" => (
+        "03_dual_kvp_switching_vmi" => (
             index     = "03",
-            title     = "Dual-kVp VMI on Gammex 472",
-            summary   = "Image-domain dual-energy pipeline (Ding 2012) — RSKR joint denoise, " *
-                        "clinical-calibrated decomposition, Mono+ VMI at 40/70/100/140 keV, " *
-                        "verified per-rod against XrayAttenuation theory.",
+            title     = "Dual-kVp Switching VMI on Gammex 472",
+            summary   = "Fully projection-domain dual-energy pipeline on a GE Apex Elite GSI — " *
+                        "joint sinogram SVD denoiser → bowtie-aware Cong material decomposition → " *
+                        "FBP → z-median → Mono+ VMI at 40/70/100/140 keV, verified per-rod against " *
+                        "XrayAttenuation theory.",
             thumbnail = "vmi_regression.png",
             tags      = ["EICT", "Dual-kVp", "VMI", "Mono+"],
         ),
         "04_pcct_vmi" => (
             index     = "04",
             title     = "PCCT VMI on Gammex 472",
-            summary   = "Photon-counting CT image-domain pipeline on a Siemens Naeotom Alpha — " *
-                        "4-bin sim → low/high recombine → RSKR-2ch denoise → self-cal Ding decomp → " *
+            summary   = "Fully projection-domain photon-counting CT pipeline on a Siemens Naeotom " *
+                        "Alpha — 4-bin sim → 4-channel SVD denoiser → bin combine → calibrated " *
+                        "polynomial material decomposition (Alvarez-Macovski) → FBP → z-median → " *
                         "Mono+ VMI at 40/70/100/140 keV, verified per-rod against XrayAttenuation theory.",
             thumbnail = "pcct_vmi_vs_theoretical.png",
             tags      = ["PCCT", "Naeotom Alpha", "VMI", "Mono+"],

@@ -13,7 +13,7 @@ function _notebook_display_title(slug::AbstractString)
     overrides = Dict(
         "01_five_struct_api"        => "01 · The Five-Struct API",
         "02_xcat_custom_materials"  => "02 · XCAT Phantom + Custom Materials",
-        "03_dual_kvp_vmi"           => "03 · Dual-kVp VMI on Gammex 472",
+        "03_dual_kvp_switching_vmi" => "03 · Dual-kVp Switching VMI on Gammex 472",
         "04_pcct_vmi"               => "04 · PCCT VMI on Gammex 472",
         "05_xcat_grid_to_recon"     => "05 · XCAT UHR → CT Scan: Affine Round-Trip",
         "06_catsim_vs_basissim"     => "06 · CatSim vs BasisSimulator (CPU + GPU)",

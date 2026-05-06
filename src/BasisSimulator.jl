@@ -257,6 +257,13 @@ include("reconstruction/vmi/median_filter.jl")
 # denoiser (Clark/Badea 2023).  2-channel + 4-channel variants.
 include("reconstruction/vmi/rskr.jl")
 
+# N-channel projection-domain SVD joint denoiser — per-row SVD + 2D
+# Gaussian on U[:, 2..N] residual components.  Works on any set of
+# co-registered sinogram channels (dual-kVp pairs, PCCT bin sets, …).
+# Inspired by RSKR's signal/noise SV split (see comment in
+# `denoising/sino_svd.jl` for the comparison).
+include("denoising/sino_svd.jl")
+
 # Phantom-mask helpers — recon-space resample + FFT-Gaussian erosion.
 # Used by Mono+ phantom_mask kwarg + edge-mask post-processing.
 include("reconstruction/vmi/phantom_mask.jl")
