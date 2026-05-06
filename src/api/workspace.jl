@@ -474,12 +474,22 @@ Create a pre-allocated workspace for zero-allocation EICT single-kVp `simulate!(
 """
 function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
                                 T::Type{<:AbstractFloat}=Float32,
-                                materials::Union{Nothing, Vector}=nothing)
+                                materials::Union{Nothing, Vector}=nothing,
+                                spectrum_override::Union{Nothing,
+                                    Tuple{AbstractVector, AbstractVector}}=nothing)
     # Geometry
     geom = CTGeometry(scanner; n_angles=protocol.views, fov_cm=recon_opts.fov_cm, z_cm=recon_opts.z_cm, collimation_mm=protocol.collimation_mm)
 
-    # Spectrum (pass scanner for IPEM pipeline)
-    energies, weights_vec = resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner=scanner)
+    # Spectrum: bypass the IPEM kVp lookup when caller supplies (energies, weights)
+    # explicitly — used for monoenergetic and custom-spectrum studies.
+    energies, weights_vec = if spectrum_override === nothing
+        resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner=scanner)
+    else
+        e, w = spectrum_override
+        length(e) == length(w) ||
+            throw(ArgumentError("spectrum_override: length(energies)=$(length(e)) != length(weights)=$(length(w))"))
+        Vector{Float64}(e), Vector{Float64}(w)
+    end
     n_energies = length(energies)
 
     # Physics config
