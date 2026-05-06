@@ -13,6 +13,9 @@ using Markdown: @md_str, Markdown
 # ╔═╡ 05000001-0000-4000-8000-000000000003
 using Statistics: mean, std, quantile
 
+# ╔═╡ 05000001-0000-4000-8000-000000000004
+using LinearAlgebra: svd, Diagonal
+
 # ╔═╡ 05000001-0000-4000-8000-000000000010
 md"""
 # 03b · Dual-kVp VMI — projection-domain decomposition
@@ -73,8 +76,8 @@ import CairoMakie as CM
 begin
     GPU_BACKEND = let
         candidates = [
-            (:Metal,  "dde4c033-4e86-420c-a63e-0dd931031962", :MtlArray),
-            (:CUDA,   "052768ef-5323-5732-b1bb-66c8b64840ba", :CuArray),
+            (:Metal, "dde4c033-4e86-420c-a63e-0dd931031962", :MtlArray),
+            (:CUDA, "052768ef-5323-5732-b1bb-66c8b64840ba", :CuArray),
             (:AMDGPU, "21141c5a-9bdb-4563-92ae-f87d6854732e", :ROCArray),
         ]
         detected = (name = "CPU", to_gpu = identity)
@@ -110,8 +113,8 @@ md"""
 phantom_cpu = BS.create_gammex_472(
     n_voxels = 512,
     n_slices = 16,
-    fov_cm   = 35.0,
-    z_cm     = 1.0,
+    fov_cm = 35.0,
+    z_cm = 1.0,
 );
 
 # ╔═╡ 05000002-0000-4000-8000-000000000020
@@ -131,29 +134,29 @@ md"""
 # ╔═╡ 05000003-0000-4000-8000-000000000010
 scanner = BS.Scanner(
     source_to_isocenter = 625.6,
-    source_to_detector  = 1100.0,
+    source_to_detector = 1100.0,
 
-    detector_rows     = 256,
-    detector_cols     = 834,
+    detector_rows = 256,
+    detector_cols = 834,
     detector_row_size = 0.625,
     detector_col_size = 0.6,
-    detector_shape    = BS.CURVED_DETECTOR,
+    detector_shape = BS.CURVED_DETECTOR,
 
-    focal_spot_width  = 1.0,
+    focal_spot_width = 1.0,
     focal_spot_length = 1.0,
-    target_angle      = 10.0,
+    target_angle = 10.0,
 
-    flat_filter_material  = :aluminum,
+    flat_filter_material = :aluminum,
     flat_filter_thickness = 2.5,
-    bowtie_filter         = :ge_revolution_large,
+    bowtie_filter = :ge_revolution_large,
 
     detector_material = :lumex,
-    detector_depth    = 3.0,
-    fill_factor_row   = 0.9,
-    fill_factor_col   = 0.9,
+    detector_depth = 3.0,
+    fill_factor_row = 0.9,
+    fill_factor_col = 0.9,
 
     electronic_noise = 0,
-    detection_gain   = 10.0,
+    detection_gain = 10.0,
 );
 
 # ╔═╡ 05000004-0000-4000-8000-000000000001
@@ -169,7 +172,7 @@ md"""
 # ╔═╡ 05000004-0000-4000-8000-000000000010
 protocol_low = BS.CTProtocol(
     kVp = 80,
-    mA  = 407 * 0.65,
+    mA = 407 * 0.65,
     views = 984,
     rotation_time = 0.5,
     collimation_mm = 5.0,
@@ -179,7 +182,7 @@ protocol_low = BS.CTProtocol(
 # ╔═╡ 05000004-0000-4000-8000-000000000020
 protocol_high = BS.CTProtocol(
     kVp = 140,
-    mA  = 405 * 0.35,
+    mA = 405 * 0.35,
     views = 984,
     rotation_time = 0.5,
     collimation_mm = 5.0,
@@ -194,7 +197,7 @@ md"""
 # ╔═╡ 05000005-0000-4000-8000-000000000010
 sim_opts = BS.SimOptions(
     fidelity = :eict,
-    seed     = 1234,
+    seed = 1234,
 );
 
 # ╔═╡ 05000005-0000-4000-8000-000000000020
@@ -202,11 +205,11 @@ recon_opts = let
     slice_thickness_mm = 0.625
     n_recon_slices = round(Int, 5.0 / slice_thickness_mm)
     BS.ReconOptions(
-        algorithm   = :fdk,
+        algorithm = :fdk,
         matrix_size = (512, 512, n_recon_slices),
-        fov_cm      = 35.0,
-        z_cm        = 0.5,
-        filter      = :standard,
+        fov_cm = 35.0,
+        z_cm = 0.5,
+        filter = :standard,
     )
 end;
 
@@ -250,8 +253,8 @@ let
     mid_r = n_row ÷ 2 + 1
 
     # sino layout is (n_col, n_row, n_view); transpose so heatmap x = view, y = col
-    slice_lo  = permutedims(sim_low.sino[:,  mid_r, :], (2, 1))
-    slice_hi  = permutedims(sim_high.sino[:, mid_r, :], (2, 1))
+    slice_lo = permutedims(sim_low.sino[:, mid_r, :], (2, 1))
+    slice_hi = permutedims(sim_high.sino[:, mid_r, :], (2, 1))
 
     # Dynamic shared range across both kVps — q1/q99 percentile clipping
     all_v = vcat(vec(slice_lo), vec(slice_hi))
@@ -264,7 +267,7 @@ let
     title_kwargs = (titlesize = 24, subtitlesize = 16)
 
     panels = (
-        (1, 1, "80 kVp",  "raw line-integral sinogram", slice_lo),
+        (1, 1, "80 kVp", "raw line-integral sinogram", slice_lo),
         (1, 2, "140 kVp", "raw line-integral sinogram", slice_hi),
     )
 
@@ -282,41 +285,116 @@ end
 
 # ╔═╡ 05000007-0000-4000-8000-000000000001
 md"""
-## 6. Sinogram-domain RSKR-equivalent denoising
+## 6. Sinogram-domain joint denoiser — RSKR-inspired SVD split
 
-**TODO** — passthrough.
+The 80 + 140 kVp sinograms are tightly correlated by physics — same
+view angles, same anatomy traced by the Radon transform, same geometry.
+They differ in amplitude, material-specific ratio, and noise.
 
-The image-domain RSKR-2ch (Clark/Badea 2023) joint-bilateral-filters two
-co-registered volumes using shared structure as a guide.  The
-projection-domain analog operates on `(sino_low, sino_high)` pairs
-**ray-by-ray**: same view angles + geometry + anatomy, similar edge
-structure across kVps, so the same joint-bilateral logic should drop
-per-pixel kVp-uncorrelated quantum noise without smearing edges.
+We use **RSKR's first move** (Clark/Badea 2023): a 2-channel SVD on the
+sinogram pair.  Stack `(vec(sino_low), vec(sino_high))` as a 2-column
+matrix `M` and decompose `M = U Σ V'`.  Then:
 
-Sketch of what to wire:
+* **U[:, 1]** — common log-attenuation structure (signal-dominated, both
+  channels share these edges).  **Left untouched.**
+* **U[:, 2]** — spectral residual (where iodine vs water *differ*) +
+  most of the **decorrelated quantum noise**.  This component is
+  noise-dominated at the pixel scale; the spectral structure lives at
+  larger scales and survives a small Gaussian.  **Smoothed** with a
+  separable 2D Gaussian in `(col, view)` space.
 
-1. Estimate per-channel σ via `BS.mad_haar_σ` on the sinogram-shaped array.
-2. Run `BS.joint_bf_2ch_gpu!` on `(sino_low, sino_high)` reshaped to
-   `(n_col, n_row, n_view)`.  May need to relax the kernel's neighborhood
-   assumption — sinogram pixels don't have isotropic spacing.
-3. Or — punt on adapting RSKR and try a separable wavelet-domain joint
-   denoise (BM4D-style), closer to clinical raw-data denoisers.
+Then reconstitute `M_denoised = U_denoised · diag(Σ) · V'` and unpack
+the two columns back into `sino_low` and `sino_high`.
 
-For now the cell returns the inputs verbatim, and §6b is the same
-visualization as §5b — just spelled differently in the table footer.
+**Memory-aware:** SVD is done **per detector row** (each row is
+independent — the Radon transform is row-independent).  Each row's
+2-column matrix is ~6 MB; tiny SVD, threaded across rows.
+
+**One knob:** `SINO_DENOISE_σ_PX` — Gaussian σ in pixels for the noise
+component.  σ ≈ 1–2 px keeps rod-scale spectral structure intact while
+killing pixel-scale noise.  σ = 0 skips smoothing (passthrough).
+
+Compared to §5b above, this cell's output (fed into Cong) should show
+visibly less quantum speckle in both kVps without altering the dominant
+attenuation pattern.
 """
+
+# ╔═╡ 05000007-0000-4000-8000-000000000005
+SINO_DENOISE_σ_PX = 1.5;   # only knob — Gaussian σ on the SVD noise component
 
 # ╔═╡ 05000007-0000-4000-8000-000000000010
 sino_denoised = let
-    sino_low_f32  = Float32.(sim_low.sino)
-    sino_high_f32 = Float32.(sim_high.sino)
+    sz = size(sim_low.sino)
+    n_col, n_row, n_view = sz
 
-    # TODO — joint sinogram-domain RSKR-2ch goes here.  Identity for now.
-    (
-        low  = sino_low_f32,
-        high = sino_high_f32,
-        geom = sim_low.geom,
-    )
+    σ = Float64(SINO_DENOISE_σ_PX)
+    if σ ≤ 0
+        @info "sino_denoised: σ = $(σ) — passthrough (no SVD denoising)"
+        sino_low_f32 = Float32.(sim_low.sino)
+        sino_high_f32 = Float32.(sim_high.sino)
+        (low = sino_low_f32, high = sino_high_f32, geom = sim_low.geom)
+    else
+        # Pre-build separable 1D Gaussian kernel (truncate at 3σ)
+        radius = max(1, ceil(Int, 3σ))
+        ks = Float32[exp(-(k^2) / (2σ^2)) for k in -radius:radius]
+        ks ./= sum(ks)
+
+        # Separable 2D Gaussian on a (n_col × n_view) plane: col-pass then view-pass
+        function _smooth_2d(slice2d::AbstractMatrix{Float32})
+            nc, nv = size(slice2d)
+            tmp = Matrix{Float32}(undef, nc, nv)
+            out = Matrix{Float32}(undef, nc, nv)
+            @inbounds for v in 1:nv, c in 1:nc
+                s = 0.0f0; w = 0.0f0
+                for (i, dk) in enumerate(-radius:radius)
+                    c2 = c + dk
+                    (1 <= c2 <= nc) || continue
+                    s += ks[i] * slice2d[c2, v]; w += ks[i]
+                end
+                tmp[c, v] = s / w
+            end
+            @inbounds for v in 1:nv, c in 1:nc
+                s = 0.0f0; w = 0.0f0
+                for (i, dk) in enumerate(-radius:radius)
+                    v2 = v + dk
+                    (1 <= v2 <= nv) || continue
+                    s += ks[i] * tmp[c, v2]; w += ks[i]
+                end
+                out[c, v] = s / w
+            end
+            return out
+        end
+
+        sino_low_d = Array{Float32}(undef, sz)
+        sino_high_d = Array{Float32}(undef, sz)
+
+        Threads.@threads for r in 1:n_row
+            slice_lo = Float32.(@view sim_low.sino[:, r, :])
+            slice_hi = Float32.(@view sim_high.sino[:, r, :])
+
+            # Per-row 2-channel SVD (matrix is (n_col*n_view) × 2 → tiny).
+            M = hcat(vec(slice_lo), vec(slice_hi))
+            F = svd(M; full = false)
+            U_signal = F.U[:, 1]
+            U_noise = F.U[:, 2]
+            Σ = F.S; V = F.V
+
+            # Smooth ONLY the noise-dominated SV in (col, view) plane.
+            U_noise_smooth = vec(_smooth_2d(reshape(copy(U_noise), n_col, n_view)))
+
+            # Reconstitute the denoised channel pair.
+            U_d = hcat(U_signal, U_noise_smooth)
+            M_d = U_d * Diagonal(Σ) * V'
+
+            sino_low_d[:, r, :] .= reshape(view(M_d, :, 1), n_col, n_view)
+            sino_high_d[:, r, :] .= reshape(view(M_d, :, 2), n_col, n_view)
+        end
+
+        @info "sino_denoised: per-row 2-channel SVD + separable 2D Gaussian " *
+            "(σ = $(σ) px, radius = $(radius)) on noise component"
+
+        (low = sino_low_d, high = sino_high_d, geom = sim_low.geom)
+    end
 end;
 
 # ╔═╡ 05000007-0000-4000-8000-000000000020
@@ -329,7 +407,7 @@ let
     n_row = size(sino_denoised.low, 2)
     mid_r = n_row ÷ 2 + 1
 
-    slice_lo = permutedims(sino_denoised.low[:,  mid_r, :], (2, 1))
+    slice_lo = permutedims(sino_denoised.low[:, mid_r, :], (2, 1))
     slice_hi = permutedims(sino_denoised.high[:, mid_r, :], (2, 1))
 
     all_v = vcat(vec(slice_lo), vec(slice_hi))
@@ -342,7 +420,7 @@ let
     title_kwargs = (titlesize = 24, subtitlesize = 16)
 
     panels = (
-        (1, 1, "80 kVp",  "post-RSKR-passthrough", slice_lo),
+        (1, 1, "80 kVp", "post-RSKR-passthrough", slice_lo),
         (1, 2, "140 kVp", "post-RSKR-passthrough", slice_hi),
     )
 
@@ -388,37 +466,39 @@ material_basis = let
     ŵ_H_f32 = Float32.(ŵ_H ./ sum(ŵ_H; dims = ndims(ŵ_H)))
 
     iodine_mat = BS.XA.Elements.Iodine     # pure-element iodine basis
-    water_mat  = BS.XA.Materials.water     # H₂O compound water basis
+    water_mat = BS.XA.Materials.water     # H₂O compound water basis
 
     p_L = Float32[Float32(BS.compute_mass_μ_at_energy(iodine_mat, Float64(E))) for E in e_L]
-    q_L = Float32[Float32(BS.compute_mass_μ_at_energy(water_mat,  Float64(E))) for E in e_L]
+    q_L = Float32[Float32(BS.compute_mass_μ_at_energy(water_mat, Float64(E))) for E in e_L]
     p_H = Float32[Float32(BS.compute_mass_μ_at_energy(iodine_mat, Float64(E))) for E in e_H]
-    q_H = Float32[Float32(BS.compute_mass_μ_at_energy(water_mat,  Float64(E))) for E in e_H]
+    q_H = Float32[Float32(BS.compute_mass_μ_at_energy(water_mat, Float64(E))) for E in e_H]
 
-    (ŵ_L = ŵ_L_f32, p_L = p_L, q_L = q_L,
-     ŵ_H = ŵ_H_f32, p_H = p_H, q_H = q_H)
+    (
+        ŵ_L = ŵ_L_f32, p_L = p_L, q_L = q_L,
+        ŵ_H = ŵ_H_f32, p_H = p_H, q_H = q_H,
+    )
 end;
 
 # ╔═╡ 05000008-0000-4000-8000-000000000020
 sino_basis = let
-    sino_low_gpu  = to_gpu(sino_denoised.low)
+    sino_low_gpu = to_gpu(sino_denoised.low)
     sino_high_gpu = to_gpu(sino_denoised.high)
 
     sino_y = similar(sino_low_gpu)   # iodine basis line integrals
     sino_c = similar(sino_low_gpu)   # water  basis line integrals
-    fill!(sino_y, 0f0); fill!(sino_c, 0f0)
+    fill!(sino_y, 0.0f0); fill!(sino_c, 0.0f0)
 
     cong_ws = BS.create_cong_workspace(sino_low_gpu, material_basis)
     BS.apply_cong!(
         cong_ws, sino_y, sino_c, sino_low_gpu, sino_high_gpu;
-        water_basis = (a = 0f0, c = 1f0),
+        water_basis = (a = 0.0f0, c = 1.0f0),
     )
 
     result = (
         sino_iodine = Array(sino_y),
-        sino_water  = Array(sino_c),
-        sino_low    = sino_denoised.low,    # kept for HU calibration anchor
-        geom        = sino_denoised.geom,
+        sino_water = Array(sino_c),
+        sino_low = sino_denoised.low,    # kept for HU calibration anchor
+        geom = sino_denoised.geom,
     )
     sino_low_gpu = nothing; sino_high_gpu = nothing
     sino_y = nothing; sino_c = nothing; cong_ws = nothing
@@ -445,14 +525,18 @@ let
     )
 
     slice_iod = permutedims(sino_basis.sino_iodine[:, mid_r, :], (2, 1))
-    slice_wat = permutedims(sino_basis.sino_water[:,  mid_r, :], (2, 1))
+    slice_wat = permutedims(sino_basis.sino_water[:, mid_r, :], (2, 1))
 
     # (panel_col, cbar_col) — colorbar always immediately right of its panel
     panels = (
-        (1, 1, 2, "iodine basis sinogram", "∫ c_iodine(r) dr",
-            slice_iod, _qrange(slice_iod)),
-        (1, 3, 4, "water basis sinogram",  "∫ c_water(r) dr",
-            slice_wat, _qrange(slice_wat)),
+        (
+            1, 1, 2, "iodine basis sinogram", "∫ c_iodine(r) dr",
+            slice_iod, _qrange(slice_iod),
+        ),
+        (
+            1, 3, 4, "water basis sinogram", "∫ c_water(r) dr",
+            slice_wat, _qrange(slice_wat),
+        ),
     )
 
     for (r, panel_c, cbar_c, ttl, sub, slice, range) in panels
@@ -479,7 +563,7 @@ anchor.
 # ╔═╡ 05000009-0000-4000-8000-000000000010
 basis_volumes = let
     matrix_size = recon_opts.matrix_size
-    geom        = sino_basis.geom
+    geom = sino_basis.geom
 
     function _fbp(sino_cpu)
         sino_gpu = to_gpu(Float32.(sino_cpu))
@@ -489,14 +573,14 @@ basis_volumes = let
         recon = Array(BS.reconstruct!(ws, sino_gpu, geom, matrix_size))
         ws = nothing; sino_gpu = nothing
         GC.gc(true)
-        Float32.(recon)
+        return Float32.(recon)
     end
 
     (
         vol_iodine_raw = _fbp(sino_basis.sino_iodine),
-        vol_water_raw  = _fbp(sino_basis.sino_water),
-        vol_low_μ_raw  = _fbp(sino_basis.sino_low),
-        geom           = geom,
+        vol_water_raw = _fbp(sino_basis.sino_water),
+        vol_low_μ_raw = _fbp(sino_basis.sino_low),
+        geom = geom,
     )
 end;
 
@@ -517,15 +601,15 @@ let
         Float64(quantile(vec(arr), 0.99)),
     )
 
-    slice_iod  = basis_volumes.vol_iodine_raw[:, :, mid]
-    slice_wat  = basis_volumes.vol_water_raw[:,  :, mid]
-    slice_lokv = basis_volumes.vol_low_μ_raw[:,  :, mid]
+    slice_iod = basis_volumes.vol_iodine_raw[:, :, mid]
+    slice_wat = basis_volumes.vol_water_raw[:, :, mid]
+    slice_lokv = basis_volumes.vol_low_μ_raw[:, :, mid]
 
     # (row, panel_col, cbar_col, ...)
     panels = (
-        (1, 1, 2, "iodine basis", "FBP raw, g/cm³ × scale", slice_iod,  _qrange(slice_iod)),
-        (1, 3, 4, "water basis",  "FBP raw, g/cm³ × scale", slice_wat,  _qrange(slice_wat)),
-        (1, 5, 6, "low-kVp μ",    "FBP raw, cm⁻¹",          slice_lokv, _qrange(slice_lokv)),
+        (1, 1, 2, "iodine basis", "FBP raw, g/cm³ × scale", slice_iod, _qrange(slice_iod)),
+        (1, 3, 4, "water basis", "FBP raw, g/cm³ × scale", slice_wat, _qrange(slice_wat)),
+        (1, 5, 6, "low-kVp μ", "FBP raw, cm⁻¹", slice_lokv, _qrange(slice_lokv)),
     )
 
     for (r, panel_c, cbar_c, ttl, sub, slice, range) in panels
@@ -559,18 +643,24 @@ Bump `Z_MEDIAN_ADJACENT` to widen the window:
 """
 
 # ╔═╡ 0500000a-0000-4000-8000-000000000005
-Z_MEDIAN_ADJACENT = 3;
+Z_MEDIAN_ADJACENT = 2;
 
 # ╔═╡ 0500000a-0000-4000-8000-000000000010
 basis_z = let
     (
-        vol_iodine = BS.apply_median_z(basis_volumes.vol_iodine_raw;
-                                       adjacent_slices = Z_MEDIAN_ADJACENT),
-        vol_water  = BS.apply_median_z(basis_volumes.vol_water_raw;
-                                       adjacent_slices = Z_MEDIAN_ADJACENT),
-        vol_low_μ  = BS.apply_median_z(basis_volumes.vol_low_μ_raw;
-                                       adjacent_slices = Z_MEDIAN_ADJACENT),
-        geom       = basis_volumes.geom,
+        vol_iodine = BS.apply_median_z(
+            basis_volumes.vol_iodine_raw;
+            adjacent_slices = Z_MEDIAN_ADJACENT
+        ),
+        vol_water = BS.apply_median_z(
+            basis_volumes.vol_water_raw;
+            adjacent_slices = Z_MEDIAN_ADJACENT
+        ),
+        vol_low_μ = BS.apply_median_z(
+            basis_volumes.vol_low_μ_raw;
+            adjacent_slices = Z_MEDIAN_ADJACENT
+        ),
+        geom = basis_volumes.geom,
     )
 end;
 
@@ -591,14 +681,14 @@ let
         Float64(quantile(vec(arr), 0.99)),
     )
 
-    slice_iod  = basis_z.vol_iodine[:, :, mid]
-    slice_wat  = basis_z.vol_water[:,  :, mid]
-    slice_lokv = basis_z.vol_low_μ[:,  :, mid]
+    slice_iod = basis_z.vol_iodine[:, :, mid]
+    slice_wat = basis_z.vol_water[:, :, mid]
+    slice_lokv = basis_z.vol_low_μ[:, :, mid]
 
     panels = (
-        (1, 1, 2, "iodine basis", "z-median, g/cm³ × scale", slice_iod,  _qrange(slice_iod)),
-        (1, 3, 4, "water basis",  "z-median, g/cm³ × scale", slice_wat,  _qrange(slice_wat)),
-        (1, 5, 6, "low-kVp μ",    "z-median, cm⁻¹",          slice_lokv, _qrange(slice_lokv)),
+        (1, 1, 2, "iodine basis", "z-median, g/cm³ × scale", slice_iod, _qrange(slice_iod)),
+        (1, 3, 4, "water basis", "z-median, g/cm³ × scale", slice_wat, _qrange(slice_wat)),
+        (1, 5, 6, "low-kVp μ", "z-median, cm⁻¹", slice_lokv, _qrange(slice_lokv)),
     )
 
     for (r, panel_c, cbar_c, ttl, sub, slice, range) in panels
@@ -620,25 +710,23 @@ md"""
 For each VMI energy `E`:
 
 ```
-μ(E)              = c_water(r) · (μ/ρ)_water(E) + c_iodine(r) · (μ/ρ)_iodine(E)
-μ_water_anchor(E) = ⟨c_water⟩_SW · (μ/ρ)_water(E) + ⟨c_iodine⟩_SW · (μ/ρ)_iodine(E)
-HU(E)             = 1000 · (μ(E) − μ_water_anchor(E)) / μ_water_anchor(E)
+μ(E)  = c_water(r) · (μ/ρ)_water(E) + c_iodine(r) · (μ/ρ)_iodine(E)
+HU(E) = 1000 · (μ(E) − (μ/ρ)_water(E)) / (μ/ρ)_water(E)
 ```
 
 The numerator is the canonical 2-basis linear mix from McCollough 2015.
-The denominator is **measured from the recon's solid-water ROI** —
-synth-evaluated at energy `E` using the mean basis values
-`(⟨c_water⟩_SW, ⟨c_iodine⟩_SW)` over the phantom's solid-water region.
+The denominator is the **mono-energetic** linear attenuation of pure
+water at the target VMI energy from NIST tables (numerically equal to
+`(μ/ρ)_water(E)` since `ρ_water = 1 g/cm³`).
 
-Why not `μρ_water(E)` directly? Cong's polychromatic forward model
-uses the bowtie-aware source spectrum, but the simulator also applies
-detector η(E), pile-up, residual scatter, etc.  Those biases push
-`vol_water` in the SW background a few % below 1.0, and the textbook
-mono divisor undercalibrates HU at every keV.  Anchoring the divisor
-to the basis-decomp's *own* SW reading absorbs that bias — solid water
-reads 0 HU exactly at every VMI keV, and rod HU slopes vs theory
-recover.  Implicit phantom-size handling: the SW ROI has already seen
-phantom hardening / scatter / detector response baked into `basis_z`.
+The earlier draft used a "measured-from-SW-ROI" divisor as a calibration
+anchor to absorb upstream bias (Cong's basis spectra not including
+detector η, residual scatter, etc.).  After the §6 SVD denoiser landed,
+that bias collapsed to a near-constant ~3% across all VMI keVs (see the
+`solid_water_basis` diagnostic cell below) — i.e. the basis decomp is
+now accurate enough that the textbook analytical divisor works
+correctly.  We keep `solid_water_basis` purely as a **diagnostic** to
+monitor the residual SW-anchor-vs-mono drift.
 
 VMI grid: 40, 70, 100, 140 keV.
 """
@@ -654,15 +742,15 @@ solid_water_basis = let
 
     mask_2d_raw = phantom_cpu.mask[:, :, size(phantom_cpu.mask, 3) ÷ 2]
     sw_bool_raw = (mask_2d_raw .== UInt8(BS.REGION_SOLID_WATER))
-    sw_bool     = BS.erode_mask_2d(sw_bool_raw; erode_px = ERODE_PX)
+    sw_bool = BS.erode_mask_2d(sw_bool_raw; erode_px = ERODE_PX)
 
     n_raw = count(sw_bool_raw); n_eroded = count(sw_bool)
     n_eroded == 0 && error(
         "solid_water_basis: deep erosion (σ = $(ERODE_PX) px) wiped out the SW " *
-        "ROI (raw count = $(n_raw)).  Reduce erode_px or check phantom mask."
+            "ROI (raw count = $(n_raw)).  Reduce erode_px or check phantom mask."
     )
     @info "solid_water_basis: SW mid-slice voxel count $(n_raw) → $(n_eroded) " *
-          "after $(ERODE_PX)-px erosion"
+        "after $(ERODE_PX)-px erosion"
 
     sw_idx = findall(sw_bool)
     n_z = size(basis_z.vol_water, 3)
@@ -671,16 +759,18 @@ solid_water_basis = let
         for z in 1:n_z, ci in sw_idx
             s += vol[ci, z]; n += 1
         end
-        s / n
+        return s / n
     end
 
     c_w = Float64(_mean(basis_z.vol_water))
     c_i = Float64(_mean(basis_z.vol_iodine))
     @info "solid_water_basis: ⟨c_water⟩_SW = $(round(c_w, digits = 4)) g/cm³, " *
-          "⟨c_iodine⟩_SW = $(round(c_i, digits = 6)) g/cm³"
+        "⟨c_iodine⟩_SW = $(round(c_i, digits = 6)) g/cm³"
 
-    (c_water = c_w, c_iodine = c_i, n_voxels = length(sw_idx) * n_z,
-     mask_2d = collect(sw_bool))   # for downstream viz
+    (
+        c_water = c_w, c_iodine = c_i, n_voxels = length(sw_idx) * n_z,
+        mask_2d = collect(sw_bool),
+    )   # for downstream viz
 end;
 
 # ╔═╡ 0500000b-0000-4000-8000-000000000015
@@ -689,30 +779,27 @@ de_vmi_energies = [40.0, 70.0, 100.0, 140.0];
 # ╔═╡ 0500000b-0000-4000-8000-000000000020
 vmi_HU_by_keV = let
     iodine_mat = BS.XA.Elements.Iodine
-    water_mat  = BS.XA.Materials.water
+    water_mat = BS.XA.Materials.water
 
     out = Dict{Float64, Array{Float32, 3}}()
     for E in de_vmi_energies
-        μρ_w = Float32(BS.compute_mass_μ_at_energy(water_mat,  E))
+        μρ_w = Float32(BS.compute_mass_μ_at_energy(water_mat, E))
         μρ_I = Float32(BS.compute_mass_μ_at_energy(iodine_mat, E))
-        μ_E  = @. basis_z.vol_water * μρ_w + basis_z.vol_iodine * μρ_I
+        μ_E = @. basis_z.vol_water * μρ_w + basis_z.vol_iodine * μρ_I
 
-        # Phantom-aware HU divisor — synth at the SW ROI's measured basis means.
+        # Diagnostic: SW-ROI measured anchor vs textbook mono divisor.
+        # Used to be the actual divisor; now informational only.  Drift
+        # between them quantifies residual basis-decomp bias post-SVD.
         μ_water_anchor = Float32(
-            solid_water_basis.c_water  * Float64(μρ_w) +
-            solid_water_basis.c_iodine * Float64(μρ_I)
+            solid_water_basis.c_water * Float64(μρ_w) +
+                solid_water_basis.c_iodine * Float64(μρ_I)
         )
+        Δ_pct = 100.0 * (Float64(μ_water_anchor) - Float64(μρ_w)) / Float64(μρ_w)
+        @info "VMI synth @ $(Int(E)) keV: divisor = $(round(Float64(μρ_w), digits = 5)) cm⁻¹ " *
+            "(mono μρ_water);  SW-ROI anchor = " *
+            "$(round(Float64(μ_water_anchor), digits = 5)) → Δ = $(round(Δ_pct, digits = 2))%"
 
-        # Mono μ_water(E) = μρ_water(E) numerically (since ρ_water = 1 g/cm³).
-        μ_water_mono = μρ_w
-        Δ_pct = 100.0 * (Float64(μ_water_anchor) - Float64(μ_water_mono)) /
-                Float64(μ_water_mono)
-        @info "VMI synth @ $(Int(E)) keV: μ_water_anchor = " *
-              "$(round(Float64(μ_water_anchor), digits = 5)) cm⁻¹  " *
-              "(mono μρ_water = $(round(Float64(μ_water_mono), digits = 5)),  " *
-              "Δ = $(round(Δ_pct, digits = 2))%)"
-
-        HU_E = @. 1000f0 * (μ_E - μ_water_anchor) / μ_water_anchor
+        HU_E = @. 1000.0f0 * (μ_E - μρ_w) / μρ_w
         out[E] = HU_E
     end
     out
@@ -731,7 +818,7 @@ let
     title_kwargs = (titlesize = 24, subtitlesize = 16)
 
     sample = vmi_HU_by_keV[40.0]
-    mid    = size(sample, 3) ÷ 2
+    mid = size(sample, 3) ÷ 2
 
     for (k, E) in enumerate(de_vmi_energies)
         r = ((k - 1) ÷ 2) + 1
@@ -801,13 +888,15 @@ streaks); leave 70 keV identity by definition.
 vmi_HU_final = let
     volumes = [vmi_HU_by_keV[E] for E in de_vmi_energies]
 
-    ws = BS.create_mono_plus_workspace(volumes[1];
-                                       n_energies = length(de_vmi_energies))
+    ws = BS.create_mono_plus_workspace(
+        volumes[1];
+        n_energies = length(de_vmi_energies)
+    )
     BS.apply_mono_plus!(
         ws, volumes, de_vmi_energies;
         E_noise_opt = 70.0,
-        σ_lp_px     = σ_vmi_lp_px,
-        verbose     = true,
+        σ_lp_px = σ_vmi_lp_px,
+        verbose = true,
     )
 
     # ws.out_vols is reused on subsequent apply_mono_plus! calls — copy
@@ -833,7 +922,7 @@ let
     title_kwargs = (titlesize = 24, subtitlesize = 16)
 
     sample = vmi_HU_final[40.0]
-    mid    = size(sample, 3) ÷ 2
+    mid = size(sample, 3) ÷ 2
 
     for (k, E) in enumerate(de_vmi_energies)
         r = ((k - 1) ÷ 2) + 1
@@ -892,18 +981,20 @@ recovering the underlying physics correctly.
 
 # ╔═╡ 0500000d-0000-4000-8000-000000000002
 md"""
-### Water ROI sanity check — phantom-aware HU divisor
+### Water ROI sanity check — basis-decomp residual bias
 
 Left: the deeply-eroded solid-water ROI (12-px erosion ≈ 8 mm) overlaid
 in red on the **70 keV Mono+ slice** — that's exactly the voxels feeding
-`solid_water_basis.c_water` / `c_iodine`, and therefore the per-keV
-`μ_water_anchor(E)` divisor.
+`solid_water_basis.c_water` / `c_iodine` (used now as a *diagnostic*
+of basis-decomp bias, not as the synthesis divisor).
 
-Right: mean HU over that ROI vs VMI energy.  By construction, every bar
-should sit very close to **0 HU** — solid water is anchored to 0 by the
-phantom-aware divisor.  Any residual deviation comes from Mono+'s
-LP/HP frequency split shifting the SW baseline at non-anchor energies
-(the 70 keV bar is identity by design and should be exactly 0).
+Right: mean HU over that ROI vs VMI energy.  With the textbook mono
+divisor `μρ_water(E)`, SW reads at `1000·(⟨c_water⟩_SW − 1)` ≈ a
+constant offset that quantifies the residual basis-decomp bias.  A
+clean projection-domain pipeline + accurate spectra → all bars cluster
+near **0 HU** with a small (a few %) consistent offset; the consistency
+across keVs is the real sanity check (energy-dependent drift would
+indicate a spectral-shape problem upstream).
 """
 
 # ╔═╡ 0500000d-0000-4000-8000-000000000005
@@ -914,7 +1005,7 @@ let
     # ─── Left panel — 70 keV Mono+ slice + eroded SW ROI overlay ───────
     HU_window = (-200, 500)
     mid = size(vmi_HU_final[70.0], 3) ÷ 2
-    bg  = vmi_HU_final[70.0][:, :, mid]
+    bg = vmi_HU_final[70.0][:, :, mid]
 
     # nb05-style overlay: Float32 array with NaN outside the mask, single
     # built-in colormap symbol + alpha + nan_color = (:white, 0.0).
@@ -943,7 +1034,7 @@ let
         for z in 1:n_z, ci in sw_idx
             s += vol[ci, z]; n += 1
         end
-        s / n
+        return s / n
     end
     sw_hu_per_keV = [_mean_hu(vmi_HU_final[E]) for E in de_vmi_energies]
 
@@ -954,7 +1045,7 @@ let
     ax2 = CM.Axis(
         fig[1, 2];
         title = "Water Region Mean HU vs VMI keV",
-        subtitle = "anchored to 0 by construction",
+        subtitle = "residual basis-decomp bias (mono divisor)",
         xlabel = "VMI energy (keV)", ylabel = "HU",
         xticks = (collect(1:n_E), ["$(Int(E))" for E in de_vmi_energies]),
         title_kwargs...,
@@ -990,13 +1081,13 @@ end
 # ╔═╡ 0500000d-0000-4000-8000-000000000010
 ROD_LABELS = (
     Ca = (UInt8(10), UInt8(11), UInt8(12), UInt8(13), UInt8(14), UInt8(15), UInt8(16)),
-    I  = (UInt8(20), UInt8(21), UInt8(22), UInt8(23), UInt8(24), UInt8(25), UInt8(26)),
+    I = (UInt8(20), UInt8(21), UInt8(22), UInt8(23), UInt8(24), UInt8(25), UInt8(26)),
 );
 
 # ╔═╡ 0500000d-0000-4000-8000-000000000020
 ROD_NAMES = (
     Ca = ("50 mg/mL", "100 mg/mL", "200 mg/mL", "300 mg/mL", "400 mg/mL", "500 mg/mL", "600 mg/mL"),
-    I  = ("2.0 mg/mL", "2.5 mg/mL", "5.0 mg/mL", "7.5 mg/mL", "10.0 mg/mL", "15.0 mg/mL", "20.0 mg/mL"),
+    I = ("2.0 mg/mL", "2.5 mg/mL", "5.0 mg/mL", "7.5 mg/mL", "10.0 mg/mL", "15.0 mg/mL", "20.0 mg/mL"),
 );
 
 # ╔═╡ 0500000d-0000-4000-8000-000000000030
@@ -1025,7 +1116,7 @@ rod_data = let
         for j in j_lo:j_hi, i in i_lo:i_hi
             ((i - cx)^2 + (j - cy)^2) ≤ r² && push!(roi, CartesianIndex(i, j))
         end
-        roi
+        return roi
     end
 
     rod_rois = Dict(
@@ -1056,9 +1147,9 @@ rod_data = let
     for group in (:Ca, :I)
         labels = ROD_LABELS[group]
         n_rods = length(labels)
-        n_E    = length(de_vmi_energies)
-        meas   = zeros(Float64, n_rods, n_E)
-        theo   = zeros(Float64, n_rods, n_E)
+        n_E = length(de_vmi_energies)
+        meas = zeros(Float64, n_rods, n_E)
+        theo = zeros(Float64, n_rods, n_E)
         for (i, lab) in pairs(labels)
             mat = materials[Int(lab) + 1]   # mask_value + 1
             for (j, E) in pairs(de_vmi_energies)
@@ -1086,7 +1177,7 @@ let
     # Two panels share the same color scheme: warm for Ca, cool for I, with
     # rod-concentration index → color shade
     cmap_ca = CM.cgrad(:Oranges, 7; categorical = true)
-    cmap_i  = CM.cgrad(:GnBu,    7; categorical = true)
+    cmap_i = CM.cgrad(:GnBu, 7; categorical = true)
 
     panels = (
         (
@@ -1180,10 +1271,10 @@ let
 
     # One color per VMI energy (cool→warm sweep)
     energy_colors = Dict(
-        40.0  => CM.RGBf(0.85, 0.27, 0.10),
-        70.0  => CM.RGBf(0.95, 0.65, 0.13),
+        40.0 => CM.RGBf(0.85, 0.27, 0.1),
+        70.0 => CM.RGBf(0.95, 0.65, 0.13),
         100.0 => CM.RGBf(0.13, 0.59, 0.85),
-        140.0 => CM.RGBf(0.10, 0.27, 0.65),
+        140.0 => CM.RGBf(0.1, 0.27, 0.65),
     )
 
     function fit_lr(x::Vector{Float64}, y::Vector{Float64})
@@ -1199,8 +1290,10 @@ let
         return (slope = β, intercept = α, r² = r²)
     end
 
-    panels = ((:Ca, "Calcium Rods", "50–600 mg/mL"),
-              (:I,  "Iodine Rods",  "2–20 mg/mL"))
+    panels = (
+        (:Ca, "Calcium Rods", "50–600 mg/mL"),
+        (:I, "Iodine Rods", "2–20 mg/mL"),
+    )
 
     for (col, (group, title, subtitle)) in pairs(panels)
         d = rod_data[group]
@@ -1286,6 +1379,7 @@ basis maps and a cleaner low-keV mono+.
 # ╠═05000001-0000-4000-8000-000000000001
 # ╠═05000001-0000-4000-8000-000000000002
 # ╠═05000001-0000-4000-8000-000000000003
+# ╠═05000001-0000-4000-8000-000000000004
 # ╠═05000001-0000-4000-8000-000000000030
 # ╠═05000001-0000-4000-8000-000000000031
 # ╠═05000001-0000-4000-8000-000000000040
@@ -1307,6 +1401,7 @@ basis maps and a cleaner low-keV mono+.
 # ╟─05000006-0000-4000-8000-000000000030
 # ╟─05000006-0000-4000-8000-000000000040
 # ╟─05000007-0000-4000-8000-000000000001
+# ╠═05000007-0000-4000-8000-000000000005
 # ╠═05000007-0000-4000-8000-000000000010
 # ╟─05000007-0000-4000-8000-000000000020
 # ╟─05000007-0000-4000-8000-000000000030
