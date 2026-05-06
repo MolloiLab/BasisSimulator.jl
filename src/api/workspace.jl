@@ -502,20 +502,22 @@ Create a pre-allocated workspace for zero-allocation EICT single-kVp `simulate!(
 function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
                                 T::Type{<:AbstractFloat}=Float32,
                                 materials::Union{Nothing, Vector}=nothing,
-                                spectrum_override::Union{Nothing, Tuple{Vector{Float64}, Vector{Float64}}}=nothing)
+                                spectrum_override::Union{Nothing,
+                                    Tuple{AbstractVector, AbstractVector}}=nothing)
     # Geometry
     geom = CTGeometry(scanner; n_angles=protocol.views, fov_cm=recon_opts.fov_cm, z_cm=recon_opts.z_cm, collimation_mm=protocol.collimation_mm)
 
     # Spectrum — IPEM polychromatic by default; spectrum_override lets a
     # caller inject a custom (energies, weights) pair (e.g. `([70.0], [1.0])`
-    # for a monoenergetic 70 keV beam).
+    # for a monoenergetic 70 keV beam).  Accepts any AbstractVector pair and
+    # materializes to `Vector{Float64}` internally.
     energies, weights_vec = if spectrum_override === nothing
         resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner=scanner)
     else
-        e_override, w_override = spectrum_override
-        length(e_override) == length(w_override) ||
-            error("create_eict_workspace: spectrum_override (energies, weights) must have matching length, got $(length(e_override)) vs $(length(w_override))")
-        copy(e_override), copy(w_override)
+        e, w = spectrum_override
+        length(e) == length(w) ||
+            throw(ArgumentError("spectrum_override: length(energies)=$(length(e)) != length(weights)=$(length(w))"))
+        Vector{Float64}(e), Vector{Float64}(w)
     end
     n_energies = length(energies)
 
