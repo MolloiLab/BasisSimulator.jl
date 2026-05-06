@@ -675,8 +675,7 @@ hu_std_corr = let
     # 1. Sinogram-domain BHC (returns a CPU array)
     sino_gpu = to_gpu(sim_std.sino)
     sino_bhc = BS.apply_bhc_two_material(
-        sino_gpu, bhc_calibration.model, sim_std.geom, matrix_size;
-        volume_extent = phantom.extent,
+        sino_gpu, bhc_calibration.model, sim_std.geom, matrix_size,
     )
     sino_gpu = to_gpu(sino_bhc)
 
@@ -690,7 +689,6 @@ hu_std_corr = let
         hu_low = 50.0,
         hu_high = 150.0,
         scale_factor = 0.2,
-        volume_extent = phantom.extent,
     )
 
     # 4. μ → HU using BHC's calibrated μ_water_ref (Float32 to feed cupping correction)
@@ -724,8 +722,7 @@ hu_low_corr = let
     # 1. Sinogram-domain BHC
     sino_gpu = to_gpu(sim_low.sino)
     sino_bhc = BS.apply_bhc_two_material(
-        sino_gpu, bhc_calibration.model, sim_low.geom, matrix_size;
-        volume_extent = phantom.extent,
+        sino_gpu, bhc_calibration.model, sim_low.geom, matrix_size,
     )
     sino_gpu = to_gpu(sino_bhc)
 
@@ -739,7 +736,6 @@ hu_low_corr = let
         hu_low = 50.0,
         hu_high = 150.0,
         scale_factor = 0.2,
-        volume_extent = phantom.extent,
     )
 
     # 4. μ → HU

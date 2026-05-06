@@ -890,7 +890,7 @@ end
 
 
 """
-    apply_bhc_two_material(sinogram_raw, bhc_2mat, geom, matrix_size; volume_extent=nothing)
+    apply_bhc_two_material(sinogram_raw, bhc_2mat, geom, matrix_size)
 
 Apply two-material (water + bone) beam hardening correction in sinogram domain.
 
@@ -898,13 +898,22 @@ Dispatches on the BHC type:
 - `TwoMaterialBHC` — single polynomial water stage (1D spectrum).
 - `TwoMaterialBHCPerColumn` — per-column polynomial water stage (bowtie-aware).
   Bone stage uses per-column spectrum + global μ refs.
+
+# Note on geometry
+Stage 2 (image-domain bone segmentation → forward projection → use as
+`p_b` in the polychromatic correction) does an FDK + Siddon round-trip
+internally.  Both halves use `geom`'s recon FOV.  An earlier signature
+accepted `volume_extent=phantom.extent` and forwarded it to the forward
+projector only — the matching FDK call always used `geom`'s FOV, which
+caused a grid mismatch and bone-shaped halo artifacts whenever the two
+extents differed (e.g. nb02's XCAT body, where `phantom.extent` ≠ recon
+FOV).  The kwarg has been removed.
 """
 function apply_bhc_two_material(
     sinogram_raw::AbstractArray{T, 3},
     bhc_2mat::TwoMaterialBHC,
     geom,
-    matrix_size::Tuple{Int,Int,Int};
-    volume_extent=nothing
+    matrix_size::Tuple{Int,Int,Int},
 ) where T <: AbstractFloat
 
     sino_water = similar(sinogram_raw)
@@ -934,7 +943,11 @@ function apply_bhc_two_material(
         end
     end
 
-    p_b_gpu = siddon_forward_project(bone_μ_gpu, geom; volume_extent=volume_extent)
+    # Forward project the segmented bone using geom's recon FOV — matches
+    # the FDK above (Stage 2's recon_gpu was built from sino_water using
+    # geom's FOV, so bone_μ_gpu lives in geom's grid; the round-trip must
+    # stay in that grid).
+    p_b_gpu = siddon_forward_project(bone_μ_gpu, geom)
 
     p_s_gpu = similar(sino_water)
     copyto!(p_s_gpu, sino_water)
@@ -982,19 +995,21 @@ function apply_bhc_two_material(
 end
 
 """
-    apply_bhc_two_material(sinogram_raw, bhc::TwoMaterialBHCPerColumn, geom, matrix_size; volume_extent=nothing)
+    apply_bhc_two_material(sinogram_raw, bhc::TwoMaterialBHCPerColumn, geom, matrix_size)
 
 Bowtie-aware two-material BHC.  Water stage uses the per-column polynomial;
 bone stage uses per-column normalized spectrum for the polychromatic forward
 model.  Global `μ_water_ref` / `μ_bone_ref` keep the mono-equivalent target
 consistent across columns so downstream FBP sees a single effective energy.
+
+Stage 2's internal FDK + Siddon round-trip both use `geom`'s recon FOV
+— see the geometry note on the `TwoMaterialBHC` method above.
 """
 function apply_bhc_two_material(
     sinogram_raw::AbstractArray{T, 3},
     bhc::TwoMaterialBHCPerColumn,
     geom,
-    matrix_size::Tuple{Int,Int,Int};
-    volume_extent=nothing
+    matrix_size::Tuple{Int,Int,Int},
 ) where T <: AbstractFloat
 
     n_col = size(sinogram_raw, 1)
@@ -1031,7 +1046,8 @@ function apply_bhc_two_material(
         end
     end
 
-    p_b_gpu = siddon_forward_project(bone_μ_gpu, geom; volume_extent=volume_extent)
+    # Forward project segmented bone using geom's recon FOV (matches Stage 1's FDK).
+    p_b_gpu = siddon_forward_project(bone_μ_gpu, geom)
 
     p_s_gpu = similar(sino_water)
     copyto!(p_s_gpu, sino_water)
@@ -1101,7 +1117,7 @@ end
 
 """
     apply_bhc_image_domain(recon_μ, geom, matrix_size, μ_water_ref;
-        hu_low=70.0, hu_high=150.0, scale_factor=0.5, volume_extent=nothing)
+        hu_low=70.0, hu_high=150.0, scale_factor=0.5)
 
 Apply image-domain beam hardening correction (So et al. 2009).
 
@@ -1122,8 +1138,6 @@ of the error image from the original.
 - `hu_high::Real=150.0`: Upper HU threshold — voxels above this are 100% high-atten (WF=1)
 - `scale_factor::Real=0.5`: Scaling factor for error image subtraction (0.0 = no correction,
   1.0 = full subtraction). Typical range: 0.2–0.7.
-- `volume_extent::Union{Nothing,NTuple{3,Float64}}=nothing`: Physical extent (cm) for
-  forward projection. Pass `phantom.extent` for correct geometry.
 
 # Returns
 - `AbstractArray{T,3}`: Corrected image in μ domain (same type/device as input)
@@ -1133,6 +1147,18 @@ of the error image from the original.
   correction. Use a wider range to include bone. Paper recommends 100–150 HU.
 - **scale_factor**: Start at 0.5. Increase if HU offset persists (under-correction).
   Decrease if artifacts appear (over-correction). Optimal is typically 0.2–0.7.
+
+# Note on geometry
+Both halves of the internal forward+back-projection round-trip use
+`geom`'s recon FOV.  Passing a separate `volume_extent` (the physical
+extent of the original phantom) is conceptually wrong here: by the time
+this function runs, the phantom is gone — we're working with a
+reconstructed image that already lives in `geom`'s recon grid.  An
+earlier signature accepted `volume_extent=phantom.extent` and forwarded
+it to the forward projector while the back-projector silently used
+`geom`'s FOV; the resulting grid mismatch produced bone-shaped halo +
+diagonal Moiré artifacts whenever the two extents differed.  The kwarg
+has been removed.
 
 # References
 So A, Hsieh J, Li JY, Lee TY. Phys Med Biol. 2009;54(10):3031-3050.
@@ -1145,7 +1171,6 @@ function apply_bhc_image_domain(
     hu_low::Real = 70.0,
     hu_high::Real = 150.0,
     scale_factor::Real = 0.5,
-    volume_extent = nothing
 ) where T <: AbstractFloat
 
     μ_w_ref = T(μ_water_ref)
@@ -1175,8 +1200,12 @@ function apply_bhc_image_domain(
         end
     end
 
-    # Step 2: Forward-project the high-attenuation image → ξ (error sinogram)
-    ξ_gpu = siddon_forward_project(high_atten_μ, geom; volume_extent=volume_extent)
+    # Step 2: Forward-project the high-attenuation image → ξ (error sinogram).
+    # Use geom's recon FOV (no volume_extent override) so this matches Step 3's
+    # FDK back-projection grid exactly — same physical box on both halves of
+    # the round-trip.  Mismatching the two halves produces a spatially-shifted
+    # error_image that subtracts as a bone-shaped halo.
+    ξ_gpu = siddon_forward_project(high_atten_μ, geom)
 
     # Step 3: Reconstruct the error sinogram → error image
     error_image = fdk_reconstruct(ξ_gpu, geom, matrix_size)

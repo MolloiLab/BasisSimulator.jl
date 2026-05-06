@@ -703,8 +703,7 @@ hu_fbp = sim === nothing ? nothing : let
         # 1. Sinogram-domain BHC (returns a CPU array)
         sino_gpu = to_gpu(sim.sino)
         sino_bhc = BS.apply_bhc_two_material(
-            sino_gpu, bhc_calibration.model, sim.geom, matrix_size;
-            volume_extent = phantom.extent,
+            sino_gpu, bhc_calibration.model, sim.geom, matrix_size,
         )
         sino_gpu = to_gpu(sino_bhc)
 
@@ -718,7 +717,6 @@ hu_fbp = sim === nothing ? nothing : let
             hu_low = 50.0,
             hu_high = 150.0,
             scale_factor = 0.2,
-            volume_extent = phantom.extent,
         )
 
         # 4. μ → HU using BHC's calibrated μ_water_ref (Float32 for cupping correction)
@@ -762,8 +760,7 @@ hu_hir = sim === nothing ? nothing : let
         # 1. Sinogram-domain BHC
         sino_gpu = to_gpu(sim.sino)
         sino_bhc = BS.apply_bhc_two_material(
-            sino_gpu, bhc_calibration.model, sim.geom, matrix_size;
-            volume_extent = phantom.extent,
+            sino_gpu, bhc_calibration.model, sim.geom, matrix_size,
         )
         sino_gpu = to_gpu(sino_bhc)
 
@@ -782,7 +779,6 @@ hu_hir = sim === nothing ? nothing : let
             hu_low = 50.0,
             hu_high = 150.0,
             scale_factor = 0.2,
-            volume_extent = phantom.extent,
         )
 
         # 4. μ → HU using BHC's calibrated μ_water_ref
