@@ -56,29 +56,6 @@ function compute_detector_I0(geom::CTGeometry, protocol::CTProtocol, spectrum_fl
 end
 
 # =============================================================================
-# Materials Resolution
-# =============================================================================
-
-"""
-    _resolve_materials(phantom, materials_kwarg) -> Vector{XA.Material}
-
-Resolve materials with priority: (1) explicit kwarg, (2) phantom.materials, (3) fallback.
-"""
-function _resolve_materials(phantom, materials_kwarg::Union{Nothing,Vector})
-    if !isnothing(materials_kwarg)
-        # Priority 1: Explicit materials kwarg override
-        return materials_kwarg
-    elseif hasproperty(phantom, :materials) && !isnothing(phantom.materials)
-        # Priority 2: Materials stored in phantom (v20.0 unified API)
-        return phantom.materials
-    else
-        # Priority 3: Fallback to Gammex 472 region materials (backwards compat)
-        return get_region_materials()
-    end
-end
-
-
-# =============================================================================
 # simulate!() — Zero-allocation PCCT simulation hot path
 # =============================================================================
 
@@ -301,7 +278,7 @@ end
 # =============================================================================
 
 """
-    simulate!(ws::EICTWorkspace, phantom, scanner, protocol, sim_opts, recon_opts; materials=nothing)
+    simulate!(ws::EICTWorkspace, phantom, scanner, protocol, sim_opts, recon_opts)
 
 Run EICT single-kVp simulation using pre-allocated workspace buffers.
 
@@ -314,8 +291,7 @@ function simulate!(
     scanner::Scanner,
     protocol::CTProtocol,
     sim_opts::SimOptions=SimOptions(),
-    recon_opts::ReconOptions=ReconOptions();
-    materials::Union{Nothing,Vector}=nothing
+    recon_opts::ReconOptions=ReconOptions(),
 ) where {T}
     geom = ws.geom
     energies = ws.energies

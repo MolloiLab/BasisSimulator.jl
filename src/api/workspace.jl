@@ -144,8 +144,7 @@ result2 = simulate!(ws, phantom, scanner, protocol, sim_opts, recon_opts)
 ```
 """
 function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
-                          T::Type{<:AbstractFloat}=Float32, mask=nothing,
-                          materials::Union{Nothing, Vector}=nothing)
+                          T::Type{<:AbstractFloat}=Float32, mask=nothing)
     # --- Pre-compute geometry first (collimation derives n_rows) ---
     geom = CTGeometry(scanner; n_angles=protocol.views, fov_cm=recon_opts.fov_cm, z_cm=recon_opts.z_cm, collimation_mm=protocol.collimation_mm)
 
@@ -173,7 +172,7 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     n_energies = length(energies)
     config = build_physics_config(scanner, sim_opts, energies, weights_vec; phantom=phantom)
     pcct_detector = _build_pcct_detector(scanner)
-    mats = _resolve_materials(phantom, materials)
+    mats = phantom.materials
     kVp = Float64(maximum(energies))
     thresholds = pcct_detector.energy_thresholds_keV
     # Pre-compute spectral response data
@@ -449,8 +448,7 @@ end
 
 """
     create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
-                          T=Float32, materials=nothing,
-                          spectrum_override=nothing)
+                          T=Float32, spectrum_override=nothing)
 
 Create a pre-allocated workspace for zero-allocation EICT single-kVp `simulate!()`.
 
@@ -481,7 +479,6 @@ Create a pre-allocated workspace for zero-allocation EICT single-kVp `simulate!(
 """
 function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
                                 T::Type{<:AbstractFloat}=Float32,
-                                materials::Union{Nothing, Vector}=nothing,
                                 spectrum_override::Union{Nothing,
                                     Tuple{AbstractVector, AbstractVector}}=nothing)
     # Geometry
@@ -505,7 +502,7 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     config = build_physics_config(scanner, sim_opts, energies, weights_vec; phantom=phantom)
 
     # Materials
-    mats = _resolve_materials(phantom, materials)
+    mats = phantom.materials
     n_regions = length(mats)
 
     # Dimensions

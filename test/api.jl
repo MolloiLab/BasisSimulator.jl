@@ -220,11 +220,14 @@ _ts("entering simulate!(PCCTWorkspace) — return contract testset")
         _ts("  running simulate!")
         res = BS.simulate!(s.ws, s.phantom, s.protocol, s.sim_opts)
         _ts("  simulate! returned")
-        # Trimmed return tuple — only pcct_sino + I0_bins (combine/scatter decoupled).
-        @test propertynames(res) == (:pcct_sino, :I0_bins)
+        # Trimmed return tuple — pcct_sino + I0_bins + pileup_S (combine/scatter
+        # decoupled).  pileup_S is `nothing` when use_pcct_pileup=false.
+        @test propertynames(res) == (:pcct_sino, :I0_bins, :pileup_S)
         @test length(res.pcct_sino.bins) == 4
         @test length(res.I0_bins) == 4
         @test all(>(0), res.I0_bins)
+        @test res.pileup_S isa Matrix{Float64}
+        @test size(res.pileup_S) == (4, 4)
         for bin in res.pcct_sino.bins
             @test all(isfinite, Array(bin))
         end
