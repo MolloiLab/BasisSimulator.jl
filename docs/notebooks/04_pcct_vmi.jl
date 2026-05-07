@@ -1,8 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.20.24
-
-using Markdown
-using InteractiveUtils
+# v0.19.0
 
 # ╔═╡ 06000001-0000-4000-8000-000000000001
 begin
@@ -664,8 +661,8 @@ let
     )
 
     panels = (
-        (1, 1, "Low Bins", "1 + 2 · 20 – 55 keV", slice_lo),
-        (1, 2, "High Bins", "3 + 4 · > 55 keV", slice_hi),
+        (1, 1, "Low Bins", "20 – 55 keV", slice_lo),
+        (1, 2, "High Bins", "> 55 keV", slice_hi),
     )
 
     for (r, c, ttl, sub, slice) in panels
@@ -794,6 +791,173 @@ let
     fig
 end
 
+# ╔═╡ 06000020-0000-4000-8000-000000000001
+md"""
+## 8b. Projection Domain Material Decomposition (Cong PCCT, Inline)
+
+Parallel decomposition path using the **Cong univariate solver** instead
+of the calibrated polynomial inverse from §8.  Drops in directly because
+the follow-up generalization (Black, *in prep.*) re-derives the Cong 2022
+framework around an effective spectral response Φ_k(ε) ≥ 0 — and our
+existing `apply_cong!` kernel is already Φ_k-agnostic.  The bin-combine
+partition (1+2 → low, 3+4 → high) gets baked into Φ_k by summing the
+relevant DRM columns; everything downstream of `apply_cong!` is
+identical to nb03's dual-kVp path.
+
+```
+Φ_low(ε)  = S(ε) · η(ε) · Σ_{b ∈ {1,2}} R(ε, b)        ← Table 1 row 3
+Φ_high(ε) = S(ε) · η(ε) · Σ_{b ∈ {3,4}} R(ε, b)        ← (counting, no ε)
+```
+
+`(p, q)` are the iodine + water mass-attenuation coefficients at the
+shared energy grid (matter-based variant, Cong follow-up §2.7).  The
+two channels share `(p, q)` — only Φ differs.
+
+!!! note "What this section is NOT"
+    This is an **inline parallel pipeline** for evaluation only.  §8's
+    polynomial decomp + §9's FBP + §10–§13 + §Results all keep their
+    existing inputs (`sino_basis`, `basis_volumes`, …) and run unchanged.
+    Once we've verified the Cong PCCT route on numbers + visuals, we can
+    promote the basis builder to `src/` and decide whether to switch the
+    main pipeline over.
+"""
+
+# ╔═╡ 06000020-0000-4000-8000-000000000010
+material_basis_cong = let
+    # Single 140 kVp source spectrum (Naeotom Alpha has no bowtie).
+    e, w = BS.resolve_source_spectrum_without_bowtie(
+        sim_opts, protocol; scanner = scanner,
+    )
+
+    # PCCT detector physics — same MC-LUT path the §5 scatter block uses.
+    # R[i, b] = P(photon at e[i] is recorded in bin b),
+    # η[i]    = quantum efficiency at e[i].
+    pcct_det = BS._build_pcct_detector(scanner)
+    kVp_val  = Float64(maximum(e))
+    R_mat    = BS.compute_mc_drm(pcct_det, kVp_val)
+    η_vec    = BS.quantum_efficiency_vector(
+        pcct_det.material, pcct_det.thickness_mm, e,
+    )
+
+    # R_mat lives on its own uniform grid `range(1.0, kVp, length=n_R)` (default
+    # n_R = 200), distinct from the spectrum's energy grid `e`.  Map each
+    # spectrum bin to its nearest DRM row exactly the way the §5 scatter
+    # block (`compute_scatter_bin_weights`) does — keeps both paths in sync.
+    n_R = size(R_mat, 1)
+    drm_idx(E) = clamp(round(Int, (Float64(E) - 1.0) / (kVp_val - 1.0) * (n_R - 1)) + 1, 1, n_R)
+
+    # Φ_k(ε) = S(ε) · η(ε) · Σ_{b ∈ group_k} R(ε, b).  Bin-combine partition
+    # (1+2 → low, 3+4 → high) reuses the cmv_low_bins / cmv_high_bins knobs
+    # so changing them here matches §7's recombination.
+    Φ_L = Float32[
+        Float32(w[i] * η_vec[i] * sum(R_mat[drm_idx(e[i]), b] for b in cmv_low_bins))
+        for i in eachindex(e)
+    ]
+    Φ_H = Float32[
+        Float32(w[i] * η_vec[i] * sum(R_mat[drm_idx(e[i]), b] for b in cmv_high_bins))
+        for i in eachindex(e)
+    ]
+    ŵ_L_f32 = Φ_L ./ sum(Φ_L)
+    ŵ_H_f32 = Φ_H ./ sum(Φ_H)
+
+    iodine_mat = BS.XA.Elements.Iodine
+    water_mat  = BS.XA.Materials.water
+
+    # Mass-attenuation coefficients on the SHARED energy grid — same array
+    # for both channels (matter-based, Cong follow-up §2.7).
+    p = Float32[
+        Float32(BS.compute_mass_μ_at_energy(iodine_mat, Float64(E)))
+        for E in e
+    ]
+    q = Float32[
+        Float32(BS.compute_mass_μ_at_energy(water_mat, Float64(E)))
+        for E in e
+    ]
+
+    @info "[Cong PCCT basis] $(length(e)) energy bins · " *
+        "low ⟨E⟩ = $(round(sum(Float64.(e) .* ŵ_L_f32), digits = 1)) keV · " *
+        "high ⟨E⟩ = $(round(sum(Float64.(e) .* ŵ_H_f32), digits = 1)) keV · " *
+        "Δ = $(round(sum(Float64.(e) .* ŵ_H_f32) - sum(Float64.(e) .* ŵ_L_f32), digits = 1)) keV"
+
+    (ŵ_L = ŵ_L_f32, p_L = p,        q_L = q,
+     ŵ_H = ŵ_H_f32, p_H = copy(p),  q_H = copy(q))
+end;
+
+# ╔═╡ 06000020-0000-4000-8000-000000000020
+sino_basis_cong = let
+    sino_low_gpu  = to_gpu(Float32.(sim_lohi.sino_low))
+    sino_high_gpu = to_gpu(Float32.(sim_lohi.sino_high))
+
+    sino_y = similar(sino_low_gpu)   # iodine basis line integrals (g/cm²)
+    sino_c = similar(sino_low_gpu)   # water  basis line integrals (g/cm²)
+    fill!(sino_y, 0.0f0); fill!(sino_c, 0.0f0)
+
+    cong_ws = BS.create_cong_workspace(sino_low_gpu, material_basis_cong)
+    BS.apply_cong!(
+        cong_ws, sino_y, sino_c, sino_low_gpu, sino_high_gpu;
+        water_basis = (a = 0.0f0, c = 1.0f0),
+    )
+
+    sino_iodine_cpu = Array(sino_y)
+    sino_water_cpu  = Array(sino_c)
+    @info "[Cong PCCT decomp] ⟨∫ρ_I·dr⟩ = $(round(mean(sino_iodine_cpu), sigdigits = 4)) g/cm²   " *
+        "⟨∫ρ_W·dr⟩ = $(round(mean(sino_water_cpu), sigdigits = 4)) g/cm²"
+
+    sino_low_gpu = nothing; sino_high_gpu = nothing
+    sino_y = nothing; sino_c = nothing; cong_ws = nothing
+    GC.gc(true)
+    (sino_iodine = sino_iodine_cpu,
+     sino_water  = sino_water_cpu,
+     geom        = sim_lohi.geom)
+end;
+
+# ╔═╡ 06000020-0000-4000-8000-000000000040
+let
+    n_row = size(sino_basis_cong.sino_iodine, 2)
+    mid_r = n_row ÷ 2 + 1
+
+    fig = CM.Figure(size = (1400, 580))
+    axis_kwargs = (
+        titlesize = 32, subtitlesize = 24,
+        xlabel = "View", ylabel = "Detector Column",
+        xlabelsize = 22, ylabelsize = 22,
+        xticklabelsize = 16, yticklabelsize = 16,
+    )
+
+    _qrange(arr) = (
+        Float64(quantile(vec(arr), 0.01)),
+        Float64(quantile(vec(arr), 0.99)),
+    )
+
+    slice_iod = permutedims(sino_basis_cong.sino_iodine[:, mid_r, :], (2, 1))
+    slice_wat = permutedims(sino_basis_cong.sino_water[:, mid_r, :], (2, 1))
+
+    panels = (
+        (
+            1, 1, 2, "Iodine Basis Sinogram", "g/cm²",
+            slice_iod, _qrange(slice_iod),
+        ),
+        (
+            1, 3, 4, "Water Basis Sinogram", "g/cm²",
+            slice_wat, _qrange(slice_wat),
+        ),
+    )
+
+    for (r, panel_c, cbar_c, ttl, cbar_label, slice, range) in panels
+        ax = CM.Axis(
+            fig[r, panel_c]; title = ttl,
+            subtitle = "Cong PCCT (univariate)",
+            axis_kwargs...,
+        )
+        CM.heatmap!(ax, slice; colormap = :viridis, colorrange = range)
+        CM.Colorbar(
+            fig[r, cbar_c]; colormap = :viridis, colorrange = range,
+            label = cbar_label, width = 16, labelsize = 22, ticklabelsize = 18,
+        )
+    end
+    fig
+end
+
 # ╔═╡ 0600000a-0000-4000-8000-000000000001
 md"""
 ## 9. FBP: Iodine and Water Basis Maps
@@ -867,6 +1031,107 @@ let
     fig
 end
 
+# ╔═╡ 06000021-0000-4000-8000-000000000001
+md"""
+## 9b. FBP: Cong PCCT Basis Maps
+
+Two FDK passes on the Cong-decomposed basis sinograms from §8b — same
+PCCT-tuned apodization filter as §9 so any visible differences are due
+to the decomposition algorithm, not the recon.  Output is in
+basis-density units (g/cm³), ready to feed §11's VMI synthesis if we
+later choose to swap pipelines.
+"""
+
+# ╔═╡ 06000021-0000-4000-8000-000000000010
+basis_volumes_cong = let
+    matrix_size = recon_opts.matrix_size
+    geom = sino_basis_cong.geom
+
+    fdk_filter = BS.CustomFilter(
+        (0.0, 0.25, 0.5, 0.75, 1.0),
+        (1.0, 0.75, 0.6, 0.2, 0.001),
+    )
+
+    function _fbp(sino_cpu)
+        sino_gpu = to_gpu(Float32.(sino_cpu))
+        ws = BS.create_fdk_recon_workspace(
+            sino_gpu, geom, matrix_size; filter = fdk_filter,
+        )
+        recon = Array(BS.reconstruct!(ws, sino_gpu, geom, matrix_size))
+        ws = nothing; sino_gpu = nothing
+        GC.gc(true)
+        return Float32.(recon)
+    end
+
+    (
+        vol_iodine_raw = _fbp(sino_basis_cong.sino_iodine),
+        vol_water_raw  = _fbp(sino_basis_cong.sino_water),
+        geom = geom,
+    )
+end;
+
+# ╔═╡ 06000021-0000-4000-8000-000000000030
+let
+    fig = CM.Figure(size = (1180, 580))
+    axis_kwargs = (titlesize = 32, subtitlesize = 24)
+
+    mid = size(basis_volumes_cong.vol_iodine_raw, 3) ÷ 2
+
+    _qrange(arr) = (
+        Float64(quantile(vec(arr), 0.01)),
+        Float64(quantile(vec(arr), 0.99)),
+    )
+
+    slice_iod = basis_volumes_cong.vol_iodine_raw[:, :, mid]
+    slice_wat = basis_volumes_cong.vol_water_raw[:, :, mid]
+
+    panels = (
+        (1, 1, 2, "Iodine Basis", "g/cm³", slice_iod, _qrange(slice_iod)),
+        (1, 3, 4, "Water Basis",  "g/cm³", slice_wat, _qrange(slice_wat)),
+    )
+
+    for (r, panel_c, cbar_c, ttl, cbar_label, slice, range) in panels
+        ax = CM.Axis(
+            fig[r, panel_c]; title = ttl,
+            subtitle = "Cong PCCT",
+            aspect = CM.DataAspect(), axis_kwargs...,
+        )
+        CM.heatmap!(ax, slice; colormap = :viridis, colorrange = range)
+        CM.hidedecorations!(ax)
+        CM.Colorbar(
+            fig[r, cbar_c]; colormap = :viridis, colorrange = range,
+            label = cbar_label, width = 16, labelsize = 22, ticklabelsize = 18,
+        )
+    end
+    fig
+end
+
+# ╔═╡ 06000022-0000-4000-8000-000000000001
+md"""
+### Pipeline Source Toggle
+
+Choose which basis-volume pair feeds **§10 onward** (z-median →
+VMI synth → Mono+ → cupping → Results):
+
+- `:cmv`  — calibrated polynomial inverse from §8 + FBP from §9 (default).
+- `:cong` — Cong PCCT univariate solver from §8b + FBP from §9b.
+
+Flip the knob and re-run from §10; everything below is reactive on the
+`basis_volumes_active` alias and will rebuild against the chosen path.
+"""
+
+# ╔═╡ 06000022-0000-4000-8000-000000000005
+BASIS_PATH = :cong;          # :cmv | :cong
+
+# ╔═╡ 06000022-0000-4000-8000-000000000010
+basis_volumes_active = let
+    src = BASIS_PATH === :cong ? basis_volumes_cong : basis_volumes
+    @info "[Pipeline source] using $(BASIS_PATH) → " *
+        (BASIS_PATH === :cong ? "Cong univariate (§8b + §9b)" :
+                                 "calibrated polynomial inverse (§8 + §9)")
+    src
+end;
+
 # ╔═╡ 0600000b-0000-4000-8000-000000000001
 md"""
 ## 10. Z-Direction Median Filter
@@ -892,14 +1157,14 @@ Z_MEDIAN_ADJACENT = 2;
 basis_z = let
     (
         vol_iodine = BS.apply_median_z(
-            basis_volumes.vol_iodine_raw;
+            basis_volumes_active.vol_iodine_raw;
             adjacent_slices = Z_MEDIAN_ADJACENT,
         ),
         vol_water = BS.apply_median_z(
-            basis_volumes.vol_water_raw;
+            basis_volumes_active.vol_water_raw;
             adjacent_slices = Z_MEDIAN_ADJACENT,
         ),
-        geom = basis_volumes.geom,
+        geom = basis_volumes_active.geom,
     )
 end;
 
@@ -1851,9 +2116,19 @@ low-keV Mono+ output.
 # ╠═06000009-0000-4000-8000-000000000010
 # ╠═06000009-0000-4000-8000-000000000020
 # ╟─06000009-0000-4000-8000-000000000040
+# ╟─06000020-0000-4000-8000-000000000001
+# ╠═06000020-0000-4000-8000-000000000010
+# ╠═06000020-0000-4000-8000-000000000020
+# ╟─06000020-0000-4000-8000-000000000040
 # ╟─0600000a-0000-4000-8000-000000000001
 # ╠═0600000a-0000-4000-8000-000000000010
 # ╟─0600000a-0000-4000-8000-000000000030
+# ╟─06000021-0000-4000-8000-000000000001
+# ╠═06000021-0000-4000-8000-000000000010
+# ╟─06000021-0000-4000-8000-000000000030
+# ╟─06000022-0000-4000-8000-000000000001
+# ╠═06000022-0000-4000-8000-000000000005
+# ╠═06000022-0000-4000-8000-000000000010
 # ╟─0600000b-0000-4000-8000-000000000001
 # ╠═0600000b-0000-4000-8000-000000000005
 # ╠═0600000b-0000-4000-8000-000000000010
