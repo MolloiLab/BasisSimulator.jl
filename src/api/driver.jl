@@ -375,19 +375,34 @@ function simulate!(
     I0_raw = compute_detector_I0(geom, protocol, sum(ws.weights))
     I0_T   = T(I0_raw) * ws.η_eff   # ws.η_eff already T-typed, baked at create time
 
+    # Capture `sf` as a real GPU buffer regardless of scatter on/off.  When
+    # scatter is off, `do_sc=false` zeroes out the contribution AND we point
+    # `sf` at `ws.physics_output` (already-allocated GPU-side buffer) so the
+    # `sf[idx]` reference type-checks during Metal kernel compilation — even
+    # though the dead branch never reads it.  Capturing `sf::Nothing` here
+    # tripped GPUCompiler's box_int64 path on Metal.
+    sf_kernel = has_scatter ? scatter_field_gpu : ws.physics_output
+
     if sim_opts.use_noise
-        randn!(ws.noise_rand_cpu)
+        # Reproducibility: seed `ws.rng` from sim_opts.seed each call.  Without
+        # this the inline randn! pulls from the global RNG and same-seed reruns
+        # disagree.  PCCT path goes through apply_pcct_noise!(seed=...) which
+        # already does this.
+        if sim_opts.seed !== nothing
+            Random.seed!(ws.rng, sim_opts.seed)
+        end
+        randn!(ws.rng, ws.noise_rand_cpu)
         copyto!(ws.noise_rand_gpu, ws.noise_rand_cpu)
 
         σ_e_photon = ws.σ_e_photon
 
         if σ_e_photon > T(0)
-            randn!(ws.enoise_rand_cpu)
+            randn!(ws.rng, ws.enoise_rand_cpu)
             copyto!(ws.enoise_rand_gpu, ws.enoise_rand_cpu)
 
             let sino = ws.sinogram, rg = ws.noise_rand_gpu, eg = ws.enoise_rand_gpu,
                     I0v = I0_T, σ_e = σ_e_photon,
-                    sf = scatter_field_gpu, sw = T(scatter_total_weight), do_sc = has_scatter
+                    sf = sf_kernel, sw = T(scatter_total_weight), do_sc = has_scatter
                 AK.foreachindex(sino) do idx
                     λ_total = I0v * exp(-sino[idx])
                     λ_noisy = λ_total + sqrt(max(λ_total, one(T))) * rg[idx]
@@ -402,7 +417,7 @@ function simulate!(
             end
         else
             let sino = ws.sinogram, rg = ws.noise_rand_gpu, I0v = I0_T,
-                    sf = scatter_field_gpu, sw = T(scatter_total_weight), do_sc = has_scatter
+                    sf = sf_kernel, sw = T(scatter_total_weight), do_sc = has_scatter
                 AK.foreachindex(sino) do idx
                     λ_total = I0v * exp(-sino[idx])
                     λ_noisy = λ_total + sqrt(max(λ_total, one(T))) * rg[idx]

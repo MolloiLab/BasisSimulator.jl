@@ -374,3 +374,123 @@ end
         @test bins_air[i] ≈ log(I0_truth[i] / I0_recorded[i]) rtol = 1e-12
     end
 end
+
+# -----------------------------------------------------------------------------
+# simulate!(::EICTWorkspace, phantom, protocol, sim_opts)
+#
+# Contract:
+# - Signature is `(ws, phantom, protocol, sim_opts)` — scanner is consumed at
+#   workspace creation time (η_eff, σ_e_photon baked in there).
+# - Returns `nothing`; mutates `ws.sinogram` in place.
+# - Notebooks read `ws.sinogram` directly (and `ws.geom`) — no separate
+#   `sino_noisy_out` field.
+# -----------------------------------------------------------------------------
+function _toy_eict_setup(; use_noise = false, use_scatter = false, kwargs...)
+    scanner = BS.Scanner(
+        source_to_isocenter = 540.0,
+        source_to_detector  = 1080.0,
+        detector_rows       = 8,
+        detector_cols       = 64,
+        detector_row_size   = 1.0,
+        detector_col_size   = 1.0,
+        detector_material   = :lumex,
+        detector_depth      = 3.0,
+        electronic_noise    = 5.0,
+        detection_gain      = 10.0,
+    )
+    protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 16, rotation_time = 0.5)
+    sim_opts = BS.SimOptions(;
+        fidelity = :eict,
+        use_noise = use_noise, use_scatter = use_scatter,
+        use_lag = false, use_focal_spot = false, use_optical_crosstalk = false,
+        kwargs...
+    )
+    recon_opts  = BS.ReconOptions(matrix_size = (32, 32, 4), fov_cm = 20.0)
+    phantom_cpu = BS.create_gammex_472(n_voxels = 32, fov_cm = 20.0, z_cm = 2.0)
+    phantom = BS.Phantom(
+        to_gpu(phantom_cpu.mask),
+        phantom_cpu.materials,
+        phantom_cpu.voxel_size,
+        phantom_cpu.origin,
+        phantom_cpu.extent,
+    )
+    ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
+    return (; scanner, protocol, sim_opts, recon_opts, phantom, ws)
+end
+
+_ts("entering simulate!(EICTWorkspace) — return contract testset")
+@testset "simulate!(EICTWorkspace) — return contract" begin
+    if !HAS_GPU
+        @warn "Skipping EICT integration test: no GPU backend (Metal/CUDA/AMDGPU)."
+    else
+        _ts("  building toy_eict_setup")
+        s = _toy_eict_setup()
+        # Workspace baked-in noise constants (Pass 2 contract).
+        @test s.ws.η_eff isa Float32
+        @test 0 < s.ws.η_eff ≤ 1
+        @test s.ws.σ_e_photon isa Float32
+        @test s.ws.σ_e_photon ≥ 0
+        # Sino shape matches (n_cols, n_rows, n_views).
+        @test size(s.ws.sinogram) == (64, 8, 16)
+        _ts("  running simulate!")
+        ret = BS.simulate!(s.ws, s.phantom, s.protocol, s.sim_opts)
+        _ts("  simulate! returned")
+        # Contract: returns nothing; ws.sinogram populated and finite.
+        @test ret === nothing
+        sino = Array(s.ws.sinogram)
+        @test all(isfinite, sino)
+        # Phantom is solid water+inserts → at least some non-trivial line integrals.
+        @test maximum(sino) > 0
+    end
+end
+
+_ts("entering simulate!(EICTWorkspace) — noise on/off seed reproducibility testset")
+@testset "simulate!(EICTWorkspace) — noise on/off + seed reproducibility" begin
+    if !HAS_GPU
+        @warn "Skipping EICT noise test: no GPU backend."
+    else
+        _ts("  noise OFF")
+        off = _toy_eict_setup(use_noise = false)
+        BS.simulate!(off.ws, off.phantom, off.protocol, off.sim_opts)
+        sino_off = Array(off.ws.sinogram)
+
+        _ts("  noise ON (seed=42)")
+        on1 = _toy_eict_setup(use_noise = true, seed = 42)
+        BS.simulate!(on1.ws, on1.phantom, on1.protocol, on1.sim_opts)
+        sino_on1 = Array(on1.ws.sinogram)
+
+        _ts("  noise ON (seed=42, second run)")
+        on2 = _toy_eict_setup(use_noise = true, seed = 42)
+        BS.simulate!(on2.ws, on2.phantom, on2.protocol, on2.sim_opts)
+        sino_on2 = Array(on2.ws.sinogram)
+
+        # Noise ON must perturb the noise-free sinogram somewhere.
+        @test maximum(abs.(sino_on1 .- sino_off)) > 1e-6
+        # Same seed → bit-identical re-run under our `randn!` + copyto! pattern
+        # (Phase-1 CPU RNG → GPU staging means this is deterministic).
+        @test sino_on1 == sino_on2
+    end
+end
+
+_ts("entering simulate!(EICTWorkspace) — scatter on/off testset")
+@testset "simulate!(EICTWorkspace) — scatter on/off" begin
+    if !HAS_GPU
+        @warn "Skipping EICT scatter test: no GPU backend."
+    else
+        _ts("  scatter OFF")
+        off = _toy_eict_setup(use_noise = false, use_scatter = false)
+        BS.simulate!(off.ws, off.phantom, off.protocol, off.sim_opts)
+        sino_off = Array(off.ws.sinogram)
+
+        _ts("  scatter ON")
+        on = _toy_eict_setup(use_noise = false, use_scatter = true)
+        BS.simulate!(on.ws, on.phantom, on.protocol, on.sim_opts)
+        sino_on = Array(on.ws.sinogram)
+
+        # Scatter must measurably perturb the line integrals (DAS subtraction
+        # of estimated scatter happens before the −log step, so the sinogram
+        # does not equal the scatter-OFF sinogram).
+        @test maximum(abs.(sino_on .- sino_off)) > 1e-6
+        @test all(isfinite, sino_on)
+    end
+end
