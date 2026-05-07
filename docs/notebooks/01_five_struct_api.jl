@@ -450,7 +450,7 @@ end
 sim_std = let
     @info "Simulating: 120 kVp / 200 mA (standard dose)…"
     ws = BS.create_eict_workspace(scanner, protocol_standard, sim_opts, recon_opts, phantom)
-    BS.simulate!(ws, phantom, scanner, protocol_standard, sim_opts, recon_opts)
+    BS.simulate!(ws, phantom, scanner, protocol_standard, sim_opts)
 
     # Copy off GPU before tearing down the workspace
     result = (sino = Array(ws.sino_noisy_out), geom = ws.geom)
@@ -564,7 +564,7 @@ device with no leftover state.
 sim_low = let
     @info "Simulating: 120 kVp / 50 mA (low dose)…"
     ws = BS.create_eict_workspace(scanner, protocol_lowdose, sim_opts, recon_opts, phantom)
-    BS.simulate!(ws, phantom, scanner, protocol_lowdose, sim_opts, recon_opts)
+    BS.simulate!(ws, phantom, scanner, protocol_lowdose, sim_opts)
 
     result = (sino = Array(ws.sino_noisy_out), geom = ws.geom)
 

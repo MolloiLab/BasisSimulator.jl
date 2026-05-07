@@ -278,9 +278,12 @@ end
 # =============================================================================
 
 """
-    simulate!(ws::EICTWorkspace, phantom, scanner, protocol, sim_opts, recon_opts)
+    simulate!(ws::EICTWorkspace, phantom, scanner, protocol, sim_opts)
 
 Run EICT single-kVp simulation using pre-allocated workspace buffers.
+
+Mutates `ws.sinogram` in place (and copies the result into `ws.sino_noisy_out`
+for the notebook-level read pattern).  Returns `nothing`.
 
 Create the workspace with `create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)`.
 Reconstruction is NOT included — handled by the wrapper.
@@ -291,7 +294,6 @@ function simulate!(
     scanner::Scanner,
     protocol::CTProtocol,
     sim_opts::SimOptions=SimOptions(),
-    recon_opts::ReconOptions=ReconOptions(),
 ) where {T}
     geom = ws.geom
     energies = ws.energies
@@ -341,22 +343,19 @@ function simulate!(
     # 1. Spatial field: Ohnesorge convolution (Ohnesorge et al., Eur Radiol 1999)
     # 2. Per-energy weights: Compton fraction 1/(1+(20/E)³) (NIST XCOM)
     # 3. Detector response: spectrum-weighted integration
-    #
-    # Scatter field + weight are saved for decoupled correction (notebook-level).
-    scatter_field_cpu = nothing
+    has_scatter = config.scatter !== nothing
     scatter_total_weight = 0.0
-    if config.scatter !== nothing
-        scatter_field = ws.physics_output  # reuse scratch buffer
-        estimate_scatter_field!(scatter_field, ws.sinogram, config.scatter;
+    scatter_field_gpu = nothing  # set below if has_scatter; reused in step 3
+    if has_scatter
+        scatter_field_gpu = ws.physics_output  # GPU buffer; live until step 3
+        estimate_scatter_field!(scatter_field_gpu, ws.sinogram, config.scatter;
             ws_scatter_temp=ws.scatter_temp, ws_kernel_1d=ws.scatter_kernel_1d)
         ew = compute_scatter_energy_weights(Float64.(ws.energies))
         wn = Float64.(ws.weights_norm)
         η = ws.η_vec
         scatter_total_weight = sum(wn[i] * ew[i] * η[i] for i in eachindex(wn)) /
                                max(sum(wn[i] * η[i] for i in eachindex(wn)), 1e-30)
-        # Save scatter artifacts for notebook-level correction
-        scatter_field_cpu = Array(scatter_field)
-        inject_scatter!(ws.sinogram, scatter_field, scatter_total_weight)
+        inject_scatter!(ws.sinogram, scatter_field_gpu, scatter_total_weight)
     end
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -369,20 +368,11 @@ function simulate!(
     #   4. Clamp at 1 count (DAS hardware minimum)
     #
     # Fused into one kernel to avoid intermediate log/exp round-trips.
-    # Scatter_field + weight still returned for notebook custom processing.
+    # Scatter field is the same GPU buffer estimated in step 2 (no round-trip).
     # ═══════════════════════════════════════════════════════════════════════
     I0_raw = compute_detector_I0(geom, protocol, sum(ws.weights))
     η_eff = sum(ws.weights_norm[i] * ws.η_vec[i] for i in 1:length(ws.η_vec))
     I0_T = T(I0_raw * η_eff)
-
-    has_scatter = config.scatter !== nothing
-    scatter_field_gpu = if has_scatter
-        sf_gpu = similar(ws.sinogram)
-        copyto!(sf_gpu, scatter_field_cpu)
-        sf_gpu
-    else
-        nothing
-    end
 
     if sim_opts.use_noise
         randn!(ws.noise_rand_cpu)
@@ -435,7 +425,6 @@ function simulate!(
             end
         end
     end
-    scatter_field_gpu = nothing
 
     # ═══════════════════════════════════════════════════════════════════════
     # STEP 4: Calibration (intensity → air scan → log)
@@ -482,14 +471,10 @@ function simulate!(
 
     # BHC is decoupled — applied at notebook level
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # Save sinograms
-    # ═══════════════════════════════════════════════════════════════════════
+    # Notebook-level read pattern reads `ws.sino_noisy_out` (Pass 2 will drop
+    # this redundant copy and have notebooks read `ws.sinogram` directly).
     copyto!(ws.sino_noisy_out, ws.sinogram)
-    copyto!(ws.sino_ideal_out, ws.sinogram)
-
-    return (sino_ideal=ws.sino_ideal_out, sino_noisy=ws.sino_noisy_out,
-            scatter_field=scatter_field_cpu, scatter_weight=scatter_total_weight)
+    return nothing
 end
 
 # =============================================================================

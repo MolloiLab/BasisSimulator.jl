@@ -742,7 +742,7 @@ here is geometry, not HU accuracy.
 sim = phantom === nothing ? nothing : let
         @info "Simulating cardiac CTA: 120 kVp / 250 mA / cropped UHR phantom…"
         ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
-        BS.simulate!(ws, phantom, scanner, protocol, sim_opts, recon_opts)
+        BS.simulate!(ws, phantom, scanner, protocol, sim_opts)
 
         result = (sino = Array(ws.sino_noisy_out), geom = ws.geom)
         ws = nothing

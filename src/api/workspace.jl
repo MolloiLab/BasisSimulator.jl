@@ -442,7 +442,6 @@ mutable struct EICTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:Abstr
     rng::MersenneTwister
 
     # ─── Result staging (CPU) ───
-    sino_ideal_out::Array{T,3}
     sino_noisy_out::Array{T,3}
 end
 
@@ -693,7 +692,6 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     rng = MersenneTwister(0)
 
     # CPU staging
-    sino_ideal_out = zeros(T, sino_shape)
     sino_noisy_out = zeros(T, sino_shape)
 
     return EICTWorkspace{T, typeof(sinogram), typeof(geom_source_positions), typeof(noise_rand_gpu)}(
@@ -707,7 +705,7 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         weights_norm, μ_lut_cpu, μ_lut_gpu, μ_table, μ_table_gpu, η_vec, wη_gpu_buf,
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
         geom, energies, weights_vec, config, mats, rng,
-        sino_ideal_out, sino_noisy_out
+        sino_noisy_out
     )
 end
 

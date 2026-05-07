@@ -572,7 +572,7 @@ longer; on a CPU-only fallback it can be **several minutes**.
 sim = phantom === nothing ? nothing : let
         @info "Simulating XCAT body CTA: 120 kVp / 250 mA…"
         ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
-        BS.simulate!(ws, phantom, scanner, protocol, sim_opts, recon_opts)
+        BS.simulate!(ws, phantom, scanner, protocol, sim_opts)
 
         result = (sino = Array(ws.sino_noisy_out), geom = ws.geom)
 
