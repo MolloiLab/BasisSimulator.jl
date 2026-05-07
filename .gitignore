@@ -71,3 +71,6 @@ test/output/*.pdf
 *.offset
 *.scan
 *.prep
+
+# Claude Code agent scratch
+.claude/
