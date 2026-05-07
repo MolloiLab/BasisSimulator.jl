@@ -770,11 +770,11 @@ basissim_cpu_result = let
     @info "[BasisSim CPU] warm-up (excluded from timing)…"
     let
         ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom_cpu)
-        BS.simulate!(ws, phantom_cpu, scanner, protocol, sim_opts)
+        BS.simulate!(ws, phantom_cpu, protocol, sim_opts)
         ws_fdk = BS.create_fdk_recon_workspace(
-            ws.sino_noisy_out, ws.geom, recon_opts.matrix_size; filter = :standard,
+            ws.sinogram, ws.geom, recon_opts.matrix_size; filter = :standard,
         )
-        BS.reconstruct!(ws_fdk, ws.sino_noisy_out, ws.geom, recon_opts.matrix_size)
+        BS.reconstruct!(ws_fdk, ws.sinogram, ws.geom, recon_opts.matrix_size)
         ws = nothing; ws_fdk = nothing
     end
     GC.gc(true)
@@ -783,11 +783,11 @@ basissim_cpu_result = let
     local recon_μ
     elapsed = @elapsed begin
         ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom_cpu)
-        BS.simulate!(ws, phantom_cpu, scanner, protocol, sim_opts)
+        BS.simulate!(ws, phantom_cpu, protocol, sim_opts)
         ws_fdk = BS.create_fdk_recon_workspace(
-            ws.sino_noisy_out, ws.geom, recon_opts.matrix_size; filter = :standard,
+            ws.sinogram, ws.geom, recon_opts.matrix_size; filter = :standard,
         )
-        recon_μ = Array(BS.reconstruct!(ws_fdk, ws.sino_noisy_out, ws.geom, recon_opts.matrix_size))
+        recon_μ = Array(BS.reconstruct!(ws_fdk, ws.sinogram, ws.geom, recon_opts.matrix_size))
         ws = nothing; ws_fdk = nothing
     end
     GC.gc(true)
@@ -813,11 +813,11 @@ basissim_gpu_result = let
     @info "[BasisSim $(GPU_BACKEND.name)] warm-up (excluded from timing)…"
     let
         ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom_gpu)
-        BS.simulate!(ws, phantom_gpu, scanner, protocol, sim_opts)
+        BS.simulate!(ws, phantom_gpu, protocol, sim_opts)
         ws_fdk = BS.create_fdk_recon_workspace(
-            ws.sino_noisy_out, ws.geom, recon_opts.matrix_size; filter = :standard,
+            ws.sinogram, ws.geom, recon_opts.matrix_size; filter = :standard,
         )
-        BS.reconstruct!(ws_fdk, ws.sino_noisy_out, ws.geom, recon_opts.matrix_size)
+        BS.reconstruct!(ws_fdk, ws.sinogram, ws.geom, recon_opts.matrix_size)
         ws = nothing; ws_fdk = nothing
     end
     GC.gc(true)
@@ -826,12 +826,12 @@ basissim_gpu_result = let
     local recon_μ
     elapsed = @elapsed begin
         ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom_gpu)
-        BS.simulate!(ws, phantom_gpu, scanner, protocol, sim_opts)
+        BS.simulate!(ws, phantom_gpu, protocol, sim_opts)
         ws_fdk = BS.create_fdk_recon_workspace(
-            ws.sino_noisy_out, ws.geom, recon_opts.matrix_size; filter = :standard,
+            ws.sinogram, ws.geom, recon_opts.matrix_size; filter = :standard,
         )
         recon_μ = Array(
-            BS.reconstruct!(ws_fdk, ws.sino_noisy_out, ws.geom, recon_opts.matrix_size)
+            BS.reconstruct!(ws_fdk, ws.sinogram, ws.geom, recon_opts.matrix_size)
         )
         ws = nothing; ws_fdk = nothing
     end

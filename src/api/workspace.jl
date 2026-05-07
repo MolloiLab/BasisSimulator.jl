@@ -441,8 +441,9 @@ mutable struct EICTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:Abstr
     mats::Vector
     rng::MersenneTwister
 
-    # ─── Result staging (CPU) ───
-    sino_noisy_out::Array{T,3}
+    # ─── Pre-computed noise constants (scanner + spectrum derived) ───
+    η_eff::T          # sum(weights_norm .* η_vec) — spectrum-averaged detector efficiency
+    σ_e_photon::T     # electronic_noise / (mean_E_keV * detection_gain) — DAS electronic σ
 end
 
 """
@@ -691,8 +692,11 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     # RNG
     rng = MersenneTwister(0)
 
-    # CPU staging
-    sino_noisy_out = zeros(T, sino_shape)
+    # Pre-compute scanner+spectrum-derived noise constants — scalars used every
+    # simulate! call.  Lets the hot path avoid taking `scanner` and re-summing.
+    mean_E_keV = sum(weights_norm[i] * T(energies[i]) for i in 1:length(energies))
+    η_eff_T    = sum(weights_norm[i] * T(η_vec[i])    for i in 1:length(η_vec))
+    σ_e_photon = T(scanner.electronic_noise) / (mean_E_keV * T(scanner.detection_gain))
 
     return EICTWorkspace{T, typeof(sinogram), typeof(geom_source_positions), typeof(noise_rand_gpu)}(
         sinogram, μ_volume, sino_mono, I_transmitted, air_scan,
@@ -705,7 +709,7 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         weights_norm, μ_lut_cpu, μ_lut_gpu, μ_table, μ_table_gpu, η_vec, wη_gpu_buf,
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
         geom, energies, weights_vec, config, mats, rng,
-        sino_noisy_out
+        η_eff_T, σ_e_photon
     )
 end
 

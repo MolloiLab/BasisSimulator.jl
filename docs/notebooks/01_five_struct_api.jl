@@ -419,7 +419,7 @@ output_cpu = let
     BS.simulate!(ws, …)              # or BS.reconstruct!(…)
 
     # 2. Copy results off the device (CPU `Array`)
-    result = Array(ws.sino_noisy_out)
+    result = Array(ws.sinogram)
 
     # 3. Explicit GPU cleanup
     ws = nothing
@@ -450,10 +450,10 @@ end
 sim_std = let
     @info "Simulating: 120 kVp / 200 mA (standard dose)…"
     ws = BS.create_eict_workspace(scanner, protocol_standard, sim_opts, recon_opts, phantom)
-    BS.simulate!(ws, phantom, scanner, protocol_standard, sim_opts)
+    BS.simulate!(ws, phantom, protocol_standard, sim_opts)
 
     # Copy off GPU before tearing down the workspace
-    result = (sino = Array(ws.sino_noisy_out), geom = ws.geom)
+    result = (sino = Array(ws.sinogram), geom = ws.geom)
 
     # Drop refs + force a real GC so device memory comes back
     ws = nothing
@@ -564,9 +564,9 @@ device with no leftover state.
 sim_low = let
     @info "Simulating: 120 kVp / 50 mA (low dose)…"
     ws = BS.create_eict_workspace(scanner, protocol_lowdose, sim_opts, recon_opts, phantom)
-    BS.simulate!(ws, phantom, scanner, protocol_lowdose, sim_opts)
+    BS.simulate!(ws, phantom, protocol_lowdose, sim_opts)
 
-    result = (sino = Array(ws.sino_noisy_out), geom = ws.geom)
+    result = (sino = Array(ws.sinogram), geom = ws.geom)
 
     ws = nothing
     GC.gc(true)

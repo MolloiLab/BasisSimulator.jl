@@ -225,15 +225,15 @@ md"""
 
 Run `BS.simulate!` on each kVp protocol.  The EICT path bakes in
 per-ray spatial scatter + Compton + Rayleigh, and we keep the
-simulator's noisy line-integral sinogram (`ws.sino_noisy_out`).
+simulator's noisy line-integral sinogram (`ws.sinogram`).
 """
 
 # ╔═╡ 05000006-0000-4000-8000-000000000010
 sim_low = let
     @info "Simulating: 80 kVp / $(round(protocol_low.mA, digits = 1)) mA-eff (DE low)…"
     ws = BS.create_eict_workspace(scanner, protocol_low, sim_opts, recon_opts, phantom)
-    BS.simulate!(ws, phantom, scanner, protocol_low, sim_opts)
-    result = (sino = Array(ws.sino_noisy_out), geom = ws.geom)
+    BS.simulate!(ws, phantom, protocol_low, sim_opts)
+    result = (sino = Array(ws.sinogram), geom = ws.geom)
     ws = nothing; GC.gc(true)
     result
 end;
@@ -242,8 +242,8 @@ end;
 sim_high = let
     @info "Simulating: 140 kVp / $(round(protocol_high.mA, digits = 1)) mA-eff (DE high)…"
     ws = BS.create_eict_workspace(scanner, protocol_high, sim_opts, recon_opts, phantom)
-    BS.simulate!(ws, phantom, scanner, protocol_high, sim_opts)
-    result = (sino = Array(ws.sino_noisy_out), geom = ws.geom)
+    BS.simulate!(ws, phantom, protocol_high, sim_opts)
+    result = (sino = Array(ws.sinogram), geom = ws.geom)
     ws = nothing; GC.gc(true)
     result
 end;

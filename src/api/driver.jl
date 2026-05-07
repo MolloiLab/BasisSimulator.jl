@@ -278,20 +278,22 @@ end
 # =============================================================================
 
 """
-    simulate!(ws::EICTWorkspace, phantom, scanner, protocol, sim_opts)
+    simulate!(ws::EICTWorkspace, phantom, protocol, sim_opts)
 
 Run EICT single-kVp simulation using pre-allocated workspace buffers.
 
-Mutates `ws.sinogram` in place (and copies the result into `ws.sino_noisy_out`
-for the notebook-level read pattern).  Returns `nothing`.
+Mutates `ws.sinogram` in place (the final log line-integral sinogram).
+Returns `nothing` — read `ws.sinogram` (and `ws.geom`) off the workspace.
 
-Create the workspace with `create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)`.
-Reconstruction is NOT included — handled by the wrapper.
+Create the workspace with `create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)`;
+scanner-derived noise constants (`η_eff`, `σ_e_photon`) are baked into `ws` at
+that point, so `simulate!` no longer needs `scanner`.
+
+Reconstruction is NOT included — handled by the caller via `reconstruct!`.
 """
 function simulate!(
     ws::EICTWorkspace{T},
     phantom,
-    scanner::Scanner,
     protocol::CTProtocol,
     sim_opts::SimOptions=SimOptions(),
 ) where {T}
@@ -371,15 +373,13 @@ function simulate!(
     # Scatter field is the same GPU buffer estimated in step 2 (no round-trip).
     # ═══════════════════════════════════════════════════════════════════════
     I0_raw = compute_detector_I0(geom, protocol, sum(ws.weights))
-    η_eff = sum(ws.weights_norm[i] * ws.η_vec[i] for i in 1:length(ws.η_vec))
-    I0_T = T(I0_raw * η_eff)
+    I0_T   = T(I0_raw) * ws.η_eff   # ws.η_eff already T-typed, baked at create time
 
     if sim_opts.use_noise
         randn!(ws.noise_rand_cpu)
         copyto!(ws.noise_rand_gpu, ws.noise_rand_cpu)
 
-        mean_E_keV = sum(ws.weights_norm[i] * ws.energies[i] for i in 1:length(ws.energies))
-        σ_e_photon = T(scanner.electronic_noise / (mean_E_keV * scanner.detection_gain))
+        σ_e_photon = ws.σ_e_photon
 
         if σ_e_photon > T(0)
             randn!(ws.enoise_rand_cpu)
@@ -470,10 +470,6 @@ function simulate!(
     end
 
     # BHC is decoupled — applied at notebook level
-
-    # Notebook-level read pattern reads `ws.sino_noisy_out` (Pass 2 will drop
-    # this redundant copy and have notebooks read `ws.sinogram` directly).
-    copyto!(ws.sino_noisy_out, ws.sinogram)
     return nothing
 end
 
