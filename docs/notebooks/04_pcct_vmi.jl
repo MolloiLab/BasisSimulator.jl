@@ -267,9 +267,12 @@ md"""
 ## 5. Forward Project
 
 Run `BS.simulate!` once on the PCCT protocol.  The simulator returns
-`(pcct_sino, I0_bins)` — the 4 per-bin log-line-integral sinograms
-and their matching reference photon counts.  Bin combine and scatter
-correction are decoupled and live here at the notebook level.
+`(pcct_sino, I0_bins, pileup_S)` — the 4 per-bin log-line-integral
+sinograms, their matching reference photon counts, and the MC-LUT
+pile-up migration matrix `S` (passed straight into
+`apply_pcct_pileup_correction!` to invert the pile-up degradation).
+Bin combine and scatter correction are decoupled and live here at
+the notebook level.
 
 Inside `simulate!`:
 - Forward projection uses the **MC-LUT detector response matrix**
