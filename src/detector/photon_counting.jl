@@ -324,7 +324,6 @@ are encoded in the MC DRM R matrix. No separate analytical detector effects are 
 - `weights::AbstractVector`: Spectral weights (normalized photon fluence)
 - `materials::Vector`: Material vector (from get_region_materials())
 - `I0::Real=1e6`: Reference photon count per detector element
-- `apply_spectral_response::Bool=true`: Whether to use spectral response matrix R(E,b)
 
 # Returns
 `EnergyResolvedSinogram` with one sinogram per energy bin.
@@ -368,8 +367,6 @@ function pcct_forward_project(
     weights::AbstractVector,
     materials::Vector = get_region_materials(),
     I0::Real = 1e6,
-    apply_spectral_response::Bool = true,
-    apply_corrections::Bool = false,
     # Workspace buffers (optional — allocate internally if not provided)
     ws_bins = nothing,
     ws_μ_volume = nothing,
@@ -431,23 +428,10 @@ function pcct_forward_project(
     # Pre-compute quantum efficiency for all energies (CPU, scalar values)
     η = ws_η !== nothing ? ws_η : quantum_efficiency_vector(detector.material, detector.thickness_mm, energies)
 
-    # Pre-compute DRM if requested (CPU, precomputed once)
-    R = if ws_R !== nothing
-        ws_R
-    elseif apply_spectral_response
-        compute_mc_drm(detector, kVp)
-    else
-        nothing
-    end
-
-    # Energy grid for R matrix (DRM's own grid, independent of spectrum)
-    R_energies = if ws_R_energies !== nothing
-        ws_R_energies
-    elseif apply_spectral_response
-        collect(range(1.0, Float64(kVp), length=size(R, 1)))
-    else
-        nothing
-    end
+    # MC-LUT detector response matrix R(E, bin).  Either passed in via
+    # `ws_R` (workspace pre-compute) or built here from `compute_mc_drm`.
+    R          = ws_R          !== nothing ? ws_R          : compute_mc_drm(detector, kVp)
+    R_energies = ws_R_energies !== nothing ? ws_R_energies : collect(range(1.0, Float64(kVp), length = size(R, 1)))
 
     # --- Allocate projection-resolution buffers (native or binned) ---
     proj_shape = (proj_geom.n_cols, proj_geom.n_rows, proj_geom.n_angles)
@@ -467,7 +451,7 @@ function pcct_forward_project(
     # TILED SPECTRAL PATH: fused DDA with multi-output (K=16 per tile)
     # Requires: μ_table_gpu + W_matrix_gpu + outputs_flat + spectral response
     # =========================================================================
-    if ws_μ_table_gpu !== nothing && ws_W_matrix_gpu !== nothing && ws_outputs_flat !== nothing && apply_spectral_response && R !== nothing
+    if ws_μ_table_gpu !== nothing && ws_W_matrix_gpu !== nothing && ws_outputs_flat !== nothing
         @info "PCCT TILED PATH: K=16, n_energies=$n_energies, n_bins=$n_bins, mask=$(size(mask))" maxlog=1
 
         TILE_K = 16
@@ -664,28 +648,21 @@ function pcct_forward_project(
         w_T = T(w)
         I0_T = T(I0)
 
-        if apply_spectral_response && R !== nothing
-            n_R = size(R, 1)
-            r_idx = clamp(round(Int, (E_float - 1.0) / (Float64(kVp) - 1.0) * (n_R - 1)) + 1, 1, n_R)
+        # Spectrum × QE × MC-LUT DRM column for each bin: wt = I0 · w(E) · η(E) · R(E, b).
+        # The MC DRM is the single source of detector physics (charge sharing,
+        # fluorescence escape, Compton escape, Fano broadening) — ideal-bin
+        # fallback is intentionally absent.
+        n_R = size(R, 1)
+        r_idx = clamp(round(Int, (E_float - 1.0) / (Float64(kVp) - 1.0) * (n_R - 1)) + 1, 1, n_R)
 
-            for b in 1:n_bins
-                R_val = T(R[r_idx, b])
-                if R_val < T(1e-10)
-                    continue
-                end
-                let wt = I0_T * w_T * η_E * R_val, ba = accum_bins[b]
-                    AK.foreachindex(sino_buf) do idx
-                        ba[idx] += wt * exp(-sino_buf[idx])
-                    end
-                end
+        for b in 1:n_bins
+            R_val = T(R[r_idx, b])
+            if R_val < T(1e-10)
+                continue
             end
-        else
-            bin_idx = _find_energy_bin(E_float, thresholds, Float64(kVp))
-            if bin_idx > 0
-                let wt = I0_T * w_T * η_E, ba = accum_bins[bin_idx]
-                    AK.foreachindex(sino_buf) do idx
-                        ba[idx] += wt * exp(-sino_buf[idx])
-                    end
+            let wt = I0_T * w_T * η_E * R_val, ba = accum_bins[b]
+                AK.foreachindex(sino_buf) do idx
+                    ba[idx] += wt * exp(-sino_buf[idx])
                 end
             end
         end
@@ -729,89 +706,33 @@ function pcct_forward_project(
 end
 
 """
-    _find_energy_bin(energy_keV, thresholds, kVp) -> Int
+    _compute_bin_I0(detector, energies, weights, η, thresholds, bin_idx, kVp, I0; R) -> Float64
 
-Find which energy bin a photon of given energy belongs to (ideal binning).
-Returns 0 if below all thresholds or above kVp.
+Reference photon count I₀ for one energy bin (the unattenuated count expected
+in `bin_idx` — the denominator for the `-log(N / I0)` step in
+`pcct_forward_project`).
+
+`R` is the MC-LUT detector response matrix (`compute_mc_drm`).  Mapping
+each spectrum energy onto its R-row and summing `I0 · w(E) · η(E) · R(E, bin_idx)`
+keeps this consistent with the forward-projection accumulator and guarantees
+the `-log(N / I0)` normalization produces well-defined line integrals.
 """
-function _find_energy_bin(energy_keV::Float64, thresholds::Vector{<:Real}, kVp::Float64)
-    n_bins = length(thresholds)
-    for b in n_bins:-1:1
-        if energy_keV >= thresholds[b]
-            return b
+function _compute_bin_I0(detector, energies, weights, η, thresholds, bin_idx, kVp, I0; R)
+    n_energies = length(energies)
+    n_R = size(R, 1)
+    I0_bin = 0.0
+    for e_idx in 1:n_energies
+        E_float = Float64(energies[e_idx])
+        w = Float64(weights[e_idx])
+        if w < 1e-12
+            continue
         end
+        # Map spectrum energy to DRM grid index
+        r_idx = clamp(round(Int, (E_float - 1.0) / (kVp - 1.0) * (n_R - 1)) + 1, 1, n_R)
+        R_val = R[r_idx, bin_idx]
+        I0_bin += I0 * w * η[e_idx] * R_val
     end
-    return 0
-end
-
-"""
-    _compute_bin_I0(detector, energies, weights, η, thresholds, bin_idx, kVp, I0; R=nothing) -> Float64
-
-Compute the reference photon count I₀ for a specific energy bin.
-This is the unattenuated count expected in this bin (for -log normalization).
-
-When `R` (spectral response matrix) is provided, uses consistent calculation with forward projection.
-When `R` is nothing, falls back to ideal binning (photon goes to exactly one bin based on energy).
-
-The spectral response matrix R accounts for all detector physics effects
-(charge sharing, fluorescence, pileup, anti-coincidence) via MC simulation.
-
-Using R ensures that -log(N/I0_bin) produces the correct line integral values.
-"""
-function _compute_bin_I0(detector, energies, weights, η, thresholds, bin_idx, kVp, I0; R=nothing)
-    if R !== nothing
-        # Use DRM (consistent with forward projection)
-        n_energies = length(energies)
-        n_R = size(R, 1)
-        I0_bin = 0.0
-        for e_idx in 1:n_energies
-            E_float = Float64(energies[e_idx])
-            w = Float64(weights[e_idx])
-            if w < 1e-12
-                continue
-            end
-            # Map spectrum energy to DRM grid index
-            r_idx = clamp(round(Int, (E_float - 1.0) / (kVp - 1.0) * (n_R - 1)) + 1, 1, n_R)
-            R_val = R[r_idx, bin_idx]
-            I0_bin += I0 * w * η[e_idx] * R_val
-        end
-        return max(I0_bin, 1.0)  # Avoid division by zero
-    else
-        # Ideal binning fallback: photon goes to exactly one bin based on energy
-        n_bins = length(thresholds)
-        T_low = Float64(thresholds[bin_idx])
-        T_high = bin_idx < n_bins ? Float64(thresholds[bin_idx + 1]) : kVp
-
-        I0_bin = 0.0
-        for (i, E) in enumerate(energies)
-            E_f = Float64(E)
-            # Last bin includes upper bound (E <= kVp)
-            in_bin = if bin_idx == n_bins
-                E_f >= T_low && E_f <= T_high
-            else
-                E_f >= T_low && E_f < T_high
-            end
-            if in_bin
-                I0_bin += I0 * Float64(weights[i]) * η[i]
-            end
-        end
-        return max(I0_bin, 1.0)  # Avoid division by zero
-    end
-end
-
-"""
-    _compute_degraded_I0(detector, energies, weights, η, thresholds, kVp, I0, flux_rate; R=nothing)
-
-Compute per-bin I0 values for correct -log(N/I0) normalization in `pcct_forward_project`.
-
-Since detector physics are now handled by the MC DRM, this simply computes the
-theoretical per-bin I0 values. The DRM already encodes all degradation effects
-(charge sharing, pileup, etc.) in the R matrix used during forward projection.
-"""
-function _compute_degraded_I0(detector, energies, weights, η, thresholds, kVp, I0, flux_rate; R=nothing)
-    n_bins = length(thresholds)
-    return [_compute_bin_I0(detector, energies, weights, η, thresholds, b,
-                             Float64(kVp), Float64(I0); R=R) for b in 1:n_bins]
+    return max(I0_bin, 1.0)  # Avoid division by zero
 end
 
 # =============================================================================

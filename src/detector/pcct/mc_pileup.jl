@@ -2,25 +2,34 @@
 # Monte Carlo Pulse Pileup Model for PCCT Detectors
 # =============================================================================
 #
-# Includes seminonparalyzable_count_factor (analytical formula, used as
-# fast approximation for count-loss in apply_mc_pileup!)
+# Author: Hamidreza Khodajou-Chokami, PhD. (original PR #10)
+# Per-photon trigger-bin tracking added in 2026 cleanup so the resulting
+# spectral migration matrix S is non-degenerate and column-sums encode
+# count loss directly.
 #
-# Author: Hamidreza Khodajou-Chokami, PhD.
-# Implements Monte Carlo-based pulse pileup simulation that generates random
-# photon arrival times, applies dead-time gating, and computes empirical
-# spectral migration matrices.
+# This file provides the building blocks for Monte Carlo dead-time pile-up
+# simulation:
+#   1. `simulate_pulse_train`   — one MC trial: Poisson arrivals → spectrum
+#                                 sampling → dead-time gating with energy
+#                                 summation; returns per-event recorded
+#                                 energies + the bin of the photon that
+#                                 triggered each event.
+#   2. `compute_mc_pileup_matrix` — averages many trials into the (true_bin →
+#                                  recorded_bin) migration matrix S.
+#                                  S[i, j] = P(true bin-j photon recorded in
+#                                  bin i). Column sums ≤ 1, the deficit being
+#                                  the count-loss for bin-j photons that piled
+#                                  up into other events.
 #
-# Advantages over analytical (Taguchi 2010):
-#   - Naturally handles arbitrary spectrum shapes
-#   - Captures higher-order pileup correlations
-#   - Accounts for dead-time retriggering with exact pulse shapes
-#   - Parametrized by mAs, spectrum quality, and detector specs
-#
-# The MC pileup produces a lookup table (spectral migration matrix S) that
-# can be cached and reused during GPU-accelerated forward projection.
+# `simulate!(::PCCTWorkspace)` (see `src/api/driver.jl`) caches S in the
+# workspace at construction time and applies it as `recorded = S × counts`,
+# combined with a renormalized I0 baseline `I0_recorded = S × I0_truth`.  No
+# analytical count-factor / Taguchi fallback is used on the live path —
+# `seminonparalyzable_count_factor` and `mc_pileup_count_factor` remain only
+# as dose-diagnostic helpers (the former emits a deprecation warning).
 #
 # References:
-# - Taguchi 2010, Med Phys 37:3957-3969 (analytical pileup model)
+# - Taguchi 2010, Med Phys 37:3957-3969 (analytical pileup model — superseded)
 # - Yang 2025, Med Phys 52:3658-3674 (seminonparalyzable model)
 # - Zambon & Amato 2023, Front Phys 11:1205638 (retrigger model)
 # =============================================================================
@@ -39,6 +48,12 @@ Result from a single MC pulse train simulation.
 - `recorded_energies::Vector{Float64}`: Energies of recorded events [keV]
 - `true_bin_counts::Vector{Int}`: Photon counts per energy bin (true)
 - `recorded_bin_counts::Vector{Int}`: Photon counts per energy bin (recorded)
+- `trigger_bins::Vector{Int}`: For each recorded event, the bin of the
+  *triggering* photon (the first photon to break dead time).  Photons that
+  pile up afterwards contribute energy to the event but do not get their own
+  trigger entry — that is the count-loss mechanism.  Used by
+  `compute_mc_pileup_matrix` to build a non-degenerate (true → recorded)
+  migration matrix.  `0` indicates a sub-threshold trigger.
 """
 struct PileupResult
     n_true::Int
@@ -47,6 +62,7 @@ struct PileupResult
     recorded_energies::Vector{Float64}
     true_bin_counts::Vector{Int}
     recorded_bin_counts::Vector{Int}
+    trigger_bins::Vector{Int}
 end
 
 """
@@ -115,7 +131,8 @@ function simulate_pulse_train(
     if n_photons == 0
         return PileupResult(0, 0,
             Float64[], Float64[],
-            zeros(Int, n_thresh), zeros(Int, n_thresh))
+            zeros(Int, n_thresh), zeros(Int, n_thresh),
+            Int[])
     end
 
     # Generate arrival times (sorted uniform in [0, T_obs])
@@ -135,13 +152,19 @@ function simulate_pulse_train(
         photon_energies[i] = E_vals[idx]
     end
 
-    # Apply dead-time gating and pileup
+    # Apply dead-time gating and pileup.
+    # `trigger_bins[k]` records the bin of the photon that triggered event k
+    # (the photon that broke dead time). Photons that pile up onto an
+    # already-open event contribute energy but do NOT seed a new trigger —
+    # that is the count-loss mechanism.
     recorded_energies = Float64[]
+    trigger_bins      = Int[]
     it = 1
     while it <= n_photons
         # This photon triggers an event
         event_energy = photon_energies[it]
-        event_time = arrival_times[it]
+        event_time   = arrival_times[it]
+        trigger_bin  = _find_threshold_bin(event_energy, thresholds_keV)
 
         if model == :seminonparalyzable
             # Seminonparalyzable: dead time can be retriggered
@@ -157,6 +180,7 @@ function simulate_pulse_train(
                 jt += 1
             end
             push!(recorded_energies, event_energy)
+            push!(trigger_bins, trigger_bin)
             it = jt
         else
             # Nonparalyzable: fixed dead time, no retrigger
@@ -167,13 +191,14 @@ function simulate_pulse_train(
                 jt += 1
             end
             push!(recorded_energies, event_energy)
+            push!(trigger_bins, trigger_bin)
             it = jt
         end
     end
 
     # Bin true and recorded photons
     true_bins = zeros(Int, n_thresh)
-    rec_bins = zeros(Int, n_thresh)
+    rec_bins  = zeros(Int, n_thresh)
 
     for E in photon_energies
         b = _find_threshold_bin(E, thresholds_keV)
@@ -192,7 +217,8 @@ function simulate_pulse_train(
     return PileupResult(
         n_photons, length(recorded_energies),
         photon_energies, recorded_energies,
-        true_bins, rec_bins
+        true_bins, rec_bins,
+        trigger_bins,
     )
 end
 
@@ -250,14 +276,24 @@ end
                               model=:seminonparalyzable,
                               seed=42) -> Matrix{Float64}
 
-Compute empirical spectral migration matrix S from Monte Carlo pulse train
-simulations.
+Compute the spectral-migration matrix `S` from Monte Carlo pulse-train
+simulations.  `S[i, j]` = fraction of true bin-`j` photons that end up
+recorded in bin `i`.  Column sums are ≤ 1 — the column-`j` deficit is the
+count-loss for bin-`j` photons that fell during another event's dead time
+and contributed energy without seeding a recorded event of their own.
 
-S[j, i] = probability that a true count in bin i is recorded in bin j,
-accounting for dead-time pileup and energy summation.
+# Algorithm
+For each MC trial we run `simulate_pulse_train` (Poisson arrivals →
+spectrum-CDF energies → dead-time gating with energy summation), and the
+trial result links each recorded event to the bin of its *triggering*
+photon (the one that broke dead time). We accumulate
+`transition_counts[recorded_bin, trigger_bin] += 1` per event, count every
+incident photon in `total_true[bin]`, and divide column-wise:
+`S[i, j] = transition_counts[i, j] / total_true[j]`.
 
-This matrix is compatible with `compute_spectral_migration_matrix()` from
-the analytical pileup model and can be used as a drop-in replacement.
+This is non-degenerate by construction (each column reflects what happens
+to the photons of a specific true bin) and obeys the physical asymmetry
+that pile-up can only push counts UP in energy (S[i, j] ≈ 0 for i < j).
 
 # Arguments
 - `thresholds_keV`: Energy threshold values [keV]
@@ -301,227 +337,77 @@ function compute_mc_pileup_matrix(
     n_bins = length(thresholds_keV)
     thresh = Float64.(thresholds_keV)
 
-    # Accumulate true → recorded bin transitions
-    transition_counts = zeros(Float64, n_bins, n_bins)  # [recorded, true]
-    total_true = zeros(Float64, n_bins)
+    # ─── Safety guard: cap expected photons per trial ───────────────────────
+    # `simulate_pulse_train` allocates `Vector{Float64}` of length `n_photons`
+    # for arrival times and energies.  If the user passes an unrealistic
+    # `count_rate` (e.g. a synthetic test scanner with overwhelming mAs/view),
+    # `expected_count = count_rate × observation_time` can blow up to 10¹¹+
+    # photons per trial, requiring hundreds of GB to allocate the arrival-time
+    # vector.  Shrink `observation_time` so each trial samples no more than
+    # ~10⁶ photons; MC statistics still converge over `n_trials`.
+    MAX_PHOTONS_PER_TRIAL = 1.0e6
+    obs_time_s = Float64(observation_time_s)
+    expected = Float64(count_rate) * obs_time_s
+    if expected > MAX_PHOTONS_PER_TRIAL
+        scale       = MAX_PHOTONS_PER_TRIAL / expected
+        obs_time_s *= scale
+        @warn """
+        compute_mc_pileup_matrix: expected $(round(expected; sigdigits=3)) photons
+        per trial at count_rate=$(count_rate) photons/s — would cause arrival-
+        time vector to blow up. Shrunk observation_time_s from $(observation_time_s)
+        to $(obs_time_s) so each trial samples ≤ $(MAX_PHOTONS_PER_TRIAL) photons.
+        MC statistics still converge across $(n_trials) trials.
+        """ maxlog=1
+    end
+
+    # transition_counts[i, j] tallies (true bin j → recorded bin i) events.
+    # total_true[j] tallies every incident bin-j photon, including those that
+    # fell in a dead-time window — the deficit gives count-loss naturally.
+    transition_counts = zeros(Float64, n_bins, n_bins)
+    total_true        = zeros(Float64, n_bins)
 
     for trial in 1:n_trials
         result = simulate_pulse_train(
             spectrum_weights, energies, count_rate, dead_time_ns;
-            observation_time_s=observation_time_s,
-            model=model,
-            thresholds_keV=thresh,
-            rng=rng
+            observation_time_s = obs_time_s,
+            model = model,
+            thresholds_keV = thresh,
+            rng = rng,
         )
 
-        # Accumulate true bin counts
+        # Every incident photon counts toward the true-bin denominator.
         for b in 1:n_bins
             total_true[b] += result.true_bin_counts[b]
         end
 
-        # For spectral migration, we need to track which true bins
-        # contributed to which recorded bins. Since individual photons
-        # can pile up, the exact mapping is complex.
-        # Approximation: use the ratio of recorded/true bin counts
-        # weighted by the spectrum shape.
-        for b in 1:n_bins
-            if result.true_bin_counts[b] > 0
-                # How these true-bin counts are redistributed
-                for j in 1:n_bins
-                    transition_counts[j, b] += result.recorded_bin_counts[j]
-                end
+        # Each recorded event has a known triggering-photon bin AND a known
+        # recorded bin (computed from the energy-summed event energy).  Bin
+        # the migration directly: trigger_bin → recorded_bin += 1.
+        for k in 1:result.n_recorded
+            trig_b = result.trigger_bins[k]
+            rec_b  = _find_threshold_bin(result.recorded_energies[k], thresh)
+            if trig_b > 0 && rec_b > 0
+                transition_counts[rec_b, trig_b] += 1.0
             end
         end
     end
 
-    # Normalize to get migration probabilities
+    # Normalize column-wise: S[i, j] = N_recorded(j → i) / N_true(j).
     S = zeros(Float64, n_bins, n_bins)
-    for i in 1:n_bins
-        col_sum = sum(transition_counts[:, i])
-        if col_sum > 0.0
-            # Normalize: fraction of true-bin-i counts → recorded-bin-j
-            for j in 1:n_bins
-                S[j, i] = transition_counts[j, i] / col_sum
+    for j in 1:n_bins
+        if total_true[j] > 0.0
+            for i in 1:n_bins
+                S[i, j] = transition_counts[i, j] / total_true[j]
             end
         else
-            S[i, i] = 1.0  # No data → identity
+            S[j, j] = 1.0  # No data for true bin j → fall back to identity column
         end
     end
-
-    # Ensure columns sum to ≤ 1
-    for i in 1:n_bins
-        col_sum = sum(S[:, i])
-        if col_sum > 1.0
-            S[:, i] ./= col_sum
-        end
-    end
-
     return S
-end
-
-"""
-    mc_pileup_count_factor(spectrum_weights, energies, count_rate, dead_time_ns;
-                            n_trials=10000, observation_time_s=1e-3,
-                            model=:seminonparalyzable, seed=42) -> Float64
-
-Compute empirical count-loss factor from MC simulation.
-
-Returns N_recorded / N_true averaged over many trials.
-This is the MC equivalent of `seminonparalyzable_count_factor(aτ)`.
-"""
-function mc_pileup_count_factor(
-    spectrum_weights::AbstractVector{<:Real},
-    energies::AbstractVector{<:Real},
-    count_rate::Real,
-    dead_time_ns::Real;
-    n_trials::Int=10000,
-    observation_time_s::Real=1e-3,
-    model::Symbol=:seminonparalyzable,
-    seed::Int=42
-)
-    rng = MersenneTwister(seed)
-    total_true = 0
-    total_recorded = 0
-    thresh = [20.0]  # Minimal threshold for counting
-
-    for _ in 1:n_trials
-        result = simulate_pulse_train(
-            spectrum_weights, energies, count_rate, dead_time_ns;
-            observation_time_s=observation_time_s,
-            model=model,
-            thresholds_keV=thresh,
-            rng=rng
-        )
-        total_true += result.n_true
-        total_recorded += result.n_recorded
-    end
-
-    return total_true > 0 ? Float64(total_recorded) / Float64(total_true) : 1.0
-end
-
-"""
-    apply_mc_pileup!(bins, detector, flux_rate, spectrum_weights, energies;
-                      n_mc_trials=10000, seed=42) -> bins
-
-Apply pulse pileup effects using Monte Carlo-computed spectral migration matrix.
-
-Drop-in replacement for `apply_pulse_pileup!()` that uses MC simulation
-instead of the analytical Taguchi 2010 model.
-
-# Arguments
-- `bins::Vector{Array}`: Energy-binned counts
-- `detector::PhotonCountingDetector`: Detector specification
-- `flux_rate::Real`: Photon flux rate [photons/s/mm²]
-- `spectrum_weights`: Normalized spectral weights
-- `energies`: Energy values [keV]
-
-# Keyword Arguments
-- `n_mc_trials::Int=10000`: Number of MC pulse trains per pixel
-- `seed::Int=42`: Random seed
-"""
-function apply_mc_pileup!(
-    bins::Vector{A},
-    detector::PhotonCountingDetector,
-    flux_rate::Real,
-    spectrum_weights::AbstractVector{<:Real},
-    energies::AbstractVector{<:Real};
-    n_mc_trials::Int=10000,
-    seed::Int=42,
-    ws_mc_S::Union{Nothing,Matrix{Float64}}=nothing
-) where {T,A<:AbstractArray{T,3}}
-
-    if !detector.enable_pile_up || detector.dead_time_ns <= 0.0
-        return bins
-    end
-
-    pixel_area = Float64(detector.pixel_size_mm[1] * detector.pixel_size_mm[2])
-    count_rate = Float64(flux_rate) * pixel_area  # photons/s per pixel
-    τ_ns = Float64(detector.dead_time_ns)
-
-    # Compute MC pileup matrix (CPU, precomputed once)
-    S = if ws_mc_S !== nothing
-        ws_mc_S
-    else
-        compute_mc_pileup_matrix(
-            detector.energy_thresholds_keV,
-            spectrum_weights, energies,
-            count_rate, τ_ns;
-            n_trials=n_mc_trials,
-            seed=seed
-        )
-    end
-
-    # Compute count-loss factor from MC
-    aτ = count_rate * τ_ns * 1e-9
-    count_factor = T(seminonparalyzable_count_factor(aτ))
-
-    # Apply count rate reduction
-    for bin in bins
-        let pf = count_factor, b = bin
-            AK.foreachindex(b) do idx
-                b[idx] *= pf
-            end
-        end
-    end
-
-    # Apply MC spectral migration
-    n_bins = length(bins)
-    if n_bins >= 2 && aτ > 0.001
-        for src_bin in 1:n_bins
-            for dst_bin in 1:n_bins
-                if dst_bin == src_bin
-                    continue
-                end
-                frac = T(S[dst_bin, src_bin])
-                if frac > T(1e-6)
-                    # Transfer fraction of counts from src → dst
-                    diag_val = S[src_bin, src_bin]
-                    # Normalize: fraction relative to diagonal
-                    transfer_frac = if diag_val > 0.0
-                        T(frac / (diag_val + sum(S[j, src_bin] for j in 1:n_bins if j != src_bin)))
-                    else
-                        T(0)
-                    end
-
-                    if transfer_frac > T(1e-6)
-                        let cb = bins[src_bin], db = bins[dst_bin], f = transfer_frac
-                            AK.foreachindex(cb) do idx
-                                transfer = cb[idx] * f
-                                db[idx] += transfer
-                                cb[idx] -= transfer
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    return bins
-end
-
-# =============================================================================
-# Analytical Count-Loss Factor (kept as fast approximation)
-# =============================================================================
-
-"""
-    seminonparalyzable_count_factor(aτ; f_retrigger=0.3) -> Float64
-
-Analytical count-loss factor for seminonparalyzable dead-time model.
-N_recorded/N_true = 1 / (1 + aτ_eff) where aτ_eff = aτ × (1 + f_retrigger × aτ).
-"""
-function seminonparalyzable_count_factor(aτ::Real; f_retrigger::Float64=0.3)
-    x = Float64(aτ)
-    x ≤ 0.0 && return 1.0
-    aτ_eff = x * (1.0 + f_retrigger * x)
-    return 1.0 / (1.0 + aτ_eff)
 end
 
 # =============================================================================
 # Exports
 # =============================================================================
 
-export PileupResult, simulate_pulse_train
-export compute_mc_pileup_matrix, mc_pileup_count_factor
-export apply_mc_pileup!
-export seminonparalyzable_count_factor
+export PileupResult, simulate_pulse_train, compute_mc_pileup_matrix

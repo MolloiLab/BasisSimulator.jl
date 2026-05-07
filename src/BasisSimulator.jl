@@ -121,6 +121,9 @@ include("source/heel_effect.jl")
 # Beam hardening correction (water-based polynomial)
 include("correction/beam_hardening_correction.jl")
 
+# PCCT pulse-pileup correction (inverse of the MC pile-up applied by simulate!)
+include("correction/pcct_pileup_correction.jl")
+
 # =============================================================================
 # Unified Physics Pipeline
 # Depends on all physics effects above including CatSim-style

@@ -244,6 +244,7 @@ sim_opts = BS.SimOptions(
     fidelity = :pcct,
     seed = 1234,
     pcct_noise_reduction = 0.3,
+    # use_pcct_pileup = false,
 );
 
 # ╔═╡ 06000005-0000-4000-8000-000000000020
@@ -263,22 +264,62 @@ end;
 md"""
 ## 5. Forward Project
 
-Run `BS.simulate!` once on the PCCT protocol.  The simulator returns 4
-per-bin sinograms + per-bin I0 + the spatial scatter field.  We apply
-a model-based per-bin scatter correction (Ohnesorge re-estimation from
-the recombined primary, scaled by spectrum × η × DRM bin weights).
+Run `BS.simulate!` once on the PCCT protocol.  The simulator returns
+`(pcct_sino, I0_bins)` — the 4 per-bin log-line-integral sinograms
+and their matching reference photon counts.  Bin combine and scatter
+correction are decoupled and live here at the notebook level.
+
+Inside `simulate!`:
+- Forward projection uses the **MC-LUT detector response matrix**
+  (`compute_mc_drm` → `cdte_response_v4.jls`) — captures CdTe transport,
+  Fano noise, charge cloud (Dreier 2018), 3×3 charge sharing, and
+  threshold comparison in a single Monte-Carlo-derived R(E,b).
+- Pulse pileup is the **MC-LUT spectral-migration matrix S**
+  (`compute_mc_pileup_matrix` running 5 000 trials of `simulate_pulse_train`,
+  with per-event trigger-bin tracking so columns are non-degenerate).
+  S applies inter-bin migration AND count loss in one multiply —
+  column sums ≤ 1, the deficit being the count loss for that true bin.
+  Toggle with `SimOptions(use_pcct_pileup=…)`; default ON for `:pcct`.
+
+The returned `I0_bins` is the **truth** per-bin air baseline
+(spectrum × η × MC-DRM, pre-pile-up).  Bins are
+`-log(N_recorded / I0_truth[b])`, so the round-trip identity
+`I0_bins[b] · exp(-pcct_sino.bins[b]) = N_recorded[b]` holds whether
+pile-up is on or off — the bin-combine and scatter-correction blocks
+below operate in count domain without needing any extra bookkeeping.
+With pile-up on, an air ray gives a small per-bin offset
+`log(I0_truth[b] / I0_recorded[b])` — the physical signature of pile-up
+"dimming" each bin's air baseline — rather than exactly zero.
+
+After `simulate!` we apply a model-based per-bin scatter correction
+(Ohnesorge re-estimation from the recombined primary, scaled by
+spectrum × η × MC-DRM bin weights).  When pile-up is on, those per-bin
+scatter fractions are first redistributed through the same MC migration
+matrix S the simulator applied — so the subtraction targets the
+**recorded** scatter contribution, not the truth one.
 """
 
 # ╔═╡ 06000006-0000-4000-8000-000000000010
 sim_bins = let
     @info "Simulating: $(Int(protocol.kVp)) kVp / $(round(protocol.mA, digits = 1)) mA (PCCT 4-bin)…"
     ws = BS.create_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
-    result = BS.simulate!(ws, phantom, scanner, protocol, sim_opts, recon_opts)
+    result = BS.simulate!(ws, phantom, protocol, sim_opts)
 
     geom = ws.geom
-    bins = [Array(b) for b in result.pcct_sino.bins]
+    # ── PCCT pile-up correction (decoupled, mirrors how a clinical scanner's
+    #    recon software un-piles-up before any downstream processing).  When
+    #    pile-up is off `result.pileup_S === nothing` and this is a no-op.
+    #    Applied directly on the GPU bins to keep the buffers warm.
+    if result.pileup_S !== nothing
+        BS.apply_pcct_pileup_correction!(result.pcct_sino.bins, result.I0_bins, result.pileup_S)
+    end
+
+    bins    = [Array(b) for b in result.pcct_sino.bins]
     I0_bins = copy(result.I0_bins)
 
+    # ── Decoupled scatter correction (same as before — bins are now in
+    #    truth-domain after pile-up correction so the standard per-bin
+    #    spectrum × η × MC-DRM scatter fractions apply directly).
     let
         I0_total = Float32(sum(I0_bins))
         eps_f = Float32(1.0e-10)
@@ -360,6 +401,86 @@ let
     CM.Colorbar(
         fig[1:2, 3]; colormap = :viridis, colorrange = sino_window,
         label = "Log Line Integral", width = 16, labelsize = 22, ticklabelsize = 18,
+    )
+    fig
+end
+
+# ╔═╡ 06000006-0000-4000-8000-000000000045
+md"""
+#### Intermediate FBP per Bin (μ-domain sanity check)
+
+A quick per-bin FDK on the raw simulator sinograms — *before* the SVD
+denoiser, the bin combine, or the polynomial decomposition — so we can
+eyeball that the photon-counting forward model is producing physically
+sensible images at each energy band.
+
+Output is the linear attenuation coefficient **μ (cm⁻¹)**, the natural
+unit of the FBP — no HU conversion yet.  Lower energy bins should
+register higher μ for the same attenuator (μ rolls off with E), and
+the same rod ordering should be visible across all four bins.
+"""
+
+# ╔═╡ 06000006-0000-4000-8000-000000000050
+sim_bins_fbp = let
+    matrix_size = recon_opts.matrix_size
+    geom        = sim_bins.geom
+
+    fdk_filter = BS.CustomFilter(
+        (0.0, 0.25, 0.5, 0.75, 1.0),
+        (1.0, 0.75, 0.6,  0.2,  0.001),
+    )
+
+    function _fbp(sino_cpu)
+        sino_gpu = to_gpu(Float32.(sino_cpu))
+        ws = BS.create_fdk_recon_workspace(
+            sino_gpu, geom, matrix_size; filter = fdk_filter,
+        )
+        recon = Array(BS.reconstruct!(ws, sino_gpu, geom, matrix_size))
+        ws = nothing; sino_gpu = nothing
+        GC.gc(true)
+        return Float32.(recon)
+    end
+
+    [_fbp(b) for b in sim_bins.bins]
+end;
+
+# ╔═╡ 06000006-0000-4000-8000-000000000060
+let
+    n_z = size(sim_bins_fbp[1], 3)
+    mid_z = n_z ÷ 2 + 1
+
+    bin_titles = ("Bin 1", "Bin 2", "Bin 3", "Bin 4")
+    bin_subs   = ("20 – 35 keV", "35 – 55 keV", "55 – 70 keV", "> 70 keV")
+    slices     = [sim_bins_fbp[k][:, :, mid_z] for k in 1:4]
+
+    # Dynamic shared range across all 4 bins — q1/q99 percentile clipping
+    all_v = vcat([vec(s) for s in slices]...)
+    mu_window = (
+        Float64(quantile(all_v, 0.01)),
+        Float64(quantile(all_v, 0.99)),
+    )
+
+    fig = CM.Figure(size = (1180, 1180))
+    axis_kwargs = (
+        titlesize = 32, subtitlesize = 24,
+        xlabel = "x", ylabel = "y",
+        xlabelsize = 22, ylabelsize = 22,
+        xticklabelsize = 16, yticklabelsize = 16,
+        aspect = CM.DataAspect(),
+    )
+
+    for k in 1:4
+        r = ((k - 1) ÷ 2) + 1
+        c = ((k - 1) % 2) + 1
+        ax = CM.Axis(
+            fig[r, c]; title = bin_titles[k], subtitle = bin_subs[k],
+            axis_kwargs...,
+        )
+        CM.heatmap!(ax, slices[k]; colormap = :viridis, colorrange = mu_window)
+    end
+    CM.Colorbar(
+        fig[1:2, 3]; colormap = :viridis, colorrange = mu_window,
+        label = "μ (cm⁻¹)", width = 16, labelsize = 22, ticklabelsize = 18,
     )
     fig
 end
@@ -1460,6 +1581,9 @@ low-keV Mono+ output.
 # ╟─06000006-0000-4000-8000-000000000001
 # ╠═06000006-0000-4000-8000-000000000010
 # ╟─06000006-0000-4000-8000-000000000040
+# ╟─06000006-0000-4000-8000-000000000045
+# ╠═06000006-0000-4000-8000-000000000050
+# ╟─06000006-0000-4000-8000-000000000060
 # ╟─06000007-0000-4000-8000-000000000001
 # ╠═06000007-0000-4000-8000-000000000005
 # ╠═06000007-0000-4000-8000-000000000010

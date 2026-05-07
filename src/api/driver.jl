@@ -4,7 +4,14 @@
 High-level driver for running end-to-end CT simulations.
 """
 
-export simulate!, add_system_noise_floor!, compute_detector_I0
+export simulate!,
+       reconstruct!,
+       add_system_noise_floor!,
+       compute_detector_I0,
+       build_physics_config,
+       resolve_source_spectrum_without_bowtie,
+       resolve_source_spectrum_with_bowtie,
+       apply_bowtie_to_spectrum
 
 # =============================================================================
 # Detector I0 Computation
@@ -13,12 +20,29 @@ export simulate!, add_system_noise_floor!, compute_detector_I0
 """
     compute_detector_I0(geom, protocol, spectrum_flux_sum) -> Float64
 
-Compute the expected photon count per detector pixel per view.
+Expected primary photon count per detector pixel per view (no detector
+quantum efficiency applied — combine with `quantum_efficiency_vector` at the
+call site if needed).
 
-I₀ = spectrum_flux_sum × mA × time_per_view × pixel_area_mm²
+    I₀ = spectrum_flux_sum × mA × time_per_view × pixel_area_at_detector_mm²
 
-where `spectrum_flux_sum` is the integrated spectral flux from `resolve_source_spectrum_without_bowtie`
-(units: photons/mAs/mm² at scanner SDD).
+where `time_per_view = protocol.rotation_time / protocol.views` and
+`pixel_area_at_detector_mm² = (pixel_size · M) × (pixel_row_size · M) · 100`
+with `M = SDD/SAD` and pixel sizes in cm at isocenter (the `· 100` folds in
+the cm→mm conversion of both edges).
+
+`spectrum_flux_sum = sum(weights)` from `resolve_source_spectrum_without_bowtie`.
+That spectrum has units of photons/mAs/mm² **at the scanner SDD** — the
+`(750 mm / SDD)²` inverse-square-law correction is already baked into the
+upstream `filter_spectrum` step, so no distance factor appears here.
+
+# Reference (port from XCIST/CatSim, GE Research)
+- `gecatsim/pyfiles/Spectrum.py`        — defines `viewTime = rotationTime/views`
+                                          and `Ivec *= mA × viewTime`.
+- `gecatsim/pyfiles/Detection_Flux.py`  — multiplies by detector active area
+                                          and the inverse-square distance
+                                          factor (which BasisSimulator folds
+                                          into `filter_spectrum` instead).
 """
 function compute_detector_I0(geom::CTGeometry, protocol::CTProtocol, spectrum_flux_sum::Float64)
     SDD_mm = geom.SDD * 10.0
@@ -59,49 +83,45 @@ end
 # =============================================================================
 
 """
-    simulate!(ws::PCCTWorkspace, phantom, scanner, protocol, sim_opts, recon_opts; materials=nothing)
+    simulate!(ws::PCCTWorkspace, phantom, protocol, sim_opts) -> (pcct_sino, I0_bins)
 
-Run PCCT simulation using pre-allocated workspace buffers for zero allocations.
+Run PCCT simulation using pre-allocated workspace buffers for zero allocations
+on the second and later calls (the first call may JIT-allocate).
 
-The first call may allocate due to JIT compilation. The second call with the same
-workspace achieves `@allocated == 0`.
+All setup data (geometry, spectrum, physics config, detector, spectral response,
+materials) is baked into the workspace at `create_workspace()` time.  The PCCT
+detector model **always** applies the MC-LUT detector response matrix
+(`compute_mc_drm`); the analytical / ideal-binning fallback inside
+`pcct_forward_project` is deprecated and only reachable by callers that bypass
+this driver.
 
-Create the workspace with `create_workspace(scanner, protocol, sim_opts, recon_opts, phantom)`.
-
-All setup data (geometry, spectrum, physics config, detector, spectral response matrices)
-is pre-computed in the workspace by `create_workspace()`. Reconstruction is handled
-separately via `reconstruct!()`.
+Pulse pileup is on by default and toggleable via `sim_opts.use_pcct_pileup`.
+Bin combination, scatter correction, and reconstruction are all decoupled —
+do them at the notebook level using the returned per-bin sinograms and the
+ground-truth `I0_bins`.
 
 # Returns
-Named tuple with `pcct_sino` and `mat_map` fields.
+- `pcct_sino` — `EnergyResolvedSinogram` (per-bin log line integrals).
+- `I0_bins`   — per-bin reference photon count vector (for `-log(N/I0)` undo).
 """
 function simulate!(
     ws::PCCTWorkspace{T},
     phantom,
-    scanner::Scanner,
     protocol::CTProtocol,
-    sim_opts::SimOptions=SimOptions(),
-    recon_opts::ReconOptions=ReconOptions();
-    materials::Union{Nothing,Vector}=nothing
+    sim_opts::SimOptions = SimOptions(),
 ) where {T}
-    # All setup data comes from workspace (pre-computed in create_workspace)
-    geom = ws.geom
-    energies = ws.energies
-    weights = ws.weights
-    config = ws.config
+    geom          = ws.geom
+    energies      = ws.energies
+    weights       = ws.weights
+    config        = ws.config
     pcct_detector = ws.pcct_detector
-    mats = ws.mats
-    use_detector_fx = ws.use_detector_fx
-    use_corrections = ws.use_corrections
-    kVp = ws.kVp
+    mats          = ws.mats
 
     # Forward projection with workspace buffers (including native-res path + tiled spectral)
     pcct_sino = pcct_forward_project(
         phantom.mask, geom, pcct_detector;
         energies=energies, weights=weights,
         materials=mats,
-        apply_spectral_response=true,
-        apply_corrections=use_corrections,
         ws_bins=ws.bins, ws_μ_volume=ws.μ_volume, ws_sino_buf=ws.sino_buf,
         ws_scratch=ws.scratch,
         ws_thresholds_T=ws.thresholds_T,
@@ -144,7 +164,6 @@ function simulate!(
     I0_bins = ws.I0_bins
     I0_total = T(sum(I0_bins))
     eps_combine = T(1e-10)
-    bin_weights_out = nothing  # saved for decoupled scatter correction
 
     if config.scatter !== nothing
         # Step 1: Combine primary bins → combined_primary (for scatter spatial estimation)
@@ -176,7 +195,6 @@ function simulate!(
 
         # Step 4: Inject scatter into each bin
         inject_scatter_bins!(pcct_sino.bins, scatter_field, I0_bins, I0_total, bin_weights)
-        bin_weights_out = bin_weights
     end
 
     # ─── Noise (in-place on pcct_sino.bins — now includes scatter in counts) ───
@@ -194,48 +212,88 @@ function simulate!(
             noise_reduction=sim_opts.pcct_noise_reduction)
     end
 
-    # ─── MC pulse pileup (pre-computed at workspace creation) ───
-    if ws.pileup_count_factor < 0.999
-        cf = T(ws.pileup_count_factor)
-        for (b_idx, bin) in enumerate(pcct_sino.bins)
-            I0b = T(ws.I0_bins[b_idx])
-            let cf=cf, I0b=I0b, b=bin, eps=T(1e-10)
-                AK.foreachindex(b) do idx
-                    N = I0b * exp(-b[idx])
-                    N_pileup = cf * N
-                    b[idx] = -log(max(N_pileup, eps) / I0b)
-                end
+    # ─── MC-LUT pulse pileup — full spectral-migration matrix S ───
+    # S[i,j] = P(true-bin-j count is recorded in bin-i), pre-computed at
+    # workspace creation by `compute_mc_pileup_matrix` (Monte Carlo of
+    # `simulate_pulse_train` with per-event trigger-bin tracking).  Column
+    # sums ≤ 1 — the deficit is the count loss, so a single S × counts
+    # multiply captures inter-bin migration AND count loss in one pass.
+    # No analytical Taguchi / semi-non-paralyzable count factor.
+    #
+    # Per-pixel pipeline (one fused kernel):
+    #   counts[j]   = I0_truth[j] · exp(-bins[j])
+    #   recorded[i] = Σ_j S[i,j] · counts[j]
+    #   bins[i]     = -log(recorded[i] / I0_truth[i])      ←  truth-basis (KEY!)
+    #
+    # **Truth-basis normalization** (NOT recorded-basis): the post-pileup
+    # bin is `-log(recorded / I0_truth)` so the I0 returned to the caller
+    # remains the truth I0 — i.e. `I0_b · exp(-bin) = recorded_count`,
+    # the count-domain math notebooks rely on for scatter correction stays
+    # valid.  Bins for an air ray are no longer exactly 0 but a small
+    # per-bin offset `log(I0_truth / I0_recorded)` reflecting how much of
+    # the bin's air baseline pile-up shifted into other bins — physically
+    # the right thing.
+    #
+    # Why this matters: an earlier draft normalized against I0_recorded
+    # which made an air ray give bins=0 but broke nb04's scatter
+    # subtraction (`N_measured - N_scatter`) by mis-scaling per-bin I0
+    # vs the I0_total used inside scatter — over-corrected bins 1–3,
+    # under-corrected bin 4 → bin-2-only streaks.
+    if ws.use_pcct_pileup && ws.pileup_S !== nothing
+        S = ws.pileup_S
+        n_bins = length(pcct_sino.bins)
+        n_bins == 4 || error("MC pile-up application is currently specialized to 4 bins; got $(n_bins).")
+
+        eps_pileup = T(1e-10)
+        let b1 = pcct_sino.bins[1], b2 = pcct_sino.bins[2],
+            b3 = pcct_sino.bins[3], b4 = pcct_sino.bins[4],
+            I0_t1 = T(ws.I0_bins[1]), I0_t2 = T(ws.I0_bins[2]),
+            I0_t3 = T(ws.I0_bins[3]), I0_t4 = T(ws.I0_bins[4]),
+            S11 = T(S[1, 1]),
+            S21 = T(S[2, 1]), S22 = T(S[2, 2]),
+            S31 = T(S[3, 1]), S32 = T(S[3, 2]), S33 = T(S[3, 3]),
+            S41 = T(S[4, 1]), S42 = T(S[4, 2]), S43 = T(S[4, 3]), S44 = T(S[4, 4]),
+            eps = eps_pileup
+            AK.foreachindex(b1) do idx
+                # 1. truth counts per bin (Float32 registers, no scratch sinos)
+                c1 = I0_t1 * exp(-b1[idx])
+                c2 = I0_t2 * exp(-b2[idx])
+                c3 = I0_t3 * exp(-b3[idx])
+                c4 = I0_t4 * exp(-b4[idx])
+                # 2. recorded counts via lower-triangular S × counts
+                r1 = S11 * c1
+                r2 = S21 * c1 + S22 * c2
+                r3 = S31 * c1 + S32 * c2 + S33 * c3
+                r4 = S41 * c1 + S42 * c2 + S43 * c3 + S44 * c4
+                # 3. back to log-line-integral, normalized against TRUTH I0
+                #    so I0_b · exp(-bin) = recorded count for downstream math.
+                b1[idx] = -log(max(r1, eps) / I0_t1)
+                b2[idx] = -log(max(r2, eps) / I0_t2)
+                b3[idx] = -log(max(r3, eps) / I0_t3)
+                b4[idx] = -log(max(r4, eps) / I0_t4)
             end
         end
     end
 
-    # ─── Combine bins → single sinogram (scatter included, NOT corrected) ───
-    combined_gpu = ws.combined
-    fill!(combined_gpu, zero(T))
-    for (b, bin_sino) in enumerate(pcct_sino.bins)
-        let I0b = T(I0_bins[b]), bs = bin_sino, comb = combined_gpu
-            AK.foreachindex(bs) do idx
-                comb[idx] += I0b * exp(-bs[idx])
-            end
-        end
-    end
-    let comb = combined_gpu, I0t = I0_total, eps = eps_combine
-        AK.foreachindex(comb) do idx
-            comb[idx] = -log(max(comb[idx], eps) / I0t)
-        end
-    end
-
-    # Scatter correction is DECOUPLED — done at notebook level using the returned
-    # scatter_field + bin_weights for exact known-model subtraction. No blind
-    # re-estimation needed for simulated data.
-
-    # Save combined to CPU
-    copyto!(ws.sino_noisy_out, combined_gpu)
-
-    # Return bins + combined + scatter artifacts for decoupled correction
-    scatter_field_cpu = config.scatter !== nothing ? Array(ws.tube_physics_scratch) : nothing
-    return (pcct_sino=pcct_sino, I0_bins=I0_bins, combined=Array(combined_gpu),
-            scatter_field=scatter_field_cpu, scatter_bin_weights=bin_weights_out)
+    # Bin-combine, scatter correction, BHC, and pile-up correction are all
+    # decoupled — done at the notebook level (see docs/notebooks/04_pcct_vmi.jl
+    # for the canonical combine + correct pattern).
+    #
+    # Returned fields:
+    # - `pcct_sino`  : per-bin log-line-integral sinograms.  When pile-up is
+    #                  on these are `-log(recorded / I0_truth)`; running
+    #                  `apply_pcct_pileup_correction!` with `pileup_S` recovers
+    #                  truth-like bins for downstream calibration / decomp.
+    # - `I0_bins`    : truth per-bin air baseline (DRM-weighted, pre-pileup).
+    #                  `I0_b · exp(-bin) = recorded count` round-trip identity.
+    # - `pileup_S`   : MC pile-up migration matrix (`nothing` when pile-up off).
+    #                  Pass into `apply_pcct_pileup_correction!` to invert
+    #                  the pile-up degradation in the sinogram domain.
+    return (
+        pcct_sino = pcct_sino,
+        I0_bins   = ws.I0_bins,
+        pileup_S  = ws.pileup_S,
+    )
 end
 
 # =============================================================================
@@ -484,9 +542,6 @@ function add_system_noise_floor!(vol::AbstractArray{T}, sigma_hu::Real; seed::Un
     vol .+= T(sigma_hu) .* randn(rng, T, size(vol))
     return vol
 end
-
-export resolve_source_spectrum_without_bowtie
-export resolve_source_spectrum_with_bowtie, apply_bowtie_to_spectrum
 
 """
     resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner=nothing) -> (energies, weights)
@@ -761,13 +816,9 @@ function build_physics_config(
     return default_physics_config(; kwargs...)
 end
 
-export build_physics_config
-
 # =============================================================================
 # reconstruct!() — Zero-allocation FDK reconstruction hot path
 # =============================================================================
-
-export reconstruct!
 
 """
     reconstruct!(ws::FDKReconWorkspace, sinogram, geom, volume_size; filter=StandardFilter(), cutoff=1.0)

@@ -23,7 +23,11 @@ These are resolved from fidelity presets and user overrides at construction time
 - `use_noise::Bool`: Enable quantum/electronic noise.
 - `use_lag::Bool`: Enable detector lag (afterglow).
 - `use_heel_effect::Bool`: Enable anode heel effect.
-- `use_pcct_corrections::Bool`: Enable PCCT detector corrections (inverse pileup, inverse charge sharing).
+- `use_pcct_pileup::Bool`: Apply MC pulse pileup at simulate-time (PCCT only).
+  Default `true` for `:pcct`, `false` for `:eict`.  When `false`, the workspace
+  skips the (expensive) MC pileup matrix calibration entirely and the simulator
+  produces noise-free count rates. The MC-LUT detector response matrix is
+  always on; pileup is the only PCCT physics knob exposed here.
 - `pcct_noise_reduction::Float64`: PCCT noise reduction factor (0.0–1.0). Approximates clinical
   vendor reconstruction (e.g., Siemens QIR). 0.0 = raw physics (default), 0.7 = 70% noise reduction
   (~QIR-3). Only affects PCCT sinogram noise; EICT noise is unaffected.
@@ -46,8 +50,8 @@ struct SimOptions
     # --- Signal Chain ---
     use_heel_effect::Bool
 
-    # --- PCCT Corrections ---
-    use_pcct_corrections::Bool
+    # --- PCCT physics ---
+    use_pcct_pileup::Bool
     pcct_noise_reduction::Float64
 
     # --- General ---
@@ -87,23 +91,27 @@ function SimOptions(;
     use_noise::Union{Bool,Nothing}=nothing,
     use_lag::Union{Bool,Nothing}=nothing,
     use_heel_effect::Union{Bool,Nothing}=nothing,
-    use_pcct_corrections::Union{Bool,Nothing}=nothing,
+    use_pcct_pileup::Union{Bool,Nothing}=nothing,
     pcct_noise_reduction::Float64=0.0,
     seed::Union{Int,Nothing}=42,
     detector_efficiency_mode::Symbol=:auto
 )
     # Fidelity preset defaults
-    # :eict = all EICT effects ON; :pcct = :eict + PCCT corrections
+    # :eict = all EICT effects ON; :pcct = :eict + MC pile-up degradation.
+    # Pile-up correction (the inverse) is decoupled — apply it post-simulate
+    # via `apply_pcct_pileup_correction!` if needed.
     defaults = if fidelity == :pcct
         (fill_factor=true, detector_efficiency=true,
             scatter=true, optical_crosstalk=true,
             focal_spot=true, noise=true, lag=true,
-            heel_effect=true, pcct_corrections=true)
+            heel_effect=true,
+            pcct_pileup=true)
     elseif fidelity == :eict
         (fill_factor=true, detector_efficiency=true,
             scatter=true, optical_crosstalk=true,
             focal_spot=true, noise=true, lag=true,
-            heel_effect=true, pcct_corrections=false)
+            heel_effect=true,
+            pcct_pileup=false)
     else
         error("Unknown fidelity preset: $fidelity. Use :eict or :pcct.")
     end
@@ -117,7 +125,7 @@ function SimOptions(;
     _noise = isnothing(use_noise) ? defaults.noise : use_noise
     _lag = isnothing(use_lag) ? defaults.lag : use_lag
     _heel_effect = isnothing(use_heel_effect) ? defaults.heel_effect : use_heel_effect
-    _pcct_corrections = isnothing(use_pcct_corrections) ? defaults.pcct_corrections : use_pcct_corrections
+    _pcct_pileup = isnothing(use_pcct_pileup) ? defaults.pcct_pileup : use_pcct_pileup
 
     return SimOptions(
         fidelity,
@@ -125,7 +133,7 @@ function SimOptions(;
         _scatter, _optical_crosstalk,
         _focal_spot, _noise, _lag,
         _heel_effect,
-        _pcct_corrections,
+        _pcct_pileup,
         clamp(pcct_noise_reduction, 0.0, 1.0),
         seed,
         detector_efficiency_mode

@@ -39,19 +39,11 @@ mutable struct PCCTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A1<:Abstr
     scratch::A3                # ONE buffer for spatial kernels
 
     # ─── Combine (GPU-side) ───
-    combined::A3               # _combine_pcct_bins output (reused ideal + noisy)
+    combined::A3               # scratch for `combined_primary` in scatter step
 
     # ─── Noise CPU staging (Phase 1: CPU RNG) ───
     noise_staging::Array{T,3}  # CPU buffer for GPU↔CPU noise transfer
     noise_buf::Array{T,3}      # randn output buffer (CPU)
-
-    # ─── Electronic noise ───
-    enoise_cpu::Vector{T}      # randn output for electronic noise (CPU, flat)
-    enoise_gpu::A1             # electronic noise GPU transfer buffer (flat)
-
-    # ─── Result staging (CPU) ───
-    sino_ideal_out::Array{T,3}  # final ideal sinogram for return
-    sino_noisy_out::Array{T,3}  # final noisy sinogram for return
 
     # ─── Pre-computed CPU vectors/matrices ───
     η::Vector{Float64}          # quantum efficiency vector (n_energies)
@@ -63,9 +55,6 @@ mutable struct PCCTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A1<:Abstr
 
     # ─── RNG state ───
     rng::MersenneTwister        # pre-allocated RNG (reset with seed each call)
-
-    # ─── Detector physics precomputed (small buffers) ───
-    μ_values::Vector{T}                       # VMI attenuation coefficients (n_materials)
 
     # ─── Noise I0 ───
     noise_I0::Vector{Float64}   # per-bin I0 for noise model (n_bins)
@@ -101,9 +90,18 @@ mutable struct PCCTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A1<:Abstr
     native_outputs_flat::Union{Nothing, A1}  # native-res flattened output (nothing if bf==1)
     source_spectral_gpu::Union{Nothing, A3}  # heel × bowtie [n_cols, n_rows, n_energies_padded]
 
-    # ─── Pre-computed pileup LUT ───
-    pileup_S::Matrix{Float64}               # spectral migration matrix S[n_bins, n_bins]
-    pileup_count_factor::Float64            # count-loss factor (N_recorded / N_true)
+    # ─── Pulse pileup (full MC-LUT spectral migration) ───
+    # `pileup_S` is the MC-derived n_bins × n_bins matrix returned by
+    # `compute_mc_pileup_matrix`: S[i,j] = fraction of true-bin-j counts
+    # recorded in bin-i.  Column sums ≤ 1 — the deficit is the count loss
+    # from pileup, so a single S × counts multiply captures both spectral
+    # migration AND count loss.  `simulate!` applies S in count domain and
+    # re-normalizes against `I0_bins` (truth) so the returned bins remain
+    # `-log(recorded / I0_truth)` and the round-trip
+    # `I0_b · exp(-bin) = recorded count` stays valid for downstream
+    # count-domain math (scatter correction, bin combine, …).
+    use_pcct_pileup::Bool                              # toggle from sim_opts.use_pcct_pileup
+    pileup_S::Union{Nothing, Matrix{Float64}}          # (n_bins × n_bins), nothing when pileup off
 
     # ─── Pre-computed setup data (computed once, reused) ───
     geom::CTGeometry                         # CT geometry (binned resolution)
@@ -112,8 +110,6 @@ mutable struct PCCTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A1<:Abstr
     config::PhysicsConfig                    # physics configuration
     pcct_detector::PhotonCountingDetector{Float64}  # PCCT detector
     mats::Vector{XA.Material}                # resolved materials
-    use_detector_fx::Bool                    # whether detector effects are applied
-    use_corrections::Bool                    # whether corrections are applied
     kVp::Float64                             # max energy (kVp)
 end
 
@@ -169,23 +165,15 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     sino_buf = similar(ref_mask, T, sino_shape)
     scratch = similar(ref_mask, T, sino_shape)
     combined = similar(ref_mask, T, sino_shape)
-    enoise_gpu = similar(ref_mask, T, n_elements)
 
-    # VMI decomposition buffers (GPU-side, unified with dual-kVp)
-
-    # CPU-side buffers
+    # CPU-side buffers (Phase 1 noise: CPU RNG → GPU staging)
     noise_staging = zeros(T, sino_shape)
     noise_buf = zeros(T, sino_shape)
-    enoise_cpu = Vector{T}(undef, n_elements)
-    sino_ideal_out = zeros(T, sino_shape)
-    sino_noisy_out = zeros(T, sino_shape)
     energies, weights_vec = resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner=scanner)
     n_energies = length(energies)
     config = build_physics_config(scanner, sim_opts, energies, weights_vec; phantom=phantom)
     pcct_detector = _build_pcct_detector(scanner)
     mats = _resolve_materials(phantom, materials)
-    use_detector_fx = sim_opts.fidelity in (:eict, :pcct)
-    use_corrections = sim_opts.use_pcct_corrections
     kVp = Float64(maximum(energies))
     thresholds = pcct_detector.energy_thresholds_keV
     # Pre-compute spectral response data
@@ -193,23 +181,13 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     R_mat = compute_mc_drm(pcct_detector, kVp)
     R_energies_vec = collect(range(1.0, Float64(kVp), length=size(R_mat, 1)))
 
-    # BHC is decoupled — applied at notebook level
+    # BHC, scatter correction, and pile-up correction are all decoupled —
+    # applied at the notebook level via dedicated `apply_*` functions.
 
-    # Pre-compute I0_bins for normalization (forward projection)
-    I0_bins_norm_vec = if use_detector_fx && !use_corrections
-        _compute_degraded_I0(pcct_detector, energies, weights_vec, η_vec, thresholds, kVp, 1e6, 1e8; R=R_mat)
-    else
-        [_compute_bin_I0(pcct_detector, energies, weights_vec, η_vec, thresholds, b,
-                          kVp, 1e6; R=R_mat) for b in 1:n_bins]
-    end
-
-    # Pre-compute I0_bins for combine (may differ from norm if corrections change the path)
-    I0_bins_combine = if use_detector_fx && !use_corrections
-        copy(I0_bins_norm_vec)
-    else
-        [_compute_bin_I0(pcct_detector, energies, weights_vec, η_vec, thresholds, b,
-                          kVp, 1e6; R=R_mat) for b in 1:n_bins]
-    end
+    # Pre-compute per-bin I0 (DRM-weighted spectrum × η).
+    I0_bins_norm_vec = [_compute_bin_I0(pcct_detector, energies, weights_vec, η_vec, thresholds, b,
+                                         kVp, 1e6; R=R_mat) for b in 1:n_bins]
+    I0_bins_combine  = copy(I0_bins_norm_vec)
 
     # Pre-compute T-typed thresholds
     thresholds_T_vec = T.(thresholds)
@@ -217,7 +195,6 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     rng = MersenneTwister(0)
 
     # Detector physics precomputed buffers
-    μ_values = zeros(T, n_materials)
     noise_I0 = zeros(Float64, n_bins)
 
     # μ lookup table — pre-compute μ for all regions × all energies
@@ -348,47 +325,50 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         nothing
     end
 
-    # ─── Pre-compute pileup migration matrix (MC-based, one-time cost) ───
+    # ─── Pre-compute MC-LUT pulse-pileup migration matrix S ───
+    # S[i,j] = P(true-bin-j count is recorded in bin-i).  Column sums ≤ 1, the
+    # deficit being the count loss, so a single S×counts multiply applies
+    # spectral migration AND count loss in one shot — no analytical Taguchi /
+    # semi-non-paralyzable fallback.
+    #
     # Pileup is per native dexel (not per binned pixel).
     # I0 from compute_detector_I0 is per binned pixel per view.
     # Count rate per dexel = (I0 / bf²) / time_per_view  [photons/s]
-    _I0_physics = compute_detector_I0(geom, protocol, sum(weights_vec))
-    _time_per_view = protocol.rotation_time / protocol.views
-    _count_rate_per_dexel = (_I0_physics / Float64(bf * bf)) / _time_per_view
-    _τ_ns = Float64(pcct_detector.dead_time_ns)
-    _aτ = _count_rate_per_dexel * _τ_ns * 1e-9
-
-    _pileup_S = if pcct_detector.dead_time_ns > 0 && _aτ > 0.01
+    _use_pileup = sim_opts.use_pcct_pileup &&
+                  pcct_detector.dead_time_ns > 0
+    _pileup_S = if _use_pileup
+        _I0_physics_pileup    = compute_detector_I0(geom, protocol, sum(weights_vec))
+        _time_per_view_pileup = protocol.rotation_time / protocol.views
+        _count_rate_per_dexel = (_I0_physics_pileup / Float64(bf * bf)) / _time_per_view_pileup
+        _τ_ns                 = Float64(pcct_detector.dead_time_ns)
         w_norm = Float64.(weights_vec) ./ sum(Float64.(weights_vec))
         compute_mc_pileup_matrix(
             pcct_detector.energy_thresholds_keV,
             w_norm, Float64.(energies),
             _count_rate_per_dexel, _τ_ns;
-            n_trials=5000, seed=42)
+            n_trials = 5000, seed = 42)
     else
-        Matrix{Float64}(I, n_bins, n_bins)  # Identity = no pileup
+        nothing
     end
-    _pileup_cf = seminonparalyzable_count_factor(_aτ)
 
     # Scatter bin fractions are now computed on-the-fly in simulate!() using
     # compute_scatter_energy_weights() + compute_scatter_bin_weights() (unified per-energy model)
 
-    return PCCTWorkspace{T, typeof(sino_buf), typeof(enoise_gpu), typeof(geom_source_positions)}(
+    return PCCTWorkspace{T, typeof(sino_buf), typeof(μ_lut_gpu), typeof(geom_source_positions)}(
         bins, μ_volume, sino_buf, scratch,
         combined,
-        noise_staging, noise_buf, enoise_cpu, enoise_gpu,
-        sino_ideal_out, sino_noisy_out,
+        noise_staging, noise_buf,
         η_vec, R_mat, R_energies_vec, I0_bins_combine, I0_bins_norm_vec, thresholds_T_vec, rng,
-        μ_values, noise_I0,
+        noise_I0,
         μ_lut_cpu, μ_lut_gpu, μ_table,
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
         _native_bins, _native_sino_buf, _native_scratch,
         _native_geom, _n_src, _n_det, _n_u, _n_v,
         tube_scratch,
         _μ_table_gpu, _W_matrix_gpu, _outputs_flat, _native_outputs_flat, _source_spectral_gpu,
-        _pileup_S, _pileup_cf,
+        _use_pileup, _pileup_S,
         geom, energies, weights_vec, config, pcct_detector, mats,
-        use_detector_fx, use_corrections, kVp
+        kVp
     )
 end
 
