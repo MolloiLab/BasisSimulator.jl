@@ -493,20 +493,55 @@ end
 # =============================================================================
 
 """
-    add_system_noise_floor!(vol, sigma_hu; seed=nothing)
+    add_system_noise_floor!(vol, sigma_hu; seed=nothing) -> vol
 
-Add dose-independent Gaussian noise to a reconstruction volume (in-place).
+Add IID zero-mean Gaussian noise of standard deviation `sigma_hu` to a
+reconstruction volume in the HU domain, in place.  Returns `vol`.
 
-Models the irreducible scanner noise floor from imperfect scatter correction,
-electronic noise, calibration residuals, etc. Added in quadrature with existing
-noise: σ_total = √(σ_quantum² + σ_floor²).
+This is an **empirical, post-reconstruction noise-floor model** — *not* a port
+of CatSim, TIGRE, or any other simulator.  CatSim and TIGRE both stop at the
+sinogram-domain pipeline (Poisson + electronic noise on counts); neither
+adds an HU-domain noise floor.
+
+# Why a separate dose-independent floor?
+
+Real scanners exhibit a noise component that *does not* scale as 1/√dose:
+imperfect scatter correction residuals, A/D and DAS electronic noise,
+detector calibration drift, ring-correction residuals, and (for PCCT)
+charge-sharing and pile-up correction residuals.  In low-dose regimes this
+floor dominates over the quantum (Poisson) noise that the sinogram-domain
+simulator already produces.
+
+Combining quadratically: σ_total = √(σ_quantum² + σ_floor²).  Adding the
+floor in image space is correct as long as the floor is approximately white
+in HU after reconstruction — empirically true for clinical scanners at the
+spatial frequencies that matter for soft-tissue contrast.
+
+For physical background see Kalender, *Computed Tomography*, 3rd ed.,
+Wiley 2011, Ch. 4 (noise sources in CT) and Hsieh, *Computed Tomography*,
+3rd ed., SPIE Press 2015 (electronic-noise floor at low dose).  For a
+PCCT-specific characterization see Leng et al., *IEEE TMI* 37(11), 2018.
+
+# Choosing `sigma_hu`
+
+Empirical, scanner-specific.  Notebooks 01/02/05 use **σ ≈ 28 HU**, which
+matches a soft-tissue ROI std measured on a clinical GE Apex Elite (120 kVp,
+standard-dose abdominal protocol) after FBP reconstruction at 5 mm slice
+thickness.  Re-measure for other scanners / kernels / slice thicknesses.
 
 # Arguments
-- `vol::AbstractArray{T}`: Reconstruction volume in HU
-- `sigma_hu::Real`: Noise floor standard deviation in HU
+- `vol::AbstractArray{T}`: reconstruction volume in HU (mutated in place).
+- `sigma_hu::Real`: noise-floor standard deviation in HU.
+  `sigma_hu ≤ 0` → no-op; `vol` is returned unchanged.
 
 # Keyword Arguments
-- `seed::Union{Int,Nothing}=nothing`: Random seed for reproducibility
+- `seed::Union{Int,Nothing}=nothing`: when an `Int` is given a private
+  `MersenneTwister(seed + 7919)` is used so the per-volume realization is
+  bit-reproducible across runs without disturbing `Random.default_rng()`.
+  When `nothing`, draws from the global RNG.
+
+# Returns
+The mutated `vol` (same object — `===` to the input).
 """
 function add_system_noise_floor!(vol::AbstractArray{T}, sigma_hu::Real; seed::Union{Int,Nothing}=nothing) where T
     sigma_hu <= 0 && return vol

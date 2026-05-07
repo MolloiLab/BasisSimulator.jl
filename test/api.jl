@@ -472,6 +472,74 @@ _ts("entering simulate!(EICTWorkspace) — noise on/off seed reproducibility tes
     end
 end
 
+_ts("entering add_system_noise_floor! testset")
+@testset "add_system_noise_floor!" begin
+    # Pure-CPU function — no GPU gating needed.  Empirical post-recon noise
+    # floor; concept covered in Kalender / Hsieh CT physics texts.
+    @testset "σ ≤ 0 is a no-op (returns identity)" begin
+        for σ in (0.0, -1e-9, -5.0)
+            vol = randn(Float32, 8, 8, 4)
+            ref = copy(vol)
+            ret = BS.add_system_noise_floor!(vol, σ)
+            @test ret === vol      # in-place identity contract
+            @test vol == ref       # bit-identical
+        end
+    end
+
+    @testset "σ > 0 produces empirical std ≈ σ" begin
+        # Large enough volume that sample-std is tight to population σ.
+        N = 64^3
+        vol = zeros(Float32, 64, 64, 64)
+        BS.add_system_noise_floor!(vol, 28.0; seed = 1234)
+        # 64³ ≈ 262k samples → 99% CI on std is ~σ × (1 ± 0.005).  Use 5% rtol.
+        @test std(vol) ≈ 28.0f0 rtol = 5e-2
+        @test mean(vol) ≈ 0.0f0 atol = 1.0     # mean ≈ 0
+        @test all(isfinite, vol)
+    end
+
+    @testset "seeded reproducibility" begin
+        vol1 = zeros(Float32, 16, 16, 4)
+        vol2 = zeros(Float32, 16, 16, 4)
+        BS.add_system_noise_floor!(vol1, 28.0; seed = 42)
+        BS.add_system_noise_floor!(vol2, 28.0; seed = 42)
+        @test vol1 == vol2
+        # Different seed → different realization
+        vol3 = zeros(Float32, 16, 16, 4)
+        BS.add_system_noise_floor!(vol3, 28.0; seed = 43)
+        @test vol1 != vol3
+    end
+
+    @testset "additive in-place: floor stacks on existing values" begin
+        # vol_after - vol_before ~ N(0, σ²); pre-existing content is preserved
+        # in mean.
+        base = fill(40.0f0, 32, 32, 4)
+        vol  = copy(base)
+        BS.add_system_noise_floor!(vol, 10.0; seed = 7)
+        diff = vol .- base
+        @test std(diff)  ≈ 10.0f0 rtol = 1e-1   # smaller volume → looser tol
+        @test mean(diff) ≈ 0.0f0  atol = 1.0
+        # Mean of vol stays near base value (within sample noise).
+        @test mean(vol) ≈ 40.0f0 atol = 1.0
+    end
+
+    @testset "private-RNG isolation: doesn't disturb default_rng" begin
+        # The seeded code path (seed::Int) builds its OWN MersenneTwister, so
+        # calling it must not advance Random.default_rng().  Compare two runs
+        # at the same global-RNG state: with and without the seeded floor
+        # call between them.
+        Random.seed!(123)
+        _ = randn(Float32, 5)                     # advance to a known state
+        target = randn(Float32, 5)                # next 5 draws
+
+        Random.seed!(123)
+        _ = randn(Float32, 5)                     # same prefix
+        BS.add_system_noise_floor!(zeros(Float32, 32, 32, 4), 28.0; seed = 999)
+        after  = randn(Float32, 5)                # next 5 draws — must match target
+
+        @test target == after
+    end
+end
+
 _ts("entering simulate!(EICTWorkspace) — scatter on/off testset")
 @testset "simulate!(EICTWorkspace) — scatter on/off" begin
     if !HAS_GPU
