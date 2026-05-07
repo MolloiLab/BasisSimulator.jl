@@ -41,9 +41,10 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
             index     = "04",
             title     = "PCCT VMI on Gammex 472",
             summary   = "Fully projection-domain photon-counting CT pipeline on a Siemens Naeotom " *
-                        "Alpha — 4-bin sim → 4-channel SVD denoiser → bin combine → calibrated " *
-                        "polynomial material decomposition (Alvarez-Macovski) → FBP → z-median → " *
-                        "Mono+ VMI at 40/70/100/140 keV, verified per-rod against XrayAttenuation theory.",
+                        "Alpha — 4-bin sim → 4-channel SVD denoiser → bin combine → Cong univariate " *
+                        "material decomposition (PCCT-generalized via the effective-spectral-response " *
+                        "Φ_k(ε)) → FBP → z-median → Mono+ VMI at 40/70/100/140 keV, verified per-rod " *
+                        "against XrayAttenuation theory.",
             thumbnail = "pcct_vmi_vs_theoretical.png",
             tags      = ["PCCT", "Naeotom Alpha", "VMI", "Mono+"],
         ),
@@ -66,6 +67,17 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
                         "BasisSim matches the physics and lands well ahead on time.",
             thumbnail = "catsim_vs_basissim_mosaic.png",
             tags      = ["EICT", "CatSim", "GPU", "Benchmark"],
+        ),
+        "07_qrm_thorax_pure_material_vmi" => (
+            index     = "07",
+            title     = "QRM-Thorax Pure-Material VMI",
+            summary   = "Dual-kVp GSI pipeline (1:1 with notebook 03) on a QRM-Thorax phantom with four " *
+                        "pure-material rod inserts bored into the heart cavity — water, lipid, collagen, " *
+                        "iodine 5 mg/mL.  SVD denoiser → bowtie-aware Cong material decomposition → FBP → " *
+                        "z-median → Mono+ VMI at 40/70/100/140 keV, verified per-rod against the four " *
+                        "tissue-specific XrayAttenuation theoretical curves.",
+            thumbnail = "qrm_thorax_vmi_vs_theoretical.png",
+            tags      = ["EICT", "Dual-kVp", "VMI", "Mono+", "QRM-Thorax"],
         ),
     )
 

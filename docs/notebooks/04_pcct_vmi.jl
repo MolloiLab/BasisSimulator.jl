@@ -1,5 +1,8 @@
 ### A Pluto.jl notebook ###
-# v0.19.0
+# v0.20.24
+
+using Markdown
+using InteractiveUtils
 
 # ╔═╡ 06000001-0000-4000-8000-000000000001
 begin
@@ -52,8 +55,8 @@ Simulate 140 kVp PCCT  (4 bins)
     Two structural differences vs an image-domain PCCT pipeline:
 
     1. **Material decomposition before reconstruction.** The per-ray
-       polynomial inverse consumes log-line-integrals directly, so the
-       basis fit sees the actual polychromatic transmission physics.
+       Cong univariate solver consumes log-line-integrals directly, so
+       the basis fit sees the actual polychromatic transmission physics.
        No pre-FBP linearization, no HU-to-fraction inverse polynomial.
     2. **Joint denoising before reconstruction.** A per-detector-row
        SVD denoiser exploits the strong cross-bin correlation
@@ -64,8 +67,10 @@ Simulate 140 kVp PCCT  (4 bins)
        vs 1) and runs *before* the lossy I0-weighted bin combine.
 
 !!! success "References"
-    - Alvarez, Macovski (1976), *Phys Med Biol* — polynomial inverse
-      for projection-domain material decomposition.
+    - Cong, De Man, Wang (2022), *J X-Ray Sci Technol* — projection-
+      domain univariate solver (dual-kVp DECT).
+    - Black (*in prep.*) — generalization of Cong 2022 to PCCT /
+      split-spectrum via an effective spectral response Φ_k(ε) ≥ 0.
     - Clark, Badea (2023), *Med Phys* — image-domain SVD signal/noise
       split (the inspiration for the projection-domain joint denoiser).
     - Grant et al. (2014) — Mono+ frequency-split rule.
@@ -407,7 +412,7 @@ md"""
 #### Intermediate FBP per Bin (μ-domain sanity check)
 
 A quick per-bin FDK on the raw simulator sinograms — *before* the SVD
-denoiser, the bin combine, or the polynomial decomposition — so we can
+denoiser, the bin combine, or the Cong decomposition — so we can
 eyeball that the photon-counting forward model is producing physically
 sensible images at each energy band.
 
@@ -680,71 +685,126 @@ end
 md"""
 ## 8. Projection Domain Material Decomposition
 
-Two-step polynomial decomposition (Alvarez & Macovski 1976):
+Per-ray Cong univariate solver mapped to PCCT via the generalization in
+Black (*in prep.*) — re-derives the Cong 2022 framework around an
+effective spectral response Φ_k(ε) ≥ 0 so the same algorithm runs on
+dual-kVp DECT, split-filter, dual-layer, and PCCT acquisitions without
+code changes.  The bin-combine partition (1+2 → low, 3+4 → high) is
+baked into Φ_k by summing the relevant DRM columns:
 
-1. **Calibrate** — build per-bin-group effective spectra from the
-   source spectrum × CdTe η × MC-DRM column sum, forward-project a
-   synthetic step-wedge across `(t_water, t_iodine)` Chebyshev grids
-   through each group's spectrum, and least-squares-fit a 4th-order
-   bivariate polynomial inverse `(p_low, p_high) → (t_water, t_iodine)`.
-2. **Apply** — evaluate the polynomial per ray on the `(low, high)`
-   sinogram pair → `(sino_water, sino_iodine)`.  Threaded CPU loop.
+```
+Φ_low(ε)  = S(ε) · η(ε) · Σ_{b ∈ {1,2}} R(ε, b)        ← Table 1 row 3
+Φ_high(ε) = S(ε) · η(ε) · Σ_{b ∈ {3,4}} R(ε, b)        ← (counting, no ε)
+```
+
+`(p, q)` are the iodine + water mass-attenuation coefficients at the
+shared energy grid (matter-based variant, Cong follow-up §2.7) — same
+array for both channels since only Φ differs.
 
 Output sinograms are per-ray basis line integrals:
 
 ```
-sino_iodine   (g/cm² of iodine along the ray)
-sino_water    (cm of pure-water-equivalent path along the ray)
+sino_iodine = ∫c_iodine(r)dr   (g/cm²)
+sino_water  = ∫c_water(r)dr    (g/cm²)
 ```
 
-!!! info "Why a Polynomial?"
-    The polynomial captures **beam hardening** through the polychromatic
-    transmission integral — that's the key thing a linear closed-form
-    2×2 inversion misses.  On a 33 cm phantom the residual cup from a
-    linear inverse becomes the dominant artifact.  The forward-projected
-    step-wedge calibration makes the inverse beam-hardening-aware
-    by construction.
+Calibration-free — no forward-projected step-wedge fit, no Chebyshev
+grid resolution to tune.
 """
 
 # ╔═╡ 06000009-0000-4000-8000-000000000005
-# Polynomial calibration knobs.
+# Bin-combine partition feeding the two Cong channels.  Must match the
+# `_combine` calls in §7 — change here AND there together.
 begin
-    cmv_low_bins = 1:2          # PCCT bins in the "low" channel
-    cmv_high_bins = 3:4          # PCCT bins in the "high" channel
-    cmv_poly_order = 4            # bivariate total-order polynomial
-    cmv_n_water = 40           # Chebyshev grid size (water axis)
-    cmv_n_iodine = 25           # Chebyshev grid size (iodine axis)
-    cmv_max_water_cm = 50.0         # step-wedge max water path (cm)
-    cmv_max_iodine_g_cm2 = 0.15         # step-wedge max iodine area density (g/cm²)
+    low_bins  = 1:2          # PCCT bins forming the "low"  channel
+    high_bins = 3:4          # PCCT bins forming the "high" channel
 end
 
 # ╔═╡ 06000009-0000-4000-8000-000000000010
-pcct_vmi_calibration = BS.calibrate_pcct_vmi_poly(
-    scanner, protocol;
-    sim_opts = sim_opts,
-    low_bins = cmv_low_bins,
-    high_bins = cmv_high_bins,
-    order = cmv_poly_order,
-    n_water = cmv_n_water,
-    n_iodine = cmv_n_iodine,
-    max_water_cm = cmv_max_water_cm,
-    max_iodine_g_cm2 = cmv_max_iodine_g_cm2,
-);
+material_basis = let
+    # Single 140 kVp source spectrum (Naeotom Alpha has no bowtie).
+    e, w = BS.resolve_source_spectrum_without_bowtie(
+        sim_opts, protocol; scanner = scanner,
+    )
+
+    # PCCT detector physics — same MC-LUT path the §5 scatter block uses.
+    # R[i, b] = P(photon at e[i] is recorded in bin b),
+    # η[i]    = quantum efficiency at e[i].
+    pcct_det = BS._build_pcct_detector(scanner)
+    kVp_val  = Float64(maximum(e))
+    R_mat    = BS.compute_mc_drm(pcct_det, kVp_val)
+    η_vec    = BS.quantum_efficiency_vector(
+        pcct_det.material, pcct_det.thickness_mm, e,
+    )
+
+    # R_mat lives on its own uniform grid `range(1.0, kVp, length=n_R)` (default
+    # n_R = 200), distinct from the spectrum's energy grid `e`.  Map each
+    # spectrum bin to its nearest DRM row exactly the way the §5 scatter
+    # block (`compute_scatter_bin_weights`) does — keeps both paths in sync.
+    n_R = size(R_mat, 1)
+    drm_idx(E) = clamp(round(Int, (Float64(E) - 1.0) / (kVp_val - 1.0) * (n_R - 1)) + 1, 1, n_R)
+
+    # Φ_k(ε) = S(ε) · η(ε) · Σ_{b ∈ group_k} R(ε, b).
+    Φ_L = Float32[
+        Float32(w[i] * η_vec[i] * sum(R_mat[drm_idx(e[i]), b] for b in low_bins))
+        for i in eachindex(e)
+    ]
+    Φ_H = Float32[
+        Float32(w[i] * η_vec[i] * sum(R_mat[drm_idx(e[i]), b] for b in high_bins))
+        for i in eachindex(e)
+    ]
+    ŵ_L_f32 = Φ_L ./ sum(Φ_L)
+    ŵ_H_f32 = Φ_H ./ sum(Φ_H)
+
+    iodine_mat = BS.XA.Elements.Iodine
+    water_mat  = BS.XA.Materials.water
+
+    # Mass-attenuation coefficients on the SHARED energy grid — same array
+    # for both channels (matter-based, Cong follow-up §2.7).
+    p = Float32[
+        Float32(BS.compute_mass_μ_at_energy(iodine_mat, Float64(E)))
+        for E in e
+    ]
+    q = Float32[
+        Float32(BS.compute_mass_μ_at_energy(water_mat, Float64(E)))
+        for E in e
+    ]
+
+    @info "[Cong basis] $(length(e)) energy bins · " *
+        "low ⟨E⟩ = $(round(sum(Float64.(e) .* ŵ_L_f32), digits = 1)) keV · " *
+        "high ⟨E⟩ = $(round(sum(Float64.(e) .* ŵ_H_f32), digits = 1)) keV · " *
+        "Δ = $(round(sum(Float64.(e) .* ŵ_H_f32) - sum(Float64.(e) .* ŵ_L_f32), digits = 1)) keV"
+
+    (ŵ_L = ŵ_L_f32, p_L = p,        q_L = q,
+     ŵ_H = ŵ_H_f32, p_H = copy(p),  q_H = copy(q))
+end;
 
 # ╔═╡ 06000009-0000-4000-8000-000000000020
 sino_basis = let
-    sl = Float32.(sim_lohi.sino_low)
-    sh = Float32.(sim_lohi.sino_high)
-    sino_water, sino_iodine = BS.apply_pcct_vmi_poly(sl, sh, pcct_vmi_calibration)
+    sino_low_gpu  = to_gpu(Float32.(sim_lohi.sino_low))
+    sino_high_gpu = to_gpu(Float32.(sim_lohi.sino_high))
 
-    @info "[Polynomial decomp] ⟨∫ρ_W·dr⟩ = $(round(mean(sino_water), sigdigits = 4)) cm   " *
-        "⟨∫ρ_I·dr⟩ = $(round(mean(sino_iodine), sigdigits = 4)) g/cm²"
+    sino_y = similar(sino_low_gpu)   # iodine basis line integrals (g/cm²)
+    sino_c = similar(sino_low_gpu)   # water  basis line integrals (g/cm²)
+    fill!(sino_y, 0.0f0); fill!(sino_c, 0.0f0)
 
-    (
-        sino_iodine = sino_iodine,
-        sino_water = sino_water,
-        geom = sim_lohi.geom,
+    cong_ws = BS.create_cong_workspace(sino_low_gpu, material_basis)
+    BS.apply_cong!(
+        cong_ws, sino_y, sino_c, sino_low_gpu, sino_high_gpu;
+        water_basis = (a = 0.0f0, c = 1.0f0),
     )
+
+    sino_iodine_cpu = Array(sino_y)
+    sino_water_cpu  = Array(sino_c)
+    @info "[Cong decomp] ⟨∫ρ_I·dr⟩ = $(round(mean(sino_iodine_cpu), sigdigits = 4)) g/cm²   " *
+        "⟨∫ρ_W·dr⟩ = $(round(mean(sino_water_cpu), sigdigits = 4)) g/cm²"
+
+    sino_low_gpu = nothing; sino_high_gpu = nothing
+    sino_y = nothing; sino_c = nothing; cong_ws = nothing
+    GC.gc(true)
+    (sino_iodine = sino_iodine_cpu,
+     sino_water  = sino_water_cpu,
+     geom        = sim_lohi.geom)
 end;
 
 # ╔═╡ 06000009-0000-4000-8000-000000000040
@@ -768,170 +828,6 @@ let
     slice_iod = permutedims(sino_basis.sino_iodine[:, mid_r, :], (2, 1))
     slice_wat = permutedims(sino_basis.sino_water[:, mid_r, :], (2, 1))
 
-    # (panel_col, cbar_col) — colorbar always immediately right of its panel.
-    panels = (
-        (
-            1, 1, 2, "Iodine Basis Sinogram", "g/cm²",
-            slice_iod, _qrange(slice_iod),
-        ),
-        (
-            1, 3, 4, "Water Basis Sinogram", "cm",
-            slice_wat, _qrange(slice_wat),
-        ),
-    )
-
-    for (r, panel_c, cbar_c, ttl, cbar_label, slice, range) in panels
-        ax = CM.Axis(fig[r, panel_c]; title = ttl, axis_kwargs...)
-        CM.heatmap!(ax, slice; colormap = :viridis, colorrange = range)
-        CM.Colorbar(
-            fig[r, cbar_c]; colormap = :viridis, colorrange = range,
-            label = cbar_label, width = 16, labelsize = 22, ticklabelsize = 18,
-        )
-    end
-    fig
-end
-
-# ╔═╡ 06000020-0000-4000-8000-000000000001
-md"""
-## 8b. Projection Domain Material Decomposition (Cong PCCT, Inline)
-
-Parallel decomposition path using the **Cong univariate solver** instead
-of the calibrated polynomial inverse from §8.  Drops in directly because
-the follow-up generalization (Black, *in prep.*) re-derives the Cong 2022
-framework around an effective spectral response Φ_k(ε) ≥ 0 — and our
-existing `apply_cong!` kernel is already Φ_k-agnostic.  The bin-combine
-partition (1+2 → low, 3+4 → high) gets baked into Φ_k by summing the
-relevant DRM columns; everything downstream of `apply_cong!` is
-identical to nb03's dual-kVp path.
-
-```
-Φ_low(ε)  = S(ε) · η(ε) · Σ_{b ∈ {1,2}} R(ε, b)        ← Table 1 row 3
-Φ_high(ε) = S(ε) · η(ε) · Σ_{b ∈ {3,4}} R(ε, b)        ← (counting, no ε)
-```
-
-`(p, q)` are the iodine + water mass-attenuation coefficients at the
-shared energy grid (matter-based variant, Cong follow-up §2.7).  The
-two channels share `(p, q)` — only Φ differs.
-
-!!! note "What this section is NOT"
-    This is an **inline parallel pipeline** for evaluation only.  §8's
-    polynomial decomp + §9's FBP + §10–§13 + §Results all keep their
-    existing inputs (`sino_basis`, `basis_volumes`, …) and run unchanged.
-    Once we've verified the Cong PCCT route on numbers + visuals, we can
-    promote the basis builder to `src/` and decide whether to switch the
-    main pipeline over.
-"""
-
-# ╔═╡ 06000020-0000-4000-8000-000000000010
-material_basis_cong = let
-    # Single 140 kVp source spectrum (Naeotom Alpha has no bowtie).
-    e, w = BS.resolve_source_spectrum_without_bowtie(
-        sim_opts, protocol; scanner = scanner,
-    )
-
-    # PCCT detector physics — same MC-LUT path the §5 scatter block uses.
-    # R[i, b] = P(photon at e[i] is recorded in bin b),
-    # η[i]    = quantum efficiency at e[i].
-    pcct_det = BS._build_pcct_detector(scanner)
-    kVp_val  = Float64(maximum(e))
-    R_mat    = BS.compute_mc_drm(pcct_det, kVp_val)
-    η_vec    = BS.quantum_efficiency_vector(
-        pcct_det.material, pcct_det.thickness_mm, e,
-    )
-
-    # R_mat lives on its own uniform grid `range(1.0, kVp, length=n_R)` (default
-    # n_R = 200), distinct from the spectrum's energy grid `e`.  Map each
-    # spectrum bin to its nearest DRM row exactly the way the §5 scatter
-    # block (`compute_scatter_bin_weights`) does — keeps both paths in sync.
-    n_R = size(R_mat, 1)
-    drm_idx(E) = clamp(round(Int, (Float64(E) - 1.0) / (kVp_val - 1.0) * (n_R - 1)) + 1, 1, n_R)
-
-    # Φ_k(ε) = S(ε) · η(ε) · Σ_{b ∈ group_k} R(ε, b).  Bin-combine partition
-    # (1+2 → low, 3+4 → high) reuses the cmv_low_bins / cmv_high_bins knobs
-    # so changing them here matches §7's recombination.
-    Φ_L = Float32[
-        Float32(w[i] * η_vec[i] * sum(R_mat[drm_idx(e[i]), b] for b in cmv_low_bins))
-        for i in eachindex(e)
-    ]
-    Φ_H = Float32[
-        Float32(w[i] * η_vec[i] * sum(R_mat[drm_idx(e[i]), b] for b in cmv_high_bins))
-        for i in eachindex(e)
-    ]
-    ŵ_L_f32 = Φ_L ./ sum(Φ_L)
-    ŵ_H_f32 = Φ_H ./ sum(Φ_H)
-
-    iodine_mat = BS.XA.Elements.Iodine
-    water_mat  = BS.XA.Materials.water
-
-    # Mass-attenuation coefficients on the SHARED energy grid — same array
-    # for both channels (matter-based, Cong follow-up §2.7).
-    p = Float32[
-        Float32(BS.compute_mass_μ_at_energy(iodine_mat, Float64(E)))
-        for E in e
-    ]
-    q = Float32[
-        Float32(BS.compute_mass_μ_at_energy(water_mat, Float64(E)))
-        for E in e
-    ]
-
-    @info "[Cong PCCT basis] $(length(e)) energy bins · " *
-        "low ⟨E⟩ = $(round(sum(Float64.(e) .* ŵ_L_f32), digits = 1)) keV · " *
-        "high ⟨E⟩ = $(round(sum(Float64.(e) .* ŵ_H_f32), digits = 1)) keV · " *
-        "Δ = $(round(sum(Float64.(e) .* ŵ_H_f32) - sum(Float64.(e) .* ŵ_L_f32), digits = 1)) keV"
-
-    (ŵ_L = ŵ_L_f32, p_L = p,        q_L = q,
-     ŵ_H = ŵ_H_f32, p_H = copy(p),  q_H = copy(q))
-end;
-
-# ╔═╡ 06000020-0000-4000-8000-000000000020
-sino_basis_cong = let
-    sino_low_gpu  = to_gpu(Float32.(sim_lohi.sino_low))
-    sino_high_gpu = to_gpu(Float32.(sim_lohi.sino_high))
-
-    sino_y = similar(sino_low_gpu)   # iodine basis line integrals (g/cm²)
-    sino_c = similar(sino_low_gpu)   # water  basis line integrals (g/cm²)
-    fill!(sino_y, 0.0f0); fill!(sino_c, 0.0f0)
-
-    cong_ws = BS.create_cong_workspace(sino_low_gpu, material_basis_cong)
-    BS.apply_cong!(
-        cong_ws, sino_y, sino_c, sino_low_gpu, sino_high_gpu;
-        water_basis = (a = 0.0f0, c = 1.0f0),
-    )
-
-    sino_iodine_cpu = Array(sino_y)
-    sino_water_cpu  = Array(sino_c)
-    @info "[Cong PCCT decomp] ⟨∫ρ_I·dr⟩ = $(round(mean(sino_iodine_cpu), sigdigits = 4)) g/cm²   " *
-        "⟨∫ρ_W·dr⟩ = $(round(mean(sino_water_cpu), sigdigits = 4)) g/cm²"
-
-    sino_low_gpu = nothing; sino_high_gpu = nothing
-    sino_y = nothing; sino_c = nothing; cong_ws = nothing
-    GC.gc(true)
-    (sino_iodine = sino_iodine_cpu,
-     sino_water  = sino_water_cpu,
-     geom        = sim_lohi.geom)
-end;
-
-# ╔═╡ 06000020-0000-4000-8000-000000000040
-let
-    n_row = size(sino_basis_cong.sino_iodine, 2)
-    mid_r = n_row ÷ 2 + 1
-
-    fig = CM.Figure(size = (1400, 580))
-    axis_kwargs = (
-        titlesize = 32, subtitlesize = 24,
-        xlabel = "View", ylabel = "Detector Column",
-        xlabelsize = 22, ylabelsize = 22,
-        xticklabelsize = 16, yticklabelsize = 16,
-    )
-
-    _qrange(arr) = (
-        Float64(quantile(vec(arr), 0.01)),
-        Float64(quantile(vec(arr), 0.99)),
-    )
-
-    slice_iod = permutedims(sino_basis_cong.sino_iodine[:, mid_r, :], (2, 1))
-    slice_wat = permutedims(sino_basis_cong.sino_water[:, mid_r, :], (2, 1))
-
     panels = (
         (
             1, 1, 2, "Iodine Basis Sinogram", "g/cm²",
@@ -944,11 +840,7 @@ let
     )
 
     for (r, panel_c, cbar_c, ttl, cbar_label, slice, range) in panels
-        ax = CM.Axis(
-            fig[r, panel_c]; title = ttl,
-            subtitle = "Cong PCCT (univariate)",
-            axis_kwargs...,
-        )
+        ax = CM.Axis(fig[r, panel_c]; title = ttl, axis_kwargs...)
         CM.heatmap!(ax, slice; colormap = :viridis, colorrange = range)
         CM.Colorbar(
             fig[r, cbar_c]; colormap = :viridis, colorrange = range,
@@ -991,7 +883,7 @@ basis_volumes = let
 
     (
         vol_iodine_raw = _fbp(sino_basis.sino_iodine),
-        vol_water_raw = _fbp(sino_basis.sino_water),
+        vol_water_raw  = _fbp(sino_basis.sino_water),
         geom = geom,
     )
 end;
@@ -1013,87 +905,12 @@ let
 
     panels = (
         (1, 1, 2, "Iodine Basis", "g/cm³", slice_iod, _qrange(slice_iod)),
-        (1, 3, 4, "Water Basis", "g/cm³", slice_wat, _qrange(slice_wat)),
-    )
-
-    for (r, panel_c, cbar_c, ttl, cbar_label, slice, range) in panels
-        ax = CM.Axis(
-            fig[r, panel_c]; title = ttl,
-            aspect = CM.DataAspect(), axis_kwargs...,
-        )
-        CM.heatmap!(ax, slice; colormap = :viridis, colorrange = range)
-        CM.hidedecorations!(ax)
-        CM.Colorbar(
-            fig[r, cbar_c]; colormap = :viridis, colorrange = range,
-            label = cbar_label, width = 16, labelsize = 22, ticklabelsize = 18,
-        )
-    end
-    fig
-end
-
-# ╔═╡ 06000021-0000-4000-8000-000000000001
-md"""
-## 9b. FBP: Cong PCCT Basis Maps
-
-Two FDK passes on the Cong-decomposed basis sinograms from §8b — same
-PCCT-tuned apodization filter as §9 so any visible differences are due
-to the decomposition algorithm, not the recon.  Output is in
-basis-density units (g/cm³), ready to feed §11's VMI synthesis if we
-later choose to swap pipelines.
-"""
-
-# ╔═╡ 06000021-0000-4000-8000-000000000010
-basis_volumes_cong = let
-    matrix_size = recon_opts.matrix_size
-    geom = sino_basis_cong.geom
-
-    fdk_filter = BS.CustomFilter(
-        (0.0, 0.25, 0.5, 0.75, 1.0),
-        (1.0, 0.75, 0.6, 0.2, 0.001),
-    )
-
-    function _fbp(sino_cpu)
-        sino_gpu = to_gpu(Float32.(sino_cpu))
-        ws = BS.create_fdk_recon_workspace(
-            sino_gpu, geom, matrix_size; filter = fdk_filter,
-        )
-        recon = Array(BS.reconstruct!(ws, sino_gpu, geom, matrix_size))
-        ws = nothing; sino_gpu = nothing
-        GC.gc(true)
-        return Float32.(recon)
-    end
-
-    (
-        vol_iodine_raw = _fbp(sino_basis_cong.sino_iodine),
-        vol_water_raw  = _fbp(sino_basis_cong.sino_water),
-        geom = geom,
-    )
-end;
-
-# ╔═╡ 06000021-0000-4000-8000-000000000030
-let
-    fig = CM.Figure(size = (1180, 580))
-    axis_kwargs = (titlesize = 32, subtitlesize = 24)
-
-    mid = size(basis_volumes_cong.vol_iodine_raw, 3) ÷ 2
-
-    _qrange(arr) = (
-        Float64(quantile(vec(arr), 0.01)),
-        Float64(quantile(vec(arr), 0.99)),
-    )
-
-    slice_iod = basis_volumes_cong.vol_iodine_raw[:, :, mid]
-    slice_wat = basis_volumes_cong.vol_water_raw[:, :, mid]
-
-    panels = (
-        (1, 1, 2, "Iodine Basis", "g/cm³", slice_iod, _qrange(slice_iod)),
         (1, 3, 4, "Water Basis",  "g/cm³", slice_wat, _qrange(slice_wat)),
     )
 
     for (r, panel_c, cbar_c, ttl, cbar_label, slice, range) in panels
         ax = CM.Axis(
             fig[r, panel_c]; title = ttl,
-            subtitle = "Cong PCCT",
             aspect = CM.DataAspect(), axis_kwargs...,
         )
         CM.heatmap!(ax, slice; colormap = :viridis, colorrange = range)
@@ -1105,32 +922,6 @@ let
     end
     fig
 end
-
-# ╔═╡ 06000022-0000-4000-8000-000000000001
-md"""
-### Pipeline Source Toggle
-
-Choose which basis-volume pair feeds **§10 onward** (z-median →
-VMI synth → Mono+ → cupping → Results):
-
-- `:cmv`  — calibrated polynomial inverse from §8 + FBP from §9 (default).
-- `:cong` — Cong PCCT univariate solver from §8b + FBP from §9b.
-
-Flip the knob and re-run from §10; everything below is reactive on the
-`basis_volumes_active` alias and will rebuild against the chosen path.
-"""
-
-# ╔═╡ 06000022-0000-4000-8000-000000000005
-BASIS_PATH = :cong;          # :cmv | :cong
-
-# ╔═╡ 06000022-0000-4000-8000-000000000010
-basis_volumes_active = let
-    src = BASIS_PATH === :cong ? basis_volumes_cong : basis_volumes
-    @info "[Pipeline source] using $(BASIS_PATH) → " *
-        (BASIS_PATH === :cong ? "Cong univariate (§8b + §9b)" :
-                                 "calibrated polynomial inverse (§8 + §9)")
-    src
-end;
 
 # ╔═╡ 0600000b-0000-4000-8000-000000000001
 md"""
@@ -1157,14 +948,14 @@ Z_MEDIAN_ADJACENT = 2;
 basis_z = let
     (
         vol_iodine = BS.apply_median_z(
-            basis_volumes_active.vol_iodine_raw;
+            basis_volumes.vol_iodine_raw;
             adjacent_slices = Z_MEDIAN_ADJACENT,
         ),
         vol_water = BS.apply_median_z(
-            basis_volumes_active.vol_water_raw;
+            basis_volumes.vol_water_raw;
             adjacent_slices = Z_MEDIAN_ADJACENT,
         ),
-        geom = basis_volumes_active.geom,
+        geom = basis_volumes.geom,
     )
 end;
 
@@ -1224,9 +1015,9 @@ water at the target VMI energy from NIST tables.  VMI grid:
     `⟨c_iodine⟩` over a deeply-eroded solid-water ROI.  Its
     synth-evaluated μ_water at each VMI energy is logged next to the
     textbook mono divisor as a Δ% drift.  This is **diagnostic only** —
-    after the SVD sinogram denoiser + polynomial decomposition, the
-    residual bias is small enough that the textbook analytical divisor
-    recovers correct HUs directly without needing an empirical anchor.
+    after the SVD sinogram denoiser + Cong decomposition, the residual
+    bias is small enough that the textbook analytical divisor recovers
+    correct HUs directly without needing an empirical anchor.
 """
 
 # ╔═╡ 0600000c-0000-4000-8000-000000000010
@@ -1436,219 +1227,6 @@ let
     fig
 end
 
-# ╔═╡ 06000013-0000-4000-8000-000000000001
-md"""
-## 13. Cupping Correction (Optional)
-
-Empirical radial-polynomial cup-flattening on each VMI.  Even with a
-beam-hardening-aware polynomial decomposition, residual scatter,
-truncation, and finite-order calibration can leave a low-frequency
-radial cup in the VMIs.  This stage fits an even-order polynomial
-`HU(r²) = a + b·r² + c·r⁴ + …` to the deeply-eroded solid-water
-voxels and subtracts the **radial part only** (the constant term `a`
-stays in the image, so the SW-ROI bulk-bias diagnostic is preserved
-and quantitative HU is unchanged on average).
-
-!!! tip "Stage Toggle"
-    `CUPPING_STAGE`
-    - `:off` (default) — passthrough; `vmi_HU_post = vmi_HU_final`.
-    - `:radial` — fit + subtract the smooth radial trend on SW voxels.
-
-!!! tip "Knobs"
-    | Knob                | Meaning                                                              |
-    |---------------------|----------------------------------------------------------------------|
-    | `CUPPING_ORDER`     | Highest polynomial power in `r`.  `2` = quadratic, `4` = + quartic.  |
-    | `CUPPING_ERODE_PX`  | SW-mask erosion before fitting.  Larger ⇒ deeper interior samples.   |
-
-    The fit pools across all z slices for stability; correction is
-    applied per-slice with the same coefficients (z-invariant cup).
-"""
-
-# ╔═╡ 06000013-0000-4000-8000-000000000005
-begin
-    CUPPING_STAGE = :off          # :off | :radial
-    CUPPING_ORDER = 4             # 2 → r² only;  4 → r² + r⁴
-    CUPPING_ERODE_PX = 12.0       # SW mask erosion in px (matches SW-bias diagnostic)
-    CUPPING_N_BINS = 32           # radial bins for median-binned robust fit
-end
-
-# ╔═╡ 06000013-0000-4000-8000-000000000010
-vmi_HU_post = let
-    if CUPPING_STAGE === :off
-        vmi_HU_final
-    else
-        # SW-only background mask, eroded so the fit is clear of rod edges
-        # (iodine bleed at small r) and scatter halo (envelope at large r).
-        mask_2d_raw = phantom_cpu.mask[:, :, size(phantom_cpu.mask, 3) ÷ 2]
-        sw_bool_raw = (mask_2d_raw .== UInt8(BS.REGION_SOLID_WATER))
-        bg_mask = BS.erode_mask_2d(sw_bool_raw; erode_px = CUPPING_ERODE_PX)
-        count(bg_mask) == 0 && error(
-            "cupping correction: erosion ($(CUPPING_ERODE_PX) px) wiped out the SW mask"
-        )
-
-        bg_idx = findall(bg_mask)
-        any_vol = vmi_HU_final[first(pcct_vmi_energies)]
-        nx, ny, _ = size(any_vol)
-        cx = (nx + 1) / 2; cy = (ny + 1) / 2
-
-        # Per-bg-voxel r², normalized to [0, 1] so the design matrix
-        # columns [1, u, u², …] all stay O(1) and the LS solve is well
-        # conditioned at higher orders (the un-normalized r⁴ column was ~10⁹
-        # which made order = 4 silently noisy and prone to overshoot).
-        r_sq_bg = [Float64((ci.I[1] - cx)^2 + (ci.I[2] - cy)^2) for ci in bg_idx]
-        R_sq_max = maximum(r_sq_bg)
-        u_bg = r_sq_bg ./ R_sq_max
-
-        npow = CUPPING_ORDER ÷ 2 + 1
-        bin_edges = range(0.0, 1.0; length = CUPPING_N_BINS + 1)
-
-        result = Dict{Float64, Array{Float32, 3}}()
-        for E in pcct_vmi_energies
-            vmi = vmi_HU_final[E]
-            nx_v, ny_v, nz_v = size(vmi)
-
-            # Robust radial profile: per u-bin, take the MEDIAN HU across
-            # all bg voxels and z slices.  Median dilutes the influence of
-            # rod-edge bleed near small r and scatter halo near large r —
-            # both of which biased the un-binned LS fit hard enough to flip
-            # the sign of the cup correction.
-            bin_u_centers = Float64[]
-            bin_hu_meds = Float64[]
-            for b in 1:CUPPING_N_BINS
-                lo, hi = bin_edges[b], bin_edges[b + 1]
-                bin_voxels = findall(u -> lo ≤ u < hi, u_bg)
-                isempty(bin_voxels) && continue
-                samples = Float64[]
-                for z in 1:nz_v, m in bin_voxels
-                    push!(samples, vmi[bg_idx[m].I[1], bg_idx[m].I[2], z])
-                end
-                push!(bin_u_centers, (lo + hi) / 2)
-                push!(bin_hu_meds, median(samples))
-            end
-
-            # LS poly fit on the binned medians (well-conditioned in u).
-            A_fit = Matrix{Float64}(undef, length(bin_u_centers), npow)
-            A_fit[:, 1] .= 1.0
-            for p in 2:npow
-                A_fit[:, p] .= bin_u_centers .^ (p - 1)
-            end
-            coeffs = A_fit \ bin_hu_meds
-
-            # Subtract the radial part only.  coeffs[1] (the global offset)
-            # stays in the image so the SW-ROI bulk-bias diagnostic and any
-            # constant residual basis-decomp HU offset are preserved.
-            corrected = similar(vmi)
-            for z in 1:nz_v, j in 1:ny_v, i in 1:nx_v
-                u = ((i - cx)^2 + (j - cy)^2) / R_sq_max
-                trend = 0.0
-                for p in 2:npow
-                    trend += coeffs[p] * u^(p - 1)
-                end
-                corrected[i, j, z] = vmi[i, j, z] - Float32(trend)
-            end
-
-            # Direction sanity: edge_trend = how much we subtract at u = 1.
-            # POSITIVE ⇒ cup (outer brighter), correction flattens it.
-            # NEGATIVE ⇒ inverse cup (would worsen a real cup).
-            edge_trend = sum(coeffs[p] for p in 2:npow)
-            @info "cupping @ $(Int(E)) keV: a₀ = $(round(coeffs[1], digits = 2)) HU,  " *
-                "subtracted at outer edge = $(round(edge_trend, digits = 1)) HU  " *
-                "($(edge_trend > 0 ? "flattening cup" : "inverse — check mask"))"
-            result[E] = corrected
-        end
-        result
-    end
-end;
-
-# ╔═╡ 06000013-0000-4000-8000-000000000020
-let
-    fig = CM.Figure(size = (980, 580))
-    ax = CM.Axis(
-        fig[1, 1];
-        title = "Solid-Water Radial HU Profile",
-        subtitle = CUPPING_STAGE === :off ?
-            "Cupping correction OFF (raw VMI shown)" :
-            "Before vs After (order $(CUPPING_ORDER), erode $(CUPPING_ERODE_PX) px)",
-        xlabel = "Radius (px)", ylabel = "HU",
-        titlesize = 32, subtitlesize = 24,
-        xlabelsize = 22, ylabelsize = 22,
-        xticklabelsize = 16, yticklabelsize = 16,
-    )
-
-    mask_2d_raw = phantom_cpu.mask[:, :, size(phantom_cpu.mask, 3) ÷ 2]
-    sw_bool_raw = (mask_2d_raw .== UInt8(BS.REGION_SOLID_WATER))
-    bg_mask = BS.erode_mask_2d(sw_bool_raw; erode_px = CUPPING_ERODE_PX)
-    bg_idx = findall(bg_mask)
-
-    nx, ny, nz = size(vmi_HU_final[70.0])
-    cx = (nx + 1) / 2; cy = (ny + 1) / 2
-
-    n_samples = length(bg_idx) * nz
-    rs = Vector{Float64}(undef, n_samples)
-    hus_pre = Vector{Float64}(undef, n_samples)
-    hus_post = Vector{Float64}(undef, n_samples)
-    k = 0
-    for z in 1:nz, ci in bg_idx
-        i, j = ci.I
-        k += 1
-        rs[k] = sqrt((i - cx)^2 + (j - cy)^2)
-        hus_pre[k] = vmi_HU_final[70.0][i, j, z]
-        hus_post[k] = vmi_HU_post[70.0][i, j, z]
-    end
-
-    CM.scatter!(
-        ax, rs, hus_pre;
-        markersize = 3, color = (CM.RGBf(0.85, 0.27, 0.1), 0.25), label = "Before"
-    )
-    if CUPPING_STAGE !== :off
-        CM.scatter!(
-            ax, rs, hus_post;
-            markersize = 3, color = (CM.RGBf(0.13, 0.59, 0.85), 0.25), label = "After"
-        )
-    end
-    CM.hlines!(ax, [0.0]; color = :black, linewidth = 1, linestyle = :dash)
-    CM.axislegend(
-        ax; position = :rb, framevisible = true,
-        labelsize = 18, padding = (6, 6, 6, 6)
-    )
-    fig
-end
-
-# ╔═╡ 06000013-0000-4000-8000-000000000030
-let
-    HU_window = (-200, 500)
-
-    fig = CM.Figure(size = (1180, 1180))
-    axis_kwargs = (titlesize = 32, subtitlesize = 24)
-
-    sample = vmi_HU_post[40.0]
-    mid = size(sample, 3) ÷ 2
-
-    sub_text = CUPPING_STAGE === :off ? "Mono+ (no cupping corr.)" :
-        "Mono+ + Radial Cupping Corr"
-
-    for (k, E) in enumerate(pcct_vmi_energies)
-        r = ((k - 1) ÷ 2) + 1
-        c = ((k - 1) % 2) + 1
-        ax = CM.Axis(
-            fig[r, c]; title = "$(Int(E)) keV VMI",
-            subtitle = sub_text,
-            aspect = CM.DataAspect(), axis_kwargs...,
-        )
-        CM.heatmap!(
-            ax, vmi_HU_post[E][:, :, mid];
-            colormap = :grays, colorrange = HU_window,
-        )
-        CM.hidedecorations!(ax)
-    end
-    CM.Colorbar(
-        fig[1:2, 3];
-        colormap = :grays, colorrange = HU_window,
-        label = "HU", width = 16, labelsize = 22, ticklabelsize = 18,
-    )
-    fig
-end
-
 # ╔═╡ 0600000e-0000-4000-8000-000000000001
 md"""
 ## Results
@@ -1750,7 +1328,7 @@ rod_data = let
         for (i, lab) in pairs(labels)
             mat = materials[Int(lab) + 1]   # mask_value + 1
             for (j, E) in pairs(pcct_vmi_energies)
-                meas[i, j] = measured_hu(vmi_HU_post[E], lab)
+                meas[i, j] = measured_hu(vmi_HU_final[E], lab)
                 theo[i, j] = theoretical_hu(mat, E)
             end
         end
@@ -1788,8 +1366,8 @@ let
 
     # ─── Left panel — 70 keV Mono+ slice + eroded SW ROI overlay ───────
     HU_window = (-200, 500)
-    mid = size(vmi_HU_post[70.0], 3) ÷ 2
-    bg = vmi_HU_post[70.0][:, :, mid]
+    mid = size(vmi_HU_final[70.0], 3) ÷ 2
+    bg = vmi_HU_final[70.0][:, :, mid]
 
     overlay = Float32[b ? 1.0f0 : NaN32 for b in solid_water_basis.mask_2d]
 
@@ -1810,7 +1388,7 @@ let
 
     # ─── Right panel — mean SW HU vs VMI energy (bar) ──────────────────
     sw_idx = findall(solid_water_basis.mask_2d)
-    n_z = size(vmi_HU_post[70.0], 3)
+    n_z = size(vmi_HU_final[70.0], 3)
     function _mean_hu(vol)
         s = 0.0; n = 0
         for z in 1:n_z, ci in sw_idx
@@ -1818,7 +1396,7 @@ let
         end
         return s / n
     end
-    sw_hu_per_keV = [_mean_hu(vmi_HU_post[E]) for E in pcct_vmi_energies]
+    sw_hu_per_keV = [_mean_hu(vmi_HU_final[E]) for E in pcct_vmi_energies]
 
     # cgrad → Vector{RGBAf} for barplot's color kwarg
     n_E = length(pcct_vmi_energies)
@@ -2061,7 +1639,7 @@ Simulate 140 kVp PCCT (4 bins, scatter-injected)
    → Per-Bin Scatter Correction  (model-based)
    → Joint Sinogram SVD Denoiser  (4-channel, BS.apply_sino_svd_denoise)
    → Bin Combine  (1+2 → low,  3+4 → high)
-   → Projection-Domain Material Decomposition  (polynomial, Alvarez-Macovski)
+   → Projection-Domain Material Decomposition  (Cong univariate, PCCT-Φ_k)
    → FBP × 2  (iodine, water basis maps)
    → Z-Direction Median Filter × 2
    → Monoenergetic VMI Synthesis  (textbook 2-basis, mono μρ_water divisor)
@@ -2070,11 +1648,12 @@ Simulate 140 kVp PCCT (4 bins, scatter-injected)
 ```
 
 The 4-channel SVD denoiser exploits cross-bin correlation *before* the
-lossy bin-combine step, then the polynomial material decomposition
-handles beam hardening through the polychromatic transmission integral
-that a linear closed-form inversion misses on a 33 cm phantom.  The
-result is HU-quantitative VMIs with low streak content and clean
-low-keV Mono+ output.
+lossy bin-combine step, then the Cong univariate solver — generalized
+to PCCT via the effective-spectral-response Φ_k(ε) ≥ 0 in Black
+(*in prep.*) — handles beam hardening through the polychromatic
+transmission integral that a linear closed-form inversion misses on a
+33 cm phantom, calibration-free.  The result is HU-quantitative VMIs
+with low streak content and clean low-keV Mono+ output.
 """
 
 # ╔═╡ Cell order:
@@ -2116,19 +1695,9 @@ low-keV Mono+ output.
 # ╠═06000009-0000-4000-8000-000000000010
 # ╠═06000009-0000-4000-8000-000000000020
 # ╟─06000009-0000-4000-8000-000000000040
-# ╟─06000020-0000-4000-8000-000000000001
-# ╠═06000020-0000-4000-8000-000000000010
-# ╠═06000020-0000-4000-8000-000000000020
-# ╟─06000020-0000-4000-8000-000000000040
 # ╟─0600000a-0000-4000-8000-000000000001
 # ╠═0600000a-0000-4000-8000-000000000010
 # ╟─0600000a-0000-4000-8000-000000000030
-# ╟─06000021-0000-4000-8000-000000000001
-# ╠═06000021-0000-4000-8000-000000000010
-# ╟─06000021-0000-4000-8000-000000000030
-# ╟─06000022-0000-4000-8000-000000000001
-# ╠═06000022-0000-4000-8000-000000000005
-# ╠═06000022-0000-4000-8000-000000000010
 # ╟─0600000b-0000-4000-8000-000000000001
 # ╠═0600000b-0000-4000-8000-000000000005
 # ╠═0600000b-0000-4000-8000-000000000010
@@ -2142,11 +1711,6 @@ low-keV Mono+ output.
 # ╠═0600000d-0000-4000-8000-000000000005
 # ╠═0600000d-0000-4000-8000-000000000010
 # ╟─0600000d-0000-4000-8000-000000000030
-# ╟─06000013-0000-4000-8000-000000000001
-# ╠═06000013-0000-4000-8000-000000000005
-# ╠═06000013-0000-4000-8000-000000000010
-# ╟─06000013-0000-4000-8000-000000000020
-# ╟─06000013-0000-4000-8000-000000000030
 # ╟─0600000e-0000-4000-8000-000000000001
 # ╠═0600000e-0000-4000-8000-000000000010
 # ╠═0600000e-0000-4000-8000-000000000020
