@@ -118,7 +118,6 @@ end
 # ╔═╡ 06000001-0000-4000-8000-000000000050
 md"""
 **Backend detected:** $(GPU_BACKEND.name)
-$(GPU_BACKEND.name == "CPU" ? "(no GPU detected — the \"BasisSim GPU\" row in §11 will be a CPU run)" : "")
 """
 
 # ╔═╡ 06000001-0000-4000-8000-000000000060
@@ -215,7 +214,7 @@ end;
 gecatsim_fdk_patched = !HAS_GECATSIM ? false : let
     PC.pyexec(
         """
-        import ctypes, sys
+        import ctypes
         import numpy as np
         import gecatsim.reconstruction.pyfiles.fdk_equiAngle as _fdk
 
@@ -251,16 +250,39 @@ gecatsim_fdk_patched = !HAS_GECATSIM ? false : let
         _fdk.float3Darray2pointer = _fast_arr2ptr
         _fdk.float3Dpointer2array = _fast_ptr2arr
 
-        # Stream upstream `print()`s to the terminal as they happen so a long
-        # recon run isn't a black box.
-        try:
-            sys.stdout.reconfigure(line_buffering=True)
-        except Exception:
-            pass
+        # Silence CatSim's chatty stdout — `run_all()` and `recon()` together
+        # emit ~600+ buffered print() lines (per-material C-allocation logs,
+        # 500 tqdm view ticks, FDK stage banners).  When PythonCall is talking
+        # to a Pluto worker, that flood overflows the captured stdout pipe and
+        # Pluto's "drain output before marking cell done" logic blocks on a
+        # pipe that never empties — the cell hangs forever even though the
+        # actual work finished.  Wrap both entry points in
+        # `contextlib.redirect_stdout(io.StringIO())` so the prints get
+        # absorbed in-process and never hit the pipe.  Plain `julia --project`
+        # doesn't have a captured pipe, which is why scripts run fine.
+        import contextlib, io
+        import gecatsim as _gecatsim
+        import gecatsim.reconstruction.pyfiles.recon as _recon_mod
+
+        if not getattr(_gecatsim.CatSim, '_basissim_silenced_run_all', False):
+            _orig_run_all = _gecatsim.CatSim.run_all
+            def _quiet_run_all(self, *args, **kwargs):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    return _orig_run_all(self, *args, **kwargs)
+            _gecatsim.CatSim.run_all = _quiet_run_all
+            _gecatsim.CatSim._basissim_silenced_run_all = True
+
+        if not getattr(_recon_mod, '_basissim_silenced_recon', False):
+            _orig_recon = _recon_mod.recon
+            def _quiet_recon(ct, *args, **kwargs):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    return _orig_recon(ct, *args, **kwargs)
+            _recon_mod.recon = _quiet_recon
+            _recon_mod._basissim_silenced_recon = True
         """,
         Main,
     )
-    @info "[gecatsim FDK patch] vectorized float3D{array2pointer,pointer2array} installed"
+    @info "[gecatsim FDK patch] vectorized float3D{array2pointer,pointer2array} + stdout silencing installed"
     true
 end;
 
@@ -280,24 +302,24 @@ magnification factor `SDD/SID`.
 # ╔═╡ 06000002-0000-4000-8000-000000000010
 scanner = BS.Scanner(
     source_to_isocenter = 625.6,
-    source_to_detector  = 1100.0,
-    detector_rows       = 256,
-    detector_cols       = 834,
-    detector_row_size   = 0.625,
-    detector_col_size   = 0.6,
-    detector_shape      = BS.CURVED_DETECTOR,
-    focal_spot_width    = 1.0,
-    focal_spot_length   = 1.0,
-    target_angle        = 10.0,
+    source_to_detector = 1100.0,
+    detector_rows = 256,
+    detector_cols = 834,
+    detector_row_size = 0.625,
+    detector_col_size = 0.6,
+    detector_shape = BS.CURVED_DETECTOR,
+    focal_spot_width = 1.0,
+    focal_spot_length = 1.0,
+    target_angle = 10.0,
     flat_filter_material = :aluminum,
     flat_filter_thickness = 2.5,
-    bowtie_filter        = :ge_revolution_large,
-    detector_material    = :lumex,
-    detector_depth       = 3.0,
-    fill_factor_row      = 0.9,
-    fill_factor_col      = 0.9,
-    electronic_noise     = 0,
-    detection_gain       = 10.0,
+    bowtie_filter = :ge_revolution_large,
+    detector_material = :lumex,
+    detector_depth = 3.0,
+    fill_factor_row = 0.9,
+    fill_factor_col = 0.9,
+    electronic_noise = 0,
+    detection_gain = 10.0,
 );
 
 # ╔═╡ 06000003-0000-4000-8000-000000000001
@@ -328,11 +350,11 @@ recon_opts = let
     slice_thickness_mm = 0.625
     n_z = max(1, round(Int, protocol.collimation_mm / slice_thickness_mm))
     BS.ReconOptions(
-        algorithm   = :fdk,
+        algorithm = :fdk,
         matrix_size = (256, 256, n_z),
-        fov_cm      = 35.0,
-        z_cm        = protocol.collimation_mm / 10.0,
-        filter      = :standard,
+        fov_cm = 35.0,
+        z_cm = protocol.collimation_mm / 10.0,
+        filter = :standard,
     )
 end;
 
@@ -367,9 +389,9 @@ function catsim_init()
     gecatsim_fdk_patched || error("gecatsim FDK speed patch did not run — see §0")
 
     if !isassigned(_catsim_ref)
-        _catsim_ref[]    = PC.pyimport("gecatsim")
+        _catsim_ref[] = PC.pyimport("gecatsim")
         _recon_mod_ref[] = PC.pyimport("gecatsim.reconstruction.pyfiles.recon")
-        _np_ref[]        = PC.pyimport("numpy")
+        _np_ref[] = PC.pyimport("numpy")
 
         spec = PC.pyimport("importlib.util")
         gecatsim_spec = spec.find_spec("gecatsim")
@@ -382,8 +404,8 @@ end
 
 # ╔═╡ 06000004-0000-4000-8000-000000000030
 function catsim_create_simulation(;
-        phantom_cfg  = "Phantom_Sample.cfg",
-        scanner_cfg  = "Scanner_Sample_generic.cfg",
+        phantom_cfg = "Phantom_Sample.cfg",
+        scanner_cfg = "Scanner_Sample_generic.cfg",
         protocol_cfg = "Protocol_Sample_axial.cfg",
     )
     xc, _, _, cfg_path = catsim_init()
@@ -404,12 +426,12 @@ function catsim_configure_scanner!(ct, scanner, protocol)
         scanner.detector_rows
     end
 
-    ct.scanner.sid              = scanner.source_to_isocenter
-    ct.scanner.sdd              = scanner.source_to_detector
+    ct.scanner.sid = scanner.source_to_isocenter
+    ct.scanner.sdd = scanner.source_to_detector
     ct.scanner.detectorColCount = scanner.detector_cols
     ct.scanner.detectorRowCount = n_active_rows
-    ct.scanner.detectorColSize  = scanner.detector_col_size * magnification  # iso → face
-    ct.scanner.detectorRowSize  = scanner.detector_row_size * magnification
+    ct.scanner.detectorColSize = scanner.detector_col_size * magnification  # iso → face
+    ct.scanner.detectorRowSize = scanner.detector_row_size * magnification
 
     # Prevent "braided" sinograms — every pixel its own module.
     ct.scanner.detectorColsPerMod = 1
@@ -423,11 +445,11 @@ end
 
 # ╔═╡ 06000004-0000-4000-8000-000000000050
 function catsim_configure_protocol!(ct, protocol)
-    ct.protocol.mA               = protocol.mA
+    ct.protocol.mA = protocol.mA
     ct.protocol.viewsPerRotation = protocol.views
-    ct.protocol.viewCount        = protocol.views
-    ct.protocol.stopViewId       = protocol.views - 1
-    ct.protocol.rotationTime     = protocol.rotation_time
+    ct.protocol.viewCount = protocol.views
+    ct.protocol.stopViewId = protocol.views - 1
+    ct.protocol.rotationTime = protocol.rotation_time
     ct.protocol.spectrumFilename = "tungsten_tar7.0_$(Int(protocol.kVp))_filt.dat"
     return ct
 end
@@ -437,31 +459,31 @@ function catsim_configure_recon!(ct, recon_opts; μ_water_cm = nothing)
     xc, _, _, cfg_path = catsim_init()
     xc.source_cfg(joinpath(cfg_path, "Recon_Sample_2d.cfg"), ct)
 
-    n_slices       = recon_opts.matrix_size[3]
+    n_slices = recon_opts.matrix_size[3]
     slice_thick_mm = recon_opts.z_cm * 10.0 / n_slices    # cm → mm
 
-    ct.recon.fov            = recon_opts.fov_cm * 10.0    # cm → mm
-    ct.recon.imageSize      = recon_opts.matrix_size[1]
-    ct.recon.sliceCount     = n_slices
+    ct.recon.fov = recon_opts.fov_cm * 10.0    # cm → mm
+    ct.recon.imageSize = recon_opts.matrix_size[1]
+    ct.recon.sliceCount = n_slices
     ct.recon.sliceThickness = slice_thick_mm
 
     # `Recon_Sample_2d.cfg` doesn't set `reconType` — pin it to FDK so we don't
     # accidentally hit the (broken) iterative recons in the MolloiLab fork.
     ct.recon.reconType = "fdk_equiAngle"
 
-    ct.recon.unit     = "HU"
-    ct.recon.mu       = μ_water_cm !== nothing ? μ_water_cm / 10.0 : 0.02   # cm⁻¹ → mm⁻¹
+    ct.recon.unit = "HU"
+    ct.recon.mu = μ_water_cm !== nothing ? μ_water_cm / 10.0 : 0.02   # cm⁻¹ → mm⁻¹
     ct.recon.huOffset = -1000
     return ct
 end
 
 # ╔═╡ 06000004-0000-4000-8000-000000000070
 function catsim_configure_phantom!(ct, json_path; scale = 1.0, offset = [0.0, 0.0, 0.0])
-    ct.phantom.callback          = "Phantom_Voxelized"
+    ct.phantom.callback = "Phantom_Voxelized"
     ct.phantom.projectorCallback = "C_Projector_Voxelized"
-    ct.phantom.filename          = json_path
-    ct.phantom.scale             = scale
-    ct.phantom.centerOffset      = PC.pylist(offset)
+    ct.phantom.filename = json_path
+    ct.phantom.scale = scale
+    ct.phantom.centerOffset = PC.pylist(offset)
     return ct
 end
 
@@ -470,8 +492,8 @@ function catsim_forward_project(ct; results_name = "catsim_out")
     ct.resultsName = results_name
     ct.run_all()
 
-    rows  = Int(PC.pyconvert(Float64, ct.scanner.detectorRowCount))
-    cols  = Int(PC.pyconvert(Float64, ct.scanner.detectorColCount))
+    rows = Int(PC.pyconvert(Float64, ct.scanner.detectorRowCount))
+    cols = Int(PC.pyconvert(Float64, ct.scanner.detectorColCount))
     views = Int(PC.pyconvert(Float64, ct.protocol.viewCount))
 
     raw_bytes = read("$(results_name).prep")
@@ -482,9 +504,9 @@ end
 # ╔═╡ 06000004-0000-4000-8000-000000000090
 function catsim_reconstruct_fdk(ct; results_name = "catsim_out")
     _, recon_mod, _, _ = catsim_init()
-    ct.resultsName     = results_name
-    ct.recon.filename  = ct.resultsName
-    ct.do_Recon        = 1
+    ct.resultsName = results_name
+    ct.recon.filename = ct.resultsName
+    ct.do_Recon = 1
 
     recon_mod.recon(ct)
 
@@ -528,9 +550,9 @@ into the phantom JSON.
 
 # ╔═╡ 06000005-0000-4000-8000-000000000010
 const REGION_TO_CATSIM = Dict{Int, String}(
-    1  => "water",                   # solid water body  (≈ water in CatSim)
-    2  => "water",                   # pure water vials
-    3  => "water",                   # SW reference rods
+    1 => "water",                   # solid water body  (≈ water in CatSim)
+    2 => "water",                   # pure water vials
+    3 => "water",                   # SW reference rods
     10 => "Gammex472_Ca_50",
     11 => "Gammex472_Ca_100",
     12 => "Gammex472_Ca_200",
@@ -599,20 +621,20 @@ function export_phantom_for_catsim(phantom, output_dir, basename_str)
     end
 
     json_data = Dict(
-        "n_materials"                => length(json_materials),
-        "mat_name"                   => json_materials,
+        "n_materials" => length(json_materials),
+        "mat_name" => json_materials,
         "volumefractionmap_filename" => json_filenames,
         "volumefractionmap_datatype" => json_datatypes,
-        "cols"                       => json_cols,
-        "rows"                       => json_rows,
-        "slices"                     => json_slices,
-        "x_size"                     => json_xsize,
-        "y_size"                     => json_ysize,
-        "z_size"                     => json_zsize,
-        "x_offset"                   => json_xoffset,
-        "y_offset"                   => json_yoffset,
-        "z_offset"                   => json_zoffset,
-        "density_scale"              => json_densscale,
+        "cols" => json_cols,
+        "rows" => json_rows,
+        "slices" => json_slices,
+        "x_size" => json_xsize,
+        "y_size" => json_ysize,
+        "z_size" => json_zsize,
+        "x_offset" => json_xoffset,
+        "y_offset" => json_yoffset,
+        "z_offset" => json_zoffset,
+        "density_scale" => json_densscale,
     )
 
     json_path = joinpath(output_dir, "$(basename_str).json")
@@ -648,8 +670,8 @@ still resolves the 28 mm rods.  `n_slices = 8` matches the recon slab.
 phantom_cpu = BS.create_gammex_472(
     n_voxels = 128,
     n_slices = 8,
-    fov_cm   = 35.0,
-    z_cm     = protocol.collimation_mm / 10.0,
+    fov_cm = 35.0,
+    z_cm = protocol.collimation_mm / 10.0,
 );
 
 # ╔═╡ 06000006-0000-4000-8000-000000000020
@@ -677,9 +699,9 @@ approach as nb04, no hardcoded 33 cm.
 # ╔═╡ 06000007-0000-4000-8000-000000000010
 geom_inspect = BS.CTGeometry(
     scanner;
-    n_angles       = protocol.views,
-    fov_cm         = recon_opts.fov_cm,
-    z_cm           = recon_opts.z_cm,
+    n_angles = protocol.views,
+    fov_cm = recon_opts.fov_cm,
+    z_cm = recon_opts.z_cm,
     collimation_mm = protocol.collimation_mm,
 );
 
@@ -688,12 +710,12 @@ geom_inspect = BS.CTGeometry(
     # Phantom-hardened μ_water: pull the *actual* body diameter from the
     # voxelized phantom (no hardcoded 33 cm) so μ_water tracks any change to
     # `n_voxels` / `fov_cm` automatically.  Same approach as nb04.
-    voxel_size_mm   = phantom_cpu.voxel_size .* 10.0
+    voxel_size_mm = phantom_cpu.voxel_size .* 10.0
     phantom_diam_cm = BS.estimate_phantom_diameter_cm(phantom_cpu.mask, voxel_size_mm)
     μ = BS.compute_polychromatic_μ_water(
         sim_opts, protocol;
-        scanner       = scanner,
-        geom          = geom_inspect,
+        scanner = scanner,
+        geom = geom_inspect,
         water_path_cm = phantom_diam_cm,
     )
     @info "μ_water (120 kVp, $(round(phantom_diam_cm, digits = 1)) cm hardening) = $(round(μ, digits = 5)) cm⁻¹"
@@ -706,29 +728,33 @@ md"""
 """
 
 # ╔═╡ 06000008-0000-4000-8000-000000000010
-catsim_result = !HAS_GECATSIM ? nothing : let
-    work_dir = mktempdir(; prefix = "basissim_catsim_06_")
-    json_path = export_phantom_for_catsim(phantom_cpu, work_dir, "gammex472")
+catsim_result = let
+    if !HAS_GECATSIM
+        nothing
+    else
+        work_dir = mktempdir(; prefix = "basissim_catsim_06_")
+        json_path = export_phantom_for_catsim(phantom_cpu, work_dir, "gammex472")
 
-    @info "[CatSim] running 120 kVp / 200 mA / 500 views on Gammex 472 (n_voxels=128)…"
-    tag = joinpath(work_dir, "gammex472_run")
+        @info "[CatSim] running 120 kVp / 200 mA / 500 views on Gammex 472 (n_voxels=128)…"
+        tag = joinpath(work_dir, "gammex472_run")
 
-    elapsed = @elapsed begin
-        ct = catsim_create_simulation()
-        catsim_configure_phantom!(ct, json_path)
-        catsim_configure_scanner!(ct, scanner, protocol)
-        catsim_configure_protocol!(ct, protocol)
-        catsim_configure_recon!(ct, recon_opts; μ_water_cm = μ_water_120)
+        elapsed = @elapsed begin
+            ct = catsim_create_simulation()
+            catsim_configure_phantom!(ct, json_path)
+            catsim_configure_scanner!(ct, scanner, protocol)
+            catsim_configure_protocol!(ct, protocol)
+            catsim_configure_recon!(ct, recon_opts; μ_water_cm = μ_water_120)
 
-        sino  = catsim_forward_project(ct; results_name = tag)
-        recon = catsim_reconstruct_fdk(ct; results_name = tag)
+            sino = catsim_forward_project(ct; results_name = tag)
+            recon = catsim_reconstruct_fdk(ct; results_name = tag)
+        end
+
+        catsim_cleanup(tag)
+        rm(work_dir; recursive = true, force = true)
+
+        @info "[CatSim] forward proj + FDK total = $(round(elapsed, digits = 2)) s"
+        (recon = recon, elapsed = elapsed)
     end
-
-    catsim_cleanup(tag)
-    rm(work_dir; recursive = true, force = true)
-
-    @info "[CatSim] forward proj + FDK total = $(round(elapsed, digits = 2)) s"
-    (recon = recon, elapsed = elapsed)
 end;
 
 # ╔═╡ 06000009-0000-4000-8000-000000000001
@@ -830,9 +856,9 @@ three panels.
 
 # ╔═╡ 0600000b-0000-4000-8000-000000000010
 let
-    fmt_s(x)        = @sprintf("%.2f s", x)
-    fmt_speedup(s)  = @sprintf("%.1f× faster", s)
-    ref_t           = catsim_result === nothing ? nothing : catsim_result.elapsed
+    fmt_s(x) = @sprintf("%.2f s", x)
+    fmt_speedup(s) = @sprintf("%.1f× faster", s)
+    ref_t = catsim_result === nothing ? nothing : catsim_result.elapsed
 
     cpu_sub = ref_t === nothing ?
         "Julia · $(fmt_s(basissim_cpu_result.elapsed))" :
@@ -866,7 +892,7 @@ let
 
     ax_cpu = CM.Axis(
         fig[1, col];
-        title    = "BasisSimulator.jl (CPU)",
+        title = "BasisSimulator.jl (CPU)",
         subtitle = cpu_sub,
         aspect = CM.DataAspect(), yreversed = true,
         title_kwargs...,
@@ -880,7 +906,7 @@ let
 
     ax_gpu = CM.Axis(
         fig[1, col];
-        title    = "BasisSimulator.jl ($(GPU_BACKEND.name))",
+        title = "BasisSimulator.jl ($(GPU_BACKEND.name))",
         subtitle = gpu_sub,
         aspect = CM.DataAspect(), yreversed = true,
         title_kwargs...,
@@ -913,21 +939,27 @@ CPU); the GPU bar is what BasisSim is actually built for.
 # ╔═╡ 0600000c-0000-4000-8000-000000000005
 let
     rows = NamedTuple[]
-    push!(rows, (
-        label = "CatSim\n(Python)",
-        seconds = catsim_result === nothing ? NaN : catsim_result.elapsed,
-        color = CM.RGBf(0.40, 0.40, 0.45),
-    ))
-    push!(rows, (
-        label = "BasisSimulator.jl\nCPU",
-        seconds = basissim_cpu_result.elapsed,
-        color = CM.RGBf(0.95, 0.55, 0.10),
-    ))
-    push!(rows, (
-        label = "BasisSimulator.jl\n$(GPU_BACKEND.name)",
-        seconds = basissim_gpu_result.elapsed,
-        color = CM.RGBf(0.13, 0.59, 0.85),
-    ))
+    push!(
+        rows, (
+            label = "CatSim\n(Python)",
+            seconds = catsim_result === nothing ? NaN : catsim_result.elapsed,
+            color = CM.RGBf(0.4, 0.4, 0.45),
+        )
+    )
+    push!(
+        rows, (
+            label = "BasisSimulator.jl\nCPU",
+            seconds = basissim_cpu_result.elapsed,
+            color = CM.RGBf(0.95, 0.55, 0.1),
+        )
+    )
+    push!(
+        rows, (
+            label = "BasisSimulator.jl\n$(GPU_BACKEND.name)",
+            seconds = basissim_gpu_result.elapsed,
+            color = CM.RGBf(0.13, 0.59, 0.85),
+        )
+    )
 
     valid_idx = findall(r -> !isnan(r.seconds), rows)
     xs = collect(1:length(rows))
@@ -1004,20 +1036,22 @@ let
         "BasisSim *GPU*  (no GPU detected — CPU run)" :
         "BasisSim GPU ($(GPU_BACKEND.name))"
 
-    Markdown.parse("""
-    | pipeline | wallclock | speedup vs CatSim |
-    |----------|-----------|-------------------|
-    | CatSim (Python, voxelized projector) | $(cs_label) | $(cs_speedup) |
-    | BasisSim CPU                         | $(@sprintf("%.2f s", basissim_cpu_result.elapsed)) | $(cpu_speedup) |
-    | $(gpu_row_label)                     | $(@sprintf("%.2f s", basissim_gpu_result.elapsed)) | $(gpu_speedup) |
+    Markdown.parse(
+        """
+        | pipeline | wallclock | speedup vs CatSim |
+        |----------|-----------|-------------------|
+        | CatSim (Python, voxelized projector) | $(cs_label) | $(cs_speedup) |
+        | BasisSim CPU                         | $(@sprintf("%.2f s", basissim_cpu_result.elapsed)) | $(cpu_speedup) |
+        | $(gpu_row_label)                     | $(@sprintf("%.2f s", basissim_gpu_result.elapsed)) | $(gpu_speedup) |
 
-    Numbers are end-to-end forward projection + FBP for one 120 kVp / 200 mA / 500-view scan
-    on a 128³ Gammex 472 phantom into a $(recon_opts.matrix_size[1])×$(recon_opts.matrix_size[2])×$(recon_opts.matrix_size[3])
-    HU recon.  **Both BasisSim runs were JIT-warmed once before the timing pass** so what's
-    reported is steady-state hot-cache wallclock, comparable to CatSim's C-kernel runtime
-    (no warm-up needed).  Re-running this notebook on different hardware will give different
-    numbers but the ordering (CatSim > BasisSim CPU > BasisSim GPU on wallclock) holds.
-    """)
+        Numbers are end-to-end forward projection + FBP for one 120 kVp / 200 mA / 500-view scan
+        on a 128³ Gammex 472 phantom into a $(recon_opts.matrix_size[1])×$(recon_opts.matrix_size[2])×$(recon_opts.matrix_size[3])
+        HU recon.  **Both BasisSim runs were JIT-warmed once before the timing pass** so what's
+        reported is steady-state hot-cache wallclock, comparable to CatSim's C-kernel runtime
+        (no warm-up needed).  Re-running this notebook on different hardware will give different
+        numbers but the ordering (CatSim > BasisSim CPU > BasisSim GPU on wallclock) holds.
+        """
+    )
 end
 
 # ╔═╡ 0600000d-0000-4000-8000-000000000001

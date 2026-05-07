@@ -752,20 +752,20 @@ end;
 
 # ╔═╡ 0500000d-0000-4000-8000-000000000020
 μ_water_120 = phantom_cpu === nothing ? nothing : let
-    # Phantom-aware water_path: pull the body chord straight off the
-    # cropped XCAT mask, so the calibration tracks any change to the
-    # crop bbox / DOWNSAMPLE_FACTOR without hardcoded cm.
-    body_diameter_cm = BS.estimate_phantom_diameter_cm(
-        phantom_cpu.mask, phantom_cpu.voxel_size .* 10.0,
-    )
-    μ = BS.compute_polychromatic_μ_water(
-        sim_opts, protocol;
-        scanner = scanner,
-        geom = geom_inspect,
-        water_path_cm = body_diameter_cm,
-    )
-    @info "[analytic μ_water]  120 kVp + 4.5 mm Al + $(round(body_diameter_cm, digits = 1)) cm body hardening: $(round(μ, digits = 5)) cm⁻¹"
-    μ
+        # Phantom-aware water_path: pull the body chord straight off the
+        # cropped XCAT mask, so the calibration tracks any change to the
+        # crop bbox / DOWNSAMPLE_FACTOR without hardcoded cm.
+        body_diameter_cm = BS.estimate_phantom_diameter_cm(
+            phantom_cpu.mask, phantom_cpu.voxel_size .* 10.0,
+        )
+        μ = BS.compute_polychromatic_μ_water(
+            sim_opts, protocol;
+            scanner = scanner,
+            geom = geom_inspect,
+            water_path_cm = body_diameter_cm,
+        )
+        @info "[analytic μ_water]  120 kVp + 4.5 mm Al + $(round(body_diameter_cm, digits = 1)) cm body hardening: $(round(μ, digits = 5)) cm⁻¹"
+        μ
 end;
 
 # ╔═╡ 0500000d-0000-4000-8000-000000000030

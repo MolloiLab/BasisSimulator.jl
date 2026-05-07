@@ -14,7 +14,7 @@ end
 using Markdown: @md_str, Markdown
 
 # ╔═╡ 06000001-0000-4000-8000-000000000003
-using Statistics: mean, std, quantile
+using Statistics: mean, std, quantile, median
 
 # ╔═╡ 06000001-0000-4000-8000-000000000010
 md"""
@@ -314,7 +314,7 @@ sim_bins = let
         BS.apply_pcct_pileup_correction!(result.pcct_sino.bins, result.I0_bins, result.pileup_S)
     end
 
-    bins    = [Array(b) for b in result.pcct_sino.bins]
+    bins = [Array(b) for b in result.pcct_sino.bins]
     I0_bins = copy(result.I0_bins)
 
     # ── Decoupled scatter correction (same as before — bins are now in
@@ -423,11 +423,11 @@ the same rod ordering should be visible across all four bins.
 # ╔═╡ 06000006-0000-4000-8000-000000000050
 sim_bins_fbp = let
     matrix_size = recon_opts.matrix_size
-    geom        = sim_bins.geom
+    geom = sim_bins.geom
 
     fdk_filter = BS.CustomFilter(
         (0.0, 0.25, 0.5, 0.75, 1.0),
-        (1.0, 0.75, 0.6,  0.2,  0.001),
+        (1.0, 0.75, 0.6, 0.2, 0.001),
     )
 
     function _fbp(sino_cpu)
@@ -450,8 +450,8 @@ let
     mid_z = n_z ÷ 2 + 1
 
     bin_titles = ("Bin 1", "Bin 2", "Bin 3", "Bin 4")
-    bin_subs   = ("20 – 35 keV", "35 – 55 keV", "55 – 70 keV", "> 70 keV")
-    slices     = [sim_bins_fbp[k][:, :, mid_z] for k in 1:4]
+    bin_subs = ("20 – 35 keV", "35 – 55 keV", "55 – 70 keV", "> 70 keV")
+    slices = [sim_bins_fbp[k][:, :, mid_z] for k in 1:4]
 
     # Dynamic shared range across all 4 bins — q1/q99 percentile clipping
     all_v = vcat([vec(s) for s in slices]...)
@@ -489,13 +489,14 @@ end
 md"""
 ## 6. Joint Sinogram SVD Denoiser
 
-The 4 PCCT bins share the same anatomy (same view angles, geometry,
+The PCCT bins share the same anatomy (same view angles, geometry,
 Radon transform) but differ in spectral content and quantum noise.
-`BS.apply_sino_svd_denoise` is N-channel generic; for PCCT we run it
-with all four bins at once.
+`BS.apply_sino_svd_denoise` is N-channel generic — it can run on
+either the **4 raw bins** before bin-combine or on the **2 combined
+channels** afterwards.
 
 !!! info "Algorithm"
-    Per detector row, stack the channels as columns of a 4-wide
+    Per detector row, stack the channels as columns of an N-wide
     matrix and SVD-decompose:
 
     - **`U[:, 1]`** carries the common log-attenuation pattern every
@@ -509,20 +510,43 @@ with all four bins at once.
     `src/denoising/sino_svd.jl` for details and the RSKR inspiration
     note.
 
-!!! tip "One Knob"
+!!! tip "Stage Toggle"
+    `SVD_DENOISE_STAGE` switches *where* the denoiser runs in the
+    pipeline:
+
+    - `:four_bin` (default) — denoise the 4 raw bins before bin-combine.
+      Strips 3 noise components (`U[:, 2..4]`) and runs ahead of the
+      lossy I0-weighted Beer recombination.
+    - `:two_bin` — bin-combine the raw bins first, then denoise the 2
+      low/high channels.  Mirrors the dual-kVp pipeline (nb03 / nb07);
+      strips only 1 noise component (`U[:, 2]`) but the combined
+      channels go in with higher SNR.
+
+!!! tip "Smoothness Knob"
     `SINO_DENOISE_σ_PX` — Gaussian σ in pixels.  σ ≈ 1–2 px keeps
     rod-scale spectral structure intact while killing pixel-scale
     noise.  σ ≤ 0 short-circuits to a passthrough.
 """
 
+# ╔═╡ 06000007-0000-4000-8000-000000000004
+# Where to apply SVD denoising:
+#   :four_bin — denoise the 4 raw bins, then bin-combine (default)
+#   :two_bin  — bin-combine the raw bins, then denoise the 2 channels
+SVD_DENOISE_STAGE = :four_bin;
+
 # ╔═╡ 06000007-0000-4000-8000-000000000005
-SINO_DENOISE_σ_PX = 2.0;   # only knob — Gaussian σ on the SVD residual components
+SINO_DENOISE_σ_PX = 2.0;   # Gaussian σ on the SVD residual components
 
 # ╔═╡ 06000007-0000-4000-8000-000000000010
-sino_bins_denoised = BS.apply_sino_svd_denoise(
-    [Float32.(b) for b in sim_bins.bins];
-    σ_px = SINO_DENOISE_σ_PX,
-);
+sino_bins_denoised = if SVD_DENOISE_STAGE === :four_bin
+    BS.apply_sino_svd_denoise(
+        [Float32.(b) for b in sim_bins.bins];
+        σ_px = SINO_DENOISE_σ_PX,
+    )
+else
+    # :two_bin — denoise runs AFTER bin-combine in §7; pass raw bins through.
+    [Float32.(b) for b in sim_bins.bins]
+end;
 
 # ╔═╡ 06000007-0000-4000-8000-000000000030
 let
@@ -551,7 +575,9 @@ let
         c = ((k - 1) % 2) + 1
         ax = CM.Axis(
             fig[r, c]; title = bin_titles[k],
-            subtitle = "After SVD denoiser",
+            subtitle = SVD_DENOISE_STAGE === :four_bin ?
+                "After SVD denoiser" :
+                "Raw (SVD runs after bin-combine)",
             axis_kwargs...,
         )
         CM.heatmap!(ax, slices[k]; colormap = :viridis, colorrange = sino_window)
@@ -565,9 +591,9 @@ end
 
 # ╔═╡ 06000008-0000-4000-8000-000000000001
 md"""
-## 7. Bin Combine: Denoised 4 → Low / High Pair
+## 7. Bin Combine: 4 Bins → Low / High Pair
 
-I0-weighted Beer recombination on the **denoised** bins:
+I0-weighted Beer recombination of the 4 bins:
 
 ```
 N_grp = Σ_{b ∈ grp} I0[b] · exp(-p[b])
@@ -579,6 +605,10 @@ p_grp = -log(N_grp / Σ_{b ∈ grp} I0[b])
 
 Each combined sinogram represents a polychromatic measurement at the
 I0-weighted average spectrum of its bin group.
+
+When `SVD_DENOISE_STAGE = :four_bin` the denoiser already ran upstream
+and this combines denoised bins.  When `SVD_DENOISE_STAGE = :two_bin`
+this combines raw bins and then runs SVD on the resulting 2 channels.
 """
 
 # ╔═╡ 06000008-0000-4000-8000-000000000010
@@ -597,6 +627,17 @@ sim_lohi = let
 
     sino_low = _combine([1, 2])
     sino_high = _combine([3, 4])
+
+    # :two_bin — denoise the 2 combined channels here (mirrors the dual-kVp
+    # pipeline in nb03 / nb07).  No-op when SVD already ran on the 4 raw bins.
+    if SVD_DENOISE_STAGE === :two_bin
+        denoised = BS.apply_sino_svd_denoise(
+            [sino_low, sino_high];
+            σ_px = SINO_DENOISE_σ_PX,
+        )
+        sino_low, sino_high = denoised[1], denoised[2]
+    end
+
     (sino_low = sino_low, sino_high = sino_high, geom = sim_bins.geom)
 end;
 
@@ -1130,6 +1171,219 @@ let
     fig
 end
 
+# ╔═╡ 06000013-0000-4000-8000-000000000001
+md"""
+## 13. Cupping Correction (Optional)
+
+Empirical radial-polynomial cup-flattening on each VMI.  Even with a
+beam-hardening-aware polynomial decomposition, residual scatter,
+truncation, and finite-order calibration can leave a low-frequency
+radial cup in the VMIs.  This stage fits an even-order polynomial
+`HU(r²) = a + b·r² + c·r⁴ + …` to the deeply-eroded solid-water
+voxels and subtracts the **radial part only** (the constant term `a`
+stays in the image, so the SW-ROI bulk-bias diagnostic is preserved
+and quantitative HU is unchanged on average).
+
+!!! tip "Stage Toggle"
+    `CUPPING_STAGE`
+    - `:off` (default) — passthrough; `vmi_HU_post = vmi_HU_final`.
+    - `:radial` — fit + subtract the smooth radial trend on SW voxels.
+
+!!! tip "Knobs"
+    | Knob                | Meaning                                                              |
+    |---------------------|----------------------------------------------------------------------|
+    | `CUPPING_ORDER`     | Highest polynomial power in `r`.  `2` = quadratic, `4` = + quartic.  |
+    | `CUPPING_ERODE_PX`  | SW-mask erosion before fitting.  Larger ⇒ deeper interior samples.   |
+
+    The fit pools across all z slices for stability; correction is
+    applied per-slice with the same coefficients (z-invariant cup).
+"""
+
+# ╔═╡ 06000013-0000-4000-8000-000000000005
+begin
+    CUPPING_STAGE = :off          # :off | :radial
+    CUPPING_ORDER = 4             # 2 → r² only;  4 → r² + r⁴
+    CUPPING_ERODE_PX = 12.0       # SW mask erosion in px (matches SW-bias diagnostic)
+    CUPPING_N_BINS = 32           # radial bins for median-binned robust fit
+end
+
+# ╔═╡ 06000013-0000-4000-8000-000000000010
+vmi_HU_post = let
+    if CUPPING_STAGE === :off
+        vmi_HU_final
+    else
+        # SW-only background mask, eroded so the fit is clear of rod edges
+        # (iodine bleed at small r) and scatter halo (envelope at large r).
+        mask_2d_raw = phantom_cpu.mask[:, :, size(phantom_cpu.mask, 3) ÷ 2]
+        sw_bool_raw = (mask_2d_raw .== UInt8(BS.REGION_SOLID_WATER))
+        bg_mask = BS.erode_mask_2d(sw_bool_raw; erode_px = CUPPING_ERODE_PX)
+        count(bg_mask) == 0 && error(
+            "cupping correction: erosion ($(CUPPING_ERODE_PX) px) wiped out the SW mask"
+        )
+
+        bg_idx = findall(bg_mask)
+        any_vol = vmi_HU_final[first(pcct_vmi_energies)]
+        nx, ny, _ = size(any_vol)
+        cx = (nx + 1) / 2; cy = (ny + 1) / 2
+
+        # Per-bg-voxel r², normalized to [0, 1] so the design matrix
+        # columns [1, u, u², …] all stay O(1) and the LS solve is well
+        # conditioned at higher orders (the un-normalized r⁴ column was ~10⁹
+        # which made order = 4 silently noisy and prone to overshoot).
+        r_sq_bg = [Float64((ci.I[1] - cx)^2 + (ci.I[2] - cy)^2) for ci in bg_idx]
+        R_sq_max = maximum(r_sq_bg)
+        u_bg = r_sq_bg ./ R_sq_max
+
+        npow = CUPPING_ORDER ÷ 2 + 1
+        bin_edges = range(0.0, 1.0; length = CUPPING_N_BINS + 1)
+
+        result = Dict{Float64, Array{Float32, 3}}()
+        for E in pcct_vmi_energies
+            vmi = vmi_HU_final[E]
+            nx_v, ny_v, nz_v = size(vmi)
+
+            # Robust radial profile: per u-bin, take the MEDIAN HU across
+            # all bg voxels and z slices.  Median dilutes the influence of
+            # rod-edge bleed near small r and scatter halo near large r —
+            # both of which biased the un-binned LS fit hard enough to flip
+            # the sign of the cup correction.
+            bin_u_centers = Float64[]
+            bin_hu_meds = Float64[]
+            for b in 1:CUPPING_N_BINS
+                lo, hi = bin_edges[b], bin_edges[b + 1]
+                bin_voxels = findall(u -> lo ≤ u < hi, u_bg)
+                isempty(bin_voxels) && continue
+                samples = Float64[]
+                for z in 1:nz_v, m in bin_voxels
+                    push!(samples, vmi[bg_idx[m].I[1], bg_idx[m].I[2], z])
+                end
+                push!(bin_u_centers, (lo + hi) / 2)
+                push!(bin_hu_meds, median(samples))
+            end
+
+            # LS poly fit on the binned medians (well-conditioned in u).
+            A_fit = Matrix{Float64}(undef, length(bin_u_centers), npow)
+            A_fit[:, 1] .= 1.0
+            for p in 2:npow
+                A_fit[:, p] .= bin_u_centers .^ (p - 1)
+            end
+            coeffs = A_fit \ bin_hu_meds
+
+            # Subtract the radial part only.  coeffs[1] (the global offset)
+            # stays in the image so the SW-ROI bulk-bias diagnostic and any
+            # constant residual basis-decomp HU offset are preserved.
+            corrected = similar(vmi)
+            for z in 1:nz_v, j in 1:ny_v, i in 1:nx_v
+                u = ((i - cx)^2 + (j - cy)^2) / R_sq_max
+                trend = 0.0
+                for p in 2:npow
+                    trend += coeffs[p] * u^(p - 1)
+                end
+                corrected[i, j, z] = vmi[i, j, z] - Float32(trend)
+            end
+
+            # Direction sanity: edge_trend = how much we subtract at u = 1.
+            # POSITIVE ⇒ cup (outer brighter), correction flattens it.
+            # NEGATIVE ⇒ inverse cup (would worsen a real cup).
+            edge_trend = sum(coeffs[p] for p in 2:npow)
+            @info "cupping @ $(Int(E)) keV: a₀ = $(round(coeffs[1], digits = 2)) HU,  " *
+                "subtracted at outer edge = $(round(edge_trend, digits = 1)) HU  " *
+                "($(edge_trend > 0 ? "flattening cup" : "inverse — check mask"))"
+            result[E] = corrected
+        end
+        result
+    end
+end;
+
+# ╔═╡ 06000013-0000-4000-8000-000000000020
+let
+    fig = CM.Figure(size = (980, 580))
+    ax = CM.Axis(
+        fig[1, 1];
+        title = "Solid-Water Radial HU Profile",
+        subtitle = CUPPING_STAGE === :off ?
+            "Cupping correction OFF (raw VMI shown)" :
+            "Before vs After (order $(CUPPING_ORDER), erode $(CUPPING_ERODE_PX) px)",
+        xlabel = "Radius (px)", ylabel = "HU",
+        titlesize = 32, subtitlesize = 24,
+        xlabelsize = 22, ylabelsize = 22,
+        xticklabelsize = 16, yticklabelsize = 16,
+    )
+
+    mask_2d_raw = phantom_cpu.mask[:, :, size(phantom_cpu.mask, 3) ÷ 2]
+    sw_bool_raw = (mask_2d_raw .== UInt8(BS.REGION_SOLID_WATER))
+    bg_mask = BS.erode_mask_2d(sw_bool_raw; erode_px = CUPPING_ERODE_PX)
+    bg_idx = findall(bg_mask)
+
+    nx, ny, nz = size(vmi_HU_final[70.0])
+    cx = (nx + 1) / 2; cy = (ny + 1) / 2
+
+    n_samples = length(bg_idx) * nz
+    rs = Vector{Float64}(undef, n_samples)
+    hus_pre = Vector{Float64}(undef, n_samples)
+    hus_post = Vector{Float64}(undef, n_samples)
+    k = 0
+    for z in 1:nz, ci in bg_idx
+        i, j = ci.I
+        k += 1
+        rs[k] = sqrt((i - cx)^2 + (j - cy)^2)
+        hus_pre[k] = vmi_HU_final[70.0][i, j, z]
+        hus_post[k] = vmi_HU_post[70.0][i, j, z]
+    end
+
+    CM.scatter!(
+        ax, rs, hus_pre;
+        markersize = 3, color = (CM.RGBf(0.85, 0.27, 0.1), 0.25), label = "Before"
+    )
+    if CUPPING_STAGE !== :off
+        CM.scatter!(
+            ax, rs, hus_post;
+            markersize = 3, color = (CM.RGBf(0.13, 0.59, 0.85), 0.25), label = "After"
+        )
+    end
+    CM.hlines!(ax, [0.0]; color = :black, linewidth = 1, linestyle = :dash)
+    CM.axislegend(
+        ax; position = :rb, framevisible = true,
+        labelsize = 18, padding = (6, 6, 6, 6)
+    )
+    fig
+end
+
+# ╔═╡ 06000013-0000-4000-8000-000000000030
+let
+    HU_window = (-200, 500)
+
+    fig = CM.Figure(size = (1180, 1180))
+    axis_kwargs = (titlesize = 32, subtitlesize = 24)
+
+    sample = vmi_HU_post[40.0]
+    mid = size(sample, 3) ÷ 2
+
+    sub_text = CUPPING_STAGE === :off ? "Mono+ (no cupping corr.)" :
+        "Mono+ + Radial Cupping Corr"
+
+    for (k, E) in enumerate(pcct_vmi_energies)
+        r = ((k - 1) ÷ 2) + 1
+        c = ((k - 1) % 2) + 1
+        ax = CM.Axis(
+            fig[r, c]; title = "$(Int(E)) keV VMI",
+            subtitle = sub_text,
+            aspect = CM.DataAspect(), axis_kwargs...,
+        )
+        CM.heatmap!(
+            ax, vmi_HU_post[E][:, :, mid];
+            colormap = :grays, colorrange = HU_window,
+        )
+        CM.hidedecorations!(ax)
+    end
+    CM.Colorbar(
+        fig[1:2, 3];
+        colormap = :grays, colorrange = HU_window,
+        label = "HU", width = 16, labelsize = 22, ticklabelsize = 18,
+    )
+    fig
+end
+
 # ╔═╡ 0600000e-0000-4000-8000-000000000001
 md"""
 ## Results
@@ -1231,7 +1485,7 @@ rod_data = let
         for (i, lab) in pairs(labels)
             mat = materials[Int(lab) + 1]   # mask_value + 1
             for (j, E) in pairs(pcct_vmi_energies)
-                meas[i, j] = measured_hu(vmi_HU_final[E], lab)
+                meas[i, j] = measured_hu(vmi_HU_post[E], lab)
                 theo[i, j] = theoretical_hu(mat, E)
             end
         end
@@ -1269,8 +1523,8 @@ let
 
     # ─── Left panel — 70 keV Mono+ slice + eroded SW ROI overlay ───────
     HU_window = (-200, 500)
-    mid = size(vmi_HU_final[70.0], 3) ÷ 2
-    bg = vmi_HU_final[70.0][:, :, mid]
+    mid = size(vmi_HU_post[70.0], 3) ÷ 2
+    bg = vmi_HU_post[70.0][:, :, mid]
 
     overlay = Float32[b ? 1.0f0 : NaN32 for b in solid_water_basis.mask_2d]
 
@@ -1291,7 +1545,7 @@ let
 
     # ─── Right panel — mean SW HU vs VMI energy (bar) ──────────────────
     sw_idx = findall(solid_water_basis.mask_2d)
-    n_z = size(vmi_HU_final[70.0], 3)
+    n_z = size(vmi_HU_post[70.0], 3)
     function _mean_hu(vol)
         s = 0.0; n = 0
         for z in 1:n_z, ci in sw_idx
@@ -1299,7 +1553,7 @@ let
         end
         return s / n
     end
-    sw_hu_per_keV = [_mean_hu(vmi_HU_final[E]) for E in pcct_vmi_energies]
+    sw_hu_per_keV = [_mean_hu(vmi_HU_post[E]) for E in pcct_vmi_energies]
 
     # cgrad → Vector{RGBAf} for barplot's color kwarg
     n_E = length(pcct_vmi_energies)
@@ -1585,6 +1839,7 @@ low-keV Mono+ output.
 # ╠═06000006-0000-4000-8000-000000000050
 # ╟─06000006-0000-4000-8000-000000000060
 # ╟─06000007-0000-4000-8000-000000000001
+# ╠═06000007-0000-4000-8000-000000000004
 # ╠═06000007-0000-4000-8000-000000000005
 # ╠═06000007-0000-4000-8000-000000000010
 # ╟─06000007-0000-4000-8000-000000000030
@@ -1612,6 +1867,11 @@ low-keV Mono+ output.
 # ╠═0600000d-0000-4000-8000-000000000005
 # ╠═0600000d-0000-4000-8000-000000000010
 # ╟─0600000d-0000-4000-8000-000000000030
+# ╟─06000013-0000-4000-8000-000000000001
+# ╠═06000013-0000-4000-8000-000000000005
+# ╠═06000013-0000-4000-8000-000000000010
+# ╟─06000013-0000-4000-8000-000000000020
+# ╟─06000013-0000-4000-8000-000000000030
 # ╟─0600000e-0000-4000-8000-000000000001
 # ╠═0600000e-0000-4000-8000-000000000010
 # ╠═0600000e-0000-4000-8000-000000000020

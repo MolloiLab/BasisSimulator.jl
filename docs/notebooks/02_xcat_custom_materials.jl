@@ -616,23 +616,23 @@ both FBP and HIR pipelines below for `to_hounsfield`.
 
 # ╔═╡ 09000004-0000-4000-8000-000000000001
 bhc_calibration = sim === nothing ? nothing : let
-    prot_for_bhc = BS.CTProtocol(kVp = 120, additional_filters = [("Al", 4.5)])
+        prot_for_bhc = BS.CTProtocol(kVp = 120, additional_filters = [("Al", 4.5)])
 
-    # Bowtie-aware high-level API: auto-resolves the bowtie-hardened spectrum,
-    # collapses to per-column weights, and dispatches to TwoMaterialBHCPerColumn.
-    model = BS.calibrate_bhc_two_material(
-        sim_opts, prot_for_bhc;
-        scanner = scanner, geom = sim.geom,
-        order   = 2,
-        hu_low  = 450.0,
-        hu_high = 600.0,
-    )
+        # Bowtie-aware high-level API: auto-resolves the bowtie-hardened spectrum,
+        # collapses to per-column weights, and dispatches to TwoMaterialBHCPerColumn.
+        model = BS.calibrate_bhc_two_material(
+            sim_opts, prot_for_bhc;
+            scanner = scanner, geom = sim.geom,
+            order = 2,
+            hu_low = 450.0,
+            hu_high = 600.0,
+        )
 
-    (
-        model     = model,
-        μ_water   = model.μ_water_ref,
-        ref_E_keV = model.reference_energy_keV,
-    )
+        (
+            model = model,
+            μ_water = model.μ_water_ref,
+            ref_E_keV = model.reference_energy_keV,
+        )
 end;
 
 # ╔═╡ 09000005-0000-4000-8000-000000000001
