@@ -367,60 +367,66 @@ end
 
 # ╔═╡ 05000007-0000-4000-8000-000000000040
 md"""
-## 6b. Subspace–Frequency Joint Bilateral Denoiser  *(experimental)*
+## 6b. Subspace–Frequency Joint Bilateral Denoiser  *(experimental — v2)*
 
-A second projection-domain denoiser built directly on top of the same
-per-row SVD skeleton as §6, but with six additional moves drawn from the
-Cong–follow-up effective-spectral-response framework, RSKR
-(Clark, Badea 2023), and Mono+ (Grant 2014):
+A second projection-domain denoiser built on the same per-row SVD
+skeleton as §6, with **a single user knob** (the principal scale `σ₀`).
+Every other quantity is fixed by RSKR (Clark, Badea 2023) or
+auto-derived from the photon-count map.
 
-1. **Per-pixel Poisson whitening.**  Multiply each pixel by
-   `√Nₖ ∝ exp(−pₖ/2)` after subtracting a heavy low-pass reference
-   `p̄ₖ⁽⁰⁾` (σ_ref ≈ 10 px Gaussian).  Whitened residuals `ξₖ = √Nₖ·(pₖ − p̄ₖ⁽⁰⁾)`
-   have ~unit per-pixel noise variance, so the SVD's principal directions
-   are not pulled toward photon-starved pixels.
-2. **Smooth BOTH subspaces** with rank-sparse bandwidths
-   `σ_e = σ₀·(Σ₁/Σ_e)^γ`, γ = 0.5 — small floor on `U[:,1]` (residual
-   noise from Wedin perturbation) and aggressive on `U[:,2]` (the
-   spectral-residual-plus-noise component).
-3. **Joint bilateral filter** (product-of-channels range kernel) instead
-   of pure 2D Gaussian — preserves rod silhouettes that a Gaussian
-   would smear.
-4. **Locally-averaged range** (Clark–Badea Eq 8) — optional `lavg_window`
-   knob; default 1 = single-pixel diff.  Up to 3 or 5 = NL-means style.
-5. **Stride resampling** — knob, default 1.
-6. **Iterative refinement** — `n_iter` outer iters with σ shrink
-   factor α; default n_iter = 1.
+### Pipeline
 
-The whole operation is a drop-in replacement for §6: same input
-(`sim_low/high.sino`), same output shape (`(low, high, geom)` named
-tuple).  See §6c for the toggle that wires it into §7.
+1. **Per-pixel Poisson whitening.**  Subtract a heavy low-pass reference
+   `p̄ₖ⁽⁰⁾` (10-px Gaussian, fixed) and scale by `√Nₖ`, with `Nₖ`
+   recovered from `I0,k · exp(−pₖ)`.  Whitened residuals `ξₖ` have
+   ~unit per-pixel noise variance.
+2. **Per-row SVD** of the whitened `(col, view)` matrix
+   `M_r = [vec(ξ_lo)  vec(ξ_hi)]`.
+3. **Joint bilateral on both subspaces** with rank-sparse bandwidth
+   `σ_e = σ₀·√(Σ₁/Σ_e)` (paper-fixed exponent γ=½).  Range scale
+   `σ_e^rng = 1.4826·MAD(Λ_e)` (no `h` knob — paper §2.4 absorbs it).
+   Locally-averaged range over a fixed 5×5 window.  Stride
+   `s ∈ {1, 2, 3}` derived from the noise correlation length measured
+   on the input.
+4. **Iterate** with `σ₀⁽ᵗ⁾ = 0.7ᵗ · σ₀★`.  Iteration count
+   `n_iter ∈ {1, 2}` derived from `min(N)`: 1 if min photon count > 100
+   everywhere, else 2.
+5. **Inverse-whiten** to recover log-line-integrals.
+
+### The single knob
+
+`SFJBF_σ0` is the only quantity the implementer sets.  Set to `0.0` to
+defer to **SURE** — Stein's unbiased risk estimator with Hutchinson MC
+divergence and golden-section search on a representative mid-row.  Set
+positive to override.  All auto-derived values (corr length, stride,
+n_iter, σ₀★) are reported via `@info` per run.
 
 !!! info "Reference paper"
     Black, *Joint Sinogram Denoising via Subspace–Frequency Reduction
-    for Two-Channel Spectral CT*, in prep.
+    for Two-Channel Spectral CT (v2)*, in prep.
 """
 
 # ╔═╡ 05000007-0000-4000-8000-000000000050
-begin
-    SFJBF_σ0          = 2.0    # principal spatial bandwidth (px) — paper §2.6
-    SFJBF_h           = 1.0    # range-kernel strength (paper default)
-    SFJBF_γ           = 0.5    # rank-sparse exponent
-    SFJBF_σ_max       = 8.0    # cap on σ_e for compute tractability
-    SFJBF_σ_ref_px    = 10.0   # heavy low-pass reference radius
-    SFJBF_n_iter      = 1      # outer iterations (1 dual-kVp; 2 photon-starved)
-    SFJBF_α           = 0.7    # σ shrink between iterations
-    SFJBF_lavg_window = 1      # 1 = single-pixel diff; 3 / 5 = NL-means style
-    SFJBF_stride      = 1      # spatial-kernel stride (1 for raw sinos)
-end
+# The only user-facing knob.  0.0 → SURE auto-selects on the mid-row;
+# any positive value → use directly.  Every other quantity (γ=½, h=1,
+# 5×5 lavg, α=0.7, σ_ref=10 px) is fixed by RSKR / paper §2.4–2.6, and
+# stride / n_iter / σ_e^rng are derived from the photon-count map.
+SFJBF_σ0 = 0.0
 
 # ╔═╡ 05000007-0000-4000-8000-000000000060
 begin
     import LinearAlgebra
     import Statistics
+    import Random
 
-    # Per-row 2D separable Gaussian on (n_col, n_row, n_view) sinogram.
-    # Smooths each (col, view) row-slice independently.
+    # ─── Paper-fixed constants (§2.4 / §2.6) ─────────────────────────────
+    const _SFJBF_α        = 0.7f0    # iteration decay
+    const _SFJBF_lavg     = 5        # locally-averaged range window (5×5)
+    const _SFJBF_σ_ref_px = 10.0f0   # heavy low-pass reference (Gaussian)
+    const _SFJBF_σ_cap    = 12.0f0   # internal compute safety on σ_e (paper §2.9)
+
+    # ─── Per-row 2D separable Gaussian (used for the heavy low-pass reference
+    #     and inside the noise-correlation-length helper) ──────────────────
     function _sfjbf_sep_gauss_3d(sino::Array{Float32, 3}, σ_px::Real)
         σ = Float64(σ_px)
         σ ≤ 0 && return copy(sino)
@@ -436,10 +442,8 @@ begin
         out
     end
 
-    # Pure 2D separable Gaussian on (n_col, n_view) — col-pass then view-pass.
     function _sfjbf_gauss_2d(slice2d::AbstractMatrix{Float32},
-                              ks::AbstractVector{Float32},
-                              radius::Int)
+                              ks::AbstractVector{Float32}, radius::Int)
         nc, nv = size(slice2d)
         tmp = Matrix{Float32}(undef, nc, nv)
         out = Matrix{Float32}(undef, nc, nv)
@@ -464,29 +468,28 @@ begin
         out
     end
 
-    # Robust MAD-based scale estimate of a 2D residual (× 1.4826 → Gaussian σ).
+    # ─── Robust MAD scale (paper Eq 14) ──────────────────────────────────
     function _sfjbf_mad_scale(arr2d::AbstractMatrix{Float32})
         med = Statistics.median(arr2d)
         mad = Statistics.median(abs.(arr2d .- med))
         Float32(1.4826 * mad)
     end
 
-    # One-component joint bilateral pass on a single (n_col, n_view) slice.
-    # Spatial kernel scaled by σ_sp; range kernel is the product-of-channels
-    # form across (Λ₁, Λ₂) with per-component MAD scales σ₁_rng, σ₂_rng.
-    # Optional locally-averaged range diff (lavg_w > 1) and stride.
+    # ─── Joint bilateral pass on a (n_col, n_view) slice.
+    #     Range kernel is the product-of-channels form (paper Eq 12) with
+    #     locally-averaged squared diff (Eq 13, fixed 5×5 window).  Range
+    #     strength h=1 absorbed into σ_e^rng. Stride from auto-rule.        ─
     function _sfjbf_pass!(out::AbstractMatrix{Float32},
                           target::AbstractMatrix{Float32},
                           σ_sp::Float32,
                           Λ1::AbstractMatrix{Float32}, Λ2::AbstractMatrix{Float32},
-                          σ1_rng::Float32, σ2_rng::Float32, h::Float32,
-                          lavg_w::Int, stride::Int)
+                          σ1_rng::Float32, σ2_rng::Float32, stride::Int)
         nc, nv = size(target)
         radius = max(1, ceil(Int, 3 * Float64(σ_sp)))
         inv_2σ²_sp = 1f0 / (2f0 * σ_sp * σ_sp + 1f-30)
-        inv_2hσ²_1 = 1f0 / (2f0 * (h * σ1_rng)^2 + 1f-30)
-        inv_2hσ²_2 = 1f0 / (2f0 * (h * σ2_rng)^2 + 1f-30)
-        half_lavg = lavg_w ÷ 2
+        inv_2σ²_r1 = 1f0 / (2f0 * σ1_rng * σ1_rng + 1f-30)
+        inv_2σ²_r2 = 1f0 / (2f0 * σ2_rng * σ2_rng + 1f-30)
+        half_lavg = _SFJBF_lavg ÷ 2
 
         Threads.@threads for v in 1:nv
             @inbounds for c in 1:nc
@@ -498,31 +501,25 @@ begin
                         c2 = c + dc
                         (1 ≤ c2 ≤ nc) || continue
 
-                        Δ1² = 0f0; Δ2² = 0f0
-                        if lavg_w == 1
-                            d1 = Λ1[c2, v2] - Λ1[c, v]
-                            d2 = Λ2[c2, v2] - Λ2[c, v]
-                            Δ1² = d1 * d1; Δ2² = d2 * d2
-                        else
-                            cnt = 0
-                            for dav in -half_lavg:half_lavg, dac in -half_lavg:half_lavg
-                                ca = c + dac;  va = v + dav
-                                cb = c2 + dac; vb = v2 + dav
-                                (1 ≤ ca ≤ nc && 1 ≤ va ≤ nv) || continue
-                                (1 ≤ cb ≤ nc && 1 ≤ vb ≤ nv) || continue
-                                d1 = Λ1[cb, vb] - Λ1[ca, va]
-                                d2 = Λ2[cb, vb] - Λ2[ca, va]
-                                Δ1² += d1 * d1; Δ2² += d2 * d2; cnt += 1
-                            end
-                            if cnt > 0
-                                Δ1² /= cnt; Δ2² /= cnt
-                            end
+                        # 5×5 locally-averaged squared diff
+                        Δ1² = 0f0; Δ2² = 0f0; cnt = 0
+                        for dav in -half_lavg:half_lavg, dac in -half_lavg:half_lavg
+                            ca = c + dac;  va = v + dav
+                            cb = c2 + dac; vb = v2 + dav
+                            (1 ≤ ca ≤ nc && 1 ≤ va ≤ nv) || continue
+                            (1 ≤ cb ≤ nc && 1 ≤ vb ≤ nv) || continue
+                            d1 = Λ1[cb, vb] - Λ1[ca, va]
+                            d2 = Λ2[cb, vb] - Λ2[ca, va]
+                            Δ1² += d1 * d1; Δ2² += d2 * d2; cnt += 1
+                        end
+                        if cnt > 0
+                            Δ1² /= cnt; Δ2² /= cnt
                         end
 
                         spatial_d² = Float32(dc * dc + dv * dv)
                         log_w = -spatial_d² * inv_2σ²_sp -
-                                Δ1² * inv_2hσ²_1 -
-                                Δ2² * inv_2hσ²_2
+                                Δ1² * inv_2σ²_r1 -
+                                Δ2² * inv_2σ²_r2
                         w = exp(log_w)
                         sum_v += w * target[c2, v2]
                         wtot  += w
@@ -534,6 +531,126 @@ begin
         nothing
     end
 
+    # ─── Single-row forward pass of the full operator D (paper Eq 15).
+    #     Used by both the SURE optimization and the main loop.            ─
+    function _sfjbf_apply_D(M::AbstractMatrix{Float32}, σ0::Float32,
+                             n_col::Int, n_view::Int, stride::Int)
+        F = LinearAlgebra.svd(M; full = false)
+        U, Σ, V = F.U, F.S, F.V
+
+        σ1 = min(σ0,                                 _SFJBF_σ_cap)
+        σ2 = min(σ0 * sqrt(Σ[1] / max(Σ[2], 1f-12)), _SFJBF_σ_cap)
+
+        Λ1 = reshape(copy(@view U[:, 1]), n_col, n_view)
+        Λ2 = reshape(copy(@view U[:, 2]), n_col, n_view)
+        σ1_rng = max(_sfjbf_mad_scale(Λ1), eps(Float32))
+        σ2_rng = max(_sfjbf_mad_scale(Λ2), eps(Float32))
+
+        Λ1_d = similar(Λ1); Λ2_d = similar(Λ2)
+        _sfjbf_pass!(Λ1_d, Λ1, σ1, Λ1, Λ2, σ1_rng, σ2_rng, stride)
+        _sfjbf_pass!(Λ2_d, Λ2, σ2, Λ1, Λ2, σ1_rng, σ2_rng, stride)
+
+        U_d = hcat(vec(Λ1_d), vec(Λ2_d))
+        U_d * LinearAlgebra.Diagonal(Σ) * V'
+    end
+
+    # ─── Stein's unbiased risk estimator with Hutchinson MC divergence.
+    #     Whitened identity-cov coordinates (paper Eq 16+17).              ─
+    function _sfjbf_sure(M::AbstractMatrix{Float32}, σ0::Float32,
+                          n_col::Int, n_view::Int, stride::Int)
+        Md = _sfjbf_apply_D(M, σ0, n_col, n_view, stride)
+
+        rng = Random.MersenneTwister(42)
+        b   = randn(rng, Float32, size(M))
+        δ   = max(Float32(1f-3) * Float32(Statistics.std(M)), Float32(1f-8))
+        Md_p = _sfjbf_apply_D(M .+ δ .* b, σ0, n_col, n_view, stride)
+        div_est = sum(b .* (Md_p .- Md)) / δ
+
+        n = length(M)
+        Float32(sum((Md .- M) .^ 2)) - Float32(n) + 2f0 * div_est
+    end
+
+    # ─── Golden-section search for σ_0★ on a representative row. ─────────
+    function _sfjbf_sure_optimize(M::AbstractMatrix{Float32},
+                                    n_col::Int, n_view::Int, stride::Int;
+                                    σ_lo::Real = 0.5, σ_hi::Real = 5.0,
+                                    tol::Real  = 0.15)
+        φ  = Float32((sqrt(5) - 1) / 2)
+        a, b = Float32(σ_lo), Float32(σ_hi)
+        c = b - φ * (b - a)
+        d = a + φ * (b - a)
+        fc = _sfjbf_sure(M, c, n_col, n_view, stride)
+        fd = _sfjbf_sure(M, d, n_col, n_view, stride)
+        n_evals = 2
+        while abs(b - a) > tol
+            if fc < fd
+                b = d; d = c; fd = fc
+                c = b - φ * (b - a)
+                fc = _sfjbf_sure(M, c, n_col, n_view, stride)
+            else
+                a = c; c = d; fc = fd
+                d = a + φ * (b - a)
+                fd = _sfjbf_sure(M, d, n_col, n_view, stride)
+            end
+            n_evals += 1
+        end
+        σ_star = (a + b) / 2f0
+        @info "[SF-jBF SURE] converged: σ₀★ = $(round(σ_star, digits=2)) px after $(n_evals) evals"
+        σ_star
+    end
+
+    # ─── Noise correlation length (FWHM of autocovariance of high-pass log
+    #     residuals on a flat sinogram patch) → stride.                    ─
+    function _sfjbf_corr_length(p::Array{Float32, 3})
+        n_col, n_row, n_view = size(p)
+        c0 = max(1, n_col ÷ 2 - 5); c1 = min(n_col, n_col ÷ 2 + 4)
+        mid_r = n_row ÷ 2 + 1
+        patch = Float32.(p[c0:c1, mid_r, :])
+
+        σ = 10.0
+        radius = ceil(Int, 3σ)
+        ks = Float32[exp(-(k^2) / (2σ^2)) for k in -radius:radius]
+        ks ./= sum(ks)
+        smoothed = similar(patch)
+        @inbounds for c_i in axes(patch, 1), v in axes(patch, 2)
+            s = 0f0; w = 0f0
+            for (i, dk) in enumerate(-radius:radius)
+                v2 = v + dk
+                (1 ≤ v2 ≤ size(patch, 2)) || continue
+                s += ks[i] * patch[c_i, v2]; w += ks[i]
+            end
+            smoothed[c_i, v] = s / w
+        end
+        resid = patch .- smoothed
+
+        n_lags = 5
+        ac = zeros(Float32, n_lags)
+        for lag in 0:(n_lags - 1)
+            s = 0.0; n = 0
+            for c_i in 1:(size(resid, 1) - lag), v in axes(resid, 2)
+                s += Float64(resid[c_i, v]) * Float64(resid[c_i + lag, v])
+                n += 1
+            end
+            ac[lag + 1] = Float32(s / n)
+        end
+
+        ac0 = ac[1]
+        ac0 ≤ 0 && return 1.0
+        for lag in 1:(n_lags - 1)
+            r1 = ac[lag] / ac0
+            r2 = ac[lag + 1] / ac0
+            if r2 ≤ 0.5
+                return Float64((lag - 1) + (r1 - 0.5) / max(r1 - r2, 1f-6))
+            end
+        end
+        Float64(n_lags - 1)
+    end
+
+    _sfjbf_pick_stride(corr_len::Real) =
+        corr_len < 1.5 ? 1 : (corr_len < 2.5 ? 2 : 3)
+
+    _sfjbf_pick_n_iter(min_N::Real) = min_N ≥ 100 ? 1 : 2
+
     nothing
 end
 
@@ -543,29 +660,64 @@ sino_denoised_alt = let
     p_hi = Float32.(sim_high.sino)
     n_col, n_row, n_view = size(p_lo)
 
-    # Per-pixel √N weight ∝ exp(−p/2).  Absolute scale cancels in the
-    # whiten/unwhiten roundtrip; only the per-pixel pattern matters.
-    w_lo = exp.(-p_lo ./ 2f0)
-    w_hi = exp.(-p_hi ./ 2f0)
+    # ─── Recover approximate photon counts N_k = I0_k · exp(-p_k).  I0_k
+    #     uses the source-flux × pixel-area × time × mA formula.  We
+    #     deliberately ignore per-pixel bowtie attenuation and detector
+    #     η_eff: the auto-rules below (n_iter, stride, SURE σ_0 in pixel
+    #     units) only need order-of-magnitude photon counts. ─────────────
+    function _scalar_I0(geom, protocol)
+        e, w = BS.resolve_source_spectrum_without_bowtie(
+            sim_opts, protocol; scanner = scanner,
+        )
+        Float64(BS.compute_detector_I0(geom, protocol, Float64(sum(w))))
+    end
+    I0_lo = Float32(_scalar_I0(sim_low.geom,  protocol_low))
+    I0_hi = Float32(_scalar_I0(sim_high.geom, protocol_high))
+    N_lo  = I0_lo .* exp.(-p_lo)
+    N_hi  = I0_hi .* exp.(-p_hi)
+    min_N = Float64(min(minimum(N_lo), minimum(N_hi)))
 
-    # Heavy low-pass reference per channel (paper §2.2).
-    p_ref_lo = _sfjbf_sep_gauss_3d(p_lo, SFJBF_σ_ref_px)
-    p_ref_hi = _sfjbf_sep_gauss_3d(p_hi, SFJBF_σ_ref_px)
+    # ─── Auto-derive stride and n_iter (paper §2.6 auto-rules) ───────────
+    corr_len = max(_sfjbf_corr_length(p_lo), _sfjbf_corr_length(p_hi))
+    stride   = _sfjbf_pick_stride(corr_len)
+    n_iter   = _sfjbf_pick_n_iter(min_N)
 
-    # Whitened residuals (paper Eq 4).  Will be denoised in place.
+    @info "[SF-jBF auto] I0_lo = $(round(Int, I0_lo)) ph, I0_hi = $(round(Int, I0_hi)) ph, min(N) = $(round(Int, min_N)) ph"
+    @info "[SF-jBF auto] noise corr length = $(round(corr_len, digits=2)) px → stride = $(stride)"
+    @info "[SF-jBF auto] n_iter = $(n_iter) (rule: 1 if min(N) ≥ 100 everywhere)"
+
+    # ─── Heavy low-pass reference (10-px Gaussian, paper §2.2 fixed) ─────
+    p_ref_lo = _sfjbf_sep_gauss_3d(p_lo, _SFJBF_σ_ref_px)
+    p_ref_hi = _sfjbf_sep_gauss_3d(p_hi, _SFJBF_σ_ref_px)
+
+    # ─── Whitened residuals ξ_k = √N_k · (p_k − p̄_k⁽⁰⁾) ─────────────────
+    w_lo = sqrt.(max.(N_lo, 1f0))
+    w_hi = sqrt.(max.(N_hi, 1f0))
     ξ_lo = w_lo .* (p_lo .- p_ref_lo)
     ξ_hi = w_hi .* (p_hi .- p_ref_hi)
 
-    p_lo = nothing; p_hi = nothing; GC.gc(true)
+    p_lo = nothing; p_hi = nothing
+    N_lo = nothing; N_hi = nothing
+    GC.gc(true)
 
-    σ0    = Float32(SFJBF_σ0)
-    σ_max = Float32(SFJBF_σ_max)
-    h_f   = Float32(SFJBF_h)
-    γ_f   = Float32(SFJBF_γ)
+    # ─── Auto-derive σ_0★ via SURE on the mid-row, or use user's value. ─
+    σ0_user = Float32(SFJBF_σ0)
+    σ0_star = if σ0_user > 0
+        @info "[SF-jBF] σ_0 from user knob: $(σ0_user) px (SURE skipped)"
+        σ0_user
+    else
+        mid_r = n_row ÷ 2 + 1
+        slice_lo = Float32.(@view ξ_lo[:, mid_r, :])
+        slice_hi = Float32.(@view ξ_hi[:, mid_r, :])
+        M_mid = hcat(vec(slice_lo), vec(slice_hi))
+        @info "[SF-jBF SURE] running on mid-row r=$(mid_r), σ ∈ [0.5, 5.0] px..."
+        _sfjbf_sure_optimize(M_mid, n_col, n_view, stride)
+    end
 
+    # ─── Run the operator with σ_0^(t) = α^t · σ_0★ ──────────────────────
     Σ_ratio_log = Vector{Float32}(undef, n_row)
-
-    for t in 0:(SFJBF_n_iter - 1)
+    σ0 = σ0_star
+    for t in 0:(n_iter - 1)
         Threads.@threads for r in 1:n_row
             slice_lo = Float32.(@view ξ_lo[:, r, :])
             slice_hi = Float32.(@view ξ_hi[:, r, :])
@@ -574,34 +726,31 @@ sino_denoised_alt = let
             F = LinearAlgebra.svd(M; full = false)
             U, Σ, V = F.U, F.S, F.V
 
-            σ1 = min(σ0, σ_max)
-            σ2 = min(σ0 * (Σ[1] / max(Σ[2], 1f-12))^γ_f, σ_max)
+            σ1 = min(σ0,                                 _SFJBF_σ_cap)
+            σ2 = min(σ0 * sqrt(Σ[1] / max(Σ[2], 1f-12)), _SFJBF_σ_cap)
             Σ_ratio_log[r] = Float32(Σ[1] / max(Σ[2], 1f-12))
 
             Λ1 = reshape(copy(@view U[:, 1]), n_col, n_view)
             Λ2 = reshape(copy(@view U[:, 2]), n_col, n_view)
-
             σ1_rng = max(_sfjbf_mad_scale(Λ1), eps(Float32))
             σ2_rng = max(_sfjbf_mad_scale(Λ2), eps(Float32))
 
             Λ1_d = similar(Λ1); Λ2_d = similar(Λ2)
-            _sfjbf_pass!(Λ1_d, Λ1, σ1, Λ1, Λ2, σ1_rng, σ2_rng, h_f,
-                         SFJBF_lavg_window, SFJBF_stride)
-            _sfjbf_pass!(Λ2_d, Λ2, σ2, Λ1, Λ2, σ1_rng, σ2_rng, h_f,
-                         SFJBF_lavg_window, SFJBF_stride)
+            _sfjbf_pass!(Λ1_d, Λ1, σ1, Λ1, Λ2, σ1_rng, σ2_rng, stride)
+            _sfjbf_pass!(Λ2_d, Λ2, σ2, Λ1, Λ2, σ1_rng, σ2_rng, stride)
 
             U_d = hcat(vec(Λ1_d), vec(Λ2_d))
             M_d = U_d * LinearAlgebra.Diagonal(Σ) * V'
             ξ_lo[:, r, :] .= reshape(view(M_d, :, 1), n_col, n_view)
             ξ_hi[:, r, :] .= reshape(view(M_d, :, 2), n_col, n_view)
         end
-        @info "[SF-jBF iter $(t + 1)/$(SFJBF_n_iter)] σ₀ = $(round(σ0, digits=2)) px, " *
+        @info "[SF-jBF iter $(t + 1)/$(n_iter)] σ₀ = $(round(σ0, digits=2)) px, " *
               "median Σ₁/Σ₂ = $(round(Statistics.median(Σ_ratio_log), sigdigits=3)), " *
-              "σ_max cap = $(SFJBF_σ_max) px"
-        σ0 *= Float32(SFJBF_α)
+              "σ_cap = $(_SFJBF_σ_cap) px"
+        σ0 *= _SFJBF_α
     end
 
-    # Inverse whiten: p = ξ/w + p_ref.
+    # ─── Inverse-whiten: p = ξ/√N + p̄⁽⁰⁾ ────────────────────────────────
     p_lo_d = ξ_lo ./ w_lo .+ p_ref_lo
     p_hi_d = ξ_hi ./ w_hi .+ p_ref_hi
 
@@ -660,14 +809,14 @@ touching anything downstream. `sino_denoised_active` is what §7 onward
 consumes — flip `DENOISER_PATH`, re-run the rest of the notebook, and
 compare per-rod measured-vs-theoretical RMSE in §11.
 
-| `DENOISER_PATH` | Path        | Knobs                           |
-|-----------------|-------------|---------------------------------|
-| `:svd`          | §6 baseline | `SINO_DENOISE_σ_PX`             |
-| `:sfjbf`        | §6b SF-jBF  | `SFJBF_*` (nine, all defaulted) |
+| `DENOISER_PATH` | Path        | Knobs                                       |
+|-----------------|-------------|---------------------------------------------|
+| `:svd`          | §6 baseline | `SINO_DENOISE_σ_PX`                         |
+| `:sfjbf`        | §6b SF-jBF  | `SFJBF_σ0` (one — `0.0` ⇒ SURE auto-select) |
 """
 
 # ╔═╡ 05000007-0000-4000-8000-000000000095
-DENOISER_PATH = :svd
+DENOISER_PATH = :sfjbf
 
 # ╔═╡ 05000007-0000-4000-8000-000000000100
 sino_denoised_active = if DENOISER_PATH == :sfjbf
