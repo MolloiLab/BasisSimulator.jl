@@ -174,12 +174,12 @@ rec_opts = BS.ReconOptions(matrix_size=(512, 512, 64), fov_cm=35.0)
 
 # Allocate workspace once, reuse on subsequent calls (zero-alloc steady state)
 ws = BS.create_eict_workspace(scanner, protocol, sim_opts, rec_opts, phantom)
-BS.simulate!(ws, phantom, scanner, protocol, sim_opts, rec_opts)
+BS.simulate!(ws, phantom, protocol, sim_opts)
 
 # Reconstruct → Hounsfield units
-ws_fdk = BS.create_fdk_recon_workspace(ws.sino_noisy_out, ws.geom, rec_opts.matrix_size)
+ws_fdk = BS.create_fdk_recon_workspace(ws.sinogram, ws.geom, rec_opts.matrix_size)
 hu = BS.to_hounsfield(
-    Array(BS.reconstruct!(ws_fdk, ws.sino_noisy_out, ws.geom, rec_opts.matrix_size));
+    Array(BS.reconstruct!(ws_fdk, ws.sinogram, ws.geom));
     μ_water = BS.get_reference_μ_water(70.0),
 )""")
             ),

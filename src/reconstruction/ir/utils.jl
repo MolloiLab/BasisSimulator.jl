@@ -104,7 +104,19 @@ end
 """
     compute_huber_gradient!(grad, x, delta)
 
-Compute gradient of Huber penalty in-place (6-connected neighborhood).
+Compute gradient of the Huber edge-preserving roughness penalty in-place,
+on a 6-connected (face-neighbor) finite-difference stencil.
+
+# Reference
+Direct GPU port of Fessler MIRT's potential-derivative + finite-difference
+combination:
+- `penalty/huber_dpot.m` — `g(t,δ) = t` for `|t| ≤ δ`, else `δ·sign(t)`
+  (Huber 1964).
+- `penalty/Cdiffs.m` — stacked first-difference operator with face-neighbor
+  offsets — what we apply by hand here in 6-connected form.
+
+For the surrounding OS-PWLS hot path that consumes this gradient see
+`reconstruct!(::HIRReconWorkspace, …)` in `src/api/driver.jl`.
 """
 function compute_huber_gradient!(
     grad::AbstractArray{T, 3},

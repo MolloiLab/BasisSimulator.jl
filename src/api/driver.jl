@@ -848,27 +848,61 @@ end
 # =============================================================================
 
 """
-    reconstruct!(ws::FDKReconWorkspace, sinogram, geom, volume_size; filter=StandardFilter(), cutoff=1.0)
+    reconstruct!(ws::FDKReconWorkspace, sinogram, geom) -> ws.volume
 
 Zero-allocation FDK reconstruction using pre-allocated workspace buffers.
 
-Create the workspace with `create_fdk_recon_workspace(sinogram, geom, volume_size)`.
+The four-step pipeline (copy → filter → backproject → FOV-mask) and the
+supported filter set (`:ram_lak`, `:shepp_logan`, `:cosine`, `:hamming`,
+`:hann`, plus the BasisSim-specific `:standard`/`:soft`/`:bone` clinical
+kernels) follow Feldkamp-Davis-Kress (1984) and the TIGRE Toolbox
+implementation.
+
+Each step is a separate exported primitive (`filter_sinogram!`,
+`backproject!`, `apply_fov_mask!`) so callers can rebuild the same pipeline
+piecewise (the hybrid-IR path reuses all three).
+
+The filter kernel, kernel size (driven by `cutoff`), and output volume size
+are all locked at workspace creation time (`create_fdk_recon_workspace`).
+There are no runtime overrides on this hot path — re-create the workspace
+to change them.
+
+# Reference (algorithm port from TIGRE Toolbox)
+- Feldkamp LA, Davis LC, Kress JW. "Practical cone-beam algorithm." J Opt
+  Soc Am A 1(6):612–619 (1984).  doi:10.1364/JOSAA.1.000612
+- TIGRE: `MATLAB/Algorithms/FDK.m` — same `filtering → backprojection`
+  flow, same filter options.  Cone-beam backprojection is in
+  `Common/CUDA/voxel_backprojection.cu` ("CUDA function for backprojection
+  using FDK weights for CBCT") and BasisSim's
+  `src/reconstruction/core/backprojection.jl` is the Julia/Metal/CUDA port
+  of the same voxel-driven cone-beam scheme.
+- Note: this path does NOT use the Siddon (1985) ray-tracing algorithm.
+  Siddon is forward-projection only — see `siddon_forward_project!`.  FDK
+  reconstruction is voxel-driven backprojection, a different algorithm.
+
+# Arguments
+- `ws::FDKReconWorkspace{T}` — pre-allocated buffers from
+  `create_fdk_recon_workspace(sinogram, geom, volume_size; filter, cutoff)`.
+- `sinogram::AbstractArray{T,3}` — `(n_col, n_row, n_view)` log line-integral
+  sinogram, on the same backend as `ws` (CPU/Metal/CUDA/AMDGPU).
+- `geom::CTGeometry` — cone-beam geometry.
+
+# Returns
+The mutated `ws.volume` (same object — `===` to the workspace field).
 """
 function reconstruct!(
     ws::FDKReconWorkspace{T},
     sinogram::AbstractArray{T,3},
     geom::CTGeometry,
-    volume_size::NTuple{3,Int};
-    filter::FilterType=StandardFilter(),
-    cutoff::Float64=1.0
 ) where T<:AbstractFloat
 
     # Step 1: Copy sinogram into filtering scratch buffer
     copyto!(ws.filtered, sinogram)
 
-    # Step 2: Filter in-place (cosine weighting + ramp convolution)
-    # Uses pre-allocated convolution scratch and filter kernel
-    filter_sinogram!(ws.filtered, geom; filter=filter, cutoff=cutoff,
+    # Step 2: Filter in-place (cosine weighting + ramp convolution).
+    # Filter and kernel size are baked into ws.filter_kernel at workspace
+    # creation time; filter_sinogram! short-circuits to ws_filter_kernel.
+    filter_sinogram!(ws.filtered, geom;
         ws_conv_scratch=ws.conv_scratch,
         ws_filter_kernel=ws.filter_kernel)
 
@@ -892,16 +926,15 @@ end
 # =============================================================================
 
 """
-    _copy_subset_into_buffer!(buf, full, angle_indices, n_sub)
+    _copy_subset_into_buffer!(buf, full, angle_indices)
 
 Copy subset of angle data from `full` into pre-allocated `buf`.
-`buf[:,:,1:n_sub] = full[:,:,angle_indices]` — zero-allocation via views.
+`buf[:,:,1:length(angle_indices)] = full[:,:,angle_indices]` — zero-allocation via views.
 """
 function _copy_subset_into_buffer!(
     buf::AbstractArray{T,3},
     full::AbstractArray{T,3},
     angle_indices::Vector{Int},
-    n_sub::Int
 ) where T
     for (i, aidx) in enumerate(angle_indices)
         copyto!(view(buf, :, :, i), view(full, :, :, aidx))
@@ -909,28 +942,79 @@ function _copy_subset_into_buffer!(
 end
 
 """
-    reconstruct!(ws::HIRReconWorkspace, sinogram, geom, volume_size; filter=StandardFilter(), cutoff=1.0, air_reference=nothing)
+    reconstruct!(ws::HIRReconWorkspace, sinogram, geom; init_volume=nothing, air_reference=nothing) -> ws.volume
 
 Zero-allocation Hybrid IR reconstruction using pre-allocated workspace buffers.
 
-Implements TRUE Hybrid IR = FDK initialization + PWLS refinement with Huber regularization.
-When `n_subsets > 0`, uses Ordered Subsets PWLS (OS-PWLS) for ~10-25x speedup.
-All iteration buffers are pre-allocated in the workspace.
+Pipeline: FDK initialization → Ordered-Subsets Penalized Weighted Least Squares
+(OS-PWLS) with Huber edge-preserving regularization on a 6-connected neighborhood.
 
-Create the workspace with `create_hir_recon_workspace(sinogram, geom, volume_size; strength=3)`.
+# Reference (algorithm — Fessler / U-Michigan school, NOT a TIGRE port)
+
+TIGRE has SART, OS-SART, MLEM, OSEM, CGLS, FISTA, ASD-POCS — but no PWLS and
+no Huber prior.  The HIR algorithm is from a different family entirely.  The
+canonical reference implementation is Jeff Fessler's MIRT (Michigan Image
+Reconstruction Toolbox); each component below is matched 1-to-1 with a MIRT
+source file.
+
+- **PWLS framework for transmission CT**:
+  Sauer K, Bouman C. "A local update strategy for iterative reconstruction
+  from projections." IEEE Trans Signal Process 41(2):534–548 (1993).
+  Fessler JA. "Penalized weighted least-squares image reconstruction for
+  positron emission tomography." IEEE Trans Med Imaging 13(2):290–300
+  (1994).  doi:10.1109/42.293921
+- **Ordered-Subsets PWLS** (the OS path used here):
+  Erdoğan H, Fessler JA. "Ordered subsets algorithms for transmission
+  tomography." Phys Med Biol 44(11):2835–2851 (1999).
+  doi:10.1088/0031-9155/44/11/311
+  → MIRT: `transmission/tpl_os_sps.m` (T-PL-OS-SPS — "Transmission
+  Penalized-Likelihood Ordered-Subsets Separable Paraboloidal Surrogates").
+  Our OS loop structure (stat-weight init → outer epoch → inner subset
+  loop → forward + backproject + V_inv-preconditioned update) mirrors
+  `tpl_os_sps`'s outer iteration; we use a SIRT-style `V_inv` preconditioner
+  in place of MIRT's per-pixel SPS curvatures (`denom`) — same algorithm
+  class, fixed-curvature variant.
+- **Huber edge-preserving penalty + gradient**:
+  Huber PJ. "Robust estimation of a location parameter." Ann Math Stat
+  35(1):73–101 (1964).
+  → MIRT: `penalty/huber_pot.m` (potential function) and `huber_dpot.m`
+  (potential derivative).  `compute_huber_gradient!` in
+  `src/reconstruction/ir/utils.jl` is a direct GPU port of `huber_dpot`
+  applied to a 6-connected finite-difference stencil (`penalty/Cdiffs.m`).
+- **Volume update rule**: SIRT-style multiplicative update with `V_inv` image-
+  domain weights — Andersen & Kak SART/SIRT framework, generalized inside
+  the same MIRT family (`general/qpwls_*`, `transmission/tpl_*`).
+
+The `strength`-keyed `HIRParams` lookup table targets the noise-reduction
+behavior of vendor IR (GE ASIR-V, Siemens SAFIRE, Philips iDose-4, Canon
+AIDR 3D) as reported in the clinical validation literature (Geyer et al.
+*Radiology* 2015; Willemink & Noël *Eur Radiol* 2019; Ghetti et al.
+PMC5714520).  Those papers describe the *target performance*; they do not
+provide vendor algorithms (which are proprietary).  Our underlying PWLS+OS
+solver is the open-literature substitute.
+
+# Implementation
+The workspace pre-allocates everything the OS-PWLS loop needs:
+ordered subsets (`ws.subsets`, `ws.subset_geometries`), per-subset GPU
+geometry arrays, statistical-weight buffer, projection-domain weights
+(`W_proj`), image-domain weights (`V_inv`), regularization gradient
+(`reg_grad`), and per-subset sinogram / forward-proj buffers.
+
+The filter kernel, kernel size, and output volume size are all locked at
+workspace creation time — no runtime overrides on this hot path.
 
 # Keyword Arguments
-- `air_reference`: Optional 2D array [n_cols, n_rows] of bowtie air reference values.
-  When provided, stat_weights are scaled by air_ref to account for position-dependent
-  noise from the bowtie filter (edge pixels have fewer counts → more noise → lower weight).
+- `init_volume`: Optional warm-start volume (skip FDK init step).  If
+  provided, must be the same shape as `ws.volume`.
+- `air_reference`: Optional 2D array `[n_cols, n_rows]` of bowtie air
+  reference values.  When provided, statistical weights are scaled by the
+  air reference to account for position-dependent noise from the bowtie
+  filter (edge pixels have fewer counts → more noise → lower weight).
 """
 function reconstruct!(
     ws::HIRReconWorkspace{T},
     sinogram::AbstractArray{T,3},
-    geom::CTGeometry,
-    volume_size::NTuple{3,Int};
-    filter::FilterType=StandardFilter(),
-    cutoff::Float64=1.0,
+    geom::CTGeometry;
     init_volume::Union{Nothing, AbstractArray{T,3}}=nothing,
     air_reference::Union{Nothing, AbstractArray}=nothing
 ) where T<:AbstractFloat
@@ -938,7 +1022,7 @@ function reconstruct!(
     # ─── Step 1: FDK initialization (or warm-start from provided volume) ───
     if init_volume === nothing
         copyto!(ws.filtered, sinogram)
-        filter_sinogram!(ws.filtered, geom; filter=filter, cutoff=cutoff,
+        filter_sinogram!(ws.filtered, geom;
             ws_conv_scratch=ws.conv_scratch,
             ws_filter_kernel=ws.filter_kernel)
         fill!(ws.volume, zero(T))
@@ -952,208 +1036,94 @@ function reconstruct!(
         copyto!(ws.volume, init_volume)
     end
 
-    # ─── Step 2: PWLS refinement with Huber regularization ───
+    # ─── Step 2: OS-PWLS refinement with Huber regularization ───
+    # Erdoğan & Fessler 1999 ordered-subsets PWLS for transmission CT.
     params = ws.params
     λ = T(params.lambda)
     λ_relax = T(params.relaxation)
     δ = T(params.huber_delta)
     backend = AK.get_backend(ws.volume)
 
-    if params.n_subsets > 0
-        # ═══════════════════════════════════════════════════════════════
-        # OS-PWLS path: Ordered Subsets for ~10-25x speedup
-        # ═══════════════════════════════════════════════════════════════
-        nepochs = params.nepochs
-        n_subsets = params.n_subsets
-        subset_scale = T(n_subsets)
+    nepochs   = params.nepochs
+    n_subsets = params.n_subsets
+    subset_scale = T(n_subsets)
 
-        # Initialize statistical weights: w = air_ref(col,row) × exp(-y)
-        # air_ref accounts for bowtie-modulated I0 (edge pixels → fewer counts → lower weight)
-        if air_reference !== nothing
-            let sw = ws.stat_weights, ε = T(1e-6), aref = air_reference,
-                    nc = Int32(size(sinogram, 1)), nr = Int32(size(sinogram, 2))
-                AK.foreachindex(sw, backend) do idx
-                    idx_0 = Int32(idx - 1)
-                    col = (idx_0 % nc) + Int32(1)
-                    row = ((idx_0 ÷ nc) % nr) + Int32(1)
-                    ref_idx = col + (row - Int32(1)) * nc
-                    y_val = sinogram[idx]
-                    y_clipped = clamp(y_val, T(-10), T(10))
-                    sw[idx] = T(aref[ref_idx]) * exp(-y_clipped) + ε
-                end
-            end
-        else
-            let sw = ws.stat_weights, ε = T(1e-6)
-                AK.foreachindex(sw, backend) do idx
-                    y_val = sinogram[idx]
-                    y_clipped = clamp(y_val, T(-10), T(10))
-                    sw[idx] = exp(-y_clipped) + ε
-                end
-            end
-        end
-
-        for epoch in 1:nepochs
-            # Compute Huber gradient ONCE per epoch (not per sub-iteration)
-            compute_huber_gradient!(ws.reg_grad, ws.volume, δ)
-
-            for (s, angle_indices) in enumerate(ws.subsets)
-                n_sub = length(angle_indices)
-                geom_s = ws.subset_geometries[s]
-
-                # Copy subset data into pre-allocated buffers
-                _copy_subset_into_buffer!(ws.subset_sino_buf, sinogram, angle_indices, n_sub)
-                _copy_subset_into_buffer!(ws.subset_W_proj_buf, ws.W_proj, angle_indices, n_sub)
-                _copy_subset_into_buffer!(ws.subset_stat_weights_buf, ws.stat_weights, angle_indices, n_sub)
-
-                # Forward project with subset geometry → subset_Ax_buf
-                ax_view = view(ws.subset_Ax_buf, :, :, 1:n_sub)
-                fill!(ax_view, zero(T))
-                siddon_forward_project!(ax_view, ws.volume, geom_s;
-                    ws_source_positions=ws.subset_geom_source_positions[s],
-                    ws_detector_centers=ws.subset_geom_detector_centers[s],
-                    ws_detector_u=ws.subset_geom_detector_u[s],
-                    ws_detector_v=ws.subset_geom_detector_v[s])
-
-                # Compute weighted residual in-place:
-                # Ax_s = W_s ⊙ stat_w_s ⊙ (sino_s - Ax_s)
-                let ax = ax_view,
-                    sino_s = view(ws.subset_sino_buf, :, :, 1:n_sub),
-                    wp_s = view(ws.subset_W_proj_buf, :, :, 1:n_sub),
-                    sw_s = view(ws.subset_stat_weights_buf, :, :, 1:n_sub)
-
-                    AK.foreachindex(ax, backend) do idx
-                        residual = sino_s[idx] - ax[idx]
-                        ax[idx] = wp_s[idx] * sw_s[idx] * residual
-                    end
-                end
-
-                # Backproject weighted residual → correction
-                fill!(ws.correction, zero(T))
-                backproject!(ws.correction, ax_view, geom_s;
-                    weighted=false,
-                    ws_source_positions=ws.subset_geom_source_positions[s],
-                    ws_detector_centers=ws.subset_geom_detector_centers[s],
-                    ws_detector_u=ws.subset_geom_detector_u[s],
-                    ws_detector_v=ws.subset_geom_detector_v[s])
-
-                # SIRT-style update with subset scaling:
-                # x += λ_relax * V_inv * (n_subsets * correction) - λ * V_inv * reg_grad
-                let vol = ws.volume, vinv = ws.V_inv, corr = ws.correction,
-                    rg = ws.reg_grad, ss = subset_scale
-
-                    AK.foreachindex(vol, backend) do idx
-                        data_update = λ_relax * vinv[idx] * ss * corr[idx]
-                        reg_update = λ * vinv[idx] * rg[idx]
-                        vol[idx] += data_update - reg_update
-                    end
-                end
+    # Initialize statistical weights: w = air_ref(col,row) × exp(-y)
+    # air_ref accounts for bowtie-modulated I0 (edge pixels → fewer counts → lower weight)
+    if air_reference !== nothing
+        let sw = ws.stat_weights, ε = T(1e-6), aref = air_reference,
+                nc = Int32(size(sinogram, 1)), nr = Int32(size(sinogram, 2))
+            AK.foreachindex(sw, backend) do idx
+                idx_0 = Int32(idx - 1)
+                col = (idx_0 % nc) + Int32(1)
+                row = ((idx_0 ÷ nc) % nr) + Int32(1)
+                ref_idx = col + (row - Int32(1)) * nc
+                y_val = sinogram[idx]
+                y_clipped = clamp(y_val, T(-10), T(10))
+                sw[idx] = T(aref[ref_idx]) * exp(-y_clipped) + ε
             end
         end
     else
-        # ═══════════════════════════════════════════════════════════════
-        # Legacy full-data PWLS path (n_subsets == 0)
-        # ═══════════════════════════════════════════════════════════════
-        niter = params.niter
-
-        # Initialize statistical weights: w = air_ref(col,row) × exp(-y)
-        if air_reference !== nothing
-            let sw = ws.stat_weights, ε = T(1e-6), aref = air_reference,
-                    nc = Int32(size(sinogram, 1)), nr = Int32(size(sinogram, 2))
-                AK.foreachindex(sw, backend) do idx
-                    idx_0 = Int32(idx - 1)
-                    col = (idx_0 % nc) + Int32(1)
-                    row = ((idx_0 ÷ nc) % nr) + Int32(1)
-                    ref_idx = col + (row - Int32(1)) * nc
-                    y_val = sinogram[idx]
-                    y_clipped = clamp(y_val, T(-10), T(10))
-                    sw[idx] = T(aref[ref_idx]) * exp(-y_clipped) + ε
-                end
-            end
-        else
-            let sw = ws.stat_weights, ε = T(1e-6)
-                AK.foreachindex(sw, backend) do idx
-                    y_val = sinogram[idx]
-                    y_clipped = clamp(y_val, T(-10), T(10))
-                    sw[idx] = exp(-y_clipped) + ε
-                end
+        let sw = ws.stat_weights, ε = T(1e-6)
+            AK.foreachindex(sw, backend) do idx
+                y_val = sinogram[idx]
+                y_clipped = clamp(y_val, T(-10), T(10))
+                sw[idx] = exp(-y_clipped) + ε
             end
         end
+    end
 
-        for iter in 1:niter
-            # Update statistical weights periodically (Poisson noise model)
-            if iter == 1 || iter % 10 == 0
-                fill!(ws.Ax, zero(T))
-                siddon_forward_project!(ws.Ax, ws.volume, geom;
-                    ws_source_positions=ws.geom_source_positions,
-                    ws_detector_centers=ws.geom_detector_centers,
-                    ws_detector_u=ws.geom_detector_u,
-                    ws_detector_v=ws.geom_detector_v)
+    for epoch in 1:nepochs
+        # Compute Huber gradient ONCE per epoch (not per sub-iteration)
+        compute_huber_gradient!(ws.reg_grad, ws.volume, δ)
 
-                if air_reference !== nothing
-                    let sw = ws.stat_weights, ax = ws.Ax, aref = air_reference,
-                            nc = Int32(size(sinogram, 1)), nr = Int32(size(sinogram, 2))
-                        AK.foreachindex(sw, backend) do idx
-                            idx_0 = Int32(idx - 1)
-                            col = (idx_0 % nc) + Int32(1)
-                            row = ((idx_0 ÷ nc) % nr) + Int32(1)
-                            ref_idx = col + (row - Int32(1)) * nc
-                            ax_val = ax[idx]
-                            ax_clipped = clamp(ax_val, T(-10), T(10))
-                            sw[idx] = T(aref[ref_idx]) * exp(-ax_clipped)
-                        end
-                    end
-                else
-                    let sw = ws.stat_weights, ax = ws.Ax
-                        AK.foreachindex(sw, backend) do idx
-                            ax_val = ax[idx]
-                            ax_clipped = clamp(ax_val, T(-10), T(10))
-                            sw[idx] = exp(-ax_clipped)
-                        end
-                    end
-                end
-                max_w = maximum(ws.stat_weights)
-                if max_w > zero(T)
-                    let sw = ws.stat_weights, mw = max_w
-                        AK.foreachindex(sw, backend) do idx
-                            sw[idx] = sw[idx] / mw
-                        end
-                    end
-                end
-            end
+        for (s, angle_indices) in enumerate(ws.subsets)
+            n_sub = length(angle_indices)
+            geom_s = ws.subset_geometries[s]
 
-            # Compute Huber regularization gradient
-            compute_huber_gradient!(ws.reg_grad, ws.volume, δ)
+            # Copy subset data into pre-allocated buffers
+            _copy_subset_into_buffer!(ws.subset_sino_buf, sinogram, angle_indices)
+            _copy_subset_into_buffer!(ws.subset_W_proj_buf, ws.W_proj, angle_indices)
+            _copy_subset_into_buffer!(ws.subset_stat_weights_buf, ws.stat_weights, angle_indices)
 
-            # Forward project: Ax = A * x
-            fill!(ws.Ax, zero(T))
-            siddon_forward_project!(ws.Ax, ws.volume, geom;
-                ws_source_positions=ws.geom_source_positions,
-                ws_detector_centers=ws.geom_detector_centers,
-                ws_detector_u=ws.geom_detector_u,
-                ws_detector_v=ws.geom_detector_v)
+            # Forward project with subset geometry → subset_Ax_buf
+            ax_view = view(ws.subset_Ax_buf, :, :, 1:n_sub)
+            fill!(ax_view, zero(T))
+            siddon_forward_project!(ax_view, ws.volume, geom_s;
+                ws_source_positions=ws.subset_geom_source_positions[s],
+                ws_detector_centers=ws.subset_geom_detector_centers[s],
+                ws_detector_u=ws.subset_geom_detector_u[s],
+                ws_detector_v=ws.subset_geom_detector_v[s])
 
-            # Compute combined-weighted residual in-place: Ax = W_proj ⊙ stat_weights ⊙ (y - Ax)
-            let ax = ws.Ax, wp = ws.W_proj, sw = ws.stat_weights
+            # Compute weighted residual in-place:
+            # Ax_s = W_s ⊙ stat_w_s ⊙ (sino_s - Ax_s)
+            let ax = ax_view,
+                sino_s = view(ws.subset_sino_buf, :, :, 1:n_sub),
+                wp_s = view(ws.subset_W_proj_buf, :, :, 1:n_sub),
+                sw_s = view(ws.subset_stat_weights_buf, :, :, 1:n_sub)
+
                 AK.foreachindex(ax, backend) do idx
-                    residual = sinogram[idx] - ax[idx]
-                    ax[idx] = wp[idx] * sw[idx] * residual
+                    residual = sino_s[idx] - ax[idx]
+                    ax[idx] = wp_s[idx] * sw_s[idx] * residual
                 end
             end
 
-            # Backproject weighted residual into ws.correction (unweighted for SIRT)
+            # Backproject weighted residual → correction
             fill!(ws.correction, zero(T))
-            backproject!(ws.correction, ws.Ax, geom;
+            backproject!(ws.correction, ax_view, geom_s;
                 weighted=false,
-                ws_source_positions=ws.geom_source_positions,
-                ws_detector_centers=ws.geom_detector_centers,
-                ws_detector_u=ws.geom_detector_u,
-                ws_detector_v=ws.geom_detector_v)
+                ws_source_positions=ws.subset_geom_source_positions[s],
+                ws_detector_centers=ws.subset_geom_detector_centers[s],
+                ws_detector_u=ws.subset_geom_detector_u[s],
+                ws_detector_v=ws.subset_geom_detector_v[s])
 
-            # Apply SIRT-style update with regularization:
-            # x = x + λ_relax * V_inv * correction - λ_reg * V_inv * reg_grad
-            let vol = ws.volume, vinv = ws.V_inv, corr = ws.correction, rg = ws.reg_grad
+            # SIRT-style update with subset scaling:
+            # x += λ_relax * V_inv * (n_subsets * correction) - λ * V_inv * reg_grad
+            let vol = ws.volume, vinv = ws.V_inv, corr = ws.correction,
+                rg = ws.reg_grad, ss = subset_scale
+
                 AK.foreachindex(vol, backend) do idx
-                    data_update = λ_relax * vinv[idx] * corr[idx]
+                    data_update = λ_relax * vinv[idx] * ss * corr[idx]
                     reg_update = λ * vinv[idx] * rg[idx]
                     vol[idx] += data_update - reg_update
                 end

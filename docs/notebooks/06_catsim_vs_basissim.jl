@@ -774,7 +774,7 @@ basissim_cpu_result = let
         ws_fdk = BS.create_fdk_recon_workspace(
             ws.sinogram, ws.geom, recon_opts.matrix_size; filter = :standard,
         )
-        BS.reconstruct!(ws_fdk, ws.sinogram, ws.geom, recon_opts.matrix_size)
+        BS.reconstruct!(ws_fdk, ws.sinogram, ws.geom)
         ws = nothing; ws_fdk = nothing
     end
     GC.gc(true)
@@ -787,7 +787,7 @@ basissim_cpu_result = let
         ws_fdk = BS.create_fdk_recon_workspace(
             ws.sinogram, ws.geom, recon_opts.matrix_size; filter = :standard,
         )
-        recon_μ = Array(BS.reconstruct!(ws_fdk, ws.sinogram, ws.geom, recon_opts.matrix_size))
+        recon_μ = Array(BS.reconstruct!(ws_fdk, ws.sinogram, ws.geom))
         ws = nothing; ws_fdk = nothing
     end
     GC.gc(true)
@@ -817,7 +817,7 @@ basissim_gpu_result = let
         ws_fdk = BS.create_fdk_recon_workspace(
             ws.sinogram, ws.geom, recon_opts.matrix_size; filter = :standard,
         )
-        BS.reconstruct!(ws_fdk, ws.sinogram, ws.geom, recon_opts.matrix_size)
+        BS.reconstruct!(ws_fdk, ws.sinogram, ws.geom)
         ws = nothing; ws_fdk = nothing
     end
     GC.gc(true)
@@ -831,7 +831,7 @@ basissim_gpu_result = let
             ws.sinogram, ws.geom, recon_opts.matrix_size; filter = :standard,
         )
         recon_μ = Array(
-            BS.reconstruct!(ws_fdk, ws.sinogram, ws.geom, recon_opts.matrix_size)
+            BS.reconstruct!(ws_fdk, ws.sinogram, ws.geom)
         )
         ws = nothing; ws_fdk = nothing
     end

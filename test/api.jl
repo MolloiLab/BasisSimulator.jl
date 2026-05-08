@@ -850,6 +850,248 @@ _ts("entering build_physics_config testset")
     end
 end
 
+# -----------------------------------------------------------------------------
+# reconstruct!(::FDKReconWorkspace, ...) — Feldkamp-Davis-Kress, TIGRE-style
+# 4-step pipeline (copy → filter → backproject → FOV mask).
+#
+# Reference port: Feldkamp LA, Davis LC, Kress JW. J Opt Soc Am A 1(6),
+# 1984.  TIGRE Toolbox MATLAB/Algorithms/FDK.m + Common/CUDA/voxel_backprojection.cu.
+# This is NOT Siddon — Siddon is forward-projection only.
+# -----------------------------------------------------------------------------
+_ts("entering reconstruct!(FDKReconWorkspace) testset")
+@testset "reconstruct!(FDKReconWorkspace)" begin
+    # Tiny CPU-only setup — no GPU gate.  16 views × 32 cols × 8 rows is
+    # enough to exercise the pipeline; this isn't a quality test, it's a
+    # contract test.
+    function _toy_fdk_setup(; matrix_size = (16, 16, 4))
+        scanner = BS.Scanner(
+            source_to_isocenter = 540.0, source_to_detector = 1080.0,
+            detector_rows = 8, detector_cols = 32,
+            detector_row_size = 1.0, detector_col_size = 1.0,
+        )
+        geom = BS.CTGeometry(scanner; n_angles = 16, fov_cm = 20.0, z_cm = 5.0)
+        sino = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
+        ws   = BS.create_fdk_recon_workspace(sino, geom, matrix_size)
+        return (; scanner, geom, sino, ws, matrix_size)
+    end
+
+    @testset "return contract: ws.volume identity, shape" begin
+        s = _toy_fdk_setup()
+        ret = BS.reconstruct!(s.ws, s.sino, s.geom)
+        @test ret === s.ws.volume
+        @test size(ret) == s.matrix_size
+        @test eltype(ret) == Float32
+    end
+
+    @testset "zero sinogram → recon is {0 inside FOV, sentinel outside}" begin
+        s = _toy_fdk_setup()
+        BS.reconstruct!(s.ws, s.sino, s.geom)
+        # FDK is linear → all-zero input gives all-zero recon BEFORE the
+        # FOV mask.  The FOV mask then writes the air sentinel (default
+        # μ = -0.04 cm⁻¹) into voxels outside the inscribed FOV circle.
+        # So every voxel is either 0 or exactly -0.04.
+        @test all(v -> v == 0.0f0 || v ≈ -0.04f0, s.ws.volume)
+        # Center voxel is inside the FOV → must be 0.
+        nx, ny, nz = s.matrix_size
+        @test s.ws.volume[nx ÷ 2 + 1, ny ÷ 2 + 1, nz ÷ 2 + 1] == 0.0f0
+    end
+
+    @testset "deterministic: same input → bit-identical output" begin
+        s1 = _toy_fdk_setup()
+        s2 = _toy_fdk_setup()
+        # Random-but-finite sinogram so the recon is non-trivial.
+        sino = randn(Float32, size(s1.sino)...)
+        BS.reconstruct!(s1.ws, sino, s1.geom)
+        BS.reconstruct!(s2.ws, sino, s2.geom)
+        @test s1.ws.volume == s2.ws.volume
+        @test all(isfinite, s1.ws.volume)
+    end
+
+    @testset "non-trivial sinogram → finite, non-uniform recon" begin
+        s = _toy_fdk_setup()
+        # Build a sinogram with a clear central log-attenuation peak — every
+        # view has a Gaussian bump at the center column.  Recon should be
+        # finite and have measurable variance (not flat).
+        sino = zeros(Float32, size(s.sino)...)
+        n_col, n_row, n_view = size(sino)
+        mid_c = n_col ÷ 2 + 1
+        for v in 1:n_view, r in 1:n_row, c in 1:n_col
+            sino[c, r, v] = 0.5f0 * exp(-((c - mid_c)^2) / (2 * 4.0f0^2))
+        end
+        BS.reconstruct!(s.ws, sino, s.geom)
+        @test all(isfinite, s.ws.volume)
+        @test std(s.ws.volume) > 0     # not all the same value
+    end
+
+    @testset "FOV mask: corner voxels (outside inscribed circle) get sentinel μ" begin
+        # apply_fov_mask! writes the air sentinel μ (default -0.04 cm⁻¹) into
+        # every voxel outside the largest circle that fits the recon's xy
+        # box (clinical convention).  All four xy corners must equal the
+        # sentinel in every z-slice.
+        s = _toy_fdk_setup()
+        sino = randn(Float32, size(s.sino)...)
+        BS.reconstruct!(s.ws, sino, s.geom)
+        nx, ny, nz = s.matrix_size
+        sentinel = -0.04f0
+        for z in 1:nz
+            @test s.ws.volume[1,  1,  z] ≈ sentinel
+            @test s.ws.volume[nx, 1,  z] ≈ sentinel
+            @test s.ws.volume[1,  ny, z] ≈ sentinel
+            @test s.ws.volume[nx, ny, z] ≈ sentinel
+        end
+        # Center voxel is inside the FOV → finite, almost certainly NOT
+        # the sentinel value.
+        cx, cy, cz = nx ÷ 2 + 1, ny ÷ 2 + 1, nz ÷ 2 + 1
+        @test isfinite(s.ws.volume[cx, cy, cz])
+        @test s.ws.volume[cx, cy, cz] != sentinel
+    end
+
+    @testset "filter kwarg accepted: ram_lak, shepp_logan, cosine, hamming, hann" begin
+        # Each TIGRE-derived FBP filter must be usable.  Each call must
+        # finish without error and produce a finite recon.
+        sino = randn(Float32, 32, 8, 16)
+        for fkernel in (:ram_lak, :shepp_logan, :cosine, :hamming, :hann)
+            s = _toy_fdk_setup()
+            ws = BS.create_fdk_recon_workspace(sino, s.geom, s.matrix_size; filter = fkernel)
+            BS.reconstruct!(ws, sino, s.geom)
+            @test all(isfinite, ws.volume)
+        end
+    end
+
+    @testset "second call overwrites volume (no accumulation)" begin
+        # Direct test of the `fill!(ws.volume, zero(T))` line at the start of
+        # reconstruct!: pollute the volume buffer with a sentinel value
+        # between calls, run the SAME sinogram, and verify the result matches
+        # the clean run.  That's what "no accumulation" actually requires.
+        s = _toy_fdk_setup()
+        sino = zeros(Float32, size(s.sino)...)
+        n_col, n_row, n_view = size(sino)
+        mid_c = n_col ÷ 2 + 1
+        for v in 1:n_view, r in 1:n_row, c in 1:n_col
+            sino[c, r, v] = 0.5f0 * exp(-((c - mid_c)^2) / (2 * 4.0f0^2))
+        end
+        BS.reconstruct!(s.ws, sino, s.geom)
+        v_clean = copy(s.ws.volume)
+
+        # Pollute with garbage; reconstruct! must zero it before backprojection.
+        fill!(s.ws.volume, 999.0f0)
+        BS.reconstruct!(s.ws, sino, s.geom)
+        @test s.ws.volume == v_clean
+    end
+end
+
+# -----------------------------------------------------------------------------
+# reconstruct!(::HIRReconWorkspace, ...) — OS-PWLS with Huber prior
+# (Fessler / U-Michigan school; see hybrid_ir.jl preamble for full citations)
+# -----------------------------------------------------------------------------
+_ts("entering reconstruct!(HIRReconWorkspace) testset")
+@testset "reconstruct!(HIRReconWorkspace)" begin
+    function _toy_hir_setup(; matrix_size = (16, 16, 4), strength = 3)
+        scanner = BS.Scanner(
+            source_to_isocenter = 540.0, source_to_detector = 1080.0,
+            detector_rows = 8, detector_cols = 32,
+            detector_row_size = 1.0, detector_col_size = 1.0,
+        )
+        # n_angles divisible by n_subsets (12) so OS subsets are balanced.
+        geom = BS.CTGeometry(scanner; n_angles = 24, fov_cm = 20.0, z_cm = 5.0)
+        sino = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
+        ws   = BS.create_hir_recon_workspace(sino, geom, matrix_size; strength = strength)
+        return (; scanner, geom, sino, ws, matrix_size, strength)
+    end
+
+    @testset "HIRParams: niter dropped, n_subsets fixed at 12" begin
+        # Sanity-check the cleanup: HIRParams no longer carries `niter`,
+        # and every strength uses 12 subsets.
+        @test !(:niter in fieldnames(BS.HIRParams))
+        for strength in 1:5
+            p = BS.get_hir_params(strength)
+            @test p.n_subsets == 12
+            @test p.nepochs ≥ 1
+            @test p.lambda > 0
+            @test p.huber_delta > 0
+            @test 0 < p.relaxation ≤ 1
+        end
+    end
+
+    @testset "HIRReconWorkspace: Ax field dropped" begin
+        # The dead Ax field used by the deleted full-data branch is gone.
+        @test !(:Ax in fieldnames(BS.HIRReconWorkspace))
+    end
+
+    @testset "return contract: ws.volume identity, shape" begin
+        s = _toy_hir_setup()
+        ret = BS.reconstruct!(s.ws, s.sino, s.geom)
+        @test ret === s.ws.volume
+        @test size(ret) == s.matrix_size
+        @test eltype(ret) == Float32
+        @test all(isfinite, ret)
+    end
+
+    @testset "deterministic: same input → bit-identical output" begin
+        s1 = _toy_hir_setup()
+        s2 = _toy_hir_setup()
+        sino = randn(Float32, size(s1.sino)...)
+        BS.reconstruct!(s1.ws, sino, s1.geom)
+        BS.reconstruct!(s2.ws, sino, s2.geom)
+        @test s1.ws.volume == s2.ws.volume
+    end
+
+    @testset "init_volume warm-start path" begin
+        # When init_volume is provided, the FDK initialization is skipped
+        # and the iterate starts from the supplied volume.  The Step-1
+        # branch flips: copyto! instead of FDK + filter + backproject.
+        s = _toy_hir_setup()
+        sino = randn(Float32, size(s.sino)...)
+        warm = fill(0.5f0, s.matrix_size...)
+        # Run with warm start — should converge to a finite recon.
+        BS.reconstruct!(s.ws, sino, s.geom; init_volume = warm)
+        @test all(isfinite, s.ws.volume)
+        # Run without warm start (FDK init) — output differs from warm-start.
+        s2 = _toy_hir_setup()
+        BS.reconstruct!(s2.ws, sino, s2.geom)
+        @test s.ws.volume != s2.ws.volume
+    end
+
+    @testset "air_reference path runs without error" begin
+        # The bowtie-aware stat-weight path (the second `if air_reference`
+        # branch) must run without crashing and produce a finite recon.
+        s = _toy_hir_setup()
+        sino = randn(Float32, size(s.sino)...)
+        # Synthetic air reference: edge pixels brighter than center
+        # (opposite of real bowtie, but valid input).
+        n_col, n_row = size(s.sino, 1), size(s.sino, 2)
+        air_ref = ones(Float32, n_col, n_row)
+        BS.reconstruct!(s.ws, sino, s.geom; air_reference = air_ref)
+        @test all(isfinite, s.ws.volume)
+    end
+
+    @testset "strength → param ordering (clinical noise-reduction band)" begin
+        # The strength dial is meant to give monotonically stronger
+        # regularization.  Verify that on the clinical params side:
+        #   - lambda increases with strength (more prior weight)
+        #   - huber_delta decreases (sharper transition to L1 region)
+        #   - nepochs increases (more iteration steps)
+        # The toy test geometry's V_inv collapses to ~0, so we can't show
+        # a recon-level difference here without a clinical-scale detector;
+        # the param table is the actual contract being tested.
+        for str in 1:4
+            p_lo = BS.get_hir_params(str)
+            p_hi = BS.get_hir_params(str + 1)
+            @test p_lo.lambda      ≤ p_hi.lambda
+            @test p_lo.huber_delta ≥ p_hi.huber_delta
+            @test p_lo.nepochs     ≤ p_hi.nepochs
+        end
+        # End-to-end smoke test: every strength runs through to completion
+        # and returns a finite recon.
+        for str in 1:5
+            s = _toy_hir_setup(strength = str)
+            sino = zeros(Float32, size(s.sino)...)
+            BS.reconstruct!(s.ws, sino, s.geom)
+            @test all(isfinite, s.ws.volume)
+        end
+    end
+end
+
 _ts("entering simulate!(EICTWorkspace) — scatter on/off testset")
 @testset "simulate!(EICTWorkspace) — scatter on/off" begin
     if !HAS_GPU

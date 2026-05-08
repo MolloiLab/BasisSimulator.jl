@@ -839,7 +839,6 @@ mutable struct HIRReconWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:A
 
     # ─── PWLS iteration scratch (reused every iteration) ───
     stat_weights::A3          # Statistical weights (sino shape)
-    Ax::A3                    # Forward projection scratch (sino shape)
     correction::A3            # Backprojection scratch (vol shape)
     reg_grad::A3              # Regularization gradient (vol shape)
 
@@ -917,7 +916,6 @@ function create_hir_recon_workspace(
 
     # PWLS iteration scratch buffers
     stat_weights = similar(sinogram, T, sino_shape...)
-    Ax = similar(sinogram, T, sino_shape...)
     correction = similar(sinogram, T, volume_size...)
     reg_grad = similar(sinogram, T, volume_size...)
 
@@ -973,7 +971,7 @@ function create_hir_recon_workspace(
         volume, filtered, conv_scratch, filter_kernel,
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
         W_proj, V_inv,
-        stat_weights, Ax, correction, reg_grad,
+        stat_weights, correction, reg_grad,
         subsets, subset_geometries,
         subset_geom_src, subset_geom_det, subset_geom_u, subset_geom_v,
         subset_sino_buf, subset_Ax_buf, subset_W_proj_buf, subset_stat_weights_buf,

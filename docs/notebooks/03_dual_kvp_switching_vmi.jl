@@ -1,8 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.20.24
-
-using Markdown
-using InteractiveUtils
+# v0.19.0
 
 # ╔═╡ 05000001-0000-4000-8000-000000000001
 begin
@@ -368,6 +365,319 @@ let
     fig
 end
 
+# ╔═╡ 05000007-0000-4000-8000-000000000040
+md"""
+## 6b. Subspace–Frequency Joint Bilateral Denoiser  *(experimental)*
+
+A second projection-domain denoiser built directly on top of the same
+per-row SVD skeleton as §6, but with six additional moves drawn from the
+Cong–follow-up effective-spectral-response framework, RSKR
+(Clark, Badea 2023), and Mono+ (Grant 2014):
+
+1. **Per-pixel Poisson whitening.**  Multiply each pixel by
+   `√Nₖ ∝ exp(−pₖ/2)` after subtracting a heavy low-pass reference
+   `p̄ₖ⁽⁰⁾` (σ_ref ≈ 10 px Gaussian).  Whitened residuals `ξₖ = √Nₖ·(pₖ − p̄ₖ⁽⁰⁾)`
+   have ~unit per-pixel noise variance, so the SVD's principal directions
+   are not pulled toward photon-starved pixels.
+2. **Smooth BOTH subspaces** with rank-sparse bandwidths
+   `σ_e = σ₀·(Σ₁/Σ_e)^γ`, γ = 0.5 — small floor on `U[:,1]` (residual
+   noise from Wedin perturbation) and aggressive on `U[:,2]` (the
+   spectral-residual-plus-noise component).
+3. **Joint bilateral filter** (product-of-channels range kernel) instead
+   of pure 2D Gaussian — preserves rod silhouettes that a Gaussian
+   would smear.
+4. **Locally-averaged range** (Clark–Badea Eq 8) — optional `lavg_window`
+   knob; default 1 = single-pixel diff.  Up to 3 or 5 = NL-means style.
+5. **Stride resampling** — knob, default 1.
+6. **Iterative refinement** — `n_iter` outer iters with σ shrink
+   factor α; default n_iter = 1.
+
+The whole operation is a drop-in replacement for §6: same input
+(`sim_low/high.sino`), same output shape (`(low, high, geom)` named
+tuple).  See §6c for the toggle that wires it into §7.
+
+!!! info "Reference paper"
+    Black, *Joint Sinogram Denoising via Subspace–Frequency Reduction
+    for Two-Channel Spectral CT*, in prep.
+"""
+
+# ╔═╡ 05000007-0000-4000-8000-000000000050
+begin
+    SFJBF_σ0          = 2.0    # principal spatial bandwidth (px) — paper §2.6
+    SFJBF_h           = 1.0    # range-kernel strength (paper default)
+    SFJBF_γ           = 0.5    # rank-sparse exponent
+    SFJBF_σ_max       = 8.0    # cap on σ_e for compute tractability
+    SFJBF_σ_ref_px    = 10.0   # heavy low-pass reference radius
+    SFJBF_n_iter      = 1      # outer iterations (1 dual-kVp; 2 photon-starved)
+    SFJBF_α           = 0.7    # σ shrink between iterations
+    SFJBF_lavg_window = 1      # 1 = single-pixel diff; 3 / 5 = NL-means style
+    SFJBF_stride      = 1      # spatial-kernel stride (1 for raw sinos)
+end
+
+# ╔═╡ 05000007-0000-4000-8000-000000000060
+begin
+    import LinearAlgebra
+    import Statistics
+
+    # Per-row 2D separable Gaussian on (n_col, n_row, n_view) sinogram.
+    # Smooths each (col, view) row-slice independently.
+    function _sfjbf_sep_gauss_3d(sino::Array{Float32, 3}, σ_px::Real)
+        σ = Float64(σ_px)
+        σ ≤ 0 && return copy(sino)
+        radius = max(1, ceil(Int, 3σ))
+        ks = Float32[exp(-(k^2) / (2σ^2)) for k in -radius:radius]
+        ks ./= sum(ks)
+        n_col, n_row, n_view = size(sino)
+        out = similar(sino)
+        Threads.@threads for r in 1:n_row
+            slice = Float32.(@view sino[:, r, :])
+            out[:, r, :] .= _sfjbf_gauss_2d(slice, ks, radius)
+        end
+        out
+    end
+
+    # Pure 2D separable Gaussian on (n_col, n_view) — col-pass then view-pass.
+    function _sfjbf_gauss_2d(slice2d::AbstractMatrix{Float32},
+                              ks::AbstractVector{Float32},
+                              radius::Int)
+        nc, nv = size(slice2d)
+        tmp = Matrix{Float32}(undef, nc, nv)
+        out = Matrix{Float32}(undef, nc, nv)
+        @inbounds for v in 1:nv, c in 1:nc
+            s = 0f0; w = 0f0
+            for (i, dk) in enumerate(-radius:radius)
+                c2 = c + dk
+                (1 ≤ c2 ≤ nc) || continue
+                s += ks[i] * slice2d[c2, v]; w += ks[i]
+            end
+            tmp[c, v] = s / w
+        end
+        @inbounds for v in 1:nv, c in 1:nc
+            s = 0f0; w = 0f0
+            for (i, dk) in enumerate(-radius:radius)
+                v2 = v + dk
+                (1 ≤ v2 ≤ nv) || continue
+                s += ks[i] * tmp[c, v2]; w += ks[i]
+            end
+            out[c, v] = s / w
+        end
+        out
+    end
+
+    # Robust MAD-based scale estimate of a 2D residual (× 1.4826 → Gaussian σ).
+    function _sfjbf_mad_scale(arr2d::AbstractMatrix{Float32})
+        med = Statistics.median(arr2d)
+        mad = Statistics.median(abs.(arr2d .- med))
+        Float32(1.4826 * mad)
+    end
+
+    # One-component joint bilateral pass on a single (n_col, n_view) slice.
+    # Spatial kernel scaled by σ_sp; range kernel is the product-of-channels
+    # form across (Λ₁, Λ₂) with per-component MAD scales σ₁_rng, σ₂_rng.
+    # Optional locally-averaged range diff (lavg_w > 1) and stride.
+    function _sfjbf_pass!(out::AbstractMatrix{Float32},
+                          target::AbstractMatrix{Float32},
+                          σ_sp::Float32,
+                          Λ1::AbstractMatrix{Float32}, Λ2::AbstractMatrix{Float32},
+                          σ1_rng::Float32, σ2_rng::Float32, h::Float32,
+                          lavg_w::Int, stride::Int)
+        nc, nv = size(target)
+        radius = max(1, ceil(Int, 3 * Float64(σ_sp)))
+        inv_2σ²_sp = 1f0 / (2f0 * σ_sp * σ_sp + 1f-30)
+        inv_2hσ²_1 = 1f0 / (2f0 * (h * σ1_rng)^2 + 1f-30)
+        inv_2hσ²_2 = 1f0 / (2f0 * (h * σ2_rng)^2 + 1f-30)
+        half_lavg = lavg_w ÷ 2
+
+        Threads.@threads for v in 1:nv
+            @inbounds for c in 1:nc
+                sum_v = 0f0; wtot = 0f0
+                for dv in -radius:stride:radius
+                    v2 = v + dv
+                    (1 ≤ v2 ≤ nv) || continue
+                    for dc in -radius:stride:radius
+                        c2 = c + dc
+                        (1 ≤ c2 ≤ nc) || continue
+
+                        Δ1² = 0f0; Δ2² = 0f0
+                        if lavg_w == 1
+                            d1 = Λ1[c2, v2] - Λ1[c, v]
+                            d2 = Λ2[c2, v2] - Λ2[c, v]
+                            Δ1² = d1 * d1; Δ2² = d2 * d2
+                        else
+                            cnt = 0
+                            for dav in -half_lavg:half_lavg, dac in -half_lavg:half_lavg
+                                ca = c + dac;  va = v + dav
+                                cb = c2 + dac; vb = v2 + dav
+                                (1 ≤ ca ≤ nc && 1 ≤ va ≤ nv) || continue
+                                (1 ≤ cb ≤ nc && 1 ≤ vb ≤ nv) || continue
+                                d1 = Λ1[cb, vb] - Λ1[ca, va]
+                                d2 = Λ2[cb, vb] - Λ2[ca, va]
+                                Δ1² += d1 * d1; Δ2² += d2 * d2; cnt += 1
+                            end
+                            if cnt > 0
+                                Δ1² /= cnt; Δ2² /= cnt
+                            end
+                        end
+
+                        spatial_d² = Float32(dc * dc + dv * dv)
+                        log_w = -spatial_d² * inv_2σ²_sp -
+                                Δ1² * inv_2hσ²_1 -
+                                Δ2² * inv_2hσ²_2
+                        w = exp(log_w)
+                        sum_v += w * target[c2, v2]
+                        wtot  += w
+                    end
+                end
+                out[c, v] = sum_v / max(wtot, 1f-30)
+            end
+        end
+        nothing
+    end
+
+    nothing
+end
+
+# ╔═╡ 05000007-0000-4000-8000-000000000070
+sino_denoised_alt = let
+    p_lo = Float32.(sim_low.sino)
+    p_hi = Float32.(sim_high.sino)
+    n_col, n_row, n_view = size(p_lo)
+
+    # Per-pixel √N weight ∝ exp(−p/2).  Absolute scale cancels in the
+    # whiten/unwhiten roundtrip; only the per-pixel pattern matters.
+    w_lo = exp.(-p_lo ./ 2f0)
+    w_hi = exp.(-p_hi ./ 2f0)
+
+    # Heavy low-pass reference per channel (paper §2.2).
+    p_ref_lo = _sfjbf_sep_gauss_3d(p_lo, SFJBF_σ_ref_px)
+    p_ref_hi = _sfjbf_sep_gauss_3d(p_hi, SFJBF_σ_ref_px)
+
+    # Whitened residuals (paper Eq 4).  Will be denoised in place.
+    ξ_lo = w_lo .* (p_lo .- p_ref_lo)
+    ξ_hi = w_hi .* (p_hi .- p_ref_hi)
+
+    p_lo = nothing; p_hi = nothing; GC.gc(true)
+
+    σ0    = Float32(SFJBF_σ0)
+    σ_max = Float32(SFJBF_σ_max)
+    h_f   = Float32(SFJBF_h)
+    γ_f   = Float32(SFJBF_γ)
+
+    Σ_ratio_log = Vector{Float32}(undef, n_row)
+
+    for t in 0:(SFJBF_n_iter - 1)
+        Threads.@threads for r in 1:n_row
+            slice_lo = Float32.(@view ξ_lo[:, r, :])
+            slice_hi = Float32.(@view ξ_hi[:, r, :])
+            M = hcat(vec(slice_lo), vec(slice_hi))
+
+            F = LinearAlgebra.svd(M; full = false)
+            U, Σ, V = F.U, F.S, F.V
+
+            σ1 = min(σ0, σ_max)
+            σ2 = min(σ0 * (Σ[1] / max(Σ[2], 1f-12))^γ_f, σ_max)
+            Σ_ratio_log[r] = Float32(Σ[1] / max(Σ[2], 1f-12))
+
+            Λ1 = reshape(copy(@view U[:, 1]), n_col, n_view)
+            Λ2 = reshape(copy(@view U[:, 2]), n_col, n_view)
+
+            σ1_rng = max(_sfjbf_mad_scale(Λ1), eps(Float32))
+            σ2_rng = max(_sfjbf_mad_scale(Λ2), eps(Float32))
+
+            Λ1_d = similar(Λ1); Λ2_d = similar(Λ2)
+            _sfjbf_pass!(Λ1_d, Λ1, σ1, Λ1, Λ2, σ1_rng, σ2_rng, h_f,
+                         SFJBF_lavg_window, SFJBF_stride)
+            _sfjbf_pass!(Λ2_d, Λ2, σ2, Λ1, Λ2, σ1_rng, σ2_rng, h_f,
+                         SFJBF_lavg_window, SFJBF_stride)
+
+            U_d = hcat(vec(Λ1_d), vec(Λ2_d))
+            M_d = U_d * LinearAlgebra.Diagonal(Σ) * V'
+            ξ_lo[:, r, :] .= reshape(view(M_d, :, 1), n_col, n_view)
+            ξ_hi[:, r, :] .= reshape(view(M_d, :, 2), n_col, n_view)
+        end
+        @info "[SF-jBF iter $(t + 1)/$(SFJBF_n_iter)] σ₀ = $(round(σ0, digits=2)) px, " *
+              "median Σ₁/Σ₂ = $(round(Statistics.median(Σ_ratio_log), sigdigits=3)), " *
+              "σ_max cap = $(SFJBF_σ_max) px"
+        σ0 *= Float32(SFJBF_α)
+    end
+
+    # Inverse whiten: p = ξ/w + p_ref.
+    p_lo_d = ξ_lo ./ w_lo .+ p_ref_lo
+    p_hi_d = ξ_hi ./ w_hi .+ p_ref_hi
+
+    ξ_lo = nothing; ξ_hi = nothing
+    w_lo = nothing; w_hi = nothing
+    p_ref_lo = nothing; p_ref_hi = nothing
+    GC.gc(true)
+
+    (low = p_lo_d, high = p_hi_d, geom = sim_low.geom)
+end;
+
+# ╔═╡ 05000007-0000-4000-8000-000000000080
+let
+    n_row = size(sino_denoised_alt.low, 2)
+    mid_r = n_row ÷ 2 + 1
+
+    slice_lo = permutedims(sino_denoised_alt.low[:, mid_r, :], (2, 1))
+    slice_hi = permutedims(sino_denoised_alt.high[:, mid_r, :], (2, 1))
+
+    all_v = vcat(vec(slice_lo), vec(slice_hi))
+    sino_window = (
+        Float64(quantile(all_v, 0.01)),
+        Float64(quantile(all_v, 0.99)),
+    )
+
+    fig = CM.Figure(size = (1180, 580))
+    axis_kwargs = (
+        titlesize = 32, subtitlesize = 24,
+        xlabel = "View", ylabel = "Detector Column",
+        xlabelsize = 22, ylabelsize = 22,
+        xticklabelsize = 16, yticklabelsize = 16,
+    )
+
+    panels = (
+        (1, 1, "80 kVp",  "After SF-jBF denoiser", slice_lo),
+        (1, 2, "140 kVp", "After SF-jBF denoiser", slice_hi),
+    )
+
+    for (r, c, ttl, sub, slice) in panels
+        ax = CM.Axis(fig[r, c]; title = ttl, subtitle = sub, axis_kwargs...)
+        CM.heatmap!(ax, slice; colormap = :viridis, colorrange = sino_window)
+    end
+    CM.Colorbar(
+        fig[1, 3]; colormap = :viridis, colorrange = sino_window,
+        label = "Log Line Integral", width = 16, labelsize = 22, ticklabelsize = 18
+    )
+    fig
+end
+
+# ╔═╡ 05000007-0000-4000-8000-000000000090
+md"""
+## 6c. Active Denoiser Path
+
+Toggle between the §6 baseline and the §6b SF-jBF denoiser without
+touching anything downstream. `sino_denoised_active` is what §7 onward
+consumes — flip `DENOISER_PATH`, re-run the rest of the notebook, and
+compare per-rod measured-vs-theoretical RMSE in §11.
+
+| `DENOISER_PATH` | Path        | Knobs                           |
+|-----------------|-------------|---------------------------------|
+| `:svd`          | §6 baseline | `SINO_DENOISE_σ_PX`             |
+| `:sfjbf`        | §6b SF-jBF  | `SFJBF_*` (nine, all defaulted) |
+"""
+
+# ╔═╡ 05000007-0000-4000-8000-000000000095
+DENOISER_PATH = :svd
+
+# ╔═╡ 05000007-0000-4000-8000-000000000100
+sino_denoised_active = if DENOISER_PATH == :sfjbf
+    sino_denoised_alt
+elseif DENOISER_PATH == :svd
+    sino_denoised
+else
+    error("Unknown DENOISER_PATH = $(DENOISER_PATH); must be :svd or :sfjbf")
+end;
+
 # ╔═╡ 05000008-0000-4000-8000-000000000001
 md"""
 ## 7. Projection Domain Material Decomposition
@@ -419,8 +729,8 @@ end;
 
 # ╔═╡ 05000008-0000-4000-8000-000000000020
 sino_basis = let
-    sino_low_gpu = to_gpu(sino_denoised.low)
-    sino_high_gpu = to_gpu(sino_denoised.high)
+    sino_low_gpu = to_gpu(sino_denoised_active.low)
+    sino_high_gpu = to_gpu(sino_denoised_active.high)
 
     sino_y = similar(sino_low_gpu)   # iodine basis line integrals
     sino_c = similar(sino_low_gpu)   # water  basis line integrals
@@ -435,7 +745,7 @@ sino_basis = let
     result = (
         sino_iodine = Array(sino_y),
         sino_water = Array(sino_c),
-        geom = sino_denoised.geom,
+        geom = sino_denoised_active.geom,
     )
     sino_low_gpu = nothing; sino_high_gpu = nothing
     sino_y = nothing; sino_c = nothing; cong_ws = nothing
@@ -506,7 +816,7 @@ basis_volumes = let
         ws = BS.create_fdk_recon_workspace(
             sino_gpu, geom, matrix_size; filter = BS.SoftFilter(),
         )
-        recon = Array(BS.reconstruct!(ws, sino_gpu, geom, matrix_size))
+        recon = Array(BS.reconstruct!(ws, sino_gpu, geom))
         ws = nothing; sino_gpu = nothing
         GC.gc(true)
         return Float32.(recon)
@@ -1317,6 +1627,14 @@ and clean low-keV Mono+ output.
 # ╠═05000007-0000-4000-8000-000000000005
 # ╠═05000007-0000-4000-8000-000000000010
 # ╟─05000007-0000-4000-8000-000000000030
+# ╟─05000007-0000-4000-8000-000000000040
+# ╠═05000007-0000-4000-8000-000000000050
+# ╠═05000007-0000-4000-8000-000000000060
+# ╠═05000007-0000-4000-8000-000000000070
+# ╟─05000007-0000-4000-8000-000000000080
+# ╟─05000007-0000-4000-8000-000000000090
+# ╠═05000007-0000-4000-8000-000000000095
+# ╠═05000007-0000-4000-8000-000000000100
 # ╟─05000008-0000-4000-8000-000000000001
 # ╠═05000008-0000-4000-8000-000000000010
 # ╠═05000008-0000-4000-8000-000000000020

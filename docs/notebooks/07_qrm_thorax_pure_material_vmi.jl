@@ -746,7 +746,7 @@ basis_volumes = let
         ws = BS.create_fdk_recon_workspace(
             sino_gpu, geom, matrix_size; filter = BS.SoftFilter(),
         )
-        recon = Array(BS.reconstruct!(ws, sino_gpu, geom, matrix_size))
+        recon = Array(BS.reconstruct!(ws, sino_gpu, geom))
         ws = nothing; sino_gpu = nothing
         GC.gc(true)
         return Float32.(recon)

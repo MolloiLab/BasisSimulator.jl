@@ -69,11 +69,11 @@ rec_opts = BS.ReconOptions(matrix_size=(512, 512, 64), fov_cm=35.0)""")
           " writes into pre-allocated buffers and runs zero-allocation after JIT warm-up."),
         Pre(:class => code_block,
             Code(:class => "language-julia text-sm font-mono", """ws = BS.create_eict_workspace(scanner, protocol, sim_opts, rec_opts, phantom)
-BS.simulate!(ws, phantom, scanner, protocol, sim_opts, rec_opts)
+BS.simulate!(ws, phantom, protocol, sim_opts)
 
-ws_fdk = BS.create_fdk_recon_workspace(ws.sino_noisy_out, ws.geom, rec_opts.matrix_size)
+ws_fdk = BS.create_fdk_recon_workspace(ws.sinogram, ws.geom, rec_opts.matrix_size)
 hu = BS.to_hounsfield(
-    Array(BS.reconstruct!(ws_fdk, ws.sino_noisy_out, ws.geom, rec_opts.matrix_size));
+    Array(BS.reconstruct!(ws_fdk, ws.sinogram, ws.geom));
     μ_water = BS.get_reference_μ_water(70.0),
 )""")
         ),

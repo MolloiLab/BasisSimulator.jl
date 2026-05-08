@@ -772,7 +772,7 @@ end;
 recon_HU = sim === nothing ? nothing : let
         sino_gpu = to_gpu(Float32.(sim.sino))
         ws = BS.create_fdk_recon_workspace(sino_gpu, sim.geom, recon_opts.matrix_size; filter = :standard)
-        recon_μ = Array(BS.reconstruct!(ws, sino_gpu, sim.geom, recon_opts.matrix_size))
+        recon_μ = Array(BS.reconstruct!(ws, sino_gpu, sim.geom))
         ws = nothing; sino_gpu = nothing; GC.gc(true)
 
         HU = Float32.(BS.to_hounsfield(recon_μ; μ_water = μ_water_120))

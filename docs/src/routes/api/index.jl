@@ -471,13 +471,13 @@ sino = Array(ws.sino_noisy_out)   # pull off GPU""")),
                 " takes a Symbol from the preset table below or a ", Code(:class => inline, "CustomFilter"), "."),
         ),
         Div(:class => card_cls,
-            Div(:class => sig_cls, "reconstruct!(ws::FDKReconWorkspace, sino, geom, matrix_size) → ws.volume"),
+            Div(:class => sig_cls, "reconstruct!(ws::FDKReconWorkspace, sino, geom) → ws.volume"),
             P(:class => prose_cls,
                 "Runs filtered back-projection in-place.  Returns the μ-domain volume; ",
                 "convert to HU via ", Code(:class => inline, "to_hounsfield"),
-                " (§8)."),
+                " (§8).  Filter, kernel size, and output volume size are locked at workspace creation."),
             Pre(:class => code_cls, Code(:class => "language-julia", """ws_fdk  = BS.create_fdk_recon_workspace(sino_gpu, geom, matrix_size; filter = :standard)
-recon_μ = Array(BS.reconstruct!(ws_fdk, sino_gpu, geom, matrix_size))
+recon_μ = Array(BS.reconstruct!(ws_fdk, sino_gpu, geom))
 recon_HU = BS.to_hounsfield(recon_μ; μ_water = μ_water_120)""")),
         ),
         Div(:class => card_cls,
@@ -522,12 +522,12 @@ ws = BS.create_fdk_recon_workspace(sino, geom, matrix_size; filter = fdk_filter)
                 "Workspace warm-starts from FDK, then runs the iterations."),
         ),
         Div(:class => card_cls,
-            Div(:class => sig_cls, "reconstruct!(ws::HIRReconWorkspace, sino, geom, matrix_size) → ws.volume"),
+            Div(:class => sig_cls, "reconstruct!(ws::HIRReconWorkspace, sino, geom; init_volume=nothing, air_reference=nothing) → ws.volume"),
             P(:class => prose_cls,
                 "Same dispatch shape as FDK.  Converges in 2–5 iterations on clinical data; ",
                 "slowest reconstruction option — use FDK + image-domain BHC if you need speed."),
             Pre(:class => code_cls, Code(:class => "language-julia", """ws_hir  = BS.create_hir_recon_workspace(sino, geom, matrix_size; strength = 3, filter = :standard)
-recon_μ = Array(BS.reconstruct!(ws_hir, sino, geom, matrix_size))""")),
+recon_μ = Array(BS.reconstruct!(ws_hir, sino, geom))""")),
             P(:class => note_cls, "see notebook 02 for FDK vs HIR side-by-side on XCAT"),
         ),
 
@@ -672,7 +672,7 @@ bhc_model, μ_water_ref = BS.calibrate_bhc_two_material(e, w; order = 2)
 
 # Apply at simulate time
 BS.apply_bhc_two_material(sino, bhc_model, geom, recon_opts.matrix_size)
-recon_μ = Array(BS.reconstruct!(ws_fdk, sino, geom, recon_opts.matrix_size))
+recon_μ = Array(BS.reconstruct!(ws_fdk, sino, geom))
 BS.apply_bhc_image_domain(recon_μ, geom, recon_opts.matrix_size, μ_water_ref;
     hu_low = 50, hu_high = 150, scale_factor = 0.2)
 recon_HU = BS.to_hounsfield(recon_μ; μ_water = μ_water_ref)""")),

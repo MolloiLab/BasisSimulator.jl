@@ -532,7 +532,7 @@ hu_std = let
     matrix_size = recon_opts.matrix_size
 
     ws_fdk = BS.create_fdk_recon_workspace(sino_gpu, sim_std.geom, matrix_size)
-    recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, sim_std.geom, matrix_size)
+    recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, sim_std.geom)
 
     # μ → HU, copying off the GPU at the same time. The `Float32.(...)` cast
     # is intentional (not redundant): `BS.μ_to_HU` widens to Float64 due to
@@ -580,7 +580,7 @@ hu_low = let
     matrix_size = recon_opts.matrix_size
 
     ws_fdk = BS.create_fdk_recon_workspace(sino_gpu, sim_low.geom, matrix_size)
-    recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, sim_low.geom, matrix_size)
+    recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, sim_low.geom)
 
     # Same polychromatic μ_water as §7 (shared 120 kVp spectrum + Gammex body)
     hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = μ_water_recon))
@@ -681,7 +681,7 @@ hu_std_corr = let
 
     # 2. FDK on the BHC-corrected sinogram
     ws_fdk = BS.create_fdk_recon_workspace(sino_gpu, sim_std.geom, matrix_size)
-    recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, sim_std.geom, matrix_size)
+    recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, sim_std.geom)
 
     # 3. Image-domain BHC refinement (in-place on GPU)
     BS.apply_bhc_image_domain(
@@ -728,7 +728,7 @@ hu_low_corr = let
 
     # 2. FDK
     ws_fdk = BS.create_fdk_recon_workspace(sino_gpu, sim_low.geom, matrix_size)
-    recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, sim_low.geom, matrix_size)
+    recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, sim_low.geom)
 
     # 3. Image-domain BHC
     BS.apply_bhc_image_domain(

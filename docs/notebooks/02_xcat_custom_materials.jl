@@ -709,7 +709,7 @@ hu_fbp = sim === nothing ? nothing : let
 
         # 2. FDK on the corrected sinogram
         ws_fdk = BS.create_fdk_recon_workspace(sino_gpu, sim.geom, matrix_size)
-        recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, sim.geom, matrix_size)
+        recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, sim.geom)
 
         # 3. Image-domain BHC refinement (in-place on GPU)
         BS.apply_bhc_image_domain(
@@ -766,7 +766,7 @@ hu_hir = sim === nothing ? nothing : let
 
         # 2. Hybrid IR (FBP init + PWLS refinement, strength = 3)
         ws_hir = BS.create_hir_recon_workspace(sino_gpu, sim.geom, matrix_size; strength = 3)
-        recon_μ = BS.reconstruct!(ws_hir, sino_gpu, sim.geom, matrix_size)
+        recon_μ = BS.reconstruct!(ws_hir, sino_gpu, sim.geom)
 
         # FBP's `reconstruct!` masks voxels outside the inscribed scan FOV
         # (`apply_fov_mask!`); HIR doesn't, so the iterative refinement
