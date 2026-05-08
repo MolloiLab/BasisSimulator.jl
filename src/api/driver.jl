@@ -608,6 +608,23 @@ by the bowtie attenuation `B[col, row, e]` pixel-by-pixel and renormalizes so
 This is the low-level primitive.  Most callers should use
 `resolve_source_spectrum_with_bowtie(...)`, which composes the two steps.
 
+# Reference (algorithm port from XCIST / CatSim, GE Research)
+- `gecatsim/pyfiles/Xray_Filter.py:bowtie_filter()` — per-ray attenuation for
+  the 4-material `{Al, graphite, Cu, Ti}` stack:
+  `B(α, E) = exp(−Σ_m μ_m(E) · t_m(α))` with `t_m` interpolated from the
+  vendor bowtie thickness file by fan angle and divided by `cos(alpha)` for
+  the cone-angle path correction.  BasisSim's `compute_bowtie_attenuation_spectral`
+  in `src/source/bowtie_filter.jl` implements the same Beer-Lambert sum for
+  the same four materials.
+- `gecatsim/pyfiles/Resample_Spectrum_Bowtie_FlatFilter.py` — the per-pixel
+  spectrum × bowtie × flat-filter product `spec.netIvec = spec.Ivec ·
+  bowtie.transVec · FiltrationTransVec`.  We do the spectrum × bowtie step
+  here and the flat-filter step in `resolve_source_spectrum_without_bowtie`
+  (so this primitive only handles the bowtie multiplication).
+
+The Julia code is original; the algorithm and the `{Al, graphite, Cu, Ti}`
+material composition are inherited from CatSim.
+
 # Arguments
 - `w_1d`, `e` — 1D spectrum + its energy grid (from `_without_bowtie`).
 - `scanner`, `geom`, `protocol` — passed to `resolve_bowtie_filter` and
@@ -725,7 +742,10 @@ Noise is not part of PhysicsConfig — it is applied externally via
   and used to scale the scatter coefficient appropriately.
 
 # Returns
-A `PhysicsConfig` ready for `forward_project()`.
+A `PhysicsConfig` consumed by `simulate!` via the workspace pathway
+(`create_workspace` / `create_eict_workspace` cache it on the workspace at
+construction time).  Original BasisSim glue — not a CatSim port.  CatSim's
+equivalent is the per-effect callback registry on `cfg.physics.*Callback`.
 """
 function build_physics_config(
     scanner::Scanner,

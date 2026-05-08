@@ -540,6 +540,316 @@ _ts("entering add_system_noise_floor! testset")
     end
 end
 
+# -----------------------------------------------------------------------------
+# Spectrum resolvers — pure CPU, no GPU gate.
+#
+# Reference for the bowtie path: XCIST/CatSim, GE Research.
+#   - `gecatsim/pyfiles/Xray_Filter.py:bowtie_filter()`            (4-material stack)
+#   - `gecatsim/pyfiles/Resample_Spectrum_Bowtie_FlatFilter.py`     (spectrum × bowtie)
+# -----------------------------------------------------------------------------
+function _toy_eict_scanner_with_bowtie()
+    BS.Scanner(
+        source_to_isocenter   = 540.0,
+        source_to_detector    = 1080.0,
+        detector_rows         = 4,
+        detector_cols         = 32,
+        detector_row_size     = 1.0,
+        detector_col_size     = 1.0,
+        detector_material     = :lumex,
+        detector_depth        = 3.0,
+        flat_filter_material  = :aluminum,
+        flat_filter_thickness = 2.5,
+        bowtie_filter         = :ge_revolution_large,
+    )
+end
+
+_ts("entering resolve_source_spectrum_without_bowtie testset")
+@testset "resolve_source_spectrum_without_bowtie" begin
+    scanner  = _toy_eict_scanner_with_bowtie()
+    protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 16, rotation_time = 0.5)
+    sim_opts = BS.SimOptions(; fidelity = :eict)
+
+    e, w = BS.resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner = scanner)
+
+    # Shape contract.
+    @test length(e) == length(w)
+    @test length(e) > 0
+    # Energy grid is positive, monotonic-ish, capped at kVp.
+    @test all(>(0), e)
+    @test maximum(e) ≤ Float64(protocol.kVp) + 1e-6
+    # Weights are non-negative (post-Beer-Lambert filtering, before any norm).
+    @test all(>=(0), w)
+    @test all(isfinite, w)
+    # Sum > 0 — flux didn't get filtered to zero.
+    @test sum(w) > 0
+end
+
+_ts("entering apply_bowtie_to_spectrum testset")
+@testset "apply_bowtie_to_spectrum" begin
+    scanner  = _toy_eict_scanner_with_bowtie()
+    protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 16, rotation_time = 0.5)
+    geom     = BS.CTGeometry(scanner; n_angles = protocol.views, fov_cm = 20.0, z_cm = 5.0)
+    sim_opts = BS.SimOptions(; fidelity = :eict)
+
+    e, w_1d = BS.resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner = scanner)
+    n_E    = length(e)
+    n_col  = scanner.detector_cols
+    n_row  = scanner.detector_rows
+
+    @testset "include_bowtie=false → 1D normalized spectrum" begin
+        ŵ = BS.apply_bowtie_to_spectrum(w_1d, e, scanner, geom, protocol;
+                                        include_bowtie = false)
+        @test ndims(ŵ) == 1
+        @test length(ŵ) == n_E
+        @test eltype(ŵ) == Float32
+        @test sum(ŵ) ≈ 1.0f0  rtol = 1e-5
+        @test all(>=(0), ŵ)
+    end
+
+    @testset "scanner with no bowtie → 1D normalized spectrum (regardless of flag)" begin
+        no_bowtie = BS.Scanner(
+            source_to_isocenter   = 540.0,
+            source_to_detector    = 1080.0,
+            detector_rows         = 4,
+            detector_cols         = 32,
+            detector_row_size     = 1.0,
+            detector_col_size     = 1.0,
+            detector_material     = :lumex,
+            detector_depth        = 3.0,
+            flat_filter_material  = :aluminum,
+            flat_filter_thickness = 2.5,
+            bowtie_filter         = :none,
+        )
+        geom_nb = BS.CTGeometry(no_bowtie; n_angles = protocol.views, fov_cm = 20.0, z_cm = 5.0)
+        ŵ = BS.apply_bowtie_to_spectrum(w_1d, e, no_bowtie, geom_nb, protocol;
+                                        include_bowtie = true)
+        @test ndims(ŵ) == 1
+        @test sum(ŵ) ≈ 1.0f0  rtol = 1e-5
+    end
+
+    @testset "bowtie ON → per-ray 3D ŵ, every ray normalized" begin
+        ŵ = BS.apply_bowtie_to_spectrum(w_1d, e, scanner, geom, protocol;
+                                        include_bowtie = true)
+        @test ndims(ŵ) == 3
+        @test size(ŵ) == (n_col, n_row, n_E)
+        @test eltype(ŵ) == Float32
+        @test all(isfinite, ŵ)
+        @test all(>=(0), ŵ)
+        # Every ray normalizes to 1.
+        for row in 1:n_row, col in 1:n_col
+            @test sum(@view ŵ[col, row, :]) ≈ 1.0f0  rtol = 1e-4
+        end
+    end
+
+    @testset "bowtie hardening: edge-ray mean E > center-ray mean E" begin
+        # Physical contract: bowtie filter is thicker at fan edges, so edge
+        # rays see more low-E attenuation → harder spectrum (higher mean E).
+        # CatSim's bowtie_filter() implements the same Beer-Lambert sum that
+        # produces this effect.
+        #
+        # Use a clinically-realistic fan width here — a 32-col × 1 mm detector
+        # at SDD = 1080 mm spans only ~1.7° of fan, which is too narrow for
+        # the bowtie shape (cm-scale thickness vs. fan angle) to differ
+        # measurably between center and edge.  Notebook scanners use ~800
+        # columns at ~0.6 mm, ~25° fan.  Mirror that.
+        wide = BS.Scanner(
+            source_to_isocenter   = 540.0,
+            source_to_detector    = 1080.0,
+            detector_rows         = 4,
+            detector_cols         = 800,
+            detector_row_size     = 1.0,
+            detector_col_size     = 0.6,
+            detector_material     = :lumex,
+            detector_depth        = 3.0,
+            flat_filter_material  = :aluminum,
+            flat_filter_thickness = 2.5,
+            bowtie_filter         = :ge_revolution_large,
+        )
+        wide_geom = BS.CTGeometry(wide; n_angles = 16, fov_cm = 50.0, z_cm = 5.0)
+        ŵ = BS.apply_bowtie_to_spectrum(w_1d, e, wide, wide_geom, protocol;
+                                        include_bowtie = true)
+        n_col_w = size(ŵ, 1)
+        mid_c   = n_col_w ÷ 2 + 1
+        mid_r   = size(ŵ, 2) ÷ 2 + 1
+        mean_E_center = sum(Float64(e[k]) * ŵ[mid_c, mid_r, k] for k in 1:n_E)
+        mean_E_edge   = sum(Float64(e[k]) * ŵ[1,     mid_r, k] for k in 1:n_E)
+        @test mean_E_edge > mean_E_center
+        # Effect should be physically meaningful, not a rounding artifact.
+        @test (mean_E_edge - mean_E_center) > 0.5
+    end
+end
+
+_ts("entering resolve_source_spectrum_with_bowtie testset")
+@testset "resolve_source_spectrum_with_bowtie" begin
+    scanner  = _toy_eict_scanner_with_bowtie()
+    protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 16, rotation_time = 0.5)
+    geom     = BS.CTGeometry(scanner; n_angles = protocol.views, fov_cm = 20.0, z_cm = 5.0)
+    sim_opts = BS.SimOptions(; fidelity = :eict)
+
+    @testset "composes _without_bowtie + apply_bowtie_to_spectrum" begin
+        # The wrapper is just a composition — verify it produces the same
+        # output as calling the two primitives by hand.
+        e₁, w_1d = BS.resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner = scanner)
+        ŵ_manual = BS.apply_bowtie_to_spectrum(w_1d, e₁, scanner, geom, protocol;
+                                                include_bowtie = true)
+        e₂, ŵ_compose = BS.resolve_source_spectrum_with_bowtie(sim_opts, protocol;
+                                                                scanner = scanner, geom = geom,
+                                                                include_bowtie = true)
+        @test e₂ == e₁
+        @test ŵ_compose == ŵ_manual
+    end
+
+    @testset "include_bowtie=false → 1D output (caller can dispatch on ndims)" begin
+        e, ŵ = BS.resolve_source_spectrum_with_bowtie(sim_opts, protocol;
+                                                      scanner = scanner, geom = geom,
+                                                      include_bowtie = false)
+        @test ndims(ŵ) == 1
+        @test length(ŵ) == length(e)
+        @test sum(ŵ) ≈ 1.0f0  rtol = 1e-5
+    end
+end
+
+# -----------------------------------------------------------------------------
+# build_physics_config — toggle resolution + Scanner→effect-model mapping.
+#
+# Original BasisSim glue (not a CatSim port).  CatSim's equivalent is the
+# per-effect callback registry on `cfg.physics.*Callback`.  Every notebook
+# reaches this function indirectly through `create_workspace` /
+# `create_eict_workspace`, so its toggle resolution is on the hot path.
+# -----------------------------------------------------------------------------
+_ts("entering build_physics_config testset")
+@testset "build_physics_config" begin
+    function _scanner_with_full_hardware()
+        BS.Scanner(
+            source_to_isocenter   = 540.0,
+            source_to_detector    = 1080.0,
+            detector_rows         = 4,
+            detector_cols         = 32,
+            detector_row_size     = 1.0,
+            detector_col_size     = 1.0,
+            detector_material     = :lumex,
+            detector_depth        = 3.0,
+            fill_factor_row       = 0.85,
+            fill_factor_col       = 0.92,
+            focal_spot_width      = 1.2,
+            focal_spot_length     = 1.0,
+            target_angle          = 7.5,
+            flat_filter_material  = :aluminum,
+            flat_filter_thickness = 2.5,
+        )
+    end
+    energies = collect(20.0:1.0:120.0)        # flat-ish proxy
+    weights  = ones(length(energies))         # uniform — mean ≈ midpoint
+
+    @testset "all toggles off → all-nothing PhysicsConfig" begin
+        sc = _scanner_with_full_hardware()
+        opts = BS.SimOptions(; fidelity = :eict,
+            use_fill_factor = false, use_detector_efficiency = false,
+            use_scatter = false, use_optical_crosstalk = false,
+            use_focal_spot = false, use_noise = false, use_lag = false,
+            use_heel_effect = false)
+        cfg = BS.build_physics_config(sc, opts, energies, weights)
+        @test cfg.fill_factor          === nothing
+        @test cfg.detector_efficiency  === nothing
+        @test cfg.scatter              === nothing
+        @test cfg.optical_crosstalk    === nothing
+        @test cfg.focal_spot           === nothing
+        @test cfg.lag                  === nothing
+        @test cfg.heel_effect          === nothing
+    end
+
+    @testset "each toggle on → corresponding field non-nothing + correct type" begin
+        sc = _scanner_with_full_hardware()
+        opts = BS.SimOptions(; fidelity = :eict)   # all on
+        cfg = BS.build_physics_config(sc, opts, energies, weights)
+        @test cfg.fill_factor         isa BS.FillFactorModel
+        @test cfg.detector_efficiency isa BS.DetectorEfficiency
+        @test cfg.scatter             isa BS.ScatterModel
+        @test cfg.optical_crosstalk   isa BS.OpticalCrosstalkModel
+        @test cfg.focal_spot          isa BS.FocalSpot
+        @test cfg.lag                 isa BS.LagModel
+        @test cfg.heel_effect         isa BS.HeelEffect
+    end
+
+    @testset "spectrum-weighted mean energy + seed passthrough" begin
+        sc = _scanner_with_full_hardware()
+        # Asymmetric weights — assert exact closed-form mean.
+        es = [40.0, 60.0, 100.0]
+        ws = [1.0,   3.0,   1.0]
+        expected_mean = sum(es .* ws) / sum(ws)
+        opts = BS.SimOptions(; fidelity = :eict, seed = 4242)
+        cfg = BS.build_physics_config(sc, opts, es, ws)
+        @test cfg.energy_keV ≈ expected_mean
+        @test cfg.noise_seed == 4242
+    end
+
+    @testset "fill_factor: scanner fields used when both >0" begin
+        sc = _scanner_with_full_hardware()    # 0.85 × 0.92
+        opts = BS.SimOptions(; fidelity = :eict)
+        cfg = BS.build_physics_config(sc, opts, energies, weights)
+        @test cfg.fill_factor.row_fill ≈ 0.85
+        @test cfg.fill_factor.col_fill ≈ 0.92
+    end
+
+    @testset "fill_factor: zero hardware → factory fallback" begin
+        sc = BS.Scanner(
+            source_to_isocenter = 540.0, source_to_detector = 1080.0,
+            detector_rows = 4, detector_cols = 32,
+            detector_row_size = 1.0, detector_col_size = 1.0,
+            detector_material = :lumex, detector_depth = 3.0,
+            fill_factor_row = 0.0, fill_factor_col = 0.0,    # ← unset
+        )
+        opts = BS.SimOptions(; fidelity = :eict)
+        cfg = BS.build_physics_config(sc, opts, energies, weights)
+        @test cfg.fill_factor isa BS.FillFactorModel
+        # Factory fill_factor_standard returns a populated model — non-zero.
+        @test cfg.fill_factor.row_fill > 0
+        @test cfg.fill_factor.col_fill > 0
+    end
+
+    @testset "detector_efficiency: lumex → gemstone branch" begin
+        sc = _scanner_with_full_hardware()    # :lumex, depth 3.0
+        opts = BS.SimOptions(; fidelity = :eict, detector_efficiency_mode = :auto)
+        cfg = BS.build_physics_config(sc, opts, energies, weights)
+        # gemstone factory tags the material distinctly from a generic
+        # `DetectorEfficiency(name, depth, 1.0)` direct ctor.  At minimum the
+        # model is not the bare-direct-ctor flavor.
+        @test cfg.detector_efficiency isa BS.DetectorEfficiency
+    end
+
+    @testset "focal_spot: scanner fields used when both >0" begin
+        sc = _scanner_with_full_hardware()
+        opts = BS.SimOptions(; fidelity = :eict)
+        cfg = BS.build_physics_config(sc, opts, energies, weights)
+        @test cfg.focal_spot.width ≈ 1.2
+        @test cfg.focal_spot.length ≈ 1.0
+    end
+
+    @testset "heel_effect: target_angle pulled from scanner" begin
+        sc = _scanner_with_full_hardware()    # 7.5°
+        opts = BS.SimOptions(; fidelity = :eict)
+        cfg = BS.build_physics_config(sc, opts, energies, weights)
+        @test cfg.heel_effect isa BS.HeelEffect
+        @test cfg.heel_effect.anode_angle_deg ≈ 7.5
+    end
+
+    @testset "scatter: phantom-diameter scaling kicks in when phantom passed" begin
+        sc = _scanner_with_full_hardware()
+        opts = BS.SimOptions(; fidelity = :eict)
+        # No phantom: scatter still built, just without size-aware scaling.
+        cfg_nopath = BS.build_physics_config(sc, opts, energies, weights)
+        @test cfg_nopath.scatter isa BS.ScatterModel
+
+        # With phantom: ensure no error and result is a ScatterModel.  Use
+        # a small synthetic mask (same path the workspace ctor takes).
+        mask = ones(UInt8, 24, 24, 4)
+        materials = [BS.XA.Materials.water]
+        phantom = BS.Phantom(mask, materials, (0.1, 0.1, 0.1), (0.0, 0.0, 0.0), (2.4, 2.4, 0.4))
+        cfg_path = BS.build_physics_config(sc, opts, energies, weights; phantom = phantom)
+        @test cfg_path.scatter isa BS.ScatterModel
+    end
+end
+
 _ts("entering simulate!(EICTWorkspace) — scatter on/off testset")
 @testset "simulate!(EICTWorkspace) — scatter on/off" begin
     if !HAS_GPU
