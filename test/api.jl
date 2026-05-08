@@ -83,6 +83,123 @@ _expected_I0(geom, protocol, flux_sum) = begin
 end
 
 # -----------------------------------------------------------------------------
+# SimOptions — fidelity preset resolution + per-toggle overrides + clamps.
+# -----------------------------------------------------------------------------
+_ts("entering SimOptions testset")
+@testset "SimOptions" begin
+    @testset "default fidelity = :eict; all use_* preset to true except pcct_pileup" begin
+        opts = BS.SimOptions()
+        @test opts.use_fill_factor         === true
+        @test opts.use_detector_efficiency === true
+        @test opts.use_scatter             === true
+        @test opts.use_optical_crosstalk   === true
+        @test opts.use_focal_spot          === true
+        @test opts.use_noise               === true
+        @test opts.use_lag                 === true
+        @test opts.use_heel_effect         === true
+        @test opts.use_pcct_pileup         === false   # off in :eict preset
+        @test opts.pcct_noise_reduction    == 0.0
+        @test opts.seed                    == 42
+        @test opts.detector_efficiency_mode == :auto
+    end
+
+    @testset ":pcct preset enables use_pcct_pileup" begin
+        opts = BS.SimOptions(fidelity = :pcct)
+        @test opts.use_pcct_pileup === true
+        # Other physics still on
+        @test opts.use_noise   === true
+        @test opts.use_scatter === true
+    end
+
+    @testset "per-effect kwarg overrides preset" begin
+        opts = BS.SimOptions(fidelity = :eict, use_scatter = false, use_noise = false)
+        @test opts.use_scatter === false
+        @test opts.use_noise   === false
+        # Untouched toggles still follow the preset
+        @test opts.use_fill_factor === true
+
+        opts2 = BS.SimOptions(fidelity = :pcct, use_pcct_pileup = false)
+        @test opts2.use_pcct_pileup === false
+    end
+
+    @testset "fidelity field is NOT stored on the struct (kwarg-only)" begin
+        # Confirms the dead-field cleanup: fidelity drives presets in the
+        # ctor but is not retained as a runtime field anymore.
+        @test !(:fidelity in fieldnames(BS.SimOptions))
+    end
+
+    @testset "pcct_noise_reduction clamps to [0, 1]" begin
+        @test BS.SimOptions(pcct_noise_reduction = -0.5).pcct_noise_reduction == 0.0
+        @test BS.SimOptions(pcct_noise_reduction =  0.7).pcct_noise_reduction ≈ 0.7
+        @test BS.SimOptions(pcct_noise_reduction =  1.5).pcct_noise_reduction == 1.0
+    end
+
+    @testset "seed accepts Int or nothing" begin
+        @test BS.SimOptions(seed = 1234).seed == 1234
+        @test BS.SimOptions(seed = nothing).seed === nothing
+    end
+
+    @testset "detector_efficiency_mode passes through unchanged" begin
+        for m in (:auto, :mc_lut, :beer_lambert)
+            @test BS.SimOptions(detector_efficiency_mode = m).detector_efficiency_mode == m
+        end
+    end
+
+    @testset "unknown fidelity errors with a clear message" begin
+        @test_throws ErrorException BS.SimOptions(fidelity = :totally_made_up)
+    end
+end
+
+# -----------------------------------------------------------------------------
+# ReconOptions — slim 3-field config (matrix_size + fov_cm + z_cm).
+# Dead fields removed: algorithm, filter, iterations, lambda, tv_weight,
+# n_subsets, penalty, penalty_delta, use_edge_weights, blend_percent,
+# vmi_energies, vmi_basis, warm_start, cascade_warm_start,
+# system_noise_floor_hu.  None had any consumer in src/ or any non-archived
+# notebook.  See git log for the audit.
+# -----------------------------------------------------------------------------
+_ts("entering ReconOptions testset")
+@testset "ReconOptions" begin
+    @testset "defaults" begin
+        ro = BS.ReconOptions()
+        @test ro.matrix_size == (512, 512, 64)
+        @test ro.fov_cm      == 35.0
+        @test ro.z_cm        === nothing
+    end
+
+    @testset "kwargs round-trip" begin
+        ro = BS.ReconOptions(matrix_size = (256, 256, 16), fov_cm = 20.0, z_cm = 5.0)
+        @test ro.matrix_size == (256, 256, 16)
+        @test ro.fov_cm      == 20.0
+        @test ro.z_cm        == 5.0
+    end
+
+    @testset "fov_cm and z_cm coerce Real → Float64" begin
+        ro = BS.ReconOptions(fov_cm = 20, z_cm = 5)        # Int input
+        @test ro.fov_cm isa Float64
+        @test ro.z_cm   isa Float64
+        @test ro.fov_cm == 20.0
+        @test ro.z_cm   == 5.0
+    end
+
+    @testset "z_cm = nothing stays nothing (auto-compute path)" begin
+        @test BS.ReconOptions(z_cm = nothing).z_cm === nothing
+        @test BS.ReconOptions().z_cm === nothing
+    end
+
+    @testset "dead fields are gone" begin
+        # Confirms the cleanup: every dead field that previously lived on
+        # ReconOptions has been removed, not silently kept around.
+        for dead in (:algorithm, :filter, :iterations, :lambda, :tv_weight,
+                     :n_subsets, :penalty, :penalty_delta, :use_edge_weights,
+                     :blend_percent, :vmi_energies, :vmi_basis,
+                     :warm_start, :cascade_warm_start, :system_noise_floor_hu)
+            @test !(dead in fieldnames(BS.ReconOptions))
+        end
+    end
+end
+
+# -----------------------------------------------------------------------------
 # compute_detector_I0
 #
 # Reference: XCIST/CatSim — `gecatsim/pyfiles/Spectrum.py` (mA × viewTime

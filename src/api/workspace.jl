@@ -128,7 +128,7 @@ spectral response matrices) so that `simulate!()` has zero allocations.
 - `scanner`: Scanner specification (provides detector geometry)
 - `protocol`: CT protocol (provides number of views)
 - `sim_opts`: Simulation options (provides fidelity and effect toggles)
-- `recon_opts`: Reconstruction options (provides vmi_basis for n_materials)
+- `recon_opts`: Reconstruction options (provides fov_cm / z_cm for CTGeometry)
 - `phantom`: Phantom struct (provides mask for backend detection and volume shape)
 - `T`: Element type, default Float32
 
@@ -151,7 +151,6 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     sino_shape = (geom.n_cols, geom.n_rows, geom.n_angles)
     vol_shape = size(phantom.mask)
     n_bins = length(scanner.energy_thresholds)
-    n_materials = length(recon_opts.vmi_basis)
     n_elements = prod(sino_shape)
     # n_energies is set after resolve_source_spectrum_without_bowtie below
 

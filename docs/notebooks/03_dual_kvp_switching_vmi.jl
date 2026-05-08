@@ -217,11 +217,9 @@ recon_opts = let
     slice_thickness_mm = 0.625
     n_recon_slices = round(Int, 5.0 / slice_thickness_mm)
     BS.ReconOptions(
-        algorithm = :fdk,
         matrix_size = (512, 512, n_recon_slices),
         fov_cm = 35.0,
         z_cm = 0.5,
-        filter = :standard,
     )
 end;
 

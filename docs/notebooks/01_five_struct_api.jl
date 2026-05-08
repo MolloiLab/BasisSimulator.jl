@@ -383,11 +383,9 @@ recon_opts = let
     n_recon_slices = round(Int, 5.0 / slice_thickness_mm)   # collimation_mm / slice_thickness
 
     BS.ReconOptions(
-        algorithm = :fdk,
         matrix_size = (512, 512, n_recon_slices),
         fov_cm = 35.0,
         z_cm = 0.5,
-        filter = :standard,
     )
 end
 

@@ -637,11 +637,9 @@ recon_opts = let
     slice_thickness_mm = 0.625
     n_z = max(1, round(Int, protocol.collimation_mm / slice_thickness_mm))
     BS.ReconOptions(
-        algorithm = :fdk,
         matrix_size = (384, 384, n_z),
         fov_cm = 14.0,
         z_cm = protocol.collimation_mm / 10.0,
-        filter = :standard,
     )
 end;
 

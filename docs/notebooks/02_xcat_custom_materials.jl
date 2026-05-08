@@ -551,11 +551,9 @@ sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234)
 
 # ╔═╡ 07000005-0000-4000-8000-000000000001
 recon_opts = BS.ReconOptions(
-    algorithm = :fdk,
     matrix_size = (512, 512, 8),
     fov_cm = 35.0,
     z_cm = 0.5,
-    filter = :standard,
 )
 
 # ╔═╡ 08000001-0000-4000-8000-000000000001

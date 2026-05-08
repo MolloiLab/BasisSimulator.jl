@@ -479,11 +479,9 @@ sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234);
 # converted to recon voxel indices — the two grids share the isocenter
 # so the conversion is just a centered linear transform.
 recon_opts = BS.ReconOptions(
-    algorithm = :fdk,
     matrix_size = (512, 512, 8),
     fov_cm = 35.0,
     z_cm = 0.5,
-    filter = :standard,
 );
 
 # ╔═╡ 07030004-0000-4000-8000-000000000001

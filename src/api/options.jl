@@ -9,12 +9,13 @@ export SimOptions, ReconOptions
 """
     SimOptions
 
-Controls the fidelity and physics realism of the simulation.
-Each `use_*` field is `Bool`: `true` = effect ON, `false` = effect OFF.
-These are resolved from fidelity presets and user overrides at construction time.
+Resolved boolean toggles + numeric knobs for one simulation run.  Each
+`use_*` field is `Bool` (`true` = effect ON, `false` = effect OFF) and is
+resolved from a `fidelity` preset (see ctor) plus optional per-effect kwarg
+overrides.  The `fidelity` symbol itself is consumed only inside the ctor
+for preset lookup — it is not stored on the struct.
 
 # Fields
-- `fidelity::Symbol`: Preset level (:eict, :pcct). Default :eict.
 - `use_fill_factor::Bool`: Enable detector fill factor.
 - `use_detector_efficiency::Bool`: Enable energy-dependent detector efficiency.
 - `use_scatter::Bool`: Enable scatter simulation (correction is decoupled to notebook level).
@@ -26,18 +27,16 @@ These are resolved from fidelity presets and user overrides at construction time
 - `use_pcct_pileup::Bool`: Apply MC pulse pileup at simulate-time (PCCT only).
   Default `true` for `:pcct`, `false` for `:eict`.  When `false`, the workspace
   skips the (expensive) MC pileup matrix calibration entirely and the simulator
-  produces noise-free count rates. The MC-LUT detector response matrix is
+  produces noise-free count rates.  The MC-LUT detector response matrix is
   always on; pileup is the only PCCT physics knob exposed here.
-- `pcct_noise_reduction::Float64`: PCCT noise reduction factor (0.0–1.0). Approximates clinical
-  vendor reconstruction (e.g., Siemens QIR). 0.0 = raw physics (default), 0.7 = 70% noise reduction
-  (~QIR-3). Only affects PCCT sinogram noise; EICT noise is unaffected.
-- `seed::Union{Int, Nothing}`: Random seed for reproducibility. Default 42.
+- `pcct_noise_reduction::Float64`: PCCT noise reduction factor (0.0–1.0).  Approximates clinical
+  vendor reconstruction (e.g., Siemens QIR).  0.0 = raw physics (default), 0.7 = 70% noise reduction
+  (~QIR-3).  Only affects PCCT sinogram noise; EICT noise is unaffected.
+- `seed::Union{Int, Nothing}`: Random seed for reproducibility.  Default 42.
 - `detector_efficiency_mode::Symbol`: Override detector efficiency calculation mode.
   `:auto` (default) = let driver decide; `:mc_lut` = force MC LUT; `:beer_lambert` = force analytical.
 """
 struct SimOptions
-    fidelity::Symbol
-
     # --- Physics Pipeline (7 effects) ---
     use_fill_factor::Bool
     use_detector_efficiency::Bool
@@ -128,7 +127,6 @@ function SimOptions(;
     _pcct_pileup = isnothing(use_pcct_pileup) ? defaults.pcct_pileup : use_pcct_pileup
 
     return SimOptions(
-        fidelity,
         _fill_factor, _detector_efficiency,
         _scatter, _optical_crosstalk,
         _focal_spot, _noise, _lag,
@@ -143,134 +141,46 @@ end
 """
     ReconOptions
 
-Standardized options for image reconstruction.
+Reconstruction-grid configuration consumed by the workspace constructors.
+Three fields, each with one specific consumer.
 
-Supports all reconstruction algorithms with algorithm-specific parameters.
-Parameters irrelevant to the chosen algorithm are silently ignored.
-
-# Core Fields
-- `algorithm::Symbol`: Reconstruction algorithm (see below)
-- `matrix_size::NTuple{3, Int}`: Output volume size (nx, ny, nz)
-- `fov_cm::Float64`: XY field of view in cm
-- `z_cm::Union{Float64, Nothing}`: Z extent in cm. If nothing, auto-computed from detector coverage.
-  Set this to `sliceCount * sliceThickness / 10` for clinical-style slice thickness control.
-- `filter::Symbol`: FDK filter kernel (:ram_lak, :shepp_logan, :cosine, :hamming, :hann, :standard, :soft, :bone)
-- `iterations::Int`: Number of iterations (iterative methods)
-
-# Iterative Parameters
-- `lambda::Float64`: Relaxation/step size (SIRT, MBIR, ASIR)
-- `tv_weight::Float64`: TV regularization strength (TV-SIRT, TV-CGLS)
-- `n_subsets::Int`: Ordered subsets count (MBIR)
-- `penalty::Symbol`: Regularizer type (:none, :quadratic, :huber, :hyperbola)
-- `penalty_delta::Float64`: Huber/hyperbola delta parameter
-- `use_edge_weights::Bool`: Edge-preserving weights (MBIR)
-- `blend_percent::Float64`: FDK/iterative blend percentage (ASIR)
-
-# VMI Parameters
-- `vmi_energies::Vector{Float64}`: VMI energies to reconstruct (keV)
-- `vmi_basis::Vector{Symbol}`: Material basis for decomposition (2+ materials; accepts Tuple for backward compat)
-
-# Initialization
-- `warm_start::Union{Nothing, AbstractArray}`: Initial estimate for iterative methods
-
-# Supported Algorithms
-| Symbol | Function | Key Params |
-|--------|----------|-----------|
-| :fdk | FDK (filtered backprojection) | filter |
-| :sirt | SIRT (iterative) | iterations, lambda |
-| :cgls | CGLS (conjugate gradient) | iterations |
-| :tv_sirt | TV-SIRT (TV regularized) | iterations, lambda, tv_weight |
-| :tv_cgls | TV-CGLS | iterations, tv_weight |
-| :asir | ASIR-style blend | iterations, lambda, blend_percent |
-| :mbir | Model-based IR | iterations, lambda, n_subsets, penalty |
+# Fields
+- `matrix_size::NTuple{3,Int}`: Output volume size `(nx, ny, nz)`.  Notebooks
+  pull this and pass it explicitly into `create_fdk_recon_workspace` /
+  `create_hir_recon_workspace` (those ctors take `volume_size` as a
+  positional arg).
+- `fov_cm::Float64`: XY field of view in cm.  Read by both PCCT and EICT
+  workspace ctors via `CTGeometry(scanner; fov_cm = recon_opts.fov_cm, ...)`.
+- `z_cm::Union{Float64,Nothing}`: Z extent in cm.  `nothing` → auto-compute
+  from detector coverage; set explicitly to `sliceCount * sliceThickness / 10`
+  for clinical slice-thickness control.  Read by the same `CTGeometry` call.
 """
 struct ReconOptions
-    # Core fields
-    algorithm::Symbol
     matrix_size::NTuple{3,Int}
     fov_cm::Float64
     z_cm::Union{Float64,Nothing}
-    filter::Symbol
-    iterations::Int
-    # Iterative parameters
-    lambda::Float64
-    tv_weight::Float64
-    n_subsets::Int
-    penalty::Symbol
-    penalty_delta::Float64
-    use_edge_weights::Bool
-    blend_percent::Float64
-    # VMI parameters
-    vmi_energies::Vector{Float64}
-    vmi_basis::Vector{Symbol}
-    # Initialization
-    warm_start::Union{Nothing,AbstractArray}
-    cascade_warm_start::Bool
-    # Post-reconstruction noise floor
-    system_noise_floor_hu::Float64  # dose-independent noise floor σ (HU), added in quadrature with quantum noise
 end
 
 """
-    ReconOptions(; kwargs...)
+    ReconOptions(; matrix_size=(512,512,64), fov_cm=35.0, z_cm=nothing)
 
-Create reconstruction options. All new fields have backward-compatible defaults.
+Construct `ReconOptions`.  All three kwargs have sane defaults.
 
 # Examples
 ```julia
-# Simple FDK (unchanged from before)
-ReconOptions(algorithm=:fdk, matrix_size=(512, 512, 64), fov_cm=35.0)
+# Standard 512² × 64 recon at 35 cm FOV
+ReconOptions(matrix_size = (512, 512, 64), fov_cm = 35.0)
 
-# SIRT with custom lambda
-ReconOptions(algorithm=:sirt, iterations=50, lambda=0.5)
-
-# TV-SIRT with regularization
-ReconOptions(algorithm=:tv_sirt, iterations=50, lambda=1.0, tv_weight=0.01)
-
-# MBIR with penalty
-ReconOptions(algorithm=:mbir, iterations=30, n_subsets=12, penalty=:hyperbola)
-
-# VMI reconstruction request
-ReconOptions(algorithm=:fdk, vmi_energies=[40.0, 50.0, 70.0, 100.0], vmi_basis=(:water, :iodine))
+# Clinical slice-thickness control (5 cm Z extent at 0.625 mm slice)
+ReconOptions(matrix_size = (512, 512, 80), fov_cm = 50.0, z_cm = 5.0)
 ```
 """
 function ReconOptions(;
-    algorithm::Symbol=:fdk,
     matrix_size::Union{NTuple{3,Int},Nothing}=nothing,
     fov_cm::Real=35.0,
     z_cm::Union{Real,Nothing}=nothing,
-    filter::Symbol=:standard,
-    iterations::Int=10,
-    # Iterative parameters
-    lambda::Real=0.01,
-    tv_weight::Real=0.0,
-    n_subsets::Int=1,
-    penalty::Symbol=:none,
-    penalty_delta::Real=0.01,
-    use_edge_weights::Bool=false,
-    blend_percent::Real=50.0,
-    # VMI parameters
-    vmi_energies::Vector{Float64}=Float64[],
-    vmi_basis::Union{Tuple{Symbol,Symbol},Vector{Symbol}}=(:water, :iodine),
-    # Initialization
-    warm_start::Union{Nothing,AbstractArray}=nothing,
-    cascade_warm_start::Bool=false,
-    # Post-reconstruction noise floor
-    system_noise_floor_hu::Float64=0.0
 )
-    # Default to 512x512x64 if not specified
     _size = isnothing(matrix_size) ? (512, 512, 64) : matrix_size
-
-    # Convert Tuple to Vector for backward compatibility
-    _vmi_basis = vmi_basis isa Tuple ? collect(Symbol, vmi_basis) : Vector{Symbol}(vmi_basis)
-
     _z_cm = isnothing(z_cm) ? nothing : Float64(z_cm)
-
-    return ReconOptions(
-        algorithm, _size, Float64(fov_cm), _z_cm, filter, iterations,
-        Float64(lambda), Float64(tv_weight), n_subsets,
-        penalty, Float64(penalty_delta), use_edge_weights, Float64(blend_percent),
-        vmi_energies, _vmi_basis,
-        warm_start, cascade_warm_start,
-        max(system_noise_floor_hu, 0.0)
-    )
+    return ReconOptions(_size, Float64(fov_cm), _z_cm)
 end
