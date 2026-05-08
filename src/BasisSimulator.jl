@@ -267,6 +267,14 @@ include("reconstruction/vmi/rskr.jl")
 # `denoising/sino_svd.jl` for the comparison).
 include("denoising/sino_svd.jl")
 
+# Two-channel projection-domain Subspace–Frequency Joint Sinogram
+# Denoiser (SF-JSD).  Per-row Poisson-whitened SVD + rank-sparse joint
+# bilateral filter with locally-averaged range, MAD-derived per-component
+# range scale, stride-based resampling, and SURE-tuned principal scale.
+# Single user knob (σ₀); everything else fixed by RSKR / paper or
+# auto-derived from the photon-count map.  Black (in prep.).
+include("denoising/sino_sfjsd.jl")
+
 # Phantom-mask helpers — recon-space resample + FFT-Gaussian erosion.
 # Used by Mono+ phantom_mask kwarg + edge-mask post-processing.
 include("reconstruction/vmi/phantom_mask.jl")

@@ -1,5 +1,8 @@
 ### A Pluto.jl notebook ###
-# v0.19.0
+# v0.20.24
+
+using Markdown
+using InteractiveUtils
 
 # ╔═╡ 06000001-0000-4000-8000-000000000001
 begin
@@ -27,9 +30,9 @@ Simulate 140 kVp PCCT  (4 bins)
                                      │
                     Per-Bin Scatter Correction
                                      │
-                    Joint Sinogram Denoising  (4 channels)
-                                     │
                     Bin Combine  (1 + 2 → low,  3 + 4 → high)
+                                     │
+                    SF-JSD Joint Sinogram Denoiser  (2 channels)
                                      │
                     Projection-Domain Material Decomposition
                           → sino_iodine, sino_water
@@ -55,21 +58,26 @@ Simulate 140 kVp PCCT  (4 bins)
        Cong univariate solver consumes log-line-integrals directly, so
        the basis fit sees the actual polychromatic transmission physics.
        No pre-FBP linearization, no HU-to-fraction inverse polynomial.
-    2. **Joint denoising before reconstruction.** A per-detector-row
-       SVD denoiser exploits the strong cross-bin correlation
-       (same view angles, geometry, anatomy) and strips quantum noise
-       before it can propagate through decomposition + FBP.  The
-       4-bin pass extracts more cross-channel redundancy than a
-       post-combine 2-channel pass would (3 noise components stripped
-       vs 1) and runs *before* the lossy I0-weighted bin combine.
+    2. **Joint denoising before reconstruction.** SF-JSD applies a
+       per-pixel-Poisson-whitened, rank-sparse joint bilateral filter
+       across the bin-combined `(low, high)` pair before any
+       decomposition — strips quantum noise where it's locally Gaussian
+       with a known per-pixel variance, before reconstruction spreads it
+       into spatially correlated streaks.
 
 !!! success "References"
+    - Black (in prep.) — *Joint Sinogram Denoising via Subspace–Frequency
+      Reduction for Two-Channel Spectral CT* (the SF-JSD denoiser used
+      at §7).  Implementation: `src/denoising/sino_sfjsd.jl`.  PCCT
+      enters as one of four hardware classes via the Cong et al. (2026)
+      effective-spectral-response Φ_k(ε) framework.
     - Cong, De Man, Wang (2022), *J X-Ray Sci Technol* — projection-
       domain univariate solver (dual-kVp DECT).
     - Black (*in prep.*) — generalization of Cong 2022 to PCCT /
       split-spectrum via an effective spectral response Φ_k(ε) ≥ 0.
-    - Clark, Badea (2023), *Med Phys* — image-domain SVD signal/noise
-      split (the inspiration for the projection-domain joint denoiser).
+    - Clark, Badea (2023), *Med Phys* — image-domain RSKR (rank-sparse
+      bandwidth, product-of-channels range, locally-averaged range,
+      stride) — SF-JSD inherits these moves into the sinogram domain.
     - Grant et al. (2014) — Mono+ frequency-split rule.
 """
 
@@ -411,8 +419,8 @@ end
 md"""
 #### Intermediate FBP per Bin (μ-domain sanity check)
 
-A quick per-bin FDK on the raw simulator sinograms — *before* the SVD
-denoiser, the bin combine, or the Cong decomposition — so we can
+A quick per-bin FDK on the raw simulator sinograms — *before* the bin
+combine, the SF-JSD denoiser, or the Cong decomposition — so we can
 eyeball that the photon-counting forward model is producing physically
 sensible images at each energy band.
 
@@ -487,115 +495,11 @@ let
     fig
 end
 
-# ╔═╡ 06000007-0000-4000-8000-000000000001
-md"""
-## 6. Joint Sinogram SVD Denoiser
-
-The PCCT bins share the same anatomy (same view angles, geometry,
-Radon transform) but differ in spectral content and quantum noise.
-`BS.apply_sino_svd_denoise` is N-channel generic — it can run on
-either the **4 raw bins** before bin-combine or on the **2 combined
-channels** afterwards.
-
-!!! info "Algorithm"
-    Per detector row, stack the channels as columns of an N-wide
-    matrix and SVD-decompose:
-
-    - **`U[:, 1]`** carries the common log-attenuation pattern every
-      channel sees (signal-dominated).  Left untouched.
-    - **`U[:, 2..N]`** carries the spectral residual + most of the
-      decorrelated quantum noise.  Smoothed with a separable 2D
-      Gaussian in `(col, view)` space.
-
-    The denoised channels come from reconstituting
-    `M = U_d · diag(Σ) · V'` and unpacking the columns.  See
-    `src/denoising/sino_svd.jl` for details and the RSKR inspiration
-    note.
-
-!!! tip "Stage Toggle"
-    `SVD_DENOISE_STAGE` switches *where* the denoiser runs in the
-    pipeline:
-
-    - `:four_bin` (default) — denoise the 4 raw bins before bin-combine.
-      Strips 3 noise components (`U[:, 2..4]`) and runs ahead of the
-      lossy I0-weighted Beer recombination.
-    - `:two_bin` — bin-combine the raw bins first, then denoise the 2
-      low/high channels.  Mirrors the dual-kVp pipeline (nb03 / nb07);
-      strips only 1 noise component (`U[:, 2]`) but the combined
-      channels go in with higher SNR.
-
-!!! tip "Smoothness Knob"
-    `SINO_DENOISE_σ_PX` — Gaussian σ in pixels.  σ ≈ 1–2 px keeps
-    rod-scale spectral structure intact while killing pixel-scale
-    noise.  σ ≤ 0 short-circuits to a passthrough.
-"""
-
-# ╔═╡ 06000007-0000-4000-8000-000000000004
-# Where to apply SVD denoising:
-#   :four_bin — denoise the 4 raw bins, then bin-combine (default)
-#   :two_bin  — bin-combine the raw bins, then denoise the 2 channels
-SVD_DENOISE_STAGE = :four_bin;
-
-# ╔═╡ 06000007-0000-4000-8000-000000000005
-SINO_DENOISE_σ_PX = 2.0;   # Gaussian σ on the SVD residual components
-
-# ╔═╡ 06000007-0000-4000-8000-000000000010
-sino_bins_denoised = if SVD_DENOISE_STAGE === :four_bin
-    BS.apply_sino_svd_denoise(
-        [Float32.(b) for b in sim_bins.bins];
-        σ_px = SINO_DENOISE_σ_PX,
-    )
-else
-    # :two_bin — denoise runs AFTER bin-combine in §7; pass raw bins through.
-    [Float32.(b) for b in sim_bins.bins]
-end;
-
-# ╔═╡ 06000007-0000-4000-8000-000000000030
-let
-    n_row = size(sino_bins_denoised[1], 2)
-    mid_r = n_row ÷ 2 + 1
-
-    bin_titles = ("Bin 1", "Bin 2", "Bin 3", "Bin 4")
-    slices = [permutedims(sino_bins_denoised[k][:, mid_r, :], (2, 1)) for k in 1:4]
-
-    all_v = vcat([vec(s) for s in slices]...)
-    sino_window = (
-        Float64(quantile(all_v, 0.01)),
-        Float64(quantile(all_v, 0.99)),
-    )
-
-    fig = CM.Figure(size = (1180, 1180))
-    axis_kwargs = (
-        titlesize = 32, subtitlesize = 24,
-        xlabel = "View", ylabel = "Detector Column",
-        xlabelsize = 22, ylabelsize = 22,
-        xticklabelsize = 16, yticklabelsize = 16,
-    )
-
-    for k in 1:4
-        r = ((k - 1) ÷ 2) + 1
-        c = ((k - 1) % 2) + 1
-        ax = CM.Axis(
-            fig[r, c]; title = bin_titles[k],
-            subtitle = SVD_DENOISE_STAGE === :four_bin ?
-                "After SVD denoiser" :
-                "Raw (SVD runs after bin-combine)",
-            axis_kwargs...,
-        )
-        CM.heatmap!(ax, slices[k]; colormap = :viridis, colorrange = sino_window)
-    end
-    CM.Colorbar(
-        fig[1:2, 3]; colormap = :viridis, colorrange = sino_window,
-        label = "Log Line Integral", width = 16, labelsize = 22, ticklabelsize = 18,
-    )
-    fig
-end
-
 # ╔═╡ 06000008-0000-4000-8000-000000000001
 md"""
-## 7. Bin Combine: 4 Bins → Low / High Pair
+## 6. Bin Combine: 4 Bins → Low / High Pair
 
-I0-weighted Beer recombination of the 4 bins:
+I₀-weighted Beer recombination of the 4 raw PCCT bins:
 
 ```
 N_grp = Σ_{b ∈ grp} I0[b] · exp(-p[b])
@@ -606,41 +510,38 @@ p_grp = -log(N_grp / Σ_{b ∈ grp} I0[b])
 * **High** = bins **3 + 4** ( > 55 keV)
 
 Each combined sinogram represents a polychromatic measurement at the
-I0-weighted average spectrum of its bin group.
-
-When `SVD_DENOISE_STAGE = :four_bin` the denoiser already ran upstream
-and this combines denoised bins.  When `SVD_DENOISE_STAGE = :two_bin`
-this combines raw bins and then runs SVD on the resulting 2 channels.
+I₀-weighted average spectrum of its bin group.  We also expose the
+per-channel `I0_lo` / `I0_hi` totals — §7's SF-JSD denoiser uses them
+for the per-pixel Poisson whitening (`√Nₖ`).
 """
 
 # ╔═╡ 06000008-0000-4000-8000-000000000010
 sim_lohi = let
-    eps_f = Float32(1.0e-10)
+    eps_f      = Float32(1.0e-10)
+    low_bins   = [1, 2]
+    high_bins  = [3, 4]
 
-    function _combine(bin_indices)
-        I0_sum = Float32(sum(Float64.(sim_bins.I0_bins[bin_indices])))
-        N = zeros(Float32, size(sino_bins_denoised[1]))
-        for b in bin_indices
-            I0b = Float32(sim_bins.I0_bins[b])
-            @. N += I0b * exp(-sino_bins_denoised[b])
-        end
-        return @. -log(max(N, eps_f) / I0_sum)
+    I0_lo = Float32(sum(Float64.(sim_bins.I0_bins[low_bins])))
+    I0_hi = Float32(sum(Float64.(sim_bins.I0_bins[high_bins])))
+
+    sz   = size(sim_bins.bins[1])
+    N_lo = zeros(Float32, sz)
+    N_hi = zeros(Float32, sz)
+    for b in low_bins
+        I0b = Float32(sim_bins.I0_bins[b])
+        @. N_lo += I0b * exp(-Float32(sim_bins.bins[b]))
+    end
+    for b in high_bins
+        I0b = Float32(sim_bins.I0_bins[b])
+        @. N_hi += I0b * exp(-Float32(sim_bins.bins[b]))
     end
 
-    sino_low = _combine([1, 2])
-    sino_high = _combine([3, 4])
+    sino_low  = Float32.(.- log.(max.(N_lo, eps_f) ./ I0_lo))
+    sino_high = Float32.(.- log.(max.(N_hi, eps_f) ./ I0_hi))
 
-    # :two_bin — denoise the 2 combined channels here (mirrors the dual-kVp
-    # pipeline in nb03 / nb07).  No-op when SVD already ran on the 4 raw bins.
-    if SVD_DENOISE_STAGE === :two_bin
-        denoised = BS.apply_sino_svd_denoise(
-            [sino_low, sino_high];
-            σ_px = SINO_DENOISE_σ_PX,
-        )
-        sino_low, sino_high = denoised[1], denoised[2]
-    end
-
-    (sino_low = sino_low, sino_high = sino_high, geom = sim_bins.geom)
+    (sino_low = sino_low, sino_high = sino_high,
+     I0_lo = I0_lo, I0_hi = I0_hi,
+     geom = sim_bins.geom)
 end;
 
 # ╔═╡ 06000008-0000-4000-8000-000000000030
@@ -683,419 +584,58 @@ end
 
 # ╔═╡ 06000008-0000-4000-8000-000000000040
 md"""
-## 7b. Subspace–Frequency Joint Bilateral Denoiser  *(experimental — v2)*
+## 7. SF-JSD: Subspace–Frequency Joint Sinogram Denoiser
 
-A second projection-domain denoiser built on the same per-row SVD
-skeleton as §6+§7, but operating on the bin-combined `(low, high)`
-pair (mirroring the dual-kVp pipeline in nb03 / nb07).  **A single
-user knob** (the principal scale `σ₀`); every other quantity is fixed
-by RSKR (Clark, Badea 2023) or auto-derived from the photon-count map.
+Two-channel projection-domain joint denoiser operating on the
+bin-combined `(low, high)` pair from §6.  Same canonical SF-JSD
+algorithm used by the dual-kVp notebooks (nb03 / nb07): per-pixel
+Poisson whitening (with `√Nₖ` recovered from `sim_lohi.I0_lo/hi ·
+exp(-pₖ)`), per-row SVD across the `(col, view)` channel matrix, joint
+bilateral on both subspaces with rank-sparse bandwidth, MAD-derived
+range scale, 5×5 locally-averaged squared diff, stride-from-corr-length,
+SURE-tuned principal scale, single inverse-whitening.
 
-### Pipeline
+!!! info "The single user knob — σ₀"
+    `SFJSD_σ0` is the principal smoothing scale in detector pixels.
+    `0.0` defers to **SURE** — Stein's unbiased risk estimator with
+    Hutchinson MC divergence and golden-section search on a
+    representative mid-row.
 
-1. **Re-bin-combine from raw `sim_bins.bins`.**  Bypasses §6 (4-bin SVD
-   denoiser) entirely — starts from clean Poisson-noisy bin-combined
-   channels with a known per-channel I₀ (`sum(I0_bins[1:2])` and
-   `sum(I0_bins[3:4])`).
-2. **Per-pixel Poisson whitening.**  Subtract a heavy low-pass reference
-   `p̄ₖ⁽⁰⁾` (10-px Gaussian, fixed) and scale by `√Nₖ`.
-3. **Per-row SVD** of the whitened `(col, view)` matrix.
-4. **Joint bilateral on both subspaces** with rank-sparse bandwidth
-   `σ_e = σ₀·√(Σ₁/Σ_e)` (paper-fixed exponent γ=½).  Range scale
-   `σ_e^rng = 1.4826·MAD(Λ_e)` (no `h` knob — paper §2.4 absorbs it).
-   Locally-averaged range over a fixed 5×5 window.  Stride
-   `s ∈ {1, 2, 3}` derived from the noise correlation length measured
-   on the input.
-5. **Iterate** with `σ₀⁽ᵗ⁾ = 0.7ᵗ · σ₀★`.  Iteration count
-   `n_iter ∈ {1, 2}` derived from `min(N)`: 1 if min photon count > 100
-   everywhere, else 2.
-6. **Inverse-whiten** to recover log-line-integrals.
+    PCCT typically sees a larger SURE-selected σ₀ than dual-kVp at
+    matched dose, since both bins draw from the same source spectrum
+    and per-bin SNR is lower than a true two-tube acquisition.
 
-### The single knob
-
-`SFJBF_σ0` is the only quantity the implementer sets.  Set to `0.0`
-to defer to **SURE** — Stein's unbiased risk estimator with Hutchinson
-MC divergence and golden-section search on a representative mid-row.
-Set positive to override.  All auto-derived values (corr length,
-stride, n_iter, σ₀★) are reported via `@info` per run.
+!!! info "Implementation"
+    Driver: `BS.apply_sino_sfjsd_denoise(channels, I0; σ₀)` —
+    see `src/denoising/sino_sfjsd.jl`.
 
 !!! info "Reference paper"
-    Black, *Joint Sinogram Denoising via Subspace–Frequency Reduction
-    for Two-Channel Spectral CT*, in prep.
+    Black (in prep.), *Joint Sinogram Denoising via Subspace–Frequency
+    Reduction for Two-Channel Spectral CT*.  PCCT recovered as one of
+    the four Φ_k(ε) hardware classes via the Cong et al. (2026)
+    effective-spectral-response framework.
 """
 
 # ╔═╡ 06000008-0000-4000-8000-000000000050
-# The only user-facing knob.  0.0 → SURE auto-selects on the mid-row;
-# any positive value → use directly.  Every other quantity (γ=½, h=1,
-# 5×5 lavg, α=0.7, σ_ref=10 px) is fixed by RSKR / paper §2.4–2.6, and
-# stride / n_iter / σ_e^rng are derived from the photon-count map.
-SFJBF_σ0 = 0.0
+SFJSD_σ0 = 0.0;   # only knob — 0.0 → SURE auto-select on mid-row; >0 → use directly
 
 # ╔═╡ 06000008-0000-4000-8000-000000000060
-begin
-    import LinearAlgebra
-    import Random
-
-    # ─── Paper-fixed constants (§2.4 / §2.6) ─────────────────────────────
-    const _SFJBF_α        = 0.7f0    # iteration decay
-    const _SFJBF_lavg     = 5        # locally-averaged range window (5×5)
-    const _SFJBF_σ_ref_px = 10.0f0   # heavy low-pass reference (Gaussian)
-    const _SFJBF_σ_cap    = 12.0f0   # internal compute safety on σ_e (paper §2.9)
-
-    # ─── Per-row 2D separable Gaussian (used for the heavy low-pass reference
-    #     and inside the noise-correlation-length helper) ──────────────────
-    function _sfjbf_sep_gauss_3d(sino::Array{Float32, 3}, σ_px::Real)
-        σ = Float64(σ_px)
-        σ ≤ 0 && return copy(sino)
-        radius = max(1, ceil(Int, 3σ))
-        ks = Float32[exp(-(k^2) / (2σ^2)) for k in -radius:radius]
-        ks ./= sum(ks)
-        n_col, n_row, n_view = size(sino)
-        out = similar(sino)
-        Threads.@threads for r in 1:n_row
-            slice = Float32.(@view sino[:, r, :])
-            out[:, r, :] .= _sfjbf_gauss_2d(slice, ks, radius)
-        end
-        out
-    end
-
-    function _sfjbf_gauss_2d(slice2d::AbstractMatrix{Float32},
-                              ks::AbstractVector{Float32}, radius::Int)
-        nc, nv = size(slice2d)
-        tmp = Matrix{Float32}(undef, nc, nv)
-        out = Matrix{Float32}(undef, nc, nv)
-        @inbounds for v in 1:nv, c in 1:nc
-            s = 0f0; w = 0f0
-            for (i, dk) in enumerate(-radius:radius)
-                c2 = c + dk
-                (1 ≤ c2 ≤ nc) || continue
-                s += ks[i] * slice2d[c2, v]; w += ks[i]
-            end
-            tmp[c, v] = s / w
-        end
-        @inbounds for v in 1:nv, c in 1:nc
-            s = 0f0; w = 0f0
-            for (i, dk) in enumerate(-radius:radius)
-                v2 = v + dk
-                (1 ≤ v2 ≤ nv) || continue
-                s += ks[i] * tmp[c, v2]; w += ks[i]
-            end
-            out[c, v] = s / w
-        end
-        out
-    end
-
-    # ─── Robust MAD scale (paper Eq 14) ──────────────────────────────────
-    function _sfjbf_mad_scale(arr2d::AbstractMatrix{Float32})
-        med = median(arr2d)
-        mad = median(abs.(arr2d .- med))
-        Float32(1.4826 * mad)
-    end
-
-    # ─── Joint bilateral pass on a (n_col, n_view) slice.
-    #     Range kernel is the product-of-channels form (paper Eq 12) with
-    #     locally-averaged squared diff (Eq 13, fixed 5×5 window).  Range
-    #     strength h=1 absorbed into σ_e^rng. Stride from auto-rule.        ─
-    function _sfjbf_pass!(out::AbstractMatrix{Float32},
-                          target::AbstractMatrix{Float32},
-                          σ_sp::Float32,
-                          Λ1::AbstractMatrix{Float32}, Λ2::AbstractMatrix{Float32},
-                          σ1_rng::Float32, σ2_rng::Float32, stride::Int)
-        nc, nv = size(target)
-        radius = max(1, ceil(Int, 3 * Float64(σ_sp)))
-        inv_2σ²_sp = 1f0 / (2f0 * σ_sp * σ_sp + 1f-30)
-        inv_2σ²_r1 = 1f0 / (2f0 * σ1_rng * σ1_rng + 1f-30)
-        inv_2σ²_r2 = 1f0 / (2f0 * σ2_rng * σ2_rng + 1f-30)
-        half_lavg = _SFJBF_lavg ÷ 2
-
-        Threads.@threads for v in 1:nv
-            @inbounds for c in 1:nc
-                sum_v = 0f0; wtot = 0f0
-                for dv in -radius:stride:radius
-                    v2 = v + dv
-                    (1 ≤ v2 ≤ nv) || continue
-                    for dc in -radius:stride:radius
-                        c2 = c + dc
-                        (1 ≤ c2 ≤ nc) || continue
-
-                        # 5×5 locally-averaged squared diff
-                        Δ1² = 0f0; Δ2² = 0f0; cnt = 0
-                        for dav in -half_lavg:half_lavg, dac in -half_lavg:half_lavg
-                            ca = c + dac;  va = v + dav
-                            cb = c2 + dac; vb = v2 + dav
-                            (1 ≤ ca ≤ nc && 1 ≤ va ≤ nv) || continue
-                            (1 ≤ cb ≤ nc && 1 ≤ vb ≤ nv) || continue
-                            d1 = Λ1[cb, vb] - Λ1[ca, va]
-                            d2 = Λ2[cb, vb] - Λ2[ca, va]
-                            Δ1² += d1 * d1; Δ2² += d2 * d2; cnt += 1
-                        end
-                        if cnt > 0
-                            Δ1² /= cnt; Δ2² /= cnt
-                        end
-
-                        spatial_d² = Float32(dc * dc + dv * dv)
-                        log_w = -spatial_d² * inv_2σ²_sp -
-                                Δ1² * inv_2σ²_r1 -
-                                Δ2² * inv_2σ²_r2
-                        w = exp(log_w)
-                        sum_v += w * target[c2, v2]
-                        wtot  += w
-                    end
-                end
-                out[c, v] = sum_v / max(wtot, 1f-30)
-            end
-        end
-        nothing
-    end
-
-    # ─── Single-row forward pass of the full operator D (paper Eq 15).
-    #     Used by both the SURE optimization and the main loop.            ─
-    function _sfjbf_apply_D(M::AbstractMatrix{Float32}, σ0::Float32,
-                             n_col::Int, n_view::Int, stride::Int)
-        F = LinearAlgebra.svd(M; full = false)
-        U, Σ, V = F.U, F.S, F.V
-
-        σ1 = min(σ0,                                 _SFJBF_σ_cap)
-        σ2 = min(σ0 * sqrt(Σ[1] / max(Σ[2], 1f-12)), _SFJBF_σ_cap)
-
-        Λ1 = reshape(copy(@view U[:, 1]), n_col, n_view)
-        Λ2 = reshape(copy(@view U[:, 2]), n_col, n_view)
-        σ1_rng = max(_sfjbf_mad_scale(Λ1), eps(Float32))
-        σ2_rng = max(_sfjbf_mad_scale(Λ2), eps(Float32))
-
-        Λ1_d = similar(Λ1); Λ2_d = similar(Λ2)
-        _sfjbf_pass!(Λ1_d, Λ1, σ1, Λ1, Λ2, σ1_rng, σ2_rng, stride)
-        _sfjbf_pass!(Λ2_d, Λ2, σ2, Λ1, Λ2, σ1_rng, σ2_rng, stride)
-
-        U_d = hcat(vec(Λ1_d), vec(Λ2_d))
-        U_d * LinearAlgebra.Diagonal(Σ) * V'
-    end
-
-    # ─── Stein's unbiased risk estimator with Hutchinson MC divergence.
-    #     Whitened identity-cov coordinates (paper Eq 16+17).              ─
-    function _sfjbf_sure(M::AbstractMatrix{Float32}, σ0::Float32,
-                          n_col::Int, n_view::Int, stride::Int)
-        Md = _sfjbf_apply_D(M, σ0, n_col, n_view, stride)
-
-        rng = Random.MersenneTwister(42)
-        b   = randn(rng, Float32, size(M))
-        δ   = max(Float32(1f-3) * Float32(std(M)), Float32(1f-8))
-        Md_p = _sfjbf_apply_D(M .+ δ .* b, σ0, n_col, n_view, stride)
-        div_est = sum(b .* (Md_p .- Md)) / δ
-
-        n = length(M)
-        Float32(sum((Md .- M) .^ 2)) - Float32(n) + 2f0 * div_est
-    end
-
-    # ─── Golden-section search for σ_0★ on a representative row. ─────────
-    function _sfjbf_sure_optimize(M::AbstractMatrix{Float32},
-                                    n_col::Int, n_view::Int, stride::Int;
-                                    σ_lo::Real = 0.5, σ_hi::Real = 5.0,
-                                    tol::Real  = 0.15)
-        φ  = Float32((sqrt(5) - 1) / 2)
-        a, b = Float32(σ_lo), Float32(σ_hi)
-        c = b - φ * (b - a)
-        d = a + φ * (b - a)
-        fc = _sfjbf_sure(M, c, n_col, n_view, stride)
-        fd = _sfjbf_sure(M, d, n_col, n_view, stride)
-        n_evals = 2
-        while abs(b - a) > tol
-            if fc < fd
-                b = d; d = c; fd = fc
-                c = b - φ * (b - a)
-                fc = _sfjbf_sure(M, c, n_col, n_view, stride)
-            else
-                a = c; c = d; fc = fd
-                d = a + φ * (b - a)
-                fd = _sfjbf_sure(M, d, n_col, n_view, stride)
-            end
-            n_evals += 1
-        end
-        σ_star = (a + b) / 2f0
-        @info "[SF-jBF SURE] converged: σ₀★ = $(round(σ_star, digits=2)) px after $(n_evals) evals"
-        σ_star
-    end
-
-    # ─── Noise correlation length (FWHM of autocovariance of high-pass log
-    #     residuals on a flat sinogram patch) → stride.                    ─
-    function _sfjbf_corr_length(p::Array{Float32, 3})
-        n_col, n_row, n_view = size(p)
-        c0 = max(1, n_col ÷ 2 - 5); c1 = min(n_col, n_col ÷ 2 + 4)
-        mid_r = n_row ÷ 2 + 1
-        patch = Float32.(p[c0:c1, mid_r, :])
-
-        σ = 10.0
-        radius = ceil(Int, 3σ)
-        ks = Float32[exp(-(k^2) / (2σ^2)) for k in -radius:radius]
-        ks ./= sum(ks)
-        smoothed = similar(patch)
-        @inbounds for c_i in axes(patch, 1), v in axes(patch, 2)
-            s = 0f0; w = 0f0
-            for (i, dk) in enumerate(-radius:radius)
-                v2 = v + dk
-                (1 ≤ v2 ≤ size(patch, 2)) || continue
-                s += ks[i] * patch[c_i, v2]; w += ks[i]
-            end
-            smoothed[c_i, v] = s / w
-        end
-        resid = patch .- smoothed
-
-        n_lags = 5
-        ac = zeros(Float32, n_lags)
-        for lag in 0:(n_lags - 1)
-            s = 0.0; n = 0
-            for c_i in 1:(size(resid, 1) - lag), v in axes(resid, 2)
-                s += Float64(resid[c_i, v]) * Float64(resid[c_i + lag, v])
-                n += 1
-            end
-            ac[lag + 1] = Float32(s / n)
-        end
-
-        ac0 = ac[1]
-        ac0 ≤ 0 && return 1.0
-        for lag in 1:(n_lags - 1)
-            r1 = ac[lag] / ac0
-            r2 = ac[lag + 1] / ac0
-            if r2 ≤ 0.5
-                return Float64((lag - 1) + (r1 - 0.5) / max(r1 - r2, 1f-6))
-            end
-        end
-        Float64(n_lags - 1)
-    end
-
-    _sfjbf_pick_stride(corr_len::Real) =
-        corr_len < 1.5 ? 1 : (corr_len < 2.5 ? 2 : 3)
-
-    _sfjbf_pick_n_iter(min_N::Real) = min_N ≥ 100 ? 1 : 2
-
-    nothing
-end
-
-# ╔═╡ 06000008-0000-4000-8000-000000000070
-sim_lohi_alt = let
-    # ─── Re-bin-combine the RAW PCCT bins (bypass §6 SVD).  Mirrors the
-    #     I0-weighted Beer recombination in §7's `sim_lohi` cell.  Inlined
-    #     (no closure) so Pluto's reactive analyzer sees every dependency
-    #     at the cell's top level. ────────────────────────────────────────
-    eps_f    = Float32(1.0e-10)
-    raw_bins = [Float32.(b) for b in sim_bins.bins]
-    sz_bin   = size(raw_bins[1])
-
-    I0_lo = Float32(sum(Float64.(sim_bins.I0_bins[[1, 2]])))
-    I0_hi = Float32(sum(Float64.(sim_bins.I0_bins[[3, 4]])))
-    N_lo  = zeros(Float32, sz_bin)
-    N_hi  = zeros(Float32, sz_bin)
-    for b in [1, 2]
-        I0b = Float32(sim_bins.I0_bins[b])
-        @. N_lo += I0b * exp(-raw_bins[b])
-    end
-    for b in [3, 4]
-        I0b = Float32(sim_bins.I0_bins[b])
-        @. N_hi += I0b * exp(-raw_bins[b])
-    end
-
-    p_lo = Float32.(.- log.(max.(N_lo, eps_f) ./ I0_lo))
-    p_hi = Float32.(.- log.(max.(N_hi, eps_f) ./ I0_hi))
-
-    raw_bins = nothing; GC.gc(true)
-
-    min_N = Float64(min(minimum(N_lo), minimum(N_hi)))
-
-    n_col, n_row, n_view = size(p_lo)
-
-    # ─── Auto-derive stride and n_iter (paper §2.6 auto-rules) ───────────
-    corr_len = max(_sfjbf_corr_length(p_lo), _sfjbf_corr_length(p_hi))
-    stride   = _sfjbf_pick_stride(corr_len)
-    n_iter   = _sfjbf_pick_n_iter(min_N)
-
-    @info "[SF-jBF auto] PCCT bin-combined · I0_lo = $(round(Int, I0_lo)) ph, " *
-          "I0_hi = $(round(Int, I0_hi)) ph, min(N) = $(round(Int, min_N)) ph"
-    @info "[SF-jBF auto] noise corr length = $(round(corr_len, digits=2)) px → stride = $(stride)"
-    @info "[SF-jBF auto] n_iter = $(n_iter) (rule: 1 if min(N) ≥ 100 everywhere)"
-
-    # ─── Heavy low-pass reference (10-px Gaussian, paper §2.2 fixed) ─────
-    p_ref_lo = _sfjbf_sep_gauss_3d(p_lo, _SFJBF_σ_ref_px)
-    p_ref_hi = _sfjbf_sep_gauss_3d(p_hi, _SFJBF_σ_ref_px)
-
-    # ─── Whitened residuals ξ_k = √N_k · (p_k − p̄_k⁽⁰⁾) ─────────────────
-    w_lo = sqrt.(max.(N_lo, 1f0))
-    w_hi = sqrt.(max.(N_hi, 1f0))
-    ξ_lo = w_lo .* (p_lo .- p_ref_lo)
-    ξ_hi = w_hi .* (p_hi .- p_ref_hi)
-
-    p_lo = nothing; p_hi = nothing
-    N_lo = nothing; N_hi = nothing
-    GC.gc(true)
-
-    # ─── Auto-derive σ_0★ via SURE on the mid-row, or use user's value. ─
-    σ0_user = Float32(SFJBF_σ0)
-    σ0_star = if σ0_user > 0
-        @info "[SF-jBF] σ_0 from user knob: $(σ0_user) px (SURE skipped)"
-        σ0_user
-    else
-        mid_r = n_row ÷ 2 + 1
-        slice_lo = Float32.(@view ξ_lo[:, mid_r, :])
-        slice_hi = Float32.(@view ξ_hi[:, mid_r, :])
-        M_mid = hcat(vec(slice_lo), vec(slice_hi))
-        @info "[SF-jBF SURE] running on mid-row r=$(mid_r), σ ∈ [0.5, 5.0] px..."
-        _sfjbf_sure_optimize(M_mid, n_col, n_view, stride)
-    end
-
-    # ─── Run the operator with σ_0^(t) = α^t · σ_0★ ──────────────────────
-    Σ_ratio_log = Vector{Float32}(undef, n_row)
-    σ0 = σ0_star
-    for t in 0:(n_iter - 1)
-        Threads.@threads for r in 1:n_row
-            slice_lo = Float32.(@view ξ_lo[:, r, :])
-            slice_hi = Float32.(@view ξ_hi[:, r, :])
-            M = hcat(vec(slice_lo), vec(slice_hi))
-
-            F = LinearAlgebra.svd(M; full = false)
-            U, Σ, V = F.U, F.S, F.V
-
-            σ1 = min(σ0,                                 _SFJBF_σ_cap)
-            σ2 = min(σ0 * sqrt(Σ[1] / max(Σ[2], 1f-12)), _SFJBF_σ_cap)
-            Σ_ratio_log[r] = Float32(Σ[1] / max(Σ[2], 1f-12))
-
-            Λ1 = reshape(copy(@view U[:, 1]), n_col, n_view)
-            Λ2 = reshape(copy(@view U[:, 2]), n_col, n_view)
-            σ1_rng = max(_sfjbf_mad_scale(Λ1), eps(Float32))
-            σ2_rng = max(_sfjbf_mad_scale(Λ2), eps(Float32))
-
-            Λ1_d = similar(Λ1); Λ2_d = similar(Λ2)
-            _sfjbf_pass!(Λ1_d, Λ1, σ1, Λ1, Λ2, σ1_rng, σ2_rng, stride)
-            _sfjbf_pass!(Λ2_d, Λ2, σ2, Λ1, Λ2, σ1_rng, σ2_rng, stride)
-
-            U_d = hcat(vec(Λ1_d), vec(Λ2_d))
-            M_d = U_d * LinearAlgebra.Diagonal(Σ) * V'
-            ξ_lo[:, r, :] .= reshape(view(M_d, :, 1), n_col, n_view)
-            ξ_hi[:, r, :] .= reshape(view(M_d, :, 2), n_col, n_view)
-        end
-        @info "[SF-jBF iter $(t + 1)/$(n_iter)] σ₀ = $(round(σ0, digits=2)) px, " *
-              "median Σ₁/Σ₂ = $(round(median(Σ_ratio_log), sigdigits=3)), " *
-              "σ_cap = $(_SFJBF_σ_cap) px"
-        σ0 *= _SFJBF_α
-    end
-
-    # ─── Inverse whiten: p = ξ/√N + p̄⁽⁰⁾ ─────────────────────────────────
-    p_lo_d = ξ_lo ./ w_lo .+ p_ref_lo
-    p_hi_d = ξ_hi ./ w_hi .+ p_ref_hi
-
-    ξ_lo = nothing; ξ_hi = nothing
-    w_lo = nothing; w_hi = nothing
-    p_ref_lo = nothing; p_ref_hi = nothing
-    GC.gc(true)
-
-    (sino_low = p_lo_d, sino_high = p_hi_d, geom = sim_bins.geom)
+sino_denoised = let
+    out = BS.apply_sino_sfjsd_denoise(
+        [Float32.(sim_lohi.sino_low), Float32.(sim_lohi.sino_high)],
+        [Float64(sim_lohi.I0_lo), Float64(sim_lohi.I0_hi)];
+        σ₀ = SFJSD_σ0,
+    )
+    (low = out[1], high = out[2], geom = sim_lohi.geom)
 end;
 
 # ╔═╡ 06000008-0000-4000-8000-000000000080
 let
-    n_row = size(sim_lohi_alt.sino_low, 2)
+    n_row = size(sino_denoised.low, 2)
     mid_r = n_row ÷ 2 + 1
 
-    slice_lo = permutedims(sim_lohi_alt.sino_low[:, mid_r, :], (2, 1))
-    slice_hi = permutedims(sim_lohi_alt.sino_high[:, mid_r, :], (2, 1))
+    slice_lo = permutedims(sino_denoised.low[:, mid_r, :], (2, 1))
+    slice_hi = permutedims(sino_denoised.high[:, mid_r, :], (2, 1))
 
     all_v = vcat(vec(slice_lo), vec(slice_hi))
     sino_window = (
@@ -1112,8 +652,8 @@ let
     )
 
     panels = (
-        (1, 1, "Low (bins 1+2)",  "After SF-jBF denoiser", slice_lo),
-        (1, 2, "High (bins 3+4)", "After SF-jBF denoiser", slice_hi),
+        (1, 1, "Low (bins 1+2)",  "After SF-JSD denoiser", slice_lo),
+        (1, 2, "High (bins 3+4)", "After SF-JSD denoiser", slice_hi),
     )
 
     for (r, c, ttl, sub, slice) in panels
@@ -1126,34 +666,6 @@ let
     )
     fig
 end
-
-# ╔═╡ 06000008-0000-4000-8000-000000000090
-md"""
-## 7c. Active Denoiser Path
-
-Toggle between the §6+§7 baseline (4-bin or 2-bin SVD then bin-combine)
-and the §7b SF-jBF denoiser without touching anything downstream.
-`sim_lohi_active` is what §8 onward consumes — flip `DENOISER_PATH`,
-re-run the rest of the notebook, and compare the per-rod measured-vs-
-theoretical RMSE in §13.
-
-| `DENOISER_PATH` | Path           | Knobs                                       |
-|-----------------|----------------|---------------------------------------------|
-| `:svd`          | §6+§7 baseline | `SVD_DENOISE_STAGE`, `SINO_DENOISE_σ_PX`    |
-| `:sfjbf`        | §7b SF-jBF     | `SFJBF_σ0` (one — `0.0` ⇒ SURE auto-select) |
-"""
-
-# ╔═╡ 06000008-0000-4000-8000-000000000095
-DENOISER_PATH = :sfjbf
-
-# ╔═╡ 06000008-0000-4000-8000-000000000100
-sim_lohi_active = if DENOISER_PATH == :sfjbf
-    sim_lohi_alt
-elseif DENOISER_PATH == :svd
-    sim_lohi
-else
-    error("Unknown DENOISER_PATH = $(DENOISER_PATH); must be :svd or :sfjbf")
-end;
 
 # ╔═╡ 06000009-0000-4000-8000-000000000001
 md"""
@@ -1255,8 +767,8 @@ end;
 
 # ╔═╡ 06000009-0000-4000-8000-000000000020
 sino_basis = let
-    sino_low_gpu  = to_gpu(Float32.(sim_lohi_active.sino_low))
-    sino_high_gpu = to_gpu(Float32.(sim_lohi_active.sino_high))
+    sino_low_gpu  = to_gpu(Float32.(sino_denoised.low))
+    sino_high_gpu = to_gpu(Float32.(sino_denoised.high))
 
     sino_y = similar(sino_low_gpu)   # iodine basis line integrals (g/cm²)
     sino_c = similar(sino_low_gpu)   # water  basis line integrals (g/cm²)
@@ -1278,7 +790,7 @@ sino_basis = let
     GC.gc(true)
     (sino_iodine = sino_iodine_cpu,
      sino_water  = sino_water_cpu,
-     geom        = sim_lohi_active.geom)
+     geom        = sino_denoised.geom)
 end;
 
 # ╔═╡ 06000009-0000-4000-8000-000000000040
@@ -1489,7 +1001,7 @@ water at the target VMI energy from NIST tables.  VMI grid:
     `⟨c_iodine⟩` over a deeply-eroded solid-water ROI.  Its
     synth-evaluated μ_water at each VMI energy is logged next to the
     textbook mono divisor as a Δ% drift.  This is **diagnostic only** —
-    after the SVD sinogram denoiser + Cong decomposition, the residual
+    after the SF-JSD sinogram denoiser + Cong decomposition, the residual
     bias is small enough that the textbook analytical divisor recovers
     correct HUs directly without needing an empirical anchor.
 """
@@ -2111,8 +1623,8 @@ md"""
 ```
 Simulate 140 kVp PCCT (4 bins, scatter-injected)
    → Per-Bin Scatter Correction  (model-based)
-   → Joint Sinogram SVD Denoiser  (4-channel, BS.apply_sino_svd_denoise)
    → Bin Combine  (1+2 → low,  3+4 → high)
+   → SF-JSD Joint Sinogram Denoiser  (2-channel, BS.apply_sino_sfjsd_denoise)
    → Projection-Domain Material Decomposition  (Cong univariate, PCCT-Φ_k)
    → FBP × 2  (iodine, water basis maps)
    → Z-Direction Median Filter × 2
@@ -2121,13 +1633,14 @@ Simulate 140 kVp PCCT (4 bins, scatter-injected)
    → Measured vs Theoretical Per-Rod Regression  at 40 / 70 / 100 / 140 keV
 ```
 
-The 4-channel SVD denoiser exploits cross-bin correlation *before* the
-lossy bin-combine step, then the Cong univariate solver — generalized
-to PCCT via the effective-spectral-response Φ_k(ε) ≥ 0 in Black
-(*in prep.*) — handles beam hardening through the polychromatic
-transmission integral that a linear closed-form inversion misses on a
-33 cm phantom, calibration-free.  The result is HU-quantitative VMIs
-with low streak content and clean low-keV Mono+ output.
+Bin-combine first, denoise after — SF-JSD operates on the 2-channel
+`(low, high)` pair (paper's canonical hardware-class layout).  The
+Cong univariate solver — generalized to PCCT via the effective-
+spectral-response Φ_k(ε) ≥ 0 in Black (*in prep.*) — then handles beam
+hardening through the polychromatic transmission integral that a linear
+closed-form inversion misses on a 33 cm phantom, calibration-free.  The
+result is HU-quantitative VMIs with low streak content and clean low-keV
+Mono+ output.
 """
 
 # ╔═╡ Cell order:
@@ -2156,22 +1669,13 @@ with low streak content and clean low-keV Mono+ output.
 # ╟─06000006-0000-4000-8000-000000000045
 # ╠═06000006-0000-4000-8000-000000000050
 # ╟─06000006-0000-4000-8000-000000000060
-# ╟─06000007-0000-4000-8000-000000000001
-# ╠═06000007-0000-4000-8000-000000000004
-# ╠═06000007-0000-4000-8000-000000000005
-# ╠═06000007-0000-4000-8000-000000000010
-# ╟─06000007-0000-4000-8000-000000000030
 # ╟─06000008-0000-4000-8000-000000000001
 # ╠═06000008-0000-4000-8000-000000000010
 # ╟─06000008-0000-4000-8000-000000000030
 # ╟─06000008-0000-4000-8000-000000000040
 # ╠═06000008-0000-4000-8000-000000000050
 # ╠═06000008-0000-4000-8000-000000000060
-# ╠═06000008-0000-4000-8000-000000000070
 # ╟─06000008-0000-4000-8000-000000000080
-# ╟─06000008-0000-4000-8000-000000000090
-# ╠═06000008-0000-4000-8000-000000000095
-# ╠═06000008-0000-4000-8000-000000000100
 # ╟─06000009-0000-4000-8000-000000000001
 # ╠═06000009-0000-4000-8000-000000000005
 # ╠═06000009-0000-4000-8000-000000000010
