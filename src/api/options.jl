@@ -54,7 +54,7 @@ struct SimOptions
     pcct_noise_reduction::Float64
 
     # --- General ---
-    seed::Union{Int,Nothing}
+    seed::Union{Int, Nothing}
     detector_efficiency_mode::Symbol   # :auto, :mc_lut, :beer_lambert
 end
 
@@ -81,36 +81,40 @@ SimOptions(fidelity=:pcct)                          # PCCT mode
 ```
 """
 function SimOptions(;
-    fidelity::Symbol=:eict,
-    use_fill_factor::Union{Bool,Nothing}=nothing,
-    use_detector_efficiency::Union{Bool,Nothing}=nothing,
-    use_scatter::Union{Bool,Nothing}=nothing,
-    use_optical_crosstalk::Union{Bool,Nothing}=nothing,
-    use_focal_spot::Union{Bool,Nothing}=nothing,
-    use_noise::Union{Bool,Nothing}=nothing,
-    use_lag::Union{Bool,Nothing}=nothing,
-    use_heel_effect::Union{Bool,Nothing}=nothing,
-    use_pcct_pileup::Union{Bool,Nothing}=nothing,
-    pcct_noise_reduction::Float64=0.0,
-    seed::Union{Int,Nothing}=42,
-    detector_efficiency_mode::Symbol=:auto
-)
+        fidelity::Symbol = :eict,
+        use_fill_factor::Union{Bool, Nothing} = nothing,
+        use_detector_efficiency::Union{Bool, Nothing} = nothing,
+        use_scatter::Union{Bool, Nothing} = nothing,
+        use_optical_crosstalk::Union{Bool, Nothing} = nothing,
+        use_focal_spot::Union{Bool, Nothing} = nothing,
+        use_noise::Union{Bool, Nothing} = nothing,
+        use_lag::Union{Bool, Nothing} = nothing,
+        use_heel_effect::Union{Bool, Nothing} = nothing,
+        use_pcct_pileup::Union{Bool, Nothing} = nothing,
+        pcct_noise_reduction::Float64 = 0.0,
+        seed::Union{Int, Nothing} = 42,
+        detector_efficiency_mode::Symbol = :auto
+    )
     # Fidelity preset defaults
     # :eict = all EICT effects ON; :pcct = :eict + MC pile-up degradation.
     # Pile-up correction (the inverse) is decoupled — apply it post-simulate
     # via `apply_pcct_pileup_correction!` if needed.
     defaults = if fidelity == :pcct
-        (fill_factor=true, detector_efficiency=true,
-            scatter=true, optical_crosstalk=true,
-            focal_spot=true, noise=true, lag=true,
-            heel_effect=true,
-            pcct_pileup=true)
+        (
+            fill_factor = true, detector_efficiency = true,
+            scatter = true, optical_crosstalk = true,
+            focal_spot = true, noise = true, lag = true,
+            heel_effect = true,
+            pcct_pileup = true,
+        )
     elseif fidelity == :eict
-        (fill_factor=true, detector_efficiency=true,
-            scatter=true, optical_crosstalk=true,
-            focal_spot=true, noise=true, lag=true,
-            heel_effect=true,
-            pcct_pileup=false)
+        (
+            fill_factor = true, detector_efficiency = true,
+            scatter = true, optical_crosstalk = true,
+            focal_spot = true, noise = true, lag = true,
+            heel_effect = true,
+            pcct_pileup = false,
+        )
     else
         error("Unknown fidelity preset: $fidelity. Use :eict or :pcct.")
     end
@@ -156,9 +160,9 @@ Three fields, each with one specific consumer.
   for clinical slice-thickness control.  Read by the same `CTGeometry` call.
 """
 struct ReconOptions
-    matrix_size::NTuple{3,Int}
+    matrix_size::NTuple{3, Int}
     fov_cm::Float64
-    z_cm::Union{Float64,Nothing}
+    z_cm::Union{Float64, Nothing}
 end
 
 """
@@ -176,10 +180,10 @@ ReconOptions(matrix_size = (512, 512, 80), fov_cm = 50.0, z_cm = 5.0)
 ```
 """
 function ReconOptions(;
-    matrix_size::Union{NTuple{3,Int},Nothing}=nothing,
-    fov_cm::Real=35.0,
-    z_cm::Union{Real,Nothing}=nothing,
-)
+        matrix_size::Union{NTuple{3, Int}, Nothing} = nothing,
+        fov_cm::Real = 35.0,
+        z_cm::Union{Real, Nothing} = nothing,
+    )
     _size = isnothing(matrix_size) ? (512, 512, 64) : matrix_size
     _z_cm = isnothing(z_cm) ? nothing : Float64(z_cm)
     return ReconOptions(_size, Float64(fov_cm), _z_cm)

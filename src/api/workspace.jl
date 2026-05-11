@@ -29,7 +29,7 @@ All GPU-side buffers match the backend of the phantom mask passed to
 Pre-computed setup data (geometry, spectrum, physics config, detector) is
 computed once in `create_workspace()` and stored here for zero-alloc reuse.
 """
-mutable struct PCCTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A1<:AbstractArray{T,1}, A2<:AbstractArray{T,2}}
+mutable struct PCCTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A1 <: AbstractArray{T, 1}, A2 <: AbstractArray{T, 2}}
     # ─── Forward projection (GPU-side) ───
     bins::Vector{A3}           # n_bins sinogram buffers (output of forward projection)
     μ_volume::A3               # attenuation volume, reused per energy
@@ -42,8 +42,8 @@ mutable struct PCCTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A1<:Abstr
     combined::A3               # scratch for `combined_primary` in scatter step
 
     # ─── Noise CPU staging (Phase 1: CPU RNG) ───
-    noise_staging::Array{T,3}  # CPU buffer for GPU↔CPU noise transfer
-    noise_buf::Array{T,3}      # randn output buffer (CPU)
+    noise_staging::Array{T, 3}  # CPU buffer for GPU↔CPU noise transfer
+    noise_buf::Array{T, 3}      # randn output buffer (CPU)
 
     # ─── Pre-computed CPU vectors/matrices ───
     η::Vector{Float64}          # quantum efficiency vector (n_energies)
@@ -141,10 +141,12 @@ result = simulate!(ws, phantom, scanner, protocol, sim_opts, recon_opts)
 result2 = simulate!(ws, phantom, scanner, protocol, sim_opts, recon_opts)
 ```
 """
-function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
-                          T::Type{<:AbstractFloat}=Float32)
+function create_workspace(
+        scanner, protocol, sim_opts, recon_opts, phantom;
+        T::Type{<:AbstractFloat} = Float32
+    )
     # --- Pre-compute geometry first (collimation derives n_rows) ---
-    geom = CTGeometry(scanner; n_angles=protocol.views, fov_cm=recon_opts.fov_cm, z_cm=recon_opts.z_cm, collimation_mm=protocol.collimation_mm)
+    geom = CTGeometry(scanner; n_angles = protocol.views, fov_cm = recon_opts.fov_cm, z_cm = recon_opts.z_cm, collimation_mm = protocol.collimation_mm)
 
     sino_shape = (geom.n_cols, geom.n_rows, geom.n_angles)
     vol_shape = size(phantom.mask)
@@ -163,9 +165,9 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     # CPU-side buffers (Phase 1 noise: CPU RNG → GPU staging)
     noise_staging = zeros(T, sino_shape)
     noise_buf = zeros(T, sino_shape)
-    energies, weights_vec = resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner=scanner)
+    energies, weights_vec = resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner = scanner)
     n_energies = length(energies)
-    config = build_physics_config(scanner, sim_opts, energies, weights_vec; phantom=phantom)
+    config = build_physics_config(scanner, sim_opts, energies, weights_vec; phantom = phantom)
     pcct_detector = _build_pcct_detector(scanner)
     mats = phantom.materials
     kVp = Float64(maximum(energies))
@@ -173,15 +175,19 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     # Pre-compute spectral response data
     η_vec = quantum_efficiency_vector(pcct_detector.material, pcct_detector.thickness_mm, energies)
     R_mat = compute_mc_drm(pcct_detector, kVp)
-    R_energies_vec = collect(range(1.0, Float64(kVp), length=size(R_mat, 1)))
+    R_energies_vec = collect(range(1.0, Float64(kVp), length = size(R_mat, 1)))
 
     # BHC, scatter correction, and pile-up correction are all decoupled —
     # applied at the notebook level via dedicated `apply_*` functions.
 
     # Pre-compute per-bin I0 (DRM-weighted spectrum × η).
-    I0_bins_norm_vec = [_compute_bin_I0(pcct_detector, energies, weights_vec, η_vec, thresholds, b,
-                                         kVp, 1e6; R=R_mat) for b in 1:n_bins]
-    I0_bins_combine  = copy(I0_bins_norm_vec)
+    I0_bins_norm_vec = [
+        _compute_bin_I0(
+                pcct_detector, energies, weights_vec, η_vec, thresholds, b,
+                kVp, 1.0e6; R = R_mat
+            ) for b in 1:n_bins
+    ]
+    I0_bins_combine = copy(I0_bins_norm_vec)
 
     # Pre-compute T-typed thresholds
     thresholds_T_vec = T.(thresholds)
@@ -269,13 +275,13 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
 
     # Build W matrix: W[e, b] = I0 * w[e] * η[e] * R[e, b]
     # Uses I0=1e6 consistent with pcct_forward_project default
-    _I0 = 1e6
+    _I0 = 1.0e6
     n_R = size(R_mat, 1)
     W_cpu = zeros(T, n_energies_padded, n_bins)
     for e_idx in 1:n_energies
         E_float = Float64(energies[e_idx])
         w = Float64(weights_vec[e_idx])
-        if w < 1e-12
+        if w < 1.0e-12
             continue
         end
         r_idx = clamp(round(Int, (E_float - 1.0) / (kVp - 1.0) * (n_R - 1)) + 1, 1, n_R)
@@ -326,18 +332,19 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     # I0 from compute_detector_I0 is per binned pixel per view.
     # Count rate per dexel = (I0 / bf²) / time_per_view  [photons/s]
     _use_pileup = sim_opts.use_pcct_pileup &&
-                  pcct_detector.dead_time_ns > 0
+        pcct_detector.dead_time_ns > 0
     _pileup_S = if _use_pileup
-        _I0_physics_pileup    = compute_detector_I0(geom, protocol, sum(weights_vec))
+        _I0_physics_pileup = compute_detector_I0(geom, protocol, sum(weights_vec))
         _time_per_view_pileup = protocol.rotation_time / protocol.views
         _count_rate_per_dexel = (_I0_physics_pileup / Float64(bf * bf)) / _time_per_view_pileup
-        _τ_ns                 = Float64(pcct_detector.dead_time_ns)
+        _τ_ns = Float64(pcct_detector.dead_time_ns)
         w_norm = Float64.(weights_vec) ./ sum(Float64.(weights_vec))
         compute_mc_pileup_matrix(
             pcct_detector.energy_thresholds_keV,
             w_norm, Float64.(energies),
             _count_rate_per_dexel, _τ_ns;
-            n_trials = 5000, seed = 42)
+            n_trials = 5000, seed = 42
+        )
     else
         nothing
     end
@@ -380,7 +387,7 @@ Type parameters:
 - `A3`: 3D array type matching GPU backend
 - `A1`: 1D array type matching GPU backend
 """
-mutable struct EICTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:AbstractArray{T,2}, A1<:AbstractArray{T,1}}
+mutable struct EICTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A2 <: AbstractArray{T, 2}, A1 <: AbstractArray{T, 1}}
     # ─── Forward projection (GPU-side) ───
     sinogram::A3          # output sinogram (n_cols, n_rows, n_angles)
     μ_volume::A3          # attenuation volume, reused per energy (nx, ny, nz)
@@ -469,19 +476,23 @@ Create a pre-allocated workspace for zero-allocation EICT single-kVp `simulate!(
   grid, so per-ray spectral physics still runs.  See
   `docs/notebooks/03b_dual_keV_monoe.jl` for the complete monoenergetic example.
 """
-function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
-                                T::Type{<:AbstractFloat}=Float32,
-                                spectrum_override::Union{Nothing,
-                                    Tuple{AbstractVector, AbstractVector}}=nothing)
+function create_eict_workspace(
+        scanner, protocol, sim_opts, recon_opts, phantom;
+        T::Type{<:AbstractFloat} = Float32,
+        spectrum_override::Union{
+            Nothing,
+            Tuple{AbstractVector, AbstractVector},
+        } = nothing
+    )
     # Geometry
-    geom = CTGeometry(scanner; n_angles=protocol.views, fov_cm=recon_opts.fov_cm, z_cm=recon_opts.z_cm, collimation_mm=protocol.collimation_mm)
+    geom = CTGeometry(scanner; n_angles = protocol.views, fov_cm = recon_opts.fov_cm, z_cm = recon_opts.z_cm, collimation_mm = protocol.collimation_mm)
 
     # Spectrum — IPEM polychromatic by default; spectrum_override lets a
     # caller inject a custom (energies, weights) pair (e.g. `([70.0], [1.0])`
     # for a monoenergetic 70 keV beam).  Accepts any AbstractVector pair and
     # materializes to `Vector{Float64}` internally.
     energies, weights_vec = if spectrum_override === nothing
-        resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner=scanner)
+        resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner = scanner)
     else
         e, w = spectrum_override
         length(e) == length(w) ||
@@ -491,7 +502,7 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     n_energies = length(energies)
 
     # Physics config
-    config = build_physics_config(scanner, sim_opts, energies, weights_vec; phantom=phantom)
+    config = build_physics_config(scanner, sim_opts, energies, weights_vec; phantom = phantom)
 
     # Materials
     mats = phantom.materials
@@ -687,7 +698,7 @@ function create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     # Pre-compute scanner+spectrum-derived noise constants — scalars used every
     # simulate! call.  Lets the hot path avoid taking `scanner` and re-summing.
     mean_E_keV = sum(weights_norm[i] * T(energies[i]) for i in 1:length(energies))
-    η_eff_T    = sum(weights_norm[i] * T(η_vec[i])    for i in 1:length(η_vec))
+    η_eff_T = sum(weights_norm[i] * T(η_vec[i])    for i in 1:length(η_vec))
     σ_e_photon = T(scanner.electronic_noise) / (mean_E_keV * T(scanner.detection_gain))
 
     return EICTWorkspace{T, typeof(sinogram), typeof(geom_source_positions), typeof(noise_rand_gpu)}(
@@ -722,7 +733,7 @@ Type parameters:
 
 Create with [`create_fdk_recon_workspace`](@ref).
 """
-mutable struct FDKReconWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:AbstractArray{T,2}, A1<:AbstractArray{T,1}}
+mutable struct FDKReconWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A2 <: AbstractArray{T, 2}, A1 <: AbstractArray{T, 1}}
     # ─── Output ───
     volume::A3                # Reconstructed volume (nx, ny, nz)
 
@@ -747,13 +758,13 @@ Create a pre-allocated workspace for zero-allocation FDK `reconstruct!()`.
 (e.g., `:standard`, `:ram_lak`).
 """
 function create_fdk_recon_workspace(
-    sinogram::AbstractArray{<:AbstractFloat, 3},
-    geom::CTGeometry,
-    volume_size::NTuple{3, Int};
-    T::Type{<:AbstractFloat} = eltype(sinogram),
-    filter::Union{FilterType, Symbol} = StandardFilter(),
-    cutoff::Float64 = 1.0
-)
+        sinogram::AbstractArray{<:AbstractFloat, 3},
+        geom::CTGeometry,
+        volume_size::NTuple{3, Int};
+        T::Type{<:AbstractFloat} = eltype(sinogram),
+        filter::Union{FilterType, Symbol} = StandardFilter(),
+        cutoff::Float64 = 1.0
+    )
     filter = filter isa Symbol ? filter_from_symbol(filter) : filter
     sino_shape = size(sinogram)
 
@@ -810,7 +821,7 @@ Type parameters:
 
 Create with [`create_hir_recon_workspace`](@ref).
 """
-mutable struct HIRReconWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A2<:AbstractArray{T,2}, A1<:AbstractArray{T,1}}
+mutable struct HIRReconWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A2 <: AbstractArray{T, 2}, A1 <: AbstractArray{T, 1}}
     # ─── Output / iterate ───
     volume::A3                # (nx, ny, nz) — FDK result → PWLS iterate
 
@@ -858,14 +869,14 @@ Create a pre-allocated workspace for zero-allocation Hybrid IR `reconstruct!()`.
 `filter` can be a `FilterType` struct or a `Symbol` (e.g., `:standard`).
 """
 function create_hir_recon_workspace(
-    sinogram::AbstractArray{<:AbstractFloat, 3},
-    geom::CTGeometry,
-    volume_size::NTuple{3, Int};
-    T::Type{<:AbstractFloat} = eltype(sinogram),
-    strength::Int = 3,
-    filter::Union{FilterType, Symbol} = StandardFilter(),
-    cutoff::Float64 = 1.0
-)
+        sinogram::AbstractArray{<:AbstractFloat, 3},
+        geom::CTGeometry,
+        volume_size::NTuple{3, Int};
+        T::Type{<:AbstractFloat} = eltype(sinogram),
+        strength::Int = 3,
+        filter::Union{FilterType, Symbol} = StandardFilter(),
+        cutoff::Float64 = 1.0
+    )
     filter = filter isa Symbol ? filter_from_symbol(filter) : filter
     sino_shape = size(sinogram)
 
@@ -924,8 +935,8 @@ function create_hir_recon_workspace(
     # Pre-compute GPU geometry arrays for each subset
     subset_geom_src = Vector{typeof(geom_source_positions)}(undef, n_subsets)
     subset_geom_det = Vector{typeof(geom_source_positions)}(undef, n_subsets)
-    subset_geom_u   = Vector{typeof(geom_source_positions)}(undef, n_subsets)
-    subset_geom_v   = Vector{typeof(geom_source_positions)}(undef, n_subsets)
+    subset_geom_u = Vector{typeof(geom_source_positions)}(undef, n_subsets)
+    subset_geom_v = Vector{typeof(geom_source_positions)}(undef, n_subsets)
     for s in 1:n_subsets
         sg = subset_geometries[s]
         subset_geom_src[s] = similar(sinogram, T, size(sg.source_positions)...)
@@ -940,10 +951,10 @@ function create_hir_recon_workspace(
 
     # Allocate subset buffers sized for the largest subset
     max_subset_size = maximum(length(s) for s in subsets)
-    subset_sino_shape       = (sino_shape[1], sino_shape[2], max_subset_size)
-    subset_sino_buf         = similar(sinogram, T, subset_sino_shape...)
-    subset_Ax_buf           = similar(sinogram, T, subset_sino_shape...)
-    subset_W_proj_buf       = similar(sinogram, T, subset_sino_shape...)
+    subset_sino_shape = (sino_shape[1], sino_shape[2], max_subset_size)
+    subset_sino_buf = similar(sinogram, T, subset_sino_shape...)
+    subset_Ax_buf = similar(sinogram, T, subset_sino_shape...)
+    subset_W_proj_buf = similar(sinogram, T, subset_sino_shape...)
     subset_stat_weights_buf = similar(sinogram, T, subset_sino_shape...)
 
     return HIRReconWorkspace{T, typeof(volume), typeof(geom_source_positions), typeof(filter_kernel)}(

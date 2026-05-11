@@ -16,8 +16,8 @@
 # -----------------------------------------------------------------------------
 const GPU_BACKEND = let
     candidates = [
-        (:Metal,  "dde4c033-4e86-420c-a63e-0dd931031962", :MtlArray),
-        (:CUDA,   "052768ef-5323-5732-b1bb-66c8b64840ba", :CuArray),
+        (:Metal, "dde4c033-4e86-420c-a63e-0dd931031962", :MtlArray),
+        (:CUDA, "052768ef-5323-5732-b1bb-66c8b64840ba", :CuArray),
         (:AMDGPU, "21141c5a-9bdb-4563-92ae-f87d6854732e", :ROCArray),
     ]
     detected = (name = "CPU", to_gpu = identity)
@@ -43,7 +43,7 @@ to_gpu(x) = GPU_BACKEND.to_gpu(x)
 # Tiny progress logger — lets us see WHERE time is going during the slow first
 # compile pass.  Pluto/Pkg.test buffers stdout until @testset exits, so without
 # this we stare at a black screen for a minute.
-_ts(label) = (println(stderr, "[api.jl t=$(round(time()-_T0;digits=1))s] ", label); flush(stderr))
+_ts(label) = (println(stderr, "[api.jl t=$(round(time() - _T0; digits = 1))s] ", label); flush(stderr))
 const _T0 = time()
 
 # Helper: build a minimally-valid (Scanner, CTGeometry, CTProtocol) triple
@@ -62,22 +62,24 @@ function _toy_scan(;
     )
     scanner = BS.Scanner(
         source_to_isocenter = SAD_mm,
-        source_to_detector  = SDD_mm,
-        detector_cols       = n_cols,
-        detector_rows       = n_rows,
-        detector_col_size   = col_mm,
-        detector_row_size   = row_mm,
+        source_to_detector = SDD_mm,
+        detector_cols = n_cols,
+        detector_rows = n_rows,
+        detector_col_size = col_mm,
+        detector_row_size = row_mm,
     )
-    geom     = BS.CTGeometry(scanner; n_angles = n_angles)
-    protocol = BS.CTProtocol(; mA = mA, kVp = 120.0, views = views,
-                               rotation_time = rotation_time)
+    geom = BS.CTGeometry(scanner; n_angles = n_angles)
+    protocol = BS.CTProtocol(;
+        mA = mA, kVp = 120.0, views = views,
+        rotation_time = rotation_time
+    )
     return scanner, geom, protocol
 end
 
 # Closed-form reference, mirrors `compute_detector_I0` line-for-line.
 _expected_I0(geom, protocol, flux_sum) = begin
-    M  = geom.SDD / geom.SAD
-    px = (geom.pixel_size     * 10.0) * M    # mm at detector
+    M = geom.SDD / geom.SAD
+    px = (geom.pixel_size * 10.0) * M    # mm at detector
     py = (geom.pixel_row_size * 10.0) * M
     flux_sum * protocol.mA * (protocol.rotation_time / protocol.views) * px * py
 end
@@ -89,17 +91,17 @@ _ts("entering SimOptions testset")
 @testset "SimOptions" begin
     @testset "default fidelity = :eict; all use_* preset to true except pcct_pileup" begin
         opts = BS.SimOptions()
-        @test opts.use_fill_factor         === true
+        @test opts.use_fill_factor === true
         @test opts.use_detector_efficiency === true
-        @test opts.use_scatter             === true
-        @test opts.use_optical_crosstalk   === true
-        @test opts.use_focal_spot          === true
-        @test opts.use_noise               === true
-        @test opts.use_lag                 === true
-        @test opts.use_heel_effect         === true
-        @test opts.use_pcct_pileup         === false   # off in :eict preset
-        @test opts.pcct_noise_reduction    == 0.0
-        @test opts.seed                    == 42
+        @test opts.use_scatter === true
+        @test opts.use_optical_crosstalk === true
+        @test opts.use_focal_spot === true
+        @test opts.use_noise === true
+        @test opts.use_lag === true
+        @test opts.use_heel_effect === true
+        @test opts.use_pcct_pileup === false   # off in :eict preset
+        @test opts.pcct_noise_reduction == 0.0
+        @test opts.seed == 42
         @test opts.detector_efficiency_mode == :auto
     end
 
@@ -107,14 +109,14 @@ _ts("entering SimOptions testset")
         opts = BS.SimOptions(fidelity = :pcct)
         @test opts.use_pcct_pileup === true
         # Other physics still on
-        @test opts.use_noise   === true
+        @test opts.use_noise === true
         @test opts.use_scatter === true
     end
 
     @testset "per-effect kwarg overrides preset" begin
         opts = BS.SimOptions(fidelity = :eict, use_scatter = false, use_noise = false)
         @test opts.use_scatter === false
-        @test opts.use_noise   === false
+        @test opts.use_noise === false
         # Untouched toggles still follow the preset
         @test opts.use_fill_factor === true
 
@@ -130,8 +132,8 @@ _ts("entering SimOptions testset")
 
     @testset "pcct_noise_reduction clamps to [0, 1]" begin
         @test BS.SimOptions(pcct_noise_reduction = -0.5).pcct_noise_reduction == 0.0
-        @test BS.SimOptions(pcct_noise_reduction =  0.7).pcct_noise_reduction ≈ 0.7
-        @test BS.SimOptions(pcct_noise_reduction =  1.5).pcct_noise_reduction == 1.0
+        @test BS.SimOptions(pcct_noise_reduction = 0.7).pcct_noise_reduction ≈ 0.7
+        @test BS.SimOptions(pcct_noise_reduction = 1.5).pcct_noise_reduction == 1.0
     end
 
     @testset "seed accepts Int or nothing" begin
@@ -163,23 +165,23 @@ _ts("entering ReconOptions testset")
     @testset "defaults" begin
         ro = BS.ReconOptions()
         @test ro.matrix_size == (512, 512, 64)
-        @test ro.fov_cm      == 35.0
-        @test ro.z_cm        === nothing
+        @test ro.fov_cm == 35.0
+        @test ro.z_cm === nothing
     end
 
     @testset "kwargs round-trip" begin
         ro = BS.ReconOptions(matrix_size = (256, 256, 16), fov_cm = 20.0, z_cm = 5.0)
         @test ro.matrix_size == (256, 256, 16)
-        @test ro.fov_cm      == 20.0
-        @test ro.z_cm        == 5.0
+        @test ro.fov_cm == 20.0
+        @test ro.z_cm == 5.0
     end
 
     @testset "fov_cm and z_cm coerce Real → Float64" begin
         ro = BS.ReconOptions(fov_cm = 20, z_cm = 5)        # Int input
         @test ro.fov_cm isa Float64
-        @test ro.z_cm   isa Float64
+        @test ro.z_cm isa Float64
         @test ro.fov_cm == 20.0
-        @test ro.z_cm   == 5.0
+        @test ro.z_cm == 5.0
     end
 
     @testset "z_cm = nothing stays nothing (auto-compute path)" begin
@@ -190,10 +192,12 @@ _ts("entering ReconOptions testset")
     @testset "dead fields are gone" begin
         # Confirms the cleanup: every dead field that previously lived on
         # ReconOptions has been removed, not silently kept around.
-        for dead in (:algorithm, :filter, :iterations, :lambda, :tv_weight,
-                     :n_subsets, :penalty, :penalty_delta, :use_edge_weights,
-                     :blend_percent, :vmi_energies, :vmi_basis,
-                     :warm_start, :cascade_warm_start, :system_noise_floor_hu)
+        for dead in (
+                :algorithm, :filter, :iterations, :lambda, :tv_weight,
+                :n_subsets, :penalty, :penalty_delta, :use_edge_weights,
+                :blend_percent, :vmi_energies, :vmi_basis,
+                :warm_start, :cascade_warm_start, :system_noise_floor_hu,
+            )
             @test !(dead in fieldnames(BS.ReconOptions))
         end
     end
@@ -214,7 +218,7 @@ _ts("entering compute_detector_I0 testset")
 
     @testset "closed-form value" begin
         _, geom, protocol = _toy_scan()
-        got      = BS.compute_detector_I0(geom, protocol, flux_sum)
+        got = BS.compute_detector_I0(geom, protocol, flux_sum)
         expected = _expected_I0(geom, protocol, flux_sum)
         @test got ≈ expected
         @test got > 0
@@ -288,17 +292,17 @@ end
 function _toy_pcct_setup(; use_pcct_pileup = true, kwargs...)
     scanner = BS.Scanner(
         source_to_isocenter = 540.0,
-        source_to_detector  = 1080.0,
-        detector_rows       = 8,
-        detector_cols       = 64,
-        detector_row_size   = 1.0,
-        detector_col_size   = 1.0,
-        detector_type       = :photon_counting,
-        detector_material   = :CdTe,
-        detector_depth      = 1.6,
-        n_energy_bins       = 4,
-        energy_thresholds   = [20.0, 35.0, 55.0, 70.0],
-        dead_time_ns        = 25.0,
+        source_to_detector = 1080.0,
+        detector_rows = 8,
+        detector_cols = 64,
+        detector_row_size = 1.0,
+        detector_col_size = 1.0,
+        detector_type = :photon_counting,
+        detector_material = :CdTe,
+        detector_depth = 1.6,
+        n_energy_bins = 4,
+        energy_thresholds = [20.0, 35.0, 55.0, 70.0],
+        dead_time_ns = 25.0,
     )
     # mAs-per-view kept near nb04 (~0.07 mAs/view) so the MC pile-up trial
     # samples a realistic number of photon arrivals (~1e7 per trial), not 1e11.
@@ -357,7 +361,7 @@ _ts("entering simulate!(PCCTWorkspace) — MC-LUT pileup wiring testset")
         @warn "Skipping PCCT integration test: no GPU backend."
     else
         _ts("  workspace ON")
-        on  = _toy_pcct_setup(use_pcct_pileup = true)
+        on = _toy_pcct_setup(use_pcct_pileup = true)
         _ts("  workspace OFF")
         off = _toy_pcct_setup(use_pcct_pileup = false)
         _ts("  workspaces built")
@@ -370,7 +374,7 @@ _ts("entering simulate!(PCCTWorkspace) — MC-LUT pileup wiring testset")
         @test off.ws.pileup_S === nothing
 
         _ts("  simulate! ON")
-        res_on  = BS.simulate!(on.ws,  on.phantom,  on.protocol,  on.sim_opts)
+        res_on = BS.simulate!(on.ws, on.phantom, on.protocol, on.sim_opts)
         _ts("  simulate! OFF")
         res_off = BS.simulate!(off.ws, off.phantom, off.protocol, off.sim_opts)
         _ts("  simulate! both done")
@@ -385,9 +389,9 @@ _ts("entering simulate!(PCCTWorkspace) — MC-LUT pileup wiring testset")
         # Pileup ON should produce DIFFERENT log line integrals than OFF.
         diff_any = false
         for b in 1:4
-            on_arr  = Array(res_on.pcct_sino.bins[b])
+            on_arr = Array(res_on.pcct_sino.bins[b])
             off_arr = Array(res_off.pcct_sino.bins[b])
-            if maximum(abs.(on_arr .- off_arr)) > 1e-6
+            if maximum(abs.(on_arr .- off_arr)) > 1.0e-6
                 diff_any = true
                 break
             end
@@ -411,17 +415,19 @@ end
 #   • At high aτ, S[i, j] for i > j must be visibly non-zero.
 # -----------------------------------------------------------------------------
 @testset "compute_mc_pileup_matrix — physical-shape contract" begin
-    energies   = collect(20.0:1.0:140.0)
-    weights    = ones(length(energies)) ./ length(energies)   # flat spectrum
+    energies = collect(20.0:1.0:140.0)
+    weights = ones(length(energies)) ./ length(energies)   # flat spectrum
     thresholds = [20.0, 35.0, 55.0, 70.0]
-    n_bins     = length(thresholds)
+    n_bins = length(thresholds)
 
     # aτ ≈ 0.5 → significant pile-up, well within the regime our PCCT runs at.
-    count_rate   = 1e8        # 100 Mcps per pixel
+    count_rate = 1.0e8        # 100 Mcps per pixel
     dead_time_ns = 5.0
-    S = BS.compute_mc_pileup_matrix(thresholds, weights, energies,
-                                    count_rate, dead_time_ns;
-                                    n_trials = 2000, seed = 1)
+    S = BS.compute_mc_pileup_matrix(
+        thresholds, weights, energies,
+        count_rate, dead_time_ns;
+        n_trials = 2000, seed = 1
+    )
 
     @test size(S) == (n_bins, n_bins)
     @test all(isfinite, S)
@@ -437,12 +443,12 @@ end
     # Column sums ≤ 1 (deficit = count loss).
     for j in 1:n_bins
         s = sum(@view S[:, j])
-        @test 0.0 < s ≤ 1.0 + 1e-6
+        @test 0.0 < s ≤ 1.0 + 1.0e-6
     end
 
     # Pile-up only adds energy → migration is upward only.
     # S[i, j] for i < j (lower recorded bin from higher true bin) must be ~0.
-    for j in 2:n_bins, i in 1:(j-1)
+    for j in 2:n_bins, i in 1:(j - 1)
         @test S[i, j] < 0.05
     end
 
@@ -463,14 +469,16 @@ end
 @testset "Pile-up math: truth-basis bins + count round-trip" begin
     n_bins = 4
     I0_truth = [1.3e12, 1.0e12, 4.2e11, 2.1e11]
-    energies   = collect(20.0:1.0:140.0)
-    weights    = ones(length(energies)) ./ length(energies)
+    energies = collect(20.0:1.0:140.0)
+    weights = ones(length(energies)) ./ length(energies)
     thresholds = [20.0, 35.0, 55.0, 70.0]
-    S = BS.compute_mc_pileup_matrix(thresholds, weights, energies,
-                                    1e8, 5.0; n_trials = 2000, seed = 1)
+    S = BS.compute_mc_pileup_matrix(
+        thresholds, weights, energies,
+        1.0e8, 5.0; n_trials = 2000, seed = 1
+    )
 
     # Air ray: pre-pileup counts == truth I0.
-    counts_true     = copy(I0_truth)
+    counts_true = copy(I0_truth)
     counts_recorded = [sum(S[i, j] * counts_true[j] for j in 1:n_bins) for i in 1:n_bins]
 
     # `simulate!` semantics: bins[i] = -log(recorded / I0_truth[i])
@@ -481,14 +489,14 @@ end
 
     # Round-trip identity: I0_truth[i] · exp(-bins[i]) == counts_recorded[i]
     for i in 1:n_bins
-        @test I0_truth[i] * exp(-bins_air[i]) ≈ counts_recorded[i] rtol = 1e-12
+        @test I0_truth[i] * exp(-bins_air[i]) ≈ counts_recorded[i] rtol = 1.0e-12
     end
 
     # The air-ray offset equals log(I0_truth / I0_recorded) — physically the
     # signature of pile-up "dimming" each bin's air baseline.
     I0_recorded = [sum(S[i, j] * I0_truth[j] for j in 1:n_bins) for i in 1:n_bins]
     for i in 1:n_bins
-        @test bins_air[i] ≈ log(I0_truth[i] / I0_recorded[i]) rtol = 1e-12
+        @test bins_air[i] ≈ log(I0_truth[i] / I0_recorded[i]) rtol = 1.0e-12
     end
 end
 
@@ -505,15 +513,15 @@ end
 function _toy_eict_setup(; use_noise = false, use_scatter = false, kwargs...)
     scanner = BS.Scanner(
         source_to_isocenter = 540.0,
-        source_to_detector  = 1080.0,
-        detector_rows       = 8,
-        detector_cols       = 64,
-        detector_row_size   = 1.0,
-        detector_col_size   = 1.0,
-        detector_material   = :lumex,
-        detector_depth      = 3.0,
-        electronic_noise    = 5.0,
-        detection_gain      = 10.0,
+        source_to_detector = 1080.0,
+        detector_rows = 8,
+        detector_cols = 64,
+        detector_row_size = 1.0,
+        detector_col_size = 1.0,
+        detector_material = :lumex,
+        detector_depth = 3.0,
+        electronic_noise = 5.0,
+        detection_gain = 10.0,
     )
     protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 16, rotation_time = 0.5)
     sim_opts = BS.SimOptions(;
@@ -522,7 +530,7 @@ function _toy_eict_setup(; use_noise = false, use_scatter = false, kwargs...)
         use_lag = false, use_focal_spot = false, use_optical_crosstalk = false,
         kwargs...
     )
-    recon_opts  = BS.ReconOptions(matrix_size = (32, 32, 4), fov_cm = 20.0)
+    recon_opts = BS.ReconOptions(matrix_size = (32, 32, 4), fov_cm = 20.0)
     phantom_cpu = BS.create_gammex_472(n_voxels = 32, fov_cm = 20.0, z_cm = 2.0)
     phantom = BS.Phantom(
         to_gpu(phantom_cpu.mask),
@@ -582,7 +590,7 @@ _ts("entering simulate!(EICTWorkspace) — noise on/off seed reproducibility tes
         sino_on2 = Array(on2.ws.sinogram)
 
         # Noise ON must perturb the noise-free sinogram somewhere.
-        @test maximum(abs.(sino_on1 .- sino_off)) > 1e-6
+        @test maximum(abs.(sino_on1 .- sino_off)) > 1.0e-6
         # Same seed → bit-identical re-run under our `randn!` + copyto! pattern
         # (Phase-1 CPU RNG → GPU staging means this is deterministic).
         @test sino_on1 == sino_on2
@@ -594,7 +602,7 @@ _ts("entering add_system_noise_floor! testset")
     # Pure-CPU function — no GPU gating needed.  Empirical post-recon noise
     # floor; concept covered in Kalender / Hsieh CT physics texts.
     @testset "σ ≤ 0 is a no-op (returns identity)" begin
-        for σ in (0.0, -1e-9, -5.0)
+        for σ in (0.0, -1.0e-9, -5.0)
             vol = randn(Float32, 8, 8, 4)
             ref = copy(vol)
             ret = BS.add_system_noise_floor!(vol, σ)
@@ -609,7 +617,7 @@ _ts("entering add_system_noise_floor! testset")
         vol = zeros(Float32, 64, 64, 64)
         BS.add_system_noise_floor!(vol, 28.0; seed = 1234)
         # 64³ ≈ 262k samples → 99% CI on std is ~σ × (1 ± 0.005).  Use 5% rtol.
-        @test std(vol) ≈ 28.0f0 rtol = 5e-2
+        @test std(vol) ≈ 28.0f0 rtol = 5.0e-2
         @test mean(vol) ≈ 0.0f0 atol = 1.0     # mean ≈ 0
         @test all(isfinite, vol)
     end
@@ -630,10 +638,10 @@ _ts("entering add_system_noise_floor! testset")
         # vol_after - vol_before ~ N(0, σ²); pre-existing content is preserved
         # in mean.
         base = fill(40.0f0, 32, 32, 4)
-        vol  = copy(base)
+        vol = copy(base)
         BS.add_system_noise_floor!(vol, 10.0; seed = 7)
         diff = vol .- base
-        @test std(diff)  ≈ 10.0f0 rtol = 1e-1   # smaller volume → looser tol
+        @test std(diff) ≈ 10.0f0 rtol = 1.0e-1   # smaller volume → looser tol
         @test mean(diff) ≈ 0.0f0  atol = 1.0
         # Mean of vol stays near base value (within sample noise).
         @test mean(vol) ≈ 40.0f0 atol = 1.0
@@ -651,7 +659,7 @@ _ts("entering add_system_noise_floor! testset")
         Random.seed!(123)
         _ = randn(Float32, 5)                     # same prefix
         BS.add_system_noise_floor!(zeros(Float32, 32, 32, 4), 28.0; seed = 999)
-        after  = randn(Float32, 5)                # next 5 draws — must match target
+        after = randn(Float32, 5)                # next 5 draws — must match target
 
         @test target == after
     end
@@ -665,24 +673,24 @@ end
 #   - `gecatsim/pyfiles/Resample_Spectrum_Bowtie_FlatFilter.py`     (spectrum × bowtie)
 # -----------------------------------------------------------------------------
 function _toy_eict_scanner_with_bowtie()
-    BS.Scanner(
-        source_to_isocenter   = 540.0,
-        source_to_detector    = 1080.0,
-        detector_rows         = 4,
-        detector_cols         = 32,
-        detector_row_size     = 1.0,
-        detector_col_size     = 1.0,
-        detector_material     = :lumex,
-        detector_depth        = 3.0,
-        flat_filter_material  = :aluminum,
+    return BS.Scanner(
+        source_to_isocenter = 540.0,
+        source_to_detector = 1080.0,
+        detector_rows = 4,
+        detector_cols = 32,
+        detector_row_size = 1.0,
+        detector_col_size = 1.0,
+        detector_material = :lumex,
+        detector_depth = 3.0,
+        flat_filter_material = :aluminum,
         flat_filter_thickness = 2.5,
-        bowtie_filter         = :ge_revolution_large,
+        bowtie_filter = :ge_revolution_large,
     )
 end
 
 _ts("entering resolve_source_spectrum_without_bowtie testset")
 @testset "resolve_source_spectrum_without_bowtie" begin
-    scanner  = _toy_eict_scanner_with_bowtie()
+    scanner = _toy_eict_scanner_with_bowtie()
     protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 16, rotation_time = 0.5)
     sim_opts = BS.SimOptions(; fidelity = :eict)
 
@@ -693,7 +701,7 @@ _ts("entering resolve_source_spectrum_without_bowtie testset")
     @test length(e) > 0
     # Energy grid is positive, monotonic-ish, capped at kVp.
     @test all(>(0), e)
-    @test maximum(e) ≤ Float64(protocol.kVp) + 1e-6
+    @test maximum(e) ≤ Float64(protocol.kVp) + 1.0e-6
     # Weights are non-negative (post-Beer-Lambert filtering, before any norm).
     @test all(>=(0), w)
     @test all(isfinite, w)
@@ -703,50 +711,56 @@ end
 
 _ts("entering apply_bowtie_to_spectrum testset")
 @testset "apply_bowtie_to_spectrum" begin
-    scanner  = _toy_eict_scanner_with_bowtie()
+    scanner = _toy_eict_scanner_with_bowtie()
     protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 16, rotation_time = 0.5)
-    geom     = BS.CTGeometry(scanner; n_angles = protocol.views, fov_cm = 20.0, z_cm = 5.0)
+    geom = BS.CTGeometry(scanner; n_angles = protocol.views, fov_cm = 20.0, z_cm = 5.0)
     sim_opts = BS.SimOptions(; fidelity = :eict)
 
     e, w_1d = BS.resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner = scanner)
-    n_E    = length(e)
-    n_col  = scanner.detector_cols
-    n_row  = scanner.detector_rows
+    n_E = length(e)
+    n_col = scanner.detector_cols
+    n_row = scanner.detector_rows
 
     @testset "include_bowtie=false → 1D normalized spectrum" begin
-        ŵ = BS.apply_bowtie_to_spectrum(w_1d, e, scanner, geom, protocol;
-                                        include_bowtie = false)
+        ŵ = BS.apply_bowtie_to_spectrum(
+            w_1d, e, scanner, geom, protocol;
+            include_bowtie = false
+        )
         @test ndims(ŵ) == 1
         @test length(ŵ) == n_E
         @test eltype(ŵ) == Float32
-        @test sum(ŵ) ≈ 1.0f0  rtol = 1e-5
+        @test sum(ŵ) ≈ 1.0f0  rtol = 1.0e-5
         @test all(>=(0), ŵ)
     end
 
     @testset "scanner with no bowtie → 1D normalized spectrum (regardless of flag)" begin
         no_bowtie = BS.Scanner(
-            source_to_isocenter   = 540.0,
-            source_to_detector    = 1080.0,
-            detector_rows         = 4,
-            detector_cols         = 32,
-            detector_row_size     = 1.0,
-            detector_col_size     = 1.0,
-            detector_material     = :lumex,
-            detector_depth        = 3.0,
-            flat_filter_material  = :aluminum,
+            source_to_isocenter = 540.0,
+            source_to_detector = 1080.0,
+            detector_rows = 4,
+            detector_cols = 32,
+            detector_row_size = 1.0,
+            detector_col_size = 1.0,
+            detector_material = :lumex,
+            detector_depth = 3.0,
+            flat_filter_material = :aluminum,
             flat_filter_thickness = 2.5,
-            bowtie_filter         = :none,
+            bowtie_filter = :none,
         )
         geom_nb = BS.CTGeometry(no_bowtie; n_angles = protocol.views, fov_cm = 20.0, z_cm = 5.0)
-        ŵ = BS.apply_bowtie_to_spectrum(w_1d, e, no_bowtie, geom_nb, protocol;
-                                        include_bowtie = true)
+        ŵ = BS.apply_bowtie_to_spectrum(
+            w_1d, e, no_bowtie, geom_nb, protocol;
+            include_bowtie = true
+        )
         @test ndims(ŵ) == 1
-        @test sum(ŵ) ≈ 1.0f0  rtol = 1e-5
+        @test sum(ŵ) ≈ 1.0f0  rtol = 1.0e-5
     end
 
     @testset "bowtie ON → per-ray 3D ŵ, every ray normalized" begin
-        ŵ = BS.apply_bowtie_to_spectrum(w_1d, e, scanner, geom, protocol;
-                                        include_bowtie = true)
+        ŵ = BS.apply_bowtie_to_spectrum(
+            w_1d, e, scanner, geom, protocol;
+            include_bowtie = true
+        )
         @test ndims(ŵ) == 3
         @test size(ŵ) == (n_col, n_row, n_E)
         @test eltype(ŵ) == Float32
@@ -754,7 +768,7 @@ _ts("entering apply_bowtie_to_spectrum testset")
         @test all(>=(0), ŵ)
         # Every ray normalizes to 1.
         for row in 1:n_row, col in 1:n_col
-            @test sum(@view ŵ[col, row, :]) ≈ 1.0f0  rtol = 1e-4
+            @test sum(@view ŵ[col, row, :]) ≈ 1.0f0  rtol = 1.0e-4
         end
     end
 
@@ -770,26 +784,28 @@ _ts("entering apply_bowtie_to_spectrum testset")
         # measurably between center and edge.  Notebook scanners use ~800
         # columns at ~0.6 mm, ~25° fan.  Mirror that.
         wide = BS.Scanner(
-            source_to_isocenter   = 540.0,
-            source_to_detector    = 1080.0,
-            detector_rows         = 4,
-            detector_cols         = 800,
-            detector_row_size     = 1.0,
-            detector_col_size     = 0.6,
-            detector_material     = :lumex,
-            detector_depth        = 3.0,
-            flat_filter_material  = :aluminum,
+            source_to_isocenter = 540.0,
+            source_to_detector = 1080.0,
+            detector_rows = 4,
+            detector_cols = 800,
+            detector_row_size = 1.0,
+            detector_col_size = 0.6,
+            detector_material = :lumex,
+            detector_depth = 3.0,
+            flat_filter_material = :aluminum,
             flat_filter_thickness = 2.5,
-            bowtie_filter         = :ge_revolution_large,
+            bowtie_filter = :ge_revolution_large,
         )
         wide_geom = BS.CTGeometry(wide; n_angles = 16, fov_cm = 50.0, z_cm = 5.0)
-        ŵ = BS.apply_bowtie_to_spectrum(w_1d, e, wide, wide_geom, protocol;
-                                        include_bowtie = true)
+        ŵ = BS.apply_bowtie_to_spectrum(
+            w_1d, e, wide, wide_geom, protocol;
+            include_bowtie = true
+        )
         n_col_w = size(ŵ, 1)
-        mid_c   = n_col_w ÷ 2 + 1
-        mid_r   = size(ŵ, 2) ÷ 2 + 1
+        mid_c = n_col_w ÷ 2 + 1
+        mid_r = size(ŵ, 2) ÷ 2 + 1
         mean_E_center = sum(Float64(e[k]) * ŵ[mid_c, mid_r, k] for k in 1:n_E)
-        mean_E_edge   = sum(Float64(e[k]) * ŵ[1,     mid_r, k] for k in 1:n_E)
+        mean_E_edge = sum(Float64(e[k]) * ŵ[1, mid_r, k] for k in 1:n_E)
         @test mean_E_edge > mean_E_center
         # Effect should be physically meaningful, not a rounding artifact.
         @test (mean_E_edge - mean_E_center) > 0.5
@@ -798,31 +814,37 @@ end
 
 _ts("entering resolve_source_spectrum_with_bowtie testset")
 @testset "resolve_source_spectrum_with_bowtie" begin
-    scanner  = _toy_eict_scanner_with_bowtie()
+    scanner = _toy_eict_scanner_with_bowtie()
     protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 16, rotation_time = 0.5)
-    geom     = BS.CTGeometry(scanner; n_angles = protocol.views, fov_cm = 20.0, z_cm = 5.0)
+    geom = BS.CTGeometry(scanner; n_angles = protocol.views, fov_cm = 20.0, z_cm = 5.0)
     sim_opts = BS.SimOptions(; fidelity = :eict)
 
     @testset "composes _without_bowtie + apply_bowtie_to_spectrum" begin
         # The wrapper is just a composition — verify it produces the same
         # output as calling the two primitives by hand.
         e₁, w_1d = BS.resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner = scanner)
-        ŵ_manual = BS.apply_bowtie_to_spectrum(w_1d, e₁, scanner, geom, protocol;
-                                                include_bowtie = true)
-        e₂, ŵ_compose = BS.resolve_source_spectrum_with_bowtie(sim_opts, protocol;
-                                                                scanner = scanner, geom = geom,
-                                                                include_bowtie = true)
+        ŵ_manual = BS.apply_bowtie_to_spectrum(
+            w_1d, e₁, scanner, geom, protocol;
+            include_bowtie = true
+        )
+        e₂, ŵ_compose = BS.resolve_source_spectrum_with_bowtie(
+            sim_opts, protocol;
+            scanner = scanner, geom = geom,
+            include_bowtie = true
+        )
         @test e₂ == e₁
         @test ŵ_compose == ŵ_manual
     end
 
     @testset "include_bowtie=false → 1D output (caller can dispatch on ndims)" begin
-        e, ŵ = BS.resolve_source_spectrum_with_bowtie(sim_opts, protocol;
-                                                      scanner = scanner, geom = geom,
-                                                      include_bowtie = false)
+        e, ŵ = BS.resolve_source_spectrum_with_bowtie(
+            sim_opts, protocol;
+            scanner = scanner, geom = geom,
+            include_bowtie = false
+        )
         @test ndims(ŵ) == 1
         @test length(ŵ) == length(e)
-        @test sum(ŵ) ≈ 1.0f0  rtol = 1e-5
+        @test sum(ŵ) ≈ 1.0f0  rtol = 1.0e-5
     end
 end
 
@@ -838,61 +860,63 @@ _ts("entering build_physics_config testset")
 @testset "build_physics_config" begin
     function _scanner_with_full_hardware()
         BS.Scanner(
-            source_to_isocenter   = 540.0,
-            source_to_detector    = 1080.0,
-            detector_rows         = 4,
-            detector_cols         = 32,
-            detector_row_size     = 1.0,
-            detector_col_size     = 1.0,
-            detector_material     = :lumex,
-            detector_depth        = 3.0,
-            fill_factor_row       = 0.85,
-            fill_factor_col       = 0.92,
-            focal_spot_width      = 1.2,
-            focal_spot_length     = 1.0,
-            target_angle          = 7.5,
-            flat_filter_material  = :aluminum,
+            source_to_isocenter = 540.0,
+            source_to_detector = 1080.0,
+            detector_rows = 4,
+            detector_cols = 32,
+            detector_row_size = 1.0,
+            detector_col_size = 1.0,
+            detector_material = :lumex,
+            detector_depth = 3.0,
+            fill_factor_row = 0.85,
+            fill_factor_col = 0.92,
+            focal_spot_width = 1.2,
+            focal_spot_length = 1.0,
+            target_angle = 7.5,
+            flat_filter_material = :aluminum,
             flat_filter_thickness = 2.5,
         )
     end
     energies = collect(20.0:1.0:120.0)        # flat-ish proxy
-    weights  = ones(length(energies))         # uniform — mean ≈ midpoint
+    weights = ones(length(energies))         # uniform — mean ≈ midpoint
 
     @testset "all toggles off → all-nothing PhysicsConfig" begin
         sc = _scanner_with_full_hardware()
-        opts = BS.SimOptions(; fidelity = :eict,
+        opts = BS.SimOptions(;
+            fidelity = :eict,
             use_fill_factor = false, use_detector_efficiency = false,
             use_scatter = false, use_optical_crosstalk = false,
             use_focal_spot = false, use_noise = false, use_lag = false,
-            use_heel_effect = false)
+            use_heel_effect = false
+        )
         cfg = BS.build_physics_config(sc, opts, energies, weights)
-        @test cfg.fill_factor          === nothing
-        @test cfg.detector_efficiency  === nothing
-        @test cfg.scatter              === nothing
-        @test cfg.optical_crosstalk    === nothing
-        @test cfg.focal_spot           === nothing
-        @test cfg.lag                  === nothing
-        @test cfg.heel_effect          === nothing
+        @test cfg.fill_factor === nothing
+        @test cfg.detector_efficiency === nothing
+        @test cfg.scatter === nothing
+        @test cfg.optical_crosstalk === nothing
+        @test cfg.focal_spot === nothing
+        @test cfg.lag === nothing
+        @test cfg.heel_effect === nothing
     end
 
     @testset "each toggle on → corresponding field non-nothing + correct type" begin
         sc = _scanner_with_full_hardware()
         opts = BS.SimOptions(; fidelity = :eict)   # all on
         cfg = BS.build_physics_config(sc, opts, energies, weights)
-        @test cfg.fill_factor         isa BS.FillFactorModel
+        @test cfg.fill_factor isa BS.FillFactorModel
         @test cfg.detector_efficiency isa BS.DetectorEfficiency
-        @test cfg.scatter             isa BS.ScatterModel
-        @test cfg.optical_crosstalk   isa BS.OpticalCrosstalkModel
-        @test cfg.focal_spot          isa BS.FocalSpot
-        @test cfg.lag                 isa BS.LagModel
-        @test cfg.heel_effect         isa BS.HeelEffect
+        @test cfg.scatter isa BS.ScatterModel
+        @test cfg.optical_crosstalk isa BS.OpticalCrosstalkModel
+        @test cfg.focal_spot isa BS.FocalSpot
+        @test cfg.lag isa BS.LagModel
+        @test cfg.heel_effect isa BS.HeelEffect
     end
 
     @testset "spectrum-weighted mean energy + seed passthrough" begin
         sc = _scanner_with_full_hardware()
         # Asymmetric weights — assert exact closed-form mean.
         es = [40.0, 60.0, 100.0]
-        ws = [1.0,   3.0,   1.0]
+        ws = [1.0, 3.0, 1.0]
         expected_mean = sum(es .* ws) / sum(ws)
         opts = BS.SimOptions(; fidelity = :eict, seed = 4242)
         cfg = BS.build_physics_config(sc, opts, es, ws)
@@ -988,7 +1012,7 @@ _ts("entering reconstruct!(FDKReconWorkspace) testset")
         )
         geom = BS.CTGeometry(scanner; n_angles = 16, fov_cm = 20.0, z_cm = 5.0)
         sino = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
-        ws   = BS.create_fdk_recon_workspace(sino, geom, matrix_size)
+        ws = BS.create_fdk_recon_workspace(sino, geom, matrix_size)
         return (; scanner, geom, sino, ws, matrix_size)
     end
 
@@ -1051,9 +1075,9 @@ _ts("entering reconstruct!(FDKReconWorkspace) testset")
         nx, ny, nz = s.matrix_size
         sentinel = -0.04f0
         for z in 1:nz
-            @test s.ws.volume[1,  1,  z] ≈ sentinel
-            @test s.ws.volume[nx, 1,  z] ≈ sentinel
-            @test s.ws.volume[1,  ny, z] ≈ sentinel
+            @test s.ws.volume[1, 1, z] ≈ sentinel
+            @test s.ws.volume[nx, 1, z] ≈ sentinel
+            @test s.ws.volume[1, ny, z] ≈ sentinel
             @test s.ws.volume[nx, ny, z] ≈ sentinel
         end
         # Center voxel is inside the FOV → finite, almost certainly NOT
@@ -1112,7 +1136,7 @@ _ts("entering reconstruct!(HIRReconWorkspace) testset")
         # n_angles divisible by n_subsets (12) so OS subsets are balanced.
         geom = BS.CTGeometry(scanner; n_angles = 24, fov_cm = 20.0, z_cm = 5.0)
         sino = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
-        ws   = BS.create_hir_recon_workspace(sino, geom, matrix_size; strength = strength)
+        ws = BS.create_hir_recon_workspace(sino, geom, matrix_size; strength = strength)
         return (; scanner, geom, sino, ws, matrix_size, strength)
     end
 
@@ -1194,9 +1218,9 @@ _ts("entering reconstruct!(HIRReconWorkspace) testset")
         for str in 1:4
             p_lo = BS.get_hir_params(str)
             p_hi = BS.get_hir_params(str + 1)
-            @test p_lo.lambda      ≤ p_hi.lambda
+            @test p_lo.lambda ≤ p_hi.lambda
             @test p_lo.huber_delta ≥ p_hi.huber_delta
-            @test p_lo.nepochs     ≤ p_hi.nepochs
+            @test p_lo.nepochs ≤ p_hi.nepochs
         end
         # End-to-end smoke test: every strength runs through to completion
         # and returns a finite recon.
@@ -1230,7 +1254,7 @@ _ts("entering Workspace ctors — PCCT field invariants testset")
         # Dead-field guard — these were removed in the workspace audit.
         # If any of these reappear via a future commit, the test screams.
         @test !(:source_spectral_gpu in fieldnames(BS.PCCTWorkspace))
-        @test !(:native_scratch      in fieldnames(BS.PCCTWorkspace))
+        @test !(:native_scratch in fieldnames(BS.PCCTWorkspace))
 
         # Sinogram-shape buffers match (n_cols, n_rows, n_angles).
         sino_shape = (s.scanner.detector_cols, s.scanner.detector_rows, s.protocol.views)
@@ -1238,15 +1262,15 @@ _ts("entering Workspace ctors — PCCT field invariants testset")
         for b in 1:s.scanner.n_energy_bins
             @test size(ws.bins[b]) == sino_shape
         end
-        @test size(ws.sino_buf)  == sino_shape
-        @test size(ws.scratch)   == sino_shape
-        @test size(ws.combined)  == sino_shape
+        @test size(ws.sino_buf) == sino_shape
+        @test size(ws.scratch) == sino_shape
+        @test size(ws.combined) == sino_shape
 
         # Spectral arrays sized to bin / energy counts.
-        @test length(ws.I0_bins)      == s.scanner.n_energy_bins
+        @test length(ws.I0_bins) == s.scanner.n_energy_bins
         @test length(ws.I0_bins_norm) == s.scanner.n_energy_bins
         @test length(ws.thresholds_T) == s.scanner.n_energy_bins
-        @test length(ws.η)            == length(ws.energies)
+        @test length(ws.η) == length(ws.energies)
 
         # Pile-up wiring (matches sim_opts.use_pcct_pileup default = true for :pcct).
         @test ws.use_pcct_pileup === true
@@ -1255,15 +1279,15 @@ _ts("entering Workspace ctors — PCCT field invariants testset")
 
         # Native-res buffers are nothing when binning_factor == 1 (toy default).
         @test s.scanner.binning_factor == 1   # toy uses default
-        @test ws.native_geom            === nothing
-        @test ws.native_bins            === nothing
-        @test ws.native_sino_buf        === nothing
-        @test ws.native_outputs_flat    === nothing
+        @test ws.native_geom === nothing
+        @test ws.native_bins === nothing
+        @test ws.native_sino_buf === nothing
+        @test ws.native_outputs_flat === nothing
 
         # Tiled spectral buffers always allocated (the only forward-projection path).
-        @test size(ws.μ_table_gpu, 1)  == length(ws.mats)
+        @test size(ws.μ_table_gpu, 1) == length(ws.mats)
         @test size(ws.W_matrix_gpu, 2) == s.scanner.n_energy_bins
-        @test length(ws.outputs_flat)  == prod(sino_shape) * s.scanner.n_energy_bins
+        @test length(ws.outputs_flat) == prod(sino_shape) * s.scanner.n_energy_bins
     end
 end
 
@@ -1274,7 +1298,7 @@ _ts("entering Workspace ctors — PCCT pile-up off testset")
     else
         s = _toy_pcct_setup(use_pcct_pileup = false)
         @test s.ws.use_pcct_pileup === false
-        @test s.ws.pileup_S        === nothing
+        @test s.ws.pileup_S === nothing
     end
 end
 
@@ -1287,11 +1311,11 @@ _ts("entering Workspace ctors — EICT field invariants testset")
         ws = s.ws
         sino_shape = (s.scanner.detector_cols, s.scanner.detector_rows, s.protocol.views)
 
-        @test size(ws.sinogram)       == sino_shape
-        @test size(ws.μ_volume)       == size(s.phantom.mask)
-        @test size(ws.sino_mono)      == sino_shape
-        @test size(ws.I_transmitted)  == sino_shape
-        @test size(ws.air_scan)       == sino_shape
+        @test size(ws.sinogram) == sino_shape
+        @test size(ws.μ_volume) == size(s.phantom.mask)
+        @test size(ws.sino_mono) == sino_shape
+        @test size(ws.I_transmitted) == sino_shape
+        @test size(ws.air_scan) == sino_shape
         @test size(ws.physics_output) == sino_shape
 
         # Pre-computed noise constants from Pass 2 cleanup.
@@ -1299,7 +1323,7 @@ _ts("entering Workspace ctors — EICT field invariants testset")
         @test ws.σ_e_photon isa Float32 && ws.σ_e_photon ≥ 0
 
         # weights_norm is normalized to sum to 1.
-        @test sum(Float64.(ws.weights_norm)) ≈ 1.0  rtol = 1e-5
+        @test sum(Float64.(ws.weights_norm)) ≈ 1.0  rtol = 1.0e-5
         @test length(ws.weights_norm) == length(ws.energies)
 
         # μ_table dimensions: (n_regions, n_energies)
@@ -1321,8 +1345,8 @@ _ts("entering Workspace ctors — EICT spectrum_override testset")
             detector_material = :lumex, detector_depth = 3.0,
             flat_filter_material = :aluminum, flat_filter_thickness = 2.5,
         )
-        protocol   = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 16, rotation_time = 0.5)
-        sim_opts   = BS.SimOptions(; fidelity = :eict)
+        protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 16, rotation_time = 0.5)
+        sim_opts = BS.SimOptions(; fidelity = :eict)
         recon_opts = BS.ReconOptions(matrix_size = (32, 32, 4), fov_cm = 20.0)
         phantom_cpu = BS.create_gammex_472(n_voxels = 32, fov_cm = 20.0, z_cm = 2.0)
         phantom = BS.Phantom(
@@ -1330,35 +1354,40 @@ _ts("entering Workspace ctors — EICT spectrum_override testset")
             phantom_cpu.voxel_size, phantom_cpu.origin, phantom_cpu.extent,
         )
 
-        ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
-                                       spectrum_override = ([70.0], [1.0e6]))
+        ws = BS.create_eict_workspace(
+            scanner, protocol, sim_opts, recon_opts, phantom;
+            spectrum_override = ([70.0], [1.0e6])
+        )
         @test length(ws.energies) == 1
-        @test ws.energies[1]      == 70.0
-        @test length(ws.weights)  == 1
-        @test ws.weights[1]       == 1.0e6
+        @test ws.energies[1] == 70.0
+        @test length(ws.weights) == 1
+        @test ws.weights[1] == 1.0e6
 
         # Mismatched lengths must throw.
         @test_throws ArgumentError BS.create_eict_workspace(
             scanner, protocol, sim_opts, recon_opts, phantom;
-            spectrum_override = ([70.0, 100.0], [1.0e6]))
+            spectrum_override = ([70.0, 100.0], [1.0e6])
+        )
     end
 end
 
 _ts("entering Workspace ctors — FDKReconWorkspace field invariants testset")
 @testset "create_fdk_recon_workspace — field invariants" begin
-    scanner  = BS.Scanner(source_to_isocenter = 540.0, source_to_detector = 1080.0,
-                          detector_rows = 8, detector_cols = 32,
-                          detector_row_size = 1.0, detector_col_size = 1.0)
-    geom     = BS.CTGeometry(scanner; n_angles = 16, fov_cm = 20.0, z_cm = 5.0)
-    sino     = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
-    matsize  = (16, 16, 4)
+    scanner = BS.Scanner(
+        source_to_isocenter = 540.0, source_to_detector = 1080.0,
+        detector_rows = 8, detector_cols = 32,
+        detector_row_size = 1.0, detector_col_size = 1.0
+    )
+    geom = BS.CTGeometry(scanner; n_angles = 16, fov_cm = 20.0, z_cm = 5.0)
+    sino = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
+    matsize = (16, 16, 4)
 
     @testset "default filter (StandardFilter)" begin
         ws = BS.create_fdk_recon_workspace(sino, geom, matsize)
-        @test size(ws.volume)       == matsize
-        @test size(ws.filtered)     == size(sino)
+        @test size(ws.volume) == matsize
+        @test size(ws.filtered) == size(sino)
         @test size(ws.conv_scratch) == size(sino)
-        @test eltype(ws.volume)     == Float32
+        @test eltype(ws.volume) == Float32
         # Filter kernel sized ≤ n_cols and ≥ 32 (lower bound from `max(..., 32)` in ctor).
         @test 32 ≤ length(ws.filter_kernel) ≤ geom.n_cols
         # Volume zeroed at construction.
@@ -1366,15 +1395,17 @@ _ts("entering Workspace ctors — FDKReconWorkspace field invariants testset")
         # Geometry arrays match underlying CTGeometry shape.
         @test size(ws.bp_source_positions) == size(geom.source_positions)
         @test size(ws.bp_detector_centers) == size(geom.detector_centers)
-        @test size(ws.bp_detector_u)       == size(geom.detector_u)
-        @test size(ws.bp_detector_v)       == size(geom.detector_v)
+        @test size(ws.bp_detector_u) == size(geom.detector_u)
+        @test size(ws.bp_detector_v) == size(geom.detector_v)
     end
 
     @testset "filter Symbol → FilterType resolution" begin
         # Every FBP filter symbol from the docstring should resolve and
         # produce a valid kernel.
-        for f in (:ram_lak, :shepp_logan, :cosine, :hamming, :hann,
-                  :standard, :soft, :bone)
+        for f in (
+                :ram_lak, :shepp_logan, :cosine, :hamming, :hann,
+                :standard, :soft, :bone,
+            )
             ws = BS.create_fdk_recon_workspace(sino, geom, matsize; filter = f)
             @test 32 ≤ length(ws.filter_kernel) ≤ geom.n_cols
         end
@@ -1388,31 +1419,33 @@ _ts("entering Workspace ctors — FDKReconWorkspace field invariants testset")
 
     @testset "T= overrides element type" begin
         ws64 = BS.create_fdk_recon_workspace(sino, geom, matsize; T = Float64)
-        @test eltype(ws64.volume)        == Float64
+        @test eltype(ws64.volume) == Float64
         @test eltype(ws64.filter_kernel) == Float64
     end
 end
 
 _ts("entering Workspace ctors — HIRReconWorkspace field invariants testset")
 @testset "create_hir_recon_workspace — field invariants" begin
-    scanner  = BS.Scanner(source_to_isocenter = 540.0, source_to_detector = 1080.0,
-                          detector_rows = 8, detector_cols = 32,
-                          detector_row_size = 1.0, detector_col_size = 1.0)
+    scanner = BS.Scanner(
+        source_to_isocenter = 540.0, source_to_detector = 1080.0,
+        detector_rows = 8, detector_cols = 32,
+        detector_row_size = 1.0, detector_col_size = 1.0
+    )
     # n_angles divisible by 12 for clean OS subsets.
-    geom     = BS.CTGeometry(scanner; n_angles = 24, fov_cm = 20.0, z_cm = 5.0)
-    sino     = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
-    matsize  = (16, 16, 4)
+    geom = BS.CTGeometry(scanner; n_angles = 24, fov_cm = 20.0, z_cm = 5.0)
+    sino = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
+    matsize = (16, 16, 4)
 
     @testset "FDK init buffers + iteration scratch" begin
         ws = BS.create_hir_recon_workspace(sino, geom, matsize; strength = 3)
-        @test size(ws.volume)       == matsize
-        @test size(ws.filtered)     == size(sino)
+        @test size(ws.volume) == matsize
+        @test size(ws.filtered) == size(sino)
         @test size(ws.conv_scratch) == size(sino)
-        @test size(ws.W_proj)       == size(sino)
-        @test size(ws.V_inv)        == matsize
+        @test size(ws.W_proj) == size(sino)
+        @test size(ws.V_inv) == matsize
         @test size(ws.stat_weights) == size(sino)
-        @test size(ws.correction)   == matsize
-        @test size(ws.reg_grad)     == matsize
+        @test size(ws.correction) == matsize
+        @test size(ws.reg_grad) == matsize
         @test all(==(0), ws.volume)
     end
 
@@ -1426,9 +1459,9 @@ _ts("entering Workspace ctors — HIRReconWorkspace field invariants testset")
         @test sort!(reduce(vcat, ws.subsets)) == collect(1:geom.n_angles)
         # Subset buffers sized to max(subset).
         max_sub = maximum(length(s) for s in ws.subsets)
-        @test size(ws.subset_sino_buf, 3)         == max_sub
-        @test size(ws.subset_Ax_buf, 3)           == max_sub
-        @test size(ws.subset_W_proj_buf, 3)       == max_sub
+        @test size(ws.subset_sino_buf, 3) == max_sub
+        @test size(ws.subset_Ax_buf, 3) == max_sub
+        @test size(ws.subset_W_proj_buf, 3) == max_sub
         @test size(ws.subset_stat_weights_buf, 3) == max_sub
     end
 
@@ -1473,7 +1506,7 @@ _ts("entering simulate!(EICTWorkspace) — scatter on/off testset")
         # Scatter must measurably perturb the line integrals (DAS subtraction
         # of estimated scatter happens before the −log step, so the sinogram
         # does not equal the scatter-OFF sinogram).
-        @test maximum(abs.(sino_on .- sino_off)) > 1e-6
+        @test maximum(abs.(sino_on .- sino_off)) > 1.0e-6
         @test all(isfinite, sino_on)
     end
 end
