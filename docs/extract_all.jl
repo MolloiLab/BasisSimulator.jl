@@ -62,19 +62,35 @@ end
 
 needs_rebuild(slug::AbstractString)::Bool = cached_hash(slug) != source_hash(slug)
 
-"""Render one notebook → standalone HTML, with the source hash embedded
-in a meta tag so subsequent runs can detect cache hits."""
+"""Render one notebook → standalone HTML.
+
+Returns the SHA-256 hash actually embedded in the HTML so the caller can
+diff against the pre-render hash and report when Pluto's normalization
+shifted the source.
+
+Two safeguards against the "every run re-renders" loop:
+
+  1. The `ServerSession` is built with `disable_writing_notebook_files=true`
+     so Pluto's auto-save-on-open doesn't mutate the source `.jl`. The
+     user's bytes stay byte-identical to what they wrote.
+  2. We recompute the hash AFTER `SessionActions.open` returns and embed
+     that post-render hash in the HTML. Belt-and-suspenders: if any future
+     Pluto release ignores the disable flag, the hash we embed still
+     matches what's on disk going forward, so subsequent runs see a cache
+     hit instead of looping.
+"""
 function render_notebook!(session::Pluto.ServerSession,
                           src_path::AbstractString,
-                          dst_path::AbstractString,
-                          hash::AbstractString)
+                          dst_path::AbstractString)
     nb = Pluto.SessionActions.open(session, src_path; run_async = false)
     try
+        post_hash = bytes2hex(sha256(read(src_path)))
         # `header_html` is spliced into the <head> of the exported HTML.
         # Using a meta tag keeps the hash machine-readable + invisible.
-        header = """<meta name="$(HASH_META)" content="$(hash)">"""
+        header = """<meta name="$(HASH_META)" content="$(post_hash)">"""
         html   = Pluto.generate_html(nb; header_html = header)
         write(dst_path, html)
+        return post_hash
     finally
         Pluto.SessionActions.shutdown(session, nb)
     end
@@ -115,14 +131,22 @@ function export_notebooks()
     println("[notebooks] rendering $(length(to_render))/$(length(slugs)) " *
             (force ? "(forced)" : "(source changed)") * "…")
 
-    session = Pluto.ServerSession()
+    # disable_writing_notebook_files=true: keep Pluto from re-saving the
+    # source .jl during open() — that's the root of the "every run re-renders"
+    # loop (Pluto normalizes the source bytes between hash-pre-render and
+    # hash-post-render).  See render_notebook! for the second safeguard.
+    options = Pluto.Configuration.from_flat_kwargs(disable_writing_notebook_files = true)
+    session = Pluto.ServerSession(; options = options)
     for slug in to_render
         src  = joinpath(NOTEBOOKS_DIR, "$(slug).jl")
         dst  = joinpath(STATIC_OUT,    "$(slug).html")
-        hash = source_hash(slug)
-        println("  ▸ $(slug)  (hash $(first(hash, 12))…)")
+        pre_hash = source_hash(slug)
+        println("  ▸ $(slug)  (hash $(first(pre_hash, 12))…)")
         t0 = time()
-        render_notebook!(session, src, dst, hash)
+        post_hash = render_notebook!(session, src, dst)
+        if post_hash != pre_hash
+            println("    ⚠ Pluto normalized source: hash $(first(pre_hash, 12))… → $(first(post_hash, 12))… (embedding post-render hash so cache stays consistent)")
+        end
         kb = round(filesize(dst) / 1024; digits = 1)
         println("    ✓ $(round(time() - t0; digits = 1))s  →  $(kb) KB")
     end
