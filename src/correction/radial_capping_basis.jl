@@ -40,11 +40,11 @@ FOV-edge drops for diagnostics.
 function apply_radial_capping_basis!(
         a::AbstractArray{Float32, 3},
         c::AbstractArray{Float32, 3};
-        fov_cm::Real    = 35.0,
+        fov_cm::Real = 35.0,
         poly_order::Integer = 2,
-        q_lo::Real      = 0.25,
-        q_hi::Real      = 0.75,
-        verbose::Bool   = true,
+        q_lo::Real = 0.25,
+        q_hi::Real = 0.75,
+        verbose::Bool = true,
     )
     nx, ny, nz = size(a)
     pixel_cm = Float64(fov_cm) / nx
@@ -73,7 +73,7 @@ function apply_radial_capping_basis!(
             hi = quantile(in_fov, q_hi_f)
 
             radii = Float64[]
-            vals  = Float64[]
+            vals = Float64[]
             for j in 1:ny, i in 1:nx
                 if (i - cx)^2 + (j - cy)^2 <= r_fov_sq
                     v = Float64(slice[i, j])
@@ -89,7 +89,7 @@ function apply_radial_capping_basis!(
             n_coeffs = poly_order_i + 1
             A = zeros(length(radii), n_coeffs)
             for (k, r_cm) in enumerate(radii), p in 0:poly_order_i
-                A[k, p+1] = r_cm^(2p)
+                A[k, p + 1] = r_cm^(2p)
             end
             coeffs = A \ vals
             coeffs_all[:, iz] .= coeffs
@@ -97,12 +97,12 @@ function apply_radial_capping_basis!(
             # Subtract offset − c₀ ⇒ keep DC (r=0), flatten curvature.
             target = coeffs[1]
             for j in 1:ny, i in 1:nx
-                r_cm   = sqrt(((i - cx) * pixel_cm)^2 + ((j - cy) * pixel_cm)^2)
-                offset = sum(coeffs[p+1] * r_cm^(2p) for p in 0:poly_order_i)
+                r_cm = sqrt(((i - cx) * pixel_cm)^2 + ((j - cy) * pixel_cm)^2)
+                offset = sum(coeffs[p + 1] * r_cm^(2p) for p in 0:poly_order_i)
                 slice[i, j] -= Float32(offset - target)
             end
         end
-        coeffs_all
+        return coeffs_all
     end
 
     t0 = time()
@@ -122,16 +122,18 @@ function apply_radial_capping_basis!(
         @info "  c(r): mean c₁=$(round(mean_c1_c; sigdigits = 3))/cm²   → edge drop ≈ $(round(drop_c; sigdigits = 3))"
     end
 
-    (coeffs_a = coeffs_a,
-     coeffs_c = coeffs_c,
-     mean_c1_a = mean_c1_a,
-     mean_c1_c = mean_c1_c,
-     edge_drop_a = drop_a,
-     edge_drop_c = drop_c,
-     fov_cm = Float64(fov_cm),
-     poly_order = poly_order_i,
-     q_lo = q_lo_f,
-     q_hi = q_hi_f)
+    return (
+        coeffs_a = coeffs_a,
+        coeffs_c = coeffs_c,
+        mean_c1_a = mean_c1_a,
+        mean_c1_c = mean_c1_c,
+        edge_drop_a = drop_a,
+        edge_drop_c = drop_c,
+        fov_cm = Float64(fov_cm),
+        poly_order = poly_order_i,
+        q_lo = q_lo_f,
+        q_hi = q_hi_f,
+    )
 end
 
 export apply_radial_capping_basis!

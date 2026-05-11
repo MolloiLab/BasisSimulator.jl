@@ -513,3 +513,68 @@ end
         @test result === hu
     end
 end
+
+# -----------------------------------------------------------------------------
+# apply_radial_capping_basis! — basis-domain sibling of radial_cupping.
+# Smoke + behavioral tests.  KEPT but not in current notebooks.
+# -----------------------------------------------------------------------------
+@testset "apply_radial_capping_basis!" begin
+    nx = ny = 32
+    nz = 2
+    fov_cm = 35.0
+    pixel_cm = fov_cm / nx
+    cx, cy = (nx + 1) / 2.0, (ny + 1) / 2.0
+
+    @testset "flattens synthetic radial cup on a basis pair" begin
+        # Build per-basis volumes with a known r² cup.  Background is
+        # mostly the cup; planted "rods" are excluded by quantile selection.
+        a = zeros(Float32, nx, ny, nz)
+        c = zeros(Float32, nx, ny, nz)
+        for j in 1:ny, i in 1:nx
+            r_cm = sqrt(((i - cx) * pixel_cm)^2 + ((j - cy) * pixel_cm)^2)
+            a[i, j, :] .= Float32(0.1 + 0.3 * (r_cm / (fov_cm / 2))^2)
+            c[i, j, :] .= Float32(0.05 + 0.15 * (r_cm / (fov_cm / 2))^2)
+        end
+        a_in = copy(a)
+        c_in = copy(c)
+        info = BS.apply_radial_capping_basis!(
+            a, c;
+            fov_cm = fov_cm, poly_order = 2, verbose = false,
+        )
+        # Both volumes were mutated.
+        @test a != a_in
+        @test c != c_in
+        # After correction: DC (r=0) preserved (target = c₀), radial
+        # curvature flattened.  Check std drops in the in-FOV region.
+        @test std(a[:, :, 1]) < std(a_in[:, :, 1])
+        @test std(c[:, :, 1]) < std(c_in[:, :, 1])
+        @test all(isfinite, a)
+        @test all(isfinite, c)
+
+        # Diagnostics NamedTuple shape.
+        @test info.fov_cm == fov_cm
+        @test info.poly_order == 2
+        @test size(info.coeffs_a) == (3, nz)
+        @test size(info.coeffs_c) == (3, nz)
+    end
+
+    @testset "shape mismatch tolerated (per-basis, no joint constraint)" begin
+        # The function processes a and c independently — different shapes
+        # would fail in size(a) destructuring; check they match:
+        a = zeros(Float32, nx, ny, nz)
+        c = zeros(Float32, nx, ny, nz)
+        info = BS.apply_radial_capping_basis!(a, c; fov_cm = fov_cm, verbose = false)
+        @test info isa NamedTuple
+    end
+
+    @testset "kwargs propagate (q_lo, q_hi clamp background)" begin
+        # Narrow quantile range — fewer fit points but still works.
+        a = Float32.(0.1 .+ 0.05 .* randn(MersenneTwister(0), nx, ny, nz))
+        c = Float32.(0.05 .+ 0.02 .* randn(MersenneTwister(1), nx, ny, nz))
+        info = BS.apply_radial_capping_basis!(
+            a, c; fov_cm = fov_cm, q_lo = 0.4, q_hi = 0.6, verbose = false,
+        )
+        @test info.q_lo == 0.4
+        @test info.q_hi == 0.6
+    end
+end

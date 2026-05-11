@@ -15,4 +15,7 @@ const BS = BasisSimulator
     @testset "correction/" begin
         include("correction.jl")
     end
+    @testset "denoising/" begin
+        include("denoising.jl")
+    end
 end

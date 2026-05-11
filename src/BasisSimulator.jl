@@ -122,8 +122,10 @@ include("source/heel_effect.jl")
 include("correction/bhc_sinogram.jl")
 # Image-domain BHC refinement (So et al. 2009)
 include("correction/bhc_image_domain.jl")
-# Post-recon residual radial cupping/capping correction
+# Post-recon residual radial cupping/capping correction (HU domain)
 include("correction/radial_cupping.jl")
+# Per-basis radial capping correction (basis domain — sibling of radial_cupping)
+include("correction/radial_capping_basis.jl")
 
 # PCCT pulse-pileup correction (inverse of the MC pile-up applied by simulate!)
 include("correction/pcct_pileup_correction.jl")
@@ -243,12 +245,6 @@ include("reconstruction/vmi/pcct_basis.jl")
 # Alvarez/Macovski 1976 sinogram-domain decomposition.
 include("reconstruction/vmi/pcct_calibration.jl")
 
-# Kalender/Klotz/Kostaridou 1988 ACNR (FFT Tikhonov smoother on s_⊥)
-include("reconstruction/vmi/acnr.jl")
-
-# Per-basis radial capping correction (even-polynomial fit)
-include("reconstruction/vmi/capping.jl")
-
 # VMI synthesis — μ(E) = p(E)·a + q(E)·c → HU
 include("reconstruction/vmi/vmi_synth.jl")
 
@@ -256,13 +252,34 @@ include("reconstruction/vmi/vmi_synth.jl")
 # Optional `phantom_mask` kwarg masks the phantom-air ring artifact.
 include("reconstruction/vmi/mono_plus.jl")
 
+# =============================================================================
+# Denoising — sinogram-domain and image-domain noise reduction
+# =============================================================================
+#
+# Live in the current notebooks:
+#   - sino_sfjsd.jl : two-channel projection-domain SF-JSD (Black, in prep.)
+#                     used by nb03/04/07
+#   - median_z.jl   : z-direction median filter (BasisSim-original)
+#                     used by nb03/04/07
+#
+# Kept as advertised tools (not in current notebooks, but exported + tested):
+#   - sino_svd.jl : N-channel projection-domain SVD joint denoiser
+#                   (predecessor of SF-JSD)
+#   - rskr.jl     : Rank-Sparse Kernel Regression — joint multi-channel
+#                   image-domain denoiser (Clark/Badea 2023).  2-/4-ch.
+#   - acnr.jl     : Anti-Correlated Noise Reduction sinogram-domain
+#                   (Kalender/Klotz/Kostaridou 1988)
+
 # Z-direction median filter — edge-preserving impulse-noise removal that
 # exploits z-axis correlation in z-invariant phantoms (Gammex 472).
-include("reconstruction/vmi/median_filter.jl")
+include("denoising/median_z.jl")
 
 # RSKR (Rank-Sparse Kernel Regression) — joint multi-channel basis-pair
 # denoiser (Clark/Badea 2023).  2-channel + 4-channel variants.
-include("reconstruction/vmi/rskr.jl")
+include("denoising/rskr.jl")
+
+# Kalender/Klotz/Kostaridou 1988 ACNR (FFT Tikhonov smoother on s_⊥)
+include("denoising/acnr.jl")
 
 # N-channel projection-domain SVD joint denoiser — per-row SVD + 2D
 # Gaussian on U[:, 2..N] residual components.  Works on any set of

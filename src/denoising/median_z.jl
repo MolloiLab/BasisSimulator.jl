@@ -61,7 +61,7 @@ function apply_median_z!(
             out[i, j, k] = buf[(n + 1) ÷ 2]
         end
     end
-    out
+    return out
 end
 
 """
@@ -81,7 +81,7 @@ function apply_median_z(
     adjacent_slices == 0 && return copy(src)
     out = similar(src)
     apply_median_z!(out, src; adjacent_slices = adjacent_slices)
-    out
+    return out
 end
 
 export apply_median_z, apply_median_z!

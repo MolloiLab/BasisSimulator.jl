@@ -70,7 +70,7 @@ function apply_acnr!(
 
     c_a_f = Float64(c_a)
     c_b_f = Float64(c_b)
-    c_sq  = c_a_f^2 + c_b_f^2
+    c_sq = c_a_f^2 + c_b_f^2
     c_sq > 0 || error("apply_acnr!: (c_a, c_b) both zero; signal direction undefined.")
 
     # s_⊥ = signal-orthogonal channel  (noise-only when c_a, c_b are the
@@ -89,8 +89,10 @@ function apply_acnr!(
         λ_f = Float64(λ)
         kx_sq = [4 * sin(π * (i - 1) / n1)^2 for i in 1:n1]
         ky_sq = [4 * sin(π * (j - 1) / n2)^2 for j in 1:n2]
-        ("Tikhonov (λ=$(λ_f), radius≈$(round(sqrt(λ_f); digits=2)) px)",
-         [1.0 / (1.0 + λ_f * (kx_sq[i] + ky_sq[j])) for i in 1:n1, j in 1:n2])
+        (
+            "Tikhonov (λ=$(λ_f), radius≈$(round(sqrt(λ_f); digits = 2)) px)",
+            [1.0 / (1.0 + λ_f * (kx_sq[i] + ky_sq[j])) for i in 1:n1, j in 1:n2],
+        )
     end
 
     t0 = time()
@@ -110,21 +112,23 @@ function apply_acnr!(
     @. sino_a = sino_a + α_a * n_orth
     @. sino_b = sino_b - α_b * n_orth
 
-    σ_sorth  = std(s_orth)
+    σ_sorth = std(s_orth)
     σ_smooth = std(s_smooth)
-    σ_n      = std(n_orth)
+    σ_n = std(n_orth)
 
     if verbose
-        @info "ACNR smoother=$(smoother_name), γ=$(γ_f), c_a=$(round(c_a_f; sigdigits=3)), c_b=$(round(c_b_f; sigdigits=3)), $(round(dt * 1000; digits = 1)) ms"
-        @info "  kept (signal): std(s_smooth)=$(round(σ_smooth; sigdigits=3))   ($(round(100 * σ_smooth / max(σ_sorth, eps()); digits=1))% of s_⊥ retained)"
-        @info "  removed (noise): std(n_⊥)=$(round(σ_n; sigdigits=3))             ($(round(100 * σ_n / max(σ_sorth, eps()); digits=1))% of s_⊥ extracted as noise)"
+        @info "ACNR smoother=$(smoother_name), γ=$(γ_f), c_a=$(round(c_a_f; sigdigits = 3)), c_b=$(round(c_b_f; sigdigits = 3)), $(round(dt * 1000; digits = 1)) ms"
+        @info "  kept (signal): std(s_smooth)=$(round(σ_smooth; sigdigits = 3))   ($(round(100 * σ_smooth / max(σ_sorth, eps()); digits = 1))% of s_⊥ retained)"
+        @info "  removed (noise): std(n_⊥)=$(round(σ_n; sigdigits = 3))             ($(round(100 * σ_n / max(σ_sorth, eps()); digits = 1))% of s_⊥ extracted as noise)"
     end
 
-    (σ_n_orth   = σ_n,
-     σ_s_orth   = σ_sorth,
-     σ_s_smooth = σ_smooth,
-     smoother   = smoother_name,
-     γ          = Float64(γ_f))
+    return (
+        σ_n_orth = σ_n,
+        σ_s_orth = σ_sorth,
+        σ_s_smooth = σ_smooth,
+        smoother = smoother_name,
+        γ = Float64(γ_f),
+    )
 end
 
 """
@@ -140,7 +144,7 @@ function apply_acnr(
     a_out = copy(sino_a)
     b_out = copy(sino_b)
     info = apply_acnr!(a_out, b_out; kwargs...)
-    (a_out, b_out, info)
+    return (a_out, b_out, info)
 end
 
 export apply_acnr!, apply_acnr

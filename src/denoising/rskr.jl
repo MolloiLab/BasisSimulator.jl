@@ -43,14 +43,14 @@ function mad_haar_σ(vol::AbstractArray{Float32, 3})
     mid_z = max(1, n_z ÷ 2 + 1)
     slice = @view vol[:, :, mid_z]
     n_pairs = (n_col - 1) * (n_row - 1)
-    absvec  = Vector{Float32}(undef, n_pairs)
+    absvec = Vector{Float32}(undef, n_pairs)
     idx = 0
-    @inbounds for j in 1:n_row-1, i in 1:n_col-1
-        v = slice[i+1, j+1] - slice[i+1, j] - slice[i, j+1] + slice[i, j]
+    @inbounds for j in 1:(n_row - 1), i in 1:(n_col - 1)
+        v = slice[i + 1, j + 1] - slice[i + 1, j] - slice[i, j + 1] + slice[i, j]
         idx += 1
         absvec[idx] = abs(v)
     end
-    Float32(1.4826) * Float32(median(absvec))
+    return Float32(1.4826) * Float32(median(absvec))
 end
 
 
@@ -70,14 +70,14 @@ all be on the same backend (Metal/CUDA) and have matching shapes.
 """
 function joint_bf_2ch_gpu!(
         out1::AbstractArray{Float32, 3}, out2::AbstractArray{Float32, 3},
-        in1::AbstractArray{Float32, 3},  in2::AbstractArray{Float32, 3},
+        in1::AbstractArray{Float32, 3}, in2::AbstractArray{Float32, 3},
         σ1::Float32, σ2::Float32, h::Float32, radius::Int,
     )
     n_col, n_row, n_z = size(in1)
-    inv_2hσ²_1 = 1f0 / (2f0 * (h * σ1) * (h * σ1) + 1f-30)
-    inv_2hσ²_2 = 1f0 / (2f0 * (h * σ2) * (h * σ2) + 1f-30)
+    inv_2hσ²_1 = 1.0f0 / (2.0f0 * (h * σ1) * (h * σ1) + 1.0f-30)
+    inv_2hσ²_2 = 1.0f0 / (2.0f0 * (h * σ2) * (h * σ2) + 1.0f-30)
     radius² = Int32(radius * radius)
-    r_i32   = Int32(radius)
+    r_i32 = Int32(radius)
 
     AK.foreachindex(in1) do idx
         i0 = idx - 1
@@ -86,7 +86,7 @@ function joint_bf_2ch_gpu!(
         zi = ((i0 ÷ (n_col * n_row)) % n_z) + 1
 
         v1 = in1[ci, ri, zi]; v2 = in2[ci, ri, zi]
-        sum_1 = 0f0; sum_2 = 0f0; wtot = 0f0
+        sum_1 = 0.0f0; sum_2 = 0.0f0; wtot = 0.0f0
 
         for dz in -r_i32:r_i32
             zi2 = zi + dz
@@ -110,16 +110,16 @@ function joint_bf_2ch_gpu!(
                     w = exp(log_w)
                     sum_1 += w * nv1
                     sum_2 += w * nv2
-                    wtot  += w
+                    wtot += w
                 end
             end
         end
 
-        inv_w = 1f0 / max(wtot, 1f-30)
+        inv_w = 1.0f0 / max(wtot, 1.0f-30)
         out1[ci, ri, zi] = sum_1 * inv_w
         out2[ci, ri, zi] = sum_2 * inv_w
     end
-    nothing
+    return nothing
 end
 
 
@@ -137,18 +137,18 @@ as [`joint_bf_2ch_gpu!`](@ref) with four channels.
 function joint_bf_4ch_gpu!(
         out1::AbstractArray{Float32, 3}, out2::AbstractArray{Float32, 3},
         out3::AbstractArray{Float32, 3}, out4::AbstractArray{Float32, 3},
-        in1::AbstractArray{Float32, 3},  in2::AbstractArray{Float32, 3},
-        in3::AbstractArray{Float32, 3},  in4::AbstractArray{Float32, 3},
+        in1::AbstractArray{Float32, 3}, in2::AbstractArray{Float32, 3},
+        in3::AbstractArray{Float32, 3}, in4::AbstractArray{Float32, 3},
         σ1::Float32, σ2::Float32, σ3::Float32, σ4::Float32,
         h::Float32, radius::Int,
     )
     n_col, n_row, n_z = size(in1)
-    inv_2hσ²_1 = 1f0 / (2f0 * (h * σ1) * (h * σ1) + 1f-30)
-    inv_2hσ²_2 = 1f0 / (2f0 * (h * σ2) * (h * σ2) + 1f-30)
-    inv_2hσ²_3 = 1f0 / (2f0 * (h * σ3) * (h * σ3) + 1f-30)
-    inv_2hσ²_4 = 1f0 / (2f0 * (h * σ4) * (h * σ4) + 1f-30)
+    inv_2hσ²_1 = 1.0f0 / (2.0f0 * (h * σ1) * (h * σ1) + 1.0f-30)
+    inv_2hσ²_2 = 1.0f0 / (2.0f0 * (h * σ2) * (h * σ2) + 1.0f-30)
+    inv_2hσ²_3 = 1.0f0 / (2.0f0 * (h * σ3) * (h * σ3) + 1.0f-30)
+    inv_2hσ²_4 = 1.0f0 / (2.0f0 * (h * σ4) * (h * σ4) + 1.0f-30)
     radius² = Int32(radius * radius)
-    r_i32   = Int32(radius)
+    r_i32 = Int32(radius)
 
     AK.foreachindex(in1) do idx
         i0 = idx - 1
@@ -158,8 +158,8 @@ function joint_bf_4ch_gpu!(
 
         v1 = in1[ci, ri, zi]; v2 = in2[ci, ri, zi]
         v3 = in3[ci, ri, zi]; v4 = in4[ci, ri, zi]
-        sum_1 = 0f0; sum_2 = 0f0; sum_3 = 0f0; sum_4 = 0f0
-        wtot  = 0f0
+        sum_1 = 0.0f0; sum_2 = 0.0f0; sum_3 = 0.0f0; sum_4 = 0.0f0
+        wtot = 0.0f0
 
         for dz in -r_i32:r_i32
             zi2 = zi + dz
@@ -185,26 +185,26 @@ function joint_bf_4ch_gpu!(
                     d1 = nv1 - v1; d2 = nv2 - v2
                     d3 = nv3 - v3; d4 = nv4 - v4
                     log_w = -d1 * d1 * inv_2hσ²_1 -
-                             d2 * d2 * inv_2hσ²_2 -
-                             d3 * d3 * inv_2hσ²_3 -
-                             d4 * d4 * inv_2hσ²_4
+                        d2 * d2 * inv_2hσ²_2 -
+                        d3 * d3 * inv_2hσ²_3 -
+                        d4 * d4 * inv_2hσ²_4
                     w = exp(log_w)
                     sum_1 += w * nv1
                     sum_2 += w * nv2
                     sum_3 += w * nv3
                     sum_4 += w * nv4
-                    wtot  += w
+                    wtot += w
                 end
             end
         end
 
-        inv_w = 1f0 / max(wtot, 1f-30)
+        inv_w = 1.0f0 / max(wtot, 1.0f-30)
         out1[ci, ri, zi] = sum_1 * inv_w
         out2[ci, ri, zi] = sum_2 * inv_w
         out3[ci, ri, zi] = sum_3 * inv_w
         out4[ci, ri, zi] = sum_4 * inv_w
     end
-    nothing
+    return nothing
 end
 
 
@@ -258,12 +258,12 @@ out = BS.apply_rskr([vol_low, vol_high]; n_iter = 2, h_param = 2.0, radius = 2)
 """
 function apply_rskr(
         vols::Vector{Array{Float32, 3}};
-        n_iter::Int       = 4,
-        h_param::Real     = 1.0,
-        radius::Int       = 6,
-        γ::Real           = 0.5,
-        gpu_arr_type      = identity,
-        verbose::Bool     = true,
+        n_iter::Int = 4,
+        h_param::Real = 1.0,
+        radius::Int = 6,
+        γ::Real = 0.5,
+        gpu_arr_type = identity,
+        verbose::Bool = true,
     )
     nch = length(vols)
     nch in (2, 4) || error("apply_rskr: requires exactly 2 or 4 channel volumes (got $nch)")
@@ -287,10 +287,10 @@ function apply_rskr(
 
         σ_per_sv = Vector{Float32}(undef, nch)
         h_per_sv = Vector{Float32}(undef, nch)
-        U_vols   = [reshape(U[:, e], sz) for e in 1:nch]
+        U_vols = [reshape(U[:, e], sz) for e in 1:nch]
         for e in 1:nch
             σ_per_sv[e] = mad_haar_σ(U_vols[e])
-            h_per_sv[e] = h_f * (Float32(Σ[1]) / max(Float32(Σ[e]), 1f-12)) ^ γ_f
+            h_per_sv[e] = h_f * (Float32(Σ[1]) / max(Float32(Σ[e]), 1.0f-12))^γ_f
         end
 
         # Upload U columns onto whichever array backend `gpu_arr_type`
@@ -304,7 +304,7 @@ function apply_rskr(
             out1 = similar(in1);             out2 = similar(in2)
             σ_eff_1 = h_per_sv[1] * σ_per_sv[1]
             σ_eff_2 = h_per_sv[2] * σ_per_sv[2]
-            joint_bf_2ch_gpu!(out1, out2, in1, in2, σ_eff_1, σ_eff_2, 1f0, radius)
+            joint_bf_2ch_gpu!(out1, out2, in1, in2, σ_eff_1, σ_eff_2, 1.0f0, radius)
             U_denoised = hcat(vec(Array(out1)), vec(Array(out2)))
             in1 = nothing; in2 = nothing; out1 = nothing; out2 = nothing
         else  # nch == 4
@@ -313,12 +313,16 @@ function apply_rskr(
             out1 = similar(in1); out2 = similar(in2)
             out3 = similar(in3); out4 = similar(in4)
             σ_eff = [h_per_sv[e] * σ_per_sv[e] for e in 1:4]
-            joint_bf_4ch_gpu!(out1, out2, out3, out4,
-                              in1,  in2,  in3,  in4,
-                              σ_eff[1], σ_eff[2], σ_eff[3], σ_eff[4],
-                              1f0, radius)
-            U_denoised = hcat(vec(Array(out1)), vec(Array(out2)),
-                              vec(Array(out3)), vec(Array(out4)))
+            joint_bf_4ch_gpu!(
+                out1, out2, out3, out4,
+                in1, in2, in3, in4,
+                σ_eff[1], σ_eff[2], σ_eff[3], σ_eff[4],
+                1.0f0, radius
+            )
+            U_denoised = hcat(
+                vec(Array(out1)), vec(Array(out2)),
+                vec(Array(out3)), vec(Array(out4))
+            )
             in1 = nothing; in2 = nothing; in3 = nothing; in4 = nothing
             out1 = nothing; out2 = nothing; out3 = nothing; out4 = nothing
         end
@@ -327,11 +331,11 @@ function apply_rskr(
 
         if verbose
             dt = time() - t0
-            @info "[apply_rskr iter $(iter)/$(n_iter)] $(round(dt, digits=2))s   σ_per_SV = $(round.(σ_per_sv, sigdigits=3))   h_per_SV = $(round.(h_per_sv, sigdigits=3))   Σ = $(round.(Σ, sigdigits=3))"
+            @info "[apply_rskr iter $(iter)/$(n_iter)] $(round(dt, digits = 2))s   σ_per_SV = $(round.(σ_per_sv, sigdigits = 3))   h_per_SV = $(round.(h_per_sv, sigdigits = 3))   Σ = $(round.(Σ, sigdigits = 3))"
         end
     end
 
-    [reshape(V_mat[:, b], sz) for b in 1:nch]
+    return [reshape(V_mat[:, b], sz) for b in 1:nch]
 end
 
 
