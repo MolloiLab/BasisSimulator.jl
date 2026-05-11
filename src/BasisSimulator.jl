@@ -283,11 +283,6 @@ include("reconstruction/vmi/phantom_mask.jl")
 # HUs, apply to (HU_low, HU_high) → c_iodine, synth per-energy VMI.
 include("reconstruction/vmi/image_domain_decomp.jl")
 
-# HIR-on-Mono+ wrapper — per-energy GPU forward-project + HIR with
-# Mono+ warm start.  Produces the "HIR equivalent" output of the
-# image-domain VMI pipeline.
-include("reconstruction/vmi/hir_on_mono.jl")
-
 # Clinical rod-HU calibration constants (image-domain Ding fits).  Per-
 # scanner Dicts of measured rod HUs at relevant kVp / VMI energies, plus
 # iodine_calibration_rods / calcium_calibration_rods helpers.

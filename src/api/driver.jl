@@ -111,11 +111,10 @@ function simulate!(
         ws_detector_u=ws.geom_detector_u,
         ws_detector_v=ws.geom_detector_v,
         volume_extent=phantom.extent,
-        # Native-resolution forward projection path
+        # Native-resolution forward projection path (used when bf > 1)
         native_geom=ws.native_geom,
         ws_native_bins=ws.native_bins,
         ws_native_sino_buf=ws.native_sino_buf,
-        ws_native_scratch=ws.native_scratch,
         ws_native_source_positions=ws.native_geom_source_positions,
         ws_native_detector_centers=ws.native_geom_detector_centers,
         ws_native_detector_u=ws.native_geom_detector_u,
@@ -125,7 +124,6 @@ function simulate!(
         ws_W_matrix_gpu=ws.W_matrix_gpu,
         ws_outputs_flat=ws.outputs_flat,
         ws_native_outputs_flat=ws.native_outputs_flat,
-        ws_source_spectral=ws.source_spectral_gpu
     )
 
     # ─── Energy-resolved scatter injection (BEFORE noise) ───

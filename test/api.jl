@@ -1209,6 +1209,252 @@ _ts("entering reconstruct!(HIRReconWorkspace) testset")
     end
 end
 
+# -----------------------------------------------------------------------------
+# Workspace constructors — field-invariant audit.
+#
+# Audit method: for each of the 4 workspace structs (PCCT, EICT, FDK, HIR),
+# trace every field and every ctor kwarg back to a real consumer in src/ +
+# notebooks.  Tests below lock in the dead-field cleanup contract: anything
+# that *was* removed should NOT come back as a field, and anything that *is*
+# kept should be a real array (not Nothing) on the same backend as
+# phantom.mask, with dimensions matching the geometry it derived from.
+# -----------------------------------------------------------------------------
+_ts("entering Workspace ctors — PCCT field invariants testset")
+@testset "create_workspace (PCCT) — field invariants" begin
+    if !HAS_GPU
+        @warn "Skipping PCCT workspace ctor test: no GPU backend."
+    else
+        s = _toy_pcct_setup()
+        ws = s.ws
+
+        # Dead-field guard — these were removed in the workspace audit.
+        # If any of these reappear via a future commit, the test screams.
+        @test !(:source_spectral_gpu in fieldnames(BS.PCCTWorkspace))
+        @test !(:native_scratch      in fieldnames(BS.PCCTWorkspace))
+
+        # Sinogram-shape buffers match (n_cols, n_rows, n_angles).
+        sino_shape = (s.scanner.detector_cols, s.scanner.detector_rows, s.protocol.views)
+        @test length(ws.bins) == s.scanner.n_energy_bins
+        for b in 1:s.scanner.n_energy_bins
+            @test size(ws.bins[b]) == sino_shape
+        end
+        @test size(ws.sino_buf)  == sino_shape
+        @test size(ws.scratch)   == sino_shape
+        @test size(ws.combined)  == sino_shape
+
+        # Spectral arrays sized to bin / energy counts.
+        @test length(ws.I0_bins)      == s.scanner.n_energy_bins
+        @test length(ws.I0_bins_norm) == s.scanner.n_energy_bins
+        @test length(ws.thresholds_T) == s.scanner.n_energy_bins
+        @test length(ws.η)            == length(ws.energies)
+
+        # Pile-up wiring (matches sim_opts.use_pcct_pileup default = true for :pcct).
+        @test ws.use_pcct_pileup === true
+        @test ws.pileup_S isa Matrix{Float64}
+        @test size(ws.pileup_S) == (s.scanner.n_energy_bins, s.scanner.n_energy_bins)
+
+        # Native-res buffers are nothing when binning_factor == 1 (toy default).
+        @test s.scanner.binning_factor == 1   # toy uses default
+        @test ws.native_geom            === nothing
+        @test ws.native_bins            === nothing
+        @test ws.native_sino_buf        === nothing
+        @test ws.native_outputs_flat    === nothing
+
+        # Tiled spectral buffers always allocated (the only forward-projection path).
+        @test size(ws.μ_table_gpu, 1)  == length(ws.mats)
+        @test size(ws.W_matrix_gpu, 2) == s.scanner.n_energy_bins
+        @test length(ws.outputs_flat)  == prod(sino_shape) * s.scanner.n_energy_bins
+    end
+end
+
+_ts("entering Workspace ctors — PCCT pile-up off testset")
+@testset "create_workspace (PCCT) — use_pcct_pileup=false skips pileup_S" begin
+    if !HAS_GPU
+        @warn "Skipping PCCT workspace ctor test: no GPU backend."
+    else
+        s = _toy_pcct_setup(use_pcct_pileup = false)
+        @test s.ws.use_pcct_pileup === false
+        @test s.ws.pileup_S        === nothing
+    end
+end
+
+_ts("entering Workspace ctors — EICT field invariants testset")
+@testset "create_eict_workspace — field invariants" begin
+    if !HAS_GPU
+        @warn "Skipping EICT workspace ctor test: no GPU backend."
+    else
+        s = _toy_eict_setup()
+        ws = s.ws
+        sino_shape = (s.scanner.detector_cols, s.scanner.detector_rows, s.protocol.views)
+
+        @test size(ws.sinogram)       == sino_shape
+        @test size(ws.μ_volume)       == size(s.phantom.mask)
+        @test size(ws.sino_mono)      == sino_shape
+        @test size(ws.I_transmitted)  == sino_shape
+        @test size(ws.air_scan)       == sino_shape
+        @test size(ws.physics_output) == sino_shape
+
+        # Pre-computed noise constants from Pass 2 cleanup.
+        @test ws.η_eff isa Float32 && 0 < ws.η_eff ≤ 1
+        @test ws.σ_e_photon isa Float32 && ws.σ_e_photon ≥ 0
+
+        # weights_norm is normalized to sum to 1.
+        @test sum(Float64.(ws.weights_norm)) ≈ 1.0  rtol = 1e-5
+        @test length(ws.weights_norm) == length(ws.energies)
+
+        # μ_table dimensions: (n_regions, n_energies)
+        @test size(ws.μ_table, 1) == length(ws.mats)
+        @test size(ws.μ_table, 2) == length(ws.energies)
+    end
+end
+
+_ts("entering Workspace ctors — EICT spectrum_override testset")
+@testset "create_eict_workspace — spectrum_override path" begin
+    if !HAS_GPU
+        @warn "Skipping EICT workspace ctor test: no GPU backend."
+    else
+        # Inject a custom 1-bin monoenergetic spectrum at 70 keV.
+        scanner = BS.Scanner(
+            source_to_isocenter = 540.0, source_to_detector = 1080.0,
+            detector_rows = 4, detector_cols = 32,
+            detector_row_size = 1.0, detector_col_size = 1.0,
+            detector_material = :lumex, detector_depth = 3.0,
+            flat_filter_material = :aluminum, flat_filter_thickness = 2.5,
+        )
+        protocol   = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 16, rotation_time = 0.5)
+        sim_opts   = BS.SimOptions(; fidelity = :eict)
+        recon_opts = BS.ReconOptions(matrix_size = (32, 32, 4), fov_cm = 20.0)
+        phantom_cpu = BS.create_gammex_472(n_voxels = 32, fov_cm = 20.0, z_cm = 2.0)
+        phantom = BS.Phantom(
+            to_gpu(phantom_cpu.mask), phantom_cpu.materials,
+            phantom_cpu.voxel_size, phantom_cpu.origin, phantom_cpu.extent,
+        )
+
+        ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
+                                       spectrum_override = ([70.0], [1.0e6]))
+        @test length(ws.energies) == 1
+        @test ws.energies[1]      == 70.0
+        @test length(ws.weights)  == 1
+        @test ws.weights[1]       == 1.0e6
+
+        # Mismatched lengths must throw.
+        @test_throws ArgumentError BS.create_eict_workspace(
+            scanner, protocol, sim_opts, recon_opts, phantom;
+            spectrum_override = ([70.0, 100.0], [1.0e6]))
+    end
+end
+
+_ts("entering Workspace ctors — FDKReconWorkspace field invariants testset")
+@testset "create_fdk_recon_workspace — field invariants" begin
+    scanner  = BS.Scanner(source_to_isocenter = 540.0, source_to_detector = 1080.0,
+                          detector_rows = 8, detector_cols = 32,
+                          detector_row_size = 1.0, detector_col_size = 1.0)
+    geom     = BS.CTGeometry(scanner; n_angles = 16, fov_cm = 20.0, z_cm = 5.0)
+    sino     = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
+    matsize  = (16, 16, 4)
+
+    @testset "default filter (StandardFilter)" begin
+        ws = BS.create_fdk_recon_workspace(sino, geom, matsize)
+        @test size(ws.volume)       == matsize
+        @test size(ws.filtered)     == size(sino)
+        @test size(ws.conv_scratch) == size(sino)
+        @test eltype(ws.volume)     == Float32
+        # Filter kernel sized ≤ n_cols and ≥ 32 (lower bound from `max(..., 32)` in ctor).
+        @test 32 ≤ length(ws.filter_kernel) ≤ geom.n_cols
+        # Volume zeroed at construction.
+        @test all(==(0), ws.volume)
+        # Geometry arrays match underlying CTGeometry shape.
+        @test size(ws.bp_source_positions) == size(geom.source_positions)
+        @test size(ws.bp_detector_centers) == size(geom.detector_centers)
+        @test size(ws.bp_detector_u)       == size(geom.detector_u)
+        @test size(ws.bp_detector_v)       == size(geom.detector_v)
+    end
+
+    @testset "filter Symbol → FilterType resolution" begin
+        # Every FBP filter symbol from the docstring should resolve and
+        # produce a valid kernel.
+        for f in (:ram_lak, :shepp_logan, :cosine, :hamming, :hann,
+                  :standard, :soft, :bone)
+            ws = BS.create_fdk_recon_workspace(sino, geom, matsize; filter = f)
+            @test 32 ≤ length(ws.filter_kernel) ≤ geom.n_cols
+        end
+    end
+
+    @testset "cutoff < 1.0 shrinks the kernel" begin
+        ws_full = BS.create_fdk_recon_workspace(sino, geom, matsize; cutoff = 1.0)
+        ws_half = BS.create_fdk_recon_workspace(sino, geom, matsize; cutoff = 0.5)
+        @test length(ws_half.filter_kernel) ≤ length(ws_full.filter_kernel)
+    end
+
+    @testset "T= overrides element type" begin
+        ws64 = BS.create_fdk_recon_workspace(sino, geom, matsize; T = Float64)
+        @test eltype(ws64.volume)        == Float64
+        @test eltype(ws64.filter_kernel) == Float64
+    end
+end
+
+_ts("entering Workspace ctors — HIRReconWorkspace field invariants testset")
+@testset "create_hir_recon_workspace — field invariants" begin
+    scanner  = BS.Scanner(source_to_isocenter = 540.0, source_to_detector = 1080.0,
+                          detector_rows = 8, detector_cols = 32,
+                          detector_row_size = 1.0, detector_col_size = 1.0)
+    # n_angles divisible by 12 for clean OS subsets.
+    geom     = BS.CTGeometry(scanner; n_angles = 24, fov_cm = 20.0, z_cm = 5.0)
+    sino     = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
+    matsize  = (16, 16, 4)
+
+    @testset "FDK init buffers + iteration scratch" begin
+        ws = BS.create_hir_recon_workspace(sino, geom, matsize; strength = 3)
+        @test size(ws.volume)       == matsize
+        @test size(ws.filtered)     == size(sino)
+        @test size(ws.conv_scratch) == size(sino)
+        @test size(ws.W_proj)       == size(sino)
+        @test size(ws.V_inv)        == matsize
+        @test size(ws.stat_weights) == size(sino)
+        @test size(ws.correction)   == matsize
+        @test size(ws.reg_grad)     == matsize
+        @test all(==(0), ws.volume)
+    end
+
+    @testset "OS-PWLS subsets always allocated (n_subsets = 12)" begin
+        ws = BS.create_hir_recon_workspace(sino, geom, matsize; strength = 3)
+        @test ws.params.n_subsets == 12
+        @test length(ws.subsets) == 12
+        @test length(ws.subset_geometries) == 12
+        @test length(ws.subset_geom_source_positions) == 12
+        # Subsets partition the angles.
+        @test sort!(reduce(vcat, ws.subsets)) == collect(1:geom.n_angles)
+        # Subset buffers sized to max(subset).
+        max_sub = maximum(length(s) for s in ws.subsets)
+        @test size(ws.subset_sino_buf, 3)         == max_sub
+        @test size(ws.subset_Ax_buf, 3)           == max_sub
+        @test size(ws.subset_W_proj_buf, 3)       == max_sub
+        @test size(ws.subset_stat_weights_buf, 3) == max_sub
+    end
+
+    @testset "strength 1..5 all produce a usable workspace" begin
+        for str in 1:5
+            ws = BS.create_hir_recon_workspace(sino, geom, matsize; strength = str)
+            @test ws.params.strength == str
+            @test ws.params.n_subsets == 12
+            @test length(ws.subsets) == 12
+        end
+    end
+
+    @testset "n_subsets <= 0 errors (legacy path deleted)" begin
+        # The dead n_subsets=0 fallback was removed; constructing HIRParams
+        # by hand with n_subsets=0 must raise.
+        bad_params = BS.HIRParams(3, 1.0f0, 1, 0, 0.05f0, 0.5f0, (10, 20))
+        @test bad_params.n_subsets == 0
+        # We can't easily inject custom HIRParams into create_hir_recon_workspace
+        # (it calls get_hir_params(strength) internally), but we can at least
+        # confirm get_hir_params never returns 0 subsets for any valid strength.
+        for str in 1:5
+            @test BS.get_hir_params(str).n_subsets > 0
+        end
+    end
+end
+
 _ts("entering simulate!(EICTWorkspace) — scatter on/off testset")
 @testset "simulate!(EICTWorkspace) — scatter on/off" begin
     if !HAS_GPU

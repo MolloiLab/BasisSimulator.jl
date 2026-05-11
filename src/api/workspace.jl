@@ -70,11 +70,10 @@ mutable struct PCCTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A1<:Abstr
     geom_detector_u::A2                      # (3, n_angles) detector u vectors
     geom_detector_v::A2                      # (3, n_angles) detector v vectors
 
-    # ─── Native-resolution buffers (for spatial binning path) ───
-    native_bins::Union{Nothing, Vector{A3}}  # per-bin at native dexel res (nothing if bf==1)
+    # ─── Native-resolution buffers (for spatial binning path, bf > 1) ───
+    native_bins::Union{Nothing, Vector{A3}}  # per-bin at native dexel res
     native_sino_buf::Union{Nothing, A3}      # Siddon scratch at native res
-    native_scratch::Union{Nothing, A3}       # scratch at native res
-    native_geom::Union{Nothing, CTGeometry}  # native-res geometry (nothing if bf==1)
+    native_geom::Union{Nothing, CTGeometry}  # native-res geometry
     native_geom_source_positions::Union{Nothing, A2}
     native_geom_detector_centers::Union{Nothing, A2}
     native_geom_detector_u::Union{Nothing, A2}
@@ -88,7 +87,6 @@ mutable struct PCCTWorkspace{T<:AbstractFloat, A3<:AbstractArray{T,3}, A1<:Abstr
     W_matrix_gpu::A2                         # spectral weight matrix [n_energies_padded, n_bins] on GPU
     outputs_flat::A1                         # flattened output buffer [n_elements * n_bins] on GPU
     native_outputs_flat::Union{Nothing, A1}  # native-res flattened output (nothing if bf==1)
-    source_spectral_gpu::Union{Nothing, A3}  # heel × bowtie [n_cols, n_rows, n_energies_padded]
 
     # ─── Pulse pileup (full MC-LUT spectral migration) ───
     # `pileup_S` is the MC-derived n_bins × n_bins matrix returned by
@@ -144,7 +142,7 @@ result2 = simulate!(ws, phantom, scanner, protocol, sim_opts, recon_opts)
 ```
 """
 function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
-                          T::Type{<:AbstractFloat}=Float32, mask=nothing)
+                          T::Type{<:AbstractFloat}=Float32)
     # --- Pre-compute geometry first (collimation derives n_rows) ---
     geom = CTGeometry(scanner; n_angles=protocol.views, fov_cm=recon_opts.fov_cm, z_cm=recon_opts.z_cm, collimation_mm=protocol.collimation_mm)
 
@@ -154,10 +152,8 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
     n_elements = prod(sino_shape)
     # n_energies is set after resolve_source_spectrum_without_bowtie below
 
-    # GPU-side buffers — similar() matches the provided mask's backend
-    # If mask kwarg is provided (e.g. GPU-converted mask), use it for similar();
-    # otherwise fall back to phantom.mask (CPU arrays)
-    ref_mask = mask === nothing ? phantom.mask : mask
+    # GPU-side buffers — similar() matches phantom.mask's backend
+    ref_mask = phantom.mask
     bins = [similar(ref_mask, T, sino_shape) for _ in 1:n_bins]
     μ_volume = similar(ref_mask, T, vol_shape)
     sino_buf = similar(ref_mask, T, sino_shape)
@@ -241,7 +237,6 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         native_sino_shape = (_native_geom.n_cols, _native_geom.n_rows, _native_geom.n_angles)
         _native_bins = [similar(ref_mask, T, native_sino_shape) for _ in 1:n_bins]
         _native_sino_buf = similar(ref_mask, T, native_sino_shape)
-        _native_scratch = similar(ref_mask, T, native_sino_shape)
         # Pre-computed geometry arrays at native resolution
         _n_src = similar(ref_mask, T, size(_native_geom.source_positions)...)
         copyto!(_n_src, T.(_native_geom.source_positions))
@@ -255,7 +250,6 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         _native_geom = nothing
         _native_bins = nothing
         _native_sino_buf = nothing
-        _native_scratch = nothing
         _n_src = nothing
         _n_det = nothing
         _n_u = nothing
@@ -310,7 +304,6 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         end
         copyto!(_W_matrix_gpu, W_cpu)
     end
-    _source_spectral_gpu = nothing  # Not needed — bowtie folded into W
 
     # Flattened output buffer for spectral projection
     _outputs_flat = similar(ref_mask, T, n_elements * n_bins)
@@ -360,10 +353,10 @@ function create_workspace(scanner, protocol, sim_opts, recon_opts, phantom;
         noise_I0,
         μ_lut_cpu, μ_lut_gpu, μ_table,
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
-        _native_bins, _native_sino_buf, _native_scratch,
+        _native_bins, _native_sino_buf,
         _native_geom, _n_src, _n_det, _n_u, _n_v,
         tube_scratch,
-        _μ_table_gpu, _W_matrix_gpu, _outputs_flat, _native_outputs_flat, _source_spectral_gpu,
+        _μ_table_gpu, _W_matrix_gpu, _outputs_flat, _native_outputs_flat,
         _use_pileup, _pileup_S,
         geom, energies, weights_vec, config, pcct_detector, mats,
         kVp
@@ -921,50 +914,37 @@ function create_hir_recon_workspace(
     # HIR params
     params = get_hir_params(strength)
 
-    # Ordered subsets pre-computation
+    # Ordered subsets pre-computation.  `get_hir_params` always returns
+    # n_subsets = 12 (strengths 1..5), so the OS-PWLS path is the only path.
     n_subsets = params.n_subsets
-    if n_subsets > 0
-        subsets = create_ordered_subsets(geom.n_angles, n_subsets)
-        subset_geometries = [create_subset_geometry(geom, indices) for indices in subsets]
+    n_subsets > 0 || error("HIRParams.n_subsets must be > 0; got $n_subsets")
+    subsets = create_ordered_subsets(geom.n_angles, n_subsets)
+    subset_geometries = [create_subset_geometry(geom, indices) for indices in subsets]
 
-        # Pre-compute GPU geometry arrays for each subset
-        subset_geom_src = Vector{typeof(geom_source_positions)}(undef, n_subsets)
-        subset_geom_det = Vector{typeof(geom_source_positions)}(undef, n_subsets)
-        subset_geom_u = Vector{typeof(geom_source_positions)}(undef, n_subsets)
-        subset_geom_v = Vector{typeof(geom_source_positions)}(undef, n_subsets)
-        for s in 1:n_subsets
-            sg = subset_geometries[s]
-            subset_geom_src[s] = similar(sinogram, T, size(sg.source_positions)...)
-            copyto!(subset_geom_src[s], T.(sg.source_positions))
-            subset_geom_det[s] = similar(sinogram, T, size(sg.detector_centers)...)
-            copyto!(subset_geom_det[s], T.(sg.detector_centers))
-            subset_geom_u[s] = similar(sinogram, T, size(sg.detector_u)...)
-            copyto!(subset_geom_u[s], T.(sg.detector_u))
-            subset_geom_v[s] = similar(sinogram, T, size(sg.detector_v)...)
-            copyto!(subset_geom_v[s], T.(sg.detector_v))
-        end
-
-        # Allocate subset buffers sized for the largest subset
-        max_subset_size = maximum(length(s) for s in subsets)
-        subset_sino_shape = (sino_shape[1], sino_shape[2], max_subset_size)
-        subset_sino_buf = similar(sinogram, T, subset_sino_shape...)
-        subset_Ax_buf = similar(sinogram, T, subset_sino_shape...)
-        subset_W_proj_buf = similar(sinogram, T, subset_sino_shape...)
-        subset_stat_weights_buf = similar(sinogram, T, subset_sino_shape...)
-    else
-        # Legacy mode: no subsets
-        subsets = Vector{Int}[]
-        subset_geometries = CTGeometry[]
-        subset_geom_src = typeof(geom_source_positions)[]
-        subset_geom_det = typeof(geom_source_positions)[]
-        subset_geom_u = typeof(geom_source_positions)[]
-        subset_geom_v = typeof(geom_source_positions)[]
-        # Allocate minimal buffers (won't be used)
-        subset_sino_buf = similar(sinogram, T, 1, 1, 1)
-        subset_Ax_buf = similar(sinogram, T, 1, 1, 1)
-        subset_W_proj_buf = similar(sinogram, T, 1, 1, 1)
-        subset_stat_weights_buf = similar(sinogram, T, 1, 1, 1)
+    # Pre-compute GPU geometry arrays for each subset
+    subset_geom_src = Vector{typeof(geom_source_positions)}(undef, n_subsets)
+    subset_geom_det = Vector{typeof(geom_source_positions)}(undef, n_subsets)
+    subset_geom_u   = Vector{typeof(geom_source_positions)}(undef, n_subsets)
+    subset_geom_v   = Vector{typeof(geom_source_positions)}(undef, n_subsets)
+    for s in 1:n_subsets
+        sg = subset_geometries[s]
+        subset_geom_src[s] = similar(sinogram, T, size(sg.source_positions)...)
+        copyto!(subset_geom_src[s], T.(sg.source_positions))
+        subset_geom_det[s] = similar(sinogram, T, size(sg.detector_centers)...)
+        copyto!(subset_geom_det[s], T.(sg.detector_centers))
+        subset_geom_u[s] = similar(sinogram, T, size(sg.detector_u)...)
+        copyto!(subset_geom_u[s], T.(sg.detector_u))
+        subset_geom_v[s] = similar(sinogram, T, size(sg.detector_v)...)
+        copyto!(subset_geom_v[s], T.(sg.detector_v))
     end
+
+    # Allocate subset buffers sized for the largest subset
+    max_subset_size = maximum(length(s) for s in subsets)
+    subset_sino_shape       = (sino_shape[1], sino_shape[2], max_subset_size)
+    subset_sino_buf         = similar(sinogram, T, subset_sino_shape...)
+    subset_Ax_buf           = similar(sinogram, T, subset_sino_shape...)
+    subset_W_proj_buf       = similar(sinogram, T, subset_sino_shape...)
+    subset_stat_weights_buf = similar(sinogram, T, subset_sino_shape...)
 
     return HIRReconWorkspace{T, typeof(volume), typeof(geom_source_positions), typeof(filter_kernel)}(
         volume, filtered, conv_scratch, filter_kernel,
