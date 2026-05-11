@@ -1,13 +1,16 @@
 """
-    Geometry/Affine.jl
+    src/geometry/affine.jl
 
-Affine transforms between phantom, reconstruction, and world coordinate systems.
+Affine transforms between phantom, reconstruction, and world coordinate
+systems.  Both phantom and recon grids are centered at isocenter `(0,0,0)`;
+the mapping is a pure scale+translate (diagonal affine, no rotation).
 
-Both phantom and recon grids are centered at isocenter (0,0,0). The mapping is
-a pure scale+translate (diagonal affine, no rotation).
+Used to resample ground-truth phantom labels onto the reconstruction grid
+for ROI analysis and segmentation evaluation — see nb05's `:nearest` /
+`:linear` round-trip and nb07's pure-material-VMI ROI overlay.
 
-Used for resampling ground truth phantom labels onto the reconstruction grid
-for ROI analysis and segmentation evaluation.
+BasisSim-original — standard image-resampling math (trilinear interpolation
+of a centered scale+translate map), not a port of any upstream package.
 """
 
 # =============================================================================
@@ -110,8 +113,10 @@ ground_truth = resample_to_recon(phantom, geom, (350, 350, 128))
 # Overlay: heatmap(ground_truth[:,:,64]) vs heatmap(recon[:,:,64])
 ```
 """
-function resample_to_recon(phantom::Phantom, geom::CTGeometry, matrix_size;
-                           method::Symbol = :nearest)
+function resample_to_recon(
+        phantom::Phantom, geom::CTGeometry, matrix_size;
+        method::Symbol = :nearest
+    )
 
     # Pull mask to CPU if on GPU
     mask_cpu = Array(phantom.mask)
@@ -139,25 +144,25 @@ function resample_to_recon(phantom::Phantom, geom::CTGeometry, matrix_size;
     if method == :nearest
         out = zeros(eltype(mask_cpu), nx, ny, nz)
 
-        @inbounds for k in 0:(nz-1)
+        @inbounds for k in 0:(nz - 1)
             wz = roz + k * rvz
             pzi = (wz - poz) * inv_pvz
             pk = round(Int, pzi) + 1  # 0-indexed → 1-indexed
             (pk < 1 || pk > pnz) && continue
 
-            for j in 0:(ny-1)
+            for j in 0:(ny - 1)
                 wy = roy + j * rvy
                 pyi = (wy - poy) * inv_pvy
                 pj = round(Int, pyi) + 1
                 (pj < 1 || pj > pny) && continue
 
-                for i in 0:(nx-1)
+                for i in 0:(nx - 1)
                     wx = rox + i * rvx
                     pxi = (wx - pox) * inv_pvx
                     pi_idx = round(Int, pxi) + 1
                     (pi_idx < 1 || pi_idx > pnx) && continue
 
-                    out[i+1, j+1, k+1] = mask_cpu[pi_idx, pj, pk]
+                    out[i + 1, j + 1, k + 1] = mask_cpu[pi_idx, pj, pk]
                 end
             end
         end
@@ -167,7 +172,7 @@ function resample_to_recon(phantom::Phantom, geom::CTGeometry, matrix_size;
     elseif method == :linear
         out = zeros(Float32, nx, ny, nz)
 
-        @inbounds for k in 0:(nz-1)
+        @inbounds for k in 0:(nz - 1)
             wz = roz + k * rvz
             pzi = (wz - poz) * inv_pvz
             kz0 = floor(Int, pzi)
@@ -176,7 +181,7 @@ function resample_to_recon(phantom::Phantom, geom::CTGeometry, matrix_size;
             kz0 += 1; kz1 += 1  # 0-indexed → 1-indexed
             (kz1 < 1 || kz0 > pnz) && continue
 
-            for j in 0:(ny-1)
+            for j in 0:(ny - 1)
                 wy = roy + j * rvy
                 pyi = (wy - poy) * inv_pvy
                 jy0 = floor(Int, pyi)
@@ -185,7 +190,7 @@ function resample_to_recon(phantom::Phantom, geom::CTGeometry, matrix_size;
                 jy0 += 1; jy1 += 1
                 (jy1 < 1 || jy0 > pny) && continue
 
-                for i in 0:(nx-1)
+                for i in 0:(nx - 1)
                     wx = rox + i * rvx
                     pxi = (wx - pox) * inv_pvx
                     ix0 = floor(Int, pxi)
@@ -220,7 +225,7 @@ function resample_to_recon(phantom::Phantom, geom::CTGeometry, matrix_size;
                     c0 = c00 * (1 - fy) + c10 * fy
                     c1 = c01 * (1 - fy) + c11 * fy
 
-                    out[i+1, j+1, k+1] = c0 * (1 - fz) + c1 * fz
+                    out[i + 1, j + 1, k + 1] = c0 * (1 - fz) + c1 * fz
                 end
             end
         end

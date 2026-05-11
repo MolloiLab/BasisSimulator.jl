@@ -1,15 +1,18 @@
 """
-    Geometry/Scanner.jl
+    src/geometry/scanner.jl
 
 CT scanner geometry definitions and pre-computed trajectory positions.
 
 This file provides two complementary abstractions:
 
-1. `Scanner{T}` - Generic scanner definition struct with all physical parameters.
-   Accepts kwargs for flexible scanner configuration.
+1. `Scanner{T}` — Generic scanner definition struct with all physical
+   parameters.  Accepts kwargs for flexible scanner configuration.
+   Parameter naming and units follow CatSim/XCIST conventions (see the
+   CatSim Parameter Mapping table in the `Scanner` docstring).
 
-2. `CTGeometry` - Pre-computed source/detector positions for simulation.
-   All positions computed at construction for Reactant/XLA compatibility.
+2. `CTGeometry` — Pre-computed source/detector trajectory positions for
+   simulation.  All positions computed at construction time so the
+   per-view ray geometry is JIT-friendly (no runtime trig).
 
 # Workflow
 ```julia
@@ -18,14 +21,11 @@ scanner = Scanner(
     source_to_isocenter = 541.0,  # mm
     source_to_detector = 949.0,   # mm
     detector_rows = 64,
-    detector_cols = 900
+    detector_cols = 900,
 )
 
 # Create computed geometry for simulation
-geom = CTGeometry(scanner; n_angles=360, fov_cm=35.0)
-
-# Or use legacy factory functions
-geom = create_aquilion_one(n_angles=360, n_rows=64, fov_cm=35.0)
+geom = CTGeometry(scanner; n_angles = 360, fov_cm = 35.0)
 ```
 """
 
@@ -124,7 +124,7 @@ Scanner(;
 - CatSim scanner configuration: cfg/Scanner_Default.cfg
 - AAPM TG-233: CT Image Quality Standards
 """
-struct Scanner{T<:AbstractFloat}
+struct Scanner{T <: AbstractFloat}
     # Geometry (required)
     source_to_isocenter::T      # mm (SID/SOD)
     source_to_detector::T       # mm (SDD)
@@ -237,56 +237,56 @@ scanner = Scanner(
 ```
 """
 function Scanner(;
-    # Geometry (CatSim defaults)
-    source_to_isocenter::Real = 540.0,
-    source_to_detector::Real = 950.0,
+        # Geometry (CatSim defaults)
+        source_to_isocenter::Real = 540.0,
+        source_to_detector::Real = 950.0,
 
-    # Detector array
-    detector_rows::Int = 64,
-    detector_cols::Int = 900,
-    detector_row_size::Real = 1.0,
-    detector_col_size::Real = 1.0,
-    detector_shape::DetectorShape = CURVED_DETECTOR,
-    detector_row_offset::Real = 0.0,
-    detector_col_offset::Real = 0.25,
+        # Detector array
+        detector_rows::Int = 64,
+        detector_cols::Int = 900,
+        detector_row_size::Real = 1.0,
+        detector_col_size::Real = 1.0,
+        detector_shape::DetectorShape = CURVED_DETECTOR,
+        detector_row_offset::Real = 0.0,
+        detector_col_offset::Real = 0.25,
 
-    # Source/focal spot
-    focal_spot_width::Real = 1.0,
-    focal_spot_length::Real = 1.0,
-    target_angle::Real = 7.0,
+        # Source/focal spot
+        focal_spot_width::Real = 1.0,
+        focal_spot_length::Real = 1.0,
+        target_angle::Real = 7.0,
 
-    # Gantry
-    gantry_rotation_time::Real = 0.5,
-    scan_diameter::Real = 500.0,
-    gantry_aperture::Real = 700.0,
+        # Gantry
+        gantry_rotation_time::Real = 0.5,
+        scan_diameter::Real = 500.0,
+        gantry_aperture::Real = 700.0,
 
-    # Filters
-    flat_filter_material::Symbol = :aluminum,
-    flat_filter_thickness::Real = 2.0,
-    bowtie_filter::Symbol = :large_body,
+        # Filters
+        flat_filter_material::Symbol = :aluminum,
+        flat_filter_thickness::Real = 2.0,
+        bowtie_filter::Symbol = :large_body,
 
-    # Detection
-    detector_material::Symbol = :lumex,
-    detector_depth::Real = 3.0,
-    fill_factor_row::Real = 0.9,
-    fill_factor_col::Real = 0.9,
-    detection_gain::Real = 15.0,
-    electronic_noise::Real = 5000.0,
+        # Detection
+        detector_material::Symbol = :lumex,
+        detector_depth::Real = 3.0,
+        fill_factor_row::Real = 0.9,
+        fill_factor_col::Real = 0.9,
+        detection_gain::Real = 15.0,
+        electronic_noise::Real = 5000.0,
 
-    # PCCT fields (flat kwargs — ignored when detector_type == :energy_integrating)
-    detector_type::Symbol = :energy_integrating,
-    n_energy_bins::Int = 1,
-    energy_thresholds::Vector{<:Real} = Float64[],
-    energy_resolution::Real = 0.0,
-    charge_sharing_fwhm::Real = 0.0,
-    dead_time_ns::Real = 0.0,
-    pixel_mode::Symbol = :standard,
+        # PCCT fields (flat kwargs — ignored when detector_type == :energy_integrating)
+        detector_type::Symbol = :energy_integrating,
+        n_energy_bins::Int = 1,
+        energy_thresholds::Vector{<:Real} = Float64[],
+        energy_resolution::Real = 0.0,
+        charge_sharing_fwhm::Real = 0.0,
+        dead_time_ns::Real = 0.0,
+        pixel_mode::Symbol = :standard,
 
-    # Native dexel parameters (PCCT only)
-    native_dexel_col_mm::Real = 0.0,
-    native_dexel_row_mm::Real = 0.0,
-    binning_factor::Int = 1
-)
+        # Native dexel parameters (PCCT only)
+        native_dexel_col_mm::Real = 0.0,
+        native_dexel_row_mm::Real = 0.0,
+        binning_factor::Int = 1
+    )
     T = Float64
 
     # PCCT validation
@@ -362,158 +362,6 @@ function Scanner(;
         T(_native_row),
         binning_factor
     )
-end
-
-"""
-    validate_scanner(scanner::Scanner) -> (valid::Bool, messages::Vector{String})
-
-Validate scanner geometric consistency.
-
-Checks:
-1. Source geometry: SID < SDD (source must be between isocenter and detector)
-2. Source geometry: Both distances must be positive
-3. Detector array: Rows and columns must be positive integers
-4. Detector geometry: Pixel sizes must be positive
-5. Fill factors: Must be between 0 and 1
-6. Scan diameter consistency: scan_diameter fits within detector coverage
-7. Target angle: Must be positive and < 90 degrees
-
-# Returns
-- `valid::Bool`: True if all checks pass
-- `messages::Vector{String}`: List of validation messages (errors and warnings)
-
-# Example
-```julia
-scanner = Scanner(source_to_detector = 500.0)  # Invalid: SDD < default SID
-valid, msgs = validate_scanner(scanner)
-# valid = false
-# msgs = ["ERROR: source_to_detector (500.0) must be > source_to_isocenter (540.0)"]
-```
-"""
-function validate_scanner(scanner::Scanner{T}) where T
-    messages = String[]
-    valid = true
-
-    # Geometry checks
-    if scanner.source_to_isocenter <= 0
-        push!(messages, "ERROR: source_to_isocenter must be positive (got $(scanner.source_to_isocenter))")
-        valid = false
-    end
-
-    if scanner.source_to_detector <= 0
-        push!(messages, "ERROR: source_to_detector must be positive (got $(scanner.source_to_detector))")
-        valid = false
-    end
-
-    if scanner.source_to_detector <= scanner.source_to_isocenter
-        push!(messages, "ERROR: source_to_detector ($(scanner.source_to_detector)) must be > source_to_isocenter ($(scanner.source_to_isocenter))")
-        valid = false
-    end
-
-    # Detector array checks
-    if scanner.detector_rows <= 0
-        push!(messages, "ERROR: detector_rows must be positive (got $(scanner.detector_rows))")
-        valid = false
-    end
-
-    if scanner.detector_cols <= 0
-        push!(messages, "ERROR: detector_cols must be positive (got $(scanner.detector_cols))")
-        valid = false
-    end
-
-    if scanner.detector_row_size <= 0
-        push!(messages, "ERROR: detector_row_size must be positive (got $(scanner.detector_row_size))")
-        valid = false
-    end
-
-    if scanner.detector_col_size <= 0
-        push!(messages, "ERROR: detector_col_size must be positive (got $(scanner.detector_col_size))")
-        valid = false
-    end
-
-    # Fill factor checks
-    if !(0 < scanner.fill_factor_row <= 1)
-        push!(messages, "ERROR: fill_factor_row must be in (0, 1] (got $(scanner.fill_factor_row))")
-        valid = false
-    end
-
-    if !(0 < scanner.fill_factor_col <= 1)
-        push!(messages, "ERROR: fill_factor_col must be in (0, 1] (got $(scanner.fill_factor_col))")
-        valid = false
-    end
-
-    # Target angle check
-    if !(0 < scanner.target_angle < 90)
-        push!(messages, "ERROR: target_angle must be in (0, 90) degrees (got $(scanner.target_angle))")
-        valid = false
-    end
-
-    # Gantry checks
-    if scanner.gantry_rotation_time <= 0
-        push!(messages, "ERROR: gantry_rotation_time must be positive (got $(scanner.gantry_rotation_time))")
-        valid = false
-    end
-
-    # Scan diameter vs detector coverage consistency warning
-    # detector_col_size is already at isocenter (mm)
-    detector_coverage_at_iso = scanner.detector_cols * scanner.detector_col_size
-    if scanner.scan_diameter > detector_coverage_at_iso
-        push!(messages, "WARNING: scan_diameter ($(scanner.scan_diameter) mm) exceeds detector coverage at isocenter ($(round(detector_coverage_at_iso, digits=1)) mm)")
-    end
-
-    # Z coverage (detector_row_size is already at isocenter)
-    magnification = scanner.source_to_detector / scanner.source_to_isocenter
-    z_coverage = scanner.detector_rows * scanner.detector_row_size
-    if z_coverage > 0
-        push!(messages, "INFO: Z coverage at isocenter: $(round(z_coverage, digits=1)) mm")
-    end
-
-    return valid, messages
-end
-
-"""
-    print_scanner_summary(scanner::Scanner)
-
-Print a summary of scanner parameters.
-"""
-function print_scanner_summary(scanner::Scanner{T}) where T
-    println("=" ^ 60)
-    println("Scanner Configuration")
-    println("=" ^ 60)
-    println()
-    println("GEOMETRY")
-    println("-" ^ 40)
-    println("  Source-to-Isocenter:  $(scanner.source_to_isocenter) mm")
-    println("  Source-to-Detector:   $(scanner.source_to_detector) mm")
-    magnification = scanner.source_to_detector / scanner.source_to_isocenter
-    println("  Magnification:        $(round(magnification, digits=3))")
-    println("  Scan Diameter:        $(scanner.scan_diameter) mm")
-    println("  Gantry Aperture:      $(scanner.gantry_aperture) mm")
-    println()
-    println("DETECTOR ($(scanner.detector_shape))")
-    println("-" ^ 40)
-    println("  Array Size:           $(scanner.detector_cols) × $(scanner.detector_rows)")
-    println("  Element Size:         $(scanner.detector_col_size) × $(scanner.detector_row_size) mm")
-    println("  Offset (col, row):    $(scanner.detector_col_offset), $(scanner.detector_row_offset)")
-    z_coverage = scanner.detector_rows * scanner.detector_row_size
-    println("  Z Coverage (iso):     $(round(z_coverage, digits=1)) mm")
-    println("  Material:             $(scanner.detector_material)")
-    println("  Depth:                $(scanner.detector_depth) mm")
-    println("  Fill Factor:          $(scanner.fill_factor_col) × $(scanner.fill_factor_row)")
-    println()
-    println("X-RAY SOURCE")
-    println("-" ^ 40)
-    println("  Focal Spot:           $(scanner.focal_spot_width) × $(scanner.focal_spot_length) mm")
-    println("  Target Angle:         $(scanner.target_angle)°")
-    println("  Flat Filter:          $(scanner.flat_filter_thickness) mm $(scanner.flat_filter_material)")
-    println("  Bowtie Filter:        $(scanner.bowtie_filter)")
-    println()
-    println("ACQUISITION")
-    println("-" ^ 40)
-    println("  Rotation Time:        $(scanner.gantry_rotation_time) s")
-    println("  Detection Gain:       $(scanner.detection_gain) e⁻/keV")
-    println("  Electronic Noise:     $(scanner.electronic_noise) e⁻")
-    println("=" ^ 60)
 end
 
 # =============================================================================
@@ -605,14 +453,15 @@ geom_fast = CTGeometry(scanner; n_angles=90, n_rows=16, n_cols=128, fov_cm=35.0)
 geom_coll = CTGeometry(scanner; n_angles=360, collimation_mm=80.0)
 ```
 """
-function CTGeometry(scanner::Scanner{T};
-    n_angles::Int = 360,
-    fov_cm::Union{Float64,Nothing} = nothing,
-    z_cm::Union{Float64,Nothing} = nothing,
-    n_rows::Union{Int,Nothing} = nothing,
-    n_cols::Union{Int,Nothing} = nothing,
-    collimation_mm::Union{Float64,Nothing} = nothing
-) where T
+function CTGeometry(
+        scanner::Scanner{T};
+        n_angles::Int = 360,
+        fov_cm::Union{Float64, Nothing} = nothing,
+        z_cm::Union{Float64, Nothing} = nothing,
+        n_rows::Union{Int, Nothing} = nothing,
+        n_cols::Union{Int, Nothing} = nothing,
+        collimation_mm::Union{Float64, Nothing} = nothing
+    ) where {T}
 
     # Determine active detector rows from collimation or explicit override
     if collimation_mm !== nothing
@@ -654,7 +503,7 @@ function CTGeometry(scanner::Scanner{T};
     end
 
     # Generate angles (full 360° rotation)
-    angles = collect(range(0.0, 2π - 2π/n_angles, length=n_angles))
+    angles = collect(range(0.0, 2π - 2π / n_angles, length = n_angles))
 
     # Pre-compute all positions
     source_positions = Matrix{Float64}(undef, 3, n_angles)
@@ -702,22 +551,16 @@ end
 # =============================================================================
 
 """
-    is_pcct(scanner::Scanner) -> Bool
-
-Check if scanner is configured for photon-counting CT mode.
-"""
-is_pcct(scanner::Scanner) = scanner.detector_type == :photon_counting
-
-"""
     _build_pcct_detector(scanner::Scanner) -> PhotonCountingDetector
 
 Internal: construct a PhotonCountingDetector from Scanner's flat PCCT kwargs.
 
 This bridges the user-facing flat kwargs API to the internal physics struct.
-Users should NEVER call this directly — it's used by the simulation driver.
+Used by the simulation driver, nb04, and the PCCT calibration/basis helpers
+in `src/reconstruction/vmi/`.
 """
-function _build_pcct_detector(scanner::Scanner{T}) where T
-    @assert is_pcct(scanner) "_build_pcct_detector called on non-PCCT scanner"
+function _build_pcct_detector(scanner::Scanner{T}) where {T}
+    @assert scanner.detector_type == :photon_counting "_build_pcct_detector called on non-PCCT scanner"
 
     # Map detector_material Symbol to DetectorMaterialPCCT enum
     material = _infer_pcct_material(scanner.detector_material)
@@ -764,8 +607,6 @@ end
 
 # Scanner definition
 export Scanner, DetectorShape, CURVED_DETECTOR, FLAT_DETECTOR
-export validate_scanner, print_scanner_summary
-export is_pcct
 
 # CTGeometry (computed positions for simulation)
 export CTGeometry
