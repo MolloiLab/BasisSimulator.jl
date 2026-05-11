@@ -8,6 +8,26 @@
 # PCCT scanner's manufacturer-supplied recon software does before any
 # downstream processing (material decomposition, VMI, etc.) sees the data.
 #
+# ## Provenance
+#
+# This module is BasisSim-original.  CatSim/XCIST ships PCCT spectral
+# response matrices (e.g. `response_matrix/PC_spectral_response_*.mat`) and
+# applies them in the forward direction, but does not open-source an
+# inverse-pile-up step.  The MC migration matrix S used here is built by
+# `compute_mc_pileup_matrix` in `src/detector/pcct/mc_response.jl`,
+# following the standard cascaded photon-counting detector model:
+#
+#   Taguchi K, Frenkel J, Doi K, et al. "Modeling the performance of a
+#   photon counting x-ray detector for CT: Energy response and pulse pileup
+#   effects." Med Phys. 2011;38(2):1089-1102. doi:10.1118/1.3539602
+#
+#   Roessl E, Proksa R. "K-edge imaging in x-ray computed tomography using
+#   multi-bin photon counting detectors." Phys Med Biol. 2007;52(15):4679-96.
+#   doi:10.1088/0031-9155/52/15/020
+#
+# The inverse `t̂ = S \ r` is the standard linear-algebra unfolding once `S`
+# is in hand (S lower-triangular by construction → forward substitution).
+#
 # ## Why this is decoupled
 #
 # `simulate!` always applies the forward pile-up degradation when
@@ -65,7 +85,7 @@ function apply_pcct_pileup_correction!(
         bins::Vector{A},
         I0_bins::AbstractVector,
         S::AbstractMatrix,
-    ) where {T<:AbstractFloat, A<:AbstractArray{T,3}}
+    ) where {T <: AbstractFloat, A <: AbstractArray{T, 3}}
     n_bins = length(bins)
     n_bins == 4 || error("apply_pcct_pileup_correction!: specialized to 4 bins, got $(n_bins)")
     size(S) == (4, 4) || error("apply_pcct_pileup_correction!: S must be 4×4, got $(size(S))")
@@ -73,15 +93,15 @@ function apply_pcct_pileup_correction!(
 
     # All inputs share `idx` index space; capture them by `let` so the AK
     # closure pulls scalars/refs by value.
-    eps_corr = T(1e-10)
+    eps_corr = T(1.0e-10)
     let b1 = bins[1], b2 = bins[2], b3 = bins[3], b4 = bins[4],
-        I0_1 = T(I0_bins[1]), I0_2 = T(I0_bins[2]),
-        I0_3 = T(I0_bins[3]), I0_4 = T(I0_bins[4]),
-        S11 = T(S[1, 1]),
-        S21 = T(S[2, 1]), S22 = T(S[2, 2]),
-        S31 = T(S[3, 1]), S32 = T(S[3, 2]), S33 = T(S[3, 3]),
-        S41 = T(S[4, 1]), S42 = T(S[4, 2]), S43 = T(S[4, 3]), S44 = T(S[4, 4]),
-        eps = eps_corr
+            I0_1 = T(I0_bins[1]), I0_2 = T(I0_bins[2]),
+            I0_3 = T(I0_bins[3]), I0_4 = T(I0_bins[4]),
+            S11 = T(S[1, 1]),
+            S21 = T(S[2, 1]), S22 = T(S[2, 2]),
+            S31 = T(S[3, 1]), S32 = T(S[3, 2]), S33 = T(S[3, 3]),
+            S41 = T(S[4, 1]), S42 = T(S[4, 2]), S43 = T(S[4, 3]), S44 = T(S[4, 4]),
+            eps = eps_corr
         AK.foreachindex(b1) do idx
             # Recorded counts from log-line-integrals (against truth I0).
             r1 = I0_1 * exp(-b1[idx])

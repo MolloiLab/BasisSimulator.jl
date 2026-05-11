@@ -118,8 +118,12 @@ include("detector/fill_factor.jl")
 # Heel effect (anode self-attenuation)
 include("source/heel_effect.jl")
 
-# Beam hardening correction (water-based polynomial)
-include("correction/beam_hardening_correction.jl")
+# Beam hardening correction (water-based polynomial, two-material per-column)
+include("correction/bhc_sinogram.jl")
+# Image-domain BHC refinement (So et al. 2009)
+include("correction/bhc_image_domain.jl")
+# Post-recon residual radial cupping/capping correction
+include("correction/radial_cupping.jl")
 
 # PCCT pulse-pileup correction (inverse of the MC pile-up applied by simulate!)
 include("correction/pcct_pileup_correction.jl")
