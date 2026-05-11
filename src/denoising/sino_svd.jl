@@ -148,8 +148,8 @@ function apply_sino_svd_denoise!(
     end
 
     @info "apply_sino_svd_denoise!: $(n_ch)-channel per-row SVD + 2D Gaussian " *
-          "(σ = $(σ) px, radius = $(radius)) on residual components 2–$(n_ch)"
-    out
+        "(σ = $(σ) px, radius = $(radius)) on residual components 2–$(n_ch)"
+    return out
 end
 
 """
@@ -176,7 +176,7 @@ function apply_sino_svd_denoise(
         σ_px::Real = 1.5,
     )
     out = [Array{Float32}(undef, size(channels[1])) for _ in eachindex(channels)]
-    apply_sino_svd_denoise!(out, channels; σ_px = σ_px)
+    return apply_sino_svd_denoise!(out, channels; σ_px = σ_px)
 end
 
 
@@ -184,14 +184,16 @@ end
 #  Internal — separable 1D Gaussian on a 2D slice (col-pass then view-pass)
 # =============================================================================
 
-function _separable_gauss_2d(slice2d::AbstractMatrix{Float32},
-                             ks::AbstractVector{Float32},
-                             radius::Int)
+function _separable_gauss_2d(
+        slice2d::AbstractMatrix{Float32},
+        ks::AbstractVector{Float32},
+        radius::Int
+    )
     nc, nv = size(slice2d)
     tmp = Matrix{Float32}(undef, nc, nv)
     out = Matrix{Float32}(undef, nc, nv)
     @inbounds for v in 1:nv, c in 1:nc
-        s = 0f0; w = 0f0
+        s = 0.0f0; w = 0.0f0
         for (i, dk) in enumerate(-radius:radius)
             c2 = c + dk
             (1 <= c2 <= nc) || continue
@@ -200,7 +202,7 @@ function _separable_gauss_2d(slice2d::AbstractMatrix{Float32},
         tmp[c, v] = s / w
     end
     @inbounds for v in 1:nv, c in 1:nc
-        s = 0f0; w = 0f0
+        s = 0.0f0; w = 0.0f0
         for (i, dk) in enumerate(-radius:radius)
             v2 = v + dk
             (1 <= v2 <= nv) || continue
@@ -208,7 +210,7 @@ function _separable_gauss_2d(slice2d::AbstractMatrix{Float32},
         end
         out[c, v] = s / w
     end
-    out
+    return out
 end
 
 
