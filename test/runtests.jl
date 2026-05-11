@@ -8,4 +8,7 @@ const BS = BasisSimulator
     @testset "api/" begin
         include("api.jl")
     end
+    @testset "bowtie/" begin
+        include("bowtie.jl")
+    end
 end
