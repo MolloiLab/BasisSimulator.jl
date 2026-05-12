@@ -309,12 +309,4 @@ include("reconstruction/vmi/image_domain_decomp.jl")
 # iodine_calibration_rods / calcium_calibration_rods helpers.
 include("reconstruction/vmi/clinical_calibrations.jl")
 
-# =============================================================================
-# Scanner-specific constants
-# =============================================================================
-# Named FBP apodization filters + scanner-specific presets (bowtie, geometry)
-# per scanner-variant.  Notebooks pick via `BS.<SCANNER>_FILTERS[:kernel]`.
-
-include("scanners/ge_apex_elite.jl")
-
 end # module

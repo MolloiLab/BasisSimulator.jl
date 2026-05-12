@@ -21,4 +21,10 @@ const BS = BasisSimulator
     @testset "geometry/" begin
         include("geometry.jl")
     end
+    @testset "object/" begin
+        include("object.jl")
+    end
+    @testset "projection/" begin
+        include("projection.jl")
+    end
 end

@@ -121,7 +121,10 @@
 
 import AcceleratedKernels as AK
 
-export forward_project!, forward_project
+# No public exports — the polychromatic forward model is driven by the
+# api/driver simulate! pipeline, which calls `_forward_project_poly!`
+# and `_apply_physics_no_noise!` directly.  `create_μ_volume!` is
+# consumed by detector/photon_counting.jl + workspace ctors.
 
 # =============================================================================
 # Create μ Volume from Material Mask
@@ -212,16 +215,16 @@ println("Water μ at 60 keV: ", μ_volume[65, 65, 16], " mm⁻¹")
 - [`compute_μ_at_energy`](@ref): Single-material attenuation lookup
 """
 function create_μ_volume!(
-    μ_volume::AbstractArray{T, 3},
-    mask::AbstractArray{<:Unsigned, 3},
-    materials::Vector,
-    energy_keV::Real;
-    ws_μ_lut_cpu::Union{Nothing, Vector{T}} = nothing,
-    ws_μ_lut_gpu = nothing,
-    ws_μ_table = nothing,   # pre-computed μ[region, energy] matrix
-    energy_idx::Int = 0,     # index into μ_table columns
-    ws_μ_table_gpu = nothing # GPU copy of μ_table for zero-copy fast path
-) where T <: AbstractFloat
+        μ_volume::AbstractArray{T, 3},
+        mask::AbstractArray{<:Unsigned, 3},
+        materials::Vector,
+        energy_keV::Real;
+        ws_μ_lut_cpu::Union{Nothing, Vector{T}} = nothing,
+        ws_μ_lut_gpu = nothing,
+        ws_μ_table = nothing,   # pre-computed μ[region, energy] matrix
+        energy_idx::Int = 0,     # index into μ_table columns
+        ws_μ_table_gpu = nothing # GPU copy of μ_table for zero-copy fast path
+    ) where {T <: AbstractFloat}
 
     # Fast path: μ_table already on GPU — skip CPU→GPU copy per energy bin
     if ws_μ_table_gpu !== nothing && energy_idx > 0
@@ -261,299 +264,25 @@ function create_μ_volume!(
     return μ_volume
 end
 
-# =============================================================================
-# Unified Forward Projection API with CatSim Signal Chain
-# =============================================================================
-
-"""
-    forward_project!(sinogram, volume_or_mask, geom; kwargs...) -> sinogram
-
-Unified forward projection with monochromatic or polychromatic X-ray physics,
-optional detector effects, and CatSim-exact calibration signal chain.
-
-This is the primary interface for CT simulation in BasisSimulator.jl, supporting
-three modes of operation:
-1. **Monochromatic**: Single effective energy (fast, simple)
-2. **Polychromatic**: Full spectral simulation (accurate, slower)
-3. **Full Signal Chain**: CatSim-exact clinical simulation pipeline
-
-# Algorithm
-
-## Polychromatic Projection (Beer-Lambert Law)
-
-For a polychromatic X-ray beam with N energy bins, the transmitted intensity is:
-
-    I_total = Σₑ wₑ × exp(-Lₑ)
-
-where:
-- wₑ = normalized spectral weight for energy bin e (Σ wₑ = 1)
-- Lₑ = ∫ μₑ(l) dl = line integral of attenuation at energy e
-
-The projection value is the negative log of transmitted intensity:
-
-    p = -log(I_total) = -log(Σₑ wₑ × exp(-Lₑ))
-
-This nonlinear operation produces beam hardening, where low-energy photons are
-preferentially absorbed, shifting the effective energy along the ray path.
-
-## Spectral Integration Method
-
-Uses energy-sequential integration for memory efficiency:
-
-```
-for e in 1:N_energies:
-    μ_volume[i,j,k] = μ(material[i,j,k], E_e)     # Create energy-specific volume
-    L_e = siddon_ray_trace(μ_volume)               # Ray trace at this energy
-    I_total += w_e × exp(-L_e)                     # Accumulate Beer-Lambert
-end
-sinogram = -log(I_total)                           # Convert to projection
-```
-
-Memory: O(volume_size) additional storage (one μ-volume), independent of N_energies.
-
-## CatSim Signal Chain
-
-When signal chain parameters are provided, applies clinical CT pipeline:
-
-1. **Polychromatic FP**: Beer-Lambert projection as above
-2. **Physics Pipeline**: scatter, crosstalk, focal spot, detector lag
-3. **Intensity Domain**: exp(-sinogram) to get transmitted photon counts
-4. **Heel Effect**: anode self-attenuation intensity gradient
-5. **DAS Model**: gain and electronic noise (phantom only)
-6. **Air Calibration**: ratio to noise-free air scan (CatSim-exact)
-7. **Low Signal Correction**: smooth replacement of negative values
-8. **Log Transform**: -log(calibrated_intensity)
-9. **BHC**: polynomial beam hardening correction
-
-# Arguments
-
-- `sinogram::AbstractArray{T,3}`: Output sinogram of size `[n_cols, n_rows, n_angles]`,
-  modified in place. Contains line integrals (projection domain) after execution.
-  - `n_cols`: Detector columns (transaxial direction)
-  - `n_rows`: Detector rows (axial direction, typically 1 for 2D, >1 for cone-beam)
-  - `n_angles`: Number of projection angles
-
-- `volume_or_mask::AbstractArray`: Input volume, either:
-  - `AbstractArray{T,3}` where `T <: AbstractFloat`: Pre-computed attenuation volume
-    μ in mm⁻¹. Used directly for monochromatic projection.
-  - `AbstractArray{UInt8,3}`: Material index mask. Combined with `materials` and
-    `energies`/`weights` for polychromatic projection.
-
-- `geom::CTGeometry`: Scanner geometry containing source positions, detector
-  geometry, and field of view. See `CTGeometry` for required fields.
-
-# Keyword Arguments
-
-## Spectrum Parameters (required for mask input)
-
-- `energy::Union{Nothing,Real}=nothing`: Single energy in keV for monochromatic
-  projection from mask input. Mutually exclusive with `energies`/`weights`.
-
-- `energies::Union{Nothing,Vector}=nothing`: Vector of energy bin centers in keV.
-  Typically 10-60 bins spanning 20-140 keV. From `load_spectrum()` or custom.
-
-- `weights::Union{Nothing,Vector}=nothing`: Vector of spectral weights (photon
-  fluence). Will be normalized internally (sum to 1). Paired with `energies`.
-
-- `materials::Union{Nothing,Vector}=nothing`: Vector of material definitions for
-  each region in the mask. From `get_region_materials()`. Required when using
-  mask input.
-
-## Volume Bounds
-
-- `volume_extent::Union{Nothing,NTuple{3,Float64}}=nothing`: Override volume
-  bounds for phantoms with extent different from reconstruction FOV.
-
-# Returns
-
-- `sinogram::AbstractArray{T,3}`: The modified sinogram array (same reference)
-
-# GPU Compatibility
-
-Backend auto-detected from array type via AcceleratedKernels.jl:
-
-| Array Type | Backend | Speedup vs CPU |
-|------------|---------|----------------|
-| `Array` | CPU (multi-threaded) | 1× (baseline) |
-| `MtlArray` | Metal (Apple Silicon) | ~50-100× |
-| `CuArray` | CUDA (NVIDIA) | ~50-100× |
-| `ROCArray` | ROCm (AMD) | ~50-100× |
-
-# Examples
-
-## Simple Monochromatic Projection
-
-```julia
-using BasisSimulator
-
-# Create geometry and phantom
-scanner = GERevolutionApex()
-geom = CTGeometry(scanner; n_angles=360, fov=(350.0, 350.0, 40.0))
-phantom = create_water_cylinder(128, diameter_mm=200.0)
-
-# Direct μ-volume projection (fastest)
-μ = compute_μ(phantom, 60.0)  # Get μ at 60 keV
-sinogram = similar(μ, Float32, geom.n_cols, geom.n_rows, geom.n_angles)
-fill!(sinogram, 0f0)
-forward_project!(sinogram, μ, geom)
-```
-
-## Polychromatic Projection
-
-```julia
-# Load 120 kVp spectrum and materials
-energies, weights = load_spectrum(120)
-energies, weights = downsample_spectrum(energies, weights, 30)  # 30 bins
-materials = get_region_materials()
-
-# Polychromatic projection (includes beam hardening)
-forward_project!(sinogram, phantom.mask, geom;
-    energies=energies,
-    weights=weights,
-    materials=materials
-)
-```
-
-# Notes
-
-For full clinical simulation with physics effects, use the workspace+simulate! API:
-`create_eict_workspace()` + `simulate!()`.
-
-# References
-
-1. Hsieh J. "Computed Tomography: Principles, Design, Artifacts, and Recent
-   Advances." 3rd ed. SPIE Press; 2015. doi:10.1117/3.2197756
-
-2. Buzug TM. "Computed Tomography: From Photon Statistics to Modern Cone-Beam
-   CT." Springer; 2008. doi:10.1007/978-3-540-39408-2
-
-3. De Man B, et al. "An iterative maximum-likelihood polychromatic algorithm
-   for CT." IEEE Trans Med Imaging. 2001;20(10):999-1008.
-   doi:10.1109/42.959297
-
-4. Hubbell JH, Seltzer SM. "Tables of X-Ray Mass Attenuation Coefficients."
-   NIST Standard Reference Database 126.
-
-# See Also
-
-- [`forward_project`](@ref): Allocating version (creates sinogram)
-- [`siddon_forward_project!`](@ref): Low-level ray tracing
-- [`fdk_reconstruct`](@ref): Filtered backprojection reconstruction
-- [`PhysicsConfig`](@ref): Physics effects configuration
-"""
-function forward_project!(
-    sinogram::AbstractArray{T, 3},
-    volume_or_mask::AbstractArray,
-    geom::CTGeometry;
-    # Spectrum parameters
-    energy::Union{Nothing, Real} = nothing,
-    energies::Union{Nothing, Vector} = nothing,
-    weights::Union{Nothing, Vector} = nothing,
-    materials::Union{Nothing, Vector} = nothing,
-    # Volume bounds override (for phantoms with extent different from recon FOV)
-    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing
-) where T <: AbstractFloat
-
-    # Determine mode based on input type and kwargs
-    if eltype(volume_or_mask) <: AbstractFloat
-        # Direct volume input - simple monochromatic projection
-        siddon_forward_project!(sinogram, volume_or_mask, geom; volume_extent=volume_extent)
-
-    elseif eltype(volume_or_mask) <: Unsigned
-        # Mask input - need energy specification
-        mask = volume_or_mask
-
-        if materials === nothing
-            error("materials must be provided when using a mask input")
-        end
-
-        if energy !== nothing
-            # Monochromatic mode with single energy
-            _forward_project_mono!(sinogram, mask, geom, T(energy), materials;
-                                   volume_extent=volume_extent)
-
-        elseif energies !== nothing && weights !== nothing
-            # Polychromatic mode
-            _forward_project_poly!(sinogram, mask, geom, energies, weights, materials;
-                                   volume_extent=volume_extent)
-
-        else
-            error("Must specify either `energy` (single keV) or `energies` + `weights` (spectrum)")
-        end
-    else
-        error("volume_or_mask must be Float32/Float64 (μ volume) or Unsigned integer (material mask)")
-    end
-
-    return sinogram
-end
-
-"""
-    forward_project(volume_or_mask, geom; kwargs...) -> sinogram
-
-Compute forward projection and return a newly allocated sinogram array.
-This is the allocating version of [`forward_project!`](@ref).
-
-Pure ray tracing only — no physics effects. For full simulation with
-physics, use `create_eict_workspace()` + `simulate!()`.
-
-# Arguments
-
-- `volume_or_mask::AbstractArray`: Input volume, either:
-  - `AbstractArray{T,3}` where `T <: AbstractFloat`: Pre-computed μ-volume (mm⁻¹)
-  - `AbstractArray{UInt8,3}`: Material mask for polychromatic projection
-
-- `geom::CTGeometry`: Scanner geometry (source positions, detector, FOV)
-
-# Keyword Arguments
-
-- `energy`: Single energy (keV) for monochromatic mode
-- `energies`, `weights`, `materials`: For polychromatic mode
-- `volume_extent`: Override volume bounds
-
-# Returns
-
-- `sinogram::AbstractArray{T,3}`: Newly allocated sinogram of size
-  `[n_cols, n_rows, n_angles]`. The array is allocated on the same device
-  as `volume_or_mask` (CPU or GPU).
-
-# See Also
-
-- [`forward_project!`](@ref): In-place version (avoids allocation)
-- [`siddon_forward_project`](@ref): Low-level allocating ray tracing
-"""
-function forward_project(
-    volume_or_mask::AbstractArray{T},
-    geom::CTGeometry;
-    kwargs...
-) where T
-    # Determine element type for output
-    out_type = T <: AbstractFloat ? T : Float32
-
-    # Create sinogram on same device as input
-    sinogram = similar(volume_or_mask, out_type, geom.n_cols, geom.n_rows, geom.n_angles)
-    fill!(sinogram, zero(out_type))
-
-    return forward_project!(sinogram, volume_or_mask, geom; kwargs...)
-end
 
 """
 Apply physics effects except noise (used by simulate! signal chain).
 """
 function _apply_physics_no_noise!(
-    sinogram::AbstractArray{T,3},
-    geom::CTGeometry,
-    config::PhysicsConfig;
-    # Workspace kwargs for zero-allocation path
-    ws_output=nothing,             # sinogram-sized scratch (shared by convolution effects)
-    ws_scatter_kernel=nothing,     # pre-computed scatter kernel (GPU)
-    ws_optical_crosstalk_kernel=nothing, # pre-computed optical crosstalk 3x3 kernel (GPU)
-    ws_focal_spot_kernel=nothing,  # pre-computed focal spot kernel (GPU)
-    ws_lag_output=nothing,         # sinogram-sized scratch for lag (needs separate from ws_output)
-    ws_lag_intensity=nothing,      # sinogram-sized intensity scratch for lag
-    ws_lag_coeffs=nothing,         # pre-computed lag coefficients (GPU)
-    ws_scatter_temp=nothing,       # sinogram-sized scratch for separable scatter (SPEED-BUILD-002)
-    ws_scatter_kernel_1d=nothing   # 1D Gaussian scatter kernel (separable path)
-) where T
+        sinogram::AbstractArray{T, 3},
+        geom::CTGeometry,
+        config::PhysicsConfig;
+        # Workspace kwargs for zero-allocation path
+        ws_output = nothing,             # sinogram-sized scratch (shared by convolution effects)
+        ws_scatter_kernel = nothing,     # pre-computed scatter kernel (GPU)
+        ws_optical_crosstalk_kernel = nothing, # pre-computed optical crosstalk 3x3 kernel (GPU)
+        ws_focal_spot_kernel = nothing,  # pre-computed focal spot kernel (GPU)
+        ws_lag_output = nothing,         # sinogram-sized scratch for lag (needs separate from ws_output)
+        ws_lag_intensity = nothing,      # sinogram-sized intensity scratch for lag
+        ws_lag_coeffs = nothing,         # pre-computed lag coefficients (GPU)
+        ws_scatter_temp = nothing,       # sinogram-sized scratch for separable scatter (SPEED-BUILD-002)
+        ws_scatter_kernel_1d = nothing   # 1D Gaussian scatter kernel (separable path)
+    ) where {T}
 
     # Apply deterministic physics effects only
     # Skip noise since DAS model handles it
@@ -571,14 +300,18 @@ function _apply_physics_no_noise!(
 
     # Optical crosstalk
     if config.optical_crosstalk !== nothing
-        apply_optical_crosstalk!(sinogram, config.optical_crosstalk;
-                                  ws_output=ws_output, ws_kernel=ws_optical_crosstalk_kernel)
+        apply_optical_crosstalk!(
+            sinogram, config.optical_crosstalk;
+            ws_output = ws_output, ws_kernel = ws_optical_crosstalk_kernel
+        )
     end
 
     # Focal spot blur
     if config.focal_spot !== nothing
-        apply_focal_spot_blur!(sinogram, config.focal_spot, geom;
-                               ws_output=ws_output, ws_kernel=ws_focal_spot_kernel)
+        apply_focal_spot_blur!(
+            sinogram, config.focal_spot, geom;
+            ws_output = ws_output, ws_kernel = ws_focal_spot_kernel
+        )
     end
 
     # Detector efficiency η(E) is now applied in the spectral sum inside
@@ -589,34 +322,15 @@ function _apply_physics_no_noise!(
 
     # Detector lag
     if config.lag !== nothing
-        apply_lag!(sinogram, config.lag;
-                   ws_output=ws_lag_output, ws_intensity=ws_lag_intensity, ws_coeffs=ws_lag_coeffs)
+        apply_lag!(
+            sinogram, config.lag;
+            ws_output = ws_lag_output, ws_intensity = ws_lag_intensity, ws_coeffs = ws_lag_coeffs
+        )
     end
 
     return sinogram
 end
 
-# =============================================================================
-# Internal Implementation Functions
-# =============================================================================
-
-"""Monochromatic forward projection from mask + single energy"""
-function _forward_project_mono!(
-    sinogram::AbstractArray{T, 3},
-    mask::AbstractArray{<:Unsigned, 3},
-    geom::CTGeometry,
-    energy_keV::T,
-    materials::Vector;
-    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing
-) where T <: AbstractFloat
-
-    # Create μ volume at this energy
-    μ_volume = similar(sinogram, T, size(mask))
-    create_μ_volume!(μ_volume, mask, materials, energy_keV)
-
-    # Forward project
-    return siddon_forward_project!(sinogram, μ_volume, geom; volume_extent=volume_extent)
-end
 
 """
     _forward_project_poly!(sinogram, mask, geom, energies, weights, materials) -> sinogram
@@ -707,39 +421,39 @@ causes beam hardening artifacts.
 - [`siddon_forward_project!`](@ref): Monochromatic ray tracing
 """
 function _forward_project_poly!(
-    sinogram::AbstractArray{T, 3},
-    mask::AbstractArray{<:Unsigned, 3},
-    geom::CTGeometry,
-    energies::Vector,
-    weights::Vector,
-    materials::Vector;
-    # Workspace kwargs for zero-allocation path
-    ws_μ_volume=nothing,
-    ws_sino_mono=nothing,
-    ws_I_transmitted=nothing,
-    ws_weights_norm::Union{Nothing, Vector{T}}=nothing,
-    ws_μ_lut_cpu::Union{Nothing, Vector{T}}=nothing,
-    ws_μ_lut_gpu=nothing,
-    ws_μ_table=nothing,
-    ws_μ_table_gpu=nothing,
-    # Siddon geometry arrays (avoid re-allocating per energy)
-    ws_source_positions=nothing,
-    ws_detector_centers=nothing,
-    ws_detector_u=nothing,
-    ws_detector_v=nothing,
-    # Override volume bounds for phantom FOV
-    volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
-    # Detector efficiency η(E) per energy bin (weights spectral sum)
-    ws_η::Union{Nothing, Vector{Float64}}=nothing,
-    # Bowtie spectral transmission [n_cols, n_rows, n_energies]
-    ws_bowtie_spectral=nothing,
-    # Fused kernel: pre-computed wη on GPU [n_energies], enables single-pass projection
-    ws_wη_gpu=nothing,
-    # Control flag: true = fused single-pass kernel, false = sequential energy loop
-    # Default false: 234-bin fused kernel causes massive register spilling on GPU (3.5× slower).
-    # Tiled fusion (K=16) will replace this — see SPEED-BUILD-V2-002.
-    fused::Bool=false
-) where T <: AbstractFloat
+        sinogram::AbstractArray{T, 3},
+        mask::AbstractArray{<:Unsigned, 3},
+        geom::CTGeometry,
+        energies::Vector,
+        weights::Vector,
+        materials::Vector;
+        # Workspace kwargs for zero-allocation path
+        ws_μ_volume = nothing,
+        ws_sino_mono = nothing,
+        ws_I_transmitted = nothing,
+        ws_weights_norm::Union{Nothing, Vector{T}} = nothing,
+        ws_μ_lut_cpu::Union{Nothing, Vector{T}} = nothing,
+        ws_μ_lut_gpu = nothing,
+        ws_μ_table = nothing,
+        ws_μ_table_gpu = nothing,
+        # Siddon geometry arrays (avoid re-allocating per energy)
+        ws_source_positions = nothing,
+        ws_detector_centers = nothing,
+        ws_detector_u = nothing,
+        ws_detector_v = nothing,
+        # Override volume bounds for phantom FOV
+        volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
+        # Detector efficiency η(E) per energy bin (weights spectral sum)
+        ws_η::Union{Nothing, Vector{Float64}} = nothing,
+        # Bowtie spectral transmission [n_cols, n_rows, n_energies]
+        ws_bowtie_spectral = nothing,
+        # Fused kernel: pre-computed wη on GPU [n_energies], enables single-pass projection
+        ws_wη_gpu = nothing,
+        # Control flag: true = fused single-pass kernel, false = sequential energy loop
+        # Default false: 234-bin fused kernel causes massive register spilling on GPU (3.5× slower).
+        # Tiled fusion (K=16) will replace this — see SPEED-BUILD-V2-002.
+        fused::Bool = false
+    ) where {T <: AbstractFloat}
 
     n_energies = length(energies)
 
@@ -747,7 +461,7 @@ function _forward_project_poly!(
     # FUSED PATH: single AK.foreachindex kernel, traces mask ONCE
     # =========================================================================
     if fused && ws_μ_table_gpu !== nothing
-        @info "FUSED PATH: n_energies=$n_energies, mask=$(size(mask)), sino=$(size(sinogram))" maxlog=1
+        @info "FUSED PATH: n_energies=$n_energies, mask=$(size(mask)), sino=$(size(sinogram))" maxlog = 1
         # Build wη on GPU if not provided via workspace
         wη_dev = if ws_wη_gpu !== nothing
             ws_wη_gpu
@@ -760,13 +474,15 @@ function _forward_project_poly!(
             _buf
         end
 
-        siddon_fused_poly_project!(sinogram, mask, geom, ws_μ_table_gpu, wη_dev, Val(n_energies);
-            volume_extent=volume_extent,
-            ws_source_positions=ws_source_positions,
-            ws_detector_centers=ws_detector_centers,
-            ws_detector_u=ws_detector_u,
-            ws_detector_v=ws_detector_v,
-            ws_bowtie_spectral=ws_bowtie_spectral)
+        siddon_fused_poly_project!(
+            sinogram, mask, geom, ws_μ_table_gpu, wη_dev, Val(n_energies);
+            volume_extent = volume_extent,
+            ws_source_positions = ws_source_positions,
+            ws_detector_centers = ws_detector_centers,
+            ws_detector_u = ws_detector_u,
+            ws_detector_v = ws_detector_v,
+            ws_bowtie_spectral = ws_bowtie_spectral
+        )
 
         return sinogram
     end
@@ -776,7 +492,7 @@ function _forward_project_poly!(
     # Default when μ_table_gpu + wη_gpu available. 3.66× faster than unfused.
     # =========================================================================
     if ws_μ_table_gpu !== nothing && ws_wη_gpu !== nothing
-        @info "TILED PATH: K=16, n_energies=$n_energies, mask=$(size(mask)), sino=$(size(sinogram))" maxlog=1
+        @info "TILED PATH: K=16, n_energies=$n_energies, mask=$(size(mask)), sino=$(size(sinogram))" maxlog = 1
 
         # Tile parameters — use proven-fast siddon_fused_poly_project! with Val(16)
         # + subset copies per tile. Avoids runtime offset arithmetic that causes
@@ -808,14 +524,16 @@ function _forward_project_poly!(
             end
 
             # Use proven-fast fused kernel with Val(16) — 95ms/tile on Metal
-            siddon_fused_poly_project!(sinogram, mask, geom,
+            siddon_fused_poly_project!(
+                sinogram, mask, geom,
                 μ_sub, wη_sub, Val(TILE_K);
-                volume_extent=volume_extent,
-                ws_source_positions=ws_source_positions,
-                ws_detector_centers=ws_detector_centers,
-                ws_detector_u=ws_detector_u,
-                ws_detector_v=ws_detector_v,
-                ws_bowtie_spectral=bt_sub)
+                volume_extent = volume_extent,
+                ws_source_positions = ws_source_positions,
+                ws_detector_centers = ws_detector_centers,
+                ws_detector_u = ws_detector_u,
+                ws_detector_v = ws_detector_v,
+                ws_bowtie_spectral = bt_sub
+            )
 
             # Accumulate: undo -log, add partial Beer-Lambert sum
             let I_trans = I_transmitted
@@ -826,7 +544,7 @@ function _forward_project_poly!(
         end
 
         # Final -log
-        let I_trans = I_transmitted, eps_val = T(1e-10)
+        let I_trans = I_transmitted, eps_val = T(1.0e-10)
             AK.foreachindex(sinogram) do idx
                 sinogram[idx] = -log(max(I_trans[idx], eps_val))
             end
@@ -853,19 +571,23 @@ function _forward_project_poly!(
     # Loop over energies (memory-efficient approach)
     for e_idx in 1:n_energies
         # Create μ volume for this energy
-        create_μ_volume!(μ_volume, mask, materials, energies[e_idx];
-                         ws_μ_lut_cpu=ws_μ_lut_cpu, ws_μ_lut_gpu=ws_μ_lut_gpu,
-                         ws_μ_table=ws_μ_table, energy_idx=e_idx,
-                         ws_μ_table_gpu=ws_μ_table_gpu)
+        create_μ_volume!(
+            μ_volume, mask, materials, energies[e_idx];
+            ws_μ_lut_cpu = ws_μ_lut_cpu, ws_μ_lut_gpu = ws_μ_lut_gpu,
+            ws_μ_table = ws_μ_table, energy_idx = e_idx,
+            ws_μ_table_gpu = ws_μ_table_gpu
+        )
 
         # Forward project at this energy
         fill!(sino_mono, zero(T))
-        siddon_forward_project!(sino_mono, μ_volume, geom;
-            ws_source_positions=ws_source_positions,
-            ws_detector_centers=ws_detector_centers,
-            ws_detector_u=ws_detector_u,
-            ws_detector_v=ws_detector_v,
-            volume_extent=volume_extent)
+        siddon_forward_project!(
+            sino_mono, μ_volume, geom;
+            ws_source_positions = ws_source_positions,
+            ws_detector_centers = ws_detector_centers,
+            ws_detector_u = ws_detector_u,
+            ws_detector_v = ws_detector_v,
+            volume_extent = volume_extent
+        )
 
         # Accumulate Beer-Lambert: I += w × η(E) × T_bt(E,col,row) × exp(-line_integral)
         w = weights_norm[e_idx]
@@ -898,7 +620,7 @@ function _forward_project_poly!(
     end
 
     # Convert back to line integral: sinogram = -log(I / I₀)
-    let I_trans = I_transmitted, eps_val = T(1e-10)
+    let I_trans = I_transmitted, eps_val = T(1.0e-10)
         AK.foreachindex(sinogram) do idx
             sinogram[idx] = -log(max(I_trans[idx], eps_val))
         end
@@ -906,4 +628,3 @@ function _forward_project_poly!(
 
     return sinogram
 end
-

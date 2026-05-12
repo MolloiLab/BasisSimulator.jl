@@ -1,10 +1,23 @@
 """
-    Geometry/Phantom.jl
+    src/object/phantom.jl
 
-Phantom generation with semantic masks for validation.
+Phantom struct + factories for the scanned object (mask + materials +
+voxel size + origin).  Every phantom carries a semantic region mask
+that identifies voxel category (air / water / Gammex insert / …) so
+downstream ROI analysis can compute per-region statistics without
+re-segmenting the reconstructed volume.
 
-Every phantom comes with a mask that identifies regions (air, water, inserts, etc.)
-for automated testing and validation.
+Two built-in factories:
+  * `create_gammex_472`   — canonical 16-rod Gammex 472 phantom
+    (7 calcium + 7 iodine inserts in a solid-water background).
+  * `create_phantom_from_mask` — thin wrapper to wrap a user-supplied
+    labeled array + materials dict into a `Phantom`.
+
+μ at any energy is computed on demand via `compute_μ(phantom, E)` /
+`create_μ_volume!` to keep memory bounded — the phantom only stores
+the mask, not a pre-computed μ volume.
+
+BasisSim-original — no upstream port.
 """
 
 # =============================================================================
@@ -120,12 +133,12 @@ phantom_gpu = Phantom(
 
 See also: [`compute_μ`](@ref)
 """
-struct Phantom{T<:Unsigned, M<:AbstractArray{T,3}, Mat}
+struct Phantom{T <: Unsigned, M <: AbstractArray{T, 3}, Mat}
     mask::M
     materials::Mat  # Vector{XA.Material}
-    voxel_size::NTuple{3,Float64}
-    origin::NTuple{3,Float64}
-    extent::NTuple{3,Float64}
+    voxel_size::NTuple{3, Float64}
+    origin::NTuple{3, Float64}
+    extent::NTuple{3, Float64}
 end
 
 # =============================================================================
@@ -162,8 +175,10 @@ phantom = create_gammex_472(n_voxels=128)
 """
 function compute_μ(phantom::Phantom, energy_keV::Real)
     # Compute μ for each material at this energy (O(n_materials))
-    μ_lookup = Float32[compute_μ_at_energy(mat, Float64(energy_keV))
-                       for mat in phantom.materials]
+    μ_lookup = Float32[
+        compute_μ_at_energy(mat, Float64(energy_keV))
+            for mat in phantom.materials
+    ]
     # Broadcast via mask indexing (mask is 0-based, vector is 1-based)
     return μ_lookup[phantom.mask .+ 1]
 end
@@ -229,11 +244,11 @@ simulate!(ws, phantom, scanner, protocol)
 See also: [`compute_μ`](@ref), [`create_phantom_from_mask`](@ref), [`create_gammex_472`](@ref)
 """
 function Phantom(
-    labeled_array::AbstractArray{<:Integer, 3},
-    materials_dict::Dict{Int, M},
-    voxel_size_cm::NTuple{3, Real};
-    origin::Union{Nothing, NTuple{3, Real}} = nothing
-) where M
+        labeled_array::AbstractArray{<:Integer, 3},
+        materials_dict::Dict{Int, M},
+        voxel_size_cm::NTuple{3, Real};
+        origin::Union{Nothing, NTuple{3, Real}} = nothing
+    ) where {M}
     # Get dimensions
     nx, ny, nz = size(labeled_array)
     dx, dy, dz = Float64.(voxel_size_cm)
@@ -245,9 +260,9 @@ function Phantom(
 
     # Compute origin (center at isocenter if not specified)
     if origin === nothing
-        origin_x = -ext_x/2 + dx/2
-        origin_y = -ext_y/2 + dy/2
-        origin_z = -ext_z/2 + dz/2
+        origin_x = -ext_x / 2 + dx / 2
+        origin_y = -ext_y / 2 + dy / 2
+        origin_z = -ext_z / 2 + dz / 2
         computed_origin = (origin_x, origin_y, origin_z)
     else
         computed_origin = Float64.(origin)
@@ -315,11 +330,11 @@ sino = forward_project(phantom.mask, geom; energies=energies, weights=weights, m
 ```
 """
 function create_gammex_472(;
-    n_voxels::Int=64,
-    n_slices::Union{Int,Nothing}=nothing,
-    fov_cm::Float64=35.0,
-    z_cm::Float64=4.0
-)
+        n_voxels::Int = 64,
+        n_slices::Union{Int, Nothing} = nothing,
+        fov_cm::Float64 = 35.0,
+        z_cm::Float64 = 4.0
+    )
     # Grid setup - use n_slices if specified, otherwise compute from z_cm
     n_z = if n_slices !== nothing
         n_slices
@@ -331,8 +346,8 @@ function create_gammex_472(;
     dz = z_cm / n_z
 
     # Coordinate arrays (centered at isocenter)
-    x = range(-fov_cm/2 + dx/2, fov_cm/2 - dx/2, length=n_voxels)
-    y = range(-fov_cm/2 + dy/2, fov_cm/2 - dy/2, length=n_voxels)
+    x = range(-fov_cm / 2 + dx / 2, fov_cm / 2 - dx / 2, length = n_voxels)
+    y = range(-fov_cm / 2 + dy / 2, fov_cm / 2 - dy / 2, length = n_voxels)
 
     # Initialize mask array only (no μ array - computed on demand)
     mask = zeros(UInt8, n_voxels, n_voxels, n_z)
@@ -349,8 +364,8 @@ function create_gammex_472(;
 
     # Insert angular positions (evenly spaced, starting at 0°)
     n_inserts = 7
-    angles_ca = [2π * i / n_inserts for i in 0:(n_inserts-1)]
-    angles_i = [2π * i / n_inserts + π/n_inserts for i in 0:(n_inserts-1)]  # Offset by half spacing
+    angles_ca = [2π * i / n_inserts for i in 0:(n_inserts - 1)]
+    angles_i = [2π * i / n_inserts + π / n_inserts for i in 0:(n_inserts - 1)]  # Offset by half spacing
 
     # Fill mask voxel by voxel (geometry only, no μ computation)
     for k in 1:n_z
@@ -424,7 +439,7 @@ function create_gammex_472(;
         mask,
         materials_vec,
         (dx, dy, dz),
-        (-fov_cm/2 + dx/2, -fov_cm/2 + dy/2, -z_cm/2 + dz/2),
+        (-fov_cm / 2 + dx / 2, -fov_cm / 2 + dy / 2, -z_cm / 2 + dz / 2),
         (Float64(fov_cm), Float64(fov_cm), Float64(z_cm))
     )
 end
@@ -498,51 +513,24 @@ simulate!(ws, phantom, scanner, protocol)
 See also: [`Phantom`](@ref), [`compute_μ`](@ref), [`create_gammex_472`](@ref)
 """
 function create_phantom_from_mask(
-    labeled_array::AbstractArray{<:Integer, 3},
-    materials::Dict{Int, M},
-    voxel_size_cm::NTuple{3, Real};
-    origin::Union{Nothing, NTuple{3, Real}} = nothing
-) where M
+        labeled_array::AbstractArray{<:Integer, 3},
+        materials::Dict{Int, M},
+        voxel_size_cm::NTuple{3, Real};
+        origin::Union{Nothing, NTuple{3, Real}} = nothing
+    ) where {M}
     # Delegate to the unified Phantom constructor
-    return Phantom(labeled_array, materials, voxel_size_cm; origin=origin)
+    return Phantom(labeled_array, materials, voxel_size_cm; origin = origin)
 end
 
-"""
-    build_materials_vector(materials_dict::Dict{Int, <:Any}) -> Vector{XA.Material}
-
-Build a materials vector from a materials dictionary for use with the simulation pipeline.
-
-The returned vector is indexed by `mask_value + 1`, so `materials_vec[1]` corresponds
-to label 0, `materials_vec[2]` to label 1, etc.
-
-# Arguments
-- `materials_dict::Dict{Int, <:Any}`: Mapping from label values to materials.
-  Materials can be `XA.Material` or `Symbol`.
-
-# Returns
-`Vector{XA.Material}` with length `max_label + 1`.
-
-# Example
-```julia
-materials_dict = Dict(
-    0 => XA.Materials.air,
-    1 => :water,
-    2 => XA.Materials.cortical_bone
-)
-materials_vec = build_materials_vector(materials_dict)
-# materials_vec has 3 elements: [air, water, bone]
-```
-"""
-function build_materials_vector(materials_dict::Dict{Int, M}) where M
+# Internal helper used by the `Phantom` ctor + `create_gammex_472` to build
+# an air-padded `Vector{XA.Material}` indexed by `label + 1`.  Not exported
+# — callers that need it should use the high-level `Phantom` ctor.
+function build_materials_vector(materials_dict::Dict{Int, M}) where {M}
     max_label = maximum(keys(materials_dict))
     materials_vec = Vector{XA.Material}(undef, max_label + 1)
-
-    # Fill with air by default
     for i in 1:(max_label + 1)
         materials_vec[i] = XA.Materials.air
     end
-
-    # Fill from dict
     for (label, mat) in materials_dict
         if mat isa Symbol
             materials_vec[label + 1] = get_material(mat)
@@ -550,36 +538,20 @@ function build_materials_vector(materials_dict::Dict{Int, M}) where M
             materials_vec[label + 1] = mat
         end
     end
-
     return materials_vec
 end
 
 # =============================================================================
-# Validation Functions
-# =============================================================================
-
-"""
-    get_region_mask(phantom::Phantom, label::RegionLabel)
-
-Get a boolean mask for a specific region.
-
-# Returns
-`BitArray{3}` where `true` indicates voxels belonging to the region.
-"""
-function get_region_mask(phantom::Phantom, label::RegionLabel)
-    return phantom.mask .== eltype(phantom.mask)(label)
-end
-
-
-# =============================================================================
 # Exports
 # =============================================================================
+#
+# `REGION_TO_MATERIAL` is kept module-internal (no export) — notebooks use
+# `get_material(:Ca_100)` directly instead of round-tripping through the
+# enum table.
 
 export RegionLabel
 export REGION_BACKGROUND, REGION_AIR, REGION_WATER, REGION_SOLID_WATER
 export REGION_CA_50, REGION_CA_100, REGION_CA_200, REGION_CA_300, REGION_CA_400, REGION_CA_500, REGION_CA_600
 export REGION_I_2_0, REGION_I_2_5, REGION_I_5_0, REGION_I_7_5, REGION_I_10_0, REGION_I_15_0, REGION_I_20_0
-export REGION_TO_MATERIAL
 
-export Phantom, compute_μ, create_gammex_472, create_phantom_from_mask, build_materials_vector
-export get_region_mask
+export Phantom, compute_μ, create_gammex_472, create_phantom_from_mask
