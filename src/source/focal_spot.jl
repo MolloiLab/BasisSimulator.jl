@@ -271,10 +271,10 @@ blur_far = compute_focal_spot_blur_fwhm(fs, geom, geom.SAD * 1.3)
 See also: [`create_focal_spot_kernel_spatial`](@ref), [`apply_focal_spot_blur!`](@ref)
 """
 function compute_focal_spot_blur_fwhm(
-    fs::FocalSpot,
-    geom::CTGeometry,
-    object_distance::Float64
-)
+        fs::FocalSpot,
+        geom::CTGeometry,
+        object_distance::Float64
+    )
     # Convert focal spot size from mm to cm
     fs_width_cm = fs.width / 10.0
     fs_length_cm = fs.length / 10.0
@@ -312,9 +312,9 @@ Returns a normalized kernel array of size (2*extent+1) × (2*extent+1),
 capped at MAX_FOCAL_SPOT_KERNEL_SIZE.
 """
 function create_focal_spot_kernel_spatial(
-    fs::FocalSpot,
-    blur_fwhm::Tuple{Float64,Float64}
-)
+        fs::FocalSpot,
+        blur_fwhm::Tuple{Float64, Float64}
+    )
     # Convert FWHM to sigma for Gaussian
     sigma_x = blur_fwhm[1] / (2 * sqrt(2 * log(2)))
     sigma_y = blur_fwhm[2] / (2 * sqrt(2 * log(2)))
@@ -395,12 +395,12 @@ Uses spatial domain convolution for GPU compatibility.
 Modified blurred sinogram.
 """
 function apply_focal_spot_blur!(
-    sinogram::AbstractArray{T,3},
-    fs::FocalSpot,
-    geom::CTGeometry;
-    object_distance::Union{Nothing,Float64}=nothing,
-    ws_output=nothing, ws_kernel=nothing
-) where T
+        sinogram::AbstractArray{T, 3},
+        fs::FocalSpot,
+        geom::CTGeometry;
+        object_distance::Union{Nothing, Float64} = nothing,
+        ws_output = nothing, ws_kernel = nothing
+    ) where {T}
     # Skip if point source
     if fs.width <= 0 && fs.length <= 0
         return sinogram
@@ -473,13 +473,13 @@ end
 
 # Convenience wrapper that allocates (for backward compatibility)
 function apply_focal_spot_blur(
-    sinogram::AbstractArray{T,3},
-    fs::FocalSpot,
-    geom::CTGeometry;
-    object_distance::Union{Nothing,Float64}=nothing
-) where T
+        sinogram::AbstractArray{T, 3},
+        fs::FocalSpot,
+        geom::CTGeometry;
+        object_distance::Union{Nothing, Float64} = nothing
+    ) where {T}
     result = copy(sinogram)
-    return apply_focal_spot_blur!(result, fs, geom; object_distance=object_distance)
+    return apply_focal_spot_blur!(result, fs, geom; object_distance = object_distance)
 end
 
 # =============================================================================
@@ -503,7 +503,7 @@ function generate_focal_spot_samples(fs::FocalSpot)
         return [(0.0, 0.0)], [1.0]
     end
 
-    positions = Tuple{Float64,Float64}[]
+    positions = Tuple{Float64, Float64}[]
     weights = Float64[]
 
     # Sample grid
@@ -545,29 +545,6 @@ function generate_focal_spot_samples(fs::FocalSpot)
     return positions, weights
 end
 
-"""
-    get_focal_spot_info(fs::FocalSpot, geom::CTGeometry) -> NamedTuple
-
-Get diagnostic information about focal spot blur.
-
-# Returns
-Named tuple with blur information at various object distances.
-"""
-function get_focal_spot_info(fs::FocalSpot, geom::CTGeometry)
-    # Blur at different positions
-    blur_at_iso = compute_focal_spot_blur_fwhm(fs, geom, geom.SAD)
-    blur_near = compute_focal_spot_blur_fwhm(fs, geom, geom.SAD * 0.7)  # Closer to source
-    blur_far = compute_focal_spot_blur_fwhm(fs, geom, geom.SAD * 1.3)   # Farther from source
-
-    return (
-        size_mm = (fs.width, fs.length),
-        shape = fs.shape,
-        blur_at_isocenter_pixels = blur_at_iso,
-        blur_near_source_pixels = blur_near,
-        blur_far_from_source_pixels = blur_far
-    )
-end
-
 # =============================================================================
 # Exports
 # =============================================================================
@@ -577,4 +554,4 @@ export focal_spot_small, focal_spot_medium, focal_spot_large, focal_spot_point
 export compute_focal_spot_blur_fwhm
 export create_focal_spot_kernel_spatial
 export apply_focal_spot_blur!, apply_focal_spot_blur
-export generate_focal_spot_samples, get_focal_spot_info
+export generate_focal_spot_samples

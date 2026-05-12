@@ -1,7 +1,41 @@
 """
-    Physics/Spectrum.jl
+    src/source/spectrum.jl
 
-Load X-ray spectra: raw IPEM Anode spectra with Beer-Lambert filtering for :eict fidelity.
+X-ray source spectrum loading + Beer-Lambert filtering.
+
+## Two spectrum data sources
+
+  1. **xspect / xcist `.dat`** (`load_spectrum`) — pre-filtered tungsten anode
+     spectra in CSV format, indexed by `(kVp, target_angle, source)`.  Two
+     sub-variants:
+       - `:xspect` — generic CSV at `src/spectrum/tungsten_tar{7,10}_*_filt.dat`,
+         photons / mA / cm² / s at 1 m.
+       - `:xcist` — CatSim/XCIST-derived spectra at
+         `src/spectrum/xcist_kVp*_tar7_bin1.dat`, photons / mA / mm² / s at 1 m.
+
+  2. **IPEM 78 raw `.TXT`** (`load_spectrum_unfiltered`) — unfiltered tungsten
+     anode spectra from IPEM Report 78 (Cranley et al. 1997), 0.5 keV
+     resolution, at `src/spectrum/Anode{8,10}/{kVp}.TXT`.  Photon fluence per
+     bin in photons / mAs / mm² at 750 mm.  Beer-Lambert filtration is
+     applied separately via `filter_spectrum`.
+
+## Filter materials
+
+`get_filter_mu` (module-internal helper) resolves a material string
+("Al", "Cu", "Sn", "Ti", "C"/"graphite", "W"/"tungsten", "Gd2O2S") to
+a linear attenuation coefficient (cm⁻¹) at a given energy via
+XrayAttenuation.jl (NIST XCOM).  The `GD2O2S` compound is defined here
+as a custom `XA.Material` for the gadolinium oxysulfide scintillator,
+used by `FILTER_MATERIAL_MAP`.
+
+## Reference
+
+Cranley K, Gilmore BJ, Fogarty GW, Desponds L.  *IPEM Report 78: Catalogue
+of Diagnostic X-Ray Spectra and Other Data*.  Institute of Physics and
+Engineering in Medicine, 1997.  https://www.ipem.ac.uk/
+
+CatSim/XCIST source spectra: https://github.com/xcist/main
+(BSD 3-Clause, GE Precision HealthCare).
 """
 
 using DelimitedFiles
@@ -39,7 +73,7 @@ energies, weights = load_spectrum(120)
 energies, weights = load_spectrum(120; target_angle=10.0)
 ```
 """
-function load_spectrum(kVp::Int; spectrum_dir::AbstractString=SPECTRUM_DIR, target_angle::Float64=7.0, source::Symbol=:xspect)
+function load_spectrum(kVp::Int; spectrum_dir::AbstractString = SPECTRUM_DIR, target_angle::Float64 = 7.0, source::Symbol = :xspect)
     # Validate inputs
     valid_kvp_xspect = [70, 80, 90, 100, 110, 120, 130, 140]
     valid_kvp_xcist = [80, 100, 120, 140]
@@ -123,10 +157,10 @@ energies_ds, weights_ds = downsample_spectrum(energies, weights, 24)
 ```
 """
 function downsample_spectrum(
-    energies::Vector{Float64},
-    weights::Vector{Float64},
-    n_bins::Int=24
-)
+        energies::Vector{Float64},
+        weights::Vector{Float64},
+        n_bins::Int = 24
+    )
     n_original = length(energies)
     n_bins = min(n_bins, n_original)
 
@@ -172,10 +206,10 @@ const GD2O2S = XA.Material(
     "Gadolinium Oxysulfide",
     0.42174,              # Z/A ratio (weighted average)
     493.3 * eV,           # Mean excitation energy (estimate)
-    7.44 * g/cm^3,        # Bulk density
-    Dict{Int,Float64}(    # Mass fractions from Gd₂O₂S (MW = 378.57 g/mol)
+    7.44 * g / cm^3,        # Bulk density
+    Dict{Int, Float64}(    # Mass fractions from Gd₂O₂S (MW = 378.57 g/mol)
         64 => 0.8308,     # Gd
-        8  => 0.0845,     # O
+        8 => 0.0845,     # O
         16 => 0.0847,     # S
     )
 )
@@ -183,12 +217,12 @@ const GD2O2S = XA.Material(
 # Map user-facing material strings to XA elements/materials for filter μ(E) lookups
 const FILTER_MATERIAL_MAP = Dict{String, Any}(
     "Al" => XA.Elements.Aluminum, "aluminum" => XA.Elements.Aluminum,
-    "Cu" => XA.Elements.Copper,   "copper"   => XA.Elements.Copper,
-    "Sn" => XA.Elements.Tin,      "tin"      => XA.Elements.Tin,
+    "Cu" => XA.Elements.Copper, "copper" => XA.Elements.Copper,
+    "Sn" => XA.Elements.Tin, "tin" => XA.Elements.Tin,
     "Ti" => XA.Elements.Titanium, "titanium" => XA.Elements.Titanium,
-    "W"  => XA.Elements.Tungsten, "tungsten" => XA.Elements.Tungsten,
-    "C"  => XA.Elements.Carbon,   "graphite" => XA.Elements.Carbon,
-    "Gd2O2S" => GD2O2S,          "gadolinium_oxysulfide" => GD2O2S,
+    "W" => XA.Elements.Tungsten, "tungsten" => XA.Elements.Tungsten,
+    "C" => XA.Elements.Carbon, "graphite" => XA.Elements.Carbon,
+    "Gd2O2S" => GD2O2S, "gadolinium_oxysulfide" => GD2O2S,
 )
 
 """
@@ -203,8 +237,10 @@ Compounds: `"Gd2O2S"` / `"gadolinium_oxysulfide"`.
 """
 function get_filter_mu(material::String, energy_keV::Float64)
     mat = get(FILTER_MATERIAL_MAP, material, nothing)
-    mat === nothing && error("Unknown filter material: \"$material\". " *
-        "Supported: $(join(sort(collect(keys(FILTER_MATERIAL_MAP))), ", "))")
+    mat === nothing && error(
+        "Unknown filter material: \"$material\". " *
+            "Supported: $(join(sort(collect(keys(FILTER_MATERIAL_MAP))), ", "))"
+    )
     return ustrip(u"cm^-1", XA.linear_attenuation_coeff(mat, energy_keV * u"keV"))
 end
 
@@ -224,7 +260,7 @@ Load a raw (unfiltered) IPEM Anode spectrum at 0.5 keV resolution.
 # File format
 Line 1: header (ignored), then whitespace-separated `energy flux` pairs.
 """
-function load_spectrum_unfiltered(kVp::Int; anode_angle::Int=10)
+function load_spectrum_unfiltered(kVp::Int; anode_angle::Int = 10)
     valid_kvp = (80, 100, 120, 140)
     valid_angles = (8, 10)
     kVp in valid_kvp || error("kVp must be one of $valid_kvp (got $kVp)")
@@ -278,11 +314,11 @@ where `μᵢ(E)` is from XrayAttenuation.jl and `tᵢ` is filter thickness in cm
 - `(energies, filtered_flux)` — same energy grid, attenuated flux.
 """
 function filter_spectrum(
-    energies::Vector{Float64},
-    flux::Vector{Float64};
-    filters::Vector{Tuple{String,Float64}}=Tuple{String,Float64}[],
-    sdd_mm::Float64=750.0,
-)
+        energies::Vector{Float64},
+        flux::Vector{Float64};
+        filters::Vector{Tuple{String, Float64}} = Tuple{String, Float64}[],
+        sdd_mm::Float64 = 750.0,
+    )
     filtered = copy(flux)
 
     # Beer-Lambert per filter layer
@@ -303,5 +339,10 @@ function filter_spectrum(
 end
 
 # Exports
+#
+# `get_filter_mu` and `GD2O2S` are kept module-internal — they're consumed
+# by `filter_spectrum` + `FILTER_MATERIAL_MAP` (and `get_filter_mu` is
+# aliased as `get_bowtie_mu` in bowtie_filter.jl).  No external caller
+# needs the bare attenuation lookup or the Gd₂O₂S material constant.
 export load_spectrum, spectrum_mean_energy, downsample_spectrum
-export load_spectrum_unfiltered, filter_spectrum, get_filter_mu, GD2O2S
+export load_spectrum_unfiltered, filter_spectrum

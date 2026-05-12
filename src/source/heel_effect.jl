@@ -32,7 +32,6 @@ import AcceleratedKernels as AK
 export HeelEffect
 export default_heel_effect, heel_effect_none
 export apply_heel_effect!, apply_heel_effect
-export get_heel_effect_info
 
 # =============================================================================
 # Heel Effect Model
@@ -79,10 +78,10 @@ Note: Real CT tubes have heel effects producing 10-30% intensity variation acros
 Use effective_thickness_mm=0.02-0.05 for stronger effects.
 """
 function default_heel_effect(;
-    anode_angle_deg::Real = 7.0,
-    target_material::Symbol = :tungsten,
-    effective_thickness_mm::Real = 0.01
-)
+        anode_angle_deg::Real = 7.0,
+        target_material::Symbol = :tungsten,
+        effective_thickness_mm::Real = 0.01
+    )
     return HeelEffect(
         Float64(anode_angle_deg),
         target_material,
@@ -148,10 +147,10 @@ apply_heel_effect!(intensity, heel, geom)
 ```
 """
 function apply_heel_effect!(
-    intensity::AbstractArray{T, 3},
-    heel::HeelEffect,
-    geom::CTGeometry
-) where T <: AbstractFloat
+        intensity::AbstractArray{T, 3},
+        heel::HeelEffect,
+        geom::CTGeometry
+    ) where {T <: AbstractFloat}
 
     if !heel.enabled || heel.effective_thickness_mm <= 0
         return intensity
@@ -196,7 +195,7 @@ function apply_heel_effect!(
         # Fan angle for this column (negative = anode side, positive = cathode side)
         # Convention: col=1 is anode side, col=n_cols is cathode side
         n_cols_T = T(n_cols)
-        γ = (T(col) - n_cols_T/T(2) - T(0.5)) / (n_cols_T/T(2)) * fan_angle_max
+        γ = (T(col) - n_cols_T / T(2) - T(0.5)) / (n_cols_T / T(2)) * fan_angle_max
 
         # Effective angle through target material
         # On anode side (negative γ), angle is smaller, more attenuation
@@ -225,10 +224,10 @@ end
 Non-mutating version of apply_heel_effect!.
 """
 function apply_heel_effect(
-    intensity::AbstractArray{T, 3},
-    heel::HeelEffect,
-    geom::CTGeometry
-) where T <: AbstractFloat
+        intensity::AbstractArray{T, 3},
+        heel::HeelEffect,
+        geom::CTGeometry
+    ) where {T <: AbstractFloat}
     result = similar(intensity)
     copyto!(result, intensity)
     return apply_heel_effect!(result, heel, geom)
@@ -253,50 +252,6 @@ function get_target_attenuation(material::Symbol)
     return get(μ_values, material, 85.0)
 end
 
-"""
-    get_heel_effect_info(heel)
-
-Get information about heel effect model.
-
-# Returns
-Named tuple with:
-- `enabled`: Whether heel effect is active
-- `anode_angle_deg`: Target angle in degrees
-- `target_material`: Target material symbol
-- `effective_thickness_mm`: Electron penetration depth in mm
-- `expected_variation`: Human-readable description of expected intensity variation
-"""
-function get_heel_effect_info(heel::HeelEffect)
-    if !heel.enabled
-        return (
-            enabled = false,
-            anode_angle_deg = heel.anode_angle_deg,
-            target_material = heel.target_material,
-            effective_thickness_mm = heel.effective_thickness_mm,
-            expected_variation = "disabled"
-        )
-    end
-
-    # Calculate expected intensity drop using CatSim formula
-    # At anode limit (θ ≈ 0), most attenuation
-    μ = get_target_attenuation(heel.target_material)
-    d = heel.effective_thickness_mm / 10  # Convert to cm
-    θ_anode = heel.anode_angle_deg * π / 180
-
-    # CatSim formula: exp(-μ × d × cos(θ_anode) / sin(θ_anode + θ))
-    # At central ray (θ = 0): exp(-μ × d × cos(θ_anode) / sin(θ_anode))
-    # Intensity drop ≈ 1 - exp(...)
-    central_atten = 1 - exp(-μ * d * cos(θ_anode) / sin(θ_anode))
-
-    return (
-        enabled = heel.enabled,
-        anode_angle_deg = heel.anode_angle_deg,
-        target_material = heel.target_material,
-        effective_thickness_mm = heel.effective_thickness_mm,
-        expected_variation = "~$(round(Int, central_atten * 100))% intensity drop at central ray"
-    )
-end
-
 # =============================================================================
 # Spectral Heel Effect (energy-dependent, per-column transmission)
 # =============================================================================
@@ -314,10 +269,10 @@ This is the spectral-domain heel effect, analogous to bowtie spectral transmissi
 Applied during forward projection by multiplying into the spectral weight matrix.
 """
 function compute_heel_spectral(
-    heel::HeelEffect,
-    geom::CTGeometry,
-    energies_keV::Vector{Float64}
-)
+        heel::HeelEffect,
+        geom::CTGeometry,
+        energies_keV::Vector{Float64}
+    )
     if !heel.enabled || heel.effective_thickness_mm <= 0
         return ones(Float64, geom.n_cols, geom.n_rows, length(energies_keV))
     end
@@ -360,7 +315,7 @@ function compute_heel_spectral(
             # both I_col and I_ref are essentially zero — no photons survive at any
             # angle. The ratio is numerically meaningless. Set to 1.0 (no modulation)
             # since the spectral weight at these energies is also ~0.
-            ratio = I_ref > 1e-30 ? I_col / I_ref : 1.0
+            ratio = I_ref > 1.0e-30 ? I_col / I_ref : 1.0
 
             for row in 1:n_rows
                 transmission[col, row, e_idx] = ratio
