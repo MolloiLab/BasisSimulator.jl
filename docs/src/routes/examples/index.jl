@@ -70,12 +70,15 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
         ),
         "07_qrm_thorax_pure_material_vmi" => (
             index     = "07",
-            title     = "QRM-Thorax Pure-Material VMI",
-            summary   = "Dual-kVp GSI pipeline (1:1 with notebook 03) on a QRM-Thorax phantom with four " *
-                        "pure-material rod inserts bored into the heart cavity — water, lipid, collagen, " *
-                        "iodine 5 mg/mL.  SVD denoiser → bowtie-aware Cong material decomposition → FBP → " *
-                        "z-median → Mono+ VMI at 40/70/100/140 keV, verified per-rod against the four " *
-                        "tissue-specific XrayAttenuation theoretical curves.",
+            title     = "QRM-Thorax Pure-Material VMI — Full-Resolution True-Scan Reference",
+            summary   = "Canonical full-fidelity reference: clinical GE Apex Elite acquisition on a " *
+                        "body-sized QRM-Thorax phantom (truly 0.2 mm isotropic ground truth, 0.625 mm " *
+                        "isotropic recon, 2.5 mm DE collimation, 32 cm FOV) with four pure-material " *
+                        "rod inserts — water, lipid, collagen, iodine 5 mg/mL.  Z trimmed to the " *
+                        "cone-beam usable budget (3 slices) so the high-res forward projector runs " *
+                        "in reasonable time.  Same dual-kVp pipeline as notebook 03: SVD denoiser → " *
+                        "bowtie-aware Cong decomposition → FBP → z-median → Mono+ VMI at 40/70/100/140 " *
+                        "keV, verified per-rod against XrayAttenuation theoretical curves.",
             thumbnail = "qrm_thorax_vmi_vs_theoretical.png",
             tags      = ["EICT", "Dual-kVp", "VMI", "Mono+", "QRM-Thorax"],
         ),

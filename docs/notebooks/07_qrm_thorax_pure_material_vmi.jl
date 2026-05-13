@@ -1,8 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.20.24
-
-using Markdown
-using InteractiveUtils
+# v0.19.0
 
 # ╔═╡ 07010003-0000-4000-8000-000000000001
 begin
@@ -21,7 +18,24 @@ using Unitful: @u_str
 
 # ╔═╡ 07010001-0000-4000-8000-000000000001
 md"""
-# 07 · QRM-Thorax Pure-Material VMI · Projection-Domain Pipeline
+# 07 · QRM-Thorax Pure-Material VMI · **Full-Resolution True-Scan Reference**
+
+**Intent:** the canonical full-fidelity reference for the projection-
+domain dual-kVp pipeline.  Every knob here matches a real clinical
+acquisition — no resolution compromises in-plane, no fake collimation,
+no exaggerated mAs.  The only place we deliberately economize is **z**,
+where we trim the phantom and recon to just the slices that are fully
+covered by the cone beam (`z_usable = c × (1 − R_body/STI) ≈ 1.9 mm`
+for 2.5 mm collimation) — so the truly 0.2 mm isotropic forward
+projector still runs in reasonable wall-clock time.
+
+| Stage         | Matrix                   | Voxel (mm)             | Extent                        |
+|---------------|--------------------------|------------------------|-------------------------------|
+| GT phantom    | **1600 × 1100 × 20**     | **0.2 isotropic**      | 320 × 220 × 4 mm              |
+| Recon         | 512 × 512 × **3**        | **0.625 isotropic**    | FOV 32 cm × 1.875 mm z        |
+| Collimation   | **2.5 mm at iso**        | —                      | ~7 detector rows lit          |
+| Scanner       | GE Revolution Apex Elite | 0.625 × 0.6 mm pixels  | 256 × 834 detector            |
+| Protocol      | DE rapid-kVp switching   | 80 + 140 kVp, 984 views, 0.5 s rot. | clinical DECT dose |
 
 GE Apex Elite GSI rapid-kVp-switching simulation (80 + 140 kVp) on a
 **QRM-Thorax-Gammex-Heart phantom** with **four pure-material rods**
@@ -35,18 +49,19 @@ QRM-Thorax mid-slice mask  → relabel rods 9–12 → tile z → BS.Phantom
        ┌───────────────────────────────┴───────────────────────────────┐
        │                                                               │
 Simulate 80 kVp →┐                                                     │
-                  ├─→ Joint Sinogram Denoising → Material Decomp →     │
-Simulate 140 kVp→┘   FBP × 2 → z-Median → 2-basis VMI → Mono+ →        │
+                  ├─→ Material Decomp → FBP × 2 → z-Median →           │
+Simulate 140 kVp→┘   2-basis VMI → Mono+ →                             │
                                                                        │
                      Per-Rod Measured-vs-Theoretical Regression  ──────┘
                                        at 40 / 70 / 100 / 140 keV
 ```
 
-This notebook is structured in two parts.  **Part 1 (this file, §1)**
-builds the phantom: read the rotated downsampled mask cache, define
-the four pure-material rod inserts in `XA.Material` style, build the
-3D phantom, visualize.  **Part 2 (added later)** runs the dual-kVp
-scans and the full projection-domain VMI pipeline.
+!!! tip "When to reach for this notebook"
+    Use 07 when you want **clinical-realism evidence** — VMI accuracy
+    on a body-sized phantom with a body-sized FOV at the resolutions
+    a real GE Revolution Apex Elite would deliver.  For faster
+    iteration on the pipeline itself, use notebook 03 (Gammex 472,
+    same pipeline, smaller phantom).
 
 !!! info "Why pure end-members?"
     `XA.Materials.basis_fat` is ICRU-44 adipose tissue (≈83 % triolein
@@ -108,10 +123,13 @@ md"""
 Read the **prepared** QRM-Thorax mask — already rotated to CT display
 orientation (spine at the bottom) and 2× downsampled, cached at
 `docs/notebooks/data/qrm_thorax/qrm_thorax_1600x1100_rot_uint8.raw`.
-Phantom shape after z-tiling: **1600 × 1100 × 16** at **0.2 mm
-in-plane × 0.625 mm in-z** (physical extent 320 × 220 × 10 mm; body
-envelope ≈ 30 × 20 cm matches QRM-Thorax-small spec).  The probe
-cell after the mask load prints the actual body bbox.
+Phantom shape after z-tiling: **1600 × 1100 × 20** at **0.2 mm
+isotropic** (physical extent 320 × 220 × 4 mm; body envelope ≈ 30 ×
+20 cm matches QRM-Thorax-small spec).  Truly 0.2 mm iso ground
+truth — finer than the demagged detector pitch (0.6 / 1.758 ≈ 0.34 mm),
+so the forward projector sees a high-res source.  The z extent is
+the **minimum** that covers all rays for 2.5 mm collimation (see ## 2).
+The probe cell after the mask load prints the actual body bbox.
 
 Source mask labels:
 
@@ -137,16 +155,16 @@ All four rod inserts and every anatomy region use prebuilt
 const QRM_CACHE_PATH = joinpath(@__DIR__, "data", "qrm_thorax", "qrm_thorax_1600x1100_rot_uint8.raw");
 
 # ╔═╡ 07020001-0000-4000-8000-000000000011
-const QRM_TARGET_NX = 800;   # 1600 cache / 2× extra NN-downsample
+const QRM_TARGET_NX = 1600;  # full prepared cache, no extra in-plane downsample
 
 # ╔═╡ 07020001-0000-4000-8000-000000000012
-const QRM_TARGET_NY = 550;   # 1100 cache / 2× extra NN-downsample
+const QRM_TARGET_NY = 1100;  # full prepared cache, no extra in-plane downsample
 
 # ╔═╡ 07020001-0000-4000-8000-000000000013
-const QRM_TARGET_NZ = 16;    # matches nb03 Gammex 472 z-budget (16 × 0.625 mm = 10 mm)
+const QRM_TARGET_NZ = 20;    # 20 × 0.2 mm = 4 mm — minimum phantom z that covers all rays for 2.5 mm collimation (see ## 2 cone-beam math)
 
 # ╔═╡ 07020001-0000-4000-8000-000000000014
-const QRM_VOXEL_SIZE_CM = (0.04, 0.04, 0.0625);   # (x, y, z) cm — 0.4 mm in-plane (32 × 22 cm physical extent), 0.625 mm z
+const QRM_VOXEL_SIZE_CM = (0.02, 0.02, 0.02);   # (x, y, z) cm — 0.2 mm isotropic ground truth (320 × 220 × 4 mm physical extent)
 
 # ╔═╡ 07020001-0000-4000-8000-000000000015
 # Share-drive copies of both prepared phantoms (rotated to CT display
@@ -187,21 +205,10 @@ mask_3d_raw = let
             "      cp \"$(QRM_SHARED_DOWN_PATH)\" \"$(QRM_CACHE_PATH)\"\n" *
             "  • or run the prep notebook once to rebuild the cache from source."
     )
-    # Cache is 1600 × 1100 UInt8.  Read it, then NN-downsample 2×
-    # in-plane to 800 × 550 (matches QRM_TARGET_NX / QRM_TARGET_NY) for
-    # forward-sim throughput — same physical extent (32 × 22 cm),
-    # 4× fewer voxels per slice.
-    cache_2d = reshape(read(QRM_CACHE_PATH), 1600, 1100)
-    nx_in, ny_in = size(cache_2d)
-    out_2d = Matrix{UInt8}(undef, QRM_TARGET_NX, QRM_TARGET_NY)
-    @inbounds for j in 1:QRM_TARGET_NY
-        sj = clamp(round(Int, ((j - 0.5) * ny_in / QRM_TARGET_NY) + 0.5), 1, ny_in)
-        for i in 1:QRM_TARGET_NX
-            si = clamp(round(Int, ((i - 0.5) * nx_in / QRM_TARGET_NX) + 0.5), 1, nx_in)
-            out_2d[i, j] = cache_2d[si, sj]
-        end
-    end
-    repeat(out_2d; outer = (1, 1, QRM_TARGET_NZ))
+    # Cache is 1600 × 1100 UInt8 at 0.2 mm in-plane.  Use it directly
+    # as the ground-truth phantom — truly 0.2 mm isotropic after z-tile.
+    cache_2d = reshape(read(QRM_CACHE_PATH), QRM_TARGET_NX, QRM_TARGET_NY)
+    repeat(cache_2d; outer = (1, 1, QRM_TARGET_NZ))
 end;
 
 # ╔═╡ 07020001-0000-4000-8000-000000000022
@@ -247,9 +254,10 @@ md"""
 `materials_dict`.  The source mask doesn't carry rod inserts of its
 own — we add them here procedurally.
 
-Tune `ROD_HEART_CENTER_MM`, `ROD_RADIUS_MM`, `ROD_OFFSET_MM` to align
+Tune `ROD_HEART_CENTER_PX`, `ROD_RADIUS_MM`, `ROD_OFFSET_MM` to align
 the rods with your phantom's actual heart cavity.  Defaults are set
-for the 1600 × 1100 (320 × 220 mm) post-rotation phantom.
+for the 1600 × 1100 (320 × 220 mm) post-rotation phantom at 0.2 mm
+in-plane.
 
 Cardinal-direction → rod-label mapping (matches `materials_dict`):
 
@@ -266,7 +274,7 @@ Cardinal-direction → rod-label mapping (matches `materials_dict`):
 # Eyeball from the visualization and tune.  Invariant under voxel-size
 # changes (only the mask shape matters).  Default lands inside the
 # upper-half heart cavity of the rotated 1600 × 1100 phantom.
-const ROD_HEART_CENTER_PX = (400, 327);   # ≈ (50%, 59%) of the 800 × 550 frame (halved after 2× downsample)
+const ROD_HEART_CENTER_PX = (800, 654);   # ≈ (50%, 59%) of the 1600 × 1100 frame
 
 # ╔═╡ 07020001-0000-4000-8000-000000000027
 const ROD_RADIUS_MM = 7.5;                  # mm — each rod radius (physical)
@@ -441,6 +449,12 @@ md"""
 |-----|------------------|------------|--------------|
 | 80  | 407              | 0.65       | 264.55       |
 | 140 | 405              | 0.35       | 141.75       |
+
+**Collimation = 2.5 mm at iso** (clinical thin-slice DE setting).
+Chosen so 3 recon slices @ 0.625 mm fit inside the usable-z budget
+`z_usable = c × (1 − R_body/STI) ≈ 1.9 mm`.  Only ~7 detector rows
+are lit — keeps the forward-projection cost low so we can afford a
+truly 0.2 mm iso ground-truth phantom.
 """
 
 # ╔═╡ 07030002-0000-4000-8000-000000000010
@@ -449,7 +463,7 @@ protocol_low = BS.CTProtocol(
     mA = 407 * 0.65,
     views = 984,
     rotation_time = 0.5,
-    collimation_mm = 5.0,
+    collimation_mm = 2.5,
     additional_filters = [("Al", 4.5)],
 );
 
@@ -459,7 +473,7 @@ protocol_high = BS.CTProtocol(
     mA = 405 * 0.35,
     views = 984,
     rotation_time = 0.5,
-    collimation_mm = 5.0,
+    collimation_mm = 2.5,
     additional_filters = [("Al", 4.5)],
 );
 
@@ -472,16 +486,18 @@ md"""
 sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234);
 
 # ╔═╡ 07030003-0000-4000-8000-000000000020
-# Standard CT recon convention: 512 × 512 in-plane regardless of phantom
-# resolution.  The phantom is the high-res forward-projector sampling
-# source (800 × 550 at 0.4 mm); the recon grid is independent (512 × 512
-# at 0.683 mm, fov 35 cm).  Rod ROIs are built in physical mm and
-# converted to recon voxel indices — the two grids share the isocenter
-# so the conversion is just a centered linear transform.
+# Standard CT recon convention: 512 × 512 in-plane at 0.625 mm isotropic
+# (GE clinical thin-slice).  The phantom is the high-res forward-projector
+# sampling source (1600 × 1100 × 20 at 0.2 mm iso); the recon grid is
+# independent (512 × 512 × 3 at 0.625 mm iso, fov 32 cm, 1.875 mm z).
+# Rod ROIs are built in physical mm and converted to recon voxel indices —
+# the two grids share the isocenter so the conversion is just a centered
+# linear transform.  Recon z extent matches the usable-z budget for
+# 2.5 mm collimation: z_usable = c × (1 − R_body/STI) ≈ 1.9 mm.
 recon_opts = BS.ReconOptions(
-    matrix_size = (512, 512, 8),
-    fov_cm = 35.0,
-    z_cm = 0.5,
+    matrix_size = (512, 512, 3),
+    fov_cm = 32.0,
+    z_cm = 0.1875,
 );
 
 # ╔═╡ 07030004-0000-4000-8000-000000000001
@@ -558,129 +574,14 @@ let
     fig
 end
 
-# ╔═╡ 07030005-0000-4000-8000-000000000001
-md"""
-## 6. SF-JSD: Subspace–Frequency Joint Sinogram Denoiser
-
-Two-channel projection-domain joint denoiser operating directly on the
-80 + 140 kVp log-line-integral pair before any decomposition or
-reconstruction.
-
-```
-Simulate 80 kVp ──┐
-                  ├──→  Per-pixel Poisson whitening (10-px Gaussian ref + √N)
-Simulate 140 kVp ─┘                       │
-                                          ▼
-                   Per-row SVD across the (col, view) channel matrix
-                                          │
-                                          ▼
-                   Joint bilateral on BOTH subspaces
-                     · rank-sparse bandwidth σ_e = σ₀·√(Σ₁/Σ_e)
-                     · product-of-channels range kernel
-                     · 5×5 locally-averaged squared diff (Clark–Badea)
-                     · MAD-derived per-component range scale
-                     · stride from noise corr length
-                                          │
-                                          ▼
-                   Iterate σ₀⁽ᵗ⁾ = 0.7ᵗ · σ₀★, n_iter from min(N)
-                                          │
-                                          ▼
-                   Inverse-whiten → denoised log-line-integrals
-```
-
-!!! info "The single user knob — σ₀"
-    `SFJSD_σ0` is the principal smoothing scale in detector pixels.
-    `0.0` defers to **SURE** — Stein's unbiased risk estimator with
-    Hutchinson MC divergence and golden-section search on a
-    representative mid-row.  Set positive to override.
-
-    On this QRM-Thorax phantom (modest iodine, low spectral contrast)
-    SURE typically picks σ₀★ ∈ [1, 2] px — gentle smoothing that
-    preserves rod silhouettes while stripping the residual quantum
-    noise.
-
-!!! info "Implementation"
-    Driver: `BS.apply_sino_sfjsd_denoise(channels, I0; σ₀)` —
-    see `src/denoising/sino_sfjsd.jl`.
-
-!!! info "Reference paper"
-    Black (in prep.), *Joint Sinogram Denoising via Subspace–Frequency
-    Reduction for Two-Channel Spectral CT*.  Inspirations: Cong et al.
-    (2026) effective-spectral-response Φ_k(ε); Clark, Badea (2023) RSKR;
-    Grant et al. (2014) Mono+ frequency split.
-"""
-
-# ╔═╡ 07030005-0000-4000-8000-000000000005
-SFJSD_σ0 = 0.0;   # only knob — 0.0 → SURE auto-select on mid-row; >0 → use directly
-
-# ╔═╡ 07030005-0000-4000-8000-000000000010
-sino_denoised = let
-    # Recover scalar I₀ per channel for the whitening step.  Inlined (no
-    # closure) so Pluto's reactive analyzer sees every dependency at the
-    # cell's top level — see `src/denoising/sino_sfjsd.jl` for the
-    # public API.
-    _, w_spec_lo = BS.resolve_source_spectrum_without_bowtie(
-        sim_opts, protocol_low; scanner = scanner,
-    )
-    _, w_spec_hi = BS.resolve_source_spectrum_without_bowtie(
-        sim_opts, protocol_high; scanner = scanner,
-    )
-    I0_lo = BS.compute_detector_I0(sim_low.geom,  protocol_low,  Float64(sum(w_spec_lo)))
-    I0_hi = BS.compute_detector_I0(sim_high.geom, protocol_high, Float64(sum(w_spec_hi)))
-
-    out = BS.apply_sino_sfjsd_denoise(
-        [Float32.(sim_low.sino), Float32.(sim_high.sino)],
-        [I0_lo, I0_hi];
-        σ₀ = SFJSD_σ0,
-    )
-    (low = out[1], high = out[2], geom = sim_low.geom)
-end;
-
-# ╔═╡ 07030005-0000-4000-8000-000000000030
-let
-    n_row = size(sino_denoised.low, 2)
-    mid_r = n_row ÷ 2 + 1
-
-    slice_lo = permutedims(sino_denoised.low[:, mid_r, :], (2, 1))
-    slice_hi = permutedims(sino_denoised.high[:, mid_r, :], (2, 1))
-
-    all_v = vcat(vec(slice_lo), vec(slice_hi))
-    sino_window = (
-        Float64(quantile(all_v, 0.01)),
-        Float64(quantile(all_v, 0.99)),
-    )
-
-    fig = CM.Figure(size = (1180, 580))
-    axis_kwargs = (
-        titlesize = 32, subtitlesize = 24,
-        xlabel = "View", ylabel = "Detector Column",
-        xlabelsize = 22, ylabelsize = 22,
-        xticklabelsize = 16, yticklabelsize = 16,
-    )
-
-    for (c, ttl, sub, slice) in (
-            (1, "80 kVp", "After SF-JSD denoiser", slice_lo),
-            (2, "140 kVp", "After SF-JSD denoiser", slice_hi),
-        )
-        ax = CM.Axis(fig[1, c]; title = ttl, subtitle = sub, axis_kwargs...)
-        CM.heatmap!(ax, slice; colormap = :viridis, colorrange = sino_window)
-    end
-    CM.Colorbar(
-        fig[1, 3]; colormap = :viridis, colorrange = sino_window,
-        label = "Log Line Integral", width = 16, labelsize = 22, ticklabelsize = 18
-    )
-    fig
-end
-
 # ╔═╡ 07030006-0000-4000-8000-000000000001
 md"""
-## 7. Projection Domain Material Decomposition
+## 6. Projection-Domain Material Decomposition
 
-Per-ray Newton solver on the polychromatic transmission integral
-(material-basis variant: iodine + water mass-attenuation tables seeded
-with `water_basis = (a = 0, c = 1)`).  Bowtie-aware: the basis builder
-uses `BS.resolve_source_spectrum_with_bowtie`, which returns a per-ray
-3D spectral weight `ŵ[col, row, E]`.
+Per-ray Newton solver on the polychromatic transmission integral with a
+fixed `(water, iodine)` basis seeded by `water_basis = (a = 0, c = 1)`.
+Bowtie-aware: the basis builder uses `BS.resolve_source_spectrum_with_bowtie`,
+which returns a per-ray 3D spectral weight `ŵ[col, row, E]`.
 """
 
 # ╔═╡ 07030006-0000-4000-8000-000000000010
@@ -696,12 +597,12 @@ material_basis = let
     ŵ_H_f32 = Float32.(ŵ_H ./ sum(ŵ_H; dims = ndims(ŵ_H)))
 
     iodine_mat = BS.XA.Elements.Iodine
-    water_mat = BS.XA.Materials.water
+    water_mat  = BS.XA.Materials.water
 
     p_L = Float32[Float32(BS.compute_mass_μ_at_energy(iodine_mat, Float64(E))) for E in e_L]
-    q_L = Float32[Float32(BS.compute_mass_μ_at_energy(water_mat, Float64(E))) for E in e_L]
+    q_L = Float32[Float32(BS.compute_mass_μ_at_energy(water_mat,  Float64(E))) for E in e_L]
     p_H = Float32[Float32(BS.compute_mass_μ_at_energy(iodine_mat, Float64(E))) for E in e_H]
-    q_H = Float32[Float32(BS.compute_mass_μ_at_energy(water_mat, Float64(E))) for E in e_H]
+    q_H = Float32[Float32(BS.compute_mass_μ_at_energy(water_mat,  Float64(E))) for E in e_H]
 
     (
         ŵ_L = ŵ_L_f32, p_L = p_L, q_L = q_L,
@@ -711,8 +612,8 @@ end;
 
 # ╔═╡ 07030006-0000-4000-8000-000000000020
 sino_basis = let
-    sino_low_gpu = to_gpu(sino_denoised.low)
-    sino_high_gpu = to_gpu(sino_denoised.high)
+    sino_low_gpu  = to_gpu(sim_low.sino)
+    sino_high_gpu = to_gpu(sim_high.sino)
 
     sino_y = similar(sino_low_gpu)
     sino_c = similar(sino_low_gpu)
@@ -726,8 +627,8 @@ sino_basis = let
 
     result = (
         sino_iodine = Array(sino_y),
-        sino_water = Array(sino_c),
-        geom = sino_denoised.geom,
+        sino_water  = Array(sino_c),
+        geom        = sim_low.geom,
     )
     sino_low_gpu = nothing; sino_high_gpu = nothing
     sino_y = nothing; sino_c = nothing; cong_ws = nothing
@@ -774,7 +675,7 @@ end
 
 # ╔═╡ 07030007-0000-4000-8000-000000000001
 md"""
-## 8. FBP: Iodine and Water Basis Maps
+## 7. FBP: Iodine and Water Basis Maps
 
 Two FDK passes with `BS.SoftFilter()` — one per basis sinogram.
 Output volumes are in basis-density units (g/cm³).
@@ -840,7 +741,7 @@ end
 
 # ╔═╡ 07030008-0000-4000-8000-000000000001
 md"""
-## 9. Z-Direction Median Filter
+## 8. Z-Direction Median Filter
 
 1D median along z, per `(x, y)` voxel column.  `adjacent_slices = n` ⇒
 `2n + 1`-slice window.  Cheap streak/outlier suppression that
@@ -900,7 +801,7 @@ end
 
 # ╔═╡ 07030009-0000-4000-8000-000000000001
 md"""
-## 10. VMI Synthesis
+## 9. VMI Synthesis
 
 `BS.synth_vmi_2basis(c_water, c_iodine_mg_per_mL; energy_keV)` evaluates
 the textbook 2-basis linear mix (McCollough 2015) at the target keV:
@@ -1023,7 +924,7 @@ end
 
 # ╔═╡ 0703000a-0000-4000-8000-000000000001
 md"""
-## 11. VMI Post-Processing (Mono+)
+## 10. VMI Post-Processing (Mono+)
 
 Frequency-split rule (Grant 2014):
 
@@ -1192,6 +1093,8 @@ let
 
     fig
 end
+
+# ╔═╡ 7fa49033-4a09-474a-875f-46c163b5ab18
 
 # ╔═╡ 0703000b-0000-4000-8000-000000000001
 md"""
@@ -1533,10 +1436,9 @@ md"""
 ## Summary
 
 ```
-QRM-Thorax mid-slice mask (1600 × 1100 cache, 800 × 550 working,
+QRM-Thorax mid-slice mask (1600 × 1100 × 20 phantom @ 0.2 mm iso,
                            rods bored at labels 9–12)
    → Forward-project (80 + 140 kVp dual-kVp GSI)
-   → SF-JSD Joint Sinogram Denoiser  (2-channel, BS.apply_sino_sfjsd_denoise)
    → Projection-Domain Material Decomposition  (iodine + water basis)
    → FBP × 2  (iodine, water basis maps)
    → Z-Direction Median Filter
@@ -1599,10 +1501,6 @@ pure-material rod inserts (`basis_water`, `basis_lipid`,
 # ╠═07030004-0000-4000-8000-000000000020
 # ╠═07030004-0000-4000-8000-000000000025
 # ╟─07030004-0000-4000-8000-000000000030
-# ╟─07030005-0000-4000-8000-000000000001
-# ╠═07030005-0000-4000-8000-000000000005
-# ╠═07030005-0000-4000-8000-000000000010
-# ╟─07030005-0000-4000-8000-000000000030
 # ╟─07030006-0000-4000-8000-000000000001
 # ╠═07030006-0000-4000-8000-000000000010
 # ╠═07030006-0000-4000-8000-000000000020
@@ -1626,6 +1524,7 @@ pure-material rod inserts (`basis_water`, `basis_lipid`,
 # ╟─0703000a-0000-4000-8000-000000000040
 # ╟─0703000b-0000-4000-8000-000000000000
 # ╟─0703000b-0000-4000-8000-00000000000a
+# ╠═7fa49033-4a09-474a-875f-46c163b5ab18
 # ╟─0703000b-0000-4000-8000-000000000001
 # ╟─0703000b-0000-4000-8000-000000000002
 # ╟─0703000b-0000-4000-8000-000000000003
@@ -1636,5 +1535,3 @@ pure-material rod inserts (`basis_water`, `basis_lipid`,
 # ╟─0703000b-0000-4000-8000-000000000030
 # ╟─0703000b-0000-4000-8000-000000000031
 # ╟─0703000c-0000-4000-8000-000000000001
-
-
