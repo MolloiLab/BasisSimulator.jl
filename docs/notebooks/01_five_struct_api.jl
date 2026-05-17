@@ -1,8 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.20.24
-
-using Markdown
-using InteractiveUtils
+# v0.19.0
 
 # ╔═╡ 01000003-0000-4000-8000-000000000001
 begin
@@ -203,8 +200,8 @@ let
     fig = CM.Figure(size = (900, 600))
     ax = CM.Axis(
         fig[1, 1];
-        title = "Gammex Model 472",
-        subtitle = "Slice $mid / $(size(phantom_cpu.mask, 3))",
+        title = "Input Phantom",
+        subtitle = "Gammex Model 472 (Slice $mid)",
         aspect = CM.DataAspect(),
         titlesize = 28, subtitlesize = 20,
     )
@@ -773,29 +770,29 @@ let
 
     ax_std_raw = CM.Axis(
         fig[1, 1];
-        title = "Standard dose (120 kVp / 200 mA)",
-        subtitle = "Raw",
+        title = "Uncorrected",
+        subtitle = "Standard dose",
         aspect = CM.DataAspect(),
         title_kwargs...,
     )
     ax_std_corr = CM.Axis(
         fig[1, 2];
-        title = "Standard dose (120 kVp / 200 mA)",
-        subtitle = "BHC (sino + image) · Noise Floor · Cupping",
+        title = "Corrected",
+        subtitle = "Standard dose",
         aspect = CM.DataAspect(),
         title_kwargs...,
     )
     ax_low_raw = CM.Axis(
         fig[2, 1];
-        title = "Low dose (120 kVp / 50 mA)",
-        subtitle = "Raw",
+        title = "Uncorrected",
+        subtitle = "Low dose",
         aspect = CM.DataAspect(),
         title_kwargs...,
     )
     ax_low_corr = CM.Axis(
         fig[2, 2];
-        title = "Low dose (120 kVp / 50 mA)",
-        subtitle = "BHC (sino + image) · Noise Floor · Cupping",
+        title = "Corrected",
+        subtitle = "Low dose",
         aspect = CM.DataAspect(),
         title_kwargs...,
     )
@@ -918,5 +915,4 @@ result, `nothing` + `GC.gc(true)`, return.
 # ╟─10000002-0000-4000-8000-000000000001
 # ╟─10000003-0000-4000-8000-000000000001
 # ╟─11000001-0000-4000-8000-000000000001
-
 

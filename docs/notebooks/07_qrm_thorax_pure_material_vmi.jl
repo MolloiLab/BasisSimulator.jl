@@ -940,7 +940,8 @@ anchor; 70 stays identity.
 """
 
 # ╔═╡ 0703000a-0000-4000-8000-000000000005
-σ_vmi_lp_px = Float64[2.0, 0.0, 1.0, 1.0];
+# σ_vmi_lp_px = Float64[2.0, 0.0, 1.0, 1.0];
+σ_vmi_lp_px = Float64[0.0, 0.0, 0.0, 0.0];
 
 # ╔═╡ 0703000a-0000-4000-8000-000000000010
 vmi_HU_final = let
@@ -1094,8 +1095,6 @@ let
     fig
 end
 
-# ╔═╡ 7fa49033-4a09-474a-875f-46c163b5ab18
-
 # ╔═╡ 0703000b-0000-4000-8000-000000000001
 md"""
 ## Results
@@ -1189,6 +1188,147 @@ let
         joinpath(
             @__DIR__, "..", "assets",
             "qrm_thorax_vmi_water_roi_check.png"
+        ), fig; px_per_unit = 2
+    )
+    fig
+end
+
+# ╔═╡ 0703000d-0000-4000-8000-000000000001
+md"""
+### Heart-Center Noise ROI
+
+HU noise (σ) inside a circular ROI offset from the **water-rod centroid**
+(label 9 — the only label guaranteed present in `phantom_in_recon`
+after `:nearest` resample at 0.625 mm).  Default offset
+`(dx, dy) = (0, -16)` puts the ROI ~10 mm below the water rod, in the
+heart cavity between the rod and the cavity center — tweak
+`HEART_NOISE_ROI_OFFSET_PX` to iterate, the left panel below shows
+exactly where the ROI lands on the 70 keV Mono+ slice.
+
+Right panel = σ vs VMI energy.  Diagnoses how the textbook
+(c_water, c_iodine) → HU(E) synth propagates noise.  Expectation for
+80/140 kVp DECT: σ(40) ≫ σ(70) ≳ σ(140) — the natural noise-optimal
+energy is near 70 keV.  The streaks visible at 140 keV are *bias*
+surfacing once σ drops below the bias amplitude.
+"""
+
+# ╔═╡ 0703000d-0000-4000-8000-000000000004
+const HEART_NOISE_ROI_OFFSET_PX = (0, -40);   # (dx, dy) recon vx — default: 10 mm below water-rod centroid
+
+# ╔═╡ 0703000d-0000-4000-8000-000000000005
+const HEART_NOISE_ROI_RADIUS_PX = 12;   # ≈7.5 mm at 0.625 mm/voxel
+
+# ╔═╡ 0703000d-0000-4000-8000-000000000010
+heart_noise_roi = let
+    WATER_ROD_LABEL = UInt8(9)   # water rod (basis_water) — bored explicitly, always present
+
+    mask_2d = phantom_in_recon[:, :, size(phantom_in_recon, 3) ÷ 2 + 1]
+    nx_r, ny_r, nz_r = size(basis_z.vol_water)
+
+    rod_idx = findall(==(WATER_ROD_LABEL), mask_2d)
+    isempty(rod_idx) && error(
+        "heart_noise_roi: no label-$(Int(WATER_ROD_LABEL)) (water rod) voxels in resampled phantom mask."
+    )
+    rod_cx = sum(ci -> Float64(ci[1]), rod_idx) / length(rod_idx)
+    rod_cy = sum(ci -> Float64(ci[2]), rod_idx) / length(rod_idx)
+
+    dx, dy = HEART_NOISE_ROI_OFFSET_PX
+    cx = rod_cx + dx
+    cy = rod_cy + dy
+
+    roi_bool = falses(nx_r, ny_r)
+    r² = Float64(HEART_NOISE_ROI_RADIUS_PX)^2
+    @inbounds for j in 1:ny_r, i in 1:nx_r
+        ((i - cx)^2 + (j - cy)^2) ≤ r² && (roi_bool[i, j] = true)
+    end
+
+    n_vox = count(roi_bool)
+    @info "heart_noise_roi: water-rod centroid = ($(round(rod_cx, digits = 1)), $(round(rod_cy, digits = 1))), " *
+        "offset = $(HEART_NOISE_ROI_OFFSET_PX), ROI center = ($(round(cx, digits = 1)), $(round(cy, digits = 1))), " *
+        "$(n_vox) vx × $(nz_r) z = $(n_vox * nz_r) total"
+
+    (
+        rod_center_xy = (rod_cx, rod_cy),
+        center_xy     = (cx, cy),
+        mask_2d       = roi_bool,
+        n_voxels      = n_vox,
+        n_total       = n_vox * nz_r,
+    )
+end;
+
+# ╔═╡ 0703000d-0000-4000-8000-000000000020
+vmi_noise_by_keV = let
+    roi_idx = findall(heart_noise_roi.mask_2d)
+    nz_r = size(basis_z.vol_water, 3)
+
+    out = Dict{Float64, NamedTuple}()
+    for E in de_vmi_energies
+        vol = vmi_HU_final[E]
+        vals = Float64[Float64(vol[ci, z]) for z in 1:nz_r, ci in roi_idx]
+        μ = mean(vals)
+        σ = std(vals)
+        out[E] = (mean = μ, std = σ, n = length(vals))
+        @info "heart noise @ $(Int(E)) keV: ⟨HU⟩ = $(round(μ, digits = 2)),  σ = $(round(σ, digits = 2)) HU  (n = $(length(vals)))"
+    end
+    out
+end;
+
+# ╔═╡ 0703000d-0000-4000-8000-000000000030
+let
+    HU_window = (-200, 500)
+    mid = size(vmi_HU_final[70.0], 3) ÷ 2
+    bg = vmi_HU_final[70.0][:, :, mid]
+
+    overlay = Float32[b ? 1.0f0 : NaN32 for b in heart_noise_roi.mask_2d]
+
+    fig = CM.Figure(size = (1180, 580))
+
+    ax1 = CM.Axis(
+        fig[1, 1];
+        title = "Heart-Center Noise ROI",
+        # subtitle = "Overlaid on 70 keV Mono+ · offset $(HEART_NOISE_ROI_OFFSET_PX) px from water rod",
+        aspect = CM.DataAspect(),
+        titlesize = 32, subtitlesize = 24,
+    )
+    CM.heatmap!(ax1, bg; colormap = :grays, colorrange = HU_window)
+    CM.heatmap!(
+        ax1, overlay; colormap = :reds, alpha = 0.5,
+        nan_color = (:white, 0.0),
+    )
+    CM.hidedecorations!(ax1)
+
+    Es = sort(collect(keys(vmi_noise_by_keV)))
+    σs = [vmi_noise_by_keV[E].std  for E in Es]
+    μs = [vmi_noise_by_keV[E].mean for E in Es]
+
+    ax2 = CM.Axis(
+        fig[1, 2];
+        title = "Heart-Center Noise vs Energy",
+        # subtitle = "$(heart_noise_roi.n_voxels) vx × $(size(basis_z.vol_water, 3)) z = $(heart_noise_roi.n_total) samples / point",
+        xlabel = "VMI Energy (keV)",
+        ylabel = "Noise σ (HU)",
+        titlesize = 32, subtitlesize = 24,
+        xlabelsize = 22, ylabelsize = 22,
+        xticklabelsize = 18, yticklabelsize = 16,
+    )
+    CM.scatterlines!(
+        ax2, Es, σs;
+        color = :tomato, markersize = 18, linewidth = 3,
+    )
+    for (E, σ, μ) in zip(Es, σs, μs)
+        CM.text!(
+            ax2, E, σ;
+            text = "σ=$(round(σ; digits = 1))\n⟨HU⟩=$(round(μ; digits = 1))",
+            align = (:center, :bottom),
+            fontsize = 16, offset = (0, 8),
+        )
+    end
+    CM.ylims!(ax2, 0, maximum(σs) * 1.4)
+
+    CM.save(
+        joinpath(
+            @__DIR__, "..", "assets",
+            "qrm_thorax_vmi_noise_roi.png"
         ), fig; px_per_unit = 2
     )
     fig
@@ -1524,10 +1664,15 @@ pure-material rod inserts (`basis_water`, `basis_lipid`,
 # ╟─0703000a-0000-4000-8000-000000000040
 # ╟─0703000b-0000-4000-8000-000000000000
 # ╟─0703000b-0000-4000-8000-00000000000a
-# ╠═7fa49033-4a09-474a-875f-46c163b5ab18
 # ╟─0703000b-0000-4000-8000-000000000001
 # ╟─0703000b-0000-4000-8000-000000000002
 # ╟─0703000b-0000-4000-8000-000000000003
+# ╟─0703000d-0000-4000-8000-000000000001
+# ╠═0703000d-0000-4000-8000-000000000004
+# ╠═0703000d-0000-4000-8000-000000000005
+# ╠═0703000d-0000-4000-8000-000000000010
+# ╠═0703000d-0000-4000-8000-000000000020
+# ╟─0703000d-0000-4000-8000-000000000030
 # ╠═0703000b-0000-4000-8000-000000000010
 # ╠═0703000b-0000-4000-8000-000000000011
 # ╠═0703000b-0000-4000-8000-000000000012
@@ -1535,3 +1680,5 @@ pure-material rod inserts (`basis_water`, `basis_lipid`,
 # ╟─0703000b-0000-4000-8000-000000000030
 # ╟─0703000b-0000-4000-8000-000000000031
 # ╟─0703000c-0000-4000-8000-000000000001
+
+
