@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/MolloiLab/BasisSimulator.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/MolloiLab/BasisSimulator.jl/actions/workflows/CI.yml?query=branch%3Amain)
 [![docs](https://img.shields.io/badge/docs-stable-blue.svg)](https://molloilab.github.io/BasisSimulator.jl/)
-[![DOI](https://img.shields.io/badge/DOI-pending-lightgrey?logo=zenodo)](https://zenodo.org/badge/latestdoi/1120264728)
+[![DOI](https://img.shields.io/badge/DOI-pending-lightgrey?logo=zenodo)](https://github.com/MolloiLab/BasisSimulator.jl/releases)
 <!-- Once the v0.1.1 GitHub Release fires the Zenodo webhook, replace the
      shields.io "pending" badge above with the real concept-DOI badge:
      [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.XXXXXXX.svg)](https://doi.org/10.5281/zenodo.XXXXXXX) -->
