@@ -958,6 +958,26 @@ _ts("entering build_physics_config testset")
         @test cfg.detector_efficiency isa BS.DetectorEfficiency
     end
 
+    @testset "detector_efficiency: PCCT scanner skips EICT scintillator branch" begin
+        # PCCT scanners declare detector_material=:cdte and detector_type=:photon_counting.
+        # The EICT scintillator branch (which only supports :lumex) must NOT
+        # fire for them — their detector physics lives in the MC DRM consumed
+        # by `pcct_forward_project`, not in PhysicsConfig.detector_efficiency.
+        sc = BS.Scanner(
+            source_to_isocenter = 540.0, source_to_detector = 1080.0,
+            detector_rows = 4, detector_cols = 32,
+            detector_row_size = 0.5, detector_col_size = 0.5,
+            detector_type = :photon_counting,
+            detector_material = :cdte,
+            detector_depth = 1.6,
+            n_energy_bins = 4,
+            energy_thresholds = [20.0, 35.0, 55.0, 70.0],
+        )
+        opts = BS.SimOptions(; fidelity = :pcct)
+        cfg = BS.build_physics_config(sc, opts, energies, weights)
+        @test cfg.detector_efficiency === nothing   # skipped for PCCT
+    end
+
     @testset "focal_spot: scanner fields used when both >0" begin
         sc = _scanner_with_full_hardware()
         opts = BS.SimOptions(; fidelity = :eict)

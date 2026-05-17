@@ -784,24 +784,24 @@ function build_physics_config(
         end
     end
 
-    # Detector efficiency: use Scanner's material and depth
-    if sim_opts.use_detector_efficiency
-        depth = scanner.detector_depth
+    # Detector efficiency (EICT only): GE Gemstone Ce:(Tb,Lu)₃Al₅O₁₂ is the
+    # only EICT scintillator we support. `detector_efficiency_mode` (:auto,
+    # :mc_lut, :beer_lambert) toggles between the MC LUT and the analytical
+    # fallback. PCCT scanners go through `pcct_forward_project` which encodes
+    # all detector physics (charge sharing, fluorescence escape, pileup) in
+    # the MC DRM — they don't consume this `PhysicsConfig.detector_efficiency`
+    # field, so we skip it.
+    if sim_opts.use_detector_efficiency && scanner.detector_type != :photon_counting
         material = scanner.detector_material
+        @assert material in (:lumex, :Lumex, :LUMEX) "Unsupported EICT detector material: $material — only :lumex (GE Gemstone) is supported"
         de_mode = sim_opts.detector_efficiency_mode   # :auto, :mc_lut, :beer_lambert
-        if material == :lumex || material == :Lumex || material == :LUMEX
-            # GE Gemstone Ce:(Tb,Lu)₃Al₅O₁₂
-            gem_mode = de_mode == :beer_lambert ? :beer_lambert : :mc_lut  # :auto defaults to :mc_lut
-            kwargs[:detector_efficiency] = detector_efficiency_gemstone(
-                mode = gem_mode,
-                thickness_mm = depth > 0 ? depth : 3.0,
-                fill_factor = scanner.fill_factor_row > 0 ? scanner.fill_factor_row : 0.9
-            )
-        elseif depth > 0
-            kwargs[:detector_efficiency] = DetectorEfficiency(String(material), depth, 1.0)
-        else
-            kwargs[:detector_efficiency] = detector_efficiency_gos()
-        end
+        gem_mode = de_mode == :beer_lambert ? :beer_lambert : :mc_lut
+        depth = scanner.detector_depth
+        kwargs[:detector_efficiency] = detector_efficiency_gemstone(
+            mode = gem_mode,
+            thickness_mm = depth > 0 ? depth : 3.0,
+            fill_factor = scanner.fill_factor_row > 0 ? scanner.fill_factor_row : 0.9
+        )
     end
 
     # Scatter: use geometry-aware model scaled for this scanner and phantom size

@@ -191,9 +191,6 @@ include("detector/pcct/mc_response.jl")
 # MC-based pulse pileup model (replaces analytical Taguchi model)
 include("detector/pcct/mc_pileup.jl")
 
-# Cumulative threshold sinograms (T1/T4 clinical readouts)
-include("detector/pcct/pcct_cumulative.jl")
-
 # PCCT spectral imaging: K-edge, effective Z, multi-material decomposition
 include("spectral/pcct_spectral.jl")
 

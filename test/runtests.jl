@@ -18,6 +18,9 @@ const BS = BasisSimulator
     @testset "denoising/" begin
         include("denoising.jl")
     end
+    @testset "detector/" begin
+        include("detector.jl")
+    end
     @testset "geometry/" begin
         include("geometry.jl")
     end

@@ -59,36 +59,6 @@ struct ScatterModel
     kernel_type::Symbol
 end
 
-"""
-    default_scatter_model(; scale_factor=1.0, kernel_fwhm=50.0, kernel_type=:gaussian)
-
-Create a scatter model with default parameters for body CT.
-
-# Parameters
-- `scale_factor`: Multiplier for scatter magnitude (1.0 = ~15% SPR for body CT)
-- `kernel_fwhm`: Full-width half-maximum of scatter kernel in pixels
-- `kernel_type`: Kernel shape (:gaussian or :exponential)
-
-# Notes
-The base scatter coefficient (0.025) is calibrated to produce approximately
-15% scatter-to-primary ratio for a typical body phantom, matching XCIST defaults.
-
-To increase/decrease scatter:
-- scale_factor=0.5 → ~7.5% SPR (less scatter, e.g., pediatric)
-- scale_factor=1.0 → ~15% SPR (nominal body CT)
-- scale_factor=2.0 → ~30% SPR (large patient)
-"""
-function default_scatter_model(;
-    scale_factor::Float64=1.0,
-    kernel_fwhm::Float64=50.0,
-    kernel_type::Symbol=:gaussian
-)
-    # Base coefficient from XCIST (produces ~15% SPR)
-    scatter_coefficient = 0.025
-
-    return ScatterModel(scatter_coefficient, scale_factor, kernel_fwhm, kernel_type)
-end
-
 # Maximum scatter kernel size (controls quality vs performance)
 # Scatter kernels are large (FWHM ~50 pixels) but we truncate at 3σ
 const MAX_SCATTER_KERNEL_SIZE = 63
@@ -692,21 +662,16 @@ end
 # =============================================================================
 # Exports
 # =============================================================================
+# Calibration constants (SCATTER_REF_*, SCATTER_PHYSICAL_KERNEL_FWHM_MM,
+# SCATTER_SIZE_SCALING_EXPONENT) and internal scaling helpers
+# (compute_scatter_geometry_scale, compute_scatter_kernel_fwhm_pixels,
+# compute_scatter_size_scale) stay `const`/internal — consumed only by
+# `geometry_aware_scatter_model` inside this file.
 
-export ScatterModel, default_scatter_model
+export ScatterModel
 export create_scatter_kernel_spatial
-# Geometry-aware scatter API
 export geometry_aware_scatter_model
-export compute_scatter_geometry_scale, compute_scatter_kernel_fwhm_pixels
-
-# Reference constants for scatter calibration
-export SCATTER_REF_SID_MM, SCATTER_REF_SDD_MM, SCATTER_REF_AIR_GAP_MM
-export SCATTER_REF_PIXEL_PITCH_MM, SCATTER_REF_COEFFICIENT
-export SCATTER_PHYSICAL_KERNEL_FWHM_MM
-
-# Phantom size-aware scatter API
-export estimate_phantom_diameter_cm, compute_scatter_size_scale
-export SCATTER_REF_PHANTOM_DIAMETER_CM, SCATTER_SIZE_SCALING_EXPONENT
+export estimate_phantom_diameter_cm
 
 # Unified per-energy scatter API (shared EICT + PCCT)
 export estimate_scatter_field!
