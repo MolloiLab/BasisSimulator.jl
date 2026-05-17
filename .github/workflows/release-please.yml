@@ -1,0 +1,52 @@
+# release-please: Conventional-Commits-driven release automation for Julia.
+#
+# Workflow:
+#   1. Every push to `main` triggers this action.
+#   2. release-please scans new Conventional Commits since the last tag
+#      (e.g. `feat:`, `fix:`, `feat!:`, `BREAKING CHANGE:`).
+#   3. It opens (or updates) a "release PR" that bumps `Project.toml` and
+#      writes the next `CHANGELOG.md` entry from those commits.
+#   4. When you merge the release PR, release-please:
+#        a. tags the commit (e.g. `v0.1.2`)
+#        b. creates a GitHub Release with the auto-generated notes
+#   5. The follow-up step in this workflow then comments
+#      `@JuliaRegistrator register` on the release commit so the package
+#      gets registered in `JuliaRegistries/General`.
+#
+# Reference setup: https://github.com/googleapis/release-please-action
+# Discussion: https://discourse.julialang.org/t/ann-easier-release-automation-with-release-please-ci-tool
+
+name: release-please
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          # `julia` release-type knows how to bump Project.toml and
+          # respects the leading-`v` tag convention used by TagBot.
+          config-file: .release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # After release-please cuts a release, kick off JuliaRegistrator by
+      # commenting on the release commit.  AutoMerge runs over in
+      # JuliaRegistries/General; TagBot is kept as a no-op fallback.
+      - name: Trigger JuliaRegistrator
+        if: ${{ steps.release.outputs.release_created }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api \
+            repos/${{ github.repository }}/commits/${{ steps.release.outputs.sha }}/comments \
+            -f body='@JuliaRegistrator register'
