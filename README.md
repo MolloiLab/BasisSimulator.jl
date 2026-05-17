@@ -1,5 +1,9 @@
 # BasisSimulator.jl
 
+[![CI](https://github.com/MolloiLab/BasisSimulator.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/MolloiLab/BasisSimulator.jl/actions/workflows/CI.yml?query=branch%3Amain)
+[![docs](https://img.shields.io/badge/docs-stable-blue.svg)](https://molloilab.github.io/BasisSimulator.jl/)
+[![DOI](https://zenodo.org/badge/1120264728.svg)](https://zenodo.org/badge/latestdoi/1120264728)
+
 GPU-portable polychromatic CT simulator in Julia. Runs on Metal, CUDA, ROCm, or CPU
 via [AcceleratedKernels.jl](https://github.com/JuliaGPU/AcceleratedKernels.jl).
 Models energy-integrating and photon-counting detectors, single- and dual-kVp
