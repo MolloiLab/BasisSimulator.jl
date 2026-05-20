@@ -8,7 +8,7 @@
 GPU-portable polychromatic CT simulator in Julia. Runs on Metal, CUDA, ROCm, or CPU
 via [AcceleratedKernels.jl](https://github.com/JuliaGPU/AcceleratedKernels.jl).
 Models energy-integrating and photon-counting detectors, single- and dual-kVp
-acquisitions, and reconstructs with FBP (FDK), Hybrid IR, and material-basis VMI.
+acquisitions, and reconstructs with FBP (FDK), OS-PWLS iterative reconstruction, and material-basis VMI.
 
 ## Install
 

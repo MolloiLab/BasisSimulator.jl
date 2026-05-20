@@ -5,6 +5,11 @@
 *.jl.cov
 *.jl.*.cov
 
+paper
+paper/**
+install-academic-skills.sh
+scripts/*
+
 # Sessions.jl stuff
 **.sessions.toml
 

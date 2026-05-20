@@ -48,7 +48,7 @@ Simulate 140 kVp PCCT  (4 bins)
                     Mono+ Post-Processing  (per-keV σ)
                                      │
                     Measured vs Theoretical Per-Rod Regression
-                          at 40 / 70 / 100 / 140 keV
+                          at 50 / 70 / 100 / 140 keV
 ```
 
 !!! info "Why Projection Domain?"
@@ -992,7 +992,7 @@ HU(E) = 1000 · (μ(E) − (μ/ρ)_water(E)) / (μ/ρ)_water(E)
 
 The denominator is the **mono-energetic** linear attenuation of pure
 water at the target VMI energy from NIST tables.  VMI grid:
-40, 70, 100, 140 keV.
+50, 70, 100, 140 keV.
 
 !!! note "Solid-Water Diagnostic"
     The `solid_water_basis` cell below measures `⟨c_water⟩` and
@@ -1047,7 +1047,7 @@ solid_water_basis = let
 end;
 
 # ╔═╡ 0600000c-0000-4000-8000-000000000015
-pcct_vmi_energies = [40.0, 70.0, 100.0, 140.0];
+pcct_vmi_energies = [50.0, 70.0, 100.0, 140.0];
 
 # ╔═╡ 0600000c-0000-4000-8000-000000000020
 vmi_HU_by_keV = let
@@ -1083,7 +1083,7 @@ let
     fig = CM.Figure(size = (1180, 1180))
     axis_kwargs = (titlesize = 32, subtitlesize = 24)
 
-    sample = vmi_HU_by_keV[40.0]
+    sample = vmi_HU_by_keV[50.0]
     mid = size(sample, 3) ÷ 2
 
     for (k, E) in enumerate(pcct_vmi_energies)
@@ -1146,7 +1146,7 @@ high frequencies (edges, fine detail) come from the target energy `E`.
 # σ = 0  ⇒ identity at that energy (Mono+(E) = VMI_E exactly, no FFT).
 # σ > 0  ⇒ that energy's LP band is replaced with the 70-keV anchor's LP.
 # Edit these to tune per-energy noise/contrast trade-off.
-# (40, 70, 100, 140) keV
+# (50, 70, 100, 140) keV
 σ_vmi_lp_px = Float64[2.0, 0.0, 1.0, 1.0];
 
 # ╔═╡ 0600000d-0000-4000-8000-000000000010
@@ -1181,7 +1181,7 @@ let
     fig = CM.Figure(size = (1180, 1180))
     axis_kwargs = (titlesize = 32, subtitlesize = 24)
 
-    sample = vmi_HU_final[40.0]
+    sample = vmi_HU_final[50.0]
     mid = size(sample, 3) ÷ 2
 
     for (k, E) in enumerate(pcct_vmi_energies)
@@ -1216,7 +1216,7 @@ md"""
 ## Results
 
 Per-rod measured vs theoretical HU at the canonical four VMI energies
-(40 / 70 / 100 / 140 keV).
+(50 / 70 / 100 / 140 keV).
 
 !!! info "Methodology"
     - **Measured HU** = mean over an 8-px-radius circular ROI at the
@@ -1229,7 +1229,7 @@ Per-rod measured vs theoretical HU at the canonical four VMI energies
 !!! note "What the Plots Show"
     Two panels: **Calcium rods** (50 – 600 mg/mL, Compton-dominated
     smooth roll-off as E increases) and **Iodine rods** (2 – 20 mg/mL,
-    K-edge at 33.2 keV so 40 keV amplifies iodine HU dramatically vs
+    K-edge at 33.2 keV so 50 keV still amplifies iodine HU strongly vs
     the 70+ keV plateau).
 
     Solid line = measured.  Dashed line = theoretical.  Tight overlay
@@ -1531,7 +1531,7 @@ let
 
     # One color per VMI energy (cool→warm sweep)
     energy_colors = Dict(
-        40.0 => CM.RGBf(0.85, 0.27, 0.1),
+        50.0 => CM.RGBf(0.85, 0.27, 0.1),
         70.0 => CM.RGBf(0.95, 0.65, 0.13),
         100.0 => CM.RGBf(0.13, 0.59, 0.85),
         140.0 => CM.RGBf(0.1, 0.27, 0.65),
@@ -1628,7 +1628,7 @@ Simulate 140 kVp PCCT (4 bins, scatter-injected)
    → Z-Direction Median Filter × 2
    → Monoenergetic VMI Synthesis  (textbook 2-basis, mono μρ_water divisor)
    → Mono+ Post-Processing  (per-keV σ via σ_vmi_lp_px)
-   → Measured vs Theoretical Per-Rod Regression  at 40 / 70 / 100 / 140 keV
+   → Measured vs Theoretical Per-Rod Regression  at 50 / 70 / 100 / 140 keV
 ```
 
 Bin-combine first, denoise after — SF-JSD operates on the 2-channel

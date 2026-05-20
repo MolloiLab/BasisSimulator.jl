@@ -1,8 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.20.24
-
-using Markdown
-using InteractiveUtils
+# v0.19.0
 
 # ╔═╡ 05000001-0000-4000-8000-000000000001
 begin
@@ -740,7 +737,7 @@ solid_water_basis = let
 end;
 
 # ╔═╡ 0500000b-0000-4000-8000-000000000015
-de_vmi_energies = [40.0, 70.0, 100.0, 140.0];
+de_vmi_energies = [50.0, 70.0, 100.0, 140.0];
 
 # ╔═╡ 0500000b-0000-4000-8000-000000000020
 vmi_HU_by_keV = let
@@ -776,7 +773,7 @@ let
     fig = CM.Figure(size = (1180, 1180))
     axis_kwargs = (titlesize = 32, subtitlesize = 24)
 
-    sample = vmi_HU_by_keV[40.0]
+    sample = vmi_HU_by_keV[50.0]
     mid = size(sample, 3) ÷ 2
 
     for (k, E) in enumerate(de_vmi_energies)
@@ -876,7 +873,7 @@ let
     fig = CM.Figure(size = (1180, 1180))
     axis_kwargs = (titlesize = 32, subtitlesize = 24)
 
-    sample = vmi_HU_final[40.0]
+    sample = vmi_HU_final[50.0]
     mid = size(sample, 3) ÷ 2
 
     for (k, E) in enumerate(de_vmi_energies)
@@ -1227,7 +1224,7 @@ let
 
     # One color per VMI energy (cool→warm sweep)
     energy_colors = Dict(
-        40.0 => CM.RGBf(0.85, 0.27, 0.1),
+        50.0 => CM.RGBf(0.85, 0.27, 0.1),
         70.0 => CM.RGBf(0.95, 0.65, 0.13),
         100.0 => CM.RGBf(0.13, 0.59, 0.85),
         140.0 => CM.RGBf(0.1, 0.27, 0.65),
@@ -1392,7 +1389,3 @@ and clean low-keV Mono+ output.
 # ╟─0500000e-0000-4000-8000-000000000020
 # ╟─0500000e-0000-4000-8000-000000000030
 # ╟─0500000f-0000-4000-8000-000000000001
-
-
-
-

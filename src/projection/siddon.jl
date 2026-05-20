@@ -2,6 +2,49 @@
 # Siddon Forward Projection (TIGRE-style, AcceleratedKernels.jl)
 # =============================================================================
 #
+# This file is a Julia / AcceleratedKernels.jl port of the Siddon forward
+# projector distributed with TIGRE (https://github.com/CERN/TIGRE), and
+# preserves the upstream copyright and BSD 3-Clause license notice below.
+# Modifications relative to the original C++/CUDA implementation are
+# Copyright (c) 2025 MolloiLab and contributors, licensed under the MIT
+# License (see ../../LICENSE).
+#
+# -----------------------------------------------------------------------------
+# Upstream copyright (TIGRE, BSD 3-Clause License):
+#
+#   Copyright (c) 2015, University of Bath and CERN. Distributed under the
+#   BSD 3-Clause License. All rights reserved.
+#
+#   Redistribution and use in source and binary forms, with or without
+#   modification, are permitted provided that the following conditions are
+#   met:
+#
+#   1. Redistributions of source code must retain the above copyright
+#      notice, this list of conditions and the following disclaimer.
+#   2. Redistributions in binary form must reproduce the above copyright
+#      notice, this list of conditions and the following disclaimer in the
+#      documentation and/or other materials provided with the distribution.
+#   3. Neither the name of the copyright holder nor the names of its
+#      contributors may be used to endorse or promote products derived from
+#      this software without specific prior written permission.
+#
+#   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
+#   IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+#   TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+#   PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+#   HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+#   SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+#   LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+#   DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+#   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+#   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+#   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+# Reference: Biguri A, Dosanjh M, Hancock S, Soleimani M. TIGRE: a
+# MATLAB-GPU toolbox for CBCT image reconstruction. Biomed Phys Eng
+# Express 2016;2(5):055010. https://doi.org/10.1088/2057-1976/2/5/055010
+# -----------------------------------------------------------------------------
+#
 # Direct port of TIGRE's Siddon algorithm using AcceleratedKernels.jl
 # for backend-agnostic GPU/CPU execution.
 #
