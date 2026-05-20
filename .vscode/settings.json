@@ -1,6 +1,6 @@
 {
     // Tells VS Code which juliaup channel to use for the background LS process
-    "julia.languageServerJuliaupChannel": "1.11",
+    "julia.languageServerJuliaupChannel": "1.12",
 
     // Keep this manual path just to be safe for the REPL
     // "julia.executablePath": "~/.julia/juliaup/julia-1.11.7+0.x64.linux.gnu/bin/julia",
