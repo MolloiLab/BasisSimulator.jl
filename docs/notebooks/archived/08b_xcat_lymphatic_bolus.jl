@@ -39,9 +39,10 @@ What's different from nb08:
 | Single `TIME_SECONDS = 230`           | Loop `TIMES_S = [0:30:210; 230]` (9 points)       |
 | Output: one HU recon                  | Output: 9 HU stacks + TDC                         |
 
-The `BOLUS_K_SLICE` constant (slice 20 of the upsampled 0.1 mm grid)
-sets the Z position the scanner is parked at — the phantom origin is
-shifted so this voxel sits exactly at isocenter.
+The `BOLUS_OFFSET_FROM_SLAB_BOTTOM_MM` constant (5.5 mm above the
+slab's anatomical bottom) sets the Z position the scanner is parked at
+— the phantom origin is shifted so the derived `bolus_k_slice` voxel
+sits exactly at isocenter, comfortably inside the cisterna sac.
 
 !!! info "Archived, exploratory"
     Sibling of `08_xcat_lymphatic.jl`.  Promote together once both stabilize.
@@ -95,6 +96,15 @@ end
 md"""
 **Backend detected:** $(GPU_BACKEND.name)
 """
+
+# ╔═╡ 08b00002-0000-4000-8000-000000000020
+# Single destination for every figure this notebook writes — kept inside
+# the archived/ tree so the docs build picks them up.
+const FIGURES_DIR = let
+    d = joinpath(@__DIR__, "figures")
+    isdir(d) || mkpath(d)
+    d
+end
 
 # ╔═╡ 08b00003-0000-4000-8000-000000000001
 md"""
@@ -211,9 +221,290 @@ phantom_native = HAS_LYMPH ? load_lymph_phantom(PHANTOM_PATH) : nothing;
 phantom_native === nothing ? md"_skipped_" :
     md"**Native phantom:** $(size(phantom_native, 1))×$(size(phantom_native, 2))×$(size(phantom_native, 3)) UInt16"
 
+# ╔═╡ 08b00007-0000-4000-8000-000000000001
+md"""
+## 3. Lymphatic structures — IDs, bboxes, and pre-crop diagnostic preview
+
+Anchor + ROI for the bolus loop.  We use the cisterna's **anatomical
+bottom** (= max k in this post-reversal frame, see §3b) to position the
+thin Z slab, and we use the cisterna mask later as the **TDC ROI**.
+"""
+
+# ╔═╡ 08b00007-0000-4000-8000-000000000002
+const CISTERNA_IDS = (1150, 1151)
+
+# ╔═╡ 08b00007-0000-4000-8000-000000000003
+const THORACIC_DUCT_IDS = (473, 474, 475, 476, 477, 478, 479, 480)
+
+# ╔═╡ 08b00007-0000-4000-8000-000000000004
+const LYMPHATIC_IDS = (CISTERNA_IDS..., THORACIC_DUCT_IDS...)
+
+# ╔═╡ 08b00007-0000-4000-8000-000000000005
+function label_bbox(phantom::AbstractArray{T, 3}, ids::Tuple) where {T}
+    id_set = Set(T.(ids))
+    mask = falses(size(phantom))
+    @inbounds for k in axes(phantom, 3), j in axes(phantom, 2), i in axes(phantom, 1)
+        mask[i, j, k] = phantom[i, j, k] in id_set
+    end
+    any(mask) || return nothing
+    is = findall(any(mask, dims = (2, 3))[:])
+    js = findall(any(mask, dims = (1, 3))[:])
+    ks = findall(any(mask, dims = (1, 2))[:])
+    return (i = extrema(is), j = extrema(js), k = extrema(ks), n = count(mask))
+end
+
+# ╔═╡ 08b00007-0000-4000-8000-000000000006
+cisterna_bbox = phantom_native === nothing ? nothing :
+    label_bbox(phantom_native, CISTERNA_IDS);
+
+# ╔═╡ 08b00007-0000-4000-8000-000000000050
+lymph_bbox = phantom_native === nothing ? nothing :
+    label_bbox(phantom_native, LYMPHATIC_IDS);
+
+# ╔═╡ 08b00007-0000-4000-8000-000000000007
+cisterna_bbox === nothing ? md"_no cisterna voxels (or phantom not loaded)_" : md"""
+    **Cisterna chyli** (anchor for the bolus slab):
+    K $(cisterna_bbox.k[1])..$(cisterna_bbox.k[2])
+    · I $(cisterna_bbox.i[1])..$(cisterna_bbox.i[2])
+    · J $(cisterna_bbox.j[1])..$(cisterna_bbox.j[2])
+    · $(cisterna_bbox.n) voxels
+    """
+
+# ╔═╡ 08b00007-0000-4000-8000-000000000100
+md"""
+### 3a. Full native phantom — triplanar with lymphatic highlights
+
+Axial / coronal / sagittal of `phantom_native` at the lymphatic centroid
+(in native voxels, **before** any crop or upsample). Cisterna chyli =
+magenta, thoracic duct = amber. Sanity-check that the hardcoded ID sets
+pick out the right structures and that the cisterna sits inferior to
+the duct (anatomically — the duct should *rise* from the cisterna into
+the chest).
+"""
+
+# ╔═╡ 08b00007-0000-4000-8000-000000000101
+let
+    if phantom_native === nothing || lymph_bbox === nothing
+        md"_skipped — see §1 / §3_"
+    else
+        nx, ny, nz = size(phantom_native)
+        i_mid = clamp(round(Int, (lymph_bbox.i[1] + lymph_bbox.i[2]) / 2), 1, nx)
+        j_mid = clamp(round(Int, (lymph_bbox.j[1] + lymph_bbox.j[2]) / 2), 1, ny)
+        k_mid = clamp(round(Int, (lymph_bbox.k[1] + lymph_bbox.k[2]) / 2), 1, nz)
+
+        is_cisterna = falses(65536)
+        is_duct     = falses(65536)
+        is_lymph    = falses(65536)
+        for id in CISTERNA_IDS;      is_cisterna[id + 1] = true; is_lymph[id + 1] = true end
+        for id in THORACIC_DUCT_IDS; is_duct[id + 1]     = true; is_lymph[id + 1] = true end
+
+        function lymph_mask_2d(slice)
+            m = falses(size(slice))
+            @inbounds for i in eachindex(slice, m)
+                m[i] = is_lymph[Int(slice[i]) + 1]
+            end
+            m
+        end
+
+        cisterna_color = CM.RGBAf(1.00, 0.20, 0.55, 1.0)
+        duct_color     = CM.RGBAf(1.00, 0.80, 0.15, 1.0)
+        palette        = CM.to_colormap(:glasbey_bw_n256)
+        n_pal          = length(palette)
+        bg             = CM.RGBAf(0.06, 0.07, 0.08, 1.0)
+
+        function colorize(slice)
+            out = Array{CM.RGBAf}(undef, size(slice))
+            @inbounds for i in eachindex(slice, out)
+                lbl = Int(slice[i])
+                if lbl == 0
+                    out[i] = bg
+                elseif is_cisterna[lbl + 1]
+                    out[i] = cisterna_color
+                elseif is_duct[lbl + 1]
+                    out[i] = duct_color
+                else
+                    c = palette[(hash(UInt(lbl)) % UInt(n_pal)) + 1]
+                    g = 0.299f0*c.r + 0.587f0*c.g + 0.114f0*c.b
+                    g = 0.22f0 + 0.30f0 * g
+                    out[i] = CM.RGBAf(g, g, g, 1.0)
+                end
+            end
+            out
+        end
+
+        halo_color    = CM.RGBAf(1.0, 1.0, 1.0, 0.35)
+        outline_color = CM.RGBAf(1.0, 0.05, 0.35, 1.0)
+
+        fig = CM.Figure(size = (700, 2400), backgroundcolor = :white, figure_padding = 6)
+
+        function panel!(row, slice, title, subtitle)
+            ax = CM.Axis(fig[row, 1];
+                title        = title,
+                subtitle     = subtitle,
+                titlesize    = 18,
+                subtitlesize = 12,
+                titlealign   = :left,
+                aspect       = CM.DataAspect(),
+                yreversed    = true,
+            )
+            CM.image!(ax, colorize(slice); interpolate = false)
+            mask = Float32.(lymph_mask_2d(slice))
+            if any(>(0), mask)
+                CM.contour!(ax, mask; levels = [0.5], color = halo_color,    linewidth = 4)
+                CM.contour!(ax, mask; levels = [0.5], color = outline_color, linewidth = 1.2)
+            end
+            CM.hidedecorations!(ax)
+            CM.hidespines!(ax)
+            return ax
+        end
+
+        panel!(1, phantom_native[:, :, k_mid], "Axial (full native)",    "k = $(k_mid) / $(nz)")
+        panel!(2, phantom_native[:, j_mid, :], "Coronal (full native)",  "j = $(j_mid) / $(ny)")
+        panel!(3, phantom_native[i_mid, :, :], "Sagittal (full native)", "i = $(i_mid) / $(nx)")
+
+        CM.Legend(fig[4, 1],
+            [CM.PolyElement(color = cisterna_color, strokevisible = false),
+             CM.PolyElement(color = duct_color,     strokevisible = false)],
+            ["Cisterna chyli (IDs $(CISTERNA_IDS[1])-$(CISTERNA_IDS[end]))",
+             "Thoracic duct (IDs $(THORACIC_DUCT_IDS[1])-$(THORACIC_DUCT_IDS[end]))"];
+            orientation  = :horizontal,
+            framevisible = false,
+            labelsize    = 13,
+            patchsize    = (18, 12),
+            tellwidth    = false,
+        )
+
+        CM.rowsize!(fig.layout, 1, CM.Aspect(1, ny/nx))
+        CM.rowsize!(fig.layout, 2, CM.Aspect(1, nz/nx))
+        CM.rowsize!(fig.layout, 3, CM.Aspect(1, nz/ny))
+        CM.rowgap!(fig.layout, 4)
+        CM.rowgap!(fig.layout, 3, 10)
+        CM.resize_to_layout!(fig)
+
+        CM.save(joinpath(FIGURES_DIR, "xcat_lymphatic_bolus_full_phantom_triplanar.png"), fig; px_per_unit = 2)
+        fig
+    end
+end
+
+# ╔═╡ 08b00007-0000-4000-8000-000000000200
+md"""
+### 3b. Sagittal + planned §6 bolus slab bounds
+
+Same sagittal slice as §3a, with two red dashed lines marking the K
+range that §6's `scan_crop_indices` will keep.  In this post-reversal
+frame **low k = superior, high k = inferior**, so the slab anchors at
+`cisterna_bbox.k[2] + margin_below` (= a few mm *below* the cisterna's
+anatomical bottom, to give the recon volume buffer on the inferior
+side) and extends superiorly toward lower k by `BOLUS_Z_SLAB_MM`.
+
+The cisterna should sit in the **lower portion** of the bracketed
+region — visible as the magenta sac near the bottom red line.
+"""
+
+# ╔═╡ 08b00007-0000-4000-8000-000000000201
+let
+    if phantom_native === nothing || cisterna_bbox === nothing || lymph_bbox === nothing
+        md"_skipped — see §1 / §3_"
+    else
+        nx, ny, nz = size(phantom_native)
+        i_mid = clamp(round(Int, (lymph_bbox.i[1] + lymph_bbox.i[2]) / 2), 1, nx)
+
+        # Mirrors §6's scan_crop_indices — anchor at cisterna's anatomical
+        # bottom + margin (inferior buffer), extend superiorly by BOLUS_Z_SLAB_MM.
+        margin_voxels = round(Int, BOLUS_MARGIN_BELOW_CISTERNA_MM / NATIVE_VOXEL_MM[3])
+        k_inferior = min(nz, cisterna_bbox.k[2] + margin_voxels)
+        slab_voxels_z = max(1, round(Int, BOLUS_Z_SLAB_MM / NATIVE_VOXEL_MM[3]))
+        k_superior = max(1, k_inferior - slab_voxels_z + 1)
+        k1, k2 = k_superior, k_inferior
+
+        is_cisterna = falses(65536)
+        is_duct     = falses(65536)
+        for id in CISTERNA_IDS;      is_cisterna[id + 1] = true end
+        for id in THORACIC_DUCT_IDS; is_duct[id + 1]     = true end
+
+        function lymph_mask_2d(slice)
+            m = falses(size(slice))
+            @inbounds for i in eachindex(slice, m)
+                v = Int(slice[i])
+                m[i] = is_cisterna[v + 1] | is_duct[v + 1]
+            end
+            m
+        end
+
+        palette        = CM.to_colormap(:glasbey_bw_n256)
+        n_pal          = length(palette)
+        bg             = CM.RGBAf(0.06, 0.07, 0.08, 1.0)
+        cisterna_color = CM.RGBAf(1.00, 0.20, 0.55, 1.0)
+        duct_color     = CM.RGBAf(1.00, 0.80, 0.15, 1.0)
+
+        function colorize(slice)
+            out = Array{CM.RGBAf}(undef, size(slice))
+            @inbounds for i in eachindex(slice, out)
+                lbl = Int(slice[i])
+                if lbl == 0
+                    out[i] = bg
+                elseif is_cisterna[lbl + 1]
+                    out[i] = cisterna_color
+                elseif is_duct[lbl + 1]
+                    out[i] = duct_color
+                else
+                    c = palette[(hash(UInt(lbl)) % UInt(n_pal)) + 1]
+                    g = 0.299f0*c.r + 0.587f0*c.g + 0.114f0*c.b
+                    g = 0.22f0 + 0.30f0 * g
+                    out[i] = CM.RGBAf(g, g, g, 1.0)
+                end
+            end
+            out
+        end
+
+        slice = phantom_native[i_mid, :, :]
+
+        fig = CM.Figure(size = (900, 1300), backgroundcolor = :white)
+        ax = CM.Axis(fig[1, 1];
+            title        = "Sagittal (full native) — planned bolus slab in red",
+            subtitle     = "i = $(i_mid) / $(nx)   ·   k ∈ [$(k1), $(k2)]   (= $(round((k2 - k1 + 1) * NATIVE_VOXEL_MM[3] / 10; digits = 2)) cm)",
+            titlesize    = 18,
+            subtitlesize = 12,
+            titlealign   = :left,
+            aspect       = CM.DataAspect(),
+            yreversed    = true,
+        )
+        CM.image!(ax, colorize(slice); interpolate = false)
+        mask = Float32.(lymph_mask_2d(slice))
+        if any(>(0), mask)
+            CM.contour!(ax, mask; levels = [0.5], color = CM.RGBAf(1, 1, 1, 0.35),    linewidth = 4)
+            CM.contour!(ax, mask; levels = [0.5], color = CM.RGBAf(1, 0.05, 0.35, 1), linewidth = 1.2)
+        end
+
+        CM.hlines!(ax, [k1, k2]; color = :red, linewidth = 2, linestyle = :dash)
+        CM.text!(ax, 4, Float32(k1); text = "k_superior = $(k1)  (slab top — $(round(BOLUS_Z_SLAB_MM; digits = 1)) mm above cisterna bottom + margin)",
+            color = :red, align = (:left, :bottom), fontsize = 12)
+        CM.text!(ax, 4, Float32(k2); text = "k_inferior = $(k2)  (cisterna bottom + $(round(BOLUS_MARGIN_BELOW_CISTERNA_MM; digits = 1)) mm inferior margin)",
+            color = :red, align = (:left, :top),    fontsize = 12)
+
+        CM.hidedecorations!(ax)
+        CM.hidespines!(ax)
+
+        CM.Legend(fig[2, 1],
+            [CM.PolyElement(color = cisterna_color, strokevisible = false),
+             CM.PolyElement(color = duct_color,     strokevisible = false),
+             CM.LineElement(color = :red, linestyle = :dash, linewidth = 2)],
+            ["Cisterna chyli", "Thoracic duct", "Planned bolus slab"];
+            orientation  = :horizontal,
+            framevisible = false,
+            labelsize    = 13,
+            patchsize    = (24, 12),
+            tellwidth    = false,
+        )
+
+        CM.save(joinpath(FIGURES_DIR, "xcat_lymphatic_bolus_planned_slab.png"), fig; px_per_unit = 2)
+        fig
+    end
+end
+
 # ╔═╡ 08b00005-0000-4000-8000-000000000001
 md"""
-## 3. Bolus tracking time series
+## 4. Bolus tracking time series
 
 `TIMES_S` defines which xlsx maps get loaded inside the time loop.
 Default is every 30 s out to 210 s, plus 230 s (nb08's peak).  Tweak
@@ -237,12 +528,12 @@ end : md"_skipped_"
 
 # ╔═╡ 08b00006-0000-4000-8000-000000000001
 md"""
-## 4. Material loaders (identical to nb08 §4)
+## 5. Material loaders (identical to nb08 §5)
 
 Same atomic-mass / mean-excitation-energy helpers and the same
 `load_materials_from_xlsx` parser.  Inside the time loop we call it once
 per `t`, apply the **ID 2 → softtissue** override (the XCAT whole-body
-filler — see nb08 §4), and water-fill the rest.
+filler — see nb08 §5), and water-fill the rest.
 """
 
 # ╔═╡ 08b00006-0000-4000-8000-000000000002
@@ -361,89 +652,61 @@ function build_materials_for_time(
     return base
 end
 
-# ╔═╡ 08b00007-0000-4000-8000-000000000001
-md"""
-## 5. Cisterna chyli bbox (identical to nb08 §5)
-
-Same anchor logic — we use the cisterna's lowest K to position the
-bolus slab, and we use the cisterna mask later as the **TDC ROI**.
-"""
-
-# ╔═╡ 08b00007-0000-4000-8000-000000000002
-const CISTERNA_IDS = (1150, 1151)
-
-# ╔═╡ 08b00007-0000-4000-8000-000000000003
-const THORACIC_DUCT_IDS = (473, 474, 475, 476, 477, 478, 479, 480)
-
-# ╔═╡ 08b00007-0000-4000-8000-000000000004
-const LYMPHATIC_IDS = (CISTERNA_IDS..., THORACIC_DUCT_IDS...)
-
-# ╔═╡ 08b00007-0000-4000-8000-000000000005
-function label_bbox(phantom::AbstractArray{T, 3}, ids::Tuple) where {T}
-    id_set = Set(T.(ids))
-    mask = falses(size(phantom))
-    @inbounds for k in axes(phantom, 3), j in axes(phantom, 2), i in axes(phantom, 1)
-        mask[i, j, k] = phantom[i, j, k] in id_set
-    end
-    any(mask) || return nothing
-    is = findall(any(mask, dims = (2, 3))[:])
-    js = findall(any(mask, dims = (1, 3))[:])
-    ks = findall(any(mask, dims = (1, 2))[:])
-    return (i = extrema(is), j = extrema(js), k = extrema(ks), n = count(mask))
-end
-
-# ╔═╡ 08b00007-0000-4000-8000-000000000006
-cisterna_bbox = phantom_native === nothing ? nothing :
-    label_bbox(phantom_native, CISTERNA_IDS);
-
-# ╔═╡ 08b00007-0000-4000-8000-000000000007
-cisterna_bbox === nothing ? md"_no cisterna voxels (or phantom not loaded)_" : md"""
-    **Cisterna chyli** (anchor for the bolus slab):
-    K $(cisterna_bbox.k[1])..$(cisterna_bbox.k[2])
-    · I $(cisterna_bbox.i[1])..$(cisterna_bbox.i[2])
-    · J $(cisterna_bbox.j[1])..$(cisterna_bbox.j[2])
-    · $(cisterna_bbox.n) voxels
-    """
-
 # ╔═╡ 08b00008-0000-4000-8000-000000000001
 md"""
 ## 6. Thin Z slab crop + upsample to 0.1 mm
 
-Same `scan_crop_indices` logic as nb08, but with `BOLUS_Z_SLAB_MM = 10`
-instead of 160 — the bolus phantom is just a thin pancake around the
-cisterna level.  Full XY kept so ray attenuation through the body chord
-stays realistic.
+Same shape as nb08 §6, scaled down for bolus tracking.  Total slab depth
+is `BOLUS_Z_SLAB_MM = 12 mm` — a thin pancake around the cisterna — and
+the slab is **offset inferiorly** from the cisterna's anatomical bottom
+by `BOLUS_MARGIN_BELOW_CISTERNA_MM = 5 mm` so the recon volume (centered
+at the scan position) has clean buffer slices below the cisterna instead
+of bleeding into air.
+
+In the post-reversal frame **low k = superior, high k = inferior**
+(verified in §3b).  So `scan_crop_indices` anchors at
+`cisterna_bbox.k[2] + margin_voxels` (inferior boundary) and walks toward
+lower k by `BOLUS_Z_SLAB_MM`.
 
 After cropping + upsampling, the phantom is roughly
-`(922×7.5, 922×7.5, $(round(Int, 10/0.1)))` =
-`(6915, 6915, 100)` voxels at 0.1 mm iso.
+`(6915, 6915, $(round(Int, 12/0.1)))` ≈ `(6915, 6915, 120)` voxels at
+0.1 mm iso.
 
 !!! warning "GPU memory at 0.1 mm with full XY"
-    Same caveat as nb08: 6915² is heavy.  The bolus phantom is ~95×
+    Same caveat as nb08: 6915² is heavy.  The bolus phantom is ~130×
     thinner in Z than nb08's, so this fits on an M-class Mac;
     on smaller GPUs drop `TARGET_VOXEL_MM` to 0.2 or 0.3.
 """
 
 # ╔═╡ 08b00008-0000-4000-8000-000000000002
-const BOLUS_Z_SLAB_MM = 10.0
+const BOLUS_Z_SLAB_MM = 12.0
+
+# ╔═╡ 08b00008-0000-4000-8000-000000000060
+# Inferior buffer below the cisterna's anatomical bottom — the recon
+# volume parked near the cisterna needs phantom on both sides of iso,
+# otherwise the recon's bottom edge sees air → reconstruction artifacts.
+const BOLUS_MARGIN_BELOW_CISTERNA_MM = 5.0
 
 # ╔═╡ 08b00008-0000-4000-8000-000000000003
 function scan_crop_indices(
         phantom::AbstractArray{T, 3},
         cisterna_bbox,
         z_slab_mm::Real,
-        native_voxel_mm::NTuple{3, Real},
+        native_voxel_mm::NTuple{3, Real};
+        margin_below_mm::Real = 0.0,
     ) where {T}
     nx, ny, nz = size(phantom)
-    k1 = cisterna_bbox.k[1]
+    margin_voxels = round(Int, margin_below_mm / native_voxel_mm[3])
+    k_inferior = min(nz, cisterna_bbox.k[2] + margin_voxels)
     slab_voxels_z = max(1, round(Int, z_slab_mm / native_voxel_mm[3]))
-    k2 = min(nz, k1 + slab_voxels_z - 1)
-    return (i_range = 1:nx, j_range = 1:ny, k_range = k1:k2)
+    k_superior = max(1, k_inferior - slab_voxels_z + 1)
+    return (i_range = 1:nx, j_range = 1:ny, k_range = k_superior:k_inferior)
 end
 
 # ╔═╡ 08b00008-0000-4000-8000-000000000004
 crop_idx = (phantom_native === nothing || cisterna_bbox === nothing) ? nothing :
-    scan_crop_indices(phantom_native, cisterna_bbox, BOLUS_Z_SLAB_MM, NATIVE_VOXEL_MM);
+    scan_crop_indices(phantom_native, cisterna_bbox, BOLUS_Z_SLAB_MM, NATIVE_VOXEL_MM;
+        margin_below_mm = BOLUS_MARGIN_BELOW_CISTERNA_MM);
 
 # ╔═╡ 08b00008-0000-4000-8000-000000000005
 const RECON_FOV_CM = 10.0
@@ -467,21 +730,32 @@ phantom_labeled === nothing ? md"_skipped_" : md"""
 
 # ╔═╡ 08b00009-0000-4000-8000-000000000001
 md"""
-## 7. Bolus scan position — shift origin so slice 20 lands at iso
+## 7. Bolus scan position — park scanner a few slices above the slab bottom
 
 `Phantom(...; origin=…)` lets us slide the phantom along Z so a specific
-voxel sits at isocenter.  We point the scanner at `BOLUS_K_SLICE = 20`
-of the upsampled volume — that's $(round(20 * 0.1; digits = 1)) mm
-above the cisterna bottom anchor, basically dead-center on the cisterna
-chyli once it fills with contrast.
+voxel sits at isocenter.  In the new orientation the cisterna sits at
+the **high-k end** of `phantom_labeled` (its anatomical bottom is at the
+slab's inferior edge + the safety margin from §6), so we park the
+scanner `BOLUS_OFFSET_FROM_SLAB_BOTTOM_MM` above that — a few slices
+above the absolute lowest, comfortably inside the cisterna sac and away
+from the edge voxels where cone-beam FBP picks up artifacts.
 
-* `origin_z = -(BOLUS_K_SLICE - 1) × dz` — places voxel `K = BOLUS_K_SLICE`
-  at world z = 0 (= isocenter).
-* `origin_x`, `origin_y` are left as the default (auto-centered).
+With the §6 numbers (`BOLUS_Z_SLAB_MM = 12`,
+`BOLUS_MARGIN_BELOW_CISTERNA_MM = 5`,
+`BOLUS_OFFSET_FROM_SLAB_BOTTOM_MM = 5.5`) the scanner ends up
+~0.5 mm above the cisterna's anatomical bottom — well inside the sac
+and ~6.5 mm below the cisterna's anatomical top (so the recon volume
+above iso stays inside the slab).
+
+* `bolus_k_slice = size(phantom_labeled, 3) − BOLUS_OFFSET / TARGET_VOXEL_MM`
+  — derived from the upsampled phantom so a slab resize re-positions
+  the scanner automatically.
+* `origin_z = −(bolus_k_slice − 1) × dz` places that voxel at world z = 0.
+* `origin_x`, `origin_y` are the default auto-centered values.
 """
 
 # ╔═╡ 08b00009-0000-4000-8000-000000000002
-const BOLUS_K_SLICE = 20
+const BOLUS_OFFSET_FROM_SLAB_BOTTOM_MM = 5.5
 
 # ╔═╡ 08b00009-0000-4000-8000-000000000003
 const VOXEL_SIZE_CM = (
@@ -490,15 +764,17 @@ const VOXEL_SIZE_CM = (
     TARGET_VOXEL_MM / 10,
 )
 
+# ╔═╡ 08b00009-0000-4000-8000-000000000050
+bolus_k_slice = phantom_labeled === nothing ? nothing :
+    size(phantom_labeled, 3) - round(Int, BOLUS_OFFSET_FROM_SLAB_BOTTOM_MM / TARGET_VOXEL_MM);
+
 # ╔═╡ 08b00009-0000-4000-8000-000000000004
-phantom_origin = phantom_labeled === nothing ? nothing : let
+phantom_origin = (phantom_labeled === nothing || bolus_k_slice === nothing) ? nothing : let
     nx, ny, nz = size(phantom_labeled)
     dx, dy, dz = VOXEL_SIZE_CM
-    # Default XY centering (matches the nothing-origin branch in BS.Phantom).
     origin_x = -nx * dx / 2 + dx / 2
     origin_y = -ny * dy / 2 + dy / 2
-    # Z shift so voxel BOLUS_K_SLICE sits at z = 0.
-    origin_z = -(BOLUS_K_SLICE - 1) * dz
+    origin_z = -(bolus_k_slice - 1) * dz
     (origin_x, origin_y, origin_z)
 end;
 
@@ -509,7 +785,7 @@ phantom_origin === nothing ? md"_skipped_" : md"""
     $(round(phantom_origin[2]; digits = 3)),
     $(round(phantom_origin[3]; digits = 3)))
 
-    Voxel K = $(BOLUS_K_SLICE) sits at world Z = 0 (isocenter).
+    Voxel K = $(bolus_k_slice) sits at world Z = 0 (isocenter).
     """
 
 # ╔═╡ 08b00009-0000-4000-8000-000000000006
@@ -523,11 +799,16 @@ md"""
 
 Apex Elite hardware identical to nb08.  Protocol is the GE clinical
 bolus tracking template: 120 kVp / **lower mA** (typical: ~30 mA for
-TDC sensing — we use 30.0 here) and `collimation_mm = 5.0` (single
-5 mm "monitoring slice", 8 detector rows active at iso).
+TDC sensing — we use 30.0 here) and `collimation_mm = 7.5`
+— wider than a single 5 mm monitoring slice so we can average HU across
+several clean middle slices instead of fighting cone-beam artifacts
+at the edges of a thin 8-slice recon.
 
-Recon volume matches the collimation: `z_cm = 0.5`, `matrix_size[3] = 8`
-gives 0.625 mm slice thickness (one detector row pitch).
+Recon volume matches the collimation: `z_cm = 0.75`,
+`matrix_size[3] = 12` gives 12 slices × 0.625 mm = 7.5 mm Z stack.
+Cisterna mask typically lights up the middle ~4–8 slices; the outer
+1–2 slices on each side absorb the cone-beam artifacts and are
+naturally excluded from the TDC because the mask is `false` there.
 """
 
 # ╔═╡ 08b00010-0000-4000-8000-000000000002
@@ -559,7 +840,7 @@ protocol = BS.CTProtocol(
     mA = 30.0,                          # bolus-tracking dose (low)
     views = 500,
     rotation_time = 1.0,
-    collimation_mm = 5.0,               # single 5 mm monitoring slice
+    collimation_mm = 7.5,               # 7.5 mm coverage — wider for clean HU averaging
     additional_filters = [("Al", 4.5)],
 )
 
@@ -568,9 +849,9 @@ sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234)
 
 # ╔═╡ 08b00010-0000-4000-8000-000000000005
 recon_opts = BS.ReconOptions(
-    matrix_size = (512, 512, 8),        # 8 slices × 0.625 mm = 5 mm Z stack
+    matrix_size = (512, 512, 12),       # 12 slices × 0.625 mm = 7.5 mm Z stack
     fov_cm = RECON_FOV_CM,
-    z_cm = 0.5,
+    z_cm = 0.75,
 )
 
 # ╔═╡ 08b00011-0000-4000-8000-000000000001
@@ -822,6 +1103,7 @@ let
         CM.hidedecorations!(ax2)
         CM.Colorbar(fig[1, 3], hm; label = "HU", width = 14, labelsize = 14)
 
+        CM.save(joinpath(FIGURES_DIR, "xcat_lymphatic_bolus_tdc.png"), fig; px_per_unit = 2)
         fig
     end
 end
@@ -847,8 +1129,10 @@ bolus_save_path = tdc_results === nothing ? nothing : let
         times              = tdc_results.times,
         mean_hu            = tdc_results.mean_hu,
         hu_stacks          = tdc_results.hu_stacks,
-        bolus_k_slice      = BOLUS_K_SLICE,
+        bolus_k_slice      = bolus_k_slice,
         bolus_z_slab_mm    = BOLUS_Z_SLAB_MM,
+        bolus_margin_below_cisterna_mm = BOLUS_MARGIN_BELOW_CISTERNA_MM,
+        bolus_offset_from_slab_bottom_mm = BOLUS_OFFSET_FROM_SLAB_BOTTOM_MM,
         collimation_mm     = protocol.collimation_mm,
         recon_matrix       = collect(recon_opts.matrix_size),
         recon_fov_cm       = recon_opts.fov_cm,
@@ -884,6 +1168,7 @@ bolus_save_path === nothing ? md"_no TDC to save_" : md"""
 # ╠═08b00002-0000-4000-8000-000000000005
 # ╠═08b00002-0000-4000-8000-000000000010
 # ╟─08b00002-0000-4000-8000-000000000011
+# ╠═08b00002-0000-4000-8000-000000000020
 # ╟─08b00003-0000-4000-8000-000000000001
 # ╠═08b00003-0000-4000-8000-000000000002
 # ╠═08b00003-0000-4000-8000-000000000003
@@ -898,6 +1183,18 @@ bolus_save_path === nothing ? md"_no TDC to save_" : md"""
 # ╠═08b00004-0000-4000-8000-000000000006
 # ╠═08b00004-0000-4000-8000-000000000007
 # ╟─08b00004-0000-4000-8000-000000000008
+# ╟─08b00007-0000-4000-8000-000000000001
+# ╠═08b00007-0000-4000-8000-000000000002
+# ╠═08b00007-0000-4000-8000-000000000003
+# ╠═08b00007-0000-4000-8000-000000000004
+# ╠═08b00007-0000-4000-8000-000000000005
+# ╠═08b00007-0000-4000-8000-000000000006
+# ╠═08b00007-0000-4000-8000-000000000050
+# ╟─08b00007-0000-4000-8000-000000000007
+# ╟─08b00007-0000-4000-8000-000000000100
+# ╟─08b00007-0000-4000-8000-000000000101
+# ╟─08b00007-0000-4000-8000-000000000200
+# ╟─08b00007-0000-4000-8000-000000000201
 # ╟─08b00005-0000-4000-8000-000000000001
 # ╠═08b00005-0000-4000-8000-000000000002
 # ╠═08b00005-0000-4000-8000-000000000003
@@ -909,15 +1206,9 @@ bolus_save_path === nothing ? md"_no TDC to save_" : md"""
 # ╠═08b00006-0000-4000-8000-000000000005
 # ╠═08b00006-0000-4000-8000-000000000006
 # ╠═08b00006-0000-4000-8000-000000000007
-# ╟─08b00007-0000-4000-8000-000000000001
-# ╠═08b00007-0000-4000-8000-000000000002
-# ╠═08b00007-0000-4000-8000-000000000003
-# ╠═08b00007-0000-4000-8000-000000000004
-# ╠═08b00007-0000-4000-8000-000000000005
-# ╠═08b00007-0000-4000-8000-000000000006
-# ╟─08b00007-0000-4000-8000-000000000007
 # ╟─08b00008-0000-4000-8000-000000000001
 # ╠═08b00008-0000-4000-8000-000000000002
+# ╠═08b00008-0000-4000-8000-000000000060
 # ╠═08b00008-0000-4000-8000-000000000003
 # ╠═08b00008-0000-4000-8000-000000000004
 # ╠═08b00008-0000-4000-8000-000000000005
@@ -926,6 +1217,7 @@ bolus_save_path === nothing ? md"_no TDC to save_" : md"""
 # ╟─08b00009-0000-4000-8000-000000000001
 # ╠═08b00009-0000-4000-8000-000000000002
 # ╠═08b00009-0000-4000-8000-000000000003
+# ╠═08b00009-0000-4000-8000-000000000050
 # ╠═08b00009-0000-4000-8000-000000000004
 # ╟─08b00009-0000-4000-8000-000000000005
 # ╠═08b00009-0000-4000-8000-000000000006
