@@ -1,5 +1,8 @@
 ### A Pluto.jl notebook ###
-# v0.19.0
+# v0.20.25
+
+using Markdown
+using InteractiveUtils
 
 # ╔═╡ 08000001-0000-4000-8000-000000000001
 begin
@@ -144,7 +147,7 @@ the static HTML still renders on a fresh checkout.
 # ╔═╡ 08000003-0000-4000-8000-000000000002
 const LYMPH_DIR = get(
     ENV, "BASISSIM_XCAT_LYMPH_DIR",
-    "/Volumes/Molloilab/Ayemon/XCAT_lymphatic_phantom",
+    "/Volumes/Molloilab-1/Ayemon/XCAT_lymphatic_phantom",
 )
 
 # ╔═╡ 08000003-0000-4000-8000-000000000003
@@ -294,7 +297,7 @@ steps. Set `TIME_SECONDS` to whichever bolus phase you want; default
 """
 
 # ╔═╡ 08000005-0000-4000-8000-000000000002
-const TIME_SECONDS = 230     # v2 peak — peak iodine bolus in Ayemon's t-series
+const TIME_SECONDS = 0     # v2 peak — peak iodine bolus in Ayemon's t-series
 
 # ╔═╡ 08000005-0000-4000-8000-000000000003
 const MATERIAL_MAP_PATH = joinpath(
@@ -380,7 +383,15 @@ function load_materials_from_xlsx(xlsx_path::AbstractString)
     id_col = 0
     name_col = 0
     for c in 1:ncols
-        nh = norm(data[1, c])
+        raw = data[1, c]
+        # Numeric atomic-number header (Ayemon's lymphatic xlsx + every XCAT
+        # material spreadsheet from the same pipeline) — column header is
+        # literally `1`, `6`, `7`, … `53` rather than `H`, `C`, `N`, … `I`.
+        if raw isa Number && isinteger(raw) && 1 <= Int(raw) <= 92
+            col_to_Z[c] = Int(raw)
+            continue
+        end
+        nh = norm(raw)
         if haskey(Z_by_name, nh)
             col_to_Z[c] = Z_by_name[nh]
         elseif nh in ("density", "ρ", "rho", "densitygcm3", "densitygcc")
@@ -425,6 +436,11 @@ end
 # ╔═╡ 08000006-0000-4000-8000-000000000007
 materials = (phantom_native === nothing || !isfile(MATERIAL_MAP_PATH)) ? nothing : let
         base = load_materials_from_xlsx(MATERIAL_MAP_PATH)
+        # Ayemon's xlsx skips ID 2 — that's the XCAT whole-body soft-tissue
+        # background filler (≈ 79% of all non-air voxels here).  Without
+        # this override it falls back to water and the body chord mass is
+        # underestimated → HU biased low and BHC calibration skewed.
+        base[2] = BS.XA.Materials.softtissue
         for l in unique(phantom_native)
             haskey(base, Int(l)) || (base[Int(l)] = BS.XA.Materials.water)
     end
@@ -438,6 +454,71 @@ materials === nothing ? md"_skipped_" : md"""
         materials[Int(id)] !== BS.XA.Materials.water, unique(phantom_native)))
     matched xlsx, rest fall back to water).
     """
+
+# ╔═╡ 08000006-0000-4000-8000-000000000009
+md"""
+### 4a. Material miss list — which phantom IDs fell back to water?
+
+Re-parses the Organ ID column of the xlsx and diffs against the unique
+labels present in the phantom volume, with voxel counts (sorted biggest
+first) so it's obvious whether each miss is a meaningful structure or a
+stray label.
+"""
+
+# ╔═╡ 08000006-0000-4000-8000-000000000010
+# let
+#     if phantom_native === nothing || !isfile(MATERIAL_MAP_PATH)
+#         md"_skipped — see §1 / §3_"
+#     else
+#         # IDs present in the xlsx (cheap re-parse: just the Organ ID column).
+#         sheet = XLSX.readxlsx(MATERIAL_MAP_PATH)[1]
+#         xdata = sheet[:]
+#         nrows_x, ncols_x = size(xdata)
+#         norm = v -> lowercase(replace(string(v === missing ? "" : v), r"[\s_]+" => ""))
+#         id_col = findfirst(
+#             c -> norm(xdata[1, c]) in (
+#                 "id", "organid", "label", "organlabel", "matid", "materialid",
+#             ),
+#             1:ncols_x,
+#         )
+#         xlsx_ids = id_col === nothing ? Set{Int}() : Set{Int}(
+#             Int(round(Float64(xdata[r, id_col]))) for r in 2:nrows_x
+#                 if xdata[r, id_col] isa Number
+#         )
+
+#         # Per-ID voxel counts via a 65k-bucket histogram — one pass over
+#         # phantom_native (≈ 1 G voxels) is much cheaper than `unique` + a
+#         # `count(==(id), ·)` per ID.
+#         bin = zeros(Int, 65536)
+#         @inbounds for v in phantom_native
+#             bin[Int(v) + 1] += 1
+#         end
+#         total_vox = length(phantom_native)
+#         n_present = count(>(0), bin)
+
+#         missing_ids = [id for id in 0:65535 if bin[id + 1] > 0 && id ∉ xlsx_ids]
+#         sort!(missing_ids; by = id -> -bin[id + 1])
+
+#         if isempty(missing_ids)
+#             md"**All $(n_present) phantom IDs matched xlsx.** ✓"
+#         else
+#             rows = [
+#                 "$(lpad(id, 6))  $(lpad(bin[id + 1], 14))  " *
+#                     "$(rpad(round(100 * bin[id + 1] / total_vox; digits = 4), 8))%"
+#                     for id in missing_ids
+#             ]
+#             Markdown.parse(
+#                 "**Unmatched phantom IDs:** $(length(missing_ids)) of $(n_present) " *
+#                 "(rest fell back to water).\n\n" *
+#                 "```\n" *
+#                 "ID         voxels          % phantom\n" *
+#                 "--------   --------------  ---------\n" *
+#                 join(rows, "\n") *
+#                 "\n```",
+#             )
+#         end
+#     end
+# end
 
 # ╔═╡ 08000007-0000-4000-8000-000000000001
 md"""
@@ -483,22 +564,22 @@ lymph_bbox = phantom_native === nothing ? nothing :
     label_bbox(phantom_native, LYMPHATIC_IDS);
 
 # ╔═╡ 08000007-0000-4000-8000-000000000008
-(cisterna_bbox === nothing || lymph_bbox === nothing) ?
-    md"_no cisterna/duct voxels found (or phantom not loaded)_" : md"""
-    **Cisterna chyli** (anchor): K $(cisterna_bbox.k[1])..$(cisterna_bbox.k[2])
-    · I $(cisterna_bbox.i[1])..$(cisterna_bbox.i[2])
-    · J $(cisterna_bbox.j[1])..$(cisterna_bbox.j[2])
+# (cisterna_bbox === nothing || lymph_bbox === nothing) ?
+#     md"_no cisterna/duct voxels found (or phantom not loaded)_" : md"""
+#     **Cisterna chyli** (anchor): K $(cisterna_bbox.k[1])..$(cisterna_bbox.k[2])
+#     · I $(cisterna_bbox.i[1])..$(cisterna_bbox.i[2])
+#     · J $(cisterna_bbox.j[1])..$(cisterna_bbox.j[2])
 
-    **Lymphatic ROI** (cisterna + thoracic duct):
+#     **Lymphatic ROI** (cisterna + thoracic duct):
 
-    * I: $(lymph_bbox.i[1]) … $(lymph_bbox.i[2])
-      ($(round((lymph_bbox.i[2] - lymph_bbox.i[1] + 1) * NATIVE_VOXEL_MM[1] / 10; digits = 1)) cm)
-    * J: $(lymph_bbox.j[1]) … $(lymph_bbox.j[2])
-      ($(round((lymph_bbox.j[2] - lymph_bbox.j[1] + 1) * NATIVE_VOXEL_MM[2] / 10; digits = 1)) cm)
-    * K: $(lymph_bbox.k[1]) … $(lymph_bbox.k[2])
-      ($(round((lymph_bbox.k[2] - lymph_bbox.k[1] + 1) * NATIVE_VOXEL_MM[3] / 10; digits = 1)) cm)
-    * voxels tagged: $(lymph_bbox.n)
-    """
+#     * I: $(lymph_bbox.i[1]) … $(lymph_bbox.i[2])
+#       ($(round((lymph_bbox.i[2] - lymph_bbox.i[1] + 1) * NATIVE_VOXEL_MM[1] / 10; digits = 1)) cm)
+#     * J: $(lymph_bbox.j[1]) … $(lymph_bbox.j[2])
+#       ($(round((lymph_bbox.j[2] - lymph_bbox.j[1] + 1) * NATIVE_VOXEL_MM[2] / 10; digits = 1)) cm)
+#     * K: $(lymph_bbox.k[1]) … $(lymph_bbox.k[2])
+#       ($(round((lymph_bbox.k[2] - lymph_bbox.k[1] + 1) * NATIVE_VOXEL_MM[3] / 10; digits = 1)) cm)
+#     * voxels tagged: $(lymph_bbox.n)
+#     """
 
 # ╔═╡ 08000008-0000-4000-8000-000000000001
 md"""
@@ -686,10 +767,10 @@ let
         CM.heatmap!(ax3, Float32.(slice_upsamp); colormap = :tab20)
         CM.hidedecorations!(ax3)
 
-        CM.save(
-            joinpath(@__DIR__, "..", "..", "assets", "xcat_lymphatic_crop_pipeline.png"),
-            fig; px_per_unit = 2,
-        )
+        # CM.save(
+        #     joinpath(@__DIR__, "..", "..", "assets", "xcat_lymphatic_crop_pipeline.png"),
+        #     fig; px_per_unit = 2,
+        # )
         fig
     end
 end
@@ -706,84 +787,251 @@ check that the duct actually runs through the slab from top to bottom
 
 # ╔═╡ 08000008-0000-4000-8000-000000000021
 let
-    if phantom_labeled === nothing
-        md"_skipped — see §1 / §5_"
+    if phantom_labeled === nothing || lymph_bbox === nothing || crop_idx === nothing
+        md"_skipped — see §1 / §5 / §6_"
     else
         nx, ny, nz = size(phantom_labeled)
-        id_set = Set(UInt16.(LYMPHATIC_IDS))
 
-        # Per-slice lymphatic mask, only over the volume we actually display
+        # Analytic centroid (was a full-volume Set-membership scan — ~76 G
+        # voxel checks with hashing on the inner loop, multi-minute on a 0.1 mm
+        # full-XY upsample).  `lymph_bbox` (§5) is already in native voxel
+        # coords; XY is uncropped, K is cropped to `crop_idx.k_range`.  Scale
+        # by NATIVE/TARGET, clamp to volume bounds.
+        sx = NATIVE_VOXEL_MM[1] / TARGET_VOXEL_MM
+        sy = NATIVE_VOXEL_MM[2] / TARGET_VOXEL_MM
+        sz = NATIVE_VOXEL_MM[3] / TARGET_VOXEL_MM
+        k_lo = first(crop_idx.k_range)
+        i_nat = (lymph_bbox.i[1] + lymph_bbox.i[2]) / 2
+        j_nat = (lymph_bbox.j[1] + lymph_bbox.j[2]) / 2
+        k_nat_slab = ((lymph_bbox.k[1] + lymph_bbox.k[2]) / 2) - k_lo + 1
+        i_mid = clamp(round(Int, i_nat * sx), 1, nx)
+        j_mid = clamp(round(Int, j_nat * sy), 1, ny)
+        k_mid = clamp(round(Int, k_nat_slab * sz), 1, nz)
+
+        # Per-slice lymphatic mask — UInt16 indicator vector instead of a
+        # Set so the inner loop is one array load per voxel, not a hash.
+        is_lymph = falses(65536)
+        for id in LYMPHATIC_IDS
+            is_lymph[id + 1] = true
+        end
         function lymph_mask_2d(slice)
             m = falses(size(slice))
             @inbounds for i in eachindex(slice, m)
-                m[i] = slice[i] in id_set
+                m[i] = is_lymph[Int(slice[i]) + 1]
             end
             m
         end
 
-        # Pick view planes through the lymphatic centroid
-        # Find I/J centroid by accumulating into 1-D projections (cheap)
-        i_hits = falses(nx); j_hits = falses(ny); k_hits = falses(nz)
-        @inbounds for k in 1:nz, j in 1:ny, i in 1:nx
-            if phantom_labeled[i, j, k] in id_set
-                i_hits[i] = true; j_hits[j] = true; k_hits[k] = true
+        # Label → colour.  `:tab20` only has 20 hues, so Makie's linear
+        # interpolation between adjacent integer IDs produces near-identical
+        # shades for adjacent labels — useless for a segmentation phantom.
+        # Hash each label into a 256-colour glasbey palette so neighbouring
+        # IDs are guaranteed visually distinct.  Label 0 (air) → dark grey.
+        palette = CM.to_colormap(:glasbey_bw_n256)
+        n_pal   = length(palette)
+        bg      = CM.RGBAf(0.08, 0.09, 0.10, 1.0)
+        function colorize(slice)
+            out = Array{CM.RGBAf}(undef, size(slice))
+            @inbounds for i in eachindex(slice, out)
+                lbl = UInt(slice[i])
+                out[i] = lbl == 0 ? bg :
+                    let c = palette[(hash(lbl) % UInt(n_pal)) + 1]
+                        CM.RGBAf(c.r, c.g, c.b, 1.0)
+                    end
             end
+            out
         end
-        any(i_hits) || return md"_no lymphatic voxels found in upsampled volume_"
 
-        i_mid = clamp((findfirst(i_hits) + findlast(i_hits)) ÷ 2, 1, nx)
-        j_mid = clamp((findfirst(j_hits) + findlast(j_hits)) ÷ 2, 1, ny)
-        k_mid = clamp((findfirst(k_hits) + findlast(k_hits)) ÷ 2, 1, nz)
+        # Lymphatic highlight: translucent yellow fill + thin red contour,
+        # so the duct reads against any underlying colour.
+        fill_color    = CM.RGBAf(1.0, 0.95, 0.2, 0.55)
+        outline_color = CM.RGBAf(0.95, 0.10, 0.10, 1.0)
 
-        ax_slice   = phantom_labeled[:, :, k_mid]           # axial (i, j) at K = k_mid
-        cor_slice  = phantom_labeled[:, j_mid, :]           # coronal (i, k) at J = j_mid
-        sag_slice  = phantom_labeled[i_mid, :, :]           # sagittal (j, k) at I = i_mid
+        fig = CM.Figure(size = (700, 1700), backgroundcolor = :white, figure_padding = 6)
 
-        fig = CM.Figure(size = (1700, 700))
-        title_kwargs = (titlesize = 24, subtitlesize = 16)
-        lymph_cmap = [CM.RGBAf(0, 0, 0, 0), CM.RGBAf(1, 0.2, 0.2, 0.95)]
+        function panel!(row, slice, title, subtitle)
+            ax = CM.Axis(fig[row, 1];
+                title        = title,
+                subtitle     = subtitle,
+                titlesize    = 18,
+                subtitlesize = 12,
+                titlealign   = :left,
+                aspect       = CM.DataAspect(),
+                yreversed    = true,
+            )
+            CM.image!(ax, colorize(slice); interpolate = false)
+            mask = Float32.(lymph_mask_2d(slice))
+            CM.heatmap!(ax, mask;
+                colormap    = [CM.RGBAf(0, 0, 0, 0), fill_color],
+                colorrange  = (0, 1),
+                interpolate = false,
+            )
+            CM.contour!(ax, mask;
+                levels    = [0.5],
+                color     = outline_color,
+                linewidth = 1.2,
+            )
+            CM.hidedecorations!(ax)
+            CM.hidespines!(ax)
+            return ax
+        end
 
-        ax1 = CM.Axis(
-            fig[1, 1];
-            title = "Axial · K = $(k_mid)",
-            subtitle = "$(nx)×$(ny) @ $(TARGET_VOXEL_MM) mm — cisterna level",
-            aspect = CM.DataAspect(),
-            yreversed = true,
-            title_kwargs...,
-        )
-        CM.heatmap!(ax1, Float32.(ax_slice); colormap = :tab20)
-        CM.heatmap!(ax1, Float32.(lymph_mask_2d(ax_slice));
-            colormap = lymph_cmap, colorrange = (0, 1))
-        CM.hidedecorations!(ax1)
+		panel!(1, phantom_labeled[:, :, k_mid], "Axial",    "k = $(k_mid)")
+        panel!(2, phantom_labeled[:, j_mid, :], "Coronal",  "j = $(j_mid)")
+        panel!(3, phantom_labeled[i_mid, :, :], "Sagittal", "i = $(i_mid)")
 
-        ax2 = CM.Axis(
-            fig[1, 2];
-            title = "Coronal · J = $(j_mid)",
-            subtitle = "$(nx)×$(nz) — duct ascending along K",
-            aspect = CM.DataAspect(),
-            yreversed = true,
-            title_kwargs...,
-        )
-        CM.heatmap!(ax2, Float32.(cor_slice); colormap = :tab20)
-        CM.heatmap!(ax2, Float32.(lymph_mask_2d(cor_slice));
-            colormap = lymph_cmap, colorrange = (0, 1))
-        CM.hidedecorations!(ax2)
+        # Slice dims plotted as (x, y):
+        #   axial    [:, :, k] → nx × ny  → height/width = ny/nx
+        #   coronal  [:, j, :] → nx × nz  → nz/nx
+        #   sagittal [i, :, :] → ny × nz  → nz/ny
+        CM.rowsize!(fig.layout, 1, CM.Aspect(1, ny/nx))
+        CM.rowsize!(fig.layout, 2, CM.Aspect(1, nz/nx))
+        CM.rowsize!(fig.layout, 3, CM.Aspect(1, nz/ny))
 
-        ax3 = CM.Axis(
-            fig[1, 3];
-            title = "Sagittal · I = $(i_mid)",
-            subtitle = "$(ny)×$(nz) — duct AP profile",
-            aspect = CM.DataAspect(),
-            yreversed = true,
-            title_kwargs...,
-        )
-        CM.heatmap!(ax3, Float32.(sag_slice); colormap = :tab20)
-        CM.heatmap!(ax3, Float32.(lymph_mask_2d(sag_slice));
-            colormap = lymph_cmap, colorrange = (0, 1))
-        CM.hidedecorations!(ax3)
+        CM.rowgap!(fig.layout, 4)
+        CM.resize_to_layout!(fig)
 
         CM.save(
             joinpath(@__DIR__, "..", "..", "assets", "xcat_lymphatic_fov_orthogonal.png"),
+            fig; px_per_unit = 2,
+        )
+        fig
+    end
+end
+
+# ╔═╡ 0fe7e0c1-6423-4676-a079-270055afb485
+let
+    if phantom_labeled === nothing || lymph_bbox === nothing || crop_idx === nothing
+        md"_skipped — see §1 / §5 / §6_"
+    else
+        nx, ny, nz = size(phantom_labeled)
+
+        # Analytic centroid (was a full-volume Set-membership scan — ~76 G
+        # voxel checks with hashing on the inner loop, multi-minute on a 0.1 mm
+        # full-XY upsample).  `lymph_bbox` (§5) is already in native voxel
+        # coords; XY is uncropped, K is cropped to `crop_idx.k_range`.  Scale
+        # by NATIVE/TARGET, clamp to volume bounds.
+        sx = NATIVE_VOXEL_MM[1] / TARGET_VOXEL_MM
+        sy = NATIVE_VOXEL_MM[2] / TARGET_VOXEL_MM
+        sz = NATIVE_VOXEL_MM[3] / TARGET_VOXEL_MM
+        k_lo = first(crop_idx.k_range)
+        i_nat = (lymph_bbox.i[1] + lymph_bbox.i[2]) / 2
+        j_nat = (lymph_bbox.j[1] + lymph_bbox.j[2]) / 2
+        k_nat_slab = ((lymph_bbox.k[1] + lymph_bbox.k[2]) / 2) - k_lo + 1
+        i_mid = clamp(round(Int, i_nat * sx), 1, nx)
+        j_mid = clamp(round(Int, j_nat * sy), 1, ny)
+        k_mid = clamp(round(Int, k_nat_slab * sz), 1, nz)
+
+        # Per-group lymphatic indicator vectors (UInt16 lookup — one array
+        # load per voxel, no hashing in the inner loop).  Splitting cisterna
+        # vs. duct lets us colour the reservoir and the channel differently.
+        is_cisterna = falses(65536)
+        is_duct     = falses(65536)
+        is_lymph    = falses(65536)
+        for id in CISTERNA_IDS;      is_cisterna[id + 1] = true; is_lymph[id + 1] = true end
+        for id in THORACIC_DUCT_IDS; is_duct[id + 1]     = true; is_lymph[id + 1] = true end
+
+        function lymph_mask_2d(slice)
+            m = falses(size(slice))
+            @inbounds for i in eachindex(slice, m)
+                m[i] = is_lymph[Int(slice[i]) + 1]
+            end
+            m
+        end
+
+        # Spotlight palette.  Non-lymph anatomy is compressed into a muted
+        # grey band so the lymphatics are the only colour in the frame.
+        # Cisterna chyli → hot magenta (the reservoir).
+        # Thoracic duct  → amber       (the channel ascending from it).
+        cisterna_color = CM.RGBAf(1.00, 0.20, 0.55, 1.0)
+        duct_color     = CM.RGBAf(1.00, 0.80, 0.15, 1.0)
+
+        palette = CM.to_colormap(:glasbey_bw_n256)
+        n_pal   = length(palette)
+        bg      = CM.RGBAf(0.06, 0.07, 0.08, 1.0)
+
+        function colorize(slice)
+            out = Array{CM.RGBAf}(undef, size(slice))
+            @inbounds for i in eachindex(slice, out)
+                lbl = Int(slice[i])
+                if lbl == 0
+                    out[i] = bg
+                elseif is_cisterna[lbl + 1]
+                    out[i] = cisterna_color
+                elseif is_duct[lbl + 1]
+                    out[i] = duct_color
+                else
+                    c = palette[(hash(UInt(lbl)) % UInt(n_pal)) + 1]
+                    g = 0.299f0*c.r + 0.587f0*c.g + 0.114f0*c.b
+                    g = 0.22f0 + 0.30f0 * g          # crush context into a muted band
+                    out[i] = CM.RGBAf(g, g, g, 1.0)
+                end
+            end
+            out
+        end
+
+        halo_color    = CM.RGBAf(1.0, 1.0, 1.0, 0.35)
+        outline_color = CM.RGBAf(1.0, 0.05, 0.35, 1.0)
+
+        fig = CM.Figure(size = (700, 1700), backgroundcolor = :white, figure_padding = 6)
+
+        function panel!(row, slice, title, subtitle)
+            ax = CM.Axis(fig[row, 1];
+                title        = title,
+                subtitle     = subtitle,
+                titlesize    = 18,
+                subtitlesize = 12,
+                titlealign   = :left,
+                aspect       = CM.DataAspect(),
+                yreversed    = true,
+            )
+            CM.image!(ax, colorize(slice); interpolate = false)
+
+            mask = Float32.(lymph_mask_2d(slice))
+            if any(>(0), mask)
+                # white halo behind...
+                CM.contour!(ax, mask; levels = [0.5],
+                    color = halo_color, linewidth = 4)
+                # ...crisp magenta line on top
+                CM.contour!(ax, mask; levels = [0.5],
+                    color = outline_color, linewidth = 1.2)
+            end
+
+            CM.hidedecorations!(ax)
+            CM.hidespines!(ax)
+            return ax
+        end
+
+        panel!(1, phantom_labeled[:, :, k_mid], "Axial",    "k = $(k_mid)")
+        panel!(2, phantom_labeled[:, j_mid, :], "Coronal",  "j = $(j_mid)")
+        panel!(3, phantom_labeled[i_mid, :, :], "Sagittal", "i = $(i_mid)")
+
+        # Self-documenting legend.
+        CM.Legend(fig[4, 1],
+            [CM.PolyElement(color = cisterna_color, strokevisible = false),
+             CM.PolyElement(color = duct_color,     strokevisible = false)],
+            ["Cisterna chyli", "Thoracic duct"];
+            orientation  = :horizontal,
+            framevisible = false,
+            labelsize    = 13,
+            patchsize    = (18, 12),
+            tellwidth    = false,
+        )
+
+        # Slice dims plotted as (x, y):
+        #   axial    [:, :, k] → nx × ny  → height/width = ny/nx
+        #   coronal  [:, j, :] → nx × nz  → nz/nx
+        #   sagittal [i, :, :] → ny × nz  → nz/ny
+        CM.rowsize!(fig.layout, 1, CM.Aspect(1, ny/nx))
+        CM.rowsize!(fig.layout, 2, CM.Aspect(1, nz/nx))
+        CM.rowsize!(fig.layout, 3, CM.Aspect(1, nz/ny))
+
+        CM.rowgap!(fig.layout, 4)
+        CM.rowgap!(fig.layout, 3, 10)   # a little extra space before the legend
+        CM.resize_to_layout!(fig)
+
+        CM.save(
+            joinpath(@__DIR__, "..", "..", "assets", "xcat_lymphatic_fov_orthogonal_gray.png"),
             fig; px_per_unit = 2,
         )
         fig
@@ -853,7 +1101,7 @@ protocol = BS.CTProtocol(
     mA = 250.0,
     views = 500,
     rotation_time = 1.0,
-    collimation_mm = 5.0,
+    collimation_mm = 160.0,
     additional_filters = [("Al", 4.5)],
 )
 
@@ -878,15 +1126,15 @@ single-digit minutes on a CUDA box.
 """
 
 # ╔═╡ 08000011-0000-4000-8000-000000000002
-# sim = phantom === nothing ? nothing : let
-#         @info "Simulating lymphatic XCAT body CTA: 120 kVp / 250 mA, t = $(TIME_SECONDS) s…"
-#         ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
-#         BS.simulate!(ws, phantom, protocol, sim_opts)
-#         result = (sino = Array(ws.sinogram), geom = ws.geom)
-#         ws = nothing
-#         GC.gc(true)
-#         result
-# end;
+sim = phantom === nothing ? nothing : let
+        @info "Simulating lymphatic XCAT body CTA: 120 kVp / 250 mA, t = $(TIME_SECONDS) s…"
+        ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
+        BS.simulate!(ws, phantom, protocol, sim_opts)
+        result = (sino = Array(ws.sinogram), geom = ws.geom)
+        ws = nothing
+        GC.gc(true)
+        result
+end;
 
 # ╔═╡ 08000012-0000-4000-8000-000000000001
 md"""
@@ -943,6 +1191,9 @@ hu_fbp = sim === nothing ? nothing : let
 
         hu
 end;
+
+# ╔═╡ f095fd10-c521-484f-8944-d0381b68ca9d
+size(hu_fbp)
 
 # ╔═╡ 08000012-0000-4000-8000-000000000010
 md"""
@@ -1030,6 +1281,9 @@ Center slice is the mid-K of `phantom_labeled` (the cropped grid), so
 swapping `CROP_MARGIN_MM` or the source bbox auto-recenters the panel.
 """
 
+# ╔═╡ a0526494-2aaf-4eb3-9b39-a3724a74b33f
+z_ind = 20
+
 # ╔═╡ 08000013-0000-4000-8000-000000000002
 let
     if phantom_labeled === nothing || hu_fbp === nothing
@@ -1049,14 +1303,16 @@ let
             1, recon_nz,
         )
 
-        lbl_slice = phantom_labeled[:, :, k_phantom]
+		@info k_recon
+
+        lbl_slice = phantom_labeled[:, :, z_ind]
         lymph_mask = falses(size(lbl_slice))
         id_set = Set(UInt16.(LYMPHATIC_IDS))
         @inbounds for j in axes(lbl_slice, 2), i in axes(lbl_slice, 1)
             lymph_mask[i, j] = lbl_slice[i, j] in id_set
         end
 
-        hu_slice = hu_fbp[:, :, k_recon]
+        hu_slice = hu_fbp[:, :, z_ind]
 
         fig = CM.Figure(size = (1500, 600))
 
@@ -1097,12 +1353,92 @@ let
         CM.hidedecorations!(ax3)
         CM.Colorbar(fig[1, 5], hm3; label = "HU", width = 14, labelsize = 16)
 
-        CM.save(
-            joinpath(@__DIR__, "..", "..", "assets", "xcat_lymphatic_t$(lpad(TIME_SECONDS, 4, '0'))s.png"),
-            fig; px_per_unit = 2,
-        )
+        # CM.save(
+        #     joinpath(@__DIR__, "..", "..", "assets", "xcat_lymphatic_t$(lpad(TIME_SECONDS, 4, '0'))s.png"),
+        #     fig; px_per_unit = 2,
+        # )
         fig
     end
+end
+
+# ╔═╡ a7166222-4cb0-4365-aef7-ba1802831cf9
+# §10c — strict-NN lymphatic mask aligned to the recon grid.
+# Same recon geometry as §10's hu_fbp and every per-t recon written by §10b,
+# so this single mask overlays the entire bolus series.  Labels are
+# time-invariant, so we only build + save it once.
+let
+    nx_p, ny_p, nz_p = size(phantom_labeled)
+    dx_p, dy_p, dz_p = VOXEL_SIZE_CM
+
+    # Auto-centered phantom origin — matches the `origin = nothing` branch
+    # of BS.Phantom that §7 uses.
+    pox = -nx_p * dx_p / 2 + dx_p / 2
+    poy = -ny_p * dy_p / 2 + dy_p / 2
+    poz = -nz_p * dz_p / 2 + dz_p / 2
+
+    Mx, My, Mz = recon_opts.matrix_size
+    dxr = recon_opts.fov_cm / Mx
+    dyr = recon_opts.fov_cm / My
+    dzr = recon_opts.z_cm  / Mz
+
+    # Per-axis NN lookup: which phantom voxel sits at each recon-voxel
+    # center.  1-D tables — much cheaper than a 3-arg round inside the
+    # inner loop.
+    rec_i = Int[round(Int, (-recon_opts.fov_cm / 2 + (i - 0.5) * dxr - pox) / dx_p) + 1 for i in 1:Mx]
+    rec_j = Int[round(Int, (-recon_opts.fov_cm / 2 + (j - 0.5) * dyr - poy) / dy_p) + 1 for j in 1:My]
+    rec_k = Int[round(Int, (-recon_opts.z_cm  / 2 + (k - 0.5) * dzr - poz) / dz_p) + 1 for k in 1:Mz]
+
+    # 65k-bin indicator vectors beat a Set hash in the inner loop.
+    is_cist = falses(65536); for id in CISTERNA_IDS;      is_cist[id + 1] = true end
+    is_duct = falses(65536); for id in THORACIC_DUCT_IDS; is_duct[id + 1] = true end
+
+    cisterna_mask = falses(Mx, My, Mz)
+    duct_mask     = falses(Mx, My, Mz)
+    @inbounds for kr in 1:Mz
+        kp = rec_k[kr]
+        (1 <= kp <= nz_p) || continue
+        for jr in 1:My
+            jp = rec_j[jr]
+            (1 <= jp <= ny_p) || continue
+            for ir in 1:Mx
+                ip = rec_i[ir]
+                (1 <= ip <= nx_p) || continue
+                v = Int(phantom_labeled[ip, jp, kp]) + 1
+                cisterna_mask[ir, jr, kr] = is_cist[v]
+                duct_mask[ir, jr, kr]     = is_duct[v]
+            end
+        end
+    end
+    lymphatic_mask = cisterna_mask .| duct_mask
+
+    isdir(RECON_SAVE_DIR) || mkpath(RECON_SAVE_DIR)
+    mask_path = joinpath(RECON_SAVE_DIR, "lymphatic_mask.jld2")
+    JLD2.jldsave(
+        mask_path;
+        lymphatic_mask     = lymphatic_mask,
+        cisterna_mask      = cisterna_mask,
+        thoracic_duct_mask = duct_mask,
+        recon_matrix       = collect(recon_opts.matrix_size),
+        recon_fov_cm       = recon_opts.fov_cm,
+        recon_z_cm         = recon_opts.z_cm,
+        recon_voxel_mm     = [dxr * 10, dyr * 10, dzr * 10],
+        phantom_origin_cm  = [pox, poy, poz],
+        phantom_voxel_mm   = collect(VOXEL_SIZE_CM .* 10),
+        phantom_dims       = collect(size(phantom_labeled)),
+        cisterna_ids       = collect(CISTERNA_IDS),
+        thoracic_duct_ids  = collect(THORACIC_DUCT_IDS),
+        method             = "nearest_neighbor_recon_to_phantom",
+    )
+
+    md"""
+    **Lymphatic mask saved → `$(mask_path)`**
+
+    * Cisterna chyli:     $(count(cisterna_mask)) recon voxels
+    * Thoracic duct:      $(count(duct_mask)) recon voxels
+    * Combined lymphatic: $(count(lymphatic_mask)) recon voxels
+    * Recon grid: $(Mx)×$(My)×$(Mz) @ ($(round(dxr * 10; digits = 3)), $(round(dyr * 10; digits = 3)), $(round(dzr * 10; digits = 3))) mm
+    * Method: strict NN (recon-voxel center → nearest phantom voxel)
+    """
 end
 
 # ╔═╡ Cell order:
@@ -1144,6 +1480,8 @@ end
 # ╠═08000006-0000-4000-8000-000000000006
 # ╠═08000006-0000-4000-8000-000000000007
 # ╟─08000006-0000-4000-8000-000000000008
+# ╟─08000006-0000-4000-8000-000000000009
+# ╠═08000006-0000-4000-8000-000000000010
 # ╟─08000007-0000-4000-8000-000000000001
 # ╠═08000007-0000-4000-8000-000000000002
 # ╠═08000007-0000-4000-8000-000000000003
@@ -1160,9 +1498,10 @@ end
 # ╠═08000008-0000-4000-8000-000000000006
 # ╟─08000008-0000-4000-8000-000000000007
 # ╟─08000008-0000-4000-8000-000000000010
-# ╠═08000008-0000-4000-8000-000000000011
+# ╟─08000008-0000-4000-8000-000000000011
 # ╟─08000008-0000-4000-8000-000000000020
-# ╠═08000008-0000-4000-8000-000000000021
+# ╟─08000008-0000-4000-8000-000000000021
+# ╟─0fe7e0c1-6423-4676-a079-270055afb485
 # ╟─08000009-0000-4000-8000-000000000001
 # ╠═08000009-0000-4000-8000-000000000002
 # ╠═08000009-0000-4000-8000-000000000003
@@ -1176,9 +1515,12 @@ end
 # ╟─08000012-0000-4000-8000-000000000001
 # ╠═08000012-0000-4000-8000-000000000002
 # ╠═08000012-0000-4000-8000-000000000003
+# ╠═f095fd10-c521-484f-8944-d0381b68ca9d
 # ╟─08000012-0000-4000-8000-000000000010
 # ╠═08000012-0000-4000-8000-000000000011
 # ╠═08000012-0000-4000-8000-000000000012
 # ╟─08000012-0000-4000-8000-000000000013
 # ╟─08000013-0000-4000-8000-000000000001
+# ╠═a0526494-2aaf-4eb3-9b39-a3724a74b33f
 # ╠═08000013-0000-4000-8000-000000000002
+# ╠═a7166222-4cb0-4365-aef7-ba1802831cf9
