@@ -1,5 +1,8 @@
 ### A Pluto.jl notebook ###
-# v0.19.0
+# v0.20.25
+
+using Markdown
+using InteractiveUtils
 
 # ╔═╡ 08000001-0000-4000-8000-000000000001
 begin
@@ -153,16 +156,16 @@ the static HTML still renders on a fresh checkout.
 # ╔═╡ 11e9885b-3c2b-45eb-a5ab-93826cc58d85
 const LYMPH_DIR = get(
     ENV, "BASISSIM_XCAT_LYMPH_DIR",
-    "/Volumes/Molloilab/Ayemon/XCAT_lymphatic_phantom",
+    "/Volumes/Molloilab-1/Ayemon/XCAT_lymphatic_phantom",
 )
 
 # ╔═╡ 08000003-0000-4000-8000-000000000003
-# const PHANTOM_PATH = joinpath(
-#     LYMPH_DIR,
-#     "Lymphatic_Phantom_32bit_real_922_922_1178.bin",
-# )
+const PHANTOM_PATH = joinpath(
+    LYMPH_DIR,
+    "Lymphatic_Phantom_32bit_real_922_922_1178.bin",
+)
 
-PHANTOM_PATH = "/Users/daleblack/Desktop/Lymphatic_Phantom_32bit_real_922_922_1178.bin"
+# PHANTOM_PATH = "/Users/daleblack/Desktop/Lymphatic_Phantom_32bit_real_922_922_1178.bin"
 
 # ╔═╡ 08000003-0000-4000-8000-000000000004
 const MATERIAL_MAP_DIR = joinpath(LYMPH_DIR, "material_map")
@@ -505,7 +508,7 @@ steps. Set `TIME_SECONDS` to whichever bolus phase you want; default
 """
 
 # ╔═╡ 08000005-0000-4000-8000-000000000002
-const TIME_SECONDS = 0     # v2 peak — peak iodine bolus in Ayemon's t-series
+const TIME_SECONDS = 230     # v2 peak — peak iodine bolus in Ayemon's t-series
 
 # ╔═╡ 08000005-0000-4000-8000-000000000003
 const MATERIAL_MAP_PATH = joinpath(
@@ -911,13 +914,13 @@ crop_idx = (phantom_native === nothing || cisterna_bbox === nothing) ? nothing :
 const RECON_FOV_CM = 10.0     # tight XY recon FOV (§8 uses this)
 
 # ╔═╡ 08000008-0000-4000-8000-000000000006
-# phantom_labeled = (phantom_native === nothing || crop_idx === nothing) ? nothing : let
-#         cropped = phantom_native[crop_idx.i_range, crop_idx.j_range, crop_idx.k_range]
-#         upsampled = resample_to_voxel_size(cropped, NATIVE_VOXEL_MM, TARGET_VOXEL_MM)
-#         cropped = nothing
-#         GC.gc()
-#         upsampled
-# end;
+phantom_labeled = (phantom_native === nothing || crop_idx === nothing) ? nothing : let
+        cropped = phantom_native[crop_idx.i_range, crop_idx.j_range, crop_idx.k_range]
+        upsampled = resample_to_voxel_size(cropped, NATIVE_VOXEL_MM, TARGET_VOXEL_MM)
+        cropped = nothing
+        GC.gc()
+        upsampled
+end;
 
 # ╔═╡ 08000008-0000-4000-8000-000000000007
 (phantom_labeled === nothing || crop_idx === nothing) ?
@@ -1308,9 +1311,9 @@ const VOXEL_SIZE_CM = (
 )
 
 # ╔═╡ 08000009-0000-4000-8000-000000000003
-# phantom = (phantom_labeled === nothing || materials === nothing) ?
-#     nothing :
-#     # BS.Phantom(to_gpu(phantom_labeled), materials, VOXEL_SIZE_CM);
+phantom = (phantom_labeled === nothing || materials === nothing) ?
+    nothing :
+    BS.Phantom(to_gpu(phantom_labeled), materials, VOXEL_SIZE_CM);
 
 # ╔═╡ 08000010-0000-4000-8000-000000000001
 md"""
@@ -1536,78 +1539,144 @@ swapping `CROP_MARGIN_MM` or the source bbox auto-recenters the panel.
 """
 
 # ╔═╡ a0526494-2aaf-4eb3-9b39-a3724a74b33f
-z_ind = 20
+z_ind = 30
 
-# ╔═╡ 08000013-0000-4000-8000-000000000002
+# ╔═╡ 96016207-2196-47c4-a92f-d32a008547ce
 let
-    if phantom_labeled === nothing || hu_fbp === nothing
+    if phantom_labeled === nothing || hu_fbp === nothing ||
+            phantom === nothing || sim === nothing
         md"_skipped — see §1–§10_"
     else
-        # Center slice of the cropped 0.1 mm phantom grid
-        k_phantom = size(phantom_labeled, 3) ÷ 2
+        # 1. Pick the K slice at the cisterna chyli mid-height (lots of lymph
+        #    voxels to actually look at).  Walk: native cisterna K-mid →
+        #    cropped K → upsampled K, same mapping nb08 §6a uses.
+        k_cist_mid_native  = (cisterna_bbox.k[1] + cisterna_bbox.k[2]) ÷ 2
+        k_cist_mid_cropped = k_cist_mid_native - first(crop_idx.k_range) + 1
+        scale_z            = NATIVE_VOXEL_MM[3] / TARGET_VOXEL_MM
+        k_phantom = clamp(
+            round(Int, (k_cist_mid_cropped - 0.5) * scale_z + 0.5),
+            1, size(phantom_labeled, 3),
+        )
 
-        # Equivalent slice in the recon volume: phantom Z extends VOXEL_SIZE_CM[3] * size cm
-        # symmetric about isocenter, recon Z extends recon_opts.z_cm.  Map by world coord.
+        # Phantom K → recon K via world coords (shared-iso convention).
         phantom_z_cm = VOXEL_SIZE_CM[3] * size(phantom_labeled, 3)
-        z_world_cm = (k_phantom - 0.5) * VOXEL_SIZE_CM[3] - phantom_z_cm / 2
-        recon_nz = recon_opts.matrix_size[3]
-        recon_dz = recon_opts.z_cm / recon_nz
+        z_world_cm   = (k_phantom - 0.5) * VOXEL_SIZE_CM[3] - phantom_z_cm / 2
+        recon_nz     = recon_opts.matrix_size[3]
+        recon_dz     = recon_opts.z_cm / recon_nz
         k_recon = clamp(
             round(Int, z_world_cm / recon_dz + recon_nz / 2 + 0.5),
             1, recon_nz,
         )
 
-        @info k_recon
+        # 2. Resample phantom labels onto the recon grid — same NN we
+        #    rolled by hand in §10c, but via the BS affine helper.
+        labels_recon = BS.resample_to_recon(
+            phantom, sim.geom, recon_opts.matrix_size; method = :nearest,
+        )
 
-        lbl_slice = phantom_labeled[:, :, z_ind]
-        lymph_mask = falses(size(lbl_slice))
-        id_set = Set(UInt16.(LYMPHATIC_IDS))
-        @inbounds for j in axes(lbl_slice, 2), i in axes(lbl_slice, 1)
-            lymph_mask[i, j] = lbl_slice[i, j] in id_set
+        # 3. Slices to render.
+        lbl_full  = phantom_labeled[:, :, k_phantom]   # 0.1 mm, full XY
+        lbl_recon = labels_recon[:, :, k_recon]        # recon res, FOV-cropped
+        hu_slice  = hu_fbp[:, :, k_recon]
+
+        # 4. Densify the label colormap.  `:tab20` only has 20 buckets and
+        #    auto-scales to [0..maxID]; without this, ID 2 (the 79%-body
+        #    soft-tissue filler) collapses into the air bucket and the body
+        #    looks "missing".  Remap each present ID to a 1..N categorical
+        #    index → one distinct tab20 color per label.
+        function densify_labels(slice::AbstractArray)
+            ids   = sort(unique(slice))
+            table = zeros(Int, 65536)
+            for (i, id) in enumerate(ids)
+                table[Int(id) + 1] = i
+            end
+            out = Array{Int}(undef, size(slice))
+            @inbounds for idx in eachindex(slice)
+                out[idx] = table[Int(slice[idx]) + 1]
+            end
+            out
+        end
+        lbl_full_d  = densify_labels(lbl_full)
+        lbl_recon_d = densify_labels(lbl_recon)
+
+        # 5. Lymphatic overlay on the HU recon — NaN-mask non-lymph voxels
+        #    so they render transparent over the HU base (nb05 §10 pattern).
+        is_lymph = falses(65536)
+        for id in LYMPHATIC_IDS
+            is_lymph[id + 1] = true
+        end
+        lymph_overlay = let
+            out = fill(NaN32, size(lbl_recon))
+            @inbounds for idx in eachindex(lbl_recon)
+                if is_lymph[Int(lbl_recon[idx]) + 1]
+                    out[idx] = 1f0
+                end
+            end
+            out
         end
 
-        hu_slice = hu_fbp[:, :, z_ind]
+        # 6. 2×2 figure.
+        fig          = CM.Figure(size = (1500, 1500))
+        title_kwargs = (titlesize = 26, subtitlesize = 16)
+        hu_kwargs    = (colormap = :grays, colorrange = (-200, 600))
 
-        fig = CM.Figure(size = (1500, 600))
-
-        ax1 = CM.Axis(
-            fig[1, 1];
-            title = "Phantom labels",
-            subtitle = "K = $(k_phantom) (phantom) · cisterna+duct overlaid",
-            aspect = CM.DataAspect(),
-            titlesize = 22, subtitlesize = 16,
+        # Top-left: phantom labels, full XY, 0.1 mm — densified colormap.
+        ax_tl = CM.Axis(fig[1, 1];
+            title     = "Phantom labels · full XY @ 0.1 mm",
+            subtitle  = "K = $(k_phantom) of $(size(phantom_labeled, 3)) · " *
+                        "$(length(unique(lbl_full))) labels (densified)",
+            aspect    = CM.DataAspect(),
+            yreversed = true,
+            title_kwargs...,
         )
-        CM.heatmap!(ax1, Float32.(lbl_slice); colormap = :tab20)
-        CM.heatmap!(
-            ax1, Float32.(lymph_mask);
-            colormap = [CM.RGBAf(0, 0, 0, 0), CM.RGBAf(1, 0.2, 0.2, 0.9)],
+        CM.heatmap!(ax_tl, lbl_full_d; colormap = :tab20)
+        CM.hidedecorations!(ax_tl)
+
+        # Top-right: phantom labels resampled to the recon grid (FOV-cropped).
+        ax_tr = CM.Axis(fig[1, 2];
+            title     = "Phantom labels · recon FOV $(recon_opts.fov_cm) cm",
+            subtitle  = "K_recon = $(k_recon) · " *
+                        "$(length(unique(lbl_recon))) labels (densified) · :nearest resample",
+            aspect    = CM.DataAspect(),
+            yreversed = true,
+            title_kwargs...,
+        )
+        CM.heatmap!(ax_tr, lbl_recon_d; colormap = :tab20)
+        CM.hidedecorations!(ax_tr)
+
+        # Bottom-left: HU recon, bare.
+        ax_bl = CM.Axis(fig[2, 1];
+            title     = "HU recon",
+            subtitle  = "K_recon = $(k_recon) · W 800 / L 200",
+            aspect    = CM.DataAspect(),
+            yreversed = true,
+            title_kwargs...,
+        )
+        CM.heatmap!(ax_bl, hu_slice; hu_kwargs...)
+        CM.hidedecorations!(ax_bl)
+
+        # Bottom-right: HU recon + lymphatic mask overlay.
+        ax_br = CM.Axis(fig[2, 2];
+            title     = "HU recon + lymphatic overlay",
+            subtitle  = "cisterna + thoracic duct in red · same window as BL",
+            aspect    = CM.DataAspect(),
+            yreversed = true,
+            title_kwargs...,
+        )
+        hm_br = CM.heatmap!(ax_br, hu_slice; hu_kwargs...)
+        CM.heatmap!(ax_br, lymph_overlay;
+            colormap   = [CM.RGBAf(0, 0, 0, 0), CM.RGBAf(1, 0.2, 0.2, 0.9)],
             colorrange = (0, 1),
+            nan_color  = (:white, 0.0),
         )
-        CM.hidedecorations!(ax1)
+        CM.hidedecorations!(ax_br)
+        CM.Colorbar(fig[2, 3], hm_br; label = "HU", width = 14, labelsize = 16)
 
-        ax2 = CM.Axis(
-            fig[1, 2];
-            title = "HU recon — soft tissue",
-            subtitle = "K = $(k_recon) (recon) · W 400 / L 40",
-            aspect = CM.DataAspect(),
-            titlesize = 22, subtitlesize = 16,
+        CM.save(
+            joinpath(@__DIR__, "..", "..", "assets",
+                "xcat_lymphatic_t$(lpad(TIME_SECONDS, 4, '0'))s.png"),
+            fig; px_per_unit = 2,
         )
-        hm2 = CM.heatmap!(ax2, hu_slice; colormap = :grays, colorrange = (-160, 240))
-        CM.hidedecorations!(ax2)
-        CM.Colorbar(fig[1, 3], hm2; label = "HU", width = 14, labelsize = 16)
-
-        ax3 = CM.Axis(
-            fig[1, 4];
-            title = "HU recon — contrast",
-            subtitle = "K = $(k_recon) · W 800 / L 200",
-            aspect = CM.DataAspect(),
-            titlesize = 22, subtitlesize = 16,
-        )
-        hm3 = CM.heatmap!(ax3, hu_slice; colormap = :grays, colorrange = (-200, 600))
-        CM.hidedecorations!(ax3)
-        CM.Colorbar(fig[1, 5], hm3; label = "HU", width = 14, labelsize = 16)
-
-        CM.save(joinpath(FIGURES_DIR, "xcat_lymphatic_t$(lpad(TIME_SECONDS, 4, '0'))s.png"), fig; px_per_unit = 2)
         fig
     end
 end
@@ -1778,5 +1847,5 @@ end
 # ╟─08000012-0000-4000-8000-000000000013
 # ╟─08000013-0000-4000-8000-000000000001
 # ╠═a0526494-2aaf-4eb3-9b39-a3724a74b33f
-# ╠═08000013-0000-4000-8000-000000000002
+# ╟─96016207-2196-47c4-a92f-d32a008547ce
 # ╠═a7166222-4cb0-4365-aef7-ba1802831cf9
