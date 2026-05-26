@@ -143,10 +143,11 @@ result2 = simulate!(ws, phantom, scanner, protocol, sim_opts, recon_opts)
 """
 function create_workspace(
         scanner, protocol, sim_opts, recon_opts, phantom;
-        T::Type{<:AbstractFloat} = Float32
+        T::Type{<:AbstractFloat} = Float32,
+        extended_collimation::Bool = false,
     )
     # --- Pre-compute geometry first (collimation derives n_rows) ---
-    geom = CTGeometry(scanner; n_angles = protocol.views, fov_cm = recon_opts.fov_cm, z_cm = recon_opts.z_cm, collimation_mm = protocol.collimation_mm)
+    geom = CTGeometry(scanner; n_angles = protocol.views, fov_cm = recon_opts.fov_cm, z_cm = recon_opts.z_cm, collimation_mm = protocol.collimation_mm, extended_collimation = extended_collimation)
 
     sino_shape = (geom.n_cols, geom.n_rows, geom.n_angles)
     vol_shape = size(phantom.mask)
@@ -482,10 +483,11 @@ function create_eict_workspace(
         spectrum_override::Union{
             Nothing,
             Tuple{AbstractVector, AbstractVector},
-        } = nothing
+        } = nothing,
+        extended_collimation::Bool = false,
     )
     # Geometry
-    geom = CTGeometry(scanner; n_angles = protocol.views, fov_cm = recon_opts.fov_cm, z_cm = recon_opts.z_cm, collimation_mm = protocol.collimation_mm)
+    geom = CTGeometry(scanner; n_angles = protocol.views, fov_cm = recon_opts.fov_cm, z_cm = recon_opts.z_cm, collimation_mm = protocol.collimation_mm, extended_collimation = extended_collimation)
 
     # Spectrum — IPEM polychromatic by default; spectrum_override lets a
     # caller inject a custom (energies, weights) pair (e.g. `([70.0], [1.0])`

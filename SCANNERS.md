@@ -39,10 +39,11 @@ These were previously implemented as factory functions and have been moved here 
 |-----------|---------------|-----------|
 | SID | 595.0 mm | 595.0 mm |
 | SDD | 1085.5 mm | 1085.5 mm |
-| Native Dexel (detector) | 0.275 × 0.322 mm | 0.275 × 0.322 mm |
+| Subpixel (iso) | 0.300 × 0.176 mm | 0.150 × 0.176 mm |
 | Binning Factor | 2 | 1 |
-| Pixel Size (iso) | 0.302 × 0.353 mm | 0.151 × 0.176 mm |
+| **Pixel Size at iso (marketed)** | **0.4 mm row × 0.5 mm col** | **0.2 mm row × 0.25 mm col** |
 | Detector Rows | 144 | 120 |
+| **Z-coverage at iso (marketed)** | **57.6 mm** (144 × 0.4 mm) | **24.0 mm** (120 × 0.2 mm) |
 | Detector Material | CdTe | CdTe |
 | Detector Depth | 1.6 mm | 1.6 mm |
 | Fill Factor | 0.95 | 0.95 |
@@ -57,6 +58,25 @@ These were previously implemented as factory functions and have been moved here 
 | Min Rotation | 0.25 s | 0.25 s |
 | Bore | 820 mm | 820 mm |
 | Scan Diameter | 500 mm | 500 mm |
+
+**Dual-source geometry**: Two source/detector pairs at ~90° angular offset around the
+gantry — *both cover the same Z extent*. The second source is for temporal resolution
+(66 ms quarter-rotation imaging) and high-pitch (3.2) helical Flash mode, **not** for
+extended Z coverage. Max single-rotation axial Z coverage is **57.6 mm** in standard
+mode; Flash mode achieves ~120 mm of *scan range* in ~160 ms via table translation, not
+a wider detector.
+
+For simulator scenarios that want to approximate Flash-mode coverage as a single axial
+rotation (training-data generation, plaque-volume scans), use the `extended_collimation`
+kwarg on `CTGeometry(scanner; collimation_mm=..., extended_collimation=true)` — see that
+function's docstring.
+
+**Note on row pitch**: The 0.4 mm marketed pitch is what Siemens publishes (Petersilka
+et al. 2021; vendor planning docs) and is the canonical number used throughout the
+literature. A strict geometric derivation from the 0.176 mm subpixel and 1.825×
+magnification would give 0.176 × 2 = 0.352 mm — a ~13% underestimate. Internally
+BasisSim adopts the published 0.4 mm so `detector_rows × detector_row_size` matches
+the 57.6 mm spec.
 
 ## Canon Aquilion ONE (Legacy Reference)
 

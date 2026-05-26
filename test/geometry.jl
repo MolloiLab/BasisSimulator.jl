@@ -158,6 +158,27 @@ end
         )
     end
 
+    @testset "extended_collimation bypasses cap with @warn" begin
+        # 32 rows × 1.0 mm = 32 mm physical max; ask for 80 mm extended.
+        local g
+        @test_logs (:warn, r"EXTENDED-COLLIMATION MODE"i) match_mode=:any begin
+            g = BS.CTGeometry(s; n_angles = 8, collimation_mm = 80.0,
+                              extended_collimation = true)
+        end
+        @test g.n_rows == 80   # round(80 / 1.0)
+        # Mutual-exclusion still holds in extended mode.
+        @test_throws ErrorException BS.CTGeometry(
+            s;
+            n_angles = 8, collimation_mm = 80.0, n_rows = 80,
+            extended_collimation = true,
+        )
+        # Default (extended=false) still errors.
+        @test_throws ErrorException BS.CTGeometry(
+            s;
+            n_angles = 8, collimation_mm = 80.0,
+        )
+    end
+
     @testset "angles cover [0, 2π) uniformly" begin
         n = 16
         g = BS.CTGeometry(s; n_angles = n)

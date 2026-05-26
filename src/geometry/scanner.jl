@@ -431,6 +431,23 @@ trajectory positions suitable for simulation.
 - `n_cols::Union{Int,Nothing} = nothing`: Override detector columns. If nothing, uses scanner.detector_cols.
 - `collimation_mm::Union{Float64,Nothing} = nothing`: Detector z-collimation in mm.
   Derives n_rows automatically. Errors if it exceeds scanner physical max or if n_rows is also specified.
+- `extended_collimation::Bool = false`: **Simulator-only escape hatch** that bypasses
+  the `collimation_mm > scanner_max` check with a loud `@warn`.  Use to approximate
+  Siemens NAEOTOM Alpha's high-pitch (3.2) Flash helical mode as a single wider
+  axial rotation — the Alpha really only has 57.6 mm of detector but its Flash
+  mode covers ~120 mm in ~160 ms via table translation, not via a wider detector.
+  This kwarg renders that effective coverage as a single axial scan.
+
+  Physical caveats when extended:
+  * The detector array becomes artificially taller (`_n_rows` exceeds
+    `scanner.detector_rows`).  Forward sim still works because every downstream
+    function treats `n_rows` as the geometry's source of truth.
+  * Per-voxel projection density is HIGHER than real Flash (full rotation vs.
+    a ~64% sweep) — image quality is *better* than the actual hardware would
+    produce, which is fine for training-data generation but wrong for
+    hardware-fidelity claims.
+  * Dual-source 66 ms temporal resolution is NOT modeled.  Treat the result
+    as a 0.25 s (or longer) single-rotation scan.
 
 # Returns
 `CTGeometry` with pre-computed source/detector positions.
@@ -460,17 +477,49 @@ function CTGeometry(
         z_cm::Union{Float64, Nothing} = nothing,
         n_rows::Union{Int, Nothing} = nothing,
         n_cols::Union{Int, Nothing} = nothing,
-        collimation_mm::Union{Float64, Nothing} = nothing
+        collimation_mm::Union{Float64, Nothing} = nothing,
+        extended_collimation::Bool = false,
     ) where {T}
 
     # Determine active detector rows from collimation or explicit override
     if collimation_mm !== nothing
-        max_collimation = scanner.detector_rows * scanner.detector_row_size
-        if collimation_mm > max_collimation
-            error("collimation_mm ($collimation_mm mm) exceeds scanner physical maximum ($(scanner.detector_rows) × $(scanner.detector_row_size) = $max_collimation mm)")
-        end
         if n_rows !== nothing
             error("Cannot specify both collimation_mm and n_rows")
+        end
+        max_collimation = scanner.detector_rows * scanner.detector_row_size
+        if collimation_mm > max_collimation
+            if extended_collimation
+                _virt_rows = round(Int, collimation_mm / scanner.detector_row_size)
+                @warn """
+                ╔══════════════════════════════════════════════════════════════════════╗
+                ║       ⚠  EXTENDED-COLLIMATION MODE — SIMULATOR-ONLY APPROX  ⚠       ║
+                ╠══════════════════════════════════════════════════════════════════════╣
+                ║ Requested collimation $(round(collimation_mm; digits=2)) mm exceeds  ║
+                ║ scanner physical max $(round(max_collimation; digits=2)) mm          ║
+                ║ ($(scanner.detector_rows) rows × $(scanner.detector_row_size) mm).   ║
+                ║                                                                      ║
+                ║ Treating this as a single axial rotation through an artificially     ║
+                ║ widened detector ($(_virt_rows) virtual rows).  This approximates    ║
+                ║ Siemens NAEOTOM Alpha's high-pitch (3.2) Flash helical mode, which   ║
+                ║ scans ~120 mm of Z in ~160 ms via table translation — NOT via a      ║
+                ║ wider detector.                                                      ║
+                ║                                                                      ║
+                ║ • Per-voxel projection density is higher than real Flash             ║
+                ║   (full rotation vs ~64% sweep) → IQ better than real hardware.      ║
+                ║ • Dual-source 66 ms temporal resolution is NOT modeled.              ║
+                ║ • Do NOT use this output for NAEOTOM-Alpha-specific image-quality    ║
+                ║   or temporal-behavior claims.                                       ║
+                ╚══════════════════════════════════════════════════════════════════════╝
+                """ collimation_mm max_collimation virtual_rows=_virt_rows
+            else
+                error("""
+                collimation_mm ($collimation_mm mm) exceeds scanner physical maximum
+                ($(scanner.detector_rows) × $(scanner.detector_row_size) = $max_collimation mm).
+
+                Set `extended_collimation = true` on this CTGeometry call to bypass
+                the check with a simulator-only approximation (see docstring).
+                """)
+            end
         end
         _n_rows = round(Int, collimation_mm / scanner.detector_row_size)
     else
