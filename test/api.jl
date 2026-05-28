@@ -89,12 +89,14 @@ end
 # -----------------------------------------------------------------------------
 _ts("entering SimOptions testset")
 @testset "SimOptions" begin
-    @testset "default fidelity = :eict; all use_* preset to true except pcct_pileup" begin
+    @testset "default fidelity = :eict; use_* presets" begin
         opts = BS.SimOptions()
         @test opts.use_fill_factor === true
         @test opts.use_detector_efficiency === true
         @test opts.use_scatter === true
-        @test opts.use_optical_crosstalk === true
+        # optical_crosstalk defaults to false because no stable post-hoc
+        # correction exists yet (see src/api/options.jl preset comment).
+        @test opts.use_optical_crosstalk === false
         @test opts.use_focal_spot === true
         @test opts.use_noise === true
         @test opts.use_lag === true
@@ -901,7 +903,9 @@ _ts("entering build_physics_config testset")
 
     @testset "each toggle on → corresponding field non-nothing + correct type" begin
         sc = _scanner_with_full_hardware()
-        opts = BS.SimOptions(; fidelity = :eict)   # all on
+        # optical_crosstalk defaults to false in :eict preset, opt in explicitly
+        # to exercise the type wiring for that field.
+        opts = BS.SimOptions(; fidelity = :eict, use_optical_crosstalk = true)
         cfg = BS.build_physics_config(sc, opts, energies, weights)
         @test cfg.fill_factor isa BS.FillFactorModel
         @test cfg.detector_efficiency isa BS.DetectorEfficiency
