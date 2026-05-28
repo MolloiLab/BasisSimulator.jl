@@ -898,7 +898,7 @@ walked in notebook 01:
 
 Every other piece — the `let ... end` GPU pattern, μ → HU conversion, the
 correction pipeline from §9 of notebook 01 — carries over unchanged.
-"""
+""" 
 
 # ╔═╡ Cell order:
 # ╟─02000001-0000-4000-8000-000000000001

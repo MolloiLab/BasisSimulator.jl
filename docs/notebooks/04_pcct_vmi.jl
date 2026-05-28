@@ -1639,7 +1639,7 @@ hardening through the polychromatic transmission integral that a linear
 closed-form inversion misses on a 33 cm phantom, calibration-free.  The
 result is HU-quantitative VMIs with low streak content and clean low-keV
 Mono+ output.
-"""
+""" 
 
 # ╔═╡ Cell order:
 # ╟─06000001-0000-4000-8000-000000000010

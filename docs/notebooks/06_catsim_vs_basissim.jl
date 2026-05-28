@@ -1100,7 +1100,7 @@ md"""
   drop in a different `BS.Scanner` and `BS.create_phantom_from_mask(...)`
   — the wrappers don't care about scanner brand or phantom geometry,
   they only forward struct fields.
-"""
+""" 
 
 # ╔═╡ Cell order:
 # ╟─06000001-0000-4000-8000-000000000010

@@ -1629,7 +1629,7 @@ QRM-Thorax mid-slice mask (1600 × 1100 × 20 phantom @ 0.2 mm iso,
 swapping the Gammex 472 phantom for the QRM-Thorax phantom with four
 pure-material rod inserts (`basis_water`, `basis_lipid`,
 `basis_collagen`, `gammex_472_i5_0`).
-"""
+""" 
 
 # ╔═╡ Cell order:
 # ╟─07010001-0000-4000-8000-000000000001

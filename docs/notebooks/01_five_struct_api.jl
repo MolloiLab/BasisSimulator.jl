@@ -863,7 +863,7 @@ This notebook walked the entire `BasisSimulator.jl` user surface end to end:
 Every reconstruction in the rest of the docs (PCCT, Hybrid IR, dual-kVp VMI,
 …) reuses this same pattern — workspace in a `let`, kernel call, copy CPU
 result, `nothing` + `GC.gc(true)`, return.
-"""
+""" 
 
 # ╔═╡ Cell order:
 # ╟─01000001-0000-4000-8000-000000000001

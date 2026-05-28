@@ -1327,7 +1327,7 @@ The denoising and material decomposition both run **upstream of FBP**,
 so quantum noise and beam-hardening residuals can't propagate into the
 basis maps — the result is HU-quantitative VMIs with low streak content
 and clean low-keV Mono+ output.
-"""
+""" 
 
 # ╔═╡ Cell order:
 # ╟─05000001-0000-4000-8000-000000000010
