@@ -99,10 +99,17 @@ function SimOptions(;
     # :eict = all EICT effects ON; :pcct = :eict + MC pile-up degradation.
     # Pile-up correction (the inverse) is decoupled — apply it post-simulate
     # via `apply_pcct_pileup_correction!` if needed.
+    # Note: `optical_crosstalk` defaults to FALSE.  `apply_optical_crosstalk!`
+    # is a physically-accurate nonlinear `−log(K · exp(−x))` blur in intensity
+    # domain, but BS does not yet ship a numerically stable inverse for the
+    # deeply-attenuated pixels behind dense rods (Van Cittert deconvolution
+    # produces FBP streaks).  Users who want to *see* the un-corrected blur
+    # in diagnostic sinograms can opt in via `use_optical_crosstalk = true`;
+    # downstream basis-decomposition accuracy will degrade accordingly.
     defaults = if fidelity == :pcct
         (
             fill_factor = true, detector_efficiency = true,
-            scatter = true, optical_crosstalk = true,
+            scatter = true, optical_crosstalk = false,
             focal_spot = true, noise = true, lag = true,
             heel_effect = true,
             pcct_pileup = true,
@@ -110,7 +117,7 @@ function SimOptions(;
     elseif fidelity == :eict
         (
             fill_factor = true, detector_efficiency = true,
-            scatter = true, optical_crosstalk = true,
+            scatter = true, optical_crosstalk = false,
             focal_spot = true, noise = true, lag = true,
             heel_effect = true,
             pcct_pileup = false,

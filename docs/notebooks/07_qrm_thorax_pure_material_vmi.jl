@@ -483,23 +483,7 @@ md"""
 """
 
 # ╔═╡ 07030003-0000-4000-8000-000000000010
-# Disable physics effects that BS simulates but does NOT yet correct for
-# (would otherwise bias the decomposition):
-#   • use_fill_factor:       adds a uniform -log(ff) offset to every log-line
-#     integral; the air-scan calibration does not cancel it (fill factor is
-#     not multiplied into `bowtie_air_reference`).  ⇒ uniform HU drift.
-#   • use_optical_crosstalk: spatially blurs the sinogram via a 3×3 separable
-#     kernel; no deconvolution step exists anywhere in BS.  ⇒ partial-volume
-#     bias at rod edges, especially low-concentration iodine.
-# Other effects (scatter, heel, detector_efficiency, focal_spot, lag, noise)
-# either *are* corrected internally or are baked into `material_basis.ŵ`
-# so Cong's inversion cancels them — see §physics audit in 03c.
-sim_opts = BS.SimOptions(
-    fidelity = :eict,
-    seed = 1234,
-    use_fill_factor       = false,
-    use_optical_crosstalk = false,
-);
+sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234);
 
 # ╔═╡ 07030003-0000-4000-8000-000000000020
 # Standard CT recon convention: 512 × 512 in-plane at 0.625 mm isotropic
@@ -649,7 +633,11 @@ end;
 # machinery (§6.5 / §6.6 cells) is left inline as dormant code in case
 # we want to revisit it for noise-handling experiments.
 sino_basis = let
-    sino_low_gpu = to_gpu(sim_low.sino)
+    # Use the §5.5-corrected sinograms (fill_factor offset removed + crosstalk
+    # deconvolved if enabled in sim_opts).  When both `use_*` flags are false
+    # the corrections are no-ops and these are identical to sim_low.sino /
+    # sim_high.sino.
+    sino_low_gpu  = to_gpu(sim_low.sino)
     sino_high_gpu = to_gpu(sim_high.sino)
 
     sino_y = similar(sino_low_gpu);  fill!(sino_y, 0.0f0)
@@ -974,13 +962,22 @@ Mono+(E_opt) = VMI_opt   (identity at the noise-optimal anchor)
 ```
 
 `σ_vmi_lp_px` pairs element-wise with `de_vmi_energies` — one σ per
-VMI energy.  σ = 0 ⇒ identity (no LP, no FFT).  Default
-`[1.0, 0.0, 1.0, 1.0]` smooths 40 / 100 / 140 toward the 70 keV
-anchor; 70 stays identity.
+VMI energy.  σ = 0 ⇒ identity (no LP, no FFT).
+
+!!! info "Mono+ is optional — default is pass-through"
+    `σ_vmi_lp_px = [0.0, 0.0, 0.0, 0.0]` makes every entry an identity
+    (no LP, no FFT), so this section is effectively a no-op and the
+    downstream rod regression sees the raw 2-basis VMI volumes from
+    §9.  Bump a σ above 0 to opt in per-energy: e.g.
+    `Float64[2.0, 0.0, 1.0, 1.0]` smooths 40 / 100 / 140 keV toward
+    the 70 keV anchor while keeping 70 keV exact.  Leave it as zeros
+    to keep the pipeline transparent — the per-keV plots below will
+    be identical to the §9 outputs.
 """
 
 # ╔═╡ 0703000a-0000-4000-8000-000000000005
-# σ_vmi_lp_px = Float64[2.0, 0.0, 1.0, 1.0];
+# Default = all zeros = pass-through (no Mono+ smoothing).  See the
+# `!!! info` block above for the opt-in pattern.
 σ_vmi_lp_px = Float64[0.0, 0.0, 0.0, 0.0];
 
 # ╔═╡ 0703000a-0000-4000-8000-000000000010
@@ -1720,3 +1717,5 @@ pure-material rod inserts (`basis_water`, `basis_lipid`,
 # ╟─0703000b-0000-4000-8000-000000000030
 # ╟─0703000b-0000-4000-8000-000000000031
 # ╟─0703000c-0000-4000-8000-000000000001
+
+

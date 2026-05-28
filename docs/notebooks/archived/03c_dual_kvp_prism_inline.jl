@@ -187,19 +187,7 @@ md"""
 """
 
 # ╔═╡ 06000005-0000-4000-8000-000000000010
-sim_opts = BS.SimOptions(
-    fidelity = :eict,
-    seed = 1234,
-    
-    use_fill_factor = false,
-    # use_detector_efficiency = false,
-    # use_scatter = false,
-    use_optical_crosstalk = false,
-    # use_focal_spot = false,
-    # use_noise = false,
-    # use_lag = false,
-    # use_heel_effect = false
-);
+sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234);
 
 # ╔═╡ 06000005-0000-4000-8000-000000000020
 recon_opts = let
@@ -334,6 +322,10 @@ end;
 # nothing at this operating point.  The PRISM machinery in §6 stays
 # inline as dormant code for future noise-handling experiments.
 sino_basis = let
+    # Use the §5.5-corrected sinograms (fill_factor offset removed + crosstalk
+    # deconvolved if enabled in sim_opts).  When both `use_*` flags are false
+    # the corrections are no-ops and these are identical to sim_low.sino /
+    # sim_high.sino.
     sino_low_gpu  = to_gpu(Float32.(sim_low.sino))
     sino_high_gpu = to_gpu(Float32.(sim_high.sino))
 
@@ -605,7 +597,8 @@ md"""
 """
 
 # ╔═╡ 0600000c-0000-4000-8000-000000000005
-σ_vmi_lp_px = Float64[2.0, 0.0, 1.0, 1.0];   # 40, 70, 100, 140 keV
+# σ_vmi_lp_px = Float64[2.0, 0.0, 1.0, 1.0];   # 40, 70, 100, 140 keV
+σ_vmi_lp_px = Float64[0.0, 0.0, 0.0, 0.0];   # 40, 70, 100, 140 keV
 
 # ╔═╡ 0600000c-0000-4000-8000-000000000010
 vmi_HU_final = let

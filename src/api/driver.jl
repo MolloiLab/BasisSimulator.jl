@@ -494,6 +494,27 @@ function simulate!(
         end
     end
 
+    # ─── Fill-factor calibration (auto-correct, matching the clinical air-scan)
+    # ── apply_fill_factor! injected +(−log(ff_eff)) ≥ 0 to every log-line-
+    # integral up in STEP 2; the air-scan calibration above does NOT roll
+    # ff_eff into its reference (real scanners absorb detector gain into the
+    # air-scan reference, BS does not yet do that at workspace-construction
+    # time).  Subtract the offset here so the returned sinogram is the same
+    # post-calibration log-line-integral a real scanner would output.
+    # No-op when use_fill_factor = false (then config.fill_factor === nothing)
+    # or ff_eff ≈ 1.
+    if config.fill_factor !== nothing
+        ff_eff = T(effective_fill_factor(config.fill_factor))
+        if !(ff_eff ≈ one(T))
+            ff_log = T(log(ff_eff))
+            let sino = ws.sinogram, ff_log = ff_log
+                AK.foreachindex(sino) do idx
+                    sino[idx] += ff_log
+                end
+            end
+        end
+    end
+
     # BHC is decoupled — applied at notebook level
     return nothing
 end
