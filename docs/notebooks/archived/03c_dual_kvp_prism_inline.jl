@@ -16,6 +16,7 @@ begin
             "LinearSolve",
             "Krylov",
             "GeometryBasics",
+            "Images",             # Canny edge detection (used by §6.9 EW regularizer)
         ]
         installed = keys(Pkg.project().dependencies)
         missing_pkgs = filter(n -> !(n in installed), needed)
@@ -36,13 +37,16 @@ using LinearAlgebra: I, transpose, dot, norm
 using SparseArrays: sparse, spdiagm, blockdiag, SparseMatrixCSC
 
 # ╔═╡ 06000001-0000-4000-8000-000000000006
-using SciMLOperators: MatrixOperator, FunctionOperator, IdentityOperator, cache_operator
+using SciMLOperators: MatrixOperator, FunctionOperator, ComposedOperator, IdentityOperator, cache_operator
 
 # ╔═╡ 06000001-0000-4000-8000-000000000007
 using LinearSolve: LinearProblem, init, solve!, KrylovJL_CG
 
 # ╔═╡ 06000001-0000-4000-8000-000000000008
 using GeometryBasics: HyperRectangle, Rect
+
+# ╔═╡ 06000001-0000-4000-8000-000000000009
+using Images: canny, Percentile
 
 # ╔═╡ 06000001-0000-4000-8000-000000000010
 md"""
@@ -547,10 +551,10 @@ mutable struct RegularizedDecompositionProblem{Tλ,Tmat,Tvec}
     prototype::Tvec
     regularization_name::String
 
-    A::Union{FunctionOperator,MatrixOperator}
-    Aᵀ::Union{FunctionOperator,MatrixOperator}
-    V⁻¹::Union{FunctionOperator,MatrixOperator}
-    ∇R::Union{FunctionOperator,MatrixOperator}
+    A::Any
+    Aᵀ::Any
+    V⁻¹::Any
+    ∇R::Any
 end
 
 # ╔═╡ 06000007-0000-4000-8000-000000000082
@@ -624,6 +628,288 @@ function RegularizedDecomposition(
     mat2 = reshape(u[prob.N+1:end],     (prob.nrows, prob.ncols)) |> Matrix{Float64}
 
     return MI(prob.μ₁, prob.μ₂, mat1, mat2)
+end
+
+# ╔═╡ 06000007-0000-4000-8000-000000000090
+md"""
+### 6.9 Edge-Weighted Quadratic Regularizer
+
+PRISM's edge-weighted Laplacian (Stayman & Fessler, doi:10.1118/1.4866386).
+Canny detects edges on each channel of the DLI; the per-pair penalty
+weight drops from `non_edge_val = 1.0` to `edge_val = 0.2` whenever
+either pixel of the pair is an edge.  Net effect: smooth interiors,
+sharp rod boundaries — no extra knob.
+"""
+
+# ╔═╡ 06000007-0000-4000-8000-000000000091
+begin
+    # Border-safe 4-neighbour helpers from PRISM's `regularization_utils.jl`.
+    # The "if on the border, return the same index" convention makes the
+    # resulting Laplacian write a zero off-diagonal weight at boundary pixels
+    # (because `ind_left == center_ind` → weight 0 in `_calculate_quad_ew_row`).
+    prism_left(ind::CartesianIndex, nrows)   =
+        ind[1] == 1     ? ind : CartesianIndex(ind[1] - 1, ind[2])
+    prism_right(ind::CartesianIndex, nrows)  =
+        ind[1] == nrows ? ind : CartesianIndex(ind[1] + 1, ind[2])
+    prism_top(ind::CartesianIndex, ncols)    =
+        ind[2] == 1     ? ind : CartesianIndex(ind[1], ind[2] - 1)
+    prism_bottom(ind::CartesianIndex, ncols) =
+        ind[2] == ncols ? ind : CartesianIndex(ind[1], ind[2] + 1)
+
+    canny_edge_prism(img, upper, lower; sigma = 1.4) = canny(
+        img,
+        (Percentile(100 * upper), Percentile(100 * lower)),
+        sigma,
+    )
+
+    function compute_edge_map(dli_images::DLI, upper::Real = 0.8, lower::Real = 0.2)
+        edges_top    = canny_edge_prism(dli_images.top,    upper, lower)
+        edges_bottom = canny_edge_prism(dli_images.bottom, upper, lower)
+        return edges_top .| edges_bottom
+    end
+
+    function _calculate_quad_ew_row(
+        linear_ind,
+        center_ind,
+        nrows,
+        ncols,
+        combined_edges,
+        edge_val,
+        non_edge_val,
+    )
+        ind_left   = prism_left(center_ind,   nrows)
+        ind_right  = prism_right(center_ind,  nrows)
+        ind_top    = prism_top(center_ind,    ncols)
+        ind_bottom = prism_bottom(center_ind, ncols)
+
+        is_edge = combined_edges[center_ind]
+
+        center_weight = is_edge ? edge_val : non_edge_val
+        center_left_weight   = (is_edge || combined_edges[ind_left])   ? edge_val : non_edge_val
+        center_right_weight  = (is_edge || combined_edges[ind_right])  ? edge_val : non_edge_val
+        center_top_weight    = (is_edge || combined_edges[ind_top])    ? edge_val : non_edge_val
+        center_bottom_weight = (is_edge || combined_edges[ind_bottom]) ? edge_val : non_edge_val
+
+        # Zero out the weight if the "neighbor" collapsed back to center (border).
+        center_left_weight   = ind_left   == center_ind ? 0.0 : center_left_weight
+        center_right_weight  = ind_right  == center_ind ? 0.0 : center_right_weight
+        center_top_weight    = ind_top    == center_ind ? 0.0 : center_top_weight
+        center_bottom_weight = ind_bottom == center_ind ? 0.0 : center_bottom_weight
+
+        # Diagonal entry: sum of the four off-diagonal weights (Laplacian).
+        diagonal = -(center_left_weight + center_right_weight +
+                     center_top_weight + center_bottom_weight)
+        # Note: PRISM's `_calculate_quad_ew_row` writes `center_weight` to the
+        # diagonal directly; we use the Laplacian-consistent sum so the matrix
+        # is exactly the EW analog of the 5-point Laplacian.
+        weights = [
+            -diagonal,
+            center_left_weight,
+            center_right_weight,
+            center_top_weight,
+            center_bottom_weight,
+        ]
+        indices = [
+            linear_ind[center_ind],
+            linear_ind[ind_left],
+            linear_ind[ind_right],
+            linear_ind[ind_top],
+            linear_ind[ind_bottom],
+        ]
+        return indices, weights
+    end
+
+    function generate_ew_quadratic_regularization_matrix(
+        img;
+        combined_edges,
+        edge_val = 0.2,
+        non_edge_val = 1.0,
+    )
+        nrows, ncols = size(img)
+        N = nrows * ncols
+        linear_ind    = LinearIndices((nrows, ncols))
+        cartesian_ind = CartesianIndices((nrows, ncols))
+
+        rows = Vector{Int64}(undef, 5N)
+        cols = Vector{Int64}(undef, 5N)
+        vals = Vector{Float64}(undef, 5N)
+
+        for (i, center_ind_cart) in enumerate(cartesian_ind)
+            center_ind_linear = linear_ind[center_ind_cart]
+            neighbor_indices, weights = _calculate_quad_ew_row(
+                linear_ind, center_ind_cart,
+                nrows, ncols,
+                combined_edges, edge_val, non_edge_val,
+            )
+            rows[5*(i-1)+1 : 5*i] .= fill(center_ind_linear, 5)
+            cols[5*(i-1)+1 : 5*i] .= neighbor_indices
+            vals[5*(i-1)+1 : 5*i] .= weights
+        end
+
+        return sparse(rows, cols, vals, N, N)
+    end
+
+    function ∇R_quad_ew_mat(params, prototype::AbstractArray)::MatrixOperator
+        # Same 1-tuple unpacking pattern as `∇R_quad_mat`.
+        _, _, _, _, (ew_matrix,) = params
+        return MatrixOperator(ew_matrix)
+    end
+end
+
+# ╔═╡ 06000007-0000-4000-8000-0000000000a0
+md"""
+### 6.10 Cross-Similarity Regularizer
+
+PRISM's novel contribution.  For each pixel `i`, build a similarity row
+of `W[i, :]` by:
+
+1. Scanning a `(2·half_size + 1)²` window of candidate neighbors `k`,
+2. Accepting `k` if `|x_top[i] − x_top[k]| < 3·h_top` *and*
+   `|x_bottom[i] − x_bottom[k]| < 3·h_bottom`,
+3. Weighting the accepted neighbor by the *product* of two Gaussians
+   (top + bottom channels) times a spatial Gaussian.
+
+The regularizer is `‖(W − I)·x‖²`, so the gradient operator is
+`(W − I)ᵀ(W − I)`.  Cross-channel coupling lives entirely inside the
+similarity weights — the operator itself acts independently on each
+basis channel via `blockdiag(W, W)`.
+
+!!! warning "Memory + time"
+    At `half_size = 3` (7×7 window) the sparse `W` keeps ≲ 49 nonzeros
+    per row → ~40 M nonzeros for a full slab.  CG per row takes
+    notably longer than with the Laplacian (~2-5×).  Drop `half_size`
+    to `2` if memory is tight.
+"""
+
+# ╔═╡ 06000007-0000-4000-8000-0000000000a1
+begin
+    gaussian_prism(δ::Real, h::Real) = exp(-δ^2 / h^2)
+
+    euclidean_distance_prism(ind1::CartesianIndex, ind2::CartesianIndex, σ_spat) =
+        norm(Tuple(ind1) .- Tuple(ind2), 2)
+    gaussian_spatial_distance(ind1::CartesianIndex, ind2::CartesianIndex, σ_spat) =
+        exp(-euclidean_distance_prism(ind1, ind2, σ_spat)^2 / σ_spat^2)
+    no_distance_penalty(ind1::CartesianIndex, ind2::CartesianIndex, σ_spat) = 1.0
+
+    function _calculate_cross_similarity_row(
+        dli_images::DLI,
+        linear_ind::LinearIndices,
+        cartesian_ind::CartesianIndices,
+        center_ind_cart::CartesianIndex,
+        h_top::Float64,
+        h_bottom::Float64,
+        ni_x,
+        ni_y,
+        nrows::Int,
+        ncols::Int,
+        half_size::Int;
+        n_iter::Int = 1,
+        n_neighbors::Int = 0,
+        distance_metric::Function = gaussian_spatial_distance,
+    )::Tuple{Vector{Int}, Vector{Float64}}
+        window_indices_cart = view(cartesian_ind, ni_x, ni_y)
+        top_img    = dli_images.top
+        bottom_img = dli_images.bottom
+
+        center_val_top    = top_img[center_ind_cart]
+        center_val_bottom = bottom_img[center_ind_cart]
+
+        neighbor_indices_linear = Int[]
+        unnormalized_weights    = Float64[]
+        distances               = Float64[]
+
+        nb_selected_pixel = 0
+        for neighbor_ind_cart in window_indices_cart
+            neighbor_ind_cart == center_ind_cart && continue
+
+            neighbor_ind_linear = linear_ind[neighbor_ind_cart]
+            neighbor_val_top    = top_img[neighbor_ind_cart]
+            neighbor_val_bottom = bottom_img[neighbor_ind_cart]
+
+            if (abs(center_val_top    - neighbor_val_top)    < 3h_top) &&
+               (abs(center_val_bottom - neighbor_val_bottom) < 3h_bottom)
+                distance = distance_metric(center_ind_cart, neighbor_ind_cart, half_size)
+                s_ik = gaussian_prism(center_val_top    - neighbor_val_top,    h_top) *
+                       gaussian_prism(center_val_bottom - neighbor_val_bottom, h_bottom)
+                push!(neighbor_indices_linear, neighbor_ind_linear)
+                push!(unnormalized_weights, s_ik)
+                push!(distances, distance)
+                nb_selected_pixel += 1
+            end
+        end
+
+        if nb_selected_pixel < n_neighbors && n_iter <= 3
+            ni_x_extended = max(1, ni_x[1] - 10):min(nrows, ni_x[end] + 10)
+            ni_y_extended = max(1, ni_y[1] - 10):min(ncols, ni_y[end] + 10)
+            return _calculate_cross_similarity_row(
+                dli_images, linear_ind, cartesian_ind, center_ind_cart,
+                h_top, h_bottom, ni_x_extended, ni_y_extended,
+                nrows, ncols, half_size;
+                n_iter = n_iter + 1, n_neighbors = n_neighbors,
+                distance_metric = distance_metric,
+            )
+        end
+
+        if isempty(unnormalized_weights)
+            neighbor_indices_linear = [linear_ind[center_ind_cart]]
+            normalized_weights      = [1.0]
+        else
+            weights = unnormalized_weights .* distances
+            norma   = sum(weights)
+            normalized_weights = weights ./ norma
+        end
+
+        return neighbor_indices_linear, normalized_weights
+    end
+
+    function generate_cross_similarity_matrix_W(
+        dli_images::DLI,
+        h_top,
+        h_bottom,
+        half_size::Int;
+        distance_metric::Function = gaussian_spatial_distance,
+    )
+        nrows, ncols = size(dli_images.top)
+        linear_ind    = LinearIndices((nrows, ncols))
+        cartesian_ind = CartesianIndices((nrows, ncols))
+        N = nrows * ncols
+        rows = Int[]
+        cols = Int[]
+        vals = Float64[]
+
+        for center_ind_cart in cartesian_ind
+            center_ind_linear = linear_ind[center_ind_cart]
+            i, j = center_ind_cart[1], center_ind_cart[2]
+            ni_x = max(1, i - half_size):min(nrows, i + half_size)
+            ni_y = max(1, j - half_size):min(ncols, j + half_size)
+
+            neighbor_indices, weights = _calculate_cross_similarity_row(
+                dli_images, linear_ind, cartesian_ind, center_ind_cart,
+                Float64(h_top), Float64(h_bottom),
+                ni_x, ni_y, nrows, ncols, half_size;
+                distance_metric = distance_metric,
+            )
+
+            append!(vals, weights)
+            append!(cols, neighbor_indices)
+            append!(rows, fill(center_ind_linear, length(neighbor_indices)))
+        end
+        return sparse(rows, cols, vals, N, N)
+    end
+
+    function ∇R_similarity_mat(params, prototype::AbstractArray)
+        # Matches PRISM's signature: (sim_mat,) is the 2N × 2N block-diagonal
+        # similarity matrix.  ∇R = (W − I)ᵀ (W − I).
+        N, _, _, _, (sim_mat,) = params
+
+        Id_2N = sparse(I, 2N, 2N)
+        W_I   = sim_mat - Id_2N
+        W_It  = transpose(W_I)
+
+        op_W_I  = MatrixOperator(W_I)
+        op_W_It = MatrixOperator(W_It)
+        return op_W_It * op_W_I
+    end
 end
 
 # ╔═╡ 06000008-0000-4000-8000-000000000001
@@ -713,6 +999,25 @@ closer to Cong's per-ray output.
 # ╔═╡ 06000008-0000-4000-8000-000000000021
 PRISM_λ = 1.0e-3;
 
+# ╔═╡ 06000008-0000-4000-8000-000000000023
+# Regularizer toggle.  Switch between PRISM's three CPU regularizer flavors:
+#   :quadratic        — 5-point Laplacian (cheap; smooth interiors AND edges)
+#   :edge_weighted    — Canny-gated 5-point Laplacian (smooth interiors, sharp edges)
+#   :cross_similarity — joint-channel patch similarity (slower, ~2-5×; sharper rods,
+#                       preserves fine structure shared across iod + water channels)
+PRISM_REG = :cross_similarity
+
+# ╔═╡ 06000008-0000-4000-8000-000000000024
+# Cross-similarity hyperparameters (used only when PRISM_REG == :cross_similarity).
+# h_top / h_bottom are auto-estimated from the background strip at solve time,
+# so the only knob here is the search-window half-size.
+#
+# The PRISM paper uses half_size = 10 (21 × 21 window) on 353 × 266 projections.
+# Our sinogram slab is 834 × 984, so half_size = 10 → ~4 GB of sparse W per
+# slab — too tight for the 16 GB memory budget.  Default to 5 (11 × 11 window),
+# which is the largest that fits comfortably; bump if you have headroom.
+PRISM_XSIM_HALF_SIZE = 5;
+
 # ╔═╡ 06000008-0000-4000-8000-000000000022
 PRISM_BG_RECT = let
     n_col, n_row, n_view = size(sim_low.sino)
@@ -790,23 +1095,65 @@ sino_basis = let
     μ_id_2 = μ("BasisTwo", 0.0, 1.0)   # M[:,2] = [0, 1]
     λ      = PRISM_λ
 
-    # Build per-slab Laplacian once (slab shape is identical for every row)
+    # Shape-only prototype for the regularizers that don't depend on data.
     proto_top = zeros(Float64, n_col, n_view)
-    L_N       = generate_quadratic_regularization_matrix(proto_top)
-    ∇R_blk    = blockdiag(L_N, L_N)
-    reg_quad  = Regularization("quadratic", ∇R_quad_mat, (∇R_blk,))
+
+    # For :quadratic the Laplacian doesn't depend on slab data, so build once.
+    L_N_quad   = generate_quadratic_regularization_matrix(proto_top)
+    ∇R_blk_quad = blockdiag(L_N_quad, L_N_quad)
+
+    function build_regularizer(kind::Symbol, dli_cong::DLI, dli_raw::DLI)
+        if kind == :quadratic
+            return Regularization("quadratic", ∇R_quad_mat, (∇R_blk_quad,))
+        elseif kind == :edge_weighted
+            # Canny on the Cong outputs — basis maps have higher rod contrast
+            # than the raw kVp projections, giving cleaner edge masks.
+            edges = compute_edge_map(dli_cong, 0.8, 0.2)
+            L_N_ew = generate_ew_quadratic_regularization_matrix(
+                dli_cong.top; combined_edges = edges,
+                edge_val = 0.2, non_edge_val = 1.0,
+            )
+            ∇R_blk_ew = blockdiag(L_N_ew, L_N_ew)
+            return Regularization("edge_weighted", ∇R_quad_ew_mat, (∇R_blk_ew,))
+        elseif kind == :cross_similarity
+            # KEY: cross-similarity W is computed from the RAW DUAL-ENERGY
+            # projections (PRISM paper Eq. 8 — the spectral consistency check
+            # `|x_iL − x_kL| < 3h_L AND |x_iH − x_kH| < 3h_H` is meaningful
+            # only on the original two-energy data, not on already-decomposed
+            # basis maps).  The denoising *target* stays as the Cong outputs
+            # via the Problem's `dli_images` field.
+            h_top    = max(std(extract_pixels(dli_raw.top,    PRISM_BG_RECT)), 1e-6)
+            h_bottom = max(std(extract_pixels(dli_raw.bottom, PRISM_BG_RECT)), 1e-6)
+            W_N = generate_cross_similarity_matrix_W(
+                dli_raw, h_top, h_bottom, PRISM_XSIM_HALF_SIZE,
+            )
+            sim_mat = blockdiag(W_N, W_N)
+            return Regularization("cross_similarity", ∇R_similarity_mat, (sim_mat,))
+        else
+            error("unknown PRISM_REG = $(kind) " *
+                  "(expected :quadratic | :edge_weighted | :cross_similarity)")
+        end
+    end
 
     n_rows_to_do = length(PRISM_ROW_RANGE)
-    @info "PRISM denoising: $(n_rows_to_do) detector row(s)"
+    @info "PRISM denoising ($(PRISM_REG)): $(n_rows_to_do) detector row(s)"
     den_elapsed = @elapsed begin
         for (k, r) in enumerate(PRISM_ROW_RANGE)
+            # Denoising target: Cong's polychromatic basis line integrals
             slab_iod = Float64.(@view cong_iodine[:, r, :])
             slab_wat = Float64.(@view cong_water[:,  r, :])
-            # DLI.top = cong_iodine slab, DLI.bottom = cong_water slab
-            dli = DLI(slab_iod, slab_wat)
+            dli_cong = DLI(slab_iod, slab_wat)
+
+            # Raw dual-energy projections — used only to compute the cross-
+            # similarity W (paper Eq. 8 spectral check).
+            slab_lo  = Float64.(@view sino_low_cpu[:,  r, :])
+            slab_hi  = Float64.(@view sino_high_cpu[:, r, :])
+            dli_raw  = DLI(slab_lo, slab_hi)
+
+            reg = build_regularizer(PRISM_REG, dli_cong, dli_raw)
 
             prob = RegularizedDecompositionProblemCPU(
-                dli, μ_id_1, μ_id_2, λ, PRISM_BG_RECT, reg_quad,
+                dli_cong, μ_id_1, μ_id_2, λ, PRISM_BG_RECT, reg,
             )
             mi = RegularizedDecomposition(prob; reltol = 1e-6, verbose = false)
 
@@ -1424,6 +1771,7 @@ from the known polychromatic spectra (zero ROI-tuning).
 # ╠═06000001-0000-4000-8000-000000000006
 # ╠═06000001-0000-4000-8000-000000000007
 # ╠═06000001-0000-4000-8000-000000000008
+# ╠═06000001-0000-4000-8000-000000000009
 # ╠═06000001-0000-4000-8000-000000000030
 # ╠═06000001-0000-4000-8000-000000000031
 # ╠═06000001-0000-4000-8000-000000000040
@@ -1469,10 +1817,16 @@ from the known polychromatic spectra (zero ROI-tuning).
 # ╠═06000007-0000-4000-8000-000000000081
 # ╠═06000007-0000-4000-8000-000000000082
 # ╠═06000007-0000-4000-8000-000000000083
+# ╟─06000007-0000-4000-8000-000000000090
+# ╠═06000007-0000-4000-8000-000000000091
+# ╟─06000007-0000-4000-8000-0000000000a0
+# ╠═06000007-0000-4000-8000-0000000000a1
 # ╟─06000008-0000-4000-8000-000000000001
 # ╠═06000008-0000-4000-8000-000000000010
 # ╟─06000008-0000-4000-8000-000000000020
 # ╠═06000008-0000-4000-8000-000000000021
+# ╠═06000008-0000-4000-8000-000000000023
+# ╠═06000008-0000-4000-8000-000000000024
 # ╠═06000008-0000-4000-8000-000000000022
 # ╟─06000008-0000-4000-8000-000000000030
 # ╠═06000008-0000-4000-8000-000000000031
