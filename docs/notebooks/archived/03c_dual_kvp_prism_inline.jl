@@ -955,29 +955,82 @@ What you gain over linear-PRISM:
 """
 
 # ╔═╡ 06000008-0000-4000-8000-000000000010
+# Per-ray *effective* spectrum that mirrors what `simulate!` actually used.
+#
+# `BS.resolve_source_spectrum_with_bowtie` only bakes in (tube × flat filter ×
+# bowtie).  It omits two factors that the EICT forward model applies on every
+# ray (see `create_eict_workspace` and `_forward_project_poly!`):
+#
+#   1. heel(col, row, E)   — anode self-attenuation, anode-cathode gradient
+#   2. η(E)                — energy-dependent detector quantum efficiency
+#
+# After air-scan calibration, simulate!'s log-line-integral is
+#   p_meas = −log( Σ_E ŵ_eff(col,row,E)·exp(−L_E) ),    with
+#   ŵ_eff(col,row,E) = w(E)·η(E)·B(col,row,E)·heel(col,row,E)
+#                      ──────────────────────────────────────  (per-ray Σ_E = 1)
+#                      Σ_k w(k)·η(k)·B(col,row,k)·heel(col,row,k)
+#
+# That `ŵ_eff` is what Cong should invert against.  Below we rebuild it from
+# the same `PhysicsConfig` and primitives the workspace ctor used, so the
+# forward model and Cong's inversion see the same spectrum.
 material_basis = let
-    e_L, ŵ_L = BS.resolve_source_spectrum_with_bowtie(
-        sim_opts, protocol_low; scanner = scanner, geom = sim_low.geom,
-    )
-    e_H, ŵ_H = BS.resolve_source_spectrum_with_bowtie(
-        sim_opts, protocol_high; scanner = scanner, geom = sim_high.geom,
-    )
-
-    # Per-pixel normalised spectrum (3D, Cong-format).
-    ŵ_L_f32 = Float32.(ŵ_L ./ sum(ŵ_L; dims = ndims(ŵ_L)))
-    ŵ_H_f32 = Float32.(ŵ_H ./ sum(ŵ_H; dims = ndims(ŵ_H)))
-
     iodine_mat = BS.XA.Elements.Iodine
     water_mat  = BS.XA.Materials.water
 
-    p_L = Float32[Float32(BS.compute_mass_μ_at_energy(iodine_mat, Float64(E))) for E in e_L]
-    q_L = Float32[Float32(BS.compute_mass_μ_at_energy(water_mat,  Float64(E))) for E in e_L]
-    p_H = Float32[Float32(BS.compute_mass_μ_at_energy(iodine_mat, Float64(E))) for E in e_H]
-    q_H = Float32[Float32(BS.compute_mass_μ_at_energy(water_mat,  Float64(E))) for E in e_H]
+    function effective_spectrum(protocol, geom)
+        e, w_1d = BS.resolve_source_spectrum_without_bowtie(
+            sim_opts, protocol; scanner = scanner,
+        )
+
+        # Same PhysicsConfig the EICT workspace used → identical heel + η objects.
+        config = BS.build_physics_config(
+            scanner, sim_opts, Float64.(e), Float64.(w_1d); phantom = phantom,
+        )
+
+        bowtie = BS.resolve_bowtie_filter(scanner.bowtie_filter; kVp = Int(protocol.kVp))
+        B    = BS.compute_bowtie_attenuation_spectral(bowtie, geom, Float64.(e))   # [col, row, E]
+        heel = config.heel_effect !== nothing ?
+            BS.compute_heel_spectral(config.heel_effect, geom, Float64.(e)) :
+            ones(Float64, size(B)...)
+        η    = config.detector_efficiency !== nothing ?
+            BS.compute_eid_efficiency_vector(config.detector_efficiency, Float64.(e)) :
+            ones(Float64, length(e))
+
+        w_norm = Float64.(w_1d) ./ sum(Float64.(w_1d))
+
+        # ŵ_raw = w_norm(E) · η(E) · B(col,row,E) · heel(col,row,E)
+        ŵ_raw = similar(B)
+        @inbounds for k in 1:length(e)
+            wη = w_norm[k] * η[k]
+            for row in 1:size(B, 2), col in 1:size(B, 1)
+                ŵ_raw[col, row, k] = wη * B[col, row, k] * heel[col, row, k]
+            end
+        end
+        ŵ = Float32.(ŵ_raw ./ sum(ŵ_raw; dims = 3))
+
+        # Diagnostic: report center-vs-edge mean energy on the effective spectrum.
+        mid_c, mid_r = size(ŵ, 1) ÷ 2 + 1, size(ŵ, 2) ÷ 2 + 1
+        mE_center = sum(Float64(e[k]) * ŵ[mid_c, mid_r, k] for k in 1:length(e))
+        mE_edge   = sum(Float64(e[k]) * ŵ[1,     mid_r, k] for k in 1:length(e))
+        @info "effective spectrum @ $(Int(protocol.kVp)) kVp — " *
+              "center mean E = $(round(mE_center, digits = 1)) keV, " *
+              "edge mean E = $(round(mE_edge, digits = 1)) keV " *
+              "(Δ = $(round(mE_edge - mE_center, digits = 1)) keV)"
+
+        (e = e, ŵ = ŵ)
+    end
+
+    low  = effective_spectrum(protocol_low,  sim_low.geom)
+    high = effective_spectrum(protocol_high, sim_high.geom)
+
+    p_L = Float32[Float32(BS.compute_mass_μ_at_energy(iodine_mat, Float64(E))) for E in low.e]
+    q_L = Float32[Float32(BS.compute_mass_μ_at_energy(water_mat,  Float64(E))) for E in low.e]
+    p_H = Float32[Float32(BS.compute_mass_μ_at_energy(iodine_mat, Float64(E))) for E in high.e]
+    q_H = Float32[Float32(BS.compute_mass_μ_at_energy(water_mat,  Float64(E))) for E in high.e]
 
     (
-        ŵ_L = ŵ_L_f32, p_L = p_L, q_L = q_L,
-        ŵ_H = ŵ_H_f32, p_H = p_H, q_H = q_H,
+        ŵ_L = low.ŵ,  p_L = p_L, q_L = q_L,
+        ŵ_H = high.ŵ, p_H = p_H, q_H = q_H,
     )
 end;
 
