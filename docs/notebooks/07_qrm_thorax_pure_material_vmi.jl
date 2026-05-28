@@ -483,7 +483,23 @@ md"""
 """
 
 # ╔═╡ 07030003-0000-4000-8000-000000000010
-sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234);
+# Disable physics effects that BS simulates but does NOT yet correct for
+# (would otherwise bias the decomposition):
+#   • use_fill_factor:       adds a uniform -log(ff) offset to every log-line
+#     integral; the air-scan calibration does not cancel it (fill factor is
+#     not multiplied into `bowtie_air_reference`).  ⇒ uniform HU drift.
+#   • use_optical_crosstalk: spatially blurs the sinogram via a 3×3 separable
+#     kernel; no deconvolution step exists anywhere in BS.  ⇒ partial-volume
+#     bias at rod edges, especially low-concentration iodine.
+# Other effects (scatter, heel, detector_efficiency, focal_spot, lag, noise)
+# either *are* corrected internally or are baked into `material_basis.ŵ`
+# so Cong's inversion cancels them — see §physics audit in 03c.
+sim_opts = BS.SimOptions(
+    fidelity = :eict,
+    seed = 1234,
+    use_fill_factor       = false,
+    use_optical_crosstalk = false,
+);
 
 # ╔═╡ 07030003-0000-4000-8000-000000000020
 # Standard CT recon convention: 512 × 512 in-plane at 0.625 mm isotropic
@@ -590,99 +606,64 @@ the forward model used.
 """
 
 # ╔═╡ 07030006-0000-4000-8000-000000000010
-# Per-ray *effective* spectrum that mirrors what `simulate!` actually used.
-#
-# `BS.resolve_source_spectrum_with_bowtie` only bakes in (tube × flat filter ×
-# bowtie).  It omits two factors that the EICT forward model applies on every
-# ray (see `create_eict_workspace` and `_forward_project_poly!`):
-#
-#   1. heel(col, row, E)   — anode self-attenuation, anode-cathode gradient
-#   2. η(E)                — energy-dependent detector quantum efficiency
-#
-# After air-scan calibration, simulate!'s log-line-integral is
-#   p_meas = −log( Σ_E ŵ_eff(col,row,E)·exp(−L_E) ),    with
-#   ŵ_eff(col,row,E) = w(E)·η(E)·B(col,row,E)·heel(col,row,E)
-#                      ──────────────────────────────────────  (per-ray Σ_E = 1)
-#                      Σ_k w(k)·η(k)·B(col,row,k)·heel(col,row,k)
-#
-# That `ŵ_eff` is what Cong should invert against.  Below we rebuild it from
-# the same `PhysicsConfig` and primitives the workspace ctor used, so the
-# forward model and Cong's inversion see the same spectrum.
+# Per-ray effective spectrum (source × bowtie × heel × η) that simulate!
+# applied.  `BS.resolve_source_spectrum_full` chains the same `PhysicsConfig`
+# the EICT workspace built, so the inversion sees exactly the spectrum the
+# forward model used (heel + η are conditionally applied per the SimOptions
+# `use_*` flags).
 material_basis = let
     iodine_mat = BS.XA.Elements.Iodine
     water_mat  = BS.XA.Materials.water
 
-    function effective_spectrum(protocol, geom)
-        e, w_1d = BS.resolve_source_spectrum_without_bowtie(
-            sim_opts, protocol; scanner = scanner,
-        )
+    e_L, ŵ_L = BS.resolve_source_spectrum_full(
+        sim_opts, protocol_low;
+        scanner = scanner, geom = sim_low.geom, phantom = phantom,
+        diagnostic = true, label = "low",
+    )
+    e_H, ŵ_H = BS.resolve_source_spectrum_full(
+        sim_opts, protocol_high;
+        scanner = scanner, geom = sim_high.geom, phantom = phantom,
+        diagnostic = true, label = "high",
+    )
 
-        # Same PhysicsConfig the EICT workspace used → identical heel + η objects.
-        config = BS.build_physics_config(
-            scanner, sim_opts, Float64.(e), Float64.(w_1d); phantom = phantom,
-        )
-
-        bowtie = BS.resolve_bowtie_filter(scanner.bowtie_filter)
-        B    = BS.compute_bowtie_attenuation_spectral(bowtie, geom, Float64.(e))   # [col, row, E]
-        heel = config.heel_effect !== nothing ?
-            BS.compute_heel_spectral(config.heel_effect, geom, Float64.(e)) :
-            ones(Float64, size(B)...)
-        η    = config.detector_efficiency !== nothing ?
-            BS.compute_eid_efficiency_vector(config.detector_efficiency, Float64.(e)) :
-            ones(Float64, length(e))
-
-        w_norm = Float64.(w_1d) ./ sum(Float64.(w_1d))
-
-        # ŵ_raw = w_norm(E) · η(E) · B(col,row,E) · heel(col,row,E)
-        ŵ_raw = similar(B)
-        @inbounds for k in 1:length(e)
-            wη = w_norm[k] * η[k]
-            for row in 1:size(B, 2), col in 1:size(B, 1)
-                ŵ_raw[col, row, k] = wη * B[col, row, k] * heel[col, row, k]
-            end
-        end
-        ŵ = Float32.(ŵ_raw ./ sum(ŵ_raw; dims = 3))
-
-        # Diagnostic: report center-vs-edge mean energy on the effective spectrum.
-        mid_c, mid_r = size(ŵ, 1) ÷ 2 + 1, size(ŵ, 2) ÷ 2 + 1
-        mE_center = sum(Float64(e[k]) * ŵ[mid_c, mid_r, k] for k in 1:length(e))
-        mE_edge   = sum(Float64(e[k]) * ŵ[1,     mid_r, k] for k in 1:length(e))
-        @info "effective spectrum @ $(Int(protocol.kVp)) kVp — " *
-              "center mean E = $(round(mE_center, digits = 1)) keV, " *
-              "edge mean E = $(round(mE_edge, digits = 1)) keV " *
-              "(Δ = $(round(mE_edge - mE_center, digits = 1)) keV)"
-
-        (e = e, ŵ = ŵ)
-    end
-
-    low  = effective_spectrum(protocol_low,  sim_low.geom)
-    high = effective_spectrum(protocol_high, sim_high.geom)
-
-    p_L = Float32[Float32(BS.compute_mass_μ_at_energy(iodine_mat, Float64(E))) for E in low.e]
-    q_L = Float32[Float32(BS.compute_mass_μ_at_energy(water_mat,  Float64(E))) for E in low.e]
-    p_H = Float32[Float32(BS.compute_mass_μ_at_energy(iodine_mat, Float64(E))) for E in high.e]
-    q_H = Float32[Float32(BS.compute_mass_μ_at_energy(water_mat,  Float64(E))) for E in high.e]
+    p_L = Float32[Float32(BS.compute_mass_μ_at_energy(iodine_mat, Float64(E))) for E in e_L]
+    q_L = Float32[Float32(BS.compute_mass_μ_at_energy(water_mat,  Float64(E))) for E in e_L]
+    p_H = Float32[Float32(BS.compute_mass_μ_at_energy(iodine_mat, Float64(E))) for E in e_H]
+    q_H = Float32[Float32(BS.compute_mass_μ_at_energy(water_mat,  Float64(E))) for E in e_H]
 
     (
-        ŵ_L = low.ŵ,  p_L = p_L, q_L = q_L,
-        ŵ_H = high.ŵ, p_H = p_H, q_H = q_H,
+        ŵ_L = ŵ_L, p_L = p_L, q_L = q_L,
+        ŵ_H = ŵ_H, p_H = p_H, q_H = q_H,
     )
 end;
 
 # ╔═╡ 07030006-0000-4000-8000-000000000020
+# Pure Cong polychromatic per-ray decomposition.
+#
+# Earlier this cell ran a Cong → PRISM-regularized-denoise hybrid, but the
+# physics audit (see SimOptions notes above) revealed that the perceived
+# bias was an un-corrected fill_factor + optical_crosstalk effect, not a
+# decomposition deficiency.  With those flags off, raw Cong reaches the
+# theoretical curves on its own, so the PRISM denoise step adds nothing
+# at the noiseless / corrected-physics operating point.  The PRISM
+# machinery (§6.5 / §6.6 cells) is left inline as dormant code in case
+# we want to revisit it for noise-handling experiments.
 sino_basis = let
-    sino_low_gpu  = to_gpu(sim_low.sino)
+    sino_low_gpu = to_gpu(sim_low.sino)
     sino_high_gpu = to_gpu(sim_high.sino)
 
-    sino_y = similar(sino_low_gpu)
-    sino_c = similar(sino_low_gpu)
-    fill!(sino_y, 0.0f0); fill!(sino_c, 0.0f0)
+    sino_y = similar(sino_low_gpu);  fill!(sino_y, 0.0f0)
+    sino_c = similar(sino_low_gpu);  fill!(sino_c, 0.0f0)
 
-    cong_ws = BS.create_cong_workspace(sino_low_gpu, material_basis)
-    BS.apply_cong!(
-        cong_ws, sino_y, sino_c, sino_low_gpu, sino_high_gpu;
-        water_basis = (a = 0.0f0, c = 1.0f0),
-    )
+    @info "Cong polychromatic decomposition: $(size(sim_low.sino))"
+    cong_elapsed = @elapsed begin
+        cong_ws = BS.create_cong_workspace(sino_low_gpu, material_basis)
+        BS.apply_cong!(
+            cong_ws, sino_y, sino_c, sino_low_gpu, sino_high_gpu;
+            water_basis = (a = 0.0f0, c = 1.0f0),
+        )
+    end
+    @info "Cong done in $(round(cong_elapsed, digits = 1)) s"
 
     result = (
         sino_iodine = Array(sino_y),
@@ -1308,10 +1289,10 @@ heart_noise_roi = let
 
     (
         rod_center_xy = (rod_cx, rod_cy),
-        center_xy     = (cx, cy),
-        mask_2d       = roi_bool,
-        n_voxels      = n_vox,
-        n_total       = n_vox * nz_r,
+        center_xy = (cx, cy),
+        mask_2d = roi_bool,
+        n_voxels = n_vox,
+        n_total = n_vox * nz_r,
     )
 end;
 
@@ -1586,9 +1567,9 @@ let
         )
         rod_lines[i] = CM.LineElement(color = c, linewidth = 2.5)
 
-        meas_i  = vec(rod_data.measured[i, :])
-        theo_i  = vec(rod_data.theoretical[i, :])
-        rmse_i  = sqrt(mean((meas_i .- theo_i) .^ 2))
+        meas_i = vec(rod_data.measured[i, :])
+        theo_i = vec(rod_data.theoretical[i, :])
+        rmse_i = sqrt(mean((meas_i .- theo_i) .^ 2))
         # nRMSE = RMSE / max(|theoretical|) × 100% — peak-relative error.
         # Less sensitive to keV points where theoretical magnitude is
         # small (e.g. iodine at 140 keV) than the mean-magnitude form.
@@ -1596,7 +1577,7 @@ let
         # (the reference), so the denominator collapses and nRMSE is
         # undefined.
         scale_i = maximum(abs.(theo_i))
-        nrmse_i = scale_i > 1f0 ? rmse_i / scale_i * 100 : nothing
+        nrmse_i = scale_i > 1.0f0 ? rmse_i / scale_i * 100 : nothing
 
         nm = get(pretty_name, rod_data.names[i], rod_data.names[i])
         rod_labels_str[i] = if nrmse_i === nothing

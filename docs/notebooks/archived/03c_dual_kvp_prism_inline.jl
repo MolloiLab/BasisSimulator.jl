@@ -5,62 +5,27 @@
 begin
     import Pkg
     Pkg.activate(joinpath(@__DIR__, "..", ".."))
-    # Add the PRISM deps that BasisSimulator's Project.toml doesn't already
-    # pull in. Idempotent: `Pkg.add` is a no-op if a compatible version is
-    # already installed.
-    let
-        needed = [
-            "SparseArrays",       # stdlib but must be added explicitly to the env
-            "LinearAlgebra",      # stdlib
-            "SciMLOperators",
-            "LinearSolve",
-            "Krylov",
-            "GeometryBasics",
-            "Images",             # Canny edge detection (used by §6.9 EW regularizer)
-        ]
-        installed = keys(Pkg.project().dependencies)
-        missing_pkgs = filter(n -> !(n in installed), needed)
-        isempty(missing_pkgs) || Pkg.add(missing_pkgs)
-    end
 end
 
 # ╔═╡ 06000001-0000-4000-8000-000000000002
 using Markdown: @md_str, Markdown
 
 # ╔═╡ 06000001-0000-4000-8000-000000000003
-using Statistics: mean, std, var, quantile
-
-# ╔═╡ 06000001-0000-4000-8000-000000000004
-using LinearAlgebra: I, transpose, dot, norm
-
-# ╔═╡ 06000001-0000-4000-8000-000000000005
-using SparseArrays: sparse, spdiagm, blockdiag, SparseMatrixCSC
-
-# ╔═╡ 06000001-0000-4000-8000-000000000006
-using SciMLOperators: MatrixOperator, FunctionOperator, ComposedOperator, IdentityOperator, cache_operator
-
-# ╔═╡ 06000001-0000-4000-8000-000000000007
-using LinearSolve: LinearProblem, init, solve!, KrylovJL_CG
-
-# ╔═╡ 06000001-0000-4000-8000-000000000008
-using GeometryBasics: HyperRectangle, Rect
-
-# ╔═╡ 06000001-0000-4000-8000-000000000009
-using Images: canny, Percentile
+using Statistics: mean, std, quantile
 
 # ╔═╡ 06000001-0000-4000-8000-000000000010
 md"""
-# 03c · Dual-kVp Switching VMI · PRISM Inlined (Standalone)
+# 03c · Dual-kVp Switching VMI · Cong-Only Baseline (Standalone)
 
 GE Apex Elite GSI rapid-kVp-switching simulation (80 + 140 kVp, Gammex
-472 phantom) where the **projection-domain material decomposition step
-is a direct, inline 1-to-1 port of PrismMaterialDecomposition.jl** —
-no `using PrismMaterialDecomposition`; every PRISM struct / matrix /
-solver call is pasted into the cells below.
+472 phantom) running the **Cong per-ray polychromatic material
+decomposition** with the un-corrected-physics flags disabled — same
+pipeline shape as `03_dual_kvp_switching_vmi.jl` but without SF-JSD
+sinogram denoising.
 
 ```
 Simulate 80 kVp  →┐
-                   ├─→  PRISM Regularized Linear PWLS (per detector row)
+                   ├─→  Cong polychromatic per-ray decomposition
 Simulate 140 kVp →┘                    │
                                        ▼
                     sino_iodine, sino_water  (basis line integrals)
@@ -77,33 +42,15 @@ Simulate 140 kVp →┘                    │
                           at 40 / 70 / 100 / 140 keV
 ```
 
-!!! info "What this notebook is for"
-    A clean, standalone test of PRISM's regularized linear PWLS
-    formulation `(AᵀV⁻¹A + λ∇R) x = AᵀV⁻¹L` directly on our dual-kVp
-    sinograms — bypassing both the SF-JSD denoiser and the Cong
-    decomposition that `03_dual_kvp_switching_vmi.jl` uses.
-
-    The CPU code path of PRISM is pasted verbatim (function names
-    preserved); GPU operators are omitted.  We solve through PRISM's
-    real `LinearSolve.jl` / `KrylovJL_CG` stack — no hand-rolled CG.
-
-!!! info "Sinogram-as-2D mapping"
-    PRISM was written for 2D dual-layer detector images (`nrows, ncols`).
-    We feed it our sinogram one detector row at a time — each slab
-    `sino[:, r, :]` is a 2D image of shape `(n_col, n_view)`.  The
-    5-point Laplacian then smooths across both adjacent detector
-    columns *and* adjacent projection views.
-
-!!! warning "Known approximation"
-    PRISM's linear `A` uses scalar effective μ values per channel; the
-    true forward model is polychromatic.  Residual beam-hardening bias
-    in basis maps is *expected* — quantifying that gap vs the Cong +
-    SF-JSD pipeline is exactly the point of this notebook.
-
-!!! success "Source"
-    Upstream:
-    <https://github.com/fdekerme/PrismMaterialDecomposition.jl> ·
-    function names mirrored 1-to-1.
+!!! info "History"
+    Earlier revisions of this notebook inlined the full source of
+    PrismMaterialDecomposition.jl and ran a Cong → PRISM-regularized-
+    denoise hybrid.  The physics audit (`use_fill_factor` and
+    `use_optical_crosstalk` are simulated but not yet corrected for
+    inside BS) closed the accuracy gap that motivated the PRISM
+    denoising step, so this notebook has been simplified back to a
+    clean Cong-only pipeline.  See git history (`wip(nb03c): …`) for
+    the PRISM-inlined version.
 """
 
 # ╔═╡ 06000001-0000-4000-8000-000000000020
@@ -147,9 +94,6 @@ end
 # ╔═╡ 06000001-0000-4000-8000-000000000050
 md"""
 **Backend detected:** $(GPU_BACKEND.name)
-
-PRISM solve runs on **CPU** (sparse matrices + Krylov CG); only the FBP
-recon uses the GPU backend, matching `03_dual_kvp_switching_vmi.jl`.
 """
 
 # ╔═╡ 06000002-0000-4000-8000-000000000001
@@ -246,6 +190,15 @@ md"""
 sim_opts = BS.SimOptions(
     fidelity = :eict,
     seed = 1234,
+    
+    use_fill_factor = false,
+    # use_detector_efficiency = false,
+    # use_scatter = false,
+    use_optical_crosstalk = false,
+    # use_focal_spot = false,
+    # use_noise = false,
+    # use_lag = false,
+    # use_heel_effect = false
 );
 
 # ╔═╡ 06000005-0000-4000-8000-000000000020
@@ -325,803 +278,69 @@ let
     fig
 end
 
-# ╔═╡ 06000007-0000-4000-8000-000000000001
-md"""
-## 6. PRISM — Inlined Source (CPU, Quadratic Regularizer)
-
-Everything between here and §7 is a verbatim paste of the relevant
-files from PrismMaterialDecomposition.jl, restricted to the CPU /
-quadratic-Laplacian / `KrylovJL_CG` solve path.  Function and struct
-names are preserved 1-to-1 with the upstream repo so the API in §7
-calls look exactly like the upstream tests / examples.
-"""
-
-# ╔═╡ 06000007-0000-4000-8000-000000000010
-md"""
-### 6.1 `types.jl`
-"""
-
-# ╔═╡ 06000007-0000-4000-8000-000000000011
-struct DLI{T<:AbstractArray}
-    top::T
-    bottom::T
-end
-
-# ╔═╡ 06000007-0000-4000-8000-000000000012
-struct μ
-    name::String
-    low::Float64
-    high::Float64
-end
-
-# ╔═╡ 06000007-0000-4000-8000-000000000013
-struct MI{T<:AbstractArray}
-    μ₁::μ
-    μ₂::μ
-    mat1::T
-    mat2::T
-end
-
-# ╔═╡ 06000007-0000-4000-8000-000000000014
-struct Regularization
-    name::String
-    constructor::Function
-    params::Tuple
-end
-
-# ╔═╡ 06000007-0000-4000-8000-000000000020
-md"""
-### 6.2 `blend_functions.jl` (change-of-basis + per-pixel direct inverse)
-
-PRISM's initial guess for the regularized solve is the algebraic
-per-pixel pseudo-inverse — same as Cong with effective μ values.
-"""
-
-# ╔═╡ 06000007-0000-4000-8000-000000000021
-function change_of_basis(v, μ₁::μ, μ₂::μ)
-    M = [μ₁.low μ₂.low; μ₁.high μ₂.high]
-    return M \ v
-end
-
-# ╔═╡ 06000007-0000-4000-8000-000000000022
-function material_decomposition(dli_images::DLI, μ₁::μ, μ₂::μ)
-    top_flat    = reshape(dli_images.top,    1, :)
-    bottom_flat = reshape(dli_images.bottom, 1, :)
-    decomposed  = change_of_basis(vcat(top_flat, bottom_flat), μ₁, μ₂)
-    decomposed_mat1 = reshape(decomposed[1, :], size(dli_images.top))
-    decomposed_mat2 = reshape(decomposed[2, :], size(dli_images.bottom))
-    return MI(μ₁, μ₂, decomposed_mat1, decomposed_mat2)
-end
-
-# ╔═╡ 06000007-0000-4000-8000-000000000030
-md"""
-### 6.3 `A_contructor.jl` (CPU sparse-matrix form only)
-
-Sparse 2N × 2N block-mixing matrix
-`A = [μ₁_L·I  μ₂_L·I ; μ₁_H·I  μ₂_H·I]` and its transpose.
-"""
-
-# ╔═╡ 06000007-0000-4000-8000-000000000031
-function A_mat_cpu(N::Integer, M::Matrix{Float64})::MatrixOperator
-    @assert N > 0 "N must be positive"
-    @assert size(M) == (2, 2) "Mixing matrix M must be 2×2"
-    Id_N = sparse(I, N, N)
-    A11 = M[1, 1] * Id_N
-    A12 = M[1, 2] * Id_N
-    A21 = M[2, 1] * Id_N
-    A22 = M[2, 2] * Id_N
-    A = [A11 A12; A21 A22]
-    return MatrixOperator(A)
-end
-
-# ╔═╡ 06000007-0000-4000-8000-000000000032
-function At_mat_cpu(N::Integer, M::Matrix{Float64})::MatrixOperator
-    @assert N > 0 "N must be positive"
-    @assert size(M) == (2, 2) "Mixing matrix M must be 2×2"
-    Mᵀ = transpose(M)
-    Id_N = sparse(I, N, N)
-    A11 = Mᵀ[1, 1] * Id_N
-    A12 = Mᵀ[1, 2] * Id_N
-    A21 = Mᵀ[2, 1] * Id_N
-    A22 = Mᵀ[2, 2] * Id_N
-    Aᵀ = [A11 A12; A21 A22]
-    return MatrixOperator(Aᵀ)
-end
-
-# ╔═╡ 06000007-0000-4000-8000-000000000040
-md"""
-### 6.4 `V_constructor.jl` (CPU diagonal V⁻¹ + Rect-based extract_pixels)
-
-PRISM samples a `Rect` background patch to estimate per-channel
-variance, normalises the two scalars to sum to 1, then assembles
-`V⁻¹ = diag([1/var_top_n · 1ₙ ; 1/var_bot_n · 1ₙ])`.
-"""
-
-# ╔═╡ 06000007-0000-4000-8000-000000000041
-function extract_pixels(image::AbstractMatrix, rect::Rect)
-    xmin = rect.origin[1]
-    ymin = rect.origin[2]
-    xmax = xmin + rect.widths[1]
-    ymax = ymin + rect.widths[2]
-    if xmin < 1 || ymin < 1 || xmax > size(image, 1) || ymax > size(image, 2)
-        error("Rectangle is out of bounds")
-    end
-    return image[xmin:xmax, ymin:ymax]
-end
-
-# ╔═╡ 06000007-0000-4000-8000-000000000042
-function _noise_variance_diag_inv(dli_images::DLI, background_mask)
-    noise_bottom = extract_pixels(dli_images.bottom, background_mask)
-    noise_top    = extract_pixels(dli_images.top,    background_mask)
-
-    var_noise_bottom = var(noise_bottom)
-    var_noise_top    = var(noise_top)
-
-    var_noise_bottom_norm = var_noise_bottom / (var_noise_bottom + var_noise_top)
-    var_noise_top_norm    = var_noise_top    / (var_noise_bottom + var_noise_top)
-
-    var_noise_bottom_vec = fill(1 / var_noise_bottom_norm, length(dli_images.bottom))
-    var_noise_top_vec    = fill(1 / var_noise_top_norm,    length(dli_images.top))
-
-    return vcat(var_noise_top_vec, var_noise_bottom_vec)
-end
-
-# ╔═╡ 06000007-0000-4000-8000-000000000043
-function Vinv_mat_cpu(dli_images::DLI, background_mask)::MatrixOperator
-    V_inv_diag = _noise_variance_diag_inv(dli_images, background_mask)
-    V⁻¹ = spdiagm(V_inv_diag)
-    return MatrixOperator(V⁻¹)
-end
-
-# ╔═╡ 06000007-0000-4000-8000-000000000050
-md"""
-### 6.5 `regularization_matrix.jl` (quadratic 5-point Laplacian)
-"""
-
-# ╔═╡ 06000007-0000-4000-8000-000000000051
-function generate_quadratic_regularization_matrix(img)
-    nrows, ncols = size(img)
-    N = nrows * ncols
-    return spdiagm(
-        N, N,
-        -nrows => fill(-1.0, N - nrows),
-         nrows => fill(-1.0, N - nrows),
-             0 => fill( 4.0, N),
-            -1 => fill(-1.0, N - 1),
-             1 => fill(-1.0, N - 1),
-    )
-end
-
-# ╔═╡ 06000007-0000-4000-8000-000000000060
-md"""
-### 6.6 `regularization_constructors.jl` (matrix-form ∇R for quadratic)
-
-PRISM expects `∇R` to act on the stacked 2N vector `[m₁; m₂]`.  The 5-
-point Laplacian `L_N` is N × N, so we hand it the block-diagonal
-`blockdiag(L_N, L_N)` — independent smoothing per material (no cross-
-material coupling — matches `feedback_pwls_no_cross_basis_prior`).
-
-The constructor signature `(params, prototype)` is the one PRISM's
-problem builder expects so we can plug straight into
-`Regularization(...)`.
-"""
-
-# ╔═╡ 06000007-0000-4000-8000-000000000061
-function ∇R_quad_mat(params, prototype::AbstractArray)::MatrixOperator
-    # NB: matches the unpacking pattern of `∇R_similarity_mat` in PRISM's
-    # `regularization_constructors.jl`, where `reg.params` is a 1-tuple
-    # `(matrix,)`.  The upstream `∇R_quad_mat` destructures with
-    # `_, _, _, _, matrix = params` which leaves `matrix` as the 1-tuple
-    # itself and then errors inside `MatrixOperator(::Tuple)`.
-    _, _, _, _, (quadratic_regularization_matrix,) = params
-    return MatrixOperator(quadratic_regularization_matrix)
-end
-
-# ╔═╡ 06000007-0000-4000-8000-000000000070
-md"""
-### 6.7 `utils.jl` (LinearSolve callback)
-"""
-
-# ╔═╡ 06000007-0000-4000-8000-000000000071
-function callback(state, cost)
-    println("Current cost: ", cost)
-    return false
-end
-
-# ╔═╡ 06000007-0000-4000-8000-000000000080
-md"""
-### 6.8 `linear_solve.jl` (CPU problem container + solver)
-"""
-
-# ╔═╡ 06000007-0000-4000-8000-000000000081
-mutable struct RegularizedDecompositionProblem{Tλ,Tmat,Tvec}
-    dli_images::DLI
-    μ₁::μ
-    μ₂::μ
-    λ::Tλ
-    background_mask::HyperRectangle{2,Int}
-
-    nrows::Int
-    ncols::Int
-    N::Int
-
-    M::Tmat
-    L::Tvec
-    initial_guess::Tvec
-    prototype::Tvec
-    regularization_name::String
-
-    A::Any
-    Aᵀ::Any
-    V⁻¹::Any
-    ∇R::Any
-end
-
-# ╔═╡ 06000007-0000-4000-8000-000000000082
-function RegularizedDecompositionProblemCPU(
-    dli_images::DLI,
-    μ₁::μ,
-    μ₂::μ,
-    λ::Float64,
-    background_mask::HyperRectangle{2,Int},
-    reg::Regularization,
-)
-    nrows, ncols = size(dli_images.top)
-    N = nrows * ncols
-
-    M = [μ₁.low μ₂.low; μ₁.high μ₂.high]
-    L = vcat(vec(dli_images.top), vec(dli_images.bottom))
-
-    initial_guess_result = material_decomposition(dli_images, μ₁, μ₂)
-    initial_guess_vec = vcat(
-        vec(initial_guess_result.mat1),
-        vec(initial_guess_result.mat2),
-    )
-
-    prototype = zeros(Float64, 2N)
-    A   = A_mat_cpu(N, M)
-    Aᵀ  = At_mat_cpu(N, M)
-    V⁻¹ = Vinv_mat_cpu(dli_images, background_mask)
-    ∇R  = reg.constructor(
-        (N, nrows, ncols, LinearIndices((nrows, ncols)), reg.params),
-        prototype,
-    )
-
-    return RegularizedDecompositionProblem{Float64,Matrix{Float64},Vector{Float64}}(
-        dli_images,
-        μ₁, μ₂,
-        λ,
-        background_mask,
-        nrows, ncols, N,
-        M, L,
-        initial_guess_vec, prototype,
-        reg.name,
-        A, Aᵀ, V⁻¹, ∇R,
-    )
-end
-
-# ╔═╡ 06000007-0000-4000-8000-000000000083
-function RegularizedDecomposition(
-    prob::RegularizedDecompositionProblem;
-    solver = KrylovJL_CG(),
-    reltol = 1e-6,
-    verbose::Bool = false,
-)
-    A   = prob.A
-    Aᵀ  = prob.Aᵀ
-    V⁻¹ = prob.V⁻¹
-    ∇R  = prob.∇R
-    λ   = prob.λ
-
-    system_matrix = cache_operator(Aᵀ * V⁻¹ * A + λ * ∇R, prob.L)
-    L2 = Aᵀ * V⁻¹ * prob.L
-
-    linear_problem = LinearProblem{true}(system_matrix, L2; u0 = prob.initial_guess)
-    linear_solve = init(
-        linear_problem, solver;
-        reltol = reltol, verbose = verbose,
-    )
-    solve!(linear_solve)
-
-    u = linear_solve.u
-    mat1 = reshape(u[1:prob.N],         (prob.nrows, prob.ncols)) |> Matrix{Float64}
-    mat2 = reshape(u[prob.N+1:end],     (prob.nrows, prob.ncols)) |> Matrix{Float64}
-
-    return MI(prob.μ₁, prob.μ₂, mat1, mat2)
-end
-
-# ╔═╡ 06000007-0000-4000-8000-000000000090
-md"""
-### 6.9 Edge-Weighted Quadratic Regularizer
-
-PRISM's edge-weighted Laplacian (Stayman & Fessler, doi:10.1118/1.4866386).
-Canny detects edges on each channel of the DLI; the per-pair penalty
-weight drops from `non_edge_val = 1.0` to `edge_val = 0.2` whenever
-either pixel of the pair is an edge.  Net effect: smooth interiors,
-sharp rod boundaries — no extra knob.
-"""
-
-# ╔═╡ 06000007-0000-4000-8000-000000000091
-begin
-    # Border-safe 4-neighbour helpers from PRISM's `regularization_utils.jl`.
-    # The "if on the border, return the same index" convention makes the
-    # resulting Laplacian write a zero off-diagonal weight at boundary pixels
-    # (because `ind_left == center_ind` → weight 0 in `_calculate_quad_ew_row`).
-    prism_left(ind::CartesianIndex, nrows)   =
-        ind[1] == 1     ? ind : CartesianIndex(ind[1] - 1, ind[2])
-    prism_right(ind::CartesianIndex, nrows)  =
-        ind[1] == nrows ? ind : CartesianIndex(ind[1] + 1, ind[2])
-    prism_top(ind::CartesianIndex, ncols)    =
-        ind[2] == 1     ? ind : CartesianIndex(ind[1], ind[2] - 1)
-    prism_bottom(ind::CartesianIndex, ncols) =
-        ind[2] == ncols ? ind : CartesianIndex(ind[1], ind[2] + 1)
-
-    canny_edge_prism(img, upper, lower; sigma = 1.4) = canny(
-        img,
-        (Percentile(100 * upper), Percentile(100 * lower)),
-        sigma,
-    )
-
-    function compute_edge_map(dli_images::DLI, upper::Real = 0.8, lower::Real = 0.2)
-        edges_top    = canny_edge_prism(dli_images.top,    upper, lower)
-        edges_bottom = canny_edge_prism(dli_images.bottom, upper, lower)
-        return edges_top .| edges_bottom
-    end
-
-    function _calculate_quad_ew_row(
-        linear_ind,
-        center_ind,
-        nrows,
-        ncols,
-        combined_edges,
-        edge_val,
-        non_edge_val,
-    )
-        ind_left   = prism_left(center_ind,   nrows)
-        ind_right  = prism_right(center_ind,  nrows)
-        ind_top    = prism_top(center_ind,    ncols)
-        ind_bottom = prism_bottom(center_ind, ncols)
-
-        is_edge = combined_edges[center_ind]
-
-        center_weight = is_edge ? edge_val : non_edge_val
-        center_left_weight   = (is_edge || combined_edges[ind_left])   ? edge_val : non_edge_val
-        center_right_weight  = (is_edge || combined_edges[ind_right])  ? edge_val : non_edge_val
-        center_top_weight    = (is_edge || combined_edges[ind_top])    ? edge_val : non_edge_val
-        center_bottom_weight = (is_edge || combined_edges[ind_bottom]) ? edge_val : non_edge_val
-
-        # Zero out the weight if the "neighbor" collapsed back to center (border).
-        center_left_weight   = ind_left   == center_ind ? 0.0 : center_left_weight
-        center_right_weight  = ind_right  == center_ind ? 0.0 : center_right_weight
-        center_top_weight    = ind_top    == center_ind ? 0.0 : center_top_weight
-        center_bottom_weight = ind_bottom == center_ind ? 0.0 : center_bottom_weight
-
-        # Diagonal entry: sum of the four off-diagonal weights (Laplacian).
-        diagonal = -(center_left_weight + center_right_weight +
-                     center_top_weight + center_bottom_weight)
-        # Note: PRISM's `_calculate_quad_ew_row` writes `center_weight` to the
-        # diagonal directly; we use the Laplacian-consistent sum so the matrix
-        # is exactly the EW analog of the 5-point Laplacian.
-        weights = [
-            -diagonal,
-            center_left_weight,
-            center_right_weight,
-            center_top_weight,
-            center_bottom_weight,
-        ]
-        indices = [
-            linear_ind[center_ind],
-            linear_ind[ind_left],
-            linear_ind[ind_right],
-            linear_ind[ind_top],
-            linear_ind[ind_bottom],
-        ]
-        return indices, weights
-    end
-
-    function generate_ew_quadratic_regularization_matrix(
-        img;
-        combined_edges,
-        edge_val = 0.2,
-        non_edge_val = 1.0,
-    )
-        nrows, ncols = size(img)
-        N = nrows * ncols
-        linear_ind    = LinearIndices((nrows, ncols))
-        cartesian_ind = CartesianIndices((nrows, ncols))
-
-        rows = Vector{Int64}(undef, 5N)
-        cols = Vector{Int64}(undef, 5N)
-        vals = Vector{Float64}(undef, 5N)
-
-        for (i, center_ind_cart) in enumerate(cartesian_ind)
-            center_ind_linear = linear_ind[center_ind_cart]
-            neighbor_indices, weights = _calculate_quad_ew_row(
-                linear_ind, center_ind_cart,
-                nrows, ncols,
-                combined_edges, edge_val, non_edge_val,
-            )
-            rows[5*(i-1)+1 : 5*i] .= fill(center_ind_linear, 5)
-            cols[5*(i-1)+1 : 5*i] .= neighbor_indices
-            vals[5*(i-1)+1 : 5*i] .= weights
-        end
-
-        return sparse(rows, cols, vals, N, N)
-    end
-
-    function ∇R_quad_ew_mat(params, prototype::AbstractArray)::MatrixOperator
-        # Same 1-tuple unpacking pattern as `∇R_quad_mat`.
-        _, _, _, _, (ew_matrix,) = params
-        return MatrixOperator(ew_matrix)
-    end
-end
-
-# ╔═╡ 06000007-0000-4000-8000-0000000000a0
-md"""
-### 6.10 Cross-Similarity Regularizer
-
-PRISM's novel contribution.  For each pixel `i`, build a similarity row
-of `W[i, :]` by:
-
-1. Scanning a `(2·half_size + 1)²` window of candidate neighbors `k`,
-2. Accepting `k` if `|x_top[i] − x_top[k]| < 3·h_top` *and*
-   `|x_bottom[i] − x_bottom[k]| < 3·h_bottom`,
-3. Weighting the accepted neighbor by the *product* of two Gaussians
-   (top + bottom channels) times a spatial Gaussian.
-
-The regularizer is `‖(W − I)·x‖²`, so the gradient operator is
-`(W − I)ᵀ(W − I)`.  Cross-channel coupling lives entirely inside the
-similarity weights — the operator itself acts independently on each
-basis channel via `blockdiag(W, W)`.
-
-!!! warning "Memory + time"
-    At `half_size = 3` (7×7 window) the sparse `W` keeps ≲ 49 nonzeros
-    per row → ~40 M nonzeros for a full slab.  CG per row takes
-    notably longer than with the Laplacian (~2-5×).  Drop `half_size`
-    to `2` if memory is tight.
-"""
-
-# ╔═╡ 06000007-0000-4000-8000-0000000000a1
-begin
-    gaussian_prism(δ::Real, h::Real) = exp(-δ^2 / h^2)
-
-    euclidean_distance_prism(ind1::CartesianIndex, ind2::CartesianIndex, σ_spat) =
-        norm(Tuple(ind1) .- Tuple(ind2), 2)
-    gaussian_spatial_distance(ind1::CartesianIndex, ind2::CartesianIndex, σ_spat) =
-        exp(-euclidean_distance_prism(ind1, ind2, σ_spat)^2 / σ_spat^2)
-    no_distance_penalty(ind1::CartesianIndex, ind2::CartesianIndex, σ_spat) = 1.0
-
-    function _calculate_cross_similarity_row(
-        dli_images::DLI,
-        linear_ind::LinearIndices,
-        cartesian_ind::CartesianIndices,
-        center_ind_cart::CartesianIndex,
-        h_top::Float64,
-        h_bottom::Float64,
-        ni_x,
-        ni_y,
-        nrows::Int,
-        ncols::Int,
-        half_size::Int;
-        n_iter::Int = 1,
-        n_neighbors::Int = 0,
-        distance_metric::Function = gaussian_spatial_distance,
-    )::Tuple{Vector{Int}, Vector{Float64}}
-        window_indices_cart = view(cartesian_ind, ni_x, ni_y)
-        top_img    = dli_images.top
-        bottom_img = dli_images.bottom
-
-        center_val_top    = top_img[center_ind_cart]
-        center_val_bottom = bottom_img[center_ind_cart]
-
-        neighbor_indices_linear = Int[]
-        unnormalized_weights    = Float64[]
-        distances               = Float64[]
-
-        nb_selected_pixel = 0
-        for neighbor_ind_cart in window_indices_cart
-            neighbor_ind_cart == center_ind_cart && continue
-
-            neighbor_ind_linear = linear_ind[neighbor_ind_cart]
-            neighbor_val_top    = top_img[neighbor_ind_cart]
-            neighbor_val_bottom = bottom_img[neighbor_ind_cart]
-
-            if (abs(center_val_top    - neighbor_val_top)    < 3h_top) &&
-               (abs(center_val_bottom - neighbor_val_bottom) < 3h_bottom)
-                distance = distance_metric(center_ind_cart, neighbor_ind_cart, half_size)
-                s_ik = gaussian_prism(center_val_top    - neighbor_val_top,    h_top) *
-                       gaussian_prism(center_val_bottom - neighbor_val_bottom, h_bottom)
-                push!(neighbor_indices_linear, neighbor_ind_linear)
-                push!(unnormalized_weights, s_ik)
-                push!(distances, distance)
-                nb_selected_pixel += 1
-            end
-        end
-
-        if nb_selected_pixel < n_neighbors && n_iter <= 3
-            ni_x_extended = max(1, ni_x[1] - 10):min(nrows, ni_x[end] + 10)
-            ni_y_extended = max(1, ni_y[1] - 10):min(ncols, ni_y[end] + 10)
-            return _calculate_cross_similarity_row(
-                dli_images, linear_ind, cartesian_ind, center_ind_cart,
-                h_top, h_bottom, ni_x_extended, ni_y_extended,
-                nrows, ncols, half_size;
-                n_iter = n_iter + 1, n_neighbors = n_neighbors,
-                distance_metric = distance_metric,
-            )
-        end
-
-        if isempty(unnormalized_weights)
-            neighbor_indices_linear = [linear_ind[center_ind_cart]]
-            normalized_weights      = [1.0]
-        else
-            weights = unnormalized_weights .* distances
-            norma   = sum(weights)
-            normalized_weights = weights ./ norma
-        end
-
-        return neighbor_indices_linear, normalized_weights
-    end
-
-    function generate_cross_similarity_matrix_W(
-        dli_images::DLI,
-        h_top,
-        h_bottom,
-        half_size::Int;
-        distance_metric::Function = gaussian_spatial_distance,
-    )
-        nrows, ncols = size(dli_images.top)
-        linear_ind    = LinearIndices((nrows, ncols))
-        cartesian_ind = CartesianIndices((nrows, ncols))
-        N = nrows * ncols
-        rows = Int[]
-        cols = Int[]
-        vals = Float64[]
-
-        for center_ind_cart in cartesian_ind
-            center_ind_linear = linear_ind[center_ind_cart]
-            i, j = center_ind_cart[1], center_ind_cart[2]
-            ni_x = max(1, i - half_size):min(nrows, i + half_size)
-            ni_y = max(1, j - half_size):min(ncols, j + half_size)
-
-            neighbor_indices, weights = _calculate_cross_similarity_row(
-                dli_images, linear_ind, cartesian_ind, center_ind_cart,
-                Float64(h_top), Float64(h_bottom),
-                ni_x, ni_y, nrows, ncols, half_size;
-                distance_metric = distance_metric,
-            )
-
-            append!(vals, weights)
-            append!(cols, neighbor_indices)
-            append!(rows, fill(center_ind_linear, length(neighbor_indices)))
-        end
-        return sparse(rows, cols, vals, N, N)
-    end
-
-    function ∇R_similarity_mat(params, prototype::AbstractArray)
-        # Matches PRISM's signature: (sim_mat,) is the 2N × 2N block-diagonal
-        # similarity matrix.  ∇R = (W − I)ᵀ (W − I).
-        N, _, _, _, (sim_mat,) = params
-
-        Id_2N = sparse(I, 2N, 2N)
-        W_I   = sim_mat - Id_2N
-        W_It  = transpose(W_I)
-
-        op_W_I  = MatrixOperator(W_I)
-        op_W_It = MatrixOperator(W_It)
-        return op_W_It * op_W_I
-    end
-end
-
 # ╔═╡ 06000008-0000-4000-8000-000000000001
 md"""
-## 7. Hybrid: Cong Polychromatic Decomp + PRISM Regularization
+## 6. Cong Polychromatic Material Decomposition
 
-### 7.1 Why this isn't pure-PRISM anymore
-
-The previous version of §7 ran PRISM's **linear** PWLS directly on the
-dual-kVp log-line-integral sinograms.  That collapsed the iodine K-edge
-into a single scalar `μ_iod_L`, which forced the inversion to
-over-attribute iodine in rod regions and under-attribute water →
-iodine rods went deeply negative at high keV.  That bias is intrinsic
-to PRISM's linear forward model and can't be fixed inside the
-linear-A framework.
-
-The pragmatic fix that keeps PRISM's §6 machinery intact:
-
-```
-Step 1.  Cong per-ray polychromatic decomposition
-         → noisy but unbiased basis line integrals
-                            │
-                            ▼
-Step 2.  PRISM regularized solve with M = I
-         → quadratic-Laplacian-denoised basis line integrals
-```
-
-Step 2 uses the **same** `RegularizedDecompositionProblemCPU` /
-`RegularizedDecomposition` we inlined in §6 — we just feed it Cong's
-output as the "measurement" and set the mixing matrix to identity,
-which collapses the data term `‖A·x − L‖²_V⁻¹` to a Tikhonov-style
-proximal `‖x − x_Cong‖²_V⁻¹`.
-
-What you gain over linear-PRISM:
-- **Polychromatic accuracy** — Cong handles the K-edge and the bowtie
-  per ray, so iodine basis line integrals come out unbiased.
-- **PRISM-style spatial smoothing** — the quadratic Laplacian still
-  couples adjacent `(col, view)` pixels per detector row.
-- **Per-channel V⁻¹ weighting** — PRISM still re-weights iodine vs
-  water by their respective basis-sinogram noise levels.
-
-### 7.2 Material basis (per-energy spectrum, Cong-style)
+Per-ray Newton solve on the polychromatic transmission integral with a
+fixed `(iodine, water)` basis seeded by `water_basis = (a = 0, c = 1)`.
+The basis builder constructs the **per-ray effective spectrum** that
+`simulate!` actually applied — tube × flat filter × bowtie × heel ×
+η(E) — and normalizes per ray so `Σ_E ŵ[col, row, E] = 1`.  Matches
+the spectrum baked into the EICT workspace's `bowtie_air_reference`
+so Cong's inversion solves the same polychromatic transmission integral
+the forward model used.
 """
 
 # ╔═╡ 06000008-0000-4000-8000-000000000010
-# Per-ray *effective* spectrum that mirrors what `simulate!` actually used.
-#
-# `BS.resolve_source_spectrum_with_bowtie` only bakes in (tube × flat filter ×
-# bowtie).  It omits two factors that the EICT forward model applies on every
-# ray (see `create_eict_workspace` and `_forward_project_poly!`):
-#
-#   1. heel(col, row, E)   — anode self-attenuation, anode-cathode gradient
-#   2. η(E)                — energy-dependent detector quantum efficiency
-#
-# After air-scan calibration, simulate!'s log-line-integral is
-#   p_meas = −log( Σ_E ŵ_eff(col,row,E)·exp(−L_E) ),    with
-#   ŵ_eff(col,row,E) = w(E)·η(E)·B(col,row,E)·heel(col,row,E)
-#                      ──────────────────────────────────────  (per-ray Σ_E = 1)
-#                      Σ_k w(k)·η(k)·B(col,row,k)·heel(col,row,k)
-#
-# That `ŵ_eff` is what Cong should invert against.  Below we rebuild it from
-# the same `PhysicsConfig` and primitives the workspace ctor used, so the
-# forward model and Cong's inversion see the same spectrum.
+# Per-ray effective spectrum (source × bowtie × heel × η) that simulate!
+# applied.  `BS.resolve_source_spectrum_full` chains the same `PhysicsConfig`
+# the EICT workspace built, so the inversion sees exactly the spectrum the
+# forward model used (heel + η are conditionally applied per the SimOptions
+# `use_*` flags).
 material_basis = let
     iodine_mat = BS.XA.Elements.Iodine
     water_mat  = BS.XA.Materials.water
 
-    function effective_spectrum(protocol, geom)
-        e, w_1d = BS.resolve_source_spectrum_without_bowtie(
-            sim_opts, protocol; scanner = scanner,
-        )
+    e_L, ŵ_L = BS.resolve_source_spectrum_full(
+        sim_opts, protocol_low;
+        scanner = scanner, geom = sim_low.geom, phantom = phantom,
+        diagnostic = true, label = "low",
+    )
+    e_H, ŵ_H = BS.resolve_source_spectrum_full(
+        sim_opts, protocol_high;
+        scanner = scanner, geom = sim_high.geom, phantom = phantom,
+        diagnostic = true, label = "high",
+    )
 
-        # Same PhysicsConfig the EICT workspace used → identical heel + η objects.
-        config = BS.build_physics_config(
-            scanner, sim_opts, Float64.(e), Float64.(w_1d); phantom = phantom,
-        )
-
-        bowtie = BS.resolve_bowtie_filter(scanner.bowtie_filter; kVp = Int(protocol.kVp))
-        B    = BS.compute_bowtie_attenuation_spectral(bowtie, geom, Float64.(e))   # [col, row, E]
-        heel = config.heel_effect !== nothing ?
-            BS.compute_heel_spectral(config.heel_effect, geom, Float64.(e)) :
-            ones(Float64, size(B)...)
-        η    = config.detector_efficiency !== nothing ?
-            BS.compute_eid_efficiency_vector(config.detector_efficiency, Float64.(e)) :
-            ones(Float64, length(e))
-
-        w_norm = Float64.(w_1d) ./ sum(Float64.(w_1d))
-
-        # ŵ_raw = w_norm(E) · η(E) · B(col,row,E) · heel(col,row,E)
-        ŵ_raw = similar(B)
-        @inbounds for k in 1:length(e)
-            wη = w_norm[k] * η[k]
-            for row in 1:size(B, 2), col in 1:size(B, 1)
-                ŵ_raw[col, row, k] = wη * B[col, row, k] * heel[col, row, k]
-            end
-        end
-        ŵ = Float32.(ŵ_raw ./ sum(ŵ_raw; dims = 3))
-
-        # Diagnostic: report center-vs-edge mean energy on the effective spectrum.
-        mid_c, mid_r = size(ŵ, 1) ÷ 2 + 1, size(ŵ, 2) ÷ 2 + 1
-        mE_center = sum(Float64(e[k]) * ŵ[mid_c, mid_r, k] for k in 1:length(e))
-        mE_edge   = sum(Float64(e[k]) * ŵ[1,     mid_r, k] for k in 1:length(e))
-        @info "effective spectrum @ $(Int(protocol.kVp)) kVp — " *
-              "center mean E = $(round(mE_center, digits = 1)) keV, " *
-              "edge mean E = $(round(mE_edge, digits = 1)) keV " *
-              "(Δ = $(round(mE_edge - mE_center, digits = 1)) keV)"
-
-        (e = e, ŵ = ŵ)
-    end
-
-    low  = effective_spectrum(protocol_low,  sim_low.geom)
-    high = effective_spectrum(protocol_high, sim_high.geom)
-
-    p_L = Float32[Float32(BS.compute_mass_μ_at_energy(iodine_mat, Float64(E))) for E in low.e]
-    q_L = Float32[Float32(BS.compute_mass_μ_at_energy(water_mat,  Float64(E))) for E in low.e]
-    p_H = Float32[Float32(BS.compute_mass_μ_at_energy(iodine_mat, Float64(E))) for E in high.e]
-    q_H = Float32[Float32(BS.compute_mass_μ_at_energy(water_mat,  Float64(E))) for E in high.e]
+    p_L = Float32[Float32(BS.compute_mass_μ_at_energy(iodine_mat, Float64(E))) for E in e_L]
+    q_L = Float32[Float32(BS.compute_mass_μ_at_energy(water_mat,  Float64(E))) for E in e_L]
+    p_H = Float32[Float32(BS.compute_mass_μ_at_energy(iodine_mat, Float64(E))) for E in e_H]
+    q_H = Float32[Float32(BS.compute_mass_μ_at_energy(water_mat,  Float64(E))) for E in e_H]
 
     (
-        ŵ_L = low.ŵ,  p_L = p_L, q_L = q_L,
-        ŵ_H = high.ŵ, p_H = p_H, q_H = q_H,
+        ŵ_L = ŵ_L, p_L = p_L, q_L = q_L,
+        ŵ_H = ŵ_H, p_H = p_H, q_H = q_H,
     )
 end;
 
-# ╔═╡ 06000008-0000-4000-8000-000000000020
-md"""
-### 7.3 Background `Rect` + λ choice
-
-PRISM samples a rectangular background region of the (basis) sinogram
-to estimate per-channel noise variance.  We take the first 20 detector
-columns × all views — well off the phantom, so the basis values there
-are near zero and their variance captures Cong's output noise.
-
-`λ` is the single regularizer knob.  Now operating on **basis line
-integrals** (not log-line-integrals), so the natural scale is smaller —
-default `1e-3`.  Increase for more spatial smoothing, decrease to stay
-closer to Cong's per-ray output.
-"""
-
-# ╔═╡ 06000008-0000-4000-8000-000000000021
-PRISM_λ = 1.0e-3;
-
-# ╔═╡ 06000008-0000-4000-8000-000000000023
-# Regularizer toggle.  Switch between PRISM's three CPU regularizer flavors:
-#   :quadratic        — 5-point Laplacian (cheap; smooth interiors AND edges)
-#   :edge_weighted    — Canny-gated 5-point Laplacian (smooth interiors, sharp edges)
-#   :cross_similarity — joint-channel patch similarity (slower, ~2-5×; sharper rods,
-#                       preserves fine structure shared across iod + water channels)
-PRISM_REG = :cross_similarity
-
-# ╔═╡ 06000008-0000-4000-8000-000000000024
-# Cross-similarity hyperparameters (used only when PRISM_REG == :cross_similarity).
-# h_top / h_bottom are auto-estimated from the background strip at solve time,
-# so the only knob here is the search-window half-size.
-#
-# The PRISM paper uses half_size = 10 (21 × 21 window) on 353 × 266 projections.
-# Our sinogram slab is 834 × 984, so half_size = 10 → ~4 GB of sparse W per
-# slab — too tight for the 16 GB memory budget.  Default to 5 (11 × 11 window),
-# which is the largest that fits comfortably; bump if you have headroom.
-PRISM_XSIM_HALF_SIZE = 5;
-
-# ╔═╡ 06000008-0000-4000-8000-000000000022
-PRISM_BG_RECT = let
-    n_col, n_row, n_view = size(sim_low.sino)
-    # Rect((xmin, ymin), (width, height)) on the (n_col × n_view) slab —
-    # x runs along detector columns, y runs along views.
-    Rect(1, 1, 19, n_view - 1)
-end;
-
-# ╔═╡ 06000008-0000-4000-8000-000000000030
-md"""
-### 7.4 Cong polychromatic decomposition + PRISM denoising
-
-**Step 1**: Run Cong on the full 3D sinograms.  This is BS's
-`apply_cong!` — per-ray Brent + Newton on the polychromatic
-transmission integral.  Output: `cong_iodine`, `cong_water` basis line
-integrals (noisy but unbiased).
-
-**Step 2**: For each detector row, fold Cong's `(cong_iodine,
-cong_water)` slab into a PRISM `DLI` and call
-`RegularizedDecompositionProblemCPU` with **identity mixing matrix**
-`M = [1 0; 0 1]`.  PRISM's data term collapses to `‖x − x_Cong‖²_V⁻¹`,
-and CG converges in tens of iterations to the Tikhonov-denoised
-basis maps.
-
-!!! tip "Subsetting for fast iteration"
-    Narrow `PRISM_ROW_RANGE` to a sub-range to iterate λ quickly;
-    uncomputed rows stay zero.
-"""
-
-# ╔═╡ 06000008-0000-4000-8000-000000000031
-PRISM_ROW_RANGE = let
-    n_row = size(sim_low.sino, 2)
-    # The simulator already sizes the detector to match the recon z-slab
-    # (recon_opts.z_cm = 0.5 cm here), so n_row is small (≈8 rows).  Just
-    # solve every detector row — narrow band logic isn't useful at this
-    # z-extent.  Override to a sub-range only if you want a smoke test.
-    1:n_row
-end
-
 # ╔═╡ 06000008-0000-4000-8000-000000000040
+# Pure Cong polychromatic per-ray decomposition.
+#
+# Earlier this cell ran Cong → PRISM-regularized-denoise.  Once the
+# physics audit pinned the dominant accuracy gap on un-corrected fill_
+# factor + optical_crosstalk effects (see SimOptions cell above), raw
+# Cong alone tracks the theoretical curves and PRISM denoise adds
+# nothing at this operating point.  The PRISM machinery in §6 stays
+# inline as dormant code for future noise-handling experiments.
 sino_basis = let
-    sino_low_cpu  = sim_low.sino
-    sino_high_cpu = sim_high.sino
+    sino_low_gpu  = to_gpu(Float32.(sim_low.sino))
+    sino_high_gpu = to_gpu(Float32.(sim_high.sino))
 
-    # ─── Step 1: Cong polychromatic per-ray decomposition ────────────────
-    sino_low_gpu  = to_gpu(Float32.(sino_low_cpu))
-    sino_high_gpu = to_gpu(Float32.(sino_high_cpu))
     sino_y = similar(sino_low_gpu);  fill!(sino_y, 0.0f0)
     sino_c = similar(sino_low_gpu);  fill!(sino_c, 0.0f0)
 
-    @info "Cong polychromatic decomposition: $(size(sino_low_cpu))"
+    @info "Cong polychromatic decomposition: $(size(sim_low.sino))"
     cong_elapsed = @elapsed begin
         cong_ws = BS.create_cong_workspace(sino_low_gpu, material_basis)
         BS.apply_cong!(
@@ -1131,94 +350,15 @@ sino_basis = let
     end
     @info "Cong done in $(round(cong_elapsed, digits = 1)) s"
 
-    cong_iodine = Array(sino_y)   # (n_col, n_row, n_view), g/cm²
-    cong_water  = Array(sino_c)
+    result = (
+        sino_iodine = Array(sino_y),
+        sino_water  = Array(sino_c),
+        geom        = sim_low.geom,
+    )
     sino_low_gpu = nothing; sino_high_gpu = nothing
     sino_y = nothing; sino_c = nothing; cong_ws = nothing
     GC.gc(true)
-
-    # ─── Step 2: PRISM regularized denoise (per detector row) ────────────
-    n_col, n_row, n_view = size(cong_iodine)
-    sino_iodine = zeros(Float32, n_col, n_row, n_view)
-    sino_water  = zeros(Float32, n_col, n_row, n_view)
-
-    # Identity mixing — PRISM's `A` becomes the 2N × 2N identity, so the
-    # data term `‖A·x − L‖²_V⁻¹` collapses to `‖x − L‖²_V⁻¹`.
-    μ_id_1 = μ("BasisOne", 1.0, 0.0)   # M[:,1] = [1, 0]
-    μ_id_2 = μ("BasisTwo", 0.0, 1.0)   # M[:,2] = [0, 1]
-    λ      = PRISM_λ
-
-    # Shape-only prototype for the regularizers that don't depend on data.
-    proto_top = zeros(Float64, n_col, n_view)
-
-    # For :quadratic the Laplacian doesn't depend on slab data, so build once.
-    L_N_quad   = generate_quadratic_regularization_matrix(proto_top)
-    ∇R_blk_quad = blockdiag(L_N_quad, L_N_quad)
-
-    function build_regularizer(kind::Symbol, dli_cong::DLI, dli_raw::DLI)
-        if kind == :quadratic
-            return Regularization("quadratic", ∇R_quad_mat, (∇R_blk_quad,))
-        elseif kind == :edge_weighted
-            # Canny on the Cong outputs — basis maps have higher rod contrast
-            # than the raw kVp projections, giving cleaner edge masks.
-            edges = compute_edge_map(dli_cong, 0.8, 0.2)
-            L_N_ew = generate_ew_quadratic_regularization_matrix(
-                dli_cong.top; combined_edges = edges,
-                edge_val = 0.2, non_edge_val = 1.0,
-            )
-            ∇R_blk_ew = blockdiag(L_N_ew, L_N_ew)
-            return Regularization("edge_weighted", ∇R_quad_ew_mat, (∇R_blk_ew,))
-        elseif kind == :cross_similarity
-            # KEY: cross-similarity W is computed from the RAW DUAL-ENERGY
-            # projections (PRISM paper Eq. 8 — the spectral consistency check
-            # `|x_iL − x_kL| < 3h_L AND |x_iH − x_kH| < 3h_H` is meaningful
-            # only on the original two-energy data, not on already-decomposed
-            # basis maps).  The denoising *target* stays as the Cong outputs
-            # via the Problem's `dli_images` field.
-            h_top    = max(std(extract_pixels(dli_raw.top,    PRISM_BG_RECT)), 1e-6)
-            h_bottom = max(std(extract_pixels(dli_raw.bottom, PRISM_BG_RECT)), 1e-6)
-            W_N = generate_cross_similarity_matrix_W(
-                dli_raw, h_top, h_bottom, PRISM_XSIM_HALF_SIZE,
-            )
-            sim_mat = blockdiag(W_N, W_N)
-            return Regularization("cross_similarity", ∇R_similarity_mat, (sim_mat,))
-        else
-            error("unknown PRISM_REG = $(kind) " *
-                  "(expected :quadratic | :edge_weighted | :cross_similarity)")
-        end
-    end
-
-    n_rows_to_do = length(PRISM_ROW_RANGE)
-    @info "PRISM denoising ($(PRISM_REG)): $(n_rows_to_do) detector row(s)"
-    den_elapsed = @elapsed begin
-        for (k, r) in enumerate(PRISM_ROW_RANGE)
-            # Denoising target: Cong's polychromatic basis line integrals
-            slab_iod = Float64.(@view cong_iodine[:, r, :])
-            slab_wat = Float64.(@view cong_water[:,  r, :])
-            dli_cong = DLI(slab_iod, slab_wat)
-
-            # Raw dual-energy projections — used only to compute the cross-
-            # similarity W (paper Eq. 8 spectral check).
-            slab_lo  = Float64.(@view sino_low_cpu[:,  r, :])
-            slab_hi  = Float64.(@view sino_high_cpu[:, r, :])
-            dli_raw  = DLI(slab_lo, slab_hi)
-
-            reg = build_regularizer(PRISM_REG, dli_cong, dli_raw)
-
-            prob = RegularizedDecompositionProblemCPU(
-                dli_cong, μ_id_1, μ_id_2, λ, PRISM_BG_RECT, reg,
-            )
-            mi = RegularizedDecomposition(prob; reltol = 1e-6, verbose = false)
-
-            sino_iodine[:, r, :] .= Float32.(mi.mat1)
-            sino_water[:,  r, :] .= Float32.(mi.mat2)
-
-            (k == 1 || k == n_rows_to_do) && @info "  row $(r)  done"
-        end
-    end
-    @info "Denoising done in $(round(den_elapsed, digits = 1)) s"
-
-    (sino_iodine = sino_iodine, sino_water = sino_water, geom = sim_low.geom)
+    result
 end;
 
 # ╔═╡ 06000008-0000-4000-8000-000000000050
@@ -1262,7 +402,7 @@ end
 
 # ╔═╡ 06000009-0000-4000-8000-000000000001
 md"""
-## 8. FBP: Iodine and Water Basis Maps
+## 7. FBP: Iodine and Water Basis Maps
 """
 
 # ╔═╡ 06000009-0000-4000-8000-000000000010
@@ -1325,7 +465,7 @@ end
 
 # ╔═╡ 0600000a-0000-4000-8000-000000000001
 md"""
-## 9. Z-Direction Median Filter
+## 8. Z-Direction Median Filter
 """
 
 # ╔═╡ 0600000a-0000-4000-8000-000000000005
@@ -1348,11 +488,56 @@ end;
 
 # ╔═╡ 0600000b-0000-4000-8000-000000000001
 md"""
-## 10. VMI Synthesis
+## 9. VMI Synthesis
 
 Textbook 2-basis linear mix; VMI grid **40, 70, 100, 140 keV** as
 requested.
 """
+
+# ╔═╡ 0600000b-0000-4000-8000-000000000012
+# Solid-water anchor diagnostic — mirrors nb07's `solid_water_basis` cell.
+# Mean (c_water, c_iodine) over a deeply-eroded REGION_SOLID_WATER ROI
+# (12-px ≈ 8 mm erosion in the Gammex 472 mid-slice plane).  Used in the
+# VMI-synth cell below to log Δ% drift between the SW-anchored μ_water and
+# the textbook mono divisor μρ_water(E) — a single-number sanity check
+# that the decomposition is recovering pure water at c_water ≈ 1.0.
+solid_water_basis = let
+    ERODE_PX = 12.0
+
+    mask_2d_raw = phantom_cpu.mask[:, :, size(phantom_cpu.mask, 3) ÷ 2]
+    sw_bool_raw = (mask_2d_raw .== UInt8(BS.REGION_SOLID_WATER))
+    sw_bool     = BS.erode_mask_2d(sw_bool_raw; erode_px = ERODE_PX)
+
+    n_raw = count(sw_bool_raw); n_eroded = count(sw_bool)
+    n_eroded == 0 && error(
+        "solid_water_basis: deep erosion (σ = $(ERODE_PX) px) wiped out the SW " *
+            "ROI (raw count = $(n_raw)).  Reduce erode_px or check phantom mask."
+    )
+    @info "solid_water_basis: SW mid-slice voxel count $(n_raw) → $(n_eroded) " *
+        "after $(ERODE_PX)-px erosion"
+
+    sw_idx = findall(sw_bool)
+    n_z    = size(basis_z.vol_water, 3)
+    function _mean(vol)
+        s = 0.0; n = 0
+        for z in 1:n_z, ci in sw_idx
+            s += vol[ci, z]; n += 1
+        end
+        return s / n
+    end
+
+    c_w = Float64(_mean(basis_z.vol_water))
+    c_i = Float64(_mean(basis_z.vol_iodine))
+    @info "solid_water_basis: ⟨c_water⟩_SW  = $(round(c_w, digits = 4)) g/cm³, " *
+        "⟨c_iodine⟩_SW = $(round(c_i, digits = 6)) g/cm³"
+
+    (
+        c_water  = c_w,
+        c_iodine = c_i,
+        n_voxels = length(sw_idx) * n_z,
+        mask_2d  = collect(sw_bool),
+    )
+end;
 
 # ╔═╡ 0600000b-0000-4000-8000-000000000015
 de_vmi_energies = [40.0, 70.0, 100.0, 140.0];
@@ -1360,8 +545,20 @@ de_vmi_energies = [40.0, 70.0, 100.0, 140.0];
 # ╔═╡ 0600000b-0000-4000-8000-000000000020
 vmi_HU_by_keV = let
     c_iodine_mg_per_mL = basis_z.vol_iodine .* 1000.0f0
+
     out = Dict{Float64, Array{Float32, 3}}()
     for E in de_vmi_energies
+        # Diagnostic only — the SW-ROI synth-evaluated μ_water vs the
+        # textbook mono divisor.  Drift = residual basis-decomp bias.
+        μρ_w = BS.compute_mass_μ_at_energy(BS.XA.Materials.water,  E)
+        μρ_I = BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine, E)
+        μ_water_anchor = solid_water_basis.c_water  * μρ_w +
+                         solid_water_basis.c_iodine * μρ_I
+        Δ_pct = 100.0 * (μ_water_anchor - μρ_w) / μρ_w
+        @info "VMI synth @ $(Int(E)) keV: divisor = $(round(μρ_w, digits = 5)) cm⁻¹ " *
+            "(mono μρ_water);  SW-ROI anchor = $(round(μ_water_anchor, digits = 5)) " *
+            "→ Δ = $(round(Δ_pct, digits = 2))%"
+
         out[E] = BS.synth_vmi_2basis(
             basis_z.vol_water, c_iodine_mg_per_mL;
             energy_keV = E,
@@ -1404,7 +601,7 @@ end
 
 # ╔═╡ 0600000c-0000-4000-8000-000000000001
 md"""
-## 11. VMI Post-Processing (Mono+)
+## 10. VMI Post-Processing (Mono+)
 """
 
 # ╔═╡ 0600000c-0000-4000-8000-000000000005
@@ -1787,44 +984,12 @@ let
     fig
 end
 
-# ╔═╡ 0600000f-0000-4000-8000-000000000001
-md"""
-## Summary
-
-```
-Simulate 80 + 140 kVp  (scatter-corrected log-line-integral sinograms)
-   → PRISM Inlined PWLS  (per detector row, AᵀV⁻¹A + λ∇R, KrylovJL_CG)
-   → FBP × 2  (iodine, water basis maps)
-   → Z-Direction Median Filter
-   → Monoenergetic VMI Synthesis  (textbook 2-basis)
-   → Mono+ Post-Processing
-   → Measured vs Theoretical Per-Rod Regression  at 40 / 70 / 100 / 140 keV
-```
-
-Single solver knob: `PRISM_λ` ($(PRISM_λ)).  Effective μ values come
-from the known polychromatic spectra (zero ROI-tuning).
-
-!!! info "Where to go next"
-    1. Sweep `PRISM_λ` over `[1e-4, 1e-3, 1e-2, 1e-1]` and watch the Ca/I
-       rod regression slope and RMSE.
-    2. Replace the global per-channel `V⁻¹` with per-pixel
-       `1/(I₀·exp(-p))` Poisson weights from `BS.compute_detector_I0`.
-    3. Replace effective-μ `A` with a polychromatic forward model and
-       outer Gauss-Newton — the path discussed in the planning thread.
-"""
-
 # ╔═╡ Cell order:
 # ╟─06000001-0000-4000-8000-000000000010
 # ╟─06000001-0000-4000-8000-000000000020
 # ╠═06000001-0000-4000-8000-000000000001
 # ╠═06000001-0000-4000-8000-000000000002
 # ╠═06000001-0000-4000-8000-000000000003
-# ╠═06000001-0000-4000-8000-000000000004
-# ╠═06000001-0000-4000-8000-000000000005
-# ╠═06000001-0000-4000-8000-000000000006
-# ╠═06000001-0000-4000-8000-000000000007
-# ╠═06000001-0000-4000-8000-000000000008
-# ╠═06000001-0000-4000-8000-000000000009
 # ╠═06000001-0000-4000-8000-000000000030
 # ╠═06000001-0000-4000-8000-000000000031
 # ╠═06000001-0000-4000-8000-000000000040
@@ -1844,45 +1009,8 @@ from the known polychromatic spectra (zero ROI-tuning).
 # ╠═06000006-0000-4000-8000-000000000010
 # ╠═06000006-0000-4000-8000-000000000020
 # ╟─06000006-0000-4000-8000-000000000040
-# ╟─06000007-0000-4000-8000-000000000001
-# ╟─06000007-0000-4000-8000-000000000010
-# ╠═06000007-0000-4000-8000-000000000011
-# ╠═06000007-0000-4000-8000-000000000012
-# ╠═06000007-0000-4000-8000-000000000013
-# ╠═06000007-0000-4000-8000-000000000014
-# ╟─06000007-0000-4000-8000-000000000020
-# ╠═06000007-0000-4000-8000-000000000021
-# ╠═06000007-0000-4000-8000-000000000022
-# ╟─06000007-0000-4000-8000-000000000030
-# ╠═06000007-0000-4000-8000-000000000031
-# ╠═06000007-0000-4000-8000-000000000032
-# ╟─06000007-0000-4000-8000-000000000040
-# ╠═06000007-0000-4000-8000-000000000041
-# ╠═06000007-0000-4000-8000-000000000042
-# ╠═06000007-0000-4000-8000-000000000043
-# ╟─06000007-0000-4000-8000-000000000050
-# ╠═06000007-0000-4000-8000-000000000051
-# ╟─06000007-0000-4000-8000-000000000060
-# ╠═06000007-0000-4000-8000-000000000061
-# ╟─06000007-0000-4000-8000-000000000070
-# ╠═06000007-0000-4000-8000-000000000071
-# ╟─06000007-0000-4000-8000-000000000080
-# ╠═06000007-0000-4000-8000-000000000081
-# ╠═06000007-0000-4000-8000-000000000082
-# ╠═06000007-0000-4000-8000-000000000083
-# ╟─06000007-0000-4000-8000-000000000090
-# ╠═06000007-0000-4000-8000-000000000091
-# ╟─06000007-0000-4000-8000-0000000000a0
-# ╠═06000007-0000-4000-8000-0000000000a1
 # ╟─06000008-0000-4000-8000-000000000001
 # ╠═06000008-0000-4000-8000-000000000010
-# ╟─06000008-0000-4000-8000-000000000020
-# ╠═06000008-0000-4000-8000-000000000021
-# ╠═06000008-0000-4000-8000-000000000023
-# ╠═06000008-0000-4000-8000-000000000024
-# ╠═06000008-0000-4000-8000-000000000022
-# ╟─06000008-0000-4000-8000-000000000030
-# ╠═06000008-0000-4000-8000-000000000031
 # ╠═06000008-0000-4000-8000-000000000040
 # ╟─06000008-0000-4000-8000-000000000050
 # ╟─06000009-0000-4000-8000-000000000001
@@ -1892,6 +1020,7 @@ from the known polychromatic spectra (zero ROI-tuning).
 # ╠═0600000a-0000-4000-8000-000000000005
 # ╠═0600000a-0000-4000-8000-000000000010
 # ╟─0600000b-0000-4000-8000-000000000001
+# ╠═0600000b-0000-4000-8000-000000000012
 # ╠═0600000b-0000-4000-8000-000000000015
 # ╠═0600000b-0000-4000-8000-000000000020
 # ╟─0600000b-0000-4000-8000-000000000040
@@ -1909,4 +1038,3 @@ from the known polychromatic spectra (zero ROI-tuning).
 # ╟─0600000e-0000-4000-8000-000000000030
 # ╟─0600000e-0000-4000-8000-000000000040
 # ╟─0600000e-0000-4000-8000-000000000050
-# ╟─0600000f-0000-4000-8000-000000000001

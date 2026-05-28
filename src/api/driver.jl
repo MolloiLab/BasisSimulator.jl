@@ -11,6 +11,7 @@ export simulate!,
     build_physics_config,
     resolve_source_spectrum_without_bowtie,
     resolve_source_spectrum_with_bowtie,
+    resolve_source_spectrum_full,
     apply_bowtie_to_spectrum
 
 # =============================================================================
@@ -725,6 +726,135 @@ function resolve_source_spectrum_with_bowtie(
         w_1d, e, scanner, geom, protocol;
         include_bowtie = include_bowtie, label = label
     )
+    return e, ŵ
+end
+
+"""
+    resolve_source_spectrum_full(
+        sim_opts, protocol;
+        scanner, geom, phantom = nothing,
+        diagnostic = false, label = "",
+    ) -> (e, ŵ)
+
+**Full-physics effective spectrum** — the spectrum each detector ray actually
+sees after every spectrum-shaping effect simulate! applies, normalized per
+ray so `Σ_E ŵ[col, row, E] = 1`.
+
+This composes `resolve_source_spectrum_without_bowtie` (tube spectrum × flat
+filter × additional filters × inverse-square SDD scaling) with the same
+`PhysicsConfig` simulate! builds (via `build_physics_config`), then multiplies
+in the bowtie, the heel-effect spectrum, and the energy-dependent detector
+efficiency `η(E)` — each conditionally on its `sim_opts.use_*` flag.
+
+The output `ŵ` is what to feed to per-ray polychromatic inverters (Cong,
+beam-hardening correction, etc.) when you want the inversion's forward model
+to match the forward model `simulate!` actually applied.  Use this instead of
+chaining `resolve_source_spectrum_with_bowtie` + manual heel + manual η.
+
+# Composition
+```
+w_source(E) = resolve_source_spectrum_without_bowtie(sim_opts, protocol)
+B(col,row,E) = compute_bowtie_attenuation_spectral(scanner.bowtie_filter, geom, E)
+heel(col,row,E) = compute_heel_spectral(config.heel_effect, geom, E)         [if heel enabled]
+η(E)        = compute_eid_efficiency_vector(config.detector_efficiency, E)   [if η enabled]
+
+ŵ_raw(col,row,E) = w_source(E) · η(E) · B(col,row,E) · heel(col,row,E)
+ŵ(col,row,E)     = ŵ_raw / Σ_E ŵ_raw
+```
+
+When `sim_opts.use_heel_effect = false` or `use_detector_efficiency = false`,
+the corresponding factor collapses to 1 (via the `config.heel_effect ===
+nothing` branch), so the function automatically follows whatever the
+SimOptions config says — guaranteeing the inversion sees exactly what
+simulate! applied.
+
+# Arguments
+- `sim_opts::SimOptions` — same struct passed to `simulate!`; its `use_*`
+  flags gate which spectrum effects are baked in.
+- `protocol::CTProtocol` — kVp / anode angle / additional filters.
+
+# Keyword Arguments
+- `scanner` — Scanner hardware definition.
+- `geom` — Workspace geometry (`ws.geom` from a forward-projected sim);
+  needed to assemble the per-(col, row) bowtie / heel maps.
+- `phantom = nothing` — Forwarded to `build_physics_config` (only matters
+  for scatter scaling, which is sinogram-domain and irrelevant here).
+- `diagnostic = false` — When `true`, log the center-vs-edge mean energy
+  to help spot bowtie / heel calibration drift.
+- `label = ""` — Prepended to the diagnostic log line for multi-kVp runs.
+
+# Returns
+- `e::Vector` — Energy grid (keV).
+- `ŵ::Array{Float32, 3}` — Per-ray effective spectrum, shape `[n_col, n_row, n_E]`,
+  normalized per ray.
+
+# Example
+```julia
+e_L, ŵ_L = BS.resolve_source_spectrum_full(
+    sim_opts, protocol_low;
+    scanner = scanner, geom = sim_low.geom, phantom = phantom,
+)
+e_H, ŵ_H = BS.resolve_source_spectrum_full(
+    sim_opts, protocol_high;
+    scanner = scanner, geom = sim_high.geom, phantom = phantom,
+)
+material_basis = (ŵ_L = ŵ_L, p_L = …, q_L = …, ŵ_H = ŵ_H, p_H = …, q_H = …)
+```
+"""
+function resolve_source_spectrum_full(
+        sim_opts::SimOptions,
+        protocol::CTProtocol;
+        scanner,
+        geom,
+        phantom::Union{Nothing, Phantom} = nothing,
+        diagnostic::Bool = false,
+        label::String = "",
+    )
+    # Step 1: 1D source spectrum (tube × flat filter × additional filters × SDD)
+    e, w_1d = resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner = scanner)
+
+    # Step 2: identical PhysicsConfig that simulate!'s workspace ctor uses,
+    # so `config.heel_effect` / `config.detector_efficiency` are populated
+    # iff the corresponding sim_opts flag is true.
+    config = build_physics_config(
+        scanner, sim_opts, Float64.(e), Float64.(w_1d); phantom = phantom,
+    )
+
+    # Step 3: bowtie B[col, row, E]
+    bowtie = resolve_bowtie_filter(scanner.bowtie_filter)
+    B = compute_bowtie_attenuation_spectral(bowtie, geom, Float64.(e))   # [col, row, E]
+
+    # Step 4: conditional heel(col, row, E) and η(E)
+    heel = config.heel_effect !== nothing ?
+        compute_heel_spectral(config.heel_effect, geom, Float64.(e)) :
+        ones(Float64, size(B)...)
+    η = config.detector_efficiency !== nothing ?
+        compute_eid_efficiency_vector(config.detector_efficiency, Float64.(e)) :
+        ones(Float64, length(e))
+
+    # Step 5: w_source · η · B · heel, then per-pixel normalize
+    w_norm = Float64.(w_1d) ./ sum(Float64.(w_1d))
+    ŵ_raw = similar(B)
+    @inbounds for k in 1:length(e)
+        wη = w_norm[k] * η[k]
+        for row in 1:size(B, 2), col in 1:size(B, 1)
+            ŵ_raw[col, row, k] = wη * B[col, row, k] * heel[col, row, k]
+        end
+    end
+    ŵ = Float32.(ŵ_raw ./ sum(ŵ_raw; dims = 3))
+
+    if diagnostic
+        mid_c = size(ŵ, 1) ÷ 2 + 1
+        mid_r = size(ŵ, 2) ÷ 2 + 1
+        mE_center = sum(Float64(e[k]) * ŵ[mid_c, mid_r, k] for k in eachindex(e))
+        mE_edge   = sum(Float64(e[k]) * ŵ[1,     mid_r, k] for k in eachindex(e))
+        tag = isempty(label) ? "" : " ($(label))"
+        @info "effective spectrum$(tag) @ $(Int(protocol.kVp)) kVp — " *
+              "center mean E = $(round(mE_center, digits = 1)) keV, " *
+              "edge mean E = $(round(mE_edge, digits = 1)) keV " *
+              "(Δ = $(round(mE_edge - mE_center, digits = 1)) keV)"
+    end
+
     return e, ŵ
 end
 
