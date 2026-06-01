@@ -16,6 +16,9 @@ using Statistics: mean, std, quantile
 # ╔═╡ 08010003-0000-4000-8000-000000000007
 using Unitful: @u_str
 
+# ╔═╡ 08010003-0000-4000-8000-000000000008
+using Random: MersenneTwister, randn!
+
 # ╔═╡ 08010001-0000-4000-8000-000000000001
 md"""
 # 08 · QRM-Thorax Pure-Material PCCT VMI · **Full-Resolution True-Scan Reference**
@@ -436,6 +439,13 @@ scanner = let
 
         flat_filter_material = :aluminum,
         flat_filter_thickness = 3.0,
+        bowtie_filter = :medium_body,   # SANDBOX: GE medium-body bowtie, turned ON to
+                                 # exercise + VALIDATE the per-pixel-bowtie pipeline end to end
+                                 # (forward → per-pixel I0 → noise → scatter → combine → Cong Φ).
+                                 # The real Naeotom Alpha has NO bowtie — set :none for physical
+                                 # fidelity once the machinery is validated here.  :medium_body
+                                 # ≈ a 30 cm thorax; :large_body over-attenuates the lateral
+                                 # body edges in this 32 cm FOV.  Any GE profile exercises the path.
 
         detector_material = :cdte,
         detector_depth = 1.6,
@@ -474,7 +484,7 @@ phantom.
 # ╔═╡ 08030002-0000-4000-8000-000000000010
 protocol = BS.CTProtocol(
     kVp = 140,
-    mA = 174.0,
+    mA = 174.0,    # clinical PCCT dose (matches header + canonical nb04); was 5.0
     views = 1200,
     rotation_time = 0.5,
     collimation_mm = 2.5,
@@ -493,19 +503,21 @@ md"""
 sim_opts = BS.SimOptions(
     fidelity = :pcct,
     seed = 1234,
-    
+
+    # ─── Inert for PCCT (flag exists but does nothing) ───
     use_fill_factor = false,
     use_detector_efficiency = false,
-    use_scatter = false,
     use_optical_crosstalk = false,
     use_focal_spot = false,
-    use_noise = false,
     use_lag = false,
     use_heel_effect = false,
-    
+
+    # ─── Active for PCCT ───
+    use_scatter = false,
+    use_noise = false,
     use_pcct_pileup = false,
     pcct_noise_reduction = 0.0,
-);
+)
 
 # ╔═╡ 08030003-0000-4000-8000-000000000020
 # Same recon grid as notebook 07: 512 × 512 in-plane at 0.625 mm
@@ -774,43 +786,326 @@ let
     )
 end
 
-# ╔═╡ 08030004-0000-4000-8000-000000000012
-# Pile-up correction (fast — works on the corrected bins from `sim_raw_corrected`).
-# No-op when `sim_raw_corrected.pileup_S === nothing` (i.e. `use_pcct_pileup = false`).
-sim_pileup = let
+# ╔═╡ 08030004-0000-4000-8000-00000000000e
+# === FAST CELL — Forward noise (mirror of apply_pcct_noise! photon_counting.jl:780-853) ===
+# Adds Poisson photon-counting noise (Gaussian approx for high counts, exact
+# Poisson for low counts) to each bin.  Placed BEFORE pile-up forward to
+# match source pipeline order (driver.jl: scatter → noise → pile-up).
+#
+# Unlike pile-up/scatter, the scalar-I0 trick does NOT preserve noise
+# statistics correctly — Poisson variance ∝ N_actual, but using scalar I0
+# scales the variance by I0_scalar/I0_pp which is wrong by a factor of
+# √(I0_scalar/I0_pp).  So we use the *per-pixel physical* I0:
+#     I0_phys_pp[c,r,b] = I0_per_pixel[c,r,b] · (I0_physics / Σ_b I0_bins)
+# where I0_physics = `compute_detector_I0(geom, protocol, sum_w)` (actual photon
+# flux per detector pixel per view) and Σ_b I0_bins normalizes the UN-normalized
+# DRM-weighted I0_per_pixel into a per-bin FRACTION — matching the source
+# `_compute_pcct_noise_I0` (photon_counting.jl:890-896) so I0_phys_pp[b] sums to
+# I0_physics.  Dividing by a bare 1e6 here leaves the spectrum's raw fluence in
+# the count, inflating N by ~total_raw and suppressing σ by ~√total_raw (≈1452×).
+#
+# Toggle is local — independent of sim_opts.use_noise / sim_opts.seed.
+sim_noise_forward = let
+    APPLY_NOISE_FORWARD = true      # per-bin Poisson noise ON (normal PCCT path —
+                                    # inline mirror of source apply_pcct_noise!).
+    NOISE_SEED          = 1234
+    NOISE_REDUCTION     = 0.0       # 0 = raw physics; 0.7 ≈ QIR-3 vendor reduction
+    # :count = Poisson-in-counts then −log (scanner-faithful, BUT carries the
+    #          Jensen/log bias ≈ (1−nr)²/(2N̄) that blows up in photon-starved
+    #          low bins → systematic, energy-dependent trend shift).
+    # :log   = inject Gaussian noise directly in the line-integral domain with
+    #          σ_p = (1−nr)/√N̄.  Same variance, ZERO bias by construction
+    #          (drops the +1/(2N̄) term).  Gaussian linearization: correct
+    #          variance everywhere, wrong tail shape only when N̄ ≲ 10.
+    NOISE_DOMAIN        = :log
+
     bins = [copy(b) for b in sim_raw_corrected.bins_raw]
-    if sim_raw_corrected.pileup_S !== nothing
-        BS.apply_pcct_pileup_correction!(bins, sim_raw_corrected.I0_bins, sim_raw_corrected.pileup_S)
-        @info "Pile-up correction applied"
+
+    if APPLY_NOISE_FORWARD
+        I0_physics = BS.compute_detector_I0(sim_raw.geom, protocol, sum(sim_raw.weights))
+        # `I0_per_pixel` (= ws.I0_bins, scaled by per-pixel bowtie) is the
+        # UN-normalized DRM-weighted count `1e6 · Σ_E w·η·R[·,b]` — it sums over
+        # bins to `1e6 · total_raw`, NOT 1e6.  The source noise model
+        # (_compute_pcct_noise_I0, photon_counting.jl:890-896) distributes the
+        # physical flux I0_physics across bins by the FRACTION raw[b]/total_raw,
+        # so the per-pixel physical I0 must be normalized by Σ_b I0_bins.
+        # Dividing by 1e6 here (the forward-projection W-matrix baseline) leaves
+        # raw[b] un-normalized → counts inflated by total_raw (~2e6) → σ ∝ 1/√N
+        # collapses to ~0.  Use Σ_b I0_bins so I0_phys_pp[b] == I0_physics·frac[b].
+        I0_bins_sum = Float32(sum(sim_raw.I0_bins_scalar))
+        scale = Float32(I0_physics) / I0_bins_sum
+
+        rng = MersenneTwister(NOISE_SEED)
+        nr_scale = Float32(1.0 - NOISE_REDUCTION)
+        I0_pp = sim_raw_corrected.I0_per_pixel   # (n_col, n_row, n_bins) Float32
+        sz = size(bins[1])
+
+        # Per-view 2D scratch buffers (~700 KB each) — keep allocations off the
+        # full sinogram footprint per the project memory budget.
+        noise_2d = Array{Float32}(undef, sz[1], sz[2])
+        Nexp_2d  = Array{Float32}(undef, sz[1], sz[2])
+
+        # Track per-bin noise magnitude (std of post - pre) by sampling
+        # one mid-slice from each bin pre / post.
+        mid_v = sz[3] ÷ 2 + 1
+        noise_samples = Vector{Tuple{Int, Float64}}()
+
+        for b in eachindex(bins)
+            bin_b = bins[b]
+            I0_phys_pp_2d = Float32.(view(I0_pp, :, :, b)) .* scale   # (n_col, n_row) physical I0
+            pre_mid = copy(view(bin_b, :, :, mid_v))                  # mid-slice before
+
+            for v in 1:sz[3]
+                bin_v   = view(bin_b, :, :, v)
+                randn!(rng, noise_2d)                                  # N(0,1) per pixel
+                @. Nexp_2d = max(I0_phys_pp_2d * exp(-bin_v), 0.1f0)   # expected physical counts
+                if NOISE_DOMAIN === :count
+                    # Poisson-in-counts → −log  (scanner-faithful, biased)
+                    @. noise_2d = max(Nexp_2d + nr_scale * sqrt(Nexp_2d) * noise_2d, 1.0f0)
+                    @. bin_v   = -log(noise_2d / I0_phys_pp_2d)
+                else
+                    # Direct line-integral injection: σ_p = (1−nr)/√N̄, zero-bias
+                    @. bin_v = bin_v + nr_scale * noise_2d / sqrt(Nexp_2d)
+                end
+            end
+
+            post_mid = view(bin_b, :, :, mid_v)
+            push!(noise_samples, (b, std(vec(post_mid .- pre_mid))))
+        end
+
+        @info "Noise applied [$(NOISE_DOMAIN)-domain] — I0_phys = $(round(I0_physics, sigdigits = 3)) ph/dexel/view, scale = $(round(scale, sigdigits = 3)), nr_scale = $(nr_scale)"
+        for (b, σ_noise) in noise_samples
+            @info "  bin $(b): per-pixel log-noise σ (mid-view) = $(round(σ_noise, digits = 4))"
+        end
     else
-        @info "Pile-up correction skipped (use_pcct_pileup = false or S not built)"
+        @info "Noise skipped (APPLY_NOISE_FORWARD = false)"
     end
-    (bins = bins,
+
+    (bins_raw = bins,
      I0_bins = sim_raw_corrected.I0_bins,
      I0_per_pixel = sim_raw_corrected.I0_per_pixel,
      bt_cpu = sim_raw_corrected.bt_cpu,
      geom = sim_raw_corrected.geom)
 end;
 
+# ╔═╡ 08030004-0000-4000-8000-00000000000c
+# === FAST CELL — Forward pile-up (mirror of driver.jl:223-257) ===
+# Builds the MC pile-up migration matrix S using the air-rate count rate
+# (same recipe as workspace.jl:336-348), then applies forward pile-up to the
+# (now-noisy) bins.  Operates inline so the existing `sim_pileup` inverse
+# correction below picks it up via `pileup_S`.
+#
+# Math sanity: bins from `sim_noise_forward` are per-pixel-normalized
+# (bin = -log(N / I0_pp)), but we apply pile-up using the scalar `I0_bins`.
+# That's fine because S is linear:
+#     N_func     = I0_scalar · exp(-bin_pp)  = (I0_scalar/I0_pp) · N_actual
+#     r_func     = S · N_func                = (I0_scalar/I0_pp) · S·N_actual
+#     bin_new    = -log(r_func / I0_scalar)  = -log(S·N_actual / I0_pp)
+# i.e. the I0_scalar factor cancels out and the output is correctly
+# per-pixel-normalized.  Same algebra applies to apply_pcct_pileup_correction!.
+#
+# Toggle: `APPLY_PILEUP_FORWARD` is local to this cell — independent of
+# `sim_opts.use_pcct_pileup` since we bypass `simulate!()`.
+sim_pileup_forward = let
+    APPLY_PILEUP_FORWARD = true
+
+    bins = [copy(b) for b in sim_noise_forward.bins_raw]
+    I0_bins = sim_noise_forward.I0_bins
+    n_bins_loc = length(bins)
+
+    pileup_S = if APPLY_PILEUP_FORWARD
+        # Build MC pile-up matrix (mirror of workspace.jl:336-348)
+        pcct_det = BS._build_pcct_detector(scanner)
+        I0_air = BS.compute_detector_I0(sim_raw.geom, protocol, sum(sim_raw.weights))
+        time_per_view = protocol.rotation_time / protocol.views
+        bf = sim_raw.bf
+        count_rate_per_dexel = (I0_air / Float64(bf * bf)) / time_per_view
+        τ_ns = Float64(pcct_det.dead_time_ns)
+        w_norm = Float64.(sim_raw.weights) ./ sum(Float64.(sim_raw.weights))
+        @info "Pile-up forward: count rate = $(round(count_rate_per_dexel, sigdigits = 3)) cps/dexel, τ = $(τ_ns) ns"
+        S = BS.compute_mc_pileup_matrix(
+            pcct_det.energy_thresholds_keV,
+            w_norm, Float64.(sim_raw.energies),
+            count_rate_per_dexel, τ_ns;
+            n_trials = 5000, seed = 42,
+        )
+
+        # Forward pile-up (mirror of driver.jl:228-256, 4-bin specialization)
+        n_bins_loc == 4 || error("Pile-up forward currently specialized to 4 bins; got $(n_bins_loc)")
+        eps_p = Float32(1.0e-10)
+        b1, b2, b3, b4 = bins[1], bins[2], bins[3], bins[4]
+        I01 = Float32(I0_bins[1]); I02 = Float32(I0_bins[2])
+        I03 = Float32(I0_bins[3]); I04 = Float32(I0_bins[4])
+        S11 = Float32(S[1, 1])
+        S21 = Float32(S[2, 1]); S22 = Float32(S[2, 2])
+        S31 = Float32(S[3, 1]); S32 = Float32(S[3, 2]); S33 = Float32(S[3, 3])
+        S41 = Float32(S[4, 1]); S42 = Float32(S[4, 2]); S43 = Float32(S[4, 3]); S44 = Float32(S[4, 4])
+        @inbounds for idx in eachindex(b1)
+            c1 = I01 * exp(-b1[idx])
+            c2 = I02 * exp(-b2[idx])
+            c3 = I03 * exp(-b3[idx])
+            c4 = I04 * exp(-b4[idx])
+            r1 = S11 * c1
+            r2 = S21 * c1 + S22 * c2
+            r3 = S31 * c1 + S32 * c2 + S33 * c3
+            r4 = S41 * c1 + S42 * c2 + S43 * c3 + S44 * c4
+            b1[idx] = -log(max(r1, eps_p) / I01)
+            b2[idx] = -log(max(r2, eps_p) / I02)
+            b3[idx] = -log(max(r3, eps_p) / I03)
+            b4[idx] = -log(max(r4, eps_p) / I04)
+        end
+        @info "Pile-up forward applied; S diagonal = $(round.([S[i,i] for i in 1:4], digits = 3))  (column sums = $(round.([sum(S[:,j]) for j in 1:4], digits = 3)))"
+        S
+    else
+        @info "Pile-up forward skipped (APPLY_PILEUP_FORWARD = false)"
+        nothing
+    end
+
+    (bins_raw = bins,
+     I0_bins = sim_noise_forward.I0_bins,
+     I0_per_pixel = sim_noise_forward.I0_per_pixel,
+     bt_cpu = sim_noise_forward.bt_cpu,
+     pileup_S = pileup_S,
+     geom = sim_noise_forward.geom)
+end;
+
+# ╔═╡ 08030004-0000-4000-8000-000000000012
+# Pile-up correction — applies the inverse of `sim_pileup_forward`'s S.
+# No-op when `sim_pileup_forward.pileup_S === nothing`.
+sim_pileup = let
+    bins = [copy(b) for b in sim_pileup_forward.bins_raw]
+    if sim_pileup_forward.pileup_S !== nothing
+        BS.apply_pcct_pileup_correction!(bins, sim_pileup_forward.I0_bins, sim_pileup_forward.pileup_S)
+        @info "Pile-up correction applied"
+    else
+        @info "Pile-up correction skipped (no pileup_S to invert)"
+    end
+    (bins = bins,
+     I0_bins = sim_pileup_forward.I0_bins,
+     I0_per_pixel = sim_pileup_forward.I0_per_pixel,
+     bt_cpu = sim_pileup_forward.bt_cpu,
+     geom = sim_pileup_forward.geom)
+end;
+
+# ╔═╡ 08030004-0000-4000-8000-000000000013
+# === FAST CELL — Forward scatter injection (per-pixel I0, mirror of driver.jl:144-177) ===
+# Computes the combined primary log-line-integral, runs Ohnesorge spatial
+# scatter convolution, computes per-bin scatter fractions via spectrum × η ×
+# MC-DRM, and injects scatter into each bin additively in count space.
+#
+# PER-PIXEL I0 (bowtie-correct).  Unlike pile-up (which is an exact S⁻¹·S
+# identity round-trip, so the I0 cancels regardless), scatter forward + the
+# correction below do NOT cancel — the correction re-estimates from
+# primary+scatter, leaving a realistic residual.  With a bowtie active the
+# per-pixel air reference `I0_pp[c,r,b]` varies ~6.8× across columns, so the
+# count conversions MUST use it (not a scalar `I0_bins`): otherwise the
+# Ohnesorge combined-sinogram is built on a per-pixel-distorted primary and
+# the residual becomes per-pixel-wrong (inconsistent with the per-pixel Cong Φ).
+#   N_primary[c,r,v,b] = I0_pp[c,r,b] · exp(-bin[c,r,v,b])
+#   combined           = -log( Σ_b N_primary / Σ_b I0_pp[c,r,b] )
+#   N_scatter          = scatter_field · (Σ_b I0_pp[c,r,b]) · frac[b]
+#
+# Toggle: `APPLY_SCATTER_FORWARD` is local — does NOT read `sim_opts.use_scatter`
+# so that flipping the simopt flag doesn't trigger Pluto to re-run sim_raw.
+sim_scatter_forward = let
+    APPLY_SCATTER_FORWARD = true
+
+    bins  = [copy(b) for b in sim_pileup.bins]
+    I0_pp = sim_pileup.I0_per_pixel               # (n_col, n_row, n_bins) per-pixel air ref
+
+    if APPLY_SCATTER_FORWARD
+        eps_f = Float32(1.0e-10)
+        n_col, n_row, n_view = size(bins[1])
+        n_b = length(bins)
+
+        # Per-pixel total air reference Σ_b I0_pp[c,r,b]  (replaces scalar I0_total)
+        I0_total_pp = dropdims(sum(I0_pp; dims = 3); dims = 3)        # (n_col, n_row)
+
+        # Step 1: combined primary sinogram (per-pixel-I0 normalized)
+        combined = zeros(Float32, size(bins[1]))
+        for b in 1:n_b
+            I0_pp_b = reshape(view(I0_pp, :, :, b), n_col, n_row, 1)   # broadcast over views
+            bin_b   = bins[b]
+            @. combined += I0_pp_b * exp(-bin_b)
+        end
+        I0_total_pp_3d = reshape(I0_total_pp, n_col, n_row, 1)
+        @. combined = -log(max(combined, eps_f) / I0_total_pp_3d)
+
+        # Step 2: Ohnesorge spatial scatter field (on the per-pixel-normalized primary)
+        voxel_size_mm = phantom_cpu.voxel_size .* 10.0
+        phantom_diam_cm = BS.estimate_phantom_diameter_cm(phantom_cpu.mask, voxel_size_mm)
+        scatter_model = BS.geometry_aware_scatter_model(scanner; phantom_diameter_cm = phantom_diam_cm)
+        scatter_field = similar(combined)
+        BS.estimate_scatter_field!(scatter_field, combined, scatter_model)
+
+        # Step 3: per-bin scatter fractions (spectrum × η × MC-DRM)
+        e_full, w_full = BS.resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner = scanner)
+        pcct_det = BS._build_pcct_detector(scanner)
+        kVp_val = Float64(maximum(e_full))
+        R_mat = BS.compute_mc_drm(pcct_det, kVp_val)
+        η_vec = BS.quantum_efficiency_vector(pcct_det.material, pcct_det.thickness_mm, e_full)
+        ew = BS.compute_scatter_energy_weights(Float64.(e_full))
+        scatter_fracs = BS.compute_scatter_bin_weights(
+            Float64.(e_full), Float64.(w_full), ew, Float64.(η_vec), R_mat, kVp_val,
+        )
+
+        # Step 4: inject scatter into each bin (additive in counts), per-pixel I0
+        for b in 1:n_b
+            bin_b   = bins[b]
+            I0_pp_b = view(I0_pp, :, :, b)                  # (n_col, n_row)
+            frac    = Float32(scatter_fracs[b])
+            @inbounds for v in 1:n_view, r in 1:n_row, c in 1:n_col
+                N_primary = I0_pp_b[c, r] * exp(-bin_b[c, r, v])
+                N_scatter = scatter_field[c, r, v] * I0_total_pp[c, r] * frac
+                N_total   = N_primary + max(N_scatter, Float32(0))
+                bin_b[c, r, v] = -log(max(N_total, eps_f) / I0_pp_b[c, r])
+            end
+        end
+        @info "Scatter forward applied [per-pixel I0] (fracs = $(round.(scatter_fracs, digits = 4)))"
+    else
+        @info "Scatter forward skipped (APPLY_SCATTER_FORWARD = false)"
+    end
+
+    (bins = bins,
+     I0_bins = sim_pileup.I0_bins,
+     I0_per_pixel = sim_pileup.I0_per_pixel,
+     bt_cpu = sim_pileup.bt_cpu,
+     geom = sim_pileup.geom)
+end;
+
 # ╔═╡ 08030004-0000-4000-8000-000000000014
 # Decoupled per-bin scatter correction (model-based Ohnesorge re-estimation,
-# scaled by spectrum × η × MC-DRM bin weights).  Operates on the pile-up-
-# corrected bins.  Gated by `sim_opts.use_scatter` — when scatter was not
-# simulated forward, no correction is needed and this cell is a pass-through.
+# scaled by spectrum × η × MC-DRM bin weights).  Operates on the bins from
+# `sim_scatter_forward` (which may or may not have scatter injected).
+# Re-estimates the scatter field from the current bin data (primary + scatter,
+# if injected) — same realistic behavior a clinical scanner exhibits.
+#
+# Toggle is local (mirrors `APPLY_SCATTER_FORWARD` above by default) so the
+# cell doesn't reference `sim_opts` and re-trigger sim_raw on flag flips.
 sim_bins = let
-    bins    = [copy(b) for b in sim_pileup.bins]
-    I0_bins = sim_pileup.I0_bins
+    APPLY_SCATTER_CORRECTION = true
 
-    if sim_opts.use_scatter
-        I0_total = Float32(sum(I0_bins))
+    bins  = [copy(b) for b in sim_scatter_forward.bins]
+    I0_pp = sim_scatter_forward.I0_per_pixel       # (n_col, n_row, n_bins) per-pixel air ref
+
+    if APPLY_SCATTER_CORRECTION
         eps_f = Float32(1.0e-10)
+        n_col, n_row, n_view = size(bins[1])
+        n_b = length(bins)
 
+        I0_total_pp = dropdims(sum(I0_pp; dims = 3); dims = 3)        # (n_col, n_row)
+
+        # Re-estimate the scatter field from the CURRENT bins (primary+scatter),
+        # per-pixel-I0 normalized — identical recipe to the forward, so the only
+        # net effect is the realistic primary-vs-(primary+scatter) re-estimation gap.
         combined = zeros(Float32, size(bins[1]))
-        for (b, bin_sino) in enumerate(bins)
-            I0b = Float32(I0_bins[b])
-            @. combined += I0b * exp(-bin_sino)
+        for b in 1:n_b
+            I0_pp_b = reshape(view(I0_pp, :, :, b), n_col, n_row, 1)
+            bin_b   = bins[b]
+            @. combined += I0_pp_b * exp(-bin_b)
         end
-        @. combined = -log(max(combined, eps_f) / I0_total)
+        I0_total_pp_3d = reshape(I0_total_pp, n_col, n_row, 1)
+        @. combined = -log(max(combined, eps_f) / I0_total_pp_3d)
 
         voxel_size_mm = phantom_cpu.voxel_size .* 10.0
         phantom_diam_cm = BS.estimate_phantom_diameter_cm(phantom_cpu.mask, voxel_size_mm)
@@ -828,24 +1123,26 @@ sim_bins = let
             Float64.(e_full), Float64.(w_full), ew, Float64.(η_vec), R_mat, kVp_val,
         )
 
-        for (b, bin_sino) in enumerate(bins)
-            I0b = Float32(I0_bins[b])
-            frac = Float32(scatter_fracs[b])
-            for idx in eachindex(bin_sino)
-                N_measured = I0b * exp(-bin_sino[idx])
-                N_scatter = scatter_field[idx] * I0_total * frac
+        for b in 1:n_b
+            bin_b   = bins[b]
+            I0_pp_b = view(I0_pp, :, :, b)
+            frac    = Float32(scatter_fracs[b])
+            @inbounds for v in 1:n_view, r in 1:n_row, c in 1:n_col
+                N_measured  = I0_pp_b[c, r] * exp(-bin_b[c, r, v])
+                N_scatter   = scatter_field[c, r, v] * I0_total_pp[c, r] * frac
                 N_corrected = N_measured - max(N_scatter, Float32(0))
-                bin_sino[idx] = -log(max(N_corrected, eps_f) / I0b)
+                bin_b[c, r, v] = -log(max(N_corrected, eps_f) / I0_pp_b[c, r])
             end
         end
-        @info "Scatter correction applied"
+        @info "Scatter correction applied [per-pixel I0]"
     else
-        @info "Scatter correction skipped (use_scatter = false)"
+        @info "Scatter correction skipped (APPLY_SCATTER_CORRECTION = false)"
     end
 
-    (bins = bins, I0_bins = I0_bins,
-     I0_per_pixel = sim_pileup.I0_per_pixel, bt_cpu = sim_pileup.bt_cpu,
-     geom = sim_pileup.geom)
+    (bins = bins, I0_bins = sim_scatter_forward.I0_bins,
+     I0_per_pixel = sim_scatter_forward.I0_per_pixel,
+     bt_cpu = sim_scatter_forward.bt_cpu,
+     geom = sim_scatter_forward.geom)
 end;
 
 # ╔═╡ 08030004-0000-4000-8000-000000000025
@@ -921,13 +1218,13 @@ sim_lohi = let
     low_bins   = [1, 2]
     high_bins  = [3, 4]
 
-    # Per-pixel I0 (mirrors EICT bowtie_air_ref).  `sim_bins.bins` were already
-    # post-normalized in `sim_raw` to be `-log(N / I0_per_pixel[c,r,b])`, so we
-    # recombine in counts domain using the matching per-pixel I0:
+    # Combine the (per-bin-noised) bins into low/high channels in the COUNT
+    # domain, then back to a log line integral.  `sim_bins.bins` are already
+    # -log(N / I0_per_pixel[c,r,b]); recombine with the matching per-pixel I0:
     #   N_grp[c,r,v] = Σ_{b ∈ grp} I0_per_pixel[c,r,b] · exp(-bins[b][c,r,v])
     #   sino_grp     = -log(N_grp / Σ_{b ∈ grp} I0_per_pixel[c,r,b])
-    # Air rays land at 0 per pixel since the per-pixel-bowtie attenuation
-    # baseline is in both numerator and denominator.
+    # Air rays land at 0 per pixel (per-pixel-bowtie baseline cancels).  Noise is
+    # injected per-bin upstream in sim_noise_forward — this cell only combines.
     I0_pp = sim_bins.I0_per_pixel   # (n_col, n_row, n_bins)
     I0_lo_pp = dropdims(sum(view(I0_pp, :, :, low_bins),  dims = 3); dims = 3)   # (n_col, n_row)
     I0_hi_pp = dropdims(sum(view(I0_pp, :, :, high_bins), dims = 3); dims = 3)
@@ -2082,6 +2379,7 @@ comparable.
 # ╠═08010003-0000-4000-8000-000000000005
 # ╠═08010003-0000-4000-8000-000000000006
 # ╠═08010003-0000-4000-8000-000000000007
+# ╠═08010003-0000-4000-8000-000000000008
 # ╠═08010003-0000-4000-8000-000000000010
 # ╠═08010003-0000-4000-8000-000000000011
 # ╠═08010003-0000-4000-8000-000000000040
@@ -2121,7 +2419,10 @@ comparable.
 # ╠═08030004-0000-4000-8000-00000000000a
 # ╠═08030004-0000-4000-8000-00000000000b
 # ╟─08030004-0000-4000-8000-000000000011
+# ╠═08030004-0000-4000-8000-00000000000e
+# ╠═08030004-0000-4000-8000-00000000000c
 # ╠═08030004-0000-4000-8000-000000000012
+# ╠═08030004-0000-4000-8000-000000000013
 # ╠═08030004-0000-4000-8000-000000000014
 # ╠═08030004-0000-4000-8000-000000000025
 # ╟─08030004-0000-4000-8000-000000000040
