@@ -19,6 +19,9 @@ using Unitful: @u_str
 # ╔═╡ 08010003-0000-4000-8000-000000000008
 using Random: MersenneTwister, randn!
 
+# ╔═╡ 08010003-0000-4000-8000-000000000009
+using LinearAlgebra: inv, cond, Diagonal, cholesky, Symmetric, I
+
 # ╔═╡ 08010001-0000-4000-8000-000000000001
 md"""
 # 08 · QRM-Thorax Pure-Material PCCT VMI · **Full-Resolution True-Scan Reference**
@@ -818,6 +821,21 @@ sim_noise_forward = let
     #          (drops the +1/(2N̄) term).  Gaussian linearization: correct
     #          variance everywhere, wrong tail shape only when N̄ ≲ 10.
     NOISE_DOMAIN        = :log
+    # Noise shaping: per-bin variance = DRM Fano √(Var/mean) (sub-Poisson), plus a
+    # TUNABLE inter-bin correlation ρ (the "rho knob").  The correlation is a PURE
+    # coupling — the per-bin variance is unchanged (no added magnitude, unlike
+    # common-mode) — so it doesn't inflate any channel (best RMSE) and is Cong-safe.
+    #
+    # By the noise theorem σ_HU(E)² = 1000²V_w + α²V_i + 2000·α·C_iw, with
+    #   C_iw ∝ [−(q_Hp_Hσ_L² + q_Lp_Lσ_H²) + ρ·σ_Lσ_H·(q_Hp_L + q_Lp_H)],
+    # ρ rotates the noise-vs-keV slope via α* = −1000·C_iw/V_i:
+    #   ρ > 0 → C_iw less negative → α* SMALLER → toward MONOTONIC-DECREASING (goal).
+    #   ρ < 0 → α* larger → monotonic-INCREASING (the "wrong direction").
+    # SWEEP INTERBIN_CORR ∈ [−0.33, 1] (PSD range for uniform 4-bin ρ) to set the slope.
+    USE_TAGUCHI_NOISE  = true
+    INTERBIN_CORR      = 0.5     # ← the rho knob.  0 = independent (current U).  Sweep up.
+    CW_REP_GCM2        = 20.0    # representative water path for the Fano estimate
+    COMMON_MODE_SIGMA  = 0.0     # shared added-magnitude term (raises water floor) — keep 0
 
     bins = [copy(b) for b in sim_raw_corrected.bins_raw]
 
@@ -839,42 +857,84 @@ sim_noise_forward = let
         nr_scale = Float32(1.0 - NOISE_REDUCTION)
         I0_pp = sim_raw_corrected.I0_per_pixel   # (n_col, n_row, n_bins) Float32
         sz = size(bins[1])
+        nb = length(bins)
 
-        # Per-view 2D scratch buffers (~700 KB each) — keep allocations off the
-        # full sinogram footprint per the project memory budget.
-        noise_2d = Array{Float32}(undef, sz[1], sz[2])
-        Nexp_2d  = Array{Float32}(undef, sz[1], sz[2])
-
-        # Track per-bin noise magnitude (std of post - pre) by sampling
-        # one mid-slice from each bin pre / post.
-        mid_v = sz[3] ÷ 2 + 1
-        noise_samples = Vector{Tuple{Int, Float64}}()
-
-        for b in eachindex(bins)
-            bin_b = bins[b]
-            I0_phys_pp_2d = Float32.(view(I0_pp, :, :, b)) .* scale   # (n_col, n_row) physical I0
-            pre_mid = copy(view(bin_b, :, :, mid_v))                  # mid-slice before
-
-            for v in 1:sz[3]
-                bin_v   = view(bin_b, :, :, v)
-                randn!(rng, noise_2d)                                  # N(0,1) per pixel
-                @. Nexp_2d = max(I0_phys_pp_2d * exp(-bin_v), 0.1f0)   # expected physical counts
-                if NOISE_DOMAIN === :count
-                    # Poisson-in-counts → −log  (scanner-faithful, biased)
-                    @. noise_2d = max(Nexp_2d + nr_scale * sqrt(Nexp_2d) * noise_2d, 1.0f0)
-                    @. bin_v   = -log(noise_2d / I0_phys_pp_2d)
-                else
-                    # Direct line-integral injection: σ_p = (1−nr)/√N̄, zero-bias
-                    @. bin_v = bin_v + nr_scale * noise_2d / sqrt(Nexp_2d)
-                end
+        # ── Taguchi noise-shaping: L = chol(C), C = DRM Fano+correlation matrix ──
+        # C[b,b'] = Σ_E λ(E)·Cov_bins[E,b,b'] / √(N̄_b N̄_b')  (diag = per-bin Fano,
+        # off-diag = inter-bin correlation), built once at a representative water
+        # path.  Drawing δp_b = nr·(L·g)_b/√N̄_b reproduces the sub-Poisson variance
+        # and inter-bin coupling.  C = I (naive independent Poisson) when toggle off.
+        L_noise = if USE_TAGUCHI_NOISE
+            mc_n   = BS.load_mc_response(BS.default_mc_drm_path())
+            Eg_n   = mc_n.energies_keV
+            idxL   = [findfirst(==(t), mc_n.thresholds_keV) for t in (20, 35, 55, 70)]
+            Mdiff  = Float64[1 -1 0 0; 0 1 -1 0; 0 0 1 -1; 0 0 0 1]
+            e_n, w_n = BS.resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner = scanner)
+            pcd_n  = BS._build_pcct_detector(scanner)
+            η_n    = BS.quantum_efficiency_vector(pcd_n.material, pcd_n.thickness_mm, e_n)
+            ef_n   = Float64.(e_n)
+            μw_n(E) = Float64(BS.compute_mass_μ_at_energy(BS.XA.Materials.water, E))
+            Nbar_c = zeros(Float64, 4); Σ_c = zeros(Float64, 4, 4)
+            for k in eachindex(ef_n)
+                λ  = Float64(w_n[k]) * Float64(η_n[k]) * exp(-μw_n(ef_n[k]) * CW_REP_GCM2)
+                iE = clamp(round(Int, ef_n[k] - Float64(Eg_n[1])) + 1, 1, length(Eg_n))
+                Rc = mc_n.R_total[iE, idxL]
+                Cc = mc_n.Cov_total[iE, idxL, idxL]
+                Nbar_c .+= λ .* (Mdiff * Rc)
+                Σ_c    .+= λ .* (Mdiff * Cc * Mdiff')
             end
-
-            post_mid = view(bin_b, :, :, mid_v)
-            push!(noise_samples, (b, std(vec(post_mid .- pre_mid))))
+            Cdrm = [Σ_c[b, bp] / sqrt(max(Nbar_c[b] * Nbar_c[bp], 1.0e-30)) for b in 1:4, bp in 1:4]
+            fano_var = [max(Cdrm[b, b], 1.0e-6) for b in 1:4]   # per-bin Fano (variance, sub-Poisson)
+            ρ = Float64(INTERBIN_CORR)
+            # C = Fano on the diagonal + uniform tunable correlation ρ off-diagonal.
+            # NO added magnitude — pure coupling.  (ρ=0 → diagonal/independent.)
+            C = [b == bp ? fano_var[b] : ρ * sqrt(fano_var[b] * fano_var[bp]) for b in 1:4, bp in 1:4]
+            C = (C .+ C') ./ 2 .+ 1.0e-4 * Matrix(I, 4, 4)   # symmetrize + tiny jitter for safe chol
+            @info "[noise] per-bin Fano = $(round.(fano_var, digits=3)) (naive=1.0) · inter-bin ρ = $(round(ρ, digits=2)) (ρ>0 → toward monotonic-DECREASING)"
+            Float32.(Matrix(cholesky(Symmetric(C)).L))
+        else
+            Matrix{Float32}(I, 4, 4)
         end
 
-        @info "Noise applied [$(NOISE_DOMAIN)-domain] — I0_phys = $(round(I0_physics, sigdigits = 3)) ph/dexel/view, scale = $(round(scale, sigdigits = 3)), nr_scale = $(nr_scale)"
-        for (b, σ_noise) in noise_samples
+        # Per-view 2D scratch (per the memory budget — no full-sinogram scratch).
+        g_b      = [Array{Float32}(undef, sz[1], sz[2]) for _ in 1:nb]   # iid N(0,1) per bin
+        Nexp_b   = [Array{Float32}(undef, sz[1], sz[2]) for _ in 1:nb]
+        I0pp_b   = [Float32.(view(I0_pp, :, :, b)) .* scale for b in 1:nb]
+        g_cm     = Array{Float32}(undef, sz[1], sz[2])                   # shared common-mode field
+        cm_σ     = Float32(COMMON_MODE_SIGMA)
+
+        mid_v = sz[3] ÷ 2 + 1
+        pre_mid = [copy(view(bins[b], :, :, mid_v)) for b in 1:nb]
+
+        for v in 1:sz[3]
+            for b in 1:nb
+                randn!(rng, g_b[b])
+                bin_v = view(bins[b], :, :, v)
+                @. Nexp_b[b] = max(I0pp_b[b] * exp(-bin_v), 0.1f0)
+            end
+            g1 = g_b[1]; g2 = g_b[2]; g3 = g_b[3]; g4 = g_b[4]
+            L = L_noise
+            randn!(rng, g_cm)        # shared common-mode draw (same for all 4 bins → +corr)
+            # δp_b = nr·(L·g)_b/√N̄_b  +  cm_σ·g_cm  (common-mode added to every bin)
+            if NOISE_DOMAIN === :count
+                # independent count-domain Poisson (Taguchi shaping not applied here)
+                for b in 1:nb
+                    bin_v = view(bins[b], :, :, v)
+                    @. bin_v = -log(max(Nexp_b[b] + nr_scale * sqrt(Nexp_b[b]) * g_b[b], 1.0f0) / I0pp_b[b]) + cm_σ * g_cm
+                end
+            else
+                bv1 = view(bins[1], :, :, v); bv2 = view(bins[2], :, :, v)
+                bv3 = view(bins[3], :, :, v); bv4 = view(bins[4], :, :, v)
+                @. bv1 = bv1 + nr_scale * (L[1,1]*g1)                               / sqrt(Nexp_b[1]) + cm_σ * g_cm
+                @. bv2 = bv2 + nr_scale * (L[2,1]*g1 + L[2,2]*g2)                   / sqrt(Nexp_b[2]) + cm_σ * g_cm
+                @. bv3 = bv3 + nr_scale * (L[3,1]*g1 + L[3,2]*g2 + L[3,3]*g3)       / sqrt(Nexp_b[3]) + cm_σ * g_cm
+                @. bv4 = bv4 + nr_scale * (L[4,1]*g1 + L[4,2]*g2 + L[4,3]*g3 + L[4,4]*g4) / sqrt(Nexp_b[4]) + cm_σ * g_cm
+            end
+        end
+
+        @info "Noise applied [$(NOISE_DOMAIN)-domain, Taguchi=$(USE_TAGUCHI_NOISE)] — I0_phys = $(round(I0_physics, sigdigits = 3)) ph/dexel/view, nr_scale = $(nr_scale)"
+        for b in 1:nb
+            σ_noise = std(vec(view(bins[b], :, :, mid_v) .- pre_mid[b]))
             @info "  bin $(b): per-pixel log-noise σ (mid-view) = $(round(σ_noise, digits = 4))"
         end
     else
@@ -1191,88 +1251,304 @@ let
     fig
 end
 
-# ╔═╡ 08030005-0000-4000-8000-000000000001
+# ╔═╡ 08030004-0000-4000-8000-000000000050
 md"""
-## 6. Bin Combine: 4 Bins → Low / High Pair
+## 5b. Detector Physics: What the Monte-Carlo DRM Encodes
 
-I₀-weighted Beer recombination of the 4 raw PCCT bins:
+The four raw bins above are **not** clean incident-energy windows.  Each
+count is registered at a *distorted* (usually lower) energy than the photon
+that produced it, because the bundled CdTe response matrix
+`R(E_inc, threshold)` (`cdte_response_v4.jls`, loaded by
+`BS.load_mc_response`) folds in the full photon-counting-detector physics:
 
-```
-N_grp = Σ_{b ∈ grp} I0[b] · exp(-p[b])
-p_grp = -log(N_grp / Σ_{b ∈ grp} I0[b])
-```
+1. **Quantum efficiency / transmission rolloff** — finite 1.6 mm CdTe; a
+   growing fraction of high-energy photons pass straight through uncounted
+   (η falls, and counts ≥20 keV drop *below* 1 by 120–140 keV).
+2. **Photoelectric · Compton · Rayleigh transport** — Compton scatter
+   deposits only partial energy, the scattered photon escapes or reabsorbs
+   elsewhere → a low-energy continuum under every photopeak.
+3. **K-fluorescence escape** — photoabsorption in Cd (Kα ≈ 23 keV) or Te
+   (Kα ≈ 27, Kβ ≈ 31 keV) leaves the pixel; the photopeak loses E_K and a
+   spurious escape count appears ≈23–31 keV lower (or in a neighbour pixel).
+4. **Charge sharing** (Stierstorfer/Dreier 2018) — the charge cloud
+   diffuses and Coulomb-repels across pixel boundaries (3×3 erf splitting),
+   so **one photon is counted as several sub-threshold events**.  Signature:
+   counts ≥20 keV *exceed* 1.0 per incident photon (≈1.2 at 60–80 keV), and
+   the struck-pixel fraction falls from ≈90 % at 30 keV to ≈67 % at 140 keV.
+5. **Fano noise** — sub-Poisson e–h-pair generation sets the intrinsic
+   energy-resolution floor (photopeak broadening).
+6. **Electronic noise** — per-pixel Gaussian on the charge signal; broadens
+   peaks and scatters counts across the lowest threshold.
+7. **Incomplete charge collection (CdTe hole tailing)** — poor hole μτ gives
+   depth-dependent charge loss → a low-energy tail on the photopeak.
+8. **Pulse pile-up** *(flux-dependent, handled separately in the pile-up
+   forward path)* — two photons within the dead time sum into one count
+   (energy up-shift) or are lost (count loss).
+9. **Threshold comparison / binning** — counts are cumulative (≥ threshold);
+   differencing adjacent thresholds gives the bins, but after (1)–(8) the
+   measured bins no longer map to incident-energy windows.
 
-* **Low**  = bins **1 + 2** (20 – 55 keV)
-* **High** = bins **3 + 4** ( > 55 keV)
-
-Each combined sinogram represents a polychromatic measurement at the
-I₀-weighted average spectrum of its bin group — the two-channel
-`(low, high)` pair the Cong PCCT-Φ_k decomposition then consumes
-directly, exactly as notebook 07 does for the dual-kVp `(80, 140)`
-pair.
+**Net consequence (the figure below):** high-energy photons leak *down* into
+the low bins, so the **low (1+2)** and **high (3+4)** channel spectra
+*overlap* far more than their ideal energy windows.  That overlap is exactly
+the loss of spectral separation that ill-conditions the Cong decomposition,
+inflates the iodine basis noise, and produces the VMI noise U-shape.  The
+plan: **correct `R` (spectral unfolding) on the four bins to recover the
+ideal energy-windowed counts *before* the 4→2 combine**, restoring
+separation so everything downstream (Cong → FBP → VMI) inherits it for free.
+The panels here are the *diagnosis*; the correction comes next.
 """
 
-# ╔═╡ 08030005-0000-4000-8000-000000000010
-sim_lohi = let
-    eps_f      = Float32(1.0e-10)
-    low_bins   = [1, 2]
-    high_bins  = [3, 4]
+# ╔═╡ 08030004-0000-4000-8000-000000000060
+let
+    # ── Pull the response matrix + raw MC LUT straight from the bundle ──────
+    e, w    = BS.resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner = scanner)
+    pcct_det = BS._build_pcct_detector(scanner)
+    kVp_val  = Float64(maximum(e))
+    D        = BS.compute_mc_drm(pcct_det, kVp_val)          # [200 × 4] P(bin | E_inc)
+    η_vec    = BS.quantum_efficiency_vector(pcct_det.material, pcct_det.thickness_mm, e)
+    mc       = BS.load_mc_response(BS.default_mc_drm_path())  # raw LUT (count-mult, per-pixel)
 
-    # Combine the (per-bin-noised) bins into low/high channels in the COUNT
-    # domain, then back to a log line integral.  `sim_bins.bins` are already
-    # -log(N / I0_per_pixel[c,r,b]); recombine with the matching per-pixel I0:
-    #   N_grp[c,r,v] = Σ_{b ∈ grp} I0_per_pixel[c,r,b] · exp(-bins[b][c,r,v])
-    #   sino_grp     = -log(N_grp / Σ_{b ∈ grp} I0_per_pixel[c,r,b])
-    # Air rays land at 0 per pixel (per-pixel-bowtie baseline cancels).  Noise is
-    # injected per-bin upstream in sim_noise_forward — this cell only combines.
-    I0_pp = sim_bins.I0_per_pixel   # (n_col, n_row, n_bins)
-    I0_lo_pp = dropdims(sum(view(I0_pp, :, :, low_bins),  dims = 3); dims = 3)   # (n_col, n_row)
-    I0_hi_pp = dropdims(sum(view(I0_pp, :, :, high_bins), dims = 3); dims = 3)
+    Egrid = collect(range(1.0, kVp_val, length = size(D, 1)))
+    ef    = Float64.(e); ηf = Float64.(η_vec)
 
-    sz   = size(sim_bins.bins[1])
-    N_lo = zeros(Float32, sz)
-    N_hi = zeros(Float32, sz)
-    for b in low_bins
-        bin_b = sim_bins.bins[b]
-        I0_b_pp = view(I0_pp, :, :, b)
-        @inbounds for v in 1:sz[3], r in 1:sz[2], c in 1:sz[1]
-            N_lo[c, r, v] += I0_b_pp[c, r] * exp(-bin_b[c, r, v])
+    bin_colors  = [:dodgerblue, :seagreen, :darkorange, :firebrick]
+    bin_labels  = ["Bin 1: 20–35", "Bin 2: 35–55", "Bin 3: 55–70", "Bin 4: >70 keV"]
+    bin_windows = [(20.0, 35.0), (35.0, 55.0), (55.0, 70.0), (70.0, kVp_val)]
+
+    # Panel B: two-channel detector RESPONSE (sensitivity), source-spectrum
+    # independent so the tungsten characteristic lines don't swamp the axis.
+    # This is exactly what the Cong low/high channels integrate against.
+    resp_low     = D[:, 1] .+ D[:, 2]
+    resp_high    = D[:, 3] .+ D[:, 4]
+    ideal_low_E  = [(20.0 <= E < 55.0) ? 1.0 : 0.0 for E in Egrid]
+    ideal_high_E = [(E >= 55.0)        ? 1.0 : 0.0 for E in Egrid]
+
+    # Panels C/D: count multiplication + per-pixel charge-sharing leakage
+    i20 = findfirst(==(20), mc.thresholds_keV)
+    mcE = Float64.(mc.energies_keV)
+    counts_per_photon = mc.R_total[:, i20]
+    center_frac = Float64[]
+    for iE in eachindex(mcE)
+        tot = sum(@view mc.R_perpixel[iE, :, :, i20])
+        push!(center_frac, tot > 1.0e-3 ? 100.0 * mc.R_perpixel[iE, 2, 2, i20] / tot : NaN)
+    end
+
+    fig = CM.Figure(size = (1240, 1060))
+    ak  = (titlesize = 28, subtitlesize = 20, xlabelsize = 22, ylabelsize = 22,
+           xticklabelsize = 16, yticklabelsize = 16)
+
+    # ── A: bin energy response (ideal window shaded, MC curve leaks across) ──
+    axA = CM.Axis(fig[1, 1]; title = "Bin Energy Response",
+        subtitle = "P(count in bin | incident E) — ideal = shaded window",
+        xlabel = "Incident energy (keV)", ylabel = "Detection probability", ak...)
+    for b in 1:4
+        lo, hi = bin_windows[b]
+        CM.vspan!(axA, lo, hi; color = (bin_colors[b], 0.10))
+        CM.lines!(axA, Egrid, D[:, b]; color = bin_colors[b], linewidth = 2.5, label = bin_labels[b])
+    end
+    CM.axislegend(
+        axA;
+        position = :rt,
+        labelsize = 15,
+        framevisible = true,
+        framecolor = (:black, 0.15),
+        backgroundcolor = (:white, 0.85)
+    )
+
+    # ── B: two-channel spectral overlap (the conditioning story) ────────────
+    axB = CM.Axis(fig[1, 2]; title = "Two-Channel Spectral Overlap",
+        subtitle = "channel sensitivity — MC (solid) leaks past ideal window (dashed)",
+        xlabel = "Incident energy (keV)", ylabel = "Channel response  Σ P(bin | E)", ak...)
+    CM.lines!(axB, Egrid, resp_low;     color = :dodgerblue, linewidth = 2.5, label = "Low (1+2) — MC")
+    CM.lines!(axB, Egrid, resp_high;    color = :firebrick,  linewidth = 2.5, label = "High (3+4) — MC")
+    CM.lines!(axB, Egrid, ideal_low_E;  color = :dodgerblue, linewidth = 2.0, linestyle = :dash, label = "Low — ideal")
+    CM.lines!(axB, Egrid, ideal_high_E; color = :firebrick,  linewidth = 2.0, linestyle = :dash, label = "High — ideal")
+    CM.vlines!(axB, [33.0]; color = :black, linestyle = :dot, linewidth = 1.5)  # iodine K-edge
+    CM.axislegend(
+        axB;
+        position = :rb,
+        labelsize = 15,
+        framevisible = true,
+        framecolor = (:black, 0.15),
+        backgroundcolor = (:white, 0.85)
+    )
+
+    # ── C: charge-sharing count multiplication + QE rolloff ─────────────────
+    axC = CM.Axis(fig[2, 1]; title = "Charge-Sharing Count Multiplication",
+        subtitle = "registered counts ≥20 keV per incident photon",
+        xlabel = "Incident energy (keV)", ylabel = "Counts / photon  ·  η", ak...)
+    CM.lines!(axC, mcE, counts_per_photon; color = :purple, linewidth = 2.5, label = "counts/photon (≥20 keV)")
+    CM.lines!(axC, ef, ηf;                 color = :teal,   linewidth = 2.5, label = "quantum efficiency η(E)")
+    CM.hlines!(axC, [1.0]; color = :gray, linestyle = :dash, linewidth = 1.5)  # one-count reference
+    CM.axislegend(
+        axC;
+        position = :rb,
+        labelsize = 15,
+        framevisible = true,
+        framecolor = (:black, 0.15),
+        backgroundcolor = (:white, 0.85)
+    )
+
+    # ── D: charge-sharing spatial leakage (struck-pixel fraction) ───────────
+    axD = CM.Axis(fig[2, 2]; title = "Charge-Sharing Spatial Leakage",
+        subtitle = "fraction of counts in the struck pixel (rest → neighbours)",
+        xlabel = "Incident energy (keV)", ylabel = "Struck-pixel fraction (%)", ak...)
+    CM.lines!(axD, mcE, center_frac; color = :crimson, linewidth = 2.5)
+    CM.ylims!(axD, 55, 100)
+
+    fig
+end
+
+# ╔═╡ 08030005-0000-4000-8000-000000000001
+md"""
+## 6. Spectral-Distortion Correction & Bin Combine
+
+Before combining, **undo the CdTe charge-sharing distortion** so each bin maps
+back to its true-energy window — the projection-domain analogue of the clinical
+coincidence-response-matrix correction (Trinci *et al.* 2025).  Charge sharing
+and K-escape only move counts **down** in energy, so the bin↔true-window
+response is **upper-triangular**:
+
+```
+F[b,a] = fraction of true-window-a counts measured in bin b   (b ≤ a; F=0 for b>a)
+       = A[b,a] / Σ_{b'≤a} A[b',a],   A[b,a] = Σ_{E ∈ window a} W[E,b]
+```
+
+A triangular system is solved **stably by backward substitution** (highest
+window first — it has no contamination from above — then subtract its
+spill-down from each lower window):
+
+```
+N_true[4] =  N_meas[4] / F[4,4]
+N_true[a] = (N_meas[a] − Σ_{a'>a} F[a,a']·N_true[a']) / F[a,a],   clamp ≥ 0
+```
+
+No matrix inverse, no noise blow-up.  The same backward substitution is applied
+to the per-pixel air reference, so air rays stay at 0.  We then combine the
+de-migrated windows:
+
+* **Low**  = true windows **1 + 2** (20 – 55 keV)
+* **High** = true windows **3 + 4** (> 55 keV)
+
+Because the windows are now de-contaminated, the §7 Cong response `Φ` becomes
+the **ideal energy window** `Wtot(E)·1[E ∈ channel]` instead of the smeared
+`Σ_b R(E,b)`.
+"""
+
+# ╔═╡ 08030005-0000-4000-8000-000000000005
+# === Charge-sharing migration F (upper-triangular) ===
+# Built from the SAME forward bin spectra W the kernel used (`bowtie_data.W_no_bowtie`),
+# so the correction is self-consistent with the forward η/DRM convention.
+# F[b,a] = P(a true-window-a count is measured in bin b).  Down-migration only
+# (b ≤ a), so F is upper-triangular → backward-substitution inverts it stably.
+correction = let
+    W   = Float64.(bowtie_data.W_no_bowtie)   # [n_E × n_bins] forward bin spectra
+    eN  = Float64.(sim_raw.energies)          # [n_E]
+    thr = Float64.(scanner.energy_thresholds) # [20, 35, 55, 70]
+    nbn = size(W, 2)
+    winid(E) = E < thr[1] ? 0 :
+               (E < thr[2] ? 1 : (E < thr[3] ? 2 : (E < thr[4] ? 3 : 4)))
+
+    A = zeros(Float64, nbn, nbn)              # A[b,a] = Σ_{E ∈ true window a} W[E,b]
+    @inbounds for i in eachindex(eN)
+        a = winid(eN[i]); a == 0 && continue
+        for b in 1:nbn
+            A[b, a] += W[i, b]
         end
     end
-    for b in high_bins
-        bin_b = sim_bins.bins[b]
-        I0_b_pp = view(I0_pp, :, :, b)
-        @inbounds for v in 1:sz[3], r in 1:sz[2], c in 1:sz[1]
-            N_hi[c, r, v] += I0_b_pp[c, r] * exp(-bin_b[c, r, v])
+    # Upper-triangular migration: keep only the physical down-migration (b ≤ a),
+    # normalize each true-window column so Σ_{b≤a} F[b,a] = 1.
+    F = zeros(Float64, nbn, nbn)
+    for a in 1:nbn
+        col = sum(A[b, a] for b in 1:a)
+        for b in 1:a
+            F[b, a] = A[b, a] / max(col, 1.0e-30)
         end
     end
+    @info "[charge-sharing correction] upper-triangular migration F (backward-substitution per ray)"
+    @info "  F diagonal (counts staying in own window) = $(round.([F[b, b] for b in 1:nbn], digits = 3))"
 
-    sino_low  = similar(N_lo)
-    sino_high = similar(N_hi)
+    (F = Float32.(F), A = A, W = W, eN = eN, thr = thr)
+end;
+
+# ╔═╡ 08030005-0000-4000-8000-000000000008
+# === Correct (charge-sharing backward-substitution) AND combine → low/high ===
+# Per ray: N_meas[b] = I0_pp[c,r,b]·exp(-bins[b]).  Backward-substitute the
+# upper-triangular F (highest window first) to de-migrate counts into their true
+# windows, clamping ≥0 (the starved 20–35 keV window simply clamps to ~0 instead
+# of blowing up).  The SAME backward-substitution on the per-pixel air reference
+# keeps air rays at 0.  Then low = windows 1+2, high = windows 3+4.
+sim_corrected = let
+    F     = correction.F                  # Float32 [4×4] upper-triangular
+    bins  = sim_bins.bins                 # 4 × (n_col, n_row, n_view) log line integrals
+    I0_pp = sim_bins.I0_per_pixel         # (n_col, n_row, 4)
+    sz    = size(bins[1])
+    eps_f = Float32(1.0e-10)
+
+    # Backward substitution: de-migrate a 4-vector of measured counts → true-window
+    # counts (clamp ≥ 0).  F upper-triangular ⇒ solve window 4 → 1.
+    @inline function demigrate(n1, n2, n3, n4)
+        t4 = n4 / F[4, 4]
+        t3 = (n3 - F[3, 4] * t4) / F[3, 3]
+        t2 = (n2 - F[2, 3] * t3 - F[2, 4] * t4) / F[2, 2]
+        t1 = (n1 - F[1, 2] * t2 - F[1, 3] * t3 - F[1, 4] * t4) / F[1, 1]
+        (max(t1, 0.0f0), max(t2, 0.0f0), max(t3, 0.0f0), max(t4, 0.0f0))
+    end
+
+    # Per-pixel corrected air reference (low = w1+w2, high = w3+w4)
+    I0_lo_pp = Array{Float32}(undef, sz[1], sz[2])
+    I0_hi_pp = Array{Float32}(undef, sz[1], sz[2])
+    @inbounds for r in 1:sz[2], c in 1:sz[1]
+        a1, a2, a3, a4 = demigrate(I0_pp[c, r, 1], I0_pp[c, r, 2], I0_pp[c, r, 3], I0_pp[c, r, 4])
+        I0_lo_pp[c, r] = a1 + a2
+        I0_hi_pp[c, r] = a3 + a4
+    end
+
+    sino_low  = Array{Float32}(undef, sz)
+    sino_high = Array{Float32}(undef, sz)
+    b1 = bins[1]; b2 = bins[2]; b3 = bins[3]; b4 = bins[4]
     @inbounds for v in 1:sz[3], r in 1:sz[2], c in 1:sz[1]
-        sino_low[c, r, v]  = -log(max(N_lo[c, r, v], eps_f) / max(I0_lo_pp[c, r], eps_f))
-        sino_high[c, r, v] = -log(max(N_hi[c, r, v], eps_f) / max(I0_hi_pp[c, r], eps_f))
+        n1 = I0_pp[c, r, 1] * exp(-b1[c, r, v])
+        n2 = I0_pp[c, r, 2] * exp(-b2[c, r, v])
+        n3 = I0_pp[c, r, 3] * exp(-b3[c, r, v])
+        n4 = I0_pp[c, r, 4] * exp(-b4[c, r, v])
+        t1, t2, t3, t4 = demigrate(n1, n2, n3, n4)
+        sino_low[c, r, v]  = -log(max(t1 + t2, eps_f) / max(I0_lo_pp[c, r], eps_f))
+        sino_high[c, r, v] = -log(max(t3 + t4, eps_f) / max(I0_hi_pp[c, r], eps_f))
     end
 
     (sino_low = sino_low, sino_high = sino_high,
      I0_lo_pp = I0_lo_pp, I0_hi_pp = I0_hi_pp,
-     bt_cpu = sim_bins.bt_cpu,
-     geom = sim_bins.geom)
+     bt_cpu = sim_bins.bt_cpu, geom = sim_bins.geom)
 end;
 
-# ╔═╡ 08030005-0000-4000-8000-000000000030
+# ╔═╡ 08030005-0000-4000-8000-00000000000b
+# PRE-correction low/high — naive I0-weighted combine of the RAW 4 bins (1+2→low,
+# 3+4→high, NO charge-sharing correction).  Stacked right above the corrected
+# channels so you can see exactly what the backward-substitution changed.  Mid-row
+# slice, 2D scratch only (memory budget).
 let
-    n_row = size(sim_lohi.sino_low, 2)
-    mid_r = n_row ÷ 2 + 1
+    eps_f = Float32(1.0e-10)
+    bins  = sim_bins.bins
+    I0_pp = sim_bins.I0_per_pixel
+    ncol  = size(bins[1], 1); nrow = size(bins[1], 2); nview = size(bins[1], 3)
+    mid_r = nrow ÷ 2 + 1
 
-    slice_lo = permutedims(sim_lohi.sino_low[:, mid_r, :], (2, 1))
-    slice_hi = permutedims(sim_lohi.sino_high[:, mid_r, :], (2, 1))
+    I0lo = Float32[I0_pp[c, mid_r, 1] + I0_pp[c, mid_r, 2] for c in 1:ncol]
+    I0hi = Float32[I0_pp[c, mid_r, 3] + I0_pp[c, mid_r, 4] for c in 1:ncol]
+    raw_lo = Array{Float32}(undef, ncol, nview)
+    raw_hi = Array{Float32}(undef, ncol, nview)
+    @inbounds for v in 1:nview, c in 1:ncol
+        nlo = I0_pp[c, mid_r, 1] * exp(-bins[1][c, mid_r, v]) + I0_pp[c, mid_r, 2] * exp(-bins[2][c, mid_r, v])
+        nhi = I0_pp[c, mid_r, 3] * exp(-bins[3][c, mid_r, v]) + I0_pp[c, mid_r, 4] * exp(-bins[4][c, mid_r, v])
+        raw_lo[c, v] = -log(max(nlo, eps_f) / max(I0lo[c], eps_f))
+        raw_hi[c, v] = -log(max(nhi, eps_f) / max(I0hi[c], eps_f))
+    end
+    slice_lo = permutedims(raw_lo, (2, 1)); slice_hi = permutedims(raw_hi, (2, 1))
 
     all_v = vcat(vec(slice_lo), vec(slice_hi))
-    sino_window = (
-        Float64(quantile(all_v, 0.01)),
-        Float64(quantile(all_v, 0.99)),
-    )
+    sino_window = (Float64(quantile(all_v, 0.01)), Float64(quantile(all_v, 0.99)))
 
     fig = CM.Figure(size = (1180, 580))
     axis_kwargs = (
@@ -1281,12 +1557,10 @@ let
         xlabelsize = 22, ylabelsize = 22,
         xticklabelsize = 16, yticklabelsize = 16,
     )
-
     panels = (
-        (1, 1, "Low Bins", "20 – 55 keV", slice_lo),
-        (1, 2, "High Bins", "> 55 keV", slice_hi),
+        (1, 1, "Raw Low (uncorrected)", "bins 1+2 · 20 – 55 keV", slice_lo),
+        (1, 2, "Raw High (uncorrected)", "bins 3+4 · > 55 keV", slice_hi),
     )
-
     for (r, c, ttl, sub, slice) in panels
         ax = CM.Axis(fig[r, c]; title = ttl, subtitle = sub, axis_kwargs...)
         CM.heatmap!(ax, slice; colormap = :viridis, colorrange = sino_window)
@@ -1297,6 +1571,158 @@ let
     )
     fig
 end
+
+# ╔═╡ 08030005-0000-4000-8000-000000000009
+# The two CORRECTED channels (charge-sharing backward-substitution) — true-energy
+# windows, spectrally disjoint.  Low [20,55) is dominated by the healthy 35–55 keV
+# window so it is clean (no starved-bin noise).  cf. the raw bins directly above.
+let
+    n_row = size(sim_corrected.sino_low, 2)
+    mid_r = n_row ÷ 2 + 1
+
+    slice_lo = permutedims(sim_corrected.sino_low[:, mid_r, :], (2, 1))
+    slice_hi = permutedims(sim_corrected.sino_high[:, mid_r, :], (2, 1))
+
+    all_v = vcat(vec(slice_lo), vec(slice_hi))
+    sino_window = (Float64(quantile(all_v, 0.01)), Float64(quantile(all_v, 0.99)))
+
+    fig = CM.Figure(size = (1180, 580))
+    axis_kwargs = (
+        titlesize = 32, subtitlesize = 24,
+        xlabel = "View", ylabel = "Detector Column",
+        xlabelsize = 22, ylabelsize = 22,
+        xticklabelsize = 16, yticklabelsize = 16,
+    )
+    panels = (
+        (1, 1, "Corrected Low", "true 20 – 55 keV", slice_lo),
+        (1, 2, "Corrected High", "true > 55 keV", slice_hi),
+    )
+    for (r, c, ttl, sub, slice) in panels
+        ax = CM.Axis(fig[r, c]; title = ttl, subtitle = sub, axis_kwargs...)
+        CM.heatmap!(ax, slice; colormap = :viridis, colorrange = sino_window)
+    end
+    CM.Colorbar(
+        fig[1, 3]; colormap = :viridis, colorrange = sino_window,
+        label = "Log Line Integral", width = 16, labelsize = 22, ticklabelsize = 18,
+    )
+    fig
+end
+
+# ╔═╡ 08030005-0000-4000-8000-00000000000a
+# Did the correction work? — the §5b channel-response panels, REDONE with the
+# corrected channels.  Each energy's measured 4-bin pattern D(E,·) is pushed
+# through the same backward-substitution (`correction.F`) used on the data, and
+# we plot the resulting per-bin / per-channel sensitivity vs incident energy.
+#   Left  — the 4 corrected bins each collapse into their own true window.
+#   Right — raw channels (dotted) overlap heavily; corrected (solid) ≈ disjoint
+#           ideal windows.  Low-channel >55 keV leakage: 57% → 12%.
+let
+    pcct_det = BS._build_pcct_detector(scanner)
+    kVp_val  = Float64(maximum(sim_raw.energies))
+    D        = BS.compute_mc_drm(pcct_det, kVp_val)          # [200 × 4] P(bin | E_inc)
+    Egrid    = collect(range(1.0, kVp_val, length = size(D, 1)))
+    F        = correction.F                                  # Float32 [4×4] upper-triangular
+
+    # backward-substitution on a measured 4-bin pattern → de-migrated windows
+    @inline function demig(n1, n2, n3, n4)
+        t4 = n4 / F[4, 4]
+        t3 = (n3 - F[3, 4] * t4) / F[3, 3]
+        t2 = (n2 - F[2, 3] * t3 - F[2, 4] * t4) / F[2, 2]
+        t1 = (n1 - F[1, 2] * t2 - F[1, 3] * t3 - F[1, 4] * t4) / F[1, 1]
+        (max(t1, 0.0), max(t2, 0.0), max(t3, 0.0), max(t4, 0.0))
+    end
+    cb = [zeros(length(Egrid)) for _ in 1:4]                 # corrected per-bin response
+    for i in eachindex(Egrid)
+        t = demig(D[i, 1], D[i, 2], D[i, 3], D[i, 4])
+        for b in 1:4
+            cb[b][i] = t[b]
+        end
+    end
+    clo = cb[1] .+ cb[2]; chi = cb[3] .+ cb[4]               # corrected channels
+    rlo = D[:, 1] .+ D[:, 2]; rhi = D[:, 3] .+ D[:, 4]       # raw channels
+
+    bin_col = [:dodgerblue, :seagreen, :darkorange, :firebrick]
+    bin_lbl = ["Bin 1: 20–35", "Bin 2: 35–55", "Bin 3: 55–70", "Bin 4: >70 keV"]
+    bin_win = [(20.0, 35.0), (35.0, 55.0), (55.0, 70.0), (70.0, kVp_val)]
+
+    fig = CM.Figure(size = (1360, 580))
+    ak = (titlesize = 27, subtitlesize = 19, xlabelsize = 21, ylabelsize = 21,
+          xticklabelsize = 16, yticklabelsize = 16)
+
+    # ── Corrected 4-bin response ──
+    axA = CM.Axis(fig[1, 1]; title = "Corrected 4-Bin Response",
+        subtitle = "each bin de-migrated to its true window (shaded)",
+        xlabel = "Incident energy (keV)", ylabel = "Corrected response", ak...)
+    for b in 1:4
+        lo, hi = bin_win[b]
+        CM.vspan!(axA, lo, hi; color = (bin_col[b], 0.10))
+        CM.lines!(axA, Egrid, cb[b]; color = bin_col[b], linewidth = 2.5, label = bin_lbl[b])
+    end
+    CM.axislegend(
+        axA;
+        position = :rt,
+        labelsize = 14,
+        framevisible = true,
+        framecolor = (:black, 0.15),
+        backgroundcolor = (:white, 0.85)
+    )
+
+    # ── Two-channel response: raw vs corrected vs ideal ──
+    axB = CM.Axis(fig[1, 2]; title = "Two-Channel Response",
+        subtitle = "raw (dotted) overlaps · corrected (solid) ≈ ideal windows",
+        xlabel = "Incident energy (keV)", ylabel = "Channel response", ak...)
+    CM.vspan!(axB, 20, 55; color = (:dodgerblue, 0.08))
+    CM.vspan!(axB, 55, kVp_val; color = (:firebrick, 0.08))
+    CM.lines!(axB, Egrid, rlo; color = (:dodgerblue, 0.35), linewidth = 2, linestyle = :dot, label = "Low raw")
+    CM.lines!(axB, Egrid, rhi; color = (:firebrick, 0.35), linewidth = 2, linestyle = :dot, label = "High raw")
+    CM.lines!(axB, Egrid, clo; color = :dodgerblue, linewidth = 3, label = "Low corrected")
+    CM.lines!(axB, Egrid, chi; color = :firebrick, linewidth = 3, label = "High corrected")
+    CM.axislegend(
+        axB;
+        position = :rt,
+        labelsize = 14,
+        framevisible = true,
+        framecolor = (:black, 0.15),
+        backgroundcolor = (:white, 0.85)
+    )
+    fig
+end
+
+# ╔═╡ 08030005-0000-4000-8000-000000000010
+# MAIN PATH — plain I0-weighted Beer combine of the RAW (uncorrected) bins:
+# low = bins 1+2, high = bins 3+4.  Pre-correction (sim_corrected) kept ABOVE as
+# a rejected diagnostic only.  Decomposition runs on these raw channels.
+sim_lohi = let
+    eps_f      = Float32(1.0e-10)
+    low_bins   = [1, 2]
+    high_bins  = [3, 4]
+    I0_pp = sim_bins.I0_per_pixel
+    I0_lo_pp = dropdims(sum(view(I0_pp, :, :, low_bins),  dims = 3); dims = 3)
+    I0_hi_pp = dropdims(sum(view(I0_pp, :, :, high_bins), dims = 3); dims = 3)
+    sz   = size(sim_bins.bins[1])
+    N_lo = zeros(Float32, sz)
+    N_hi = zeros(Float32, sz)
+    for b in low_bins
+        bin_b = sim_bins.bins[b]; I0_b_pp = view(I0_pp, :, :, b)
+        @inbounds for v in 1:sz[3], r in 1:sz[2], c in 1:sz[1]
+            N_lo[c, r, v] += I0_b_pp[c, r] * exp(-bin_b[c, r, v])
+        end
+    end
+    for b in high_bins
+        bin_b = sim_bins.bins[b]; I0_b_pp = view(I0_pp, :, :, b)
+        @inbounds for v in 1:sz[3], r in 1:sz[2], c in 1:sz[1]
+            N_hi[c, r, v] += I0_b_pp[c, r] * exp(-bin_b[c, r, v])
+        end
+    end
+    sino_low  = similar(N_lo); sino_high = similar(N_hi)
+    @inbounds for v in 1:sz[3], r in 1:sz[2], c in 1:sz[1]
+        sino_low[c, r, v]  = -log(max(N_lo[c, r, v], eps_f) / max(I0_lo_pp[c, r], eps_f))
+        sino_high[c, r, v] = -log(max(N_hi[c, r, v], eps_f) / max(I0_hi_pp[c, r], eps_f))
+    end
+    (sino_low = sino_low, sino_high = sino_high,
+     I0_lo_pp = I0_lo_pp, I0_hi_pp = I0_hi_pp,
+     bt_cpu = sim_bins.bt_cpu, geom = sim_bins.geom)
+end;
 
 # ╔═╡ 08030007-0000-4000-8000-000000000001
 md"""
@@ -1348,7 +1774,10 @@ material_basis = let
     n_R = size(R_mat, 1)
     drm_idx(E) = clamp(round(Int, (Float64(E) - 1.0) / (kVp_val - 1.0) * (n_R - 1)) + 1, 1, n_R)
 
-    # Per-energy 1D weight (no bowtie) — `w · η · ΣR_grp`
+    # Per-energy 1D weight (no bowtie).  AFTER the §6 spectral correction the
+    # channels are TRUE-energy windows, so Φ is the ideal window cut of the
+    # total detected response Wtot(E) = w·η·Σ_b R(E,b) — NOT the smeared
+    # per-bin ΣR_grp.  This is what restores the spectral contrast Cong needs.
     Φ_L_1d = Float32[
         Float32(w[i] * η_vec[i] * sum(R_mat[drm_idx(e[i]), b] for b in cong_low_bins))
         for i in eachindex(e)
@@ -1417,8 +1846,149 @@ material_basis = let
      ŵ_H = Φ_H_pp, p_H = copy(p),  q_H = copy(q))
 end;
 
+# ╔═╡ 08030007-0000-4000-8000-000000000015
+# ─── INLINED Cong solver (was BS.apply_cong!) — edit freely for the corrected bins ───
+# Faithful port of src/reconstruction/vmi/cong.jl::apply_cong!, lifted into the
+# notebook so the per-ray kernel can be re-worked for the spectrally-corrected
+# channels.  Runs on GPU via BS.AK.foreachindex (same body compiles CPU/Metal/CUDA);
+# all root-finds use BS.brent_solve (allocation-free, GPU-safe).
+#
+# Algorithm (Cong 2022, generalized — Black, in prep.):
+#   1. Brent on water-equivalent path L  → anchor c̄ = c_w·L           (LOW channel)
+#   2. Newton on the 5th-order Taylor quintic for x = h(y)            (LOW channel)
+#   3. Brent on y matching the HIGH channel: T_H_pred(y, c̄+h(y)) = T_H_meas
+#   → y = iodine path, C = c̄ + h(y) = water path.
+#
+# LIKELY TWEAK POINTS for the corrected bins (the corrected LOW window [20,55) is
+# soft + iodine-absorbed, so the old water-equiv anchor may be the weak link):
+#   • anchor (Step 1) — try a high-channel or linearized-2×2 anchor for c̄.
+#   • metric  (Step 3) — exact root-find assumes noiseless m_2; Cong §2.5 suggests
+#     a Poisson log-likelihood min for photon-starved bins.
+#   • Taylor order / one-step anchor refinement (Cong §2.6, algorithm step 4).
+function cong_inline!(
+        sino_y, sino_c, sino_low, sino_high,
+        ŵ_L, p_L, q_L, ŵ_H, p_H, q_H;
+        a_w::Float32 = 0.0f0, c_w::Float32 = 1.0f0,
+        anchor_high::Bool = true,    # ← TWEAK: anchor c̄ on the HIGH channel (robust,
+                                     #   well-populated).  false = original (LOW anchor).
+        newton_max_iter::Int = 12, newton_tol::Float32 = eps(Float32),
+        y_max_factor::Float32 = 0.99f0, y_max_cap::Float32 = 1.0f7,
+    )
+    # Pick the anchor channel (Steps 1+2: water-equiv anchor + quintic h(y)) and the
+    # solve channel (Step 3: root-find iodine path y).  The decomposition is symmetric
+    # in the two channels — y is iodine and C is water either way — so this only changes
+    # WHICH measurement seeds c̄.  The corrected LOW window is soft + K-edge-absorbed, so
+    # anchoring on the HIGH channel avoids the water-equiv Brent overflowing on iodine rays.
+    ŵ_anc = anchor_high ? ŵ_H : ŵ_L;  p_anc = anchor_high ? p_H : p_L;  q_anc = anchor_high ? q_H : q_L
+    ŵ_sol = anchor_high ? ŵ_L : ŵ_H;  p_sol = anchor_high ? p_L : p_H;  q_sol = anchor_high ? q_L : q_H
+    per_ray = ndims(ŵ_anc) == 3
+    nE_anc = per_ray ? size(ŵ_anc, 3) : length(ŵ_anc)
+    nE_sol = per_ray ? size(ŵ_sol, 3) : length(ŵ_sol)
+    p_anc_min = Float32(minimum(p_anc))
+    nm_iter = newton_max_iter; n_tol = newton_tol
+    y_fac = y_max_factor; y_cap = y_max_cap
+    n_col = Int(size(sino_low, 1)); n_row = Int(size(sino_low, 2))
+
+    BS.AK.foreachindex(sino_low) do idx
+        i0  = idx - 1
+        col = (i0 % n_col) + 1
+        row = ((i0 ÷ n_col) % n_row) + 1
+
+        p_L_meas = Float32(sino_low[idx])
+        p_H_meas = Float32(sino_high[idx])
+        if p_L_meas < 1f-6 && p_H_meas < 1f-6
+            sino_y[idx] = 0f0; sino_c[idx] = 0f0; return
+        end
+        p_anc_meas = anchor_high ? p_H_meas : p_L_meas
+        p_sol_meas = anchor_high ? p_L_meas : p_H_meas
+        T_anc_meas = exp(-p_anc_meas); T_sol_meas = exp(-p_sol_meas)
+
+        # Step 1 — Brent on water-equivalent path L on the ANCHOR channel → c̄.
+        water_T = function (L::Float32)
+            T = 0f0
+            if per_ray
+                @inbounds for i in 1:nE_anc
+                    T += ŵ_anc[col, row, i] * exp(-(p_anc[i]*a_w + q_anc[i]*c_w) * L)
+                end
+            else
+                @inbounds for i in 1:nE_anc
+                    T += ŵ_anc[i] * exp(-(p_anc[i]*a_w + q_anc[i]*c_w) * L)
+                end
+            end
+            T - T_anc_meas
+        end
+        L_water, ok_L = BS.brent_solve(water_T, 0f0, 60f0)
+        if !ok_L
+            sino_y[idx] = 0f0; sino_c[idx] = 0f0; return
+        end
+        c̄ = c_w * L_water
+
+        y_max = min(y_fac * p_anc_meas / max(p_anc_min, eps(Float32)), y_cap)
+        if y_max <= 0f0
+            sino_y[idx] = 0f0; sino_c[idx] = c̄; return
+        end
+
+        # Step 2 — Newton on the Taylor quintic (ANCHOR channel) for x = h(y).
+        solve_quintic = function (y::Float32, c̄_::Float32)
+            P0=0f0;P1=0f0;P2=0f0;P3=0f0;P4=0f0;P5=0f0
+            if per_ray
+                @inbounds for i in 1:nE_anc
+                    q_i=q_anc[i];q2=q_i*q_i;q3=q2*q_i;q4=q3*q_i;q5=q4*q_i
+                    wexp=ŵ_anc[col,row,i]*exp(-p_anc[i]*y - q_i*c̄_)
+                    P0+=wexp;P1-=wexp*q_i;P2+=wexp*q2*0.5f0;P3-=wexp*q3*(1f0/6f0);P4+=wexp*q4*(1f0/24f0);P5-=wexp*q5*(1f0/120f0)
+                end
+            else
+                @inbounds for i in 1:nE_anc
+                    q_i=q_anc[i];q2=q_i*q_i;q3=q2*q_i;q4=q3*q_i;q5=q4*q_i
+                    wexp=ŵ_anc[i]*exp(-p_anc[i]*y - q_i*c̄_)
+                    P0+=wexp;P1-=wexp*q_i;P2+=wexp*q2*0.5f0;P3-=wexp*q3*(1f0/6f0);P4+=wexp*q4*(1f0/24f0);P5-=wexp*q5*(1f0/120f0)
+                end
+            end
+            x=0f0
+            for _ in 1:nm_iter
+                F=(P0-T_anc_meas)+x*(P1+x*(P2+x*(P3+x*(P4+x*P5))))
+                dF=P1+x*(2f0*P2+x*(3f0*P3+x*(4f0*P4+x*5f0*P5)))
+                abs(dF)<1f-30 && break
+                Δ=F/dF; x-=Δ; abs(Δ)<n_tol && break
+            end
+            x
+        end
+
+        # Step 3 — Brent on y matching the SOLVE channel.
+        T_sol_pred = function (y::Float32, C::Float32)
+            T=0f0
+            if per_ray
+                @inbounds for i in 1:nE_sol
+                    T += ŵ_sol[col,row,i]*exp(-p_sol[i]*y - q_sol[i]*C)
+                end
+            else
+                @inbounds for i in 1:nE_sol
+                    T += ŵ_sol[i]*exp(-p_sol[i]*y - q_sol[i]*C)
+                end
+            end
+            T
+        end
+        G = function (y::Float32)
+            x = solve_quintic(y, c̄)
+            T_sol_pred(y, c̄ + x) - T_sol_meas
+        end
+        y_opt, ok_y = BS.brent_solve(G, 0f0, y_max)
+        if !ok_y
+            sino_y[idx] = a_w*L_water; sino_c[idx] = c_w*L_water; return
+        end
+        x_final = solve_quintic(y_opt, c̄)
+        sino_y[idx] = max(y_opt, 0f0)
+        sino_c[idx] = max(c̄ + x_final, 0f0)
+    end
+    (sino_y, sino_c)
+end;
+
 # ╔═╡ 08030007-0000-4000-8000-000000000020
 sino_basis = let
+    # NORMAL src Cong — BS.create_cong_workspace + BS.apply_cong! (original path).
+    # Runs on the raw low/high channels with the distorted R_grp Φ (material_basis).
+    # The inlined `cong_inline!` above is kept as a dormant, editable copy but is
+    # NOT used here.
     sino_low_gpu  = to_gpu(Float32.(sim_lohi.sino_low))
     sino_high_gpu = to_gpu(Float32.(sim_lohi.sino_high))
 
@@ -1426,7 +1996,7 @@ sino_basis = let
     sino_c = similar(sino_low_gpu)
     fill!(sino_y, 0.0f0); fill!(sino_c, 0.0f0)
 
-    @info "Cong polychromatic decomposition: $(size(sim_lohi.sino_low))"
+    @info "Cong polychromatic decomposition (src BS.apply_cong!): $(size(sim_lohi.sino_low))"
     cong_elapsed = @elapsed begin
         cong_ws = BS.create_cong_workspace(sino_low_gpu, material_basis)
         BS.apply_cong!(
@@ -2060,6 +2630,24 @@ vmi_noise_by_keV = let
     roi_idx = findall(heart_noise_roi.mask_2d)
     nz_r = size(basis_z.vol_water, 3)
 
+    # ── Basis-covariance diagnostic (progress meter for the separation work) ──
+    # σ_HU(E)² = 1000²V_w + α²V_i + 2·1000·α·C_iw ;  α* = −1000·C_iw/V_i locates
+    # the noise minimum.  Monotonic-decreasing ⟺ α* ≤ α(140).  Watch ρ_basis
+    # (need it → 0/positive) and α* (need it → ≤5.4).  var/cov via mean.
+    cw    = vec(Float64[Float64(basis_z.vol_water[ci, z])           for z in 1:nz_r, ci in roi_idx])
+    ci_mg = vec(Float64[Float64(basis_z.vol_iodine[ci, z]) * 1000.0 for z in 1:nz_r, ci in roi_idx])
+    mw = mean(cw); mi = mean(ci_mg)
+    V_w  = mean((cw .- mw).^2);  V_i = mean((ci_mg .- mi).^2);  C_iw = mean((cw .- mw) .* (ci_mg .- mi))
+    ρ_b  = C_iw / sqrt(max(V_w * V_i, 1e-30))
+    α(E) = BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine, Float64(E)) /
+           BS.compute_mass_μ_at_energy(BS.XA.Materials.water,  Float64(E))
+    α_star = -1000.0 * C_iw / max(V_i, 1e-30)
+    @info "[basis cov · heart ROI]  σ(c_water)=$(round(sqrt(V_w), sigdigits=3)) g/mL · " *
+          "σ(c_iod)=$(round(sqrt(V_i), sigdigits=3)) mg/mL · ρ_basis=$(round(ρ_b, digits=3)) · " *
+          "water floor=$(round(1000*sqrt(V_w), digits=1)) HU"
+    @info "  α* = $(round(α_star, digits=1))  [α(40)=$(round(α(40),digits=1)), α(70)=$(round(α(70),digits=1)), α(140)=$(round(α(140),digits=1))] → " *
+          (α_star ≤ α(140) ? "MONOTONIC predicted" : (α_star ≥ α(40) ? "monotonic-increasing" : "U-shape (min where α=α*)"))
+
     out = Dict{Float64, NamedTuple}()
     for E in pcct_vmi_energies
         vol = vmi_HU_final[E]
@@ -2122,6 +2710,55 @@ let
     end
     CM.ylims!(ax2, 0, maximum(σs) * 1.4)
 
+    fig
+end
+
+# ╔═╡ 0803000d-0000-4000-8000-000000000040
+# VMI-noise DECOMPOSITION — confirms (in the image domain) where the U comes from.
+# From the basis covariance in the heart ROI (σ_w, σ_i, C_iw):
+#   σ_HU(E)² = 1000²·V_w  +  α(E)²·V_i  +  2·1000·α(E)·C_iw
+#              └ water floor ┘  └ iodine ┘   └── cross term ──┘
+# The flat blue line is the water floor 1000·√V_w — the high-keV asymptote.  The
+# grey dotted curve is what σ would be WITHOUT the cross term (C_iw=0).  If the
+# black "predicted total" tracks the measured points, the theorem holds and the
+# high-keV rise is provably the water floor (set by C_iw<0 / poor separation).
+let
+    roi_idx = findall(heart_noise_roi.mask_2d)
+    nz_r = size(basis_z.vol_water, 3)
+    cw    = vec(Float64[Float64(basis_z.vol_water[ci, z])           for z in 1:nz_r, ci in roi_idx])
+    ci_mg = vec(Float64[Float64(basis_z.vol_iodine[ci, z]) * 1000.0 for z in 1:nz_r, ci in roi_idx])
+    mw = mean(cw); mi = mean(ci_mg)
+    V_w  = mean((cw .- mw) .^ 2); V_i = mean((ci_mg .- mi) .^ 2); C_iw = mean((cw .- mw) .* (ci_mg .- mi))
+    ρ_b  = C_iw / sqrt(max(V_w * V_i, 1.0e-30))
+    αf(E) = Float64(BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine, E)) /
+            Float64(BS.compute_mass_μ_at_energy(BS.XA.Materials.water,  E))
+    floor_HU = 1000.0 * sqrt(V_w)
+    α_star = -1000.0 * C_iw / max(V_i, 1.0e-30)
+
+    Es = collect(40.0:2.0:140.0)
+    σ_total = [sqrt(max(1.0e6 * V_w + αf(E)^2 * V_i + 2.0e3 * αf(E) * C_iw, 0.0)) for E in Es]
+    σ_indep = [sqrt(1.0e6 * V_w + αf(E)^2 * V_i) for E in Es]   # cross term = 0
+    σ_iod   = [αf(E) * sqrt(V_i) for E in Es]
+    E_min   = Es[argmin(σ_total)]
+
+    Em = sort(collect(keys(vmi_noise_by_keV))); σm = [vmi_noise_by_keV[E].std for E in Em]
+
+    fig = CM.Figure(size = (1040, 660))
+    ak  = (titlesize = 28, subtitlesize = 18, xlabelsize = 22, ylabelsize = 22,
+           xticklabelsize = 16, yticklabelsize = 16)
+    ax = CM.Axis(fig[1, 1];
+        title = "VMI Noise Decomposition (heart ROI)",
+        subtitle = "ρ_basis = $(round(ρ_b, digits=2)) · water floor = $(round(floor_HU, digits=0)) HU · " *
+                   "U-min ≈ $(Int(E_min)) keV (α*=$(round(α_star, digits=1)))",
+        xlabel = "VMI energy (keV)", ylabel = "Noise σ (HU)", ak...)
+    CM.hlines!(ax, [floor_HU]; color = :dodgerblue, linewidth = 2.5, linestyle = :dash,
+        label = "water floor 1000·√V_w")
+    CM.lines!(ax, Es, σ_iod;   color = :firebrick, linewidth = 2, linestyle = :dash, label = "iodine α·√V_i")
+    CM.lines!(ax, Es, σ_indep; color = :gray,      linewidth = 2, linestyle = :dot,  label = "if C_iw = 0 (no cross term)")
+    CM.lines!(ax, Es, σ_total; color = :black,     linewidth = 3, label = "predicted total (theorem)")
+    CM.scatter!(ax, Em, σm;    color = :tomato,    markersize = 16, label = "measured σ")
+    CM.axislegend(ax; position = :rt, labelsize = 14, framevisible = false)
+    CM.ylims!(ax, 0, max(maximum(σm), maximum(σ_total)) * 1.15)
     fig
 end
 
@@ -2380,6 +3017,7 @@ comparable.
 # ╠═08010003-0000-4000-8000-000000000006
 # ╠═08010003-0000-4000-8000-000000000007
 # ╠═08010003-0000-4000-8000-000000000008
+# ╠═08010003-0000-4000-8000-000000000009
 # ╠═08010003-0000-4000-8000-000000000010
 # ╠═08010003-0000-4000-8000-000000000011
 # ╠═08010003-0000-4000-8000-000000000040
@@ -2426,12 +3064,19 @@ comparable.
 # ╠═08030004-0000-4000-8000-000000000014
 # ╠═08030004-0000-4000-8000-000000000025
 # ╟─08030004-0000-4000-8000-000000000040
+# ╟─08030004-0000-4000-8000-000000000050
+# ╟─08030004-0000-4000-8000-000000000060
 # ╟─08030005-0000-4000-8000-000000000001
+# ╠═08030005-0000-4000-8000-000000000005
+# ╠═08030005-0000-4000-8000-000000000008
+# ╟─08030005-0000-4000-8000-00000000000b
+# ╟─08030005-0000-4000-8000-000000000009
+# ╟─08030005-0000-4000-8000-00000000000a
 # ╠═08030005-0000-4000-8000-000000000010
-# ╟─08030005-0000-4000-8000-000000000030
 # ╟─08030007-0000-4000-8000-000000000001
 # ╠═08030007-0000-4000-8000-000000000005
 # ╠═08030007-0000-4000-8000-000000000010
+# ╠═08030007-0000-4000-8000-000000000015
 # ╠═08030007-0000-4000-8000-000000000020
 # ╟─08030007-0000-4000-8000-000000000040
 # ╟─08030008-0000-4000-8000-000000000001
@@ -2462,6 +3107,7 @@ comparable.
 # ╠═0803000d-0000-4000-8000-000000000010
 # ╠═0803000d-0000-4000-8000-000000000020
 # ╟─0803000d-0000-4000-8000-000000000030
+# ╟─0803000d-0000-4000-8000-000000000040
 # ╠═0803000c-0000-4000-8000-000000000010
 # ╠═0803000c-0000-4000-8000-000000000011
 # ╠═0803000c-0000-4000-8000-000000000012
