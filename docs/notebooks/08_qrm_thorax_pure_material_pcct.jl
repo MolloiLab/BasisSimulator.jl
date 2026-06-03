@@ -806,12 +806,12 @@ end
 #
 # Toggle is local — independent of sim_opts.use_noise / sim_opts.seed.
 sim_noise_forward = let
-    APPLY_NOISE_FORWARD = false     # OFF for the rung-1 channel-noise probe — all noise is
-                                    # injected post-combine in `channels_noised` instead.
-                                    # Set true to restore the realistic per-bin Poisson path
-                                    # (inline mirror of source apply_pcct_noise!).
+    APPLY_NOISE_FORWARD = true      # ON — realistic per-bin Poisson noise (inline mirror of
+                                    # source apply_pcct_noise!).  The normal PCCT path; the
+                                    # downstream edge-aware ACNR removes the anti-correlated
+                                    # basis noise this produces.
     NOISE_SEED          = 1234
-    NOISE_REDUCTION     = 0.0       # 0 = raw physics; 0.7 ≈ QIR-3 vendor reduction
+    NOISE_REDUCTION     = 0.3       # 0 = raw physics; 0.7 ≈ QIR-3 vendor reduction
     # :count = Poisson-in-counts then −log (scanner-faithful, BUT carries the
     #          Jensen/log bias ≈ (1−nr)²/(2N̄) that blows up in photon-starved
     #          low bins → systematic, energy-dependent trend shift).
@@ -909,7 +909,7 @@ end;
 # Toggle: `APPLY_PILEUP_FORWARD` is local to this cell — independent of
 # `sim_opts.use_pcct_pileup` since we bypass `simulate!()`.
 sim_pileup_forward = let
-    APPLY_PILEUP_FORWARD = false
+    APPLY_PILEUP_FORWARD = true
 
     bins = [copy(b) for b in sim_noise_forward.bins_raw]
     I0_bins = sim_noise_forward.I0_bins
@@ -1010,7 +1010,7 @@ end;
 # Toggle: `APPLY_SCATTER_FORWARD` is local — does NOT read `sim_opts.use_scatter`
 # so that flipping the simopt flag doesn't trigger Pluto to re-run sim_raw.
 sim_scatter_forward = let
-    APPLY_SCATTER_FORWARD = false
+    APPLY_SCATTER_FORWARD = true
 
     bins  = [copy(b) for b in sim_pileup.bins]
     I0_pp = sim_pileup.I0_per_pixel               # (n_col, n_row, n_bins) per-pixel air ref
@@ -1085,7 +1085,7 @@ end;
 # Toggle is local (mirrors `APPLY_SCATTER_FORWARD` above by default) so the
 # cell doesn't reference `sim_opts` and re-trigger sim_raw on flag flips.
 sim_bins = let
-    APPLY_SCATTER_CORRECTION = false
+    APPLY_SCATTER_CORRECTION = true
 
     bins  = [copy(b) for b in sim_scatter_forward.bins]
     I0_pp = sim_scatter_forward.I0_per_pixel       # (n_col, n_row, n_bins) per-pixel air ref
@@ -1262,67 +1262,6 @@ sim_lohi = let
      geom = sim_bins.geom)
 end;
 
-# ╔═╡ 08030005-0000-4000-8000-000000000020
-# === Channel-domain noise injection — INTER-CHANNEL CORRELATION LEVER ===
-# Finding (rung 1): equal, INDEPENDENT, constant-σ white noise on (p_low, p_high)
-# STILL produced the U-shape → the U is not an injection-asymmetry artifact, it is
-# intrinsic to the Cong → VMI decomposition geometry.  Two symptoms split cleanly:
-#   • U-shape LOCATION   ← spectral A-ratios AND inter-channel noise correlation ρ
-#                          (independent of conditioning)
-#   • overall MAGNITUDE  ← conditioning / spectral separation (RMSE, σ-floor)
-#
-# Lever (this cell): the basis-noise cross term C_iw sets the VMI-noise minimum
-#   σ_HU(E)² = 1e6·V_w + α(E)²·V_i + 2e3·α(E)·C_iw ,  min at  α* = −1e3·C_iw/V_i.
-# Monotonic-DECREASING ⟺ α* ≤ α(140) ⟺ C_iw not too negative.  INDEPENDENT channel
-# noise → C_iw < 0 → U.  POSITIVE inter-channel correlation ρ raises C_iw toward 0
-# → α* drops below α(140) → monotonic.  CHANNEL_CORR is that ρ knob; ρ=1 = common
-# mode (same field on both channels).  Sweep ρ: 0 (U) → 0.5 → 1 (expect monotonic).
-#
-# PAPER CAVEAT: disjoint-energy-bin Poisson counts are physically INDEPENDENT
-# (Poisson thinning) → ρ≈0, which is exactly what gives the U.  So a positive ρ is
-# the mathematically-indicated lever but still needs a physical story (shared-flux
-# common mode, or the real fix lives in the spectral responses / A-ratios).  We
-# confirm the lever moves the shape here FIRST, then justify it.
-channels_noised = let
-    NOISE_MODE   = :simple_white   # ON — rung-1 simple white noise (independent), to read the
-                                   # basis-noise correlation Cong produces (sino + image cov cells).
-                                   # :none = passthrough.
-    N0           = 5000.0          # global count → σ = 1/√N₀ (line-integral domain).  ← visibility knob
-    CHANNEL_CORR = 0.0             # ρ ∈ [−1,1] inter-channel noise correlation — THE lever:
-                                   #   0  = independent      → C_iw<0 → U-shape (rung-1 result)
-                                   #  +1  = common-mode (same field on both) → C_iw→0 → MONOTONIC
-                                   #  <0  = anti-correlated   → C_iw more negative → worse
-    NOISE_SEED   = 1234
-
-    lo = copy(sim_lohi.sino_low)
-    hi = copy(sim_lohi.sino_high)
-
-    if NOISE_MODE === :simple_white
-        σ   = Float32(1.0 / sqrt(N0))
-        ρ   = Float32(CHANNEL_CORR)
-        ρc  = Float32(sqrt(max(1.0f0 - ρ^2, 0.0f0)))  # independent-component weight
-        rng = MersenneTwister(NOISE_SEED)
-        sz  = size(lo)
-        g1  = Array{Float32}(undef, sz[1], sz[2])     # shared component (per-view 2D scratch)
-        g2  = Array{Float32}(undef, sz[1], sz[2])     # independent component
-        for v in 1:sz[3]
-            randn!(rng, g1); randn!(rng, g2)
-            # n_L = σ·g1 ;  n_H = σ·(ρ·g1 + √(1−ρ²)·g2)  → Corr(n_L,n_H)=ρ, both var σ²
-            @views lo[:, :, v] .+= σ .* g1
-            @views hi[:, :, v] .+= σ .* (ρ .* g1 .+ ρc .* g2)
-        end
-        @info "[channel noise] σ = $(round(σ, sigdigits = 3)) (N₀=$(N0)) · inter-channel ρ = $(round(ρ, digits = 2)) " *
-              (ρ ≥ 0.99f0 ? "(common-mode → expect MONOTONIC)" :
-               ρ ≤ 0.01f0 ? "(independent → expect U-shape)" : "(partial correlation)")
-    else
-        @info "[channel noise] passthrough (NOISE_MODE = :none)"
-    end
-
-    (sino_low = lo, sino_high = hi,
-     I0_lo_pp = sim_lohi.I0_lo_pp, I0_hi_pp = sim_lohi.I0_hi_pp,
-     bt_cpu = sim_lohi.bt_cpu, geom = sim_lohi.geom)
-end;
-
 # ╔═╡ 08030005-0000-4000-8000-000000000030
 let
     n_row = size(sim_lohi.sino_low, 2)
@@ -1482,14 +1421,14 @@ end;
 
 # ╔═╡ 08030007-0000-4000-8000-000000000020
 sino_basis = let
-    sino_low_gpu  = to_gpu(Float32.(channels_noised.sino_low))
-    sino_high_gpu = to_gpu(Float32.(channels_noised.sino_high))
+    sino_low_gpu  = to_gpu(Float32.(sim_lohi.sino_low))
+    sino_high_gpu = to_gpu(Float32.(sim_lohi.sino_high))
 
     sino_y = similar(sino_low_gpu)
     sino_c = similar(sino_low_gpu)
     fill!(sino_y, 0.0f0); fill!(sino_c, 0.0f0)
 
-    @info "Cong polychromatic decomposition: $(size(channels_noised.sino_low))"
+    @info "Cong polychromatic decomposition: $(size(sim_lohi.sino_low))"
     cong_elapsed = @elapsed begin
         cong_ws = BS.create_cong_workspace(sino_low_gpu, material_basis)
         BS.apply_cong!(
@@ -1502,7 +1441,7 @@ sino_basis = let
     result = (
         sino_iodine = Array(sino_y),
         sino_water  = Array(sino_c),
-        geom        = channels_noised.geom,
+        geom        = sim_lohi.geom,
     )
     sino_low_gpu = nothing; sino_high_gpu = nothing
     sino_y = nothing; sino_c = nothing; cong_ws = nothing
@@ -1547,53 +1486,6 @@ let
     fig
 end
 
-# ╔═╡ 08030007-0000-4000-8000-000000000050
-# === Basis-domain noise injection — SLOPE CONTROL (iodine vs water vs correlation) ===
-# Finding: basis-domain noise gives PERFECT rod RMSE (no bias — it skips Cong's nonlinear
-# propagation), but the σ-vs-E slope came out monotonic-INCREASING — the wrong way.  Why:
-#   δHU(E) = 1000·δc_w + 1000·α(E)·δc_i ,  α(E)=(μ/ρ)_i/(μ/ρ)_w  (≈90 @40 keV → ≈15 @140)
-#   • water-basis noise  δc_w → FLAT floor (energy-independent)
-#   • iodine-basis noise δc_i → ∝ α(E) → DECREASING (this is the no-noise iodine-texture shape)
-#   • C_iw < 0 → cancels the low-E noise (α huge there) → leaves the high-E floor → INCREASING
-# So monotonic-DECREASING (the goal) needs IODINE-dominant noise with C_iw not too negative.
-# The three knobs below dial σ_i, σ_w, and ρ_basis directly; default = iodine-ONLY
-# (FRAC_W=0, ρ=0) to test the reverse.  DIAGNOSTIC for the shape recipe — once we know which
-# (σ_i, σ_w, ρ) gives the right slope, we ask what channel noise yields that basis covariance
-# after Cong.  (channels_noised is :none, so this is the only noise source.)
-basis_sino_noised = let
-    APPLY      = true
-    FRAC_I     = 0.0       # iodine-basis noise: σ_i = FRAC_I · std(iodine sinogram).  ↑ → more DECREASE
-    FRAC_W     = 0.0        # water-basis  noise: σ_w = FRAC_W · std(water sinogram).   ↑ → raises FLAT floor
-    RHO        = 0.0        # Corr(δc_i, δc_w) ∈ [−1,1].  <0 → low-E cancellation → tips toward INCREASING
-    NOISE_SEED = 1234
-
-    io = copy(sino_basis.sino_iodine)
-    wa = copy(sino_basis.sino_water)
-
-    if APPLY
-        rng = MersenneTwister(NOISE_SEED)
-        σ_i = Float32(FRAC_I * std(vec(io)))
-        σ_w = Float32(FRAC_W * std(vec(wa)))
-        ρ   = Float32(RHO)
-        ρc  = Float32(sqrt(max(1.0f0 - ρ^2, 0.0f0)))  # independent-component weight
-        sz  = size(io)
-        g1  = Array{Float32}(undef, sz[1], sz[2])     # iodine draw / shared component
-        g2  = Array{Float32}(undef, sz[1], sz[2])     # independent component for water
-        for v in 1:sz[3]
-            randn!(rng, g1); randn!(rng, g2)
-            # δc_i = σ_i·g1 ;  δc_w = σ_w·(ρ·g1 + √(1−ρ²)·g2)  → Corr(δc_i,δc_w) = ρ
-            @views io[:, :, v] .+= σ_i .* g1
-            @views wa[:, :, v] .+= σ_w .* (ρ .* g1 .+ ρc .* g2)
-        end
-        @info "[basis noise] σ_iodine = $(round(σ_i, sigdigits = 3)) g/cm² · σ_water = $(round(σ_w, sigdigits = 3)) g/cm² · ρ_basis = $(round(ρ, digits = 2)) " *
-              (FRAC_W ≤ 1.0f-6 ? "(iodine-ONLY → expect MONOTONIC-DECREASING)" : "(mixed)")
-    else
-        @info "[basis noise] passthrough (APPLY = false)"
-    end
-
-    (sino_iodine = io, sino_water = wa, geom = sino_basis.geom)
-end;
-
 # ╔═╡ 08030007-0000-4000-8000-000000000060
 # === Basis-sinogram covariance readout (sinogram domain, PRE-FBP) ===
 # Measures the iodine↔water correlation in the basis SINOGRAMS that feed FBP — the
@@ -1606,8 +1498,8 @@ end;
 # ρ < 0 ⇒ anti-correlated basis content ⇒ ACNR has something to remove.  Single-pass
 # scalar accumulation — no full-sinogram temporaries (memory budget).
 let
-    io = basis_sino_noised.sino_iodine
-    wa = basis_sino_noised.sino_water
+    io = sino_basis.sino_iodine
+    wa = sino_basis.sino_water
     n  = length(io)
 
     # ── GLOBAL covariance (two scalar passes) ──
@@ -1657,7 +1549,7 @@ basis-density units (g/cm³).
 # ╔═╡ 08030008-0000-4000-8000-000000000010
 basis_volumes = let
     matrix_size = recon_opts.matrix_size
-    geom = basis_sino_noised.geom
+    geom = sino_basis.geom
 
     function _fbp(sino_cpu)
         sino_gpu = to_gpu(Float32.(sino_cpu))
@@ -1671,8 +1563,8 @@ basis_volumes = let
     end
 
     (
-        vol_iodine_raw = _fbp(basis_sino_noised.sino_iodine),
-        vol_water_raw = _fbp(basis_sino_noised.sino_water),
+        vol_iodine_raw = _fbp(sino_basis.sino_iodine),
+        vol_water_raw = _fbp(sino_basis.sino_water),
         geom = geom,
     )
 end;
@@ -1746,7 +1638,7 @@ basis_acnr = let
     BILAT_RADIUS  = 3        # spatial window radius (px)
     BILAT_SIGMA_S = 2.0      # spatial Gaussian σ (px)
     BILAT_RANGE_K = 2.5      # range σ = K · per-basis noise std (edges > K·σ_noise preserved)
-    GAMMA         = 1.0      # strength ∈ [0,1]; 0 = identity
+    GAMMA         = 1.0      # strength ∈ [0,1]; 0 = identity.  ↓ = sharper, slightly noisier
 
     W = copy(basis_volumes.vol_water_raw)
     I = copy(basis_volumes.vol_iodine_raw)
@@ -2752,14 +2644,12 @@ comparable.
 # ╟─08030004-0000-4000-8000-000000000040
 # ╟─08030005-0000-4000-8000-000000000001
 # ╠═08030005-0000-4000-8000-000000000010
-# ╠═08030005-0000-4000-8000-000000000020
 # ╟─08030005-0000-4000-8000-000000000030
 # ╟─08030007-0000-4000-8000-000000000001
 # ╠═08030007-0000-4000-8000-000000000005
 # ╠═08030007-0000-4000-8000-000000000010
 # ╠═08030007-0000-4000-8000-000000000020
 # ╟─08030007-0000-4000-8000-000000000040
-# ╠═08030007-0000-4000-8000-000000000050
 # ╠═08030007-0000-4000-8000-000000000060
 # ╟─08030008-0000-4000-8000-000000000001
 # ╠═08030008-0000-4000-8000-000000000010
