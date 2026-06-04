@@ -354,16 +354,18 @@ function inject_scatter_bins!(
     scatter_field::AbstractArray{T,3},
     I0_bins::Vector{<:Real},
     I0_total::Real,
-    bin_scatter_weights::Vector{Float64}
+    bin_scatter_weights::Vector{Float64};
+    subtract::Bool = false,
 ) where T
     eps = T(1e-10)
+    sgn = subtract ? -one(T) : one(T)   # +1 = inject (forward), -1 = correct
     for (b, bin_sino) in enumerate(bins)
         let I0b = T(I0_bins[b]), frac = T(bin_scatter_weights[b]),
-            I0t = T(I0_total), bs = bin_sino, sf = scatter_field
+            I0t = T(I0_total), bs = bin_sino, sf = scatter_field, s = sgn
             AK.foreachindex(bs) do idx
                 N_primary = I0b * exp(-bs[idx])
                 N_scatter = sf[idx] * I0t * frac
-                N_total = N_primary + max(N_scatter, zero(T))
+                N_total = N_primary + s * max(N_scatter, zero(T))
                 bs[idx] = -log(max(N_total, eps) / I0b)
             end
         end

@@ -141,7 +141,7 @@ function simulate!(
     I0_total = T(sum(I0_bins))
     eps_combine = T(1.0e-10)
 
-    if config.scatter !== nothing
+    if config.scatter !== nothing && sim_opts.use_pcct_scatter
         # Step 1: Combine primary bins → combined_primary (for scatter spatial estimation)
         combined_primary = ws.combined
         fill!(combined_primary, zero(T))
@@ -254,6 +254,52 @@ function simulate!(
                 b4[idx] = -log(max(r4, eps) / I0_t4)
             end
         end
+    end
+
+    # --- PCCT pileup correction (optional; use_pcct_pileup_correction) ---
+    # Inverts the MC pileup matrix S applied above via apply_pcct_pileup_correction! —
+    # the same model-based un-pileup a clinical recon performs before downstream
+    # processing.  Logically identical to the validated nb08 inline sim_pileup cell.
+    # Runs before scatter correction so the latter re-estimates from un-piled counts.
+    if ws.use_pcct_pileup && ws.pileup_S !== nothing && sim_opts.use_pcct_pileup_correction
+        apply_pcct_pileup_correction!(pcct_sino.bins, ws.I0_bins, ws.pileup_S)
+    end
+
+    # --- PCCT scatter correction (optional; use_pcct_scatter_correction) ---
+    # Model-based re-estimate-and-subtract, logically identical to the validated
+    # nb08 inline scatter-correction cell: re-combine the CURRENT bins (now
+    # primary+scatter+noise+pileup), re-estimate the Ohnesorge field, and subtract
+    # the per-bin scatter.  Scalar I0 here equals the per-pixel reference for a
+    # bowtie-free scanner.  Runs after pileup so it sees the recorded counts.
+    if config.scatter !== nothing && sim_opts.use_pcct_scatter_correction
+        combined_corr = ws.combined
+        fill!(combined_corr, zero(T))
+        for (b, bin_sino) in enumerate(pcct_sino.bins)
+            let I0b = T(I0_bins[b]), bs = bin_sino, comb = combined_corr
+                AK.foreachindex(bs) do idx
+                    comb[idx] += I0b * exp(-bs[idx])
+                end
+            end
+        end
+        let comb = combined_corr, I0t = I0_total, eps = eps_combine
+            AK.foreachindex(comb) do idx
+                comb[idx] = -log(max(comb[idx], eps) / I0t)
+            end
+        end
+        scatter_field_corr = ws.tube_physics_scratch
+        estimate_scatter_field!(
+            scatter_field_corr, combined_corr, config.scatter;
+            ws_scatter_temp = ws.scratch
+        )
+        ew_corr = compute_scatter_energy_weights(Float64.(energies))
+        bin_weights_corr = compute_scatter_bin_weights(
+            Float64.(energies), Float64.(weights),
+            ew_corr, Float64.(ws.η), ws.R, ws.kVp
+        )
+        inject_scatter_bins!(
+            pcct_sino.bins, scatter_field_corr, I0_bins, I0_total,
+            bin_weights_corr; subtract = true
+        )
     end
 
     # Bin-combine, scatter correction, BHC, and pile-up correction are all
@@ -957,14 +1003,14 @@ function build_physics_config(
 
     # Scatter: use geometry-aware model scaled for this scanner and phantom size
     # If phantom is provided, estimate diameter from mask for size-aware scatter scaling
-    phantom_diameter_cm = if phantom !== nothing && sim_opts.use_scatter
+    phantom_diameter_cm = if phantom !== nothing && (sim_opts.use_scatter || sim_opts.use_pcct_scatter)
         voxel_size_mm = phantom.voxel_size .* 10.0
         estimate_phantom_diameter_cm(phantom.mask, voxel_size_mm)
     else
         nothing
     end
 
-    if sim_opts.use_scatter
+    if sim_opts.use_scatter || sim_opts.use_pcct_scatter
         kwargs[:scatter] = geometry_aware_scatter_model(scanner; phantom_diameter_cm = phantom_diameter_cm)
     end
 
