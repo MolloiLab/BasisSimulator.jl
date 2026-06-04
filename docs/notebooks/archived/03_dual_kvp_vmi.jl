@@ -332,8 +332,8 @@ bhc_cal = let
         model = BS.calibrate_bhc_two_material(
             sim_opts, protocol;
             scanner = scanner, geom = geom,
-            order   = 5,
-            hu_low  = 450.0,
+            order = 5,
+            hu_low = 450.0,
             hu_high = 600.0,
         )
         μ_water_poly = BS.compute_polychromatic_μ_water(
@@ -341,15 +341,15 @@ bhc_cal = let
             scanner = scanner, geom = geom,
             water_path_cm = body_diameter_cm,
         )
-        (
-            model         = model,
-            μ_water_mono  = model.μ_water_ref,       # post-BHC HU divisor
-            μ_water_poly  = μ_water_poly,            # no-BHC HU divisor
-            ref_E_keV     = model.reference_energy_keV,
+        return (
+            model = model,
+            μ_water_mono = model.μ_water_ref,       # post-BHC HU divisor
+            μ_water_poly = μ_water_poly,            # no-BHC HU divisor
+            ref_E_keV = model.reference_energy_keV,
         )
     end
     Dict(
-        80  => _calibrate(protocol_low,  sim_low.geom),
+        80 => _calibrate(protocol_low, sim_low.geom),
         140 => _calibrate(protocol_high, sim_high.geom),
     )
 end;
@@ -395,11 +395,11 @@ de_lohi_μ_raw = let
         return Float32.(recon_μ)
     end
 
-    vol_low_μ  = _bhc_fbp_to_μ(sim_low.sino,  sim_low.geom,  bhc_cal[80])
+    vol_low_μ = _bhc_fbp_to_μ(sim_low.sino, sim_low.geom, bhc_cal[80])
     vol_high_μ = _bhc_fbp_to_μ(sim_high.sino, sim_high.geom, bhc_cal[140])
 
     (
-        vol_low_μ  = vol_low_μ,
+        vol_low_μ = vol_low_μ,
         vol_high_μ = vol_high_μ,
         geom = sim_low.geom,
     )
@@ -415,10 +415,10 @@ end;
 #   radius   ⇒ neighborhood half-width in voxels
 #   γ        ⇒ singular-value soft-thresholding factor
 rskr_knob = (
-    n_iter  = 2,
+    n_iter = 2,
     h_param = 2,
-    radius  = 3,
-    γ       = 0.1,
+    radius = 3,
+    γ = 0.1,
 );
 
 # ╔═╡ 03000010-0000-4000-8000-000000000001
@@ -450,10 +450,10 @@ de_lohi_rskr = let
     # source, any backend.
     out = BS.apply_rskr(
         [de_lohi_μ_raw.vol_low_μ, de_lohi_μ_raw.vol_high_μ];
-        n_iter  = rskr_knob.n_iter,
+        n_iter = rskr_knob.n_iter,
         h_param = rskr_knob.h_param,
-        radius  = rskr_knob.radius,
-        γ       = rskr_knob.γ,
+        radius = rskr_knob.radius,
+        γ = rskr_knob.γ,
         gpu_arr_type = GPU_BACKEND.to_gpu,
         verbose = true,
     )
@@ -492,11 +492,11 @@ every downstream stage (HU → Ding decomp → VMI → Mono+) without any
 #   enabled    ⇒ flip to `false` to bypass cupping entirely (sets
 #                de_lohi_μ ≡ de_lohi_rskr)
 cupping_knob = (
-    enabled    = true,
-    fov_cm     = 35.0,
+    enabled = true,
+    fov_cm = 35.0,
     poly_order = 3,
-    q_lo       = 0.50,
-    q_hi       = 0.80,
+    q_lo = 0.5,
+    q_hi = 0.8,
 );
 
 # ╔═╡ 03000009-0000-4000-8000-000000000020
@@ -504,20 +504,20 @@ de_lohi_μ = let
     if !cupping_knob.enabled
         de_lohi_rskr
     else
-        vol_low_μ  = deepcopy(de_lohi_rskr.vol_low_μ)
+        vol_low_μ = deepcopy(de_lohi_rskr.vol_low_μ)
         vol_high_μ = deepcopy(de_lohi_rskr.vol_high_μ)
         BS.apply_radial_capping_basis!(
             vol_low_μ, vol_high_μ;
-            fov_cm     = cupping_knob.fov_cm,
+            fov_cm = cupping_knob.fov_cm,
             poly_order = cupping_knob.poly_order,
-            q_lo       = cupping_knob.q_lo,
-            q_hi       = cupping_knob.q_hi,
-            verbose    = true,
+            q_lo = cupping_knob.q_lo,
+            q_hi = cupping_knob.q_hi,
+            verbose = true,
         )
         (
-            vol_low_μ  = vol_low_μ,
+            vol_low_μ = vol_low_μ,
             vol_high_μ = vol_high_μ,
-            geom       = de_lohi_rskr.geom,
+            geom = de_lohi_rskr.geom,
         )
     end
 end;
@@ -546,9 +546,9 @@ right now.
 # ╔═╡ 03000006-0000-4000-8000-000000000010
 kVp_μ_water = let
     nx, ny, nz = size(de_lohi_μ.vol_low_μ)
-    cx, cy     = nx / 2 + 0.5, ny / 2 + 0.5
-    ROI_R      = 8.0
-    r²         = ROI_R^2
+    cx, cy = nx / 2 + 0.5, ny / 2 + 0.5
+    ROI_R = 8.0
+    r² = ROI_R^2
 
     roi = CartesianIndex{2}[]
     i_lo = max(1, floor(Int, cx - ROI_R)); i_hi = min(nx, ceil(Int, cx + ROI_R))
@@ -562,11 +562,11 @@ kVp_μ_water = let
         for z in 1:nz, ci in roi
             s += vol[ci, z]; n += 1
         end
-        s / n
+        return s / n
     end
 
     Dict(
-        80  => Float64(_mean_μ(de_lohi_μ.vol_low_μ)),
+        80 => Float64(_mean_μ(de_lohi_μ.vol_low_μ)),
         140 => Float64(_mean_μ(de_lohi_μ.vol_high_μ)),
     )
 end;
@@ -592,10 +592,10 @@ let
     end
 
     panels = (
-        (1, 1, "80 kVp",  "BHC + FBP — raw",     to_HU_slice(de_lohi_μ_raw.vol_low_μ,  80)),
-        (1, 2, "140 kVp", "BHC + FBP — raw",     to_HU_slice(de_lohi_μ_raw.vol_high_μ, 140)),
-        (2, 1, "80 kVp",  "post-RSKR + cupping", to_HU_slice(de_lohi_μ.vol_low_μ,      80)),
-        (2, 2, "140 kVp", "post-RSKR + cupping", to_HU_slice(de_lohi_μ.vol_high_μ,     140)),
+        (1, 1, "80 kVp", "BHC + FBP — raw", to_HU_slice(de_lohi_μ_raw.vol_low_μ, 80)),
+        (1, 2, "140 kVp", "BHC + FBP — raw", to_HU_slice(de_lohi_μ_raw.vol_high_μ, 140)),
+        (2, 1, "80 kVp", "post-RSKR + cupping", to_HU_slice(de_lohi_μ.vol_low_μ, 80)),
+        (2, 2, "140 kVp", "post-RSKR + cupping", to_HU_slice(de_lohi_μ.vol_high_μ, 140)),
     )
 
     hms = nothing
@@ -646,7 +646,7 @@ during cal derivation.
 
 # ╔═╡ 03000011-0000-4000-8000-000000000010
 de_lohi_HU = let
-    vol_low_HU  = Float32.(BS.to_hounsfield(de_lohi_μ.vol_low_μ;  μ_water = kVp_μ_water[80]))
+    vol_low_HU = Float32.(BS.to_hounsfield(de_lohi_μ.vol_low_μ; μ_water = kVp_μ_water[80]))
     vol_high_HU = Float32.(BS.to_hounsfield(de_lohi_μ.vol_high_μ; μ_water = kVp_μ_water[140]))
     (vol_low_HU = vol_low_HU, vol_high_HU = vol_high_HU, geom = de_lohi_μ.geom)
 end;
@@ -748,7 +748,7 @@ new_cal_measurements = let
         for j in j_lo:j_hi, i in i_lo:i_hi
             ((i - cx)^2 + (j - cy)^2) ≤ r² && push!(roi, CartesianIndex(i, j))
         end
-        roi
+        return roi
     end
 
     # Per-label rod ROI (centroid of the mask label, 8-px core).
@@ -757,7 +757,7 @@ new_cal_measurements = let
         isempty(idx) && error("rod_roi: no voxels with label $label")
         cx = sum(ci -> Float64(ci[1]), idx) / length(idx)
         cy = sum(ci -> Float64(ci[2]), idx) / length(idx)
-        _circular_roi(cx, cy)
+        return _circular_roi(cx, cy)
     end
 
     # Mean over (ROI × all z slices) — rods are z-invariant, so summing
@@ -767,15 +767,15 @@ new_cal_measurements = let
         for z in 1:size(vol, 3), ci in roi
             s += vol[ci, z]; n += 1
         end
-        s / n
+        return s / n
     end
 
     # Iodine rods (label 20–26 → 2.0…20.0 mg/mL)
     I_rod_specs = (
-        ("I 2.0",  UInt8(20),  2.0),
-        ("I 2.5",  UInt8(21),  2.5),
-        ("I 5.0",  UInt8(22),  5.0),
-        ("I 7.5",  UInt8(23),  7.5),
+        ("I 2.0", UInt8(20), 2.0),
+        ("I 2.5", UInt8(21), 2.5),
+        ("I 5.0", UInt8(22), 5.0),
+        ("I 7.5", UInt8(23), 7.5),
         ("I 10.0", UInt8(24), 10.0),
         ("I 15.0", UInt8(25), 15.0),
         ("I 20.0", UInt8(26), 20.0),
@@ -783,20 +783,20 @@ new_cal_measurements = let
 
     iodine_rows = [
         let roi = _rod_roi(lab)
-            (
-                name      = name,
-                material  = :iodine,
-                mg_per_mL = mgml,
-                HU_80kVp  = Float32(_mean_HU(de_lohi_HU.vol_low_HU,  roi)),
-                HU_140kVp = Float32(_mean_HU(de_lohi_HU.vol_high_HU, roi)),
-            )
+                (
+                    name = name,
+                    material = :iodine,
+                    mg_per_mL = mgml,
+                    HU_80kVp = Float32(_mean_HU(de_lohi_HU.vol_low_HU, roi)),
+                    HU_140kVp = Float32(_mean_HU(de_lohi_HU.vol_high_HU, roi)),
+                )
         end
-        for (name, lab, mgml) in I_rod_specs
+            for (name, lab, mgml) in I_rod_specs
     ]
 
     # Water — center 8-px ROI (rod-free zone, same trick as §7d).
     water_roi = _circular_roi(nx / 2 + 0.5, ny / 2 + 0.5)
-    water_HU_low  = Float32(_mean_HU(de_lohi_HU.vol_low_HU,  water_roi))
+    water_HU_low = Float32(_mean_HU(de_lohi_HU.vol_low_HU, water_roi))
     water_HU_high = Float32(_mean_HU(de_lohi_HU.vol_high_HU, water_roi))
 
     (
@@ -820,35 +820,47 @@ let
     name_to_old = Dict(zip(old_rods.names, zip(old_rods.HU_low, old_rods.HU_high)))
 
     diff_rows = String[]
-    push!(diff_rows,
-        "| Water (center ROI) | 0.0 | — | — | $(round(w.HU_80kVp, digits=1)) | $(round(w.HU_140kVp, digits=1)) |",
+    push!(
+        diff_rows,
+        "| Water (center ROI) | 0.0 | — | — | $(round(w.HU_80kVp, digits = 1)) | $(round(w.HU_140kVp, digits = 1)) |",
     )
     for r in new_cal_measurements.iodine
         old_lo, old_hi = get(name_to_old, r.name, (NaN, NaN))
-        push!(diff_rows,
+        push!(
+            diff_rows,
             "| $(r.name) | $(r.mg_per_mL) | " *
-            "$(isnan(old_lo) ? "—" : round(old_lo, digits=1)) | " *
-            "$(isnan(old_hi) ? "—" : round(old_hi, digits=1)) | " *
-            "$(round(r.HU_80kVp, digits=1)) | " *
-            "$(round(r.HU_140kVp, digits=1)) |",
+                "$(isnan(old_lo) ? "—" : round(old_lo, digits = 1)) | " *
+                "$(isnan(old_hi) ? "—" : round(old_hi, digits = 1)) | " *
+                "$(round(r.HU_80kVp, digits = 1)) | " *
+                "$(round(r.HU_140kVp, digits = 1)) |",
         )
     end
 
     # Copy-paste-ready Julia source.
     src_lines = String[]
-    push!(src_lines,
-        "    \"Water (O)\" => (material = :water,        mg_per_mL =   0.0, HU_80kVp = $(fmt(w.HU_80kVp)), HU_140kVp = $(fmt(w.HU_140kVp))),")
-    push!(src_lines,
-        "    \"Water (I)\" => (material = :water,        mg_per_mL =   0.0, HU_80kVp = $(fmt(w.HU_80kVp)), HU_140kVp = $(fmt(w.HU_140kVp))),")
-    push!(src_lines,
-        "    \"SW ref 1\"  => (material = :solid_water,  mg_per_mL =   0.0, HU_80kVp = $(fmt(w.HU_80kVp)), HU_140kVp = $(fmt(w.HU_140kVp))),")
-    push!(src_lines,
-        "    \"SW ref 2\"  => (material = :solid_water,  mg_per_mL =   0.0, HU_80kVp = $(fmt(w.HU_80kVp)), HU_140kVp = $(fmt(w.HU_140kVp))),")
+    push!(
+        src_lines,
+        "    \"Water (O)\" => (material = :water,        mg_per_mL =   0.0, HU_80kVp = $(fmt(w.HU_80kVp)), HU_140kVp = $(fmt(w.HU_140kVp))),"
+    )
+    push!(
+        src_lines,
+        "    \"Water (I)\" => (material = :water,        mg_per_mL =   0.0, HU_80kVp = $(fmt(w.HU_80kVp)), HU_140kVp = $(fmt(w.HU_140kVp))),"
+    )
+    push!(
+        src_lines,
+        "    \"SW ref 1\"  => (material = :solid_water,  mg_per_mL =   0.0, HU_80kVp = $(fmt(w.HU_80kVp)), HU_140kVp = $(fmt(w.HU_140kVp))),"
+    )
+    push!(
+        src_lines,
+        "    \"SW ref 2\"  => (material = :solid_water,  mg_per_mL =   0.0, HU_80kVp = $(fmt(w.HU_80kVp)), HU_140kVp = $(fmt(w.HU_140kVp))),"
+    )
     for r in new_cal_measurements.iodine
         name_padded = rpad("\"$(r.name)\"", 9, " ")
-        mgml_padded = lpad(string(round(r.mg_per_mL, digits=1)), 5, " ")
-        push!(src_lines,
-            "    $(name_padded)   => (material = :iodine,       mg_per_mL = $(mgml_padded), HU_80kVp = $(fmt(r.HU_80kVp)), HU_140kVp = $(fmt(r.HU_140kVp))),")
+        mgml_padded = lpad(string(round(r.mg_per_mL, digits = 1)), 5, " ")
+        push!(
+            src_lines,
+            "    $(name_padded)   => (material = :iodine,       mg_per_mL = $(mgml_padded), HU_80kVp = $(fmt(r.HU_80kVp)), HU_140kVp = $(fmt(r.HU_140kVp))),"
+        )
     end
 
     body = """
@@ -1048,7 +1060,7 @@ de_cal = BS.de_vmi_cal_2basis_for(:ge_revolution_apex_elite, 80, 140);
 # ╔═╡ 03000012-0000-4000-8000-000000000020
 let
     function fmt_coeffs(c, form)
-        if form === :linear
+        return if form === :linear
             """
             * **c_iodine = f_I(HU_low, HU_high)** — `:linear` (Ding-2012):
                 * a₀, a₁, a₂ = $(round(c[1], sigdigits = 4)), $(round(c[2], sigdigits = 4)), $(round(c[3], sigdigits = 4))
@@ -1158,7 +1170,7 @@ de_decomp = let
     # fraction noise tied to one HU term (see §12.5 recipe for derivation).
     raw = BS.decomp_2basis(de_lohi_HU.vol_low_HU, de_lohi_HU.vol_high_HU, de_cal)
     c_iodine_raw = raw.c_iodine
-    c_water_raw  = raw.c_water
+    c_water_raw = raw.c_water
 
     # FOV mask: outside the recon circle, basis fits extrapolate wildly
     # (esp. RQ form on air at HU ≈ -1000).  Force air voxels to
@@ -1166,37 +1178,37 @@ de_decomp = let
     # at every keV, and the §13 displays don't get a yellow halo from
     # out-of-domain extrapolation.
     BS.apply_fov_mask!(c_iodine_raw, de_lohi_HU.geom; sentinel_μ = 0.0f0)
-    BS.apply_fov_mask!(c_water_raw,  de_lohi_HU.geom; sentinel_μ = 0.0f0)
+    BS.apply_fov_mask!(c_water_raw, de_lohi_HU.geom; sentinel_μ = 0.0f0)
 
     # z-direction denoise — both basis maps + the HU pair (HU pair carried
     # for the §12b before/after figure; VMI synth consumes (c_water,
     # c_iodine) directly).
     radius = z_denoise_kwargs.radius
-    c_iodine    = BS.apply_median_z(c_iodine_raw;          radius = radius)
-    c_water     = BS.apply_median_z(c_water_raw;           radius = radius)
-    vol_low_HU  = BS.apply_median_z(de_lohi_HU.vol_low_HU;  radius = radius)
+    c_iodine = BS.apply_median_z(c_iodine_raw; radius = radius)
+    c_water = BS.apply_median_z(c_water_raw; radius = radius)
+    vol_low_HU = BS.apply_median_z(de_lohi_HU.vol_low_HU; radius = radius)
     vol_high_HU = BS.apply_median_z(de_lohi_HU.vol_high_HU; radius = radius)
 
     (
         # Raw (FOV-masked) — for the §12b before/after figure
-        c_iodine_raw    = c_iodine_raw,
-        c_water_raw     = c_water_raw,
-        vol_low_HU_raw  = de_lohi_HU.vol_low_HU,
+        c_iodine_raw = c_iodine_raw,
+        c_water_raw = c_water_raw,
+        vol_low_HU_raw = de_lohi_HU.vol_low_HU,
         vol_high_HU_raw = de_lohi_HU.vol_high_HU,
 
         # z-denoised — feeds §13 VMI synth
-        c_iodine    = c_iodine,
-        c_water     = c_water,
-        vol_low_HU  = vol_low_HU,
+        c_iodine = c_iodine,
+        c_water = c_water,
+        vol_low_HU = vol_low_HU,
         vol_high_HU = vol_high_HU,
-        geom        = de_lohi_HU.geom,
+        geom = de_lohi_HU.geom,
     )
 end;
 
 # ╔═╡ 03000013-0000-4000-8000-000000000030
 let
-    HU_window      = (-200, 500)     # HU input panels
-    c_iod_window   = (-2.0, 22.0)    # mg/mL — covers 2–20 mg/mL iodine rods
+    HU_window = (-200, 500)     # HU input panels
+    c_iod_window = (-2.0, 22.0)    # mg/mL — covers 2–20 mg/mL iodine rods
     c_water_window = (0.5, 2.0)      # g/mL — water ≈ 1, calcium rods reach ~2
 
     fig = CM.Figure(size = (1400, 1700))
@@ -1205,36 +1217,52 @@ let
     mid = size(de_decomp.c_iodine, 3) ÷ 2
 
     function panel!(r, c, slice2d, ttl, sub, cmap, crng, label)
-        ax = CM.Axis(fig[r, c]; title = ttl, subtitle = sub,
-            aspect = CM.DataAspect(), title_kwargs...)
+        ax = CM.Axis(
+            fig[r, c]; title = ttl, subtitle = sub,
+            aspect = CM.DataAspect(), title_kwargs...
+        )
         hm = CM.heatmap!(ax, slice2d; colormap = cmap, colorrange = crng)
         CM.hidedecorations!(ax)
-        CM.Colorbar(fig[r, c, CM.Right()], hm;
-            label = label, width = 14, labelsize = 18)
+        return CM.Colorbar(
+            fig[r, c, CM.Right()], hm;
+            label = label, width = 14, labelsize = 18
+        )
     end
 
     # Row 1 — post-RSKR HU pair (the inputs to the Ding decomp in §12)
-    panel!(1, 1, de_decomp.vol_low_HU_raw[:, :, mid],
+    panel!(
+        1, 1, de_decomp.vol_low_HU_raw[:, :, mid],
         "HU @ 80 kVp", "post-RSKR — low energy",
-        :grays, HU_window, "HU")
-    panel!(1, 2, de_decomp.vol_high_HU_raw[:, :, mid],
+        :grays, HU_window, "HU"
+    )
+    panel!(
+        1, 2, de_decomp.vol_high_HU_raw[:, :, mid],
         "HU @ 140 kVp", "post-RSKR — high energy",
-        :grays, HU_window, "HU")
+        :grays, HU_window, "HU"
+    )
 
     # Row 2 — raw decomposition outputs (BEFORE z-direction denoising)
-    panel!(2, 1, de_decomp.c_iodine_raw[:, :, mid],
+    panel!(
+        2, 1, de_decomp.c_iodine_raw[:, :, mid],
         "c_iodine", "post image-decomp · pre z-denoise",
-        :viridis, c_iod_window, "mg/mL")
-    panel!(2, 2, de_decomp.c_water_raw[:, :, mid],
+        :viridis, c_iod_window, "mg/mL"
+    )
+    panel!(
+        2, 2, de_decomp.c_water_raw[:, :, mid],
         "c_water", "post image-decomp · pre z-denoise",
-        :viridis, c_water_window, "g/mL")
+        :viridis, c_water_window, "g/mL"
+    )
 
     # Row 3 — z-direction-denoised outputs (this pair feeds §13 VMI synth)
     sub3 = "post z-denoise (radius = $(z_denoise_kwargs.radius))"
-    panel!(3, 1, de_decomp.c_iodine[:, :, mid],
-        "c_iodine", sub3, :viridis, c_iod_window, "mg/mL")
-    panel!(3, 2, de_decomp.c_water[:, :, mid],
-        "c_water", sub3, :viridis, c_water_window, "g/mL")
+    panel!(
+        3, 1, de_decomp.c_iodine[:, :, mid],
+        "c_iodine", sub3, :viridis, c_iod_window, "mg/mL"
+    )
+    panel!(
+        3, 2, de_decomp.c_water[:, :, mid],
+        "c_water", sub3, :viridis, c_water_window, "g/mL"
+    )
 
     fig
 end
@@ -1302,11 +1330,11 @@ let
         for z in 1:nz, ci in roi
             s += vol[ci, z]; n += 1
         end
-        s / n
+        return s / n
     end
 
     energies = de_vmi_energies
-    mean_HU  = [_mean_HU(de_vmi_mono[E]) for E in energies]
+    mean_HU = [_mean_HU(de_vmi_mono[E]) for E in energies]
 
     fig = CM.Figure(size = (900, 540))
     ax = CM.Axis(
@@ -1321,10 +1349,10 @@ let
     )
 
     bar_colors = [
-        CM.RGBf(0.85, 0.32, 0.20),   # 40 keV — warm
-        CM.RGBf(0.92, 0.65, 0.20),
+        CM.RGBf(0.85, 0.32, 0.2),   # 40 keV — warm
+        CM.RGBf(0.92, 0.65, 0.2),
         CM.RGBf(0.45, 0.65, 0.85),
-        CM.RGBf(0.20, 0.30, 0.65),   # 140 keV — cool
+        CM.RGBf(0.2, 0.3, 0.65),   # 140 keV — cool
     ]
 
     CM.barplot!(
@@ -1335,7 +1363,8 @@ let
     CM.hlines!(ax, [0.0]; color = :black, linestyle = :dash, linewidth = 2)
 
     for (i, hu) in enumerate(mean_HU)
-        CM.text!(ax, i, hu;
+        CM.text!(
+            ax, i, hu;
             text = "$(round(hu, digits = 1)) HU",
             align = (:center, hu < 0 ? :top : :bottom),
             offset = (0, hu < 0 ? -4 : 4),

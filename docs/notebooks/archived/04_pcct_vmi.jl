@@ -686,11 +686,11 @@ every downstream stage (HU → Ding decomp → VMI → Mono+) without any
 #   enabled    ⇒ flip to `false` to bypass cupping entirely (sets
 #                de_lohi_μ ≡ de_lohi_rskr)
 cupping_knob = (
-    enabled    = true,
-    fov_cm     = 35.0,
+    enabled = true,
+    fov_cm = 35.0,
     poly_order = 2,
-    q_lo       = 0.25,
-    q_hi       = 0.75,
+    q_lo = 0.25,
+    q_hi = 0.75,
 );
 
 # ╔═╡ 0400000b-0000-4000-8000-000000000050
@@ -698,20 +698,20 @@ de_lohi_μ = let
     if !cupping_knob.enabled
         de_lohi_rskr
     else
-        vol_low_μ  = deepcopy(de_lohi_rskr.vol_low_μ)
+        vol_low_μ = deepcopy(de_lohi_rskr.vol_low_μ)
         vol_high_μ = deepcopy(de_lohi_rskr.vol_high_μ)
         BS.apply_radial_capping_basis!(
             vol_low_μ, vol_high_μ;
-            fov_cm     = cupping_knob.fov_cm,
+            fov_cm = cupping_knob.fov_cm,
             poly_order = cupping_knob.poly_order,
-            q_lo       = cupping_knob.q_lo,
-            q_hi       = cupping_knob.q_hi,
-            verbose    = true,
+            q_lo = cupping_knob.q_lo,
+            q_hi = cupping_knob.q_hi,
+            verbose = true,
         )
         (
-            vol_low_μ  = vol_low_μ,
+            vol_low_μ = vol_low_μ,
             vol_high_μ = vol_high_μ,
-            geom       = de_lohi_rskr.geom,
+            geom = de_lohi_rskr.geom,
         )
     end
 end;
@@ -735,9 +735,9 @@ noise without diluting signal.
 # ╔═╡ 04000006-0000-4000-8000-000000000010
 μ_water_per_bin = let
     nx, ny, nz = size(de_lohi_μ.vol_low_μ)
-    cx, cy     = nx / 2 + 0.5, ny / 2 + 0.5
-    ROI_R      = 8.0
-    r²         = ROI_R^2
+    cx, cy = nx / 2 + 0.5, ny / 2 + 0.5
+    ROI_R = 8.0
+    r² = ROI_R^2
 
     roi = CartesianIndex{2}[]
     i_lo = max(1, floor(Int, cx - ROI_R)); i_hi = min(nx, ceil(Int, cx + ROI_R))
@@ -751,11 +751,11 @@ noise without diluting signal.
         for z in 1:nz, ci in roi
             s += vol[ci, z]; n += 1
         end
-        s / n
+        return s / n
     end
 
     (
-        low  = Float64(_mean_μ(de_lohi_μ.vol_low_μ)),
+        low = Float64(_mean_μ(de_lohi_μ.vol_low_μ)),
         high = Float64(_mean_μ(de_lohi_μ.vol_high_μ)),
     )
 end;
@@ -790,7 +790,7 @@ cal at use time, not during cal derivation.
 
 # ╔═╡ 0400000c-0000-4000-8000-000000000010
 de_lohi_HU = let
-    vol_low_HU  = Float32.(BS.to_hounsfield(de_lohi_μ.vol_low_μ;  μ_water = μ_water_per_bin.low))
+    vol_low_HU = Float32.(BS.to_hounsfield(de_lohi_μ.vol_low_μ; μ_water = μ_water_per_bin.low))
     vol_high_HU = Float32.(BS.to_hounsfield(de_lohi_μ.vol_high_μ; μ_water = μ_water_per_bin.high))
     (vol_low_HU = vol_low_HU, vol_high_HU = vol_high_HU, geom = de_lohi_μ.geom)
 end;
@@ -930,7 +930,7 @@ de_cal = BS.pcct_vmi_cal_2basis_for(:siemens_naeotom_alpha, Int(round(protocol.k
 # ╔═╡ 0400000d-0000-4000-8000-000000000080
 let
     function fmt_coeffs(c, form)
-        if form === :linear
+        return if form === :linear
             """
             * **c_iodine = f_I(HU_low, HU_high)** — `:linear` (Ding-2012):
                 * a₀, a₁, a₂ = $(round(c[1], sigdigits = 4)), $(round(c[2], sigdigits = 4)), $(round(c[3], sigdigits = 4))
@@ -1070,37 +1070,37 @@ de_decomp = let
     # fraction noise tied to one HU term (see §12.5 recipe for derivation).
     raw = BS.decomp_2basis(de_lohi_HU.vol_low_HU, de_lohi_HU.vol_high_HU, de_cal)
     c_iodine_raw = raw.c_iodine
-    c_water_raw  = raw.c_water
+    c_water_raw = raw.c_water
 
     # FOV mask: outside the recon circle, basis fits extrapolate wildly
     # (esp. RQ form on air at HU ≈ -1000).  Force air voxels to
     # c_iodine = 0, c_water = 0 → 2-basis synth gives HU(E) = -1000 (air)
     # at every keV.
     BS.apply_fov_mask!(c_iodine_raw, de_lohi_HU.geom; sentinel_μ = 0.0f0)
-    BS.apply_fov_mask!(c_water_raw,  de_lohi_HU.geom; sentinel_μ = 0.0f0)
+    BS.apply_fov_mask!(c_water_raw, de_lohi_HU.geom; sentinel_μ = 0.0f0)
 
     # z-direction denoise — both basis maps + the HU pair (HU pair carried
     # for the §12b before/after figure; VMI synth consumes (c_water,
     # c_iodine) directly).
     radius = z_denoise_kwargs.radius
-    c_iodine    = BS.apply_median_z(c_iodine_raw;          radius = radius)
-    c_water     = BS.apply_median_z(c_water_raw;           radius = radius)
-    vol_low_HU  = BS.apply_median_z(de_lohi_HU.vol_low_HU;  radius = radius)
+    c_iodine = BS.apply_median_z(c_iodine_raw; radius = radius)
+    c_water = BS.apply_median_z(c_water_raw; radius = radius)
+    vol_low_HU = BS.apply_median_z(de_lohi_HU.vol_low_HU; radius = radius)
     vol_high_HU = BS.apply_median_z(de_lohi_HU.vol_high_HU; radius = radius)
 
     (
         # Raw (FOV-masked) — for the §12b before/after figure
-        c_iodine_raw    = c_iodine_raw,
-        c_water_raw     = c_water_raw,
-        vol_low_HU_raw  = de_lohi_HU.vol_low_HU,
+        c_iodine_raw = c_iodine_raw,
+        c_water_raw = c_water_raw,
+        vol_low_HU_raw = de_lohi_HU.vol_low_HU,
         vol_high_HU_raw = de_lohi_HU.vol_high_HU,
 
         # z-denoised — feeds §13 VMI synth
-        c_iodine    = c_iodine,
-        c_water     = c_water,
-        vol_low_HU  = vol_low_HU,
+        c_iodine = c_iodine,
+        c_water = c_water,
+        vol_low_HU = vol_low_HU,
         vol_high_HU = vol_high_HU,
-        geom        = de_lohi_HU.geom,
+        geom = de_lohi_HU.geom,
     )
 end;
 
@@ -1163,11 +1163,11 @@ let
         for z in 1:nz, ci in roi
             s += vol[ci, z]; n += 1
         end
-        s / n
+        return s / n
     end
 
     energies = de_vmi_energies
-    mean_HU  = [_mean_HU(de_vmi_mono[E]) for E in energies]
+    mean_HU = [_mean_HU(de_vmi_mono[E]) for E in energies]
 
     fig = CM.Figure(size = (900, 540))
     ax = CM.Axis(
@@ -1182,10 +1182,10 @@ let
     )
 
     bar_colors = [
-        CM.RGBf(0.85, 0.32, 0.20),   # 40 keV — warm
-        CM.RGBf(0.92, 0.65, 0.20),
+        CM.RGBf(0.85, 0.32, 0.2),   # 40 keV — warm
+        CM.RGBf(0.92, 0.65, 0.2),
         CM.RGBf(0.45, 0.65, 0.85),
-        CM.RGBf(0.20, 0.30, 0.65),   # 140 keV — cool
+        CM.RGBf(0.2, 0.3, 0.65),   # 140 keV — cool
     ]
 
     CM.barplot!(
@@ -1196,7 +1196,8 @@ let
     CM.hlines!(ax, [0.0]; color = :black, linestyle = :dash, linewidth = 2)
 
     for (i, hu) in enumerate(mean_HU)
-        CM.text!(ax, i, hu;
+        CM.text!(
+            ax, i, hu;
             text = "$(round(hu, digits = 1)) HU",
             align = (:center, hu < 0 ? :top : :bottom),
             offset = (0, hu < 0 ? -4 : 4),

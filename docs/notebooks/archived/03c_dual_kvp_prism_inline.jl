@@ -288,7 +288,7 @@ the forward model used.
 # `use_*` flags).
 material_basis = let
     iodine_mat = BS.XA.Elements.Iodine
-    water_mat  = BS.XA.Materials.water
+    water_mat = BS.XA.Materials.water
 
     e_L, ŵ_L = BS.resolve_source_spectrum_full(
         sim_opts, protocol_low;
@@ -302,9 +302,9 @@ material_basis = let
     )
 
     p_L = Float32[Float32(BS.compute_mass_μ_at_energy(iodine_mat, Float64(E))) for E in e_L]
-    q_L = Float32[Float32(BS.compute_mass_μ_at_energy(water_mat,  Float64(E))) for E in e_L]
+    q_L = Float32[Float32(BS.compute_mass_μ_at_energy(water_mat, Float64(E))) for E in e_L]
     p_H = Float32[Float32(BS.compute_mass_μ_at_energy(iodine_mat, Float64(E))) for E in e_H]
-    q_H = Float32[Float32(BS.compute_mass_μ_at_energy(water_mat,  Float64(E))) for E in e_H]
+    q_H = Float32[Float32(BS.compute_mass_μ_at_energy(water_mat, Float64(E))) for E in e_H]
 
     (
         ŵ_L = ŵ_L, p_L = p_L, q_L = q_L,
@@ -326,7 +326,7 @@ sino_basis = let
     # deconvolved if enabled in sim_opts).  When both `use_*` flags are false
     # the corrections are no-ops and these are identical to sim_low.sino /
     # sim_high.sino.
-    sino_low_gpu  = to_gpu(Float32.(sim_low.sino))
+    sino_low_gpu = to_gpu(Float32.(sim_low.sino))
     sino_high_gpu = to_gpu(Float32.(sim_high.sino))
 
     sino_y = similar(sino_low_gpu);  fill!(sino_y, 0.0f0)
@@ -344,8 +344,8 @@ sino_basis = let
 
     result = (
         sino_iodine = Array(sino_y),
-        sino_water  = Array(sino_c),
-        geom        = sim_low.geom,
+        sino_water = Array(sino_c),
+        geom = sim_low.geom,
     )
     sino_low_gpu = nothing; sino_high_gpu = nothing
     sino_y = nothing; sino_c = nothing; cong_ws = nothing
@@ -372,13 +372,17 @@ let
     )
 
     slice_iod = permutedims(sino_basis.sino_iodine[:, mid_r, :], (2, 1))
-    slice_wat = permutedims(sino_basis.sino_water[:,  mid_r, :], (2, 1))
+    slice_wat = permutedims(sino_basis.sino_water[:, mid_r, :], (2, 1))
 
     panels = (
-        (1, 1, 2, "PRISM Iodine Basis Sinogram", "g/cm²",
-            slice_iod, _qrange(slice_iod)),
-        (1, 3, 4, "PRISM Water Basis Sinogram",  "g/cm²",
-            slice_wat, _qrange(slice_wat)),
+        (
+            1, 1, 2, "PRISM Iodine Basis Sinogram", "g/cm²",
+            slice_iod, _qrange(slice_iod),
+        ),
+        (
+            1, 3, 4, "PRISM Water Basis Sinogram", "g/cm²",
+            slice_wat, _qrange(slice_wat),
+        ),
     )
 
     for (r, panel_c, cbar_c, ttl, cbar_label, slice, range) in panels
@@ -415,7 +419,7 @@ basis_volumes = let
 
     (
         vol_iodine_raw = _fbp(sino_basis.sino_iodine),
-        vol_water_raw  = _fbp(sino_basis.sino_water),
+        vol_water_raw = _fbp(sino_basis.sino_water),
         geom = geom,
     )
 end;
@@ -433,11 +437,11 @@ let
     )
 
     slice_iod = basis_volumes.vol_iodine_raw[:, :, mid]
-    slice_wat = basis_volumes.vol_water_raw[:,  :, mid]
+    slice_wat = basis_volumes.vol_water_raw[:, :, mid]
 
     panels = (
         (1, 1, 2, "Iodine Basis", "g/cm³", slice_iod, _qrange(slice_iod)),
-        (1, 3, 4, "Water Basis",  "g/cm³", slice_wat, _qrange(slice_wat)),
+        (1, 3, 4, "Water Basis", "g/cm³", slice_wat, _qrange(slice_wat)),
     )
 
     for (r, panel_c, cbar_c, ttl, cbar_label, slice, range) in panels
@@ -498,7 +502,7 @@ solid_water_basis = let
 
     mask_2d_raw = phantom_cpu.mask[:, :, size(phantom_cpu.mask, 3) ÷ 2]
     sw_bool_raw = (mask_2d_raw .== UInt8(BS.REGION_SOLID_WATER))
-    sw_bool     = BS.erode_mask_2d(sw_bool_raw; erode_px = ERODE_PX)
+    sw_bool = BS.erode_mask_2d(sw_bool_raw; erode_px = ERODE_PX)
 
     n_raw = count(sw_bool_raw); n_eroded = count(sw_bool)
     n_eroded == 0 && error(
@@ -509,7 +513,7 @@ solid_water_basis = let
         "after $(ERODE_PX)-px erosion"
 
     sw_idx = findall(sw_bool)
-    n_z    = size(basis_z.vol_water, 3)
+    n_z = size(basis_z.vol_water, 3)
     function _mean(vol)
         s = 0.0; n = 0
         for z in 1:n_z, ci in sw_idx
@@ -524,10 +528,10 @@ solid_water_basis = let
         "⟨c_iodine⟩_SW = $(round(c_i, digits = 6)) g/cm³"
 
     (
-        c_water  = c_w,
+        c_water = c_w,
         c_iodine = c_i,
         n_voxels = length(sw_idx) * n_z,
-        mask_2d  = collect(sw_bool),
+        mask_2d = collect(sw_bool),
     )
 end;
 
@@ -542,10 +546,10 @@ vmi_HU_by_keV = let
     for E in de_vmi_energies
         # Diagnostic only — the SW-ROI synth-evaluated μ_water vs the
         # textbook mono divisor.  Drift = residual basis-decomp bias.
-        μρ_w = BS.compute_mass_μ_at_energy(BS.XA.Materials.water,  E)
+        μρ_w = BS.compute_mass_μ_at_energy(BS.XA.Materials.water, E)
         μρ_I = BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine, E)
-        μ_water_anchor = solid_water_basis.c_water  * μρ_w +
-                         solid_water_basis.c_iodine * μρ_I
+        μ_water_anchor = solid_water_basis.c_water * μρ_w +
+            solid_water_basis.c_iodine * μρ_I
         Δ_pct = 100.0 * (μ_water_anchor - μρ_w) / μρ_w
         @info "VMI synth @ $(Int(E)) keV: divisor = $(round(μρ_w, digits = 5)) cm⁻¹ " *
             "(mono μρ_water);  SW-ROI anchor = $(round(μ_water_anchor, digits = 5)) " *
@@ -663,13 +667,13 @@ Per-rod measured vs theoretical HU at 40 / 70 / 100 / 140 keV.
 # ╔═╡ 0600000d-0000-4000-8000-000000000010
 ROD_LABELS = (
     Ca = (UInt8(10), UInt8(11), UInt8(12), UInt8(13), UInt8(14), UInt8(15), UInt8(16)),
-    I  = (UInt8(20), UInt8(21), UInt8(22), UInt8(23), UInt8(24), UInt8(25), UInt8(26)),
+    I = (UInt8(20), UInt8(21), UInt8(22), UInt8(23), UInt8(24), UInt8(25), UInt8(26)),
 );
 
 # ╔═╡ 0600000d-0000-4000-8000-000000000020
 ROD_NAMES = (
     Ca = ("50 mg/mL", "100 mg/mL", "200 mg/mL", "300 mg/mL", "400 mg/mL", "500 mg/mL", "600 mg/mL"),
-    I  = ("2.0 mg/mL", "2.5 mg/mL", "5.0 mg/mL", "7.5 mg/mL", "10.0 mg/mL", "15.0 mg/mL", "20.0 mg/mL"),
+    I = ("2.0 mg/mL", "2.5 mg/mL", "5.0 mg/mL", "7.5 mg/mL", "10.0 mg/mL", "15.0 mg/mL", "20.0 mg/mL"),
 );
 
 # ╔═╡ 0600000d-0000-4000-8000-000000000030
@@ -729,9 +733,9 @@ rod_data = let
     for group in (:Ca, :I)
         labels = ROD_LABELS[group]
         n_rods = length(labels)
-        n_E    = length(de_vmi_energies)
-        meas   = zeros(Float64, n_rods, n_E)
-        theo   = zeros(Float64, n_rods, n_E)
+        n_E = length(de_vmi_energies)
+        meas = zeros(Float64, n_rods, n_E)
+        theo = zeros(Float64, n_rods, n_E)
         for (i, lab) in pairs(labels)
             mat = materials[Int(lab) + 1]
             for (j, E) in pairs(de_vmi_energies)
@@ -757,13 +761,17 @@ let
     fig = CM.Figure(size = (1180, 580))
 
     cmap_ca = CM.cgrad(:Oranges, 7; categorical = true)
-    cmap_i  = CM.cgrad(:GnBu,    7; categorical = true)
+    cmap_i = CM.cgrad(:GnBu, 7; categorical = true)
 
     panels = (
-        (group = :Ca, title = "Calcium rods", subtitle = "50–600 mg/mL",
-            cmap = cmap_ca, ylim = (0, 4200)),
-        (group = :I,  title = "Iodine rods",  subtitle = "2–20 mg/mL",
-            cmap = cmap_i,  ylim = (0, 1500)),
+        (
+            group = :Ca, title = "Calcium rods", subtitle = "50–600 mg/mL",
+            cmap = cmap_ca, ylim = (0, 4200),
+        ),
+        (
+            group = :I, title = "Iodine rods", subtitle = "2–20 mg/mL",
+            cmap = cmap_i, ylim = (0, 1500),
+        ),
     )
 
     for (col, p) in pairs(panels)
@@ -822,10 +830,10 @@ let
     fig = CM.Figure(size = (1000, 1200))
 
     energy_colors = Dict(
-         40.0 => CM.RGBf(0.85, 0.27, 0.10),
-         70.0 => CM.RGBf(0.95, 0.65, 0.13),
+        40.0 => CM.RGBf(0.85, 0.27, 0.1),
+        70.0 => CM.RGBf(0.95, 0.65, 0.13),
         100.0 => CM.RGBf(0.13, 0.59, 0.85),
-        140.0 => CM.RGBf(0.10, 0.27, 0.65),
+        140.0 => CM.RGBf(0.1, 0.27, 0.65),
     )
 
     function fit_lr(x::Vector{Float64}, y::Vector{Float64})
@@ -837,14 +845,14 @@ let
         ŷ = α .+ β .* x
         ss_res = sum((y .- ŷ) .^ 2)
         ss_tot = sum((y .- ȳ) .^ 2)
-        r²   = 1 - ss_res / ss_tot
+        r² = 1 - ss_res / ss_tot
         rmse = sqrt(ss_res / length(y))
         return (slope = β, intercept = α, r² = r², rmse = rmse)
     end
 
     panels = (
         (:Ca, "Calcium Rods", "50–600 mg/mL"),
-        (:I,  "Iodine Rods",  "2–20 mg/mL"),
+        (:I, "Iodine Rods", "2–20 mg/mL"),
     )
 
     for (row, (group, title, subtitle)) in pairs(panels)
@@ -915,8 +923,8 @@ let
 
     mask_2d_raw = phantom_cpu.mask[:, :, size(phantom_cpu.mask, 3) ÷ 2]
     sw_bool_raw = (mask_2d_raw .== UInt8(BS.REGION_SOLID_WATER))
-    sw_bool     = BS.erode_mask_2d(sw_bool_raw; erode_px = ERODE_PX)
-    sw_idx      = findall(sw_bool)
+    sw_bool = BS.erode_mask_2d(sw_bool_raw; erode_px = ERODE_PX)
+    sw_idx = findall(sw_bool)
 
     if isempty(sw_idx)
         error("solid water ROI empty after $(ERODE_PX)-px erosion; reduce erode_px")
@@ -935,10 +943,10 @@ let
 
     # Same energy → color map as the linear regression panel.
     energy_colors = Dict(
-         40.0 => CM.RGBf(0.85, 0.27, 0.10),
-         70.0 => CM.RGBf(0.95, 0.65, 0.13),
+        40.0 => CM.RGBf(0.85, 0.27, 0.1),
+        70.0 => CM.RGBf(0.95, 0.65, 0.13),
         100.0 => CM.RGBf(0.13, 0.59, 0.85),
-        140.0 => CM.RGBf(0.10, 0.27, 0.65),
+        140.0 => CM.RGBf(0.1, 0.27, 0.65),
     )
     bar_colors = [energy_colors[E] for E in de_vmi_energies]
 

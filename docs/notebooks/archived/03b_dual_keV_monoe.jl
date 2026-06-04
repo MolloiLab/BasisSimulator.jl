@@ -69,8 +69,8 @@ import CairoMakie as CM
 begin
     GPU_BACKEND = let
         candidates = [
-            (:Metal,  "dde4c033-4e86-420c-a63e-0dd931031962", :MtlArray),
-            (:CUDA,   "052768ef-5323-5732-b1bb-66c8b64840ba", :CuArray),
+            (:Metal, "dde4c033-4e86-420c-a63e-0dd931031962", :MtlArray),
+            (:CUDA, "052768ef-5323-5732-b1bb-66c8b64840ba", :CuArray),
             (:AMDGPU, "21141c5a-9bdb-4563-92ae-f87d6854732e", :ROCArray),
         ]
         detected = (name = "CPU", to_gpu = identity)
@@ -134,29 +134,29 @@ spectrum to make BHC / Ding decomp / VMI relevant.
 # ╔═╡ 030b0003-0000-4000-8000-000000000010
 scanner = BS.Scanner(
     source_to_isocenter = 625.6,
-    source_to_detector  = 1100.0,
+    source_to_detector = 1100.0,
 
-    detector_rows     = 256,
-    detector_cols     = 834,
+    detector_rows = 256,
+    detector_cols = 834,
     detector_row_size = 0.625,
     detector_col_size = 0.6,
-    detector_shape    = BS.CURVED_DETECTOR,
+    detector_shape = BS.CURVED_DETECTOR,
 
-    focal_spot_width  = 1.0,
+    focal_spot_width = 1.0,
     focal_spot_length = 1.0,
-    target_angle      = 10.0,
+    target_angle = 10.0,
 
-    flat_filter_material  = :aluminum,
+    flat_filter_material = :aluminum,
     flat_filter_thickness = 2.5,
-    bowtie_filter         = :ge_revolution_large,
+    bowtie_filter = :ge_revolution_large,
 
     detector_material = :lumex,
-    detector_depth    = 3.0,
-    fill_factor_row   = 0.9,
-    fill_factor_col   = 0.9,
+    detector_depth = 3.0,
+    fill_factor_row = 0.9,
+    fill_factor_col = 0.9,
 
     electronic_noise = 0,
-    detection_gain   = 10.0,
+    detection_gain = 10.0,
 );
 
 # ╔═╡ 030b0004-0000-4000-8000-000000000001
@@ -180,7 +180,7 @@ de_mono_energies = (low = 70.0, high = 150.0);
 # ╔═╡ 030b0004-0000-4000-8000-000000000020
 protocol_low = BS.CTProtocol(
     kVp = 80,                    # flux-calibration proxy only
-    mA  = 407 * 0.65,
+    mA = 407 * 0.65,
     views = 984,
     rotation_time = 0.5,
     collimation_mm = 5.0,
@@ -190,7 +190,7 @@ protocol_low = BS.CTProtocol(
 # ╔═╡ 030b0004-0000-4000-8000-000000000030
 protocol_high = BS.CTProtocol(
     kVp = 140,                   # flux-calibration proxy only
-    mA  = 405 * 0.35,
+    mA = 405 * 0.35,
     views = 984,
     rotation_time = 0.5,
     collimation_mm = 5.0,
@@ -207,7 +207,7 @@ Identical to nb03 §4.
 # ╔═╡ 030b0005-0000-4000-8000-000000000010
 sim_opts = BS.SimOptions(
     fidelity = :eict,
-    seed     = 1234,
+    seed = 1234,
 );
 
 # ╔═╡ 030b0005-0000-4000-8000-000000000020
@@ -215,11 +215,11 @@ recon_opts = let
     slice_thickness_mm = 0.625
     n_recon_slices = round(Int, 5.0 / slice_thickness_mm)
     BS.ReconOptions(
-        algorithm   = :fdk,
+        algorithm = :fdk,
         matrix_size = (512, 512, n_recon_slices),
-        fov_cm      = 35.0,
-        z_cm        = 0.5,
-        filter      = :standard,
+        fov_cm = 35.0,
+        z_cm = 0.5,
+        filter = :standard,
     )
 end;
 
@@ -333,7 +333,7 @@ de_lohi_μ = let
         return Float32.(recon_μ)
     end
 
-    vol_low_μ  = _fbp_to_μ(sim_low.sino,  sim_low.geom)
+    vol_low_μ = _fbp_to_μ(sim_low.sino, sim_low.geom)
     vol_high_μ = _fbp_to_μ(sim_high.sino, sim_high.geom)
 
     (vol_low_μ = vol_low_μ, vol_high_μ = vol_high_μ, geom = sim_low.geom)
@@ -365,9 +365,9 @@ outer ring of the Gammex 472, so the sample is pure solid water.
 # ╔═╡ 030b0009-0000-4000-8000-000000000010
 keV_μ_water = let
     nx, ny, nz = size(de_lohi_μ.vol_low_μ)
-    cx, cy     = nx / 2 + 0.5, ny / 2 + 0.5
-    ROI_R      = 8.0
-    r²         = ROI_R^2
+    cx, cy = nx / 2 + 0.5, ny / 2 + 0.5
+    ROI_R = 8.0
+    r² = ROI_R^2
 
     roi = CartesianIndex{2}[]
     i_lo = max(1, floor(Int, cx - ROI_R)); i_hi = min(nx, ceil(Int, cx + ROI_R))
@@ -381,11 +381,11 @@ keV_μ_water = let
         for z in 1:nz, ci in roi
             s += vol[ci, z]; n += 1
         end
-        s / n
+        return s / n
     end
 
     Dict(
-        de_mono_energies.low  => Float64(_mean_μ(de_lohi_μ.vol_low_μ)),
+        de_mono_energies.low => Float64(_mean_μ(de_lohi_μ.vol_low_μ)),
         de_mono_energies.high => Float64(_mean_μ(de_lohi_μ.vol_high_μ)),
     )
 end;
@@ -410,7 +410,7 @@ the entire post-FBP pipeline.
 
 # ╔═╡ 030b000a-0000-4000-8000-000000000010
 de_lohi_HU = let
-    vol_low_HU  = Float32.(BS.to_hounsfield(de_lohi_μ.vol_low_μ;  μ_water = keV_μ_water[de_mono_energies.low]))
+    vol_low_HU = Float32.(BS.to_hounsfield(de_lohi_μ.vol_low_μ; μ_water = keV_μ_water[de_mono_energies.low]))
     vol_high_HU = Float32.(BS.to_hounsfield(de_lohi_μ.vol_high_μ; μ_water = keV_μ_water[de_mono_energies.high]))
     (vol_low_HU = vol_low_HU, vol_high_HU = vol_high_HU, geom = de_lohi_μ.geom)
 end;
@@ -435,12 +435,16 @@ let
     mid = size(de_lohi_HU.vol_low_HU, 3) ÷ 2
 
     panels = (
-        (1, 1, "HU @ $(Int(de_mono_energies.low)) keV",
-                "monoenergetic input · FBP only",
-                de_lohi_HU.vol_low_HU[:, :, mid]),
-        (1, 2, "HU @ $(Int(de_mono_energies.high)) keV",
-                "monoenergetic input · FBP only",
-                de_lohi_HU.vol_high_HU[:, :, mid]),
+        (
+            1, 1, "HU @ $(Int(de_mono_energies.low)) keV",
+            "monoenergetic input · FBP only",
+            de_lohi_HU.vol_low_HU[:, :, mid],
+        ),
+        (
+            1, 2, "HU @ $(Int(de_mono_energies.high)) keV",
+            "monoenergetic input · FBP only",
+            de_lohi_HU.vol_high_HU[:, :, mid],
+        ),
     )
 
     hms = nothing
@@ -492,11 +496,11 @@ let
         for z in 1:nz, ci in roi
             s += vol[ci, z]; n += 1
         end
-        s / n
+        return s / n
     end
 
     energies = (de_mono_energies.low, de_mono_energies.high)
-    mean_HU  = [_mean_HU(de_lohi_HU.vol_low_HU), _mean_HU(de_lohi_HU.vol_high_HU)]
+    mean_HU = [_mean_HU(de_lohi_HU.vol_low_HU), _mean_HU(de_lohi_HU.vol_high_HU)]
 
     fig = CM.Figure(size = (700, 480))
     ax = CM.Axis(
@@ -513,8 +517,8 @@ let
     CM.ylims!(ax, -15, 15)
 
     bar_colors = [
-        CM.RGBf(0.92, 0.65, 0.20),   # 70  keV — warm
-        CM.RGBf(0.20, 0.30, 0.65),   # 150 keV — cool
+        CM.RGBf(0.92, 0.65, 0.2),   # 70  keV — warm
+        CM.RGBf(0.2, 0.3, 0.65),   # 150 keV — cool
     ]
 
     CM.barplot!(
@@ -525,7 +529,8 @@ let
     CM.hlines!(ax, [0.0]; color = :black, linestyle = :dash, linewidth = 2)
 
     for (i, hu) in enumerate(mean_HU)
-        CM.text!(ax, i, hu;
+        CM.text!(
+            ax, i, hu;
             text = "$(round(hu, digits = 2)) HU",
             align = (:center, hu < 0 ? :top : :bottom),
             offset = (0, hu < 0 ? -4 : 4),
@@ -550,13 +555,13 @@ straight from XrayAttenuation — pure NIST physics, no calibration.
 # ╔═╡ 030b000d-0000-4000-8000-000000000010
 const ROD_LABELS = (
     Ca = (UInt8(10), UInt8(11), UInt8(12), UInt8(13), UInt8(14), UInt8(15), UInt8(16)),
-    I  = (UInt8(20), UInt8(21), UInt8(22), UInt8(23), UInt8(24), UInt8(25), UInt8(26)),
+    I = (UInt8(20), UInt8(21), UInt8(22), UInt8(23), UInt8(24), UInt8(25), UInt8(26)),
 );
 
 # ╔═╡ 030b000d-0000-4000-8000-000000000020
 const ROD_NAMES = (
     Ca = ("50 mg/mL", "100 mg/mL", "200 mg/mL", "300 mg/mL", "400 mg/mL", "500 mg/mL", "600 mg/mL"),
-    I  = ("2.0 mg/mL", "2.5 mg/mL", "5.0 mg/mL", "7.5 mg/mL", "10.0 mg/mL", "15.0 mg/mL", "20.0 mg/mL"),
+    I = ("2.0 mg/mL", "2.5 mg/mL", "5.0 mg/mL", "7.5 mg/mL", "10.0 mg/mL", "15.0 mg/mL", "20.0 mg/mL"),
 );
 
 # ╔═╡ 030b000d-0000-4000-8000-000000000030
@@ -615,7 +620,7 @@ rod_data = let
     end
 
     energy_vols = Dict(
-        de_mono_energies.low  => de_lohi_HU.vol_low_HU,
+        de_mono_energies.low => de_lohi_HU.vol_low_HU,
         de_mono_energies.high => de_lohi_HU.vol_high_HU,
     )
 
@@ -646,16 +651,20 @@ let
     fig = CM.Figure(size = (1180, 580))
 
     cmap_ca = CM.cgrad(:Oranges, 7; categorical = true)
-    cmap_i  = CM.cgrad(:GnBu,    7; categorical = true)
+    cmap_i = CM.cgrad(:GnBu, 7; categorical = true)
     energies = [de_mono_energies.low, de_mono_energies.high]
 
     panels = (
-        (group = :Ca, title = "Calcium rods",
+        (
+            group = :Ca, title = "Calcium rods",
             subtitle = "50–600 mg/mL · Compton roll-off",
-            cmap = cmap_ca, ylim = (0, 4200)),
-        (group = :I, title = "Iodine rods",
+            cmap = cmap_ca, ylim = (0, 4200),
+        ),
+        (
+            group = :I, title = "Iodine rods",
             subtitle = "2–20 mg/mL · 70 vs 150 keV",
-            cmap = cmap_i, ylim = (0, 1500)),
+            cmap = cmap_i, ylim = (0, 1500),
+        ),
     )
 
     for (col, p) in pairs(panels)
@@ -727,8 +736,8 @@ let
     fig = CM.Figure(size = (1180, 620))
 
     energy_colors = Dict(
-        de_mono_energies.low  => CM.RGBf(0.95, 0.65, 0.13),
-        de_mono_energies.high => CM.RGBf(0.10, 0.27, 0.65),
+        de_mono_energies.low => CM.RGBf(0.95, 0.65, 0.13),
+        de_mono_energies.high => CM.RGBf(0.1, 0.27, 0.65),
     )
     energies = [de_mono_energies.low, de_mono_energies.high]
 

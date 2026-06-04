@@ -1093,12 +1093,12 @@ samples into the background fit.
 
 # ╔═╡ 040c000f-0000-4000-8000-000000000035
 vmi_capping_knob = (
-    enabled    = true,
-    fov_cm     = 35.0,
-    hu_lo      = -20.0,
-    hu_hi      = 20.0,
+    enabled = true,
+    fov_cm = 35.0,
+    hu_lo = -20.0,
+    hu_hi = 20.0,
     poly_order = 3,
-    target_hu  = 0.0,
+    target_hu = 0.0,
 );
 
 # ╔═╡ 040c000f-0000-4000-8000-000000000040
@@ -1111,11 +1111,11 @@ de_vmi = let
             v = copy(de_vmi_raw[E])  # `apply_radial_cupping_correction!` is in-place
             BS.apply_radial_cupping_correction!(
                 v;
-                fov_cm     = vmi_capping_knob.fov_cm,
-                hu_lo      = vmi_capping_knob.hu_lo,
-                hu_hi      = vmi_capping_knob.hu_hi,
+                fov_cm = vmi_capping_knob.fov_cm,
+                hu_lo = vmi_capping_knob.hu_lo,
+                hu_hi = vmi_capping_knob.hu_hi,
                 poly_order = vmi_capping_knob.poly_order,
-                target_hu  = vmi_capping_knob.target_hu,
+                target_hu = vmi_capping_knob.target_hu,
             )
             out[E] = v
         end

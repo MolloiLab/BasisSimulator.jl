@@ -156,43 +156,45 @@ HAS_GECATSIM ? md"""
 # The right long-term fix is a PR to `github.com/MolloiLab/main` (the fork)
 # that either ships a real `C_DD3Back.py` or updates the iterative recon imports.
 gecatsim_patched = !HAS_GECATSIM ? false : let
-    spec_mod = PC.pyimport("importlib.util")
-    gecatsim_spec = spec_mod.find_spec("gecatsim")
-    gecatsim_init_path = PC.pyconvert(String, gecatsim_spec.origin)
-    pyfiles_dir = joinpath(dirname(gecatsim_init_path), "pyfiles")
+        spec_mod = PC.pyimport("importlib.util")
+        gecatsim_spec = spec_mod.find_spec("gecatsim")
+        gecatsim_init_path = PC.pyconvert(String, gecatsim_spec.origin)
+        pyfiles_dir = joinpath(dirname(gecatsim_init_path), "pyfiles")
 
-    function _write_stub(name::String)
-        path = joinpath(pyfiles_dir, "$(name).py")
-        if isfile(path)
-            return false
+        function _write_stub(name::String)
+            path = joinpath(pyfiles_dir, "$(name).py")
+            if isfile(path)
+                return false
         end
-        open(path, "w") do io
-            print(io, """
-                # Auto-generated stub by BasisSimulator.jl docs notebook 06.
-                # The MolloiLab gecatsim fork is missing this legacy module — only
-                # `$(name)_mm.py` (different signature) ships.  This stub lets
-                # `gecatsim.reconstruction.pyfiles.recon` import successfully so
-                # FDK recon works.  Iterative recons (ART/SART/CGLS) will raise.
-                def $(replace(name, "C_" => ""))(*args, **kwargs):
-                    raise NotImplementedError(
-                        "$(name) is a stub — install a real one from upstream "
-                        "xcist/main or fix the MolloiLab fork.  FDK recon does "
-                        "not need this; iterative recons (ART/SART/CGLS) do."
-                    )
-                """)
+            open(path, "w") do io
+                print(
+                    io, """
+                    # Auto-generated stub by BasisSimulator.jl docs notebook 06.
+                    # The MolloiLab gecatsim fork is missing this legacy module — only
+                    # `$(name)_mm.py` (different signature) ships.  This stub lets
+                    # `gecatsim.reconstruction.pyfiles.recon` import successfully so
+                    # FDK recon works.  Iterative recons (ART/SART/CGLS) will raise.
+                    def $(replace(name, "C_" => ""))(*args, **kwargs):
+                        raise NotImplementedError(
+                            "$(name) is a stub — install a real one from upstream "
+                            "xcist/main or fix the MolloiLab fork.  FDK recon does "
+                            "not need this; iterative recons (ART/SART/CGLS) do."
+                        )
+                    """
+                )
         end
-        return true
+            return true
     end
 
-    wrote_back  = _write_stub("C_DD3Back")
-    wrote_wback = _write_stub("C_DD3WBack")
+        wrote_back = _write_stub("C_DD3Back")
+        wrote_wback = _write_stub("C_DD3WBack")
 
-    if wrote_back || wrote_wback
-        @info "[gecatsim patch] wrote stub(s): C_DD3Back=$(wrote_back), C_DD3WBack=$(wrote_wback) → $(pyfiles_dir)"
+        if wrote_back || wrote_wback
+            @info "[gecatsim patch] wrote stub(s): C_DD3Back=$(wrote_back), C_DD3WBack=$(wrote_wback) → $(pyfiles_dir)"
     else
-        @info "[gecatsim patch] all stubs already present at $(pyfiles_dir) — no-op"
+            @info "[gecatsim patch] all stubs already present at $(pyfiles_dir) — no-op"
     end
-    true
+        true
 end;
 
 # ╔═╡ 06000001-0000-4000-8000-000000000090
@@ -212,78 +214,78 @@ end;
 # Same C ABI, ~1000× fewer Python iterations.  Also enable line-buffered
 # stdout so the upstream `print("* In C...")` lines flush to your terminal.
 gecatsim_fdk_patched = !HAS_GECATSIM ? false : let
-    PC.pyexec(
-        """
-        import ctypes
-        import numpy as np
-        import gecatsim.reconstruction.pyfiles.fdk_equiAngle as _fdk
+        PC.pyexec(
+            """
+            import ctypes
+            import numpy as np
+            import gecatsim.reconstruction.pyfiles.fdk_equiAngle as _fdk
 
-        FLOAT       = ctypes.c_float
-        PtrFLOAT    = ctypes.POINTER(FLOAT)
-        PtrPtrFLOAT = ctypes.POINTER(PtrFLOAT)
+            FLOAT       = ctypes.c_float
+            PtrFLOAT    = ctypes.POINTER(FLOAT)
+            PtrPtrFLOAT = ctypes.POINTER(PtrFLOAT)
 
-        def _fast_arr2ptr(arr):
-            arr = np.ascontiguousarray(arr, dtype=np.float32)
-            n0, n1, _ = arr.shape
-            out = (PtrPtrFLOAT * n0)()
-            for i in range(n0):
-                row = (PtrFLOAT * n1)()
-                for j in range(n1):
-                    row[j] = arr[i, j].ctypes.data_as(PtrFLOAT)
-                out[i] = row
-            # Keep `arr` alive — the row pointers alias into its buffer.
-            out._keepalive_ = arr
-            return out
+            def _fast_arr2ptr(arr):
+                arr = np.ascontiguousarray(arr, dtype=np.float32)
+                n0, n1, _ = arr.shape
+                out = (PtrPtrFLOAT * n0)()
+                for i in range(n0):
+                    row = (PtrFLOAT * n1)()
+                    for j in range(n1):
+                        row[j] = arr[i, j].ctypes.data_as(PtrFLOAT)
+                    out[i] = row
+                # Keep `arr` alive — the row pointers alias into its buffer.
+                out._keepalive_ = arr
+                return out
 
-        def _fast_ptr2arr(ptr, n, m, o):
-            out = np.empty((n, m, o), dtype=np.float32)
-            nbytes = o * ctypes.sizeof(FLOAT)
-            for i in range(n):
-                for j in range(m):
-                    ctypes.memmove(
-                        out[i, j].ctypes.data_as(PtrFLOAT),
-                        ptr[i][j],
-                        nbytes,
-                    )
-            return out
+            def _fast_ptr2arr(ptr, n, m, o):
+                out = np.empty((n, m, o), dtype=np.float32)
+                nbytes = o * ctypes.sizeof(FLOAT)
+                for i in range(n):
+                    for j in range(m):
+                        ctypes.memmove(
+                            out[i, j].ctypes.data_as(PtrFLOAT),
+                            ptr[i][j],
+                            nbytes,
+                        )
+                return out
 
-        _fdk.float3Darray2pointer = _fast_arr2ptr
-        _fdk.float3Dpointer2array = _fast_ptr2arr
+            _fdk.float3Darray2pointer = _fast_arr2ptr
+            _fdk.float3Dpointer2array = _fast_ptr2arr
 
-        # Silence CatSim's chatty stdout — `run_all()` and `recon()` together
-        # emit ~600+ buffered print() lines (per-material C-allocation logs,
-        # 500 tqdm view ticks, FDK stage banners).  When PythonCall is talking
-        # to a Pluto worker, that flood overflows the captured stdout pipe and
-        # Pluto's "drain output before marking cell done" logic blocks on a
-        # pipe that never empties — the cell hangs forever even though the
-        # actual work finished.  Wrap both entry points in
-        # `contextlib.redirect_stdout(io.StringIO())` so the prints get
-        # absorbed in-process and never hit the pipe.  Plain `julia --project`
-        # doesn't have a captured pipe, which is why scripts run fine.
-        import contextlib, io
-        import gecatsim as _gecatsim
-        import gecatsim.reconstruction.pyfiles.recon as _recon_mod
+            # Silence CatSim's chatty stdout — `run_all()` and `recon()` together
+            # emit ~600+ buffered print() lines (per-material C-allocation logs,
+            # 500 tqdm view ticks, FDK stage banners).  When PythonCall is talking
+            # to a Pluto worker, that flood overflows the captured stdout pipe and
+            # Pluto's "drain output before marking cell done" logic blocks on a
+            # pipe that never empties — the cell hangs forever even though the
+            # actual work finished.  Wrap both entry points in
+            # `contextlib.redirect_stdout(io.StringIO())` so the prints get
+            # absorbed in-process and never hit the pipe.  Plain `julia --project`
+            # doesn't have a captured pipe, which is why scripts run fine.
+            import contextlib, io
+            import gecatsim as _gecatsim
+            import gecatsim.reconstruction.pyfiles.recon as _recon_mod
 
-        if not getattr(_gecatsim.CatSim, '_basissim_silenced_run_all', False):
-            _orig_run_all = _gecatsim.CatSim.run_all
-            def _quiet_run_all(self, *args, **kwargs):
-                with contextlib.redirect_stdout(io.StringIO()):
-                    return _orig_run_all(self, *args, **kwargs)
-            _gecatsim.CatSim.run_all = _quiet_run_all
-            _gecatsim.CatSim._basissim_silenced_run_all = True
+            if not getattr(_gecatsim.CatSim, '_basissim_silenced_run_all', False):
+                _orig_run_all = _gecatsim.CatSim.run_all
+                def _quiet_run_all(self, *args, **kwargs):
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        return _orig_run_all(self, *args, **kwargs)
+                _gecatsim.CatSim.run_all = _quiet_run_all
+                _gecatsim.CatSim._basissim_silenced_run_all = True
 
-        if not getattr(_recon_mod, '_basissim_silenced_recon', False):
-            _orig_recon = _recon_mod.recon
-            def _quiet_recon(ct, *args, **kwargs):
-                with contextlib.redirect_stdout(io.StringIO()):
-                    return _orig_recon(ct, *args, **kwargs)
-            _recon_mod.recon = _quiet_recon
-            _recon_mod._basissim_silenced_recon = True
-        """,
-        Main,
-    )
-    @info "[gecatsim FDK patch] vectorized float3D{array2pointer,pointer2array} + stdout silencing installed"
-    true
+            if not getattr(_recon_mod, '_basissim_silenced_recon', False):
+                _orig_recon = _recon_mod.recon
+                def _quiet_recon(ct, *args, **kwargs):
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        return _orig_recon(ct, *args, **kwargs)
+                _recon_mod.recon = _quiet_recon
+                _recon_mod._basissim_silenced_recon = True
+            """,
+            Main,
+        )
+        @info "[gecatsim FDK patch] vectorized float3D{array2pointer,pointer2array} + stdout silencing installed"
+        true
 end;
 
 # ╔═╡ 06000002-0000-4000-8000-000000000001
@@ -1100,7 +1102,7 @@ md"""
   drop in a different `BS.Scanner` and `BS.create_phantom_from_mask(...)`
   — the wrappers don't care about scanner brand or phantom geometry,
   they only forward struct fields.
-""" 
+"""
 
 # ╔═╡ Cell order:
 # ╟─06000001-0000-4000-8000-000000000010
@@ -1161,7 +1163,3 @@ md"""
 # ╟─0600000c-0000-4000-8000-000000000010
 # ╟─0600000d-0000-4000-8000-000000000001
 # ╟─0600000e-0000-4000-8000-000000000001
-
-
-
-

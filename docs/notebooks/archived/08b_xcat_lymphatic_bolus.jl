@@ -293,24 +293,28 @@ let
         k_mid = clamp(round(Int, (lymph_bbox.k[1] + lymph_bbox.k[2]) / 2), 1, nz)
 
         is_cisterna = falses(65536)
-        is_duct     = falses(65536)
-        is_lymph    = falses(65536)
-        for id in CISTERNA_IDS;      is_cisterna[id + 1] = true; is_lymph[id + 1] = true end
-        for id in THORACIC_DUCT_IDS; is_duct[id + 1]     = true; is_lymph[id + 1] = true end
+        is_duct = falses(65536)
+        is_lymph = falses(65536)
+        for id in CISTERNA_IDS
+            is_cisterna[id + 1] = true; is_lymph[id + 1] = true
+        end
+        for id in THORACIC_DUCT_IDS
+            is_duct[id + 1] = true; is_lymph[id + 1] = true
+        end
 
         function lymph_mask_2d(slice)
             m = falses(size(slice))
             @inbounds for i in eachindex(slice, m)
                 m[i] = is_lymph[Int(slice[i]) + 1]
             end
-            m
+            return m
         end
 
-        cisterna_color = CM.RGBAf(1.00, 0.20, 0.55, 1.0)
-        duct_color     = CM.RGBAf(1.00, 0.80, 0.15, 1.0)
-        palette        = CM.to_colormap(:glasbey_bw_n256)
-        n_pal          = length(palette)
-        bg             = CM.RGBAf(0.06, 0.07, 0.08, 1.0)
+        cisterna_color = CM.RGBAf(1.0, 0.2, 0.55, 1.0)
+        duct_color = CM.RGBAf(1.0, 0.8, 0.15, 1.0)
+        palette = CM.to_colormap(:glasbey_bw_n256)
+        n_pal = length(palette)
+        bg = CM.RGBAf(0.06, 0.07, 0.08, 1.0)
 
         function colorize(slice)
             out = Array{CM.RGBAf}(undef, size(slice))
@@ -324,33 +328,34 @@ let
                     out[i] = duct_color
                 else
                     c = palette[(hash(UInt(lbl)) % UInt(n_pal)) + 1]
-                    g = 0.299f0*c.r + 0.587f0*c.g + 0.114f0*c.b
-                    g = 0.22f0 + 0.30f0 * g
+                    g = 0.299f0 * c.r + 0.587f0 * c.g + 0.114f0 * c.b
+                    g = 0.22f0 + 0.3f0 * g
                     out[i] = CM.RGBAf(g, g, g, 1.0)
                 end
             end
-            out
+            return out
         end
 
-        halo_color    = CM.RGBAf(1.0, 1.0, 1.0, 0.35)
+        halo_color = CM.RGBAf(1.0, 1.0, 1.0, 0.35)
         outline_color = CM.RGBAf(1.0, 0.05, 0.35, 1.0)
 
         fig = CM.Figure(size = (700, 2400), backgroundcolor = :white, figure_padding = 6)
 
         function panel!(row, slice, title, subtitle)
-            ax = CM.Axis(fig[row, 1];
-                title        = title,
-                subtitle     = subtitle,
-                titlesize    = 18,
+            ax = CM.Axis(
+                fig[row, 1];
+                title = title,
+                subtitle = subtitle,
+                titlesize = 18,
                 subtitlesize = 12,
-                titlealign   = :left,
-                aspect       = CM.DataAspect(),
-                yreversed    = true,
+                titlealign = :left,
+                aspect = CM.DataAspect(),
+                yreversed = true,
             )
             CM.image!(ax, colorize(slice); interpolate = false)
             mask = Float32.(lymph_mask_2d(slice))
             if any(>(0), mask)
-                CM.contour!(ax, mask; levels = [0.5], color = halo_color,    linewidth = 4)
+                CM.contour!(ax, mask; levels = [0.5], color = halo_color, linewidth = 4)
                 CM.contour!(ax, mask; levels = [0.5], color = outline_color, linewidth = 1.2)
             end
             CM.hidedecorations!(ax)
@@ -358,25 +363,30 @@ let
             return ax
         end
 
-        panel!(1, phantom_native[:, :, k_mid], "Axial (full native)",    "k = $(k_mid) / $(nz)")
-        panel!(2, phantom_native[:, j_mid, :], "Coronal (full native)",  "j = $(j_mid) / $(ny)")
+        panel!(1, phantom_native[:, :, k_mid], "Axial (full native)", "k = $(k_mid) / $(nz)")
+        panel!(2, phantom_native[:, j_mid, :], "Coronal (full native)", "j = $(j_mid) / $(ny)")
         panel!(3, phantom_native[i_mid, :, :], "Sagittal (full native)", "i = $(i_mid) / $(nx)")
 
-        CM.Legend(fig[4, 1],
-            [CM.PolyElement(color = cisterna_color, strokevisible = false),
-             CM.PolyElement(color = duct_color,     strokevisible = false)],
-            ["Cisterna chyli (IDs $(CISTERNA_IDS[1])-$(CISTERNA_IDS[end]))",
-             "Thoracic duct (IDs $(THORACIC_DUCT_IDS[1])-$(THORACIC_DUCT_IDS[end]))"];
-            orientation  = :horizontal,
+        CM.Legend(
+            fig[4, 1],
+            [
+                CM.PolyElement(color = cisterna_color, strokevisible = false),
+                CM.PolyElement(color = duct_color, strokevisible = false),
+            ],
+            [
+                "Cisterna chyli (IDs $(CISTERNA_IDS[1])-$(CISTERNA_IDS[end]))",
+                "Thoracic duct (IDs $(THORACIC_DUCT_IDS[1])-$(THORACIC_DUCT_IDS[end]))",
+            ];
+            orientation = :horizontal,
             framevisible = false,
-            labelsize    = 13,
-            patchsize    = (18, 12),
-            tellwidth    = false,
+            labelsize = 13,
+            patchsize = (18, 12),
+            tellwidth = false,
         )
 
-        CM.rowsize!(fig.layout, 1, CM.Aspect(1, ny/nx))
-        CM.rowsize!(fig.layout, 2, CM.Aspect(1, nz/nx))
-        CM.rowsize!(fig.layout, 3, CM.Aspect(1, nz/ny))
+        CM.rowsize!(fig.layout, 1, CM.Aspect(1, ny / nx))
+        CM.rowsize!(fig.layout, 2, CM.Aspect(1, nz / nx))
+        CM.rowsize!(fig.layout, 3, CM.Aspect(1, nz / ny))
         CM.rowgap!(fig.layout, 4)
         CM.rowgap!(fig.layout, 3, 10)
         CM.resize_to_layout!(fig)
@@ -418,9 +428,13 @@ let
         k1, k2 = k_superior, k_inferior
 
         is_cisterna = falses(65536)
-        is_duct     = falses(65536)
-        for id in CISTERNA_IDS;      is_cisterna[id + 1] = true end
-        for id in THORACIC_DUCT_IDS; is_duct[id + 1]     = true end
+        is_duct = falses(65536)
+        for id in CISTERNA_IDS
+            is_cisterna[id + 1] = true
+        end
+        for id in THORACIC_DUCT_IDS
+            is_duct[id + 1] = true
+        end
 
         function lymph_mask_2d(slice)
             m = falses(size(slice))
@@ -428,14 +442,14 @@ let
                 v = Int(slice[i])
                 m[i] = is_cisterna[v + 1] | is_duct[v + 1]
             end
-            m
+            return m
         end
 
-        palette        = CM.to_colormap(:glasbey_bw_n256)
-        n_pal          = length(palette)
-        bg             = CM.RGBAf(0.06, 0.07, 0.08, 1.0)
-        cisterna_color = CM.RGBAf(1.00, 0.20, 0.55, 1.0)
-        duct_color     = CM.RGBAf(1.00, 0.80, 0.15, 1.0)
+        palette = CM.to_colormap(:glasbey_bw_n256)
+        n_pal = length(palette)
+        bg = CM.RGBAf(0.06, 0.07, 0.08, 1.0)
+        cisterna_color = CM.RGBAf(1.0, 0.2, 0.55, 1.0)
+        duct_color = CM.RGBAf(1.0, 0.8, 0.15, 1.0)
 
         function colorize(slice)
             out = Array{CM.RGBAf}(undef, size(slice))
@@ -449,52 +463,60 @@ let
                     out[i] = duct_color
                 else
                     c = palette[(hash(UInt(lbl)) % UInt(n_pal)) + 1]
-                    g = 0.299f0*c.r + 0.587f0*c.g + 0.114f0*c.b
-                    g = 0.22f0 + 0.30f0 * g
+                    g = 0.299f0 * c.r + 0.587f0 * c.g + 0.114f0 * c.b
+                    g = 0.22f0 + 0.3f0 * g
                     out[i] = CM.RGBAf(g, g, g, 1.0)
                 end
             end
-            out
+            return out
         end
 
         slice = phantom_native[i_mid, :, :]
 
         fig = CM.Figure(size = (900, 1300), backgroundcolor = :white)
-        ax = CM.Axis(fig[1, 1];
-            title        = "Sagittal (full native) — planned bolus slab in red",
-            subtitle     = "i = $(i_mid) / $(nx)   ·   k ∈ [$(k1), $(k2)]   (= $(round((k2 - k1 + 1) * NATIVE_VOXEL_MM[3] / 10; digits = 2)) cm)",
-            titlesize    = 18,
+        ax = CM.Axis(
+            fig[1, 1];
+            title = "Sagittal (full native) — planned bolus slab in red",
+            subtitle = "i = $(i_mid) / $(nx)   ·   k ∈ [$(k1), $(k2)]   (= $(round((k2 - k1 + 1) * NATIVE_VOXEL_MM[3] / 10; digits = 2)) cm)",
+            titlesize = 18,
             subtitlesize = 12,
-            titlealign   = :left,
-            aspect       = CM.DataAspect(),
-            yreversed    = true,
+            titlealign = :left,
+            aspect = CM.DataAspect(),
+            yreversed = true,
         )
         CM.image!(ax, colorize(slice); interpolate = false)
         mask = Float32.(lymph_mask_2d(slice))
         if any(>(0), mask)
-            CM.contour!(ax, mask; levels = [0.5], color = CM.RGBAf(1, 1, 1, 0.35),    linewidth = 4)
+            CM.contour!(ax, mask; levels = [0.5], color = CM.RGBAf(1, 1, 1, 0.35), linewidth = 4)
             CM.contour!(ax, mask; levels = [0.5], color = CM.RGBAf(1, 0.05, 0.35, 1), linewidth = 1.2)
         end
 
         CM.hlines!(ax, [k1, k2]; color = :red, linewidth = 2, linestyle = :dash)
-        CM.text!(ax, 4, Float32(k1); text = "k_superior = $(k1)  (slab top — $(round(BOLUS_Z_SLAB_MM; digits = 1)) mm above cisterna bottom + margin)",
-            color = :red, align = (:left, :bottom), fontsize = 12)
-        CM.text!(ax, 4, Float32(k2); text = "k_inferior = $(k2)  (cisterna bottom + $(round(BOLUS_MARGIN_BELOW_CISTERNA_MM; digits = 1)) mm inferior margin)",
-            color = :red, align = (:left, :top),    fontsize = 12)
+        CM.text!(
+            ax, 4, Float32(k1); text = "k_superior = $(k1)  (slab top — $(round(BOLUS_Z_SLAB_MM; digits = 1)) mm above cisterna bottom + margin)",
+            color = :red, align = (:left, :bottom), fontsize = 12
+        )
+        CM.text!(
+            ax, 4, Float32(k2); text = "k_inferior = $(k2)  (cisterna bottom + $(round(BOLUS_MARGIN_BELOW_CISTERNA_MM; digits = 1)) mm inferior margin)",
+            color = :red, align = (:left, :top), fontsize = 12
+        )
 
         CM.hidedecorations!(ax)
         CM.hidespines!(ax)
 
-        CM.Legend(fig[2, 1],
-            [CM.PolyElement(color = cisterna_color, strokevisible = false),
-             CM.PolyElement(color = duct_color,     strokevisible = false),
-             CM.LineElement(color = :red, linestyle = :dash, linewidth = 2)],
+        CM.Legend(
+            fig[2, 1],
+            [
+                CM.PolyElement(color = cisterna_color, strokevisible = false),
+                CM.PolyElement(color = duct_color, strokevisible = false),
+                CM.LineElement(color = :red, linestyle = :dash, linewidth = 2),
+            ],
             ["Cisterna chyli", "Thoracic duct", "Planned bolus slab"];
-            orientation  = :horizontal,
+            orientation = :horizontal,
             framevisible = false,
-            labelsize    = 13,
-            patchsize    = (24, 12),
-            tellwidth    = false,
+            labelsize = 13,
+            patchsize = (24, 12),
+            tellwidth = false,
         )
 
         CM.save(joinpath(FIGURES_DIR, "xcat_lymphatic_bolus_planned_slab.png"), fig; px_per_unit = 2)
@@ -520,8 +542,8 @@ material_map_path(t::Integer) =
 
 # ╔═╡ 08b00005-0000-4000-8000-000000000004
 HAS_LYMPH ? let
-    missing_t = [t for t in TIMES_S if !isfile(material_map_path(t))]
-    isempty(missing_t) ?
+        missing_t = [t for t in TIMES_S if !isfile(material_map_path(t))]
+        isempty(missing_t) ?
         md"**Time points:** $(length(TIMES_S)) — all xlsx files present (t = $(TIMES_S) s)" :
         md"!!! danger \"Missing xlsx files\"\n    These time points have no map: $(missing_t)"
 end : md"_skipped_"
@@ -705,8 +727,10 @@ end
 
 # ╔═╡ 08b00008-0000-4000-8000-000000000004
 crop_idx = (phantom_native === nothing || cisterna_bbox === nothing) ? nothing :
-    scan_crop_indices(phantom_native, cisterna_bbox, BOLUS_Z_SLAB_MM, NATIVE_VOXEL_MM;
-        margin_below_mm = BOLUS_MARGIN_BELOW_CISTERNA_MM);
+    scan_crop_indices(
+        phantom_native, cisterna_bbox, BOLUS_Z_SLAB_MM, NATIVE_VOXEL_MM;
+        margin_below_mm = BOLUS_MARGIN_BELOW_CISTERNA_MM
+    );
 
 # ╔═╡ 08b00008-0000-4000-8000-000000000005
 const RECON_FOV_CM = 10.0
@@ -770,12 +794,12 @@ bolus_k_slice = phantom_labeled === nothing ? nothing :
 
 # ╔═╡ 08b00009-0000-4000-8000-000000000004
 phantom_origin = (phantom_labeled === nothing || bolus_k_slice === nothing) ? nothing : let
-    nx, ny, nz = size(phantom_labeled)
-    dx, dy, dz = VOXEL_SIZE_CM
-    origin_x = -nx * dx / 2 + dx / 2
-    origin_y = -ny * dy / 2 + dy / 2
-    origin_z = -(bolus_k_slice - 1) * dz
-    (origin_x, origin_y, origin_z)
+        nx, ny, nz = size(phantom_labeled)
+        dx, dy, dz = VOXEL_SIZE_CM
+        origin_x = -nx * dx / 2 + dx / 2
+        origin_y = -ny * dy / 2 + dy / 2
+        origin_z = -(bolus_k_slice - 1) * dz
+        (origin_x, origin_y, origin_z)
 end;
 
 # ╔═╡ 08b00009-0000-4000-8000-000000000005
@@ -865,25 +889,25 @@ compute it once outside the time loop and reuse the model for every `t`.
 
 # ╔═╡ 08b00011-0000-4000-8000-000000000002
 bhc_calibration = phantom_labels_gpu === nothing ? nothing : let
-    # We need a geom matching the bolus protocol for calibration —
-    # build it directly from scanner + recon_opts so we don't have to
-    # run a simulation first.
-    geom = BS.CTGeometry(
-        scanner;
-        n_angles = protocol.views,
-        fov_cm = recon_opts.fov_cm,
-        z_cm = recon_opts.z_cm,
-        collimation_mm = protocol.collimation_mm,
-    )
-    prot_for_bhc = BS.CTProtocol(kVp = 120, additional_filters = [("Al", 4.5)])
-    model = BS.calibrate_bhc_two_material(
-        sim_opts, prot_for_bhc;
-        scanner = scanner, geom = geom,
-        order = 2,
-        hu_low = 450.0,
-        hu_high = 600.0,
-    )
-    (model = model, μ_water = model.μ_water_ref, ref_E_keV = model.reference_energy_keV)
+        # We need a geom matching the bolus protocol for calibration —
+        # build it directly from scanner + recon_opts so we don't have to
+        # run a simulation first.
+        geom = BS.CTGeometry(
+            scanner;
+            n_angles = protocol.views,
+            fov_cm = recon_opts.fov_cm,
+            z_cm = recon_opts.z_cm,
+            collimation_mm = protocol.collimation_mm,
+        )
+        prot_for_bhc = BS.CTProtocol(kVp = 120, additional_filters = [("Al", 4.5)])
+        model = BS.calibrate_bhc_two_material(
+            sim_opts, prot_for_bhc;
+            scanner = scanner, geom = geom,
+            order = 2,
+            hu_low = 450.0,
+            hu_high = 600.0,
+        )
+        (model = model, μ_water = model.μ_water_ref, ref_E_keV = model.reference_energy_keV)
 end;
 
 # ╔═╡ 08b00011-0000-4000-8000-000000000003
@@ -986,58 +1010,60 @@ flat.  Budget on Metal: ~30-60 s / time point at 0.1 mm iso phantom.
 """
 
 # ╔═╡ 08b00013-0000-4000-8000-000000000002
-tdc_results = (phantom_labels_gpu === nothing || bhc_calibration === nothing ||
-        cisterna_recon_mask === nothing) ? nothing : let
-    present_ids = unique(phantom_labeled)
-    matrix_size = recon_opts.matrix_size
-    n_cist = count(cisterna_recon_mask)
+tdc_results = (
+        phantom_labels_gpu === nothing || bhc_calibration === nothing ||
+        cisterna_recon_mask === nothing
+    ) ? nothing : let
+        present_ids = unique(phantom_labeled)
+        matrix_size = recon_opts.matrix_size
+        n_cist = count(cisterna_recon_mask)
 
-    times = Int[]
-    mean_hu = Float64[]
-    hu_stacks = Dict{Int, Array{Float32, 3}}()
+        times = Int[]
+        mean_hu = Float64[]
+        hu_stacks = Dict{Int, Array{Float32, 3}}()
 
-    for t in TIMES_S
-        @info "Bolus tracking · t = $(t) s"
-        materials_t = build_materials_for_time(t, present_ids)
-        phantom_t = BS.Phantom(phantom_labels_gpu, materials_t, VOXEL_SIZE_CM; origin = phantom_origin)
+        for t in TIMES_S
+            @info "Bolus tracking · t = $(t) s"
+            materials_t = build_materials_for_time(t, present_ids)
+            phantom_t = BS.Phantom(phantom_labels_gpu, materials_t, VOXEL_SIZE_CM; origin = phantom_origin)
 
-        ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom_t)
-        BS.simulate!(ws, phantom_t, protocol, sim_opts)
-        sino_cpu = Array(ws.sinogram)
-        geom = ws.geom
-        ws = nothing
-        GC.gc(true)
+            ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom_t)
+            BS.simulate!(ws, phantom_t, protocol, sim_opts)
+            sino_cpu = Array(ws.sinogram)
+            geom = ws.geom
+            ws = nothing
+            GC.gc(true)
 
-        sino_gpu = to_gpu(sino_cpu)
-        sino_bhc = BS.apply_bhc_two_material(
-            sino_gpu, bhc_calibration.model, geom, matrix_size,
-        )
-        sino_gpu = to_gpu(sino_bhc)
+            sino_gpu = to_gpu(sino_cpu)
+            sino_bhc = BS.apply_bhc_two_material(
+                sino_gpu, bhc_calibration.model, geom, matrix_size,
+            )
+            sino_gpu = to_gpu(sino_bhc)
 
-        ws_fdk = BS.create_fdk_recon_workspace(sino_gpu, geom, matrix_size)
-        recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, geom)
+            ws_fdk = BS.create_fdk_recon_workspace(sino_gpu, geom, matrix_size)
+            recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, geom)
 
-        BS.apply_bhc_image_domain(
-            recon_μ, geom, matrix_size, bhc_calibration.μ_water;
-            hu_low = 50.0, hu_high = 150.0, scale_factor = 0.2,
-        )
+            BS.apply_bhc_image_domain(
+                recon_μ, geom, matrix_size, bhc_calibration.μ_water;
+                hu_low = 50.0, hu_high = 150.0, scale_factor = 0.2,
+            )
 
-        hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc_calibration.μ_water))
-        BS.add_system_noise_floor!(hu, 28.0; seed = 1234)
-        BS.apply_radial_cupping_correction!(hu; fov_cm = recon_opts.fov_cm)
+            hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc_calibration.μ_water))
+            BS.add_system_noise_floor!(hu, 28.0; seed = 1234)
+            BS.apply_radial_cupping_correction!(hu; fov_cm = recon_opts.fov_cm)
 
-        m = n_cist > 0 ? mean(hu[cisterna_recon_mask]) : NaN
-        push!(times, t)
-        push!(mean_hu, m)
-        hu_stacks[t] = hu
+            m = n_cist > 0 ? mean(hu[cisterna_recon_mask]) : NaN
+            push!(times, t)
+            push!(mean_hu, m)
+            hu_stacks[t] = hu
 
-        ws_fdk = nothing
-        sino_gpu = nothing
-        recon_μ = nothing
-        GC.gc(true)
+            ws_fdk = nothing
+            sino_gpu = nothing
+            recon_μ = nothing
+            GC.gc(true)
     end
 
-    (times = times, mean_hu = mean_hu, hu_stacks = hu_stacks)
+        (times = times, mean_hu = mean_hu, hu_stacks = hu_stacks)
 end;
 
 # ╔═╡ 08b00013-0000-4000-8000-000000000003
@@ -1076,14 +1102,20 @@ let
             ylabel = "Mean HU",
             titlesize = 22, subtitlesize = 14,
         )
-        CM.lines!(ax1, tdc_results.times, tdc_results.mean_hu;
-            color = :dodgerblue, linewidth = 3)
-        CM.scatter!(ax1, tdc_results.times, tdc_results.mean_hu;
-            color = :dodgerblue, markersize = 10)
+        CM.lines!(
+            ax1, tdc_results.times, tdc_results.mean_hu;
+            color = :dodgerblue, linewidth = 3
+        )
+        CM.scatter!(
+            ax1, tdc_results.times, tdc_results.mean_hu;
+            color = :dodgerblue, markersize = 10
+        )
         CM.vlines!(ax1, [peak_t]; color = (:crimson, 0.4), linestyle = :dash)
-        CM.text!(ax1, peak_t, maximum(tdc_results.mean_hu);
+        CM.text!(
+            ax1, peak_t, maximum(tdc_results.mean_hu);
             text = "peak t = $(peak_t) s", color = :crimson,
-            align = (:left, :bottom), offset = (6, 4))
+            align = (:left, :bottom), offset = (6, 4)
+        )
 
         ax2 = CM.Axis(
             fig[1, 2];
@@ -1093,8 +1125,10 @@ let
             aspect = CM.DataAspect(),
             titlesize = 22, subtitlesize = 14,
         )
-        hm = CM.heatmap!(ax2, hu_peak[:, :, k_mid];
-            colormap = :grays, colorrange = (-200, 600))
+        hm = CM.heatmap!(
+            ax2, hu_peak[:, :, k_mid];
+            colormap = :grays, colorrange = (-200, 600)
+        )
         CM.heatmap!(
             ax2, Float32.(cisterna_recon_mask[:, :, k_mid]);
             colormap = [CM.RGBAf(0, 0, 0, 0), CM.RGBAf(1, 0.25, 0.25, 0.7)],
@@ -1122,28 +1156,28 @@ const BOLUS_SAVE_DIR = joinpath(@__DIR__, "..", "data", "lymphatic_recons")
 
 # ╔═╡ 08b00015-0000-4000-8000-000000000003
 bolus_save_path = tdc_results === nothing ? nothing : let
-    isdir(BOLUS_SAVE_DIR) || mkpath(BOLUS_SAVE_DIR)
-    path = joinpath(BOLUS_SAVE_DIR, "lymphatic_bolus_tdc.jld2")
-    JLD2.jldsave(
-        path;
-        times              = tdc_results.times,
-        mean_hu            = tdc_results.mean_hu,
-        hu_stacks          = tdc_results.hu_stacks,
-        bolus_k_slice      = bolus_k_slice,
-        bolus_z_slab_mm    = BOLUS_Z_SLAB_MM,
-        bolus_margin_below_cisterna_mm = BOLUS_MARGIN_BELOW_CISTERNA_MM,
-        bolus_offset_from_slab_bottom_mm = BOLUS_OFFSET_FROM_SLAB_BOTTOM_MM,
-        collimation_mm     = protocol.collimation_mm,
-        recon_matrix       = collect(recon_opts.matrix_size),
-        recon_fov_cm       = recon_opts.fov_cm,
-        recon_z_cm         = recon_opts.z_cm,
-        target_voxel_mm    = TARGET_VOXEL_MM,
-        kvp                = protocol.kVp,
-        mA                 = protocol.mA,
-        cisterna_ids       = collect(CISTERNA_IDS),
-        thoracic_duct_ids  = collect(THORACIC_DUCT_IDS),
-    )
-    path
+        isdir(BOLUS_SAVE_DIR) || mkpath(BOLUS_SAVE_DIR)
+        path = joinpath(BOLUS_SAVE_DIR, "lymphatic_bolus_tdc.jld2")
+        JLD2.jldsave(
+            path;
+            times = tdc_results.times,
+            mean_hu = tdc_results.mean_hu,
+            hu_stacks = tdc_results.hu_stacks,
+            bolus_k_slice = bolus_k_slice,
+            bolus_z_slab_mm = BOLUS_Z_SLAB_MM,
+            bolus_margin_below_cisterna_mm = BOLUS_MARGIN_BELOW_CISTERNA_MM,
+            bolus_offset_from_slab_bottom_mm = BOLUS_OFFSET_FROM_SLAB_BOTTOM_MM,
+            collimation_mm = protocol.collimation_mm,
+            recon_matrix = collect(recon_opts.matrix_size),
+            recon_fov_cm = recon_opts.fov_cm,
+            recon_z_cm = recon_opts.z_cm,
+            target_voxel_mm = TARGET_VOXEL_MM,
+            kvp = protocol.kVp,
+            mA = protocol.mA,
+            cisterna_ids = collect(CISTERNA_IDS),
+            thoracic_duct_ids = collect(THORACIC_DUCT_IDS),
+        )
+        path
 end;
 
 # ╔═╡ 08b00015-0000-4000-8000-000000000004

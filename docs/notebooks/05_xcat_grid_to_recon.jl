@@ -1054,7 +1054,7 @@ Once you have ground truth on the recon grid, the rest is bookkeeping:
   and the simulator runs faster.  Same observable behavior as a real
   scanner's reduced SFOV; better memory characteristics than recon-side
   cropping ever could be.
-""" 
+"""
 
 # ╔═╡ Cell order:
 # ╟─05000001-0000-4000-8000-000000000010
@@ -1127,7 +1127,3 @@ Once you have ground truth on the recon grid, the rest is bookkeeping:
 # ╟─05000010-0000-4000-8000-000000000001
 # ╟─05000010-0000-4000-8000-000000000010
 # ╟─05000011-0000-4000-8000-000000000001
-
-
-
-

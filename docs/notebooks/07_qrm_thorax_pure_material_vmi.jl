@@ -597,7 +597,7 @@ the forward model used.
 # `use_*` flags).
 material_basis = let
     iodine_mat = BS.XA.Elements.Iodine
-    water_mat  = BS.XA.Materials.water
+    water_mat = BS.XA.Materials.water
 
     e_L, ŵ_L = BS.resolve_source_spectrum_full(
         sim_opts, protocol_low;
@@ -611,9 +611,9 @@ material_basis = let
     )
 
     p_L = Float32[Float32(BS.compute_mass_μ_at_energy(iodine_mat, Float64(E))) for E in e_L]
-    q_L = Float32[Float32(BS.compute_mass_μ_at_energy(water_mat,  Float64(E))) for E in e_L]
+    q_L = Float32[Float32(BS.compute_mass_μ_at_energy(water_mat, Float64(E))) for E in e_L]
     p_H = Float32[Float32(BS.compute_mass_μ_at_energy(iodine_mat, Float64(E))) for E in e_H]
-    q_H = Float32[Float32(BS.compute_mass_μ_at_energy(water_mat,  Float64(E))) for E in e_H]
+    q_H = Float32[Float32(BS.compute_mass_μ_at_energy(water_mat, Float64(E))) for E in e_H]
 
     (
         ŵ_L = ŵ_L, p_L = p_L, q_L = q_L,
@@ -637,7 +637,7 @@ sino_basis = let
     # deconvolved if enabled in sim_opts).  When both `use_*` flags are false
     # the corrections are no-ops and these are identical to sim_low.sino /
     # sim_high.sino.
-    sino_low_gpu  = to_gpu(sim_low.sino)
+    sino_low_gpu = to_gpu(sim_low.sino)
     sino_high_gpu = to_gpu(sim_high.sino)
 
     sino_y = similar(sino_low_gpu);  fill!(sino_y, 0.0f0)
@@ -655,8 +655,8 @@ sino_basis = let
 
     result = (
         sino_iodine = Array(sino_y),
-        sino_water  = Array(sino_c),
-        geom        = sim_low.geom,
+        sino_water = Array(sino_c),
+        geom = sim_low.geom,
     )
     sino_low_gpu = nothing; sino_high_gpu = nothing
     sino_y = nothing; sino_c = nothing; cong_ws = nothing
@@ -1629,7 +1629,7 @@ QRM-Thorax mid-slice mask (1600 × 1100 × 20 phantom @ 0.2 mm iso,
 swapping the Gammex 472 phantom for the QRM-Thorax phantom with four
 pure-material rod inserts (`basis_water`, `basis_lipid`,
 `basis_collagen`, `gammex_472_i5_0`).
-""" 
+"""
 
 # ╔═╡ Cell order:
 # ╟─07010001-0000-4000-8000-000000000001
@@ -1717,5 +1717,3 @@ pure-material rod inserts (`basis_water`, `basis_lipid`,
 # ╟─0703000b-0000-4000-8000-000000000030
 # ╟─0703000b-0000-4000-8000-000000000031
 # ╟─0703000c-0000-4000-8000-000000000001
-
-

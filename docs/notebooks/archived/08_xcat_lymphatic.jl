@@ -385,24 +385,28 @@ let
         k_mid = clamp(round(Int, (lymph_bbox.k[1] + lymph_bbox.k[2]) / 2), 1, nz)
 
         is_cisterna = falses(65536)
-        is_duct     = falses(65536)
-        is_lymph    = falses(65536)
-        for id in CISTERNA_IDS;      is_cisterna[id + 1] = true; is_lymph[id + 1] = true end
-        for id in THORACIC_DUCT_IDS; is_duct[id + 1]     = true; is_lymph[id + 1] = true end
+        is_duct = falses(65536)
+        is_lymph = falses(65536)
+        for id in CISTERNA_IDS
+            is_cisterna[id + 1] = true; is_lymph[id + 1] = true
+        end
+        for id in THORACIC_DUCT_IDS
+            is_duct[id + 1] = true; is_lymph[id + 1] = true
+        end
 
         function lymph_mask_2d(slice)
             m = falses(size(slice))
             @inbounds for i in eachindex(slice, m)
                 m[i] = is_lymph[Int(slice[i]) + 1]
             end
-            m
+            return m
         end
 
-        cisterna_color = CM.RGBAf(1.00, 0.20, 0.55, 1.0)
-        duct_color     = CM.RGBAf(1.00, 0.80, 0.15, 1.0)
-        palette        = CM.to_colormap(:glasbey_bw_n256)
-        n_pal          = length(palette)
-        bg             = CM.RGBAf(0.06, 0.07, 0.08, 1.0)
+        cisterna_color = CM.RGBAf(1.0, 0.2, 0.55, 1.0)
+        duct_color = CM.RGBAf(1.0, 0.8, 0.15, 1.0)
+        palette = CM.to_colormap(:glasbey_bw_n256)
+        n_pal = length(palette)
+        bg = CM.RGBAf(0.06, 0.07, 0.08, 1.0)
 
         function colorize(slice)
             out = Array{CM.RGBAf}(undef, size(slice))
@@ -416,33 +420,34 @@ let
                     out[i] = duct_color
                 else
                     c = palette[(hash(UInt(lbl)) % UInt(n_pal)) + 1]
-                    g = 0.299f0*c.r + 0.587f0*c.g + 0.114f0*c.b
-                    g = 0.22f0 + 0.30f0 * g
+                    g = 0.299f0 * c.r + 0.587f0 * c.g + 0.114f0 * c.b
+                    g = 0.22f0 + 0.3f0 * g
                     out[i] = CM.RGBAf(g, g, g, 1.0)
                 end
             end
-            out
+            return out
         end
 
-        halo_color    = CM.RGBAf(1.0, 1.0, 1.0, 0.35)
+        halo_color = CM.RGBAf(1.0, 1.0, 1.0, 0.35)
         outline_color = CM.RGBAf(1.0, 0.05, 0.35, 1.0)
 
         fig = CM.Figure(size = (700, 2400), backgroundcolor = :white, figure_padding = 6)
 
         function panel!(row, slice, title, subtitle)
-            ax = CM.Axis(fig[row, 1];
-                title        = title,
-                subtitle     = subtitle,
-                titlesize    = 18,
+            ax = CM.Axis(
+                fig[row, 1];
+                title = title,
+                subtitle = subtitle,
+                titlesize = 18,
                 subtitlesize = 12,
-                titlealign   = :left,
-                aspect       = CM.DataAspect(),
-                yreversed    = true,
+                titlealign = :left,
+                aspect = CM.DataAspect(),
+                yreversed = true,
             )
             CM.image!(ax, colorize(slice); interpolate = false)
             mask = Float32.(lymph_mask_2d(slice))
             if any(>(0), mask)
-                CM.contour!(ax, mask; levels = [0.5], color = halo_color,    linewidth = 4)
+                CM.contour!(ax, mask; levels = [0.5], color = halo_color, linewidth = 4)
                 CM.contour!(ax, mask; levels = [0.5], color = outline_color, linewidth = 1.2)
             end
             CM.hidedecorations!(ax)
@@ -450,25 +455,30 @@ let
             return ax
         end
 
-        panel!(1, phantom_native[:, :, k_mid], "Axial (full native)",    "k = $(k_mid) / $(nz)")
-        panel!(2, phantom_native[:, j_mid, :], "Coronal (full native)",  "j = $(j_mid) / $(ny)")
+        panel!(1, phantom_native[:, :, k_mid], "Axial (full native)", "k = $(k_mid) / $(nz)")
+        panel!(2, phantom_native[:, j_mid, :], "Coronal (full native)", "j = $(j_mid) / $(ny)")
         panel!(3, phantom_native[i_mid, :, :], "Sagittal (full native)", "i = $(i_mid) / $(nx)")
 
-        CM.Legend(fig[4, 1],
-            [CM.PolyElement(color = cisterna_color, strokevisible = false),
-             CM.PolyElement(color = duct_color,     strokevisible = false)],
-            ["Cisterna chyli (IDs $(CISTERNA_IDS[1])-$(CISTERNA_IDS[end]))",
-             "Thoracic duct (IDs $(THORACIC_DUCT_IDS[1])-$(THORACIC_DUCT_IDS[end]))"];
-            orientation  = :horizontal,
+        CM.Legend(
+            fig[4, 1],
+            [
+                CM.PolyElement(color = cisterna_color, strokevisible = false),
+                CM.PolyElement(color = duct_color, strokevisible = false),
+            ],
+            [
+                "Cisterna chyli (IDs $(CISTERNA_IDS[1])-$(CISTERNA_IDS[end]))",
+                "Thoracic duct (IDs $(THORACIC_DUCT_IDS[1])-$(THORACIC_DUCT_IDS[end]))",
+            ];
+            orientation = :horizontal,
             framevisible = false,
-            labelsize    = 13,
-            patchsize    = (18, 12),
-            tellwidth    = false,
+            labelsize = 13,
+            patchsize = (18, 12),
+            tellwidth = false,
         )
 
-        CM.rowsize!(fig.layout, 1, CM.Aspect(1, ny/nx))
-        CM.rowsize!(fig.layout, 2, CM.Aspect(1, nz/nx))
-        CM.rowsize!(fig.layout, 3, CM.Aspect(1, nz/ny))
+        CM.rowsize!(fig.layout, 1, CM.Aspect(1, ny / nx))
+        CM.rowsize!(fig.layout, 2, CM.Aspect(1, nz / nx))
+        CM.rowsize!(fig.layout, 3, CM.Aspect(1, nz / ny))
         CM.rowgap!(fig.layout, 4)
         CM.rowgap!(fig.layout, 3, 10)
         CM.resize_to_layout!(fig)
@@ -784,9 +794,13 @@ let
         k1, k2 = k_superior, k_inferior
 
         is_cisterna = falses(65536)
-        is_duct     = falses(65536)
-        for id in CISTERNA_IDS;      is_cisterna[id + 1] = true end
-        for id in THORACIC_DUCT_IDS; is_duct[id + 1]     = true end
+        is_duct = falses(65536)
+        for id in CISTERNA_IDS
+            is_cisterna[id + 1] = true
+        end
+        for id in THORACIC_DUCT_IDS
+            is_duct[id + 1] = true
+        end
 
         function lymph_mask_2d(slice)
             m = falses(size(slice))
@@ -794,14 +808,14 @@ let
                 v = Int(slice[i])
                 m[i] = is_cisterna[v + 1] | is_duct[v + 1]
             end
-            m
+            return m
         end
 
-        palette        = CM.to_colormap(:glasbey_bw_n256)
-        n_pal          = length(palette)
-        bg             = CM.RGBAf(0.06, 0.07, 0.08, 1.0)
-        cisterna_color = CM.RGBAf(1.00, 0.20, 0.55, 1.0)
-        duct_color     = CM.RGBAf(1.00, 0.80, 0.15, 1.0)
+        palette = CM.to_colormap(:glasbey_bw_n256)
+        n_pal = length(palette)
+        bg = CM.RGBAf(0.06, 0.07, 0.08, 1.0)
+        cisterna_color = CM.RGBAf(1.0, 0.2, 0.55, 1.0)
+        duct_color = CM.RGBAf(1.0, 0.8, 0.15, 1.0)
 
         function colorize(slice)
             out = Array{CM.RGBAf}(undef, size(slice))
@@ -815,54 +829,62 @@ let
                     out[i] = duct_color
                 else
                     c = palette[(hash(UInt(lbl)) % UInt(n_pal)) + 1]
-                    g = 0.299f0*c.r + 0.587f0*c.g + 0.114f0*c.b
-                    g = 0.22f0 + 0.30f0 * g
+                    g = 0.299f0 * c.r + 0.587f0 * c.g + 0.114f0 * c.b
+                    g = 0.22f0 + 0.3f0 * g
                     out[i] = CM.RGBAf(g, g, g, 1.0)
                 end
             end
-            out
+            return out
         end
 
         slice = phantom_native[i_mid, :, :]    # (ny, nz)
 
         fig = CM.Figure(size = (900, 1300), backgroundcolor = :white)
-        ax = CM.Axis(fig[1, 1];
-            title        = "Sagittal (full native) — planned Z slab in red",
-            subtitle     = "i = $(i_mid) / $(nx)   ·   k ∈ [$(k1), $(k2)]   (= $(round((k2 - k1 + 1) * NATIVE_VOXEL_MM[3] / 10; digits = 1)) cm)",
-            titlesize    = 18,
+        ax = CM.Axis(
+            fig[1, 1];
+            title = "Sagittal (full native) — planned Z slab in red",
+            subtitle = "i = $(i_mid) / $(nx)   ·   k ∈ [$(k1), $(k2)]   (= $(round((k2 - k1 + 1) * NATIVE_VOXEL_MM[3] / 10; digits = 1)) cm)",
+            titlesize = 18,
             subtitlesize = 12,
-            titlealign   = :left,
-            aspect       = CM.DataAspect(),
-            yreversed    = true,
+            titlealign = :left,
+            aspect = CM.DataAspect(),
+            yreversed = true,
         )
         CM.image!(ax, colorize(slice); interpolate = false)
         mask = Float32.(lymph_mask_2d(slice))
         if any(>(0), mask)
-            CM.contour!(ax, mask; levels = [0.5], color = CM.RGBAf(1, 1, 1, 0.35),    linewidth = 4)
+            CM.contour!(ax, mask; levels = [0.5], color = CM.RGBAf(1, 1, 1, 0.35), linewidth = 4)
             CM.contour!(ax, mask; levels = [0.5], color = CM.RGBAf(1, 0.05, 0.35, 1), linewidth = 1.2)
         end
 
         # Slice's 2nd dim (k) maps to y-axis under image! — hlines at y=k1,k2
         # become the K crop bounds as horizontal red dashes.
         CM.hlines!(ax, [k1, k2]; color = :red, linewidth = 2, linestyle = :dash)
-        CM.text!(ax, 4, Float32(k1); text = "k_superior = $(k1)  (slab top — $(round(Z_COVERAGE_MM / 10; digits = 1)) cm above cisterna)",
-            color = :red, align = (:left, :bottom), fontsize = 12)
-        CM.text!(ax, 4, Float32(k2); text = "k_inferior = $(k2)  (cisterna anatomical bottom — slab anchor)",
-            color = :red, align = (:left, :top),    fontsize = 12)
+        CM.text!(
+            ax, 4, Float32(k1); text = "k_superior = $(k1)  (slab top — $(round(Z_COVERAGE_MM / 10; digits = 1)) cm above cisterna)",
+            color = :red, align = (:left, :bottom), fontsize = 12
+        )
+        CM.text!(
+            ax, 4, Float32(k2); text = "k_inferior = $(k2)  (cisterna anatomical bottom — slab anchor)",
+            color = :red, align = (:left, :top), fontsize = 12
+        )
 
         CM.hidedecorations!(ax)
         CM.hidespines!(ax)
 
-        CM.Legend(fig[2, 1],
-            [CM.PolyElement(color = cisterna_color, strokevisible = false),
-             CM.PolyElement(color = duct_color,     strokevisible = false),
-             CM.LineElement(color = :red, linestyle = :dash, linewidth = 2)],
+        CM.Legend(
+            fig[2, 1],
+            [
+                CM.PolyElement(color = cisterna_color, strokevisible = false),
+                CM.PolyElement(color = duct_color, strokevisible = false),
+                CM.LineElement(color = :red, linestyle = :dash, linewidth = 2),
+            ],
             ["Cisterna chyli", "Thoracic duct", "Planned §6 crop bounds"];
-            orientation  = :horizontal,
+            orientation = :horizontal,
             framevisible = false,
-            labelsize    = 13,
-            patchsize    = (24, 12),
-            tellwidth    = false,
+            labelsize = 13,
+            patchsize = (24, 12),
+            tellwidth = false,
         )
 
         CM.save(joinpath(FIGURES_DIR, "xcat_lymphatic_planned_slab.png"), fig; px_per_unit = 2)
@@ -973,8 +995,8 @@ let
             1, size(phantom_labeled, 3),
         )
 
-        slice_full   = phantom_native[:, :, k_native]
-        slice_crop   = phantom_native[crop_idx.i_range, crop_idx.j_range, k_native]
+        slice_full = phantom_native[:, :, k_native]
+        slice_crop = phantom_native[crop_idx.i_range, crop_idx.j_range, k_native]
         slice_upsamp = phantom_labeled[:, :, k_upsamp]
 
         # Recon FOV rectangle (centered on the phantom's lateral midpoint,
@@ -1082,7 +1104,7 @@ let
             @inbounds for i in eachindex(slice, m)
                 m[i] = is_lymph[Int(slice[i]) + 1]
             end
-            m
+            return m
         end
 
         # Label → colour.  `:tab20` only has 20 hues, so Makie's linear
@@ -1091,8 +1113,8 @@ let
         # Hash each label into a 256-colour glasbey palette so neighbouring
         # IDs are guaranteed visually distinct.  Label 0 (air) → dark grey.
         palette = CM.to_colormap(:glasbey_bw_n256)
-        n_pal   = length(palette)
-        bg      = CM.RGBAf(0.08, 0.09, 0.10, 1.0)
+        n_pal = length(palette)
+        bg = CM.RGBAf(0.08, 0.09, 0.1, 1.0)
         function colorize(slice)
             out = Array{CM.RGBAf}(undef, size(slice))
             @inbounds for i in eachindex(slice, out)
@@ -1100,38 +1122,41 @@ let
                 out[i] = lbl == 0 ? bg :
                     let c = palette[(hash(lbl) % UInt(n_pal)) + 1]
                         CM.RGBAf(c.r, c.g, c.b, 1.0)
-                    end
+                end
             end
-            out
+            return out
         end
 
         # Lymphatic highlight: translucent yellow fill + thin red contour,
         # so the duct reads against any underlying colour.
-        fill_color    = CM.RGBAf(1.0, 0.95, 0.2, 0.55)
-        outline_color = CM.RGBAf(0.95, 0.10, 0.10, 1.0)
+        fill_color = CM.RGBAf(1.0, 0.95, 0.2, 0.55)
+        outline_color = CM.RGBAf(0.95, 0.1, 0.1, 1.0)
 
         fig = CM.Figure(size = (700, 1700), backgroundcolor = :white, figure_padding = 6)
 
         function panel!(row, slice, title, subtitle)
-            ax = CM.Axis(fig[row, 1];
-                title        = title,
-                subtitle     = subtitle,
-                titlesize    = 18,
+            ax = CM.Axis(
+                fig[row, 1];
+                title = title,
+                subtitle = subtitle,
+                titlesize = 18,
                 subtitlesize = 12,
-                titlealign   = :left,
-                aspect       = CM.DataAspect(),
-                yreversed    = true,
+                titlealign = :left,
+                aspect = CM.DataAspect(),
+                yreversed = true,
             )
             CM.image!(ax, colorize(slice); interpolate = false)
             mask = Float32.(lymph_mask_2d(slice))
-            CM.heatmap!(ax, mask;
-                colormap    = [CM.RGBAf(0, 0, 0, 0), fill_color],
-                colorrange  = (0, 1),
+            CM.heatmap!(
+                ax, mask;
+                colormap = [CM.RGBAf(0, 0, 0, 0), fill_color],
+                colorrange = (0, 1),
                 interpolate = false,
             )
-            CM.contour!(ax, mask;
-                levels    = [0.5],
-                color     = outline_color,
+            CM.contour!(
+                ax, mask;
+                levels = [0.5],
+                color = outline_color,
                 linewidth = 1.2,
             )
             CM.hidedecorations!(ax)
@@ -1139,17 +1164,17 @@ let
             return ax
         end
 
-        panel!(1, phantom_labeled[:, :, k_mid], "Axial",    "k = $(k_mid)")
-        panel!(2, phantom_labeled[:, j_mid, :], "Coronal",  "j = $(j_mid)")
+        panel!(1, phantom_labeled[:, :, k_mid], "Axial", "k = $(k_mid)")
+        panel!(2, phantom_labeled[:, j_mid, :], "Coronal", "j = $(j_mid)")
         panel!(3, phantom_labeled[i_mid, :, :], "Sagittal", "i = $(i_mid)")
 
         # Slice dims plotted as (x, y):
         #   axial    [:, :, k] → nx × ny  → height/width = ny/nx
         #   coronal  [:, j, :] → nx × nz  → nz/nx
         #   sagittal [i, :, :] → ny × nz  → nz/ny
-        CM.rowsize!(fig.layout, 1, CM.Aspect(1, ny/nx))
-        CM.rowsize!(fig.layout, 2, CM.Aspect(1, nz/nx))
-        CM.rowsize!(fig.layout, 3, CM.Aspect(1, nz/ny))
+        CM.rowsize!(fig.layout, 1, CM.Aspect(1, ny / nx))
+        CM.rowsize!(fig.layout, 2, CM.Aspect(1, nz / nx))
+        CM.rowsize!(fig.layout, 3, CM.Aspect(1, nz / ny))
 
         CM.rowgap!(fig.layout, 4)
         CM.resize_to_layout!(fig)
@@ -1186,29 +1211,33 @@ let
         # load per voxel, no hashing in the inner loop).  Splitting cisterna
         # vs. duct lets us colour the reservoir and the channel differently.
         is_cisterna = falses(65536)
-        is_duct     = falses(65536)
-        is_lymph    = falses(65536)
-        for id in CISTERNA_IDS;      is_cisterna[id + 1] = true; is_lymph[id + 1] = true end
-        for id in THORACIC_DUCT_IDS; is_duct[id + 1]     = true; is_lymph[id + 1] = true end
+        is_duct = falses(65536)
+        is_lymph = falses(65536)
+        for id in CISTERNA_IDS
+            is_cisterna[id + 1] = true; is_lymph[id + 1] = true
+        end
+        for id in THORACIC_DUCT_IDS
+            is_duct[id + 1] = true; is_lymph[id + 1] = true
+        end
 
         function lymph_mask_2d(slice)
             m = falses(size(slice))
             @inbounds for i in eachindex(slice, m)
                 m[i] = is_lymph[Int(slice[i]) + 1]
             end
-            m
+            return m
         end
 
         # Spotlight palette.  Non-lymph anatomy is compressed into a muted
         # grey band so the lymphatics are the only colour in the frame.
         # Cisterna chyli → hot magenta (the reservoir).
         # Thoracic duct  → amber       (the channel ascending from it).
-        cisterna_color = CM.RGBAf(1.00, 0.20, 0.55, 1.0)
-        duct_color     = CM.RGBAf(1.00, 0.80, 0.15, 1.0)
+        cisterna_color = CM.RGBAf(1.0, 0.2, 0.55, 1.0)
+        duct_color = CM.RGBAf(1.0, 0.8, 0.15, 1.0)
 
         palette = CM.to_colormap(:glasbey_bw_n256)
-        n_pal   = length(palette)
-        bg      = CM.RGBAf(0.06, 0.07, 0.08, 1.0)
+        n_pal = length(palette)
+        bg = CM.RGBAf(0.06, 0.07, 0.08, 1.0)
 
         function colorize(slice)
             out = Array{CM.RGBAf}(undef, size(slice))
@@ -1222,39 +1251,44 @@ let
                     out[i] = duct_color
                 else
                     c = palette[(hash(UInt(lbl)) % UInt(n_pal)) + 1]
-                    g = 0.299f0*c.r + 0.587f0*c.g + 0.114f0*c.b
-                    g = 0.22f0 + 0.30f0 * g          # crush context into a muted band
+                    g = 0.299f0 * c.r + 0.587f0 * c.g + 0.114f0 * c.b
+                    g = 0.22f0 + 0.3f0 * g          # crush context into a muted band
                     out[i] = CM.RGBAf(g, g, g, 1.0)
                 end
             end
-            out
+            return out
         end
 
-        halo_color    = CM.RGBAf(1.0, 1.0, 1.0, 0.35)
+        halo_color = CM.RGBAf(1.0, 1.0, 1.0, 0.35)
         outline_color = CM.RGBAf(1.0, 0.05, 0.35, 1.0)
 
         fig = CM.Figure(size = (700, 1700), backgroundcolor = :white, figure_padding = 6)
 
         function panel!(row, slice, title, subtitle)
-            ax = CM.Axis(fig[row, 1];
-                title        = title,
-                subtitle     = subtitle,
-                titlesize    = 18,
+            ax = CM.Axis(
+                fig[row, 1];
+                title = title,
+                subtitle = subtitle,
+                titlesize = 18,
                 subtitlesize = 12,
-                titlealign   = :left,
-                aspect       = CM.DataAspect(),
-                yreversed    = true,
+                titlealign = :left,
+                aspect = CM.DataAspect(),
+                yreversed = true,
             )
             CM.image!(ax, colorize(slice); interpolate = false)
 
             mask = Float32.(lymph_mask_2d(slice))
             if any(>(0), mask)
                 # white halo behind...
-                CM.contour!(ax, mask; levels = [0.5],
-                    color = halo_color, linewidth = 4)
+                CM.contour!(
+                    ax, mask; levels = [0.5],
+                    color = halo_color, linewidth = 4
+                )
                 # ...crisp magenta line on top
-                CM.contour!(ax, mask; levels = [0.5],
-                    color = outline_color, linewidth = 1.2)
+                CM.contour!(
+                    ax, mask; levels = [0.5],
+                    color = outline_color, linewidth = 1.2
+                )
             end
 
             CM.hidedecorations!(ax)
@@ -1262,29 +1296,32 @@ let
             return ax
         end
 
-        panel!(1, phantom_labeled[:, :, k_mid], "Axial",    "k = $(k_mid)")
-        panel!(2, phantom_labeled[:, j_mid, :], "Coronal",  "j = $(j_mid)")
+        panel!(1, phantom_labeled[:, :, k_mid], "Axial", "k = $(k_mid)")
+        panel!(2, phantom_labeled[:, j_mid, :], "Coronal", "j = $(j_mid)")
         panel!(3, phantom_labeled[i_mid, :, :], "Sagittal", "i = $(i_mid)")
 
         # Self-documenting legend.
-        CM.Legend(fig[4, 1],
-            [CM.PolyElement(color = cisterna_color, strokevisible = false),
-             CM.PolyElement(color = duct_color,     strokevisible = false)],
+        CM.Legend(
+            fig[4, 1],
+            [
+                CM.PolyElement(color = cisterna_color, strokevisible = false),
+                CM.PolyElement(color = duct_color, strokevisible = false),
+            ],
             ["Cisterna chyli", "Thoracic duct"];
-            orientation  = :horizontal,
+            orientation = :horizontal,
             framevisible = false,
-            labelsize    = 13,
-            patchsize    = (18, 12),
-            tellwidth    = false,
+            labelsize = 13,
+            patchsize = (18, 12),
+            tellwidth = false,
         )
 
         # Slice dims plotted as (x, y):
         #   axial    [:, :, k] → nx × ny  → height/width = ny/nx
         #   coronal  [:, j, :] → nx × nz  → nz/nx
         #   sagittal [i, :, :] → ny × nz  → nz/ny
-        CM.rowsize!(fig.layout, 1, CM.Aspect(1, ny/nx))
-        CM.rowsize!(fig.layout, 2, CM.Aspect(1, nz/nx))
-        CM.rowsize!(fig.layout, 3, CM.Aspect(1, nz/ny))
+        CM.rowsize!(fig.layout, 1, CM.Aspect(1, ny / nx))
+        CM.rowsize!(fig.layout, 2, CM.Aspect(1, nz / nx))
+        CM.rowsize!(fig.layout, 3, CM.Aspect(1, nz / ny))
 
         CM.rowgap!(fig.layout, 4)
         CM.rowgap!(fig.layout, 3, 10)   # a little extra space before the legend
@@ -1480,37 +1517,37 @@ const RECON_SAVE_DIR = joinpath(@__DIR__, "..", "data", "lymphatic_recons")
 
 # ╔═╡ 08000012-0000-4000-8000-000000000012
 recon_save_path = (hu_fbp === nothing || recon_opts === nothing) ? nothing : let
-    isdir(RECON_SAVE_DIR) || mkpath(RECON_SAVE_DIR)
-    path = joinpath(
-        RECON_SAVE_DIR,
-        "lymphatic_recon_t" * lpad(TIME_SECONDS, 4, '0') * "s.jld2",
-    )
-    recon_voxel_mm = (
-        recon_opts.fov_cm * 10 / recon_opts.matrix_size[1],
-        recon_opts.fov_cm * 10 / recon_opts.matrix_size[2],
-        recon_opts.z_cm  * 10 / recon_opts.matrix_size[3],
-    )
-    JLD2.jldsave(
-        path;
-        hu               = hu_fbp,
-        time_seconds     = TIME_SECONDS,
-        recon_matrix     = collect(recon_opts.matrix_size),
-        recon_fov_cm     = RECON_FOV_CM,
-        recon_z_cm       = recon_opts.z_cm,
-        recon_voxel_mm   = collect(recon_voxel_mm),
-        z_coverage_mm    = Z_COVERAGE_MM,
-        native_voxel_mm  = collect(NATIVE_VOXEL_MM),
-        target_voxel_mm  = TARGET_VOXEL_MM,
-        kvp              = protocol.kVp,
-        mA               = protocol.mA,
-        views            = protocol.views,
-        bhc_ref_keV      = bhc_calibration === nothing ? NaN : bhc_calibration.ref_E_keV,
-        mu_water         = bhc_calibration === nothing ? NaN : bhc_calibration.μ_water,
-        lymphatic_ids    = collect(LYMPHATIC_IDS),
-        cisterna_ids     = collect(CISTERNA_IDS),
-        thoracic_duct_ids = collect(THORACIC_DUCT_IDS),
-    )
-    path
+        isdir(RECON_SAVE_DIR) || mkpath(RECON_SAVE_DIR)
+        path = joinpath(
+            RECON_SAVE_DIR,
+            "lymphatic_recon_t" * lpad(TIME_SECONDS, 4, '0') * "s.jld2",
+        )
+        recon_voxel_mm = (
+            recon_opts.fov_cm * 10 / recon_opts.matrix_size[1],
+            recon_opts.fov_cm * 10 / recon_opts.matrix_size[2],
+            recon_opts.z_cm * 10 / recon_opts.matrix_size[3],
+        )
+        JLD2.jldsave(
+            path;
+            hu = hu_fbp,
+            time_seconds = TIME_SECONDS,
+            recon_matrix = collect(recon_opts.matrix_size),
+            recon_fov_cm = RECON_FOV_CM,
+            recon_z_cm = recon_opts.z_cm,
+            recon_voxel_mm = collect(recon_voxel_mm),
+            z_coverage_mm = Z_COVERAGE_MM,
+            native_voxel_mm = collect(NATIVE_VOXEL_MM),
+            target_voxel_mm = TARGET_VOXEL_MM,
+            kvp = protocol.kVp,
+            mA = protocol.mA,
+            views = protocol.views,
+            bhc_ref_keV = bhc_calibration === nothing ? NaN : bhc_calibration.ref_E_keV,
+            mu_water = bhc_calibration === nothing ? NaN : bhc_calibration.μ_water,
+            lymphatic_ids = collect(LYMPHATIC_IDS),
+            cisterna_ids = collect(CISTERNA_IDS),
+            thoracic_duct_ids = collect(THORACIC_DUCT_IDS),
+        )
+        path
 end;
 
 # ╔═╡ 08000012-0000-4000-8000-000000000013
@@ -1550,9 +1587,9 @@ let
         # 1. Pick the K slice at the cisterna chyli mid-height (lots of lymph
         #    voxels to actually look at).  Walk: native cisterna K-mid →
         #    cropped K → upsampled K, same mapping nb08 §6a uses.
-        k_cist_mid_native  = (cisterna_bbox.k[1] + cisterna_bbox.k[2]) ÷ 2
+        k_cist_mid_native = (cisterna_bbox.k[1] + cisterna_bbox.k[2]) ÷ 2
         k_cist_mid_cropped = k_cist_mid_native - first(crop_idx.k_range) + 1
-        scale_z            = NATIVE_VOXEL_MM[3] / TARGET_VOXEL_MM
+        scale_z = NATIVE_VOXEL_MM[3] / TARGET_VOXEL_MM
         k_phantom = clamp(
             round(Int, (k_cist_mid_cropped - 0.5) * scale_z + 0.5),
             1, size(phantom_labeled, 3),
@@ -1560,9 +1597,9 @@ let
 
         # Phantom K → recon K via world coords (shared-iso convention).
         phantom_z_cm = VOXEL_SIZE_CM[3] * size(phantom_labeled, 3)
-        z_world_cm   = (k_phantom - 0.5) * VOXEL_SIZE_CM[3] - phantom_z_cm / 2
-        recon_nz     = recon_opts.matrix_size[3]
-        recon_dz     = recon_opts.z_cm / recon_nz
+        z_world_cm = (k_phantom - 0.5) * VOXEL_SIZE_CM[3] - phantom_z_cm / 2
+        recon_nz = recon_opts.matrix_size[3]
+        recon_dz = recon_opts.z_cm / recon_nz
         k_recon = clamp(
             round(Int, z_world_cm / recon_dz + recon_nz / 2 + 0.5),
             1, recon_nz,
@@ -1575,9 +1612,9 @@ let
         )
 
         # 3. Slices to render.
-        lbl_full  = phantom_labeled[:, :, k_phantom]   # 0.1 mm, full XY
+        lbl_full = phantom_labeled[:, :, k_phantom]   # 0.1 mm, full XY
         lbl_recon = labels_recon[:, :, k_recon]        # recon res, FOV-cropped
-        hu_slice  = hu_fbp[:, :, k_recon]
+        hu_slice = hu_fbp[:, :, k_recon]
 
         # 4. Densify the label colormap.  `:tab20` only has 20 buckets and
         #    auto-scales to [0..maxID]; without this, ID 2 (the 79%-body
@@ -1585,7 +1622,7 @@ let
         #    looks "missing".  Remap each present ID to a 1..N categorical
         #    index → one distinct tab20 color per label.
         function densify_labels(slice::AbstractArray)
-            ids   = sort(unique(slice))
+            ids = sort(unique(slice))
             table = zeros(Int, 65536)
             for (i, id) in enumerate(ids)
                 table[Int(id) + 1] = i
@@ -1594,9 +1631,9 @@ let
             @inbounds for idx in eachindex(slice)
                 out[idx] = table[Int(slice[idx]) + 1]
             end
-            out
+            return out
         end
-        lbl_full_d  = densify_labels(lbl_full)
+        lbl_full_d = densify_labels(lbl_full)
         lbl_recon_d = densify_labels(lbl_recon)
 
         # 5. Lymphatic overlay on the HU recon — NaN-mask non-lymph voxels
@@ -1609,23 +1646,24 @@ let
             out = fill(NaN32, size(lbl_recon))
             @inbounds for idx in eachindex(lbl_recon)
                 if is_lymph[Int(lbl_recon[idx]) + 1]
-                    out[idx] = 1f0
+                    out[idx] = 1.0f0
                 end
             end
             out
         end
 
         # 6. 2×2 figure.
-        fig          = CM.Figure(size = (1500, 1500))
+        fig = CM.Figure(size = (1500, 1500))
         title_kwargs = (titlesize = 26, subtitlesize = 16)
-        hu_kwargs    = (colormap = :grays, colorrange = (-200, 600))
+        hu_kwargs = (colormap = :grays, colorrange = (-200, 600))
 
         # Top-left: phantom labels, full XY, 0.1 mm — densified colormap.
-        ax_tl = CM.Axis(fig[1, 1];
-            title     = "Phantom labels · full XY @ 0.1 mm",
-            subtitle  = "K = $(k_phantom) of $(size(phantom_labeled, 3)) · " *
-                        "$(length(unique(lbl_full))) labels (densified)",
-            aspect    = CM.DataAspect(),
+        ax_tl = CM.Axis(
+            fig[1, 1];
+            title = "Phantom labels · full XY @ 0.1 mm",
+            subtitle = "K = $(k_phantom) of $(size(phantom_labeled, 3)) · " *
+                "$(length(unique(lbl_full))) labels (densified)",
+            aspect = CM.DataAspect(),
             yreversed = true,
             title_kwargs...,
         )
@@ -1633,11 +1671,12 @@ let
         CM.hidedecorations!(ax_tl)
 
         # Top-right: phantom labels resampled to the recon grid (FOV-cropped).
-        ax_tr = CM.Axis(fig[1, 2];
-            title     = "Phantom labels · recon FOV $(recon_opts.fov_cm) cm",
-            subtitle  = "K_recon = $(k_recon) · " *
-                        "$(length(unique(lbl_recon))) labels (densified) · :nearest resample",
-            aspect    = CM.DataAspect(),
+        ax_tr = CM.Axis(
+            fig[1, 2];
+            title = "Phantom labels · recon FOV $(recon_opts.fov_cm) cm",
+            subtitle = "K_recon = $(k_recon) · " *
+                "$(length(unique(lbl_recon))) labels (densified) · :nearest resample",
+            aspect = CM.DataAspect(),
             yreversed = true,
             title_kwargs...,
         )
@@ -1645,10 +1684,11 @@ let
         CM.hidedecorations!(ax_tr)
 
         # Bottom-left: HU recon, bare.
-        ax_bl = CM.Axis(fig[2, 1];
-            title     = "HU recon",
-            subtitle  = "K_recon = $(k_recon) · W 800 / L 200",
-            aspect    = CM.DataAspect(),
+        ax_bl = CM.Axis(
+            fig[2, 1];
+            title = "HU recon",
+            subtitle = "K_recon = $(k_recon) · W 800 / L 200",
+            aspect = CM.DataAspect(),
             yreversed = true,
             title_kwargs...,
         )
@@ -1656,25 +1696,29 @@ let
         CM.hidedecorations!(ax_bl)
 
         # Bottom-right: HU recon + lymphatic mask overlay.
-        ax_br = CM.Axis(fig[2, 2];
-            title     = "HU recon + lymphatic overlay",
-            subtitle  = "cisterna + thoracic duct in red · same window as BL",
-            aspect    = CM.DataAspect(),
+        ax_br = CM.Axis(
+            fig[2, 2];
+            title = "HU recon + lymphatic overlay",
+            subtitle = "cisterna + thoracic duct in red · same window as BL",
+            aspect = CM.DataAspect(),
             yreversed = true,
             title_kwargs...,
         )
         hm_br = CM.heatmap!(ax_br, hu_slice; hu_kwargs...)
-        CM.heatmap!(ax_br, lymph_overlay;
-            colormap   = [CM.RGBAf(0, 0, 0, 0), CM.RGBAf(1, 0.2, 0.2, 0.9)],
+        CM.heatmap!(
+            ax_br, lymph_overlay;
+            colormap = [CM.RGBAf(0, 0, 0, 0), CM.RGBAf(1, 0.2, 0.2, 0.9)],
             colorrange = (0, 1),
-            nan_color  = (:white, 0.0),
+            nan_color = (:white, 0.0),
         )
         CM.hidedecorations!(ax_br)
         CM.Colorbar(fig[2, 3], hm_br; label = "HU", width = 14, labelsize = 16)
 
         CM.save(
-            joinpath(@__DIR__, "..", "..", "assets",
-                "xcat_lymphatic_t$(lpad(TIME_SECONDS, 4, '0'))s.png"),
+            joinpath(
+                @__DIR__, "..", "..", "assets",
+                "xcat_lymphatic_t$(lpad(TIME_SECONDS, 4, '0'))s.png"
+            ),
             fig; px_per_unit = 2,
         )
         fig
@@ -1699,21 +1743,25 @@ let
     Mx, My, Mz = recon_opts.matrix_size
     dxr = recon_opts.fov_cm / Mx
     dyr = recon_opts.fov_cm / My
-    dzr = recon_opts.z_cm  / Mz
+    dzr = recon_opts.z_cm / Mz
 
     # Per-axis NN lookup: which phantom voxel sits at each recon-voxel
     # center.  1-D tables — much cheaper than a 3-arg round inside the
     # inner loop.
     rec_i = Int[round(Int, (-recon_opts.fov_cm / 2 + (i - 0.5) * dxr - pox) / dx_p) + 1 for i in 1:Mx]
     rec_j = Int[round(Int, (-recon_opts.fov_cm / 2 + (j - 0.5) * dyr - poy) / dy_p) + 1 for j in 1:My]
-    rec_k = Int[round(Int, (-recon_opts.z_cm  / 2 + (k - 0.5) * dzr - poz) / dz_p) + 1 for k in 1:Mz]
+    rec_k = Int[round(Int, (-recon_opts.z_cm / 2 + (k - 0.5) * dzr - poz) / dz_p) + 1 for k in 1:Mz]
 
     # 65k-bin indicator vectors beat a Set hash in the inner loop.
-    is_cist = falses(65536); for id in CISTERNA_IDS;      is_cist[id + 1] = true end
-    is_duct = falses(65536); for id in THORACIC_DUCT_IDS; is_duct[id + 1] = true end
+    is_cist = falses(65536); for id in CISTERNA_IDS
+        is_cist[id + 1] = true
+    end
+    is_duct = falses(65536); for id in THORACIC_DUCT_IDS
+        is_duct[id + 1] = true
+    end
 
     cisterna_mask = falses(Mx, My, Mz)
-    duct_mask     = falses(Mx, My, Mz)
+    duct_mask = falses(Mx, My, Mz)
     @inbounds for kr in 1:Mz
         kp = rec_k[kr]
         (1 <= kp <= nz_p) || continue
@@ -1725,7 +1773,7 @@ let
                 (1 <= ip <= nx_p) || continue
                 v = Int(phantom_labeled[ip, jp, kp]) + 1
                 cisterna_mask[ir, jr, kr] = is_cist[v]
-                duct_mask[ir, jr, kr]     = is_duct[v]
+                duct_mask[ir, jr, kr] = is_duct[v]
             end
         end
     end
@@ -1735,19 +1783,19 @@ let
     mask_path = joinpath(RECON_SAVE_DIR, "lymphatic_mask.jld2")
     JLD2.jldsave(
         mask_path;
-        lymphatic_mask     = lymphatic_mask,
-        cisterna_mask      = cisterna_mask,
+        lymphatic_mask = lymphatic_mask,
+        cisterna_mask = cisterna_mask,
         thoracic_duct_mask = duct_mask,
-        recon_matrix       = collect(recon_opts.matrix_size),
-        recon_fov_cm       = recon_opts.fov_cm,
-        recon_z_cm         = recon_opts.z_cm,
-        recon_voxel_mm     = [dxr * 10, dyr * 10, dzr * 10],
-        phantom_origin_cm  = [pox, poy, poz],
-        phantom_voxel_mm   = collect(VOXEL_SIZE_CM .* 10),
-        phantom_dims       = collect(size(phantom_labeled)),
-        cisterna_ids       = collect(CISTERNA_IDS),
-        thoracic_duct_ids  = collect(THORACIC_DUCT_IDS),
-        method             = "nearest_neighbor_recon_to_phantom",
+        recon_matrix = collect(recon_opts.matrix_size),
+        recon_fov_cm = recon_opts.fov_cm,
+        recon_z_cm = recon_opts.z_cm,
+        recon_voxel_mm = [dxr * 10, dyr * 10, dzr * 10],
+        phantom_origin_cm = [pox, poy, poz],
+        phantom_voxel_mm = collect(VOXEL_SIZE_CM .* 10),
+        phantom_dims = collect(size(phantom_labeled)),
+        cisterna_ids = collect(CISTERNA_IDS),
+        thoracic_duct_ids = collect(THORACIC_DUCT_IDS),
+        method = "nearest_neighbor_recon_to_phantom",
     )
 
     md"""

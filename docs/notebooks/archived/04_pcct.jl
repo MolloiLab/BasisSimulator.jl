@@ -55,8 +55,8 @@ import CairoMakie as CM
 begin
     GPU_BACKEND = let
         candidates = [
-            (:Metal,  "dde4c033-4e86-420c-a63e-0dd931031962", :MtlArray),
-            (:CUDA,   "052768ef-5323-5732-b1bb-66c8b64840ba", :CuArray),
+            (:Metal, "dde4c033-4e86-420c-a63e-0dd931031962", :MtlArray),
+            (:CUDA, "052768ef-5323-5732-b1bb-66c8b64840ba", :CuArray),
             (:AMDGPU, "21141c5a-9bdb-4563-92ae-f87d6854732e", :ROCArray),
         ]
         detected = (name = "CPU", to_gpu = identity)
@@ -92,8 +92,8 @@ md"""
 phantom_cpu = BS.create_gammex_472(
     n_voxels = 512,
     n_slices = 16,
-    fov_cm   = 35.0,
-    z_cm     = 1.0,
+    fov_cm = 35.0,
+    z_cm = 1.0,
 );
 
 # ╔═╡ 04000002-0000-4000-8000-000000000020
@@ -140,45 +140,45 @@ scanner = let
 
     BS.Scanner(
         source_to_isocenter = sid,
-        source_to_detector  = sdd,
+        source_to_detector = sdd,
 
-        detector_rows       = 144,
-        detector_cols       = n_cols,
-        detector_row_size   = pixel_row_iso,
-        detector_col_size   = pixel_col_iso,
-        detector_shape      = BS.CURVED_DETECTOR,
+        detector_rows = 144,
+        detector_cols = n_cols,
+        detector_row_size = pixel_row_iso,
+        detector_col_size = pixel_col_iso,
+        detector_shape = BS.CURVED_DETECTOR,
         detector_row_offset = 0.0,
         detector_col_offset = pixel_col_iso / 2,
 
-        focal_spot_width  = 0.4,
+        focal_spot_width = 0.4,
         focal_spot_length = 0.5,
-        target_angle      = 7.0,
+        target_angle = 7.0,
 
         gantry_rotation_time = 0.5,
-        scan_diameter        = 360.0,
-        gantry_aperture      = 820.0,
+        scan_diameter = 360.0,
+        gantry_aperture = 820.0,
 
-        flat_filter_material  = :aluminum,
+        flat_filter_material = :aluminum,
         flat_filter_thickness = 3.0,
 
         detector_material = :cdte,
-        detector_depth    = 1.6,
-        fill_factor_row   = 0.95,
-        fill_factor_col   = 0.95,
-        detection_gain    = 1.0,
-        electronic_noise  = 0.0,
+        detector_depth = 1.6,
+        fill_factor_row = 0.95,
+        fill_factor_col = 0.95,
+        detection_gain = 1.0,
+        electronic_noise = 0.0,
 
-        detector_type       = :photon_counting,
-        n_energy_bins       = 4,
-        energy_thresholds   = [20.0, 35.0, 55.0, 70.0],
-        energy_resolution   = 10.0,
+        detector_type = :photon_counting,
+        n_energy_bins = 4,
+        energy_thresholds = [20.0, 35.0, 55.0, 70.0],
+        energy_resolution = 10.0,
         charge_sharing_fwhm = 0.08,
-        dead_time_ns        = 5.0,
-        pixel_mode          = :standard,
+        dead_time_ns = 5.0,
+        pixel_mode = :standard,
 
         native_dexel_col_mm = native_col_mm,
         native_dexel_row_mm = native_row_mm,
-        binning_factor      = bf,
+        binning_factor = bf,
     )
 end;
 
@@ -193,11 +193,11 @@ Matches nb07 Scan 2 (clinical 140 kVp / 174 mA / 10.12 mGy CTDIvol).
 
 # ╔═╡ 04000004-0000-4000-8000-000000000010
 protocol = BS.CTProtocol(
-    kVp                = 140,
-    mA                 = 174.0,
-    views              = 1200,
-    rotation_time      = 0.5,
-    collimation_mm     = 5.0,
+    kVp = 140,
+    mA = 174.0,
+    views = 1200,
+    rotation_time = 0.5,
+    collimation_mm = 5.0,
     additional_filters = [("Ti", 0.9)],
 );
 
@@ -211,8 +211,8 @@ path (per-bin sinograms + DRM + Compton scatter modeling).
 
 # ╔═╡ 04000005-0000-4000-8000-000000000010
 sim_opts = BS.SimOptions(
-    fidelity             = :pcct,
-    seed                 = 1234,
+    fidelity = :pcct,
+    seed = 1234,
     pcct_noise_reduction = 0.3,
 );
 
@@ -221,11 +221,11 @@ recon_opts = let
     slice_thickness_mm = 0.4
     n_recon_slices = max(1, round(Int, protocol.collimation_mm / slice_thickness_mm))
     BS.ReconOptions(
-        algorithm   = :fdk,
+        algorithm = :fdk,
         matrix_size = (512, 512, n_recon_slices),
-        fov_cm      = 35.0,
-        z_cm        = protocol.collimation_mm / 10.0,
-        filter      = :standard,
+        fov_cm = 35.0,
+        z_cm = protocol.collimation_mm / 10.0,
+        filter = :standard,
     )
 end;
 
@@ -246,14 +246,14 @@ sim_bins = let
     ws = BS.create_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
     result = BS.simulate!(ws, phantom, scanner, protocol, sim_opts, recon_opts)
 
-    geom    = ws.geom
-    bins    = [Array(b) for b in result.pcct_sino.bins]   # Float32 each
+    geom = ws.geom
+    bins = [Array(b) for b in result.pcct_sino.bins]   # Float32 each
     I0_bins = copy(result.I0_bins)
 
     # Per-bin scatter correction — model-based, exact for simulated data.
     let
         I0_total = Float32(sum(I0_bins))
-        eps_f    = Float32(1.0e-10)
+        eps_f = Float32(1.0e-10)
 
         # Re-estimate scatter from recombined primary (mirrors nb07 clinical flow).
         combined = zeros(Float32, size(bins[1]))
@@ -263,30 +263,30 @@ sim_bins = let
         end
         @. combined = -log(max(combined, eps_f) / I0_total)
 
-        voxel_size_mm   = phantom_cpu.voxel_size .* 10.0
+        voxel_size_mm = phantom_cpu.voxel_size .* 10.0
         phantom_diam_cm = BS.estimate_phantom_diameter_cm(phantom_cpu.mask, voxel_size_mm)
-        scatter_model   = BS.geometry_aware_scatter_model(scanner; phantom_diameter_cm = phantom_diam_cm)
-        scatter_field   = similar(combined)
+        scatter_model = BS.geometry_aware_scatter_model(scanner; phantom_diameter_cm = phantom_diam_cm)
+        scatter_field = similar(combined)
         BS.estimate_scatter_field!(scatter_field, combined, scatter_model)
 
         # Per-bin scatter fractions from spectrum × η × DRM.
         e_full, w_full = BS.resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner = scanner)
-        pcct_det       = BS._build_pcct_detector(scanner)
-        kVp_val        = Float64(maximum(e_full))
-        R_mat          = BS.compute_mc_drm(pcct_det, kVp_val)
-        η_vec          = BS.quantum_efficiency_vector(pcct_det.material, pcct_det.thickness_mm, e_full)
-        ew             = BS.compute_scatter_energy_weights(Float64.(e_full))
-        scatter_fracs  = BS.compute_scatter_bin_weights(
+        pcct_det = BS._build_pcct_detector(scanner)
+        kVp_val = Float64(maximum(e_full))
+        R_mat = BS.compute_mc_drm(pcct_det, kVp_val)
+        η_vec = BS.quantum_efficiency_vector(pcct_det.material, pcct_det.thickness_mm, e_full)
+        ew = BS.compute_scatter_energy_weights(Float64.(e_full))
+        scatter_fracs = BS.compute_scatter_bin_weights(
             Float64.(e_full), Float64.(w_full), ew, Float64.(η_vec), R_mat, kVp_val,
         )
 
         # In-place per-bin subtraction.
         for (b, bin_sino) in enumerate(bins)
-            I0b  = Float32(I0_bins[b])
+            I0b = Float32(I0_bins[b])
             frac = Float32(scatter_fracs[b])
             for idx in eachindex(bin_sino)
-                N_measured  = I0b * exp(-bin_sino[idx])
-                N_scatter   = scatter_field[idx] * I0_total * frac
+                N_measured = I0b * exp(-bin_sino[idx])
+                N_scatter = scatter_field[idx] * I0_total * frac
                 N_corrected = N_measured - max(N_scatter, Float32(0))
                 bin_sino[idx] = -log(max(N_corrected, eps_f) / I0b)
             end
@@ -312,7 +312,7 @@ PCCT bins).  No BHC, no RSKR, no cupping correction.
 # ╔═╡ 04000007-0000-4000-8000-000000000010
 bin_μ = let
     matrix_size = recon_opts.matrix_size
-    geom        = sim_bins.geom
+    geom = sim_bins.geom
 
     fdk_filter = BS.CustomFilter(
         (0.0, 0.25, 0.5, 0.75, 1.0),
@@ -365,7 +365,7 @@ sim_lohi = let
         return @. -log(max(N, eps_f) / I0_sum)
     end
 
-    sino_low  = _combine([1, 2])
+    sino_low = _combine([1, 2])
     sino_high = _combine([3, 4])
 
     (sino_low = sino_low, sino_high = sino_high, geom = sim_bins.geom)
@@ -381,7 +381,7 @@ Same FDK + filter as §6, applied to the combined low / high sinograms.
 # ╔═╡ 04000009-0000-4000-8000-000000000010
 lohi_μ = let
     matrix_size = recon_opts.matrix_size
-    geom        = sim_lohi.geom
+    geom = sim_lohi.geom
 
     fdk_filter = BS.CustomFilter(
         (0.0, 0.25, 0.5, 0.75, 1.0),
@@ -400,9 +400,9 @@ lohi_μ = let
     end
 
     (
-        vol_low_μ  = _fbp_to_μ(sim_lohi.sino_low),
+        vol_low_μ = _fbp_to_μ(sim_lohi.sino_low),
         vol_high_μ = _fbp_to_μ(sim_lohi.sino_high),
-        geom       = geom,
+        geom = geom,
     )
 end;
 
@@ -421,8 +421,8 @@ region.  The 4 bin volumes stay in native μ — no HU divisor needed.
 μ_water_per_vol = let
     nx, ny, nz = size(lohi_μ.vol_low_μ)
     cx, cy = nx / 2 + 0.5, ny / 2 + 0.5
-    ROI_R  = 8.0
-    r²     = ROI_R^2
+    ROI_R = 8.0
+    r² = ROI_R^2
 
     roi = CartesianIndex{2}[]
     i_lo = max(1, floor(Int, cx - ROI_R)); i_hi = min(nx, ceil(Int, cx + ROI_R))
@@ -436,11 +436,11 @@ region.  The 4 bin volumes stay in native μ — no HU divisor needed.
         for z in 1:nz, ci in roi
             s += vol[ci, z]; n += 1
         end
-        s / n
+        return s / n
     end
 
     (
-        low  = Float64(_mean_μ(lohi_μ.vol_low_μ)),
+        low = Float64(_mean_μ(lohi_μ.vol_low_μ)),
         high = Float64(_mean_μ(lohi_μ.vol_high_μ)),
     )
 end;
@@ -452,7 +452,7 @@ md"""
 
 # ╔═╡ 0400000b-0000-4000-8000-000000000020
 lohi_HU = (
-    vol_low_HU  = Float32.(BS.to_hounsfield(lohi_μ.vol_low_μ;  μ_water = μ_water_per_vol.low)),
+    vol_low_HU = Float32.(BS.to_hounsfield(lohi_μ.vol_low_μ; μ_water = μ_water_per_vol.low)),
     vol_high_HU = Float32.(BS.to_hounsfield(lohi_μ.vol_high_μ; μ_water = μ_water_per_vol.high)),
 );
 
@@ -477,7 +477,7 @@ let
         (1, 1, "Bin 1", "20 – 35 keV", bin_μ[1]),
         (1, 2, "Bin 2", "35 – 55 keV", bin_μ[2]),
         (2, 1, "Bin 3", "55 – 70 keV", bin_μ[3]),
-        (2, 2, "Bin 4", "> 70 keV",   bin_μ[4]),
+        (2, 2, "Bin 4", "> 70 keV", bin_μ[4]),
     )
 
     μ_window = (0.0, 0.5)

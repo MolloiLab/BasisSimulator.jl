@@ -60,8 +60,8 @@ import CairoMakie as CM
 begin
     GPU_BACKEND = let
         candidates = [
-            (:Metal,  "dde4c033-4e86-420c-a63e-0dd931031962", :MtlArray),
-            (:CUDA,   "052768ef-5323-5732-b1bb-66c8b64840ba", :CuArray),
+            (:Metal, "dde4c033-4e86-420c-a63e-0dd931031962", :MtlArray),
+            (:CUDA, "052768ef-5323-5732-b1bb-66c8b64840ba", :CuArray),
             (:AMDGPU, "21141c5a-9bdb-4563-92ae-f87d6854732e", :ROCArray),
         ]
         detected = (name = "CPU", to_gpu = identity)
@@ -97,8 +97,8 @@ md"""
 phantom_cpu = BS.create_gammex_472(
     n_voxels = 512,
     n_slices = 16,
-    fov_cm   = 35.0,
-    z_cm     = 1.0,
+    fov_cm = 35.0,
+    z_cm = 1.0,
 );
 
 # ╔═╡ 04000002-0000-4000-8000-000000000020
@@ -118,29 +118,29 @@ md"""
 # ╔═╡ 04000003-0000-4000-8000-000000000010
 scanner = BS.Scanner(
     source_to_isocenter = 625.6,
-    source_to_detector  = 1100.0,
+    source_to_detector = 1100.0,
 
-    detector_rows     = 256,
-    detector_cols     = 834,
+    detector_rows = 256,
+    detector_cols = 834,
     detector_row_size = 0.625,
     detector_col_size = 0.6,
-    detector_shape    = BS.CURVED_DETECTOR,
+    detector_shape = BS.CURVED_DETECTOR,
 
-    focal_spot_width  = 1.0,
+    focal_spot_width = 1.0,
     focal_spot_length = 1.0,
-    target_angle      = 10.0,
+    target_angle = 10.0,
 
-    flat_filter_material  = :aluminum,
+    flat_filter_material = :aluminum,
     flat_filter_thickness = 2.5,
-    bowtie_filter         = :ge_revolution_large,
+    bowtie_filter = :ge_revolution_large,
 
     detector_material = :lumex,
-    detector_depth    = 3.0,
-    fill_factor_row   = 0.9,
-    fill_factor_col   = 0.9,
+    detector_depth = 3.0,
+    fill_factor_row = 0.9,
+    fill_factor_col = 0.9,
 
     electronic_noise = 0,
-    detection_gain   = 10.0,
+    detection_gain = 10.0,
 );
 
 # ╔═╡ 04000004-0000-4000-8000-000000000001
@@ -156,7 +156,7 @@ md"""
 # ╔═╡ 04000004-0000-4000-8000-000000000010
 protocol_low = BS.CTProtocol(
     kVp = 80,
-    mA  = 407 * 0.65,
+    mA = 407 * 0.65,
     views = 984,
     rotation_time = 0.5,
     collimation_mm = 5.0,
@@ -166,7 +166,7 @@ protocol_low = BS.CTProtocol(
 # ╔═╡ 04000004-0000-4000-8000-000000000020
 protocol_high = BS.CTProtocol(
     kVp = 140,
-    mA  = 405 * 0.35,
+    mA = 405 * 0.35,
     views = 984,
     rotation_time = 0.5,
     collimation_mm = 5.0,
@@ -181,7 +181,7 @@ md"""
 # ╔═╡ 04000005-0000-4000-8000-000000000010
 sim_opts = BS.SimOptions(
     fidelity = :eict,
-    seed     = 1234,
+    seed = 1234,
 );
 
 # ╔═╡ 04000005-0000-4000-8000-000000000020
@@ -189,11 +189,11 @@ recon_opts = let
     slice_thickness_mm = 0.625
     n_recon_slices = round(Int, 5.0 / slice_thickness_mm)
     BS.ReconOptions(
-        algorithm   = :fdk,
+        algorithm = :fdk,
         matrix_size = (512, 512, n_recon_slices),
-        fov_cm      = 35.0,
-        z_cm        = 0.5,
-        filter      = :standard,
+        fov_cm = 35.0,
+        z_cm = 0.5,
+        filter = :standard,
     )
 end;
 
@@ -261,7 +261,7 @@ de_lohi_μ = let
         return Float32.(recon_μ)
     end
 
-    vol_low_μ  = _fbp_to_μ(sim_low.sino,  sim_low.geom)
+    vol_low_μ = _fbp_to_μ(sim_low.sino, sim_low.geom)
     vol_high_μ = _fbp_to_μ(sim_high.sino, sim_high.geom)
 
     (vol_low_μ = vol_low_μ, vol_high_μ = vol_high_μ, geom = sim_low.geom)
@@ -282,7 +282,7 @@ kVp_μ_water = let
     nx, ny, nz = size(de_lohi_μ.vol_low_μ)
     cx, cy = nx / 2 + 0.5, ny / 2 + 0.5
     ROI_R = 8.0
-    r²    = ROI_R^2
+    r² = ROI_R^2
 
     roi = CartesianIndex{2}[]
     i_lo = max(1, floor(Int, cx - ROI_R)); i_hi = min(nx, ceil(Int, cx + ROI_R))
@@ -296,11 +296,11 @@ kVp_μ_water = let
         for z in 1:nz, ci in roi
             s += vol[ci, z]; n += 1
         end
-        s / n
+        return s / n
     end
 
     Dict(
-        80  => Float64(_mean_μ(de_lohi_μ.vol_low_μ)),
+        80 => Float64(_mean_μ(de_lohi_μ.vol_low_μ)),
         140 => Float64(_mean_μ(de_lohi_μ.vol_high_μ)),
     )
 end;
@@ -314,7 +314,7 @@ md"""
 
 # ╔═╡ 0400000a-0000-4000-8000-000000000010
 de_lohi_HU = let
-    vol_low_HU  = Float32.(BS.to_hounsfield(de_lohi_μ.vol_low_μ;  μ_water = kVp_μ_water[80]))
+    vol_low_HU = Float32.(BS.to_hounsfield(de_lohi_μ.vol_low_μ; μ_water = kVp_μ_water[80]))
     vol_high_HU = Float32.(BS.to_hounsfield(de_lohi_μ.vol_high_μ; μ_water = kVp_μ_water[140]))
     (vol_low_HU = vol_low_HU, vol_high_HU = vol_high_HU, geom = de_lohi_μ.geom)
 end;
@@ -362,11 +362,11 @@ kVp_E_eff = let
         end
         μ = [BS.compute_μ_at_energy(BS.XA.Materials.water, ei) for ei in e_f]
         w_hard = w_1d .* exp.(-μ .* D_half)
-        sum(e_f .* w_hard) / sum(w_hard)
+        return sum(e_f .* w_hard) / sum(w_hard)
     end
 
     Dict(
-        80  => _eff_E(protocol_low,  sim_low.geom),
+        80 => _eff_E(protocol_low, sim_low.geom),
         140 => _eff_E(protocol_high, sim_high.geom),
     )
 end;
@@ -432,13 +432,13 @@ dual-kVp data.
 # ╔═╡ 0400000c-0000-4000-8000-000000000005
 const ROD_LABELS = (
     Ca = (UInt8(10), UInt8(11), UInt8(12), UInt8(13), UInt8(14), UInt8(15), UInt8(16)),
-    I  = (UInt8(20), UInt8(21), UInt8(22), UInt8(23), UInt8(24), UInt8(25), UInt8(26)),
+    I = (UInt8(20), UInt8(21), UInt8(22), UInt8(23), UInt8(24), UInt8(25), UInt8(26)),
 );
 
 # ╔═╡ 0400000c-0000-4000-8000-000000000010
 const ROD_NAMES = (
     Ca = ("50 mg/mL", "100 mg/mL", "200 mg/mL", "300 mg/mL", "400 mg/mL", "500 mg/mL", "600 mg/mL"),
-    I  = ("2.0 mg/mL", "2.5 mg/mL", "5.0 mg/mL", "7.5 mg/mL", "10.0 mg/mL", "15.0 mg/mL", "20.0 mg/mL"),
+    I = ("2.0 mg/mL", "2.5 mg/mL", "5.0 mg/mL", "7.5 mg/mL", "10.0 mg/mL", "15.0 mg/mL", "20.0 mg/mL"),
 );
 
 # ╔═╡ 0400000c-0000-4000-8000-000000000020
@@ -500,7 +500,7 @@ rod_data = let
     end
 
     kVp_vols = Dict(
-        80  => de_lohi_HU.vol_low_HU,
+        80 => de_lohi_HU.vol_low_HU,
         140 => de_lohi_HU.vol_high_HU,
     )
 
@@ -508,7 +508,7 @@ rod_data = let
     for group in (:Ca, :I)
         labels = ROD_LABELS[group]
         n_rods = length(labels)
-        n_kVp  = length(kVps)
+        n_kVp = length(kVps)
         meas = zeros(Float64, n_rods, n_kVp)
         theo = zeros(Float64, n_rods, n_kVp)
         for (i, lab) in pairs(labels)
@@ -541,12 +541,16 @@ let
     mid = size(de_lohi_HU.vol_low_HU, 3) ÷ 2
 
     panels = (
-        (1, 1, "HU @ 80 kVp",
-                "$(round(kVp_E_eff[80],  digits = 1)) keV effective · SoftFilter FBP",
-                de_lohi_HU.vol_low_HU[:, :, mid]),
-        (1, 2, "HU @ 140 kVp",
-                "$(round(kVp_E_eff[140], digits = 1)) keV effective · SoftFilter FBP",
-                de_lohi_HU.vol_high_HU[:, :, mid]),
+        (
+            1, 1, "HU @ 80 kVp",
+            "$(round(kVp_E_eff[80], digits = 1)) keV effective · SoftFilter FBP",
+            de_lohi_HU.vol_low_HU[:, :, mid],
+        ),
+        (
+            1, 2, "HU @ 140 kVp",
+            "$(round(kVp_E_eff[140], digits = 1)) keV effective · SoftFilter FBP",
+            de_lohi_HU.vol_high_HU[:, :, mid],
+        ),
     )
 
     hms = nothing
@@ -589,8 +593,8 @@ let
 
     kVps = [80, 140]
     kvp_colors = Dict(
-        80  => CM.RGBf(0.95, 0.65, 0.13),   # warm
-        140 => CM.RGBf(0.10, 0.27, 0.65),   # cool
+        80 => CM.RGBf(0.95, 0.65, 0.13),   # warm
+        140 => CM.RGBf(0.1, 0.27, 0.65),   # cool
     )
 
     function fit_lr(x::Vector{Float64}, y::Vector{Float64})

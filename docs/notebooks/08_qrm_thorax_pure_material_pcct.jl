@@ -440,12 +440,12 @@ scanner = let
         flat_filter_material = :aluminum,
         flat_filter_thickness = 3.0,
         bowtie_filter = :medium_body,   # SANDBOX: GE medium-body bowtie, turned ON to
-                                 # exercise + VALIDATE the per-pixel-bowtie pipeline end to end
-                                 # (forward → per-pixel I0 → noise → scatter → combine → Cong Φ).
-                                 # The real Naeotom Alpha has NO bowtie — set :none for physical
-                                 # fidelity once the machinery is validated here.  :medium_body
-                                 # ≈ a 30 cm thorax; :large_body over-attenuates the lateral
-                                 # body edges in this 32 cm FOV.  Any GE profile exercises the path.
+        # exercise + VALIDATE the per-pixel-bowtie pipeline end to end
+        # (forward → per-pixel I0 → noise → scatter → combine → Cong Φ).
+        # The real Naeotom Alpha has NO bowtie — set :none for physical
+        # fidelity once the machinery is validated here.  :medium_body
+        # ≈ a 30 cm thorax; :large_body over-attenuates the lateral
+        # body edges in this 32 cm FOV.  Any GE profile exercises the path.
 
         detector_material = :cdte,
         detector_depth = 1.6,
@@ -573,13 +573,13 @@ sim_raw = let
     result = BS.simulate!(ws, phantom, protocol, sim_opts)
 
     bins_raw = [Array(b) for b in result.pcct_sino.bins]   # full physics + corrections (scatter+noise+pileup, per sim_opts)
-    I0_bins  = copy(result.I0_bins)
-    geom     = ws.geom
+    I0_bins = copy(result.I0_bins)
+    geom = ws.geom
     energies = copy(ws.energies)
-    weights  = copy(ws.weights)
-    bf       = scanner.binning_factor
+    weights = copy(ws.weights)
+    bf = scanner.binning_factor
     n_col, n_row, _ = size(bins_raw[1])
-    n_E      = length(energies)
+    n_E = length(energies)
 
     # No bowtie ⇒ uniform per-pixel air reference (= scalar I0_bins broadcast).
     I0_per_pixel = Array{Float32}(undef, n_col, n_row, length(bins_raw))
@@ -590,9 +590,11 @@ sim_raw = let
 
     ws = nothing; result = nothing
     GC.gc(true)
-    (bins_raw = bins_raw, I0_bins = I0_bins,
-     I0_per_pixel = I0_per_pixel, bt_cpu = bt_cpu,
-     geom = geom, energies = energies, weights = weights, bf = bf)
+    (
+        bins_raw = bins_raw, I0_bins = I0_bins,
+        I0_per_pixel = I0_per_pixel, bt_cpu = bt_cpu,
+        geom = geom, energies = energies, weights = weights, bf = bf,
+    )
 end;
 
 # ╔═╡ 08030004-0000-4000-8000-000000000025
@@ -664,9 +666,9 @@ pair.
 
 # ╔═╡ 08030005-0000-4000-8000-000000000010
 sim_lohi = let
-    eps_f      = Float32(1.0e-10)
-    low_bins   = [1, 2]
-    high_bins  = [3, 4]
+    eps_f = Float32(1.0e-10)
+    low_bins = [1, 2]
+    high_bins = [3, 4]
 
     # Combine the (per-bin-noised) bins into low/high channels in the COUNT
     # domain, then back to a log line integral.  `sim_raw.bins_raw` are already
@@ -676,10 +678,10 @@ sim_lohi = let
     # Air rays land at 0 per pixel (per-pixel-bowtie baseline cancels).  Noise is
     # injected upstream in sim_raw (simulate!) — this cell only combines.
     I0_pp = sim_raw.I0_per_pixel   # (n_col, n_row, n_bins)
-    I0_lo_pp = dropdims(sum(view(I0_pp, :, :, low_bins),  dims = 3); dims = 3)   # (n_col, n_row)
+    I0_lo_pp = dropdims(sum(view(I0_pp, :, :, low_bins), dims = 3); dims = 3)   # (n_col, n_row)
     I0_hi_pp = dropdims(sum(view(I0_pp, :, :, high_bins), dims = 3); dims = 3)
 
-    sz   = size(sim_raw.bins_raw[1])
+    sz = size(sim_raw.bins_raw[1])
     N_lo = zeros(Float32, sz)
     N_hi = zeros(Float32, sz)
     for b in low_bins
@@ -697,17 +699,19 @@ sim_lohi = let
         end
     end
 
-    sino_low  = similar(N_lo)
+    sino_low = similar(N_lo)
     sino_high = similar(N_hi)
     @inbounds for v in 1:sz[3], r in 1:sz[2], c in 1:sz[1]
-        sino_low[c, r, v]  = -log(max(N_lo[c, r, v], eps_f) / max(I0_lo_pp[c, r], eps_f))
+        sino_low[c, r, v] = -log(max(N_lo[c, r, v], eps_f) / max(I0_lo_pp[c, r], eps_f))
         sino_high[c, r, v] = -log(max(N_hi[c, r, v], eps_f) / max(I0_hi_pp[c, r], eps_f))
     end
 
-    (sino_low = sino_low, sino_high = sino_high,
-     I0_lo_pp = I0_lo_pp, I0_hi_pp = I0_hi_pp,
-     bt_cpu = sim_raw.bt_cpu,
-     geom = sim_raw.geom)
+    (
+        sino_low = sino_low, sino_high = sino_high,
+        I0_lo_pp = I0_lo_pp, I0_hi_pp = I0_hi_pp,
+        bt_cpu = sim_raw.bt_cpu,
+        geom = sim_raw.geom,
+    )
 end;
 
 # ╔═╡ 08030005-0000-4000-8000-000000000030
@@ -777,7 +781,7 @@ Output sinograms are per-ray basis line integrals
 # Bin-combine partition feeding the two Cong channels.  Must match the
 # §6 combine — change here AND there together.
 begin
-    cong_low_bins  = 1:2          # PCCT bins forming the "low"  channel
+    cong_low_bins = 1:2          # PCCT bins forming the "low"  channel
     cong_high_bins = 3:4          # PCCT bins forming the "high" channel
 end
 
@@ -789,9 +793,9 @@ material_basis = let
     )
 
     pcct_det = BS._build_pcct_detector(scanner)
-    kVp_val  = Float64(maximum(e))
-    R_mat    = BS.compute_mc_drm(pcct_det, kVp_val)
-    η_vec    = BS.quantum_efficiency_vector(
+    kVp_val = Float64(maximum(e))
+    R_mat = BS.compute_mc_drm(pcct_det, kVp_val)
+    η_vec = BS.quantum_efficiency_vector(
         pcct_det.material, pcct_det.thickness_mm, e,
     )
 
@@ -801,11 +805,11 @@ material_basis = let
     # Per-energy 1D weight (no bowtie) — `w · η · ΣR_grp`
     Φ_L_1d = Float32[
         Float32(w[i] * η_vec[i] * sum(R_mat[drm_idx(e[i]), b] for b in cong_low_bins))
-        for i in eachindex(e)
+            for i in eachindex(e)
     ]
     Φ_H_1d = Float32[
         Float32(w[i] * η_vec[i] * sum(R_mat[drm_idx(e[i]), b] for b in cong_high_bins))
-        for i in eachindex(e)
+            for i in eachindex(e)
     ]
 
     # ─── 3D per-pixel ŵ to match what forward applied ──────────────────────
@@ -840,15 +844,15 @@ material_basis = let
     end
 
     iodine_mat = BS.XA.Elements.Iodine
-    water_mat  = BS.XA.Materials.water
+    water_mat = BS.XA.Materials.water
 
     p = Float32[
         Float32(BS.compute_mass_μ_at_energy(iodine_mat, Float64(E)))
-        for E in e
+            for E in e
     ]
     q = Float32[
         Float32(BS.compute_mass_μ_at_energy(water_mat, Float64(E)))
-        for E in e
+            for E in e
     ]
 
     # Diagnostic: center vs edge mean energy
@@ -857,19 +861,21 @@ material_basis = let
     e64 = Float64.(e)
     mean_E_L_c = sum(e64[i] * Φ_L_pp[mid_c, mid_r, i] for i in 1:n_E)
     mean_E_H_c = sum(e64[i] * Φ_H_pp[mid_c, mid_r, i] for i in 1:n_E)
-    mean_E_L_e = sum(e64[i] * Φ_L_pp[1,     mid_r, i] for i in 1:n_E)
-    mean_E_H_e = sum(e64[i] * Φ_H_pp[1,     mid_r, i] for i in 1:n_E)
+    mean_E_L_e = sum(e64[i] * Φ_L_pp[1, mid_r, i] for i in 1:n_E)
+    mean_E_H_e = sum(e64[i] * Φ_H_pp[1, mid_r, i] for i in 1:n_E)
     @info "[Cong basis] $(n_E) energies · 3D per-pixel ŵ (EICT-mirror)"
     @info "  low : center ⟨E⟩ = $(round(mean_E_L_c, digits = 1)) keV · edge ⟨E⟩ = $(round(mean_E_L_e, digits = 1)) keV (Δ = $(round(mean_E_L_e - mean_E_L_c, digits = 1)) ← bowtie hardening)"
     @info "  high: center ⟨E⟩ = $(round(mean_E_H_c, digits = 1)) keV · edge ⟨E⟩ = $(round(mean_E_H_e, digits = 1)) keV (Δ = $(round(mean_E_H_e - mean_E_H_c, digits = 1)))"
 
-    (ŵ_L = Φ_L_pp, p_L = p,        q_L = q,
-     ŵ_H = Φ_H_pp, p_H = copy(p),  q_H = copy(q))
+    (
+        ŵ_L = Φ_L_pp, p_L = p, q_L = q,
+        ŵ_H = Φ_H_pp, p_H = copy(p), q_H = copy(q),
+    )
 end;
 
 # ╔═╡ 08030007-0000-4000-8000-000000000020
 sino_basis = let
-    sino_low_gpu  = to_gpu(Float32.(sim_lohi.sino_low))
+    sino_low_gpu = to_gpu(Float32.(sim_lohi.sino_low))
     sino_high_gpu = to_gpu(Float32.(sim_lohi.sino_high))
 
     sino_y = similar(sino_low_gpu)
@@ -888,8 +894,8 @@ sino_basis = let
 
     result = (
         sino_iodine = Array(sino_y),
-        sino_water  = Array(sino_c),
-        geom        = sim_lohi.geom,
+        sino_water = Array(sino_c),
+        geom = sim_lohi.geom,
     )
     sino_low_gpu = nothing; sino_high_gpu = nothing
     sino_y = nothing; sino_c = nothing; cong_ws = nothing
@@ -948,11 +954,13 @@ end
 let
     io = sino_basis.sino_iodine
     wa = sino_basis.sino_water
-    n  = length(io)
+    n = length(io)
 
     # ── GLOBAL covariance (two scalar passes) ──
     si = 0.0; sw = 0.0
-    @inbounds for k in eachindex(io); si += io[k]; sw += wa[k]; end
+    @inbounds for k in eachindex(io)
+        si += io[k]; sw += wa[k]
+    end
     mi = si / n; mw = sw / n
     Vi = 0.0; Vw = 0.0; Ciw = 0.0
     @inbounds for k in eachindex(io)
@@ -1080,9 +1088,9 @@ removed. The resolution check below shows the *removed* component: it must be
 # Image-domain cov-ACNR on the FBP basis maps via the src-proper
 # `BS.apply_image_acnr!` (denoising/acnr.jl).  Knobs are passed as kwargs.
 basis_acnr = let
-    APPLY_ACNR    = true        # ON — image-domain edge-aware cov-ACNR
-    GAMMA         = 1.0         # strength ∈ [0,1]; 0 = identity.  ↓ = sharper, slightly noisier
-    BILAT_RADIUS  = 3           # spatial window radius (px)
+    APPLY_ACNR = true        # ON — image-domain edge-aware cov-ACNR
+    GAMMA = 1.0         # strength ∈ [0,1]; 0 = identity.  ↓ = sharper, slightly noisier
+    BILAT_RADIUS = 3           # spatial window radius (px)
     BILAT_SIGMA_S = 2.0         # spatial Gaussian σ (px)
     BILAT_RANGE_K = 2.5         # range σ = K · per-basis noise std (edges > K·σ_noise preserved)
 
@@ -1090,9 +1098,11 @@ basis_acnr = let
     I = copy(basis_volumes.vol_iodine_raw)
 
     if APPLY_ACNR && GAMMA > 0
-        info = BS.apply_image_acnr!(W, I;
+        info = BS.apply_image_acnr!(
+            W, I;
             gamma = GAMMA, bilat_radius = BILAT_RADIUS,
-            bilat_sigma_s = BILAT_SIGMA_S, bilat_range_k = BILAT_RANGE_K)
+            bilat_sigma_s = BILAT_SIGMA_S, bilat_range_k = BILAT_RANGE_K
+        )
         @info "[ACNR · cov / SRC apply_image_acnr!] θ=$(round(info.θ_deg, digits = 1))° · ρ(W,I)=$(round(info.ρ_struct, digits = 3)) · γ=$(GAMMA) · e1 (structure) pixel-perfect, e2 (anti-corr noise) denoised · σ_noise(W)=$(round(info.σ_W, sigdigits = 3)), σ_noise(I)=$(round(info.σ_I, sigdigits = 3))"
     else
         @info "[ACNR] OFF (passthrough)"
@@ -1106,28 +1116,30 @@ end;
 # noise.  If rod rings/edges show up in the right panel, ACNR is sacrificing
 # resolution → lower γ or raise BILAT_RANGE_K.  Iodine basis (most edge-sensitive).
 let
-    mid     = size(basis_acnr.vol_iodine_raw, 3) ÷ 2 + 1
-    before  = basis_volumes.vol_iodine_raw[:, :, mid]
-    after   = basis_acnr.vol_iodine_raw[:, :, mid]
+    mid = size(basis_acnr.vol_iodine_raw, 3) ÷ 2 + 1
+    before = basis_volumes.vol_iodine_raw[:, :, mid]
+    after = basis_acnr.vol_iodine_raw[:, :, mid]
     removed = after .- before
 
-    rng  = (Float64(quantile(vec(before), 0.01)), Float64(quantile(vec(before), 0.99)))
+    rng = (Float64(quantile(vec(before), 0.01)), Float64(quantile(vec(before), 0.99)))
     rmax = max(maximum(abs.(removed)), 1.0f-12)
 
     fig = CM.Figure(size = (1500, 540))
-    ak  = (titlesize = 26, subtitlesize = 18, aspect = CM.DataAspect())
+    ak = (titlesize = 26, subtitlesize = 18, aspect = CM.DataAspect())
     panels = (
-        (1, "Iodine basis — before ACNR", "g/cm³",                          before,  :viridis, rng),
-        (2, "Iodine basis — after ACNR",  "g/cm³",                          after,   :viridis, rng),
-        (3, "REMOVED (after − before)",   "must be structureless noise",    removed, :balance, (-rmax, rmax)),
+        (1, "Iodine basis — before ACNR", "g/cm³", before, :viridis, rng),
+        (2, "Iodine basis — after ACNR", "g/cm³", after, :viridis, rng),
+        (3, "REMOVED (after − before)", "must be structureless noise", removed, :balance, (-rmax, rmax)),
     )
     for (c, ttl, sub, sl, cm, cr) in panels
         ax = CM.Axis(fig[1, c]; title = ttl, subtitle = sub, ak...)
         CM.heatmap!(ax, sl; colormap = cm)
         CM.hidedecorations!(ax)
     end
-    CM.Colorbar(fig[1, 4]; colormap = :balance, colorrange = (-rmax, rmax),
-        label = "removed (g/cm³)", width = 16, labelsize = 20, ticklabelsize = 16)
+    CM.Colorbar(
+        fig[1, 4]; colormap = :balance, colorrange = (-rmax, rmax),
+        label = "removed (g/cm³)", width = 16, labelsize = 20, ticklabelsize = 16
+    )
     fig
 end
 
@@ -1646,24 +1658,24 @@ end;
 # target.  Small ROI → tiny vectors, no memory concern.
 let
     roi = findall(heart_noise_roi.mask_2d)
-    nz  = size(basis_z.vol_water, 3)
-    cw  = Float64[Float64(basis_z.vol_water[p, z])           for z in 1:nz, p in roi]
-    ci  = Float64[Float64(basis_z.vol_iodine[p, z]) * 1000.0 for z in 1:nz, p in roi]  # mg/mL
+    nz = size(basis_z.vol_water, 3)
+    cw = Float64[Float64(basis_z.vol_water[p, z])           for z in 1:nz, p in roi]
+    ci = Float64[Float64(basis_z.vol_iodine[p, z]) * 1000.0 for z in 1:nz, p in roi]  # mg/mL
     mw = mean(cw); mi = mean(ci)
-    Vw  = mean((cw .- mw) .^ 2); Vi = mean((ci .- mi) .^ 2)
+    Vw = mean((cw .- mw) .^ 2); Vi = mean((ci .- mi) .^ 2)
     Ciw = mean((cw .- mw) .* (ci .- mi))
     ρ_b = Ciw / sqrt(max(Vw * Vi, 1.0e-30))
     αf(E) = Float64(BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine, E)) /
-            Float64(BS.compute_mass_μ_at_energy(BS.XA.Materials.water,  E))
+        Float64(BS.compute_mass_μ_at_energy(BS.XA.Materials.water, E))
     α_star = -1000.0 * Ciw / max(Vi, 1.0e-30)
     verdict = α_star ≤ αf(140.0) ? "MONOTONIC-decreasing predicted ✓" :
-              α_star ≥ αf(40.0)  ? "monotonic-INCREASING" :
-                                   "U-shape (min near α=α*)"
+        α_star ≥ αf(40.0) ? "monotonic-INCREASING" :
+        "U-shape (min near α=α*)"
     @info "[basis cov · heart ROI, image]  σ_water = $(round(sqrt(Vw), sigdigits = 3)) g/mL · " *
-          "σ_iod = $(round(sqrt(Vi), sigdigits = 3)) mg/mL · ρ_basis = $(round(ρ_b, digits = 3)) · " *
-          "water floor = $(round(1000 * sqrt(Vw), digits = 1)) HU"
+        "σ_iod = $(round(sqrt(Vi), sigdigits = 3)) mg/mL · ρ_basis = $(round(ρ_b, digits = 3)) · " *
+        "water floor = $(round(1000 * sqrt(Vw), digits = 1)) HU"
     @info "  α* = $(round(α_star, digits = 1))  vs  α(40)=$(round(αf(40.0), digits = 1)), " *
-          "α(70)=$(round(αf(70.0), digits = 1)), α(140)=$(round(αf(140.0), digits = 1))  →  $(verdict)"
+        "α(70)=$(round(αf(70.0), digits = 1)), α(140)=$(round(αf(140.0), digits = 1))  →  $(verdict)"
     (V_water = Vw, V_iodine = Vi, C_iw = Ciw, ρ_basis = ρ_b, α_star = α_star)
 end
 

@@ -517,14 +517,14 @@ de_decomp = let
     )
 
     radius = 1   # 3-slice z-median window
-    c_iodine   = BS.apply_median_z(c_iodine;                radius = radius)
-    vol_low_HU = BS.apply_median_z(de_lohi_HU.vol_low_HU;   radius = radius)
+    c_iodine = BS.apply_median_z(c_iodine; radius = radius)
+    vol_low_HU = BS.apply_median_z(de_lohi_HU.vol_low_HU; radius = radius)
 
     (
-        c_iodine    = c_iodine,
-        vol_low_HU  = vol_low_HU,
+        c_iodine = c_iodine,
+        vol_low_HU = vol_low_HU,
         vol_high_HU = de_lohi_HU.vol_high_HU,   # passed through; not used by §13 synth
-        geom        = de_lohi_HU.geom,
+        geom = de_lohi_HU.geom,
     )
 end;
 

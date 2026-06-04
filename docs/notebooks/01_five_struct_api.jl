@@ -633,14 +633,14 @@ bhc_calibration = let
     model = BS.calibrate_bhc_two_material(
         sim_opts, prot_for_bhc;
         scanner = scanner, geom = sim_std.geom,
-        order   = 2,
-        hu_low  = 450.0,   # bone-segmentation lower threshold (HU)
+        order = 2,
+        hu_low = 450.0,   # bone-segmentation lower threshold (HU)
         hu_high = 600.0,   # bone-segmentation upper threshold (HU)
     )
 
     (
-        model     = model,
-        μ_water   = model.μ_water_ref,
+        model = model,
+        μ_water = model.μ_water_ref,
         ref_E_keV = model.reference_energy_keV,
     )
 end;
@@ -863,7 +863,7 @@ This notebook walked the entire `BasisSimulator.jl` user surface end to end:
 Every reconstruction in the rest of the docs (PCCT, Hybrid IR, dual-kVp VMI,
 …) reuses this same pattern — workspace in a `let`, kernel call, copy CPU
 result, `nothing` + `GC.gc(true)`, return.
-""" 
+"""
 
 # ╔═╡ Cell order:
 # ╟─01000001-0000-4000-8000-000000000001
@@ -915,4 +915,3 @@ result, `nothing` + `GC.gc(true)`, return.
 # ╟─10000002-0000-4000-8000-000000000001
 # ╟─10000003-0000-4000-8000-000000000001
 # ╟─11000001-0000-4000-8000-000000000001
-
