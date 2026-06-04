@@ -1730,8 +1730,8 @@ basis_acnr = let
     APPLY_ACNR    = true        # ON — image-domain edge-aware ACNR (sinogram `sino_acnr` is OFF)
     METHOD        = :cov_acnr   # :cov_acnr (data-adaptive SVD axes) | :fixed (μ(E_ref) anchor)
     ACNR_E_REF    = 70.0        # keV anchor — only used by METHOD = :fixed
-    BILAT_RADIUS  = 3           # spatial window radius (px)
-    BILAT_SIGMA_S = 2.0         # spatial Gaussian σ (px)
+    BILAT_SIGMA_S = 2.0         # spatial Gaussian σ (px) — THE spatial-extent knob
+    BILAT_TRUNC   = 1.5         # window radius in units of σ:  radius = ⌈TRUNC·σ⌉  (≥3 ≈ full Gaussian)
     BILAT_RANGE_K = 2.5         # range σ = K · per-basis noise std (edges > K·σ_noise preserved)
     GAMMA         = 1.0         # strength ∈ [0,1]; 0 = identity.  ↓ = sharper, slightly noisier
 
@@ -1753,7 +1753,7 @@ basis_acnr = let
         denW = Float32(2 * (BILAT_RANGE_K * σW)^2)
         denI = Float32(2 * (BILAT_RANGE_K * σI)^2)
 
-        r   = BILAT_RADIUS
+        r   = max(1, ceil(Int, BILAT_TRUNC * BILAT_SIGMA_S))   # window radius, coupled to σ
         σs2 = Float32(2 * BILAT_SIGMA_S^2)
         sw  = Float32[exp(-(di * di + dj * dj) / σs2) for di in -r:r, dj in -r:r]
 
@@ -1866,7 +1866,7 @@ let
     )
     for (c, ttl, sub, sl, cm, cr) in panels
         ax = CM.Axis(fig[1, c]; title = ttl, subtitle = sub, ak...)
-        CM.heatmap!(ax, sl; colormap = cm, colorrange = cr)
+        CM.heatmap!(ax, sl; colormap = cm)
         CM.hidedecorations!(ax)
     end
     CM.Colorbar(fig[1, 4]; colormap = :balance, colorrange = (-rmax, rmax),
@@ -1884,7 +1884,7 @@ exploits z-invariance of this tiled phantom.
 """
 
 # ╔═╡ 08030009-0000-4000-8000-000000000005
-Z_MEDIAN_ADJACENT = 2;
+Z_MEDIAN_ADJACENT = 3;
 
 # ╔═╡ 08030009-0000-4000-8000-000000000010
 basis_z = let
