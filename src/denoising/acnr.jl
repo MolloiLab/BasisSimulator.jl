@@ -147,4 +147,140 @@ function apply_acnr(
     return (a_out, b_out, info)
 end
 
+"""
+    apply_image_acnr!(W, I; gamma=1.0, bilat_radius=3, bilat_sigma_s=2.0,
+                      bilat_range_k=2.5) -> info
+
+Image-domain, **data-adaptive** Anti-Correlated Noise Reduction for a basis-map
+pair — water `W` and iodine `I` (3-D volumes), modified IN PLACE.  The
+image-domain counterpart of [`apply_acnr!`] (which is sinogram-domain).
+
+Material decomposition stamps strongly anti-correlated noise on the basis maps
+(`ρ_basis < 0`); that anti-correlation *is* the VMI-noise "U".  Rather than
+assuming the signal/noise axes, this LEARNS them from the joint W–I covariance
+via a closed-form 2×2 eigen-rotation:
+
+* **e1** (large-variance axis = correlated structure) is kept **pixel-perfect**;
+* **e2** (small-variance axis = the anti-correlated noise) is denoised with a
+  joint bilateral filter guided by BOTH basis maps, so real water/iodine edges
+  (Δ ≳ `bilat_range_k`·σ_noise) survive — only locally-flat anti-correlated
+  noise is removed.  Resolution is preserved two ways (pixel-perfect e1 +
+  edge-aware e2).
+
+# Keyword arguments (all knobs)
+- `gamma::Real = 1.0`         : strength ∈ [0,1]; 0 ⇒ identity (no-op).
+- `bilat_radius::Integer = 3` : bilateral spatial window radius (px).
+- `bilat_sigma_s::Real = 2.0` : bilateral spatial Gaussian σ (px).
+- `bilat_range_k::Real = 2.5` : range σ = k · per-basis noise std (edge threshold).
+
+# Returns
+`info::NamedTuple` with `θ_deg`, `ρ_struct`, `σ_W`, `σ_I`, `γ` (diagnostics).
+`W` and `I` are updated in place.
+"""
+function apply_image_acnr!(
+        W::AbstractArray{T, 3},
+        I::AbstractArray{T, 3};
+        gamma::Real = 1.0,
+        bilat_radius::Integer = 3,
+        bilat_sigma_s::Real = 2.0,
+        bilat_range_k::Real = 2.5,
+    ) where {T}
+    size(I) == size(W) ||
+        error("apply_image_acnr!: W $(size(W)) and I $(size(I)) must match shape.")
+    γ = T(gamma)
+    nx, ny, nz = size(W)
+
+    # robust per-basis noise std (adjacent-column difference / √2)
+    _nstd = function (V)
+        s = 0.0; m = 0
+        @inbounds for k in 1:nz, j in 1:ny, i in 2:nx
+            d = V[i, j, k] - V[i - 1, j, k]; s += d * d; m += 1
+        end
+        sqrt(s / max(m, 1)) / sqrt(2)
+    end
+    σW = max(_nstd(W), 1.0e-8)   # Float64 (matches the inline cell's arithmetic)
+    σI = max(_nstd(I), 1.0e-8)
+
+    # covariance of the joint (W, I) field → eigen-rotation angle θ
+    mW = T(sum(W) / length(W))
+    mI = T(sum(I) / length(I))
+    a = 0.0; bb = 0.0; c = 0.0
+    @inbounds for idx in eachindex(W)
+        dw = Float64(W[idx] - mW); di = Float64(I[idx] - mI)
+        a += dw * dw; bb += dw * di; c += di * di
+    end
+    ρ_struct = bb / sqrt(max(a, 1.0e-30) * max(c, 1.0e-30))
+
+    if γ <= 0   # identity
+        return (θ_deg = 0.0, ρ_struct = ρ_struct,
+                σ_W = Float64(σW), σ_I = Float64(σI), γ = Float64(γ))
+    end
+
+    θ  = 0.5 * atan(2bb, a - c)               # e1 = (cosθ, sinθ) → larger eigenvalue
+    ct = T(cos(θ)); st = T(sin(θ))
+
+    # rotate centered (W, I) into (signal, noise) axes
+    p_sig   = Array{T}(undef, nx, ny, nz)
+    p_noise = Array{T}(undef, nx, ny, nz)
+    @inbounds for idx in eachindex(W)
+        dw = W[idx] - mW; di = I[idx] - mI
+        p_sig[idx]   =  ct * dw + st * di
+        p_noise[idx] = -st * dw + ct * di
+    end
+
+    # joint-bilateral denoise of the noise axis, guided by BOTH basis maps
+    denW = T(2 * (bilat_range_k * σW)^2)
+    denI = T(2 * (bilat_range_k * σI)^2)
+    r    = Int(bilat_radius)
+    σs2  = T(2 * bilat_sigma_s^2)
+    sw   = T[exp(-(di * di + dj * dj) / σs2) for di in -r:r, dj in -r:r]
+
+    p_noise_s = Array{T}(undef, nx, ny, nz)
+    @inbounds for k in 1:nz
+        for j in 1:ny, i in 1:nx
+            Wc = W[i, j, k]; Ic = I[i, j, k]
+            acc = zero(T); wsum = zero(T)
+            for dj in -r:r
+                jj = j + dj; (1 ≤ jj ≤ ny) || continue
+                for di in -r:r
+                    ii = i + di; (1 ≤ ii ≤ nx) || continue
+                    dW = W[ii, jj, k] - Wc; dI = I[ii, jj, k] - Ic
+                    wr = exp(-(dW * dW / denW + dI * dI / denI))
+                    w  = sw[di + r + 1, dj + r + 1] * wr
+                    acc += w * p_noise[ii, jj, k]; wsum += w
+                end
+            end
+            p_noise_s[i, j, k] = acc / wsum
+        end
+    end
+
+    # reconstitute: keep p_sig (e1) pixel-perfect, γ-blend the denoised noise
+    # axis, rotate back (Rᵀ), restore means.
+    @inbounds for idx in eachindex(W)
+        pn = p_noise[idx] + γ * (p_noise_s[idx] - p_noise[idx])
+        ps = p_sig[idx]
+        W[idx] = mW + ct * ps - st * pn
+        I[idx] = mI + st * ps + ct * pn
+    end
+
+    return (θ_deg = rad2deg(θ), ρ_struct = ρ_struct,
+            σ_W = Float64(σW), σ_I = Float64(σI), γ = Float64(γ))
+end
+
+"""
+    apply_image_acnr(W, I; kwargs...) -> (W_out, I_out, info)
+
+Allocating wrapper around [`apply_image_acnr!`].
+"""
+function apply_image_acnr(
+        W::AbstractArray{T, 3},
+        I::AbstractArray{T, 3};
+        kwargs...,
+    ) where {T}
+    W_out = copy(W); I_out = copy(I)
+    info = apply_image_acnr!(W_out, I_out; kwargs...)
+    return (W_out, I_out, info)
+end
+
 export apply_acnr!, apply_acnr
+export apply_image_acnr!, apply_image_acnr
