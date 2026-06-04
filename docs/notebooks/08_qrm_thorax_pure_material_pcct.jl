@@ -1538,6 +1538,97 @@ let
     (ρ_global = ρ_g, ρ_highfreq = ρ_hf, V_iodine = Vi, V_water = Vw, C_iw = Ciw)
 end
 
+# ╔═╡ 08030007-0000-4000-8000-000000000070
+# === Sinogram-domain ACNR (inline, FAST) — applied to the basis SINOGRAMS, BEFORE FBP ===
+# Same orthogonal-projection ACNR as src/denoising/acnr.jl (preserves the E_ref(70)
+# projection  c_a·sino_water + c_b·sino_iodine  pixel-perfect ⇒ μ(70) image preserved after
+# FBP), but with a FAST O(N) smoother instead of a per-pixel bilateral (which was O(N·win²)
+# and took minutes on the full sinogram).  src smooths the orthogonal channel with an FFT
+# Gaussian LP; here we use the equivalent SEPARABLE spatial Gaussian (no FFTW dependency,
+# 1D conv along col then view).
+#
+# RESOLUTION: this is a LINEAR LP, so it blurs whatever it smooths (that linearity is what
+# makes it fast — edge-aware = slow).  Key lever: the smoother is ANISOTROPIC.
+#   • SIGMA_COL → 0  ⇒ detector-COLUMN direction left untouched ⇒ in-plane RADIAL
+#                      resolution preserved exactly (columns set radial resolution).
+#   • SIGMA_VIEW > 0 ⇒ denoise along the OVERSAMPLED view direction (cheap, mild
+#                      azimuthal cost).
+# So default leans resolution-safe (SIGMA_COL=0).  If the U isn't fully killed, raise
+# SIGMA_COL (trades radial resolution) or GAMMA.  This is the same noise↔resolution dial
+# as image-domain, just fast enough to actually sweep.
+# Toggle: this ON + image-domain `basis_acnr` OFF (don't run both).
+sino_acnr = let
+    APPLY_SINO_ACNR = false    # OFF — image-domain `basis_acnr` is ON instead (don't run both)
+    ACNR_E_REF      = 70.0     # keV anchor — E_ref projection preserved pixel-perfect
+    SIGMA_COL       = 0.0      # Gaussian σ across DETECTOR COLUMNS (px). 0 = radial res preserved
+    SIGMA_VIEW      = 3.0      # Gaussian σ along VIEWS (px) — denoise the oversampled direction
+    GAMMA           = 1.0      # strength ∈ [0,1]; 0 = identity. ↓ = sharper, noisier
+
+    siw = copy(sino_basis.sino_iodine)   # (n_col, n_row, n_view)
+    sww = copy(sino_basis.sino_water)
+
+    if APPLY_SINO_ACNR && GAMMA > 0
+        ncol, nrow, nview = size(siw)
+        ca  = Float32(BS.compute_mass_μ_at_energy(BS.XA.Materials.water,  ACNR_E_REF))
+        cb  = Float32(BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine, ACNR_E_REF))
+        csq = ca * ca + cb * cb
+        αa  = Float32(GAMMA * cb / csq)
+        αb  = Float32(GAMMA * ca / csq)
+
+        # 1D Gaussian kernels (separable LP — O(N·(h_col+h_view)), no FFT, no exp-in-window)
+        function gk(σ)
+            σ ≤ 0 && return (Float32[1.0f0], 0)
+            h = max(1, ceil(Int, 3σ))
+            k = Float32[exp(-(d * d) / (2σ^2)) for d in -h:h]
+            (k ./ sum(k), h)
+        end
+        kc, hc = gk(SIGMA_COL); kv, hv = gk(SIGMA_VIEW)
+
+        # Per detector row: s_⊥ (2D) → separable Gaussian LP over (col, view) → back-project
+        # orthogonal to the E_ref projection.  Row-by-row 2D scratch (memory budget).
+        sp  = Array{Float32}(undef, ncol, nview)   # s_⊥
+        tc  = Array{Float32}(undef, ncol, nview)   # after column conv
+        smo = Array{Float32}(undef, ncol, nview)   # after view conv
+        @inbounds for r in 1:nrow
+            for v in 1:nview, c in 1:ncol
+                sp[c, v] = -cb * sww[c, r, v] + ca * siw[c, r, v]
+            end
+            if hc == 0
+                copyto!(tc, sp)
+            else
+                for v in 1:nview, c in 1:ncol
+                    acc = 0.0f0
+                    for d in -hc:hc
+                        acc += kc[d + hc + 1] * sp[clamp(c + d, 1, ncol), v]
+                    end
+                    tc[c, v] = acc
+                end
+            end
+            if hv == 0
+                copyto!(smo, tc)
+            else
+                for v in 1:nview, c in 1:ncol
+                    acc = 0.0f0
+                    for d in -hv:hv
+                        acc += kv[d + hv + 1] * tc[c, clamp(v + d, 1, nview)]
+                    end
+                    smo[c, v] = acc
+                end
+            end
+            for v in 1:nview, c in 1:ncol
+                n = sp[c, v] - smo[c, v]
+                sww[c, r, v] += αa * n
+                siw[c, r, v] -= αb * n
+            end
+        end
+        @info "[sino-ACNR · separable-LP] E_ref=$(ACNR_E_REF) keV · γ=$(GAMMA) · σ_col=$(SIGMA_COL) (0 ⇒ radial res preserved), σ_view=$(SIGMA_VIEW) · E_ref projection preserved → μ(70) pixel-perfect after FBP"
+    else
+        @info "[sino-ACNR] OFF (passthrough)"
+    end
+
+    (sino_iodine = siw, sino_water = sww, geom = sino_basis.geom)
+end;
+
 # ╔═╡ 08030008-0000-4000-8000-000000000001
 md"""
 ## 8. FBP: Iodine and Water Basis Maps
@@ -1549,7 +1640,7 @@ basis-density units (g/cm³).
 # ╔═╡ 08030008-0000-4000-8000-000000000010
 basis_volumes = let
     matrix_size = recon_opts.matrix_size
-    geom = sino_basis.geom
+    geom = sino_acnr.geom
 
     function _fbp(sino_cpu)
         sino_gpu = to_gpu(Float32.(sino_cpu))
@@ -1563,8 +1654,8 @@ basis_volumes = let
     end
 
     (
-        vol_iodine_raw = _fbp(sino_basis.sino_iodine),
-        vol_water_raw = _fbp(sino_basis.sino_water),
+        vol_iodine_raw = _fbp(sino_acnr.sino_iodine),
+        vol_water_raw = _fbp(sino_acnr.sino_water),
         geom = geom,
     )
 end;
@@ -1610,21 +1701,24 @@ md"""
 
 Material decomposition stamps strongly **anti-correlated** noise onto the basis
 maps (measured `ρ_basis ≈ −0.92`) — that anti-correlation *is* the VMI-noise U.
-ACNR removes it, and resolution is preserved two independent ways:
+ACNR removes it. Two methods (`METHOD` in the cell):
 
-1. **Structural guarantee at `E_ref`.** Only the channel *orthogonal* to the
-   `E_ref` signal direction `(μρ_w, μρ_i)` is modified, so `μ(E_ref)` is
-   **pixel-perfect at every voxel regardless of the smoother** — zero resolution
-   loss at the anchor, by construction (`c_a·ΔW + c_b·ΔI ≡ 0`).
-2. **Edge-aware everywhere else.** That orthogonal channel is smoothed with a
-   **joint bilateral filter guided by BOTH basis maps**, so any real edge (water
-   *or* iodine) survives; only locally-flat regions — pure anti-correlated noise —
-   are smoothed.
+- **`:cov_acnr` (default, data-adaptive — gleaned from src `rskr.jl`/`sino_svd.jl`).**
+  A closed-form 2×2 eigen-rotation of the joint W–I covariance *learns* the
+  signal/noise axes instead of assuming them. The large-variance axis **e1**
+  (correlated structure) is kept **pixel-perfect**; only the small-variance axis
+  **e2** (the anti-correlated noise that *is* the U) is denoised. Targeting the
+  *true* noise eigenvector removes more `|C_iw|` per unit blur than a fixed anchor.
+- **`:fixed` (Kalender 1988).** Only the channel orthogonal to the `E_ref` signal
+  direction `(μρ_w, μρ_i)` is modified, so `μ(E_ref)` is pixel-perfect by
+  construction (`c_a·ΔW + c_b·ΔI ≡ 0`).
 
-Signal is positively correlated, noise negatively correlated → opposite subspaces,
-so ACNR removes noise without touching structure.  The resolution check below shows
-the *removed* component: it must be **structureless noise** (no rod rings).  Runs on
-the FBP basis maps, **before** the §9 z-median.
+Both preserve resolution two ways: (1) one axis is kept pixel-perfect, and (2) the
+denoised axis is smoothed with a **joint bilateral guided by BOTH basis maps**, so
+any real water/iodine edge survives — only locally-flat anti-correlated noise is
+removed. The resolution check below shows the *removed* component: it must be
+**structureless noise** (no rod rings). Runs on the FBP basis maps, **before** the
+§9 z-median.
 """
 
 # ╔═╡ 08030008-0000-4000-8000-000000000055
@@ -1633,23 +1727,19 @@ the FBP basis maps, **before** the §9 z-median.
 # BOTH basis maps so real water/iodine edges survive.  Two passes (compute s_smooth
 # fully, then back-project) so the bilateral reads unmodified neighbours.
 basis_acnr = let
-    APPLY_ACNR    = true
-    ACNR_E_REF    = 70.0     # keV anchor — μ(E_ref) preserved pixel-perfect
-    BILAT_RADIUS  = 3        # spatial window radius (px)
-    BILAT_SIGMA_S = 2.0      # spatial Gaussian σ (px)
-    BILAT_RANGE_K = 2.5      # range σ = K · per-basis noise std (edges > K·σ_noise preserved)
-    GAMMA         = 1.0      # strength ∈ [0,1]; 0 = identity.  ↓ = sharper, slightly noisier
+    APPLY_ACNR    = true        # ON — image-domain edge-aware ACNR (sinogram `sino_acnr` is OFF)
+    METHOD        = :cov_acnr   # :cov_acnr (data-adaptive SVD axes) | :fixed (μ(E_ref) anchor)
+    ACNR_E_REF    = 70.0        # keV anchor — only used by METHOD = :fixed
+    BILAT_RADIUS  = 3           # spatial window radius (px)
+    BILAT_SIGMA_S = 2.0         # spatial Gaussian σ (px)
+    BILAT_RANGE_K = 2.5         # range σ = K · per-basis noise std (edges > K·σ_noise preserved)
+    GAMMA         = 1.0         # strength ∈ [0,1]; 0 = identity.  ↓ = sharper, slightly noisier
 
     W = copy(basis_volumes.vol_water_raw)
     I = copy(basis_volumes.vol_iodine_raw)
 
     if APPLY_ACNR && GAMMA > 0
         nx, ny, nz = size(W)
-        ca  = Float32(BS.compute_mass_μ_at_energy(BS.XA.Materials.water,  ACNR_E_REF))
-        cb  = Float32(BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine, ACNR_E_REF))
-        csq = ca * ca + cb * cb
-        αa  = Float32(GAMMA * cb / csq)
-        αb  = Float32(GAMMA * ca / csq)
 
         # robust per-basis noise std (adjacent-column difference / √2)
         function _nstd(V)
@@ -1667,37 +1757,86 @@ basis_acnr = let
         σs2 = Float32(2 * BILAT_SIGMA_S^2)
         sw  = Float32[exp(-(di * di + dj * dj) / σs2) for di in -r:r, dj in -r:r]
 
-        s_perp = Array{Float32}(undef, nx, ny, nz)
-        @inbounds @. s_perp = -cb * W + ca * I
-
-        # Pass 1: joint-bilateral smooth of s_perp, guided by (W, I) — read-only on W,I.
-        s_smooth = Array{Float32}(undef, nx, ny, nz)
-        @inbounds for k in 1:nz
-            for j in 1:ny, i in 1:nx
-                Wc = W[i, j, k]; Ic = I[i, j, k]
-                acc = 0.0f0; wsum = 0.0f0
-                for dj in -r:r
-                    jj = j + dj; (1 ≤ jj ≤ ny) || continue
-                    for di in -r:r
-                        ii = i + di; (1 ≤ ii ≤ nx) || continue
-                        dW = W[ii, jj, k] - Wc; dI = I[ii, jj, k] - Ic
-                        wr = exp(-(dW * dW / denW + dI * dI / denI))
-                        w  = sw[di + r + 1, dj + r + 1] * wr
-                        acc += w * s_perp[ii, jj, k]; wsum += w
+        # Shared edge-aware joint-bilateral smoother of `tgt`, guided by (W, I).
+        # Real water/iodine edges (Δ > range σ) collapse the weight → preserved.
+        function _bilat(tgt)
+            out = Array{Float32}(undef, nx, ny, nz)
+            @inbounds for k in 1:nz
+                for j in 1:ny, i in 1:nx
+                    Wc = W[i, j, k]; Ic = I[i, j, k]
+                    acc = 0.0f0; wsum = 0.0f0
+                    for dj in -r:r
+                        jj = j + dj; (1 ≤ jj ≤ ny) || continue
+                        for di in -r:r
+                            ii = i + di; (1 ≤ ii ≤ nx) || continue
+                            dW = W[ii, jj, k] - Wc; dI = I[ii, jj, k] - Ic
+                            wr = exp(-(dW * dW / denW + dI * dI / denI))
+                            w  = sw[di + r + 1, dj + r + 1] * wr
+                            acc += w * tgt[ii, jj, k]; wsum += w
+                        end
                     end
+                    out[i, j, k] = acc / wsum
                 end
-                s_smooth[i, j, k] = acc / wsum
             end
+            out
         end
 
-        # Pass 2: back-project the removed (anti-correlated noise) component, orthogonal
-        # to the E_ref signal → μ(E_ref) unchanged at every voxel.
-        @inbounds for idx in eachindex(W)
-            n = s_perp[idx] - s_smooth[idx]
-            W[idx] += αa * n
-            I[idx] -= αb * n
+        if METHOD == :cov_acnr
+            # Data-adaptive ACNR (gleaned from RSKR/SF-JSD src `rskr.jl`/`sino_svd.jl`).
+            # The signal/noise axes are LEARNED from the joint W–I covariance instead
+            # of assumed to be μ(E_ref).  Closed-form 2×2 eigen-rotation:
+            #   e1 = large-variance axis  (correlated structure, ρ_struct > 0) — KEPT
+            #   e2 = small-variance axis  (anti-correlated noise, C_iw < 0)    — DENOISED
+            # Keeping e1 pixel-perfect preserves resolution along the TRUE structure
+            # direction (≈ all structural energy); the anti-correlated noise that *is*
+            # the VMI-U lives in e2.  Targets the real noise eigenvector → removes more
+            # |C_iw| per unit blur than the fixed μ(E_ref)-orthogonal channel.
+            mW = Float32(mean(W)); mI = Float32(mean(I))
+            a = 0.0; bb = 0.0; c = 0.0
+            @inbounds for idx in eachindex(W)
+                dw = Float64(W[idx] - mW); di = Float64(I[idx] - mI)
+                a += dw * dw; bb += dw * di; c += di * di
+            end
+            θ  = 0.5 * atan(2bb, a - c)            # e1 = (cosθ, sinθ) → larger eigenvalue
+            ct = Float32(cos(θ)); st = Float32(sin(θ))
+
+            # rotate (centered) into (signal, noise) axes
+            p_sig   = Array{Float32}(undef, nx, ny, nz)
+            p_noise = Array{Float32}(undef, nx, ny, nz)
+            @inbounds for idx in eachindex(W)
+                dw = W[idx] - mW; di = I[idx] - mI
+                p_sig[idx]   =  ct * dw + st * di
+                p_noise[idx] = -st * dw + ct * di
+            end
+
+            p_noise_s = _bilat(p_noise)            # edge-aware denoise of the noise axis
+
+            # reconstitute: keep p_sig untouched, γ-blend the denoised noise axis, rotate
+            # back (Rᵀ), restore means.  Resolution along e1 is pixel-perfect.
+            @inbounds for idx in eachindex(W)
+                pn = p_noise[idx] + GAMMA * (p_noise_s[idx] - p_noise[idx])
+                ps = p_sig[idx]
+                W[idx] = mW + ct * ps - st * pn
+                I[idx] = mI + st * ps + ct * pn
+            end
+            ρ_struct = bb / sqrt(max(a, 1e-30) * max(c, 1e-30))
+            @info "[ACNR · cov / data-adaptive] θ=$(round(rad2deg(θ), digits = 1))° · ρ(W,I)=$(round(ρ_struct, digits = 3)) · γ=$(GAMMA) · e1 (structure) kept pixel-perfect, e2 (anti-corr noise) denoised · σ_noise(W)=$(round(σW, sigdigits = 3)), σ_noise(I)=$(round(σI, sigdigits = 3))"
+        else  # :fixed — μ(E_ref) anchor preserved pixel-perfect (Kalender 1988 ACNR)
+            ca  = Float32(BS.compute_mass_μ_at_energy(BS.XA.Materials.water,  ACNR_E_REF))
+            cb  = Float32(BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine, ACNR_E_REF))
+            csq = ca * ca + cb * cb
+            αa  = Float32(GAMMA * cb / csq)
+            αb  = Float32(GAMMA * ca / csq)
+            s_perp = Array{Float32}(undef, nx, ny, nz)
+            @inbounds @. s_perp = -cb * W + ca * I
+            s_smooth = _bilat(s_perp)
+            @inbounds for idx in eachindex(W)
+                n = s_perp[idx] - s_smooth[idx]
+                W[idx] += αa * n
+                I[idx] -= αb * n
+            end
+            @info "[ACNR · fixed μ(E_ref)] E_ref=$(ACNR_E_REF) keV · γ=$(GAMMA) · σ_noise(W)=$(round(σW, sigdigits = 3)), σ_noise(I)=$(round(σI, sigdigits = 3)) g/cm³ · μ(E_ref) pixel-perfect preserved"
         end
-        @info "[ACNR · edge-aware] E_ref=$(ACNR_E_REF) keV · γ=$(GAMMA) · σ_noise(W)=$(round(σW, sigdigits = 3)), σ_noise(I)=$(round(σI, sigdigits = 3)) g/cm³ · range_k=$(BILAT_RANGE_K) · μ(E_ref) pixel-perfect preserved"
     else
         @info "[ACNR] OFF (passthrough)"
     end
@@ -2651,6 +2790,7 @@ comparable.
 # ╠═08030007-0000-4000-8000-000000000020
 # ╟─08030007-0000-4000-8000-000000000040
 # ╠═08030007-0000-4000-8000-000000000060
+# ╠═08030007-0000-4000-8000-000000000070
 # ╟─08030008-0000-4000-8000-000000000001
 # ╠═08030008-0000-4000-8000-000000000010
 # ╟─08030008-0000-4000-8000-000000000030
