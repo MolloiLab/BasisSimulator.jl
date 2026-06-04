@@ -986,97 +986,6 @@ let
     (ρ_global = ρ_g, ρ_highfreq = ρ_hf, V_iodine = Vi, V_water = Vw, C_iw = Ciw)
 end
 
-# ╔═╡ 08030007-0000-4000-8000-000000000070
-# === Sinogram-domain ACNR (inline, FAST) — applied to the basis SINOGRAMS, BEFORE FBP ===
-# Same orthogonal-projection ACNR as src/denoising/acnr.jl (preserves the E_ref(70)
-# projection  c_a·sino_water + c_b·sino_iodine  pixel-perfect ⇒ μ(70) image preserved after
-# FBP), but with a FAST O(N) smoother instead of a per-pixel bilateral (which was O(N·win²)
-# and took minutes on the full sinogram).  src smooths the orthogonal channel with an FFT
-# Gaussian LP; here we use the equivalent SEPARABLE spatial Gaussian (no FFTW dependency,
-# 1D conv along col then view).
-#
-# RESOLUTION: this is a LINEAR LP, so it blurs whatever it smooths (that linearity is what
-# makes it fast — edge-aware = slow).  Key lever: the smoother is ANISOTROPIC.
-#   • SIGMA_COL → 0  ⇒ detector-COLUMN direction left untouched ⇒ in-plane RADIAL
-#                      resolution preserved exactly (columns set radial resolution).
-#   • SIGMA_VIEW > 0 ⇒ denoise along the OVERSAMPLED view direction (cheap, mild
-#                      azimuthal cost).
-# So default leans resolution-safe (SIGMA_COL=0).  If the U isn't fully killed, raise
-# SIGMA_COL (trades radial resolution) or GAMMA.  This is the same noise↔resolution dial
-# as image-domain, just fast enough to actually sweep.
-# Toggle: this ON + image-domain `basis_acnr` OFF (don't run both).
-sino_acnr = let
-    APPLY_SINO_ACNR = false    # OFF — image-domain `basis_acnr` is ON instead (don't run both)
-    ACNR_E_REF      = 70.0     # keV anchor — E_ref projection preserved pixel-perfect
-    SIGMA_COL       = 0.0      # Gaussian σ across DETECTOR COLUMNS (px). 0 = radial res preserved
-    SIGMA_VIEW      = 3.0      # Gaussian σ along VIEWS (px) — denoise the oversampled direction
-    GAMMA           = 1.0      # strength ∈ [0,1]; 0 = identity. ↓ = sharper, noisier
-
-    siw = copy(sino_basis.sino_iodine)   # (n_col, n_row, n_view)
-    sww = copy(sino_basis.sino_water)
-
-    if APPLY_SINO_ACNR && GAMMA > 0
-        ncol, nrow, nview = size(siw)
-        ca  = Float32(BS.compute_mass_μ_at_energy(BS.XA.Materials.water,  ACNR_E_REF))
-        cb  = Float32(BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine, ACNR_E_REF))
-        csq = ca * ca + cb * cb
-        αa  = Float32(GAMMA * cb / csq)
-        αb  = Float32(GAMMA * ca / csq)
-
-        # 1D Gaussian kernels (separable LP — O(N·(h_col+h_view)), no FFT, no exp-in-window)
-        function gk(σ)
-            σ ≤ 0 && return (Float32[1.0f0], 0)
-            h = max(1, ceil(Int, 3σ))
-            k = Float32[exp(-(d * d) / (2σ^2)) for d in -h:h]
-            (k ./ sum(k), h)
-        end
-        kc, hc = gk(SIGMA_COL); kv, hv = gk(SIGMA_VIEW)
-
-        # Per detector row: s_⊥ (2D) → separable Gaussian LP over (col, view) → back-project
-        # orthogonal to the E_ref projection.  Row-by-row 2D scratch (memory budget).
-        sp  = Array{Float32}(undef, ncol, nview)   # s_⊥
-        tc  = Array{Float32}(undef, ncol, nview)   # after column conv
-        smo = Array{Float32}(undef, ncol, nview)   # after view conv
-        @inbounds for r in 1:nrow
-            for v in 1:nview, c in 1:ncol
-                sp[c, v] = -cb * sww[c, r, v] + ca * siw[c, r, v]
-            end
-            if hc == 0
-                copyto!(tc, sp)
-            else
-                for v in 1:nview, c in 1:ncol
-                    acc = 0.0f0
-                    for d in -hc:hc
-                        acc += kc[d + hc + 1] * sp[clamp(c + d, 1, ncol), v]
-                    end
-                    tc[c, v] = acc
-                end
-            end
-            if hv == 0
-                copyto!(smo, tc)
-            else
-                for v in 1:nview, c in 1:ncol
-                    acc = 0.0f0
-                    for d in -hv:hv
-                        acc += kv[d + hv + 1] * tc[c, clamp(v + d, 1, nview)]
-                    end
-                    smo[c, v] = acc
-                end
-            end
-            for v in 1:nview, c in 1:ncol
-                n = sp[c, v] - smo[c, v]
-                sww[c, r, v] += αa * n
-                siw[c, r, v] -= αb * n
-            end
-        end
-        @info "[sino-ACNR · separable-LP] E_ref=$(ACNR_E_REF) keV · γ=$(GAMMA) · σ_col=$(SIGMA_COL) (0 ⇒ radial res preserved), σ_view=$(SIGMA_VIEW) · E_ref projection preserved → μ(70) pixel-perfect after FBP"
-    else
-        @info "[sino-ACNR] OFF (passthrough)"
-    end
-
-    (sino_iodine = siw, sino_water = sww, geom = sino_basis.geom)
-end;
-
 # ╔═╡ 08030008-0000-4000-8000-000000000001
 md"""
 ## 8. FBP: Iodine and Water Basis Maps
@@ -1088,7 +997,7 @@ basis-density units (g/cm³).
 # ╔═╡ 08030008-0000-4000-8000-000000000010
 basis_volumes = let
     matrix_size = recon_opts.matrix_size
-    geom = sino_acnr.geom
+    geom = sino_basis.geom
 
     function _fbp(sino_cpu)
         sino_gpu = to_gpu(Float32.(sino_cpu))
@@ -1102,8 +1011,8 @@ basis_volumes = let
     end
 
     (
-        vol_iodine_raw = _fbp(sino_acnr.sino_iodine),
-        vol_water_raw = _fbp(sino_acnr.sino_water),
+        vol_iodine_raw = _fbp(sino_basis.sino_iodine),
+        vol_water_raw = _fbp(sino_basis.sino_water),
         geom = geom,
     )
 end;
@@ -1145,13 +1054,12 @@ end
 
 # ╔═╡ 08030008-0000-4000-8000-000000000050
 md"""
-## 8b. ACNR — Edge-Aware Anti-Correlated Noise Reduction (image domain)
+### ACNR — Edge-Aware Anti-Correlated Noise Reduction (image domain)
 
 Material decomposition stamps strongly **anti-correlated** noise onto the basis
 maps (measured `ρ_basis ≈ −0.92`) — that anti-correlation *is* the VMI-noise U.
 ACNR removes it. Now runs via the src-proper **`BS.apply_image_acnr!`**
-(`denoising/acnr.jl`); the cell's `USE_SRC_ACNR` toggle flips to an inline copy
-for A/B testing until the src path is fully verified.
+(`denoising/acnr.jl`).
 
 **Data-adaptive cov-ACNR.** A closed-form 2×2 eigen-rotation of the joint W–I
 covariance *learns* the signal/noise axes instead of assuming them. The
@@ -1169,12 +1077,10 @@ removed. The resolution check below shows the *removed* component: it must be
 """
 
 # ╔═╡ 08030008-0000-4000-8000-000000000055
-# Image-domain cov-ACNR on the FBP basis maps.  Default path calls the
-# src-proper `BS.apply_image_acnr!`; flip USE_SRC_ACNR=false for the inline
-# implementation (kept for A/B until the src path is fully verified).
+# Image-domain cov-ACNR on the FBP basis maps via the src-proper
+# `BS.apply_image_acnr!` (denoising/acnr.jl).  Knobs are passed as kwargs.
 basis_acnr = let
-    APPLY_ACNR    = true        # ON — image-domain edge-aware ACNR (sinogram `sino_acnr` is OFF)
-    USE_SRC_ACNR  = true        # true = BS.apply_image_acnr! (src);  false = inline (A/B test)
+    APPLY_ACNR    = true        # ON — image-domain edge-aware cov-ACNR
     GAMMA         = 1.0         # strength ∈ [0,1]; 0 = identity.  ↓ = sharper, slightly noisier
     BILAT_RADIUS  = 3           # spatial window radius (px)
     BILAT_SIGMA_S = 2.0         # spatial Gaussian σ (px)
@@ -1184,77 +1090,10 @@ basis_acnr = let
     I = copy(basis_volumes.vol_iodine_raw)
 
     if APPLY_ACNR && GAMMA > 0
-        if USE_SRC_ACNR
-            # src-proper path — cov-ACNR, image domain (denoising/acnr.jl).
-            info = BS.apply_image_acnr!(W, I;
-                gamma = GAMMA, bilat_radius = BILAT_RADIUS,
-                bilat_sigma_s = BILAT_SIGMA_S, bilat_range_k = BILAT_RANGE_K)
-            @info "[ACNR · cov / SRC apply_image_acnr!] θ=$(round(info.θ_deg, digits = 1))° · ρ(W,I)=$(round(info.ρ_struct, digits = 3)) · γ=$(GAMMA) · e1 (structure) pixel-perfect, e2 (anti-corr noise) denoised · σ_noise(W)=$(round(info.σ_W, sigdigits = 3)), σ_noise(I)=$(round(info.σ_I, sigdigits = 3))"
-        else
-            # ── INLINE fallback (A/B until src path is verified; cov-ACNR only) ──
-            # Learn signal/noise axes from the joint W–I covariance; keep e1
-            # (structure) pixel-perfect, denoise e2 (anti-corr noise) with a joint
-            # bilateral guided by BOTH basis maps.  Mirrors BS.apply_image_acnr!.
-            nx, ny, nz = size(W)
-            function _nstd(V)
-                s = 0.0; m = 0
-                @inbounds for k in 1:nz, j in 1:ny, i in 2:nx
-                    d = V[i, j, k] - V[i - 1, j, k]; s += d * d; m += 1
-                end
-                sqrt(s / max(m, 1)) / sqrt(2)
-            end
-            σW = max(_nstd(W), 1.0f-8); σI = max(_nstd(I), 1.0f-8)
-            denW = Float32(2 * (BILAT_RANGE_K * σW)^2)
-            denI = Float32(2 * (BILAT_RANGE_K * σI)^2)
-            r   = BILAT_RADIUS
-            σs2 = Float32(2 * BILAT_SIGMA_S^2)
-            sw  = Float32[exp(-(di * di + dj * dj) / σs2) for di in -r:r, dj in -r:r]
-            function _bilat(tgt)
-                out = Array{Float32}(undef, nx, ny, nz)
-                @inbounds for k in 1:nz
-                    for j in 1:ny, i in 1:nx
-                        Wc = W[i, j, k]; Ic = I[i, j, k]
-                        acc = 0.0f0; wsum = 0.0f0
-                        for dj in -r:r
-                            jj = j + dj; (1 ≤ jj ≤ ny) || continue
-                            for di in -r:r
-                                ii = i + di; (1 ≤ ii ≤ nx) || continue
-                                dW = W[ii, jj, k] - Wc; dI = I[ii, jj, k] - Ic
-                                wr = exp(-(dW * dW / denW + dI * dI / denI))
-                                w  = sw[di + r + 1, dj + r + 1] * wr
-                                acc += w * tgt[ii, jj, k]; wsum += w
-                            end
-                        end
-                        out[i, j, k] = acc / wsum
-                    end
-                end
-                out
-            end
-            mW = Float32(mean(W)); mI = Float32(mean(I))
-            a = 0.0; bb = 0.0; c = 0.0
-            @inbounds for idx in eachindex(W)
-                dw = Float64(W[idx] - mW); di = Float64(I[idx] - mI)
-                a += dw * dw; bb += dw * di; c += di * di
-            end
-            θ  = 0.5 * atan(2bb, a - c)
-            ct = Float32(cos(θ)); st = Float32(sin(θ))
-            p_sig   = Array{Float32}(undef, nx, ny, nz)
-            p_noise = Array{Float32}(undef, nx, ny, nz)
-            @inbounds for idx in eachindex(W)
-                dw = W[idx] - mW; di = I[idx] - mI
-                p_sig[idx]   =  ct * dw + st * di
-                p_noise[idx] = -st * dw + ct * di
-            end
-            p_noise_s = _bilat(p_noise)
-            @inbounds for idx in eachindex(W)
-                pn = p_noise[idx] + GAMMA * (p_noise_s[idx] - p_noise[idx])
-                ps = p_sig[idx]
-                W[idx] = mW + ct * ps - st * pn
-                I[idx] = mI + st * ps + ct * pn
-            end
-            ρ_struct = bb / sqrt(max(a, 1e-30) * max(c, 1e-30))
-            @info "[ACNR · cov / data-adaptive INLINE] θ=$(round(rad2deg(θ), digits = 1))° · ρ(W,I)=$(round(ρ_struct, digits = 3)) · γ=$(GAMMA) · e1 pixel-perfect, e2 denoised · σ_noise(W)=$(round(σW, sigdigits = 3)), σ_noise(I)=$(round(σI, sigdigits = 3))"
-        end
+        info = BS.apply_image_acnr!(W, I;
+            gamma = GAMMA, bilat_radius = BILAT_RADIUS,
+            bilat_sigma_s = BILAT_SIGMA_S, bilat_range_k = BILAT_RANGE_K)
+        @info "[ACNR · cov / SRC apply_image_acnr!] θ=$(round(info.θ_deg, digits = 1))° · ρ(W,I)=$(round(info.ρ_struct, digits = 3)) · γ=$(GAMMA) · e1 (structure) pixel-perfect, e2 (anti-corr noise) denoised · σ_noise(W)=$(round(info.σ_W, sigdigits = 3)), σ_noise(I)=$(round(info.σ_I, sigdigits = 3))"
     else
         @info "[ACNR] OFF (passthrough)"
     end
@@ -2200,7 +2039,6 @@ comparable.
 # ╠═08030007-0000-4000-8000-000000000020
 # ╟─08030007-0000-4000-8000-000000000040
 # ╠═08030007-0000-4000-8000-000000000060
-# ╠═08030007-0000-4000-8000-000000000070
 # ╟─08030008-0000-4000-8000-000000000001
 # ╠═08030008-0000-4000-8000-000000000010
 # ╟─08030008-0000-4000-8000-000000000030
