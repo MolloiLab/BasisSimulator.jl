@@ -284,6 +284,89 @@ end
     end
 end
 
+@testset "DetectorEfficiency — UFC MC LUT (Siemens Force Gd₂O₂S)" begin
+    @testset "detector_efficiency_ufc factory" begin
+        model = BS.detector_efficiency_ufc()
+        @test model.material == "UFC"
+        @test model.thickness_mm == 1.4
+        @test model.fill_factor == 0.9
+        @test model.mode == BS.MC_LUT
+
+        bl = BS.detector_efficiency_ufc(mode = :beer_lambert)
+        @test bl.mode == BS.BEER_LAMBERT
+    end
+
+    @testset "LUT shape + provenance values" begin
+        @test length(BS.UFC_MC_EFFICIENCY_LUT.energies) == 140
+        @test length(BS.UFC_MC_EFFICIENCY_LUT.efficiency) == 140
+        # Spot-check verbatim values from Khodajou-Chokami efficiency_results.csv
+        @test BS.UFC_MC_EFFICIENCY_LUT.efficiency[1] ≈ 9.90863305e-01
+        @test BS.UFC_MC_EFFICIENCY_LUT.efficiency[50] ≈ 9.69026725e-01
+        @test BS.UFC_MC_EFFICIENCY_LUT.efficiency[51] ≈ 7.41154644e-01
+        @test BS.UFC_MC_EFFICIENCY_LUT.efficiency[140] ≈ 8.15971281e-01
+    end
+
+    @testset "get_ufc_mc_efficiency captures Gd K-edge fluorescence drop" begin
+        η50 = BS.get_ufc_mc_efficiency(50.0)
+        η51 = BS.get_ufc_mc_efficiency(51.0)
+        # MC LUT: at the Gd K-edge (50.24 keV) η drops ~0.969 → ~0.741
+        # because Gd-Kα fluorescence (~43 keV) escapes the crystal.
+        @test η50 > 0.95
+        @test η51 < 0.78
+        @test η50 - η51 > 0.20
+    end
+
+    @testset "get_ufc_mc_efficiency captures Gd L-edge dip near 8 keV" begin
+        @test BS.get_ufc_mc_efficiency(8.0) < BS.get_ufc_mc_efficiency(7.0)
+    end
+
+    @testset "MC LUT linear interpolation + clamping" begin
+        η_60_5 = BS.get_ufc_mc_efficiency(60.5)
+        lo = min(BS.UFC_MC_EFFICIENCY_LUT.efficiency[60], BS.UFC_MC_EFFICIENCY_LUT.efficiency[61])
+        hi = max(BS.UFC_MC_EFFICIENCY_LUT.efficiency[60], BS.UFC_MC_EFFICIENCY_LUT.efficiency[61])
+        @test lo - 1.0e-12 < η_60_5 < hi + 1.0e-12
+
+        @test BS.get_ufc_mc_efficiency(0.5) == BS.UFC_MC_EFFICIENCY_LUT.efficiency[1]
+        @test BS.get_ufc_mc_efficiency(200.0) == BS.UFC_MC_EFFICIENCY_LUT.efficiency[end]
+    end
+
+    @testset "compute_eid_efficiency_vector — MC routes to UFC LUT" begin
+        model = BS.detector_efficiency_ufc()
+        energies = [30.0, 50.0, 51.0, 100.0, 140.0]
+        η = BS.compute_eid_efficiency_vector(model, energies)
+        @test length(η) == length(energies)
+        @test η[3] < η[2]                    # Gd K-edge fluorescence drop
+        @test η ≈ [BS.get_ufc_mc_efficiency(E) for E in energies]
+    end
+
+    @testset "compute_eid_efficiency_vector — UFC Beer-Lambert path" begin
+        bl = BS.detector_efficiency_ufc(mode = :beer_lambert)
+        energies = [30.0, 49.0, 51.0, 100.0]
+        η = BS.compute_eid_efficiency_vector(bl, energies)
+        @test length(η) == length(energies)
+        @test all(0 .<= η .<= 1)
+        # Beer-Lambert predicts η RISES just above the Gd K-edge (more
+        # absorption) — the opposite of the MC LUT's fluorescence-escape
+        # drop.  That contrast is the whole point of the MC path.
+        @test η[3] > η[2]
+    end
+
+    @testset "build_physics_config routes :ufc to the UFC factory" begin
+        scanner = BS.Scanner(detector_material = :ufc, detector_depth = 1.4)
+        sim_opts = BS.SimOptions(fidelity = :eict)
+        e = collect(20.0:10.0:140.0)
+        w = ones(length(e))
+        config = BS.build_physics_config(scanner, sim_opts, e, w)
+        @test config.detector_efficiency !== nothing
+        @test config.detector_efficiency.material == "UFC"
+        @test config.detector_efficiency.mode == BS.MC_LUT
+
+        # Unknown EICT material errors with a clear message
+        bad = BS.Scanner(detector_material = :unobtainium)
+        @test_throws ErrorException BS.build_physics_config(bad, sim_opts, e, w)
+    end
+end
+
 @testset "get_scintillator_mu — Gemstone + CdTe" begin
     # CdTe K-edges: Cd at 26.7 keV, Te at 31.8 keV.
     μ_cdte_25 = BS.get_scintillator_mu("CdTe", 25.0)

@@ -7,11 +7,14 @@ Detector absorption efficiency for CT simulation.
 
 Two paths, both routed by `DetectorEfficiencyMode`:
 
-1. **`MC_LUT`** — Monte Carlo-derived per-energy efficiency LUT for the GE
-   Gemstone Ce:(Tb,Lu)₃Al₅O₁₂ scintillator (`GEMSTONE_MC_EFFICIENCY_LUT`).
-   Captures fluorescence escape at the Tb (52 keV) and Lu (63 keV) K-edges,
-   which Beer-Lambert cannot model — at those energies, real η DROPS rather
-   than rising as photons in the fluorescent shell escape the crystal.
+1. **`MC_LUT`** — Monte Carlo-derived per-energy efficiency LUTs for the
+   supported EICT scintillators:
+   - GE Gemstone Ce:(Tb,Lu)₃Al₅O₁₂ (`GEMSTONE_MC_EFFICIENCY_LUT`) —
+     fluorescence escape at the Tb (52 keV) and Lu (63 keV) K-edges.
+   - Siemens UFC Gd₂O₂S:Pr,Ce (`UFC_MC_EFFICIENCY_LUT`, SOMATOM Force
+     StellarInfinity) — fluorescence escape at the Gd K-edge (50.24 keV).
+   At those K-edges real η DROPS rather than rising as photons in the
+   fluorescent shell escape the crystal — Beer-Lambert cannot model this.
 
 2. **`BEER_LAMBERT`** — analytical fallback `η(E) = 1 − exp(−μ(E) × d / cos θ)`
    using `get_scintillator_mu`. Reachable via `sim_opts.detector_efficiency_mode
@@ -92,6 +95,26 @@ SCINTILLATOR_MU_DATA["Garnet"]     = SCINTILLATOR_MU_DATA["Gemstone"]
 SCINTILLATOR_MU_DATA["TbLuAG"]     = SCINTILLATOR_MU_DATA["Gemstone"]
 SCINTILLATOR_MU_DATA["TbLuAG:Ce"]  = SCINTILLATOR_MU_DATA["Gemstone"]
 
+# UFC Gd₂O₂S:Pr,Ce — Siemens "Ultra-Fast Ceramic" scintillator
+# (SOMATOM Force StellarInfinity).  μ(E) = (μ/ρ)(E) × ρ evaluated from the
+# module's GD2O2S compound (ρ = 7.44 g/cm³, NIST XCOM via XrayAttenuation);
+# Gd K-edge discontinuity bracketed at 50.23 / 50.25 keV (K-edge 50.24 keV).
+# Used only by the :beer_lambert verification mode — the live UFC path is
+# UFC_MC_EFFICIENCY_LUT below.
+SCINTILLATOR_MU_DATA["UFC"] = (
+    [10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0,
+        50.23, 50.25, 52.0, 55.0, 60.0, 65.0, 70.0, 75.0,
+        80.0, 85.0, 90.0, 100.0, 110.0, 120.0, 130.0, 140.0, 150.0],
+    [1700.9, 588.5, 274.3, 151.3, 93.2, 61.9, 43.6, 32.0, 24.4,
+        24.1, 115.6, 105.8, 91.5, 73.0, 59.4, 49.0, 41.0,
+        34.7, 29.7, 25.6, 19.4, 15.2, 12.2, 9.9, 8.3, 7.0]
+)
+
+# UFC aliases
+SCINTILLATOR_MU_DATA["ufc"]    = SCINTILLATOR_MU_DATA["UFC"]
+SCINTILLATOR_MU_DATA["Gd2O2S"] = SCINTILLATOR_MU_DATA["UFC"]
+SCINTILLATOR_MU_DATA["GOS"]    = SCINTILLATOR_MU_DATA["UFC"]
+
 # =============================================================================
 # Monte Carlo-Derived Detector Efficiency LUT
 # =============================================================================
@@ -157,6 +180,79 @@ const GEMSTONE_MC_EFFICIENCY_LUT = (
     ]
 )
 
+"""
+    UFC_MC_EFFICIENCY_LUT
+
+Monte Carlo-derived detector efficiency lookup table for the Siemens UFC
+(Ultra-Fast Ceramic, Gd₂O₂S:Pr,Ce) scintillator as a function of photon
+energy — the Siemens SOMATOM Force sister of [`GEMSTONE_MC_EFFICIENCY_LUT`].
+
+Computed from a full Monte-Carlo transport simulation of the SOMATOM Force
+StellarInfinity detector by Hamidreza Khodajou-Chokami, PhD (UC Irvine
+Medical Imaging Laboratory), `efficiency_results.csv`, 2026-06-08.  Values
+are verbatim from that dataset on a 1-keV grid (1–140 keV).
+
+# Key features captured by MC (not in Beer-Lambert)
+
+1. **Fluorescence escape at the Gd K-edge (50.24 keV)**: η drops
+   0.969 → 0.741 between 50 and 51 keV as Gd Kα fluorescence (~43 keV)
+   escapes the crystal.  Beer-Lambert predicts the opposite jump.
+2. **Gd L-edge structure** near 7–8 keV (L₃ 7.24 / L₂ 7.93 / L₁ 8.38 keV).
+3. **High-energy roll-off** from primary transmission + Compton escape
+   (0.897 at 100 keV → 0.816 at 140 keV).
+
+First validated end-to-end (poly + dual-source VMI) in
+`docs/notebooks/09_siemens_force_ufc_dual_source_vmi.jl`.
+"""
+const UFC_MC_EFFICIENCY_LUT = (
+    energies=Float64[
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+        11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+        21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+        31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+        41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
+        51, 52, 53, 54, 55, 56, 57, 58, 59, 60,
+        61, 62, 63, 64, 65, 66, 67, 68, 69, 70,
+        71, 72, 73, 74, 75, 76, 77, 78, 79, 80,
+        81, 82, 83, 84, 85, 86, 87, 88, 89, 90,
+        91, 92, 93, 94, 95, 96, 97, 98, 99, 100,
+        101, 102, 103, 104, 105, 106, 107, 108, 109, 110,
+        111, 112, 113, 114, 115, 116, 117, 118, 119, 120,
+        121, 122, 123, 124, 125, 126, 127, 128, 129, 130,
+        131, 132, 133, 134, 135, 136, 137, 138, 139, 140
+    ],
+    efficiency=Float64[
+        9.90863305e-01, 9.90798712e-01, 9.90207366e-01, 9.89968109e-01, 9.89353993e-01,
+        9.88877621e-01, 9.88764364e-01, 9.69360328e-01, 9.72729277e-01, 9.76089134e-01,
+        9.78741846e-01, 9.80889490e-01, 9.82528622e-01, 9.83559147e-01, 9.84355716e-01,
+        9.84992948e-01, 9.85387625e-01, 9.85860336e-01, 9.86036647e-01, 9.86192298e-01,
+        9.86036424e-01, 9.86016013e-01, 9.85866718e-01, 9.85760036e-01, 9.85619041e-01,
+        9.85427871e-01, 9.85144176e-01, 9.84997524e-01, 9.84686433e-01, 9.84226060e-01,
+        9.83886432e-01, 9.83888151e-01, 9.83530746e-01, 9.82826388e-01, 9.82299763e-01,
+        9.81754579e-01, 9.81145416e-01, 9.80406222e-01, 9.79366721e-01, 9.78673909e-01,
+        9.78040413e-01, 9.77222704e-01, 9.75291071e-01, 9.74675907e-01, 9.73959516e-01,
+        9.72894908e-01, 9.71301325e-01, 9.70168735e-01, 9.69081131e-01, 9.69026725e-01,
+        7.41154644e-01, 7.47765810e-01, 7.54996954e-01, 7.61970239e-01, 7.68339996e-01,
+        7.74502998e-01, 7.80637525e-01, 7.85478337e-01, 7.91350826e-01, 7.97260988e-01,
+        8.01716927e-01, 8.06821449e-01, 8.12187403e-01, 8.16816937e-01, 8.21093164e-01,
+        8.25750637e-01, 8.29601348e-01, 8.33439150e-01, 8.36683997e-01, 8.40730609e-01,
+        8.44150931e-01, 8.47429296e-01, 8.50435158e-01, 8.53887225e-01, 8.56827475e-01,
+        8.59963243e-01, 8.62840135e-01, 8.65738358e-01, 8.68314163e-01, 8.70655876e-01,
+        8.72908866e-01, 8.74932562e-01, 8.77096478e-01, 8.78888967e-01, 8.80993084e-01,
+        8.82948845e-01, 8.84599046e-01, 8.86221492e-01, 8.87676325e-01, 8.88783948e-01,
+        8.90449254e-01, 8.91856769e-01, 8.92648690e-01, 8.93756963e-01, 8.94433775e-01,
+        8.95239544e-01, 8.95655380e-01, 8.96253439e-01, 8.96718581e-01, 8.96705367e-01,
+        8.96467303e-01, 8.96790377e-01, 8.96711472e-01, 8.96650987e-01, 8.96839385e-01,
+        8.96598287e-01, 8.96387397e-01, 8.95719919e-01, 8.94503447e-01, 8.93412046e-01,
+        8.92210714e-01, 8.90899489e-01, 8.89779601e-01, 8.88385073e-01, 8.87015853e-01,
+        8.85130923e-01, 8.83793476e-01, 8.82173648e-01, 8.80395144e-01, 8.78167359e-01,
+        8.76309315e-01, 8.73851763e-01, 8.71613318e-01, 8.69143288e-01, 8.66828531e-01,
+        8.64327296e-01, 8.61391429e-01, 8.58218989e-01, 8.55394561e-01, 8.52652873e-01,
+        8.49222638e-01, 8.45710682e-01, 8.41841634e-01, 8.37917905e-01, 8.34416213e-01,
+        8.30333026e-01, 8.26984885e-01, 8.23573340e-01, 8.20082743e-01, 8.15971281e-01
+    ]
+)
+
 # =============================================================================
 # Detector Efficiency Types
 # =============================================================================
@@ -212,6 +308,31 @@ function detector_efficiency_gemstone(; mode::Symbol=:mc_lut,
     fill_factor::Float64=0.90)
     eff_mode = mode == :mc_lut ? MC_LUT : BEER_LAMBERT
     return DetectorEfficiency("Gemstone", thickness_mm, fill_factor, eff_mode)
+end
+
+"""
+    detector_efficiency_ufc(; mode::Symbol=:mc_lut, thickness_mm=1.4,
+                             fill_factor=0.90)
+
+Siemens UFC (Ultra-Fast Ceramic) Gd₂O₂S:Pr,Ce scintillator detector
+(SOMATOM Force StellarInfinity) — sister factory of
+[`detector_efficiency_gemstone`](@ref).
+
+# Modes
+- `:mc_lut` (default) — Monte Carlo-derived efficiency LUT
+  ([`UFC_MC_EFFICIENCY_LUT`]).  Captures Gd K-edge fluorescence escape
+  that Beer-Lambert cannot model.
+- `:beer_lambert` — Analytical Beer-Lambert using the Gd₂O₂S μ(E) table.
+
+The 1.4 mm default thickness is a documented assumption — Siemens does not
+publish the UFC layer depth (the value is inert in `:mc_lut` mode; with
+μ ≈ 46 mm⁻¹ at 120 kVp mean energies, ≥1 mm already absorbs >99%).
+"""
+function detector_efficiency_ufc(; mode::Symbol=:mc_lut,
+    thickness_mm::Float64=1.4,
+    fill_factor::Float64=0.90)
+    eff_mode = mode == :mc_lut ? MC_LUT : BEER_LAMBERT
+    return DetectorEfficiency("UFC", thickness_mm, fill_factor, eff_mode)
 end
 
 # =============================================================================
@@ -291,6 +412,34 @@ function get_gemstone_mc_efficiency(energy_keV::Float64)
     return lut.efficiency[idx] + t * (lut.efficiency[idx+1] - lut.efficiency[idx])
 end
 
+"""
+    get_ufc_mc_efficiency(energy_keV::Float64) -> Float64
+
+Look up Monte Carlo-derived detector efficiency for the Siemens UFC
+Gd₂O₂S:Pr,Ce scintillator at the given photon energy.
+
+Linear interpolation of the 1–140 keV MC efficiency table
+([`UFC_MC_EFFICIENCY_LUT`]).  Energies outside the range are clamped.
+
+# Key physics
+- Gd K-edge fluorescence escape at 50–51 keV (η: 0.969 → 0.741)
+- Gd L-edge dip near 8 keV
+- Peak efficiency ~0.986 at ~20 keV
+- η ≈ 0.897 at 100 keV, declining to 0.816 at 140 keV
+"""
+function get_ufc_mc_efficiency(energy_keV::Float64)
+    lut = UFC_MC_EFFICIENCY_LUT
+    E = clamp(energy_keV, lut.energies[1], lut.energies[end])
+
+    if E == floor(E) && 1.0 <= E <= 140.0
+        return lut.efficiency[Int(E)]
+    end
+
+    idx = clamp(floor(Int, E), 1, 139)
+    t = E - lut.energies[idx]
+    return lut.efficiency[idx] + t * (lut.efficiency[idx+1] - lut.efficiency[idx])
+end
+
 # =============================================================================
 # EID Pipeline Efficiency Vector
 # =============================================================================
@@ -309,6 +458,9 @@ function compute_eid_efficiency_vector(model::DetectorEfficiency, energies::Abst
     if model.mode == MC_LUT && model.material in ("Gemstone", "LUMEX", "lumex", "Garnet", "TbLuAG", "TbLuAG:Ce")
         return [get_gemstone_mc_efficiency(Float64(E)) for E in energies]
     end
+    if model.mode == MC_LUT && model.material in ("UFC", "ufc", "Gd2O2S", "GOS")
+        return [get_ufc_mc_efficiency(Float64(E)) for E in energies]
+    end
     d_cm = model.thickness_mm / 10.0
     return [1.0 - exp(-get_scintillator_mu(model.material, Float64(E)) * d_cm) for E in energies]
 end
@@ -318,6 +470,7 @@ end
 # =============================================================================
 
 export DetectorEfficiency, DetectorEfficiencyMode, BEER_LAMBERT, MC_LUT
-export detector_efficiency_gemstone
-export get_scintillator_mu, get_gemstone_mc_efficiency, compute_eid_efficiency_vector
-export GEMSTONE_MC_EFFICIENCY_LUT
+export detector_efficiency_gemstone, detector_efficiency_ufc
+export get_scintillator_mu, get_gemstone_mc_efficiency, get_ufc_mc_efficiency
+export compute_eid_efficiency_vector
+export GEMSTONE_MC_EFFICIENCY_LUT, UFC_MC_EFFICIENCY_LUT
