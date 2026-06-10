@@ -28,7 +28,7 @@ results:
 
 ```
 UFC MC η(E) LUT  (Khodajou-Chokami MC, 1–140 keV)
-        │ folded into the source spectrum  (spectrum_override)
+        │ via Scanner(detector_material = :ufc)  (src MC-LUT pathway)
         ▼
 Simulate 100 kVp (tube A) ──┬─→ POLY: per-tube η-aware BHC → FDK → HU
 Simulate Sn140 kVp (tube B)─┘         → Siemens-style mixed image M_w
@@ -48,28 +48,19 @@ Simulate Sn140 kVp (tube B)─┘         → Siemens-style mixed image M_w
     low-kV and high-kV reconstructions.  This notebook models the DE
     acquisition and derives both readouts from it.
 
-!!! info "How the UFC LUT enters the pipeline (no src changes)"
-    The EICT forward model weights every energy bin by
-    `w(E) · η(E) · exp(-∫μ dl)`.  Instead of routing through
-    `SimOptions(use_detector_efficiency = true)` (which dispatches to the
-    **Gemstone** MC LUT and asserts a `:lumex` detector), this notebook:
-
-    1. sets `use_detector_efficiency = false`, and
-    2. passes `spectrum_override = (e, w .* η_UFC.(e))` into
-       `create_eict_workspace` — the UFC absorbed fraction is folded
-       directly into the source weights.
-
-    The two are algebraically identical inside `simulate!` (same `w·η`
-    product, same detected-flux `I₀ = Σ w·η`), and the same η-folded
-    weights drive the Cong basis and the BHC calibration — so the forward
-    and inverse spectral models match *exactly*.
-
-!!! success "Once validated here → src integration"
-    The promotion path mirrors Gemstone 1:1: a `UFC_MC_EFFICIENCY_LUT`
-    const + `get_ufc_mc_efficiency(E)` in
-    `src/detector/detector_efficiency.jl`, a `detector_efficiency_ufc()`
-    factory, a `:ufc` material branch in `compute_eid_efficiency_vector`,
-    and a relaxed material assert in `build_physics_config`.
+!!! success "The UFC LUT is src-proper (sister pathway to Gemstone)"
+    `src/detector/detector_efficiency.jl` ships `UFC_MC_EFFICIENCY_LUT`,
+    `get_ufc_mc_efficiency(E)`, and the `detector_efficiency_ufc()`
+    factory; `build_physics_config` dispatches `detector_material = :ufc`
+    to it (exactly as `:lumex` dispatches to Gemstone).  So this notebook
+    simply sets `Scanner(detector_material = :ufc)` +
+    `SimOptions(use_detector_efficiency = true)` and the EICT forward
+    model weights every energy bin by `w(E) · η_UFC(E) · exp(-∫μ dl)`.
+    The Cong basis and the BHC calibration resolve the *same* η-folded
+    spectrum via `resolve_source_spectrum_full`, so the forward and
+    inverse spectral models match exactly.  (This notebook originally
+    validated the LUT standalone via `spectrum_override` before the src
+    promotion — the two paths are algebraically identical.)
 """
 
 # ╔═╡ 09000001-0000-4000-8000-000000000020
@@ -125,10 +116,10 @@ StellarInfinity detector.
 
 **Provenance**: Hamidreza Khodajou-Chokami, PhD (UC Irvine Medical Imaging
 Laboratory), `efficiency_results.csv`, received 2026-06-08.  The 140 values
-below are verbatim from that CSV (1-keV grid, 1–140 keV); an archival copy
-lives at `docs/notebooks/data/ufc_mc_efficiency_v1.csv` (gitignored — this
-inline vector is the tracked copy, same convention as the inline
-`GEMSTONE_MC_EFFICIENCY_LUT` in src).
+(1-keV grid, 1–140 keV) live verbatim in src as
+`BS.UFC_MC_EFFICIENCY_LUT` (`src/detector/detector_efficiency.jl`), the
+sister of `BS.GEMSTONE_MC_EFFICIENCY_LUT`; an archival copy of the CSV is
+at `docs/notebooks/data/ufc_mc_efficiency_v1.csv` (gitignored).
 
 **Physics signatures** (same class of MC-only features the Gemstone LUT
 captures — Beer-Lambert *cannot* model these):
@@ -144,62 +135,10 @@ captures — Beer-Lambert *cannot* model these):
    from primary transmission + Compton escape.
 """
 
-# ╔═╡ 09000002-0000-4000-8000-000000000010
-# Verbatim from ufc_mc_efficiency_v1.csv (Khodajou-Chokami MC, 2026-06-08).
-# 1-keV grid: UFC_MC_EFFICIENCY_LUT.efficiency[k] is η at k keV.
-const UFC_MC_EFFICIENCY_LUT = (
-    energies = collect(1.0:1.0:140.0),
-    efficiency = Float64[
-        9.90863305e-01, 9.90798712e-01, 9.90207366e-01, 9.89968109e-01, 9.89353993e-01,
-        9.88877621e-01, 9.88764364e-01, 9.69360328e-01, 9.72729277e-01, 9.76089134e-01,
-        9.78741846e-01, 9.80889490e-01, 9.82528622e-01, 9.83559147e-01, 9.84355716e-01,
-        9.84992948e-01, 9.85387625e-01, 9.85860336e-01, 9.86036647e-01, 9.86192298e-01,
-        9.86036424e-01, 9.86016013e-01, 9.85866718e-01, 9.85760036e-01, 9.85619041e-01,
-        9.85427871e-01, 9.85144176e-01, 9.84997524e-01, 9.84686433e-01, 9.84226060e-01,
-        9.83886432e-01, 9.83888151e-01, 9.83530746e-01, 9.82826388e-01, 9.82299763e-01,
-        9.81754579e-01, 9.81145416e-01, 9.80406222e-01, 9.79366721e-01, 9.78673909e-01,
-        9.78040413e-01, 9.77222704e-01, 9.75291071e-01, 9.74675907e-01, 9.73959516e-01,
-        9.72894908e-01, 9.71301325e-01, 9.70168735e-01, 9.69081131e-01, 9.69026725e-01,
-        7.41154644e-01, 7.47765810e-01, 7.54996954e-01, 7.61970239e-01, 7.68339996e-01,
-        7.74502998e-01, 7.80637525e-01, 7.85478337e-01, 7.91350826e-01, 7.97260988e-01,
-        8.01716927e-01, 8.06821449e-01, 8.12187403e-01, 8.16816937e-01, 8.21093164e-01,
-        8.25750637e-01, 8.29601348e-01, 8.33439150e-01, 8.36683997e-01, 8.40730609e-01,
-        8.44150931e-01, 8.47429296e-01, 8.50435158e-01, 8.53887225e-01, 8.56827475e-01,
-        8.59963243e-01, 8.62840135e-01, 8.65738358e-01, 8.68314163e-01, 8.70655876e-01,
-        8.72908866e-01, 8.74932562e-01, 8.77096478e-01, 8.78888967e-01, 8.80993084e-01,
-        8.82948845e-01, 8.84599046e-01, 8.86221492e-01, 8.87676325e-01, 8.88783948e-01,
-        8.90449254e-01, 8.91856769e-01, 8.92648690e-01, 8.93756963e-01, 8.94433775e-01,
-        8.95239544e-01, 8.95655380e-01, 8.96253439e-01, 8.96718581e-01, 8.96705367e-01,
-        8.96467303e-01, 8.96790377e-01, 8.96711472e-01, 8.96650987e-01, 8.96839385e-01,
-        8.96598287e-01, 8.96387397e-01, 8.95719919e-01, 8.94503447e-01, 8.93412046e-01,
-        8.92210714e-01, 8.90899489e-01, 8.89779601e-01, 8.88385073e-01, 8.87015853e-01,
-        8.85130923e-01, 8.83793476e-01, 8.82173648e-01, 8.80395144e-01, 8.78167359e-01,
-        8.76309315e-01, 8.73851763e-01, 8.71613318e-01, 8.69143288e-01, 8.66828531e-01,
-        8.64327296e-01, 8.61391429e-01, 8.58218989e-01, 8.55394561e-01, 8.52652873e-01,
-        8.49222638e-01, 8.45710682e-01, 8.41841634e-01, 8.37917905e-01, 8.34416213e-01,
-        8.30333026e-01, 8.26984885e-01, 8.23573340e-01, 8.20082743e-01, 8.15971281e-01,
-    ],
-);
-
-# ╔═╡ 09000002-0000-4000-8000-000000000020
-"""
-    ufc_mc_efficiency(E_keV) -> Float64
-
-UFC MC LUT lookup with linear interpolation on the 1-keV grid (clamped
-to 1–140 keV).  Mirror of `BS.get_gemstone_mc_efficiency`.
-"""
-function ufc_mc_efficiency(E_keV::Real)
-    η = UFC_MC_EFFICIENCY_LUT.efficiency
-    E = clamp(Float64(E_keV), 1.0, 140.0)
-    i = clamp(floor(Int, E), 1, 139)
-    t = E - i
-    return η[i] * (1.0 - t) + η[i + 1] * t
-end;
-
 # ╔═╡ 09000002-0000-4000-8000-000000000030
 let
     Es = collect(1.0:0.25:140.0)
-    η_ufc = ufc_mc_efficiency.(Es)
+    η_ufc = BS.get_ufc_mc_efficiency.(Es)
     η_gem = BS.get_gemstone_mc_efficiency.(Es)
 
     fig = CM.Figure(size = (1180, 580))
@@ -213,7 +152,7 @@ let
         xlabelsize = 22, ylabelsize = 22,
         xticklabelsize = 18, yticklabelsize = 16,
     )
-    CM.lines!(ax, Es, η_ufc; color = :crimson, linewidth = 3, label = "UFC Gd₂O₂S (this notebook)")
+    CM.lines!(ax, Es, η_ufc; color = :crimson, linewidth = 3, label = "UFC Gd₂O₂S (BS.UFC_MC_EFFICIENCY_LUT)")
     CM.lines!(ax, Es, η_gem; color = :steelblue, linewidth = 3, label = "Gemstone garnet (src)")
 
     CM.vlines!(ax, [50.24]; color = :crimson, linestyle = :dash, linewidth = 1.5)
@@ -387,26 +326,25 @@ protocol_high = BS.CTProtocol(
 
 # ╔═╡ 09000006-0000-4000-8000-000000000001
 md"""
-## 5. `SimOptions`, `ReconOptions`, and the UFC Spectrum Fold
+## 5. `SimOptions` and `ReconOptions`
 
-`use_detector_efficiency = false` keeps the src Gemstone LUT out of the
-loop; the UFC η(E) is folded into the **absolute-flux source weights**
-instead and handed to `create_eict_workspace` via `spectrum_override`.
-Inside `simulate!` the math is identical (`I = Σ w·η·e^{-∫μ}`, detected
-`I₀ = Σ w·η`), so the Poisson noise level automatically reflects the
-UFC-detected flux.
+`use_detector_efficiency = true` (the `:eict` preset default) routes
+through the **src UFC MC LUT**: `build_physics_config` sees
+`Scanner(detector_material = :ufc)` and dispatches to
+`detector_efficiency_ufc()`, so the EICT forward model weights every
+energy by `w(E) · η_UFC(E)` and the detected flux (and therefore the
+Poisson noise level) automatically reflects the UFC absorption.
 
 `use_heel_effect = false` keeps the forward spectral model exactly equal
 to the η-folded basis the Cong inversion uses (heel is a small
-row-direction effect; with 5 mm collimation at center it is negligible).
+row-direction effect; with 4.8 mm collimation at center it is negligible).
 """
 
 # ╔═╡ 09000006-0000-4000-8000-000000000010
 sim_opts = BS.SimOptions(
     fidelity = :eict,
     seed = 1234,
-    use_detector_efficiency = false,   # UFC η folded into spectrum_override instead
-    use_heel_effect = false,           # exact forward/inverse spectral match
+    use_heel_effect = false,   # exact forward/inverse spectral match
 );
 
 # ╔═╡ 09000006-0000-4000-8000-000000000020
@@ -424,17 +362,17 @@ recon_opts = BS.ReconOptions(
 
 # ╔═╡ 09000006-0000-4000-8000-000000000030
 """
-    ufc_spectrum(protocol) -> (e, w_eta)
+    ufc_detected_spectrum(protocol) -> (e, w_eta)
 
-Tube spectrum × flat filtration × protocol filters (IPEM, absolute flux)
-with the UFC MC η(E) folded in — the `spectrum_override` pair for
-`create_eict_workspace`.
+Display helper: tube spectrum × flat filtration × protocol filters
+(IPEM, absolute flux) with the src UFC MC η(E) folded in — what the
+detector actually integrates (centered ray, no bowtie).
 """
-function ufc_spectrum(protocol)
+function ufc_detected_spectrum(protocol)
     e, w = BS.resolve_source_spectrum_without_bowtie(
         sim_opts, protocol; scanner = scanner,
     )
-    return e, Float64.(w) .* ufc_mc_efficiency.(e)
+    return e, Float64.(w) .* BS.get_ufc_mc_efficiency.(e)
 end;
 
 # ╔═╡ 09000006-0000-4000-8000-000000000040
@@ -457,7 +395,7 @@ let
     )
 
     for (label, prot, color) in specs
-        e, wη = ufc_spectrum(prot)
+        e, wη = ufc_detected_spectrum(prot)
         wn = wη ./ sum(wη)
         mean_E = sum(e .* wn)
         CM.lines!(
@@ -467,6 +405,10 @@ let
         )
     end
     CM.axislegend(ax; position = :rt, framevisible = true, labelsize = 18)
+    CM.save(
+        joinpath(@__DIR__, "..", "assets", "force_ufc_detected_spectra.png"),
+        fig; px_per_unit = 2,
+    )
     fig
 end
 
@@ -474,8 +416,9 @@ end
 md"""
 ## 6. Forward Project (one DE acquisition = two tube scans)
 
-Each tube builds its own η-folded workspace via `spectrum_override` and
-keeps only the noisy log-line-integral sinogram + geometry.
+Each tube builds its own workspace (the UFC η enters via the src
+`detector_efficiency` pathway) and keeps only the noisy log-line-integral
+sinogram + geometry.
 
 Tube B sees the phantom through a **−0.88 mm z-shifted origin** — the real
 detector-B z-offset (Wang et al. 2021).  For the z-invariant Gammex this
@@ -499,8 +442,7 @@ phantom_b = BS.Phantom(
 sim_low = let
     @info "Simulating: 100 kVp / $(round(protocol_low.mA, digits = 1)) mA (tube A, UFC η folded)…"
     ws = BS.create_eict_workspace(
-        scanner, protocol_low, sim_opts, recon_opts, phantom;
-        spectrum_override = ufc_spectrum(protocol_low),
+        scanner, protocol_low, sim_opts, recon_opts, phantom,
     )
     BS.simulate!(ws, phantom, protocol_low, sim_opts)
     result = (sino = Array(ws.sinogram), geom = ws.geom)
@@ -512,8 +454,7 @@ end;
 sim_high = let
     @info "Simulating: Sn140 kVp / $(round(protocol_high.mA, digits = 1)) mA (tube B, UFC η folded, z-offset −0.88 mm)…"
     ws = BS.create_eict_workspace(
-        scanner, protocol_high, sim_opts, recon_opts, phantom_b;
-        spectrum_override = ufc_spectrum(protocol_high),
+        scanner, protocol_high, sim_opts, recon_opts, phantom_b,
     )
     BS.simulate!(ws, phantom_b, protocol_high, sim_opts)
     result = (sino = Array(ws.sinogram), geom = ws.geom)
@@ -577,7 +518,8 @@ lands at ≈ 0 HU in *both* per-tube recons (and therefore in any blend).
 !!! info "η-aware BHC"
     The BHC water polynomial must see the same detected spectrum the
     forward model used.  We resolve the bowtie-hardened per-column
-    spectrum, multiply by η_UFC(E), and feed the low-level
+    spectrum with the UFC η(E) already folded in
+    (`resolve_source_spectrum_full`), and feed the low-level
     `calibrate_bhc_two_material(e, w_col)` — same per-column fit the
     high-level API performs, but with the UFC fold included.
 """
@@ -590,12 +532,13 @@ lands at ≈ 0 HU in *both* per-tube recons (and therefore in any blend).
 per-column two-material polynomial.  Returns `(model, μ_water, ref_E_keV)`.
 """
 function ufc_bhc_calibration(protocol, geom)
-    e, ŵ = BS.resolve_source_spectrum_with_bowtie(
+    # resolve_source_spectrum_full folds bowtie AND the src UFC η(E)
+    # (via the same build_physics_config the forward model used).
+    e, ŵ = BS.resolve_source_spectrum_full(
         sim_opts, protocol; scanner = scanner, geom = geom,
     )
     e2, w_col = BS.bhc_spectrum_per_column(e, ŵ)          # [n_E, n_col]
-    η = ufc_mc_efficiency.(e2)
-    w_col_η = w_col .* η                                  # broadcast along energy dim
+    w_col_η = w_col
 
     # Single mono-equivalent target = mean energy of the η-folded mean spectrum
     w_mean = vec(sum(w_col_η; dims = 2)) ./ size(w_col_η, 2)
@@ -816,24 +759,23 @@ iodine + water material basis, running on the **raw noisy sinograms** (no
 projection-domain denoising — the anti-correlated basis noise is handled
 by cov-ACNR after FBP).  The per-ray spectral weights are
 **source × flat filters × bowtie × UFC η(E)** — the identical model the
-forward projector applied, because we fold the same `ufc_mc_efficiency.(e)`
-into the bowtie-resolved 1D spectrum before the per-ray normalization.
+forward projector applied, because `resolve_source_spectrum_full` builds
+ŵ from the same `build_physics_config` (and therefore the same src UFC
+LUT) that `simulate!` used.
 """
 
 # ╔═╡ 0900000a-0000-4000-8000-000000000010
 material_basis = let
-    function ŵ_ufc(protocol, geom, label)
-        e, w1d = BS.resolve_source_spectrum_without_bowtie(
-            sim_opts, protocol; scanner = scanner,
-        )
-        wη = Float64.(w1d) .* ufc_mc_efficiency.(e)
-        # Per-ray bowtie fold + per-ray normalization (Σ_E ŵ = 1) → Float32 3D
-        ŵ = BS.apply_bowtie_to_spectrum(wη, e, scanner, geom, protocol; label = label)
-        return e, ŵ
-    end
-
-    e_L, ŵ_L = ŵ_ufc(protocol_low, sim_low.geom, "low·UFC")
-    e_H, ŵ_H = ŵ_ufc(protocol_high, sim_high.geom, "high·UFC")
+    # Per-ray effective spectrum: source × filters × bowtie × src UFC η(E),
+    # normalized per ray (Σ_E ŵ = 1) — the nb07 pattern.
+    e_L, ŵ_L = BS.resolve_source_spectrum_full(
+        sim_opts, protocol_low; scanner = scanner, geom = sim_low.geom,
+        diagnostic = true, label = "low·UFC",
+    )
+    e_H, ŵ_H = BS.resolve_source_spectrum_full(
+        sim_opts, protocol_high; scanner = scanner, geom = sim_high.geom,
+        diagnostic = true, label = "high·UFC",
+    )
 
     iodine_mat = BS.XA.Elements.Iodine
     water_mat = BS.XA.Materials.water
@@ -1660,7 +1602,7 @@ md"""
 
 ```
 UFC MC η(E) LUT (Khodajou-Chokami, Gd₂O₂S, 1–140 keV)
-   → folded into the source spectrum  (spectrum_override; η-exact forward + inverse)
+   → src pathway: Scanner(detector_material = :ufc) → detector_efficiency_ufc()
 Simulate 100 kVp + Sn140 kVp   (one SOMATOM Force dual-source DE acquisition)
    ├─→ POLY: per-tube η-aware BHC → FDK → HU → mixed image M_w  (SW ≈ 0 HU ×3)
    └─→ VMI:  Cong Decomposition on raw sinograms  (iodine + water,
@@ -1682,13 +1624,13 @@ Simulate 100 kVp + Sn140 kVp   (one SOMATOM Force dual-source DE acquisition)
    (100 kVp vs Sn140 kVp, separated by the 0.6 mm tin filter and sitting
    on opposite sides of the Gd K-edge fluorescence-escape cliff).
 
-**Next step (after sign-off):** promote the LUT into
-`src/detector/detector_efficiency.jl` next to `GEMSTONE_MC_EFFICIENCY_LUT`
-(`UFC_MC_EFFICIENCY_LUT` + `get_ufc_mc_efficiency` +
-`detector_efficiency_ufc()` + a `:ufc` branch in
-`compute_eid_efficiency_vector` and `build_physics_config`), then this
-notebook collapses to `use_detector_efficiency = true` with
-`detector_material = :ufc` and no `spectrum_override`.
+**src status:** the LUT lives in `src/detector/detector_efficiency.jl`
+next to `GEMSTONE_MC_EFFICIENCY_LUT` (`UFC_MC_EFFICIENCY_LUT`,
+`get_ufc_mc_efficiency`, `detector_efficiency_ufc()`, `:ufc` branches in
+`compute_eid_efficiency_vector` + `build_physics_config`, covered by
+`test/detector.jl`).  This notebook consumes it directly via
+`Scanner(detector_material = :ufc)` — the original standalone
+`spectrum_override` validation path is retired.
 """
 
 # ╔═╡ Cell order:
@@ -1702,8 +1644,6 @@ notebook collapses to `use_detector_efficiency = true` with
 # ╠═09000001-0000-4000-8000-000000000040
 # ╟─09000001-0000-4000-8000-000000000050
 # ╟─09000002-0000-4000-8000-000000000001
-# ╠═09000002-0000-4000-8000-000000000010
-# ╠═09000002-0000-4000-8000-000000000020
 # ╟─09000002-0000-4000-8000-000000000030
 # ╟─09000003-0000-4000-8000-000000000001
 # ╠═09000003-0000-4000-8000-000000000010

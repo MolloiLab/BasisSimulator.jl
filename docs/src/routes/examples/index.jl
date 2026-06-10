@@ -82,6 +82,32 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
             thumbnail = "qrm_thorax_vmi_vs_theoretical.png",
             tags      = ["EICT", "Dual-kVp", "VMI", "Mono+", "QRM-Thorax"],
         ),
+        "08_qrm_thorax_pure_material_pcct" => (
+            index     = "08",
+            title     = "QRM-Thorax Pure-Material PCCT — Full-Resolution True-Scan Reference",
+            summary   = "The photon-counting mirror of notebook 07: Siemens Naeotom Alpha PCCT " *
+                        "acquisition on the body-sized QRM-Thorax with the same four pure-material " *
+                        "rods.  Full PCCT physics inside simulate!() (MC-LUT detector response, " *
+                        "MC pile-up + correction, scatter + correction) → 4→2 count-domain bin " *
+                        "combine → Cong-Φ_k decomposition → FBP → data-adaptive cov-ACNR (the " *
+                        "VMI-noise-U killer) → z-median → 2-basis VMI at 40/70/100/140 keV, " *
+                        "verified per-rod against XrayAttenuation theory.",
+            thumbnail = "qrm_thorax_pcct_vmi_vs_theoretical.png",
+            tags      = ["PCCT", "Naeotom Alpha", "VMI", "cov-ACNR", "QRM-Thorax"],
+        ),
+        "09_siemens_force_ufc_dual_source_vmi" => (
+            index     = "09",
+            title     = "Siemens SOMATOM Force — UFC MC LUT + Dual-Source VMI",
+            summary   = "First outing of the second EICT MC-LUT detector: the Siemens UFC " *
+                        "(Gd₂O₂S:Pr,Ce) scintillator on the third-generation dual-source Force, " *
+                        "with the Gd K-edge fluorescence-escape cliff baked into η(E).  One " *
+                        "100 kVp / Sn140 (0.6 mm tin) DE acquisition feeds both readouts — " *
+                        "per-tube η-aware BHC recons + Siemens-style mixed image, and a " *
+                        "projection-domain Cong → cov-ACNR → VMI chain at 50/70/100/140 keV, " *
+                        "verified per-rod against XrayAttenuation theory.",
+            thumbnail = "force_ufc_detected_spectra.png",
+            tags      = ["EICT", "Dual-Source", "UFC MC LUT", "Sn filter", "VMI"],
+        ),
     )
 
     # Card builder — defined inside the `let` so Therapy's file-based router

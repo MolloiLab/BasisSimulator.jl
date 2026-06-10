@@ -1320,6 +1320,10 @@ let
         fig[1:2, 3]; colormap = :grays, colorrange = HU_window,
         label = "HU", width = 16, labelsize = 22, ticklabelsize = 18
     )
+    CM.save(
+        joinpath(@__DIR__, "..", "assets", "qrm_thorax_pcct_vmi_grid.png"),
+        fig; px_per_unit = 2,
+    )
     fig
 end
 
@@ -1400,6 +1404,10 @@ let
     CM.Colorbar(
         fig[1:2, 3]; colormap = :grays, colorrange = HU_window,
         label = "HU", width = 16, labelsize = 22, ticklabelsize = 18
+    )
+    CM.save(
+        joinpath(@__DIR__, "..", "assets", "qrm_thorax_pcct_vmi_monoplus.png"),
+        fig; px_per_unit = 2,
     )
     fig
 end
@@ -1584,6 +1592,10 @@ let
     y_max = max(15.0, 1.2 * maximum(abs, sw_hu_per_keV))
     CM.ylims!(ax2, -y_max, y_max)
 
+    CM.save(
+        joinpath(@__DIR__, "..", "assets", "qrm_thorax_pcct_water_roi.png"),
+        fig; px_per_unit = 2,
+    )
     fig
 end
 
@@ -1746,6 +1758,10 @@ let
     end
     # CM.ylims!(ax2, 0, maximum(σs) * 1.4)
 
+    CM.save(
+        joinpath(@__DIR__, "..", "assets", "qrm_thorax_pcct_noise_vs_energy.png"),
+        fig; px_per_unit = 2,
+    )
     fig
 end
 
@@ -1963,6 +1979,10 @@ let
         rowgap = 1, padding = (6, 6, 6, 6),
     )
 
+    CM.save(
+        joinpath(@__DIR__, "..", "assets", "qrm_thorax_pcct_vmi_vs_theoretical.png"),
+        fig; px_per_unit = 2,
+    )
     fig
 end
 
