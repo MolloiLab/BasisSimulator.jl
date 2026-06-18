@@ -1,5 +1,8 @@
 ### A Pluto.jl notebook ###
-# v0.19.0
+# v0.1.0
+
+using Markdown
+using InteractiveUtils
 
 # ╔═╡ 05000001-0000-4000-8000-000000000001
 begin
@@ -307,7 +310,7 @@ subspace `U[:,2]` with a small separable Gaussian.  One knob:
 """
 
 # ╔═╡ 05000007-0000-4000-8000-000000000005
-SVD_SIGMA_PX = 1.0;   # Gaussian σ (px) for U[:,2]; 0 = passthrough (no denoising)
+SVD_SIGMA_PX = 0.0;   # Gaussian σ (px) for U[:,2]; 0 = passthrough (no denoising)
 
 # ╔═╡ 05000007-0000-4000-8000-000000000010
 # 2-channel joint projection-domain SVD denoise (BS.apply_sino_svd_denoise).
