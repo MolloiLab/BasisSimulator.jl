@@ -474,7 +474,7 @@ function _forward_project_poly!(
             _buf
         end
 
-        siddon_fused_poly_project!(
+        dd_fused_poly_project!(
             sinogram, mask, geom, ws_μ_table_gpu, wη_dev, Val(n_energies);
             volume_extent = volume_extent,
             ws_source_positions = ws_source_positions,
@@ -524,7 +524,7 @@ function _forward_project_poly!(
             end
 
             # Use proven-fast fused kernel with Val(16) — 95ms/tile on Metal
-            siddon_fused_poly_project!(
+            dd_fused_poly_project!(
                 sinogram, mask, geom,
                 μ_sub, wη_sub, Val(TILE_K);
                 volume_extent = volume_extent,
@@ -580,7 +580,7 @@ function _forward_project_poly!(
 
         # Forward project at this energy
         fill!(sino_mono, zero(T))
-        siddon_forward_project!(
+        dd_forward_project!(
             sino_mono, μ_volume, geom;
             ws_source_positions = ws_source_positions,
             ws_detector_centers = ws_detector_centers,

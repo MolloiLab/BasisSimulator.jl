@@ -1321,7 +1321,7 @@ function reconstruct!(
             # Forward project with subset geometry → subset_Ax_buf
             ax_view = view(ws.subset_Ax_buf, :, :, 1:n_sub)
             fill!(ax_view, zero(T))
-            siddon_forward_project!(
+            dd_forward_project!(
                 ax_view, ws.volume, geom_s;
                 ws_source_positions = ws.subset_geom_source_positions[s],
                 ws_detector_centers = ws.subset_geom_detector_centers[s],

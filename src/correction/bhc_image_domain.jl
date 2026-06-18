@@ -107,7 +107,7 @@ function apply_bhc_image_domain(
     # Use geom's recon FOV (no volume_extent override) so this matches Step 3's
     # FDK back-projection grid exactly — same physical box on both halves of
     # the round-trip.
-    ξ_gpu = siddon_forward_project(high_atten_μ, geom)
+    ξ_gpu = dd_forward_project(high_atten_μ, geom)
 
     # Step 3: FDK-reconstruct the error sinogram → error image.
     error_image = fdk_reconstruct(ξ_gpu, geom, matrix_size)

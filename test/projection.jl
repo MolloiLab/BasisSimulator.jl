@@ -82,6 +82,122 @@ end
 end
 
 # -----------------------------------------------------------------------------
+# dd_forward_project — distance-driven projector (drop-in for Siddon).
+# Must agree with Siddon on line integrals (both discretise ∫μ·dl) and be a
+# linear operator on μ.  Small edge differences (DD footprint vs Siddon chord)
+# are expected; we bound the mean relative deviation on rays that hit the object.
+# -----------------------------------------------------------------------------
+@testset "dd_forward_project (distance-driven)" begin
+    # Larger toy grid so the object spans many detector rays (fair DD-vs-Siddon stats).
+    geom = _toy_proj_geom(n_cols = 64, n_rows = 8, n_angles = 8, fov_cm = 20.0)
+    nx = ny = 64
+    nz = 8
+
+    @testset "shape + zero volume → zero sinogram" begin
+        vol = zeros(Float32, nx, ny, nz)
+        sino = BS.dd_forward_project(vol, geom)
+        @test size(sino) == (geom.n_cols, geom.n_rows, geom.n_angles)
+        @test eltype(sino) == Float32
+        @test all(sino .== 0)
+    end
+
+    # Centred water cylinder, μ = 0.2 cm⁻¹.
+    vol = zeros(Float32, nx, ny, nz)
+    cx = (nx + 1) / 2
+    cy = (ny + 1) / 2
+    R = 0.6 * (nx / 2)
+    for k in 1:nz, j in 1:ny, i in 1:nx
+        if (i - cx)^2 + (j - cy)^2 <= R^2
+            vol[i, j, k] = 0.2f0
+        end
+    end
+
+    sino_siddon = BS.siddon_forward_project(vol, geom)
+    sino_dd = BS.dd_forward_project(vol, geom)
+
+    @testset "agrees with Siddon on object rays" begin
+        mask = sino_siddon .> 1.0f-4
+        relΔ = abs.(sino_dd[mask] .- sino_siddon[mask]) ./ sino_siddon[mask]
+        @test count(mask) > 1000                 # object actually illuminated
+        @test sum(relΔ) / length(relΔ) < 0.01    # mean relative deviation < 1%
+        @test maximum(relΔ) < 0.05               # worst-ray deviation < 5%
+    end
+
+    @testset "in-place == allocating" begin
+        sino_ip = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
+        BS.dd_forward_project!(sino_ip, vol, geom)
+        @test maximum(abs.(sino_ip .- sino_dd)) < 1.0e-5
+    end
+
+    @testset "linearity in μ — 2× scale doubles the sinogram" begin
+        sino_2x = BS.dd_forward_project(2 .* vol, geom)
+        @test maximum(abs.(sino_2x .- 2 .* sino_dd)) < 1.0e-4
+    end
+end
+
+# -----------------------------------------------------------------------------
+# dd_fused_poly_project! / dd_fused_spectral_project! — must agree with the
+# Siddon fused kernels (same mask / μ-table / weights) within the DD-vs-Siddon
+# discretisation tolerance.  These are the kernels the EI (polychromatic) and
+# PCCT (photon-counting) pipelines call.
+# -----------------------------------------------------------------------------
+@testset "dd fused projectors vs Siddon fused" begin
+    geom = _toy_proj_geom(n_cols = 64, n_rows = 8, n_angles = 8, fov_cm = 20.0)
+    nx = ny = 64
+    nz = 8
+    N_E = 8
+
+    # material mask: 0 = air, 1 = water cylinder
+    mask = zeros(UInt16, nx, ny, nz)
+    for k in 1:nz, j in 1:ny, i in 1:nx
+        if (i - 32.5)^2 + (j - 32.5)^2 <= (0.6 * 32)^2
+            mask[i, j, k] = UInt16(1)
+        end
+    end
+    μ_table = zeros(Float32, 2, N_E)             # row 1 = air (0), row 2 = water
+    for e in 1:N_E
+        μ_table[2, e] = 0.30f0 - 0.12f0 * (e - 1) / (N_E - 1)
+    end
+    wη = fill(Float32(1 / N_E), N_E)
+
+    @testset "fused poly" begin
+        sino_s = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
+        sino_d = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
+        BS.siddon_fused_poly_project!(sino_s, mask, geom, μ_table, wη, Val(N_E))
+        BS.dd_fused_poly_project!(sino_d, mask, geom, μ_table, wη, Val(N_E))
+        m = sino_s .> 1.0f-4
+        relΔ = abs.(sino_d[m] .- sino_s[m]) ./ sino_s[m]
+        @test count(m) > 1000
+        @test sum(relΔ) / length(relΔ) < 0.01      # mean within 1%
+        @test maximum(relΔ) < 0.05
+    end
+
+    @testset "fused spectral (PCCT, single tile)" begin
+        n_bins = Int32(2)
+        K = N_E
+        W = zeros(Float32, N_E, 2)
+        for e in 1:N_E
+            W[e, 1] = wη[e] * (1.0f0 - (e - 1) / (N_E - 1))
+            W[e, 2] = wη[e] * ((e - 1) / (N_E - 1))
+        end
+        pilot = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
+        ne = length(pilot)
+        out_s = zeros(Float32, ne * 2)
+        out_d = zeros(Float32, ne * 2)
+        BS.siddon_fused_spectral_project!(pilot, out_s, n_bins, mask, geom, μ_table, W, Val(K), Int32(1))
+        BS.dd_fused_spectral_project!(pilot, out_d, n_bins, mask, geom, μ_table, W, Val(K), Int32(1))
+        for b in 1:2
+            seg = ((b - 1) * ne + 1):(b * ne)
+            bs = out_s[seg]
+            bd = out_d[seg]
+            mm = bs .> 1.0f-6
+            relb = abs.(bd[mm] .- bs[mm]) ./ bs[mm]
+            @test sum(relb) / length(relb) < 0.02   # bin mean within 2%
+        end
+    end
+end
+
+# -----------------------------------------------------------------------------
 # create_μ_volume! — label → material → μ at energy mapping.
 # -----------------------------------------------------------------------------
 @testset "create_μ_volume!" begin
