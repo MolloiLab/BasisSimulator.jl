@@ -183,7 +183,7 @@ function compute_projection_weights(
     ::Type{T}
 ) where T <: AbstractFloat
     ones_volume = ones(T, volume_size...)
-    ray_sums = siddon_forward_project(ones_volume, geom)
+    ray_sums = dd_forward_project(ones_volume, geom)
     eps = T(1e-8)
     AK.foreachindex(ray_sums) do idx
         val = ray_sums[idx]

@@ -1,5 +1,8 @@
 ### A Pluto.jl notebook ###
-# v0.19.0
+# v0.1.0
+
+using Markdown
+using InteractiveUtils
 
 # ╔═╡ 01000003-0000-4000-8000-000000000001
 begin
@@ -47,6 +50,7 @@ detect a GPU backend.
 import BasisSimulator as BS
 
 # ╔═╡ 01000003-0000-4000-8000-000000000003
+# ╠═╡ show_logs = false
 import CairoMakie as CM
 
 # ╔═╡ 01000004-0000-4000-8000-000000000001

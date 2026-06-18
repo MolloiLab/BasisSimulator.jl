@@ -79,6 +79,11 @@ include("geometry/affine.jl")
 # Reference: CERN/TIGRE/Common/CUDA/Siddon_projection.cu
 include("projection/siddon.jl")
 
+# Distance-driven forward projection (CatSim/XCIST DD3, gather form)
+# Reference: De Man & Basu 2004; gecatsim DD3Proj_roi_notrans_mm.cpp
+# Drop-in replacement for Siddon (same signatures, cm units, Σμ·l output).
+include("projection/dd.jl")
+
 # =============================================================================
 # Detector (ALL detector effects + noise)
 # =============================================================================

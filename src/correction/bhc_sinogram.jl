@@ -603,7 +603,7 @@ function apply_bhc_two_material(
         end
     end
 
-    p_b_gpu = siddon_forward_project(bone_μ_gpu, geom)
+    p_b_gpu = dd_forward_project(bone_μ_gpu, geom)
 
     p_s_gpu = similar(sino_water)
     copyto!(p_s_gpu, sino_water)

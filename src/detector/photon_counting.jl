@@ -495,7 +495,7 @@ function pcct_forward_project(
 
             if has_src
                 copyto!(bt_sub, @view ws_source_spectral[:, :, ts:te])
-                siddon_fused_spectral_project!(
+                dd_fused_spectral_project!(
                     _pilot, _outputs_flat, Int32(n_bins), mask, _proj_geom,
                     μ_sub, W_sub, Val(TILE_K), Int32(1);
                     volume_extent=volume_extent,
@@ -503,7 +503,7 @@ function pcct_forward_project(
                     ws_detector_u=_ws_u, ws_detector_v=_ws_v,
                     ws_bowtie_spectral=bt_sub)
             else
-                siddon_fused_spectral_project!(
+                dd_fused_spectral_project!(
                     _pilot, _outputs_flat, Int32(n_bins), mask, _proj_geom,
                     μ_sub, W_sub, Val(TILE_K), Int32(1);
                     volume_extent=volume_extent,
@@ -636,7 +636,7 @@ function pcct_forward_project(
 
         # Forward project at this energy (native or binned resolution)
         fill!(sino_buf, zero(T))
-        siddon_forward_project!(sino_buf, μ_volume, proj_geom;
+        dd_forward_project!(sino_buf, μ_volume, proj_geom;
             ws_source_positions=_ws_src,
             ws_detector_centers=_ws_det,
             ws_detector_u=_ws_u,
