@@ -43,6 +43,12 @@ for preset lookup — it is not stored on the struct.
 - `seed::Union{Int, Nothing}`: Random seed for reproducibility.  Default 42.
 - `detector_efficiency_mode::Symbol`: Override detector efficiency calculation mode.
   `:auto` (default) = let driver decide; `:mc_lut` = force MC LUT; `:beer_lambert` = force analytical.
+- `projector::Symbol`: Forward-projection ray tracer.  `:dd` (default) = distance-driven,
+  anti-aliased footprint integration (robust in severe beam-hardened regions).  `:siddon` =
+  exact ray tracing, ~3.5-5.5x faster on GPU but ALIASES in severe beam-hardened regions —
+  use only when speed outranks accuracy.  NOTE: to keep the iterative-recon system matrix
+  consistent with the data, pass the SAME projector to `create_hir_recon_workspace(; projector=…)`
+  (both default `:dd`).
 """
 struct SimOptions
     # --- Physics Pipeline (7 effects) ---
@@ -67,6 +73,7 @@ struct SimOptions
     # --- General ---
     seed::Union{Int, Nothing}
     detector_efficiency_mode::Symbol   # :auto, :mc_lut, :beer_lambert
+    projector::Symbol                  # :dd (default, anti-aliased) or :siddon (fast)
 end
 
 """
@@ -107,8 +114,10 @@ function SimOptions(;
         use_pcct_scatter_correction::Union{Bool, Nothing} = nothing,
         pcct_noise_reduction::Float64 = 0.0,
         seed::Union{Int, Nothing} = 42,
-        detector_efficiency_mode::Symbol = :auto
+        detector_efficiency_mode::Symbol = :auto,
+        projector::Symbol = :dd
     )
+    _validate_projector(projector)
     # Fidelity preset defaults
     # :eict = all EICT effects ON; :pcct = :eict + MC pile-up degradation.
     # Pile-up correction (the inverse) is decoupled — apply it post-simulate
@@ -167,7 +176,8 @@ function SimOptions(;
         _pcct_scatter_correction,
         clamp(pcct_noise_reduction, 0.0, 1.0),
         seed,
-        detector_efficiency_mode
+        detector_efficiency_mode,
+        projector
     )
 end
 

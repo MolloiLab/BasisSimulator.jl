@@ -149,6 +149,13 @@ _ts("entering SimOptions testset")
         end
     end
 
+    @testset "projector defaults to :dd, accepts :siddon, validates" begin
+        @test BS.SimOptions().projector == :dd
+        @test BS.SimOptions(fidelity = :pcct).projector == :dd
+        @test BS.SimOptions(projector = :siddon).projector == :siddon
+        @test_throws ArgumentError BS.SimOptions(projector = :bogus)
+    end
+
     @testset "unknown fidelity errors with a clear message" begin
         @test_throws ErrorException BS.SimOptions(fidelity = :totally_made_up)
     end

@@ -564,9 +564,11 @@ function apply_bhc_two_material(
         sinogram_raw::AbstractArray{T, 3},
         bhc::TwoMaterialBHCPerColumn,
         geom,
-        matrix_size::Tuple{Int, Int, Int},
+        matrix_size::Tuple{Int, Int, Int};
+        projector::Symbol = :dd,
     ) where {T <: AbstractFloat}
 
+    _validate_projector(projector)
     n_col = size(sinogram_raw, 1)
     length(bhc.water_bhc_per_col) == n_col ||
         error("apply_bhc_two_material(PerColumn): polys $(length(bhc.water_bhc_per_col)) ≠ sino n_col $n_col")
@@ -603,7 +605,7 @@ function apply_bhc_two_material(
         end
     end
 
-    p_b_gpu = dd_forward_project(bone_μ_gpu, geom)
+    p_b_gpu = _project_mono(projector, bone_μ_gpu, geom)
 
     p_s_gpu = similar(sino_water)
     copyto!(p_s_gpu, sino_water)

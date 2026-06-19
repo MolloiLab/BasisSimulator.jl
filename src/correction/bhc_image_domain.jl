@@ -74,8 +74,10 @@ function apply_bhc_image_domain(
         hu_low::Real = 70.0,
         hu_high::Real = 150.0,
         scale_factor::Real = 0.5,
+        projector::Symbol = :dd,
     ) where {T <: AbstractFloat}
 
+    _validate_projector(projector)
     μ_w_ref = T(μ_water_ref)
     hu_low_T = T(hu_low)
     hu_high_T = T(hu_high)
@@ -107,7 +109,7 @@ function apply_bhc_image_domain(
     # Use geom's recon FOV (no volume_extent override) so this matches Step 3's
     # FDK back-projection grid exactly — same physical box on both halves of
     # the round-trip.
-    ξ_gpu = dd_forward_project(high_atten_μ, geom)
+    ξ_gpu = _project_mono(projector, high_atten_μ, geom)
 
     # Step 3: FDK-reconstruct the error sinogram → error image.
     error_image = fdk_reconstruct(ξ_gpu, geom, matrix_size)

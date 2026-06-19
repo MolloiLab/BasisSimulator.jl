@@ -180,10 +180,11 @@ Compute W = 1 / (A · 1). Normalizes for ray length differences.
 function compute_projection_weights(
     geom::CTGeometry,
     volume_size::NTuple{3, Int},
-    ::Type{T}
+    ::Type{T};
+    projector::Symbol = :dd
 ) where T <: AbstractFloat
     ones_volume = ones(T, volume_size...)
-    ray_sums = dd_forward_project(ones_volume, geom)
+    ray_sums = _project_mono(projector, ones_volume, geom)
     eps = T(1e-8)
     AK.foreachindex(ray_sums) do idx
         val = ray_sums[idx]
