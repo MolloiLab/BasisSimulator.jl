@@ -552,8 +552,14 @@ Bowtie-aware sinogram-domain two-material BHC.
    `w_norm_per_col` and add the (mono − poly) residual to the original
    sinogram.
 
+# Keyword Arguments
+- `projector::Symbol=:dd`: forward ray tracer for Stage 2's bone-fraction
+  projection.  Pass the SAME value as the simulation's `SimOptions(; projector=…)`
+  (`:dd` default, anti-aliased; `:siddon` faster but aliases) so the correction
+  matches the model that generated the data.
+
 # Note on geometry
-Stage 2's internal FDK + Siddon round-trip both use `geom`'s recon FOV. An
+Stage 2's internal FDK + forward-projection round-trip both use `geom`'s recon FOV. An
 earlier signature accepted `volume_extent=phantom.extent` and forwarded it to
 the forward projector only — the matching FDK call always used `geom`'s FOV,
 which caused a grid mismatch and bone-shaped halo artifacts whenever the two

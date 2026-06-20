@@ -352,6 +352,10 @@ sim_opts = BS.SimOptions(
     # use_optical_crosstalk = false,   # disable detector optical crosstalk
     # use_lag               = false,   # disable scintillator afterglow
     # use_noise             = false,   # ideal sinogram only (no Poisson + Gaussian)
+
+    # projector = :siddon,   # fast ray tracer (~3.5-5.5×); default :dd is anti-aliased.
+                             #  :siddon ALIASES in severe beam-hardened regions — speed over
+                             #  accuracy. The BHC cells below read sim_opts.projector to match.
 );
 
 # ╔═╡ 05000003-0000-4000-8000-000000000001
@@ -674,7 +678,8 @@ hu_std_corr = let
     # 1. Sinogram-domain BHC (returns a CPU array)
     sino_gpu = to_gpu(sim_std.sino)
     sino_bhc = BS.apply_bhc_two_material(
-        sino_gpu, bhc_calibration.model, sim_std.geom, matrix_size,
+        sino_gpu, bhc_calibration.model, sim_std.geom, matrix_size;
+        projector = sim_opts.projector,
     )
     sino_gpu = to_gpu(sino_bhc)
 
@@ -688,6 +693,7 @@ hu_std_corr = let
         hu_low = 50.0,
         hu_high = 150.0,
         scale_factor = 0.2,
+        projector = sim_opts.projector,
     )
 
     # 4. μ → HU using BHC's calibrated μ_water_ref (Float32 to feed cupping correction)
@@ -721,7 +727,8 @@ hu_low_corr = let
     # 1. Sinogram-domain BHC
     sino_gpu = to_gpu(sim_low.sino)
     sino_bhc = BS.apply_bhc_two_material(
-        sino_gpu, bhc_calibration.model, sim_low.geom, matrix_size,
+        sino_gpu, bhc_calibration.model, sim_low.geom, matrix_size;
+        projector = sim_opts.projector,
     )
     sino_gpu = to_gpu(sino_bhc)
 
@@ -735,6 +742,7 @@ hu_low_corr = let
         hu_low = 50.0,
         hu_high = 150.0,
         scale_factor = 0.2,
+        projector = sim_opts.projector,
     )
 
     # 4. μ → HU
