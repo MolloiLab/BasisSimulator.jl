@@ -405,6 +405,8 @@ function pcct_forward_project(
     ws_outputs_flat = nothing,        # GPU [n_elements * n_bins]
     ws_native_outputs_flat = nothing, # GPU [native_n_elements * n_bins] (for bf>1)
     ws_source_spectral = nothing,    # GPU [n_cols, n_rows, n_energies_padded] heel × bowtie
+    # Ray tracer: :dd (default, anti-aliased) or :siddon (fast, aliases).
+    projector::Symbol = :dd,
     # Ignored kwargs for backward compat with callers that still pass them
     kwargs...
 )
@@ -495,7 +497,8 @@ function pcct_forward_project(
 
             if has_src
                 copyto!(bt_sub, @view ws_source_spectral[:, :, ts:te])
-                dd_fused_spectral_project!(
+                _project_fused_spectral!(
+                    projector,
                     _pilot, _outputs_flat, Int32(n_bins), mask, _proj_geom,
                     μ_sub, W_sub, Val(TILE_K), Int32(1);
                     volume_extent=volume_extent,
@@ -503,7 +506,8 @@ function pcct_forward_project(
                     ws_detector_u=_ws_u, ws_detector_v=_ws_v,
                     ws_bowtie_spectral=bt_sub)
             else
-                dd_fused_spectral_project!(
+                _project_fused_spectral!(
+                    projector,
                     _pilot, _outputs_flat, Int32(n_bins), mask, _proj_geom,
                     μ_sub, W_sub, Val(TILE_K), Int32(1);
                     volume_extent=volume_extent,
@@ -636,7 +640,7 @@ function pcct_forward_project(
 
         # Forward project at this energy (native or binned resolution)
         fill!(sino_buf, zero(T))
-        dd_forward_project!(sino_buf, μ_volume, proj_geom;
+        _project_mono!(projector, sino_buf, μ_volume, proj_geom;
             ws_source_positions=_ws_src,
             ws_detector_centers=_ws_det,
             ws_detector_u=_ws_u,

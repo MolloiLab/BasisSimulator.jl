@@ -345,6 +345,8 @@ sim_opts = BS.SimOptions(
     fidelity = :eict,
     seed = 1234,
     use_heel_effect = false,   # exact forward/inverse spectral match
+    # projector = :siddon,     # fast ray tracer; default :dd is anti-aliased.
+                               #  BHC (ufc_poly_recon) reads sim_opts.projector to match.
 );
 
 # ╔═╡ 09000006-0000-4000-8000-000000000020
@@ -565,7 +567,10 @@ function ufc_poly_recon(sino_cpu, geom, bhc)
     matrix_size = recon_opts.matrix_size
 
     sino_gpu = to_gpu(sino_cpu)
-    sino_bhc = BS.apply_bhc_two_material(sino_gpu, bhc.model, geom, matrix_size)
+    # BHC forward-projects internally → match the sim's projector (sim_opts global).
+    sino_bhc = BS.apply_bhc_two_material(
+        sino_gpu, bhc.model, geom, matrix_size; projector = sim_opts.projector,
+    )
     sino_gpu = to_gpu(sino_bhc)
 
     ws_fdk = BS.create_fdk_recon_workspace(sino_gpu, geom, matrix_size)
@@ -574,6 +579,7 @@ function ufc_poly_recon(sino_cpu, geom, bhc)
     BS.apply_bhc_image_domain(
         recon_μ, geom, matrix_size, bhc.μ_water;
         hu_low = 50.0, hu_high = 150.0, scale_factor = 0.2,
+        projector = sim_opts.projector,
     )
 
     hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc.μ_water))

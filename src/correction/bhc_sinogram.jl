@@ -552,8 +552,14 @@ Bowtie-aware sinogram-domain two-material BHC.
    `w_norm_per_col` and add the (mono − poly) residual to the original
    sinogram.
 
+# Keyword Arguments
+- `projector::Symbol=:dd`: forward ray tracer for Stage 2's bone-fraction
+  projection.  Pass the SAME value as the simulation's `SimOptions(; projector=…)`
+  (`:dd` default, anti-aliased; `:siddon` faster but aliases) so the correction
+  matches the model that generated the data.
+
 # Note on geometry
-Stage 2's internal FDK + Siddon round-trip both use `geom`'s recon FOV. An
+Stage 2's internal FDK + forward-projection round-trip both use `geom`'s recon FOV. An
 earlier signature accepted `volume_extent=phantom.extent` and forwarded it to
 the forward projector only — the matching FDK call always used `geom`'s FOV,
 which caused a grid mismatch and bone-shaped halo artifacts whenever the two
@@ -564,9 +570,11 @@ function apply_bhc_two_material(
         sinogram_raw::AbstractArray{T, 3},
         bhc::TwoMaterialBHCPerColumn,
         geom,
-        matrix_size::Tuple{Int, Int, Int},
+        matrix_size::Tuple{Int, Int, Int};
+        projector::Symbol = :dd,
     ) where {T <: AbstractFloat}
 
+    _validate_projector(projector)
     n_col = size(sinogram_raw, 1)
     length(bhc.water_bhc_per_col) == n_col ||
         error("apply_bhc_two_material(PerColumn): polys $(length(bhc.water_bhc_per_col)) ≠ sino n_col $n_col")
@@ -603,7 +611,7 @@ function apply_bhc_two_material(
         end
     end
 
-    p_b_gpu = dd_forward_project(bone_μ_gpu, geom)
+    p_b_gpu = _project_mono(projector, bone_μ_gpu, geom)
 
     p_s_gpu = similar(sino_water)
     copyto!(p_s_gpu, sino_water)

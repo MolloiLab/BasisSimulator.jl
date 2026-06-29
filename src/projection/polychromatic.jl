@@ -452,7 +452,9 @@ function _forward_project_poly!(
         # Control flag: true = fused single-pass kernel, false = sequential energy loop
         # Default false: 234-bin fused kernel causes massive register spilling on GPU (3.5× slower).
         # Tiled fusion (K=16) will replace this — see SPEED-BUILD-V2-002.
-        fused::Bool = false
+        fused::Bool = false,
+        # Ray tracer: :dd (default, anti-aliased) or :siddon (fast, aliases).
+        projector::Symbol = :dd
     ) where {T <: AbstractFloat}
 
     n_energies = length(energies)
@@ -474,7 +476,8 @@ function _forward_project_poly!(
             _buf
         end
 
-        dd_fused_poly_project!(
+        _project_fused_poly!(
+            projector,
             sinogram, mask, geom, ws_μ_table_gpu, wη_dev, Val(n_energies);
             volume_extent = volume_extent,
             ws_source_positions = ws_source_positions,
@@ -494,7 +497,7 @@ function _forward_project_poly!(
     if ws_μ_table_gpu !== nothing && ws_wη_gpu !== nothing
         @info "TILED PATH: K=16, n_energies=$n_energies, mask=$(size(mask)), sino=$(size(sinogram))" maxlog = 1
 
-        # Tile parameters — use proven-fast siddon_fused_poly_project! with Val(16)
+        # Tile parameters — fused poly projector (Val(16), `projector`-selected)
         # + subset copies per tile. Avoids runtime offset arithmetic that causes
         # 71% GPU slowdown vs compile-time constant indices.
         TILE_K = 16
@@ -524,7 +527,8 @@ function _forward_project_poly!(
             end
 
             # Use proven-fast fused kernel with Val(16) — 95ms/tile on Metal
-            dd_fused_poly_project!(
+            _project_fused_poly!(
+                projector,
                 sinogram, mask, geom,
                 μ_sub, wη_sub, Val(TILE_K);
                 volume_extent = volume_extent,
@@ -580,7 +584,8 @@ function _forward_project_poly!(
 
         # Forward project at this energy
         fill!(sino_mono, zero(T))
-        dd_forward_project!(
+        _project_mono!(
+            projector,
             sino_mono, μ_volume, geom;
             ws_source_positions = ws_source_positions,
             ws_detector_centers = ws_detector_centers,

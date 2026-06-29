@@ -861,6 +861,9 @@ mutable struct HIRReconWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, 
 
     # ─── Pre-computed HIR params ───
     params::HIRParams
+
+    # ─── Forward-projection ray tracer (must match the sim's projector) ───
+    projector::Symbol         # :dd (default) or :siddon
 end
 
 """
@@ -869,6 +872,11 @@ end
 Create a pre-allocated workspace for zero-allocation Hybrid IR `reconstruct!()`.
 
 `filter` can be a `FilterType` struct or a `Symbol` (e.g., `:standard`).
+
+`projector` (`:dd` default, or `:siddon`) selects the forward ray tracer used
+for the IR system matrix (`A·x` and `W = 1/(A·1)`).  Set it to the SAME value
+as the simulation's `SimOptions(; projector=…)` so the recon inverts the
+operator that generated the data.
 """
 function create_hir_recon_workspace(
         sinogram::AbstractArray{<:AbstractFloat, 3},
@@ -877,8 +885,10 @@ function create_hir_recon_workspace(
         T::Type{<:AbstractFloat} = eltype(sinogram),
         strength::Int = 3,
         filter::Union{FilterType, Symbol} = StandardFilter(),
-        cutoff::Float64 = 1.0
+        cutoff::Float64 = 1.0,
+        projector::Symbol = :dd
     )
+    _validate_projector(projector)
     filter = filter isa Symbol ? filter_from_symbol(filter) : filter
     sino_shape = size(sinogram)
 
@@ -910,8 +920,9 @@ function create_hir_recon_workspace(
     copyto!(geom_detector_v, T.(geom.detector_v))
 
     # Pre-compute SIRT-style normalization weights (W_proj and V_inv)
-    # These are expensive but only computed once
-    W_proj_cpu = compute_projection_weights(geom, volume_size, T)
+    # These are expensive but only computed once.  W_proj = 1/(A·1) uses the
+    # selected forward projector so the system matrix matches the sim's.
+    W_proj_cpu = compute_projection_weights(geom, volume_size, T; projector = projector)
     W_proj = similar(sinogram, T, size(W_proj_cpu)...)
     copyto!(W_proj, W_proj_cpu)
 
@@ -967,6 +978,7 @@ function create_hir_recon_workspace(
         subsets, subset_geometries,
         subset_geom_src, subset_geom_det, subset_geom_u, subset_geom_v,
         subset_sino_buf, subset_Ax_buf, subset_W_proj_buf, subset_stat_weights_buf,
-        params
+        params,
+        projector
     )
 end

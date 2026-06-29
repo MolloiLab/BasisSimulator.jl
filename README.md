@@ -58,6 +58,15 @@ hu = BS.to_hounsfield(
 )
 ```
 
+### Forward projector: speed vs. accuracy
+
+`SimOptions(; projector=:dd)` (default) uses the **distance-driven** ray tracer —
+anti-aliased and robust in severe beam-hardened regions. Pass `projector=:siddon`
+for **~3.5–5.5× faster** forward projection, at the cost of aliasing in those
+regions (use when speed outranks accuracy). If you reconstruct **iteratively**,
+pass the *same* projector to `create_hir_recon_workspace(; projector=…)` so the IR
+system matrix matches the data — FDK reconstruction is unaffected.
+
 ## Documentation
 
 Full API reference, physics overview, and worked examples: **docs link TBD** (Documenter site

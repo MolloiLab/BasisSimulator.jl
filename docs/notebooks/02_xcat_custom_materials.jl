@@ -547,7 +547,13 @@ protocol = BS.CTProtocol(
 )
 
 # ╔═╡ 07000004-0000-4000-8000-000000000001
-sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234)
+# `projector` picks the forward ray tracer: :dd (default) is distance-driven and
+# anti-aliased (robust in severe beam-hardened regions); :siddon is ~3.5-5.5× faster
+# on GPU but ALIASES in those regions — use it only when speed outranks accuracy.
+# The BHC and Hybrid-IR cells below all read `sim_opts.projector`, so changing it
+# HERE updates the whole pipeline consistently — the recon must invert the operator
+# that generated the data, or the IR system matrix won't match and convergence suffers.
+sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234, projector = :siddon)
 
 # ╔═╡ 07000005-0000-4000-8000-000000000001
 recon_opts = BS.ReconOptions(
@@ -701,7 +707,8 @@ hu_fbp = sim === nothing ? nothing : let
         # 1. Sinogram-domain BHC (returns a CPU array)
         sino_gpu = to_gpu(sim.sino)
         sino_bhc = BS.apply_bhc_two_material(
-            sino_gpu, bhc_calibration.model, sim.geom, matrix_size,
+            sino_gpu, bhc_calibration.model, sim.geom, matrix_size;
+            projector = sim_opts.projector,
         )
         sino_gpu = to_gpu(sino_bhc)
 
@@ -715,6 +722,7 @@ hu_fbp = sim === nothing ? nothing : let
             hu_low = 50.0,
             hu_high = 150.0,
             scale_factor = 0.2,
+            projector = sim_opts.projector,
         )
 
         # 4. μ → HU using BHC's calibrated μ_water_ref (Float32 for cupping correction)
@@ -749,6 +757,13 @@ swapped in for the FDK workspace.
     FDK init + iterative PWLS refinement with a Huber prior. It costs
     ~5–15× FBP runtime but returns ~30 % lower pixel σ at matched
     resolution.
+
+!!! warning "Projector consistency (IR only)"
+    Hybrid IR's data-fidelity term uses a forward projector `A`, so it
+    **must use the same projector that generated the sinogram**. We pass
+    `projector = sim_opts.projector` to `create_hir_recon_workspace`, so
+    flipping `sim_opts.projector` to `:siddon` (for speed) automatically
+    keeps the recon consistent. FBP (§8) is immune — it has no forward `A`.
 """
 
 # ╔═╡ 10000002-0000-4000-8000-000000000001
@@ -758,12 +773,17 @@ hu_hir = sim === nothing ? nothing : let
         # 1. Sinogram-domain BHC
         sino_gpu = to_gpu(sim.sino)
         sino_bhc = BS.apply_bhc_two_material(
-            sino_gpu, bhc_calibration.model, sim.geom, matrix_size,
+            sino_gpu, bhc_calibration.model, sim.geom, matrix_size;
+            projector = sim_opts.projector,
         )
         sino_gpu = to_gpu(sino_bhc)
 
         # 2. Hybrid IR (FBP init + PWLS refinement, strength = 3)
-        ws_hir = BS.create_hir_recon_workspace(sino_gpu, sim.geom, matrix_size; strength = 3)
+        # projector MUST match the forward sim so the IR system matrix A inverts
+        # the operator that generated the data (read from sim_opts, single source).
+        ws_hir = BS.create_hir_recon_workspace(
+            sino_gpu, sim.geom, matrix_size; strength = 3, projector = sim_opts.projector,
+        )
         recon_μ = BS.reconstruct!(ws_hir, sino_gpu, sim.geom)
 
         # FBP's `reconstruct!` masks voxels outside the inscribed scan FOV
@@ -777,6 +797,7 @@ hu_hir = sim === nothing ? nothing : let
             hu_low = 50.0,
             hu_high = 150.0,
             scale_factor = 0.2,
+            projector = sim_opts.projector,
         )
 
         # 4. μ → HU using BHC's calibrated μ_water_ref

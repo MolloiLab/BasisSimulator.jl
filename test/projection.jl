@@ -242,3 +242,44 @@ end
     @test eltype(μ64) == Float64
     @test μ32[1, 1, 1] ≈ Float32(μ64[1, 1, 1])
 end
+
+# -----------------------------------------------------------------------------
+# Projector selection — :dd / :siddon dispatch shims must route to the exact
+# underlying projector (bit-identical), and validate the symbol.
+# -----------------------------------------------------------------------------
+@testset "projector selection (_project_mono / _validate_projector)" begin
+    geom = _toy_proj_geom(n_cols = 32, n_rows = 4, n_angles = 4, fov_cm = 10.0)
+    vol = fill(Float32(0.15), 32, 32, 4)
+
+    @testset "_validate_projector" begin
+        @test BS._validate_projector(:dd) === :dd
+        @test BS._validate_projector(:siddon) === :siddon
+        @test_throws ArgumentError BS._validate_projector(:bogus)
+    end
+
+    @testset "allocating shim routes to the exact projector" begin
+        @test BS._project_mono(:dd, vol, geom) == BS.dd_forward_project(vol, geom)
+        @test BS._project_mono(:siddon, vol, geom) == BS.siddon_forward_project(vol, geom)
+    end
+
+    @testset "in-place shim routes to the exact projector" begin
+        sino = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
+        ref_dd = BS.dd_forward_project(vol, geom)
+        BS._project_mono!(:dd, sino, vol, geom)
+        @test sino == ref_dd
+
+        ref_si = BS.siddon_forward_project(vol, geom)
+        fill!(sino, 0.0f0)
+        BS._project_mono!(:siddon, sino, vol, geom)
+        @test sino == ref_si
+    end
+
+    @testset ":dd and :siddon are genuinely different code paths" begin
+        # Same line integral (both discretise ∫μ·dl) but not byte-identical.
+        s_dd = BS._project_mono(:dd, vol, geom)
+        s_si = BS._project_mono(:siddon, vol, geom)
+        @test s_dd != s_si                       # different projectors
+        mid = geom.n_cols ÷ 2 + 1
+        @test isapprox(s_dd[mid, 2, 1], s_si[mid, 2, 1]; rtol = 0.05)  # but close
+    end
+end

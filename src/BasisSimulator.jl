@@ -84,6 +84,10 @@ include("projection/siddon.jl")
 # Drop-in replacement for Siddon (same signatures, cm units, Σμ·l output).
 include("projection/dd.jl")
 
+# Projector selection (:dd default / :siddon) — shared by the forward sim,
+# the IR system matrix, and the BHC correction so the model stays consistent.
+include("projection/select_projector.jl")
+
 # =============================================================================
 # Detector (ALL detector effects + noise)
 # =============================================================================

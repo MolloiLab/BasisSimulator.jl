@@ -125,6 +125,7 @@ function simulate!(
         ws_W_matrix_gpu = ws.W_matrix_gpu,
         ws_outputs_flat = ws.outputs_flat,
         ws_native_outputs_flat = ws.native_outputs_flat,
+        projector = sim_opts.projector,
     )
 
     # ─── Energy-resolved scatter injection (BEFORE noise) ───
@@ -371,7 +372,8 @@ function simulate!(
         volume_extent = phantom.extent,
         ws_η = ws.η_vec,
         ws_bowtie_spectral = ws.bowtie_spectral,
-        ws_wη_gpu = ws.wη_gpu
+        ws_wη_gpu = ws.wη_gpu,
+        projector = sim_opts.projector
     )
 
     # ═══════════════════════════════════════════════════════════════════════
@@ -1318,10 +1320,12 @@ function reconstruct!(
             _copy_subset_into_buffer!(ws.subset_W_proj_buf, ws.W_proj, angle_indices)
             _copy_subset_into_buffer!(ws.subset_stat_weights_buf, ws.stat_weights, angle_indices)
 
-            # Forward project with subset geometry → subset_Ax_buf
+            # Forward project with subset geometry → subset_Ax_buf.
+            # Uses ws.projector so A·x matches the projector that made the data.
             ax_view = view(ws.subset_Ax_buf, :, :, 1:n_sub)
             fill!(ax_view, zero(T))
-            dd_forward_project!(
+            _project_mono!(
+                ws.projector,
                 ax_view, ws.volume, geom_s;
                 ws_source_positions = ws.subset_geom_source_positions[s],
                 ws_detector_centers = ws.subset_geom_detector_centers[s],
