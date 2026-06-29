@@ -1,7 +1,7 @@
 name = "BasisSimulator"
 uuid = "8f904dfe-b85e-4ff6-b463-dae2292396b9"
 authors = ["Dale Black <djblack@uci.edu>"]
-version = "0.4.0"  # x-release-please-version
+version = "0.5.0"  # x-release-please-version
 
 [deps]
 AcceleratedKernels = "6a4ca0a5-0e36-4168-a932-d9be78d558f1"
