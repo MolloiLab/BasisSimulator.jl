@@ -1,0 +1,13 @@
+# Publish BasisSimulator.jl to Snapshot as a custom BUILD (the blessed build.sh
+# override) — NOT Snapshot's default Pluto-notebook→WASM collection pipeline.
+#
+# Snapshot sees type="build", runs docs/build.sh in your own GitHub Actions, and
+# publishes whatever it writes to docs/dist. The build mirrors the regular GitHub
+# Pages docs CI (.github/workflows/docs.yml) and REUSES the committed, pre-rendered
+# Pluto HTML (docs/notebooks-static/) — so notebooks are never recompiled on CI.
+title = "BasisSimulator.jl"
+type  = "build"
+
+[app]
+dir    = "docs"    # the Therapy docs app lives in docs/ (docs/app.jl + docs/build.sh)
+output = "dist"    # app.jl writes the static site to docs/dist

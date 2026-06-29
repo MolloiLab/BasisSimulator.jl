@@ -28,7 +28,11 @@ cd(@__DIR__)
 # =============================================================================
 
 const IS_BUILD = length(ARGS) > 0 && ARGS[1] == "build"
-ENV["BASISSIM_BASE"] = IS_BUILD ? "/BasisSimulator.jl" : ""
+# Snapshot hosts this app under /app/<owner>/<repo>/ and exports SNAPSHOT_BASE_PATH to
+# that path — honor it so every href + asset resolves there. Otherwise fall back to
+# "/BasisSimulator.jl" for GH Pages (molloilab.github.io/BasisSimulator.jl) in build
+# mode, or "" for the local dev server.
+ENV["BASISSIM_BASE"] = get(ENV, "SNAPSHOT_BASE_PATH", IS_BUILD ? "/BasisSimulator.jl" : "")
 
 # =============================================================================
 # Pluto notebook export — runs PlutoStaticHTML on docs/notebooks/*.jl, writes

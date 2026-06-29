@@ -184,6 +184,32 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
                 )
             ),
 
+            # ── Projector notice ──────────────────────────────────────────────
+            # The whole gallery runs on the fast Siddon projector so the docs
+            # rebuild quickly; the distance-driven :dd default is what to use
+            # for real work.  Amber callout so it can't be missed.
+            Div(:class => "rounded-xl border border-amber-300 dark:border-amber-700/60 bg-amber-50 dark:bg-amber-950/30 px-5 py-4 flex items-start gap-4",
+                Div(:class => "shrink-0 text-2xl leading-none select-none",
+                    RawHtml("&#9888;&#65039;")
+                ),
+                Div(:class => "space-y-1.5",
+                    P(:class => "font-serif font-semibold text-amber-900 dark:text-amber-200 text-base leading-snug",
+                        "These examples render with the fast Siddon projector — not the default."
+                    ),
+                    P(:class => "text-sm text-amber-800/90 dark:text-amber-200/80 leading-relaxed",
+                        "Every notebook here sets ",
+                        Code(:class => "font-mono px-1 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-900 dark:text-amber-100",
+                            "projector = :siddon"),
+                        " so the gallery rebuilds fast. Siddon is exact ray-tracing but ",
+                        "aliases in severely beam-hardened regions. For real work, use the ",
+                        "library default ",
+                        Code(:class => "font-mono px-1 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-900 dark:text-amber-100",
+                            "projector = :dd"),
+                        " (distance-driven) — anti-aliased and more accurate."
+                    )
+                )
+            ),
+
             # Notebook grid
             if isempty(slugs)
                 Div(:class => "py-16 border border-dashed border-warm-300 dark:border-warm-700 rounded-xl text-center",

@@ -17,18 +17,203 @@ env:
   WASMTOOLS_VERSION: 1.244.0
   SNAPSHOT_OPTIMIZE: size
   SNAPSHOT_INGEST_URL: https://snapshot.show
+
+# Build model (general, one-size-fits-most):
+#   discover → detect app vs collection + list notebooks, and WARM the Julia depot
+#             cache (instantiate + precompile ONCE).
+#   export   → a notebook collection fans out: one job per notebook, each RESTORES
+#             the warmed depot (no re-precompile) and compiles its notebook in
+#             parallel. fail-fast:false so one bad notebook never sinks the rest.
+#   publish  → gather the per-notebook outputs into one site, DEDUPLICATE the shared
+#             WasmMakie font atlas, then zip → attest → ingest (OIDC). Apps skip the
+#             matrix and build/publish in a single job.
+# Fine-tuning is via the repo's snapshot.toml (type/app/home/theme/oracle) and a
+# blessed build.sh for apps — the defaults Just Work without any of that.
+
 jobs:
-  publish:
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      kind: ${{ steps.d.outputs.kind }}
+      matrix: ${{ steps.d.outputs.matrix }}
+      has_notebooks: ${{ steps.d.outputs.has_notebooks }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: repo }
+      - uses: actions/checkout@v4
+        with: { repository: GroupTherapyOrg/WasmTarget.jl, ref: "${{ env.SNAPSHOT_WT_REF }}", path: WasmTarget.jl }
+      - uses: actions/checkout@v4
+        with: { repository: GroupTherapyOrg/PlutoIslands.jl, ref: "${{ env.SNAPSHOT_PI_REF }}", path: PlutoIslands.jl }
+      - uses: julia-actions/setup-julia@v2
+        with: { version: "1.12" }
+      - uses: julia-actions/cache@v2          # WARMS the shared depot cache
+      - name: Instantiate + precompile engine (shared by every matrix job)
+        run: julia --project=PlutoIslands.jl -e 'using Pkg; Pkg.Registry.add("General"); Pkg.instantiate(); using PlutoIslands'
+      - name: Fetch Snapshot driver + collection builder
+        run: |
+          curl -fsSL "${SNAPSHOT_INGEST_URL%/}/ci/export.jl" -o export.jl
+          curl -fsSL "${SNAPSHOT_INGEST_URL%/}/ci/collection.jl" -o collection.jl
+      - id: d
+        name: Discover (kind + notebook matrix)
+        run: |
+          julia --project=PlutoIslands.jl export.jl discover repo discover.json
+          kind=$(jq -r '.kind' discover.json)
+          matrix=$(jq -c '{nb: .notebooks}' discover.json)
+          n=$(jq '.notebooks | length' discover.json)
+          { echo "kind=$kind"; echo "matrix=$matrix"; echo "has_notebooks=$([ "${n:-0}" -gt 0 ] && echo true || echo false)"; } >> "$GITHUB_OUTPUT"
+          echo "→ kind=$kind, $n notebook(s)"
+
+  # ── a notebook collection: one parallel job per notebook ──────────────────
+  export:
+    needs: discover
+    if: needs.discover.outputs.kind == 'collection' && needs.discover.outputs.has_notebooks == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: repo }
+      - uses: actions/checkout@v4
+        with: { repository: GroupTherapyOrg/WasmTarget.jl, ref: "${{ env.SNAPSHOT_WT_REF }}", path: WasmTarget.jl }
+      - uses: actions/checkout@v4
+        with: { repository: GroupTherapyOrg/PlutoIslands.jl, ref: "${{ env.SNAPSHOT_PI_REF }}", path: PlutoIslands.jl }
+      # ── per-notebook export cache: key = notebook source hash + the engine
+      # commit SHAs + optimize level. A cache HIT means this notebook's source AND
+      # the compiler are unchanged since it was last built → restore its <slug>/ and
+      # skip Julia entirely (no instantiate, no compile). Only CHANGED notebooks pay
+      # the compile cost; everything else is a seconds-long restore.
+      - id: keys
+        name: Compute cache key parts (engine SHAs)
+        run: |
+          echo "wt=$(git -C WasmTarget.jl rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "pi=$(git -C PlutoIslands.jl rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          path: _stage/${{ matrix.nb.slug }}
+          key: snap-nb-v1-${{ matrix.nb.slug }}-${{ hashFiles(format('repo/{0}', matrix.nb.notebook)) }}-wt${{ steps.keys.outputs.wt }}-pi${{ steps.keys.outputs.pi }}-${{ env.SNAPSHOT_OPTIMIZE }}
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: julia-actions/setup-julia@v2
+        with: { version: "1.12" }
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: julia-actions/cache@v2          # RESTORES the warmed depot — no re-precompile
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - if: steps.cache.outputs.cache-hit != 'true'
+        name: Install Binaryen (wasm-opt, wasm-merge)
+        run: |
+          curl -fsSL "https://github.com/WebAssembly/binaryen/releases/download/${BINARYEN_VERSION}/binaryen-${BINARYEN_VERSION}-x86_64-linux.tar.gz" | tar -xz
+          echo "$PWD/binaryen-${BINARYEN_VERSION}/bin" >> "$GITHUB_PATH"
+      - if: steps.cache.outputs.cache-hit != 'true'
+        name: Install wasm-tools
+        run: |
+          curl -fsSL "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASMTOOLS_VERSION}/wasm-tools-${WASMTOOLS_VERSION}-x86_64-linux.tar.gz" | tar -xz
+          echo "$PWD/wasm-tools-${WASMTOOLS_VERSION}-x86_64-linux" >> "$GITHUB_PATH"
+      - if: steps.cache.outputs.cache-hit != 'true'
+        name: Instantiate (restored cache → fast)
+        run: julia --project=PlutoIslands.jl -e 'using Pkg; Pkg.instantiate()'
+      - if: steps.cache.outputs.cache-hit != 'true'
+        name: Fetch Snapshot driver + collection builder
+        run: |
+          curl -fsSL "${SNAPSHOT_INGEST_URL%/}/ci/export.jl" -o export.jl
+          curl -fsSL "${SNAPSHOT_INGEST_URL%/}/ci/collection.jl" -o collection.jl
+      - if: steps.cache.outputs.cache-hit != 'true'
+        name: Export ${{ matrix.nb.slug }}
+        run: julia --project=PlutoIslands.jl export.jl one repo _stage "${{ matrix.nb.slug }}" "${{ matrix.nb.notebook }}"
+      - name: Cache status
+        run: echo "${{ matrix.nb.slug }} cache-hit=${{ steps.cache.outputs.cache-hit || 'false' }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nb-${{ matrix.nb.slug }}
+          path: _stage
+          retention-days: 1
+          if-no-files-found: error
+
+  collection-publish:
+    needs: [discover, export]
+    if: needs.discover.outputs.kind == 'collection' && needs.discover.outputs.has_notebooks == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout notebooks repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with: { path: repo }
-      - name: Checkout WasmTarget.jl (sibling)
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with: { repository: GroupTherapyOrg/WasmTarget.jl, ref: "${{ env.SNAPSHOT_WT_REF }}", path: WasmTarget.jl }
-      - name: Checkout PlutoIslands.jl
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with: { repository: GroupTherapyOrg/PlutoIslands.jl, ref: "${{ env.SNAPSHOT_PI_REF }}", path: PlutoIslands.jl }
+      - uses: julia-actions/setup-julia@v2
+        with: { version: "1.12" }
+      - uses: julia-actions/cache@v2
+      - name: Instantiate (restored cache → fast)
+        run: julia --project=PlutoIslands.jl -e 'using Pkg; Pkg.instantiate()'
+      - name: Fetch Snapshot driver + collection builder
+        run: |
+          curl -fsSL "${SNAPSHOT_INGEST_URL%/}/ci/export.jl" -o export.jl
+          curl -fsSL "${SNAPSHOT_INGEST_URL%/}/ci/collection.jl" -o collection.jl
+      - name: Gather per-notebook exports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: nb-*
+          merge-multiple: true
+          path: _stage
+      - name: Assemble site (+ dedup shared font atlas) → manifest
+        run: julia --project=PlutoIslands.jl export.jl gather repo _stage
+      - name: Package the site as one zip
+        run: |
+          ok=$(jq -r '.ok' _stage/manifest.json)
+          [ "${ok:-0}" -gt 0 ] || { echo "no notebooks published"; exit 1; }
+          ( cd _stage && zip -qr "$GITHUB_WORKSPACE/site.zip" . )
+          ls -la site.zip
+      - name: Attest build provenance
+        # GitHub's provenance attestation isn't available for user-owned PRIVATE
+        # repos, so it errors there and would sink the publish. Skip it for private
+        # repos (Snapshot sends its own sha256(site.zip) digest at publish anyway);
+        # continue-on-error keeps a transient public-repo hiccup non-fatal too.
+        if: ${{ github.event.repository.private != true }}
+        continue-on-error: true
+        uses: actions/attest-build-provenance@v2
+        with: { subject-path: "site.zip" }
+      - name: Publish site to Snapshot (OIDC)
+        run: |
+          OIDC=$(curl -fsSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=snapshot" | jq -r '.value')
+          owner="${GITHUB_REPOSITORY%%/*}"; reponame="${GITHUB_REPOSITORY##*/}"
+          slug=$(jq -r '.slug' _stage/manifest.json); index=$(jq -r '.index' _stage/manifest.json); kind=$(jq -r '.kind' _stage/manifest.json)
+          digest=$(sha256sum site.zip | awk '{print $1}')
+          zipkb=$(( $(wc -c < site.zip) / 1024 ))
+          echo "Publishing '${slug}' (${kind}) — bundle ${zipkb} KB (sha256:${digest})"
+          code=$(curl -sS -o /tmp/sn_resp.txt -w "%{http_code}" -X POST "${SNAPSHOT_INGEST_URL%/}/ingest" \
+            -H "authorization: Bearer ${OIDC}" -H "x-snapshot-auth: oidc" \
+            -H "x-snapshot-owner: ${owner}" -H "x-snapshot-repo: ${reponame}" \
+            -H "x-snapshot-notebook: ${slug}" -H "x-snapshot-kind: ${kind}" \
+            -H "x-snapshot-commit: ${GITHUB_SHA}" -H "x-snapshot-index: ${index}" \
+            -H "x-snapshot-attestation: sha256:${digest}" \
+            -H "content-type: application/zip" --data-binary "@site.zip" || echo "000")
+          reason="$(cat /tmp/sn_resp.txt 2>/dev/null)"
+          if [ "${code:-000}" -ge 200 ] && [ "${code:-000}" -lt 300 ]; then echo "✓ Published. ${reason}"; exit 0; fi
+          echo "::error title=Snapshot couldn't publish your site::HTTP ${code} — ${reason}"
+          case "${code}" in
+            413) echo "  Over the size limit — trim large notebooks/images (heavy WASM islands are the usual culprit)." ;;
+            403) echo "  Repo not enabled for publishing, or it's private (only public repos for now)." ;;
+            429) echo "  Too many publishes in a short window — wait, then retry." ;;
+            503) echo "  Snapshot is temporarily at capacity / paused — hosted sites are unaffected; retry later." ;;
+            000) echo "  Couldn't reach Snapshot at all (network/URL)." ;;
+          esac
+          exit 1
+
+  # ── a Therapy app: single-job build + publish (snapshot.toml/build.sh drive it) ──
+  app-publish:
+    needs: discover
+    if: needs.discover.outputs.kind == 'app'
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: repo }
+      - uses: actions/checkout@v4
+        with: { repository: GroupTherapyOrg/WasmTarget.jl, ref: "${{ env.SNAPSHOT_WT_REF }}", path: WasmTarget.jl }
+      - uses: actions/checkout@v4
         with: { repository: GroupTherapyOrg/PlutoIslands.jl, ref: "${{ env.SNAPSHOT_PI_REF }}", path: PlutoIslands.jl }
       - uses: julia-actions/setup-julia@v2
         with: { version: "1.12" }
@@ -44,38 +229,51 @@ jobs:
           curl -fsSL "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASMTOOLS_VERSION}/wasm-tools-${WASMTOOLS_VERSION}-x86_64-linux.tar.gz" | tar -xz
           echo "$PWD/wasm-tools-${WASMTOOLS_VERSION}-x86_64-linux" >> "$GITHUB_PATH"
       - name: Instantiate engine
-        run: julia --project=PlutoIslands.jl -e 'using Pkg; Pkg.Registry.add("General"); Pkg.instantiate()'
+        run: julia --project=PlutoIslands.jl -e 'using Pkg; Pkg.instantiate()'
       - name: Fetch Snapshot driver + collection builder
         run: |
           curl -fsSL "${SNAPSHOT_INGEST_URL%/}/ci/export.jl" -o export.jl
           curl -fsSL "${SNAPSHOT_INGEST_URL%/}/ci/collection.jl" -o collection.jl
-      - name: Build collection site (compile notebooks, wasm-opt'd + verified)
+      - name: Build app (snapshot.toml [app] / build.sh / app.jl build)
         run: julia --project=PlutoIslands.jl export.jl repo _stage
       - name: Package the site as one zip
         run: |
           ok=$(jq -r '.ok' _stage/manifest.json)
-          [ "${ok:-0}" -gt 0 ] || { echo "no notebooks published"; exit 1; }
+          [ "${ok:-0}" -gt 0 ] || { echo "app produced nothing to publish"; exit 1; }
           ( cd _stage && zip -qr "$GITHUB_WORKSPACE/site.zip" . )
           ls -la site.zip
       - name: Attest build provenance
+        # GitHub's provenance attestation isn't available for user-owned PRIVATE
+        # repos, so it errors there and would sink the publish. Skip it for private
+        # repos (Snapshot sends its own sha256(site.zip) digest at publish anyway);
+        # continue-on-error keeps a transient public-repo hiccup non-fatal too.
+        if: ${{ github.event.repository.private != true }}
+        continue-on-error: true
         uses: actions/attest-build-provenance@v2
         with: { subject-path: "site.zip" }
       - name: Publish site to Snapshot (OIDC)
         run: |
           OIDC=$(curl -fsSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=snapshot" | jq -r '.value')
           owner="${GITHUB_REPOSITORY%%/*}"; reponame="${GITHUB_REPOSITORY##*/}"
-          slug=$(jq -r '.slug' _stage/manifest.json); index=$(jq -r '.index' _stage/manifest.json)
+          slug=$(jq -r '.slug' _stage/manifest.json); index=$(jq -r '.index' _stage/manifest.json); kind=$(jq -r '.kind' _stage/manifest.json)
           digest=$(sha256sum site.zip | awk '{print $1}')
-          echo "publishing $slug (sha256:$digest)"
-          curl -fsS -X POST "${SNAPSHOT_INGEST_URL%/}/ingest" \
-            -H "authorization: Bearer ${OIDC}" \
-            -H "x-snapshot-auth: oidc" \
-            -H "x-snapshot-owner: ${owner}" \
-            -H "x-snapshot-repo: ${reponame}" \
-            -H "x-snapshot-notebook: ${slug}" \
-            -H "x-snapshot-kind: collection" \
-            -H "x-snapshot-commit: ${GITHUB_SHA}" \
-            -H "x-snapshot-index: ${index}" \
+          zipkb=$(( $(wc -c < site.zip) / 1024 ))
+          echo "Publishing '${slug}' (${kind}) — bundle ${zipkb} KB (sha256:${digest})"
+          code=$(curl -sS -o /tmp/sn_resp.txt -w "%{http_code}" -X POST "${SNAPSHOT_INGEST_URL%/}/ingest" \
+            -H "authorization: Bearer ${OIDC}" -H "x-snapshot-auth: oidc" \
+            -H "x-snapshot-owner: ${owner}" -H "x-snapshot-repo: ${reponame}" \
+            -H "x-snapshot-notebook: ${slug}" -H "x-snapshot-kind: ${kind}" \
+            -H "x-snapshot-commit: ${GITHUB_SHA}" -H "x-snapshot-index: ${index}" \
             -H "x-snapshot-attestation: sha256:${digest}" \
-            -H "content-type: application/zip" \
-            --data-binary "@site.zip"
+            -H "content-type: application/zip" --data-binary "@site.zip" || echo "000")
+          reason="$(cat /tmp/sn_resp.txt 2>/dev/null)"
+          if [ "${code:-000}" -ge 200 ] && [ "${code:-000}" -lt 300 ]; then echo "✓ Published. ${reason}"; exit 0; fi
+          echo "::error title=Snapshot couldn't publish your site::HTTP ${code} — ${reason}"
+          case "${code}" in
+            413) echo "  Over the size limit — trim large notebooks/images (heavy WASM islands are the usual culprit)." ;;
+            403) echo "  Repo not enabled for publishing, or it's private (only public repos for now)." ;;
+            429) echo "  Too many publishes in a short window — wait, then retry." ;;
+            503) echo "  Snapshot is temporarily at capacity / paused — hosted sites are unaffected; retry later." ;;
+            000) echo "  Couldn't reach Snapshot at all (network/URL)." ;;
+          esac
+          exit 1
