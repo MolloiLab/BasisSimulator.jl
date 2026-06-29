@@ -353,7 +353,7 @@ sim_opts = BS.SimOptions(
     # use_lag               = false,   # disable scintillator afterglow
     # use_noise             = false,   # ideal sinogram only (no Poisson + Gaussian)
 
-    # projector = :siddon,   # fast ray tracer (~3.5-5.5×); default :dd is anti-aliased.
+    projector = :siddon,   # fast ray tracer (~3.5-5.5×); default :dd is anti-aliased.
                              #  :siddon ALIASES in severe beam-hardened regions — speed over
                              #  accuracy. The BHC cells below read sim_opts.projector to match.
 );

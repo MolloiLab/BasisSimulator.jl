@@ -503,6 +503,7 @@ md"""
 sim_opts = BS.SimOptions(
     fidelity = :pcct,
     seed = 1234,
+    projector = :siddon,   # fast ray tracer (~3.5-5.5×); default :dd is anti-aliased
 
     # ─── Inert for PCCT (flag exists but does nothing) ───
     use_fill_factor = false,

@@ -553,7 +553,7 @@ protocol = BS.CTProtocol(
 # The BHC and Hybrid-IR cells below all read `sim_opts.projector`, so changing it
 # HERE updates the whole pipeline consistently — the recon must invert the operator
 # that generated the data, or the IR system matrix won't match and convergence suffers.
-sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234, projector = :dd)
+sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234, projector = :siddon)
 
 # ╔═╡ 07000005-0000-4000-8000-000000000001
 recon_opts = BS.ReconOptions(
