@@ -24,7 +24,10 @@ cd "$(dirname "$0")"   # docs/ — runnable standalone, and exactly where Snapsh
 export BASISSIM_SKIP_NB_EXPORT=1   # ← the key override: reuse committed notebooks-static/, never re-render
 
 echo "▶ instantiate docs env (no-op if Snapshot already warmed it)"
-julia --project=. -e 'using Pkg; Pkg.instantiate()'
+# Mirrors docs.yml exactly: ensure the General registry exists + resolve BEFORE
+# instantiate, so a drifted committed Manifest (vs the path-sourced BasisSimulator
+# at ..) fixes itself instead of failing the build.
+julia --project=. -e 'using Pkg; Pkg.Registry.add("General"); Pkg.resolve(); Pkg.instantiate()'
 
 echo "▶ Therapy build — notebooks NOT re-rendered, Tailwind auto-compiled → dist/"
 julia --project=. --optimize=3 app.jl build

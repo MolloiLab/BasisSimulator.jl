@@ -3,6 +3,11 @@ on:
   push:
     branches: [main, master]
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Re-export every notebook (ignore all export caches)"
+        type: boolean
+        default: false
 permissions:
   contents: read
   id-token: write
@@ -12,10 +17,11 @@ concurrency:
   cancel-in-progress: true
 env:
   SNAPSHOT_WT_REF: main
-  SNAPSHOT_PI_REF: main
+  SNAPSHOT_ENGINE_REF: main
   BINARYEN_VERSION: version_125
   WASMTOOLS_VERSION: 1.244.0
   SNAPSHOT_OPTIMIZE: size
+  SNAPSHOT_ORACLE_SAMPLES: "5"
   SNAPSHOT_INGEST_URL: https://snapshot.show
 
 # Build model (general, one-size-fits-most):
@@ -43,12 +49,12 @@ jobs:
       - uses: actions/checkout@v4
         with: { repository: GroupTherapyOrg/WasmTarget.jl, ref: "${{ env.SNAPSHOT_WT_REF }}", path: WasmTarget.jl }
       - uses: actions/checkout@v4
-        with: { repository: GroupTherapyOrg/PlutoIslands.jl, ref: "${{ env.SNAPSHOT_PI_REF }}", path: PlutoIslands.jl }
+        with: { repository: GroupTherapyOrg/Snapshot.jl, ref: "${{ env.SNAPSHOT_ENGINE_REF }}", path: Snapshot.jl }
       - uses: julia-actions/setup-julia@v2
         with: { version: "1.12" }
       - uses: julia-actions/cache@v2          # WARMS the shared depot cache
       - name: Instantiate + precompile engine (shared by every matrix job)
-        run: julia --project=PlutoIslands.jl -e 'using Pkg; Pkg.Registry.add("General"); Pkg.instantiate(); using PlutoIslands'
+        run: julia --project=Snapshot.jl -e 'using Pkg; Pkg.Registry.add("General"); Pkg.instantiate(); using Snapshot'
       - name: Fetch Snapshot driver + collection builder
         run: |
           curl -fsSL "${SNAPSHOT_INGEST_URL%/}/ci/export.jl" -o export.jl
@@ -56,7 +62,7 @@ jobs:
       - id: d
         name: Discover (kind + notebook matrix)
         run: |
-          julia --project=PlutoIslands.jl export.jl discover repo discover.json
+          julia --project=Snapshot.jl export.jl discover repo discover.json
           kind=$(jq -r '.kind' discover.json)
           matrix=$(jq -c '{nb: .notebooks}' discover.json)
           n=$(jq '.notebooks | length' discover.json)
@@ -78,22 +84,29 @@ jobs:
       - uses: actions/checkout@v4
         with: { repository: GroupTherapyOrg/WasmTarget.jl, ref: "${{ env.SNAPSHOT_WT_REF }}", path: WasmTarget.jl }
       - uses: actions/checkout@v4
-        with: { repository: GroupTherapyOrg/PlutoIslands.jl, ref: "${{ env.SNAPSHOT_PI_REF }}", path: PlutoIslands.jl }
-      # ── per-notebook export cache: key = notebook source hash + the engine
-      # commit SHAs + optimize level. A cache HIT means this notebook's source AND
-      # the compiler are unchanged since it was last built → restore its <slug>/ and
-      # skip Julia entirely (no instantiate, no compile). Only CHANGED notebooks pay
-      # the compile cost; everything else is a seconds-long restore.
+        with: { repository: GroupTherapyOrg/Snapshot.jl, ref: "${{ env.SNAPSHOT_ENGINE_REF }}", path: Snapshot.jl }
+      # ── per-notebook export cache: key = notebook source hash + engine content +
+      # WasmTarget SHA + every knob that changes the compiled output (optimize level,
+      # oracle depth, Binaryen/wasm-tools versions). A cache HIT means NOTHING that
+      # affects this notebook's export changed since it was last built → restore its
+      # <slug>/ and skip Julia entirely. Only CHANGED notebooks pay the compile cost.
+      # OVERRIDES (skip the cache → always re-export):
+      #   • snapshot.toml `cache = false` (top-level: all notebooks; or per-[[notebooks]])
+      #   • manual run with the "force" checkbox (Actions → Run workflow)
+      # (Custom build.sh / app builds never use this cache — they always run in full.)
       - id: keys
-        name: Compute cache key parts (engine SHAs)
+        name: Compute cache key parts (WasmTarget SHA)
         run: |
           echo "wt=$(git -C WasmTarget.jl rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "pi=$(git -C PlutoIslands.jl rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - id: cache
+        if: matrix.nb.cache != false && inputs.force != true
         uses: actions/cache@v4
         with:
           path: _stage/${{ matrix.nb.slug }}
-          key: snap-nb-v1-${{ matrix.nb.slug }}-${{ hashFiles(format('repo/{0}', matrix.nb.notebook)) }}-wt${{ steps.keys.outputs.wt }}-pi${{ steps.keys.outputs.pi }}-${{ env.SNAPSHOT_OPTIMIZE }}
+          # v4: + oracle depth + Binaryen/wasm-tools versions (all affect the emitted
+          # wasm/verification). Engine-CONTENT hash (not commit SHA) so an engine
+          # docs-only push doesn't bust every tenant's notebook cache.
+          key: snap-nb-v4-${{ matrix.nb.slug }}-${{ hashFiles(format('repo/{0}', matrix.nb.notebook)) }}-wt${{ steps.keys.outputs.wt }}-eng${{ hashFiles('Snapshot.jl/src/**', 'Snapshot.jl/assets/**', 'Snapshot.jl/Project.toml') }}-${{ env.SNAPSHOT_OPTIMIZE }}-o${{ env.SNAPSHOT_ORACLE_SAMPLES }}-b${{ env.BINARYEN_VERSION }}-t${{ env.WASMTOOLS_VERSION }}
       - if: steps.cache.outputs.cache-hit != 'true'
         uses: julia-actions/setup-julia@v2
         with: { version: "1.12" }
@@ -114,7 +127,7 @@ jobs:
           echo "$PWD/wasm-tools-${WASMTOOLS_VERSION}-x86_64-linux" >> "$GITHUB_PATH"
       - if: steps.cache.outputs.cache-hit != 'true'
         name: Instantiate (restored cache → fast)
-        run: julia --project=PlutoIslands.jl -e 'using Pkg; Pkg.instantiate()'
+        run: julia --project=Snapshot.jl -e 'using Pkg; Pkg.instantiate()'
       - if: steps.cache.outputs.cache-hit != 'true'
         name: Fetch Snapshot driver + collection builder
         run: |
@@ -122,9 +135,19 @@ jobs:
           curl -fsSL "${SNAPSHOT_INGEST_URL%/}/ci/collection.jl" -o collection.jl
       - if: steps.cache.outputs.cache-hit != 'true'
         name: Export ${{ matrix.nb.slug }}
-        run: julia --project=PlutoIslands.jl export.jl one repo _stage "${{ matrix.nb.slug }}" "${{ matrix.nb.notebook }}"
+        run: julia --project=Snapshot.jl export.jl one repo _stage "${{ matrix.nb.slug }}" "${{ matrix.nb.notebook }}"
       - name: Cache status
-        run: echo "${{ matrix.nb.slug }} cache-hit=${{ steps.cache.outputs.cache-hit || 'false' }}"
+        run: |
+          hit="${{ steps.cache.outputs.cache-hit || 'false' }}"
+          why=""
+          [ "${{ matrix.nb.cache }}" = "false" ] && why=" (snapshot.toml cache=false)"
+          [ "${{ inputs.force }}" = "true" ] && why=" (forced re-export)"
+          if [ "$hit" = "true" ]; then
+            echo "♻️  \`${{ matrix.nb.slug }}\` — unchanged, reused cached export" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "🔨 \`${{ matrix.nb.slug }}\` — exported$why" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "${{ matrix.nb.slug }} cache-hit=$hit$why"
       - uses: actions/upload-artifact@v4
         with:
           name: nb-${{ matrix.nb.slug }}
@@ -142,12 +165,12 @@ jobs:
       - uses: actions/checkout@v4
         with: { repository: GroupTherapyOrg/WasmTarget.jl, ref: "${{ env.SNAPSHOT_WT_REF }}", path: WasmTarget.jl }
       - uses: actions/checkout@v4
-        with: { repository: GroupTherapyOrg/PlutoIslands.jl, ref: "${{ env.SNAPSHOT_PI_REF }}", path: PlutoIslands.jl }
+        with: { repository: GroupTherapyOrg/Snapshot.jl, ref: "${{ env.SNAPSHOT_ENGINE_REF }}", path: Snapshot.jl }
       - uses: julia-actions/setup-julia@v2
         with: { version: "1.12" }
       - uses: julia-actions/cache@v2
       - name: Instantiate (restored cache → fast)
-        run: julia --project=PlutoIslands.jl -e 'using Pkg; Pkg.instantiate()'
+        run: julia --project=Snapshot.jl -e 'using Pkg; Pkg.instantiate()'
       - name: Fetch Snapshot driver + collection builder
         run: |
           curl -fsSL "${SNAPSHOT_INGEST_URL%/}/ci/export.jl" -o export.jl
@@ -159,7 +182,7 @@ jobs:
           merge-multiple: true
           path: _stage
       - name: Assemble site (+ dedup shared font atlas) → manifest
-        run: julia --project=PlutoIslands.jl export.jl gather repo _stage
+        run: julia --project=Snapshot.jl export.jl gather repo _stage
       - name: Package the site as one zip
         run: |
           ok=$(jq -r '.ok' _stage/manifest.json)
@@ -214,7 +237,7 @@ jobs:
       - uses: actions/checkout@v4
         with: { repository: GroupTherapyOrg/WasmTarget.jl, ref: "${{ env.SNAPSHOT_WT_REF }}", path: WasmTarget.jl }
       - uses: actions/checkout@v4
-        with: { repository: GroupTherapyOrg/PlutoIslands.jl, ref: "${{ env.SNAPSHOT_PI_REF }}", path: PlutoIslands.jl }
+        with: { repository: GroupTherapyOrg/Snapshot.jl, ref: "${{ env.SNAPSHOT_ENGINE_REF }}", path: Snapshot.jl }
       - uses: julia-actions/setup-julia@v2
         with: { version: "1.12" }
       - uses: julia-actions/cache@v2
@@ -229,13 +252,13 @@ jobs:
           curl -fsSL "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASMTOOLS_VERSION}/wasm-tools-${WASMTOOLS_VERSION}-x86_64-linux.tar.gz" | tar -xz
           echo "$PWD/wasm-tools-${WASMTOOLS_VERSION}-x86_64-linux" >> "$GITHUB_PATH"
       - name: Instantiate engine
-        run: julia --project=PlutoIslands.jl -e 'using Pkg; Pkg.instantiate()'
+        run: julia --project=Snapshot.jl -e 'using Pkg; Pkg.instantiate()'
       - name: Fetch Snapshot driver + collection builder
         run: |
           curl -fsSL "${SNAPSHOT_INGEST_URL%/}/ci/export.jl" -o export.jl
           curl -fsSL "${SNAPSHOT_INGEST_URL%/}/ci/collection.jl" -o collection.jl
       - name: Build app (snapshot.toml [app] / build.sh / app.jl build)
-        run: julia --project=PlutoIslands.jl export.jl repo _stage
+        run: julia --project=Snapshot.jl export.jl repo _stage
       - name: Package the site as one zip
         run: |
           ok=$(jq -r '.ok' _stage/manifest.json)
