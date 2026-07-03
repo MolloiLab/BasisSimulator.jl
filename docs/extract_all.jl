@@ -1,7 +1,11 @@
 #!/usr/bin/env julia
-# Render every Pluto notebook in docs/notebooks/*.jl to a self-contained
-# HTML at docs/notebooks-static/<slug>.html — a full standalone Pluto
-# export, identical to File → Export → HTML inside the Pluto IDE.
+# Render every Pluto notebook in docs/notebooks/*.jl to a LEAN standalone
+# HTML at docs/notebooks-static/<slug>.html via Snapshot.jl's Therapy emit
+# (therapy=true): rendered cell outputs as plain HTML + WASM islands where a
+# @bind group compiles — and NO embedded Pluto statefile. The old
+# Pluto.generate_html path baked the full notebook state into every page
+# (17–42 MB each, 141 MB total); the lean pages are ~100× smaller, which is
+# what lets the site fit through Snapshot's publish pipeline.
 #
 # Cache is keyed on the SHA-256 of the source .jl content (NOT mtime, so
 # `git checkout` doesn't trigger spurious rebuilds).  The hash is embedded
@@ -29,6 +33,7 @@ let build_env = joinpath(@__DIR__, "build_env")
 end
 
 using Pluto
+using Snapshot: export_notebook
 using SHA: bytes2hex, sha256
 
 const NOTEBOOKS_DIR = joinpath(@__DIR__, "notebooks")
@@ -62,38 +67,44 @@ end
 
 needs_rebuild(slug::AbstractString)::Bool = cached_hash(slug) != source_hash(slug)
 
-"""Render one notebook → standalone HTML.
+"""Render one notebook → LEAN standalone HTML (Snapshot.jl therapy emit).
 
-Returns the SHA-256 hash actually embedded in the HTML so the caller can
-diff against the pre-render hash and report when Pluto's normalization
-shifted the source.
+`export_notebook` opens the notebook in `session`, runs every cell (the
+notebooks self-activate docs/Project.toml, so Metal/CairoMakie resolve as
+always), SSRs the rendered outputs, attempts a WASM island per `@bind`
+group (a group that can't compile falls back to its static output with a
+visible note — never a blank), writes `<slug>.html` + `<slug>.islands/`,
+and shuts the notebook down.
 
-Two safeguards against the "every run re-renders" loop:
-
-  1. The `ServerSession` is built with `disable_writing_notebook_files=true`
-     so Pluto's auto-save-on-open doesn't mutate the source `.jl`. The
-     user's bytes stay byte-identical to what they wrote.
-  2. We recompute the hash AFTER `SessionActions.open` returns and embed
-     that post-render hash in the HTML. Belt-and-suspenders: if any future
-     Pluto release ignores the disable flag, the hash we embed still
-     matches what's on disk going forward, so subsequent runs see a cache
-     hit instead of looping.
+Returns the SHA-256 hash embedded in the HTML so the caller can diff
+against the pre-render hash and report when Pluto's normalization shifted
+the source. The hash is recomputed AFTER the run (the session disables
+notebook writes, but belt-and-suspenders: whatever lands on disk is what
+we key the cache on).
 """
 function render_notebook!(session::Pluto.ServerSession,
                           src_path::AbstractString,
                           dst_path::AbstractString)
-    nb = Pluto.SessionActions.open(session, src_path; run_async = false)
-    try
-        post_hash = bytes2hex(sha256(read(src_path)))
-        # `header_html` is spliced into the <head> of the exported HTML.
-        # Using a meta tag keeps the hash machine-readable + invisible.
-        header = """<meta name="$(HASH_META)" content="$(post_hash)">"""
-        html   = Pluto.generate_html(nb; header_html = header)
-        write(dst_path, html)
-        return post_hash
-    finally
-        Pluto.SessionActions.shutdown(session, nb)
-    end
+    html_path = export_notebook(src_path;
+        output_dir = dirname(dst_path),
+        therapy = true,           # lean page: SSR cells + islands, NO statefile
+        islands = true,           # compile @bind groups to wasm where possible
+        verify = true,            # oracle-check compiled islands (node)
+        optimize = :size,
+        session = session)
+    post_hash = bytes2hex(sha256(read(src_path)))
+    # Embed the source hash for the rebuild cache (machine-readable, invisible).
+    meta = """<meta name="$(HASH_META)" content="$(post_hash)">"""
+    html = read(html_path, String)
+    html = occursin("<head>", html) ? replace(html, "<head>" => "<head>" * meta; count = 1) :
+                                      html * "\n" * meta * "\n"
+    write(html_path, html)
+    # export_notebook names the file after the notebook stem == our slug, so
+    # html_path and dst_path coincide; assert so a future rename can't desync.
+    abspath(html_path) == abspath(dst_path) ||
+        error("export wrote $(html_path) but the gallery expects $(dst_path)")
+    compress_page_images!(html_path)   # embedded figure PNGs → WebP q90 (~90% smaller)
+    return post_hash
 end
 
 """Set of slugs the user wants to skip entirely (no render, not in the route
@@ -152,6 +163,34 @@ function export_notebooks()
     end
 
     return slugs
+end
+
+"""Shrink the figures embedded in a rendered page: every `data:image/png` URI
+over ~200 KB is transcoded to WebP q90 (visually indistinguishable for the CT
+figures here; ~90% smaller — a 2360×2360 retina CairoMakie PNG is ~4.7 MB as
+PNG, ~0.3 MB as WebP). Runs python3+Pillow — fine, this script only ever runs
+on the local render machine. Idempotent: already-webp URIs are untouched."""
+function compress_page_images!(html_path::AbstractString)
+    py = raw"""
+import re, base64, io, sys
+from PIL import Image
+p = sys.argv[1]
+h = open(p, encoding='utf-8', errors='surrogateescape').read()
+saved = [0, 0]
+def sub(m):
+    raw = base64.b64decode(m.group(1))
+    if len(raw) < 200_000: return m.group(0)
+    im = Image.open(io.BytesIO(raw)).convert('RGB')
+    out = io.BytesIO(); im.save(out, 'WEBP', quality=90, method=6)
+    if out.tell() >= len(raw): return m.group(0)
+    saved[0] += len(raw); saved[1] += out.tell()
+    return 'data:image/webp;base64,' + base64.b64encode(out.getvalue()).decode()
+h2 = re.sub(r'data:image/png;base64,\s*([A-Za-z0-9+/=]{1000,})', sub, h)
+if h2 != h:
+    open(p, 'w', encoding='utf-8', errors='surrogateescape').write(h2)
+print(f"png->webp: {saved[0]/1e6:.1f} MB -> {saved[1]/1e6:.1f} MB")
+"""
+    run(`python3 -c $py $html_path`)
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
