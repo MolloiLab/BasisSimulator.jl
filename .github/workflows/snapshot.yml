@@ -189,6 +189,17 @@ jobs:
           [ "${ok:-0}" -gt 0 ] || { echo "no notebooks published"; exit 1; }
           ( cd _stage && zip -qr "$GITHUB_WORKSPACE/site.zip" . )
           ls -la site.zip
+          # Pre-flight size gate: uploads over ~100 MB die at Cloudflare's edge with an
+          # opaque 413 before Snapshot can even reply — fail HERE with a useful breakdown.
+          zipmb=$(( $(wc -c < site.zip) / 1048576 ))
+          if [ "$zipmb" -ge 95 ]; then
+            echo "::error title=Bundle too large to upload::site.zip is ${zipmb} MB — the platform's hard upload ceiling is ~95 MB (compressed). Largest files in your site:"
+            ( cd _stage && find . -type f -size +1M -exec du -m {} + | sort -rn | head -12 )
+            echo "Trim the biggest files (pre-rendered notebook HTML with embedded state is the usual culprit), lower figure resolution, or exclude heavy pages from this build."
+            exit 1
+          elif [ "$zipmb" -ge 20 ]; then
+            echo "::warning title=Large bundle::site.zip is ${zipmb} MB compressed — this may exceed your plan's publish limit (the publish step will say so if it does)."
+          fi
       - name: Attest build provenance
         # GitHub's provenance attestation isn't available for user-owned PRIVATE
         # repos, so it errors there and would sink the publish. Skip it for private
@@ -265,6 +276,17 @@ jobs:
           [ "${ok:-0}" -gt 0 ] || { echo "app produced nothing to publish"; exit 1; }
           ( cd _stage && zip -qr "$GITHUB_WORKSPACE/site.zip" . )
           ls -la site.zip
+          # Pre-flight size gate: uploads over ~100 MB die at Cloudflare's edge with an
+          # opaque 413 before Snapshot can even reply — fail HERE with a useful breakdown.
+          zipmb=$(( $(wc -c < site.zip) / 1048576 ))
+          if [ "$zipmb" -ge 95 ]; then
+            echo "::error title=Bundle too large to upload::site.zip is ${zipmb} MB — the platform's hard upload ceiling is ~95 MB (compressed). Largest files in your site:"
+            ( cd _stage && find . -type f -size +1M -exec du -m {} + | sort -rn | head -12 )
+            echo "Trim the biggest files (pre-rendered notebook HTML with embedded state is the usual culprit), lower figure resolution, or exclude heavy pages from this build."
+            exit 1
+          elif [ "$zipmb" -ge 20 ]; then
+            echo "::warning title=Large bundle::site.zip is ${zipmb} MB compressed — this may exceed your plan's publish limit (the publish step will say so if it does)."
+          fi
       - name: Attest build provenance
         # GitHub's provenance attestation isn't available for user-owned PRIVATE
         # repos, so it errors there and would sink the publish. Skip it for private
