@@ -152,15 +152,25 @@ Construct a PhotonCountingDetector with keyword arguments.
 - `thickness_mm::Float64=1.6`: Sensor thickness
 - `pixel_size_mm::Tuple{Float64,Float64}=(0.302, 0.302)`: Pixel size (row, col)
 - `energy_thresholds_keV::Vector{Float64}=[20.0, 35.0, 55.0, 70.0]`: Energy thresholds
-- `energy_resolution_keV::Float64=10.0`: Energy resolution FWHM at 60 keV
-- `charge_sharing_fwhm_mm::Float64=0.08`: Charge cloud FWHM
+- `energy_resolution_keV::Float64=10.0`: Energy resolution FWHM at 60 keV (informational — see note)
+- `charge_sharing_fwhm_mm::Float64=0.08`: Charge cloud FWHM (informational — see note)
 - `enable_charge_sharing::Bool=true`: Enable charge sharing simulation
 - `dead_time_ns::Float64=5.0`: Detector dead time
 - `enable_pile_up::Bool=true`: Enable pile-up simulation
 - `enable_anti_coincidence::Bool=true`: Enable anti-coincidence correction
 - `coincidence_window_ns::Float64=30.0`: Coincidence time window
-- `electronic_noise_keV::Float64=1.5`: Electronic noise RMS
+- `electronic_noise_keV::Float64=1.5`: Electronic noise RMS (informational — see note)
 - `seed::Union{Nothing,Int}=nothing`: Random seed
+
+!!! note "Informational spectral-response fields"
+    `energy_resolution_keV`, `charge_sharing_fwhm_mm`, and
+    `electronic_noise_keV` describe the detector but do not drive the
+    simulated spectral response. The effective energy resolution, charge
+    sharing, K-escape, and electronic-noise smearing are all encoded in the
+    Monte-Carlo-derived detector response matrix (`cdte_response_v4.jls`,
+    see `mc_response.jl`), which is the single source of detector physics
+    on the forward path. These fields are used for display and for the
+    qualitative K-edge sensitivity rating in `pcct_spectral.jl`.
 """
 function PhotonCountingDetector(;
     material::DetectorMaterialPCCT=CDTE_MATERIAL,

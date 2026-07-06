@@ -34,16 +34,6 @@ geom = CTGeometry(scanner; n_angles = 360, fov_cm = 35.0)
 # =============================================================================
 
 """
-    DetectorShape
-
-Enumeration of detector array geometries.
-"""
-@enum DetectorShape begin
-    CURVED_DETECTOR    # Third-generation CT: curved detector array
-    FLAT_DETECTOR      # Flat panel detectors (CBCT, interventional)
-end
-
-"""
     Scanner{T<:AbstractFloat}
 
 Generic CT scanner definition with all physical parameters.
@@ -61,8 +51,11 @@ with CatSim and medical imaging conventions.
 - `detector_cols::Int`: Number of detector columns (fan direction)
 - `detector_row_size::T`: Detector element size in z (mm) at isocenter
 - `detector_col_size::T`: Detector element size in fan direction (mm) at isocenter
-- `detector_shape::DetectorShape`: Detector geometry (:curved or :flat)
 - `detector_row_offset::T`: Row offset from centered position (rows)
+
+The detector is modeled as a flat (planar) array with constant linear element
+pitch; the projectors and FDK weighting assume this geometry. An equiangular
+(arc) detector option is planned but not yet implemented.
 - `detector_col_offset::T`: Column offset (quarter-detector offset for aliasing)
 
 # Source Parameters
@@ -134,7 +127,6 @@ struct Scanner{T <: AbstractFloat}
     detector_cols::Int          # number of columns
     detector_row_size::T        # mm at isocenter
     detector_col_size::T        # mm at isocenter
-    detector_shape::DetectorShape
     detector_row_offset::T      # rows
     detector_col_offset::T      # columns (quarter-detector offset)
 
@@ -192,7 +184,6 @@ All distances are in mm. Default values match a generic research CT scanner
 - `detector_cols::Int = 900`: Number of detector columns
 - `detector_row_size::Real = 1.0`: Detector row pitch (mm)
 - `detector_col_size::Real = 1.0`: Detector column pitch (mm)
-- `detector_shape::DetectorShape = CURVED_DETECTOR`: Detector geometry
 - `detector_row_offset::Real = 0.0`: Row offset (rows)
 - `detector_col_offset::Real = 0.25`: Column offset for quarter-detector shift
 - `focal_spot_width::Real = 1.0`: Focal spot width (mm)
@@ -226,9 +217,8 @@ scanner = Scanner(
     target_angle = 10.0
 )
 
-# Flat panel scanner
+# Flat-panel-style scanner (the detector is always modeled as planar)
 scanner = Scanner(
-    detector_shape = FLAT_DETECTOR,
     detector_rows = 512,
     detector_cols = 512,
     detector_row_size = 0.15,
@@ -246,7 +236,6 @@ function Scanner(;
         detector_cols::Int = 900,
         detector_row_size::Real = 1.0,
         detector_col_size::Real = 1.0,
-        detector_shape::DetectorShape = CURVED_DETECTOR,
         detector_row_offset::Real = 0.0,
         detector_col_offset::Real = 0.25,
 
@@ -333,7 +322,6 @@ function Scanner(;
         detector_cols,
         T(detector_row_size),
         T(detector_col_size),
-        detector_shape,
         T(detector_row_offset),
         T(detector_col_offset),
         T(focal_spot_width),
@@ -655,7 +643,7 @@ end
 # =============================================================================
 
 # Scanner definition
-export Scanner, DetectorShape, CURVED_DETECTOR, FLAT_DETECTOR
+export Scanner
 
 # CTGeometry (computed positions for simulation)
 export CTGeometry

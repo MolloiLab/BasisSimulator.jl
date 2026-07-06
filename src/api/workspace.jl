@@ -81,6 +81,7 @@ mutable struct PCCTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A1 <
 
     # ─── Tube physics scratch (for combined sinogram) ───
     tube_physics_scratch::Union{Nothing, A3}  # sinogram-sized scratch for scatter/focal spot
+    focal_spot_kernel::Union{Nothing, A2}     # pre-computed focal-spot kernel (nothing when blur off/negligible)
 
     # ─── Tiled spectral projection (fused PCCT forward projection) ───
     μ_table_gpu::A2                          # GPU copy of μ_table [n_regions, n_energies_padded]
@@ -353,6 +354,23 @@ function create_workspace(
     # Scatter bin fractions are now computed on-the-fly in simulate!() using
     # compute_scatter_energy_weights() + compute_scatter_bin_weights() (unified per-energy model)
 
+    # ─── Pre-compute focal-spot blur kernel (opt-in; :pcct preset default off) ───
+    # Mirrors the EICT workspace: kernel is built once here so the per-bin
+    # blur in simulate! stays allocation-free.
+    _pcct_focal_kernel = if config.focal_spot !== nothing
+        _blur_fwhm = compute_focal_spot_blur_fwhm(config.focal_spot, geom, geom.SAD)
+        if _blur_fwhm[1] >= 0.1 || _blur_fwhm[2] >= 0.1
+            _k_cpu = T.(create_focal_spot_kernel_spatial(config.focal_spot, _blur_fwhm))
+            _k_gpu = similar(ref_mask, T, size(_k_cpu)...)
+            copyto!(_k_gpu, _k_cpu)
+            _k_gpu
+        else
+            nothing
+        end
+    else
+        nothing
+    end
+
     return PCCTWorkspace{T, typeof(sino_buf), typeof(μ_lut_gpu), typeof(geom_source_positions)}(
         bins, μ_volume, sino_buf, scratch,
         combined,
@@ -363,7 +381,7 @@ function create_workspace(
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
         _native_bins, _native_sino_buf,
         _native_geom, _n_src, _n_det, _n_u, _n_v,
-        tube_scratch,
+        tube_scratch, _pcct_focal_kernel,
         _μ_table_gpu, _W_matrix_gpu, _outputs_flat, _native_outputs_flat,
         _use_pileup, _pileup_S,
         geom, energies, weights_vec, config, pcct_detector, mats,

@@ -1,8 +1,7 @@
 # Tests for src/geometry/ — Scanner + CTGeometry + affine transforms.
 #
 # Coverage policy: every exported symbol from src/geometry/ is exercised:
-#   scanner.jl  : Scanner, DetectorShape, CURVED_DETECTOR, FLAT_DETECTOR,
-#                 CTGeometry, _build_pcct_detector, _infer_pcct_material.
+#   scanner.jl  : Scanner, CTGeometry, _build_pcct_detector, _infer_pcct_material.
 #   affine.jl   : phantom_to_world_affine, recon_to_world_affine, resample_to_recon.
 
 # -----------------------------------------------------------------------------
@@ -15,7 +14,6 @@
     @test s.source_to_detector == 950.0
     @test s.detector_rows == 64
     @test s.detector_cols == 900
-    @test s.detector_shape === BS.CURVED_DETECTOR
     @test s.detector_type === :energy_integrating
     @test s.n_energy_bins == 1
     @test isempty(s.energy_thresholds)
@@ -26,13 +24,11 @@
     @test s.native_dexel_row_mm ≈ s.detector_row_size * mag / s.binning_factor
 end
 
-@testset "Scanner — flat panel detector dispatch" begin
+@testset "Scanner — flat-panel-style geometry kwargs" begin
     s = BS.Scanner(
-        detector_shape = BS.FLAT_DETECTOR,
         detector_rows = 512, detector_cols = 512,
         detector_row_size = 0.15, detector_col_size = 0.15,
     )
-    @test s.detector_shape === BS.FLAT_DETECTOR
     @test s.detector_rows == 512
     @test s.detector_cols == 512
 end
