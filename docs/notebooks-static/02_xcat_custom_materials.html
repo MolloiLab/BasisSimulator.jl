@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="light">
-<head><meta name="basissim-source-hash" content="ab423ebd67e7291e7354cbb309235582716ef89f0ba1f4b0651ab989c9813607">
+<head><meta name="basissim-source-hash" content="0e7e534ed26165077abebb7056bc1d7515814ea042832791353416e4e3a2c23f">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script>(function(){try{var t=localStorage.getItem('snap-theme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
@@ -77,6 +77,93 @@ pre,table,bond,.markdown,img{max-width:100%}
    as a tidy tab the reader opens, never floating over docs text at rest. */
 .plutoui-toc.toc-embedded.aside{z-index:30;top:4.5rem;right:0;max-height:calc(100vh - 6rem);box-shadow:0 2px 14px rgba(0,0,0,.10)}
 .plutoui-toc.toc-embedded.aside.hide{transform:translateX(calc(100% - 28px))}
+
+/* classic-light / classic-dark — 1:1 ports of Pluto's own palettes (Pluto
+   frontend/themes/light.css and dark.css, v0.20.28) onto the standard DaisyUI
+   tokens that src/pluto_css.jl's PLUTO_VAR_MAP consumes — so a notebook under
+   these themes renders with native Pluto colours, while DaisyUI site chrome
+   uses the same palette. Token ← Pluto var derivations noted inline.
+
+   SINGLE SOURCE OF TRUTH, used twice:
+     - src/pluto_css.jl reads it at precompile time → CLASSIC_THEMES_CSS, inlined
+       into every export (standalone + fragment), because the CDN
+       daisyui@5/themes.css only ships the built-in themes.
+     - docs/input.css @imports it into the site stylesheet.
+
+   Selector shape matters: `:root[data-theme=…]` is specificity (0,2,0) so the
+   html-level attribute beats the bare `:root { …light tokens… }` block that the
+   CDN daisyui@5/themes.css (loaded by embedded notebook fragments, possibly
+   AFTER this sheet) declares at (0,1,0). The bare `[data-theme=…]` alternative
+   matches theme swatches / .snap-notebook divs, where inheritance proximity
+   already wins. */
+
+/* classic-light — Pluto frontend/themes/light.css → DaisyUI tokens */
+:root[data-theme="classic-light"],
+[data-theme="classic-light"] {
+  color-scheme: light;
+  --color-base-100: #ffffff;              /* --main-bg-color / --pluto-output-bg-color */
+  --color-base-200: hsl(46 90% 98%);      /* --code-background (Pluto's cream code bg) */
+  --color-base-300: #d9d9d9;              /* --rule-color rgba(0,0,0,.15) on white */
+  --color-base-content: hsl(0 0% 25%);    /* --pluto-output-color */
+  --color-primary: #284ebd;               /* --selected-cell-color rgba(40,78,189) */
+  --color-primary-content: #ffffff;       /* --admonition-title-color */
+  --color-secondary: #6432b3;             /* --pluto-logs-debug-accent-color */
+  --color-secondary-content: #ffffff;
+  --color-accent: #177377;                /* --footnote-border-color teal rgba(23,115,119) */
+  --color-accent-content: #ffffff;
+  --color-neutral: #2a2a2b;               /* --ui-button-color */
+  --color-neutral-content: #ffffff;
+  --color-info: #94b6e2;                  /* --jl-info-accent-color rgb(148,182,226) */
+  --color-info-content: #16324e;
+  --color-success: #9ec889;               /* --jl-message-accent-color rgb(158,200,137) */
+  --color-success-content: #1e3a1a;
+  --color-warning: #cfc78a;               /* --jl-warn-accent-color rgb(207,199,138) */
+  --color-warning-content: #443e15;
+  --color-error: #ac4234;                 /* --pluto-logs-danger-accent-color rgb(172,66,52) */
+  --color-error-content: #ffffff;
+  --radius-selector: 0.5rem;
+  --radius-field: 0.25rem;
+  --radius-box: 0.5rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+/* classic-dark — Pluto frontend/themes/dark.css → DaisyUI tokens */
+:root[data-theme="classic-dark"],
+[data-theme="classic-dark"] {
+  color-scheme: dark;
+  --color-base-100: hsl(0 0% 12%);        /* --main-bg-color */
+  --color-base-200: hsl(222 16% 19%);     /* --code-background (blue-gray code bg) */
+  --color-base-300: #414141;              /* --rule-color rgba(255,255,255,.15) on base-100 */
+  --color-base-content: hsl(0 0% 77%);    /* --pluto-output-color */
+  --color-primary: #2893bd;               /* --selected-cell-color rgb(40,147,189) */
+  --color-primary-content: #000000;       /* --admonition-title-color */
+  --color-secondary: #c087dd;             /* --jl-debug-accent-color hsl(283,59%,69%) */
+  --color-secondary-content: #1a0a24;
+  --color-accent: #00ab85;                /* --cm-color-html */
+  --color-accent-content: #00190f;
+  --color-neutral: #2c2c2c;               /* --overlay-button-bg */
+  --color-neutral-content: #c7c7c7;
+  --color-info: #5c8ccd;                  /* --jl-info-accent-color rgb(92,140,205) */
+  --color-info-content: #000000;
+  --color-success: #83bf8a;               /* --jl-message-accent-color rgb(131,191,138) */
+  --color-success-content: #000000;
+  --color-warning: #ddd464;               /* --jl-warn-accent-color rgb(221,212,100) */
+  --color-warning-content: #000000;
+  --color-error: #ff7562;                 /* --jl-danger-accent-color rgb(255,117,98) */
+  --color-error-content: #000000;
+  --radius-selector: 0.5rem;
+  --radius-field: 0.25rem;
+  --radius-box: 0.5rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
 
 /* AUTO-GENERATED by src/pluto_css.jl — Pluto's output CSS re-themed to DaisyUI.
    Every Pluto colour var below → a DaisyUI --color-* token. Do not hand-edit;
@@ -1676,6 +1763,10 @@ a:visited {
 <div class="snap-theme-picker">
   <span aria-hidden="true">🎨</span>
   <select id="snap-theme-select" aria-label="Theme" onchange="__piSetTheme(this.value)">
+    <optgroup label="Snapshot classic (Pluto palette)">
+      <option value="classic-light">classic-light</option>
+      <option value="classic-dark">classic-dark</option>
+    </optgroup>
     <optgroup label="DaisyUI">
       <option value="light">light</option>
       <option value="dark">dark</option>
@@ -2012,14 +2103,13 @@ end;</code></pre></div>
 <div class="pl-cell"><pluto-output class="rich_output" id="out-07000001-0000-4000-8000-000000000001"><div class="markdown"><h2 id="5.-Scanner,-protocol,-sim-&amp;-recon-options">5. Scanner, protocol, sim &amp; recon options</h2>
 <p>Same GE Revolution Apex Elite hardware as notebook 01.  The protocol is a clinical body-CTA acquisition: 120 kVp / 250 mA, 5 mm collimation, 500 views.  Recon: 512 × 512, 35 cm FOV, FBP <code>:standard</code> filter.</p>
 </div></pluto-output></div>
-<div class="pl-cell"><pluto-output class="rich_output" id="out-07000002-0000-4000-8000-000000000001"><pluto-tree class="collapsed struct"><pluto-tree-prefix></pluto-tree-prefix><pluto-tree-items class="struct"><p-r><p-k>source_to_isocenter</p-k><p-v>625.6</p-v></p-r><p-r><p-k>source_to_detector</p-k><p-v>1100.0</p-v></p-r><p-r><p-k>detector_rows</p-k><p-v>256</p-v></p-r><p-r><p-k>detector_cols</p-k><p-v>834</p-v></p-r><p-r><p-k>detector_row_size</p-k><p-v>0.625</p-v></p-r><p-r><p-k>detector_col_size</p-k><p-v>0.6</p-v></p-r><p-r><p-k>detector_shape</p-k><p-v>CURVED_DETECTOR::DetectorShape = 0</p-v></p-r><p-r><p-k>detector_row_offset</p-k><p-v>0.0</p-v></p-r><p-r><p-k>detector_col_offset</p-k><p-v>0.25</p-v></p-r><p-r><p-k>focal_spot_width</p-k><p-v>1.0</p-v></p-r><p-r><p-k>focal_spot_length</p-k><p-v>1.0</p-v></p-r><p-r><p-k>target_angle</p-k><p-v>10.0</p-v></p-r><p-r><p-k>gantry_rotation_time</p-k><p-v>0.5</p-v></p-r><p-r><p-k>scan_diameter</p-k><p-v>500.0</p-v></p-r><p-r><p-k>gantry_aperture</p-k><p-v>700.0</p-v></p-r><p-r><p-k>flat_filter_material</p-k><p-v>:aluminum</p-v></p-r><p-r><p-k>flat_filter_thickness</p-k><p-v>2.5</p-v></p-r><p-r><p-k>bowtie_filter</p-k><p-v>:ge_revolution_large</p-v></p-r><p-r><p-k>detector_material</p-k><p-v>:lumex</p-v></p-r><p-r><p-k>detector_depth</p-k><p-v>3.0</p-v></p-r><p-r><p-k>fill_factor_row</p-k><p-v>0.9</p-v></p-r><p-r><p-k>fill_factor_col</p-k><p-v>0.9</p-v></p-r><p-r><p-k>detection_gain</p-k><p-v>10.0</p-v></p-r><p-r><p-k>electronic_noise</p-k><p-v>0.0</p-v></p-r><p-r><p-k>detector_type</p-k><p-v>:energy_integrating</p-v></p-r><p-r><p-k>n_energy_bins</p-k><p-v>1</p-v></p-r><p-r><p-k>energy_thresholds</p-k><p-v><pluto-tree class="collapsed Array"><pluto-tree-prefix></pluto-tree-prefix><pluto-tree-items class="Array"></pluto-tree-items></pluto-tree></p-v></p-r><p-r><p-k>energy_resolution</p-k><p-v>0.0</p-v></p-r><p-r><p-k>charge_sharing_fwhm</p-k><p-v>0.0</p-v></p-r><p-r><p-k>dead_time_ns</p-k><p-v>0.0</p-v></p-r><p-r><p-k>pixel_mode</p-k><p-v>:standard</p-v></p-r><p-r><p-k>native_dexel_col_mm</p-k><p-v>1.0549872122762147</p-v></p-r><p-r><p-k>native_dexel_row_mm</p-k><p-v>1.0989450127877238</p-v></p-r><p-r><p-k>binning_factor</p-k><p-v>1</p-v></p-r></pluto-tree-items></pluto-tree></pluto-output><pre class="pl-code"><code class="pl-jl">scanner = BS.Scanner(
+<div class="pl-cell"><pluto-output class="rich_output" id="out-07000002-0000-4000-8000-000000000001"><pluto-tree class="collapsed struct"><pluto-tree-prefix></pluto-tree-prefix><pluto-tree-items class="struct"><p-r><p-k>source_to_isocenter</p-k><p-v>625.6</p-v></p-r><p-r><p-k>source_to_detector</p-k><p-v>1100.0</p-v></p-r><p-r><p-k>detector_rows</p-k><p-v>256</p-v></p-r><p-r><p-k>detector_cols</p-k><p-v>834</p-v></p-r><p-r><p-k>detector_row_size</p-k><p-v>0.625</p-v></p-r><p-r><p-k>detector_col_size</p-k><p-v>0.6</p-v></p-r><p-r><p-k>detector_row_offset</p-k><p-v>0.0</p-v></p-r><p-r><p-k>detector_col_offset</p-k><p-v>0.25</p-v></p-r><p-r><p-k>focal_spot_width</p-k><p-v>1.0</p-v></p-r><p-r><p-k>focal_spot_length</p-k><p-v>1.0</p-v></p-r><p-r><p-k>target_angle</p-k><p-v>10.0</p-v></p-r><p-r><p-k>gantry_rotation_time</p-k><p-v>0.5</p-v></p-r><p-r><p-k>scan_diameter</p-k><p-v>500.0</p-v></p-r><p-r><p-k>gantry_aperture</p-k><p-v>700.0</p-v></p-r><p-r><p-k>flat_filter_material</p-k><p-v>:aluminum</p-v></p-r><p-r><p-k>flat_filter_thickness</p-k><p-v>2.5</p-v></p-r><p-r><p-k>bowtie_filter</p-k><p-v>:ge_revolution_large</p-v></p-r><p-r><p-k>detector_material</p-k><p-v>:lumex</p-v></p-r><p-r><p-k>detector_depth</p-k><p-v>3.0</p-v></p-r><p-r><p-k>fill_factor_row</p-k><p-v>0.9</p-v></p-r><p-r><p-k>fill_factor_col</p-k><p-v>0.9</p-v></p-r><p-r><p-k>detection_gain</p-k><p-v>10.0</p-v></p-r><p-r><p-k>electronic_noise</p-k><p-v>0.0</p-v></p-r><p-r><p-k>detector_type</p-k><p-v>:energy_integrating</p-v></p-r><p-r><p-k>n_energy_bins</p-k><p-v>1</p-v></p-r><p-r><p-k>energy_thresholds</p-k><p-v><pluto-tree class="collapsed Array"><pluto-tree-prefix></pluto-tree-prefix><pluto-tree-items class="Array"></pluto-tree-items></pluto-tree></p-v></p-r><p-r><p-k>energy_resolution</p-k><p-v>0.0</p-v></p-r><p-r><p-k>charge_sharing_fwhm</p-k><p-v>0.0</p-v></p-r><p-r><p-k>dead_time_ns</p-k><p-v>0.0</p-v></p-r><p-r><p-k>pixel_mode</p-k><p-v>:standard</p-v></p-r><p-r><p-k>native_dexel_col_mm</p-k><p-v>1.0549872122762147</p-v></p-r><p-r><p-k>native_dexel_row_mm</p-k><p-v>1.0989450127877238</p-v></p-r><p-r><p-k>binning_factor</p-k><p-v>1</p-v></p-r></pluto-tree-items></pluto-tree></pluto-output><pre class="pl-code"><code class="pl-jl">scanner = BS.Scanner(
     source_to_isocenter = 625.6,
     source_to_detector = 1100.0,
     detector_rows = 256,
     detector_cols = 834,
     detector_row_size = 0.625,
     detector_col_size = 0.6,
-    detector_shape = BS.CURVED_DETECTOR,
     focal_spot_width = 1.0,
     focal_spot_length = 1.0,
     target_angle = 10.0,
