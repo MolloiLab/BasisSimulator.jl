@@ -264,7 +264,6 @@ scanner = BS.Scanner(
     detector_cols = 920,
     detector_row_size = 0.6,
     detector_col_size = 0.561,
-    detector_shape = BS.CURVED_DETECTOR,
 
     focal_spot_width = 0.8,
     focal_spot_length = 1.2,

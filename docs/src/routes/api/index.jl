@@ -138,7 +138,7 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                         :class => table_cls,
                         Tr(Th(:class => th_cls, "kwarg group"), Th(:class => th_cls, ""), Th(:class => th_cls, "")),
                         Tr(Td(:class => td_mono, "Geometry"), Td(:class => td_cls, ""), Td(:class => td_cls, "source_to_isocenter, source_to_detector (mm); scan_diameter; gantry_aperture")),
-                        Tr(Td(:class => td_mono, "Detector array"), Td(:class => td_cls, ""), Td(:class => td_cls, "detector_rows, detector_cols, detector_row_size, detector_col_size, detector_shape (CURVED_DETECTOR | FLAT_DETECTOR), detector_row_offset, detector_col_offset")),
+                        Tr(Td(:class => td_mono, "Detector array"), Td(:class => td_cls, ""), Td(:class => td_cls, "detector_rows, detector_cols, detector_row_size, detector_col_size, detector_row_offset, detector_col_offset (flat/planar array; equiangular arc planned)")),
                         Tr(Td(:class => td_mono, "Source"), Td(:class => td_cls, ""), Td(:class => td_cls, "focal_spot_width, focal_spot_length, target_angle")),
                         Tr(Td(:class => td_mono, "Filtration"), Td(:class => td_cls, ""), Td(:class => td_cls, "flat_filter_material, flat_filter_thickness, bowtie_filter (Symbol or struct)")),
                         Tr(Td(:class => td_mono, "Detector physics"), Td(:class => td_cls, ""), Td(:class => td_cls, "detector_material, detector_depth, fill_factor_row, fill_factor_col, detection_gain, electronic_noise")),
@@ -154,7 +154,6 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                                 detector_cols       = 834,
                                 detector_row_size   = 0.625,
                                 detector_col_size   = 0.6,
-                                detector_shape      = BS.CURVED_DETECTOR,
                                 bowtie_filter       = :ge_revolution_large,
                                 detector_material   = :lumex,
                                 detector_depth      = 3.0,
@@ -401,17 +400,6 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                         )
                     )
                 ),
-                Div(
-                    :class => card_cls,
-                    Div(:class => sig_cls, "CURVED_DETECTOR :: DetectorShape    FLAT_DETECTOR :: DetectorShape"),
-                    P(
-                        :class => prose_cls,
-                        "Detector geometry constants for ", Code(:class => inline, "Scanner.detector_shape"),
-                        ".  Curved detector ≈ all clinical CT (every column subtends the same angle from source); ",
-                        "flat detector for cone-beam micro-CT and most academic phantom studies."
-                    ),
-                ),
-
                 # ── 4b. Affine round-trip ─────────────────────────────────────
                 H3(:id => "affine", :class => h3_cls, "Affine round-trip"),
                 Div(

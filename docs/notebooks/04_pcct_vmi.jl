@@ -175,7 +175,6 @@ scanner = let
         detector_cols = n_cols,
         detector_row_size = pixel_row_iso,
         detector_col_size = pixel_col_iso,
-        detector_shape = BS.CURVED_DETECTOR,
         detector_row_offset = 0.0,
         detector_col_offset = pixel_col_iso / 2,
 
