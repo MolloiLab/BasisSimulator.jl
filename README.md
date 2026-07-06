@@ -69,8 +69,9 @@ system matrix matches the data — FDK reconstruction is unaffected.
 
 ## Documentation
 
-Full API reference, physics overview, and worked examples: **docs link TBD** (Documenter site
-in preparation). Until then, see docstrings via `?Function` in the Julia REPL.
+Full API reference, getting-started guide, and ten worked-example notebooks:
+**<https://molloilab.github.io/BasisSimulator.jl/>**. Docstrings are also
+available via `?Function` in the Julia REPL.
 
 ## License
 
