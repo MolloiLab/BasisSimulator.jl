@@ -1541,3 +1541,128 @@ _ts("entering simulate!(EICTWorkspace) — scatter on/off testset")
         @test all(isfinite, sino_on)
     end
 end
+
+# -----------------------------------------------------------------------------
+# PCCT focal-spot blur wiring (SoftwareX revision, R1.7)
+# -----------------------------------------------------------------------------
+_ts("entering PCCT focal-spot preset defaults testset")
+@testset ":pcct preset — focal_spot and lag default OFF" begin
+    # Pure-CPU option resolution — no GPU gating needed.
+    # Tube-side focal-spot blur is wired into the PCCT path but ships
+    # disabled by default; lag is a scintillator (Gd2O2S) afterglow model
+    # that direct-conversion PCCT detectors do not exhibit.
+    opts = BS.SimOptions(fidelity = :pcct)
+    @test opts.use_focal_spot === false
+    @test opts.use_lag === false
+    # Opt-in must survive preset resolution.
+    opts_on = BS.SimOptions(fidelity = :pcct, use_focal_spot = true)
+    @test opts_on.use_focal_spot === true
+    # EICT preset unchanged.
+    eict = BS.SimOptions(fidelity = :eict)
+    @test eict.use_focal_spot === true
+    @test eict.use_lag === true
+end
+
+_ts("entering simulate!(PCCTWorkspace) — focal-spot blur on/off testset")
+@testset "simulate!(PCCTWorkspace) — focal-spot blur on/off" begin
+    if !HAS_GPU
+        @warn "Skipping PCCT focal-spot test: no GPU backend."
+    else
+        _ts("  focal spot OFF")
+        off = _toy_pcct_setup(use_pcct_pileup = false, use_pcct_scatter = false)
+        @test off.ws.focal_spot_kernel === nothing
+        res_off = BS.simulate!(off.ws, off.phantom, off.protocol, off.sim_opts)
+        bins_off = [Array(b) for b in res_off.pcct_sino.bins]
+
+        _ts("  focal spot ON")
+        on = _toy_pcct_setup(
+            use_pcct_pileup = false, use_pcct_scatter = false,
+            use_focal_spot = true,
+        )
+        # Kernel is pre-computed at workspace creation (zero-alloc contract).
+        @test on.ws.focal_spot_kernel !== nothing
+        res_on = BS.simulate!(on.ws, on.phantom, on.protocol, on.sim_opts)
+        bins_on = [Array(b) for b in res_on.pcct_sino.bins]
+
+        # Blur must measurably perturb every energy bin, and keep it finite.
+        for b in eachindex(bins_on)
+            @test maximum(abs.(bins_on[b] .- bins_off[b])) > 1.0e-6
+            @test all(isfinite, bins_on[b])
+        end
+        # Blur is a normalized convolution of log line integrals: the mean
+        # should be approximately preserved (no energy created or destroyed).
+        for b in eachindex(bins_on)
+            @test mean(bins_on[b]) ≈ mean(bins_off[b]) rtol = 2.0e-2
+        end
+    end
+end
+
+# -----------------------------------------------------------------------------
+# EICT quantum-noise dose scaling (SoftwareX revision, R1.4)
+# -----------------------------------------------------------------------------
+_ts("entering EICT quantum noise dose-sweep testset")
+@testset "simulate!(EICTWorkspace) — quantum noise scales as 1/sqrt(mA)" begin
+    if !HAS_GPU
+        @warn "Skipping EICT dose-sweep test: no GPU backend."
+    else
+        # Pure quantum regime: electronic_noise = 0 so the only noise term is
+        # Poisson (Gaussian-approximated) with variance = expected count.
+        # sigma_p ∝ 1/sqrt(I0) ∝ 1/sqrt(mA · t) at fixed views/rotation time.
+        function _dose_setup(mA)
+            scanner = BS.Scanner(
+                source_to_isocenter = 540.0,
+                source_to_detector = 1080.0,
+                detector_rows = 8,
+                detector_cols = 64,
+                detector_row_size = 1.0,
+                detector_col_size = 1.0,
+                detector_material = :lumex,
+                detector_depth = 3.0,
+                electronic_noise = 0.0,
+                detection_gain = 10.0,
+            )
+            protocol = BS.CTProtocol(mA = mA, kVp = 120.0, views = 16, rotation_time = 0.5)
+            sim_opts = BS.SimOptions(;
+                fidelity = :eict,
+                use_noise = true, use_scatter = false,
+                use_lag = false, use_focal_spot = false,
+                use_optical_crosstalk = false,
+                seed = 7,
+            )
+            recon_opts = BS.ReconOptions(matrix_size = (32, 32, 4), fov_cm = 20.0)
+            phantom_cpu = BS.create_gammex_472(n_voxels = 32, fov_cm = 20.0, z_cm = 2.0)
+            phantom = BS.Phantom(
+                to_gpu(phantom_cpu.mask),
+                phantom_cpu.materials,
+                phantom_cpu.voxel_size,
+                phantom_cpu.origin,
+                phantom_cpu.extent,
+            )
+            clean_opts = BS.SimOptions(;
+                fidelity = :eict,
+                use_noise = false, use_scatter = false,
+                use_lag = false, use_focal_spot = false,
+                use_optical_crosstalk = false,
+            )
+            ws_noisy = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
+            ws_clean = BS.create_eict_workspace(scanner, protocol, clean_opts, recon_opts, phantom)
+            BS.simulate!(ws_noisy, phantom, protocol, sim_opts)
+            BS.simulate!(ws_clean, phantom, protocol, clean_opts)
+            resid = Array(ws_noisy.sinogram) .- Array(ws_clean.sinogram)
+            return std(resid)
+        end
+
+        mA_lo, mA_hi = 50.0, 800.0
+        _ts("  sweep mA = $mA_lo")
+        σ_lo = _dose_setup(mA_lo)
+        _ts("  sweep mA = $mA_hi")
+        σ_hi = _dose_setup(mA_hi)
+
+        @test σ_lo > 0
+        @test σ_hi > 0
+        # Expected ratio sqrt(800/50) = 4.0. Sinogram has ~8k noise samples,
+        # so the sample-std ratio is tight; allow 15% for the count-floor and
+        # low-count tails behind the densest rods.
+        @test σ_lo / σ_hi ≈ sqrt(mA_hi / mA_lo) rtol = 0.15
+    end
+end

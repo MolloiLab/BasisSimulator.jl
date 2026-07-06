@@ -128,6 +128,26 @@ function simulate!(
         projector = sim_opts.projector,
     )
 
+    # ─── Tube-side focal-spot blur (per bin, BEFORE scatter/noise/pile-up) ───
+    # The focal-spot penumbra is a tube-side effect common to both detector
+    # chains; here it mirrors the EICT placement in `_apply_physics_no_noise!`
+    # (a detector-plane convolution of the log line integrals). Placed before
+    # the rate-dependent pile-up step so blurred local count rates feed it.
+    # Note the blur acts at binned (not native-dexel) resolution.
+    # Off by default for the :pcct fidelity preset — opt in with
+    # `use_focal_spot = true`. Detector lag is intentionally NOT applied on
+    # this path: the shipped lag model is scintillator (Gd₂O₂S) afterglow,
+    # which direct-conversion PCCT detectors do not exhibit.
+    if config.focal_spot !== nothing
+        for bin_sino in pcct_sino.bins
+            apply_focal_spot_blur!(
+                bin_sino, config.focal_spot, geom;
+                ws_output = ws.tube_physics_scratch,
+                ws_kernel = ws.focal_spot_kernel
+            )
+        end
+    end
+
     # ─── Energy-resolved scatter injection (BEFORE noise) ───
     # Unified per-energy scatter model (shared with EICT):
     # 1. Spatial distribution: Ohnesorge convolution on combined sinogram

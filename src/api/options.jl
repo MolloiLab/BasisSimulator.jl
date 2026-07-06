@@ -129,11 +129,18 @@ function SimOptions(;
     # produces FBP streaks).  Users who want to *see* the un-corrected blur
     # in diagnostic sinograms can opt in via `use_optical_crosstalk = true`;
     # downstream basis-decomposition accuracy will degrade accordingly.
+    # :pcct preset notes:
+    # - `focal_spot = false`: the tube-side focal-spot blur IS wired into the
+    #   PCCT path (per-bin, before scatter/noise/pile-up) but ships disabled
+    #   by default in this release; opt in with `use_focal_spot = true`.
+    # - `lag = false`: the shipped lag model is scintillator (Gd₂O₂S)
+    #   afterglow, which direct-conversion PCCT detectors do not exhibit, so
+    #   lag is not applied on the PCCT path.
     defaults = if fidelity == :pcct
         (
             fill_factor = true, detector_efficiency = true,
             scatter = true, optical_crosstalk = false,
-            focal_spot = true, noise = true, lag = true,
+            focal_spot = false, noise = true, lag = false,
             heel_effect = true,
             pcct_pileup = true, pcct_pileup_correction = false,
             pcct_scatter = true, pcct_scatter_correction = false,
