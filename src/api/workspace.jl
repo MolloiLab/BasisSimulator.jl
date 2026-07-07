@@ -148,7 +148,7 @@ function create_workspace(
         extended_collimation::Bool = false,
     )
     # --- Pre-compute geometry first (collimation derives n_rows) ---
-    geom = CTGeometry(scanner; n_angles = protocol.views, fov_cm = recon_opts.fov_cm, z_cm = recon_opts.z_cm, collimation_mm = protocol.collimation_mm, extended_collimation = extended_collimation)
+    geom = CTGeometry(scanner; n_angles = protocol.views, fov_cm = recon_opts.fov_cm, z_cm = recon_opts.z_cm, collimation_mm = protocol.collimation_mm, extended_collimation = extended_collimation, pitch = protocol.pitch, n_rotations = protocol.n_rotations)
 
     sino_shape = (geom.n_cols, geom.n_rows, geom.n_angles)
     vol_shape = size(phantom.mask)
@@ -240,7 +240,8 @@ function create_workspace(
             geom.angles,
             geom.source_positions, geom.detector_centers,
             geom.detector_u, geom.detector_v,
-            geom.fov  # same recon FOV
+            geom.fov,  # same recon FOV
+            geom.pitch, geom.table_feed
         )
         native_sino_shape = (_native_geom.n_cols, _native_geom.n_rows, _native_geom.n_angles)
         _native_bins = [similar(ref_mask, T, native_sino_shape) for _ in 1:n_bins]
@@ -505,7 +506,7 @@ function create_eict_workspace(
         extended_collimation::Bool = false,
     )
     # Geometry
-    geom = CTGeometry(scanner; n_angles = protocol.views, fov_cm = recon_opts.fov_cm, z_cm = recon_opts.z_cm, collimation_mm = protocol.collimation_mm, extended_collimation = extended_collimation)
+    geom = CTGeometry(scanner; n_angles = protocol.views, fov_cm = recon_opts.fov_cm, z_cm = recon_opts.z_cm, collimation_mm = protocol.collimation_mm, extended_collimation = extended_collimation, pitch = protocol.pitch, n_rotations = protocol.n_rotations)
 
     # Spectrum — IPEM polychromatic by default; spectrum_override lets a
     # caller inject a custom (energies, weights) pair (e.g. `([70.0], [1.0])`

@@ -38,6 +38,7 @@ Scan protocol parameters for physical simulation.
 - `anode_angle`: IPEM anode angle in degrees (8 or 10)
 - `additional_filters`: Extra filter layers `[(material, thickness_mm), ...]` applied
   on top of the scanner's built-in flat filter in the spectrum domain.
+- `pitch`: Helical pitch (IEC: table feed per rotation ÷ collimation); `nothing` = axial.
 """
 struct CTProtocol
     mA::Float64            # Tube current
@@ -48,6 +49,7 @@ struct CTProtocol
     collimation_mm::Union{Float64, Nothing}  # Detector z-collimation (mm), nothing = full detector
     anode_angle::Int       # IPEM anode angle (8 or 10 degrees)
     additional_filters::Vector{Tuple{String, Float64}}  # Extra filter layers [(material, thickness_mm)]
+    pitch::Union{Float64, Nothing}  # Helical pitch (IEC: table feed per rotation / collimation); nothing = axial
 end
 
 """
@@ -65,6 +67,11 @@ Create a CT protocol. You must provide either `mA` OR `mAs`.
 - `collimation_mm`: Detector z-collimation in mm (default: nothing = full detector)
 - `anode_angle`: IPEM anode angle, 8 or 10 degrees (default: 10)
 - `additional_filters`: Extra filter layers `[(material, thickness_mm), ...]` (default: empty)
+- `pitch`: Helical pitch (default: nothing = axial scan).  IEC 60601-2-44 definition:
+  table feed per rotation ÷ total active collimation width.  When set, the
+  gantry traces a helix of `n_rotations` turns centred on isocentre — the table
+  travel is `pitch × collimation × n_rotations`.  Typical clinical range
+  0.5–1.5 (dual-source Flash up to 3.2).
 
 # Examples
 ```julia
@@ -73,6 +80,9 @@ CTProtocol(kVp=120, mA=200, views=984)
 
 # With collimation (128×0.625mm = 80mm)
 CTProtocol(kVp=120, mA=200, views=984, collimation_mm=80.0)
+
+# Helical: pitch 1.0, 8 rotations, 40 mm collimation → 320 mm table travel
+CTProtocol(kVp=120, mA=200, views=984, collimation_mm=40.0, pitch=1.0, n_rotations=8)
 
 # Extra filtration
 CTProtocol(kVp=120, mA=200, additional_filters=[("Al", 4.5)])
@@ -87,7 +97,8 @@ function CTProtocol(;
         n_rotations::Real = 1.0,
         collimation_mm::Union{Real, Nothing} = nothing,
         anode_angle::Int = 10,
-        additional_filters::Vector{Tuple{String, Float64}} = Tuple{String, Float64}[]
+        additional_filters::Vector{Tuple{String, Float64}} = Tuple{String, Float64}[],
+        pitch::Union{Real, Nothing} = nothing,
     )
     # Handle mA / mAs exclusivity
     final_mA = if !isnothing(mA)
@@ -98,6 +109,12 @@ function CTProtocol(;
         200.0
     end
 
+    if pitch !== nothing
+        pitch > 0 || throw(ArgumentError("pitch must be positive, got $pitch"))
+        n_rotations >= 1 || throw(ArgumentError(
+            "helical scans need n_rotations ≥ 1, got $n_rotations"))
+    end
+
     return CTProtocol(
         final_mA,
         Float64(kVp),
@@ -106,7 +123,8 @@ function CTProtocol(;
         Float64(n_rotations),
         collimation_mm === nothing ? nothing : Float64(collimation_mm),
         anode_angle,
-        additional_filters
+        additional_filters,
+        pitch === nothing ? nothing : Float64(pitch),
     )
 end
 
@@ -235,7 +253,7 @@ function constant_dose_protocol(base::CTProtocol, new_views::Int)
     return CTProtocol(
         base.mA, base.kVp, new_views, base.rotation_time,
         base.n_rotations, base.collimation_mm, base.anode_angle,
-        base.additional_filters
+        base.additional_filters, base.pitch
     )
 end
 
@@ -250,7 +268,7 @@ function constant_noise_protocol(base::CTProtocol, new_views::Int)
     return CTProtocol(
         new_mA, base.kVp, new_views, base.rotation_time,
         base.n_rotations, base.collimation_mm, base.anode_angle,
-        base.additional_filters
+        base.additional_filters, base.pitch
     )
 end
 
