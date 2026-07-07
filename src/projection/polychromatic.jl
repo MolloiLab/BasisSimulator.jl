@@ -495,6 +495,29 @@ function _forward_project_poly!(
     # Default when μ_table_gpu + wη_gpu available. 3.66× faster than unfused.
     # =========================================================================
     if ws_μ_table_gpu !== nothing && ws_wη_gpu !== nothing
+        # ---------------------------------------------------------------------
+        # SINGLE-PASS PATH (:dd_fast, ≤32 materials): the path-length DD kernel
+        # accumulates per-MATERIAL path lengths (energy-independent registers),
+        # so all n_energies convert once per cell — ONE volume walk instead of
+        # n_tiles.  Identical DD footprint/weights; float ordering only.
+        # :dd and :siddon keep the tiled path below (their kernels hold
+        # per-energy registers → K=16 required).
+        # ---------------------------------------------------------------------
+        if projector === :dd_fast && size(ws_μ_table_gpu, 1) <= _PLEN_MAX_MATERIALS
+            @info "SINGLE-PASS PATH (:dd_fast path-length): n_energies=$n_energies, mask=$(size(mask)), sino=$(size(sinogram))" maxlog = 1
+            dd_fast_fused_poly_project!(
+                sinogram, mask, geom,
+                ws_μ_table_gpu, ws_wη_gpu, Val(n_energies);
+                volume_extent = volume_extent,
+                ws_source_positions = ws_source_positions,
+                ws_detector_centers = ws_detector_centers,
+                ws_detector_u = ws_detector_u,
+                ws_detector_v = ws_detector_v,
+                ws_bowtie_spectral = ws_bowtie_spectral
+            )
+            return sinogram
+        end
+
         @info "TILED PATH: K=16, n_energies=$n_energies, mask=$(size(mask)), sino=$(size(sinogram))" maxlog = 1
 
         # Tile parameters — fused poly projector (Val(16), `projector`-selected)

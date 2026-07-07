@@ -84,8 +84,13 @@ include("projection/siddon.jl")
 # Drop-in replacement for Siddon (same signatures, cm units, Σμ·l output).
 include("projection/dd.jl")
 
-# Projector selection (:dd default / :siddon) — shared by the forward sim,
-# the IR system matrix, and the BHC correction so the model stays consistent.
+# :dd_fast — same DD3 model, single-pass per-material path-length fused kernels
+# (results ≡ :dd to float ordering; full spectrum in ONE volume walk).
+include("projection/dd_fast.jl")
+
+# Projector selection (:dd default / :dd_fast / :siddon) — shared by the
+# forward sim, the IR system matrix, and the BHC correction so the model stays
+# consistent.
 include("projection/select_projector.jl")
 
 # =============================================================================

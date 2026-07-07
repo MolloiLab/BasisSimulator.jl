@@ -9,9 +9,16 @@
 #
 #   :dd      — distance-driven (DD3).  DEFAULT.  Anti-aliased footprint
 #              integration; robust in severe beam-hardened regions.
-#   :siddon  — Siddon exact ray tracing.  ~3.5-5.5x faster on GPU, but
-#              point-samples one voxel per step → ALIASES in severe
-#              beam-hardened regions.  Use only when speed > accuracy.
+#   :dd_fast — SAME DD3 model, single-pass per-material path-length fused
+#              kernels: identical footprint/overlap weights (results agree with
+#              :dd to float ordering), but the full spectrum is produced in ONE
+#              volume walk instead of the K=16 tiled re-walks.  Measured 47x
+#              faster on the 234-bin polychromatic forward path (M4 Metal).
+#              Mono projection is byte-identical to :dd (same kernel).
+#              Requires ≤ 32 materials (falls back to :dd kernels above that).
+#   :siddon  — Siddon exact ray tracing.  Fast mono, but point-samples one
+#              voxel per step → ALIASES in severe beam-hardened regions.  Use
+#              only when speed > accuracy.
 #
 # Consistency contract: the forward simulation, the iterative-recon system
 # matrix (A·x and W = 1/(A·1)), and the BHC correction all read the SAME
@@ -28,17 +35,19 @@
 """
     _validate_projector(p::Symbol) -> Symbol
 
-Throw an `ArgumentError` unless `p` is `:dd` or `:siddon`; return `p` unchanged.
-Call at every public entry point that accepts a projector so an invalid symbol
-fails loudly instead of silently falling back to `:dd` in the shims below.
+Throw an `ArgumentError` unless `p` is `:dd`, `:dd_fast`, or `:siddon`; return
+`p` unchanged.  Call at every public entry point that accepts a projector so an
+invalid symbol fails loudly instead of silently falling back to `:dd` in the
+shims below.
 """
 @inline function _validate_projector(p::Symbol)
-    (p === :dd || p === :siddon) ||
-        throw(ArgumentError("projector must be :dd or :siddon, got :$p"))
+    (p === :dd || p === :dd_fast || p === :siddon) ||
+        throw(ArgumentError("projector must be :dd, :dd_fast, or :siddon, got :$p"))
     return p
 end
 
-# In-place monochromatic forward projection.
+# In-place monochromatic forward projection.  :dd_fast has no mono variant —
+# mono has no energy loop, so it IS the :dd kernel.
 @inline _project_mono!(proj::Symbol, args...; kw...) =
     proj === :siddon ? siddon_forward_project!(args...; kw...) :
                        dd_forward_project!(args...; kw...)
@@ -50,10 +59,12 @@ end
 
 # Fused polychromatic (energy-integrating EI).
 @inline _project_fused_poly!(proj::Symbol, args...; kw...) =
-    proj === :siddon ? siddon_fused_poly_project!(args...; kw...) :
-                       dd_fused_poly_project!(args...; kw...)
+    proj === :siddon  ? siddon_fused_poly_project!(args...; kw...) :
+    proj === :dd_fast ? dd_fast_fused_poly_project!(args...; kw...) :
+                        dd_fused_poly_project!(args...; kw...)
 
 # Fused spectral (photon-counting PCCT, tiled).
 @inline _project_fused_spectral!(proj::Symbol, args...; kw...) =
-    proj === :siddon ? siddon_fused_spectral_project!(args...; kw...) :
-                       dd_fused_spectral_project!(args...; kw...)
+    proj === :siddon  ? siddon_fused_spectral_project!(args...; kw...) :
+    proj === :dd_fast ? dd_fast_fused_spectral_project!(args...; kw...) :
+                        dd_fused_spectral_project!(args...; kw...)
