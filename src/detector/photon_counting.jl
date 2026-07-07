@@ -493,9 +493,27 @@ function pcct_forward_project(
 
         # Per-tile subset copy + kernel call (same approach as EICT tiled path)
         n_regions = size(ws_μ_table_gpu, 1)
+        has_src = ws_source_spectral !== nothing
+
+        # ---------------------------------------------------------------------
+        # SINGLE-PASS PATH (:dd_fast, ≤32 materials): per-material path-length
+        # DD kernel handles the FULL padded energy range in one volume walk —
+        # identical DD footprint/weights, no per-tile re-walk, no subset copies.
+        # ---------------------------------------------------------------------
+        if projector === :dd_fast && n_regions <= _PLEN_MAX_MATERIALS
+            @info "PCCT SINGLE-PASS PATH (:dd_fast path-length): n_energies=$n_energies, n_bins=$n_bins" maxlog=1
+            dd_fast_fused_spectral_project!(
+                _pilot, _outputs_flat, Int32(n_bins), mask, _proj_geom,
+                ws_μ_table_gpu, ws_W_matrix_gpu, Val(n_energies_padded), Int32(1);
+                volume_extent=volume_extent,
+                ws_source_positions=_ws_src, ws_detector_centers=_ws_det,
+                ws_detector_u=_ws_u, ws_detector_v=_ws_v,
+                ws_bowtie_spectral=(has_src ? ws_source_spectral : nothing))
+            @goto tiles_done
+        end
+
         μ_sub = similar(mask, T, n_regions, TILE_K)
         W_sub = similar(mask, T, TILE_K, n_bins)
-        has_src = ws_source_spectral !== nothing
         bt_sub = has_src ? similar(mask, T, size(_pilot, 1), size(_pilot, 2), TILE_K) : nothing
 
         for tile_idx in 1:n_tiles
@@ -525,6 +543,8 @@ function pcct_forward_project(
                     ws_detector_u=_ws_u, ws_detector_v=_ws_v)
             end
         end
+
+        @label tiles_done
 
         # Unpack outputs_flat → bins (or native_bins if spatial binning)
         if use_native

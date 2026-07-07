@@ -846,11 +846,15 @@ function siddon_fused_poly_project!(
     # Bowtie layout constants
     nc_nr = n_cols * n_rows
     has_bowtie = ws_bowtie_spectral !== nothing
+    # Concrete dummy when no bowtie: capturing `nothing` makes the kernel
+    # closure compile a `getindex(::Nothing, …)` branch → invalid GPU IR on
+    # Metal even though `hbt` guards it at runtime.  (Same pattern as dd.jl.)
+    _bt = has_bowtie ? ws_bowtie_spectral : similar(μ_table_gpu, T, 1, 1, 1)
 
     # Capture all variables in let block for GPU closure correctness
     let mask = mask, μ_tbl = μ_table_gpu, wη = wη_gpu,
             sp = source_positions, dc = detector_centers, du = detector_u, dv = detector_v,
-            bt = ws_bowtie_spectral,
+            bt = _bt,
             vmx = vol_min_x, vmy = vol_min_y, vmz = vol_min_z,
             vMx = vol_max_x, vMy = vol_max_y, vMz = vol_max_z,
             vsx = voxel_size_x, vsy = voxel_size_y, vsz = voxel_size_z,

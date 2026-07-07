@@ -317,9 +317,6 @@ end
     return nothing
 end
 
-# =============================================================================
-# Fused polychromatic — mirror siddon_fused_poly_project!
-# =============================================================================
 """
     dd_fused_poly_project!(sinogram, mask, geom, μ_table_gpu, wη_gpu, Val(N_E); kwargs...)
 
@@ -327,6 +324,9 @@ Distance-driven analog of [`siddon_fused_poly_project!`](@ref): one gather pass
 per detector cell through the material `mask`, accumulating line integrals for
 all `N_E` energy bins, then Beer-Lambert `-log(Σ_e wη[e]·exp(-L_e))`.  Same
 arguments, output, and bowtie-spectral handling as the Siddon version.
+
+See [`dd_fast_fused_poly_project!`](@ref) for the single-pass per-material
+path-length variant (identical DD model, no per-energy register pressure).
 """
 function dd_fused_poly_project!(
         sinogram::AbstractArray{T, 3},
@@ -435,9 +435,6 @@ function dd_fused_poly_project!(
     return sinogram
 end
 
-# =============================================================================
-# Fused spectral (PCCT, tiled) — mirror siddon_fused_spectral_project!
-# =============================================================================
 """
     dd_fused_spectral_project!(pilot, outputs_flat, n_bins, mask, geom,
         μ_table_gpu, W_gpu, Val(K), tile_start; kwargs...)
@@ -447,6 +444,9 @@ pass per detector cell accumulating `K` energy bins (tile starting at
 `tile_start`), then ADDS per-bin partial Beer-Lambert sums to `outputs_flat`.
 Same tiled-accumulation contract as the Siddon version (zero-init before the
 first tile; tiles accumulate).
+
+See [`dd_fast_fused_spectral_project!`](@ref) for the single-pass per-material
+path-length variant (identical DD model; `K` can be the full energy count).
 """
 function dd_fused_spectral_project!(
         pilot::AbstractArray{T, 3},

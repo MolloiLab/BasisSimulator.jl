@@ -347,7 +347,7 @@ sim_opts = BS.SimOptions(
     fidelity = :eict,
     seed = 1234,
     use_heel_effect = false,   # exact forward/inverse spectral match
-    # projector = :siddon,     # fast ray tracer; default :dd is anti-aliased.
+    projector = :dd_fast,      # same DD physics, single-pass fused kernels.
                                #  BHC (ufc_poly_recon) reads sim_opts.projector to match.
 );
 

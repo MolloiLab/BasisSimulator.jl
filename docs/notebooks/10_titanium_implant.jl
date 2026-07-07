@@ -163,7 +163,7 @@ scanner = BS.Scanner(
 protocol = BS.CTProtocol(kVp = 120.0, mA = 200.0, views = 360, rotation_time = 0.5);
 
 # ╔═╡ 10000005-0000-4000-8000-000000000004
-sim_opts = BS.SimOptions(fidelity = :eict, seed = 42);
+sim_opts = BS.SimOptions(fidelity = :eict, seed = 42, projector = :dd_fast);
 
 # ╔═╡ 10000005-0000-4000-8000-000000000005
 recon_opts = BS.ReconOptions(matrix_size = (256, 256, 8), fov_cm = 30.0);

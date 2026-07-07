@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.1.0
+# v0.2.1
 
 using Markdown
 using InteractiveUtils
@@ -547,12 +547,12 @@ protocol = BS.CTProtocol(
 
 # ╔═╡ 07000004-0000-4000-8000-000000000001
 # `projector` picks the forward ray tracer: :dd (default) is distance-driven and
-# anti-aliased (robust in severe beam-hardened regions); :siddon is ~3.5-5.5× faster
+# anti-aliased (robust in severe beam-hardened regions); :dd_fast is the SAME DD physics
 # on GPU but ALIASES in those regions — use it only when speed outranks accuracy.
 # The BHC and Hybrid-IR cells below all read `sim_opts.projector`, so changing it
 # HERE updates the whole pipeline consistently — the recon must invert the operator
 # that generated the data, or the IR system matrix won't match and convergence suffers.
-sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234, projector = :siddon)
+sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234, projector = :dd_fast)
 
 # ╔═╡ 07000005-0000-4000-8000-000000000001
 recon_opts = BS.ReconOptions(
@@ -761,7 +761,7 @@ swapped in for the FDK workspace.
     Hybrid IR's data-fidelity term uses a forward projector `A`, so it
     **must use the same projector that generated the sinogram**. We pass
     `projector = sim_opts.projector` to `create_hir_recon_workspace`, so
-    flipping `sim_opts.projector` to `:siddon` (for speed) automatically
+    flipping `sim_opts.projector` (e.g. to `:dd_fast`) automatically
     keeps the recon consistent. FBP (§8) is immune — it has no forward `A`.
 """
 

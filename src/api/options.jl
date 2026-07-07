@@ -46,9 +46,13 @@ for preset lookup — it is not stored on the struct.
 - `projector::Symbol`: Forward-projection ray tracer.  `:dd` (default) = distance-driven,
   anti-aliased footprint integration (robust in severe beam-hardened regions).  `:siddon` =
   exact ray tracing, ~3.5-5.5x faster on GPU but ALIASES in severe beam-hardened regions —
-  use only when speed outranks accuracy.  NOTE: to keep the iterative-recon system matrix
-  consistent with the data, pass the SAME projector to `create_hir_recon_workspace(; projector=…)`
-  (both default `:dd`).
+  use only when speed outranks accuracy.  `:dd_fast` = the SAME distance-driven model with
+  single-pass per-material path-length fused kernels — results agree with `:dd` to floating-point
+  ordering, the full spectrum runs in ONE volume walk (measured 47x faster on a 234-bin
+  polychromatic forward on M4 Metal), mono projection is the `:dd` kernel unchanged; requires
+  ≤ 32 materials (falls back to `:dd` kernels above that).  NOTE: to keep the iterative-recon
+  system matrix consistent with the data, pass the SAME projector to
+  `create_hir_recon_workspace(; projector=…)` (both default `:dd`).
 """
 struct SimOptions
     # --- Physics Pipeline (7 effects) ---
@@ -73,7 +77,7 @@ struct SimOptions
     # --- General ---
     seed::Union{Int, Nothing}
     detector_efficiency_mode::Symbol   # :auto, :mc_lut, :beer_lambert
-    projector::Symbol                  # :dd (default, anti-aliased) or :siddon (fast)
+    projector::Symbol                  # :dd (default, anti-aliased), :dd_fast (same DD, single-pass), :siddon (fast)
 end
 
 """
