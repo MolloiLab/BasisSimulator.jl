@@ -210,6 +210,7 @@ fig_artifacts = let
     ax2 = CM.Axis(fig[1, 2], title = "Wide window [-1000, 4000] HU", aspect = 1)
     CM.heatmap!(ax2, sl; colorrange = (-1000, 4000), colormap = :grays)
     CM.hidedecorations!(ax2)
+    CM.save(joinpath(@__DIR__, "..", "assets", "titanium_artifacts.png"), fig)
     fig
 end
 

@@ -95,6 +95,18 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
             thumbnail = "qrm_thorax_pcct_vmi_vs_theoretical.png",
             tags      = ["PCCT", "Naeotom Alpha", "VMI", "cov-ACNR", "QRM-Thorax"],
         ),
+        "10_titanium_implant" => (
+            index     = "10",
+            title     = "Titanium Implant — Metal Artifacts from a User-Defined Material",
+            summary   = "Register titanium as a custom XA.Material (pure Ti, 4.54 g/cm³, NIST " *
+                        "XCOM cross-sections) and scan two 1.5 cm rods in a water cylinder at " *
+                        "120 kVp.  The polychromatic forward model and count-domain noise chain " *
+                        "produce the classic metal artifacts by construction — a between-rod " *
+                        "beam-hardening dark band and photon-starvation streaks — reconstructed " *
+                        "uncorrected with FDK.  States the no-MAR scope explicitly.",
+            thumbnail = "titanium_artifacts.png",
+            tags      = ["EICT", "Metal artifacts", "Custom material", "Beam hardening", "FDK"],
+        ),
         "09_siemens_force_ufc_dual_source_vmi" => (
             index     = "09",
             title     = "Siemens SOMATOM Force — UFC MC LUT + Dual-Source VMI",
