@@ -332,6 +332,14 @@ function fdk_reconstruct(
     cutoff::Float64 = 1.0
 ) where T <: AbstractFloat
 
+    # Helical trajectories route to the rebinned WFBP chain (Stierstorfer
+    # 2004 family) — the circular FDK weighting below assumes a full-orbit
+    # circular scan.
+    if is_helical(geom)
+        return wfbp_helical_reconstruct(sinogram, geom, volume_size;
+            filter = filter, cutoff = cutoff)
+    end
+
     # Step 1: Filter sinogram (includes cosine weighting)
     # GPU-native spatial domain filtering - no CPU transfer needed
     filtered = filter_sinogram(sinogram, geom; filter=filter, cutoff=cutoff)
@@ -428,7 +436,8 @@ function fdk_reconstruct(
         geom.n_angles, geom.n_rows, geom.n_cols, geom.pixel_size, geom.pixel_row_size,
         geom.angles, geom.source_positions, geom.detector_centers,
         geom.detector_u, geom.detector_v,
-        fov  # Use specified FOV
+        fov,  # Use specified FOV
+        geom.pitch, geom.table_feed
     )
 
     return fdk_reconstruct(sinogram, geom_fov, volume_size; filter=filter, cutoff=cutoff)

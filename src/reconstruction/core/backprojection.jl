@@ -146,6 +146,197 @@ Note: Uses Int32 for dimensions to ensure GPU compatibility.
 end
 
 """
+    _wq_aperture(q̂, Q) -> T
+
+Stierstorfer cos² detector-row aperture weight (WFBP, Phys Med Biol 49:2209,
+2004).  `q̂ ∈ [-1, 1]` is the voxel's projected detector-row coordinate
+normalised to the outer row edges; `Q` is the flat-plateau fraction
+(canonical 0.7; LEAP uses an equivalent C¹ quadratic with the same default).
+
+    W_Q(q̂) = 1                                |q̂| < Q
+           = cos²( (π/2)·(|q̂|−Q)/(1−Q) )      Q ≤ |q̂| < 1
+           = 0                                |q̂| ≥ 1
+"""
+@inline function _wq_aperture(q̂::T, Q::T) where {T}
+    aq = abs(q̂)
+    if aq < Q
+        return one(T)
+    elseif aq < one(T)
+        c = cos(T(π) / T(2) * (aq - Q) / (one(T) - Q))
+        return c * c
+    else
+        return zero(T)
+    end
+end
+
+"""
+    backproject_voxel_helical(...)
+
+Aperture-weighted helical FDK backprojection for a single voxel — native
+cone-beam (non-rebinned) WFBP-family weighting with ANALYTIC conjugate-ray
+normalisation (the LEAP `backprojectors_VD.cu` scheme; Stierstorfer 2004,
+Tang 2006 lineage):
+
+    f(x) = Δθ · Σ_views  [ W_Q(q̂) / N(x, view) ] · (SAD²/L²) · p_filt
+
+    N(x, view) = Σ_k W_Q(q̂ − k·δq)  +  Σ_k W_Q(q̂* − k·δq*)
+
+where q̂ is the voxel's projected detector-row coordinate at this view, q̂* is
+its row coordinate at the CONJUGATE ray's view (β* = β + π − 2γ, the
+fan-angle-corrected redundant partner — pairing β with β+π at the same voxel
+is wrong off-axis and imprints feed-periodic banding), and the k-sums run
+over ±full turns of the helix (row shift δq per turn), restricted to source
+positions that exist on the scan.  The per-line partition of unity
+(w + w* = 1) makes the in-plane fan redundancy exact — no Parker weights —
+while the aperture taper W_Q handles the helical z-redundancy smoothly.
+"""
+@inline function backproject_voxel_helical(
+    sinogram::AbstractArray{T, 3},
+    voxel_x::T, voxel_y::T, voxel_z::T,
+    source_positions::AbstractArray{T, 2},
+    detector_centers::AbstractArray{T, 2},
+    detector_u::AbstractArray{T, 2},
+    detector_v::AbstractArray{T, 2},
+    n_cols::Int32, n_rows::Int32, n_angles::Int32,
+    col_center::T, row_center::T,
+    pixel_mag::T, pixel_row_mag::T, SAD::T, SAD_sq::T, SDD::T,
+    delta_theta::T, q_plateau::T, feed::T, n_turns_k::Int32,
+    src_z_lo::T, src_z_hi::T
+) where T
+
+    half_rows = T(n_rows) / T(2)
+    det_dist = SDD - SAD              # detector-centre distance from isocentre
+    acc = zero(T)
+
+    for angle in Int32(1):n_angles
+        # ── identical per-view projection math to backproject_voxel ──
+        src_x = source_positions[1, angle]
+        src_y = source_positions[2, angle]
+        src_z = source_positions[3, angle]
+
+        dcx = detector_centers[1, angle]
+        dcy = detector_centers[2, angle]
+        dcz = detector_centers[3, angle]
+
+        dux = detector_u[1, angle]
+        duy = detector_u[2, angle]
+        duz = detector_u[3, angle]
+
+        dvx = detector_v[1, angle]
+        dvy = detector_v[2, angle]
+        dvz = detector_v[3, angle]
+
+        sv_x = voxel_x - src_x
+        sv_y = voxel_y - src_y
+        sv_z = voxel_z - src_z
+
+        sd_x = dcx - src_x
+        sd_y = dcy - src_y
+        sd_z = dcz - src_z
+
+        sd_len_sq = sd_x^2 + sd_y^2 + sd_z^2
+        sv_dot_sd = sv_x * sd_x + sv_y * sd_y + sv_z * sd_z
+
+        if abs(sv_dot_sd) < T(1e-10)
+            continue
+        end
+
+        t = sd_len_sq / sv_dot_sd
+
+        proj_x = src_x + t * sv_x
+        proj_y = src_y + t * sv_y
+        proj_z = src_z + t * sv_z
+
+        dp_x = proj_x - dcx
+        dp_y = proj_y - dcy
+        dp_z = proj_z - dcz
+
+        u = (dp_x * dux + dp_y * duy + dp_z * duz) / pixel_mag
+        v = (dp_x * dvx + dp_y * dvy + dp_z * dvz) / pixel_row_mag
+
+        col_f = u + col_center
+        row_f = v + row_center
+
+        if !(col_f >= one(T) && col_f <= T(n_cols) && row_f >= one(T) && row_f <= T(n_rows))
+            continue
+        end
+
+        q̂ = v / half_rows
+        Wq = _wq_aperture(q̂, q_plateau)
+        if Wq <= zero(T)
+            continue
+        end
+
+        # ── analytic redundancy normalisation ────────────────────────────
+        # view angle β from the source position (s = (−R sinβ, −R cosβ, z)):
+        sinβ = -src_x / SAD
+        cosβ = -src_y / SAD
+        # fan angle of THIS RAY from its impact parameter ℓ (signed
+        # perpendicular distance from the isocentre to the source→voxel line);
+        # under this package's rotation convention the redundant partner view
+        # is β* = β + π + 2γ (verified numerically against brute force).
+        dlen2d = sqrt(sv_x * sv_x + sv_y * sv_y)
+        ℓ = (src_x * sv_y - src_y * sv_x) / max(dlen2d, T(1e-6))
+        γ = asin(clamp(ℓ / SAD, -one(T), one(T)))
+
+        # conjugate ray: view β* = β + π + 2γ, source z advanced along the helix
+        Δβc = T(π) + T(2) * γ
+        βc = atan(sinβ, cosβ) + Δβc          # atan(sin, cos) = β
+        zc = src_z + feed * Δβc / T(2π)
+        sinβc = sin(βc)
+        cosβc = cos(βc)
+        # parametric scale of the conjugate projection (flat detector ⟂ ray):
+        #   sd* = (SDD sinβ*, SDD cosβ*, 0);  sv*·sd* = SDD(x sinβ* + y cosβ* + R)
+        denomc = voxel_x * sinβc + voxel_y * cosβc + SAD
+        # row-coordinate slopes per unit z (v = t·(z_v − z_src)/pixel_row_mag)
+        m = t / (pixel_row_mag * half_rows)
+        q̂c = abs(denomc) > T(1e-6) ?
+             (SDD / denomc) * (voxel_z - zc) / (pixel_row_mag * half_rows) : T(2)
+        mc = abs(denomc) > T(1e-6) ? SDD / (denomc * pixel_row_mag * half_rows) : zero(T)
+
+        # partition-of-unity normalisation over all helix copies that exist
+        norm = zero(T)
+        for k in (-n_turns_k):n_turns_k
+            zk = src_z + T(k) * feed
+            if zk >= src_z_lo - T(1e-6) && zk <= src_z_hi + T(1e-6)
+                norm += _wq_aperture(q̂ - T(k) * m * feed, q_plateau)
+            end
+            zkc = zc + T(k) * feed
+            if zkc >= src_z_lo - T(1e-6) && zkc <= src_z_hi + T(1e-6)
+                norm += _wq_aperture(q̂c - T(k) * mc * feed, q_plateau)
+            end
+        end
+        norm = max(norm, Wq)          # guard: the k=0 main term is always present
+
+        # ── bilinear sample + FDK distance weight ─────────────────────────
+        col_lo = unsafe_trunc(Int32, col_f)
+        col_hi = col_lo + Int32(1)
+        row_lo = unsafe_trunc(Int32, row_f)
+        row_hi = row_lo + Int32(1)
+
+        w_col = col_f - T(col_lo)
+        w_row = row_f - T(row_lo)
+
+        col_lo = clamp(col_lo, Int32(1), n_cols)
+        col_hi = clamp(col_hi, Int32(1), n_cols)
+        row_lo = clamp(row_lo, Int32(1), n_rows)
+        row_hi = clamp(row_hi, Int32(1), n_rows)
+
+        val = (one(T) - w_col) * (one(T) - w_row) * sinogram[col_lo, row_lo, angle] +
+              w_col * (one(T) - w_row) * sinogram[col_hi, row_lo, angle] +
+              (one(T) - w_col) * w_row * sinogram[col_lo, row_hi, angle] +
+              w_col * w_row * sinogram[col_hi, row_hi, angle]
+
+        dist_sq = sv_x^2 + sv_y^2 + sv_z^2
+        w_fdk = SAD_sq / dist_sq
+
+        acc += (Wq / norm) * w_fdk * val
+    end
+
+    return acc * delta_theta
+end
+
+"""
     backproject_voxel_matched(...)
 
 Matched (unweighted) backprojection for a single voxel - for iterative algorithms.
@@ -298,6 +489,7 @@ function backproject!(
     sinogram::AbstractArray{T, 3},
     geom::CTGeometry;
     weighted::Bool = true,
+    helical_q::Real = 0.7,
     ws_source_positions = nothing,
     ws_detector_centers = nothing,
     ws_detector_u = nothing,
@@ -368,7 +560,44 @@ function backproject!(
     half = T(0.5)
 
     # Use AcceleratedKernels.jl to parallelize over all voxels
-    if weighted
+    if weighted && is_helical(geom)
+        # Aperture-weighted helical FDK (WFBP-family; Stierstorfer 2004/LEAP).
+        # View loop regrouped into half-turn conjugate families with per-family
+        # ΣW normalisation — handles helical AND in-plane fan redundancy.
+        Δθ = length(geom.angles) > 1 ? geom.angles[2] - geom.angles[1] : 2π
+        delta_theta = T(Δθ)
+        q_plateau = T(helical_q)
+        feed = T(geom.table_feed)
+        SDD_T = T(geom.SDD)
+        pitch_eff = geom.pitch > 0 ? geom.pitch : 1.0
+        n_turns_k = Int32(ceil(Int, 1 / pitch_eff) + 1)
+        src_z_lo = T(minimum(@view geom.source_positions[3, :]))
+        src_z_hi = T(maximum(@view geom.source_positions[3, :]))
+
+        AK.foreachindex(volume) do idx
+            idx_0 = Int32(idx - 1)
+            ix = (idx_0 % nx) + Int32(1)
+            idx_0 = idx_0 ÷ nx
+            iy = (idx_0 % ny) + Int32(1)
+            iz = (idx_0 ÷ ny) + Int32(1)
+
+            voxel_x = vol_min_x + (T(ix) - half) * voxel_size_x
+            voxel_y = vol_min_y + (T(iy) - half) * voxel_size_y
+            voxel_z = vol_min_z + (T(iz) - half) * voxel_size_z
+
+            volume[idx] = backproject_voxel_helical(
+                sinogram,
+                voxel_x, voxel_y, voxel_z,
+                source_positions, detector_centers,
+                detector_u, detector_v,
+                n_cols, n_rows, n_angles,
+                col_center, row_center,
+                pixel_mag, pixel_row_mag, SAD, SAD_sq, SDD_T,
+                delta_theta, q_plateau, feed, n_turns_k,
+                src_z_lo, src_z_hi
+            )
+        end
+    elseif weighted
         # FDK-weighted backprojection
         AK.foreachindex(volume) do idx
             # Convert linear index to (ix, iy, iz) using integer arithmetic

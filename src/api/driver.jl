@@ -1141,6 +1141,24 @@ function reconstruct!(
         geom::CTGeometry,
     ) where {T <: AbstractFloat}
 
+    if is_helical(geom)
+        # Helical → rebinned WFBP chain (Stierstorfer family), reusing the
+        # workspace buffers: ws.filtered holds the rebinned/filtered data.
+        # ws.filter_kernel was built with spacing geom.pixel_size == Δt, so it
+        # is the correct parallel ramp kernel as-is.
+        _, Δt = _wfbp_rebin!(ws.filtered, sinogram, geom)
+        filter_sinogram!(
+            ws.filtered, geom;
+            ws_conv_scratch = ws.conv_scratch,
+            ws_filter_kernel = ws.filter_kernel,
+            apply_cosine = false, ray_spacing = Δt
+        )
+        fill!(ws.volume, zero(T))
+        _wfbp_backproject!(ws.volume, ws.filtered, geom, T(Δt))
+        apply_fov_mask!(ws.volume, geom)
+        return ws.volume
+    end
+
     # Step 1: Copy sinogram into filtering scratch buffer
     copyto!(ws.filtered, sinogram)
 
@@ -1271,6 +1289,18 @@ function reconstruct!(
 
     # ─── Step 1: FDK initialization (or warm-start from provided volume) ───
     if init_volume === nothing
+        if is_helical(geom)
+            # Helical FDK init → rebinned WFBP (see FDKReconWorkspace path)
+            _, Δt_h = _wfbp_rebin!(ws.filtered, sinogram, geom)
+            filter_sinogram!(
+                ws.filtered, geom;
+                ws_conv_scratch = ws.conv_scratch,
+                ws_filter_kernel = ws.filter_kernel,
+                apply_cosine = false, ray_spacing = Δt_h
+            )
+            fill!(ws.volume, zero(T))
+            _wfbp_backproject!(ws.volume, ws.filtered, geom, T(Δt_h))
+        else
         copyto!(ws.filtered, sinogram)
         filter_sinogram!(
             ws.filtered, geom;
@@ -1286,6 +1316,7 @@ function reconstruct!(
             ws_detector_u = ws.geom_detector_u,
             ws_detector_v = ws.geom_detector_v
         )
+        end
     else
         copyto!(ws.volume, init_volume)
     end

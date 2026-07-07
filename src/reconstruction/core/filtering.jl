@@ -436,18 +436,21 @@ function filter_sinogram!(
     filter::FilterType = StandardFilter(),
     cutoff::Float64 = 1.0,
     ws_conv_scratch = nothing,
-    ws_filter_kernel = nothing
+    ws_filter_kernel = nothing,
+    apply_cosine::Bool = true,
+    ray_spacing::Union{Nothing, Real} = nothing
 ) where T <: AbstractFloat
 
     n_cols = Int32(size(sinogram, 1))
     n_rows = Int32(size(sinogram, 2))
     n_angles = Int32(size(sinogram, 3))
 
-    # Step 1: Cosine weighting
-    cosine_weight!(sinogram, geom)
+    # Step 1: Cosine weighting (skipped for rebinned-parallel WFBP data,
+    # which is filtered as plain parallel rows)
+    apply_cosine && cosine_weight!(sinogram, geom)
 
     # Step 2: Create spatial domain filter kernel
-    pixel_size = T(geom.pixel_size)
+    pixel_size = ray_spacing === nothing ? T(geom.pixel_size) : T(ray_spacing)
 
     # Kernel size based on cutoff (smaller cutoff = smaller kernel = faster)
     # Compute without reassignment to avoid GPU boxing issues

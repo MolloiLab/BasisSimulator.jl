@@ -183,6 +183,10 @@ include("reconstruction/core/filtering.jl")
 # FDK reconstruction (filter + backproject)
 include("reconstruction/fbp/fdk.jl")
 
+# Helical WFBP (rebinned weighted FBP — Stierstorfer 2004 family); dispatched
+# from fdk_reconstruct when is_helical(geom).
+include("reconstruction/fbp/wfbp_helical.jl")
+
 # --- Iterative Reconstruction Utilities ---
 # Huber penalty, projection/image weights (shared by HIR)
 include("reconstruction/ir/utils.jl")
