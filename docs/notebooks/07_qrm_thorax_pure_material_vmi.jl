@@ -485,7 +485,7 @@ md"""
 """
 
 # ╔═╡ 07030003-0000-4000-8000-000000000010
-sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234, projector = :siddon);
+sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234, projector = :dd_fast);
 
 # ╔═╡ 07030003-0000-4000-8000-000000000020
 # Standard CT recon convention: 512 × 512 in-plane at 0.625 mm isotropic

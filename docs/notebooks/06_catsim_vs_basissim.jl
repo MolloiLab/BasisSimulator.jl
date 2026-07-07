@@ -344,7 +344,7 @@ protocol = BS.CTProtocol(
 );
 
 # ╔═╡ 06000003-0000-4000-8000-000000000020
-sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234, projector = :siddon);
+sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234, projector = :dd_fast);
 
 # ╔═╡ 06000003-0000-4000-8000-000000000030
 recon_opts = let

@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.1.0
+# v0.2.1
 
 using Markdown
 using InteractiveUtils
@@ -343,6 +343,7 @@ toggle it off below.
 sim_opts = BS.SimOptions(
     fidelity = :eict,
     seed = 1234,
+    projector = :dd_fast,   # same anti-aliased DD physics, single-pass fused kernels
 
     # Override individual physics toggles by uncommenting:
     # use_scatter           = false,   # disable scatter convolution

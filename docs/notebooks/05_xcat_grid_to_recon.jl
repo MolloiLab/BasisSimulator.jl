@@ -613,7 +613,7 @@ protocol = BS.CTProtocol(
 );
 
 # ╔═╡ 0500000a-0000-4000-8000-000000000040
-sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234, projector = :siddon);
+sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234, projector = :dd_fast);
 
 # ╔═╡ 0500000b-0000-4000-8000-000000000001
 md"""
