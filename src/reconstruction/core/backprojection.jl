@@ -48,6 +48,8 @@ Note: Uses Int32 for dimensions to ensure GPU compatibility.
 ) where T
 
     acc = zero(T)
+    w_full = zero(T)
+    w_acc = zero(T)
 
     # Loop over all angles
     for angle in Int32(1):n_angles
@@ -119,6 +121,13 @@ Note: Uses Int32 for dimensions to ensure GPU compatibility.
             (u + col_center, v + row_center)
         end
 
+        # FDK distance weight is pure geometry (no detector dependence) — track
+        # the full-scan weight sum so partial-coverage voxels renormalize
+        # consistently (see return).
+        dist_sq_g = arc_det ? (sv_x^2 + sv_y^2) : (sv_x^2 + sv_y^2 + sv_z^2)
+        weight_g = SAD_sq / dist_sq_g
+        w_full += weight_g
+
         # Check if within detector bounds
         if col_f >= T(0.5) && col_f <= T(n_cols) + T(0.5) && row_f >= T(0.5) && row_f <= T(n_rows) + T(0.5)
             # Bilinear interpolation indices
@@ -143,17 +152,19 @@ Note: Uses Int32 for dimensions to ensure GPU compatibility.
                   (one(T) - w_col) * w_row * sinogram[col_lo, row_hi, angle] +
                   w_col * w_row * sinogram[col_hi, row_hi, angle]
 
-            # FDK distance weighting: flat (TIGRE) uses 3D distance; equiangular
-            # (Kak-Slaney fan FBP) uses the in-plane source→voxel distance.
-            dist_sq = arc_det ? (sv_x^2 + sv_y^2) : (sv_x^2 + sv_y^2 + sv_z^2)
-            weight = SAD_sq / dist_sq
-
-            acc += val * weight
+            acc += val * weight_g
+            w_acc += weight_g
         end
     end
 
-    # Scale by angle step
-    return acc * pi_over_angles
+    # Per-voxel redundancy normalization in WEIGHT space (same principle as
+    # WFBP's sumW and IR's 1/(Bᵀ1)): Σ_full(val·w) ≈ Σ_acc(val·w)·(Σ_full w /
+    # Σ_acc w).  Interior voxels: Σ_full == Σ_acc → plain FDK unchanged.
+    # z-edge rim voxels keep ≥ half-scan coverage and reconstruct at ~correct
+    # HU from far-side views — narrow collimation → clean edges; peak/wide
+    # collimation → genuine cone inconsistency stays visible (clinical
+    # behaviour).
+    return w_acc > zero(T) ? acc * (w_full / w_acc) * pi_over_angles : zero(T)
 end
 
 """
