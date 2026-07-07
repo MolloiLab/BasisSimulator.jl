@@ -81,6 +81,16 @@ function apply_bhc_image_domain(
         projector::Symbol = :dd,
     ) where {T <: AbstractFloat}
 
+    Base.depwarn(
+        "apply_bhc_image_domain is DEPRECATED and disabled from the canonical " *
+        "correction chain: audit found it subtracts a scaled copy of the " *
+        "dense-material image itself (FBP∘FP ≈ identity), deflating bone/iodine " *
+        "HU by ~scale_factor instead of removing dark-band artifacts.  Use the " *
+        "sinogram-domain apply_bhc_two_material (now calibrated on the full " *
+        "detected spectrum) alone.",
+        :apply_bhc_image_domain,
+    )
+
     _validate_projector(projector)
     μ_w_ref = T(μ_water_ref)
     hu_low_T = T(hu_low)

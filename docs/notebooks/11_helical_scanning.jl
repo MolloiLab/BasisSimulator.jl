@@ -224,10 +224,9 @@ function corrected_recon(sino_gpu, geom, matrix_size, bhc)
     sino_g = to_gpu(Float32.(sino_bhc))
     ws_fdk = BS.create_fdk_recon_workspace(sino_g, geom, matrix_size)
     recon_μ = BS.reconstruct!(ws_fdk, sino_g, geom)
-    BS.apply_bhc_image_domain(
-        recon_μ, geom, matrix_size, bhc.μ_water;
-        hu_low = 50.0, hu_high = 150.0, scale_factor = 0.2,
-    )
+    # NOTE: no image-domain BHC — audit found it deflates dense-material HU
+    # (a scaled self-subtraction, not So et al.); the sinogram-domain BHC
+    # (calibrated on the full detected spectrum) is the whole correction.
     return Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc.μ_water))
 end;
 

@@ -199,6 +199,7 @@ function pcct_material_decomposition(
     ws_A_pinv = nothing,  # Pre-computed pseudo-inverse (n_materials × n_bins)
     ws_basis_vec = nothing  # Pre-computed basis vector
 ) where {T, A}
+    Base.depwarn("pcct_material_decomposition is a legacy effective-energy LSQ (ill-conditioned iodine basis); use the Cong projection-domain chain (apply_cong! with Phi_k).", :pcct_material_decomposition)
 
     basis_vec = if ws_basis_vec !== nothing
         ws_basis_vec

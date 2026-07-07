@@ -38,8 +38,11 @@ for preset lookup — it is not stored on the struct.
   `simulate!()` after pileup (re-estimates the scatter field from the current bins and
   subtracts it).  Default `false`; enable to fold the notebook-level correction into `simulate!()`.
 - `pcct_noise_reduction::Float64`: PCCT noise reduction factor (0.0–1.0).  Approximates clinical
-  vendor reconstruction (e.g., Siemens QIR).  0.0 = raw physics (default), 0.7 = 70% noise reduction
-  (~QIR-3).  Only affects PCCT sinogram noise; EICT noise is unaffected.
+  vendor reconstruction (e.g., Siemens QIR) by scaling the quantum-noise σ.  0.0 = raw physics
+  (default), 0.7 = 70% noise reduction (~QIR-3).  Only affects PCCT sinogram noise; EICT noise is
+  unaffected.  VALIDATION DOCTRINE: HU-accuracy claims must hold at 0.0 — nonzero values also
+  shrink the (now removed) clamp-rectification bias, so a nonzero setting can mask decomposition
+  bias rather than just modeling vendor denoising.  Use nonzero only for noise-magnitude studies.
 - `seed::Union{Int, Nothing}`: Random seed for reproducibility.  Default 42.
 - `detector_efficiency_mode::Symbol`: Override detector efficiency calculation mode.
   `:auto` (default) = let driver decide; `:mc_lut` = force MC LUT; `:beer_lambert` = force analytical.

@@ -157,6 +157,9 @@ struct TwoMaterialBHCPerColumn
     reference_energy_keV::Float64
     hu_low::Float64
     hu_high::Float64
+    # Projector the sim used (captured at calibration): the apply-time
+    # forward projections default to this, enforcing the consistency contract.
+    projector::Symbol
 end
 
 # =============================================================================
@@ -385,7 +388,12 @@ function calibrate_bhc_two_material(
         hu_low::Real = 100.0,
         hu_high::Real = 500.0,
     )
-    e, ŵ = resolve_source_spectrum_with_bowtie(
+    # AUDIT FIX: calibrate against the spectrum the detector ACTUALLY saw —
+    # tube × filters × bowtie × heel × η(E), each gated on sim_opts.use_* —
+    # not just tube × filters × bowtie.  (resolve_source_spectrum_full exists
+    # for exactly this: "the inversion's forward model matches the forward
+    # model simulate! actually applied.")
+    e, ŵ = resolve_source_spectrum_full(
         sim_opts, protocol; scanner = scanner, geom = geom,
     )
     e, w_col = bhc_spectrum_per_column(e, ŵ)
@@ -405,6 +413,7 @@ function calibrate_bhc_two_material(
         reference_energy_keV = ref_E,
         hu_low = hu_low,
         hu_high = hu_high,
+        projector = sim_opts.projector,
     )
 end
 
@@ -417,6 +426,7 @@ function calibrate_bhc_two_material(
         reference_energy_keV::Real = 70.0,
         hu_low::Real = 100.0,
         hu_high::Real = 500.0,
+        projector::Symbol = :dd,
     )
     n_E, n_col = size(weights_per_col)
     length(energies) == n_E ||
@@ -449,6 +459,7 @@ function calibrate_bhc_two_material(
         μ_water_ref, μ_bone_ref,
         Float64(reference_energy_keV),
         Float64(hu_low), Float64(hu_high),
+        projector,
     )
 end
 
@@ -571,7 +582,7 @@ function apply_bhc_two_material(
         bhc::TwoMaterialBHCPerColumn,
         geom,
         matrix_size::Tuple{Int, Int, Int};
-        projector::Symbol = :dd,
+        projector::Symbol = bhc.projector,
     ) where {T <: AbstractFloat}
 
     _validate_projector(projector)

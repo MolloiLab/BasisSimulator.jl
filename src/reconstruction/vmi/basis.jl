@@ -88,6 +88,7 @@ the scan.  Float32 precision (~7 decimal digits) is more than enough for
 the physical line-integral ranges (0–10 cm·g/cm²) that Cong operates on.
 """
 function compute_photo_compton_basis(prot_low, prot_high; sim_opts, scanner)
+    Base.depwarn("photo/Compton basis is DEPRECATED: the LSQ fit fails on the iodine K-edge (body-envelope noise). Use material-direct (murho_iodine, murho_water) with water_basis=(0,1).", :compute_photo_compton_basis)
     e_L, w_L = resolve_source_spectrum_without_bowtie(sim_opts, prot_low;  scanner = scanner)
     e_H, w_H = resolve_source_spectrum_without_bowtie(sim_opts, prot_high; scanner = scanner)
 

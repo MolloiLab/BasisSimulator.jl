@@ -179,6 +179,9 @@ function apply_cong!(
     a_w     = Float32(water_basis.a)
     c_w     = Float32(water_basis.c)
     p_L_min = Float32(minimum(p_L))
+    # softest per-cm water attenuation over the low spectrum — used for the
+    # adaptive Brent bracket (audit B3)
+    μ_w_min = Float32(minimum(Float32.(Array(p_L)) .* a_w .+ Float32.(Array(q_L)) .* c_w))
 
     # Capture tuning knobs as locals so the AK closure sees them on every backend.
     nm_iter = newton_max_iter
@@ -197,7 +200,10 @@ function apply_cong!(
         p_L_meas = Float32(sino_low[idx])
         p_H_meas = Float32(sino_high[idx])
 
-        if p_L_meas < 1f-6 && p_H_meas < 1f-6
+        # Symmetric air gate: |p| small in BOTH channels → air.  (The old
+        # one-sided `p < 1e-6` gate rectified zero-mean air noise into a
+        # positive-mean basis bias — audit finding B4.)
+        if abs(p_L_meas) < 5f-3 && abs(p_H_meas) < 5f-3
             sino_y[idx] = 0f0
             sino_c[idx] = 0f0
             return
@@ -220,7 +226,12 @@ function apply_cong!(
             T - T_L_meas
         end
 
-        L_water, ok_L = brent_solve(water_T_L, 0f0, 60f0)
+        # Adaptive upper bracket (audit B3): the old hard 60 cm cap zeroed
+        # BOTH bases on dense rays (p_L/μ_min > 60) → paired dropout streaks.
+        # Bound L by the measured low-channel integral over the softest μ in
+        # the spectrum, with margin; floor at 60 cm for the water-only regime.
+        L_hi = max(60f0, 1.5f0 * p_L_meas / max(μ_w_min, 1f-4))
+        L_water, ok_L = brent_solve(water_T_L, -1f0, L_hi)
         if !ok_L
             sino_y[idx] = 0f0
             sino_c[idx] = 0f0
@@ -299,15 +310,20 @@ function apply_cong!(
             T_H_pred(y, c̄ + x) - T_H_meas
         end
 
-        y_opt, ok_y = brent_solve(G, 0f0, y_max)
+        y_opt, ok_y = brent_solve(G, -0.5f0, y_max)
         if !ok_y
             sino_y[idx] = a_w * L_water
             sino_c[idx] = c_w * L_water
             return
         end
         x_final = solve_quintic(y_opt, c̄)
-        sino_y[idx] = max(y_opt, 0f0)
-        sino_c[idx] = max(c̄ + x_final, 0f0)
+        # Audit B4: do NOT rectify noise — small negative basis line
+        # integrals are legitimate zero-mean noise excursions; clamping them
+        # to 0 creates a positive-mean bias that ramp-filtering spreads into
+        # the body as a keV-dependent HU offset (previously masked by
+        # pcct_noise_reduction).  Clamp only at absurd magnitudes.
+        sino_y[idx] = clamp(y_opt, -5f0, 1f4)
+        sino_c[idx] = clamp(c̄ + x_final, -5f0, 1f4)
     end
 
     (sino_y, sino_c)

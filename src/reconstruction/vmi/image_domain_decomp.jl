@@ -247,6 +247,7 @@ by the calibration data — the BFGS optimizer doesn't enforce this, so
 sanity-check post-fit if you're rolling your own.
 """
 @inline function eval_cal(L, H, c, form::Symbol)
+    Base.depwarn("Image-domain decomposition calibrations are QUARANTINED: constants are stale (flat+Siddon era) and the rational-quadratic denominators have poles inside the clinical HU domain (audit B1/B6). Use the projection-domain Cong chain.", :eval_cal)
     if form === :linear
         return c[1] + c[2]*L + c[3]*H
     elseif form === :rational_quadratic
@@ -274,6 +275,7 @@ function apply_cal!(
         coeffs;
         form::Symbol = :linear,
     )
+    Base.depwarn("Image-domain decomposition calibrations are QUARANTINED: constants are stale (flat+Siddon era) and the rational-quadratic denominators have poles inside the clinical HU domain (audit B1/B6). Use the projection-domain Cong chain.", :apply_cal!)
     size(out) == size(HU_low) == size(HU_high) ||
         error("apply_cal!: shapes must match")
     if form === :linear

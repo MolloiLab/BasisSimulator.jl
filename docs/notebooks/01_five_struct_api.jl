@@ -80,7 +80,7 @@ plain `Array` (CPU) otherwise. Returned as a one-liner: `to_gpu(arr)`.
 # ╔═╡ 01000005-0000-4000-8000-000000000001
 begin
     import GPUSelect
-    AT = GPUSelect.Storage()     # the backend array type, directly: MtlArray / CuArray / ROCArray
+    AT = GPUSelect.Storage() # the backend array type, directly: MtlArray / CuArray / ROCArray / oneArray / Array
     to_gpu(x) = AT(x)
     GPU_BACKEND = (name = string(nameof(AT)),)
 end
@@ -577,7 +577,6 @@ corrections on top — the same stack we'll build here:
 | 1.    | `calibrate_bhc_two_material`          | Fits a (water + bone) polynomial from the source spectrum once, returns a BHC model      |
 | 2.    | `apply_bhc_two_material`              | Sinogram-domain beam-hardening correction — runs *before* FBP, removes the bulk poly bias |
 | 3.    | `reconstruct!` (FDK)                  | Filtered back-projection on the corrected sinogram                                       |
-| 4.    | `apply_bhc_image_domain`              | Image-domain BHC refinement — bone-region smoothstep + scaled error subtraction          |
 | 5.    | `to_hounsfield` (with BHC μ_water)    | Convert μ → HU using the BHC model's calibrated reference (not the 70 keV NIST value)    |
 | 6.    | `add_system_noise_floor!`             | Add dose-independent DAS Gaussian σ ≈ 28 HU                                              |
 | 7.    | `apply_radial_cupping_correction!`    | Residual even-polynomial cup correction on solid water (mostly cosmetic after BHC)       |
@@ -654,13 +653,8 @@ hu_std_corr = let
     ws_fdk = BS.create_fdk_recon_workspace(sino_gpu, sim_std.geom, matrix_size)
     recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, sim_std.geom)
 
-    # 3. Image-domain BHC refinement (in-place on GPU)
-    BS.apply_bhc_image_domain(
-        recon_μ, sim_std.geom, matrix_size, bhc_calibration.μ_water;
-        hu_low = 50.0,
-        hu_high = 150.0,
-        scale_factor = 0.2,
-    )
+    # 3. (image-domain BHC removed — audit: it was a scaled self-subtraction
+    #    that deflated dense-material HU, not an artifact correction)
 
     # 4. μ → HU using BHC's calibrated μ_water_ref (Float32 to feed cupping correction)
     hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc_calibration.μ_water))
@@ -701,13 +695,7 @@ hu_low_corr = let
     ws_fdk = BS.create_fdk_recon_workspace(sino_gpu, sim_low.geom, matrix_size)
     recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, sim_low.geom)
 
-    # 3. Image-domain BHC
-    BS.apply_bhc_image_domain(
-        recon_μ, sim_low.geom, matrix_size, bhc_calibration.μ_water;
-        hu_low = 50.0,
-        hu_high = 150.0,
-        scale_factor = 0.2,
-    )
+    # 3. (image-domain BHC removed — see the note in the standard-dose cell)
 
     # 4. μ → HU
     hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc_calibration.μ_water))
@@ -829,7 +817,7 @@ This notebook walked the entire `BasisSimulator.jl` user surface end to end:
   buffers actually come back. The Pluto worker stays comfortably under
   memory pressure even with two protocols back-to-back.
 - **A clinical-grade postprocessing pipeline** — `calibrate_bhc_two_material`
-  → `apply_bhc_two_material` (sinogram BHC) → FDK → `apply_bhc_image_domain`
+  → `apply_bhc_two_material` (sinogram BHC, full detected spectrum) → FDK
   → `to_hounsfield` (with the BHC model's own `μ_water_ref`) →
   `add_system_noise_floor!` → `apply_radial_cupping_correction!`.
 - **Backend-agnostic GPU dispatch** — `to_gpu()` resolves at startup via

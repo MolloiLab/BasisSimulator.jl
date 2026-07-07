@@ -80,6 +80,21 @@ function apply_radial_cupping_correction!(
         end
         coeffs = A \ vals
 
+        # QA doctrine: after a correct (full-detected-spectrum) BHC the fitted
+        # cup should be ≈ 0.  If this correction is doing real work, the BHC
+        # upstream is under-correcting — surface that loudly instead of
+        # silently absorbing it.
+        r_max = maximum(radii)
+        cup_mag = abs(sum(coeffs[p + 1] * r_max^(2p) for p in 1:poly_order))  # r-dependent part
+        dc_mag = abs(coeffs[1] - target_hu)
+        if cup_mag > 5.0 || dc_mag > 5.0
+            @warn "apply_radial_cupping_correction!: fitted residual cup = " *
+                  "$(round(cup_mag; digits=1)) HU, DC offset = $(round(dc_mag; digits=1)) HU " *
+                  "(slice $iz).  Values > ~5 HU mean the upstream BHC is under-correcting — " *
+                  "fix the BHC calibration rather than relying on this crutch." maxlog = 3
+
+        end
+
         # Subtract fitted profile, shifting to target_hu.
         for j in 1:ny, i in 1:nx
             r = sqrt(((i - cx) * pixel_cm)^2 + ((j - cy) * pixel_cm)^2)
