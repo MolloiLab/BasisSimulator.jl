@@ -120,7 +120,7 @@ Note: Uses Int32 for dimensions to ensure GPU compatibility.
         end
 
         # Check if within detector bounds
-        if col_f >= one(T) && col_f <= T(n_cols) && row_f >= one(T) && row_f <= T(n_rows)
+        if col_f >= T(0.5) && col_f <= T(n_cols) + T(0.5) && row_f >= T(0.5) && row_f <= T(n_rows) + T(0.5)
             # Bilinear interpolation indices
             col_lo = unsafe_trunc(Int32, col_f)
             col_hi = col_lo + Int32(1)
@@ -276,7 +276,7 @@ while the aperture taper W_Q handles the helical z-redundancy smoothly.
             (u + col_center, v + row_center)
         end
 
-        if !(col_f >= one(T) && col_f <= T(n_cols) && row_f >= one(T) && row_f <= T(n_rows))
+        if !(col_f >= T(0.5) && col_f <= T(n_cols) + T(0.5) && row_f >= T(0.5) && row_f <= T(n_rows) + T(0.5))
             continue
         end
 
@@ -452,7 +452,7 @@ This ensures the backprojection is the matched adjoint of the Siddon forward pro
         end
 
         # Check if within detector bounds
-        if col_f >= one(T) && col_f <= T(n_cols) && row_f >= one(T) && row_f <= T(n_rows)
+        if col_f >= T(0.5) && col_f <= T(n_cols) + T(0.5) && row_f >= T(0.5) && row_f <= T(n_rows) + T(0.5)
             # Bilinear interpolation indices
             col_lo = unsafe_trunc(Int32, col_f)
             col_hi = col_lo + Int32(1)

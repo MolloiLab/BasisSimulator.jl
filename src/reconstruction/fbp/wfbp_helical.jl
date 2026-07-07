@@ -208,14 +208,14 @@ function _wfbp_backproject!(
                             if Wq > zero(T)
                                 t_f = t̂ / Δt + t_center
                                 row_f = v + row_center
-                                if t_f >= one(T) && t_f <= T(n_cols) &&
-                                   row_f >= one(T) && row_f <= T(n_rows)
-                                    t_lo = unsafe_trunc(Int32, t_f)
-                                    t_hi = min(t_lo + Int32(1), n_cols)
-                                    r_lo = unsafe_trunc(Int32, row_f)
-                                    r_hi = min(r_lo + Int32(1), n_rows)
-                                    wt = t_f - T(t_lo)
-                                    wr = row_f - T(r_lo)
+                                if t_f >= T(0.5) && t_f <= T(n_cols) + T(0.5) &&
+                                   row_f >= T(0.5) && row_f <= T(n_rows) + T(0.5)
+                                    wt = t_f - floor(t_f)
+                                    wr = row_f - floor(row_f)
+                                    t_lo = clamp(unsafe_trunc(Int32, floor(t_f)), Int32(1), n_cols)
+                                    t_hi = clamp(t_lo + Int32(1), Int32(1), n_cols)
+                                    r_lo = clamp(unsafe_trunc(Int32, floor(row_f)), Int32(1), n_rows)
+                                    r_hi = clamp(r_lo + Int32(1), Int32(1), n_rows)
                                     val = (one(T) - wt) * ((one(T) - wr) * reb[t_lo, r_lo, j] + wr * reb[t_lo, r_hi, j]) +
                                           wt * ((one(T) - wr) * reb[t_hi, r_lo, j] + wr * reb[t_hi, r_hi, j])
                                     sumW += Wq

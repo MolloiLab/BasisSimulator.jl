@@ -4,6 +4,18 @@
 using Markdown
 using InteractiveUtils
 
+# This Pluto notebook uses @bind for interactivity. When running this notebook outside of Pluto, the following 'mock version' of @bind gives bound variables a default value (instead of an error).
+macro bind(def, element)
+    #! format: off
+    return quote
+        local iv = try Base.loaded_modules[Base.PkgId(Base.UUID("6e696c72-6542-2067-7265-42206c756150"), "AbstractPlutoDingetjes")].Bonds.initial_value catch; b -> missing; end
+        local el = $(esc(element))
+        global $(esc(def)) = Core.applicable(Base.get, el) ? Base.get(el) : iv(el)
+        el
+    end
+    #! format: on
+end
+
 # ╔═╡ 01000003-0000-4000-8000-000000000001
 begin
     import Pkg
@@ -15,6 +27,9 @@ using Markdown: @md_str
 
 # ╔═╡ 01000003-0000-4000-8000-000000000004
 using Statistics: std
+
+# ╔═╡ 12000001-0000-4000-8000-000000000002
+using PlutoUI
 
 # ╔═╡ 01000001-0000-4000-8000-000000000001
 md"""
@@ -803,6 +818,161 @@ let
     """
 end
 
+
+# ╔═╡ 12000001-0000-4000-8000-000000000001
+md"""
+## 11. Scroll through ``z`` — edge slices matter
+
+The cone beam means edge slices are reconstructed from obliquer rays than
+central ones. Slide through the corrected volumes and watch the ends — this
+is where usable-z limits and any residual cone behaviour show up first.
+"""
+
+# ╔═╡ 12000001-0000-4000-8000-000000000003
+@bind z_slice PlutoUI.Slider(1:size(hu_std_corr, 3); default = size(hu_std_corr, 3) ÷ 2, show_value = true)
+
+# ╔═╡ 12000001-0000-4000-8000-000000000004
+let
+    nz = size(hu_std_corr, 3)
+    fov_z_cm = sim_std.geom.fov[3]
+    dz_mm = fov_z_cm * 10 / nz
+    z_cm = -fov_z_cm / 2 + (z_slice - 0.5) * fov_z_cm / nz
+
+    fig = CM.Figure(size = (1100, 560))
+    CM.Label(fig[0, 1:3],
+        "slice $(z_slice)/$(nz)  ·  z = $(round(z_cm * 10; digits = 2)) mm of ±$(round(fov_z_cm * 10 / 2; digits = 1)) mm  ·  slice thickness $(round(dz_mm; digits = 2)) mm";
+        fontsize = 26, font = :bold, tellwidth = false)
+    ax1 = CM.Axis(fig[1, 1]; title = "Corrected · standard dose", titlesize = 22, aspect = CM.DataAspect())
+    hm = CM.heatmap!(ax1, hu_std_corr[:, :, z_slice]; colormap = :grays, colorrange = (-100, 500))
+    CM.hidedecorations!(ax1)
+    ax2 = CM.Axis(fig[1, 2]; title = "Corrected · low dose", titlesize = 22, aspect = CM.DataAspect())
+    CM.heatmap!(ax2, hu_low_corr[:, :, z_slice]; colormap = :grays, colorrange = (-100, 500))
+    CM.hidedecorations!(ax2)
+    CM.Colorbar(fig[1, 3], hm; label = "HU", labelsize = 20, ticklabelsize = 14)
+    fig
+end
+
+# ╔═╡ 12000002-0000-4000-8000-000000000001
+md"""
+## 12. Automated verification
+
+Quantitative pass/fail against physics-derived expectations — no eyeballing.
+Per-rod theory is mono HU at the BHC reference energy from the same
+XrayAttenuation data that drove the simulation; tolerances cover partial
+volume + noise + the two-material bone-window caveat for dense iodine rods.
+"""
+
+# ╔═╡ 12000002-0000-4000-8000-000000000002
+verification = let
+    import Statistics as _St
+    labels = BS.resample_to_recon(phantom_cpu, sim_std.geom, recon_opts.matrix_size; method = :nearest)
+    refE = bhc_calibration.ref_E_keV
+    μw = bhc_calibration.μ_water
+    nx, ny, nz = size(labels)
+    kmid = (nz + 1) ÷ 2                              # central slice only: edge
+                                                      # slices carry usable-z falloff
+
+    # in-plane-eroded mask of one label on the CENTRAL slice
+    function eroded(lab)
+        m = falses(nx, ny)
+        for j in 2:(ny - 1), i in 2:(nx - 1)
+            if labels[i, j, kmid] == lab &&
+               labels[i - 1, j, kmid] == lab && labels[i + 1, j, kmid] == lab &&
+               labels[i, j - 1, kmid] == lab && labels[i, j + 1, kmid] == lab
+                m[i, j] = true
+            end
+        end
+        m
+    end
+    matname(lab) = try phantom_cpu.materials[lab + 1].name catch; "?" end
+
+    # auto-detect the solid-water body label: most-common non-zero label
+    lab_counts = Dict{Int, Int}()
+    for v in @view labels[:, :, kmid]
+        v == 0 && continue
+        lab_counts[Int(v)] = get(lab_counts, Int(v), 0) + 1
+    end
+    water_lab = argmax(lab_counts)
+
+    checks = NamedTuple[]
+    addcheck(name, val, lo, hi) = push!(checks,
+        (name = name, value = round(val; digits = 1), lo = lo, hi = hi, pass = lo <= val <= hi))
+
+    wmask = eroded(UInt8(water_lab))
+    slc_std = @view hu_std_corr[:, :, kmid]
+    slc_low = @view hu_low_corr[:, :, kmid]
+    addcheck("water mean HU (corrected, central slice, label $(water_lab))",
+        _St.mean(slc_std[wmask]), -10.0, 10.0)
+    addcheck("noise ratio low/std (raw, water-only ROI)",
+        _St.std(hu_low[:, :, kmid][wmask]) / _St.std(hu_std[:, :, kmid][wmask]), 1.7, 2.3)
+
+    # per-slice water profiles: full body vs central r<5cm.  Central-ROI
+    # falloff = geometry bug; peripheral-only falloff = real cone divergence
+    # (outer voxels at edge slices lose near-side views — genuine usable-z).
+    wm = eroded(UInt8(water_lab))
+    Δxy = sim_std.geom.fov[1] / nx
+    central = [wm[i, j] && ((i - (nx + 1) / 2) * Δxy)^2 + ((j - (ny + 1) / 2) * Δxy)^2 < 25.0
+               for i in 1:nx, j in 1:ny]
+    zprof = [round(_St.mean(hu_std_corr[:, :, k][wm]); digits = 1) for k in 1:nz]
+    zprof_c = [round(_St.mean(hu_std_corr[:, :, k][central]); digits = 1) for k in 1:nz]
+
+    rod_rows = String[]
+    n_rod_pass = 0; n_rod = 0
+    for lab in 1:(length(phantom_cpu.materials) - 1)   # materials is a VECTOR: position L+1 = label L
+        lab == water_lab && continue
+        m = eroded(UInt8(lab))
+        count(m) < 20 && continue
+        mat = phantom_cpu.materials[lab + 1]
+        μm = BS.compute_μ_at_energy(mat, refE)
+        theory = 1000 * (μm - μw) / μw
+        meas = _St.mean(slc_std[m])
+        meas_low = _St.mean(slc_low[m])
+        raw = _St.mean(hu_std[:, :, kmid][m])          # alignment sentinel
+        # percentage-based gate with an absolute floor: |Δ| ≤ max(15 HU, 10 %).
+        # Iodine gets 15 %: single-kVp two-material BHC cannot distinguish the
+        # iodine K-edge from bone (the 450–600 HU window reclassifies dense
+        # iodine as bone and under-corrects it ~10–12 %) — quantitative iodine
+        # is the dual-energy/VMI chain's job (nb03/04/07/08), not this one.
+        pct = 100 * (meas - theory) / max(abs(theory), 1.0)
+        is_iodine = occursin("Iodine", matname(lab))
+        ok_theory = abs(meas - theory) <= max(15.0, (is_iodine ? 0.15 : 0.10) * abs(theory))
+        ok_dose = abs(meas - meas_low) <= max(10.0, 0.03 * abs(theory))
+        ok = ok_theory && ok_dose
+        n_rod += 1
+        n_rod_pass += ok
+        push!(rod_rows,
+            "| $(lab) $(matname(lab)) | $(round(theory; digits = 0)) | $(round(meas; digits = 0)) | " *
+            "$(round(raw; digits = 0)) | $(round(meas - theory; digits = 0)) | " *
+            "$(round(pct; digits = 1))% | $(round(meas - meas_low; digits = 0)) | $(ok ? "✅" : "❌") |")
+    end
+    addcheck("rods passing (theory ± tol AND dose-invariant)", n_rod_pass, n_rod, n_rod)
+
+    n_pass = count(c -> c.pass, checks)
+    verdict = n_pass == length(checks) ? "✅ NB01 VERIFICATION: PASS ($(n_pass)/$(length(checks)))" :
+                                          "❌ NB01 VERIFICATION: FAIL ($(n_pass)/$(length(checks)))"
+    global_rows = join(["| $(c.name) | $(c.value) | [$(c.lo), $(c.hi)] | $(c.pass ? "✅" : "❌") |"
+                        for c in checks], "\n")
+    md_str = """
+### $(verdict)
+
+| check | value | expected | pass |
+|---|---|---|---|
+$(global_rows)
+
+**Water per slice (corrected)** — central-ROI falloff = bug; peripheral-only = real cone divergence:
+- full body: `$(zprof)`
+- central r<5 cm: `$(zprof_c)`
+
+**Per-rod, CENTRAL slice — theory = mono HU @ $(round(refE; digits = 1)) keV;
+`raw` = uncorrected recon (alignment sentinel):**
+
+| label material | theory | corrected | raw | Δ | Δ% | Δdose | pass |
+|---|---|---|---|---|---|---|---|
+$(join(rod_rows, "\n"))
+"""
+    Markdown.parse(md_str)
+end
+
 # ╔═╡ 11000001-0000-4000-8000-000000000001
 md"""
 ## Summary
@@ -878,4 +1048,10 @@ result, `nothing` + `GC.gc(true)`, return.
 # ╟─10000001-0000-4000-8000-000000000001
 # ╟─10000002-0000-4000-8000-000000000001
 # ╟─10000003-0000-4000-8000-000000000001
+# ╟─12000001-0000-4000-8000-000000000001
+# ╠═12000001-0000-4000-8000-000000000002
+# ╟─12000001-0000-4000-8000-000000000003
+# ╟─12000001-0000-4000-8000-000000000004
+# ╟─12000002-0000-4000-8000-000000000001
+# ╟─12000002-0000-4000-8000-000000000002
 # ╟─11000001-0000-4000-8000-000000000001
