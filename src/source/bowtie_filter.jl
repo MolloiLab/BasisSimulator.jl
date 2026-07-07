@@ -375,8 +375,13 @@ function compute_bowtie_attenuation_spectral(
         cos_alpha = cos(cone_angle)
 
         for col in 1:n_cols
-            u_offset = (col - (n_cols + 1) / 2) * pixel_size_det
-            fan_angle = atan(u_offset / geom.SDD)
+            # :arc — the column IS the fan angle (equiangular); :flat — planar atan
+            fan_angle = if is_arc(geom)
+                (col - (n_cols + 1) / 2) * (geom.pixel_size / geom.SAD)
+            else
+                u_offset = (col - (n_cols + 1) / 2) * pixel_size_det
+                atan(u_offset / geom.SDD)
+            end
 
             thickness_vec = interpolate_thickness(filter, fan_angle)
             thickness_corrected = thickness_vec ./ cos_alpha

@@ -53,9 +53,12 @@ with CatSim and medical imaging conventions.
 - `detector_col_size::T`: Detector element size in fan direction (mm) at isocenter
 - `detector_row_offset::T`: Row offset from centered position (rows)
 
-The detector is modeled as a flat (planar) array with constant linear element
-pitch; the projectors and FDK weighting assume this geometry. An equiangular
-(arc) detector option is planned but not yet implemented.
+The detector is an equiangular ARC (cylindrical, centred on the focal spot —
+clinical third-generation MDCT geometry) by DEFAULT; `detector_shape = :flat`
+selects a planar panel instead.  Both shapes are supported end-to-end by all
+projectors (Siddon / DD / dd_fast), the FDK weighting (Kak-Slaney equiangular
+cosγ pre-weight + (γ/sinγ)² kernel for :arc), the helical WFBP rebinning, and
+the bowtie model (whose thickness tables are natively fan-angle-parameterised).
 - `detector_col_offset::T`: Column offset (quarter-detector offset for aliasing)
 
 # Source Parameters
@@ -167,6 +170,11 @@ struct Scanner{T <: AbstractFloat}
     native_dexel_col_mm::T      # native dexel col size at detector face (mm); 0 = infer
     native_dexel_row_mm::T      # native dexel row size at detector face (mm); 0 = infer
     binning_factor::Int         # spatial binning (1=unbinned, 2=2×2 standard)
+
+    # Detector shape: :arc (equiangular cylindrical, source-centred — clinical
+    # third-gen MDCT) or :flat (planar).  Functional as of the arc-geometry
+    # work; consumed by CTGeometry and every projector/recon kernel.
+    detector_shape::Symbol
 end
 
 """
@@ -254,6 +262,12 @@ function Scanner(;
         flat_filter_thickness::Real = 2.0,
         bowtie_filter::Symbol = :large_body,
 
+        # Detector shape (:arc = equiangular cylindrical, :flat = planar).
+        # DEFAULT :arc — clinical third-generation MDCT detectors are arcs
+        # centred on the focal spot.  Use :flat for planar-panel systems
+        # (C-arm CBCT) or for comparison studies.
+        detector_shape::Symbol = :arc,
+
         # Detection
         detector_material::Symbol = :lumex,
         detector_depth::Real = 3.0,
@@ -299,6 +313,10 @@ function Scanner(;
     # Binning factor validation
     if binning_factor < 1
         error("binning_factor must be >= 1 (got $binning_factor)")
+    end
+
+    if !(detector_shape in (:flat, :arc))
+        error("detector_shape must be :flat or :arc (got :$detector_shape)")
     end
 
     # Infer native dexel from binned pixel size × magnification when 0.0
@@ -348,7 +366,8 @@ function Scanner(;
         pixel_mode,
         T(_native_col),
         T(_native_row),
-        binning_factor
+        binning_factor,
+        detector_shape,
     )
 end
 
@@ -401,6 +420,8 @@ struct CTGeometry
     # ── Helical trajectory metadata (0.0/0.0 = axial circular orbit) ─────────
     pitch::Float64           # IEC pitch: table feed per rotation ÷ collimation
     table_feed::Float64      # table feed per rotation (cm); 0.0 = axial
+    # ── Detector shape: :arc (equiangular cylindrical) or :flat (planar) ─────
+    detector_shape::Symbol
 end
 
 # Backward-compatible positional constructor: the pre-helical 14-field form
@@ -416,7 +437,22 @@ function CTGeometry(
     return CTGeometry(
         SAD, SDD, n_angles, n_rows, n_cols, pixel_size, pixel_row_size,
         angles, source_positions, detector_centers, detector_u, detector_v,
-        fov, 0.0, 0.0)
+        fov, 0.0, 0.0, :flat)
+end
+
+# 16-field compat (helical metadata, pre-arc): defaults to a flat panel.
+function CTGeometry(
+        SAD::Float64, SDD::Float64, n_angles::Int, n_rows::Int, n_cols::Int,
+        pixel_size::Float64, pixel_row_size::Float64,
+        angles::Vector{Float64},
+        source_positions::Matrix{Float64}, detector_centers::Matrix{Float64},
+        detector_u::Matrix{Float64}, detector_v::Matrix{Float64},
+        fov::NTuple{3, Float64}, pitch::Float64, table_feed::Float64,
+    )
+    return CTGeometry(
+        SAD, SDD, n_angles, n_rows, n_cols, pixel_size, pixel_row_size,
+        angles, source_positions, detector_centers, detector_u, detector_v,
+        fov, pitch, table_feed, :flat)
 end
 
 """
@@ -427,6 +463,17 @@ end
 is_helical(geom::CTGeometry) = geom.table_feed != 0.0
 
 export is_helical
+
+"""
+    is_arc(geom::CTGeometry) -> Bool
+
+`true` for an equiangular (cylindrical, source-centred) detector.  The
+column angular pitch is `Δγ = geom.pixel_size / geom.SAD` (the column pitch
+at isocentre interpreted as arc length at the isocentre radius).
+"""
+is_arc(geom::CTGeometry) = geom.detector_shape === :arc
+
+export is_arc
 
 """
     CTGeometry(scanner::Scanner; n_angles=360, fov_cm=nothing, z_cm=nothing, n_rows=nothing, n_cols=nothing, collimation_mm=nothing)
@@ -643,7 +690,8 @@ function CTGeometry(
     return CTGeometry(
         SAD, SDD, n_views_total, _n_rows, _n_cols, pixel_size, pixel_row_size,
         angles, source_positions, detector_centers, detector_u, detector_v,
-        fov, helical ? Float64(pitch) : 0.0, table_feed
+        fov, helical ? Float64(pitch) : 0.0, table_feed,
+        scanner.detector_shape,
     )
 end
 

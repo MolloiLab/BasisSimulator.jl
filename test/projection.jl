@@ -367,3 +367,100 @@ end
         @test isapprox(s_dd[mid, 2, 1], s_si[mid, 2, 1]; rtol = 0.05)  # but close
     end
 end
+
+# -----------------------------------------------------------------------------
+# Arc (equiangular) detector — projector correctness.
+#
+# 1. MATLAB-fanbeam-style cross-validation: a FLAT sinogram resampled onto the
+#    arc's column grid (col ↦ γ ↦ u = SDD·tanγ) must match the NATIVE arc
+#    sinogram (this is the "simple interpolation" conversion — here used as a
+#    test oracle rather than as the implementation).
+# 2. The three projectors must agree with each other on the arc exactly as
+#    they do on the flat panel; dd_fast ≡ dd to float ordering.
+# -----------------------------------------------------------------------------
+@testset "arc detector — projectors" begin
+    scanner_flat = BS.Scanner(
+        source_to_isocenter = 540.0, source_to_detector = 1080.0,
+        detector_rows = 8, detector_cols = 128,
+        detector_row_size = 1.0, detector_col_size = 1.0,
+        detector_shape = :flat)
+    scanner_arc = BS.Scanner(
+        source_to_isocenter = 540.0, source_to_detector = 1080.0,
+        detector_rows = 8, detector_cols = 128,
+        detector_row_size = 1.0, detector_col_size = 1.0,
+        detector_shape = :arc)
+    gf = BS.CTGeometry(scanner_flat; n_angles = 8, fov_cm = 20.0)
+    ga = BS.CTGeometry(scanner_arc; n_angles = 8, fov_cm = 20.0)
+    @test BS.is_arc(ga) && !BS.is_arc(gf)
+
+    nx = ny = 64
+    nz = 8
+    vol = zeros(Float32, nx, ny, nz)
+    for k in 1:nz, j in 1:ny, i in 1:nx
+        if (i - 32.5)^2 + (j - 32.5)^2 <= (0.6 * 32)^2
+            vol[i, j, k] = 0.2f0
+        end
+        if (i - 45.5)^2 + (j - 32.5)^2 <= 3.0^2
+            vol[i, j, k] = 1.0f0
+        end
+    end
+
+    sino_flat = BS.dd_forward_project(vol, gf)
+    sino_arc = BS.dd_forward_project(vol, ga)
+
+    @testset "flat→arc resampling oracle (MATLAB fanbeam-style)" begin
+        SAD = gf.SAD; SDD = gf.SDD
+        dγ = gf.pixel_size / SAD
+        pm = gf.pixel_size * (SDD / SAD)
+        nc = gf.n_cols
+        cc = (nc + 1) / 2
+        resampled = similar(sino_flat)
+        for a in 1:size(sino_flat, 3), r in 1:size(sino_flat, 2), i in 1:nc
+            γ = (i - cc) * dγ
+            colf = SDD * tan(γ) / pm + cc
+            c0 = clamp(floor(Int, colf), 1, nc - 1)
+            w = clamp(colf - c0, 0.0, 1.0)
+            resampled[i, r, a] = (1 - w) * sino_flat[c0, r, a] + w * sino_flat[c0 + 1, r, a]
+        end
+        # Interior chords only: tangent (grazing) rays have near-singular
+        # gradients where ANY resampling shows large relative error — that is
+        # interpolation physics, not a geometry defect.  Measured interior:
+        # mean 0.25%, p99 2.3%, max 4%.
+        m = (sino_arc .> 0.5f0) .& (resampled .> 0.5f0)
+        relΔ = sort(abs.(sino_arc[m] .- resampled[m]) ./ resampled[m])
+        @test count(m) > 3000
+        @test sum(relΔ) / length(relΔ) < 0.005
+        @test relΔ[ceil(Int, 0.99 * length(relΔ))] < 0.05
+        @test relΔ[end] < 0.10
+    end
+
+    @testset "central columns: arc ≈ flat (small-angle limit)" begin
+        mid = 57:72                                 # |γ| < 0.03 rad
+        Δ = abs.(sino_arc[mid, :, :] .- sino_flat[mid, :, :])
+        rel = Δ ./ max.(sino_flat[mid, :, :], 1.0f-3)
+        @test maximum(rel[sino_flat[mid, :, :] .> 0.5f0]) < 0.01
+    end
+
+    @testset "siddon / dd / dd_fast agree on the arc" begin
+        # On this hard-edged rod phantom siddon-vs-dd differ by design (the
+        # aliasing DD exists to fix) — the invariant is that the ARC panel
+        # behaves like the FLAT panel, not an absolute bound.
+        sino_sid = BS.siddon_forward_project(vol, ga)
+        m = sino_sid .> 1.0f-3
+        relΔ = abs.(sino_arc[m] .- sino_sid[m]) ./ sino_sid[m]
+        sino_sid_f = BS.siddon_forward_project(vol, gf)
+        mf = sino_sid_f .> 1.0f-3
+        relΔ_f = abs.(sino_flat[mf] .- sino_sid_f[mf]) ./ sino_sid_f[mf]
+        @test sum(relΔ) / length(relΔ) <= 1.3 * sum(relΔ_f) / length(relΔ_f) + 0.002
+
+        N_E = 4
+        mask8 = UInt8.(vol .> 0) .+ UInt8.(vol .> 0.5f0)   # 0 air, 1 water, 2 rod
+        μt = zeros(Float32, 3, N_E); μt[2, :] .= 0.2f0; μt[3, :] .= 1.0f0
+        wη = fill(Float32(1 / N_E), N_E)
+        sd = zeros(Float32, ga.n_cols, ga.n_rows, ga.n_angles)
+        sf = zeros(Float32, ga.n_cols, ga.n_rows, ga.n_angles)
+        BS.dd_fused_poly_project!(sd, mask8, ga, μt, wη, Val(N_E))
+        BS.dd_fast_fused_poly_project!(sf, mask8, ga, μt, wη, Val(N_E))
+        @test maximum(abs.(sf .- sd)) < 1.0f-4     # path-length ≡ legacy, on arc
+    end
+end

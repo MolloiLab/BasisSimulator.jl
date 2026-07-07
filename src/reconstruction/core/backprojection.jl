@@ -43,7 +43,8 @@ Note: Uses Int32 for dimensions to ensure GPU compatibility.
     detector_v::AbstractArray{T, 2},
     n_cols::Int32, n_rows::Int32, n_angles::Int32,
     col_center::T, row_center::T,
-    pixel_mag::T, pixel_row_mag::T, SAD::T, SAD_sq::T, pi_over_angles::T
+    pixel_mag::T, pixel_row_mag::T, SAD::T, SAD_sq::T, pi_over_angles::T,
+    arc_det::Bool, dγ::T
 ) where T
 
     acc = zero(T)
@@ -101,13 +102,22 @@ Note: Uses Int32 for dimensions to ensure GPU compatibility.
         dp_y = proj_y - dcy
         dp_z = proj_z - dcz
 
-        # Detector coordinates (u, v) — use pixel_mag for u (columns), pixel_row_mag for v (rows)
-        u = (dp_x * dux + dp_y * duy + dp_z * duz) / pixel_mag
-        v = (dp_x * dvx + dp_y * dvy + dp_z * dvz) / pixel_row_mag
-
-        # Convert to pixel indices (centered)
-        col_f = u + col_center
-        row_f = v + row_center
+        # Detector coordinates (col_f, row_f).  :arc → fan angle of the voxel
+        # ray on the equiangular cylinder + z at in-plane distance SDD;
+        # :flat → perpendicular projection onto the planar panel.
+        col_f, row_f = if arc_det
+            sd_len = sqrt(sd_x * sd_x + sd_y * sd_y)          # = SDD (in-plane)
+            a_c = (sv_x * sd_x + sv_y * sd_y) / sd_len        # along central ray
+            a_u = sv_x * dux + sv_y * duy                     # along detector û
+            γv = atan(a_u, a_c)
+            L_in = sqrt(sv_x * sv_x + sv_y * sv_y)
+            v_arc = sv_z * (sd_len / L_in) / pixel_row_mag
+            (γv / dγ + col_center, v_arc + row_center)
+        else
+            u = (dp_x * dux + dp_y * duy + dp_z * duz) / pixel_mag
+            v = (dp_x * dvx + dp_y * dvy + dp_z * dvz) / pixel_row_mag
+            (u + col_center, v + row_center)
+        end
 
         # Check if within detector bounds
         if col_f >= one(T) && col_f <= T(n_cols) && row_f >= one(T) && row_f <= T(n_rows)
@@ -133,8 +143,9 @@ Note: Uses Int32 for dimensions to ensure GPU compatibility.
                   (one(T) - w_col) * w_row * sinogram[col_lo, row_hi, angle] +
                   w_col * w_row * sinogram[col_hi, row_hi, angle]
 
-            # FDK distance weighting (TIGRE style)
-            dist_sq = sv_x^2 + sv_y^2 + sv_z^2
+            # FDK distance weighting: flat (TIGRE) uses 3D distance; equiangular
+            # (Kak-Slaney fan FBP) uses the in-plane source→voxel distance.
+            dist_sq = arc_det ? (sv_x^2 + sv_y^2) : (sv_x^2 + sv_y^2 + sv_z^2)
             weight = SAD_sq / dist_sq
 
             acc += val * weight
@@ -201,7 +212,8 @@ while the aperture taper W_Q handles the helical z-redundancy smoothly.
     col_center::T, row_center::T,
     pixel_mag::T, pixel_row_mag::T, SAD::T, SAD_sq::T, SDD::T,
     delta_theta::T, q_plateau::T, feed::T, n_turns_k::Int32,
-    src_z_lo::T, src_z_hi::T
+    src_z_lo::T, src_z_hi::T,
+    arc_det::Bool, dγ::T
 ) where T
 
     half_rows = T(n_rows) / T(2)
@@ -251,17 +263,24 @@ while the aperture taper W_Q handles the helical z-redundancy smoothly.
         dp_y = proj_y - dcy
         dp_z = proj_z - dcz
 
-        u = (dp_x * dux + dp_y * duy + dp_z * duz) / pixel_mag
-        v = (dp_x * dvx + dp_y * dvy + dp_z * dvz) / pixel_row_mag
-
-        col_f = u + col_center
-        row_f = v + row_center
+        col_f, row_f = if arc_det
+            sd_len = sqrt(sd_x * sd_x + sd_y * sd_y)
+            a_c = (sv_x * sd_x + sv_y * sd_y) / sd_len
+            a_u = sv_x * dux + sv_y * duy
+            γv = atan(a_u, a_c)
+            L_in = sqrt(sv_x * sv_x + sv_y * sv_y)
+            (γv / dγ + col_center, sv_z * (sd_len / L_in) / pixel_row_mag + row_center)
+        else
+            u = (dp_x * dux + dp_y * duy + dp_z * duz) / pixel_mag
+            v = (dp_x * dvx + dp_y * dvy + dp_z * dvz) / pixel_row_mag
+            (u + col_center, v + row_center)
+        end
 
         if !(col_f >= one(T) && col_f <= T(n_cols) && row_f >= one(T) && row_f <= T(n_rows))
             continue
         end
 
-        q̂ = v / half_rows
+        q̂ = (row_f - row_center) / half_rows
         Wq = _wq_aperture(q̂, q_plateau)
         if Wq <= zero(T)
             continue
@@ -327,7 +346,7 @@ while the aperture taper W_Q handles the helical z-redundancy smoothly.
               (one(T) - w_col) * w_row * sinogram[col_lo, row_hi, angle] +
               w_col * w_row * sinogram[col_hi, row_hi, angle]
 
-        dist_sq = sv_x^2 + sv_y^2 + sv_z^2
+        dist_sq = arc_det ? (sv_x^2 + sv_y^2) : (sv_x^2 + sv_y^2 + sv_z^2)
         w_fdk = SAD_sq / dist_sq
 
         acc += (Wq / norm) * w_fdk * val
@@ -356,7 +375,8 @@ This ensures the backprojection is the matched adjoint of the Siddon forward pro
     detector_v::AbstractArray{T, 2},
     n_cols::Int32, n_rows::Int32, n_angles::Int32,
     col_center::T, row_center::T,
-    pixel_mag::T, pixel_row_mag::T
+    pixel_mag::T, pixel_row_mag::T,
+    arc_det::Bool, dγ::T
 ) where T
 
     acc = zero(T)
@@ -414,13 +434,22 @@ This ensures the backprojection is the matched adjoint of the Siddon forward pro
         dp_y = proj_y - dcy
         dp_z = proj_z - dcz
 
-        # Detector coordinates (u, v) — use pixel_mag for u (columns), pixel_row_mag for v (rows)
-        u = (dp_x * dux + dp_y * duy + dp_z * duz) / pixel_mag
-        v = (dp_x * dvx + dp_y * dvy + dp_z * dvz) / pixel_row_mag
-
-        # Convert to pixel indices (centered)
-        col_f = u + col_center
-        row_f = v + row_center
+        # Detector coordinates (col_f, row_f).  :arc → fan angle of the voxel
+        # ray on the equiangular cylinder + z at in-plane distance SDD;
+        # :flat → perpendicular projection onto the planar panel.
+        col_f, row_f = if arc_det
+            sd_len = sqrt(sd_x * sd_x + sd_y * sd_y)          # = SDD (in-plane)
+            a_c = (sv_x * sd_x + sv_y * sd_y) / sd_len        # along central ray
+            a_u = sv_x * dux + sv_y * duy                     # along detector û
+            γv = atan(a_u, a_c)
+            L_in = sqrt(sv_x * sv_x + sv_y * sv_y)
+            v_arc = sv_z * (sd_len / L_in) / pixel_row_mag
+            (γv / dγ + col_center, v_arc + row_center)
+        else
+            u = (dp_x * dux + dp_y * duy + dp_z * duz) / pixel_mag
+            v = (dp_x * dvx + dp_y * dvy + dp_z * dvz) / pixel_row_mag
+            (u + col_center, v + row_center)
+        end
 
         # Check if within detector bounds
         if col_f >= one(T) && col_f <= T(n_cols) && row_f >= one(T) && row_f <= T(n_rows)
@@ -520,6 +549,8 @@ function backproject!(
     SAD_sq = SAD * SAD
     pixel_mag = pixel_size * magnification
     pixel_row_mag = pixel_row_size * magnification
+    arc_det = is_arc(geom)
+    dγ = T(geom.pixel_size / geom.SAD)
 
     # Pre-compute constants
     col_center = (T(n_cols) + one(T)) / T(2)
@@ -594,7 +625,8 @@ function backproject!(
                 col_center, row_center,
                 pixel_mag, pixel_row_mag, SAD, SAD_sq, SDD_T,
                 delta_theta, q_plateau, feed, n_turns_k,
-                src_z_lo, src_z_hi
+                src_z_lo, src_z_hi,
+                arc_det, dγ
             )
         end
     elseif weighted
@@ -620,7 +652,8 @@ function backproject!(
                 detector_u, detector_v,
                 n_cols, n_rows, n_angles,
                 col_center, row_center,
-                pixel_mag, pixel_row_mag, SAD, SAD_sq, pi_over_angles
+                pixel_mag, pixel_row_mag, SAD, SAD_sq, pi_over_angles,
+                arc_det, dγ
             )
         end
     else
@@ -646,7 +679,8 @@ function backproject!(
                 detector_u, detector_v,
                 n_cols, n_rows, n_angles,
                 col_center, row_center,
-                pixel_mag, pixel_row_mag
+                pixel_mag, pixel_row_mag,
+                arc_det, dγ
             )
         end
     end

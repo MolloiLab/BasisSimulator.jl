@@ -359,6 +359,27 @@ before filtering and backprojection.
 # Reference
 Feldkamp, Davis, Kress (1984) Eq. 5
 """
+
+"""
+    equiangular_kernel_scale!(kernel_cpu, dγ) -> kernel_cpu
+
+Scale spatial ramp-kernel taps by `(γ/sin γ)²` (Kak & Slaney's equiangular
+fan-beam kernel, `g(γ) = ½(γ/sinγ)²·h(γ)`), with `γₙ = n·Δγ`.  Call on the
+CPU kernel before upload when the geometry is an :arc detector (skip for
+:flat and for rebinned-parallel WFBP data).
+"""
+function equiangular_kernel_scale!(kernel_cpu::AbstractVector{T}, dγ::Real) where {T}
+    n = length(kernel_cpu)
+    c = (n + 1) ÷ 2
+    for i in 1:n
+        γ = (i - c) * dγ
+        if γ != 0
+            kernel_cpu[i] *= T((γ / sin(γ))^2)
+        end
+    end
+    return kernel_cpu
+end
+
 function cosine_weight!(
     sinogram::AbstractArray{T, 3},
     geom::CTGeometry
@@ -378,6 +399,8 @@ function cosine_weight!(
     # Pre-compute center offsets for GPU
     col_center = (T(n_cols) + one(T)) / T(2)
     row_center = (T(n_rows) + one(T)) / T(2)
+    arc_det = is_arc(geom)
+    dγ = T(geom.pixel_size / geom.SAD)
 
     # Use AcceleratedKernels.jl for parallel cosine weighting
     AK.foreachindex(sinogram) do idx
@@ -387,15 +410,18 @@ function cosine_weight!(
         idx_0 = idx_0 ÷ n_cols
         row = (idx_0 % n_rows) + Int32(1)
 
-        # Compute detector pixel position (u uses col pixel_size, v uses row pixel_size)
-        u = (T(col) - col_center) * pixel_size * magnification
-        v = (T(row) - row_center) * pixel_row_size * magnification
-
-        # Distance from source to detector pixel
-        dist = sqrt(SDD_sq + u^2 + v^2)
-
-        # Cosine weight = SDD / dist
-        weight = SDD / dist
+        # :flat — cos of the full 3D ray obliquity (TIGRE/FDK);
+        # :arc  — equiangular fan pre-weight cos(γ) × z-obliquity D/√(D²+v²)
+        #         (Kak & Slaney eq. 91 generalised to the cone row).
+        weight = if arc_det
+            γ = (T(col) - col_center) * dγ
+            v = (T(row) - row_center) * pixel_row_size * magnification
+            cos(γ) * SDD / sqrt(SDD_sq + v^2)
+        else
+            u = (T(col) - col_center) * pixel_size * magnification
+            v = (T(row) - row_center) * pixel_row_size * magnification
+            SDD / sqrt(SDD_sq + u^2 + v^2)
+        end
 
         sinogram[idx] *= weight
     end
@@ -462,6 +488,11 @@ function filter_sinogram!(
         ws_filter_kernel
     else
         kernel_cpu = create_spatial_kernel(kernel_size_int, filter, pixel_size)
+        # equiangular fan filter correction (only for native arc fan data —
+        # not for rebinned-parallel WFBP rows, which pass ray_spacing)
+        if is_arc(geom) && ray_spacing === nothing
+            equiangular_kernel_scale!(kernel_cpu, geom.pixel_size / geom.SAD)
+        end
         _k = similar(sinogram, T, kernel_size_int)
         copyto!(_k, kernel_cpu)
         _k

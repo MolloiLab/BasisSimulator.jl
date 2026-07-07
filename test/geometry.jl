@@ -492,3 +492,46 @@ end
     roi_ax = rec_ax[25:40, 25:40, 4]
     @test abs(μ̄ - sum(roi_ax) / length(roi_ax)) < 0.005
 end
+
+# -----------------------------------------------------------------------------
+# Arc detector — FDK round-trip (equiangular weighting) + helical WFBP on arc.
+# -----------------------------------------------------------------------------
+@testset "arc detector — reconstruction round-trips" begin
+    scanner = BS.Scanner(
+        source_to_isocenter = 540.0, source_to_detector = 1080.0,
+        detector_rows = 16, detector_cols = 128,
+        detector_row_size = 1.0, detector_col_size = 1.0,
+        detector_shape = :arc)
+
+    nx, nz = 64, 48
+    vol = zeros(Float32, nx, nx, nz)
+    c = (nx + 1) / 2
+    for k in 1:nz, j in 1:nx, i in 1:nx
+        if (i - c)^2 + (j - c)^2 <= (0.35 * nx)^2
+            vol[i, j, k] = 0.2f0
+        end
+    end
+
+    @testset "axial equiangular FDK: μ accuracy + radial flatness" begin
+        geom = BS.CTGeometry(scanner; n_angles = 96, fov_cm = 12.8)
+        sino = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
+        BS.dd_forward_project!(sino, vol, geom; volume_extent = (12.8, 12.8, 9.6))
+        rec = BS.fdk_reconstruct(sino, geom, (64, 64, 8))
+        roi_c = rec[29:36, 29:36, 4]                       # centre
+        roi_e = rec[43:50, 29:36, 4]                       # off-centre (in water)
+        @test abs(sum(roi_c) / length(roi_c) - 0.2) < 0.01
+        # equiangular weighting keeps the profile flat centre→edge
+        @test abs(sum(roi_e) / length(roi_e) - sum(roi_c) / length(roi_c)) < 0.008
+    end
+
+    @testset "helical WFBP on arc: z-uniformity" begin
+        geom = BS.CTGeometry(scanner; n_angles = 96, fov_cm = 12.8,
+            pitch = 1.0, n_rotations = 3.0)
+        sino = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
+        BS.dd_forward_project!(sino, vol, geom; volume_extent = (12.8, 12.8, 9.6))
+        rec = BS.fdk_reconstruct(sino, geom, (64, 64, 24))
+        zmeans = [sum(rec[25:40, 25:40, k]) / 256 for k in 2:23]
+        @test abs(sum(zmeans) / length(zmeans) - 0.2) < 0.012
+        @test (maximum(zmeans) - minimum(zmeans)) < 0.015   # no banding on arc
+    end
+end

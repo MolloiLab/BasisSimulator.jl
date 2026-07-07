@@ -77,6 +77,8 @@ function _wfbp_rebin!(
     t_center = (T(n_cols) + one(T)) / T(2)
     col_center = (T(n_cols) + one(T)) / T(2)
     pixel_mag = T(geom.pixel_size) * (SDD / R)
+    arc_det = is_arc(geom)
+    dγ_arc = T(geom.pixel_size / geom.SAD)
 
     fill!(reb, zero(T))
 
@@ -98,8 +100,11 @@ function _wfbp_rebin!(
                 θ = (T(j) - one(T)) * Δβ          # unwrapped parallel angle
                 β = θ - γ                          # unwrapped fan view angle
                 jf = β / Δβ + one(T)               # fractional view index
-                u_world = SDD * tan(γ)             # detector column offset (world)
-                col_f = u_world / pm + cc
+                col_f = if arc_det
+                    γ / dγ_arc + cc                # equiangular: column IS the angle
+                else
+                    SDD * tan(γ) / pm + cc         # flat: planar offset
+                end
 
                 if jf >= one(T) && jf <= T(nv) && col_f >= one(T) && col_f <= T(nc)
                     j_lo = unsafe_trunc(Int32, jf)

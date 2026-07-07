@@ -241,7 +241,7 @@ function create_workspace(
             geom.source_positions, geom.detector_centers,
             geom.detector_u, geom.detector_v,
             geom.fov,  # same recon FOV
-            geom.pitch, geom.table_feed
+            geom.pitch, geom.table_feed, geom.detector_shape
         )
         native_sino_shape = (_native_geom.n_cols, _native_geom.n_rows, _native_geom.n_angles)
         _native_bins = [similar(ref_mask, T, native_sino_shape) for _ in 1:n_bins]
@@ -803,6 +803,11 @@ function create_fdk_recon_workspace(
     raw_size = max(Int(ceil(n_cols * cutoff)), 32)
     kernel_size_int = min(raw_size + (1 - raw_size % 2), n_cols)
     kernel_cpu = create_spatial_kernel(kernel_size_int, filter, pixel_size)
+    if is_arc(geom) && !is_helical(geom)
+        # equiangular fan filter correction (helical WFBP filters rebinned
+        # PARALLEL rows, which need the plain ramp)
+        equiangular_kernel_scale!(kernel_cpu, geom.pixel_size / geom.SAD)
+    end
     filter_kernel = similar(sinogram, T, kernel_size_int)
     copyto!(filter_kernel, kernel_cpu)
 
@@ -925,6 +930,11 @@ function create_hir_recon_workspace(
     raw_size = max(Int(ceil(n_cols * cutoff)), 32)
     kernel_size_int = min(raw_size + (1 - raw_size % 2), n_cols)
     kernel_cpu = create_spatial_kernel(kernel_size_int, filter, pixel_size)
+    if is_arc(geom) && !is_helical(geom)
+        # equiangular fan filter correction (helical WFBP filters rebinned
+        # PARALLEL rows, which need the plain ramp)
+        equiangular_kernel_scale!(kernel_cpu, geom.pixel_size / geom.SAD)
+    end
     filter_kernel = similar(sinogram, T, kernel_size_int)
     copyto!(filter_kernel, kernel_cpu)
 

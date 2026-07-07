@@ -492,6 +492,8 @@ function siddon_forward_project!(
 
     magnification = T(geom.SDD / geom.SAD)
     pixel_size = T(geom.pixel_size)
+    arc_det = is_arc(geom)
+    dγ = T(geom.pixel_size / geom.SAD)   # equiangular column pitch (rad)
     pixel_row_size = T(geom.pixel_row_size)
 
     # Pre-compute detector center offset for GPU
@@ -557,13 +559,24 @@ function siddon_forward_project!(
         dvy = detector_v[2, angle]
         dvz = detector_v[3, angle]
 
-        # Compute detector pixel position
-        u_offset = (T(col) - col_center) * pixel_size * magnification
+        # Compute detector pixel position (:arc = equiangular cylinder centred
+        # on the source; :flat = planar along detector_u)
         v_offset = (T(row) - row_center) * pixel_row_size * magnification
-
-        det_x = dcx + u_offset * dux + v_offset * dvx
-        det_y = dcy + u_offset * duy + v_offset * dvy
-        det_z = dcz + u_offset * duz + v_offset * dvz
+        det_x, det_y, det_z = if arc_det
+            γ = (T(col) - col_center) * dγ
+            cin_x = dcx - src_x
+            cin_y = dcy - src_y
+            Lsd = sqrt(cin_x * cin_x + cin_y * cin_y)
+            sγ = sin(γ); cγ = cos(γ)
+            (src_x + cγ * cin_x + sγ * Lsd * dux,
+             src_y + cγ * cin_y + sγ * Lsd * duy,
+             dcz + v_offset * dvz)
+        else
+            u_offset = (T(col) - col_center) * pixel_size * magnification
+            (dcx + u_offset * dux + v_offset * dvx,
+             dcy + u_offset * duy + v_offset * dvy,
+             dcz + u_offset * duz + v_offset * dvz)
+        end
 
         # Trace ray and store result
         sinogram[idx] = siddon_trace_ray(
@@ -809,6 +822,8 @@ function siddon_fused_poly_project!(
 
     magnification = T(geom.SDD / geom.SAD)
     pixel_size = T(geom.pixel_size)
+    arc_det = is_arc(geom)
+    dγ = T(geom.pixel_size / geom.SAD)   # equiangular column pitch (rad)
     pixel_row_size = T(geom.pixel_row_size)
     col_center = (T(n_cols) + one(T)) / T(2)
     row_center = (T(n_rows) + one(T)) / T(2)
@@ -852,7 +867,7 @@ function siddon_fused_poly_project!(
     _bt = has_bowtie ? ws_bowtie_spectral : similar(μ_table_gpu, T, 1, 1, 1)
 
     # Capture all variables in let block for GPU closure correctness
-    let mask = mask, μ_tbl = μ_table_gpu, wη = wη_gpu,
+    let mask = mask, μ_tbl = μ_table_gpu, wη = wη_gpu, arc_det = arc_det, dγ = dγ,
             sp = source_positions, dc = detector_centers, du = detector_u, dv = detector_v,
             bt = _bt,
             vmx = vol_min_x, vmy = vol_min_y, vmz = vol_min_z,
@@ -880,12 +895,22 @@ function siddon_fused_poly_project!(
             dux = du[1, angle]; duy = du[2, angle]; duz = du[3, angle]
             dvx = dv[1, angle]; dvy = dv[2, angle]; dvz = dv[3, angle]
 
-            u_offset = (T(col) - cc) * ps * mag
             v_offset = (T(row) - rc) * prs * mag
-
-            det_x = dcx + u_offset * dux + v_offset * dvx
-            det_y = dcy + u_offset * duy + v_offset * dvy
-            det_z = dcz + u_offset * duz + v_offset * dvz
+            det_x, det_y, det_z = if arc_det
+                γa = (T(col) - cc) * dγ
+                cin_x = dcx - src_x
+                cin_y = dcy - src_y
+                Lsd = sqrt(cin_x * cin_x + cin_y * cin_y)
+                sγ = sin(γa); cγ = cos(γa)
+                (src_x + cγ * cin_x + sγ * Lsd * dux,
+                 src_y + cγ * cin_y + sγ * Lsd * duy,
+                 dcz + v_offset * dvz)
+            else
+                u_offset = (T(col) - cc) * ps * mag
+                (dcx + u_offset * dux + v_offset * dvx,
+                 dcy + u_offset * duy + v_offset * dvy,
+                 dcz + u_offset * duz + v_offset * dvz)
+            end
 
             # ═══════════════════════════════════════════════════════════
             # DDA SETUP (from siddon_trace_ray — identical geometry)
@@ -1187,6 +1212,8 @@ function siddon_fused_spectral_project!(
 
     magnification = T(geom.SDD / geom.SAD)
     pixel_size = T(geom.pixel_size)
+    arc_det = is_arc(geom)
+    dγ = T(geom.pixel_size / geom.SAD)   # equiangular column pitch (rad)
     pixel_row_size = T(geom.pixel_row_size)
     col_center = (T(n_cols) + one(T)) / T(2)
     row_center = (T(n_rows) + one(T)) / T(2)
@@ -1228,7 +1255,7 @@ function siddon_fused_spectral_project!(
     _bt = has_source_spectral ? ws_bowtie_spectral : similar(μ_table_gpu, T, 1, 1, 1)
 
     # Capture all variables in let block for GPU closure correctness
-    let mask = mask, μ_tbl = μ_table_gpu, W = W_gpu, ts = tile_start,
+    let mask = mask, μ_tbl = μ_table_gpu, W = W_gpu, ts = tile_start, arc_det = arc_det, dγ = dγ,
             sp = source_positions, dc = detector_centers, du = detector_u, dv = detector_v,
             vmx = vol_min_x, vmy = vol_min_y, vmz = vol_min_z,
             vMx = vol_max_x, vMy = vol_max_y, vMz = vol_max_z,
@@ -1257,12 +1284,22 @@ function siddon_fused_spectral_project!(
             dux = du[1, angle]; duy = du[2, angle]; duz = du[3, angle]
             dvx = dv[1, angle]; dvy = dv[2, angle]; dvz = dv[3, angle]
 
-            u_offset = (T(col) - cc) * ps * mag
             v_offset = (T(row) - rc) * prs * mag
-
-            det_x = dcx + u_offset * dux + v_offset * dvx
-            det_y = dcy + u_offset * duy + v_offset * dvy
-            det_z = dcz + u_offset * duz + v_offset * dvz
+            det_x, det_y, det_z = if arc_det
+                γa = (T(col) - cc) * dγ
+                cin_x = dcx - src_x
+                cin_y = dcy - src_y
+                Lsd = sqrt(cin_x * cin_x + cin_y * cin_y)
+                sγ = sin(γa); cγ = cos(γa)
+                (src_x + cγ * cin_x + sγ * Lsd * dux,
+                 src_y + cγ * cin_y + sγ * Lsd * duy,
+                 dcz + v_offset * dvz)
+            else
+                u_offset = (T(col) - cc) * ps * mag
+                (dcx + u_offset * dux + v_offset * dvx,
+                 dcy + u_offset * duy + v_offset * dvy,
+                 dcz + u_offset * duz + v_offset * dvz)
+            end
 
             # ═══════════════════════════════════════════════════════════
             # DDA SETUP (identical to tiled EICT kernel)

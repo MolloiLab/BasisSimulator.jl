@@ -87,11 +87,12 @@ function _dd_fused_poly_plen!(
         vmin_x::T, vmin_y::T, vmin_z::T, vx::T, vy::T, vz::T,
         nx::Int32, ny::Int32, nz::Int32, n_cols::Int32, n_rows::Int32,
         mag::T, ps::T, prs::T, col_center::T, row_center::T, nc_nr::Int32,
+        arc_det::Bool, dγ::T,
     ) where {M, T <: AbstractFloat}
 
     n_E = Int32(length(wη_gpu))
 
-    let mask = mask, μ_tbl = μ_table_gpu, wη = wη_gpu,
+    let mask = mask, μ_tbl = μ_table_gpu, wη = wη_gpu, arc_det = arc_det, dγ = dγ,
             sp = sp, dc = dc, du = du, dv = dv, bt = _bt,
             vmx = vmin_x, vmy = vmin_y, vmz = vmin_z, vsx = vx, vsy = vy, vsz = vz,
             nx = nx, ny = ny, nz = nz, nc = n_cols, nr = n_rows,
@@ -112,7 +113,7 @@ function _dd_fused_poly_plen!(
             (valid, vertical, s_long, s_tran, dXlo, dXhi, dZlo, dZhi, norm,
                 n_t, v_t, vmin_t, n_long, v_long, vmin_long) = _dd_cell_setup(
                 col, row, sx, sy, sz, dcx, dcy, dcz, ux, uy, vvz,
-                mag, ps, prs, cc, rc, nx, ny, vmx, vmy, vsx, vsy)
+                mag, ps, prs, cc, rc, nx, ny, vmx, vmy, vsx, vsy, arc_det, dγ)
 
             plens = ntuple(_ -> zero(T), Val(M))
             if valid
@@ -182,9 +183,10 @@ function _dd_fused_spectral_plen!(
         vmin_x::T, vmin_y::T, vmin_z::T, vx::T, vy::T, vz::T,
         nx::Int32, ny::Int32, nz::Int32, n_cols::Int32, n_rows::Int32, n_elem::Int32,
         mag::T, ps::T, prs::T, col_center::T, row_center::T, nc_nr::Int32,
+        arc_det::Bool, dγ::T,
     ) where {M, T <: AbstractFloat}
 
-    let mask = mask, μ_tbl = μ_table_gpu, W = W_gpu, ts = ts, kk = K,
+    let mask = mask, μ_tbl = μ_table_gpu, W = W_gpu, ts = ts, kk = K, arc_det = arc_det, dγ = dγ,
             sp = sp, dc = dc, du = du, dv = dv, bt = _bt,
             vmx = vmin_x, vmy = vmin_y, vmz = vmin_z, vsx = vx, vsy = vy, vsz = vz,
             nx = nx, ny = ny, nz = nz, nc = n_cols, nr = n_rows,
@@ -206,7 +208,7 @@ function _dd_fused_spectral_plen!(
             (valid, vertical, s_long, s_tran, dXlo, dXhi, dZlo, dZhi, norm,
                 n_t, v_t, vmin_t, n_long, v_long, vmin_long) = _dd_cell_setup(
                 col, row, sx, sy, sz, dcx, dcy, dcz, ux, uy, vvz,
-                mag, ps, prs, cc, rc, nx, ny, vmx, vmy, vsx, vsy)
+                mag, ps, prs, cc, rc, nx, ny, vmx, vmy, vsx, vsy, arc_det, dγ)
 
             plens = ntuple(_ -> zero(T), Val(M))
             if valid
@@ -331,6 +333,8 @@ function dd_fast_fused_poly_project!(
     _dd_check_isotropy(vx, vy)
 
     mag = T(geom.SDD / geom.SAD)
+    arc_det = is_arc(geom)
+    dγ = T(geom.pixel_size / geom.SAD)
     ps = T(geom.pixel_size); prs = T(geom.pixel_row_size)
     col_center = (T(n_cols) + one(T)) / T(2)
     row_center = (T(n_rows) + one(T)) / T(2)
@@ -349,7 +353,8 @@ function dd_fast_fused_poly_project!(
         sp, dc, du, dv,
         vmin_x, vmin_y, vmin_z, vx, vy, vz,
         nx, ny, nz, n_cols, n_rows,
-        mag, ps, prs, col_center, row_center, nc_nr)
+        mag, ps, prs, col_center, row_center, nc_nr,
+        arc_det, dγ)
 end
 
 """
@@ -402,6 +407,8 @@ function dd_fast_fused_spectral_project!(
     _dd_check_isotropy(vx, vy)
 
     mag = T(geom.SDD / geom.SAD)
+    arc_det = is_arc(geom)
+    dγ = T(geom.pixel_size / geom.SAD)
     ps = T(geom.pixel_size); prs = T(geom.pixel_row_size)
     col_center = (T(n_cols) + one(T)) / T(2)
     row_center = (T(n_rows) + one(T)) / T(2)
@@ -422,5 +429,6 @@ function dd_fast_fused_spectral_project!(
         sp, dc, du, dv,
         vmin_x, vmin_y, vmin_z, vx, vy, vz,
         nx, ny, nz, n_cols, n_rows, n_elem,
-        mag, ps, prs, col_center, row_center, nc_nr)
+        mag, ps, prs, col_center, row_center, nc_nr,
+        arc_det, dγ)
 end
