@@ -902,12 +902,11 @@ sim_helical === nothing ? nothing : let
         (g0 >= 0.6f0 * gm) && (hits += 1)
     end
     frac = total == 0 ? 0.0 : hits / total
-    md"""
-    **Helical pixel-perfection score:** $(round(100 * frac; digits = 1)) % of
-    resampled label boundaries coincide with the local recon-gradient
-    maximum (n = $(total)).  ≥ 80 % ⇒ the affine mapping holds on the
-    helical grid ($(frac >= 0.8 ? "✅ PASS" : "❌ FAIL")).
-    """
+    verdict = frac >= 0.8 ? "✅ PASS" : "❌ FAIL"
+    Markdown.parse("**Helical pixel-perfection score:** " *
+        "$(round(100 * frac, digits = 1)) % of resampled label boundaries " *
+        "coincide with the local recon-gradient maximum (n = $(total)).  " *
+        "≥ 80 % ⇒ the affine mapping holds on the helical grid ($(verdict)).")
 end
 
 # ╔═╡ 0500000f-0000-4000-8000-000000000001
