@@ -284,4 +284,234 @@ function apply_mono_plus!(
      E_noise_opt = Float64(E_noise_opt))
 end
 
+# ════════════════════════════════════════════════════════════════════════
+#  Resolution-preserving Mono+  (per-pixel HF regression — Kalender-style)
+# ════════════════════════════════════════════════════════════════════════
+
+"""
+    apply_mono_plus_regression!(ws, volumes, energies;
+                                E_noise_opt = 70.0,
+                                σ_lp_px     = 1.5,
+                                window      = 4,
+                                beta_max    = 4.0,
+                                verbose     = true,
+                                phantom_mask = nothing) -> NamedTuple
+
+Structure-preserving Mono+.  Same LP/HP skeleton as [`apply_mono_plus!`]
+(Grant 2014) — the quantitative low-frequency band is kept from the target
+energy `E`, so rod HU is untouched — but the **hard high-frequency swap is
+replaced by a per-pixel local regression** of the target HF onto the
+low-noise reference HF, the exact analog of `apply_acnr_kalender!`:
+
+    Mono+_res(E) = LP_σ(VMI_E) + β(x)·HP_σ(VMI_opt)
+                 = VMI_E − ( hE − β(x)·hOpt )
+
+    β(x) = clamp( Σ_win hE·hOpt / Σ_win hOpt² , 0, β_max )
+
+with `hE = VMI_E − LP_σ(VMI_E)`, `hOpt = VMI_opt − LP_σ(VMI_opt)`.
+
+Why this reduces noise with **zero resolution cost** (by construction, not
+by an edge heuristic):
+
+  * **Real edge (present in both energies)** → hE, hOpt strongly correlated
+    → β ≈ the true local contrast ratio C_E/C_opt.  `β·hOpt` rebuilds the
+    target energy's TRUE edge amplitude (fixing plain Mono+'s contrast
+    loss for fine iodine detail) but carried on the low-noise reference →
+    denoised.  Edge geometry = hOpt's geometry exactly (β only scales
+    amplitude) → no blur, no misregistration.
+  * **Flat / noise-only region** → the two energies' HF are independent
+    noise realizations → uncorrelated → β ≈ 0 → HF ≈ 0 → HF noise removed
+    (strictly better than plain Mono+, which injects hOpt's residual HF
+    noise everywhere).
+  * **E == E_opt** → hE ≡ hOpt → β ≡ 1 → output = VMI_opt identically
+    (Grant's reference-identity property retained).
+
+`β_max` is additionally variance-limited to the global HF-energy ratio
+`λ = √(Σ hE² / Σ hOpt²)` (Kalender's original bound), so a noisy local β̂
+can never over-amplify the reference HF.
+
+# Keyword arguments
+- `E_noise_opt` : noise-optimal reference energy (must appear in `energies`).
+- `σ_lp_px`     : Gaussian LP σ (px) for the HF split.  Scalar or per-energy
+  vector.  σ = 0 ⇒ identity at that energy (Mono+_res(E) = VMI_E).
+- `window`      : half-width of the (2w+1)² regression window (px).  Sizes
+  only the ESTIMATE of β — the correction stays a per-pixel linear
+  combination, so no signal smoothing occurs regardless of window.
+- `beta_max`    : hard ceiling on the HF amplification β (further capped by
+  the per-energy global HF ratio λ).
+- `phantom_mask`: optional eroded `Bool` mask; voxels where `false` revert to
+  the raw `VMI_E` (kills the LP boundary ring — same semantics as
+  `apply_mono_plus!`).
+
+Mutates `ws.out_vols` in place; **copy** the returned volumes to retain them
+across subsequent calls on the same `ws`.  Returns a NamedTuple with
+`energies`, `volumes`, `σ_lp_px`, `E_noise_opt`, and per-energy diagnostics
+`β_mean` / `β_frac_active` (fraction of pixels with β > 0).
+"""
+function apply_mono_plus_regression!(
+        ws::MonoPlusWorkspace,
+        volumes::AbstractVector{<:AbstractArray{Float32, 3}},
+        energies::AbstractVector;
+        E_noise_opt::Real                    = 70.0,
+        σ_lp_px::Union{Real, AbstractVector} = 1.5,
+        window::Integer                      = 4,
+        beta_max::Real                       = 4.0,
+        verbose::Bool                        = true,
+        phantom_mask::Union{Nothing, AbstractArray{Bool, 3}} = nothing,
+    )
+    length(volumes) == length(energies) ||
+        error("apply_mono_plus_regression!: length(volumes) = $(length(volumes)) ≠ length(energies) = $(length(energies))")
+    length(ws.out_vols) == length(energies) ||
+        error("apply_mono_plus_regression!: workspace has $(length(ws.out_vols)) output slots ≠ length(energies) = $(length(energies)).  " *
+              "Recreate workspace with `create_mono_plus_workspace(...; n_energies = $(length(energies)))`.")
+    sh = size(ws.lp_buf)
+    for (i, v) in enumerate(volumes)
+        size(v) == sh ||
+            error("apply_mono_plus_regression!: volumes[$i] shape $(size(v)) ≠ workspace shape $(sh).")
+    end
+    if phantom_mask !== nothing
+        size(phantom_mask) == sh ||
+            error("apply_mono_plus_regression!: phantom_mask shape $(size(phantom_mask)) ≠ workspace shape $(sh).")
+    end
+
+    i_opt = findfirst(==(Float64(E_noise_opt)), Float64.(energies))
+    i_opt === nothing &&
+        error("apply_mono_plus_regression!: E_noise_opt = $(E_noise_opt) keV not in energies = $(energies)")
+
+    σ_vec = if σ_lp_px isa Real
+        fill(Float64(σ_lp_px), length(energies))
+    else
+        length(σ_lp_px) == length(energies) ||
+            error("apply_mono_plus_regression!: σ_lp_px length $(length(σ_lp_px)) ≠ energies length $(length(energies))")
+        Float64.(σ_lp_px)
+    end
+
+    vmi_opt = volumes[i_opt]
+    nx, ny, nz = size(vmi_opt)
+    fx = [min(i - 1, nx - (i - 1)) / nx for i in 1:nx]
+    fy = [min(j - 1, ny - (j - 1)) / ny for j in 1:ny]
+    w = Int(window)
+
+    function _kernel_for(σ::Float64)
+        get!(ws.kernel_cache, σ) do
+            σ² = σ^2
+            [exp(-2π^2 * σ² * (fx[i]^2 + fy[j]^2)) for i in 1:nx, j in 1:ny]
+        end
+    end
+    function _gaussian_lp!(dst::AbstractArray{Float32, 3}, img::AbstractArray{Float32, 3}, σ::Float64)
+        kernel = _kernel_for(σ)
+        Threads.@threads for k in 1:nz
+            slice = Float64.(@view img[:, :, k])
+            dst[:, :, k] .= Float32.(real.(FFTW.ifft(FFTW.fft(slice) .* kernel)))
+        end
+        return dst
+    end
+    function _apply_mask!(out::AbstractArray{Float32, 3}, src::AbstractArray{Float32, 3})
+        if phantom_mask !== nothing
+            @inbounds for j in eachindex(out)
+                phantom_mask[j] || (out[j] = src[j])
+            end
+        end
+        return out
+    end
+
+    # HF-regression transplant, writing Mono+_res(E) into `out`.
+    #   hE   = VMI_E − lpE      (target HF, lpE precomputed in ws.lp_buf)
+    #   hOpt = ws.hp_opt        (reference HF, precomputed for this σ)
+    #   β    = clamp(Σ_win hE·hOpt / Σ_win hOpt², 0, βmax)  (variance-limited)
+    #   out  = lpE + β·hOpt
+    function _hf_regress!(out, vol_E, lpE, hOpt)
+        # per-energy global HF ratio → variance-limited β ceiling (Kalender)
+        sEE = 0.0; sOO = 0.0
+        @inbounds for idx in eachindex(vol_E)
+            he = Float64(vol_E[idx] - lpE[idx]); ho = Float64(hOpt[idx])
+            sEE += he * he; sOO += ho * ho
+        end
+        λ = sqrt(sEE / max(sOO, 1.0e-30))
+        βmax = Float32(min(Float64(beta_max), λ))
+        β_acc = 0.0; β_active = 0
+        β_lock = Threads.SpinLock()
+        Threads.@threads for k in 1:nz
+            local_acc = 0.0; local_active = 0
+            @inbounds for j in 1:ny, i in 1:nx
+                sOOw = 0.0f0; sEOw = 0.0f0
+                for dj in -w:w
+                    jj = j + dj; (1 <= jj <= ny) || continue
+                    for di in -w:w
+                        ii = i + di; (1 <= ii <= nx) || continue
+                        ho = hOpt[ii, jj, k]
+                        he = vol_E[ii, jj, k] - lpE[ii, jj, k]
+                        sOOw += ho * ho; sEOw += he * ho
+                    end
+                end
+                β = clamp(sEOw / max(sOOw, 1.0f-20), 0.0f0, βmax)
+                out[i, j, k] = lpE[i, j, k] + β * hOpt[i, j, k]
+                local_acc += β; (β > 0) && (local_active += 1)
+            end
+            Threads.lock(β_lock) do
+                β_acc += local_acc; β_active += local_active
+            end
+        end
+        npix = nx * ny * nz
+        return (β_mean = β_acc / npix, β_frac_active = β_active / npix)
+    end
+
+    t0 = time()
+    σ_uniform = all(σ -> σ == σ_vec[1], σ_vec)
+    diags = Vector{NamedTuple{(:β_mean, :β_frac_active), Tuple{Float64, Float64}}}(undef, length(energies))
+
+    if σ_uniform && σ_vec[1] != 0.0
+        σ0 = σ_vec[1]
+        _gaussian_lp!(ws.lp_opt, vmi_opt, σ0)
+        @. ws.hp_opt = vmi_opt - ws.lp_opt              # reference HF (cached)
+        for i in eachindex(energies)
+            if i == i_opt
+                copyto!(ws.out_vols[i], vmi_opt)
+                diags[i] = (β_mean = 1.0, β_frac_active = 1.0)
+            else
+                _gaussian_lp!(ws.lp_buf, volumes[i], σ0) # lpE into ws.lp_buf
+                diags[i] = _hf_regress!(ws.out_vols[i], volumes[i], ws.lp_buf, ws.hp_opt)
+                _apply_mask!(ws.out_vols[i], volumes[i])
+            end
+        end
+    else
+        # Per-energy σ (or all-zero): recompute the reference HF per σ.
+        for i in eachindex(energies)
+            σ_i = σ_vec[i]
+            if i == i_opt
+                copyto!(ws.out_vols[i], vmi_opt)
+                diags[i] = (β_mean = 1.0, β_frac_active = 1.0)
+            elseif σ_i == 0.0
+                copyto!(ws.out_vols[i], volumes[i])         # identity
+                diags[i] = (β_mean = 0.0, β_frac_active = 0.0)
+            else
+                _gaussian_lp!(ws.lp_opt, vmi_opt, σ_i)
+                @. ws.hp_opt = vmi_opt - ws.lp_opt
+                _gaussian_lp!(ws.lp_buf, volumes[i], σ_i)
+                diags[i] = _hf_regress!(ws.out_vols[i], volumes[i], ws.lp_buf, ws.hp_opt)
+                _apply_mask!(ws.out_vols[i], volumes[i])
+            end
+        end
+    end
+    dt = time() - t0
+
+    if verbose
+        σ_label = σ_uniform ? "σ=$(σ_vec[1]) px" : "σ per-keV $(σ_vec)"
+        @info "Mono+ (resolution-preserving, per-pixel HF regression): $σ_label, window=$(w), β_max=$(beta_max), E_opt=$(Int(E_noise_opt)) keV, $(Threads.nthreads()) threads, $(round(dt * 1000; digits = 1)) ms"
+        for (i, E) in enumerate(energies)
+            i == i_opt && continue
+            @info "  $(Int(E)) keV: β_mean=$(round(diags[i].β_mean; sigdigits = 3)) · active(β>0)=$(round(100 * diags[i].β_frac_active; digits = 1))% · structure keeps low-keV amplitude, flat HF → 0 (noise removed), edges bit-aligned to VMI_opt"
+        end
+        @info "  sanity: Mono+_res(E_opt) = VMI_opt identically  (identity at i_opt=$(i_opt))"
+    end
+
+    (energies = collect(energies),
+     volumes  = ws.out_vols,
+     σ_lp_px  = (σ_lp_px isa Real ? Float64(σ_lp_px) : σ_vec),
+     E_noise_opt = Float64(E_noise_opt),
+     β_mean = [d.β_mean for d in diags],
+     β_frac_active = [d.β_frac_active for d in diags])
+end
+
 export MonoPlusWorkspace, create_mono_plus_workspace, apply_mono_plus!
+export apply_mono_plus_regression!

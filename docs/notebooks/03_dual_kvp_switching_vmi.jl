@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.2.1
+# v0.2.3
 
 using Markdown
 using InteractiveUtils
@@ -718,12 +718,16 @@ high frequencies (edges, fine detail) come from the target energy `E`.
 """
 
 # ╔═╡ 0500000c-0000-4000-8000-000000000005
-# Per-keV Gaussian LP σ in pixels — paired with `de_vmi_energies` order.
+# Per-keV Gaussian LP σ in pixels (HF-split cutoff) — paired with
+# `de_vmi_energies` order.  Feeds the RESOLUTION-PRESERVING Mono+
+# (`apply_mono_plus_regression!`): the HF band is not swapped from the
+# anchor — it is regressed onto the anchor per-pixel, so real iodine edges
+# keep their TRUE target-energy amplitude (β≈C_E/C_opt) while flat-region
+# HF noise → 0 (β≈0).  Resolution untouched by construction.
 # σ = 0  ⇒ identity at that energy (Mono+(E) = VMI_E exactly, no FFT).
-# σ > 0  ⇒ that energy's LP band is replaced with the 70-keV anchor's LP.
-# Edit these to tune per-energy noise/contrast trade-off.
-# (50, 70, 100, 140) keV
-# σ_vmi_lp_px = Float64[1.0, 0.0, 1.0, 1.0];
+# σ > 0  ⇒ that energy's HF band is regressed onto the 70-keV anchor's HF.
+# (50, 70, 100, 140) keV — 0 at the 70 keV noise-optimal slot.
+# σ_vmi_lp_px = Float64[1.5, 0.0, 1.0, 1.0];
 σ_vmi_lp_px = Float64[0.0, 0.0, 0.0, 0.0];
 
 # ╔═╡ 0500000c-0000-4000-8000-000000000010
@@ -734,11 +738,13 @@ vmi_HU_final = let
         volumes[1];
         n_energies = length(de_vmi_energies)
     )
-    BS.apply_mono_plus!(
+    BS.apply_mono_plus_regression!(
         ws, volumes, de_vmi_energies;
         E_noise_opt = 70.0,
-        σ_lp_px = σ_vmi_lp_px,
-        verbose = true,
+        σ_lp_px  = σ_vmi_lp_px,
+        window   = 4,     # sizes only the β estimate — never smooths signal
+        beta_max = 4.0,   # HF amplification ceiling (also variance-limited to λ)
+        verbose  = true,
     )
 
     # ws.out_vols is reused on subsequent apply_mono_plus! calls — copy
@@ -1403,6 +1409,52 @@ loss.  The result is HU-quantitative VMIs with low streak content and clean
 low-keV Mono+ output.
 """
 
+# ╔═╡ d7aabaf8-7b15-11f1-a33d-bbcaf07b4213
+# Pre-Cong dual-channel SVD denoise (edge-preserving BILATERAL variant).
+# Runs on the raw (low, high) line-integral sinograms BEFORE debias + Cong.
+# Per detector row it SVD-decomposes the 2 channels: U[:,1] = common
+# log-attenuation (anatomy) kept PIXEL-PERFECT; the residual component
+# U[:,2] — which carries the photon-starvation streaks + decorrelated
+# quantum noise — is cleaned with an edge-aware JOINT BILATERAL (guided by
+# U[:,1] and itself) instead of a Gaussian.  Streaks gone, ZERO spatial
+# resolution cost (unlike `apply_sino_svd_denoise`'s Gaussian).
+# bilat_range_k = 0 ⇒ passthrough (APPLY_SVD = false ⇒ raw sinograms).
+sino_denoised = let
+    APPLY_SVD = true
+    if APPLY_SVD
+        out = BS.apply_sino_svd_denoise_bilateral(
+            [sim_low.sino, sim_high.sino];
+            bilat_radius = 3, bilat_sigma_s = 2.0, bilat_range_k = 2.0,
+        )
+        (low = out[1], high = out[2])
+    else
+        (low = sim_low.sino, high = sim_high.sino)
+    end
+end;
+
+# ╔═╡ 05000008-0000-4000-8000-0000000000a0
+# Pre-Cong dual-channel SVD denoise (edge-preserving BILATERAL variant).
+# Runs on the raw (low, high) line-integral sinograms BEFORE debias + Cong.
+# Per detector row it SVD-decomposes the 2 channels: U[:,1] = common
+# log-attenuation (anatomy) kept PIXEL-PERFECT; the residual component
+# U[:,2] — which carries the photon-starvation streaks + decorrelated
+# quantum noise — is cleaned with an edge-aware JOINT BILATERAL (guided by
+# U[:,1] and itself) instead of a Gaussian.  Streaks gone, ZERO spatial
+# resolution cost (unlike `apply_sino_svd_denoise`'s Gaussian).
+# APPLY_SVD = false ⇒ passthrough (raw sinograms).
+sino_denoised = let
+    APPLY_SVD = true
+    if APPLY_SVD
+        out = BS.apply_sino_svd_denoise_bilateral(
+            [sim_low.sino, sim_high.sino];
+            bilat_radius = 3, bilat_sigma_s = 2.0, bilat_range_k = 2.0,
+        )
+        (low = out[1], high = out[2])
+    else
+        (low = sim_low.sino, high = sim_high.sino)
+    end
+end;
+
 # ╔═╡ Cell order:
 # ╟─05000001-0000-4000-8000-000000000010
 # ╟─05000001-0000-4000-8000-000000000020
@@ -1464,3 +1516,5 @@ low-keV Mono+ output.
 # ╟─15000001-0000-4000-8000-000000000001
 # ╠═15000001-0000-4000-8000-000000000002
 # ╟─0500000f-0000-4000-8000-000000000001
+# ╠═05000008-0000-4000-8000-0000000000a0
+# ╠═d7aabaf8-7b15-11f1-a33d-bbcaf07b4213

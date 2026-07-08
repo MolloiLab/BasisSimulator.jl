@@ -214,4 +214,174 @@ function _separable_gauss_2d(
 end
 
 
+# =============================================================================
+#  Resolution-preserving variant — edge-aware joint bilateral on U[:,2..N]
+# =============================================================================
+
+"""
+    apply_sino_svd_denoise_bilateral!(out, channels;
+        bilat_radius = 3, bilat_sigma_s = 2.0, bilat_range_k = 2.0) -> out
+
+Same per-row N-channel SVD as [`apply_sino_svd_denoise!`] — `U[:, 1]` (common
+log-attenuation / anatomy) is kept **pixel-perfect** — but the residual
+components `U[:, 2..N]` are cleaned with an **edge-preserving joint bilateral
+filter instead of a Gaussian**, so streaks / decorrelated quantum noise are
+removed with **zero spatial-resolution cost** (no blur across edges).
+
+This is the SVD counterpart of the Kalender-ACNR and regression-Mono+ reworks:
+the noise-suppression operator is switched from a linear low-pass (which blurs
+real spectral edges in the residual components) to a structure-aware filter.
+
+# Filter
+
+For each residual component `k = 2..N`, reshaped to the row's `(col, view)`
+plane, each pixel is a bilateral-weighted average of its `(2·bilat_radius+1)²`
+neighbourhood:
+
+    w(p,q) = exp(-‖p-q‖² / 2σ_s²)                    # spatial (bilat_sigma_s)
+           · exp(-(g_p - g_q)² / 2σ_g²)              # range on the U[:,1] guide
+           · exp(-(u_p - u_q)² / 2σ_t²)              # range on U[:,k] itself
+
+`σ_g` and `σ_t` are per-row robust scales (MAD·1.4826) of the guide `U[:,1]`
+and the target `U[:,k]`, each times `bilat_range_k`.  A neighbour is averaged
+in only where **both** the anatomy guide **and** the component itself are
+locally flat (noise/streak) → smoothed; at any edge present in either →
+range weight collapses → the pixel is preserved.  Resolution preservation is
+structural (an edge in either channel stops the averaging), not a global
+low-pass.
+
+# Keyword arguments
+- `bilat_radius::Integer = 3` : spatial window radius (px) in `(col, view)`.
+- `bilat_sigma_s::Real  = 2.0`: spatial Gaussian σ (px).
+- `bilat_range_k::Real  = 2.0`: range-σ multiplier; smaller ⇒ edges protected
+  more aggressively (less smoothing), larger ⇒ more smoothing.  `≤ 0` ⇒
+  passthrough copy.
+
+# Returns
+`out` — same vector that was passed in.
+"""
+function apply_sino_svd_denoise_bilateral!(
+        out::AbstractVector{<:AbstractArray{Float32, 3}},
+        channels::AbstractVector{<:AbstractArray{Float32, 3}};
+        bilat_radius::Integer = 3,
+        bilat_sigma_s::Real   = 2.0,
+        bilat_range_k::Real   = 2.0,
+    )
+    n_ch = length(channels)
+    n_ch ≥ 2 || error("apply_sino_svd_denoise_bilateral!: requires ≥ 2 channels (got $(n_ch)).")
+    length(out) == n_ch ||
+        error("apply_sino_svd_denoise_bilateral!: length(out) = $(length(out)) ≠ length(channels) = $(n_ch).")
+    sz = size(channels[1])
+    for (k, c) in enumerate(channels)
+        size(c) == sz || error("apply_sino_svd_denoise_bilateral!: channels[$(k)] shape $(size(c)) ≠ channels[1] shape $(sz).")
+    end
+    for (k, o) in enumerate(out)
+        size(o) == sz || error("apply_sino_svd_denoise_bilateral!: out[$(k)] shape $(size(o)) ≠ channels[1] shape $(sz).")
+    end
+
+    n_col, n_row, n_view = sz
+
+    if bilat_range_k ≤ 0
+        for k in 1:n_ch
+            copyto!(out[k], channels[k])
+        end
+        return out
+    end
+
+    r    = Int(bilat_radius)
+    σs2  = Float32(2 * bilat_sigma_s^2)
+    kf   = Float32(bilat_range_k)
+
+    Threads.@threads for row in 1:n_row
+        slices = [Float32.(@view channels[b][:, row, :]) for b in 1:n_ch]
+        M = hcat([vec(s) for s in slices]...)
+
+        F = LinearAlgebra.svd(M; full = false)
+        U = F.U; Σ = F.S; V = F.V
+
+        U_d = similar(U)
+        U_d[:, 1] .= U[:, 1]                                # anatomy — untouched
+
+        guide = reshape(copy(U[:, 1]), n_col, n_view)
+        σg = kf * _mad_scale_2d(guide)
+        for k in 2:n_ch
+            tgt = reshape(copy(U[:, k]), n_col, n_view)
+            σt  = kf * _mad_scale_2d(tgt)
+            U_d[:, k] .= vec(_joint_bilateral_2d(tgt, guide, r, σs2, σg, σt))
+        end
+
+        M_d = U_d * LinearAlgebra.Diagonal(Σ) * V'
+        for b in 1:n_ch
+            out[b][:, row, :] .= reshape(view(M_d, :, b), n_col, n_view)
+        end
+    end
+
+    @info "apply_sino_svd_denoise_bilateral!: $(n_ch)-channel per-row SVD + edge-aware " *
+        "joint bilateral (radius = $(r), σ_s = $(bilat_sigma_s) px, range_k = $(bilat_range_k)) " *
+        "on residual components 2–$(n_ch) — U[:,1] pixel-perfect, edges preserved"
+    return out
+end
+
+"""
+    apply_sino_svd_denoise_bilateral(channels; kwargs...) -> Vector{Array{Float32, 3}}
+
+Allocating wrapper around [`apply_sino_svd_denoise_bilateral!`].
+"""
+function apply_sino_svd_denoise_bilateral(
+        channels::AbstractVector{<:AbstractArray{Float32, 3}};
+        kwargs...,
+    )
+    out = [Array{Float32}(undef, size(channels[1])) for _ in eachindex(channels)]
+    return apply_sino_svd_denoise_bilateral!(out, channels; kwargs...)
+end
+
+
+# =============================================================================
+#  Internal — robust MAD scale + edge-aware joint bilateral on a 2D slice
+# =============================================================================
+
+# Robust spread of a 2D slice: 1.4826 · median(|x − median(x)|).  Floored to a
+# tiny positive so σ_range is never zero.
+function _mad_scale_2d(slice2d::AbstractMatrix{Float32})
+    v = vec(slice2d)
+    med = Statistics.median(v)
+    mad = Statistics.median(abs.(v .- med))
+    return max(Float32(1.4826 * mad), 1.0f-12)
+end
+
+# Joint bilateral: smooth `tgt`, range-weighted by BOTH the guide `U[:,1]`
+# (σ_g) and `tgt` itself (σ_t).  Averaging happens only where both are locally
+# flat; any edge in either collapses the range weight → pixel preserved.
+function _joint_bilateral_2d(
+        tgt::AbstractMatrix{Float32},
+        guide::AbstractMatrix{Float32},
+        r::Int,
+        σs2::Float32,
+        σg::Float32,
+        σt::Float32,
+    )
+    nc, nv = size(tgt)
+    out = Matrix{Float32}(undef, nc, nv)
+    invg = 1.0f0 / (2σg^2)
+    invt = 1.0f0 / (2σt^2)
+    @inbounds for v in 1:nv, c in 1:nc
+        gc = guide[c, v]; tc = tgt[c, v]
+        acc = 0.0f0; wsum = 0.0f0
+        for dv in -r:r
+            v2 = v + dv; (1 <= v2 <= nv) || continue
+            for dc in -r:r
+                c2 = c + dc; (1 <= c2 <= nc) || continue
+                dg = guide[c2, v2] - gc
+                dt = tgt[c2, v2] - tc
+                w = exp(-(dc * dc + dv * dv) / σs2 - dg * dg * invg - dt * dt * invt)
+                acc += w * tgt[c2, v2]; wsum += w
+            end
+        end
+        out[c, v] = acc / wsum
+    end
+    return out
+end
+
+
 export apply_sino_svd_denoise, apply_sino_svd_denoise!
+export apply_sino_svd_denoise_bilateral, apply_sino_svd_denoise_bilateral!
