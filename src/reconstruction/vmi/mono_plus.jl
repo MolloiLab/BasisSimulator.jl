@@ -513,5 +513,78 @@ function apply_mono_plus_regression!(
      β_frac_active = [d.β_frac_active for d in diags])
 end
 
+# ════════════════════════════════════════════════════════════════════════
+#  Structure-transplant Mono+  (WIDE-band, contrast-matched — the powerful one)
+# ════════════════════════════════════════════════════════════════════════
+
+"""
+    apply_mono_plus_structure!(ws, volumes, energies;
+                               E_noise_opt = 70.0,
+                               σ_lp_px     = 6.0,
+                               window      = 5,
+                               beta_max    = 6.0,
+                               verbose     = true,
+                               phantom_mask = nothing) -> NamedTuple
+
+The **powerful** resolution-preserving Mono+.  Same Grant-2014 frequency-split
+skeleton and the same per-pixel contrast-matched transplant as
+[`apply_mono_plus_regression!`], but run in the regime that actually denoises:
+
+    Mono+(E) = LP_σ(VMI_E) + β(x)·HP_σ(VMI_opt),   HP_σ = I − LP_σ
+
+Two things make it much stronger than either prior variant:
+
+  1. **WIDE transplant band (low cutoff / large σ).**  Post-FBP CT noise is
+     high-frequency-weighted (ramp filter), so most of the noise *variance*
+     lives above even a low cutoff.  The generic Gaussian Mono+ and the
+     narrow-σ regression Mono+ used a HIGH cutoff (σ≈1.5) → they only
+     transplanted the top sliver of the spectrum → ~all the noise stayed in
+     the LP band (impotent, esp. at low keV where σ_VMI is dominated by the
+     broadband α(E)²σ²_I term).  Here σ is LARGE: the LP band keeps only the
+     **coarse quantitative base** (per-region HU ⇒ rod accuracy preserved)
+     and the entire broadband detail is transplanted from the low-noise 70
+     keV anchor.  In a flat region this collapses the output to a
+     heavily-smoothed base ⇒ σ plummets (≈ 15–20× for ramp-weighted noise).
+
+  2. **Contrast-matched transplant (local β) — the anatomical-identity prior,
+     quantified.**  β(x) = clamp(Σ_win hE·hOpt / Σ_win hOpt², 0, βmax) is the
+     LOCAL contrast ratio: ≈0 in flat regions (⇒ pure smoothed base, noise
+     killed), ≈ α(E)/α(E_opt) at real iodine/anatomy edges (⇒ the anchor's
+     sharp low-noise edge, re-scaled to the TARGET energy's amplitude).  This
+     is why it does not blur: edges come from the full-bandwidth anchor at the
+     target's own contrast.  βmax is variance-limited to the global HF ratio
+     λ = √(Σhᴇ²/Σh_opt²) so a noisy β̂ cannot over-amplify.
+
+Net: flat → smoothed base (huge low-keV denoise); edges → low-noise anchor
+structure at correct target contrast (full resolution).  E == E_opt ⇒ β ≡ 1 ⇒
+output = VMI_opt identically.
+
+Only the default σ (6.0 vs 1.5) and window (5 vs 4) differ from
+`apply_mono_plus_regression!` in mechanism; `σ_lp_px` is the master dial —
+larger = wider transplant = more denoising (until the LP base gets too coarse
+to hold per-rod HU).  All arguments as in `apply_mono_plus_regression!`.
+"""
+function apply_mono_plus_structure!(
+        ws::MonoPlusWorkspace,
+        volumes::AbstractVector{<:AbstractArray{Float32, 3}},
+        energies::AbstractVector;
+        E_noise_opt::Real                    = 70.0,
+        σ_lp_px::Union{Real, AbstractVector} = 6.0,
+        window::Integer                      = 5,
+        beta_max::Real                       = 6.0,
+        verbose::Bool                        = true,
+        phantom_mask::Union{Nothing, AbstractArray{Bool, 3}} = nothing,
+    )
+    return apply_mono_plus_regression!(
+        ws, volumes, energies;
+        E_noise_opt = E_noise_opt,
+        σ_lp_px     = σ_lp_px,
+        window      = window,
+        beta_max    = beta_max,
+        verbose     = verbose,
+        phantom_mask = phantom_mask,
+    )
+end
+
 export MonoPlusWorkspace, create_mono_plus_workspace, apply_mono_plus!
-export apply_mono_plus_regression!
+export apply_mono_plus_regression!, apply_mono_plus_structure!
