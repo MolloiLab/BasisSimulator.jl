@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.1.0
+# v0.2.1
 
 using Markdown
 using InteractiveUtils
@@ -87,7 +87,7 @@ import CairoMakie as CM
 # ╔═╡ 05000001-0000-4000-8000-000000000040
 begin
     import GPUSelect
-    AT = GPUSelect.Storage()     # the backend array type, directly: MtlArray / CuArray / ROCArray
+    AT = GPUSelect.Storage() # the backend array type, directly: MtlArray / CuArray / oneArray / ROCArray / Array
     to_gpu(x) = AT(x)
     GPU_BACKEND = (name = string(nameof(AT)),)
 end
@@ -358,21 +358,27 @@ sino_iodine = ∫ c_iodine(r) dr   (iodine basis density × path)
 sino_water  = ∫ c_water(r)  dr   (water  basis density × path)
 ```
 
-!!! info "Bowtie Awareness"
-    The basis builder uses `BS.resolve_source_spectrum_with_bowtie`,
-    which returns a per-ray 3D spectral weight `ŵ[col, row, E]`.  The
-    decomposition kernel detects the 3D shape automatically and uses
-    the right column–row spectrum for each detector position — so the
-    bowtie's per-ray spectral hardening is baked into the basis fit
-    from the start.
+!!! info "Full-Spectrum Awareness"
+    The basis builder uses `BS.resolve_source_spectrum_full`, which
+    returns a per-ray 3D spectral weight `ŵ[col, row, E]` containing
+    EVERY spectrum-shaping factor the simulation applied — bowtie,
+    anode heel, and detector efficiency η(E).  The decomposition kernel
+    detects the 3D shape automatically and uses the right column–row
+    spectrum for each detector position, so the inversion's forward
+    model matches the data exactly.
 """
 
 # ╔═╡ 05000008-0000-4000-8000-000000000010
 material_basis = let
-    e_L, ŵ_L = BS.resolve_source_spectrum_with_bowtie(
+    # FULL detected spectrum — tube × filters × bowtie × heel × η(E), each
+    # gated on sim_opts.use_*.  The decomposition's forward model must match
+    # the forward model simulate! actually applied (same doctrine as the
+    # knobless water BHC); the old bowtie-only resolver omitted η + heel and
+    # left a keV-dependent bias on every ray.
+    e_L, ŵ_L = BS.resolve_source_spectrum_full(
         sim_opts, protocol_low; scanner = scanner, geom = sim_low.geom,
     )
-    e_H, ŵ_H = BS.resolve_source_spectrum_with_bowtie(
+    e_H, ŵ_H = BS.resolve_source_spectrum_full(
         sim_opts, protocol_high; scanner = scanner, geom = sim_high.geom,
     )
 
@@ -547,7 +553,7 @@ so real water/iodine edges survive).  Runs on the FBP basis maps, **before** the
 # ╔═╡ 05000009-0000-4000-8000-000000000050
 # Image-domain cov-ACNR on the FBP basis maps via src `BS.apply_image_acnr!`.
 basis_acnr = let
-    APPLY_ACNR = true        # ON — image-domain edge-aware cov-ACNR
+    APPLY_ACNR = false        # ON — image-domain edge-aware cov-ACNR
     GAMMA = 1.0         # strength ∈ [0,1]; 0 = identity
     BILAT_RADIUS = 3           # spatial window radius (px)
     BILAT_SIGMA_S = 1.0         # spatial Gaussian σ (px)
@@ -589,7 +595,7 @@ Bump `Z_MEDIAN_ADJACENT` to widen the window:
 """
 
 # ╔═╡ 0500000a-0000-4000-8000-000000000005
-Z_MEDIAN_ADJACENT = 2;
+Z_MEDIAN_ADJACENT = 0;
 
 # ╔═╡ 0500000a-0000-4000-8000-000000000010
 basis_z = let
@@ -1398,6 +1404,66 @@ let
     fig
 end
 
+# ╔═╡ 15000001-0000-4000-8000-000000000001
+md"""
+## 14. Automated verification
+
+Quantitative PASS/FAIL against first-principles theory — per rod, per VMI
+energy.  Theory is mono HU from the same XrayAttenuation data that drove the
+simulation.  This is the notebook's contract: the projection-domain direct
+solve should put every rod on its theoretical line at every keV.
+"""
+
+# ╔═╡ 15000001-0000-4000-8000-000000000002
+verification = let
+    checks = NamedTuple[]
+    addcheck(name, val, lo, hi) = push!(checks,
+        (name = name, value = round(val; digits = 1), lo = lo, hi = hi, pass = lo <= val <= hi))
+
+    # solid water: |HU| small at every energy (basis water map → HU ≈ 0)
+    sw = solid_water_basis
+    sw_worst = maximum(abs(mean(vmi_HU_final[E][sw.mask_2d, :])) for E in de_vmi_energies)
+    addcheck("solid water worst |HU| across keV", sw_worst, 0.0, 10.0)
+
+    # per-rod, per-energy: |Δ| ≤ max(15 HU, 10 %)
+    rod_rows = String[]
+    n_pass_rod = 0; n_rod = 0
+    for group in (:Ca, :I), (i, name) in pairs(rod_data[group].names)
+        cells = String[]
+        ok_all = true
+        for (j, E) in pairs(de_vmi_energies)
+            meas = rod_data[group].measured[i, j]
+            theo = rod_data[group].theoretical[i, j]
+            ok = abs(meas - theo) <= max(15.0, 0.10 * abs(theo))
+            ok_all &= ok
+            push!(cells, "$(round(meas; digits = 0)) / $(round(theo; digits = 0)) $(ok ? "✅" : "❌")")
+        end
+        n_rod += 1
+        n_pass_rod += ok_all
+        push!(rod_rows, "| $(name) | " * join(cells, " | ") * " |")
+    end
+    addcheck("rods passing at ALL energies", n_pass_rod, n_rod, n_rod)
+
+    n_pass = count(c -> c.pass, checks)
+    verdict = n_pass == length(checks) ? "✅ NB03 VERIFICATION: PASS ($(n_pass)/$(length(checks)))" :
+                                          "❌ NB03 VERIFICATION: FAIL ($(n_pass)/$(length(checks)))"
+    hdr = join(["$(Int(E)) keV" for E in de_vmi_energies], " | ")
+    md_str = """
+### $(verdict)
+
+| check | value | expected | pass |
+|---|---|---|---|
+$(join(["| $(c.name) | $(c.value) | [$(c.lo), $(c.hi)] | $(c.pass ? "✅" : "❌") |" for c in checks], "\n"))
+
+**Per-rod measured / theory (Mono+ final volumes), gate |Δ| ≤ max(15 HU, 10 %):**
+
+| rod | $(hdr) |
+|---|$(join(["---" for _ in de_vmi_energies], "|"))|
+$(join(rod_rows, "\n"))
+"""
+    Markdown.parse(md_str)
+end
+
 # ╔═╡ 0500000f-0000-4000-8000-000000000001
 md"""
 ## Summary
@@ -1488,4 +1554,6 @@ low-keV Mono+ output.
 # ╟─0500000e-0000-4000-8000-000000000010
 # ╟─0500000e-0000-4000-8000-000000000020
 # ╟─0500000e-0000-4000-8000-000000000030
+# ╟─15000001-0000-4000-8000-000000000001
+# ╠═15000001-0000-4000-8000-000000000002
 # ╟─0500000f-0000-4000-8000-000000000001

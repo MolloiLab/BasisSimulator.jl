@@ -310,7 +310,43 @@ function apply_cong!(
             T_H_pred(y, c̄ + x) - T_H_meas
         end
 
-        y_opt, ok_y = brent_solve(G, -0.5f0, y_max)
+        # Root-bracket selection.  G(y) is INCREASING in y (the iodine-for-
+        # water substitution rate p̄_L/q̄_L exceeds p̄_H/q̄_H), and the quintic
+        # x(y) is a LOCAL Taylor approximation — far from the anchor its
+        # Newton diverges and G returns garbage/NaN (the legacy y_max ≈
+        # p_L/p_L_min is an absurd ~3 g/cm² of iodine).  So: expand the upper
+        # bracket geometrically from a small start, never evaluating G
+        # outside its validity; open only a NOISE-scale negative window when
+        # G(0) > 0 proves the root sits below zero.
+        G0 = G(0f0)
+        y_opt, ok_y = if G0 == 0f0
+            (0f0, true)
+        elseif G0 < 0f0
+            # positive-iodine root: double y_hi until G flips sign (finite)
+            y_hi = min(0.01f0, y_max)
+            G_hi = G(y_hi)
+            n_exp = Int32(0)
+            while isfinite(G_hi) && G_hi < 0f0 && y_hi < y_max && n_exp < Int32(24)
+                y_hi = min(y_hi * 2f0, y_max)
+                G_hi = G(y_hi)
+                n_exp += Int32(1)
+            end
+            if isfinite(G_hi) && G_hi >= 0f0
+                brent_solve(G, 0f0, y_hi)
+            else
+                (0f0, false)                     # no valid root → water-only fallback
+            end
+        else
+            # G0 > 0: zero-mean noise excursion → root slightly below 0.
+            # Window at the noise scale only — far-negative y is outside the
+            # quintic's validity and hosts spurious roots.
+            Glo = G(-0.1f0)
+            if isfinite(Glo) && Glo < 0f0
+                brent_solve(G, -0.1f0, 0f0)
+            else
+                (0f0, true)
+            end
+        end
         if !ok_y
             sino_y[idx] = a_w * L_water
             sino_c[idx] = c_w * L_water
