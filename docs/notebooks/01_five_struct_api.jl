@@ -589,8 +589,8 @@ corrections on top — the same stack we'll build here:
 
 | Stage | Function                              | What it does                                                                             |
 |-------|---------------------------------------|------------------------------------------------------------------------------------------|
-| 1.    | `calibrate_bhc_two_material`          | Fits a (water + bone) polynomial from the source spectrum once, returns a BHC model      |
-| 2.    | `apply_bhc_two_material`              | Sinogram-domain beam-hardening correction — runs *before* FBP, removes the bulk poly bias |
+| 1.    | `calibrate_bhc_water`                 | Precomputes per-column water poly→mono polynomials from the FULL detected spectrum — pure physics, zero tunables |
+| 2.    | `apply_bhc_water`                     | Sinogram-domain water BHC — one polynomial pass *before* FBP, removes the poly bias        |
 | 3.    | `reconstruct!` (FDK)                  | Filtered back-projection on the corrected sinogram                                       |
 | 5.    | `to_hounsfield` (with BHC μ_water)    | Convert μ → HU using the BHC model's calibrated reference (not the 70 keV NIST value)    |
 | 6.    | `add_system_noise_floor!`             | Add dose-independent DAS Gaussian σ ≈ 28 HU                                              |
@@ -616,16 +616,14 @@ becomes our reference for `to_hounsfield`).
 
 # ╔═╡ 09000006-0000-4000-8000-000000000001
 bhc_calibration = let
-    prot_for_bhc = BS.CTProtocol(kVp = 120, additional_filters = [("Al", 4.5)])
-
-    # Bowtie-aware high-level API: auto-resolves the bowtie-hardened spectrum,
-    # collapses to per-column weights, and dispatches to TwoMaterialBHCPerColumn.
-    model = BS.calibrate_bhc_two_material(
-        sim_opts, prot_for_bhc;
+    # KNOBLESS water BHC — pure physics, zero tunables, zero thresholds.
+    # calibrate_bhc_water resolves the FULL detected spectrum per detector
+    # column (tube × filters × bowtie × heel × η(E), exactly the factors this
+    # sim_opts enabled) and precomputes the poly→mono water polynomial for
+    # each column.  Nothing is fitted to the data being corrected.
+    model = BS.calibrate_bhc_water(
+        sim_opts, protocol_standard;
         scanner = scanner, geom = sim_std.geom,
-        order = 2,
-        hu_low = 450.0,   # bone-segmentation lower threshold (HU)
-        hu_high = 600.0,   # bone-segmentation upper threshold (HU)
     )
 
     (
@@ -659,9 +657,7 @@ hu_std_corr = let
 
     # 1. Sinogram-domain BHC (returns a CPU array)
     sino_gpu = to_gpu(sim_std.sino)
-    sino_bhc = BS.apply_bhc_two_material(
-        sino_gpu, bhc_calibration.model, sim_std.geom, matrix_size,
-    )
+    sino_bhc = BS.apply_bhc_water(sino_gpu, bhc_calibration.model)
     sino_gpu = to_gpu(sino_bhc)
 
     # 2. FDK on the BHC-corrected sinogram
@@ -701,9 +697,7 @@ hu_low_corr = let
 
     # 1. Sinogram-domain BHC
     sino_gpu = to_gpu(sim_low.sino)
-    sino_bhc = BS.apply_bhc_two_material(
-        sino_gpu, bhc_calibration.model, sim_low.geom, matrix_size,
-    )
+    sino_bhc = BS.apply_bhc_water(sino_gpu, bhc_calibration.model)
     sino_gpu = to_gpu(sino_bhc)
 
     # 2. FDK
@@ -859,7 +853,9 @@ md"""
 Quantitative pass/fail against physics-derived expectations — no eyeballing.
 Per-rod theory is mono HU at the BHC reference energy from the same
 XrayAttenuation data that drove the simulation; tolerances cover partial
-volume + noise + the two-material bone-window caveat for dense iodine rods.
+volume + noise + the single-kVp limit: the knobless water BHC maps the water
+component exactly, and the remaining high-Z (Ca/iodine) spectral residual is
+physics a single-energy scan cannot resolve — dual-energy/VMI territory.
 """
 
 # ╔═╡ 12000002-0000-4000-8000-000000000002
@@ -928,14 +924,14 @@ verification = let
         meas = _St.mean(slc_std[m])
         meas_low = _St.mean(slc_low[m])
         raw = _St.mean(hu_std[:, :, kmid][m])          # alignment sentinel
-        # percentage-based gate with an absolute floor: |Δ| ≤ max(15 HU, 10 %).
-        # Iodine gets 15 %: single-kVp two-material BHC cannot distinguish the
-        # iodine K-edge from bone (the 450–600 HU window reclassifies dense
-        # iodine as bone and under-corrects it ~10–12 %) — quantitative iodine
-        # is the dual-energy/VMI chain's job (nb03/04/07/08), not this one.
+        # Physics-honest gate: |Δ| ≤ max(15 HU, 15 %).  Under the knobless
+        # water BHC every dense insert (Ca AND iodine) carries a smooth,
+        # density-proportional single-kVp deficit (up to ~−12 % at Ca-600 /
+        # I-20) — the rod's own beam hardening beyond the water curve, which
+        # single-energy CT cannot resolve.  Quantitative high-Z belongs to
+        # the dual-energy/VMI chain (nb03/04/07/08).
         pct = 100 * (meas - theory) / max(abs(theory), 1.0)
-        is_iodine = occursin("Iodine", matname(lab))
-        ok_theory = abs(meas - theory) <= max(15.0, (is_iodine ? 0.15 : 0.10) * abs(theory))
+        ok_theory = abs(meas - theory) <= max(15.0, 0.15 * abs(theory))
         ok_dose = abs(meas - meas_low) <= max(10.0, 0.03 * abs(theory))
         ok = ok_theory && ok_dose
         n_rod += 1
@@ -986,8 +982,8 @@ This notebook walked the entire `BasisSimulator.jl` user surface end to end:
   `reconstruct!` — each ending with `ws = nothing; GC.gc(true)` so GPU
   buffers actually come back. The Pluto worker stays comfortably under
   memory pressure even with two protocols back-to-back.
-- **A clinical-grade postprocessing pipeline** — `calibrate_bhc_two_material`
-  → `apply_bhc_two_material` (sinogram BHC, full detected spectrum) → FDK
+- **A clinical-grade postprocessing pipeline** — `calibrate_bhc_water`
+  → `apply_bhc_water` (knobless sinogram BHC, full detected spectrum) → FDK
   → `to_hounsfield` (with the BHC model's own `μ_water_ref`) →
   `add_system_noise_floor!` → `apply_radial_cupping_correction!`.
 - **Backend-agnostic GPU dispatch** — `to_gpu()` resolves at startup via

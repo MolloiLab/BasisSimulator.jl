@@ -70,6 +70,7 @@ using Unitful: ustrip, @u_str
 
 export BHCPolynomial, BeamHardeningCorrection, TwoMaterialBHCPerColumn
 export calibrate_bhc, apply_bhc!
+export calibrate_bhc_water, apply_bhc_water
 export calibrate_bhc_two_material, apply_bhc_two_material
 export bhc_spectrum_per_column, compute_polychromatic_μ_water
 
@@ -388,6 +389,7 @@ function calibrate_bhc_two_material(
         hu_low::Real = 100.0,
         hu_high::Real = 500.0,
     )
+    Base.depwarn("The two-material BHC (bone second pass with hu_low/hu_high segmentation thresholds) is DEPRECATED: thresholds are ad hoc and dense iodine is misclassified as bone. Use the knobless calibrate_bhc_water/apply_bhc_water; quantitative bone/iodine belongs to the VMI chain.", :calibrate_bhc_two_material)
     # AUDIT FIX: calibrate against the spectrum the detector ACTUALLY saw —
     # tube × filters × bowtie × heel × η(E), each gated on sim_opts.use_* —
     # not just tube × filters × bowtie.  (resolve_source_spectrum_full exists
@@ -428,6 +430,7 @@ function calibrate_bhc_two_material(
         hu_high::Real = 500.0,
         projector::Symbol = :dd,
     )
+    Base.depwarn("The two-material BHC (bone second pass with hu_low/hu_high segmentation thresholds) is DEPRECATED: thresholds are ad hoc and dense iodine is misclassified as bone. Use the knobless calibrate_bhc_water/apply_bhc_water; quantitative bone/iodine belongs to the VMI chain.", :calibrate_bhc_two_material)
     n_E, n_col = size(weights_per_col)
     length(energies) == n_E ||
         error("calibrate_bhc_two_material: energies length $(length(energies)) ≠ weights_per_col n_E $n_E")
@@ -546,6 +549,93 @@ function compute_polychromatic_μ_water(
     return sum(w_hard .* μ_per_E) / sum(w_hard)
 end
 
+
+"""
+    WaterBHC
+
+**The knobless default BHC model.**  Per-column water poly→mono polynomials
+precomputed ANALYTICALLY from the full detected spectrum (tube × filters ×
+bowtie × heel × η(E)) — no data fitting, no scans, no segmentation
+thresholds, no projector dependence.  Build with [`calibrate_bhc_water`](@ref),
+apply with [`apply_bhc_water`](@ref).
+"""
+struct WaterBHC
+    water_bhc_per_col::Vector{BeamHardeningCorrection}
+    μ_water_ref::Float64
+    reference_energy_keV::Float64
+end
+
+"""
+    calibrate_bhc_water(sim_opts, protocol; scanner, geom, order=5,
+                        max_path_cm=50.0, n_points=100,
+                        reference_energy_keV=nothing) -> WaterBHC
+
+Precompute the knobless water BHC from pure physics: resolves the FULL
+detected spectrum per detector column (`resolve_source_spectrum_full` — every
+`sim_opts.use_*`-gated factor the simulation actually applied) and fits the
+poly→mono water curve per column.  Nothing here touches the data being
+corrected and there are no segmentation thresholds.
+"""
+function calibrate_bhc_water(
+        sim_opts,
+        protocol;
+        scanner,
+        geom,
+        order::Int = 5,
+        max_path_cm::Real = 50.0,
+        n_points::Int = 100,
+        reference_energy_keV::Union{Nothing, Real} = nothing,
+    )
+    e, ŵ = resolve_source_spectrum_full(
+        sim_opts, protocol; scanner = scanner, geom = geom,
+    )
+    e, w_col = bhc_spectrum_per_column(e, ŵ)
+    if ndims(w_col) == 1
+        w_col = repeat(reshape(w_col, :, 1), 1, geom.n_cols)
+    end
+
+    ref_E = if reference_energy_keV === nothing
+        w_mean = vec(sum(w_col; dims = 2)) ./ size(w_col, 2)
+        sum(e .* w_mean) / sum(w_mean)
+    else
+        Float64(reference_energy_keV)
+    end
+
+    n_col = size(w_col, 2)
+    water_bhc_per_col = Vector{BeamHardeningCorrection}(undef, n_col)
+    for c in 1:n_col
+        water_bhc_per_col[c] = calibrate_bhc(
+            e, Float64.(@view w_col[:, c]);
+            order = order, max_path_cm = max_path_cm,
+            n_points = n_points, reference_energy_keV = ref_E,
+        )
+    end
+    μ_water_ref = ustrip(u"cm^-1",
+        XA.linear_attenuation_coeff(XA.Materials.water, ref_E * u"keV"))
+
+    @info "[calibrate_bhc_water] knobless full-spectrum BHC: $n_col columns × order-$order polynomials, ref_E = $(round(ref_E; digits = 2)) keV"
+    return WaterBHC(water_bhc_per_col, μ_water_ref, ref_E)
+end
+
+"""
+    apply_bhc_water(sinogram_raw, bhc::WaterBHC) -> corrected sinogram
+
+Water BHC: one sinogram-domain per-column polynomial pass.  Knobless, no
+reconstruction round-trip, no projector, helical-safe.
+"""
+function apply_bhc_water(
+        sinogram_raw::AbstractArray{T, 3},
+        bhc::WaterBHC,
+    ) where {T <: AbstractFloat}
+    n_col = size(sinogram_raw, 1)
+    length(bhc.water_bhc_per_col) == n_col ||
+        error("apply_bhc_water: polys $(length(bhc.water_bhc_per_col)) ≠ sino n_col $n_col")
+    sino = similar(sinogram_raw)
+    copyto!(sino, sinogram_raw)
+    apply_bhc!(sino, bhc.water_bhc_per_col)
+    return sino
+end
+
 """
     apply_bhc_two_material(sinogram_raw, bhc::TwoMaterialBHCPerColumn, geom, matrix_size)
 
@@ -584,6 +674,7 @@ function apply_bhc_two_material(
         matrix_size::Tuple{Int, Int, Int};
         projector::Symbol = bhc.projector,
     ) where {T <: AbstractFloat}
+    Base.depwarn("The two-material BHC (bone second pass with hu_low/hu_high segmentation thresholds) is DEPRECATED: thresholds are ad hoc and dense iodine is misclassified as bone. Use the knobless calibrate_bhc_water/apply_bhc_water; quantitative bone/iodine belongs to the VMI chain.", :apply_bhc_two_material)
 
     _validate_projector(projector)
     n_col = size(sinogram_raw, 1)
