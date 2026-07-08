@@ -163,8 +163,18 @@ md"""
 
 # ╔═╡ 05000004-0000-4000-8000-000000000010
 protocol_low = BS.CTProtocol(
+    # DICOM-faithful GSI per-view exposure (Revolution Apex scan 2026-02-23,
+    # DE_80_140kVp_10.07mGyCTDI, tags 0053,1085/1086): the tube runs 407 mA
+    # during each 0.508 ms 80 kVp view → 0.207 mAs/view.  The real scanner
+    # acquires 492 views/channel interleaved and its GSI chain
+    # view-interpolates back to the full 984-view grid before recon; here the
+    # 984-view simulation stands in for that interpolated grid, with the
+    # per-view photon statistics (what controls starvation) matching the
+    # clinical scan exactly.  (The earlier 265 mA-eff had the right dose but
+    # 1.54× fewer photons per view → starvation streaks the real GSI does
+    # not show.)
     kVp = 80,
-    mA = 407 * 0.65,
+    mA = 407.0,
     views = 984,
     rotation_time = 0.5,
     collimation_mm = 5.0,
@@ -173,8 +183,10 @@ protocol_low = BS.CTProtocol(
 
 # ╔═╡ 05000004-0000-4000-8000-000000000020
 protocol_high = BS.CTProtocol(
+    # 140 kVp channel: 405 mA × 0.508 ms dwell (DICOM tags 0053,1083/1084),
+    # same 984-view interpolated grid.
     kVp = 140,
-    mA = 405 * 0.35,
+    mA = 405.0,
     views = 984,
     rotation_time = 0.5,
     collimation_mm = 5.0,
