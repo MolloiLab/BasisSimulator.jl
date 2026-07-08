@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.1.0
+# v0.2.1
 
 using Markdown
 using InteractiveUtils
@@ -497,7 +497,12 @@ sim_low = let
     @info "Simulating: 80 kVp / $(round(protocol_low.mA, digits = 1)) mA-eff (DE low)…"
     ws = BS.create_eict_workspace(scanner, protocol_low, sim_opts, recon_opts, phantom)
     BS.simulate!(ws, phantom, protocol_low, sim_opts)
-    result = (sino = Array(ws.sinogram), geom = ws.geom)
+    # Per-ray air-scan counts I0(col,row) for the Jensen debias.
+    I0_scalar = BS.compute_detector_I0(ws.geom, protocol_low, sum(ws.weights)) * Float64(ws.η_eff)
+    air_ref = ws.bowtie_air_reference === nothing ? ones(Float32, ws.geom.n_cols, ws.geom.n_rows) :
+        Array(ws.bowtie_air_reference)
+    result = (sino = Array(ws.sinogram), geom = ws.geom,
+        I0_ray = Float32.(I0_scalar .* Float64.(air_ref)))
     ws = nothing; GC.gc(true)
     result
 end;
@@ -507,7 +512,12 @@ sim_high = let
     @info "Simulating: 140 kVp / $(round(protocol_high.mA, digits = 1)) mA-eff (DE high)…"
     ws = BS.create_eict_workspace(scanner, protocol_high, sim_opts, recon_opts, phantom)
     BS.simulate!(ws, phantom, protocol_high, sim_opts)
-    result = (sino = Array(ws.sinogram), geom = ws.geom)
+    # Per-ray air-scan counts I0(col,row) for the Jensen debias.
+    I0_scalar = BS.compute_detector_I0(ws.geom, protocol_high, sum(ws.weights)) * Float64(ws.η_eff)
+    air_ref = ws.bowtie_air_reference === nothing ? ones(Float32, ws.geom.n_cols, ws.geom.n_rows) :
+        Array(ws.bowtie_air_reference)
+    result = (sino = Array(ws.sinogram), geom = ws.geom,
+        I0_ray = Float32.(I0_scalar .* Float64.(air_ref)))
     ws = nothing; GC.gc(true)
     result
 end;
@@ -620,8 +630,20 @@ sino_basis = let
     # deconvolved if enabled in sim_opts).  When both `use_*` flags are false
     # the corrections are no-ops and these are identical to sim_low.sino /
     # sim_high.sino.
-    sino_low_gpu = to_gpu(sim_low.sino)
-    sino_high_gpu = to_gpu(sim_high.sino)
+    # First-order log-Poisson DEBIAS (deterministic; matches nb03):
+    # E[−log(N/I0)] = p_true + 1/(2N), N = I₀(col,row)·e^{−p}.  Removes the
+    # low-count log bias behind dense rods before the solve.
+    debias(p, I0_ray) = begin
+        out = Float32.(p)
+        nc, nr, nv = size(out)
+        for v in 1:nv, r in 1:nr, c in 1:nc
+            N = max(I0_ray[c, r] * exp(-out[c, r, v]), 1.0f0)
+            out[c, r, v] -= 1.0f0 / (2.0f0 * N)
+        end
+        out
+    end
+    sino_low_gpu = to_gpu(debias(sim_low.sino, sim_low.I0_ray))
+    sino_high_gpu = to_gpu(debias(sim_high.sino, sim_high.I0_ray))
 
     sino_y = similar(sino_low_gpu);  fill!(sino_y, 0.0f0)
     sino_c = similar(sino_low_gpu);  fill!(sino_c, 0.0f0)
@@ -750,29 +772,25 @@ let
     fig
 end
 
-# ╔═╡ 07030008-0000-4000-8000-000000000001
+# ╔═╡ 07030007-0000-4000-8000-000000000040
 md"""
-## 8. Z-Direction Median Filter
+## 8. Kalender-1988 TRUE ACNR
 
-1D median along z, per `(x, y)` voxel column.  `adjacent_slices = n` ⇒
-`2n + 1`-slice window.  Cheap streak/outlier suppression that
-exploits z-invariance of this tiled phantom.
+Per-pixel local regression between the two basis maps' high-frequency
+channels (`BS.apply_acnr_kalender!`).  Dual-energy basis noise is
+ANTI-correlated while structure is positively correlated, so the
+anti-correlated (noise) component is subtracted exactly and structure
+pixels stay bit-untouched — zero resolution loss by construction.
+Identical to nb03.
 """
 
-# ╔═╡ 07030008-0000-4000-8000-000000000005
-Z_MEDIAN_ADJACENT = 2;
-
-# ╔═╡ 07030008-0000-4000-8000-000000000010
-basis_z = let
-    (
-        vol_iodine = BS.apply_median_z(
-            basis_volumes.vol_iodine_raw; adjacent_slices = Z_MEDIAN_ADJACENT
-        ),
-        vol_water = BS.apply_median_z(
-            basis_volumes.vol_water_raw; adjacent_slices = Z_MEDIAN_ADJACENT
-        ),
-        geom = basis_volumes.geom,
-    )
+# ╔═╡ 07030007-0000-4000-8000-000000000050
+basis_acnr = let
+    W = copy(basis_volumes.vol_water_raw)
+    I = copy(basis_volumes.vol_iodine_raw)
+    info = BS.apply_acnr_kalender!(W, I)
+    @info "[ACNR · Kalender-1988 true ACNR] ρ_hp(W,I)=$(round(info.ρ_hp, digits = 3))"
+    (vol_iodine_raw = I, vol_water_raw = W, geom = basis_volumes.geom)
 end;
 
 # ╔═╡ 07030008-0000-4000-8000-000000000030
@@ -780,15 +798,15 @@ let
     fig = CM.Figure(size = (1180, 580))
     axis_kwargs = (titlesize = 32, subtitlesize = 24)
 
-    mid = size(basis_z.vol_iodine, 3) ÷ 2
+    mid = size(basis_acnr.vol_iodine_raw, 3) ÷ 2
 
     _qrange(arr) = (
         Float64(quantile(vec(arr), 0.01)),
         Float64(quantile(vec(arr), 0.99)),
     )
 
-    slice_iod = basis_z.vol_iodine[:, :, mid]
-    slice_wat = basis_z.vol_water[:, :, mid]
+    slice_iod = basis_acnr.vol_iodine_raw[:, :, mid]
+    slice_wat = basis_acnr.vol_water_raw[:, :, mid]
 
     panels = (
         (1, 1, 2, "Iodine Basis · z-median", "g/cm³", slice_iod, _qrange(slice_iod)),
@@ -838,7 +856,7 @@ solid_water_basis = let
     ROI_RADIUS_PX = 8
 
     mask_2d = phantom_in_recon[:, :, size(phantom_in_recon, 3) ÷ 2 + 1]
-    nx_r, ny_r, nz_r = size(basis_z.vol_water)
+    nx_r, ny_r, nz_r = size(basis_acnr.vol_water_raw)
 
     rod_idx = findall(==(WATER_ROD_LABEL), mask_2d)
     isempty(rod_idx) && error(
@@ -867,8 +885,8 @@ solid_water_basis = let
         return s / n
     end
 
-    c_w = Float64(_mean(basis_z.vol_water))
-    c_i = Float64(_mean(basis_z.vol_iodine))
+    c_w = Float64(_mean(basis_acnr.vol_water_raw))
+    c_i = Float64(_mean(basis_acnr.vol_iodine_raw))
     @info "solid_water_basis: ⟨c_water⟩_water-rod = $(round(c_w, digits = 4)) g/cm³, " *
         "⟨c_iodine⟩_water-rod = $(round(c_i, digits = 6)) g/cm³"
 
@@ -882,8 +900,8 @@ end;
 de_vmi_energies = [40.0, 70.0, 100.0, 140.0];
 
 # ╔═╡ 07030009-0000-4000-8000-000000000020
-vmi_HU_by_keV = let
-    c_iodine_mg_per_mL = basis_z.vol_iodine .* 1000.0f0
+vmi_HU_final = let
+    c_iodine_mg_per_mL = basis_acnr.vol_iodine_raw .* 1000.0f0
 
     out = Dict{Float64, Array{Float32, 3}}()
     for E in de_vmi_energies
@@ -897,7 +915,7 @@ vmi_HU_by_keV = let
             "→ Δ = $(round(Δ_pct, digits = 2))%"
 
         out[E] = BS.synth_vmi_2basis(
-            basis_z.vol_water, c_iodine_mg_per_mL; energy_keV = E,
+            basis_acnr.vol_water_raw, c_iodine_mg_per_mL; energy_keV = E,
         )
     end
     out
@@ -910,7 +928,7 @@ let
     fig = CM.Figure(size = (1180, 1180))
     axis_kwargs = (titlesize = 32, subtitlesize = 24)
 
-    sample = vmi_HU_by_keV[40.0]
+    sample = vmi_HU_final[40.0]
     mid = size(sample, 3) ÷ 2
 
     for (k, E) in enumerate(de_vmi_energies)
@@ -921,7 +939,7 @@ let
             aspect = CM.DataAspect(), axis_kwargs...,
         )
         CM.heatmap!(
-            ax, vmi_HU_by_keV[E][:, :, mid];
+            ax, vmi_HU_final[E][:, :, mid];
             colormap = :grays, colorrange = HU_window
         )
         CM.hidedecorations!(ax)
@@ -932,56 +950,6 @@ let
     )
     fig
 end
-
-# ╔═╡ 0703000a-0000-4000-8000-000000000001
-md"""
-## 10. VMI Post-Processing (Mono+)
-
-Frequency-split rule (Grant 2014):
-
-```
-Mono+(E)     = LP_σ(VMI_E) + VMI_opt − LP_σ(VMI_opt)
-Mono+(E_opt) = VMI_opt   (identity at the noise-optimal anchor)
-```
-
-`σ_vmi_lp_px` pairs element-wise with `de_vmi_energies` — one σ per
-VMI energy.  σ = 0 ⇒ identity (no LP, no FFT).
-
-!!! info "Mono+ is optional — default is pass-through"
-    `σ_vmi_lp_px = [0.0, 0.0, 0.0, 0.0]` makes every entry an identity
-    (no LP, no FFT), so this section is effectively a no-op and the
-    downstream rod regression sees the raw 2-basis VMI volumes from
-    §9.  Bump a σ above 0 to opt in per-energy: e.g.
-    `Float64[2.0, 0.0, 1.0, 1.0]` smooths 40 / 100 / 140 keV toward
-    the 70 keV anchor while keeping 70 keV exact.  Leave it as zeros
-    to keep the pipeline transparent — the per-keV plots below will
-    be identical to the §9 outputs.
-"""
-
-# ╔═╡ 0703000a-0000-4000-8000-000000000005
-# Default = all zeros = pass-through (no Mono+ smoothing).  See the
-# `!!! info` block above for the opt-in pattern.
-σ_vmi_lp_px = Float64[0.0, 0.0, 0.0, 0.0];
-
-# ╔═╡ 0703000a-0000-4000-8000-000000000010
-vmi_HU_final = let
-    volumes = [vmi_HU_by_keV[E] for E in de_vmi_energies]
-
-    ws = BS.create_mono_plus_workspace(
-        volumes[1]; n_energies = length(de_vmi_energies)
-    )
-    BS.apply_mono_plus!(
-        ws, volumes, de_vmi_energies;
-        E_noise_opt = 70.0, σ_lp_px = σ_vmi_lp_px, verbose = true,
-    )
-
-    out = Dict{Float64, Array{Float32, 3}}()
-    for (i, E) in enumerate(de_vmi_energies)
-        out[E] = copy(ws.out_vols[i])
-    end
-    ws = nothing; GC.gc(true)
-    out
-end;
 
 # ╔═╡ 0703000a-0000-4000-8000-000000000040
 let
@@ -998,7 +966,7 @@ let
         c = ((k - 1) % 2) + 1
         ax = CM.Axis(
             fig[r, c]; title = "$(Int(E)) keV VMI",
-            subtitle = "Mono+",
+            subtitle = "VMI",
             aspect = CM.DataAspect(), axis_kwargs...,
         )
         CM.heatmap!(
@@ -1243,7 +1211,7 @@ heart_noise_roi = let
     WATER_ROD_LABEL = UInt8(9)   # water rod (basis_water) — bored explicitly, always present
 
     mask_2d = phantom_in_recon[:, :, size(phantom_in_recon, 3) ÷ 2 + 1]
-    nx_r, ny_r, nz_r = size(basis_z.vol_water)
+    nx_r, ny_r, nz_r = size(basis_acnr.vol_water_raw)
 
     rod_idx = findall(==(WATER_ROD_LABEL), mask_2d)
     isempty(rod_idx) && error(
@@ -1279,7 +1247,7 @@ end;
 # ╔═╡ 0703000d-0000-4000-8000-000000000020
 vmi_noise_by_keV = let
     roi_idx = findall(heart_noise_roi.mask_2d)
-    nz_r = size(basis_z.vol_water, 3)
+    nz_r = size(basis_acnr.vol_water_raw, 3)
 
     out = Dict{Float64, NamedTuple}()
     for E in de_vmi_energies
@@ -1324,7 +1292,7 @@ let
     ax2 = CM.Axis(
         fig[1, 2];
         title = "Heart-Center Noise vs Energy",
-        # subtitle = "$(heart_noise_roi.n_voxels) vx × $(size(basis_z.vol_water, 3)) z = $(heart_noise_roi.n_total) samples / point",
+        # subtitle = "$(heart_noise_roi.n_voxels) vx × $(size(basis_acnr.vol_water_raw, 3)) z = $(heart_noise_roi.n_total) samples / point",
         xlabel = "VMI Energy (keV)",
         ylabel = "Noise σ (HU)",
         titlesize = 32, subtitlesize = 24,
@@ -1389,7 +1357,7 @@ let
     nx, ny = size(mask_2d)
     ROI_R_PX = 8
 
-    n_z = size(basis_z.vol_water, 3)
+    n_z = size(basis_acnr.vol_water_raw, 3)
 
     function rod_centroid(label::UInt8)
         idx = findall(==(label), mask_2d)
@@ -1423,8 +1391,8 @@ let
     for (lab, name, mat) in zip(ROD_LABELS, ROD_NAMES, ROD_MATERIALS)
         cx, cy = rod_centroid(lab)
         roi = _disc_idx(cx, cy)
-        c_w = _mean(basis_z.vol_water, roi)
-        c_i = _mean(basis_z.vol_iodine, roi)
+        c_w = _mean(basis_acnr.vol_water_raw, roi)
+        c_i = _mean(basis_acnr.vol_iodine_raw, roi)
         ρ = round(BS.XA.val(mat.density), digits = 3)
         @info "  rod $(lab) ($(rpad(name, 9))): c_water = $(round(c_w, digits = 4)) g/cm³, " *
             "c_iodine = $(round(c_i, digits = 6)) g/cm³  (truth ρ = $(ρ))"
@@ -1601,9 +1569,7 @@ QRM-Thorax mid-slice mask (1600 × 1100 × 20 phantom @ 0.2 mm iso,
    → Forward-project (80 + 140 kVp dual-kVp GSI)
    → Projection-Domain Material Decomposition  (iodine + water basis)
    → FBP × 2  (iodine, water basis maps)
-   → Z-Direction Median Filter
    → Monoenergetic VMI Synthesis  (textbook 2-basis, mono μρ_water divisor)
-   → Mono+ Post-Processing  (per-keV σ via σ_vmi_lp_px)
    → Per-rod Measured vs Theoretical Regression
         (water · lipid · collagen · iodine at 40 / 70 / 100 / 140 keV)
 ```
@@ -1668,9 +1634,8 @@ pure-material rod inserts (`basis_water`, `basis_lipid`,
 # ╟─07030007-0000-4000-8000-000000000001
 # ╠═07030007-0000-4000-8000-000000000010
 # ╟─07030007-0000-4000-8000-000000000030
-# ╟─07030008-0000-4000-8000-000000000001
-# ╠═07030008-0000-4000-8000-000000000005
-# ╠═07030008-0000-4000-8000-000000000010
+# ╟─07030007-0000-4000-8000-000000000040
+# ╠═07030007-0000-4000-8000-000000000050
 # ╟─07030008-0000-4000-8000-000000000030
 # ╟─07030009-0000-4000-8000-000000000001
 # ╠═07030009-0000-4000-8000-000000000005
@@ -1678,9 +1643,6 @@ pure-material rod inserts (`basis_water`, `basis_lipid`,
 # ╠═07030009-0000-4000-8000-000000000010
 # ╠═07030009-0000-4000-8000-000000000020
 # ╟─07030009-0000-4000-8000-000000000040
-# ╟─0703000a-0000-4000-8000-000000000001
-# ╠═0703000a-0000-4000-8000-000000000005
-# ╠═0703000a-0000-4000-8000-000000000010
 # ╟─0703000a-0000-4000-8000-000000000040
 # ╟─0703000b-0000-4000-8000-000000000000
 # ╟─0703000b-0000-4000-8000-00000000000a
