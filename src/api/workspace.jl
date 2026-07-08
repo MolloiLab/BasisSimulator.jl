@@ -182,11 +182,21 @@ function create_workspace(
     # BHC, scatter correction, and pile-up correction are all decoupled —
     # applied at the notebook level via dedicated `apply_*` functions.
 
-    # Pre-compute per-bin I0 (DRM-weighted spectrum × η).
+    # Pre-compute per-bin I0 (DRM-weighted spectrum × η) in PHYSICAL counts.
+    # `_I0_anchor` is the protocol-derived incident photons per ray per view
+    # divided by the raw spectrum sum, so N_air(b) = I0_phys·Σ(ŵ·η·R) — true
+    # detected counts.  The SAME anchor scales the forward W matrix below;
+    # the two sites are a coupled invariant (a global count-unit rescale):
+    # change them TOGETHER or the -log(N/I0) round trip breaks.  Previously
+    # both used a hardcoded 1.0e6 → ~7e11 fake "counts"/ray, which (a) let
+    # the scatter-correction eps floor mint deterministic p≈50 plateau rays
+    # and (b) left the noise model's low-count Poisson branch dead.
+    _I0_anchor = compute_detector_I0(geom, protocol, sum(weights_vec)) /
+        max(sum(weights_vec), 1.0e-30)
     I0_bins_norm_vec = [
         _compute_bin_I0(
                 pcct_detector, energies, weights_vec, η_vec, thresholds, b,
-                kVp, 1.0e6; R = R_mat
+                kVp, _I0_anchor; R = R_mat
             ) for b in 1:n_bins
     ]
     I0_bins_combine = copy(I0_bins_norm_vec)
@@ -277,8 +287,8 @@ function create_workspace(
     copyto!(view(_μ_table_gpu, :, 1:n_energies), μ_table)
 
     # Build W matrix: W[e, b] = I0 * w[e] * η[e] * R[e, b]
-    # Uses I0=1e6 consistent with pcct_forward_project default
-    _I0 = 1.0e6
+    # SAME physical anchor as I0_bins_norm_vec above (coupled invariant).
+    _I0 = _I0_anchor
     n_R = size(R_mat, 1)
     W_cpu = zeros(T, n_energies_padded, n_bins)
     for e_idx in 1:n_energies

@@ -357,7 +357,12 @@ function inject_scatter_bins!(
     bin_scatter_weights::Vector{Float64};
     subtract::Bool = false,
 ) where T
-    eps = T(1e-10)
+    # DAS-honest floor: a real DAS records at minimum 1 count — with I0_bins
+    # now in PHYSICAL units this caps line integrals at the true information
+    # limit p = ln(I0_bin) (~10 at clinical PCCT technique) instead of a
+    # sub-count fantasy ceiling.  (Scatter SUBTRACTION drives starved rays
+    # ≤ 0 here; the old 1e-10 floor minted deterministic p ≈ 33 plateaus.)
+    eps = T(1)
     sgn = subtract ? -one(T) : one(T)   # +1 = inject (forward), -1 = correct
     for (b, bin_sino) in enumerate(bins)
         let I0b = T(I0_bins[b]), frac = T(bin_scatter_weights[b]),
