@@ -522,8 +522,8 @@ hu_std = let
 
     # μ → HU, copying off the GPU at the same time. The `Float32.(...)` cast
     # is intentional (not redundant): `BS.μ_to_HU` widens to Float64 due to
-    # an internal `1000.0` literal, but `apply_radial_cupping_correction!`
-    # (used in section 9) only has a method for `Array{Float32, 3}`.
+    # an internal `1000.0` literal; Float32 keeps the volume memory-light on
+    # the 16 GB M-series workers.
     hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = μ_water_recon))
 
     # Drop every GPU ref before exiting
@@ -594,7 +594,7 @@ corrections on top — the same stack we'll build here:
 | 3.    | `reconstruct!` (FDK)                  | Filtered back-projection on the corrected sinogram                                       |
 | 5.    | `to_hounsfield` (with BHC μ_water)    | Convert μ → HU using the BHC model's calibrated reference (not the 70 keV NIST value)    |
 | 6.    | `add_system_noise_floor!`             | Add dose-independent DAS Gaussian σ ≈ 28 HU                                              |
-| 7.    | `apply_radial_cupping_correction!`    | Residual even-polynomial cup correction on solid water (mostly cosmetic after BHC)       |
+| 7.    | `measure_radial_cupping`              | QA metric (never applied): fitted residual cup + DC — both ≈ 0 after a correct BHC        |
 
 !!! info "Why the cupping correction looks subtle"
     Stage 7 only catches what stages 2 and 4 missed — a small residual
@@ -673,8 +673,9 @@ hu_std_corr = let
     # 5. Dose-independent DAS noise floor
     BS.add_system_noise_floor!(hu, 28.0; seed = 1234)
 
-    # 6. Residual radial cupping correction
-    BS.apply_radial_cupping_correction!(hu; fov_cm = 35.0)
+    # 6. (radial cupping "correction" removed — measured to INJECT +8 HU on
+    #    noisy data via its asymmetric fit window; cupping is a QA metric now,
+    #    checked in the verification cell via measure_radial_cupping)
 
     # GPU cleanup
     ws_fdk = nothing; sino_gpu = nothing; recon_μ = nothing
@@ -712,8 +713,7 @@ hu_low_corr = let
     # 5. Noise floor (different seed so the noise pattern doesn't match the std-dose scan)
     BS.add_system_noise_floor!(hu, 28.0; seed = 5678)
 
-    # 6. Cupping correction
-    BS.apply_radial_cupping_correction!(hu; fov_cm = 35.0)
+    # (cupping correction removed — QA-only; see verification cell)
 
     # GPU cleanup
     ws_fdk = nothing; sino_gpu = nothing; recon_μ = nothing
@@ -898,9 +898,18 @@ verification = let
     slc_std = @view hu_std_corr[:, :, kmid]
     slc_low = @view hu_low_corr[:, :, kmid]
     addcheck("water mean HU (corrected, central slice, label $(water_lab))",
-        _St.mean(slc_std[wmask]), -10.0, 10.0)
+        _St.mean(slc_std[wmask]), -6.0, 6.0)
     addcheck("noise ratio low/std (raw, water-only ROI)",
         _St.std(hu_low[:, :, kmid][wmask]) / _St.std(hu_std[:, :, kmid][wmask]), 1.7, 2.3)
+
+    # cupping/DC QA (non-mutating).  On a UNIFORM water phantom both ≈ 0
+    # after a correct full-spectrum BHC.  On the Gammex the radial fit also
+    # picks up the rod-ring hardening structure (rays crossing dense rods are
+    # under-corrected by a water-only map — genuine single-kVp physics), so
+    # the gate is wider here than the ≤6 HU a uniform phantom would get.
+    cupqa = BS.measure_radial_cupping(hu_std_corr; fov_cm = sim_std.geom.fov[1])
+    addcheck("radial structure QA (worst slice; incl. rod-ring hardening)", cupqa.cup_hu, 0.0, 12.0)
+    addcheck("DC offset QA (worst slice)", abs(cupqa.dc_hu), 0.0, 6.0)
 
     # per-slice water profiles: full body vs central r<5cm.  Central-ROI
     # falloff = geometry bug; peripheral-only falloff = real cone divergence
@@ -985,7 +994,7 @@ This notebook walked the entire `BasisSimulator.jl` user surface end to end:
 - **A clinical-grade postprocessing pipeline** — `calibrate_bhc_water`
   → `apply_bhc_water` (knobless sinogram BHC, full detected spectrum) → FDK
   → `to_hounsfield` (with the BHC model's own `μ_water_ref`) →
-  `add_system_noise_floor!` → `apply_radial_cupping_correction!`.
+  `add_system_noise_floor!`; cupping/DC is measured, never applied (`measure_radial_cupping`).
 - **Backend-agnostic GPU dispatch** — `to_gpu()` resolves at startup via
   `Base.locate_package` + `Base.require`, so the same notebook runs on
   Metal, CUDA, ROCm, or pure CPU with no project-level changes.

@@ -373,7 +373,9 @@ function equiangular_kernel_scale!(kernel_cpu::AbstractVector{T}, dγ::Real) whe
     c = (n + 1) ÷ 2
     for i in 1:n
         γ = (i - c) * dγ
-        if γ != 0
+        # physical column pairs always satisfy |γ| < π (full fan); guard the
+        # far zero-data taps of the full-support kernel anyway
+        if γ != 0 && abs(γ) < π * 0.999
             kernel_cpu[i] *= T((γ / sin(γ))^2)
         end
     end
@@ -478,10 +480,13 @@ function filter_sinogram!(
     # Step 2: Create spatial domain filter kernel
     pixel_size = ray_spacing === nothing ? T(geom.pixel_size) : T(ray_spacing)
 
-    # Kernel size based on cutoff (smaller cutoff = smaller kernel = faster)
-    # Compute without reassignment to avoid GPU boxing issues
-    raw_size = max(Int(ceil(Int(n_cols) * cutoff)), 32)
-    kernel_size_int = min(raw_size + (1 - raw_size % 2), Int(n_cols))  # Make odd, clamp to n_cols
+    # Kernel size based on cutoff (smaller cutoff = smaller kernel = faster).
+    # FULL support is 2·n_cols−1: every output column must see the ramp's
+    # negative wings across the whole data extent.  The old n_cols clamp
+    # truncated the far wings, under-subtracting at the object rim → +8 HU
+    # capping when the object fills most of the detector (audit 2026-07-07).
+    raw_size = max(Int(ceil(2 * Int(n_cols) * cutoff)), 64)
+    kernel_size_int = min(raw_size + (1 - raw_size % 2), 2 * Int(n_cols) - 1)
 
     # Use pre-allocated filter kernel if provided (zero-alloc path)
     kernel = if ws_filter_kernel !== nothing

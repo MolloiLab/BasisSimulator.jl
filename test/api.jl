@@ -1419,8 +1419,8 @@ _ts("entering Workspace ctors — FDKReconWorkspace field invariants testset")
         @test size(ws.filtered) == size(sino)
         @test size(ws.conv_scratch) == size(sino)
         @test eltype(ws.volume) == Float32
-        # Filter kernel sized ≤ n_cols and ≥ 32 (lower bound from `max(..., 32)` in ctor).
-        @test 32 ≤ length(ws.filter_kernel) ≤ geom.n_cols
+        # Filter kernel: full linear-convolution support, up to 2·n_cols − 1.
+        @test 32 ≤ length(ws.filter_kernel) ≤ 2 * geom.n_cols - 1
         # Volume zeroed at construction.
         @test all(==(0), ws.volume)
         # Geometry arrays match underlying CTGeometry shape.
@@ -1438,7 +1438,9 @@ _ts("entering Workspace ctors — FDKReconWorkspace field invariants testset")
                 :standard, :soft, :bone,
             )
             ws = BS.create_fdk_recon_workspace(sino, geom, matsize; filter = f)
-            @test 32 ≤ length(ws.filter_kernel) ≤ geom.n_cols
+            # full linear-convolution support: up to 2·n_cols − 1 (the old
+            # n_cols clamp truncated the ramp wings → rim capping)
+            @test 32 ≤ length(ws.filter_kernel) ≤ 2 * geom.n_cols - 1
         end
     end
 

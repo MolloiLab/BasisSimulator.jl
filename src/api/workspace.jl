@@ -800,8 +800,8 @@ function create_fdk_recon_workspace(
     # Pre-compute filter kernel on GPU
     pixel_size = T(geom.pixel_size)
     n_cols = size(sinogram, 1)
-    raw_size = max(Int(ceil(n_cols * cutoff)), 32)
-    kernel_size_int = min(raw_size + (1 - raw_size % 2), n_cols)
+    raw_size = max(Int(ceil(2 * n_cols * cutoff)), 64)
+    kernel_size_int = min(raw_size + (1 - raw_size % 2), 2 * n_cols - 1)
     kernel_cpu = create_spatial_kernel(kernel_size_int, filter, pixel_size)
     if is_arc(geom) && !is_helical(geom)
         # equiangular fan filter correction (helical WFBP filters rebinned
@@ -927,8 +927,8 @@ function create_hir_recon_workspace(
     # Pre-compute filter kernel on GPU
     pixel_size = T(geom.pixel_size)
     n_cols = size(sinogram, 1)
-    raw_size = max(Int(ceil(n_cols * cutoff)), 32)
-    kernel_size_int = min(raw_size + (1 - raw_size % 2), n_cols)
+    raw_size = max(Int(ceil(2 * n_cols * cutoff)), 64)
+    kernel_size_int = min(raw_size + (1 - raw_size % 2), 2 * n_cols - 1)
     kernel_cpu = create_spatial_kernel(kernel_size_int, filter, pixel_size)
     if is_arc(geom) && !is_helical(geom)
         # equiangular fan filter correction (helical WFBP filters rebinned
