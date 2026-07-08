@@ -286,76 +286,6 @@ let
     fig
 end
 
-# ╔═╡ 05000007-0000-4000-8000-000000000001
-md"""
-## 6. Projection-Domain SVD Denoising (2-channel joint)
-
-Simple N-channel projection-domain SVD joint denoiser
-(`BS.apply_sino_svd_denoise`, `src/denoising/sino_svd.jl`) applied to the
-**80 + 140 kVp log-line-integral pair, before any decomposition** — the
-earliest projection-domain point.
-
-Per detector row, an SVD across the 2 channels keeps the common
-log-attenuation structure `U[:,1]` (the shared anatomy, ~√2 SNR gain)
-**pixel-perfect** and smooths the spectral-residual + decorrelated-noise
-subspace `U[:,2]` with a small separable Gaussian.  One knob:
-`SVD_SIGMA_PX` (px); `0` ⇒ passthrough (A/B against no projection denoising).
-"""
-
-# ╔═╡ 05000007-0000-4000-8000-000000000005
-SVD_SIGMA_PX = 0.0;   # Gaussian σ (px) for U[:,2]; 0 = passthrough (no denoising)
-
-# ╔═╡ 05000007-0000-4000-8000-000000000010
-# 2-channel joint projection-domain SVD denoise (BS.apply_sino_svd_denoise).
-# Runs on the (80, 140) kVp pair before the §7 Cong decomposition;
-# SVD_SIGMA_PX = 0 ⇒ passthrough (no denoising).
-sino_denoised = let
-    out = BS.apply_sino_svd_denoise(
-        [Float32.(sim_low.sino), Float32.(sim_high.sino)];
-        σ_px = SVD_SIGMA_PX,
-    )
-    @info "[sino-SVD] 2-channel joint projection denoise · σ_px = $(SVD_SIGMA_PX) (0 ⇒ passthrough)"
-    (low = out[1], high = out[2], geom = sim_low.geom)
-end;
-
-# ╔═╡ 05000007-0000-4000-8000-000000000030
-let
-    n_row = size(sino_denoised.low, 2)
-    mid_r = n_row ÷ 2 + 1
-
-    slice_lo = permutedims(sino_denoised.low[:, mid_r, :], (2, 1))
-    slice_hi = permutedims(sino_denoised.high[:, mid_r, :], (2, 1))
-
-    all_v = vcat(vec(slice_lo), vec(slice_hi))
-    sino_window = (
-        Float64(quantile(all_v, 0.01)),
-        Float64(quantile(all_v, 0.99)),
-    )
-
-    fig = CM.Figure(size = (1180, 580))
-    axis_kwargs = (
-        titlesize = 32, subtitlesize = 24,
-        xlabel = "View", ylabel = "Detector Column",
-        xlabelsize = 22, ylabelsize = 22,
-        xticklabelsize = 16, yticklabelsize = 16,
-    )
-
-    panels = (
-        (1, 1, "80 kVp", "After SVD denoise", slice_lo),
-        (1, 2, "140 kVp", "After SVD denoise", slice_hi),
-    )
-
-    for (r, c, ttl, sub, slice) in panels
-        ax = CM.Axis(fig[r, c]; title = ttl, subtitle = sub, axis_kwargs...)
-        CM.heatmap!(ax, slice; colormap = :viridis, colorrange = sino_window)
-    end
-    CM.Colorbar(
-        fig[1, 3]; colormap = :viridis, colorrange = sino_window,
-        label = "Log Line Integral", width = 16, labelsize = 22, ticklabelsize = 18
-    )
-    fig
-end
-
 # ╔═╡ 05000008-0000-4000-8000-000000000001
 md"""
 ## 7. Projection Domain Material Decomposition
@@ -413,8 +343,8 @@ end;
 
 # ╔═╡ 05000008-0000-4000-8000-000000000020
 sino_basis = let
-    sino_low_gpu = to_gpu(sino_denoised.low)
-    sino_high_gpu = to_gpu(sino_denoised.high)
+    sino_low_gpu = to_gpu(Float32.(sim_low.sino))
+    sino_high_gpu = to_gpu(Float32.(sim_high.sino))
 
     sino_y = similar(sino_low_gpu)   # iodine basis line integrals
     sino_c = similar(sino_low_gpu)   # water  basis line integrals
@@ -429,7 +359,7 @@ sino_basis = let
     result = (
         sino_iodine = Array(sino_y),
         sino_water = Array(sino_c),
-        geom = sino_denoised.geom,
+        geom = sim_low.geom,
     )
     sino_low_gpu = nothing; sino_high_gpu = nothing
     sino_y = nothing; sino_c = nothing; cong_ws = nothing
@@ -565,16 +495,12 @@ so real water/iodine edges survive).  Runs on the FBP basis maps, **before** the
 # ╔═╡ 05000009-0000-4000-8000-000000000050
 # Image-domain cov-ACNR on the FBP basis maps via src `BS.apply_image_acnr!`.
 basis_acnr = let
-    APPLY_ACNR = true         # ON — image-domain edge-aware cov-ACNR
-    GAMMA = 1.0         # strength ∈ [0,1]; 0 = identity
-    BILAT_RADIUS = 3           # spatial window radius (px)
-    BILAT_SIGMA_S = 1.0         # spatial Gaussian σ (px)
-    BILAT_RANGE_K = 2.5         # range σ = K · per-basis noise std (edges > K·σ preserved)
+    APPLY_ACNR = true          # Kalender-1988 true ACNR; false ⇒ passthrough
 
     W = copy(basis_volumes.vol_water_raw)
     I = copy(basis_volumes.vol_iodine_raw)
 
-    if APPLY_ACNR && GAMMA > 0
+    if APPLY_ACNR
         # TRUE ACNR (Kalender 1988): per-pixel local regression between the
         # two maps' high-frequency channels — anti-correlated (noise) content
         # is subtracted exactly, positively-correlated (structure) pixels are
@@ -588,77 +514,6 @@ basis_acnr = let
 
     (vol_iodine_raw = I, vol_water_raw = W, geom = basis_volumes.geom)
 end;
-
-# ╔═╡ 0500000a-0000-4000-8000-000000000001
-md"""
-## 9. Z-Direction Median Filter
-
-1D median along z, per `(x, y)` voxel column.  `adjacent_slices = 1`
-⇒ 3-slice window (1 above + center + 1 below).  Cheap streak/outlier
-suppression that exploits the Gammex 472's z-invariance — zero
-in-plane resolution loss.
-
-Bump `Z_MEDIAN_ADJACENT` to widen the window:
-
-| `adjacent_slices` | window size |
-|-------------------|-------------|
-| `0`               | identity    |
-| `1` (default)     | 3 slices    |
-| `2`               | 5 slices    |
-"""
-
-# ╔═╡ 0500000a-0000-4000-8000-000000000005
-Z_MEDIAN_ADJACENT = 0;
-
-# ╔═╡ 0500000a-0000-4000-8000-000000000010
-basis_z = let
-    (
-        vol_iodine = BS.apply_median_z(
-            basis_acnr.vol_iodine_raw;
-            adjacent_slices = Z_MEDIAN_ADJACENT,
-        ),
-        vol_water = BS.apply_median_z(
-            basis_acnr.vol_water_raw;
-            adjacent_slices = Z_MEDIAN_ADJACENT,
-        ),
-        geom = basis_acnr.geom,
-    )
-end;
-
-# ╔═╡ 0500000a-0000-4000-8000-000000000030
-let
-    fig = CM.Figure(size = (1180, 580))
-    axis_kwargs = (titlesize = 32, subtitlesize = 24)
-
-    mid = size(basis_z.vol_iodine, 3) ÷ 2
-
-    _qrange(arr) = (
-        Float64(quantile(vec(arr), 0.01)),
-        Float64(quantile(vec(arr), 0.99)),
-    )
-
-    slice_iod = basis_z.vol_iodine[:, :, mid]
-    slice_wat = basis_z.vol_water[:, :, mid]
-
-    panels = (
-        (1, 1, 2, "Iodine Basis", "g/cm³", slice_iod, _qrange(slice_iod)),
-        (1, 3, 4, "Water Basis", "g/cm³", slice_wat, _qrange(slice_wat)),
-    )
-
-    for (r, panel_c, cbar_c, ttl, cbar_label, slice, range) in panels
-        ax = CM.Axis(
-            fig[r, panel_c]; title = ttl,
-            aspect = CM.DataAspect(), axis_kwargs...
-        )
-        CM.heatmap!(ax, slice; colormap = :viridis, colorrange = range)
-        CM.hidedecorations!(ax)
-        CM.Colorbar(
-            fig[r, cbar_c]; colormap = :viridis, colorrange = range,
-            label = cbar_label, width = 16, labelsize = 22, ticklabelsize = 18
-        )
-    end
-    fig
-end
 
 # ╔═╡ 0500000b-0000-4000-8000-000000000001
 md"""
@@ -708,7 +563,7 @@ solid_water_basis = let
         "after $(ERODE_PX)-px erosion"
 
     sw_idx = findall(sw_bool)
-    n_z = size(basis_z.vol_water, 3)
+    n_z = size(basis_acnr.vol_water_raw, 3)
     function _mean(vol)
         s = 0.0; n = 0
         for z in 1:n_z, ci in sw_idx
@@ -717,8 +572,8 @@ solid_water_basis = let
         return s / n
     end
 
-    c_w = Float64(_mean(basis_z.vol_water))
-    c_i = Float64(_mean(basis_z.vol_iodine))
+    c_w = Float64(_mean(basis_acnr.vol_water_raw))
+    c_i = Float64(_mean(basis_acnr.vol_iodine_raw))
     @info "solid_water_basis: ⟨c_water⟩_SW = $(round(c_w, digits = 4)) g/cm³, " *
         "⟨c_iodine⟩_SW = $(round(c_i, digits = 6)) g/cm³"
 
@@ -735,7 +590,7 @@ de_vmi_energies = [50.0, 70.0, 100.0, 140.0];
 vmi_HU_by_keV = let
     # `BS.synth_vmi_2basis` expects c_iodine in mg/mL; our basis maps
     # are in g/cm³ (= g/mL).  Multiply by 1000 to convert.
-    c_iodine_mg_per_mL = basis_z.vol_iodine .* 1000.0f0
+    c_iodine_mg_per_mL = basis_acnr.vol_iodine_raw .* 1000.0f0
 
     out = Dict{Float64, Array{Float32, 3}}()
     for E in de_vmi_energies
@@ -751,7 +606,7 @@ vmi_HU_by_keV = let
             "$(round(μ_water_anchor, digits = 5)) → Δ = $(round(Δ_pct, digits = 2))%"
 
         out[E] = BS.synth_vmi_2basis(
-            basis_z.vol_water, c_iodine_mg_per_mL;
+            basis_acnr.vol_water_raw, c_iodine_mg_per_mL;
             energy_keV = E,
         )
     end
@@ -1133,7 +988,7 @@ const WATER_NOISE_ROI_RADIUS_PX = 12;   # ≈8.2 mm at 0.683 mm/px (FOV 35 cm / 
 # Central circular noise ROI in the solid-water background (image center =
 # isocenter = phantom center for the centered Gammex 472).
 water_noise_roi = let
-    nx_r, ny_r, nz_r = size(basis_z.vol_water)
+    nx_r, ny_r, nz_r = size(basis_acnr.vol_water_raw)
     cx = nx_r ÷ 2 + 1
     cy = ny_r ÷ 2 + 1
 
@@ -1492,15 +1347,15 @@ md"""
 ## Summary
 
 ```
-Simulate 80 + 140 kVp (scatter-corrected line-integral sinograms)
-   → Projection-Domain SVD Denoise  (2-channel, BS.apply_sino_svd_denoise)
+Simulate 80 + 140 kVp  (DICOM-faithful GSI technique, per-view flux from
+                         the clinical Revolution Apex scan)
    → Projection-Domain Material Decomposition  (Cong univariate, iodine + water)
    → FBP × 2  (iodine, water basis maps)
-   → Image-Domain cov-ACNR  (BS.apply_image_acnr!)
-   → Z-Direction Median Filter × 2
+   → Kalender-1988 TRUE ACNR  (BS.apply_acnr_kalender! — per-pixel HF
+                               regression, structure bit-untouched, zero blur)
    → Monoenergetic VMI Synthesis  (textbook 2-basis, mono μρ_water divisor)
-   → Mono+ Post-Processing  (per-keV σ via σ_vmi_lp_px)
-   → Measured vs Theoretical Per-Rod Regression  at 50 / 70 / 100 / 140 keV
+   → Mono+  (wired, currently PASSTHROUGH: σ_vmi_lp_px all zero)
+   → Automated verification  (water HU · monotonic noise-vs-keV · 14-rod NIST regression)
 ```
 
 The SVD projection denoise and the Cong material decomposition both run
@@ -1536,10 +1391,6 @@ low-keV Mono+ output.
 # ╠═05000006-0000-4000-8000-000000000010
 # ╠═05000006-0000-4000-8000-000000000020
 # ╟─05000006-0000-4000-8000-000000000040
-# ╟─05000007-0000-4000-8000-000000000001
-# ╠═05000007-0000-4000-8000-000000000005
-# ╠═05000007-0000-4000-8000-000000000010
-# ╟─05000007-0000-4000-8000-000000000030
 # ╟─05000008-0000-4000-8000-000000000001
 # ╠═05000008-0000-4000-8000-000000000010
 # ╠═05000008-0000-4000-8000-000000000020
@@ -1549,10 +1400,6 @@ low-keV Mono+ output.
 # ╟─05000009-0000-4000-8000-000000000030
 # ╟─05000009-0000-4000-8000-000000000040
 # ╠═05000009-0000-4000-8000-000000000050
-# ╟─0500000a-0000-4000-8000-000000000001
-# ╠═0500000a-0000-4000-8000-000000000005
-# ╠═0500000a-0000-4000-8000-000000000010
-# ╟─0500000a-0000-4000-8000-000000000030
 # ╟─0500000b-0000-4000-8000-000000000001
 # ╠═0500000b-0000-4000-8000-000000000010
 # ╠═0500000b-0000-4000-8000-000000000015
