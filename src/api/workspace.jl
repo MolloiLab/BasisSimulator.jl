@@ -193,13 +193,15 @@ function create_workspace(
     # and (b) left the noise model's low-count Poisson branch dead.
     _I0_anchor = compute_detector_I0(geom, protocol, sum(weights_vec)) /
         max(sum(weights_vec), 1.0e-30)
-    I0_bins_norm_vec = [
-        _compute_bin_I0(
-                pcct_detector, energies, weights_vec, η_vec, thresholds, b,
-                kVp, _I0_anchor; R = R_mat
-            ) for b in 1:n_bins
-    ]
-    I0_bins_combine = copy(I0_bins_norm_vec)
+    # AIR CALIBRATION: per-bin I0 = the forward kernel's own air response,
+    # Σ_e W[e,b] (all paths zero → exp(0) = 1) — guarantees p_air ≡ 0 by
+    # construction, like a real scanner's air cal.  (`_compute_bin_I0`
+    # disagreed with the kernel's actual air output by 13–26 % per bin —
+    # measured air rays read p = 0.24/0.22/0.17/0.13 instead of 0, a
+    # per-bin DC that biased every PCCT decomposition.)  Filled right after
+    # W_cpu is built below.
+    I0_bins_norm_vec = Float64[]
+    I0_bins_combine = I0_bins_norm_vec === nothing ? Float64[] : Float64[]
 
     # Pre-compute T-typed thresholds
     thresholds_T_vec = T.(thresholds)
@@ -302,6 +304,9 @@ function create_workspace(
             W_cpu[e_idx, b] = T(_I0 * w * η_vec[e_idx] * R_mat[r_idx, b])
         end
     end
+    append!(I0_bins_norm_vec, [sum(Float64.(W_cpu[1:n_energies, b])) for b in 1:n_bins])
+    append!(I0_bins_combine, I0_bins_norm_vec)
+
     _W_matrix_gpu = similar(ref_mask, T, n_energies_padded, n_bins)
     copyto!(_W_matrix_gpu, W_cpu)
 
