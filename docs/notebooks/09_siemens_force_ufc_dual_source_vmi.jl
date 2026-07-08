@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.1.0
+# v0.2.1
 
 using Markdown
 using InteractiveUtils
@@ -430,7 +430,11 @@ sim_low = let
         scanner, protocol_low, sim_opts, recon_opts, phantom,
     )
     BS.simulate!(ws, phantom, protocol_low, sim_opts)
-    result = (sino = Array(ws.sinogram), geom = ws.geom)
+    I0_scalar = BS.compute_detector_I0(ws.geom, protocol_low, sum(ws.weights)) * Float64(ws.η_eff)
+    air_ref = ws.bowtie_air_reference === nothing ? ones(Float32, ws.geom.n_cols, ws.geom.n_rows) :
+        Array(ws.bowtie_air_reference)
+    result = (sino = Array(ws.sinogram), geom = ws.geom,
+        I0_ray = Float32.(I0_scalar .* Float64.(air_ref)))
     ws = nothing; GC.gc(true)
     result
 end;
@@ -442,7 +446,11 @@ sim_high = let
         scanner, protocol_high, sim_opts, recon_opts, phantom_b,
     )
     BS.simulate!(ws, phantom_b, protocol_high, sim_opts)
-    result = (sino = Array(ws.sinogram), geom = ws.geom)
+    I0_scalar = BS.compute_detector_I0(ws.geom, protocol_high, sum(ws.weights)) * Float64(ws.η_eff)
+    air_ref = ws.bowtie_air_reference === nothing ? ones(Float32, ws.geom.n_cols, ws.geom.n_rows) :
+        Array(ws.bowtie_air_reference)
+    result = (sino = Array(ws.sinogram), geom = ws.geom,
+        I0_ray = Float32.(I0_scalar .* Float64.(air_ref)))
     ws = nothing; GC.gc(true)
     result
 end;
@@ -774,8 +782,18 @@ end;
 
 # ╔═╡ 0900000a-0000-4000-8000-000000000020
 sino_basis = let
-    sino_low_gpu = to_gpu(Float32.(sim_low.sino))
-    sino_high_gpu = to_gpu(Float32.(sim_high.sino))
+    # First-order log-Poisson DEBIAS (deterministic; matches nb03).
+    debias(p, I0_ray) = begin
+        out = Float32.(p)
+        nc, nr, nv = size(out)
+        for v in 1:nv, r in 1:nr, c in 1:nc
+            N = max(I0_ray[c, r] * exp(-out[c, r, v]), 1.0f0)
+            out[c, r, v] -= 1.0f0 / (2.0f0 * N)
+        end
+        out
+    end
+    sino_low_gpu = to_gpu(debias(sim_low.sino, sim_low.I0_ray))
+    sino_high_gpu = to_gpu(debias(sim_high.sino, sim_high.I0_ray))
 
     sino_y = similar(sino_low_gpu)   # iodine basis line integrals
     sino_c = similar(sino_low_gpu)   # water  basis line integrals
@@ -837,12 +855,11 @@ end
 
 # ╔═╡ 0900000b-0000-4000-8000-000000000001
 md"""
-## 9. FBP × 2, cov-ACNR, Z-Median
+## 9. FBP × 2 + Kalender ACNR
 
 Identical post-decomposition chain to nb03: two FDK passes
 (`BS.SoftFilter()`) → image-domain data-adaptive cov-ACNR
-(`BS.apply_acnr_kalender!`, per-pixel regression, zero blur) → z-median
-(5-slice window, exploits the Gammex z-invariance).
+(`BS.apply_acnr_kalender!`, per-pixel regression, zero blur).
 """
 
 # ╔═╡ 0900000b-0000-4000-8000-000000000010
@@ -879,38 +896,20 @@ basis_acnr = let
     (vol_iodine_raw = I, vol_water_raw = W, geom = basis_volumes.geom)
 end;
 
-# ╔═╡ 0900000b-0000-4000-8000-000000000025
-Z_MEDIAN_ADJACENT = 0;   # identity — doctrine chain matches nb03 (pure Cong → FBP → Kalender ACNR)
-
-# ╔═╡ 0900000b-0000-4000-8000-000000000030
-basis_z = let
-    (
-        vol_iodine = BS.apply_median_z(
-            basis_acnr.vol_iodine_raw;
-            adjacent_slices = Z_MEDIAN_ADJACENT,
-        ),
-        vol_water = BS.apply_median_z(
-            basis_acnr.vol_water_raw;
-            adjacent_slices = Z_MEDIAN_ADJACENT,
-        ),
-        geom = basis_acnr.geom,
-    )
-end;
-
 # ╔═╡ 0900000b-0000-4000-8000-000000000040
 let
     fig = CM.Figure(size = (1180, 580))
     axis_kwargs = (titlesize = 32, subtitlesize = 24)
 
-    mid = size(basis_z.vol_iodine, 3) ÷ 2
+    mid = size(basis_acnr.vol_iodine_raw, 3) ÷ 2
 
     _qrange(arr) = (
         Float64(quantile(vec(arr), 0.01)),
         Float64(quantile(vec(arr), 0.99)),
     )
 
-    slice_iod = basis_z.vol_iodine[:, :, mid]
-    slice_wat = basis_z.vol_water[:, :, mid]
+    slice_iod = basis_acnr.vol_iodine_raw[:, :, mid]
+    slice_wat = basis_acnr.vol_water_raw[:, :, mid]
 
     panels = (
         (1, 1, 2, "Iodine Basis", "g/cm³", slice_iod, _qrange(slice_iod)),
@@ -964,7 +963,7 @@ solid_water_basis = let
         "after $(ERODE_PX)-px erosion"
 
     sw_idx = findall(sw_bool)
-    n_z = size(basis_z.vol_water, 3)
+    n_z = size(basis_acnr.vol_water_raw, 3)
     function _mean(vol)
         s = 0.0; n = 0
         for z in 1:n_z, ci in sw_idx
@@ -973,8 +972,8 @@ solid_water_basis = let
         return s / n
     end
 
-    c_w = Float64(_mean(basis_z.vol_water))
-    c_i = Float64(_mean(basis_z.vol_iodine))
+    c_w = Float64(_mean(basis_acnr.vol_water_raw))
+    c_i = Float64(_mean(basis_acnr.vol_iodine_raw))
     @info "solid_water_basis: ⟨c_water⟩_SW = $(round(c_w, digits = 4)) g/cm³, " *
         "⟨c_iodine⟩_SW = $(round(c_i, digits = 6)) g/cm³"
 
@@ -988,9 +987,9 @@ end;
 de_vmi_energies = [50.0, 70.0, 100.0, 140.0];
 
 # ╔═╡ 0900000c-0000-4000-8000-000000000020
-vmi_HU_by_keV = let
+vmi_HU_final = let
     # synth_vmi_2basis expects c_iodine in mg/mL; basis maps are g/cm³ (= g/mL)
-    c_iodine_mg_per_mL = basis_z.vol_iodine .* 1000.0f0
+    c_iodine_mg_per_mL = basis_acnr.vol_iodine_raw .* 1000.0f0
 
     out = Dict{Float64, Array{Float32, 3}}()
     for E in de_vmi_energies
@@ -1004,7 +1003,7 @@ vmi_HU_by_keV = let
             "$(round(μ_water_anchor, digits = 5)) → Δ = $(round(Δ_pct, digits = 2))%"
 
         out[E] = BS.synth_vmi_2basis(
-            basis_z.vol_water, c_iodine_mg_per_mL;
+            basis_acnr.vol_water_raw, c_iodine_mg_per_mL;
             energy_keV = E,
         )
     end
@@ -1018,7 +1017,7 @@ let
     fig = CM.Figure(size = (1180, 1180))
     axis_kwargs = (titlesize = 32, subtitlesize = 24)
 
-    sample = vmi_HU_by_keV[50.0]
+    sample = vmi_HU_final[50.0]
     mid = size(sample, 3) ÷ 2
 
     for (k, E) in enumerate(de_vmi_energies)
@@ -1029,7 +1028,7 @@ let
             aspect = CM.DataAspect(), axis_kwargs...,
         )
         CM.heatmap!(
-            ax, vmi_HU_by_keV[E][:, :, mid];
+            ax, vmi_HU_final[E][:, :, mid];
             colormap = :grays, colorrange = HU_window,
         )
         CM.hidedecorations!(ax)
@@ -1047,41 +1046,6 @@ let
     fig
 end
 
-# ╔═╡ 0900000d-0000-4000-8000-000000000001
-md"""
-## 11. VMI Post-Processing (Mono+)
-
-Grant 2014 frequency split toward the 70 keV noise-optimal anchor.
-σ pairs element-wise with `de_vmi_energies`; 0 ⇒ identity.
-"""
-
-# ╔═╡ 0900000d-0000-4000-8000-000000000005
-# (50, 70, 100, 140) keV
-σ_vmi_lp_px = Float64[1.0, 0.0, 1.0, 1.0];
-
-# ╔═╡ 0900000d-0000-4000-8000-000000000010
-vmi_HU_final = let
-    volumes = [vmi_HU_by_keV[E] for E in de_vmi_energies]
-
-    ws = BS.create_mono_plus_workspace(
-        volumes[1];
-        n_energies = length(de_vmi_energies)
-    )
-    BS.apply_mono_plus!(
-        ws, volumes, de_vmi_energies;
-        E_noise_opt = 70.0,
-        σ_lp_px = σ_vmi_lp_px,
-        verbose = true,
-    )
-
-    out = Dict{Float64, Array{Float32, 3}}()
-    for (i, E) in enumerate(de_vmi_energies)
-        out[E] = copy(ws.out_vols[i])
-    end
-    ws = nothing; GC.gc(true)
-    out
-end;
-
 # ╔═╡ 0900000d-0000-4000-8000-000000000030
 let
     HU_window = (-200, 500)
@@ -1097,7 +1061,7 @@ let
         c = ((k - 1) % 2) + 1
         ax = CM.Axis(
             fig[r, c]; title = "$(Int(E)) keV VMI",
-            subtitle = "Mono+",
+            subtitle = "VMI",
             aspect = CM.DataAspect(), axis_kwargs...,
         )
         CM.heatmap!(
@@ -1309,7 +1273,7 @@ const WATER_NOISE_ROI_RADIUS_PX = 12;   # ≈8.2 mm at 0.683 mm/px
 
 # ╔═╡ 0900000e-0000-4000-8000-000000000070
 water_noise_roi = let
-    nx_r, ny_r, nz_r = size(basis_z.vol_water)
+    nx_r, ny_r, nz_r = size(basis_acnr.vol_water_raw)
     cx = nx_r ÷ 2 + 1
     cy = ny_r ÷ 2 + 1
 
@@ -1655,17 +1619,12 @@ next to `GEMSTONE_MC_EFFICIENCY_LUT` (`UFC_MC_EFFICIENCY_LUT`,
 # ╟─0900000b-0000-4000-8000-000000000001
 # ╠═0900000b-0000-4000-8000-000000000010
 # ╠═0900000b-0000-4000-8000-000000000020
-# ╠═0900000b-0000-4000-8000-000000000025
-# ╠═0900000b-0000-4000-8000-000000000030
 # ╟─0900000b-0000-4000-8000-000000000040
 # ╟─0900000c-0000-4000-8000-000000000001
 # ╠═0900000c-0000-4000-8000-000000000010
 # ╠═0900000c-0000-4000-8000-000000000015
 # ╠═0900000c-0000-4000-8000-000000000020
 # ╟─0900000c-0000-4000-8000-000000000040
-# ╟─0900000d-0000-4000-8000-000000000001
-# ╠═0900000d-0000-4000-8000-000000000005
-# ╠═0900000d-0000-4000-8000-000000000010
 # ╟─0900000d-0000-4000-8000-000000000030
 # ╟─0900000e-0000-4000-8000-000000000001
 # ╠═0900000e-0000-4000-8000-000000000010
