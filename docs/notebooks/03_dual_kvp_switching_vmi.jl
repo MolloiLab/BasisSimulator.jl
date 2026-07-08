@@ -818,7 +818,8 @@ high frequencies (edges, fine detail) come from the target energy `E`.
 # σ > 0  ⇒ that energy's LP band is replaced with the 70-keV anchor's LP.
 # Edit these to tune per-energy noise/contrast trade-off.
 # (50, 70, 100, 140) keV
-σ_vmi_lp_px = Float64[1.0, 0.0, 1.0, 1.0];
+# σ_vmi_lp_px = Float64[1.0, 0.0, 1.0, 1.0];
+σ_vmi_lp_px = Float64[0.0, 0.0, 0.0, 0.0];
 
 # ╔═╡ 0500000c-0000-4000-8000-000000000010
 vmi_HU_final = let
