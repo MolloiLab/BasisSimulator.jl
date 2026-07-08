@@ -182,11 +182,19 @@ function create_workspace(
     # BHC, scatter correction, and pile-up correction are all decoupled —
     # applied at the notebook level via dedicated `apply_*` functions.
 
-    # Pre-compute per-bin I0 (DRM-weighted spectrum × η).
+    # Pre-compute per-bin I0 (DRM-weighted spectrum × η) in PHYSICAL counts:
+    # anchored to the protocol-derived per-ray flux (mA × dwell × pixel area ×
+    # spectrum), NOT an arbitrary reference.  This puts the whole PCCT count
+    # domain (bin combine, scatter subtraction, eps floors) in true photons —
+    # previously a hardcoded 1.0e6 anchor made I0_bins ~7e11 "counts"/ray, so
+    # the scatter-correction eps floor produced deterministic p ≈ 50 plateau
+    # rays (coherent streaks) and count-domain math was unit-inconsistent
+    # with the (already physical) noise model.
+    I0_ray_physics = compute_detector_I0(geom, protocol, sum(weights_vec))
     I0_bins_norm_vec = [
         _compute_bin_I0(
                 pcct_detector, energies, weights_vec, η_vec, thresholds, b,
-                kVp, 1.0e6; R = R_mat
+                kVp, I0_ray_physics / max(sum(weights_vec), 1.0e-30); R = R_mat
             ) for b in 1:n_bins
     ]
     I0_bins_combine = copy(I0_bins_norm_vec)
