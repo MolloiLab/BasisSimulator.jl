@@ -230,7 +230,13 @@ sim_low = let
     @info "Simulating: 80 kVp / $(round(protocol_low.mA, digits = 1)) mA-eff (DE low)…"
     ws = BS.create_eict_workspace(scanner, protocol_low, sim_opts, recon_opts, phantom)
     BS.simulate!(ws, phantom, protocol_low, sim_opts)
-    result = (sino = Array(ws.sinogram), geom = ws.geom)
+    # Per-ray air-scan counts I0(col,row) — needed by the Jensen debias
+    # (bowtie + heel make the EICT flux ray-dependent).
+    I0_scalar = BS.compute_detector_I0(ws.geom, protocol_low, sum(ws.weights)) * Float64(ws.η_eff)
+    air_ref = ws.bowtie_air_reference === nothing ? ones(Float32, ws.geom.n_cols, ws.geom.n_rows) :
+        Array(ws.bowtie_air_reference)
+    result = (sino = Array(ws.sinogram), geom = ws.geom,
+        I0_ray = Float32.(I0_scalar .* Float64.(air_ref)))
     ws = nothing; GC.gc(true)
     result
 end;
@@ -240,7 +246,13 @@ sim_high = let
     @info "Simulating: 140 kVp / $(round(protocol_high.mA, digits = 1)) mA-eff (DE high)…"
     ws = BS.create_eict_workspace(scanner, protocol_high, sim_opts, recon_opts, phantom)
     BS.simulate!(ws, phantom, protocol_high, sim_opts)
-    result = (sino = Array(ws.sinogram), geom = ws.geom)
+    # Per-ray air-scan counts I0(col,row) — needed by the Jensen debias
+    # (bowtie + heel make the EICT flux ray-dependent).
+    I0_scalar = BS.compute_detector_I0(ws.geom, protocol_high, sum(ws.weights)) * Float64(ws.η_eff)
+    air_ref = ws.bowtie_air_reference === nothing ? ones(Float32, ws.geom.n_cols, ws.geom.n_rows) :
+        Array(ws.bowtie_air_reference)
+    result = (sino = Array(ws.sinogram), geom = ws.geom,
+        I0_ray = Float32.(I0_scalar .* Float64.(air_ref)))
     ws = nothing; GC.gc(true)
     result
 end;
@@ -292,7 +304,16 @@ md"""
 
 Per-ray Newton solver on the polychromatic transmission integral
 (material-basis variant: iodine + water mass-attenuation tables seeded
-with `water_basis = (a = 0, c = 1)`).  Output sinograms are per-ray
+with `water_basis = (a = 0, c = 1)`).
+
+**Jensen debias (in the decomposition cell, before the solve):** the channel
+sinograms are debiased per ray by `1/(2N)` with `N = I₀(col,row)·e^{−p}` —
+the first-order bias of `−log` of Poisson counts.  Deterministic statistics
+(σ untouched), exact for this simulator's pure-Poisson count noise; on rays
+behind the dense Ca rods (N ≈ 2–50 at 80 kVp) it removes the 1–2.5 % `p`
+inflation that Cong would otherwise amplify into low-keV HU bias.
+
+Output sinograms are per-ray
 basis line integrals:
 
 ```
@@ -343,8 +364,24 @@ end;
 
 # ╔═╡ 05000008-0000-4000-8000-000000000020
 sino_basis = let
-    sino_low_gpu = to_gpu(Float32.(sim_low.sino))
-    sino_high_gpu = to_gpu(Float32.(sim_high.sino))
+    # First-order log-Poisson DEBIAS (deterministic statistics, not
+    # denoising): E[−log(N/I0)] = p_true + 1/(2N) for Poisson counts.  On
+    # rays behind the dense Ca rods the 80 kVp channel detects N ≈ 2–50
+    # photons, inflating p by 1–2.5 % exactly where Cong amplifies it into
+    # the low-keV dense-rod bias.  (Exact for this simulator's pure-Poisson
+    # count noise; a real energy-integrating detector needs the same form
+    # with Swank-corrected effective counts, ~10–30 % larger.)
+    debias(p, I0_ray) = begin
+        out = Float32.(p)
+        nc, nr, nv = size(out)
+        for v in 1:nv, r in 1:nr, c in 1:nc
+            N = max(I0_ray[c, r] * exp(-out[c, r, v]), 1.0f0)
+            out[c, r, v] -= 1.0f0 / (2.0f0 * N)
+        end
+        out
+    end
+    sino_low_gpu = to_gpu(debias(sim_low.sino, sim_low.I0_ray))
+    sino_high_gpu = to_gpu(debias(sim_high.sino, sim_high.I0_ray))
 
     sino_y = similar(sino_low_gpu)   # iodine basis line integrals
     sino_c = similar(sino_low_gpu)   # water  basis line integrals

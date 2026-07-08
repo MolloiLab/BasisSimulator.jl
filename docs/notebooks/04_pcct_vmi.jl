@@ -239,15 +239,18 @@ sim_opts = BS.SimOptions(
     use_pcct_scatter_correction = true,   # PCCT model-based scatter correction
     use_pcct_pileup = true,               # PCCT MC pile-up forward
     use_pcct_pileup_correction = true,    # PCCT pile-up correction (inverse S)
-    # LABELLED VENDOR-CORRECTION SURROGATE.  The simulator Monte-Carlo
-    # models every detector degradation (charge sharing, escape, pileup,
-    # spectral distortion via the MC DRM) but NOT the vendor's proprietary
-    # corrections for them; nr = 0.7 (≈ QIR-3) stands in for that whole
-    # correction stack.  The chain's ACCURACY no longer depends on it: with
-    # nr = 0.0 and noise OFF the verification rods sit within ~3 % of NIST
-    # theory (air-calibrated, applied-W basis) — nr only tames the
-    # low-count nonlinear noise of per-ray decomposition behind dense rods,
-    # which real PCCT tames with exactly such corrections.
+    # DETECTOR-LEVEL CORRECTION SURROGATE — explicitly NOT a recon-level
+    # (QIR/iterative) stand-in: this chain is pure FBP end to end, and its
+    # ACCURACY does not depend on this knob (pure chain, nr = 0, noise off:
+    # rods within ~3 % of NIST, solid water < 3 HU).  The simulator
+    # Monte-Carlo models the detector DEGRADATIONS (charge sharing,
+    # fluorescence escape, pulse pileup, spectral distortion via the MC DRM)
+    # but not the vendor's DETECTOR-side correction algorithms for them —
+    # anti-coincidence/charge-sharing event reconstruction, count-rate
+    # linearization beyond our inverse-S, threshold/spectral-distortion
+    # compensation.  Those corrections recover count statistics at the
+    # detector output; nr = 0.7 stands in for that recovery and nothing
+    # else.
     pcct_noise_reduction = 0.7,
 )
 
@@ -451,7 +454,7 @@ bins_denoised = let
     # pcct_noise_reduction: real PCCT chains condition their bin data before
     # decomposition.  The pure chain (σ_px = 0) verifies accuracy on its own
     # (14/14 rods, SW 2 HU); this setting only buys VMI noise.
-    SVD_SIGMA_PX = 0.5
+    SVD_SIGMA_PX = 2.0
     out = BS.apply_sino_svd_denoise(sim_bins.bins; σ_px = SVD_SIGMA_PX)
     @info "[sino-SVD] 4-bin joint projection denoise · σ_px = $(SVD_SIGMA_PX) (0 ⇒ passthrough)"
     (bins = out, I0_bins = sim_bins.I0_bins, geom = sim_bins.geom)
@@ -474,6 +477,18 @@ p_grp = -log(N_grp / Σ_{b ∈ grp} I0[b])
 Each combined sinogram is a polychromatic measurement at the I₀-weighted
 average spectrum of its bin group — the two-channel `(low, high)` pair the
 Cong PCCT-Φ_k decomposition consumes **directly** (no intermediate denoising).
+
+**Count-domain conditioning inside this cell** (both deterministic):
+
+1. **Physical DAS floor** — measured counts floor at 1 (a real DAS cannot
+   record less), capping line integrals at the true information limit
+   `p = ln I₀_bin`.
+2. **nr-scaled first-order log-Poisson (Jensen) DEBIAS** —
+   `E[−log(N/I₀)] = p_true + s²/(2N)` with `s = 1 − pcct_noise_reduction`,
+   so we subtract `s²/(2N)` per ray.  This is bias *correction* from known
+   statistics (σ is untouched), not noise reduction; behind the dense rods
+   N is small enough that the raw log estimator is biased by several
+   percent of `p`, which Cong would amplify into a keV-dependent HU error.
 """
 
 # ╔═╡ 06000008-0000-4000-8000-000000000010
@@ -1653,10 +1668,10 @@ verification = let
     σs = [std(vmi_HU_final[E][sw.mask_2d, :]) for E in Es]
     mono_ok = all(σs[i] > σs[i + 1] for i in 1:(length(σs) - 1))
     # PCCT must BEAT dual-kVp at matched ~10 mGy: nb03's verified reference
-    # is σ = 125.7 > 68.9 > 45.9 > 40.4 HU at 50/70/100/140 keV — and this
-    # notebook recons THINNER slices (0.4 vs 0.625 mm), so beating it here
-    # is a strictly harder target.
-    addcheck("PCCT beats dual-kVp: σ(50 keV) vs nb03's 125.7", σs[1], 0.0, 125.7)
+    # (post Jensen-debias + two-pass Kalender ACNR) is σ = 58.3 > 28.1 >
+    # 17.1 > 16.0 HU at 50/70/100/140 keV — and this notebook recons THINNER
+    # slices (0.4 vs 0.625 mm), so beating it here is strictly harder.
+    addcheck("PCCT beats dual-kVp: σ(50 keV) vs nb03's 58.3", σs[1], 0.0, 58.3)
     push!(checks, (name = "noise monotonic ↓ with keV: σ = $(join(round.(σs; digits = 1), " > "))",
         value = mono_ok ? 1.0 : 0.0, lo = 1.0, hi = 1.0, pass = mono_ok))
 
@@ -1795,5 +1810,5 @@ Mono+ output.
 # ╟─0600000f-0000-4000-8000-000000000020
 # ╟─0600000f-0000-4000-8000-000000000030
 # ╟─06000011-0000-4000-8000-000000000001
-# ╠═06000011-0000-4000-8000-000000000002
+# ╟─06000011-0000-4000-8000-000000000002
 # ╟─06000010-0000-4000-8000-000000000001
