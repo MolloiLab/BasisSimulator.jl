@@ -148,7 +148,7 @@ function create_workspace(
         extended_collimation::Bool = false,
     )
     # --- Pre-compute geometry first (collimation derives n_rows) ---
-    geom = CTGeometry(scanner; n_angles = protocol.views, fov_cm = recon_opts.fov_cm, z_cm = recon_opts.z_cm, collimation_mm = protocol.collimation_mm, extended_collimation = extended_collimation)
+    geom = CTGeometry(scanner; n_angles = protocol.views, fov_cm = recon_opts.fov_cm, z_cm = recon_opts.z_cm, collimation_mm = protocol.collimation_mm, extended_collimation = extended_collimation, pitch = protocol.pitch, n_rotations = protocol.n_rotations)
 
     sino_shape = (geom.n_cols, geom.n_rows, geom.n_angles)
     vol_shape = size(phantom.mask)
@@ -182,14 +182,26 @@ function create_workspace(
     # BHC, scatter correction, and pile-up correction are all decoupled —
     # applied at the notebook level via dedicated `apply_*` functions.
 
-    # Pre-compute per-bin I0 (DRM-weighted spectrum × η).
-    I0_bins_norm_vec = [
-        _compute_bin_I0(
-                pcct_detector, energies, weights_vec, η_vec, thresholds, b,
-                kVp, 1.0e6; R = R_mat
-            ) for b in 1:n_bins
-    ]
-    I0_bins_combine = copy(I0_bins_norm_vec)
+    # Pre-compute per-bin I0 (DRM-weighted spectrum × η) in PHYSICAL counts.
+    # `_I0_anchor` is the protocol-derived incident photons per ray per view
+    # divided by the raw spectrum sum, so N_air(b) = I0_phys·Σ(ŵ·η·R) — true
+    # detected counts.  The SAME anchor scales the forward W matrix below;
+    # the two sites are a coupled invariant (a global count-unit rescale):
+    # change them TOGETHER or the -log(N/I0) round trip breaks.  Previously
+    # both used a hardcoded 1.0e6 → ~7e11 fake "counts"/ray, which (a) let
+    # the scatter-correction eps floor mint deterministic p≈50 plateau rays
+    # and (b) left the noise model's low-count Poisson branch dead.
+    _I0_anchor = compute_detector_I0(geom, protocol, sum(weights_vec)) /
+        max(sum(weights_vec), 1.0e-30)
+    # AIR CALIBRATION: per-bin I0 = the forward kernel's own air response,
+    # Σ_e W[e,b] (all paths zero → exp(0) = 1) — guarantees p_air ≡ 0 by
+    # construction, like a real scanner's air cal.  (`_compute_bin_I0`
+    # disagreed with the kernel's actual air output by 13–26 % per bin —
+    # measured air rays read p = 0.24/0.22/0.17/0.13 instead of 0, a
+    # per-bin DC that biased every PCCT decomposition.)  Filled right after
+    # W_cpu is built below.
+    I0_bins_norm_vec = Float64[]
+    I0_bins_combine = I0_bins_norm_vec === nothing ? Float64[] : Float64[]
 
     # Pre-compute T-typed thresholds
     thresholds_T_vec = T.(thresholds)
@@ -240,7 +252,8 @@ function create_workspace(
             geom.angles,
             geom.source_positions, geom.detector_centers,
             geom.detector_u, geom.detector_v,
-            geom.fov  # same recon FOV
+            geom.fov,  # same recon FOV
+            geom.pitch, geom.table_feed, geom.detector_shape
         )
         native_sino_shape = (_native_geom.n_cols, _native_geom.n_rows, _native_geom.n_angles)
         _native_bins = [similar(ref_mask, T, native_sino_shape) for _ in 1:n_bins]
@@ -276,8 +289,8 @@ function create_workspace(
     copyto!(view(_μ_table_gpu, :, 1:n_energies), μ_table)
 
     # Build W matrix: W[e, b] = I0 * w[e] * η[e] * R[e, b]
-    # Uses I0=1e6 consistent with pcct_forward_project default
-    _I0 = 1.0e6
+    # SAME physical anchor as I0_bins_norm_vec above (coupled invariant).
+    _I0 = _I0_anchor
     n_R = size(R_mat, 1)
     W_cpu = zeros(T, n_energies_padded, n_bins)
     for e_idx in 1:n_energies
@@ -292,7 +305,6 @@ function create_workspace(
         end
     end
     _W_matrix_gpu = similar(ref_mask, T, n_energies_padded, n_bins)
-    copyto!(_W_matrix_gpu, W_cpu)
 
     # Source spectral: fold center-pixel bowtie into W matrix
     # The bowtie's dominant effect is spectral hardening (energy-dependent), which is
@@ -312,6 +324,15 @@ function create_workspace(
         end
         copyto!(_W_matrix_gpu, W_cpu)
     end
+
+    # AIR CALIBRATION — after ALL W shaping (η, DRM, bowtie-centre fold):
+    # the fused kernel's air output is exactly Σ_e W[e,b], so this
+    # normalization guarantees p_air ≡ 0 per bin by construction.  (The old
+    # _compute_bin_I0 normalization ignored the bowtie fold → air rays read
+    # p = 0.13–0.24 per bin, a DC on every ray.)
+    append!(I0_bins_norm_vec, [sum(Float64.(W_cpu[1:n_energies, b])) for b in 1:n_bins])
+    append!(I0_bins_combine, I0_bins_norm_vec)
+    copyto!(_W_matrix_gpu, W_cpu)
 
     # Flattened output buffer for spectral projection
     _outputs_flat = similar(ref_mask, T, n_elements * n_bins)
@@ -505,7 +526,7 @@ function create_eict_workspace(
         extended_collimation::Bool = false,
     )
     # Geometry
-    geom = CTGeometry(scanner; n_angles = protocol.views, fov_cm = recon_opts.fov_cm, z_cm = recon_opts.z_cm, collimation_mm = protocol.collimation_mm, extended_collimation = extended_collimation)
+    geom = CTGeometry(scanner; n_angles = protocol.views, fov_cm = recon_opts.fov_cm, z_cm = recon_opts.z_cm, collimation_mm = protocol.collimation_mm, extended_collimation = extended_collimation, pitch = protocol.pitch, n_rotations = protocol.n_rotations)
 
     # Spectrum — IPEM polychromatic by default; spectrum_override lets a
     # caller inject a custom (energies, weights) pair (e.g. `([70.0], [1.0])`
@@ -799,9 +820,14 @@ function create_fdk_recon_workspace(
     # Pre-compute filter kernel on GPU
     pixel_size = T(geom.pixel_size)
     n_cols = size(sinogram, 1)
-    raw_size = max(Int(ceil(n_cols * cutoff)), 32)
-    kernel_size_int = min(raw_size + (1 - raw_size % 2), n_cols)
+    raw_size = max(Int(ceil(2 * n_cols * cutoff)), 64)
+    kernel_size_int = min(raw_size + (1 - raw_size % 2), 2 * n_cols - 1)
     kernel_cpu = create_spatial_kernel(kernel_size_int, filter, pixel_size)
+    if is_arc(geom) && !is_helical(geom)
+        # equiangular fan filter correction (helical WFBP filters rebinned
+        # PARALLEL rows, which need the plain ramp)
+        equiangular_kernel_scale!(kernel_cpu, geom.pixel_size / geom.SAD)
+    end
     filter_kernel = similar(sinogram, T, kernel_size_int)
     copyto!(filter_kernel, kernel_cpu)
 
@@ -921,9 +947,14 @@ function create_hir_recon_workspace(
     # Pre-compute filter kernel on GPU
     pixel_size = T(geom.pixel_size)
     n_cols = size(sinogram, 1)
-    raw_size = max(Int(ceil(n_cols * cutoff)), 32)
-    kernel_size_int = min(raw_size + (1 - raw_size % 2), n_cols)
+    raw_size = max(Int(ceil(2 * n_cols * cutoff)), 64)
+    kernel_size_int = min(raw_size + (1 - raw_size % 2), 2 * n_cols - 1)
     kernel_cpu = create_spatial_kernel(kernel_size_int, filter, pixel_size)
+    if is_arc(geom) && !is_helical(geom)
+        # equiangular fan filter correction (helical WFBP filters rebinned
+        # PARALLEL rows, which need the plain ramp)
+        equiangular_kernel_scale!(kernel_cpu, geom.pixel_size / geom.SAD)
+    end
     filter_kernel = similar(sinogram, T, kernel_size_int)
     copyto!(filter_kernel, kernel_cpu)
 

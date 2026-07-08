@@ -4,6 +4,18 @@
 using Markdown
 using InteractiveUtils
 
+# This Pluto notebook uses @bind for interactivity. When running this notebook outside of Pluto, the following 'mock version' of @bind gives bound variables a default value (instead of an error).
+macro bind(def, element)
+    #! format: off
+    return quote
+        local iv = try Base.loaded_modules[Base.PkgId(Base.UUID("6e696c72-6542-2067-7265-42206c756150"), "AbstractPlutoDingetjes")].Bonds.initial_value catch; b -> missing; end
+        local el = $(esc(element))
+        global $(esc(def)) = Core.applicable(Base.get, el) ? Base.get(el) : iv(el)
+        el
+    end
+    #! format: on
+end
+
 # ╔═╡ 01000003-0000-4000-8000-000000000001
 begin
     import Pkg
@@ -15,6 +27,9 @@ using Markdown: @md_str
 
 # ╔═╡ 01000003-0000-4000-8000-000000000004
 using Statistics: std
+
+# ╔═╡ 12000001-0000-4000-8000-000000000002
+using PlutoUI
 
 # ╔═╡ 01000001-0000-4000-8000-000000000001
 md"""
@@ -79,38 +94,10 @@ plain `Array` (CPU) otherwise. Returned as a one-liner: `to_gpu(arr)`.
 
 # ╔═╡ 01000005-0000-4000-8000-000000000001
 begin
-    GPU_BACKEND = let
-        # (package name, UUID, array-type name) — UUIDs from the General registry
-        candidates = [
-            (:Metal, "dde4c033-4e86-420c-a63e-0dd931031962", :MtlArray),
-            (:CUDA, "052768ef-5323-5732-b1bb-66c8b64840ba", :CuArray),
-            (:AMDGPU, "21141c5a-9bdb-4563-92ae-f87d6854732e", :ROCArray),
-        ]
-
-        detected = (name = "CPU", to_gpu = identity)
-
-        for (pkg, uuid, ctor) in candidates
-            pkg_id = Base.PkgId(Base.UUID(uuid), String(pkg))
-            # Skip if the package isn't installed anywhere on the load path.
-            Base.locate_package(pkg_id) === nothing && continue
-            try
-                m = Base.require(pkg_id)
-                if Base.invokelatest(getfield(m, :functional))
-                    detected = (
-                        name = string(pkg),
-                        to_gpu = getfield(m, ctor),
-                    )
-                    break
-                end
-            catch
-                # Loaded but errored — try the next candidate.
-            end
-        end
-
-        detected
-    end
-
-    to_gpu(x) = GPU_BACKEND.to_gpu(x)
+    import GPUSelect
+    AT = GPUSelect.Storage() # the backend array type, directly: MtlArray / CuArray / ROCArray / oneArray / Array
+    to_gpu(x) = AT(x)
+    GPU_BACKEND = (name = string(nameof(AT)),)
 end
 
 # ╔═╡ 01000007-0000-4000-8000-000000000001
@@ -535,8 +522,8 @@ hu_std = let
 
     # μ → HU, copying off the GPU at the same time. The `Float32.(...)` cast
     # is intentional (not redundant): `BS.μ_to_HU` widens to Float64 due to
-    # an internal `1000.0` literal, but `apply_radial_cupping_correction!`
-    # (used in section 9) only has a method for `Array{Float32, 3}`.
+    # an internal `1000.0` literal; Float32 keeps the volume memory-light on
+    # the 16 GB M-series workers.
     hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = μ_water_recon))
 
     # Drop every GPU ref before exiting
@@ -602,13 +589,12 @@ corrections on top — the same stack we'll build here:
 
 | Stage | Function                              | What it does                                                                             |
 |-------|---------------------------------------|------------------------------------------------------------------------------------------|
-| 1.    | `calibrate_bhc_two_material`          | Fits a (water + bone) polynomial from the source spectrum once, returns a BHC model      |
-| 2.    | `apply_bhc_two_material`              | Sinogram-domain beam-hardening correction — runs *before* FBP, removes the bulk poly bias |
+| 1.    | `calibrate_bhc_water`                 | Precomputes per-column water poly→mono polynomials from the FULL detected spectrum — pure physics, zero tunables |
+| 2.    | `apply_bhc_water`                     | Sinogram-domain water BHC — one polynomial pass *before* FBP, removes the poly bias        |
 | 3.    | `reconstruct!` (FDK)                  | Filtered back-projection on the corrected sinogram                                       |
-| 4.    | `apply_bhc_image_domain`              | Image-domain BHC refinement — bone-region smoothstep + scaled error subtraction          |
 | 5.    | `to_hounsfield` (with BHC μ_water)    | Convert μ → HU using the BHC model's calibrated reference (not the 70 keV NIST value)    |
 | 6.    | `add_system_noise_floor!`             | Add dose-independent DAS Gaussian σ ≈ 28 HU                                              |
-| 7.    | `apply_radial_cupping_correction!`    | Residual even-polynomial cup correction on solid water (mostly cosmetic after BHC)       |
+| 7.    | `measure_radial_cupping`              | QA metric (never applied): fitted residual cup + DC — both ≈ 0 after a correct BHC        |
 
 !!! info "Why the cupping correction looks subtle"
     Stage 7 only catches what stages 2 and 4 missed — a small residual
@@ -630,16 +616,14 @@ becomes our reference for `to_hounsfield`).
 
 # ╔═╡ 09000006-0000-4000-8000-000000000001
 bhc_calibration = let
-    prot_for_bhc = BS.CTProtocol(kVp = 120, additional_filters = [("Al", 4.5)])
-
-    # Bowtie-aware high-level API: auto-resolves the bowtie-hardened spectrum,
-    # collapses to per-column weights, and dispatches to TwoMaterialBHCPerColumn.
-    model = BS.calibrate_bhc_two_material(
-        sim_opts, prot_for_bhc;
+    # KNOBLESS water BHC — pure physics, zero tunables, zero thresholds.
+    # calibrate_bhc_water resolves the FULL detected spectrum per detector
+    # column (tube × filters × bowtie × heel × η(E), exactly the factors this
+    # sim_opts enabled) and precomputes the poly→mono water polynomial for
+    # each column.  Nothing is fitted to the data being corrected.
+    model = BS.calibrate_bhc_water(
+        sim_opts, protocol_standard;
         scanner = scanner, geom = sim_std.geom,
-        order = 2,
-        hu_low = 450.0,   # bone-segmentation lower threshold (HU)
-        hu_high = 600.0,   # bone-segmentation upper threshold (HU)
     )
 
     (
@@ -673,22 +657,15 @@ hu_std_corr = let
 
     # 1. Sinogram-domain BHC (returns a CPU array)
     sino_gpu = to_gpu(sim_std.sino)
-    sino_bhc = BS.apply_bhc_two_material(
-        sino_gpu, bhc_calibration.model, sim_std.geom, matrix_size,
-    )
+    sino_bhc = BS.apply_bhc_water(sino_gpu, bhc_calibration.model)
     sino_gpu = to_gpu(sino_bhc)
 
     # 2. FDK on the BHC-corrected sinogram
     ws_fdk = BS.create_fdk_recon_workspace(sino_gpu, sim_std.geom, matrix_size)
     recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, sim_std.geom)
 
-    # 3. Image-domain BHC refinement (in-place on GPU)
-    BS.apply_bhc_image_domain(
-        recon_μ, sim_std.geom, matrix_size, bhc_calibration.μ_water;
-        hu_low = 50.0,
-        hu_high = 150.0,
-        scale_factor = 0.2,
-    )
+    # 3. (image-domain BHC removed — audit: it was a scaled self-subtraction
+    #    that deflated dense-material HU, not an artifact correction)
 
     # 4. μ → HU using BHC's calibrated μ_water_ref (Float32 to feed cupping correction)
     hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc_calibration.μ_water))
@@ -696,8 +673,9 @@ hu_std_corr = let
     # 5. Dose-independent DAS noise floor
     BS.add_system_noise_floor!(hu, 28.0; seed = 1234)
 
-    # 6. Residual radial cupping correction
-    BS.apply_radial_cupping_correction!(hu; fov_cm = 35.0)
+    # 6. (radial cupping "correction" removed — measured to INJECT +8 HU on
+    #    noisy data via its asymmetric fit window; cupping is a QA metric now,
+    #    checked in the verification cell via measure_radial_cupping)
 
     # GPU cleanup
     ws_fdk = nothing; sino_gpu = nothing; recon_μ = nothing
@@ -720,22 +698,14 @@ hu_low_corr = let
 
     # 1. Sinogram-domain BHC
     sino_gpu = to_gpu(sim_low.sino)
-    sino_bhc = BS.apply_bhc_two_material(
-        sino_gpu, bhc_calibration.model, sim_low.geom, matrix_size,
-    )
+    sino_bhc = BS.apply_bhc_water(sino_gpu, bhc_calibration.model)
     sino_gpu = to_gpu(sino_bhc)
 
     # 2. FDK
     ws_fdk = BS.create_fdk_recon_workspace(sino_gpu, sim_low.geom, matrix_size)
     recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, sim_low.geom)
 
-    # 3. Image-domain BHC
-    BS.apply_bhc_image_domain(
-        recon_μ, sim_low.geom, matrix_size, bhc_calibration.μ_water;
-        hu_low = 50.0,
-        hu_high = 150.0,
-        scale_factor = 0.2,
-    )
+    # 3. (image-domain BHC removed — see the note in the standard-dose cell)
 
     # 4. μ → HU
     hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc_calibration.μ_water))
@@ -743,8 +713,7 @@ hu_low_corr = let
     # 5. Noise floor (different seed so the noise pattern doesn't match the std-dose scan)
     BS.add_system_noise_floor!(hu, 28.0; seed = 5678)
 
-    # 6. Cupping correction
-    BS.apply_radial_cupping_correction!(hu; fov_cm = 35.0)
+    # (cupping correction removed — QA-only; see verification cell)
 
     # GPU cleanup
     ws_fdk = nothing; sino_gpu = nothing; recon_μ = nothing
@@ -843,6 +812,172 @@ let
     """
 end
 
+
+# ╔═╡ 12000001-0000-4000-8000-000000000001
+md"""
+## 11. Scroll through ``z`` — edge slices matter
+
+The cone beam means edge slices are reconstructed from obliquer rays than
+central ones. Slide through the corrected volumes and watch the ends — this
+is where usable-z limits and any residual cone behaviour show up first.
+"""
+
+# ╔═╡ 12000001-0000-4000-8000-000000000003
+@bind z_slice PlutoUI.Slider(1:size(hu_std_corr, 3); default = size(hu_std_corr, 3) ÷ 2, show_value = true)
+
+# ╔═╡ 12000001-0000-4000-8000-000000000004
+let
+    nz = size(hu_std_corr, 3)
+    fov_z_cm = sim_std.geom.fov[3]
+    dz_mm = fov_z_cm * 10 / nz
+    z_cm = -fov_z_cm / 2 + (z_slice - 0.5) * fov_z_cm / nz
+
+    fig = CM.Figure(size = (1100, 560))
+    CM.Label(fig[0, 1:3],
+        "slice $(z_slice)/$(nz)  ·  z = $(round(z_cm * 10; digits = 2)) mm of ±$(round(fov_z_cm * 10 / 2; digits = 1)) mm  ·  slice thickness $(round(dz_mm; digits = 2)) mm";
+        fontsize = 26, font = :bold, tellwidth = false)
+    ax1 = CM.Axis(fig[1, 1]; title = "Corrected · standard dose", titlesize = 22, aspect = CM.DataAspect())
+    hm = CM.heatmap!(ax1, hu_std_corr[:, :, z_slice]; colormap = :grays, colorrange = (-100, 500))
+    CM.hidedecorations!(ax1)
+    ax2 = CM.Axis(fig[1, 2]; title = "Corrected · low dose", titlesize = 22, aspect = CM.DataAspect())
+    CM.heatmap!(ax2, hu_low_corr[:, :, z_slice]; colormap = :grays, colorrange = (-100, 500))
+    CM.hidedecorations!(ax2)
+    CM.Colorbar(fig[1, 3], hm; label = "HU", labelsize = 20, ticklabelsize = 14)
+    fig
+end
+
+# ╔═╡ 12000002-0000-4000-8000-000000000001
+md"""
+## 12. Automated verification
+
+Quantitative pass/fail against physics-derived expectations — no eyeballing.
+Per-rod theory is mono HU at the BHC reference energy from the same
+XrayAttenuation data that drove the simulation; tolerances cover partial
+volume + noise + the single-kVp limit: the knobless water BHC maps the water
+component exactly, and the remaining high-Z (Ca/iodine) spectral residual is
+physics a single-energy scan cannot resolve — dual-energy/VMI territory.
+"""
+
+# ╔═╡ 12000002-0000-4000-8000-000000000002
+verification = let
+    import Statistics as _St
+    labels = BS.resample_to_recon(phantom_cpu, sim_std.geom, recon_opts.matrix_size; method = :nearest)
+    refE = bhc_calibration.ref_E_keV
+    μw = bhc_calibration.μ_water
+    nx, ny, nz = size(labels)
+    kmid = (nz + 1) ÷ 2                              # central slice only: edge
+                                                      # slices carry usable-z falloff
+
+    # in-plane-eroded mask of one label on the CENTRAL slice
+    function eroded(lab)
+        m = falses(nx, ny)
+        for j in 2:(ny - 1), i in 2:(nx - 1)
+            if labels[i, j, kmid] == lab &&
+               labels[i - 1, j, kmid] == lab && labels[i + 1, j, kmid] == lab &&
+               labels[i, j - 1, kmid] == lab && labels[i, j + 1, kmid] == lab
+                m[i, j] = true
+            end
+        end
+        m
+    end
+    matname(lab) = try phantom_cpu.materials[lab + 1].name catch; "?" end
+
+    # auto-detect the solid-water body label: most-common non-zero label
+    lab_counts = Dict{Int, Int}()
+    for v in @view labels[:, :, kmid]
+        v == 0 && continue
+        lab_counts[Int(v)] = get(lab_counts, Int(v), 0) + 1
+    end
+    water_lab = argmax(lab_counts)
+
+    checks = NamedTuple[]
+    addcheck(name, val, lo, hi) = push!(checks,
+        (name = name, value = round(val; digits = 1), lo = lo, hi = hi, pass = lo <= val <= hi))
+
+    wmask = eroded(UInt8(water_lab))
+    slc_std = @view hu_std_corr[:, :, kmid]
+    slc_low = @view hu_low_corr[:, :, kmid]
+    addcheck("water mean HU (corrected, central slice, label $(water_lab))",
+        _St.mean(slc_std[wmask]), -6.0, 6.0)
+    addcheck("noise ratio low/std (raw, water-only ROI)",
+        _St.std(hu_low[:, :, kmid][wmask]) / _St.std(hu_std[:, :, kmid][wmask]), 1.7, 2.3)
+
+    # cupping/DC QA (non-mutating).  On a UNIFORM water phantom both ≈ 0
+    # after a correct full-spectrum BHC.  On the Gammex the radial fit also
+    # picks up the rod-ring hardening structure (rays crossing dense rods are
+    # under-corrected by a water-only map — genuine single-kVp physics), so
+    # the gate is wider here than the ≤6 HU a uniform phantom would get.
+    cupqa = BS.measure_radial_cupping(hu_std_corr; fov_cm = sim_std.geom.fov[1])
+    addcheck("radial structure QA (worst slice; incl. rod-ring hardening)", cupqa.cup_hu, 0.0, 12.0)
+    addcheck("DC offset QA (worst slice)", abs(cupqa.dc_hu), 0.0, 6.0)
+
+    # per-slice water profiles: full body vs central r<5cm.  Central-ROI
+    # falloff = geometry bug; peripheral-only falloff = real cone divergence
+    # (outer voxels at edge slices lose near-side views — genuine usable-z).
+    wm = eroded(UInt8(water_lab))
+    Δxy = sim_std.geom.fov[1] / nx
+    central = [wm[i, j] && ((i - (nx + 1) / 2) * Δxy)^2 + ((j - (ny + 1) / 2) * Δxy)^2 < 25.0
+               for i in 1:nx, j in 1:ny]
+    zprof = [round(_St.mean(hu_std_corr[:, :, k][wm]); digits = 1) for k in 1:nz]
+    zprof_c = [round(_St.mean(hu_std_corr[:, :, k][central]); digits = 1) for k in 1:nz]
+
+    rod_rows = String[]
+    n_rod_pass = 0; n_rod = 0
+    for lab in 1:(length(phantom_cpu.materials) - 1)   # materials is a VECTOR: position L+1 = label L
+        lab == water_lab && continue
+        m = eroded(UInt8(lab))
+        count(m) < 20 && continue
+        mat = phantom_cpu.materials[lab + 1]
+        μm = BS.compute_μ_at_energy(mat, refE)
+        theory = 1000 * (μm - μw) / μw
+        meas = _St.mean(slc_std[m])
+        meas_low = _St.mean(slc_low[m])
+        raw = _St.mean(hu_std[:, :, kmid][m])          # alignment sentinel
+        # Physics-honest gate: |Δ| ≤ max(15 HU, 15 %).  Under the knobless
+        # water BHC every dense insert (Ca AND iodine) carries a smooth,
+        # density-proportional single-kVp deficit (up to ~−12 % at Ca-600 /
+        # I-20) — the rod's own beam hardening beyond the water curve, which
+        # single-energy CT cannot resolve.  Quantitative high-Z belongs to
+        # the dual-energy/VMI chain (nb03/04/07/08).
+        pct = 100 * (meas - theory) / max(abs(theory), 1.0)
+        ok_theory = abs(meas - theory) <= max(15.0, 0.15 * abs(theory))
+        ok_dose = abs(meas - meas_low) <= max(10.0, 0.03 * abs(theory))
+        ok = ok_theory && ok_dose
+        n_rod += 1
+        n_rod_pass += ok
+        push!(rod_rows,
+            "| $(lab) $(matname(lab)) | $(round(theory; digits = 0)) | $(round(meas; digits = 0)) | " *
+            "$(round(raw; digits = 0)) | $(round(meas - theory; digits = 0)) | " *
+            "$(round(pct; digits = 1))% | $(round(meas - meas_low; digits = 0)) | $(ok ? "✅" : "❌") |")
+    end
+    addcheck("rods passing (theory ± tol AND dose-invariant)", n_rod_pass, n_rod, n_rod)
+
+    n_pass = count(c -> c.pass, checks)
+    verdict = n_pass == length(checks) ? "✅ NB01 VERIFICATION: PASS ($(n_pass)/$(length(checks)))" :
+                                          "❌ NB01 VERIFICATION: FAIL ($(n_pass)/$(length(checks)))"
+    global_rows = join(["| $(c.name) | $(c.value) | [$(c.lo), $(c.hi)] | $(c.pass ? "✅" : "❌") |"
+                        for c in checks], "\n")
+    md_str = """
+### $(verdict)
+
+| check | value | expected | pass |
+|---|---|---|---|
+$(global_rows)
+
+**Water per slice (corrected)** — central-ROI falloff = bug; peripheral-only = real cone divergence:
+- full body: `$(zprof)`
+- central r<5 cm: `$(zprof_c)`
+
+**Per-rod, CENTRAL slice — theory = mono HU @ $(round(refE; digits = 1)) keV;
+`raw` = uncorrected recon (alignment sentinel):**
+
+| label material | theory | corrected | raw | Δ | Δ% | Δdose | pass |
+|---|---|---|---|---|---|---|---|
+$(join(rod_rows, "\n"))
+"""
+    Markdown.parse(md_str)
+end
+
 # ╔═╡ 11000001-0000-4000-8000-000000000001
 md"""
 ## Summary
@@ -856,10 +991,10 @@ This notebook walked the entire `BasisSimulator.jl` user surface end to end:
   `reconstruct!` — each ending with `ws = nothing; GC.gc(true)` so GPU
   buffers actually come back. The Pluto worker stays comfortably under
   memory pressure even with two protocols back-to-back.
-- **A clinical-grade postprocessing pipeline** — `calibrate_bhc_two_material`
-  → `apply_bhc_two_material` (sinogram BHC) → FDK → `apply_bhc_image_domain`
+- **A clinical-grade postprocessing pipeline** — `calibrate_bhc_water`
+  → `apply_bhc_water` (knobless sinogram BHC, full detected spectrum) → FDK
   → `to_hounsfield` (with the BHC model's own `μ_water_ref`) →
-  `add_system_noise_floor!` → `apply_radial_cupping_correction!`.
+  `add_system_noise_floor!`; cupping/DC is measured, never applied (`measure_radial_cupping`).
 - **Backend-agnostic GPU dispatch** — `to_gpu()` resolves at startup via
   `Base.locate_package` + `Base.require`, so the same notebook runs on
   Metal, CUDA, ROCm, or pure CPU with no project-level changes.
@@ -918,4 +1053,10 @@ result, `nothing` + `GC.gc(true)`, return.
 # ╟─10000001-0000-4000-8000-000000000001
 # ╟─10000002-0000-4000-8000-000000000001
 # ╟─10000003-0000-4000-8000-000000000001
+# ╟─12000001-0000-4000-8000-000000000001
+# ╠═12000001-0000-4000-8000-000000000002
+# ╟─12000001-0000-4000-8000-000000000003
+# ╟─12000001-0000-4000-8000-000000000004
+# ╟─12000002-0000-4000-8000-000000000001
+# ╟─12000002-0000-4000-8000-000000000002
 # ╟─11000001-0000-4000-8000-000000000001

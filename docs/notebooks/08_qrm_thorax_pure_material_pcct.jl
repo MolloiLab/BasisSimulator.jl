@@ -94,29 +94,10 @@ import CairoMakie as CM
 
 # ╔═╡ 08010003-0000-4000-8000-000000000040
 begin
-    GPU_BACKEND = let
-        candidates = [
-            (:Metal, "dde4c033-4e86-420c-a63e-0dd931031962", :MtlArray),
-            (:CUDA, "052768ef-5323-5732-b1bb-66c8b64840ba", :CuArray),
-            (:AMDGPU, "21141c5a-9bdb-4563-92ae-f87d6854732e", :ROCArray),
-        ]
-        detected = (name = "CPU", to_gpu = identity)
-        for (pkg, uuid, ctor) in candidates
-            pkg_id = Base.PkgId(Base.UUID(uuid), String(pkg))
-            Base.locate_package(pkg_id) === nothing && continue
-            try
-                m = Base.require(pkg_id)
-                if Base.invokelatest(getfield(m, :functional))
-                    detected = (name = string(pkg), to_gpu = getfield(m, ctor))
-                    break
-                end
-            catch
-            end
-        end
-        detected
-    end
-
-    to_gpu(x) = GPU_BACKEND.to_gpu(x)
+    import GPUSelect
+    AT = GPUSelect.Storage()     # the backend array type, directly: MtlArray / CuArray / ROCArray
+    to_gpu(x) = AT(x)
+    GPU_BACKEND = (name = string(nameof(AT)),)
 end
 
 # ╔═╡ 08010003-0000-4000-8000-000000000050
@@ -522,6 +503,12 @@ sim_opts = BS.SimOptions(
     use_pcct_scatter_correction = true,   # ← PCCT model-based scatter correction, inside simulate!()
     use_pcct_pileup = true,               # ← PCCT pileup forward, inside simulate!()
     use_pcct_pileup_correction = true,    # ← PCCT pileup correction (inverse S), inside simulate!()
+    # DETECTOR-LEVEL CORRECTION SURROGATE — NOT a recon-level (QIR) stand-in
+    # (chain is pure FBP; accuracy is independent of this knob).  Stands in
+    # for the vendor's detector-side algorithms (anti-coincidence /
+    # charge-sharing event reconstruction, count-rate linearization,
+    # threshold compensation) whose degradations we Monte-Carlo simulate
+    # but whose corrections we do not implement.
     pcct_noise_reduction = 0.7,
 )
 
@@ -1069,7 +1056,7 @@ md"""
 
 Material decomposition stamps strongly **anti-correlated** noise onto the basis
 maps (measured `ρ_basis ≈ −0.92`) — that anti-correlation *is* the VMI-noise U.
-ACNR removes it. Now runs via the src-proper **`BS.apply_image_acnr!`**
+ACNR removes it. Now runs via the src-proper **`BS.apply_acnr_kalender!`** (per-pixel regression, zero blur)
 (`denoising/acnr.jl`).
 
 **Data-adaptive cov-ACNR.** A closed-form 2×2 eigen-rotation of the joint W–I
@@ -1089,24 +1076,16 @@ removed. The resolution check below shows the *removed* component: it must be
 
 # ╔═╡ 08030008-0000-4000-8000-000000000055
 # Image-domain cov-ACNR on the FBP basis maps via the src-proper
-# `BS.apply_image_acnr!` (denoising/acnr.jl).  Knobs are passed as kwargs.
+# `BS.apply_acnr_kalender!` (denoising/acnr.jl) — no knobs, no blur.
 basis_acnr = let
     APPLY_ACNR = true        # ON — image-domain edge-aware cov-ACNR
-    GAMMA = 1.0         # strength ∈ [0,1]; 0 = identity.  ↓ = sharper, slightly noisier
-    BILAT_RADIUS = 3           # spatial window radius (px)
-    BILAT_SIGMA_S = 2.0         # spatial Gaussian σ (px)
-    BILAT_RANGE_K = 2.5         # range σ = K · per-basis noise std (edges > K·σ_noise preserved)
 
     W = copy(basis_volumes.vol_water_raw)
     I = copy(basis_volumes.vol_iodine_raw)
 
-    if APPLY_ACNR && GAMMA > 0
-        info = BS.apply_image_acnr!(
-            W, I;
-            gamma = GAMMA, bilat_radius = BILAT_RADIUS,
-            bilat_sigma_s = BILAT_SIGMA_S, bilat_range_k = BILAT_RANGE_K
-        )
-        @info "[ACNR · cov / SRC apply_image_acnr!] θ=$(round(info.θ_deg, digits = 1))° · ρ(W,I)=$(round(info.ρ_struct, digits = 3)) · γ=$(GAMMA) · e1 (structure) pixel-perfect, e2 (anti-corr noise) denoised · σ_noise(W)=$(round(info.σ_W, sigdigits = 3)), σ_noise(I)=$(round(info.σ_I, sigdigits = 3))"
+    if APPLY_ACNR
+        info = BS.apply_acnr_kalender!(W, I)
+        @info "[ACNR · Kalender-1988 true ACNR] ρ_hp(W,I)=$(round(info.ρ_hp, digits = 3))"
     else
         @info "[ACNR] OFF (passthrough)"
     end
@@ -1117,7 +1096,6 @@ end;
 # ╔═╡ 08030008-0000-4000-8000-000000000058
 # Resolution check — the REMOVED component (after − before) must be structureless
 # noise.  If rod rings/edges show up in the right panel, ACNR is sacrificing
-# resolution → lower γ or raise BILAT_RANGE_K.  Iodine basis (most edge-sensitive).
 let
     mid = size(basis_acnr.vol_iodine_raw, 3) ÷ 2 + 1
     before = basis_volumes.vol_iodine_raw[:, :, mid]

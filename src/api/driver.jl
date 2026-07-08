@@ -1141,6 +1141,24 @@ function reconstruct!(
         geom::CTGeometry,
     ) where {T <: AbstractFloat}
 
+    if is_helical(geom)
+        # Helical → rebinned WFBP chain (Stierstorfer family), reusing the
+        # workspace buffers: ws.filtered holds the rebinned/filtered data.
+        # ws.filter_kernel was built with spacing geom.pixel_size == Δt, so it
+        # is the correct parallel ramp kernel as-is.
+        _, Δt = _wfbp_rebin!(ws.filtered, sinogram, geom)
+        filter_sinogram!(
+            ws.filtered, geom;
+            ws_conv_scratch = ws.conv_scratch,
+            ws_filter_kernel = ws.filter_kernel,
+            apply_cosine = false, ray_spacing = Δt
+        )
+        fill!(ws.volume, zero(T))
+        _wfbp_backproject!(ws.volume, ws.filtered, geom, T(Δt))
+        apply_fov_mask!(ws.volume, geom)
+        return ws.volume
+    end
+
     # Step 1: Copy sinogram into filtering scratch buffer
     copyto!(ws.filtered, sinogram)
 
@@ -1271,6 +1289,18 @@ function reconstruct!(
 
     # ─── Step 1: FDK initialization (or warm-start from provided volume) ───
     if init_volume === nothing
+        if is_helical(geom)
+            # Helical FDK init → rebinned WFBP (see FDKReconWorkspace path)
+            _, Δt_h = _wfbp_rebin!(ws.filtered, sinogram, geom)
+            filter_sinogram!(
+                ws.filtered, geom;
+                ws_conv_scratch = ws.conv_scratch,
+                ws_filter_kernel = ws.filter_kernel,
+                apply_cosine = false, ray_spacing = Δt_h
+            )
+            fill!(ws.volume, zero(T))
+            _wfbp_backproject!(ws.volume, ws.filtered, geom, T(Δt_h))
+        else
         copyto!(ws.filtered, sinogram)
         filter_sinogram!(
             ws.filtered, geom;
@@ -1286,6 +1316,7 @@ function reconstruct!(
             ws_detector_u = ws.geom_detector_u,
             ws_detector_v = ws.geom_detector_v
         )
+        end
     else
         copyto!(ws.volume, init_volume)
     end
@@ -1313,7 +1344,9 @@ function reconstruct!(
                 row = ((idx_0 ÷ nc) % nr) + Int32(1)
                 ref_idx = col + (row - Int32(1)) * nc
                 y_val = sinogram[idx]
-                y_clipped = clamp(y_val, T(-10), T(10))
+                # clamp below at 0: a noisy negative-y air ray would get weight
+                # exp(+|y|) and dominate the subset update (audit A4)
+                y_clipped = clamp(y_val, T(0), T(10))
                 sw[idx] = T(aref[ref_idx]) * exp(-y_clipped) + ε
             end
         end
@@ -1321,7 +1354,9 @@ function reconstruct!(
         let sw = ws.stat_weights, ε = T(1.0e-6)
             AK.foreachindex(sw, backend) do idx
                 y_val = sinogram[idx]
-                y_clipped = clamp(y_val, T(-10), T(10))
+                # clamp below at 0: a noisy negative-y air ray would get weight
+                # exp(+|y|) and dominate the subset update (audit A4)
+                y_clipped = clamp(y_val, T(0), T(10))
                 sw[idx] = exp(-y_clipped) + ε
             end
         end
@@ -1379,17 +1414,27 @@ function reconstruct!(
 
             # SIRT-style update with subset scaling:
             # x += λ_relax * V_inv * (n_subsets * correction) - λ * V_inv * reg_grad
+            # Audit A1: V_inv ≈ 1/n_views makes the raw reg step scale as
+            # λ/n_views while the data step is n_views-invariant (subset_scale
+            # cancels) — so "strength" would mean different smoothing per
+            # protocol.  Scale the reg term by n_views/1000 to make it
+            # protocol-invariant (bands anchored at ~1000-view protocols).
+            reg_views_scale = T(length(geom.angles)) / T(1000)
             let vol = ws.volume, vinv = ws.V_inv, corr = ws.correction,
-                    rg = ws.reg_grad, ss = subset_scale
+                    rg = ws.reg_grad, ss = subset_scale, rvs = reg_views_scale
 
                 AK.foreachindex(vol, backend) do idx
                     data_update = λ_relax * vinv[idx] * ss * corr[idx]
-                    reg_update = λ * vinv[idx] * rg[idx]
+                    reg_update = λ * rvs * vinv[idx] * rg[idx]
                     vol[idx] += data_update - reg_update
                 end
             end
         end
     end
+
+    # Audit A6: match the FDK path's clinical convention (outside-FOV corners
+    # otherwise retain FDK-init ringing and skew volume statistics).
+    apply_fov_mask!(ws.volume, geom)
 
     return ws.volume
 end

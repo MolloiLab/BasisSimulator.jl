@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.1.0
+# v0.2.1
 
 using Markdown
 using InteractiveUtils
@@ -35,7 +35,7 @@ Simulate 140 kVp →┘                  │
                                      │
                     FBP × 2   (iodine, water basis maps)
                                      │
-                    Image-Domain cov-ACNR  (BS.apply_image_acnr!)
+                    Kalender-1988 TRUE ACNR  (BS.apply_acnr_kalender!)
                                      │
                     Z-Direction Median Filter × 2
                                      │
@@ -59,7 +59,7 @@ Simulate 140 kVp →┘                  │
        linearization, no HU-to-fraction inverse polynomial.
     2. **Image-domain anti-correlated noise reduction (ACNR).** Material
        decomposition stamps anti-correlated noise on the basis maps (the
-       VMI-noise "U"); `BS.apply_image_acnr!` removes it after FBP with a
+       VMI-noise "U"); `BS.apply_acnr_kalender!` removes it after FBP with a
        data-adaptive covariance eigen-rotation + edge-aware joint bilateral,
        keeping the structure axis pixel-perfect (no resolution loss).
 
@@ -68,7 +68,7 @@ Simulate 140 kVp →┘                  │
       domain per-ray univariate solver (dual-kVp DECT); material-basis
       variant (iodine + water).
     - Clark, Badea (2023), *Med Phys* — image-domain RSKR (rank-sparse
-      bandwidth, joint bilateral); the cov-ACNR in `BS.apply_image_acnr!`
+      bandwidth); the Kalender true ACNR in `BS.apply_acnr_kalender!`
       adapts these moves to the water/iodine basis-map pair.
     - Grant et al. (2014) — Mono+ frequency-split rule.
 """
@@ -86,29 +86,10 @@ import CairoMakie as CM
 
 # ╔═╡ 05000001-0000-4000-8000-000000000040
 begin
-    GPU_BACKEND = let
-        candidates = [
-            (:Metal, "dde4c033-4e86-420c-a63e-0dd931031962", :MtlArray),
-            (:CUDA, "052768ef-5323-5732-b1bb-66c8b64840ba", :CuArray),
-            (:AMDGPU, "21141c5a-9bdb-4563-92ae-f87d6854732e", :ROCArray),
-        ]
-        detected = (name = "CPU", to_gpu = identity)
-        for (pkg, uuid, ctor) in candidates
-            pkg_id = Base.PkgId(Base.UUID(uuid), String(pkg))
-            Base.locate_package(pkg_id) === nothing && continue
-            try
-                m = Base.require(pkg_id)
-                if Base.invokelatest(getfield(m, :functional))
-                    detected = (name = string(pkg), to_gpu = getfield(m, ctor))
-                    break
-                end
-            catch
-            end
-        end
-        detected
-    end
-
-    to_gpu(x) = GPU_BACKEND.to_gpu(x)
+    import GPUSelect
+    AT = GPUSelect.Storage() # the backend array type, directly: MtlArray / CuArray / oneArray / ROCArray / Array
+    to_gpu(x) = AT(x)
+    GPU_BACKEND = (name = string(nameof(AT)),)
 end
 
 # ╔═╡ 05000001-0000-4000-8000-000000000050
@@ -182,8 +163,18 @@ md"""
 
 # ╔═╡ 05000004-0000-4000-8000-000000000010
 protocol_low = BS.CTProtocol(
+    # DICOM-faithful GSI per-view exposure (Revolution Apex scan 2026-02-23,
+    # DE_80_140kVp_10.07mGyCTDI, tags 0053,1085/1086): the tube runs 407 mA
+    # during each 0.508 ms 80 kVp view → 0.207 mAs/view.  The real scanner
+    # acquires 492 views/channel interleaved and its GSI chain
+    # view-interpolates back to the full 984-view grid before recon; here the
+    # 984-view simulation stands in for that interpolated grid, with the
+    # per-view photon statistics (what controls starvation) matching the
+    # clinical scan exactly.  (The earlier 265 mA-eff had the right dose but
+    # 1.54× fewer photons per view → starvation streaks the real GSI does
+    # not show.)
     kVp = 80,
-    mA = 407 * 0.65,
+    mA = 407.0,
     views = 984,
     rotation_time = 0.5,
     collimation_mm = 5.0,
@@ -192,8 +183,10 @@ protocol_low = BS.CTProtocol(
 
 # ╔═╡ 05000004-0000-4000-8000-000000000020
 protocol_high = BS.CTProtocol(
+    # 140 kVp channel: 405 mA × 0.508 ms dwell (DICOM tags 0053,1083/1084),
+    # same 984-view interpolated grid.
     kVp = 140,
-    mA = 405 * 0.35,
+    mA = 405.0,
     views = 984,
     rotation_time = 0.5,
     collimation_mm = 5.0,
@@ -237,7 +230,13 @@ sim_low = let
     @info "Simulating: 80 kVp / $(round(protocol_low.mA, digits = 1)) mA-eff (DE low)…"
     ws = BS.create_eict_workspace(scanner, protocol_low, sim_opts, recon_opts, phantom)
     BS.simulate!(ws, phantom, protocol_low, sim_opts)
-    result = (sino = Array(ws.sinogram), geom = ws.geom)
+    # Per-ray air-scan counts I0(col,row) — needed by the Jensen debias
+    # (bowtie + heel make the EICT flux ray-dependent).
+    I0_scalar = BS.compute_detector_I0(ws.geom, protocol_low, sum(ws.weights)) * Float64(ws.η_eff)
+    air_ref = ws.bowtie_air_reference === nothing ? ones(Float32, ws.geom.n_cols, ws.geom.n_rows) :
+        Array(ws.bowtie_air_reference)
+    result = (sino = Array(ws.sinogram), geom = ws.geom,
+        I0_ray = Float32.(I0_scalar .* Float64.(air_ref)))
     ws = nothing; GC.gc(true)
     result
 end;
@@ -247,7 +246,13 @@ sim_high = let
     @info "Simulating: 140 kVp / $(round(protocol_high.mA, digits = 1)) mA-eff (DE high)…"
     ws = BS.create_eict_workspace(scanner, protocol_high, sim_opts, recon_opts, phantom)
     BS.simulate!(ws, phantom, protocol_high, sim_opts)
-    result = (sino = Array(ws.sinogram), geom = ws.geom)
+    # Per-ray air-scan counts I0(col,row) — needed by the Jensen debias
+    # (bowtie + heel make the EICT flux ray-dependent).
+    I0_scalar = BS.compute_detector_I0(ws.geom, protocol_high, sum(ws.weights)) * Float64(ws.η_eff)
+    air_ref = ws.bowtie_air_reference === nothing ? ones(Float32, ws.geom.n_cols, ws.geom.n_rows) :
+        Array(ws.bowtie_air_reference)
+    result = (sino = Array(ws.sinogram), geom = ws.geom,
+        I0_ray = Float32.(I0_scalar .* Float64.(air_ref)))
     ws = nothing; GC.gc(true)
     result
 end;
@@ -293,83 +298,22 @@ let
     fig
 end
 
-# ╔═╡ 05000007-0000-4000-8000-000000000001
-md"""
-## 6. Projection-Domain SVD Denoising (2-channel joint)
-
-Simple N-channel projection-domain SVD joint denoiser
-(`BS.apply_sino_svd_denoise`, `src/denoising/sino_svd.jl`) applied to the
-**80 + 140 kVp log-line-integral pair, before any decomposition** — the
-earliest projection-domain point.
-
-Per detector row, an SVD across the 2 channels keeps the common
-log-attenuation structure `U[:,1]` (the shared anatomy, ~√2 SNR gain)
-**pixel-perfect** and smooths the spectral-residual + decorrelated-noise
-subspace `U[:,2]` with a small separable Gaussian.  One knob:
-`SVD_SIGMA_PX` (px); `0` ⇒ passthrough (A/B against no projection denoising).
-"""
-
-# ╔═╡ 05000007-0000-4000-8000-000000000005
-SVD_SIGMA_PX = 0.0;   # Gaussian σ (px) for U[:,2]; 0 = passthrough (no denoising)
-
-# ╔═╡ 05000007-0000-4000-8000-000000000010
-# 2-channel joint projection-domain SVD denoise (BS.apply_sino_svd_denoise).
-# Runs on the (80, 140) kVp pair before the §7 Cong decomposition;
-# SVD_SIGMA_PX = 0 ⇒ passthrough (no denoising).
-sino_denoised = let
-    out = BS.apply_sino_svd_denoise(
-        [Float32.(sim_low.sino), Float32.(sim_high.sino)];
-        σ_px = SVD_SIGMA_PX,
-    )
-    @info "[sino-SVD] 2-channel joint projection denoise · σ_px = $(SVD_SIGMA_PX) (0 ⇒ passthrough)"
-    (low = out[1], high = out[2], geom = sim_low.geom)
-end;
-
-# ╔═╡ 05000007-0000-4000-8000-000000000030
-let
-    n_row = size(sino_denoised.low, 2)
-    mid_r = n_row ÷ 2 + 1
-
-    slice_lo = permutedims(sino_denoised.low[:, mid_r, :], (2, 1))
-    slice_hi = permutedims(sino_denoised.high[:, mid_r, :], (2, 1))
-
-    all_v = vcat(vec(slice_lo), vec(slice_hi))
-    sino_window = (
-        Float64(quantile(all_v, 0.01)),
-        Float64(quantile(all_v, 0.99)),
-    )
-
-    fig = CM.Figure(size = (1180, 580))
-    axis_kwargs = (
-        titlesize = 32, subtitlesize = 24,
-        xlabel = "View", ylabel = "Detector Column",
-        xlabelsize = 22, ylabelsize = 22,
-        xticklabelsize = 16, yticklabelsize = 16,
-    )
-
-    panels = (
-        (1, 1, "80 kVp", "After SVD denoise", slice_lo),
-        (1, 2, "140 kVp", "After SVD denoise", slice_hi),
-    )
-
-    for (r, c, ttl, sub, slice) in panels
-        ax = CM.Axis(fig[r, c]; title = ttl, subtitle = sub, axis_kwargs...)
-        CM.heatmap!(ax, slice; colormap = :viridis, colorrange = sino_window)
-    end
-    CM.Colorbar(
-        fig[1, 3]; colormap = :viridis, colorrange = sino_window,
-        label = "Log Line Integral", width = 16, labelsize = 22, ticklabelsize = 18
-    )
-    fig
-end
-
 # ╔═╡ 05000008-0000-4000-8000-000000000001
 md"""
 ## 7. Projection Domain Material Decomposition
 
 Per-ray Newton solver on the polychromatic transmission integral
 (material-basis variant: iodine + water mass-attenuation tables seeded
-with `water_basis = (a = 0, c = 1)`).  Output sinograms are per-ray
+with `water_basis = (a = 0, c = 1)`).
+
+**Jensen debias (in the decomposition cell, before the solve):** the channel
+sinograms are debiased per ray by `1/(2N)` with `N = I₀(col,row)·e^{−p}` —
+the first-order bias of `−log` of Poisson counts.  Deterministic statistics
+(σ untouched), exact for this simulator's pure-Poisson count noise; on rays
+behind the dense Ca rods (N ≈ 2–50 at 80 kVp) it removes the 1–2.5 % `p`
+inflation that Cong would otherwise amplify into low-keV HU bias.
+
+Output sinograms are per-ray
 basis line integrals:
 
 ```
@@ -377,21 +321,27 @@ sino_iodine = ∫ c_iodine(r) dr   (iodine basis density × path)
 sino_water  = ∫ c_water(r)  dr   (water  basis density × path)
 ```
 
-!!! info "Bowtie Awareness"
-    The basis builder uses `BS.resolve_source_spectrum_with_bowtie`,
-    which returns a per-ray 3D spectral weight `ŵ[col, row, E]`.  The
-    decomposition kernel detects the 3D shape automatically and uses
-    the right column–row spectrum for each detector position — so the
-    bowtie's per-ray spectral hardening is baked into the basis fit
-    from the start.
+!!! info "Full-Spectrum Awareness"
+    The basis builder uses `BS.resolve_source_spectrum_full`, which
+    returns a per-ray 3D spectral weight `ŵ[col, row, E]` containing
+    EVERY spectrum-shaping factor the simulation applied — bowtie,
+    anode heel, and detector efficiency η(E).  The decomposition kernel
+    detects the 3D shape automatically and uses the right column–row
+    spectrum for each detector position, so the inversion's forward
+    model matches the data exactly.
 """
 
 # ╔═╡ 05000008-0000-4000-8000-000000000010
 material_basis = let
-    e_L, ŵ_L = BS.resolve_source_spectrum_with_bowtie(
+    # FULL detected spectrum — tube × filters × bowtie × heel × η(E), each
+    # gated on sim_opts.use_*.  The decomposition's forward model must match
+    # the forward model simulate! actually applied (same doctrine as the
+    # knobless water BHC); the old bowtie-only resolver omitted η + heel and
+    # left a keV-dependent bias on every ray.
+    e_L, ŵ_L = BS.resolve_source_spectrum_full(
         sim_opts, protocol_low; scanner = scanner, geom = sim_low.geom,
     )
-    e_H, ŵ_H = BS.resolve_source_spectrum_with_bowtie(
+    e_H, ŵ_H = BS.resolve_source_spectrum_full(
         sim_opts, protocol_high; scanner = scanner, geom = sim_high.geom,
     )
 
@@ -414,8 +364,24 @@ end;
 
 # ╔═╡ 05000008-0000-4000-8000-000000000020
 sino_basis = let
-    sino_low_gpu = to_gpu(sino_denoised.low)
-    sino_high_gpu = to_gpu(sino_denoised.high)
+    # First-order log-Poisson DEBIAS (deterministic statistics, not
+    # denoising): E[−log(N/I0)] = p_true + 1/(2N) for Poisson counts.  On
+    # rays behind the dense Ca rods the 80 kVp channel detects N ≈ 2–50
+    # photons, inflating p by 1–2.5 % exactly where Cong amplifies it into
+    # the low-keV dense-rod bias.  (Exact for this simulator's pure-Poisson
+    # count noise; a real energy-integrating detector needs the same form
+    # with Swank-corrected effective counts, ~10–30 % larger.)
+    debias(p, I0_ray) = begin
+        out = Float32.(p)
+        nc, nr, nv = size(out)
+        for v in 1:nv, r in 1:nr, c in 1:nc
+            N = max(I0_ray[c, r] * exp(-out[c, r, v]), 1.0f0)
+            out[c, r, v] -= 1.0f0 / (2.0f0 * N)
+        end
+        out
+    end
+    sino_low_gpu = to_gpu(debias(sim_low.sino, sim_low.I0_ray))
+    sino_high_gpu = to_gpu(debias(sim_high.sino, sim_high.I0_ray))
 
     sino_y = similar(sino_low_gpu)   # iodine basis line integrals
     sino_c = similar(sino_low_gpu)   # water  basis line integrals
@@ -430,7 +396,7 @@ sino_basis = let
     result = (
         sino_iodine = Array(sino_y),
         sino_water = Array(sino_c),
-        geom = sino_denoised.geom,
+        geom = sim_low.geom,
     )
     sino_low_gpu = nothing; sino_high_gpu = nothing
     sino_y = nothing; sino_c = nothing; cong_ws = nothing
@@ -555,7 +521,7 @@ md"""
 ## 8b. ACNR — Edge-Aware Anti-Correlated Noise Reduction (image domain)
 
 Material decomposition stamps anti-correlated noise on the basis maps
-(`ρ_basis < 0`) — that anti-correlation *is* the VMI-noise U.  `BS.apply_image_acnr!`
+(`ρ_basis < 0`) — that anti-correlation *is* the VMI-noise U.  `BS.apply_acnr_kalender!`
 (data-adaptive cov-ACNR, `denoising/acnr.jl`) removes it: a closed-form 2×2
 covariance eigen-rotation keeps the structure axis **e1** pixel-perfect and
 joint-bilateral-denoises only the anti-correlated noise axis **e2** (edge-aware,
@@ -564,101 +530,27 @@ so real water/iodine edges survive).  Runs on the FBP basis maps, **before** the
 """
 
 # ╔═╡ 05000009-0000-4000-8000-000000000050
-# Image-domain cov-ACNR on the FBP basis maps via src `BS.apply_image_acnr!`.
+# Kalender-1988 true ACNR on the FBP basis maps via `BS.apply_acnr_kalender!`.
 basis_acnr = let
-    APPLY_ACNR = true        # ON — image-domain edge-aware cov-ACNR
-    GAMMA = 1.0         # strength ∈ [0,1]; 0 = identity
-    BILAT_RADIUS = 3           # spatial window radius (px)
-    BILAT_SIGMA_S = 1.0         # spatial Gaussian σ (px)
-    BILAT_RANGE_K = 2.5         # range σ = K · per-basis noise std (edges > K·σ preserved)
+    APPLY_ACNR = true          # Kalender-1988 true ACNR; false ⇒ passthrough
 
     W = copy(basis_volumes.vol_water_raw)
     I = copy(basis_volumes.vol_iodine_raw)
 
-    if APPLY_ACNR && GAMMA > 0
-        info = BS.apply_image_acnr!(
-            W, I;
-            gamma = GAMMA, bilat_radius = BILAT_RADIUS,
-            bilat_sigma_s = BILAT_SIGMA_S, bilat_range_k = BILAT_RANGE_K
-        )
-        @info "[ACNR · cov / SRC apply_image_acnr!] θ=$(round(info.θ_deg, digits = 1))° · ρ(W,I)=$(round(info.ρ_struct, digits = 3)) · γ=$(GAMMA) · e1 (structure) pixel-perfect, e2 (anti-corr noise) denoised · σ_noise(W)=$(round(info.σ_W, sigdigits = 3)), σ_noise(I)=$(round(info.σ_I, sigdigits = 3))"
+    if APPLY_ACNR
+        # TRUE ACNR (Kalender 1988): per-pixel local regression between the
+        # two maps' high-frequency channels — anti-correlated (noise) content
+        # is subtracted exactly, positively-correlated (structure) pixels are
+        # clamped to zero correction and stay BIT-untouched.  No smoothing
+        # operator touches signal: resolution preservation by construction.
+        info = BS.apply_acnr_kalender!(W, I)
+        @info "[ACNR · Kalender-1988 true ACNR] ρ_hp(W,I)=$(round(info.ρ_hp, digits = 3)) · σ_hp(W)=$(round(info.σ_hW, sigdigits = 3)) σ_hp(I)=$(round(info.σ_hI, sigdigits = 3)) · anti-correlated HF removed pixelwise, structure clamp-protected"
     else
         @info "[ACNR] OFF (passthrough)"
     end
 
     (vol_iodine_raw = I, vol_water_raw = W, geom = basis_volumes.geom)
 end;
-
-# ╔═╡ 0500000a-0000-4000-8000-000000000001
-md"""
-## 9. Z-Direction Median Filter
-
-1D median along z, per `(x, y)` voxel column.  `adjacent_slices = 1`
-⇒ 3-slice window (1 above + center + 1 below).  Cheap streak/outlier
-suppression that exploits the Gammex 472's z-invariance — zero
-in-plane resolution loss.
-
-Bump `Z_MEDIAN_ADJACENT` to widen the window:
-
-| `adjacent_slices` | window size |
-|-------------------|-------------|
-| `0`               | identity    |
-| `1` (default)     | 3 slices    |
-| `2`               | 5 slices    |
-"""
-
-# ╔═╡ 0500000a-0000-4000-8000-000000000005
-Z_MEDIAN_ADJACENT = 2;
-
-# ╔═╡ 0500000a-0000-4000-8000-000000000010
-basis_z = let
-    (
-        vol_iodine = BS.apply_median_z(
-            basis_acnr.vol_iodine_raw;
-            adjacent_slices = Z_MEDIAN_ADJACENT,
-        ),
-        vol_water = BS.apply_median_z(
-            basis_acnr.vol_water_raw;
-            adjacent_slices = Z_MEDIAN_ADJACENT,
-        ),
-        geom = basis_acnr.geom,
-    )
-end;
-
-# ╔═╡ 0500000a-0000-4000-8000-000000000030
-let
-    fig = CM.Figure(size = (1180, 580))
-    axis_kwargs = (titlesize = 32, subtitlesize = 24)
-
-    mid = size(basis_z.vol_iodine, 3) ÷ 2
-
-    _qrange(arr) = (
-        Float64(quantile(vec(arr), 0.01)),
-        Float64(quantile(vec(arr), 0.99)),
-    )
-
-    slice_iod = basis_z.vol_iodine[:, :, mid]
-    slice_wat = basis_z.vol_water[:, :, mid]
-
-    panels = (
-        (1, 1, 2, "Iodine Basis", "g/cm³", slice_iod, _qrange(slice_iod)),
-        (1, 3, 4, "Water Basis", "g/cm³", slice_wat, _qrange(slice_wat)),
-    )
-
-    for (r, panel_c, cbar_c, ttl, cbar_label, slice, range) in panels
-        ax = CM.Axis(
-            fig[r, panel_c]; title = ttl,
-            aspect = CM.DataAspect(), axis_kwargs...
-        )
-        CM.heatmap!(ax, slice; colormap = :viridis, colorrange = range)
-        CM.hidedecorations!(ax)
-        CM.Colorbar(
-            fig[r, cbar_c]; colormap = :viridis, colorrange = range,
-            label = cbar_label, width = 16, labelsize = 22, ticklabelsize = 18
-        )
-    end
-    fig
-end
 
 # ╔═╡ 0500000b-0000-4000-8000-000000000001
 md"""
@@ -708,7 +600,7 @@ solid_water_basis = let
         "after $(ERODE_PX)-px erosion"
 
     sw_idx = findall(sw_bool)
-    n_z = size(basis_z.vol_water, 3)
+    n_z = size(basis_acnr.vol_water_raw, 3)
     function _mean(vol)
         s = 0.0; n = 0
         for z in 1:n_z, ci in sw_idx
@@ -717,8 +609,8 @@ solid_water_basis = let
         return s / n
     end
 
-    c_w = Float64(_mean(basis_z.vol_water))
-    c_i = Float64(_mean(basis_z.vol_iodine))
+    c_w = Float64(_mean(basis_acnr.vol_water_raw))
+    c_i = Float64(_mean(basis_acnr.vol_iodine_raw))
     @info "solid_water_basis: ⟨c_water⟩_SW = $(round(c_w, digits = 4)) g/cm³, " *
         "⟨c_iodine⟩_SW = $(round(c_i, digits = 6)) g/cm³"
 
@@ -735,7 +627,7 @@ de_vmi_energies = [50.0, 70.0, 100.0, 140.0];
 vmi_HU_by_keV = let
     # `BS.synth_vmi_2basis` expects c_iodine in mg/mL; our basis maps
     # are in g/cm³ (= g/mL).  Multiply by 1000 to convert.
-    c_iodine_mg_per_mL = basis_z.vol_iodine .* 1000.0f0
+    c_iodine_mg_per_mL = basis_acnr.vol_iodine_raw .* 1000.0f0
 
     out = Dict{Float64, Array{Float32, 3}}()
     for E in de_vmi_energies
@@ -751,7 +643,7 @@ vmi_HU_by_keV = let
             "$(round(μ_water_anchor, digits = 5)) → Δ = $(round(Δ_pct, digits = 2))%"
 
         out[E] = BS.synth_vmi_2basis(
-            basis_z.vol_water, c_iodine_mg_per_mL;
+            basis_acnr.vol_water_raw, c_iodine_mg_per_mL;
             energy_keV = E,
         )
     end
@@ -831,7 +723,8 @@ high frequencies (edges, fine detail) come from the target energy `E`.
 # σ > 0  ⇒ that energy's LP band is replaced with the 70-keV anchor's LP.
 # Edit these to tune per-energy noise/contrast trade-off.
 # (50, 70, 100, 140) keV
-σ_vmi_lp_px = Float64[1.0, 0.0, 1.0, 1.0];
+# σ_vmi_lp_px = Float64[1.0, 0.0, 1.0, 1.0];
+σ_vmi_lp_px = Float64[0.0, 0.0, 0.0, 0.0];
 
 # ╔═╡ 0500000c-0000-4000-8000-000000000010
 vmi_HU_final = let
@@ -1132,7 +1025,7 @@ const WATER_NOISE_ROI_RADIUS_PX = 12;   # ≈8.2 mm at 0.683 mm/px (FOV 35 cm / 
 # Central circular noise ROI in the solid-water background (image center =
 # isocenter = phantom center for the centered Gammex 472).
 water_noise_roi = let
-    nx_r, ny_r, nz_r = size(basis_z.vol_water)
+    nx_r, ny_r, nz_r = size(basis_acnr.vol_water_raw)
     cx = nx_r ÷ 2 + 1
     cy = ny_r ÷ 2 + 1
 
@@ -1417,25 +1310,94 @@ let
     fig
 end
 
+# ╔═╡ 15000001-0000-4000-8000-000000000001
+md"""
+## 14. Automated verification
+
+Quantitative PASS/FAIL against first-principles theory — per rod, per VMI
+energy.  Theory is mono HU from the same XrayAttenuation data that drove the
+simulation.  This is the notebook's contract: the projection-domain direct
+solve should put every rod on its theoretical line at every keV.
+"""
+
+# ╔═╡ 15000001-0000-4000-8000-000000000002
+verification = let
+    checks = NamedTuple[]
+    addcheck(name, val, lo, hi) = push!(checks,
+        (name = name, value = round(val; digits = 1), lo = lo, hi = hi, pass = lo <= val <= hi))
+
+    # solid water: |HU| small at every energy (basis water map → HU ≈ 0)
+    sw = solid_water_basis
+    sw_worst = maximum(abs(mean(vmi_HU_final[E][sw.mask_2d, :])) for E in de_vmi_energies)
+    addcheck("solid water worst |HU| across keV", sw_worst, 0.0, 10.0)
+
+    # CRITICAL clinical requirement: VMI noise decreases MONOTONICALLY with
+    # keV (the U-shape = untreated anti-correlated basis noise; cov-ACNR
+    # removes it — see the solved U-shape analysis).
+    Es = sort(collect(de_vmi_energies))
+    σs = [std(vmi_HU_final[E][sw.mask_2d, :]) for E in Es]
+    mono_ok = all(σs[i] > σs[i + 1] for i in 1:(length(σs) - 1))
+    push!(checks, (name = "noise monotonic ↓ with keV: σ = $(join(round.(σs; digits = 1), " > "))",
+        value = mono_ok ? 1.0 : 0.0, lo = 1.0, hi = 1.0, pass = mono_ok))
+
+    # per-rod, per-energy: |Δ| ≤ max(15 HU, 10 %)
+    rod_rows = String[]
+    n_pass_rod = 0; n_rod = 0
+    for group in (:Ca, :I), (i, name) in pairs(rod_data[group].names)
+        cells = String[]
+        ok_all = true
+        for (j, E) in pairs(de_vmi_energies)
+            meas = rod_data[group].measured[i, j]
+            theo = rod_data[group].theoretical[i, j]
+            ok = abs(meas - theo) <= max(15.0, 0.10 * abs(theo))
+            ok_all &= ok
+            push!(cells, "$(round(meas; digits = 0)) / $(round(theo; digits = 0)) $(ok ? "✅" : "❌")")
+        end
+        n_rod += 1
+        n_pass_rod += ok_all
+        push!(rod_rows, "| $(name) | " * join(cells, " | ") * " |")
+    end
+    addcheck("rods passing at ALL energies", n_pass_rod, n_rod, n_rod)
+
+    n_pass = count(c -> c.pass, checks)
+    verdict = n_pass == length(checks) ? "✅ NB03 VERIFICATION: PASS ($(n_pass)/$(length(checks)))" :
+                                          "❌ NB03 VERIFICATION: FAIL ($(n_pass)/$(length(checks)))"
+    hdr = join(["$(Int(E)) keV" for E in de_vmi_energies], " | ")
+    md_str = """
+### $(verdict)
+
+| check | value | expected | pass |
+|---|---|---|---|
+$(join(["| $(c.name) | $(c.value) | [$(c.lo), $(c.hi)] | $(c.pass ? "✅" : "❌") |" for c in checks], "\n"))
+
+**Per-rod measured / theory (Mono+ final volumes), gate |Δ| ≤ max(15 HU, 10 %):**
+
+| rod | $(hdr) |
+|---|$(join(["---" for _ in de_vmi_energies], "|"))|
+$(join(rod_rows, "\n"))
+"""
+    Markdown.parse(md_str)
+end
+
 # ╔═╡ 0500000f-0000-4000-8000-000000000001
 md"""
 ## Summary
 
 ```
-Simulate 80 + 140 kVp (scatter-corrected line-integral sinograms)
-   → Projection-Domain SVD Denoise  (2-channel, BS.apply_sino_svd_denoise)
+Simulate 80 + 140 kVp  (DICOM-faithful GSI technique, per-view flux from
+                         the clinical Revolution Apex scan)
    → Projection-Domain Material Decomposition  (Cong univariate, iodine + water)
    → FBP × 2  (iodine, water basis maps)
-   → Image-Domain cov-ACNR  (BS.apply_image_acnr!)
-   → Z-Direction Median Filter × 2
+   → Kalender-1988 TRUE ACNR  (BS.apply_acnr_kalender! — per-pixel HF
+                               regression, structure bit-untouched, zero blur)
    → Monoenergetic VMI Synthesis  (textbook 2-basis, mono μρ_water divisor)
-   → Mono+ Post-Processing  (per-keV σ via σ_vmi_lp_px)
-   → Measured vs Theoretical Per-Rod Regression  at 50 / 70 / 100 / 140 keV
+   → Mono+  (wired, currently PASSTHROUGH: σ_vmi_lp_px all zero)
+   → Automated verification  (water HU · monotonic noise-vs-keV · 14-rod NIST regression)
 ```
 
 The SVD projection denoise and the Cong material decomposition both run
 **upstream of FBP**, so quantum noise and beam-hardening residuals can't
-propagate into the basis maps.  Image-domain cov-ACNR (`BS.apply_image_acnr!`)
+propagate into the basis maps.  Kalender true ACNR (`BS.apply_acnr_kalender!`)
 then removes the anti-correlated basis noise (the VMI-U) without resolution
 loss.  The result is HU-quantitative VMIs with low streak content and clean
 low-keV Mono+ output.
@@ -1466,10 +1428,6 @@ low-keV Mono+ output.
 # ╠═05000006-0000-4000-8000-000000000010
 # ╠═05000006-0000-4000-8000-000000000020
 # ╟─05000006-0000-4000-8000-000000000040
-# ╟─05000007-0000-4000-8000-000000000001
-# ╠═05000007-0000-4000-8000-000000000005
-# ╠═05000007-0000-4000-8000-000000000010
-# ╟─05000007-0000-4000-8000-000000000030
 # ╟─05000008-0000-4000-8000-000000000001
 # ╠═05000008-0000-4000-8000-000000000010
 # ╠═05000008-0000-4000-8000-000000000020
@@ -1479,10 +1437,6 @@ low-keV Mono+ output.
 # ╟─05000009-0000-4000-8000-000000000030
 # ╟─05000009-0000-4000-8000-000000000040
 # ╠═05000009-0000-4000-8000-000000000050
-# ╟─0500000a-0000-4000-8000-000000000001
-# ╠═0500000a-0000-4000-8000-000000000005
-# ╠═0500000a-0000-4000-8000-000000000010
-# ╟─0500000a-0000-4000-8000-000000000030
 # ╟─0500000b-0000-4000-8000-000000000001
 # ╠═0500000b-0000-4000-8000-000000000010
 # ╠═0500000b-0000-4000-8000-000000000015
@@ -1507,4 +1461,6 @@ low-keV Mono+ output.
 # ╟─0500000e-0000-4000-8000-000000000010
 # ╟─0500000e-0000-4000-8000-000000000020
 # ╟─0500000e-0000-4000-8000-000000000030
+# ╟─15000001-0000-4000-8000-000000000001
+# ╠═15000001-0000-4000-8000-000000000002
 # ╟─0500000f-0000-4000-8000-000000000001

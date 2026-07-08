@@ -95,6 +95,20 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
             thumbnail = "qrm_thorax_pcct_vmi_vs_theoretical.png",
             tags      = ["PCCT", "Naeotom Alpha", "VMI", "cov-ACNR", "QRM-Thorax"],
         ),
+        "11_helical_scanning" => (
+            index     = "11",
+            title     = "Helical Scanning — Narrow Collimation, Long Coverage",
+            summary   = "One new kwarg — pitch — turns any protocol into a spiral scan.  A 32 cm " *
+                        "z-slab captured with a NARROW 20 mm collimation (pitch 1.0 × 16 rotations, " *
+                        ":dd_fast projector, rebinned-WFBP helical recon) vs classic step-and-shoot " *
+                        "(8 axial stations at the scanner-max 40 mm collimation), matched exposure, " *
+                        "full nb01 correction stack.  A z-varying low-Z phantom (helically winding " *
+                        "lung rod + tapering adipose cone) and a PlutoUI z-slider show phantom truth " *
+                        "against both recons slice by slice — helical holds water flat across the " *
+                        "whole slab while the stitched stations show their seams.",
+            thumbnail = "helical_vs_stepshoot_coronal.png",
+            tags      = ["EICT", "Helical", "Pitch", "dd_fast", "FDK"],
+        ),
         "10_titanium_implant" => (
             index     = "10",
             title     = "Titanium Implant — Metal Artifacts from a User-Defined Material",

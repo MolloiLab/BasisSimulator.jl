@@ -284,3 +284,127 @@ end
 
 export apply_acnr!, apply_acnr
 export apply_image_acnr!, apply_image_acnr
+
+# =============================================================================
+# Kalender-1988 TRUE ACNR — per-pixel regression, zero structural blur
+# =============================================================================
+
+"""
+    apply_acnr_kalender!(W, I; hp_sigma_px=1.5, window=2, beta_max=8.0) -> info
+
+TRUE anti-correlated noise reduction (Kalender, Klotz & Kostaridou 1988,
+the original dual-energy ACNR): per-pixel LOCAL linear regression between
+the two basis maps' high-frequency channels.
+
+Physics: dual-energy basis noise is ANTI-correlated (`cov(n_W, n_I) < 0`)
+while anatomical structure is positively correlated.  For each pixel take
+`hW = W − G(W)`, `hI = I − G(I)` (high-pass, σ = `hp_sigma_px`), estimate
+the local regression slope `β = cov(hI, hW)/var(hW)` in a `(2w+1)²`
+window (the window sizes only the ESTIMATE of β — the correction itself
+stays a per-pixel linear combination, so no signal smoothing occurs;
+larger windows reduce β̂ variance, whose noise otherwise re-introduces a
+small positive residual correlation that flips the VMI noise-vs-keV
+tail upward), and CLAMP it to `[−beta_max, 0]`:
+
+  * noise-dominated pixels → β ≈ −σ_I/σ_W → `I − β·hW` cancels the
+    predictable anti-correlated component EXACTLY (pixelwise subtraction,
+    no smoothing operator ever multiplies the signal);
+  * structure-dominated pixels → local cov > 0 → β clamps to 0 → the
+    pixel is BIT-UNTOUCHED.
+
+Resolution preservation is therefore by construction, not by an
+edge-stopping heuristic.  Symmetric correction is applied to `W` from
+`hI`.  Returns `(ρ_hp, σ_hW, σ_hI)` global HF statistics.
+"""
+function apply_acnr_kalender!(
+        W::AbstractArray{T, 3},
+        I::AbstractArray{T, 3};
+        hp_sigma_px::Real = 1.5,
+        window::Int = 4,
+        beta_max::Real = 8.0,
+        passes::Int = 2,
+    ) where {T <: AbstractFloat}
+    # Multi-pass: the one-sided clamp on a NOISY local β̂ under-corrects on
+    # average (β̂ > 0 pixels keep their full anti-correlated noise), leaving
+    # residual C_WI < 0 that puts the VMI noise-vs-keV minimum inside the
+    # clinical range (tail flips up at 140 keV).  Each pass shrinks the
+    # residual geometrically; the correction stays a per-pixel linear
+    # combination — zero signal smoothing regardless of pass count.
+    if passes > 1
+        info = nothing
+        for _ in 1:passes
+            info = apply_acnr_kalender!(W, I; hp_sigma_px = hp_sigma_px,
+                window = window, beta_max = beta_max, passes = 1)
+        end
+        return info
+    end
+
+    nx, ny, nz = size(W)
+    # high-pass via small separable Gaussian (CPU FFT fine — done once)
+    G(vol) = begin
+        out = similar(vol)
+        σ = Float64(hp_sigma_px)
+        r = max(2, ceil(Int, 3σ))
+        k = T.(exp.(-(collect(-r:r) .^ 2) ./ (2σ^2)))
+        k ./= sum(k)
+        tmp = similar(vol)
+        # x
+        for z in 1:nz, j in 1:ny, i in 1:nx
+            acc = zero(T)
+            for t in -r:r
+                ii = clamp(i + t, 1, nx)
+                acc += k[t + r + 1] * vol[ii, j, z]
+            end
+            tmp[i, j, z] = acc
+        end
+        # y
+        for z in 1:nz, j in 1:ny, i in 1:nx
+            acc = zero(T)
+            for t in -r:r
+                jj = clamp(j + t, 1, ny)
+                acc += k[t + r + 1] * tmp[i, jj, z]
+            end
+            out[i, j, z] = acc
+        end
+        out
+    end
+
+    Wc = Array(W); Ic = Array(I)
+    hW = Wc .- G(Wc)
+    hI = Ic .- G(Ic)
+
+    w = window
+    # Variance-limited regression bound (Kalender's original): |β| may not
+    # exceed the GLOBAL HF noise ratio — an unbounded local β̂ overshoots on
+    # noisy covariance estimates, over-subtracting until the residual pair
+    # is positively correlated (the VMI noise-vs-keV tail flips upward).
+    λ_I = sqrt(sum(abs2, hI) / max(sum(abs2, hW), T(1.0e-30)))
+    λ_W = sqrt(sum(abs2, hW) / max(sum(abs2, hI), T(1.0e-30)))
+    βmaxI = min(T(beta_max), λ_I)
+    βmaxW = min(T(beta_max), λ_W)
+    outW = copy(Wc); outI = copy(Ic)
+    for z in 1:nz
+        for j in 1:ny, i in 1:nx
+            sWW = zero(T); sII = zero(T); sWI = zero(T)
+            n = 0
+            for dj in -w:w, di in -w:w
+                ii = i + di; jj = j + dj
+                (1 <= ii <= nx && 1 <= jj <= ny) || continue
+                a = hW[ii, jj, z]; b = hI[ii, jj, z]
+                sWW += a * a; sII += b * b; sWI += a * b
+                n += 1
+            end
+            # regression of hI on hW (for I) and hW on hI (for W), clamped ≤ 0
+            βI = clamp(sWI / max(sWW, T(1.0e-20)), -βmaxI, zero(T))
+            βW = clamp(sWI / max(sII, T(1.0e-20)), -βmaxW, zero(T))
+            outI[i, j, z] = Ic[i, j, z] - βI * hW[i, j, z]
+            outW[i, j, z] = Wc[i, j, z] - βW * hI[i, j, z]
+        end
+    end
+    copyto!(W, outW); copyto!(I, outI)
+
+    ρ = sum(hW .* hI) / sqrt(max(sum(hW .^ 2) * sum(hI .^ 2), T(1.0e-30)))
+    return (ρ_hp = ρ, σ_hW = sqrt(sum(hW .^ 2) / length(hW)), σ_hI = sqrt(sum(hI .^ 2) / length(hI)))
+end
+
+export apply_acnr_kalender!

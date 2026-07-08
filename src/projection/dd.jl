@@ -114,16 +114,31 @@ end
         mag::T, ps::T, prs::T, col_center::T, row_center::T,
         nx::Int32, ny::Int32,
         vmin_x::T, vmin_y::T, vx::T, vy::T,
+        arc_det::Bool, dγ::T,
     ) where {T}
 
     eps = T(1.0e-12)
     half = T(0.5)
 
-    # detector COLUMN boundaries (transaxial), world (x,y) at detector mid-row
-    uL = (T(col) - half - col_center) * ps * mag
-    uU = (T(col) + half - col_center) * ps * mag
-    bxL = dcx + uL * ux;  byL = dcy + uL * uy
-    bxU = dcx + uU * ux;  byU = dcy + uU * uy
+    # detector COLUMN boundaries (transaxial), world (x,y) at detector mid-row.
+    # :arc → boundaries at fan angles γ ± Δγ/2 on the source-centred cylinder;
+    # :flat → linear offsets along detector_u.
+    bxL, byL, bxU, byU = if arc_det
+        γL = (T(col) - half - col_center) * dγ
+        γU = (T(col) + half - col_center) * dγ
+        cin_x = dcx - sx
+        cin_y = dcy - sy
+        Lsd = sqrt(cin_x * cin_x + cin_y * cin_y)
+        (sx + cos(γL) * cin_x + sin(γL) * Lsd * ux,
+         sy + cos(γL) * cin_y + sin(γL) * Lsd * uy,
+         sx + cos(γU) * cin_x + sin(γU) * Lsd * ux,
+         sy + cos(γU) * cin_y + sin(γU) * Lsd * uy)
+    else
+        uL = (T(col) - half - col_center) * ps * mag
+        uU = (T(col) + half - col_center) * ps * mag
+        (dcx + uL * ux, dcy + uL * uy,
+         dcx + uU * ux, dcy + uU * uy)
+    end
 
     # integration axis = dominant source component
     vertical = abs(sy) >= abs(sx)
@@ -180,12 +195,14 @@ end
         mag::T, ps::T, prs::T, col_center::T, row_center::T,
         nx::Int32, ny::Int32, nz::Int32,
         vmin_x::T, vmin_y::T, vmin_z::T, vx::T, vy::T, vz::T,
+        arc_det::Bool, dγ::T,
     ) where {T}
 
     (valid, vertical, s_long, s_tran, dXlo, dXhi, dZlo, dZhi, norm,
         n_t, v_t, vmin_t, n_long, v_long, vmin_long) = _dd_cell_setup(
         col, row, sx, sy, sz, dcx, dcy, dcz, ux, uy, vvz,
-        mag, ps, prs, col_center, row_center, nx, ny, vmin_x, vmin_y, vx, vy)
+        mag, ps, prs, col_center, row_center, nx, ny, vmin_x, vmin_y, vx, vy,
+        arc_det, dγ)
 
     valid || return zero(T)
 
@@ -266,6 +283,8 @@ function dd_forward_project!(
     _dd_check_isotropy(vx, vy)
 
     mag = T(geom.SDD / geom.SAD)
+    arc_det = is_arc(geom)
+    dγ = T(geom.pixel_size / geom.SAD)
     ps = T(geom.pixel_size); prs = T(geom.pixel_row_size)
     col_center = (T(n_cols) + one(T)) / T(2)
     row_center = (T(n_rows) + one(T)) / T(2)
@@ -288,6 +307,7 @@ function dd_forward_project!(
             dc[1, angle], dc[2, angle], dc[3, angle], du[1, angle], du[2, angle], dv[3, angle],
             mag, ps, prs, col_center, row_center,
             nx, ny, nz, vmin_x, vmin_y, vmin_z, vx, vy, vz,
+            arc_det, dγ,
         )
     end
     return sinogram
@@ -352,6 +372,8 @@ function dd_fused_poly_project!(
     _dd_check_isotropy(vx, vy)
 
     mag = T(geom.SDD / geom.SAD)
+    arc_det = is_arc(geom)
+    dγ = T(geom.pixel_size / geom.SAD)
     ps = T(geom.pixel_size); prs = T(geom.pixel_row_size)
     col_center = (T(n_cols) + one(T)) / T(2)
     row_center = (T(n_rows) + one(T)) / T(2)
@@ -365,7 +387,7 @@ function dd_fused_poly_project!(
     has_bowtie = ws_bowtie_spectral !== nothing
     _bt = has_bowtie ? ws_bowtie_spectral : similar(μ_table_gpu, T, 1, 1, 1)
 
-    let mask = mask, μ_tbl = μ_table_gpu, wη = wη_gpu,
+    let mask = mask, μ_tbl = μ_table_gpu, wη = wη_gpu, arc_det = arc_det, dγ = dγ,
             sp = sp, dc = dc, du = du, dv = dv, bt = _bt,
             vmx = vmin_x, vmy = vmin_y, vmz = vmin_z, vsx = vx, vsy = vy, vsz = vz,
             nx = nx, ny = ny, nz = nz, nc = n_cols, nr = n_rows,
@@ -386,7 +408,7 @@ function dd_fused_poly_project!(
             (valid, vertical, s_long, s_tran, dXlo, dXhi, dZlo, dZhi, norm,
                 n_t, v_t, vmin_t, n_long, v_long, vmin_long) = _dd_cell_setup(
                 col, row, sx, sy, sz, dcx, dcy, dcz, ux, uy, vvz,
-                mag, ps, prs, cc, rc, nx, ny, vmx, vmy, vsx, vsy)
+                mag, ps, prs, cc, rc, nx, ny, vmx, vmy, vsx, vsy, arc_det, dγ)
 
             accums = ntuple(_ -> zero(T), Val(N_E))
             if valid
@@ -476,6 +498,8 @@ function dd_fused_spectral_project!(
     _dd_check_isotropy(vx, vy)
 
     mag = T(geom.SDD / geom.SAD)
+    arc_det = is_arc(geom)
+    dγ = T(geom.pixel_size / geom.SAD)
     ps = T(geom.pixel_size); prs = T(geom.pixel_row_size)
     col_center = (T(n_cols) + one(T)) / T(2)
     row_center = (T(n_rows) + one(T)) / T(2)
@@ -489,7 +513,7 @@ function dd_fused_spectral_project!(
     has_src_spectral = ws_bowtie_spectral !== nothing
     _bt = has_src_spectral ? ws_bowtie_spectral : similar(μ_table_gpu, T, 1, 1, 1)
 
-    let mask = mask, μ_tbl = μ_table_gpu, W = W_gpu, ts = tile_start,
+    let mask = mask, μ_tbl = μ_table_gpu, W = W_gpu, ts = tile_start, arc_det = arc_det, dγ = dγ,
             sp = sp, dc = dc, du = du, dv = dv, bt = _bt,
             vmx = vmin_x, vmy = vmin_y, vmz = vmin_z, vsx = vx, vsy = vy, vsz = vz,
             nx = nx, ny = ny, nz = nz, nc = n_cols, nr = n_rows,
@@ -511,7 +535,7 @@ function dd_fused_spectral_project!(
             (valid, vertical, s_long, s_tran, dXlo, dXhi, dZlo, dZhi, norm,
                 n_t, v_t, vmin_t, n_long, v_long, vmin_long) = _dd_cell_setup(
                 col, row, sx, sy, sz, dcx, dcy, dcz, ux, uy, vvz,
-                mag, ps, prs, cc, rc, nx, ny, vmx, vmy, vsx, vsy)
+                mag, ps, prs, cc, rc, nx, ny, vmx, vmy, vsx, vsy, arc_det, dγ)
 
             accums = ntuple(_ -> zero(T), Val(K))
             if valid

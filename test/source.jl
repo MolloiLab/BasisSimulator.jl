@@ -577,3 +577,23 @@ end
         @test maximum(abs.(out_alloc .- intensity2)) < 1.0f-6
     end
 end
+
+# -----------------------------------------------------------------------------
+# CTProtocol helical pitch kwarg.
+# -----------------------------------------------------------------------------
+@testset "CTProtocol pitch" begin
+    p_ax = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 200)
+    @test p_ax.pitch === nothing
+
+    p_h = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 200,
+        collimation_mm = 40.0, pitch = 1.2, n_rotations = 6)
+    @test p_h.pitch == 1.2
+    @test p_h.n_rotations == 6.0
+
+    @test_throws ArgumentError BS.CTProtocol(mA = 200.0, kVp = 120.0, pitch = -0.5)
+    @test_throws ArgumentError BS.CTProtocol(mA = 200.0, kVp = 120.0, pitch = 1.0, n_rotations = 0.5)
+
+    # derived protocols carry pitch through
+    @test BS.constant_dose_protocol(p_h, 400).pitch == 1.2
+    @test BS.constant_noise_protocol(p_h, 400).pitch == 1.2
+end

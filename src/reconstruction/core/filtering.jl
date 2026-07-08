@@ -359,6 +359,29 @@ before filtering and backprojection.
 # Reference
 Feldkamp, Davis, Kress (1984) Eq. 5
 """
+
+"""
+    equiangular_kernel_scale!(kernel_cpu, dγ) -> kernel_cpu
+
+Scale spatial ramp-kernel taps by `(γ/sin γ)²` (Kak & Slaney's equiangular
+fan-beam kernel, `g(γ) = ½(γ/sinγ)²·h(γ)`), with `γₙ = n·Δγ`.  Call on the
+CPU kernel before upload when the geometry is an :arc detector (skip for
+:flat and for rebinned-parallel WFBP data).
+"""
+function equiangular_kernel_scale!(kernel_cpu::AbstractVector{T}, dγ::Real) where {T}
+    n = length(kernel_cpu)
+    c = (n + 1) ÷ 2
+    for i in 1:n
+        γ = (i - c) * dγ
+        # physical column pairs always satisfy |γ| < π (full fan); guard the
+        # far zero-data taps of the full-support kernel anyway
+        if γ != 0 && abs(γ) < π * 0.999
+            kernel_cpu[i] *= T((γ / sin(γ))^2)
+        end
+    end
+    return kernel_cpu
+end
+
 function cosine_weight!(
     sinogram::AbstractArray{T, 3},
     geom::CTGeometry
@@ -378,6 +401,8 @@ function cosine_weight!(
     # Pre-compute center offsets for GPU
     col_center = (T(n_cols) + one(T)) / T(2)
     row_center = (T(n_rows) + one(T)) / T(2)
+    arc_det = is_arc(geom)
+    dγ = T(geom.pixel_size / geom.SAD)
 
     # Use AcceleratedKernels.jl for parallel cosine weighting
     AK.foreachindex(sinogram) do idx
@@ -387,15 +412,18 @@ function cosine_weight!(
         idx_0 = idx_0 ÷ n_cols
         row = (idx_0 % n_rows) + Int32(1)
 
-        # Compute detector pixel position (u uses col pixel_size, v uses row pixel_size)
-        u = (T(col) - col_center) * pixel_size * magnification
-        v = (T(row) - row_center) * pixel_row_size * magnification
-
-        # Distance from source to detector pixel
-        dist = sqrt(SDD_sq + u^2 + v^2)
-
-        # Cosine weight = SDD / dist
-        weight = SDD / dist
+        # :flat — cos of the full 3D ray obliquity (TIGRE/FDK);
+        # :arc  — equiangular fan pre-weight cos(γ) × z-obliquity D/√(D²+v²)
+        #         (Kak & Slaney eq. 91 generalised to the cone row).
+        weight = if arc_det
+            γ = (T(col) - col_center) * dγ
+            v = (T(row) - row_center) * pixel_row_size * magnification
+            cos(γ) * SDD / sqrt(SDD_sq + v^2)
+        else
+            u = (T(col) - col_center) * pixel_size * magnification
+            v = (T(row) - row_center) * pixel_row_size * magnification
+            SDD / sqrt(SDD_sq + u^2 + v^2)
+        end
 
         sinogram[idx] *= weight
     end
@@ -436,29 +464,40 @@ function filter_sinogram!(
     filter::FilterType = StandardFilter(),
     cutoff::Float64 = 1.0,
     ws_conv_scratch = nothing,
-    ws_filter_kernel = nothing
+    ws_filter_kernel = nothing,
+    apply_cosine::Bool = true,
+    ray_spacing::Union{Nothing, Real} = nothing
 ) where T <: AbstractFloat
 
     n_cols = Int32(size(sinogram, 1))
     n_rows = Int32(size(sinogram, 2))
     n_angles = Int32(size(sinogram, 3))
 
-    # Step 1: Cosine weighting
-    cosine_weight!(sinogram, geom)
+    # Step 1: Cosine weighting (skipped for rebinned-parallel WFBP data,
+    # which is filtered as plain parallel rows)
+    apply_cosine && cosine_weight!(sinogram, geom)
 
     # Step 2: Create spatial domain filter kernel
-    pixel_size = T(geom.pixel_size)
+    pixel_size = ray_spacing === nothing ? T(geom.pixel_size) : T(ray_spacing)
 
-    # Kernel size based on cutoff (smaller cutoff = smaller kernel = faster)
-    # Compute without reassignment to avoid GPU boxing issues
-    raw_size = max(Int(ceil(Int(n_cols) * cutoff)), 32)
-    kernel_size_int = min(raw_size + (1 - raw_size % 2), Int(n_cols))  # Make odd, clamp to n_cols
+    # Kernel size based on cutoff (smaller cutoff = smaller kernel = faster).
+    # FULL support is 2·n_cols−1: every output column must see the ramp's
+    # negative wings across the whole data extent.  The old n_cols clamp
+    # truncated the far wings, under-subtracting at the object rim → +8 HU
+    # capping when the object fills most of the detector (audit 2026-07-07).
+    raw_size = max(Int(ceil(2 * Int(n_cols) * cutoff)), 64)
+    kernel_size_int = min(raw_size + (1 - raw_size % 2), 2 * Int(n_cols) - 1)
 
     # Use pre-allocated filter kernel if provided (zero-alloc path)
     kernel = if ws_filter_kernel !== nothing
         ws_filter_kernel
     else
         kernel_cpu = create_spatial_kernel(kernel_size_int, filter, pixel_size)
+        # equiangular fan filter correction (only for native arc fan data —
+        # not for rebinned-parallel WFBP rows, which pass ray_spacing)
+        if is_arc(geom) && ray_spacing === nothing
+            equiangular_kernel_scale!(kernel_cpu, geom.pixel_size / geom.SAD)
+        end
         _k = similar(sinogram, T, kernel_size_int)
         copyto!(_k, kernel_cpu)
         _k

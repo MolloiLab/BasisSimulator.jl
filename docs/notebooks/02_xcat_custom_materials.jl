@@ -71,35 +71,10 @@ AMDGPU via `Base.locate_package`, falls back to CPU `identity`.
 
 # ╔═╡ 02000005-0000-4000-8000-000000000001
 begin
-    GPU_BACKEND = let
-        candidates = [
-            (:Metal, "dde4c033-4e86-420c-a63e-0dd931031962", :MtlArray),
-            (:CUDA, "052768ef-5323-5732-b1bb-66c8b64840ba", :CuArray),
-            (:AMDGPU, "21141c5a-9bdb-4563-92ae-f87d6854732e", :ROCArray),
-        ]
-
-        detected = (name = "CPU", to_gpu = identity)
-
-        for (pkg, uuid, ctor) in candidates
-            pkg_id = Base.PkgId(Base.UUID(uuid), String(pkg))
-            Base.locate_package(pkg_id) === nothing && continue
-            try
-                m = Base.require(pkg_id)
-                if Base.invokelatest(getfield(m, :functional))
-                    detected = (
-                        name = string(pkg),
-                        to_gpu = getfield(m, ctor),
-                    )
-                    break
-                end
-            catch
-            end
-        end
-
-        detected
-    end
-
-    to_gpu(x) = GPU_BACKEND.to_gpu(x)
+    import GPUSelect
+    AT = GPUSelect.Storage()     # the backend array type, directly: MtlArray / CuArray / ROCArray
+    to_gpu(x) = AT(x)
+    GPU_BACKEND = (name = string(nameof(AT)),)
 end
 
 # ╔═╡ 02000007-0000-4000-8000-000000000001
@@ -594,13 +569,12 @@ apply a stack of corrections after the simulator's forward model:
 
 | Stage | Function                              | What it does                                                                             |
 |-------|---------------------------------------|------------------------------------------------------------------------------------------|
-| 1.    | `calibrate_bhc_two_material`          | Fits a (water + bone) polynomial from the source spectrum once, returns a BHC model      |
-| 2.    | `apply_bhc_two_material`              | Sinogram-domain beam-hardening correction — runs *before* FDK, removes the bulk poly bias |
+| 1.    | `calibrate_bhc_water`                 | Precomputes per-column water poly→mono polynomials from the FULL detected spectrum — pure physics, zero tunables |
+| 2.    | `apply_bhc_water`                     | Sinogram-domain water BHC — one polynomial pass *before* FDK/HIR                          |
 | 3.    | `reconstruct!` (FDK or Hybrid IR)     | Filtered back-projection / iterative reconstruction on the corrected sinogram            |
-| 4.    | `apply_bhc_image_domain`              | Image-domain BHC refinement — bone-region smoothstep + scaled error subtraction          |
 | 5.    | `to_hounsfield` (with BHC μ_water)    | Convert μ → HU using the BHC model's calibrated reference (not the 70 keV NIST value)    |
 | 6.    | `add_system_noise_floor!`             | Add dose-independent DAS Gaussian σ ≈ 28 HU                                              |
-| 7.    | `apply_radial_cupping_correction!`    | Residual even-polynomial cup correction on water-like voxels (mostly cosmetic after BHC) |
+| 7.    | `measure_radial_cupping`              | QA metric (never applied): fitted residual cup + DC — both ≈ 0 after a correct BHC        |
 
 The same pipeline applies to both FBP and HIR — only the recon workspace
 inside the let block differs (`create_fdk_recon_workspace` vs
@@ -619,16 +593,12 @@ both FBP and HIR pipelines below for `to_hounsfield`.
 
 # ╔═╡ 09000004-0000-4000-8000-000000000001
 bhc_calibration = sim === nothing ? nothing : let
-        prot_for_bhc = BS.CTProtocol(kVp = 120, additional_filters = [("Al", 4.5)])
-
-        # Bowtie-aware high-level API: auto-resolves the bowtie-hardened spectrum,
-        # collapses to per-column weights, and dispatches to TwoMaterialBHCPerColumn.
-        model = BS.calibrate_bhc_two_material(
-            sim_opts, prot_for_bhc;
+        # KNOBLESS water BHC — pure physics, zero tunables, zero thresholds:
+        # per-column poly→mono polynomials from the FULL detected spectrum
+        # (tube × filters × bowtie × heel × η(E) — whatever sim_opts enabled).
+        model = BS.calibrate_bhc_water(
+            sim_opts, protocol;
             scanner = scanner, geom = sim.geom,
-            order = 2,
-            hu_low = 450.0,
-            hu_high = 600.0,
         )
 
         (
@@ -705,24 +675,16 @@ hu_fbp = sim === nothing ? nothing : let
 
         # 1. Sinogram-domain BHC (returns a CPU array)
         sino_gpu = to_gpu(sim.sino)
-        sino_bhc = BS.apply_bhc_two_material(
-            sino_gpu, bhc_calibration.model, sim.geom, matrix_size;
-            projector = sim_opts.projector,
-        )
+        sino_bhc = BS.apply_bhc_water(sino_gpu, bhc_calibration.model)
         sino_gpu = to_gpu(sino_bhc)
 
         # 2. FDK on the corrected sinogram
         ws_fdk = BS.create_fdk_recon_workspace(sino_gpu, sim.geom, matrix_size)
         recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, sim.geom)
 
-        # 3. Image-domain BHC refinement (in-place on GPU)
-        BS.apply_bhc_image_domain(
-            recon_μ, sim.geom, matrix_size, bhc_calibration.μ_water;
-            hu_low = 50.0,
-            hu_high = 150.0,
-            scale_factor = 0.2,
-            projector = sim_opts.projector,
-        )
+    # (image-domain BHC removed — audit: scaled self-subtraction that
+    #  deflated dense-material HU; the knobless sinogram water BHC is the
+    #  whole correction)
 
         # 4. μ → HU using BHC's calibrated μ_water_ref (Float32 for cupping correction)
         hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc_calibration.μ_water))
@@ -731,7 +693,7 @@ hu_fbp = sim === nothing ? nothing : let
         BS.add_system_noise_floor!(hu, 28.0; seed = 1234)
 
         # 6. Residual radial cupping correction
-        BS.apply_radial_cupping_correction!(hu; fov_cm = 35.0)
+        # (cupping is QA-only now — measure_radial_cupping; never applied)
 
         # GPU cleanup
         ws_fdk = nothing
@@ -771,10 +733,7 @@ hu_hir = sim === nothing ? nothing : let
 
         # 1. Sinogram-domain BHC
         sino_gpu = to_gpu(sim.sino)
-        sino_bhc = BS.apply_bhc_two_material(
-            sino_gpu, bhc_calibration.model, sim.geom, matrix_size;
-            projector = sim_opts.projector,
-        )
+        sino_bhc = BS.apply_bhc_water(sino_gpu, bhc_calibration.model)
         sino_gpu = to_gpu(sino_bhc)
 
         # 2. Hybrid IR (FBP init + PWLS refinement, strength = 3)
@@ -790,14 +749,9 @@ hu_hir = sim === nothing ? nothing : let
         # leaves garbage in the corners.  Apply the same mask for parity.
         BS.apply_fov_mask!(recon_μ, sim.geom)
 
-        # 3. Image-domain BHC refinement
-        BS.apply_bhc_image_domain(
-            recon_μ, sim.geom, matrix_size, bhc_calibration.μ_water;
-            hu_low = 50.0,
-            hu_high = 150.0,
-            scale_factor = 0.2,
-            projector = sim_opts.projector,
-        )
+    # (image-domain BHC removed — audit: scaled self-subtraction that
+    #  deflated dense-material HU; the knobless sinogram water BHC is the
+    #  whole correction)
 
         # 4. μ → HU using BHC's calibrated μ_water_ref
         hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc_calibration.μ_water))
@@ -806,7 +760,7 @@ hu_hir = sim === nothing ? nothing : let
         BS.add_system_noise_floor!(hu, 28.0; seed = 5678)
 
         # 6. Cupping correction
-        BS.apply_radial_cupping_correction!(hu; fov_cm = 35.0)
+        # (cupping is QA-only now — measure_radial_cupping; never applied)
 
         # GPU cleanup
         ws_hir = nothing

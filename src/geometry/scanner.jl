@@ -53,9 +53,12 @@ with CatSim and medical imaging conventions.
 - `detector_col_size::T`: Detector element size in fan direction (mm) at isocenter
 - `detector_row_offset::T`: Row offset from centered position (rows)
 
-The detector is modeled as a flat (planar) array with constant linear element
-pitch; the projectors and FDK weighting assume this geometry. An equiangular
-(arc) detector option is planned but not yet implemented.
+The detector is an equiangular ARC (cylindrical, centred on the focal spot —
+clinical third-generation MDCT geometry) by DEFAULT; `detector_shape = :flat`
+selects a planar panel instead.  Both shapes are supported end-to-end by all
+projectors (Siddon / DD / dd_fast), the FDK weighting (Kak-Slaney equiangular
+cosγ pre-weight + (γ/sinγ)² kernel for :arc), the helical WFBP rebinning, and
+the bowtie model (whose thickness tables are natively fan-angle-parameterised).
 - `detector_col_offset::T`: Column offset (quarter-detector offset for aliasing)
 
 # Source Parameters
@@ -167,6 +170,11 @@ struct Scanner{T <: AbstractFloat}
     native_dexel_col_mm::T      # native dexel col size at detector face (mm); 0 = infer
     native_dexel_row_mm::T      # native dexel row size at detector face (mm); 0 = infer
     binning_factor::Int         # spatial binning (1=unbinned, 2=2×2 standard)
+
+    # Detector shape: :arc (equiangular cylindrical, source-centred — clinical
+    # third-gen MDCT) or :flat (planar).  Functional as of the arc-geometry
+    # work; consumed by CTGeometry and every projector/recon kernel.
+    detector_shape::Symbol
 end
 
 """
@@ -254,6 +262,12 @@ function Scanner(;
         flat_filter_thickness::Real = 2.0,
         bowtie_filter::Symbol = :large_body,
 
+        # Detector shape (:arc = equiangular cylindrical, :flat = planar).
+        # DEFAULT :arc — clinical third-generation MDCT detectors are arcs
+        # centred on the focal spot.  Use :flat for planar-panel systems
+        # (C-arm CBCT) or for comparison studies.
+        detector_shape::Symbol = :arc,
+
         # Detection
         detector_material::Symbol = :lumex,
         detector_depth::Real = 3.0,
@@ -299,6 +313,10 @@ function Scanner(;
     # Binning factor validation
     if binning_factor < 1
         error("binning_factor must be >= 1 (got $binning_factor)")
+    end
+
+    if !(detector_shape in (:flat, :arc))
+        error("detector_shape must be :flat or :arc (got :$detector_shape)")
     end
 
     # Infer native dexel from binned pixel size × magnification when 0.0
@@ -348,7 +366,8 @@ function Scanner(;
         pixel_mode,
         T(_native_col),
         T(_native_row),
-        binning_factor
+        binning_factor,
+        detector_shape,
     )
 end
 
@@ -398,7 +417,63 @@ struct CTGeometry
     detector_u::Matrix{Float64}
     detector_v::Matrix{Float64}
     fov::NTuple{3, Float64}  # (fov_x, fov_y, fov_z) in cm
+    # ── Helical trajectory metadata (0.0/0.0 = axial circular orbit) ─────────
+    pitch::Float64           # IEC pitch: table feed per rotation ÷ collimation
+    table_feed::Float64      # table feed per rotation (cm); 0.0 = axial
+    # ── Detector shape: :arc (equiangular cylindrical) or :flat (planar) ─────
+    detector_shape::Symbol
 end
+
+# Backward-compatible positional constructor: the pre-helical 14-field form
+# (subset extraction, FOV overrides, native-PCCT geometry) defaults to axial.
+function CTGeometry(
+        SAD::Float64, SDD::Float64, n_angles::Int, n_rows::Int, n_cols::Int,
+        pixel_size::Float64, pixel_row_size::Float64,
+        angles::Vector{Float64},
+        source_positions::Matrix{Float64}, detector_centers::Matrix{Float64},
+        detector_u::Matrix{Float64}, detector_v::Matrix{Float64},
+        fov::NTuple{3, Float64},
+    )
+    return CTGeometry(
+        SAD, SDD, n_angles, n_rows, n_cols, pixel_size, pixel_row_size,
+        angles, source_positions, detector_centers, detector_u, detector_v,
+        fov, 0.0, 0.0, :flat)
+end
+
+# 16-field compat (helical metadata, pre-arc): defaults to a flat panel.
+function CTGeometry(
+        SAD::Float64, SDD::Float64, n_angles::Int, n_rows::Int, n_cols::Int,
+        pixel_size::Float64, pixel_row_size::Float64,
+        angles::Vector{Float64},
+        source_positions::Matrix{Float64}, detector_centers::Matrix{Float64},
+        detector_u::Matrix{Float64}, detector_v::Matrix{Float64},
+        fov::NTuple{3, Float64}, pitch::Float64, table_feed::Float64,
+    )
+    return CTGeometry(
+        SAD, SDD, n_angles, n_rows, n_cols, pixel_size, pixel_row_size,
+        angles, source_positions, detector_centers, detector_u, detector_v,
+        fov, pitch, table_feed, :flat)
+end
+
+"""
+    is_helical(geom::CTGeometry) -> Bool
+
+`true` when the geometry carries a helical trajectory (non-zero table feed).
+"""
+is_helical(geom::CTGeometry) = geom.table_feed != 0.0
+
+export is_helical
+
+"""
+    is_arc(geom::CTGeometry) -> Bool
+
+`true` for an equiangular (cylindrical, source-centred) detector.  The
+column angular pitch is `Δγ = geom.pixel_size / geom.SAD` (the column pitch
+at isocentre interpreted as arc length at the isocentre radius).
+"""
+is_arc(geom::CTGeometry) = geom.detector_shape === :arc
+
+export is_arc
 
 """
     CTGeometry(scanner::Scanner; n_angles=360, fov_cm=nothing, z_cm=nothing, n_rows=nothing, n_cols=nothing, collimation_mm=nothing)
@@ -412,9 +487,15 @@ trajectory positions suitable for simulation.
 - `scanner::Scanner`: Scanner definition with physical parameters (in mm)
 
 # Keyword Arguments
-- `n_angles::Int = 360`: Number of projection angles
+- `n_angles::Int = 360`: Number of projection angles PER ROTATION
 - `fov_cm::Union{Float64,Nothing} = nothing`: Reconstruction XY FOV in cm. If nothing, uses full detector coverage at isocenter.
-- `z_cm::Union{Float64,Nothing} = nothing`: Reconstruction Z extent in cm. If nothing, computes from detector coverage.
+- `z_cm::Union{Float64,Nothing} = nothing`: Reconstruction Z extent in cm. If nothing, computes
+  from detector coverage (axial) or `table_travel − collimation` (helical).
+- `pitch::Union{Float64,Nothing} = nothing`: Helical pitch (IEC: table feed per rotation ÷
+  active collimation).  `nothing` = axial circular orbit.  When set, source AND detector
+  translate along z over `n_rotations` turns, helix centred on isocentre; total views
+  = `n_angles × n_rotations`.
+- `n_rotations::Real = 1.0`: Number of gantry rotations (helical only; ignored for axial).
 - `n_rows::Union{Int,Nothing} = nothing`: Override detector rows. If nothing, uses scanner.detector_rows.
 - `n_cols::Union{Int,Nothing} = nothing`: Override detector columns. If nothing, uses scanner.detector_cols.
 - `collimation_mm::Union{Float64,Nothing} = nothing`: Detector z-collimation in mm.
@@ -467,6 +548,8 @@ function CTGeometry(
         n_cols::Union{Int, Nothing} = nothing,
         collimation_mm::Union{Float64, Nothing} = nothing,
         extended_collimation::Bool = false,
+        pitch::Union{Float64, Nothing} = nothing,
+        n_rotations::Real = 1.0,
     ) where {T}
 
     # Determine active detector rows from collimation or explicit override
@@ -531,37 +614,65 @@ function CTGeometry(
         fov_xy = _n_cols * pixel_size
     end
 
+    # ── Helical trajectory parameters ────────────────────────────────────────
+    # IEC pitch = table feed per rotation ÷ total active collimation.  The
+    # collimation used here is the ACTIVE detector z-coverage at isocentre
+    # (_n_rows × pixel_row_size), which equals `collimation_mm` when given.
+    # The helix runs `n_rotations` turns, centred on isocentre (z = 0 at the
+    # scan midpoint), translating BOTH source and detector (gantry ↔ table).
+    helical = pitch !== nothing
+    collim_iso_cm = _n_rows * pixel_row_size
+    table_feed = helical ? pitch * collim_iso_cm : 0.0
+    table_travel = table_feed * (helical ? Float64(n_rotations) : 0.0)
+
+    # Total view count and angular span
+    n_views_total = helical ? round(Int, n_angles * n_rotations) : n_angles
+
     # Z FOV — uses active rows (from collimation or override), not full scanner
     if z_cm !== nothing
         fov_z = z_cm
+    elseif helical
+        # Default recon z-extent = planned range: table travel minus one
+        # collimation width (the first/last half-collimation is over-ranging —
+        # rays exist but z-sampling is incomplete there).  Clamped so very
+        # short helices still get one collimation width.
+        fov_z = max(table_travel - collim_iso_cm, collim_iso_cm)
     else
         z_coverage_mm = _n_rows * scanner.detector_row_size
         fov_z = z_coverage_mm / 10.0  # mm → cm
     end
 
-    # Generate angles (full 360° rotation)
-    angles = collect(range(0.0, 2π - 2π / n_angles, length = n_angles))
+    # Generate angles: axial = one full 360° rotation; helical = n_rotations
+    # turns at the same per-rotation angular sampling (Δθ = 2π/n_angles).
+    angles = if helical
+        collect(range(0.0, step = 2π / n_angles, length = n_views_total))
+    else
+        collect(range(0.0, 2π - 2π / n_angles, length = n_angles))
+    end
 
     # Pre-compute all positions
-    source_positions = Matrix{Float64}(undef, 3, n_angles)
-    detector_centers = Matrix{Float64}(undef, 3, n_angles)
-    detector_u = Matrix{Float64}(undef, 3, n_angles)
-    detector_v = Matrix{Float64}(undef, 3, n_angles)
+    source_positions = Matrix{Float64}(undef, 3, n_views_total)
+    detector_centers = Matrix{Float64}(undef, 3, n_views_total)
+    detector_u = Matrix{Float64}(undef, 3, n_views_total)
+    detector_v = Matrix{Float64}(undef, 3, n_views_total)
 
     for (i, θ) in enumerate(angles)
         cosθ = cos(θ)
         sinθ = sin(θ)
 
-        # Source position: starts at (0, -SAD, 0), rotates around Z
+        # Gantry z: helix centred on isocentre (z=0 at the scan midpoint)
+        z_i = helical ? (-table_travel / 2 + table_feed * θ / (2π)) : 0.0
+
+        # Source position: starts at (0, -SAD, z_start), rotates around Z
         source_positions[1, i] = -SAD * sinθ
         source_positions[2, i] = -SAD * cosθ
-        source_positions[3, i] = 0.0
+        source_positions[3, i] = z_i
 
-        # Detector center: opposite side of source
+        # Detector center: opposite side of source, same gantry z
         det_dist = SDD - SAD
         detector_centers[1, i] = det_dist * sinθ
         detector_centers[2, i] = det_dist * cosθ
-        detector_centers[3, i] = 0.0
+        detector_centers[3, i] = z_i
 
         # Detector u-axis (column direction)
         detector_u[1, i] = cosθ
@@ -577,9 +688,10 @@ function CTGeometry(
     fov = (fov_xy, fov_xy, fov_z)
 
     return CTGeometry(
-        SAD, SDD, n_angles, _n_rows, _n_cols, pixel_size, pixel_row_size,
+        SAD, SDD, n_views_total, _n_rows, _n_cols, pixel_size, pixel_row_size,
         angles, source_positions, detector_centers, detector_u, detector_v,
-        fov
+        fov, helical ? Float64(pitch) : 0.0, table_feed,
+        scanner.detector_shape,
     )
 end
 

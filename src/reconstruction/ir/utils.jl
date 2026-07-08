@@ -247,7 +247,7 @@ function create_subset_geometry(geom::CTGeometry, angle_indices::Vector{Int})
         geom.detector_centers[:, angle_indices],
         geom.detector_u[:, angle_indices],
         geom.detector_v[:, angle_indices],
-        geom.fov
+        geom.fov, geom.pitch, geom.table_feed, geom.detector_shape
     )
 end
 

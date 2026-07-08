@@ -25,29 +25,10 @@ using Unitful: @u_str
 
 # ╔═╡ 10000001-0000-4000-8000-000000000006
 begin
-    GPU_BACKEND = let
-        candidates = [
-            (:Metal, "dde4c033-4e86-420c-a63e-0dd931031962", :MtlArray),
-            (:CUDA, "052768ef-5323-5732-b1bb-66c8b64840ba", :CuArray),
-            (:AMDGPU, "21141c5a-9bdb-4563-92ae-f87d6854732e", :ROCArray),
-        ]
-        detected = (name = "CPU", to_gpu = identity)
-        for (pkg, uuid, ctor) in candidates
-            pkg_id = Base.PkgId(Base.UUID(uuid), String(pkg))
-            Base.locate_package(pkg_id) === nothing && continue
-            try
-                m = Base.require(pkg_id)
-                if Base.invokelatest(getfield(m, :functional))
-                    detected = (name = string(pkg), to_gpu = getfield(m, ctor))
-                    break
-                end
-            catch
-            end
-        end
-        detected
-    end
-
-    to_gpu(x) = GPU_BACKEND.to_gpu(x)
+    import GPUSelect
+    AT = GPUSelect.Storage()     # the backend array type, directly: MtlArray / CuArray / ROCArray
+    to_gpu(x) = AT(x)
+    GPU_BACKEND = (name = string(nameof(AT)),)
 end
 
 # ╔═╡ 10000002-0000-4000-8000-000000000001
@@ -60,7 +41,7 @@ Metal artifacts in CT come from two physical mechanisms that
 `BasisSimulator.jl` models by construction:
 
 1. **Beam hardening** — the polychromatic forward model accumulates
-   ``I = \\sum_E w_E\\, e^{-L_E}`` before the negative-log transform, so a
+   ``I = \sum_E w_E\, e^{-L_E}`` before the negative-log transform, so a
    high-``Z``, high-density object hardens the transmitted spectrum and the
    log line integrals stop being proportional to path length. Reconstructed:
    dark bands, especially *between* two metal objects.
