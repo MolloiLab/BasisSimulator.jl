@@ -128,8 +128,17 @@ Note: Uses Int32 for dimensions to ensure GPU compatibility.
         weight_g = SAD_sq / dist_sq_g
         w_full += weight_g
 
-        # Check if within detector bounds
-        if col_f >= T(0.5) && col_f <= T(n_cols) + T(0.5) && row_f >= T(0.5) && row_f <= T(n_rows) + T(0.5)
+        # Detector bounds with a bounded ROW-extrapolation margin (1.5 rows,
+        # nearest-row values via the weight/clamp pattern below).  This is the
+        # standard narrow-cone approximation every vendor makes: at small cone
+        # angles the nearest measured row's ray passes sub-voxel-close to the
+        # true ray, so edge-slice rim voxels keep ALL their views (clean edge
+        # slices at narrow collimation).  The margin is fixed in ROWS, so at
+        # wide/peak collimation z-edge voxels still lose genuinely unmeasured
+        # views and the real cone artifact (Defrise) remains visible.
+        row_margin = T(1.5)
+        if col_f >= T(0.5) && col_f <= T(n_cols) + T(0.5) &&
+           row_f >= T(0.5) - row_margin && row_f <= T(n_rows) + T(0.5) + row_margin
             # Bilinear interpolation indices
             col_lo = unsafe_trunc(Int32, col_f)
             col_hi = col_lo + Int32(1)
