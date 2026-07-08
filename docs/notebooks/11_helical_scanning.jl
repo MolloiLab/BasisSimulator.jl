@@ -220,7 +220,7 @@ geometries dispatch to WFBP inside `reconstruct!` automatically).  Noise
 floor + cupping are applied by the caller (once per final volume).
 """
 function corrected_recon(sino_gpu, geom, matrix_size, bhc)
-    sino_bhc = BS.apply_bhc_two_material(sino_gpu, bhc.model, geom, matrix_size)
+    sino_bhc = BS.apply_bhc_water(sino_gpu, bhc.model)
     sino_g = to_gpu(Float32.(sino_bhc))
     ws_fdk = BS.create_fdk_recon_workspace(sino_g, geom, matrix_size)
     recon_μ = BS.reconstruct!(ws_fdk, sino_g, geom)
@@ -245,18 +245,16 @@ helical_result = let
     ws = BS.create_eict_workspace(scanner, protocol_helical, sim_opts, recon_opts, phantom)
     t = @elapsed BS.simulate!(ws, phantom, protocol_helical, sim_opts)
     bhc = let
-        model = BS.calibrate_bhc_two_material(
-            sim_opts, protocol_helical;
+        model = BS.calibrate_bhc_water(sim_opts, protocol_helical;
             scanner = scanner, geom = ws.geom,
-            order = 2, hu_low = 450.0, hu_high = 600.0,
-        )
+            )
         (model = model, μ_water = model.μ_water_ref)
     end
     t += @elapsed (hu = corrected_recon(ws.sinogram, ws.geom, recon_opts.matrix_size, bhc))
     ws = nothing
     GC.gc()
     BS.add_system_noise_floor!(hu, 28.0; seed = 1234)
-    BS.apply_radial_cupping_correction!(hu; fov_cm = recon_opts.fov_cm)
+    # (cupping is QA-only now — measure_radial_cupping; never applied)
     (hu = hu, t = t)
 end;
 
@@ -279,11 +277,9 @@ sns_result = let
         ws = BS.create_eict_workspace(scanner, protocol_axial, sim_opts, recon_opts_station, ph_st)
         t_total += @elapsed BS.simulate!(ws, ph_st, protocol_axial, sim_opts)
         if bhc_ax === nothing
-            model = BS.calibrate_bhc_two_material(
-                sim_opts, protocol_axial;
+            model = BS.calibrate_bhc_water(sim_opts, protocol_axial;
                 scanner = scanner, geom = ws.geom,
-                order = 2, hu_low = 450.0, hu_high = 600.0,
-            )
+                )
             bhc_ax = (model = model, μ_water = model.μ_water_ref)
         end
         t_total += @elapsed (hu_st = corrected_recon(
@@ -298,7 +294,7 @@ sns_result = let
         hu[:, :, valid] .= hu_st[:, :, (first(valid) - k_lo + 1):(last(valid) - k_lo + 1)]
     end
     BS.add_system_noise_floor!(hu, 28.0; seed = 1234)
-    BS.apply_radial_cupping_correction!(hu; fov_cm = recon_opts.fov_cm)
+    # (cupping is QA-only now — measure_radial_cupping; never applied)
     (hu = hu, t = t_total)
 end;
 

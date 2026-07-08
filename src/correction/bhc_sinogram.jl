@@ -618,6 +618,39 @@ function calibrate_bhc_water(
 end
 
 """
+    calibrate_bhc_water(energies, weights_per_col; order=5, max_path_cm=50.0,
+                        n_points=100, reference_energy_keV=70.0) -> WaterBHC
+
+Low-level form for CUSTOM per-column spectra (e.g. measured detector
+response overrides): builds the same knobless per-column water poly→mono
+polynomials from an explicit `[n_E, n_col]` weight matrix.
+"""
+function calibrate_bhc_water(
+        energies::Vector,
+        weights_per_col::AbstractMatrix;
+        order::Int = 5,
+        max_path_cm::Real = 50.0,
+        n_points::Int = 100,
+        reference_energy_keV::Real = 70.0,
+    )
+    n_E, n_col = size(weights_per_col)
+    length(energies) == n_E ||
+        error("calibrate_bhc_water: energies length $(length(energies)) ≠ n_E $n_E")
+    water_bhc_per_col = Vector{BeamHardeningCorrection}(undef, n_col)
+    for c in 1:n_col
+        water_bhc_per_col[c] = calibrate_bhc(
+            energies, Float64.(@view weights_per_col[:, c]);
+            order = order, max_path_cm = max_path_cm,
+            n_points = n_points, reference_energy_keV = reference_energy_keV,
+        )
+    end
+    μ_water_ref = ustrip(u"cm^-1",
+        XA.linear_attenuation_coeff(XA.Materials.water, Float64(reference_energy_keV) * u"keV"))
+    @info "[calibrate_bhc_water] knobless custom-spectrum BHC: $n_col columns × order-$order polynomials, ref_E = $(round(Float64(reference_energy_keV); digits = 2)) keV"
+    return WaterBHC(water_bhc_per_col, μ_water_ref, Float64(reference_energy_keV))
+end
+
+"""
     apply_bhc_water(sinogram_raw, bhc::WaterBHC) -> corrected sinogram
 
 Water BHC: one sinogram-domain per-column polynomial pass.  Knobless, no

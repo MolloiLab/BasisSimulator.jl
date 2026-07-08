@@ -505,7 +505,7 @@ lands at ≈ 0 HU in *both* per-tube recons (and therefore in any blend).
     forward model used.  We resolve the bowtie-hardened per-column
     spectrum with the UFC η(E) already folded in
     (`resolve_source_spectrum_full`), and feed the low-level
-    `calibrate_bhc_two_material(e, w_col)` — same per-column fit the
+    `calibrate_bhc_water(e, w_col)` — same per-column fit the
     high-level API performs, but with the UFC fold included.
 """
 
@@ -529,12 +529,12 @@ function ufc_bhc_calibration(protocol, geom)
     w_mean = vec(sum(w_col_η; dims = 2)) ./ size(w_col_η, 2)
     ref_E = sum(e2 .* w_mean) / sum(w_mean)
 
-    model = BS.calibrate_bhc_two_material(
+    # KNOBLESS water BHC from the custom UFC-η per-column spectrum — zero
+    # segmentation thresholds (the two-material bone pass is deprecated:
+    # its 450–600 HU window misclassified dense iodine as bone).
+    model = BS.calibrate_bhc_water(
         e2, w_col_η;
-        order = 2,
         reference_energy_keV = ref_E,
-        hu_low = 450.0,
-        hu_high = 600.0,
     )
     return (model = model, μ_water = model.μ_water_ref, ref_E_keV = model.reference_energy_keV)
 end;
@@ -543,30 +543,22 @@ end;
 """
     ufc_poly_recon(sino_cpu, geom, bhc) -> Array{Float32, 3}
 
-nb01 correction stack for one tube: sino BHC → FDK → image BHC → HU →
-residual radial cupping.
+Doctrine correction stack for one tube: knobless water sino-BHC → FDK → HU.
 """
 function ufc_poly_recon(sino_cpu, geom, bhc)
     matrix_size = recon_opts.matrix_size
 
     sino_gpu = to_gpu(sino_cpu)
-    # BHC forward-projects internally → match the sim's projector (sim_opts global).
-    sino_bhc = BS.apply_bhc_two_material(
-        sino_gpu, bhc.model, geom, matrix_size; projector = sim_opts.projector,
-    )
-    sino_gpu = to_gpu(sino_bhc)
+    # Knobless water BHC: one sinogram-domain pass, no recon round-trip.
+    sino_bhc = BS.apply_bhc_water(sino_gpu, bhc.model)
+    sino_gpu = sino_bhc
 
     ws_fdk = BS.create_fdk_recon_workspace(sino_gpu, geom, matrix_size)
     recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, geom)
 
-    BS.apply_bhc_image_domain(
-        recon_μ, geom, matrix_size, bhc.μ_water;
-        hu_low = 50.0, hu_high = 150.0, scale_factor = 0.2,
-        projector = sim_opts.projector,
-    )
-
+    # (image-domain BHC + applied cupping removed — deprecated; cupping is a
+    #  QA metric via measure_radial_cupping)
     hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc.μ_water))
-    BS.apply_radial_cupping_correction!(hu; fov_cm = 35.0)
 
     ws_fdk = nothing; sino_gpu = nothing; recon_μ = nothing
     GC.gc(true)
@@ -849,7 +841,7 @@ md"""
 
 Identical post-decomposition chain to nb03: two FDK passes
 (`BS.SoftFilter()`) → image-domain data-adaptive cov-ACNR
-(`BS.apply_image_acnr!`, structure axis pixel-perfect) → z-median
+(`BS.apply_acnr_kalender!`, per-pixel regression, zero blur) → z-median
 (5-slice window, exploits the Gammex z-invariance).
 """
 
@@ -878,26 +870,17 @@ end;
 
 # ╔═╡ 0900000b-0000-4000-8000-000000000020
 basis_acnr = let
-    GAMMA = 1.0
-    BILAT_RADIUS = 3
-    BILAT_SIGMA_S = 1.0
-    BILAT_RANGE_K = 2.5
-
     W = copy(basis_volumes.vol_water_raw)
     I = copy(basis_volumes.vol_iodine_raw)
 
-    info = BS.apply_image_acnr!(
-        W, I;
-        gamma = GAMMA, bilat_radius = BILAT_RADIUS,
-        bilat_sigma_s = BILAT_SIGMA_S, bilat_range_k = BILAT_RANGE_K
-    )
-    @info "[ACNR · cov] θ=$(round(info.θ_deg, digits = 1))° · ρ(W,I)=$(round(info.ρ_struct, digits = 3)) · γ=$(GAMMA) · σ_noise(W)=$(round(info.σ_W, sigdigits = 3)), σ_noise(I)=$(round(info.σ_I, sigdigits = 3))"
+    info = BS.apply_acnr_kalender!(W, I)
+    @info "[ACNR · Kalender-1988 true ACNR] ρ_hp(W,I)=$(round(info.ρ_hp, digits = 3))"
 
     (vol_iodine_raw = I, vol_water_raw = W, geom = basis_volumes.geom)
 end;
 
 # ╔═╡ 0900000b-0000-4000-8000-000000000025
-Z_MEDIAN_ADJACENT = 2;
+Z_MEDIAN_ADJACENT = 0;   # identity — doctrine chain matches nb03 (pure Cong → FBP → Kalender ACNR)
 
 # ╔═╡ 0900000b-0000-4000-8000-000000000030
 basis_z = let

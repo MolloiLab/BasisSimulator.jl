@@ -35,7 +35,7 @@ Simulate 140 kVp →┘                  │
                                      │
                     FBP × 2   (iodine, water basis maps)
                                      │
-                    Image-Domain cov-ACNR  (BS.apply_image_acnr!)
+                    Kalender-1988 TRUE ACNR  (BS.apply_acnr_kalender!)
                                      │
                     Z-Direction Median Filter × 2
                                      │
@@ -59,7 +59,7 @@ Simulate 140 kVp →┘                  │
        linearization, no HU-to-fraction inverse polynomial.
     2. **Image-domain anti-correlated noise reduction (ACNR).** Material
        decomposition stamps anti-correlated noise on the basis maps (the
-       VMI-noise "U"); `BS.apply_image_acnr!` removes it after FBP with a
+       VMI-noise "U"); `BS.apply_acnr_kalender!` removes it after FBP with a
        data-adaptive covariance eigen-rotation + edge-aware joint bilateral,
        keeping the structure axis pixel-perfect (no resolution loss).
 
@@ -68,7 +68,7 @@ Simulate 140 kVp →┘                  │
       domain per-ray univariate solver (dual-kVp DECT); material-basis
       variant (iodine + water).
     - Clark, Badea (2023), *Med Phys* — image-domain RSKR (rank-sparse
-      bandwidth, joint bilateral); the cov-ACNR in `BS.apply_image_acnr!`
+      bandwidth); the Kalender true ACNR in `BS.apply_acnr_kalender!`
       adapts these moves to the water/iodine basis-map pair.
     - Grant et al. (2014) — Mono+ frequency-split rule.
 """
@@ -521,7 +521,7 @@ md"""
 ## 8b. ACNR — Edge-Aware Anti-Correlated Noise Reduction (image domain)
 
 Material decomposition stamps anti-correlated noise on the basis maps
-(`ρ_basis < 0`) — that anti-correlation *is* the VMI-noise U.  `BS.apply_image_acnr!`
+(`ρ_basis < 0`) — that anti-correlation *is* the VMI-noise U.  `BS.apply_acnr_kalender!`
 (data-adaptive cov-ACNR, `denoising/acnr.jl`) removes it: a closed-form 2×2
 covariance eigen-rotation keeps the structure axis **e1** pixel-perfect and
 joint-bilateral-denoises only the anti-correlated noise axis **e2** (edge-aware,
@@ -530,7 +530,7 @@ so real water/iodine edges survive).  Runs on the FBP basis maps, **before** the
 """
 
 # ╔═╡ 05000009-0000-4000-8000-000000000050
-# Image-domain cov-ACNR on the FBP basis maps via src `BS.apply_image_acnr!`.
+# Kalender-1988 true ACNR on the FBP basis maps via `BS.apply_acnr_kalender!`.
 basis_acnr = let
     APPLY_ACNR = true          # Kalender-1988 true ACNR; false ⇒ passthrough
 
@@ -1397,7 +1397,7 @@ Simulate 80 + 140 kVp  (DICOM-faithful GSI technique, per-view flux from
 
 The SVD projection denoise and the Cong material decomposition both run
 **upstream of FBP**, so quantum noise and beam-hardening residuals can't
-propagate into the basis maps.  Image-domain cov-ACNR (`BS.apply_image_acnr!`)
+propagate into the basis maps.  Kalender true ACNR (`BS.apply_acnr_kalender!`)
 then removes the anti-correlated basis noise (the VMI-U) without resolution
 loss.  The result is HU-quantitative VMIs with low streak content and clean
 low-keV Mono+ output.

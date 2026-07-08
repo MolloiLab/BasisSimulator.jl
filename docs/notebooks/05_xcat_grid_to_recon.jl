@@ -820,9 +820,99 @@ let
     end
 end
 
+# ╔═╡ 05000012-0000-4000-8000-000000000001
+md"""
+## 13. HELICAL: the same pixel-perfect mapping, spiral acquisition
+
+Everything above used an axial scan.  The affine machinery is
+trajectory-agnostic by design: a helical acquisition changes the SOURCE
+path (z ramps with view), but the RECON grid is still a stack of axial
+slices centred on the scanned range — so `recon_to_world_affine`, and
+therefore `resample_to_recon`, apply unchanged.  This section proves it
+end-to-end on the new spiral chain: `CTProtocol(pitch = …)` → z-ramped
+`CTGeometry` → `:dd_fast` forward on the (default) arc detector →
+rebinned-WFBP reconstruction → label overlay on the helical recon grid.
+"""
+
+# ╔═╡ 05000012-0000-4000-8000-000000000010
+sim_helical = phantom === nothing ? nothing : let
+    protocol_hel = BS.CTProtocol(
+        kVp = 120, mA = 250.0, views = 500, rotation_time = 1.0,
+        collimation_mm = 5.0, additional_filters = [("Al", 4.5)],
+        pitch = 1.0, n_rotations = 3.0,
+    )
+    @info "Simulating HELICAL cardiac CTA: pitch 1.0 × 3 rotations…"
+    ws = BS.create_eict_workspace(scanner, protocol_hel, sim_opts, recon_opts, phantom)
+    BS.simulate!(ws, phantom, protocol_hel, sim_opts)
+    result = (sino = Array(ws.sinogram), geom = ws.geom)
+    ws = nothing
+    GC.gc(true)
+    result
+end;
+
+# ╔═╡ 05000012-0000-4000-8000-000000000020
+recon_HU_helical = sim_helical === nothing ? nothing : let
+    sino_gpu = to_gpu(Float32.(sim_helical.sino))
+    # is_helical(geom) routes reconstruct! to the rebinned-WFBP path
+    ws = BS.create_fdk_recon_workspace(sino_gpu, sim_helical.geom, recon_opts.matrix_size; filter = :standard)
+    recon_μ = Array(BS.reconstruct!(ws, sino_gpu, sim_helical.geom))
+    ws = nothing; sino_gpu = nothing; GC.gc(true)
+    Float32.(BS.to_hounsfield(recon_μ; μ_water = μ_water_120))
+end;
+
+# ╔═╡ 05000012-0000-4000-8000-000000000030
+gt_helical_nn = (phantom_cpu === nothing || sim_helical === nothing) ? nothing :
+    BS.resample_to_recon(phantom_cpu, sim_helical.geom, recon_opts.matrix_size; method = :nearest);
+
+# ╔═╡ 05000012-0000-4000-8000-000000000040
+sim_helical === nothing ? md"_(XCAT not available — helical demo skipped)_" : let
+    mid = size(recon_HU_helical, 3) ÷ 2
+    fig = CM.Figure(size = (1180, 620))
+    ax1 = CM.Axis(fig[1, 1]; title = "Helical WFBP recon", titlesize = 28, aspect = CM.DataAspect())
+    hm = CM.heatmap!(ax1, recon_HU_helical[:, :, mid]; colormap = :grays, colorrange = (-200, 600))
+    CM.hidedecorations!(ax1)
+    ax2 = CM.Axis(fig[1, 2]; title = "Resampled labels (pixel-perfect overlay)", titlesize = 28, aspect = CM.DataAspect())
+    CM.heatmap!(ax2, recon_HU_helical[:, :, mid]; colormap = :grays, colorrange = (-200, 600))
+    edge = Float32[gt_helical_nn[i, j, mid] != gt_helical_nn[min(i + 1, end), j, mid] ||
+                   gt_helical_nn[i, j, mid] != gt_helical_nn[i, min(j + 1, end), mid] ? 1.0f0 : NaN32
+                   for i in 1:size(gt_helical_nn, 1), j in 1:size(gt_helical_nn, 2)]
+    CM.heatmap!(ax2, edge; colormap = [:transparent, :red], colorrange = (0, 1))
+    CM.hidedecorations!(ax2)
+    CM.Colorbar(fig[1, 3], hm; label = "HU", labelsize = 20, ticklabelsize = 14)
+    fig
+end
+
+# ╔═╡ 05000012-0000-4000-8000-000000000050
+sim_helical === nothing ? nothing : let
+    # Quantitative pixel-perfection check on the HELICAL grid: boundary
+    # alignment between recon gradients and resampled label edges — the
+    # same agreement the axial section demonstrates, now on the spiral
+    # acquisition.  A misregistered affine would shift edges by ≥1 px and
+    # collapse this overlap score.
+    mid = size(recon_HU_helical, 3) ÷ 2
+    lab = gt_helical_nn[:, :, mid]
+    hu = recon_HU_helical[:, :, mid]
+    nx, ny = size(lab)
+    hits = 0; total = 0
+    for j in 3:(ny - 2), i in 3:(nx - 2)
+        (lab[i, j] != lab[i + 1, j]) || continue
+        total += 1
+        g0 = abs(hu[i + 1, j] - hu[i, j])
+        gm = maximum(abs(hu[a + 1, j] - hu[a, j]) for a in (i - 2):(i + 1))
+        (g0 >= 0.6f0 * gm) && (hits += 1)
+    end
+    frac = total == 0 ? 0.0 : hits / total
+    md"""
+    **Helical pixel-perfection score:** $(round(100 * frac; digits = 1)) % of
+    resampled label boundaries coincide with the local recon-gradient
+    maximum (n = $(total)).  ≥ 80 % ⇒ the affine mapping holds on the
+    helical grid ($(frac >= 0.8 ? "✅ PASS" : "❌ FAIL")).
+    """
+end
+
 # ╔═╡ 0500000f-0000-4000-8000-000000000001
 md"""
-## 13. Bring-your-own-interpolator pattern
+## 14. Bring-your-own-interpolator pattern
 
 When `:nearest` and `:linear` aren't enough — e.g. you want a B-spline,
 a sinc kernel, or some learned upsampling — the affines give you the
@@ -1102,6 +1192,12 @@ Once you have ground truth on the recon grid, the rest is bookkeeping:
 # ╠═0500000e-0000-4000-8000-000000000011
 # ╠═0500000e-0000-4000-8000-000000000012
 # ╟─0500000e-0000-4000-8000-000000000020
+# ╟─05000012-0000-4000-8000-000000000001
+# ╠═05000012-0000-4000-8000-000000000010
+# ╠═05000012-0000-4000-8000-000000000020
+# ╠═05000012-0000-4000-8000-000000000030
+# ╟─05000012-0000-4000-8000-000000000040
+# ╟─05000012-0000-4000-8000-000000000050
 # ╟─0500000f-0000-4000-8000-000000000001
 # ╟─0500000f-0000-4000-8000-000000000010
 # ╟─05000010-0000-4000-8000-000000000001
