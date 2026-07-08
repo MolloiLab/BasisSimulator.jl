@@ -304,11 +304,7 @@ function create_workspace(
             W_cpu[e_idx, b] = T(_I0 * w * η_vec[e_idx] * R_mat[r_idx, b])
         end
     end
-    append!(I0_bins_norm_vec, [sum(Float64.(W_cpu[1:n_energies, b])) for b in 1:n_bins])
-    append!(I0_bins_combine, I0_bins_norm_vec)
-
     _W_matrix_gpu = similar(ref_mask, T, n_energies_padded, n_bins)
-    copyto!(_W_matrix_gpu, W_cpu)
 
     # Source spectral: fold center-pixel bowtie into W matrix
     # The bowtie's dominant effect is spectral hardening (energy-dependent), which is
@@ -328,6 +324,15 @@ function create_workspace(
         end
         copyto!(_W_matrix_gpu, W_cpu)
     end
+
+    # AIR CALIBRATION — after ALL W shaping (η, DRM, bowtie-centre fold):
+    # the fused kernel's air output is exactly Σ_e W[e,b], so this
+    # normalization guarantees p_air ≡ 0 per bin by construction.  (The old
+    # _compute_bin_I0 normalization ignored the bowtie fold → air rays read
+    # p = 0.13–0.24 per bin, a DC on every ray.)
+    append!(I0_bins_norm_vec, [sum(Float64.(W_cpu[1:n_energies, b])) for b in 1:n_bins])
+    append!(I0_bins_combine, I0_bins_norm_vec)
+    copyto!(_W_matrix_gpu, W_cpu)
 
     # Flattened output buffer for spectral projection
     _outputs_flat = similar(ref_mask, T, n_elements * n_bins)
