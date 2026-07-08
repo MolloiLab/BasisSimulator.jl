@@ -565,7 +565,7 @@ so real water/iodine edges survive).  Runs on the FBP basis maps, **before** the
 # ╔═╡ 05000009-0000-4000-8000-000000000050
 # Image-domain cov-ACNR on the FBP basis maps via src `BS.apply_image_acnr!`.
 basis_acnr = let
-    APPLY_ACNR = false        # ON — image-domain edge-aware cov-ACNR
+    APPLY_ACNR = true         # ON — image-domain edge-aware cov-ACNR
     GAMMA = 1.0         # strength ∈ [0,1]; 0 = identity
     BILAT_RADIUS = 3           # spatial window radius (px)
     BILAT_SIGMA_S = 1.0         # spatial Gaussian σ (px)
@@ -575,12 +575,13 @@ basis_acnr = let
     I = copy(basis_volumes.vol_iodine_raw)
 
     if APPLY_ACNR && GAMMA > 0
-        info = BS.apply_image_acnr!(
-            W, I;
-            gamma = GAMMA, bilat_radius = BILAT_RADIUS,
-            bilat_sigma_s = BILAT_SIGMA_S, bilat_range_k = BILAT_RANGE_K
-        )
-        @info "[ACNR · cov / SRC apply_image_acnr!] θ=$(round(info.θ_deg, digits = 1))° · ρ(W,I)=$(round(info.ρ_struct, digits = 3)) · γ=$(GAMMA) · e1 (structure) pixel-perfect, e2 (anti-corr noise) denoised · σ_noise(W)=$(round(info.σ_W, sigdigits = 3)), σ_noise(I)=$(round(info.σ_I, sigdigits = 3))"
+        # TRUE ACNR (Kalender 1988): per-pixel local regression between the
+        # two maps' high-frequency channels — anti-correlated (noise) content
+        # is subtracted exactly, positively-correlated (structure) pixels are
+        # clamped to zero correction and stay BIT-untouched.  No smoothing
+        # operator touches signal: resolution preservation by construction.
+        info = BS.apply_acnr_kalender!(W, I)
+        @info "[ACNR · Kalender-1988 true ACNR] ρ_hp(W,I)=$(round(info.ρ_hp, digits = 3)) · σ_hp(W)=$(round(info.σ_hW, sigdigits = 3)) σ_hp(I)=$(round(info.σ_hI, sigdigits = 3)) · anti-correlated HF removed pixelwise, structure clamp-protected"
     else
         @info "[ACNR] OFF (passthrough)"
     end
@@ -1437,6 +1438,15 @@ verification = let
     sw = solid_water_basis
     sw_worst = maximum(abs(mean(vmi_HU_final[E][sw.mask_2d, :])) for E in de_vmi_energies)
     addcheck("solid water worst |HU| across keV", sw_worst, 0.0, 10.0)
+
+    # CRITICAL clinical requirement: VMI noise decreases MONOTONICALLY with
+    # keV (the U-shape = untreated anti-correlated basis noise; cov-ACNR
+    # removes it — see the solved U-shape analysis).
+    Es = sort(collect(de_vmi_energies))
+    σs = [std(vmi_HU_final[E][sw.mask_2d, :]) for E in Es]
+    mono_ok = all(σs[i] > σs[i + 1] for i in 1:(length(σs) - 1))
+    push!(checks, (name = "noise monotonic ↓ with keV: σ = $(join(round.(σs; digits = 1), " > "))",
+        value = mono_ok ? 1.0 : 0.0, lo = 1.0, hi = 1.0, pass = mono_ok))
 
     # per-rod, per-energy: |Δ| ≤ max(15 HU, 10 %)
     rod_rows = String[]
