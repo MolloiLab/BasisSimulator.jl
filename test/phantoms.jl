@@ -5,7 +5,6 @@
 using Test
 using BasisSimulator
 const BS = BasisSimulator
-import BasisSimulator: _parse_xcist_voxelized
 import XrayAttenuation as XA
 import JSON
 
@@ -46,21 +45,27 @@ end
     )
     open(io -> JSON.print(io, hdr), joinpath(dir, "syn.json"), "w")
 
-    ph = _parse_xcist_voxelized(dir)
-    @test size(ph.mask) == (3, 3, 1)
-    @test sort(unique(ph.mask)) == UInt8[0, 1, 2]
-    @test count(==(0x01), ph.mask) == 3
-    @test count(==(0x02), ph.mask) == 4
-    @test count(==(0x00), ph.mask) == 2
-    @test length(ph.materials) == 3              # air + water + muscle (indexed by label+1)
-    @test ph.voxel_size == (0.1, 0.1, 0.1)       # 1 mm header → 0.1 cm
+    # path= bypasses download; `name` is irrelevant with a local path.
+    p = load_xcat_phantom(:female_slab; path = dir)
+    @test size(p.mask) == (3, 3, 1)
+    @test sort(unique(p.mask)) == UInt8[0, 1, 2]
+    @test count(==(0x01), p.mask) == 3
+    @test count(==(0x02), p.mask) == 4
+    @test count(==(0x00), p.mask) == 2
+    @test p.label_names == Dict(1 => "ncat_water", 2 => "ncat_muscle")
+    @test length(p.materials) == 3               # air + water + muscle (label-keyed, 0 = air)
+    @test p.voxel_size_cm == (0.1, 0.1, 0.1)      # 1 mm header → 0.1 cm
 
-    # material override by XCIST name
+    # the pieces build a Phantom in one line
+    phantom = BS.Phantom(p.mask, p.materials, p.voxel_size_cm)
+    @test size(phantom.mask) == (3, 3, 1)
+
+    # material override by XCIST name + explicit voxel size
     mats = BS.xcat_default_materials()
     mats["ncat_water"] = XA.Materials.air
-    ph2 = _parse_xcist_voxelized(dir; materials = mats, voxel_size_cm = (0.2, 0.2, 0.2))
-    @test ph2.voxel_size == (0.2, 0.2, 0.2)
+    p2 = load_xcat_phantom(:female_slab; path = dir, materials = mats, voxel_size_cm = (0.2, 0.2, 0.2))
+    @test p2.voxel_size_cm == (0.2, 0.2, 0.2)
 
     # an unmapped material name is a clear error
-    @test_throws ErrorException _parse_xcist_voxelized(dir; materials = Dict("ncat_muscle" => XA.Materials.muscle))
+    @test_throws ErrorException load_xcat_phantom(:female_slab; path = dir, materials = Dict("ncat_muscle" => XA.Materials.muscle))
 end

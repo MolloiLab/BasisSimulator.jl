@@ -147,8 +147,9 @@ function download_xcat_phantom(name::Symbol; path::Union{Nothing, AbstractString
     Artifacts.artifact_exists(hash) && return Artifacts.artifact_path(hash)
 
     # (3) download → verify → extract → install
-    quiet || print(stderr, xcat_citation())
-    quiet || @info "Downloading XCAT phantom :$name ($(entry.zipname)) into the Julia artifact store…"
+    quiet || @info """Downloading XCAT phantom :$name ($(entry.desc)) into the Julia artifact store…
+
+    $(xcat_citation())"""
 
     dest = Artifacts.artifact_path(hash)
     artifacts_dir = dirname(dest)
@@ -305,28 +306,34 @@ function _xcist_materials_dict(names::Vector{String}; materials::Union{Nothing, 
     return mdict
 end
 
-# Path-based parse → Phantom (used by the offline tests).
-function _parse_xcist_voxelized(dir::AbstractString; materials = nothing, voxel_size_cm = nothing, downsample::Integer = 1)
-    a = _assemble_xcist(dir; voxel_size_cm = voxel_size_cm, downsample = downsample)
-    return Phantom(a.mask, _xcist_materials_dict(a.names; materials = materials), a.voxel_size_cm)
-end
-
 """
-    load_xcat_phantom_labeled(name; path, materials, voxel_size_cm, downsample, quiet)
+    load_xcat_phantom(name::Symbol; path=nothing, materials=nothing,
+                      voxel_size_cm=nothing, downsample=1, quiet=false)
         -> (; mask, materials, label_names, voxel_size_cm)
 
-Like [`load_xcat_phantom`](@ref) but returns the raw pieces instead of a built
-`Phantom`: the CPU `mask` (labeled `UInt8`), the `materials` map (`label →
-XA.Material`, `0 = air`), the `label_names` (`label → XCIST name`), and the voxel
-size (cm).  Use this when you need the mask on a specific device before building
-the phantom, e.g. for GPU simulation:
+Download (if needed) and load XCAT phantom `name`, returning the labeled pieces:
+the CPU `mask` (`UInt8`, one label per voxel, `0` = air), the `materials` map
+(`label → XA.Material`), the `label_names` (`label → XCIST name`), and the voxel
+size (cm).  You build the `Phantom` yourself in one line — placing the mask on
+your device first when you want a GPU simulation (`create_eict_workspace` picks
+the compute backend from the mask's array type):
 
 ```julia
-p = load_xcat_male_chest_labeled(; downsample = 6)   # (via load_xcat_phantom_labeled(:male_chest; …))
-phantom = Phantom(my_to_gpu(p.mask), p.materials, p.voxel_size_cm)
+p = load_xcat_female_slab()                                     # auto-download → pieces
+phantom = Phantom(p.mask, p.materials, p.voxel_size_cm)          # CPU
+phantom = Phantom(to_gpu(p.mask), p.materials, p.voxel_size_cm)  # GPU
+
+# customize materials up front, by XCIST name …
+mats = xcat_default_materials(); mats["ncat_blood"] = XA.Materials.wholeblood
+p = load_xcat_female_slab(; materials = mats, downsample = 6)
+# … or edit the returned label-keyed dict before building:
+p.materials[7] = XA.Materials.wholeblood
 ```
+
+`path` / caching: see [`download_xcat_phantom`](@ref).  `downsample` is a
+label-preserving nearest-neighbor integer factor (extent preserved).
 """
-function load_xcat_phantom_labeled(
+function load_xcat_phantom(
         name::Symbol;
         path::Union{Nothing, AbstractString} = nothing,
         materials::Union{Nothing, AbstractDict} = nothing,
@@ -344,33 +351,8 @@ function load_xcat_phantom_labeled(
     )
 end
 
-"""
-    load_xcat_phantom(name::Symbol; path=nothing, materials=nothing,
-                      voxel_size_cm=nothing, downsample=1, quiet=false) -> Phantom
-
-Download (if needed) and load XCAT phantom `name` as a labeled [`Phantom`](@ref)
-ready for `simulate!`.  See [`download_xcat_phantom`](@ref) for `path`/caching,
-[`load_xcat_phantom_labeled`](@ref) for the raw pieces (GPU/custom builds), and
-`materials` / `voxel_size_cm` / `downsample` for the labeled assembly.
-
-```julia
-phantom = load_xcat_female_slab()                 # auto-download + labeled Phantom
-mats = xcat_default_materials()                   # grab the material dict …
-mats["ncat_blood"] = XA.Materials.wholeblood      # … edit it …
-phantom = load_xcat_female_slab(; materials = mats)   # … and reload
-```
-"""
-function load_xcat_phantom(name::Symbol; kwargs...)
-    p = load_xcat_phantom_labeled(name; kwargs...)
-    return Phantom(p.mask, p.materials, p.voxel_size_cm)
-end
-
-for (base, sym) in (
-        (:female_slab, :female_slab), (:female_chest, :female_chest),
-        (:male_slab, :male_slab), (:male_chest, :male_chest),
-    )
-    @eval $(Symbol(:load_xcat_, base))(; kwargs...) = load_xcat_phantom($(QuoteNode(sym)); kwargs...)
-    @eval $(Symbol(:load_xcat_, base, :_labeled))(; kwargs...) = load_xcat_phantom_labeled($(QuoteNode(sym)); kwargs...)
+for sym in (:female_slab, :female_chest, :male_slab, :male_chest)
+    @eval $(Symbol(:load_xcat_, sym))(; kwargs...) = load_xcat_phantom($(QuoteNode(sym)); kwargs...)
 end
 
 # =============================================================================
@@ -378,10 +360,8 @@ end
 # =============================================================================
 
 export xcat_phantoms, xcat_default_materials, xcat_citation,
-    download_xcat_phantom, load_xcat_phantom, load_xcat_phantom_labeled,
+    download_xcat_phantom, load_xcat_phantom,
     download_xcat_female_slab, download_xcat_female_chest,
     download_xcat_male_slab, download_xcat_male_chest,
     load_xcat_female_slab, load_xcat_female_chest,
-    load_xcat_male_slab, load_xcat_male_chest,
-    load_xcat_female_slab_labeled, load_xcat_female_chest_labeled,
-    load_xcat_male_slab_labeled, load_xcat_male_chest_labeled
+    load_xcat_male_slab, load_xcat_male_chest
