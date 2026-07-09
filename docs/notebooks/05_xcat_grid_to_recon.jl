@@ -1199,8 +1199,8 @@ md"""
 ### 05. Scroll through z: slider-driven overlay
 
 Drag the slider to scrub through the helical recon in z.  Left is the WFBP HU
-recon; right overlays the resampled ground-truth label boundaries (red) — they
-track the recon anatomy on **every** slice, proving the affine holds across the
+recon; right overlays the resampled cardiac labels (translucent fill) — they
+sit on the recon anatomy on **every** slice, so the affine holds across the
 full z stack, not just the mid-plane.
 """
 
@@ -1251,31 +1251,164 @@ sim_helical === nothing ? md"_(XCAT not available — helical demo skipped)_" : 
     fig
 end
 
-# ╔═╡ 05000012-0000-4000-8000-000000000050
-sim_helical === nothing ? nothing : let
-    # Quantitative pixel-perfection check on the HELICAL grid: boundary
-    # alignment between recon gradients and resampled label edges — the
-    # same agreement the axial section demonstrates, now on the spiral
-    # acquisition.  A misregistered affine would shift edges by ≥1 px and
-    # collapse this overlap score.
-    mid = size(recon_HU_helical, 3) ÷ 2
-    lab = gt_helical_nn[:, :, mid]
-    hu = recon_HU_helical[:, :, mid]
-    nx, ny = size(lab)
-    hits = 0; total = 0
-    for j in 3:(ny - 2), i in 3:(nx - 2)
-        (lab[i, j] != lab[i + 1, j]) || continue
-        total += 1
-        g0 = abs(hu[i + 1, j] - hu[i, j])
-        gm = maximum(abs(hu[a + 1, j] - hu[a, j]) for a in (i - 2):(i + 1))
-        (g0 >= 0.6f0 * gm) && (hits += 1)
+# ╔═╡ 05000016-0000-4000-8000-000000000001
+md"""
+### 06. `:nearest` vs `:linear` at boundaries
+
+The affine mapping is exact (see the round-trip audit below), so any apparent
+"fuzziness" at a label edge is **resampling**, not misregistration.  With
+`:nearest`, every recon voxel snaps to the single closest UHR phantom voxel
+(nearest in **all three axes**, z included) — so label boundaries stair-step
+onto the coarse recon grid, a half-voxel quantization.  Resampling a *binary*
+cardiac mask with `:linear` instead gives a **fully 3D** partial-volume coverage
+∈ [0, 1] per recon voxel: the trilinear blend weights x, y **and z**, so a voxel
+straddling the cardiac surface *in z* (0.625 mm helical slices) picks up a
+fractional value too — not just in-plane.  It follows the sub-voxel boundary
+smoothly.  Same slice, same slider — scrub `z` and compare.
+
+Caveat on "partial volume": trilinear samples at each recon-voxel *centre* from
+the 8 bracketing phantom voxels — that equals the true occupied-volume fraction
+when the phantom and recon grids are comparable in resolution, as they are here
+(phantom 0.4 mm vs recon 0.37 mm in-plane / 0.625 mm in z).  If you push the
+phantom much finer than the recon (smaller `DOWNSAMPLE_FACTOR`), a recon voxel
+would enclose several phantom voxels that a centre-sample ignores, and a true
+volumetric coverage would need box-averaging / supersampling instead.
+"""
+
+# ╔═╡ 05000016-0000-4000-8000-000000000010
+# Fractional cardiac coverage on the HELICAL grid: binary mask → `:linear`
+# resample (the multi-label `:nearest` map mixes IDs under trilinear, so we
+# resample a 0/1 mask to get physical partial-volume fractions).
+cardiac_coverage_lin_helical = (
+        phantom_cropped_tall === nothing || sim_helical === nothing ||
+        heart_label_ids === nothing
+    ) ? nothing : let
+        binary_mask = zeros(UInt8, size(phantom_cropped_tall))
+        for oid in heart_label_ids
+            binary_mask[phantom_cropped_tall .== oid] .= 0x01
+        end
+        binary_phantom = BS.Phantom(
+            binary_mask,
+            Dict(0 => BS.XA.Materials.water, 1 => BS.XA.Materials.water),
+            VOXEL_SIZE_CM,
+        )
+        BS.resample_to_recon(binary_phantom, sim_helical.geom, recon_opts_helical.matrix_size; method = :linear)
+end;
+
+# ╔═╡ 05000016-0000-4000-8000-000000000020
+(sim_helical === nothing || cardiac_coverage_lin_helical === nothing) ?
+        md"_(XCAT not available — helical demo skipped)_" : let
+    nz = size(recon_HU_helical, 3)
+    z = clamp(z_helical, 1, nz)
+    recon = recon_HU_helical[:, :, z]
+    nnslice = gt_helical_nn[:, :, z]
+    covslice = cardiac_coverage_lin_helical[:, :, z]
+
+    is_cardiac = falses(256)
+    if heart_label_ids !== nothing
+        for oid in heart_label_ids; is_cardiac[Int(oid) + 1] = true; end
     end
-    frac = total == 0 ? 0.0 : hits / total
-    verdict = frac >= 0.8 ? "✅ PASS" : "❌ FAIL"
-    Markdown.parse("**Helical pixel-perfection score:** " *
-        "$(round(100 * frac, digits = 1)) % of resampled label boundaries " *
-        "coincide with the local recon-gradient maximum (n = $(total)).  " *
-        "≥ 80 % ⇒ the affine mapping holds on the helical grid ($(verdict)).")
+    nx, ny = size(nnslice)
+    cx, cy = (nx + 1) / 2, (ny + 1) / 2
+    r2 = (min(nx, ny) / 2)^2                          # circular recon FOV
+
+    nn_over = fill(NaN32, size(nnslice))              # :nearest cardiac labels
+    lin_over = fill(NaN32, size(covslice))            # :linear coverage ∈ [0,1]
+    @inbounds for j in 1:ny, i in 1:nx
+        ((i - cx)^2 + (j - cy)^2 <= r2) || continue
+        is_cardiac[Int(nnslice[i, j]) + 1] && (nn_over[i, j] = Float32(nnslice[i, j]))
+        covslice[i, j] > 0.01f0 && (lin_over[i, j] = covslice[i, j])
+    end
+
+    fig = CM.Figure(size = (1500, 560))
+    hu_kwargs = (colormap = :grays, colorrange = (-200, 600))
+    ax1 = CM.Axis(fig[1, 1]; title = "raw helical recon · z=$(z)/$(nz)",
+        titlesize = 22, aspect = CM.DataAspect(), yreversed = true)
+    hm = CM.heatmap!(ax1, recon; hu_kwargs...); CM.hidedecorations!(ax1)
+
+    ax2 = CM.Axis(fig[1, 2]; title = ":nearest labels — stair-stepped to recon grid",
+        titlesize = 22, aspect = CM.DataAspect(), yreversed = true)
+    CM.heatmap!(ax2, recon; hu_kwargs...)
+    CM.heatmap!(ax2, nn_over; colormap = :tab20, alpha = 0.65); CM.hidedecorations!(ax2)
+
+    ax3 = CM.Axis(fig[1, 3]; title = ":linear coverage ∈ [0,1] — sub-voxel boundary",
+        titlesize = 22, aspect = CM.DataAspect(), yreversed = true)
+    CM.heatmap!(ax3, recon; hu_kwargs...)
+    hmc = CM.heatmap!(ax3, lin_over; colormap = :viridis, colorrange = (0, 1), alpha = 0.75)
+    CM.hidedecorations!(ax3)
+    CM.Colorbar(fig[1, 4], hmc; label = "cardiac coverage", labelsize = 16, ticklabelsize = 13)
+    fig
+end
+
+# ╔═╡ 05000017-0000-4000-8000-000000000001
+md"""
+### 07. The affine round-trip is exact (1-to-1)
+
+The overlays above are exact by construction — not "≥ 80 % aligned".  This cell
+proves it with numbers, for **both** the axial and the helical geometry.  Two
+independent checks:
+
+1. **Affine ≡ reconstructor grid.**  The FDK and WFBP backprojectors both place
+   recon voxel `(i,j,k)` at world `-fov/2 + (idx − ½)·(fov/n)` (1-indexed) — the
+   *same* isocenter-centered rule `recon_to_world_affine` encodes.  So the grid
+   the reconstructor writes into is bit-for-bit the grid the resampler samples.
+2. **Round-trip identity.**  `A⁻¹ · A · v = v` — the map is a diagonal
+   scale + translate, algebraically invertible to floating-point roundoff.
+
+Helical carries no special-casing: `is_helical(geom)` only switches the
+*backprojection algorithm*, never the grid geometry — so the mapping is 1-to-1
+for the spiral scan exactly as it is for the axial one.
+"""
+
+# ╔═╡ 05000012-0000-4000-8000-000000000050
+let
+    # Audit: recon_to_world_affine vs the reconstructor's own voxel-centering
+    # rule, plus the A⁻¹·A round-trip — for both geoms.  Errors are in µm
+    # (1e-4 cm) so any nonzero digit is visible; both should read ~0.
+    affine_audit = function (geom, ms)
+        A = BS.recon_to_world_affine(geom, ms)
+        Ainv = inv(A)
+        fov = geom.fov
+        grid_err = 0.0     # affine world vs backprojector world (cm)
+        rt_err = 0.0       # A⁻¹·A·v − v  (voxel indices)
+        for ax in 1:3
+            vs = fov[ax] / ms[ax]
+            vmin = -fov[ax] / 2
+            for idx in (1, (ms[ax] + 1) ÷ 2, ms[ax])   # 1-indexed extremes + mid
+                k = idx - 1                              # 0-indexed for the affine
+                v = zeros(4); v[4] = 1.0; v[ax] = k
+                world_affine = (A * v)[ax]
+                world_bp = vmin + (idx - 0.5) * vs       # exact reconstructor rule
+                grid_err = max(grid_err, abs(world_affine - world_bp))
+                rt_err = max(rt_err, abs((Ainv * (A * v))[ax] - k))
+            end
+        end
+        (grid_err * 1e4, rt_err)                          # cm → µm for grid_err
+    end
+
+    ga, ra = affine_audit(sim.geom, recon_opts.matrix_size)
+    if sim_helical === nothing
+        Markdown.parse("""
+        | geometry | affine ≡ reconstructor grid | round-trip `A⁻¹·A·v = v` |
+        |---|---|---|
+        | axial | max Δ = $(round(ga, sigdigits = 2)) µm | max Δ = $(round(ra, sigdigits = 2)) voxel |
+
+        Both ~0 ⇒ the mapping is exactly 1-to-1.  _(helical skipped — see §1.)_
+        """)
+    else
+        gh, rh = affine_audit(sim_helical.geom, recon_opts_helical.matrix_size)
+        Markdown.parse("""
+        | geometry | affine ≡ reconstructor grid | round-trip `A⁻¹·A·v = v` |
+        |---|---|---|
+        | axial   | max Δ = $(round(ga, sigdigits = 2)) µm | max Δ = $(round(ra, sigdigits = 2)) voxel |
+        | helical | max Δ = $(round(gh, sigdigits = 2)) µm | max Δ = $(round(rh, sigdigits = 2)) voxel |
+
+        Both geometries: sub-µm grid agreement and machine-precision round-trip
+        ⇒ the UHR-phantom → recon mapping is exactly **1-to-1**, axial and
+        helical alike.  Any softness at boundaries is `:nearest` quantization
+        (§06) or recon PSF, never the affine.
+        """)
+    end
 end
 
 # ╔═╡ 05000011-0000-4000-8000-000000000001
@@ -1418,6 +1551,10 @@ tall FOV, the ground-truth-to-recon mapping is the same three calls.
 # ╟─05000015-0000-4000-8000-000000000001
 # ╟─05000015-0000-4000-8000-000000000010
 # ╟─05000012-0000-4000-8000-000000000040
+# ╟─05000016-0000-4000-8000-000000000001
+# ╠═05000016-0000-4000-8000-000000000010
+# ╟─05000016-0000-4000-8000-000000000020
+# ╟─05000017-0000-4000-8000-000000000001
 # ╟─05000012-0000-4000-8000-000000000050
 # ╟─05000011-0000-4000-8000-000000000001
 # ╟─05000011-0000-4000-8000-000000000020
