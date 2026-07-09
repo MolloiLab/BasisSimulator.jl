@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.2.1
+# v0.2.3
 
 using Markdown
 using InteractiveUtils
@@ -22,18 +22,21 @@ begin
     Pkg.activate(joinpath(@__DIR__, ".."))
 end
 
+# ╔═╡ 9b048f73-b097-4e8b-b9b8-6f65b123938d
+using PlutoUI: TableOfContents
+
+# ╔═╡ 12000001-0000-4000-8000-000000000002
+using PlutoUI
+
 # ╔═╡ 01000003-0000-4000-8000-000000000005
 using Markdown: @md_str
 
 # ╔═╡ 01000003-0000-4000-8000-000000000004
 using Statistics: std
 
-# ╔═╡ 12000001-0000-4000-8000-000000000002
-using PlutoUI
-
 # ╔═╡ 01000001-0000-4000-8000-000000000001
 md"""
-# 01 · The Five-Struct API
+# The Five-Struct API
 
 **Build a phantom, configure a scanner, run a simulation, reconstruct an image.**
 
@@ -54,7 +57,7 @@ comparing a standard-dose acquisition against a low-dose one.
 
 # ╔═╡ 01000002-0000-4000-8000-000000000001
 md"""
-## Setup
+## Notebook Setup
 
 Activate `docs/Project.toml` (which has `BasisSimulator` from the local source
 tree + `CairoMakie`), then bring in our imports — one per cell — and finally
@@ -62,11 +65,15 @@ detect a GPU backend.
 """
 
 # ╔═╡ 01000003-0000-4000-8000-000000000002
+# ╠═╡ show_logs = false
 import BasisSimulator as BS
 
 # ╔═╡ 01000003-0000-4000-8000-000000000003
 # ╠═╡ show_logs = false
 import CairoMakie as CM
+
+# ╔═╡ 886270ac-b0c1-4c77-b218-3bb67c8bee20
+TableOfContents()
 
 # ╔═╡ 01000004-0000-4000-8000-000000000001
 md"""
@@ -105,9 +112,14 @@ md"""
 **Backend detected:** $(GPU_BACKEND.name)
 """
 
+# ╔═╡ 02000000-0000-4000-8000-000000000000
+md"""
+## The Five Structs
+"""
+
 # ╔═╡ 02000001-0000-4000-8000-000000000001
 md"""
-## 1. `Phantom`
+### 01. `Phantom`
 
 A `Phantom` is three pieces of data:
 
@@ -216,7 +228,7 @@ end
 
 # ╔═╡ 03000001-0000-4000-8000-000000000001
 md"""
-## 2. `Scanner`
+### 02. `Scanner`
 
 `Scanner` describes the **hardware** — properties that don't change between
 acquisitions: source-to-isocenter distance, detector geometry, focal spot,
@@ -278,7 +290,7 @@ md"""
 
 # ╔═╡ 04000001-0000-4000-8000-000000000001
 md"""
-## 3. `CTProtocol`
+### 03. `CTProtocol`
 
 `CTProtocol` is the **acquisition** struct. We define two protocols — a
 **standard-dose** scan at 200 mA and a **low-dose** scan at 50 mA — both at
@@ -315,7 +327,7 @@ md"""
 
 # ╔═╡ 05000001-0000-4000-8000-000000000001
 md"""
-## 4. `SimOptions`
+### 04. `SimOptions`
 
 `SimOptions` is the **fidelity dial**: which physics effects to include in the
 forward model.
@@ -359,7 +371,7 @@ md"""
 
 # ╔═╡ 06000001-0000-4000-8000-000000000001
 md"""
-## 5. `ReconOptions`
+### 05. `ReconOptions`
 
 `ReconOptions` controls the reconstructed output: matrix size, FOV, algorithm,
 and apodization filter. For now we'll do plain FBP (Feldkamp-Davis-Kress).
@@ -390,9 +402,14 @@ md"""
     ramp filter differently, trading sharpness for noise.
 """
 
+# ╔═╡ 07000000-0000-4000-8000-000000000000
+md"""
+## Simulate & Reconstruct
+"""
+
 # ╔═╡ 07000001-0000-4000-8000-000000000001
 md"""
-## 6. Forward Project (Standard Dose)
+### 01. Forward Project (Standard Dose)
 
 Time to actually scan the phantom. Each "phase" of GPU work — forward
 projection, reconstruction — lives inside its own `let ... end` block. The
@@ -480,7 +497,7 @@ end
 
 # ╔═╡ 07000020-0000-4000-8000-000000000001
 md"""
-## 7. Reconstruct (Standard Dose: FBP)
+### 02. Reconstruct (Standard Dose: FBP)
 
 Same pattern: allocate an FDK workspace, run `reconstruct!`, copy the volume
 off the device, drop GPU references, GC. The output is in linear attenuation
@@ -537,7 +554,7 @@ end;
 
 # ╔═╡ 08000001-0000-4000-8000-000000000001
 md"""
-## 8. Repeat (Low Dose)
+### 03. Repeat (Low Dose)
 
 Same two `let ... end` blocks, only `protocol_lowdose` swapped in. Everything
 else (scanner, sim_opts, recon_opts, phantom) is reused unchanged — that's
@@ -581,7 +598,7 @@ end;
 
 # ╔═╡ 09000001-0000-4000-8000-000000000001
 md"""
-## 9. Postprocessing: The Full Correction Pipeline
+### 04. Postprocessing: The Full Correction Pipeline
 
 A raw FBP recon (`hu_std`, `hu_low` above) is what comes out of the FDK
 kernel with no clinical corrections. Real CT vendors apply a stack of
@@ -605,7 +622,7 @@ corrections on top — the same stack we'll build here:
 
 # ╔═╡ 09000005-0000-4000-8000-000000000001
 md"""
-#### 9a. Calibrate the BHC model
+#### a. Calibrate the BHC model
 
 Both protocols use 120 kVp with the same filtration, so a single BHC model
 covers both. The calibration is a one-time spectrum fit — input is
@@ -644,7 +661,7 @@ md"""
 
 # ╔═╡ 09000010-0000-4000-8000-000000000001
 md"""
-#### 9b. Standard-Dose Corrected Pipeline
+#### b. Standard-Dose Corrected Pipeline
 
 Same `let ... end` shape as §7, but with the full correction stack inline:
 sino BHC → FDK → image BHC → HU → noise floor → cupping. GPU buffers are
@@ -686,7 +703,7 @@ end;
 
 # ╔═╡ 09000020-0000-4000-8000-000000000001
 md"""
-#### 9c. Low-Dose Corrected Pipeline
+#### c. Low-Dose Corrected Pipeline
 
 Identical to 9b — same BHC model, image BHC params, noise floor, cupping
 correction — only the input sinogram (`sim_low.sino`) and noise seed differ.
@@ -722,9 +739,14 @@ hu_low_corr = let
     hu
 end;
 
+# ╔═╡ 10000000-0000-4000-8000-000000000000
+md"""
+## Results
+"""
+
 # ╔═╡ 10000001-0000-4000-8000-000000000001
 md"""
-## 10. Compare Protocols (Before & After Correction)
+### Compare Protocols (Before & After Correction)
 
 The two reconstructions use identical physics, geometry, and reconstruction
 settings — only the tube current differs. The lower-dose scan should show
@@ -815,7 +837,7 @@ end
 
 # ╔═╡ 12000001-0000-4000-8000-000000000001
 md"""
-## 11. Scroll through ``z`` — edge slices matter
+### Scroll Through Slices
 
 The cone beam means edge slices are reconstructed from obliquer rays than
 central ones. Slide through the corrected volumes and watch the ends — this
@@ -848,7 +870,7 @@ end
 
 # ╔═╡ 12000002-0000-4000-8000-000000000001
 md"""
-## 12. Automated verification
+### Verification
 
 Quantitative pass/fail against physics-derived expectations — no eyeballing.
 Per-rod theory is mono HU at the BHC reference energy from the same
@@ -1008,13 +1030,17 @@ result, `nothing` + `GC.gc(true)`, return.
 # ╟─01000001-0000-4000-8000-000000000001
 # ╟─01000002-0000-4000-8000-000000000001
 # ╠═01000003-0000-4000-8000-000000000001
+# ╠═9b048f73-b097-4e8b-b9b8-6f65b123938d
+# ╠═12000001-0000-4000-8000-000000000002
 # ╠═01000003-0000-4000-8000-000000000005
 # ╠═01000003-0000-4000-8000-000000000002
 # ╠═01000003-0000-4000-8000-000000000003
 # ╠═01000003-0000-4000-8000-000000000004
+# ╠═886270ac-b0c1-4c77-b218-3bb67c8bee20
 # ╟─01000004-0000-4000-8000-000000000001
 # ╠═01000005-0000-4000-8000-000000000001
 # ╟─01000007-0000-4000-8000-000000000001
+# ╟─02000000-0000-4000-8000-000000000000
 # ╟─02000001-0000-4000-8000-000000000001
 # ╠═02000002-0000-4000-8000-000000000001
 # ╟─02000003-0000-4000-8000-000000000001
@@ -1033,6 +1059,7 @@ result, `nothing` + `GC.gc(true)`, return.
 # ╟─06000001-0000-4000-8000-000000000001
 # ╠═06000002-0000-4000-8000-000000000001
 # ╟─06000003-0000-4000-8000-000000000001
+# ╟─07000000-0000-4000-8000-000000000000
 # ╟─07000001-0000-4000-8000-000000000001
 # ╠═07000010-0000-4000-8000-000000000001
 # ╟─07000015-0000-4000-8000-000000000001
@@ -1050,11 +1077,11 @@ result, `nothing` + `GC.gc(true)`, return.
 # ╠═09000011-0000-4000-8000-000000000001
 # ╟─09000020-0000-4000-8000-000000000001
 # ╠═09000021-0000-4000-8000-000000000001
+# ╟─10000000-0000-4000-8000-000000000000
 # ╟─10000001-0000-4000-8000-000000000001
 # ╟─10000002-0000-4000-8000-000000000001
 # ╟─10000003-0000-4000-8000-000000000001
 # ╟─12000001-0000-4000-8000-000000000001
-# ╠═12000001-0000-4000-8000-000000000002
 # ╟─12000001-0000-4000-8000-000000000003
 # ╟─12000001-0000-4000-8000-000000000004
 # ╟─12000002-0000-4000-8000-000000000001

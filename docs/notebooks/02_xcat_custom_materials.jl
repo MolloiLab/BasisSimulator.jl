@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.2.1
+# v0.2.3
 
 using Markdown
 using InteractiveUtils
@@ -19,9 +19,12 @@ using Markdown: @md_str
 # ╔═╡ 02000003-0000-4000-8000-000000000006
 using Unitful: @u_str
 
+# ╔═╡ b0c50f56-f6fc-4589-b699-c25f51d6b247
+using PlutoUI: TableOfContents
+
 # ╔═╡ 02000001-0000-4000-8000-000000000001
 md"""
-# 02 · XCAT Phantom + Custom Materials
+# XCAT Phantom + Custom Materials
 
 **Scan a digital anatomy with material attenuation you define from scratch.**
 
@@ -45,7 +48,7 @@ on the same scan.
 
 # ╔═╡ 02000002-0000-4000-8000-000000000001
 md"""
-## Setup
+## Notebook Setup
 
 Same shape as notebook 01 — activate `docs/Project.toml`, four discrete
 import cells, then probe for a GPU backend.  We add **Unitful** here for
@@ -60,6 +63,9 @@ import CairoMakie as CM
 
 # ╔═╡ 05000003-0000-4000-8000-000000000003
 import Unitful: ustrip, uconvert
+
+# ╔═╡ 1ab8176f-2b8e-4948-a332-f326aed838c9
+TableOfContents()
 
 # ╔═╡ 02000004-0000-4000-8000-000000000001
 md"""
@@ -82,9 +88,14 @@ md"""
 **Backend detected:** $(GPU_BACKEND.name)
 """
 
+# ╔═╡ 03000000-0000-4000-8000-000000000000
+md"""
+## Phantom Construction
+"""
+
 # ╔═╡ 03000001-0000-4000-8000-000000000001
 md"""
-## 1. Locate the XCAT data
+### 01. Locate the XCAT data
 
 The XCAT phantom is **not bundled with the repo** — voxelized anatomical
 phantoms are several hundred MB and have their own licensing terms.  Set
@@ -148,7 +159,7 @@ HAS_XCAT ? md"""
 
 # ╔═╡ 04000001-0000-4000-8000-000000000001
 md"""
-## 2. Load + downsample the labeled mask
+### 02. Load + downsample the labeled mask
 
 XCAT bin layout: column-major (Fortran order) `UInt8` array of shape
 `(1600, 1400, 500)` — column → row → slice.  We reverse along axes (2, 3)
@@ -237,7 +248,7 @@ end
 
 # ╔═╡ 05000001-0000-4000-8000-000000000001
 md"""
-## 3. Custom materials via `XrayAttenuation`
+### 03. Custom materials via `XrayAttenuation`
 
 Every voxel in the labeled mask needs a corresponding
 [`XA.Material`](https://github.com/MolloiLab/XrayAttenuation.jl) so the
@@ -270,7 +281,7 @@ materials reference table.
 
 # ╔═╡ 05000002-0000-4000-8000-000000000001
 md"""
-### 3a. Pull a prebuilt NCAT material
+#### a. Pull a prebuilt NCAT material
 
 `XrayAttenuation` ships with the full NCAT/XCAT tissue catalog.  Inspect one:
 """
@@ -292,7 +303,7 @@ end
 
 # ╔═╡ 05000003-0000-4000-8000-000000000001
 md"""
-### 3b. Construct a custom contrast material
+#### b. Construct a custom contrast material
 
 Below: a 5 mg/mL iodinated blood mixture, like a coronary CT-angiography
 bolus.  We start from `ncat_blood`'s composition and add elemental iodine.
@@ -332,7 +343,7 @@ iodine_blood = build_iodine_blood(5.0)
 
 # ╔═╡ 05000004-0000-4000-8000-000000000001
 md"""
-### 3c. Load the canonical mapping from XCAT's xlsx
+#### c. Load the canonical mapping from XCAT's xlsx
 
 XCAT v_male_50 ships with material spreadsheets — one row per organ, with
 the elemental mass-fraction columns, density, and the integer label that
@@ -433,7 +444,7 @@ end
 
 # ╔═╡ 05000004-0000-4000-8000-000000000008
 md"""
-### 3d. Assemble the final dict
+#### d. Assemble the final dict
 
 Load the xlsx, then ensure every label that actually appears in the mask
 has a fallback (water) — `simulate!` will error if any label is missing.
@@ -459,7 +470,7 @@ end;
 
 # ╔═╡ 06000001-0000-4000-8000-000000000001
 md"""
-## 4. Build the `Phantom`
+### 04. Build the `Phantom`
 
 XCAT v_male_50 voxels are 0.2 mm isotropic at full resolution; after
 `DOWNSAMPLE_FACTOR = 5` they become 1 mm isotropic.  FOV at 320 × 280 × 100
@@ -479,9 +490,14 @@ phantom = (phantom_labeled === nothing || materials === nothing) ?
     nothing :
     BS.Phantom(to_gpu(phantom_labeled), materials, VOXEL_SIZE_CM);
 
+# ╔═╡ 07000000-0000-4000-8000-000000000000
+md"""
+## Scan Setup & Simulation
+"""
+
 # ╔═╡ 07000001-0000-4000-8000-000000000001
 md"""
-## 5. Scanner, protocol, sim & recon options
+### 01. Scanner, protocol, sim & recon options
 
 Same GE Revolution Apex Elite hardware as notebook 01.  The protocol is a
 clinical body-CTA acquisition: 120 kVp / 250 mA, 5 mm collimation, 500
@@ -538,7 +554,7 @@ recon_opts = BS.ReconOptions(
 
 # ╔═╡ 08000001-0000-4000-8000-000000000001
 md"""
-## 6. Forward project
+### 02. Forward project
 
 Same `let ... end` shape as notebook 01 — workspace, `simulate!`, copy off
 GPU, drop refs, force `GC.gc(true)`.  The XCAT phantom is ~3× the volume
@@ -560,9 +576,14 @@ sim = phantom === nothing ? nothing : let
         result
 end;
 
+# ╔═╡ 09000000-0000-4000-8000-000000000000
+md"""
+## Reconstruction
+"""
+
 # ╔═╡ 09000001-0000-4000-8000-000000000001
 md"""
-## 7. Postprocessing (The Full Correction Pipeline)
+### 01. Postprocessing (The Full Correction Pipeline)
 
 A raw FDK or HIR recon doesn't ship as a clinical image.  Real CT vendors
 apply a stack of corrections after the simulator's forward model:
@@ -584,7 +605,7 @@ the Gammex 472 phantom.
 
 # ╔═╡ 09000003-0000-4000-8000-000000000001
 md"""
-#### 7a. Calibrate the BHC model
+#### a. Calibrate the BHC model
 
 One-time spectrum fit at 120 kVp + 7 mm Al filtration. Returns a
 `TwoMaterialBHC` polynomial model + the calibrated `μ_water_ref` used by
@@ -617,7 +638,7 @@ md"""
 
 # ╔═╡ 09000006-0000-4000-8000-000000000001
 md"""
-#### 7b. Polychromatic `μ_water` from the XCAT body — *informational*
+#### b. Polychromatic `μ_water` from the XCAT body — *informational*
 
 The BHC's `μ_water_ref` above (the monoenergetic μ_water at the
 spectrum-mean energy) is what §8 + §9 use as the HU divisor — that's
@@ -660,7 +681,7 @@ md"""
 
 # ╔═╡ 09000010-0000-4000-8000-000000000001
 md"""
-## 8. FBP with the full correction pipeline
+### 02. FBP with the full correction pipeline
 
 Same `let ... end` shape as notebook 01 — sino BHC → FDK → image BHC →
 HU → noise floor → cupping, with explicit GPU cleanup at the end.
@@ -706,7 +727,7 @@ end;
 
 # ╔═╡ 10000001-0000-4000-8000-000000000001
 md"""
-## 9. Hybrid IR with the full correction pipeline
+### 03. Hybrid IR with the full correction pipeline
 
 Identical pipeline to §8 — sino BHC → recon → image BHC → HU → noise
 floor → cupping — with `create_hir_recon_workspace(...; strength = 3)`
@@ -771,9 +792,14 @@ hu_hir = sim === nothing ? nothing : let
         hu
 end;
 
+# ╔═╡ 11000000-0000-4000-8000-000000000000
+md"""
+## Results
+"""
+
 # ╔═╡ 11000001-0000-4000-8000-000000000001
 md"""
-## 10. Compare FBP vs Hybrid IR
+### Compare FBP vs Hybrid IR
 
 Both reconstructions go through the identical correction pipeline (sino
 BHC + image BHC + noise floor + cupping). Soft-tissue window shows the
@@ -884,9 +910,12 @@ correction pipeline from §9 of notebook 01 — carries over unchanged.
 # ╠═02000003-0000-4000-8000-000000000005
 # ╠═02000003-0000-4000-8000-000000000006
 # ╠═05000003-0000-4000-8000-000000000003
+# ╠═b0c50f56-f6fc-4589-b699-c25f51d6b247
+# ╠═1ab8176f-2b8e-4948-a332-f326aed838c9
 # ╟─02000004-0000-4000-8000-000000000001
 # ╠═02000005-0000-4000-8000-000000000001
 # ╟─02000007-0000-4000-8000-000000000001
+# ╟─03000000-0000-4000-8000-000000000000
 # ╟─03000001-0000-4000-8000-000000000001
 # ╠═03000002-0000-4000-8000-000000000001
 # ╠═03000002-0000-4000-8000-000000000002
@@ -917,6 +946,7 @@ correction pipeline from §9 of notebook 01 — carries over unchanged.
 # ╟─06000001-0000-4000-8000-000000000001
 # ╠═06000002-0000-4000-8000-000000000001
 # ╠═06000003-0000-4000-8000-000000000001
+# ╟─07000000-0000-4000-8000-000000000000
 # ╟─07000001-0000-4000-8000-000000000001
 # ╠═07000002-0000-4000-8000-000000000001
 # ╠═07000003-0000-4000-8000-000000000001
@@ -924,6 +954,7 @@ correction pipeline from §9 of notebook 01 — carries over unchanged.
 # ╠═07000005-0000-4000-8000-000000000001
 # ╟─08000001-0000-4000-8000-000000000001
 # ╠═08000002-0000-4000-8000-000000000001
+# ╟─09000000-0000-4000-8000-000000000000
 # ╟─09000001-0000-4000-8000-000000000001
 # ╟─09000003-0000-4000-8000-000000000001
 # ╠═09000004-0000-4000-8000-000000000001
@@ -935,6 +966,7 @@ correction pipeline from §9 of notebook 01 — carries over unchanged.
 # ╠═09000002-0000-4000-8000-000000000001
 # ╟─10000001-0000-4000-8000-000000000001
 # ╠═10000002-0000-4000-8000-000000000001
+# ╟─11000000-0000-4000-8000-000000000000
 # ╟─11000001-0000-4000-8000-000000000001
 # ╟─11000002-0000-4000-8000-000000000001
 # ╟─11000003-0000-4000-8000-000000000001
