@@ -1211,17 +1211,42 @@ full z stack, not just the mid-plane.
 sim_helical === nothing ? md"_(XCAT not available — helical demo skipped)_" : let
     nz = size(recon_HU_helical, 3)
     z = clamp(z_helical, 1, nz)
+    recon = recon_HU_helical[:, :, z]
+
+    # Translucent cardiac-label fill (same style as Scan A's overlay, not a wiry
+    # edge): NaN-mask every non-cardiac voxel so it renders transparent, then
+    # lay the labels over the HU recon at α — you see the coloured structures
+    # sit exactly on the anatomy as you scroll z.
+    is_cardiac = falses(256)
+    if heart_label_ids !== nothing
+        for oid in heart_label_ids
+            is_cardiac[Int(oid) + 1] = true
+        end
+    end
+    labslice = gt_helical_nn[:, :, z]
+    nx, ny = size(labslice)
+    cx, cy = (nx + 1) / 2, (ny + 1) / 2
+    r2 = (min(nx, ny) / 2)^2                     # circular recon FOV = inscribed circle
+    lab_over = fill(NaN32, size(labslice))
+    @inbounds for j in 1:ny, i in 1:nx
+        ((i - cx)^2 + (j - cy)^2 <= r2) || continue    # keep the overlay INSIDE the FOV
+        is_cardiac[Int(labslice[i, j]) + 1] && (lab_over[i, j] = Float32(labslice[i, j]))
+    end
+
     fig = CM.Figure(size = (1180, 620))
-    ax1 = CM.Axis(fig[1, 1]; title = "Helical WFBP recon · z=$(z)/$(nz)", titlesize = 26, aspect = CM.DataAspect())
-    hm = CM.heatmap!(ax1, recon_HU_helical[:, :, z]; colormap = :grays, colorrange = (-200, 600))
+    hu_kwargs = (colormap = :grays, colorrange = (-200, 600))
+    ax1 = CM.Axis(fig[1, 1]; title = "Helical WFBP recon · z=$(z)/$(nz)",
+        titlesize = 26, aspect = CM.DataAspect(), yreversed = true)
+    hm = CM.heatmap!(ax1, recon; hu_kwargs...)
     CM.hidedecorations!(ax1)
-    ax2 = CM.Axis(fig[1, 2]; title = "Ground-truth overlay · z=$(z)", titlesize = 26, aspect = CM.DataAspect())
-    CM.heatmap!(ax2, recon_HU_helical[:, :, z]; colormap = :grays, colorrange = (-200, 600))
-    edge = Float32[gt_helical_nn[i, j, z] != gt_helical_nn[min(i + 1, end), j, z] ||
-                   gt_helical_nn[i, j, z] != gt_helical_nn[i, min(j + 1, end), z] ? 1.0f0 : NaN32
-                   for i in 1:size(gt_helical_nn, 1), j in 1:size(gt_helical_nn, 2)]
-    CM.heatmap!(ax2, edge; colormap = [:transparent, :red], colorrange = (0, 1))
+
+    ax2 = CM.Axis(fig[1, 2]; title = "HU + cardiac labels · z=$(z)",
+        subtitle = "resampled ground truth on the helical recon grid (α = 0.6)",
+        titlesize = 26, subtitlesize = 18, aspect = CM.DataAspect(), yreversed = true)
+    CM.heatmap!(ax2, recon; hu_kwargs...)
+    CM.heatmap!(ax2, lab_over; colormap = :tab20, alpha = 0.6)
     CM.hidedecorations!(ax2)
+
     CM.Colorbar(fig[1, 3], hm; label = "HU", labelsize = 20, ticklabelsize = 14)
     fig
 end
@@ -1391,7 +1416,7 @@ tall FOV, the ground-truth-to-recon mapping is the same three calls.
 # ╟─05000014-0000-4000-8000-000000000020
 # ╠═05000012-0000-4000-8000-000000000030
 # ╟─05000015-0000-4000-8000-000000000001
-# ╠═05000015-0000-4000-8000-000000000010
+# ╟─05000015-0000-4000-8000-000000000010
 # ╟─05000012-0000-4000-8000-000000000040
 # ╟─05000012-0000-4000-8000-000000000050
 # ╟─05000011-0000-4000-8000-000000000001
