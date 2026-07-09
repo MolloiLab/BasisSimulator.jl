@@ -215,24 +215,6 @@ function _find_xcist_json(dir::AbstractString)
     error("no .json phantom header found under $dir")
 end
 
-# Nearest-neighbor integer downsample of a labeled mask (preserves labels — no
-# interpolated mid-organ voxels).  Samples the voxel nearest each block center.
-# Degenerate axes (e.g. a single-slice slab) are kept intact, not collapsed.
-function _downsample_labeled(mask::AbstractArray{T, 3}, factor::Integer) where {T}
-    factor <= 1 && return mask
-    sz = size(mask)
-    osz = map(d -> max(1, d ÷ factor), sz)
-    out = similar(mask, osz)
-    off = factor ÷ 2
-    @inbounds for k in 1:osz[3], j in 1:osz[2], i in 1:osz[1]
-        ii = min(sz[1], (i - 1) * factor + off + 1)
-        jj = min(sz[2], (j - 1) * factor + off + 1)
-        kk = min(sz[3], (k - 1) * factor + off + 1)
-        out[i, j, k] = mask[ii, jj, kk]
-    end
-    return out
-end
-
 _xcist_eltype(dt::AbstractString) =
     dt == "int8"    ? Int8    :
     dt == "uint8"   ? UInt8   :
@@ -270,27 +252,42 @@ function _assemble_xcist(
     GR = round(Int, maximum(rows[i]   - 1 - yoff[i] for i in 1:nm) - gr0) + 1
     GS = round(Int, maximum(slices[i] - 1 - zoff[i] for i in 1:nm) - gs0) + 1
 
-    mask = zeros(UInt8, GC, GR, GS)
+    # Build the (optionally downsampled) mask directly: iterate the OUTPUT grid
+    # and sample each material's nearest-neighbor block center.  Fusing the
+    # downsample into placement avoids materializing the full-resolution mask
+    # (the full chest is ~1.4 billion voxels — assembling it then downsampling
+    # is minutes; this is seconds).  With f = 1 this reduces to a plain place.
+    f = max(1, Int(downsample))
+    off = f ÷ 2
+    dGC = max(1, GC ÷ f); dGR = max(1, GR ÷ f); dGS = max(1, GS ÷ f)
+    mask = zeros(UInt8, dGC, dGR, dGS)
     for i in 1:nm
         T = _xcist_eltype(dtypes[i])
-        n = cols[i] * rows[i] * slices[i]
-        raw = read!(joinpath(base, files[i]), Vector{T}(undef, n))
-        A = reshape(raw, (cols[i], rows[i], slices[i]))          # [col, row, slice], col fastest
+        A = reshape(read!(joinpath(base, files[i]), Vector{T}(undef, cols[i] * rows[i] * slices[i])),
+            (cols[i], rows[i], slices[i]))                       # [col, row, slice], col fastest
         c0 = round(Int, -xoff[i] - gc0)
         r0 = round(Int, -yoff[i] - gr0)
         s0 = round(Int, -zoff[i] - gs0)
-        @inbounds for s in 1:slices[i], r in 1:rows[i], c in 1:cols[i]
-            A[c, r, s] > 0 && (mask[c0 + c, r0 + r, s0 + s] = UInt8(i))
+        ci, ri, si = cols[i], rows[i], slices[i]
+        @inbounds for K in 1:dGS
+            s = (K - 1) * f + off + 1 - s0
+            (1 <= s <= si) || continue
+            for J in 1:dGR
+                r = (J - 1) * f + off + 1 - r0
+                (1 <= r <= ri) || continue
+                for I in 1:dGC
+                    c = (I - 1) * f + off + 1 - c0
+                    (1 <= c <= ci) && A[c, r, s] > 0 && (mask[I, J, K] = UInt8(i))
+                end
+            end
         end
     end
 
-    pre_size = size(mask)
-    downsample > 1 && (mask = _downsample_labeled(mask, downsample))
-    # header is mm → cm; when downsampling, scale each axis by its actual size
-    # ratio so the physical extent is preserved exactly (degenerate axes stay
-    # unscaled).  An explicit voxel_size_cm is taken as the final size.
+    # header is mm → cm; scale each axis by its full/downsampled size ratio so
+    # the physical extent is preserved (degenerate axes stay unscaled).  An
+    # explicit voxel_size_cm is taken as the final size.
     vs_cm = voxel_size_cm !== nothing ? Float64.(voxel_size_cm) :
-        (xs[1] / 10, ys[1] / 10, zs[1] / 10) .* (pre_size ./ size(mask))
+        (xs[1] / 10, ys[1] / 10, zs[1] / 10) .* ((GC, GR, GS) ./ (dGC, dGR, dGS))
     return (mask = mask, names = names, voxel_size_cm = vs_cm)
 end
 
