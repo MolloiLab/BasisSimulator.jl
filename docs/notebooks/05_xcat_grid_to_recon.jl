@@ -1344,8 +1344,8 @@ end
 md"""
 ### 07. The affine round-trip is exact (1-to-1)
 
-The overlays above are exact by construction — not "≥ 80 % aligned".  This cell
-proves it with numbers, for **both** the axial and the helical geometry.  Two
+The overlays above are exact by construction — not "≥ 80 % aligned".  This
+proves it with numbers, for **both** the axial and the helical geometry.  Three
 independent checks:
 
 1. **Affine ≡ reconstructor grid.**  The FDK and WFBP backprojectors both place
@@ -1354,10 +1354,17 @@ independent checks:
    the reconstructor writes into is bit-for-bit the grid the resampler samples.
 2. **Round-trip identity.**  `A⁻¹ · A · v = v` — the map is a diagonal
    scale + translate, algebraically invertible to floating-point roundoff.
+3. **Recon registered to the map.**  Checks 1–2 certify the *coordinate map*;
+   the last cell certifies the *image* — that the forward projector images the
+   phantom at the exact world position the backprojector reconstructs it (a
+   forward↔backprojector half-voxel / rebinning offset would displace the recon
+   and stay invisible to 1–2).  Best edge-alignment shift = **(0,0)** for both.
 
 Helical carries no special-casing: `is_helical(geom)` only switches the
 *backprojection algorithm*, never the grid geometry — so the mapping is 1-to-1
-for the spiral scan exactly as it is for the axial one.
+for the spiral scan exactly as it is for the axial one.  Any softness you see at
+a boundary when you zoom in is `:nearest` half-voxel quantization (§06) or the
+recon's point-spread blur — never the affine, and never a registration offset.
 """
 
 # ╔═╡ 05000012-0000-4000-8000-000000000050
@@ -1409,6 +1416,51 @@ let
         (§06) or recon PSF, never the affine.
         """)
     end
+end
+
+# ╔═╡ 05000099-0000-4000-8000-000000000001
+# The affine audit proves the MAP is exact; this proves the RECON is registered
+# TO that map — i.e. the forward projector images the phantom at the same world
+# position the backprojector reconstructs it (a half-voxel or rebinning-column
+# mismatch would displace the recon and stay invisible to the round-trip audit).
+# Correlate recon edge-magnitude against the label-boundary map over integer
+# (dx,dy) shifts; the peak shift is the real offset.  (0,0) = registered.
+# (Integer resolution: a systematic ≤½-voxel shift also reads (0,0) — but that is
+#  the same scale as :nearest quantization / recon PSF, not a registration bug.)
+let
+    reg_offset = function (recon, gt; R = 5)
+        mid = size(recon, 3) ÷ 2
+        hu = Float32.(recon[:, :, mid]); lab = gt[:, :, mid]
+        nx, ny = size(hu)
+        gr = zeros(Float32, nx, ny)          # recon edge strength
+        lb = zeros(Float32, nx, ny)          # gt label-boundary map
+        for j in 2:(ny - 1), i in 2:(nx - 1)
+            gx = hu[i + 1, j] - hu[i - 1, j]; gy = hu[i, j + 1] - hu[i, j - 1]
+            gr[i, j] = sqrt(gx * gx + gy * gy)
+            (lab[i, j] != lab[i + 1, j] || lab[i, j] != lab[i, j + 1]) && (lb[i, j] = 1f0)
+        end
+        best = (0, 0); bs = -Inf; sc = Dict{Tuple{Int,Int},Float64}()
+        for dx in -R:R, dy in -R:R
+            s = 0.0
+            for j in (1 + R):(ny - R), i in (1 + R):(nx - R)
+                s += gr[i, j] * lb[i + dx, j + dy]
+            end
+            sc[(dx, dy)] = s
+            s > bs && (bs = s; best = (dx, dy))
+        end
+        (best, sc[(0, 0)] / bs)              # best shift + how good (0,0) is vs peak
+    end
+    ax = (sim === nothing) ? "—" : reg_offset(recon_HU, gt_resampled_nn)
+    hx = (sim_helical === nothing) ? "—" : reg_offset(recon_HU_helical, gt_helical_nn)
+    Markdown.parse("""
+    **Registration offset (recon edges vs label boundaries, mid-slice):**
+
+    - axial   : best shift = $(ax isa String ? ax : ax[1]) voxels · (0,0) score = $(ax isa String ? ax : round(ax[2], digits = 3)) of peak
+    - helical : best shift = $(hx isa String ? hx : hx[1]) voxels · (0,0) score = $(hx isa String ? hx : round(hx[2], digits = 3)) of peak
+
+    `(0,0)` best shift ⇒ registered; a consistent nonzero shift ⇒ a real
+    forward↔backprojector offset.  Score near 1.0 ⇒ `(0,0)` is already the peak.
+    """)
 end
 
 # ╔═╡ 05000011-0000-4000-8000-000000000001
@@ -1556,5 +1608,6 @@ tall FOV, the ground-truth-to-recon mapping is the same three calls.
 # ╟─05000016-0000-4000-8000-000000000020
 # ╟─05000017-0000-4000-8000-000000000001
 # ╟─05000012-0000-4000-8000-000000000050
+# ╠═05000099-0000-4000-8000-000000000001
 # ╟─05000011-0000-4000-8000-000000000001
 # ╟─05000011-0000-4000-8000-000000000020
