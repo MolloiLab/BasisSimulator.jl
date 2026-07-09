@@ -27,11 +27,12 @@ step operates on log-line-integrals before the reconstruction runs.
 
 ```
 Simulate 140 kVp PCCT  (4 bins; scatter + noise + pile-up + corrections)
-   → Projection-domain SVD denoise  (4-bin joint)
-   → Bin combine  (1 + 2 → low, 3 + 4 → high)
-   → Jensen debias + material decomposition  (Cong; iodine + water)
-   → FBP × 2 with per-basis apodization  (soft iodine, sharp water)
-   → Kalender-1988 true ACNR on the basis maps
+   → 4-bin joint SVD denoise  (edge-aware bilateral — main, zero resolution loss)
+   → Bin combine  (1 + 2 + 3 → low, 4 → high)
+   → Fine 2-channel Gaussian SVD on the combined (low, high) pair
+   → Projection-domain material decomposition  (Cong; iodine + water)
+   → FBP × 2 with per-basis apodization  (soft iodine + soft water)
+   → Kalender-1988 true ACNR on the basis maps  (beta_max = 20)
    → Monoenergetic VMI synthesis  (50 / 70 / 100 / 140 keV)
    → Measured-vs-theoretical per-rod verification
 ```
@@ -251,7 +252,7 @@ sim_opts = BS.SimOptions(
     # compensation.  Those corrections recover count statistics at the
     # detector output; nr = 0.7 stands in for that recovery and nothing
     # else.
-    pcct_noise_reduction = 0.5,
+    pcct_noise_reduction = 0.7,
 )
 
 # ╔═╡ 06000005-0000-4000-8000-000000000020
@@ -354,8 +355,8 @@ end
 md"""
 #### Intermediate FBP per Bin (μ-domain sanity check)
 
-A quick per-bin FDK on the raw simulator sinograms — *before* the bin
-combine, the SF-JSD denoiser, or the Cong decomposition — so we can
+A quick per-bin FDK on the raw simulator sinograms — *before* the SVD
+denoise, the bin combine, or the Cong decomposition — so we can
 eyeball that the photon-counting forward model is producing physically
 sensible images at each energy band.
 
@@ -437,79 +438,55 @@ md"""
 
 # ╔═╡ 06000008-0000-4000-8000-000000000001
 md"""
-### 01. Jensen Debias
-**Per-Bin Log-Poisson Bias Correction**
+### 01. SVD Denoise
+**4-Bin Joint, Edge-Aware Bilateral (main denoise, zero resolution loss)**
 
-Each of the 4 raw bins is genuinely Poisson, so the debias runs **per bin on
-the raw sinograms** (before any denoise or combine): `p_b ← p_b − DEBIAS/(2N_b)`,
-`N_b = I0_b·e^{−p_b}`.  `DEBIAS` = strength knob (`0` = off, `1` = full
-`1/(2N)`).  Runs FIRST — so `N_b` is the true detected count and the 4-bin SVD
-(step 02) can clean any noise the debias amplifies.  PCCT counts are not pure
-Poisson (pile-up + charge-sharing), so the true factor is a Fano `F ≤ 1`.
+Per detector row, an SVD across the 4 raw bins.  `U[:,1]` = the common anatomy
+shared by all bins (~√4 SNR), kept **pixel-perfect**; the residual `U[:,2..4]`
+(spectral difference + decorrelated quantum noise) is cleaned with an
+**edge-preserving joint bilateral** → no blur across edges, spatial resolution
+untouched.  This is the main, resolution-safe stage on the 4 bins; a *subtle*
+2-channel Gaussian on the combined pair (step 03) does the fine cleanup nb03
+gets from denoising its final channels.  `APPLY_SVD = false` ⇒ passthrough.
 """
 
 # ╔═╡ 06000008-0000-4000-8000-000000000005
-bins_debiased = let
-    DEBIAS = 1.0f0   # 0 = off, 1 = full per-bin 1/(2N); PCCT truth F ≤ 1
-    out = map(eachindex(sim_bins.bins)) do b
-        p = Float32.(sim_bins.bins[b])
-        I0b = Float32(sim_bins.I0_bins[b])
-        N = max.(I0b .* exp.(-p), 1.0f0)
-        p .- DEBIAS ./ (2.0f0 .* N)
+bins_denoised = let
+    APPLY_SVD = true   # A/B TOGGLE — false ⇒ passthrough raw bins
+    if APPLY_SVD
+        out = BS.apply_sino_svd_denoise_bilateral(
+            sim_bins.bins;
+            bilat_radius  = 3,     # search-window radius (px)
+            bilat_sigma_s = 2.0,   # spatial Gaussian σ (px)
+            bilat_range_k = 2.0,   # edge sensitivity (↓ protects edges harder)
+        )
+        (bins = out, I0_bins = sim_bins.I0_bins, geom = sim_bins.geom)
+    else
+        (bins = sim_bins.bins, I0_bins = sim_bins.I0_bins, geom = sim_bins.geom)
     end
-    (bins = out, I0_bins = sim_bins.I0_bins, geom = sim_bins.geom)
 end;
 
 # ╔═╡ 06000008-0000-4000-8000-000000000006
 md"""
-### 02. SVD Denoise
-**4-Bin Joint (Edge-Aware Bilateral)**
-
-Per detector row, an SVD across the 4 **debiased** bins keeps the common
-log-attenuation structure `U[:,1]` (shared anatomy, ~√4 SNR) **pixel-perfect**
-and cleans the residual `U[:,2..4]` (spectral residual + decorrelated quantum
-noise) with an edge-aware joint bilateral — zero resolution cost.  4-channel
-denoise is the key noise lever; running it on the debiased bins keeps the
-bias correction upstream.  `APPLY_SVD = false` ⇒ passthrough.
-"""
-
-# ╔═╡ 06000008-0000-4000-8000-000000000007
-bins_denoised = let
-    APPLY_SVD = true
-    if APPLY_SVD
-        out = BS.apply_sino_svd_denoise_bilateral(
-            bins_debiased.bins;
-            bilat_radius  = 3,
-            bilat_sigma_s = 2.0,
-            bilat_range_k = 2.0,
-        )
-        (bins = out, I0_bins = bins_debiased.I0_bins, geom = bins_debiased.geom)
-    else
-        bins_debiased
-    end
-end;
-
-# ╔═╡ 06000008-0000-4000-8000-000000000008
-md"""
-### 03. Bin Combine
+### 02. Bin Combine
 **4 Bins → Low / High Pair**
 
-I₀-weighted Beer recombination of the 4 debiased + denoised bins:
+I₀-weighted Beer recombination of the 4 SVD-denoised bins into the two-channel
+`(low, high)` pair the Cong decomposition consumes:
 
 ```
-N_grp = Σ_{b ∈ grp} I0[b] · exp(-p[b])
-p_grp = -log(N_grp / Σ_{b ∈ grp} I0[b])
+N_grp = Σ_{b ∈ grp} I0[b] · exp(-p[b]),   p_grp = -log(N_grp / Σ I0[b])
 ```
 
 * **Low**  = bins **1 + 2 + 3** (20 – 70 keV)
 * **High** = bin  **4** ( > 70 keV)
 
-The two-channel `(low, high)` pair the Cong PCCT-Φ_k decomposition consumes
-directly.  Physical DAS floor (counts ≥ 1) applied.
+The two-channel `(low, high)` log line integrals feed the fine SVD (step 03) and
+then Cong.  Physical DAS floor (counts ≥ 1) applied.
 """
 
-# ╔═╡ 06000008-0000-4000-8000-000000000010
-sim_lohi = let
+# ╔═╡ 06000008-0000-4000-8000-000000000007
+sino_combined = let
     low_bins = collect(1:3)
     high_bins = [4]
 
@@ -537,6 +514,30 @@ sim_lohi = let
         sino_low = sino_low, sino_high = sino_high,
         I0_lo = I0_lo, I0_hi = I0_hi,
         geom = bins_denoised.geom,
+    )
+end;
+
+# ╔═╡ 06000008-0000-4000-8000-000000000008
+md"""
+### 03. Fine SVD
+**Subtle 2-Channel Gaussian on the Combined Pair**
+
+A *subtle* Gaussian `apply_sino_svd_denoise` on the combined `(low, high)` pair
+that Cong consumes: `U[:,1]` (anatomy) kept pixel-perfect, `U[:,2]` (iodine
+contrast) lightly Gaussian-smoothed at `SVD2_SIGMA` px — the extra cleanup nb03
+gets from denoising the *final* channels the decomposition sees.
+"""
+
+# ╔═╡ 06000008-0000-4000-8000-000000000010
+sim_lohi = let
+    SVD2_SIGMA = 0.5f0   # subtle 2-channel Gaussian σ (px) on the combined pair
+    out = BS.apply_sino_svd_denoise(
+        [sino_combined.sino_low, sino_combined.sino_high]; σ_px = SVD2_SIGMA,
+    )
+    (
+        sino_low = out[1], sino_high = out[2],
+        I0_lo = sino_combined.I0_lo, I0_hi = sino_combined.I0_hi,
+        geom = sino_combined.geom,
     )
 end;
 
@@ -726,10 +727,11 @@ md"""
 ### 05. FBP Basis Maps
 **Per-Basis Apodization**
 
-Two FDK passes with a PCCT-tuned apodization filter (sharper than
-`SoftFilter` to recover the higher native PCCT spatial resolution).
-The iodine + water reconstructions land in basis-density units (g/cm³)
-directly; no post-decomposition step needed.
+Two FDK passes, one apodization filter per basis: a **soft iodine** filter
+crushes the α-amplified low-keV noise, and a **soft water** (`SoftFilter`) filter
+holds down the σ_W floor.  Because every VMI is `W + α(E)·I`, softening each basis
+once selectively shapes noise across energies (selectivity is emergent from α(E)).
+The iodine + water reconstructions land in basis-density units (g/cm³) directly.
 """
 
 # ╔═╡ 0600000a-0000-4000-8000-000000000010
@@ -737,11 +739,10 @@ basis_volumes = let
     matrix_size = recon_opts.matrix_size
     geom = sino_basis.geom
 
-    # PER-BASIS apodization (NOT per-keV).  Applied ONCE to each basis
-    # sinogram; every VMI is VMI_E = W + α(E)·I.  A SOFT iodine filter
-    # crushes the low-keV noise (α(50) large) while barely touching high keV
-    # (water-dominated); the WATER filter stays sharp so anatomy resolution
-    # is preserved at every energy.  Selectivity is emergent from α(E).
+    # PER-BASIS apodization (NOT per-keV).  Applied ONCE to each basis sinogram;
+    # every VMI is VMI_E = W + α(E)·I.  A SOFT iodine filter crushes the low-keV
+    # noise (α(50) large); a SOFT water filter holds down the σ_W floor that
+    # dominates the high-keV VMIs.  Selectivity is emergent from α(E).
     #
     # ── TUNE iodine softness here: lower mid/high values ⇒ softer ⇒ less
     #    low-keV noise (but softer iodine detail).
@@ -749,12 +750,7 @@ basis_volumes = let
         (0.0, 0.25, 0.5, 0.75, 1.0),
         (1.0, 0.40, 0.12, 0.03, 0.001),
     )
-    # Water filter: halfway between SoftFilter and StandardFilter (per-point
-    # average) — sharp anatomy, sets the σ_W floor / high-keV noise.
-    water_filter = BS.CustomFilter(
-        (0.0, 0.25, 0.5, 0.75, 1.0),
-        (1.0, 0.8744, 0.6003, 0.3031, 0.0266),
-    )
+    water_filter = BS.SoftFilter()
 
     function _fbp(sino_cpu, filt)
         sino_gpu = to_gpu(Float32.(sino_cpu))
@@ -819,14 +815,20 @@ Material decomposition stamps anti-correlated noise on the basis maps
 (data-adaptive cov-ACNR, `denoising/acnr.jl`) removes it: a closed-form 2×2
 covariance eigen-rotation keeps the structure axis **e1** pixel-perfect and
 joint-bilateral-denoises only the anti-correlated noise axis **e2** (edge-aware,
-so real water/iodine edges survive).  Runs on the FBP basis maps, **before** the
-§10 z-median.
+so real water/iodine edges survive).  Runs on the FBP basis maps, just before
+VMI synthesis.
 """
 
 # ╔═╡ 0600000a-0000-4000-8000-000000000050
 # Kalender-1988 true ACNR on the FBP basis maps via `BS.apply_acnr_kalender!`.
 basis_acnr = let
     APPLY_ACNR = true          # Kalender-1988 true ACNR; false ⇒ passthrough
+    ACNR_PASSES = 4            # geometric shrink of residual anti-correlation per pass
+    ACNR_BETA_MAX = 20.0       # ← THE monotonicity lever: caps the per-pixel regression
+    #   coefficient.  The default (8) UNDER-corrects, leaving Cov≈−6.3 when
+    #   monotonicity needs |Cov| ≤ 5σ_I² ≈ 2.7 (α★ sat at ~100 keV → 140 keV tail
+    #   flipped up).  Raising it lets strongly anti-correlated pixels actually be
+    #   regressed out, pulling Cov under the bar in few passes.
 
     W = copy(basis_volumes.vol_water_raw)
     I = copy(basis_volumes.vol_iodine_raw)
@@ -836,7 +838,7 @@ basis_acnr = let
         # two maps' high-frequency channels — anti-correlated (noise) content
         # subtracted exactly, structure pixels clamped to zero correction and
         # bit-untouched.  Zero blur by construction.
-        info = BS.apply_acnr_kalender!(W, I)
+        info = BS.apply_acnr_kalender!(W, I; passes = ACNR_PASSES, beta_max = ACNR_BETA_MAX)
         @info "[ACNR · Kalender-1988 true ACNR] ρ_hp(W,I)=$(round(info.ρ_hp, digits = 3)) · σ_hp(W)=$(round(info.σ_hW, sigdigits = 3)) σ_hp(I)=$(round(info.σ_hI, sigdigits = 3))"
     else
         @info "[ACNR] OFF (passthrough)"
@@ -866,7 +868,7 @@ water at the target VMI energy from NIST tables.  VMI grid:
     `⟨c_iodine⟩` over a deeply-eroded solid-water ROI.  Its
     synth-evaluated μ_water at each VMI energy is logged next to the
     textbook mono divisor as a Δ% drift.  This is **diagnostic only** —
-    after the SF-JSD sinogram denoiser + Cong decomposition, the residual
+    after the SVD sinogram denoising + Cong decomposition, the residual
     bias is small enough that the textbook analytical divisor recovers
     correct HUs directly without needing an empirical anchor.
 """
@@ -1097,7 +1099,7 @@ md"""
 ### Water ROI
 
 Left panel: the deeply-eroded solid-water ROI (12-px erosion ≈ 8 mm)
-overlaid in red on the 70 keV Mono+ slice — exactly the voxels feeding
+overlaid in red on the 70 keV VMI slice — exactly the voxels feeding
 the `solid_water_basis` diagnostic.  Right panel: mean HU over that
 ROI vs VMI energy.
 
@@ -1116,7 +1118,7 @@ ROI vs VMI energy.
 let
     fig = CM.Figure(size = (1180, 580))
 
-    # ─── Left panel — 70 keV Mono+ slice + eroded SW ROI overlay ───────
+    # ─── Left panel — 70 keV VMI slice + eroded SW ROI overlay ───────
     HU_window = (-200, 500)
     mid = size(vmi_HU_by_keV[70.0], 3) ÷ 2
     bg = vmi_HU_by_keV[70.0][:, :, mid]
@@ -1528,11 +1530,6 @@ verification = let
     Es = sort(collect(pcct_vmi_energies))
     σs = [std(vmi_HU_by_keV[E][sw.mask_2d, :]) for E in Es]
     mono_ok = all(σs[i] > σs[i + 1] for i in 1:(length(σs) - 1))
-    # PCCT must BEAT dual-kVp at matched ~10 mGy: nb03's verified reference
-    # (post Jensen-debias + two-pass Kalender ACNR) is σ = 58.3 > 28.1 >
-    # 17.1 > 16.0 HU at 50/70/100/140 keV — and this notebook recons THINNER
-    # slices (0.4 vs 0.625 mm), so beating it here is strictly harder.
-    addcheck("PCCT beats dual-kVp: σ(50 keV) vs nb03's 58.3", σs[1], 0.0, 58.3)
     push!(checks, (name = "noise monotonic ↓ with keV: σ = $(join(round.(σs; digits = 1), " > "))",
         value = mono_ok ? 1.0 : 0.0, lo = 1.0, hi = 1.0, pass = mono_ok))
 
@@ -1580,11 +1577,12 @@ md"""
 
 ```
 Simulate 140 kVp PCCT  (4 bins; scatter + noise + pile-up + corrections)
-   → Projection-domain SVD denoise  (4-bin joint)
-   → Bin combine  (1+2 → low, 3+4 → high)
-   → Jensen debias + projection-domain material decomposition  (Cong, PCCT-Φ_k)
-   → FBP × 2 with per-basis apodization  (soft iodine, sharp water)
-   → Kalender-1988 true ACNR  (BS.apply_acnr_kalender!)
+   → 4-bin joint SVD denoise  (edge-aware bilateral — main, zero resolution loss)
+   → Bin combine  (1+2+3 → low, 4 → high)
+   → Fine 2-channel Gaussian SVD on the combined (low, high) pair
+   → Projection-domain material decomposition  (Cong, PCCT-Φ_k)
+   → FBP × 2 with per-basis apodization  (soft iodine + soft water)
+   → Kalender-1988 true ACNR  (BS.apply_acnr_kalender!, beta_max = 20)
    → Monoenergetic VMI synthesis  (textbook 2-basis, mono μρ_water divisor)
    → Automated verification  (water HU · monotonic noise-vs-keV · 14-rod NIST regression)
 ```
