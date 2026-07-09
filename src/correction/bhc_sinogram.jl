@@ -428,7 +428,7 @@ function calibrate_bhc_two_material(
         reference_energy_keV::Real = 70.0,
         hu_low::Real = 100.0,
         hu_high::Real = 500.0,
-        projector::Symbol = :dd,
+        projector::Symbol = :dd_fast,
     )
     Base.depwarn("The two-material BHC (bone second pass with hu_low/hu_high segmentation thresholds) is DEPRECATED: thresholds are ad hoc and dense iodine is misclassified as bone. Use the knobless calibrate_bhc_water/apply_bhc_water; quantitative bone/iodine belongs to the VMI chain.", :calibrate_bhc_two_material)
     n_E, n_col = size(weights_per_col)
@@ -687,7 +687,7 @@ Bowtie-aware sinogram-domain two-material BHC.
    sinogram.
 
 # Keyword Arguments
-- `projector::Symbol=:dd`: forward ray tracer for Stage 2's bone-fraction
+- `projector::Symbol=:dd_fast`: forward ray tracer for Stage 2's bone-fraction
   projection.  Pass the SAME value as the simulation's `SimOptions(; projector=…)`
   (`:dd` default, anti-aliased; `:dd_fast` same DD model, single-pass fused kernels; `:siddon` faster mono but aliases) so the correction
   matches the model that generated the data.

@@ -453,8 +453,8 @@ function _forward_project_poly!(
         # Default false: 234-bin fused kernel causes massive register spilling on GPU (3.5× slower).
         # Tiled fusion (K=16) will replace this — see SPEED-BUILD-V2-002.
         fused::Bool = false,
-        # Ray tracer: :dd (default, anti-aliased) or :siddon (fast, aliases).
-        projector::Symbol = :dd
+        # Ray tracer: :dd_fast (default, single-pass DD), :dd (DEPRECATED), or :siddon (fast, aliases).
+        projector::Symbol = :dd_fast
     ) where {T <: AbstractFloat}
 
     n_energies = length(energies)

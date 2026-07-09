@@ -88,7 +88,7 @@ include("projection/dd.jl")
 # (results ≡ :dd to float ordering; full spectrum in ONE volume walk).
 include("projection/dd_fast.jl")
 
-# Projector selection (:dd default / :dd_fast / :siddon) — shared by the
+# Projector selection (:dd_fast default / :dd DEPRECATED / :siddon) — shared by the
 # forward sim, the IR system matrix, and the BHC correction so the model stays
 # consistent.
 include("projection/select_projector.jl")

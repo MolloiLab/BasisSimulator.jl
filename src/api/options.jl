@@ -46,16 +46,17 @@ for preset lookup — it is not stored on the struct.
 - `seed::Union{Int, Nothing}`: Random seed for reproducibility.  Default 42.
 - `detector_efficiency_mode::Symbol`: Override detector efficiency calculation mode.
   `:auto` (default) = let driver decide; `:mc_lut` = force MC LUT; `:beer_lambert` = force analytical.
-- `projector::Symbol`: Forward-projection ray tracer.  `:dd` (default) = distance-driven,
-  anti-aliased footprint integration (robust in severe beam-hardened regions).  `:siddon` =
-  exact ray tracing, ~3.5-5.5x faster on GPU but ALIASES in severe beam-hardened regions —
-  use only when speed outranks accuracy.  `:dd_fast` = the SAME distance-driven model with
-  single-pass per-material path-length fused kernels — results agree with `:dd` to floating-point
-  ordering, the full spectrum runs in ONE volume walk (measured 47x faster on a 234-bin
-  polychromatic forward on M4 Metal), mono projection is the `:dd` kernel unchanged; requires
-  ≤ 32 materials (falls back to `:dd` kernels above that).  NOTE: to keep the iterative-recon
-  system matrix consistent with the data, pass the SAME projector to
-  `create_hir_recon_workspace(; projector=…)` (both default `:dd`).
+- `projector::Symbol`: Forward-projection ray tracer.  `:dd_fast` (default) = distance-driven,
+  anti-aliased footprint integration with single-pass per-material path-length fused kernels —
+  the full spectrum runs in ONE volume walk (measured 47x faster than `:dd` on a 234-bin
+  polychromatic forward on M4 Metal), results agree with `:dd` to floating-point ordering;
+  requires ≤ 32 materials (falls back to the `:dd` kernels above that), and mono projection is
+  the `:dd` kernel unchanged.  `:dd` = the original per-energy distance-driven kernel —
+  **DEPRECATED** (kept as the numerical reference; emits a warning and may be removed in a
+  future release; use `:dd_fast`).  `:siddon` = exact ray tracing, ~3.5-5.5x faster on GPU but
+  ALIASES in severe beam-hardened regions — use only when speed outranks accuracy.  NOTE: to keep
+  the iterative-recon system matrix consistent with the data, pass the SAME projector to
+  `create_hir_recon_workspace(; projector=…)` (both default `:dd_fast`).
 """
 struct SimOptions
     # --- Physics Pipeline (7 effects) ---
@@ -80,7 +81,7 @@ struct SimOptions
     # --- General ---
     seed::Union{Int, Nothing}
     detector_efficiency_mode::Symbol   # :auto, :mc_lut, :beer_lambert
-    projector::Symbol                  # :dd (default, anti-aliased), :dd_fast (same DD, single-pass), :siddon (fast)
+    projector::Symbol                  # :dd_fast (default, single-pass DD), :dd (DEPRECATED reference kernel), :siddon (fast)
 end
 
 """
@@ -122,7 +123,7 @@ function SimOptions(;
         pcct_noise_reduction::Float64 = 0.0,
         seed::Union{Int, Nothing} = 42,
         detector_efficiency_mode::Symbol = :auto,
-        projector::Symbol = :dd
+        projector::Symbol = :dd_fast
     )
     _validate_projector(projector)
     # Fidelity preset defaults

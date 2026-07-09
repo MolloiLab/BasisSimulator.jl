@@ -907,7 +907,7 @@ mutable struct HIRReconWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, 
     params::HIRParams
 
     # ─── Forward-projection ray tracer (must match the sim's projector) ───
-    projector::Symbol         # :dd (default), :dd_fast, or :siddon
+    projector::Symbol         # :dd_fast (default), :dd (DEPRECATED), or :siddon
 end
 
 """
@@ -917,7 +917,7 @@ Create a pre-allocated workspace for zero-allocation Hybrid IR `reconstruct!()`.
 
 `filter` can be a `FilterType` struct or a `Symbol` (e.g., `:standard`).
 
-`projector` (`:dd` default, `:dd_fast`, or `:siddon`) selects the forward ray tracer used
+`projector` (`:dd_fast` default, `:dd` DEPRECATED, or `:siddon`) selects the forward ray tracer used
 for the IR system matrix (`A·x` and `W = 1/(A·1)`).  Set it to the SAME value
 as the simulation's `SimOptions(; projector=…)` so the recon inverts the
 operator that generated the data.
@@ -930,7 +930,7 @@ function create_hir_recon_workspace(
         strength::Int = 3,
         filter::Union{FilterType, Symbol} = StandardFilter(),
         cutoff::Float64 = 1.0,
-        projector::Symbol = :dd
+        projector::Symbol = :dd_fast
     )
     _validate_projector(projector)
     filter = filter isa Symbol ? filter_from_symbol(filter) : filter

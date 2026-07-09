@@ -181,7 +181,7 @@ function compute_projection_weights(
     geom::CTGeometry,
     volume_size::NTuple{3, Int},
     ::Type{T};
-    projector::Symbol = :dd
+    projector::Symbol = :dd_fast
 ) where T <: AbstractFloat
     ones_volume = ones(T, volume_size...)
     ray_sums = _project_mono(projector, ones_volume, geom)

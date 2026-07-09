@@ -50,7 +50,7 @@ Apply image-domain beam hardening correction (So et al. 2009).
   - `0.0` = no correction (identity)
   - `1.0` = full subtraction
   - Typical 0.2–0.7; start at 0.5.
-- `projector::Symbol=:dd`: forward ray tracer for the internal error-sinogram
+- `projector::Symbol=:dd_fast`: forward ray tracer for the internal error-sinogram
   projection.  Pass the SAME value as the simulation's `SimOptions(; projector=…)`
   (`:dd` default, anti-aliased; `:siddon` faster but aliases) so the correction
   is computed with the model that generated the data.
@@ -78,7 +78,7 @@ function apply_bhc_image_domain(
         hu_low::Real = 70.0,
         hu_high::Real = 150.0,
         scale_factor::Real = 0.5,
-        projector::Symbol = :dd,
+        projector::Symbol = :dd_fast,
     ) where {T <: AbstractFloat}
 
     Base.depwarn(

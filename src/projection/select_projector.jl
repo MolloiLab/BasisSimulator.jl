@@ -40,9 +40,15 @@ Throw an `ArgumentError` unless `p` is `:dd`, `:dd_fast`, or `:siddon`; return
 invalid symbol fails loudly instead of silently falling back to `:dd` in the
 shims below.
 """
-@inline function _validate_projector(p::Symbol)
+function _validate_projector(p::Symbol)
     (p === :dd || p === :dd_fast || p === :siddon) ||
         throw(ArgumentError("projector must be :dd, :dd_fast, or :siddon, got :$p"))
+    p === :dd && @warn(
+        "projector = :dd is DEPRECATED; use :dd_fast (the new default) — same distance-driven " *
+        "physics, results agree to floating-point ordering, ~47× faster polychromatic forward. " *
+        ":dd remains as the reference kernel but may be removed in a future release.",
+        maxlog = 1,
+    )
     return p
 end
 

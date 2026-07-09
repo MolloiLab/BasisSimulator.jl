@@ -415,8 +415,8 @@ function pcct_forward_project(
     ws_outputs_flat = nothing,        # GPU [n_elements * n_bins]
     ws_native_outputs_flat = nothing, # GPU [native_n_elements * n_bins] (for bf>1)
     ws_source_spectral = nothing,    # GPU [n_cols, n_rows, n_energies_padded] heel × bowtie
-    # Ray tracer: :dd (default, anti-aliased) or :siddon (fast, aliases).
-    projector::Symbol = :dd,
+    # Ray tracer: :dd_fast (default, single-pass DD), :dd (DEPRECATED), or :siddon (fast, aliases).
+    projector::Symbol = :dd_fast,
     # Ignored kwargs for backward compat with callers that still pass them
     kwargs...
 )
