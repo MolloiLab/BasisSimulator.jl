@@ -36,6 +36,13 @@ using FFTW
 import AcceleratedKernels as AK
 import XrayAttenuation as XA
 
+# XCAT phantom download/load (artifact store + XCIST voxelized parsing)
+import Artifacts
+import Downloads
+import JSON
+import SHA
+import p7zip_jll
+
 # Re-export for convenience
 export XA
 
@@ -69,6 +76,9 @@ include("geometry/scanner.jl")
 
 # Affine transforms: phantom ↔ world ↔ recon coordinate mapping
 include("geometry/affine.jl")
+
+# XCAT voxelized phantom download + load (XCIST phantoms-voxelized, BSD-3)
+include("phantoms/xcat_artifacts.jl")
 
 
 # =============================================================================
