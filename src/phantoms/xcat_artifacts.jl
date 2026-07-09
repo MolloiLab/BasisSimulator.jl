@@ -239,21 +239,13 @@ _xcist_eltype(dt::AbstractString) =
     dt == "float64" ? Float64 :
     error("unsupported XCIST volumefractionmap_datatype \"$dt\"")
 
-"""
-    _parse_xcist_voxelized(dir; materials=nothing, voxel_size_cm=nothing) -> Phantom
-
-Assemble the per-material volume-fraction maps under `dir` into a labeled
-`Phantom`.  Each material map is placed on a common grid by isocenter alignment
-(`global = local − offset`) and reduced to one label per voxel (argmax; exact
-for the binary XCAT maps).  Label `i` is XCIST material `i`; label `0` is air.
-
-`materials` overrides the XCIST-name → material map (default
-[`xcat_default_materials`](@ref)); `voxel_size_cm` overrides the voxel size read
-from the header (which is in mm).
-"""
-function _parse_xcist_voxelized(
+# Assemble the per-material volume-fraction maps under `dir` into a single
+# labeled UInt8 mask (one label per voxel; label i = XCIST material i, 0 = air),
+# returning the mask, the per-label material NAMES, and the voxel size (cm).
+# Each material map is placed on a common grid by isocenter alignment
+# (`global = local − offset`); binary XCAT maps make the label reduction exact.
+function _assemble_xcist(
         dir::AbstractString;
-        materials::Union{Nothing, AbstractDict} = nothing,
         voxel_size_cm::Union{Nothing, NTuple{3, Real}} = nothing,
         downsample::Integer = 1,
     )
@@ -291,45 +283,50 @@ function _parse_xcist_voxelized(
         end
     end
 
+    pre_size = size(mask)
+    downsample > 1 && (mask = _downsample_labeled(mask, downsample))
+    # header is mm → cm; when downsampling, scale each axis by its actual size
+    # ratio so the physical extent is preserved exactly (degenerate axes stay
+    # unscaled).  An explicit voxel_size_cm is taken as the final size.
+    vs_cm = voxel_size_cm !== nothing ? Float64.(voxel_size_cm) :
+        (xs[1] / 10, ys[1] / 10, zs[1] / 10) .* (pre_size ./ size(mask))
+    return (mask = mask, names = names, voxel_size_cm = vs_cm)
+end
+
+# label → XA.Material dict (0 = air) from per-label names + an XCIST-name→material map.
+function _xcist_materials_dict(names::Vector{String}; materials::Union{Nothing, AbstractDict} = nothing)
     matmap = materials === nothing ? xcat_default_materials() : materials
     mdict = Dict{Int, XA.Material}(0 => XA.Materials.air)
-    for i in 1:nm
-        haskey(matmap, names[i]) ||
-            error("no material mapping for XCIST material \"$(names[i])\" — pass a `materials` dict covering it")
-        mdict[i] = matmap[names[i]]
+    for (i, nm) in enumerate(names)
+        haskey(matmap, nm) ||
+            error("no material mapping for XCIST material \"$nm\" — pass a `materials` dict covering it")
+        mdict[i] = matmap[nm]
     end
+    return mdict
+end
 
-    pre_size = size(mask)
-    if downsample > 1
-        mask = _downsample_labeled(mask, downsample)
-    end
-    # voxel size: header is mm → cm.  When downsampling, scale each axis by its
-    # actual size ratio so the physical extent is preserved exactly (degenerate
-    # axes stay unscaled).  An explicit voxel_size_cm is taken as the final size.
-    vs_cm = if voxel_size_cm !== nothing
-        Float64.(voxel_size_cm)
-    else
-        (xs[1] / 10, ys[1] / 10, zs[1] / 10) .* (pre_size ./ size(mask))
-    end
-    return Phantom(mask, mdict, vs_cm)
+# Path-based parse → Phantom (used by the offline tests).
+function _parse_xcist_voxelized(dir::AbstractString; materials = nothing, voxel_size_cm = nothing, downsample::Integer = 1)
+    a = _assemble_xcist(dir; voxel_size_cm = voxel_size_cm, downsample = downsample)
+    return Phantom(a.mask, _xcist_materials_dict(a.names; materials = materials), a.voxel_size_cm)
 end
 
 """
-    load_xcat_phantom(name::Symbol; path=nothing, materials=nothing,
-                      voxel_size_cm=nothing, quiet=false) -> Phantom
+    load_xcat_phantom_labeled(name; path, materials, voxel_size_cm, downsample, quiet)
+        -> (; mask, materials, label_names, voxel_size_cm)
 
-Download (if needed) and load XCAT phantom `name` as a labeled [`Phantom`](@ref)
-ready for `simulate!`.  See [`download_xcat_phantom`](@ref) for `path`/caching
-and [`_parse_xcist_voxelized`](@ref) for `materials`/`voxel_size_cm`.
+Like [`load_xcat_phantom`](@ref) but returns the raw pieces instead of a built
+`Phantom`: the CPU `mask` (labeled `UInt8`), the `materials` map (`label →
+XA.Material`, `0 = air`), the `label_names` (`label → XCIST name`), and the voxel
+size (cm).  Use this when you need the mask on a specific device before building
+the phantom, e.g. for GPU simulation:
 
 ```julia
-phantom = load_xcat_female_slab()                 # auto-download + labeled Phantom
-mats = xcat_default_materials()                   # grab the material dict …
-mats["ncat_blood"] = XA.Materials.wholeblood      # … edit it …
-phantom = load_xcat_female_slab(; materials = mats)   # … and reload
+p = load_xcat_male_chest_labeled(; downsample = 6)   # (via load_xcat_phantom_labeled(:male_chest; …))
+phantom = Phantom(my_to_gpu(p.mask), p.materials, p.voxel_size_cm)
 ```
 """
-function load_xcat_phantom(
+function load_xcat_phantom_labeled(
         name::Symbol;
         path::Union{Nothing, AbstractString} = nothing,
         materials::Union{Nothing, AbstractDict} = nothing,
@@ -338,14 +335,42 @@ function load_xcat_phantom(
         quiet::Bool = false,
     )
     dir = download_xcat_phantom(name; path = path, quiet = quiet)
-    return _parse_xcist_voxelized(dir; materials = materials, voxel_size_cm = voxel_size_cm, downsample = downsample)
+    a = _assemble_xcist(dir; voxel_size_cm = voxel_size_cm, downsample = downsample)
+    return (
+        mask = a.mask,
+        materials = _xcist_materials_dict(a.names; materials = materials),
+        label_names = Dict(i => a.names[i] for i in eachindex(a.names)),
+        voxel_size_cm = a.voxel_size_cm,
+    )
 end
 
-for (fn, sym) in (
-        (:load_xcat_female_slab, :female_slab), (:load_xcat_female_chest, :female_chest),
-        (:load_xcat_male_slab, :male_slab), (:load_xcat_male_chest, :male_chest),
+"""
+    load_xcat_phantom(name::Symbol; path=nothing, materials=nothing,
+                      voxel_size_cm=nothing, downsample=1, quiet=false) -> Phantom
+
+Download (if needed) and load XCAT phantom `name` as a labeled [`Phantom`](@ref)
+ready for `simulate!`.  See [`download_xcat_phantom`](@ref) for `path`/caching,
+[`load_xcat_phantom_labeled`](@ref) for the raw pieces (GPU/custom builds), and
+`materials` / `voxel_size_cm` / `downsample` for the labeled assembly.
+
+```julia
+phantom = load_xcat_female_slab()                 # auto-download + labeled Phantom
+mats = xcat_default_materials()                   # grab the material dict …
+mats["ncat_blood"] = XA.Materials.wholeblood      # … edit it …
+phantom = load_xcat_female_slab(; materials = mats)   # … and reload
+```
+"""
+function load_xcat_phantom(name::Symbol; kwargs...)
+    p = load_xcat_phantom_labeled(name; kwargs...)
+    return Phantom(p.mask, p.materials, p.voxel_size_cm)
+end
+
+for (base, sym) in (
+        (:female_slab, :female_slab), (:female_chest, :female_chest),
+        (:male_slab, :male_slab), (:male_chest, :male_chest),
     )
-    @eval $fn(; kwargs...) = load_xcat_phantom($(QuoteNode(sym)); kwargs...)
+    @eval $(Symbol(:load_xcat_, base))(; kwargs...) = load_xcat_phantom($(QuoteNode(sym)); kwargs...)
+    @eval $(Symbol(:load_xcat_, base, :_labeled))(; kwargs...) = load_xcat_phantom_labeled($(QuoteNode(sym)); kwargs...)
 end
 
 # =============================================================================
@@ -353,8 +378,10 @@ end
 # =============================================================================
 
 export xcat_phantoms, xcat_default_materials, xcat_citation,
-    download_xcat_phantom, load_xcat_phantom,
+    download_xcat_phantom, load_xcat_phantom, load_xcat_phantom_labeled,
     download_xcat_female_slab, download_xcat_female_chest,
     download_xcat_male_slab, download_xcat_male_chest,
     load_xcat_female_slab, load_xcat_female_chest,
-    load_xcat_male_slab, load_xcat_male_chest
+    load_xcat_male_slab, load_xcat_male_chest,
+    load_xcat_female_slab_labeled, load_xcat_female_chest_labeled,
+    load_xcat_male_slab_labeled, load_xcat_male_chest_labeled
