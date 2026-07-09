@@ -24,7 +24,7 @@ using Random: MersenneTwister, randn!
 
 # ╔═╡ 08010001-0000-4000-8000-000000000001
 md"""
-# 08 · QRM-Thorax Pure-Material PCCT VMI · **Full-Resolution True-Scan Reference**
+# QRM-Thorax Pure-Material PCCT VMI: Full-Resolution True-Scan Reference
 
 **Intent:** 1-to-1 PCCT counterpart of notebook 07.  Same QRM-Thorax
 phantom with four pure-material rods (water · triolein · collagen ·
@@ -83,7 +83,7 @@ QRM-Thorax mid-slice mask  → relabel rods 9–12 → tile z → BS.Phantom
 
 # ╔═╡ 08010002-0000-4000-8000-000000000001
 md"""
-## Setup
+## Notebook Setup
 """
 
 # ╔═╡ 08010003-0000-4000-8000-000000000010
@@ -91,6 +91,12 @@ import BasisSimulator as BS
 
 # ╔═╡ 08010003-0000-4000-8000-000000000011
 import CairoMakie as CM
+
+# ╔═╡ 08010003-0000-4000-8000-000000000012
+import PlutoUI
+
+# ╔═╡ 08010003-0000-4000-8000-000000000013
+PlutoUI.TableOfContents()
 
 # ╔═╡ 08010003-0000-4000-8000-000000000040
 begin
@@ -105,9 +111,18 @@ md"""
 **Backend detected:** $(GPU_BACKEND.name)
 """
 
+# ╔═╡ 08020000-0000-4000-8000-0000000000f1
+md"""
+## Scan Setup and Simulation
+
+One clinical PCCT acquisition: the QRM-Thorax phantom, the Siemens Naeotom
+Alpha photon-counting scanner, the 140 kVp protocol, and the 4-bin forward
+projection.
+"""
+
 # ╔═╡ 08020001-0000-4000-8000-000000000001
 md"""
-## 1. `Phantom`: QRM-Thorax with 4 Pure-Material Rods
+### 01. `Phantom`: QRM-Thorax with 4 Pure-Material Rods
 
 Identical to notebook 07.  Read the **prepared** QRM-Thorax mask —
 already rotated to CT display orientation (spine at the bottom) and
@@ -371,7 +386,7 @@ end
 
 # ╔═╡ 08030001-0000-4000-8000-000000000001
 md"""
-## 2. `Scanner`: Siemens Naeotom Alpha (PCCT, 4-threshold)
+### 02. `Scanner`: Siemens Naeotom Alpha (PCCT, 4-threshold)
 
 CdTe direct-conversion detector with native dexels 0.275 × 0.322 mm at
 the detector face (2×2 binned in DAS).  Energy thresholds
@@ -451,7 +466,7 @@ end;
 
 # ╔═╡ 08030002-0000-4000-8000-000000000001
 md"""
-## 3. `CTProtocol`: 140 kVp / 174 mA / 2.5 mm collimation
+### 03. `CTProtocol`: 140 kVp / 174 mA / 2.5 mm collimation
 
 Clinical 140 kVp single-energy PCCT acquisition.
 `additional_filters = [("Ti", 0.9)]` is the Vectron tube's inherent
@@ -474,7 +489,7 @@ protocol = BS.CTProtocol(
 
 # ╔═╡ 08030003-0000-4000-8000-000000000001
 md"""
-## 4. `SimOptions` and `ReconOptions`
+### 04. `SimOptions` and `ReconOptions`
 
 `fidelity = :pcct` switches the simulator into the photon-counting path
 (per-bin sinograms + DRM + Compton scatter modeling + MC pile-up).
@@ -522,7 +537,7 @@ recon_opts = BS.ReconOptions(
 
 # ╔═╡ 08030004-0000-4000-8000-000000000001
 md"""
-## 5. Forward Project (PCCT)
+### 05. Forward Project (PCCT)
 
 Run `BS.simulate!` once on the PCCT protocol.  The simulator returns
 `(pcct_sino, I0_bins, pileup_S)` — the 4 per-bin log-line-integral
@@ -623,9 +638,18 @@ let
     fig
 end
 
+# ╔═╡ 08030000-0000-4000-8000-0000000000f1
+md"""
+## VMI Pipeline
+
+4-bin combine → projection-domain material decomposition → per-basis FBP →
+image-domain ACNR → monoenergetic synthesis.  The PCCT counterpart of the
+notebook 04 chain.
+"""
+
 # ╔═╡ 08030005-0000-4000-8000-000000000001
 md"""
-## 6. Bin Combine: 4 Bins → Low / High Pair
+### 01. Bin Combine: 4 Bins → Low / High Pair
 
 I₀-weighted Beer recombination of the 4 raw PCCT bins:
 
@@ -720,7 +744,7 @@ end
 
 # ╔═╡ 08030007-0000-4000-8000-000000000001
 md"""
-## 7. Projection-Domain Material Decomposition (PCCT-Φ_k)
+### 02. Projection-Domain Material Decomposition (PCCT-Φ_k)
 
 Per-ray Cong univariate solver mapped to PCCT via the generalization in
 Black (*in prep.*) — re-derives the Cong 2022 framework around an
@@ -900,7 +924,7 @@ end
 
 # ╔═╡ 08030008-0000-4000-8000-000000000001
 md"""
-## 8. FBP: Iodine and Water Basis Maps
+### 03. FBP: Iodine and Water Basis Maps
 
 Two FDK passes — one per basis sinogram.  Output volumes are in
 basis-density units (g/cm³).
@@ -966,7 +990,7 @@ end
 
 # ╔═╡ 08030008-0000-4000-8000-000000000050
 md"""
-### ACNR — Edge-Aware Anti-Correlated Noise Reduction (image domain)
+### 04. ACNR: Edge-Aware Anti-Correlated Noise Reduction (Image Domain)
 
 Material decomposition stamps strongly **anti-correlated** noise onto the basis
 maps (measured `ρ_basis ≈ −0.92`) — that anti-correlation *is* the VMI-noise U.
@@ -1075,7 +1099,7 @@ end
 
 # ╔═╡ 0803000a-0000-4000-8000-000000000001
 md"""
-## 10. VMI Synthesis
+### 05. VMI Synthesis
 
 `BS.synth_vmi_2basis(c_water, c_iodine_mg_per_mL; energy_keV)` evaluates
 the textbook 2-basis linear mix (McCollough 2015) at the target keV:
@@ -1809,8 +1833,11 @@ comparable.
 # ╠═08010003-0000-4000-8000-000000000008
 # ╠═08010003-0000-4000-8000-000000000010
 # ╠═08010003-0000-4000-8000-000000000011
+# ╠═08010003-0000-4000-8000-000000000012
+# ╠═08010003-0000-4000-8000-000000000013
 # ╠═08010003-0000-4000-8000-000000000040
 # ╟─08010003-0000-4000-8000-000000000050
+# ╟─08020000-0000-4000-8000-0000000000f1
 # ╟─08020001-0000-4000-8000-000000000001
 # ╠═08020001-0000-4000-8000-000000000010
 # ╠═08020001-0000-4000-8000-000000000011
@@ -1845,6 +1872,7 @@ comparable.
 # ╠═08030004-0000-4000-8000-000000000010
 # ╠═08030004-0000-4000-8000-000000000025
 # ╟─08030004-0000-4000-8000-000000000040
+# ╟─08030000-0000-4000-8000-0000000000f1
 # ╟─08030005-0000-4000-8000-000000000001
 # ╠═08030005-0000-4000-8000-000000000010
 # ╟─08030005-0000-4000-8000-000000000030
@@ -1867,9 +1895,9 @@ comparable.
 # ╠═0803000a-0000-4000-8000-000000000010
 # ╠═0803000a-0000-4000-8000-000000000020
 # ╟─0803000a-0000-4000-8000-000000000040
+# ╟─0803000c-0000-4000-8000-000000000001
 # ╟─0803000c-0000-4000-8000-000000000000
 # ╟─0803000c-0000-4000-8000-00000000000a
-# ╟─0803000c-0000-4000-8000-000000000001
 # ╟─0803000c-0000-4000-8000-000000000002
 # ╟─0803000c-0000-4000-8000-000000000003
 # ╟─0803000d-0000-4000-8000-000000000001
