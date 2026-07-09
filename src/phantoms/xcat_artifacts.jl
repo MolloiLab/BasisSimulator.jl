@@ -214,6 +214,24 @@ function _find_xcist_json(dir::AbstractString)
     error("no .json phantom header found under $dir")
 end
 
+# Nearest-neighbor integer downsample of a labeled mask (preserves labels — no
+# interpolated mid-organ voxels).  Samples the voxel nearest each block center.
+# Degenerate axes (e.g. a single-slice slab) are kept intact, not collapsed.
+function _downsample_labeled(mask::AbstractArray{T, 3}, factor::Integer) where {T}
+    factor <= 1 && return mask
+    sz = size(mask)
+    osz = map(d -> max(1, d ÷ factor), sz)
+    out = similar(mask, osz)
+    off = factor ÷ 2
+    @inbounds for k in 1:osz[3], j in 1:osz[2], i in 1:osz[1]
+        ii = min(sz[1], (i - 1) * factor + off + 1)
+        jj = min(sz[2], (j - 1) * factor + off + 1)
+        kk = min(sz[3], (k - 1) * factor + off + 1)
+        out[i, j, k] = mask[ii, jj, kk]
+    end
+    return out
+end
+
 _xcist_eltype(dt::AbstractString) =
     dt == "int8"    ? Int8    :
     dt == "uint8"   ? UInt8   :
@@ -237,6 +255,7 @@ function _parse_xcist_voxelized(
         dir::AbstractString;
         materials::Union{Nothing, AbstractDict} = nothing,
         voxel_size_cm::Union{Nothing, NTuple{3, Real}} = nothing,
+        downsample::Integer = 1,
     )
     jf = _find_xcist_json(dir)
     base = dirname(jf)
@@ -280,7 +299,18 @@ function _parse_xcist_voxelized(
         mdict[i] = matmap[names[i]]
     end
 
-    vs_cm = voxel_size_cm === nothing ? (xs[1] / 10, ys[1] / 10, zs[1] / 10) : Float64.(voxel_size_cm)
+    pre_size = size(mask)
+    if downsample > 1
+        mask = _downsample_labeled(mask, downsample)
+    end
+    # voxel size: header is mm → cm.  When downsampling, scale each axis by its
+    # actual size ratio so the physical extent is preserved exactly (degenerate
+    # axes stay unscaled).  An explicit voxel_size_cm is taken as the final size.
+    vs_cm = if voxel_size_cm !== nothing
+        Float64.(voxel_size_cm)
+    else
+        (xs[1] / 10, ys[1] / 10, zs[1] / 10) .* (pre_size ./ size(mask))
+    end
     return Phantom(mask, mdict, vs_cm)
 end
 
@@ -304,10 +334,11 @@ function load_xcat_phantom(
         path::Union{Nothing, AbstractString} = nothing,
         materials::Union{Nothing, AbstractDict} = nothing,
         voxel_size_cm::Union{Nothing, NTuple{3, Real}} = nothing,
+        downsample::Integer = 1,
         quiet::Bool = false,
     )
     dir = download_xcat_phantom(name; path = path, quiet = quiet)
-    return _parse_xcist_voxelized(dir; materials = materials, voxel_size_cm = voxel_size_cm)
+    return _parse_xcist_voxelized(dir; materials = materials, voxel_size_cm = voxel_size_cm, downsample = downsample)
 end
 
 for (fn, sym) in (
