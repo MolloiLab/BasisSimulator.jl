@@ -29,7 +29,7 @@ using Printf: @sprintf
 
 # ╔═╡ 06000001-0000-4000-8000-000000000010
 md"""
-# 06 · CatSim vs BasisSimulator (CPU + GPU) — qualitative + runtime
+# CatSim vs BasisSimulator: Qualitative Match and Runtime
 
 **Same scanner, same protocol, same Gammex 472 phantom.  Three
 forward-projection + FDK pipelines run side-by-side: XCIST/CatSim
@@ -73,7 +73,7 @@ Gammex 472 @ 128³ (2.7 mm)
 
 # ╔═╡ 06000001-0000-4000-8000-000000000020
 md"""
-## Setup
+## Notebook Setup
 
 Same project + GPU detection idiom as nb02 / nb04 / nb05, plus the
 Python-side `import PythonCall as PC` for gecatsim.
@@ -87,6 +87,12 @@ import CairoMakie as CM
 
 # ╔═╡ 06000001-0000-4000-8000-000000000032
 import PythonCall as PC
+
+# ╔═╡ 06000001-0000-4000-8000-000000000033
+import PlutoUI
+
+# ╔═╡ 06000001-0000-4000-8000-000000000034
+PlutoUI.TableOfContents()
 
 # ╔═╡ 06000001-0000-4000-8000-000000000040
 begin
@@ -269,9 +275,18 @@ gecatsim_fdk_patched = !HAS_GECATSIM ? false : let
         true
 end;
 
+# ╔═╡ 060000f1-0000-4000-8000-000000000001
+md"""
+## Scan and Phantom Setup
+
+One scanner, one protocol, one phantom, shared verbatim by all three
+pipelines.  These cells also build the CatSim wrapper layer that hands
+BasisSimulator's phantom to gecatsim.
+"""
+
 # ╔═╡ 06000002-0000-4000-8000-000000000001
 md"""
-## 1. Scanner — GE Revolution Apex Elite
+### 01. Scanner: GE Revolution Apex Elite
 
 Same hardware as nb02 / nb03 / nb05.  The GE Apex Elite is the
 clinical scanner the CatSim reference is configured against, so it's
@@ -306,7 +321,7 @@ scanner = BS.Scanner(
 
 # ╔═╡ 06000003-0000-4000-8000-000000000001
 md"""
-## 2. Protocol + sim/recon options
+### 02. Protocol and Sim/Recon Options
 
 Single 120 kVp / 200 mA / 500-view acquisition, 4 mm collimation, 35 cm
 recon FOV.  Recon matrix is `(256, 256, n_z)` to keep the comparison
@@ -340,7 +355,7 @@ end;
 
 # ╔═╡ 06000004-0000-4000-8000-000000000001
 md"""
-## 3. CatSim wrapper layer
+### 03. CatSim Wrapper Layer
 
 Eight Julia functions wrap gecatsim so it accepts `BS.Scanner` /
 `BS.CTProtocol` / `BS.ReconOptions` / `BS.Phantom` directly.  The
@@ -519,7 +534,7 @@ end
 
 # ╔═╡ 06000005-0000-4000-8000-000000000001
 md"""
-### 3b. BasisSimulator label → CatSim material name
+#### CatSim Wrapper: Label → Material Name
 
 `BS.create_gammex_472` mask labels: 1 = solid water body, 10–16 = Ca
 inserts, 20–26 = I inserts.  CatSim wants string material names, and
@@ -551,7 +566,7 @@ const REGION_TO_CATSIM = Dict{Int, String}(
 
 # ╔═╡ 06000005-0000-4000-8000-000000000020
 md"""
-### 3c. Phantom → CatSim voxelized JSON
+#### CatSim Wrapper: Phantom → Voxelized JSON
 
 CatSim's `Phantom_Voxelized` callback wants:
 
@@ -639,7 +654,7 @@ end
 
 # ╔═╡ 06000006-0000-4000-8000-000000000001
 md"""
-## 4. Build the Gammex 472 phantom (heavily downsampled)
+### 04. Build the Gammex 472 Phantom
 
 `n_voxels = 128` → 2.7 mm voxels at 35 cm FOV.  Coarse enough that
 CatSim's voxelized projector finishes in ~1 minute on a laptop CPU but
@@ -665,7 +680,7 @@ phantom_gpu = BS.Phantom(
 
 # ╔═╡ 06000007-0000-4000-8000-000000000001
 md"""
-## 5. Theoretical μ_water for HU calibration
+### 05. Theoretical μ_water for HU Calibration
 
 All three pipelines use the same per-kVp μ_water reference so HU
 baselines line up.  `BS.compute_polychromatic_μ_water` returns a
@@ -702,9 +717,17 @@ geom_inspect = BS.CTGeometry(
     μ
 end;
 
+# ╔═╡ 060000f2-0000-4000-8000-000000000001
+md"""
+## Run Both Simulators
+
+The same forward-project → FDK job three ways: CatSim (the Python
+reference), BasisSimulator on CPU, and BasisSimulator on GPU.
+"""
+
 # ╔═╡ 06000008-0000-4000-8000-000000000001
 md"""
-## 6. Run CatSim
+### 01. Run CatSim
 """
 
 # ╔═╡ 06000008-0000-4000-8000-000000000010
@@ -739,7 +762,7 @@ end;
 
 # ╔═╡ 06000009-0000-4000-8000-000000000001
 md"""
-## 7. Run BasisSimulator (CPU)
+### 02. Run BasisSimulator (CPU)
 
 `phantom_cpu.mask` is a regular `Array{UInt8, 3}`, so the EICT workspace
 runs everything on the CPU side.
@@ -779,7 +802,7 @@ end;
 
 # ╔═╡ 0600000a-0000-4000-8000-000000000001
 md"""
-## 8. Run BasisSimulator (GPU)
+### 03. Run BasisSimulator (GPU)
 
 Same scanner / protocol / phantom geometry as the CPU run, but
 `phantom_gpu.mask` lives on the detected GPU backend
@@ -822,9 +845,17 @@ basissim_gpu_result = let
     (recon = recon_HU, elapsed = elapsed)
 end;
 
+# ╔═╡ 060000f3-0000-4000-8000-000000000001
+md"""
+## Results
+
+Qualitative image agreement first, then the runtime comparison that is the
+whole point of a native-Julia GPU simulator.
+"""
+
 # ╔═╡ 0600000b-0000-4000-8000-000000000001
 md"""
-## 9. Verification mosaic — qualitative comparison
+### Qualitative Comparison
 
 Mid-slice of all three reconstructions, shared HU window
 (-200, 600) so the rod contrast lines up visually.  CatSim handles HU
@@ -908,7 +939,7 @@ end
 
 # ╔═╡ 0600000c-0000-4000-8000-000000000001
 md"""
-## 10. Runtime — bar chart and numerical table
+### Runtime: Bar Chart and Table
 
 End-to-end **forward projection + FBP** wallclock for each pipeline.
 Log-y so the GPU bar doesn't disappear next to the CatSim bar.  The
@@ -1034,9 +1065,16 @@ let
     )
 end
 
+# ╔═╡ 060000f4-0000-4000-8000-000000000001
+md"""
+## Summary
+
+Where the speedup comes from, and where to take the comparison next.
+"""
+
 # ╔═╡ 0600000d-0000-4000-8000-000000000001
 md"""
-## 11. Why BasisSim is faster
+### Why BasisSim Is Faster
 
 A few specific things that show up in the runtime difference:
 
@@ -1067,7 +1105,7 @@ ray-tracing time scales linearly.
 
 # ╔═╡ 0600000e-0000-4000-8000-000000000001
 md"""
-## 12. Where to go next
+### Where to Go Next
 
 - For a **full multi-protocol regression** (multiple dose levels × kVp
   values) at clinical fidelity (1750³ phantom, hours of CatSim runtime
@@ -1094,12 +1132,15 @@ md"""
 # ╠═06000001-0000-4000-8000-000000000030
 # ╠═06000001-0000-4000-8000-000000000031
 # ╠═06000001-0000-4000-8000-000000000032
+# ╠═06000001-0000-4000-8000-000000000033
+# ╠═06000001-0000-4000-8000-000000000034
 # ╠═06000001-0000-4000-8000-000000000040
 # ╟─06000001-0000-4000-8000-000000000050
 # ╠═06000001-0000-4000-8000-000000000060
 # ╟─06000001-0000-4000-8000-000000000070
 # ╠═06000001-0000-4000-8000-000000000080
 # ╠═06000001-0000-4000-8000-000000000090
+# ╟─060000f1-0000-4000-8000-000000000001
 # ╟─06000002-0000-4000-8000-000000000001
 # ╠═06000002-0000-4000-8000-000000000010
 # ╟─06000003-0000-4000-8000-000000000001
@@ -1130,16 +1171,19 @@ md"""
 # ╟─06000007-0000-4000-8000-000000000001
 # ╠═06000007-0000-4000-8000-000000000010
 # ╠═06000007-0000-4000-8000-000000000020
+# ╟─060000f2-0000-4000-8000-000000000001
 # ╟─06000008-0000-4000-8000-000000000001
 # ╠═06000008-0000-4000-8000-000000000010
 # ╟─06000009-0000-4000-8000-000000000001
 # ╠═06000009-0000-4000-8000-000000000010
 # ╟─0600000a-0000-4000-8000-000000000001
 # ╠═0600000a-0000-4000-8000-000000000010
+# ╟─060000f3-0000-4000-8000-000000000001
 # ╟─0600000b-0000-4000-8000-000000000001
 # ╟─0600000b-0000-4000-8000-000000000010
 # ╟─0600000c-0000-4000-8000-000000000001
 # ╟─0600000c-0000-4000-8000-000000000005
 # ╟─0600000c-0000-4000-8000-000000000010
+# ╟─060000f4-0000-4000-8000-000000000001
 # ╟─0600000d-0000-4000-8000-000000000001
 # ╟─0600000e-0000-4000-8000-000000000001
