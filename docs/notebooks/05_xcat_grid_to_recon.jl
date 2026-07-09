@@ -1,8 +1,20 @@
 ### A Pluto.jl notebook ###
-# v0.1.0
+# v0.2.3
 
 using Markdown
 using InteractiveUtils
+
+# This Pluto notebook uses @bind for interactivity. When running this notebook outside of Pluto, the following 'mock version' of @bind gives bound variables a default value (instead of an error).
+macro bind(def, element)
+    #! format: off
+    return quote
+        local iv = try Base.loaded_modules[Base.PkgId(Base.UUID("6e696c72-6542-2067-7265-42206c756150"), "AbstractPlutoDingetjes")].Bonds.initial_value catch; b -> missing; end
+        local el = $(esc(element))
+        global $(esc(def)) = Core.applicable(Base.get, el) ? Base.get(el) : iv(el)
+        el
+    end
+    #! format: on
+end
 
 # ╔═╡ 05000001-0000-4000-8000-000000000001
 begin
@@ -21,7 +33,7 @@ using Unitful: @u_str
 
 # ╔═╡ 05000001-0000-4000-8000-000000000010
 md"""
-# 05 · XCAT UHR → CT Scan: Phantom Grids, Cropping, and the Affine Round-Trip
+# XCAT UHR → CT: Grid Mapping and the Recon-Affine Round-Trip
 
 **Take a 0.4 mm UHR XCAT phantom, crop it down to a cardiac sub-region as
 the input to a clinical CT acquisition, and use the simulator's affine
@@ -62,7 +74,7 @@ Full UHR XCAT (0.4 mm, ~32 × 28 × 10 cm)
 
 # ╔═╡ 05000001-0000-4000-8000-000000000020
 md"""
-## Setup
+## Notebook Setup
 
 Same project + GPU detection idiom as notebooks 02 / 04.
 """
@@ -72,6 +84,9 @@ import BasisSimulator as BS
 
 # ╔═╡ 05000001-0000-4000-8000-000000000031
 import CairoMakie as CM
+
+# ╔═╡ 05000001-0000-4000-8000-000000000060
+import PlutoUI
 
 # ╔═╡ 05000001-0000-4000-8000-000000000040
 begin
@@ -86,9 +101,20 @@ md"""
 **Backend detected:** $(GPU_BACKEND.name)
 """
 
+# ╔═╡ 05000001-0000-4000-8000-000000000070
+PlutoUI.TableOfContents()
+
+# ╔═╡ 05000002-0000-4000-8000-000000000000
+md"""
+## Load the XCAT Phantom
+
+Shared by both scans below: locate the bin, load the UHR mask, build the
+materials dict, and find the cardiac bounding box.
+"""
+
 # ╔═╡ 05000002-0000-4000-8000-000000000001
 md"""
-## 1. Locate the XCAT data
+### 01. Locate the XCAT data
 
 Same env-var pattern as notebook 02 — the bin lives outside the repo
 under `BASISSIM_XCAT_DIR` (default: `docs/notebooks/data/xcat/`).  All
@@ -124,7 +150,7 @@ HAS_XCAT ? md"""
 
 # ╔═╡ 05000003-0000-4000-8000-000000000001
 md"""
-## 2. Load the UHR XCAT (DOWNSAMPLE_FACTOR = 2)
+### 02. Load the UHR mask (DOWNSAMPLE_FACTOR = 2)
 
 XCAT v_male_50 ships at 1600 × 1400 × 500 voxels @ 0.2 mm isotropic.
 Notebook 02 downsamples 5× for speed (1 mm voxels — clinical-typical).
@@ -207,7 +233,7 @@ end
 
 # ╔═╡ 05000004-0000-4000-8000-000000000001
 md"""
-## 3. Custom materials from XCAT spreadsheet
+### 03. Custom materials from XCAT spreadsheet
 
 Same xlsx loader as notebook 02 — one row per organ in
 `vmale_50_materials_heart_high_contrast.xlsx` → 33 `XA.Material` entries
@@ -304,7 +330,7 @@ end;
 
 # ╔═╡ 05000005-0000-4000-8000-000000000001
 md"""
-## 4. Cardiac bbox by label-name match
+### 04. Cardiac bbox by label-name match
 
 This is the **core idea** of the notebook.
 
@@ -386,9 +412,18 @@ heart_bbox = (phantom_full_uhr === nothing || heart_label_ids === nothing) ? not
         (i_lo = i_lo, i_hi = i_hi, j_lo = j_lo, j_hi = j_hi, k_lo = k_lo, k_hi = k_hi)
 end;
 
+# ╔═╡ 05000006-0000-4000-8000-000000000000
+md"""
+## Scan A: Axial, Zoomed Cardiac FOV
+
+Crop the UHR phantom tight to the cardiac bbox (the SFOV-equivalent step),
+scan it with a single axial rotation and a tight centered FOV, then resample
+the ground truth back onto the recon grid and overlay it — pixel-perfect.
+"""
+
 # ╔═╡ 05000006-0000-4000-8000-000000000001
 md"""
-## 5. Crop the phantom — the SFOV-equivalent step
+### 01. Crop the phantom: the SFOV-equivalent step
 
 Just an indexing op on the UHR mask.  This is the moment the simulator's
 "FOV cropping" actually happens: the cropped block is what gets handed
@@ -419,7 +454,7 @@ end;
 
 # ╔═╡ 05000007-0000-4000-8000-000000000001
 md"""
-### 5b. Visualize the crop
+#### Visualize the crop
 
 Mid-z slice of the full UHR phantom with the bbox drawn over it (left)
 next to the cropped block (right).  This is the picture that justifies
@@ -478,7 +513,7 @@ end
 
 # ╔═╡ 05000008-0000-4000-8000-000000000001
 md"""
-## 6. Build the `Phantom` from the cropped mask
+### 02. Build the `Phantom` and its world affine
 
 Default origin behavior: when you don't pass `origin = …` to `Phantom`,
 the constructor computes `origin = -extent/2 + voxel/2` — i.e. it
@@ -497,7 +532,7 @@ phantom_cpu = (phantom_cropped === nothing || materials_cropped === nothing) ? n
 
 # ╔═╡ 05000009-0000-4000-8000-000000000001
 md"""
-### 6b. `phantom_to_world_affine`
+#### `phantom_to_world_affine`
 
 The 4×4 matrix `A_phantom` maps a 0-indexed phantom voxel `(i, j, k)` to
 world coordinates `(x, y, z)` in cm:
@@ -543,7 +578,7 @@ end
 
 # ╔═╡ 0500000a-0000-4000-8000-000000000001
 md"""
-## 7. `Scanner` — GE Apex Elite
+### 03. Scanner, protocol, and tight-FOV recon
 
 Same hardware as notebooks 01 / 02 / 03 — clinical 64-row CT, large
 bowtie, GE Revolution Apex Elite-class detector.  We're doing single-kVp
@@ -575,7 +610,7 @@ scanner = BS.Scanner(
 
 # ╔═╡ 0500000a-0000-4000-8000-000000000020
 md"""
-## 8. `CTProtocol` — clinical cardiac CTA
+#### `CTProtocol`: clinical cardiac CTA
 
 120 kVp / 250 mA, 1 s rotation, 5 mm collimation, 500 views.  The recon
 slab will derive its z-extent from the protocol collimation, which is
@@ -598,7 +633,7 @@ sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234, projector = :dd_fast);
 
 # ╔═╡ 0500000b-0000-4000-8000-000000000001
 md"""
-## 9. `ReconOptions` — tight cardiac FOV
+#### `ReconOptions`: tight cardiac FOV
 
 The recon FOV is **always centered at isocenter** in this simulator.
 That's fine for us — we centered the cropped phantom at iso for free in
@@ -625,7 +660,7 @@ end;
 
 # ╔═╡ 0500000b-0000-4000-8000-000000000020
 md"""
-### 9b. `recon_to_world_affine`
+#### `recon_to_world_affine`
 
 We can build the `CTGeometry` directly from `(scanner, protocol,
 recon_opts)` — no need to wait for `simulate!` to inspect the recon
@@ -670,7 +705,7 @@ end
 
 # ╔═╡ 0500000c-0000-4000-8000-000000000001
 md"""
-## 10. Side-by-side grid comparison
+#### Side-by-side grid comparison
 
 The two grids share **world coordinates** (cm) but differ in voxel size,
 shape, and FOV.  `resample_to_recon` (and the affines under it) handle
@@ -709,7 +744,7 @@ end
 
 # ╔═╡ 0500000d-0000-4000-8000-000000000001
 md"""
-## 11. Forward project + reconstruct
+### 04. Forward project and reconstruct
 
 Standard EICT path.  We skip the BHC pipeline (see notebook 02 §7 for
 that) and use a quick analytic μ_water for HU conversion — the focus
@@ -760,7 +795,7 @@ end;
 
 # ╔═╡ 0500000e-0000-4000-8000-000000000001
 md"""
-## 12. Resample ground truth onto the recon grid
+### 05. Resample ground truth and overlay
 
 `BS.resample_to_recon` is the convenience wrapper.  It pulls the phantom
 mask to CPU, computes each recon voxel's world coordinate via
@@ -820,98 +855,9 @@ let
     end
 end
 
-# ╔═╡ 05000012-0000-4000-8000-000000000001
-md"""
-## 13. HELICAL: the same pixel-perfect mapping, spiral acquisition
-
-Everything above used an axial scan.  The affine machinery is
-trajectory-agnostic by design: a helical acquisition changes the SOURCE
-path (z ramps with view), but the RECON grid is still a stack of axial
-slices centred on the scanned range — so `recon_to_world_affine`, and
-therefore `resample_to_recon`, apply unchanged.  This section proves it
-end-to-end on the new spiral chain: `CTProtocol(pitch = …)` → z-ramped
-`CTGeometry` → `:dd_fast` forward on the (default) arc detector →
-rebinned-WFBP reconstruction → label overlay on the helical recon grid.
-"""
-
-# ╔═╡ 05000012-0000-4000-8000-000000000010
-sim_helical = phantom === nothing ? nothing : let
-    protocol_hel = BS.CTProtocol(
-        kVp = 120, mA = 250.0, views = 500, rotation_time = 1.0,
-        collimation_mm = 5.0, additional_filters = [("Al", 4.5)],
-        pitch = 1.0, n_rotations = 3.0,
-    )
-    @info "Simulating HELICAL cardiac CTA: pitch 1.0 × 3 rotations…"
-    ws = BS.create_eict_workspace(scanner, protocol_hel, sim_opts, recon_opts, phantom)
-    BS.simulate!(ws, phantom, protocol_hel, sim_opts)
-    result = (sino = Array(ws.sinogram), geom = ws.geom)
-    ws = nothing
-    GC.gc(true)
-    result
-end;
-
-# ╔═╡ 05000012-0000-4000-8000-000000000020
-recon_HU_helical = sim_helical === nothing ? nothing : let
-    sino_gpu = to_gpu(Float32.(sim_helical.sino))
-    # is_helical(geom) routes reconstruct! to the rebinned-WFBP path
-    ws = BS.create_fdk_recon_workspace(sino_gpu, sim_helical.geom, recon_opts.matrix_size; filter = :standard)
-    recon_μ = Array(BS.reconstruct!(ws, sino_gpu, sim_helical.geom))
-    ws = nothing; sino_gpu = nothing; GC.gc(true)
-    Float32.(BS.to_hounsfield(recon_μ; μ_water = μ_water_120))
-end;
-
-# ╔═╡ 05000012-0000-4000-8000-000000000030
-gt_helical_nn = (phantom_cpu === nothing || sim_helical === nothing) ? nothing :
-    BS.resample_to_recon(phantom_cpu, sim_helical.geom, recon_opts.matrix_size; method = :nearest);
-
-# ╔═╡ 05000012-0000-4000-8000-000000000040
-sim_helical === nothing ? md"_(XCAT not available — helical demo skipped)_" : let
-    mid = size(recon_HU_helical, 3) ÷ 2
-    fig = CM.Figure(size = (1180, 620))
-    ax1 = CM.Axis(fig[1, 1]; title = "Helical WFBP recon", titlesize = 28, aspect = CM.DataAspect())
-    hm = CM.heatmap!(ax1, recon_HU_helical[:, :, mid]; colormap = :grays, colorrange = (-200, 600))
-    CM.hidedecorations!(ax1)
-    ax2 = CM.Axis(fig[1, 2]; title = "Resampled labels (pixel-perfect overlay)", titlesize = 28, aspect = CM.DataAspect())
-    CM.heatmap!(ax2, recon_HU_helical[:, :, mid]; colormap = :grays, colorrange = (-200, 600))
-    edge = Float32[gt_helical_nn[i, j, mid] != gt_helical_nn[min(i + 1, end), j, mid] ||
-                   gt_helical_nn[i, j, mid] != gt_helical_nn[i, min(j + 1, end), mid] ? 1.0f0 : NaN32
-                   for i in 1:size(gt_helical_nn, 1), j in 1:size(gt_helical_nn, 2)]
-    CM.heatmap!(ax2, edge; colormap = [:transparent, :red], colorrange = (0, 1))
-    CM.hidedecorations!(ax2)
-    CM.Colorbar(fig[1, 3], hm; label = "HU", labelsize = 20, ticklabelsize = 14)
-    fig
-end
-
-# ╔═╡ 05000012-0000-4000-8000-000000000050
-sim_helical === nothing ? nothing : let
-    # Quantitative pixel-perfection check on the HELICAL grid: boundary
-    # alignment between recon gradients and resampled label edges — the
-    # same agreement the axial section demonstrates, now on the spiral
-    # acquisition.  A misregistered affine would shift edges by ≥1 px and
-    # collapse this overlap score.
-    mid = size(recon_HU_helical, 3) ÷ 2
-    lab = gt_helical_nn[:, :, mid]
-    hu = recon_HU_helical[:, :, mid]
-    nx, ny = size(lab)
-    hits = 0; total = 0
-    for j in 3:(ny - 2), i in 3:(nx - 2)
-        (lab[i, j] != lab[i + 1, j]) || continue
-        total += 1
-        g0 = abs(hu[i + 1, j] - hu[i, j])
-        gm = maximum(abs(hu[a + 1, j] - hu[a, j]) for a in (i - 2):(i + 1))
-        (g0 >= 0.6f0 * gm) && (hits += 1)
-    end
-    frac = total == 0 ? 0.0 : hits / total
-    verdict = frac >= 0.8 ? "✅ PASS" : "❌ FAIL"
-    Markdown.parse("**Helical pixel-perfection score:** " *
-        "$(round(100 * frac, digits = 1)) % of resampled label boundaries " *
-        "coincide with the local recon-gradient maximum (n = $(total)).  " *
-        "≥ 80 % ⇒ the affine mapping holds on the helical grid ($(verdict)).")
-end
-
 # ╔═╡ 0500000f-0000-4000-8000-000000000001
 md"""
-## 14. Bring-your-own-interpolator pattern
+#### Bring-your-own-interpolator pattern
 
 When `:nearest` and `:linear` aren't enough — e.g. you want a B-spline,
 a sinc kernel, or some learned upsampling — the affines give you the
@@ -975,7 +921,7 @@ end
 
 # ╔═╡ 05000010-0000-4000-8000-000000000001
 md"""
-## 14. The verification mosaic
+#### The verification mosaic
 
 Four panels, all on the **recon grid** at the same mid-slice.  Top row
 shows the two raw inputs; bottom row overlays the masks on the HU recon
@@ -1096,9 +1042,220 @@ let
     end
 end
 
+# ╔═╡ 05000012-0000-4000-8000-000000000000
+md"""
+## Scan B: Helical, Extended-Z FOV
+
+Same phantom, same affine machinery — but a **taller crop** scanned with a
+**helical** acquisition, reconstructed into a tall stack of axial slices you
+can **scroll through in z**.  The recon grid has its *own* recon→world affine
+(a bigger z extent than Scan A); `resample_to_recon` still lands the ground
+truth pixel-perfectly on every slice.
+"""
+
+# ╔═╡ 05000013-0000-4000-8000-000000000001
+md"""
+### 01. Extended-z crop
+
+Scan A cropped tight to the heart.  For the helical demo we keep the same
+in-plane (x, y) bbox but **extend the z range** (± a few cm beyond the cardiac
+extent) so there's a tall stack to scroll — the extra z is exactly what the
+helix sweeps through.
+"""
+
+# ╔═╡ 05000013-0000-4000-8000-000000000010
+heart_bbox_tall = (phantom_full_uhr === nothing || heart_bbox === nothing) ? nothing : let
+    nz = size(phantom_full_uhr, 3)
+    extra_z = round(Int, 4.0 / VOXEL_SIZE_CM[3])   # +4 cm each side beyond the cardiac bbox
+    b = heart_bbox
+    tall = (i_lo = b.i_lo, i_hi = b.i_hi, j_lo = b.j_lo, j_hi = b.j_hi,
+            k_lo = max(1, b.k_lo - extra_z), k_hi = min(nz, b.k_hi + extra_z))
+    @info "[Scan B tall bbox] z range $(b.k_lo):$(b.k_hi) → $(tall.k_lo):$(tall.k_hi)  ($(round((tall.k_hi - tall.k_lo + 1) * VOXEL_SIZE_CM[3], digits = 1)) cm z extent)"
+    tall
+end;
+
+# ╔═╡ 05000013-0000-4000-8000-000000000020
+phantom_cropped_tall = (phantom_full_uhr === nothing || heart_bbox_tall === nothing) ? nothing : let
+    b = heart_bbox_tall
+    phantom_full_uhr[b.i_lo:b.i_hi, b.j_lo:b.j_hi, b.k_lo:b.k_hi]
+end;
+
+# ╔═╡ 05000013-0000-4000-8000-000000000025
+materials_tall = (phantom_cropped_tall === nothing || materials_full === nothing) ? nothing : let
+    base = copy(materials_full)
+    for l in unique(phantom_cropped_tall)
+        haskey(base, Int(l)) || (base[Int(l)] = BS.XA.Materials.water)
+    end
+    base
+end;
+
+# ╔═╡ 05000013-0000-4000-8000-000000000030
+phantom_helical = (phantom_cropped_tall === nothing || materials_tall === nothing) ? nothing :
+    BS.Phantom(to_gpu(phantom_cropped_tall), materials_tall, VOXEL_SIZE_CM);
+
+# ╔═╡ 05000013-0000-4000-8000-000000000031
+phantom_helical_cpu = (phantom_cropped_tall === nothing || materials_tall === nothing) ? nothing :
+    BS.Phantom(phantom_cropped_tall, materials_tall, VOXEL_SIZE_CM);
+
+# ╔═╡ 05000013-0000-4000-8000-000000000040
+recon_opts_helical = let
+    slice_thickness_mm = 0.625
+    z_cm = 4.0                        # taller recon slab than Scan A — the helix supplies the z coverage
+    n_z = max(1, round(Int, z_cm * 10 / slice_thickness_mm))   # ~64 slices to scroll
+    BS.ReconOptions(matrix_size = (384, 384, n_z), fov_cm = 14.0, z_cm = z_cm)
+end;
+
+# ╔═╡ 05000012-0000-4000-8000-000000000001
+md"""
+### 02. Helical protocol and z-ramped acquisition
+
+Everything above used an axial scan.  The affine machinery is
+trajectory-agnostic by design: a helical acquisition changes the SOURCE
+path (z ramps with view), but the RECON grid is still a stack of axial
+slices centred on the scanned range — so `recon_to_world_affine`, and
+therefore `resample_to_recon`, apply unchanged.  This section proves it
+end-to-end on the new spiral chain: `CTProtocol(pitch = …)` → z-ramped
+`CTGeometry` → `:dd_fast` forward on the (default) arc detector →
+rebinned-WFBP reconstruction → label overlay on the helical recon grid.
+"""
+
+# ╔═╡ 05000012-0000-4000-8000-000000000010
+sim_helical = phantom_helical === nothing ? nothing : let
+    protocol_hel = BS.CTProtocol(
+        kVp = 120, mA = 250.0, views = 500, rotation_time = 1.0,
+        collimation_mm = 10.0, additional_filters = [("Al", 4.5)],
+        pitch = 1.0, n_rotations = 8.0,
+    )
+    @info "Simulating HELICAL cardiac CTA: pitch 1.0 × 8 rotations, 10 mm collimation…"
+    ws = BS.create_eict_workspace(scanner, protocol_hel, sim_opts, recon_opts_helical, phantom_helical)
+    BS.simulate!(ws, phantom_helical, protocol_hel, sim_opts)
+    result = (sino = Array(ws.sinogram), geom = ws.geom)
+    ws = nothing
+    GC.gc(true)
+    result
+end;
+
+# ╔═╡ 05000014-0000-4000-8000-000000000001
+md"""
+### 03. WFBP reconstruct and its own recon affine
+
+`is_helical(geom)` routes `reconstruct!` to the rebinned-WFBP path.  The recon
+grid is a **taller** stack of axial slices than Scan A — its own
+`recon_to_world_affine`, with a bigger z extent — but still centered at
+isocenter, so the affine round-trip is unchanged.
+"""
+
+# ╔═╡ 05000012-0000-4000-8000-000000000020
+recon_HU_helical = sim_helical === nothing ? nothing : let
+    sino_gpu = to_gpu(Float32.(sim_helical.sino))
+    # is_helical(geom) routes reconstruct! to the rebinned-WFBP path
+    ws = BS.create_fdk_recon_workspace(sino_gpu, sim_helical.geom, recon_opts_helical.matrix_size; filter = :standard)
+    recon_μ = Array(BS.reconstruct!(ws, sino_gpu, sim_helical.geom))
+    ws = nothing; sino_gpu = nothing; GC.gc(true)
+    Float32.(BS.to_hounsfield(recon_μ; μ_water = μ_water_120))
+end;
+
+# ╔═╡ 05000014-0000-4000-8000-000000000010
+let
+    if sim_helical === nothing
+        md"""!!! warning "Skipped — see §1 above" """
+    else
+        A = BS.recon_to_world_affine(sim_helical.geom, recon_opts_helical.matrix_size)
+        rows = [
+            "| $(round(A[i, 1], digits = 4)) | $(round(A[i, 2], digits = 4)) | $(round(A[i, 3], digits = 4)) | $(round(A[i, 4], digits = 4)) |"
+                for i in 1:4
+        ]
+        nx, ny, nz = recon_opts_helical.matrix_size
+        Markdown.parse(
+            """
+            **Helical `A_recon = recon_to_world_affine(helical geom, matrix_size)`** (cm)
+
+            | col 1 | col 2 | col 3 | col 4 |
+            |---|---|---|---|
+            $(join(rows, "\n"))
+
+            - matrix size = $(nx) × $(ny) × $(nz) voxels  (**$(nz)** z slices vs Scan A's **$(recon_opts.matrix_size[3])**)
+            - z extent = $(round(recon_opts_helical.z_cm, digits = 2)) cm  (vs Scan A's $(round(recon_opts.z_cm, digits = 2)) cm)
+            - same centered, isocenter origin — only the z stack is taller.
+            """
+        )
+    end
+end
+
+# ╔═╡ 05000014-0000-4000-8000-000000000020
+md"""
+### 04. Resample ground truth onto the helical grid
+
+Same `resample_to_recon`, now against the taller helical recon grid — the
+ground-truth labels land on the exact voxels of the WFBP stack.
+"""
+
+# ╔═╡ 05000012-0000-4000-8000-000000000030
+gt_helical_nn = (phantom_helical_cpu === nothing || sim_helical === nothing) ? nothing :
+    BS.resample_to_recon(phantom_helical_cpu, sim_helical.geom, recon_opts_helical.matrix_size; method = :nearest);
+
+# ╔═╡ 05000015-0000-4000-8000-000000000001
+md"""
+### 05. Scroll through z: slider-driven overlay
+
+Drag the slider to scrub through the helical recon in z.  Left is the WFBP HU
+recon; right overlays the resampled ground-truth label boundaries (red) — they
+track the recon anatomy on **every** slice, proving the affine holds across the
+full z stack, not just the mid-plane.
+"""
+
+# ╔═╡ 05000015-0000-4000-8000-000000000010
+@bind z_helical PlutoUI.Slider(1:recon_opts_helical.matrix_size[3]; default = recon_opts_helical.matrix_size[3] ÷ 2, show_value = true)
+
+# ╔═╡ 05000012-0000-4000-8000-000000000040
+sim_helical === nothing ? md"_(XCAT not available — helical demo skipped)_" : let
+    nz = size(recon_HU_helical, 3)
+    z = clamp(z_helical, 1, nz)
+    fig = CM.Figure(size = (1180, 620))
+    ax1 = CM.Axis(fig[1, 1]; title = "Helical WFBP recon · z=$(z)/$(nz)", titlesize = 26, aspect = CM.DataAspect())
+    hm = CM.heatmap!(ax1, recon_HU_helical[:, :, z]; colormap = :grays, colorrange = (-200, 600))
+    CM.hidedecorations!(ax1)
+    ax2 = CM.Axis(fig[1, 2]; title = "Ground-truth overlay · z=$(z)", titlesize = 26, aspect = CM.DataAspect())
+    CM.heatmap!(ax2, recon_HU_helical[:, :, z]; colormap = :grays, colorrange = (-200, 600))
+    edge = Float32[gt_helical_nn[i, j, z] != gt_helical_nn[min(i + 1, end), j, z] ||
+                   gt_helical_nn[i, j, z] != gt_helical_nn[i, min(j + 1, end), z] ? 1.0f0 : NaN32
+                   for i in 1:size(gt_helical_nn, 1), j in 1:size(gt_helical_nn, 2)]
+    CM.heatmap!(ax2, edge; colormap = [:transparent, :red], colorrange = (0, 1))
+    CM.hidedecorations!(ax2)
+    CM.Colorbar(fig[1, 3], hm; label = "HU", labelsize = 20, ticklabelsize = 14)
+    fig
+end
+
+# ╔═╡ 05000012-0000-4000-8000-000000000050
+sim_helical === nothing ? nothing : let
+    # Quantitative pixel-perfection check on the HELICAL grid: boundary
+    # alignment between recon gradients and resampled label edges — the
+    # same agreement the axial section demonstrates, now on the spiral
+    # acquisition.  A misregistered affine would shift edges by ≥1 px and
+    # collapse this overlap score.
+    mid = size(recon_HU_helical, 3) ÷ 2
+    lab = gt_helical_nn[:, :, mid]
+    hu = recon_HU_helical[:, :, mid]
+    nx, ny = size(lab)
+    hits = 0; total = 0
+    for j in 3:(ny - 2), i in 3:(nx - 2)
+        (lab[i, j] != lab[i + 1, j]) || continue
+        total += 1
+        g0 = abs(hu[i + 1, j] - hu[i, j])
+        gm = maximum(abs(hu[a + 1, j] - hu[a, j]) for a in (i - 2):(i + 1))
+        (g0 >= 0.6f0 * gm) && (hits += 1)
+    end
+    frac = total == 0 ? 0.0 : hits / total
+    verdict = frac >= 0.8 ? "✅ PASS" : "❌ FAIL"
+    Markdown.parse("**Helical pixel-perfection score:** " *
+        "$(round(100 * frac, digits = 1)) % of resampled label boundaries " *
+        "coincide with the local recon-gradient maximum (n = $(total)).  " *
+        "≥ 80 % ⇒ the affine mapping holds on the helical grid ($(verdict)).")
+end
+
 # ╔═╡ 05000011-0000-4000-8000-000000000001
 md"""
-## 15. Why this matters
+## Why the Affine Round-Trip Matters
 
 Once you have ground truth on the recon grid, the rest is bookkeeping:
 
@@ -1115,7 +1272,7 @@ Once you have ground truth on the recon grid, the rest is bookkeeping:
   resample the multi-label mask with `:linear` and expect meaningful
   fractions: trilinear arithmetically mixes integer label IDs.
 - **Custom interpolation.** When `:nearest` / `:linear` aren't sharp
-  enough, the `M = inv(A_phantom) * A_recon` pattern from §13 lets you
+  enough, the `M = inv(A_phantom) * A_recon` pattern from the bring-your-own-interpolator step lets you
   drop in any third-party interpolator with three lines.
 - **SFOV-equivalent cropping is *physical*.** Because the crop happens
   on the input phantom, it shows up in the forward-projection pass
@@ -1123,6 +1280,25 @@ Once you have ground truth on the recon grid, the rest is bookkeeping:
   and the simulator runs faster.  Same observable behavior as a real
   scanner's reduced SFOV; better memory characteristics than recon-side
   cropping ever could be.
+"""
+
+# ╔═╡ 05000011-0000-4000-8000-000000000020
+md"""
+## Summary
+
+Two acquisitions, one affine round-trip:
+
+- **Scan A (axial, zoomed FOV)** — crop the UHR phantom to the cardiac bbox
+  (the SFOV-equivalent step), reconstruct a tight centered FOV, and overlay the
+  resampled ground truth pixel-perfectly.
+- **Scan B (helical, extended z)** — a taller crop scanned with a spiral
+  trajectory, reconstructed via rebinned WFBP into a tall axial stack you can
+  scroll through; its recon grid has its own (taller) recon→world affine, and
+  `resample_to_recon` lands the ground truth on every slice unchanged.
+
+The takeaway: `phantom_to_world_affine` / `recon_to_world_affine` /
+`resample_to_recon` are **trajectory-agnostic** — axial or helical, tight or
+tall FOV, the ground-truth-to-recon mapping is the same three calls.
 """
 
 # ╔═╡ Cell order:
@@ -1134,8 +1310,11 @@ Once you have ground truth on the recon grid, the rest is bookkeeping:
 # ╠═05000001-0000-4000-8000-000000000004
 # ╠═05000001-0000-4000-8000-000000000030
 # ╠═05000001-0000-4000-8000-000000000031
+# ╠═05000001-0000-4000-8000-000000000060
 # ╠═05000001-0000-4000-8000-000000000040
 # ╟─05000001-0000-4000-8000-000000000050
+# ╠═05000001-0000-4000-8000-000000000070
+# ╟─05000002-0000-4000-8000-000000000000
 # ╟─05000002-0000-4000-8000-000000000001
 # ╠═05000002-0000-4000-8000-000000000010
 # ╠═05000002-0000-4000-8000-000000000011
@@ -1160,6 +1339,7 @@ Once you have ground truth on the recon grid, the rest is bookkeeping:
 # ╟─05000005-0000-4000-8000-000000000001
 # ╠═05000005-0000-4000-8000-000000000010
 # ╠═05000005-0000-4000-8000-000000000020
+# ╟─05000006-0000-4000-8000-000000000000
 # ╟─05000006-0000-4000-8000-000000000001
 # ╠═05000006-0000-4000-8000-000000000010
 # ╠═05000006-0000-4000-8000-000000000020
@@ -1191,14 +1371,28 @@ Once you have ground truth on the recon grid, the rest is bookkeeping:
 # ╠═0500000e-0000-4000-8000-000000000011
 # ╠═0500000e-0000-4000-8000-000000000012
 # ╟─0500000e-0000-4000-8000-000000000020
-# ╟─05000012-0000-4000-8000-000000000001
-# ╠═05000012-0000-4000-8000-000000000010
-# ╠═05000012-0000-4000-8000-000000000020
-# ╠═05000012-0000-4000-8000-000000000030
-# ╟─05000012-0000-4000-8000-000000000040
-# ╟─05000012-0000-4000-8000-000000000050
 # ╟─0500000f-0000-4000-8000-000000000001
 # ╟─0500000f-0000-4000-8000-000000000010
 # ╟─05000010-0000-4000-8000-000000000001
 # ╟─05000010-0000-4000-8000-000000000010
+# ╟─05000012-0000-4000-8000-000000000000
+# ╟─05000013-0000-4000-8000-000000000001
+# ╠═05000013-0000-4000-8000-000000000010
+# ╠═05000013-0000-4000-8000-000000000020
+# ╠═05000013-0000-4000-8000-000000000025
+# ╠═05000013-0000-4000-8000-000000000030
+# ╠═05000013-0000-4000-8000-000000000031
+# ╠═05000013-0000-4000-8000-000000000040
+# ╟─05000012-0000-4000-8000-000000000001
+# ╠═05000012-0000-4000-8000-000000000010
+# ╟─05000014-0000-4000-8000-000000000001
+# ╠═05000012-0000-4000-8000-000000000020
+# ╟─05000014-0000-4000-8000-000000000010
+# ╟─05000014-0000-4000-8000-000000000020
+# ╠═05000012-0000-4000-8000-000000000030
+# ╟─05000015-0000-4000-8000-000000000001
+# ╠═05000015-0000-4000-8000-000000000010
+# ╟─05000012-0000-4000-8000-000000000040
+# ╟─05000012-0000-4000-8000-000000000050
 # ╟─05000011-0000-4000-8000-000000000001
+# ╟─05000011-0000-4000-8000-000000000020
