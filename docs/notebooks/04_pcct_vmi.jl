@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.2.1
+# v0.2.3
 
 using Markdown
 using InteractiveUtils
@@ -18,35 +18,22 @@ using Statistics: mean, std, quantile, median
 
 # ╔═╡ 06000001-0000-4000-8000-000000000010
 md"""
-# 04 · PCCT VMI · Projection-Domain Pipeline
+# Photon-Counting CT Virtual Monoenergetic Imaging
 
 Siemens Naeotom Alpha photon-counting CT simulation (140 kVp / 174 mA,
 4-threshold acquisition, Gammex 472 phantom) with a **fully
-projection-domain** VMI pipeline.  Every denoising and decomposition
-step operates on log-line-integrals before the recon ever runs.
+projection-domain** VMI pipeline — every denoising and decomposition
+step operates on log-line-integrals before the reconstruction runs.
 
 ```
 Simulate 140 kVp PCCT  (4 bins; scatter + noise + pile-up + corrections)
-                                     │
-                    Bin Combine  (1 + 2 → low,  3 + 4 → high)
-                                     │
-                    Projection-Domain Material Decomposition
-                          → sino_iodine, sino_water
-                                     │
-                    FBP × 2   (iodine, water basis maps)
-                                     │
-                    Kalender-1988 TRUE ACNR  (BS.apply_acnr_kalender!)
-                                     │
-                    Z-Direction Median Filter × 2
-                                     │
-                    Monoenergetic VMI Synthesis
-                          μ(E) = c_water · (μ/ρ)_water(E)
-                               + c_iodine · (μ/ρ)_iodine(E)
-                                     │
-                    Mono+ Post-Processing  (per-keV σ)
-                                     │
-                    Measured vs Theoretical Per-Rod Regression
-                          at 50 / 70 / 100 / 140 keV
+   → Projection-domain SVD denoise  (4-bin joint)
+   → Bin combine  (1 + 2 → low, 3 + 4 → high)
+   → Jensen debias + material decomposition  (Cong; iodine + water)
+   → FBP × 2 with per-basis apodization  (soft iodine, sharp water)
+   → Kalender-1988 true ACNR on the basis maps
+   → Monoenergetic VMI synthesis  (50 / 70 / 100 / 140 keV)
+   → Measured-vs-theoretical per-rod verification
 ```
 
 !!! info "Why Projection Domain?"
@@ -70,19 +57,24 @@ Simulate 140 kVp PCCT  (4 bins; scatter + noise + pile-up + corrections)
     - Clark, Badea (2023), *Med Phys* — image-domain RSKR (rank-sparse
       bandwidth); the Kalender true ACNR in `BS.apply_acnr_kalender!`
       adapts these moves to the water/iodine basis-map pair.
-    - Grant et al. (2014) — Mono+ frequency-split rule.
 """
 
 # ╔═╡ 06000001-0000-4000-8000-000000000020
 md"""
-## Setup
+## Notebook Setup
 """
+
+# ╔═╡ 06000001-0000-4000-8000-000000000004
+import PlutoUI
 
 # ╔═╡ 06000001-0000-4000-8000-000000000030
 import BasisSimulator as BS
 
 # ╔═╡ 06000001-0000-4000-8000-000000000031
 import CairoMakie as CM
+
+# ╔═╡ 06000001-0000-4000-8000-000000000005
+PlutoUI.TableOfContents()
 
 # ╔═╡ 06000001-0000-4000-8000-000000000040
 begin
@@ -97,9 +89,15 @@ md"""
 **Backend detected:** $(GPU_BACKEND.name)
 """
 
+# ╔═╡ 06000002-0000-4000-8000-000000000000
+md"""
+## Scan Setup and Simulation
+"""
+
 # ╔═╡ 06000002-0000-4000-8000-000000000001
 md"""
-## 1. `Phantom`: Gammex Model 472
+### 01. `Phantom()` Struct
+**Gammex 472**
 """
 
 # ╔═╡ 06000002-0000-4000-8000-000000000010
@@ -121,7 +119,8 @@ phantom = BS.Phantom(
 
 # ╔═╡ 06000003-0000-4000-8000-000000000001
 md"""
-## 2. `Scanner`: Siemens Naeotom Alpha (PCCT, 4-threshold)
+### 02. `Scanner()` Struct
+**Siemens Naeotom Alpha (PCCT, 4-threshold)**
 
 CdTe direct-conversion detector with native dexels 0.275 × 0.322 mm at
 the detector face (2×2 binned in DAS).  Energy thresholds
@@ -193,7 +192,8 @@ end;
 
 # ╔═╡ 06000004-0000-4000-8000-000000000001
 md"""
-## 3. `CTProtocol`: 140 kVp / 174 mA / ~10 mGy CTDIvol
+### 03. `CTProtocol()` Struct
+**140 kVp Photon-Counting**
 
 Clinical 140 kVp single-energy acquisition.
 `additional_filters = [("Ti", 0.9)]` is the Vectron tube's inherent
@@ -212,7 +212,7 @@ protocol = BS.CTProtocol(
 
 # ╔═╡ 06000005-0000-4000-8000-000000000001
 md"""
-## 4. `SimOptions` and `ReconOptions`
+### 04. `SimOptions()` & `ReconOptions()`
 
 `fidelity = :pcct` switches the simulator into the photon-counting path
 (per-bin sinograms + DRM + Compton scatter modeling).
@@ -251,7 +251,7 @@ sim_opts = BS.SimOptions(
     # compensation.  Those corrections recover count statistics at the
     # detector output; nr = 0.7 stands in for that recovery and nothing
     # else.
-    pcct_noise_reduction = 0.7,
+    pcct_noise_reduction = 0.5,
 )
 
 # ╔═╡ 06000005-0000-4000-8000-000000000020
@@ -267,7 +267,7 @@ end;
 
 # ╔═╡ 06000006-0000-4000-8000-000000000001
 md"""
-## 5. Forward Project
+### 05. Forward Project: `simulate!`
 
 A single `BS.simulate!` call produces the 4 per-bin log-line-integral
 sinograms with the **complete PCCT physics + corrections**, all gated by the
@@ -430,70 +430,86 @@ let
     fig
 end
 
-# ╔═╡ 06000006-0000-4000-8000-000000000070
+# ╔═╡ 06000006-0000-4000-8000-000000000065
 md"""
-## 5b. Projection-Domain SVD Denoising (4-bin joint)
-
-Simple N-channel projection-domain SVD joint denoiser
-(`BS.apply_sino_svd_denoise`, `src/denoising/sino_svd.jl`) applied to the **4 raw
-PCCT bins, before the bin-combine** — the earliest projection-domain point.
-
-Per detector row, an SVD across the 4 bins keeps the common log-attenuation
-structure `U[:,1]` (the shared anatomy, ~√4 SNR gain) **pixel-perfect** and
-smooths the spectral-residual + decorrelated-quantum-noise subspace `U[:,2..4]`
-with a small separable Gaussian.  One knob: `SVD_SIGMA_PX` (px); `0` ⇒ passthrough
-(A/B against no projection denoising).
+## VMI Pipeline
 """
-
-# ╔═╡ 06000006-0000-4000-8000-000000000080
-# 4-bin joint projection-domain SVD denoise (BS.apply_sino_svd_denoise).
-# Runs BEFORE the §6 combine; SVD_SIGMA_PX = 0 ⇒ passthrough (no denoising).
-bins_denoised = let
-    # Pre-Cong 4-channel joint SVD (projection domain, BEFORE the combine) —
-    # part of the labelled vendor-correction surrogate stack alongside
-    # pcct_noise_reduction: real PCCT chains condition their bin data before
-    # decomposition.  The pure chain (σ_px = 0) verifies accuracy on its own
-    # (14/14 rods, SW 2 HU); this setting only buys VMI noise.
-    SVD_SIGMA_PX = 2.0
-    out = BS.apply_sino_svd_denoise(sim_bins.bins; σ_px = SVD_SIGMA_PX)
-    @info "[sino-SVD] 4-bin joint projection denoise · σ_px = $(SVD_SIGMA_PX) (0 ⇒ passthrough)"
-    (bins = out, I0_bins = sim_bins.I0_bins, geom = sim_bins.geom)
-end;
 
 # ╔═╡ 06000008-0000-4000-8000-000000000001
 md"""
-## 6. Bin Combine: 4 Bins → Low / High Pair
+### 01. Jensen Debias
+**Per-Bin Log-Poisson Bias Correction**
 
-I₀-weighted Beer recombination of the 4 raw PCCT bins:
+Each of the 4 raw bins is genuinely Poisson, so the debias runs **per bin on
+the raw sinograms** (before any denoise or combine): `p_b ← p_b − DEBIAS/(2N_b)`,
+`N_b = I0_b·e^{−p_b}`.  `DEBIAS` = strength knob (`0` = off, `1` = full
+`1/(2N)`).  Runs FIRST — so `N_b` is the true detected count and the 4-bin SVD
+(step 02) can clean any noise the debias amplifies.  PCCT counts are not pure
+Poisson (pile-up + charge-sharing), so the true factor is a Fano `F ≤ 1`.
+"""
+
+# ╔═╡ 06000008-0000-4000-8000-000000000005
+bins_debiased = let
+    DEBIAS = 1.0f0   # 0 = off, 1 = full per-bin 1/(2N); PCCT truth F ≤ 1
+    out = map(eachindex(sim_bins.bins)) do b
+        p = Float32.(sim_bins.bins[b])
+        I0b = Float32(sim_bins.I0_bins[b])
+        N = max.(I0b .* exp.(-p), 1.0f0)
+        p .- DEBIAS ./ (2.0f0 .* N)
+    end
+    (bins = out, I0_bins = sim_bins.I0_bins, geom = sim_bins.geom)
+end;
+
+# ╔═╡ 06000008-0000-4000-8000-000000000006
+md"""
+### 02. SVD Denoise
+**4-Bin Joint (Edge-Aware Bilateral)**
+
+Per detector row, an SVD across the 4 **debiased** bins keeps the common
+log-attenuation structure `U[:,1]` (shared anatomy, ~√4 SNR) **pixel-perfect**
+and cleans the residual `U[:,2..4]` (spectral residual + decorrelated quantum
+noise) with an edge-aware joint bilateral — zero resolution cost.  4-channel
+denoise is the key noise lever; running it on the debiased bins keeps the
+bias correction upstream.  `APPLY_SVD = false` ⇒ passthrough.
+"""
+
+# ╔═╡ 06000008-0000-4000-8000-000000000007
+bins_denoised = let
+    APPLY_SVD = true
+    if APPLY_SVD
+        out = BS.apply_sino_svd_denoise_bilateral(
+            bins_debiased.bins;
+            bilat_radius  = 3,
+            bilat_sigma_s = 2.0,
+            bilat_range_k = 2.0,
+        )
+        (bins = out, I0_bins = bins_debiased.I0_bins, geom = bins_debiased.geom)
+    else
+        bins_debiased
+    end
+end;
+
+# ╔═╡ 06000008-0000-4000-8000-000000000008
+md"""
+### 03. Bin Combine
+**4 Bins → Low / High Pair**
+
+I₀-weighted Beer recombination of the 4 debiased + denoised bins:
 
 ```
 N_grp = Σ_{b ∈ grp} I0[b] · exp(-p[b])
 p_grp = -log(N_grp / Σ_{b ∈ grp} I0[b])
 ```
 
-* **Low**  = bins **1 + 2** (20 – 55 keV)
-* **High** = bins **3 + 4** ( > 55 keV)
+* **Low**  = bins **1 + 2 + 3** (20 – 70 keV)
+* **High** = bin  **4** ( > 70 keV)
 
-Each combined sinogram is a polychromatic measurement at the I₀-weighted
-average spectrum of its bin group — the two-channel `(low, high)` pair the
-Cong PCCT-Φ_k decomposition consumes **directly** (no intermediate denoising).
-
-**Count-domain conditioning inside this cell** (both deterministic):
-
-1. **Physical DAS floor** — measured counts floor at 1 (a real DAS cannot
-   record less), capping line integrals at the true information limit
-   `p = ln I₀_bin`.
-2. **nr-scaled first-order log-Poisson (Jensen) DEBIAS** —
-   `E[−log(N/I₀)] = p_true + s²/(2N)` with `s = 1 − pcct_noise_reduction`,
-   so we subtract `s²/(2N)` per ray.  This is bias *correction* from known
-   statistics (σ is untouched), not noise reduction; behind the dense rods
-   N is small enough that the raw log estimator is biased by several
-   percent of `p`, which Cong would amplify into a keV-dependent HU error.
+The two-channel `(low, high)` pair the Cong PCCT-Φ_k decomposition consumes
+directly.  Physical DAS floor (counts ≥ 1) applied.
 """
 
 # ╔═╡ 06000008-0000-4000-8000-000000000010
 sim_lohi = let
-    eps_f = Float32(1.0e-10)
     low_bins = collect(1:3)
     high_bins = [4]
 
@@ -512,15 +528,10 @@ sim_lohi = let
         @. N_hi += I0b * exp(-Float32(bins_denoised.bins[b]))
     end
 
-    # Physical DAS floor (1 count) + first-order log-Poisson DEBIAS:
-    # E[−log(N/I0)] = p_true + s²/(2N) with s = 1 − pcct_noise_reduction
-    # (the nr blend scales noise σ by s, so the quadratic log bias scales
-    # by s²).  Deterministic bias correction, not noise reduction.
-    s_nr = Float32((1.0 - sim_opts.pcct_noise_reduction)^2)
-    N_lo_f = max.(N_lo, 1.0f0)
+    N_lo_f = max.(N_lo, 1.0f0)   # physical DAS floor (1 count)
     N_hi_f = max.(N_hi, 1.0f0)
-    sino_low = Float32.(.- log.(N_lo_f ./ I0_lo) .- s_nr ./ (2.0f0 .* N_lo_f))
-    sino_high = Float32.(.- log.(N_hi_f ./ I0_hi) .- s_nr ./ (2.0f0 .* N_hi_f))
+    sino_low = Float32.(.- log.(N_lo_f ./ I0_lo))
+    sino_high = Float32.(.- log.(N_hi_f ./ I0_hi))
 
     (
         sino_low = sino_low, sino_high = sino_high,
@@ -552,8 +563,8 @@ let
     )
 
     panels = (
-        (1, 1, "Low Bins", "20 – 55 keV", slice_lo),
-        (1, 2, "High Bins", "> 55 keV", slice_hi),
+        (1, 1, "Low Bins", "1 + 2 + 3  (20 – 70 keV)", slice_lo),
+        (1, 2, "High Bins", "4  ( > 70 keV)", slice_hi),
     )
 
     for (r, c, ttl, sub, slice) in panels
@@ -569,7 +580,8 @@ end
 
 # ╔═╡ 06000009-0000-4000-8000-000000000001
 md"""
-## 8. Projection Domain Material Decomposition
+### 04. Material Decomposition
+**Cong (Projection Domain)**
 
 Per-ray Cong univariate solver mapped to PCCT via the generalization in
 Black (*in prep.*) — re-derives the Cong 2022 framework around an
@@ -711,7 +723,8 @@ end
 
 # ╔═╡ 0600000a-0000-4000-8000-000000000001
 md"""
-## 9. FBP: Iodine and Water Basis Maps
+### 05. FBP Basis Maps
+**Per-Basis Apodization**
 
 Two FDK passes with a PCCT-tuned apodization filter (sharper than
 `SoftFilter` to recover the higher native PCCT spatial resolution).
@@ -724,15 +737,29 @@ basis_volumes = let
     matrix_size = recon_opts.matrix_size
     geom = sino_basis.geom
 
-    fdk_filter = BS.CustomFilter(
+    # PER-BASIS apodization (NOT per-keV).  Applied ONCE to each basis
+    # sinogram; every VMI is VMI_E = W + α(E)·I.  A SOFT iodine filter
+    # crushes the low-keV noise (α(50) large) while barely touching high keV
+    # (water-dominated); the WATER filter stays sharp so anatomy resolution
+    # is preserved at every energy.  Selectivity is emergent from α(E).
+    #
+    # ── TUNE iodine softness here: lower mid/high values ⇒ softer ⇒ less
+    #    low-keV noise (but softer iodine detail).
+    iodine_filter = BS.CustomFilter(
         (0.0, 0.25, 0.5, 0.75, 1.0),
-        (1.0, 0.75, 0.6, 0.2, 0.001),
+        (1.0, 0.40, 0.12, 0.03, 0.001),
+    )
+    # Water filter: halfway between SoftFilter and StandardFilter (per-point
+    # average) — sharp anatomy, sets the σ_W floor / high-keV noise.
+    water_filter = BS.CustomFilter(
+        (0.0, 0.25, 0.5, 0.75, 1.0),
+        (1.0, 0.8744, 0.6003, 0.3031, 0.0266),
     )
 
-    function _fbp(sino_cpu)
+    function _fbp(sino_cpu, filt)
         sino_gpu = to_gpu(Float32.(sino_cpu))
         ws = BS.create_fdk_recon_workspace(
-            sino_gpu, geom, matrix_size; filter = fdk_filter,
+            sino_gpu, geom, matrix_size; filter = filt,
         )
         recon = Array(BS.reconstruct!(ws, sino_gpu, geom))
         ws = nothing; sino_gpu = nothing
@@ -741,8 +768,8 @@ basis_volumes = let
     end
 
     (
-        vol_iodine_raw = _fbp(sino_basis.sino_iodine),
-        vol_water_raw = _fbp(sino_basis.sino_water),
+        vol_iodine_raw = _fbp(sino_basis.sino_iodine, iodine_filter),
+        vol_water_raw = _fbp(sino_basis.sino_water, water_filter),
         geom = geom,
     )
 end;
@@ -784,7 +811,8 @@ end
 
 # ╔═╡ 0600000a-0000-4000-8000-000000000040
 md"""
-## 9b. ACNR — Edge-Aware Anti-Correlated Noise Reduction (image domain)
+### 06. ACNR
+**Anti-Correlated Noise Reduction**
 
 Material decomposition stamps anti-correlated noise on the basis maps
 (`ρ_basis < 0`) — that anti-correlation *is* the VMI-noise U.  `BS.apply_acnr_kalender!`
@@ -817,80 +845,9 @@ basis_acnr = let
     (vol_iodine_raw = I, vol_water_raw = W, geom = basis_volumes.geom)
 end;
 
-# ╔═╡ 0600000b-0000-4000-8000-000000000001
-md"""
-## 10. Z-Direction Median Filter
-
-1D median along z, per `(x, y)` voxel column.  `adjacent_slices = 1`
-⇒ 3-slice window (1 above + center + 1 below).  Cheap streak/outlier
-suppression that exploits the Gammex 472's z-invariance — zero
-in-plane resolution loss.
-
-Bump `Z_MEDIAN_ADJACENT` to widen the window:
-
-| `adjacent_slices` | window size |
-|-------------------|-------------|
-| `0`               | identity    |
-| `1` (default)     | 3 slices    |
-| `2`               | 5 slices    |
-"""
-
-# ╔═╡ 0600000b-0000-4000-8000-000000000005
-Z_MEDIAN_ADJACENT = 0;   # identity — pure-chain baseline (doctrine)
-
-# ╔═╡ 0600000b-0000-4000-8000-000000000010
-basis_z = let
-    (
-        vol_iodine = BS.apply_median_z(
-            basis_acnr.vol_iodine_raw;
-            adjacent_slices = Z_MEDIAN_ADJACENT,
-        ),
-        vol_water = BS.apply_median_z(
-            basis_acnr.vol_water_raw;
-            adjacent_slices = Z_MEDIAN_ADJACENT,
-        ),
-        geom = basis_acnr.geom,
-    )
-end;
-
-# ╔═╡ 0600000b-0000-4000-8000-000000000030
-let
-    fig = CM.Figure(size = (1180, 580))
-    axis_kwargs = (titlesize = 32, subtitlesize = 24)
-
-    mid = size(basis_z.vol_iodine, 3) ÷ 2
-
-    _qrange(arr) = (
-        Float64(quantile(vec(arr), 0.01)),
-        Float64(quantile(vec(arr), 0.99)),
-    )
-
-    slice_iod = basis_z.vol_iodine[:, :, mid]
-    slice_wat = basis_z.vol_water[:, :, mid]
-
-    panels = (
-        (1, 1, 2, "Iodine Basis", "g/cm³", slice_iod, _qrange(slice_iod)),
-        (1, 3, 4, "Water Basis", "g/cm³", slice_wat, _qrange(slice_wat)),
-    )
-
-    for (r, panel_c, cbar_c, ttl, cbar_label, slice, range) in panels
-        ax = CM.Axis(
-            fig[r, panel_c]; title = ttl,
-            aspect = CM.DataAspect(), axis_kwargs...,
-        )
-        CM.heatmap!(ax, slice; colormap = :viridis, colorrange = range)
-        CM.hidedecorations!(ax)
-        CM.Colorbar(
-            fig[r, cbar_c]; colormap = :viridis, colorrange = range,
-            label = cbar_label, width = 16, labelsize = 22, ticklabelsize = 18,
-        )
-    end
-    fig
-end
-
 # ╔═╡ 0600000c-0000-4000-8000-000000000001
 md"""
-## 11. VMI Synthesis
+### 07. VMI Synthesis
 
 `BS.synth_vmi_2basis(c_water, c_iodine; energy_keV)` evaluates the
 textbook 2-basis linear mix (McCollough 2015) at the target keV:
@@ -936,7 +893,7 @@ solid_water_basis = let
         "after $(ERODE_PX)-px erosion"
 
     sw_idx = findall(sw_bool)
-    n_z = size(basis_z.vol_water, 3)
+    n_z = size(basis_acnr.vol_water_raw, 3)
     function _mean(vol)
         s = 0.0; n = 0
         for z in 1:n_z, ci in sw_idx
@@ -945,8 +902,8 @@ solid_water_basis = let
         return s / n
     end
 
-    c_w = Float64(_mean(basis_z.vol_water))
-    c_i = Float64(_mean(basis_z.vol_iodine))
+    c_w = Float64(_mean(basis_acnr.vol_water_raw))
+    c_i = Float64(_mean(basis_acnr.vol_iodine_raw))
     @info "solid_water_basis: ⟨c_water⟩_SW = $(round(c_w, digits = 4)) g/cm³, " *
         "⟨c_iodine⟩_SW = $(round(c_i, digits = 6)) g/cm³"
 
@@ -963,7 +920,7 @@ pcct_vmi_energies = [50.0, 70.0, 100.0, 140.0];
 vmi_HU_by_keV = let
     # `BS.synth_vmi_2basis` expects c_iodine in mg/mL; our basis maps
     # are in g/cm³ (= g/mL).  Multiply by 1000 to convert.
-    c_iodine_mg_per_mL = basis_z.vol_iodine .* 1000.0f0
+    c_iodine_mg_per_mL = basis_acnr.vol_iodine_raw .* 1000.0f0
 
     out = Dict{Float64, Array{Float32, 3}}()
     for E in pcct_vmi_energies
@@ -979,7 +936,7 @@ vmi_HU_by_keV = let
             "$(round(μ_water_anchor, digits = 5)) → Δ = $(round(Δ_pct, digits = 2))%"
 
         out[E] = BS.synth_vmi_2basis(
-            basis_z.vol_water, c_iodine_mg_per_mL;
+            basis_acnr.vol_water_raw, c_iodine_mg_per_mL;
             energy_keV = E,
         )
     end
@@ -1017,107 +974,6 @@ let
 
     CM.save(
         joinpath(@__DIR__, "..", "assets", "pcct_vmi_projection_grid.png"),
-        fig; px_per_unit = 2,
-    )
-    fig
-end
-
-# ╔═╡ 0600000d-0000-4000-8000-000000000001
-md"""
-## 12. VMI Post-Processing (Mono+)
-
-Frequency-split rule from Grant et al. 2014:
-
-```
-Mono+(E)     = LP_σ(VMI_E) + VMI_opt − LP_σ(VMI_opt)
-Mono+(E_opt) = VMI_opt   (identity at the noise-optimal anchor)
-```
-
-Low frequencies come from the noise-optimal anchor (`E_opt = 70 keV`);
-high frequencies (edges, fine detail) come from the target energy `E`.
-
-!!! tip "Per-keV σ Tuning"
-    `σ_vmi_lp_px` pairs element-wise with `pcct_vmi_energies` — one σ
-    per VMI energy.
-
-    | σ          | Behavior                                      |
-    |------------|-----------------------------------------------|
-    | `0`        | Identity (no LP, no FFT — `Mono+(E) = VMI_E`) |
-    | `> 0`      | LP band replaced with the anchor's LP         |
-    | larger σ   | Broader anchor-driven smoothing; edges blur   |
-
-    Default `[1.0, 0.0, 1.0, 1.0]`: smooth 40 / 100 / 140 toward the
-    70-keV anchor (reduces low-keV iodine speckle and high-keV
-    photon-starvation streaks); 70 keV stays identity by definition.
-"""
-
-# ╔═╡ 0600000d-0000-4000-8000-000000000005
-# Per-keV Gaussian LP σ in pixels — paired with `pcct_vmi_energies` order.
-# σ = 0  ⇒ identity at that energy (Mono+(E) = VMI_E exactly, no FFT).
-# σ > 0  ⇒ that energy's LP band is replaced with the 70-keV anchor's LP.
-# Edit these to tune per-energy noise/contrast trade-off.
-# (50, 70, 100, 140) keV
-# ALL ZERO: Mono+ is a PASSTHROUGH (Mono+(E) = VMI_E exactly, no FFT); the
-# stage stays wired for one-edit per-keV tuning.
-σ_vmi_lp_px = Float64[0.0, 0.0, 0.0, 0.0];
-
-# ╔═╡ 0600000d-0000-4000-8000-000000000010
-vmi_HU_final = let
-    volumes = [vmi_HU_by_keV[E] for E in pcct_vmi_energies]
-
-    ws = BS.create_mono_plus_workspace(
-        volumes[1];
-        n_energies = length(pcct_vmi_energies),
-    )
-    BS.apply_mono_plus!(
-        ws, volumes, pcct_vmi_energies;
-        E_noise_opt = 70.0,
-        σ_lp_px = σ_vmi_lp_px,
-        verbose = true,
-    )
-
-    # ws.out_vols is reused on subsequent apply_mono_plus! calls — copy
-    # into a Dict so downstream cells (Results plots) hold their own arrays.
-    out = Dict{Float64, Array{Float32, 3}}()
-    for (i, E) in enumerate(pcct_vmi_energies)
-        out[E] = copy(ws.out_vols[i])
-    end
-    ws = nothing; GC.gc(true)
-    out
-end;
-
-# ╔═╡ 0600000d-0000-4000-8000-000000000030
-let
-    HU_window = (-200, 500)
-
-    fig = CM.Figure(size = (1180, 1180))
-    axis_kwargs = (titlesize = 32, subtitlesize = 24)
-
-    sample = vmi_HU_final[50.0]
-    mid = size(sample, 3) ÷ 2
-
-    for (k, E) in enumerate(pcct_vmi_energies)
-        r = ((k - 1) ÷ 2) + 1
-        c = ((k - 1) % 2) + 1
-        ax = CM.Axis(
-            fig[r, c]; title = "$(Int(E)) keV VMI",
-            subtitle = "Mono+",
-            aspect = CM.DataAspect(), axis_kwargs...,
-        )
-        CM.heatmap!(
-            ax, vmi_HU_final[E][:, :, mid];
-            colormap = :grays, colorrange = HU_window,
-        )
-        CM.hidedecorations!(ax)
-    end
-    CM.Colorbar(
-        fig[1:2, 3];
-        colormap = :grays, colorrange = HU_window,
-        label = "HU", width = 16, labelsize = 22, ticklabelsize = 18,
-    )
-
-    CM.save(
-        joinpath(@__DIR__, "..", "assets", "pcct_vmi_projection_monoplus.png"),
         fig; px_per_unit = 2,
     )
     fig
@@ -1224,7 +1080,7 @@ rod_data = let
         for (i, lab) in pairs(labels)
             mat = materials[Int(lab) + 1]   # mask_value + 1
             for (j, E) in pairs(pcct_vmi_energies)
-                meas[i, j] = measured_hu(vmi_HU_final[E], lab)
+                meas[i, j] = measured_hu(vmi_HU_by_keV[E], lab)
                 theo[i, j] = theoretical_hu(mat, E)
             end
         end
@@ -1262,8 +1118,8 @@ let
 
     # ─── Left panel — 70 keV Mono+ slice + eroded SW ROI overlay ───────
     HU_window = (-200, 500)
-    mid = size(vmi_HU_final[70.0], 3) ÷ 2
-    bg = vmi_HU_final[70.0][:, :, mid]
+    mid = size(vmi_HU_by_keV[70.0], 3) ÷ 2
+    bg = vmi_HU_by_keV[70.0][:, :, mid]
 
     overlay = Float32[b ? 1.0f0 : NaN32 for b in solid_water_basis.mask_2d]
 
@@ -1284,7 +1140,7 @@ let
 
     # ─── Right panel — mean SW HU vs VMI energy (bar) ──────────────────
     sw_idx = findall(solid_water_basis.mask_2d)
-    n_z = size(vmi_HU_final[70.0], 3)
+    n_z = size(vmi_HU_by_keV[70.0], 3)
     function _mean_hu(vol)
         s = 0.0; n = 0
         for z in 1:n_z, ci in sw_idx
@@ -1292,7 +1148,7 @@ let
         end
         return s / n
     end
-    sw_hu_per_keV = [_mean_hu(vmi_HU_final[E]) for E in pcct_vmi_energies]
+    sw_hu_per_keV = [_mean_hu(vmi_HU_by_keV[E]) for E in pcct_vmi_energies]
 
     # cgrad → Vector{RGBAf} for barplot's color kwarg
     n_E = length(pcct_vmi_energies)
@@ -1340,10 +1196,10 @@ end
 md"""
 ### Water-Region Noise
 
-HU noise (σ) inside a **central circular ROI** in the solid-water background
-(radius `WATER_NOISE_ROI_RADIUS_PX` ≈ 8 mm).  Gammex 472 is centered at
-isocenter and its inner calcium ring starts at 50 mm, so a small central
-circle samples pure solid water — well clear of every rod.
+HU noise (σ) over the **large eroded solid-water region**
+(`solid_water_basis.mask_2d`) — the whole solid-water background between the
+rods, deeply eroded to stay clear of every rod edge.  Canonical water ROI for
+**all** noise measurements in this notebook (not a tiny central circle).
 
 Right panel = σ vs VMI energy.  Diagnoses how the textbook
 `(c_water, c_iodine) → HU(E)` synth propagates noise through the PCCT
@@ -1359,7 +1215,7 @@ const WATER_NOISE_ROI_RADIUS_PX = 12;   # ≈8.2 mm at 0.683 mm/px (FOV 35 cm / 
 # Central circular noise ROI in the solid-water background (image center =
 # isocenter = phantom center for the centered Gammex 472).
 water_noise_roi = let
-    nx_r, ny_r, nz_r = size(basis_z.vol_water)
+    nx_r, ny_r, nz_r = size(basis_acnr.vol_water_raw)
     cx = nx_r ÷ 2 + 1
     cy = ny_r ÷ 2 + 1
 
@@ -1380,14 +1236,16 @@ water_noise_roi = let
 end;
 
 # ╔═╡ 0600000e-0000-4000-8000-000000000060
-# Per-keV HU noise (σ) + mean over the central water ROI on the final Mono+ VMIs.
+# Per-keV HU noise (σ) + mean over the LARGE ERODED solid-water region
+# (`solid_water_basis.mask_2d`) — the canonical water ROI for ALL noise
+# measurements (not the tiny central circle).
 vmi_noise_by_keV = let
-    roi_idx = findall(water_noise_roi.mask_2d)
-    nz_r = size(vmi_HU_final[70.0], 3)
+    roi_idx = findall(solid_water_basis.mask_2d)
+    nz_r = size(vmi_HU_by_keV[70.0], 3)
 
     out = Dict{Float64, NamedTuple}()
     for E in pcct_vmi_energies
-        vol = vmi_HU_final[E]
+        vol = vmi_HU_by_keV[E]
         vals = Float64[Float64(vol[ci, z]) for z in 1:nz_r, ci in roi_idx]
         μ = mean(vals); σ = std(vals)
         out[E] = (mean = μ, std = σ, n = length(vals))
@@ -1399,16 +1257,16 @@ end;
 # ╔═╡ 0600000e-0000-4000-8000-000000000070
 let
     HU_window = (-200, 500)
-    mid = size(vmi_HU_final[70.0], 3) ÷ 2
-    bg = vmi_HU_final[70.0][:, :, mid]
+    mid = size(vmi_HU_by_keV[70.0], 3) ÷ 2
+    bg = vmi_HU_by_keV[70.0][:, :, mid]
 
-    overlay = Float32[b ? 1.0f0 : NaN32 for b in water_noise_roi.mask_2d]
+    overlay = Float32[b ? 1.0f0 : NaN32 for b in solid_water_basis.mask_2d]
 
     fig = CM.Figure(size = (1180, 580))
 
     ax1 = CM.Axis(
         fig[1, 1];
-        title = "Water-Region Noise ROI",
+        title = "Eroded Water Region",
         subtitle = "Overlaid on 70 keV VMI",
         aspect = CM.DataAspect(),
         titlesize = 32, subtitlesize = 24,
@@ -1423,28 +1281,31 @@ let
     Es = sort(collect(keys(vmi_noise_by_keV)))
     σs = [vmi_noise_by_keV[E].std  for E in Es]
     μs = [vmi_noise_by_keV[E].mean for E in Es]
+    n = length(Es)
 
     ax2 = CM.Axis(
         fig[1, 2];
         title = "Water-Region Noise vs Energy",
         xlabel = "VMI Energy (keV)",
         ylabel = "Noise σ (HU)",
+        xticks = (collect(1:n), ["$(Int(E))" for E in Es]),
         titlesize = 32, subtitlesize = 24,
         xlabelsize = 22, ylabelsize = 22,
         xticklabelsize = 18, yticklabelsize = 16,
     )
-    CM.scatterlines!(
-        ax2, Es, σs;
-        color = :tomato, markersize = 18, linewidth = 3,
+    CM.barplot!(
+        ax2, 1:n, σs;
+        color = :tomato, strokecolor = :black, strokewidth = 1,
     )
-    for (E, σ, μ) in zip(Es, σs, μs)
+    for (i, (σ, μ)) in enumerate(zip(σs, μs))
         CM.text!(
-            ax2, E, σ;
+            ax2, i, σ;
             text = "σ=$(round(σ; digits = 1))\n⟨HU⟩=$(round(μ; digits = 1))",
             align = (:center, :bottom),
             fontsize = 16, offset = (0, 8),
         )
     end
+    CM.ylims!(ax2, 0, 1.20 * maximum(σs))
 
     CM.save(
         joinpath(@__DIR__, "..", "assets", "pcct_vmi_water_noise_vs_energy.png"),
@@ -1645,7 +1506,7 @@ end
 
 # ╔═╡ 06000011-0000-4000-8000-000000000001
 md"""
-## 15. Automated verification
+### Verification
 
 Quantitative PASS/FAIL against first-principles theory — per rod, per VMI
 energy, plus the two chain-health invariants: solid-water HU accuracy and
@@ -1661,11 +1522,11 @@ verification = let
         (name = name, value = round(val; digits = 1), lo = lo, hi = hi, pass = lo <= val <= hi))
 
     sw = solid_water_basis
-    sw_worst = maximum(abs(mean(vmi_HU_final[E][sw.mask_2d, :])) for E in pcct_vmi_energies)
+    sw_worst = maximum(abs(mean(vmi_HU_by_keV[E][sw.mask_2d, :])) for E in pcct_vmi_energies)
     addcheck("solid water worst |HU| across keV", sw_worst, 0.0, 10.0)
 
     Es = sort(collect(pcct_vmi_energies))
-    σs = [std(vmi_HU_final[E][sw.mask_2d, :]) for E in Es]
+    σs = [std(vmi_HU_by_keV[E][sw.mask_2d, :]) for E in Es]
     mono_ok = all(σs[i] > σs[i + 1] for i in 1:(length(σs) - 1))
     # PCCT must BEAT dual-kVp at matched ~10 mGy: nb03's verified reference
     # (post Jensen-debias + two-pass Kalender ACNR) is σ = 58.3 > 28.1 >
@@ -1715,29 +1576,29 @@ end
 
 # ╔═╡ 06000010-0000-4000-8000-000000000001
 md"""
-## Summary
+### Summary
 
 ```
-Simulate 140 kVp PCCT (4 bins, scatter-injected)
-   → Per-Bin Scatter Correction  (model-based)
-   → Bin Combine  (1+2 → low,  3+4 → high)
-   → SF-JSD Joint Sinogram Denoiser  (2-channel, BS.apply_sino_sfjsd_denoise)
-   → Projection-Domain Material Decomposition  (Cong univariate, PCCT-Φ_k)
-   → FBP × 2  (iodine, water basis maps)
-   → Z-Direction Median Filter × 2
-   → Monoenergetic VMI Synthesis  (textbook 2-basis, mono μρ_water divisor)
-   → Mono+ Post-Processing  (per-keV σ via σ_vmi_lp_px)
-   → Measured vs Theoretical Per-Rod Regression  at 50 / 70 / 100 / 140 keV
+Simulate 140 kVp PCCT  (4 bins; scatter + noise + pile-up + corrections)
+   → Projection-domain SVD denoise  (4-bin joint)
+   → Bin combine  (1+2 → low, 3+4 → high)
+   → Jensen debias + projection-domain material decomposition  (Cong, PCCT-Φ_k)
+   → FBP × 2 with per-basis apodization  (soft iodine, sharp water)
+   → Kalender-1988 true ACNR  (BS.apply_acnr_kalender!)
+   → Monoenergetic VMI synthesis  (textbook 2-basis, mono μρ_water divisor)
+   → Automated verification  (water HU · monotonic noise-vs-keV · 14-rod NIST regression)
 ```
 
-Bin-combine first, denoise after — SF-JSD operates on the 2-channel
-`(low, high)` pair (paper's canonical hardware-class layout).  The
-Cong univariate solver — generalized to PCCT via the effective-
-spectral-response Φ_k(ε) ≥ 0 in Black (*in prep.*) — then handles beam
-hardening through the polychromatic transmission integral that a linear
-closed-form inversion misses on a 33 cm phantom, calibration-free.  The
-result is HU-quantitative VMIs with low streak content and clean low-keV
-Mono+ output.
+The 4-bin SVD denoise and Cong decomposition run **upstream of FBP**, so
+quantum noise and beam-hardening residuals can't propagate into the basis
+maps.  The Cong univariate solver — generalized to PCCT via the effective-
+spectral-response Φ_k(ε) ≥ 0 in Black (*in prep.*) — handles beam hardening
+through the polychromatic transmission integral a linear closed-form
+inversion misses on a 33 cm phantom, calibration-free.  The per-basis
+apodization softens only the iodine channel, so low-keV VMI noise drops
+preferentially (α(E)² weighting) while water/anatomy resolution stays sharp;
+Kalender true ACNR then removes the anti-correlated basis noise — yielding
+HU-quantitative VMIs with low streak content.
 """
 
 # ╔═╡ Cell order:
@@ -1746,10 +1607,13 @@ Mono+ output.
 # ╠═06000001-0000-4000-8000-000000000001
 # ╠═06000001-0000-4000-8000-000000000002
 # ╠═06000001-0000-4000-8000-000000000003
+# ╠═06000001-0000-4000-8000-000000000004
 # ╠═06000001-0000-4000-8000-000000000030
 # ╠═06000001-0000-4000-8000-000000000031
+# ╠═06000001-0000-4000-8000-000000000005
 # ╠═06000001-0000-4000-8000-000000000040
 # ╟─06000001-0000-4000-8000-000000000050
+# ╟─06000002-0000-4000-8000-000000000000
 # ╟─06000002-0000-4000-8000-000000000001
 # ╠═06000002-0000-4000-8000-000000000010
 # ╠═06000002-0000-4000-8000-000000000020
@@ -1766,9 +1630,12 @@ Mono+ output.
 # ╟─06000006-0000-4000-8000-000000000045
 # ╠═06000006-0000-4000-8000-000000000050
 # ╟─06000006-0000-4000-8000-000000000060
-# ╟─06000006-0000-4000-8000-000000000070
-# ╠═06000006-0000-4000-8000-000000000080
+# ╟─06000006-0000-4000-8000-000000000065
 # ╟─06000008-0000-4000-8000-000000000001
+# ╠═06000008-0000-4000-8000-000000000005
+# ╟─06000008-0000-4000-8000-000000000006
+# ╠═06000008-0000-4000-8000-000000000007
+# ╟─06000008-0000-4000-8000-000000000008
 # ╠═06000008-0000-4000-8000-000000000010
 # ╟─06000008-0000-4000-8000-000000000030
 # ╟─06000009-0000-4000-8000-000000000001
@@ -1781,19 +1648,11 @@ Mono+ output.
 # ╟─0600000a-0000-4000-8000-000000000030
 # ╟─0600000a-0000-4000-8000-000000000040
 # ╠═0600000a-0000-4000-8000-000000000050
-# ╟─0600000b-0000-4000-8000-000000000001
-# ╠═0600000b-0000-4000-8000-000000000005
-# ╠═0600000b-0000-4000-8000-000000000010
-# ╟─0600000b-0000-4000-8000-000000000030
 # ╟─0600000c-0000-4000-8000-000000000001
 # ╠═0600000c-0000-4000-8000-000000000010
 # ╠═0600000c-0000-4000-8000-000000000015
 # ╠═0600000c-0000-4000-8000-000000000020
 # ╟─0600000c-0000-4000-8000-000000000040
-# ╟─0600000d-0000-4000-8000-000000000001
-# ╠═0600000d-0000-4000-8000-000000000005
-# ╠═0600000d-0000-4000-8000-000000000010
-# ╟─0600000d-0000-4000-8000-000000000030
 # ╟─0600000e-0000-4000-8000-000000000001
 # ╠═0600000e-0000-4000-8000-000000000010
 # ╠═0600000e-0000-4000-8000-000000000020

@@ -74,7 +74,7 @@ import BasisSimulator as BS
 import CairoMakie as CM
 
 # ╔═╡ 05000001-0000-4000-8000-000000000005
-PlutoUI.TableOfContents(title = "Contents", depth = 3)
+PlutoUI.TableOfContents()
 
 # ╔═╡ 05000001-0000-4000-8000-000000000040
 begin
@@ -305,22 +305,79 @@ md"""
 
 # ╔═╡ 05000008-0000-4000-8000-000000000001
 md"""
-### 01. Material Decomposition
+### 01. Jensen Debias
+**Log-Poisson Bias Correction**
 
-Three per-ray, projection-domain steps, in order:
+Per ray: `p ← p − 1/(2N)`, `N = I₀(col,row)·e^{−p}` — the first-order bias of
+`−log` of Poisson counts.  Deterministic (σ untouched); on photon-starved rays
+behind the dense Ca rods (N ≈ 2–50 at 80 kVp) it removes the 1–2.5 % `p`
+inflation Cong would amplify into low-keV HU bias.  Runs on the **raw**
+sinograms — before any denoising — so `N` is the true detected count.
+"""
 
-1. **Jensen debias** — `p ← p − 1/(2N)`, `N = I₀(col,row)·e^{−p}`: the
-   first-order bias of `−log` of Poisson counts.  Deterministic (σ untouched);
-   on photon-starved rays behind the dense Ca rods (N ≈ 2–50 at 80 kVp) it
-   removes the 1–2.5 % `p` inflation Cong would amplify into low-keV HU bias.
-2. **SVD-bilateral denoise** — per-row cross-channel SVD keeps the common
-   anatomy (`U[:,1]`) pixel-perfect and edge-aware-bilateral-cleans the
-   residual (streaks + decorrelated noise).  Runs on the *debiased* pair, so
-   it also removes the noise the debias amplifies.  Zero resolution cost.
-3. **Cong solve** — per-ray Newton solver on the polychromatic transmission
-   integral (iodine + water basis, seeded `water_basis = (a = 0, c = 1)`),
-   yielding basis line integrals `sino_iodine = ∫c_iodine dr` and
-   `sino_water = ∫c_water dr`.
+# ╔═╡ 05000008-0000-4000-8000-000000000005
+sino_debiased = let
+    # First-order log-Poisson debias: E[−log(N/I0)] = p_true + 1/(2N) for
+    # Poisson counts.  Deterministic bias correction (σ untouched); MUST run
+    # on the RAW sinograms so N is the true detected count.
+    debias(p, I0_ray) = begin
+        out = Float32.(p)
+        nc, nr, nv = size(out)
+        for v in 1:nv, r in 1:nr, c in 1:nc
+            N = max(I0_ray[c, r] * exp(-out[c, r, v]), 1.0f0)
+            out[c, r, v] -= 1.0f0 / (2.0f0 * N)
+        end
+        out
+    end
+    (low  = debias(sim_low.sino,  sim_low.I0_ray),
+     high = debias(sim_high.sino, sim_high.I0_ray))
+end;
+
+# ╔═╡ 05000008-0000-4000-8000-000000000006
+md"""
+### 02. SVD Denoise
+**Edge-Aware Bilateral (Projection Domain)**
+
+Per-row cross-channel SVD on the debiased `(low, high)` pair: the common
+anatomy `U[:,1]` is kept **pixel-perfect** and the residual `U[:,2]` (streaks
++ decorrelated quantum noise) is cleaned with an edge-aware joint bilateral —
+zero resolution cost (unlike `apply_sino_svd_denoise`'s Gaussian).  Runs
+**after** the debias, so it also removes the noise the debias amplifies in
+photon-starved rays.  `APPLY_SVD = false` ⇒ debias-only passthrough.
+"""
+
+# ╔═╡ 05000008-0000-4000-8000-0000000000a0
+sino_denoised = let
+    APPLY_SVD = true
+    if APPLY_SVD
+        out = BS.apply_sino_svd_denoise_bilateral(
+            [sino_debiased.low, sino_debiased.high];
+            # ── how FAR it can reach to average. Bigger = smoother but slower;
+            #    never averages across an edge. Secondary knob; keep ≈ σ_s.
+            bilat_radius  = 3,    # search-window radius (px)
+            # ── spatial falloff inside that window. ↑ = stronger flat-region
+            #    (streak/noise) smoothing; ↓ = gentler. Pair with radius.
+            bilat_sigma_s = 2.0,  # spatial Gaussian σ (px)
+            # ── THE important knob (edge sensitivity): how big an intensity
+            #    jump counts as a real edge to PROTECT vs. noise to smooth.
+            #    ↓ (≈1.0) = guard edges harder, less smoothing, safest for
+            #    resolution. ↑ (3–4) = smooth more, risks eating faint detail.
+            bilat_range_k = 2.0,
+        )
+        (low = out[1], high = out[2])
+    else
+        (low = sino_debiased.low, high = sino_debiased.high)
+    end
+end;
+
+# ╔═╡ 05000008-0000-4000-8000-000000000007
+md"""
+### 03. Material Decomposition
+**Cong (Projection Domain)**
+
+Per-ray Newton solver on the polychromatic transmission integral (iodine +
+water basis, seeded `water_basis = (a = 0, c = 1)`), yielding basis line
+integrals `sino_iodine = ∫c_iodine dr` and `sino_water = ∫c_water dr`.
 
 !!! info "Full-Spectrum Awareness"
     The basis builder uses `BS.resolve_source_spectrum_full`, which
@@ -361,61 +418,6 @@ material_basis = let
         ŵ_L = ŵ_L_f32, p_L = p_L, q_L = q_L,
         ŵ_H = ŵ_H_f32, p_H = p_H, q_H = q_H,
     )
-end;
-
-# ╔═╡ 05000008-0000-4000-8000-0000000000a0
-# Pre-Cong pipeline, CORRECT ORDER: (1) Jensen log-Poisson DEBIAS on the
-# RAW per-ray sinograms, THEN (2) edge-preserving BILATERAL SVD denoise on
-# the debiased pair.  Order matters — the debias term is exp(p)/(2·I0),
-# which is violently noise-amplifying in photon-starved rays; it MUST see
-# the raw counts N = I0·exp(−p_raw) for the 1/(2N) bias to be correct, and
-# the denoiser MUST run LAST so it also removes the noise the debias
-# amplifies.  (Old order — SVD then debias — re-injected that amplified
-# noise with nothing downstream to clean it: streaks gone but σ went up.)
-# The SVD keeps U[:,1] (anatomy) pixel-perfect and cleans the residual
-# U[:,2] (streaks + decorrelated noise) with a joint bilateral → zero
-# spatial-resolution cost (unlike `apply_sino_svd_denoise`'s Gaussian).
-# APPLY_SVD = false ⇒ debias only (no denoise), = the certified chain.
-sino_denoised = let
-    # First-order log-Poisson debias (deterministic statistics, not
-    # denoising): E[−log(N/I0)] = p_true + 1/(2N) for Poisson counts.  On
-    # rays behind the dense Ca rods the 80 kVp channel detects N ≈ 2–50
-    # photons, inflating p by 1–2.5 % exactly where Cong amplifies it into
-    # the low-keV dense-rod bias.  (Exact for this simulator's pure-Poisson
-    # count noise; a real energy-integrating detector needs the same form
-    # with Swank-corrected effective counts, ~10–30 % larger.)
-    debias(p, I0_ray) = begin
-        out = Float32.(p)
-        nc, nr, nv = size(out)
-        for v in 1:nv, r in 1:nr, c in 1:nc
-            N = max(I0_ray[c, r] * exp(-out[c, r, v]), 1.0f0)
-            out[c, r, v] -= 1.0f0 / (2.0f0 * N)
-        end
-        out
-    end
-    p_low  = debias(sim_low.sino,  sim_low.I0_ray)    # debias RAW first
-    p_high = debias(sim_high.sino, sim_high.I0_ray)
-
-    APPLY_SVD = true
-    if APPLY_SVD
-        out = BS.apply_sino_svd_denoise_bilateral(
-            [p_low, p_high];                          # ← denoise the DEBIASED pair
-            # ── how FAR it can reach to average. Bigger = smoother but slower;
-            #    never averages across an edge. Secondary knob; keep ≈ σ_s.
-            bilat_radius  = 3,    # search-window radius (px)
-            # ── spatial falloff inside that window. ↑ = stronger flat-region
-            #    (streak/noise) smoothing; ↓ = gentler. Pair with radius.
-            bilat_sigma_s = 2.0,  # spatial Gaussian σ (px)
-            # ── THE important knob (edge sensitivity): how big an intensity
-            #    jump counts as a real edge to PROTECT vs. noise to smooth.
-            #    ↓ (≈1.0) = guard edges harder, less smoothing, safest for
-            #    resolution. ↑ (3–4) = smooth more, risks eating faint detail.
-            bilat_range_k = 2.0,
-        )
-        (low = out[1], high = out[2])
-    else
-        (low = p_low, high = p_high)
-    end
 end;
 
 # ╔═╡ 05000008-0000-4000-8000-000000000020
@@ -493,7 +495,7 @@ end
 
 # ╔═╡ 05000009-0000-4000-8000-000000000001
 md"""
-### 02. FBP Basis Maps
+### 04. FBP Basis Maps
 **Per-Basis Apodization**
 
 Two FDK passes with `BS.SoftFilter()` — one per basis sinogram.  The
@@ -584,7 +586,7 @@ end
 
 # ╔═╡ 05000009-0000-4000-8000-000000000040
 md"""
-### 03. ACNR
+### 05. ACNR
 **Anti-Correlated Noise Reduction**
 
 Material decomposition stamps anti-correlated noise on the basis maps
@@ -621,7 +623,7 @@ end;
 
 # ╔═╡ 0500000b-0000-4000-8000-000000000001
 md"""
-### 04. VMI Synthesis
+### 06. VMI Synthesis
 
 `BS.synth_vmi_2basis(c_water, c_iodine; energy_keV)` evaluates the
 textbook 2-basis linear mix (McCollough 2015) at the target keV:
@@ -873,7 +875,7 @@ md"""
 ### Water ROI
 
 Left panel: the deeply-eroded solid-water ROI (12-px erosion ≈ 8 mm)
-overlaid in red on the 70 keV Mono+ slice — exactly the voxels feeding
+overlaid in red on the 70 keV VMI slice — exactly the voxels feeding
 the `solid_water_basis` diagnostic.  Right panel: mean HU over that
 ROI vs VMI energy.
 
@@ -892,7 +894,7 @@ ROI vs VMI energy.
 let
     fig = CM.Figure(size = (1180, 580))
 
-    # ─── Left panel — 70 keV Mono+ slice + eroded SW ROI overlay ───────
+    # ─── Left panel — 70 keV VMI slice + eroded SW ROI overlay ───────
     HU_window = (-200, 500)
     mid = size(vmi_HU_by_keV[70.0], 3) ÷ 2
     bg = vmi_HU_by_keV[70.0][:, :, mid]
@@ -1015,7 +1017,7 @@ end;
 
 # ╔═╡ 0500000d-0000-4000-8000-000000000060
 # Per-keV HU noise (σ) + mean over the LARGE ERODED solid-water region
-# (`solid_water_basis.mask_2d`) on the final Mono+ VMIs — the canonical water
+# (`solid_water_basis.mask_2d`) on the final VMIs — the canonical water
 # ROI for ALL noise measurements (not the tiny central circle).
 vmi_noise_by_keV = let
     roi_idx = findall(solid_water_basis.mask_2d)
@@ -1407,8 +1409,11 @@ resolution loss — yielding HU-quantitative VMIs with low streak content.
 # ╟─05000006-0000-4000-8000-000000000040
 # ╟─05000008-0000-4000-8000-000000000000
 # ╟─05000008-0000-4000-8000-000000000001
-# ╠═05000008-0000-4000-8000-000000000010
+# ╠═05000008-0000-4000-8000-000000000005
+# ╟─05000008-0000-4000-8000-000000000006
 # ╠═05000008-0000-4000-8000-0000000000a0
+# ╟─05000008-0000-4000-8000-000000000007
+# ╠═05000008-0000-4000-8000-000000000010
 # ╠═05000008-0000-4000-8000-000000000020
 # ╟─05000008-0000-4000-8000-000000000040
 # ╟─05000009-0000-4000-8000-000000000001
