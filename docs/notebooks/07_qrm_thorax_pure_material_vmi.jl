@@ -21,7 +21,7 @@ using Unitful: @u_str
 
 # ╔═╡ 07010001-0000-4000-8000-000000000001
 md"""
-# 07 · QRM-Thorax Pure-Material VMI · **Full-Resolution True-Scan Reference**
+# QRM-Thorax Pure-Material VMI: Full-Resolution True-Scan Reference
 
 **Intent:** the canonical full-fidelity reference for the projection-
 domain dual-kVp pipeline.  Every knob here matches a real clinical
@@ -78,7 +78,7 @@ Simulate 140 kVp→┘   2-basis VMI → Mono+ →                             �
 
 # ╔═╡ 07010002-0000-4000-8000-000000000001
 md"""
-## Setup
+## Notebook Setup
 """
 
 # ╔═╡ 07010003-0000-4000-8000-000000000010
@@ -86,6 +86,12 @@ import BasisSimulator as BS
 
 # ╔═╡ 07010003-0000-4000-8000-000000000011
 import CairoMakie as CM
+
+# ╔═╡ 07010003-0000-4000-8000-000000000012
+import PlutoUI
+
+# ╔═╡ 07010003-0000-4000-8000-000000000013
+PlutoUI.TableOfContents()
 
 # ╔═╡ 07010003-0000-4000-8000-000000000040
 begin
@@ -100,9 +106,18 @@ md"""
 **Backend detected:** $(GPU_BACKEND.name)
 """
 
+# ╔═╡ 07020000-0000-4000-8000-0000000000f1
+md"""
+## Scan Setup and Simulation
+
+One clinical GSI acquisition: the QRM-Thorax phantom, the GE Apex Elite
+scanner, the dual-kVp switching protocol, and the forward projection that
+turns them into 80 + 140 kVp sinograms.
+"""
+
 # ╔═╡ 07020001-0000-4000-8000-000000000001
 md"""
-## 1. `Phantom`: QRM-Thorax with 4 Pure-Material Rods
+### 01. `Phantom`: QRM-Thorax with 4 Pure-Material Rods
 
 Read the **prepared** QRM-Thorax mask — already rotated to CT display
 orientation (spine at the bottom) and 2× downsampled, cached at
@@ -394,7 +409,7 @@ end
 
 # ╔═╡ 07030001-0000-4000-8000-000000000001
 md"""
-## 2. `Scanner`: GE Revolution Apex Elite
+### 02. `Scanner`: GE Revolution Apex Elite
 """
 
 # ╔═╡ 07030001-0000-4000-8000-000000000010
@@ -426,7 +441,7 @@ scanner = BS.Scanner(
 
 # ╔═╡ 07030002-0000-4000-8000-000000000001
 md"""
-## 3. Dual-kVp Protocols (Rapid kVp Switching)
+### 03. Dual-kVp Protocols (Rapid kVp Switching)
 
 | kVp | Instantaneous mA | Duty cycle | Effective mA |
 |-----|------------------|------------|--------------|
@@ -462,7 +477,7 @@ protocol_high = BS.CTProtocol(
 
 # ╔═╡ 07030003-0000-4000-8000-000000000001
 md"""
-## 4. `SimOptions` and `ReconOptions`
+### 04. `SimOptions` and `ReconOptions`
 """
 
 # ╔═╡ 07030003-0000-4000-8000-000000000010
@@ -485,7 +500,7 @@ recon_opts = BS.ReconOptions(
 
 # ╔═╡ 07030004-0000-4000-8000-000000000001
 md"""
-## 5. Forward Project
+### 05. Forward Project
 
 Run `BS.simulate!` on each kVp protocol.  The EICT path bakes in
 per-ray spatial scatter + Compton + Rayleigh, and we keep the
@@ -567,9 +582,17 @@ let
     fig
 end
 
+# ╔═╡ 07030000-0000-4000-8000-0000000000f1
+md"""
+## VMI Pipeline
+
+Projection-domain material decomposition → per-basis FBP → Kalender-1988
+ACNR → monoenergetic synthesis.  The same certified chain as notebook 03.
+"""
+
 # ╔═╡ 07030006-0000-4000-8000-000000000001
 md"""
-## 6. Projection-Domain Material Decomposition
+### 01. Projection-Domain Material Decomposition
 
 Per-ray Newton solver on the polychromatic transmission integral with a
 fixed `(water, iodine)` basis seeded by `water_basis = (a = 0, c = 1)`.
@@ -708,7 +731,7 @@ end
 
 # ╔═╡ 07030007-0000-4000-8000-000000000001
 md"""
-## 7. FBP: Iodine and Water Basis Maps
+### 02. FBP: Iodine and Water Basis Maps
 
 Two FDK passes with `BS.SoftFilter()` — one per basis sinogram.
 Output volumes are in basis-density units (g/cm³).
@@ -774,7 +797,7 @@ end
 
 # ╔═╡ 07030007-0000-4000-8000-000000000040
 md"""
-## 8. Kalender-1988 TRUE ACNR
+### 03. Kalender-1988 TRUE ACNR
 
 Per-pixel local regression between the two basis maps' high-frequency
 channels (`BS.apply_acnr_kalender!`).  Dual-energy basis noise is
@@ -830,7 +853,7 @@ end
 
 # ╔═╡ 07030009-0000-4000-8000-000000000001
 md"""
-## 9. VMI Synthesis
+### 04. VMI Synthesis
 
 `BS.synth_vmi_2basis(c_water, c_iodine_mg_per_mL; energy_keV)` evaluates
 the textbook 2-basis linear mix (McCollough 2015) at the target keV:
@@ -1589,8 +1612,11 @@ pure-material rod inserts (`basis_water`, `basis_lipid`,
 # ╠═07010003-0000-4000-8000-000000000007
 # ╠═07010003-0000-4000-8000-000000000010
 # ╠═07010003-0000-4000-8000-000000000011
+# ╠═07010003-0000-4000-8000-000000000012
+# ╠═07010003-0000-4000-8000-000000000013
 # ╠═07010003-0000-4000-8000-000000000040
 # ╟─07010003-0000-4000-8000-000000000050
+# ╟─07020000-0000-4000-8000-0000000000f1
 # ╟─07020001-0000-4000-8000-000000000001
 # ╠═07020001-0000-4000-8000-000000000010
 # ╠═07020001-0000-4000-8000-000000000011
@@ -1627,6 +1653,7 @@ pure-material rod inserts (`basis_water`, `basis_lipid`,
 # ╠═07030004-0000-4000-8000-000000000020
 # ╠═07030004-0000-4000-8000-000000000025
 # ╟─07030004-0000-4000-8000-000000000030
+# ╟─07030000-0000-4000-8000-0000000000f1
 # ╟─07030006-0000-4000-8000-000000000001
 # ╠═07030006-0000-4000-8000-000000000010
 # ╠═07030006-0000-4000-8000-000000000020
@@ -1644,9 +1671,9 @@ pure-material rod inserts (`basis_water`, `basis_lipid`,
 # ╠═07030009-0000-4000-8000-000000000020
 # ╟─07030009-0000-4000-8000-000000000040
 # ╟─0703000a-0000-4000-8000-000000000040
+# ╟─0703000b-0000-4000-8000-000000000001
 # ╟─0703000b-0000-4000-8000-000000000000
 # ╟─0703000b-0000-4000-8000-00000000000a
-# ╟─0703000b-0000-4000-8000-000000000001
 # ╟─0703000b-0000-4000-8000-000000000002
 # ╟─0703000b-0000-4000-8000-000000000003
 # ╟─0703000d-0000-4000-8000-000000000001
