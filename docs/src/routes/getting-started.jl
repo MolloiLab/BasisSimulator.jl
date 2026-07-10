@@ -25,7 +25,7 @@ Pkg.add(url=\"https://github.com/MolloiLab/BasisSimulator.jl\")""")
         ),
         P(:class => "text-warm-600 dark:text-warm-400", "Then add GPUSelect and your GPU backend (skip the backend for CPU-only):"),
         Pre(:class => code_block,
-            Code(:class => "language-julia text-sm font-mono", """Pkg.add(url=\"https://github.com/GroupTherapyOrg/GPUSelect.jl\")
+            Code(:class => "language-julia text-sm font-mono", """Pkg.add(\"GPUSelect\")
 Pkg.add(\"Metal\")     # Apple Silicon
 Pkg.add(\"CUDA\")      # NVIDIA
 Pkg.add(\"AMDGPU\")    # AMD
