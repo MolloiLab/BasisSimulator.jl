@@ -69,3 +69,40 @@ end
     # an unmapped material name is a clear error
     @test_throws ErrorException load_xcat_phantom(:female_slab; path = dir, materials = Dict("ncat_muscle" => XA.Materials.muscle))
 end
+
+# Regression: each piece's rows are stored BOTTOM-UP, so a piece must be read in
+# reverse along y before being placed at `-y_offset` (the same rule as x and z).
+# Reading rows forward mis-registers every piece by its own height.  The `XCIST
+# voxelized parse` phantom above cannot catch that — its two pieces are the same
+# height and diagonally symmetric, so the wrong convention merely mirrors the
+# result.  Here the pieces have DIFFERENT heights and tile the grid exactly, so
+# the buggy convention stacks them in the opposite order and the mask differs.
+@testset "XCIST y rows are stored bottom-up (regression)" begin
+    dir = mktempdir()
+    # water: 2×1 (one row) and muscle: 2×2 (two rows) tile a 2×3 grid, no air.
+    write(joinpath(dir, "syn.density_0"), Int8[1, 1])           # water,  cols=2 rows=1
+    write(joinpath(dir, "syn.density_1"), Int8[1, 1, 1, 1])     # muscle, cols=2 rows=2
+    hdr = Dict(
+        "n_materials" => 2,
+        "mat_name" => ["ncat_water", "ncat_muscle"],
+        "volumefractionmap_filename" => ["syn.density_0", "syn.density_1"],
+        "volumefractionmap_datatype" => ["int8", "int8"],
+        "cols" => [2, 2], "rows" => [1, 2], "slices" => [1, 1],
+        "x_size" => [1.0, 1.0], "y_size" => [1.0, 1.0], "z_size" => [1.0, 1.0],
+        "x_offset" => [0.5, 0.5], "y_offset" => [1.5, 3.5], "z_offset" => [1.0, 1.0],
+    )
+    open(io -> JSON.print(io, hdr), joinpath(dir, "syn.json"), "w")
+
+    p = load_xcat_phantom(:female_slab; path = dir)
+    @test size(p.mask) == (2, 3, 1)
+
+    # muscle occupies the first two rows, water the last.  Reading rows forward
+    # swaps the two pieces (water row 1, muscle rows 2–3) — this is the assertion
+    # that fails on the bug.
+    @test p.mask[:, :, 1] == UInt8[2 2 1; 2 2 1]
+
+    # the pieces tile exactly: every voxel claimed once, none twice, no air
+    @test count(==(0x00), p.mask) == 0
+    @test count(==(0x01), p.mask) == 2          # water occupancy preserved in full
+    @test count(==(0x02), p.mask) == 4          # muscle occupancy preserved in full
+end

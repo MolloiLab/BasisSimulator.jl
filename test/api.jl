@@ -149,9 +149,10 @@ _ts("entering SimOptions testset")
         end
     end
 
-    @testset "projector defaults to :dd, accepts :siddon, validates" begin
-        @test BS.SimOptions().projector == :dd
-        @test BS.SimOptions(fidelity = :pcct).projector == :dd
+    @testset "projector defaults to :dd_fast, accepts :dd/:siddon, validates" begin
+        @test BS.SimOptions().projector == :dd_fast
+        @test BS.SimOptions(fidelity = :pcct).projector == :dd_fast
+        @test BS.SimOptions(projector = :dd).projector == :dd            # deprecated, still accepted
         @test BS.SimOptions(projector = :siddon).projector == :siddon
         @test_throws ArgumentError BS.SimOptions(projector = :bogus)
     end

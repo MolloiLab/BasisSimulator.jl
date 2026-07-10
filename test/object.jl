@@ -213,3 +213,29 @@ end
     @test size(ph.mask) == size(labels)
     @test ph.voxel_size == (0.5, 0.5, 0.5)
 end
+
+# Regression: `Phantom` must NOT copy a mask that already has the target label
+# type.  `UInt8.(x)` on a UInt8 device array launches a broadcast kernel whose
+# output the caller never synchronizes; handing that buffer back is a race that
+# intermittently yields an all-zero mask (empty sinogram, blank reconstruction).
+@testset "Phantom reuses an already-typed mask (no copy)" begin
+    mask = rand(UInt8(0):UInt8(2), 4, 4, 2)
+    mats = Dict(0 => XA.Materials.air, 1 => XA.Materials.water, 2 => XA.Materials.ncat_muscle)
+
+    p = BS.Phantom(mask, mats, (0.1, 0.1, 0.1))
+    @test p.mask === mask                       # aliased, not re-broadcast
+
+    # a mask needing a widening conversion still converts
+    big = fill(UInt16(300), 2, 2, 1)
+    mats_big = Dict(i => XA.Materials.water for i in 0:300)
+    mats_big[0] = XA.Materials.air
+    p_big = BS.Phantom(big, mats_big, (0.1, 0.1, 0.1))
+    @test eltype(p_big.mask) === UInt16
+    @test p_big.mask == big
+
+    # a signed/other integer mask is converted down to UInt8
+    ints = reshape(Int32[0, 1, 2, 1], 2, 2, 1)
+    p_int = BS.Phantom(ints, mats, (0.1, 0.1, 0.1))
+    @test eltype(p_int.mask) === UInt8
+    @test p_int.mask == UInt8.(ints)
+end

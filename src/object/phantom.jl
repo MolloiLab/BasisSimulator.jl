@@ -268,9 +268,16 @@ function Phantom(
         computed_origin = Float64.(origin)
     end
 
-    # Convert labeled array to smallest unsigned type that fits
+    # Convert labeled array to smallest unsigned type that fits.  Reuse the array
+    # as-is when it already has that type: `UInt8.(x)` on a UInt8 GPU array is a
+    # pointless copy, and on a device it is a KERNEL whose result the caller never
+    # synchronizes.  Handing back that unsynchronized buffer is a real race — a
+    # phantom built in one Pluto cell then projected from another intermittently
+    # reads all zeros, and the reconstruction comes out empty.  `maximum` above
+    # already forces a device→host readback, so `labeled_array` itself is settled.
     max_label = maximum(labeled_array)
-    mask = max_label > typemax(UInt8) ? UInt16.(labeled_array) : UInt8.(labeled_array)
+    U = max_label > typemax(UInt8) ? UInt16 : UInt8
+    mask = eltype(labeled_array) === U ? labeled_array : U.(labeled_array)
 
     # Build materials vector (indexed by mask_value + 1)
     materials_vec = build_materials_vector(materials_dict)

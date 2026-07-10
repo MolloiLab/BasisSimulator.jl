@@ -104,7 +104,9 @@ xcat_default_materials() = Dict{String, XA.Material}(
 """
     xcat_citation() -> String
 
-Attribution for the XCAT voxelized phantoms.  Printed on first download.
+Attribution for the XCAT voxelized phantoms.  Logged by
+[`download_xcat_phantom`](@ref) / [`load_xcat_phantom`](@ref) on every call,
+cached or fresh, unless `quiet = true`.
 """
 xcat_citation() = """
 XCAT voxelized chest phantom — please cite:
@@ -125,18 +127,24 @@ XCAT voxelized chest phantom — please cite:
 Return a directory holding the XCIST voxelized files for XCAT phantom `name`
 (one of [`xcat_phantoms`](@ref)).
 
+The [`xcat_citation`](@ref) attribution is logged on every call (cached or fresh)
+— these phantoms are other people's work, so the ask to cite them should not be
+something a user sees once and then never again.  Pass `quiet = true` to silence
+it (and the progress log) in scripts and loops.
+
 Resolution order:
 1. If `path` is given, it is returned unchanged (bring-your-own copy — point at
    the extracted phantom folder).
 2. If the phantom is already in Julia's artifact store (`~/.julia/artifacts/`),
    its cached path is returned — no download.
 3. Otherwise the `.zip` is downloaded from the XCIST repository (with a progress
-   log and a one-time citation), verified by SHA-256, extracted, and installed
-   into the artifact store keyed by its git-tree-sha1.
+   log), verified by SHA-256, extracted, and installed into the artifact store
+   keyed by its git-tree-sha1.
 
 The full-volume phantoms are ~65 MB; the slabs are <100 KB.
 """
 function download_xcat_phantom(name::Symbol; path::Union{Nothing, AbstractString} = nothing, quiet::Bool = false)
+    quiet || @info xcat_citation()
     path !== nothing && return String(path)
     haskey(XCAT_REGISTRY, name) ||
         error("unknown XCAT phantom :$name — available: $(xcat_phantoms())")
@@ -147,9 +155,7 @@ function download_xcat_phantom(name::Symbol; path::Union{Nothing, AbstractString
     Artifacts.artifact_exists(hash) && return Artifacts.artifact_path(hash)
 
     # (3) download → verify → extract → install
-    quiet || @info """Downloading XCAT phantom :$name ($(entry.desc)) into the Julia artifact store…
-
-    $(xcat_citation())"""
+    quiet || @info "Downloading XCAT phantom :$name ($(entry.desc)) into the Julia artifact store…"
 
     dest = Artifacts.artifact_path(hash)
     artifacts_dir = dirname(dest)
@@ -225,8 +231,8 @@ _xcist_eltype(dt::AbstractString) =
 # Assemble the per-material volume-fraction maps under `dir` into a single
 # labeled UInt8 mask (one label per voxel; label i = XCIST material i, 0 = air),
 # returning the mask, the per-label material NAMES, and the voxel size (cm).
-# Each material map is placed on a common grid by isocenter alignment
-# (`global = local − offset`); binary XCAT maps make the label reduction exact.
+# Each material map is placed on a common grid by isocenter alignment (see the
+# offset conventions below); binary XCAT maps make the label reduction exact.
 function _assemble_xcist(
         dir::AbstractString;
         voxel_size_cm::Union{Nothing, NTuple{3, Real}} = nothing,
@@ -245,12 +251,36 @@ function _assemble_xcist(
     xs     = Float64.(hdr["x_size"]);   ys   = Float64.(hdr["y_size"]);   zs   = Float64.(hdr["z_size"])
 
     # Common grid spanning the union of all bounding boxes, aligned by isocenter.
-    gc0 = minimum(-xoff[i] for i in 1:nm)
-    gr0 = minimum(-yoff[i] for i in 1:nm)
-    gs0 = minimum(-zoff[i] for i in 1:nm)
-    GC = round(Int, maximum(cols[i]   - 1 - xoff[i] for i in 1:nm) - gc0) + 1
-    GR = round(Int, maximum(rows[i]   - 1 - yoff[i] for i in 1:nm) - gr0) + 1
-    GS = round(Int, maximum(slices[i] - 1 - zoff[i] for i in 1:nm) - gs0) + 1
+    #
+    # All three offsets share ONE convention: the offset is the isocenter's index
+    # inside the piece, so the piece's first voxel sits at global `-offset`.  The
+    # subtlety is that each piece's ROW axis is stored bottom-up on disk (row 0 =
+    # largest y), so a piece must be read in reverse along y before being placed
+    # at `-y_offset`.  Reading rows forward instead shifts every piece by its own
+    # height, which mis-registers the organs against each other — e.g. it buries
+    # most of the heart in the lung.
+    #
+    # (Placing a forward-read piece at `y_offset - rows` also yields a valid
+    # partition, but it is the mirror image: it flips the phantom top-to-bottom.
+    # The reverse-and-place form below is the upright one, and keeps x, y and z
+    # on the same rule.)
+    #
+    # Verified on both slabs: with this convention the material maps form an
+    # exact partition (every occupied voxel claimed exactly once); the placement
+    # agrees with the reference loader in MolloiLab/pimmd-method
+    # (`calculate_x_offsets` / `calculate_y_offsets`), up to that global flip.
+    #
+    # z is UNVERIFIED: both slabs have `slices == 1`, so they cannot distinguish
+    # the z convention.  `-z_offset` with slices read forward is assumed here;
+    # confirm against a full-volume phantom with the same partition test before
+    # trusting `:female_chest` / `:male_chest` registration.
+    lo_c = [-xoff[i] for i in 1:nm]
+    lo_r = [-yoff[i] for i in 1:nm]
+    lo_s = [-zoff[i] for i in 1:nm]
+    gc0 = minimum(lo_c); gr0 = minimum(lo_r); gs0 = minimum(lo_s)
+    GC = round(Int, maximum(lo_c[i] + cols[i]   - 1 for i in 1:nm) - gc0) + 1
+    GR = round(Int, maximum(lo_r[i] + rows[i]   - 1 for i in 1:nm) - gr0) + 1
+    GS = round(Int, maximum(lo_s[i] + slices[i] - 1 for i in 1:nm) - gs0) + 1
 
     # Recombine the material pieces into one labeled mask by MAJORITY VOTE: for
     # each material, count how many of its full-resolution occupied voxels land
@@ -269,12 +299,12 @@ function _assemble_xcist(
         T = _xcist_eltype(dtypes[i])
         A = reshape(read!(joinpath(base, files[i]), Vector{T}(undef, cols[i] * rows[i] * slices[i])),
             (cols[i], rows[i], slices[i]))                       # [col, row, slice], col fastest
-        c0 = round(Int, -xoff[i] - gc0)
-        r0 = round(Int, -yoff[i] - gr0)
-        s0 = round(Int, -zoff[i] - gs0)
+        c0 = round(Int, lo_c[i] - gc0)
+        r0 = round(Int, lo_r[i] - gr0)
+        s0 = round(Int, lo_s[i] - gs0)
         fill!(cnt, zero(UInt16))
         @inbounds for s in 1:slices[i], r in 1:rows[i], c in 1:cols[i]
-            A[c, r, s] > 0 || continue
+            A[c, rows[i] + 1 - r, s] > 0 || continue     # rows stored bottom-up
             I = (c + c0 - 1) ÷ f + 1
             J = (r + r0 - 1) ÷ f + 1
             K = (s + s0 - 1) ÷ f + 1

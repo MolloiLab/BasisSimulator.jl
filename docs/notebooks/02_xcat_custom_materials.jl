@@ -5,6 +5,7 @@ using Markdown
 using InteractiveUtils
 
 # ╔═╡ 02000003-0000-4000-8000-000000000001
+# ╠═╡ show_logs = false
 begin
     import Pkg
     Pkg.activate(joinpath(@__DIR__, ".."))
@@ -40,7 +41,7 @@ on the same scan.
 
 | | |
 |---|---|
-| **Phantom** | XCAT v_male_50 (1600 × 1400 × 500, 0.2 mm isotropic, downsampled 5× for speed) |
+| **Phantom** | XCAT adult-male 50th-percentile chest slab (1385 × 917 × 1, 0.25 mm in-plane, full resolution) |
 | **Materials** | Mix of `XA.Materials.ncat_*` prebuilt + a custom iodinated-blood material constructed inline |
 | **Scanner** | GE Revolution Apex Elite (same as notebook 01) |
 | **Recon** | FBP/FDK + Hybrid IR (`:asir`-style PWLS refinement) |
@@ -56,6 +57,7 @@ the `u"eV"` and `u"g/cm^3"` units used by the `XA.Material` constructor.
 """
 
 # ╔═╡ 02000003-0000-4000-8000-000000000002
+# ╠═╡ show_logs = false
 import BasisSimulator as BS
 
 # ╔═╡ 02000003-0000-4000-8000-000000000003
@@ -95,188 +97,47 @@ md"""
 
 # ╔═╡ 03000001-0000-4000-8000-000000000001
 md"""
-### 01. Locate the XCAT data
+### 01. Download the XCAT phantom
 
-The XCAT phantom is **not bundled with the repo** — voxelized anatomical
-phantoms are several hundred MB and have their own licensing terms.  Set
-`BASISSIM_XCAT_DIR` to wherever you keep your local install, or drop the
-bin file into `docs/notebooks/data/xcat/` (the default path below).
+No local files, no manual setup.  `BS.load_xcat_male_chest()` fetches the
+voxelized **XCAT adult-male 50th-percentile chest** phantom from the open
+[`xcist/phantoms-voxelized`](https://github.com/xcist/phantoms-voxelized)
+repository (BSD-3-Clause) into Julia\'s standard artifact store
+(`~/.julia/artifacts/`): it downloads once (~65 MB, SHA-256-verified), logs the
+Segars XCAT + XCIST citation, and reuses the cached copy on every later call.
 
-The notebook short-circuits all heavy compute when the file isn't present,
-so the static HTML still renders cleanly on a fresh checkout.
+!!! info "Using `load_xcat_*`"
+    Four phantoms ship — `:female_slab`, `:female_chest`, `:male_slab`,
+    `:male_chest` (see `BS.xcat_phantoms()`).  Each `load_xcat_<name>()` returns
+    the **labeled pieces**: `mask`, a `materials` dict (`label => XA.Material`),
+    `label_names`, and `voxel_size_cm` — which you turn into a `Phantom` in one
+    line (§3).  Useful keywords:
 
-!!! info "Where to get a voxelized phantom"
-    A reasonable starting point is the open
-    [`xcist/phantoms-voxelized`](https://github.com/xcist/phantoms-voxelized)
-    repository — XCIST ships several voxelized phantoms (Duke XCAT-derived
-    plus simpler shapes) with material lookup tables.  This notebook is
-    written against a slightly larger Duke XCAT instance
-    (`vmale_50`, 1600 × 1400 × 500 @ 0.2 mm), but the loader below is just
-    a `read!` over a column-major `UInt8` array — point it at any voxelized
-    phantom with a similar layout and adjust the `cols` / `rows` / `slices`
-    kwargs.  Duke's full XCAT program is at
-    [cvit.duke.edu/resource/xcat-phantom-program](https://cvit.duke.edu/resource/xcat-phantom-program).
-
-Expected files (default layout, override via env var):
-
-```
-\$BASISSIM_XCAT_DIR/
-└── vmale_50_1600x1400x500_8bit_little_endian_act_1.bin
-```
-
-!!! info "Why isn't the binary tracked in git?"
-    Voxelized phantoms come with their own licenses (Duke CVIT terms etc.),
-    so each user obtains their own copy.  Once you've rendered the
-    notebook locally, the resulting HTML (`docs/notebooks-static/02_*.html`)
-    DOES ship with the repo and CI deploys it verbatim — no phantom redistribution.
+    - `downsample = n` — label-preserving majority-vote shrink (physical extent
+      preserved).  This notebook uses the **slab** at full 0.25 mm resolution, so
+      it passes no `downsample`; reach for it on the full `:male_chest` volume.
+      It is lossy — a 6× round-trip agrees with full-res on ~96% of voxels — so
+      treat it as a speed knob, not a lossless representation.
+    - `materials = Dict("ncat_blood" => …)` — override the tissue → material map
+      by XCIST name *before* assembly (see §2).
+    - `path = "/my/local/xcat"` — skip the download and read an already-extracted
+      copy from disk.
+    - `quiet = true` — silence the citation + progress logging.
 """
-
-# ╔═╡ 03000002-0000-4000-8000-000000000001
-const XCAT_DIR = get(
-    ENV, "BASISSIM_XCAT_DIR",
-    joinpath(@__DIR__, "data", "xcat")
-)
-
-# ╔═╡ 03000002-0000-4000-8000-000000000002
-const PHANTOM_PATH = joinpath(
-    XCAT_DIR,
-    "vmale_50_1600x1400x500_8bit_little_endian_act_1.bin"
-)
-
-# ╔═╡ 03000002-0000-4000-8000-000000000003
-const HAS_XCAT = isfile(PHANTOM_PATH)
-
-# ╔═╡ 03000002-0000-4000-8000-000000000004
-HAS_XCAT ? md"""
-    **XCAT located:** `$(PHANTOM_PATH)` ($(round(filesize(PHANTOM_PATH) / 1024^2; digits=1)) MB)
-    """ : md"""
-    !!! warning "XCAT bin not found"
-        Looked at `$(PHANTOM_PATH)` and didn't find it.  Subsequent compute
-        cells will short-circuit to `nothing` and the comparison panels will
-        show this notice.  Set `BASISSIM_XCAT_DIR` to your local install or
-        drop the file into the default path above and re-run.
-    """
-
-# ╔═╡ 04000001-0000-4000-8000-000000000001
-md"""
-### 02. Load + downsample the labeled mask
-
-XCAT bin layout: column-major (Fortran order) `UInt8` array of shape
-`(1600, 1400, 500)` — column → row → slice.  We reverse along axes (2, 3)
-to match the BasisSimulator convention (X = lateral right-positive, Y =
-anterior-positive, Z = inferior→superior).
-
-A 1.6 GB voxel grid is overkill for a docs example, so we **downsample 5×**
-in every axis (320 × 280 × 100, 1 mm voxels) using nearest-neighbor
-sampling — preserves label integrity (no interpolated mid-organ voxels).
-"""
-
-# ╔═╡ 04000002-0000-4000-8000-000000000001
-function load_xcat_bin(
-        filepath::AbstractString;
-        cols::Int = 1600, rows::Int = 1400, slices::Int = 500
-    )
-    expected = cols * rows * slices * sizeof(UInt8)
-    actual = filesize(filepath)
-    actual == expected ||
-        error("XCAT file size mismatch: expected $(expected) bytes, got $(actual)")
-
-    data = Vector{UInt8}(undef, cols * rows * slices)
-    open(filepath, "r") do io
-        read!(io, data)
-    end
-
-    phantom = reshape(data, (cols, rows, slices))
-    return reverse(phantom; dims = (2, 3))
-end
-
-# ╔═╡ 04000002-0000-4000-8000-000000000002
-"""Nearest-neighbor 3D downsample by an integer factor — preserves labels."""
-function downsample_labeled(phantom::AbstractArray{T, 3}, factor::Int) where {T}
-    factor == 1 && return phantom
-    nx, ny, nz = size(phantom) .÷ factor
-    out = similar(phantom, (nx, ny, nz))
-    @inbounds for k in 1:nz, j in 1:ny, i in 1:nx
-        ii = (i - 1) * factor + factor ÷ 2 + 1
-        jj = (j - 1) * factor + factor ÷ 2 + 1
-        kk = (k - 1) * factor + factor ÷ 2 + 1
-        out[i, j, k] = phantom[ii, jj, kk]
-    end
-    return out
-end
-
-# ╔═╡ 04000003-0000-4000-8000-000000000001
-const DOWNSAMPLE_FACTOR = 5
-
-# ╔═╡ 04000004-0000-4000-8000-000000000001
-phantom_labeled = HAS_XCAT ?
-    downsample_labeled(load_xcat_bin(PHANTOM_PATH), DOWNSAMPLE_FACTOR) :
-    nothing;
-
-# ╔═╡ 04000005-0000-4000-8000-000000000001
-let
-    if phantom_labeled === nothing
-        md"""
-        !!! warning "Skipped — see 1 above"
-        """
-    else
-        mid = size(phantom_labeled, 3) ÷ 2
-        n_lbl = length(unique(phantom_labeled))
-        slice = phantom_labeled[:, :, mid]
-
-        fig = CM.Figure(size = (900, 600))
-        ax = CM.Axis(
-            fig[1, 1];
-            title = "XCAT v_male_50",
-            subtitle = "Slice $(mid) / $(size(phantom_labeled, 3))" *
-                " · $(size(phantom_labeled, 1))×$(size(phantom_labeled, 2))" *
-                " · $(n_lbl) unique labels",
-            aspect = CM.DataAspect(),
-            titlesize = 28, subtitlesize = 20,
-        )
-        hm = CM.heatmap!(ax, Float32.(slice); colormap = :tab20)
-        CM.hidedecorations!(ax)
-        CM.Colorbar(fig[1, 2], hm; label = "label", width = 14, labelsize = 18)
-
-        CM.save(
-            joinpath(@__DIR__, "..", "assets", "xcat_phantom.png"),
-            fig; px_per_unit = 2
-        )
-        fig
-    end
-end
 
 # ╔═╡ 05000001-0000-4000-8000-000000000001
 md"""
-### 03. Custom materials via `XrayAttenuation`
+### 02. Custom materials via `XrayAttenuation`
 
-Every voxel in the labeled mask needs a corresponding
-[`XA.Material`](https://github.com/MolloiLab/XrayAttenuation.jl) so the
-simulator knows its energy-dependent linear attenuation μ(E).  Two ways
-to get one:
+The loader assigns every label a sensible default tissue, but the whole point of
+a digital phantom is that **you control the material physics**.  Each label maps
+to an [`XA.Material`](https://github.com/MolloiLab/XrayAttenuation.jl) that gives
+the simulator its energy-dependent μ(E).  Two ways to get one:
 
-1. **Prebuilt** — `XA.Materials.ncat_blood`, `XA.Materials.ncat_muscle`,
-   etc.  XrayAttenuation ships with the canonical NCAT/XCAT tissue compositions.
-2. **Constructed inline** — `XA.Material(name, ZA_ratio, I, density, composition)`.
-   Useful when you want to model *your specific* contrast bolus, calibration
-   solution, or non-standard alloy.
-
-The constructor signature:
-
-```julia
-XA.Material(
-    name::String,                  # human label
-    ZA_ratio::Real,                # mean ⟨Z/A⟩ across the composition
-    I::Quantity,                   # mean excitation energy, Unitful (e.g. 70u"eV")
-    density::Quantity,             # bulk density, Unitful (e.g. 1.06u"g/cm^3")
-    composition::Dict{Int,Float64} # element atomic number → mass fraction
-)
-```
-
-Composition mass fractions must sum to 1. `ZA_ratio` and `I` follow Bethe's
-stopping-power convention; for educational use you can compute them from the
-composition (see notebook 05's `compute_ZA_ratio` helper) or copy from a
-materials reference table.
+1. **Prebuilt** — `XA.Materials.ncat_blood`, `XA.Materials.ncat_muscle`, etc.
+   XrayAttenuation ships the canonical NCAT/XCAT tissue compositions.
+2. **Constructed inline** — `XA.Material(name, ZA_ratio, I, density, composition)`
+   for *your specific* contrast bolus, calibration solution, or alloy.
 """
 
 # ╔═╡ 05000002-0000-4000-8000-000000000001
@@ -343,152 +204,99 @@ iodine_blood = build_iodine_blood(5.0)
 
 # ╔═╡ 05000004-0000-4000-8000-000000000001
 md"""
-#### c. Load the canonical mapping from XCAT's xlsx
+#### c. The canonical name → material map
 
-XCAT v_male_50 ships with material spreadsheets — one row per organ, with
-the elemental mass-fraction columns, density, and the integer label that
-appears in the mask.  Three variants in `Material_Spreadsheets/`:
-`heart_high_contrast`, `heart_low_contrast`, `heart_non_contrast` —
-differing only in the iodine concentration in the blood pool labels.
-
-Reading the xlsx (33 organs × 13 elements) into a `Dict{Int, XA.Material}`
-is straightforward: parse each row, build a composition dict, derive
-`ZA_ratio` and the mean excitation energy `I` from the composition, then
-construct the `XA.Material`.
-
-!!! info "Why ZA and I are computed, not stored"
-    The xlsx ships only the elemental mass fractions + density.  ZA_ratio
-    and I (mean excitation energy) are derived quantities the simulator
-    needs but the spreadsheet doesn't carry — we compute them from the
-    composition using the textbook Bethe formulas.
+The loader ships the canonical NCAT/XCAT mapping as `BS.xcat_default_materials()`
+— every XCIST material name → an `XrayAttenuation` material.  This is what
+replaces hand-parsing a per-organ spreadsheet: the compositions already live in
+XrayAttenuation\'s NCAT catalog.  Copy the dict, edit it by name, and hand it
+back to the loader via `materials =` (§d).
 """
 
-# ╔═╡ 05000004-0000-4000-8000-000000000002
-import XLSX
-
-# ╔═╡ 05000004-0000-4000-8000-000000000003
-const MATERIAL_XLSX_PATH = joinpath(
-    XCAT_DIR, "Material_Spreadsheets",
-    "vmale_50_materials_heart_high_contrast.xlsx"
-)
-
-# ╔═╡ 20ce81a0-4eed-4b58-9123-efd38b978e54
-# Atomic masses + I-values for the elements present in XCAT compositions.
-const _ATOMIC_MASSES = Dict(
-    1 => 1.008, 6 => 12.011, 7 => 14.007, 8 => 15.999, 11 => 22.99, 12 => 24.305,
-    15 => 30.974, 16 => 32.06, 17 => 35.45, 19 => 39.098, 20 => 40.078, 26 => 55.845, 53 => 126.904,
-)
-
-# ╔═╡ 05000004-0000-4000-8000-000000000004
-const _I_VALUES_EV = Dict(
-    1 => 19.2, 6 => 81.0, 7 => 82.0, 8 => 95.0, 11 => 149.0, 12 => 156.0,
-    15 => 173.0, 16 => 180.0, 17 => 174.0, 19 => 190.0, 20 => 191.0, 26 => 286.0, 53 => 491.0,
-)
-
-# ╔═╡ 05000004-0000-4000-8000-000000000005
-"""Bethe ⟨Z/A⟩ from a `composition::Dict{Z=>mass_fraction}`."""
-function compute_ZA_ratio(comp::Dict{Int, Float64})
-    Z_sum = sum(w * Z / get(_ATOMIC_MASSES, Z, Float64(Z) * 2) for (Z, w) in comp)
-    A_sum = sum(values(comp))
-    return Z_sum / A_sum
-end
-
-# ╔═╡ 05000004-0000-4000-8000-000000000006
-"""Bethe mean excitation energy from a composition (returns Unitful eV)."""
-function compute_mean_excitation_energy(comp::Dict{Int, Float64})
-    log_I_sum = 0.0
-    Z_A_sum = 0.0
-    for (Z, w) in comp
-        A = get(_ATOMIC_MASSES, Z, Float64(Z) * 2)
-        I = get(_I_VALUES_EV, Z, 10.0 * Z)
-        Z_A = w * Z / A
-        log_I_sum += Z_A * log(I)
-        Z_A_sum += Z_A
-    end
-    return exp(log_I_sum / Z_A_sum) * u"eV"
-end
-
-# ╔═╡ 05000004-0000-4000-8000-000000000007
-"""Load every organ from the XCAT material spreadsheet → `Dict{organ_id, XA.Material}`."""
-function load_materials_from_xlsx(xlsx_path::AbstractString)
-    sheet = XLSX.readxlsx(xlsx_path)["Sheet1"]
-    data = sheet["A2:P34"]                                   # 33 organ rows
-    out = Dict{Int, BS.XA.Material}()
-
-    # Element atomic numbers in xlsx columns 2..14 (header row 1 confirms order)
-    Z_cols = (1, 6, 7, 8, 11, 12, 15, 16, 17, 19, 20, 26, 53)
-
-    for r in 1:size(data, 1)
-        name = data[r, 1]
-        oid = data[r, 16]
-        ρ = data[r, 15]
-        (name === nothing || oid === nothing || ρ === nothing) && continue
-
-        comp = Dict{Int, Float64}()
-        for (k, Z) in enumerate(Z_cols)
-            v = data[r, k + 1]
-            v isa Number && v > 0 && (comp[Z] = Float64(v))
-        end
-        isempty(comp) && continue
-
-        out[Int(oid)] = BS.XA.Material(
-            String(name),
-            compute_ZA_ratio(comp),
-            compute_mean_excitation_energy(comp),
-            Float64(ρ) * u"g/cm^3",
-            comp,
-        )
-    end
-    return out
+# ╔═╡ 05000004-0000-4000-8000-0000000000c1
+let m = BS.xcat_default_materials()
+    rows = ["| `$(k)` | `$(v.name)` |" for (k, v) in sort(collect(m); by = first)]
+    Markdown.parse("**`BS.xcat_default_materials()`**\n\n" *
+        "| XCIST name | XrayAttenuation material |\n|---|---|\n" * join(rows, "\n"))
 end
 
 # ╔═╡ 05000004-0000-4000-8000-000000000008
 md"""
-#### d. Assemble the final dict
+#### d. Override a material
 
-Load the xlsx, then ensure every label that actually appears in the mask
-has a fallback (water) — `simulate!` will error if any label is missing.
-
-!!! info "Override pattern"
-    To swap a single label for your own custom material, just reassign in
-    the returned dict:
-    `materials[19] = iodine_blood` — replaces the LV blood pool with the
-    5 mg/mL `iodine_blood` we built in §3b.  Comment that line out and
-    you'll get the xlsx's default contrast level instead.
+Copy the default map and reassign by XCIST name — here we swap the blood pool for
+the 5 mg/mL `iodine_blood` we built in §b, so the heart chambers and great
+vessels light up like a contrast-enhanced CTA.  The edited map is passed to the
+loader via `materials =` in §3.
 """
 
 # ╔═╡ 05000004-0000-4000-8000-000000000009
-materials = if phantom_labeled === nothing
-    nothing
-else
-    base = load_materials_from_xlsx(MATERIAL_XLSX_PATH)
-    for l in unique(phantom_labeled)
-        haskey(base, Int(l)) || (base[Int(l)] = BS.XA.Materials.water)
-    end
-    base
-end;
+materials_map = let m = BS.xcat_default_materials()
+    m["ncat_blood"] = iodine_blood        # dope the blood pool with 5 mg/mL iodine contrast
+    m
+end
 
 # ╔═╡ 06000001-0000-4000-8000-000000000001
 md"""
-### 04. Build the `Phantom`
+### 03. Build the `Phantom`
 
-XCAT v_male_50 voxels are 0.2 mm isotropic at full resolution; after
-`DOWNSAMPLE_FACTOR = 5` they become 1 mm isotropic.  FOV at 320 × 280 × 100
-voxels = 32 × 28 × 10 cm — fits inside the 35 cm scanner FOV with some
-margin.
+`load_xcat_male_slab` returns the labeled pieces; we assemble the `Phantom` from
+them.  For a GPU simulation the mask must live on the device — the workspace
+picks its compute backend from the mask\'s array type — so we `to_gpu` it first.
+The slab is one 5 mm-thick axial section at full 0.25 mm in-plane resolution: real
+anatomy at a docs-friendly compute cost, no downsampling needed.
 """
 
+# ╔═╡ 04000004-0000-4000-8000-000000000001
+xcat = try
+    BS.load_xcat_male_slab(; materials = materials_map, quiet = true)   # full-resolution single slab
+catch err
+    @warn "XCAT download/load failed — compute cells will skip" err
+    nothing
+end
+
+# ╔═╡ 06000000-0000-4000-8000-0000000000a1
+phantom_labeled = xcat === nothing ? nothing : xcat.mask
+
 # ╔═╡ 06000002-0000-4000-8000-000000000001
-const VOXEL_SIZE_CM = (
-    0.02 * DOWNSAMPLE_FACTOR,                # 1 mm
-    0.02 * DOWNSAMPLE_FACTOR,
-    0.02 * DOWNSAMPLE_FACTOR,
-)
+VOXEL_SIZE_CM = xcat === nothing ? (0.15, 0.15, 0.15) : xcat.voxel_size_cm
 
 # ╔═╡ 06000003-0000-4000-8000-000000000001
-phantom = (phantom_labeled === nothing || materials === nothing) ?
-    nothing :
-    BS.Phantom(to_gpu(phantom_labeled), materials, VOXEL_SIZE_CM);
+phantom = xcat === nothing ? nothing :
+    BS.Phantom(to_gpu(xcat.mask), xcat.materials, xcat.voxel_size_cm)
+
+# ╔═╡ 04000005-0000-4000-8000-000000000001
+let
+    if phantom_labeled === nothing
+        md"""
+        !!! warning "Skipped — see 1 above"
+        """
+    else
+        mid = max(1, size(phantom_labeled, 3) ÷ 2)
+        n_lbl = length(unique(phantom_labeled))
+        slice = phantom_labeled[:, :, mid]
+
+        fig = CM.Figure(size = (900, 600))
+        ax = CM.Axis(
+            fig[1, 1];
+            title = "XCAT male chest slab (full resolution)",
+            subtitle = "Slice $(mid) / $(size(phantom_labeled, 3))" *
+                " · $(size(phantom_labeled, 1))×$(size(phantom_labeled, 2))" *
+                " · $(n_lbl) unique labels",
+            aspect = CM.DataAspect(),
+            titlesize = 28, subtitlesize = 20,
+        )
+        hm = CM.heatmap!(ax, Float32.(slice); colormap = :tab20)
+        CM.hidedecorations!(ax)
+        CM.Colorbar(fig[1, 2], hm; label = "label", width = 14, labelsize = 18)
+
+        CM.save(
+            joinpath(@__DIR__, "..", "assets", "xcat_phantom.png"),
+            fig; px_per_unit = 2
+        )
+        fig
+    end
+end
 
 # ╔═╡ 07000000-0000-4000-8000-000000000000
 md"""
@@ -870,9 +678,9 @@ let
 
         | Algorithm  | σ (HU)                    |
         |------------|---------------------------|
-        | FBP        | $(round(σ_fbp, digits=1)) |
-        | Hybrid IR  | $(round(σ_hir, digits=1)) |
-        | Reduction  | $(round(100 * (1 - σ_hir / σ_fbp); digits=1))% |
+        | FBP        | $(round(Float64(σ_fbp), digits=1)) |
+        | Hybrid IR  | $(round(Float64(σ_hir), digits=1)) |
+        | Reduction  | $(round(100 * (1 - Float64(σ_hir) / Float64(σ_fbp)); digits=1))% |
         """
     end
 end
@@ -900,6 +708,8 @@ Every other piece — the `let ... end` GPU pattern, μ → HU conversion, the
 correction pipeline from §9 of notebook 01 — carries over unchanged.
 """
 
+
+
 # ╔═╡ Cell order:
 # ╟─02000001-0000-4000-8000-000000000001
 # ╟─02000002-0000-4000-8000-000000000001
@@ -917,16 +727,6 @@ correction pipeline from §9 of notebook 01 — carries over unchanged.
 # ╟─02000007-0000-4000-8000-000000000001
 # ╟─03000000-0000-4000-8000-000000000000
 # ╟─03000001-0000-4000-8000-000000000001
-# ╠═03000002-0000-4000-8000-000000000001
-# ╠═03000002-0000-4000-8000-000000000002
-# ╠═03000002-0000-4000-8000-000000000003
-# ╟─03000002-0000-4000-8000-000000000004
-# ╟─04000001-0000-4000-8000-000000000001
-# ╠═04000002-0000-4000-8000-000000000001
-# ╠═04000002-0000-4000-8000-000000000002
-# ╠═04000003-0000-4000-8000-000000000001
-# ╠═04000004-0000-4000-8000-000000000001
-# ╟─04000005-0000-4000-8000-000000000001
 # ╟─05000001-0000-4000-8000-000000000001
 # ╟─05000002-0000-4000-8000-000000000001
 # ╟─05000002-0000-4000-8000-000000000002
@@ -934,18 +734,15 @@ correction pipeline from §9 of notebook 01 — carries over unchanged.
 # ╠═05000003-0000-4000-8000-000000000002
 # ╠═05000003-0000-4000-8000-000000000004
 # ╟─05000004-0000-4000-8000-000000000001
-# ╠═05000004-0000-4000-8000-000000000002
-# ╠═05000004-0000-4000-8000-000000000003
-# ╠═20ce81a0-4eed-4b58-9123-efd38b978e54
-# ╠═05000004-0000-4000-8000-000000000004
-# ╠═05000004-0000-4000-8000-000000000005
-# ╠═05000004-0000-4000-8000-000000000006
-# ╠═05000004-0000-4000-8000-000000000007
+# ╟─05000004-0000-4000-8000-0000000000c1
 # ╟─05000004-0000-4000-8000-000000000008
 # ╠═05000004-0000-4000-8000-000000000009
 # ╟─06000001-0000-4000-8000-000000000001
+# ╠═04000004-0000-4000-8000-000000000001
+# ╠═06000000-0000-4000-8000-0000000000a1
 # ╠═06000002-0000-4000-8000-000000000001
 # ╠═06000003-0000-4000-8000-000000000001
+# ╟─04000005-0000-4000-8000-000000000001
 # ╟─07000000-0000-4000-8000-000000000000
 # ╟─07000001-0000-4000-8000-000000000001
 # ╠═07000002-0000-4000-8000-000000000001
