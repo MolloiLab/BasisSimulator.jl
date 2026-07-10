@@ -511,8 +511,8 @@ md"""
 md"""
 ### 02. FBP with the full correction pipeline
 
-Same `let ... end` shape as notebook 01 — sino BHC → FDK → image BHC →
-HU → noise floor → cupping, with explicit GPU cleanup at the end.
+Same `let ... end` shape as notebook 01 — detected-spectrum water BHC → FDK
+→ HU, with explicit GPU cleanup and non-mutating cupping QA at the end.
 HU conversion uses `bhc_calibration.μ_water` (the BHC's calibrated
 `μ_water_ref` at the spectrum-mean energy), since the post-BHC recon
 reads as approximately monochromatic at that reference.
@@ -535,13 +535,13 @@ hu_fbp = sim === nothing ? nothing : let
     #  deflated dense-material HU; the knobless sinogram water BHC is the
     #  whole correction)
 
-        # 4. μ → HU using BHC's calibrated μ_water_ref (Float32 for cupping correction)
+        # 4. μ → HU using BHC's calibrated μ_water_ref
         hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc_calibration.μ_water))
 
         # 5. DAS/electronic noise is injected in the counts domain by simulate!
         # (scanner.electronic_noise), not bolted onto the HU volume here.
 
-        # 6. Residual radial cupping correction
+        # 6. Residual radial cupping is measured as QA, never applied
         # (cupping is QA-only now — measure_radial_cupping; never applied)
 
         # GPU cleanup
@@ -627,8 +627,8 @@ md"""
 md"""
 ### Compare FBP vs Hybrid IR
 
-Both reconstructions go through the identical correction pipeline (sino
-BHC + image BHC + noise floor + cupping). Soft-tissue window shows the
+Both reconstructions go through the identical correction pipeline
+(water sino-BHC + recon + HU; counts-domain noise; cupping QA). The soft-tissue window shows the
 iodine-enhanced blood pools (XCAT labels 19–22 = `bldplLV/RV/LA/RA`) and
 the texture / noise contrast between the two algorithms.
 

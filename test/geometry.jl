@@ -435,6 +435,18 @@ end
         @test g.table_feed ≈ 1.6
     end
 
+    @testset "invalid trajectory inputs fail consistently" begin
+        @test_throws ArgumentError BS.CTGeometry(scanner; n_angles = 1)
+        @test_throws ArgumentError BS.CTGeometry(scanner; n_angles = 90, pitch = 0.0)
+        @test_throws ArgumentError BS.CTGeometry(scanner; n_angles = 90, pitch = -0.5)
+        @test_throws ArgumentError BS.CTGeometry(scanner; n_angles = 90,
+            pitch = 1.0, n_rotations = 0.5)
+        @test_throws ArgumentError BS.CTGeometry(scanner; n_angles = 90,
+            collimation_mm = 0.0)
+        @test_throws ArgumentError BS.CTGeometry(scanner; n_angles = 90, n_rows = 0)
+        @test_throws ArgumentError BS.CTGeometry(scanner; n_angles = 90, n_cols = 0)
+    end
+
     @testset "subset geometry carries helical metadata" begin
         g = BS.CTGeometry(scanner; n_angles = 90, fov_cm = 20.0,
             pitch = 1.0, n_rotations = 2.0)

@@ -1090,9 +1090,9 @@ A few specific things that show up in the runtime difference:
   rather than one ray-trace per energy bin.  Same physics, fewer kernel
   launches.
 - **GPU forward projection.**  CatSim's `C_Projector_Voxelized` is a C
-  kernel that runs on the host CPU.  BasisSim's Siddon ray-tracer is
+  kernel that runs on the host CPU.  BasisSim's default distance-driven projector is
   written in `AcceleratedKernels.jl` and dispatches to whichever GPU
-  backend is loaded (Metal, CUDA, ROCm) — same Julia source, different
+  backend is loaded (Metal, CUDA, ROCm, oneAPI) — same Julia source, different
   hardware.
 - **HU conversion is a single broadcast.**  No per-slice file write,
   no `huOffset` arithmetic on every voxel — just `to_hounsfield(recon_μ;

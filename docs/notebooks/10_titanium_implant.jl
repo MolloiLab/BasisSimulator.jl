@@ -17,6 +17,9 @@ import BasisSimulator as BS
 # ╠═╡ show_logs = false
 import CairoMakie as CM
 
+# ╔═╡ 10000001-0000-4000-8000-000000000007
+import PlutoUI
+
 # ╔═╡ 10000001-0000-4000-8000-000000000004
 using Statistics: mean, std
 
@@ -58,7 +61,26 @@ algorithm**; the bundled beam-hardening correction is a water-based
 correction.
 
 **Backend detected:** $(GPU_BACKEND.name)
+
+```
+Define titanium → build water + implant phantom → simulate with :dd_fast
+   → uncorrected FDK → soft-tissue / wide-window comparison
+   → quantitative dark-band, water, and peak-HU checks
+```
 """
+
+# ╔═╡ 10000002-0000-4000-8000-000000000002
+md"""
+## Notebook Setup
+
+This notebook uses the shared docs environment and the same backend-neutral
+`GPUSelect.Storage()` pattern as notebooks 01–04. The simulation is intentionally
+left uncorrected: the goal is to expose the metal artifact mechanisms, not to
+present a MAR algorithm.
+"""
+
+# ╔═╡ 10000002-0000-4000-8000-000000000003
+PlutoUI.TableOfContents()
 
 # ╔═╡ 10000003-0000-4000-8000-000000000001
 md"""
@@ -174,7 +196,9 @@ end;
 
 # ╔═╡ 10000006-0000-4000-8000-000000000001
 md"""
-## 4. The artifacts
+## Results
+
+### 01. The artifacts
 
 Left: soft-tissue window — the between-rod **beam-hardening dark band** and
 the radiating **photon-starvation streaks**. Right: wide window — the rods
@@ -217,7 +241,7 @@ end
 
 # ╔═╡ 10000007-0000-4000-8000-000000000001
 md"""
-## Notes and scope
+## Verification and Scope
 
 - The bundled sinogram/image-domain beam-hardening correction is a **water
   polynomial**; it is not designed for metal and will not remove these
@@ -231,14 +255,31 @@ md"""
   is GPU-oriented); with Metal/CUDA/ROCm available it runs in seconds.
 """
 
+# ╔═╡ 10000008-0000-4000-8000-000000000001
+md"""
+## Summary
+
+- A user-defined `XA.Material` enters the same attenuation pipeline as every
+  built-in tissue.
+- `:dd_fast` remains the default projector and retains the anti-aliased DD
+  footprint in the severe beam-hardening region around titanium.
+- The uncorrected reconstruction intentionally demonstrates the between-rod
+  dark band and photon-starvation streaks.
+- The notebook makes no MAR claim; its quantitative table is the regression
+  target to preserve when a future MAR method is added.
+"""
+
 # ╔═╡ Cell order:
 # ╟─10000002-0000-4000-8000-000000000001
+# ╟─10000002-0000-4000-8000-000000000002
 # ╠═10000001-0000-4000-8000-000000000001
 # ╠═10000001-0000-4000-8000-000000000002
 # ╠═10000001-0000-4000-8000-000000000003
+# ╠═10000001-0000-4000-8000-000000000007
 # ╠═10000001-0000-4000-8000-000000000004
 # ╠═10000001-0000-4000-8000-000000000005
 # ╠═10000001-0000-4000-8000-000000000006
+# ╠═10000002-0000-4000-8000-000000000003
 # ╟─10000003-0000-4000-8000-000000000001
 # ╠═10000003-0000-4000-8000-000000000002
 # ╟─10000004-0000-4000-8000-000000000001
@@ -253,3 +294,4 @@ md"""
 # ╠═10000006-0000-4000-8000-000000000002
 # ╟─10000006-0000-4000-8000-000000000003
 # ╟─10000007-0000-4000-8000-000000000001
+# ╟─10000008-0000-4000-8000-000000000001

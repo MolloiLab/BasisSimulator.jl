@@ -1,11 +1,10 @@
-# NotebookPage — wraps a static-rendered Pluto notebook in an iframe with
-# Therapy chrome (top breadcrumb back-link).  Used by per-slug routes
-# registered in docs/app.jl.
+# NotebookPage — embeds Snapshot's scoped Pluto fragment directly inside the
+# Therapy route. Used by per-slug routes registered in docs/app.jl.
 #
-# The iframe points to /notebooks-static/<slug>.html, which is written by
-# `export_notebooks()` (docs/extract_all.jl) into docs/dist/notebooks-static/.
-# Pluto's CSS/JS stays sandboxed inside the iframe — no style collisions with
-# the Tailwind layout chrome.
+# `export_notebooks()` writes both a standalone `<slug>.html` and a native
+# `<slug>.fragment.html`. The fragment wraps its CSS in `@scope
+# (.snap-notebook)`, so Pluto styling cannot leak into the docs shell and the
+# notebook reads as ordinary page content instead of a nested iframe viewport.
 
 """Pretty-print a slug like `01_five_struct_api` → `01 · The Five-Struct API`.
 Falls back to the raw slug if no override is registered."""
@@ -17,6 +16,11 @@ function _notebook_display_title(slug::AbstractString)
         "04_pcct_vmi"               => "04 · PCCT VMI on Gammex 472",
         "05_xcat_grid_to_recon"     => "05 · XCAT UHR → CT Scan: Affine Round-Trip",
         "06_catsim_vs_basissim"     => "06 · CatSim vs BasisSimulator (CPU + GPU)",
+        "07_qrm_thorax_pure_material_vmi"  => "07 · QRM Thorax Pure-Material VMI",
+        "08_qrm_thorax_pure_material_pcct" => "08 · QRM Thorax Pure-Material PCCT",
+        "09_siemens_force_ufc_dual_source_vmi" => "09 · Siemens Force UFC Dual-Source VMI",
+        "10_titanium_implant"       => "10 · Titanium Implant Artifacts",
+        "11_helical_scanning"       => "11 · Helical Scanning",
     )
     get(overrides, slug, replace(slug, "_" => " "))
 end
@@ -28,6 +32,14 @@ function NotebookPage(slug::AbstractString)
     BASE = get(ENV, "BASISSIM_BASE", "")
     title = _notebook_display_title(slug)
     github_src_url = "$(_NOTEBOOK_GITHUB_BASE)/$(slug).jl"
+    fragment_path = normpath(joinpath(@__DIR__, "..", "..", "notebooks-static", "$(slug).fragment.html"))
+    isfile(fragment_path) || error(
+        "Missing notebook fragment $(fragment_path). Run `julia --project=docs/build_env docs/extract_all.jl`."
+    )
+    notebook_html = replace(
+        read(fragment_path, String),
+        "__BASISSIM_NOTEBOOKS_BASE__" => "$(BASE)/notebooks-static",
+    )
 
     Div(:class => "max-w-6xl mx-auto px-6 py-6 space-y-4",
         # Breadcrumb (left) + GitHub source link (right) — single flex row.
@@ -49,16 +61,8 @@ function NotebookPage(slug::AbstractString)
             ),
         ),
 
-        # Iframe — Pluto static HTML, sandboxed CSS/JS.  Force a white
-        # background regardless of our docs site's dark mode: Pluto's
-        # standalone HTML uses light-mode colors (dark text on white), so
-        # rendering it on top of `dark:bg-warm-950` makes it invisible.
-        Iframe(
-            :src    => "$(BASE)/notebooks-static/$(slug).html",
-            :class  => "w-full h-[calc(100vh-9rem)] border border-warm-200 dark:border-warm-800 rounded-lg",
-            :style  => "background-color: #ffffff;",
-            :loading => "eager",
-            :title  => title,
-        ),
+        # Native inline notebook — scoped Pluto/Snapshot styles, one page
+        # scroll, inherited Therapy theme, no nested viewport or iframe chrome.
+        Div(:class => "w-full min-w-0", RawHtml(notebook_html)),
     )
 end

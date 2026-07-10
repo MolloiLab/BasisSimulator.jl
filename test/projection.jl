@@ -269,6 +269,31 @@ end
         @test maximum(abs.(out_f .- out_d)) < 1.0f-4          # reassociation noise only
     end
 
+    @testset "helical arc geometry + spectral bowtie remain equivalent" begin
+        scanner_h = BS.Scanner(
+            source_to_isocenter = 540.0, source_to_detector = 1080.0,
+            detector_rows = 4, detector_cols = 32,
+            detector_row_size = 1.0, detector_col_size = 1.0,
+            detector_shape = :arc,
+        )
+        geom_h = BS.CTGeometry(scanner_h; n_angles = 16, fov_cm = 10.0,
+            z_cm = 1.0, pitch = 1.0, n_rotations = 2.0)
+        mask_h = mask[17:48, 17:48, 3:6]
+        bowtie = Array{Float32}(undef, geom_h.n_cols, geom_h.n_rows, N_E)
+        for e in 1:N_E, r in 1:geom_h.n_rows, c in 1:geom_h.n_cols
+            bowtie[c, r, e] = 0.7f0 + 0.25f0 * (c - 1) / (geom_h.n_cols - 1) +
+                0.03f0 * (e - 1) / (N_E - 1)
+        end
+
+        sino_d = zeros(Float32, geom_h.n_cols, geom_h.n_rows, geom_h.n_angles)
+        sino_f = similar(sino_d)
+        BS.dd_fused_poly_project!(sino_d, mask_h, geom_h, μ_table, wη, Val(N_E);
+            volume_extent = (10.0, 10.0, 1.0), ws_bowtie_spectral = bowtie)
+        BS.dd_fast_fused_poly_project!(sino_f, mask_h, geom_h, μ_table, wη, Val(N_E);
+            volume_extent = (10.0, 10.0, 1.0), ws_bowtie_spectral = bowtie)
+        @test maximum(abs.(sino_f .- sino_d)) < 1.0f-4
+    end
+
     @testset "M > 32 materials falls back to the legacy dd kernel" begin
         μ_big = zeros(Float32, 40, N_E)
         μ_big[2, :] .= μ_table[2, :]

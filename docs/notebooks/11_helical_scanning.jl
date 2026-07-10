@@ -70,11 +70,25 @@ costs it nothing (the projectors consume per-view source/detector arrays; a
 helix is just a z-ramp in those arrays). Helical reconstruction is
 **rebinned WFBP** (Stierstorfer *et al.* 2004 — the production spiral
 algorithm family), dispatched automatically whenever the geometry is
-helical. Both pipelines get the full clinical correction stack from
-notebook 01: sinogram BHC → recon → image BHC → HU → noise floor → cupping.
+helical. Both pipelines use the current notebook-01 correction stack:
+detected-spectrum water BHC → recon → HU. Quantum and DAS noise are
+already generated in the counts domain by `simulate!`; radial cupping is
+measured as QA rather than applied as a correction.
 
 **Backend detected:** $(GPU_BACKEND.name)
 """
+
+# ╔═╡ 11000002-0000-4000-8000-000000000002
+md"""
+## Notebook Setup
+
+Activate the shared docs environment, select Metal/CUDA/ROCm/CPU through
+`GPUSelect`, and expose the section hierarchy through Pluto's table of
+contents. No acquisition is executed until section 4.
+"""
+
+# ╔═╡ 11000002-0000-4000-8000-000000000003
+PlutoUI.TableOfContents()
 
 # ╔═╡ 11000003-0000-4000-8000-000000000001
 md"""
@@ -202,13 +216,14 @@ end;
 
 # ╔═╡ 11000005-0000-4000-8000-000000000001
 md"""
-## 3. Corrections — the notebook-01 clinical stack
+## 3. Corrections — the current notebook-01 stack
 
 One BHC model per protocol (the bowtie-hardened spectrum depends on the
 collimation), then the standard chain per reconstruction: sinogram-domain
-BHC → recon → image-domain BHC → HU (using the BHC-calibrated
-``\mu_\text{water}``) → DAS noise floor → residual radial cupping
-correction.
+water BHC → recon → HU using the BHC-calibrated ``\mu_\text{water}``.
+The simulator already produces quantum and electronic/DAS noise in counts;
+no second HU-domain noise floor is added. Residual cupping is a non-mutating
+QA measurement, not a correction stage.
 """
 
 # ╔═╡ 11000005-0000-4000-8000-000000000002
@@ -216,8 +231,8 @@ correction.
     corrected_recon(sino_gpu, geom, matrix_size, bhc) -> Array{Float32,3} (HU)
 
 Notebook-01 correction chain around a single reconstruction (helical
-geometries dispatch to WFBP inside `reconstruct!` automatically).  Noise
-floor + cupping are applied by the caller (once per final volume).
+geometries dispatch to WFBP inside `reconstruct!` automatically). Noise is
+already present in the simulated counts; cupping is measured separately as QA.
 """
 function corrected_recon(sino_gpu, geom, matrix_size, bhc)
     sino_bhc = BS.apply_bhc_water(sino_gpu, bhc.model)
@@ -353,7 +368,9 @@ end
 
 # ╔═╡ 11000008-0000-4000-8000-000000000001
 md"""
-## 6. The money figures: water flatness and the coronal view
+## Results
+
+### 01. Water flatness and the coronal view
 
 Mean HU in a fixed water ROI (clear of rod and cone), slice by slice — the
 helical scan should hold water flat across the full 30 cm, while the
@@ -401,7 +418,7 @@ end
 
 # ╔═╡ 11000009-0000-4000-8000-000000000001
 md"""
-## Notes and scope
+## Verification and Scope
 
 - **`:dd_fast` needed zero changes for helical.** The projectors consume
   per-view geometry arrays (the same representation as ASTRA's `cone_vec`
@@ -427,14 +444,32 @@ md"""
   (2 stations × 360 views) ≈ $(round(sns_result.t; digits = 1)) s.
 """
 
+# ╔═╡ 1100000a-0000-4000-8000-000000000001
+md"""
+## Summary
+
+- `pitch` and `n_rotations` are the only additions needed to turn the axial
+  acquisition geometry into a centered helical trajectory.
+- `:dd_fast` consumes the per-view geometry arrays unchanged and remains the
+  default forward projector.
+- Helical geometries dispatch automatically to rebinned WFBP; axial stations
+  retain the ordinary FDK path.
+- The slice slider, water-HU profile, and coronal comparison jointly verify
+  longitudinal coverage, station seams, and z-dependent anatomy.
+- Cached figures and reported wall times will be regenerated only after the
+  source audit across all eleven notebooks is complete.
+"""
+
 # ╔═╡ Cell order:
 # ╟─11000002-0000-4000-8000-000000000001
+# ╟─11000002-0000-4000-8000-000000000002
 # ╠═11000001-0000-4000-8000-000000000001
 # ╠═11000001-0000-4000-8000-000000000004
 # ╠═11000001-0000-4000-8000-000000000005
 # ╠═11000001-0000-4000-8000-000000000002
 # ╠═11000001-0000-4000-8000-000000000003
 # ╠═11000001-0000-4000-8000-000000000006
+# ╠═11000002-0000-4000-8000-000000000003
 # ╟─11000003-0000-4000-8000-000000000001
 # ╠═11000003-0000-4000-8000-000000000002
 # ╠═11000003-0000-4000-8000-000000000003
@@ -454,3 +489,4 @@ md"""
 # ╟─11000008-0000-4000-8000-000000000002
 # ╟─11000008-0000-4000-8000-000000000003
 # ╟─11000009-0000-4000-8000-000000000001
+# ╟─1100000a-0000-4000-8000-000000000001

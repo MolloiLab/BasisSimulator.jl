@@ -552,6 +552,20 @@ function CTGeometry(
         n_rotations::Real = 1.0,
     ) where {T}
 
+    n_angles >= 2 || throw(ArgumentError("n_angles must be at least 2, got $n_angles"))
+    n_rotations > 0 || throw(ArgumentError("n_rotations must be positive, got $n_rotations"))
+    if pitch !== nothing
+        pitch > 0 || throw(ArgumentError("pitch must be positive, got $pitch"))
+        n_rotations >= 1 || throw(ArgumentError(
+            "helical scans need n_rotations ≥ 1, got $n_rotations"))
+    end
+    collimation_mm === nothing || collimation_mm > 0 ||
+        throw(ArgumentError("collimation_mm must be positive, got $collimation_mm"))
+    n_rows === nothing || n_rows > 0 ||
+        throw(ArgumentError("n_rows must be positive, got $n_rows"))
+    n_cols === nothing || n_cols > 0 ||
+        throw(ArgumentError("n_cols must be positive, got $n_cols"))
+
     # Determine active detector rows from collimation or explicit override
     if collimation_mm !== nothing
         if n_rows !== nothing

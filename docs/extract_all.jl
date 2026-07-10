@@ -88,6 +88,8 @@ function render_notebook!(session::Pluto.ServerSession,
     html_path = export_notebook(src_path;
         output_dir = dirname(dst_path),
         therapy = true,           # lean page: SSR cells + islands, NO statefile
+        fragment = true,          # native inline component for Therapy docs (no iframe)
+        assets_base = "__BASISSIM_NOTEBOOKS_BASE__",
         islands = true,           # compile @bind groups to wasm where possible
         verify = true,            # oracle-check compiled islands (node)
         optimize = :size,
@@ -104,6 +106,9 @@ function render_notebook!(session::Pluto.ServerSession,
     abspath(html_path) == abspath(dst_path) ||
         error("export wrote $(html_path) but the gallery expects $(dst_path)")
     compress_page_images!(html_path)   # embedded figure PNGs → WebP q90 (~90% smaller)
+    fragment_path = replace(html_path, r"\.html$" => ".fragment.html")
+    isfile(fragment_path) || error("Snapshot did not emit expected fragment: $(fragment_path)")
+    compress_page_images!(fragment_path)
     return post_hash
 end
 

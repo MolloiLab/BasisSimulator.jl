@@ -14,7 +14,7 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
             title     = "The Five-Struct API",
             summary   = "Walk the entire BasisSimulator surface — Phantom, Scanner, " *
                         "CTProtocol, SimOptions, ReconOptions — on the GE Revolution Apex Elite, " *
-                        "with the full clinical correction pipeline (BHC + noise floor + cupping).",
+                        "with detected-spectrum water BHC, counts-domain detector noise, and cupping QA.",
             thumbnail = "recon_compare_4panel.png",
             tags      = ["EICT", "FBP", "GE Apex Elite"],
         ),

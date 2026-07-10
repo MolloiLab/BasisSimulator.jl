@@ -7,9 +7,9 @@
 # `projector::Symbol` knob can pick between them at every forward-projection
 # site without any other code change.
 #
-#   :dd      — distance-driven (DD3).  DEFAULT.  Anti-aliased footprint
-#              integration; robust in severe beam-hardened regions.
-#   :dd_fast — SAME DD3 model, single-pass per-material path-length fused
+#   :dd      — reference distance-driven (DD3) implementation.  Anti-aliased
+#              footprint integration; deprecated in favor of `:dd_fast`.
+#   :dd_fast — DEFAULT.  Same DD3 model, single-pass per-material path-length fused
 #              kernels: identical footprint/overlap weights (results agree with
 #              :dd to float ordering), but the full spectrum is produced in ONE
 #              volume walk instead of the K=16 tiled re-walks.  Measured 47x
@@ -22,7 +22,7 @@
 #
 # Consistency contract: the forward simulation, the iterative-recon system
 # matrix (A·x and W = 1/(A·1)), and the BHC correction all read the SAME
-# `projector` symbol (same `:dd` default), so the model is self-consistent —
+# `projector` symbol (same `:dd_fast` default), so the model is self-consistent —
 # the recon inverts the operator that generated the data.  The voxel-driven
 # back-projector (`backproject!`) has no DD/Siddon variant and is unchanged.
 #

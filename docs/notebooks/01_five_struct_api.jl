@@ -48,7 +48,7 @@ md"""
 | `Scanner`       | The CT hardware (geometry, detector, filtration)        |
 | `CTProtocol`    | The acquisition (kVp, mA, views, rotation, collimation) |
 | `SimOptions`    | The physics model (which effects to include)            |
-| `ReconOptions`  | The output (matrix size, FOV, algorithm, filter)        |
+| `ReconOptions`  | The output grid (matrix size, XY FOV, optional Z extent)|
 
 This notebook walks through each one — building a Gammex Model 472 phantom and
 scanning it on a model of the **GE Revolution Apex Elite**. We'll finish by
@@ -81,7 +81,7 @@ md"""
 
 `BasisSimulator` dispatches kernels on array type via
 [AcceleratedKernels.jl](https://github.com/JuliaGPU/AcceleratedKernels.jl), so
-the same source runs on Metal, CUDA, ROCm, or CPU. The only thing the user
+the same source runs on Metal, CUDA, ROCm, oneAPI, or CPU. The only thing the user
 controls is **which array type** they hand the simulator.
 
 The cell below probes for `Metal → CUDA → AMDGPU` in that order, picks the
@@ -375,8 +375,9 @@ md"""
 md"""
 ### 05. `ReconOptions`
 
-`ReconOptions` controls the reconstructed output: matrix size, FOV, algorithm,
-and apodization filter. For now we'll do plain FBP (Feldkamp-Davis-Kress).
+`ReconOptions` controls only the reconstructed grid: matrix size, XY FOV, and
+optional Z extent. The reconstruction algorithm and apodization filter belong
+to the reconstruction workspace constructor, where they are consumed.
 """
 
 # ╔═╡ 06000002-0000-4000-8000-000000000001
@@ -393,15 +394,11 @@ end
 
 # ╔═╡ 06000003-0000-4000-8000-000000000001
 md"""
-!!! info "Other reconstruction algorithms"
-    `algorithm` accepts `:fdk` (default), plus iterative methods `:sirt`,
-    `:cgls`, `:tv_sirt`, `:tv_cgls`, `:asir`, `:mbir`. The Hybrid IR pipeline
-    uses `:asir` with a PWLS refinement step.
-
-!!! info "FBP filters"
-    `filter` accepts `:ram_lak`, `:shepp_logan`, `:cosine`, `:hamming`,
-    `:hann`, `:standard` (vendor-tuned), `:soft`, `:bone`. Each apodizes the
-    ramp filter differently, trading sharpness for noise.
+!!! info "Algorithm and filter selection"
+    Choose analytic FDK/WFBP with `create_fdk_recon_workspace(...; filter=...)`
+    or Hybrid IR with `create_hir_recon_workspace(...; strength=...,
+    filter=...)`. `ReconOptions` deliberately contains no inert algorithm,
+    iteration, filter, or VMI fields.
 """
 
 # ╔═╡ 07000000-0000-4000-8000-000000000000
@@ -624,11 +621,11 @@ corrections on top — the same stack we'll build here:
     effects that genuinely survive reconstruction (calibration drift, ring
     residuals).
 
-!!! info "Why the cupping correction looks subtle"
-    Stage 7 only catches what stages 2 and 4 missed — a small residual
-    radial bias. After bowtie-aware BHC the residual cup is *supposed to be
-    nearly invisible*. If the cupping correction is doing a lot, your BHC
-    isn't pulling its weight.
+!!! info "Cupping is a QA signal"
+    `measure_radial_cupping` is intentionally non-mutating. After bowtie-aware
+    water BHC, the fitted residual cup and DC offset should both be small. A
+    large value points to an upstream calibration or coverage problem; it is
+    not something this notebook hides with a post-reconstruction correction.
 """
 
 # ╔═╡ 09000005-0000-4000-8000-000000000001
@@ -674,9 +671,10 @@ md"""
 md"""
 #### b. Standard-Dose Corrected Pipeline
 
-Same `let ... end` shape as §7, but with the full correction stack inline:
-sino BHC → FDK → image BHC → HU → noise floor → cupping. GPU buffers are
-dropped at the end exactly like before.
+Same `let ... end` shape as §7, but with the current correction stack inline:
+detected-spectrum water BHC → FDK → HU, followed by non-mutating cupping
+QA. Noise is already present in the simulated detector counts. GPU buffers
+are dropped at the end exactly like before.
 """
 
 # ╔═╡ 09000011-0000-4000-8000-000000000001
@@ -695,7 +693,7 @@ hu_std_corr = let
     # 3. (image-domain BHC removed — audit: it was a scaled self-subtraction
     #    that deflated dense-material HU, not an artifact correction)
 
-    # 4. μ → HU using BHC's calibrated μ_water_ref (Float32 to feed cupping correction)
+    # 4. μ → HU using BHC's calibrated μ_water_ref
     hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc_calibration.μ_water))
 
     # 5. DAS/electronic noise is injected in the counts domain by simulate!
@@ -716,8 +714,8 @@ end;
 md"""
 #### c. Low-Dose Corrected Pipeline
 
-Identical to 9b — same BHC model, image BHC params, noise floor, cupping
-correction — only the input sinogram (`sim_low.sino`) and noise seed differ.
+Identical to 9b — same detected-spectrum water BHC, recon, HU conversion,
+and QA — only the input sinogram (`sim_low.sino`) and dose level differ.
 """
 
 # ╔═╡ 09000021-0000-4000-8000-000000000001
@@ -763,7 +761,7 @@ The two reconstructions use identical physics, geometry, and reconstruction
 settings — only the tube current differs. The lower-dose scan should show
 visibly more noise (≈√4 = 2× higher pixel σ) but the same mean HU values
 inside each rod. Postprocessing flattens the radial cup and adds the system
-noise floor — visible mostly in the rim region.
+counts-domain electronic noise — visible mostly in the rim region.
 """
 
 # ╔═╡ 10000002-0000-4000-8000-000000000001
@@ -1029,9 +1027,9 @@ This notebook walked the entire `BasisSimulator.jl` user surface end to end:
   → `to_hounsfield` (with the BHC model's own `μ_water_ref`); quantum + DAS
   noise arrive in the counts domain from `simulate!`, and cupping/DC is
   measured, never applied (`measure_radial_cupping`).
-- **Backend-agnostic GPU dispatch** — `to_gpu()` resolves at startup via
-  `Base.locate_package` + `Base.require`, so the same notebook runs on
-  Metal, CUDA, ROCm, or pure CPU with no project-level changes.
+- **Backend-agnostic GPU dispatch** — `GPUSelect.Storage()` resolves at startup,
+  so the same notebook runs on Metal, CUDA, ROCm, oneAPI, or pure CPU with no
+  notebook-level changes.
 
 Every reconstruction in the rest of the docs (PCCT, Hybrid IR, dual-kVp VMI,
 …) reuses this same pattern — workspace in a `let`, kernel call, copy CPU
