@@ -32,9 +32,10 @@ julia --project=. -e 'using Pkg; Pkg.Registry.add("General"); Pkg.resolve(); Pkg
 echo "▶ Therapy build — notebooks NOT re-rendered, Tailwind auto-compiled → dist/"
 julia --project=. --optimize=3 app.jl build
 
-# Native Therapy routes embed the `.fragment.html` files. Keep the standalone
-# exports committed as reusable Pluto caches, but do not ship a second copy of
-# every notebook in Snapshot's app bundle.
-find dist/notebooks-static -maxdepth 1 -type f -name '*.html' ! -name '*.fragment.html' -delete
+# Native Therapy routes already contain the fragment markup in their rendered
+# `/examples/.../index.html`. Keep both export forms committed as reusable Pluto
+# caches, but do not ship either redundant root HTML copy in Snapshot's bundle.
+# Island directories and all referenced assets remain untouched.
+find dist/notebooks-static -maxdepth 1 -type f -name '*.html' -delete
 
 echo "✓ dist/ ready ($(find dist -type f | wc -l | tr -d ' ') files)"
