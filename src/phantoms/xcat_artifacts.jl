@@ -252,15 +252,19 @@ function _assemble_xcist(
     GR = round(Int, maximum(rows[i]   - 1 - yoff[i] for i in 1:nm) - gr0) + 1
     GS = round(Int, maximum(slices[i] - 1 - zoff[i] for i in 1:nm) - gs0) + 1
 
-    # Build the (optionally downsampled) mask directly: iterate the OUTPUT grid
-    # and sample each material's nearest-neighbor block center.  Fusing the
-    # downsample into placement avoids materializing the full-resolution mask
-    # (the full chest is ~1.4 billion voxels — assembling it then downsampling
-    # is minutes; this is seconds).  With f = 1 this reduces to a plain place.
+    # Recombine the material pieces into one labeled mask by MAJORITY VOTE: for
+    # each material, count how many of its full-resolution occupied voxels land
+    # in each OUTPUT block; each output voxel takes the material with the most
+    # votes.  At f = 1 this is the plain jigsaw (each voxel = the material placed
+    # there, last-index wins ties).  When downsampling, majority vote preserves
+    # solid structures — unlike block-center sampling, which aliases thin
+    # structures into scattered noise.  Fused so the full-resolution mask is
+    # never materialized (the full chest is ~1.4 billion voxels).
     f = max(1, Int(downsample))
-    off = f ÷ 2
     dGC = max(1, GC ÷ f); dGR = max(1, GR ÷ f); dGS = max(1, GS ÷ f)
     mask = zeros(UInt8, dGC, dGR, dGS)
+    best = zeros(UInt16, dGC, dGR, dGS)     # votes for the current winner per voxel
+    cnt = zeros(UInt16, dGC, dGR, dGS)      # votes for material i (reused each i)
     for i in 1:nm
         T = _xcist_eltype(dtypes[i])
         A = reshape(read!(joinpath(base, files[i]), Vector{T}(undef, cols[i] * rows[i] * slices[i])),
@@ -268,18 +272,17 @@ function _assemble_xcist(
         c0 = round(Int, -xoff[i] - gc0)
         r0 = round(Int, -yoff[i] - gr0)
         s0 = round(Int, -zoff[i] - gs0)
-        ci, ri, si = cols[i], rows[i], slices[i]
-        @inbounds for K in 1:dGS
-            s = (K - 1) * f + off + 1 - s0
-            (1 <= s <= si) || continue
-            for J in 1:dGR
-                r = (J - 1) * f + off + 1 - r0
-                (1 <= r <= ri) || continue
-                for I in 1:dGC
-                    c = (I - 1) * f + off + 1 - c0
-                    (1 <= c <= ci) && A[c, r, s] > 0 && (mask[I, J, K] = UInt8(i))
-                end
-            end
+        fill!(cnt, zero(UInt16))
+        @inbounds for s in 1:slices[i], r in 1:rows[i], c in 1:cols[i]
+            A[c, r, s] > 0 || continue
+            I = (c + c0 - 1) ÷ f + 1
+            J = (r + r0 - 1) ÷ f + 1
+            K = (s + s0 - 1) ÷ f + 1
+            (I <= dGC && J <= dGR && K <= dGS) && (cnt[I, J, K] += one(UInt16))
+        end
+        @inbounds for idx in eachindex(cnt)          # winner-takes-block; ties → later material
+            v = cnt[idx]
+            (v > 0 && v >= best[idx]) && (best[idx] = v; mask[idx] = UInt8(i))
         end
     end
 
