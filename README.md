@@ -21,7 +21,7 @@ Pkg.add(url="https://github.com/MolloiLab/BasisSimulator.jl")
 For portable device selection, add `GPUSelect` plus your backend:
 
 ```julia
-Pkg.add(url="https://github.com/GroupTherapyOrg/GPUSelect.jl")
+Pkg.add("GPUSelect")
 Pkg.add("Metal")     # Apple Silicon
 Pkg.add("CUDA")      # NVIDIA
 Pkg.add("AMDGPU")    # AMD
