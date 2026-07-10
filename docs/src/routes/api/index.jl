@@ -114,8 +114,11 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                     ),
                     Pre(
                         :class => code_cls, Code(
-                            :class => "language-julia", """phantom_cpu = BS.create_gammex_472(n_voxels = 512)
-                            phantom = BS.Phantom(MtlArray(phantom_cpu.mask),
+                            :class => "language-julia", """import GPUSelect
+                            AT = GPUSelect.Storage()
+                            to_gpu(x) = AT(x)
+                            phantom_cpu = BS.create_gammex_472(n_voxels = 512)
+                            phantom = BS.Phantom(to_gpu(phantom_cpu.mask),
                                                  phantom_cpu.materials,
                                                  phantom_cpu.voxel_size)"""
                         )
@@ -230,33 +233,26 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                 H3(:id => "reconoptions-struct", :class => h3_cls, "ReconOptions"),
                 Div(
                     :class => card_cls,
-                    Div(:class => sig_cls, "ReconOptions(; algorithm, matrix_size, fov_cm, z_cm, filter, ...)"),
+                    Div(:class => sig_cls, "ReconOptions(; matrix_size, fov_cm, z_cm = nothing)"),
                     P(
                         :class => prose_cls,
-                        "The output grid + algorithm.  Recon is ", Strong("always centered at isocenter"),
+                        "The output grid. Recon is ", Strong("always centered at isocenter"),
                         " — there's no off-center FOV parameter (see notebook 05 for the SFOV-equivalent ",
                         "phantom-cropping pattern)."
                     ),
                     Table(
                         :class => table_cls,
                         Tr(Th(:class => th_cls, "field"), Th(:class => th_cls, ""), Th(:class => th_cls, "")),
-                        Tr(Td(:class => td_mono, "algorithm"), Td(:class => td_cls, ""), Td(:class => td_cls, ":fdk | :hir | :sirt | :tv_sirt | :asir | :mbir")),
                         Tr(Td(:class => td_mono, "matrix_size"), Td(:class => td_cls, ""), Td(:class => td_cls, "(nx, ny, nz) recon volume shape")),
                         Tr(Td(:class => td_mono, "fov_cm"), Td(:class => td_cls, ""), Td(:class => td_cls, "In-plane FOV diameter (cm)")),
                         Tr(Td(:class => td_mono, "z_cm"), Td(:class => td_cls, ""), Td(:class => td_cls, "Recon slab thickness (cm); usually = collimation_mm/10")),
-                        Tr(Td(:class => td_mono, "filter"), Td(:class => td_cls, ""), Td(:class => td_cls, ":standard | :ram_lak | :shepp_logan | :cosine | :bone | CustomFilter(...)")),
-                        Tr(Td(:class => td_mono, "iterations"), Td(:class => td_cls, ""), Td(:class => td_cls, "Iterative algorithms only")),
-                        Tr(Td(:class => td_mono, "vmi_basis"), Td(:class => td_cls, ""), Td(:class => td_cls, "[:water, :iodine] etc. — material basis for VMI flows")),
-                        Tr(Td(:class => td_mono, "vmi_energies"), Td(:class => td_cls, ""), Td(:class => td_cls, "[40.0, 70.0, 100.0, 140.0] keV target VMIs")),
                     ),
                     Pre(
                         :class => code_cls, Code(
                             :class => "language-julia", """recon_opts = BS.ReconOptions(
-                                algorithm   = :fdk,
                                 matrix_size = (512, 512, 8),
                                 fov_cm      = 35.0,
                                 z_cm        = 0.5,
-                                filter      = :standard,
                             )"""
                         )
                     ),
@@ -559,29 +555,30 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                 H3(:id => "simulate", :class => h3_cls, Code(:class => inline, "simulate!")),
                 Div(
                     :class => card_cls,
-                    Div(:class => sig_cls, "simulate!(ws, phantom, scanner, protocol, sim_opts, recon_opts; materials = nothing)"),
+                    Div(:class => sig_cls, "simulate!(ws, phantom, protocol, sim_opts = SimOptions())"),
                     P(
                         :class => prose_cls,
                         "The forward-projection entry point.  Dispatches on workspace type — ",
                         Code(:class => inline, "EICTWorkspace"),
-                        " runs the polychromatic Siddon → noise → optional corrections path; ",
+                        " runs the selected polychromatic projector (", Code(:class => inline, ":dd_fast"),
+                        " by default) → noise → optional corrections path; ",
                         Code(:class => inline, "PCCTWorkspace"),
                         " runs spectral ray-tracing with detector-response convolution + per-bin Poisson noise."
                     ),
                     Table(
                         :class => table_cls,
                         Tr(Th(:class => th_cls, "ws type"), Th(:class => th_cls, "writes to"), Th(:class => th_cls, "")),
-                        Tr(Td(:class => td_mono, "EICTWorkspace"), Td(:class => td_mono, "ws.sino_noisy_out"), Td(:class => td_cls, "Single Float32 sinogram (n_cols, n_rows, n_views)")),
-                        Tr(Td(:class => td_mono, "PCCTWorkspace"), Td(:class => td_mono, "result.pcct_sino.bins"), Td(:class => td_cls, "Vector of n_bins sinograms; PCCT path returns a NamedTuple with bins + I0 + scatter_field")),
+                        Tr(Td(:class => td_mono, "EICTWorkspace"), Td(:class => td_mono, "ws.sinogram"), Td(:class => td_cls, "Single Float32 sinogram (n_cols, n_rows, n_views)")),
+                        Tr(Td(:class => td_mono, "PCCTWorkspace"), Td(:class => td_mono, "result.pcct_sino.bins"), Td(:class => td_cls, "Vector of n_bins sinograms; returns pcct_sino + I0_bins + pileup_S")),
                     ),
                     Pre(
                         :class => code_cls, Code(
                             :class => "language-julia", """ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
-                            BS.simulate!(ws, phantom, scanner, protocol, sim_opts, recon_opts)
-                            sino = Array(ws.sino_noisy_out)   # pull off GPU"""
+                            BS.simulate!(ws, phantom, protocol, sim_opts)
+                            sino = Array(ws.sinogram)   # pull off GPU"""
                         )
                     ),
-                    P(:class => note_cls, "see notebooks 01–06 for the canonical call patterns"),
+                    P(:class => note_cls, "see notebooks 01–11 for canonical end-to-end call patterns"),
                 ),
 
                 # ════════════════════════════════════════════════════════════════
@@ -821,25 +818,24 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                 ),
 
                 # ── 8b. Noise floor & cupping ─────────────────────────────────
-                H3(:id => "noise-cupping", :class => h3_cls, "Noise floor & cupping"),
+                H3(:id => "noise-cupping", :class => h3_cls, "Noise and cupping QA"),
                 Div(
                     :class => card_cls,
                     Div(:class => sig_cls, "add_system_noise_floor!(hu_volume, σ_HU; seed = 1234)"),
                     P(
                         :class => prose_cls,
-                        "In-place additive Gaussian — models the dose-independent DAS readout floor (≈ 28 HU ",
-                        "on most clinical scanners).  Run AFTER ", Code(:class => inline, "to_hounsfield"),
-                        " so it lands at the right scale."
+                        "Legacy HU-domain additive Gaussian helper. Ordinary detector noise belongs in ",
+                        "simulate!, which injects quantum and electronic/DAS noise in counts before the log. ",
+                        "Reserve this helper for an explicitly modeled post-reconstruction residual."
                     ),
                 ),
                 Div(
                     :class => card_cls,
-                    Div(:class => sig_cls, "apply_radial_cupping_correction!(hu_volume; fov_cm)"),
+                    Div(:class => sig_cls, "measure_radial_cupping(hu_volume; fov_cm) → QA metrics"),
                     P(
                         :class => prose_cls,
-                        "Even-polynomial radial cup correction on water-like voxels.  Mostly cosmetic after ",
-                        "BHC has done its job; useful when you want a flat HU profile across the phantom ",
-                        "for visual inspection."
+                        "Non-mutating radial-bias measurement on water-like voxels. Large residual cup or ",
+                        "DC offset is evidence to fix the upstream spectrum, BHC, or coverage model."
                     ),
                 ),
 
@@ -847,27 +843,23 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                 H3(:id => "bhc", :class => h3_cls, "Beam-hardening correction"),
                 P(
                     :class => prose_cls,
-                    "Two-stage BHC (Joseph & Spital 1978; standard refinement): polynomial water-stage ",
-                    "correction in the sinogram domain pre-FDK, plus an image-domain bone-region refinement ",
-                    "post-FDK.  Both stages share a one-time spectrum calibration."
+                    "The production path is knobless detected-spectrum water BHC: calibrate a per-column ",
+                    "poly→mono model, apply it once in the sinogram domain, reconstruct, then convert with ",
+                    "the calibration's μ_water_ref. The thresholded two-material/image-domain path is deprecated."
                 ),
                 Div(
                     :class => card_cls,
-                    Div(:class => sig_cls, "calibrate_bhc_two_material(energies, weights; order = 2, ...) → (model, μ_water_ref)"),
+                    Div(:class => sig_cls, "calibrate_bhc_water(sim_opts, protocol; scanner, geom) → WaterBHC"),
                     P(
                         :class => prose_cls,
-                        "One-time fit: feed it the resolved spectrum and it returns a ",
-                        Code(:class => inline, "TwoMaterialBHC"),
-                        " polynomial model + the calibrated polychromatic ",
-                        Code(:class => inline, "μ_water_ref"),
-                        ".  Use that ", Code(:class => inline, "μ_water_ref"),
-                        " for the FBP-side ", Code(:class => inline, "to_hounsfield"),
-                        " call so HU baselines stay self-consistent."
+                        "One-time per-column fit from the full detected spectrum (tube, filters, bowtie, heel, ",
+                        "and detector efficiency). Use its ", Code(:class => inline, "μ_water_ref"),
+                        " for the downstream HU conversion so calibration stays self-consistent."
                     ),
                 ),
                 Div(
                     :class => card_cls,
-                    Div(:class => sig_cls, "apply_bhc_two_material(sino, model, geom, matrix_size)"),
+                    Div(:class => sig_cls, "apply_bhc_water(sino, model) → corrected sinogram"),
                     P(
                         :class => prose_cls,
                         "Sinogram-domain water-stage correction using the calibrated polynomial.  ",
@@ -876,26 +868,24 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                 ),
                 Div(
                     :class => card_cls,
-                    Div(:class => sig_cls, "apply_bhc_image_domain(recon_μ, geom, matrix_size, μ_water; hu_low, hu_high, scale_factor)"),
+                    Div(:class => sig_cls, "Canonical water-BHC reconstruction pipeline"),
                     P(
                         :class => prose_cls,
-                        "Image-domain bone-region refinement.  Smoothsteps between ",
-                        Code(:class => inline, "hu_low"), " and ", Code(:class => inline, "hu_high"),
-                        " to identify bone voxels, scales their residual error, and subtracts.  ",
-                        "Run AFTER FDK, BEFORE ", Code(:class => inline, "to_hounsfield"), "."
+                        "The older calibrate_bhc_two_material/apply_bhc_image_domain functions remain for ",
+                        "compatibility only: thresholded bone segmentation can misclassify dense iodine, and ",
+                        "the image-domain scaled self-subtraction deflates dense-material HU."
                     ),
                     Pre(
                         :class => code_cls, Code(
-                            :class => "language-julia", """# Calibrate once
-                            e, w = BS.resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner = scanner)
-                            bhc_model, μ_water_ref = BS.calibrate_bhc_two_material(e, w; order = 2)
+                            :class => "language-julia", """# Calibrate once from the same detected spectrum as simulation
+                            bhc = BS.calibrate_bhc_water(sim_opts, protocol; scanner = scanner, geom = geom)
 
-                            # Apply at simulate time
-                            BS.apply_bhc_two_material(sino, bhc_model, geom, recon_opts.matrix_size)
-                            recon_μ = Array(BS.reconstruct!(ws_fdk, sino, geom))
-                            BS.apply_bhc_image_domain(recon_μ, geom, recon_opts.matrix_size, μ_water_ref;
-                                hu_low = 50, hu_high = 150, scale_factor = 0.2)
-                            recon_HU = BS.to_hounsfield(recon_μ; μ_water = μ_water_ref)"""
+                            # Apply once before reconstruction
+                            sino_bhc = BS.apply_bhc_water(sino, bhc)
+                            ws_fdk = BS.create_fdk_recon_workspace(sino_bhc, geom, recon_opts.matrix_size)
+                            recon_μ = Array(BS.reconstruct!(ws_fdk, sino_bhc, geom))
+                            recon_HU = BS.to_hounsfield(recon_μ; μ_water = bhc.μ_water_ref)
+                            qa = BS.measure_radial_cupping(recon_HU; fov_cm = recon_opts.fov_cm)"""
                         )
                     ),
                     P(:class => note_cls, "see notebook 02 for the full BHC pipeline on XCAT"),
@@ -1156,7 +1146,7 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                         "This page covers the surface that's actually used by the example notebooks.  ",
                         "The full export list lives in ",
                         Code(:class => inline, "src/BasisSimulator.jl"),
-                        "; lower-level entry points (Siddon ray-tracer, individual physics-effect ",
+                        "; lower-level entry points (distance-driven and Siddon projectors, individual physics-effect ",
                         "constructors, internal solver workspaces) are documented in their respective ",
                         "source files."
                     ),

@@ -1,16 +1,11 @@
-<!DOCTYPE html>
-<html lang="en" data-theme="light">
-<head><meta name="basissim-source-hash" content="21ed3b0c03414d09b2279ed7221169b4d3d2b73e05cd91c210984afc3dcfe87e">
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<script>(function(){try{var t=localStorage.getItem('snap-theme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
+<div class="snap-notebook">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.11.1/dist/katex.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.11.1/dist/katex.min.js"></script>
-<title>08_qrm_thorax_pure_material_pcct</title>
 <style>
-:root{--pl-muted:color-mix(in oklab,var(--color-base-content) 60%,transparent)}
-body{font-family:var(--system-ui-font-stack,ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif);max-width:768px;margin:0 auto;padding:2rem 1rem;line-height:1.65;color:var(--color-base-content);background:var(--color-base-100)}
+@scope (.snap-notebook) {
+:scope{--pl-muted:color-mix(in oklab,var(--color-base-content) 60%,transparent)}
+:scope{font-family:var(--system-ui-font-stack,ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif);max-width:768px;margin:0 auto;padding:2rem 1rem;line-height:1.65;color:var(--color-base-content);background:var(--color-base-100)}
 /* Pluto's tree/table/code use white-space:pre (no wrap); the output box must
    scroll horizontally so wide content (long arrays, wide tables, long inline
    math) stays inside the cell column instead of bleeding off-page — exactly
@@ -1757,58 +1752,12 @@ a {
 a:visited {
     /* color: red; */
 }
-</style>
-</head>
-<body>
-<div class="snap-theme-picker">
-  <span aria-hidden="true">🎨</span>
-  <select id="snap-theme-select" aria-label="Theme" onchange="__piSetTheme(this.value)">
-    <optgroup label="Snapshot classic (Pluto palette)">
-      <option value="classic-light">classic-light</option>
-      <option value="classic-dark">classic-dark</option>
-    </optgroup>
-    <optgroup label="DaisyUI">
-      <option value="light">light</option>
-      <option value="dark">dark</option>
-      <option value="cupcake">cupcake</option>
-      <option value="bumblebee">bumblebee</option>
-      <option value="emerald">emerald</option>
-      <option value="corporate">corporate</option>
-      <option value="synthwave">synthwave</option>
-      <option value="retro">retro</option>
-      <option value="cyberpunk">cyberpunk</option>
-      <option value="valentine">valentine</option>
-      <option value="halloween">halloween</option>
-      <option value="garden">garden</option>
-      <option value="forest">forest</option>
-      <option value="aqua">aqua</option>
-      <option value="lofi">lofi</option>
-      <option value="pastel">pastel</option>
-      <option value="fantasy">fantasy</option>
-      <option value="wireframe">wireframe</option>
-      <option value="black">black</option>
-      <option value="luxury">luxury</option>
-      <option value="dracula">dracula</option>
-      <option value="cmyk">cmyk</option>
-      <option value="autumn">autumn</option>
-      <option value="business">business</option>
-      <option value="acid">acid</option>
-      <option value="lemonade">lemonade</option>
-      <option value="night">night</option>
-      <option value="coffee">coffee</option>
-      <option value="winter">winter</option>
-      <option value="dim">dim</option>
-      <option value="nord">nord</option>
-      <option value="sunset">sunset</option>
-    </optgroup>
-  </select>
-</div>
-<script>
-function __piSetTheme(t){document.documentElement.setAttribute('data-theme',t);try{localStorage.setItem('snap-theme',t);}catch(e){}}
-(function(){var sel=document.getElementById('snap-theme-select');if(sel)sel.value=document.documentElement.getAttribute('data-theme')||'light';})();
-</script>
 
-<nav class="plutoui-toc aside indent">  <header>
+:scope{background:transparent;max-width:none;padding:0;margin:0}
+}
+</style>
+<script>(function(){try{var t=localStorage.getItem('snap-theme');if(t){var s=document.currentScript;var n=s&&s.closest?s.closest('.snap-notebook'):null;if(n)n.setAttribute('data-theme',t);}}catch(e){}})();</script>
+<nav class="plutoui-toc aside indent toc-embedded" data-embedded="1">  <header>
     <span class="toc-toggle open-toc"></span>
     <span class="toc-toggle closed-toc"></span>
     <span>Table of Contents</span>
@@ -1941,7 +1890,8 @@ function __piSetTheme(t){document.documentElement.setAttribute('data-theme',t);t
     ? document.addEventListener("DOMContentLoaded", init) : init();
 })();
 </script>
-<main>
+
+<div class="snap-cells">
 <div class="pl-cell"><pluto-output class="rich_output" id="out-08010001-0000-4000-8000-000000000001"><div class="markdown"><h1 id="QRM-Thorax-Pure-Material-PCCT-VMI:-Full-Resolution-True-Scan-Reference">QRM-Thorax Pure-Material PCCT VMI: Full-Resolution True-Scan Reference</h1>
 <p><strong>Intent:</strong> 1-to-1 PCCT counterpart of notebook 07.  Same QRM-Thorax phantom with four pure-material rods &#40;water · triolein · collagen · iodine&#41;, same full-fidelity recon grid, same per-rod measured-vs- theoretical VMI regression — but the acquisition is a single 140 kVp photon-counting scan with four energy bins, bin-combined to a <code>&#40;low, high&#41;</code> pair and run through the SF-JSD joint sinogram denoiser before the Cong PCCT-Φ_k decomposition.</p>
 <table><tr><th align="right">Stage</th><th align="right">Matrix</th><th align="right">Voxel &#40;mm&#41;</th><th align="right">Extent</th></tr><tr><td align="right">GT phantom</td><td align="right"><strong>1600 × 1100 × 20</strong></td><td align="right"><strong>0.2 isotropic</strong></td><td align="right">320 × 220 × 4 mm</td></tr><tr><td align="right">Recon</td><td align="right">512 × 512 × <strong>3</strong></td><td align="right"><strong>0.625 isotropic</strong></td><td align="right">FOV 32 cm × 1.875 mm z</td></tr><tr><td align="right">Collimation</td><td align="right"><strong>2.5 mm at iso</strong></td><td align="right">—</td><td align="right">~7 detector rows lit</td></tr><tr><td align="right">Scanner</td><td align="right">Siemens Naeotom Alpha</td><td align="right">0.353 × 0.302 mm pixels</td><td align="right">144 × ~1192 detector</td></tr><tr><td align="right">Protocol</td><td align="right">PCCT, 4 bins</td><td align="right">140 kVp · 174 mA · 1200 views · 0.5 s rot.</td><td align="right">clinical PCCT dose</td></tr></table>
@@ -2820,7 +2770,7 @@ end;</code></pre></div>
         &#40;water · lipid · collagen · iodine at 40 / 70 / 100 / 140 keV&#41;</code></pre>
 <p>1:1 parity with notebook 07&#39;s QRM-Thorax pure-material pipeline, swapping the dual-kVp GSI acquisition for a Siemens Naeotom Alpha PCCT 4-bin acquisition.  The 4-bin PCCT measurement is bin-combined into a two-channel <code>&#40;low, high&#41;</code> pair that Cong&#39;s PCCT-Φ_k decomposition then consumes directly — exactly the same downstream pipeline as notebook 07 &#40;Cong → FBP × 2 → Kalender ACNR → VMI → per-rod regression&#41;. Phantom, recon grid, VMI energies, ROI definitions, and per-rod regression style are identical so the two notebooks are directly comparable.</p>
 </div></pluto-output></div>
-</main>
+</div>
 
 <script>
 (function () {
@@ -2894,5 +2844,4 @@ document.addEventListener("click", function (e) {
 });
 </script>
 
-</body>
-</html>
+</div>

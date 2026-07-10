@@ -1467,7 +1467,9 @@ end
 
 # ╔═╡ 05000011-0000-4000-8000-000000000001
 md"""
-## Why the Affine Round-Trip Matters
+## Results and Interpretation
+
+### Why the Affine Round-Trip Matters
 
 Once you have ground truth on the recon grid, the rest is bookkeeping:
 

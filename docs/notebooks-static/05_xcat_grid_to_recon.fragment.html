@@ -1,16 +1,11 @@
-<!DOCTYPE html>
-<html lang="en" data-theme="light">
-<head><meta name="basissim-source-hash" content="34673d390bb358cf2a6af43f8deac480679d3d2e02074c1ca9352b6098b24c4c">
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<script>(function(){try{var t=localStorage.getItem('snap-theme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
+<div class="snap-notebook">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.11.1/dist/katex.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.11.1/dist/katex.min.js"></script>
-<title>05_xcat_grid_to_recon</title>
 <style>
-:root{--pl-muted:color-mix(in oklab,var(--color-base-content) 60%,transparent)}
-body{font-family:var(--system-ui-font-stack,ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif);max-width:768px;margin:0 auto;padding:2rem 1rem;line-height:1.65;color:var(--color-base-content);background:var(--color-base-100)}
+@scope (.snap-notebook) {
+:scope{--pl-muted:color-mix(in oklab,var(--color-base-content) 60%,transparent)}
+:scope{font-family:var(--system-ui-font-stack,ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif);max-width:768px;margin:0 auto;padding:2rem 1rem;line-height:1.65;color:var(--color-base-content);background:var(--color-base-100)}
 /* Pluto's tree/table/code use white-space:pre (no wrap); the output box must
    scroll horizontally so wide content (long arrays, wide tables, long inline
    math) stays inside the cell column instead of bleeding off-page — exactly
@@ -1757,58 +1752,12 @@ a {
 a:visited {
     /* color: red; */
 }
-</style>
-</head>
-<body>
-<div class="snap-theme-picker">
-  <span aria-hidden="true">🎨</span>
-  <select id="snap-theme-select" aria-label="Theme" onchange="__piSetTheme(this.value)">
-    <optgroup label="Snapshot classic (Pluto palette)">
-      <option value="classic-light">classic-light</option>
-      <option value="classic-dark">classic-dark</option>
-    </optgroup>
-    <optgroup label="DaisyUI">
-      <option value="light">light</option>
-      <option value="dark">dark</option>
-      <option value="cupcake">cupcake</option>
-      <option value="bumblebee">bumblebee</option>
-      <option value="emerald">emerald</option>
-      <option value="corporate">corporate</option>
-      <option value="synthwave">synthwave</option>
-      <option value="retro">retro</option>
-      <option value="cyberpunk">cyberpunk</option>
-      <option value="valentine">valentine</option>
-      <option value="halloween">halloween</option>
-      <option value="garden">garden</option>
-      <option value="forest">forest</option>
-      <option value="aqua">aqua</option>
-      <option value="lofi">lofi</option>
-      <option value="pastel">pastel</option>
-      <option value="fantasy">fantasy</option>
-      <option value="wireframe">wireframe</option>
-      <option value="black">black</option>
-      <option value="luxury">luxury</option>
-      <option value="dracula">dracula</option>
-      <option value="cmyk">cmyk</option>
-      <option value="autumn">autumn</option>
-      <option value="business">business</option>
-      <option value="acid">acid</option>
-      <option value="lemonade">lemonade</option>
-      <option value="night">night</option>
-      <option value="coffee">coffee</option>
-      <option value="winter">winter</option>
-      <option value="dim">dim</option>
-      <option value="nord">nord</option>
-      <option value="sunset">sunset</option>
-    </optgroup>
-  </select>
-</div>
-<script>
-function __piSetTheme(t){document.documentElement.setAttribute('data-theme',t);try{localStorage.setItem('snap-theme',t);}catch(e){}}
-(function(){var sel=document.getElementById('snap-theme-select');if(sel)sel.value=document.documentElement.getAttribute('data-theme')||'light';})();
-</script>
 
-<nav class="plutoui-toc aside indent">  <header>
+:scope{background:transparent;max-width:none;padding:0;margin:0}
+}
+</style>
+<script>(function(){try{var t=localStorage.getItem('snap-theme');if(t){var s=document.currentScript;var n=s&&s.closest?s.closest('.snap-notebook'):null;if(n)n.setAttribute('data-theme',t);}}catch(e){}})();</script>
+<nav class="plutoui-toc aside indent toc-embedded" data-embedded="1">  <header>
     <span class="toc-toggle open-toc"></span>
     <span class="toc-toggle closed-toc"></span>
     <span>Table of Contents</span>
@@ -1941,7 +1890,8 @@ function __piSetTheme(t){document.documentElement.setAttribute('data-theme',t);t
     ? document.addEventListener("DOMContentLoaded", init) : init();
 })();
 </script>
-<main>
+
+<div class="snap-cells">
 <div class="pl-cell"><pluto-output class="rich_output" id="out-05000001-0000-4000-8000-000000000010"><div class="markdown"><h1 id="XCAT-UHR-→-CT:-Grid-Mapping-and-the-Recon-Affine-Round-Trip">XCAT UHR → CT: Grid Mapping and the Recon-Affine Round-Trip</h1>
 <p><strong>Take a 0.4 mm UHR XCAT phantom, crop it down to a cardiac sub-region as the input to a clinical CT acquisition, and use the simulator&#39;s affine matrices to overlay the original ground truth on the reconstructed volume — pixel-perfect.</strong></p>
 <p>This notebook teaches one specific thing the API can be subtle about: how the <strong>phantom voxel grid</strong> &#40;your input ground truth&#41; and the <strong>reconstruction voxel grid</strong> &#40;what the scanner outputs&#41; relate.  In particular:</p>
@@ -2656,8 +2606,8 @@ end</code></pre></div>
 </ul>
 <p>The takeaway: <code>phantom_to_world_affine</code> / <code>recon_to_world_affine</code> / <code>resample_to_recon</code> are <strong>trajectory-agnostic</strong> — axial or helical, tight or tall FOV, the ground-truth-to-recon mapping is the same three calls.</p>
 </div></pluto-output></div>
-</main>
-<script src="05_xcat_grid_to_recon.islands/shim.js"></script>
+</div>
+<script src="__BASISSIM_NOTEBOOKS_BASE__/05_xcat_grid_to_recon.islands/shim.js"></script>
 <script>
 (function () {
   function collectBonds() {
@@ -2730,5 +2680,4 @@ document.addEventListener("click", function (e) {
 });
 </script>
 
-</body>
-</html>
+</div>

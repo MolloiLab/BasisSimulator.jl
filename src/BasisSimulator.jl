@@ -4,24 +4,25 @@
 CT simulation with backend-agnostic GPU/CPU execution via AcceleratedKernels.jl.
 
 Core algorithms ported from TIGRE (CERN/TIGRE).
-Works on: Metal (Apple), CUDA (NVIDIA), ROCm (AMD), or CPU.
+Works on: Metal (Apple), CUDA (NVIDIA), ROCm (AMD), oneAPI (Intel), or CPU.
 
 # Quick Start
 ```julia
 using BasisSimulator
 
-# Create phantom and geometry
-phantom = create_gammex_472(n_voxels=128, fov_cm=35.0, z_cm=4.0)
-geom = create_aquilion_one(n_angles=180, n_rows=32, n_cols=256, fov_cm=35.0)
+# Five-struct simulation setup (`:dd_fast` is the default projector)
+phantom = create_gammex_472(n_voxels=128, n_slices=8, fov_cm=35.0, z_cm=0.5)
+scanner = Scanner(detector_rows=8, detector_cols=256)
+protocol = CTProtocol(kVp=120.0, mA=200.0, views=360)
+sim_opts = SimOptions(fidelity=:eict)
+recon_opts = ReconOptions(matrix_size=(256, 256, 8), fov_cm=35.0, z_cm=0.5)
 
-# Get μ at desired energy (v20.0-pivot: compute on demand)
-μ = compute_μ(phantom, 60.0)  # 60 keV
+ws = create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
+simulate!(ws, phantom, protocol, sim_opts)
 
-# Forward projection
-sinogram = siddon_forward_project(μ, geom)
-
-# FDK reconstruction
-recon = fdk_reconstruct(sinogram, geom, size(phantom.mask))
+# Analytic FDK (helical geometries dispatch to WFBP automatically)
+ws_fdk = create_fdk_recon_workspace(ws.sinogram, ws.geom, recon_opts.matrix_size)
+recon = reconstruct!(ws_fdk, ws.sinogram, ws.geom)
 ```
 """
 module BasisSimulator

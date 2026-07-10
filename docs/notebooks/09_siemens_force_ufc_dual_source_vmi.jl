@@ -68,7 +68,10 @@ Simulate Sn140 kVp (tube B)─┘         → Siemens-style mixed image M_w
 
 # ╔═╡ 09000001-0000-4000-8000-000000000020
 md"""
-## Setup
+## Notebook Setup
+
+Activate the shared docs environment, load the simulator and plotting stack,
+detect the available compute backend, and build the notebook table of contents.
 """
 
 # ╔═╡ 09000001-0000-4000-8000-000000000030
@@ -76,6 +79,12 @@ import BasisSimulator as BS
 
 # ╔═╡ 09000001-0000-4000-8000-000000000031
 import CairoMakie as CM
+
+# ╔═╡ 09000001-0000-4000-8000-000000000032
+import PlutoUI
+
+# ╔═╡ 09000001-0000-4000-8000-000000000033
+PlutoUI.TableOfContents()
 
 # ╔═╡ 09000001-0000-4000-8000-000000000040
 begin
@@ -503,9 +512,9 @@ reconstructions (Yu et al., *Med Phys* 2009: `M = w·I_low + (1−w)·I_high`;
 Eusemann et al., SPIE 2008).  On Sn150-class pairs the clinical weight is
 w ≈ 0.5–0.6 (Lenga et al., *Br J Radiol* 2021).
 
-So the poly validation of the UFC LUT runs the nb01 correction stack
-**per tube** — η-aware sinogram BHC → FDK → image-domain BHC → HU →
-residual cupping — then blends.  If the η fold is right, solid water
+So the poly validation of the UFC LUT runs the current nb01 correction stack
+**per tube** — η-aware water sinogram BHC → FDK → HU, with residual
+cupping measured as QA — then blends. If the η fold is right, solid water
 lands at ≈ 0 HU in *both* per-tube recons (and therefore in any blend).
 
 !!! info "η-aware BHC"
@@ -1577,6 +1586,8 @@ next to `GEMSTONE_MC_EFFICIENCY_LUT` (`UFC_MC_EFFICIENCY_LUT`,
 # ╟─09000001-0000-4000-8000-000000000020
 # ╠═09000001-0000-4000-8000-000000000030
 # ╠═09000001-0000-4000-8000-000000000031
+# ╠═09000001-0000-4000-8000-000000000032
+# ╠═09000001-0000-4000-8000-000000000033
 # ╠═09000001-0000-4000-8000-000000000040
 # ╟─09000001-0000-4000-8000-000000000050
 # ╟─09000002-0000-4000-8000-000000000001

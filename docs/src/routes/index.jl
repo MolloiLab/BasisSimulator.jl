@@ -54,7 +54,7 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                     Span(:class => "text-warm-900 dark:text-warm-100 font-semibold", "FBP"), ", ",
                     Span(:class => "text-warm-900 dark:text-warm-100 font-semibold", "Hybrid IR"), ", and material-basis ",
                     Span(:class => "text-warm-900 dark:text-warm-100 font-semibold", "VMI"),
-                    " — covering both energy-integrating and CdTe photon-counting detectors. The same source tree runs on Metal, CUDA, ROCm, and CPU."
+                    " — covering both energy-integrating and CdTe photon-counting detectors. The same source tree runs on Metal, CUDA, ROCm, oneAPI, and CPU."
                 ),
                 Div(:class => "flex flex-wrap gap-3 pt-2",
                     A(:href => "$(BASE)/getting-started/",
@@ -158,11 +158,13 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
             # Code block
             Pre(:class => "bg-warm-900 dark:bg-warm-950 text-warm-200 p-6 md:p-8 rounded-xl overflow-x-auto border border-warm-800 shadow-sm",
                 Code(:class => "language-julia text-sm font-mono leading-relaxed", """import BasisSimulator as BS
-using Metal  # or CUDA / AMDGPU; omit for CPU
+import GPUSelect
+AT = GPUSelect.Storage()
+to_gpu(x) = AT(x)
 
 # 1. Phantom — labeled mask + materials dict + voxel size
 phantom_cpu = BS.create_gammex_472(n_voxels=256)
-phantom = BS.Phantom(MtlArray(phantom_cpu.mask),
+phantom = BS.Phantom(to_gpu(phantom_cpu.mask),
                      phantom_cpu.materials,
                      phantom_cpu.voxel_size)
 
@@ -176,11 +178,13 @@ rec_opts = BS.ReconOptions(matrix_size=(512, 512, 64), fov_cm=35.0)
 ws = BS.create_eict_workspace(scanner, protocol, sim_opts, rec_opts, phantom)
 BS.simulate!(ws, phantom, protocol, sim_opts)
 
-# Reconstruct → Hounsfield units
-ws_fdk = BS.create_fdk_recon_workspace(ws.sinogram, ws.geom, rec_opts.matrix_size)
+# BHC → reconstruct → Hounsfield units
+bhc = BS.calibrate_bhc_water(sim_opts, protocol; scanner=scanner, geom=ws.geom)
+sino_bhc = to_gpu(BS.apply_bhc_water(ws.sinogram, bhc))
+ws_fdk = BS.create_fdk_recon_workspace(sino_bhc, ws.geom, rec_opts.matrix_size)
 hu = BS.to_hounsfield(
-    Array(BS.reconstruct!(ws_fdk, ws.sinogram, ws.geom));
-    μ_water = BS.get_reference_μ_water(70.0),
+    Array(BS.reconstruct!(ws_fdk, sino_bhc, ws.geom));
+    μ_water = bhc.μ_water_ref,
 )""")
             ),
 

@@ -13,7 +13,7 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
             "Getting Started"),
         P(:class => "text-warm-600 dark:text-warm-400 leading-relaxed",
             "BasisSimulator.jl runs on Julia 1.11+ and is GPU-backend-agnostic. Pick the backend that matches your hardware ",
-            "(Metal for Apple Silicon, CUDA for NVIDIA, AMDGPU for AMD), or omit it entirely to run on CPU."
+            "(Metal for Apple Silicon, CUDA for NVIDIA, AMDGPU for AMD, oneAPI for Intel), or omit it entirely to run on CPU."
         ),
 
         H2(:id => "install", :class => "text-xl font-semibold text-warm-800 dark:text-warm-200",
@@ -23,11 +23,13 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
             Code(:class => "language-julia text-sm font-mono", """using Pkg
 Pkg.add(url=\"https://github.com/MolloiLab/BasisSimulator.jl\")""")
         ),
-        P(:class => "text-warm-600 dark:text-warm-400", "Then add your GPU backend (skip for CPU-only):"),
+        P(:class => "text-warm-600 dark:text-warm-400", "Then add GPUSelect and your GPU backend (skip the backend for CPU-only):"),
         Pre(:class => code_block,
-            Code(:class => "language-julia text-sm font-mono", """Pkg.add(\"Metal\")     # Apple Silicon
+            Code(:class => "language-julia text-sm font-mono", """Pkg.add(url=\"https://github.com/GroupTherapyOrg/GPUSelect.jl\")
+Pkg.add(\"Metal\")     # Apple Silicon
 Pkg.add(\"CUDA\")      # NVIDIA
-Pkg.add(\"AMDGPU\")    # AMD""")
+Pkg.add(\"AMDGPU\")    # AMD
+Pkg.add(\"oneAPI\")    # Intel""")
         ),
 
         H2(:id => "first-simulation", :class => "text-xl font-semibold text-warm-800 dark:text-warm-200",
@@ -36,11 +38,14 @@ Pkg.add(\"AMDGPU\")    # AMD""")
             "The five-struct API maps to the five things every CT simulation needs to specify: what to scan, the scanner, the acquisition, simulation fidelity, and the reconstruction output."),
         Pre(:class => code_block,
             Code(:class => "language-julia text-sm font-mono", """import BasisSimulator as BS
-using Metal  # or CUDA / AMDGPU; omit for CPU
+import GPUSelect
+
+AT = GPUSelect.Storage()  # MtlArray / CuArray / ROCArray / oneArray / Array
+to_gpu(x) = AT(x)
 
 # 1. Phantom — labeled mask + materials dict + voxel size
 phantom_cpu = BS.create_gammex_472(n_voxels=256)
-phantom = BS.Phantom(MtlArray(phantom_cpu.mask),
+phantom = BS.Phantom(to_gpu(phantom_cpu.mask),
                      phantom_cpu.materials,
                      phantom_cpu.voxel_size)
 
@@ -60,7 +65,7 @@ protocol = BS.CTProtocol(kVp=120.0, mA=200.0, views=984, rotation_time=0.5)
 # 4. SimOptions — physics fidelity preset (:eict | :pcct)
 sim_opts = BS.SimOptions(fidelity=:eict, seed=42)
 
-# 5. ReconOptions — output matrix, FOV, algorithm
+# 5. ReconOptions — output matrix and physical grid extent
 rec_opts = BS.ReconOptions(matrix_size=(512, 512, 64), fov_cm=35.0)""")
         ),
         P(:class => "text-warm-600 dark:text-warm-400",
@@ -71,10 +76,12 @@ rec_opts = BS.ReconOptions(matrix_size=(512, 512, 64), fov_cm=35.0)""")
             Code(:class => "language-julia text-sm font-mono", """ws = BS.create_eict_workspace(scanner, protocol, sim_opts, rec_opts, phantom)
 BS.simulate!(ws, phantom, protocol, sim_opts)
 
-ws_fdk = BS.create_fdk_recon_workspace(ws.sinogram, ws.geom, rec_opts.matrix_size)
+bhc = BS.calibrate_bhc_water(sim_opts, protocol; scanner=scanner, geom=ws.geom)
+sino_bhc = to_gpu(BS.apply_bhc_water(ws.sinogram, bhc))
+ws_fdk = BS.create_fdk_recon_workspace(sino_bhc, ws.geom, rec_opts.matrix_size)
 hu = BS.to_hounsfield(
-    Array(BS.reconstruct!(ws_fdk, ws.sinogram, ws.geom));
-    μ_water = BS.get_reference_μ_water(70.0),
+    Array(BS.reconstruct!(ws_fdk, sino_bhc, ws.geom));
+    μ_water = bhc.μ_water_ref,
 )""")
         ),
 
