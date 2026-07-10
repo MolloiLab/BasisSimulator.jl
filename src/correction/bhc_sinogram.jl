@@ -689,7 +689,7 @@ Bowtie-aware sinogram-domain two-material BHC.
 # Keyword Arguments
 - `projector::Symbol=:dd_fast`: forward ray tracer for Stage 2's bone-fraction
   projection.  Pass the SAME value as the simulation's `SimOptions(; projector=…)`
-  (`:dd` default, anti-aliased; `:dd_fast` same DD model, single-pass fused kernels; `:siddon` faster mono but aliases) so the correction
+  (`:dd_fast` default and fastest general path; `:dd` is deprecated; `:siddon` is retained for compatibility but aliases) so the correction
   matches the model that generated the data.
 
 # Note on geometry

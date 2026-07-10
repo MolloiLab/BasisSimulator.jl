@@ -66,13 +66,14 @@ hu = BS.to_hounsfield(
 )
 ```
 
-### Forward projector: speed vs. accuracy
+### Forward projector: `dd_fast` is the fast default
 
-`SimOptions(; projector=:dd_fast)` (default) uses the single-pass
-**distance-driven** projector — anti-aliased and robust in severe
-beam-hardened regions. Pass `projector=:siddon`
-for **~3.5–5.5× faster** forward projection, at the cost of aliasing in those
-regions (use when speed outranks accuracy). If you reconstruct **iteratively**,
+`SimOptions(; projector=:dd_fast)` uses the fastest general-purpose projector
+and is the default. Its single-pass **distance-driven** kernels are anti-aliased
+and robust in severe beam-hardened regions while outperforming both the legacy
+`:dd` path and `:siddon` for full polychromatic and spectral simulations.
+`:siddon` remains available for comparison and compatibility, but its
+point-sampled rays can alias in those regions. If you reconstruct **iteratively**,
 pass the *same* projector to `create_hir_recon_workspace(; projector=…)` so the IR
 system matrix matches the data — FDK reconstruction is unaffected.
 

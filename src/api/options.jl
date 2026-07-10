@@ -53,8 +53,9 @@ for preset lookup — it is not stored on the struct.
   requires ≤ 32 materials (falls back to the `:dd` kernels above that), and mono projection is
   the `:dd` kernel unchanged.  `:dd` = the original per-energy distance-driven kernel —
   **DEPRECATED** (kept as the numerical reference; emits a warning and may be removed in a
-  future release; use `:dd_fast`).  `:siddon` = exact ray tracing, ~3.5-5.5x faster on GPU but
-  ALIASES in severe beam-hardened regions — use only when speed outranks accuracy.  NOTE: to keep
+  future release; use `:dd_fast`).  `:siddon` = exact point-sampled ray tracing retained for
+  comparison and compatibility; it is slower than `:dd_fast` for full polychromatic/spectral
+  simulations and can ALIAS in severe beam-hardened regions.  NOTE: to keep
   the iterative-recon system matrix consistent with the data, pass the SAME projector to
   `create_hir_recon_workspace(; projector=…)` (both default `:dd_fast`).
 """
@@ -81,7 +82,7 @@ struct SimOptions
     # --- General ---
     seed::Union{Int, Nothing}
     detector_efficiency_mode::Symbol   # :auto, :mc_lut, :beer_lambert
-    projector::Symbol                  # :dd_fast (default, single-pass DD), :dd (DEPRECATED reference kernel), :siddon (fast)
+    projector::Symbol                  # :dd_fast (default/fastest general path), :dd (DEPRECATED reference), :siddon (compatibility)
 end
 
 """

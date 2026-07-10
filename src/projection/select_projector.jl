@@ -16,9 +16,10 @@
 #              faster on the 234-bin polychromatic forward path (M4 Metal).
 #              Mono projection is byte-identical to :dd (same kernel).
 #              Requires ≤ 32 materials (falls back to :dd kernels above that).
-#   :siddon  — Siddon exact ray tracing.  Fast mono, but point-samples one
-#              voxel per step → ALIASES in severe beam-hardened regions.  Use
-#              only when speed > accuracy.
+#   :siddon  — Siddon exact ray tracing retained for comparison and
+#              compatibility. It point-samples one voxel per step, can ALIAS
+#              in severe beam-hardened regions, and is slower than :dd_fast
+#              for full polychromatic/spectral simulations.
 #
 # Consistency contract: the forward simulation, the iterative-recon system
 # matrix (A·x and W = 1/(A·1)), and the BHC correction all read the SAME

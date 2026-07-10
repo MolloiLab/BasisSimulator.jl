@@ -52,7 +52,7 @@ Apply image-domain beam hardening correction (So et al. 2009).
   - Typical 0.2–0.7; start at 0.5.
 - `projector::Symbol=:dd_fast`: forward ray tracer for the internal error-sinogram
   projection.  Pass the SAME value as the simulation's `SimOptions(; projector=…)`
-  (`:dd` default, anti-aliased; `:siddon` faster but aliases) so the correction
+  (`:dd_fast` default and fastest general path; `:siddon` is retained for compatibility but aliases) so the correction
   is computed with the model that generated the data.
 
 # Returns
