@@ -605,16 +605,42 @@ adds an HU-domain noise floor.
 # Why a separate dose-independent floor?
 
 Real scanners exhibit a noise component that *does not* scale as 1/√dose:
-imperfect scatter correction residuals, A/D and DAS electronic noise,
-detector calibration drift, ring-correction residuals, and (for PCCT)
-charge-sharing and pile-up correction residuals.  In low-dose regimes this
-floor dominates over the quantum (Poisson) noise that the sinogram-domain
-simulator already produces.
+imperfect scatter correction residuals, detector calibration drift, and
+ring-correction residuals.  In low-dose regimes this floor can rival the
+quantum (Poisson) noise that the sinogram-domain simulator already produces.
 
 Combining quadratically: σ_total = √(σ_quantum² + σ_floor²).  Adding the
 floor in image space is correct as long as the floor is approximately white
 in HU after reconstruction — empirically true for clinical scanners at the
 spatial frequencies that matter for soft-tissue contrast.
+
+!!! danger "Never use this to compare reconstruction algorithms"
+    Noise added here bypasses the reconstruction operator, so it is *identical*
+    in an FBP and an iterative recon of the same sinogram.  Any FBP-vs-IR noise
+    comparison that includes this floor understates the iterative reduction —
+    at σ = 28 HU it reported Hybrid IR at 1.6 % noise reduction where the true
+    figure was ~26 %.  Reserve this helper for effects that genuinely survive
+    reconstruction.
+
+!!! danger "DAS / electronic noise does NOT belong here"
+    A/D and DAS electronic noise enters the **counts**, before the log
+    transform, and reconstruction therefore acts on it.  `simulate!` already
+    models it from `scanner.electronic_noise` (electrons) — see the
+    `λ_noisy += σ_e · randn()` term in the EICT noise kernel.  Set that field
+    rather than adding an equivalent HU-domain floor here.  (At standard dose
+    its contribution is small: 5000 e⁻ moves a soft-tissue σ from 22.2 to
+    22.5 HU at 120 kVp / 250 mA.  It matters at low dose and behind dense
+    anatomy, which is exactly where it must be allowed to propagate through
+    the reconstruction.)
+
+!!! danger "Do not apply to PCCT"
+    A photon-counting detector discards charge pulses below its lowest energy
+    threshold, which is precisely the mechanism that removes electronic noise —
+    the headline PCCT advantage.  Its residual spectral distortion (charge
+    sharing, K-escape, electronic smearing) is already encoded in the
+    Monte-Carlo detector response matrix on the forward path, and pile-up /
+    count-loss are modeled explicitly.  Adding a white HU floor to a PCCT recon
+    would erase the advantage the simulation exists to demonstrate.
 
 For physical background see Kalender, *Computed Tomography*, 3rd ed.,
 Wiley 2011, Ch. 4 (noise sources in CT) and Hsieh, *Computed Tomography*,
@@ -623,10 +649,15 @@ PCCT-specific characterization see Leng et al., *IEEE TMI* 37(11), 2018.
 
 # Choosing `sigma_hu`
 
-Empirical, scanner-specific.  Notebooks 01/02/05 use **σ ≈ 28 HU**, which
+Empirical, scanner-specific.  Notebooks 01/05/11 use **σ ≈ 28 HU**, which
 matches a soft-tissue ROI std measured on a clinical GE Apex Elite (120 kVp,
 standard-dose abdominal protocol) after FBP reconstruction at 5 mm slice
 thickness.  Re-measure for other scanners / kernels / slice thicknesses.
+
+Note that σ ≈ 28 HU is a *total* soft-tissue σ, not a residual-only floor, so
+using it here double-counts the quantum noise `simulate!` has already added.
+Notebook 02 instead leaves this helper off and lets `scanner.electronic_noise`
+carry the DAS term through the reconstruction.
 
 # Arguments
 - `vol::AbstractArray{T}`: reconstruction volume in HU (mutated in place).
@@ -1193,23 +1224,6 @@ end
 # =============================================================================
 
 """
-    _copy_subset_into_buffer!(buf, full, angle_indices)
-
-Copy subset of angle data from `full` into pre-allocated `buf`.
-`buf[:,:,1:length(angle_indices)] = full[:,:,angle_indices]` — zero-allocation via views.
-"""
-function _copy_subset_into_buffer!(
-        buf::AbstractArray{T, 3},
-        full::AbstractArray{T, 3},
-        angle_indices::Vector{Int},
-    ) where {T}
-    for (i, aidx) in enumerate(angle_indices)
-        copyto!(view(buf, :, :, i), view(full, :, :, aidx))
-    end
-    return
-end
-
-"""
     reconstruct!(ws::HIRReconWorkspace, sinogram, geom; init_volume=nothing, air_reference=nothing) -> ws.volume
 
 Zero-allocation Hybrid IR reconstruction using pre-allocated workspace buffers.
@@ -1264,9 +1278,14 @@ solver is the open-literature substitute.
 # Implementation
 The workspace pre-allocates everything the OS-PWLS loop needs:
 ordered subsets (`ws.subsets`, `ws.subset_geometries`), per-subset GPU
-geometry arrays, statistical-weight buffer, projection-domain weights
-(`W_proj`), image-domain weights (`V_inv`), regularization gradient
-(`reg_grad`), and per-subset sinogram / forward-proj buffers.
+geometry arrays and angle maps, the folded data-weight buffer
+(`data_weights` = `W_proj` ⊙ statistical weights), image-domain weights
+(`V_inv`), regularization gradient (`reg_grad`), and the forward-projection
+buffer.  Each subset gathers its rays out of the full sinogram through
+`ws.subset_angle_idx[s]` rather than staging them into a copy.
+
+At `strength = 0` (`nepochs == 0`) the PWLS loop is skipped entirely and the
+FDK initialization is returned — i.e. plain FBP.
 
 The filter kernel, kernel size, and output volume size are all locked at
 workspace creation time — no runtime overrides on this hot path.
@@ -1333,10 +1352,17 @@ function reconstruct!(
     n_subsets = params.n_subsets
     subset_scale = T(n_subsets)
 
+    # strength = 0 ⇒ no PWLS refinement at all: the FDK init IS the result.
+    # Bail out before the weight kernels so a 0 % request costs a plain FBP.
+    if nepochs == 0
+        apply_fov_mask!(ws.volume, geom)
+        return ws.volume
+    end
+
     # Initialize statistical weights: w = air_ref(col,row) × exp(-y)
     # air_ref accounts for bowtie-modulated I0 (edge pixels → fewer counts → lower weight)
     if air_reference !== nothing
-        let sw = ws.stat_weights, ε = T(1.0e-6), aref = air_reference,
+        let sw = ws.data_weights, ε = T(1.0e-6), aref = air_reference,
                 nc = Int32(size(sinogram, 1)), nr = Int32(size(sinogram, 2))
             AK.foreachindex(sw, backend) do idx
                 idx_0 = Int32(idx - 1)
@@ -1351,7 +1377,7 @@ function reconstruct!(
             end
         end
     else
-        let sw = ws.stat_weights, ε = T(1.0e-6)
+        let sw = ws.data_weights, ε = T(1.0e-6)
             AK.foreachindex(sw, backend) do idx
                 y_val = sinogram[idx]
                 # clamp below at 0: a noisy negative-y air ray would get weight
@@ -1362,6 +1388,16 @@ function reconstruct!(
         end
     end
 
+    # Fold the projection weights into the statistical weights once.  The
+    # residual is `W_proj ⊙ stat_w ⊙ (y - Ax)` and `a * b * c` associates left,
+    # so pre-multiplying `W_proj ⊙ stat_w` reproduces the same roundings while
+    # letting each subset read a single array.
+    let dw = ws.data_weights, wp = ws.W_proj
+        AK.foreachindex(dw, backend) do idx
+            dw[idx] = wp[idx] * dw[idx]
+        end
+    end
+
     for epoch in 1:nepochs
         # Compute Huber gradient ONCE per epoch (not per sub-iteration)
         compute_huber_gradient!(ws.reg_grad, ws.volume, δ)
@@ -1369,11 +1405,6 @@ function reconstruct!(
         for (s, angle_indices) in enumerate(ws.subsets)
             n_sub = length(angle_indices)
             geom_s = ws.subset_geometries[s]
-
-            # Copy subset data into pre-allocated buffers
-            _copy_subset_into_buffer!(ws.subset_sino_buf, sinogram, angle_indices)
-            _copy_subset_into_buffer!(ws.subset_W_proj_buf, ws.W_proj, angle_indices)
-            _copy_subset_into_buffer!(ws.subset_stat_weights_buf, ws.stat_weights, angle_indices)
 
             # Forward project with subset geometry → subset_Ax_buf.
             # Uses ws.projector so A·x matches the projector that made the data.
@@ -1389,15 +1420,21 @@ function reconstruct!(
             )
 
             # Compute weighted residual in-place:
-            # Ax_s = W_s ⊙ stat_w_s ⊙ (sino_s - Ax_s)
-            let ax = ax_view,
-                    sino_s = view(ws.subset_sino_buf, :, :, 1:n_sub),
-                    wp_s = view(ws.subset_W_proj_buf, :, :, 1:n_sub),
-                    sw_s = view(ws.subset_stat_weights_buf, :, :, 1:n_sub)
+            # Ax_s = (W ⊙ stat_w)_s ⊙ (sino_s - Ax_s)
+            # The subset's rays are gathered straight out of the full arrays via
+            # the angle map, so no staging copy is needed.
+            let ax = ax_view, sino = sinogram, dw = ws.data_weights,
+                    aidx = ws.subset_angle_idx[s],
+                    nc = Int32(size(sinogram, 1)), nr = Int32(size(sinogram, 2))
 
                 AK.foreachindex(ax, backend) do idx
-                    residual = sino_s[idx] - ax[idx]
-                    ax[idx] = wp_s[idx] * sw_s[idx] * residual
+                    idx_0 = Int32(idx - 1)
+                    col = (idx_0 % nc) + Int32(1)
+                    row = ((idx_0 ÷ nc) % nr) + Int32(1)
+                    k = (idx_0 ÷ (nc * nr)) + Int32(1)   # slot within the subset
+                    a = aidx[k]                          # global view index
+                    residual = sino[col, row, a] - ax[idx]
+                    ax[idx] = dw[col, row, a] * residual
                 end
             end
 

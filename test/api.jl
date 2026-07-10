@@ -1159,7 +1159,7 @@ end
 # -----------------------------------------------------------------------------
 _ts("entering reconstruct!(HIRReconWorkspace) testset")
 @testset "reconstruct!(HIRReconWorkspace)" begin
-    function _toy_hir_setup(; matrix_size = (16, 16, 4), strength = 3)
+    function _toy_hir_setup(; matrix_size = (16, 16, 4), strength = 60)
         scanner = BS.Scanner(
             source_to_isocenter = 540.0, source_to_detector = 1080.0,
             detector_rows = 8, detector_cols = 32,
@@ -1176,14 +1176,71 @@ _ts("entering reconstruct!(HIRReconWorkspace) testset")
         # Sanity-check the cleanup: HIRParams no longer carries `niter`,
         # and every strength uses 12 subsets.
         @test !(:niter in fieldnames(BS.HIRParams))
-        for strength in 1:5
+        for strength in 10:10:100
             p = BS.get_hir_params(strength)
+            @test p.strength == strength
             @test p.n_subsets == 12
             @test p.nepochs ≥ 1
             @test p.lambda > 0
             @test p.huber_delta > 0
             @test 0 < p.relaxation ≤ 1
         end
+    end
+
+    @testset "strength is a percentage in 10% steps" begin
+        # 0 % is pure FBP: no PWLS epochs, no prior weight.
+        p0 = BS.get_hir_params(0)
+        @test p0.nepochs == 0
+        @test p0.lambda == 0
+        @test p0.target_noise_reduction == (0, 0)
+
+        # Every decade is valid; nothing in between is.
+        for s in 0:10:100
+            @test BS.get_hir_params(s) isa BS.HIRParams
+        end
+        for bad in (5, 15, 33, -10, 110, 101)
+            @test_throws ArgumentError BS.get_hir_params(bad)
+        end
+
+        # The old integer levels 1..5 are not multiples of 10, so a stale call
+        # fails loudly rather than silently reconstructing at 3 % strength.
+        for old_level in 1:5
+            @test_throws ArgumentError BS.get_hir_params(old_level)
+        end
+
+        # Anchors 20..80 carry the historical level-1..4 parameters verbatim.
+        @test BS.get_hir_params(20).lambda == 1.0f0
+        @test BS.get_hir_params(60).lambda == 4.0f0
+        @test BS.get_hir_params(60).huber_delta == 0.06f0
+        @test BS.get_hir_params(60).nepochs == 2
+        @test BS.get_hir_params(80).lambda == 6.0f0
+        @test BS.get_hir_params(100).nepochs == 4
+
+        # Odd decades interpolate between their neighbours and stay in-band.
+        p50 = BS.get_hir_params(50)
+        @test BS.get_hir_params(40).lambda < p50.lambda < BS.get_hir_params(60).lambda
+        @test BS.get_hir_params(60).huber_delta < p50.huber_delta < BS.get_hir_params(40).huber_delta
+        @test p50.nepochs ≥ 1
+
+        # Every 10 % step must be a DISTINCT operating point.  λ was flat across
+        # the old level-4/5 anchors, which made 90 % round to the same epoch
+        # count as 100 % and reconstruct bit-identically — a dead dial position.
+        pts = [BS.get_hir_params(s) for s in 0:10:100]
+        @test length(unique(p -> (p.lambda, p.nepochs, p.huber_delta, p.relaxation), pts)) == length(pts)
+        # λ strictly increasing is what guarantees that.
+        @test all(pts[i].lambda < pts[i + 1].lambda for i in 1:(length(pts) - 1))
+    end
+
+    @testset "strength = 0 returns the FBP init unchanged" begin
+        # nepochs == 0 short-circuits the PWLS loop, so HIR at 0 % must equal
+        # the FDK workspace's own reconstruction (both then FOV-masked).
+        s = _toy_hir_setup(strength = 0)
+        sino = abs.(randn(Float32, size(s.sino)...))
+        BS.reconstruct!(s.ws, sino, s.geom)
+
+        ws_fdk = BS.create_fdk_recon_workspace(sino, s.geom, s.matrix_size)
+        BS.reconstruct!(ws_fdk, sino, s.geom)
+        @test s.ws.volume == ws_fdk.volume
     end
 
     @testset "HIRReconWorkspace: Ax field dropped" begin
@@ -1247,16 +1304,19 @@ _ts("entering reconstruct!(HIRReconWorkspace) testset")
         # The toy test geometry's V_inv collapses to ~0, so we can't show
         # a recon-level difference here without a clinical-scale detector;
         # the param table is the actual contract being tested.
-        for str in 1:4
+        # Monotone across every 10 % step, not just the anchors.
+        for str in 10:10:90
             p_lo = BS.get_hir_params(str)
-            p_hi = BS.get_hir_params(str + 1)
+            p_hi = BS.get_hir_params(str + 10)
             @test p_lo.lambda ≤ p_hi.lambda
             @test p_lo.huber_delta ≥ p_hi.huber_delta
             @test p_lo.nepochs ≤ p_hi.nepochs
+            @test p_lo.relaxation ≥ p_hi.relaxation
+            @test p_lo.target_noise_reduction[1] ≤ p_hi.target_noise_reduction[1]
         end
         # End-to-end smoke test: every strength runs through to completion
         # and returns a finite recon.
-        for str in 1:5
+        for str in 0:10:100
             s = _toy_hir_setup(strength = str)
             sino = zeros(Float32, size(s.sino)...)
             BS.reconstruct!(s.ws, sino, s.geom)
@@ -1471,52 +1531,60 @@ _ts("entering Workspace ctors — HIRReconWorkspace field invariants testset")
     matsize = (16, 16, 4)
 
     @testset "FDK init buffers + iteration scratch" begin
-        ws = BS.create_hir_recon_workspace(sino, geom, matsize; strength = 3)
+        ws = BS.create_hir_recon_workspace(sino, geom, matsize; strength = 60)
         @test size(ws.volume) == matsize
         @test size(ws.filtered) == size(sino)
         @test size(ws.conv_scratch) == size(sino)
         @test size(ws.W_proj) == size(sino)
         @test size(ws.V_inv) == matsize
-        @test size(ws.stat_weights) == size(sino)
+        @test size(ws.data_weights) == size(sino)
         @test size(ws.correction) == matsize
         @test size(ws.reg_grad) == matsize
         @test all(==(0), ws.volume)
     end
 
     @testset "OS-PWLS subsets always allocated (n_subsets = 12)" begin
-        ws = BS.create_hir_recon_workspace(sino, geom, matsize; strength = 3)
+        ws = BS.create_hir_recon_workspace(sino, geom, matsize; strength = 60)
         @test ws.params.n_subsets == 12
         @test length(ws.subsets) == 12
         @test length(ws.subset_geometries) == 12
         @test length(ws.subset_geom_source_positions) == 12
         # Subsets partition the angles.
         @test sort!(reduce(vcat, ws.subsets)) == collect(1:geom.n_angles)
-        # Subset buffers sized to max(subset).
+        # Only the forward-projection buffer is staged; the sinogram, weights
+        # and stat weights are gathered in place through the angle map.
         max_sub = maximum(length(s) for s in ws.subsets)
-        @test size(ws.subset_sino_buf, 3) == max_sub
         @test size(ws.subset_Ax_buf, 3) == max_sub
-        @test size(ws.subset_W_proj_buf, 3) == max_sub
-        @test size(ws.subset_stat_weights_buf, 3) == max_sub
+        @test !(:subset_sino_buf in fieldnames(BS.HIRReconWorkspace))
+        @test !(:subset_W_proj_buf in fieldnames(BS.HIRReconWorkspace))
+        @test !(:subset_stat_weights_buf in fieldnames(BS.HIRReconWorkspace))
+        # The angle map reproduces the subset partition on the device side.
+        @test length(ws.subset_angle_idx) == 12
+        for s in 1:12
+            @test Array(ws.subset_angle_idx[s]) == Int32.(ws.subsets[s])
+        end
     end
 
-    @testset "strength 1..5 all produce a usable workspace" begin
-        for str in 1:5
+    @testset "every 10% strength produces a usable workspace" begin
+        for str in 0:10:100
             ws = BS.create_hir_recon_workspace(sino, geom, matsize; strength = str)
             @test ws.params.strength == str
             @test ws.params.n_subsets == 12
             @test length(ws.subsets) == 12
         end
+        # The old 1..5 levels must not silently construct a 1-5 % workspace.
+        @test_throws ArgumentError BS.create_hir_recon_workspace(sino, geom, matsize; strength = 3)
     end
 
     @testset "n_subsets <= 0 errors (legacy path deleted)" begin
         # The dead n_subsets=0 fallback was removed; constructing HIRParams
         # by hand with n_subsets=0 must raise.
-        bad_params = BS.HIRParams(3, 1.0f0, 1, 0, 0.05f0, 0.5f0, (10, 20))
+        bad_params = BS.HIRParams(60, 1.0f0, 1, 0, 0.05f0, 0.5f0, (10, 20))
         @test bad_params.n_subsets == 0
         # We can't easily inject custom HIRParams into create_hir_recon_workspace
         # (it calls get_hir_params(strength) internally), but we can at least
         # confirm get_hir_params never returns 0 subsets for any valid strength.
-        for str in 1:5
+        for str in 0:10:100
             @test BS.get_hir_params(str).n_subsets > 0
         end
     end

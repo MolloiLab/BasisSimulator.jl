@@ -253,7 +253,8 @@ helical_result = let
     t += @elapsed (hu = corrected_recon(ws.sinogram, ws.geom, recon_opts.matrix_size, bhc))
     ws = nothing
     GC.gc()
-    BS.add_system_noise_floor!(hu, 28.0; seed = 1234)
+    # quantum + DAS noise arrive in the counts domain from simulate!
+    # (scanner.electronic_noise); do not add an HU-domain floor on top.
     # (cupping is QA-only now — measure_radial_cupping; never applied)
     (hu = hu, t = t)
 end;
@@ -293,7 +294,7 @@ sns_result = let
         valid = max(k_lo, 1):min(k_lo + n_slab - 1, 150)
         hu[:, :, valid] .= hu_st[:, :, (first(valid) - k_lo + 1):(last(valid) - k_lo + 1)]
     end
-    BS.add_system_noise_floor!(hu, 28.0; seed = 1234)
+    # quantum + DAS noise arrive in the counts domain from simulate!
     # (cupping is QA-only now — measure_radial_cupping; never applied)
     (hu = hu, t = t_total)
 end;

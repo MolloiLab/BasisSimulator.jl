@@ -172,21 +172,35 @@ end
 # Projection / Image Domain Weights
 # =============================================================================
 
+# `like` is a prototype array that fixes the compute backend.  Both weights are
+# a full forward / back projection, so running them on the host when the caller
+# holds device arrays costs minutes (measured 62.9 s + 20.3 s at 834×8×500 into
+# 512×512×8) to produce arrays that are immediately copied to the device anyway.
+# `similar(like, …)` keeps the projection on whatever backend owns the data.
+# The operators are unchanged — same kernels, same weights, just not on the CPU.
+@inline _ones_like(::Nothing, ::Type{T}, dims...) where {T} = ones(T, dims...)
+@inline _ones_like(like::AbstractArray, ::Type{T}, dims...) where {T} =
+    fill!(similar(like, T, dims...), one(T))
+
 """
-    compute_projection_weights(geom, volume_size, T) -> sinogram-shaped weights
+    compute_projection_weights(geom, volume_size, T; projector, like) -> sinogram-shaped weights
 
 Compute W = 1 / (A · 1). Normalizes for ray length differences.
+
+`like` is an optional prototype array selecting the backend the projection runs
+on (defaults to the CPU).  Pass the caller's sinogram to keep this on the GPU.
 """
 function compute_projection_weights(
     geom::CTGeometry,
     volume_size::NTuple{3, Int},
     ::Type{T};
-    projector::Symbol = :dd_fast
+    projector::Symbol = :dd_fast,
+    like::Union{Nothing, AbstractArray} = nothing
 ) where T <: AbstractFloat
-    ones_volume = ones(T, volume_size...)
+    ones_volume = _ones_like(like, T, volume_size...)
     ray_sums = _project_mono(projector, ones_volume, geom)
     eps = T(1e-8)
-    AK.foreachindex(ray_sums) do idx
+    AK.foreachindex(ray_sums, AK.get_backend(ray_sums)) do idx
         val = ray_sums[idx]
         ray_sums[idx] = val > eps ? one(T) / val : zero(T)
     end
@@ -194,20 +208,23 @@ function compute_projection_weights(
 end
 
 """
-    compute_image_weights(geom, volume_size, T) -> volume-shaped weights
+    compute_image_weights(geom, volume_size, T; like) -> volume-shaped weights
 
 Compute V = 1 / (Aᵀ · 1). Accounts for non-uniform voxel sensitivity.
+
+`like` selects the backend, as in [`compute_projection_weights`](@ref).
 """
 function compute_image_weights(
     geom::CTGeometry,
     volume_size::NTuple{3, Int},
-    ::Type{T}
+    ::Type{T};
+    like::Union{Nothing, AbstractArray} = nothing
 ) where T <: AbstractFloat
-    ones_sino = ones(T, geom.n_cols, geom.n_rows, geom.n_angles)
+    ones_sino = _ones_like(like, T, geom.n_cols, geom.n_rows, geom.n_angles)
     # CRITICAL: Use matched/unweighted backprojection, NOT FDK-weighted!
     voxel_sums = backproject(ones_sino, geom, volume_size; weighted=false)
     eps = T(1e-8)
-    AK.foreachindex(voxel_sums) do idx
+    AK.foreachindex(voxel_sums, AK.get_backend(voxel_sums)) do idx
         val = voxel_sums[idx]
         voxel_sums[idx] = val > eps ? one(T) / val : zero(T)
     end

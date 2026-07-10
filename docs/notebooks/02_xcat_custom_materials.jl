@@ -330,7 +330,12 @@ scanner = BS.Scanner(
     detector_depth = 3.0,
     fill_factor_row = 0.9,
     fill_factor_col = 0.9,
-    electronic_noise = 0,
+    # DAS/electronic noise, in electrons.  This enters the COUNTS before the log
+    # transform (`λ_noisy += σ_e·randn()` in simulate!), which is where a real
+    # DAS contributes it — so it propagates through reconstruction and iterative
+    # recon can suppress it.  Adding an equivalent floor to the HU volume *after*
+    # reconstruction instead would make FBP and HIR look identical by fiat.
+    electronic_noise = 3500.0,   # e⁻ — clinical GE Apex Elite DAS readout noise
     detection_gain = 10.0,
 )
 
@@ -345,9 +350,11 @@ protocol = BS.CTProtocol(
 )
 
 # ╔═╡ 07000004-0000-4000-8000-000000000001
-# `projector` picks the forward ray tracer: :dd (default) is distance-driven and
-# anti-aliased (robust in severe beam-hardened regions); :dd_fast is the SAME DD physics
-# on GPU but ALIASES in those regions — use it only when speed outranks accuracy.
+# `projector` picks the forward ray tracer: :dd_fast (default) is distance-driven and
+# anti-aliased (robust in severe beam-hardened regions), fusing the whole spectrum into
+# one volume walk. :siddon point-samples one voxel per step and ALIASES in those regions —
+# use it only when speed outranks accuracy. (:dd is the older, slower reference kernel:
+# same physics as :dd_fast, now deprecated.)
 # The BHC and Hybrid-IR cells below all read `sim_opts.projector`, so changing it
 # HERE updates the whole pipeline consistently — the recon must invert the operator
 # that generated the data, or the IR system matrix won't match and convergence suffers.
@@ -402,8 +409,21 @@ apply a stack of corrections after the simulator's forward model:
 | 2.    | `apply_bhc_water`                     | Sinogram-domain water BHC — one polynomial pass *before* FDK/HIR                          |
 | 3.    | `reconstruct!` (FDK or Hybrid IR)     | Filtered back-projection / iterative reconstruction on the corrected sinogram            |
 | 5.    | `to_hounsfield` (with BHC μ_water)    | Convert μ → HU using the BHC model's calibrated reference (not the 70 keV NIST value)    |
-| 6.    | `add_system_noise_floor!`             | Add dose-independent DAS Gaussian σ ≈ 28 HU                                              |
-| 7.    | `measure_radial_cupping`              | QA metric (never applied): fitted residual cup + DC — both ≈ 0 after a correct BHC        |
+| 6.    | `measure_radial_cupping`              | QA metric (never applied): fitted residual cup + DC — both ≈ 0 after a correct BHC        |
+
+!!! warning "Where the DAS noise goes"
+    Quantum (Poisson) **and** DAS/electronic noise are both injected by
+    `simulate!` in the **counts domain**, before the log transform — electronic
+    noise via `scanner.electronic_noise` (electrons). That is where a real DAS
+    contributes it, and it means reconstruction sees it and can suppress it.
+
+    Do **not** substitute `add_system_noise_floor!` here. That helper adds white
+    Gaussian noise to the HU volume *after* reconstruction, so it is identical in
+    FBP and HIR by construction and makes iterative recon look useless — an
+    earlier version of this notebook set `electronic_noise = 0` and added a 28 HU
+    floor post-recon, which reported HIR at ~1.6 % noise reduction instead of the
+    ~26 % it actually delivers. Reserve that helper for effects that genuinely
+    survive reconstruction (calibration drift, ring-correction residuals).
 
 The same pipeline applies to both FBP and HIR — only the recon workspace
 inside the let block differs (`create_fdk_recon_workspace` vs
@@ -518,8 +538,8 @@ hu_fbp = sim === nothing ? nothing : let
         # 4. μ → HU using BHC's calibrated μ_water_ref (Float32 for cupping correction)
         hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc_calibration.μ_water))
 
-        # 5. Dose-independent DAS noise floor
-        BS.add_system_noise_floor!(hu, 28.0; seed = 1234)
+        # 5. DAS/electronic noise is injected in the counts domain by simulate!
+        # (scanner.electronic_noise), not bolted onto the HU volume here.
 
         # 6. Residual radial cupping correction
         # (cupping is QA-only now — measure_radial_cupping; never applied)
@@ -538,21 +558,29 @@ md"""
 ### 03. Hybrid IR with the full correction pipeline
 
 Identical pipeline to §8 — sino BHC → recon → image BHC → HU → noise
-floor → cupping — with `create_hir_recon_workspace(...; strength = 3)`
+floor → cupping — with `create_hir_recon_workspace(...; strength = 60)`
 swapped in for the FDK workspace.
 
 !!! info "What HIR adds over FBP"
     Hybrid IR is the clinical workhorse: vendors call it ASIR, AIDR3D,
     iDose⁴, SAFIRE depending on brand. All share the same architecture —
     FDK init + iterative PWLS refinement with a Huber prior. It costs
-    ~5–15× FBP runtime but returns ~30 % lower pixel σ at matched
+    a few FDK passes but returns ~30 % lower pixel σ at matched
     resolution.
+
+!!! tip "One dial: `strength`"
+    `strength` is a percentage in 10 % steps, read exactly like the GE
+    ASIR-V dial: `0` is pure FBP (the PWLS loop is skipped entirely), `60`
+    is the standard clinical setting used here, `100` is maximum noise
+    reduction. It moves λ, the Huber edge threshold δ, the relaxation and
+    the epoch count together along one tuned trajectory — there is no
+    second knob to keep in sync.
 
 !!! warning "Projector consistency (IR only)"
     Hybrid IR's data-fidelity term uses a forward projector `A`, so it
     **must use the same projector that generated the sinogram**. We pass
     `projector = sim_opts.projector` to `create_hir_recon_workspace`, so
-    flipping `sim_opts.projector` (e.g. to `:dd_fast`) automatically
+    flipping `sim_opts.projector` (e.g. to `:siddon`) automatically
     keeps the recon consistent. FBP (§8) is immune — it has no forward `A`.
 """
 
@@ -565,11 +593,11 @@ hu_hir = sim === nothing ? nothing : let
         sino_bhc = BS.apply_bhc_water(sino_gpu, bhc_calibration.model)
         sino_gpu = to_gpu(sino_bhc)
 
-        # 2. Hybrid IR (FBP init + PWLS refinement, strength = 3)
+        # 2. Hybrid IR (FBP init + PWLS refinement, strength = 60 %)
         # projector MUST match the forward sim so the IR system matrix A inverts
         # the operator that generated the data (read from sim_opts, single source).
         ws_hir = BS.create_hir_recon_workspace(
-            sino_gpu, sim.geom, matrix_size; strength = 3, projector = sim_opts.projector,
+            sino_gpu, sim.geom, matrix_size; strength = 60, projector = sim_opts.projector,
         )
         recon_μ = BS.reconstruct!(ws_hir, sino_gpu, sim.geom)
 
@@ -577,19 +605,9 @@ hu_hir = sim === nothing ? nothing : let
         # (`apply_fov_mask!`); HIR doesn't, so the iterative refinement
         # leaves garbage in the corners.  Apply the same mask for parity.
         BS.apply_fov_mask!(recon_μ, sim.geom)
-
-    # (image-domain BHC removed — audit: scaled self-subtraction that
-    #  deflated dense-material HU; the knobless sinogram water BHC is the
-    #  whole correction)
-
-        # 4. μ → HU using BHC's calibrated μ_water_ref
+    
+        # 3. μ → HU using BHC's calibrated μ_water_ref
         hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc_calibration.μ_water))
-
-        # 5. Noise floor (different seed so noise pattern doesn't match FBP)
-        BS.add_system_noise_floor!(hu, 28.0; seed = 5678)
-
-        # 6. Cupping correction
-        # (cupping is QA-only now — measure_radial_cupping; never applied)
 
         # GPU cleanup
         ws_hir = nothing
@@ -613,6 +631,14 @@ Both reconstructions go through the identical correction pipeline (sino
 BHC + image BHC + noise floor + cupping). Soft-tissue window shows the
 iodine-enhanced blood pools (XCAT labels 19–22 = `bldplLV/RV/LA/RA`) and
 the texture / noise contrast between the two algorithms.
+
+!!! warning "Measure noise inside a material, not inside a box"
+    A fixed box near the image center spans −794 to +353 HU here — lung
+    through iodinated blood — so its σ (≈160 HU) is *anatomy*, not noise, and
+    HIR appears to do nothing. The cell below instead uses
+    `BS.resample_to_recon` to carry the phantom labels onto the recon grid,
+    then erodes the myocardium label so only voxels surrounded by
+    myocardium survive. That is the only place where σ means noise.
 """
 
 # ╔═╡ 11000002-0000-4000-8000-000000000001
@@ -640,7 +666,7 @@ let
         ax_hir = CM.Axis(
             fig[1, 2];
             title = "Hybrid IR",
-            subtitle = "120 kVp / 250 mA · strength = 3",
+            subtitle = "120 kVp / 250 mA · strength = 60 %",
             aspect = CM.DataAspect(),
             title_kwargs...,
         )
@@ -665,22 +691,42 @@ let
     if hu_fbp === nothing || hu_hir === nothing
         md""
     else
-        # Pixel-σ in a homogeneous region near the body envelope (matters: HIR's
-        # whole point is reducing this number while keeping edges sharp).
-        n = size(hu_fbp, 1)
-        roi = ((n ÷ 2 - 30):(n ÷ 2 + 30), (n ÷ 2 - 30):(n ÷ 2 + 30), :)
+        # Measure σ inside ONE material, not inside a box.  A fixed box near the
+        # image center straddles the heart/lung boundary, so its σ is anatomy
+        # (≈160 HU) and HIR looks like it does nothing.  Instead, map the phantom
+        # labels onto the recon grid and keep only voxels deep inside the
+        # myocardium, where the sole remaining variation is noise.
+        labels = BS.resample_to_recon(phantom, sim.geom, recon_opts.matrix_size)
+        heart = first(k for (k, v) in xcat.label_names if v == "ncat_heart")
 
-        σ_fbp = std(hu_fbp[roi...])
-        σ_hir = std(hu_hir[roi...])
+        # Erode in-plane by r voxels: a recon voxel is "interior" only if every
+        # neighbour within r is the same label.  Boundary voxels are partial
+        # volumes of two tissues — their spread is the edge, not the noise.
+        r = 2
+        nx, ny, nz = size(labels)
+        roi = CartesianIndex{3}[]
+        @inbounds for k in 1:nz, j in (1 + r):(ny - r), i in (1 + r):(nx - r)
+            labels[i, j, k] == heart || continue
+            all(labels[i + di, j + dj, k] == heart for dj in -r:r, di in -r:r) &&
+                push!(roi, CartesianIndex(i, j, k))
+        end
+
+        σ_fbp = std(hu_fbp[roi])
+        σ_hir = std(hu_hir[roi])
 
         md"""
-        **Noise (σ in HU, 60×60 ROI near image center):**
+        **Noise (σ in HU, $(length(roi)) voxels deep inside the myocardium,
+        mean $(round(Float64(mean(hu_fbp[roi])), digits=1)) HU):**
 
         | Algorithm  | σ (HU)                    |
         |------------|---------------------------|
         | FBP        | $(round(Float64(σ_fbp), digits=1)) |
         | Hybrid IR  | $(round(Float64(σ_hir), digits=1)) |
         | Reduction  | $(round(100 * (1 - Float64(σ_hir) / Float64(σ_fbp)); digits=1))% |
+
+        Compare against the `strength = 60` target band (25–35 %).  Both quantum
+        and DAS/electronic noise enter in the counts domain, so HIR acts on all
+        of it — no post-hoc correction needed to read this number.
         """
     end
 end

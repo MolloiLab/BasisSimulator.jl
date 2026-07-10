@@ -267,8 +267,10 @@ scanner = BS.Scanner(
     fill_factor_row = 0.9,
     fill_factor_col = 0.9,
 
-    # DAS noise model
-    electronic_noise = 0,       # e⁻ (set ~3500 for clinical DAS readout noise)
+    # DAS noise model.  Injected into the COUNTS before the log transform, where
+    # a real DAS contributes it — so it propagates through reconstruction rather
+    # than being pasted onto the HU volume afterwards.
+    electronic_noise = 3500.0,  # e⁻ — clinical GE Apex Elite DAS readout noise
     detection_gain = 10.0,    # e⁻/keV
 );
 
@@ -610,8 +612,17 @@ corrections on top — the same stack we'll build here:
 | 2.    | `apply_bhc_water`                     | Sinogram-domain water BHC — one polynomial pass *before* FBP, removes the poly bias        |
 | 3.    | `reconstruct!` (FDK)                  | Filtered back-projection on the corrected sinogram                                       |
 | 5.    | `to_hounsfield` (with BHC μ_water)    | Convert μ → HU using the BHC model's calibrated reference (not the 70 keV NIST value)    |
-| 6.    | `add_system_noise_floor!`             | Add dose-independent DAS Gaussian σ ≈ 28 HU                                              |
-| 7.    | `measure_radial_cupping`              | QA metric (never applied): fitted residual cup + DC — both ≈ 0 after a correct BHC        |
+| 6.    | `measure_radial_cupping`              | QA metric (never applied): fitted residual cup + DC — both ≈ 0 after a correct BHC        |
+
+!!! warning "Noise belongs in the counts, not the HU volume"
+    Quantum (Poisson) **and** DAS/electronic noise are both injected by
+    `simulate!` before the log transform — electronic noise via
+    `scanner.electronic_noise` (electrons).  `add_system_noise_floor!` adds white
+    Gaussian noise to the *reconstructed* volume instead, which double-counts the
+    quantum noise already present and, because it bypasses the reconstruction
+    operator, makes every recon algorithm look equally noisy.  Reserve it for
+    effects that genuinely survive reconstruction (calibration drift, ring
+    residuals).
 
 !!! info "Why the cupping correction looks subtle"
     Stage 7 only catches what stages 2 and 4 missed — a small residual
@@ -687,8 +698,8 @@ hu_std_corr = let
     # 4. μ → HU using BHC's calibrated μ_water_ref (Float32 to feed cupping correction)
     hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc_calibration.μ_water))
 
-    # 5. Dose-independent DAS noise floor
-    BS.add_system_noise_floor!(hu, 28.0; seed = 1234)
+    # 5. DAS/electronic noise is injected in the counts domain by simulate!
+    # (scanner.electronic_noise), not bolted onto the HU volume here.
 
     # 6. (radial cupping "correction" removed — measured to INJECT +8 HU on
     #    noisy data via its asymmetric fit window; cupping is a QA metric now,
@@ -727,8 +738,8 @@ hu_low_corr = let
     # 4. μ → HU
     hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc_calibration.μ_water))
 
-    # 5. Noise floor (different seed so the noise pattern doesn't match the std-dose scan)
-    BS.add_system_noise_floor!(hu, 28.0; seed = 5678)
+    # 5. DAS/electronic noise comes from simulate! (counts domain).  Both scans
+    # share sim_opts.seed, but the low-dose λ differs, so the realizations do too.
 
     # (cupping correction removed — QA-only; see verification cell)
 
@@ -1015,8 +1026,9 @@ This notebook walked the entire `BasisSimulator.jl` user surface end to end:
   memory pressure even with two protocols back-to-back.
 - **A clinical-grade postprocessing pipeline** — `calibrate_bhc_water`
   → `apply_bhc_water` (knobless sinogram BHC, full detected spectrum) → FDK
-  → `to_hounsfield` (with the BHC model's own `μ_water_ref`) →
-  `add_system_noise_floor!`; cupping/DC is measured, never applied (`measure_radial_cupping`).
+  → `to_hounsfield` (with the BHC model's own `μ_water_ref`); quantum + DAS
+  noise arrive in the counts domain from `simulate!`, and cupping/DC is
+  measured, never applied (`measure_radial_cupping`).
 - **Backend-agnostic GPU dispatch** — `to_gpu()` resolves at startup via
   `Base.locate_package` + `Base.require`, so the same notebook runs on
   Metal, CUDA, ROCm, or pure CPU with no project-level changes.

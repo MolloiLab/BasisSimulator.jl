@@ -604,7 +604,9 @@ scanner = BS.Scanner(
     detector_depth = 3.0,
     fill_factor_row = 0.9,
     fill_factor_col = 0.9,
-    electronic_noise = 0,
+    # DAS/electronic noise enters the counts before the log transform, so it
+    # propagates through reconstruction (see `add_system_noise_floor!` docstring).
+    electronic_noise = 3500.0,   # e⁻ — clinical GE Apex Elite DAS readout noise
     detection_gain = 10.0,
 );
 
@@ -788,8 +790,8 @@ recon_HU = sim === nothing ? nothing : let
         recon_μ = Array(BS.reconstruct!(ws, sino_gpu, sim.geom))
         ws = nothing; sino_gpu = nothing; GC.gc(true)
 
+        # quantum + DAS noise already carried by the sinogram (counts domain)
         HU = Float32.(BS.to_hounsfield(recon_μ; μ_water = μ_water_120))
-        BS.add_system_noise_floor!(HU, 28.0; seed = 1234)
         HU
 end;
 

@@ -867,7 +867,7 @@ Type parameters:
 
 Create with [`create_hir_recon_workspace`](@ref).
 """
-mutable struct HIRReconWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A2 <: AbstractArray{T, 2}, A1 <: AbstractArray{T, 1}}
+mutable struct HIRReconWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A2 <: AbstractArray{T, 2}, A1 <: AbstractArray{T, 1}, AI <: AbstractVector{Int32}}
     # ─── Output / iterate ───
     volume::A3                # (nx, ny, nz) — FDK result → PWLS iterate
 
@@ -887,7 +887,10 @@ mutable struct HIRReconWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, 
     V_inv::A3                 # Image domain weights (vol shape)
 
     # ─── PWLS iteration scratch (reused every iteration) ───
-    stat_weights::A3          # Statistical weights (sino shape)
+    # `data_weights` holds W_proj ⊙ stat_weights, folded once per reconstruct!
+    # call (the product is loop-invariant), so the subset residual kernel reads
+    # one array instead of two.
+    data_weights::A3          # W_proj ⊙ statistical weights (sino shape)
     correction::A3            # Backprojection scratch (vol shape)
     reg_grad::A3              # Regularization gradient (vol shape)
 
@@ -898,10 +901,8 @@ mutable struct HIRReconWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, 
     subset_geom_detector_centers::Vector{A2}
     subset_geom_detector_u::Vector{A2}
     subset_geom_detector_v::Vector{A2}
-    subset_sino_buf::A3                     # (n_cols, n_rows, max_subset_size)
-    subset_Ax_buf::A3                       # same shape for forward projection
-    subset_W_proj_buf::A3                   # same shape for projection weights
-    subset_stat_weights_buf::A3             # same shape for statistical weights
+    subset_angle_idx::Vector{AI}            # device-side global angle index per subset
+    subset_Ax_buf::A3                       # (n_cols, n_rows, max_subset_size)
 
     # ─── Pre-computed HIR params ───
     params::HIRParams
@@ -911,9 +912,14 @@ mutable struct HIRReconWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, 
 end
 
 """
-    create_hir_recon_workspace(sinogram, geom, volume_size; T=eltype(sinogram), strength=3, filter=StandardFilter(), cutoff=1.0)
+    create_hir_recon_workspace(sinogram, geom, volume_size; T=eltype(sinogram), strength=60, filter=StandardFilter(), cutoff=1.0)
 
 Create a pre-allocated workspace for zero-allocation Hybrid IR `reconstruct!()`.
+
+`strength` is the IR strength **percentage**, `0`–`100` in steps of 10 — the one
+dial for the whole HIR pipeline (`0` = pure FBP, `60` = standard clinical,
+`100` = maximum noise reduction).  See [`get_hir_params`](@ref) for the
+strength → noise-reduction table.
 
 `filter` can be a `FilterType` struct or a `Symbol` (e.g., `:standard`).
 
@@ -927,7 +933,7 @@ function create_hir_recon_workspace(
         geom::CTGeometry,
         volume_size::NTuple{3, Int};
         T::Type{<:AbstractFloat} = eltype(sinogram),
-        strength::Int = 3,
+        strength::Integer = 60,
         filter::Union{FilterType, Symbol} = StandardFilter(),
         cutoff::Float64 = 1.0,
         projector::Symbol = :dd_fast
@@ -968,19 +974,17 @@ function create_hir_recon_workspace(
     geom_detector_v = similar(sinogram, T, size(geom.detector_v)...)
     copyto!(geom_detector_v, T.(geom.detector_v))
 
-    # Pre-compute SIRT-style normalization weights (W_proj and V_inv)
-    # These are expensive but only computed once.  W_proj = 1/(A·1) uses the
-    # selected forward projector so the system matrix matches the sim's.
-    W_proj_cpu = compute_projection_weights(geom, volume_size, T; projector = projector)
-    W_proj = similar(sinogram, T, size(W_proj_cpu)...)
-    copyto!(W_proj, W_proj_cpu)
-
-    V_inv_cpu = compute_image_weights(geom, volume_size, T)
-    V_inv = similar(sinogram, T, size(V_inv_cpu)...)
-    copyto!(V_inv, V_inv_cpu)
+    # Pre-compute SIRT-style normalization weights (W_proj and V_inv).
+    # Each is one full projection, so `like = sinogram` pins them to the
+    # backend that already owns the data — computing them on the host and
+    # copying over dominated workspace construction (~83 s of 99 s at
+    # 834×8×500 → 512×512×8).  W_proj = 1/(A·1) uses the selected forward
+    # projector so the system matrix matches the sim's.
+    W_proj = compute_projection_weights(geom, volume_size, T; projector = projector, like = sinogram)
+    V_inv = compute_image_weights(geom, volume_size, T; like = sinogram)
 
     # PWLS iteration scratch buffers
-    stat_weights = similar(sinogram, T, sino_shape...)
+    data_weights = similar(sinogram, T, sino_shape...)
     correction = similar(sinogram, T, volume_size...)
     reg_grad = similar(sinogram, T, volume_size...)
 
@@ -988,7 +992,8 @@ function create_hir_recon_workspace(
     params = get_hir_params(strength)
 
     # Ordered subsets pre-computation.  `get_hir_params` always returns
-    # n_subsets = 12 (strengths 1..5), so the OS-PWLS path is the only path.
+    # n_subsets = 12 at every strength, so the OS-PWLS path is the only path.
+    # (At strength = 0 the subsets go unused: nepochs = 0 short-circuits to FBP.)
     n_subsets = params.n_subsets
     n_subsets > 0 || error("HIRParams.n_subsets must be > 0; got $n_subsets")
     subsets = create_ordered_subsets(geom.n_angles, n_subsets)
@@ -1011,22 +1016,30 @@ function create_hir_recon_workspace(
         copyto!(subset_geom_v[s], T.(sg.detector_v))
     end
 
-    # Allocate subset buffers sized for the largest subset
-    max_subset_size = maximum(length(s) for s in subsets)
-    subset_sino_shape = (sino_shape[1], sino_shape[2], max_subset_size)
-    subset_sino_buf = similar(sinogram, T, subset_sino_shape...)
-    subset_Ax_buf = similar(sinogram, T, subset_sino_shape...)
-    subset_W_proj_buf = similar(sinogram, T, subset_sino_shape...)
-    subset_stat_weights_buf = similar(sinogram, T, subset_sino_shape...)
+    # Device-side global angle index per subset.  The residual kernel reads the
+    # full sinogram / data_weights through this map instead of copying each
+    # subset into a staging buffer every sub-iteration (that was 3 copies ×
+    # n_subsets × nepochs, ~23 % of `reconstruct!`, and 3 extra sinogram-subset
+    # buffers).  Int32 keeps the index small; nc·nr·n_angles ≪ typemax(Int32).
+    idx_proto = similar(sinogram, Int32, 0)
+    subset_angle_idx = Vector{typeof(idx_proto)}(undef, n_subsets)
+    for s in 1:n_subsets
+        subset_angle_idx[s] = similar(sinogram, Int32, length(subsets[s]))
+        copyto!(subset_angle_idx[s], Int32.(subsets[s]))
+    end
 
-    return HIRReconWorkspace{T, typeof(volume), typeof(geom_source_positions), typeof(filter_kernel)}(
+    # Only the forward-projection target still needs a staging buffer.
+    max_subset_size = maximum(length(s) for s in subsets)
+    subset_Ax_buf = similar(sinogram, T, sino_shape[1], sino_shape[2], max_subset_size)
+
+    return HIRReconWorkspace{T, typeof(volume), typeof(geom_source_positions), typeof(filter_kernel), typeof(idx_proto)}(
         volume, filtered, conv_scratch, filter_kernel,
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
         W_proj, V_inv,
-        stat_weights, correction, reg_grad,
+        data_weights, correction, reg_grad,
         subsets, subset_geometries,
         subset_geom_src, subset_geom_det, subset_geom_u, subset_geom_v,
-        subset_sino_buf, subset_Ax_buf, subset_W_proj_buf, subset_stat_weights_buf,
+        subset_angle_idx, subset_Ax_buf,
         params,
         projector
     )

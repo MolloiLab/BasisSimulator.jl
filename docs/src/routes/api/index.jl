@@ -672,12 +672,13 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                 H3(:id => "recon-hir", :class => h3_cls, "Hybrid IR — penalized iterative"),
                 Div(
                     :class => card_cls,
-                    Div(:class => sig_cls, "create_hir_recon_workspace(sino, geom, matrix_size; strength = 3, filter = :standard) → HIRReconWorkspace"),
+                    Div(:class => sig_cls, "create_hir_recon_workspace(sino, geom, matrix_size; strength = 60, filter = :standard) → HIRReconWorkspace"),
                     P(
                         :class => prose_cls,
                         "Penalized weighted least-squares iterative recon (Huber prior + ordered subsets).  ",
                         Code(:class => inline, "strength"),
-                        " ∈ {0, 1, 2, 3, 4, 5} — 0 = pure FDK pass-through, 5 = heaviest regularization.  ",
+                        " is a percentage in 10 % steps: 0 = pure FDK pass-through, 60 = standard clinical, ",
+                        "100 = heaviest regularization (it reads like the GE ASIR-V dial).  ",
                         "Workspace warm-starts from FDK, then runs the iterations."
                     ),
                 ),
@@ -687,11 +688,11 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                     P(
                         :class => prose_cls,
                         "Same dispatch shape as FDK.  Converges in 2–5 iterations on clinical data; ",
-                        "slowest reconstruction option — use FDK + image-domain BHC if you need speed."
+                        "costs a few FDK passes — the workspace is built once and reused."
                     ),
                     Pre(
                         :class => code_cls, Code(
-                            :class => "language-julia", """ws_hir  = BS.create_hir_recon_workspace(sino, geom, matrix_size; strength = 3, filter = :standard)
+                            :class => "language-julia", """ws_hir  = BS.create_hir_recon_workspace(sino, geom, matrix_size; strength = 60, filter = :standard)
                             recon_μ = Array(BS.reconstruct!(ws_hir, sino, geom))"""
                         )
                     ),
