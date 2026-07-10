@@ -28,17 +28,6 @@ end
 const _NOTEBOOK_GITHUB_BASE =
     "https://github.com/MolloiLab/BasisSimulator.jl/blob/main/docs/notebooks"
 
-# Match Snapshot.jl's own native-docs integration: keep the fragment's scoped
-# Pluto presentation intact inside a deliberate reading surface. Only its
-# floating page-level controls are suppressed because Therapy already owns the
-# surrounding navigation and theme.
-const _NOTEBOOK_EMBED_STYLE = """
-<style>
-.snap-notebook .plutoui-toc,
-.snap-notebook .snap-theme-picker { display: none !important; }
-</style>
-"""
-
 function NotebookPage(slug::AbstractString)
     BASE = get(ENV, "BASISSIM_BASE", "")
     title = _notebook_display_title(slug)
@@ -77,9 +66,7 @@ function NotebookPage(slug::AbstractString)
         # Same native reading surface used by Snapshot.jl's docs: the fragment
         # remains real DOM and theme-aware, while the soft boundary makes its
         # own Pluto typography/layout feel intentional inside Therapy.
-        Div(:class => "w-full min-w-0 overflow-hidden rounded-2xl border border-warm-200 dark:border-warm-800 bg-warm-50 dark:bg-warm-900 px-5 sm:px-8 py-7 shadow-[0_6px_22px_rgba(42,37,32,0.08)]",
-            RawHtml(notebook_html),
-            RawHtml(_NOTEBOOK_EMBED_STYLE),
-        ),
+        Div(:class => "bg-base-100 rounded-box sn-bubble px-5 sm:px-8 py-7 overflow-hidden",
+            RawHtml(notebook_html)),
     )
 end
