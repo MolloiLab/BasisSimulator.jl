@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.1.0
+# v0.2.3
 
 using Markdown
 using InteractiveUtils
@@ -86,6 +86,7 @@ import BasisSimulator as BS
 import CairoMakie as CM
 
 # ╔═╡ 06000001-0000-4000-8000-000000000032
+# ╠═╡ show_logs = false
 import PythonCall as PC
 
 # ╔═╡ 06000001-0000-4000-8000-000000000033
@@ -1074,7 +1075,7 @@ Where the speedup comes from, and where to take the comparison next.
 
 # ╔═╡ 0600000d-0000-4000-8000-000000000001
 md"""
-### Why BasisSim Is Faster
+### Why BasisSimulator.jl Is Faster
 
 A few specific things that show up in the runtime difference:
 
