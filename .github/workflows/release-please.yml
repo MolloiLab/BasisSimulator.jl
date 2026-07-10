@@ -35,8 +35,8 @@ jobs:
       - uses: googleapis/release-please-action@v4
         id: release
         with:
-          # `julia` release-type knows how to bump Project.toml and
-          # respects the leading-`v` tag convention used by TagBot.
+          # The simple strategy plus the GenericToml extra-file updater bumps
+          # Project.toml's version and respects the leading-v tag convention.
           config-file: .release-please-config.json
           manifest-file: .release-please-manifest.json
 
