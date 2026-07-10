@@ -29,6 +29,9 @@ echo "▶ instantiate docs env (no-op if Snapshot already warmed it)"
 # at ..) fixes itself instead of failing the build.
 julia --project=. -e 'using Pkg; Pkg.Registry.add("General"); Pkg.resolve(); Pkg.instantiate()'
 
+echo "▶ install Tailwind + DaisyUI"
+npm install --no-audit --no-fund
+
 echo "▶ Therapy build — notebooks NOT re-rendered, Tailwind auto-compiled → dist/"
 julia --project=. --optimize=3 app.jl build
 

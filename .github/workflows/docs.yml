@@ -28,6 +28,9 @@ jobs:
 
       - uses: julia-actions/cache@v2
 
+      - name: Install Tailwind and DaisyUI
+        run: npm install --prefix docs --no-audit --no-fund
+
       - name: Install dependencies
         run: |
           julia --project=docs -e '
