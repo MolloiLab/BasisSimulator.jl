@@ -623,6 +623,35 @@ end
         # Below the lowest threshold (≤20 keV) → near-zero registration in all bins
         @test sum(D[1, :]) < 0.05
     end
+
+    @testset "compute_mc_count_moments — spectrum-averaged covariance" begin
+        det = BS.PhotonCountingDetector(;
+            material = BS.CDTE_MATERIAL,
+            thickness_mm = 1.6,
+            energy_thresholds_keV = [20.0, 35.0, 55.0, 70.0],
+        )
+        energies = collect(20.0:2.0:120.0)
+        weights = @. exp(-((energies - 65.0) / 25.0)^2)
+        moments = BS.compute_mc_count_moments(det, energies, weights)
+
+        @test length(moments.mean) == 4
+        @test length(moments.fano) == 4
+        @test size(moments.covariance) == (4, 4)
+        @test size(moments.correlation) == (4, 4)
+        @test all(isfinite, moments.mean)
+        @test all(moments.mean .>= 0)
+        @test all(moments.fano .>= 0)
+        @test moments.covariance ≈ transpose(moments.covariance)
+        @test all(diag(moments.covariance) .>= 0)
+        @test diag(moments.correlation) ≈ ones(4)
+        @test all(abs.(moments.correlation) .<= 1.0)
+        @test minimum(eigvals(Symmetric(moments.covariance))) >= -1.0e-10
+
+        @test_throws DimensionMismatch BS.compute_mc_count_moments(
+            det, energies, weights[1:end-1])
+        @test_throws ArgumentError BS.compute_mc_count_moments(
+            det, energies, zeros(length(energies)))
+    end
 end
 
 # -----------------------------------------------------------------------------

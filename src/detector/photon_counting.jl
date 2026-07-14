@@ -777,10 +777,11 @@ end
     apply_pcct_noise!(sino::EnergyResolvedSinogram, detector, protocol;
                        seed=nothing, I0=1e6, energies=nothing, weights=nothing) -> EnergyResolvedSinogram
 
-Apply per-bin Poisson noise to PCCT energy-resolved sinograms (in-place).
+Apply MC-informed count noise to PCCT energy-resolved sinograms (in-place).
 
 Key PCCT noise characteristics:
-- Each bin has INDEPENDENT Poisson statistics
+- The default uses spectrum-averaged Fano factors and inter-bin correlations
+  from the bundled Monte Carlo detector-response covariance.
 - NO electronic noise (eliminated by energy thresholds — fundamental PCCT advantage)
 - Lower counts per bin → higher relative noise per bin vs conventional
 - Total counts (sum of all bins) ≈ conventional EID counts × η_avg
@@ -795,6 +796,8 @@ Key PCCT noise characteristics:
 - `I0::Real`: Reference photon count per detector element (total, before binning)
 - `energies::Union{Nothing,AbstractVector}`: Spectrum energies (keV) for proper per-bin I₀
 - `weights::Union{Nothing,AbstractVector}`: Spectrum weights for proper per-bin I₀
+- `use_mc_covariance::Bool`: Use bundled MC Fano factors and inter-bin count
+  correlations. Set false for the legacy independent-Poisson approximation.
 
 # Physics
 
@@ -826,7 +829,8 @@ function apply_pcct_noise!(
     ws_noise_I0 = nothing,
     ws_η = nothing,
     ws_R = nothing,
-    noise_reduction::Float64 = 0.0
+    noise_reduction::Float64 = 0.0,
+    use_mc_covariance::Bool = true
 ) where {T, A}
 
     rng = if ws_rng !== nothing
@@ -848,6 +852,28 @@ function apply_pcct_noise!(
     cpu_buf = ws_noise_staging !== nothing ? ws_noise_staging : Array(sino.bins[1])
     noise_buf = ws_noise_buf !== nothing ? ws_noise_buf : similar(cpu_buf)
 
+    # Convert the bundled cumulative-threshold MC covariance into the same
+    # differential bins and spectrum used by the forward projector. An ideal
+    # detector reduces to fano=1 and corr=I; the real CdTe response carries
+    # modest positive inter-bin correlations from charge sharing.
+    mc_noise = use_mc_covariance && energies !== nothing && weights !== nothing
+    fano = ones(Float64, n_bins)
+    corr_factor = Matrix{Float64}(I, n_bins, n_bins)
+    if mc_noise
+        moments = compute_mc_count_moments(detector, energies, weights;
+            η = ws_η, R = ws_R)
+        fano .= moments.fano
+        corr = Symmetric((moments.correlation .+ transpose(moments.correlation)) ./ 2)
+        eig = eigen(corr)
+        corr_psd = eig.vectors * Diagonal(max.(eig.values, 1.0e-6)) * transpose(eig.vectors)
+        d = sqrt.(max.(diag(corr_psd), 1.0e-12))
+        corr_psd ./= d * transpose(d)
+        corr_factor .= cholesky(Symmetric(corr_psd + 1.0e-7I)).L
+    end
+
+    factor_rng = MersenneTwister(isnothing(seed) ? 0 : seed)
+    nr_scale = T(1.0 - noise_reduction)
+
     for (b, bin) in enumerate(sino.bins)
         I0_bin = T(I0_per_bin[b])
 
@@ -858,17 +884,31 @@ function apply_pcct_noise!(
         @. cpu_buf = I0_bin * exp(-cpu_buf)
         @. cpu_buf = max(cpu_buf, T(0.1))
 
-        # Fill pre-allocated noise buffer (same RNG sequence as before)
-        randn!(rng, noise_buf)
-        # In-place: compute measured counts = N_expected + scale * sqrt(N_expected) * noise
-        # noise_reduction ∈ [0,1]: 0 = raw physics, 0.7 = 70% noise reduction (~QIR-3)
-        nr_scale = T(1.0 - noise_reduction)
-        @. noise_buf = cpu_buf + nr_scale * sqrt(cpu_buf) * noise_buf
+        if mc_noise
+            # Generate z_b = Σ_j L[b,j] ξ_j without another sino-sized buffer.
+            # Re-seeding each factor makes ξ_j bit-identical wherever it is
+            # reused by another output bin, producing the requested covariance.
+            fill!(noise_buf, zero(T))
+            for j in 1:b
+                coeff = T(corr_factor[b, j])
+                abs(coeff) <= eps(T) && continue
+                Random.seed!(factor_rng, (isnothing(seed) ? 0 : seed) + 1009 * j)
+                @inbounds for idx in eachindex(noise_buf)
+                    noise_buf[idx] += coeff * randn(factor_rng, T)
+                end
+            end
+            fano_b = T(max(fano[b], 0.0))
+            @. noise_buf = cpu_buf + nr_scale * sqrt(cpu_buf * fano_b) * noise_buf
+        else
+            # Legacy independent-Poisson Gaussian approximation.
+            randn!(rng, noise_buf)
+            @. noise_buf = cpu_buf + nr_scale * sqrt(cpu_buf) * noise_buf
+        end
 
         # Fix up low-count pixels with exact Poisson sampling (rare in clinical data)
         # cpu_buf still holds N_expected, noise_buf holds N_measured
         @inbounds for idx in eachindex(cpu_buf)
-            if cpu_buf[idx] <= T(20)
+            if !mc_noise && cpu_buf[idx] <= T(20)
                 sampled = T(_poisson_sample(rng, Float64(cpu_buf[idx])))
                 # Apply same noise reduction: blend toward expected value
                 noise_buf[idx] = cpu_buf[idx] + nr_scale * (sampled - cpu_buf[idx])

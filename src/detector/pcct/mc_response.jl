@@ -258,6 +258,129 @@ function compute_mc_drm(detector::PhotonCountingDetector, kVp::Real;
 end
 
 """
+    compute_mc_count_moments(detector, energies, weights; η=nothing, R=nothing)
+
+Compute spectrum-averaged first and second moments of differential PCCT bin
+counts from the bundled Monte Carlo detector response. The returned covariance
+is the compound-Poisson covariance per incident spectral photon,
+`E[Cov(Y|E) + E[Y|E]E[Y|E]′]`; an ideal one-count categorical detector therefore
+reduces exactly to independent Poisson bins (`fano == 1`, zero correlation).
+
+The MC cumulative-threshold covariance is transformed to the detector's
+differential bins, interpolated in energy, and scaled to the same DRM row used
+by the forward projector. `mean`, `fano`, `correlation`, and `covariance` are
+returned as `Float64` arrays.
+"""
+function compute_mc_count_moments(
+        detector::PhotonCountingDetector,
+        energies::AbstractVector,
+        weights::AbstractVector;
+        η = nothing,
+        R = nothing,
+        response_path::String = default_mc_drm_path(),
+    )
+    length(energies) == length(weights) || throw(DimensionMismatch(
+        "energies and weights must have equal length"
+    ))
+    isempty(energies) && throw(ArgumentError("energies must be nonempty"))
+    all(isfinite, weights) && all(>=(0), weights) || throw(ArgumentError(
+        "weights must be finite and nonnegative"
+    ))
+    sum(weights) > 0 || throw(ArgumentError("weights must have positive sum"))
+
+    mc = load_mc_response(response_path)
+    target_t = Float64.(detector.energy_thresholds_keV)
+    source_t = Float64.(mc.thresholds_keV)
+    n_bins = length(target_t)
+
+    # H maps cumulative counts at MC thresholds to cumulative counts at target
+    # thresholds. Standard NAEOTOM thresholds are exact rows; linear threshold
+    # interpolation keeps custom threshold sets well-defined.
+    H = zeros(Float64, n_bins, length(source_t))
+    for (i, t) in enumerate(target_t)
+        if t <= first(source_t)
+            H[i, 1] = 1
+        elseif t >= last(source_t)
+            H[i, end] = 1
+        else
+            hi = searchsortedfirst(source_t, t)
+            lo = hi - 1
+            α = (t - source_t[lo]) / (source_t[hi] - source_t[lo])
+            H[i, lo] = 1 - α
+            H[i, hi] = α
+        end
+    end
+    B = zeros(Float64, n_bins, n_bins)
+    for b in 1:(n_bins - 1)
+        B[b, b] = 1
+        B[b, b + 1] = -1
+    end
+    B[end, end] = 1
+    S = B * H
+
+    kVp = Float64(maximum(energies))
+    R_use = R === nothing ? compute_mc_drm(detector, kVp) : Float64.(R)
+    η_use = η === nothing ?
+        quantum_efficiency_vector(detector.material, detector.thickness_mm, energies) : η
+    size(R_use, 2) == n_bins || throw(DimensionMismatch(
+        "R has $(size(R_use, 2)) bins; detector has $n_bins"
+    ))
+
+    mean_eff = zeros(Float64, n_bins)
+    second_eff = zeros(Float64, n_bins, n_bins)
+    weight_sum = Float64(sum(weights))
+    mc_E = Float64.(mc.energies_keV)
+    n_R = size(R_use, 1)
+
+    for i in eachindex(energies, weights)
+        w = Float64(weights[i]) / weight_sum
+        w == 0 && continue
+        E = Float64(energies[i])
+        if E <= first(mc_E)
+            lo = hi = 1; α = 0.0
+        elseif E >= last(mc_E)
+            lo = hi = length(mc_E); α = 0.0
+        else
+            hi = searchsortedfirst(mc_E, E)
+            lo = hi - 1
+            α = (E - mc_E[lo]) / (mc_E[hi] - mc_E[lo])
+        end
+        r_cum = (1 - α) .* @view(mc.R_total[lo, :]) .+
+            α .* @view(mc.R_total[hi, :])
+        c_cum = (1 - α) .* @view(mc.Cov_total[lo, :, :]) .+
+            α .* @view(mc.Cov_total[hi, :, :])
+        m_raw = S * r_cum
+        C_raw = S * c_cum * transpose(S)
+
+        r_idx = clamp(round(Int, (E - 1.0) / (kVp - 1.0) * (n_R - 1)) + 1, 1, n_R)
+        d = Float64.(@view R_use[r_idx, :])
+        scale = [m_raw[b] > eps(Float64) ? d[b] / m_raw[b] : 0.0 for b in 1:n_bins]
+        Dscale = Diagonal(scale)
+        C = Dscale * C_raw * Dscale
+        ηi = Float64(η_use[i])
+        event_mean = ηi .* d
+        # Bernoulli detection gate followed by a compound-Poisson incident
+        # process: Cov_total = η(C + dd′).
+        event_second = ηi .* (C .+ d * transpose(d))
+        mean_eff .+= w .* event_mean
+        second_eff .+= w .* event_second
+    end
+
+    second_eff .= (second_eff .+ transpose(second_eff)) ./ 2
+    fano = [mean_eff[b] > eps(Float64) ? second_eff[b, b] / mean_eff[b] : 1.0
+            for b in 1:n_bins]
+    correlation = Matrix{Float64}(I, n_bins, n_bins)
+    for j in 1:n_bins, i in 1:n_bins
+        denom = sqrt(max(second_eff[i, i] * second_eff[j, j], 0.0))
+        correlation[i, j] = denom > eps(Float64) ? second_eff[i, j] / denom : (i == j ? 1.0 : 0.0)
+    end
+    correlation .= clamp.(correlation, -1.0, 1.0)
+    (mean = mean_eff, fano = fano, correlation = correlation, covariance = second_eff)
+end
+
+export compute_mc_count_moments
+
+"""
     mc_drm_summary(D::Matrix{Float64}, thresholds::AbstractVector, kVp::Real;
                     n_energy_points::Int=200)
 
