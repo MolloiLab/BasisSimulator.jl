@@ -16,10 +16,16 @@ concurrency:
   group: snapshot-${{ github.ref }}
   cancel-in-progress: true
 env:
-  SNAPSHOT_WT_REF: main
-  SNAPSHOT_ENGINE_REF: main
+  # Immutable audited inputs for the free-tier test. Upgrade deliberately.
+  SNAPSHOT_WT_REF: cadb908093efee3b08a065f50930d3337916391d # WasmTarget main (2026-07-14)
+  SNAPSHOT_ENGINE_REF: 9aece0db304b68ee4d8b4a16ee41f95fd93a7667 # Snapshot.jl main (2026-07-14)
+  SNAPSHOT_EXPORT_SHA256: 0f9fab84fd6137b14d762cc2405eebe65233e0c3ca096e0a8c7a79dbe7d1d591
+  SNAPSHOT_COLLECTION_SHA256: 6db49d448ddaf1a55b9556f47caa1548a1a8a9b68d00bf2bacaf3cf8e29bcc76
+  SNAPSHOT_UPLOAD_SHA256: b298148e9c1c6a78a2ef63f33cbb59c6d8ec4c8157b1d7b46583321160518ca4
   BINARYEN_VERSION: version_125
   WASMTOOLS_VERSION: 1.244.0
+  BINARYEN_SHA256: 7c3bc16599c8274a04d34a504fe4be2047884f900e0e2da2f6fb9cd667183be4
+  WASMTOOLS_SHA256: c3bf279c10e8ca37262773c829efd45423b5efeeb93ba1dc17baf25d9479074c
   SNAPSHOT_OPTIMIZE: size
   SNAPSHOT_ORACLE_SAMPLES: "5"
   SNAPSHOT_INGEST_URL: https://snapshot.show
@@ -44,21 +50,25 @@ jobs:
       matrix: ${{ steps.d.outputs.matrix }}
       has_notebooks: ${{ steps.d.outputs.has_notebooks }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with: { path: repo }
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with: { repository: GroupTherapyOrg/WasmTarget.jl, ref: "${{ env.SNAPSHOT_WT_REF }}", path: WasmTarget.jl }
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with: { repository: GroupTherapyOrg/Snapshot.jl, ref: "${{ env.SNAPSHOT_ENGINE_REF }}", path: Snapshot.jl }
-      - uses: julia-actions/setup-julia@v2
+      - uses: julia-actions/setup-julia@4c0cb0fce8556fdb04a90347310e5db8b1f98fb9 # v2
         with: { version: "1.12" }
-      - uses: julia-actions/cache@v2          # WARMS the shared depot cache
+      - uses: julia-actions/cache@d10a6fd8f31b12404a54613ebad242900567f2b9 # v2 — warms shared depot
       - name: Instantiate + precompile engine (shared by every matrix job)
         run: julia --project=Snapshot.jl -e 'using Pkg; Pkg.Registry.add("General"); Pkg.instantiate(); using Snapshot'
       - name: Fetch Snapshot driver + collection builder
         run: |
           curl -fsSL "${SNAPSHOT_INGEST_URL%/}/ci/export.jl" -o export.jl
           curl -fsSL "${SNAPSHOT_INGEST_URL%/}/ci/collection.jl" -o collection.jl
+          curl -fsSL "${SNAPSHOT_INGEST_URL%/}/ci/upload.mjs" -o upload.mjs
+          echo "${SNAPSHOT_EXPORT_SHA256}  export.jl" | sha256sum -c -
+          echo "${SNAPSHOT_COLLECTION_SHA256}  collection.jl" | sha256sum -c -
+          echo "${SNAPSHOT_UPLOAD_SHA256}  upload.mjs" | sha256sum -c -
       - id: d
         name: Discover (kind + notebook matrix)
         run: |
@@ -79,11 +89,11 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with: { path: repo }
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with: { repository: GroupTherapyOrg/WasmTarget.jl, ref: "${{ env.SNAPSHOT_WT_REF }}", path: WasmTarget.jl }
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with: { repository: GroupTherapyOrg/Snapshot.jl, ref: "${{ env.SNAPSHOT_ENGINE_REF }}", path: Snapshot.jl }
       # ── per-notebook export cache: key = notebook source hash + engine content +
       # WasmTarget SHA + every knob that changes the compiled output (optimize level,
@@ -100,7 +110,7 @@ jobs:
           echo "wt=$(git -C WasmTarget.jl rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - id: cache
         if: matrix.nb.cache != false && inputs.force != true
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: _stage/${{ matrix.nb.slug }}
           # v4: + oracle depth + Binaryen/wasm-tools versions (all affect the emitted
@@ -108,22 +118,26 @@ jobs:
           # docs-only push doesn't bust every tenant's notebook cache.
           key: snap-nb-v4-${{ matrix.nb.slug }}-${{ hashFiles(format('repo/{0}', matrix.nb.notebook)) }}-wt${{ steps.keys.outputs.wt }}-eng${{ hashFiles('Snapshot.jl/src/**', 'Snapshot.jl/assets/**', 'Snapshot.jl/Project.toml') }}-${{ env.SNAPSHOT_OPTIMIZE }}-o${{ env.SNAPSHOT_ORACLE_SAMPLES }}-b${{ env.BINARYEN_VERSION }}-t${{ env.WASMTOOLS_VERSION }}
       - if: steps.cache.outputs.cache-hit != 'true'
-        uses: julia-actions/setup-julia@v2
+        uses: julia-actions/setup-julia@4c0cb0fce8556fdb04a90347310e5db8b1f98fb9 # v2
         with: { version: "1.12" }
       - if: steps.cache.outputs.cache-hit != 'true'
-        uses: julia-actions/cache@v2          # RESTORES the warmed depot — no re-precompile
+        uses: julia-actions/cache@d10a6fd8f31b12404a54613ebad242900567f2b9 # v2 — restores warmed depot
       - if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with: { node-version: "22" }
       - if: steps.cache.outputs.cache-hit != 'true'
         name: Install Binaryen (wasm-opt, wasm-merge)
         run: |
-          curl -fsSL "https://github.com/WebAssembly/binaryen/releases/download/${BINARYEN_VERSION}/binaryen-${BINARYEN_VERSION}-x86_64-linux.tar.gz" | tar -xz
+          curl -fsSL "https://github.com/WebAssembly/binaryen/releases/download/${BINARYEN_VERSION}/binaryen-${BINARYEN_VERSION}-x86_64-linux.tar.gz" -o binaryen.tar.gz
+          echo "${BINARYEN_SHA256}  binaryen.tar.gz" | sha256sum -c -
+          tar -xzf binaryen.tar.gz
           echo "$PWD/binaryen-${BINARYEN_VERSION}/bin" >> "$GITHUB_PATH"
       - if: steps.cache.outputs.cache-hit != 'true'
         name: Install wasm-tools
         run: |
-          curl -fsSL "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASMTOOLS_VERSION}/wasm-tools-${WASMTOOLS_VERSION}-x86_64-linux.tar.gz" | tar -xz
+          curl -fsSL "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASMTOOLS_VERSION}/wasm-tools-${WASMTOOLS_VERSION}-x86_64-linux.tar.gz" -o wasm-tools.tar.gz
+          echo "${WASMTOOLS_SHA256}  wasm-tools.tar.gz" | sha256sum -c -
+          tar -xzf wasm-tools.tar.gz
           echo "$PWD/wasm-tools-${WASMTOOLS_VERSION}-x86_64-linux" >> "$GITHUB_PATH"
       - if: steps.cache.outputs.cache-hit != 'true'
         name: Instantiate (restored cache → fast)
@@ -133,6 +147,8 @@ jobs:
         run: |
           curl -fsSL "${SNAPSHOT_INGEST_URL%/}/ci/export.jl" -o export.jl
           curl -fsSL "${SNAPSHOT_INGEST_URL%/}/ci/collection.jl" -o collection.jl
+          echo "${SNAPSHOT_EXPORT_SHA256}  export.jl" | sha256sum -c -
+          echo "${SNAPSHOT_COLLECTION_SHA256}  collection.jl" | sha256sum -c -
       - if: steps.cache.outputs.cache-hit != 'true'
         name: Export ${{ matrix.nb.slug }}
         run: julia --project=Snapshot.jl export.jl one repo _stage "${{ matrix.nb.slug }}" "${{ matrix.nb.notebook }}"
@@ -148,7 +164,7 @@ jobs:
             echo "🔨 \`${{ matrix.nb.slug }}\` — exported$why" >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "${{ matrix.nb.slug }} cache-hit=$hit$why"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: nb-${{ matrix.nb.slug }}
           path: _stage
@@ -160,23 +176,29 @@ jobs:
     if: needs.discover.outputs.kind == 'collection' && needs.discover.outputs.has_notebooks == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with: { path: repo }
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with: { repository: GroupTherapyOrg/WasmTarget.jl, ref: "${{ env.SNAPSHOT_WT_REF }}", path: WasmTarget.jl }
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with: { repository: GroupTherapyOrg/Snapshot.jl, ref: "${{ env.SNAPSHOT_ENGINE_REF }}", path: Snapshot.jl }
-      - uses: julia-actions/setup-julia@v2
+      - uses: julia-actions/setup-julia@4c0cb0fce8556fdb04a90347310e5db8b1f98fb9 # v2
         with: { version: "1.12" }
-      - uses: julia-actions/cache@v2
+      - uses: julia-actions/cache@d10a6fd8f31b12404a54613ebad242900567f2b9 # v2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with: { node-version: "22" }
       - name: Instantiate (restored cache → fast)
         run: julia --project=Snapshot.jl -e 'using Pkg; Pkg.instantiate()'
       - name: Fetch Snapshot driver + collection builder
         run: |
           curl -fsSL "${SNAPSHOT_INGEST_URL%/}/ci/export.jl" -o export.jl
           curl -fsSL "${SNAPSHOT_INGEST_URL%/}/ci/collection.jl" -o collection.jl
+          curl -fsSL "${SNAPSHOT_INGEST_URL%/}/ci/upload.mjs" -o upload.mjs
+          echo "${SNAPSHOT_EXPORT_SHA256}  export.jl" | sha256sum -c -
+          echo "${SNAPSHOT_COLLECTION_SHA256}  collection.jl" | sha256sum -c -
+          echo "${SNAPSHOT_UPLOAD_SHA256}  upload.mjs" | sha256sum -c -
       - name: Gather per-notebook exports
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: nb-*
           merge-multiple: true
@@ -188,18 +210,8 @@ jobs:
           ok=$(jq -r '.ok' _stage/manifest.json)
           [ "${ok:-0}" -gt 0 ] || { echo "no notebooks published"; exit 1; }
           ( cd _stage && zip -qr "$GITHUB_WORKSPACE/site.zip" . )
+          node upload.mjs _stage upload-manifest.json prepare
           ls -la site.zip
-          # Pre-flight size gate: uploads over ~100 MB die at Cloudflare's edge with an
-          # opaque 413 before Snapshot can even reply — fail HERE with a useful breakdown.
-          zipmb=$(( $(wc -c < site.zip) / 1048576 ))
-          if [ "$zipmb" -ge 95 ]; then
-            echo "::error title=Bundle too large to upload::site.zip is ${zipmb} MB — the platform's hard upload ceiling is ~95 MB (compressed). Largest files in your site:"
-            ( cd _stage && find . -type f -size +1M -exec du -m {} + | sort -rn | head -12 )
-            echo "Trim the biggest files (pre-rendered notebook HTML with embedded state is the usual culprit), lower figure resolution, or exclude heavy pages from this build."
-            exit 1
-          elif [ "$zipmb" -ge 20 ]; then
-            echo "::warning title=Large bundle::site.zip is ${zipmb} MB compressed — this may exceed your plan's publish limit (the publish step will say so if it does)."
-          fi
       - name: Attest build provenance
         # GitHub's provenance attestation isn't available for user-owned PRIVATE
         # repos, so it errors there and would sink the publish. Skip it for private
@@ -207,34 +219,13 @@ jobs:
         # continue-on-error keeps a transient public-repo hiccup non-fatal too.
         if: ${{ github.event.repository.private != true }}
         continue-on-error: true
-        uses: actions/attest-build-provenance@v2
-        with: { subject-path: "site.zip" }
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: |
+            site.zip
+            upload-manifest.json
       - name: Publish site to Snapshot (OIDC)
-        run: |
-          OIDC=$(curl -fsSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=snapshot" | jq -r '.value')
-          owner="${GITHUB_REPOSITORY%%/*}"; reponame="${GITHUB_REPOSITORY##*/}"
-          slug=$(jq -r '.slug' _stage/manifest.json); index=$(jq -r '.index' _stage/manifest.json); kind=$(jq -r '.kind' _stage/manifest.json)
-          digest=$(sha256sum site.zip | awk '{print $1}')
-          zipkb=$(( $(wc -c < site.zip) / 1024 ))
-          echo "Publishing '${slug}' (${kind}) — bundle ${zipkb} KB (sha256:${digest})"
-          code=$(curl -sS -o /tmp/sn_resp.txt -w "%{http_code}" -X POST "${SNAPSHOT_INGEST_URL%/}/ingest" \
-            -H "authorization: Bearer ${OIDC}" -H "x-snapshot-auth: oidc" \
-            -H "x-snapshot-owner: ${owner}" -H "x-snapshot-repo: ${reponame}" \
-            -H "x-snapshot-notebook: ${slug}" -H "x-snapshot-kind: ${kind}" \
-            -H "x-snapshot-commit: ${GITHUB_SHA}" -H "x-snapshot-index: ${index}" \
-            -H "x-snapshot-attestation: sha256:${digest}" \
-            -H "content-type: application/zip" --data-binary "@site.zip" || echo "000")
-          reason="$(cat /tmp/sn_resp.txt 2>/dev/null)"
-          if [ "${code:-000}" -ge 200 ] && [ "${code:-000}" -lt 300 ]; then echo "✓ Published. ${reason}"; exit 0; fi
-          echo "::error title=Snapshot couldn't publish your site::HTTP ${code} — ${reason}"
-          case "${code}" in
-            413) echo "  Over the size limit — trim large notebooks/images (heavy WASM islands are the usual culprit)." ;;
-            403) echo "  Repo not enabled for publishing, or it's private (only public repos for now)." ;;
-            429) echo "  Too many publishes in a short window — wait, then retry." ;;
-            503) echo "  Snapshot is temporarily at capacity / paused — hosted sites are unaffected; retry later." ;;
-            000) echo "  Couldn't reach Snapshot at all (network/URL)." ;;
-          esac
-          exit 1
+        run: node upload.mjs _stage upload-manifest.json
 
   # ── a Therapy app: single-job build + publish (snapshot.toml/build.sh drive it) ──
   app-publish:
@@ -243,24 +234,28 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with: { path: repo }
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with: { repository: GroupTherapyOrg/WasmTarget.jl, ref: "${{ env.SNAPSHOT_WT_REF }}", path: WasmTarget.jl }
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with: { repository: GroupTherapyOrg/Snapshot.jl, ref: "${{ env.SNAPSHOT_ENGINE_REF }}", path: Snapshot.jl }
-      - uses: julia-actions/setup-julia@v2
+      - uses: julia-actions/setup-julia@4c0cb0fce8556fdb04a90347310e5db8b1f98fb9 # v2
         with: { version: "1.12" }
-      - uses: julia-actions/cache@v2
-      - uses: actions/setup-node@v4
+      - uses: julia-actions/cache@d10a6fd8f31b12404a54613ebad242900567f2b9 # v2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with: { node-version: "22" }
       - name: Install Binaryen (wasm-opt, wasm-merge)
         run: |
-          curl -fsSL "https://github.com/WebAssembly/binaryen/releases/download/${BINARYEN_VERSION}/binaryen-${BINARYEN_VERSION}-x86_64-linux.tar.gz" | tar -xz
+          curl -fsSL "https://github.com/WebAssembly/binaryen/releases/download/${BINARYEN_VERSION}/binaryen-${BINARYEN_VERSION}-x86_64-linux.tar.gz" -o binaryen.tar.gz
+          echo "${BINARYEN_SHA256}  binaryen.tar.gz" | sha256sum -c -
+          tar -xzf binaryen.tar.gz
           echo "$PWD/binaryen-${BINARYEN_VERSION}/bin" >> "$GITHUB_PATH"
       - name: Install wasm-tools
         run: |
-          curl -fsSL "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASMTOOLS_VERSION}/wasm-tools-${WASMTOOLS_VERSION}-x86_64-linux.tar.gz" | tar -xz
+          curl -fsSL "https://github.com/bytecodealliance/wasm-tools/releases/download/v${WASMTOOLS_VERSION}/wasm-tools-${WASMTOOLS_VERSION}-x86_64-linux.tar.gz" -o wasm-tools.tar.gz
+          echo "${WASMTOOLS_SHA256}  wasm-tools.tar.gz" | sha256sum -c -
+          tar -xzf wasm-tools.tar.gz
           echo "$PWD/wasm-tools-${WASMTOOLS_VERSION}-x86_64-linux" >> "$GITHUB_PATH"
       - name: Instantiate engine
         run: julia --project=Snapshot.jl -e 'using Pkg; Pkg.instantiate()'
@@ -268,6 +263,10 @@ jobs:
         run: |
           curl -fsSL "${SNAPSHOT_INGEST_URL%/}/ci/export.jl" -o export.jl
           curl -fsSL "${SNAPSHOT_INGEST_URL%/}/ci/collection.jl" -o collection.jl
+          curl -fsSL "${SNAPSHOT_INGEST_URL%/}/ci/upload.mjs" -o upload.mjs
+          echo "${SNAPSHOT_EXPORT_SHA256}  export.jl" | sha256sum -c -
+          echo "${SNAPSHOT_COLLECTION_SHA256}  collection.jl" | sha256sum -c -
+          echo "${SNAPSHOT_UPLOAD_SHA256}  upload.mjs" | sha256sum -c -
       - name: Build app (snapshot.toml [app] / build.sh / app.jl build)
         run: julia --project=Snapshot.jl export.jl repo _stage
       - name: Package the site as one zip
@@ -275,18 +274,8 @@ jobs:
           ok=$(jq -r '.ok' _stage/manifest.json)
           [ "${ok:-0}" -gt 0 ] || { echo "app produced nothing to publish"; exit 1; }
           ( cd _stage && zip -qr "$GITHUB_WORKSPACE/site.zip" . )
+          node upload.mjs _stage upload-manifest.json prepare
           ls -la site.zip
-          # Pre-flight size gate: uploads over ~100 MB die at Cloudflare's edge with an
-          # opaque 413 before Snapshot can even reply — fail HERE with a useful breakdown.
-          zipmb=$(( $(wc -c < site.zip) / 1048576 ))
-          if [ "$zipmb" -ge 95 ]; then
-            echo "::error title=Bundle too large to upload::site.zip is ${zipmb} MB — the platform's hard upload ceiling is ~95 MB (compressed). Largest files in your site:"
-            ( cd _stage && find . -type f -size +1M -exec du -m {} + | sort -rn | head -12 )
-            echo "Trim the biggest files (pre-rendered notebook HTML with embedded state is the usual culprit), lower figure resolution, or exclude heavy pages from this build."
-            exit 1
-          elif [ "$zipmb" -ge 20 ]; then
-            echo "::warning title=Large bundle::site.zip is ${zipmb} MB compressed — this may exceed your plan's publish limit (the publish step will say so if it does)."
-          fi
       - name: Attest build provenance
         # GitHub's provenance attestation isn't available for user-owned PRIVATE
         # repos, so it errors there and would sink the publish. Skip it for private
@@ -294,31 +283,10 @@ jobs:
         # continue-on-error keeps a transient public-repo hiccup non-fatal too.
         if: ${{ github.event.repository.private != true }}
         continue-on-error: true
-        uses: actions/attest-build-provenance@v2
-        with: { subject-path: "site.zip" }
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: |
+            site.zip
+            upload-manifest.json
       - name: Publish site to Snapshot (OIDC)
-        run: |
-          OIDC=$(curl -fsSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=snapshot" | jq -r '.value')
-          owner="${GITHUB_REPOSITORY%%/*}"; reponame="${GITHUB_REPOSITORY##*/}"
-          slug=$(jq -r '.slug' _stage/manifest.json); index=$(jq -r '.index' _stage/manifest.json); kind=$(jq -r '.kind' _stage/manifest.json)
-          digest=$(sha256sum site.zip | awk '{print $1}')
-          zipkb=$(( $(wc -c < site.zip) / 1024 ))
-          echo "Publishing '${slug}' (${kind}) — bundle ${zipkb} KB (sha256:${digest})"
-          code=$(curl -sS -o /tmp/sn_resp.txt -w "%{http_code}" -X POST "${SNAPSHOT_INGEST_URL%/}/ingest" \
-            -H "authorization: Bearer ${OIDC}" -H "x-snapshot-auth: oidc" \
-            -H "x-snapshot-owner: ${owner}" -H "x-snapshot-repo: ${reponame}" \
-            -H "x-snapshot-notebook: ${slug}" -H "x-snapshot-kind: ${kind}" \
-            -H "x-snapshot-commit: ${GITHUB_SHA}" -H "x-snapshot-index: ${index}" \
-            -H "x-snapshot-attestation: sha256:${digest}" \
-            -H "content-type: application/zip" --data-binary "@site.zip" || echo "000")
-          reason="$(cat /tmp/sn_resp.txt 2>/dev/null)"
-          if [ "${code:-000}" -ge 200 ] && [ "${code:-000}" -lt 300 ]; then echo "✓ Published. ${reason}"; exit 0; fi
-          echo "::error title=Snapshot couldn't publish your site::HTTP ${code} — ${reason}"
-          case "${code}" in
-            413) echo "  Over the size limit — trim large notebooks/images (heavy WASM islands are the usual culprit)." ;;
-            403) echo "  Repo not enabled for publishing, or it's private (only public repos for now)." ;;
-            429) echo "  Too many publishes in a short window — wait, then retry." ;;
-            503) echo "  Snapshot is temporarily at capacity / paused — hosted sites are unaffected; retry later." ;;
-            000) echo "  Couldn't reach Snapshot at all (network/URL)." ;;
-          esac
-          exit 1
+        run: node upload.mjs _stage upload-manifest.json
