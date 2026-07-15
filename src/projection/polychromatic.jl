@@ -496,7 +496,7 @@ function _forward_project_poly!(
     # =========================================================================
     if ws_μ_table_gpu !== nothing && ws_wη_gpu !== nothing
         # ---------------------------------------------------------------------
-        # SINGLE-PASS PATH (:dd_fast, ≤32 materials): the path-length DD kernel
+        # SINGLE-PASS PATH (:dd_fast, ≤64 materials): the path-length DD kernel
         # accumulates per-MATERIAL path lengths (energy-independent registers),
         # so all n_energies convert once per cell — ONE volume walk instead of
         # n_tiles.  Identical DD footprint/weights; float ordering only.
@@ -518,6 +518,7 @@ function _forward_project_poly!(
             return sinogram
         end
 
+        projector === :dd_fast && _warn_dd_fast_fallback(size(ws_μ_table_gpu, 1))
         @info "TILED PATH: K=16, n_energies=$n_energies, mask=$(size(mask)), sino=$(size(sinogram))" maxlog = 1
 
         # Tile parameters — fused poly projector (Val(16), `projector`-selected)

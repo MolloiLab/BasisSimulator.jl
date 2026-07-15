@@ -50,7 +50,8 @@ for preset lookup — it is not stored on the struct.
   anti-aliased footprint integration with single-pass per-material path-length fused kernels —
   the full spectrum runs in ONE volume walk (measured 47x faster than `:dd` on a 234-bin
   polychromatic forward on M4 Metal), results agree with `:dd` to floating-point ordering;
-  requires ≤ 32 materials (falls back to the `:dd` kernels above that), and mono projection is
+  supports ≤ 64 materials (emits a prominent warning and falls back to the `:dd` kernels above
+  that); call `compact_materials` to remove inactive table entries. Mono projection is
   the `:dd` kernel unchanged.  `:dd` = the original per-energy distance-driven kernel —
   **DEPRECATED** (kept as the numerical reference; emits a warning and may be removed in a
   future release; use `:dd_fast`).  `:siddon` = exact point-sampled ray tracing retained for

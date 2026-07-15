@@ -14,7 +14,7 @@
 #                                         volume n_tiles times)
 #         = Σ_m μ[m, e] · P_m,   P_m = Σ_{v : m_v = m} w_v
 #
-# so ONE volume walk accumulates per-MATERIAL path lengths P (n_mat ≤ 32
+# so ONE volume walk accumulates per-MATERIAL path lengths P (n_mat ≤ 64
 # registers, energy-independent) and every energy converts once per detector
 # cell.  Results agree with legacy `:dd` to floating-point ordering.
 #
@@ -26,8 +26,8 @@
 # Selected via `projector = :dd_fast` (SimOptions / create_hir_recon_workspace
 # / the `_project_fused_*` shims).  Mono projection has no energy loop, so
 # `:dd_fast` mono IS `dd_forward_project!` — see `select_projector.jl`.
-# Requires n_materials ≤ `_PLEN_MAX_MATERIALS` (= 32); larger tables fall back
-# to the legacy `dd_*` kernels (and the hosts keep their tiled loop).
+# Requires n_materials ≤ `_PLEN_MAX_MATERIALS` (= 64); larger tables emit a
+# prominent warning and fall back to the legacy tiled `dd_*` kernels.
 # =============================================================================
 
 export dd_fast_fused_poly_project!, dd_fast_fused_spectral_project!
@@ -49,7 +49,7 @@ export dd_fast_fused_poly_project!, dd_fast_fused_spectral_project!
 # energy-independent) during ONE volume walk and convert to the energies once
 # per cell.  Footprint, overlap weights, and anti-aliasing are IDENTICAL —
 # this is a reassociation of a linear sum (floating-point ordering only).
-# Used when n_materials ≤ 32 (register budget); larger tables fall back to
+# Used when n_materials ≤ 64 (validated register budget); larger tables fall back to
 # the legacy per-energy kernels.
 
 # Branchless scatter of `w` into `plens[mat]` (select chain, no divergence).
@@ -68,7 +68,17 @@ end
 end
 
 # Max n_materials for the path-length kernels (NTuple stays in registers).
-const _PLEN_MAX_MATERIALS = 32
+const _PLEN_MAX_MATERIALS = 64
+
+function _warn_dd_fast_fallback(n_materials::Integer)
+    @warn """
+    DD_FAST SINGLE-PASS DISABLED: material table has $n_materials entries; the optimized limit is $(_PLEN_MAX_MATERIALS).
+    Falling back to the legacy tiled distance-driven projector, which can be tens of times slower.
+    Call compact_materials(phantom) before GPU transfer to remove inactive materials, merge materials when physically appropriate,
+    or deliberately select projector=:dd. The requested :dd_fast path is NOT effective for this projection.
+    """ maxlog = 1
+    nothing
+end
 
 # =============================================================================
 # Kernel launches (internal)
@@ -285,9 +295,8 @@ end
 # polychromatic forward (512²×64 vol, 736×16×720 sino): 113.8 s (:dd tiled)
 # → 2.4 s (:dd_fast single-pass), agreement mean_rel ≈ 5e-7.
 #
-# Requires n_materials ≤ `_PLEN_MAX_MATERIALS` (= 32) so the path-length tuple
-# stays in registers; larger tables fall back to the legacy `dd_*` kernels
-# (the hosts then also keep their tiled loop).
+# Requires n_materials ≤ `_PLEN_MAX_MATERIALS` (= 64); larger tables warn and
+# fall back to the legacy `dd_*` kernels (the hosts keep their tiled loop).
 
 """
     dd_fast_fused_poly_project!(sinogram, mask, geom, μ_table_gpu, wη_gpu, Val(N_E); kwargs...)
@@ -296,7 +305,7 @@ Single-pass per-material path-length variant of [`dd_fused_poly_project!`](@ref)
 (the `:dd_fast` projector).  Identical distance-driven footprint and weights;
 accumulation reassociated by linearity so ALL `N_E` energies are produced in
 one volume walk with `n_materials` registers.  Falls back to the legacy kernel
-when `size(μ_table_gpu, 1) > 32`.
+when `size(μ_table_gpu, 1) > 64`, with a prominent performance warning.
 """
 function dd_fast_fused_poly_project!(
         sinogram::AbstractArray{T, 3},
@@ -314,6 +323,7 @@ function dd_fast_fused_poly_project!(
     ) where {T <: AbstractFloat, N_E}
 
     if size(μ_table_gpu, 1) > _PLEN_MAX_MATERIALS
+        _warn_dd_fast_fallback(size(μ_table_gpu, 1))
         return dd_fused_poly_project!(
             sinogram, mask, geom, μ_table_gpu, wη_gpu, Val(N_E);
             volume_extent = volume_extent,
@@ -365,7 +375,8 @@ Single-pass per-material path-length variant of
 [`dd_fused_spectral_project!`](@ref) (the `:dd_fast` projector).  Identical
 distance-driven footprint and weights; `K` may be the FULL padded energy count
 in a single call (no per-energy registers, no per-tile volume re-walk).  Falls
-back to the legacy kernel when `size(μ_table_gpu, 1) > 32`.
+back to the legacy kernel when `size(μ_table_gpu, 1) > 64`, with a prominent
+performance warning.
 """
 function dd_fast_fused_spectral_project!(
         pilot::AbstractArray{T, 3},
@@ -386,6 +397,7 @@ function dd_fast_fused_spectral_project!(
     ) where {T <: AbstractFloat, K}
 
     if size(μ_table_gpu, 1) > _PLEN_MAX_MATERIALS
+        _warn_dd_fast_fallback(size(μ_table_gpu, 1))
         return dd_fused_spectral_project!(
             pilot, outputs_flat, n_bins, mask, geom, μ_table_gpu, W_gpu,
             Val(K), tile_start;

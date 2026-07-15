@@ -294,14 +294,15 @@ end
         @test maximum(abs.(sino_f .- sino_d)) < 1.0f-4
     end
 
-    @testset "M > 32 materials falls back to the legacy dd kernel" begin
-        μ_big = zeros(Float32, 40, N_E)
+    @testset "M > 64 materials warns and falls back to the legacy dd kernel" begin
+        μ_big = zeros(Float32, 65, N_E)
         μ_big[2, :] .= μ_table[2, :]
         μ_big[3, :] .= μ_table[3, :]
         sino_d = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
         sino_f = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
         BS.dd_fused_poly_project!(sino_d, mask, geom, μ_big, wη, Val(N_E))
-        BS.dd_fast_fused_poly_project!(sino_f, mask, geom, μ_big, wη, Val(N_E))
+        @test_logs (:warn, r"DD_FAST SINGLE-PASS DISABLED.*65"s) BS.dd_fast_fused_poly_project!(
+            sino_f, mask, geom, μ_big, wη, Val(N_E))
         @test sino_f == sino_d                                # same code path, bit-identical
     end
 end

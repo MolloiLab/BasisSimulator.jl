@@ -15,7 +15,7 @@
 #              volume walk instead of the K=16 tiled re-walks.  Measured 47x
 #              faster on the 234-bin polychromatic forward path (M4 Metal).
 #              Mono projection is byte-identical to :dd (same kernel).
-#              Requires ≤ 32 materials (falls back to :dd kernels above that).
+#              Supports ≤ 64 materials; warns and falls back above that.
 #   :siddon  — Siddon exact ray tracing retained for comparison and
 #              compatibility. It point-samples one voxel per step, can ALIAS
 #              in severe beam-hardened regions, and is slower than :dd_fast

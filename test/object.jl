@@ -239,3 +239,21 @@ end
     @test eltype(p_int.mask) === UInt8
     @test p_int.mask == UInt8.(ints)
 end
+
+@testset "compact_materials removes inactive and sparse labels" begin
+    mask = reshape(UInt8[0, 7, 42, 7], 2, 2, 1)
+    mats = Dict(i => (i == 0 ? XA.Materials.air : XA.Materials.water) for i in 0:109)
+    mats[42] = XA.Materials.corticalbone
+    p = BS.Phantom(mask, mats, (0.1, 0.1, 0.1))
+    q = BS.compact_materials(p)
+
+    @test p.mask === mask
+    @test length(p.materials) == 110
+    @test Set(q.mask) == Set(UInt8[0, 1, 2])
+    @test length(q.materials) == 3
+    @test q.voxel_size == p.voxel_size
+    @test q.origin == p.origin
+    @test q.extent == p.extent
+    @test BS.compute_μ(q, 70.0) == BS.compute_μ(p, 70.0)
+    @test BS.compact_materials(q) === q
+end

@@ -496,7 +496,7 @@ function pcct_forward_project(
         has_src = ws_source_spectral !== nothing
 
         # ---------------------------------------------------------------------
-        # SINGLE-PASS PATH (:dd_fast, ≤32 materials): per-material path-length
+        # SINGLE-PASS PATH (:dd_fast, ≤64 materials): per-material path-length
         # DD kernel handles the FULL padded energy range in one volume walk —
         # identical DD footprint/weights, no per-tile re-walk, no subset copies.
         # ---------------------------------------------------------------------
@@ -512,6 +512,7 @@ function pcct_forward_project(
             @goto tiles_done
         end
 
+        projector === :dd_fast && _warn_dd_fast_fallback(n_regions)
         μ_sub = similar(mask, T, n_regions, TILE_K)
         W_sub = similar(mask, T, TILE_K, n_bins)
         bt_sub = has_src ? similar(mask, T, size(_pilot, 1), size(_pilot, 2), TILE_K) : nothing

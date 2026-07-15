@@ -529,6 +529,49 @@ function create_phantom_from_mask(
     return Phantom(labeled_array, materials, voxel_size_cm; origin = origin)
 end
 
+"""
+    compact_materials(phantom::Phantom) -> Phantom
+
+Return a projection-equivalent phantom whose mask labels and material vector contain
+only materials that are actually present in `phantom.mask`. Geometry and attenuation
+are unchanged; labels are remapped densely from zero. The input phantom is not
+modified, so semantic-label workflows can retain the original object.
+
+Compacting sparse or shared material tables is especially important for `:dd_fast`:
+its single-pass spectral kernel supports up to 64 active materials. Device masks are
+copied to the host once to discover/remap labels, then copied back to the same backend.
+Prefer calling this before transferring a CPU phantom to the GPU.
+"""
+function compact_materials(phantom::Phantom)
+    mask_cpu = Array(phantom.mask)
+    labels = sort!(Int.(unique(mask_cpu)))
+    isempty(labels) && return phantom
+    last(labels) < length(phantom.materials) || throw(ArgumentError(
+        "mask label $(last(labels)) has no material (table length $(length(phantom.materials)))"))
+
+    # Already dense and free of inactive table entries: preserve mask identity.
+    labels == collect(0:(length(phantom.materials) - 1)) && return phantom
+
+    U = length(labels) - 1 > typemax(UInt8) ? UInt16 : UInt8
+    remap = fill(-1, last(labels) + 1)
+    for (new_label, old_label) in enumerate(labels)
+        remap[old_label + 1] = new_label - 1
+    end
+    compact_cpu = Array{U}(undef, size(mask_cpu))
+    for i in eachindex(mask_cpu)
+        compact_cpu[i] = U(remap[Int(mask_cpu[i]) + 1])
+    end
+    compact_mask = if phantom.mask isa Array
+        compact_cpu
+    else
+        out = similar(phantom.mask, U, size(phantom.mask))
+        copyto!(out, compact_cpu)
+        out
+    end
+    compact_mats = phantom.materials[labels .+ 1]
+    Phantom(compact_mask, compact_mats, phantom.voxel_size, phantom.origin, phantom.extent)
+end
+
 # Internal helper used by the `Phantom` ctor + `create_gammex_472` to build
 # an air-padded `Vector{XA.Material}` indexed by `label + 1`.  Not exported
 # — callers that need it should use the high-level `Phantom` ctor.
@@ -561,4 +604,4 @@ export REGION_BACKGROUND, REGION_AIR, REGION_WATER, REGION_SOLID_WATER
 export REGION_CA_50, REGION_CA_100, REGION_CA_200, REGION_CA_300, REGION_CA_400, REGION_CA_500, REGION_CA_600
 export REGION_I_2_0, REGION_I_2_5, REGION_I_5_0, REGION_I_7_5, REGION_I_10_0, REGION_I_15_0, REGION_I_20_0
 
-export Phantom, compute_μ, create_gammex_472, create_phantom_from_mask
+export Phantom, compute_μ, create_gammex_472, create_phantom_from_mask, compact_materials
