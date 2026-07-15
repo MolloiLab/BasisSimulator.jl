@@ -1240,12 +1240,70 @@ _ts("entering reconstruct!(HIRReconWorkspace) testset")
         # nepochs == 0 short-circuits the PWLS loop, so HIR at 0 % must equal
         # the FDK workspace's own reconstruction (both then FOV-masked).
         s = _toy_hir_setup(strength = 0)
+        @test s.ws.work_volume === s.ws.volume
+        @test s.ws.work_geom === s.geom
+        @test s.ws.output_z == axes(s.ws.volume, 3)
         sino = abs.(randn(Float32, size(s.sino)...))
         BS.reconstruct!(s.ws, sino, s.geom)
 
         ws_fdk = BS.create_fdk_recon_workspace(sino, s.geom, s.matrix_size)
         BS.reconstruct!(ws_fdk, sino, s.geom)
         @test s.ws.volume == ws_fdk.volume
+    end
+
+    @testset "axial ROI support does not bias a z-uniform long object" begin
+        # The measurement object deliberately extends well beyond the saved
+        # reconstruction slab. Cone rays through the terminal output slices
+        # therefore contain real attenuation outside the output ROI. HIR must
+        # model that attenuation internally rather than assume exterior air.
+        scanner = BS.Scanner(
+            source_to_isocenter = 610.0, source_to_detector = 1113.0,
+            detector_rows = 24, detector_cols = 64,
+            detector_row_size = 0.353, detector_col_size = 1.0,
+        )
+        geom_out = BS.CTGeometry(
+            scanner; n_angles = 120, n_rows = 18, n_cols = 64,
+            fov_cm = 20.0, z_cm = 0.44,
+        )
+        geom_object = BS.CTGeometry(
+            scanner; n_angles = 120, n_rows = 18, n_cols = 64,
+            fov_cm = 20.0, z_cm = 1.0,
+        )
+        object = zeros(Float32, 32, 32, 25)
+        for k in axes(object, 3), j in axes(object, 2), i in axes(object, 1)
+            (i - 16.5)^2 + (j - 16.5)^2 < 12^2 && (object[i, j, k] = 0.02f0)
+        end
+        sino = BS._project_mono(:dd_fast, object, geom_object)
+        ws = BS.create_hir_recon_workspace(
+            sino, geom_out, (32, 32, 11); strength = 60, projector = :dd_fast,
+        )
+
+        @test size(ws.volume) == (32, 32, 11)
+        @test size(ws.work_volume, 3) > size(ws.volume, 3)
+        @test length(ws.output_z) == size(ws.volume, 3)
+
+        ret = BS.reconstruct!(ws, sino, geom_out)
+        @test ret === ws.volume
+        @test all(isfinite, ret)
+        @test all(iszero, @view ws.work_volume[1, 1, :])
+        roi = object[:, :, 13] .> 0
+        means = [mean(@view ret[:, :, k][roi]) for k in axes(ret, 3)]
+        terminal_mean = (means[1] + means[end]) / 2
+        @test 0.01 < means[6] < 0.03 # retain the 0.02 cm⁻¹ cylinder DC signal
+        @test means[1] ≈ means[end] rtol = 2.0e-5
+        @test terminal_mean ≈ means[6] rtol = 0.01
+
+        fdk = BS.create_fdk_recon_workspace(sino, geom_out, (32, 32, 11))
+        fdk_volume = BS.reconstruct!(fdk, sino, geom_out)
+        fdk_means = [mean(@view fdk_volume[:, :, k][roi]) for k in axes(fdk_volume, 3)]
+        @test (fdk_means[1] + fdk_means[end]) / 2 ≈ fdk_means[6] rtol = 0.01
+    end
+
+    @testset "z-uniform Huber field has zero axial-boundary gradient" begin
+        x = fill(0.25f0, 9, 7, 5)
+        grad = similar(x)
+        BS.compute_huber_gradient!(grad, x, 0.06f0)
+        @test iszero(grad)
     end
 
     @testset "HIRReconWorkspace: Ax field dropped" begin
@@ -1541,10 +1599,13 @@ _ts("entering Workspace ctors — HIRReconWorkspace field invariants testset")
         @test size(ws.filtered) == size(sino)
         @test size(ws.conv_scratch) == size(sino)
         @test size(ws.W_proj) == size(sino)
-        @test size(ws.V_inv) == matsize
+        @test size(ws.work_volume)[1:2] == matsize[1:2]
+        @test size(ws.work_volume, 3) >= matsize[3]
+        @test size(ws.V_inv) == size(ws.work_volume)
         @test size(ws.data_weights) == size(sino)
-        @test size(ws.correction) == matsize
-        @test size(ws.reg_grad) == matsize
+        @test size(ws.correction) == size(ws.work_volume)
+        @test size(ws.reg_grad) == size(ws.work_volume)
+        @test length(ws.output_z) == matsize[3]
         @test all(==(0), ws.volume)
     end
 

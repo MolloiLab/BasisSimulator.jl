@@ -1223,6 +1223,40 @@ end
 # reconstruct!() — Zero-allocation Hybrid IR reconstruction hot path
 # =============================================================================
 
+function _hir_seed_work!(work::AbstractArray{T, 3}, init::AbstractArray{T, 3}, output_z) where {T}
+    work === init && return work
+    nx = Int32(size(work, 1))
+    ny = Int32(size(work, 2))
+    nz = Int32(size(init, 3))
+    z0 = Int32(first(output_z))
+    backend = AK.get_backend(work)
+    AK.foreachindex(work, backend) do idx
+        idx0 = Int32(idx - 1)
+        i = (idx0 % nx) + Int32(1)
+        j = ((idx0 ÷ nx) % ny) + Int32(1)
+        kw = (idx0 ÷ (nx * ny)) + Int32(1)
+        ko = clamp(kw - z0 + Int32(1), Int32(1), nz)
+        work[idx] = init[i, j, ko]
+    end
+    return work
+end
+
+function _hir_extract_output!(output::AbstractArray{T, 3}, work::AbstractArray{T, 3}, output_z) where {T}
+    output === work && return output
+    nx = Int32(size(output, 1))
+    ny = Int32(size(output, 2))
+    z0 = Int32(first(output_z))
+    backend = AK.get_backend(output)
+    AK.foreachindex(output, backend) do idx
+        idx0 = Int32(idx - 1)
+        i = (idx0 % nx) + Int32(1)
+        j = ((idx0 ÷ nx) % ny) + Int32(1)
+        k = (idx0 ÷ (nx * ny)) + Int32(1)
+        output[idx] = work[i, j, z0 + k - Int32(1)]
+    end
+    return output
+end
+
 """
     reconstruct!(ws::HIRReconWorkspace, sinogram, geom; init_volume=nothing, air_reference=nothing) -> ws.volume
 
@@ -1292,7 +1326,9 @@ workspace creation time — no runtime overrides on this hot path.
 
 # Keyword Arguments
 - `init_volume`: Optional warm-start volume (skip FDK init step).  If
-  provided, must be the same shape as `ws.volume`.
+  provided, must be the same shape as `ws.volume`. For axial HIR, its terminal
+  slices are replicated only into the private computational halo; the returned
+  grid and caller-owned input are unchanged.
 - `air_reference`: Optional 2D array `[n_cols, n_rows]` of bowtie air
   reference values.  When provided, statistical weights are scaled by the
   air reference to account for position-dependent noise from the bowtie
@@ -1306,29 +1342,33 @@ function reconstruct!(
         air_reference::Union{Nothing, AbstractArray} = nothing
     ) where {T <: AbstractFloat}
 
+    params = ws.params
+    model_volume = ws.work_volume
+    model_geom = ws.work_geom
+
     # ─── Step 1: FDK initialization (or warm-start from provided volume) ───
     if init_volume === nothing
-        if is_helical(geom)
+        if is_helical(model_geom)
             # Helical FDK init → rebinned WFBP (see FDKReconWorkspace path)
-            _, Δt_h = _wfbp_rebin!(ws.filtered, sinogram, geom)
+            _, Δt_h = _wfbp_rebin!(ws.filtered, sinogram, model_geom)
             filter_sinogram!(
-                ws.filtered, geom;
+                ws.filtered, model_geom;
                 ws_conv_scratch = ws.conv_scratch,
                 ws_filter_kernel = ws.filter_kernel,
                 apply_cosine = false, ray_spacing = Δt_h
             )
-            fill!(ws.volume, zero(T))
-            _wfbp_backproject!(ws.volume, ws.filtered, geom, T(Δt_h))
+            fill!(model_volume, zero(T))
+            _wfbp_backproject!(model_volume, ws.filtered, model_geom, T(Δt_h))
         else
         copyto!(ws.filtered, sinogram)
         filter_sinogram!(
-            ws.filtered, geom;
+            ws.filtered, model_geom;
             ws_conv_scratch = ws.conv_scratch,
             ws_filter_kernel = ws.filter_kernel
         )
-        fill!(ws.volume, zero(T))
+        fill!(model_volume, zero(T))
         backproject!(
-            ws.volume, ws.filtered, geom;
+            model_volume, ws.filtered, model_geom;
             weighted = true,
             ws_source_positions = ws.geom_source_positions,
             ws_detector_centers = ws.geom_detector_centers,
@@ -1337,16 +1377,18 @@ function reconstruct!(
         )
         end
     else
+        size(init_volume) == size(ws.volume) || throw(DimensionMismatch(
+            "init_volume has size $(size(init_volume)); expected $(size(ws.volume))"))
         copyto!(ws.volume, init_volume)
+        _hir_seed_work!(model_volume, ws.volume, ws.output_z)
     end
 
     # ─── Step 2: OS-PWLS refinement with Huber regularization ───
     # Erdoğan & Fessler 1999 ordered-subsets PWLS for transmission CT.
-    params = ws.params
     λ = T(params.lambda)
     λ_relax = T(params.relaxation)
     δ = T(params.huber_delta)
-    backend = AK.get_backend(ws.volume)
+    backend = AK.get_backend(model_volume)
 
     nepochs = params.nepochs
     n_subsets = params.n_subsets
@@ -1355,9 +1397,16 @@ function reconstruct!(
     # strength = 0 ⇒ no PWLS refinement at all: the FDK init IS the result.
     # Bail out before the weight kernels so a 0 % request costs a plain FBP.
     if nepochs == 0
+        _hir_extract_output!(ws.volume, model_volume, ws.output_z)
         apply_fov_mask!(ws.volume, geom)
         return ws.volume
     end
+
+    # The iterative system matrix represents the circular reconstruction FOV,
+    # not the enclosing square array. Keep that support constraint active
+    # throughout HIR; masking only at return lets exterior corner estimates
+    # feed back through A*x and leaves a circular boundary ring.
+    apply_fov_mask!(model_volume, model_geom; sentinel_μ = zero(T))
 
     # Initialize statistical weights: w = air_ref(col,row) × exp(-y)
     # air_ref accounts for bowtie-modulated I0 (edge pixels → fewer counts → lower weight)
@@ -1400,7 +1449,7 @@ function reconstruct!(
 
     for epoch in 1:nepochs
         # Compute Huber gradient ONCE per epoch (not per sub-iteration)
-        compute_huber_gradient!(ws.reg_grad, ws.volume, δ)
+        compute_huber_gradient!(ws.reg_grad, model_volume, δ)
 
         for (s, angle_indices) in enumerate(ws.subsets)
             n_sub = length(angle_indices)
@@ -1412,7 +1461,7 @@ function reconstruct!(
             fill!(ax_view, zero(T))
             _project_mono!(
                 ws.projector,
-                ax_view, ws.volume, geom_s;
+                ax_view, model_volume, geom_s;
                 ws_source_positions = ws.subset_geom_source_positions[s],
                 ws_detector_centers = ws.subset_geom_detector_centers[s],
                 ws_detector_u = ws.subset_geom_detector_u[s],
@@ -1457,13 +1506,27 @@ function reconstruct!(
             # protocol.  Scale the reg term by n_views/1000 to make it
             # protocol-invariant (bands anchored at ~1000-view protocols).
             reg_views_scale = T(length(geom.angles)) / T(1000)
-            let vol = ws.volume, vinv = ws.V_inv, corr = ws.correction,
-                    rg = ws.reg_grad, ss = subset_scale, rvs = reg_views_scale
+            let vol = model_volume, vinv = ws.V_inv, corr = ws.correction,
+                    rg = ws.reg_grad, ss = subset_scale, rvs = reg_views_scale,
+                    nx = Int32(size(model_volume, 1)), ny = Int32(size(model_volume, 2)),
+                    dx = T(model_geom.fov[1]) / T(size(model_volume, 1)),
+                    dy = T(model_geom.fov[2]) / T(size(model_volume, 2)),
+                    radius_sq = T(min(model_geom.fov[1], model_geom.fov[2]) / 2)^2,
+                    half = T(0.5)
 
                 AK.foreachindex(vol, backend) do idx
-                    data_update = λ_relax * vinv[idx] * ss * corr[idx]
-                    reg_update = λ * rvs * vinv[idx] * rg[idx]
-                    vol[idx] += data_update - reg_update
+                    idx0 = Int32(idx - 1)
+                    ix = (idx0 % nx) + Int32(1)
+                    iy = ((idx0 ÷ nx) % ny) + Int32(1)
+                    x = (T(ix) - half - T(nx) / T(2)) * dx
+                    y = (T(iy) - half - T(ny) / T(2)) * dy
+                    if x * x + y * y > radius_sq
+                        vol[idx] = zero(T)
+                    else
+                        data_update = λ_relax * vinv[idx] * ss * corr[idx]
+                        reg_update = λ * rvs * vinv[idx] * rg[idx]
+                        vol[idx] += data_update - reg_update
+                    end
                 end
             end
         end
@@ -1471,6 +1534,7 @@ function reconstruct!(
 
     # Audit A6: match the FDK path's clinical convention (outside-FOV corners
     # otherwise retain FDK-init ringing and skew volume statistics).
+    _hir_extract_output!(ws.volume, model_volume, ws.output_z)
     apply_fov_mask!(ws.volume, geom)
 
     return ws.volume

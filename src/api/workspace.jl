@@ -880,6 +880,43 @@ export calibrate_pcct_poly_bhc
 # HIRReconWorkspace — Pre-allocated workspace for zero-allocation Hybrid IR reconstruct!()
 # =============================================================================
 
+# Cone rays through a requested axial ROI continue through the object beyond
+# the ROI's terminal planes.  The iterative forward model must represent that
+# chord or it implicitly inserts air immediately outside the saved volume and
+# creates a systematic terminal residual.  Keep the requested voxel spacing
+# and expand symmetrically by the worst-case near-to-far cone magnification.
+# This is an internal computational domain; `ws.volume` remains the exact grid
+# requested by the caller.
+function _hir_axial_support(
+        geom::CTGeometry, volume_size::NTuple{3, Int}, enabled::Bool,
+    )
+    nx, ny, nz = volume_size
+    if !enabled || is_helical(geom) || nz == 1
+        return geom, volume_size, 1:nz
+    end
+
+    radius = min(geom.fov[1], geom.fov[2]) / 2
+    radius < geom.SAD || throw(ArgumentError(
+        "HIR reconstruction radius $radius cm must be smaller than SAD $(geom.SAD) cm"))
+    cone_ratio = (geom.SAD + radius) / (geom.SAD - radius)
+    dz = geom.fov[3] / nz
+    work_nz = max(nz, ceil(Int, geom.fov[3] * cone_ratio / dz))
+    # Equal halo on both sides preserves the requested voxel-center coordinates.
+    isodd(work_nz - nz) && (work_nz += 1)
+    work_nz == nz && return geom, volume_size, 1:nz
+
+    work_fov = (geom.fov[1], geom.fov[2], work_nz * dz)
+    work_geom = CTGeometry(
+        geom.SAD, geom.SDD, geom.n_angles, geom.n_rows, geom.n_cols,
+        geom.pixel_size, geom.pixel_row_size,
+        geom.angles, geom.source_positions, geom.detector_centers,
+        geom.detector_u, geom.detector_v, work_fov,
+        geom.pitch, geom.table_feed, geom.detector_shape,
+    )
+    z0 = (work_nz - nz) ÷ 2 + 1
+    return work_geom, (nx, ny, work_nz), z0:(z0 + nz - 1)
+end
+
 """
     HIRReconWorkspace{T, A3, A2, A1}
 
@@ -898,7 +935,10 @@ Create with [`create_hir_recon_workspace`](@ref).
 """
 mutable struct HIRReconWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A2 <: AbstractArray{T, 2}, A1 <: AbstractArray{T, 1}, AI <: AbstractVector{Int32}}
     # ─── Output / iterate ───
-    volume::A3                # (nx, ny, nz) — FDK result → PWLS iterate
+    volume::A3                # exact caller-requested output grid
+    work_volume::A3           # PWLS iterate with internal axial support halo
+    work_geom::CTGeometry
+    output_z::UnitRange{Int}
 
     # ─── FDK filtering scratch ───
     filtered::A3              # (sino shape)
@@ -971,9 +1011,18 @@ function create_hir_recon_workspace(
     filter = filter isa Symbol ? filter_from_symbol(filter) : filter
     sino_shape = size(sinogram)
 
-    # Output volume / iterate
+    # Strength zero is contractually plain FBP and needs no iterative support
+    # domain.  Helical HIR retains its existing WFBP-domain behavior.
+    params = get_hir_params(strength)
+    work_geom, work_size, output_z = _hir_axial_support(
+        geom, volume_size, params.nepochs > 0)
+
+    # Exact public output plus the internal iterative domain.  Alias them when
+    # no halo is needed so strength=0/helical paths allocate nothing extra.
     volume = similar(sinogram, T, volume_size...)
     fill!(volume, zero(T))
+    work_volume = work_size == volume_size ? volume : similar(sinogram, T, work_size...)
+    work_volume === volume || fill!(work_volume, zero(T))
 
     # FDK filtering scratch
     filtered = similar(sinogram, T, sino_shape...)
@@ -1009,16 +1058,13 @@ function create_hir_recon_workspace(
     # copying over dominated workspace construction (~83 s of 99 s at
     # 834×8×500 → 512×512×8).  W_proj = 1/(A·1) uses the selected forward
     # projector so the system matrix matches the sim's.
-    W_proj = compute_projection_weights(geom, volume_size, T; projector = projector, like = sinogram)
-    V_inv = compute_image_weights(geom, volume_size, T; like = sinogram)
+    W_proj = compute_projection_weights(work_geom, work_size, T; projector = projector, like = sinogram)
+    V_inv = compute_image_weights(work_geom, work_size, T; like = sinogram)
 
     # PWLS iteration scratch buffers
     data_weights = similar(sinogram, T, sino_shape...)
-    correction = similar(sinogram, T, volume_size...)
-    reg_grad = similar(sinogram, T, volume_size...)
-
-    # HIR params
-    params = get_hir_params(strength)
+    correction = similar(sinogram, T, work_size...)
+    reg_grad = similar(sinogram, T, work_size...)
 
     # Ordered subsets pre-computation.  `get_hir_params` always returns
     # n_subsets = 12 at every strength, so the OS-PWLS path is the only path.
@@ -1026,7 +1072,7 @@ function create_hir_recon_workspace(
     n_subsets = params.n_subsets
     n_subsets > 0 || error("HIRParams.n_subsets must be > 0; got $n_subsets")
     subsets = create_ordered_subsets(geom.n_angles, n_subsets)
-    subset_geometries = [create_subset_geometry(geom, indices) for indices in subsets]
+    subset_geometries = [create_subset_geometry(work_geom, indices) for indices in subsets]
 
     # Pre-compute GPU geometry arrays for each subset
     subset_geom_src = Vector{typeof(geom_source_positions)}(undef, n_subsets)
@@ -1062,7 +1108,8 @@ function create_hir_recon_workspace(
     subset_Ax_buf = similar(sinogram, T, sino_shape[1], sino_shape[2], max_subset_size)
 
     return HIRReconWorkspace{T, typeof(volume), typeof(geom_source_positions), typeof(filter_kernel), typeof(idx_proto)}(
-        volume, filtered, conv_scratch, filter_kernel,
+        volume, work_volume, work_geom, output_z,
+        filtered, conv_scratch, filter_kernel,
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
         W_proj, V_inv,
         data_weights, correction, reg_grad,
