@@ -1,25 +1,26 @@
 cff-version: 1.2.0
-title: "BasisSimulator.jl: GPU-native polychromatic CT and PCCT simulation, reconstruction, and virtual monoenergetic imaging in Julia"
-message: "If you use this software, please cite it using the metadata below."
+title: >-
+  BasisSimulator.jl: GPU-native polychromatic CT and PCCT simulation,
+  reconstruction, and virtual monoenergetic imaging in Julia
+message: If you use this software, please cite it using the metadata below.
 type: software
 authors:
   - given-names: Dale
     family-names: Black
-    affiliation: "University of California, Irvine — Molloi Lab"
-    orcid: "https://orcid.org/0000-0002-9150-9827"
-repository-code: "https://github.com/MolloiLab/BasisSimulator.jl"
-url: "https://github.com/MolloiLab/BasisSimulator.jl"
+    affiliation: University of California, Irvine — Molloi Lab
+    orcid: https://orcid.org/0000-0002-9150-9827
+repository-code: https://github.com/MolloiLab/BasisSimulator.jl
+url: https://github.com/MolloiLab/BasisSimulator.jl
 abstract: >-
   GPU-native Julia framework for CT and photon-counting CT simulation,
-  reconstruction, and quantitative spectral imaging. Provides exact
-  Siddon ray-tracing forward projection, polychromatic Beer-Lambert
-  physics with vendor-realistic detector response (MC-derived LUTs for
-  GE Gemstone scintillator and Siemens NAEOTOM Alpha CdTe), FDK and
-  hybrid iterative reconstruction, sinogram and image-domain beam-
-  hardening correction, dual-kVp and PCCT material decomposition
-  (Cong 2022, Alvarez-Macovski, PWLS), and virtual monoenergetic
-  imaging (VMI + Grant 2014 Mono+) — all dispatching transparently
-  across CPU, Metal, CUDA, and ROCm via AcceleratedKernels.jl.
+  reconstruction, and quantitative spectral imaging. Provides exact Siddon
+  ray-tracing forward projection, polychromatic Beer-Lambert physics with
+  vendor-realistic detector response (MC-derived LUTs for GE Gemstone
+  scintillator and Siemens NAEOTOM Alpha CdTe), FDK and hybrid iterative
+  reconstruction, sinogram and image-domain beam- hardening correction, dual-kVp
+  and PCCT material decomposition (Cong 2022, Alvarez-Macovski, PWLS), and
+  virtual monoenergetic imaging (VMI + Grant 2014 Mono+) — all dispatching
+  transparently across CPU, Metal, CUDA, and ROCm via AcceleratedKernels.jl.
 keywords:
   - computed tomography
   - photon-counting CT
@@ -34,4 +35,4 @@ keywords:
   - Julia
   - scientific computing
 license: MIT
-version: "0.1.1"
+version: 0.10.1
