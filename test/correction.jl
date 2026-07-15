@@ -341,6 +341,16 @@ end
     # Beam hardening: longer water path raises the mean E, and water μ
     # decreases monotonically with E in this range, so μ_eff drops with path.
     @test μ0 > μ20 > μ50
+
+    pcct_scanner = BS.Scanner(
+        detector_type = :photon_counting, detector_material = :cdte,
+        n_energy_bins = 4, energy_thresholds = [20.0, 35.0, 55.0, 70.0],
+    )
+    pcct_geom = BS.CTGeometry(pcct_scanner; n_angles = 16)
+    @test_throws ArgumentError BS.compute_polychromatic_μ_water(
+        BS.SimOptions(fidelity = :pcct), protocol;
+        scanner = pcct_scanner, geom = pcct_geom, water_path_cm = 20.0,
+    )
 end
 
 # -----------------------------------------------------------------------------

@@ -300,7 +300,7 @@ protocol_low = BS.CTProtocol(
     mA = 380.0,
     views = 1160,
     rotation_time = 0.5,
-    collimation_mm = 4.8,    # 8 × 0.6 mm rows
+    collimation_mm = 4.8,    # nominal beam width; axial cone guards are automatic
     anode_angle = 8,
     additional_filters = [("Ti", 0.9)],
 );
@@ -342,12 +342,9 @@ sim_opts = BS.SimOptions(
 );
 
 # ╔═╡ 09000006-0000-4000-8000-000000000020
-# Cone-beam usable-z budget (same constraint nb07/nb08 respect): voxels
-# near the source at slice-edge z fall off the detector unless
-#   z_recon ≤ collimation × (1 − R_body/SID) = 4.8 × (1 − 165/595) ≈ 3.5 mm.
-# Reconstructing the full 4.8 mm would put the two edge slices outside
-# coverage (they read ~0.37× — verified during bring-up).  5 × 0.6 mm
-# slices = 3.0 mm sits safely inside the budget.
+# Keep the intended centered 5 × 0.6 mm saved grid. The axial workspace
+# automatically adds symmetric detector guard rows so peripheral voxels
+# on both terminal slices retain measured cone-beam support.
 recon_opts = BS.ReconOptions(
     matrix_size = (512, 512, 5),
     fov_cm = 35.0,

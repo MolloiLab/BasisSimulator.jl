@@ -38,7 +38,7 @@ before the Cong PCCT-Φ_k decomposition.
 |---------------|--------------------------|------------------------|-------------------------------|
 | GT phantom    | **1600 × 1100 × 20**     | **0.2 isotropic**      | 320 × 220 × 4 mm              |
 | Recon         | 512 × 512 × **3**        | **0.625 isotropic**    | FOV 32 cm × 1.875 mm z        |
-| Collimation   | **2.5 mm at iso**        | —                      | ~7 detector rows lit          |
+| Collimation   | **5.0 mm nominal**       | —                      | cone-guard rows added automatically |
 | Scanner       | Siemens Naeotom Alpha    | 0.353 × 0.302 mm pixels | 144 × ~1192 detector          |
 | Protocol      | PCCT, 4 bins             | 140 kVp · 174 mA · 1200 views · 0.5 s rot. | clinical PCCT dose |
 
@@ -159,7 +159,7 @@ const QRM_TARGET_NX = 1600;  # full prepared cache, no extra in-plane downsample
 const QRM_TARGET_NY = 1100;  # full prepared cache, no extra in-plane downsample
 
 # ╔═╡ 08020001-0000-4000-8000-000000000013
-const QRM_TARGET_NZ = 20;    # 20 × 0.2 mm = 4 mm — minimum phantom z that covers all rays for 2.5 mm collimation
+const QRM_TARGET_NZ = 20;    # 20 × 0.2 mm = 4 mm — short z-invariant reference phantom
 
 # ╔═╡ 08020001-0000-4000-8000-000000000014
 const QRM_VOXEL_SIZE_CM = (0.02, 0.02, 0.02);   # (x, y, z) cm — 0.2 mm isotropic ground truth (320 × 220 × 4 mm physical extent)
@@ -466,15 +466,15 @@ end;
 
 # ╔═╡ 08030002-0000-4000-8000-000000000001
 md"""
-### 03. `CTProtocol`: 140 kVp / 174 mA / 2.5 mm collimation
+### 03. `CTProtocol`: 140 kVp / 174 mA / 5.0 mm collimation
 
 Clinical 140 kVp single-energy PCCT acquisition.
 `additional_filters = [("Ti", 0.9)]` is the Vectron tube's inherent
 0.9 mm titanium window on top of the 3 mm Al flat filter.
 
-**Collimation = 2.5 mm at iso** matches notebook 07 so the 3-slice
-recon at 0.625 mm fits the usable-z budget of the same QRM-Thorax
-phantom.
+**Nominal collimation = 5.0 mm at iso**. The saved reconstruction remains
+the same centered 3-slice grid as notebook 07; the workspace automatically
+adds symmetric detector guard rows for full cone support.
 """
 
 # ╔═╡ 08030002-0000-4000-8000-000000000010
@@ -483,7 +483,7 @@ protocol = BS.CTProtocol(
     mA = 174.0,    # clinical PCCT dose (matches header + canonical nb04); was 5.0
     views = 1200,
     rotation_time = 0.5,
-    collimation_mm = 5.0,    # matches nb04 scan approach (recon z-extent unchanged)
+    collimation_mm = 5.0,    # nominal width; full-FOV axial cone guards are automatic
     additional_filters = [("Ti", 0.9)],
 );
 
@@ -526,9 +526,8 @@ sim_opts = BS.SimOptions(
 )
 
 # ╔═╡ 08030003-0000-4000-8000-000000000020
-# Same recon grid as notebook 07: 512 × 512 in-plane at 0.625 mm
-# isotropic, 3 slices to fit the usable-z budget for 2.5 mm collimation
-# (z_usable ≈ c × (1 − R_body/SID) ≈ 1.9 mm).
+# Same saved recon grid as notebook 07: 512 × 512 in-plane at 0.625 mm
+# isotropic, 3 slices. Automatic detector guards provide full-FOV support.
 recon_opts = BS.ReconOptions(
     matrix_size = (512, 512, 3),
     fov_cm = 32.0,

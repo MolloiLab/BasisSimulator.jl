@@ -847,6 +847,35 @@ function create_fdk_recon_workspace(
     )
 end
 
+"""
+    calibrate_pcct_poly_bhc(ws; order=5, max_path_cm=50, n_points=100)
+
+Build water BHC for an I₀-weighted combination of all PCCT bins from the
+workspace's exact detected spectrum (`source × η × DRM × bowtie`). The same
+per-column model and `μ_water_ref` contract as [`calibrate_bhc_water`](@ref)
+is returned.
+"""
+function calibrate_pcct_poly_bhc(
+        ws::PCCTWorkspace;
+        order::Int = 5,
+        max_path_cm::Real = 50.0,
+        n_points::Int = 100,
+    )
+    n_E = length(ws.energies)
+    energies = Float64.(ws.energies)
+    W = Float64.(Array(ws.W_matrix_gpu))[1:n_E, :]
+    w_detected = vec(sum(W; dims = 2))
+    sum(w_detected) > 0 || error("PCCT detected spectrum has zero total weight")
+    weights_per_col = repeat(reshape(w_detected, :, 1), 1, ws.geom.n_cols)
+    reference_energy_keV = sum(energies .* w_detected) / sum(w_detected)
+    return calibrate_bhc_water(
+        energies, weights_per_col;
+        order, max_path_cm, n_points, reference_energy_keV,
+    )
+end
+
+export calibrate_pcct_poly_bhc
+
 # =============================================================================
 # HIRReconWorkspace — Pre-allocated workspace for zero-allocation Hybrid IR reconstruct!()
 # =============================================================================

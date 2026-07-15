@@ -348,6 +348,11 @@ _ts("entering simulate!(PCCTWorkspace) — return contract testset")
     else
         _ts("  building toy_pcct_setup")
         s = _toy_pcct_setup()
+        bhc = BS.calibrate_pcct_poly_bhc(s.ws; n_points = 16)
+        @test bhc isa BS.WaterBHC
+        @test isfinite(bhc.μ_water_ref)
+        @test bhc.μ_water_ref > 0
+        @test length(bhc.water_bhc_per_col) == s.ws.geom.n_cols
         _ts("  running simulate!")
         res = BS.simulate!(s.ws, s.phantom, s.protocol, s.sim_opts)
         _ts("  simulate! returned")

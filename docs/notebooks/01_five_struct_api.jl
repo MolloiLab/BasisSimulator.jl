@@ -305,7 +305,7 @@ protocol_standard = BS.CTProtocol(
     mA = 200.0,
     views = 500,
     rotation_time = 1.0,
-    collimation_mm = 5.0,                 # 8 × 0.625 mm rows active
+    collimation_mm = 5.0,                 # nominal beam width; axial cone guards are automatic
     additional_filters = [("Al", 4.5)],       # ~7 mm total Al (matches GE Apex inherent filtration)
 );
 
@@ -323,8 +323,9 @@ protocol_lowdose = BS.CTProtocol(
 md"""
 !!! info "`collimation_mm` slices the detector down"
     Our scanner has 256 rows × 0.625 mm = 160 mm of axial coverage, but a typical clinical
-    scan uses the minimum amount of coverage to reduce dose. `collimation_mm = 5.0` activates
-    the central 8 rows — keeping the simulation fast while still being clinically representative.
+    scan uses a 5 mm nominal beam width. BasisSimulator automatically acquires
+    symmetric detector guard rows when needed to support the complete requested
+    reconstruction cylinder at the edge of the XY FOV.
 """
 
 # ╔═╡ 05000001-0000-4000-8000-000000000001

@@ -26,17 +26,17 @@ md"""
 **Intent:** the canonical full-fidelity reference for the projection-
 domain dual-kVp pipeline.  Every knob here matches a real clinical
 acquisition — no resolution compromises in-plane, no fake collimation,
-no exaggerated mAs.  The only place we deliberately economize is **z**,
-where we trim the phantom and recon to just the slices that are fully
-covered by the cone beam (`z_usable = c × (1 − R_body/STI) ≈ 1.9 mm`
-for 2.5 mm collimation) — so the truly 0.2 mm isotropic forward
-projector still runs in reasonable wall-clock time.
+no exaggerated mAs.  The only place we deliberately economize is **z**:
+the saved reconstruction is three slices and the phantom is only deep
+enough to cover every acquired ray.  BasisSimulator adds symmetric
+detector guard rows for the full reconstruction cylinder, so this small
+z grid does not discard terminal cone-beam support.
 
 | Stage         | Matrix                   | Voxel (mm)             | Extent                        |
 |---------------|--------------------------|------------------------|-------------------------------|
 | GT phantom    | **1600 × 1100 × 20**     | **0.2 isotropic**      | 320 × 220 × 4 mm              |
 | Recon         | 512 × 512 × **3**        | **0.625 isotropic**    | FOV 32 cm × 1.875 mm z        |
-| Collimation   | **2.5 mm at iso**        | —                      | ~7 detector rows lit          |
+| Collimation   | **2.5 mm nominal**       | —                      | cone-guard rows added automatically |
 | Scanner       | GE Revolution Apex Elite | 0.625 × 0.6 mm pixels  | 256 × 834 detector            |
 | Protocol      | DE rapid-kVp switching   | 80 + 140 kVp, 984 views, 0.5 s rot. | clinical DECT dose |
 
@@ -127,7 +127,7 @@ isotropic** (physical extent 320 × 220 × 4 mm; body envelope ≈ 30 ×
 20 cm matches QRM-Thorax-small spec).  Truly 0.2 mm iso ground
 truth — finer than the demagged detector pitch (0.6 / 1.758 ≈ 0.34 mm),
 so the forward projector sees a high-res source.  The z extent is
-the **minimum** that covers all rays for 2.5 mm collimation (see ## 2).
+the minimum used by this deliberately short reference scan.
 The probe cell after the mask load prints the actual body bbox.
 
 Source mask labels:
@@ -160,7 +160,7 @@ const QRM_TARGET_NX = 1600;  # full prepared cache, no extra in-plane downsample
 const QRM_TARGET_NY = 1100;  # full prepared cache, no extra in-plane downsample
 
 # ╔═╡ 07020001-0000-4000-8000-000000000013
-const QRM_TARGET_NZ = 20;    # 20 × 0.2 mm = 4 mm — minimum phantom z that covers all rays for 2.5 mm collimation (see ## 2 cone-beam math)
+const QRM_TARGET_NZ = 20;    # 20 × 0.2 mm = 4 mm — short z-invariant reference phantom
 
 # ╔═╡ 07020001-0000-4000-8000-000000000014
 const QRM_VOXEL_SIZE_CM = (0.02, 0.02, 0.02);   # (x, y, z) cm — 0.2 mm isotropic ground truth (320 × 220 × 4 mm physical extent)
@@ -448,11 +448,11 @@ md"""
 | 80  | 407              | 0.65       | 264.55       |
 | 140 | 405              | 0.35       | 141.75       |
 
-**Collimation = 2.5 mm at iso** (clinical thin-slice DE setting).
-Chosen so 3 recon slices @ 0.625 mm fit inside the usable-z budget
-`z_usable = c × (1 − R_body/STI) ≈ 1.9 mm`.  Only ~7 detector rows
-are lit — keeps the forward-projection cost low so we can afford a
-truly 0.2 mm iso ground-truth phantom.
+**Nominal collimation = 2.5 mm at iso** (clinical thin-slice DE setting).
+The saved grid is 3 recon slices @ 0.625 mm.  The workspace automatically
+adds the symmetric detector rows required to cover those slices across
+the full XY FOV, while keeping the forward projection compact enough for
+the truly 0.2 mm isotropic ground-truth phantom.
 """
 
 # ╔═╡ 07030002-0000-4000-8000-000000000010
@@ -490,8 +490,8 @@ sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234, projector = :dd_fast);
 # independent (512 × 512 × 3 at 0.625 mm iso, fov 32 cm, 1.875 mm z).
 # Rod ROIs are built in physical mm and converted to recon voxel indices —
 # the two grids share the isocenter so the conversion is just a centered
-# linear transform.  Recon z extent matches the usable-z budget for
-# 2.5 mm collimation: z_usable = c × (1 − R_body/STI) ≈ 1.9 mm.
+# linear transform.  Automatic detector guard rows cover this complete
+# reconstruction cylinder at the edge of the XY FOV.
 recon_opts = BS.ReconOptions(
     matrix_size = (512, 512, 3),
     fov_cm = 32.0,

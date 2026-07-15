@@ -476,6 +476,26 @@ is_arc(geom::CTGeometry) = geom.detector_shape === :arc
 export is_arc
 
 """
+    required_axial_detector_rows(scanner; fov_cm, z_cm) -> Int
+
+Minimum symmetric detector-row count needed to support the complete axial
+reconstruction cylinder. Cone divergence magnifies the terminal z coordinate
+at the near edge of the reconstruction FOV by `SAD / (SAD - radius)`.
+"""
+function required_axial_detector_rows(
+        scanner::Scanner; fov_cm::Real, z_cm::Real,
+    )
+    radius_mm = Float64(fov_cm) * 5.0
+    sad_mm = Float64(scanner.source_to_isocenter)
+    radius_mm < sad_mm || throw(ArgumentError(
+        "reconstruction radius $radius_mm mm must be smaller than SAD $sad_mm mm"))
+    support_mm = Float64(z_cm) * 10.0 * sad_mm / (sad_mm - radius_mm)
+    return ceil(Int, support_mm / Float64(scanner.detector_row_size))
+end
+
+export required_axial_detector_rows
+
+"""
     CTGeometry(scanner::Scanner; n_angles=360, fov_cm=nothing, z_cm=nothing, n_rows=nothing, n_cols=nothing, collimation_mm=nothing)
 
 Create a CTGeometry from a Scanner definition.
@@ -499,7 +519,10 @@ trajectory positions suitable for simulation.
 - `n_rows::Union{Int,Nothing} = nothing`: Override detector rows. If nothing, uses scanner.detector_rows.
 - `n_cols::Union{Int,Nothing} = nothing`: Override detector columns. If nothing, uses scanner.detector_cols.
 - `collimation_mm::Union{Float64,Nothing} = nothing`: Detector z-collimation in mm.
-  Derives n_rows automatically. Errors if it exceeds scanner physical max or if n_rows is also specified.
+  Derives the nominal row count automatically. For axial scans with explicit
+  `fov_cm` and `z_cm`, symmetric cone-guard rows are added as needed to support
+  the complete reconstruction cylinder. Errors if the guarded count exceeds
+  the physical detector or if `n_rows` is also specified.
 - `extended_collimation::Bool = false`: **Simulator-only escape hatch** that bypasses
   the `collimation_mm > scanner_max` check with a loud `@warn`.  Use to approximate
   Siemens NAEOTOM Alpha's high-pitch (3.2) Flash helical mode as a single wider
@@ -606,7 +629,26 @@ function CTGeometry(
                 """)
             end
         end
-        _n_rows = round(Int, collimation_mm / scanner.detector_row_size)
+        nominal_rows = round(Int, collimation_mm / scanner.detector_row_size)
+        _n_rows = nominal_rows
+        if pitch === nothing && fov_cm !== nothing && z_cm !== nothing
+            required_rows = required_axial_detector_rows(scanner; fov_cm, z_cm)
+            # Preserve detector centering parity so guards are symmetric.
+            if isodd(required_rows - nominal_rows)
+                required_rows += 1
+            end
+            _n_rows = max(nominal_rows, required_rows)
+            if _n_rows > scanner.detector_rows && !extended_collimation
+                error("""
+                Full-FOV axial support requires $(_n_rows) detector rows, but the
+                scanner has only $(scanner.detector_rows). Reduce fov_cm/z_cm or
+                use a scanner with sufficient physical row coverage.
+                """)
+            end
+            if _n_rows > nominal_rows
+                @info "axial cone guards added" nominal_rows guarded_rows=_n_rows
+            end
+        end
     else
         _n_rows = n_rows !== nothing ? n_rows : scanner.detector_rows
     end

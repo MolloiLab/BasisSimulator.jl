@@ -140,6 +140,20 @@ end
         @test g.n_rows == 16
     end
 
+    @testset "axial cone guards cover the full reconstruction cylinder" begin
+        pcct = BS.Scanner(
+            source_to_isocenter = 610.0, source_to_detector = 1113.0,
+            detector_rows = 144, detector_cols = 1195,
+            detector_row_size = 0.3529559748427673,
+            detector_col_size = 0.3015274034141959,
+        )
+        @test BS.required_axial_detector_rows(pcct; fov_cm = 35.0, z_cm = 0.5) == 20
+        g = BS.CTGeometry(pcct; n_angles = 8, fov_cm = 35.0, z_cm = 0.5,
+                          collimation_mm = 5.0)
+        @test g.n_rows == 20
+        @test g.fov[3] == 0.5 # guard acquisition never changes the saved z grid
+    end
+
     @testset "collimation_mm vs n_rows mutual exclusion" begin
         @test_throws ErrorException BS.CTGeometry(
             s;
