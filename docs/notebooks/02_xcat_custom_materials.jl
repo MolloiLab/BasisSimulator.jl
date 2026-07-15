@@ -61,7 +61,8 @@ the `u"eV"` and `u"g/cm^3"` units used by the `XA.Material` constructor.
 import BasisSimulator as BS
 
 # ╔═╡ 02000003-0000-4000-8000-000000000003
-import CairoMakie as CM
+# import CairoMakie as Mke
+import WasmMakie as Mke
 
 # ╔═╡ 05000003-0000-4000-8000-000000000003
 import Unitful: ustrip, uconvert
@@ -276,21 +277,21 @@ let
         n_lbl = length(unique(phantom_labeled))
         slice = phantom_labeled[:, :, mid]
 
-        fig = CM.Figure(size = (900, 600))
-        ax = CM.Axis(
+        fig = Mke.Figure(size = (900, 600))
+        ax = Mke.Axis(
             fig[1, 1];
             title = "XCAT male chest slab (full resolution)",
             subtitle = "Slice $(mid) / $(size(phantom_labeled, 3))" *
                 " · $(size(phantom_labeled, 1))×$(size(phantom_labeled, 2))" *
                 " · $(n_lbl) unique labels",
-            aspect = CM.DataAspect(),
+            aspect = Mke.DataAspect(),
             titlesize = 28, subtitlesize = 20,
         )
-        hm = CM.heatmap!(ax, Float32.(slice); colormap = :tab20)
-        CM.hidedecorations!(ax)
-        CM.Colorbar(fig[1, 2], hm; label = "label", width = 14, labelsize = 18)
+        hm = Mke.heatmap!(ax, Float32.(slice); colormap = :tab20)
+        Mke.hidedecorations!(ax)
+        Mke.Colorbar(fig[1, 2], hm; label = "label", width = 14, labelsize = 18)
 
-        CM.save(
+        Mke.save(
             joinpath(@__DIR__, "..", "assets", "xcat_phantom.png"),
             fig; px_per_unit = 2
         )
@@ -648,7 +649,7 @@ let
         !!! warning "Skipped — see 1 for XCAT setup"
         """
     else
-        fig = CM.Figure(size = (1200, 660))
+        fig = Mke.Figure(size = (1200, 660))
 
         mid = size(hu_fbp, 3) ÷ 2
         img_fbp = hu_fbp[:, :, mid]
@@ -656,29 +657,29 @@ let
         colorrng = (-300, 550)   # soft-tissue window: W=400, L=40
         title_kwargs = (titlesize = 28, subtitlesize = 20)
 
-        ax_fbp = CM.Axis(
+        ax_fbp = Mke.Axis(
             fig[1, 1];
             title = "FBP (FDK)",
             subtitle = "120 kVp / 250 mA · :standard filter",
-            aspect = CM.DataAspect(),
+            aspect = Mke.DataAspect(),
             title_kwargs...,
         )
-        ax_hir = CM.Axis(
+        ax_hir = Mke.Axis(
             fig[1, 2];
             title = "Hybrid IR",
             subtitle = "120 kVp / 250 mA · strength = 60 %",
-            aspect = CM.DataAspect(),
+            aspect = Mke.DataAspect(),
             title_kwargs...,
         )
 
-        CM.heatmap!(ax_fbp, img_fbp; colormap = :grays, colorrange = colorrng)
-        hm = CM.heatmap!(ax_hir, img_hir; colormap = :grays, colorrange = colorrng)
+        Mke.heatmap!(ax_fbp, img_fbp; colormap = :grays, colorrange = colorrng)
+        hm = Mke.heatmap!(ax_hir, img_hir; colormap = :grays, colorrange = colorrng)
 
-        CM.hidedecorations!(ax_fbp)
-        CM.hidedecorations!(ax_hir)
-        CM.Colorbar(fig[1, 3], hm; label = "HU", width = 14, labelsize = 18)
+        Mke.hidedecorations!(ax_fbp)
+        Mke.hidedecorations!(ax_hir)
+        Mke.Colorbar(fig[1, 3], hm; label = "HU", width = 14, labelsize = 18)
 
-        CM.save(
+        Mke.save(
             joinpath(@__DIR__, "..", "assets", "xcat_fbp_vs_hir.png"),
             fig; px_per_unit = 2
         )

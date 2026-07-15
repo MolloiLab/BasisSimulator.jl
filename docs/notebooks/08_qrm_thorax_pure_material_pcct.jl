@@ -90,7 +90,8 @@ md"""
 import BasisSimulator as BS
 
 # ╔═╡ 08010003-0000-4000-8000-000000000011
-import CairoMakie as CM
+# import CairoMakie as Mke
+import WasmMakie as Mke
 
 # ╔═╡ 08010003-0000-4000-8000-000000000012
 import PlutoUI
@@ -351,17 +352,17 @@ let
     slice = phantom_cpu.mask[:, :, mid]
     n_lbl = length(unique(slice))
 
-    fig = CM.Figure(size = (1100, 760))
-    ax = CM.Axis(
+    fig = Mke.Figure(size = (1100, 760))
+    ax = Mke.Axis(
         fig[1, 1];
         title = "QRM-Thorax mid-slice (labeled)",
         subtitle = "$(size(slice, 1)) × $(size(slice, 2)) at $(QRM_VOXEL_SIZE_CM[1] * 10) mm/voxel · $(n_lbl) unique labels",
-        aspect = CM.DataAspect(),
+        aspect = Mke.DataAspect(),
         titlesize = 28, subtitlesize = 18,
     )
-    hm = CM.heatmap!(ax, Float32.(slice); colormap = :tab20)
-    CM.hidedecorations!(ax)
-    CM.Colorbar(fig[1, 2], hm; label = "label", width = 14, labelsize = 18)
+    hm = Mke.heatmap!(ax, Float32.(slice); colormap = :tab20)
+    Mke.hidedecorations!(ax)
+    Mke.Colorbar(fig[1, 2], hm; label = "label", width = 14, labelsize = 18)
     fig
 end
 
@@ -613,7 +614,7 @@ let
         Float64(quantile(all_v, 0.99)),
     )
 
-    fig = CM.Figure(size = (1180, 1180))
+    fig = Mke.Figure(size = (1180, 1180))
     axis_kwargs = (
         titlesize = 32, subtitlesize = 24,
         xlabel = "View", ylabel = "Detector Column",
@@ -624,13 +625,13 @@ let
     for k in 1:4
         r = ((k - 1) ÷ 2) + 1
         c = ((k - 1) % 2) + 1
-        ax = CM.Axis(
+        ax = Mke.Axis(
             fig[r, c]; title = bin_titles[k], subtitle = bin_subs[k],
             axis_kwargs...,
         )
-        CM.heatmap!(ax, slices[k]; colormap = :viridis, colorrange = sino_window)
+        Mke.heatmap!(ax, slices[k]; colormap = :viridis, colorrange = sino_window)
     end
-    CM.Colorbar(
+    Mke.Colorbar(
         fig[1:2, 3]; colormap = :viridis, colorrange = sino_window,
         label = "Log Line Integral", width = 16, labelsize = 22, ticklabelsize = 18,
     )
@@ -717,7 +718,7 @@ let
         Float64(quantile(all_v, 0.99)),
     )
 
-    fig = CM.Figure(size = (1180, 580))
+    fig = Mke.Figure(size = (1180, 580))
     axis_kwargs = (
         titlesize = 32, subtitlesize = 24,
         xlabel = "View", ylabel = "Detector Column",
@@ -731,10 +732,10 @@ let
     )
 
     for (r, c, ttl, sub, slice) in panels
-        ax = CM.Axis(fig[r, c]; title = ttl, subtitle = sub, axis_kwargs...)
-        CM.heatmap!(ax, slice; colormap = :viridis, colorrange = sino_window)
+        ax = Mke.Axis(fig[r, c]; title = ttl, subtitle = sub, axis_kwargs...)
+        Mke.heatmap!(ax, slice; colormap = :viridis, colorrange = sino_window)
     end
-    CM.Colorbar(
+    Mke.Colorbar(
         fig[1, 3]; colormap = :viridis, colorrange = sino_window,
         label = "Log Line Integral", width = 16, labelsize = 22, ticklabelsize = 18,
     )
@@ -835,7 +836,7 @@ let
     n_row = size(sino_basis.sino_iodine, 2)
     mid_r = n_row ÷ 2 + 1
 
-    fig = CM.Figure(size = (1400, 580))
+    fig = Mke.Figure(size = (1400, 580))
     axis_kwargs = (
         titlesize = 32, subtitlesize = 24,
         xlabel = "View", ylabel = "Detector Column",
@@ -857,9 +858,9 @@ let
     )
 
     for (r, panel_c, cbar_c, ttl, cbar_label, slice, range) in panels
-        ax = CM.Axis(fig[r, panel_c]; title = ttl, axis_kwargs...)
-        CM.heatmap!(ax, slice; colormap = :viridis, colorrange = range)
-        CM.Colorbar(
+        ax = Mke.Axis(fig[r, panel_c]; title = ttl, axis_kwargs...)
+        Mke.heatmap!(ax, slice; colormap = :viridis, colorrange = range)
+        Mke.Colorbar(
             fig[r, cbar_c]; colormap = :viridis, colorrange = range,
             label = cbar_label, width = 16, labelsize = 22, ticklabelsize = 18
         )
@@ -954,7 +955,7 @@ end;
 
 # ╔═╡ 08030008-0000-4000-8000-000000000030
 let
-    fig = CM.Figure(size = (1180, 580))
+    fig = Mke.Figure(size = (1180, 580))
     axis_kwargs = (titlesize = 32, subtitlesize = 24)
 
     mid = size(basis_volumes.vol_iodine_raw, 3) ÷ 2
@@ -973,13 +974,13 @@ let
     )
 
     for (r, panel_c, cbar_c, ttl, cbar_label, slice, range) in panels
-        ax = CM.Axis(
+        ax = Mke.Axis(
             fig[r, panel_c]; title = ttl,
-            aspect = CM.DataAspect(), axis_kwargs...
+            aspect = Mke.DataAspect(), axis_kwargs...
         )
-        CM.heatmap!(ax, slice; colormap = :viridis, colorrange = range)
-        CM.hidedecorations!(ax)
-        CM.Colorbar(
+        Mke.heatmap!(ax, slice; colormap = :viridis, colorrange = range)
+        Mke.hidedecorations!(ax)
+        Mke.Colorbar(
             fig[r, cbar_c]; colormap = :viridis, colorrange = range,
             label = cbar_label, width = 16, labelsize = 22, ticklabelsize = 18
         )
@@ -1042,19 +1043,19 @@ let
     rng = (Float64(quantile(vec(before), 0.01)), Float64(quantile(vec(before), 0.99)))
     rmax = max(maximum(abs.(removed)), 1.0f-12)
 
-    fig = CM.Figure(size = (1500, 540))
-    ak = (titlesize = 26, subtitlesize = 18, aspect = CM.DataAspect())
+    fig = Mke.Figure(size = (1500, 540))
+    ak = (titlesize = 26, subtitlesize = 18, aspect = Mke.DataAspect())
     panels = (
         (1, "Iodine basis — before ACNR", "g/cm³", before, :viridis, rng),
         (2, "Iodine basis — after ACNR", "g/cm³", after, :viridis, rng),
         (3, "REMOVED (after − before)", "must be structureless noise", removed, :balance, (-rmax, rmax)),
     )
     for (c, ttl, sub, sl, cm, cr) in panels
-        ax = CM.Axis(fig[1, c]; title = ttl, subtitle = sub, ak...)
-        CM.heatmap!(ax, sl; colormap = cm)
-        CM.hidedecorations!(ax)
+        ax = Mke.Axis(fig[1, c]; title = ttl, subtitle = sub, ak...)
+        Mke.heatmap!(ax, sl; colormap = cm)
+        Mke.hidedecorations!(ax)
     end
-    CM.Colorbar(
+    Mke.Colorbar(
         fig[1, 4]; colormap = :balance, colorrange = (-rmax, rmax),
         label = "removed (g/cm³)", width = 16, labelsize = 20, ticklabelsize = 16
     )
@@ -1063,7 +1064,7 @@ end
 
 # ╔═╡ 08030009-0000-4000-8000-000000000030
 let
-    fig = CM.Figure(size = (1180, 580))
+    fig = Mke.Figure(size = (1180, 580))
     axis_kwargs = (titlesize = 32, subtitlesize = 24)
 
     mid = size(basis_acnr.vol_iodine, 3) ÷ 2
@@ -1082,13 +1083,13 @@ let
     )
 
     for (r, panel_c, cbar_c, ttl, cbar_label, slice, range) in panels
-        ax = CM.Axis(
+        ax = Mke.Axis(
             fig[r, panel_c]; title = ttl,
-            aspect = CM.DataAspect(), axis_kwargs...
+            aspect = Mke.DataAspect(), axis_kwargs...
         )
-        CM.heatmap!(ax, slice; colormap = :viridis, colorrange = range)
-        CM.hidedecorations!(ax)
-        CM.Colorbar(
+        Mke.heatmap!(ax, slice; colormap = :viridis, colorrange = range)
+        Mke.hidedecorations!(ax)
+        Mke.Colorbar(
             fig[r, cbar_c]; colormap = :viridis, colorrange = range,
             label = cbar_label, width = 16, labelsize = 22, ticklabelsize = 18
         )
@@ -1190,7 +1191,7 @@ end;
 let
     HU_window = (-200, 500)
 
-    fig = CM.Figure(size = (1180, 1180))
+    fig = Mke.Figure(size = (1180, 1180))
     axis_kwargs = (titlesize = 32, subtitlesize = 24)
 
     sample = vmi_HU_final[40.0]
@@ -1199,21 +1200,21 @@ let
     for (k, E) in enumerate(pcct_vmi_energies)
         r = ((k - 1) ÷ 2) + 1
         c = ((k - 1) % 2) + 1
-        ax = CM.Axis(
+        ax = Mke.Axis(
             fig[r, c]; title = "$(Int(E)) keV VMI",
-            aspect = CM.DataAspect(), axis_kwargs...,
+            aspect = Mke.DataAspect(), axis_kwargs...,
         )
-        CM.heatmap!(
+        Mke.heatmap!(
             ax, vmi_HU_final[E][:, :, mid];
             colormap = :grays, colorrange = HU_window
         )
-        CM.hidedecorations!(ax)
+        Mke.hidedecorations!(ax)
     end
-    CM.Colorbar(
+    Mke.Colorbar(
         fig[1:2, 3]; colormap = :grays, colorrange = HU_window,
         label = "HU", width = 16, labelsize = 22, ticklabelsize = 18
     )
-    CM.save(
+    Mke.save(
         joinpath(@__DIR__, "..", "assets", "qrm_thorax_pcct_vmi_grid.png"),
         fig; px_per_unit = 2,
     )
@@ -1255,59 +1256,59 @@ let
         out
     end
 
-    fig = CM.Figure(size = (1400, 1320))
+    fig = Mke.Figure(size = (1400, 1320))
     hu_kwargs = (colormap = :grays, colorrange = (-200, 500))
     title_kwargs = (titlesize = 28, subtitlesize = 20)
 
-    ax_tl = CM.Axis(
+    ax_tl = Mke.Axis(
         fig[1, 1];
         title = "70 keV VMI HU recon",
         subtitle = "z = $(z_recon) of $(size(vmi_HU_final[70.0], 3))",
-        aspect = CM.DataAspect(),
+        aspect = Mke.DataAspect(),
         title_kwargs...,
     )
-    CM.heatmap!(ax_tl, hu_slice; hu_kwargs...)
-    CM.hidedecorations!(ax_tl)
+    Mke.heatmap!(ax_tl, hu_slice; hu_kwargs...)
+    Mke.hidedecorations!(ax_tl)
 
-    ax_tr = CM.Axis(
+    ax_tr = Mke.Axis(
         fig[1, 2];
         title = "phantom_in_recon (`:nearest` resample)",
         subtitle = "$(length(unique(pir_slice))) unique labels on recon grid",
-        aspect = CM.DataAspect(),
+        aspect = Mke.DataAspect(),
         title_kwargs...,
     )
-    CM.heatmap!(ax_tr, Float32.(pir_slice); colormap = :tab20)
-    CM.hidedecorations!(ax_tr)
+    Mke.heatmap!(ax_tr, Float32.(pir_slice); colormap = :tab20)
+    Mke.hidedecorations!(ax_tr)
 
-    ax_bl = CM.Axis(
+    ax_bl = Mke.Axis(
         fig[2, 1];
         title = "HU + rod labels (9–12)",
         subtitle = "α = 0.6 over HU — rod edges should sit on recon rod edges",
-        aspect = CM.DataAspect(),
+        aspect = Mke.DataAspect(),
         title_kwargs...,
     )
-    CM.heatmap!(ax_bl, hu_slice; hu_kwargs...)
-    CM.heatmap!(
+    Mke.heatmap!(ax_bl, hu_slice; hu_kwargs...)
+    Mke.heatmap!(
         ax_bl, rod_overlay;
         colormap = :tab20, alpha = 0.6, nan_color = (:white, 0.0),
         colorrange = (1, 12),
     )
-    CM.hidedecorations!(ax_bl)
+    Mke.hidedecorations!(ax_bl)
 
-    ax_br = CM.Axis(
+    ax_br = Mke.Axis(
         fig[2, 2];
         title = "HU + full label mask (every non-air label)",
         subtitle = "α = 0.4 over HU — bone walls / heart cavity edge alignment",
-        aspect = CM.DataAspect(),
+        aspect = Mke.DataAspect(),
         title_kwargs...,
     )
-    CM.heatmap!(ax_br, hu_slice; hu_kwargs...)
-    CM.heatmap!(
+    Mke.heatmap!(ax_br, hu_slice; hu_kwargs...)
+    Mke.heatmap!(
         ax_br, full_overlay;
         colormap = :tab20, alpha = 0.4, nan_color = (:white, 0.0),
         colorrange = (1, 12),
     )
-    CM.hidedecorations!(ax_br)
+    Mke.hidedecorations!(ax_br)
 
     fig
 end
@@ -1342,21 +1343,21 @@ let
 
     overlay = Float32[b ? 1.0f0 : NaN32 for b in solid_water_basis.mask_2d]
 
-    fig = CM.Figure(size = (1180, 580))
+    fig = Mke.Figure(size = (1180, 580))
 
-    ax1 = CM.Axis(
+    ax1 = Mke.Axis(
         fig[1, 1];
         title = "SW-ROI (water rod core)",
         subtitle = "Overlaid on 70 keV VMI",
-        aspect = CM.DataAspect(),
+        aspect = Mke.DataAspect(),
         titlesize = 32, subtitlesize = 24,
     )
-    CM.heatmap!(ax1, bg; colormap = :grays, colorrange = HU_window)
-    CM.heatmap!(
+    Mke.heatmap!(ax1, bg; colormap = :grays, colorrange = HU_window)
+    Mke.heatmap!(
         ax1, overlay; colormap = :reds, alpha = 0.5,
         nan_color = (:white, 0.0)
     )
-    CM.hidedecorations!(ax1)
+    Mke.hidedecorations!(ax1)
 
     sw_idx = findall(solid_water_basis.mask_2d)
     n_z = size(vmi_HU_final[70.0], 3)
@@ -1370,9 +1371,9 @@ let
     sw_hu_per_keV = [_mean_hu(vmi_HU_final[E]) for E in pcct_vmi_energies]
 
     n_E = length(pcct_vmi_energies)
-    bar_colors = [CM.cgrad(:plasma, n_E; categorical = true)[i] for i in 1:n_E]
+    bar_colors = [Mke.cgrad(:plasma, n_E; categorical = true)[i] for i in 1:n_E]
 
-    ax2 = CM.Axis(
+    ax2 = Mke.Axis(
         fig[1, 2];
         title = "Water ROI Mean HU",
         subtitle = "Per VMI Energy",
@@ -1382,14 +1383,14 @@ let
         xlabelsize = 22, ylabelsize = 22,
         xticklabelsize = 18, yticklabelsize = 16,
     )
-    CM.barplot!(
+    Mke.barplot!(
         ax2, 1:n_E, sw_hu_per_keV;
         color = bar_colors, strokecolor = :black, strokewidth = 1
     )
-    CM.hlines!(ax2, [0.0]; color = :black, linewidth = 1, linestyle = :dash)
+    Mke.hlines!(ax2, [0.0]; color = :black, linewidth = 1, linestyle = :dash)
 
     for (k, h) in pairs(sw_hu_per_keV)
-        CM.text!(
+        Mke.text!(
             ax2, k, h;
             text = "$(round(h, digits = 1)) HU",
             align = (:center, h ≥ 0 ? :bottom : :top),
@@ -1398,9 +1399,9 @@ let
     end
 
     y_max = max(15.0, 1.2 * maximum(abs, sw_hu_per_keV))
-    CM.ylims!(ax2, -y_max, y_max)
+    Mke.ylims!(ax2, -y_max, y_max)
 
-    CM.save(
+    Mke.save(
         joinpath(@__DIR__, "..", "assets", "qrm_thorax_pcct_water_roi.png"),
         fig; px_per_unit = 2,
     )
@@ -1524,26 +1525,26 @@ let
 
     overlay = Float32[b ? 1.0f0 : NaN32 for b in heart_noise_roi.mask_2d]
 
-    fig = CM.Figure(size = (1180, 580))
+    fig = Mke.Figure(size = (1180, 580))
 
-    ax1 = CM.Axis(
+    ax1 = Mke.Axis(
         fig[1, 1];
         title = "Heart-Center Noise ROI",
-        aspect = CM.DataAspect(),
+        aspect = Mke.DataAspect(),
         titlesize = 32, subtitlesize = 24,
     )
-    CM.heatmap!(ax1, bg; colormap = :grays, colorrange = HU_window)
-    CM.heatmap!(
+    Mke.heatmap!(ax1, bg; colormap = :grays, colorrange = HU_window)
+    Mke.heatmap!(
         ax1, overlay; colormap = :reds, alpha = 0.5,
         nan_color = (:white, 0.0),
     )
-    CM.hidedecorations!(ax1)
+    Mke.hidedecorations!(ax1)
 
     Es = sort(collect(keys(vmi_noise_by_keV)))
     σs = [vmi_noise_by_keV[E].std  for E in Es]
     μs = [vmi_noise_by_keV[E].mean for E in Es]
 
-    ax2 = CM.Axis(
+    ax2 = Mke.Axis(
         fig[1, 2];
         title = "Heart-Center Noise vs Energy",
         xlabel = "VMI Energy (keV)",
@@ -1552,21 +1553,21 @@ let
         xlabelsize = 22, ylabelsize = 22,
         xticklabelsize = 18, yticklabelsize = 16,
     )
-    CM.scatterlines!(
+    Mke.scatterlines!(
         ax2, Es, σs;
         color = :tomato, markersize = 18, linewidth = 3,
     )
     for (E, σ, μ) in zip(Es, σs, μs)
-        CM.text!(
+        Mke.text!(
             ax2, E, σ;
             text = "σ=$(round(σ; digits = 1))\n⟨HU⟩=$(round(μ; digits = 1))",
             align = (:center, :bottom),
             fontsize = 16, offset = (0, 8),
         )
     end
-    # CM.ylims!(ax2, 0, maximum(σs) * 1.4)
+    # Mke.ylims!(ax2, 0, maximum(σs) * 1.4)
 
-    CM.save(
+    Mke.save(
         joinpath(@__DIR__, "..", "assets", "qrm_thorax_pcct_noise_vs_energy.png"),
         fig; px_per_unit = 2,
     )
@@ -1717,16 +1718,16 @@ md"""
 
 # ╔═╡ 0803000c-0000-4000-8000-000000000031
 let
-    fig = CM.Figure(size = (980, 580))
+    fig = Mke.Figure(size = (980, 580))
 
     rod_colors = [
-        CM.RGBf(0.2, 0.6, 0.85),  # water    — blue
-        CM.RGBf(0.95, 0.65, 0.13),  # lipid    — orange
-        CM.RGBf(0.55, 0.3, 0.65),  # collagen — purple
-        CM.RGBf(0.85, 0.27, 0.1),  # iodine   — red
+        Mke.RGBf(0.2, 0.6, 0.85),  # water    — blue
+        Mke.RGBf(0.95, 0.65, 0.13),  # lipid    — orange
+        Mke.RGBf(0.55, 0.3, 0.65),  # collagen — purple
+        Mke.RGBf(0.85, 0.27, 0.1),  # iodine   — red
     ]
 
-    ax = CM.Axis(
+    ax = Mke.Axis(
         fig[1, 1];
         title = "Pure-Material Rods (PCCT)",
         subtitle = "40 / 70 / 100 / 140 keV",
@@ -1748,15 +1749,15 @@ let
     rod_labels_str = Vector{String}(undef, length(rod_data.names))
     for i in eachindex(rod_data.names)
         c = rod_colors[i]
-        CM.scatterlines!(
+        Mke.scatterlines!(
             ax, pcct_vmi_energies, vec(rod_data.measured[i, :]);
             color = c, linewidth = 2.5, markersize = 9
         )
-        CM.lines!(
+        Mke.lines!(
             ax, pcct_vmi_energies, vec(rod_data.theoretical[i, :]);
             color = c, linewidth = 1.6, linestyle = :dash
         )
-        rod_lines[i] = CM.LineElement(color = c, linewidth = 2.5)
+        rod_lines[i] = Mke.LineElement(color = c, linewidth = 2.5)
 
         meas_i = vec(rod_data.measured[i, :])
         theo_i = vec(rod_data.theoretical[i, :])
@@ -1772,14 +1773,14 @@ let
         end
     end
 
-    style_meas = CM.MarkerElement(
+    style_meas = Mke.MarkerElement(
         color = :black, marker = :circle, markersize = 9,
         strokecolor = :black, strokewidth = 1
     )
-    style_theo = CM.LineElement(
+    style_theo = Mke.LineElement(
         color = :black, linewidth = 1.6, linestyle = :dash
     )
-    CM.axislegend(
+    Mke.axislegend(
         ax,
         vcat([style_meas, style_theo], rod_lines),
         vcat(["Measured", "Theoretical"], rod_labels_str);
@@ -1787,7 +1788,7 @@ let
         rowgap = 1, padding = (6, 6, 6, 6),
     )
 
-    CM.save(
+    Mke.save(
         joinpath(@__DIR__, "..", "assets", "qrm_thorax_pcct_vmi_vs_theoretical.png"),
         fig; px_per_unit = 2,
     )

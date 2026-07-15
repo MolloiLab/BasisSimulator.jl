@@ -6,11 +6,9 @@
 # outputs as plain HTML + WASM islands where compilable — NO embedded Pluto statefile
 # (the old Pluto.generate_html path baked 17-42 MB of state into every page).
 #
-# [sources] are LOCAL PATHS (this env only ever runs on the dev machine — that's the
-# whole point: the notebooks need Metal, so rendering is local and CI just mounts the
-# committed HTML). Layout assumption: GroupTherapyOrg/ is a sibling of MolloiLab/.
-# WasmTarget must be pinned HERE too — [sources] only apply from the root project, so
-# Snapshot.jl's own WasmTarget pin doesn't propagate.
+# Snapshot tracks its GitHub main branch, while WasmTarget is resolved as a normal
+# registered package. The notebooks themselves still render locally because they
+# need Metal; CI only mounts the committed HTML.
 
 [deps]
 Pluto = "c3e4b0f8-55cb-11ea-2926-15256bba5781"
@@ -19,5 +17,4 @@ Snapshot = "1e64ef43-5f79-4f6b-8e97-159df4e27032"
 WasmTarget = "9f3a1415-1112-405b-ae89-c61daf9872bd"
 
 [sources]
-Snapshot = {path = "../../../../GroupTherapyOrg/Snapshot.jl"}
-WasmTarget = {path = "../../../../GroupTherapyOrg/WasmTarget.jl"}
+Snapshot = {url = "https://github.com/GroupTherapyOrg/Snapshot.jl", rev = "main"}

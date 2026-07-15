@@ -83,7 +83,8 @@ Python-side `import PythonCall as PC` for gecatsim.
 import BasisSimulator as BS
 
 # ╔═╡ 06000001-0000-4000-8000-000000000031
-import CairoMakie as CM
+# import CairoMakie as Mke
+import WasmMakie as Mke
 
 # ╔═╡ 06000001-0000-4000-8000-000000000032
 # ╠═╡ show_logs = false
@@ -880,58 +881,58 @@ let
         "$(GPU_BACKEND.name) · $(fmt_s(basissim_gpu_result.elapsed)) · $(fmt_speedup(ref_t / basissim_gpu_result.elapsed))"
 
     n_panels = catsim_result === nothing ? 2 : 3
-    fig = CM.Figure(size = (n_panels * 540 + 90, 600))
+    fig = Mke.Figure(size = (n_panels * 540 + 90, 600))
 
     title_kwargs = (titlesize = 28, subtitlesize = 20)
 
     col = 1
     last_hm = nothing
     if catsim_result !== nothing
-        ax = CM.Axis(
+        ax = Mke.Axis(
             fig[1, col];
             title = "CatSim",
             subtitle = "Python · $(fmt_s(catsim_result.elapsed)) · reference",
-            aspect = CM.DataAspect(), yreversed = true,
+            aspect = Mke.DataAspect(), yreversed = true,
             title_kwargs...,
         )
-        last_hm = CM.heatmap!(
+        last_hm = Mke.heatmap!(
             ax, catsim_result.recon[:, :, size(catsim_result.recon, 3) ÷ 2 + 1];
             colormap = :grays, colorrange = (-200, 600),
         )
-        CM.hidedecorations!(ax)
+        Mke.hidedecorations!(ax)
         col += 1
     end
 
-    ax_cpu = CM.Axis(
+    ax_cpu = Mke.Axis(
         fig[1, col];
         title = "BasisSimulator.jl (CPU)",
         subtitle = cpu_sub,
-        aspect = CM.DataAspect(), yreversed = true,
+        aspect = Mke.DataAspect(), yreversed = true,
         title_kwargs...,
     )
-    last_hm = CM.heatmap!(
+    last_hm = Mke.heatmap!(
         ax_cpu, basissim_cpu_result.recon[:, :, size(basissim_cpu_result.recon, 3) ÷ 2 + 1];
         colormap = :grays, colorrange = (-200, 600),
     )
-    CM.hidedecorations!(ax_cpu)
+    Mke.hidedecorations!(ax_cpu)
     col += 1
 
-    ax_gpu = CM.Axis(
+    ax_gpu = Mke.Axis(
         fig[1, col];
         title = "BasisSimulator.jl ($(GPU_BACKEND.name))",
         subtitle = gpu_sub,
-        aspect = CM.DataAspect(), yreversed = true,
+        aspect = Mke.DataAspect(), yreversed = true,
         title_kwargs...,
     )
-    last_hm = CM.heatmap!(
+    last_hm = Mke.heatmap!(
         ax_gpu, basissim_gpu_result.recon[:, :, size(basissim_gpu_result.recon, 3) ÷ 2 + 1];
         colormap = :grays, colorrange = (-200, 600),
     )
-    CM.hidedecorations!(ax_gpu)
+    Mke.hidedecorations!(ax_gpu)
 
-    CM.Colorbar(fig[1, col + 1], last_hm; label = "HU", width = 14, labelsize = 18)
+    Mke.Colorbar(fig[1, col + 1], last_hm; label = "HU", width = 14, labelsize = 18)
 
-    CM.save(
+    Mke.save(
         joinpath(@__DIR__, "..", "assets", "catsim_vs_basissim_mosaic.png"),
         fig; px_per_unit = 2,
     )
@@ -955,21 +956,21 @@ let
         rows, (
             label = "CatSim\n(Python)",
             seconds = catsim_result === nothing ? NaN : catsim_result.elapsed,
-            color = CM.RGBf(0.4, 0.4, 0.45),
+            color = Mke.RGBf(0.4, 0.4, 0.45),
         )
     )
     push!(
         rows, (
             label = "BasisSimulator.jl\nCPU",
             seconds = basissim_cpu_result.elapsed,
-            color = CM.RGBf(0.95, 0.55, 0.1),
+            color = Mke.RGBf(0.95, 0.55, 0.1),
         )
     )
     push!(
         rows, (
             label = "BasisSimulator.jl\n$(GPU_BACKEND.name)",
             seconds = basissim_gpu_result.elapsed,
-            color = CM.RGBf(0.13, 0.59, 0.85),
+            color = Mke.RGBf(0.13, 0.59, 0.85),
         )
     )
 
@@ -980,8 +981,8 @@ let
 
     ref_t = catsim_result === nothing ? nothing : catsim_result.elapsed
 
-    fig = CM.Figure(size = (1180, 620))
-    ax = CM.Axis(
+    fig = Mke.Figure(size = (1180, 620))
+    ax = Mke.Axis(
         fig[1, 1];
         title = "End-to-End Timing (Forward projection + FBP)",
         subtitle = "120 kVp · 200 mA · 500 views · 128³ Gammex 472",
@@ -997,7 +998,7 @@ let
         yticklabelsize = 16,
     )
 
-    CM.barplot!(
+    Mke.barplot!(
         ax, xs[valid_idx], ys[valid_idx];
         color = cs[valid_idx],
         strokecolor = :black, strokewidth = 1,
@@ -1015,7 +1016,7 @@ let
         else
             @sprintf("%s\n(%.1f× faster)", time_txt, ref_t / r.seconds)
         end
-        CM.text!(
+        Mke.text!(
             ax, i, r.seconds * 1.18;
             text = annot, align = (:center, :bottom),
             fontsize = 20, font = :bold,
@@ -1025,9 +1026,9 @@ let
     # pad the y-range so the bold text annotations don't clip
     y_hi = maximum(ys[valid_idx]) * 3.5
     y_lo = minimum(ys[valid_idx]) * 0.7
-    CM.ylims!(ax, y_lo, y_hi)
+    Mke.ylims!(ax, y_lo, y_hi)
 
-    CM.save(
+    Mke.save(
         joinpath(@__DIR__, "..", "assets", "catsim_vs_basissim_runtime_bar.png"),
         fig; px_per_unit = 2,
     )

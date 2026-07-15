@@ -60,7 +60,7 @@ md"""
 ## Notebook Setup
 
 Activate `docs/Project.toml` (which has `BasisSimulator` from the local source
-tree + `CairoMakie`), then bring in our imports — one per cell — and finally
+tree + `WasmMakie`), then bring in our imports — one per cell — and finally
 detect a GPU backend.
 """
 
@@ -70,7 +70,8 @@ import BasisSimulator as BS
 
 # ╔═╡ 01000003-0000-4000-8000-000000000003
 # ╠═╡ show_logs = false
-import CairoMakie as CM
+# import CairoMakie as Mke
+import WasmMakie as Mke
 
 # ╔═╡ 886270ac-b0c1-4c77-b218-3bb67c8bee20
 TableOfContents()
@@ -198,19 +199,19 @@ let
 
     colors = [info[l][2] for l in labels]
     names = [info[l][1] for l in labels]
-    cmap = CM.cgrad(colors, n; categorical = true)
+    cmap = Mke.cgrad(colors, n; categorical = true)
 
-    fig = CM.Figure(size = (900, 600))
-    ax = CM.Axis(
+    fig = Mke.Figure(size = (900, 600))
+    ax = Mke.Axis(
         fig[1, 1];
         title = "Input Phantom",
         subtitle = "Gammex Model 472 (Slice $mid)",
-        aspect = CM.DataAspect(),
+        aspect = Mke.DataAspect(),
         titlesize = 28, subtitlesize = 20,
     )
-    CM.heatmap!(ax, mapped; colormap = cmap, colorrange = (0.5, n + 0.5))
-    CM.hidedecorations!(ax)
-    CM.Colorbar(
+    Mke.heatmap!(ax, mapped; colormap = cmap, colorrange = (0.5, n + 0.5))
+    Mke.hidedecorations!(ax)
+    Mke.Colorbar(
         fig[1, 2];
         colormap = cmap,
         colorrange = (0.5, n + 0.5),
@@ -219,7 +220,7 @@ let
         width = 16,
     )
 
-    CM.save(
+    Mke.save(
         joinpath(@__DIR__, "..", "assets", "gammex_472_phantom.png"),
         fig; px_per_unit = 2
     )
@@ -471,8 +472,8 @@ let
     n_col, n_row, n_view = size(sino)
     mid_row = n_row ÷ 2 + 1
 
-    fig = CM.Figure(size = (1100, 660))
-    ax = CM.Axis(
+    fig = Mke.Figure(size = (1100, 660))
+    ax = Mke.Axis(
         fig[1, 1];
         title = "Standard-dose sinogram",
         subtitle = "Central detector row · 120 kVp / 200 mA · $n_view views",
@@ -482,13 +483,13 @@ let
         xlabelsize = 22, ylabelsize = 22,
         xticklabelsize = 16, yticklabelsize = 16,
     )
-    hm = CM.heatmap!(
+    hm = Mke.heatmap!(
         ax, 1:n_view, 1:n_col, permutedims(sino[:, mid_row, :]);
         colormap = :viridis,
     )
-    CM.Colorbar(fig[1, 2], hm; label = "Line integral  −log(I / I₀)", width = 14, labelsize = 18)
+    Mke.Colorbar(fig[1, 2], hm; label = "Line integral  −log(I / I₀)", width = 14, labelsize = 18)
 
-    CM.save(
+    Mke.save(
         joinpath(@__DIR__, "..", "assets", "sinogram_standard.png"),
         fig; px_per_unit = 2
     )
@@ -767,53 +768,53 @@ counts-domain electronic noise — visible mostly in the rim region.
 
 # ╔═╡ 10000002-0000-4000-8000-000000000001
 let
-    fig = CM.Figure(size = (1200, 1100))
+    fig = Mke.Figure(size = (1200, 1100))
 
     mid = size(hu_std, 3) ÷ 2
     colorrng = (-200, 500)
     title_kwargs = (titlesize = 28, subtitlesize = 20)
 
-    ax_std_raw = CM.Axis(
+    ax_std_raw = Mke.Axis(
         fig[1, 1];
         title = "Uncorrected",
         subtitle = "Standard dose",
-        aspect = CM.DataAspect(),
+        aspect = Mke.DataAspect(),
         title_kwargs...,
     )
-    ax_std_corr = CM.Axis(
+    ax_std_corr = Mke.Axis(
         fig[1, 2];
         title = "Corrected",
         subtitle = "Standard dose",
-        aspect = CM.DataAspect(),
+        aspect = Mke.DataAspect(),
         title_kwargs...,
     )
-    ax_low_raw = CM.Axis(
+    ax_low_raw = Mke.Axis(
         fig[2, 1];
         title = "Uncorrected",
         subtitle = "Low dose",
-        aspect = CM.DataAspect(),
+        aspect = Mke.DataAspect(),
         title_kwargs...,
     )
-    ax_low_corr = CM.Axis(
+    ax_low_corr = Mke.Axis(
         fig[2, 2];
         title = "Corrected",
         subtitle = "Low dose",
-        aspect = CM.DataAspect(),
+        aspect = Mke.DataAspect(),
         title_kwargs...,
     )
 
-    CM.heatmap!(ax_std_raw, hu_std[:, :, mid]; colormap = :grays, colorrange = colorrng)
-    CM.heatmap!(ax_std_corr, hu_std_corr[:, :, mid]; colormap = :grays, colorrange = colorrng)
-    CM.heatmap!(ax_low_raw, hu_low[:, :, mid]; colormap = :grays, colorrange = colorrng)
-    hm = CM.heatmap!(ax_low_corr, hu_low_corr[:, :, mid]; colormap = :grays, colorrange = colorrng)
+    Mke.heatmap!(ax_std_raw, hu_std[:, :, mid]; colormap = :grays, colorrange = colorrng)
+    Mke.heatmap!(ax_std_corr, hu_std_corr[:, :, mid]; colormap = :grays, colorrange = colorrng)
+    Mke.heatmap!(ax_low_raw, hu_low[:, :, mid]; colormap = :grays, colorrange = colorrng)
+    hm = Mke.heatmap!(ax_low_corr, hu_low_corr[:, :, mid]; colormap = :grays, colorrange = colorrng)
 
     for ax in (ax_std_raw, ax_std_corr, ax_low_raw, ax_low_corr)
-        CM.hidedecorations!(ax)
+        Mke.hidedecorations!(ax)
     end
 
-    CM.Colorbar(fig[1:2, 3], hm; label = "HU", width = 14, labelsize = 18)
+    Mke.Colorbar(fig[1:2, 3], hm; label = "HU", width = 14, labelsize = 18)
 
-    CM.save(
+    Mke.save(
         joinpath(@__DIR__, "..", "assets", "recon_compare_4panel.png"),
         fig; px_per_unit = 2
     )
@@ -864,17 +865,17 @@ let
     dz_mm = fov_z_cm * 10 / nz
     z_cm = -fov_z_cm / 2 + (z_slice - 0.5) * fov_z_cm / nz
 
-    fig = CM.Figure(size = (1100, 560))
-    CM.Label(fig[0, 1:3],
+    fig = Mke.Figure(size = (1100, 560))
+    Mke.Label(fig[0, 1:3],
         "slice $(z_slice)/$(nz)  ·  z = $(round(z_cm * 10; digits = 2)) mm of ±$(round(fov_z_cm * 10 / 2; digits = 1)) mm  ·  slice thickness $(round(dz_mm; digits = 2)) mm";
         fontsize = 26, font = :bold, tellwidth = false)
-    ax1 = CM.Axis(fig[1, 1]; title = "Corrected · standard dose", titlesize = 22, aspect = CM.DataAspect())
-    hm = CM.heatmap!(ax1, hu_std_corr[:, :, z_slice]; colormap = :grays, colorrange = (-100, 500))
-    CM.hidedecorations!(ax1)
-    ax2 = CM.Axis(fig[1, 2]; title = "Corrected · low dose", titlesize = 22, aspect = CM.DataAspect())
-    CM.heatmap!(ax2, hu_low_corr[:, :, z_slice]; colormap = :grays, colorrange = (-100, 500))
-    CM.hidedecorations!(ax2)
-    CM.Colorbar(fig[1, 3], hm; label = "HU", labelsize = 20, ticklabelsize = 14)
+    ax1 = Mke.Axis(fig[1, 1]; title = "Corrected · standard dose", titlesize = 22, aspect = Mke.DataAspect())
+    hm = Mke.heatmap!(ax1, hu_std_corr[:, :, z_slice]; colormap = :grays, colorrange = (-100, 500))
+    Mke.hidedecorations!(ax1)
+    ax2 = Mke.Axis(fig[1, 2]; title = "Corrected · low dose", titlesize = 22, aspect = Mke.DataAspect())
+    Mke.heatmap!(ax2, hu_low_corr[:, :, z_slice]; colormap = :grays, colorrange = (-100, 500))
+    Mke.hidedecorations!(ax2)
+    Mke.Colorbar(fig[1, 3], hm; label = "HU", labelsize = 20, ticklabelsize = 14)
     fig
 end
 

@@ -33,7 +33,8 @@ import BasisSimulator as BS
 
 # ╔═╡ 11000001-0000-4000-8000-000000000003
 # ╠═╡ show_logs = false
-import CairoMakie as CM
+# import CairoMakie as Mke
+import WasmMakie as Mke
 
 # ╔═╡ 11000001-0000-4000-8000-000000000006
 begin
@@ -333,36 +334,36 @@ let
     z_cm = -15.0 + (z_idx - 0.5) * (30.0 / 150)
     kp = clamp(round(Int, (z_cm + 18.0) / phantom_data.voxz + 0.5), 1, phantom_data.nz)
 
-    fig = CM.Figure(size = (1100, 1150))
+    fig = Mke.Figure(size = (1100, 1150))
 
     # Super-title.  tellwidth = false so the spanning label cannot stretch the
     # columns (Makie FAQ: elements with tellwidth = true resize their column).
-    CM.Label(fig[0, 1:3], "z = $(round(z_cm; digits = 1)) cm  (slice $(z_idx)/150)";
+    Mke.Label(fig[0, 1:3], "z = $(round(z_cm; digits = 1)) cm  (slice $(z_idx)/150)";
         fontsize = 32, font = :bold, tellwidth = false)
 
     # ── Row 1: phantom ground truth, CATEGORICAL colours + labels ──
-    cat_colors = CM.cgrad([:gray10, :steelblue, :darkorange, :seagreen]; categorical = true)
-    ax1 = CM.Axis(fig[1, 1:2]; title = "Phantom ground truth", titlesize = 24,
-        aspect = CM.DataAspect())
-    hm1 = CM.heatmap!(ax1, Float32.(phantom_data.mask[:, :, kp]);
+    cat_colors = Mke.cgrad([:gray10, :steelblue, :darkorange, :seagreen]; categorical = true)
+    ax1 = Mke.Axis(fig[1, 1:2]; title = "Phantom ground truth", titlesize = 24,
+        aspect = Mke.DataAspect())
+    hm1 = Mke.heatmap!(ax1, Float32.(phantom_data.mask[:, :, kp]);
         colormap = cat_colors, colorrange = (-0.5, 3.5))
-    CM.hidedecorations!(ax1)
-    CM.Colorbar(fig[1, 3], hm1;
+    Mke.hidedecorations!(ax1)
+    Mke.Colorbar(fig[1, 3], hm1;
         ticks = (0:3, ["air", "water body", "lung rod", "adipose cone"]),
         ticklabelsize = 18, tellheight = false)
 
     # ── Row 2: the two reconstructions (HU grayscale) ──
-    ax2 = CM.Axis(fig[2, 1]; title = "Helical · 20 mm collim, pitch 1.0", titlesize = 24,
-        aspect = CM.DataAspect())
-    hm2 = CM.heatmap!(ax2, helical_result.hu[:, :, z_idx]; colormap = :grays, colorrange = (-500, 100))
-    CM.hidedecorations!(ax2)
+    ax2 = Mke.Axis(fig[2, 1]; title = "Helical · 20 mm collim, pitch 1.0", titlesize = 24,
+        aspect = Mke.DataAspect())
+    hm2 = Mke.heatmap!(ax2, helical_result.hu[:, :, z_idx]; colormap = :grays, colorrange = (-500, 100))
+    Mke.hidedecorations!(ax2)
 
-    ax3 = CM.Axis(fig[2, 2]; title = "Volume axial · 2 × 16 cm", titlesize = 24,
-        aspect = CM.DataAspect())
-    CM.heatmap!(ax3, sns_result.hu[:, :, z_idx]; colormap = :grays, colorrange = (-500, 100))
-    CM.hidedecorations!(ax3)
+    ax3 = Mke.Axis(fig[2, 2]; title = "Volume axial · 2 × 16 cm", titlesize = 24,
+        aspect = Mke.DataAspect())
+    Mke.heatmap!(ax3, sns_result.hu[:, :, z_idx]; colormap = :grays, colorrange = (-500, 100))
+    Mke.hidedecorations!(ax3)
 
-    CM.Colorbar(fig[2, 3], hm2; label = "HU", labelsize = 22, ticklabelsize = 16)
+    Mke.Colorbar(fig[2, 3], hm2; label = "HU", labelsize = 22, ticklabelsize = 16)
     fig
 end
 
@@ -385,34 +386,34 @@ z_profile_fig = let
     prof_hel = [mean(helical_result.hu[xr, yr, k]) for k in 1:150]
     prof_sns = [mean(sns_result.hu[xr, yr, k]) for k in 1:150]
 
-    fig = CM.Figure(size = (1400, 600))
-    ax = CM.Axis(fig[1, 1];
+    fig = Mke.Figure(size = (1400, 600))
+    ax = Mke.Axis(fig[1, 1];
         title = "Water HU vs z", titlesize = 32,
         subtitle = "helical (20 mm collim) vs wide-cone volume axial (160 mm collim), matched exposure",
         subtitlesize = 24,
         xlabel = "z (cm)", ylabel = "mean HU (water ROI)",
         xlabelsize = 22, ylabelsize = 22, xticklabelsize = 18, yticklabelsize = 18)
-    CM.lines!(ax, zs, prof_hel; linewidth = 4, label = "helical · 20 mm, pitch 1.0 × 16 rot")
-    CM.lines!(ax, zs, prof_sns; linewidth = 4, label = "volume axial · 2 × 16 cm stations")
-    CM.hlines!(ax, [0.0]; color = :gray, linestyle = :dash, linewidth = 2)
-    CM.vlines!(ax, [0.0]; color = (:orange, 0.5), linestyle = :dot, linewidth = 3)
-    CM.ylims!(ax, -100, 100)
-    CM.axislegend(ax; labelsize = 18, position = :cb)
+    Mke.lines!(ax, zs, prof_hel; linewidth = 4, label = "helical · 20 mm, pitch 1.0 × 16 rot")
+    Mke.lines!(ax, zs, prof_sns; linewidth = 4, label = "volume axial · 2 × 16 cm stations")
+    Mke.hlines!(ax, [0.0]; color = :gray, linestyle = :dash, linewidth = 2)
+    Mke.vlines!(ax, [0.0]; color = (:orange, 0.5), linestyle = :dot, linewidth = 3)
+    Mke.ylims!(ax, -100, 100)
+    Mke.axislegend(ax; labelsize = 18, position = :cb)
     fig
 end
 
 # ╔═╡ 11000008-0000-4000-8000-000000000003
 coronal_fig = let
     yc = 80
-    fig = CM.Figure(size = (1400, 640))
-    ax1 = CM.Axis(fig[1, 1]; title = "Helical — coronal", titlesize = 24)
-    hm = CM.heatmap!(ax1, helical_result.hu[:, yc, :]; colormap = :grays, colorrange = (-500, 100))
-    CM.hidedecorations!(ax1)
-    ax2 = CM.Axis(fig[1, 2]; title = "Volume axial (2 × 16 cm) — coronal", titlesize = 24)
-    CM.heatmap!(ax2, sns_result.hu[:, yc, :]; colormap = :grays, colorrange = (-500, 100))
-    CM.hidedecorations!(ax2)
-    CM.Colorbar(fig[1, 3], hm; label = "HU", labelsize = 22, ticklabelsize = 16)
-    CM.save(joinpath(@__DIR__, "..", "assets", "helical_vs_stepshoot_coronal.png"), fig)
+    fig = Mke.Figure(size = (1400, 640))
+    ax1 = Mke.Axis(fig[1, 1]; title = "Helical — coronal", titlesize = 24)
+    hm = Mke.heatmap!(ax1, helical_result.hu[:, yc, :]; colormap = :grays, colorrange = (-500, 100))
+    Mke.hidedecorations!(ax1)
+    ax2 = Mke.Axis(fig[1, 2]; title = "Volume axial (2 × 16 cm) — coronal", titlesize = 24)
+    Mke.heatmap!(ax2, sns_result.hu[:, yc, :]; colormap = :grays, colorrange = (-500, 100))
+    Mke.hidedecorations!(ax2)
+    Mke.Colorbar(fig[1, 3], hm; label = "HU", labelsize = 22, ticklabelsize = 16)
+    Mke.save(joinpath(@__DIR__, "..", "assets", "helical_vs_stepshoot_coronal.png"), fig)
     fig
 end
 

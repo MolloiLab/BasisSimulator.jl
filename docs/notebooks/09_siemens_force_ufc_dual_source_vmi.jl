@@ -78,7 +78,8 @@ detect the available compute backend, and build the notebook table of contents.
 import BasisSimulator as BS
 
 # ╔═╡ 09000001-0000-4000-8000-000000000031
-import CairoMakie as CM
+# import CairoMakie as Mke
+import WasmMakie as Mke
 
 # ╔═╡ 09000001-0000-4000-8000-000000000032
 import PlutoUI
@@ -134,8 +135,8 @@ let
     η_ufc = BS.get_ufc_mc_efficiency.(Es)
     η_gem = BS.get_gemstone_mc_efficiency.(Es)
 
-    fig = CM.Figure(size = (1180, 580))
-    ax = CM.Axis(
+    fig = Mke.Figure(size = (1180, 580))
+    ax = Mke.Axis(
         fig[1, 1];
         title = "MC Detector Efficiency",
         subtitle = "UFC (SOMATOM Force) vs Gemstone (GE Apex Elite)",
@@ -145,16 +146,16 @@ let
         xlabelsize = 22, ylabelsize = 22,
         xticklabelsize = 18, yticklabelsize = 16,
     )
-    CM.lines!(ax, Es, η_ufc; color = :crimson, linewidth = 3, label = "UFC Gd₂O₂S (BS.UFC_MC_EFFICIENCY_LUT)")
-    CM.lines!(ax, Es, η_gem; color = :steelblue, linewidth = 3, label = "Gemstone garnet (src)")
+    Mke.lines!(ax, Es, η_ufc; color = :crimson, linewidth = 3, label = "UFC Gd₂O₂S (BS.UFC_MC_EFFICIENCY_LUT)")
+    Mke.lines!(ax, Es, η_gem; color = :steelblue, linewidth = 3, label = "Gemstone garnet (src)")
 
-    CM.vlines!(ax, [50.24]; color = :crimson, linestyle = :dash, linewidth = 1.5)
-    CM.text!(ax, 50.24, 0.70; text = "Gd K-edge\n50.2 keV", fontsize = 16, align = (:left, :top), offset = (4, 0))
-    CM.vlines!(ax, [52.0, 63.31]; color = :steelblue, linestyle = :dash, linewidth = 1.5)
-    CM.text!(ax, 63.31, 0.99; text = "Tb / Lu K-edges", fontsize = 16, align = (:left, :top), offset = (4, 0))
+    Mke.vlines!(ax, [50.24]; color = :crimson, linestyle = :dash, linewidth = 1.5)
+    Mke.text!(ax, 50.24, 0.70; text = "Gd K-edge\n50.2 keV", fontsize = 16, align = (:left, :top), offset = (4, 0))
+    Mke.vlines!(ax, [52.0, 63.31]; color = :steelblue, linestyle = :dash, linewidth = 1.5)
+    Mke.text!(ax, 63.31, 0.99; text = "Tb / Lu K-edges", fontsize = 16, align = (:left, :top), offset = (4, 0))
 
-    CM.ylims!(ax, 0.6, 1.02)
-    CM.axislegend(ax; position = :rt, framevisible = true, labelsize = 18)
+    Mke.ylims!(ax, 0.6, 1.02)
+    Mke.axislegend(ax; position = :rt, framevisible = true, labelsize = 18)
     fig
 end
 
@@ -373,8 +374,8 @@ let
         ("Sn140 kVp · tube B", protocol_high, :crimson),
     )
 
-    fig = CM.Figure(size = (1180, 580))
-    ax = CM.Axis(
+    fig = Mke.Figure(size = (1180, 580))
+    ax = Mke.Axis(
         fig[1, 1];
         title = "UFC-Detected Spectra",
         subtitle = "w(E) · η_UFC(E), normalized — Sn hardening on tube B",
@@ -389,14 +390,14 @@ let
         e, wη = ufc_detected_spectrum(prot)
         wn = wη ./ sum(wη)
         mean_E = sum(e .* wn)
-        CM.lines!(
+        Mke.lines!(
             ax, Float64.(e), wn ./ maximum(wn);
             color = color, linewidth = 3,
             label = "$(label)  (mean $(round(mean_E, digits = 1)) keV)",
         )
     end
-    CM.axislegend(ax; position = :rt, framevisible = true, labelsize = 18)
-    CM.save(
+    Mke.axislegend(ax; position = :rt, framevisible = true, labelsize = 18)
+    Mke.save(
         joinpath(@__DIR__, "..", "assets", "force_ufc_detected_spectra.png"),
         fig; px_per_unit = 2,
     )
@@ -475,7 +476,7 @@ let
         Float64(quantile(all_v, 0.99)),
     )
 
-    fig = CM.Figure(size = (1180, 580))
+    fig = Mke.Figure(size = (1180, 580))
     axis_kwargs = (
         titlesize = 32, subtitlesize = 24,
         xlabel = "View", ylabel = "Detector Column",
@@ -489,10 +490,10 @@ let
     )
 
     for (r, c, ttl, slice) in panels
-        ax = CM.Axis(fig[r, c]; title = ttl, axis_kwargs...)
-        CM.heatmap!(ax, slice; colormap = :viridis, colorrange = sino_window)
+        ax = Mke.Axis(fig[r, c]; title = ttl, axis_kwargs...)
+        Mke.heatmap!(ax, slice; colormap = :viridis, colorrange = sino_window)
     end
-    CM.Colorbar(
+    Mke.Colorbar(
         fig[1, 3]; colormap = :viridis, colorrange = sino_window,
         label = "Log Line Integral", width = 16, labelsize = 22, ticklabelsize = 18
     )
@@ -638,7 +639,7 @@ let
     HU_window = (-200, 500)
     mid = size(hu_mixed, 3) ÷ 2
 
-    fig = CM.Figure(size = (1400, 520))
+    fig = Mke.Figure(size = (1400, 520))
     axis_kwargs = (titlesize = 32, subtitlesize = 24)
 
     panels = (
@@ -647,19 +648,19 @@ let
         (3, "Mixed M$(MIX_W_LOW)", hu_mixed),
     )
     for (c, ttl, vol) in panels
-        ax = CM.Axis(
+        ax = Mke.Axis(
             fig[1, c]; title = ttl,
-            aspect = CM.DataAspect(), axis_kwargs...,
+            aspect = Mke.DataAspect(), axis_kwargs...,
         )
-        CM.heatmap!(ax, vol[:, :, mid]; colormap = :grays, colorrange = HU_window)
-        CM.hidedecorations!(ax)
+        Mke.heatmap!(ax, vol[:, :, mid]; colormap = :grays, colorrange = HU_window)
+        Mke.hidedecorations!(ax)
     end
-    CM.Colorbar(
+    Mke.Colorbar(
         fig[1, 4]; colormap = :grays, colorrange = HU_window,
         label = "HU", width = 16, labelsize = 22, ticklabelsize = 18,
     )
 
-    CM.save(
+    Mke.save(
         joinpath(@__DIR__, "..", "assets", "force_ufc_poly_recon.png"),
         fig; px_per_unit = 2,
     )
@@ -686,30 +687,30 @@ let
     means = [e[2].mean for e in entries]
     stds = [e[2].std for e in entries]
 
-    fig = CM.Figure(size = (1180, 580))
+    fig = Mke.Figure(size = (1180, 580))
 
     # ─── Left panel — eroded SW ROI on the mixed image ──────────────────
     HU_window = (-200, 500)
     mid = size(hu_mixed, 3) ÷ 2
     overlay = Float32[b ? 1.0f0 : NaN32 for b in poly_water_stats.mask_2d]
 
-    ax1 = CM.Axis(
+    ax1 = Mke.Axis(
         fig[1, 1];
         title = "Eroded Water Region",
         subtitle = "Overlaid on mixed image",
-        aspect = CM.DataAspect(),
+        aspect = Mke.DataAspect(),
         titlesize = 32, subtitlesize = 24,
     )
-    CM.heatmap!(ax1, hu_mixed[:, :, mid]; colormap = :grays, colorrange = HU_window)
-    CM.heatmap!(
+    Mke.heatmap!(ax1, hu_mixed[:, :, mid]; colormap = :grays, colorrange = HU_window)
+    Mke.heatmap!(
         ax1, overlay; colormap = :reds, alpha = 0.5,
         nan_color = (:white, 0.0),
     )
-    CM.hidedecorations!(ax1)
+    Mke.hidedecorations!(ax1)
 
     # ─── Right panel — water ⟨HU⟩ ± σ per poly readout ───────────────────
-    bar_colors = [CM.cgrad(:plasma, n; categorical = true)[i] for i in 1:n]
-    ax2 = CM.Axis(
+    bar_colors = [Mke.cgrad(:plasma, n; categorical = true)[i] for i in 1:n]
+    ax2 = Mke.Axis(
         fig[1, 2];
         title = "Poly Water HU",
         subtitle = "Solid-water ROI, mean ± σ",
@@ -719,15 +720,15 @@ let
         xlabelsize = 22, ylabelsize = 22,
         xticklabelsize = 18, yticklabelsize = 16,
     )
-    CM.barplot!(
+    Mke.barplot!(
         ax2, 1:n, means;
         color = bar_colors, strokecolor = :black, strokewidth = 1,
     )
-    CM.errorbars!(ax2, 1:n, means, stds; color = :black, whiskerwidth = 14, linewidth = 2)
-    CM.hlines!(ax2, [0.0]; color = :black, linewidth = 1, linestyle = :dash)
+    Mke.errorbars!(ax2, 1:n, means, stds; color = :black, whiskerwidth = 14, linewidth = 2)
+    Mke.hlines!(ax2, [0.0]; color = :black, linewidth = 1, linestyle = :dash)
 
     for (k, (m, s)) in enumerate(zip(means, stds))
-        CM.text!(
+        Mke.text!(
             ax2, k, m + s;
             text = "$(round(m, digits = 1)) ± $(round(s, digits = 1)) HU",
             align = (:center, :bottom),
@@ -736,9 +737,9 @@ let
     end
 
     y_max = max(25.0, 1.4 * maximum(abs.(means) .+ stds))
-    CM.ylims!(ax2, -y_max, y_max)
+    Mke.ylims!(ax2, -y_max, y_max)
 
-    CM.save(
+    Mke.save(
         joinpath(@__DIR__, "..", "assets", "force_ufc_poly_water_values.png"),
         fig; px_per_unit = 2,
     )
@@ -827,7 +828,7 @@ let
     n_row = size(sino_basis.sino_iodine, 2)
     mid_r = n_row ÷ 2 + 1
 
-    fig = CM.Figure(size = (1400, 580))
+    fig = Mke.Figure(size = (1400, 580))
     axis_kwargs = (
         titlesize = 32, subtitlesize = 24,
         xlabel = "View", ylabel = "Detector Column",
@@ -849,9 +850,9 @@ let
     )
 
     for (r, panel_c, cbar_c, ttl, cbar_label, slice, range) in panels
-        ax = CM.Axis(fig[r, panel_c]; title = ttl, axis_kwargs...)
-        CM.heatmap!(ax, slice; colormap = :viridis, colorrange = range)
-        CM.Colorbar(
+        ax = Mke.Axis(fig[r, panel_c]; title = ttl, axis_kwargs...)
+        Mke.heatmap!(ax, slice; colormap = :viridis, colorrange = range)
+        Mke.Colorbar(
             fig[r, cbar_c]; colormap = :viridis, colorrange = range,
             label = cbar_label, width = 16, labelsize = 22, ticklabelsize = 18
         )
@@ -904,7 +905,7 @@ end;
 
 # ╔═╡ 0900000b-0000-4000-8000-000000000040
 let
-    fig = CM.Figure(size = (1180, 580))
+    fig = Mke.Figure(size = (1180, 580))
     axis_kwargs = (titlesize = 32, subtitlesize = 24)
 
     mid = size(basis_acnr.vol_iodine_raw, 3) ÷ 2
@@ -923,13 +924,13 @@ let
     )
 
     for (r, panel_c, cbar_c, ttl, cbar_label, slice, range) in panels
-        ax = CM.Axis(
+        ax = Mke.Axis(
             fig[r, panel_c]; title = ttl,
-            aspect = CM.DataAspect(), axis_kwargs...
+            aspect = Mke.DataAspect(), axis_kwargs...
         )
-        CM.heatmap!(ax, slice; colormap = :viridis, colorrange = range)
-        CM.hidedecorations!(ax)
-        CM.Colorbar(
+        Mke.heatmap!(ax, slice; colormap = :viridis, colorrange = range)
+        Mke.hidedecorations!(ax)
+        Mke.Colorbar(
             fig[r, cbar_c]; colormap = :viridis, colorrange = range,
             label = cbar_label, width = 16, labelsize = 22, ticklabelsize = 18
         )
@@ -1020,7 +1021,7 @@ end;
 let
     HU_window = (-200, 500)
 
-    fig = CM.Figure(size = (1180, 1180))
+    fig = Mke.Figure(size = (1180, 1180))
     axis_kwargs = (titlesize = 32, subtitlesize = 24)
 
     sample = vmi_HU_final[50.0]
@@ -1029,23 +1030,23 @@ let
     for (k, E) in enumerate(de_vmi_energies)
         r = ((k - 1) ÷ 2) + 1
         c = ((k - 1) % 2) + 1
-        ax = CM.Axis(
+        ax = Mke.Axis(
             fig[r, c]; title = "$(Int(E)) keV VMI",
-            aspect = CM.DataAspect(), axis_kwargs...,
+            aspect = Mke.DataAspect(), axis_kwargs...,
         )
-        CM.heatmap!(
+        Mke.heatmap!(
             ax, vmi_HU_final[E][:, :, mid];
             colormap = :grays, colorrange = HU_window,
         )
-        CM.hidedecorations!(ax)
+        Mke.hidedecorations!(ax)
     end
-    CM.Colorbar(
+    Mke.Colorbar(
         fig[1:2, 3];
         colormap = :grays, colorrange = HU_window,
         label = "HU", width = 16, labelsize = 22, ticklabelsize = 18,
     )
 
-    CM.save(
+    Mke.save(
         joinpath(@__DIR__, "..", "assets", "force_ufc_vmi_grid.png"),
         fig; px_per_unit = 2,
     )
@@ -1056,7 +1057,7 @@ end
 let
     HU_window = (-200, 500)
 
-    fig = CM.Figure(size = (1180, 1180))
+    fig = Mke.Figure(size = (1180, 1180))
     axis_kwargs = (titlesize = 32, subtitlesize = 24)
 
     sample = vmi_HU_final[50.0]
@@ -1065,24 +1066,24 @@ let
     for (k, E) in enumerate(de_vmi_energies)
         r = ((k - 1) ÷ 2) + 1
         c = ((k - 1) % 2) + 1
-        ax = CM.Axis(
+        ax = Mke.Axis(
             fig[r, c]; title = "$(Int(E)) keV VMI",
             subtitle = "VMI",
-            aspect = CM.DataAspect(), axis_kwargs...,
+            aspect = Mke.DataAspect(), axis_kwargs...,
         )
-        CM.heatmap!(
+        Mke.heatmap!(
             ax, vmi_HU_final[E][:, :, mid];
             colormap = :grays, colorrange = HU_window,
         )
-        CM.hidedecorations!(ax)
+        Mke.hidedecorations!(ax)
     end
-    CM.Colorbar(
+    Mke.Colorbar(
         fig[1:2, 3];
         colormap = :grays, colorrange = HU_window,
         label = "HU", width = 16, labelsize = 22, ticklabelsize = 18,
     )
 
-    CM.save(
+    Mke.save(
         joinpath(@__DIR__, "..", "assets", "force_ufc_vmi_monoplus.png"),
         fig; px_per_unit = 2,
     )
@@ -1196,7 +1197,7 @@ md"""
 
 # ╔═╡ 0900000e-0000-4000-8000-000000000050
 let
-    fig = CM.Figure(size = (1180, 580))
+    fig = Mke.Figure(size = (1180, 580))
 
     HU_window = (-200, 500)
     mid = size(vmi_HU_final[70.0], 3) ÷ 2
@@ -1204,20 +1205,20 @@ let
 
     overlay = Float32[b ? 1.0f0 : NaN32 for b in solid_water_basis.mask_2d]
 
-    ax1 = CM.Axis(
+    ax1 = Mke.Axis(
         fig[1, 1];
         title = "Eroded Water Region",
         subtitle = "Overlaid on 70 keV VMI",
-        aspect = CM.DataAspect(),
+        aspect = Mke.DataAspect(),
         titlesize = 32, subtitlesize = 24,
     )
-    CM.heatmap!(ax1, bg; colormap = :grays, colorrange = HU_window)
-    CM.heatmap!(
+    Mke.heatmap!(ax1, bg; colormap = :grays, colorrange = HU_window)
+    Mke.heatmap!(
         ax1, overlay;
         colormap = :reds, alpha = 0.5,
         nan_color = (:white, 0.0),
     )
-    CM.hidedecorations!(ax1)
+    Mke.hidedecorations!(ax1)
 
     sw_idx = findall(solid_water_basis.mask_2d)
     n_z = size(vmi_HU_final[70.0], 3)
@@ -1231,9 +1232,9 @@ let
     sw_hu_per_keV = [_mean_hu(vmi_HU_final[E]) for E in de_vmi_energies]
 
     n_E = length(de_vmi_energies)
-    bar_colors = [CM.cgrad(:plasma, n_E; categorical = true)[i] for i in 1:n_E]
+    bar_colors = [Mke.cgrad(:plasma, n_E; categorical = true)[i] for i in 1:n_E]
 
-    ax2 = CM.Axis(
+    ax2 = Mke.Axis(
         fig[1, 2];
         title = "Water Region Mean HU",
         subtitle = "Per VMI Energy",
@@ -1243,15 +1244,15 @@ let
         xlabelsize = 22, ylabelsize = 22,
         xticklabelsize = 18, yticklabelsize = 16,
     )
-    CM.barplot!(
+    Mke.barplot!(
         ax2, 1:n_E, sw_hu_per_keV;
         color = bar_colors,
         strokecolor = :black, strokewidth = 1,
     )
-    CM.hlines!(ax2, [0.0]; color = :black, linewidth = 1, linestyle = :dash)
+    Mke.hlines!(ax2, [0.0]; color = :black, linewidth = 1, linestyle = :dash)
 
     for (k, h) in pairs(sw_hu_per_keV)
-        CM.text!(
+        Mke.text!(
             ax2, k, h;
             text = "$(round(h, digits = 1)) HU",
             align = (:center, h ≥ 0 ? :bottom : :top),
@@ -1260,9 +1261,9 @@ let
     end
 
     y_max = max(15.0, 1.2 * maximum(abs, sw_hu_per_keV))
-    CM.ylims!(ax2, -y_max, y_max)
+    Mke.ylims!(ax2, -y_max, y_max)
 
-    CM.save(
+    Mke.save(
         joinpath(@__DIR__, "..", "assets", "force_ufc_vmi_water_roi.png"),
         fig; px_per_unit = 2,
     )
@@ -1323,27 +1324,27 @@ let
 
     overlay = Float32[b ? 1.0f0 : NaN32 for b in water_noise_roi.mask_2d]
 
-    fig = CM.Figure(size = (1180, 580))
+    fig = Mke.Figure(size = (1180, 580))
 
-    ax1 = CM.Axis(
+    ax1 = Mke.Axis(
         fig[1, 1];
         title = "Water-Region Noise ROI",
         subtitle = "Overlaid on 70 keV VMI",
-        aspect = CM.DataAspect(),
+        aspect = Mke.DataAspect(),
         titlesize = 32, subtitlesize = 24,
     )
-    CM.heatmap!(ax1, bg; colormap = :grays, colorrange = HU_window)
-    CM.heatmap!(
+    Mke.heatmap!(ax1, bg; colormap = :grays, colorrange = HU_window)
+    Mke.heatmap!(
         ax1, overlay; colormap = :reds, alpha = 0.5,
         nan_color = (:white, 0.0),
     )
-    CM.hidedecorations!(ax1)
+    Mke.hidedecorations!(ax1)
 
     Es = sort(collect(keys(vmi_noise_by_keV)))
     σs = [vmi_noise_by_keV[E].std  for E in Es]
     μs = [vmi_noise_by_keV[E].mean for E in Es]
 
-    ax2 = CM.Axis(
+    ax2 = Mke.Axis(
         fig[1, 2];
         title = "Water-Region Noise vs Energy",
         xlabel = "VMI Energy (keV)",
@@ -1352,12 +1353,12 @@ let
         xlabelsize = 22, ylabelsize = 22,
         xticklabelsize = 18, yticklabelsize = 16,
     )
-    CM.scatterlines!(
+    Mke.scatterlines!(
         ax2, Es, σs;
         color = :tomato, markersize = 18, linewidth = 3,
     )
     for (E, σ, μ) in zip(Es, σs, μs)
-        CM.text!(
+        Mke.text!(
             ax2, E, σ;
             text = "σ=$(round(σ; digits = 1))\n⟨HU⟩=$(round(μ; digits = 1))",
             align = (:center, :bottom),
@@ -1365,7 +1366,7 @@ let
         )
     end
 
-    CM.save(
+    Mke.save(
         joinpath(@__DIR__, "..", "assets", "force_ufc_vmi_water_noise.png"),
         fig; px_per_unit = 2,
     )
@@ -1379,10 +1380,10 @@ md"""
 
 # ╔═╡ 0900000f-0000-4000-8000-000000000010
 let
-    fig = CM.Figure(size = (1180, 580))
+    fig = Mke.Figure(size = (1180, 580))
 
-    cmap_ca = CM.cgrad(:Oranges, 7; categorical = true)
-    cmap_i = CM.cgrad(:GnBu, 7; categorical = true)
+    cmap_ca = Mke.cgrad(:Oranges, 7; categorical = true)
+    cmap_i = Mke.cgrad(:GnBu, 7; categorical = true)
 
     panels = (
         (
@@ -1398,7 +1399,7 @@ let
     )
 
     for (col, p) in pairs(panels)
-        ax = CM.Axis(
+        ax = Mke.Axis(
             fig[1, col];
             title = p.title,
             subtitle = p.subtitle,
@@ -1409,31 +1410,31 @@ let
             xlabelsize = 22, ylabelsize = 22,
             xticklabelsize = 18, yticklabelsize = 16,
         )
-        CM.ylims!(ax, p.ylim...)
+        Mke.ylims!(ax, p.ylim...)
 
         d = rod_data[p.group]
         rod_lines = Vector{Any}(undef, length(d.names))
         for i in eachindex(d.names)
             color = p.cmap[i]
-            CM.scatterlines!(
+            Mke.scatterlines!(
                 ax, de_vmi_energies, vec(d.measured[i, :]);
                 color = color, linewidth = 2.5, markersize = 9,
             )
-            CM.lines!(
+            Mke.lines!(
                 ax, de_vmi_energies, vec(d.theoretical[i, :]);
                 color = color, linewidth = 1.6, linestyle = :dash,
             )
-            rod_lines[i] = CM.LineElement(color = color, linewidth = 2.5)
+            rod_lines[i] = Mke.LineElement(color = color, linewidth = 2.5)
         end
 
-        style_meas = CM.MarkerElement(
+        style_meas = Mke.MarkerElement(
             color = :black, marker = :circle, markersize = 9,
             strokecolor = :black, strokewidth = 1,
         )
-        style_theo = CM.LineElement(
+        style_theo = Mke.LineElement(
             color = :black, linewidth = 1.6, linestyle = :dash,
         )
-        CM.axislegend(
+        Mke.axislegend(
             ax,
             vcat([style_meas, style_theo], rod_lines),
             vcat(["Measured", "Theoretical"], collect(d.names));
@@ -1442,7 +1443,7 @@ let
         )
     end
 
-    CM.save(
+    Mke.save(
         joinpath(@__DIR__, "..", "assets", "force_ufc_vmi_vs_theoretical.png"),
         fig; px_per_unit = 2,
     )
@@ -1456,13 +1457,13 @@ md"""
 
 # ╔═╡ 0900000f-0000-4000-8000-000000000030
 let
-    fig = CM.Figure(size = (1000, 1200))
+    fig = Mke.Figure(size = (1000, 1200))
 
     energy_colors = Dict(
-        50.0 => CM.RGBf(0.85, 0.27, 0.1),
-        70.0 => CM.RGBf(0.95, 0.65, 0.13),
-        100.0 => CM.RGBf(0.13, 0.59, 0.85),
-        140.0 => CM.RGBf(0.1, 0.27, 0.65),
+        50.0 => Mke.RGBf(0.85, 0.27, 0.1),
+        70.0 => Mke.RGBf(0.95, 0.65, 0.13),
+        100.0 => Mke.RGBf(0.13, 0.59, 0.85),
+        140.0 => Mke.RGBf(0.1, 0.27, 0.65),
     )
 
     function fit_lr(x::Vector{Float64}, y::Vector{Float64})
@@ -1486,7 +1487,7 @@ let
 
     for (row, (group, title, subtitle)) in pairs(panels)
         d = rod_data[group]
-        ax = CM.Axis(
+        ax = Mke.Axis(
             fig[row, 1];
             title = title,
             subtitle = subtitle,
@@ -1499,7 +1500,7 @@ let
 
         lim_lo = min(0.0, minimum(d.measured), minimum(d.theoretical))
         lim_hi = max(maximum(d.measured), maximum(d.theoretical)) * 1.05
-        CM.lines!(
+        Mke.lines!(
             ax, [lim_lo, lim_hi], [lim_lo, lim_hi];
             color = :black, linestyle = :dash, linewidth = 2,
             label = "Unity (y = x)",
@@ -1509,7 +1510,7 @@ let
             x = Vector{Float64}(vec(d.theoretical[:, j]))
             y = Vector{Float64}(vec(d.measured[:, j]))
             color = energy_colors[E]
-            CM.scatter!(ax, x, y; color = color, markersize = 11)
+            Mke.scatter!(ax, x, y; color = color, markersize = 11)
 
             f = fit_lr(x, y)
             xrange = [minimum(x), maximum(x)]
@@ -1519,19 +1520,19 @@ let
                 "$(sign_str) $(round(abs(f.intercept), digits = 0)) HU   " *
                 "R² = $(round(f.r², digits = 3))   " *
                 "RMSE = $(round(f.rmse, digits = 1)) HU"
-            CM.lines!(
+            Mke.lines!(
                 ax, xrange, yrange;
                 color = color, linewidth = 2, label = label,
             )
         end
 
-        CM.axislegend(
+        Mke.axislegend(
             ax; position = :rb, framevisible = true,
             labelsize = 16, padding = (6, 6, 6, 6), rowgap = 1,
         )
     end
 
-    CM.save(
+    Mke.save(
         joinpath(@__DIR__, "..", "assets", "force_ufc_vmi_regression.png"),
         fig; px_per_unit = 2,
     )

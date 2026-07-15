@@ -15,7 +15,8 @@ import BasisSimulator as BS
 
 # ╔═╡ 10000001-0000-4000-8000-000000000003
 # ╠═╡ show_logs = false
-import CairoMakie as CM
+# import CairoMakie as Mke
+import WasmMakie as Mke
 
 # ╔═╡ 10000001-0000-4000-8000-000000000007
 import PlutoUI
@@ -208,14 +209,14 @@ themselves (titanium reconstructs at several thousand HU).
 # ╔═╡ 10000006-0000-4000-8000-000000000002
 fig_artifacts = let
     sl = hu[:, :, 4]
-    fig = CM.Figure(size = (900, 460))
-    ax1 = CM.Axis(fig[1, 1], title = "Soft-tissue window [-500, 500] HU", aspect = 1)
-    CM.heatmap!(ax1, sl; colorrange = (-500, 500), colormap = :grays)
-    CM.hidedecorations!(ax1)
-    ax2 = CM.Axis(fig[1, 2], title = "Wide window [-1000, 4000] HU", aspect = 1)
-    CM.heatmap!(ax2, sl; colorrange = (-1000, 4000), colormap = :grays)
-    CM.hidedecorations!(ax2)
-    CM.save(joinpath(@__DIR__, "..", "assets", "titanium_artifacts.png"), fig)
+    fig = Mke.Figure(size = (900, 460))
+    ax1 = Mke.Axis(fig[1, 1], title = "Soft-tissue window [-500, 500] HU", aspect = 1)
+    Mke.heatmap!(ax1, sl; colorrange = (-500, 500), colormap = :grays)
+    Mke.hidedecorations!(ax1)
+    ax2 = Mke.Axis(fig[1, 2], title = "Wide window [-1000, 4000] HU", aspect = 1)
+    Mke.heatmap!(ax2, sl; colorrange = (-1000, 4000), colormap = :grays)
+    Mke.hidedecorations!(ax2)
+    Mke.save(joinpath(@__DIR__, "..", "assets", "titanium_artifacts.png"), fig)
     fig
 end
 

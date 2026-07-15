@@ -83,7 +83,8 @@ Same project + GPU detection idiom as notebooks 02 / 04.
 import BasisSimulator as BS
 
 # ╔═╡ 05000001-0000-4000-8000-000000000031
-import CairoMakie as CM
+# import CairoMakie as Mke
+import WasmMakie as Mke
 
 # ╔═╡ 05000001-0000-4000-8000-000000000060
 import PlutoUI
@@ -472,38 +473,38 @@ let
         z_full = clamp((b.k_lo + b.k_hi) ÷ 2, 1, nz)
         z_crop = z_full - b.k_lo + 1
 
-        fig = CM.Figure(size = (1200, 600))
+        fig = Mke.Figure(size = (1200, 600))
         title_kwargs = (titlesize = 28, subtitlesize = 20)
 
-        ax_l = CM.Axis(
+        ax_l = Mke.Axis(
             fig[1, 1];
             title = "Full UHR phantom · z=$(z_full)",
             subtitle = "$(size(phantom_full_uhr, 1))×$(size(phantom_full_uhr, 2)) @ $(round.(VOXEL_SIZE_CM .* 10, digits = 2)) mm",
-            aspect = CM.DataAspect(),
+            aspect = Mke.DataAspect(),
             yreversed = true,
             title_kwargs...,
         )
-        CM.heatmap!(ax_l, Float32.(phantom_full_uhr[:, :, z_full]); colormap = :tab20)
+        Mke.heatmap!(ax_l, Float32.(phantom_full_uhr[:, :, z_full]); colormap = :tab20)
         # Bbox rectangle (note: x-axis is dim 1, y-axis is dim 2)
-        CM.poly!(
+        Mke.poly!(
             ax_l,
-            CM.Point2f[(b.i_lo, b.j_lo), (b.i_hi, b.j_lo), (b.i_hi, b.j_hi), (b.i_lo, b.j_hi)];
+            Mke.Point2f[(b.i_lo, b.j_lo), (b.i_hi, b.j_lo), (b.i_hi, b.j_hi), (b.i_lo, b.j_hi)];
             color = :transparent, strokecolor = :red, strokewidth = 3,
         )
-        CM.hidedecorations!(ax_l)
+        Mke.hidedecorations!(ax_l)
 
-        ax_r = CM.Axis(
+        ax_r = Mke.Axis(
             fig[1, 2];
             title = "Cropped cardiac block · z=$(z_crop)",
             subtitle = "$(size(phantom_cropped, 1))×$(size(phantom_cropped, 2)) (same voxel size — only the extent changed)",
-            aspect = CM.DataAspect(),
+            aspect = Mke.DataAspect(),
             yreversed = true,
             title_kwargs...,
         )
-        CM.heatmap!(ax_r, Float32.(phantom_cropped[:, :, z_crop]); colormap = :tab20)
-        CM.hidedecorations!(ax_r)
+        Mke.heatmap!(ax_r, Float32.(phantom_cropped[:, :, z_crop]); colormap = :tab20)
+        Mke.hidedecorations!(ax_r)
 
-        CM.save(
+        Mke.save(
             joinpath(@__DIR__, "..", "assets", "xcat_grid_crop.png"),
             fig; px_per_unit = 2,
         )
@@ -975,68 +976,68 @@ let
             out
         end
 
-        fig = CM.Figure(size = (1400, 1320))
+        fig = Mke.Figure(size = (1400, 1320))
         hu_kwargs = (colormap = :grays, colorrange = (-300, 700))
         title_kwargs = (titlesize = 28, subtitlesize = 20)
 
         # Top-left: raw HU recon.
-        ax_tl = CM.Axis(
+        ax_tl = Mke.Axis(
             fig[1, 1];
             title = "HU recon",
             subtitle = "z=$(z) of $(size(recon_HU, 3)) · centered FOV $(recon_opts.fov_cm) cm",
-            aspect = CM.DataAspect(), yreversed = true,
+            aspect = Mke.DataAspect(), yreversed = true,
             title_kwargs...,
         )
-        CM.heatmap!(ax_tl, hu_slice; hu_kwargs...)
-        CM.hidedecorations!(ax_tl)
+        Mke.heatmap!(ax_tl, hu_slice; hu_kwargs...)
+        Mke.hidedecorations!(ax_tl)
 
         # Top-right: ALL structures — full multi-label resample, no masking.
-        ax_tr = CM.Axis(
+        ax_tr = Mke.Axis(
             fig[1, 2];
             title = "All structures (`:nearest`, no overlay)",
             subtitle = "$(length(unique(gt_resampled_nn))) labels resampled onto recon grid",
-            aspect = CM.DataAspect(), yreversed = true,
+            aspect = Mke.DataAspect(), yreversed = true,
             title_kwargs...,
         )
-        CM.heatmap!(
+        Mke.heatmap!(
             ax_tr, Float32.(gt_resampled_nn[:, :, z]);
             colormap = :tab20,
         )
-        CM.hidedecorations!(ax_tr)
+        Mke.hidedecorations!(ax_tr)
 
         # Bottom-left: HU + cardiac labels overlay.
-        ax_bl = CM.Axis(
+        ax_bl = Mke.Axis(
             fig[2, 1];
             title = "HU + cardiac labels",
             subtitle = "α=0.6 over HU — alignment check",
-            aspect = CM.DataAspect(), yreversed = true,
+            aspect = Mke.DataAspect(), yreversed = true,
             title_kwargs...,
         )
-        CM.heatmap!(ax_bl, hu_slice; hu_kwargs...)
-        CM.heatmap!(
+        Mke.heatmap!(ax_bl, hu_slice; hu_kwargs...)
+        Mke.heatmap!(
             ax_bl, nn_overlay;
             colormap = :tab20, alpha = 0.6, nan_color = (:white, 0.0),
         )
-        CM.hidedecorations!(ax_bl)
+        Mke.hidedecorations!(ax_bl)
 
         # Bottom-right: HU + fractional cardiac coverage overlay.
-        ax_br = CM.Axis(
+        ax_br = Mke.Axis(
             fig[2, 2];
             title = "HU + cardiac coverage (`:linear`, binary mask)",
             subtitle = "fractional ∈ [0.05, 1] · α=0.7 over HU",
-            aspect = CM.DataAspect(), yreversed = true,
+            aspect = Mke.DataAspect(), yreversed = true,
             title_kwargs...,
         )
-        CM.heatmap!(ax_br, hu_slice; hu_kwargs...)
-        hm_br = CM.heatmap!(
+        Mke.heatmap!(ax_br, hu_slice; hu_kwargs...)
+        hm_br = Mke.heatmap!(
             ax_br, lin_overlay;
             colormap = :viridis, colorrange = (0, 1),
             alpha = 0.7, nan_color = (:white, 0.0),
         )
-        CM.hidedecorations!(ax_br)
-        CM.Colorbar(fig[2, 3], hm_br; label = "cardiac fraction", width = 14, labelsize = 18)
+        Mke.hidedecorations!(ax_br)
+        Mke.Colorbar(fig[2, 3], hm_br; label = "cardiac fraction", width = 14, labelsize = 18)
 
-        CM.save(
+        Mke.save(
             joinpath(@__DIR__, "..", "assets", "xcat_grid_overlay.png"),
             fig; px_per_unit = 2,
         )
@@ -1235,21 +1236,21 @@ sim_helical === nothing ? md"_(XCAT not available — helical demo skipped)_" : 
         is_cardiac[Int(labslice[i, j]) + 1] && (lab_over[i, j] = Float32(labslice[i, j]))
     end
 
-    fig = CM.Figure(size = (1180, 620))
+    fig = Mke.Figure(size = (1180, 620))
     hu_kwargs = (colormap = :grays, colorrange = (-200, 600))
-    ax1 = CM.Axis(fig[1, 1]; title = "Helical WFBP recon · z=$(z)/$(nz)",
-        titlesize = 26, aspect = CM.DataAspect(), yreversed = true)
-    hm = CM.heatmap!(ax1, recon; hu_kwargs...)
-    CM.hidedecorations!(ax1)
+    ax1 = Mke.Axis(fig[1, 1]; title = "Helical WFBP recon · z=$(z)/$(nz)",
+        titlesize = 26, aspect = Mke.DataAspect(), yreversed = true)
+    hm = Mke.heatmap!(ax1, recon; hu_kwargs...)
+    Mke.hidedecorations!(ax1)
 
-    ax2 = CM.Axis(fig[1, 2]; title = "HU + cardiac labels · z=$(z)",
+    ax2 = Mke.Axis(fig[1, 2]; title = "HU + cardiac labels · z=$(z)",
         subtitle = "resampled ground truth on the helical recon grid (α = 0.6)",
-        titlesize = 26, subtitlesize = 18, aspect = CM.DataAspect(), yreversed = true)
-    CM.heatmap!(ax2, recon; hu_kwargs...)
-    CM.heatmap!(ax2, lab_over; colormap = :tab20, alpha = 0.6)
-    CM.hidedecorations!(ax2)
+        titlesize = 26, subtitlesize = 18, aspect = Mke.DataAspect(), yreversed = true)
+    Mke.heatmap!(ax2, recon; hu_kwargs...)
+    Mke.heatmap!(ax2, lab_over; colormap = :tab20, alpha = 0.6)
+    Mke.hidedecorations!(ax2)
 
-    CM.Colorbar(fig[1, 3], hm; label = "HU", labelsize = 20, ticklabelsize = 14)
+    Mke.Colorbar(fig[1, 3], hm; label = "HU", labelsize = 20, ticklabelsize = 14)
     fig
 end
 
@@ -1322,23 +1323,23 @@ end;
         covslice[i, j] > 0.01f0 && (lin_over[i, j] = covslice[i, j])
     end
 
-    fig = CM.Figure(size = (1500, 560))
+    fig = Mke.Figure(size = (1500, 560))
     hu_kwargs = (colormap = :grays, colorrange = (-200, 600))
-    ax1 = CM.Axis(fig[1, 1]; title = "raw helical recon · z=$(z)/$(nz)",
-        titlesize = 22, aspect = CM.DataAspect(), yreversed = true)
-    hm = CM.heatmap!(ax1, recon; hu_kwargs...); CM.hidedecorations!(ax1)
+    ax1 = Mke.Axis(fig[1, 1]; title = "raw helical recon · z=$(z)/$(nz)",
+        titlesize = 22, aspect = Mke.DataAspect(), yreversed = true)
+    hm = Mke.heatmap!(ax1, recon; hu_kwargs...); Mke.hidedecorations!(ax1)
 
-    ax2 = CM.Axis(fig[1, 2]; title = ":nearest labels — stair-stepped to recon grid",
-        titlesize = 22, aspect = CM.DataAspect(), yreversed = true)
-    CM.heatmap!(ax2, recon; hu_kwargs...)
-    CM.heatmap!(ax2, nn_over; colormap = :tab20, alpha = 0.65); CM.hidedecorations!(ax2)
+    ax2 = Mke.Axis(fig[1, 2]; title = ":nearest labels — stair-stepped to recon grid",
+        titlesize = 22, aspect = Mke.DataAspect(), yreversed = true)
+    Mke.heatmap!(ax2, recon; hu_kwargs...)
+    Mke.heatmap!(ax2, nn_over; colormap = :tab20, alpha = 0.65); Mke.hidedecorations!(ax2)
 
-    ax3 = CM.Axis(fig[1, 3]; title = ":linear coverage ∈ [0,1] — sub-voxel boundary",
-        titlesize = 22, aspect = CM.DataAspect(), yreversed = true)
-    CM.heatmap!(ax3, recon; hu_kwargs...)
-    hmc = CM.heatmap!(ax3, lin_over; colormap = :viridis, colorrange = (0, 1), alpha = 0.75)
-    CM.hidedecorations!(ax3)
-    CM.Colorbar(fig[1, 4], hmc; label = "cardiac coverage", labelsize = 16, ticklabelsize = 13)
+    ax3 = Mke.Axis(fig[1, 3]; title = ":linear coverage ∈ [0,1] — sub-voxel boundary",
+        titlesize = 22, aspect = Mke.DataAspect(), yreversed = true)
+    Mke.heatmap!(ax3, recon; hu_kwargs...)
+    hmc = Mke.heatmap!(ax3, lin_over; colormap = :viridis, colorrange = (0, 1), alpha = 0.75)
+    Mke.hidedecorations!(ax3)
+    Mke.Colorbar(fig[1, 4], hmc; label = "cardiac coverage", labelsize = 16, ticklabelsize = 13)
     fig
 end
 
