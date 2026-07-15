@@ -23,6 +23,15 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      registration_sha:
+        description: Existing release commit to (re)submit to JuliaRegistrator
+        required: false
+        type: string
+      release_notes:
+        description: Release notes for a manual registration retry
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -44,10 +53,19 @@ jobs:
       # commenting on the release commit.  AutoMerge runs over in
       # JuliaRegistries/General; TagBot is kept as a no-op fallback.
       - name: Trigger JuliaRegistrator
-        if: ${{ steps.release.outputs.release_created }}
+        if: ${{ steps.release.outputs.release_created || inputs.registration_sha != '' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REGISTRATION_SHA: ${{ inputs.registration_sha || steps.release.outputs.sha }}
+          RELEASE_NOTES: ${{ inputs.release_notes || steps.release.outputs.body }}
         run: |
-          gh api \
-            repos/${{ github.repository }}/commits/${{ steps.release.outputs.sha }}/comments \
-            -f body='@JuliaRegistrator register'
+          body=$(printf '%s\n\n%s\n\n%s\n\n%s' \
+            '@JuliaRegistrator register' \
+            'Release notes:' \
+            'See the changelog below for compatibility and breaking-change details.' \
+            "$RELEASE_NOTES")
+          jq -n --arg body "$body" '{body: $body}' | \
+            gh api \
+              "repos/${{ github.repository }}/commits/${REGISTRATION_SHA}/comments" \
+              --method POST \
+              --input -
