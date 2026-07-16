@@ -1,3 +1,5 @@
+# Managed by Snapshot. Unknown edits are never overwritten automatically.
+# snapshot-workflow-version: snapshot-ee40f2ad-v2
 name: Snapshot — build & publish
 on:
   push:
@@ -18,9 +20,9 @@ concurrency:
 env:
   # Immutable audited inputs for the free-tier test. Upgrade deliberately.
   SNAPSHOT_WT_REF: cadb908093efee3b08a065f50930d3337916391d # WasmTarget main (2026-07-14)
-  SNAPSHOT_ENGINE_REF: 9aece0db304b68ee4d8b4a16ee41f95fd93a7667 # Snapshot.jl main (2026-07-14)
-  SNAPSHOT_EXPORT_SHA256: 0f9fab84fd6137b14d762cc2405eebe65233e0c3ca096e0a8c7a79dbe7d1d591
-  SNAPSHOT_COLLECTION_SHA256: 6db49d448ddaf1a55b9556f47caa1548a1a8a9b68d00bf2bacaf3cf8e29bcc76
+  SNAPSHOT_ENGINE_REF: ee40f2ad05fd6a84a44537297d35e153f0b29719 # Snapshot.jl import isolation (2026-07-15)
+  SNAPSHOT_EXPORT_SHA256: e92498be5a535d4d9a3cd3811ffe342a2a2d80d7432c57ff6197a12ec91537fa
+  SNAPSHOT_COLLECTION_SHA256: 2f686c994bdb24e4c89a4404e8a48bde23e4917fcb4ab2f8362a35c8f3c7dacc
   SNAPSHOT_UPLOAD_SHA256: 318bbffce0d18336b1e172963fa7feeb12b648cd1be37a46ca2d6f95213dc4c7
   BINARYEN_VERSION: version_125
   WASMTOOLS_VERSION: 1.244.0
@@ -43,7 +45,17 @@ env:
 # blessed build.sh for apps — the defaults Just Work without any of that.
 
 jobs:
+  workflow-update:
+    # A managed workflow-only commit should not spend minutes rebuilding the
+    # user's project. This successful sentinel keeps branch checks conclusive;
+    # the new workflow takes effect on the next project push (or manual run).
+    if: github.event_name == 'push' && contains(github.event.head_commit.message, '[snapshot workflow update]')
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Snapshot workflow updated; project build intentionally deferred until the next source push."
+
   discover:
+    if: github.event_name != 'push' || !contains(github.event.head_commit.message, '[snapshot workflow update]')
     runs-on: ubuntu-latest
     outputs:
       kind: ${{ steps.d.outputs.kind }}
