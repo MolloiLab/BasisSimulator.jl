@@ -159,19 +159,33 @@ end
 Therapy.run(app)
 
 # =============================================================================
-# Post-build: inject favicon <link> into every dist/**/*.html so GH Pages
-# (served under /BasisSimulator.jl/) actually finds the icon.  No-op in dev.
+# Post-build: inject favicon and version the generated stylesheet URL in every
+# dist/**/*.html. The query key changes on every CI build, so browsers that
+# cached an older unversioned stylesheet cannot combine it with newer HTML.
+# Snapshot also revalidates logical bundle assets, but this one-time versioned
+# URL heals clients that previously received Snapshot's old immutable header.
+# No-op in dev.
 # =============================================================================
 
 if IS_BUILD && isdir(app.output_dir)
     favicon_link = "<link rel=\"icon\" type=\"image/x-icon\" href=\"$(ENV["BASISSIM_BASE"])/favicon.ico\">"
+    asset_version = get(ENV, "GITHUB_RUN_ID", get(ENV, "GITHUB_SHA", "local"))
+    stylesheet_href = "$(ENV["BASISSIM_BASE"])/styles.css"
+    versioned_stylesheet_href = "$(stylesheet_href)?v=$(asset_version)"
     for (root, _, files) in walkdir(app.output_dir)
         for f in files
             endswith(f, ".html") || continue
             path = joinpath(root, f)
             content = read(path, String)
-            (occursin(favicon_link, content) || !occursin("</head>", content)) && continue
-            write(path, replace(content, "</head>" => "    $(favicon_link)\n</head>"; count=1))
+            occursin("</head>", content) || continue
+            if !occursin(favicon_link, content)
+                content = replace(content, "</head>" => "    $(favicon_link)\n</head>"; count=1)
+            end
+            content = replace(content,
+                "href=\"$(stylesheet_href)\"" => "href=\"$(versioned_stylesheet_href)\"";
+                count=1,
+            )
+            write(path, content)
         end
     end
 end
