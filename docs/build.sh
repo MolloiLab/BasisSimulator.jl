@@ -23,11 +23,21 @@ cd "$(dirname "$0")"   # docs/ — runnable standalone, and exactly where Snapsh
 
 export BASISSIM_SKIP_NB_EXPORT=1   # ← the key override: reuse committed notebooks-static/, never re-render
 
+echo "▶ verify committed notebook exports"
+python3 verify_notebook_exports.py
+
 echo "▶ instantiate docs env (no-op if Snapshot already warmed it)"
-# Mirrors docs.yml exactly: ensure the General registry exists + resolve BEFORE
-# instantiate, so a drifted committed Manifest (vs the path-sourced BasisSimulator
-# at ..) fixes itself instead of failing the build.
-julia --project=. -e 'using Pkg; Pkg.Registry.add("General"); Pkg.resolve(); Pkg.instantiate()'
+# The committed lock is part of every notebook export fingerprint. Never
+# resolve it during deployment: build exactly what was verified, and fail if
+# instantiation unexpectedly rewrites the lock.
+manifest_before="$(shasum -a 256 Manifest.toml | awk '{print $1}')"
+julia --project=. -e 'using Pkg; Pkg.Registry.add("General"); Pkg.instantiate()'
+manifest_after="$(shasum -a 256 Manifest.toml | awk '{print $1}')"
+test "$manifest_before" = "$manifest_after" || {
+    echo "docs/Manifest.toml changed during instantiate; refusing unverified build" >&2
+    exit 1
+}
+python3 verify_notebook_exports.py
 
 echo "▶ install Tailwind + DaisyUI"
 npm install --no-audit --no-fund
@@ -40,5 +50,9 @@ julia --project=. --optimize=3 app.jl build
 # caches, but do not ship either redundant root HTML copy in Snapshot's bundle.
 # Island directories and all referenced assets remain untouched.
 find dist/notebooks-static -maxdepth 1 -type f -name '*.html' -delete
+# Compiler diagnostics are review artifacts, not runtime assets. The browser
+# needs islands.json + shim.js, but report/coverage files can contain source
+# details and should never be published.
+find dist/notebooks-static -type f \( -name 'report.json' -o -name 'coverage.json' \) -delete
 
 echo "✓ dist/ ready ($(find dist -type f | wc -l | tr -d ' ') files)"

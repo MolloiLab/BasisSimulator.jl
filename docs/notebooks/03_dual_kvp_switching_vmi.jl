@@ -71,8 +71,9 @@ import PlutoUI
 import BasisSimulator as BS
 
 # ╔═╡ 05000001-0000-4000-8000-000000000031
-# import CairoMakie as Mke
-import WasmMakie as Mke
+# Use CairoMakie for faithful build-time rendering. Snapshot can still isolate
+# and compile independent browser-safe islands without hoisting this import.
+import CairoMakie as Mke
 
 # ╔═╡ 05000001-0000-4000-8000-000000000005
 PlutoUI.TableOfContents()

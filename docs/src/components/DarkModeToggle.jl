@@ -12,11 +12,13 @@ const dark_mode = create_signal(0)
     # Sync signal with actual DOM state on hydration
     # (head script already set 'dark' class from localStorage/OS preference)
     js("if(document.documentElement.classList.contains('dark'))\$1(1)", set_dark)
+    js("document.documentElement.setAttribute('data-theme',document.documentElement.classList.contains('dark')?'fun-dark':'fun-light')")
 
     return Button(
         :on_click => () -> begin
             set_dark(1 - is_dark())
             js("document.documentElement.classList.toggle('dark')")
+            js("document.documentElement.setAttribute('data-theme',document.documentElement.classList.contains('dark')?'fun-dark':'fun-light')")
             js("var bp = document.documentElement.getAttribute('data-base-path') || ''")
             js("var sk = bp ? 'therapy-theme:' + bp : 'therapy-theme'")
             js("localStorage.setItem(sk, document.documentElement.classList.contains('dark') ? 'dark' : 'light')")

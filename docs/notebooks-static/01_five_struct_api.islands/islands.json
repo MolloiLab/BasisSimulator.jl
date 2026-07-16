@@ -1,1 +1,1 @@
-{"bond_graph":{"z_slice":["z_slice"]},"fallback_warnings":true,"groups":[],"version":1}
+{"bond_graph":{"z_slice":["z_slice"]},"fallback_groups":[{"bonds":["z_slice"],"fallback_kind":"configured","judgement":"fallback"}],"fallback_warnings":true,"groups":[],"version":1}

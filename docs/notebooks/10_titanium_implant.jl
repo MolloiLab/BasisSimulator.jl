@@ -15,8 +15,9 @@ import BasisSimulator as BS
 
 # ╔═╡ 10000001-0000-4000-8000-000000000003
 # ╠═╡ show_logs = false
-# import CairoMakie as Mke
-import WasmMakie as Mke
+# Use CairoMakie for faithful build-time rendering. Snapshot can still isolate
+# and compile independent browser-safe islands without hoisting this import.
+import CairoMakie as Mke
 
 # ╔═╡ 10000001-0000-4000-8000-000000000007
 import PlutoUI

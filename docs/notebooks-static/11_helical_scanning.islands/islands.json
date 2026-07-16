@@ -1,1 +1,1 @@
-{"bond_graph":{"z_idx":["z_idx"]},"fallback_warnings":true,"groups":[],"version":1}
+{"bond_graph":{"z_idx":["z_idx"]},"fallback_groups":[{"bonds":["z_idx"],"fallback_kind":"configured","judgement":"fallback"}],"fallback_warnings":true,"groups":[],"version":1}

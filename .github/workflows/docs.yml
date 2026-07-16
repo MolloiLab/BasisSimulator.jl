@@ -28,18 +28,6 @@ jobs:
 
       - uses: julia-actions/cache@v2
 
-      - name: Install Tailwind and DaisyUI
-        run: npm install --prefix docs --no-audit --no-fund
-
-      - name: Install dependencies
-        run: |
-          julia --project=docs -e '
-            using Pkg
-            Pkg.Registry.add("General")
-            Pkg.resolve()
-            Pkg.instantiate()
-          '
-
       - name: Build docs
         # `BASISSIM_SKIP_NB_EXPORT` short-circuits the Pluto notebook
         # render in `docs/app.jl` — CI can't run our Metal/CUDA kernels
@@ -47,10 +35,7 @@ jobs:
         # rendered locally (Apple Silicon Metal GPU), and the resulting
         # HTML is committed under `docs/notebooks-static/` and tracked
         # in the repo.  CI just mounts those HTML files into `dist/`.
-        env:
-          BASISSIM_SKIP_NB_EXPORT: "1"
-        run: |
-          julia --project=docs --optimize=3 docs/app.jl build
+        run: docs/build.sh
 
       - name: Setup Pages
         uses: actions/configure-pages@v4

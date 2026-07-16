@@ -85,8 +85,9 @@ md"""
 import BasisSimulator as BS
 
 # ╔═╡ 07010003-0000-4000-8000-000000000011
-# import CairoMakie as Mke
-import WasmMakie as Mke
+# Use CairoMakie for faithful build-time rendering. Snapshot can still isolate
+# and compile independent browser-safe islands without hoisting this import.
+import CairoMakie as Mke
 
 # ╔═╡ 07010003-0000-4000-8000-000000000012
 import PlutoUI
@@ -292,7 +293,7 @@ mask_3d = let
     r_px = ROD_RADIUS_MM / px_mm
     o_px = ROD_OFFSET_MM / px_mm
 
-    # WasmMakie heatmap puts the y-axis going UP (math convention).
+    # Makie heatmaps put the y-axis going UP (math convention).
     # So +Δy in voxel coords = north (top of image).  Mapping cardinal
     # direction → (Δi, Δj, new_label):
     rod_specs = (

@@ -83,8 +83,9 @@ Python-side `import PythonCall as PC` for gecatsim.
 import BasisSimulator as BS
 
 # ╔═╡ 06000001-0000-4000-8000-000000000031
-# import CairoMakie as Mke
-import WasmMakie as Mke
+# Use CairoMakie for faithful build-time rendering. Snapshot can still isolate
+# and compile independent browser-safe islands without hoisting this import.
+import CairoMakie as Mke
 
 # ╔═╡ 06000001-0000-4000-8000-000000000032
 # ╠═╡ show_logs = false
