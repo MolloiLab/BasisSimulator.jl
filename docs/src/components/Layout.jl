@@ -12,28 +12,29 @@ function BasisSimulatorWordmark()
 end
 
 function Layout(content)
-    Div(:class => "min-h-screen flex flex-col bg-warm-100 dark:bg-warm-950 text-warm-800 dark:text-warm-200 transition-colors",
+    Div(:class => "min-h-screen flex flex-col overflow-x-clip bg-warm-100 dark:bg-warm-950 text-warm-800 dark:text-warm-200 transition-colors",
         # Therapy owns the light/dark preference through the `dark` class. Keep
         # Snapshot's embedded notebook token theme on the same authoritative
         # state before the notebook fragment is painted.
+        RawHtml("""<style>html,body{overflow-x:clip}</style>"""),
         RawHtml("""<script>(function(){var h=document.documentElement;h.setAttribute('data-theme',h.classList.contains('dark')?'fun-dark':'fun-light');})();</script>"""),
         # Sticky top nav — always visible while content scrolls underneath.
         Nav(:class => "sticky top-0 z-40 border-b border-warm-200 dark:border-warm-800 h-16 px-6 bg-warm-100/80 dark:bg-warm-950/80 backdrop-blur supports-[backdrop-filter]:bg-warm-100/60 supports-[backdrop-filter]:dark:bg-warm-950/60",
             Div(:class => "max-w-5xl mx-auto h-full flex items-center justify-between",
                 BasisSimulatorWordmark(),
-                Div(:class => "flex items-center gap-6",
+                Div(:class => "flex items-center gap-4 sm:gap-6",
                     NavLink("$(BASE)/getting-started/", "Getting Started";
-                        class = "text-sm transition-colors no-underline",
+                        class = "hidden sm:inline text-sm transition-colors no-underline",
                         active_class = "text-accent-600 dark:text-accent-400 font-medium",
                         inactive_class = "text-warm-600 dark:text-warm-400 hover:text-accent-600 dark:hover:text-accent-400"
                     ),
                     NavLink("$(BASE)/api/", "API";
-                        class = "text-sm transition-colors no-underline",
+                        class = "hidden sm:inline text-sm transition-colors no-underline",
                         active_class = "text-accent-600 dark:text-accent-400 font-medium",
                         inactive_class = "text-warm-600 dark:text-warm-400 hover:text-accent-600 dark:hover:text-accent-400"
                     ),
                     NavLink("$(BASE)/examples/", "Examples";
-                        class = "text-sm transition-colors no-underline",
+                        class = "hidden sm:inline text-sm transition-colors no-underline",
                         active_class = "text-accent-600 dark:text-accent-400 font-medium",
                         inactive_class = "text-warm-600 dark:text-warm-400 hover:text-accent-600 dark:hover:text-accent-400"
                     ),
@@ -46,12 +47,12 @@ function Layout(content)
             )
         ),
         # Main content — id="page-content" enables SPA navigation (router swaps this)
-        MainEl(:id => "page-content", :class => "flex-1 w-full max-w-5xl mx-auto px-6 py-12",
+        MainEl(:id => "page-content", :class => "flex-1 w-full max-w-5xl mx-auto px-3 sm:px-6 py-8 sm:py-12",
             content
         ),
         # Footer — MolloiLab | MIT | Built with Therapy.jl
         Footer(:class => "border-t border-warm-200 dark:border-warm-800 px-6 py-6",
-            Div(:class => "max-w-5xl mx-auto flex items-center justify-between",
+            Div(:class => "max-w-5xl mx-auto flex flex-col sm:flex-row gap-3 sm:gap-0 items-center justify-between",
                 A(:href => "https://github.com/MolloiLab", :target => "_blank",
                     :class => "text-sm text-warm-600 dark:text-warm-400 hover:text-warm-700 dark:hover:text-warm-300 transition-colors no-underline",
                     "MolloiLab"
