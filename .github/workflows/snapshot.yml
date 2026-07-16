@@ -1,5 +1,5 @@
 # Managed by Snapshot. Unknown edits are never overwritten automatically.
-# snapshot-workflow-version: snapshot-ee40f2ad-v2
+# snapshot-workflow-version: snapshot-cf1fcdb-v3
 name: Snapshot — build & publish
 on:
   push:
@@ -20,9 +20,9 @@ concurrency:
 env:
   # Immutable audited inputs for the free-tier test. Upgrade deliberately.
   SNAPSHOT_WT_REF: cadb908093efee3b08a065f50930d3337916391d # WasmTarget main (2026-07-14)
-  SNAPSHOT_ENGINE_REF: ee40f2ad05fd6a84a44537297d35e153f0b29719 # Snapshot.jl import isolation (2026-07-15)
+  SNAPSHOT_ENGINE_REF: cf1fcdb02f5fa039f3be5b91fc01d26ae1fb01a5 # Snapshot.jl collection ToC scrolling (2026-07-16)
   SNAPSHOT_EXPORT_SHA256: e92498be5a535d4d9a3cd3811ffe342a2a2d80d7432c57ff6197a12ec91537fa
-  SNAPSHOT_COLLECTION_SHA256: 2f686c994bdb24e4c89a4404e8a48bde23e4917fcb4ab2f8362a35c8f3c7dacc
+  SNAPSHOT_COLLECTION_SHA256: 5375321231ce429136703914989711c244fd8f81e3c071c65acda98107cae235
   SNAPSHOT_UPLOAD_SHA256: 318bbffce0d18336b1e172963fa7feeb12b648cd1be37a46ca2d6f95213dc4c7
   BINARYEN_VERSION: version_125
   WASMTOOLS_VERSION: 1.244.0
