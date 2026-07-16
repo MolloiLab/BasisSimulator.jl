@@ -195,9 +195,11 @@ function compute_projection_weights(
     volume_size::NTuple{3, Int},
     ::Type{T};
     projector::Symbol = :dd_fast,
-    like::Union{Nothing, AbstractArray} = nothing
+    like::Union{Nothing, AbstractArray} = nothing,
+    circular_support::Bool = false,
 ) where T <: AbstractFloat
     ones_volume = _ones_like(like, T, volume_size...)
+    circular_support && apply_fov_mask!(ones_volume, geom; sentinel_μ = zero(T))
     ray_sums = _project_mono(projector, ones_volume, geom)
     eps = T(1e-8)
     AK.foreachindex(ray_sums, AK.get_backend(ray_sums)) do idx
@@ -218,11 +220,20 @@ function compute_image_weights(
     geom::CTGeometry,
     volume_size::NTuple{3, Int},
     ::Type{T};
-    like::Union{Nothing, AbstractArray} = nothing
+    like::Union{Nothing, AbstractArray} = nothing,
+    projector::Symbol = :dd_fast,
+    active_z::Union{Nothing, UnitRange{Int}} = nothing,
+    circular_support::Bool = false,
 ) where T <: AbstractFloat
     ones_sino = _ones_like(like, T, geom.n_cols, geom.n_rows, geom.n_angles)
-    # CRITICAL: Use matched/unweighted backprojection, NOT FDK-weighted!
-    voxel_sums = backproject(ones_sino, geom, volume_size; weighted=false)
+    voxel_sums = similar(ones_sino, T, volume_size...)
+    fill!(voxel_sums, zero(T))
+    if projector === :siddon
+        _backproject_mono!(projector, voxel_sums, ones_sino, geom)
+    else
+        _backproject_mono!(projector, voxel_sums, ones_sino, geom;
+                           active_z, circular_support)
+    end
     eps = T(1e-8)
     AK.foreachindex(voxel_sums, AK.get_backend(voxel_sums)) do idx
         val = voxel_sums[idx]

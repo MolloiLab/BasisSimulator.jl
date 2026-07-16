@@ -59,10 +59,24 @@ end
     proj === :siddon ? siddon_forward_project!(args...; kw...) :
                        dd_forward_project!(args...; kw...)
 
+# HIR subset projections use a row-tiled arc kernel.  It is algebraically
+# identical to DD and falls back to the generic path for flat/Siddon geometry.
+@inline _project_mono_hir!(proj::Symbol, output, volume, geom; kw...) =
+    proj === :siddon ? siddon_forward_project!(output, volume, geom; kw...) :
+    is_arc(geom) ? _dd_forward_project_arc_rowtile4!(output, volume, geom; kw...) :
+                   dd_forward_project!(output, volume, geom; kw...)
+
 # Allocating monochromatic forward projection.
 @inline _project_mono(proj::Symbol, args...; kw...) =
     proj === :siddon ? siddon_forward_project(args...; kw...) :
                        dd_forward_project(args...; kw...)
+
+# In-place algebraic transpose. :dd and :dd_fast share the same mono operator.
+# Siddon retains the legacy voxel-driven approximation until its own exact
+# transpose is implemented.
+@inline _backproject_mono!(proj::Symbol, volume, sinogram, geom; kw...) =
+    proj === :siddon ? backproject!(volume, sinogram, geom; weighted = false, kw...) :
+                       dd_backproject!(volume, sinogram, geom; kw...)
 
 # Fused polychromatic (energy-integrating EI).
 @inline _project_fused_poly!(proj::Symbol, args...; kw...) =

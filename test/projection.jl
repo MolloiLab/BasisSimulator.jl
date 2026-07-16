@@ -28,6 +28,73 @@ function _toy_proj_geom(; n_cols = 16, n_rows = 4, n_angles = 4, fov_cm = 5.0)
     return BS.CTGeometry(scanner; n_angles = n_angles, fov_cm = fov_cm, z_cm = 1.0)
 end
 
+@testset "distance-driven exact transpose" begin
+    for shape in (:flat, :arc)
+        scanner = BS.Scanner(
+            source_to_isocenter = 540.0, source_to_detector = 1080.0,
+            detector_rows = 7, detector_cols = 24,
+            detector_row_size = 0.8, detector_col_size = 0.8,
+            detector_shape = shape,
+        )
+        geom = BS.CTGeometry(
+            scanner; n_angles = 9, n_rows = 7, n_cols = 24,
+            fov_cm = 8.0, z_cm = 1.4,
+        )
+        rng = MersenneTwister(0xDD3 + (shape === :arc))
+        x = randn(rng, Float64, 9, 9, 5)
+        y = randn(rng, Float64, geom.n_cols, geom.n_rows, geom.n_angles)
+        Ax = BS.dd_forward_project(x, geom)
+        if shape === :arc
+            Ax_tiled = similar(Ax)
+            BS._dd_forward_project_arc_rowtile4!(Ax_tiled, x, geom)
+            @test Ax_tiled == Ax
+        end
+        Aty = zeros(Float64, size(x))
+        BS.dd_backproject!(Aty, y, geom)
+        lhs = sum(Ax .* y)
+        rhs = sum(x .* Aty)
+        @test lhs ≈ rhs rtol = 2.0e-11 atol = 2.0e-11
+
+        # Deterministic gather: repeated calls are bit-identical.
+        again = similar(Aty)
+        BS.dd_backproject!(again, y, geom)
+        @test again == Aty
+
+        if shape === :arc
+            # The HIR hot path tiles an arbitrary active z range four planes
+            # at a time.  It must preserve the scalar kernel's per-plane sum
+            # order, including a nonzero range offset and a partial last tile.
+            tiled = fill(NaN, size(Aty))
+            BS.dd_backproject!(tiled, y, geom; active_z = 2:4)
+            @test tiled[:, :, 2:4] == Aty[:, :, 2:4]
+            @test all(isnan, tiled[:, :, 1])
+            @test all(isnan, tiled[:, :, 5])
+        end
+
+        @test_throws ArgumentError BS.dd_backproject!(similar(Aty), y, geom; active_z = 0:2)
+        @test_throws ArgumentError BS.dd_backproject!(similar(Aty), y, geom; active_z = 4:6)
+
+        # Brute-force matrix oracle: explicitly form every column of A and
+        # compare the optimized gather against A' * y. This catches omitted
+        # edge candidates even when a global dot-product check happens to be
+        # numerically forgiving.
+        oracle_shape = (3, 3, 3)
+        nvox = prod(oracle_shape)
+        nrays = geom.n_cols * geom.n_rows * geom.n_angles
+        A = Matrix{Float64}(undef, nrays, nvox)
+        basis = zeros(Float64, oracle_shape)
+        for j in 1:nvox
+            fill!(basis, 0)
+            basis[j] = 1
+            A[:, j] .= vec(BS.dd_forward_project(basis, geom))
+        end
+        oracle = reshape(transpose(A) * vec(y), oracle_shape)
+        gathered = zeros(Float64, oracle_shape)
+        BS.dd_backproject!(gathered, y, geom)
+        @test gathered ≈ oracle rtol = 2.0e-12 atol = 2.0e-12
+    end
+end
+
 # -----------------------------------------------------------------------------
 # siddon_forward_project — allocating + identity case.
 # -----------------------------------------------------------------------------

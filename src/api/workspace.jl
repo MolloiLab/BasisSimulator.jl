@@ -1058,8 +1058,14 @@ function create_hir_recon_workspace(
     # copying over dominated workspace construction (~83 s of 99 s at
     # 834×8×500 → 512×512×8).  W_proj = 1/(A·1) uses the selected forward
     # projector so the system matrix matches the sim's.
-    W_proj = compute_projection_weights(work_geom, work_size, T; projector = projector, like = sinogram)
-    V_inv = compute_image_weights(work_geom, work_size, T; like = sinogram)
+    W_proj = compute_projection_weights(
+        work_geom, work_size, T;
+        projector = projector, like = sinogram, circular_support = true,
+    )
+    V_inv = compute_image_weights(
+        work_geom, work_size, T; like = sinogram, projector = projector,
+        active_z = 1:work_size[3], circular_support = true,
+    )
 
     # PWLS iteration scratch buffers
     data_weights = similar(sinogram, T, sino_shape...)

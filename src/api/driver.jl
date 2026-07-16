@@ -1362,19 +1362,26 @@ function reconstruct!(
         else
         copyto!(ws.filtered, sinogram)
         filter_sinogram!(
-            ws.filtered, model_geom;
+            ws.filtered, geom;
             ws_conv_scratch = ws.conv_scratch,
             ws_filter_kernel = ws.filter_kernel
         )
-        fill!(model_volume, zero(T))
+        # Initialize only the caller-requested, data-supported grid.  The
+        # private axial halo is a nuisance-domain boundary model, not a saved
+        # reconstruction volume. Reconstructing it directly with FDK from the
+        # narrower acquisition creates unsupported terminal estimates; seed it
+        # by continuation, then let the exact iterative operator update only
+        # the detector-observable components (V_inv is zero on its nullspace).
+        fill!(ws.volume, zero(T))
         backproject!(
-            model_volume, ws.filtered, model_geom;
+            ws.volume, ws.filtered, geom;
             weighted = true,
             ws_source_positions = ws.geom_source_positions,
             ws_detector_centers = ws.geom_detector_centers,
             ws_detector_u = ws.geom_detector_u,
             ws_detector_v = ws.geom_detector_v
         )
+        _hir_seed_work!(model_volume, ws.volume, ws.output_z)
         end
     else
         size(init_volume) == size(ws.volume) || throw(DimensionMismatch(
@@ -1385,7 +1392,11 @@ function reconstruct!(
 
     # ─── Step 2: OS-PWLS refinement with Huber regularization ───
     # Erdoğan & Fessler 1999 ordered-subsets PWLS for transmission CT.
-    λ = T(params.lambda)
+    # The public table is historically calibrated to the legacy Siddon/BP
+    # normalization. Exact DDᵀ has a roughly 10× different regularizer
+    # sensitivity; convert that scale here without changing the strength API or
+    # the supported Siddon reconstruction semantics.
+    λ = T(params.lambda) * (ws.projector === :siddon ? one(T) : T(0.1))
     λ_relax = T(params.relaxation)
     δ = T(params.huber_delta)
     backend = AK.get_backend(model_volume)
@@ -1448,18 +1459,29 @@ function reconstruct!(
     end
 
     for epoch in 1:nepochs
-        # Compute Huber gradient ONCE per epoch (not per sub-iteration)
-        compute_huber_gradient!(ws.reg_grad, model_volume, δ)
-
+        # Preserve the historically calibrated Siddon cadence. Exact DD uses
+        # the current-iterate gradient below to avoid stale-Laplacian gain.
+        ws.projector === :siddon && compute_huber_gradient!(ws.reg_grad, model_volume, δ)
         for (s, angle_indices) in enumerate(ws.subsets)
+            # The penalty gradient must describe the CURRENT ordered-subset
+            # iterate. Reusing the epoch-start gradient for all 12 updates
+            # repeatedly applies one stale Laplacian step; on high-frequency
+            # modes its cumulative gain can cross zero and amplify the very
+            # texture the Huber prior is meant to suppress.
+            ws.projector === :siddon || compute_huber_gradient!(ws.reg_grad, model_volume, δ)
+
             n_sub = length(angle_indices)
             geom_s = ws.subset_geometries[s]
 
             # Forward project with subset geometry → subset_Ax_buf.
             # Uses ws.projector so A·x matches the projector that made the data.
-            ax_view = view(ws.subset_Ax_buf, :, :, 1:n_sub)
+            # Avoid wrapping the full buffer in a SubArray. Metal dispatch on
+            # that otherwise-equivalent view is ~2.3× slower for both A and Aᵀ.
+            # Uneven final subsets retain the bounded view fallback.
+            ax_view = n_sub == size(ws.subset_Ax_buf, 3) ?
+                ws.subset_Ax_buf : view(ws.subset_Ax_buf, :, :, 1:n_sub)
             fill!(ax_view, zero(T))
-            _project_mono!(
+            _project_mono_hir!(
                 ws.projector,
                 ax_view, model_volume, geom_s;
                 ws_source_positions = ws.subset_geom_source_positions[s],
@@ -1489,14 +1511,24 @@ function reconstruct!(
 
             # Backproject weighted residual → correction
             fill!(ws.correction, zero(T))
-            backproject!(
-                ws.correction, ax_view, geom_s;
-                weighted = false,
-                ws_source_positions = ws.subset_geom_source_positions[s],
-                ws_detector_centers = ws.subset_geom_detector_centers[s],
-                ws_detector_u = ws.subset_geom_detector_u[s],
-                ws_detector_v = ws.subset_geom_detector_v[s]
-            )
+            if ws.projector === :siddon
+                _backproject_mono!(
+                    ws.projector, ws.correction, ax_view, geom_s;
+                    ws_source_positions = ws.subset_geom_source_positions[s],
+                    ws_detector_centers = ws.subset_geom_detector_centers[s],
+                    ws_detector_u = ws.subset_geom_detector_u[s],
+                    ws_detector_v = ws.subset_geom_detector_v[s]
+                )
+            else
+                _backproject_mono!(
+                    ws.projector, ws.correction, ax_view, geom_s;
+                    active_z = 1:size(ws.work_volume, 3), circular_support = true,
+                    ws_source_positions = ws.subset_geom_source_positions[s],
+                    ws_detector_centers = ws.subset_geom_detector_centers[s],
+                    ws_detector_u = ws.subset_geom_detector_u[s],
+                    ws_detector_v = ws.subset_geom_detector_v[s]
+                )
+            end
 
             # SIRT-style update with subset scaling:
             # x += λ_relax * V_inv * (n_subsets * correction) - λ * V_inv * reg_grad

@@ -107,17 +107,15 @@ end
 # iso-plane and returns the footprint + normalisation shared by every DD kernel.
 # Returns a flat tuple (compiler-inlined): the value-tuple plus a `valid` flag.
 # -----------------------------------------------------------------------------
-@inline function _dd_cell_setup(
-        col::Int32, row::Int32,
+@inline function _dd_col_setup(
+        col::Int32,
         sx::T, sy::T, sz::T,
-        dcx::T, dcy::T, dcz::T, ux::T, uy::T, vvz::T,
-        mag::T, ps::T, prs::T, col_center::T, row_center::T,
+        dcx::T, dcy::T, ux::T, uy::T,
+        mag::T, ps::T, col_center::T,
         nx::Int32, ny::Int32,
         vmin_x::T, vmin_y::T, vx::T, vy::T,
         arc_det::Bool, dγ::T,
     ) where {T}
-
-    eps = T(1.0e-12)
     half = T(0.5)
 
     # detector COLUMN boundaries (transaxial), world (x,y) at detector mid-row.
@@ -164,7 +162,17 @@ end
     deltaT = half * (dXa + dXb) - s_tran
     scale_col = half * (scaleL + scaleU)
 
-    # detector ROW boundaries (axial), world z, projected to iso-plane
+    return (detXstep > T(1.0e-12), vertical, s_long, s_tran,
+        dXlo, dXhi, detXstep, deltaT, scale_col,
+        n_t, v_t, vmin_t, n_long, v_long, vmin_long)
+end
+
+@inline function _dd_row_setup(
+        row::Int32, sz::T, dcz::T, vvz::T,
+        mag::T, prs::T, row_center::T, scale_col::T,
+        s_long::T, deltaT::T, v_long::T, detXstep::T,
+    ) where {T}
+    half = T(0.5)
     wL = (T(row) - half - row_center) * prs * mag
     wU = (T(row) + half - row_center) * prs * mag
     zdL = dcz + wL * vvz
@@ -175,12 +183,34 @@ end
     detZstep = dZhi - dZlo
     deltaZ = half * (dZa + dZb) - sz
 
-    valid = detXstep > eps && detZstep > eps
+    valid = detXstep > T(1.0e-12) && detZstep > T(1.0e-12)
     invCos = sqrt(s_long * s_long + deltaT * deltaT + deltaZ * deltaZ) /
         abs(s_long) * v_long
     norm = valid ? invCos / (detXstep * detZstep) : zero(T)
 
-    return (valid, vertical, s_long, s_tran, dXlo, dXhi, dZlo, dZhi, norm,
+    return (valid, dZlo, dZhi, norm)
+end
+
+@inline function _dd_cell_setup(
+        col::Int32, row::Int32,
+        sx::T, sy::T, sz::T,
+        dcx::T, dcy::T, dcz::T, ux::T, uy::T, vvz::T,
+        mag::T, ps::T, prs::T, col_center::T, row_center::T,
+        nx::Int32, ny::Int32,
+        vmin_x::T, vmin_y::T, vx::T, vy::T,
+        arc_det::Bool, dγ::T,
+    ) where {T}
+    (valid_x, vertical, s_long, s_tran, dXlo, dXhi, detXstep,
+        deltaT, scale_col, n_t, v_t, vmin_t, n_long, v_long,
+        vmin_long) = _dd_col_setup(
+        col, sx, sy, sz, dcx, dcy, ux, uy, mag, ps, col_center,
+        nx, ny, vmin_x, vmin_y, vx, vy, arc_det, dγ)
+    (valid_z, dZlo, dZhi, norm) = _dd_row_setup(
+        row, sz, dcz, vvz, mag, prs, row_center, scale_col,
+        s_long, deltaT, v_long, detXstep)
+    valid = valid_x && valid_z
+    return (valid, vertical, s_long, s_tran, dXlo, dXhi, dZlo, dZhi,
+        valid ? norm : zero(T),
         n_t, v_t, vmin_t, n_long, v_long, vmin_long)
 end
 
@@ -241,6 +271,108 @@ end
     end
 
     return norm * accum
+end
+
+# Four adjacent arc-detector rows share the complete column/view setup and the
+# transaxial voxel traversal.  Each accumulator still observes voxel
+# contributions in the scalar kernel's exact `il -> it -> ip` order.
+@inline function _dd_trace_rows4(
+        volume::AbstractArray{T, 3}, col::Int32, row1::Int32, n_rows::Int32,
+        sx::T, sy::T, sz::T, dcx::T, dcy::T, dcz::T, ux::T, uy::T, vvz::T,
+        mag::T, ps::T, prs::T, col_center::T, row_center::T,
+        nx::Int32, ny::Int32, nz::Int32,
+        vmin_x::T, vmin_y::T, vmin_z::T, vx::T, vy::T, vz::T, dγ::T,
+    ) where {T}
+    (valid_x, vertical, s_long, s_tran, dXlo, dXhi, detXstep,
+        deltaT, scale_col, n_t, v_t, vmin_t, n_long, v_long,
+        vmin_long) = _dd_col_setup(
+        col, sx, sy, sz, dcx, dcy, ux, uy, mag, ps, col_center,
+        nx, ny, vmin_x, vmin_y, vx, vy, true, dγ)
+
+    row2 = row1 + Int32(1); row3 = row1 + Int32(2); row4 = row1 + Int32(3)
+    use1 = row1 <= n_rows; use2 = row2 <= n_rows
+    use3 = row3 <= n_rows; use4 = row4 <= n_rows
+    valid1, dZlo1, dZhi1, norm1 = _dd_row_setup(
+        row1, sz, dcz, vvz, mag, prs, row_center, scale_col,
+        s_long, deltaT, v_long, detXstep)
+    valid2, dZlo2, dZhi2, norm2 = _dd_row_setup(
+        row2, sz, dcz, vvz, mag, prs, row_center, scale_col,
+        s_long, deltaT, v_long, detXstep)
+    valid3, dZlo3, dZhi3, norm3 = _dd_row_setup(
+        row3, sz, dcz, vvz, mag, prs, row_center, scale_col,
+        s_long, deltaT, v_long, detXstep)
+    valid4, dZlo4, dZhi4, norm4 = _dd_row_setup(
+        row4, sz, dcz, vvz, mag, prs, row_center, scale_col,
+        s_long, deltaT, v_long, detXstep)
+    valid1 = valid_x && valid1 && use1; valid2 = valid_x && valid2 && use2
+    valid3 = valid_x && valid3 && use3; valid4 = valid_x && valid4 && use4
+
+    acc1 = zero(T); acc2 = zero(T); acc3 = zero(T); acc4 = zero(T)
+    il = Int32(1)
+    while il <= n_long
+        lp = vmin_long + (T(il) - T(0.5)) * v_long
+        mag_fac = s_long / (s_long - lp)
+        inv_mf = one(T) / mag_fac
+        it_s, it_e = _dd_bounds(dXlo, dXhi, s_tran, vmin_t, v_t, inv_mf, n_t)
+        ip_s1, ip_e1 = _dd_bounds(dZlo1, dZhi1, sz, vmin_z, vz, inv_mf, nz)
+        ip_s2, ip_e2 = _dd_bounds(dZlo2, dZhi2, sz, vmin_z, vz, inv_mf, nz)
+        ip_s3, ip_e3 = _dd_bounds(dZlo3, dZhi3, sz, vmin_z, vz, inv_mf, nz)
+        ip_s4, ip_e4 = _dd_bounds(dZlo4, dZhi4, sz, vmin_z, vz, inv_mf, nz)
+
+        it = it_s
+        while it <= it_e
+            t0 = s_tran + (vmin_t + T(it - Int32(1)) * v_t - s_tran) * mag_fac
+            t1 = s_tran + (vmin_t + T(it) * v_t - s_tran) * mag_fac
+            ox = _dd_overlap(dXlo, dXhi, min(t0, t1), max(t0, t1))
+            if ox > zero(T)
+                ixv = vertical ? it : il
+                iyv = vertical ? il : it
+                if valid1
+                    ip = ip_s1
+                    while ip <= ip_e1
+                        z0 = sz + (vmin_z + T(ip - Int32(1)) * vz - sz) * mag_fac
+                        z1 = sz + (vmin_z + T(ip) * vz - sz) * mag_fac
+                        oz = _dd_overlap(dZlo1, dZhi1, min(z0, z1), max(z0, z1))
+                        oz > zero(T) && (acc1 += ox * oz * volume[ixv, iyv, ip])
+                        ip += Int32(1)
+                    end
+                end
+                if valid2
+                    ip = ip_s2
+                    while ip <= ip_e2
+                        z0 = sz + (vmin_z + T(ip - Int32(1)) * vz - sz) * mag_fac
+                        z1 = sz + (vmin_z + T(ip) * vz - sz) * mag_fac
+                        oz = _dd_overlap(dZlo2, dZhi2, min(z0, z1), max(z0, z1))
+                        oz > zero(T) && (acc2 += ox * oz * volume[ixv, iyv, ip])
+                        ip += Int32(1)
+                    end
+                end
+                if valid3
+                    ip = ip_s3
+                    while ip <= ip_e3
+                        z0 = sz + (vmin_z + T(ip - Int32(1)) * vz - sz) * mag_fac
+                        z1 = sz + (vmin_z + T(ip) * vz - sz) * mag_fac
+                        oz = _dd_overlap(dZlo3, dZhi3, min(z0, z1), max(z0, z1))
+                        oz > zero(T) && (acc3 += ox * oz * volume[ixv, iyv, ip])
+                        ip += Int32(1)
+                    end
+                end
+                if valid4
+                    ip = ip_s4
+                    while ip <= ip_e4
+                        z0 = sz + (vmin_z + T(ip - Int32(1)) * vz - sz) * mag_fac
+                        z1 = sz + (vmin_z + T(ip) * vz - sz) * mag_fac
+                        oz = _dd_overlap(dZlo4, dZhi4, min(z0, z1), max(z0, z1))
+                        oz > zero(T) && (acc4 += ox * oz * volume[ixv, iyv, ip])
+                        ip += Int32(1)
+                    end
+                end
+            end
+            it += Int32(1)
+        end
+        il += Int32(1)
+    end
+    return (norm1 * acc1, norm2 * acc2, norm3 * acc3, norm4 * acc4)
 end
 
 # -----------------------------------------------------------------------------
@@ -309,6 +441,63 @@ function dd_forward_project!(
             nx, ny, nz, vmin_x, vmin_y, vmin_z, vx, vy, vz,
             arc_det, dγ,
         )
+    end
+    return sinogram
+end
+
+# HIR-only arc fast path: four detector rows share one column/view DD setup.
+# The public `dd_forward_project!` remains the generic reference entry point.
+function _dd_forward_project_arc_rowtile4!(
+        sinogram::AbstractArray{T, 3}, volume::AbstractArray{T, 3}, geom::CTGeometry;
+        ws_source_positions = nothing, ws_detector_centers = nothing,
+        ws_detector_u = nothing, ws_detector_v = nothing,
+        volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
+    ) where {T <: AbstractFloat}
+    is_arc(geom) || return dd_forward_project!(
+        sinogram, volume, geom; ws_source_positions, ws_detector_centers,
+        ws_detector_u, ws_detector_v, volume_extent)
+
+    nx = Int32(size(volume, 1)); ny = Int32(size(volume, 2)); nz = Int32(size(volume, 3))
+    nc = Int32(size(sinogram, 1)); nr = Int32(size(sinogram, 2))
+    na = Int32(size(sinogram, 3)); ntiles = (nr + Int32(3)) ÷ Int32(4)
+    bounds = volume_extent === nothing ? geom.fov : volume_extent
+    vmx = T(-bounds[1] / 2); vmy = T(-bounds[2] / 2); vmz = T(-bounds[3] / 2)
+    vsx = T(bounds[1]) / T(nx); vsy = T(bounds[2]) / T(ny); vsz = T(bounds[3]) / T(nz)
+    _dd_check_isotropy(vsx, vsy)
+    mag = T(geom.SDD / geom.SAD)
+    ps = T(geom.pixel_size); prs = T(geom.pixel_row_size)
+    cc = (T(nc) + one(T)) / T(2); rc = (T(nr) + one(T)) / T(2)
+    dγ = T(geom.pixel_size / geom.SAD)
+    sp = _dd_geom_array(ws_source_positions, volume, geom.source_positions, T)
+    dc = _dd_geom_array(ws_detector_centers, volume, geom.detector_centers, T)
+    du = _dd_geom_array(ws_detector_u, volume, geom.detector_u, T)
+    dv = _dd_geom_array(ws_detector_v, volume, geom.detector_v, T)
+    let sino = sinogram, vol = volume, sp = sp, dc = dc, du = du, dv = dv,
+            nx = nx, ny = ny, nz = nz, nc = nc, nr = nr, na = na,
+            vmx = vmx, vmy = vmy, vmz = vmz, vsx = vsx, vsy = vsy, vsz = vsz,
+            mag = mag, ps = ps, prs = prs, cc = cc, rc = rc, dγ = dγ
+        AK.foreachindex(sino) do idx
+            idx0 = Int32(idx - 1)
+            col = (idx0 % nc) + Int32(1)
+            idx0 = idx0 ÷ nc
+            slot = idx0 % nr
+            angle = (idx0 ÷ nr) + Int32(1)
+            slot >= ntiles && return
+            tile = slot
+            row1 = tile * Int32(4) + Int32(1)
+            row2 = row1 + Int32(1); row3 = row1 + Int32(2); row4 = row1 + Int32(3)
+            a1, a2, a3, a4 = _dd_trace_rows4(
+                vol, col, row1, nr,
+                sp[1, angle], sp[2, angle], sp[3, angle],
+                dc[1, angle], dc[2, angle], dc[3, angle],
+                du[1, angle], du[2, angle], dv[3, angle],
+                mag, ps, prs, cc, rc, nx, ny, nz,
+                vmx, vmy, vmz, vsx, vsy, vsz, dγ)
+            sino[col, row1, angle] = a1
+            row2 <= nr && (sino[col, row2, angle] = a2)
+            row3 <= nr && (sino[col, row3, angle] = a3)
+            row4 <= nr && (sino[col, row4, angle] = a4)
+        end
     end
     return sinogram
 end

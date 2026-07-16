@@ -68,7 +68,8 @@ const _HIR_N_SUBSETS = 12
 # Anchor table.  Tuning notes (v29 HIR-DISCOVER / HIR-FIX-WEIGHTS): V_inv
 # normalization (~0.03) and the statistical weights (~0.14 mean) suppress the
 # effective regularization, so λ must be O(1-10); relaxation < 1.0 is needed for
-# stability at higher λ.
+# stability at higher λ. The exact-DD solver converts this legacy calibration
+# to its adjoint normalization internally; Siddon retains the historical scale.
 #
 # The 0 row is pure FBP; its δ and relaxation are inert (nepochs = 0) and carry
 # the 20 % values so that interpolation toward strength = 10 is continuous.

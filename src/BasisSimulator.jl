@@ -95,6 +95,9 @@ include("projection/siddon.jl")
 # Drop-in replacement for Siddon (same signatures, cm units, Σμ·l output).
 include("projection/dd.jl")
 
+# Exact deterministic transpose of the monochromatic DD operator.
+include("projection/dd_transpose.jl")
+
 # :dd_fast — same DD3 model, single-pass per-material path-length fused kernels
 # (results ≡ :dd to float ordering; full spectrum in ONE volume walk).
 include("projection/dd_fast.jl")

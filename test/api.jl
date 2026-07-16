@@ -1286,6 +1286,13 @@ _ts("entering reconstruct!(HIRReconWorkspace) testset")
         @test ret === ws.volume
         @test all(isfinite, ret)
         @test all(iszero, @view ws.work_volume[1, 1, :])
+        # Projection normalization must describe the same circular support that
+        # reconstruct! enforces, not the enclosing square array.
+        support = ones(Float32, size(ws.work_volume))
+        BS.apply_fov_mask!(support, ws.work_geom; sentinel_μ = 0.0f0)
+        ray_sum = BS._project_mono(:dd_fast, support, ws.work_geom)
+        expected_W = @. ifelse(ray_sum > 1.0f-8, inv(ray_sum), 0.0f0)
+        @test ws.W_proj ≈ expected_W rtol = 2.0f-6 atol = 2.0f-6
         roi = object[:, :, 13] .> 0
         means = [mean(@view ret[:, :, k][roi]) for k in axes(ret, 3)]
         terminal_mean = (means[1] + means[end]) / 2
@@ -1297,6 +1304,62 @@ _ts("entering reconstruct!(HIRReconWorkspace) testset")
         fdk_volume = BS.reconstruct!(fdk, sino, geom_out)
         fdk_means = [mean(@view fdk_volume[:, :, k][roi]) for k in axes(fdk_volume, 3)]
         @test (fdk_means[1] + fdk_means[end]) / 2 ≈ fdk_means[6] rtol = 0.01
+
+        # A fixed noisy z-uniform object must remain axially uniform and HIR60
+        # must damp, not amplify, pixel-scale texture. This is the regression
+        # for the stale per-epoch Huber gradient that produced a terminal mesh.
+        noisy = sino .+ 0.003f0 .* randn(MersenneTwister(0x484952), Float32, size(sino))
+        noisy_hir_ws = BS.create_hir_recon_workspace(
+            noisy, geom_out, (32, 32, 11); strength = 60, projector = :dd_fast,
+        )
+        noisy_hir = copy(BS.reconstruct!(noisy_hir_ws, noisy, geom_out))
+        noisy_fdk_ws = BS.create_fdk_recon_workspace(noisy, geom_out, (32, 32, 11))
+        noisy_fdk = copy(BS.reconstruct!(noisy_fdk_ws, noisy, geom_out))
+        inner = falses(32, 32)
+        inner[10:23, 10:23] .= true
+        function hp_std(vol, k)
+            img = @view vol[:, :, k]
+            hp = img .- (circshift(img, (1, 0)) .+ circshift(img, (-1, 0)) .+
+                         circshift(img, (0, 1)) .+ circshift(img, (0, -1))) ./ 4
+            std(hp[inner])
+        end
+        fbp_hp = [hp_std(noisy_fdk, k) for k in axes(noisy_fdk, 3)]
+        hir_hp = [hp_std(noisy_hir, k) for k in axes(noisy_hir, 3)]
+        @test mean(hir_hp) < 0.9 * mean(fbp_hp)
+        @test max(hir_hp[1], hir_hp[end]) / hir_hp[6] < 1.25
+
+        # A genuinely finite object must remain finite: continuation is only
+        # the private initial boundary condition, not invented attenuation.
+        short_object = zeros(Float32, size(object))
+        short_object[:, :, 10:16] .= object[:, :, 10:16]
+        short_sino = BS._project_mono(:dd_fast, short_object, geom_object)
+        short_ws = BS.create_hir_recon_workspace(
+            short_sino, geom_out, (32, 32, 11); strength = 60, projector = :dd_fast,
+        )
+        short_hir = BS.reconstruct!(short_ws, short_sino, geom_out)
+        short_means = [mean(@view short_hir[:, :, k][roi]) for k in axes(short_hir, 3)]
+        @test short_means[6] > 2 * max(short_means[1], short_means[end])
+        @test short_means[1] ≈ short_means[end] rtol = 0.1 atol = 5.0e-4
+    end
+
+
+    @testset "helical HIR exact-DD smoke" begin
+        scanner = BS.Scanner(
+            source_to_isocenter = 540.0, source_to_detector = 1080.0,
+            detector_rows = 8, detector_cols = 32,
+            detector_row_size = 1.0, detector_col_size = 1.0,
+        )
+        geom = BS.CTGeometry(
+            scanner; n_angles = 12, n_rows = 8, n_cols = 32,
+            fov_cm = 8.0, pitch = 0.5, n_rotations = 2.0,
+        )
+        sino = zeros(Float32, geom.n_cols, geom.n_rows, geom.n_angles)
+        ws = BS.create_hir_recon_workspace(
+            sino, geom, (16, 16, 5); strength = 20, projector = :dd_fast,
+        )
+        @test ws.work_volume === ws.volume
+        @test BS.reconstruct!(ws, sino, geom) === ws.volume
+        @test all(isfinite, ws.volume)
     end
 
     @testset "z-uniform Huber field has zero axial-boundary gradient" begin
