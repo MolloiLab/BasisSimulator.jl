@@ -13,6 +13,10 @@ end
 
 function Layout(content)
     Div(:class => "min-h-screen flex flex-col bg-warm-100 dark:bg-warm-950 text-warm-800 dark:text-warm-200 transition-colors",
+        # Therapy owns the light/dark preference through the `dark` class. Keep
+        # Snapshot's embedded notebook token theme on the same authoritative
+        # state before the notebook fragment is painted.
+        RawHtml("""<script>(function(){var h=document.documentElement;h.setAttribute('data-theme',h.classList.contains('dark')?'fun-dark':'fun-light');})();</script>"""),
         # Sticky top nav — always visible while content scrolls underneath.
         Nav(:class => "sticky top-0 z-40 border-b border-warm-200 dark:border-warm-800 h-16 px-6 bg-warm-100/80 dark:bg-warm-950/80 backdrop-blur supports-[backdrop-filter]:bg-warm-100/60 supports-[backdrop-filter]:dark:bg-warm-950/60",
             Div(:class => "max-w-5xl mx-auto h-full flex items-center justify-between",

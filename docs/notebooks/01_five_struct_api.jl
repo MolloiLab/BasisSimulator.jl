@@ -60,7 +60,7 @@ md"""
 ## Notebook Setup
 
 Activate `docs/Project.toml` (which has `BasisSimulator` from the local source
-tree + `WasmMakie`), then bring in our imports — one per cell — and finally
+tree + `CairoMakie`), then bring in our imports — one per cell — and finally
 detect a GPU backend.
 """
 
@@ -70,8 +70,9 @@ import BasisSimulator as BS
 
 # ╔═╡ 01000003-0000-4000-8000-000000000003
 # ╠═╡ show_logs = false
-# import CairoMakie as Mke
-import WasmMakie as Mke
+# Use CairoMakie for faithful build-time rendering. Snapshot can still isolate
+# and compile independent browser-safe islands without hoisting this import.
+import CairoMakie as Mke
 
 # ╔═╡ 886270ac-b0c1-4c77-b218-3bb67c8bee20
 TableOfContents()

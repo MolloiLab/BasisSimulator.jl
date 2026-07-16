@@ -1,15 +1,3 @@
-# Sidecar environment for the LOCAL notebook export pipeline (docs/extract_all.jl).
-# Lives separate from docs/Project.toml so the export driver's deps don't weigh on
-# the notebook runtime — notebooks self-activate docs/Project.toml when they run.
-#
-# Exports go through Snapshot.jl's LEAN Therapy emit (therapy=true): rendered cell
-# outputs as plain HTML + WASM islands where compilable — NO embedded Pluto statefile
-# (the old Pluto.generate_html path baked 17-42 MB of state into every page).
-#
-# Snapshot tracks its GitHub main branch, while WasmTarget is resolved as a normal
-# registered package. The notebooks themselves still render locally because they
-# need Metal; CI only mounts the committed HTML.
-
 [deps]
 Pluto = "c3e4b0f8-55cb-11ea-2926-15256bba5781"
 SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
@@ -17,4 +5,4 @@ Snapshot = "1e64ef43-5f79-4f6b-8e97-159df4e27032"
 WasmTarget = "9f3a1415-1112-405b-ae89-c61daf9872bd"
 
 [sources]
-Snapshot = {url = "https://github.com/GroupTherapyOrg/Snapshot.jl", rev = "main"}
+Snapshot = {rev = "316c5acb1f768fc6a839788e73d9c91fd04fb581", url = "https://github.com/GroupTherapyOrg/Snapshot.jl"}

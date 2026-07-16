@@ -98,16 +98,17 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
         "11_helical_scanning" => (
             index     = "11",
             title     = "Helical Scanning — Narrow Collimation, Long Coverage",
-            summary   = "One new kwarg — pitch — turns any protocol into a spiral scan.  A 32 cm " *
-                        "z-slab captured with a NARROW 20 mm collimation (pitch 1.0 × 16 rotations, " *
-                        ":dd_fast projector, rebinned-WFBP helical recon) vs classic step-and-shoot " *
-                        "(8 axial stations at the scanner-max 40 mm collimation), matched exposure, " *
-                        "full nb01 correction stack.  A z-varying low-Z phantom (helically winding " *
-                        "lung rod + tapering adipose cone) and a PlutoUI z-slider show phantom truth " *
-                        "against both recons slice by slice — helical holds water flat across the " *
-                        "whole slab while the stitched stations show their seams.",
+            summary   = "One new kwarg — pitch — turns an axial protocol into a spiral scan.  A 30 cm " *
+                        "reconstructed z-slab uses narrow 20 mm collimation (pitch 1.0 × 16 rotations, " *
+                        ":dd_fast projector, rebinned WFBP) and is compared with three 10 cm volume-axial " *
+                        "stations using the scanner's full 160 mm detector.  Beam-width–current product " *
+                        "is matched explicitly; this is not a claim of equal CTDIvol, local dose, noise, " *
+                        "or per-slice mAs.  A z-varying low-Z phantom, water-HU profile, and coronal " *
+                        "reformats provide a direct inspection of longitudinal behavior.  The published " *
+                        "slice control is intentionally static because the native reconstruction closure " *
+                        "is outside the current browser-compiler envelope.",
             thumbnail = "helical_vs_stepshoot_coronal.png",
-            tags      = ["EICT", "Helical", "Pitch", "dd_fast", "FDK"],
+            tags      = ["EICT", "Helical", "Pitch", "dd_fast", "WFBP"],
         ),
         "10_titanium_implant" => (
             index     = "10",

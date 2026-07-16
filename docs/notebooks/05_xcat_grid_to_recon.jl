@@ -83,8 +83,9 @@ Same project + GPU detection idiom as notebooks 02 / 04.
 import BasisSimulator as BS
 
 # ╔═╡ 05000001-0000-4000-8000-000000000031
-# import CairoMakie as Mke
-import WasmMakie as Mke
+# Use CairoMakie for faithful build-time rendering. Snapshot can still isolate
+# and compile independent browser-safe islands without hoisting this import.
+import CairoMakie as Mke
 
 # ╔═╡ 05000001-0000-4000-8000-000000000060
 import PlutoUI
@@ -127,13 +128,13 @@ cleanly when the bin isn't available.
 const XCAT_DIR = get(
     ENV, "BASISSIM_XCAT_DIR",
     joinpath(@__DIR__, "data", "xcat")
-)
+);
 
 # ╔═╡ 05000002-0000-4000-8000-000000000011
 const PHANTOM_PATH = joinpath(
     XCAT_DIR,
     "vmale_50_1600x1400x500_8bit_little_endian_act_1.bin"
-)
+);
 
 # ╔═╡ 05000002-0000-4000-8000-000000000012
 const HAS_XCAT = isfile(PHANTOM_PATH)
@@ -253,7 +254,7 @@ import XLSX
 const MATERIAL_XLSX_PATH = joinpath(
     XCAT_DIR, "Material_Spreadsheets",
     "vmale_50_materials_heart_high_contrast.xlsx",
-)
+);
 
 # ╔═╡ 05000004-0000-4000-8000-000000000004
 const _ATOMIC_MASSES = Dict(

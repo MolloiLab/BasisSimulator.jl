@@ -33,8 +33,9 @@ import BasisSimulator as BS
 
 # ╔═╡ 11000001-0000-4000-8000-000000000003
 # ╠═╡ show_logs = false
-# import CairoMakie as Mke
-import WasmMakie as Mke
+# Use CairoMakie for faithful build-time rendering. Snapshot can still isolate
+# and compile independent browser-safe islands without hoisting this import.
+import CairoMakie as Mke
 
 # ╔═╡ 11000001-0000-4000-8000-000000000006
 begin
@@ -54,16 +55,17 @@ Helical (spiral) CT solves a geometry problem no detector can: covering a
 long ``z`` range with a **narrow** beam. Before spiral CT, long coverage
 meant **step-and-shoot**: scan a slab, move the table, scan the next slab.
 Each station is a clean axial scan — but every station has cone-beam edges,
-and the stitched volume carries a seam at every station boundary. A helical
+and the stitched volume can introduce a discontinuity at a station boundary. A helical
 scan instead sweeps the collimator *past* every slice continuously: each
 ``z`` position is, at some moment of the spiral, at the centre of the beam.
 
-This notebook covers a **32 cm** z-slab both ways at matched exposure, on a
+This notebook covers a **30 cm** reconstructed z-slab both ways at matched
+beam-width–current product, on a
 wide-cone 256 × 0.625 mm (16 cm) volume scanner:
 
 |                | collimation | rotations | table          |
 |:---------------|:-----------|:----------|:---------------|
-| volume axial   | 160 mm (full detector) | 2 × axial | steps 16 cm between stations |
+| volume axial   | 160 mm (full detector) | 3 × axial | steps 10 cm between stations |
 | **helical**    | **20 mm (1/8th!)**     | 16 turns  | glides at pitch 1.0 |
 
 The forward projection is the anti-aliased `:dd_fast` projector — helical
@@ -167,7 +169,7 @@ md"""
 ## 2. The helical scan: `pitch` is the whole API
 
 IEC pitch = table feed per rotation ÷ active collimation. With **20 mm**
-collimation (32 of the scanner's 64 × 0.625 mm rows), pitch 1.0, and 16
+collimation (32 of the scanner's 256 × 0.625 mm rows), pitch 1.0, and 16
 rotations, the table travels
 
 ```math
@@ -195,12 +197,14 @@ begin
     protocol_helical = BS.CTProtocol(
         kVp = 120.0, mA = 200.0, views = 360,
         rotation_time = 0.5,
-        collimation_mm = 20.0,       # NARROW: half the physical detector
+        collimation_mm = 20.0,       # NARROW: one eighth of the physical detector
         pitch = 1.0,                 # ← the one helical kwarg
         n_rotations = 16,            # 16 × 2 cm = 32 cm table travel
     )
     protocol_axial = BS.CTProtocol(
-        kVp = 120.0, mA = 200.0, views = 360,
+        # Three 160 mm stations match 16 × 20 mm helical rotations when
+        # weighted by tube current: 3 × 160 × 133⅓ = 16 × 20 × 200.
+        kVp = 120.0, mA = 400.0 / 3.0, views = 360,
         rotation_time = 0.5,
         collimation_mm = 160.0,      # WIDE: the full 16 cm detector, volume mode
     )
@@ -212,7 +216,10 @@ begin
     sim_opts = BS.SimOptions(fidelity = :eict, seed = 42, projector = :dd_fast,
         use_heel_effect = false)
     recon_opts = BS.ReconOptions(matrix_size = (160, 160, 150), fov_cm = 30.0, z_cm = 30.0)
-    recon_opts_station = BS.ReconOptions(matrix_size = (160, 160, 80), fov_cm = 30.0, z_cm = 16.0)
+    # A 16 cm *physical* detector cannot reconstruct a full 16 cm axial
+    # cylinder at 30 cm transverse FOV: cone magnification requires 356 rows.
+    # Ten centimetres requires 222 guarded rows and fits the 256-row scanner.
+    recon_opts_station = BS.ReconOptions(matrix_size = (160, 160, 50), fov_cm = 30.0, z_cm = 10.0)
 end;
 
 # ╔═╡ 11000005-0000-4000-8000-000000000001
@@ -251,9 +258,9 @@ md"""
 ## 4. Run both acquisitions
 
 **Helical**: one `simulate!`, one reconstruction.  **Volume axial
-(step-and-shoot)**: two independent 16 cm wide-cone stations back to back —
+(step-and-shoot)**: three independent 10 cm reconstruction stations —
 for each, the table (here: the phantom window) moves so the station is
-centred at the isocentre — then the two slabs are stitched at ``z = 0``.
+centred at the isocentre — then the three slabs are stitched at ``z = ±5`` cm.
 """
 
 # ╔═╡ 11000006-0000-4000-8000-000000000002
@@ -277,17 +284,26 @@ end;
 
 # ╔═╡ 11000006-0000-4000-8000-000000000003
 sns_result = let
-    station_zs = [-8.0, 8.0]                    # 2 stations × 16 cm, back to back
-    n_slab = 80                                 # 16 cm at 2 mm recon slices
+    station_zs = [-10.0, 0.0, 10.0]             # 3 stations × 10 cm, back to back
+    n_slab = 50                                 # 10 cm at 2 mm recon slices
     hu = zeros(Float32, 160, 160, 150)
     t_total = 0.0
     bhc_ax = nothing
     for (s, z0) in enumerate(station_zs)
         # move the "table": phantom window (±10 cm) centred on this station
         k0 = round(Int, 90 + z0 / phantom_data.voxz)
-        window = (k0 - 49):(k0 + 50)            # 100 slices = 20 cm (covers the cone)
+        requested = (k0 - 49):(k0 + 50)         # 100 slices = 20 cm (covers the cone)
+        available = max(first(requested), 1):min(last(requested), phantom_data.nz)
+        # End stations extend beyond the finite source phantom. Keep their
+        # isocentres fixed and pad the missing exterior with material 0 (air),
+        # rather than clamping the window and shifting anatomy toward isocentre.
+        station_mask = zeros(eltype(phantom_data.mask), size(phantom_data.mask, 1),
+            size(phantom_data.mask, 2), length(requested))
+        destination = ((first(available) - first(requested) + 1):
+            (last(available) - first(requested) + 1))
+        station_mask[:, :, destination] .= phantom_data.mask[:, :, available]
         ph_st = BS.Phantom(
-            to_gpu(phantom_data.mask[:, :, window]),
+            to_gpu(station_mask),
             phantom_materials,
             (phantom_data.vox, phantom_data.vox, phantom_data.voxz),
         )
@@ -303,10 +319,8 @@ sns_result = let
             ws.sinogram, ws.geom, recon_opts_station.matrix_size, bhc_ax))
         ws = nothing
         GC.gc()
-        # station slab → global z index: station s covers z0 ± 8 cm.  The two
-        # stations overhang the ±15 cm recon volume by 1 cm (they cover ±16 —
-        # real volume scans over-range too): clip.
-        k_lo = round(Int, (z0 - 8.0 + 15.0) / 0.2) + 1
+        # station slab → global z index: each station covers z0 ± 5 cm.
+        k_lo = round(Int, (z0 - 5.0 + 15.0) / 0.2) + 1
         valid = max(k_lo, 1):min(k_lo + n_slab - 1, 150)
         hu[:, :, valid] .= hu_st[:, :, (first(valid) - k_lo + 1):(last(valid) - k_lo + 1)]
     end
@@ -322,8 +336,8 @@ md"""
 Top row: the phantom ground truth as a labelled categorical map. Bottom
 row: **helical** (20 mm collimation) and **volume axial** (the full 16 cm
 detector, 8× wider). Watch the rod rotate and the cone shrink — and watch
-what the wide cone does away from each station centre, with the seam at
-``z = 0``.
+what the wide cone does away from each station centre. The axial station
+boundaries are marked at ``z = ±5`` cm for inspection.
 """
 
 # ╔═╡ 11000007-0000-4000-8000-000000000002
@@ -358,7 +372,7 @@ let
     hm2 = Mke.heatmap!(ax2, helical_result.hu[:, :, z_idx]; colormap = :grays, colorrange = (-500, 100))
     Mke.hidedecorations!(ax2)
 
-    ax3 = Mke.Axis(fig[2, 2]; title = "Volume axial · 2 × 16 cm", titlesize = 24,
+    ax3 = Mke.Axis(fig[2, 2]; title = "Volume axial · 3 × 10 cm", titlesize = 24,
         aspect = Mke.DataAspect())
     Mke.heatmap!(ax3, sns_result.hu[:, :, z_idx]; colormap = :grays, colorrange = (-500, 100))
     Mke.hidedecorations!(ax3)
@@ -373,10 +387,11 @@ md"""
 
 ### 01. Water flatness and the coronal view
 
-Mean HU in a fixed water ROI (clear of rod and cone), slice by slice — the
-helical scan should hold water flat across the full 30 cm, while the
-step-and-shoot volume shows its station structure. The coronal reformats
-show the same thing spatially.
+Mean HU in a fixed water ROI (clear of rod and cone), slice by slice, together
+with coronal reformats. The marked axial station boundaries make this a direct
+inspection of longitudinal uniformity and possible boundary discontinuities;
+in this realization both water curves are nearly flat rather than demonstrating
+a large seam artifact.
 """
 
 # ╔═╡ 11000008-0000-4000-8000-000000000002
@@ -389,14 +404,14 @@ z_profile_fig = let
     fig = Mke.Figure(size = (1400, 600))
     ax = Mke.Axis(fig[1, 1];
         title = "Water HU vs z", titlesize = 32,
-        subtitle = "helical (20 mm collim) vs wide-cone volume axial (160 mm collim), matched exposure",
+        subtitle = "helical (20 mm collim) vs volume axial (160 mm collim), matched beam-width–current product",
         subtitlesize = 24,
         xlabel = "z (cm)", ylabel = "mean HU (water ROI)",
         xlabelsize = 22, ylabelsize = 22, xticklabelsize = 18, yticklabelsize = 18)
     Mke.lines!(ax, zs, prof_hel; linewidth = 4, label = "helical · 20 mm, pitch 1.0 × 16 rot")
-    Mke.lines!(ax, zs, prof_sns; linewidth = 4, label = "volume axial · 2 × 16 cm stations")
+    Mke.lines!(ax, zs, prof_sns; linewidth = 4, label = "volume axial · 3 × 10 cm stations")
     Mke.hlines!(ax, [0.0]; color = :gray, linestyle = :dash, linewidth = 2)
-    Mke.vlines!(ax, [0.0]; color = (:orange, 0.5), linestyle = :dot, linewidth = 3)
+    Mke.vlines!(ax, [-5.0, 5.0]; color = (:orange, 0.5), linestyle = :dot, linewidth = 3)
     Mke.ylims!(ax, -100, 100)
     Mke.axislegend(ax; labelsize = 18, position = :cb)
     fig
@@ -409,7 +424,7 @@ coronal_fig = let
     ax1 = Mke.Axis(fig[1, 1]; title = "Helical — coronal", titlesize = 24)
     hm = Mke.heatmap!(ax1, helical_result.hu[:, yc, :]; colormap = :grays, colorrange = (-500, 100))
     Mke.hidedecorations!(ax1)
-    ax2 = Mke.Axis(fig[1, 2]; title = "Volume axial (2 × 16 cm) — coronal", titlesize = 24)
+    ax2 = Mke.Axis(fig[1, 2]; title = "Volume axial (3 × 10 cm) — coronal", titlesize = 24)
     Mke.heatmap!(ax2, sns_result.hu[:, yc, :]; colormap = :grays, colorrange = (-500, 100))
     Mke.hidedecorations!(ax2)
     Mke.Colorbar(fig[1, 3], hm; label = "HU", labelsize = 22, ticklabelsize = 16)
@@ -432,17 +447,21 @@ md"""
   production spiral-CT algorithm family (Siemens WFBP; UCLA FreeCT), and it
   is dispatched automatically by `reconstruct!`/`fdk_reconstruct` whenever
   `is_helical(geom)`.
-- **Both scans got identical corrections** (notebook 01 stack) and matched
-  exposure (16 × 20 mm vs 2 × 160 mm beam-time product, same mA).
+- **Both scans got identical corrections** (notebook 01 stack). Exposure is
+  matched by beam-width–current product: 16 × 20 mm × 200 mA versus
+  3 × 160 mm × 133⅓ mA (equal rotation time). This is an acquisition-integral
+  match, not a claim of equal CTDIvol, local dose, image noise, or per-slice mAs;
+  the axial beams overlap and only their central 10 cm slabs are reconstructed.
 - Hybrid IR works on helical unchanged — matched forward/backprojection are
   geometry-general, subsets are angular-interleaved, and the HIR FDK
   initialisation routes through WFBP.
-- **Honest limits**: WFBP-family recon is clinically credible up to ~128
-  detector rows and pitch ≲ 1.5.  Windmill artifacts around sharp
+- **Honest limits**: the current intended and tested simulator envelope is up
+  to roughly 128 active detector rows and pitch ≲ 1.5; this notebook is not a
+  clinical-validation study. Windmill artifacts around sharp
   ``z``-edges at high pitch are physics (longitudinal Nyquist), not a bug.
 - Wall-clock on this machine: helical (5760 views, full EICT physics +
   corrections) ≈ $(round(helical_result.t; digits = 1)) s; volume axial
-  (2 stations × 360 views) ≈ $(round(sns_result.t; digits = 1)) s.
+  (3 stations × 360 views) ≈ $(round(sns_result.t; digits = 1)) s.
 """
 
 # ╔═╡ 1100000a-0000-4000-8000-000000000001
@@ -455,10 +474,11 @@ md"""
   default forward projector.
 - Helical geometries dispatch automatically to rebinned WFBP; axial stations
   retain the ordinary FDK path.
-- The slice slider, water-HU profile, and coronal comparison jointly verify
-  longitudinal coverage, station seams, and z-dependent anatomy.
-- Cached figures and reported wall times will be regenerated only after the
-  source audit across all eleven notebooks is complete.
+- The native Pluto slice slider, water-HU profile, and coronal comparison jointly
+  inspect longitudinal coverage, possible station-boundary effects, and
+  z-dependent anatomy. The published Snapshot control is deliberately static.
+- Cached figures and reported wall times were regenerated after the source
+  audit across all eleven notebooks was completed.
 """
 
 # ╔═╡ Cell order:

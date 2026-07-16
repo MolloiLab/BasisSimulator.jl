@@ -66,7 +66,7 @@ function NotebookPage(slug::AbstractString)
         # Same native reading surface used by Snapshot.jl's docs: the fragment
         # remains real DOM and theme-aware, while the soft boundary makes its
         # own Pluto typography/layout feel intentional inside Therapy.
-        Div(:class => "bg-base-100 rounded-box sn-bubble px-5 sm:px-8 py-7 overflow-hidden",
+        Div(:class => "bg-white dark:bg-[#20212b] rounded-box sn-bubble px-5 sm:px-8 py-7 overflow-hidden transition-colors",
             RawHtml(notebook_html)),
     )
 end

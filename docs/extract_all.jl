@@ -7,16 +7,16 @@
 # (17–42 MB each, 141 MB total); the lean pages are ~100× smaller, which is
 # what lets the site fit through Snapshot's publish pipeline.
 #
-# Cache is keyed on the SHA-256 of the source .jl content (NOT mtime, so
-# `git checkout` doesn't trigger spurious rebuilds).  The hash is embedded
-# as a `<meta>` tag in the rendered HTML; on each run we compare current
-# source hash to the cached hash and only re-render on mismatch.
+# Cache is keyed on a SHA-256 fingerprint of the source notebook, Snapshot's
+# locked source tree, and the export contract (NOT mtime, so `git checkout`
+# doesn't trigger spurious rebuilds). The fingerprint is embedded in both
+# exported forms; renderer/theme upgrades therefore invalidate cleanly.
 #
 # Workflow:
 #   1. Render locally on whatever GPU you have (Metal / CUDA / ROCm) —
-#      this populates docs/notebooks-static/<slug>.html with the hash baked in.
+#      this populates docs/notebooks-static/<slug>.html with the fingerprint baked in.
 #   2. `git add docs/notebooks-static/*.html` and commit.
-#   3. CI inherits the rendered HTML, sees a hash match, skips re-render,
+#   3. CI inherits the rendered HTML, sees a fingerprint match, skips re-render,
 #      deploys what you committed.  Re-render only happens when somebody
 #      actually edits a .jl source.
 #
@@ -35,10 +35,20 @@ end
 using Pluto
 using Snapshot: export_notebook
 using SHA: bytes2hex, sha256
+using UUIDs: UUID
 
 const NOTEBOOKS_DIR = joinpath(@__DIR__, "notebooks")
 const STATIC_OUT    = joinpath(@__DIR__, "notebooks-static")
-const HASH_META     = "basissim-source-hash"
+const DATA_DIR      = joinpath(NOTEBOOKS_DIR, "data")
+const DATA_PROVENANCE = joinpath(NOTEBOOKS_DIR, "DATA_PROVENANCE.sha256")
+const HASH_META     = "basissim-export-fingerprint"
+const SNAPSHOT_UUID = UUID("1e64ef43-5f79-4f6b-8e97-159df4e27032")
+const FORCE_FALLBACK_BONDS = Dict(
+    "01_five_struct_api" => (:z_slice,),
+    "05_xcat_grid_to_recon" => (:z_helical,),
+    "11_helical_scanning" => (:z_idx,),
+)
+const EXPORT_CONTRACT = "basissim-lean-v4|therapy=true|fragment=true|islands=true|verify=true|optimize=size|forced-fallback=01:z_slice,05:z_helical,11:z_idx"
 
 """Discover every Pluto notebook under `docs/notebooks/`."""
 function notebook_slugs()
@@ -54,7 +64,58 @@ end
 source_hash(slug::AbstractString) =
     bytes2hex(sha256(read(joinpath(NOTEBOOKS_DIR, "$(slug).jl"))))
 
-"""Hash recorded inside the cached HTML, or `nothing` if the cache is
+"Digest committed simulator code and the committed declarations for optional data."
+const _SIMULATOR_INPUT_HASH = Ref{Union{Nothing,String}}(nothing)
+function simulator_input_hash()
+    _SIMULATOR_INPUT_HASH[] === nothing || return _SIMULATOR_INPUT_HASH[]::String
+    root = dirname(@__DIR__)
+    files = [joinpath(root, "Project.toml"), DATA_PROVENANCE]
+    for dir in (joinpath(root, "src"),)
+        isdir(dir) || continue
+        for (base, _, names) in walkdir(dir), name in names
+            path = joinpath(base, name)
+            isfile(path) && push!(files, path)
+        end
+    end
+    entries = [
+        string(relpath(path, root), ":", bytes2hex(sha256(read(path))))
+        for path in sort!(files)
+    ]
+    _SIMULATOR_INPUT_HASH[] = bytes2hex(sha256(join(entries, '\0')))
+    _SIMULATOR_INPUT_HASH[]::String
+end
+
+"""Verify any locally available, ignored datasets against the committed
+provenance declaration. Missing files are allowed: CI consumes the committed
+exports and does not need private/large rendering inputs."""
+function verify_local_data!()
+    isfile(DATA_PROVENANCE) || error("missing committed data provenance: $(DATA_PROVENANCE)")
+    for raw_line in eachline(DATA_PROVENANCE)
+        line = strip(raw_line)
+        (isempty(line) || startswith(line, '#')) && continue
+        parts = split(line; limit = 2)
+        length(parts) == 2 || error("malformed data provenance line: $(raw_line)")
+        expected, relative = parts
+        path = joinpath(DATA_DIR, strip(relative))
+        isfile(path) || continue
+        actual = bytes2hex(sha256(read(path)))
+        actual == expected || error("dataset checksum mismatch: $(relative)")
+    end
+    nothing
+end
+
+"Fingerprint both notebook input and the immutable exporter implementation."
+function export_fingerprint(slug::AbstractString)
+    snapshot_tree = string(Pkg.dependencies()[SNAPSHOT_UUID].tree_hash)
+    build_lock = bytes2hex(sha256(read(joinpath(@__DIR__, "build_env", "Manifest.toml"))))
+    docs_lock = bytes2hex(sha256(read(joinpath(@__DIR__, "Manifest.toml"))))
+    driver = bytes2hex(sha256(read(@__FILE__)))
+    payload = join((source_hash(slug), simulator_input_hash(), snapshot_tree,
+        build_lock, docs_lock, driver, EXPORT_CONTRACT), '\0')
+    bytes2hex(sha256(payload))
+end
+
+"""Fingerprint recorded inside the cached HTML, or `nothing` if the cache is
 missing or unreadable."""
 function cached_hash(slug::AbstractString)::Union{String, Nothing}
     out = joinpath(STATIC_OUT, "$(slug).html")
@@ -65,7 +126,7 @@ function cached_hash(slug::AbstractString)::Union{String, Nothing}
     m === nothing ? nothing : m.captures[1]
 end
 
-needs_rebuild(slug::AbstractString)::Bool = cached_hash(slug) != source_hash(slug)
+needs_rebuild(slug::AbstractString)::Bool = cached_hash(slug) != export_fingerprint(slug)
 
 """Render one notebook → LEAN standalone HTML (Snapshot.jl therapy emit).
 
@@ -85,6 +146,7 @@ we key the cache on).
 function render_notebook!(session::Pluto.ServerSession,
                           src_path::AbstractString,
                           dst_path::AbstractString)
+    slug = splitext(basename(src_path))[1]
     html_path = export_notebook(src_path;
         output_dir = dirname(dst_path),
         therapy = true,           # lean page: SSR cells + islands, NO statefile
@@ -93,10 +155,17 @@ function render_notebook!(session::Pluto.ServerSession,
         islands = true,           # compile @bind groups to wasm where possible
         verify = true,            # oracle-check compiled islands (node)
         optimize = :size,
+        # These controls drive native Cairo/GPU simulation volumes whose
+        # closures are intentionally outside WasmTarget's current scope.
+        # Keep Pluto interactive; publish the rendered result with an honest,
+        # disabled control instead of spending unbounded time in inference.
+        force_fallback_bonds = get(FORCE_FALLBACK_BONDS, slug, ()),
+        env_dir = @__DIR__,       # notebook imports resolve from docs/Project.toml
         session = session)
-    post_hash = bytes2hex(sha256(read(src_path)))
-    # Embed the source hash for the rebuild cache (machine-readable, invisible).
-    meta = """<meta name="$(HASH_META)" content="$(post_hash)">"""
+    post_hash = source_hash(slug)
+    fingerprint = export_fingerprint(slug)
+    # Embed the source+exporter fingerprint for the rebuild cache.
+    meta = """<meta name="$(HASH_META)" content="$(fingerprint)">"""
     html = read(html_path, String)
     html = occursin("<head>", html) ? replace(html, "<head>" => "<head>" * meta; count = 1) :
                                       html * "\n" * meta * "\n"
@@ -108,6 +177,9 @@ function render_notebook!(session::Pluto.ServerSession,
     compress_page_images!(html_path)   # embedded figure PNGs → WebP q90 (~90% smaller)
     fragment_path = replace(html_path, r"\.html$" => ".fragment.html")
     isfile(fragment_path) || error("Snapshot did not emit expected fragment: $(fragment_path)")
+    fragment = read(fragment_path, String)
+    marker = "<!-- $(HASH_META): $(fingerprint) -->"
+    write(fragment_path, marker * "\n" * fragment)
     compress_page_images!(fragment_path)
     return post_hash
 end
@@ -120,10 +192,11 @@ function skipped_slugs()
     Set(strip.(split(get(ENV, "BASISSIM_SKIP_NOTEBOOKS", ""), ","; keepempty = false)))
 end
 
-"""Walk every notebook, rendering only those whose source hash doesn't
-match the cached hash.  Returns the full list of slugs (cached + freshly
+"""Walk every notebook, rendering only those whose export fingerprint doesn't
+match the cached fingerprint. Returns the full list of slugs (cached + freshly
 rendered) so callers can register routes for all of them."""
 function export_notebooks()
+    verify_local_data!()
     slugs = notebook_slugs()
     skip = skipped_slugs()
     if !isempty(skip)
@@ -140,7 +213,7 @@ function export_notebooks()
     to_render = force ? slugs : filter(needs_rebuild, slugs)
 
     if isempty(to_render)
-        println("[notebooks] all $(length(slugs)) cached (source hash matches) — no rebuild")
+        println("[notebooks] all $(length(slugs)) cached (export fingerprint matches) — no rebuild")
         return slugs
     end
 
