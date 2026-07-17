@@ -152,7 +152,10 @@ compositions.
 """
 
 # ╔═╡ 08020001-0000-4000-8000-000000000010
-const QRM_CACHE_PATH = joinpath(@__DIR__, "data", "qrm_thorax", "qrm_thorax_1600x1100_rot_uint8.raw");
+const QRM_CACHE_PATH = joinpath(
+    get(ENV, "BASISSIM_QRM_DIR", joinpath(@__DIR__, "data", "qrm_thorax")),
+    "qrm_thorax_1600x1100_rot_uint8.raw",
+);
 
 # ╔═╡ 08020001-0000-4000-8000-000000000011
 const QRM_TARGET_NX = 1600;  # full prepared cache, no extra in-plane downsample
@@ -167,39 +170,36 @@ const QRM_TARGET_NZ = 20;    # 20 × 0.2 mm = 4 mm — short z-invariant referen
 const QRM_VOXEL_SIZE_CM = (0.02, 0.02, 0.02);   # (x, y, z) cm — 0.2 mm isotropic ground truth (320 × 220 × 4 mm physical extent)
 
 # ╔═╡ 08020001-0000-4000-8000-000000000015
-const QRM_SHARED_DRIVE_DIR = "/Volumes/Molloilab/Shu Nie/water-lipid";
+const QRM_DATA_DIR = dirname(QRM_CACHE_PATH);
 
 # ╔═╡ 08020001-0000-4000-8000-000000000016
-const QRM_SHARED_FULL_PATH = joinpath(QRM_SHARED_DRIVE_DIR, "qrm_thorax_3200x2200_rot_uint8.raw");
+const QRM_FULL_PATH = joinpath(QRM_DATA_DIR, "qrm_thorax_3200x2200_rot_uint8.raw");
 
 # ╔═╡ 08020001-0000-4000-8000-000000000017
-const QRM_SHARED_DOWN_PATH = joinpath(QRM_SHARED_DRIVE_DIR, "qrm_thorax_1600x1100_rot_uint8.raw");
+const QRM_DOWN_PATH = joinpath(QRM_DATA_DIR, "qrm_thorax_1600x1100_rot_uint8.raw");
 
 # ╔═╡ 08020001-0000-4000-8000-000000000018
 md"""
-!!! success "Share-drive (lab volume) copies of the QRM-Thorax phantom"
-    Both rotated phantom files are mirrored on the lab volume so any
-    lab member can pick them up without rerunning prep.
+!!! info "Prepared QRM-Thorax phantom data"
+    Set `BASISSIM_QRM_DIR` to the directory containing either prepared
+    phantom file. The downsampled file is used by this notebook.
 
     | resolution                        | path                                                  |
     |-----------------------------------|-------------------------------------------------------|
-    | full-resolution (3200 × 2200, ~7 MB) | `$(QRM_SHARED_FULL_PATH)` |
-    | 2× downsampled (1600 × 1100, ~1.7 MB) ← used here | `$(QRM_SHARED_DOWN_PATH)` |
+    | full-resolution (3200 × 2200, ~7 MB) | `qrm_thorax_3200x2200_rot_uint8.raw` |
+    | 2× downsampled (1600 × 1100, ~1.7 MB) ← used here | `qrm_thorax_1600x1100_rot_uint8.raw` |
 
-    If you don't have the local cache yet:
-    ```sh
-    cp "$(QRM_SHARED_DOWN_PATH)" "$(QRM_CACHE_PATH)"
-    ```
+    If the data is elsewhere, point `BASISSIM_QRM_DIR` at that directory
+    before starting Pluto.
 """
 
 # ╔═╡ 08020001-0000-4000-8000-000000000020
 mask_3d_raw = let
     isfile(QRM_CACHE_PATH) || error(
-        "QRM-Thorax cache not found at $(QRM_CACHE_PATH).\n" *
-            "Either:\n" *
-            "  • copy the prepared cache from the lab volume:\n" *
-            "      cp \"$(QRM_SHARED_DOWN_PATH)\" \"$(QRM_CACHE_PATH)\"\n" *
-            "  • or run the prep notebook once to rebuild the cache from source."
+        "QRM-Thorax cache is unavailable at " *
+            "docs/notebooks/data/qrm_thorax/$(basename(QRM_CACHE_PATH)).\n" *
+            "Set BASISSIM_QRM_DIR to the prepared-data directory, or run " *
+            "the prep notebook once to rebuild the cache from source."
     )
     cache_2d = reshape(read(QRM_CACHE_PATH), QRM_TARGET_NX, QRM_TARGET_NY)
     repeat(cache_2d; outer = (1, 1, QRM_TARGET_NZ))

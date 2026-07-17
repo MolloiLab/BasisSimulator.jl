@@ -26,6 +26,12 @@ BAD_TEXT = {
     "developer-machine path": "/Users/daleblack/",
     "CI workspace path": "/home/runner/work/",
 }
+BAD_TEXT_PATTERNS = {
+    "macOS user path": re.compile(r"/(?:private/)?Users/[^/\s<]+/", re.I),
+    "Unix home path": re.compile(r"/home/[^/\s<]+/", re.I),
+    "temporary build path": re.compile(r"/(?:private/)?tmp/[^\s<\"']+", re.I),
+    "mounted volume path": re.compile(r"/Volumes/[^\s<\"']+", re.I),
+}
 BAD_REPORT_REASONS = ("failed to parse", "package ", "not found in current path")
 FORCED_FALLBACKS = {
     "01_five_struct_api": (
@@ -251,6 +257,12 @@ def main() -> int:
             if needle.lower() in text:
                 failures.append(
                     f"{artifact.relative_to(ROOT)}: {label} ({needle!r})"
+                )
+        for label, pattern in BAD_TEXT_PATTERNS.items():
+            match = pattern.search(text)
+            if match:
+                failures.append(
+                    f"{artifact.relative_to(ROOT)}: {label} ({match.group(0)!r})"
                 )
 
     if failures:

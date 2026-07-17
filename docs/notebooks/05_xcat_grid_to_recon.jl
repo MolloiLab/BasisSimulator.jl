@@ -141,13 +141,13 @@ const HAS_XCAT = isfile(PHANTOM_PATH)
 
 # ╔═╡ 05000002-0000-4000-8000-000000000013
 HAS_XCAT ? md"""
-    **XCAT located:** `$(PHANTOM_PATH)` ($(round(filesize(PHANTOM_PATH) / 1024^2; digits=1)) MB)
+    **XCAT located:** `$(basename(PHANTOM_PATH))` ($(round(filesize(PHANTOM_PATH) / 1024^2; digits=1)) MB)
     """ : md"""
     !!! warning "XCAT bin not found"
-        Looked at $(PHANTOM_PATH) and didn't find it.  All compute cells
-        below short-circuit to `nothing` and the comparison panels show
-        this notice.  Set `BASISSIM_XCAT_DIR` to your local install or
-        drop the file into the default path above and re-run.
+        The configured `$(basename(PHANTOM_PATH))` input is unavailable. All
+        compute cells below short-circuit to `nothing` and the comparison
+        panels show this notice. Set `BASISSIM_XCAT_DIR` to your local install
+        or drop the file into `docs/notebooks/data/xcat/` and re-run.
     """
 
 # ╔═╡ 05000003-0000-4000-8000-000000000001
