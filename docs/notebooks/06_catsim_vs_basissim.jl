@@ -35,7 +35,9 @@ md"""
 forward-projection + FDK pipelines run side-by-side: XCIST/CatSim
 (industry reference, Python), BasisSimulator on CPU, BasisSimulator on
 GPU.  We compare the recon images qualitatively, then the runtimes —
-the second is the point of the simulator.**
+the second is the point of the simulator.  Detector noise is disabled in all
+three runs so independently calibrated flux models cannot masquerade as a
+projector or reconstruction mismatch.**
 
 !!! warning "🚧 Heavy install — read this first"
     This notebook is the only one in the docs gallery that uses Python.
@@ -63,9 +65,9 @@ Pipeline:
 ```
 Gammex 472 @ 128³ (2.7 mm)
    → GE Apex Elite scanner + 120 kVp / 200 mA / 500-view protocol
-   →┬→ CatSim (Python): forward project → FDK
-    ├→ BasisSim CPU:   simulate! → reconstruct!
-    └→ BasisSim GPU:   simulate! → reconstruct!  (same code path, GPU phantom mask)
+   →┬→ CatSim (Python): forward project → water BHC → FDK
+    ├→ BasisSim CPU:   simulate! → water BHC → reconstruct!
+    └→ BasisSim GPU:   simulate! → water BHC → reconstruct!  (same code path, GPU phantom mask)
    → 1×3 mid-slice mosaic with shared HU window
    → runtime / speedup table
 ```
@@ -328,8 +330,9 @@ md"""
 
 Single 120 kVp / 200 mA / 500-view acquisition, 4 mm collimation, 35 cm
 recon FOV.  Recon matrix is `(256, 256, n_z)` to keep the comparison
-quick — the goal is qualitative-similarity verification, not clinical
-fidelity.
+quick. Quantum/electronic noise is disabled in both simulators: this figure
+is a projector + preprocessing + FDK agreement check, not a comparison of two
+differently calibrated tube-flux/noise models.
 """
 
 # ╔═╡ 06000003-0000-4000-8000-000000000010
@@ -343,7 +346,9 @@ protocol = BS.CTProtocol(
 );
 
 # ╔═╡ 06000003-0000-4000-8000-000000000020
-sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234, projector = :dd_fast);
+sim_opts = BS.SimOptions(
+    fidelity = :eict, seed = 1234, projector = :dd_fast, use_noise = false,
+);
 
 # ╔═╡ 06000003-0000-4000-8000-000000000030
 recon_opts = let
@@ -449,6 +454,11 @@ function catsim_configure_protocol!(ct, protocol)
     ct.protocol.stopViewId = protocol.views - 1
     ct.protocol.rotationTime = protocol.rotation_time
     ct.protocol.spectrumFilename = "tungsten_tar7.0_$(Int(protocol.kVp))_filt.dat"
+    # This notebook validates deterministic projector/recon agreement. CatSim
+    # and BasisSimulator use independently calibrated spectrum-flux models, so
+    # nominal mA alone is not a matched-noise experiment.
+    ct.physics.enableQuantumNoise = 0
+    ct.physics.enableElectronicNoise = 0
     return ct
 end
 
@@ -683,15 +693,18 @@ phantom_gpu = BS.Phantom(
 
 # ╔═╡ 06000007-0000-4000-8000-000000000001
 md"""
-### 05. Theoretical μ_water for HU Calibration
+### 05. Matched Beam-Hardening and HU Calibration
 
-All three pipelines use the same per-kVp μ_water reference so HU
-baselines line up.  `BS.compute_polychromatic_μ_water` returns a
-spectrum-weighted, phantom-hardened μ — the **resolved source spectrum**
-(post-bowtie, post-flat-filter) is integrated against `exp(-μ_water · L)`
-for `L = ` the actual phantom diameter.  Diameter `L` is pulled from the
-voxelized phantom via [`BS.estimate_phantom_diameter_cm`](@ref) — same
-approach as nb04, no hardcoded 33 cm.
+CatSim's `run_all()` does not send the raw polychromatic log sinogram straight
+to FDK: its preprocessing includes `Prep_BHC_Accurate`.  The BasisSimulator
+paths must therefore apply their equivalent detected-spectrum, bowtie-aware
+water BHC before FDK.  Otherwise the dense Gammex rods produce the conspicuous
+dark/bright radial streaks that an apples-to-apples comparison is supposed to
+remove.
+
+`calibrate_bhc_water` resolves the full detected spectrum and returns both the
+per-column correction and its mono-equivalent `μ_water_ref`.  That same reference
+is used for HU conversion in all three panels.
 """
 
 # ╔═╡ 06000007-0000-4000-8000-000000000010
@@ -704,20 +717,12 @@ geom_inspect = BS.CTGeometry(
 );
 
 # ╔═╡ 06000007-0000-4000-8000-000000000020
-μ_water_120 = let
-    # Phantom-hardened μ_water: pull the *actual* body diameter from the
-    # voxelized phantom (no hardcoded 33 cm) so μ_water tracks any change to
-    # `n_voxels` / `fov_cm` automatically.  Same approach as nb04.
-    voxel_size_mm = phantom_cpu.voxel_size .* 10.0
-    phantom_diam_cm = BS.estimate_phantom_diameter_cm(phantom_cpu.mask, voxel_size_mm)
-    μ = BS.compute_polychromatic_μ_water(
-        sim_opts, protocol;
-        scanner = scanner,
-        geom = geom_inspect,
-        water_path_cm = phantom_diam_cm,
+bhc_120 = let
+    model = BS.calibrate_bhc_water(
+        sim_opts, protocol; scanner = scanner, geom = geom_inspect,
     )
-    @info "μ_water (120 kVp, $(round(phantom_diam_cm, digits = 1)) cm hardening) = $(round(μ, digits = 5)) cm⁻¹"
-    μ
+    @info "BHC reference = $(round(model.reference_energy_keV, digits = 1)) keV, μ_water = $(round(model.μ_water_ref, digits = 5)) cm⁻¹"
+    model
 end;
 
 # ╔═╡ 060000f2-0000-4000-8000-000000000001
@@ -749,7 +754,7 @@ catsim_result = let
             catsim_configure_phantom!(ct, json_path)
             catsim_configure_scanner!(ct, scanner, protocol)
             catsim_configure_protocol!(ct, protocol)
-            catsim_configure_recon!(ct, recon_opts; μ_water_cm = μ_water_120)
+            catsim_configure_recon!(ct, recon_opts; μ_water_cm = bhc_120.μ_water_ref)
 
             sino = catsim_forward_project(ct; results_name = tag)
             recon = catsim_reconstruct_fdk(ct; results_name = tag)
@@ -777,10 +782,11 @@ basissim_cpu_result = let
     let
         ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom_cpu)
         BS.simulate!(ws, phantom_cpu, protocol, sim_opts)
+        sino_bhc = BS.apply_bhc_water(ws.sinogram, bhc_120)
         ws_fdk = BS.create_fdk_recon_workspace(
-            ws.sinogram, ws.geom, recon_opts.matrix_size; filter = :standard,
+            sino_bhc, ws.geom, recon_opts.matrix_size; filter = :standard,
         )
-        BS.reconstruct!(ws_fdk, ws.sinogram, ws.geom)
+        BS.reconstruct!(ws_fdk, sino_bhc, ws.geom)
         ws = nothing; ws_fdk = nothing
     end
     GC.gc(true)
@@ -790,16 +796,17 @@ basissim_cpu_result = let
     elapsed = @elapsed begin
         ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom_cpu)
         BS.simulate!(ws, phantom_cpu, protocol, sim_opts)
+        sino_bhc = BS.apply_bhc_water(ws.sinogram, bhc_120)
         ws_fdk = BS.create_fdk_recon_workspace(
-            ws.sinogram, ws.geom, recon_opts.matrix_size; filter = :standard,
+            sino_bhc, ws.geom, recon_opts.matrix_size; filter = :standard,
         )
-        recon_μ = Array(BS.reconstruct!(ws_fdk, ws.sinogram, ws.geom))
+        recon_μ = Array(BS.reconstruct!(ws_fdk, sino_bhc, ws.geom))
         ws = nothing; ws_fdk = nothing
     end
     GC.gc(true)
 
-    recon_HU = Float32.(BS.to_hounsfield(recon_μ; μ_water = μ_water_120))
-    @info "[BasisSim CPU] forward proj + FBP = $(round(elapsed, digits = 2)) s"
+    recon_HU = Float32.(BS.to_hounsfield(recon_μ; μ_water = bhc_120.μ_water_ref))
+    @info "[BasisSim CPU] forward proj + BHC + FBP = $(round(elapsed, digits = 2)) s"
     (recon = recon_HU, elapsed = elapsed)
 end;
 
@@ -820,10 +827,11 @@ basissim_gpu_result = let
     let
         ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom_gpu)
         BS.simulate!(ws, phantom_gpu, protocol, sim_opts)
+        sino_bhc = to_gpu(BS.apply_bhc_water(ws.sinogram, bhc_120))
         ws_fdk = BS.create_fdk_recon_workspace(
-            ws.sinogram, ws.geom, recon_opts.matrix_size; filter = :standard,
+            sino_bhc, ws.geom, recon_opts.matrix_size; filter = :standard,
         )
-        BS.reconstruct!(ws_fdk, ws.sinogram, ws.geom)
+        BS.reconstruct!(ws_fdk, sino_bhc, ws.geom)
         ws = nothing; ws_fdk = nothing
     end
     GC.gc(true)
@@ -833,18 +841,19 @@ basissim_gpu_result = let
     elapsed = @elapsed begin
         ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom_gpu)
         BS.simulate!(ws, phantom_gpu, protocol, sim_opts)
+        sino_bhc = to_gpu(BS.apply_bhc_water(ws.sinogram, bhc_120))
         ws_fdk = BS.create_fdk_recon_workspace(
-            ws.sinogram, ws.geom, recon_opts.matrix_size; filter = :standard,
+            sino_bhc, ws.geom, recon_opts.matrix_size; filter = :standard,
         )
         recon_μ = Array(
-            BS.reconstruct!(ws_fdk, ws.sinogram, ws.geom)
+            BS.reconstruct!(ws_fdk, sino_bhc, ws.geom)
         )
         ws = nothing; ws_fdk = nothing
     end
     GC.gc(true)
 
-    recon_HU = Float32.(BS.to_hounsfield(recon_μ; μ_water = μ_water_120))
-    @info "[BasisSim $(GPU_BACKEND.name)] forward proj + FBP = $(round(elapsed, digits = 2)) s"
+    recon_HU = Float32.(BS.to_hounsfield(recon_μ; μ_water = bhc_120.μ_water_ref))
+    @info "[BasisSim $(GPU_BACKEND.name)] forward proj + BHC + FBP = $(round(elapsed, digits = 2)) s"
     (recon = recon_HU, elapsed = elapsed)
 end;
 
@@ -861,11 +870,10 @@ md"""
 ### Qualitative Comparison
 
 Mid-slice of all three reconstructions, shared HU window
-(-200, 600) so the rod contrast lines up visually.  CatSim handles HU
-internally (`recon.unit = "HU"`, `huOffset = -1000`); BasisSim's recons
-go through `BS.to_hounsfield(...; μ_water = μ_water_120)` with the same
-spectrum-weighted μ_water — so HU baselines should match across all
-three panels.
+(-200, 600) so the rod contrast lines up visually.  CatSim and BasisSimulator
+both apply water BHC before FDK, then use the same calibrated mono-equivalent
+`μ_water_ref` for HU scaling.  This compares corrected reconstruction chains,
+not CatSim preprocessing against an uncorrected BasisSimulator sinogram.
 """
 
 # ╔═╡ 0600000b-0000-4000-8000-000000000010
@@ -944,7 +952,7 @@ end
 md"""
 ### Runtime: Bar Chart and Table
 
-End-to-end **forward projection + FBP** wallclock for each pipeline.
+End-to-end **forward projection + preprocessing/BHC + FBP** wallclock for each pipeline.
 Log-y so the GPU bar doesn't disappear next to the CatSim bar.  The
 CPU bar is the apples-to-apples comparison (both run on the host
 CPU); the GPU bar is what BasisSim is actually built for.
@@ -985,8 +993,8 @@ let
     fig = Mke.Figure(size = (1180, 620))
     ax = Mke.Axis(
         fig[1, 1];
-        title = "End-to-End Timing (Forward projection + FBP)",
-        subtitle = "120 kVp · 200 mA · 500 views · 128³ Gammex 472",
+        title = "End-to-End Timing (Forward projection + preprocessing + FBP)",
+        subtitle = "120 kVp · 200 mA · 500 views · noise-free · 128³ Gammex 472",
         xlabel = "",
         ylabel = "Timing (s)",
         xticks = (xs, [r.label for r in rows]),
