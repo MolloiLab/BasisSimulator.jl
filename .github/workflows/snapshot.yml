@@ -1,5 +1,5 @@
 # Managed by Snapshot. Unknown edits are never overwritten automatically.
-# snapshot-workflow-version: snapshot-5ebf817-semantic-v2
+# snapshot-workflow-version: snapshot-f0932cb-lifecycle-v1
 name: Snapshot — build & publish
 on:
   push:
@@ -20,7 +20,7 @@ concurrency:
 env:
   # Immutable audited inputs for the free-tier test. Upgrade deliberately.
   SNAPSHOT_WT_REF: cadb908093efee3b08a065f50930d3337916391d # WasmTarget main (2026-07-14)
-  SNAPSHOT_ENGINE_REF: 5ebf81702934267806d213376f4a769fa898f791 # Snapshot.jl Pluto-semantic exports (2026-07-16)
+  SNAPSHOT_ENGINE_REF: f0932cb2cd23781fe6d63fa488b65a16fa968e2d # Snapshot.jl navigation lifecycle + Pluto errors (2026-07-16)
   SNAPSHOT_EXPORT_SHA256: dfa9b03bd1099e86a9ee00c02495e3e7a86cac2a0ad3115045e8e869aa9fe1e4
   SNAPSHOT_COLLECTION_SHA256: d51830bd0932e21503f5dba9418649ac74e5b3e7148153f49a0c302ee4d428bc
   SNAPSHOT_UPLOAD_SHA256: 318bbffce0d18336b1e172963fa7feeb12b648cd1be37a46ca2d6f95213dc4c7
