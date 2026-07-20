@@ -33,6 +33,16 @@ html {
   scrollbar-gutter: stable;
 }
 
+/* Native details gives the compact navigation keyboard semantics without an
+   island. Hide only the browser's disclosure marker; the visible menu icon is
+   part of the summary and remains available to assistive technology by label. */
+[data-mobile-nav] > summary {
+  list-style: none;
+}
+[data-mobile-nav] > summary::-webkit-details-marker {
+  display: none;
+}
+
 @layer components {
   .sn-bubble {
     box-shadow: 0 0 0 1px color-mix(in oklab, var(--color-base-content) 11%, transparent),
