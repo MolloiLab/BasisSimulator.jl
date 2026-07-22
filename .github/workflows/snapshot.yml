@@ -1,5 +1,5 @@
 # Managed by Snapshot. Unknown edits are never overwritten automatically.
-# snapshot-workflow-version: snapshot-cd5c6dbe-v1
+# snapshot-workflow-version: snapshot-v0.2.1-node24
 name: Snapshot — build & publish
 on:
   push:
@@ -20,7 +20,7 @@ concurrency:
 env:
   # Immutable audited inputs for the free-tier test. Upgrade deliberately.
   SNAPSHOT_WT_REF: cadb908093efee3b08a065f50930d3337916391d # WasmTarget main (2026-07-14)
-  SNAPSHOT_ENGINE_REF: cd5c6dbe7b93c371d5f5a6061ed4bec3fae3c922 # Snapshot.jl v0.2 lean defaults + themed controls (2026-07-17)
+  SNAPSHOT_ENGINE_REF: 6d8157ae00ece37d64d65ed11baa7a07edfc1b08 # Snapshot.jl v0.2.1 (bundled Node 24 verifier)
   SNAPSHOT_EXPORT_SHA256: dfa9b03bd1099e86a9ee00c02495e3e7a86cac2a0ad3115045e8e869aa9fe1e4
   SNAPSHOT_COLLECTION_SHA256: d51830bd0932e21503f5dba9418649ac74e5b3e7148153f49a0c302ee4d428bc
   SNAPSHOT_UPLOAD_SHA256: 318bbffce0d18336b1e172963fa7feeb12b648cd1be37a46ca2d6f95213dc4c7
@@ -135,9 +135,6 @@ jobs:
       - if: steps.cache.outputs.cache-hit != 'true'
         uses: julia-actions/cache@d10a6fd8f31b12404a54613ebad242900567f2b9 # v2 — restores warmed depot
       - if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with: { node-version: "22" }
-      - if: steps.cache.outputs.cache-hit != 'true'
         name: Install Binaryen (wasm-opt, wasm-merge)
         run: |
           curl -fsSL "https://github.com/WebAssembly/binaryen/releases/download/${BINARYEN_VERSION}/binaryen-${BINARYEN_VERSION}-x86_64-linux.tar.gz" -o binaryen.tar.gz
@@ -154,6 +151,13 @@ jobs:
       - if: steps.cache.outputs.cache-hit != 'true'
         name: Instantiate (restored cache → fast)
         run: julia --project=Snapshot.jl -e 'using Pkg; Pkg.instantiate()'
+      - if: steps.cache.outputs.cache-hit != 'true'
+        name: Activate Snapshot's bundled Node 24
+        run: |
+          node_bin=$(julia --project=Snapshot.jl -e 'using NodeJS_24_jll; print(dirname(NodeJS_24_jll.node_path))')
+          echo "$node_bin" >> "$GITHUB_PATH"
+          PATH="$node_bin:$PATH" node --version
+          PATH="$node_bin:$PATH" npm --version
       - if: steps.cache.outputs.cache-hit != 'true'
         name: Fetch Snapshot driver + collection builder
         run: |
@@ -197,10 +201,14 @@ jobs:
       - uses: julia-actions/setup-julia@4c0cb0fce8556fdb04a90347310e5db8b1f98fb9 # v2
         with: { version: "1.12" }
       - uses: julia-actions/cache@d10a6fd8f31b12404a54613ebad242900567f2b9 # v2
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with: { node-version: "22" }
       - name: Instantiate (restored cache → fast)
         run: julia --project=Snapshot.jl -e 'using Pkg; Pkg.instantiate()'
+      - name: Activate Snapshot's bundled Node 24
+        run: |
+          node_bin=$(julia --project=Snapshot.jl -e 'using NodeJS_24_jll; print(dirname(NodeJS_24_jll.node_path))')
+          echo "$node_bin" >> "$GITHUB_PATH"
+          PATH="$node_bin:$PATH" node --version
+          PATH="$node_bin:$PATH" npm --version
       - name: Fetch Snapshot driver + collection builder
         run: |
           curl -fsSL "${SNAPSHOT_INGEST_URL%/}/ci/sha256/${SNAPSHOT_EXPORT_SHA256}/export.jl" -o export.jl
@@ -255,8 +263,6 @@ jobs:
       - uses: julia-actions/setup-julia@4c0cb0fce8556fdb04a90347310e5db8b1f98fb9 # v2
         with: { version: "1.12" }
       - uses: julia-actions/cache@d10a6fd8f31b12404a54613ebad242900567f2b9 # v2
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with: { node-version: "22" }
       - name: Install Binaryen (wasm-opt, wasm-merge)
         run: |
           curl -fsSL "https://github.com/WebAssembly/binaryen/releases/download/${BINARYEN_VERSION}/binaryen-${BINARYEN_VERSION}-x86_64-linux.tar.gz" -o binaryen.tar.gz
@@ -271,6 +277,12 @@ jobs:
           echo "$PWD/wasm-tools-${WASMTOOLS_VERSION}-x86_64-linux" >> "$GITHUB_PATH"
       - name: Instantiate engine
         run: julia --project=Snapshot.jl -e 'using Pkg; Pkg.instantiate()'
+      - name: Activate Snapshot's bundled Node 24
+        run: |
+          node_bin=$(julia --project=Snapshot.jl -e 'using NodeJS_24_jll; print(dirname(NodeJS_24_jll.node_path))')
+          echo "$node_bin" >> "$GITHUB_PATH"
+          PATH="$node_bin:$PATH" node --version
+          PATH="$node_bin:$PATH" npm --version
       - name: Fetch Snapshot driver + collection builder
         run: |
           curl -fsSL "${SNAPSHOT_INGEST_URL%/}/ci/sha256/${SNAPSHOT_EXPORT_SHA256}/export.jl" -o export.jl
