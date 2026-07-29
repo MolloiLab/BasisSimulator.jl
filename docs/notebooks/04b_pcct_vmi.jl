@@ -2022,7 +2022,17 @@ function nchannel_edge_width(image,label::UInt8=UInt8(26))
     cx = mean(Float64(ci[1]) for ci in idx)
     cy = mean(Float64(ci[2]) for ci in idx)
     area_radius = sqrt(length(idx)/π)
-    averaged = dropdims(mean(Float64.(image),dims=3),dims=3)
+    # Cone-beam reconstruction uses NaN outside the valid axial support.
+    # Average only finite voxels so invalid end slices cannot poison the ESF.
+    averaged = zeros(Float64,size(image,1),size(image,2))
+    valid_counts = zeros(Int,size(image,1),size(image,2))
+    for z in axes(image,3),j in axes(image,2),i in axes(image,1)
+        value = Float64(image[i,j,z])
+        isfinite(value) || continue
+        averaged[i,j] += value
+        valid_counts[i,j] += 1
+    end
+    averaged ./= max.(valid_counts,1)
     spacing = 0.20
     distances = collect(-4.0:spacing:4.0)
     sums = zeros(Float64,length(distances))
@@ -2756,6 +2766,478 @@ let
     fig
 end
 
+# ╔═╡ a1c36a77-9d4f-47f2-a9a9-459902572861
+md"""
+### Native four-bin SVD/bilateral adversarial candidate
+
+The older PCCT notebook filters a per-row SVD of the four log-sinograms before
+material decomposition. Here that idea is tested without merging bins and
+without reverting to the older two-channel Cong solve:
+
+1. apply the same joint bilateral parameters to the four native bins;
+2. run the unchanged four-channel profiled likelihood;
+3. reconstruct both bases with the same `SoftFilter`;
+4. reject the candidate unless noise, material response, and insert-edge
+   transfer all pass.
+
+Because filtering changes the measurement covariance, the independent-Poisson
+objective is only a quasi-likelihood in this branch. This branch is therefore
+an empirical adversarial test, not yet the accepted statistical formulation.
+"""
+
+# ╔═╡ b8af5d0a-fb39-458f-bd25-a82182c0eed0
+nchannel_svd_bins = let
+    out = BS.apply_sino_svd_denoise_bilateral(
+        sim_bins.bins;
+        bilat_radius=3,
+        bilat_sigma_s=2.0,
+        bilat_range_k=2.0,
+    )
+    # Compatibility guard for a live Pluto kernel that loaded the package
+    # before the flat-component bilateral fix. A fresh kernel uses the fixed
+    # implementation and this replacement is a no-op.
+    for k in eachindex(out)
+        @. out[k] = ifelse(isfinite(out[k]),out[k],sim_bins.bins[k])
+    end
+    out
+end;
+
+# ╔═╡ b572a783-74ad-4f4a-bcb3-bd35730c21a0
+sino_basis_nchannel_svd = let
+    shape = size(nchannel_svd_bins[1])
+    sino_I = Array{Float32}(undef,shape)
+    sino_W = Array{Float32}(undef,shape)
+    flags = Array{UInt8}(undef,shape)
+    Φ_gpu = to_gpu(nchannel_basis.Φ)
+    μρ_I_gpu = to_gpu(nchannel_basis.μρ_I)
+    μρ_W_gpu = to_gpu(nchannel_basis.μρ_W)
+    I0_gpu = to_gpu(nchannel_basis.I0)
+    μI_eff_gpu = to_gpu(nchannel_basis.μI_eff)
+    μW_eff_gpu = to_gpu(nchannel_basis.μW_eff)
+    elapsed = @elapsed for vrange in BS.tile_ranges(
+        shape[3],nchannel_controls.tile_views,
+    )
+        hs = [
+            to_gpu(Float32.(nchannel_svd_bins[k][:,:,vrange]))
+            for k in 1:4
+        ]
+        I_gpu,W_gpu = similar(hs[1]),similar(hs[1])
+        flag_gpu = similar(hs[1],UInt8)
+        nchannel_profile_tile!(
+            I_gpu,W_gpu,flag_gpu,hs[1],hs[2],hs[3],hs[4],
+            Φ_gpu,μρ_I_gpu,μρ_W_gpu,I0_gpu,μI_eff_gpu,μW_eff_gpu,
+            nchannel_basis.normal_II,nchannel_basis.normal_IW,
+            nchannel_basis.normal_WW,nchannel_controls,
+        )
+        sino_I[:,:,vrange] .= Array(I_gpu)
+        sino_W[:,:,vrange] .= Array(W_gpu)
+        flags[:,:,vrange] .= Array(flag_gpu)
+    end
+    (
+        sino_iodine=sino_I,sino_water=sino_W,boundary_flag=flags,
+        geom=sim_bins.geom,elapsed_s=elapsed,
+    )
+end;
+
+# ╔═╡ 1e6b8991-57da-4250-81c0-b19b117fd84e
+nchannel_svd_common_fbp = let
+    function common_fbp(sino)
+        sino_gpu = to_gpu(Float32.(sino))
+        ws = BS.create_fdk_recon_workspace(
+            sino_gpu,sim_bins.geom,recon_opts.matrix_size;
+            filter=BS.SoftFilter(),
+        )
+        out = Float32.(Array(BS.reconstruct!(ws,sino_gpu,sim_bins.geom)))
+        ws = nothing
+        sino_gpu = nothing
+        GC.gc(true)
+        out
+    end
+    W = common_fbp(sino_basis_nchannel_svd.sino_water)
+    I = common_fbp(sino_basis_nchannel_svd.sino_iodine)
+    energies = fisher_acnr.energies
+    mu = Dict{Float64,Array{Float32,3}}()
+    for E in energies
+        μW = BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+        μI = BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine,E)
+        mu[E] = @. Float32(μW*W + μI*I)
+    end
+    (vol_water=W,vol_iodine=I,mu=mu,energies=energies)
+end;
+
+# ╔═╡ 334cebab-ddfc-49c2-90d6-a1b724811655
+nchannel_svd_audit = let
+    x = nchannel_svd_common_fbp
+    mask = fisher_acnr.water_mask
+    finite_fraction(a) = count(isfinite,a)/length(a)
+    noise = [
+        1000std(filter(isfinite,vec(x.mu[E][mask,:]))) /
+        BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+        for E in x.energies
+    ]
+    raw_mu = Dict{Float64,Array{Float32,3}}()
+    for E in x.energies
+        μW = BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+        μI = BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine,E)
+        raw_mu[E] = @. Float32(
+            μW*fisher_common_fbp.vol_water +
+            μI*fisher_common_fbp.vol_iodine
+        )
+    end
+    raw_widths = [
+        nchannel_edge_width(raw_mu[E]).width_10_90
+        for E in x.energies
+    ]
+    filtered_widths = [
+        nchannel_edge_width(x.mu[E]).width_10_90
+        for E in x.energies
+    ]
+    edge_ratios = filtered_widths ./ raw_widths
+    (
+        noise=noise,edge_ratios=edge_ratios,
+        monotonic=all(diff(noise) .≤ 0),
+        bin_finite=[finite_fraction(b) for b in nchannel_svd_bins],
+        sino_finite=(
+            finite_fraction(sino_basis_nchannel_svd.sino_iodine),
+            finite_fraction(sino_basis_nchannel_svd.sino_water),
+        ),
+        volume_finite=(
+            finite_fraction(x.vol_iodine),finite_fraction(x.vol_water),
+        ),
+        boundary_fraction=count(!iszero,sino_basis_nchannel_svd.boundary_flag) /
+            length(sino_basis_nchannel_svd.boundary_flag),
+    )
+end;
+
+# ╔═╡ c62e7f40-19e7-4f31-b453-4803b7d1ab80
+let
+    a = nchannel_svd_audit
+    md"""
+    **Four-bin SVD/bilateral gate**
+
+    - VMI noise (HU): **$(join(round.(a.noise,digits=1),", "))**
+    - Strictly monotonic: **$(a.monotonic)**
+    - Denoised/raw iodine-edge width ratios:
+      **$(join(round.(a.edge_ratios,digits=3),", "))**
+    - Profile-boundary fraction:
+      **$(round(100a.boundary_fraction,digits=3))%**
+    - Finite fractions (bins / basis sinograms / basis volumes):
+      **$(join(round.(a.bin_finite,digits=6),", ")) /**
+      **$(join(round.(a.sino_finite,digits=6),", ")) /**
+      **$(join(round.(a.volume_finite,digits=6),", "))**
+
+    Passing this screen is necessary but not sufficient. A surviving candidate
+    still requires repeated-noise bias, NPS, material-slope, and covariance
+    validation with the filtered-data likelihood treated correctly.
+    """
+end
+
+# ╔═╡ b3e1d768-eb02-4c2a-9363-c84077fedc32
+md"""
+### Pre-decomposition 5-mm row-count combination
+
+For the present axial phantom the object is invariant over the active
+longitudinal detector extent. The row-center cone factor is
+\[
+s_r=\sqrt{1+(z_r/\mathrm{SAD})^2}.
+\]
+The maximum departure from unity is reported below. When this departure is
+negligible, the rows are repeated independent measurements of the same
+in-plane ray to that stated tolerance. We may then sum **raw counts by native
+energy bin before the logarithm**:
+\[
+Y_{k,\Sigma}=\sum_r I_{0,k}e^{-h_{k,r}},\qquad
+h_{k,\Sigma}=-\log\frac{Y_{k,\Sigma}}{R I_{0,k}}.
+\]
+The four-bin likelihood is unchanged except that both \(\Phi_k\) and \(I_{0,k}\)
+are multiplied by \(R\). This improves the photon support seen by the
+nonlinear estimator while retaining all four spectral bins and the profiled
+univariate solve. It represents a declared 5-mm slice, not native 0.4-mm
+longitudinal resolution.
+"""
+
+# ╔═╡ 50ed35bb-df61-4862-a99b-ea37380f30d8
+nchannel_slab_counts = let
+    available_rows = size(sim_bins.bins[1],2)
+    nrows = round(
+        Int,protocol.collimation_mm/(10*sim_bins.geom.pixel_row_size),
+    )
+    nrows ≤ available_rows || error("Nominal active rows exceed simulated rows.")
+    first_row = (available_rows-nrows) ÷ 2 + 1
+    selected_rows = first_row:(first_row+nrows-1)
+    row_positions = (
+        collect(selected_rows) .- (available_rows+1)/2
+    ) .* sim_bins.geom.pixel_row_size
+    cone_scales = sqrt.(1 .+ (row_positions ./ sim_bins.geom.SAD).^2)
+    bins = map(1:4) do k
+        summed_transmission = dropdims(
+            sum(
+                exp.(-Float64.(sim_bins.bins[k][:,selected_rows,:])),
+                dims=2,
+            ),dims=2,
+        )
+        h = @. Float32(-log(max(summed_transmission,1e-12)/nrows))
+        reshape(h,size(h,1),1,size(h,2))
+    end
+    (
+        bins=bins,nrows=nrows,selected_rows=selected_rows,
+        available_rows=available_rows,cone_scales=cone_scales,
+        max_cone_relerr=maximum(abs.(cone_scales .- 1)),
+        thickness_mm=nrows*10*sim_bins.geom.pixel_row_size,
+    )
+end;
+
+# ╔═╡ b86a9c50-cb10-44b2-af2e-06bdd50943b7
+sino_basis_nchannel_slab = let
+    shape = size(nchannel_slab_counts.bins[1])
+    sino_I = Array{Float32}(undef,shape)
+    sino_W = Array{Float32}(undef,shape)
+    flags = Array{UInt8}(undef,shape)
+    scale = Float32(nchannel_slab_counts.nrows)
+    Φ_gpu = to_gpu(scale .* nchannel_basis.Φ)
+    μρ_I_gpu = to_gpu(nchannel_basis.μρ_I)
+    μρ_W_gpu = to_gpu(nchannel_basis.μρ_W)
+    I0_gpu = to_gpu(scale .* nchannel_basis.I0)
+    μI_eff_gpu = to_gpu(nchannel_basis.μI_eff)
+    μW_eff_gpu = to_gpu(nchannel_basis.μW_eff)
+    elapsed = @elapsed for vrange in BS.tile_ranges(
+        shape[3],nchannel_controls.tile_views,
+    )
+        hs = [
+            to_gpu(Float32.(nchannel_slab_counts.bins[k][:,:,vrange]))
+            for k in 1:4
+        ]
+        I_gpu,W_gpu = similar(hs[1]),similar(hs[1])
+        flag_gpu = similar(hs[1],UInt8)
+        nchannel_profile_tile!(
+            I_gpu,W_gpu,flag_gpu,hs[1],hs[2],hs[3],hs[4],
+            Φ_gpu,μρ_I_gpu,μρ_W_gpu,I0_gpu,μI_eff_gpu,μW_eff_gpu,
+            nchannel_basis.normal_II,nchannel_basis.normal_IW,
+            nchannel_basis.normal_WW,nchannel_controls,
+        )
+        sino_I[:,:,vrange] .= Array(I_gpu)
+        sino_W[:,:,vrange] .= Array(W_gpu)
+        flags[:,:,vrange] .= Array(flag_gpu)
+    end
+    (
+        sino_iodine=sino_I,sino_water=sino_W,boundary_flag=flags,
+        geom=sim_bins.geom,elapsed_s=elapsed,
+    )
+end;
+
+# ╔═╡ ddfde8bb-ddff-44bb-8b70-b397725402cf
+nchannel_slab_common_fbp = let
+    nrows = sim_bins.geom.n_rows
+    function common_fbp(sino_one_row)
+        repeated = repeat(sino_one_row,1,nrows,1)
+        sino_gpu = to_gpu(Float32.(repeated))
+        ws = BS.create_fdk_recon_workspace(
+            sino_gpu,sim_bins.geom,recon_opts.matrix_size;
+            filter=BS.SoftFilter(),
+        )
+        out = Float32.(Array(BS.reconstruct!(ws,sino_gpu,sim_bins.geom)))
+        ws = nothing
+        sino_gpu = nothing
+        GC.gc(true)
+        out
+    end
+    W = common_fbp(sino_basis_nchannel_slab.sino_water)
+    I = common_fbp(sino_basis_nchannel_slab.sino_iodine)
+    energies = fisher_acnr.energies
+    mu = Dict{Float64,Array{Float32,3}}()
+    for E in energies
+        μW = BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+        μI = BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine,E)
+        mu[E] = @. Float32(μW*W + μI*I)
+    end
+    (vol_water=W,vol_iodine=I,mu=mu,energies=energies)
+end;
+
+# ╔═╡ 0f505bf9-d8e7-4440-a040-61073ce0630d
+nchannel_slab_cong_audit = let
+    x = nchannel_slab_common_fbp
+    mask = fisher_acnr.water_mask
+    finite_values(a) = filter(isfinite,vec(a[mask,:]))
+    noise = [
+        1000std(finite_values(x.mu[E])) /
+        BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+        for E in x.energies
+    ]
+    (
+        noise=noise,monotonic=all(diff(noise) .≤ 0),
+        edge_widths=[
+            nchannel_edge_width(x.mu[E]).width_10_90 for E in x.energies
+        ],
+        boundary_fraction=count(!iszero,sino_basis_nchannel_slab.boundary_flag) /
+            length(sino_basis_nchannel_slab.boundary_flag),
+    )
+end;
+
+# ╔═╡ 07b94f6b-f13d-46d1-81a3-4e2709ab386c
+let
+    a = nchannel_slab_cong_audit
+    s = nchannel_slab_counts
+    md"""
+    **Pre-decomposition row-combination gate**
+
+    - Combined rows / declared thickness:
+      **$(s.nrows) / $(round(s.thickness_mm,digits=2)) mm**
+    - Maximum cone-path relative departure:
+      **$(round(s.max_cone_relerr,sigdigits=3))**
+    - Direct common-filter VMI noise (HU):
+      **$(join(round.(a.noise,digits=1),", "))**
+    - Strictly monotonic: **$(a.monotonic)**
+    - Iodine-edge widths (pixels):
+      **$(join(round.(a.edge_widths,digits=3),", "))**
+    - Profile-boundary fraction:
+      **$(round(100a.boundary_fraction,digits=3))%**
+    """
+end
+
+# ╔═╡ aa1c494e-ccbf-4a0c-8d44-5f12d47f6e8c
+md"""
+### Matched-support all-photon guide after row-count combination
+
+This repeats the composite-guided test with one crucial correction: the guide
+and the material likelihood now use the same centered 4.94-mm raw-count
+support. The guide is reconstructed with the same `SoftFilter`; only one
+central valid slice is evaluated, because the row-combined sinogram defines
+one slab estimate.
+"""
+
+# ╔═╡ af6ea59b-06a0-4527-9b6d-344e54dc3bee
+nchannel_slab_guide = let
+    I0 = Float64.(nchannel_basis.I0)
+    weighted = zeros(Float64,size(nchannel_slab_counts.bins[1]))
+    for k in 1:4
+        weighted .+= I0[k] .* exp.(-nchannel_slab_counts.bins[k])
+    end
+    I0sum = sum(I0)
+    h = Float32.(-log.(max.(weighted,1e-12)./I0sum))
+    repeated = repeat(h,1,sim_bins.geom.n_rows,1)
+    sino_gpu = to_gpu(repeated)
+    ws = BS.create_fdk_recon_workspace(
+        sino_gpu,sim_bins.geom,recon_opts.matrix_size;
+        filter=BS.SoftFilter(),
+    )
+    volume = Float32.(Array(BS.reconstruct!(ws,sino_gpu,sim_bins.geom)))
+    ws = nothing
+    sino_gpu = nothing
+    GC.gc(true)
+    finite_counts = [
+        count(isfinite,@view volume[:,:,z]) for z in axes(volume,3)
+    ]
+    z = argmax(finite_counts)
+    (sino=h,volume=volume,slice=volume[:,:,z],z=z)
+end;
+
+# ╔═╡ 85a00a06-7463-4f32-83ba-6eb97edb6200
+function nchannel_hypr_from_bases_2d(W,I,guide,cutoff,energies,mask)
+    volume(x) = reshape(Float32.(x),size(x,1),size(x,2),1)
+    G = volume(guide)
+    low_G = nchannel_radial_lowpass(G,cutoff)
+    guide_values = filter(isfinite,vec(guide[mask]))
+    epsilon = 5std(guide_values)/sqrt(length(guide_values))
+    denominator = max.(low_G,Float32(epsilon))
+    object_mask = low_G .> Float32(5epsilon)
+    output = Dict{Float64,Array{Float32,3}}()
+    raw = Dict{Float64,Array{Float32,3}}()
+    for E in energies
+        μW = BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+        μI = BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine,E)
+        V = @. Float32(μW*W+μI*I)
+        V3 = volume(V)
+        ratio = nchannel_radial_lowpass(V3,cutoff)./denominator
+        raw[E] = V3
+        output[E] = @. Float32(ifelse(object_mask,G*ratio,V3))
+    end
+    (raw=raw,output=output,cutoff=Float64(cutoff),epsilon=epsilon)
+end
+
+# ╔═╡ ea6e51b1-1f04-4460-a1ac-13056d0ff970
+nchannel_slab_hypr_sweep = let
+    x = nchannel_slab_common_fbp
+    z = nchannel_slab_guide.z
+    W = x.vol_water[:,:,z]
+    I = x.vol_iodine[:,:,z]
+    guide = nchannel_slab_guide.slice
+    mask = fisher_acnr.water_mask
+    energies = x.energies
+    cutoffs = collect(0.005:0.005:0.150)
+    trials = map(cutoffs) do cutoff
+        result = nchannel_hypr_from_bases_2d(
+            W,I,guide,cutoff,energies,mask,
+        )
+        noise = [
+            1000std(filter(
+                isfinite,vec(result.output[E][:,:,1][mask]),
+            ))/BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+            for E in energies
+        ]
+        raw_means = [
+            mean(filter(isfinite,vec(result.raw[E][:,:,1][mask])))
+            for E in energies
+        ]
+        output_means = [
+            mean(filter(isfinite,vec(result.output[E][:,:,1][mask])))
+            for E in energies
+        ]
+        mean_shift = [
+            1000*(output_means[j]-raw_means[j]) /
+            BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+            for (j,E) in pairs(energies)
+        ]
+        edge_ratio = [
+            nchannel_edge_width(result.output[E]).width_10_90 /
+            nchannel_edge_width(result.raw[E]).width_10_90
+            for E in energies
+        ]
+        (
+            cutoff=cutoff,result=result,noise=noise,
+            mean_shift=mean_shift,edge_ratio=edge_ratio,
+            monotonic=all(diff(noise) .≤ 0),
+        )
+    end
+    target = [60.0,40.0,35.0,35.0]
+    acceptable(t) =
+        t.monotonic &&
+        all(t.noise .≤ target) &&
+        all(abs.(t.mean_shift) .≤ 10) &&
+        all(abs.(t.edge_ratio .- 1) .≤ 0.05)
+    passing = findall(acceptable,trials)
+    selected = isempty(passing) ?
+        trials[argmin([
+            sum(max.(t.noise .- target,0).^2) +
+            100sum(max.(diff(t.noise),0).^2) +
+            100sum(max.(abs.(t.edge_ratio .- 1) .- 0.05,0).^2)
+            for t in trials
+        ])] :
+        trials[last(passing)]
+    (
+        energies=energies,trials=trials,selected=selected,
+        has_passing=!isempty(passing),
+    )
+end;
+
+# ╔═╡ 5ae66a29-ae16-4d85-9513-f22ab55ee960
+let
+    s = nchannel_slab_hypr_sweep
+    x = s.selected
+    md"""
+    **Matched-support composite gate**
+
+    - Selected common cutoff:
+      **$(round(x.cutoff,digits=3)) cycles/pixel**
+    - VMI noise (HU): **$(join(round.(x.noise,digits=1),", "))**
+    - Strictly monotonic: **$(x.monotonic)**
+    - Water mean shifts (HU):
+      **$(join(round.(x.mean_shift,digits=1),", "))**
+    - Output/raw iodine-edge width ratios:
+      **$(join(round.(x.edge_ratio,digits=3),", "))**
+    - Passes every current gate: **$(s.has_passing)**
+    """
+end
+
 # ╔═╡ 2d447ccd-b408-42a6-8a1b-af770e3277e4
 md"""
 ## Direct FBP of the Material Sinograms
@@ -3238,6 +3720,23 @@ end
 # ╠═784aaf59-2422-408c-b6ab-2004981f1c00
 # ╟─8a08befc-af91-4ebc-b75d-f520885515d6
 # ╟─d8b8608f-6fa8-4c5f-85ee-17e3877efb4c
+# ╟─a1c36a77-9d4f-47f2-a9a9-459902572861
+# ╠═b8af5d0a-fb39-458f-bd25-a82182c0eed0
+# ╠═b572a783-74ad-4f4a-bcb3-bd35730c21a0
+# ╠═1e6b8991-57da-4250-81c0-b19b117fd84e
+# ╠═334cebab-ddfc-49c2-90d6-a1b724811655
+# ╟─c62e7f40-19e7-4f31-b453-4803b7d1ab80
+# ╟─b3e1d768-eb02-4c2a-9363-c84077fedc32
+# ╠═50ed35bb-df61-4862-a99b-ea37380f30d8
+# ╠═b86a9c50-cb10-44b2-af2e-06bdd50943b7
+# ╠═ddfde8bb-ddff-44bb-8b70-b397725402cf
+# ╠═0f505bf9-d8e7-4440-a040-61073ce0630d
+# ╟─07b94f6b-f13d-46d1-81a3-4e2709ab386c
+# ╟─aa1c494e-ccbf-4a0c-8d44-5f12d47f6e8c
+# ╠═af6ea59b-06a0-4527-9b6d-344e54dc3bee
+# ╠═85a00a06-7463-4f32-83ba-6eb97edb6200
+# ╠═ea6e51b1-1f04-4460-a1ac-13056d0ff970
+# ╟─5ae66a29-ae16-4d85-9513-f22ab55ee960
 # ╟─2d447ccd-b408-42a6-8a1b-af770e3277e4
 # ╠═1ff5e801-ef54-45ff-b0a8-e780e2e6cb63
 # ╟─65a40efc-c9ff-41d4-8f42-46d6737119d5
