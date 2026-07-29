@@ -853,6 +853,94 @@ let
     fig
 end
 
+# ╔═╡ a6d34bb4-9af4-46ab-8b20-20cd4dbfe33f
+md"""
+### NIST HU Linearity
+
+The same rod measurements are plotted against their independently calculated
+NIST HU values. Each VMI energy receives one least-squares line, while the
+dashed identity line shows perfect quantitative agreement.
+
+Slope near one and intercept near zero indicate correct quantitative scaling;
+\(R^2\) measures linearity, and RMSE reports the remaining HU error directly.
+Calcium and iodine are shown separately because their HU ranges differ
+substantially.
+"""
+
+# ╔═╡ dbb6d6e4-e9a0-4b99-933d-d6937a486622
+let
+    fig = Mke.Figure(size=(1000,1200))
+    energy_colors = Dict(
+        40.0 => Mke.RGBf(0.85,0.27,0.10),
+        70.0 => Mke.RGBf(0.95,0.65,0.13),
+        100.0 => Mke.RGBf(0.13,0.59,0.85),
+        140.0 => Mke.RGBf(0.10,0.27,0.65),
+    )
+
+    function fit_lr(x,y)
+        x̄,ȳ = mean(x),mean(y)
+        sxx = sum((x .- x̄).^2)
+        β = sum((x .- x̄).*(y .- ȳ)) / sxx
+        α = ȳ - β*x̄
+        residuals = y .- (α .+ β.*x)
+        ss_res = sum(abs2,residuals)
+        ss_tot = sum(abs2,y .- ȳ)
+        (
+            slope=β,
+            intercept=α,
+            r²=1-ss_res/ss_tot,
+            rmse=sqrt(ss_res/length(y)),
+        )
+    end
+
+    panels = (
+        (:Ca,"Calcium Rods","50–600 mg/mL"),
+        (:I,"Iodine Rods","2–20 mg/mL"),
+    )
+    for (row,(group,title,subtitle)) in pairs(panels)
+        d = nchannel_rod_data[group]
+        ax = Mke.Axis(
+            fig[row,1];
+            title,subtitle,
+            xlabel="Theoretical HU",ylabel="Measured HU",
+            titlesize=32,subtitlesize=24,
+            xlabelsize=22,ylabelsize=22,
+            xticklabelsize=16,yticklabelsize=16,
+        )
+        lim_lo = min(0.0,minimum(d.measured),minimum(d.theoretical))
+        lim_hi = max(maximum(d.measured),maximum(d.theoretical))*1.05
+        Mke.lines!(
+            ax,[lim_lo,lim_hi],[lim_lo,lim_hi];
+            color=:black,linestyle=:dash,linewidth=2,label="Unity (y = x)",
+        )
+
+        for (j,E) in pairs(nchannel_vmi_energies)
+            x = Float64.(vec(d.theoretical[:,j]))
+            y = Float64.(vec(d.measured[:,j]))
+            color = energy_colors[E]
+            fit = fit_lr(x,y)
+            xrange = [minimum(x),maximum(x)]
+            sign_str = fit.intercept ≥ 0 ? "+" : "−"
+            label = "$(Int(E)) keV: y = $(round(fit.slope,digits=3))·x " *
+                "$sign_str $(round(abs(fit.intercept),digits=1)) HU   " *
+                "R² = $(round(fit.r²,digits=4))   " *
+                "RMSE = $(round(fit.rmse,digits=1)) HU"
+            Mke.scatter!(ax,x,y; color,markersize=11)
+            Mke.lines!(
+                ax,xrange,fit.intercept .+ fit.slope.*xrange;
+                color,linewidth=2,label,
+            )
+        end
+        Mke.xlims!(ax,lim_lo,lim_hi)
+        Mke.ylims!(ax,lim_lo,lim_hi)
+        Mke.axislegend(
+            ax; position=:rb,framevisible=true,labelsize=16,
+            padding=(6,6,6,6),rowgap=1,
+        )
+    end
+    fig
+end
+
 # ╔═╡ df5f06e2-6075-40b0-9eec-660c75002e9a
 md"""
 ### Solid-Water ROI by VMI Energy
@@ -1056,6 +1144,8 @@ end
 # ╠═594208fc-89bc-4c7b-b989-623a0c432207
 # ╠═f2bd7681-b328-48c4-b578-71d01f1bd5eb
 # ╟─48ef9fbf-aa1d-4535-81db-70d9551667a6
+# ╟─a6d34bb4-9af4-46ab-8b20-20cd4dbfe33f
+# ╟─dbb6d6e4-e9a0-4b99-933d-d6937a486622
 # ╟─df5f06e2-6075-40b0-9eec-660c75002e9a
 # ╠═7e8bbfaf-35f1-4fc9-8ddd-58c4ca50ca6d
 # ╟─e2ccf044-c0b8-414a-ad09-f5e40a0b71b5
