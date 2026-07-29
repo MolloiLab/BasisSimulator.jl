@@ -1776,6 +1776,431 @@ let
     fig
 end
 
+# ╔═╡ 63d11d7a-8ff4-4e86-89c7-312199ef95ef
+md"""
+## All-photon composite-guided VMI experiment
+
+The protected-mode experiment above is retained as a negative control. Its
+zero-residual oracle proved that a noisy decomposed VMI cannot serve as the
+protected structural image.
+
+This experiment instead follows the photon statistics:
+
+1. Sum the four **exclusive count bins before the logarithm**,
+   \(Y_\Sigma=\sum_k I_{0,k}\exp(-h_k)\).
+2. Reconstruct \(g=-\log(Y_\Sigma/I_{0,\Sigma})\) with the same common
+   `SoftFilter` used for both material bases.
+3. In positive linear-attenuation units, form for every energy
+   \[
+   V_E^{\rm out}=G\,
+   \frac{L[V_E^{\rm raw}]}{L[G]+\epsilon}.
+   \]
+4. Use one radially symmetric low-pass transfer function and one cutoff for
+   the complete energy series. No energy-specific denoising strength is
+   allowed.
+
+The adjacent detector rows are **not** summed: this notebook targets a native
+approximately 0.4-mm slice, and those rows are different cone rays. The
+axially averaged guide below is an explicitly labelled oracle diagnostic,
+not the accepted native-slice result.
+"""
+
+# ╔═╡ 1662cde2-263f-473f-ae6e-f517df96058b
+nchannel_all_photon_guide = let
+    I0 = Float64.(sim_bins.I0_bins)
+    I0sum = sum(I0)
+    counts_sum = zeros(Float32,size(sim_bins.bins[1]))
+    for k in 1:4
+        @. counts_sum += Float32(I0[k]) * exp(-sim_bins.bins[k])
+    end
+    hsum = @. Float32(-log(max(counts_sum,1.0f0)/Float32(I0sum)))
+
+    sino_gpu = to_gpu(hsum)
+    ws = BS.create_fdk_recon_workspace(
+        sino_gpu,sim_bins.geom,recon_opts.matrix_size;
+        filter=BS.SoftFilter(),
+    )
+    measured = Float32.(Array(BS.reconstruct!(ws,sino_gpu,sim_bins.geom)))
+    ws = nothing
+    sino_gpu = nothing
+    GC.gc(true)
+
+    # The phantom is axially constant over the reconstructed central slab.
+    # Averaging all reconstructed slices therefore gives a high-dose/oracle
+    # guide with unchanged in-plane sampling but deliberately sacrificed
+    # native z resolution. It is only a diagnostic ceiling.
+    axial_mean = dropdims(mean(measured,dims=3),dims=3)
+    oracle = repeat(axial_mean,1,1,size(measured,3))
+    (
+        sino=hsum,measured=measured,oracle=Float32.(oracle),
+        I0_sum=I0sum,median_object_counts=median(counts_sum),
+    )
+end;
+
+# ╔═╡ d8841fe7-c89f-4e73-930a-f12e42ed258e
+function nchannel_radial_lowpass(
+    volume::AbstractArray{<:Real,3},cutoff_cycles_per_pixel::Real,
+)
+    nx,ny,nz = size(volume)
+    cutoff = Float64(cutoff_cycles_per_pixel)
+    transfer = [
+        exp(-0.5 * (
+            hypot(min(i-1,nx-(i-1))/nx,min(j-1,ny-(j-1))/ny) /
+            max(cutoff,eps(Float64))
+        )^4)
+        for i in 1:nx,j in 1:ny
+    ]
+    out = similar(volume,Float32)
+    Threads.@threads for z in 1:nz
+        spectrum = FFTW.fft(Float64.(@view volume[:,:,z]))
+        out[:,:,z] .= Float32.(real.(FFTW.ifft(spectrum .* transfer)))
+    end
+    out
+end
+
+# ╔═╡ 220dc45d-83c6-4e2e-bcee-b65830337a61
+function nchannel_hypr_series(guide,cutoff;energies=fisher_acnr.energies)
+    W = fisher_common_fbp.vol_water
+    I = fisher_common_fbp.vol_iodine
+    low_guide = nchannel_radial_lowpass(guide,cutoff)
+    water_mask = fisher_acnr.water_mask
+    # A 5-sigma denominator floor is derived from the measured guide noise.
+    guide_roi = Float64.(guide[water_mask,:])
+    epsilon = 5std(guide_roi) / sqrt(length(guide_roi))
+    denominator = max.(low_guide,Float32(epsilon))
+    object_mask = low_guide .> Float32(5epsilon)
+
+    raw_mu = Dict{Float64,Array{Float32,3}}()
+    output_mu = Dict{Float64,Array{Float32,3}}()
+    for E in energies
+        μW = BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+        μI = BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine,E)
+        raw = @. Float32(μW*W + μI*I)
+        ratio = nchannel_radial_lowpass(raw,cutoff) ./ denominator
+        output = @. Float32(ifelse(object_mask,guide*ratio,raw))
+        raw_mu[E] = raw
+        output_mu[E] = output
+    end
+    (
+        raw_mu=raw_mu,output_mu=output_mu,low_guide=low_guide,
+        epsilon=epsilon,object_mask=object_mask,cutoff=Float64(cutoff),
+    )
+end
+
+# ╔═╡ 2a246b35-0810-4c50-a208-b85d8b4bc63f
+nchannel_hypr_sweep = let
+    energies = fisher_acnr.energies
+    water_mask = fisher_acnr.water_mask
+    cutoffs = collect(0.03:0.02:0.31)
+    μwater = Dict(
+        E => BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+        for E in energies
+    )
+    raw = nchannel_hypr_series(
+        nchannel_all_photon_guide.measured,last(cutoffs);energies,
+    )
+    raw_sd = [
+        1000std(raw.raw_mu[E][water_mask,:])/μwater[E] for E in energies
+    ]
+    raw_mean = [
+        mean(raw.raw_mu[E][water_mask,:]) for E in energies
+    ]
+
+    function summarize(guide,cutoff)
+        result = nchannel_hypr_series(guide,cutoff;energies)
+        sd = [
+            1000std(result.output_mu[E][water_mask,:])/μwater[E]
+            for E in energies
+        ]
+        bias = [
+            1000(
+                mean(result.output_mu[E][water_mask,:])-raw_mean[j]
+            )/μwater[E]
+            for (j,E) in enumerate(energies)
+        ]
+        # Gradient-energy retention is an adversarial edge-transfer screen.
+        # It is evaluated on the central slice after removing the DC level.
+        function gradient_energy(image)
+            z = size(image,3) ÷ 2 + 1
+            s = Float64.(@view image[:,:,z])
+            gx = diff(s,dims=1)
+            gy = diff(s,dims=2)
+            sqrt(sum(abs2,gx)+sum(abs2,gy))
+        end
+        edge_ratio = [
+            gradient_energy(result.output_mu[E]) /
+            max(gradient_energy(result.raw_mu[E]),eps(Float64))
+            for E in energies
+        ]
+        (
+            cutoff=Float64(cutoff),sd=sd,bias_HU=bias,
+            edge_energy_ratio=edge_ratio,result=result,
+            monotonic=all(diff(sd) .≤ 0),
+        )
+    end
+
+    measured = [summarize(nchannel_all_photon_guide.measured,c) for c in cutoffs]
+    oracle = [summarize(nchannel_all_photon_guide.oracle,c) for c in cutoffs]
+    target = [60.0,40.0,35.0,35.0]
+    acceptable(row) = row.monotonic &&
+        all(row.sd .≤ target) &&
+        all(abs.(row.bias_HU) .≤ 10.0) &&
+        all(abs.(row.edge_energy_ratio .- 1.0) .≤ 0.05)
+    measured_ok = findall(acceptable,measured)
+    oracle_ok = findall(acceptable,oracle)
+    measured_pick = isempty(measured_ok) ?
+        measured[argmin([sum(abs2,r.sd .- target) for r in measured])] :
+        measured[last(measured_ok)]
+    oracle_pick = isempty(oracle_ok) ?
+        oracle[argmin([sum(abs2,r.sd .- target) for r in oracle])] :
+        oracle[last(oracle_ok)]
+    (
+        energies=energies,cutoffs=cutoffs,raw_sd=raw_sd,
+        measured=measured,oracle=oracle,
+        measured_pick=measured_pick,oracle_pick=oracle_pick,
+        measured_has_acceptable=!isempty(measured_ok),
+        oracle_has_acceptable=!isempty(oracle_ok),
+    )
+end;
+
+# ╔═╡ 62f127a2-eb84-4ddd-a758-02eda218c5a6
+let
+    s = nchannel_hypr_sweep
+    fig = Mke.Figure(size=(1100,500))
+    ax = Mke.Axis(
+        fig[1,1];title="Composite-guided VMI adversarial sweep",
+        subtitle="One common cutoff across all energies",
+        xlabel="VMI energy (keV)",ylabel="Solid-water σ (HU)",
+        xticks=(s.energies,string.(Int.(s.energies))),
+    )
+    Mke.lines!(ax,s.energies,s.raw_sd;color=:black,linewidth=3,label="Raw")
+    Mke.scatter!(ax,s.energies,s.raw_sd;color=:black,markersize=12)
+    for (row,color,label) in (
+        (s.measured_pick,:dodgerblue,"Measured composite"),
+        (s.oracle_pick,:darkorange,"Axial-average oracle"),
+    )
+        Mke.lines!(ax,s.energies,row.sd;color,linewidth=3,label)
+        Mke.scatter!(ax,s.energies,row.sd;color,markersize=12)
+    end
+    Mke.axislegend(ax;position=:rt)
+    fig
+end
+
+# ╔═╡ dbe133d0-ffde-450d-97dd-e1309401f70b
+let
+    s = nchannel_hypr_sweep
+    m,o = s.measured_pick,s.oracle_pick
+    md"""
+    **Composite-guide gate results**
+
+    - Summed-bin air counts: **$(round(nchannel_all_photon_guide.I0_sum,digits=1))**
+    - Median summed transmitted counts: **$(round(nchannel_all_photon_guide.median_object_counts,digits=1))**
+    - Raw common-kernel noise (HU): **$(join(round.(s.raw_sd,digits=1),", "))**
+    - Measured-guide selected cutoff: **$(round(m.cutoff,digits=3)) cycles/pixel**
+    - Measured-guide noise (HU): **$(join(round.(m.sd,digits=1),", "))**
+    - Measured-guide mean shifts (HU): **$(join(round.(m.bias_HU,digits=1),", "))**
+    - Measured-guide gradient-energy ratios: **$(join(round.(m.edge_energy_ratio,digits=3),", "))**
+    - Measured guide passes all gates: **$(s.measured_has_acceptable)**
+    - Oracle-guide selected cutoff: **$(round(o.cutoff,digits=3)) cycles/pixel**
+    - Oracle-guide noise (HU): **$(join(round.(o.sd,digits=1),", "))**
+    - Oracle-guide mean shifts (HU): **$(join(round.(o.bias_HU,digits=1),", "))**
+    - Oracle-guide gradient-energy ratios: **$(join(round.(o.edge_energy_ratio,digits=3),", "))**
+    - Oracle guide passes all gates: **$(s.oracle_has_acceptable)**
+
+    The oracle is diagnostic only. If it succeeds while the measured guide
+    fails, the limitation is guide photon statistics. If both fail, the
+    multiplicative contrast-transfer model or frequency split is rejected.
+    Gradient energy is only a screening metric; a passing candidate still
+    requires insert-specific TTF/MTF validation before acceptance.
+    """
+end
+
+# ╔═╡ 393f8547-f96f-44ac-9665-f284297a0bfd
+function nchannel_edge_width(image,label::UInt8=UInt8(26))
+    truth = phantom_cpu.mask[:,:,size(phantom_cpu.mask,3) ÷ 2]
+    idx = findall(==(label),truth)
+    cx = mean(Float64(ci[1]) for ci in idx)
+    cy = mean(Float64(ci[2]) for ci in idx)
+    area_radius = sqrt(length(idx)/π)
+    averaged = dropdims(mean(Float64.(image),dims=3),dims=3)
+    spacing = 0.20
+    distances = collect(-4.0:spacing:4.0)
+    sums = zeros(Float64,length(distances))
+    counts = zeros(Int,length(distances))
+    for j in axes(averaged,2),i in axes(averaged,1)
+        d = hypot(i-cx,j-cy)-area_radius
+        -4.0 ≤ d ≤ 4.0 || continue
+        b = clamp(round(Int,(d+4.0)/spacing)+1,1,length(distances))
+        sums[b] += averaged[i,j]
+        counts[b] += 1
+    end
+    profile = sums ./ max.(counts,1)
+    inside = mean(profile[distances .≤ -2.5])
+    outside = mean(profile[distances .≥ 2.5])
+    normalized = (profile .- inside) ./ (outside-inside)
+    function crossing(level)
+        for i in 1:(length(distances)-1)
+            y1,y2 = normalized[i],normalized[i+1]
+            if (y1-level)*(y2-level) ≤ 0 && y1 != y2
+                return distances[i] +
+                    spacing*(level-y1)/(y2-y1)
+            end
+        end
+        NaN
+    end
+    x10,x90 = crossing(0.1),crossing(0.9)
+    (
+        width_10_90=abs(x90-x10),distances=distances,
+        profile=profile,normalized=normalized,
+        center=(cx,cy),area_radius=area_radius,
+    )
+end
+
+# ╔═╡ 18d6335a-d6a0-4742-a63e-c40250dd78b6
+function nchannel_local_wiener_guide(guide,cutoff)
+    local_mean = nchannel_radial_lowpass(guide,cutoff)
+    local_second = nchannel_radial_lowpass(guide .* guide,cutoff)
+    local_variance = max.(local_second .- local_mean .* local_mean,0.0f0)
+    mask = fisher_acnr.water_mask
+    noise_variance = Float32(std(Float64.(guide[mask,:]))^2)
+    gain = @. Float32(clamp(
+        1.0f0-noise_variance/max(local_variance,eps(Float32)),0.0f0,1.0f0,
+    ))
+    denoised = @. Float32(local_mean + gain*(guide-local_mean))
+    (
+        denoised=denoised,gain=gain,noise_variance=noise_variance,
+        cutoff=Float64(cutoff),
+    )
+end
+
+# ╔═╡ 9415717e-0f1e-472f-ab4e-ad5c643b9f33
+nchannel_adaptive_guide_sweep = let
+    energies = fisher_acnr.energies
+    mask = fisher_acnr.water_mask
+    μwater = Dict(
+        E => BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+        for E in energies
+    )
+    raw_reference = nchannel_hypr_series(
+        nchannel_all_photon_guide.measured,0.31;energies,
+    )
+    raw_width = Dict(
+        E => nchannel_edge_width(raw_reference.raw_mu[E]).width_10_90
+        for E in energies
+    )
+    measured_guide_width = nchannel_edge_width(
+        nchannel_all_photon_guide.measured,
+    ).width_10_90
+    cutoffs = collect(0.03:0.02:0.31)
+    rows = map(cutoffs) do cutoff
+        guide_filter = nchannel_local_wiener_guide(
+            nchannel_all_photon_guide.measured,cutoff,
+        )
+        result = nchannel_hypr_series(
+            guide_filter.denoised,cutoff;energies,
+        )
+        sd = [
+            1000std(result.output_mu[E][mask,:])/μwater[E]
+            for E in energies
+        ]
+        widths = Dict(
+            E => nchannel_edge_width(result.output_mu[E]).width_10_90
+            for E in energies
+        )
+        width_ratio = [widths[E]/raw_width[E] for E in energies]
+        guide_width = nchannel_edge_width(
+            guide_filter.denoised,
+        ).width_10_90
+        guide_width_ratio = guide_width/measured_guide_width
+        output_to_guide_width = [widths[E]/guide_width for E in energies]
+        mean_shift = [
+            1000(
+                mean(result.output_mu[E][mask,:]) -
+                mean(result.raw_mu[E][mask,:])
+            )/μwater[E]
+            for E in energies
+        ]
+        (
+            cutoff=Float64(cutoff),sd=sd,width_ratio=width_ratio,
+            guide_width_ratio=guide_width_ratio,
+            output_to_guide_width=output_to_guide_width,
+            mean_shift_HU=mean_shift,result=result,
+            guide=guide_filter,
+            monotonic=all(diff(sd) .≤ 0),
+        )
+    end
+    target = [60.0,40.0,35.0,35.0]
+    valid(row) = row.monotonic &&
+        all(row.sd .≤ target) &&
+        all(abs.(row.mean_shift_HU) .≤ 10.0) &&
+        abs(row.guide_width_ratio-1.0) ≤ 0.05 &&
+        all(abs.(row.output_to_guide_width .- 1.0) .≤ 0.05)
+    valid_indices = findall(valid,rows)
+    score(row) = sum(abs2,row.sd .- target) +
+        1e4(
+            abs2(row.guide_width_ratio-1.0) +
+            sum(abs2,row.output_to_guide_width .- 1.0)
+        )
+    selected = isempty(valid_indices) ?
+        rows[argmin(score.(rows))] : rows[last(valid_indices)]
+    (
+        energies=energies,rows=rows,selected=selected,
+        has_acceptable=!isempty(valid_indices),raw_width=raw_width,
+        measured_guide_width=measured_guide_width,
+    )
+end;
+
+# ╔═╡ 56702bee-3c47-4328-b920-c004cc1ca5ff
+let
+    a = nchannel_adaptive_guide_sweep.selected
+    md"""
+    **Noise-derived adaptive-guide gate**
+
+    - Selected common cutoff: **$(round(a.cutoff,digits=3)) cycles/pixel**
+    - VMI noise (HU): **$(join(round.(a.sd,digits=1),", "))**
+    - Water mean shifts (HU): **$(join(round.(a.mean_shift_HU,digits=1),", "))**
+    - Denoised/measured guide 10–90% edge-width ratio:
+      **$(round(a.guide_width_ratio,digits=3))**
+    - VMI/denoised-guide edge-width ratios:
+      **$(join(round.(a.output_to_guide_width,digits=3),", "))**
+    - VMI/raw-VMI edge-width ratios (noise-sensitive diagnostic):
+      **$(join(round.(a.width_ratio,digits=3),", "))**
+    - Monotonic noise: **$(a.monotonic)**
+    - Passes absolute-noise, bias, and ±5% edge-width gates:
+      **$(nchannel_adaptive_guide_sweep.has_acceptable)**
+
+    The local Wiener gain is calculated from the measured composite variance;
+    it is not an energy-specific or visually selected strength. The insert
+    edge is averaged over all axial replicates solely to estimate the TTF
+    robustly; the processed native slices themselves are not averaged.
+    """
+end
+
+# ╔═╡ 764394d6-8103-4af9-816a-dfe8c12fc6da
+let
+    h = nchannel_hypr_sweep
+    a = nchannel_adaptive_guide_sweep
+    rows = String[
+        "| cutoff | measured σ HU | oracle σ HU | adaptive σ HU | adaptive guide edge ratio |",
+        "|---:|:---|:---|:---|---:|",
+    ]
+    for i in eachindex(h.cutoffs)
+        measured_text = join(round.(h.measured[i].sd,digits=0),",")
+        oracle_text = join(round.(h.oracle[i].sd,digits=0),",")
+        adaptive_text = join(round.(a.rows[i].sd,digits=0),",")
+        push!(rows,
+            "| $(round(h.cutoffs[i],digits=2)) | " *
+            "$measured_text | $oracle_text | $adaptive_text | " *
+            "$(round(a.rows[i].guide_width_ratio,digits=2)) |"
+        )
+    end
+    md"""
+    **Common-cutoff audit (40, 70, 100, 140 keV)**
+
+    $(join(rows,"\n"))
+    """
+end
+
 # ╔═╡ 2d447ccd-b408-42a6-8a1b-af770e3277e4
 md"""
 ## Direct FBP of the Material Sinograms
@@ -2229,6 +2654,18 @@ end
 # ╠═804d3ec2-8e56-4496-a44f-882bb8d426b4
 # ╟─b16d08c9-29d8-4998-adcd-3ad25f93a1f0
 # ╟─c0c45d8d-3c5f-46af-8e65-03a83b20ee47
+# ╟─63d11d7a-8ff4-4e86-89c7-312199ef95ef
+# ╠═1662cde2-263f-473f-ae6e-f517df96058b
+# ╠═d8841fe7-c89f-4e73-930a-f12e42ed258e
+# ╠═220dc45d-83c6-4e2e-bcee-b65830337a61
+# ╠═2a246b35-0810-4c50-a208-b85d8b4bc63f
+# ╟─62f127a2-eb84-4ddd-a758-02eda218c5a6
+# ╟─dbe133d0-ffde-450d-97dd-e1309401f70b
+# ╠═393f8547-f96f-44ac-9665-f284297a0bfd
+# ╠═18d6335a-d6a0-4742-a63e-c40250dd78b6
+# ╠═9415717e-0f1e-472f-ab4e-ad5c643b9f33
+# ╟─56702bee-3c47-4328-b920-c004cc1ca5ff
+# ╟─764394d6-8103-4af9-816a-dfe8c12fc6da
 # ╟─2d447ccd-b408-42a6-8a1b-af770e3277e4
 # ╠═1ff5e801-ef54-45ff-b0a8-e780e2e6cb63
 # ╟─65a40efc-c9ff-41d4-8f42-46d6737119d5
