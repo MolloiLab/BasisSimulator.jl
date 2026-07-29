@@ -1488,6 +1488,294 @@ let
     """
 end
 
+# ╔═╡ 7f515bef-0690-43aa-8d54-e61019c60380
+md"""
+### Upstream exposure and count-statistics tests
+
+These tests determine whether the denoiser is being asked to compensate for
+an exposure/count problem:
+
+1. independently reconstruct the protocol-derived incident photons per
+   detector pixel and compare them with the detected four-bin air counts;
+2. compare repeated-row log-count variance with the Poisson prediction
+   \(\operatorname{Var}[-\log(Y/I_0)]\approx1/\lambda\);
+3. resample fitted rays at \(1\times\), \(4\times\), and \(16\times\) counts
+   with independent Poisson noise, repeat the complete four-bin profile
+   solve, and test the required \(1/\sqrt{N}\) material-noise scaling.
+"""
+
+# ╔═╡ 4975fdf4-5479-454c-a2e8-04a0bd755859
+nchannel_exposure_audit = let
+    spectrum_E,spectrum_weights = BS.resolve_source_spectrum_without_bowtie(
+        sim_opts,protocol;scanner=scanner,
+    )
+    incident_I0 = BS.compute_detector_I0(
+        sim_bins.geom,protocol,sum(spectrum_weights),
+    )
+    magnification = sim_bins.geom.SDD/sim_bins.geom.SAD
+    detector_col_mm = sim_bins.geom.pixel_size*10*magnification
+    detector_row_mm = sim_bins.geom.pixel_row_size*10*magnification
+    detector_area_mm2 = detector_col_mm*detector_row_mm
+    total_detected_I0 = sum(Float64.(sim_bins.I0_bins))
+    (
+        total_mAs=protocol.mA*protocol.rotation_time,
+        mAs_per_view=protocol.mA*protocol.rotation_time/protocol.views,
+        detector_col_mm=detector_col_mm,
+        detector_row_mm=detector_row_mm,
+        detector_area_mm2=detector_area_mm2,
+        incident_I0=incident_I0,
+        detected_I0=total_detected_I0,
+        detected_fraction=total_detected_I0/incident_I0,
+        bin_I0=Float64.(sim_bins.I0_bins),
+        spectrum_energy_range=extrema(spectrum_E),
+    )
+end;
+
+# ╔═╡ 0cb20a11-9250-43d3-beac-2bb9e0560a7f
+nchannel_log_variance_test = let
+    nrow = size(sim_bins.bins[1],2)
+    rows = max(1,nrow ÷ 4):min(nrow,nrow-nrow ÷ 4)
+    observed = zeros(Float64,4)
+    predicted = zeros(Float64,4)
+    samples = zeros(Int,4)
+    for k in 1:4
+        h = sim_bins.bins[k]
+        I0 = Float64(sim_bins.I0_bins[k])
+        for view in axes(h,3),col in axes(h,1)
+            values = Float64.(h[col,rows,view])
+            mean(values) > 0.1 || continue
+            counts = I0 .* exp.(-values)
+            h_centered = values .- mean(values)
+            n = length(values)
+            observed[k] += sum(abs2,h_centered)
+            predicted[k] += (1-1/n)*sum(1.0 ./ max.(counts,1.0))
+            samples[k] += n
+        end
+    end
+    (
+        observed_variance=observed ./ max.(samples .- 1,1),
+        predicted_variance=predicted ./ max.(samples .- 1,1),
+        ratio=observed ./ max.(predicted,eps(Float64)),
+        samples=samples,
+    )
+end;
+
+# ╔═╡ 12527954-7d88-4b5d-9958-41b797affee4
+function nchannel_poisson_dose_trial(
+    A_truth,C_truth,λ_truth,scale::Float32,seed::Int;
+    controls=nchannel_controls,
+)
+    rng = BS.Random.MersenneTwister(seed)
+    hs = map(1:4) do k
+        I0 = scale*nchannel_basis.I0[k]
+        Float32[
+            -log(Float32(max(BS._poisson_sample(
+                rng,Float64(scale*λ),
+            ),1))/I0)
+            for λ in λ_truth[k]
+        ]
+    end
+    hs = [reshape(h,size(A_truth)) for h in hs]
+    hs_gpu = to_gpu.(hs)
+    I_gpu,W_gpu = similar(hs_gpu[1]),similar(hs_gpu[1])
+    flags_gpu = similar(hs_gpu[1],UInt8)
+    nchannel_profile_tile!(
+        I_gpu,W_gpu,flags_gpu,hs_gpu...,
+        to_gpu(scale .* nchannel_basis.Φ),
+        to_gpu(nchannel_basis.μρ_I),to_gpu(nchannel_basis.μρ_W),
+        to_gpu(scale .* nchannel_basis.I0),
+        to_gpu(nchannel_basis.μI_eff),to_gpu(nchannel_basis.μW_eff),
+        nchannel_basis.normal_II,nchannel_basis.normal_IW,
+        nchannel_basis.normal_WW,controls,
+    )
+    (
+        error_I=Array(I_gpu) .- A_truth,
+        error_W=Array(W_gpu) .- C_truth,
+        flags=Array(flags_gpu),
+    )
+end
+
+# ╔═╡ 0b50613e-d9bd-4905-9964-dcf14e04c5e9
+nchannel_dose_scaling_test = let
+    full_I = sino_basis_nchannel.sino_iodine
+    full_W = sino_basis_nchannel.sino_water
+    cols = 1:8:size(full_I,1)
+    row_mid = size(full_I,2) ÷ 2 + 1
+    rows = (row_mid-3):(row_mid+4)
+    views = 1:12:size(full_I,3)
+    A = Float32.(full_I[cols,rows,views])
+    C = Float32.(full_W[cols,rows,views])
+    original_flags = sino_basis_nchannel.boundary_flag[cols,rows,views]
+    valid = (original_flags .== 0x00) .& (C .> 1.0f0)
+
+    λ = map(1:4) do k
+        λk = zeros(Float32,size(A))
+        for e in eachindex(nchannel_basis.E)
+            @. λk += nchannel_basis.Φ[e,k] * exp(
+                -nchannel_basis.μρ_I[e]*A -
+                nchannel_basis.μρ_W[e]*C
+            )
+        end
+        λk
+    end
+    base_var_I = mean(
+        nchannel_fisher.var_iodine[cols,rows,views][valid]
+    )
+    base_cov_IW = mean(
+        nchannel_fisher.cov_iodine_water[cols,rows,views][valid]
+    )
+    base_var_W = mean(
+        nchannel_fisher.var_water[cols,rows,views][valid]
+    )
+
+    scales = Float32[1,4,16]
+    seeds = 4101:4106
+    rows_out = map(scales) do scale
+        errors_I = Float64[]
+        errors_W = Float64[]
+        boundary_count = 0
+        valid_count = 0
+        for seed in seeds
+            trial = nchannel_poisson_dose_trial(A,C,λ,scale,seed)
+            keep = valid .& (trial.flags .== 0x00)
+            append!(errors_I,Float64.(trial.error_I[keep]))
+            append!(errors_W,Float64.(trial.error_W[keep]))
+            boundary_count += count(x -> !iszero(x),trial.flags[valid])
+            valid_count += count(valid)
+        end
+        centered_I = errors_I .- mean(errors_I)
+        centered_W = errors_W .- mean(errors_W)
+        covariance = [
+            mean(abs2,centered_I) mean(centered_I .* centered_W)
+            mean(centered_I .* centered_W) mean(abs2,centered_W)
+        ]
+        (
+            scale=Float64(scale),n=length(errors_I),
+            bias_I=mean(errors_I),bias_W=mean(errors_W),
+            sd_I=std(errors_I),sd_W=std(errors_W),
+            covariance=covariance,
+            rho=covariance[1,2]/sqrt(covariance[1,1]*covariance[2,2]),
+            fisher_ratio_I=covariance[1,1]/(base_var_I/scale),
+            fisher_ratio_W=covariance[2,2]/(base_var_W/scale),
+            fisher_rho=(base_cov_IW/scale) /
+                sqrt((base_var_I/scale)*(base_var_W/scale)),
+            boundary_fraction=boundary_count/max(valid_count,1),
+        )
+    end
+    (
+        results=rows_out,
+        iodine_scaling=[
+            r.sd_I*sqrt(r.scale)/rows_out[1].sd_I for r in rows_out
+        ],
+        water_scaling=[
+            r.sd_W*sqrt(r.scale)/rows_out[1].sd_W for r in rows_out
+        ],
+        subset_shape=size(A),valid_rays=count(valid),
+        repetitions=length(seeds),
+        trial_data=(A=A,C=C,λ=λ,valid=valid),
+    )
+end;
+
+# ╔═╡ 804d3ec2-8e56-4496-a44f-882bb8d426b4
+nchannel_optimizer_precision_test = let
+    data = nchannel_dose_scaling_test.trial_data
+    scale = 16.0f0
+    tight_controls = merge(
+        nchannel_controls,
+        (outer_iterations=16,inner_iterations=12),
+    )
+    function summarize(controls)
+        error_I,error_W = Float64[],Float64[]
+        boundary,total = 0,0
+        for seed in 5101:5103
+            trial = nchannel_poisson_dose_trial(
+                data.A,data.C,data.λ,scale,seed;controls,
+            )
+            keep = data.valid .& (trial.flags .== 0x00)
+            append!(error_I,Float64.(trial.error_I[keep]))
+            append!(error_W,Float64.(trial.error_W[keep]))
+            boundary += count(x -> !iszero(x),trial.flags[data.valid])
+            total += count(data.valid)
+        end
+        (
+            sd_I=std(error_I),sd_W=std(error_W),
+            bias_I=mean(error_I),bias_W=mean(error_W),
+            boundary_fraction=boundary/total,
+        )
+    end
+    (
+        standard=summarize(nchannel_controls),
+        tight=summarize(tight_controls),
+        tight_controls=tight_controls,
+    )
+end;
+
+# ╔═╡ b16d08c9-29d8-4998-adcd-3ad25f93a1f0
+let
+    e = nchannel_exposure_audit
+    l = nchannel_log_variance_test
+    d = nchannel_dose_scaling_test
+    md"""
+    **Exposure and count-statistics results**
+
+    - Total exposure: **$(round(e.total_mAs,digits=2)) mAs**
+    - Exposure per view: **$(round(e.mAs_per_view,digits=5)) mAs**
+    - Binned detector pixel: **$(round(e.detector_col_mm,digits=4)) × $(round(e.detector_row_mm,digits=4)) mm**
+    - Detector area: **$(round(e.detector_area_mm2,digits=4)) mm²**
+    - Incident air photons/pixel/view: **$(round(e.incident_I0,digits=1))**
+    - Detected four-bin air counts: **$(round(e.detected_I0,digits=1))**
+    - Detected/incident fraction after bowtie, QE, and DRM: **$(round(100e.detected_fraction,digits=2))%**
+    - Per-bin empirical/Poisson log-variance ratio: **$(join(round.(l.ratio,digits=3),", "))**
+    - Dose-sweep subset: **$(d.valid_rays) rays × $(d.repetitions) noise realizations**
+    - Iodine \(σ\sqrt{N}\) relative to 1×: **$(join(round.(d.iodine_scaling,digits=3),", "))**
+    - Water \(σ\sqrt{N}\) relative to 1×: **$(join(round.(d.water_scaling,digits=3),", "))**
+    - Iodine SD by count scale (g/cm²): **$(join(round.([r.sd_I for r in d.results],digits=6),", "))**
+    - Water SD by count scale (g/cm²): **$(join(round.([r.sd_W for r in d.results],digits=5),", "))**
+    - Iodine bias by count scale (g/cm²): **$(join(round.([r.bias_I for r in d.results],digits=6),", "))**
+    - Water bias by count scale (g/cm²): **$(join(round.([r.bias_W for r in d.results],digits=5),", "))**
+    - Dose-sweep boundary fractions: **$(join(round.([r.boundary_fraction for r in d.results],digits=4),", "))**
+    - Repeated-seed iodine variance / mean \(F^{-1}\): **$(join(round.([r.fisher_ratio_I for r in d.results],digits=3),", "))**
+    - Repeated-seed water variance / mean \(F^{-1}\): **$(join(round.([r.fisher_ratio_W for r in d.results],digits=3),", "))**
+    - Repeated-seed empirical material correlation: **$(join(round.([r.rho for r in d.results],digits=3),", "))**
+    - Fisher-predicted material correlation: **$(join(round.([r.fisher_rho for r in d.results],digits=3),", "))**
+    - 16× standard/tight iodine SD: **$(round(nchannel_optimizer_precision_test.standard.sd_I,digits=6)) / $(round(nchannel_optimizer_precision_test.tight.sd_I,digits=6)) g/cm²**
+    - 16× standard/tight water SD: **$(round(nchannel_optimizer_precision_test.standard.sd_W,digits=5)) / $(round(nchannel_optimizer_precision_test.tight.sd_W,digits=5)) g/cm²**
+    - 16× standard/tight iodine bias: **$(round(nchannel_optimizer_precision_test.standard.bias_I,digits=6)) / $(round(nchannel_optimizer_precision_test.tight.bias_I,digits=6)) g/cm²**
+    - 16× standard/tight water bias: **$(round(nchannel_optimizer_precision_test.standard.bias_W,digits=5)) / $(round(nchannel_optimizer_precision_test.tight.bias_W,digits=5)) g/cm²**
+
+    Ideal Poisson behavior gives a log-variance ratio near one and a flat
+    normalized \(σ\sqrt{N}\) sequence near one. Deviations isolate corrected
+    count statistics, solver bounds, or model mismatch from ordinary quantum
+    noise.
+    """
+end
+
+# ╔═╡ c0c45d8d-3c5f-46af-8e65-03a83b20ee47
+let
+    d = nchannel_dose_scaling_test
+    scales = [r.scale for r in d.results]
+    fig = Mke.Figure(size=(1000,480))
+    ax = Mke.Axis(
+        fig[1,1];title="Controlled Poisson Dose Scaling",
+        subtitle="Flat at 1.0 is ideal 1/√N behavior",
+        xlabel="Count scale",ylabel="Normalized σ√N",
+        xticks=(scales,["$(Int(s))×" for s in scales]),
+    )
+    Mke.lines!(
+        ax,scales,d.iodine_scaling;
+        color=:darkorange,linewidth=3,label="Iodine",
+    )
+    Mke.scatter!(ax,scales,d.iodine_scaling;color=:darkorange,markersize=14)
+    Mke.lines!(
+        ax,scales,d.water_scaling;
+        color=:dodgerblue,linewidth=3,label="Water",
+    )
+    Mke.scatter!(ax,scales,d.water_scaling;color=:dodgerblue,markersize=14)
+    Mke.hlines!(ax,[1.0];color=:black,linestyle=:dash)
+    Mke.axislegend(ax;position=:rt)
+    fig
+end
+
 # ╔═╡ 2d447ccd-b408-42a6-8a1b-af770e3277e4
 md"""
 ## Direct FBP of the Material Sinograms
@@ -1933,6 +2221,14 @@ end
 # ╠═d13ac73b-b554-4a42-a1e1-29feb2365514
 # ╟─0e3e1191-edfb-4e5d-8845-6ba9be895538
 # ╟─bf6152a1-c29f-4292-a197-f2e2cdd7e9e0
+# ╟─7f515bef-0690-43aa-8d54-e61019c60380
+# ╠═4975fdf4-5479-454c-a2e8-04a0bd755859
+# ╠═0cb20a11-9250-43d3-beac-2bb9e0560a7f
+# ╠═12527954-7d88-4b5d-9958-41b797affee4
+# ╠═0b50613e-d9bd-4905-9964-dcf14e04c5e9
+# ╠═804d3ec2-8e56-4496-a44f-882bb8d426b4
+# ╟─b16d08c9-29d8-4998-adcd-3ad25f93a1f0
+# ╟─c0c45d8d-3c5f-46af-8e65-03a83b20ee47
 # ╟─2d447ccd-b408-42a6-8a1b-af770e3277e4
 # ╠═1ff5e801-ef54-45ff-b0a8-e780e2e6cb63
 # ╟─65a40efc-c9ff-41d4-8f42-46d6737119d5
