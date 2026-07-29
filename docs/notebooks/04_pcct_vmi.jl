@@ -287,11 +287,11 @@ PCCT detector routines rather than inferred from variable names.
 
 - Each returned channel is a floating-point **corrected negative-log
   transmission**, not an integer raw-count array:
-  \(h_k=-\log(\widetilde y_k/I_{0,k})\). Consequently
-  \(\widetilde y_k=I_{0,k}e^{-h_k}\) is called a **corrected count-domain
+  ``h_k=-\log(\widetilde y_k/I_{0,k})``. Consequently
+  ``\widetilde y_k=I_{0,k}e^{-h_k}`` is called a **corrected count-domain
   equivalent**, never a raw Poisson count.
 - `I0_bins[k]` is the expected air count per detector element and view in
-  native differential window \(k\), in photons/counts. The same absolute
+  native differential window ``k``, in photons/counts. The same absolute
   response is stored in `ws.W_matrix_gpu`; its energy sum must reproduce
   `I0_bins`.
 - Before detector corrections, the four thresholds define mutually exclusive
@@ -368,7 +368,6 @@ nchannel_controls = (
     fisher_condition_limit = 1.0f8,
     # Disabled for the production result: the shortcut is discontinuous and
     # the bounded-reference audit showed measurable likelihood gaps in air.
-    # A separate threshold sweep below quantifies it as an optional speed path.
     air_gate = 0.0f0,
     tile_views = 8,
 );
@@ -796,21 +795,21 @@ md"""
 
 For the present axial phantom the object is invariant over the active
 longitudinal detector extent. The row-center cone factor is
-\[
+```math
 s_r=\sqrt{1+(z_r/\mathrm{SAD})^2}.
-\]
+```
 The maximum departure from unity is reported below. When this departure is
 negligible, the rows are repeated measurements of the same in-plane ray to
 that stated tolerance. The simulator supplies corrected log transmissions, so
 we sum their **corrected count-domain equivalents by native energy bin before
 reapplying the logarithm**:
-\[
+```math
 Y_{k,\Sigma}=\sum_r I_{0,k}e^{-h_{k,r}},\qquad
 h_{k,\Sigma}=-\log\frac{Y_{k,\Sigma}}{R I_{0,k}}.
-\]
-For ideal independent Poisson counts the \(K\)-channel likelihood is unchanged
-except that every \(\Phi_k\) and \(I_{0,k}\)
-are multiplied by \(R\). This improves the photon support seen by the
+```
+For ideal independent Poisson counts the ``K``-channel likelihood is unchanged
+except that every ``\Phi_k`` and ``I_{0,k}``
+are multiplied by ``R``. This improves the photon support seen by the
 nonlinear estimator while retaining all native spectral bins and the profiled
 univariate solve. It represents a declared 5-mm slice, not native 0.4-mm
 longitudinal resolution. With fractional detector-corrected outputs, the same
@@ -819,10 +818,10 @@ quasi-likelihood unless post-correction covariance is validated.
 
 The 1200-view acquisition also oversamples the angular sampling requirement
 of the 512-pixel reconstruction,
-\(N_{\theta,\mathrm{required}}=\lceil\pi N/2\rceil=805\). Before the common
+``N_{\theta,\mathrm{required}}=\lceil\pi N/2\rceil=805``. Before the common
 FBP, both material sinograms therefore receive the same deterministic angular
 anti-alias projection: Fourier modes through
-\(\lceil\pi N/4\rceil\) pass with gain exactly one, followed by a raised-cosine
+``\lceil\pi N/4\rceil`` pass with gain exactly one, followed by a raised-cosine
 roll-off confined to the angular oversampling margin. This is not a denoising
 parameter or an energy-dependent kernel; it discards angular noise that the
 target image grid cannot represent without aliasing.
@@ -959,8 +958,8 @@ pair** is evaluated with the center measurement and the same MC-DRM-weighted
 forward model. One normalized scalar weight is applied jointly to iodine and
 water. The collapsed total count is never used for material estimation.
 
-The implementation follows Lee 2025 with a \(5\times5\) sinogram window,
-\(\alpha_1=0.9\), circular view wrapping, and nonwrapping detector boundaries.
+The implementation follows Lee 2025 with a ``5\times5`` sinogram window,
+``\alpha_1=0.9``, circular view wrapping, and nonwrapping detector boundaries.
 The simulator returns corrected fractional count equivalents rather than raw
 independent Poisson counts; that is the only likelihood-model deviation in
 this feasibility test.
@@ -1562,10 +1561,13 @@ end
 # ╔═╡ 040e0002-0000-4000-8000-000000000005
 md"""
 !!! note "Deferred reconstruction diagnostic"
-    The unfiltered common-FBP baseline shows a subtle edge response that can
-    become more visible after sinogram denoising. A future controlled test will
-    separate projector/ray-tracing, angular sampling, and reconstruction-filter
-    contributions. No compensatory sharpening is introduced here.
+    The PCCT outer-shell boundary shows a subtle blur/ring that becomes more
+    visible after T-LBF. The matched dual-kVp notebook does **not** show this
+    feature, even when the same T-LBF structure is applied. This cross-modality
+    control argues against Lee filtering as the generic cause and localizes the
+    future audit to PCCT-specific detector corrections, native sampling,
+    detector-row combination, and their interaction with common FBP. No
+    compensatory sharpening is introduced here.
 """
 
 # ╔═╡ 040e0002-0000-4000-8000-000000000006
