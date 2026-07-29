@@ -14,7 +14,7 @@ end
 using Markdown: @md_str, Markdown
 
 # ╔═╡ 9ae27110-5c47-442b-a98e-d137599570f2
-using Statistics: mean, std, quantile, median, cov, cor
+using Statistics: mean, std, var, quantile, median, cov, cor
 
 # ╔═╡ 27f065e9-f97c-4392-a83f-e3638682152d
 using LinearAlgebra: Symmetric, eigvals, det, I
@@ -166,7 +166,7 @@ scanner = let
         native_dexel_row_mm = native_row_mm,
         binning_factor = bf,
     )
-end;
+end
 
 # ╔═╡ ba6a1636-c0bc-4881-8ba7-d0e9dc8d90a8
 md"""
@@ -449,10 +449,12 @@ begin
         nE,K = size(Φ)
         nE == length(μI) == length(μW) ||
             throw(DimensionMismatch("Energy dimensions disagree"))
-        λ=zeros(Float64,K); dA=similar(λ); dC=similar(λ)
-        dAA=second ? similar(λ) : nothing
-        dAC=second ? similar(λ) : nothing
-        dCC=second ? similar(λ) : nothing
+        λ=zeros(Float64,K)
+        dA=zeros(Float64,K)
+        dC=zeros(Float64,K)
+        dAA=second ? zeros(Float64,K) : nothing
+        dAC=second ? zeros(Float64,K) : nothing
+        dCC=second ? zeros(Float64,K) : nothing
         @inbounds for k in 1:K, e in 1:nE
             z=Float64(Φ[e,k])*exp(-Float64(μI[e])*A-Float64(μW[e])*C)
             mi,mw=Float64(μI[e]),Float64(μW[e])
@@ -606,9 +608,11 @@ begin
         λ=max.(f.λ,eps(Float64)); yv=Float64.(y)
         gA=sum((1 .- yv./λ).*f.dA)
         gC=sum((1 .- yv./λ).*f.dC)
+        FAA=sum(f.dA.^2 ./ λ)
+        FCC=sum(f.dC.^2 ./ λ)
         (
             iodine=A,water=inn.C,objective=inn.value,
-            score_norm=hypot(gA,gC),
+            score_norm=hypot(gA,gC)/sqrt(max(FAA+FCC,eps(Float64))),
             selected_outer_basin=s.best.basin,
             outer_basin_count=s.basin_count,
             selected_inner_basin=inn.basin,
@@ -679,6 +683,17 @@ begin
             total_hi += Φ[e,k]*exp(-μρ_I[e]*A-μρ_W[e]*croot_hi)
         end
         aggregate_bracketed=total_lo≥y_total && total_hi≤y_total
+        attainable_max,attainable_min=0f0,0f0
+        for k in 1:K, e in 1:nE
+            attainable_max += Φ[e,k]*exp(
+                -μρ_I[e]*A_lo-μρ_W[e]*C_lo,
+            )
+            attainable_min += Φ[e,k]*exp(
+                -μρ_I[e]*A_hi-μρ_W[e]*C_hi,
+            )
+        end
+        aggregate_feasible =
+            attainable_max≥y_total && attainable_min≤y_total
         if aggregate_bracketed
             for _ in 1:28
                 mid=(croot_lo+croot_hi)/2f0
@@ -823,7 +838,7 @@ begin
             UInt8(hit_C ? 2 : 0) |
             UInt8(converged ? 0 : 4) |
             UInt8(ill_conditioned || !initializer_valid ? 8 : 0) |
-            UInt8(aggregate_bracketed ? 0 : 16) |
+            UInt8(aggregate_feasible ? 0 : 16) |
             UInt8(invalid_model ? 32 : 0)
         outer_count[idx]=UInt8(min(used_outer,255))
         inner_count[idx]=UInt8(min(used_inner,255))
@@ -837,15 +852,20 @@ end
 nchannel_derivative_audit = let
     rng=MersenneTwister(20260728)
     worst=0.0
+    worst_case=nothing
     trials=64
-    for _ in 1:trials
+    for trial in 1:trials
         A=0.18rand(rng)
-        C=45rand(rng)
+        C=4+38rand(rng)
         f=nchannel_forward(
             A,C,nchannel_basis.Φ,nchannel_basis.μρ_I,nchannel_basis.μρ_W,
         )
-        ϵA=1e-6*max(1.0,abs(A))
-        ϵC=1e-6*max(1.0,abs(C))
+        # The forward means can be extremely small on the longest, most
+        # photon-starved paths. A sqrt(eps) step is then dominated by
+        # subtractive cancellation. These relative steps were prespecified
+        # from the forward scale, not selected after inspecting the result.
+        ϵA=1e-5*max(1.0,abs(A))
+        ϵC=1e-5*max(1.0,abs(C))
         dAfd=(
             nchannel_forward(A+ϵA,C,nchannel_basis.Φ,nchannel_basis.μρ_I,nchannel_basis.μρ_W).λ-
             nchannel_forward(A-ϵA,C,nchannel_basis.Φ,nchannel_basis.μρ_I,nchannel_basis.μρ_W).λ
@@ -854,14 +874,54 @@ nchannel_derivative_audit = let
             nchannel_forward(A,C+ϵC,nchannel_basis.Φ,nchannel_basis.μρ_I,nchannel_basis.μρ_W).λ-
             nchannel_forward(A,C-ϵC,nchannel_basis.Φ,nchannel_basis.μρ_I,nchannel_basis.μρ_W).λ
         )/(2ϵC)
-        rel(x,y)=maximum(abs.(x-y)./max.(abs.(y),1e-10))
-        worst=max(worst,rel(f.dA,dAfd),rel(f.dC,dCfd))
+        function rel(x,y)
+            valid=isfinite.(x).&isfinite.(y)
+            any(valid) || return Inf
+            xv=x[valid]
+            yv=y[valid]
+            maximum(abs.(xv.-yv))/max(
+                maximum(abs.(xv)),maximum(abs.(yv)),1e-8,
+            )
+        end
+        errA=rel(f.dA,dAfd)
+        errC=rel(f.dC,dCfd)
+        if max(errA,errC)>worst
+            worst=max(errA,errC)
+            worst_case=(
+                trial,A,C,errA,errC,
+                min_lambda=minimum(f.λ),max_lambda=maximum(f.λ),
+                analytic_dA=copy(f.dA),fd_dA=copy(dAfd),
+                analytic_dC=copy(f.dC),fd_dC=copy(dCfd),
+            )
+        end
     end
     (
         trials,maximum_relative_error=worst,
+        worst_case,
         tolerance=1e-5,pass=worst<1e-5,
     )
-end;
+end
+
+# ╔═╡ d9b7596d-13b5-4b16-b456-ee4584db67a0
+nchannel_derivative_debug = let
+    A,C=0.073,22.4
+    f=nchannel_forward(A,C,nchannel_basis.Φ,nchannel_basis.μρ_I,nchannel_basis.μρ_W)
+    ϵ=1e-5
+    dAfd=(
+        nchannel_forward(A+ϵ,C,nchannel_basis.Φ,nchannel_basis.μρ_I,nchannel_basis.μρ_W).λ-
+        nchannel_forward(A-ϵ,C,nchannel_basis.Φ,nchannel_basis.μρ_I,nchannel_basis.μρ_W).λ
+    )/(2ϵ)
+    dCfd=(
+        nchannel_forward(A,C+ϵ,nchannel_basis.Φ,nchannel_basis.μρ_I,nchannel_basis.μρ_W).λ-
+        nchannel_forward(A,C-ϵ,nchannel_basis.Φ,nchannel_basis.μρ_I,nchannel_basis.μρ_W).λ
+    )/(2ϵ)
+    (
+        analytic_dA=f.dA,finite_difference_dA=dAfd,
+        analytic_dC=f.dC,finite_difference_dC=dCfd,
+        dA_relative=maximum(abs.(f.dA-dAfd))/maximum(abs.(dAfd)),
+        dC_relative=maximum(abs.(f.dC-dCfd))/maximum(abs.(dCfd)),
+    )
+end
 
 # ╔═╡ 1db6ded1-11ed-4674-ae4a-77e3c210c85d
 md"""
@@ -1058,6 +1118,28 @@ sino_basis_nchannel_slab = let
         outer_iterations[:,:,vrange] .= Array(outer_gpu)
         inner_iterations[:,:,vrange] .= Array(inner_gpu)
     end
+    # Recompute the aggregate feasibility bit on the host from the global
+    # attainable count range. This is independent of the initializer's
+    # single-A bracket and avoids backend-specific boolean lowering in QC.
+    Φ_host=scale.*Float64.(nchannel_basis.Φ)
+    attainable_max=sum(nchannel_forward(
+        first(nchannel_controls.iodine_bounds),
+        first(nchannel_controls.water_bounds),
+        Φ_host,nchannel_basis.μρ_I,nchannel_basis.μρ_W,
+    ).λ)
+    attainable_min=sum(nchannel_forward(
+        last(nchannel_controls.iodine_bounds),
+        last(nchannel_controls.water_bounds),
+        Φ_host,nchannel_basis.μρ_I,nchannel_basis.μρ_W,
+    ).λ)
+    ytotal=zeros(Float64,shape)
+    for k in eachindex(nchannel_slab_counts.bins)
+        ytotal .+= scale*nchannel_basis.I0[k].*
+            exp.(-Float64.(nchannel_slab_counts.bins[k]))
+    end
+    feasible=(ytotal.≤attainable_max).&(ytotal.≥attainable_min)
+    flags[feasible] .&= 0xef
+    flags[.!feasible] .|= 0x10
     (
         sino_iodine=sino_I,sino_water=sino_W,quality_flag=flags,
         score_norm,outer_iterations,inner_iterations,
@@ -1098,6 +1180,106 @@ nchannel_solver_qc = let
         inner_iterations_max=maximum(sino_basis_nchannel_slab.inner_iterations),
     )
 end;
+
+# ╔═╡ 92692d46-1b57-4daa-b78d-c5aef609ed86
+nchannel_decomposition_checkpoint = (
+    simulator_contract=nchannel_simulator_contract,
+    derivative_audit=nchannel_derivative_audit,
+    exact_solver_audit=(
+        maximum_aggregate_error=nchannel_exact_solver_audit.maximum_aggregate_error,
+        maximum_profile_error=nchannel_exact_solver_audit.maximum_profile_error,
+        maximum_permutation_error=nchannel_exact_solver_audit.maximum_permutation_error,
+        maximum_exposure_error=nchannel_exact_solver_audit.maximum_exposure_error,
+        aggregate_root_failures=nchannel_exact_solver_audit.aggregate_root_failures,
+        maximum_aggregate_residual=nchannel_exact_solver_audit.maximum_aggregate_residual,
+    ),
+    production_qc=nchannel_solver_qc,
+)
+
+# ╔═╡ d02c928d-7d1a-4d52-8ba1-e2fa9060fe13
+nchannel_root_flag_audit = let
+    flags=sino_basis_nchannel_slab.quality_flag
+    hs=nchannel_slab_counts.bins
+    scale=nchannel_slab_counts.nrows
+    ytotal=zeros(Float64,size(first(hs)))
+    for k in eachindex(hs)
+        ytotal .+= scale*nchannel_basis.I0[k].*exp.(-Float64.(hs[k]))
+    end
+    Φ=scale.*Float64.(nchannel_basis.Φ)
+    max_total=sum(nchannel_forward(
+        first(nchannel_controls.iodine_bounds),
+        first(nchannel_controls.water_bounds),
+        Φ,nchannel_basis.μρ_I,nchannel_basis.μρ_W,
+    ).λ)
+    min_total=sum(nchannel_forward(
+        last(nchannel_controls.iodine_bounds),
+        last(nchannel_controls.water_bounds),
+        Φ,nchannel_basis.μρ_I,nchannel_basis.μρ_W,
+    ).λ)
+    failed=(flags .& 0x10).!=0
+    (
+        flagged=count(failed),
+        expected_outside_range=count((ytotal.>max_total).|(ytotal.<min_total)),
+        ytotal_quantiles=quantile(vec(ytotal),(0.0,0.01,0.5,0.99,1.0)),
+        attainable_range=(min_total,max_total),
+        flag_matches_expected=all(failed.==(
+            (ytotal.>max_total).|(ytotal.<min_total)
+        )),
+    )
+end
+
+# ╔═╡ 223637d8-da9e-4342-a138-4c272a524d2c
+nchannel_reference_pilot = let
+    shape=size(sino_basis_nchannel_slab.sino_iodine)
+    hs=nchannel_slab_counts.bins
+    scale=nchannel_slab_counts.nrows
+    ytotal=zeros(Float64,shape)
+    for k in eachindex(hs)
+        ytotal .+= scale*nchannel_basis.I0[k].*exp.(-Float64.(hs[k]))
+    end
+    flat_total=vec(ytotal)
+    order=sortperm(flat_total)
+    sample=unique(vcat(
+        round.(Int,range(1,length(order);length=80)) .|> i->order[i],
+        findall(!iszero,vec(sino_basis_nchannel_slab.quality_flag))[1:min(
+            20,count(!iszero,sino_basis_nchannel_slab.quality_flag),
+        )],
+    ))
+    Φ=scale.*Float64.(nchannel_basis.Φ)
+    rows=NamedTuple[]
+    for idx in sample
+        ci=CartesianIndices(shape)[idx]
+        y=[
+            scale*nchannel_basis.I0[k]*exp(-Float64(hs[k][ci]))
+            for k in eachindex(hs)
+        ]
+        ref=nchannel_profile_reference(
+            y,Φ,nchannel_basis.μρ_I,nchannel_basis.μρ_W;
+            outer_grid_points=33,inner_grid_points=33,iterations=60,
+        )
+        A=Float64(sino_basis_nchannel_slab.sino_iodine[ci])
+        C=Float64(sino_basis_nchannel_slab.sino_water[ci])
+        fast_nll=nchannel_poisson_quasi_nll(
+            A,C,y,Φ,nchannel_basis.μρ_I,nchannel_basis.μρ_W,
+        )
+        push!(rows,(
+            index=idx,total_counts=flat_total[idx],
+            quality_flag=sino_basis_nchannel_slab.quality_flag[ci],
+            delta_iodine=A-ref.iodine,
+            delta_water=C-ref.water,
+            likelihood_gap=fast_nll-ref.objective,
+            reference_score=ref.score_norm,
+            same_basin=abs(A-ref.iodine)<0.01&&abs(C-ref.water)<0.2,
+        ))
+    end
+    (
+        n=length(rows),rows,
+        max_abs_delta_iodine=maximum(abs.(getproperty.(rows,:delta_iodine))),
+        max_abs_delta_water=maximum(abs.(getproperty.(rows,:delta_water))),
+        max_likelihood_gap=maximum(getproperty.(rows,:likelihood_gap)),
+        different_basin=count(!,getproperty.(rows,:same_basin)),
+    )
+end
 
 # ╔═╡ ddfde8bb-ddff-44bb-8b70-b397725402cf
 nchannel_slab_common_fbp = let
@@ -1253,7 +1435,10 @@ reconstructed iodine density is converted from g/cm³ by multiplying by
 """
 
 # ╔═╡ 9161e7bf-eaa9-4d48-9d93-ab743ff3a0c2
-nchannel_vmi_energies = [40.0, 70.0, 100.0, 140.0];
+begin
+    nchannel_validation_energies=collect(40.0:5.0:140.0)
+    nchannel_vmi_energies=[40.0,70.0,100.0,140.0]
+end;
 
 # ╔═╡ 5cc1f9ba-4a5f-4a78-86dd-e0d844a09a28
 nchannel_vmi_raw_HU = let
@@ -1263,7 +1448,7 @@ nchannel_vmi_raw_HU = let
             nchannel_basis_volumes.vol_water, iodine_mg_per_mL;
             energy_keV = E,
         )
-        for E in nchannel_vmi_energies
+        for E in nchannel_validation_energies
     )
 end;
 
@@ -1329,6 +1514,7 @@ function nchannel_stable_hf_regression(
     targets,guide;
     split_sigma_px=5.0,gain_sigma_px=16.0,
     ridge_fraction=0.25,beta_max=6.0,regression_mask=nothing,
+    coherence_gate=true,
 )
     nx,ny,nz = size(guide)
     fx = [min(i-1,nx-(i-1))/nx for i in 1:nx]
@@ -1414,9 +1600,13 @@ function nchannel_stable_hf_regression(
             0f0,1f0,
         )
         transplanted = beta.*high_guide
-        outputs[j] .= low_target .+
-            coherence.*transplanted .+
-            target_confidence.*high_target
+        if coherence_gate
+            outputs[j] .= low_target .+
+                coherence.*transplanted .+
+                target_confidence.*high_target
+        else
+            outputs[j] .= low_target.+transplanted
+        end
         beta_maps[j] .= beta
         coherence_maps[j] .= coherence
         target_confidence_maps[j] .= target_confidence
@@ -1425,14 +1615,14 @@ function nchannel_stable_hf_regression(
     (
         volumes=outputs,beta_maps,coherence_maps,target_confidence_maps,
         global_beta,
-        split_sigma_px,gain_sigma_px,ridge_fraction,beta_max,
+        split_sigma_px,gain_sigma_px,ridge_fraction,beta_max,coherence_gate,
     )
 end
 end
 
 # ╔═╡ c1a8d98e-607c-45d4-8938-e637c29c3a1d
 nchannel_support_candidate = let
-    energies = nchannel_vmi_energies
+    energies = nchannel_validation_energies
     z = size(nchannel_slab_guide.volume,3)÷2+1
     guide = Float32.(nchannel_slab_guide.volume[:,:,z])
     function otsu_threshold(image;nbins=256)
@@ -1545,7 +1735,8 @@ nchannel_support_candidate = let
         std(Float64.(HU[E][:,:,1][water_mask])) for E in energies
     ]
     (
-        result...,HU,noise,support,
+        result...,HU,noise,support,raw_mu,extended_mu,guide_extended,
+        water_mask,
         support_threshold,guide_water,
         monotonic=all(diff(noise).<0),
     )
@@ -1595,6 +1786,391 @@ nchannel_visual_failure_audit = let
         end
     end
     (metrics=rows,figure=fig)
+end
+
+# ╔═╡ 0ce17aa0-bd0c-4813-b09c-381465738c9f
+md"""
+## 12. Leng HYPR-LR baseline
+
+The exact 1:1 comparator uses Leng et al.'s
+\(\widehat T=[L(T)/L(G)]G\) with one 7×7 uniform kernel.
+
+## 13. Previous ridge baseline
+
+The prior unconditional high-frequency ridge is retained by name; it is not
+called HYPR-LR.
+
+## 14. Revised gated ridge
+
+The audited coherence-gated form is also retained by name despite its failed
+annular-transfer audit. Raw, a fixed Gaussian control, standard guided
+filtering, exact Leng HYPR-LR, unconditional ridge, and gated ridge all use
+one declared parameter set across the dense energy range.
+"""
+
+# ╔═╡ fe89ba85-3be6-445c-bc71-3a6fc06dad30
+nchannel_denoising_baselines = let
+    candidate=nchannel_support_candidate
+    energies=nchannel_validation_energies
+    targets=candidate.extended_mu
+    guide=candidate.guide_extended
+    support=candidate.support
+    mask3=reshape(support,size(support)...,1)
+
+    function fft_gaussian(volume,σ)
+        nx,ny,nz=size(volume)
+        fx=[min(i-1,nx-(i-1))/nx for i in 1:nx]
+        fy=[min(j-1,ny-(j-1))/ny for j in 1:ny]
+        kernel=[
+            exp(-2π^2*σ^2*(fx[i]^2+fy[j]^2))
+            for i in 1:nx,j in 1:ny
+        ]
+        out=similar(volume)
+        for z in axes(volume,3)
+            out[:,:,z].=Float32.(real.(BS.FFTW.ifft(
+                BS.FFTW.fft(Float64.(volume[:,:,z])).*kernel,
+            )))
+        end
+        out
+    end
+    function boxmean(volume,radius)
+        out=zeros(Float32,size(volume))
+        for di in -radius:radius, dj in -radius:radius
+            out .+= circshift(volume,(di,dj,0))
+        end
+        out./Float32((2radius+1)^2)
+    end
+    function standard_guided(target,guide;radius=3,ridge_fraction=0.25)
+        meanG=boxmean(guide,radius)
+        meanT=boxmean(target,radius)
+        varG=boxmean(guide.*guide,radius).-meanG.*meanG
+        covGT=boxmean(guide.*target,radius).-meanG.*meanT
+        positive=filter(x->isfinite(x)&&x>0,Float64.(varG[mask3]))
+        ϵ=Float32(ridge_fraction*median(positive))
+        a=covGT./max.(varG.+ϵ,eps(Float32))
+        b=meanT.-a.*meanG
+        boxmean(a,radius).*guide.+boxmean(b,radius)
+    end
+    function undecimated_bayes(target;scales=(1.0,2.0,4.0))
+        current=copy(target)
+        details=Array{Float32,3}[]
+        thresholds=Float64[]
+        for σ in scales
+            smooth=fft_gaussian(target,σ)
+            detail=current.-smooth
+            noise_values=Float64.(detail[mask3])
+            center=median(noise_values)
+            σn=median(abs.(noise_values.-center))/0.6744897501960817
+            all_values=Float64.(detail[mask3])
+            σsignal=sqrt(max(var(all_values)-σn^2,0.0))
+            threshold=σsignal>0 ? σn^2/σsignal :
+                maximum(abs,all_values;init=0.0)
+            push!(thresholds,threshold)
+            push!(details,@. sign(detail)*max(abs(detail)-threshold,0))
+            current=smooth
+        end
+        output=current
+        for detail in details
+            output=output.+detail
+        end
+        (volume=output,thresholds)
+    end
+    prior=nchannel_stable_hf_regression(
+        targets,guide;split_sigma_px=5.0,gain_sigma_px=16.0,
+        ridge_fraction=0.25,beta_max=6.0,
+        regression_mask=mask3,coherence_gate=false,
+    )
+    gated=nchannel_stable_hf_regression(
+        targets,guide;split_sigma_px=5.0,gain_sigma_px=16.0,
+        ridge_fraction=0.25,beta_max=6.0,
+        regression_mask=mask3,coherence_gate=true,
+    )
+    leng=nchannel_hypr_lr(targets,guide;radius_px=3)
+    gaussian=[fft_gaussian(t,1.5) for t in targets]
+    guided=[standard_guided(t,guide) for t in targets]
+    bayes_results=[undecimated_bayes(t) for t in targets]
+    bayes=[r.volume for r in bayes_results]
+    self_guided=[
+        standard_guided(t,t;ridge_fraction=0.10) for t in targets
+    ]
+    self_guided_rho1=[
+        standard_guided(t,t;ridge_fraction=1.0) for t in targets
+    ]
+    self_guided_rho4=[
+        standard_guided(t,t;ridge_fraction=4.0) for t in targets
+    ]
+    target_safe_guided=[
+        guided[j].+gated.target_confidence_maps[j].*(targets[j].-guided[j])
+        for j in eachindex(targets)
+    ]
+    method_volumes=(
+        raw=candidate.raw_mu,
+        gaussian=gaussian,
+        leng_hypr_lr=leng,
+        prior_unconditional_ridge=prior.volumes,
+        revised_gated_ridge=gated.volumes,
+        standard_guided=guided,
+        undecimated_bayes=bayes,
+        self_guided=self_guided,
+        self_guided_rho1=self_guided_rho1,
+        self_guided_rho4=self_guided_rho4,
+        target_safe_guided=target_safe_guided,
+    )
+    HU=Dict{Symbol,Dict{Float64,Array{Float32,3}}}()
+    for (method,volumes) in pairs(method_volumes)
+        HU[method]=Dict(
+            E=>begin
+                μW=BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+                output=copy(candidate.raw_mu[j])
+                (@view output[:,:,1])[support].=(@view volumes[j][:,:,1])[support]
+                hu=@. Float32(1000*(output/μW-1))
+                (@view hu[:,:,1])[.!support].=-1000f0
+                hu
+            end
+            for (j,E) in pairs(energies)
+        )
+    end
+    (
+        HU,prior,gated,
+        parameters=(
+            gaussian_sigma_px=1.5,
+            leng_box_width_px=7,
+            guided_box_width_px=7,
+            self_guided_ridge_fraction_grid=(0.10,1.0,4.0),
+            ridge_fraction=0.25,
+            split_sigma_px=5.0,
+            gain_sigma_px=16.0,
+            beta_max=6.0,
+            bayes_scales_px=(1.0,2.0,4.0),
+        ),
+        bayes_thresholds=[r.thresholds for r in bayes_results],
+    )
+end;
+
+# ╔═╡ 61dd42aa-407d-4e2c-b34d-c3780af61881
+nchannel_single_realization_baseline_audit = let
+    methods=collect(keys(nchannel_denoising_baselines.HU))
+    energies=nchannel_validation_energies
+    water=nchannel_support_candidate.water_mask
+    support=nchannel_support_candidate.support
+    yy,xx=axes(support,1),axes(support,2)
+    cx=(first(xx)+last(xx))/2
+    cy=(first(yy)+last(yy))/2
+    radius=sqrt.([(i-cy)^2+(j-cx)^2 for i in yy,j in xx])
+    R=maximum(radius[support])
+    core_water=water .& (radius.<0.70R)
+    annular_water=water .& (radius.>0.82R)
+    curves=Dict{Symbol,NamedTuple}()
+    for method in methods
+        hu=nchannel_denoising_baselines.HU[method]
+        core=[std(Float64.(hu[E][:,:,1][core_water])) for E in energies]
+        annulus=[std(Float64.(hu[E][:,:,1][annular_water])) for E in energies]
+        means=[mean(Float64.(hu[E][:,:,1][water])) for E in energies]
+        curves[method]=(
+            core_noise=core,annular_noise=annulus,water_mean=means,
+            monotonic_core=all(diff(core).≤0),
+            largest_upward_core=maximum(vcat(0.0,diff(core))),
+            annulus_to_core=annulus./core,
+        )
+    end
+    display_energies=nchannel_vmi_energies
+    fig=Mke.Figure(size=(1450,420length(methods)))
+    for (row,method) in pairs(methods), (col,E) in pairs(display_energies)
+        image=nchannel_denoising_baselines.HU[method][E][:,:,1]
+        σ=curves[method].core_noise[findfirst(==(E),energies)]
+        ax=Mke.Axis(
+            fig[row,col];
+            title="$(method) · $(Int(E)) keV · $(round(σ,digits=1)) HU",
+            aspect=Mke.DataAspect(),titlesize=16,
+        )
+        Mke.heatmap!(ax,image;colormap=:grays,colorrange=(-200,500))
+        Mke.hidedecorations!(ax)
+    end
+    visual_path="/tmp/04c_pcct_denoising_baselines.png"
+    Mke.save(visual_path,fig)
+    (curves,figure=fig,visual_path)
+end
+
+# ╔═╡ 7576c790-cd95-4588-939d-e725422a4d86
+md"""
+## 15. Adversarial structure tests
+
+These controlled images distinguish denoising from structure transfer:
+guide-only, target-only, shared, opposite-sign/cancelled-guide, flat-field,
+and air–water boundary cases are evaluated independently of the Gammex image.
+The tests are prespecified; a method cannot be selected from ROI noise alone.
+"""
+
+# ╔═╡ 16bbe3bb-310a-4cc6-8e66-e18e69228bb8
+nchannel_structure_transfer_audit = let
+    shape=(192,192,1)
+    yy,xx=axes(zeros(shape),1),axes(zeros(shape),2)
+    disk(cx,cy,r)=reshape([
+        (i-cy)^2+(j-cx)^2≤r^2 for i in yy,j in xx
+    ],shape)
+    feature=disk(96,96,18)
+    small_feature=disk(96,96,5)
+    flat=ones(Float32,shape)
+    support=trues(shape)
+
+    function boxmean(volume,radius=3)
+        out=zeros(Float32,size(volume))
+        for di in -radius:radius, dj in -radius:radius
+            out .+= circshift(volume,(di,dj,0))
+        end
+        out./Float32((2radius+1)^2)
+    end
+    function gaussian(volume,σ=1.5)
+        nx,ny,nz=size(volume)
+        fx=[min(i-1,nx-(i-1))/nx for i in 1:nx]
+        fy=[min(j-1,ny-(j-1))/ny for j in 1:ny]
+        kernel=[exp(-2π^2*σ^2*(fx[i]^2+fy[j]^2))
+                for i in 1:nx,j in 1:ny]
+        out=similar(volume)
+        for z in axes(volume,3)
+            out[:,:,z].=Float32.(real.(BS.FFTW.ifft(
+                BS.FFTW.fft(Float64.(volume[:,:,z])).*kernel,
+            )))
+        end
+        out
+    end
+    function guided(target,guide;radius=3,ridge_fraction=0.25)
+        mG=boxmean(guide,radius); mT=boxmean(target,radius)
+        vG=boxmean(guide.*guide,radius).-mG.*mG
+        c=boxmean(guide.*target,radius).-mG.*mT
+        pos=filter(x->isfinite(x)&&x>0,Float64.(vG))
+        ϵ=isempty(pos) ? eps(Float32) : Float32(ridge_fraction*median(pos))
+        a=c./max.(vG.+ϵ,eps(Float32))
+        b=mT.-a.*mG
+        boxmean(a,radius).*guide.+boxmean(b,radius)
+    end
+    function undecimated_bayes(target;scales=(1.0,2.0,4.0))
+        current=copy(target)
+        retained=zeros(Float32,size(target))
+        # This corner is flat in every synthetic adversary and therefore gives
+        # the shrinker an edge-free noise sample without using the test insert.
+        noise_mask=falses(size(target))
+        noise_mask[1:48,1:48,:].=true
+        for σ in scales
+            smooth=gaussian(current,σ)
+            detail=current.-smooth
+            samples=Float64.(detail[noise_mask])
+            σn=median(abs.(samples.-median(samples)))/0.6744897501960817
+            σx=sqrt(max(var(samples)-σn^2,0.0))
+            threshold=σx>eps(Float64) ? σn^2/σx : maximum(abs,samples)
+            retained .+= sign.(detail).*max.(abs.(detail).-Float32(threshold),0f0)
+            current=smooth
+        end
+        current.+retained
+    end
+    function apply(method,target,guide)
+        method===:raw && return copy(target)
+        method===:gaussian && return gaussian(target)
+        method===:leng_hypr_lr &&
+            return nchannel_hypr_lr([target],guide;radius_px=3)[1]
+        method===:standard_guided && return guided(target,guide)
+        method===:self_guided && return guided(
+            target,target;ridge_fraction=0.10,
+        )
+        method===:self_guided_rho1 && return guided(
+            target,target;ridge_fraction=1.0,
+        )
+        method===:self_guided_rho4 && return guided(
+            target,target;ridge_fraction=4.0,
+        )
+        method===:undecimated_bayes && return undecimated_bayes(target)
+        if method===:target_safe_guided
+            base=guided(target,guide)
+            gate=nchannel_stable_hf_regression(
+                [target],guide;
+                split_sigma_px=5.0,gain_sigma_px=16.0,
+                ridge_fraction=0.25,beta_max=6.0,
+                regression_mask=support,coherence_gate=true,
+            )
+            return base.+gate.target_confidence_maps[1].*(target.-base)
+        end
+        if method===:prior_unconditional_ridge ||
+           method===:revised_gated_ridge
+            return nchannel_stable_hf_regression(
+                [target],guide;
+                split_sigma_px=5.0,gain_sigma_px=16.0,
+                ridge_fraction=0.25,beta_max=6.0,
+                regression_mask=support,
+                coherence_gate=method===:revised_gated_ridge,
+            ).volumes[1]
+        end
+        error("Unknown method $method")
+    end
+    function contrast(image,mask)
+        outer=boxmean(Float32.(mask),5).>0.02
+        ring=outer .& .!mask
+        mean(Float64.(image[mask]))-mean(Float64.(image[ring]))
+    end
+    function edge_width(image,mask)
+        # Radial 10–90% width through a noiseless circular edge.
+        center=96
+        profile=Float64.(image[:,center,1])
+        inside=mean(profile[90:102])
+        outside=mean(vcat(profile[55:68],profile[124:137]))
+        norm=(profile.-outside)./max(inside-outside,eps(Float64))
+        left=norm[1:center]
+        x10=findfirst(>=(0.1),left)
+        x90=findfirst(>=(0.9),left)
+        x10===nothing||x90===nothing ? Inf : abs(x90-x10)
+    end
+
+    methods=(
+        :raw,:gaussian,:leng_hypr_lr,:prior_unconditional_ridge,
+        :revised_gated_ridge,:standard_guided,:self_guided,
+        :self_guided_rho1,:self_guided_rho4,
+        :target_safe_guided,:undecimated_bayes,
+    )
+    target_only=flat.+0.4f0.*feature
+    guide_only=flat.+0.4f0.*feature
+    shared_target=flat.+0.2f0.*feature
+    shared_guide=flat.+0.5f0.*feature
+    small_target=flat.+0.4f0.*small_feature
+    rows=NamedTuple[]
+    for method in methods
+        target_out=apply(method,target_only,flat)
+        guide_out=apply(method,flat,guide_only)
+        shared_out=apply(method,shared_target,shared_guide)
+        small_out=apply(method,small_target,flat)
+        push!(rows,(
+            method,
+            target_only_recovery=contrast(target_out,feature)/
+                contrast(target_only,feature),
+            guide_only_false_fraction=contrast(guide_out,feature)/
+                contrast(guide_only,feature),
+            shared_recovery=contrast(shared_out,feature)/
+                contrast(shared_target,feature),
+            opposite_sign_recovery=contrast(target_out,feature)/
+                contrast(target_only,feature),
+            small_target_recovery=contrast(small_out,small_feature)/
+                contrast(small_target,small_feature),
+            edge_width_px=edge_width(target_out,feature),
+        ))
+    end
+
+    rng=MersenneTwister(20260728)
+    noise_rows=NamedTuple[]
+    for method in methods
+        raw_var=Float64[]; out_var=Float64[]
+        for _ in 1:30
+            common=randn(rng,Float32,shape)
+            nt=0.7f0.*common.+sqrt(1f0-0.7f0^2).*randn(rng,Float32,shape)
+            ng=0.35f0.*common.+sqrt(1f0-0.35f0^2).*randn(rng,Float32,shape)
+            target=flat.+0.08f0.*nt
+            guide=flat.+0.04f0.*ng
+            output=apply(method,target,guide)
+            push!(raw_var,var(Float64.(target)))
+            push!(out_var,var(Float64.(output)))
+        end
+        push!(noise_rows,(
+            method,variance_ratio=mean(out_var)/mean(raw_var),
+        ))
+    end
+    (structure=rows,flat_noise=noise_rows)
 end
 
 # ╔═╡ a2ce06aa-31e8-4533-8617-40cb0f02b292
@@ -2015,6 +2591,7 @@ end
 # ╟─11fd3c9c-392b-4ee4-adcb-e757021401f7
 # ╟─41c4d6c2-69cc-453e-9ad5-35026e027a93
 # ╠═c59a96e3-f574-4305-b7c1-b4602f596e82
+# ╠═d9b7596d-13b5-4b16-b456-ee4584db67a0
 # ╟─a27649c0-e623-473e-bfbe-60fc8dd6d976
 # ╠═4985581f-616d-4bb7-ab9b-967d7250b28b
 # ╠═73371177-0498-4eda-897b-651c94f43e83
@@ -2025,6 +2602,9 @@ end
 # ╠═b86a9c50-cb10-44b2-af2e-06bdd50943b7
 # ╟─8d2f8d5c-72a1-4e7f-a8e8-7a6128cf41aa
 # ╠═64b55bc9-0245-4dcc-94b0-c6a7e26b224c
+# ╠═92692d46-1b57-4daa-b78d-c5aef609ed86
+# ╠═d02c928d-7d1a-4d52-8ba1-e2fa9060fe13
+# ╠═223637d8-da9e-4342-a138-4c272a524d2c
 # ╠═ddfde8bb-ddff-44bb-8b70-b397725402cf
 # ╟─aa1c494e-ccbf-4a0c-8d44-5f12d47f6e8c
 # ╠═af6ea59b-06a0-4527-9b6d-344e54dc3bee
@@ -2038,6 +2618,11 @@ end
 # ╠═b799b240-dca4-4fa6-9d5f-441bfb1aeb3a
 # ╠═c1a8d98e-607c-45d4-8938-e637c29c3a1d
 # ╠═c4cff265-44d8-46ec-8f85-5ea800acb7fa
+# ╟─0ce17aa0-bd0c-4813-b09c-381465738c9f
+# ╠═fe89ba85-3be6-445c-bc71-3a6fc06dad30
+# ╠═61dd42aa-407d-4e2c-b34d-c3780af61881
+# ╠═7576c790-cd95-4588-939d-e725422a4d86
+# ╠═16bbe3bb-310a-4cc6-8e66-e18e69228bb8
 # ╠═a2ce06aa-31e8-4533-8617-40cb0f02b292
 # ╟─c0231062-8372-44c3-a3f0-574d39a1c326
 # ╟─3e8869e6-4f74-4ac8-a048-10d55aa76e20
