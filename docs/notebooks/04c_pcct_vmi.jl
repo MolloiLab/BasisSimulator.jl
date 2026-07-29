@@ -4250,6 +4250,77 @@ nchannel_final_acceptance = let
     )
 end
 
+# ╔═╡ 6c6911c7-df21-4de2-8b80-0f333712c398
+md"""
+### First-principles stopping rule and claim classification
+
+#### Guaranteed by construction
+
+- For a positive water basis, the aggregate count is continuous and strictly
+  decreasing in water area density at fixed iodine area density. A bracketed
+  aggregate root is therefore unique when it exists.
+- The complete native-bin conditional allocation objective is scalar after
+  that aggregate constraint.
+- The bounded all-channel profile construction is an exact dimensional
+  reduction of the declared two-parameter quasi-likelihood.
+- Every retained native bin enters the production and reference estimators.
+
+#### Numerically validated here
+
+- Generic K = 2, 4, and 8 forward derivatives and noiseless recovery.
+- Channel permutation and exposure scaling.
+- Fast Fisher production solver agreement with 1,443 stratified bounded
+  reference rays, including every warning ray.
+- Identical angular response, FBP kernel, matrix, and voxel grid for water,
+  iodine, and the all-photon guide.
+- Thirty-seed covariance/NPS/radial-edge TTF analysis at the original dose.
+- Thirty seeds at each of 1×, 4×, and 16× exposure. Raw VMI noise follows
+  approximately dose\(^{-1/2}\) at every energy.
+
+#### Empirical image-quality findings
+
+- The fixed-dose raw noise curve is reproducibly U-shaped. Extreme attenuation
+  and beam hardening make 40 keV especially noisy; high-energy growth follows
+  from the water–iodine covariance geometry.
+- Exact Leng HYPR-LR, Gaussian filtering, unconditional ridge, gated ridge,
+  and standard guided filtering all reduce ROI noise, but no tested method
+  jointly satisfies the prespecified dense-energy monotonicity, target/guide
+  structure-transfer, and 5% TTF50 requirements.
+- A 4× exposure produces raw common-kernel noise near 47 HU at 60 keV and
+  23 HU at 70 keV without spatial postprocessing. A 16× exposure produces
+  about 81 HU at 40 keV. These are diagnostic exposure levels, not a proposed
+  silent protocol substitution.
+- Iodine NIST linearity is close to unity. Calcium departs most strongly at
+  the lowest and highest energies, consistent with the limits of a
+  water–iodine two-basis representation.
+
+#### Unresolved assumptions and required data
+
+- The simulator exposes detector Monte-Carlo count moments but not a complete
+  object- and count-rate-dependent covariance after pileup correction,
+  scatter correction, row combination, and logarithmic conversion. The
+  independent-Poisson objective therefore remains explicitly a
+  quasi-likelihood.
+- A calibrated post-correction covariance LUT would be required to test a
+  covariance-weighted production estimator rigorously.
+- Clinical claims still require scanner-specific repeated acquisitions,
+  task-specific TTF/NPS, and a matched clinical slice/exposure comparator.
+
+#### Paper wording that must change
+
+- Replace unqualified “generalized Cong” with “Cong-inspired K-channel
+  profiled likelihood estimator, supplemented by an exact monotone Cong-like
+  aggregate-channel reference path.”
+- Do not claim global convergence of profiled Fisher scoring; report the
+  bounded-reference audit and convergence diagnostics.
+- Call the corrected-data Poisson objective a quasi-likelihood.
+- Do not call the ridge or gated method HYPR-LR. Retain exact Leng HYPR-LR as
+  its own baseline.
+- Do not claim monotonic VMI noise or resolution-preserving denoising from the
+  present 1× experiment.
+- State the 4.941 mm, 14-row slab and the matched angular/FBP transfer.
+"""
+
 # ╔═╡ Cell order:
 # ╠═171294a2-26bd-49e2-ac92-9df48ae5444f
 # ╠═69358294-97f2-4782-94d7-c29c747c45f4
@@ -4350,3 +4421,4 @@ end
 # ╠═c2687091-4959-46cf-8157-900d676d53a7
 # ╟─dc528bfc-ea84-4fc7-b222-3dccf49c32b2
 # ╠═8c2ee485-2bde-405d-b5ca-e60ac97bc970
+# ╟─6c6911c7-df21-4de2-8b80-0f333712c398
