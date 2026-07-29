@@ -3238,6 +3238,260 @@ let
     """
 end
 
+# ╔═╡ e52a8e9b-5ce2-45e3-880d-9604a43a5740
+md"""
+### Legacy per-basis-filter + Kalender-ACNR comparator
+
+The older PCCT notebook reaches a monotonic noise curve using a soft custom
+iodine reconstruction filter, `SoftFilter` for water, and four passes of
+`apply_acnr_kalender!`. That chain is copied here only as a comparator after
+the new four-bin row-combined profile solve.
+
+It is not accepted merely for matching HU noise. Different basis filters can
+make spatial transfer depend on energy and material composition. The result is
+therefore compared directly with the common-filter control at the iodine edge.
+"""
+
+# ╔═╡ 75c4e16e-63ca-4fc6-b30b-a7071f8b030a
+nchannel_slab_legacy_basis = let
+    nrows = sim_bins.geom.n_rows
+    function reconstruct_basis(sino_one_row,filter)
+        repeated = repeat(sino_one_row,1,nrows,1)
+        sino_gpu = to_gpu(Float32.(repeated))
+        ws = BS.create_fdk_recon_workspace(
+            sino_gpu,sim_bins.geom,recon_opts.matrix_size;filter,
+        )
+        volume = Float32.(Array(BS.reconstruct!(ws,sino_gpu,sim_bins.geom)))
+        ws = nothing
+        sino_gpu = nothing
+        GC.gc(true)
+        volume
+    end
+    iodine_filter = BS.CustomFilter(
+        (0.0,0.25,0.5,0.75,1.0),
+        (1.0,0.40,0.12,0.03,0.001),
+    )
+    Ivol = reconstruct_basis(
+        sino_basis_nchannel_slab.sino_iodine,iodine_filter,
+    )
+    Wvol = reconstruct_basis(
+        sino_basis_nchannel_slab.sino_water,BS.SoftFilter(),
+    )
+    z = nchannel_slab_guide.z
+    (
+        iodine=reshape(copy(Ivol[:,:,z]),size(Ivol,1),size(Ivol,2),1),
+        water=reshape(copy(Wvol[:,:,z]),size(Wvol,1),size(Wvol,2),1),
+        z=z,
+    )
+end;
+
+# ╔═╡ f007ad74-bbd5-4649-a437-a492223782bb
+nchannel_slab_legacy_acnr = let
+    W = copy(nchannel_slab_legacy_basis.water)
+    I = copy(nchannel_slab_legacy_basis.iodine)
+    info = BS.apply_acnr_kalender!(W,I;passes=4,beta_max=20.0)
+    energies = fisher_acnr.energies
+    mu = Dict{Float64,Array{Float32,3}}()
+    for E in energies
+        μW = BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+        μI = BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine,E)
+        mu[E] = @. Float32(μW*W+μI*I)
+    end
+    (water=W,iodine=I,mu=mu,energies=energies,info=info)
+end;
+
+# ╔═╡ 5a77b578-b9d4-4c7f-876f-bc29609b786d
+nchannel_slab_legacy_audit = let
+    x = nchannel_slab_legacy_acnr
+    mask = fisher_acnr.water_mask
+    z = nchannel_slab_guide.z
+    common = Dict(
+        E => reshape(
+            nchannel_slab_common_fbp.mu[E][:,:,z],
+            size(x.mu[E])...,
+        )
+        for E in x.energies
+    )
+    noise = [
+        1000std(filter(isfinite,vec(x.mu[E][:,:,1][mask]))) /
+        BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+        for E in x.energies
+    ]
+    edge_ratio = [
+        nchannel_edge_width(x.mu[E]).width_10_90 /
+        nchannel_edge_width(common[E]).width_10_90
+        for E in x.energies
+    ]
+    (
+        noise=noise,edge_ratio=edge_ratio,
+        monotonic=all(diff(noise) .≤ 0),
+    )
+end;
+
+# ╔═╡ 537298be-9e17-4b7a-87c9-1b700f54541e
+let
+    a = nchannel_slab_legacy_audit
+    md"""
+    **Legacy-chain adversarial gate**
+
+    - VMI noise (HU): **$(join(round.(a.noise,digits=1),", "))**
+    - Strictly monotonic: **$(a.monotonic)**
+    - Legacy/common-filter iodine-edge width ratios:
+      **$(join(round.(a.edge_ratio,digits=3),", "))**
+
+    A noise pass with edge ratios outside 0.95–1.05 is evidence that the
+    apparent gain was purchased with energy-dependent spatial transfer.
+    """
+end
+
+# ╔═╡ 1224fc4c-12b3-4fd9-8daa-dc26df89e061
+md"""
+### Common-filter Kalender-ACNR control
+
+This isolates ACNR from unequal reconstruction kernels. Water and iodine both
+come from the same `SoftFilter` reconstruction of the row-combined,
+four-channel profile estimate. The identical legacy ACNR parameters are then
+applied to the central slab image.
+"""
+
+# ╔═╡ 78c2aac2-e8fd-4916-8bbe-9ed094268084
+nchannel_slab_common_acnr = let
+    z = nchannel_slab_guide.z
+    W0 = nchannel_slab_common_fbp.vol_water[:,:,z]
+    I0 = nchannel_slab_common_fbp.vol_iodine[:,:,z]
+    W = reshape(copy(W0),size(W0,1),size(W0,2),1)
+    I = reshape(copy(I0),size(I0,1),size(I0,2),1)
+    Wraw = reshape(W0,size(W))
+    Iraw = reshape(I0,size(I))
+    info = BS.apply_acnr_kalender!(W,I;passes=4,beta_max=20.0)
+    energies = fisher_acnr.energies
+    mu = Dict{Float64,Array{Float32,3}}()
+    raw = Dict{Float64,Array{Float32,3}}()
+    for E in energies
+        μW = BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+        μI = BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine,E)
+        mu[E] = @. Float32(μW*W+μI*I)
+        raw[E] = @. Float32(μW*Wraw+μI*Iraw)
+    end
+    (water=W,iodine=I,mu=mu,raw=raw,energies=energies,info=info)
+end;
+
+# ╔═╡ d5b808f4-aed7-424c-87a2-334aee99a8a7
+nchannel_slab_common_acnr_audit = let
+    x = nchannel_slab_common_acnr
+    mask = fisher_acnr.water_mask
+    noise = [
+        1000std(filter(isfinite,vec(x.mu[E][:,:,1][mask]))) /
+        BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+        for E in x.energies
+    ]
+    edge_ratio = [
+        nchannel_edge_width(x.mu[E]).width_10_90 /
+        nchannel_edge_width(x.raw[E]).width_10_90
+        for E in x.energies
+    ]
+    (
+        noise=noise,edge_ratio=edge_ratio,
+        monotonic=all(diff(noise) .≤ 0),
+    )
+end;
+
+# ╔═╡ 07eb760d-5fcd-4718-a6b8-dd78c406fc4c
+let
+    a = nchannel_slab_common_acnr_audit
+    md"""
+    **Common-filter ACNR gate**
+
+    - VMI noise (HU): **$(join(round.(a.noise,digits=1),", "))**
+    - Strictly monotonic: **$(a.monotonic)**
+    - ACNR/raw iodine-edge width ratios:
+      **$(join(round.(a.edge_ratio,digits=3),", "))**
+    """
+end
+
+# ╔═╡ 60b31144-99bf-416a-a99d-ad0c831f21f1
+md"""
+### Common-FBP-kernel noise–resolution frontier
+
+The same reconstruction filter is applied to both material sinograms at every
+energy. This is the admissible kernel comparison: it cannot create a favorable
+energy curve by assigning water and iodine different spatial bandwidths.
+Noise is reported together with the iodine-insert edge width.
+"""
+
+# ╔═╡ 5c9227b8-092d-488d-8735-297710d510ae
+nchannel_common_filter_frontier = let
+    filters = [
+        (name="Standard",filter=BS.StandardFilter()),
+        (name="Soft",filter=BS.SoftFilter()),
+        (name="Cosine",filter=BS.CosineFilter()),
+        (name="Hamming",filter=BS.HammingFilter()),
+        (name="Hann",filter=BS.HannFilter()),
+    ]
+    energies = fisher_acnr.energies
+    mask = fisher_acnr.water_mask
+    nrows = sim_bins.geom.n_rows
+    function reconstruct_slice(sino_one_row,filter)
+        repeated = repeat(sino_one_row,1,nrows,1)
+        sino_gpu = to_gpu(Float32.(repeated))
+        ws = BS.create_fdk_recon_workspace(
+            sino_gpu,sim_bins.geom,recon_opts.matrix_size;filter,
+        )
+        volume = Float32.(Array(BS.reconstruct!(ws,sino_gpu,sim_bins.geom)))
+        ws = nothing
+        sino_gpu = nothing
+        GC.gc(true)
+        z = nchannel_slab_guide.z
+        reshape(copy(volume[:,:,z]),size(volume,1),size(volume,2),1)
+    end
+    map(filters) do spec
+        W = reconstruct_slice(
+            sino_basis_nchannel_slab.sino_water,spec.filter,
+        )
+        I = reconstruct_slice(
+            sino_basis_nchannel_slab.sino_iodine,spec.filter,
+        )
+        mu = Dict{Float64,Array{Float32,3}}()
+        for E in energies
+            μW = BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+            μI = BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine,E)
+            mu[E] = @. Float32(μW*W+μI*I)
+        end
+        noise = [
+            1000std(filter(isfinite,vec(mu[E][:,:,1][mask]))) /
+            BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+            for E in energies
+        ]
+        widths = [
+            nchannel_edge_width(mu[E]).width_10_90 for E in energies
+        ]
+        (
+            name=spec.name,noise=noise,widths=widths,
+            monotonic=all(diff(noise) .≤ 0),
+        )
+    end
+end;
+
+# ╔═╡ 37ea1649-76db-4df2-a81d-49c7f2f618cc
+let
+    rows = String[
+        "| common filter | σ HU at 40/70/100/140 | iodine-edge width px | monotonic |",
+        "|:--|:--|:--|:--:|",
+    ]
+    for x in nchannel_common_filter_frontier
+        push!(
+            rows,
+            "| $(x.name) | $(join(round.(x.noise,digits=1),", ")) | " *
+            "$(join(round.(x.widths,digits=2),", ")) | $(x.monotonic) |",
+        )
+    end
+    md"""
+    **Common-filter frontier**
+
+    $(join(rows,"\n"))
+    """
+end
+
 # ╔═╡ 2d447ccd-b408-42a6-8a1b-af770e3277e4
 md"""
 ## Direct FBP of the Material Sinograms
@@ -3737,6 +3991,18 @@ end
 # ╠═85a00a06-7463-4f32-83ba-6eb97edb6200
 # ╠═ea6e51b1-1f04-4460-a1ac-13056d0ff970
 # ╟─5ae66a29-ae16-4d85-9513-f22ab55ee960
+# ╟─e52a8e9b-5ce2-45e3-880d-9604a43a5740
+# ╠═75c4e16e-63ca-4fc6-b30b-a7071f8b030a
+# ╠═f007ad74-bbd5-4649-a437-a492223782bb
+# ╠═5a77b578-b9d4-4c7f-876f-bc29609b786d
+# ╟─537298be-9e17-4b7a-87c9-1b700f54541e
+# ╟─1224fc4c-12b3-4fd9-8daa-dc26df89e061
+# ╠═78c2aac2-e8fd-4916-8bbe-9ed094268084
+# ╠═d5b808f4-aed7-424c-87a2-334aee99a8a7
+# ╟─07eb760d-5fcd-4718-a6b8-dd78c406fc4c
+# ╟─60b31144-99bf-416a-a99d-ad0c831f21f1
+# ╠═5c9227b8-092d-488d-8735-297710d510ae
+# ╟─37ea1649-76db-4df2-a81d-49c7f2f618cc
 # ╟─2d447ccd-b408-42a6-8a1b-af770e3277e4
 # ╠═1ff5e801-ef54-45ff-b0a8-e780e2e6cb63
 # ╟─65a40efc-c9ff-41d4-8f42-46d6737119d5
