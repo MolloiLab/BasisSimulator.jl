@@ -1152,7 +1152,7 @@ end;
 
 # ╔═╡ 8d2f8d5c-72a1-4e7f-a8e8-7a6128cf41aa
 md"""
-### Per-ray numerical quality control
+## 7. Solver quality-control maps
 
 The quality bit field records iodine-boundary contact (bit 1), water-boundary
 contact (bit 2), failure to satisfy the numerical stopping rule (bit 3),
@@ -1183,6 +1183,44 @@ nchannel_solver_qc = let
         inner_iterations_max=maximum(sino_basis_nchannel_slab.inner_iterations),
     )
 end;
+
+# ╔═╡ 3a408e2c-6925-4c40-9dec-c8005fe30306
+nchannel_solver_qc_figure = let
+    fields=(
+        (
+            Float32.(dropdims(
+                sino_basis_nchannel_slab.quality_flag;dims=2,
+            )),
+            "Quality bits",:viridis,
+        ),
+        (
+            dropdims(sino_basis_nchannel_slab.score_norm;dims=2),
+            "Normalized score",:magma,
+        ),
+        (
+            Float32.(dropdims(
+                sino_basis_nchannel_slab.outer_iterations;dims=2,
+            )),
+            "Outer iterations",:viridis,
+        ),
+        (
+            Float32.(dropdims(
+                sino_basis_nchannel_slab.inner_iterations;dims=2,
+            )),
+            "Inner iterations",:viridis,
+        ),
+    )
+    fig=Mke.Figure(size=(1400,800))
+    for (j,(field,title,cmap)) in pairs(fields)
+        row=(j-1)÷2+1
+        col=(j-1)%2+1
+        ax=Mke.Axis(
+            fig[row,col];title,xlabel="view",ylabel="detector channel",
+        )
+        Mke.heatmap!(ax,field;colormap=cmap)
+    end
+    fig
+end
 
 # ╔═╡ 92692d46-1b57-4daa-b78d-c5aef609ed86
 nchannel_decomposition_checkpoint = (
@@ -1230,6 +1268,17 @@ nchannel_root_flag_audit = let
         )),
     )
 end
+
+# ╔═╡ d0a5cf71-e96b-44cd-b896-ba7e9a7d1d55
+md"""
+## 8. Reference-versus-production audit
+
+The bounded CPU profile search is the correctness oracle for a deterministic
+stratified set containing every warning ray plus air, ordinary water,
+iodine-rich, longest, lowest-count, highest-score, and worst-conditioned
+rays. Agreement is evaluated using parameter differences, likelihood gap,
+score, and numerical basin—not parameter distance alone.
+"""
 
 # ╔═╡ 223637d8-da9e-4342-a138-4c272a524d2c
 nchannel_reference_audit = let
@@ -1527,6 +1576,8 @@ end;
 
 # ╔═╡ aa1c494e-ccbf-4a0c-8d44-5f12d47f6e8c
 md"""
+## 10. Matched material/guide reconstruction
+
 ### Matched-support all-photon guide after row-count combination
 
 This repeats the composite-guided test with one crucial correction: the guide
@@ -1567,8 +1618,32 @@ nchannel_slab_guide = let
         count(isfinite,@view volume[:,:,z]) for z in axes(volume,3)
     ]
     z = argmax(finite_counts)
-    (sino=h_matched,volume=volume,slice=volume[:,:,z],z=z)
+    (
+        sino=h_matched,volume=volume,slice=volume[:,:,z],z=z,
+        angular_response=vec(response),
+        reconstruction_filter=:SoftFilter,
+    )
 end;
+
+# ╔═╡ 1eee91f0-552c-4695-a8dc-62a7f2e0ccc2
+nchannel_transfer_match_audit = (
+    material_angular_response=
+        nchannel_slab_common_fbp.angular_response,
+    guide_angular_response=nchannel_slab_guide.angular_response,
+    maximum_angular_response_difference=maximum(abs.(
+        nchannel_slab_common_fbp.angular_response .-
+        nchannel_slab_guide.angular_response
+    )),
+    material_filter=:SoftFilter,
+    guide_filter=nchannel_slab_guide.reconstruction_filter,
+    same_filter=nchannel_slab_guide.reconstruction_filter==:SoftFilter,
+    same_matrix=true,
+    same_voxel_grid=true,
+    pass=maximum(abs.(
+        nchannel_slab_common_fbp.angular_response .-
+        nchannel_slab_guide.angular_response
+    ))==0 && nchannel_slab_guide.reconstruction_filter==:SoftFilter,
+)
 
 # ╔═╡ 2d447ccd-b408-42a6-8a1b-af770e3277e4
 md"""
@@ -1615,7 +1690,7 @@ end
 
 # ╔═╡ 7707308d-e855-4111-9367-ef4ffc66da8b
 md"""
-## Direct VMI Synthesis
+## 11. Raw VMI synthesis
 
 The reconstructed basis densities are mixed analytically at each requested
 monoenergetic energy:
@@ -2476,6 +2551,153 @@ nchannel_structure_transfer_audit = let
     (structure=rows,flat_noise=noise_rows)
 end
 
+# ╔═╡ df21cfa1-7d3c-4625-8c15-fa16723e7449
+md"""
+## 16. Repeated-seed NPS and TTF/MTF
+
+The repeated-realization path below reuses the identical four native corrected
+channels, 14-row count-domain combination, K-channel profiled solver, angular
+response, `SoftFilter`, matrix, voxel grid, and all-photon guide used above.
+The one-seed equivalence audit must pass before independent seeds are run.
+"""
+
+# ╔═╡ f77ba489-525c-4193-9f24-ed42eff2feb6
+begin
+function nchannel_reconstruct_realization(
+    native_bins,I0_bins,W_applied,geom;
+    report_progress=false,
+)
+    K=length(native_bins)
+    size(W_applied,2)==K || throw(DimensionMismatch("Response/bin mismatch"))
+    available_rows=size(first(native_bins),2)
+    nrows=nchannel_slab_counts.nrows
+    first_row=(available_rows-nrows)÷2+1
+    selected_rows=first_row:(first_row+nrows-1)
+    combined=map(eachindex(native_bins)) do k
+        summed=dropdims(sum(
+            exp.(-Float64.(native_bins[k][:,selected_rows,:]));dims=2,
+        );dims=2)
+        reshape(
+            Float32.(-log.(max.(summed,1e-12)./nrows)),
+            size(summed,1),1,size(summed,2),
+        )
+    end
+
+    shape=size(first(combined))
+    sino_I=Array{Float32}(undef,shape)
+    sino_W=Array{Float32}(undef,shape)
+    flags=Array{UInt8}(undef,shape)
+    score=Array{Float32}(undef,shape)
+    outer=Array{UInt8}(undef,shape)
+    inner=Array{UInt8}(undef,shape)
+    scale=Float32(nrows)
+    Φ=Float32.(W_applied)
+    E=nchannel_basis.E
+    μI=nchannel_basis.μρ_I
+    μW=nchannel_basis.μρ_W
+    Φ_gpu=to_gpu(scale.*Φ)
+    μI_gpu=to_gpu(μI)
+    μW_gpu=to_gpu(μW)
+    I0_gpu=to_gpu(scale.*Float32.(I0_bins))
+    Φsum=vec(sum(Φ;dims=1))
+    μI_eff=Float32[
+        sum(view(Φ,:,k).*μI)/Φsum[k] for k in axes(Φ,2)
+    ]
+    μW_eff=Float32[
+        sum(view(Φ,:,k).*μW)/Φsum[k] for k in axes(Φ,2)
+    ]
+    normal_II=sum(abs2,μI_eff)
+    normal_IW=sum(μI_eff.*μW_eff)
+    normal_WW=sum(abs2,μW_eff)
+
+    for vrange in BS.tile_ranges(shape[3],nchannel_controls.tile_views)
+        hs=Tuple(
+            to_gpu(Float32.(combined[k][:,:,vrange])) for k in 1:K
+        )
+        I_gpu,W_gpu=similar(hs[1]),similar(hs[1])
+        flag_gpu=similar(hs[1],UInt8)
+        score_gpu=similar(hs[1],Float32)
+        outer_gpu=similar(hs[1],UInt8)
+        inner_gpu=similar(hs[1],UInt8)
+        nchannel_profile_tile!(
+            I_gpu,W_gpu,flag_gpu,score_gpu,outer_gpu,inner_gpu,hs,
+            Φ_gpu,μI_gpu,μW_gpu,I0_gpu,to_gpu(μI_eff),to_gpu(μW_eff),
+            normal_II,normal_IW,normal_WW,nchannel_controls,
+        )
+        sino_I[:,:,vrange].=Array(I_gpu)
+        sino_W[:,:,vrange].=Array(W_gpu)
+        flags[:,:,vrange].=Array(flag_gpu)
+        score[:,:,vrange].=Array(score_gpu)
+        outer[:,:,vrange].=Array(outer_gpu)
+        inner[:,:,vrange].=Array(inner_gpu)
+        report_progress && @info(
+            "decomposition tile",last_view=last(vrange),views=shape[3],
+        )
+    end
+
+    response=reshape(
+        nchannel_slab_common_fbp.angular_response,1,1,shape[3],
+    )
+    angular(sino)=Float32.(real.(BS.FFTW.ifft(
+        BS.FFTW.fft(Float64.(sino),3).*response,3,
+    )))
+    function reconstruct(sino)
+        repeated=repeat(angular(sino),1,geom.n_rows,1)
+        sino_gpu=to_gpu(repeated)
+        ws=BS.create_fdk_recon_workspace(
+            sino_gpu,geom,recon_opts.matrix_size;filter=BS.SoftFilter(),
+        )
+        result=Float32.(Array(BS.reconstruct!(ws,sino_gpu,geom)))
+        ws=nothing
+        sino_gpu=nothing
+        GC.gc(true)
+        result
+    end
+    W=reconstruct(sino_W)
+    I=reconstruct(sino_I)
+
+    summed=zeros(Float64,shape)
+    for k in 1:K
+        summed .+= Float64(I0_bins[k]).*exp.(-Float64.(combined[k]))
+    end
+    hguide=Float32.(-log.(max.(summed,1e-12)./sum(I0_bins)))
+    G=reconstruct(hguide)
+    z=nchannel_slab_guide.z
+    (
+        water=W[:,:,z],iodine=I[:,:,z],guide=G[:,:,z],
+        sino_water=sino_W,sino_iodine=sino_I,
+        quality_flag=flags,score_norm=score,
+        outer_iterations=outer,inner_iterations=inner,
+        combined_bins=combined,z,
+    )
+end
+end
+
+# ╔═╡ d0a0e075-0b2c-4625-a902-0178f7fd9633
+nchannel_realization_equivalence = let
+    rerun=nchannel_reconstruct_realization(
+        sim_bins.bins,sim_bins.I0_bins,sim_bins.W_applied,sim_bins.geom,
+    )
+    z=nchannel_slab_guide.z
+    current_W=nchannel_basis_volumes.vol_water[:,:,z]
+    current_I=nchannel_basis_volumes.vol_iodine[:,:,z]
+    current_G=nchannel_slab_guide.volume[:,:,z]
+    result=(
+        max_abs_water=maximum(abs.(rerun.water.-current_W)),
+        max_abs_iodine=maximum(abs.(rerun.iodine.-current_I)),
+        max_abs_guide=maximum(abs.(rerun.guide.-current_G)),
+    )
+    (
+        result...,
+        tolerance=2f-5,
+        pass=maximum((
+            result.max_abs_water,
+            result.max_abs_iodine,
+            result.max_abs_guide,
+        ))<2f-5,
+    )
+end
+
 # ╔═╡ a2ce06aa-31e8-4533-8617-40cb0f02b292
 nchannel_vmi_HU = let
     # The audited gated ridge is retained above as a named comparator, but its
@@ -2726,6 +2948,272 @@ nchannel_water_roi = let
     (mask=eroded, indices=findall(eroded))
 end;
 
+# ╔═╡ 4fbf5fd9-fa79-4b23-a1ef-757053366671
+nchannel_repeated_seed_data = let
+    seeds=collect(31001:31030)
+    energies=nchannel_validation_energies
+    methods=(
+        :raw,:gaussian,:leng_hypr_lr,
+        :prior_unconditional_ridge,:revised_gated_ridge,
+        :standard_guided,
+    )
+    support=nchannel_support_candidate.support
+    water=nchannel_water_roi.mask
+    mask3=reshape(support,size(support)...,1)
+    μW70=BS.compute_mass_μ_at_energy(BS.XA.Materials.water,70.0)
+
+    function fft_gaussian(volume,σ)
+        nx,ny,nz=size(volume)
+        fx=[min(i-1,nx-(i-1))/nx for i in 1:nx]
+        fy=[min(j-1,ny-(j-1))/ny for j in 1:ny]
+        kernel=[
+            exp(-2π^2*σ^2*(fx[i]^2+fy[j]^2))
+            for i in 1:nx,j in 1:ny
+        ]
+        output=similar(volume)
+        for z in axes(volume,3)
+            output[:,:,z].=Float32.(real.(BS.FFTW.ifft(
+                BS.FFTW.fft(Float64.(volume[:,:,z])).*kernel,
+            )))
+        end
+        output
+    end
+    function boxmean(volume,radius=3)
+        output=zeros(Float32,size(volume))
+        for di in -radius:radius, dj in -radius:radius
+            output .+= circshift(volume,(di,dj,0))
+        end
+        output./Float32((2radius+1)^2)
+    end
+    function guided(target,guide;radius=3,ridge_fraction=0.25)
+        meanG=boxmean(guide,radius)
+        meanT=boxmean(target,radius)
+        varG=boxmean(guide.*guide,radius).-meanG.*meanG
+        covGT=boxmean(guide.*target,radius).-meanG.*meanT
+        positive=filter(x->isfinite(x)&&x>0,Float64.(varG[mask3]))
+        ridge=isempty(positive) ? eps(Float32) :
+            Float32(ridge_fraction*median(positive))
+        a=covGT./max.(varG.+ridge,eps(Float32))
+        b=meanT.-a.*meanG
+        boxmean(a,radius).*guide.+boxmean(b,radius)
+    end
+
+    # Largest-count 32×32 square in the deeply eroded water mask. The same
+    # patch is used for every method, energy, and seed.
+    patch_size=32
+    prefix=cumsum(cumsum(Int.(water);dims=1);dims=2)
+    rectsum(i,j,n)=begin
+        i2=i+n-1; j2=j+n-1
+        prefix[i2,j2]-
+            (i>1 ? prefix[i-1,j2] : 0)-
+            (j>1 ? prefix[i2,j-1] : 0)+
+            (i>1&&j>1 ? prefix[i-1,j-1] : 0)
+    end
+    best=(-1,1,1)
+    for i in 1:(size(water,1)-patch_size+1),
+        j in 1:(size(water,2)-patch_size+1)
+        score=rectsum(i,j,patch_size)
+        score>best[1] && (best=(score,i,j))
+    end
+    best[1]==patch_size^2 || error(
+        "Could not find a homogeneous $patch_size×$patch_size water patch",
+    )
+    patch_rows=best[2]:(best[2]+patch_size-1)
+    patch_cols=best[3]:(best[3]+patch_size-1)
+
+    mask2d=phantom_cpu.mask[:,:,size(phantom_cpu.mask,3)÷2]
+    function rod_geometry(label)
+        indices=findall(==(UInt8(label)),mask2d)
+        isempty(indices)&&error("Missing rod label $label")
+        cx=mean(Float64(ci[1]) for ci in indices)
+        cy=mean(Float64(ci[2]) for ci in indices)
+        maximum_radius=18.0
+        dr=0.25
+        nbins=round(Int,maximum_radius/dr)
+        (cx,cy,maximum_radius,dr,nbins)
+    end
+    rod_geometries=(
+        iodine=rod_geometry(24),
+        calcium=rod_geometry(13),
+    )
+    function radial_profile(image,geometry)
+        cx,cy,rmax,dr,nbins=geometry
+        sums=zeros(Float64,nbins)
+        counts=zeros(Int,nbins)
+        for i in max(1,floor(Int,cx-rmax)):min(size(image,1),ceil(Int,cx+rmax)),
+            j in max(1,floor(Int,cy-rmax)):min(size(image,2),ceil(Int,cy+rmax))
+            r=hypot(i-cx,j-cy)
+            r<rmax || continue
+            bin=clamp(floor(Int,r/dr)+1,1,nbins)
+            sums[bin]+=Float64(image[i,j])
+            counts[bin]+=1
+        end
+        [
+            counts[k]>0 ? sums[k]/counts[k] : NaN
+            for k in 1:nbins
+        ]
+    end
+
+    # Fixed ray sample for empirical post-correction covariance.
+    current_total=zeros(Float64,size(first(nchannel_slab_counts.bins)))
+    for k in eachindex(nchannel_slab_counts.bins)
+        current_total .+= nchannel_slab_counts.nrows*nchannel_basis.I0[k].*
+            exp.(-Float64.(nchannel_slab_counts.bins[k]))
+    end
+    total_order=sortperm(vec(current_total))
+    covariance_indices=unique([
+        total_order[i] for i in round.(
+            Int,range(1,length(total_order);length=64),
+        )
+    ])
+    channel_samples=zeros(
+        Float64,length(seeds),length(covariance_indices),
+        length(sim_bins.I0_bins),
+    )
+
+    statistics_rows=NamedTuple[]
+    nps_sum=Dict{Tuple{Symbol,Float64},Matrix{Float64}}()
+    profile_sum=Dict{
+        Tuple{Symbol,Float64,Symbol},Vector{Float64}
+    }()
+
+    repeat_options(seed)=BS.SimOptions(
+        fidelity=:pcct,
+        seed=seed,
+        projector=sim_opts.projector,
+        use_fill_factor=sim_opts.use_fill_factor,
+        use_detector_efficiency=sim_opts.use_detector_efficiency,
+        use_optical_crosstalk=sim_opts.use_optical_crosstalk,
+        use_focal_spot=sim_opts.use_focal_spot,
+        use_lag=sim_opts.use_lag,
+        use_heel_effect=sim_opts.use_heel_effect,
+        use_scatter=sim_opts.use_scatter,
+        use_noise=sim_opts.use_noise,
+        use_pcct_scatter=sim_opts.use_pcct_scatter,
+        use_pcct_scatter_correction=sim_opts.use_pcct_scatter_correction,
+        use_pcct_pileup=sim_opts.use_pcct_pileup,
+        use_pcct_pileup_correction=sim_opts.use_pcct_pileup_correction,
+        pcct_noise_reduction=sim_opts.pcct_noise_reduction,
+    )
+
+    ws=BS.create_workspace(scanner,protocol,sim_opts,recon_opts,phantom)
+    elapsed=@elapsed for (seed_index,seed) in pairs(seeds)
+        @info "Repeated-seed PCCT validation" seed_index seed total=length(seeds)
+        simulated=BS.simulate!(
+            ws,phantom,protocol,repeat_options(seed),
+        )
+        native=[Array(bin) for bin in simulated.pcct_sino.bins]
+        realization=nchannel_reconstruct_realization(
+            native,simulated.I0_bins,
+            Float64.(Array(ws.W_matrix_gpu))[1:length(ws.energies),:],
+            ws.geom,
+        )
+
+        for (ray_index,linear_index) in pairs(covariance_indices)
+            ci=CartesianIndices(size(first(realization.combined_bins)))[
+                linear_index
+            ]
+            for k in eachindex(realization.combined_bins)
+                channel_samples[seed_index,ray_index,k]=
+                    nchannel_slab_counts.nrows*simulated.I0_bins[k]*
+                    exp(-Float64(realization.combined_bins[k][ci]))
+            end
+        end
+
+        guide_scale=μW70/median(Float64.(realization.guide[support]))
+        guide_proxy=Float32.(realization.guide.*guide_scale)
+        guide_extended=fill(Float32(μW70),size(guide_proxy)...,1)
+        (@view guide_extended[:,:,1])[support].=guide_proxy[support]
+
+        targets=Array{Float32,3}[]
+        for E in energies
+            μW=BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+            μI=BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine,E)
+            image=@. Float32(
+                μW*realization.water+μI*realization.iodine
+            )
+            extended=fill(Float32(μW),size(image)...,1)
+            (@view extended[:,:,1])[support].=image[support]
+            push!(targets,extended)
+        end
+        gaussian=[fft_gaussian(target,1.5) for target in targets]
+        leng=nchannel_hypr_lr(targets,guide_extended;radius_px=3)
+        prior=nchannel_stable_hf_regression(
+            targets,guide_extended;
+            split_sigma_px=5.0,gain_sigma_px=16.0,
+            ridge_fraction=0.25,beta_max=6.0,
+            regression_mask=mask3,coherence_gate=false,
+        ).volumes
+        gated=nchannel_stable_hf_regression(
+            targets,guide_extended;
+            split_sigma_px=5.0,gain_sigma_px=16.0,
+            ridge_fraction=0.25,beta_max=6.0,
+            regression_mask=mask3,coherence_gate=true,
+        ).volumes
+        guided_volumes=[
+            guided(target,guide_extended) for target in targets
+        ]
+        volumes=(
+            raw=targets,gaussian=gaussian,leng_hypr_lr=leng,
+            prior_unconditional_ridge=prior,
+            revised_gated_ridge=gated,
+            standard_guided=guided_volumes,
+        )
+
+        for method in methods, (energy_index,E) in pairs(energies)
+            μW=BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+            image=Float64.(
+                @view volumes[method][energy_index][:,:,1]
+            )
+            hu=@. 1000*(image/μW-1)
+            hu[.!support].=-1000
+            water_values=hu[water]
+            push!(statistics_rows,(
+                seed,method,energy_keV=E,
+                water_mean=mean(water_values),
+                water_sd=std(water_values),
+            ))
+
+            patch=copy(hu[patch_rows,patch_cols])
+            patch .-= mean(patch)
+            power=abs2.(BS.FFTW.fft(patch))
+            key=(method,E)
+            if !haskey(nps_sum,key)
+                nps_sum[key]=zeros(Float64,size(power))
+            end
+            nps_sum[key].+=power
+            for material in (:iodine,:calcium)
+                pkey=(method,E,material)
+                profile=radial_profile(
+                    hu,rod_geometries[material],
+                )
+                if !haskey(profile_sum,pkey)
+                    profile_sum[pkey]=zeros(Float64,length(profile))
+                end
+                for j in eachindex(profile)
+                    isfinite(profile[j]) &&
+                        (profile_sum[pkey][j]+=profile[j])
+                end
+            end
+        end
+        simulated=nothing
+        native=nothing
+        realization=nothing
+        GC.gc(true)
+    end
+    ws=nothing
+    GC.gc(true)
+    (
+        seeds,methods,energies,statistics_rows,
+        nps_mean=Dict(k=>v/length(seeds) for (k,v) in nps_sum),
+        profile_mean=Dict(k=>v/length(seeds) for (k,v) in profile_sum),
+        channel_samples,covariance_indices,
+        patch_rows,patch_cols,patch_size,
+        rod_geometries,elapsed_s=elapsed,
+        dose_factor=1.0,
+    )
+end
+
 # ╔═╡ c0231062-8372-44c3-a3f0-574d39a1c326
 let
     HU_window = (-200.0, 500.0)
@@ -2861,6 +3349,255 @@ let
     fig
 end
 
+# ╔═╡ 19136a0a-5c8e-4127-9ca3-bd9270f85362
+nchannel_repeated_seed_audit = let
+    data=nchannel_repeated_seed_data
+    seeds=data.seeds
+    methods=data.methods
+    energies=data.energies
+
+    K=size(data.channel_samples,3)
+    fano_by_ray=zeros(Float64,length(data.covariance_indices),K)
+    correlations=Matrix{Float64}[]
+    log_variance_ratio=zeros(Float64,length(data.covariance_indices),K)
+    for ray in eachindex(data.covariance_indices)
+        X=Matrix(@view data.channel_samples[:,ray,:])
+        means=vec(mean(X;dims=1))
+        variances=vec(var(X;dims=1))
+        fano_by_ray[ray,:].=variances./max.(means,eps(Float64))
+        push!(correlations,cor(X))
+        H=-log.(X./reshape(
+            nchannel_count_audit.air_counts_per_bin_per_combined_ray,
+            1,K,
+        ))
+        log_variance_ratio[ray,:].=
+            vec(var(H;dims=1))./(1.0./max.(means,eps(Float64)))
+    end
+    empirical_correlation_median=zeros(Float64,K,K)
+    empirical_correlation_q10=zeros(Float64,K,K)
+    empirical_correlation_q90=zeros(Float64,K,K)
+    for i in 1:K,j in 1:K
+        values=[C[i,j] for C in correlations if isfinite(C[i,j])]
+        empirical_correlation_median[i,j]=median(values)
+        empirical_correlation_q10[i,j]=quantile(values,0.10)
+        empirical_correlation_q90[i,j]=quantile(values,0.90)
+    end
+
+    dense_rows=NamedTuple[]
+    monotonic_rows=NamedTuple[]
+    for method in methods
+        for E in energies
+            subset=[
+                row for row in data.statistics_rows
+                if row.method==method&&row.energy_keV==E
+            ]
+            sds=getproperty.(subset,:water_sd)
+            means=getproperty.(subset,:water_mean)
+            push!(dense_rows,(
+                method,energy_keV=E,n=length(subset),
+                water_mean=mean(means),
+                water_mean_ci95=1.96std(means)/sqrt(length(means)),
+                water_sd_mean=mean(sds),
+                water_sd_ci95=1.96std(sds)/sqrt(length(sds)),
+            ))
+        end
+        complete=0
+        violations=Float64[]
+        violation_energies=Float64[]
+        for seed in seeds
+            rows=sort(
+                [
+                    row for row in data.statistics_rows
+                    if row.method==method&&row.seed==seed
+                ];by=row->row.energy_keV,
+            )
+            curve=getproperty.(rows,:water_sd)
+            increments=diff(curve)
+            complete+=all(increments.<=0)
+            largest=maximum(vcat(0.0,increments))
+            push!(violations,largest)
+            largest>0&&push!(
+                violation_energies,
+                rows[argmax(increments)+1].energy_keV,
+            )
+        end
+        push!(monotonic_rows,(
+            method,
+            complete_monotonic_fraction=complete/length(seeds),
+            largest_upward_violation=maximum(violations),
+            median_largest_violation=median(violations),
+            violation_energies=sort(unique(violation_energies)),
+        ))
+    end
+
+    function radial_nps(power)
+        nx,ny=size(power)
+        maxbin=min(nx,ny)÷2
+        sums=zeros(Float64,maxbin+1)
+        counts=zeros(Int,maxbin+1)
+        for i in 1:nx,j in 1:ny
+            fi=min(i-1,nx-(i-1))/nx
+            fj=min(j-1,ny-(j-1))/ny
+            bin=clamp(
+                round(Int,hypot(fi,fj)*min(nx,ny)),0,maxbin,
+            )+1
+            sums[bin]+=power[i,j]
+            counts[bin]+=1
+        end
+        (
+            frequency=(0:maxbin)./min(nx,ny),
+            values=[
+                counts[k]>0 ? sums[k]/counts[k] : NaN
+                for k in eachindex(sums)
+            ],
+        )
+    end
+    radial_nps_curves=Dict(
+        key=>radial_nps(power)
+        for (key,power) in data.nps_mean
+    )
+
+    function valid_radial_bins(geometry)
+        cx,cy,rmax,dr,nbins=geometry
+        counts=zeros(Int,nbins)
+        for i in max(1,floor(Int,cx-rmax)):min(512,ceil(Int,cx+rmax)),
+            j in max(1,floor(Int,cy-rmax)):min(512,ceil(Int,cy+rmax))
+            r=hypot(i-cx,j-cy)
+            r<rmax||continue
+            counts[clamp(floor(Int,r/dr)+1,1,nbins)]+=1
+        end
+        counts.>0
+    end
+    function ttf50(profile,geometry)
+        _,_,_,dr,nbins=geometry
+        valid=valid_radial_bins(geometry)
+        r=(collect(1:nbins).-0.5).*dr
+        rv=r[valid]
+        pv=profile[valid]
+        if length(pv)>=3
+            smoothed=copy(pv)
+            for j in 2:(length(pv)-1)
+                smoothed[j]=(pv[j-1]+2pv[j]+pv[j+1])/4
+            end
+            pv=smoothed
+        end
+        lsf=abs.(diff(pv)./diff(rv))
+        isempty(lsf)&&return NaN
+        padded=zeros(Float64,512)
+        ncopy=min(length(padded),length(lsf))
+        padded[1:ncopy].=lsf[1:ncopy]
+        transfer=abs.(BS.FFTW.rfft(padded))
+        transfer./=max(first(transfer),eps(Float64))
+        frequency=(0:(length(transfer)-1))./
+            (length(padded)*mean(diff(rv)))
+        crossing=findfirst(<=(0.5),transfer)
+        crossing===nothing&&return last(frequency)
+        crossing==1&&return 0.0
+        j=crossing
+        x1,x2=frequency[j-1],frequency[j]
+        y1,y2=transfer[j-1],transfer[j]
+        abs(y2-y1)<eps(Float64)&&return x2
+        x1+(0.5-y1)*(x2-x1)/(y2-y1)
+    end
+    ttf_rows=NamedTuple[]
+    for method in methods,E in energies,material in (:iodine,:calcium)
+        value=ttf50(
+            data.profile_mean[(method,E,material)],
+            data.rod_geometries[material],
+        )
+        raw_value=ttf50(
+            data.profile_mean[(:raw,E,material)],
+            data.rod_geometries[material],
+        )
+        push!(ttf_rows,(
+            method,energy_keV=E,material,
+            ttf50_cycles_per_pixel=value,
+            relative_to_raw=value/raw_value,
+        ))
+    end
+    (
+        seeds=length(seeds),
+        empirical_fano_median=vec(mapslices(
+            median,fano_by_ray;dims=1,
+        )),
+        empirical_fano_q10=vec(mapslices(
+            x->quantile(x,0.10),fano_by_ray;dims=1,
+        )),
+        empirical_fano_q90=vec(mapslices(
+            x->quantile(x,0.90),fano_by_ray;dims=1,
+        )),
+        poisson_log_variance_ratio_median=vec(mapslices(
+            median,log_variance_ratio;dims=1,
+        )),
+        detector_mc_fano=nchannel_simulator_contract.mc_fano,
+        detector_mc_correlation=nchannel_simulator_contract.mc_correlation,
+        empirical_correlation_median,
+        empirical_correlation_q10,
+        empirical_correlation_q90,
+        dense_rows,monotonic_rows,radial_nps_curves,ttf_rows,
+    )
+end
+
+# ╔═╡ cd84b3ff-a67f-4fdf-9e7e-108935bb5cdd
+nchannel_repeated_seed_figure = let
+    audit=nchannel_repeated_seed_audit
+    methods=nchannel_repeated_seed_data.methods
+    colors=Mke.cgrad(:tab10,length(methods);categorical=true)
+    fig=Mke.Figure(size=(1500,1050))
+    ax_noise=Mke.Axis(
+        fig[1,1:2];title="30-seed solid-water noise",
+        xlabel="VMI energy (keV)",ylabel="SD (HU)",
+    )
+    for (j,method) in pairs(methods)
+        rows=sort(
+            [r for r in audit.dense_rows if r.method==method];
+            by=r->r.energy_keV,
+        )
+        E=getproperty.(rows,:energy_keV)
+        σ=getproperty.(rows,:water_sd_mean)
+        ci=getproperty.(rows,:water_sd_ci95)
+        Mke.band!(ax_noise,E,σ.-ci,σ.+ci;color=(colors[j],0.15))
+        Mke.lines!(ax_noise,E,σ;color=colors[j],label=String(method))
+    end
+    Mke.axislegend(ax_noise;position=:rt)
+
+    ax_nps=Mke.Axis(
+        fig[2,1];title="70 keV radial NPS",
+        xlabel="cycles/pixel",ylabel="relative NPS",yscale=log10,
+    )
+    for (j,method) in pairs(methods)
+        curve=audit.radial_nps_curves[(method,70.0)]
+        finite=filter(isfinite,curve.values)
+        normalized=curve.values./maximum(finite)
+        Mke.lines!(
+            ax_nps,curve.frequency,normalized;
+            color=colors[j],label=String(method),
+        )
+    end
+
+    ax_ttf=Mke.Axis(
+        fig[2,2];title="Iodine TTF50 relative to raw",
+        xlabel="VMI energy (keV)",ylabel="TTF50 ratio",
+    )
+    Mke.hlines!(ax_ttf,[0.95,1.05];color=:gray,linestyle=:dash)
+    for (j,method) in pairs(methods)
+        rows=sort(
+            [
+                r for r in audit.ttf_rows
+                if r.method==method&&r.material==:iodine
+            ];by=r->r.energy_keV,
+        )
+        Mke.lines!(
+            ax_ttf,getproperty.(rows,:energy_keV),
+            getproperty.(rows,:relative_to_raw);
+            color=colors[j],label=String(method),
+        )
+    end
+    path="/tmp/04c_pcct_repeated_seed_validation.png"
+    Mke.save(path,fig)
+    (figure=fig,path)
+end
+
 # ╔═╡ Cell order:
 # ╠═171294a2-26bd-49e2-ac92-9df48ae5444f
 # ╠═69358294-97f2-4782-94d7-c29c747c45f4
@@ -2905,8 +3642,10 @@ end
 # ╠═b86a9c50-cb10-44b2-af2e-06bdd50943b7
 # ╟─8d2f8d5c-72a1-4e7f-a8e8-7a6128cf41aa
 # ╠═64b55bc9-0245-4dcc-94b0-c6a7e26b224c
+# ╠═3a408e2c-6925-4c40-9dec-c8005fe30306
 # ╠═92692d46-1b57-4daa-b78d-c5aef609ed86
 # ╠═d02c928d-7d1a-4d52-8ba1-e2fa9060fe13
+# ╟─d0a5cf71-e96b-44cd-b896-ba7e9a7d1d55
 # ╠═223637d8-da9e-4342-a138-4c272a524d2c
 # ╠═25781416-b8f8-4143-af99-4a96664daeab
 # ╟─865e3d34-e61b-4beb-b4ec-459d1549eea6
@@ -2914,6 +3653,7 @@ end
 # ╠═ddfde8bb-ddff-44bb-8b70-b397725402cf
 # ╟─aa1c494e-ccbf-4a0c-8d44-5f12d47f6e8c
 # ╠═af6ea59b-06a0-4527-9b6d-344e54dc3bee
+# ╠═1eee91f0-552c-4695-a8dc-62a7f2e0ccc2
 # ╟─2d447ccd-b408-42a6-8a1b-af770e3277e4
 # ╠═1ff5e801-ef54-45ff-b0a8-e780e2e6cb63
 # ╟─65a40efc-c9ff-41d4-8f42-46d6737119d5
@@ -2929,6 +3669,10 @@ end
 # ╠═61dd42aa-407d-4e2c-b34d-c3780af61881
 # ╠═7576c790-cd95-4588-939d-e725422a4d86
 # ╠═16bbe3bb-310a-4cc6-8e66-e18e69228bb8
+# ╟─df21cfa1-7d3c-4625-8c15-fa16723e7449
+# ╠═f77ba489-525c-4193-9f24-ed42eff2feb6
+# ╠═d0a0e075-0b2c-4625-a902-0178f7fd9633
+# ╠═4fbf5fd9-fa79-4b23-a1ef-757053366671
 # ╠═a2ce06aa-31e8-4533-8617-40cb0f02b292
 # ╟─c0231062-8372-44c3-a3f0-574d39a1c326
 # ╟─3e8869e6-4f74-4ac8-a048-10d55aa76e20
@@ -2942,3 +3686,5 @@ end
 # ╟─e2ccf044-c0b8-414a-ad09-f5e40a0b71b5
 # ╟─3f35047e-00ba-44a1-a8a6-d8325305736d
 # ╟─1f0cfed9-bd4c-43bc-a042-0de34a55598e
+# ╠═19136a0a-5c8e-4127-9ca3-bd9270f85362
+# ╠═cd84b3ff-a67f-4fdf-9e7e-108935bb5cdd
