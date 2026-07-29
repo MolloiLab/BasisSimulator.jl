@@ -642,13 +642,6 @@ end;
 # ╔═╡ 831c3a54-76d2-4dfc-b93a-faf3661518a3
 md"""
 ### Two Material Sinograms
-
-These are the terminal outputs of this notebook:
-
-- `sino_basis_nchannel.sino_iodine`: iodine area density (g/cm²)
-- `sino_basis_nchannel.sino_water`: water area density (g/cm²)
-
-No basis reconstruction or VMI synthesis is performed below.
 """
 
 # ╔═╡ 7bfdb7d7-6a46-4803-88dd-8c08d41a3780
@@ -669,6 +662,278 @@ let
         Mke.Colorbar(fig[r,cb]; colormap=:viridis, colorrange=range, label, width=16)
     end
     fig
+end
+
+# ╔═╡ c456f690-518d-4fb9-941e-a5662b101ff5
+md"""
+## Pre-Reconstruction Statistical Verification
+
+Before applying FBP, filtering, or VMI synthesis, evaluate the final material
+estimate against the complete native four-bin likelihood. For every active
+ray this block records
+
+```math
+\Sigma_{WI,\mathrm{CRLB}}=F^{-1},\qquad
+F=J^\mathsf{T}\operatorname{diag}(\lambda_k^{-1})J,
+```
+
+the water--iodine correlation, the four-bin Poisson deviance, and the
+Fisher-normalized score magnitude. The decomposition itself is not modified.
+
+The empirical covariance check uses the central repeated detector rows of
+this axially uniform phantom as independent realizations of nearly identical
+rays. Their per-ray across-row mean is removed before pooling. This is a
+single-simulation diagnostic; repeated full noise realizations remain the
+strict validation experiment.
+"""
+
+# ╔═╡ f9168282-ad86-446c-ac04-1aac09d4c1a2
+function nchannel_fisher_tile!(
+    var_I, cov_IW, var_W, deviance, score2,
+    sino_I, sino_W, h1, h2, h3, h4,
+    Φ, μρ_I, μρ_W, I0, air_gate::Float32,
+)
+    nE = length(μρ_I)
+    BS.AK.foreachindex(sino_I) do idx
+        h_1, h_2, h_3, h_4 = h1[idx], h2[idx], h3[idx], h4[idx]
+        if max(max(abs(h_1), abs(h_2)), max(abs(h_3), abs(h_4))) < air_gate
+            var_I[idx] = NaN32
+            cov_IW[idx] = NaN32
+            var_W[idx] = NaN32
+            deviance[idx] = NaN32
+            score2[idx] = NaN32
+            return
+        end
+
+        A, C = sino_I[idx], sino_W[idx]
+        y1 = max(I0[1] * exp(-h_1), 1f-6)
+        y2 = max(I0[2] * exp(-h_2), 1f-6)
+        y3 = max(I0[3] * exp(-h_3), 1f-6)
+        y4 = max(I0[4] * exp(-h_4), 1f-6)
+        FAA, FAC, FCC = 0f0, 0f0, 0f0
+        gA, gC, D = 0f0, 0f0, 0f0
+
+        # Deliberately loop over every native channel: no bin is selected or merged.
+        for k in 1:4
+            λ, dA, dC = 0f0, 0f0, 0f0
+            @inbounds for e in 1:nE
+                z = Φ[e,k] * exp(-μρ_I[e]*A - μρ_W[e]*C)
+                λ += z
+                dA -= μρ_I[e] * z
+                dC -= μρ_W[e] * z
+            end
+            λ = max(λ, 1f-6)
+            y = k == 1 ? y1 : k == 2 ? y2 : k == 3 ? y3 : y4
+            q = 1f0 - y/λ
+            gA += q*dA
+            gC += q*dC
+            FAA += dA*dA/λ
+            FAC += dA*dC/λ
+            FCC += dC*dC/λ
+            D += 2f0 * (λ - y + y*log(y/λ))
+        end
+
+        detF = max(FAA*FCC - FAC*FAC, 1f-20)
+        vI = FCC/detF
+        cIW = -FAC/detF
+        vW = FAA/detF
+        var_I[idx], cov_IW[idx], var_W[idx] = vI, cIW, vW
+        deviance[idx] = max(D, 0f0)
+        score2[idx] = max(vI*gA*gA + 2f0*cIW*gA*gC + vW*gC*gC, 0f0)
+    end
+    nothing
+end
+
+# ╔═╡ 54bc4490-08c6-4d61-a687-d491976b2761
+nchannel_fisher = let
+    shape = size(sino_basis_nchannel.sino_iodine)
+    fields = (
+        var_iodine = Array{Float32}(undef, shape),
+        cov_iodine_water = Array{Float32}(undef, shape),
+        var_water = Array{Float32}(undef, shape),
+        deviance = Array{Float32}(undef, shape),
+        score2 = Array{Float32}(undef, shape),
+    )
+    Φ_gpu = to_gpu(nchannel_basis.Φ)
+    μI_gpu = to_gpu(nchannel_basis.μρ_I)
+    μW_gpu = to_gpu(nchannel_basis.μρ_W)
+    I0_gpu = to_gpu(nchannel_basis.I0)
+
+    elapsed = @elapsed for vrange in BS.tile_ranges(
+        shape[3], nchannel_controls.tile_views,
+    )
+        hs = [
+            to_gpu(Float32.(sim_bins.bins[k][:,:,vrange]))
+            for k in 1:4
+        ]
+        I_gpu = to_gpu(
+            Float32.(sino_basis_nchannel.sino_iodine[:,:,vrange])
+        )
+        W_gpu = to_gpu(
+            Float32.(sino_basis_nchannel.sino_water[:,:,vrange])
+        )
+        outs = ntuple(_ -> similar(I_gpu), 5)
+        nchannel_fisher_tile!(
+            outs..., I_gpu, W_gpu, hs...,
+            Φ_gpu, μI_gpu, μW_gpu, I0_gpu, nchannel_controls.air_gate,
+        )
+        for (dest, src) in zip(values(fields), outs)
+            dest[:,:,vrange] .= Array(src)
+        end
+    end
+    @info "Four-bin Fisher verification complete" elapsed_s=round(elapsed,digits=1)
+    merge(fields, (elapsed_s=elapsed,))
+end;
+
+# ╔═╡ a0930dd5-c28e-45a1-9bb6-4be300ba19d2
+nchannel_sinogram_verification = let
+    I = sino_basis_nchannel.sino_iodine
+    W = sino_basis_nchannel.sino_water
+    nrow = size(I,2)
+    rows = max(1, nrow ÷ 4):min(nrow, nrow - nrow ÷ 4)
+    flags = sino_basis_nchannel.boundary_flag
+
+    residual_I = Float64[]
+    residual_W = Float64[]
+    predicted = NTuple{3,Float64}[]
+    for view in axes(I,3), col in axes(I,1)
+        valid_rows = [
+            r for r in rows
+            if flags[col,r,view] == 0x00 &&
+               isfinite(nchannel_fisher.var_iodine[col,r,view])
+        ]
+        length(valid_rows) ≥ 4 || continue
+        mean_I = mean(I[col,valid_rows,view])
+        mean_W = mean(W[col,valid_rows,view])
+        # Exclude air while retaining water-only and insert-bearing object rays.
+        mean_W > 1.0f0 || continue
+        n = length(valid_rows)
+        mean_removal = 1.0 - 1.0/n
+        for r in valid_rows
+            push!(residual_I, Float64(I[col,r,view] - mean_I))
+            push!(residual_W, Float64(W[col,r,view] - mean_W))
+            push!(predicted, (
+                mean_removal*Float64(nchannel_fisher.var_iodine[col,r,view]),
+                mean_removal*Float64(nchannel_fisher.cov_iodine_water[col,r,view]),
+                mean_removal*Float64(nchannel_fisher.var_water[col,r,view]),
+            ))
+        end
+    end
+    length(residual_I) > 100 || error("Too few valid repeated-row samples")
+
+    centered_I = residual_I .- mean(residual_I)
+    centered_W = residual_W .- mean(residual_W)
+    denom = length(residual_I) - 1
+    empirical = [
+        sum(abs2,centered_I)/denom sum(centered_I .* centered_W)/denom
+        sum(centered_I .* centered_W)/denom sum(abs2,centered_W)/denom
+    ]
+    predicted_mean = [
+        mean(first.(predicted)) mean(getindex.(predicted,2))
+        mean(getindex.(predicted,2)) mean(last.(predicted))
+    ]
+    empirical_rho = empirical[1,2] / sqrt(empirical[1,1]*empirical[2,2])
+    predicted_rho = predicted_mean[1,2] /
+        sqrt(predicted_mean[1,1]*predicted_mean[2,2])
+    finite_deviance = filter(isfinite, vec(nchannel_fisher.deviance))
+    finite_score2 = filter(isfinite, vec(nchannel_fisher.score2))
+
+    (
+        rows=rows, n_samples=length(residual_I),
+        empirical=empirical, predicted=predicted_mean,
+        variance_ratio=[
+            empirical[1,1]/predicted_mean[1,1],
+            empirical[2,2]/predicted_mean[2,2],
+        ],
+        empirical_rho=empirical_rho, predicted_rho=predicted_rho,
+        deviance_median=median(finite_deviance),
+        deviance_p95=quantile(finite_deviance,0.95),
+        score2_median=median(finite_score2),
+        score2_p95=quantile(finite_score2,0.95),
+        boundary_fraction=count(x -> !iszero(x),flags)/length(flags),
+    )
+end;
+
+# ╔═╡ 7d987c7a-50ac-4827-9145-d07efe14747a
+let
+    d = nchannel_sinogram_verification
+    labels = ["Iodine variance","Water variance"]
+    empirical = [d.empirical[1,1],d.empirical[2,2]]
+    predicted = [d.predicted[1,1],d.predicted[2,2]]
+
+    fig = Mke.Figure(size=(1180,500))
+    ax1 = Mke.Axis(
+        fig[1,1];
+        title="Empirical Repeated-Row Covariance vs CRLB",
+        subtitle="$(d.n_samples) samples; bars are variances",
+        xticks=(1:2,labels), ylabel="Variance (basis units²)",
+        yscale=log10,
+    )
+    Mke.barplot!(
+        ax1,[0.82,1.82],predicted;
+        color=:steelblue,strokecolor=:black,strokewidth=1,
+    )
+    Mke.barplot!(
+        ax1,[1.18,2.18],empirical;
+        color=:darkorange,strokecolor=:black,strokewidth=1,
+    )
+    Mke.axislegend(
+        ax1,
+        [
+            Mke.PolyElement(color=:steelblue),
+            Mke.PolyElement(color=:darkorange),
+        ],
+        ["Mean F⁻¹ prediction","Empirical residual"];
+        position=:lt,
+    )
+
+    ax2 = Mke.Axis(
+        fig[1,2];
+        title="Four-Bin Fit Health",
+        xlabel="Diagnostic", ylabel="Value",
+        xticks=(
+            1:4,
+            ["ρ(W,I) predicted","ρ(W,I) empirical","Deviance p95","Score² p95"],
+        ),
+    )
+    values = [
+        d.predicted_rho,d.empirical_rho,d.deviance_p95,d.score2_p95,
+    ]
+    Mke.barplot!(
+        ax2,1:4,values;
+        color=[:steelblue,:darkorange,:seagreen,:mediumpurple],
+        strokecolor=:black,strokewidth=1,
+    )
+    Mke.hlines!(ax2,[0.0]; color=:black,linewidth=1)
+    for (i,value) in pairs(values)
+        Mke.text!(
+            ax2,i,value;text="$(round(value,digits=3))",
+            align=(:center,value ≥ 0 ? :bottom : :top),
+            offset=(0,value ≥ 0 ? 5 : -5),
+        )
+    end
+    fig
+end
+
+# ╔═╡ 2d6e6dda-5a23-42c8-8744-116029c2db9a
+let
+    d = nchannel_sinogram_verification
+    md"""
+    **Four-bin pre-FBP verification**
+
+    - Native channels in the evaluated likelihood: **4 / 4**
+    - Boundary-contact fraction: **$(round(100d.boundary_fraction,digits=3))%**
+    - Empirical / CRLB variance ratio — iodine: **$(round(d.variance_ratio[1],digits=3))×**, water: **$(round(d.variance_ratio[2],digits=3))×**
+    - Water--iodine correlation — predicted: **$(round(d.predicted_rho,digits=4))**, empirical: **$(round(d.empirical_rho,digits=4))**
+    - Four-bin deviance — median: **$(round(Float64(d.deviance_median),digits=3))**, p95: **$(round(Float64(d.deviance_p95),digits=3))**
+    - Fisher-normalized score² — median: **$(round(Float64(d.score2_median),digits=4))**, p95: **$(round(Float64(d.score2_p95),digits=4))**
+
+    A variance ratio near one supports an efficient decomposition. A much
+    larger empirical value points to avoidable solver/model noise before any
+    denoising is considered. A small normalized score indicates that the
+    final estimates are close to a stationary point of the complete
+    likelihood.
+    """
 end
 
 # ╔═╡ 2d447ccd-b408-42a6-8a1b-af770e3277e4
@@ -1095,6 +1360,12 @@ end
 # ╠═ad092cf9-14b2-4f32-bad4-1e7962961fc2
 # ╟─831c3a54-76d2-4dfc-b93a-faf3661518a3
 # ╟─7bfdb7d7-6a46-4803-88dd-8c08d41a3780
+# ╟─c456f690-518d-4fb9-941e-a5662b101ff5
+# ╠═f9168282-ad86-446c-ac04-1aac09d4c1a2
+# ╠═54bc4490-08c6-4d61-a687-d491976b2761
+# ╠═a0930dd5-c28e-45a1-9bb6-4be300ba19d2
+# ╟─7d987c7a-50ac-4827-9145-d07efe14747a
+# ╟─2d6e6dda-5a23-42c8-8744-116029c2db9a
 # ╟─2d447ccd-b408-42a6-8a1b-af770e3277e4
 # ╠═1ff5e801-ef54-45ff-b0a8-e780e2e6cb63
 # ╟─65a40efc-c9ff-41d4-8f42-46d6737119d5
