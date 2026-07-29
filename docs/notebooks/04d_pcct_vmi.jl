@@ -25,40 +25,28 @@ using Random: MersenneTwister, randn
 
 # ╔═╡ d3054785-9e00-4094-a491-088ce63be9dc
 md"""
-# Cong Covariance-Weighted TNV Reconstruction
+# Cong Followed by Total-Likelihood Bilateral Filtering
 
 Siemens Naeotom Alpha photon-counting CT simulation (140 kVp / 174 mA,
 four native energy windows, Gammex 472 phantom).
 
-This is the focused continuation of `04c_pcct_vmi.jl`. It preserves the
-validated **Cong-inspired K-channel profiled quasi-likelihood estimator** and
-adds its full per-ray covariance to a joint, convex material reconstruction.
-The previous exploratory RSKR and long audit chain is archived separately.
+This feasibility notebook preserves the verified four-bin Cong decomposition,
+then tests Lee's 2025 total-likelihood bilateral filter (T-LBF) on the completed
+water and iodine sinograms.
 """
 
 # ╔═╡ f2798d62-3509-4cc4-a24f-39ace8bb5a9e
 md"""
-## First-principles objective
+## Focused feasibility objective
 
-The solved generic K-channel Cong/profile decomposition is fixed. This
-notebook now follows one primary path:
+The four native bins, detector corrections, row-count combination, and
+all-bin profiled Cong solve remain unchanged. Filtering begins only after Cong.
+The collapsed total count is used only to calculate a shared neighborhood
+weight; it is never used to estimate the two materials.
 
-1. run one four-bin scan;
-2. compute the unchanged Cong material sinograms;
-3. retain the full per-ray \(2\times2\) Fisher/covariance matrix;
-4. reconstruct a common-filter FBP baseline;
-5. solve one covariance-weighted, basis-whitened total nuclear variation
-   (TNV) reconstruction;
-6. synthesize every VMI from that single material pair.
-
-TNV is the mathematical foundation because it is a convex, data-consistent
-joint reconstruction problem. Literal RSKR is not treated as a proximal map
-or convergence-guaranteed optimizer; it is only an optional empirical
-comparator after the TNV endpoint works.
-
-There are no 30-seed or dose-sweep scans in the primary execution path.
-The discrepancy radius is calibrated from detector statistics (and later a
-small declared bootstrap), never tuned separately by VMI energy.
+Executable TNV, CGLS, LSMR, RSKR, and earlier denoising experiments were
+removed from this active notebook and remain recoverable from Git history at
+checkpoint `37b7241`.
 """
 
 # ╔═╡ 3d515abe-f3d9-4ce5-96c7-bef7da9bf294
@@ -1092,53 +1080,58 @@ nchannel_decomposition_checkpoint = (
 )
 
 # ╔═╡ ddfde8bb-ddff-44bb-8b70-b397725402cf
-nchannel_slab_common_fbp = let
-    nrows = sim_bins.geom.n_rows
-    nview = size(sino_basis_nchannel_slab.sino_water,3)
-    pass_mode = min(
-        nview÷2,
-        ceil(Int,π*recon_opts.matrix_size[1]/4),
+begin
+    nchannel_fbp_matrix_size=(512,512,1)
+    nchannel_fbp_nview=size(sino_basis_nchannel_slab.sino_water,3)
+    nchannel_fbp_pass_mode=min(
+        nchannel_fbp_nview÷2,
+        ceil(Int,π*nchannel_fbp_matrix_size[1]/4),
     )
-    angular_response = [
-        let mode=min(j-1,nview-(j-1))
-            mode ≤ pass_mode ? 1.0 :
-            0.5*(1+cos(π*(mode-pass_mode)/(nview÷2-pass_mode)))
+    nchannel_fbp_angular_response=[
+        let mode=min(j-1,nchannel_fbp_nview-(j-1))
+            mode≤nchannel_fbp_pass_mode ? 1.0 :
+            0.5*(1+cos(
+                π*(mode-nchannel_fbp_pass_mode)/
+                (nchannel_fbp_nview÷2-nchannel_fbp_pass_mode),
+            ))
         end
-        for j in 1:nview
+        for j in 1:nchannel_fbp_nview
     ]
-    function angular_antialias(sino)
-        spectrum = BS.FFTW.fft(Float64.(sino),3)
-        Float32.(real.(BS.FFTW.ifft(
-            spectrum .* reshape(angular_response,1,1,nview),3,
+
+    function nchannel_common_fbp_slice(sino_one_row)
+        spectrum=BS.FFTW.fft(Float64.(sino_one_row),3)
+        antialiased=Float32.(real.(BS.FFTW.ifft(
+            spectrum.*reshape(
+                nchannel_fbp_angular_response,1,1,nchannel_fbp_nview,
+            ),3,
         )))
-    end
-    function common_fbp(sino_one_row)
-        repeated = repeat(angular_antialias(sino_one_row),1,nrows,1)
-        sino_gpu = to_gpu(Float32.(repeated))
-        ws = BS.create_fdk_recon_workspace(
-            sino_gpu,sim_bins.geom,recon_opts.matrix_size;
+        repeated=repeat(antialiased,1,sim_bins.geom.n_rows,1)
+        sino_gpu=to_gpu(repeated)
+        ws=BS.create_fdk_recon_workspace(
+            sino_gpu,sim_bins.geom,nchannel_fbp_matrix_size;
             filter=BS.SoftFilter(),
         )
         try
-            Float32.(Array(BS.reconstruct!(ws,sino_gpu,sim_bins.geom)))
+            Float32.(Array(BS.reconstruct!(
+                ws,sino_gpu,sim_bins.geom,
+            )))
         finally
             BS.release_backend!(ws)
         end
     end
-    W = common_fbp(sino_basis_nchannel_slab.sino_water)
-    I = common_fbp(sino_basis_nchannel_slab.sino_iodine)
-    energies = [40.0,70.0,100.0,140.0]
-    mu = Dict{Float64,Array{Float32,3}}()
-    for E in energies
-        μW = BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
-        μI = BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine,E)
-        mu[E] = @. Float32(μW*W + μI*I)
-    end
-    (
-        vol_water=W,vol_iodine=I,mu=mu,energies=energies,
-        angular_response,pass_mode,
+
+    nchannel_slab_common_fbp=(
+        vol_water=nchannel_common_fbp_slice(
+            sino_basis_nchannel_slab.sino_water,
+        ),
+        vol_iodine=nchannel_common_fbp_slice(
+            sino_basis_nchannel_slab.sino_iodine,
+        ),
+        angular_response=nchannel_fbp_angular_response,
+        pass_mode=nchannel_fbp_pass_mode,
+        kernel=:SoftFilter,
     )
-end;
+end
 
 # ╔═╡ 2d447ccd-b408-42a6-8a1b-af770e3277e4
 md"""
@@ -1201,7 +1194,7 @@ reconstructed iodine density is converted from g/cm³ by multiplying by
 
 # ╔═╡ 9161e7bf-eaa9-4d48-9d93-ab743ff3a0c2
 begin
-    nchannel_validation_energies=collect(40.0:5.0:140.0)
+    nchannel_validation_energies=collect(40.0:5.0:190.0)
     nchannel_vmi_energies=[40.0,70.0,100.0,140.0]
 end;
 
@@ -1216,1073 +1209,6 @@ nchannel_vmi_raw_HU = let
         for E in nchannel_validation_energies
     )
 end;
-
-# ╔═╡ 4d6d8375-5805-4e1d-9c77-fcde574c42a1
-md"""
-## 12. Covariance-whitened TNV reconstruction
-
-This is the sole primary denoising path. Let \(s_r=(A_r,C_r)^T\) be the
-unchanged Cong estimate and \(F_r\) its retained full precision matrix.
-The reconstruction solves
-
-\[
-\min_{x\in\mathcal B} \operatorname{TNV}(Sx)
-\quad\text{subject to}\quad
-\sum_r(Px_r-s_r)^T F_r(Px_r-s_r)\le\epsilon^2.
-\]
-
-The same matched distance-driven projector and its exact algebraic transpose
-are used for both materials. The off-diagonal precision is never discarded.
-All VMIs are synthesized afterward from one reconstructed material pair.
-"""
-
-# ╔═╡ 4a7e1704-9abc-4430-8146-5e8a1fbaf852
-tnv_material_data = let
-    s = sino_basis_nchannel_slab
-    c = cong_ray_covariance
-    (
-        observed=(iodine=s.sino_iodine,water=s.sino_water),
-        precision=c.precision,
-        covariance=c.covariance,
-        valid=c.valid,
-        geometry=s.geom,
-        initial=(
-            iodine=nchannel_slab_common_fbp.vol_iodine,
-            water=nchannel_slab_common_fbp.vol_water,
-        ),
-    )
-end;
-
-# ╔═╡ 83bece80-87f7-4e18-943f-13d0a7287548
-begin
-function pooled_covariance_whitener(C;floor_fraction=16eps(Float64))
-    E=eigen(Symmetric(Matrix{Float64}(C)))
-    λmax=maximum(E.values)
-    λfloor=max(floor_fraction*λmax,eps(Float64))
-    λ=max.(E.values,λfloor)
-    S=E.vectors*Diagonal(inv.(sqrt.(λ)))*E.vectors'
-    Sinv=E.vectors*Diagonal(sqrt.(λ))*E.vectors'
-    (
-        covariance=Symmetric(Matrix{Float64}(C)),
-        whitening=S,inverse_whitening=Sinv,
-        eigenvalues=λ,eigenvalue_floor=λfloor,
-    )
-end
-
-function material_precision_sqrt(FAA,FAC,FCC,valid=trues(size(FAA)))
-    T=promote_type(float(eltype(FAA)),float(eltype(FAC)),float(eltype(FCC)))
-    LAA,LAC,LCC=zeros(T,size(FAA)),zeros(T,size(FAA)),zeros(T,size(FAA))
-    for i in eachindex(FAA,FAC,FCC,valid)
-        valid[i]||continue
-        a,b,c=T(FAA[i]),T(FAC[i]),T(FCC[i])
-        determinant=a*c-b*b
-        isfinite(a)&&isfinite(b)&&isfinite(c)&&
-            a≥0&&c≥0&&determinant≥0||continue
-        s=sqrt(max(determinant,zero(T)))
-        t=sqrt(max(a+c+2s,eps(T)))
-        LAA[i],LAC[i],LCC[i]=(a+s)/t,b/t,(c+s)/t
-    end
-    (AA=LAA,AC=LAC,CC=LCC)
-end
-
-function material_matrix(x,M)
-    size(x,ndims(x))==2||error("last dimension must contain two materials")
-    y=similar(x,promote_type(eltype(x),eltype(M)))
-    x1,x2=selectdim(x,ndims(x),1),selectdim(x,ndims(x),2)
-    y1,y2=selectdim(y,ndims(y),1),selectdim(y,ndims(y),2)
-    @. y1=M[1,1]*x1+M[1,2]*x2
-    @. y2=M[2,1]*x1+M[2,2]*x2
-    y
-end
-
-function tnv_gradient(x,S)
-    z=material_matrix(x,S)
-    nx,ny,_=size(z)
-    g=similar(z,eltype(z),nx,ny,2,2)
-    fill!(g,zero(eltype(g)))
-    @views begin
-        g[1:nx-1,:,:,1].=z[2:nx,:,:].-z[1:nx-1,:,:]
-        g[:,1:ny-1,:,2].=z[:,2:ny,:].-z[:,1:ny-1,:]
-    end
-    g
-end
-
-function tnv_gradient_adjoint(p,S)
-    nx,ny=size(p,1),size(p,2)
-    T=promote_type(eltype(p),eltype(S))
-    q=similar(p,T,nx,ny,2)
-    fill!(q,zero(T))
-    @views for m in 1:2
-        px,py=p[:,:,m,1],p[:,:,m,2]
-        q[1,:,m].-=px[1,:]
-        nx>2&&(q[2:nx-1,:,m].+=px[1:nx-2,:].-px[2:nx-1,:])
-        nx>1&&(q[nx,:,m].+=px[nx-1,:])
-        q[:,1,m].-=py[:,1]
-        ny>2&&(q[:,2:ny-1,m].+=py[:,1:ny-2].-py[:,2:ny-1])
-        ny>1&&(q[:,ny,m].+=py[:,ny-1])
-    end
-    material_matrix(q,transpose(S))
-end
-
-function tnv_value(x,S)
-    g=tnv_gradient(x,S)
-    sum(
-        sqrt(
-            sum(abs2,@view(g[i,j,:,:]))+
-            2abs(det(Matrix(@view(g[i,j,:,:]))))
-        )
-        for i in axes(g,1),j in axes(g,2)
-    )
-end
-
-@inline function project_spectral_ball_2x2(
-    m11::T,m12::T,m21::T,m22::T,radius::T,
-) where T
-    a=m11*m11+m21*m21
-    b=m11*m12+m21*m22
-    c=m12*m12+m22*m22
-    disc=sqrt(max((a-c)*(a-c)+T(4)*b*b,zero(T)))
-    λ1=max((a+c+disc)/T(2),zero(T))
-    λ2=max((a+c-disc)/T(2),zero(T))
-    s1=λ1>radius*radius ? radius/sqrt(λ1) : one(T)
-    s2=λ2>radius*radius ? radius/sqrt(λ2) : one(T)
-    if abs(λ1-λ2)≤T(16)*eps(T)*max(λ1,one(T))
-        h11,h12,h22=s1,zero(T),s1
-    else
-        α=(s1-s2)/(λ1-λ2)
-        β=s2-α*λ2
-        h11,h12,h22=α*a+β,α*b,α*c+β
-    end
-    (
-        m11*h11+m12*h12,
-        m11*h12+m12*h22,
-        m21*h11+m22*h12,
-        m21*h12+m22*h22,
-    )
-end
-
-function project_tnv_dual!(p,radius=1.0)
-    n=size(p,1)*size(p,2)
-    r=eltype(p)(radius)
-    BS.AK.foreachindex(@view(p[:,:,1,1])) do idx
-        m11,m21,m12,m22=p[idx],p[idx+n],p[idx+2n],p[idx+3n]
-        q11,q12,q21,q22=project_spectral_ball_2x2(
-            m11,m12,m21,m22,r,
-        )
-        p[idx],p[idx+n],p[idx+2n],p[idx+3n]=q11,q21,q12,q22
-    end
-    p
-end
-
-function ray_whiten(y,L)
-    z=similar(y)
-    y1,y2=selectdim(y,ndims(y),1),selectdim(y,ndims(y),2)
-    z1,z2=selectdim(z,ndims(z),1),selectdim(z,ndims(z),2)
-    @. z1=L.AA*y1+L.AC*y2
-    @. z2=L.AC*y1+L.CC*y2
-    z
-end
-
-function pair_forward(x,forward)
-    y1,y2=forward(@view(x[:,:,1])),forward(@view(x[:,:,2]))
-    cat(y1,y2;dims=ndims(y1)+1)
-end
-
-function pair_adjoint(y,adjoint)
-    n=ndims(y)
-    x1,x2=adjoint(selectdim(y,n,1)),adjoint(selectdim(y,n,2))
-    cat(x1,x2;dims=ndims(x1)+1)
-end
-
-function tnv_operator_norm(initial,forward,adjoint,L,S;iterations=24)
-    x=float(eltype(initial)).(initial)
-    norm(x)>0||fill!(x,one(eltype(x)))
-    x./=norm(x)
-    λ=0.0
-    for _ in 1:iterations
-        y=ray_whiten(pair_forward(x,forward),L)
-        g=tnv_gradient(x,S)
-        z=pair_adjoint(ray_whiten(y,L),adjoint)+tnv_gradient_adjoint(g,S)
-        λ=norm(z)
-        x.=z./λ
-    end
-    sqrt(λ)
-end
-
-function covariance_tnv_pdhg(
-    observed,initial,forward,adjoint,L,S;
-    epsilon,tnv_weight=1.0,bounds=((-Inf,Inf),(-Inf,Inf)),
-    strict_convexity=1e-8,operator_norm=nothing,
-    max_iterations=1000,tolerance=1e-5,check_every=10,
-)
-    T=float(promote_type(
-        eltype(initial),eltype(observed),eltype(L.AA),eltype(S),
-    ))
-    Knorm=isnothing(operator_norm) ?
-        tnv_operator_norm(initial,forward,adjoint,L,S) : operator_norm
-    Knorm=T(Knorm)
-    τ=T(0.99)/Knorm
-    σ=T(0.99)/Knorm
-    η=T(strict_convexity)
-    ε=T(epsilon)
-    tol=T(tolerance)
-    typed_bounds=(
-        (T(bounds[1][1]),T(bounds[1][2])),
-        (T(bounds[2][1]),T(bounds[2][2])),
-    )
-    x=T.(initial)
-    xbar,xold=copy(x),similar(x)
-    d=ray_whiten(T.(observed),L)
-    y=similar(d)
-    fill!(y,zero(T))
-    p=similar(x,T,size(x,1),size(x,2),2,2)
-    fill!(p,zero(T))
-    history=NamedTuple[]
-    converged=false
-    for iteration in 1:max_iterations
-        q=y.+σ.*ray_whiten(pair_forward(xbar,forward),L)
-        v=q./σ
-        residual=v.-d
-        nr=norm(residual)
-        projection=nr>ε ? d.+ε/nr.*residual : v
-        y.=q.-σ.*projection
-        p.+=σ.*tnv_gradient(xbar,S)
-        project_tnv_dual!(p,tnv_weight)
-        copyto!(xold,x)
-        data_gradient=pair_adjoint(ray_whiten(y,L),adjoint)
-        x.=(x.-τ.*(data_gradient.+tnv_gradient_adjoint(p,S)))./
-            (one(T)+τ*η)
-        for m in 1:2
-            clamp!(@view(x[:,:,m]),typed_bounds[m]...)
-        end
-        @. xbar=2x-xold
-        if iteration==1||iteration%check_every==0
-            discrepancy=norm(ray_whiten(pair_forward(x,forward).-observed,L))
-            relative_change=norm(x.-xold)/max(norm(xold),one(T))
-            record=(iteration,discrepancy,relative_change,
-                feasible=discrepancy≤ε*(one(T)+tol))
-            push!(history,record)
-            if record.feasible&&relative_change≤tol
-                converged=true
-                break
-            end
-        end
-    end
-    (
-        image=x,history,converged,operator_norm=Knorm,
-        tau=τ,sigma=σ,epsilon=ε,
-        data_dual=y,tnv_dual=p,
-    )
-end
-end
-
-# ╔═╡ 829630be-523b-464e-a250-e6b617be8ce1
-tnv_unit_audit = let
-    C=[4.0 -1.5;-1.5 2.0]
-    W=pooled_covariance_whitener(C)
-    whitening_error=norm(W.whitening*C*W.whitening'-I)
-
-    rng=MersenneTwister(544)
-    x=randn(rng,7,6,2)
-    p=randn(rng,7,6,2,2)
-    adjoint_error=abs(
-        dot(tnv_gradient(x,W.whitening),p)-
-        dot(x,tnv_gradient_adjoint(p,W.whitening))
-    )
-    projected=project_tnv_dual!(copy(p),0.7)
-    svd_projection=similar(projected)
-    for i in axes(p,1),j in axes(p,2)
-        F=svd(Matrix(@view(p[i,j,:,:])))
-        @views svd_projection[i,j,:,:].=
-            F.U*Diagonal(min.(F.S,0.7))*F.Vt
-    end
-    dual_projection_error=maximum(abs.(projected.-svd_projection))
-
-    T=[1000.0 0.2;-3.0 0.01]
-    J=[0.7 -1.1;2.3 0.4]
-    Sp=pooled_covariance_whitener(T*C*T').whitening
-    basis_error=abs(
-        sum(svdvals(W.whitening*J))-sum(svdvals(Sp*T*J))
-    )
-
-    truth=zeros(12,11,2)
-    truth[4:9,4:8,1].=1.2
-    truth[5:8,5:7,2].=0.7
-    noisy=truth.+0.03randn(rng,size(truth))
-    ray_shape=size(noisy)[1:2]
-    L=(AA=ones(ray_shape),AC=zeros(ray_shape),CC=ones(ray_shape))
-    identity_forward(v)=copy(v)
-    identity_adjoint(v)=copy(v)
-    result=covariance_tnv_pdhg(
-        noisy,noisy,identity_forward,identity_adjoint,L,I(2);
-        epsilon=0.03sqrt(length(noisy))*1.1,
-        tnv_weight=0.08,bounds=((-2.0,2.0),(-2.0,2.0)),
-        max_iterations=600,tolerance=2e-4,check_every=5,
-    )
-    (
-        whitening_error,adjoint_error,dual_projection_error,basis_error,
-        pdhg_converged=result.converged,
-        pdhg_feasible=last(result.history).feasible,
-        error_before=norm(noisy-truth),
-        error_after=norm(result.image-truth),
-        step_condition=result.tau*result.sigma*result.operator_norm^2,
-        pass=whitening_error<1e-12&&adjoint_error<1e-11&&
-            dual_projection_error<1e-12&&
-            basis_error<1e-10&&result.converged&&
-            last(result.history).feasible&&
-            norm(result.image-truth)<norm(noisy-truth)&&
-            result.tau*result.sigma*result.operator_norm^2<1,
-    )
-end
-
-# ╔═╡ b07ec202-ddcb-465a-8f0d-18e53c2ff902
-tnv_backend_audit = let
-    rng=MersenneTwister(546)
-    p=randn(rng,Float32,5,4,2,2)
-    reference=project_tnv_dual!(copy(p),0.7f0)
-    device=to_gpu(p)
-    result=nothing
-    truth_gpu=nothing
-    noisy_gpu=nothing
-    L_gpu=nothing
-    try
-        project_tnv_dual!(device,0.7f0)
-        observed=Array(device)
-        truth=zeros(Float32,12,11,2)
-        truth[4:9,4:8,1].=1.2f0
-        truth[5:8,5:7,2].=0.7f0
-        noisy=truth.+0.03f0.*randn(rng,Float32,size(truth))
-        truth_gpu=to_gpu(truth)
-        noisy_gpu=to_gpu(noisy)
-        ray_shape=size(noisy)[1:2]
-        L_gpu=(
-            AA=to_gpu(ones(Float32,ray_shape)),
-            AC=to_gpu(zeros(Float32,ray_shape)),
-            CC=to_gpu(ones(Float32,ray_shape)),
-        )
-        identity_forward(v)=copy(v)
-        identity_adjoint(v)=copy(v)
-        result=covariance_tnv_pdhg(
-            noisy_gpu,noisy_gpu,identity_forward,identity_adjoint,
-            L_gpu,Float32[1 0;0 1];
-            epsilon=0.03f0*sqrt(length(noisy))*1.1f0,
-            tnv_weight=0.08f0,
-            bounds=((-2.0f0,2.0f0),(-2.0f0,2.0f0)),
-            max_iterations=600,tolerance=2f-4,check_every=5,
-        )
-        recovered=Array(result.image)
-        (
-            backend=GPU_BACKEND.name,
-            maximum_error=maximum(abs.(observed.-reference)),
-            pdhg_converged=result.converged,
-            pdhg_feasible=last(result.history).feasible,
-            error_before=norm(noisy-truth),
-            error_after=norm(recovered-truth),
-            pass=isapprox(observed,reference;rtol=2f-5,atol=2f-6)&&
-                result.converged&&last(result.history).feasible&&
-                norm(recovered-truth)<norm(noisy-truth),
-        )
-    finally
-        BS.release_backend!((
-            device,result,truth_gpu,noisy_gpu,L_gpu,
-        ))
-    end
-end
-
-# ╔═╡ d9c149c8-135a-42c9-bb95-213b0aec3b32
-begin
-function central_row_geometry(geom,image_size)
-    voxel_xy=geom.fov[1]/image_size[1]
-    BS.CTGeometry(
-        geom.SAD,geom.SDD,geom.n_angles,1,geom.n_cols,
-        geom.pixel_size,geom.pixel_row_size,
-        geom.angles,geom.source_positions,geom.detector_centers,
-        geom.detector_u,geom.detector_v,
-        (geom.fov[1],geom.fov[2],voxel_xy),
-        geom.pitch,geom.table_feed,geom.detector_shape,
-    )
-end
-
-function central_row_projector(geom,image_size)
-    geom2d=central_row_geometry(geom,image_size)
-    extent=geom2d.fov
-    function forward(image)
-        size(image)==image_size||
-            throw(DimensionMismatch("projector image size mismatch"))
-        volume=reshape(image,image_size...,1)
-        BS.dd_forward_project(volume,geom2d;volume_extent=extent)
-    end
-    function adjoint(sinogram)
-        size(sinogram)==(geom2d.n_cols,1,geom2d.n_angles)||
-            throw(DimensionMismatch("projector sinogram size mismatch"))
-        volume=similar(
-            sinogram,eltype(sinogram),(image_size...,1),
-        )
-        fill!(volume,zero(eltype(volume)))
-        BS.dd_backproject!(
-            volume,sinogram,geom2d;volume_extent=extent,
-        )
-        dropdims(volume;dims=3)
-    end
-    (forward=forward,adjoint=adjoint,geometry=geom2d,extent=extent)
-end
-end
-
-# ╔═╡ 739a1ff6-dd9b-4edf-8653-73a2704bfb59
-begin
-function backend_synchronize()
-    backend_module=parentmodule(AT)
-    isdefined(backend_module,:synchronize) &&
-        getfield(backend_module,:synchronize)()
-    nothing
-end
-
-function central_row_reusable_projector(geom,image_size,prototype)
-    geom2d=central_row_geometry(geom,image_size)
-    extent=geom2d.fov
-    T=eltype(prototype)
-    sinogram=similar(
-        prototype,T,geom2d.n_cols,1,geom2d.n_angles,
-    )
-    volume=similar(prototype,T,image_size...,1)
-    ws=(
-        source_positions=to_gpu(T.(geom2d.source_positions)),
-        detector_centers=to_gpu(T.(geom2d.detector_centers)),
-        detector_u=to_gpu(T.(geom2d.detector_u)),
-        detector_v=to_gpu(T.(geom2d.detector_v)),
-    )
-    function forward!(image)
-        BS.dd_forward_project!(
-            sinogram,reshape(image,image_size...,1),geom2d;
-            volume_extent=extent,
-            ws_source_positions=ws.source_positions,
-            ws_detector_centers=ws.detector_centers,
-            ws_detector_u=ws.detector_u,
-            ws_detector_v=ws.detector_v,
-        )
-    end
-    function adjoint!(input)
-        BS.dd_backproject!(
-            volume,input,geom2d;
-            volume_extent=extent,
-            ws_source_positions=ws.source_positions,
-            ws_detector_centers=ws.detector_centers,
-            ws_detector_u=ws.detector_u,
-            ws_detector_v=ws.detector_v,
-        )
-        reshape(volume,image_size)
-    end
-    (
-        forward! = forward!,adjoint! = adjoint!,
-        geometry=geom2d,extent,sinogram,volume,ws,
-    )
-end
-end
-
-# ╔═╡ 813d96ad-4b83-4db9-95db-67336bf4b43e
-tnv_operator_profile = let
-    records=NamedTuple[]
-    for resolution in (128,512)
-        image_size=(resolution,resolution)
-        allocating=central_row_projector(
-            sino_basis_nchannel_slab.geom,image_size,
-        )
-        image=to_gpu(zeros(Float32,image_size))
-        reusable=central_row_reusable_projector(
-            sino_basis_nchannel_slab.geom,image_size,image,
-        )
-
-        allocating.forward(image)
-        backend_synchronize()
-        reusable.forward!(image)
-        backend_synchronize()
-
-        forward_allocations=@allocated allocating.forward(image)
-        backend_synchronize()
-        allocating_forward_s=@elapsed begin
-            allocating.forward(image)
-            backend_synchronize()
-        end
-        reusable_forward_allocations=@allocated reusable.forward!(image)
-        backend_synchronize()
-        reusable_forward_s=@elapsed begin
-            reusable.forward!(image)
-            backend_synchronize()
-        end
-
-        input_sinogram=copy(reusable.sinogram)
-        allocating.adjoint(input_sinogram)
-        backend_synchronize()
-        reusable.adjoint!(input_sinogram)
-        backend_synchronize()
-
-        adjoint_allocations=@allocated allocating.adjoint(input_sinogram)
-        backend_synchronize()
-        allocating_adjoint_s=@elapsed begin
-            allocating.adjoint(input_sinogram)
-            backend_synchronize()
-        end
-        reusable_adjoint_allocations=@allocated reusable.adjoint!(input_sinogram)
-        backend_synchronize()
-        reusable_adjoint_s=@elapsed begin
-            reusable.adjoint!(input_sinogram)
-            backend_synchronize()
-        end
-
-        push!(records,(;
-            resolution,
-            allocating_forward_s,reusable_forward_s,
-            allocating_adjoint_s,reusable_adjoint_s,
-            forward_allocations,reusable_forward_allocations,
-            adjoint_allocations,reusable_adjoint_allocations,
-            allocating_geometry_uploads_per_call=4,
-            reusable_geometry_uploads_per_call=0,
-            allocating_output_buffers_per_call=1,
-            reusable_output_buffers_per_call=0,
-            arrays_remain_on_device=true,
-            synchronization=:timing_boundary_only,
-        ))
-        BS.release_backend!((
-            image,input_sinogram,reusable.sinogram,reusable.volume,
-            reusable.ws,
-        ))
-    end
-    records
-end
-
-# ╔═╡ 47384dd6-7b4e-403b-b4b5-1c6bc34a77e2
-tnv_gpu_fft_capability = let
-    probe=to_gpu(reshape(Float32.(1:64),8,8))
-    try
-        transformed=BS.FFTW.fft(probe)
-        (
-            supported=true,
-            input_type=typeof(probe),
-            output_type=typeof(transformed),
-            remains_on_device=
-                parentmodule(typeof(transformed))===
-                parentmodule(typeof(probe)),
-        )
-    catch error
-        (
-            supported=false,
-            input_type=typeof(probe),
-            error=string(typeof(error),": ",error),
-            remains_on_device=false,
-        )
-    finally
-        BS.release_backend!(probe)
-    end
-end
-
-# ╔═╡ 6c7fdf0f-bc9f-4cf7-96ba-eb0e1ff94c60
-md"""
-### Projector-wrapper profile
-
-`tnv_operator_profile` times synchronized forward and exact-adjoint calls for
-the original allocating notebook wrapper and a notebook-local reusable wrapper.
-The reusable wrapper retains geometry arrays and output buffers on the selected
-GPU backend; synchronization occurs only at explicit timing boundaries.
-"""
-
-# ╔═╡ 9c675f52-0046-41be-a203-d603cffcea2d
-tnv_projector_adjoint_audit = let
-    toy_scanner=BS.Scanner(
-        source_to_isocenter=540.0,source_to_detector=1080.0,
-        detector_rows=1,detector_cols=24,
-        detector_row_size=0.8,detector_col_size=0.8,
-        detector_shape=:arc,
-    )
-    toy_geom=BS.CTGeometry(
-        toy_scanner;n_angles=9,n_rows=1,n_cols=24,
-        fov_cm=8.0,z_cm=8.0/9,
-    )
-    bridge=central_row_projector(toy_geom,(9,9))
-    rng=MersenneTwister(545)
-    x=randn(rng,9,9)
-    y=randn(rng,24,1,9)
-    Ax=bridge.forward(x)
-    Aty=bridge.adjoint(y)
-    lhs=dot(Ax,y)
-    rhs=dot(x,Aty)
-    x_gpu=to_gpu(Float32.(x))
-    y_gpu=to_gpu(Float32.(y))
-    Ax_gpu=nothing
-    Aty_gpu=nothing
-    try
-        Ax_gpu=bridge.forward(x_gpu)
-        Aty_gpu=bridge.adjoint(y_gpu)
-        lhs_gpu=dot(Ax_gpu,y_gpu)
-        rhs_gpu=dot(x_gpu,Aty_gpu)
-        (
-            lhs,rhs,
-            absolute_error=abs(lhs-rhs),
-            relative_error=abs(lhs-rhs)/max(abs(lhs),abs(rhs),eps()),
-            backend=GPU_BACKEND.name,
-            backend_relative_error=
-                abs(lhs_gpu-rhs_gpu)/max(abs(lhs_gpu),abs(rhs_gpu),eps(Float32)),
-            output_size=size(Ax),
-            pass=isapprox(lhs,rhs;rtol=2e-11,atol=2e-11)&&
-                isapprox(lhs_gpu,rhs_gpu;rtol=2f-5,atol=2f-5),
-        )
-    finally
-        BS.release_backend!((x_gpu,y_gpu,Ax_gpu,Aty_gpu))
-    end
-end
-
-# ╔═╡ dc5da7d1-3dcf-4942-b6f5-ea632aee1472
-tnv_explicit_oracle_problem = let
-    nx,ny=16,16
-    nviews,ndet=24,20
-    nvox=nx*ny
-    pixel_size=2/nx
-    xs=collect(range(-1+pixel_size/2,1-pixel_size/2;length=nx))
-    ys=collect(range(-1+pixel_size/2,1-pixel_size/2;length=ny))
-    angles=collect(range(0,π;length=nviews+1))[1:end-1]
-    offsets=collect(range(-1.25,1.25;length=ndet))
-    ray_width=0.75pixel_size
-    P=zeros(Float64,nviews*ndet,nvox)
-    ray=0
-    for θ in angles,offset in offsets
-        ray+=1
-        c,s=cos(θ),sin(θ)
-        for j in 1:ny,i in 1:nx
-            distance=xs[i]*c+ys[j]*s-offset
-            P[ray,i+(j-1)*nx]=
-                pixel_size*exp(-0.5*(distance/ray_width)^2)
-        end
-    end
-
-    nrays=size(P,1)
-    ray_angle(r)=angles[cld(r,ndet)]
-    LAA=[1.0+0.15sin(ray_angle(r))^2 for r in 1:nrays]
-    LCC=[0.80+0.10cos(ray_angle(r))^2 for r in 1:nrays]
-    LAC=[0.08cos(2ray_angle(r)) for r in 1:nrays]
-    L=(AA=LAA,AC=LAC,CC=LCC)
-    A=[
-        Diagonal(LAA)*P Diagonal(LAC)*P
-        Diagonal(LAC)*P Diagonal(LCC)*P
-    ]
-
-    Cmaterial=[3.0 -0.7;-0.7 1.4]
-    S=pooled_covariance_whitener(Cmaterial).whitening
-    xtrue=zeros(Float64,nx,ny,2)
-    for j in 1:ny,i in 1:nx
-        r2=xs[i]^2+ys[j]^2
-        xtrue[i,j,1]=r2≤0.48^2 ? 0.65 : 0.05
-        xtrue[i,j,2]=r2≤0.70^2 ? 0.75 : 0.12
-        (xs[i]-0.28)^2+(ys[j]+0.18)^2≤0.16^2&&
-            (xtrue[i,j,1]+=0.30)
-    end
-
-    G=zeros(Float64,4nvox,2nvox)
-    basis=zeros(Float64,nx,ny,2)
-    for column in 1:2nvox
-        fill!(basis,0)
-        basis[column]=1
-        G[:,column].=vec(tnv_gradient(basis,S))
-    end
-    xtrue_vec=vec(xtrue)
-    rng=MersenneTwister(0x16a32)
-    noise=randn(rng,2nrays)
-    noise.*=0.025norm(A*xtrue_vec)/norm(noise)
-    data=A*xtrue_vec+noise
-    epsilon=1.05norm(noise)
-
-    observed=zeros(Float64,nrays,2)
-    for r in 1:nrays
-        determinant=LAA[r]*LCC[r]-LAC[r]^2
-        d1,d2=data[r],data[r+nrays]
-        observed[r,1]=(LCC[r]*d1-LAC[r]*d2)/determinant
-        observed[r,2]=(-LAC[r]*d1+LAA[r]*d2)/determinant
-    end
-    forward=x->P*vec(x)
-    adjoint=y->reshape(transpose(P)*vec(y),nx,ny)
-    (
-        nx,ny,nvox,nrays,P,A,G,L,S,xtrue,xtrue_vec,
-        observed,data,epsilon,
-        bounds=((-0.25,1.25),(-0.25,1.25)),
-        strict_convexity=1e-3,
-        initial=zeros(Float64,nx,ny,2),
-        forward,adjoint,
-    )
-end;
-
-# ╔═╡ 595b5b3b-d8e6-4001-9f63-0365728ca667
-begin
-function oracle_nuclear_prox(v,nx,ny,threshold)
-    V=reshape(v,nx,ny,2,2)
-    U=similar(V)
-    for j in 1:ny,i in 1:nx
-        F=svd(Matrix(@view(V[i,j,:,:])))
-        @views U[i,j,:,:].=
-            F.U*Diagonal(max.(F.S.-threshold,0))*F.Vt
-    end
-    vec(U)
-end
-
-function explicit_tnv_admm_reference(problem;
-    rho=2.0,max_iterations=6000,tolerance=2e-8,check_every=25,
-)
-    A,G=problem.A,problem.G
-    d,ε=problem.data,problem.epsilon
-    η=problem.strict_convexity
-    lo=vcat(
-        fill(problem.bounds[1][1],problem.nvox),
-        fill(problem.bounds[2][1],problem.nvox),
-    )
-    hi=vcat(
-        fill(problem.bounds[1][2],problem.nvox),
-        fill(problem.bounds[2][2],problem.nvox),
-    )
-    H=transpose(A)*A+transpose(G)*G+I
-    EH=eigen(Symmetric(Matrix(H)))
-    Hinv=EH.vectors*Diagonal(inv.(EH.values))*transpose(EH.vectors)
-    x=vec(copy(problem.initial))
-    u=G*x
-    residual=A*x-d
-    v=norm(residual)≤ε ? residual : ε/norm(residual).*residual
-    w=clamp.(x,lo,hi)
-    du=zeros(length(u));dv=zeros(length(v));dw=zeros(length(w))
-    history=NamedTuple[]
-    converged=false
-    for iteration in 1:max_iterations
-        rhs=transpose(G)*(u-du)+transpose(A)*(d+v-dv)+(w-dw)
-        x=Hinv*rhs
-        uold,vold,wold=copy(u),copy(v),copy(w)
-        u=oracle_nuclear_prox(
-            G*x+du,problem.nx,problem.ny,1/rho,
-        )
-        q=A*x-d+dv
-        nq=norm(q)
-        v=nq≤ε ? q : ε/nq.*q
-        w=clamp.(rho.*(x+dw)./(rho+η),lo,hi)
-        du.+=G*x-u
-        dv.+=A*x-d-v
-        dw.+=x-w
-        if iteration==1||iteration%check_every==0
-            primal=max(norm(G*x-u),norm(A*x-d-v),norm(x-w))
-            dual=rho*norm(
-                transpose(G)*(u-uold)+
-                transpose(A)*(v-vold)+(w-wold)
-            )
-            push!(history,(;iteration,primal,dual))
-            if max(primal,dual)≤tolerance
-                converged=true
-                break
-            end
-        end
-    end
-    (
-        image=reshape(w,problem.nx,problem.ny,2),
-        tnv_dual=rho.*du,
-        data_dual=rho.*dv,
-        bound_dual=rho.*dw,
-        history,converged,
-    )
-end
-
-function oracle_solution_metrics(image,tnv_dual,data_dual,problem)
-    x=vec(image)
-    residual=problem.A*x-problem.data
-    p=vec(tnv_dual)
-    y=vec(data_dual)
-    lo=vcat(
-        fill(problem.bounds[1][1],problem.nvox),
-        fill(problem.bounds[2][1],problem.nvox),
-    )
-    hi=vcat(
-        fill(problem.bounds[1][2],problem.nvox),
-        fill(problem.bounds[2][2],problem.nvox),
-    )
-    objective=tnv_value(image,problem.S)+
-        problem.strict_convexity/2*dot(x,x)
-    feasibility=max(
-        max(norm(residual)-problem.epsilon,0.0),
-        maximum(max.(lo.-x,0.0)),
-        maximum(max.(x.-hi,0.0)),
-    )
-    gradient=transpose(problem.A)*y+transpose(problem.G)*p+
-        problem.strict_convexity.*x
-    kkt_residual=norm(
-        x-clamp.(x-gradient,lo,hi),
-    )/max(norm(x),1.0)
-    P=reshape(p,problem.nx,problem.ny,2,2)
-    dual_tnv_violation=maximum(
-        max(maximum(svdvals(Matrix(@view(P[i,j,:,:]))))-1,0.0)
-        for j in 1:problem.ny,i in 1:problem.nx
-    )
-    qdual=-(transpose(problem.G)*p+transpose(problem.A)*y)
-    conjugate_x=clamp.(
-        qdual./problem.strict_convexity,lo,hi,
-    )
-    fstar=dot(qdual,conjugate_x)-
-        problem.strict_convexity/2*dot(conjugate_x,conjugate_x)
-    dual_objective=-dot(y,problem.data)-
-        problem.epsilon*norm(y)-fstar
-    gap=objective-dual_objective
-    (
-        objective,feasibility,kkt_residual,
-        dual_tnv_violation,dual_objective,
-        primal_dual_gap=gap,
-        relative_gap=gap/max(abs(objective),1.0),
-        data_residual=norm(residual),
-    )
-end
-end
-
-# ╔═╡ 7429a1a3-785d-423d-93c4-2bb0ee3cf1a7
-tnv_small_oracle = let
-    problem=tnv_explicit_oracle_problem
-    reference=explicit_tnv_admm_reference(problem)
-    pdhg=covariance_tnv_pdhg(
-        problem.observed,problem.initial,
-        problem.forward,problem.adjoint,
-        problem.L,problem.S;
-        epsilon=problem.epsilon,
-        tnv_weight=1.0,
-        bounds=problem.bounds,
-        strict_convexity=problem.strict_convexity,
-        max_iterations=40_000,
-        tolerance=1e-10,
-        check_every=25,
-    )
-    reference_metrics=oracle_solution_metrics(
-        reference.image,reference.tnv_dual,
-        reference.data_dual,problem,
-    )
-    pdhg_metrics=oracle_solution_metrics(
-        pdhg.image,pdhg.tnv_dual,pdhg.data_dual,problem,
-    )
-    image_relative_error=norm(pdhg.image-reference.image)/
-        max(norm(reference.image),eps())
-    objective_relative_error=abs(
-        pdhg_metrics.objective-reference_metrics.objective
-    )/max(abs(reference_metrics.objective),1.0)
-    (
-        grid=(problem.nx,problem.ny),
-        variables=2problem.nvox,
-        data_rows=2problem.nrays,
-        reference_converged=reference.converged,
-        pdhg_converged=pdhg.converged,
-        reference=reference_metrics,
-        pdhg=pdhg_metrics,
-        image_relative_error,
-        objective_relative_error,
-        pass=(
-            max(reference_metrics.feasibility,pdhg_metrics.feasibility)<1e-6&&
-            max(reference_metrics.kkt_residual,pdhg_metrics.kkt_residual)<5e-5&&
-            max(
-                abs(reference_metrics.relative_gap),
-                abs(pdhg_metrics.relative_gap),
-            )<5e-4&&
-            objective_relative_error<5e-4
-        ),
-    )
-end
-
-# ╔═╡ 3d3ece92-6d20-49b4-8539-4a2ff2200455
-md"""
-### Explicit-matrix constrained-TNV oracle
-
-`tnv_small_oracle` compares the notebook PDHG implementation against an
-independent dense-matrix ADMM reference on a 16², two-material tomography
-problem. The reference uses a dense linear solve, SVD nuclear proximal maps,
-an exact Euclidean data-ball projection, and explicit bound/quadratic proximal
-steps. Pass/fail requires agreement in feasibility, objective, KKT residual,
-and primal-dual gap—not image appearance or iteration count.
-"""
-
-# ╔═╡ df46022b-033d-45df-8bca-478517904e86
-tnv_ray_whitening = let
-    F = cong_ray_covariance.precision
-    material_precision_sqrt(F.AA,F.AC,F.CC,cong_ray_covariance.valid)
-end;
-
-# ╔═╡ 296b915c-edbb-4b76-bf42-d42061109608
-tnv_whitening = let
-    C = cong_ray_covariance.covariance
-    valid = cong_ray_covariance.valid .&
-        isfinite.(C.AA) .& isfinite.(C.AC) .& isfinite.(C.CC)
-    idx = findall(valid)
-    isempty(idx) && error("no valid Cong covariance samples")
-    Cbar = [
-        mean(Float64.(C.AA[idx])) mean(Float64.(C.AC[idx]))
-        mean(Float64.(C.AC[idx])) mean(Float64.(C.CC[idx]))
-    ]
-    merge(
-        pooled_covariance_whitener(Cbar),
-        (valid_rays=length(idx),),
-    )
-end;
-
-# ╔═╡ 0a8d4979-5665-4b4d-84e9-b5da72183134
-tnv_basis_invariance_audit = let
-    C = Matrix(tnv_whitening.covariance)
-    S = tnv_whitening.whitening
-    J = [0.7 -1.1; 2.3 0.4]
-    T = [1000.0 0.2; -3.0 0.01]
-    Cp = Symmetric(T*C*T')
-    Sp = pooled_covariance_whitener(Cp).whitening
-    nuclear(M) = sum(svdvals(M))
-    original = nuclear(S*J)
-    transformed = nuclear(Sp*T*J)
-    (
-        original,
-        transformed,
-        relative_error=abs(transformed-original)/max(abs(original),eps()),
-        pass=isapprox(transformed,original;rtol=1e-10,atol=1e-12),
-    )
-end;
-
-# ╔═╡ a8a740e0-9e33-447a-b34c-dfa0139662da
-tnv_controls = let
-    active = count(cong_ray_covariance.valid)
-    dof = 2active
-    alpha = 0.001
-    normal_quantile = 3.090232306167813
-    epsilon_squared = dof + sqrt(2dof)*normal_quantile
-    (
-        confidence=1-alpha,
-        degrees_of_freedom=dof,
-        epsilon_squared,
-        image_bounds=(
-            iodine_g_cm3=(-0.02,0.10),
-            water_g_cm3=(-0.20,2.00),
-        ),
-        operator_norm_method=:power_iteration,
-        step_condition=:tau_sigma_normK_squared_lt_one,
-        stopping=(:primal_dual_gap,:data_feasibility),
-        strict_convexity=1e-8,
-    )
-end;
-
-# ╔═╡ 223af75d-05c7-431c-b598-70bef1f1c6a0
-bootstrap_controls = (
-    seeds=32,
-    sampled_rays=1024,
-    quantile=0.95,
-    base_seed=0x04d2026,
-    model=:fitted_corrected_counts_with_mc_fano_and_correlation,
-);
-
-# ╔═╡ f86d4398-f245-4899-adf9-30ce3dd405e3
-tnv_bootstrap = let
-    controls=bootstrap_controls
-    valid_linear=findall(vec(cong_ray_covariance.valid))
-    nsample=min(controls.sampled_rays,length(valid_linear))
-    positions=round.(Int,range(1,length(valid_linear);length=nsample))
-    selected=valid_linear[positions]
-    K=length(nchannel_basis.I0)
-    scale=Float64(nchannel_slab_counts.nrows)
-    Φ=scale.*Float64.(nchannel_basis.Φ)
-    I0=scale.*Float64.(nchannel_basis.I0)
-    μI=Float64.(nchannel_basis.μρ_I)
-    μW=Float64.(nchannel_basis.μρ_W)
-    A0=Float64.(vec(sino_basis_nchannel_slab.sino_iodine)[selected])
-    C0=Float64.(vec(sino_basis_nchannel_slab.sino_water)[selected])
-    λ=zeros(Float64,nsample,K)
-    for i in 1:nsample
-        λ[i,:].=nchannel_forward(A0[i],C0[i],Φ,μI,μW).λ
-    end
-
-    moments=sim_bins.mc_count_moments
-    corr=Symmetric(
-        (moments.correlation+transpose(moments.correlation))./2,
-    )
-    E=eigen(corr)
-    corr_psd=E.vectors*Diagonal(max.(E.values,1e-6))*E.vectors'
-    d=sqrt.(max.(
-        [corr_psd[i,i] for i in axes(corr_psd,1)],
-        1e-12,
-    ))
-    corr_psd./=d*transpose(d)
-    Ecorr=eigen(Symmetric(corr_psd+1e-7I))
-    Lcorr=Ecorr.vectors*Diagonal(sqrt.(max.(Ecorr.values,1e-7)))
-    fano=reshape(Float64.(moments.fano),1,K)
-
-    F=sino_basis_nchannel_slab.fisher
-    FAA=Float64.(vec(F.AA)[selected])
-    FAC=Float64.(vec(F.AC)[selected])
-    FCC=Float64.(vec(F.CC)[selected])
-
-    Φ_gpu=to_gpu(Float32.(Φ))
-    μI_gpu=to_gpu(Float32.(μI))
-    μW_gpu=to_gpu(Float32.(μW))
-    I0_gpu=to_gpu(Float32.(I0))
-    μI_eff_gpu=to_gpu(nchannel_basis.μI_eff)
-    μW_eff_gpu=to_gpu(nchannel_basis.μW_eff)
-    template=to_gpu(zeros(Float32,nsample,1,1))
-    q_per_ray=Float64[]
-    retained_fraction=Float64[]
-    try
-        for seed_index in 1:controls.seeds
-            rng=MersenneTwister(Int(controls.base_seed)+seed_index)
-            correlated=randn(rng,nsample,K)*transpose(Lcorr)
-            y=max.(
-                λ.+correlated.*sqrt.(max.(λ,1e-6).*fano),
-                1.0,
-            )
-            h=-log.(y./reshape(I0,1,K))
-            hs=ntuple(
-                k->to_gpu(reshape(Float32.(h[:,k]),nsample,1,1)),
-                K,
-            )
-            I_gpu,W_gpu=similar(template),similar(template)
-            flag_gpu=similar(template,UInt8)
-            score_gpu=similar(template)
-            FAA_gpu,FAC_gpu,FCC_gpu=
-                similar(template),similar(template),similar(template)
-            outer_gpu,inner_gpu=
-                similar(template,UInt8),similar(template,UInt8)
-            nchannel_profile_tile!(
-                I_gpu,W_gpu,FAA_gpu,FAC_gpu,FCC_gpu,
-                flag_gpu,score_gpu,outer_gpu,inner_gpu,hs,
-                Φ_gpu,μI_gpu,μW_gpu,I0_gpu,μI_eff_gpu,μW_eff_gpu,
-                nchannel_basis.normal_II,nchannel_basis.normal_IW,
-                nchannel_basis.normal_WW,nchannel_controls,
-            )
-            Astar=vec(Array(I_gpu))
-            Cstar=vec(Array(W_gpu))
-            flags=vec(Array(flag_gpu))
-            retained=@. (flags&0x2c)==0
-            δA=Float64.(Astar).-A0
-            δC=Float64.(Cstar).-C0
-            q=@. FAA*δA^2+2FAC*δA*δC+FCC*δC^2
-            push!(q_per_ray,mean(q[retained]))
-            push!(retained_fraction,count(retained)/nsample)
-            BS.release_backend!((
-                hs,I_gpu,W_gpu,flag_gpu,score_gpu,
-                FAA_gpu,FAC_gpu,FCC_gpu,outer_gpu,inner_gpu,
-            ))
-        end
-    finally
-        BS.release_backend!((
-            Φ_gpu,μI_gpu,μW_gpu,I0_gpu,
-            μI_eff_gpu,μW_eff_gpu,template,
-        ))
-    end
-
-    q_reference=2.0
-    inflation=max(quantile(q_per_ray,controls.quantile)/q_reference,1.0)
-    epsilon_squared=inflation*tnv_controls.epsilon_squared
-    (
-        controls,
-        sampled_rays=nsample,
-        q_per_ray,
-        retained_fraction,
-        q_quantile=quantile(q_per_ray,controls.quantile),
-        fisher_calibration_inflation=inflation,
-        epsilon_squared,
-        epsilon=sqrt(epsilon_squared),
-        post_scatter_correction_included=false,
-        limitation=(
-            "The fitted-count bootstrap reproduces the simulator's MC Fano/"*
-            "correlation model after exact linear pileup inversion. It does not "*
-            "model uncertainty from the nonlinear scatter re-estimation."
-        ),
-    )
-end
 
 # ╔═╡ 707aec65-d9d6-4462-a662-c669beb8525b
 begin
@@ -2401,6 +1327,7 @@ function cong_from_corrected_bins(native_bins)
     flags[.!feasible].|=0x10
     (
         sino_iodine=sino_I,sino_water=sino_W,
+        slab_bins=slab,
         quality_flag=flags,score_norm=score,
         fisher=(AA=FAA,AC=FAC,CC=FCC),
         outer_iterations=outer,inner_iterations=inner,
@@ -2410,7 +1337,7 @@ end
 end
 
 # ╔═╡ 067e491c-b305-46d0-abf9-bad0431f7b5e
-tnv_noiseless_pipeline = let
+matched_noiseless_pipeline = let
     GC.gc(true)
     simulated=simulate_corrected_pcct_bins(
         use_noise=false,seed=Int(0x04d0000),
@@ -2422,852 +1349,1281 @@ tnv_noiseless_pipeline = let
     )
 end
 
-# ╔═╡ 55e6d611-7c3a-48d6-a01e-7e91707a2e27
-tnv_full_pipeline_first_difference = let
-    noiseless=tnv_noiseless_pipeline.cong
-    noisy=sino_basis_nchannel_slab
-    difference=cat(
-        noisy.sino_iodine.-noiseless.sino_iodine,
-        noisy.sino_water.-noiseless.sino_water;dims=4,
-    )
-    L=material_precision_sqrt(
-        noisy.fisher.AA,noisy.fisher.AC,noisy.fisher.CC,
-    )
-    valid=@. ((noisy.quality_flag|noiseless.quality_flag)&0x2c)==0
-    whitened=ray_whiten(difference,L)
-    whitened[.!repeat(valid,1,1,1,2)].=0
-    (
-        residual=norm(whitened),
-        residual_per_active_dof=norm(whitened)/sqrt(2count(valid)),
-        active_rays=count(valid),
-        interpretation=:one_full_pipeline_noise_realization,
-    )
-end
-
-# ╔═╡ a44c3a3b-6f30-456e-b0ff-a7f71a4fdd37
-tnv_full_pipeline_repetitions = let
-    noiseless=tnv_noiseless_pipeline.cong
-    function retained_payload(cong,seed,elapsed_s)
-        difference=cat(
-            cong.sino_iodine.-noiseless.sino_iodine,
-            cong.sino_water.-noiseless.sino_water;dims=4,
-        )
-        L=material_precision_sqrt(
-            cong.fisher.AA,cong.fisher.AC,cong.fisher.CC,
-        )
-        valid=@. ((cong.quality_flag|noiseless.quality_flag)&0x2c)==0
-        whitened=ray_whiten(difference,L)
-        whitened[.!repeat(valid,1,1,1,2)].=0
-        (
-            seed,elapsed_s,
-            residual_to_noiseless=norm(whitened),
-            active_rays=count(valid),
-            sino_iodine=cong.sino_iodine,
-            sino_water=cong.sino_water,
-            fisher=cong.fisher,
-            quality_flag=cong.quality_flag,
-        )
-    end
-    repetitions=Any[
-        retained_payload(
-            sino_basis_nchannel_slab,sim_opts.seed,
-            sino_basis_nchannel_slab.elapsed_s,
-        ),
-    ]
-    for seed in (40401,40402,40403)
-        GC.gc(true)
-        simulated=simulate_corrected_pcct_bins(
-            use_noise=true,seed=seed,
-        )
-        cong=cong_from_corrected_bins(simulated.bins)
-        push!(repetitions,retained_payload(
-            cong,seed,simulated.elapsed_s+cong.elapsed_s,
-        ))
-    end
-    residuals=[r.residual_to_noiseless for r in repetitions]
-    (
-        repetitions,
-        residuals,
-        empirical_quantile=0.95,
-        epsilon_noise_full_pipeline=quantile(residuals,0.95),
-        total_elapsed_s=sum(r.elapsed_s for r in repetitions[2:end]),
-        sample_size=length(repetitions),
-        limitation=(
-            "Four complete realizations provide a fast preliminary empirical "*
-            "calibration. The stored Cong outputs permit direct recomputation "*
-            "against the later consistent reference image."
-        ),
-    )
-end
-
-# ╔═╡ 87a1be5f-8211-4861-a8f9-d6e996b76d4a
-begin
-function ray_whiten!(output,input,L)
-    x1,x2=selectdim(input,ndims(input),1),selectdim(input,ndims(input),2)
-    y1,y2=selectdim(output,ndims(output),1),selectdim(output,ndims(output),2)
-    @. y1=L.AA*x1+L.AC*x2
-    @. y2=L.AC*x1+L.CC*x2
-    output
-end
-
-function central_row_reusable_pair_projector(geom,image_size,prototype)
-    geom2d=central_row_geometry(geom,image_size)
-    T=eltype(prototype)
-    sinogram=similar(
-        prototype,T,geom2d.n_cols,1,geom2d.n_angles,2,
-    )
-    volume=similar(prototype,T,image_size...,1,2)
-    ws=(
-        source_positions=to_gpu(T.(geom2d.source_positions)),
-        detector_centers=to_gpu(T.(geom2d.detector_centers)),
-        detector_u=to_gpu(T.(geom2d.detector_u)),
-        detector_v=to_gpu(T.(geom2d.detector_v)),
-    )
-    function forward!(image)
-        for material in 1:2
-            BS.dd_forward_project!(
-                @view(sinogram[:,:,:,material]),
-                reshape(@view(image[:,:,material]),image_size...,1),
-                geom2d;volume_extent=geom2d.fov,
-                ws_source_positions=ws.source_positions,
-                ws_detector_centers=ws.detector_centers,
-                ws_detector_u=ws.detector_u,
-                ws_detector_v=ws.detector_v,
-            )
-        end
-        sinogram
-    end
-    function adjoint!(input)
-        for material in 1:2
-            BS.dd_backproject!(
-                @view(volume[:,:,:,material]),
-                @view(input[:,:,:,material]),
-                geom2d;volume_extent=geom2d.fov,
-                ws_source_positions=ws.source_positions,
-                ws_detector_centers=ws.detector_centers,
-                ws_detector_u=ws.detector_u,
-                ws_detector_v=ws.detector_v,
-            )
-        end
-        reshape(volume,image_size...,2)
-    end
-    (
-        forward! = forward!,adjoint! = adjoint!,
-        geometry=geom2d,sinogram,volume,ws,
-    )
-end
-
-function preconditioned_weighted_operator(
-    pair_workspace,L,Rm,Rx,epsilon,prototype,
-)
-    image_size=size(Rx)
-    x_buffer=similar(prototype,eltype(prototype),image_size...,2)
-    z_buffer=similar(x_buffer)
-    forward_buffer=similar(pair_workspace.sinogram)
-    adjoint_input=similar(pair_workspace.sinogram)
-    function apply_right!(output,input)
-        @views begin
-            @. output[:,:,1]=Rx*(
-                Rm[1,1]*input[:,:,1]+Rm[1,2]*input[:,:,2]
-            )
-            @. output[:,:,2]=Rx*(
-                Rm[2,1]*input[:,:,1]+Rm[2,2]*input[:,:,2]
-            )
-        end
-        output
-    end
-    function forward!(z)
-        apply_right!(x_buffer,z)
-        pair_workspace.forward!(x_buffer)
-        ray_whiten!(forward_buffer,pair_workspace.sinogram,L)
-        forward_buffer./=epsilon
-    end
-    function adjoint!(q)
-        ray_whiten!(adjoint_input,q,L)
-        adjoint_input./=epsilon
-        pair_workspace.adjoint!(adjoint_input)
-        apply_right!(z_buffer,reshape(pair_workspace.volume,image_size...,2))
-    end
-    (
-        forward! = forward!,adjoint! = adjoint!,
-        apply_right! = apply_right!,
-        pair_workspace,x_buffer,z_buffer,forward_buffer,adjoint_input,
-    )
-end
-
-function preconditioned_cgls(
-    operator,data,initial;
-    normal_tolerance=1e-5,check_every=5,
-    plateau_window=6,plateau_fraction=0.01,safety_iterations=2000,
-)
-    z=copy(initial)
-    residual=copy(data)
-    residual.-=operator.forward!(z)
-    s=copy(operator.adjoint!(residual))
-    normal_scale=max(norm(operator.adjoint!(data)),eps(float(eltype(z))))
-    p=copy(s)
-    γ=dot(s,s)
-    history=NamedTuple[]
-    function record(iteration)
-        (
-            iteration,
-            discrepancy=norm(residual),
-            normal_residual=sqrt(γ),
-            relative_normal_residual=sqrt(γ)/normal_scale,
-        )
-    end
-    push!(history,record(0))
-    converged=history[end].relative_normal_residual<normal_tolerance
-    plateaued=false
-    iteration=0
-    while !converged&&!plateaued&&iteration<safety_iterations
-        iteration+=1
-        q=operator.forward!(p)
-        denominator=dot(q,q)
-        denominator>0||break
-        α=γ/denominator
-        z.+=α.*p
-        residual.-=α.*q
-        snew=operator.adjoint!(residual)
-        γnew=dot(snew,snew)
-        p.=snew.+(γnew/γ).*p
-        γ=γnew
-        converged=sqrt(γ)/normal_scale<normal_tolerance
-        if iteration%check_every==0||converged
-            push!(history,record(iteration))
-            if length(history)≥plateau_window
-                recent=history[end-plateau_window+1:end]
-                normals=getproperty.(recent,:relative_normal_residual)
-                discrepancies=getproperty.(recent,:discrepancy)
-                plateaued=maximum(normals)/max(minimum(normals),eps())<
-                    1+plateau_fraction &&
-                    abs(first(discrepancies)-last(discrepancies))/
-                    max(first(discrepancies),eps())<plateau_fraction/10
-            end
-        end
-    end
-    (
-        z,history,converged,plateaued,
-        stop_reason=converged ? :normal_equation :
-            plateaued ? :documented_plateau : :safety_limit,
-    )
-end
-end
-
-# ╔═╡ e91efbee-d615-4496-9867-a94651672ad6
-begin
-function square_root_ramp(
-    image_size,voxel_size,prototype,
-)
-    nx,ny=image_size
-    hx,hy=voxel_size
-    kx=[min(k,nx-k) for k in 0:nx-1]
-    ky=[min(k,ny-k) for k in 0:ny-1]
-    wx=2 .* sin.(π .* kx ./ nx) ./ hx
-    wy=2 .* sin.(π .* ky ./ ny) ./ hy
-    rho=sqrt.(wx.^2 .+ transpose(wy).^2)
-    rho0=min(
-        2sin(π/nx)/hx,
-        2sin(π/ny)/hy,
-    )
-    q=(rho.^2 .+ rho0^2).^(1/4)
-    to_gpu(Float32.(q))
-end
-
-function apply_square_root_ramp!(output,input,q)
-    transformed=BS.FFTW.fft(input,(1,2))
-    transformed .*= reshape(q,size(q)...,1)
-    output .= real.(BS.FFTW.ifft(transformed,(1,2)))
-    output
-end
-
-function ramp_preconditioned_weighted_operator(
-    pair_workspace,L,Rm,Rx,q,epsilon,prototype,
-)
-    image_size=size(Rx)
-    material_buffer=similar(prototype,eltype(prototype),image_size...,2)
-    ramp_buffer=similar(material_buffer)
-    right_buffer=similar(material_buffer)
-    adjoint_sensitivity_buffer=similar(material_buffer)
-    adjoint_ramp_buffer=similar(material_buffer)
-    adjoint_right_buffer=similar(material_buffer)
-    forward_buffer=similar(pair_workspace.sinogram)
-    adjoint_input=similar(pair_workspace.sinogram)
-    function material_forward!(output,input)
-        @views begin
-            @. output[:,:,1]=
-                Rm[1,1]*input[:,:,1]+Rm[1,2]*input[:,:,2]
-            @. output[:,:,2]=
-                Rm[2,1]*input[:,:,1]+Rm[2,2]*input[:,:,2]
-        end
-        output
-    end
-    function material_adjoint!(output,input)
-        @views begin
-            @. output[:,:,1]=
-                Rm[1,1]*input[:,:,1]+Rm[2,1]*input[:,:,2]
-            @. output[:,:,2]=
-                Rm[1,2]*input[:,:,1]+Rm[2,2]*input[:,:,2]
-        end
-        output
-    end
-    function apply_right!(output,input)
-        material_forward!(material_buffer,input)
-        apply_square_root_ramp!(ramp_buffer,material_buffer,q)
-        @. output=Rx*ramp_buffer
-        output
-    end
-    function apply_right_adjoint!(output,input)
-        @. adjoint_sensitivity_buffer=Rx*input
-        apply_square_root_ramp!(
-            adjoint_ramp_buffer,adjoint_sensitivity_buffer,q,
-        )
-        material_adjoint!(output,adjoint_ramp_buffer)
-    end
-    function forward!(z)
-        apply_right!(right_buffer,z)
-        pair_workspace.forward!(right_buffer)
-        ray_whiten!(forward_buffer,pair_workspace.sinogram,L)
-        forward_buffer./=epsilon
-    end
-    function adjoint!(y)
-        ray_whiten!(adjoint_input,y,L)
-        adjoint_input./=epsilon
-        pair_workspace.adjoint!(adjoint_input)
-        apply_right_adjoint!(
-            adjoint_right_buffer,
-            reshape(pair_workspace.volume,image_size...,2),
-        )
-    end
-    (
-        forward! = forward!,adjoint! = adjoint!,
-        apply_right! = apply_right!,
-        apply_right_adjoint! = apply_right_adjoint!,
-        pair_workspace,forward_buffer,adjoint_input,
-        right_buffer,adjoint_right_buffer,q,
-    )
-end
-
-function monitored_lsmr(
-    operator,data,initial;
-    iterations,
-)
-    z=copy(initial)
-    u=copy(data)
-    u.-=operator.forward!(z)
-    beta=norm(u)
-    u./=beta
-    v=copy(operator.adjoint!(u))
-    alpha=norm(v)
-    v./=alpha
-    zetabar=alpha*beta
-    alphabar=alpha
-    rho=one(alpha)
-    rhobar=one(alpha)
-    cbar=one(alpha)
-    sbar=zero(alpha)
-    h=copy(v)
-    hbar=similar(v);fill!(hbar,zero(eltype(hbar)))
-    normal_scale=max(norm(operator.adjoint!(data)),eps(float(eltype(z))))
-    data_scale=max(norm(data),eps(float(eltype(z))))
-    history=NamedTuple[]
-    for iteration in 1:iterations
-        u_new=operator.forward!(v)
-        u_new.-=alpha.*u
-        beta=norm(u_new)
-        u.=u_new./beta
-        v_new=operator.adjoint!(u)
-        v_new.-=beta.*v
-        alpha=norm(v_new)
-        v.=v_new./alpha
-
-        rho_old=rho
-        rho=hypot(alphabar,beta)
-        c=alphabar/rho
-        s=beta/rho
-        theta_new=s*alpha
-        alphabar=c*alpha
-        rhobar_old=rhobar
-        theta_bar=sbar*rho
-        rho_temp=cbar*rho
-        rhobar=hypot(rho_temp,theta_new)
-        cbar=rho_temp/rhobar
-        sbar=theta_new/rhobar
-        zeta=cbar*zetabar
-        zetabar=-sbar*zetabar
-        hbar.=h.-(
-            theta_bar*rho/(rho_old*rhobar_old)
-        ).*hbar
-        z.+=zeta/(rho*rhobar).*hbar
-        h.=v.-theta_new/rho.*h
-
-        residual=copy(operator.forward!(z))
-        residual.-=data
-        normal=operator.adjoint!(residual)
-        push!(history,(;
-            iteration,
-            relative_data_residual=norm(residual)/data_scale,
-            relative_normal_residual=norm(normal)/normal_scale,
-            data_residual=norm(residual),
-        ))
-    end
-    (;z,history)
-end
-end
-
-# ╔═╡ 61a5abd5-a5ce-4aa8-8e8c-3c579dedbed5
-tnv_ramp_preconditioner_gate = let
-    resolution=64
-    image_size=(resolution,resolution)
-    noiseless=tnv_noiseless_pipeline.cong
-    valid=(noiseless.quality_flag .& 0x2c).==0
-    idx=findall(valid)
-    pooled_AA=mean(Float64.(noiseless.fisher.AA[idx]))
-    pooled_AC=mean(Float64.(noiseless.fisher.AC[idx]))
-    pooled_CC=mean(Float64.(noiseless.fisher.CC[idx]))
-    EF=eigen(Symmetric(
-        [pooled_AA pooled_AC;pooled_AC pooled_CC],
-    ))
-    Rm=Float32.(
-        EF.vectors*Diagonal(inv.(sqrt.(EF.values)))*EF.vectors'
-    )
-    L_cpu=material_precision_sqrt(
-        noiseless.fisher.AA,noiseless.fisher.AC,noiseless.fisher.CC,
-    )
-    L=(AA=to_gpu(L_cpu.AA),AC=to_gpu(L_cpu.AC),CC=to_gpu(L_cpu.CC))
-    prototype=to_gpu(zeros(Float32,image_size...,2))
-    pair_old=central_row_reusable_pair_projector(
-        sino_basis_nchannel_slab.geom,image_size,prototype,
-    )
-    pair_ramp=central_row_reusable_pair_projector(
-        sino_basis_nchannel_slab.geom,image_size,prototype,
-    )
-    single=central_row_reusable_projector(
-        sino_basis_nchannel_slab.geom,image_size,
-        to_gpu(ones(Float32,image_size)),
-    )
-    ones_image=to_gpu(ones(Float32,image_size))
-    pones=copy(single.forward!(ones_image))
-    traceF=noiseless.fisher.AA.+noiseless.fisher.CC
-    detF=noiseless.fisher.AA.*noiseless.fisher.CC.-
-        noiseless.fisher.AC.^2
-    λmax=0.5f0 .* (
-        traceF .+ sqrt.(max.(traceF.^2 .- 4f0 .* detF,0f0))
-    )
-    sensitivity=copy(single.adjoint!(
-        to_gpu(Float32.(λmax)).*pones,
-    ))
-    floor_value=max(1f-6*maximum(sensitivity),eps(Float32))
-    Rx=1f0./sqrt.(max.(sensitivity,floor_value))
-    epsilon=Float32(
-        tnv_full_pipeline_repetitions.epsilon_noise_full_pipeline,
-    )
-    old=preconditioned_weighted_operator(
-        pair_old,L,Rm,Rx,epsilon,prototype,
-    )
-    voxel_size=(
-        pair_ramp.geometry.fov[1]/resolution,
-        pair_ramp.geometry.fov[2]/resolution,
-    )
-    q=square_root_ramp(image_size,voxel_size,prototype)
-    ramp=ramp_preconditioned_weighted_operator(
-        pair_ramp,L,Rm,Rx,q,epsilon,prototype,
-    )
-    rng=MersenneTwister(0x6404d)
-    x_test=zeros(Float32,image_size...,2)
-    for j in 1:resolution,i in 1:resolution
-        x=(i-(resolution+1)/2)/(resolution/2)
-        y=(j-(resolution+1)/2)/(resolution/2)
-        r2=x*x+y*y
-        x_test[i,j,1]=r2<0.42^2 ? 0.02f0 : 0f0
-        x_test[i,j,2]=r2<0.78^2 ? 1f0 : 0f0
-        (x+0.22)^2+(y-0.18)^2<0.12^2 &&
-            (x_test[i,j,1]=0.055f0)
-    end
-    x_test_gpu=to_gpu(x_test)
-    pair_data=central_row_reusable_pair_projector(
-        sino_basis_nchannel_slab.geom,image_size,prototype,
-    )
-    consistent=pair_data.forward!(x_test_gpu)
-    data=similar(pair_data.sinogram)
-    ray_whiten!(data,consistent,L)
-    data./=epsilon
-
-    zprobe=to_gpu(randn(rng,Float32,image_size...,2))
-    yprobe=to_gpu(randn(rng,Float32,size(data)))
-    function adjoint_error(operator)
-        Az=copy(operator.forward!(zprobe))
-        Aty=copy(operator.adjoint!(yprobe))
-        abs(dot(Az,yprobe)-dot(zprobe,Aty))/
-            max(abs(dot(Az,yprobe)),abs(dot(zprobe,Aty)),eps(Float32))
-    end
-    old_adjoint_error=adjoint_error(old)
-    ramp_adjoint_error=adjoint_error(ramp)
-    max(old_adjoint_error,ramp_adjoint_error)<3f-4||error(
-        "Right-preconditioned adjoint audit failed."
-    )
-    initial=to_gpu(zeros(Float32,image_size...,2))
-    old_result=monitored_lsmr(old,data,initial;iterations=30)
-    ramp_result=monitored_lsmr(ramp,data,initial;iterations=30)
-    old_final=last(old_result.history)
-    ramp_final=last(ramp_result.history)
-    data_improvement=old_final.relative_data_residual/
-        ramp_final.relative_data_residual
-    normal_improvement=old_final.relative_normal_residual/
-        ramp_final.relative_normal_residual
-    (
-        resolution,iterations=30,
-        old=old_final,ramp=ramp_final,
-        old_adjoint_error,ramp_adjoint_error,
-        data_improvement,normal_improvement,
-        pass=min(data_improvement,normal_improvement)>=10,
-        required_improvement=10.0,
-    )
-end
-
-# ╔═╡ 558a210b-5729-4a26-82ae-b354813c8642
-begin
-function build_noiseless_consistent_reference_128()
-    resolution=128
-    image_size=(resolution,resolution)
-    noiseless=tnv_noiseless_pipeline.cong
-    observed=cat(
-        noiseless.sino_iodine,noiseless.sino_water;dims=4,
-    )
-    valid=(noiseless.quality_flag .& 0x2c).==0
-    idx=findall(valid)
-    pooled_AA=mean(Float64.(noiseless.fisher.AA[idx]))
-    pooled_AC=mean(Float64.(noiseless.fisher.AC[idx]))
-    pooled_CC=mean(Float64.(noiseless.fisher.CC[idx]))
-    Fbar=[pooled_AA pooled_AC;pooled_AC pooled_CC]
-    EF=eigen(Symmetric(Fbar))
-    Rm=EF.vectors*Diagonal(inv.(sqrt.(EF.values)))*EF.vectors'
-    L_cpu=material_precision_sqrt(
-        noiseless.fisher.AA,noiseless.fisher.AC,noiseless.fisher.CC,
-    )
-    prototype=to_gpu(zeros(Float32,image_size...,2))
-    pair=central_row_reusable_pair_projector(
-        sino_basis_nchannel_slab.geom,image_size,prototype,
-    )
-    ones_image=to_gpu(ones(Float32,image_size))
-    single=central_row_reusable_projector(
-        sino_basis_nchannel_slab.geom,image_size,ones_image,
-    )
-    pones=copy(single.forward!(ones_image))
-    traceF=noiseless.fisher.AA.+noiseless.fisher.CC
-    detF=noiseless.fisher.AA.*noiseless.fisher.CC.-
-        noiseless.fisher.AC.^2
-    λmax=0.5f0 .* (
-        traceF .+ sqrt.(max.(traceF.^2 .- 4f0 .* detF,0f0))
-    )
-    sensitivity_input=to_gpu(Float32.(λmax)).*pones
-    sensitivity=copy(single.adjoint!(sensitivity_input))
-    sensitivity_floor=max(
-        Float32(1e-6)*maximum(sensitivity),eps(Float32),
-    )
-    Rx=1f0./sqrt.(max.(sensitivity,sensitivity_floor))
-    L=(
-        AA=to_gpu(L_cpu.AA),AC=to_gpu(L_cpu.AC),CC=to_gpu(L_cpu.CC),
-    )
-    epsilon=Float32(tnv_full_pipeline_repetitions.epsilon_noise_full_pipeline)
-    operator=preconditioned_weighted_operator(
-        pair,L,Float32.(Rm),Rx,epsilon,prototype,
-    )
-    rng=MersenneTwister(0x12804d)
-    ztest=to_gpu(randn(rng,Float32,image_size...,2))
-    qtest=to_gpu(randn(
-        rng,Float32,size(operator.forward_buffer),
-    ))
-    Az=copy(operator.forward!(ztest))
-    Atq=copy(operator.adjoint!(qtest))
-    adjoint_error=abs(dot(Az,qtest)-dot(ztest,Atq))/
-        max(abs(dot(Az,qtest)),abs(dot(ztest,Atq)),eps(Float32))
-    adjoint_error<2f-4||error(
-        "Preconditioned weighted operator failed adjoint audit: $adjoint_error"
-    )
-    data=similar(operator.forward_buffer)
-    ray_whiten!(data,to_gpu(Float32.(observed)),L)
-    data./=epsilon
-    result=nothing
-    elapsed=@elapsed begin
-        result=preconditioned_cgls(
-            operator,data,to_gpu(zeros(Float32,image_size...,2));
-            normal_tolerance=1e-5,
-        )
-    end
-    image=similar(prototype)
-    operator.apply_right!(image,result.z)
-    predicted=copy(pair.forward!(image))
-    model_difference=predicted.-to_gpu(Float32.(observed))
-    model_whitened=ray_whiten(model_difference,L)
-    final_record=last(result.history)
-    (
-        resolution,elapsed_s=elapsed,
-        converged=result.converged,plateaued=result.plateaued,
-        stop_reason=result.stop_reason,
-        iterations=final_record.iteration,
-        relative_normal_residual=final_record.relative_normal_residual,
-        r_model=norm(model_whitened),
-        epsilon_noise=epsilon,
-        image=Array(image),
-        Rm=Rm,Rx_summary=(
-            minimum_value=minimum(Rx),maximum_value=maximum(Rx),
-            sensitivity_floor=sensitivity_floor,
-        ),
-        adjoint_error=adjoint_error,
-        history=result.history,
-    )
-end
-
-tnv_noiseless_consistent_reference_128 = (
-    status=:pending_improved_krylov_preconditioner,
-    attempted_resolution=128,
-    elapsed_before_interrupt_s=300.0,
-    certified_r_model=nothing,
-    certified_r_min=nothing,
-    interpretation=(
-        "The reusable operator removed the allocation pathology, but the "*
-        "specified pooled-Fisher/sensitivity right preconditioner did not "*
-        "reach the normal-equation tolerance or documented plateau within "*
-        "five minutes. No residual-floor claim is made."
-    ),
-)
-end
-
-# ╔═╡ 8f227499-7784-4dd3-ad30-9810cc7741bb
-tnv_exact_problem = let
-    image_size=recon_opts.matrix_size[1:2]
-    mid_z=size(nchannel_basis_volumes.vol_water,3)÷2+1
-    initial=cat(
-        nchannel_basis_volumes.vol_iodine[:,:,mid_z],
-        nchannel_basis_volumes.vol_water[:,:,mid_z];
-        dims=3,
-    )
-    observed=cat(
-        sino_basis_nchannel_slab.sino_iodine,
-        sino_basis_nchannel_slab.sino_water;
-        dims=4,
-    )
-    bridge=central_row_projector(sino_basis_nchannel_slab.geom,image_size)
-    (
-        image_size,mid_z,initial=Float32.(initial),
-        observed=Float32.(observed),bridge,
-        ray_whitening=tnv_ray_whitening,
-        material_whitening=Float32.(tnv_whitening.whitening),
-        epsilon=Float32(tnv_bootstrap.epsilon),
-        bounds=(
-            tnv_controls.image_bounds.iodine_g_cm3,
-            tnv_controls.image_bounds.water_g_cm3,
-        ),
-    )
-end;
-
-# ╔═╡ f88339be-5430-4357-83ca-ad027ff54e3a
-function covariance_weighted_cgls(
-    observed,initial,forward,adjoint,L;
-    normal_tolerance=1e-5,check_every=5,safety_iterations=10_000,
-)
-    x=copy(initial)
-    residual=ray_whiten(observed.-pair_forward(x,forward),L)
-    s=pair_adjoint(ray_whiten(residual,L),adjoint)
-    normal_scale=max(norm(
-        pair_adjoint(
-            ray_whiten(ray_whiten(observed,L),L),
-            adjoint,
-        ),
-    ),eps(float(eltype(x))))
-    p=copy(s)
-    γ=dot(s,s)
-    history=NamedTuple[(
-        iteration=0,
-        discrepancy=norm(residual),
-        normal_residual=sqrt(γ),
-        relative_normal_residual=sqrt(γ)/normal_scale,
-    )]
-    converged=history[end].relative_normal_residual<normal_tolerance
-    iteration=0
-    while !converged && iteration<safety_iterations
-        iteration+=1
-        q=ray_whiten(pair_forward(p,forward),L)
-        denominator=dot(q,q)
-        denominator>0||break
-        α=γ/denominator
-        x.+=α.*p
-        residual.-=α.*q
-        snew=pair_adjoint(ray_whiten(residual,L),adjoint)
-        γnew=dot(snew,snew)
-        β=γnew/γ
-        p.=snew.+β.*p
-        s=snew
-        γ=γnew
-        converged=sqrt(γ)/normal_scale<normal_tolerance
-        if iteration%check_every==0||converged
-            push!(history,(
-                iteration,
-                discrepancy=norm(residual),
-                normal_residual=sqrt(γ),
-                relative_normal_residual=sqrt(γ)/normal_scale,
-            ))
-        end
-    end
-    (
-        image=x,history,converged,
-        stop_reason=converged ? :normal_equation : :safety_limit,
-    )
-end
-
-# ╔═╡ 69d03cc0-af0c-433b-90da-b57b7e6401de
-tnv_data_feasibility = (
-    status=:pending_fast_preconditioned_cgls,
-    reason=(
-        "The exact 128² matrix-free CGLS path was interrupted after two minutes. "*
-        "No residual floor is reported until the requested normal-equation "*
-        "criterion is reached."
-    ),
-    normal_equation_tolerance=1e-5,
-)
-
-# ╔═╡ f427fde7-40ad-4b6e-b7ed-8ee31ffab8ae
-tnv_feasibility_conclusion = (
-    endpoint_selected=false,
-    classification=:projection_domain_tnv_terminated,
-    interpretation=(
-        "The small explicit oracle passes and the reusable wrapper removes the "*
-        "allocation pathology. However, the final square-root-ramp LSMR gate "*
-        "improved the consistent-data residual by only 1.21× and worsened the "*
-        "normal residual; it failed the declared 10× gate. No projector-domain "*
-        "feasibility or residual-floor claim is made."
-    ),
-    next_required_evidence=(
-        :post_fbp_cross_nps_covariance,
-        :post_fbp_tnv_endpoint,
-    ),
-)
-
-# ╔═╡ 8bbf633c-8859-437a-8237-dd2637916e87
-tnv_decision_table = (
-    small_oracle=(
-        pass=tnv_small_oracle.pass,
-        relative_objective_error=
-            tnv_small_oracle.objective_relative_error,
-        relative_primal_dual_gap=
-            tnv_small_oracle.pdhg.relative_gap,
-    ),
-    discrepancy_budgets=(
-        epsilon_detector_only=tnv_bootstrap.epsilon,
-        epsilon_noise_preliminary=
-            tnv_full_pipeline_repetitions.epsilon_noise_full_pipeline,
-        full_pipeline_samples=
-            tnv_full_pipeline_repetitions.sample_size,
-        r_model=nothing,
-        epsilon_full=nothing,
-    ),
-    residual_floor=(
-        r_min=nothing,
-        comparison_to_epsilon_full=:not_available,
-    ),
-    projector_solver=(
-        scalar_pdhg=:correct_but_unsuitable,
-        pooled_fisher_sensitivity_cgls=
-            :interrupted_without_certificate,
-        ramp_lsmr_gate_pass=tnv_ramp_preconditioner_gate.pass,
-        data_improvement=
-            tnv_ramp_preconditioner_gate.data_improvement,
-        normal_improvement=
-            tnv_ramp_preconditioner_gate.normal_improvement,
-        decision=:terminate_projection_domain_tnv,
-    ),
-    runtime_and_gap=(
-        allocating_adjoint_512_s=
-            tnv_operator_profile[2].allocating_adjoint_s,
-        reusable_adjoint_512_s=
-            tnv_operator_profile[2].reusable_adjoint_s,
-        oracle_relative_gap=tnv_small_oracle.pdhg.relative_gap,
-        final_projector_tnv_gap=nothing,
-    ),
-)
-
-# ╔═╡ c81819eb-fd95-4193-af0c-8c8fce52c1e2
+# ╔═╡ 8a23843f-3414-4641-a4c0-8800ec52cd7c
 md"""
-## TNV endpoint decision
+## Lee 2025 total-likelihood bilateral filter
 
-The full covariance, whitening, matched-projector adjointness, and convex TNV
-operators pass their in-notebook checks. A short unregularized,
-covariance-weighted CGLS solve is then used as a **feasibility gate** before any
-long TNV run.
+For every center ray, the corrected four-bin count equivalents are summed only
+to evaluate Lee's total likelihood. Each neighboring **completed Cong material
+pair** is evaluated with the center measurement and the same MC-DRM-weighted
+forward model. One normalized scalar weight is applied jointly to iodine and
+water. The collapsed total count is never used for material estimation.
 
-The 32-seed fitted-count bootstrap includes the detector Monte Carlo Fano
-factors and inter-bin correlations and increases the Fisher variance by only
-about 15%. The capped solve still does not reach that calibrated discrepancy
-radius. Exact linear pileup inversion is represented, but uncertainty from
-nonlinear scatter re-estimation is not; that remaining boundary is reported
-explicitly rather than replaced by an arbitrary radius inflation.
-
-Therefore this notebook deliberately selects **no TNV VMI endpoint yet**.
-This is a documented runtime/statistical-calibration limitation, not a claim
-that the convex problem itself is infeasible. The common-FBP VMI branch remains
-the valid baseline, and no RSKR result is promoted as a mathematical solution.
+The implementation follows Lee 2025 with a \(5\times5\) sinogram window,
+\(\alpha_1=0.9\), circular view wrapping, and nonwrapping detector boundaries.
+The simulator returns corrected fractional count equivalents rather than raw
+independent Poisson counts; that is the only likelihood-model deviation in
+this feasibility test.
 """
 
-# ╔═╡ fab1f0dc-8ee2-41b3-bf90-33122487d725
-tnv_goal_audit = (
-    proven=(
-        fixed_cong_profile_decomposition=true,
-        one_four_bin_scan=true,
-        full_per_ray_fisher_and_covariance=true,
-        off_diagonal_material_covariance=true,
-        quality_flags_retained=true,
-        matched_projector_and_exact_transpose=
-            tnv_projector_adjoint_audit.pass,
-        covariance_whitened_tnv_definition=true,
-        basis_unit_invariance=tnv_basis_invariance_audit.pass,
-        cpu_operator_checks=tnv_unit_audit.pass,
-        gpu_operator_checks=tnv_backend_audit.pass,
-        common_fbp_baseline=true,
-        raw_and_derived_channels_not_double_counted=true,
-        deterministic_memory_cleanup=true,
-        detector_bootstrap_completed=true,
-    ),
-    partial=(
-        corrected_count_covariance=(
-            detector_fano_and_bin_correlation=true,
-            exact_linear_pileup_inverse=true,
-            nonlinear_scatter_reestimation=false,
-        ),
-        epsilon_calibration=(
-            detector_bootstrap=tnv_bootstrap.epsilon,
-            post_scatter_bootstrap=nothing,
-        ),
-        full_resolution_optimization=(
-            converged=false,
-            feasibility_established=false,
-            limitation=tnv_feasibility_conclusion.classification,
-        ),
-    ),
-    not_claimed_without_endpoint=(
-        dense_tnv_vmis=false,
-        primal_dual_convergence=false,
-        dose_behavior=false,
-        repeated_seed_covariance=false,
-        nps=false,
-        mtf_ttf_edge_slope=false,
-        concentration_nist_bias=false,
-        endpoint_visuals=false,
-        tnv_vs_rskr_comparison=false,
-    ),
-    completion_status=:rigorous_limitation_without_selected_endpoint,
+# ╔═╡ f3de45a6-4818-4ee1-ad56-c65797119dee
+begin
+function total_measured_counts(slab_bins,I0,nrows)
+    total=zeros(Float32,size(first(slab_bins)))
+    for bin in eachindex(slab_bins)
+        @. total+=Float32(nrows*I0[bin])*exp(-slab_bins[bin])
+    end
+    total
+end
+
+function total_expected_counts(
+    sino_iodine,sino_water,Φ_total,μI,μW,
 )
+    I_gpu=to_gpu(Float32.(sino_iodine))
+    W_gpu=to_gpu(Float32.(sino_water))
+    Φ_gpu=to_gpu(Float32.(Φ_total))
+    μI_gpu=to_gpu(Float32.(μI))
+    μW_gpu=to_gpu(Float32.(μW))
+    output_gpu=similar(I_gpu)
+    try
+        BS.AK.foreachindex(output_gpu) do idx
+            total=0f0
+            @inbounds for energy in eachindex(Φ_gpu)
+                total+=Φ_gpu[energy]*exp(
+                    -μI_gpu[energy]*I_gpu[idx]-
+                    μW_gpu[energy]*W_gpu[idx],
+                )
+            end
+            output_gpu[idx]=max(total,1f-6)
+        end
+        Array(output_gpu)
+    finally
+        BS.release_backend!((
+            I_gpu,W_gpu,Φ_gpu,μI_gpu,μW_gpu,output_gpu,
+        ))
+    end
+end
 
-# ╔═╡ 97f45341-b796-4611-95b8-4319f49eb053
+function tlbf_delta_sample(expected,measured;maximum_centers=4096)
+    nchannel,_,nview=size(expected)
+    stride=max(1,cld(length(expected),maximum_centers))
+    values=Float32[]
+    for linear in 1:stride:length(expected)
+        channel=mod1(linear,nchannel)
+        view=mod1(cld(linear,nchannel),nview)
+        center_expected=max(expected[channel,1,view],1f-6)
+        Y=measured[channel,1,view]
+        center=-center_expected+Y*log(center_expected)
+        for dv in -2:2,dc in -2:2
+            dc==0&&dv==0&&continue
+            neighbor_channel=channel+dc
+            1≤neighbor_channel≤nchannel||continue
+            neighbor_view=mod1(view+dv,nview)
+            neighbor_expected=max(
+                expected[neighbor_channel,1,neighbor_view],1f-6,
+            )
+            candidate=-neighbor_expected+Y*log(neighbor_expected)
+            push!(values,abs(candidate-center))
+        end
+    end
+    values
+end
+
+function tlbf_filter_pair(
+    sino_iodine,sino_water,expected,measured,alpha2;
+    alpha1=0.9,
+)
+    I_gpu=to_gpu(Float32.(sino_iodine))
+    W_gpu=to_gpu(Float32.(sino_water))
+    expected_gpu=to_gpu(Float32.(expected))
+    measured_gpu=to_gpu(Float32.(measured))
+    output_I=similar(I_gpu)
+    output_W=similar(W_gpu)
+    nchannel,_,nview=size(sino_iodine)
+    a1=Float32(alpha1)
+    a2=Float32(alpha2)
+    try
+        BS.AK.foreachindex(output_I) do idx
+            channel=Int32(mod1(idx,nchannel))
+            view=Int32(mod1(cld(idx,nchannel),nview))
+            center_expected=max(expected_gpu[idx],1f-6)
+            Y=measured_gpu[idx]
+            center_likelihood=
+                -center_expected+Y*log(center_expected)
+            weight_sum=0f0
+            iodine_sum=0f0
+            water_sum=0f0
+            for dv in Int32(-2):Int32(2),dc in Int32(-2):Int32(2)
+                neighbor_channel=channel+dc
+                (
+                    neighbor_channel<Int32(1)||
+                    neighbor_channel>Int32(nchannel)
+                )&&continue
+                neighbor_view=mod1(view+dv,Int32(nview))
+                neighbor_idx=
+                    Int(neighbor_channel)+
+                    (Int(neighbor_view)-1)*nchannel
+                spatial=exp(
+                    -Float32(dc*dc+dv*dv)/(2f0*a1*a1),
+                )
+                likelihood_weight=if isinf(a2)
+                    1f0
+                elseif a2≤0f0
+                    dc==0&&dv==0 ? 1f0 : 0f0
+                else
+                    candidate_expected=max(
+                        expected_gpu[neighbor_idx],1f-6,
+                    )
+                    candidate_likelihood=
+                        -candidate_expected+Y*log(candidate_expected)
+                    delta=candidate_likelihood-center_likelihood
+                    exp(-(delta*delta)/(a2*a2))
+                end
+                weight=spatial*likelihood_weight
+                weight_sum+=weight
+                iodine_sum+=weight*I_gpu[neighbor_idx]
+                water_sum+=weight*W_gpu[neighbor_idx]
+            end
+            inverse_weight=1f0/max(weight_sum,eps(Float32))
+            output_I[idx]=iodine_sum*inverse_weight
+            output_W[idx]=water_sum*inverse_weight
+        end
+        (
+            sino_iodine=Array(output_I),
+            sino_water=Array(output_W),
+        )
+    finally
+        BS.release_backend!((
+            I_gpu,W_gpu,expected_gpu,measured_gpu,output_I,output_W,
+        ))
+    end
+end
+
+function reconstruct_material_pair(pair)
+    (
+        water=nchannel_common_fbp_slice(pair.sino_water),
+        iodine=nchannel_common_fbp_slice(pair.sino_iodine),
+    )
+end
+
+function synthesize_vmi_stack(images,energies)
+    nx,ny,_=size(images.water)
+    stack=Array{Float32}(undef,nx,ny,length(energies))
+    iodine_mg_mL=images.iodine.*1000f0
+    for (index,energy) in enumerate(energies)
+        stack[:,:,index].=BS.synth_vmi_2basis(
+            images.water,iodine_mg_mL;energy_keV=energy,
+        )[:,:,1]
+    end
+    stack
+end
+
+function circular_roi(image_size;radius=28)
+    nx,ny=image_size
+    cx,cy=(nx+1)/2,(ny+1)/2
+    [
+        (i-cx)^2+(j-cy)^2≤radius^2
+        for i in 1:nx,j in 1:ny
+    ]
+end
+
+function circular_object_roi(image_size;radius=225)
+    nx,ny=image_size
+    cx,cy=(nx+1)/2,(ny+1)/2
+    [
+        (i-cx)^2+(j-cy)^2≤radius^2
+        for i in 1:nx,j in 1:ny
+    ]
+end
+
+function edge_width_pixels(image)
+    nx,ny,_=size(image)
+    profile=Float64.(image[:,ny÷2+1,1])
+    center=nx÷2+1
+    search=(center+round(Int,0.55center)):(nx-4)
+    edge=search[argmax(abs.(diff(profile[search])))]
+    inside=median(profile[max(center,edge-30):max(center,edge-10)])
+    outside=median(profile[min(nx,edge+10):min(nx,edge+30)])
+    low=outside+0.1*(inside-outside)
+    high=outside+0.9*(inside-outside)
+    segment=max(center,edge-20):min(nx,edge+20)
+    function crossing(level)
+        local_index=argmin(abs.(profile[segment].-level))
+        first(segment)+local_index-1
+    end
+    (
+        width=abs(crossing(low)-crossing(high)),
+        edge,profile,inside,outside,
+    )
+end
+end
+
+# ╔═╡ c35105bb-7bcb-4905-8c82-c5d695e7c779
+tlbf_primary_inputs = let
+    reference_sinograms=(
+        sino_iodine=matched_noiseless_pipeline.cong.sino_iodine,
+        sino_water=matched_noiseless_pipeline.cong.sino_water,
+    )
+    noisy_sinograms=(
+        sino_iodine=sino_basis_nchannel_slab.sino_iodine,
+        sino_water=sino_basis_nchannel_slab.sino_water,
+    )
+    reference_images=reconstruct_material_pair(reference_sinograms)
+    noisy_images=(
+        water=nchannel_slab_common_fbp.vol_water,
+        iodine=nchannel_slab_common_fbp.vol_iodine,
+    )
+    reference_vmis=synthesize_vmi_stack(
+        reference_images,nchannel_validation_energies,
+    )
+    noisy_vmis=synthesize_vmi_stack(
+        noisy_images,nchannel_validation_energies,
+    )
+    scale=nchannel_slab_counts.nrows
+    Φ_total=scale.*vec(sum(Float64.(nchannel_basis.Φ);dims=2))
+    reference_measured=total_measured_counts(
+        matched_noiseless_pipeline.cong.slab_bins,
+        nchannel_basis.I0,scale,
+    )
+    noisy_measured=total_measured_counts(
+        nchannel_slab_counts.bins,nchannel_basis.I0,scale,
+    )
+    reference_expected=total_expected_counts(
+        reference_sinograms.sino_iodine,
+        reference_sinograms.sino_water,
+        Φ_total,nchannel_basis.μρ_I,nchannel_basis.μρ_W,
+    )
+    noisy_expected=total_expected_counts(
+        noisy_sinograms.sino_iodine,
+        noisy_sinograms.sino_water,
+        Φ_total,nchannel_basis.μρ_I,nchannel_basis.μρ_W,
+    )
+    homogeneous_roi=circular_roi(size(reference_images.water)[1:2])
+    reference_water_mean=mean(
+        reference_images.water[:,:,1][homogeneous_roi],
+    )
+    reference_iodine_mean=mean(
+        reference_images.iodine[:,:,1][homogeneous_roi],
+    )
+    minimal_checks=(
+        four_bins=length(nchannel_slab_counts.bins)==4,
+        bin_order=collect(scanner.energy_thresholds)==
+            [20.0,35.0,55.0,70.0],
+        basis_order=(:iodine,:water),
+        finite_noisy=all(isfinite,noisy_sinograms.sino_iodine)&&
+            all(isfinite,noisy_sinograms.sino_water),
+        finite_noiseless=all(isfinite,reference_sinograms.sino_iodine)&&
+            all(isfinite,reference_sinograms.sino_water),
+        matched_geometry=matched_noiseless_pipeline.simulated.geom.angles==
+            sim_bins.geom.angles,
+        common_fbp_kernel=:SoftFilter,
+        reference_water_mean,
+        reference_iodine_mean,
+        background_truth_close=
+            abs(reference_water_mean-1)<0.2&&
+            abs(reference_iodine_mean)<0.01,
+        vmi_algebra_check=maximum(abs.(
+            reference_vmis[:,:,1].-
+            BS.synth_vmi_2basis(
+                reference_images.water,
+                reference_images.iodine.*1000f0;
+                energy_keV=first(nchannel_validation_energies),
+            )[:,:,1]
+        ))<1f-5,
+    )
+    (
+        reference_noiseless_cong=(
+            sinograms=reference_sinograms,
+            images=reference_images,
+            vmis=reference_vmis,
+        ),
+        baseline_noisy_cong=(
+            sinograms=noisy_sinograms,
+            images=noisy_images,
+            vmis=noisy_vmis,
+        ),
+        reference_measured,noisy_measured,
+        reference_expected,noisy_expected,
+        Φ_total,homogeneous_roi,minimal_checks,
+    )
+end
+
+# ╔═╡ f4f046cb-fd81-4683-9533-92d1e732dc24
+tlbf_controls = let
+    delta_sample=tlbf_delta_sample(
+        tlbf_primary_inputs.noisy_expected,
+        tlbf_primary_inputs.noisy_measured,
+    )
+    positive=filter(>(100eps(Float32)),delta_sample)
+    isempty(positive)&&error("T-LBF likelihood differences are degenerate.")
+    low=max(0.1quantile(positive,0.10),100eps(Float32))
+    high=max(10quantile(positive,0.95),10low)
+    finite_values=exp.(range(log(low),log(high);length=8))
+    (
+        window=(5,5),alpha1=0.9,
+        alpha2=vcat(0.0,finite_values,Inf),
+        delta_quantiles=(
+            q10=quantile(positive,0.10),
+            q50=quantile(positive,0.50),
+            q95=quantile(positive,0.95),
+            maximum=maximum(positive),
+        ),
+        angle_boundary=:circular,
+        detector_boundary=:nonwrapping,
+    )
+end
+
+# ╔═╡ ec10ffc2-7ba2-4a05-9346-930a958a6660
+tlbf_sinogram_library = let
+    noisy=NamedTuple[]
+    noiseless=NamedTuple[]
+    elapsed=@elapsed for alpha2 in tlbf_controls.alpha2
+        push!(noisy,merge(
+            (alpha2=alpha2,),
+            tlbf_filter_pair(
+                tlbf_primary_inputs.baseline_noisy_cong.sinograms.sino_iodine,
+                tlbf_primary_inputs.baseline_noisy_cong.sinograms.sino_water,
+                tlbf_primary_inputs.noisy_expected,
+                tlbf_primary_inputs.noisy_measured,
+                alpha2;alpha1=tlbf_controls.alpha1,
+            ),
+        ))
+        push!(noiseless,merge(
+            (alpha2=alpha2,),
+            tlbf_filter_pair(
+                tlbf_primary_inputs.reference_noiseless_cong.sinograms.sino_iodine,
+                tlbf_primary_inputs.reference_noiseless_cong.sinograms.sino_water,
+                tlbf_primary_inputs.reference_expected,
+                tlbf_primary_inputs.reference_measured,
+                alpha2;alpha1=tlbf_controls.alpha1,
+            ),
+        ))
+    end
+    (
+        noisy,noiseless,elapsed_s=elapsed,
+        exact_joint_weights=true,
+    )
+end
+
+# ╔═╡ c2c7b7ef-296e-4005-a578-bd38ec818be3
+tlbf_reconstruction_library = let
+    entries=NamedTuple[]
+    elapsed=@elapsed for index in eachindex(tlbf_controls.alpha2)
+        noisy_images=reconstruct_material_pair(
+            tlbf_sinogram_library.noisy[index],
+        )
+        noiseless_images=reconstruct_material_pair(
+            tlbf_sinogram_library.noiseless[index],
+        )
+        push!(entries,(
+            alpha2=tlbf_controls.alpha2[index],
+            noisy_images,
+            noiseless_images,
+            noisy_vmis=synthesize_vmi_stack(
+                noisy_images,nchannel_validation_energies,
+            ),
+            noiseless_vmis=synthesize_vmi_stack(
+                noiseless_images,nchannel_validation_energies,
+            ),
+        ))
+    end
+    (entries,elapsed_s=elapsed)
+end
+
+# ╔═╡ 307532ad-9599-4e8d-ba1a-2681fcf2f110
+tlbf_metrics = let
+    reference=tlbf_primary_inputs.reference_noiseless_cong
+    roi=tlbf_primary_inputs.homogeneous_roi
+    object_roi=circular_object_roi(size(reference.images.water)[1:2])
+    reference_edge=edge_width_pixels(reference.images.water)
+    entries=map(tlbf_reconstruction_library.entries) do entry
+        noisy_W=entry.noisy_images.water[:,:,1]
+        noisy_I=entry.noisy_images.iodine[:,:,1]
+        noiseless_W=entry.noiseless_images.water[:,:,1]
+        noiseless_I=entry.noiseless_images.iodine[:,:,1]
+        ref_W=reference.images.water[:,:,1]
+        ref_I=reference.images.iodine[:,:,1]
+        edge=edge_width_pixels(entry.noiseless_images.water)
+        vmi_noise=[
+            std(entry.noisy_vmis[:,:,energy][roi])
+            for energy in axes(entry.noisy_vmis,3)
+        ]
+        (
+            alpha2=entry.alpha2,
+            water_sd=std(noisy_W[roi]),
+            iodine_sd=std(noisy_I[roi]),
+            water_rmse=sqrt(mean(abs2,noisy_W[object_roi].-ref_W[object_roi])),
+            iodine_rmse=sqrt(mean(abs2,noisy_I[object_roi].-ref_I[object_roi])),
+            water_bias=mean(noisy_W[roi].-ref_W[roi]),
+            iodine_bias=mean(noisy_I[roi].-ref_I[roi]),
+            vmi_noise,
+            vmi_rmse=[
+                sqrt(mean(abs2,
+                    entry.noisy_vmis[:,:,energy][object_roi].-
+                    reference.vmis[:,:,energy][object_roi],
+                ))
+                for energy in axes(entry.noisy_vmis,3)
+            ],
+            deterministic_water_rmse=sqrt(mean(
+                abs2,noiseless_W[object_roi].-ref_W[object_roi],
+            )),
+            deterministic_iodine_rmse=sqrt(mean(
+                abs2,noiseless_I[object_roi].-ref_I[object_roi],
+            )),
+            edge_width_pixels=edge.width,
+            edge_width_ratio=edge.width/max(reference_edge.width,1),
+            edge_profile=edge.profile,
+        )
+    end
+    (
+        entries,
+        reference_edge_width_pixels=reference_edge.width,
+        reference_edge_profile=reference_edge.profile,
+        object_roi,
+    )
+end
+
+# ╔═╡ 1ea2dcbe-8cd8-4b0c-85f1-d59bf5d37a78
+tlbf_selection = let
+    n=length(tlbf_metrics.entries)
+    light=clamp(3,2,n-1)
+    moderate=clamp(round(Int,(n+1)/2),2,n-1)
+    strong=clamp(n-1,2,n-1)
+    energy70=argmin(abs.(nchannel_validation_energies.-70))
+    candidates=2:n
+    best=candidates[argmin([
+        tlbf_metrics.entries[index].vmi_rmse[energy70]
+        for index in candidates
+    ])]
+    (
+        light,moderate,strong,best,
+        representative=(light,moderate,strong),
+        best_alpha2=tlbf_controls.alpha2[best],
+        selection_rule=:minimum_70keV_RMSE_with_reported_resolution,
+    )
+end
+
+# ╔═╡ 07f4d2b6-6c29-47f3-88dd-98fc915009bc
+tlbf_noise_matching = let
+    roi=tlbf_primary_inputs.homogeneous_roi
+    library=tlbf_reconstruction_library.entries
+    water_index=tlbf_selection.best
+    water=library[water_index].noisy_images.water[:,:,1]
+    sigma_W=std(water[roi])
+    common_stack=library[water_index].noisy_vmis
+    matched_stack=similar(common_stack)
+    selections=NamedTuple[]
+    for (energy_index,energy) in enumerate(nchannel_validation_energies)
+        phi_W=BS.compute_mass_μ_at_energy(BS.XA.Materials.water,energy)
+        phi_I=BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine,energy)
+        scores=Float64[]
+        correlations=Float64[]
+        for iodine_entry in library
+            iodine=iodine_entry.noisy_images.iodine[:,:,1]
+            sigma_I=std(iodine[roi])
+            rho=cor(water[roi],iodine[roi])
+            push!(correlations,rho)
+            push!(scores,abs(
+                sigma_I*phi_I+rho*sigma_W*phi_W,
+            ))
+        end
+        iodine_index=argmin(scores)
+        iodine=library[iodine_index].noisy_images.iodine
+        matched_stack[:,:,energy_index].=
+            BS.synth_vmi_2basis(
+                library[water_index].noisy_images.water,
+                iodine.*1000f0;energy_keV=energy,
+            )[:,:,1]
+        push!(selections,(;
+            energy,water_index,iodine_index,
+            water_alpha2=library[water_index].alpha2,
+            iodine_alpha2=library[iodine_index].alpha2,
+            rho=correlations[iodine_index],
+            matching_error=scores[iodine_index],
+        ))
+    end
+    (
+        tlbf_common_pair_vmis=common_stack,
+        tlbf_noise_matched_vmis=matched_stack,
+        selections,
+        common_noise=[
+            std(common_stack[:,:,index][roi])
+            for index in axes(common_stack,3)
+        ],
+        matched_noise=[
+            std(matched_stack[:,:,index][roi])
+            for index in axes(matched_stack,3)
+        ],
+    )
+end
+
+# ╔═╡ 4f210d68-19cd-4b67-adce-6d59498f1366
+tlbf_feasibility_summary = let
+    baseline=tlbf_metrics.entries[1]
+    best=tlbf_metrics.entries[tlbf_selection.best]
+    energy70=argmin(abs.(nchannel_validation_energies.-70))
+    common=tlbf_noise_matching.common_noise
+    matched=tlbf_noise_matching.matched_noise
+    monotonic_nonincreasing(curve)=all(diff(curve).≤0)
+    (
+        implementation=:Lee_2025_T_LBF,
+        deviations=(
+            :corrected_fractional_count_equivalents,
+            :single_noisy_realization_feasibility_pass,
+        ),
+        best_alpha2=tlbf_selection.best_alpha2,
+        water_noise_reduction_percent=
+            100*(1-best.water_sd/baseline.water_sd),
+        iodine_noise_reduction_percent=
+            100*(1-best.iodine_sd/baseline.iodine_sd),
+        vmi70_noise_reduction_percent=
+            100*(1-best.vmi_noise[energy70]/baseline.vmi_noise[energy70]),
+        water_roi_bias=best.water_bias,
+        iodine_roi_bias=best.iodine_bias,
+        deterministic_water_rmse=best.deterministic_water_rmse,
+        deterministic_iodine_rmse=best.deterministic_iodine_rmse,
+        reference_edge_width_pixels=
+            tlbf_metrics.reference_edge_width_pixels,
+        filtered_edge_width_pixels=best.edge_width_pixels,
+        common_pair_monotonic=monotonic_nonincreasing(common),
+        noise_matched_monotonic=monotonic_nonincreasing(matched),
+        noise_matching_best_improvement_percent=
+            100maximum((common.-matched)./common),
+        noise_matching_worst_change_percent=
+            100minimum((common.-matched)./common),
+        decision=:promising_but_needs_refinement,
+    )
+end
+
+# ╔═╡ d544993a-e959-48c7-b1da-2888edc7623a
+let
+    best=tlbf_reconstruction_library.entries[tlbf_selection.best]
+    reference=tlbf_primary_inputs.reference_noiseless_cong
+    baseline=tlbf_primary_inputs.baseline_noisy_cong
+    energy_index=argmin(abs.(nchannel_validation_energies.-70))
+    images=[
+        reference.vmis[:,:,energy_index],
+        best.noiseless_vmis[:,:,energy_index],
+        baseline.vmis[:,:,energy_index],
+        best.noisy_vmis[:,:,energy_index],
+    ]
+    titles=[
+        "Noiseless Cong","Noiseless + T-LBF",
+        "Noisy Cong","Noisy + T-LBF",
+    ]
+    HU_window=(-200,500)
+    fig=Mke.Figure(size=(1000,850))
+    for index in eachindex(images)
+        row,col=Tuple(CartesianIndices((2,2))[index])
+        axis=Mke.Axis(
+            fig[row,col];title=titles[index],aspect=Mke.DataAspect(),
+        )
+        Mke.heatmap!(
+            axis,images[index];colormap=:grays,colorrange=HU_window,
+        )
+        Mke.hidedecorations!(axis)
+    end
+    Mke.Label(
+        fig[0,:],
+        "Matched 70 keV comparison — α₂=$(round(tlbf_selection.best_alpha2,digits=3))",
+        fontsize=22,
+    )
+    Mke.Colorbar(
+        fig[1:2,3];colormap=:grays,colorrange=HU_window,
+        label="HU",width=16,labelsize=22,ticklabelsize=18,
+    )
+    fig
+end
+
+# ╔═╡ 881c8fac-c00a-46c3-9bbf-802227d9c4d0
+let
+    best=tlbf_reconstruction_library.entries[tlbf_selection.best]
+    baseline=tlbf_primary_inputs.baseline_noisy_cong
+    energies=[40.0,70.0,100.0,140.0]
+    indices=[
+        argmin(abs.(nchannel_validation_energies.-energy))
+        for energy in energies
+    ]
+    fig=Mke.Figure(size=(1450,700))
+    for (column,(energy,index)) in enumerate(zip(energies,indices))
+        pair=[
+            baseline.vmis[:,:,index],
+            best.noisy_vmis[:,:,index],
+        ]
+        HU_window=(-200,500)
+        for row in 1:2
+            axis=Mke.Axis(
+                fig[row,column];
+                title=row==1 ? "$(Int(energy)) keV — Cong" :
+                    "$(Int(energy)) keV — T-LBF",
+                aspect=Mke.DataAspect(),
+            )
+            Mke.heatmap!(
+                axis,pair[row];colormap=:grays,colorrange=HU_window,
+            )
+            Mke.hidedecorations!(axis)
+        end
+    end
+    Mke.Label(
+        fig[0,:],
+        "Noisy VMIs before and after common-pair T-LBF",
+        fontsize=22,
+    )
+    Mke.Colorbar(
+        fig[1:2,5];colormap=:grays,colorrange=(-200,500),
+        label="HU",width=16,labelsize=22,ticklabelsize=18,
+    )
+    fig
+end
+
+# ╔═╡ c0fcdf63-513d-489e-b105-0454b18c3f83
+let
+    alpha_labels=[
+        isinf(value) ? "LPF" : string(round(value,sigdigits=3))
+        for value in tlbf_controls.alpha2
+    ]
+    baseline=tlbf_metrics.entries[1]
+    fig=Mke.Figure(size=(1100,450))
+    noise_axis=Mke.Axis(
+        fig[1,1];xlabel="α₂ setting",ylabel="70 keV noise / baseline",
+        xticks=(eachindex(alpha_labels),alpha_labels),
+    )
+    energy70=argmin(abs.(nchannel_validation_energies.-70))
+    Mke.scatterlines!(
+        noise_axis,eachindex(alpha_labels),
+        [entry.vmi_noise[energy70]/baseline.vmi_noise[energy70]
+         for entry in tlbf_metrics.entries];
+        marker=:circle,label="noise",
+    )
+    Mke.scatterlines!(
+        noise_axis,eachindex(alpha_labels),
+        [entry.vmi_rmse[energy70]/baseline.vmi_rmse[energy70]
+         for entry in tlbf_metrics.entries];
+        marker=:rect,label="RMSE",
+    )
+    Mke.axislegend(noise_axis)
+    edge_axis=Mke.Axis(
+        fig[1,2];xlabel="pixel",ylabel="water value",
+        title="Noiseless edge profiles",
+    )
+    Mke.lines!(
+        edge_axis,tlbf_metrics.reference_edge_profile;
+        label="unfiltered",
+    )
+    for index in tlbf_selection.representative
+        Mke.lines!(
+            edge_axis,tlbf_metrics.entries[index].edge_profile;
+            label="α₂=$(alpha_labels[index])",
+        )
+    end
+    Mke.axislegend(edge_axis;position=:lb)
+    fig
+end
+
+# ╔═╡ 24db3af8-9e58-4499-8de0-5966c9fe0394
+let
+    baseline=tlbf_metrics.entries[1].vmi_noise
+    fig=Mke.Figure(size=(850,480))
+    axis=Mke.Axis(
+        fig[1,1];xlabel="VMI energy (keV)",ylabel="ROI SD",
+        title="VMI noise-versus-energy feasibility",
+    )
+    Mke.scatterlines!(
+        axis,nchannel_validation_energies,baseline;
+        marker=:circle,label="unfiltered Cong",
+    )
+    Mke.scatterlines!(
+        axis,nchannel_validation_energies,tlbf_noise_matching.common_noise;
+        marker=:rect,label="common-pair T-LBF",
+    )
+    Mke.scatterlines!(
+        axis,nchannel_validation_energies,tlbf_noise_matching.matched_noise;
+        marker=:utriangle,label="noise-matched T-LBF",
+    )
+    Mke.axislegend(axis)
+    fig
+end
+
+# ╔═╡ e788e4ab-50f1-4bad-af31-f31ff877e9de
+let
+    roi=tlbf_primary_inputs.homogeneous_roi
+    reference=tlbf_primary_inputs.reference_noiseless_cong.vmis
+    baseline=tlbf_primary_inputs.baseline_noisy_cong.vmis
+    common=tlbf_noise_matching.tlbf_common_pair_vmis
+    matched=tlbf_noise_matching.tlbf_noise_matched_vmis
+    roi_mean(stack)=[
+        mean(stack[:,:,index][roi]) for index in axes(stack,3)
+    ]
+    fig=Mke.Figure(size=(850,480))
+    axis=Mke.Axis(
+        fig[1,1];xlabel="VMI energy (keV)",ylabel="Water-region mean (HU)",
+        title="VMI mean HU versus energy",
+    )
+    Mke.lines!(
+        axis,nchannel_validation_energies,roi_mean(reference);
+        color=:black,linestyle=:dash,linewidth=2,label="noiseless Cong",
+    )
+    Mke.scatterlines!(
+        axis,nchannel_validation_energies,roi_mean(baseline);
+        label="noisy Cong",
+    )
+    Mke.scatterlines!(
+        axis,nchannel_validation_energies,roi_mean(common);
+        label="common-pair T-LBF",
+    )
+    Mke.scatterlines!(
+        axis,nchannel_validation_energies,roi_mean(matched);
+        label="noise-matched T-LBF",
+    )
+    Mke.axislegend(axis;position=:rb)
+    fig
+end
+
+# ╔═╡ a702126e-7e5a-47c5-a45e-b8038ae096c8
+let
+    best=tlbf_reconstruction_library.entries[tlbf_selection.best]
+    reference=tlbf_primary_inputs.reference_noiseless_cong
+    baseline=tlbf_primary_inputs.baseline_noisy_cong
+    energy_index=argmin(abs.(nchannel_validation_energies.-70))
+    differences=[
+        baseline.vmis[:,:,energy_index].-reference.vmis[:,:,energy_index],
+        best.noisy_vmis[:,:,energy_index].-reference.vmis[:,:,energy_index],
+        best.noiseless_vmis[:,:,energy_index].-reference.vmis[:,:,energy_index],
+    ]
+    titles=[
+        "Noisy Cong − reference",
+        "Noisy T-LBF − reference",
+        "Noiseless T-LBF − reference",
+    ]
+    limit=quantile(abs.(vcat(vec.(differences)...)),0.98)
+    fig=Mke.Figure(size=(1350,430))
+    for index in eachindex(differences)
+        axis=Mke.Axis(
+            fig[1,index];title=titles[index],aspect=Mke.DataAspect(),
+        )
+        Mke.heatmap!(
+            axis,differences[index];
+            colormap=:balance,colorrange=(-limit,limit),
+        )
+        Mke.hidedecorations!(axis)
+    end
+    Mke.Colorbar(
+        fig[1,4];colormap=:balance,colorrange=(-limit,limit),
+        label="HU difference",width=16,
+    )
+    fig
+end
+
+# ╔═╡ 71344579-fce7-46a1-b55d-1029c9c20229
+tlbf_original_style_results = let
+    energies=[40.0,70.0,100.0,140.0]
+    energy_indices=[argmin(abs.(nchannel_validation_energies.-E)) for E in energies]
+    vmis=Dict(E=>tlbf_noise_matching.tlbf_common_pair_vmis[:,:,i]
+              for (E,i) in zip(energies,energy_indices))
+    mask_2d=phantom_cpu.mask[:,:,size(phantom_cpu.mask,3)÷2]
+    water_mask=collect(BS.erode_mask_2d(
+        mask_2d.==UInt8(BS.REGION_SOLID_WATER);erode_px=12.0,
+    ))
+    labels=(
+        Ca=UInt8.((10,11,12,13,14,15,16)),
+        I=UInt8.((20,21,22,23,24,25,26)),
+    )
+    names=(
+        Ca=("50 mg/mL","100 mg/mL","200 mg/mL","300 mg/mL",
+            "400 mg/mL","500 mg/mL","600 mg/mL"),
+        I=("2.0 mg/mL","2.5 mg/mL","5.0 mg/mL","7.5 mg/mL",
+           "10.0 mg/mL","15.0 mg/mL","20.0 mg/mL"),
+    )
+    function rod_roi(label)
+        pixels=findall(==(label),mask_2d)
+        cx=mean(p->Float64(p[1]),pixels)
+        cy=mean(p->Float64(p[2]),pixels)
+        [CartesianIndex(i,j)
+         for j in max(1,floor(Int,cy-8)):min(size(mask_2d,2),ceil(Int,cy+8))
+         for i in max(1,floor(Int,cx-8)):min(size(mask_2d,1),ceil(Int,cx+8))
+         if (i-cx)^2+(j-cy)^2≤64]
+    end
+    μwater=Dict(E=>BS.compute_μ_at_energy(BS.XA.Materials.water,E) for E in energies)
+    rod_data=Dict{Symbol,NamedTuple}()
+    for group in (:Ca,:I)
+        measured=zeros(length(labels[group]),length(energies))
+        theoretical=similar(measured)
+        for (row,label) in pairs(labels[group])
+            roi=rod_roi(label)
+            material=phantom_cpu.materials[Int(label)+1]
+            for (column,E) in pairs(energies)
+                measured[row,column]=mean(vmis[E][roi])
+                μ=BS.compute_μ_at_energy(material,E)
+                theoretical[row,column]=1000*(μ-μwater[E])/μwater[E]
+            end
+        end
+        rod_data[group]=(names=names[group],measured,theoretical)
+    end
+    (
+        energies,vmis,water_mask,rod_data,
+        water_mean=[mean(vmis[E][water_mask]) for E in energies],
+        water_noise=[std(vmis[E][water_mask]) for E in energies],
+    )
+end
+
+# ╔═╡ ab1319af-8619-4ae8-853a-b5e63cb134f3
+let
+    result=tlbf_original_style_results
+    overlay=Float32[value ? 1f0 : NaN32 for value in result.water_mask]
+    image70=result.vmis[70.0]
+    n=length(result.energies)
+    colors=[Mke.cgrad(:plasma,n;categorical=true)[i] for i in 1:n]
+    fig=Mke.Figure(size=(1180,1180))
+    ax1=Mke.Axis(fig[1,1];title="Eroded Water Region",
+        subtitle="Overlaid on 70 keV T-LBF VMI",aspect=Mke.DataAspect(),
+        titlesize=32,subtitlesize=24)
+    Mke.heatmap!(ax1,image70;colormap=:grays,colorrange=(-200,500))
+    Mke.heatmap!(ax1,overlay;colormap=:reds,alpha=0.5,nan_color=(:white,0.0))
+    Mke.hidedecorations!(ax1)
+    ax2=Mke.Axis(fig[1,2];title="Water Region Mean HU",
+        subtitle="Selected T-LBF · Per VMI Energy",
+        xlabel="VMI Energy (keV)",ylabel="HU",
+        xticks=(1:n,string.(Int.(result.energies))),
+        titlesize=32,subtitlesize=24)
+    Mke.barplot!(ax2,1:n,result.water_mean;color=colors,
+        strokecolor=:black,strokewidth=1)
+    Mke.hlines!(ax2,[0.0];color=:black,linestyle=:dash)
+    for (index,value) in pairs(result.water_mean)
+        Mke.text!(ax2,index,value;text="$(round(value,digits=1)) HU",
+            align=(:center,value≥0 ? :bottom : :top),
+            offset=(0,value≥0 ? 4 : -4))
+    end
+    limit=max(15.0,1.2maximum(abs,result.water_mean))
+    Mke.ylims!(ax2,-limit,limit)
+    ax3=Mke.Axis(fig[2,1];title="Eroded Water Region",
+        subtitle="Canonical noise ROI",aspect=Mke.DataAspect(),
+        titlesize=32,subtitlesize=24)
+    Mke.heatmap!(ax3,image70;colormap=:grays,colorrange=(-200,500))
+    Mke.heatmap!(ax3,overlay;colormap=:reds,alpha=0.5,nan_color=(:white,0.0))
+    Mke.hidedecorations!(ax3)
+    ax4=Mke.Axis(fig[2,2];title="Water-Region Noise vs Energy",
+        subtitle="Selected T-LBF",xlabel="VMI Energy (keV)",
+        ylabel="Noise σ (HU)",xticks=(1:n,string.(Int.(result.energies))),
+        titlesize=32,subtitlesize=24)
+    Mke.barplot!(ax4,1:n,result.water_noise;color=:tomato,
+        strokecolor=:black,strokewidth=1)
+    for index in 1:n
+        Mke.text!(ax4,index,result.water_noise[index];
+            text="σ=$(round(result.water_noise[index],digits=1))\n"*
+                 "⟨HU⟩=$(round(result.water_mean[index],digits=1))",
+            align=(:center,:bottom),offset=(0,8))
+    end
+    Mke.ylims!(ax4,0,1.25maximum(result.water_noise))
+    fig
+end
+
+# ╔═╡ d95a694b-dac0-4b28-bac6-2dadc94fe355
+let
+    result=tlbf_original_style_results
+    fig=Mke.Figure(size=(1180,580))
+    panels=(
+        (group=:Ca,title="Calcium rods",subtitle="50–600 mg/mL",
+         cmap=Mke.cgrad(:Oranges,7;categorical=true),ylim=(0,5500)),
+        (group=:I,title="Iodine rods",subtitle="2–20 mg/mL",
+         cmap=Mke.cgrad(:GnBu,7;categorical=true),ylim=(0,2500)),
+    )
+    for (column,panel) in pairs(panels)
+        axis=Mke.Axis(fig[1,column];title=panel.title,subtitle=panel.subtitle,
+            xlabel="VMI energy (keV)",ylabel="HU",xticks=result.energies,
+            titlesize=32,subtitlesize=24)
+        Mke.ylims!(axis,panel.ylim...)
+        data=result.rod_data[panel.group]
+        rod_lines=Any[]
+        for index in eachindex(data.names)
+            color=panel.cmap[index]
+            Mke.scatterlines!(axis,result.energies,vec(data.measured[index,:]);
+                color,linewidth=2.5,markersize=9)
+            Mke.lines!(axis,result.energies,vec(data.theoretical[index,:]);
+                color,linewidth=1.6,linestyle=:dash)
+            push!(rod_lines,Mke.LineElement(;color,linewidth=2.5))
+        end
+        Mke.axislegend(axis,
+            vcat([Mke.MarkerElement(color=:black,marker=:circle),
+                  Mke.LineElement(color=:black,linestyle=:dash)],rod_lines),
+            vcat(["Measured","Theoretical"],collect(data.names));
+            position=:rt,framevisible=true,labelsize=18,rowgap=1)
+    end
+    fig
+end
+
+# ╔═╡ a6694310-43ec-4bf6-bf22-374e2fcf6b00
+let
+    result=tlbf_original_style_results
+    colors=Dict(40.0=>Mke.RGBf(0.85,0.27,0.1),
+        70.0=>Mke.RGBf(0.95,0.65,0.13),
+        100.0=>Mke.RGBf(0.13,0.59,0.85),
+        140.0=>Mke.RGBf(0.1,0.27,0.65))
+    fig=Mke.Figure(size=(1000,1200))
+    for (row,group) in enumerate((:Ca,:I))
+        data=result.rod_data[group]
+        axis=Mke.Axis(fig[row,1];
+            title=group==:Ca ? "Calcium regression" : "Iodine regression",
+            xlabel="Theoretical HU",ylabel="Measured T-LBF HU",
+            aspect=Mke.DataAspect(),titlesize=30)
+        low=min(0.0,minimum(data.measured),minimum(data.theoretical))
+        high=1.05max(maximum(data.measured),maximum(data.theoretical))
+        Mke.lines!(axis,[low,high],[low,high];color=:black,
+            linestyle=:dash,linewidth=2,label="Unity (y=x)")
+        for (column,E) in pairs(result.energies)
+            x=vec(data.theoretical[:,column]); y=vec(data.measured[:,column])
+            slope=sum((x.-mean(x)).*(y.-mean(y)))/sum(abs2,x.-mean(x))
+            intercept=mean(y)-slope*mean(x)
+            prediction=intercept.+slope.*x
+            r2=1-sum(abs2,y.-prediction)/sum(abs2,y.-mean(y))
+            endpoints=collect(extrema(x)); color=colors[E]
+            Mke.scatter!(axis,x,y;color,markersize=11)
+            Mke.lines!(axis,endpoints,intercept.+slope.*endpoints;
+                color,linewidth=2,
+                label="$(Int(E)) keV: slope=$(round(slope,digits=2)), "*
+                      "R²=$(round(r2,digits=3))")
+        end
+        Mke.axislegend(axis;position=:rb,labelsize=16)
+    end
+    fig
+end
+
+# ╔═╡ 12497ebd-c1b4-4789-836a-fc49c5a06762
+begin
+function nchannel_fbp_slice_filter(sino_one_row,filter)
+    spectrum=BS.FFTW.fft(Float64.(sino_one_row),3)
+    antialiased=Float32.(real.(BS.FFTW.ifft(
+        spectrum.*reshape(
+            nchannel_fbp_angular_response,1,1,nchannel_fbp_nview,
+        ),3,
+    )))
+    repeated=repeat(antialiased,1,sim_bins.geom.n_rows,1)
+    sino_gpu=to_gpu(repeated)
+    workspace=BS.create_fdk_recon_workspace(
+        sino_gpu,sim_bins.geom,nchannel_fbp_matrix_size;filter,
+    )
+    try
+        Float32.(Array(BS.reconstruct!(workspace,sino_gpu,sim_bins.geom)))
+    finally
+        BS.release_backend!(workspace)
+    end
+end
+end
+
+# ╔═╡ e6d42b22-8fe5-48a2-982e-0db460fd9797
+basis_fbp_filter_sweep = let
+    filters=[
+        (name="Soft baseline",filter=BS.SoftFilter()),
+        (name="Light iodine",filter=BS.CustomFilter(
+            (0.0,0.25,0.5,0.75,1.0),
+            (1.0,0.65,0.30,0.10,0.001),
+        )),
+        (name="Original 04 iodine",filter=BS.CustomFilter(
+            (0.0,0.25,0.5,0.75,1.0),
+            (1.0,0.40,0.12,0.03,0.001),
+        )),
+        (name="Strong iodine",filter=BS.CustomFilter(
+            (0.0,0.25,0.5,0.75,1.0),
+            (1.0,0.25,0.05,0.005,0.0),
+        )),
+    ]
+    best=tlbf_selection.best
+    noisy_sino=tlbf_sinogram_library.noisy[best]
+    noiseless_sino=tlbf_sinogram_library.noiseless[best]
+    base=tlbf_reconstruction_library.entries[best]
+    entries=NamedTuple[]
+    elapsed=@elapsed for candidate in filters
+        noisy_iodine=nchannel_fbp_slice_filter(
+            noisy_sino.sino_iodine,candidate.filter,
+        )
+        noiseless_iodine=nchannel_fbp_slice_filter(
+            noiseless_sino.sino_iodine,candidate.filter,
+        )
+        noisy_images=(water=base.noisy_images.water,iodine=noisy_iodine)
+        noiseless_images=(
+            water=base.noiseless_images.water,iodine=noiseless_iodine,
+        )
+        push!(entries,(
+            name=candidate.name,filter=candidate.filter,
+            noisy_images,noiseless_images,
+            noisy_vmis=synthesize_vmi_stack(
+                noisy_images,nchannel_validation_energies,
+            ),
+            noiseless_vmis=synthesize_vmi_stack(
+                noiseless_images,nchannel_validation_energies,
+            ),
+        ))
+    end
+    (entries,elapsed_s=elapsed,water_filter=:SoftFilter)
+end
+
+# ╔═╡ 07ed190a-58e8-4d0a-8802-137ceabbb67e
+basis_fbp_filter_metrics = let
+    roi=tlbf_original_style_results.water_mask
+    reference=tlbf_primary_inputs.reference_noiseless_cong.vmis
+    object_roi=tlbf_metrics.object_roi
+    entries=map(basis_fbp_filter_sweep.entries) do entry
+        noise=[
+            std(entry.noisy_vmis[:,:,index][roi])
+            for index in axes(entry.noisy_vmis,3)
+        ]
+        means=[
+            mean(entry.noisy_vmis[:,:,index][roi])
+            for index in axes(entry.noisy_vmis,3)
+        ]
+        rmse=[
+            sqrt(mean(abs2,
+                entry.noisy_vmis[:,:,index][object_roi].-
+                reference[:,:,index][object_roi],
+            ))
+            for index in axes(entry.noisy_vmis,3)
+        ]
+        deterministic_rmse=[
+            sqrt(mean(abs2,
+                entry.noiseless_vmis[:,:,index][object_roi].-
+                reference[:,:,index][object_roi],
+            ))
+            for index in axes(entry.noiseless_vmis,3)
+        ]
+        (
+            name=entry.name,noise,means,rmse,deterministic_rmse,
+            monotonic=all(diff(noise).≤0),
+            forty_noise=noise[1],
+            forty_edge=edge_width_pixels(
+                reshape(entry.noiseless_vmis[:,:,1],512,512,1),
+            ).width,
+        )
+    end
+    baseline=entries[1]
+    (
+        entries,
+        best_40_index=argmin(getfield.(entries,:forty_noise)),
+        forty_noise_reduction_percent=[
+            100*(1-entry.forty_noise/baseline.forty_noise)
+            for entry in entries
+        ],
+    )
+end
+
+# ╔═╡ 082a7479-95d7-4973-8b18-a1d639542b25
+let
+    fig=Mke.Figure(size=(1100,500))
+    axis=Mke.Axis(
+        fig[1,1];title="Per-basis FBP apodization",
+        subtitle="Water fixed at SoftFilter; iodine filter varied",
+        xlabel="VMI energy (keV)",ylabel="Water-region noise σ (HU)",
+        titlesize=30,subtitlesize=20,
+    )
+    for entry in basis_fbp_filter_metrics.entries
+        Mke.scatterlines!(
+            axis,nchannel_validation_energies,entry.noise;
+            label=entry.name,linewidth=2,markersize=8,
+        )
+    end
+    Mke.axislegend(axis)
+    fig
+end
+
+# ╔═╡ d7266214-0e21-411f-90f1-226b7ef1a742
+let
+    candidates=basis_fbp_filter_sweep.entries
+    energy_index=1
+    HU_window=(-200,500)
+    fig=Mke.Figure(size=(1180,1180))
+    for index in eachindex(candidates)
+        row=((index-1)÷2)+1
+        column=((index-1)%2)+1
+        axis=Mke.Axis(
+            fig[row,column];title="$(candidates[index].name) · 40 keV",
+            aspect=Mke.DataAspect(),titlesize=26,
+        )
+        Mke.heatmap!(
+            axis,candidates[index].noisy_vmis[:,:,energy_index];
+            colormap=:grays,colorrange=HU_window,
+        )
+        Mke.hidedecorations!(axis)
+    end
+    Mke.Colorbar(
+        fig[1:2,3];colormap=:grays,colorrange=HU_window,
+        label="HU",width=16,
+    )
+    fig
+end
+
+# ╔═╡ 712d508b-95b5-43f3-b305-d0259134cd74
+water_fbp_filter_sweep = let
+    filters=[
+        (name="Soft water",filter=BS.SoftFilter()),
+        (name="Light-soft water",filter=BS.CustomFilter(
+            (0.0,0.25,0.5,0.75,1.0),
+            (1.0,0.70,0.35,0.12,0.001),
+        )),
+        (name="Medium-soft water",filter=BS.CustomFilter(
+            (0.0,0.25,0.5,0.75,1.0),
+            (1.0,0.50,0.18,0.05,0.001),
+        )),
+        (name="Strong-soft water",filter=BS.CustomFilter(
+            (0.0,0.25,0.5,0.75,1.0),
+            (1.0,0.30,0.07,0.01,0.0),
+        )),
+    ]
+    best=tlbf_selection.best
+    noisy_sino=tlbf_sinogram_library.noisy[best]
+    noiseless_sino=tlbf_sinogram_library.noiseless[best]
+    fixed_iodine=basis_fbp_filter_sweep.entries[3]
+    entries=NamedTuple[]
+    elapsed=@elapsed for candidate in filters
+        noisy_water=nchannel_fbp_slice_filter(
+            noisy_sino.sino_water,candidate.filter,
+        )
+        noiseless_water=nchannel_fbp_slice_filter(
+            noiseless_sino.sino_water,candidate.filter,
+        )
+        noisy_images=(
+            water=noisy_water,
+            iodine=fixed_iodine.noisy_images.iodine,
+        )
+        noiseless_images=(
+            water=noiseless_water,
+            iodine=fixed_iodine.noiseless_images.iodine,
+        )
+        push!(entries,(
+            name=candidate.name,filter=candidate.filter,
+            noisy_images,noiseless_images,
+            noisy_vmis=synthesize_vmi_stack(
+                noisy_images,nchannel_validation_energies,
+            ),
+            noiseless_vmis=synthesize_vmi_stack(
+                noiseless_images,nchannel_validation_energies,
+            ),
+        ))
+    end
+    (
+        entries,elapsed_s=elapsed,
+        iodine_filter="Original 04 iodine",
+    )
+end
+
+# ╔═╡ fd6ab3d2-88e1-4862-a574-62b57f265279
+water_fbp_filter_metrics = let
+    roi=tlbf_original_style_results.water_mask
+    object_roi=tlbf_metrics.object_roi
+    reference=tlbf_primary_inputs.reference_noiseless_cong.vmis
+    entries=map(water_fbp_filter_sweep.entries) do entry
+        noise=[
+            std(entry.noisy_vmis[:,:,index][roi])
+            for index in axes(entry.noisy_vmis,3)
+        ]
+        deterministic_rmse=[
+            sqrt(mean(abs2,
+                entry.noiseless_vmis[:,:,index][object_roi].-
+                reference[:,:,index][object_roi],
+            ))
+            for index in axes(entry.noiseless_vmis,3)
+        ]
+        (
+            name=entry.name,noise,deterministic_rmse,
+            monotonic=all(diff(noise).≤0),
+            upward_variation=sum(max.(diff(noise),0)),
+            forty_noise=noise[1],
+            oneforty_noise=noise[
+                argmin(abs.(nchannel_validation_energies.-140))
+            ],
+            forty_edge=edge_width_pixels(
+                reshape(entry.noiseless_vmis[:,:,1],512,512,1),
+            ).width,
+        )
+    end
+    monotonic_indices=findall(getfield.(entries,:monotonic))
+    selected=if isempty(monotonic_indices)
+        argmin(getfield.(entries,:upward_variation))
+    else
+        monotonic_indices[argmin([
+            mean(entries[index].deterministic_rmse)
+            for index in monotonic_indices
+        ])]
+    end
+    (entries,selected,any_monotonic=!isempty(monotonic_indices))
+end
+
+# ╔═╡ 4e9a9a3c-f9f2-41b8-b85b-155c0a6d1ff0
+let
+    fig=Mke.Figure(size=(1100,500))
+    axis=Mke.Axis(
+        fig[1,1];title="Water FBP kernel sweep",
+        subtitle="Iodine fixed at original 04 kernel",
+        xlabel="VMI energy (keV)",ylabel="Water-region noise σ (HU)",
+        titlesize=30,subtitlesize=20,
+    )
+    for entry in water_fbp_filter_metrics.entries
+        Mke.scatterlines!(
+            axis,nchannel_validation_energies,entry.noise;
+            label="$(entry.name)$(entry.monotonic ? " ✓ monotonic" : "")",
+            linewidth=2,markersize=8,
+        )
+    end
+    Mke.axislegend(axis)
+    fig
+end
+
+# ╔═╡ 6fabf137-a705-436c-bdf0-0697f5d5bd7b
+let
+    candidates=water_fbp_filter_sweep.entries
+    energy_indices=[
+        argmin(abs.(nchannel_validation_energies.-energy))
+        for energy in (40.0,70.0,140.0)
+    ]
+    selected=water_fbp_filter_metrics.selected
+    HU_window=(-200,500)
+    fig=Mke.Figure(size=(1400,850))
+    for (row,index) in enumerate((1,selected))
+        for (column,energy_index) in enumerate(energy_indices)
+            energy=nchannel_validation_energies[energy_index]
+            axis=Mke.Axis(
+                fig[row,column];
+                title="$(candidates[index].name) · $(Int(energy)) keV",
+                aspect=Mke.DataAspect(),titlesize=23,
+            )
+            Mke.heatmap!(
+                axis,candidates[index].noisy_vmis[:,:,energy_index];
+                colormap=:grays,colorrange=HU_window,
+            )
+            Mke.hidedecorations!(axis)
+        end
+    end
+    Mke.Colorbar(
+        fig[1:2,4];colormap=:grays,colorrange=HU_window,
+        label="HU",width=16,
+    )
+    fig
+end
+
+# ╔═╡ b1d0f9d7-0e3e-4b65-b587-d9efcfac5a97
 md"""
-### Completion audit
+## Feasibility conclusion
 
-`tnv_goal_audit` is the authoritative scope check. Items under `proven` have
-direct live-notebook evidence. Items under `partial` retain their exact
-statistical or computational boundary. Endpoint-dependent VMI, dose, NPS,
-TTF/MTF, concentration-bias, covariance, and visual claims are intentionally
-listed under `not_claimed_without_endpoint`; they are **not** inferred from
-operator unit tests or the common-FBP baseline.
+**Decision: promising but needs refinement.**
+
+The Lee 2025 T-LBF was implemented as a joint filter of the completed water
+and iodine Cong sinograms. At the provisional best setting
+(`α₂ = $(round(tlbf_feasibility_summary.best_alpha2,digits=3))`), water,
+iodine, and 70 keV noise fell by approximately
+$(round(tlbf_feasibility_summary.water_noise_reduction_percent,digits=1))%,
+$(round(tlbf_feasibility_summary.iodine_noise_reduction_percent,digits=1))%,
+and $(round(tlbf_feasibility_summary.vmi70_noise_reduction_percent,digits=1))%,
+respectively. The sampled 10–90% edge width remained
+$(tlbf_feasibility_summary.filtered_edge_width_pixels) pixel versus
+$(tlbf_feasibility_summary.reference_edge_width_pixels) pixel unfiltered,
+although deterministic difference images and RMSE show nonzero smoothing.
+
+The common-pair VMI curve is smoother and substantially lower but remains
+U-shaped, not monotonic. Lee noise matching improves the high-keV tail but is
+not uniformly beneficial and does not make the full curve monotonic. It should
+therefore be refined before a five-seed confirmation.
+
+This is a one-realization feasibility result. Corrected fractional count
+equivalents were used in the total-likelihood weights; the four-bin Cong
+decomposition itself was unchanged. No `BasisSimulator.jl` source file was
+modified.
 """
 
 # ╔═╡ Cell order:
@@ -3318,40 +2674,35 @@ operator unit tests or the common-FBP baseline.
 # ╟─7707308d-e855-4111-9367-ef4ffc66da8b
 # ╠═9161e7bf-eaa9-4d48-9d93-ab743ff3a0c2
 # ╠═5cc1f9ba-4a5f-4a78-86dd-e0d844a09a28
-# ╟─4d6d8375-5805-4e1d-9c77-fcde574c42a1
-# ╠═4a7e1704-9abc-4430-8146-5e8a1fbaf852
-# ╠═83bece80-87f7-4e18-943f-13d0a7287548
-# ╠═829630be-523b-464e-a250-e6b617be8ce1
-# ╠═b07ec202-ddcb-465a-8f0d-18e53c2ff902
-# ╠═d9c149c8-135a-42c9-bb95-213b0aec3b32
-# ╠═739a1ff6-dd9b-4edf-8653-73a2704bfb59
-# ╠═813d96ad-4b83-4db9-95db-67336bf4b43e
-# ╠═47384dd6-7b4e-403b-b4b5-1c6bc34a77e2
-# ╟─6c7fdf0f-bc9f-4cf7-96ba-eb0e1ff94c60
-# ╠═9c675f52-0046-41be-a203-d603cffcea2d
-# ╠═dc5da7d1-3dcf-4942-b6f5-ea632aee1472
-# ╠═595b5b3b-d8e6-4001-9f63-0365728ca667
-# ╠═7429a1a3-785d-423d-93c4-2bb0ee3cf1a7
-# ╠═3d3ece92-6d20-49b4-8539-4a2ff2200455
-# ╠═df46022b-033d-45df-8bca-478517904e86
-# ╠═296b915c-edbb-4b76-bf42-d42061109608
-# ╠═0a8d4979-5665-4b4d-84e9-b5da72183134
-# ╠═a8a740e0-9e33-447a-b34c-dfa0139662da
-# ╠═223af75d-05c7-431c-b598-70bef1f1c6a0
-# ╠═f86d4398-f245-4899-adf9-30ce3dd405e3
 # ╠═707aec65-d9d6-4462-a662-c669beb8525b
 # ╠═067e491c-b305-46d0-abf9-bad0431f7b5e
-# ╠═55e6d611-7c3a-48d6-a01e-7e91707a2e27
-# ╠═a44c3a3b-6f30-456e-b0ff-a7f71a4fdd37
-# ╠═87a1be5f-8211-4861-a8f9-d6e996b76d4a
-# ╠═e91efbee-d615-4496-9867-a94651672ad6
-# ╠═61a5abd5-a5ce-4aa8-8e8c-3c579dedbed5
-# ╠═558a210b-5729-4a26-82ae-b354813c8642
-# ╠═8f227499-7784-4dd3-ad30-9810cc7741bb
-# ╠═f88339be-5430-4357-83ca-ad027ff54e3a
-# ╠═69d03cc0-af0c-433b-90da-b57b7e6401de
-# ╠═f427fde7-40ad-4b6e-b7ed-8ee31ffab8ae
-# ╠═8bbf633c-8859-437a-8237-dd2637916e87
-# ╟─c81819eb-fd95-4193-af0c-8c8fce52c1e2
-# ╠═fab1f0dc-8ee2-41b3-bf90-33122487d725
-# ╟─97f45341-b796-4611-95b8-4319f49eb053
+# ╟─8a23843f-3414-4641-a4c0-8800ec52cd7c
+# ╠═f3de45a6-4818-4ee1-ad56-c65797119dee
+# ╠═c35105bb-7bcb-4905-8c82-c5d695e7c779
+# ╠═f4f046cb-fd81-4683-9533-92d1e732dc24
+# ╠═ec10ffc2-7ba2-4a05-9346-930a958a6660
+# ╠═c2c7b7ef-296e-4005-a578-bd38ec818be3
+# ╠═307532ad-9599-4e8d-ba1a-2681fcf2f110
+# ╠═1ea2dcbe-8cd8-4b0c-85f1-d59bf5d37a78
+# ╠═07f4d2b6-6c29-47f3-88dd-98fc915009bc
+# ╠═4f210d68-19cd-4b67-adce-6d59498f1366
+# ╟─d544993a-e959-48c7-b1da-2888edc7623a
+# ╟─881c8fac-c00a-46c3-9bbf-802227d9c4d0
+# ╟─c0fcdf63-513d-489e-b105-0454b18c3f83
+# ╟─24db3af8-9e58-4499-8de0-5966c9fe0394
+# ╟─e788e4ab-50f1-4bad-af31-f31ff877e9de
+# ╟─a702126e-7e5a-47c5-a45e-b8038ae096c8
+# ╠═71344579-fce7-46a1-b55d-1029c9c20229
+# ╟─ab1319af-8619-4ae8-853a-b5e63cb134f3
+# ╟─d95a694b-dac0-4b28-bac6-2dadc94fe355
+# ╟─a6694310-43ec-4bf6-bf22-374e2fcf6b00
+# ╠═12497ebd-c1b4-4789-836a-fc49c5a06762
+# ╠═e6d42b22-8fe5-48a2-982e-0db460fd9797
+# ╠═07ed190a-58e8-4d0a-8802-137ceabbb67e
+# ╟─082a7479-95d7-4973-8b18-a1d639542b25
+# ╟─d7266214-0e21-411f-90f1-226b7ef1a742
+# ╠═712d508b-95b5-43f3-b305-d0259134cd74
+# ╠═fd6ab3d2-88e1-4862-a574-62b57f265279
+# ╟─4e9a9a3c-f9f2-41b8-b85b-155c0a6d1ff0
+# ╟─6fabf137-a705-436c-bdf0-0697f5d5bd7b
+# ╟─b1d0f9d7-0e3e-4b65-b587-d9efcfac5a97
