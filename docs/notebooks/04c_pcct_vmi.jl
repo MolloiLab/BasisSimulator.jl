@@ -3929,6 +3929,327 @@ nchannel_dose_sweep_figure = let
     (figure=fig,path)
 end
 
+# ╔═╡ 25255d46-4e30-4b62-835b-39c78b71b93b
+md"""
+## 19. Quantitative NIST validation
+
+The four display-energy plots above are retained for direct comparison with
+the established PCCT notebook.  The audit below repeats the independent NIST
+comparison at every 5 keV from 40 through 140 keV.  Each material group and
+energy is fit once as measured HU versus theoretical HU; no empirical
+calibration is applied.
+"""
+
+# ╔═╡ aedcd970-8283-49cb-ae3a-72003fbd8b3e
+nchannel_dense_nist_audit = let
+    energies=nchannel_validation_energies
+    materials=phantom_cpu.materials
+    mask_2d=phantom_cpu.mask[:,:,size(phantom_cpu.mask,3)÷2]
+    nx,ny=size(mask_2d)
+    radius_px=8
+    function roi(label)
+        indices=findall(==(UInt8(label)),mask_2d)
+        cx=mean(Float64(ci[1]) for ci in indices)
+        cy=mean(Float64(ci[2]) for ci in indices)
+        [
+            CartesianIndex(i,j)
+            for i in max(1,floor(Int,cx-radius_px)):
+                min(nx,ceil(Int,cx+radius_px))
+            for j in max(1,floor(Int,cy-radius_px)):
+                min(ny,ceil(Int,cy+radius_px))
+            if (i-cx)^2+(j-cy)^2≤radius_px^2
+        ]
+    end
+    labels=(
+        calcium=collect(NCHANNEL_ROD_LABELS.Ca),
+        iodine=collect(NCHANNEL_ROD_LABELS.I),
+    )
+    rois=Dict(label=>roi(label) for label in vcat(labels.calcium,labels.iodine))
+    function fit_lr(x,y)
+        xbar=mean(x)
+        ybar=mean(y)
+        sxx=sum(abs2,x.-xbar)
+        slope=sum((x.-xbar).*(y.-ybar))/sxx
+        intercept=ybar-slope*xbar
+        residual=y.-(intercept.+slope.*x)
+        ssres=sum(abs2,residual)
+        sstot=sum(abs2,y.-ybar)
+        (
+            slope,intercept,r2=1-ssres/sstot,
+            rmse=sqrt(ssres/length(y)),
+        )
+    end
+    rows=NamedTuple[]
+    for E in energies
+        μwater=BS.compute_μ_at_energy(BS.XA.Materials.water,E)
+        for group in (:calcium,:iodine)
+            theoretical=Float64[]
+            measured=Float64[]
+            for label in labels[group]
+                material=materials[Int(label)+1]
+                push!(
+                    theoretical,
+                    1000*(
+                        BS.compute_μ_at_energy(material,E)-μwater
+                    )/μwater,
+                )
+                values=Float64.(
+                    nchannel_vmi_raw_HU[E][rois[label],:]
+                )
+                push!(measured,mean(values))
+            end
+            fit=fit_lr(theoretical,measured)
+            push!(rows,(
+                energy_keV=E,material=group,
+                fit...,
+                maximum_absolute_error=maximum(
+                    abs.(measured.-theoretical),
+                ),
+            ))
+        end
+    end
+    (
+        rows,
+        max_slope_error=maximum(abs(r.slope-1) for r in rows),
+        max_abs_intercept=maximum(abs(r.intercept) for r in rows),
+        min_r2=minimum(r.r2 for r in rows),
+        max_rmse=maximum(r.rmse for r in rows),
+        slope_within_2_percent=all(abs(r.slope-1)≤0.02 for r in rows),
+    )
+end
+
+# ╔═╡ c2687091-4959-46cf-8157-900d676d53a7
+nchannel_dense_nist_figure = let
+    rows=nchannel_dense_nist_audit.rows
+    energies=nchannel_validation_energies
+    fig=Mke.Figure(size=(1180,760))
+    for (column,material) in pairs((:calcium,:iodine))
+        selected=filter(r->r.material==material,rows)
+        ax1=Mke.Axis(
+            fig[1,column];
+            title="$(uppercasefirst(String(material))) NIST linearity",
+            xlabel="VMI energy (keV)",ylabel="slope",
+        )
+        Mke.lines!(
+            ax1,energies,[r.slope for r in selected];
+            color=:steelblue,linewidth=3,
+        )
+        Mke.scatter!(
+            ax1,energies,[r.slope for r in selected];
+            color=:steelblue,markersize=7,
+        )
+        Mke.hlines!(
+            ax1,[0.98,1.02];color=:gray,linestyle=:dash,
+        )
+        Mke.hlines!(ax1,[1.0];color=:black)
+        ax2=Mke.Axis(
+            fig[2,column];xlabel="VMI energy (keV)",
+            ylabel="RMSE (HU)",title="No-fit HU error",
+        )
+        Mke.lines!(
+            ax2,energies,[r.rmse for r in selected];
+            color=:darkorange,linewidth=3,
+        )
+        Mke.scatter!(
+            ax2,energies,[r.rmse for r in selected];
+            color=:darkorange,markersize=7,
+        )
+    end
+    path="/tmp/04c_pcct_dense_nist.png"
+    Mke.save(path,fig)
+    (figure=fig,path)
+end
+
+# ╔═╡ dc528bfc-ea84-4fc7-b222-3dccf49c32b2
+md"""
+## 20. Final acceptance table
+
+`PASS` means the prespecified numerical criterion was met. `FAIL` is retained
+as a scientific result; it is never converted to a pass by changing a
+criterion after seeing the output. `NOT TESTED` is reserved for information
+the simulator does not expose or an experiment not represented in this
+notebook.
+
+The selected quantitative endpoint remains the raw common-kernel VMI because
+none of the tested image-domain denoisers simultaneously passes dense-energy
+noise, target/guide structure transfer, and the 5% TTF50 limit.
+"""
+
+# ╔═╡ 8c2ee485-2bde-405d-b5ca-e60ac97bc970
+nchannel_final_acceptance = let
+    status(pass)=pass ? "PASS" : "FAIL"
+    exact=nchannel_exact_solver_audit
+    reference=nchannel_reference_audit
+    qc=nchannel_solver_qc
+    transfer=nchannel_transfer_match_audit
+    structure=nchannel_structure_transfer_audit.flat_noise
+    raw_monotonic=only(filter(
+        r->r.method==:raw,
+        nchannel_repeated_seed_audit.monotonic_rows,
+    ))
+    raw_ttf=filter(
+        r->r.method==:raw,nchannel_repeated_seed_audit.ttf_rows,
+    )
+    dose_errors=[
+        abs(r.dose_exponent+0.5)
+        for r in nchannel_dose_sweep_audit.raw_exponents
+    ]
+    rows=[
+        (
+            test="response-versus-I0 agreement",
+            result=status(
+                nchannel_simulator_contract.
+                    response_I0_max_relative_error<5e-5,
+            ),
+            evidence="max relative discrepancy = $(
+                nchannel_simulator_contract.response_I0_max_relative_error
+            )",
+        ),
+        (
+            test="derivative audit",
+            result=status(nchannel_derivative_audit.pass),
+            evidence="worst relative error = $(
+                nchannel_derivative_audit.maximum_relative_error
+            )",
+        ),
+        (
+            test="noiseless recovery",
+            result=status(max(
+                exact.maximum_aggregate_error,
+                exact.maximum_profile_error,
+            )<1e-5),
+            evidence="K = 2, 4, 8 randomized systems",
+        ),
+        (
+            test="channel-permutation invariance",
+            result=status(exact.maximum_permutation_error<1e-5),
+            evidence="max error = $(exact.maximum_permutation_error)",
+        ),
+        (
+            test="aggregate-root success",
+            result=status(exact.aggregate_root_failures==0),
+            evidence="failures = $(exact.aggregate_root_failures)",
+        ),
+        (
+            test="fast/reference agreement",
+            result=status(
+                reference.max_likelihood_gap<1e-5 &&
+                reference.different_basin==0,
+            ),
+            evidence="$(reference.n) stratified rays; max gap = $(
+                reference.max_likelihood_gap
+            )",
+        ),
+        (
+            test="convergence rate",
+            result=status(qc.not_converged==0),
+            evidence="$(qc.not_converged) / $(qc.rays) flagged",
+        ),
+        (
+            test="Fisher conditioning",
+            result=status(qc.ill_conditioned==0),
+            evidence="$(qc.ill_conditioned) / $(qc.rays) flagged",
+        ),
+        (
+            test="covariance-model agreement",
+            result="FAIL",
+            evidence="corrected channels are sub-Poisson and correlated; Poisson is quasi-likelihood",
+        ),
+        (
+            test="1/sqrt(N) dose scaling",
+            result=status(maximum(dose_errors)<0.05),
+            evidence="max raw exponent error = $(maximum(dose_errors))",
+        ),
+        (
+            test="common angular transfer",
+            result=status(transfer.pass),
+            evidence="max numerical response difference = $(
+                transfer.maximum_angular_response_difference
+            )",
+        ),
+        (
+            test="common reconstruction kernel",
+            result=status(transfer.same_filter),
+            evidence="water, iodine, guide use SoftFilter and one grid",
+        ),
+        (
+            test="VMI unit correctness",
+            result=status(
+                maximum(abs(r.water_mean) for r in
+                    nchannel_repeated_seed_audit.dense_rows
+                    if r.method==:raw)<6,
+            ),
+            evidence="monoenergetic mass attenuation and water HU reference",
+        ),
+        (
+            test="water HU bias",
+            result=status(
+                maximum(abs(r.water_mean) for r in
+                    nchannel_repeated_seed_audit.dense_rows
+                    if r.method==:raw)≤2,
+            ),
+            evidence="predeclared ±2 HU criterion across 40:5:140",
+        ),
+        (
+            test="material linearity",
+            result=status(
+                nchannel_dense_nist_audit.slope_within_2_percent,
+            ),
+            evidence="max slope error = $(
+                nchannel_dense_nist_audit.max_slope_error
+            )",
+        ),
+        (
+            test="NPS reduction (selected endpoint)",
+            result="FAIL",
+            evidence="raw selected; denoisers with lower NPS failed transfer criteria",
+        ),
+        (
+            test="TTF/MTF preservation (selected endpoint)",
+            result=status(all(
+                abs(r.relative_to_raw-1)≤0.05 for r in raw_ttf
+            )),
+            evidence="raw common-kernel endpoint",
+        ),
+        (
+            test="target-only recovery (candidate denoisers)",
+            result=status(any(
+                r.noisy_target_recovery_p05≥0.90 for r in structure
+            )),
+            evidence="30-realization controlled target-only test",
+        ),
+        (
+            test="guide-only rejection (same candidate)",
+            result=status(any(
+                r.noisy_target_recovery_p05≥0.90 &&
+                r.noisy_guide_false_median≤0.05 for r in structure
+            )),
+            evidence="must pass jointly with target recovery",
+        ),
+        (
+            test="dense-energy monotonicity (selected endpoint)",
+            result=status(
+                raw_monotonic.complete_monotonic_fraction==1,
+            ),
+            evidence="fraction = $(
+                raw_monotonic.complete_monotonic_fraction
+            ); raw U-shape is physically observed",
+        ),
+        (
+            test="parameter robustness",
+            result="FAIL",
+            evidence="tested candidates do not jointly pass noise and transfer gates",
+        ),
+    ]
+    (
+        rows,
+        passed=count(r->r.result=="PASS",rows),
+        failed=count(r->r.result=="FAIL",rows),
+        not_tested=count(r->r.result=="NOT TESTED",rows),
+        selected_method=:raw_common_kernel,
+    )
+end
+
 # ╔═╡ Cell order:
 # ╠═171294a2-26bd-49e2-ac92-9df48ae5444f
 # ╠═69358294-97f2-4782-94d7-c29c747c45f4
@@ -4024,3 +4345,8 @@ end
 # ╠═856574f6-41c0-46c8-9274-61e2c2978094
 # ╠═918c2112-9aba-4cd1-95bb-f18c5a1c63a4
 # ╠═33770fa7-871c-4512-af0a-95d56532d6e2
+# ╟─25255d46-4e30-4b62-835b-39c78b71b93b
+# ╠═aedcd970-8283-49cb-ae3a-72003fbd8b3e
+# ╠═c2687091-4959-46cf-8157-900d676d53a7
+# ╟─dc528bfc-ea84-4fc7-b222-3dccf49c32b2
+# ╠═8c2ee485-2bde-405d-b5ca-e60ac97bc970
