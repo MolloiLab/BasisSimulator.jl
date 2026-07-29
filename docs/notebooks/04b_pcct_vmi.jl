@@ -455,6 +455,16 @@ are multiplied by \(R\). This improves the photon support seen by the
 nonlinear estimator while retaining all four spectral bins and the profiled
 univariate solve. It represents a declared 5-mm slice, not native 0.4-mm
 longitudinal resolution.
+
+The 1200-view acquisition also oversamples the angular sampling requirement
+of the 512-pixel reconstruction,
+\(N_{\theta,\mathrm{required}}=\lceil\pi N/2\rceil=805\). Before the common
+FBP, both material sinograms therefore receive the same deterministic angular
+anti-alias projection: Fourier modes through
+\(\lceil\pi N/4\rceil\) pass with gain exactly one, followed by a raised-cosine
+roll-off confined to the angular oversampling margin. This is not a denoising
+parameter or an energy-dependent kernel; it discards angular noise that the
+target image grid cannot represent without aliasing.
 """
 
 # ╔═╡ 50ed35bb-df61-4862-a99b-ea37380f30d8
@@ -529,8 +539,26 @@ end;
 # ╔═╡ ddfde8bb-ddff-44bb-8b70-b397725402cf
 nchannel_slab_common_fbp = let
     nrows = sim_bins.geom.n_rows
+    nview = size(sino_basis_nchannel_slab.sino_water,3)
+    pass_mode = min(
+        nview÷2,
+        ceil(Int,π*recon_opts.matrix_size[1]/4),
+    )
+    angular_response = [
+        let mode=min(j-1,nview-(j-1))
+            mode ≤ pass_mode ? 1.0 :
+            0.5*(1+cos(π*(mode-pass_mode)/(nview÷2-pass_mode)))
+        end
+        for j in 1:nview
+    ]
+    function angular_antialias(sino)
+        spectrum = BS.FFTW.fft(Float64.(sino),3)
+        Float32.(real.(BS.FFTW.ifft(
+            spectrum .* reshape(angular_response,1,1,nview),3,
+        )))
+    end
     function common_fbp(sino_one_row)
-        repeated = repeat(sino_one_row,1,nrows,1)
+        repeated = repeat(angular_antialias(sino_one_row),1,nrows,1)
         sino_gpu = to_gpu(Float32.(repeated))
         ws = BS.create_fdk_recon_workspace(
             sino_gpu,sim_bins.geom,recon_opts.matrix_size;
@@ -551,7 +579,10 @@ nchannel_slab_common_fbp = let
         μI = BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine,E)
         mu[E] = @. Float32(μW*W + μI*I)
     end
-    (vol_water=W,vol_iodine=I,mu=mu,energies=energies)
+    (
+        vol_water=W,vol_iodine=I,mu=mu,energies=energies,
+        angular_response,pass_mode,
+    )
 end;
 
 # ╔═╡ aa1c494e-ccbf-4a0c-8d44-5f12d47f6e8c
@@ -666,59 +697,208 @@ end;
 
 # ╔═╡ 1c55fa7b-e29a-4464-81f5-a75a6fce7228
 md"""
-## Fixed All-Energy Denoising
+## Support-Aware All-Energy Denoising
 
-One all-photon guide, one common `σ = 5` pixel frequency split, one 9×9
-local covariance window, and one common gain cap `β ≤ 6` are used for the
-entire VMI series. No denoising parameter or reconstruction kernel is chosen
-independently by keV.
+The summed-bin reconstruction defines one connected object support and one
+common high-frequency structural guide. The same `σ = 5` pixel split,
+`σ = 16` pixel covariance support, ridge fraction, and gain cap are used for
+all energies; no parameter or reconstruction kernel is selected by keV.
 
-The low-frequency quantitative content always comes from the four-bin Cong
-VMI. Only the shared high-frequency structure is carried by the summed-bin
-guide.
+The air–water boundary is excluded from covariance regression because it is a
+known discontinuity rather than material noise. For the filtering calculation,
+the object interior is extended with the measured water level. The original
+sharp boundary is then restored by assigning exterior pixels to air. This
+prevents the guide edge from being amplified into a false low-keV ring while
+leaving the interior rod edges unmasked.
 """
 
-# ╔═╡ a2ce06aa-31e8-4533-8617-40cb0f02b292
-nchannel_vmi_HU = let
-    energies = nchannel_vmi_energies
-    z = nchannel_slab_guide.z
-    raw_mu = [
-        begin
-            μW = BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
-            hu = nchannel_vmi_raw_HU[E][:,:,z]
-            image = @. Float32(μW*(hu/1000+1))
-            reshape(image,size(hu)...,1)
-        end
-        for E in energies
+# ╔═╡ b799b240-dca4-4fa6-9d5f-441bfb1aeb3a
+function nchannel_stable_hf_regression(
+    targets,guide;
+    split_sigma_px=5.0,gain_sigma_px=16.0,
+    ridge_fraction=0.25,beta_max=6.0,
+)
+    nx,ny,nz = size(guide)
+    fx = [min(i-1,nx-(i-1))/nx for i in 1:nx]
+    fy = [min(j-1,ny-(j-1))/ny for j in 1:ny]
+    kernel(σ) = [
+        exp(-2π^2*σ^2*(fx[i]^2+fy[j]^2))
+        for i in 1:nx,j in 1:ny
     ]
+    split_kernel = kernel(split_sigma_px)
+    gain_kernel = kernel(gain_sigma_px)
 
-    mask_2d = phantom_cpu.mask[:,:,size(phantom_cpu.mask,3) ÷ 2]
-    water_mask = collect(BS.erode_mask_2d(
-        mask_2d .== UInt8(BS.REGION_SOLID_WATER);erode_px=12.0,
-    ))
-    guide = Float32.(nchannel_slab_guide.slice)
-    guide_water = mean(filter(isfinite,vec(guide[water_mask])))
+    function lowpass(volume,k)
+        output = similar(volume)
+        for z in axes(volume,3)
+            slice = Float64.(@view volume[:,:,z])
+            output[:,:,z] .= Float32.(
+                real.(BS.FFTW.ifft(BS.FFTW.fft(slice).*k))
+            )
+        end
+        output
+    end
+
+    low_guide = lowpass(guide,split_kernel)
+    high_guide = guide.-low_guide
+    guide_power = lowpass(high_guide.^2,gain_kernel)
+    finite_power = filter(
+        x -> isfinite(x) && x > 0,
+        Float64.(vec(guide_power)),
+    )
+    ridge = Float32(ridge_fraction*median(finite_power))
+
+    outputs = similar.(targets)
+    beta_maps = similar.(targets)
+    global_beta = zeros(Float64,length(targets))
+    for (j,target) in pairs(targets)
+        low_target = lowpass(target,split_kernel)
+        high_target = target.-low_target
+        β_global = clamp(
+            sum(Float64.(high_target).*Float64.(high_guide)) /
+                max(sum(abs2,Float64.(high_guide)),eps()),
+            0.0,beta_max,
+        )
+        numerator = lowpass(high_target.*high_guide,gain_kernel)
+        beta = @. clamp(
+            (numerator+ridge*Float32(β_global))/(guide_power+ridge),
+            0.0f0,Float32(beta_max),
+        )
+        transplanted = beta.*high_guide
+        outputs[j] .= low_target.+transplanted
+        beta_maps[j] .= beta
+        global_beta[j] = β_global
+    end
+    (
+        volumes=outputs,beta_maps,
+        global_beta,
+        split_sigma_px,gain_sigma_px,ridge_fraction,beta_max,
+    )
+end
+
+# ╔═╡ c1a8d98e-607c-45d4-8938-e637c29c3a1d
+nchannel_support_candidate = let
+    energies = nchannel_vmi_energies
+    z = size(nchannel_slab_guide.volume,3)÷2+1
+    guide = Float32.(nchannel_slab_guide.volume[:,:,z])
+    function otsu_threshold(image;nbins=256)
+        values = filter(isfinite,Float64.(vec(image)))
+        lo,hi = extrema(values)
+        edges = range(lo,hi;length=nbins+1)
+        counts = zeros(Float64,nbins)
+        for value in values
+            bin = clamp(
+                floor(Int,(value-lo)/(hi-lo)*nbins)+1,1,nbins,
+            )
+            counts[bin] += 1
+        end
+        probabilities = counts/sum(counts)
+        centers = (collect(edges[1:end-1]).+collect(edges[2:end]))./2
+        cumulative_weight = cumsum(probabilities)
+        cumulative_mean = cumsum(probabilities.*centers)
+        total_mean = cumulative_mean[end]
+        between = [
+            let
+                w0 = cumulative_weight[k]
+                w1 = 1-w0
+                if w0<=0 || w1<=0
+                    -Inf
+                else
+                    μ0 = cumulative_mean[k]/w0
+                    μ1 = (total_mean-cumulative_mean[k])/w1
+                    w0*w1*(μ0-μ1)^2
+                end
+            end
+            for k in 1:(nbins-1)
+        ]
+        centers[argmax(between)]
+    end
+    support_threshold = otsu_threshold(guide)
+    raw_support = guide .> support_threshold
+    function largest_component(mask)
+        visited = falses(size(mask))
+        largest = CartesianIndex{2}[]
+        queue = CartesianIndex{2}[]
+        for seed in CartesianIndices(mask)
+            (!mask[seed] || visited[seed]) && continue
+            empty!(queue)
+            component = CartesianIndex{2}[]
+            push!(queue,seed)
+            visited[seed] = true
+            first_index = 1
+            while first_index <= length(queue)
+                current = queue[first_index]
+                first_index += 1
+                push!(component,current)
+                i,j = Tuple(current)
+                for neighbor in (
+                    CartesianIndex(i-1,j),CartesianIndex(i+1,j),
+                    CartesianIndex(i,j-1),CartesianIndex(i,j+1),
+                )
+                    checkbounds(Bool,mask,neighbor) || continue
+                    if mask[neighbor] && !visited[neighbor]
+                        visited[neighbor] = true
+                        push!(queue,neighbor)
+                    end
+                end
+            end
+            length(component)>length(largest) && (largest=component)
+        end
+        output = falses(size(mask))
+        output[largest] .= true
+        output
+    end
+    support = largest_component(raw_support)
+    guide_water = median(Float64.(guide[support]))
     μW70 = BS.compute_mass_μ_at_energy(BS.XA.Materials.water,70.0)
-    guide_proxy = reshape(
-        Float32.(guide .* (μW70/guide_water)),size(guide)...,1,
-    )
+    guide_proxy = @. Float32(guide*(μW70/guide_water))
+    guide_extended = fill(Float32(μW70),size(guide_proxy)...,1)
+    (@view guide_extended[:,:,1])[support] .= guide_proxy[support]
 
-    volumes = [raw_mu...,guide_proxy]
-    workspace = BS.create_mono_plus_workspace(
-        raw_mu[1];n_energies=length(volumes),
+    raw_mu = Vector{Array{Float32,3}}(undef,length(energies))
+    extended_mu = similar(raw_mu)
+    for (j,E) in pairs(energies)
+        μW = BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+        hu = nchannel_vmi_raw_HU[E][:,:,z]
+        image = @. Float32(μW*(hu/1000+1))
+        raw_mu[j] = reshape(image,size(image)...,1)
+        extended_mu[j] = fill(Float32(μW),size(image)...,1)
+        (@view extended_mu[j][:,:,1])[support] .= image[support]
+    end
+    result = nchannel_stable_hf_regression(
+        extended_mu,guide_extended;
+        split_sigma_px=5.0,gain_sigma_px=16.0,
+        ridge_fraction=0.25,beta_max=6.0,
     )
-    result = BS.apply_mono_plus_regression!(
-        workspace,volumes,[energies...,-1.0];
-        E_noise_opt=-1.0,σ_lp_px=5.0,window=4,
-        beta_max=6.0,verbose=false,
-    )
-    Dict(
+    HU = Dict(
         E => begin
             μW = BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
-            @. Float32(1000*(result.volumes[j]/μW-1))
+            output_mu = copy(raw_mu[j])
+            (@view output_mu[:,:,1])[support] .=
+                (@view result.volumes[j][:,:,1])[support]
+            output_hu = @. Float32(1000*(output_mu/μW-1))
+            (@view output_hu[:,:,1])[.!support] .= -1000.0f0
+            output_hu
         end
         for (j,E) in pairs(energies)
     )
+    mask_2d = phantom_cpu.mask[:,:,size(phantom_cpu.mask,3)÷2]
+    water_mask = collect(BS.erode_mask_2d(
+        mask_2d .== UInt8(BS.REGION_SOLID_WATER);erode_px=12.0,
+    ))
+    noise = [
+        std(Float64.(HU[E][:,:,1][water_mask])) for E in energies
+    ]
+    (
+        result...,HU,noise,support,
+        support_threshold,guide_water,
+        monotonic=all(diff(noise).<0),
+    )
+end;
+
+# ╔═╡ a2ce06aa-31e8-4533-8617-40cb0f02b292
+nchannel_vmi_HU = let
+    nchannel_support_candidate.HU
 end;
 
 # ╔═╡ 3e8869e6-4f74-4ac8-a048-10d55aa76e20
@@ -1138,6 +1318,8 @@ end
 # ╠═9161e7bf-eaa9-4d48-9d93-ab743ff3a0c2
 # ╠═5cc1f9ba-4a5f-4a78-86dd-e0d844a09a28
 # ╟─1c55fa7b-e29a-4464-81f5-a75a6fce7228
+# ╠═b799b240-dca4-4fa6-9d5f-441bfb1aeb3a
+# ╠═c1a8d98e-607c-45d4-8938-e637c29c3a1d
 # ╠═a2ce06aa-31e8-4533-8617-40cb0f02b292
 # ╟─c0231062-8372-44c3-a3f0-574d39a1c326
 # ╟─3e8869e6-4f74-4ac8-a048-10d55aa76e20
