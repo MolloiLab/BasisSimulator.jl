@@ -3492,6 +3492,763 @@ let
     """
 end
 
+# ╔═╡ 43f62f33-94a4-4845-b81d-e26c0f18265c
+md"""
+### Fixed-transfer Fisher feasibility bound
+
+For the common-filter 4.94-mm reconstruction, let
+\(\Sigma_{WI}\) be the empirical water–iodine covariance in the uniform-water
+ROI. The VMI noise prediction is
+\[
+\sigma_{\mathrm{HU}}(E)=
+\frac{1000}{\mu_W(E)}
+\sqrt{\mathbf c_E^\mathsf T\Sigma_{WI}\mathbf c_E},
+\quad
+\mathbf c_E=[\mu_W(E),\mu_I(E)]^\mathsf T.
+\]
+At unchanged spatial transfer and for an efficient unbiased estimator,
+increasing independent photon support by a factor \(q\) can reduce this only
+as \(1/\sqrt q\). The factors below are therefore optimistic lower bounds;
+the repeated Poisson trials show slightly worse-than-ideal scaling in the
+low-count regime.
+"""
+
+# ╔═╡ 5dc95568-79e1-4316-947c-87bc3c3cf60f
+nchannel_fixed_transfer_bound = let
+    x = nchannel_slab_common_fbp
+    z = nchannel_slab_guide.z
+    mask = fisher_acnr.water_mask
+    W = Float64.(x.vol_water[:,:,z][mask])
+    I = Float64.(x.vol_iodine[:,:,z][mask])
+    keep = isfinite.(W) .& isfinite.(I)
+    samples = hcat(W[keep],I[keep])
+    Σ = cov(samples)
+    ρ = cor(samples)[1,2]
+    function predicted_hu(E)
+        μW = BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+        μI = BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine,E)
+        c = [μW,μI]
+        1000sqrt(max(sum(c.*(Σ*c)),0))/μW
+    end
+    energies = x.energies
+    predicted = predicted_hu.(energies)
+    observed = nchannel_slab_cong_audit.noise
+    dense_energies = collect(40.0:1.0:140.0)
+    dense_noise = predicted_hu.(dense_energies)
+    nominal_target = [50.0,30.0,27.5,25.0]
+    tolerance_ceiling = [60.0,60.0,57.5,55.0]
+    nominal_factor = (observed./nominal_target).^2
+    tolerance_factor = (observed./tolerance_ceiling).^2
+    q_nominal = maximum(nominal_factor)
+    q_tolerance = maximum(tolerance_factor)
+    (
+        covariance=Σ,rho=ρ,energies=energies,
+        predicted=predicted,observed=observed,
+        agreement=predicted./observed,
+        minimum_energy=dense_energies[argmin(dense_noise)],
+        minimum_noise=minimum(dense_noise),
+        nominal_target=nominal_target,
+        tolerance_ceiling=tolerance_ceiling,
+        nominal_factor=nominal_factor,tolerance_factor=tolerance_factor,
+        q_nominal=q_nominal,q_tolerance=q_tolerance,
+        nominal_mAs=q_nominal*nchannel_exposure_audit.total_mAs,
+        tolerance_mAs=q_tolerance*nchannel_exposure_audit.total_mAs,
+        nominal_equivalent_mm=q_nominal*nchannel_slab_counts.thickness_mm,
+        tolerance_equivalent_mm=q_tolerance*nchannel_slab_counts.thickness_mm,
+    )
+end;
+
+# ╔═╡ b2cbe5ea-f315-45c3-a41e-7fb12021e909
+let
+    b = nchannel_fixed_transfer_bound
+    md"""
+    **Fixed-transfer feasibility result**
+
+    - Empirical water–iodine correlation: **$(round(b.rho,digits=4))**
+    - Covariance-predicted VMI noise (HU):
+      **$(join(round.(b.predicted,digits=1),", "))**
+    - Directly measured VMI noise (HU):
+      **$(join(round.(b.observed,digits=1),", "))**
+    - Predicted/measured ratios:
+      **$(join(round.(b.agreement,digits=3),", "))**
+    - Natural minimum of the unmodified covariance curve:
+      **$(Int(b.minimum_energy)) keV at $(round(b.minimum_noise,digits=1)) HU**
+    - Optimistic photon factors by energy for the nominal
+      50/30/27.5/25-HU target:
+      **$(join(round.(b.nominal_factor,digits=1),", "))**
+    - Dominant nominal factor: **$(round(b.q_nominal,digits=1))×**,
+      equivalent to **$(round(b.nominal_mAs,digits=0)) mAs** at 4.94 mm
+      or **$(round(b.nominal_equivalent_mm,digits=0)) mm** at 87 mAs.
+    - Even the broad ±30-HU ceiling requires at least
+      **$(round(b.q_tolerance,digits=1))×** photons
+      (**$(round(b.tolerance_mAs,digits=0)) mAs** at 4.94 mm).
+
+    These are lower bounds at the measured common-filter transfer. A method
+    that crosses them without additional photons is necessarily using prior
+    information or changing effective resolution; it must demonstrate that
+    choice with task-specific TTF and bias tests rather than call the gain
+    statistically free.
+    """
+end
+
+# ╔═╡ af4cf353-c7d6-4eab-86c0-d1ee7c7e7546
+md"""
+### Rank-sparse kernel-regression material prior
+
+The common-filter slab bases are passed through the repository's
+Clark–Badea-inspired RSKR implementation using its published/default operator
+settings (`n_iter=4`, `h=1`, radius 6, \(\gamma=1/2\)). Both SVD material
+subspaces participate in one product-channel range kernel.
+
+This is explicitly a material-image prior and is therefore allowed to beat the
+fixed-transfer variance bound only if its iodine-edge transfer, water bias,
+and energy consistency survive the adversarial gates.
+"""
+
+# ╔═╡ d58fb8ae-ce39-4e34-90b9-b76a6c6cc844
+nchannel_slab_rskr = let
+    z = nchannel_slab_guide.z
+    W0 = nchannel_slab_common_fbp.vol_water[:,:,z]
+    I0 = nchannel_slab_common_fbp.vol_iodine[:,:,z]
+    W = reshape(copy(W0),size(W0,1),size(W0,2),1)
+    I = reshape(copy(I0),size(I0,1),size(I0,2),1)
+    denoised = BS.apply_rskr(
+        [W,I];
+        n_iter=4,h_param=1.0,radius=6,γ=0.5,
+        gpu_arr_type=to_gpu,verbose=true,
+    )
+    energies = fisher_acnr.energies
+    mu = Dict{Float64,Array{Float32,3}}()
+    raw = Dict{Float64,Array{Float32,3}}()
+    for E in energies
+        μW = BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+        μI = BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine,E)
+        mu[E] = @. Float32(μW*denoised[1]+μI*denoised[2])
+        raw[E] = @. Float32(μW*W+μI*I)
+    end
+    (
+        water=denoised[1],iodine=denoised[2],
+        mu=mu,raw=raw,energies=energies,
+    )
+end;
+
+# ╔═╡ 863dbb34-5ac5-42a6-84a3-0bbd9938451e
+nchannel_slab_rskr_audit = let
+    x = nchannel_slab_rskr
+    mask = fisher_acnr.water_mask
+    noise = [
+        1000std(filter(isfinite,vec(x.mu[E][:,:,1][mask]))) /
+        BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+        for E in x.energies
+    ]
+    mean_shift = [
+        1000(
+            mean(filter(isfinite,vec(x.mu[E][:,:,1][mask]))) -
+            mean(filter(isfinite,vec(x.raw[E][:,:,1][mask])))
+        )/BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+        for E in x.energies
+    ]
+    edge_ratio = [
+        nchannel_edge_width(x.mu[E]).width_10_90 /
+        nchannel_edge_width(x.raw[E]).width_10_90
+        for E in x.energies
+    ]
+    (
+        noise=noise,mean_shift=mean_shift,edge_ratio=edge_ratio,
+        monotonic=all(diff(noise) .≤ 0),
+    )
+end;
+
+# ╔═╡ f3cf3c57-6091-40e7-9bab-f70e23ee15e7
+let
+    a = nchannel_slab_rskr_audit
+    md"""
+    **RSKR material-prior gate**
+
+    - VMI noise (HU): **$(join(round.(a.noise,digits=1),", "))**
+    - Strictly monotonic: **$(a.monotonic)**
+    - Water mean shifts (HU):
+      **$(join(round.(a.mean_shift,digits=1),", "))**
+    - RSKR/raw iodine-edge width ratios:
+      **$(join(round.(a.edge_ratio,digits=3),", "))**
+    """
+end
+
+# ╔═╡ 2b0c7587-a951-4560-adb1-455f5e5b0e92
+nchannel_rskr_radius_frontier = let
+    z = nchannel_slab_guide.z
+    W0 = nchannel_slab_common_fbp.vol_water[:,:,z]
+    I0 = nchannel_slab_common_fbp.vol_iodine[:,:,z]
+    W = reshape(copy(W0),size(W0,1),size(W0,2),1)
+    I = reshape(copy(I0),size(I0,1),size(I0,2),1)
+    energies = fisher_acnr.energies
+    mask = fisher_acnr.water_mask
+    map(1:6) do radius
+        denoised = BS.apply_rskr(
+            [W,I];
+            n_iter=1,h_param=1.0,radius=radius,γ=0.5,
+            gpu_arr_type=to_gpu,verbose=false,
+        )
+        noise = Float64[]
+        edge_ratio = Float64[]
+        for E in energies
+            μW = BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+            μI = BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine,E)
+            output = @. Float32(μW*denoised[1]+μI*denoised[2])
+            raw = @. Float32(μW*W+μI*I)
+            push!(
+                noise,
+                1000std(filter(isfinite,vec(output[:,:,1][mask])))/μW,
+            )
+            push!(
+                edge_ratio,
+                nchannel_edge_width(output).width_10_90 /
+                nchannel_edge_width(raw).width_10_90,
+            )
+        end
+        (
+            radius=radius,noise=noise,edge_ratio=edge_ratio,
+            monotonic=all(diff(noise) .≤ 0),
+            edge_pass=all(abs.(edge_ratio .- 1) .≤ 0.05),
+        )
+    end
+end;
+
+# ╔═╡ fdad4b92-76af-48ad-9f1a-772de06b2173
+let
+    rows = String[
+        "| radius | σ HU 40/70/100/140 | edge ratio 40/70/100/140 | mono | edge pass |",
+        "|---:|:--|:--|:--:|:--:|",
+    ]
+    for x in nchannel_rskr_radius_frontier
+        push!(
+            rows,
+            "| $(x.radius) | $(join(round.(x.noise,digits=1),", ")) | " *
+            "$(join(round.(x.edge_ratio,digits=3),", ")) | " *
+            "$(x.monotonic) | $(x.edge_pass) |",
+        )
+    end
+    md"""
+    **One-pass RSKR radius frontier**
+
+    $(join(rows,"\n"))
+    """
+end
+
+# ╔═╡ 05a8bb7a-19cf-41de-9638-ef19557896f4
+md"""
+### Legacy `pcct_noise_reduction` provenance audit
+
+The legacy notebook sets `pcct_noise_reduction=0.7`; this generalized notebook
+uses the physical default `0.0`. In the simulator implementation the noisy
+count is formed as
+\[
+N_{\rm out}=N_{\rm expected}+
+(1-\mathrm{nr})(N_{\rm sampled}-N_{\rm expected}).
+\]
+Thus `nr=0.7` directly uses the unavailable noise-free expected count to
+shrink every quantum fluctuation to 30% amplitude. Its variance is multiplied
+by \(0.3^2=0.09\), equivalent to an 11.1-fold photon increase before any
+subsequent denoising.
+
+This is a useful vendor/QIR noise-magnitude surrogate, but it is not a
+detector-only count correction and cannot be used as first-principles evidence
+for a raw-count Cong estimator.
+"""
+
+# ╔═╡ c537b260-7d07-4003-8c33-c45351284460
+nchannel_noise_reduction_audit = let
+    legacy_nr = 0.7
+    amplitude = 1-legacy_nr
+    variance = amplitude^2
+    (
+        legacy_nr=legacy_nr,amplitude=amplitude,variance=variance,
+        equivalent_photon_factor=1/variance,
+        equivalent_mAs=nchannel_exposure_audit.total_mAs/variance,
+        equivalent_slab_mm=nchannel_slab_counts.thickness_mm/variance,
+    )
+end;
+
+# ╔═╡ 13547ea6-b03e-4f93-9f11-e32e1dad90b8
+let
+    a = nchannel_noise_reduction_audit
+    md"""
+    **Legacy noise-surrogate result**
+
+    - Quantum-noise amplitude retained: **$(round(a.amplitude,digits=2))**
+    - Quantum-noise variance retained: **$(round(a.variance,digits=2))**
+    - Equivalent photon factor: **$(round(a.equivalent_photon_factor,digits=2))×**
+    - Equivalent exposure at 4.94 mm:
+      **$(round(a.equivalent_mAs,digits=0)) mAs**
+    - Equivalent thickness at 87 mAs:
+      **$(round(a.equivalent_slab_mm,digits=1)) mm**
+
+    The old notebook's noise numbers and the present `nr=0` results are
+    therefore not measurements of the same acquisition statistics.
+    """
+end
+
+# ╔═╡ 0bc859cf-9af1-45ce-875e-62ff1c2ae383
+md"""
+### Local versus global water-noise definition
+
+The large eroded solid-water mask matches the legacy notebook, but its SD can
+include low-frequency shading. The comparison below reports:
+
+- the canonical large-mask SD;
+- a central 12-pixel-radius water ROI;
+- each ROI after removing its best-fit plane.
+
+If detrending collapses the 40-keV value, the dominant error is deterministic
+nonuniformity rather than stationary quantum noise.
+"""
+
+# ╔═╡ 71c1d8b4-a9e4-4702-ad1e-18b742175b7d
+nchannel_noise_definition_audit = let
+    x = nchannel_slab_common_fbp
+    z = nchannel_slab_guide.z
+    nx,ny = size(x.vol_water,1),size(x.vol_water,2)
+    cx,cy = nx ÷ 2 + 1,ny ÷ 2 + 1
+    central_mask = [
+        (i-cx)^2+(j-cy)^2 ≤ 12^2
+        for i in 1:nx,j in 1:ny
+    ]
+    large_mask = fisher_acnr.water_mask
+    function roi_stats(image,mask)
+        indices = findall(mask)
+        values = Float64[image[ci] for ci in indices]
+        keep = isfinite.(values)
+        values = values[keep]
+        indices = indices[keep]
+        X = hcat(
+            ones(length(indices)),
+            Float64[ci[1] for ci in indices],
+            Float64[ci[2] for ci in indices],
+        )
+        residual = values-X*(X\values)
+        (sd=std(values),detrended_sd=std(residual),n=length(values))
+    end
+    rows = map(x.energies) do E
+        μW = BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+        hu = @. Float64(1000*(x.mu[E][:,:,z]/μW-1))
+        (
+            energy=E,large=roi_stats(hu,large_mask),
+            central=roi_stats(hu,central_mask),
+        )
+    end
+    (rows=rows,central_mask=central_mask,large_mask=large_mask)
+end;
+
+# ╔═╡ a82e635f-22dd-42af-bc63-03b2f50f68c1
+let
+    rows = String[
+        "| keV | large SD | large detrended | central SD | central detrended |",
+        "|---:|---:|---:|---:|---:|",
+    ]
+    for x in nchannel_noise_definition_audit.rows
+        push!(
+            rows,
+            "| $(Int(x.energy)) | $(round(x.large.sd,digits=1)) | " *
+            "$(round(x.large.detrended_sd,digits=1)) | " *
+            "$(round(x.central.sd,digits=1)) | " *
+            "$(round(x.central.detrended_sd,digits=1)) |",
+        )
+    end
+    md"""
+    **Water-noise definition audit (HU)**
+
+    $(join(rows,"\n"))
+    """
+end
+
+# ╔═╡ 9f79687a-3e54-45be-a529-8797b1e4d353
+md"""
+### Required material-covariance eigenmode shrinkage
+
+Diagonalize the measured common-filter covariance,
+\(\Sigma_{WI}=Q\operatorname{diag}(\lambda_1,\lambda_2)Q^\mathsf T\).
+If an edge-adaptive operator retains noise amplitudes \(s_1,s_2\) in the two
+orthogonal modes without bias, then
+\[
+\widetilde\Sigma=
+Q\operatorname{diag}(s_1^2\lambda_1,s_2^2\lambda_2)Q^\mathsf T.
+\]
+The grid below finds the least total shrinkage satisfying the nominal VMI
+noise targets and monotonicity. The equivalent independent sample count is
+\(N_i=1/s_i^2\).
+"""
+
+# ╔═╡ 6c612535-e935-4cf3-98c0-f7295b806811
+nchannel_required_mode_shrinkage = let
+    b = nchannel_fixed_transfer_bound
+    eig = BS.LinearAlgebra.eigen(BS.LinearAlgebra.Symmetric(b.covariance))
+    energies = b.energies
+    target = b.nominal_target
+    function noise_for(s1,s2)
+        Σ = eig.vectors*BS.LinearAlgebra.Diagonal(
+            [s1^2*eig.values[1],s2^2*eig.values[2]],
+        )*eig.vectors'
+        [
+            let
+                μW = BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+                μI = BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine,E)
+                c = [μW,μI]
+                1000sqrt(max(sum(c.*(Σ*c)),0))/μW
+            end
+            for E in energies
+        ]
+    end
+    feasible = NamedTuple[]
+    for s1 in 0.01:0.01:1.0,s2 in 0.01:0.01:1.0
+        noise = noise_for(s1,s2)
+        if all(noise .≤ target) && all(diff(noise) .≤ 0)
+            push!(feasible,(s1=s1,s2=s2,noise=noise,score=s1^2+s2^2))
+        end
+    end
+    selected = isempty(feasible) ? nothing :
+        feasible[argmax(getfield.(feasible,:score))]
+    (
+        eigenvalues=eig.values,eigenvectors=eig.vectors,
+        selected=selected,has_feasible=!isnothing(selected),
+        equivalent_samples=isnothing(selected) ? [Inf,Inf] :
+            [1/selected.s1^2,1/selected.s2^2],
+    )
+end;
+
+# ╔═╡ 2dcfcce8-bc0b-4d36-8bb0-63a0fa7cf263
+let
+    s = nchannel_required_mode_shrinkage
+    result = if s.has_feasible
+        x = s.selected
+        """
+        - Required retained amplitudes: **$(round(x.s1,digits=2)), $(round(x.s2,digits=2))**
+        - Resulting noise (HU): **$(join(round.(x.noise,digits=1),", "))**
+        - Equivalent independent samples per mode:
+          **$(join(round.(s.equivalent_samples,digits=1),", "))**
+        """
+    else
+        "**No diagonal covariance-mode shrinkage satisfies the nominal curve.**"
+    end
+    md"""
+    **Covariance-mode design result**
+
+    - Material covariance eigenvalues:
+      **$(join(round.(s.eigenvalues,sigdigits=4),", "))**
+    $result
+    """
+end
+
+# ╔═╡ f4c61e0d-0574-4487-bfe0-8bc602642f91
+md"""
+### Covariance required by the requested VMI curve
+
+In HU units the two-basis variance is a quadratic in
+\(\alpha(E)=\mu_I(E)/\mu_W(E)\):
+\[
+\sigma_{\rm HU}^2(E)/10^6
+=\sigma_W^2+2\alpha(E)\sigma_{WI}+\alpha(E)^2\sigma_I^2.
+\]
+Fitting this quadratic to the requested 50/30/27.5/25-HU sequence reveals
+the material covariance—not merely the marginal variances—that a successful
+noise processor must produce.
+"""
+
+# ╔═╡ 66ed5296-09bf-4c36-b6c7-c592a9b71acd
+nchannel_target_covariance = let
+    b = nchannel_fixed_transfer_bound
+    α = [
+        BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine,E) /
+        BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+        for E in b.energies
+    ]
+    X = hcat(ones(length(α)),2α,α.^2)
+    y = (b.nominal_target./1000).^2
+    q = X\y
+    Σtarget = [q[1] q[2];q[2] q[3]]
+    eig = BS.LinearAlgebra.eigen(BS.LinearAlgebra.Symmetric(Σtarget))
+    fitted = 1000sqrt.(max.(X*q,0))
+    (
+        alpha=α,covariance=Σtarget,eigenvalues=eig.values,
+        rho=q[2]/sqrt(max(q[1]*q[3],eps(Float64))),
+        fitted=fitted,target=b.nominal_target,
+        raw_covariance=b.covariance,raw_rho=b.rho,
+    )
+end;
+
+# ╔═╡ 0c439466-c109-4027-b7a5-69757e4f04c6
+let
+    t = nchannel_target_covariance
+    md"""
+    **Target-covariance result**
+
+    - Requested / fitted noise (HU):
+      **$(join(round.(t.target,digits=1),", ")) /**
+      **$(join(round.(t.fitted,digits=1),", "))**
+    - Raw material correlation: **$(round(t.raw_rho,digits=4))**
+    - Required fitted correlation: **$(round(t.rho,digits=4))**
+    - Required covariance eigenvalues:
+      **$(join(round.(t.eigenvalues,sigdigits=4),", "))**
+    - Required covariance matrix \([W,I]\):
+      **$(round.(t.covariance,sigdigits=4))**
+
+    A sign change from strongly anticorrelated raw material noise toward a
+    shared positively correlated component cannot be achieved by scalar dose
+    scaling or diagonal mode shrinkage alone. It requires a structural
+    reference with independently validated transfer.
+    """
+end
+
+# ╔═╡ 07597126-d2ff-41d0-8145-37be6ec8126b
+md"""
+### Grant-2014 additive Mono+ comparator
+
+The strict literature frequency split is now tested on the four-bin,
+row-combined, common-filter VMIs:
+\[
+V_E^+=L[V_E]+V_{70}-L[V_{70}].
+\]
+This is additive rather than the rejected HYPR ratio. The same Gaussian split
+is used at all energies, and 70 keV is exactly unchanged. The sweep tests
+whether importing the 70-keV high-frequency covariance can approach the
+required positive/shared covariance without changing iodine-edge transfer.
+"""
+
+# ╔═╡ bc6e9ef7-73b8-4100-871e-1da53b4603de
+nchannel_mono_plus_frontier = let
+    x = nchannel_slab_common_fbp
+    z = nchannel_slab_guide.z
+    energies = x.energies
+    raw = [reshape(
+        copy(x.mu[E][:,:,z]),size(x.mu[E],1),size(x.mu[E],2),1,
+    ) for E in energies]
+    mask = fisher_acnr.water_mask
+    workspace = BS.create_mono_plus_workspace(
+        raw[1];n_energies=length(energies),
+    )
+    map(collect(0.5:0.5:6.0)) do sigma
+        result = BS.apply_mono_plus!(
+            workspace,raw,energies;
+            E_noise_opt=70.0,σ_lp_px=sigma,verbose=false,
+        )
+        output = copy.(result.volumes)
+        noise = [
+            1000std(filter(isfinite,vec(output[j][:,:,1][mask]))) /
+            BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+            for (j,E) in pairs(energies)
+        ]
+        edge_ratio = [
+            nchannel_edge_width(output[j]).width_10_90 /
+            nchannel_edge_width(raw[j]).width_10_90
+            for j in eachindex(energies)
+        ]
+        (
+            sigma=sigma,noise=noise,edge_ratio=edge_ratio,
+            monotonic=all(diff(noise) .≤ 0),
+            edge_pass=all(abs.(edge_ratio .- 1) .≤ 0.05),
+        )
+    end
+end;
+
+# ╔═╡ e3743ea6-9b6d-41c4-ac19-99750af11bd3
+let
+    rows = String[
+        "| σ px | σ HU 40/70/100/140 | edge ratio 40/70/100/140 | mono | edge pass |",
+        "|---:|:--|:--|:--:|:--:|",
+    ]
+    for x in nchannel_mono_plus_frontier
+        push!(
+            rows,
+            "| $(x.sigma) | $(join(round.(x.noise,digits=1),", ")) | " *
+            "$(join(round.(x.edge_ratio,digits=3),", ")) | " *
+            "$(x.monotonic) | $(x.edge_pass) |",
+        )
+    end
+    md"""
+    **Grant Mono+ frontier**
+
+    $(join(rows,"\n"))
+    """
+end
+
+# ╔═╡ 59fa94e7-64ee-4b06-8e4a-b5e89e2c0fac
+md"""
+### Composite-reference additive HF regression
+
+The all-photon slab guide is placed in a fifth reference slot and the
+repository's local Mono+ regression is applied to each quantitative Cong VMI:
+\[
+\widetilde V_E=L[V_E]+\beta_E(\mathbf r)\,H[G].
+\]
+Unlike strict Mono+, every target energy—including 70 keV—keeps its own
+low-frequency content. The arbitrary guide amplitude is normalized to water at
+70 keV; local regression estimates material-dependent high-frequency gain.
+One common split and the fixed regression window/default cap are used.
+"""
+
+# ╔═╡ bbb753fc-7283-4071-a396-f0fbc31f04af
+nchannel_composite_regression_frontier = let
+    x = nchannel_slab_common_fbp
+    z = nchannel_slab_guide.z
+    energies = x.energies
+    raw = [reshape(
+        copy(x.mu[E][:,:,z]),size(x.mu[E],1),size(x.mu[E],2),1,
+    ) for E in energies]
+    guide2 = Float32.(nchannel_slab_guide.slice)
+    mask = fisher_acnr.water_mask
+    guide_water = mean(filter(isfinite,vec(guide2[mask])))
+    μW70 = BS.compute_mass_μ_at_energy(BS.XA.Materials.water,70.0)
+    guide_scaled = @. Float32(guide2*μW70/guide_water)
+    guide_proxy = reshape(
+        guide_scaled,
+        size(guide2,1),size(guide2,2),1,
+    )
+    volumes = [raw...,guide_proxy]
+    energies_ext = [energies...,-1.0]
+    workspace = BS.create_mono_plus_workspace(
+        raw[1];n_energies=length(volumes),
+    )
+    map(
+        [(sigma=sigma,beta=beta,window=window)
+         for beta in (4.0,20.0),window in (4,8,12),
+             sigma in (2.0,3.0,4.0,5.0,6.0)][:]
+    ) do setting
+        sigma,beta,window = setting.sigma,setting.beta,setting.window
+        result = BS.apply_mono_plus_regression!(
+            workspace,volumes,energies_ext;
+            E_noise_opt=-1.0,σ_lp_px=sigma,
+            window=window,beta_max=beta,verbose=false,
+        )
+        output = copy.(result.volumes[1:4])
+        noise = [
+            1000std(filter(isfinite,vec(output[j][:,:,1][mask]))) /
+            BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+            for (j,E) in pairs(energies)
+        ]
+        mean_shift = [
+            1000(
+                mean(filter(isfinite,vec(output[j][:,:,1][mask]))) -
+                mean(filter(isfinite,vec(raw[j][:,:,1][mask])))
+            )/BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+            for (j,E) in pairs(energies)
+        ]
+        edge_ratio = [
+            nchannel_edge_width(output[j]).width_10_90 /
+            nchannel_edge_width(raw[j]).width_10_90
+            for j in eachindex(energies)
+        ]
+        (
+            sigma=sigma,beta=beta,window=window,
+            noise=noise,mean_shift=mean_shift,
+            edge_ratio=edge_ratio,
+            beta_mean=copy(result.β_mean[1:4]),
+            beta_active=copy(result.β_frac_active[1:4]),
+            monotonic=all(diff(noise) .≤ 0),
+            edge_pass=all(abs.(edge_ratio .- 1) .≤ 0.05),
+            output=output,
+        )
+    end
+end;
+
+# ╔═╡ 2f7d77f2-1cbc-402b-a780-95cd3228118c
+let
+    rows = String[
+        "| β cap | win | σ px | σ HU 40/70/100/140 | edge ratio | β mean | β active % | mono | edge pass |",
+        "|---:|---:|---:|:--|:--|:--|:--|:--:|:--:|",
+    ]
+    for x in nchannel_composite_regression_frontier
+        push!(
+            rows,
+            "| $(Int(x.beta)) | $(x.window) | $(x.sigma) | " *
+            "$(join(round.(x.noise,digits=1),", ")) | " *
+            "$(join(round.(x.edge_ratio,digits=3),", ")) | " *
+            "$(join(round.(x.beta_mean,digits=2),", ")) | " *
+            "$(join(round.(100x.beta_active,digits=1),", ")) | " *
+            "$(x.monotonic) | $(x.edge_pass) |",
+        )
+    end
+    md"""
+    **Composite-reference regression frontier**
+
+    $(join(rows,"\n"))
+    """
+end
+
+# ╔═╡ 5f507782-b4d1-49ac-936c-10016ae1cb72
+md"""
+### Current best monotonic candidate — qualitative comparison
+
+This is the strongest result **so far**, selected from the declared frontier
+before looking at this figure: composite-reference regression with
+`σ = 6 px`, a 9×9 gain-estimation window, and `β_max = 20`.
+It is retained as a candidate rather than labeled final because the robust
+task-transfer test below is still pending.
+
+Each column uses the same HU window in the raw and candidate rows. Therefore,
+the visible noise reduction cannot be produced by changing display contrast.
+"""
+
+# ╔═╡ ac0a4f24-f7bb-47a7-a1d9-1a18ef76ea44
+nchannel_best_composite_candidate = only(filter(
+    x -> x.beta == 20.0 && x.window == 4 && x.sigma == 6.0,
+    nchannel_composite_regression_frontier,
+));
+
+# ╔═╡ 5d1ab6ce-8fb4-4736-9301-19ae794c8c02
+let
+    c = nchannel_best_composite_candidate
+    x = nchannel_slab_common_fbp
+    z = nchannel_slab_guide.z
+    energies = x.energies
+    HU_window = (-200.0,800.0)
+    μwater = [
+        BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+        for E in energies
+    ]
+    raw_HU = [
+        @. 1000 * (x.mu[E][:,:,z] / μwater[j] - 1)
+        for (j,E) in pairs(energies)
+    ]
+    water_mask = fisher_acnr.water_mask
+    raw_noise = [
+        std(filter(isfinite,vec(image[water_mask])))
+        for image in raw_HU
+    ]
+    candidate_HU = [
+        @. 1000 * (c.output[j][:,:,1] / μwater[j] - 1)
+        for j in eachindex(energies)
+    ]
+
+    fig = Mke.Figure(size=(1500,760))
+    Mke.Label(
+        fig[1,1:4],
+        "Current best monotonic candidate — identical HU display windows";
+        fontsize=28,
+    )
+    for (j,E) in pairs(energies)
+        for (row,label,images) in (
+            (2,"Raw generalized Cong",raw_HU),
+            (3,"Composite candidate",candidate_HU),
+        )
+            ax = Mke.Axis(
+                fig[row,j];
+                title="$(label)\n$(Int(E)) keV · " *
+                      "$(round(row == 2 ? raw_noise[j] : c.noise[j],digits=1)) HU SD",
+                aspect=Mke.DataAspect(),
+                titlesize=19,
+            )
+            Mke.heatmap!(
+                ax,images[j];colormap=:grays,colorrange=HU_window,
+            )
+            Mke.hidedecorations!(ax)
+        end
+    end
+    Mke.Colorbar(
+        fig[2:3,5];colormap=:grays,colorrange=HU_window,
+        label="HU",width=18,
+    )
+    fig
+end
+
 # ╔═╡ 2d447ccd-b408-42a6-8a1b-af770e3277e4
 md"""
 ## Direct FBP of the Material Sinograms
@@ -4003,6 +4760,36 @@ end
 # ╟─60b31144-99bf-416a-a99d-ad0c831f21f1
 # ╠═5c9227b8-092d-488d-8735-297710d510ae
 # ╟─37ea1649-76db-4df2-a81d-49c7f2f618cc
+# ╟─43f62f33-94a4-4845-b81d-e26c0f18265c
+# ╠═5dc95568-79e1-4316-947c-87bc3c3cf60f
+# ╟─b2cbe5ea-f315-45c3-a41e-7fb12021e909
+# ╟─af4cf353-c7d6-4eab-86c0-d1ee7c7e7546
+# ╠═d58fb8ae-ce39-4e34-90b9-b76a6c6cc844
+# ╠═863dbb34-5ac5-42a6-84a3-0bbd9938451e
+# ╟─f3cf3c57-6091-40e7-9bab-f70e23ee15e7
+# ╠═2b0c7587-a951-4560-adb1-455f5e5b0e92
+# ╟─fdad4b92-76af-48ad-9f1a-772de06b2173
+# ╟─05a8bb7a-19cf-41de-9638-ef19557896f4
+# ╠═c537b260-7d07-4003-8c33-c45351284460
+# ╟─13547ea6-b03e-4f93-9f11-e32e1dad90b8
+# ╟─0bc859cf-9af1-45ce-875e-62ff1c2ae383
+# ╠═71c1d8b4-a9e4-4702-ad1e-18b742175b7d
+# ╟─a82e635f-22dd-42af-bc63-03b2f50f68c1
+# ╟─9f79687a-3e54-45be-a529-8797b1e4d353
+# ╠═6c612535-e935-4cf3-98c0-f7295b806811
+# ╟─2dcfcce8-bc0b-4d36-8bb0-63a0fa7cf263
+# ╟─f4c61e0d-0574-4487-bfe0-8bc602642f91
+# ╠═66ed5296-09bf-4c36-b6c7-c592a9b71acd
+# ╟─0c439466-c109-4027-b7a5-69757e4f04c6
+# ╟─07597126-d2ff-41d0-8145-37be6ec8126b
+# ╠═bc6e9ef7-73b8-4100-871e-1da53b4603de
+# ╟─e3743ea6-9b6d-41c4-ac19-99750af11bd3
+# ╟─59fa94e7-64ee-4b06-8e4a-b5e89e2c0fac
+# ╠═bbb753fc-7283-4071-a396-f0fbc31f04af
+# ╟─2f7d77f2-1cbc-402b-a780-95cd3228118c
+# ╟─5f507782-b4d1-49ac-936c-10016ae1cb72
+# ╠═ac0a4f24-f7bb-47a7-a1d9-1a18ef76ea44
+# ╟─5d1ab6ce-8fb4-4736-9301-19ae794c8c02
 # ╟─2d447ccd-b408-42a6-8a1b-af770e3277e4
 # ╠═1ff5e801-ef54-45ff-b0a8-e780e2e6cb63
 # ╟─65a40efc-c9ff-41d4-8f42-46d6737119d5
