@@ -3598,6 +3598,337 @@ nchannel_repeated_seed_figure = let
     (figure=fig,path)
 end
 
+# ╔═╡ b65919d7-c2b9-46b5-8e94-c9ef7ae7d939
+md"""
+## 17. Dense-energy noise analysis
+
+The 30-realization curves above cover every 5 keV from 40 through 140 keV.
+The raw curve is expected to be strongly elevated at low energy in this
+extremely attenuating phantom: those photons are most severely starved and
+beam hardening makes the two-basis inverse problem especially sensitive.
+The rise above the raw minimum near 80 keV is a separate covariance-propagation
+effect.  Monotonicity is therefore tested as a denoising outcome, never imposed
+by energy-specific kernels or parameters.
+
+An apparently monotonic curve is not sufficient for acceptance.  It is
+reported alongside radial NPS, iodine and calcium radial-edge TTF50, controlled
+target-only recovery, and guide-only injection.
+"""
+
+# ╔═╡ e598b54b-a882-4f59-98a1-57e546302a0c
+md"""
+## 18. Dose sweep
+
+The original exposure and 4× and 16× count levels use 30 independent seeds
+each.  The scanner geometry, 14-row 4.941 mm slab, all four native channels,
+decomposition bounds, angular transfer, reconstruction kernel, object support,
+and every denoiser parameter are held fixed.  This is a prespecified physics
+test—not a search over dose or energy.
+"""
+
+# ╔═╡ 856574f6-41c0-46c8-9274-61e2c2978094
+nchannel_dose_sweep_data = let
+    factors=(4.0,16.0)
+    seeds=collect(32001:32030)
+    energies=nchannel_validation_energies
+    methods=nchannel_repeated_seed_data.methods
+    support=nchannel_support_candidate.support
+    water=nchannel_water_roi.mask
+    mask3=reshape(support,size(support)...,1)
+    μW70=BS.compute_mass_μ_at_energy(BS.XA.Materials.water,70.0)
+    rows=NamedTuple[]
+    count_rows=NamedTuple[]
+
+    function fft_gaussian_dose(volume,σ)
+        nx,ny,nz=size(volume)
+        fx=[min(i-1,nx-(i-1))/nx for i in 1:nx]
+        fy=[min(j-1,ny-(j-1))/ny for j in 1:ny]
+        kernel=[
+            exp(-2π^2*σ^2*(fx[i]^2+fy[j]^2))
+            for i in 1:nx,j in 1:ny
+        ]
+        output=similar(volume)
+        for z in axes(volume,3)
+            output[:,:,z].=Float32.(real.(BS.FFTW.ifft(
+                BS.FFTW.fft(Float64.(volume[:,:,z])).*kernel,
+            )))
+        end
+        output
+    end
+    function boxmean_dose(volume,radius=3)
+        output=zeros(Float32,size(volume))
+        for di in -radius:radius, dj in -radius:radius
+            output .+= circshift(volume,(di,dj,0))
+        end
+        output./Float32((2radius+1)^2)
+    end
+    function guided_dose(target,guide;radius=3,ridge_fraction=0.25)
+        meanG=boxmean_dose(guide,radius)
+        meanT=boxmean_dose(target,radius)
+        varG=boxmean_dose(guide.*guide,radius).-meanG.*meanG
+        covGT=boxmean_dose(guide.*target,radius).-meanG.*meanT
+        positive=filter(x->isfinite(x)&&x>0,Float64.(varG[mask3]))
+        ridge=isempty(positive) ? eps(Float32) :
+            Float32(ridge_fraction*median(positive))
+        a=covGT./max.(varG.+ridge,eps(Float32))
+        b=meanT.-a.*meanG
+        boxmean_dose(a,radius).*guide.+boxmean_dose(b,radius)
+    end
+    repeat_options_dose(seed)=BS.SimOptions(
+        fidelity=:pcct,seed=seed,projector=sim_opts.projector,
+        use_fill_factor=sim_opts.use_fill_factor,
+        use_detector_efficiency=sim_opts.use_detector_efficiency,
+        use_optical_crosstalk=sim_opts.use_optical_crosstalk,
+        use_focal_spot=sim_opts.use_focal_spot,use_lag=sim_opts.use_lag,
+        use_heel_effect=sim_opts.use_heel_effect,
+        use_scatter=sim_opts.use_scatter,use_noise=sim_opts.use_noise,
+        use_pcct_scatter=sim_opts.use_pcct_scatter,
+        use_pcct_scatter_correction=sim_opts.use_pcct_scatter_correction,
+        use_pcct_pileup=sim_opts.use_pcct_pileup,
+        use_pcct_pileup_correction=sim_opts.use_pcct_pileup_correction,
+        pcct_noise_reduction=sim_opts.pcct_noise_reduction,
+    )
+
+    elapsed=@elapsed for factor in factors
+        dose_protocol=BS.CTProtocol(
+            kVp=protocol.kVp,mA=protocol.mA*factor,views=protocol.views,
+            rotation_time=protocol.rotation_time,
+            collimation_mm=protocol.collimation_mm,
+            additional_filters=protocol.additional_filters,
+        )
+        ws=BS.create_workspace(
+            scanner,dose_protocol,sim_opts,recon_opts,phantom,
+        )
+        for (seed_index,seed) in pairs(seeds)
+            @info "PCCT dose sweep" factor seed_index seed total=length(seeds)
+            simulated=BS.simulate!(
+                ws,phantom,dose_protocol,repeat_options_dose(seed),
+            )
+            native=[Array(bin) for bin in simulated.pcct_sino.bins]
+            realization=nchannel_reconstruct_realization(
+                native,simulated.I0_bins,
+                Float64.(Array(ws.W_matrix_gpu))[1:length(ws.energies),:],
+                ws.geom,
+            )
+            combined_counts=[
+                nchannel_slab_counts.nrows*simulated.I0_bins[k].*
+                    exp.(-Float64.(realization.combined_bins[k]))
+                for k in eachindex(realization.combined_bins)
+            ]
+            push!(count_rows,(
+                factor,seed,
+                median_total=median(sum(combined_counts)),
+                median_per_bin=[
+                    median(c) for c in combined_counts
+                ],
+            ))
+
+            guide_scale=μW70/median(Float64.(realization.guide[support]))
+            guide_proxy=Float32.(realization.guide.*guide_scale)
+            guide_extended=fill(Float32(μW70),size(guide_proxy)...,1)
+            (@view guide_extended[:,:,1])[support].=guide_proxy[support]
+            targets=Array{Float32,3}[]
+            for E in energies
+                μW=BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+                μI=BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine,E)
+                image=@. Float32(
+                    μW*realization.water+μI*realization.iodine
+                )
+                extended=fill(Float32(μW),size(image)...,1)
+                (@view extended[:,:,1])[support].=image[support]
+                push!(targets,extended)
+            end
+            volumes=(
+                raw=targets,
+                gaussian=[fft_gaussian_dose(t,1.5) for t in targets],
+                leng_hypr_lr=nchannel_hypr_lr(
+                    targets,guide_extended;radius_px=3,
+                ),
+                prior_unconditional_ridge=
+                    nchannel_stable_hf_regression(
+                        targets,guide_extended;
+                        split_sigma_px=5.0,gain_sigma_px=16.0,
+                        ridge_fraction=0.25,beta_max=6.0,
+                        regression_mask=mask3,coherence_gate=false,
+                    ).volumes,
+                revised_gated_ridge=nchannel_stable_hf_regression(
+                    targets,guide_extended;
+                    split_sigma_px=5.0,gain_sigma_px=16.0,
+                    ridge_fraction=0.25,beta_max=6.0,
+                    regression_mask=mask3,coherence_gate=true,
+                ).volumes,
+                standard_guided=[
+                    guided_dose(t,guide_extended) for t in targets
+                ],
+            )
+            for method in methods, (energy_index,E) in pairs(energies)
+                μW=BS.compute_mass_μ_at_energy(
+                    BS.XA.Materials.water,E,
+                )
+                image=Float64.(
+                    @view volumes[method][energy_index][:,:,1]
+                )
+                hu=@. 1000*(image/μW-1)
+                values=hu[water]
+                push!(rows,(
+                    factor,seed,method,energy_keV=E,
+                    water_mean=mean(values),water_sd=std(values),
+                ))
+            end
+            simulated=nothing
+            native=nothing
+            realization=nothing
+            GC.gc(true)
+        end
+        ws=nothing
+        GC.gc(true)
+    end
+    (
+        factors,seeds,methods,energies,rows,count_rows,
+        elapsed_s=elapsed,
+    )
+end
+
+# ╔═╡ 918c2112-9aba-4cd1-95bb-f18c5a1c63a4
+nchannel_dose_sweep_audit = let
+    original=nchannel_repeated_seed_data.statistics_rows
+    higher=nchannel_dose_sweep_data.rows
+    methods=nchannel_repeated_seed_data.methods
+    energies=nchannel_validation_energies
+    factors=[1.0,4.0,16.0]
+    rows=NamedTuple[]
+    for factor in factors, method in methods, E in energies
+        source=factor==1.0 ? original : higher
+        selected=filter(
+            r->r.method==method && r.energy_keV==E &&
+                (factor==1.0 || r.factor==factor),
+            source,
+        )
+        sds=Float64[r.water_sd for r in selected]
+        means=Float64[r.water_mean for r in selected]
+        push!(rows,(
+            factor,method,energy_keV=E,n=length(sds),
+            water_sd_mean=mean(sds),
+            water_sd_ci95=1.96std(sds)/sqrt(length(sds)),
+            water_mean=mean(means),
+        ))
+    end
+    exponent_rows=NamedTuple[]
+    x=log.(factors)
+    xcenter=x.-mean(x)
+    denominator=sum(abs2,xcenter)
+    for method in methods, E in energies
+        y=log.([
+            only(filter(
+                r->r.factor==factor && r.method==method &&
+                    r.energy_keV==E,rows,
+            )).water_sd_mean
+            for factor in factors
+        ])
+        slope=sum(xcenter.*(y.-mean(y)))/denominator
+        push!(exponent_rows,(
+            method,energy_keV=E,
+            dose_exponent=slope,
+            inverse_sqrt_error=abs(slope+0.5),
+        ))
+    end
+    monotonic_rows=NamedTuple[]
+    for factor in factors, method in methods
+        source=factor==1.0 ? original : higher
+        per_seed=Dict{Int,Vector{Float64}}()
+        selected=filter(
+            r->r.method==method && (factor==1.0 || r.factor==factor),
+            source,
+        )
+        for r in selected
+            push!(get!(per_seed,r.seed,Float64[]),r.water_sd)
+        end
+        violations=[
+            maximum(vcat(diff(curve),0.0))
+            for curve in Base.values(per_seed)
+        ]
+        push!(monotonic_rows,(
+            factor,method,
+            complete_monotonic_fraction=mean(violations.<=0),
+            largest_upward_violation=maximum(violations),
+        ))
+    end
+    baseline_total=median(
+        sum(
+            nchannel_slab_counts.nrows*nchannel_basis.I0[k].*
+                exp.(-Float64.(nchannel_slab_counts.bins[k]))
+            for k in eachindex(nchannel_slab_counts.bins)
+        ),
+    )
+    count_scaling=[
+        (
+            factor,
+            median_total=factor==1.0 ? baseline_total :
+                median(
+                    r.median_total for r in
+                    nchannel_dose_sweep_data.count_rows if r.factor==factor
+                ),
+        )
+        for factor in factors
+    ]
+    (
+        rows,exponent_rows,monotonic_rows,count_scaling,
+        raw_exponents=filter(r->r.method==:raw,exponent_rows),
+    )
+end
+
+# ╔═╡ 33770fa7-871c-4512-af0a-95d56532d6e2
+nchannel_dose_sweep_figure = let
+    audit=nchannel_dose_sweep_audit
+    energies=nchannel_validation_energies
+    fig=Mke.Figure(size=(1180,760))
+    ax1=Mke.Axis(
+        fig[1,1:2];title="Raw common-kernel VMI: 30-seed dose sweep",
+        xlabel="VMI energy (keV)",ylabel="solid-water SD (HU)",
+    )
+    colors=Dict(1.0=>:steelblue,4.0=>:darkorange,16.0=>:seagreen)
+    for factor in (1.0,4.0,16.0)
+        selected=filter(
+            r->r.factor==factor&&r.method==:raw,audit.rows,
+        )
+        Mke.lines!(
+            ax1,energies,[r.water_sd_mean for r in selected];
+            color=colors[factor],linewidth=3,label="$(Int(factor))×",
+        )
+        Mke.scatter!(
+            ax1,energies,[r.water_sd_mean for r in selected];
+            color=colors[factor],markersize=7,
+        )
+    end
+    Mke.axislegend(ax1;position=:rt)
+
+    ax2=Mke.Axis(
+        fig[2,1];title="Raw dose exponent",
+        subtitle="ideal quantum scaling = −0.5",
+        xlabel="VMI energy (keV)",ylabel="slope of log(SD) vs log(dose)",
+    )
+    exponents=[r.dose_exponent for r in audit.raw_exponents]
+    Mke.lines!(ax2,energies,exponents;color=:purple,linewidth=3)
+    Mke.scatter!(ax2,energies,exponents;color=:purple,markersize=8)
+    Mke.hlines!(ax2,[-0.5];color=:black,linestyle=:dash)
+
+    ax3=Mke.Axis(
+        fig[2,2];title="Corrected count-domain scaling",
+        xlabel="nominal exposure factor",ylabel="median object counts",
+        xscale=log10,yscale=log10,
+    )
+    count_factors=[r.factor for r in audit.count_scaling]
+    count_values=[r.median_total for r in audit.count_scaling]
+    Mke.lines!(ax3,count_factors,count_values;color=:black,linewidth=3)
+    Mke.scatter!(
+        ax3,count_factors,count_values;color=:goldenrod,
+        strokecolor=:black,markersize=15,
+    )
+    path="/tmp/04c_pcct_dose_sweep.png"
+    Mke.save(path,fig)
+    (figure=fig,path)
+end
+
 # ╔═╡ Cell order:
 # ╠═171294a2-26bd-49e2-ac92-9df48ae5444f
 # ╠═69358294-97f2-4782-94d7-c29c747c45f4
@@ -3688,3 +4019,8 @@ end
 # ╟─1f0cfed9-bd4c-43bc-a042-0de34a55598e
 # ╠═19136a0a-5c8e-4127-9ca3-bd9270f85362
 # ╠═cd84b3ff-a67f-4fdf-9e7e-108935bb5cdd
+# ╟─b65919d7-c2b9-46b5-8e94-c9ef7ae7d939
+# ╟─e598b54b-a882-4f59-98a1-57e546302a0c
+# ╠═856574f6-41c0-46c8-9274-61e2c2978094
+# ╠═918c2112-9aba-4cd1-95bb-f18c5a1c63a4
+# ╠═33770fa7-871c-4512-af0a-95d56532d6e2
