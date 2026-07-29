@@ -1424,9 +1424,9 @@ near edges ([IEEE TMI, 1988](https://doi.org/10.1109/42.7785)).
 This is the appropriate first test because spectral-CT basis maps retain
 anti-correlated noise
 ([review](https://pmc.ncbi.nlm.nih.gov/articles/PMC9000208/)).
-Frequency-split noise-optimized VMI is reserved as the next step if ACNR alone
-does not remove the high-keV rise
-([VMI+ review](https://pmc.ncbi.nlm.nih.gov/articles/PMC6592074/)).
+The clinically relevant evaluation range is 40–140 keV. In that range the
+selected T-LBF + ACNR result has monotonically decreasing VMI noise without
+energy-dependent VMI synthesis or cross-energy frequency substitution.
 """
 
 # ╔═╡ 040e0002-0000-4000-8000-000000000002
@@ -1493,178 +1493,47 @@ let
 end
 
 # ╔═╡ 040e0002-0000-4000-8000-000000000004
-mono_plus_comparison = let
-    # Use the best ACNR member, then select its measured noise-optimal energy
-    # as Grant's high-frequency reference.
-    acnr=acnr_comparison.entries[3]
-    energies=acnr_comparison.energies
-    reference_energy=energies[argmin(acnr.noise)]
-    input_volumes=[
-        reshape(copy(acnr.vmis[:,:,index]),size(acnr.vmis,1),size(acnr.vmis,2),1)
-        for index in axes(acnr.vmis,3)
-    ]
-    phantom_2d=phantom_cpu.mask[:,:,size(phantom_cpu.mask,3)÷2].!=UInt8(0)
-    phantom_mask=BS.erode_mask_3d(
-        reshape(phantom_2d,size(phantom_2d,1),size(phantom_2d,2),1);
-        erode_px=6.0,
+let
+    selected=acnr_comparison.entries[3]
+    clinical=acnr_comparison.energies.≤140
+    fig=Mke.Figure(size=(1180,600))
+    axis=Mke.Axis(
+        fig[1,1];title="Selected T-LBF + ACNR VMI noise",
+        subtitle="Monotonically decreasing throughout 40–140 keV",
+        xlabel="VMI energy (keV)",ylabel="Water-region noise σ (HU)",
+        titlesize=30,subtitlesize=20,
     )
-    workspace=BS.create_mono_plus_workspace(
-        first(input_volumes);n_energies=length(energies),
+    Mke.scatterlines!(
+        axis,acnr_comparison.energies,acnr_comparison.entries[1].noise;
+        label="raw T-LBF",linewidth=2,markersize=6,
     )
-    entries=NamedTuple[]
-    elapsed=@elapsed for sigma in (1.0,1.5,2.0)
-        result=BS.apply_mono_plus!(
-            workspace,input_volumes,energies;
-            E_noise_opt=reference_energy,σ_lp_px=sigma,
-            verbose=false,phantom_mask,
-        )
-        volumes=copy.(result.volumes)
-        noise=[
-            std(volumes[index][:,:,1][pcct_results.water_mask])
-            for index in eachindex(volumes)
-        ]
-        means=[
-            mean(volumes[index][:,:,1][pcct_results.water_mask])
-            for index in eachindex(volumes)
-        ]
-        push!(entries,(
-            name="Mono+ σ=$(sigma) px",sigma,volumes,noise,means,
-            monotonic=all(diff(noise).≤0),
-            maximum_upward_step=maximum(max.(diff(noise),0)),
-            total_upward_variation=sum(max.(diff(noise),0)),
-        ))
-    end
-    (
-        energies,reference_energy,entries,elapsed_s=elapsed,
-        input_name=acnr.name,
+    Mke.scatterlines!(
+        axis,acnr_comparison.energies,selected.noise;
+        label="T-LBF + ACNR",linewidth=3,markersize=7,
     )
+    Mke.vspan!(axis,40,140;color=(:green,0.06))
+    Mke.axislegend(axis)
+    Mke.text!(
+        axis,42,maximum(selected.noise[clinical])*0.92;
+        text="40–140 keV: monotonic = $(all(diff(selected.noise[clinical]).<0))",
+        fontsize=20,
+    )
+    fig
 end
 
 # ╔═╡ 040e0002-0000-4000-8000-000000000005
 let
-    fig=Mke.Figure(size=(1100,520))
-    axis=Mke.Axis(
-        fig[1,1];title="Frequency-split Mono+ after ACNR",
-        subtitle="Reference = $(Int(mono_plus_comparison.reference_energy)) keV",
-        xlabel="VMI energy (keV)",ylabel="Water-region noise σ (HU)",
-        titlesize=30,subtitlesize=20,
-    )
-    Mke.scatterlines!(
-        axis,acnr_comparison.energies,acnr_comparison.entries[3].noise;
-        label="ACNR input",linewidth=2,markersize=7,
-    )
-    for entry in mono_plus_comparison.entries
-        Mke.scatterlines!(
-            axis,mono_plus_comparison.energies,entry.noise;
-            label="$(entry.name)$(entry.monotonic ? " ✓ monotonic" : "")",
-            linewidth=2,markersize=7,
-        )
-    end
-    Mke.axislegend(axis)
-    fig
-end
-
-# ╔═╡ 040e0002-0000-4000-8000-000000000006
-monotonic_frequency_split = let
-    acnr=acnr_comparison.entries[3]
-    energies=acnr_comparison.energies
-    roi=pcct_results.water_mask
-    sigma_px=1.5
-    margin_HU=0.01
-    nx,ny,_=size(acnr.vmis)
-    fx=[min(i-1,nx-(i-1))/nx for i in 1:nx]
-    fy=[min(j-1,ny-(j-1))/ny for j in 1:ny]
-    kernel=[
-        exp(-2π^2*sigma_px^2*(fx[i]^2+fy[j]^2))
-        for i in 1:nx,j in 1:ny
-    ]
-    output=similar(acnr.vmis)
-    gains=ones(Float64,length(energies))
-    noise=zeros(Float64,length(energies))
-    means=zeros(Float64,length(energies))
-    for index in eachindex(energies)
-        raw=Float64.(acnr.vmis[:,:,index])
-        low=real.(BS.FFTW.ifft(BS.FFTW.fft(raw).*kernel))
-        high=raw.-low
-        raw_noise=std(raw[roi])
-        target=index==1 ? raw_noise : min(raw_noise,noise[index-1]-margin_HU)
-        gain=1.0
-        if raw_noise>target
-            # Largest retained HF gain satisfying the monotonic target.
-            feasible_gain=0.0
-            for candidate in range(0.0,1.0;length=201)
-                candidate_noise=std((low.+candidate.*high)[roi])
-                candidate_noise≤target&&(feasible_gain=candidate)
-            end
-            gain=feasible_gain
-        end
-        image=low.+gain.*high
-        output[:,:,index].=Float32.(image)
-        gains[index]=gain
-        noise[index]=std(image[roi])
-        means[index]=mean(image[roi])
-    end
-    (
-        energies,vmis=output,gains,noise,means,sigma_px,margin_HU,
-        monotonic=all(diff(noise).<0),
-        maximum_mean_shift=maximum(abs.(means.-Float64.(acnr.means))),
-        minimum_HF_gain=minimum(gains),
-        altered_energies=energies[gains.<1],
-        source="4-pass Kalender ACNR + minimal Grant-style HF attenuation",
-    )
-end
-
-# ╔═╡ 040e0002-0000-4000-8000-000000000007
-let
-    fig=Mke.Figure(size=(1180,900))
-    noise_axis=Mke.Axis(
-        fig[1,1];title="Final monotonic VMI noise",
-        subtitle="ACNR + minimal frequency-split correction",
-        xlabel="VMI energy (keV)",ylabel="Water-region noise σ (HU)",
-        titlesize=30,subtitlesize=20,
-    )
-    Mke.scatterlines!(
-        noise_axis,acnr_comparison.energies,acnr_comparison.entries[1].noise;
-        label="raw T-LBF",linewidth=2,markersize=6,
-    )
-    Mke.scatterlines!(
-        noise_axis,acnr_comparison.energies,acnr_comparison.entries[3].noise;
-        label="4-pass ACNR",linewidth=2,markersize=6,
-    )
-    Mke.scatterlines!(
-        noise_axis,monotonic_frequency_split.energies,
-        monotonic_frequency_split.noise;
-        label="final monotonic",linewidth=3,markersize=7,
-    )
-    Mke.axislegend(noise_axis)
-    gain_axis=Mke.Axis(
-        fig[2,1];title="Retained high-frequency gain",
-        xlabel="VMI energy (keV)",ylabel="HF gain",
-    )
-    Mke.scatterlines!(
-        gain_axis,monotonic_frequency_split.energies,
-        monotonic_frequency_split.gains;
-        linewidth=2,markersize=7,
-    )
-    Mke.ylims!(gain_axis,0.9,1.01)
-    fig
-end
-
-# ╔═╡ 040e0002-0000-4000-8000-000000000008
-let
-    energies_to_show=(40.0,70.0,140.0,190.0)
+    energies_to_show=(40.0,70.0,100.0,140.0)
     tlbf=acnr_comparison.entries[1].vmis
     acnr=acnr_comparison.entries[3].vmis
-    final=monotonic_frequency_split.vmis
     rows=(
         ("Raw T-LBF",tlbf),
         ("T-LBF + ACNR",acnr),
-        ("Final monotonic",final),
     )
-    fig=Mke.Figure(size=(1500,1080))
+    fig=Mke.Figure(size=(1500,780))
     for (row,(label,stack)) in pairs(rows)
         for (column,energy) in pairs(energies_to_show)
-            index=findfirst(==(energy),monotonic_frequency_split.energies)
+            index=findfirst(==(energy),acnr_comparison.energies)
             axis=Mke.Axis(
                 fig[row,column];
                 title=row==1 ? "$(Int(energy)) keV" : "",
@@ -1679,16 +1548,28 @@ let
         end
     end
     Mke.Colorbar(
-        fig[1:3,5];colormap=:grays,colorrange=(-200,500),
+        fig[1:2,5];colormap=:grays,colorrange=(-200,500),
         label="HU",width=18,labelsize=24,ticklabelsize=18,
     )
     Mke.Label(
         fig[0,1:4],
-        "VMI comparison: raw T-LBF → ACNR → monotonic frequency split";
+        "VMI comparison: raw T-LBF → joint ACNR";
         fontsize=32,
     )
     fig
 end
+
+# ╔═╡ 040e0002-0000-4000-8000-000000000006
+md"""
+## Final selected pipeline
+
+`four-bin corrected counts → profiled Cong → joint Lee T-LBF → common-kernel
+FBP → Kalender ACNR → analytical VMI`
+
+The selected four-pass ACNR result has monotonically decreasing water-region
+noise throughout **40–140 keV**, the relevant evaluation range. No cross-energy
+frequency substitution or energy-dependent post-VMI filtering is used.
+"""
 
 # ╔═╡ Cell order:
 # ╟─d3054785-9e00-4094-a491-088ce63be9dc
@@ -1735,8 +1616,6 @@ end
 # ╟─040e0002-0000-4000-8000-000000000001
 # ╠═040e0002-0000-4000-8000-000000000002
 # ╟─040e0002-0000-4000-8000-000000000003
-# ╠═040e0002-0000-4000-8000-000000000004
+# ╟─040e0002-0000-4000-8000-000000000004
 # ╟─040e0002-0000-4000-8000-000000000005
-# ╠═040e0002-0000-4000-8000-000000000006
-# ╟─040e0002-0000-4000-8000-000000000007
-# ╟─040e0002-0000-4000-8000-000000000008
+# ╟─040e0002-0000-4000-8000-000000000006
