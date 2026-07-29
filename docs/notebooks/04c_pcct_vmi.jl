@@ -432,7 +432,10 @@ nchannel_controls = (
     max_water_step = 5.0f0,
     parameter_tolerance = 5.0f-5,
     fisher_condition_limit = 1.0f8,
-    air_gate = 5.0f-3,
+    # Disabled for the production result: the shortcut is discontinuous and
+    # the bounded-reference audit showed measurable likelihood gaps in air.
+    # A separate threshold sweep below quantifies it as an optional speed path.
+    air_gate = 0.0f0,
     tile_views = 8,
 );
 
@@ -1229,7 +1232,7 @@ nchannel_root_flag_audit = let
 end
 
 # ╔═╡ 223637d8-da9e-4342-a138-4c272a524d2c
-nchannel_reference_pilot = let
+nchannel_reference_audit = let
     shape=size(sino_basis_nchannel_slab.sino_iodine)
     hs=nchannel_slab_counts.bins
     scale=nchannel_slab_counts.nrows
@@ -1238,16 +1241,73 @@ nchannel_reference_pilot = let
         ytotal .+= scale*nchannel_basis.I0[k].*exp.(-Float64.(hs[k]))
     end
     flat_total=vec(ytotal)
-    order=sortperm(flat_total)
+    Φ=scale.*Float64.(nchannel_basis.Φ)
+    flat_I=vec(Float64.(sino_basis_nchannel_slab.sino_iodine))
+    flat_W=vec(Float64.(sino_basis_nchannel_slab.sino_water))
+    flat_score=vec(Float64.(sino_basis_nchannel_slab.score_norm))
+    flat_flag=vec(sino_basis_nchannel_slab.quality_flag)
+    order_total=sortperm(flat_total)
+    order_I=sortperm(flat_I;rev=true)
+    order_W=sortperm(flat_W;rev=true)
+    order_score=sortperm(flat_score;rev=true)
+
+    # Start with every production warning/boundary ray, then explicitly add
+    # air, longest paths, iodine paths, lowest counts, and high-score rays.
+    # A deterministic full-range fill makes the audit reproducible.
     sample=unique(vcat(
-        round.(Int,range(1,length(order);length=80)) .|> i->order[i],
-        findall(!iszero,vec(sino_basis_nchannel_slab.quality_flag))[1:min(
-            20,count(!iszero,sino_basis_nchannel_slab.quality_flag),
+        findall(!iszero,flat_flag),
+        order_total[1:min(80,end)],
+        order_total[max(1,end-79):end],
+        order_I[1:min(80,end)],
+        order_W[1:min(80,end)],
+        order_score[1:min(80,end)],
+        [order_total[i] for i in round.(
+            Int,range(1,length(order_total);length=400),
         )],
     ))
-    Φ=scale.*Float64.(nchannel_basis.Φ)
+
+    function fisher_condition(idx)
+        f=nchannel_forward(
+            flat_I[idx],flat_W[idx],Φ,
+            nchannel_basis.μρ_I,nchannel_basis.μρ_W,
+        )
+        invλ=1.0./max.(f.λ,1e-12)
+        FAA=sum(f.dA.^2 .* invλ)
+        FAC=sum(f.dA.*f.dC .* invλ)
+        FCC=sum(f.dC.^2 .* invλ)
+        trace=FAA+FCC
+        disc=hypot(FAA-FCC,2FAC)
+        λmax=0.5*(trace+disc)
+        λmin=max(0.5*(trace-disc),eps(Float64)*max(trace,1.0))
+        λmax/λmin
+    end
+    condition_pool=unique([
+        order_total[i] for i in round.(
+            Int,range(1,length(order_total);length=5000),
+        )
+    ])
+    pool_condition=fisher_condition.(condition_pool)
+    append!(
+        sample,
+        condition_pool[partialsortperm(
+            pool_condition,1:min(100,length(pool_condition));rev=true,
+        )],
+    )
+    unique!(sample)
+    if length(sample)<1000
+        fill_indices=[
+            order_total[i] for i in round.(
+                Int,range(1,length(order_total);length=1500),
+            )
+        ]
+        for idx in fill_indices
+            idx in sample || push!(sample,idx)
+            length(sample)>=1000 && break
+        end
+    end
+
     rows=NamedTuple[]
-    for idx in sample
+    for (audit_i,idx) in pairs(sample)
         ci=CartesianIndices(shape)[idx]
         y=[
             scale*nchannel_basis.I0[k]*exp(-Float64(hs[k][ci]))
@@ -1269,15 +1329,99 @@ nchannel_reference_pilot = let
             delta_water=C-ref.water,
             likelihood_gap=fast_nll-ref.objective,
             reference_score=ref.score_norm,
+            fisher_condition=fisher_condition(idx),
             same_basin=abs(A-ref.iodine)<0.01&&abs(C-ref.water)<0.2,
         ))
+        audit_i%25==0 && @info(
+            "bounded profile audit",
+            completed=audit_i,total=length(sample),
+        )
     end
+    likelihood_gaps=getproperty.(rows,:likelihood_gap)
     (
         n=length(rows),rows,
         max_abs_delta_iodine=maximum(abs.(getproperty.(rows,:delta_iodine))),
         max_abs_delta_water=maximum(abs.(getproperty.(rows,:delta_water))),
-        max_likelihood_gap=maximum(getproperty.(rows,:likelihood_gap)),
+        likelihood_gap_median=median(likelihood_gaps),
+        likelihood_gap_p99=quantile(likelihood_gaps,0.99),
+        max_likelihood_gap=maximum(likelihood_gaps),
         different_basin=count(!,getproperty.(rows,:same_basin)),
+        warning_rays_included=all(
+            findall(!iszero,flat_flag) .∈ Ref(sample),
+        ),
+        condition_range=extrema(getproperty.(rows,:fisher_condition)),
+    )
+end
+
+# ╔═╡ 865e3d34-e61b-4beb-b4ec-459d1549eea6
+md"""
+## 9. Count and covariance audit
+
+The values below are an exposure ledger and a descriptive audit of the
+**corrected count-domain equivalents** entering decomposition. Spatial
+variation across rays is not treated as a repeated-noise covariance estimate.
+The independent-Poisson diagonal and detector-MC covariance are reported
+side-by-side; post-pileup/scatter-correction covariance still requires
+repeated simulations with identical noiseless rays.
+"""
+
+# ╔═╡ a9dcf17f-fb02-4afb-9a15-492896b9f92c
+nchannel_count_audit = let
+    hs=nchannel_slab_counts.bins
+    rows=nchannel_slab_counts.nrows
+    I0=rows.*Float64.(nchannel_basis.I0)
+    corrected=[
+        rows*nchannel_basis.I0[k].*exp.(-Float64.(hs[k]))
+        for k in eachindex(hs)
+    ]
+    max_h=maximum(
+        cat([abs.(Float64.(h)) for h in hs]...;dims=4),dims=4,
+    )[:,:,:,1]
+    object=max_h.>0.10
+    count(object)>0 || error("No attenuated rays found for count audit")
+    transmitted_median=[
+        median(c[object]) for c in corrected
+    ]
+    transmitted_q01=[
+        quantile(c[object],0.01) for c in corrected
+    ]
+    total=zeros(Float64,size(first(corrected)))
+    for c in corrected
+        total .+= c
+    end
+    # Delta-method log variance under the explicit independent-Poisson
+    # comparator. This is not asserted to describe corrected outputs.
+    poisson_log_variance_median=[
+        median(1.0./max.(c[object],1e-12)) for c in corrected
+    ]
+    detector_area_cm2=
+        Float64(sim_bins.geom.pixel_size)*
+        Float64(sim_bins.geom.pixel_row_size)
+    (
+        tube_current_mA=protocol.mA,
+        rotation_time_s=protocol.rotation_time,
+        mAs_per_rotation=protocol.mA*protocol.rotation_time,
+        views=protocol.views,
+        mAs_per_view=protocol.mA*protocol.rotation_time/protocol.views,
+        detector_element_area_cm2=detector_area_cm2,
+        native_row_thickness_mm=10sim_bins.geom.pixel_row_size,
+        rows_combined=rows,
+        reconstructed_slab_thickness_mm=nchannel_slab_counts.thickness_mm,
+        air_counts_per_bin_per_combined_ray=I0,
+        transmitted_object_median_per_bin=transmitted_median,
+        transmitted_object_median_per_native_row=
+            transmitted_median./rows,
+        transmitted_object_q01_per_bin=transmitted_q01,
+        transmitted_object_q01_per_native_row=
+            transmitted_q01./rows,
+        total_object_counts_quantiles=quantile(
+            total[object],(0.01,0.10,0.50,0.90,0.99),
+        ),
+        poisson_log_variance_median,
+        mc_fano=sim_bins.mc_count_moments.fano,
+        mc_correlation=sim_bins.mc_count_moments.correlation,
+        postcorrection_empirical_covariance=:requires_repeated_identical_rays,
+        statistical_interpretation=:poisson_quasi_likelihood,
     )
 end
 
@@ -1888,6 +2032,14 @@ nchannel_denoising_baselines = let
     leng=nchannel_hypr_lr(targets,guide;radius_px=3)
     gaussian=[fft_gaussian(t,1.5) for t in targets]
     guided=[standard_guided(t,guide) for t in targets]
+    # One common, shift-invariant resolution-restoration grid. These are
+    # candidates for the prespecified TTF gate, not per-energy tuning.
+    guided_unsharp_05=[
+        g.+0.5f0.*(g.-fft_gaussian(g,1.0)) for g in guided
+    ]
+    guided_unsharp_10=[
+        g.+1.0f0.*(g.-fft_gaussian(g,1.0)) for g in guided
+    ]
     bayes_results=[undecimated_bayes(t) for t in targets]
     bayes=[r.volume for r in bayes_results]
     self_guided=[
@@ -1910,6 +2062,8 @@ nchannel_denoising_baselines = let
         prior_unconditional_ridge=prior.volumes,
         revised_gated_ridge=gated.volumes,
         standard_guided=guided,
+        guided_unsharp_05=guided_unsharp_05,
+        guided_unsharp_10=guided_unsharp_10,
         undecimated_bayes=bayes,
         self_guided=self_guided,
         self_guided_rho1=self_guided_rho1,
@@ -1936,6 +2090,8 @@ nchannel_denoising_baselines = let
             gaussian_sigma_px=1.5,
             leng_box_width_px=7,
             guided_box_width_px=7,
+            guided_unsharp_sigma_px=1.0,
+            guided_unsharp_gain_grid=(0.5,1.0),
             self_guided_ridge_fraction_grid=(0.10,1.0,4.0),
             ridge_fraction=0.25,
             split_sigma_px=5.0,
@@ -2069,6 +2225,11 @@ nchannel_structure_transfer_audit = let
         method===:leng_hypr_lr &&
             return nchannel_hypr_lr([target],guide;radius_px=3)[1]
         method===:standard_guided && return guided(target,guide)
+        if method===:guided_unsharp_05 || method===:guided_unsharp_10
+            base=guided(target,guide)
+            gain=method===:guided_unsharp_05 ? 0.5f0 : 1f0
+            return base.+gain.*(base.-gaussian(base,1.0))
+        end
         method===:self_guided && return guided(
             target,target;ridge_fraction=0.10,
         )
@@ -2122,6 +2283,7 @@ nchannel_structure_transfer_audit = let
     methods=(
         :raw,:gaussian,:leng_hypr_lr,:prior_unconditional_ridge,
         :revised_gated_ridge,:standard_guided,:self_guided,
+        :guided_unsharp_05,:guided_unsharp_10,
         :self_guided_rho1,:self_guided_rho4,
         :target_safe_guided,:undecimated_bayes,
     )
@@ -2605,6 +2767,8 @@ end
 # ╠═92692d46-1b57-4daa-b78d-c5aef609ed86
 # ╠═d02c928d-7d1a-4d52-8ba1-e2fa9060fe13
 # ╠═223637d8-da9e-4342-a138-4c272a524d2c
+# ╟─865e3d34-e61b-4beb-b4ec-459d1549eea6
+# ╠═a9dcf17f-fb02-4afb-9a15-492896b9f92c
 # ╠═ddfde8bb-ddff-44bb-8b70-b397725402cf
 # ╟─aa1c494e-ccbf-4a0c-8d44-5f12d47f6e8c
 # ╠═af6ea59b-06a0-4527-9b6d-344e54dc3bee
