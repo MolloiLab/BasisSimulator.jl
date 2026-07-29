@@ -1353,6 +1353,57 @@ nchannel_reference_audit = let
     )
 end
 
+# ╔═╡ 25781416-b8f8-4143-af99-4a96664daeab
+nchannel_air_gate_sensitivity = let
+    shape=size(sino_basis_nchannel_slab.sino_iodine)
+    hs=nchannel_slab_counts.bins
+    scale=nchannel_slab_counts.nrows
+    Φ=scale.*Float64.(nchannel_basis.Φ)
+    thresholds=(0.0,1e-4,5e-4,1e-3,5e-3)
+    rows=NamedTuple[]
+    for threshold in thresholds
+        iodine_errors=Float64[]
+        water_errors=Float64[]
+        penalties=Float64[]
+        for audit_row in nchannel_reference_audit.rows
+            ci=CartesianIndices(shape)[audit_row.index]
+            max_h=maximum(abs(Float64(hs[k][ci])) for k in eachindex(hs))
+            max_h<threshold || continue
+            fast_A=Float64(sino_basis_nchannel_slab.sino_iodine[ci])
+            fast_C=Float64(sino_basis_nchannel_slab.sino_water[ci])
+            ref_A=fast_A-audit_row.delta_iodine
+            ref_C=fast_C-audit_row.delta_water
+            y=[
+                scale*nchannel_basis.I0[k]*exp(-Float64(hs[k][ci]))
+                for k in eachindex(hs)
+            ]
+            ref_nll=nchannel_poisson_quasi_nll(
+                ref_A,ref_C,y,Φ,
+                nchannel_basis.μρ_I,nchannel_basis.μρ_W,
+            )
+            gate_nll=nchannel_poisson_quasi_nll(
+                0.0,0.0,y,Φ,
+                nchannel_basis.μρ_I,nchannel_basis.μρ_W,
+            )
+            push!(iodine_errors,abs(ref_A))
+            push!(water_errors,abs(ref_C))
+            push!(penalties,gate_nll-ref_nll)
+        end
+        push!(rows,(
+            threshold,gated_rays=length(penalties),
+            max_abs_iodine_bias=isempty(iodine_errors) ? 0.0 : maximum(iodine_errors),
+            max_abs_water_bias=isempty(water_errors) ? 0.0 : maximum(water_errors),
+            median_likelihood_penalty=isempty(penalties) ? 0.0 : median(penalties),
+            max_likelihood_penalty=isempty(penalties) ? 0.0 : maximum(penalties),
+        ))
+    end
+    (
+        production_threshold=nchannel_controls.air_gate,
+        production_gate_disabled=nchannel_controls.air_gate==0,
+        rows,
+    )
+end
+
 # ╔═╡ 865e3d34-e61b-4beb-b4ec-459d1549eea6
 md"""
 ## 9. Count and covariance audit
@@ -2019,6 +2070,29 @@ nchannel_denoising_baselines = let
         end
         (volume=output,thresholds)
     end
+    function universal_residual_restore(
+        target,base;scales=(1.0,2.0,4.0),
+    )
+        residual=target.-base
+        current=copy(residual)
+        restored=zeros(Float32,size(target))
+        thresholds=Float64[]
+        # Fixed two-sigma detection is a common two-sided significance
+        # rule. It is shared by every scale and every VMI energy.
+        detection_factor=2.0
+        for σ in scales
+            smooth=fft_gaussian(current,σ)
+            detail=current.-smooth
+            samples=Float64.(detail[mask3])
+            center=median(samples)
+            σn=median(abs.(samples.-center))/0.6744897501960817
+            threshold=detection_factor*σn
+            push!(thresholds,threshold)
+            restored .+= detail.*(abs.(detail).>=Float32(threshold))
+            current=smooth
+        end
+        (volume=base.+restored,thresholds)
+    end
     prior=nchannel_stable_hf_regression(
         targets,guide;split_sigma_px=5.0,gain_sigma_px=16.0,
         ridge_fraction=0.25,beta_max=6.0,
@@ -2040,6 +2114,11 @@ nchannel_denoising_baselines = let
     guided_unsharp_10=[
         g.+1.0f0.*(g.-fft_gaussian(g,1.0)) for g in guided
     ]
+    residual_restore_results=[
+        universal_residual_restore(targets[j],guided[j])
+        for j in eachindex(targets)
+    ]
+    guided_residual_restore=[r.volume for r in residual_restore_results]
     bayes_results=[undecimated_bayes(t) for t in targets]
     bayes=[r.volume for r in bayes_results]
     self_guided=[
@@ -2047,6 +2126,12 @@ nchannel_denoising_baselines = let
     ]
     self_guided_rho1=[
         standard_guided(t,t;ridge_fraction=1.0) for t in targets
+    ]
+    self_guided_rho2=[
+        standard_guided(t,t;ridge_fraction=2.0) for t in targets
+    ]
+    self_guided_rho3=[
+        standard_guided(t,t;ridge_fraction=3.0) for t in targets
     ]
     self_guided_rho4=[
         standard_guided(t,t;ridge_fraction=4.0) for t in targets
@@ -2062,11 +2147,14 @@ nchannel_denoising_baselines = let
         prior_unconditional_ridge=prior.volumes,
         revised_gated_ridge=gated.volumes,
         standard_guided=guided,
+        guided_residual_restore=guided_residual_restore,
         guided_unsharp_05=guided_unsharp_05,
         guided_unsharp_10=guided_unsharp_10,
         undecimated_bayes=bayes,
         self_guided=self_guided,
         self_guided_rho1=self_guided_rho1,
+        self_guided_rho2=self_guided_rho2,
+        self_guided_rho3=self_guided_rho3,
         self_guided_rho4=self_guided_rho4,
         target_safe_guided=target_safe_guided,
     )
@@ -2092,7 +2180,7 @@ nchannel_denoising_baselines = let
             guided_box_width_px=7,
             guided_unsharp_sigma_px=1.0,
             guided_unsharp_gain_grid=(0.5,1.0),
-            self_guided_ridge_fraction_grid=(0.10,1.0,4.0),
+            self_guided_ridge_fraction_grid=(0.10,1.0,2.0,3.0,4.0),
             ridge_fraction=0.25,
             split_sigma_px=5.0,
             gain_sigma_px=16.0,
@@ -2100,6 +2188,9 @@ nchannel_denoising_baselines = let
             bayes_scales_px=(1.0,2.0,4.0),
         ),
         bayes_thresholds=[r.thresholds for r in bayes_results],
+        residual_restore_thresholds=[
+            r.thresholds for r in residual_restore_results
+        ],
     )
 end;
 
@@ -2219,12 +2310,32 @@ nchannel_structure_transfer_audit = let
         end
         current.+retained
     end
+    function guided_residual_restore(target,guide;scales=(1.0,2.0,4.0))
+        base=guided(target,guide)
+        current=target.-base
+        restored=zeros(Float32,size(target))
+        noise_mask=falses(size(target))
+        noise_mask[1:48,1:48,:].=true
+        threshold_factor=2.0
+        for σ in scales
+            smooth=gaussian(current,σ)
+            detail=current.-smooth
+            samples=Float64.(detail[noise_mask])
+            σn=median(abs.(samples.-median(samples)))/0.6744897501960817
+            threshold=threshold_factor*σn
+            restored .+= detail.*(abs.(detail).>=Float32(threshold))
+            current=smooth
+        end
+        base.+restored
+    end
     function apply(method,target,guide)
         method===:raw && return copy(target)
         method===:gaussian && return gaussian(target)
         method===:leng_hypr_lr &&
             return nchannel_hypr_lr([target],guide;radius_px=3)[1]
         method===:standard_guided && return guided(target,guide)
+        method===:guided_residual_restore &&
+            return guided_residual_restore(target,guide)
         if method===:guided_unsharp_05 || method===:guided_unsharp_10
             base=guided(target,guide)
             gain=method===:guided_unsharp_05 ? 0.5f0 : 1f0
@@ -2235,6 +2346,12 @@ nchannel_structure_transfer_audit = let
         )
         method===:self_guided_rho1 && return guided(
             target,target;ridge_fraction=1.0,
+        )
+        method===:self_guided_rho2 && return guided(
+            target,target;ridge_fraction=2.0,
+        )
+        method===:self_guided_rho3 && return guided(
+            target,target;ridge_fraction=3.0,
         )
         method===:self_guided_rho4 && return guided(
             target,target;ridge_fraction=4.0,
@@ -2283,8 +2400,10 @@ nchannel_structure_transfer_audit = let
     methods=(
         :raw,:gaussian,:leng_hypr_lr,:prior_unconditional_ridge,
         :revised_gated_ridge,:standard_guided,:self_guided,
+        :guided_residual_restore,
         :guided_unsharp_05,:guided_unsharp_10,
-        :self_guided_rho1,:self_guided_rho4,
+        :self_guided_rho1,:self_guided_rho2,:self_guided_rho3,
+        :self_guided_rho4,
         :target_safe_guided,:undecimated_bayes,
     )
     target_only=flat.+0.4f0.*feature
@@ -2318,6 +2437,9 @@ nchannel_structure_transfer_audit = let
     noise_rows=NamedTuple[]
     for method in methods
         raw_var=Float64[]; out_var=Float64[]
+        noisy_target_recovery=Float64[]
+        noisy_guide_false=Float64[]
+        mean_target_output=zeros(Float64,shape)
         for _ in 1:30
             common=randn(rng,Float32,shape)
             nt=0.7f0.*common.+sqrt(1f0-0.7f0^2).*randn(rng,Float32,shape)
@@ -2327,9 +2449,28 @@ nchannel_structure_transfer_audit = let
             output=apply(method,target,guide)
             push!(raw_var,var(Float64.(target)))
             push!(out_var,var(Float64.(output)))
+            target_edge=target_only.+0.08f0.*nt
+            flat_guide=flat.+0.04f0.*ng
+            target_output=apply(method,target_edge,flat_guide)
+            mean_target_output .+= Float64.(target_output)./30
+            push!(
+                noisy_target_recovery,
+                contrast(target_output,feature)/contrast(target_only,feature),
+            )
+            guide_edge=guide_only.+0.04f0.*ng
+            flat_target=flat.+0.08f0.*nt
+            false_output=apply(method,flat_target,guide_edge)
+            push!(
+                noisy_guide_false,
+                contrast(false_output,feature)/contrast(guide_only,feature),
+            )
         end
         push!(noise_rows,(
             method,variance_ratio=mean(out_var)/mean(raw_var),
+            noisy_target_recovery_median=median(noisy_target_recovery),
+            noisy_target_recovery_p05=quantile(noisy_target_recovery,0.05),
+            noisy_guide_false_median=median(abs.(noisy_guide_false)),
+            ensemble_edge_width_px=edge_width(mean_target_output,feature),
         ))
     end
     (structure=rows,flat_noise=noise_rows)
@@ -2767,6 +2908,7 @@ end
 # ╠═92692d46-1b57-4daa-b78d-c5aef609ed86
 # ╠═d02c928d-7d1a-4d52-8ba1-e2fa9060fe13
 # ╠═223637d8-da9e-4342-a138-4c272a524d2c
+# ╠═25781416-b8f8-4143-af99-4a96664daeab
 # ╟─865e3d34-e61b-4beb-b4ec-459d1549eea6
 # ╠═a9dcf17f-fb02-4afb-9a15-492896b9f92c
 # ╠═ddfde8bb-ddff-44bb-8b70-b397725402cf
