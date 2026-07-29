@@ -14,7 +14,7 @@ end
 using Markdown: @md_str, Markdown
 
 # ╔═╡ 9ae27110-5c47-442b-a98e-d137599570f2
-using Statistics: mean, std, quantile, median
+using Statistics: mean, std, quantile, median, cov, cor
 
 # ╔═╡ d3054785-9e00-4094-a491-088ce63be9dc
 md"""
@@ -2035,18 +2035,27 @@ function nchannel_edge_width(image,label::UInt8=UInt8(26))
         counts[b] += 1
     end
     profile = sums ./ max.(counts,1)
+    # Reject remote threshold crossings caused by noise: smooth only along
+    # the edge normal and choose the crossing nearest the known boundary.
+    smooth = similar(profile)
+    for i in eachindex(profile)
+        lo,hi = max(firstindex(profile),i-2),min(lastindex(profile),i+2)
+        smooth[i] = mean(@view profile[lo:hi])
+    end
     inside = mean(profile[distances .≤ -2.5])
     outside = mean(profile[distances .≥ 2.5])
-    normalized = (profile .- inside) ./ (outside-inside)
+    normalized = (smooth .- inside) ./ (outside-inside)
     function crossing(level)
+        candidates = Float64[]
         for i in 1:(length(distances)-1)
             y1,y2 = normalized[i],normalized[i+1]
             if (y1-level)*(y2-level) ≤ 0 && y1 != y2
-                return distances[i] +
-                    spacing*(level-y1)/(y2-y1)
+                push!(candidates,distances[i] +
+                    spacing*(level-y1)/(y2-y1))
             end
         end
-        NaN
+        isempty(candidates) ? NaN :
+            candidates[argmin(abs.(candidates))]
     end
     x10,x90 = crossing(0.1),crossing(0.9)
     (
@@ -2199,6 +2208,552 @@ let
 
     $(join(rows,"\n"))
     """
+end
+
+# ╔═╡ bfd8f2d8-b708-478b-9d84-6b02e1eb9de3
+md"""
+### Likelihood-gated native-volume guide
+
+The axial-average oracle is now replaced by a falsifiable native-volume
+estimator. For target slice \(z\), candidate slice \(q\), and a fixed
+3×3 decision patch \(P\), define
+
+```math
+d_{zq}^2(\mathbf r)
+=\frac{1}{|P|}\sum_{\mathbf p\in P}
+[G_z(\mathbf r+\mathbf p)-G_q(\mathbf r+\mathbf p)]^2.
+```
+
+Two independent measurements of the same signal have expected squared
+difference \(2\sigma_G^2\). The non-negative signal discrepancy and its
+likelihood weight are therefore
+
+```math
+\delta_{zq}^2=\max(d_{zq}^2-2\sigma_G^2,0),
+\qquad
+w_{zq}=\exp\!\left[-\frac{|P|\delta_{zq}^2}{4\sigma_G^2}\right].
+```
+
+Only the **co-located** value \(G_q(\mathbf r)\) is combined. The patch
+controls statistical compatibility but contributes no neighboring pixel
+values, so the operation introduces no direct in-plane convolution.
+The noise variance comes from adjacent-slice differences in the eroded
+water ROI. There is no fitted range bandwidth or energy-specific strength.
+"""
+
+# ╔═╡ 34c4bda9-3ca6-4f1c-99c3-f146697fcaf3
+function nchannel_box3_mean_squared_difference(a,b)
+    nx,ny = size(a)
+    out = zeros(Float32,nx,ny)
+    Threads.@threads for j in 1:ny
+        for i in 1:nx
+            total = 0.0f0
+            count = 0
+            for dj in -1:1,di in -1:1
+                ii,jj = i+di,j+dj
+                if 1 ≤ ii ≤ nx && 1 ≤ jj ≤ ny
+                    difference = Float32(a[ii,jj]-b[ii,jj])
+                    total += difference*difference
+                    count += 1
+                end
+            end
+            out[i,j] = total/count
+        end
+    end
+    out
+end
+
+# ╔═╡ b278c84b-7506-45c6-9f83-2c603a64ebbb
+function nchannel_likelihood_gated_guide(
+    guide::AbstractArray{<:Real,3};noise_variance=nothing,
+)
+    nx,ny,nz = size(guide)
+    mask = fisher_acnr.water_mask
+    σ² = if isnothing(noise_variance)
+        differences = Float64[]
+        for z in 1:(nz-1)
+            append!(
+                differences,
+                Float64.(
+                    @view(guide[:,:,z+1])[mask] .-
+                    @view(guide[:,:,z])[mask]
+                ),
+            )
+        end
+        mean(abs2,differences)/2
+    else
+        Float64(noise_variance)
+    end
+    numerator = zeros(Float32,nx,ny,nz)
+    denominator = zeros(Float32,nx,ny,nz)
+    patch_samples = 9.0f0
+    σ²f = Float32(max(σ²,eps(Float32)))
+    for z in 1:nz,q in 1:nz
+        distance² = nchannel_box3_mean_squared_difference(
+            @view(guide[:,:,z]),@view(guide[:,:,q]),
+        )
+        weight = @. Float32(exp(
+            -patch_samples*max(distance²-2σ²f,0.0f0)/(4σ²f)
+        ))
+        @views @. numerator[:,:,z] += weight*guide[:,:,q]
+        @views @. denominator[:,:,z] += weight
+    end
+    denoised = numerator ./ max.(denominator,eps(Float32))
+    effective_samples = @. Float32(
+        denominator^2 / max(denominator,eps(Float32))
+    )
+    (
+        denoised=denoised,noise_variance=σ²,
+        noise_sd=sqrt(σ²),effective_samples=effective_samples,
+        patch_samples=Int(patch_samples),
+    )
+end
+
+# ╔═╡ d7f0f806-452d-4028-a635-f1415290a09e
+nchannel_likelihood_guide = nchannel_likelihood_gated_guide(
+    nchannel_all_photon_guide.measured,
+);
+
+# ╔═╡ f01f8544-e949-40b1-a5f0-13d8d04f222a
+nchannel_likelihood_hypr_sweep = let
+    energies = fisher_acnr.energies
+    mask = fisher_acnr.water_mask
+    μwater = Dict(
+        E => BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+        for E in energies
+    )
+    cutoffs = collect(0.015:0.005:0.08)
+    rows = map(cutoffs) do cutoff
+        result = nchannel_hypr_series(
+            nchannel_likelihood_guide.denoised,cutoff;energies,
+        )
+        sd = [
+            1000std(result.output_mu[E][mask,:])/μwater[E]
+            for E in energies
+        ]
+        mean_shift = [
+            1000(
+                mean(result.output_mu[E][mask,:]) -
+                mean(result.raw_mu[E][mask,:])
+            )/μwater[E]
+            for E in energies
+        ]
+        guide_width_ratio = nchannel_edge_width(
+            nchannel_likelihood_guide.denoised,
+        ).width_10_90 / nchannel_edge_width(
+            nchannel_all_photon_guide.measured,
+        ).width_10_90
+        output_width = [
+            nchannel_edge_width(result.output_mu[E]).width_10_90
+            for E in energies
+        ]
+        output_spread = maximum(output_width)/minimum(output_width)
+        (
+            cutoff=Float64(cutoff),result=result,sd=sd,
+            mean_shift_HU=mean_shift,
+            guide_width_ratio=guide_width_ratio,
+            output_width=output_width,output_spread=output_spread,
+            monotonic=all(diff(sd) .≤ 1.0),
+        )
+    end
+    target = [50.0,30.0,27.5,25.0]
+    valid(row) = row.monotonic &&
+        all(row.sd .≤ [60.0,40.0,35.0,35.0]) &&
+        all(abs.(row.mean_shift_HU) .≤ 10.0) &&
+        abs(row.guide_width_ratio-1.0) ≤ 0.05 &&
+        row.output_spread ≤ 1.05
+    valid_indices = findall(valid,rows)
+    score(row) = sum(abs2,row.sd .- target) +
+        1e4abs2(row.guide_width_ratio-1.0) +
+        1e4abs2(row.output_spread-1.0)
+    selected = isempty(valid_indices) ?
+        rows[argmin(score.(rows))] : rows[last(valid_indices)]
+    (
+        energies=energies,cutoffs=cutoffs,rows=rows,selected=selected,
+        has_acceptable=!isempty(valid_indices),
+    )
+end;
+
+# ╔═╡ e756839a-54c4-43d3-9e05-9463ee9ddd0e
+nchannel_axial_edge_adversary = let
+    guide = nchannel_all_photon_guide.measured
+    mask = fisher_acnr.water_mask
+    water_level = mean(Float64.(guide[mask,:]))
+    nz = size(guide,3)
+    step_index = nz ÷ 2
+    contrasts_HU = [50.0,100.0,300.0]
+    rows = map(contrasts_HU) do contrast
+        synthetic = copy(guide)
+        Δ = Float32(water_level*contrast/1000)
+        for z in (step_index+1):nz
+            @views synthetic[:,:,z][mask] .+= Δ
+        end
+        filtered = nchannel_likelihood_gated_guide(
+            synthetic;
+            noise_variance=nchannel_likelihood_guide.noise_variance,
+        ).denoised
+        before = [
+            mean(Float64.(@view synthetic[:,:,z])[mask]) for z in 1:nz
+        ]
+        after = [
+            mean(Float64.(@view filtered[:,:,z])[mask]) for z in 1:nz
+        ]
+        measured_step = mean(after[(step_index+1):end]) -
+            mean(after[1:step_index])
+        leakage = (
+            after[step_index+1]-after[step_index]
+        ) / max(Δ,eps(Float32))
+        (
+            contrast_HU=contrast,before=before,after=after,
+            recovered_step_fraction=measured_step/Δ,
+            adjacent_step_fraction=leakage,
+        )
+    end
+    rows
+end;
+
+# ╔═╡ 484246a0-4240-44d8-884c-c074794cda57
+let
+    s = nchannel_likelihood_hypr_sweep
+    r = s.selected
+    axial = nchannel_axial_edge_adversary
+    md"""
+    **Likelihood-gated native-volume result**
+
+    - Estimated native-guide noise SD:
+      **$(round(nchannel_likelihood_guide.noise_sd,sigdigits=4)) μ units**
+    - Selected common split: **$(round(r.cutoff,digits=3)) cycles/pixel**
+    - VMI noise (HU): **$(join(round.(r.sd,digits=1),", "))**
+    - Water mean shifts (HU):
+      **$(join(round.(r.mean_shift_HU,digits=1),", "))**
+    - Denoised/measured guide iodine-edge width ratio:
+      **$(round(r.guide_width_ratio,digits=3))**
+    - Cross-energy VMI edge-width spread:
+      **$(round(r.output_spread,digits=3))**
+    - Axial 50/100/300-HU recovered step fractions:
+      **$(join(round.([x.recovered_step_fraction for x in axial],digits=3),", "))**
+    - Axial adjacent-slice step fractions:
+      **$(join(round.([x.adjacent_step_fraction for x in axial],digits=3),", "))**
+    - Passes current magnitude, monotonicity, bias, and edge gates:
+      **$(s.has_acceptable)**
+    """
+end
+
+# ╔═╡ e6a9ed03-b6ec-4241-826f-dcbfb34b3631
+md"""
+### Dose–slice-resolution feasibility boundary
+
+No denoiser can be judged independently of the resolution and photon budget
+of the comparator. This sweep uses the all-photon composite and a fixed
+0.03-cycle/pixel HYPR split while changing only the number of statistically
+independent 0.4-mm axial replicas in the guide. It is a diagnostic of the
+required photon factor:
+
+- `n = 1` is the native 0.4-mm slice;
+- averaging `n` replicas corresponds to an `n`-fold photon increase, or to
+  an \(0.4n\)-mm slab for this axially uniform phantom;
+- the in-plane FBP kernel and sampling remain unchanged;
+- longitudinal resolution is **not** claimed to remain unchanged.
+
+This explicitly distinguishes a true denoising result from a thicker-slice
+or higher-dose result.
+"""
+
+# ╔═╡ 542ddc41-7d19-497e-b530-f3414736db3b
+nchannel_resolution_dose_boundary = let
+    guide = nchannel_all_photon_guide.measured
+    energies = fisher_acnr.energies
+    mask = fisher_acnr.water_mask
+    μwater = Dict(
+        E => BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+        for E in energies
+    )
+    nz = size(guide,3)
+    rows = map(1:nz) do n
+        slab = dropdims(mean(@view(guide[:,:,1:n]),dims=3),dims=3)
+        slab_volume = repeat(slab,1,1,nz)
+        result = nchannel_hypr_series(slab_volume,0.03;energies)
+        sd = [
+            1000std(result.output_mu[E][mask,:])/μwater[E]
+            for E in energies
+        ]
+        width_ratio = nchannel_edge_width(slab_volume).width_10_90 /
+            nchannel_edge_width(guide).width_10_90
+        (
+            replicas=n,thickness_mm=0.4n,
+            equivalent_mAs=n*nchannel_exposure_audit.total_mAs,
+            sd=sd,width_ratio=width_ratio,result=result,
+        )
+    end
+    requested = [60.0,40.0,35.0,35.0]
+    meets = findall(row ->
+        all(row.sd .≤ requested) &&
+        all(diff(row.sd) .≤ 1.0),
+        rows,
+    )
+    (
+        rows=rows,
+        first_meeting=isempty(meets) ? nothing : rows[first(meets)],
+        requested=requested,
+    )
+end;
+
+# ╔═╡ 8e6551a4-5481-4812-bbf7-707fd27c289d
+let
+    b = nchannel_resolution_dose_boundary
+    rows = String[
+        "| replicas | slab (mm) | equivalent mAs | σ HU at 40/70/100/140 | in-plane edge ratio |",
+        "|---:|---:|---:|:---|---:|",
+    ]
+    for r in b.rows
+        noise_text = join(round.(r.sd,digits=1),", ")
+        push!(rows,
+            "| $(r.replicas) | $(round(r.thickness_mm,digits=1)) | " *
+            "$(round(r.equivalent_mAs,digits=0)) | $noise_text | " *
+            "$(round(r.width_ratio,digits=3)) |"
+        )
+    end
+    first_text = if isnothing(b.first_meeting)
+        "No tested photon factor meets the requested envelope."
+    else
+        r = b.first_meeting
+        "First factor meeting the magnitude envelope: **$(r.replicas)×**, " *
+        "equivalent to **$(round(r.thickness_mm,digits=1)) mm** in this " *
+        "uniform phantom or **$(round(r.equivalent_mAs,digits=0)) mAs** " *
+        "at native thickness."
+    end
+    md"""
+    **Resolution/dose boundary**
+
+    $first_text
+
+    $(join(rows,"\n"))
+    """
+end
+
+# ╔═╡ 2ee9014d-aebc-4a25-a1ca-30c5ba3a24b6
+md"""
+### Resolution-matched 4.8-mm candidate audit
+
+The following candidate is evaluated at a declared 4.8-mm longitudinal
+resolution, matching the 12-replica photon support used by its all-photon
+guide. It preserves the original four exclusive energy bins, the complete
+four-bin Cong likelihood, the common in-plane `SoftFilter`, and the common
+0.03-cycle/pixel HYPR split. It does **not** claim native 0.4-mm z
+resolution.
+"""
+
+# ╔═╡ 79332028-9529-4837-892b-39e5fc3c81a2
+nchannel_slab_candidate = let
+    energies = fisher_acnr.energies
+    guide = nchannel_all_photon_guide.oracle
+    mask = fisher_acnr.water_mask
+    μwater = Dict(
+        E => BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+        for E in energies
+    )
+    cutoffs = collect(0.005:0.005:0.060)
+    trials = map(cutoffs) do cutoff
+        result = nchannel_hypr_series(guide,cutoff;energies)
+        sd = [
+            1000std(result.output_mu[E][mask,:])/μwater[E]
+            for E in energies
+        ]
+        (cutoff=cutoff,result=result,sd=sd)
+    end
+    target = [60.0,40.0,35.0,35.0]
+    admissible = findall(t ->
+        all(t.sd .≤ target) && all(diff(t.sd) .≤ 0),
+        trials,
+    )
+    selected = isempty(admissible) ?
+        trials[argmin([
+            sum(max.(t.sd .- target,0).^2) +
+            100sum(max.(diff(t.sd),0).^2)
+            for t in trials
+        ])] :
+        trials[last(admissible)]
+    hu = Dict{Float64,Array{Float32,3}}()
+    for E in energies
+        μw = BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+        hu[E] = @. Float32(1000*(selected.result.output_mu[E]/μw-1))
+    end
+    (
+        energies=energies,HU=hu,mu=selected.result.output_mu,
+        noise_sd_HU=selected.sd,thickness_mm=4.8,
+        cutoff=selected.cutoff,guide=guide,trials=trials,
+        has_admissible=!isempty(admissible),
+    )
+end;
+
+# ╔═╡ c414d52f-b563-43a0-b0e0-85fc9ea73e1c
+nchannel_slab_quantitative_audit = let
+    candidate = nchannel_slab_candidate
+    truth = phantom_cpu.mask[:,:,size(phantom_cpu.mask,3) ÷ 2]
+    materials = phantom_cpu.materials
+    labels = (
+        Ca=UInt8[10,11,12,13,14,15,16],
+        I=UInt8[20,21,22,23,24,25,26],
+    )
+    function core_roi(label)
+        idx = findall(==(label),truth)
+        cx = mean(Float64(ci[1]) for ci in idx)
+        cy = mean(Float64(ci[2]) for ci in idx)
+        [
+            CartesianIndex(i,j)
+            for j in axes(truth,2),i in axes(truth,1)
+            if (i-cx)^2+(j-cy)^2 ≤ 8.0^2
+        ]
+    end
+    function roi_mean(volume,roi)
+        mean(Float64(volume[ci,z]) for z in axes(volume,3),ci in roi)
+    end
+    function linear_fit(x,y)
+        xc = x .- mean(x)
+        slope = sum(xc .* (y .- mean(y)))/sum(abs2,xc)
+        (slope=slope,intercept=mean(y)-slope*mean(x))
+    end
+    groups = Dict{Symbol,Any}()
+    for group in (:Ca,:I)
+        measured = zeros(Float64,length(labels[group]),length(candidate.energies))
+        theoretical = similar(measured)
+        for (i,label) in pairs(labels[group])
+            roi = core_roi(label)
+            material = materials[Int(label)+1]
+            for (j,E) in pairs(candidate.energies)
+                measured[i,j] = roi_mean(candidate.HU[E],roi)
+                μ = BS.compute_μ_at_energy(material,E)
+                μw = BS.compute_μ_at_energy(BS.XA.Materials.water,E)
+                theoretical[i,j] = 1000*(μ-μw)/μw
+            end
+        end
+        fits = [
+            linear_fit(theoretical[:,j],measured[:,j])
+            for j in axes(measured,2)
+        ]
+        groups[group]=(measured=measured,theoretical=theoretical,fits=fits)
+    end
+
+    water_mask = fisher_acnr.water_mask
+    samples = hcat([
+        vec(Float64.(candidate.HU[E][water_mask,:]))
+        for E in candidate.energies
+    ]...)
+    covariance = cov(samples)
+    correlation = cor(samples)
+
+    edge_widths = Dict(
+        E => nchannel_edge_width(candidate.mu[E]).width_10_90
+        for E in candidate.energies
+    )
+    guide_width = nchannel_edge_width(candidate.guide).width_10_90
+    edge_ratios = [edge_widths[E]/guide_width for E in candidate.energies]
+    (
+        groups=groups,covariance=covariance,correlation=correlation,
+        edge_widths=edge_widths,guide_width=guide_width,
+        edge_ratios=edge_ratios,
+    )
+end;
+
+# ╔═╡ 602c2ef8-7364-4d26-8308-72a073f44485
+function nchannel_radial_nps(volume,halfwidth::Int=48)
+    nx,ny,nz = size(volume)
+    cx,cy = nx ÷ 2 + 1,ny ÷ 2 + 1
+    mean_image = dropdims(mean(Float64.(volume),dims=3),dims=3)
+    npx,npy = 2halfwidth,2halfwidth
+    X = hcat(
+        ones(npx*npy),
+        repeat(collect(1.0:npx),npy),
+        repeat(collect(1.0:npy)',npx)[:],
+    )
+    spectrum = zeros(Float64,npx,npy)
+    variance_sum = 0.0
+    for z in 1:nz
+        patch = Float64.(
+            @view volume[
+                (cx-halfwidth):(cx+halfwidth-1),
+                (cy-halfwidth):(cy+halfwidth-1),z,
+            ]
+        ) .- @view mean_image[
+            (cx-halfwidth):(cx+halfwidth-1),
+            (cy-halfwidth):(cy+halfwidth-1),
+        ]
+        residual = vec(patch)-X*(X\vec(patch))
+        spectrum .+= abs2.(FFTW.fft(reshape(residual,npx,npy)))/(npx*npy)
+        variance_sum += sum(abs2,residual)/(length(residual)-3)
+    end
+    spectrum ./= nz
+    nrad = floor(Int,hypot(npx ÷ 2,npy ÷ 2))+1
+    sums,counts = zeros(Float64,nrad),zeros(Int,nrad)
+    for j in 1:npy,i in 1:npx
+        radius = floor(Int,hypot(
+            min(i-1,npx-(i-1)),min(j-1,npy-(j-1)),
+        ))+1
+        sums[radius] += spectrum[i,j]
+        counts[radius] += 1
+    end
+    radial = sums ./ max.(counts,1)
+    frequencies = collect(0:(nrad-1))/npx
+    (
+        frequency=frequencies,power=radial,
+        integral=variance_sum/nz,
+        peak_frequency=frequencies[argmax(radial[2:end])+1],
+    )
+end
+
+# ╔═╡ 784aaf59-2422-408c-b6ab-2004981f1c00
+nchannel_slab_nps = Dict(
+    E => nchannel_radial_nps(nchannel_slab_candidate.HU[E])
+    for E in nchannel_slab_candidate.energies
+);
+
+# ╔═╡ 8a08befc-af91-4ebc-b75d-f520885515d6
+let
+    c = nchannel_slab_candidate
+    q = nchannel_slab_quantitative_audit
+    slopes(group) = [x.slope for x in q.groups[group].fits]
+    intercepts(group) = [x.intercept for x in q.groups[group].fits]
+    md"""
+    **4.8-mm candidate quantitative gates**
+
+    - VMI noise (HU): **$(join(round.(c.noise_sd_HU,digits=1),", "))**
+    - Selected common split: **$(round(c.cutoff,digits=3)) cycles/pixel**
+    - An admissible common split exists: **$(c.has_admissible)**
+    - Strictly monotonic: **$(all(diff(c.noise_sd_HU) .≤ 0))**
+    - Iodine NIST slopes: **$(join(round.(slopes(:I),digits=3),", "))**
+    - Iodine intercepts (HU):
+      **$(join(round.(intercepts(:I),digits=1),", "))**
+    - Calcium NIST slopes:
+      **$(join(round.(slopes(:Ca),digits=3),", "))**
+    - Calcium intercepts (HU):
+      **$(join(round.(intercepts(:Ca),digits=1),", "))**
+    - VMI/guide iodine-edge width ratios:
+      **$(join(round.(q.edge_ratios,digits=3),", "))**
+    - NPS peak frequencies (cycles/pixel):
+      **$(join(round.([nchannel_slab_nps[E].peak_frequency for E in c.energies],digits=3),", "))**
+    - Cross-energy water-noise correlation, 40↔140 keV:
+      **$(round(q.correlation[1,end],digits=3))**
+    """
+end
+
+# ╔═╡ d8b8608f-6fa8-4c5f-85ee-17e3877efb4c
+let
+    c = nchannel_slab_candidate
+    z = size(first(values(c.HU)),3) ÷ 2 + 1
+    fig = Mke.Figure(size=(1180,920))
+    for (i,E) in enumerate(c.energies)
+        row,col = divrem(i-1,2) .+ (1,1)
+        ax = Mke.Axis(
+            fig[row,col];title="$(Int(E)) keV · 4.8 mm",
+            aspect=Mke.DataAspect(),
+        )
+        Mke.heatmap!(
+            ax,c.HU[E][:,:,z];colormap=:grays,
+            colorrange=(-200,800),
+        )
+        Mke.hidedecorations!(ax)
+    end
+    fig
 end
 
 # ╔═╡ 2d447ccd-b408-42a6-8a1b-af770e3277e4
@@ -2666,6 +3221,23 @@ end
 # ╠═9415717e-0f1e-472f-ab4e-ad5c643b9f33
 # ╟─56702bee-3c47-4328-b920-c004cc1ca5ff
 # ╟─764394d6-8103-4af9-816a-dfe8c12fc6da
+# ╟─bfd8f2d8-b708-478b-9d84-6b02e1eb9de3
+# ╠═34c4bda9-3ca6-4f1c-99c3-f146697fcaf3
+# ╠═b278c84b-7506-45c6-9f83-2c603a64ebbb
+# ╠═d7f0f806-452d-4028-a635-f1415290a09e
+# ╠═f01f8544-e949-40b1-a5f0-13d8d04f222a
+# ╠═e756839a-54c4-43d3-9e05-9463ee9ddd0e
+# ╟─484246a0-4240-44d8-884c-c074794cda57
+# ╟─e6a9ed03-b6ec-4241-826f-dcbfb34b3631
+# ╠═542ddc41-7d19-497e-b530-f3414736db3b
+# ╟─8e6551a4-5481-4812-bbf7-707fd27c289d
+# ╟─2ee9014d-aebc-4a25-a1ca-30c5ba3a24b6
+# ╠═79332028-9529-4837-892b-39e5fc3c81a2
+# ╠═c414d52f-b563-43a0-b0e0-85fc9ea73e1c
+# ╠═602c2ef8-7364-4d26-8308-72a073f44485
+# ╠═784aaf59-2422-408c-b6ab-2004981f1c00
+# ╟─8a08befc-af91-4ebc-b75d-f520885515d6
+# ╟─d8b8608f-6fa8-4c5f-85ee-17e3877efb4c
 # ╟─2d447ccd-b408-42a6-8a1b-af770e3277e4
 # ╠═1ff5e801-ef54-45ff-b0a8-e780e2e6cb63
 # ╟─65a40efc-c9ff-41d4-8f42-46d6737119d5
