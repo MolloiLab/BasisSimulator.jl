@@ -936,6 +936,558 @@ let
     """
 end
 
+# ╔═╡ f8688ab5-5e22-432e-bf04-45d8a7763576
+md"""
+## Experimental Fisher-ACNR → VMI Path
+
+This is a standalone experimental path. The original direct-FBP workflow
+below remains unchanged as a control.
+
+1. Reconstruct water and iodine with the **same** `SoftFilter`.
+2. Use the mean four-bin Fisher covariance to define the 140-keV reference
+   mode \(g\), the orthogonal material-separation mode \(d\), and
+   \(r=d-\beta g\), so the predicted \(\operatorname{Cov}(g,r)=0\).
+3. Estimate residual-mode noise from adjacent axial-replicate differences
+   and apply the closed-form radial Wiener gain \(H=\max(1-N/P,0)\).
+4. Select the largest residual-retention factor \(s\in[0,1]\) satisfying
+   the solid-water monotonic-noise inequalities. This is solved from their
+   quadratic variance curves, not manually tuned.
+5. Preserve the 140-keV reference mode pixel-for-pixel and synthesize every
+   VMI from the same corrected material pair.
+"""
+
+# ╔═╡ 40b39aa1-2aed-4804-80db-cab52a8e4964
+FFTW = BS.FFTW
+
+# ╔═╡ 308003a4-fe8e-4690-a492-2bc786e96965
+fisher_common_fbp = let
+    geom = sino_basis_nchannel.geom
+    matrix_size = recon_opts.matrix_size
+    common_filter = BS.SoftFilter()
+
+    function common_fbp(sino_cpu)
+        sino_gpu = to_gpu(Float32.(sino_cpu))
+        ws = BS.create_fdk_recon_workspace(
+            sino_gpu,geom,matrix_size; filter=common_filter,
+        )
+        volume = Float32.(Array(BS.reconstruct!(ws,sino_gpu,geom)))
+        ws = nothing
+        sino_gpu = nothing
+        GC.gc(true)
+        volume
+    end
+
+    W = common_fbp(sino_basis_nchannel.sino_water)
+    I = common_fbp(sino_basis_nchannel.sino_iodine)
+
+    # A direct mixed-sinogram FBP verifies linear commutation at E_ref.
+    E_ref = 140.0
+    μW_ref = BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E_ref)
+    μI_ref = BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine,E_ref)
+    mixed_sino = @. Float32(
+        μW_ref*sino_basis_nchannel.sino_water +
+        μI_ref*sino_basis_nchannel.sino_iodine
+    )
+    mixed_direct = common_fbp(mixed_sino)
+    mixed_after = @. Float32(μW_ref*W + μI_ref*I)
+    commutation_relerr = maximum(abs,mixed_direct .- mixed_after) /
+        max(maximum(abs,mixed_direct),eps(Float32))
+
+    (
+        vol_water=W,vol_iodine=I,geom=geom,filter=common_filter,
+        E_ref=E_ref,μW_ref=μW_ref,μI_ref=μI_ref,
+        commutation_relerr=commutation_relerr,
+    )
+end;
+
+# ╔═╡ f8138d36-d35a-403a-a824-26ab60d75727
+function fisher_radial_wiener(residual::AbstractArray{<:Real,3})
+    nx,ny,nz = size(residual)
+    nrad = floor(Int,hypot(nx ÷ 2,ny ÷ 2)) + 1
+    power_sum = zeros(Float64,nrad)
+    noise_sum = zeros(Float64,nrad)
+    power_count = zeros(Int,nrad)
+    noise_count = zeros(Int,nrad)
+
+    radial_bin(i,j) = min(
+        floor(Int,hypot(min(i-1,nx-(i-1)),min(j-1,ny-(j-1)))) + 1,
+        nrad,
+    )
+
+    for z in 1:nz
+        spectrum = FFTW.fft(Float64.(@view residual[:,:,z]))
+        for j in 1:ny, i in 1:nx
+            b = radial_bin(i,j)
+            power_sum[b] += abs2(spectrum[i,j])
+            power_count[b] += 1
+        end
+    end
+    for z in 1:(nz-1)
+        noise_sample = (
+            Float64.(@view residual[:,:,z+1]) .-
+            Float64.(@view residual[:,:,z])
+        ) ./ sqrt(2.0)
+        spectrum = FFTW.fft(noise_sample)
+        for j in 1:ny, i in 1:nx
+            b = radial_bin(i,j)
+            noise_sum[b] += abs2(spectrum[i,j])
+            noise_count[b] += 1
+        end
+    end
+
+    P = power_sum ./ max.(power_count,1)
+    N = noise_sum ./ max.(noise_count,1)
+    gain_radial = clamp.(1.0 .- N ./ max.(P,eps(Float64)),0.0,1.0)
+    gain_radial[1] = 1.0
+    gain = [
+        gain_radial[radial_bin(i,j)] for i in 1:nx, j in 1:ny
+    ]
+    filtered = similar(residual,Float32)
+    Threads.@threads for z in 1:nz
+        spectrum = FFTW.fft(Float64.(@view residual[:,:,z]))
+        filtered[:,:,z] .= Float32.(
+            real.(FFTW.ifft(spectrum .* gain))
+        )
+    end
+    (
+        filtered=filtered,gain_radial=gain_radial,
+        power_radial=P,noise_radial=N,
+    )
+end
+
+# ╔═╡ 94b9c44f-90a5-4dad-95d8-3b47d4036575
+function largest_monotonic_retention(variance_polynomials)
+    # Each tuple is (constant, linear, quadratic) for σ²_E(s).
+    boundaries = Float64[0.0,1.0]
+    inequalities = NTuple{3,Float64}[]
+    for j in 1:(length(variance_polynomials)-1)
+        lo,hi = variance_polynomials[j],variance_polynomials[j+1]
+        q = (hi[1]-lo[1],hi[2]-lo[2],hi[3]-lo[3])
+        push!(inequalities,q)
+        c,b,a = q
+        if abs(a) < 1e-14
+            abs(b) > 1e-14 && push!(boundaries,-c/b)
+        else
+            Δ = b*b - 4a*c
+            if Δ ≥ 0
+                root = sqrt(Δ)
+                push!(boundaries,(-b-root)/(2a),(-b+root)/(2a))
+            end
+        end
+    end
+    boundaries = sort(unique(clamp.(filter(
+        x -> isfinite(x) && -1e-10 ≤ x ≤ 1+1e-10,boundaries,
+    ),0.0,1.0)))
+    feasible(s) = all(
+        q -> q[1]+q[2]*s+q[3]*s*s ≤ 1e-10,inequalities,
+    )
+    candidates = Float64[]
+    for x in boundaries
+        feasible(x) && push!(candidates,x)
+    end
+    for j in 1:(length(boundaries)-1)
+        midpoint = (boundaries[j]+boundaries[j+1])/2
+        feasible(midpoint) && push!(candidates,boundaries[j+1])
+    end
+    isempty(candidates) ?
+        (retention=1.0,feasible=false) :
+        (retention=maximum(candidates),feasible=true)
+end
+
+# ╔═╡ ca67864e-a436-4bf5-be0e-1924019885f5
+fisher_acnr = let
+    W,I = fisher_common_fbp.vol_water,fisher_common_fbp.vol_iodine
+    μW,μI = fisher_common_fbp.μW_ref,fisher_common_fbp.μI_ref
+
+    # x=[W,I]. Reorder the stored projection covariance, which is [I,W].
+    Σ_sino = nchannel_sinogram_verification.predicted
+    Σ = [
+        Σ_sino[2,2] Σ_sino[2,1]
+        Σ_sino[1,2] Σ_sino[1,1]
+    ]
+    norm_c = hypot(μW,μI)
+    u = [μW/norm_c,μI/norm_c]
+    v = [-u[2],u[1]]
+    Σgg = sum(u .* (Σ*u))
+    Σdg = sum(v .* (Σ*u))
+    β = Σdg/Σgg
+
+    g = @. Float32(u[1]*W + u[2]*I)
+    d = @. Float32(v[1]*W + v[2]*I)
+    r = @. Float32(d - β*g)
+    wiener = fisher_radial_wiener(r)
+    rf = wiener.filtered
+
+    mask_mid = phantom_cpu.mask[:,:,size(phantom_cpu.mask,3) ÷ 2]
+    water_mask = collect(BS.erode_mask_2d(
+        mask_mid .== UInt8(BS.REGION_SOLID_WATER); erode_px=12.0,
+    ))
+    roi_g = Float64.(g[water_mask,:])
+    roi_r = Float64.(rf[water_mask,:])
+    gc = roi_g .- mean(roi_g)
+    rc = roi_r .- mean(roi_r)
+    var_g = sum(abs2,gc)/(length(gc)-1)
+    cov_gr = sum(gc .* rc)/(length(gc)-1)
+    var_r = sum(abs2,rc)/(length(rc)-1)
+    energies = [40.0,70.0,100.0,140.0]
+
+    # HU noise at E is qg*g + s*qr*rf; constants do not affect variance.
+    mode_coefficients = map(energies) do E
+        ratio = BS.compute_mass_μ_at_energy(
+            BS.XA.Elements.Iodine,E,
+        ) / BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E)
+        cHU = [1000.0,1000.0*ratio]
+        b = sum(cHU .* v)
+        a = sum(cHU .* u) + β*b
+        (a=a,b=b)
+    end
+    variance_polynomials = [
+        (
+            q.a^2*var_g,
+            2q.a*q.b*cov_gr,
+            q.b^2*var_r,
+        )
+        for q in mode_coefficients
+    ]
+    monotonic = largest_monotonic_retention(variance_polynomials)
+    s = monotonic.retention
+
+    d_corrected = @. Float32(β*g + s*rf)
+    W_corrected = @. Float32(u[1]*g + v[1]*d_corrected)
+    I_corrected = @. Float32(u[2]*g + v[2]*d_corrected)
+    reference_before = @. Float32(μW*W + μI*I)
+    reference_after = @. Float32(μW*W_corrected + μI*I_corrected)
+    reference_relerr = maximum(abs,reference_after .- reference_before) /
+        max(maximum(abs,reference_before),eps(Float32))
+
+    predicted_sd = [
+        sqrt(max(p[1]+p[2]*s+p[3]*s*s,0.0))
+        for p in variance_polynomials
+    ]
+    (
+        vol_water=W_corrected,vol_iodine=I_corrected,
+        vol_water_raw=W,vol_iodine_raw=I,
+        reference_mode=g,residual_mode=r,residual_wiener=rf,
+        u=u,v=v,β=β,retention=s,
+        monotonic_feasible=monotonic.feasible,
+        predicted_roi_sd_HU=predicted_sd,energies=energies,
+        reference_relerr=reference_relerr,
+        commutation_relerr=fisher_common_fbp.commutation_relerr,
+        wiener_gain_radial=wiener.gain_radial,
+        wiener_power_radial=wiener.power_radial,
+        wiener_noise_radial=wiener.noise_radial,
+        water_mask=water_mask,
+    )
+end;
+
+# ╔═╡ 42dafcec-17be-4ed4-8e6a-3185ee9f0b0b
+fisher_acnr_vmi = let
+    energies = fisher_acnr.energies
+    raw = Dict(
+        E => BS.synth_vmi_2basis(
+            fisher_acnr.vol_water_raw,
+            fisher_acnr.vol_iodine_raw .* 1000.0f0;
+            energy_keV=E,
+        )
+        for E in energies
+    )
+    denoised = Dict(
+        E => BS.synth_vmi_2basis(
+            fisher_acnr.vol_water,
+            fisher_acnr.vol_iodine .* 1000.0f0;
+            energy_keV=E,
+        )
+        for E in energies
+    )
+    (raw=raw,denoised=denoised,energies=energies)
+end;
+
+# ╔═╡ fa1fb5e8-64ee-4e9b-8ce7-dd8eb00f0e22
+let
+    sample = fisher_acnr_vmi.denoised[40.0]
+    mid_z = size(sample,3) ÷ 2 + 1
+    fig = Mke.Figure(size=(1180,1180))
+    for (k,E) in enumerate(fisher_acnr_vmi.energies)
+        row = (k-1) ÷ 2 + 1
+        col = (k-1) % 2 + 1
+        ax = Mke.Axis(
+            fig[row,col]; title="Fisher-ACNR · $(Int(E)) keV",
+            aspect=Mke.DataAspect(),titlesize=28,
+        )
+        Mke.heatmap!(
+            ax,fisher_acnr_vmi.denoised[E][:,:,mid_z];
+            colormap=:grays,colorrange=(-200.0,500.0),
+        )
+        Mke.hidedecorations!(ax)
+    end
+    fig
+end
+
+# ╔═╡ c2f2b9a2-aead-4de1-9132-a8d6bc10ded6
+fisher_acnr_metrics = let
+    mask = fisher_acnr.water_mask
+    energies = fisher_acnr_vmi.energies
+    mean_roi(volume) = mean(volume[mask,:])
+    sd_roi(volume) = std(volume[mask,:])
+    raw_mean = [mean_roi(fisher_acnr_vmi.raw[E]) for E in energies]
+    denoised_mean = [mean_roi(fisher_acnr_vmi.denoised[E]) for E in energies]
+    raw_sd = [sd_roi(fisher_acnr_vmi.raw[E]) for E in energies]
+    denoised_sd = [sd_roi(fisher_acnr_vmi.denoised[E]) for E in energies]
+    (
+        energies=energies,raw_mean=raw_mean,denoised_mean=denoised_mean,
+        raw_sd=raw_sd,denoised_sd=denoised_sd,
+        mean_change=denoised_mean .- raw_mean,
+        monotonic_measured=all(diff(denoised_sd) .≤ 1f-4),
+    )
+end;
+
+# ╔═╡ efbb5ea0-a2ad-4d94-a145-34bc65a059cc
+let
+    d = fisher_acnr_metrics
+    fig = Mke.Figure(size=(1180,500))
+    ax1 = Mke.Axis(
+        fig[1,1];title="Solid-Water Noise",
+        subtitle="Common-kernel raw vs Fisher-ACNR",
+        xlabel="VMI Energy (keV)",ylabel="σ (HU)",
+        xticks=(d.energies,string.(Int.(d.energies))),
+    )
+    Mke.lines!(
+        ax1,d.energies,d.raw_sd;
+        color=:darkorange,linewidth=3,label="Raw",
+    )
+    Mke.scatter!(ax1,d.energies,d.raw_sd;color=:darkorange,markersize=14)
+    Mke.lines!(
+        ax1,d.energies,d.denoised_sd;
+        color=:dodgerblue,linewidth=3,label="Fisher-ACNR",
+    )
+    Mke.scatter!(
+        ax1,d.energies,d.denoised_sd;color=:dodgerblue,markersize=14,
+    )
+    Mke.axislegend(ax1;position=:rt)
+
+    ax2 = Mke.Axis(
+        fig[1,2];title="Solid-Water Mean HU",
+        subtitle="Bias must remain unchanged",
+        xlabel="VMI Energy (keV)",ylabel="Mean HU",
+        xticks=(d.energies,string.(Int.(d.energies))),
+    )
+    Mke.lines!(
+        ax2,d.energies,d.raw_mean;
+        color=:darkorange,linewidth=3,label="Raw",
+    )
+    Mke.scatter!(ax2,d.energies,d.raw_mean;color=:darkorange,markersize=14)
+    Mke.lines!(
+        ax2,d.energies,d.denoised_mean;
+        color=:dodgerblue,linewidth=3,label="Fisher-ACNR",
+    )
+    Mke.scatter!(
+        ax2,d.energies,d.denoised_mean;color=:dodgerblue,markersize=14,
+    )
+    Mke.hlines!(ax2,[0.0];color=:black,linestyle=:dash)
+    Mke.axislegend(ax2;position=:rt)
+    fig
+end
+
+# ╔═╡ 22c17c01-1162-49e8-80d4-3b013f1e0672
+let
+    a,d = fisher_acnr,fisher_acnr_metrics
+    md"""
+    **Experimental Fisher-ACNR verification**
+
+    - Common-kernel FBP/VMI commutation relative error: **$(round(Float64(a.commutation_relerr),sigdigits=4))**
+    - 140-keV reference-mode relative change: **$(round(Float64(a.reference_relerr),sigdigits=4))**
+    - Fisher regression coefficient β: **$(round(a.β,digits=5))**
+    - Automatically selected residual retention \(s\): **$(round(a.retention,digits=5))**
+    - Monotonic constraint feasible while preserving the reference: **$(a.monotonic_feasible)**
+    - Measured denoised ROI noise monotonic: **$(d.monotonic_measured)**
+    - Raw ROI noise (HU): **$(join(round.(d.raw_sd,digits=1),", "))**
+    - Fisher-ACNR ROI noise (HU): **$(join(round.(d.denoised_sd,digits=1),", "))**
+    - Maximum absolute water-ROI mean change: **$(round(Float64(maximum(abs,d.mean_change)),digits=4)) HU**
+
+    The reference and commutation errors should be near floating-point
+    precision. If monotonic feasibility is false, filtering only the
+    separation mode cannot satisfy the requested curve without also changing
+    the protected reference mode.
+    """
+end
+
+# ╔═╡ 3d019ead-ea76-49b6-bc64-a6e534b9612a
+md"""
+### Adversarial implementation audit
+
+The first Fisher-ACNR result is not accepted at face value. These controls
+test the most consequential assumptions:
+
+- **units/order:** direct textbook HU algebra must match
+  `synth_vmi_2basis`;
+- **covariance propagation:** projection-domain Fisher \(\beta\) is compared
+  with image-ROI \(\beta\) after common-kernel FBP;
+- **noise-spectrum validity:** adjacent-slice correlation and Wiener-gain
+  occupancy reveal whether difference NPS underestimates coherent noise;
+- **method ceiling:** setting the residual mode identically to zero gives the
+  lowest noise this one-protected-mode construction can possibly reach.
+"""
+
+# ╔═╡ d13ac73b-b554-4a42-a1e1-29feb2365514
+fisher_acnr_adversarial = let
+    W,I = fisher_common_fbp.vol_water,fisher_common_fbp.vol_iodine
+    mask = fisher_acnr.water_mask
+    u,v = fisher_acnr.u,fisher_acnr.v
+    g = @. Float32(u[1]*W + u[2]*I)
+    d = @. Float32(v[1]*W + v[2]*I)
+
+    roi_g = Float64.(g[mask,:])
+    roi_d = Float64.(d[mask,:])
+    gc = roi_g .- mean(roi_g)
+    dc = roi_d .- mean(roi_d)
+    β_image = sum(gc .* dc) / sum(abs2,gc)
+    r_image = @. Float32(d - β_image*g)
+    wiener_image = fisher_radial_wiener(r_image)
+
+    function volumes_for(β,residual)
+        d_new = @. Float32(β*g + residual)
+        W_new = @. Float32(u[1]*g + v[1]*d_new)
+        I_new = @. Float32(u[2]*g + v[2]*d_new)
+        (W=W_new,I=I_new)
+    end
+    empirical_wiener = volumes_for(β_image,wiener_image.filtered)
+    zero_residual = volumes_for(β_image,zeros(Float32,size(r_image)))
+    energies = fisher_acnr.energies
+
+    function noise_curve(pair)
+        [
+            std(BS.synth_vmi_2basis(
+                pair.W,pair.I .* 1000.0f0; energy_keV=E,
+            )[mask,:])
+            for E in energies
+        ]
+    end
+    empirical_wiener_sd = noise_curve(empirical_wiener)
+    zero_residual_sd = noise_curve(zero_residual)
+
+    # Direct algebra/unit-order identity check at all requested energies.
+    synth_error = maximum(energies) do E
+        via_api = BS.synth_vmi_2basis(
+            W,I .* 1000.0f0; energy_keV=E,
+        )
+        ratio = Float32(BS.compute_mass_μ_at_energy(
+            BS.XA.Elements.Iodine,E,
+        ) / BS.compute_mass_μ_at_energy(BS.XA.Materials.water,E))
+        direct = @. Float32(1000.0f0*(W-1.0f0) + 1000.0f0*I*ratio)
+        maximum(abs,via_api .- direct)
+    end
+
+    # Lag-one correlation after removing each voxel's axial mean.
+    r_centered = Float64.(r_image[mask,:])
+    r_centered .-= mean(r_centered;dims=2)
+    lag_left = @view r_centered[:,1:end-1]
+    lag_right = @view r_centered[:,2:end]
+    lag_num = sum(lag_left .* lag_right)
+    lag_den = sqrt(
+        sum(abs2,lag_left) * sum(abs2,lag_right)
+    )
+    axial_lag1 = lag_num / lag_den
+
+    gains = wiener_image.gain_radial[2:end]
+    roi_W = Float64.(W[mask,:])
+    roi_I = Float64.(I[mask,:])
+    roi_W .-= mean(roi_W)
+    roi_I .-= mean(roi_I)
+    basis_rho = sum(roi_W .* roi_I) /
+        sqrt(sum(abs2,roi_W)*sum(abs2,roi_I))
+    object_counts = [
+        begin
+            h = sim_bins.bins[k]
+            selected = h .> 0.1f0
+            median(Float64.(
+                nchannel_basis.I0[k] .* exp.(-h[selected])
+            ))
+        end
+        for k in 1:4
+    ]
+
+    (
+        β_fisher=fisher_acnr.β,β_image=β_image,
+        β_relative_error=abs(β_image-fisher_acnr.β)/max(abs(β_image),eps()),
+        empirical_wiener_sd=empirical_wiener_sd,
+        zero_residual_sd=zero_residual_sd,
+        synth_max_abs_error_HU=synth_error,
+        axial_lag1=axial_lag1,
+        gain_median=median(gains),
+        gain_zero_fraction=count(x -> x ≤ 1e-6,gains)/length(gains),
+        gain_high_fraction=count(x -> x ≥ 0.9,gains)/length(gains),
+        basis_roi_sd=(water=std(W[mask,:]),iodine=std(I[mask,:])),
+        basis_roi_rho=basis_rho,
+        I0_counts=Float64.(nchannel_basis.I0),
+        median_object_counts=object_counts,
+    )
+end;
+
+# ╔═╡ 0e3e1191-edfb-4e5d-8845-6ba9be895538
+let
+    a = fisher_acnr_adversarial
+    energies = fisher_acnr.energies
+    fig = Mke.Figure(size=(900,500))
+    ax = Mke.Axis(
+        fig[1,1];title="Adversarial Noise Floors",
+        subtitle="Tests covariance propagation and method ceiling",
+        xlabel="VMI Energy (keV)",ylabel="Solid-water σ (HU)",
+        xticks=(energies,string.(Int.(energies))),
+    )
+    Mke.lines!(
+        ax,energies,fisher_acnr_metrics.raw_sd;
+        color=:black,linewidth=3,label="Common-kernel raw",
+    )
+    Mke.lines!(
+        ax,energies,fisher_acnr_metrics.denoised_sd;
+        color=:dodgerblue,linewidth=3,label="Projection-Fisher β",
+    )
+    Mke.lines!(
+        ax,energies,a.empirical_wiener_sd;
+        color=:darkorange,linewidth=3,label="Image-ROI β",
+    )
+    Mke.lines!(
+        ax,energies,a.zero_residual_sd;
+        color=:crimson,linewidth=3,linestyle=:dash,
+        label="Residual deleted (ceiling)",
+    )
+    for curve in (
+        fisher_acnr_metrics.raw_sd,fisher_acnr_metrics.denoised_sd,
+        a.empirical_wiener_sd,a.zero_residual_sd,
+    )
+        Mke.scatter!(ax,energies,curve;markersize=11)
+    end
+    Mke.axislegend(ax;position=:rt)
+    fig
+end
+
+# ╔═╡ bf6152a1-c29f-4292-a197-f2e2cdd7e9e0
+let
+    a = fisher_acnr_adversarial
+    md"""
+    **Adversarial audit results**
+
+    - VMI algebra/unit maximum error: **$(round(Float64(a.synth_max_abs_error_HU),sigdigits=4)) HU**
+    - Projection-Fisher β: **$(round(a.β_fisher,digits=5))**
+    - Empirical post-FBP image β: **$(round(a.β_image,digits=5))**
+    - β relative disagreement: **$(round(100a.β_relative_error,digits=2))%**
+    - Image-β Wiener noise (HU): **$(join(round.(a.empirical_wiener_sd,digits=1),", "))**
+    - Zero-residual method floor (HU): **$(join(round.(a.zero_residual_sd,digits=1),", "))**
+    - Residual axial lag-one correlation: **$(round(a.axial_lag1,digits=4))**
+    - Wiener radial gain median: **$(round(a.gain_median,digits=4))**
+    - Gain bins at zero / above 0.9: **$(round(100a.gain_zero_fraction,digits=1))% / $(round(100a.gain_high_fraction,digits=1))%**
+    - Raw common-kernel basis ROI SD — water: **$(round(a.basis_roi_sd.water,digits=4)) g/cm³**, iodine: **$(round(a.basis_roi_sd.iodine,digits=5)) g/cm³**
+    - Raw image-domain basis correlation: **$(round(a.basis_roi_rho,digits=4))**
+    - Per-bin air counts: **$(join(round.(a.I0_counts,digits=1),", "))**
+    - Median transmitted object counts: **$(join(round.(a.median_object_counts,digits=1),", "))**
+
+    A large β disagreement identifies invalid covariance propagation in the
+    first implementation. A still-unacceptable zero-residual floor proves
+    that preserving one noisy reference mode cannot solve the absolute-noise
+    problem even with perfect removal of the other mode.
+    """
+end
+
 # ╔═╡ 2d447ccd-b408-42a6-8a1b-af770e3277e4
 md"""
 ## Direct FBP of the Material Sinograms
@@ -1366,6 +1918,21 @@ end
 # ╠═a0930dd5-c28e-45a1-9bb6-4be300ba19d2
 # ╟─7d987c7a-50ac-4827-9145-d07efe14747a
 # ╟─2d6e6dda-5a23-42c8-8744-116029c2db9a
+# ╟─f8688ab5-5e22-432e-bf04-45d8a7763576
+# ╠═40b39aa1-2aed-4804-80db-cab52a8e4964
+# ╠═308003a4-fe8e-4690-a492-2bc786e96965
+# ╠═f8138d36-d35a-403a-a824-26ab60d75727
+# ╠═94b9c44f-90a5-4dad-95d8-3b47d4036575
+# ╠═ca67864e-a436-4bf5-be0e-1924019885f5
+# ╠═42dafcec-17be-4ed4-8e6a-3185ee9f0b0b
+# ╟─fa1fb5e8-64ee-4e9b-8ce7-dd8eb00f0e22
+# ╠═c2f2b9a2-aead-4de1-9132-a8d6bc10ded6
+# ╟─efbb5ea0-a2ad-4d94-a145-34bc65a059cc
+# ╟─22c17c01-1162-49e8-80d4-3b013f1e0672
+# ╟─3d019ead-ea76-49b6-bc64-a6e534b9612a
+# ╠═d13ac73b-b554-4a42-a1e1-29feb2365514
+# ╟─0e3e1191-edfb-4e5d-8845-6ba9be895538
+# ╟─bf6152a1-c29f-4292-a197-f2e2cdd7e9e0
 # ╟─2d447ccd-b408-42a6-8a1b-af770e3277e4
 # ╠═1ff5e801-ef54-45ff-b0a8-e780e2e6cb63
 # ╟─65a40efc-c9ff-41d4-8f42-46d6737119d5
