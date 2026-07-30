@@ -218,6 +218,12 @@ version = "0.10.2"
     CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
     Metal = "dde4c033-4e86-420c-a63e-0dd931031962"
 
+[[deps.Binaryen_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "e249aa8bb57ada48a924e5bb02d141369c691a58"
+uuid = "a54ac8ab-712d-5a0e-8e11-9296c0d3c20e"
+version = "0.130.0+0"
+
 [[deps.Bzip2_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]
 git-tree-sha1 = "1b96ea4a01afe0ea4090c5c8039690672dd13f2e"
@@ -1927,9 +1933,9 @@ version = "1.11.0"
 
 [[deps.Therapy]]
 deps = ["Downloads", "FileWatching", "HTTP", "JSON", "MIMEs", "SHA", "Sockets", "TOML", "UUIDs", "WasmTarget"]
-git-tree-sha1 = "1dffacc8f17a2be05cbff541dd1f100032190499"
+git-tree-sha1 = "87ec1c6e8eee9d4f47b0bdc116e09ee0527757bb"
 uuid = "b2c3d4e5-f6a7-8901-bcde-f12345678901"
-version = "0.2.1"
+version = "0.2.6"
 
 [[deps.TiffImages]]
 deps = ["CodecZstd", "ColorTypes", "DataStructures", "DocStringExtensions", "FileIO", "FixedPointNumbers", "IndirectArrays", "Inflate", "Mmap", "OffsetArrays", "PkgVersion", "PrecompileTools", "ProgressMeter", "SIMD", "UUIDs"]
@@ -2022,10 +2028,10 @@ uuid = "e17b2a0c-0bdf-430a-bd0c-3a23cae4ff39"
 version = "1.0.0"
 
 [[deps.WasmTarget]]
-deps = ["JSON", "PrecompileTools"]
-git-tree-sha1 = "52af3745becfacd730abdfd1939b159eefaf94ef"
+deps = ["Binaryen_jll", "JSON", "PrecompileTools"]
+git-tree-sha1 = "9d40d644f7ad0beda8a7900b3bca8eb4e912f453"
 uuid = "9f3a1415-1112-405b-ae89-c61daf9872bd"
-version = "0.4.12"
+version = "0.5.3"
 
     [deps.WasmTarget.extensions]
     WasmTargetDatesExt = "Dates"

@@ -90,13 +90,23 @@ provenance declaration. Missing files are allowed: CI consumes the committed
 exports and does not need private/large rendering inputs."""
 function verify_local_data!()
     isfile(DATA_PROVENANCE) || error("missing committed data provenance: $(DATA_PROVENANCE)")
+    configured_roots = Dict(
+        "qrm_thorax" => get(ENV, "BASISSIM_QRM_DIR", joinpath(DATA_DIR, "qrm_thorax")),
+        "xcat" => get(ENV, "BASISSIM_XCAT_DIR", joinpath(DATA_DIR, "xcat")),
+    )
     for raw_line in eachline(DATA_PROVENANCE)
         line = strip(raw_line)
         (isempty(line) || startswith(line, '#')) && continue
         parts = split(line; limit = 2)
         length(parts) == 2 || error("malformed data provenance line: $(raw_line)")
         expected, relative = parts
-        path = joinpath(DATA_DIR, strip(relative))
+        relative = strip(relative)
+        parts = splitpath(relative)
+        path = if !isempty(parts) && haskey(configured_roots, first(parts))
+            joinpath(configured_roots[first(parts)], parts[2:end]...)
+        else
+            joinpath(DATA_DIR, relative)
+        end
         isfile(path) || continue
         actual = bytes2hex(sha256(read(path)))
         actual == expected || error("dataset checksum mismatch: $(relative)")

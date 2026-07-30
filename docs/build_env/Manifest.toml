@@ -367,8 +367,8 @@ version = "1.2.0"
 
 [[deps.Snapshot]]
 deps = ["AbstractPlutoDingetjes", "Base64", "Dates", "InteractiveUtils", "JSON", "Markdown", "Pkg", "Pluto", "PlutoDependencyExplorer", "Random", "SHA", "UUIDs", "WasmTarget"]
-git-tree-sha1 = "ba78226c96a1d139b479a9815dd7a27b23e4d2ad"
-repo-rev = "316c5acb1f768fc6a839788e73d9c91fd04fb581"
+git-tree-sha1 = "8d6ee8bd4c682c7d86a5d222d83c7f27d90f404f"
+repo-rev = "f0932cb2cd23781fe6d63fa488b65a16fa968e2d"
 repo-url = "https://github.com/GroupTherapyOrg/Snapshot.jl"
 uuid = "1e64ef43-5f79-4f6b-8e97-159df4e27032"
 version = "0.1.0"
