@@ -1,8 +1,8 @@
-<!-- basissim-export-fingerprint: f1fee2909263fa04ac96b9bc83d0a12d1611932a05124a1fc0d1b803355ee52b -->
-<div class="snap-notebook">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5/themes.css">
+<!-- basissim-export-fingerprint: 754c95486b654774ad762937824be896bbd212b867a2b68f2fe46eaefb143b98 -->
+<div class="snap-notebook" data-snapshot-requires="daisyui-themes@5.6.2 katex@0.11.1">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.6.2/themes.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.11.1/dist/katex.min.css">
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.11.1/dist/katex.min.js"></script>
+<script defer data-therapy-rerun src="https://cdn.jsdelivr.net/npm/katex@0.11.1/dist/katex.min.js"></script>
 <style>
 /* classic-light / classic-dark — 1:1 ports of Pluto's own palettes (Pluto
    frontend/themes/light.css and dark.css, v0.20.28) onto the standard DaisyUI
@@ -13,13 +13,13 @@
    SINGLE SOURCE OF TRUTH, used twice:
      - src/pluto_css.jl reads it at precompile time → CLASSIC_THEMES_CSS, inlined
        into every export (standalone + fragment), because the CDN
-       daisyui@5/themes.css only ships the built-in themes.
+       pinned DaisyUI themes sheet only ships the built-in themes.
      - docs/input.css @imports it into the site stylesheet.
 
    Selector shape matters: `:root[data-theme=…]` is specificity (0,2,0) so the
    html-level attribute beats the bare `:root { …light tokens… }` block that the
-   CDN daisyui@5/themes.css (loaded by embedded notebook fragments, possibly
-   AFTER this sheet) declares at (0,1,0). The bare `[data-theme=…]` alternative
+   host's DaisyUI themes sheet declares at (0,1,0). The bare
+   `[data-theme=…]` alternative
    matches theme swatches / .snap-notebook divs, where inheritance proximity
    already wins. */
 
@@ -211,14 +211,15 @@ pre,table,bond,.markdown,img{max-width:100%}
 /* safety net: anything STILL wider than the column scrolls within the notebook column
    rather than pushing the page layout out (e.g. a stray fixed-width figure). */
 .snap-cells,main{overflow-x:auto}
-/* Lezer-Julia token highlight (classHighlighter tok-* classes), DaisyUI-aware */
-.tok-keyword,.tok-controlKeyword,.tok-definitionKeyword,.tok-moduleKeyword,.tok-operatorKeyword{color:#8b5cf6}
+/* Lezer-Julia token highlight. These consume the same shared syntax tokens as
+   Pluto/CodeMirror in PLUTO_VAR_MAP, so upstream and exported code cannot drift. */
+.tok-keyword,.tok-controlKeyword,.tok-definitionKeyword,.tok-moduleKeyword,.tok-operatorKeyword{color:var(--snapshot-syntax-keyword)}
 .tok-comment,.tok-lineComment,.tok-blockComment{color:var(--pl-muted);font-style:italic}
-.tok-string,.tok-character,.tok-special{color:#16a34a}
-.tok-number,.tok-integer,.tok-float,.tok-bool,.tok-atom,.tok-constant{color:#d97706}
-.tok-typeName{color:#0891b2}
-.tok-macroName{color:#db2777}
-.tok-function,.tok-definition{color:#2563eb}
+.tok-string,.tok-character,.tok-special{color:var(--snapshot-syntax-string)}
+.tok-number,.tok-integer,.tok-float,.tok-bool,.tok-atom,.tok-constant{color:var(--snapshot-syntax-number)}
+.tok-typeName{color:var(--snapshot-syntax-type)}
+.tok-macroName{color:var(--snapshot-syntax-macro)}
+.tok-function,.tok-definition{color:var(--snapshot-syntax-function)}
 .tok-operator,.tok-arithmeticOperator,.tok-compareOperator,.tok-logicOperator,.tok-derefOperator,.tok-typeOperator{color:var(--color-base-content);opacity:.8}
 /* ── EMBEDDED ToC (docs): keep Pluto's floating aside, but make it respect the docs
    chrome. It stays a fixed top-right panel (like Pluto) so it never disturbs the
@@ -227,7 +228,13 @@ pre,table,bond,.markdown,img{max-width:100%}
    right viewport edge (translateX to right:0) instead of PAST it, so it can never
    add a horizontal scrollbar. It starts collapsed (the JS adds .hide) so it reads
    as a tidy tab the reader opens, never floating over docs text at rest. */
-.plutoui-toc.toc-embedded.aside{z-index:30;top:4.5rem;right:0;max-height:calc(100vh - 6rem);box-shadow:0 2px 14px rgba(0,0,0,.10)}
+.plutoui-toc.toc-embedded.aside{
+  z-index:var(--snapshot-toc-z,30);
+  top:var(--snapshot-toc-top,4.5rem);
+  right:var(--snapshot-toc-right,0);
+  max-height:var(--snapshot-toc-max-height,calc(100vh - 6rem));
+  box-shadow:0 2px 14px color-mix(in oklab,var(--color-base-content) 10%,transparent)
+}
 .plutoui-toc.toc-embedded.aside.hide{transform:translateX(calc(100% - 28px))}
 
 /* classic-light / classic-dark — 1:1 ports of Pluto's own palettes (Pluto
@@ -239,20 +246,20 @@ pre,table,bond,.markdown,img{max-width:100%}
    SINGLE SOURCE OF TRUTH, used twice:
      - src/pluto_css.jl reads it at precompile time → CLASSIC_THEMES_CSS, inlined
        into every export (standalone + fragment), because the CDN
-       daisyui@5/themes.css only ships the built-in themes.
+       pinned DaisyUI themes sheet only ships the built-in themes.
      - docs/input.css @imports it into the site stylesheet.
 
-   Selector shape matters: `:root[data-theme=…]` is specificity (0,2,0) so the
-   html-level attribute beats the bare `:root { …light tokens… }` block that the
-   CDN daisyui@5/themes.css (loaded by embedded notebook fragments, possibly
-   AFTER this sheet) declares at (0,1,0). The bare `[data-theme=…]` alternative
+   Selector shape matters: `:scope[data-theme=…]` is specificity (0,2,0) so the
+   html-level attribute beats the bare `:scope { …light tokens… }` block that the
+   host's DaisyUI themes sheet declares at (0,1,0). The bare
+   `[data-theme=…]` alternative
    matches theme swatches / .snap-notebook divs, where inheritance proximity
    already wins. */
 
 /* fun-light / fun-dark — Snapshot's playful export palettes. These are kept in
    the same token sheet as the classic themes so standalone exports and scoped
    collection fragments share one source of truth. */
-:root[data-theme="fun-light"],
+:scope[data-theme="fun-light"],
 [data-theme="fun-light"] {
   color-scheme: light;
   --color-base-100: #ffffff;
@@ -285,7 +292,7 @@ pre,table,bond,.markdown,img{max-width:100%}
   --noise: 0;
 }
 
-:root[data-theme="fun-dark"],
+:scope[data-theme="fun-dark"],
 [data-theme="fun-dark"] {
   color-scheme: dark;
   --color-base-100: #20212b;
@@ -319,7 +326,7 @@ pre,table,bond,.markdown,img{max-width:100%}
 }
 
 /* classic-light — Pluto frontend/themes/light.css → DaisyUI tokens */
-:root[data-theme="classic-light"],
+:scope[data-theme="classic-light"],
 [data-theme="classic-light"] {
   color-scheme: light;
   --color-base-100: #ffffff;              /* --main-bg-color / --pluto-output-bg-color */
@@ -353,7 +360,7 @@ pre,table,bond,.markdown,img{max-width:100%}
 }
 
 /* classic-dark — Pluto frontend/themes/dark.css → DaisyUI tokens */
-:root[data-theme="classic-dark"],
+:scope[data-theme="classic-dark"],
 [data-theme="classic-dark"] {
   color-scheme: dark;
   --color-base-100: hsl(0 0% 12%);        /* --main-bg-color */
@@ -389,7 +396,7 @@ pre,table,bond,.markdown,img{max-width:100%}
 /* AUTO-GENERATED by src/pluto_css.jl — Pluto's output CSS re-themed to DaisyUI.
    Every Pluto colour var below → a DaisyUI --color-* token. Do not hand-edit;
    edit PLUTO_VAR_MAP / pluto-base.css and regenerate (write_pluto_css()). */
-:root {
+:scope {
   --a-underline: color-mix(in oklab, var(--color-primary) 45%, transparent);
   --admonition-title-color: var(--color-primary-content);
   --ansi-black: var(--color-base-content);
@@ -414,17 +421,17 @@ pre,table,bond,.markdown,img{max-width:100%}
   --blockquote-bg: var(--color-base-200);
   --blockquote-color: color-mix(in oklab, var(--color-base-content) 65%, transparent);
   --br: 0.4rem;
-  --cm-color-builtin: var(--color-info, #0891b2);
+  --cm-color-builtin: var(--snapshot-syntax-type);
   --cm-color-clickable-underline: var(--color-primary);
   --cm-color-comment: color-mix(in oklab, var(--color-base-content) 50%, transparent);
   --cm-color-editor-text: var(--color-base-content);
-  --cm-color-keyword: #8b5cf6;
+  --cm-color-keyword: var(--snapshot-syntax-keyword);
   --cm-color-line-numbers: color-mix(in oklab, var(--color-base-content) 50%, transparent);
-  --cm-color-literal: #d97706;
-  --cm-color-macro: #db2777;
-  --cm-color-string: #16a34a;
-  --cm-color-symbol: #d97706;
-  --cm-color-type: var(--color-info, #0891b2);
+  --cm-color-literal: var(--snapshot-syntax-number);
+  --cm-color-macro: var(--snapshot-syntax-macro);
+  --cm-color-string: var(--snapshot-syntax-string);
+  --cm-color-symbol: var(--snapshot-syntax-number);
+  --cm-color-type: var(--snapshot-syntax-type);
   --cm-color-variable: var(--color-base-content);
   --cm-highlighted: color-mix(in oklab, var(--color-primary) 15%, transparent);
   --cm-var-color: var(--color-base-content);
@@ -471,6 +478,12 @@ pre,table,bond,.markdown,img{max-width:100%}
   --roboto-mono-font-stack: "Roboto Mono", ui-monospace, Menlo, monospace;
   --rule-color: var(--color-base-300);
   --sidebar-li-active-bg: color-mix(in oklab, var(--color-primary) 12%, transparent);
+  --snapshot-syntax-function: #2563eb;
+  --snapshot-syntax-keyword: #8b5cf6;
+  --snapshot-syntax-macro: #db2777;
+  --snapshot-syntax-number: #d97706;
+  --snapshot-syntax-string: #16a34a;
+  --snapshot-syntax-type: #0891b2;
   --system-fonts-mono: var(--julia-mono-font-stack);
   --system-ui-font-stack: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --table-bg-hover-color: var(--color-base-200);
@@ -1252,7 +1265,7 @@ jlerror > section > ol > li:not(.important)::marker {
     font-weight: 100;
 }
 jlerror > section > ol > li.from_this_notebook {
-    --bg: var(--jl-info-acccolor);
+    --bg: var(--color-base-100);
     background: var(--bg);
     outline: 3px solid var(--bg);
     padding: 0.4em 0em;
@@ -1323,9 +1336,9 @@ jlerror li a.frame-line-preview {
     display: block;
     text-decoration: none;
     border: 3px solid var(--cm-color-clickable-underline);
-    --br: 0.6em;
+    --br: 0.4rem;
     border-radius: var(--br);
-    --crop: -0.5em;
+    --crop: 0;
 }
 jlerror li .frame-line-preview pre:not(.asdfdsaf) {
     background-color: var(--code-background);
@@ -1497,20 +1510,20 @@ pluto-tree.collapsed p-v > pre {
 .plutoui-toc {
 	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Cantarell, "Apple Color Emoji",
 		"Segoe UI Emoji", "Segoe UI Symbol", system-ui, sans-serif;
-	--main-bg-color: #fafafa;
-	--pluto-output-color: hsl(0, 0%, 36%);
-	--pluto-output-h-color: hsl(0, 0%, 21%);
-	--sidebar-li-active-bg: rgb(235, 235, 235);
-	--icon-filter: unset;
+	--main-bg-color: var(--color-base-100);
+	--pluto-output-color: var(--color-base-content);
+	--pluto-output-h-color: var(--color-base-content);
+	--sidebar-li-active-bg: color-mix(in oklab, var(--color-primary) 12%, transparent);
+	--icon-filter: none;
 }
 
 @media (prefers-color-scheme: dark) {
 	.plutoui-toc {
-		--main-bg-color: #303030;
-		--pluto-output-color: hsl(0, 0%, 90%);
-		--pluto-output-h-color: hsl(0, 0%, 97%);
-		--sidebar-li-active-bg: rgb(82, 82, 82);
-		--icon-filter: invert(1);
+		--main-bg-color: var(--color-base-100);
+		--pluto-output-color: var(--color-base-content);
+		--pluto-output-h-color: var(--color-base-content);
+		--sidebar-li-active-bg: color-mix(in oklab, var(--color-primary) 12%, transparent);
+		--icon-filter: none;
 	}
 }
 
@@ -1532,7 +1545,7 @@ pluto-tree.collapsed p-v > pre {
 }
 
 .plutoui-toc.smallscreen:not(.hide) {
-	box-shadow: 0 0 11px 0px #00000010;
+	box-shadow: 0 0 11px 0px color-mix(in oklab, var(--color-base-content) 6%, transparent);
 }
 
 .plutoui-toc.aside.hide {
@@ -1636,7 +1649,7 @@ pluto-tree.collapsed p-v > pre {
 
 	
 .highlight-pluto-cell-shoulder {
-	background: rgba(0, 0, 0, 0.05);
+	background: color-mix(in oklab, var(--color-primary) 7%, transparent);
 	background-clip: padding-box;
 }
 
@@ -1688,37 +1701,37 @@ pluto-tree.collapsed p-v > pre {
 /* ─── ToC local vars → DaisyUI (after, so it wins over Pluto's prefers-dark) ─── */
 .plutoui-toc {
   --main-bg-color: var(--color-base-100);
-  --pluto-output-color: color-mix(in oklab, var(--color-base-content) 65%, transparent);
+  --pluto-output-color: var(--color-base-content);
   --pluto-output-h-color: var(--color-base-content);
-  --sidebar-li-active-bg: var(--color-base-200);
+  --sidebar-li-active-bg: color-mix(in oklab, var(--color-primary) 12%, transparent);
   --icon-filter: none;
-  --cm-var-color: var(--color-primary);
+  --cm-var-color: var(--color-base-content);
   border: 1px solid var(--color-base-300);
 }
-@media (prefers-color-scheme: dark) { :root:not([data-theme]) .plutoui-toc { --icon-filter: invert(1); } }
+@media (prefers-color-scheme: dark) { :scope:not([data-theme]) .plutoui-toc { --icon-filter: none; } }
 
 
 /* ── ansi-colors.css (stdout colour) ── */
 
 /* ANSI color classes */
 
-:root {
-    --ansi-black: rgb(0, 0, 0);
-    --ansi-red: rgb(187, 0, 0);
-    --ansi-green: rgb(0, 187, 0);
-    --ansi-yellow: rgb(187, 187, 0);
-    --ansi-blue: rgb(0, 0, 187);
-    --ansi-magenta: rgb(187, 0, 187);
-    --ansi-cyan: rgb(0, 187, 187);
-    --ansi-white: rgb(255, 255, 255);
-    --ansi-bright-black: rgb(85, 85, 85);
-    --ansi-bright-red: rgb(255, 85, 85);
-    --ansi-bright-green: rgb(0, 255, 0);
-    --ansi-bright-yellow: rgb(255, 255, 85);
-    --ansi-bright-blue: rgb(85, 85, 255);
-    --ansi-bright-magenta: rgb(255, 85, 255);
-    --ansi-bright-cyan: rgb(85, 255, 255);
-    --ansi-bright-white: rgb(255, 255, 255);
+:scope {
+    --ansi-black: var(--color-base-content);
+    --ansi-red: var(--color-error, #dc2626);
+    --ansi-green: var(--color-success, #16a34a);
+    --ansi-yellow: var(--color-warning, #d97706);
+    --ansi-blue: var(--color-info, #3b82f6);
+    --ansi-magenta: var(--color-secondary, #7c3aed);
+    --ansi-cyan: var(--color-accent, #0891b2);
+    --ansi-white: color-mix(in oklab, var(--color-base-content) 35%, var(--color-base-100));
+    --ansi-bright-black: color-mix(in oklab, var(--color-base-content) 60%, transparent);
+    --ansi-bright-red: var(--color-error, #ef4444);
+    --ansi-bright-green: var(--color-success, #22c55e);
+    --ansi-bright-yellow: var(--color-warning, #eab308);
+    --ansi-bright-blue: var(--color-info, #60a5fa);
+    --ansi-bright-magenta: var(--color-secondary, #a855f7);
+    --ansi-bright-cyan: var(--color-accent, #22d3ee);
+    --ansi-bright-white: var(--color-base-content);
 }
 
 /* Foreground colors */
@@ -1825,14 +1838,14 @@ pluto-tree.collapsed p-v > pre {
 
 /* Some custom styles for stdout to improve contrast and readability */
 pluto-log-dot.Stdout {
-    --ansi-red: rgb(220, 0, 0);
-    --ansi-magenta: rgb(200, 0, 200);
-    --ansi-white: rgb(220, 220, 220);
-    --ansi-bright-black: rgb(50, 50, 50);
-    --ansi-bright-yellow: rgb(240, 240, 50);
-    --ansi-bright-blue: rgb(110, 110, 255);
-    --ansi-bright-white: rgb(240, 240, 240);
-    --ansi-bright-black: rgb(183 183 183);
+    --ansi-red: var(--color-error, #dc2626);
+    --ansi-magenta: var(--color-secondary, #7c3aed);
+    --ansi-white: color-mix(in oklab, var(--color-base-content) 35%, var(--color-base-100));
+    --ansi-bright-black: color-mix(in oklab, var(--color-base-content) 60%, transparent);
+    --ansi-bright-yellow: var(--color-warning, #eab308);
+    --ansi-bright-blue: var(--color-info, #60a5fa);
+    --ansi-bright-white: var(--color-base-content);
+    --ansi-bright-black: color-mix(in oklab, var(--color-base-content) 60%, transparent);
 }
 
 pluto-log-dot.Stdout .ansi-bright-black-fg:is(.ansi-white-bg, .ansi-bright-white-bg) {
@@ -1910,30 +1923,28 @@ code.hljs {
     box-sizing: border-box;
 }
 
-:root {
-    --inter-ui-font-stack:
-        "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Cantarell, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol",
-        system-ui, sans-serif;
-    --system-fonts-mono: Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+:scope {
+    --inter-ui-font-stack: var(--system-ui-font-stack);
+    --system-fonts-mono: var(--julia-mono-font-stack);
 
     color-scheme: light dark;
     font-family: var(--inter-ui-font-stack);
     font-size: 17px;
 
-    --black: black;
-    --gray1: gray;
-    --white: white;
+    --black: var(--color-base-content);
+    --gray1: color-mix(in oklab, var(--color-base-content) 45%, transparent);
+    --white: var(--color-base-100);
 }
 
 @media (prefers-color-scheme: dark) {
-    :root {
-        --black: white;
-        --gray1: color-mix(in oklab, var(--color-base-content) 22%, transparent);
-        --white: black;
+    :scope {
+        --black: var(--color-base-content);
+        --gray1: color-mix(in oklab, var(--color-base-content) 45%, transparent);
+        --white: var(--color-base-100);
     }
 }
 
-body {
+:scope {
     max-width: 700px;
     margin: 0 auto;
     margin-top: 3rem;
@@ -1989,7 +2000,7 @@ a:visited {
   </header>
   <section></section>
 </nav>
-<script>
+<script data-therapy-rerun>
 (function () {
   function init() {
     var navs = document.querySelectorAll(".plutoui-toc");
@@ -1998,6 +2009,16 @@ a:visited {
       if (nav.__pl_toc_init) return; nav.__pl_toc_init = true;
       var section = nav.querySelector("section");
       var embedded = nav.hasAttribute("data-embedded");
+      var lifecycle = new AbortController();
+      var mutationObserver = null;
+      var timers = [];
+      function later(fn, ms) {
+        var id = setTimeout(function () {
+          timers = timers.filter(function (x) { return x !== id; });
+          if (!lifecycle.signal.aborted) fn();
+        }, ms);
+        timers.push(id); return id;
+      }
       // the notebook root this ToC belongs to (its nearest .snap-notebook, else <main>,
       // else the document) — keeps the heading scan scoped in BOTH contexts.
       var root = (nav.closest && nav.closest(".snap-notebook")) || document.querySelector("main") || document;
@@ -2017,6 +2038,52 @@ a:visited {
       // ── scroll-spy: PlutoUI's two-observer "topmost header in upper half" rule ──
       var highlighted = new Set();
       var lastClickTime = { current: 0 };
+      var pendingHash = location.hash ? location.hash.slice(1) : "";
+      var hashRestoreToken = 0;
+      var hashRestoreCancelled = false;
+      function decodedHash(raw) {
+        try { return decodeURIComponent(raw); } catch (_) { return raw; }
+      }
+      function scrollHeading(h, behavior) {
+        // Collections put the notebook inside `.sn-main`, its own scroll pane.
+        // `scrollIntoView()` also scrolls overflow:hidden ancestors such as
+        // `.sn-body`, which nudges the entire notebook/sidebar shell. Move only
+        // the real notebook scroller and restore the shell to its fixed origin.
+        var scroller = h.closest && h.closest(".sn-main");
+        if (scroller) {
+          var shell = scroller.closest && scroller.closest(".sn-body");
+          if (shell) shell.scrollTop = 0;
+          var hr = h.getBoundingClientRect();
+          var sr = scroller.getBoundingClientRect();
+          var inset = 24;
+          var top = scroller.scrollTop + hr.top - sr.top - inset;
+          scroller.scrollTo({ top: Math.max(0, top), behavior: behavior });
+        } else {
+          h.scrollIntoView({ behavior: behavior, block: "start" });
+        }
+      }
+      function restoreCollectionHash(heads) {
+        if (!pendingHash) return;
+        var hashId = decodedHash(pendingHash);
+        var target = heads.find(function (h) { return h.id === hashId; });
+        if (!target || !(target.closest && target.closest(".sn-main"))) return;
+        pendingHash = "";
+        var token = ++hashRestoreToken;
+        var apply = function () {
+          if (token !== hashRestoreToken || hashRestoreCancelled) return;
+          scrollHeading(target, "auto");
+        };
+        var afterLoad = function () {
+          // The first pass repairs the browser's deferred native hash scroll.
+          // Two bounded rechecks absorb late font/island layout without
+          // continuing to fight a visitor who starts scrolling.
+          [0, 150, 900].forEach(function (ms) {
+            later(function () { requestAnimationFrame(apply); }, ms);
+          });
+        };
+        if (document.readyState === "complete") afterLoad();
+        else window.addEventListener("load", afterLoad, { once: true, signal: lifecycle.signal });
+      }
       function intersectionCallback(ixs) {
         var onTop = ixs.filter(function (ix) {
           return ix.intersectionRatio > 0 && ix.intersectionRect.y < ix.rootBounds.height / 2;
@@ -2034,6 +2101,14 @@ a:visited {
         ? new IntersectionObserver(intersectionCallback, { root: null, threshold: 1, rootMargin: "-15px" }) : null;
       var io2 = "IntersectionObserver" in window
         ? new IntersectionObserver(intersectionCallback, { root: null, threshold: 1, rootMargin: "15px" }) : null;
+      function cleanup() {
+        lifecycle.abort();
+        timers.forEach(clearTimeout); timers = [];
+        io1 && io1.disconnect(); io2 && io2.disconnect();
+        mutationObserver && mutationObserver.disconnect();
+      }
+      window.addEventListener("therapy:router:before-swap", cleanup,
+        { once: true, signal: lifecycle.signal });
 
       // skip rebuilds when the heading set hasn't changed (the heading texts as a
       // fingerprint) — without this the MutationObserver + island re-renders would
@@ -2058,7 +2133,9 @@ a:visited {
             e.preventDefault();
             try { history.replaceState(null, "", a.getAttribute("href")); } catch (_) {}
             lastClickTime.current = Date.now();
-            h.scrollIntoView({ behavior: "smooth", block: "start" });
+            var reduced = window.matchMedia &&
+              window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+            scrollHeading(h, reduced ? "auto" : "smooth");
           });
           var row = document.createElement("div");
           row.className = "toc-row " + lvl + " after-" + last;
@@ -2069,13 +2146,18 @@ a:visited {
           last = lvl;
         });
         section.replaceChildren(frag);
+        // A direct `.../#heading` load is handled natively before this script.
+        // In collections that can scroll `.sn-body`; route it back through the
+        // safe pane-only path. If an island creates the heading later,
+        // `pendingHash` deliberately survives until a later render finds it.
+        restoreCollectionHash(heads);
       }
 
       // toggle collapse on the header icons (PlutoUI: any click within a .toc-toggle)
       nav.addEventListener("click", function (e) {
         var t = e.target.closest && e.target.closest(".toc-toggle");
         if (t) { e.stopImmediatePropagation(); nav.classList.toggle("hide"); }
-      });
+      }, { signal: lifecycle.signal });
 
       // small-screen auto-hide (PlutoUI thresholds). Embedded ToCs ALSO start hidden
       // so they never float over docs content at rest — hover/click the edge strip.
@@ -2087,13 +2169,31 @@ a:visited {
         if (!nav.__pl_user_toggled) nav.classList.toggle("hide", small || embedded);
       }
       nav.querySelectorAll(".toc-toggle").forEach(function (t) {
-        t.addEventListener("click", function () { nav.__pl_user_toggled = true; });
+        t.addEventListener("click", function () { nav.__pl_user_toggled = true; },
+          { signal: lifecycle.signal });
       });
-      ["resize"].forEach(function (ev) { window.addEventListener(ev, matchListener); });
+      ["resize"].forEach(function (ev) {
+        window.addEventListener(ev, matchListener, { signal: lifecycle.signal });
+      });
+      ["wheel", "touchstart"].forEach(function (ev) {
+        window.addEventListener(ev, function () {
+          hashRestoreCancelled = true; ++hashRestoreToken;
+        }, { passive: true, signal: lifecycle.signal });
+      });
+      window.addEventListener("keydown", function (e) {
+        if (["ArrowDown","ArrowUp","PageDown","PageUp","Home","End"," "].indexOf(e.key) >= 0) {
+          hashRestoreCancelled = true; ++hashRestoreToken;
+        }
+      }, { signal: lifecycle.signal });
+      window.addEventListener("hashchange", function () {
+        pendingHash = location.hash ? location.hash.slice(1) : "";
+        hashRestoreCancelled = false;
+        restoreCollectionHash(getHeaders());
+      }, { signal: lifecycle.signal });
 
       render();
       // reactive islands mount their output after first paint — rebuild a few times
-      [100, 1000, 3000].forEach(function (ms) { setTimeout(render, ms); });
+      [100, 1000, 3000].forEach(function (ms) { later(render, ms); });
       // and watch the CELLS container for structural changes (island re-renders add
       // output). We observe the cells area, NOT the nav — observing the whole `root`
       // (which CONTAINS this nav) would let our own section.replaceChildren() retrigger
@@ -2104,9 +2204,10 @@ a:visited {
                       (root === document ? null : root);
       if ("MutationObserver" in window && cellsArea && !cellsArea.contains(nav)) {
         var deb = null;
-        new MutationObserver(function () {
-          clearTimeout(deb); deb = setTimeout(render, 200);
-        }).observe(cellsArea, { childList: true, subtree: true });
+        mutationObserver = new MutationObserver(function () {
+          clearTimeout(deb); deb = later(render, 200);
+        });
+        mutationObserver.observe(cellsArea, { childList: true, subtree: true });
       }
       matchListener();
     });
@@ -2176,7 +2277,7 @@ end</code></pre></div>
     "vmale_50_1600x1400x500_8bit_little_endian_act_1.bin"
 );</code></pre></div>
 <div class="pl-cell"><pluto-output class="rich_output" id="out-05000002-0000-4000-8000-000000000012">true</pluto-output><pre class="pl-code"><code class="pl-jl">const HAS_XCAT = isfile(PHANTOM_PATH)</code></pre></div>
-<div class="pl-cell"><pluto-output class="rich_output" id="out-05000002-0000-4000-8000-000000000013"><div class="markdown"><p><strong>XCAT located:</strong> <code>&#36;&#40;PHANTOM_PATH&#41;</code> &#40;1068.1 MB&#41;</p>
+<div class="pl-cell"><pluto-output class="rich_output" id="out-05000002-0000-4000-8000-000000000013"><div class="markdown"><p><strong>XCAT located:</strong> <code>&#36;&#40;basename&#40;PHANTOM_PATH&#41;&#41;</code> &#40;1068.1 MB&#41;</p>
 </div></pluto-output></div>
 <div class="pl-cell"><pluto-output class="rich_output" id="out-05000003-0000-4000-8000-000000000001"><div class="markdown"><h3 id="02.-Load-the-UHR-mask-&#40;DOWNSAMPLE_FACTOR-&#61;-2&#41;">02. Load the UHR mask &#40;DOWNSAMPLE_FACTOR &#61; 2&#41;</h3>
 <p>XCAT v<em>male</em>50 ships at 1600 × 1400 × 500 voxels @ 0.2 mm isotropic. Notebook 02 downsamples 5× for speed &#40;1 mm voxels — clinical-typical&#41;. <strong>Here we downsample only 2×</strong> → 800 × 700 × 250 voxels @ 0.4 mm isotropic &#61; roughly 32 × 28 × 10 cm physical, <strong>140 MB as UInt8</strong>.</p>
@@ -2692,7 +2793,7 @@ end;</code></pre></div>
 <div class="pl-cell"><pluto-output class="rich_output" id="out-05000015-0000-4000-8000-000000000001"><div class="markdown"><h3 id="05.-Scroll-through-z:-slider-driven-overlay">05. Scroll through z: slider-driven overlay</h3>
 <p>Drag the slider to scrub through the helical recon in z.  Left is the WFBP HU recon; right overlays the resampled cardiac labels &#40;translucent fill&#41; — they sit on the recon anatomy on <strong>every</strong> slice, so the affine holds across the full z stack, not just the mid-plane.</p>
 </div></pluto-output></div>
-<div class="pl-cell"><pluto-output class="rich_output" id="out-05000015-0000-4000-8000-000000000010"><bond def="z_helical" unique_id="fayyqtzxccqh"><input type='range' min='1' max='64' value='32'><script>(function(){const currentScript=document.currentScript;const invalidation=new Promise(function(){});const html=function(strings,...values){const t=document.createElement('template');t.innerHTML=String.raw({raw:strings},...values);return t.content.childNodes.length===1?t.content.firstChild:t.content;};const Generators=window.Generators||(window.Generators={input:function(el){let first=true,waiter=null;const read=function(){if(el.type==='checkbox')return el.checked;if(el.type==='range'||el.type==='number')return Number(el.value);return el.value;};el.addEventListener('input',function(){if(waiter){const w=waiter;waiter=null;w(read());}});return{next:function(){return{value:first?(first=false,Promise.resolve(read())):new Promise(function(r){waiter=r;})};}};}});const __run=async function(){
+<div class="pl-cell"><pluto-output class="rich_output" id="out-05000015-0000-4000-8000-000000000010"><bond def="z_helical" unique_id="ruvkvobhxeah"><input type='range' min='1' max='64' value='32'><script data-therapy-rerun>(function(){const currentScript=document.currentScript;let __invalidate;const invalidation=new Promise(function(resolve){__invalidate=resolve;});window.addEventListener('therapy:router:before-swap',function(){__invalidate();},{once:true});const html=function(strings,...values){const t=document.createElement('template');t.innerHTML=String.raw({raw:strings},...values);return t.content.childNodes.length===1?t.content.firstChild:t.content;};const Generators=window.Generators||(window.Generators={input:function(el){let first=true,waiter=null;const read=function(){if(el.type==='checkbox')return el.checked;if(el.type==='range'||el.type==='number')return Number(el.value);return el.value;};el.addEventListener('input',function(){if(waiter){const w=waiter;waiter=null;w(read());}});return{next:function(){return{value:first?(first=false,Promise.resolve(read())):new Promise(function(r){waiter=r;})};}};}});const __run=async function(){
 
 					const input_el = currentScript.previousElementSibling
 					const output_el = currentScript.nextElementSibling
@@ -2834,12 +2935,19 @@ end</code></pre></div>
 <p>The takeaway: <code>phantom_to_world_affine</code> / <code>recon_to_world_affine</code> / <code>resample_to_recon</code> are <strong>trajectory-agnostic</strong> — axial or helical, tight or tall FOV, the ground-truth-to-recon mapping is the same three calls.</p>
 </div></pluto-output></div>
 </div>
-<script src="__BASISSIM_NOTEBOOKS_BASE__/05_xcat_grid_to_recon.islands/shim.js"></script>
-<script>
+<script data-therapy-rerun="blocking" src="__BASISSIM_NOTEBOOKS_BASE__/05_xcat_grid_to_recon.islands/shim.js"></script>
+<script data-therapy-rerun>
 (function () {
+  const root = (document.currentScript && document.currentScript.closest(".snap-notebook")) || document;
+  const lifecycle = new AbortController();
+  let waitTimer = null;
+  window.addEventListener("therapy:router:before-swap", function () {
+    lifecycle.abort();
+    if (waitTimer !== null) clearTimeout(waitTimer);
+  }, { once: true, signal: lifecycle.signal });
   function collectBonds() {
     const vals = {};
-    document.querySelectorAll("bond[def]").forEach(function (b) {
+    root.querySelectorAll("bond[def]").forEach(function (b) {
       const inputs = Array.from(b.querySelectorAll("input,select,textarea"));
       const valueInputs = inputs.filter(function (inp) {
         return inp.type !== "submit" && inp.type !== "reset";
@@ -2884,59 +2992,103 @@ end</code></pre></div>
     return vals;
   }
   async function rerender() {
+    if (lifecycle.signal.aborted || !root.isConnected) return;
     if (window.__pi_renderAll) { try { await window.__pi_renderAll(collectBonds()); } catch (e) { console.warn(e); } }
   }
   document.addEventListener("input", function (e) {
-    if (e.target.closest && e.target.closest("bond[def]")) rerender();
-  }, true);
+    var bond = e.target.closest && e.target.closest("bond[def]");
+    if (bond && root.contains(bond)) rerender();
+  }, { capture: true, signal: lifecycle.signal });
   // Pluto's Button dispatches a non-bubbling `input` event on its wrapper and
   // stops the click at the button. Capture the click, then rerender after the
   // widget's target-phase handler increments the wrapper's numeric value.
   document.addEventListener("click", function (e) {
-    if (e.target.closest && e.target.closest('bond[def] input[type="button"]'))
+    var button = e.target.closest && e.target.closest('bond[def] input[type="button"]');
+    if (button && root.contains(button))
       setTimeout(rerender, 0);
-  }, true);
-  (function wait() { window.__pi_renderAll ? rerender() : setTimeout(wait, 50); })();
+  }, { capture: true, signal: lifecycle.signal });
+  (function wait() {
+    if (lifecycle.signal.aborted || !root.isConnected) return;
+    window.__pi_renderAll ? rerender() : (waitTimer = setTimeout(wait, 50));
+  })();
 })();
 </script>
 
-<script>
+<script data-therapy-rerun>
 (function () {
-  function render(root) { (root || document).querySelectorAll(".tex").forEach(function (s) {
+  const root = (document.currentScript && document.currentScript.closest(".snap-notebook")) || document;
+  const lifecycle = new AbortController();
+  let waitTimer = null;
+  let observer = null;
+  window.addEventListener("therapy:router:before-swap", function () {
+    lifecycle.abort();
+    if (waitTimer !== null) clearTimeout(waitTimer);
+    if (observer) observer.disconnect();
+  }, { once: true, signal: lifecycle.signal });
+  function render() { root.querySelectorAll(".tex").forEach(function (s) {
     if (s.dataset.r) return;
     var t = s.textContent.trim();
     var disp = t.indexOf("$$") === 0;
     t = t.replace(/^\$\$?/, "").replace(/\$\$?$/, "");
     try { katex.render(t, s, { displayMode: disp, throwOnError: false }); s.dataset.r = "1"; } catch (e) {}
   }); }
-  (function wait() { window.katex ? render() : setTimeout(wait, 80); })();
-  new MutationObserver(function () { window.katex && render(); }).observe(document.body, { childList: true, subtree: true });
+  (function wait() {
+    if (lifecycle.signal.aborted || !root.isConnected) return;
+    window.katex ? render() : (waitTimer = setTimeout(wait, 80));
+  })();
+  observer = new MutationObserver(function () { window.katex && render(); });
+  observer.observe(root, { childList: true, subtree: true });
 })();
 </script>
 
-<script type="module">
-import { parser } from "https://esm.sh/@plutojl/lezer-julia@1";
-import { highlightTree, classHighlighter } from "https://esm.sh/@lezer/highlight@1";
-const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-function hl(code) {
-  const tree = parser.parse(code); let out = "", pos = 0;
-  highlightTree(tree, classHighlighter, (from, to, cls) => {
-    if (from > pos) out += esc(code.slice(pos, from));
-    out += '<span class="' + cls + '">' + esc(code.slice(from, to)) + '</span>'; pos = to;
+<script data-therapy-rerun>
+(function () {
+  const script = document.currentScript;
+  const root = (script && script.closest(".snap-notebook")) || document;
+  const lifecycle = new AbortController();
+  window.addEventListener("therapy:router:before-swap", function () {
+    lifecycle.abort();
+  }, { once: true, signal: lifecycle.signal });
+  Promise.all([
+    import("https://esm.sh/@plutojl/lezer-julia@1.2.0"),
+    import("https://esm.sh/@lezer/highlight@1.2.3")
+  ]).then(function (modules) {
+    if (lifecycle.signal.aborted || !root.isConnected) return;
+    const parser = modules[0].parser;
+    const highlightTree = modules[1].highlightTree;
+    const classHighlighter = modules[1].classHighlighter;
+    const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    function hl(code) {
+      const tree = parser.parse(code); let out = "", pos = 0;
+      highlightTree(tree, classHighlighter, (from, to, cls) => {
+        if (from > pos) out += esc(code.slice(pos, from));
+        out += '<span class="' + cls + '">' + esc(code.slice(from, to)) + '</span>'; pos = to;
+      });
+      out += esc(code.slice(pos)); return out;
+    }
+    root.querySelectorAll("code.pl-jl:not([data-snapshot-highlighted])").forEach(el => {
+      if (lifecycle.signal.aborted || !el.isConnected) return;
+      try { el.innerHTML = hl(el.textContent); el.dataset.snapshotHighlighted = "1"; }
+      catch (e) { console.warn("pl-hl", e); }
+    });
+  }).catch(function (e) {
+    if (!lifecycle.signal.aborted) console.warn("pl-hl", e);
   });
-  out += esc(code.slice(pos)); return out;
-}
-document.querySelectorAll("code.pl-jl").forEach(el => {
-  try { el.innerHTML = hl(el.textContent); } catch (e) { console.warn("pl-hl", e); }
-});
+})();
 </script>
 
-<script>
+<script data-therapy-rerun>
+(function () {
+const root = (document.currentScript && document.currentScript.closest(".snap-notebook")) || document;
+const lifecycle = new AbortController();
+window.addEventListener("therapy:router:before-swap", function () { lifecycle.abort(); },
+  { once: true, signal: lifecycle.signal });
 document.addEventListener("click", function (e) {
   if (!e.target.closest) return;
   var pre = e.target.closest("pluto-tree > pluto-tree-prefix");
-  if (pre && pre.parentElement) pre.parentElement.classList.toggle("collapsed");
-});
+  if (pre && root.contains(pre) && pre.parentElement) pre.parentElement.classList.toggle("collapsed");
+}, { signal: lifecycle.signal });
+})();
 </script>
 
 </div>
