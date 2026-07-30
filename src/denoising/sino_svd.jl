@@ -362,8 +362,6 @@ function _joint_bilateral_2d(
     )
     nc, nv = size(tgt)
     out = Matrix{Float32}(undef, nc, nv)
-    invg = 1.0f0 / (2σg^2)
-    invt = 1.0f0 / (2σt^2)
     @inbounds for v in 1:nv, c in 1:nc
         gc = guide[c, v]; tc = tgt[c, v]
         acc = 0.0f0; wsum = 0.0f0
@@ -373,7 +371,17 @@ function _joint_bilateral_2d(
                 c2 = c + dc; (1 <= c2 <= nc) || continue
                 dg = guide[c2, v2] - gc
                 dt = tgt[c2, v2] - tc
-                w = exp(-(dc * dc + dv * dv) / σs2 - dg * dg * invg - dt * dt * invt)
+                # Use normalized differences instead of `difference² / scale²`.
+                # For a flat component the robust scale reaches its tiny
+                # positive floor; the former algebra could evaluate 0 * Inf
+                # in Float32 and turn the self-weight into NaN.
+                zg = dg / σg
+                zt = dt / σt
+                w = exp(
+                    -(dc * dc + dv * dv) / σs2 -
+                    0.5f0 * zg * zg -
+                    0.5f0 * zt * zt
+                )
                 acc += w * tgt[c2, v2]; wsum += w
             end
         end

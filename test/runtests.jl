@@ -24,6 +24,9 @@ const BS = BasisSimulator
     @testset "geometry/" begin
         include("geometry.jl")
     end
+    @testset "memory lifecycle/" begin
+        include("memory_lifecycle.jl")
+    end
     @testset "object/" begin
         include("object.jl")
     end

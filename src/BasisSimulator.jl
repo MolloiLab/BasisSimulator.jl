@@ -247,6 +247,8 @@ include("api/driver.jl")
 # Free utility functions (suggest_tile_size, tile_ranges, with_oom_retry)
 # consumed by RwlsWorkspace / PwlsWorkspace / CongWorkspace / MonoPlusWorkspace.
 include("reconstruction/workspace/memory_budget.jl")
+export backend_memory_snapshot, release_backend!
+export estimate_pcct_workspace_bytes, check_pcct_workspace_budget
 
 # Photoelectric + Compton physical basis tables (Cong 2022 Eqs 3a-3e, 4)
 include("reconstruction/vmi/basis.jl")

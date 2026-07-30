@@ -230,6 +230,19 @@ end
         @test maximum(abs.(out_a[1] .- out_b[1])) < 1.0e-5
         @test maximum(abs.(out_a[2] .- out_b[2])) < 1.0e-5
     end
+
+    @testset "bilateral remains finite on constant channels" begin
+        # Constant/linearly dependent channels yield zero-MAD residual SVD
+        # components. This specifically guards against 0*Inf in the bilateral
+        # range exponent.
+        flat = fill(0.5f0, 16, 2, 8)
+        out = BS.apply_sino_svd_denoise_bilateral(
+            [flat,2f0 .* flat,3f0 .* flat,4f0 .* flat];
+            bilat_radius=2,bilat_sigma_s=1.5,bilat_range_k=2.0,
+        )
+        @test all(o -> all(isfinite,o),out)
+        @test all(o -> maximum(abs,o) > 0,out)
+    end
 end
 
 # -----------------------------------------------------------------------------

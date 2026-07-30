@@ -158,11 +158,22 @@ function create_workspace(
 
     # GPU-side buffers — similar() matches phantom.mask's backend
     ref_mask = phantom.mask
-    bins = [similar(ref_mask, T, sino_shape) for _ in 1:n_bins]
-    μ_volume = similar(ref_mask, T, vol_shape)
-    sino_buf = similar(ref_mask, T, sino_shape)
-    scratch = similar(ref_mask, T, sino_shape)
-    combined = similar(ref_mask, T, sino_shape)
+    memory_estimate = estimate_pcct_workspace_bytes(
+        sino_shape, vol_shape, n_bins, scanner.binning_factor; T,
+    )
+    check_pcct_workspace_budget(ref_mask, memory_estimate)
+    owned_backend = Any[]
+    allocate_backend(dims...) = begin
+        buffer = similar(ref_mask, T, dims...)
+        push!(owned_backend, buffer)
+        buffer
+    end
+    try
+    bins = [allocate_backend(sino_shape) for _ in 1:n_bins]
+    μ_volume = allocate_backend(vol_shape)
+    sino_buf = allocate_backend(sino_shape)
+    scratch = allocate_backend(sino_shape)
+    combined = allocate_backend(sino_shape)
 
     # CPU-side buffers (Phase 1 noise: CPU RNG → GPU staging)
     noise_staging = zeros(T, sino_shape)
@@ -214,7 +225,7 @@ function create_workspace(
     # μ lookup table — pre-compute μ for all regions × all energies
     n_regions = length(mats)
     μ_lut_cpu = Vector{T}(undef, n_regions)
-    μ_lut_gpu = similar(ref_mask, T, n_regions)
+    μ_lut_gpu = allocate_backend(n_regions)
     μ_table = zeros(T, n_regions, n_energies)
     for (e_idx, E) in enumerate(energies)
         for r in 1:n_regions
@@ -223,13 +234,13 @@ function create_workspace(
     end
 
     # Pre-computed geometry arrays (T-typed, same backend as mask) for siddon_forward_project!
-    geom_source_positions = similar(ref_mask, T, size(geom.source_positions)...)
+    geom_source_positions = allocate_backend(size(geom.source_positions)...)
     copyto!(geom_source_positions, T.(geom.source_positions))
-    geom_detector_centers = similar(ref_mask, T, size(geom.detector_centers)...)
+    geom_detector_centers = allocate_backend(size(geom.detector_centers)...)
     copyto!(geom_detector_centers, T.(geom.detector_centers))
-    geom_detector_u = similar(ref_mask, T, size(geom.detector_u)...)
+    geom_detector_u = allocate_backend(size(geom.detector_u)...)
     copyto!(geom_detector_u, T.(geom.detector_u))
-    geom_detector_v = similar(ref_mask, T, size(geom.detector_v)...)
+    geom_detector_v = allocate_backend(size(geom.detector_v)...)
     copyto!(geom_detector_v, T.(geom.detector_v))
 
     # Pre-compute 2×2 decomposition matrix for pseudo-dual-energy VMI
@@ -256,16 +267,16 @@ function create_workspace(
             geom.pitch, geom.table_feed, geom.detector_shape
         )
         native_sino_shape = (_native_geom.n_cols, _native_geom.n_rows, _native_geom.n_angles)
-        _native_bins = [similar(ref_mask, T, native_sino_shape) for _ in 1:n_bins]
-        _native_sino_buf = similar(ref_mask, T, native_sino_shape)
+        _native_bins = [allocate_backend(native_sino_shape) for _ in 1:n_bins]
+        _native_sino_buf = allocate_backend(native_sino_shape)
         # Pre-computed geometry arrays at native resolution
-        _n_src = similar(ref_mask, T, size(_native_geom.source_positions)...)
+        _n_src = allocate_backend(size(_native_geom.source_positions)...)
         copyto!(_n_src, T.(_native_geom.source_positions))
-        _n_det = similar(ref_mask, T, size(_native_geom.detector_centers)...)
+        _n_det = allocate_backend(size(_native_geom.detector_centers)...)
         copyto!(_n_det, T.(_native_geom.detector_centers))
-        _n_u = similar(ref_mask, T, size(_native_geom.detector_u)...)
+        _n_u = allocate_backend(size(_native_geom.detector_u)...)
         copyto!(_n_u, T.(_native_geom.detector_u))
-        _n_v = similar(ref_mask, T, size(_native_geom.detector_v)...)
+        _n_v = allocate_backend(size(_native_geom.detector_v)...)
         copyto!(_n_v, T.(_native_geom.detector_v))
     else
         _native_geom = nothing
@@ -278,13 +289,13 @@ function create_workspace(
     end
 
     # Tube physics scratch buffer (binned resolution, for scatter/focal spot on combined sinogram)
-    tube_scratch = similar(ref_mask, T, sino_shape)
+    tube_scratch = allocate_backend(sino_shape)
 
     # ─── Tiled spectral projection buffers (fused PCCT forward projection) ───
     # Pad μ_table to multiple of 16 for tiled projection (same as EICT path)
     TILE_K = 16
     n_energies_padded = cld(n_energies, TILE_K) * TILE_K
-    _μ_table_gpu = similar(ref_mask, T, n_regions, n_energies_padded)
+    _μ_table_gpu = allocate_backend(n_regions, n_energies_padded)
     fill!(_μ_table_gpu, zero(T))
     copyto!(view(_μ_table_gpu, :, 1:n_energies), μ_table)
 
@@ -304,7 +315,7 @@ function create_workspace(
             W_cpu[e_idx, b] = T(_I0 * w * η_vec[e_idx] * R_mat[r_idx, b])
         end
     end
-    _W_matrix_gpu = similar(ref_mask, T, n_energies_padded, n_bins)
+    _W_matrix_gpu = allocate_backend(n_energies_padded, n_bins)
 
     # Source spectral: fold center-pixel bowtie into W matrix
     # The bowtie's dominant effect is spectral hardening (energy-dependent), which is
@@ -335,12 +346,12 @@ function create_workspace(
     copyto!(_W_matrix_gpu, W_cpu)
 
     # Flattened output buffer for spectral projection
-    _outputs_flat = similar(ref_mask, T, n_elements * n_bins)
+    _outputs_flat = allocate_backend(n_elements * n_bins)
 
     # Native-resolution flattened output (for spatial binning path)
     _native_outputs_flat = if bf > 1
         native_n_elements = prod(native_sino_shape)
-        similar(ref_mask, T, native_n_elements * n_bins)
+        allocate_backend(native_n_elements * n_bins)
     else
         nothing
     end
@@ -382,7 +393,7 @@ function create_workspace(
         _blur_fwhm = compute_focal_spot_blur_fwhm(config.focal_spot, geom, geom.SAD)
         if _blur_fwhm[1] >= 0.1 || _blur_fwhm[2] >= 0.1
             _k_cpu = T.(create_focal_spot_kernel_spatial(config.focal_spot, _blur_fwhm))
-            _k_gpu = similar(ref_mask, T, size(_k_cpu)...)
+            _k_gpu = allocate_backend(size(_k_cpu)...)
             copyto!(_k_gpu, _k_cpu)
             _k_gpu
         else
@@ -408,6 +419,10 @@ function create_workspace(
         geom, energies, weights_vec, config, pcct_detector, mats,
         kVp
     )
+    catch
+        release_backend!(owned_backend)
+        rethrow()
+    end
 end
 
 # =============================================================================
