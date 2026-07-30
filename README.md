@@ -16,7 +16,7 @@ acquisitions, and reconstructs with FBP (FDK), OS-PWLS iterative reconstruction,
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/MolloiLab/BasisSimulator.jl")
+Pkg.add("BasisSimulator")
 ```
 
 For portable device selection, add `GPUSelect` plus your backend:
@@ -67,17 +67,6 @@ hu = BS.to_hounsfield(
 )
 ```
 
-### Forward projector: `dd_fast` is the fast default
-
-`SimOptions(; projector=:dd_fast)` uses the fastest general-purpose projector
-and is the default. Its single-pass **distance-driven** kernels are anti-aliased
-and robust in severe beam-hardened regions while outperforming both the legacy
-`:dd` path and `:siddon` for full polychromatic and spectral simulations.
-`:siddon` remains available for comparison and compatibility, but its
-point-sampled rays can alias in those regions. If you reconstruct **iteratively**,
-pass the *same* projector to `create_hir_recon_workspace(; projector=…)` so the IR
-system matrix matches the data — FDK reconstruction is unaffected.
-
 ## Documentation
 
 Full API reference, getting-started guide, and eleven worked-example notebooks:
@@ -109,5 +98,14 @@ If you use BasisSimulator.jl in your work, please cite the SoftwareX article:
 
 ## License
 
-MIT. Core ray tracing ported from [TIGRE](https://github.com/CERN/TIGRE);
-calibration workflow follows [CatSim/XCIST](https://github.com/xcist/main).
+BasisSimulator.jl's original source code is released under the
+[MIT License](LICENSE). The package also contains or adapts components under
+their original licenses:
+
+- The bundled [CatSim/XCIST](https://github.com/xcist/main) bowtie profiles are
+  redistributed under the BSD 3-Clause License.
+- The Siddon projector is ported from [TIGRE](https://github.com/CERN/TIGRE)
+  under the BSD 3-Clause License; its upstream copyright and license notice are
+  preserved in `src/projection/siddon.jl`.
+- The distance-driven DD3 projector is ported from CatSim/XCIST under the
+  Apache License 2.0, with attribution preserved in `src/projection/dd.jl`.
