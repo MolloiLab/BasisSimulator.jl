@@ -22,19 +22,19 @@ function Layout(content)
         Nav(:class => "sticky top-0 z-40 border-b border-warm-200 dark:border-warm-800 h-16 px-6 bg-warm-100/80 dark:bg-warm-950/80 backdrop-blur supports-[backdrop-filter]:bg-warm-100/60 supports-[backdrop-filter]:dark:bg-warm-950/60",
             Div(:class => "max-w-5xl mx-auto h-full flex items-center justify-between",
                 BasisSimulatorWordmark(),
-                Div(:class => "flex items-center gap-4 sm:gap-6",
+                Div(:class => "flex items-center gap-3 min-[30rem]:gap-6",
                     NavLink("$(BASE)/getting-started/", "Getting Started";
-                        class = "hidden sm:inline text-sm transition-colors no-underline",
+                        class = "hidden min-[30rem]:inline text-sm transition-colors no-underline",
                         active_class = "text-accent-600 dark:text-accent-400 font-medium",
                         inactive_class = "text-warm-600 dark:text-warm-400 hover:text-accent-600 dark:hover:text-accent-400"
                     ),
                     NavLink("$(BASE)/api/", "API";
-                        class = "hidden sm:inline text-sm transition-colors no-underline",
+                        class = "hidden min-[30rem]:inline text-sm transition-colors no-underline",
                         active_class = "text-accent-600 dark:text-accent-400 font-medium",
                         inactive_class = "text-warm-600 dark:text-warm-400 hover:text-accent-600 dark:hover:text-accent-400"
                     ),
                     NavLink("$(BASE)/examples/", "Examples";
-                        class = "hidden sm:inline text-sm transition-colors no-underline",
+                        class = "hidden min-[30rem]:inline text-sm transition-colors no-underline",
                         active_class = "text-accent-600 dark:text-accent-400 font-medium",
                         inactive_class = "text-warm-600 dark:text-warm-400 hover:text-accent-600 dark:hover:text-accent-400"
                     ),
@@ -52,7 +52,7 @@ function Layout(content)
         ),
         # Footer — MolloiLab | MIT | Built with Therapy.jl
         Footer(:class => "border-t border-warm-200 dark:border-warm-800 px-6 py-6",
-            Div(:class => "max-w-5xl mx-auto flex flex-col sm:flex-row gap-3 sm:gap-0 items-center justify-between",
+            Div(:class => "max-w-5xl mx-auto flex flex-col min-[30rem]:flex-row gap-3 min-[30rem]:gap-0 items-center justify-between",
                 A(:href => "https://github.com/MolloiLab", :target => "_blank",
                     :class => "text-sm text-warm-600 dark:text-warm-400 hover:text-warm-700 dark:hover:text-warm-300 transition-colors no-underline",
                     "MolloiLab"
