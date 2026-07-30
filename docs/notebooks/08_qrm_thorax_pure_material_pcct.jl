@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.2.1
+# v0.2.6
 
 using Markdown
 using InteractiveUtils
@@ -30,9 +30,9 @@ md"""
 phantom with four pure-material rods (water · triolein · collagen ·
 iodine), same full-fidelity recon grid, same per-rod measured-vs-
 theoretical VMI regression — but the acquisition is a single 140 kVp
-photon-counting scan with four energy bins, bin-combined to a
-`(low, high)` pair and run through the SF-JSD joint sinogram denoiser
-before the Cong PCCT-Φ_k decomposition.
+photon-counting scan whose four native corrected energy bins enter the
+fully inlined generalized Cong likelihood directly. Lee total-likelihood
+bilateral filtering begins only after the four-bin decomposition.
 
 | Stage         | Matrix                   | Voxel (mm)             | Extent                        |
 |---------------|--------------------------|------------------------|-------------------------------|
@@ -49,13 +49,12 @@ QRM-Thorax mid-slice mask  → relabel rods 9–12 → tile z → BS.Phantom
                                        │
                        Per-Bin Pile-up + Scatter Correction
                                        │
-                          Bin Combine  (1+2 → low,  3+4 → high)
+                       Four-Bin Profiled Cong Decomposition
                                        │
-                       Material Decomp → FBP × 2 → z-Median →
-                       2-basis VMI →
+                       Joint T-LBF → Common FBP → ACNR → VMI
                                        │
                        Per-Rod Measured-vs-Theoretical Regression
-                                       at 40 / 70 / 100 / 140 keV
+                                       at 50 / 70 / 100 / 140 keV
 ```
 
 !!! tip "When to reach for this notebook"
@@ -78,7 +77,7 @@ QRM-Thorax mid-slice mask  → relabel rods 9–12 → tile z → BS.Phantom
       domain univariate solver (originally dual-kVp DECT).
     - Black (*in prep.*) — generalization of Cong 2022 to PCCT /
       split-spectrum via an effective spectral response Φ_k(ε) ≥ 0.
-    - Grant et al. (2014) — Mono+ frequency-split rule.
+    - Lee et al. (2025) — total-likelihood bilateral filtering.
 """
 
 # ╔═╡ 08010002-0000-4000-8000-000000000001
@@ -559,39 +558,32 @@ Inside `simulate!`:
 """
 
 # ╔═╡ 08030004-0000-4000-8000-000000000010
-# === SLOW CELL (~6 min) — Full measured sinogram via STANDARD simulate!() ===
-# Single src call producing the 4 per-bin log-line-integral sinograms with the
-# COMPLETE PCCT physics + corrections, all gated by `sim_opts` flags:
-#   forward → scatter inject (use_pcct_scatter) → quantum noise (use_noise,
-#   pcct_noise_reduction) → pile-up fwd (use_pcct_pileup) → pile-up correction
-#   (use_pcct_pileup_correction) → scatter correction (use_pcct_scatter_correction).
-# Consumed directly by the bin-combine below — the former inline forward cells
-# (pile-up / scatter fwd + correct) are GONE; this is the src-proper path.
-#
+# === SLOW CELL — full PCCT physics + corrections via simulate!() ===
 sim_raw = let
-    @info "simulate!(): $(Int(protocol.kVp)) kVp / $(round(protocol.mA, digits = 1)) mA — full PCCT physics + corrections (nr = $(sim_opts.pcct_noise_reduction))"
-    ws = BS.create_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
-    result = BS.simulate!(ws, phantom, protocol, sim_opts)
-
-    bins_raw = [Array(b) for b in result.pcct_sino.bins]   # full physics + corrections (scatter+noise+pileup, per sim_opts)
-    I0_bins = copy(result.I0_bins)
-    geom = ws.geom
-    energies = Float64.(ws.energies)
-    weights = copy(ws.weights)
-    # The EXACT per-bin detected spectra the forward applied (w·η·DRM with the
-    # workspace's MC-LUT η + centre-pixel bowtie fold) — the decomposition
-    # basis consumes THESE, so the inversion's forward model is the model
-    # simulate! actually applied (matches nb04).
-    W_applied = Float64.(Array(ws.W_matrix_gpu))[1:length(ws.energies), :]
-    bf = scanner.binning_factor
-
-    ws = nothing; result = nothing
-    GC.gc(true)
-    (
-        bins_raw = bins_raw, I0_bins = I0_bins, W_applied = W_applied,
-        geom = geom, energies = energies, weights = weights, bf = bf,
+    @info "simulate!(): $(Int(protocol.kVp)) kVp / $(round(protocol.mA, digits = 1)) mA — full PCCT physics + corrections"
+    ws = BS.create_workspace(
+        scanner, protocol, sim_opts, recon_opts, phantom,
     )
-end;
+    try
+        result = BS.simulate!(ws, phantom, protocol, sim_opts)
+        bins_raw = [Float32.(Array(b)) for b in result.pcct_sino.bins]
+        I0_bins = copy(result.I0_bins)
+        geom = ws.geom
+        energies = Float64.(ws.energies)
+        weights = copy(ws.weights)
+        W_applied = Float64.(Array(ws.W_matrix_gpu))[
+            1:length(ws.energies), :,
+        ]
+        bf = scanner.binning_factor
+        (
+            bins_raw = bins_raw, I0_bins = I0_bins,
+            W_applied = W_applied, geom = geom, energies = energies,
+            weights = weights, bf = bf,
+        )
+    finally
+        BS.release_backend!(ws)
+    end
+end
 
 # ╔═╡ 08030004-0000-4000-8000-000000000025
 # Resample the phantom labels onto the recon grid via BS's affine
@@ -643,194 +635,651 @@ end
 md"""
 ## VMI Pipeline
 
-4-bin combine → projection-domain material decomposition → per-basis FBP →
-image-domain ACNR → monoenergetic synthesis.  The PCCT counterpart of the
-notebook 04 chain.
+Four native corrected bins → fully inlined ``K=4`` profiled Cong → Lee
+T-LBF → identical common-kernel FBP → Kalender ACNR → analytical VMI.
+This is the canonical notebook 04 framework applied to the QRM thorax phantom.
 """
 
 # ╔═╡ 08030005-0000-4000-8000-000000000001
 md"""
-### 01. Bin Combine: 4 Bins → Low / High Pair
+### 01. Standard Four-Bin Corrected Counts
 
-I₀-weighted Beer recombination of the 4 raw PCCT bins:
-
-```
-N_grp = Σ_{b ∈ grp} I0[b] · exp(-p[b])
-p_grp = -log(N_grp / Σ_{b ∈ grp} I0[b])
-```
-
-* **Low**  = bins **1 + 2 + 3** (20 – 70 keV)
-* **High** = bin **4** ( > 70 keV)
-
-Each combined sinogram represents a polychromatic measurement at the
-I₀-weighted average spectrum of its bin group — the two-channel
-`(low, high)` pair the Cong PCCT-Φ_k decomposition then consumes
-directly, exactly as nb04 does — 123|4 partition, physical DAS floor + Jensen
-debias, applied-W Cong basis.
+All four native corrected PCCT bins and all native detector rows remain
+separate through decomposition. This matters for the finite 4-mm QRM volume:
+the outer rows of the nominal 5-mm acquisition are not repeated measurements
+of the same complete object ray, so count-domain row summation would introduce
+axial partial-volume bias. No spectral bins or detector rows are merged.
 """
 
 # ╔═╡ 08030005-0000-4000-8000-000000000010
-sim_lohi = let
-    low_bins = [1, 2, 3]     # 123|4 partition — analytic noise optimum (matches nb04)
-    high_bins = [4]
-
-    I0_lo = Float32(sum(Float64.(sim_raw.I0_bins[low_bins])))
-    I0_hi = Float32(sum(Float64.(sim_raw.I0_bins[high_bins])))
-
-    sz = size(sim_raw.bins_raw[1])
-    N_lo = zeros(Float32, sz)
-    N_hi = zeros(Float32, sz)
-    for b in low_bins
-        I0b = Float32(sim_raw.I0_bins[b])
-        @. N_lo += I0b * exp(-sim_raw.bins_raw[b])
-    end
-    for b in high_bins
-        I0b = Float32(sim_raw.I0_bins[b])
-        @. N_hi += I0b * exp(-sim_raw.bins_raw[b])
-    end
-
-    # Physical DAS floor (1 count) + first-order log-Poisson DEBIAS (matches
-    # nb04): E[−log(N/I0)] = p_true + s²/(2N), s = 1 − pcct_noise_reduction.
-    # Deterministic bias correction (σ untouched).
-    s_nr = Float32((1.0 - sim_opts.pcct_noise_reduction)^2)
-    N_lo_f = max.(N_lo, 1.0f0)
-    N_hi_f = max.(N_hi, 1.0f0)
-    sino_low = Float32.(.- log.(N_lo_f ./ I0_lo) .- s_nr ./ (2.0f0 .* N_lo_f))
-    sino_high = Float32.(.- log.(N_hi_f ./ I0_hi) .- s_nr ./ (2.0f0 .* N_hi_f))
-
-    (
-        sino_low = sino_low, sino_high = sino_high,
-        I0_lo = I0_lo, I0_hi = I0_hi,
-        geom = sim_raw.geom,
+begin
+    nchannel_controls = (
+        iodine_bounds = (-0.10f0, 0.40f0),
+        water_bounds = (-2.0f0, 50.0f0),
+        outer_iterations = 16,
+        inner_iterations = 12,
+        max_iodine_step = 0.05f0,
+        max_water_step = 5.0f0,
+        parameter_tolerance = 5.0f-5,
+        fisher_condition_limit = 1.0f8,
+        air_gate = 0.0f0,
+        tile_views = 8,
     )
-end;
+
+    nchannel_basis = let
+        E = Float32.(sim_raw.energies)
+        Φ = Float32.(sim_raw.W_applied)
+        μρ_I = Float32[
+            BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine, Float64(e))
+            for e in E
+        ]
+        μρ_W = Float32[
+            BS.compute_mass_μ_at_energy(BS.XA.Materials.water, Float64(e))
+            for e in E
+        ]
+        I0_from_Φ = vec(sum(Float64.(Φ); dims = 1))
+        I0_relerr = maximum(
+            abs.(I0_from_Φ .- Float64.(sim_raw.I0_bins)) ./
+            max.(Float64.(sim_raw.I0_bins), eps(Float64)),
+        )
+        I0_relerr < 5e-5 || error(
+            "Applied response and I0 disagree (max relative error = $(I0_relerr)).",
+        )
+        Φsum = vec(sum(Φ; dims = 1))
+        μI_eff = Float32[
+            sum(view(Φ, :, k) .* μρ_I) / Φsum[k]
+            for k in axes(Φ, 2)
+        ]
+        μW_eff = Float32[
+            sum(view(Φ, :, k) .* μρ_W) / Φsum[k]
+            for k in axes(Φ, 2)
+        ]
+        (
+            E = E, Φ = Φ, μρ_I = μρ_I, μρ_W = μρ_W,
+            I0 = Float32.(sim_raw.I0_bins),
+            μI_eff = μI_eff, μW_eff = μW_eff,
+            normal_II = sum(abs2, μI_eff),
+            normal_IW = sum(μI_eff .* μW_eff),
+            normal_WW = sum(abs2, μW_eff),
+            I0_relerr = I0_relerr,
+        )
+    end
+
+    nchannel_slab_counts = let
+        available_rows = size(sim_raw.bins_raw[1], 2)
+        phantom_thickness_mm = size(phantom_cpu.mask, 3) *
+            phantom_cpu.voxel_size[3] * 10
+        # Unlike notebook 04's z-invariant cylinder, this finite 4-mm QRM
+        # volume does not represent the same ray over the full nominal 5-mm
+        # aperture. Preserve every acquired detector row separately rather
+        # than averaging partially illuminated edge rows into one projection.
+        selected_rows = 1:available_rows
+        nrows = length(selected_rows)
+        row_positions = (
+            collect(selected_rows) .- (available_rows + 1) / 2
+        ) .* sim_raw.geom.pixel_row_size
+        cone_scales = sqrt.(1 .+ (row_positions ./ sim_raw.geom.SAD).^2)
+        bins = [
+            Float32.(bin[:, selected_rows, :]) for bin in sim_raw.bins_raw
+        ]
+        (
+            bins = bins, nrows = nrows, selected_rows = selected_rows,
+            available_rows = available_rows, cone_scales = cone_scales,
+            max_cone_relerr = maximum(abs.(cone_scales .- 1)),
+            thickness_mm = nrows * 10 * sim_raw.geom.pixel_row_size,
+            phantom_thickness_mm = phantom_thickness_mm,
+            count_scale = 1.0f0,
+            row_handling = :native_rows,
+        )
+    end
+end
 
 # ╔═╡ 08030005-0000-4000-8000-000000000030
 let
-    n_row = size(sim_lohi.sino_low, 2)
+    n_row = size(first(nchannel_slab_counts.bins), 2)
     mid_r = n_row ÷ 2 + 1
-
-    slice_lo = permutedims(sim_lohi.sino_low[:, mid_r, :], (2, 1))
-    slice_hi = permutedims(sim_lohi.sino_high[:, mid_r, :], (2, 1))
-
-    all_v = vcat(vec(slice_lo), vec(slice_hi))
+    slices = [
+        permutedims(bin[:, mid_r, :], (2, 1))
+        for bin in nchannel_slab_counts.bins
+    ]
+    all_v = vcat(vec.(slices)...)
     sino_window = (
         Float64(quantile(all_v, 0.01)),
         Float64(quantile(all_v, 0.99)),
     )
-
-    fig = Mke.Figure(size = (1180, 580))
+    fig = Mke.Figure(size = (1180, 1180))
     axis_kwargs = (
         titlesize = 32, subtitlesize = 24,
         xlabel = "View", ylabel = "Detector Column",
         xlabelsize = 22, ylabelsize = 22,
         xticklabelsize = 16, yticklabelsize = 16,
     )
-
-    panels = (
-        (1, 1, "Low Bins", "20 – 55 keV", slice_lo),
-        (1, 2, "High Bins", "> 55 keV", slice_hi),
-    )
-
-    for (r, c, ttl, sub, slice) in panels
-        ax = Mke.Axis(fig[r, c]; title = ttl, subtitle = sub, axis_kwargs...)
-        Mke.heatmap!(ax, slice; colormap = :viridis, colorrange = sino_window)
+    for k in eachindex(slices)
+        r = (k - 1) ÷ 2 + 1
+        c = (k - 1) % 2 + 1
+        ax = Mke.Axis(
+            fig[r, c]; title = "Native Bin $(k)",
+            subtitle = "corrected count-domain row combination",
+            axis_kwargs...,
+        )
+        Mke.heatmap!(
+            ax, slices[k]; colormap = :viridis, colorrange = sino_window,
+        )
     end
     Mke.Colorbar(
-        fig[1, 3]; colormap = :viridis, colorrange = sino_window,
-        label = "Log Line Integral", width = 16, labelsize = 22, ticklabelsize = 18,
+        fig[1:2, 3]; colormap = :viridis, colorrange = sino_window,
+        label = "Log Line Integral", width = 16,
+        labelsize = 22, ticklabelsize = 18,
     )
     fig
 end
 
 # ╔═╡ 08030007-0000-4000-8000-000000000001
 md"""
-### 02. Projection-Domain Material Decomposition (PCCT-Φ_k)
+### 02. Four-Bin Profiled Cong Material Decomposition
 
-Per-ray Cong univariate solver mapped to PCCT via the generalization in
-Black (*in prep.*) — re-derives the Cong 2022 framework around an
-effective spectral response Φ_k(ε) ≥ 0 so the same algorithm runs on
-dual-kVp DECT and PCCT acquisitions without code changes.  The
-bin-combine partition (123 → low, 4 → high) is baked into Φ_k by
-summing the relevant DRM columns:
-
-```
-Φ_low(ε)  = S(ε) · η(ε) · Σ_{b ∈ {1,2}} R(ε, b)
-Φ_high(ε) = S(ε) · η(ε) · Σ_{b ∈ {3,4}} R(ε, b)
-```
-
-`(p, q)` are the iodine + water mass-attenuation coefficients at the
-shared energy grid (matter-based variant, Cong follow-up §2.7) — same
-array for both channels since only Φ differs.
-
-Output sinograms are per-ray basis line integrals
-`sino_iodine = ∫c_iodine(r)dr` and `sino_water = ∫c_water(r)dr`
-(g/cm²) — calibration-free, no forward-projected step-wedge fit.
+The same fully inlined generalized profiled likelihood used in notebook 04
+runs here at ``K=4``. Every native corrected bin and its absolute applied
+MC-detector response enter the solve; no two-bin surrogate is formed.
 """
 
-# ╔═╡ 08030007-0000-4000-8000-000000000005
-# Bin-combine partition feeding the two Cong channels.  Must match the
-# §6 combine — change here AND there together.
-begin
-    cong_low_bins = 1:3          # PCCT bins forming the "low"  channel (123|4, matches §6)
-    cong_high_bins = 4:4          # PCCT bins forming the "high" channel
-end
-
 # ╔═╡ 08030007-0000-4000-8000-000000000010
-material_basis = let
-    # Per-channel spectra = column sums of the sim's APPLIED W matrix over
-    # the bin partition — exact by construction, identical to nb04.  (The
-    # forward applies the MC-LUT η + centre-pixel bowtie fold; rebuilding
-    # w·η·R with the analytic η here would mismatch it and reintroduce a
-    # keV-dependent HU bias.  With no bowtie the per-pixel ŵ collapses to
-    # this 1-D spectrum, so this is the exact effective model.)
-    e = sim_raw.energies
-    ΦL = Float32.(vec(sum(sim_raw.W_applied[:, collect(cong_low_bins)]; dims = 2)))
-    ΦH = Float32.(vec(sum(sim_raw.W_applied[:, collect(cong_high_bins)]; dims = 2)))
-    ŵ_L_f32 = ΦL ./ sum(ΦL)
-    ŵ_H_f32 = ΦH ./ sum(ΦH)
+begin
+    """
+        nchannel_forward(A, C, Φ, μI, μW; second=false)
 
-    p = Float32[Float32(BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine, Float64(E))) for E in e]
-    q = Float32[Float32(BS.compute_mass_μ_at_energy(BS.XA.Materials.water, Float64(E))) for E in e]
+    Exact discrete polychromatic K-channel mean and analytic derivatives.
+    `Φ[e,k]` is the absolute air-count contribution, `A` is iodine area
+    density, and `C` is water area density, both in g/cm².
+    """
+    function nchannel_forward(A,C,Φ,μI,μW;second=false)
+        nE,K = size(Φ)
+        nE == length(μI) == length(μW) ||
+            throw(DimensionMismatch("Energy dimensions disagree"))
+        λ=zeros(Float64,K)
+        dA=zeros(Float64,K)
+        dC=zeros(Float64,K)
+        dAA=second ? zeros(Float64,K) : nothing
+        dAC=second ? zeros(Float64,K) : nothing
+        dCC=second ? zeros(Float64,K) : nothing
+        @inbounds for k in 1:K, e in 1:nE
+            z=Float64(Φ[e,k])*exp(-Float64(μI[e])*A-Float64(μW[e])*C)
+            mi,mw=Float64(μI[e]),Float64(μW[e])
+            λ[k]+=z; dA[k]-=mi*z; dC[k]-=mw*z
+            if second
+                dAA[k]+=mi*mi*z; dAC[k]+=mi*mw*z; dCC[k]+=mw*mw*z
+            end
+        end
+        second ? (;λ,dA,dC,dAA,dAC,dCC) : (;λ,dA,dC)
+    end
 
-    @info "[Cong basis · applied-W] low ⟨E⟩ = $(round(sum(e .* Float64.(ŵ_L_f32)); digits = 1)) keV · " *
-        "high ⟨E⟩ = $(round(sum(e .* Float64.(ŵ_H_f32)); digits = 1)) keV"
+    function nchannel_golden_minimize(f,lo,hi;iterations=80)
+        lo == hi && return (x=lo,value=f(lo))
+        ϕ=(sqrt(5.0)-1)/2
+        x1=hi-ϕ*(hi-lo); x2=lo+ϕ*(hi-lo)
+        f1,f2=f(x1),f(x2)
+        for _ in 1:iterations
+            if f1 ≤ f2
+                hi,x2,f2=x2,x1,f1
+                x1=hi-ϕ*(hi-lo); f1=f(x1)
+            else
+                lo,x1,f1=x1,x2,f2
+                x2=lo+ϕ*(hi-lo); f2=f(x2)
+            end
+        end
+        candidates=((x1,f1),(x2,f2),(lo,f(lo)),(hi,f(hi)))
+        x,value=argmin(last,candidates)
+        (;x,value)
+    end
 
-    (
-        ŵ_L = ŵ_L_f32, p_L = p, q_L = q,
-        ŵ_H = ŵ_H_f32, p_H = copy(p), q_H = copy(q),
+    function nchannel_scalar_global(f,bounds;grid_points=129,iterations=80)
+        grid=collect(range(bounds...;length=grid_points))
+        values=f.(grid)
+        basins=Tuple{Float64,Float64,Int}[]
+        for i in 2:(length(grid)-1)
+            isfinite(values[i]) &&
+                values[i] ≤ values[i-1] && values[i] ≤ values[i+1] &&
+                push!(basins,(grid[i-1],grid[i+1],i))
+        end
+        candidates=NamedTuple[
+            (x=grid[1],value=values[1],basin=0),
+            (x=grid[end],value=values[end],basin=length(grid)),
+        ]
+        for (lo,hi,i) in basins
+            r=nchannel_golden_minimize(f,lo,hi;iterations)
+            push!(candidates,(x=r.x,value=r.value,basin=i))
+        end
+        if isempty(basins)
+            i=argmin(values)
+            push!(candidates,(x=grid[i],value=values[i],basin=i))
+        end
+        best=candidates[argmin(getproperty.(candidates,:value))]
+        (;best,candidates,grid,values,basin_count=length(basins))
+    end
+
+    function nchannel_solve_total_C(
+        A,y_total,Φ,μI,μW,water_bounds;
+        bisection_iterations=80,
     )
-end;
+        lo,hi=Float64.(water_bounds)
+        residual(C)=sum(nchannel_forward(A,C,Φ,μI,μW).λ)-y_total
+        rlo,rhi=residual(lo),residual(hi)
+        if !(isfinite(rlo)&&isfinite(rhi)&&rlo≥0&&rhi≤0)
+            return (success=false,C=NaN,residual=NaN,bracket=(rlo,rhi))
+        end
+        for _ in 1:bisection_iterations
+            mid=(lo+hi)/2
+            residual(mid)>0 ? (lo=mid) : (hi=mid)
+        end
+        C=(lo+hi)/2
+        (success=true,C,residual=residual(C),bracket=(rlo,rhi))
+    end
+
+    """
+    Exact monotone aggregate-channel Cong-like reference. The inner root is
+    guaranteed when bracketed; the complete outer iodine interval is scanned,
+    every detected basin is refined, and both endpoints are evaluated.
+    """
+    function nchannel_cong_constrained_reference(
+        y,Φ,μI,μW;
+        iodine_bounds=(-0.10,0.40),water_bounds=(-2.0,50.0),
+        grid_points=129,bisection_iterations=80,golden_iterations=80,
+    )
+        K=length(y)
+        size(Φ,2)==K || throw(DimensionMismatch("Channel count mismatch"))
+        yv=Float64.(y); y_total=sum(yv)
+        roots=Dict{Float64,NamedTuple}()
+        root(A)=get!(roots,Float64(A)) do
+            nchannel_solve_total_C(
+                A,y_total,Φ,μI,μW,water_bounds;
+                bisection_iterations,
+            )
+        end
+        function objective(A)
+            r=root(A)
+            r.success || return Inf
+            λ=max.(nchannel_forward(A,r.C,Φ,μI,μW).λ,eps(Float64))
+            π=λ/sum(λ)
+            -sum(yv.*log.(π))
+        end
+        search=nchannel_scalar_global(
+            objective,iodine_bounds;
+            grid_points,iterations=golden_iterations,
+        )
+        A=search.best.x; r=root(A)
+        (
+            iodine=A,water=r.C,objective=search.best.value,
+            root_bracketed=r.success,total_residual=r.residual,
+            selected_basin=search.best.basin,
+            basin_count=search.basin_count,
+            boundary_contact=(
+                A≈first(iodine_bounds) || A≈last(iodine_bounds) ||
+                r.C≈first(water_bounds) || r.C≈last(water_bounds)
+            ),
+        )
+    end
+
+    nchannel_poisson_quasi_nll(A,C,y,Φ,μI,μW)=let
+        λ=max.(nchannel_forward(A,C,Φ,μI,μW).λ,eps(Float64))
+        sum(λ-Float64.(y).*log.(λ))
+    end
+
+    """
+    Slow bounded all-channel profile quasi-likelihood reference. No
+    allocation assumptions or local optimizer starting point enter the
+    correctness claim: every sampled inner and outer basin plus endpoints is
+    evaluated.
+    """
+    function nchannel_profile_reference(
+        y,Φ,μI,μW;
+        iodine_bounds=(-0.10,0.40),water_bounds=(-2.0,50.0),
+        outer_grid_points=65,inner_grid_points=65,iterations=80,
+    )
+        inner_cache=Dict{Float64,NamedTuple}()
+        function inner(A)
+            get!(inner_cache,Float64(A)) do
+                f(C)=nchannel_poisson_quasi_nll(A,C,y,Φ,μI,μW)
+                s=nchannel_scalar_global(
+                    f,water_bounds;grid_points=inner_grid_points,iterations,
+                )
+                (C=s.best.x,value=s.best.value,basin=s.best.basin,
+                 basin_count=s.basin_count)
+            end
+        end
+        outer(A)=inner(A).value
+        s=nchannel_scalar_global(
+            outer,iodine_bounds;grid_points=outer_grid_points,iterations,
+        )
+        A=s.best.x; inn=inner(A)
+        f=nchannel_forward(A,inn.C,Φ,μI,μW)
+        λ=max.(f.λ,eps(Float64)); yv=Float64.(y)
+        gA=sum((1 .- yv./λ).*f.dA)
+        gC=sum((1 .- yv./λ).*f.dC)
+        FAA=sum(f.dA.^2 ./ λ)
+        FCC=sum(f.dC.^2 ./ λ)
+        (
+            iodine=A,water=inn.C,objective=inn.value,
+            score_norm=hypot(gA,gC)/sqrt(max(FAA+FCC,eps(Float64))),
+            selected_outer_basin=s.best.basin,
+            outer_basin_count=s.basin_count,
+            selected_inner_basin=inn.basin,
+            inner_basin_count=inn.basin_count,
+            boundary_contact=(
+                A≈first(iodine_bounds)||A≈last(iodine_bounds)||
+                inn.C≈first(water_bounds)||inn.C≈last(water_bounds)
+            ),
+        )
+    end
+
+    function nchannel_profile_tile!(
+    sino_I, sino_W, fisher_AA, fisher_AC, fisher_CC,
+    quality_flag, score_norm, outer_count, inner_count,
+    hs::NTuple{K},
+    Φ, μρ_I, μρ_W, I0, μI_eff, μW_eff,
+    normal_II::Float32, normal_IW::Float32, normal_WW::Float32, controls,
+) where {K}
+    nE = length(μρ_I)
+    A_lo, A_hi = controls.iodine_bounds
+    C_lo, C_hi = controls.water_bounds
+    n_outer, n_inner = controls.outer_iterations, controls.inner_iterations
+    A_step, C_step = controls.max_iodine_step, controls.max_water_step
+    parameter_tolerance = controls.parameter_tolerance
+    fisher_condition_limit = controls.fisher_condition_limit
+    air_gate = controls.air_gate
+
+    BS.AK.foreachindex(sino_I) do idx
+        max_abs_h = 0f0
+        for k in 1:K
+            max_abs_h = max(max_abs_h,abs(hs[k][idx]))
+        end
+        if max_abs_h < air_gate
+            sino_I[idx] = 0f0
+            sino_W[idx] = 0f0
+            fisher_AA[idx] = 0f0
+            fisher_AC[idx] = 0f0
+            fisher_CC[idx] = 0f0
+            quality_flag[idx] = UInt8(0)
+            score_norm[idx] = 0f0
+            outer_count[idx] = UInt8(0)
+            inner_count[idx] = UInt8(0)
+            return
+        end
+
+        # K-channel linear initializer; all iterations below are polychromatic.
+        rhs_I, rhs_W = 0f0, 0f0
+        for k in 1:K
+            rhs_I += μI_eff[k]*hs[k][idx]
+            rhs_W += μW_eff[k]*hs[k][idx]
+        end
+        det0_raw = normal_II*normal_WW - normal_IW*normal_IW
+        initializer_valid = isfinite(det0_raw) && det0_raw > 1f-12
+        det0 = initializer_valid ? det0_raw : 1f0
+        A = initializer_valid ?
+            clamp((normal_WW*rhs_I-normal_IW*rhs_W)/det0,A_lo,A_hi) :
+            clamp(0f0,A_lo,A_hi)
+        C = initializer_valid ?
+            clamp((normal_II*rhs_W-normal_IW*rhs_I)/det0,C_lo,C_hi) :
+            clamp(20f0,C_lo,C_hi)
+
+        # Guaranteed monotone aggregate equation, used here only to stabilize
+        # the fast solver's initial water value at its current iodine value.
+        y_total=0f0
+        for k in 1:K
+            y_total += max(I0[k]*exp(-hs[k][idx]),1f-6)
+        end
+        croot_lo,croot_hi=C_lo,C_hi
+        total_lo,total_hi=0f0,0f0
+        for k in 1:K, e in 1:nE
+            total_lo += Φ[e,k]*exp(-μρ_I[e]*A-μρ_W[e]*croot_lo)
+            total_hi += Φ[e,k]*exp(-μρ_I[e]*A-μρ_W[e]*croot_hi)
+        end
+        aggregate_bracketed=total_lo≥y_total && total_hi≤y_total
+        attainable_max,attainable_min=0f0,0f0
+        for k in 1:K, e in 1:nE
+            attainable_max += Φ[e,k]*exp(
+                -μρ_I[e]*A_lo-μρ_W[e]*C_lo,
+            )
+            attainable_min += Φ[e,k]*exp(
+                -μρ_I[e]*A_hi-μρ_W[e]*C_hi,
+            )
+        end
+        aggregate_feasible =
+            attainable_max≥y_total && attainable_min≤y_total
+        if aggregate_bracketed
+            for _ in 1:28
+                mid=(croot_lo+croot_hi)/2f0
+                total_mid=0f0
+                for k in 1:K, e in 1:nE
+                    total_mid += Φ[e,k]*exp(-μρ_I[e]*A-μρ_W[e]*mid)
+                end
+                if total_mid>y_total
+                    croot_lo=mid
+                else
+                    croot_hi=mid
+                end
+            end
+            C=(croot_lo+croot_hi)/2f0
+        end
+
+        converged = false
+        used_outer=0
+        used_inner=0
+        for outer_iter in 1:n_outer
+            used_outer=outer_iter
+            # Inner scalar solve: C*(A) = argmin_C L(A,C).
+            for _ in 1:n_inner
+                used_inner+=1
+                gC, FCC = 0f0, 0f0
+                for k in 1:K
+                    λ, dC = 0f0, 0f0
+                    @inbounds for e in 1:nE
+                        z = Φ[e,k] * exp(-μρ_I[e]*A - μρ_W[e]*C)
+                        λ += z
+                        dC -= μρ_W[e] * z
+                    end
+                    λ = max(λ, 1f-6)
+                    # Corrected counts may be fractional after detector correction.
+                    y = max(I0[k]*exp(-hs[k][idx]),1f-6)
+                    gC += (1f0 - y/λ) * dC
+                    FCC += dC*dC / λ
+                end
+                raw_C_step = gC/max(FCC,1f-12)
+                C_new = clamp(
+                    C-clamp(raw_C_step,-C_step,C_step),C_lo,C_hi,
+                )
+                C_done = abs(C_new-C) <= parameter_tolerance*(1f0+abs(C))
+                C = C_new
+                C_done && break
+            end
+
+            # Envelope gradient and Fisher Schur-complement profile curvature.
+            gA, FAA, FAC, FCC = 0f0, 0f0, 0f0, 0f0
+            for k in 1:K
+                λ, dA, dC = 0f0, 0f0, 0f0
+                @inbounds for e in 1:nE
+                    z = Φ[e,k] * exp(-μρ_I[e]*A - μρ_W[e]*C)
+                    λ += z
+                    dA -= μρ_I[e] * z
+                    dC -= μρ_W[e] * z
+                end
+                λ = max(λ, 1f-6)
+                y = max(I0[k]*exp(-hs[k][idx]),1f-6)
+                gA += (1f0 - y/λ) * dA
+                FAA += dA*dA / λ
+                FAC += dA*dC / λ
+                FCC += dC*dC / λ
+            end
+            Hprof = max(FAA - FAC*FAC/max(FCC, 1f-12), 1f-12)
+            raw_A_step = gA/Hprof
+            A_new = clamp(
+                A-clamp(raw_A_step,-A_step,A_step),A_lo,A_hi,
+            )
+            converged = abs(A_new-A) <= parameter_tolerance*(1f0+abs(A))
+            A = A_new
+            converged && break
+        end
+
+        # Re-profile water at the final iodine iterate.
+        c_converged = false
+        for _ in 1:n_inner
+            used_inner+=1
+            gC, FCC = 0f0, 0f0
+            for k in 1:K
+                λ, dC = 0f0, 0f0
+                @inbounds for e in 1:nE
+                    z = Φ[e,k] * exp(-μρ_I[e]*A - μρ_W[e]*C)
+                    λ += z
+                    dC -= μρ_W[e] * z
+                end
+                λ = max(λ, 1f-6)
+                y = max(I0[k]*exp(-hs[k][idx]),1f-6)
+                gC += (1f0 - y/λ) * dC
+                FCC += dC*dC / λ
+            end
+            C_new = clamp(
+                C-clamp(gC/max(FCC,1f-12),-C_step,C_step),C_lo,C_hi,
+            )
+            C_done = abs(C_new-C) <= parameter_tolerance*(1f0+abs(C))
+            C = C_new
+            if C_done
+                c_converged = true
+                break
+            end
+        end
+        converged &= c_converged
+
+        # Final score and Fisher conditioning are recorded; they are not silently
+        # converted into image regularization.
+        gA, gC, FAA, FAC, FCC = 0f0, 0f0, 0f0, 0f0, 0f0
+        for k in 1:K
+            λ, dA, dC = 0f0, 0f0, 0f0
+            @inbounds for e in 1:nE
+                z = Φ[e,k] * exp(-μρ_I[e]*A - μρ_W[e]*C)
+                λ += z
+                dA -= μρ_I[e]*z
+                dC -= μρ_W[e]*z
+            end
+            λ = max(λ,1f-6)
+            y = max(I0[k]*exp(-hs[k][idx]),1f-6)
+            gA += (1f0-y/λ)*dA
+            gC += (1f0-y/λ)*dC
+            FAA += dA*dA/λ
+            FAC += dA*dC/λ
+            FCC += dC*dC/λ
+        end
+        score_norm[idx] = sqrt(gA*gA+gC*gC) /
+            sqrt(max(FAA+FCC,1f-12))
+        fisher_det = max(FAA*FCC-FAC*FAC,0f0)
+        fisher_trace = FAA+FCC
+        fisher_disc = sqrt(max(fisher_trace*fisher_trace-4f0*fisher_det,0f0))
+        eig_max_raw = max((fisher_trace+fisher_disc)/2f0,1f-12)
+        eig_min = max(fisher_det/eig_max_raw,1f-12)
+        eig_max = max(eig_max_raw,eig_min)
+        ill_conditioned = eig_max/eig_min > fisher_condition_limit
+
+        tol = 2f-4
+        hit_A = A <= A_lo + tol || A >= A_hi - tol
+        hit_C = C <= C_lo + tol || C >= C_hi - tol
+        invalid_model = !(
+            isfinite(A)&&isfinite(C)&&isfinite(score_norm[idx])&&
+            isfinite(FAA)&&isfinite(FAC)&&isfinite(FCC)
+        )
+        quality_flag[idx] =
+            UInt8(hit_A ? 1 : 0) |
+            UInt8(hit_C ? 2 : 0) |
+            UInt8(converged ? 0 : 4) |
+            UInt8(ill_conditioned || !initializer_valid ? 8 : 0) |
+            UInt8(aggregate_feasible ? 0 : 16) |
+            UInt8(invalid_model ? 32 : 0)
+        outer_count[idx]=UInt8(min(used_outer,255))
+        inner_count[idx]=UInt8(min(used_inner,255))
+        fisher_AA[idx],fisher_AC[idx],fisher_CC[idx] = FAA,FAC,FCC
+        sino_I[idx], sino_W[idx] = A, C
+    end
+    nothing
+    end
+end
 
 # ╔═╡ 08030007-0000-4000-8000-000000000020
 sino_basis = let
-    sino_low_gpu = to_gpu(Float32.(sim_lohi.sino_low))
-    sino_high_gpu = to_gpu(Float32.(sim_lohi.sino_high))
-
-    sino_y = similar(sino_low_gpu)
-    sino_c = similar(sino_low_gpu)
-    fill!(sino_y, 0.0f0); fill!(sino_c, 0.0f0)
-
-    @info "Cong polychromatic decomposition: $(size(sim_lohi.sino_low))"
-    cong_elapsed = @elapsed begin
-        cong_ws = BS.create_cong_workspace(sino_low_gpu, material_basis)
-        BS.apply_cong!(
-            cong_ws, sino_y, sino_c, sino_low_gpu, sino_high_gpu;
-            water_basis = (a = 0.0f0, c = 1.0f0),
-        )
-    end
-    @info "Cong done in $(round(cong_elapsed, digits = 1)) s"
-
-    result = (
-        sino_iodine = Array(sino_y),
-        sino_water = Array(sino_c),
-        geom = sim_lohi.geom,
+    shape = size(nchannel_slab_counts.bins[1])
+    sino_I = Array{Float32}(undef,shape)
+    sino_W = Array{Float32}(undef,shape)
+    flags = Array{UInt8}(undef,shape)
+    score_norm = Array{Float32}(undef,shape)
+    fisher_AA = Array{Float32}(undef,shape)
+    fisher_AC = Array{Float32}(undef,shape)
+    fisher_CC = Array{Float32}(undef,shape)
+    outer_iterations = Array{UInt8}(undef,shape)
+    inner_iterations = Array{UInt8}(undef,shape)
+    scale = nchannel_slab_counts.count_scale
+    Φ_gpu = to_gpu(scale .* nchannel_basis.Φ)
+    μρ_I_gpu = to_gpu(nchannel_basis.μρ_I)
+    μρ_W_gpu = to_gpu(nchannel_basis.μρ_W)
+    I0_gpu = to_gpu(scale .* nchannel_basis.I0)
+    μI_eff_gpu = to_gpu(nchannel_basis.μI_eff)
+    μW_eff_gpu = to_gpu(nchannel_basis.μW_eff)
+    elapsed = @elapsed for vrange in BS.tile_ranges(
+        shape[3],nchannel_controls.tile_views,
     )
-    sino_low_gpu = nothing; sino_high_gpu = nothing
-    sino_y = nothing; sino_c = nothing; cong_ws = nothing
-    GC.gc(true)
-    result
-end;
+        hs = [
+            to_gpu(Float32.(nchannel_slab_counts.bins[k][:,:,vrange]))
+            for k in eachindex(nchannel_slab_counts.bins)
+        ]
+        I_gpu,W_gpu = similar(hs[1]),similar(hs[1])
+        flag_gpu = similar(hs[1],UInt8)
+        score_gpu = similar(hs[1],Float32)
+        fisher_AA_gpu = similar(hs[1],Float32)
+        fisher_AC_gpu = similar(hs[1],Float32)
+        fisher_CC_gpu = similar(hs[1],Float32)
+        outer_gpu = similar(hs[1],UInt8)
+        inner_gpu = similar(hs[1],UInt8)
+        nchannel_profile_tile!(
+            I_gpu,W_gpu,fisher_AA_gpu,fisher_AC_gpu,fisher_CC_gpu,
+            flag_gpu,score_gpu,outer_gpu,inner_gpu,Tuple(hs),
+            Φ_gpu,μρ_I_gpu,μρ_W_gpu,I0_gpu,μI_eff_gpu,μW_eff_gpu,
+            nchannel_basis.normal_II,nchannel_basis.normal_IW,
+            nchannel_basis.normal_WW,nchannel_controls,
+        )
+        sino_I[:,:,vrange] .= Array(I_gpu)
+        sino_W[:,:,vrange] .= Array(W_gpu)
+        flags[:,:,vrange] .= Array(flag_gpu)
+        score_norm[:,:,vrange] .= Array(score_gpu)
+        fisher_AA[:,:,vrange] .= Array(fisher_AA_gpu)
+        fisher_AC[:,:,vrange] .= Array(fisher_AC_gpu)
+        fisher_CC[:,:,vrange] .= Array(fisher_CC_gpu)
+        outer_iterations[:,:,vrange] .= Array(outer_gpu)
+        inner_iterations[:,:,vrange] .= Array(inner_gpu)
+    end
+    # Recompute the aggregate feasibility bit on the host from the global
+    # attainable count range. This is independent of the initializer's
+    # single-A bracket and avoids backend-specific boolean lowering in QC.
+    Φ_host=scale.*Float64.(nchannel_basis.Φ)
+    attainable_max=sum(nchannel_forward(
+        first(nchannel_controls.iodine_bounds),
+        first(nchannel_controls.water_bounds),
+        Φ_host,nchannel_basis.μρ_I,nchannel_basis.μρ_W,
+    ).λ)
+    attainable_min=sum(nchannel_forward(
+        last(nchannel_controls.iodine_bounds),
+        last(nchannel_controls.water_bounds),
+        Φ_host,nchannel_basis.μρ_I,nchannel_basis.μρ_W,
+    ).λ)
+    ytotal=zeros(Float64,shape)
+    for k in eachindex(nchannel_slab_counts.bins)
+        ytotal .+= scale*nchannel_basis.I0[k].*
+            exp.(-Float64.(nchannel_slab_counts.bins[k]))
+    end
+    feasible=(ytotal.≤attainable_max).&(ytotal.≥attainable_min)
+    flags[feasible] .&= 0xef
+    flags[.!feasible] .|= 0x10
+    (
+        sino_iodine=sino_I,sino_water=sino_W,quality_flag=flags,
+        fisher=(AA=fisher_AA,AC=fisher_AC,CC=fisher_CC),
+        score_norm,outer_iterations,inner_iterations,
+        geom=sim_raw.geom,elapsed_s=elapsed,
+    )
+end
 
 # ╔═╡ 08030007-0000-4000-8000-000000000040
 let
@@ -869,65 +1318,165 @@ let
     fig
 end
 
+# ╔═╡ 08030007-0000-4000-8000-000000000050
+md"""
+### 03. Lee Total-Likelihood Bilateral Filter
+
+The completed four-bin Cong water/iodine pair is filtered jointly with the
+canonical Lee-2025 ``5\times5`` T-LBF: ``\alpha_1=0.9`` and
+``\alpha_2=24.636``. The collapsed total likelihood determines only the
+shared denoising weights; it is never used to estimate the two materials.
+"""
+
 # ╔═╡ 08030007-0000-4000-8000-000000000060
-# === Basis-sinogram covariance readout (sinogram domain, PRE-FBP) ===
-# Measures the iodine↔water correlation in the basis SINOGRAMS that feed FBP — the
-# quantity an ACNR-before-FBP step would act on.  Two views:
-#   • GLOBAL    — cov over all rays.  With noise OFF this is the deterministic
-#                 STRUCTURE correlation Cong bakes in; with noise ON it also carries it.
-#   • Δcol HF   — cov of the adjacent-detector-column difference (isolates the
-#                 high-frequency / noise-like component — what ACNR actually targets).
-# ρ is scale-free (iodine sino tiny, water sino large), so it is the honest correlation.
-# ρ < 0 ⇒ anti-correlated basis content ⇒ ACNR has something to remove.  Single-pass
-# scalar accumulation — no full-sinogram temporaries (memory budget).
-let
-    io = sino_basis.sino_iodine
-    wa = sino_basis.sino_water
-    n = length(io)
+begin
+begin
+function total_measured_counts(slab_bins,I0,count_scale)
+    total=zeros(Float32,size(first(slab_bins)))
+    for bin in eachindex(slab_bins)
+        @. total+=Float32(count_scale*I0[bin])*exp(-slab_bins[bin])
+    end
+    total
+end
 
-    # ── GLOBAL covariance (two scalar passes) ──
-    si = 0.0; sw = 0.0
-    @inbounds for k in eachindex(io)
-        si += io[k]; sw += wa[k]
+function total_expected_counts(
+    sino_iodine,sino_water,Φ_total,μI,μW,
+)
+    I_gpu=to_gpu(Float32.(sino_iodine))
+    W_gpu=to_gpu(Float32.(sino_water))
+    Φ_gpu=to_gpu(Float32.(Φ_total))
+    μI_gpu=to_gpu(Float32.(μI))
+    μW_gpu=to_gpu(Float32.(μW))
+    output_gpu=similar(I_gpu)
+    try
+        BS.AK.foreachindex(output_gpu) do idx
+            total=0f0
+            @inbounds for energy in eachindex(Φ_gpu)
+                total+=Φ_gpu[energy]*exp(
+                    -μI_gpu[energy]*I_gpu[idx]-
+                    μW_gpu[energy]*W_gpu[idx],
+                )
+            end
+            output_gpu[idx]=max(total,1f-6)
+        end
+        Array(output_gpu)
+    finally
+        BS.release_backend!((
+            I_gpu,W_gpu,Φ_gpu,μI_gpu,μW_gpu,output_gpu,
+        ))
     end
-    mi = si / n; mw = sw / n
-    Vi = 0.0; Vw = 0.0; Ciw = 0.0
-    @inbounds for k in eachindex(io)
-        a = io[k] - mi; b = wa[k] - mw
-        Vi += a * a; Vw += b * b; Ciw += a * b
-    end
-    Vi /= n; Vw /= n; Ciw /= n
-    ρ_g = Ciw / sqrt(max(Vi * Vw, 1.0e-30))
+end
 
-    # ── HIGH-FREQ covariance: adjacent-detector-column difference Δcol ──
-    nc, nr, nv = size(io)
-    sdi = 0.0; sdw = 0.0; ndf = 0
-    @inbounds for v in 1:nv, r in 1:nr, c in 2:nc
-        sdi += io[c, r, v] - io[c - 1, r, v]
-        sdw += wa[c, r, v] - wa[c - 1, r, v]
-        ndf += 1
+function tlbf_filter_pair(
+    sino_iodine,sino_water,expected,measured,alpha2;
+    alpha1=0.9,
+)
+    I_gpu=to_gpu(Float32.(sino_iodine))
+    W_gpu=to_gpu(Float32.(sino_water))
+    expected_gpu=to_gpu(Float32.(expected))
+    measured_gpu=to_gpu(Float32.(measured))
+    output_I=similar(I_gpu)
+    output_W=similar(W_gpu)
+    nchannel,nrow,nview=size(sino_iodine)
+    a1=Float32(alpha1)
+    a2=Float32(alpha2)
+    try
+        BS.AK.foreachindex(output_I) do idx
+            channel=Int32(mod1(idx,nchannel))
+            row=Int32(mod1(cld(idx,nchannel),nrow))
+            view=Int32(cld(idx,nchannel*nrow))
+            center_expected=max(expected_gpu[idx],1f-6)
+            Y=measured_gpu[idx]
+            center_likelihood=
+                -center_expected+Y*log(center_expected)
+            weight_sum=0f0
+            iodine_sum=0f0
+            water_sum=0f0
+            for dv in Int32(-2):Int32(2),dc in Int32(-2):Int32(2)
+                neighbor_channel=channel+dc
+                (
+                    neighbor_channel<Int32(1)||
+                    neighbor_channel>Int32(nchannel)
+                )&&continue
+                neighbor_view=mod1(view+dv,Int32(nview))
+                neighbor_idx=
+                    Int(neighbor_channel)+
+                    (Int(row)-1)*nchannel+
+                    (Int(neighbor_view)-1)*nchannel*nrow
+                spatial=exp(
+                    -Float32(dc*dc+dv*dv)/(2f0*a1*a1),
+                )
+                likelihood_weight=if isinf(a2)
+                    1f0
+                elseif a2≤0f0
+                    dc==0&&dv==0 ? 1f0 : 0f0
+                else
+                    candidate_expected=max(
+                        expected_gpu[neighbor_idx],1f-6,
+                    )
+                    candidate_likelihood=
+                        -candidate_expected+Y*log(candidate_expected)
+                    delta=candidate_likelihood-center_likelihood
+                    exp(-(delta*delta)/(a2*a2))
+                end
+                weight=spatial*likelihood_weight
+                weight_sum+=weight
+                iodine_sum+=weight*I_gpu[neighbor_idx]
+                water_sum+=weight*W_gpu[neighbor_idx]
+            end
+            inverse_weight=1f0/max(weight_sum,eps(Float32))
+            output_I[idx]=iodine_sum*inverse_weight
+            output_W[idx]=water_sum*inverse_weight
+        end
+        (
+            sino_iodine=Array(output_I),
+            sino_water=Array(output_W),
+        )
+    finally
+        BS.release_backend!((
+            I_gpu,W_gpu,expected_gpu,measured_gpu,output_I,output_W,
+        ))
     end
-    mdi = sdi / ndf; mdw = sdw / ndf
-    Vih = 0.0; Vwh = 0.0; Ciwh = 0.0
-    @inbounds for v in 1:nv, r in 1:nr, c in 2:nc
-        a = (io[c, r, v] - io[c - 1, r, v]) - mdi
-        b = (wa[c, r, v] - wa[c - 1, r, v]) - mdw
-        Vih += a * a; Vwh += b * b; Ciwh += a * b
-    end
-    Vih /= ndf; Vwh /= ndf; Ciwh /= ndf
-    ρ_hf = Ciwh / sqrt(max(Vih * Vwh, 1.0e-30))
+end
 
-    @info "[basis-sino cov · GLOBAL]  σ_iod = $(round(sqrt(Vi), sigdigits = 3)) · σ_wat = $(round(sqrt(Vw), sigdigits = 3)) g/cm² · ρ(iod,wat) = $(round(ρ_g, digits = 3))"
-    @info "[basis-sino cov · Δcol HF] σ_iod = $(round(sqrt(Vih), sigdigits = 3)) · σ_wat = $(round(sqrt(Vwh), sigdigits = 3)) g/cm² · ρ_hf(iod,wat) = $(round(ρ_hf, digits = 3))  ← ACNR target"
-    @info "  ρ<0 ⇒ anti-correlated basis content (ACNR has something to remove).  Noise is OFF → these are the STRUCTURE baseline; turn channel noise ON to read the NOISE correlation."
-    (ρ_global = ρ_g, ρ_highfreq = ρ_hf, V_iodine = Vi, V_water = Vw, C_iw = Ciw)
+end
+
+
+
+qrm_pcct_tlbf = let
+    # Fixed Lee-2025 T-LBF configuration selected in notebook 04d.
+    alpha1=0.9
+    alpha2=24.635648571666497
+    count_scale=nchannel_slab_counts.count_scale
+    Φ_total=count_scale.*vec(sum(Float64.(nchannel_basis.Φ);dims=2))
+    measured=total_measured_counts(
+        nchannel_slab_counts.bins,nchannel_basis.I0,count_scale,
+    )
+    expected=total_expected_counts(
+        sino_basis.sino_iodine,
+        sino_basis.sino_water,
+        Φ_total,nchannel_basis.μρ_I,nchannel_basis.μρ_W,
+    )
+    sinograms=tlbf_filter_pair(
+        sino_basis.sino_iodine,
+        sino_basis.sino_water,
+        expected,measured,alpha2;alpha1,
+    )
+    (
+        alpha1,alpha2,sinograms,
+        implementation=:Lee_2025_joint_total_likelihood,
+        shared_material_weights=true,
+        window=(5,5),
+    )
+end
 end
 
 # ╔═╡ 08030008-0000-4000-8000-000000000001
 md"""
-### 03. FBP: Iodine and Water Basis Maps
+### 04. Common-Kernel FBP Basis Maps
 
-Two FDK passes — one per basis sinogram.  Output volumes are in
+The Lee-filtered water and iodine sinograms use the same `SoftFilter` and
+the same deterministic angular anti-alias response. Output volumes are in
 basis-density units (g/cm³).
 """
 
@@ -935,24 +1484,42 @@ basis-density units (g/cm³).
 basis_volumes = let
     matrix_size = recon_opts.matrix_size
     geom = sino_basis.geom
-
-    function _fbp(sino_cpu)
-        sino_gpu = to_gpu(Float32.(sino_cpu))
+    nview = size(qrm_pcct_tlbf.sinograms.sino_water, 3)
+    pass_mode = min(nview ÷ 2, ceil(Int, π * matrix_size[1] / 4))
+    angular_response = [
+        let mode = min(j - 1, nview - (j - 1))
+            mode ≤ pass_mode ? 1.0 :
+            0.5 * (1 + cos(
+                π * (mode - pass_mode) / (nview ÷ 2 - pass_mode),
+            ))
+        end
+        for j in 1:nview
+    ]
+    function _fbp(sino_native_rows)
+        spectrum = BS.FFTW.fft(Float64.(sino_native_rows), 3)
+        antialiased = Float32.(real.(BS.FFTW.ifft(
+            spectrum .* reshape(angular_response, 1, 1, nview), 3,
+        )))
+        size(antialiased, 2) == geom.n_rows || error(
+            "Native-row sinogram and geometry row counts disagree.",
+        )
+        sino_gpu = to_gpu(antialiased)
         ws = BS.create_fdk_recon_workspace(
             sino_gpu, geom, matrix_size; filter = BS.SoftFilter(),
         )
-        recon = Array(BS.reconstruct!(ws, sino_gpu, geom))
-        ws = nothing; sino_gpu = nothing
-        GC.gc(true)
-        return Float32.(recon)
+        try
+            Float32.(Array(BS.reconstruct!(ws, sino_gpu, geom)))
+        finally
+            BS.release_backend!(ws)
+        end
     end
-
     (
-        vol_iodine_raw = _fbp(sino_basis.sino_iodine),
-        vol_water_raw = _fbp(sino_basis.sino_water),
-        geom = geom,
+        vol_iodine_raw = _fbp(qrm_pcct_tlbf.sinograms.sino_iodine),
+        vol_water_raw = _fbp(qrm_pcct_tlbf.sinograms.sino_water),
+        geom = geom, kernel = :SoftFilter,
+        angular_response = angular_response, pass_mode = pass_mode,
     )
-end;
+end
 
 # ╔═╡ 08030008-0000-4000-8000-000000000030
 let
@@ -991,7 +1558,7 @@ end
 
 # ╔═╡ 08030008-0000-4000-8000-000000000050
 md"""
-### 04. ACNR: Edge-Aware Anti-Correlated Noise Reduction (Image Domain)
+### 05. ACNR
 
 Material decomposition stamps strongly **anti-correlated** noise onto the basis
 maps (measured `ρ_basis ≈ −0.92`) — that anti-correlation *is* the VMI-noise U.
@@ -1023,14 +1590,18 @@ basis_acnr = let
     I = copy(basis_volumes.vol_iodine_raw)
 
     if APPLY_ACNR
-        info = BS.apply_acnr_kalender!(W, I)
+        info = BS.apply_acnr_kalender!(
+            W, I; hp_sigma_px = 1.5, window = 4,
+            passes = 4, beta_max = 20.0,
+        )
         @info "[ACNR · Kalender-1988 true ACNR] ρ_hp(W,I)=$(round(info.ρ_hp, digits = 3))"
     else
         @info "[ACNR] OFF (passthrough)"
     end
 
-    (vol_iodine = I, vol_water = W, geom = basis_volumes.geom)
-end;
+    (vol_iodine = I, vol_water = W, geom = basis_volumes.geom,
+     acnr = (passes = 4, beta_max = 20.0, hp_sigma_px = 1.5, window = 4))
+end
 
 # ╔═╡ 08030008-0000-4000-8000-000000000058
 # Resolution check — the REMOVED component (after − before) must be structureless
@@ -1100,7 +1671,7 @@ end
 
 # ╔═╡ 0803000a-0000-4000-8000-000000000001
 md"""
-### 05. VMI Synthesis
+### 06. VMI Synthesis
 
 `BS.synth_vmi_2basis(c_water, c_iodine_mg_per_mL; energy_keV)` evaluates
 the textbook 2-basis linear mix (McCollough 2015) at the target keV:
@@ -1110,7 +1681,7 @@ the textbook 2-basis linear mix (McCollough 2015) at the target keV:
 HU(E) = 1000 · (μ(E) − (μ/ρ)_water(E)) / (μ/ρ)_water(E)
 ```
 
-VMI grid: 40, 70, 100, 140 keV — matched to notebook 07.  The
+VMI grid: 50, 70, 100, 140 keV — matched to notebook 07.  The
 `solid_water_basis` cell measures `⟨c_water⟩` and `⟨c_iodine⟩` over the
 **dedicated water-rod core ROI** (label 9, `basis_water`) — a diagnostic
 used to log Δ% drift between the water-rod-anchored synth μ_water and
@@ -1164,7 +1735,7 @@ solid_water_basis = let
 end;
 
 # ╔═╡ 0803000a-0000-4000-8000-000000000010
-pcct_vmi_energies = [40.0, 70.0, 100.0, 140.0];
+pcct_vmi_energies = [50.0, 70.0, 100.0, 140.0];
 
 # ╔═╡ 0803000a-0000-4000-8000-000000000020
 vmi_HU_final = let
@@ -1195,7 +1766,7 @@ let
     fig = Mke.Figure(size = (1180, 1180))
     axis_kwargs = (titlesize = 32, subtitlesize = 24)
 
-    sample = vmi_HU_final[40.0]
+    sample = vmi_HU_final[50.0]
     mid = size(sample, 3) ÷ 2
 
     for (k, E) in enumerate(pcct_vmi_energies)
@@ -1221,6 +1792,18 @@ let
     )
     fig
 end
+
+# ╔═╡ 0803000c-0000-4000-8000-000000000001
+md"""
+## Results
+
+Per-rod measured vs theoretical HU at 50 / 70 / 100 / 140 keV.
+
+- **Measured HU** = mean over an 8-px-radius circular ROI at each rod
+  centroid, broadcast across all z slices.
+- **Theoretical HU** = `1000 · (μ_r(E) − μ_water(E)) / μ_water(E)` from
+  `BS.compute_μ_at_energy(material, E)` — pure physics, no fitting.
+"""
 
 # ╔═╡ 0803000c-0000-4000-8000-000000000000
 md"""
@@ -1313,18 +1896,6 @@ let
 
     fig
 end
-
-# ╔═╡ 0803000c-0000-4000-8000-000000000001
-md"""
-## Results
-
-Per-rod measured vs theoretical HU at 40 / 70 / 100 / 140 keV.
-
-- **Measured HU** = mean over an 8-px-radius circular ROI at each rod
-  centroid, broadcast across all z slices.
-- **Theoretical HU** = `1000 · (μ_r(E) − μ_water(E)) / μ_water(E)` from
-  `BS.compute_μ_at_energy(material, E)` — pure physics, no fitting.
-"""
 
 # ╔═╡ 0803000c-0000-4000-8000-000000000002
 md"""
@@ -1422,8 +1993,9 @@ iterate.
 
 Right panel = σ vs VMI energy.  Diagnoses how the textbook
 (c_water, c_iodine) → HU(E) synth propagates noise through the PCCT
-pipeline (Cong-Φ_k + SF-JSD).  Expectation: σ(40) ≫ σ(70) ≳ σ(140) —
-the natural noise-optimal energy is near 70 keV.
+pipeline (four-bin profiled Cong + T-LBF + ACNR). The displayed
+50/70/100/140-keV curve is the feasibility result; no separate
+energy-dependent VMI filtering is applied.
 """
 
 # ╔═╡ 0803000d-0000-4000-8000-000000000004
@@ -1491,12 +2063,12 @@ let
         Float64(BS.compute_mass_μ_at_energy(BS.XA.Materials.water, E))
     α_star = -1000.0 * Ciw / max(Vi, 1.0e-30)
     verdict = α_star ≤ αf(140.0) ? "MONOTONIC-decreasing predicted ✓" :
-        α_star ≥ αf(40.0) ? "monotonic-INCREASING" :
+        α_star ≥ αf(50.0) ? "monotonic-INCREASING" :
         "U-shape (min near α=α*)"
     @info "[basis cov · heart ROI, image]  σ_water = $(round(sqrt(Vw), sigdigits = 3)) g/mL · " *
         "σ_iod = $(round(sqrt(Vi), sigdigits = 3)) mg/mL · ρ_basis = $(round(ρ_b, digits = 3)) · " *
         "water floor = $(round(1000 * sqrt(Vw), digits = 1)) HU"
-    @info "  α* = $(round(α_star, digits = 1))  vs  α(40)=$(round(αf(40.0), digits = 1)), " *
+    @info "  α* = $(round(α_star, digits = 1))  vs  α(50)=$(round(αf(50.0), digits = 1)), " *
         "α(70)=$(round(αf(70.0), digits = 1)), α(140)=$(round(αf(140.0), digits = 1))  →  $(verdict)"
     (V_water = Vw, V_iodine = Vi, C_iw = Ciw, ρ_basis = ρ_b, α_star = α_star)
 end
@@ -1731,7 +2303,7 @@ let
     ax = Mke.Axis(
         fig[1, 1];
         title = "Pure-Material Rods (PCCT)",
-        subtitle = "40 / 70 / 100 / 140 keV",
+        subtitle = "50 / 70 / 100 / 140 keV",
         xlabel = "VMI energy (keV)", ylabel = "HU",
         xticks = pcct_vmi_energies,
         titlesize = 32, subtitlesize = 24,
@@ -1796,6 +2368,76 @@ let
     fig
 end
 
+# ╔═╡ 0803000d-0000-4000-8000-000000000090
+verification = let
+    sino_finite = all(isfinite, sino_basis.sino_iodine) &&
+                  all(isfinite, sino_basis.sino_water)
+    vmi_finite = all(
+        all(isfinite, image) for image in values(vmi_HU_final)
+    )
+    checks = [
+        (
+            name = "all four native bins retained",
+            value = length(nchannel_slab_counts.bins),
+            pass = length(nchannel_slab_counts.bins) == 4,
+        ),
+        (
+            name = "absolute response matches I0",
+            value = nchannel_basis.I0_relerr,
+            pass = nchannel_basis.I0_relerr < 5e-5,
+        ),
+        (
+            name = "generalized Cong outputs finite",
+            value = sino_finite, pass = sino_finite,
+        ),
+        (
+            name = "canonical Lee T-LBF",
+            value = (
+                qrm_pcct_tlbf.alpha1, qrm_pcct_tlbf.alpha2,
+                qrm_pcct_tlbf.window,
+            ),
+            pass = qrm_pcct_tlbf.implementation ==
+                   :Lee_2025_joint_total_likelihood &&
+                   qrm_pcct_tlbf.shared_material_weights,
+        ),
+        (
+            name = "identical common FBP kernel",
+            value = basis_volumes.kernel,
+            pass = basis_volumes.kernel == :SoftFilter,
+        ),
+        (
+            name = "water-reference basis calibration",
+            value = (
+                water = round(solid_water_basis.c_water, digits = 4),
+                iodine = round(solid_water_basis.c_iodine, digits = 6),
+            ),
+            pass = 0.8 ≤ solid_water_basis.c_water ≤ 1.2 &&
+                   abs(solid_water_basis.c_iodine) ≤ 0.01,
+        ),
+        (
+            name = "canonical VMI energies",
+            value = pcct_vmi_energies,
+            pass = pcct_vmi_energies == [50.0, 70.0, 100.0, 140.0],
+        ),
+        (
+            name = "final VMI values finite",
+            value = vmi_finite, pass = vmi_finite,
+        ),
+    ]
+    passed = count(check -> check.pass, checks)
+    rows = join([
+        "| $(check.name) | $(check.value) | $(check.pass ? "✅" : "❌") |"
+        for check in checks
+    ], "\n")
+    Markdown.parse("""
+### $(passed == length(checks) ? "✅ Verification: PASS" : "❌ Verification: CHECK")
+
+| check | value | pass |
+|---|---:|:---:|
+$rows
+""")
+end
+
 # ╔═╡ 0803000e-0000-4000-8000-000000000001
 md"""
 ## Summary
@@ -1805,20 +2447,21 @@ QRM-Thorax mid-slice mask (1600 × 1100 × 20 phantom @ 0.2 mm iso,
                            rods bored at labels 9–12)
    → Forward-project (140 kVp PCCT, 4 bins, scatter-injected)
    → Per-Bin Pile-up + Scatter Correction
-   → Bin Combine  (1+2 → low,  3+4 → high)
-   → Projection-Domain Material Decomposition  (Cong PCCT-Φ_k)
-   → FBP × 2  (iodine, water basis maps)
+   → Fully inlined K=4 profiled Cong  (all native bins retained)
+   → Lee 2025 joint T-LBF  (5×5, α₁=0.9, α₂=24.636)
+   → Identical SoftFilter FBP  (iodine, water basis maps)
+   → Kalender ACNR  (four passes, beta_max=20)
    → Monoenergetic VMI Synthesis  (textbook 2-basis, mono μρ_water divisor)
    → Per-rod Measured vs Theoretical Regression
-        (water · lipid · collagen · iodine at 40 / 70 / 100 / 140 keV)
+        (water · lipid · collagen · iodine at 50 / 70 / 100 / 140 keV)
 ```
 
 1:1 parity with notebook 07's QRM-Thorax pure-material pipeline,
 swapping the dual-kVp GSI acquisition for a Siemens Naeotom Alpha PCCT
-4-bin acquisition.  The 4-bin PCCT measurement is bin-combined into a
-two-channel `(low, high)` pair that Cong's PCCT-Φ_k decomposition then
-consumes directly — exactly the same downstream pipeline as notebook
-07 (Cong → FBP × 2 → Kalender ACNR → VMI → per-rod regression).
+4-bin acquisition. All four native PCCT bins remain separate through the
+generalized Cong solve. The post-decomposition path intentionally follows
+notebook 04 (T-LBF → common FBP → Kalender ACNR → VMI), while notebook 07
+follows the canonical dual-kVp per-basis-FBP path from notebook 03.
 Phantom, recon grid, VMI energies, ROI definitions, and per-rod
 regression style are identical so the two notebooks are directly
 comparable.
@@ -1878,10 +2521,10 @@ comparable.
 # ╠═08030005-0000-4000-8000-000000000010
 # ╟─08030005-0000-4000-8000-000000000030
 # ╟─08030007-0000-4000-8000-000000000001
-# ╠═08030007-0000-4000-8000-000000000005
 # ╠═08030007-0000-4000-8000-000000000010
 # ╠═08030007-0000-4000-8000-000000000020
 # ╟─08030007-0000-4000-8000-000000000040
+# ╟─08030007-0000-4000-8000-000000000050
 # ╠═08030007-0000-4000-8000-000000000060
 # ╟─08030008-0000-4000-8000-000000000001
 # ╠═08030008-0000-4000-8000-000000000010
@@ -1914,4 +2557,5 @@ comparable.
 # ╠═0803000c-0000-4000-8000-000000000020
 # ╟─0803000c-0000-4000-8000-000000000030
 # ╟─0803000c-0000-4000-8000-000000000031
+# ╟─0803000d-0000-4000-8000-000000000090
 # ╟─0803000e-0000-4000-8000-000000000001
