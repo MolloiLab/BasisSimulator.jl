@@ -64,12 +64,23 @@ end
 source_hash(slug::AbstractString) =
     bytes2hex(sha256(read(joinpath(NOTEBOOKS_DIR, "$(slug).jl"))))
 
+"Hash Project.toml while ignoring the package's release-only version field."
+function project_input_hash(path::AbstractString)
+    content = read(path, String)
+    normalized = replace(
+        content,
+        r"(?m)^version\s*=\s*\"[^\"]*\"\s*$" => "version = \"<release-version>\"",
+    )
+    bytes2hex(sha256(normalized))
+end
+
 "Digest committed simulator code and the committed declarations for optional data."
 const _SIMULATOR_INPUT_HASH = Ref{Union{Nothing,String}}(nothing)
 function simulator_input_hash()
     _SIMULATOR_INPUT_HASH[] === nothing || return _SIMULATOR_INPUT_HASH[]::String
     root = dirname(@__DIR__)
-    files = [joinpath(root, "Project.toml"), DATA_PROVENANCE]
+    project = joinpath(root, "Project.toml")
+    files = [DATA_PROVENANCE]
     for dir in (joinpath(root, "src"),)
         isdir(dir) || continue
         for (base, _, names) in walkdir(dir), name in names
@@ -81,6 +92,8 @@ function simulator_input_hash()
         string(relpath(path, root), ":", bytes2hex(sha256(read(path))))
         for path in sort!(files)
     ]
+    push!(entries, string("Project.toml:", project_input_hash(project)))
+    sort!(entries)
     _SIMULATOR_INPUT_HASH[] = bytes2hex(sha256(join(entries, '\0')))
     _SIMULATOR_INPUT_HASH[]::String
 end

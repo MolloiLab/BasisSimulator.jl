@@ -56,10 +56,22 @@ def source_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def project_input_hash(path: Path) -> str:
+    """Hash package inputs while ignoring the release-only version field."""
+    content = path.read_text(encoding="utf-8")
+    normalized = re.sub(
+        r'^version\s*=\s*"[^"]*"\s*$',
+        'version = "<release-version>"',
+        content,
+        flags=re.M,
+    )
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
 @lru_cache(maxsize=1)
 def simulator_input_hash() -> str:
     root = DOCS.parent
-    files = [root / "Project.toml", DATA_PROVENANCE]
+    files = [DATA_PROVENANCE]
     for directory in (root / "src",):
         if directory.is_dir():
             files.extend(path for path in directory.rglob("*") if path.is_file())
@@ -67,6 +79,8 @@ def simulator_input_hash() -> str:
         f"{path.relative_to(root)}:{source_hash(path)}"
         for path in sorted(files)
     ]
+    entries.append(f"Project.toml:{project_input_hash(root / 'Project.toml')}")
+    entries.sort()
     return hashlib.sha256("\0".join(entries).encode("utf-8")).hexdigest()
 
 
