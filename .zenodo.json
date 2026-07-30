@@ -1,11 +1,17 @@
 {
-  "title": "BasisSimulator.jl: GPU-native polychromatic CT and PCCT simulation, reconstruction, and virtual monoenergetic imaging in Julia",
+  "title": "BasisSimulator.jl: Open-source polychromatic CT simulation with a GPU-portable reconstruction stack",
   "description": "GPU-native Julia framework for CT and photon-counting CT simulation, reconstruction, and quantitative spectral imaging. Provides exact Siddon ray-tracing forward projection, polychromatic Beer-Lambert physics with vendor-realistic detector response (MC-derived LUTs for GE Gemstone scintillator and Siemens NAEOTOM Alpha CdTe), FDK and hybrid iterative reconstruction, sinogram and image-domain beam-hardening correction, dual-kVp and PCCT material decomposition (Cong 2022, Alvarez-Macovski, PWLS), and virtual monoenergetic imaging (VMI + Grant 2014 Mono+) — all dispatching transparently across CPU, Metal, CUDA, and ROCm via AcceleratedKernels.jl.",
   "creators": [
     {
       "name": "Black, Dale",
       "affiliation": "University of California, Irvine — Molloi Lab",
       "orcid": "0000-0002-9150-9827"
+    },
+    {
+      "name": "Khodajou-Chokami, Hamidreza"
+    },
+    {
+      "name": "Molloi, Sabee"
     }
   ],
   "license": "MIT",
@@ -34,6 +40,12 @@
       "identifier": "10.5281/zenodo.20260565",
       "relation": "requires",
       "resource_type": "software"
+    },
+    {
+      "scheme": "doi",
+      "identifier": "10.1016/j.softx.2026.102910",
+      "relation": "isDocumentedBy",
+      "resource_type": "publication-article"
     }
   ]
 }

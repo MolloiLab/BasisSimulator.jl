@@ -2,7 +2,8 @@
 
 [![CI](https://github.com/MolloiLab/BasisSimulator.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/MolloiLab/BasisSimulator.jl/actions/workflows/CI.yml?query=branch%3Amain)
 [![docs](https://img.shields.io/badge/docs-stable-blue.svg)](https://molloilab.github.io/BasisSimulator.jl/)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20262003.svg)](https://doi.org/10.5281/zenodo.20262003)
+[![SoftwareX DOI](https://img.shields.io/badge/DOI-10.1016%2Fj.softx.2026.102910-blue)](https://doi.org/10.1016/j.softx.2026.102910)
+[![Zenodo archive](https://zenodo.org/badge/DOI/10.5281/zenodo.20262003.svg)](https://doi.org/10.5281/zenodo.20262003)
 
 
 GPU-portable polychromatic CT simulator in Julia. Runs on Metal, CUDA, ROCm,
@@ -82,6 +83,29 @@ system matrix matches the data — FDK reconstruction is unaffected.
 Full API reference, getting-started guide, and eleven worked-example notebooks:
 **<https://molloilab.github.io/BasisSimulator.jl/>**. Docstrings are also
 available via `?Function` in the Julia REPL.
+
+## Citation
+
+If you use BasisSimulator.jl in your work, please cite the SoftwareX article:
+
+> Black D, Khodajou-Chokami H, Molloi S. BasisSimulator.jl: Open-source
+> polychromatic CT simulation with a GPU-portable reconstruction stack.
+> *SoftwareX*. 2026;35:102910.
+> <https://doi.org/10.1016/j.softx.2026.102910>
+
+```bibtex
+@article{BLACK2026102910,
+  title = {BasisSimulator.jl: Open-source polychromatic CT simulation with a GPU-portable reconstruction stack},
+  journal = {SoftwareX},
+  volume = {35},
+  pages = {102910},
+  year = {2026},
+  issn = {2352-7110},
+  doi = {https://doi.org/10.1016/j.softx.2026.102910},
+  url = {https://www.sciencedirect.com/science/article/pii/S2352711026004012},
+  author = {Dale Black and Hamidreza Khodajou-Chokami and Sabee Molloi}
+}
+```
 
 ## License
 
