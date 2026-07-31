@@ -60,8 +60,26 @@ end
 # simulate!() — Zero-allocation PCCT simulation hot path
 # =============================================================================
 
+function _capture_pcct_raw_counts(
+        bins::Vector{<:AbstractArray{T, 3}},
+        I0_bins::AbstractVector,
+    ) where {T<:AbstractFloat}
+    length(bins) == length(I0_bins) ||
+        throw(DimensionMismatch("one I0 value is required per PCCT bin"))
+    captured = [similar(bin) for bin in bins]
+    for (b, bin_sino) in enumerate(bins)
+        let out = captured[b], input = bin_sino, I0b = T(I0_bins[b])
+            AK.foreachindex(input) do idx
+                out[idx] = I0b * exp(-input[idx])
+            end
+        end
+    end
+    captured
+end
+
 """
-    simulate!(ws::PCCTWorkspace, phantom, protocol, sim_opts) -> (pcct_sino, I0_bins)
+    simulate!(ws::PCCTWorkspace, phantom, protocol, sim_opts;
+              capture_raw_counts=false)
 
 Run PCCT simulation using pre-allocated workspace buffers for zero allocations
 on the second and later calls (the first call may JIT-allocate).
@@ -81,12 +99,23 @@ ground-truth `I0_bins`.
 # Returns
 - `pcct_sino` — `EnergyResolvedSinogram` (per-bin log line integrals).
 - `I0_bins`   — per-bin reference photon count vector (for `-log(N/I0)` undo).
+- `pileup_S`  — MC pulse-pileup migration matrix, or `nothing` when disabled.
+- `raw_counts` — present only when `capture_raw_counts=true`; independent
+  per-bin arrays containing the detector counts immediately before pile-up and
+  scatter correction. These are floating-point measurements and include all
+  enabled acquisition physics and count safeguards.
+
+Capturing raw counts allocates one additional full-size array per energy bin.
+It is disabled by default so the normal reusable-workspace path retains its
+existing memory behavior and return contract.
 """
 function simulate!(
         ws::PCCTWorkspace{T},
         phantom,
         protocol::CTProtocol,
         sim_opts::SimOptions = SimOptions(),
+        ;
+        capture_raw_counts::Bool = false,
     ) where {T}
     geom = ws.geom
     energies = ws.energies
@@ -277,6 +306,18 @@ function simulate!(
         end
     end
 
+    # Snapshot the acquisition output before either correction mutates it.
+    # The correction routines consume counts reconstructed from this exact
+    # truth-I0 log representation, so this captures their actual inputs,
+    # including any count floors already applied by the enabled acquisition
+    # stages. Each array owns its storage and therefore cannot be overwritten
+    # by correction or by a later reuse of the workspace.
+    raw_counts = if capture_raw_counts
+        _capture_pcct_raw_counts(pcct_sino.bins, ws.I0_bins)
+    else
+        nothing
+    end
+
     # --- PCCT pileup correction (optional; use_pcct_pileup_correction) ---
     # Inverts the MC pileup matrix S applied above via apply_pcct_pileup_correction! —
     # the same model-based un-pileup a clinical recon performs before downstream
@@ -337,11 +378,12 @@ function simulate!(
     # - `pileup_S`   : MC pile-up migration matrix (`nothing` when pile-up off).
     #                  Pass into `apply_pcct_pileup_correction!` to invert
     #                  the pile-up degradation in the sinogram domain.
-    return (
+    result = (
         pcct_sino = pcct_sino,
         I0_bins = ws.I0_bins,
         pileup_S = ws.pileup_S,
     )
+    capture_raw_counts ? merge(result, (; raw_counts)) : result
 end
 
 # =============================================================================
