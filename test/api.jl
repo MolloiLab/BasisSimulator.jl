@@ -341,6 +341,23 @@ function _toy_pcct_setup(; use_pcct_pileup = true, kwargs...)
 end
 
 _ts("entering simulate!(PCCTWorkspace) — return contract testset")
+@testset "PCCT raw-count snapshot helper" begin
+    logged = [fill(Float32(-log(0.25b)), 2, 3, 4) for b in 1:4]
+    I0 = Float64[100, 200, 300, 400]
+    raw = BS._capture_pcct_raw_counts(logged, I0)
+
+    @test length(raw) == 4
+    @test all(raw[b] !== logged[b] for b in eachindex(raw))
+    for b in eachindex(raw)
+        @test raw[b] ≈ I0[b] .* exp.(-logged[b]) rtol = 8eps(Float32)
+    end
+
+    before = copy(raw[1])
+    fill!(logged[1], 0f0)
+    @test raw[1] == before
+    @test_throws DimensionMismatch BS._capture_pcct_raw_counts(logged, I0[1:3])
+end
+
 @testset "simulate!(PCCTWorkspace) — return contract" begin
     if !HAS_GPU
         @warn "Skipping PCCT integration test: no GPU backend (Metal/CUDA/AMDGPU). \
@@ -366,6 +383,25 @@ _ts("entering simulate!(PCCTWorkspace) — return contract testset")
         @test size(res.pileup_S) == (4, 4)
         for bin in res.pcct_sino.bins
             @test all(isfinite, Array(bin))
+        end
+
+        # Raw-count capture is opt-in so the default return and allocation
+        # contract above remain unchanged. The captured arrays are independent
+        # snapshots of the exact count-domain values presented to correction.
+        captured = BS.simulate!(
+            s.ws, s.phantom, s.protocol, s.sim_opts;
+            capture_raw_counts = true,
+        )
+        @test propertynames(captured) ==
+            (:pcct_sino, :I0_bins, :pileup_S, :raw_counts)
+        @test length(captured.raw_counts) == length(captured.pcct_sino.bins)
+        for b in eachindex(captured.raw_counts)
+            @test captured.raw_counts[b] !== captured.pcct_sino.bins[b]
+            raw = Array(captured.raw_counts[b])
+            encoded = captured.I0_bins[b] .* exp.(-Array(captured.pcct_sino.bins[b]))
+            @test raw ≈ encoded rtol = 8eps(Float32) atol = 1.0e-6
+            @test all(isfinite, raw)
+            @test all(>=(0), raw)
         end
     end
 end

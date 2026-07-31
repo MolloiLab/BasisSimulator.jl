@@ -555,7 +555,7 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                 H3(:id => "simulate", :class => h3_cls, Code(:class => inline, "simulate!")),
                 Div(
                     :class => card_cls,
-                    Div(:class => sig_cls, "simulate!(ws, phantom, protocol, sim_opts = SimOptions())"),
+                    Div(:class => sig_cls, "simulate!(ws, phantom, protocol, sim_opts = SimOptions(); capture_raw_counts=false)"),
                     P(
                         :class => prose_cls,
                         "The forward-projection entry point.  Dispatches on workspace type — ",
@@ -569,7 +569,7 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                         :class => table_cls,
                         Tr(Th(:class => th_cls, "ws type"), Th(:class => th_cls, "writes to"), Th(:class => th_cls, "")),
                         Tr(Td(:class => td_mono, "EICTWorkspace"), Td(:class => td_mono, "ws.sinogram"), Td(:class => td_cls, "Single Float32 sinogram (n_cols, n_rows, n_views)")),
-                        Tr(Td(:class => td_mono, "PCCTWorkspace"), Td(:class => td_mono, "result.pcct_sino.bins"), Td(:class => td_cls, "Vector of n_bins sinograms; returns pcct_sino + I0_bins + pileup_S")),
+                        Tr(Td(:class => td_mono, "PCCTWorkspace"), Td(:class => td_mono, "result.pcct_sino.bins"), Td(:class => td_cls, "Vector of n_bins sinograms; optionally returns pre-correction detector counts with capture_raw_counts=true")),
                     ),
                     Pre(
                         :class => code_cls, Code(
@@ -577,6 +577,13 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                             BS.simulate!(ws, phantom, protocol, sim_opts)
                             sino = Array(ws.sinogram)   # pull off GPU"""
                         )
+                    ),
+                    P(
+                        :class => prose_cls,
+                        "For PCCT correction validation, pass ",
+                        Code(:class => inline, "capture_raw_counts=true"),
+                        ". The resulting ", Code(:class => inline, "raw_counts"),
+                        " arrays are independent floating-point snapshots after enabled acquisition physics and immediately before pile-up/scatter correction. This opt-in capture allocates one full sinogram per energy bin."
                     ),
                     P(:class => note_cls, "see notebooks 01–11 for canonical end-to-end call patterns"),
                 ),
