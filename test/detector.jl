@@ -716,7 +716,22 @@ end
     s4 = BS.apply_pcct_noise!(make_sino(), I0_bins; seed = 42, noise_reduction = 1.0)
     @test all(all(isapprox.(Array(bin), 2f0; atol = 2f-5)) for bin in s4.bins)
 
+    # raw_out: measured counts captured verbatim at the sampling site —
+    # TRUE ZEROS preserved; the floor at 1 lives only in the log bins
+    lo_I0 = Float64[2, 3, 2, 4]          # λ = I0·e⁻² ≈ 0.27–0.54 → many zeros
+    s5 = make_sino()
+    raw5 = [similar(b) for b in s5.bins]
+    BS.apply_pcct_noise!(s5, lo_I0; seed = 5, raw_out = raw5)
+    @test sum(count(==(0f0), r) for r in raw5) > 0
+    for (b, r) in enumerate(raw5)
+        @test all(isinteger, r)
+        enc = lo_I0[b] .* exp.(-Float64.(s5.bins[b]))     # = max(N, 1)
+        @test all(abs.(enc .- max.(Float64.(r), 1.0)) .< 1e-4)
+    end
+
     @test_throws DimensionMismatch BS.apply_pcct_noise!(make_sino(), I0_bins[1:3])
+    @test_throws DimensionMismatch BS.apply_pcct_noise!(
+        make_sino(), I0_bins; raw_out = [zeros(Float32, 32, 4, 25)])
 end
 
 # -----------------------------------------------------------------------------

@@ -62,18 +62,15 @@ end
 
 function _capture_pcct_raw_counts(
         bins::Vector{<:AbstractArray{T, 3}},
-        I0_bins::AbstractVector;
-        round_to_integers::Bool = false,
+        I0_bins::AbstractVector,
     ) where {T<:AbstractFloat}
     length(bins) == length(I0_bins) ||
         throw(DimensionMismatch("one I0 value is required per PCCT bin"))
     captured = [similar(bin) for bin in bins]
     for (b, bin_sino) in enumerate(bins)
-        let out = captured[b], input = bin_sino, I0b = T(I0_bins[b]),
-            do_round = round_to_integers
+        let out = captured[b], input = bin_sino, I0b = T(I0_bins[b])
             AK.foreachindex(input) do idx
-                c = I0b * exp(-input[idx])
-                out[idx] = do_round ? round(c) : c
+                out[idx] = I0b * exp(-input[idx])
             end
         end
     end
@@ -105,13 +102,14 @@ ground-truth `I0_bins`.
 - `pileup_S`  — MC pulse-pileup migration matrix, or `nothing` when disabled.
 - `raw_counts` — captured by default; independent per-bin arrays containing
   the detector counts immediately before pile-up correction and scatter
-  correction.  With noise on, pile-up off, and `pcct_noise_reduction = 0`
-  these are exact integer Poisson realizations, returned as bit-exact
-  integers (the capture rounds off the Float32 log-transport wobble; counts
-  are floored at 1 — a zero count has no finite log line integral).  Forward
-  pile-up migration (`S × counts`) and the downstream corrections re-mix the
-  draws into fractional counts, which is real detector physics, not a
-  sampling artifact — no rounding is applied there.
+  correction.  With noise on and pile-up off they are captured verbatim at
+  the sampling site: bit-exact integer Poisson realizations with TRUE ZEROS
+  preserved (the floor at 1 applies only to the log-domain sinograms, where
+  a zero count has no finite representation — the simulator imposes no
+  zero-count policy on the counts themselves).  With pile-up on, forward
+  migration (`S × counts`) re-mixes the draws into fractional recorded
+  counts (real detector physics); with noise off, they are the continuous
+  expected counts λ.
 
 Capturing raw counts allocates one additional full-size array per energy bin;
 pass `capture_raw_counts=false` only when memory-constrained.
@@ -237,13 +235,22 @@ function simulate!(
     # Exact integer Poisson counts, sampled in the SAME air-cal basis
     # (ws.I0_bins) the bins are normalized against, so a downstream
     # `I0 · exp(-h)` recovers the sampled counts exactly.
+    #
+    # When pile-up is off, nothing modifies the bins between the noise draw
+    # and the raw-count capture point, so the capture happens AT the sampling
+    # site (`raw_out`) — the measured counts land in `raw_counts` verbatim,
+    # before the log-domain floor at 1, with TRUE ZEROS preserved.
+    pileup_active = ws.use_pcct_pileup && ws.pileup_S !== nothing
+    raw_from_noise = capture_raw_counts && sim_opts.use_noise && !pileup_active ?
+        [similar(bin) for bin in pcct_sino.bins] : nothing
     if sim_opts.use_noise
         apply_pcct_noise!(
             pcct_sino, ws.I0_bins;
             seed = sim_opts.seed,
             ws_noise_staging = ws.noise_staging,
             ws_rng = ws.rng,
-            noise_reduction = sim_opts.pcct_noise_reduction
+            noise_reduction = sim_opts.pcct_noise_reduction,
+            raw_out = raw_from_noise,
         )
     end
 
@@ -316,17 +323,13 @@ function simulate!(
     # including any count floors already applied by the enabled acquisition
     # stages. Each array owns its storage and therefore cannot be overwritten
     # by correction or by a later reuse of the workspace.
-    raw_counts = if capture_raw_counts
-        # When noise ran and nothing re-mixed the draws (no pile-up migration,
-        # no noise-reduction blend), the bins encode exact integer Poisson
-        # counts; rounding undoes the Float32 log round trip so the captured
-        # counts are bit-exact integers.
-        _capture_pcct_raw_counts(
-            pcct_sino.bins, ws.I0_bins;
-            round_to_integers = sim_opts.use_noise &&
-                sim_opts.pcct_noise_reduction == 0.0 &&
-                !(ws.use_pcct_pileup && ws.pileup_S !== nothing),
-        )
+    raw_counts = if raw_from_noise !== nothing
+        # Captured verbatim at the sampling site: exact draws, true zeros.
+        raw_from_noise
+    elseif capture_raw_counts
+        # Pile-up on (fractional recorded counts) or noise off (expected
+        # counts λ): reconstruct the pre-correction count-domain state.
+        _capture_pcct_raw_counts(pcct_sino.bins, ws.I0_bins)
     else
         nothing
     end

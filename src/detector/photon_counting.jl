@@ -798,8 +798,13 @@ For each bin `b` and ray:
 2. `N ~ Poisson(λ)` — exact integer sampling at every λ (`_poisson_sample`);
 3. optional `noise_reduction` blend `λ + (1 - nr)·(N - λ)`; any nonzero value
    leaves the strict Poisson count model (vendor-denoising surrogate only);
-4. counts floored at 1 (a zero count has no finite log line integral), then
-   back to `h = -log(N / I0_bins[b])`.
+4. the measured count is written verbatim to `raw_out[b]` when provided
+   (TRUE ZEROS preserved), then floored at 1 ONLY for the log-domain bins —
+   a zero count has no finite log line integral — and stored back as
+   `h = -log(max(N, 1) / I0_bins[b])`.
+
+The simulator imposes no zero-count policy on the counts product: any
+epsilon/interpolation convention for zeros is a downstream (user) choice.
 
 # Arguments
 - `sino::EnergyResolvedSinogram`: per-bin log line integrals, mutated in place.
@@ -810,6 +815,9 @@ For each bin `b` and ray:
 - `ws_noise_staging`: optional pre-allocated sinogram-shaped CPU buffer.
 - `ws_rng`: optional pre-allocated RNG (re-seeded each call).
 - `noise_reduction::Float64`: 0.0 = exact Poisson counts (default).
+- `raw_out`: optional vector of per-bin arrays (same backend/shape as the
+  bins) that receives the measured counts BEFORE the log-domain floor.
+  With `noise_reduction = 0` these are the exact integer draws.
 """
 function apply_pcct_noise!(
     sino::EnergyResolvedSinogram{T,A},
@@ -818,9 +826,12 @@ function apply_pcct_noise!(
     ws_noise_staging = nothing,
     ws_rng = nothing,
     noise_reduction::Float64 = 0.0,
+    raw_out = nothing,
 ) where {T, A}
     length(sino.bins) == length(I0_bins) ||
         throw(DimensionMismatch("one I0 value is required per PCCT bin"))
+    raw_out === nothing || length(raw_out) == length(sino.bins) ||
+        throw(DimensionMismatch("one raw_out array is required per PCCT bin"))
 
     rng = if ws_rng !== nothing
         Random.seed!(ws_rng, isnothing(seed) ? 0 : seed)
@@ -838,13 +849,20 @@ function apply_pcct_noise!(
         # Bulk GPU→CPU transfer (reuses pre-allocated buffer)
         copyto!(cpu_buf, bin)
 
+        # Pass 1: measured counts (pre-floor; exact integers when nr = 0)
         @inbounds for idx in eachindex(cpu_buf)
             λ = I0_bin * exp(-Float64(cpu_buf[idx]))
             N = Float64(_poisson_sample(rng, λ))
             if nr_scale != 1.0
                 N = λ + nr_scale * (N - λ)
             end
-            cpu_buf[idx] = T(-log(max(N, 1.0) / I0_bin))
+            cpu_buf[idx] = T(N)
+        end
+        raw_out === nothing || copyto!(raw_out[b], cpu_buf)
+
+        # Pass 2: floor at 1 for the log domain only, convert back in place
+        @inbounds for idx in eachindex(cpu_buf)
+            cpu_buf[idx] = T(-log(Float64(max(cpu_buf[idx], one(T))) / I0_bin))
         end
 
         # Bulk CPU→GPU transfer

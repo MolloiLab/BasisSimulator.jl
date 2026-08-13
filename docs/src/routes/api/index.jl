@@ -581,7 +581,7 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                     P(
                         :class => prose_cls,
                         "The ", Code(:class => inline, "raw_counts"),
-                        " arrays (captured by default) are independent snapshots of the detector counts after enabled acquisition physics and immediately before pile-up/scatter correction — with noise on and pile-up off, exact integer Poisson realizations. The capture allocates one full sinogram per energy bin; pass ",
+                        " arrays (captured by default) are independent snapshots of the detector counts after enabled acquisition physics and immediately before pile-up/scatter correction — with noise on and pile-up off, bit-exact integer Poisson realizations with true zeros preserved (the floor at 1 lives only in the log-domain sinograms). The capture allocates one full sinogram per energy bin; pass ",
                         Code(:class => inline, "capture_raw_counts=false"),
                         " only when memory-constrained."
                     ),
