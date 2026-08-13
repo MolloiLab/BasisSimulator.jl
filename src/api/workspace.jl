@@ -41,9 +41,8 @@ mutable struct PCCTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A1 <
     # ─── Combine (GPU-side) ───
     combined::A3               # scratch for `combined_primary` in scatter step
 
-    # ─── Noise CPU staging (Phase 1: CPU RNG) ───
+    # ─── Noise CPU staging (CPU RNG, exact Poisson sampling) ───
     noise_staging::Array{T, 3}  # CPU buffer for GPU↔CPU noise transfer
-    noise_buf::Array{T, 3}      # randn output buffer (CPU)
 
     # ─── Pre-computed CPU vectors/matrices ───
     η::Vector{Float64}          # quantum efficiency vector (n_energies)
@@ -55,9 +54,6 @@ mutable struct PCCTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A1 <
 
     # ─── RNG state ───
     rng::MersenneTwister        # pre-allocated RNG (reset with seed each call)
-
-    # ─── Noise I0 ───
-    noise_I0::Vector{Float64}   # per-bin I0 for noise model (n_bins)
 
     # ─── μ lookup table (pre-computed for all energies × materials) ───
     μ_lut_cpu::Vector{T}                     # μ LUT CPU buffer (n_regions)
@@ -175,9 +171,8 @@ function create_workspace(
     scratch = allocate_backend(sino_shape)
     combined = allocate_backend(sino_shape)
 
-    # CPU-side buffers (Phase 1 noise: CPU RNG → GPU staging)
+    # CPU-side staging buffer (CPU Poisson RNG → GPU transfer)
     noise_staging = zeros(T, sino_shape)
-    noise_buf = zeros(T, sino_shape)
     energies, weights_vec = resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner = scanner)
     n_energies = length(energies)
     config = build_physics_config(scanner, sim_opts, energies, weights_vec; phantom = phantom)
@@ -201,7 +196,7 @@ function create_workspace(
     # change them TOGETHER or the -log(N/I0) round trip breaks.  Previously
     # both used a hardcoded 1.0e6 → ~7e11 fake "counts"/ray, which (a) let
     # the scatter-correction eps floor mint deterministic p≈50 plateau rays
-    # and (b) left the noise model's low-count Poisson branch dead.
+    # and (b) fed the Poisson noise model fake count magnitudes.
     _I0_anchor = compute_detector_I0(geom, protocol, sum(weights_vec)) /
         max(sum(weights_vec), 1.0e-30)
     # AIR CALIBRATION: per-bin I0 = the forward kernel's own air response,
@@ -218,9 +213,6 @@ function create_workspace(
     thresholds_T_vec = T.(thresholds)
 
     rng = MersenneTwister(0)
-
-    # Detector physics precomputed buffers
-    noise_I0 = zeros(Float64, n_bins)
 
     # μ lookup table — pre-compute μ for all regions × all energies
     n_regions = length(mats)
@@ -406,9 +398,8 @@ function create_workspace(
     return PCCTWorkspace{T, typeof(sino_buf), typeof(μ_lut_gpu), typeof(geom_source_positions)}(
         bins, μ_volume, sino_buf, scratch,
         combined,
-        noise_staging, noise_buf,
+        noise_staging,
         η_vec, R_mat, R_energies_vec, I0_bins_combine, I0_bins_norm_vec, thresholds_T_vec, rng,
-        noise_I0,
         μ_lut_cpu, μ_lut_gpu, μ_table,
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
         _native_bins, _native_sino_buf,

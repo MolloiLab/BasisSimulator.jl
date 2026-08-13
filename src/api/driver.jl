@@ -79,7 +79,7 @@ end
 
 """
     simulate!(ws::PCCTWorkspace, phantom, protocol, sim_opts;
-              capture_raw_counts=false)
+              capture_raw_counts=true)
 
 Run PCCT simulation using pre-allocated workspace buffers for zero allocations
 on the second and later calls (the first call may JIT-allocate).
@@ -100,14 +100,16 @@ ground-truth `I0_bins`.
 - `pcct_sino` — `EnergyResolvedSinogram` (per-bin log line integrals).
 - `I0_bins`   — per-bin reference photon count vector (for `-log(N/I0)` undo).
 - `pileup_S`  — MC pulse-pileup migration matrix, or `nothing` when disabled.
-- `raw_counts` — present only when `capture_raw_counts=true`; independent
-  per-bin arrays containing the detector counts immediately before pile-up and
-  scatter correction. These are floating-point measurements and include all
-  enabled acquisition physics and count safeguards.
+- `raw_counts` — captured by default; independent per-bin arrays containing
+  the detector counts immediately before pile-up correction and scatter
+  correction.  With noise on and pile-up off these are exact integer Poisson
+  realizations (floored at 1 — a zero count has no finite log line integral);
+  forward pile-up migration (`S × counts`) and the downstream corrections
+  re-mix them into fractional counts, which is real detector physics, not a
+  sampling artifact.
 
-Capturing raw counts allocates one additional full-size array per energy bin.
-It is disabled by default so the normal reusable-workspace path retains its
-existing memory behavior and return contract.
+Capturing raw counts allocates one additional full-size array per energy bin;
+pass `capture_raw_counts=false` only when memory-constrained.
 """
 function simulate!(
         ws::PCCTWorkspace{T},
@@ -115,7 +117,7 @@ function simulate!(
         protocol::CTProtocol,
         sim_opts::SimOptions = SimOptions(),
         ;
-        capture_raw_counts::Bool = false,
+        capture_raw_counts::Bool = true,
     ) where {T}
     geom = ws.geom
     energies = ws.energies
@@ -227,18 +229,15 @@ function simulate!(
     end
 
     # ─── Noise (in-place on pcct_sino.bins — now includes scatter in counts) ───
-    I0_physics = compute_detector_I0(geom, protocol, sum(ws.weights))
+    # Exact integer Poisson counts, sampled in the SAME air-cal basis
+    # (ws.I0_bins) the bins are normalized against, so a downstream
+    # `I0 · exp(-h)` recovers the sampled counts exactly.
     if sim_opts.use_noise
         apply_pcct_noise!(
-            pcct_sino, pcct_detector, protocol;
-            seed = sim_opts.seed, I0 = I0_physics,
-            energies = energies, weights = weights,
+            pcct_sino, ws.I0_bins;
+            seed = sim_opts.seed,
             ws_noise_staging = ws.noise_staging,
-            ws_noise_buf = ws.noise_buf,
             ws_rng = ws.rng,
-            ws_noise_I0 = ws.noise_I0,
-            ws_η = ws.η,
-            ws_R = ws.R,
             noise_reduction = sim_opts.pcct_noise_reduction
         )
     end

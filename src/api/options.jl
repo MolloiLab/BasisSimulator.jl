@@ -21,7 +21,9 @@ for preset lookup — it is not stored on the struct.
 - `use_scatter::Bool`: Enable scatter simulation (correction is decoupled to notebook level).
 - `use_optical_crosstalk::Bool`: Enable optical crosstalk.
 - `use_focal_spot::Bool`: Enable focal spot blur.
-- `use_noise::Bool`: Enable quantum/electronic noise.
+- `use_noise::Bool`: Enable noise.  PCCT: exact per-bin integer Poisson count
+  realizations of the MC-detector expected counts (no electronic noise — counting
+  thresholds eliminate it).  EICT: Gaussian quantum + electronic noise on counts.
 - `use_lag::Bool`: Enable detector lag (afterglow).
 - `use_heel_effect::Bool`: Enable anode heel effect.
 - `use_pcct_pileup::Bool`: Apply MC pulse pileup at simulate-time (PCCT only).
@@ -38,11 +40,12 @@ for preset lookup — it is not stored on the struct.
   `simulate!()` after pileup (re-estimates the scatter field from the current bins and
   subtracts it).  Default `false`; enable to fold the notebook-level correction into `simulate!()`.
 - `pcct_noise_reduction::Float64`: PCCT noise reduction factor (0.0–1.0).  Approximates clinical
-  vendor reconstruction (e.g., Siemens QIR) by scaling the quantum-noise σ.  0.0 = raw physics
-  (default), 0.7 = 70% noise reduction (~QIR-3).  Only affects PCCT sinogram noise; EICT noise is
-  unaffected.  VALIDATION DOCTRINE: HU-accuracy claims must hold at 0.0 — nonzero values also
-  shrink the (now removed) clamp-rectification bias, so a nonzero setting can mask decomposition
-  bias rather than just modeling vendor denoising.  Use nonzero only for noise-magnitude studies.
+  vendor reconstruction (e.g., Siemens QIR) by blending sampled Poisson counts toward their
+  expectation.  0.0 = raw physics, exact integer Poisson counts (default); 0.7 = 70% noise
+  reduction (~QIR-3).  ANY nonzero value leaves the strict Poisson count model (a scaled Poisson
+  deviate is not Poisson) — statistical-model validation must run at 0.0.  Only affects PCCT
+  sinogram noise; EICT noise is unaffected.  VALIDATION DOCTRINE: HU-accuracy claims must hold at
+  0.0.  Use nonzero only for noise-magnitude studies.
 - `seed::Union{Int, Nothing}`: Random seed for reproducibility.  Default 42.
 - `detector_efficiency_mode::Symbol`: Override detector efficiency calculation mode.
   `:auto` (default) = let driver decide; `:mc_lut` = force MC LUT; `:beer_lambert` = force analytical.

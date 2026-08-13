@@ -655,6 +655,71 @@ end
 end
 
 # -----------------------------------------------------------------------------
+# photon_counting.jl — exact Poisson count noise
+# -----------------------------------------------------------------------------
+@testset "_poisson_sample — exact Poisson statistics" begin
+    rng = MersenneTwister(1234)
+    @test BS._poisson_sample(rng, 0.0) == 0
+    @test BS._poisson_sample(rng, 1.0e-15) == 0
+
+    # log-factorial: exact table vs Stirling tail agree across the seam
+    @test BS._log_factorial(20) ≈ sum(log, 1:20)
+    @test BS._log_factorial(21) ≈ sum(log, 1:21) rtol = 1.0e-12
+    @test BS._log_factorial(150) ≈ sum(log, 1:150) rtol = 1.0e-12
+
+    # Mean/variance across the inversion (λ < 10) and PTRS (λ ≥ 10) branches
+    for λ in (0.5, 5.0, 9.9, 10.1, 50.0, 1.0e4)
+        s = [BS._poisson_sample(rng, λ) for _ in 1:200_000]
+        @test all(>=(0), s)
+        @test mean(s) ≈ λ rtol = 0.02
+        @test std(s)^2 ≈ λ rtol = 0.05
+    end
+
+    # Skewness 1/√λ separates exact Poisson from a Gaussian approximation
+    # (the old sampler switched to a rounded Gaussian above λ = 30 — skewness 0)
+    s = [BS._poisson_sample(rng, 50.0) for _ in 1:200_000]
+    z = (s .- mean(s)) ./ std(s)
+    @test isapprox(mean(z .^ 3), 1 / sqrt(50.0); atol = 0.03)
+
+    # Determinism under an explicit seed
+    draw(seed) = [BS._poisson_sample(MersenneTwister(seed), 123.4) for _ in 1:100]
+    @test draw(7) == draw(7)
+    @test draw(7) != draw(8)
+end
+
+@testset "apply_pcct_noise! — Poisson counts in the air-cal basis" begin
+    thresholds = Float32[20, 35, 55, 70]
+    I0_bins = Float64[40_000, 60_000, 30_000, 10_000]
+    # Uniform log line integral h = 2 → expected counts λ_b = I0_b·e⁻²
+    make_sino() = BS.EnergyResolvedSinogram(
+        [fill(Float32(2), 32, 4, 25) for _ in 1:4], thresholds)
+
+    sino = BS.apply_pcct_noise!(make_sino(), I0_bins; seed = 11)
+    for (b, bin) in enumerate(sino.bins)
+        counts = I0_bins[b] .* exp.(-Float64.(bin))
+        # Integer realizations survive the Float32 log round trip
+        @test maximum(abs.(counts .- round.(counts))) < 0.1
+        λ = I0_bins[b] * exp(-2.0)
+        @test mean(counts) ≈ λ rtol = 0.01
+        @test std(counts)^2 ≈ λ rtol = 0.15
+    end
+
+    # Same seed → identical realization; different seed → different one
+    s1 = BS.apply_pcct_noise!(make_sino(), I0_bins; seed = 42)
+    s2 = BS.apply_pcct_noise!(make_sino(), I0_bins; seed = 42)
+    s3 = BS.apply_pcct_noise!(make_sino(), I0_bins; seed = 43)
+    @test all(s1.bins[b] == s2.bins[b] for b in 1:4)
+    @test any(s1.bins[b] != s3.bins[b] for b in 1:4)
+
+    # noise_reduction = 1 collapses to the noiseless expectation exactly
+    # (any nonzero value leaves the strict Poisson count model)
+    s4 = BS.apply_pcct_noise!(make_sino(), I0_bins; seed = 42, noise_reduction = 1.0)
+    @test all(all(isapprox.(Array(bin), 2f0; atol = 2f-5)) for bin in s4.bins)
+
+    @test_throws DimensionMismatch BS.apply_pcct_noise!(make_sino(), I0_bins[1:3])
+end
+
+# -----------------------------------------------------------------------------
 # pcct/mc_pileup.jl
 # -----------------------------------------------------------------------------
 @testset "MC pile-up — simulate_pulse_train + compute_mc_pileup_matrix" begin
