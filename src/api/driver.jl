@@ -62,15 +62,18 @@ end
 
 function _capture_pcct_raw_counts(
         bins::Vector{<:AbstractArray{T, 3}},
-        I0_bins::AbstractVector,
+        I0_bins::AbstractVector;
+        round_to_integers::Bool = false,
     ) where {T<:AbstractFloat}
     length(bins) == length(I0_bins) ||
         throw(DimensionMismatch("one I0 value is required per PCCT bin"))
     captured = [similar(bin) for bin in bins]
     for (b, bin_sino) in enumerate(bins)
-        let out = captured[b], input = bin_sino, I0b = T(I0_bins[b])
+        let out = captured[b], input = bin_sino, I0b = T(I0_bins[b]),
+            do_round = round_to_integers
             AK.foreachindex(input) do idx
-                out[idx] = I0b * exp(-input[idx])
+                c = I0b * exp(-input[idx])
+                out[idx] = do_round ? round(c) : c
             end
         end
     end
@@ -102,11 +105,13 @@ ground-truth `I0_bins`.
 - `pileup_S`  — MC pulse-pileup migration matrix, or `nothing` when disabled.
 - `raw_counts` — captured by default; independent per-bin arrays containing
   the detector counts immediately before pile-up correction and scatter
-  correction.  With noise on and pile-up off these are exact integer Poisson
-  realizations (floored at 1 — a zero count has no finite log line integral);
-  forward pile-up migration (`S × counts`) and the downstream corrections
-  re-mix them into fractional counts, which is real detector physics, not a
-  sampling artifact.
+  correction.  With noise on, pile-up off, and `pcct_noise_reduction = 0`
+  these are exact integer Poisson realizations, returned as bit-exact
+  integers (the capture rounds off the Float32 log-transport wobble; counts
+  are floored at 1 — a zero count has no finite log line integral).  Forward
+  pile-up migration (`S × counts`) and the downstream corrections re-mix the
+  draws into fractional counts, which is real detector physics, not a
+  sampling artifact — no rounding is applied there.
 
 Capturing raw counts allocates one additional full-size array per energy bin;
 pass `capture_raw_counts=false` only when memory-constrained.
@@ -312,7 +317,16 @@ function simulate!(
     # stages. Each array owns its storage and therefore cannot be overwritten
     # by correction or by a later reuse of the workspace.
     raw_counts = if capture_raw_counts
-        _capture_pcct_raw_counts(pcct_sino.bins, ws.I0_bins)
+        # When noise ran and nothing re-mixed the draws (no pile-up migration,
+        # no noise-reduction blend), the bins encode exact integer Poisson
+        # counts; rounding undoes the Float32 log round trip so the captured
+        # counts are bit-exact integers.
+        _capture_pcct_raw_counts(
+            pcct_sino.bins, ws.I0_bins;
+            round_to_integers = sim_opts.use_noise &&
+                sim_opts.pcct_noise_reduction == 0.0 &&
+                !(ws.use_pcct_pileup && ws.pileup_S !== nothing),
+        )
     else
         nothing
     end

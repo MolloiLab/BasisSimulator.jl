@@ -356,6 +356,14 @@ _ts("entering simulate!(PCCTWorkspace) — return contract testset")
     fill!(logged[1], 0f0)
     @test raw[1] == before
     @test_throws DimensionMismatch BS._capture_pcct_raw_counts(logged, I0[1:3])
+
+    # round_to_integers undoes the Float32 log-transport wobble
+    logged_r = [fill(Float32(-log(0.25b)), 2, 3, 4) for b in 1:4]
+    raw_r = BS._capture_pcct_raw_counts(logged_r, I0; round_to_integers = true)
+    for b in eachindex(raw_r)
+        @test raw_r[b] == round.(I0[b] .* exp.(-logged_r[b]))
+        @test all(isinteger, raw_r[b])
+    end
 end
 
 @testset "simulate!(PCCTWorkspace) — return contract" begin
@@ -404,6 +412,16 @@ end
             capture_raw_counts = false,
         )
         @test propertynames(trimmed) == (:pcct_sino, :I0_bins, :pileup_S)
+
+        # Model-matched config (noise on, pile-up off, nr = 0): raw counts
+        # are BIT-EXACT integer Poisson realizations, floored at 1.
+        mm = _toy_pcct_setup(use_pcct_pileup = false, use_noise = true)
+        res_mm = BS.simulate!(mm.ws, mm.phantom, mm.protocol, mm.sim_opts)
+        for raw in res_mm.raw_counts
+            arr = Array(raw)
+            @test all(isinteger, arr)
+            @test all(>=(1), arr)
+        end
     end
 end
 
