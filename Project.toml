@@ -1,6 +1,6 @@
 name = "BasisSimulator"
 uuid = "8f904dfe-b85e-4ff6-b463-dae2292396b9"
-version = "0.12.0"
+version = "0.13.0"
 authors = ["Dale Black <djblack@uci.edu>"]
 
 [deps]
