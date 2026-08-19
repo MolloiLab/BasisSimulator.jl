@@ -118,7 +118,11 @@ for iteration in 1:N_CYCLES
         ws = BS.create_workspace(
             scanner, protocol, sim_opts, recon_opts, phantom,
         )
-        result = BS.simulate!(ws, phantom, protocol, sim_opts)
+        # capture_raw_counts=false: this script pins the reusable-workspace
+        # memory contract; raw-count capture allocates per call by design.
+        result = BS.simulate!(
+            ws, phantom, protocol, sim_opts; capture_raw_counts = false,
+        )
         cpu_bins = [Array(bin) for bin in result.pcct_sino.bins]
         checksum = sum(mean, cpu_bins)
         peak = BS.backend_memory_snapshot(first(ws.bins))

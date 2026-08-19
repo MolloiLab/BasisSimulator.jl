@@ -204,7 +204,7 @@ sim_opts = BS.SimOptions(
 
     # ─── Active for PCCT — all applied INSIDE simulate!() ───
     use_scatter = false,                  # EICT scatter flag — OFF (PCCT uses use_pcct_scatter)
-    use_noise = true,                     # quantum noise (src :count, nr below)
+    use_noise = true,                     # exact per-bin Poisson counts
     use_pcct_scatter = true,              # PCCT scatter injection
     use_pcct_scatter_correction = true,   # PCCT model-based scatter correction
     use_pcct_pileup = true,               # PCCT MC pile-up forward
@@ -233,7 +233,7 @@ sinograms with the **complete PCCT physics + corrections**, all gated by the
 `sim_opts` flags above:
 
 ```
-forward → scatter inject → quantum noise → pile-up fwd →
+forward → scatter inject → Poisson noise → pile-up fwd →
 pile-up correction → scatter correction
 ```
 
@@ -251,7 +251,12 @@ sim_bins = let
     @info "Simulating: $(Int(protocol.kVp)) kVp / $(round(protocol.mA, digits = 1)) mA (PCCT 4-bin) — full physics + corrections via simulate!()"
     ws = BS.create_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
     try
-        result = BS.simulate!(ws, phantom, protocol, sim_opts)
+        # Pre-correction integer Poisson `raw_counts` are captured by default;
+        # opt out here — this notebook consumes only the corrected bins, and
+        # the capture would hold four extra sinogram-sized arrays.
+        result = BS.simulate!(
+            ws, phantom, protocol, sim_opts; capture_raw_counts = false,
+        )
         bins = [Array(b) for b in result.pcct_sino.bins]
         I0_bins = copy(result.I0_bins)
         geom = ws.geom
@@ -259,16 +264,11 @@ sim_bins = let
         # the workspace's MC-LUT η and the centre-pixel bowtie fold).
         energies = Float64.(ws.energies)
         W_applied = Float64.(Array(ws.W_matrix_gpu))[1:length(ws.energies), :]
-        mc_count_moments = BS.compute_mc_count_moments(
-            ws.pcct_detector, ws.energies, ws.weights;
-            η=ws.η, R=ws.R,
-        )
         pileup_S = result.pileup_S
         returned_eltype = eltype(first(bins))
         memory_before_release = BS.backend_memory_snapshot(first(ws.bins))
         (bins = bins, I0_bins = I0_bins, geom = geom,
          energies = energies, W_applied = W_applied,
-         mc_count_moments = mc_count_moments,
          pileup_S = pileup_S, returned_eltype = returned_eltype,
          memory = (before_release = memory_before_release,))
     finally
@@ -300,18 +300,21 @@ PCCT detector routines rather than inferred from variable names.
   operation.
 - The implemented order is: primary polychromatic projection through the
   applied MC response → optional focal-spot blur → count-domain scatter
-  injection → MC-covariance quantum noise → pileup forward migration →
-  inverse pileup correction → scatter correction → negative-log conversion.
-- The bundled Monte-Carlo LUT supplies both the mean detector response and
-  second moments. `compute_mc_count_moments` exposes per-incident-photon
-  `mean`, `fano`, `correlation`, and compound-Poisson `covariance`.
+  injection → exact per-bin Poisson count sampling in the truth-``I_0`` basis
+  → pileup forward migration → inverse pileup correction → scatter correction
+  → negative-log conversion.
+- Incident photons are Poisson and the MC detector response acts as
+  independent per-photon thinning, so integer Poisson counts around the
+  DRM-shaped means are the exact detector statistics.  Pre-correction
+  realizations are available from `simulate!` as `raw_counts` (captured by
+  default; opted out above).  Detector second moments remain inspectable via
+  `BS.compute_mc_count_moments`.
 
-Pileup inversion, scatter correction, and the final logarithm can introduce
-fractional values and alter covariance. Therefore the independent-Poisson
-objective below is explicitly a **Poisson quasi-likelihood** unless repeated
-realizations validate that covariance model. The calibrated MC moments are
-reported as a separate detector-statistics model, not silently substituted
-for post-correction covariance.
+Pileup migration and inversion, scatter correction, and the final logarithm
+re-mix the integer realizations into fractional values with covariance.
+Therefore the independent-Poisson objective below is explicitly a **Poisson
+quasi-likelihood** for the corrected bins, exact for the pre-correction
+counts.
 """
 
 # ╔═╡ 4ca28c64-ee96-47c8-b7c3-f0e0c4c99423

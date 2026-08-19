@@ -775,64 +775,63 @@ end
 # =============================================================================
 
 """
-    apply_pcct_noise!(sino::EnergyResolvedSinogram, detector, protocol;
-                       seed=nothing, I0=1e6, energies=nothing, weights=nothing) -> EnergyResolvedSinogram
+    apply_pcct_noise!(sino::EnergyResolvedSinogram, I0_bins;
+                      seed=nothing, ws_noise_staging=nothing, ws_rng=nothing,
+                      noise_reduction=0.0) -> EnergyResolvedSinogram
 
-Apply MC-informed count noise to PCCT energy-resolved sinograms (in-place).
+Draw exact per-bin Poisson count realizations in-place.
 
-Key PCCT noise characteristics:
-- The default uses spectrum-averaged Fano factors and inter-bin correlations
-  from the bundled Monte Carlo detector-response covariance.
-- NO electronic noise (eliminated by energy thresholds — fundamental PCCT advantage)
-- Lower counts per bin → higher relative noise per bin vs conventional
-- Total counts (sum of all bins) ≈ conventional EID counts × η_avg
+Incident photons are Poisson distributed and the MC-LUT detector response
+(quantum efficiency + spectral migration) acts as independent per-photon
+thinning, so the recorded counts in each bin are exactly Poisson with the
+DRM-shaped expected counts as their mean.  Charge-sharing double counting
+across bins is the one residual effect outside this model.  NO electronic
+noise — eliminated by the counting thresholds, the fundamental PCCT
+advantage.
+
+`I0_bins` must be the SAME per-bin air calibration the sinograms are
+normalized against (`ws.I0_bins`), so a downstream `I0 · exp(-h)` recovers
+the sampled integer counts exactly.
+
+For each bin `b` and ray:
+1. expected counts `λ = I0_bins[b] · exp(-h)`;
+2. `N ~ Poisson(λ)` — exact integer sampling at every λ (`_poisson_sample`);
+3. optional `noise_reduction` blend `λ + (1 - nr)·(N - λ)`; any nonzero value
+   leaves the strict Poisson count model (vendor-denoising surrogate only);
+4. the measured count is written verbatim to `raw_out[b]` when provided
+   (TRUE ZEROS preserved), then floored at 1 ONLY for the log-domain bins —
+   a zero count has no finite log line integral — and stored back as
+   `h = -log(max(N, 1) / I0_bins[b])`.
+
+The simulator imposes no zero-count policy on the counts product: any
+epsilon/interpolation convention for zeros is a downstream (user) choice.
 
 # Arguments
-- `sino::EnergyResolvedSinogram`: Energy-resolved sinograms (in line-integral domain)
-- `detector::PhotonCountingDetector`: Detector specification
-- `protocol`: CTProtocol (for exposure/flux information)
+- `sino::EnergyResolvedSinogram`: per-bin log line integrals, mutated in place.
+- `I0_bins::AbstractVector`: per-bin air-calibration counts (one per bin).
 
 # Keyword Arguments
-- `seed::Union{Nothing,Int}`: Random seed for reproducibility
-- `I0::Real`: Reference photon count per detector element (total, before binning)
-- `energies::Union{Nothing,AbstractVector}`: Spectrum energies (keV) for proper per-bin I₀
-- `weights::Union{Nothing,AbstractVector}`: Spectrum weights for proper per-bin I₀
-- `use_mc_covariance::Bool`: Use bundled MC Fano factors and inter-bin count
-  correlations. Set false for the legacy independent-Poisson approximation.
-
-# Physics
-
-For each bin b and pixel:
-1. Compute I₀_bin from spectrum: I₀_bin = I₀ × Σ_{E∈bin} S(E) × η(E)
-2. Convert from line-integral to photon counts: N = I₀_bin × exp(-sino_value)
-3. Sample: N_measured ~ Poisson(N)
-4. Convert back: sino_noisy = -log(N_measured / I₀_bin)
-
-When `energies` and `weights` are provided, per-bin I₀ is computed from the
-spectrum weighted by quantum efficiency — this gives physically correct noise
-levels per bin (lower bins get fewer photons from the spectrum).
-
-# Returns
-Modified EnergyResolvedSinogram with noise applied.
+- `seed::Union{Nothing,Int}`: RNG seed for reproducibility.
+- `ws_noise_staging`: optional pre-allocated sinogram-shaped CPU buffer.
+- `ws_rng`: optional pre-allocated RNG (re-seeded each call).
+- `noise_reduction::Float64`: 0.0 = exact Poisson counts (default).
+- `raw_out`: optional vector of per-bin arrays (same backend/shape as the
+  bins) that receives the measured counts BEFORE the log-domain floor.
+  With `noise_reduction = 0` these are the exact integer draws.
 """
 function apply_pcct_noise!(
     sino::EnergyResolvedSinogram{T,A},
-    detector::PhotonCountingDetector,
-    protocol;
+    I0_bins::AbstractVector;
     seed::Union{Nothing,Int} = nothing,
-    I0::Real = 1e6,
-    energies::Union{Nothing,AbstractVector} = nothing,
-    weights::Union{Nothing,AbstractVector} = nothing,
-    # Workspace buffers (optional — allocate internally if not provided)
     ws_noise_staging = nothing,
-    ws_noise_buf = nothing,
     ws_rng = nothing,
-    ws_noise_I0 = nothing,
-    ws_η = nothing,
-    ws_R = nothing,
     noise_reduction::Float64 = 0.0,
-    use_mc_covariance::Bool = true
+    raw_out = nothing,
 ) where {T, A}
+    length(sino.bins) == length(I0_bins) ||
+        throw(DimensionMismatch("one I0 value is required per PCCT bin"))
+    raw_out === nothing || length(raw_out) == length(sino.bins) ||
+        throw(DimensionMismatch("one raw_out array is required per PCCT bin"))
 
     rng = if ws_rng !== nothing
         Random.seed!(ws_rng, isnothing(seed) ? 0 : seed)
@@ -840,85 +839,31 @@ function apply_pcct_noise!(
     else
         isnothing(seed) ? Random.default_rng() : MersenneTwister(seed)
     end
-    n_bins = length(sino.bins)
-    thresholds = sino.thresholds_keV
 
-    # Compute per-bin I₀ values (into workspace buffer if provided)
-    # Pass R matrix for DRM-consistent bin distribution
-    I0_per_bin = _compute_pcct_noise_I0(detector, n_bins, thresholds, I0, energies, weights;
-                                         output=ws_noise_I0, ws_η=ws_η, ws_R=ws_R)
-
-    # Pre-allocate reusable CPU buffers (one-time allocation, reused across all bins)
-    # Use workspace buffers if provided
     cpu_buf = ws_noise_staging !== nothing ? ws_noise_staging : Array(sino.bins[1])
-    noise_buf = ws_noise_buf !== nothing ? ws_noise_buf : similar(cpu_buf)
-
-    # Convert the bundled cumulative-threshold MC covariance into the same
-    # differential bins and spectrum used by the forward projector. An ideal
-    # detector reduces to fano=1 and corr=I; the real CdTe response carries
-    # modest positive inter-bin correlations from charge sharing.
-    mc_noise = use_mc_covariance && energies !== nothing && weights !== nothing
-    fano = ones(Float64, n_bins)
-    corr_factor = Matrix{Float64}(I, n_bins, n_bins)
-    if mc_noise
-        moments = compute_mc_count_moments(detector, energies, weights;
-            η = ws_η, R = ws_R)
-        fano .= moments.fano
-        corr = Symmetric((moments.correlation .+ transpose(moments.correlation)) ./ 2)
-        eig = eigen(corr)
-        corr_psd = eig.vectors * Diagonal(max.(eig.values, 1.0e-6)) * transpose(eig.vectors)
-        d = sqrt.(max.(diag(corr_psd), 1.0e-12))
-        corr_psd ./= d * transpose(d)
-        corr_factor .= cholesky(Symmetric(corr_psd + 1.0e-7I)).L
-    end
-
-    factor_rng = MersenneTwister(isnothing(seed) ? 0 : seed)
-    nr_scale = T(1.0 - noise_reduction)
+    nr_scale = 1.0 - noise_reduction
 
     for (b, bin) in enumerate(sino.bins)
-        I0_bin = T(I0_per_bin[b])
+        I0_bin = Float64(I0_bins[b])
 
         # Bulk GPU→CPU transfer (reuses pre-allocated buffer)
         copyto!(cpu_buf, bin)
 
-        # In-place: convert line integrals → expected counts
-        @. cpu_buf = I0_bin * exp(-cpu_buf)
-        @. cpu_buf = max(cpu_buf, T(0.1))
-
-        if mc_noise
-            # Generate z_b = Σ_j L[b,j] ξ_j without another sino-sized buffer.
-            # Re-seeding each factor makes ξ_j bit-identical wherever it is
-            # reused by another output bin, producing the requested covariance.
-            fill!(noise_buf, zero(T))
-            for j in 1:b
-                coeff = T(corr_factor[b, j])
-                abs(coeff) <= eps(T) && continue
-                Random.seed!(factor_rng, (isnothing(seed) ? 0 : seed) + 1009 * j)
-                @inbounds for idx in eachindex(noise_buf)
-                    noise_buf[idx] += coeff * randn(factor_rng, T)
-                end
-            end
-            fano_b = T(max(fano[b], 0.0))
-            @. noise_buf = cpu_buf + nr_scale * sqrt(cpu_buf * fano_b) * noise_buf
-        else
-            # Legacy independent-Poisson Gaussian approximation.
-            randn!(rng, noise_buf)
-            @. noise_buf = cpu_buf + nr_scale * sqrt(cpu_buf) * noise_buf
-        end
-
-        # Fix up low-count pixels with exact Poisson sampling (rare in clinical data)
-        # cpu_buf still holds N_expected, noise_buf holds N_measured
+        # Pass 1: measured counts (pre-floor; exact integers when nr = 0)
         @inbounds for idx in eachindex(cpu_buf)
-            if !mc_noise && cpu_buf[idx] <= T(20)
-                sampled = T(_poisson_sample(rng, Float64(cpu_buf[idx])))
-                # Apply same noise reduction: blend toward expected value
-                noise_buf[idx] = cpu_buf[idx] + nr_scale * (sampled - cpu_buf[idx])
+            λ = I0_bin * exp(-Float64(cpu_buf[idx]))
+            N = Float64(_poisson_sample(rng, λ))
+            if nr_scale != 1.0
+                N = λ + nr_scale * (N - λ)
             end
+            cpu_buf[idx] = T(N)
         end
+        raw_out === nothing || copyto!(raw_out[b], cpu_buf)
 
-        # Floor measured counts and convert back to line-integral domain
-        @. noise_buf = max(noise_buf, T(1))
-        @. cpu_buf = -log(noise_buf / I0_bin)
+        # Pass 2: floor at 1 for the log domain only, convert back in place
+        @inbounds for idx in eachindex(cpu_buf)
+            cpu_buf[idx] = T(-log(Float64(max(cpu_buf[idx], one(T))) / I0_bin))
+        end
 
         # Bulk CPU→GPU transfer
         copyto!(bin, cpu_buf)
@@ -927,76 +872,59 @@ function apply_pcct_noise!(
     return sino
 end
 
-"""
-    _compute_pcct_noise_I0(detector, n_bins, thresholds, I0, energies, weights) -> Vector{Float64}
+# log(k!) for k = 0…20 exactly; Stirling–de Moivre series beyond (rel. error
+# < 1e-10 at k = 21, decreasing with k — far below rejection-test resolution).
+const _LOG_FACTORIAL_TABLE = Float64[sum(log(j) for j in 1:k; init = 0.0) for k in 0:20]
 
-Compute per-bin reference photon counts for noise model.
-
-`I0` is the physics-based total photons per pixel per view (from `compute_detector_I0`).
-This function distributes I0 across bins based on the fractional spectrum × quantum
-efficiency × spectral response contribution of each bin.
-
-The spectrum weights may be unnormalized (raw tube output), so we compute the
-fractional bin distribution using a unit I0, then scale by the actual I0.
-"""
-function _compute_pcct_noise_I0(detector, n_bins, thresholds, I0, energies, weights;
-                                output=nothing, ws_η=nothing, ws_R=nothing)
-    if isnothing(energies) || isnothing(weights)
-        # Fallback: uniform distribution across bins
-        if output !== nothing
-            fill!(output, Float64(I0) / n_bins)
-            return output
-        end
-        return fill(Float64(I0) / n_bins, n_bins)
-    end
-
-    # Compute quantum efficiency for all energies (use pre-computed if available)
-    η = ws_η !== nothing ? ws_η : quantum_efficiency_vector(detector.material, detector.thickness_mm, energies)
-    kVp = maximum(energies)
-
-    # Compute per-bin contributions with unit I0 to get relative fractions
-    # Use MC DRM (R matrix) for consistency with forward projection
-    raw_per_bin = output !== nothing ? output : zeros(Float64, n_bins)
-    fill!(raw_per_bin, 0.0)
-    for b in 1:n_bins
-        raw_per_bin[b] = _compute_bin_I0(detector, energies, weights, η, thresholds, b, Float64(kVp), 1.0; R=ws_R)
-    end
-
-    # Normalize to get fractional distribution, then scale by physics I0
-    total_raw = sum(raw_per_bin)
-    if total_raw > 0
-        for i in eachindex(raw_per_bin)
-            raw_per_bin[i] = (raw_per_bin[i] / total_raw) * Float64(I0)
-        end
-        return raw_per_bin
-    else
-        fill!(raw_per_bin, Float64(I0) / n_bins)
-        return raw_per_bin
-    end
+function _log_factorial(k::Int)
+    k <= 20 && return @inbounds _LOG_FACTORIAL_TABLE[k + 1]
+    invk = 1.0 / k
+    return (k + 0.5) * log(k) - k + 0.9189385332046728 +
+        invk * (1.0 / 12.0 - invk * invk * (1.0 / 360.0 - invk * invk / 1260.0))
 end
 
 """
     _poisson_sample(rng, λ) -> Int
 
-Sample from Poisson distribution with parameter λ.
-Uses Knuth's algorithm for small λ, normal approximation for large λ.
+Exact Poisson sample at any λ: sequential inversion below λ = 10, Hörmann's
+PTRS transformed rejection above (W. Hörmann, "The transformed rejection
+method for generating Poisson random variables", Insurance: Mathematics and
+Economics 12, 39–45, 1993).  No Gaussian approximation at any count level.
 """
 function _poisson_sample(rng, λ::Float64)
-    if λ > 30.0
-        # Gaussian approximation
-        return max(round(Int, λ + sqrt(λ) * randn(rng)), 0)
-    elseif λ < 1e-10
+    if λ < 1e-10
         return 0
-    else
-        # Knuth's algorithm
+    elseif λ < 10.0
+        # Inversion by sequential search (Knuth): exact, O(λ).
         L = exp(-λ)
         k = 0
         p = 1.0
         while true
-            k += 1
             p *= rand(rng)
-            if p < L
-                return k - 1
+            p < L && return k
+            k += 1
+        end
+    else
+        # PTRS: O(1) exact transformed-rejection sampling for λ ≥ 10.
+        b = 0.931 + 2.53 * sqrt(λ)
+        a = -0.059 + 0.02483 * b
+        inv_alpha = 1.1239 + 1.1328 / (b - 3.4)
+        v_r = 0.9277 - 3.6224 / (b - 2.0)
+        logλ = log(λ)
+        while true
+            U = rand(rng) - 0.5
+            V = rand(rng)
+            us = 0.5 - abs(U)
+            k = floor(Int, (2.0 * a / us + b) * U + λ + 0.43)
+            if us >= 0.07 && V <= v_r
+                return k
+            end
+            if k < 0 || (us < 0.013 && V > us)
+                continue
+            end
+            if log(V) + log(inv_alpha) - log(a / (us * us) + b) <=
+                    k * logλ - λ - _log_factorial(k)
+                return k
             end
         end
     end

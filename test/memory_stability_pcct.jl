@@ -57,7 +57,11 @@ for iteration in 1:5
     peak = nothing
     released = 0
     try
-        result = BS.simulate!(ws, phantom, protocol, sim_opts)
+        # capture_raw_counts=false: this script pins the reusable-workspace
+        # memory contract; raw-count capture allocates per call by design.
+        result = BS.simulate!(
+            ws, phantom, protocol, sim_opts; capture_raw_counts = false,
+        )
         checksum = sum(sum, (Array(bin) for bin in result.pcct_sino.bins))
         peak = BS.backend_memory_snapshot(first(ws.bins))
     finally

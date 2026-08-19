@@ -373,9 +373,10 @@ end
         _ts("  running simulate!")
         res = BS.simulate!(s.ws, s.phantom, s.protocol, s.sim_opts)
         _ts("  simulate! returned")
-        # Trimmed return tuple — pcct_sino + I0_bins + pileup_S (combine/scatter
-        # decoupled).  pileup_S is `nothing` when use_pcct_pileup=false.
-        @test propertynames(res) == (:pcct_sino, :I0_bins, :pileup_S)
+        # Return tuple — pcct_sino + I0_bins + pileup_S + raw_counts
+        # (combine/scatter decoupled; raw counts captured by default).
+        # pileup_S is `nothing` when use_pcct_pileup=false.
+        @test propertynames(res) == (:pcct_sino, :I0_bins, :pileup_S, :raw_counts)
         @test length(res.pcct_sino.bins) == 4
         @test length(res.I0_bins) == 4
         @test all(>(0), res.I0_bins)
@@ -385,23 +386,40 @@ end
             @test all(isfinite, Array(bin))
         end
 
-        # Raw-count capture is opt-in so the default return and allocation
-        # contract above remain unchanged. The captured arrays are independent
-        # snapshots of the exact count-domain values presented to correction.
-        captured = BS.simulate!(
-            s.ws, s.phantom, s.protocol, s.sim_opts;
-            capture_raw_counts = true,
-        )
-        @test propertynames(captured) ==
-            (:pcct_sino, :I0_bins, :pileup_S, :raw_counts)
-        @test length(captured.raw_counts) == length(captured.pcct_sino.bins)
-        for b in eachindex(captured.raw_counts)
-            @test captured.raw_counts[b] !== captured.pcct_sino.bins[b]
-            raw = Array(captured.raw_counts[b])
-            encoded = captured.I0_bins[b] .* exp.(-Array(captured.pcct_sino.bins[b]))
+        # Raw counts are captured by default — independent snapshots of the
+        # exact count-domain values presented to correction.
+        @test length(res.raw_counts) == length(res.pcct_sino.bins)
+        for b in eachindex(res.raw_counts)
+            @test res.raw_counts[b] !== res.pcct_sino.bins[b]
+            raw = Array(res.raw_counts[b])
+            encoded = res.I0_bins[b] .* exp.(-Array(res.pcct_sino.bins[b]))
             @test raw ≈ encoded rtol = 8eps(Float32) atol = 1.0e-6
             @test all(isfinite, raw)
             @test all(>=(0), raw)
+        end
+
+        # Opt-out trims the return tuple for memory-constrained callers.
+        trimmed = BS.simulate!(
+            s.ws, s.phantom, s.protocol, s.sim_opts;
+            capture_raw_counts = false,
+        )
+        @test propertynames(trimmed) == (:pcct_sino, :I0_bins, :pileup_S)
+
+        # Model-matched config (noise on, pile-up off, nr = 0): raw counts
+        # are BIT-EXACT integer Poisson realizations captured at the
+        # sampling site — true zeros preserved (the floor at 1 lives only
+        # in the log-domain bins).
+        mm = _toy_pcct_setup(use_pcct_pileup = false, use_noise = true)
+        res_mm = BS.simulate!(mm.ws, mm.phantom, mm.protocol, mm.sim_opts)
+        for (b, raw) in enumerate(res_mm.raw_counts)
+            arr = Float64.(Array(raw))
+            @test all(isinteger, arr)
+            @test all(>=(0), arr)
+            # Log bins encode max(N, 1): equal to raw wherever raw ≥ 1
+            enc = res_mm.I0_bins[b] .* exp.(-Float64.(Array(res_mm.pcct_sino.bins[b])))
+            mask = arr .>= 1
+            @test maximum(abs.(enc[mask] .- arr[mask])) < 0.1
+            @test all(x -> abs(x - 1) < 0.1, enc[.!mask])
         end
     end
 end

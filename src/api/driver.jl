@@ -79,7 +79,7 @@ end
 
 """
     simulate!(ws::PCCTWorkspace, phantom, protocol, sim_opts;
-              capture_raw_counts=false)
+              capture_raw_counts=true)
 
 Run PCCT simulation using pre-allocated workspace buffers for zero allocations
 on the second and later calls (the first call may JIT-allocate).
@@ -100,14 +100,19 @@ ground-truth `I0_bins`.
 - `pcct_sino` — `EnergyResolvedSinogram` (per-bin log line integrals).
 - `I0_bins`   — per-bin reference photon count vector (for `-log(N/I0)` undo).
 - `pileup_S`  — MC pulse-pileup migration matrix, or `nothing` when disabled.
-- `raw_counts` — present only when `capture_raw_counts=true`; independent
-  per-bin arrays containing the detector counts immediately before pile-up and
-  scatter correction. These are floating-point measurements and include all
-  enabled acquisition physics and count safeguards.
+- `raw_counts` — captured by default; independent per-bin arrays containing
+  the detector counts immediately before pile-up correction and scatter
+  correction.  With noise on and pile-up off they are captured verbatim at
+  the sampling site: bit-exact integer Poisson realizations with TRUE ZEROS
+  preserved (the floor at 1 applies only to the log-domain sinograms, where
+  a zero count has no finite representation — the simulator imposes no
+  zero-count policy on the counts themselves).  With pile-up on, forward
+  migration (`S × counts`) re-mixes the draws into fractional recorded
+  counts (real detector physics); with noise off, they are the continuous
+  expected counts λ.
 
-Capturing raw counts allocates one additional full-size array per energy bin.
-It is disabled by default so the normal reusable-workspace path retains its
-existing memory behavior and return contract.
+Capturing raw counts allocates one additional full-size array per energy bin;
+pass `capture_raw_counts=false` only when memory-constrained.
 """
 function simulate!(
         ws::PCCTWorkspace{T},
@@ -115,7 +120,7 @@ function simulate!(
         protocol::CTProtocol,
         sim_opts::SimOptions = SimOptions(),
         ;
-        capture_raw_counts::Bool = false,
+        capture_raw_counts::Bool = true,
     ) where {T}
     geom = ws.geom
     energies = ws.energies
@@ -227,19 +232,25 @@ function simulate!(
     end
 
     # ─── Noise (in-place on pcct_sino.bins — now includes scatter in counts) ───
-    I0_physics = compute_detector_I0(geom, protocol, sum(ws.weights))
+    # Exact integer Poisson counts, sampled in the SAME air-cal basis
+    # (ws.I0_bins) the bins are normalized against, so a downstream
+    # `I0 · exp(-h)` recovers the sampled counts exactly.
+    #
+    # When pile-up is off, nothing modifies the bins between the noise draw
+    # and the raw-count capture point, so the capture happens AT the sampling
+    # site (`raw_out`) — the measured counts land in `raw_counts` verbatim,
+    # before the log-domain floor at 1, with TRUE ZEROS preserved.
+    pileup_active = ws.use_pcct_pileup && ws.pileup_S !== nothing
+    raw_from_noise = capture_raw_counts && sim_opts.use_noise && !pileup_active ?
+        [similar(bin) for bin in pcct_sino.bins] : nothing
     if sim_opts.use_noise
         apply_pcct_noise!(
-            pcct_sino, pcct_detector, protocol;
-            seed = sim_opts.seed, I0 = I0_physics,
-            energies = energies, weights = weights,
+            pcct_sino, ws.I0_bins;
+            seed = sim_opts.seed,
             ws_noise_staging = ws.noise_staging,
-            ws_noise_buf = ws.noise_buf,
             ws_rng = ws.rng,
-            ws_noise_I0 = ws.noise_I0,
-            ws_η = ws.η,
-            ws_R = ws.R,
-            noise_reduction = sim_opts.pcct_noise_reduction
+            noise_reduction = sim_opts.pcct_noise_reduction,
+            raw_out = raw_from_noise,
         )
     end
 
@@ -312,7 +323,12 @@ function simulate!(
     # including any count floors already applied by the enabled acquisition
     # stages. Each array owns its storage and therefore cannot be overwritten
     # by correction or by a later reuse of the workspace.
-    raw_counts = if capture_raw_counts
+    raw_counts = if raw_from_noise !== nothing
+        # Captured verbatim at the sampling site: exact draws, true zeros.
+        raw_from_noise
+    elseif capture_raw_counts
+        # Pile-up on (fractional recorded counts) or noise off (expected
+        # counts λ): reconstruct the pre-correction count-domain state.
         _capture_pcct_raw_counts(pcct_sino.bins, ws.I0_bins)
     else
         nothing
