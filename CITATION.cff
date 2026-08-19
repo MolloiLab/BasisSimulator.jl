@@ -39,7 +39,7 @@ keywords:
   - Julia
   - scientific computing
 license: MIT
-version: 0.12.0
+version: 0.13.0
 preferred-citation:
   type: article
   title: >-
