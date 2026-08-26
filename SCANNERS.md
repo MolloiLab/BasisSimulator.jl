@@ -86,3 +86,29 @@ the 57.6 mm spec.
 | SDD | 1000 mm |
 | Pixel Pitch (iso) | 0.5 mm |
 | Detector Type | Energy-integrating |
+
+## Siemens SOMATOM Definition Flash (Dual-Source, Energy-Integrating)
+
+**FDA 510(k):** K082220 (2008); Stellar detector variant K113342 (2011)
+
+Full sourced dossier: [`docs/scanner_dossiers/somatom_definition_flash.md`](docs/scanner_dossiers/somatom_definition_flash.md)
+(geometry, tubes, filtration, protocols, and the documented-assumption gaps).
+
+| Parameter | Tube/Detector A | Tube/Detector B |
+|-----------|-----------------|-----------------|
+| SID / SDD | 595.0 / 1085.6 mm | same |
+| Tube A–B angular offset | — | 95° |
+| Detector Rows × Cols | 64 × 736 | 64 × 480 |
+| Row / Col Size (iso) | 0.6 / 0.70473 mm | same |
+| FOV at iso | 50 cm | 33 cm |
+| Detector Material | UFC Gd₂O₂S:Pr,Ce → `:ufc_flash` (Flash-specific MC LUT) | same |
+| Focal Spot (small) | 0.7 × 0.7 mm @ 7° | same |
+| Flat Filtration | 8.4 mm Al equivalent | + 0.4 mm Sn (Selective Photon Shield, DE mode) |
+| Supported kVp | 80, 100, 120, 140 (70 on later software) | same |
+| Max mA | 800 single-source / 1600 dual-source | |
+| Min Rotation | 0.28 s | |
+| Views/rotation | 1152 per focal-spot position (2304 with z-FFS) | |
+
+The detector efficiency is the **Flash-specific** `UFC_FLASH_MC_EFFICIENCY_LUT`
+(Khodajou-Chokami MC, 2026-08-26) — NOT the Force UFC LUT: same Gd₂O₂S material,
+distinctly thinner crystal (η −28% at 140 keV vs the Force).
