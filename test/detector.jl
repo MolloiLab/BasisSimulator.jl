@@ -367,6 +367,105 @@ end
     end
 end
 
+@testset "DetectorEfficiency — UFC Flash MC LUT (Siemens Definition Flash Gd₂O₂S)" begin
+    @testset "detector_efficiency_ufc_flash factory" begin
+        model = BS.detector_efficiency_ufc_flash()
+        @test model.material == "UFC_Flash"
+        @test model.thickness_mm == 1.0
+        @test model.fill_factor == 0.9
+        @test model.mode == BS.MC_LUT
+
+        bl = BS.detector_efficiency_ufc_flash(mode = :beer_lambert)
+        @test bl.mode == BS.BEER_LAMBERT
+    end
+
+    @testset "LUT shape + provenance values" begin
+        @test length(BS.UFC_FLASH_MC_EFFICIENCY_LUT.energies) == 140
+        @test length(BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency) == 140
+        # Spot-check verbatim values from Khodajou-Chokami flash_efficiency_results.csv
+        @test BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency[1] ≈ 9.90863305e-01
+        @test BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency[50] ≈ 9.24938847e-01
+        @test BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency[51] ≈ 7.39476107e-01
+        @test BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency[140] ≈ 5.87915529e-01
+    end
+
+    @testset "get_ufc_flash_mc_efficiency captures Gd K-edge fluorescence drop" begin
+        η50 = BS.get_ufc_flash_mc_efficiency(50.0)
+        η51 = BS.get_ufc_flash_mc_efficiency(51.0)
+        # MC LUT: at the Gd K-edge (50.24 keV) η drops ~0.925 → ~0.739
+        # because Gd-Kα fluorescence (~43 keV) escapes the crystal.
+        @test η50 > 0.90
+        @test η51 < 0.78
+        @test η50 - η51 > 0.15
+    end
+
+    @testset "get_ufc_flash_mc_efficiency captures Gd L-edge dip near 8 keV" begin
+        @test BS.get_ufc_flash_mc_efficiency(8.0) < BS.get_ufc_flash_mc_efficiency(7.0)
+    end
+
+    @testset "MC LUT linear interpolation + clamping" begin
+        η_60_5 = BS.get_ufc_flash_mc_efficiency(60.5)
+        lo = min(BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency[60], BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency[61])
+        hi = max(BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency[60], BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency[61])
+        @test lo - 1.0e-12 < η_60_5 < hi + 1.0e-12
+
+        @test BS.get_ufc_flash_mc_efficiency(0.5) == BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency[1]
+        @test BS.get_ufc_flash_mc_efficiency(200.0) == BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency[end]
+    end
+
+    @testset "Flash is a distinct detector from the Force UFC" begin
+        # Same Gd₂O₂S physics (L-edge, K-edge), thinner crystal → steeper
+        # high-energy roll-off.  Guards against ever aliasing the two LUTs.
+        @test BS.get_ufc_flash_mc_efficiency(140.0) < 0.65   # Force: 0.816
+        @test BS.get_ufc_mc_efficiency(140.0) > 0.80
+        @test BS.get_ufc_flash_mc_efficiency(100.0) < BS.get_ufc_mc_efficiency(100.0)
+    end
+
+    @testset "compute_eid_efficiency_vector — MC routes to Flash LUT" begin
+        model = BS.detector_efficiency_ufc_flash()
+        energies = [30.0, 50.0, 51.0, 100.0, 140.0]
+        η = BS.compute_eid_efficiency_vector(model, energies)
+        @test length(η) == length(energies)
+        @test η[3] < η[2]                    # Gd K-edge fluorescence drop
+        @test η ≈ [BS.get_ufc_flash_mc_efficiency(E) for E in energies]
+    end
+
+    @testset "compute_eid_efficiency_vector — Flash Beer-Lambert path" begin
+        bl = BS.detector_efficiency_ufc_flash(mode = :beer_lambert)
+        energies = [30.0, 49.0, 51.0, 100.0]
+        η = BS.compute_eid_efficiency_vector(bl, energies)
+        @test length(η) == length(energies)
+        @test all(0 .<= η .<= 1)
+        # Beer-Lambert predicts η RISES just above the Gd K-edge — the
+        # opposite of the MC LUT's fluorescence-escape drop.
+        @test η[3] > η[2]
+    end
+
+    @testset "build_physics_config routes :ufc_flash to the Flash factory" begin
+        scanner = BS.Scanner(detector_material = :ufc_flash, detector_depth = 1.0)
+        sim_opts = BS.SimOptions(fidelity = :eict)
+        e = collect(20.0:10.0:140.0)
+        w = ones(length(e))
+        config = BS.build_physics_config(scanner, sim_opts, e, w)
+        @test config.detector_efficiency !== nothing
+        @test config.detector_efficiency.material == "UFC_Flash"
+        @test config.detector_efficiency.mode == BS.MC_LUT
+    end
+
+    # docs/notebooks/data/ is gitignored — this runs only on machines that
+    # hold the local CSV archive (skipped silently in CI).
+    @testset "LUT matches the local CSV archive verbatim" begin
+        csv_path = joinpath(@__DIR__, "..", "docs", "notebooks", "data",
+            "ufc_flash_mc_efficiency_v1.csv")
+        if isfile(csv_path)
+            rows = [split(l, ",") for l in readlines(csv_path)[2:end] if !isempty(strip(l))]
+            @test length(rows) == 140
+            csv_eff = [parse(Float64, r[2]) for r in rows]
+            @test csv_eff == BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency
+        end
+    end
+end
+
 @testset "get_scintillator_mu — Gemstone + CdTe" begin
     # CdTe K-edges: Cd at 26.7 keV, Te at 31.8 keV.
     μ_cdte_25 = BS.get_scintillator_mu("CdTe", 25.0)

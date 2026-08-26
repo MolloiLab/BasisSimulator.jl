@@ -13,6 +13,9 @@ Two paths, both routed by `DetectorEfficiencyMode`:
      fluorescence escape at the Tb (52 keV) and Lu (63 keV) K-edges.
    - Siemens UFC Gd₂O₂S:Pr,Ce (`UFC_MC_EFFICIENCY_LUT`, SOMATOM Force
      StellarInfinity) — fluorescence escape at the Gd K-edge (50.24 keV).
+   - Siemens UFC Gd₂O₂S:Pr,Ce (`UFC_FLASH_MC_EFFICIENCY_LUT`, SOMATOM
+     Definition Flash) — same Gd K-edge escape, thinner crystal → steeper
+     high-energy roll-off than the Force (η 0.588 vs 0.816 at 140 keV).
    At those K-edges real η DROPS rather than rising as photons in the
    fluorescent shell escape the crystal — Beer-Lambert cannot model this.
 
@@ -114,6 +117,11 @@ SCINTILLATOR_MU_DATA["UFC"] = (
 SCINTILLATOR_MU_DATA["ufc"]    = SCINTILLATOR_MU_DATA["UFC"]
 SCINTILLATOR_MU_DATA["Gd2O2S"] = SCINTILLATOR_MU_DATA["UFC"]
 SCINTILLATOR_MU_DATA["GOS"]    = SCINTILLATOR_MU_DATA["UFC"]
+
+# UFC (Definition Flash) — same Gd₂O₂S μ(E) table; only the crystal depth
+# differs (see detector_efficiency_ufc_flash).
+SCINTILLATOR_MU_DATA["UFC_Flash"] = SCINTILLATOR_MU_DATA["UFC"]
+SCINTILLATOR_MU_DATA["ufc_flash"] = SCINTILLATOR_MU_DATA["UFC"]
 
 # =============================================================================
 # Monte Carlo-Derived Detector Efficiency LUT
@@ -253,6 +261,82 @@ const UFC_MC_EFFICIENCY_LUT = (
     ]
 )
 
+"""
+    UFC_FLASH_MC_EFFICIENCY_LUT
+
+Monte Carlo-derived detector efficiency lookup table for the Siemens UFC
+(Ultra-Fast Ceramic, Gd₂O₂S:Pr,Ce) scintillator of the SOMATOM Definition
+Flash — the dual-source sister of [`UFC_MC_EFFICIENCY_LUT`] (SOMATOM Force).
+
+Computed from a full Monte-Carlo transport simulation of the Definition Flash
+detector by Hamidreza Khodajou-Chokami, PhD (UC Irvine Medical Imaging
+Laboratory), `flash_efficiency_results.csv`, 2026-08-26 (CRSP lab share;
+archived locally with provenance notes as
+`docs/notebooks/data/ufc_flash_mc_efficiency_v1.csv` — that directory is
+gitignored, so this LUT is the canonical tracked copy).  Values are verbatim
+from that dataset on a 1-keV grid (1–140 keV).
+
+# Key features captured by MC (not in Beer-Lambert)
+
+1. **Fluorescence escape at the Gd K-edge (50.24 keV)**: η drops
+   0.925 → 0.739 between 50 and 51 keV as Gd Kα fluorescence (~43 keV)
+   escapes the crystal.  Beer-Lambert predicts the opposite jump.
+2. **Gd L-edge structure** near 7–8 keV (L₃ 7.24 / L₂ 7.93 / L₁ 8.38 keV).
+3. **High-energy roll-off** much steeper than the Force LUT — a thinner
+   crystal transmits more primaries (η 0.825 at 100 keV → 0.588 at 140 keV,
+   vs the Force's 0.897 → 0.816).  Low-energy values (≤5 keV) are
+   bit-identical to the Force run: those photons are absorbed within the
+   first microns, before the geometries differ.
+"""
+const UFC_FLASH_MC_EFFICIENCY_LUT = (
+    energies=Float64[
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+        11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+        21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+        31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+        41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
+        51, 52, 53, 54, 55, 56, 57, 58, 59, 60,
+        61, 62, 63, 64, 65, 66, 67, 68, 69, 70,
+        71, 72, 73, 74, 75, 76, 77, 78, 79, 80,
+        81, 82, 83, 84, 85, 86, 87, 88, 89, 90,
+        91, 92, 93, 94, 95, 96, 97, 98, 99, 100,
+        101, 102, 103, 104, 105, 106, 107, 108, 109, 110,
+        111, 112, 113, 114, 115, 116, 117, 118, 119, 120,
+        121, 122, 123, 124, 125, 126, 127, 128, 129, 130,
+        131, 132, 133, 134, 135, 136, 137, 138, 139, 140
+    ],
+    efficiency=Float64[
+        9.90863305e-01, 9.90798712e-01, 9.90207366e-01, 9.89968109e-01, 9.89353993e-01,
+        9.88878348e-01, 9.88799461e-01, 9.69280049e-01, 9.72680393e-01, 9.76024913e-01,
+        9.78683467e-01, 9.80869687e-01, 9.82525889e-01, 9.83542171e-01, 9.84361034e-01,
+        9.84926359e-01, 9.85365648e-01, 9.85807753e-01, 9.85954648e-01, 9.86121642e-01,
+        9.86087242e-01, 9.86007682e-01, 9.85858807e-01, 9.85654446e-01, 9.85520548e-01,
+        9.85397561e-01, 9.85073469e-01, 9.84956888e-01, 9.84652981e-01, 9.84251092e-01,
+        9.83910596e-01, 9.83940858e-01, 9.83584046e-01, 9.82905390e-01, 9.82148640e-01,
+        9.81408927e-01, 9.80382832e-01, 9.79307509e-01, 9.77129089e-01, 9.75038060e-01,
+        9.72384256e-01, 9.69537668e-01, 9.65819924e-01, 9.61742842e-01, 9.56876112e-01,
+        9.52048366e-01, 9.45472025e-01, 9.38947381e-01, 9.31514860e-01, 9.24938847e-01,
+        7.39476107e-01, 7.46119168e-01, 7.53673303e-01, 7.60560885e-01, 7.67229606e-01,
+        7.73103088e-01, 7.79248456e-01, 7.84240835e-01, 7.89989634e-01, 7.95928222e-01,
+        8.00075823e-01, 8.04954607e-01, 8.10453653e-01, 8.14644996e-01, 8.19040638e-01,
+        8.23440611e-01, 8.26830641e-01, 8.30506370e-01, 8.33517744e-01, 8.37190959e-01,
+        8.40049862e-01, 8.42790818e-01, 8.45262288e-01, 8.47876888e-01, 8.49755187e-01,
+        8.52072302e-01, 8.53928851e-01, 8.55360887e-01, 8.56503045e-01, 8.57867247e-01,
+        8.58662848e-01, 8.58604655e-01, 8.58812270e-01, 8.58630935e-01, 8.58270093e-01,
+        8.57876167e-01, 8.57485058e-01, 8.56465819e-01, 8.55174500e-01, 8.53415746e-01,
+        8.51856312e-01, 8.50252417e-01, 8.48170144e-01, 8.45899643e-01, 8.42812966e-01,
+        8.40080044e-01, 8.36841955e-01, 8.33267838e-01, 8.29293030e-01, 8.24957887e-01,
+        8.20500644e-01, 8.16422580e-01, 8.11819338e-01, 8.06968409e-01, 8.02137768e-01,
+        7.98087055e-01, 7.92300508e-01, 7.86692217e-01, 7.80827954e-01, 7.74951485e-01,
+        7.68879429e-01, 7.63614577e-01, 7.57656050e-01, 7.52015794e-01, 7.45400463e-01,
+        7.39052424e-01, 7.32991643e-01, 7.26544215e-01, 7.19742470e-01, 7.13900917e-01,
+        7.07672419e-01, 7.01641675e-01, 6.95039457e-01, 6.88321100e-01, 6.81803779e-01,
+        6.75172887e-01, 6.68955762e-01, 6.63039874e-01, 6.56870622e-01, 6.50404848e-01,
+        6.43321225e-01, 6.36485781e-01, 6.30424846e-01, 6.24023582e-01, 6.18325353e-01,
+        6.12310983e-01, 6.06160347e-01, 6.00003918e-01, 5.93984754e-01, 5.87915529e-01
+    ]
+)
+
 # =============================================================================
 # Detector Efficiency Types
 # =============================================================================
@@ -333,6 +417,32 @@ function detector_efficiency_ufc(; mode::Symbol=:mc_lut,
     fill_factor::Float64=0.90)
     eff_mode = mode == :mc_lut ? MC_LUT : BEER_LAMBERT
     return DetectorEfficiency("UFC", thickness_mm, fill_factor, eff_mode)
+end
+
+"""
+    detector_efficiency_ufc_flash(; mode::Symbol=:mc_lut, thickness_mm=1.0,
+                                   fill_factor=0.90)
+
+Siemens UFC (Ultra-Fast Ceramic) Gd₂O₂S:Pr,Ce scintillator detector of the
+SOMATOM Definition Flash (dual-source) — sister factory of
+[`detector_efficiency_ufc`](@ref) (Force) with its own per-scanner MC LUT.
+
+# Modes
+- `:mc_lut` (default) — Monte Carlo-derived efficiency LUT
+  ([`UFC_FLASH_MC_EFFICIENCY_LUT`]).  Captures Gd K-edge fluorescence escape
+  that Beer-Lambert cannot model.
+- `:beer_lambert` — Analytical Beer-Lambert using the Gd₂O₂S μ(E) table.
+
+The 1.0 mm default thickness is a documented assumption — Siemens does not
+publish the Definition Flash UFC layer depth (the value is inert in
+`:mc_lut` mode).  The MC high-energy roll-off implies a Beer-Lambert-
+effective depth of ≈1.07 mm (η = 0.588 at 140 keV with μ ≈ 8.3 cm⁻¹).
+"""
+function detector_efficiency_ufc_flash(; mode::Symbol=:mc_lut,
+    thickness_mm::Float64=1.0,
+    fill_factor::Float64=0.90)
+    eff_mode = mode == :mc_lut ? MC_LUT : BEER_LAMBERT
+    return DetectorEfficiency("UFC_Flash", thickness_mm, fill_factor, eff_mode)
 end
 
 # =============================================================================
@@ -440,6 +550,35 @@ function get_ufc_mc_efficiency(energy_keV::Float64)
     return lut.efficiency[idx] + t * (lut.efficiency[idx+1] - lut.efficiency[idx])
 end
 
+"""
+    get_ufc_flash_mc_efficiency(energy_keV::Float64) -> Float64
+
+Look up Monte Carlo-derived detector efficiency for the Siemens SOMATOM
+Definition Flash UFC Gd₂O₂S:Pr,Ce scintillator at the given photon energy.
+
+Linear interpolation of the 1–140 keV MC efficiency table
+([`UFC_FLASH_MC_EFFICIENCY_LUT`]).  Energies outside the range are clamped.
+
+# Key physics
+- Gd K-edge fluorescence escape at 50–51 keV (η: 0.925 → 0.739)
+- Gd L-edge dip near 8 keV
+- Peak efficiency ~0.986 at ~20 keV
+- η ≈ 0.825 at 100 keV, declining to 0.588 at 140 keV (thinner crystal
+  than the Force — steeper roll-off)
+"""
+function get_ufc_flash_mc_efficiency(energy_keV::Float64)
+    lut = UFC_FLASH_MC_EFFICIENCY_LUT
+    E = clamp(energy_keV, lut.energies[1], lut.energies[end])
+
+    if E == floor(E) && 1.0 <= E <= 140.0
+        return lut.efficiency[Int(E)]
+    end
+
+    idx = clamp(floor(Int, E), 1, 139)
+    t = E - lut.energies[idx]
+    return lut.efficiency[idx] + t * (lut.efficiency[idx+1] - lut.efficiency[idx])
+end
+
 # =============================================================================
 # EID Pipeline Efficiency Vector
 # =============================================================================
@@ -461,6 +600,9 @@ function compute_eid_efficiency_vector(model::DetectorEfficiency, energies::Abst
     if model.mode == MC_LUT && model.material in ("UFC", "ufc", "Gd2O2S", "GOS")
         return [get_ufc_mc_efficiency(Float64(E)) for E in energies]
     end
+    if model.mode == MC_LUT && model.material in ("UFC_Flash", "ufc_flash")
+        return [get_ufc_flash_mc_efficiency(Float64(E)) for E in energies]
+    end
     d_cm = model.thickness_mm / 10.0
     return [1.0 - exp(-get_scintillator_mu(model.material, Float64(E)) * d_cm) for E in energies]
 end
@@ -470,7 +612,10 @@ end
 # =============================================================================
 
 export DetectorEfficiency, DetectorEfficiencyMode, BEER_LAMBERT, MC_LUT
-export detector_efficiency_gemstone, detector_efficiency_ufc
-export get_scintillator_mu, get_gemstone_mc_efficiency, get_ufc_mc_efficiency
+export detector_efficiency_gemstone, detector_efficiency_ufc,
+    detector_efficiency_ufc_flash
+export get_scintillator_mu, get_gemstone_mc_efficiency, get_ufc_mc_efficiency,
+    get_ufc_flash_mc_efficiency
 export compute_eid_efficiency_vector
-export GEMSTONE_MC_EFFICIENCY_LUT, UFC_MC_EFFICIENCY_LUT
+export GEMSTONE_MC_EFFICIENCY_LUT, UFC_MC_EFFICIENCY_LUT,
+    UFC_FLASH_MC_EFFICIENCY_LUT

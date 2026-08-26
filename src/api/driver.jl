@@ -1092,9 +1092,10 @@ function build_physics_config(
         end
     end
 
-    # Detector efficiency (EICT only): two MC-LUT scintillators are supported —
-    # GE Gemstone Ce:(Tb,Lu)₃Al₅O₁₂ (:lumex) and Siemens UFC Gd₂O₂S:Pr,Ce
-    # (:ufc). `detector_efficiency_mode` (:auto, :mc_lut, :beer_lambert)
+    # Detector efficiency (EICT only): three MC-LUT scintillators are supported —
+    # GE Gemstone Ce:(Tb,Lu)₃Al₅O₁₂ (:lumex) and Siemens UFC Gd₂O₂S:Pr,Ce,
+    # per-scanner: SOMATOM Force (:ufc) and SOMATOM Definition Flash
+    # (:ufc_flash). `detector_efficiency_mode` (:auto, :mc_lut, :beer_lambert)
     # toggles between the MC LUT and the analytical fallback. PCCT scanners go
     # through `pcct_forward_project` which encodes all detector physics
     # (charge sharing, fluorescence escape, pileup) in the MC DRM — they
@@ -1118,10 +1119,18 @@ function build_physics_config(
                 thickness_mm = depth > 0 ? depth : 1.4,
                 fill_factor = fill
             )
+        elseif material in (:ufc_flash, :UFC_Flash, :UFC_FLASH)
+            detector_efficiency_ufc_flash(
+                mode = eff_mode,
+                thickness_mm = depth > 0 ? depth : 1.0,
+                fill_factor = fill
+            )
         else
             error(
                 "Unsupported EICT detector material: $material — supported: " *
-                    ":lumex (GE Gemstone MC LUT), :ufc (Siemens UFC Gd₂O₂S MC LUT)"
+                    ":lumex (GE Gemstone MC LUT), :ufc (Siemens Force UFC " *
+                    "Gd₂O₂S MC LUT), :ufc_flash (Siemens Definition Flash " *
+                    "UFC Gd₂O₂S MC LUT)"
             )
         end
     end
