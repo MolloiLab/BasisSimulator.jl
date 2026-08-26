@@ -85,5 +85,8 @@ test/output/*.pdf
 *.scan
 *.prep
 
-# Claude Code agent scratch
+# Claude Code agent scratch + local agent-config files (SpaceStation-managed;
+# see chore/remove-stray-agent-config — these must never be committed)
 .claude/
+/CLAUDE.md
+/AGENTS.md
