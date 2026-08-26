@@ -95,6 +95,22 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
             thumbnail = "qrm_thorax_pcct_vmi_vs_theoretical.png",
             tags      = ["PCCT", "Naeotom Alpha", "VMI", "cov-ACNR", "QRM-Thorax"],
         ),
+        "12_siemens_flash_ufc" => (
+            index     = "12",
+            title     = "Siemens Definition Flash — Dual-Source Regular + VMI",
+            summary   = "The second-generation dual-source scanner modeled as itself, not a " *
+                        "re-badged Force: its own MC detector LUT (Gd₂O₂S, −28% η at 140 keV " *
+                        "vs the Force's crystal), published LDCT-PD geometry (595/1085.6 mm, " *
+                        "64 × 736 @ 0.70473 mm), and datasheet filtration (8.4 mm Al eq).  Both " *
+                        "dual-source acquisition classes run in one notebook: a regular " *
+                        "dual-power 120/120 kVp scan verifying water accuracy and the √2 noise " *
+                        "reduction of two independent tube chains, and the true clinical " *
+                        "100/Sn140 (0.4 mm tin) DE pair driving per-tube η-aware BHC recons, a " *
+                        "Siemens-style mixed image, and the Cong → cov-ACNR → VMI chain at " *
+                        "50/70/100/140 keV — closed out by an automated PASS/FAIL gate suite.",
+            thumbnail = "flash_ufc_lut_comparison.png",
+            tags      = ["EICT", "Definition Flash", "Dual-Source", "UFC MC LUT", "VMI"],
+        ),
         "11_helical_scanning" => (
             index     = "11",
             title     = "Helical Scanning — Narrow Collimation, Long Coverage",

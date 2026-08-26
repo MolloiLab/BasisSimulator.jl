@@ -21,6 +21,7 @@ function _notebook_display_title(slug::AbstractString)
         "09_siemens_force_ufc_dual_source_vmi" => "09 · Siemens Force UFC Dual-Source VMI",
         "10_titanium_implant"       => "10 · Titanium Implant Artifacts",
         "11_helical_scanning"       => "11 · Helical Scanning",
+        "12_siemens_flash_ufc"      => "12 · Siemens Definition Flash Dual-Source",
     )
     get(overrides, slug, replace(slug, "_" => " "))
 end
