@@ -1481,6 +1481,12 @@ md"""
 
 The published post-decomposition chain (nb03 §04–05):
 
+- **Single-slice basis reconstruction** — the basis maps are FBP'd at
+  `(512, 512, 1)`, one slice spanning the 4.8 mm DE beam, exactly as
+  nb03 §04 presents its certified numbers (and matching clinical
+  DE-abdomen slice thickness).  This keeps nb12's σ values directly
+  comparable with nb03's; thin 0.6 mm slices would read ~√8 noisier
+  for identical physics.
 - **Original dual-kVp per-basis apodization** — a **soft iodine kernel**
   (`:OriginalDualKvpSoft`) controls the low-energy-amplified streak mode,
   while the halfway Standard/Soft **water kernel** (`:StandardSoftBlend`)
@@ -1507,12 +1513,19 @@ basis_volumes = let
         (1.0, 0.8744, 0.6003, 0.3031, 0.0266),
     )
 
+    # nb03 §04 presentation: ONE reconstructed slice over the 4.8 mm DE
+    # beam (512, 512, 1) — the certified cross-notebook comparison basis
+    # and the clinically realistic DE-abdomen slice thickness.  Thin
+    # 0.6 mm slices would inflate per-voxel σ by ~√(thickness ratio)
+    # without changing any physics.
+    basis_fbp_matrix_size = (512, 512, 1)
+
     function _fbp(sino_cpu, filter)
         # Every native detector row has its own estimator solution and is
         # passed directly to FBP; no noisy-row replication is permitted.
         sino_gpu = to_gpu(Float32.(sino_cpu))
         ws = BS.create_fdk_recon_workspace(
-            sino_gpu, geom, recon_opts.matrix_size; filter,
+            sino_gpu, geom, basis_fbp_matrix_size; filter,
         )
         try
             Float32.(Array(BS.reconstruct!(ws, sino_gpu, geom)))
@@ -1558,7 +1571,7 @@ let
     fig = Mke.Figure(size = (1180, 580))
     axis_kwargs = (titlesize = 32, subtitlesize = 24)
 
-    mid = size(basis_acnr.vol_iodine_raw, 3) ÷ 2
+    mid = (size(basis_acnr.vol_iodine_raw, 3) + 1) ÷ 2
 
     _qrange(arr) = (
         Float64(quantile(vec(arr), 0.01)),
@@ -1675,7 +1688,7 @@ let
     axis_kwargs = (titlesize = 32, subtitlesize = 24)
 
     sample = vmi_HU_final[50.0]
-    mid = size(sample, 3) ÷ 2
+    mid = (size(sample, 3) + 1) ÷ 2
 
     for (k, E) in enumerate(de_vmi_energies)
         r = ((k - 1) ÷ 2) + 1
@@ -1813,7 +1826,7 @@ let
     fig = Mke.Figure(size = (1180, 580))
 
     HU_window = (-200, 500)
-    mid = size(vmi_HU_final[70.0], 3) ÷ 2
+    mid = (size(vmi_HU_final[70.0], 3) + 1) ÷ 2
     bg = vmi_HU_final[70.0][:, :, mid]
 
     overlay = Float32[b ? 1.0f0 : NaN32 for b in solid_water_basis.mask_2d]
@@ -1914,7 +1927,7 @@ end;
 # ╔═╡ 1200000e-0000-4000-8000-000000000090
 let
     HU_window = (-200, 500)
-    mid = size(vmi_HU_final[70.0], 3) ÷ 2
+    mid = (size(vmi_HU_final[70.0], 3) + 1) ÷ 2
     bg = vmi_HU_final[70.0][:, :, mid]
 
     overlay = Float32[b ? 1.0f0 : NaN32 for b in solid_water_basis.mask_2d]
