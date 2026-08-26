@@ -1,6 +1,6 @@
 # This file is machine-generated - editing it directly is not advised
 
-julia_version = "1.12.6"
+julia_version = "1.12.7"
 manifest_format = "2.0"
 project_hash = "0d7b1496497975319c118421a259f36dfff0f59f"
 
@@ -212,7 +212,7 @@ version = "1.4.0"
 deps = ["AcceleratedKernels", "Artifacts", "DelimitedFiles", "Downloads", "FFTW", "JSON", "LinearAlgebra", "Random", "SHA", "Serialization", "Statistics", "Unitful", "XrayAttenuation", "p7zip_jll"]
 path = ".."
 uuid = "8f904dfe-b85e-4ff6-b463-dae2292396b9"
-version = "0.10.2"
+version = "0.13.0"
 
     [deps.BasisSimulator.weakdeps]
     CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
@@ -376,7 +376,7 @@ weakdeps = ["Dates", "LinearAlgebra"]
 [[deps.CompilerSupportLibraries_jll]]
 deps = ["Artifacts", "Libdl"]
 uuid = "e66e0078-7015-5450-92f7-15fbd957f2ae"
-version = "1.3.0+1"
+version = "1.3.1+2"
 
 [[deps.CompositionsBase]]
 git-tree-sha1 = "802bb88cd69dfd1509f6670416bd4434015693ad"
@@ -1397,7 +1397,7 @@ version = "0.8.7+0"
 [[deps.OpenSSL_jll]]
 deps = ["Artifacts", "Libdl"]
 uuid = "458c3c95-2e84-50aa-8efc-19380b2a3a95"
-version = "3.5.4+0"
+version = "3.5.6+0"
 
 [[deps.OpenSpecFun_jll]]
 deps = ["Artifacts", "CompilerSupportLibraries_jll", "JLLWrappers", "Libdl"]
