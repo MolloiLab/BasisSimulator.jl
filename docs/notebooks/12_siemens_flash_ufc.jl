@@ -1536,15 +1536,19 @@ basis_acnr = let
     W = copy(basis_volumes.vol_water_raw)
     I = copy(basis_volumes.vol_iodine_raw)
 
-    # Published strengthened setting from nb03 §05 (:moderately_aggressive_5x14).
-    # (An 8-pass variant was tested and does NOT flatten the ~1% 140-keV noise
-    # uptick — see the flat-tail note in the Verification section: the residual
-    # is low-frequency anti-correlated basis noise, outside HF-ACNR's reach.)
+    # nb03 §05 strength (5 passes, beta_max = 14) with a WIDER high-pass band
+    # than nb03's hp_sigma_px = 1.5: the per-basis kernels put the two noise
+    # spectra in different bands (the soft iodine kernel crushes iodine HF
+    # noise), so on the Flash — whose noisy Sn140 channel (η = 0.588 at
+    # 140 keV, 0.4 mm Sn) stamps stronger basis anti-correlation — the
+    # residual anti-correlated noise lives BELOW a 1.5-px band edge, where
+    # the regression cannot see it and the VMI noise-vs-keV curve bends
+    # back up at 140 keV.  Widening the band to 4 px reaches it.
     info = BS.apply_acnr_kalender!(
         W, I;
-        hp_sigma_px = 1.5, window = 4, passes = 5, beta_max = 14.0,
+        hp_sigma_px = 4.0, window = 4, passes = 5, beta_max = 14.0,
     )
-    @info "[ACNR · Kalender 5×14] ρ_hp(W,I)=$(round(info.ρ_hp, digits = 3))"
+    @info "[ACNR · Kalender 5×14, hp 4 px] ρ_hp(W,I)=$(round(info.ρ_hp, digits = 3))"
 
     (vol_iodine_raw = I, vol_water_raw = W, geom = basis_volumes.geom)
 end;
@@ -2142,14 +2146,9 @@ Automated PASS/FAIL gates over both acquisition classes (nb01 convention):
 3. **DE poly water accuracy** — |⟨HU⟩| ≤ 5 in low, high, mixed.
 4. **VMI water accuracy** — |⟨HU⟩| ≤ 10 at every synthesized keV,
    measured on the deeply eroded solid-water region (nb03 convention).
-5. **VMI noise decreases with keV** — strict σ(50) > σ(70) > σ(100), and
-   σ(140) ≤ 1.02 · σ(100).  The 2% flat-tail tolerance is a documented
-   Flash-specific finding: the σ(E) curve has a genuine shallow minimum
-   near 100 keV (residual *low-frequency* anti-correlated basis noise
-   from the noisy Sn140 channel — η = 0.588 at 140 keV, 0.4 mm Sn —
-   which high-pass ACNR cannot remove; an 8-pass variant was tested and
-   does not flatten it), and the ±1% observed uptick sits inside the
-   σ-estimator's own error band on a correlated noise field.
+5. **Monotonic VMI noise** — σ(50) > σ(70) > σ(100) > σ(140) (clinical
+   truth; hard gate, no tolerance — the same standard every other VMI
+   notebook meets).
 6. **Published per-basis FBP kernels** — water `:StandardSoftBlend`,
    iodine `:OriginalDualKvpSoft` (the nb03 kernel gate).
 7. **Per-rod regression** — measured-vs-theoretical slope ∈ [0.85, 1.15]
@@ -2193,19 +2192,11 @@ verification = let
         ))
     end
 
-    # 5. Noise decrease with keV: strict through 100 keV; the 100→140 leg
-    # carries a documented 2% flat-tail tolerance.  On the Flash the σ(E)
-    # curve has a genuine shallow minimum near 100 keV (weak 140-keV
-    # detector η + thin 0.4 mm Sn → residual LOW-frequency anti-correlated
-    # basis noise that HF-ACNR cannot remove; an 8-pass ACNR variant was
-    # tested and does not flatten it).  The observed +≈1% uptick is also
-    # within the σ-estimator's own error band on a spatially correlated
-    # field (~±1%), so the gate forbids any real high-keV noise growth
-    # while not failing on estimator jitter.
+    # 5. Monotonic noise decrease with keV — HARD gate, no tolerance
+    # (clinical truth; same standard every other VMI notebook meets).
     σs = [vmi_noise_by_keV[E].std for E in de_vmi_energies]
     push!(checks, (
-        "VMI noise ↓ (2% flat-tail tol at 140)",
-        all(diff(σs[1:3]) .< 0) && σs[4] <= 1.02 * σs[3],
+        "VMI noise monotonic ↓", all(diff(σs) .< 0),
         "σ = " * join([string(round(σ, digits = 1)) for σ in σs], " > "),
     ))
 
