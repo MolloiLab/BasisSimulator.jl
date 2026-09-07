@@ -17,3 +17,9 @@ XrayAttenuation = "7811750c-a499-436e-8b04-55fc0593dd37"
 
 [sources]
 BasisSimulator = {path = ".."}
+
+# Reseau is an indirect dependency (Therapy → HTTP → Reseau). It is listed here as an
+# extra ONLY so that docs/LocalPreferences.toml can target it by name; extras never
+# enter the Manifest, so the committed notebook-export fingerprints are unaffected.
+[extras]
+Reseau = "802f3686-a58f-41ce-bb0c-3c43c75bba36"
