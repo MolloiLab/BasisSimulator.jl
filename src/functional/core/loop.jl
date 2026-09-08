@@ -26,6 +26,14 @@ function _batched_loop(body, n::Int, state, consts::Tuple, ::AbstractArray)
     return state
 end
 
+# Unrolled twin of `_batched_loop` (host indices; the trace unrolls `n` copies of the body).
+function _unrolled_loop(body, n::Int, state, consts::Tuple)
+    for b in 1:n
+        state = body(state, b, consts)
+    end
+    return state
+end
+
 function _dslice(x::AbstractArray{<:Any, N}, start, len::Int, dim::Int) where {N}
     idx = ntuple(d -> d == dim ? (start:(start + len - 1)) : Colon(), N)
     return x[idx...]
@@ -50,7 +58,7 @@ Apply `chunk_fn(start, len, consts...)` — which returns the result for views
 (the view axis of sinograms).  `n ≤ B` runs a single chunk with no loop.
 `consts` carries every traced array the chunk needs (see the contract above).
 """
-function _loop_over_batches(chunk_fn, n::Int, B::Int, out, consts::Tuple, ref)
+function _loop_over_batches(chunk_fn, n::Int, B::Int, out, consts::Tuple, ref; unroll::Bool = false)
     B = min(B, n)
     nb = n ÷ B; tail = n % B
     if nb == 1 && tail == 0
@@ -58,7 +66,7 @@ function _loop_over_batches(chunk_fn, n::Int, B::Int, out, consts::Tuple, ref)
     end
     # no variable named inside the closure may be assigned anywhere else in this scope (boxing)
     body = (state, b, cs) -> (s0 = (b - 1) * B + 1; _dupdate(state, chunk_fn(s0, B, cs...), s0, 3))
-    out = _batched_loop(body, nb, out, consts, ref)
+    out = unroll ? _unrolled_loop(body, nb, out, consts) : _batched_loop(body, nb, out, consts, ref)
     if tail > 0
         s_tail = nb * B + 1
         out = _dupdate(out, chunk_fn(s_tail, tail, consts...), s_tail, 3)
@@ -72,14 +80,14 @@ end
 Like [`_loop_over_batches`](@ref) but the chunks are ACCUMULATED (`acc .+ chunk`)
 instead of written side by side (backprojection-type reductions over views).
 """
-function _sum_over_batches(chunk_fn, n::Int, B::Int, acc0, consts::Tuple, ref)
+function _sum_over_batches(chunk_fn, n::Int, B::Int, acc0, consts::Tuple, ref; unroll::Bool = false)
     B = min(B, n)
     nb = n ÷ B; tail = n % B
     if nb == 1 && tail == 0
         return acc0 .+ chunk_fn(1, n, consts...)
     end
     body = (state, b, cs) -> (s0 = (b - 1) * B + 1; state .+ chunk_fn(s0, B, cs...))
-    acc = _batched_loop(body, nb, acc0, consts, ref)
+    acc = unroll ? _unrolled_loop(body, nb, acc0, consts) : _batched_loop(body, nb, acc0, consts, ref)
     if tail > 0
         s_tail = nb * B + 1
         acc = acc .+ chunk_fn(s_tail, tail, consts...)

@@ -43,13 +43,16 @@ material axis is the batch axis of the linear operator). Differentiable in
 """
 function material_paths(fractions::AbstractArray{<:Any, 4}, pipe::AbstractPipeline{T}) where {T}
     geom = pipe.geom
-    if !pipe.unrolled && pipe.loop
+    if !pipe.unrolled && pipe.batching.dense
         runs = dd_run_plans(geom, pipe.vol_shape; view_batch = pipe.batching.dd,
             volume_extent = pipe.volume_extent, eltype = T)
-        proj = pipe.batching.dense ? dd_project_dense_run : dd_project_run
-        return reduce((a, b) -> cat(a, b; dims = 3), [proj(fractions, r) for r in runs])
+        return reduce((a, b) -> cat(a, b; dims = 3), [dd_project_dense_run(fractions, r; unroll = !pipe.loop) for r in runs])
+    elseif !pipe.unrolled && pipe.loop
+        runs = dd_run_plans(geom, pipe.vol_shape; view_batch = pipe.batching.dd,
+            volume_extent = pipe.volume_extent, eltype = T)
+        return reduce((a, b) -> cat(a, b; dims = 3), [dd_project_run(fractions, r) for r in runs])
     elseif !pipe.unrolled
-        # unrolled batches: one static program per batch (compile ∝ number of batches)
+        # gather formulation, unrolled batches: one static program per batch
         batches = dd_batch_plans(geom, pipe.vol_shape; view_batch = pipe.batching.dd,
             volume_extent = pipe.volume_extent, eltype = T)
         per_mat = [reduce((a, b) -> cat(a, b; dims = 3), [dd_project_batch(fractions[:, :, :, m], bp) for bp in batches])

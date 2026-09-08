@@ -20,10 +20,10 @@
     dd_project_dense_run(vol4, run::DDRunPlan) -> (n_cols, n_rows, n_run, n_channels)
 
 Dense-separable forward projection of every channel of `vol4` over the run's
-views (batches of `run.B` inside one compiled loop); numerically the per-view
+views (batches of `run.B` inside one compiled loop, or unrolled with `unroll = true`); numerically the per-view
 [`dd_project_view`](@ref) up to summation order.
 """
-function dd_project_dense_run(vol::AbstractArray{<:Any, 4}, p::DDRunPlan{T}) where {T <: AbstractFloat}
+function dd_project_dense_run(vol::AbstractArray{<:Any, 4}, p::DDRunPlan{T}; unroll::Bool = false) where {T <: AbstractFloat}
     size(vol)[1:3] == (p.nx, p.ny, p.nz) ||
         throw(DimensionMismatch("volume $(size(vol)[1:3]) does not match plan $((p.nx, p.ny, p.nz))"))
     M = size(vol, 4)
@@ -61,7 +61,7 @@ function dd_project_dense_run(vol::AbstractArray{<:Any, 4}, p::DDRunPlan{T}) whe
         P = _bmm_zl(Wz, reshape(A, n_cols, nz, M, n_long, B))                             # (n_cols, n_rows, M, B)
         return permutedims(P .* reshape(dropdims(norm; dims = 3), n_cols, n_rows, 1, B), (1, 2, 4, 3))   # (n_cols,n_rows,B,M)
     end
-    return _loop_over_batches(chunk_fn, nr, p.B, out, (tab, V), vol)
+    return _loop_over_batches(chunk_fn, nr, p.B, out, (tab, V), vol; unroll)
 end
 
 """
@@ -82,7 +82,7 @@ views (`sino_run :: (n_cols, n_rows, n_run)`), as two batched contractions:
 `V[t, z, l] = Σ_{col,b} Wx[col,t,l,b] · G[col,z,l,b]`.  Numerically the per-view
 [`dd_transpose_view`](@ref) sum up to summation order.
 """
-function dd_transpose_dense_run(sino::AbstractArray{<:Any, 3}, p::DDRunPlan{T}, vol_shape::NTuple{3, Int}) where {T <: AbstractFloat}
+function dd_transpose_dense_run(sino::AbstractArray{<:Any, 3}, p::DDRunPlan{T}, vol_shape::NTuple{3, Int}; unroll::Bool = false) where {T <: AbstractFloat}
     nr = length(p.views)
     size(sino) == (p.n_cols, p.n_rows, nr) ||
         throw(DimensionMismatch("sinogram run $(size(sino)) does not match plan $((p.n_cols, p.n_rows, nr))"))
@@ -116,6 +116,6 @@ function dd_transpose_dense_run(sino::AbstractArray{<:Any, 3}, p::DDRunPlan{T}, 
         G = _bmm_rows(Wz, S)                                                              # (n_cols, nz, n_long, B)
         return _bmm_cols(Wx, G)                                                           # (n_t, nz, n_long)
     end
-    acc = _sum_over_batches(chunk_fn, nr, p.B, acc0, (tab, sino), sino)
+    acc = _sum_over_batches(chunk_fn, nr, p.B, acc0, (tab, sino), sino; unroll)
     return p.vertical ? permutedims(acc, (1, 3, 2)) : permutedims(acc, (3, 1, 2))
 end

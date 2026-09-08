@@ -6,7 +6,7 @@
 using Reactant, Enzyme, BasisSimulator, Statistics, Printf
 const BS = BasisSimulator; const BSF = BS.Functional
 envi(k, d) = parse(Int, get(ENV, k, string(d)))
-NV = envi("NV", 64); VIEWS = envi("VIEWS", 100); RECON = envi("RECON", 64); VB = envi("VB", 25); GRAD = envi("GRAD", 1)
+NV = envi("NV", 64); VIEWS = envi("VIEWS", 100); RECON = envi("RECON", 64); VB = envi("VB", 25); GRAD = envi("GRAD", 1); UNROLLED = envi("UNROLLED", 1)
 T0 = time(); say(m) = (println(@sprintf("[%7.1f s] ", time() - T0), m); flush(stdout))
 say("config NV=$NV VIEWS=$VIEWS RECON=$RECON VB=$VB threads=$(Threads.nthreads())")
 scanner = BS.EICTScanner(source_to_isocenter = 625.6, source_to_detector = 1100.0, detector_rows = 256, detector_cols = 834,
@@ -31,7 +31,7 @@ say(@sprintf("(a) legacy CPU: simulate! %.2f s + recon %.2f s  [mask backend %s]
 fr = BSF.onehot_fractions(phantom.mask, length(phantom.materials)); fr_r = Reactant.to_rarray(fr)
 m = [hypot(i - (RECON + 1) / 2, j - (RECON + 1) / 2) < 0.47RECON for i in 1:RECON, j in 1:RECON, k in 1:2]
 results = Dict{String, Any}()
-for (name, loop) in (("(b) unrolled batches", false), ("(c) while loops", true))
+for (name, loop) in (UNROLLED == 1 ? (("(b) unrolled batches", false), ("(c) while loops", true)) : (("(c) while loops", true),))
     pipe = BSF.eict_pipeline(phantom, scanner, protocol, opts, recon_opts; view_batch = VB, loop)
     t_c = @elapsed fwd = @compile sync = true BSF.eict_forward(fr_r, pipe)
     hu = Array(fwd(fr_r, pipe)); t_f = @elapsed fwd(fr_r, pipe)
@@ -47,5 +47,5 @@ for (name, loop) in (("(b) unrolled batches", false), ("(c) while loops", true))
         say(@sprintf("%s: gradient compile %.0f s, gradient step %.2f s", name, t_gc, t_g))
     end
 end
-say(@sprintf("(b) vs (c) max abs %.3e HU", maximum(abs.(results["(b) unrolled batches"] .- results["(c) while loops"]))))
+UNROLLED == 1 && say(@sprintf("(b) vs (c) max abs %.3e HU", maximum(abs.(results["(b) unrolled batches"] .- results["(c) while loops"]))))
 say("BENCH_DONE")
