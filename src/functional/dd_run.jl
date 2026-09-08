@@ -206,3 +206,27 @@ function dd_transpose_views(sino::AbstractArray{<:Any, 3}, geom::CTGeometry, vie
     end
     return acc
 end
+
+"""
+    hir_operators(geom, vol_shape; view_batch, volume_extent = nothing, eltype = Float32, support = nothing) -> (A, At)
+
+The projector pair an ordered-subsets reconstruction ([`hir_reconstruct`](@ref))
+takes, on the looped DD operators: `A(vol, idx) -> (n_cols, n_rows, length(idx))`
+and `At(sino_sub, idx) -> (nx, ny, nz)` for any ordered view list `idx`
+(padded subsets included), each batch of `view_batch` views inside one compiled
+loop.  `support` (a `(nx, ny, 1)` or `(nx, ny, nz)` Bool mask) restricts the
+transpose to the reconstruction support, like the legacy `circular_support`.
+"""
+function hir_operators(geom::CTGeometry, vol_shape::NTuple{3, Int};
+        view_batch::Int, volume_extent = nothing, eltype::Type{T} = Float32,
+        support::Union{Nothing, AbstractArray{Bool}} = nothing) where {T}
+    A = function (vol, idx)
+        out = dd_project_views(reshape(vol, size(vol)..., 1), geom, idx; view_batch, volume_extent, eltype = T)
+        return out[:, :, :, 1]
+    end
+    At = function (sub, idx)
+        acc = dd_transpose_views(sub, geom, idx, vol_shape; view_batch, volume_extent, eltype = T)
+        return support === nothing ? acc : ifelse.(support, acc, zero(T))
+    end
+    return A, At
+end

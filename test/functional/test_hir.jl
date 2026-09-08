@@ -383,3 +383,30 @@ _ts("start")
     end
 end
 _ts("done")
+
+@testset "functional HIR on the looped DD operators (hir_operators) ≡ per-view operators" begin
+    s = toy_setup(strength = 60)
+    T = Float32
+    sino = cylinder_sino(s.geom, s.matrix_size)
+    init = fdk_init(sino, s.geom, s.matrix_size)
+    wg = s.plan.work_geom; vshape = s.plan.work_shape
+    vplans = [BSF.dd_view_plan(wg, v, vshape; eltype = T) for v in 1:wg.n_angles]
+    A_pv = (vol, idx) -> cat([BSF.dd_project_view(vol, vplans[v]) for v in idx]...; dims = 3)
+    At_pv = function (sub, idx)
+        acc = nothing
+        for (k, v) in enumerate(idx)
+            term = BSF.dd_transpose_view(sub[:, :, k], vplans[v], vshape)
+            acc = acc === nothing ? term : acc .+ term
+        end
+        return acc
+    end
+    A_lp, At_lp = BSF.hir_operators(wg, vshape; view_batch = 3, eltype = T)
+    idx = s.plan.subset_views[1]
+    work = FStage.hir_seed(init, s.plan)                                          # padded work volume
+    @test A_lp(work, idx) == A_pv(work, idx)                                     # looped forward is bit-identical
+    y = rand(MersenneTwister(5), T, wg.n_cols, wg.n_rows, length(idx))
+    @test maximum(abs.(At_lp(y, idx) .- At_pv(y, idx))) <= 2e-6 * maximum(abs.(At_pv(y, idx)))
+    out_pv = FStage.hir_reconstruct(sino, init, s.plan, A_pv, At_pv)
+    out_lp = FStage.hir_reconstruct(sino, init, s.plan, A_lp, At_lp)
+    @test maximum(abs.(out_lp .- out_pv)) <= 1e-4 * maximum(abs.(out_pv))
+end
