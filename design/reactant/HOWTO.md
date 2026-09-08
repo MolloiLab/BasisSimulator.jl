@@ -129,3 +129,13 @@ out  = BSF.vmi_forward(fr, vp)     # (; vmis (nx,ny,nz,nE), vol_water, vol_iodin
 ```
 All three are pure programs over the material fractions: compile them with `@compile`, differentiate
 with `Enzyme.gradient`; `test/functional/reactant/smoke_pipelines_all.jl` does both for each.
+
+## Performance knobs (all pipelines)
+
+- `batch_budget_mb` (default 512): sizes every compiled view loop; bigger = fewer, larger iterations.
+  The dense projector needs `4·n_cols·n_t·n_long` bytes of overlap weights per view — if one view
+  does not fit, `eict_pipeline`/`pcct_pipeline` throw with the numbers. There is no silent fallback.
+- `loop` (default `true`): batches inside a StableHLO while loop (constant program size). `false`
+  unrolls the batches (compile ∝ number of batches; same runtime on CPU).
+- `projector` (default `:dense`): the dense-separable DD contractions (PROBES §8: 5× faster than the
+  legacy CPU kernels at 64/100). `:gather` is the static-tap form kept for the oracle tests only.
