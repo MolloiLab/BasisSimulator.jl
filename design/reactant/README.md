@@ -9,6 +9,18 @@ code, and the Reactant/Enzyme smoke tests runnable from `envs/reactant`.
 
 ---
 
+## Handoff (2026-09-08)
+
+Branch `feat/reactant-autodiff` is the library: `src/functional/` (laid out along the imaging
+chain — the module docstring is the map), the Reactant extension, the five-struct pipelines
+(`Functional.pipeline` / `forward`, `vmi_pipeline` / `vmi_forward`), compiled view loops sized
+from a memory budget, the strict `EICTScanner` / `PCCTScanner` API, oracle tests
+(`test/functional/`, 1149 assertions) and Reactant smokes (`test/functional/reactant/`). Never
+merge to `main` without Dale. The material-decomposition work that USES this branch lives in the
+private repo `MolloiLab/basis-autodiff-mmd` (see its `HANDOFF.md`). Open items: M6 driver switch
+(`simulate!`/`reconstruct!` on the functional core), CUDA validation on the lab box, the
+CT-realistic gallery numbers (`design/reactant/probes/gallery_parity.jl`) into PROBES §8.
+
 ## 0. Where things stand (status board)
 
 | Item | State |
