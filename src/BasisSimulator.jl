@@ -340,4 +340,10 @@ include("reconstruction/vmi/image_domain_decomp.jl")
 # iodine_calibration_rods / calcium_calibration_rods helpers.
 include("reconstruction/vmi/clinical_calibrations.jl")
 
+# =============================================================================
+# Functional core — pure tensor-program re-implementation (Reactant/Enzyme path).
+# Legacy kernels above remain the numerical oracle; see src/functional/Functional.jl.
+# =============================================================================
+include("functional/Functional.jl")
+
 end # module

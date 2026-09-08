@@ -39,4 +39,7 @@ const BS = BasisSimulator
     @testset "source/" begin
         include("source.jl")
     end
+    @testset "functional/" begin
+        include("functional/runtests.jl")
+    end
 end

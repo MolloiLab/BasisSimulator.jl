@@ -16,8 +16,15 @@ code, and the Reactant/Enzyme smoke tests runnable from `envs/reactant`.
 | Sync with origin, CI fix for the docs deploy | done (PR #65, separate) |
 | Surveys: pipeline map, tests/oracles, AD hazards, prior attempts, Reactant capabilities | done → `surveys/` |
 | Reactant 0.2.285 + Enzyme 0.13.201 on Julia 1.12.7 / macOS arm64 | installs, compiles, differentiates (`probes/`, `PROBES.md`) |
-| Static-tap distance-driven projector formulation | proven in isolation: parity 4.4e-6 vs Float64 reference, adjoint test 6e-6, Enzyme reverse works with no custom rule |
-| `src/functional/` stages | being built in parallel by stage agents (see §5); each lands with its oracle test |
+| **M1 operators** — `dd_project`/`dd_transpose` (flat+arc, axial+helical), `fbp` (filter, weighted/matched backprojection, FOV mask, 8 kernels) | **done.** DD: Float64 parity 1.8e-16 vs `dd_forward_project`, brute-force `Aᵀ` 5.7e-14, adjoint 3.6e-16, Float32 2e-6; FBP: backprojection bit-identical, filter 1.8e-7, FDK 1.8e-7; both compile + Enzyme gradient (DD 7.8e-6 vs transpose, FDK 3e-13 vs FD) |
+| **M2 EICT chain** — `eict_chain` (spectral conversion, fill factor, scatter, reparameterized noise, air/log, BHC) + hand VJPs | **done.** ≤3.8e-6 abs vs `simulate!` with the captured noise draws (all four noise/scatter variants), BHC bit-identical, VJP 1e-9 vs FD, compiled chain 4.8e-16 (F64) / 2.7e-7 (F32), Enzyme = VJP to 6e-16 |
+| **M2 end to end** — `eict_pipeline` / `eict_forward`: fractions → DD → EICT(+BHC) → FDK → HU behind the five structs | **done.** HU 1.1e-6 rel vs the nb01 chain (`simulate!`→`apply_bhc_water`→`reconstruct!`→`to_hounsfield`), noise on and off, legacy RNG stream reproduced; Reactant compile + Enzyme gradient w.r.t. fractions: see PROBES.md §5 |
+| **M3 PCCT** — `pcct_chain` (spectral bins, per-bin log, host-drawn exact Poisson + Gaussian surrogate, pile-up, combine) | **done.** bins 8.6e-8 vs the fused spectral kernel, full chain 3.8e-6 vs `simulate!(PCCTWorkspace)` (pile-up on), legacy counts reproduced bit-for-bit from the legacy bins, Enzyme = closed-form VJP to 2e-16 |
+| **M3 HIR** — `hir_reconstruct` (OS-PWLS, Huber, padded equal subsets, operators passed in) | **done.** bit-identical to `reconstruct!` at strengths 0/60/100 (legacy operators), 4.4e-7 with the functional DD operators, `W_proj` 2e-6, Enzyme gradient 1.2e-10 vs FD |
+| **M4 VMI** — `cong_decompose` (fixed-iteration vectorized) + IFT VJP, `cmv_decompose`, `synth_vmi_2basis` | **done.** Cong 4.3e-5 (F32, shared ŵ) / 6.9e-5 (per-ray ŵ) vs `apply_cong!`, F64 residual 3e-16; CMV + synth bit-exact; Enzyme (unrolled) = IFT VJP to 6e-14 |
+| **M4 denoisers** — `acnr_kalender`, `sino_svd_denoise_bilateral`, `median_z`, `sfjsd_denoise` | **done.** ACNR bit-exact (nb03/nb04 kwargs), SVD-bilateral 4.6e-5, median-z exact (`:shrink`), SF-JSD 2e-6 with captured constants; compiled ≤2.2e-7; found a legacy SF-JSD thread race (§7) |
+| **M4 n-channel estimator** (notebook-only production VMI) | in progress — `src/functional/nchannel.jl` + NOTES |
+| Integrated CPU suite (`Pkg.test()`) | 3826 pass with seven stages wired (`test/functional/`) |
 | Driver switch (`simulate!`/`reconstruct!` → functional core) | not started (M6) |
 | CUDA validation | not started (needs a lab NVIDIA box) |
 
@@ -313,6 +320,25 @@ to be added when the first such path needs it.
   worst-ray residuals reported in the stage tests.
 - **Metal**: no Reactant backend; if Dale's PJRT PR lands, the same thunks should run there —
   until then Metal = legacy.
+- **Legacy bug found (unfixed in `src/`, oracle untouched):** `apply_sino_sfjsd_denoise` captures
+  `slice_lo`/`slice_hi` across `Threads.@threads` → rows mixed nondeterministically with
+  `nthreads > 1` (0.5–15 % max-rel), bit-exact with one thread. Two-line rename fixes it; the
+  functional tests use a sequential replica (`Functional.sfjsd_capture`) as the oracle.
+- **Reactant tracing gotchas collected by the builders** (all worked around in the stages):
+  (a) `TracedRArray{T} <: AbstractArray{TracedRNumber{T}}` — never bind `T` from an array;
+  (b) a host `Matrix * traced` falls back to generic `Matrix{TracedRNumber}` and recurses on
+  slicing — pass tables as traced inputs or use broadcast-and-reduce; (c) `min.(x, T(1e30))` with
+  `T` taken from a host matrix's eltype sends the interpreter into unbounded recursion even in an
+  unexecuted branch; (d) `ifelse.(host_Bool, Float32, traced)` infers a `Union` eltype — lift the
+  scalar with `oftype`; (e) compiled `Enzyme.gradient` thunks are called with the mode first
+  (`g(Reverse, loss, x, Const(p))`); (f) `stack` is not traceable, `cat` is; (g) keep plans
+  host-side and move only their tensors with `to_rarray` so per-view index tensors are built
+  in-graph (a host-constant plan bakes them in as literals); (h) nested fused broadcasts cost
+  ~10 s of Julia compile each on 1.12 — a `@noinline` broadcast barrier halves it.
+- **Compile-time scaling of unrolled view loops** (HIR × functional DD > 20 min at 24 views;
+  FDK compiled only to 16 views so far) → `@trace for` over views / view chunks is the M5 task.
+- **Test-suite runtime**: the functional testsets add ~4 min of mostly one-time Julia compile
+  (`gram_eigen` 6 specializations, DD kernels 4); a PrecompileTools workload would remove it.
 - **Float32 vs Float64 drift** in denoisers/ACNR (legacy runs some FFTs in Float64): quantify, and
   decide per stage whether to match the Float64 path or accept a documented difference.
 
@@ -336,6 +362,11 @@ Rules for agents and humans working here:
   hazard rows before writing code.
 - Pure, static-shape, array-generic, no scalar indexing, no RNG, noise as input, plans as immutable
   structs, host-only precompute allowed and labeled.
+- **Never bind the scalar type from an array.** `Reactant.TracedRArray{T,N} <: AbstractArray{TracedRNumber{T},N}`,
+  so `f(x::AbstractArray{T,3}, p::Plan{T}) where {T<:AbstractFloat}` throws `MethodError` inside
+  `@compile`. Type arrays as `AbstractArray{<:Any,N}` (or leave them untyped) and take `T` only from
+  the plan (`p::Plan{T}`) or an explicit `::Type{T}`; never `T(...)` with `T = eltype(x)`; avoid
+  `similar(x, T, …)`/`zeros(eltype(x), …)` assumptions (found by the HIR builder, 2026-09-07).
 - Every stage lands with: parity test(s) vs legacy with the tolerances in §4, an adjoint or
   finite-difference gradient test, a Reactant smoke, and a line in the status board.
 - Do not modify legacy kernels. Do not re-run whole notebooks on the Metal machine without need.
