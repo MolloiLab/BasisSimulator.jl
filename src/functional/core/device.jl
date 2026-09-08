@@ -71,3 +71,31 @@ function _bmm_zl(Wz::AbstractArray{<:Any, 5}, A::AbstractArray{<:Any, 5})
     end
     return P
 end
+
+"""
+    _bmm_rows(Wz, S) -> G
+
+Transpose-side axial contraction: `G[col, z, l, b] = Σ_row Wz[col,row,z,l,b] · S[col,row,b]`.
+"""
+function _bmm_rows(Wz::AbstractArray{<:Any, 5}, S::AbstractArray{<:Any, 3})
+    n_cols, n_rows, nz, n_long, B = size(Wz)
+    G = similar(Wz, n_cols, nz, n_long, B)
+    for b in 1:B, l in 1:n_long, z in 1:nz
+        G[:, z, l, b] = vec(sum(Wz[:, :, z, l, b] .* S[:, :, b]; dims = 2))
+    end
+    return G
+end
+
+"""
+    _bmm_cols(Wx, G) -> V
+
+Transpose-side transverse contraction: `V[t, z, l] = Σ_{col,b} Wx[col,t,l,b] · G[col,z,l,b]`.
+"""
+function _bmm_cols(Wx::AbstractArray{<:Any, 4}, G::AbstractArray{<:Any, 4})
+    n_cols, n_t, n_long, B = size(Wx); nz = size(G, 2)
+    V = zeros(eltype(Wx), n_t, nz, n_long)
+    for b in 1:B, l in 1:n_long
+        V[:, :, l] .+= transpose(Wx[:, :, l, b]) * G[:, :, l, b]
+    end
+    return V
+end

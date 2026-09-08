@@ -76,6 +76,18 @@ function BSF._bmm_t(Wx::_AnyTraced, V::_AnyTraced)
     # r :: (n_long, B, n_cols, K) → (n_cols, K, n_long, B)
     return permutedims(r, (3, 4, 1, 2))
 end
+function BSF._bmm_rows(Wz::_AnyTraced, S::_AnyTraced)
+    Wzm = _mat(Wz); Sm = _mat(S)                             # (n_cols,n_rows,nz,n_long,B), (n_cols,n_rows,B)
+    r = Reactant.Ops.dot_general(Wzm, Sm; contracting_dimensions = ([2], [2]), batching_dimensions = ([1, 5], [1, 3]))
+    # r :: (n_cols, B, nz, n_long) → (n_cols, nz, n_long, B)
+    return permutedims(r, (1, 3, 4, 2))
+end
+function BSF._bmm_cols(Wx::_AnyTraced, G::_AnyTraced)
+    Wxm = _mat(Wx); Gm = _mat(G)                             # (n_cols,n_t,n_long,B), (n_cols,nz,n_long,B)
+    r = Reactant.Ops.dot_general(Wxm, Gm; contracting_dimensions = ([1, 4], [1, 4]), batching_dimensions = ([3], [3]))
+    # r :: (n_long, n_t, nz) → (n_t, nz, n_long)
+    return permutedims(r, (2, 3, 1))
+end
 function BSF._bmm_zl(Wz::_AnyTraced, A::_AnyTraced)
     Wzm = _mat(Wz); Am = _mat(A)                             # (n_cols,n_rows,nz,n_long,B), (n_cols,nz,M,n_long,B)
     r = Reactant.Ops.dot_general(Wzm, Am; contracting_dimensions = ([3, 4], [2, 4]), batching_dimensions = ([1, 5], [1, 5]))

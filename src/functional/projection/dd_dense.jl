@@ -72,3 +72,50 @@ Host estimate of the dense weights and intermediates one view needs
 """
 dd_dense_view_bytes(n_cols, n_rows, n_t, nz, n_long, M) =
     4 * (n_cols * n_t * n_long + n_cols * n_rows * nz * n_long + n_cols * nz * M * n_long + n_t * nz * M * n_long)
+
+"""
+    dd_transpose_dense_run(sino_run, run::DDRunPlan, vol_shape) -> (nx, ny, nz)
+
+Exact transpose of [`dd_project_dense_run`](@ref) for one channel over the run's
+views (`sino_run :: (n_cols, n_rows, n_run)`), as two batched contractions:
+`G[col, z, l, b] = Σ_row Wz[col,row,z,l,b] · (norm · S)[col,row,b]` then
+`V[t, z, l] = Σ_{col,b} Wx[col,t,l,b] · G[col,z,l,b]`.  Numerically the per-view
+[`dd_transpose_view`](@ref) sum up to summation order.
+"""
+function dd_transpose_dense_run(sino::AbstractArray{<:Any, 3}, p::DDRunPlan{T}, vol_shape::NTuple{3, Int}) where {T <: AbstractFloat}
+    nr = length(p.views)
+    size(sino) == (p.n_cols, p.n_rows, nr) ||
+        throw(DimensionMismatch("sinogram run $(size(sino)) does not match plan $((p.n_cols, p.n_rows, nr))"))
+    vol_shape == (p.nx, p.ny, p.nz) ||
+        throw(DimensionMismatch("vol_shape $(vol_shape) does not match plan $((p.nx, p.ny, p.nz))"))
+    n_t, n_long = p.vertical ? (p.nx, p.ny) : (p.ny, p.nx); nz = p.nz
+    tab = _on_device(p.table, sino)
+    n_cols, n_rows = p.n_cols, p.n_rows
+    acc0 = _zeros(sino, T, (n_t, nz, n_long))
+    chunk_fn = (start, len, tab, sino) -> begin                                # closes over host data only
+        c = _consts_run(p, _dslice(tab, start, len, 2))
+        B = len
+        colf = reshape(_iota(tab, T, n_cols), :, 1, 1, 1)
+        rowf = reshape(_iota(tab, T, n_rows), 1, :, 1, 1)
+        ilf = reshape(_iota(tab, T, n_long), 1, 1, :, 1)
+        tf = reshape(_iota(tab, T, n_t), 1, :, 1, 1)
+        zf = reshape(_iota(tab, T, nz), 1, 1, :, 1, 1)
+        (dXlo, dXhi, detXstep, deltaT, scale_col, valid_x) = _x_cells(colf, c)
+        (dZlo, dZhi, _, norm) = _z_cells(rowf, scale_col, deltaT, detXstep, valid_x, c)
+        lp = c.vmin_long .+ (ilf .- c.half) .* c.v_long
+        mf = c.s_long ./ (c.s_long .- lp)
+        t0 = c.s_tran .+ (c.vmin_t .+ (tf .- one(T)) .* c.v_t .- c.s_tran) .* mf
+        t1 = c.s_tran .+ (c.vmin_t .+ tf .* c.v_t .- c.s_tran) .* mf
+        Wx = _overlap.(dXlo, dXhi, min.(t0, t1), max.(t0, t1))                            # (n_cols,n_t,n_long,B)
+        mf5 = reshape(mf, 1, 1, 1, n_long, B); sz5 = reshape(c.sz, 1, 1, 1, 1, B)
+        z0 = sz5 .+ (c.vmin_z .+ (zf .- one(T)) .* c.vz .- sz5) .* mf5
+        z1 = sz5 .+ (c.vmin_z .+ zf .* c.vz .- sz5) .* mf5
+        dZlo5 = reshape(dZlo, n_cols, n_rows, 1, 1, B); dZhi5 = reshape(dZhi, n_cols, n_rows, 1, 1, B)
+        Wz = _overlap.(dZlo5, dZhi5, min.(z0, z1), max.(z0, z1))                          # (n_cols,n_rows,nz,n_long,B)
+        S = _dslice(sino, start, len, 3) .* dropdims(norm; dims = 3)                      # (n_cols,n_rows,B)
+        G = _bmm_rows(Wz, S)                                                              # (n_cols, nz, n_long, B)
+        return _bmm_cols(Wx, G)                                                           # (n_t, nz, n_long)
+    end
+    acc = _sum_over_batches(chunk_fn, nr, p.B, acc0, (tab, sino), sino)
+    return p.vertical ? permutedims(acc, (1, 3, 2)) : permutedims(acc, (3, 1, 2))
+end
