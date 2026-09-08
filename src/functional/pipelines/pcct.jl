@@ -26,7 +26,7 @@ struct PCCTPipeline{T <: AbstractFloat, PP, FP} <: AbstractPipeline{T}
     groups::Vector{Vector{Int}}
     fbp::FP
     recon_shape::NTuple{3, Int}
-    batching::NamedTuple{(:dd, :spectral, :fdk, :dense, :col_block, :slab_block), Tuple{Int, Int, Int, Bool, Int, Int}}
+    batching::NamedTuple{(:dd, :spectral, :fdk, :dense, :col_block, :slab_block, :tile), Tuple{Int, Int, Int, Bool, Int, Int, Int}}
     unrolled::Bool
     loop::Bool
 end
@@ -65,17 +65,18 @@ function pcct_pipeline(
     n_view = geom.n_angles
     n_bins = length(ws.I0_bins)
     groups = groups === nothing ? [[b] for b in 1:n_bins] : groups
+    fplan = fbp_plan(geom, recon_opts.matrix_size; filter, cutoff, T)
     batching = if view_batch === :auto
-        _auto_batching((geom.n_cols, geom.n_rows, n_view), vol_shape, n_E, size(ws.μ_table, 1), recon_opts.matrix_size, batch_budget_mb; projector, geom, volume_extent = phantom.extent)
+        _auto_batching((geom.n_cols, geom.n_rows, n_view), vol_shape, n_E, size(ws.μ_table, 1), recon_opts.matrix_size, batch_budget_mb;
+            projector, geom, volume_extent = phantom.extent, fdk_window = fdk_tile_windows(fplan, 16)[2])
     else
         (dd = Int(view_batch), spectral = Int(view_batch), fdk = Int(view_batch), dense = projector === :dense,
-         col_block = geom.n_cols, slab_block = max(vol_shape[1], vol_shape[2]))
+         col_block = geom.n_cols, slab_block = max(vol_shape[1], vol_shape[2]), tile = 16)
     end
     unrolled = view_batch === 1
     pplan = pcct_plan(ws; view_batch = (unrolled || !loop) ? 0 : batching.spectral, view_chunks = (unrolled || loop) ? 1 : cld(n_view, batching.spectral), T)
     bt = nothing            # the PCCT workspace folds the centre-pixel bowtie into W (no per-pixel spectral bowtie)
     G, I0g = combine_matrix(Vector{Float64}(ws.I0_bins), groups, T)
-    fplan = fbp_plan(geom, recon_opts.matrix_size; filter, cutoff, T)
     return PCCTPipeline{T, typeof(pplan), typeof(fplan)}(
         geom, vol_shape, size(ws.μ_table, 1), phantom.extent, pplan, bt, G, I0g, groups, fplan,
         recon_opts.matrix_size, batching, unrolled, loop)
@@ -123,7 +124,7 @@ end
 function _fdk_channels(sino::AbstractArray{<:Any, 4}, pipe::PCCTPipeline{T}) where {T}
     fplan = _fbp_on_device(pipe.fbp, sino)
     vb = pipe.unrolled ? 1 : pipe.batching.fdk
-    vols = [fdk(sino[:, :, :, g], fplan; view_batch = vb, loop = pipe.loop) for g in 1:size(sino, 4)]
+    vols = [fdk(sino[:, :, :, g], fplan; view_batch = vb, loop = pipe.loop, dense = pipe.batching.dense, tile = pipe.batching.tile) for g in 1:size(sino, 4)]
     return _cat_new_axis(vols)
 end
 

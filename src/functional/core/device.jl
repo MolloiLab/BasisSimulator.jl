@@ -122,3 +122,17 @@ Element type conversion (integer index arrays → the plan's float type) in the
 array world of `x`: `T.(x)` on the host, a StableHLO convert under Reactant.
 """
 _to_float(::Type{T}, x::AbstractArray) where {T} = T.(x)
+
+"""
+    _bmm_fdk(wr, fw) -> G
+
+FDK row contraction: `G[vox, k, b] = Σ_row wr[vox, row, b] · fw[k, row, b]`.
+"""
+function _bmm_fdk(wr::AbstractArray{<:Any, 3}, fw::AbstractArray{<:Any, 3})
+    N, n_row, B = size(wr); w = size(fw, 1)
+    G = similar(wr, N, w, B)
+    for b in 1:B
+        G[:, :, b] = wr[:, :, b] * transpose(fw[:, :, b])
+    end
+    return G
+end

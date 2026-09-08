@@ -85,8 +85,9 @@ function vmi_forward(fractions::AbstractArray{<:Any, 4}, vp::VMIPipeline{T}, noi
     # like the notebooks' quality-flagged rays; the FDK would otherwise spread one NaN everywhere
     finite0(x) = (y = _plain(x); ifelse.(isfinite.(y), y, zero(T)))
     lp = vp.pipes[1].loop
-    fbp_iodine = s -> fdk(finite0(s), _fbp_on_device(vp.fbp_iodine, s); view_batch = vb_I, loop = lp)
-    fbp_water = s -> fdk(finite0(s), _fbp_on_device(vp.fbp_water, s); view_batch = vb_I, loop = lp)
+    dn, tl = vp.pipes[1].batching.dense, vp.pipes[1].batching.tile
+    fbp_iodine = s -> fdk(finite0(s), _fbp_on_device(vp.fbp_iodine, s); view_batch = vb_I, loop = lp, dense = dn, tile = tl)
+    fbp_water = s -> fdk(finite0(s), _fbp_on_device(vp.fbp_water, s); view_batch = vb_I, loop = lp, dense = dn, tile = tl)
     acnr = vp.acnr === nothing ? nothing : ((W, I) -> (r = acnr_kalender(W, I, vp.acnr); (; water = r[1], iodine = r[2])))
     synth = (W, I, es) -> nchannel_synth_vmi(W, I, _on_device(vp.alphas, W), T)
     c = nchannel_vmi_chain(h, vp.nchannel; fbp_iodine, fbp_water, acnr, synth, energies = vp.energies)

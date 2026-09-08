@@ -82,7 +82,8 @@ DD gather chain `n_col·n_row·n_long·(6 + n_mat)`, spectral sum
 set by the budget, not by the scan (any number of views, any phantom grid).
 """
 function _auto_batching(sino_shape::NTuple{3, Int}, vol_shape::NTuple{3, Int}, n_E::Int, n_mat::Int,
-        recon_shape::NTuple{3, Int}, budget_mb::Real; projector::Symbol = :dense, geom = nothing, volume_extent = nothing)
+        recon_shape::NTuple{3, Int}, budget_mb::Real; projector::Symbol = :dense, geom = nothing, volume_extent = nothing,
+        tile::Int = 16, fdk_window::Int = sino_shape[1])
     n_col, n_row, n_view = sino_shape
     n_long = max(vol_shape[1], vol_shape[2]); n_t = n_long; nzv = vol_shape[3]
     nx, ny, nz = recon_shape
@@ -109,8 +110,10 @@ function _auto_batching(sino_shape::NTuple{3, Int}, vol_shape::NTuple{3, Int}, n
             "(16 columns × 8 slabs) exceed batch_budget_mb = $budget_mb; raise batch_budget_mb — there is no silent fallback"))
     end
     dd = dense ? Int(clamp(bytes ÷ view_bytes, 1, n_view)) : per_view(n_col * n_row * n_long * (6 + n_mat))
-    return (dd = dd, spectral = per_view(n_col * n_row * n_E * 3), fdk = per_view(nx * ny * nz * 10), dense = dense,
-            col_block = col_block, slab_block = slab_block)
+    # dense FDK: per view, one tile's (w + n_row) dense weights, the window contraction and ~16 geometry arrays
+    fdk_bytes = dense ? tile^2 * nz * (3 * fdk_window + n_row + 16) * 4 : nx * ny * nz * 10 * 4
+    return (dd = dd, spectral = per_view(n_col * n_row * n_E * 3), fdk = Int(clamp(bytes ÷ fdk_bytes, 1, n_view)), dense = dense,
+            col_block = col_block, slab_block = slab_block, tile = tile)
 end
 
 function _eict_on_device(p::EICTPlan{T}, ref) where {T}

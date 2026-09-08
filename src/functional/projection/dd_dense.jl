@@ -263,8 +263,8 @@ function dd_project_dense_windowed_run(vol::AbstractArray{<:Any, 4}, p::DDRunPla
 end
 
 # stack the per-view (transverse window × slab block) of V: Vw[:, :, :, b] = V[s_b : s_b+w-1, :, l0 : l0+blen-1]
-function _window_stack2(V, st, row::Int, w::Int, l0, blen::Int, B::Int)
+function _window_stack2(V, st, row, w::Int, l0, blen::Int, B::Int)
     parts = [reshape(_dslice_at(V, (_scalar_start(st, row, b), 1, l0), (w, size(V, 2), blen)), w, size(V, 2), blen, 1) for b in 1:B]
     return reduce((a, b) -> cat(a, b; dims = 4), parts)
 end
-_scalar_start(st, j::Int, b::Int) = Int(st[j, b])            # host; the extension returns a traced integer
+_scalar_start(st, j, b::Int) = Int(st[j, b])                 # host (j :: Int); the extension returns a traced integer

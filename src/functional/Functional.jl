@@ -24,7 +24,8 @@ Layout (one folder per part of the chain; files are included in this order):
                                     air normalisation, −log, water BHC) + hand VJPs
                      pcct.jl        photon-counting chain (spectral bins, DRM/LUT weights, Poisson counts and
                                     surrogate, pile-up, bin combine) + hand VJPs
-    reconstruction/  fbp.jl         FDK (cosine weights, ramp filter, looped backprojection, FOV mask)
+    reconstruction/  fbp.jl         FDK (cosine weights, ramp filter, backprojection, FOV mask)
+                     fbp_dense.jl   the FDK backprojection as dense windowed contractions (the fast path: a contraction's reverse is a contraction)
                      hir.jl         OS-PWLS hybrid iterative reconstruction (operators passed in)
                      denoising.jl   ACNR (Kalender), sinogram SVD-bilateral, median-z, SF-JSD
                      vmi/           virtual monoenergetic imaging = material decomposition + synthesis
@@ -58,6 +59,7 @@ include("detector/eict.jl")
 include("detector/pcct.jl")
 include("source/spectrum.jl")
 include("reconstruction/fbp.jl")
+include("reconstruction/fbp_dense.jl")
 include("reconstruction/hir.jl")
 include("reconstruction/denoising.jl")
 include("reconstruction/vmi/cong_cmv.jl")

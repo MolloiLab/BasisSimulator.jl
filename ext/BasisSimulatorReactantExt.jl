@@ -102,7 +102,11 @@ function BSF._bmm_tb(Wx::_AnyTraced, Vw::_AnyTraced)
     r = Reactant.Ops.dot_general(Wxm, Vm; contracting_dimensions = ([2], [1]), batching_dimensions = ([3, 4], [3, 4]))
     return permutedims(r, (3, 4, 1, 2))                       # (n_long, B, n_cols, K) → (n_cols, K, n_long, B)
 end
-BSF._scalar_start(st::_AnyTraced, j::Int, b::Int) = _mat(st)[j, b]     # TracedRNumber{Int32}
+BSF._scalar_start(st::_AnyTraced, j, b::Int) = _mat(BSF._dslice_at(st, (j, b), (1, 1)))[1, 1]     # TracedRNumber{Int32}; j may be traced
+function BSF._bmm_fdk(wr::_AnyTraced, fw::_AnyTraced)
+    r = Reactant.Ops.dot_general(_mat(wr), _mat(fw); contracting_dimensions = ([2], [2]), batching_dimensions = ([3], [3]))
+    return permutedims(r, (2, 3, 1))                          # (B, N, w) → (N, w, B)
+end
 function BSF._bmm_zl(Wz::_AnyTraced, A::_AnyTraced)
     Wzm = _mat(Wz); Am = _mat(A)                             # (n_cols,n_rows,nz,n_long,B), (n_cols,nz,M,n_long,B)
     r = Reactant.Ops.dot_general(Wzm, Am; contracting_dimensions = ([3, 4], [2, 4]), batching_dimensions = ([1, 5], [1, 5]))
