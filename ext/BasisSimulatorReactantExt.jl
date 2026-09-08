@@ -26,4 +26,11 @@ const BSF = BasisSimulator.Functional
 BSF._on_device(x::AbstractArray, ::Reactant.TracedRArray) = Reactant.Ops.constant(Array(x))
 BSF._on_device(x::AbstractArray, ::Reactant.TracedRNumber) = Reactant.Ops.constant(Array(x))
 
+# In-graph index vectors for the projector: with the plain-array fallback (`collect(T, 1:n)`) every
+# geometry/index tensor derived from them is evaluated on the HOST and embedded in the module as a
+# literal constant (megabytes per view; trace time then scales with detector columns × slabs).
+# An `Ops.iota` makes all of that in-graph arithmetic instead.
+BSF._iota(::Reactant.TracedRArray, ::Type{T}, n::Integer) where {T} =
+    Reactant.Ops.iota(T, [Int(n)]; iota_dimension = 1) .+ one(T)
+
 end # module
