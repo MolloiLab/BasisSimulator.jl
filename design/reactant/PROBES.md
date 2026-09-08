@@ -100,3 +100,25 @@ Two lessons from getting this to run:
 | Cong VMI (`smoke_vmi`) | 1.2e-13 (F64) | unrolled solver = IFT VJP 6.1e-14, vs FD 2.3e-9 |
 | n-channel estimator (`smoke_nchannel`) | 2.7e-15 (F64), 1.3e-6 (F32) | vs FD 1.7e-11 directional, ≤3.6e-9 per entry |
 | End-to-end pipeline (`smoke_pipeline`) | 3.3e-6 (F32) | vs FD 1.6e-11 |
+
+## 7. Compiled view loops (M5): toy pipeline under Reactant/Enzyme
+
+Toy fixture (`test/functional/reactant/smoke_view_batch.jl` geometry: 32 cols × 4 rows, 8 views,
+16³×2 Gammex, 15 materials), `view_batch = 1` → every stage runs a StableHLO `while` loop over
+one view per iteration (DD runs of 2 views, spectral sum, FDK). `design/reactant/probes` staged
+timing, XLA CPU, Julia 1.12.7, Reactant 0.2.285:
+
+| stage compiled | compile | note |
+|---|---|---|
+| DD path lengths (looped) | 554 s | 15 channels share one index computation per batch |
+| DD + EICT chain (looped spectral sum) | 400 s | |
+| full forward (DD + chain + looped FDK) | 346 s | forward vs host looped path: max 2.1e-2 HU |
+| Enzyme reverse of the full forward | 297 s | gradient runs through all three while loops |
+
+Compile time no longer depends on the number of views (the body is traced once); it is set by
+the batch size and the number of runs. Tracer rules learned here: loop bodies may only read
+traced arrays that are loop arguments (carried in the state tuple), never closure captures; wrapper
+arrays (`reshape`/`dropdims` of traced arrays) must be materialized before `dynamic_*_slice`;
+the tap accumulator must be a tuple (a `Vector{Any}` of traced arrays turns the final
+`sum(; dims)` into a dynamic call that recurses in `mapreducedim!`); a variable assigned inside
+the loop closure and elsewhere in the enclosing scope is boxed and hides the traced index.
