@@ -135,3 +135,37 @@ end
         detector_rows = 8, detector_cols = 64, detector_row_size = 1.0, detector_col_size = 1.0), protocol,
         BS.SimOptions(; use_noise = false), recon_opts)
 end
+
+@testset "Functional.vmi_pipeline — dual-kVp n-channel VMI behind the five structs" begin
+    # 240 × 1 mm cells at isocentre cover ±12 cm: the 20 cm FOV is NOT truncated (truncation, not
+    # units, is what turns a water body into several g/cm³ after the FDK)
+    scanner = BS.EICTScanner(source_to_isocenter = 540.0, source_to_detector = 1080.0,
+        detector_rows = 4, detector_cols = 240, detector_row_size = 1.0, detector_col_size = 1.0,
+        detector_material = :lumex, detector_depth = 3.0, electronic_noise = 0.0, detection_gain = 10.0)
+    protocols = [BS.CTProtocol(mA = 300.0, kVp = 80.0, views = 24, rotation_time = 0.5),
+                 BS.CTProtocol(mA = 150.0, kVp = 140.0, views = 24, rotation_time = 0.5)]
+    sim_opts = BS.SimOptions(; use_noise = false, use_scatter = false, use_lag = false, use_focal_spot = false, use_optical_crosstalk = false)
+    recon_opts = BS.ReconOptions(matrix_size = (24, 24, 2), fov_cm = 20.0)
+    phantom = BS.compact_materials(BS.create_gammex_472(n_voxels = 24, n_slices = 2, fov_cm = 20.0, z_cm = 1.0))
+    vp = BSF.vmi_pipeline(phantom, scanner, protocols, sim_opts, recon_opts; energies = [50.0, 70.0, 100.0])
+    @test length(vp.pipes) == 2 && all(p -> p.eict.bhc_coeffs === nothing, vp.pipes)     # no BHC before the estimator
+    @test vp.nchannel.K == 2 && vp.nchannel.per_ray && length(vp.alphas) == 3
+    @test length(vp.pipes[1].eict.energies) == length(vp.pipes[1].eict.wη)
+    fr = BSF.onehot_fractions(phantom.mask, vp.pipes[1].n_mat)
+    out = BSF.vmi_forward(fr, vp)
+    @test size(out.h) == (240, 4, 24, 2) && size(out.vmis) == (24, 24, 2, 3)
+    @test all(isfinite, out.vmis)
+    # the chain is pure and deterministic
+    @test BSF.vmi_forward(fr, vp).vmis == out.vmis
+    # water body voxels are near 0 HU at every energy (loose: toy grid, 24 views)
+    body_label = argmax(l -> count(==(UInt8(l)), phantom.mask), 0:length(phantom.materials) - 1)   # the body: most voxels
+    @test occursin("water", lowercase(phantom.materials[body_label + 1].name))
+    inner = [hypot(i - 12.5, j - 12.5) < 5 for i in 1:24, j in 1:24, k in 1:2] .& (phantom.mask .== UInt8(body_label))
+    @test count(inner) > 0
+    @test 0.7 < median(out.vol_water[inner]) < 1.3                                  # water basis ≈ 1 g/cm³ in the body
+    @test abs(median(out.vol_iodine[inner])) < 0.01                                 # no iodine in the water body
+    for e in 1:3
+        @test abs(median(out.vmis[:, :, :, e][inner])) < 300                      # water body near 0 HU (toy grid, 24 views)
+    end
+    @test_throws ArgumentError BSF.vmi_pipeline(phantom, scanner, protocols[1:1], sim_opts, recon_opts)
+end

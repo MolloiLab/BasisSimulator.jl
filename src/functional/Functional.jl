@@ -57,5 +57,6 @@ include("vmi.jl")
 include("nchannel.jl")
 # End-to-end pipelines behind the five-struct API
 include("pipeline.jl")
+include("vmi_pipeline.jl")
 
 end # module Functional

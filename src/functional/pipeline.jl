@@ -300,7 +300,7 @@ function _eict_on_device(p::EICTPlan{T}, ref) where {T}
     bc = _on_device(p.bhc_coeffs, ref)
     return EICTPlan{T, typeof(μ), typeof(w), typeof(b), typeof(a), typeof(p.ff_log), typeof(hc), typeof(hr), typeof(bc)}(
         μ, w, b, a, p.I0, p.σ_e, p.use_noise, p.use_enoise, p.ff_log, hc, hr, p.scatter_C, p.scatter_sw,
-        bc, p.eps, p.sino_shape)
+        bc, p.eps, p.sino_shape, p.energies)
 end
 
 _fbp_on_device(p::FBPPlan, ref) = FBPPlan(p; tensors = map(x -> _on_device(x, ref), p.tensors))

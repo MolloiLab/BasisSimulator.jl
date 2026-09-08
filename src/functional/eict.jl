@@ -444,12 +444,13 @@ struct EICTPlan{T <: AbstractFloat, MT, VT, BT, AR, FF, HC, HR, BC}
     bhc_coeffs::BC
     eps::T
     sino_shape::NTuple{3, Int}
+    energies::Vector{Float64}       # the spectral grid of `wη` / `μ_tbl` columns (keV)
 end
 
 """
     EICTPlan(; μ_tbl, wη, sino_shape, I0, bt=nothing, air_ref=nothing, σ_e=0,
              use_noise=false, ff_log=nothing, scatter_Hc=nothing, scatter_Hr=nothing,
-             scatter_C=0, scatter_sw=0, bhc_coeffs=nothing, eps=1e-10,
+             scatter_C=0, scatter_sw=0, bhc_coeffs=nothing, eps=1e-10, energies=Float64[],
              eltype=_scalar_type(μ_tbl))
 
 Keyword constructor for hand-built plans (tests, toy problems, Reactant smokes).
@@ -461,14 +462,18 @@ function EICTPlan(;
         bt = nothing, air_ref = nothing, σ_e::Real = 0, use_noise::Bool = false,
         ff_log::Union{Nothing, Real} = nothing, scatter_Hc = nothing, scatter_Hr = nothing,
         scatter_C::Real = 0, scatter_sw::Real = 0, bhc_coeffs = nothing, eps::Real = 1.0e-10,
+        energies::AbstractVector{<:Real} = Float64[],
         eltype::Type{T} = _scalar_type(μ_tbl),
     ) where {T <: AbstractFloat}
     σ = T(σ_e)
     ff = ff_log === nothing ? nothing : T(ff_log)
+    isempty(energies) || length(energies) == length(wη) ||
+        throw(ArgumentError("EICTPlan: energies has $(length(energies)) entries but wη has $(length(wη))"))
     return EICTPlan{T, typeof(μ_tbl), typeof(wη), typeof(bt), typeof(air_ref), typeof(ff),
         typeof(scatter_Hc), typeof(scatter_Hr), typeof(bhc_coeffs)}(
         μ_tbl, wη, bt, air_ref, T(I0), σ, use_noise, use_noise && σ > zero(T),
-        ff, scatter_Hc, scatter_Hr, T(scatter_C), T(scatter_sw), bhc_coeffs, T(eps), sino_shape)
+        ff, scatter_Hc, scatter_Hr, T(scatter_C), T(scatter_sw), bhc_coeffs, T(eps), sino_shape,
+        Vector{Float64}(energies))
 end
 
 """
@@ -538,7 +543,7 @@ function eict_plan(ws::BS.EICTWorkspace{T}, protocol::BS.CTProtocol, sim_opts::B
 
     return EICTPlan(; μ_tbl, wη, sino_shape = (n_col, n_row, n_view), I0, bt, air_ref, σ_e,
         use_noise = sim_opts.use_noise, ff_log, scatter_Hc = Hc, scatter_Hr = Hr,
-        scatter_C = C, scatter_sw = sw, bhc_coeffs = bhc_coeff_matrix(T, bhc), eltype = T)
+        scatter_C = C, scatter_sw = sw, bhc_coeffs = bhc_coeff_matrix(T, bhc), energies = Float64.(ws.energies), eltype = T)
 end
 
 # Host-level selection of the STEP 3 variant (mirrors driver.jl:522-578).

@@ -71,9 +71,16 @@ BSF._zeros(::_AnyTraced, ::Type{T}, dims::Dims) where {T} =
 # table on every call). A single full pipeline exceeds it once every stage loops over views.
 # Replaced at load time by a monotonic per-name counter (no cap, O(1) per call); names stay
 # unique, so the emitted MLIR is unchanged.
+# Counters are PER MODULE (reset whenever a new module is being built): the entry function of
+# every compile keeps its plain name, exactly as Reactant's own symbol-table probe would give it.
 const _UNIQUE_NAME_COUNTERS = Dict{String, Int}()
+const _UNIQUE_NAME_MODULE = Ref{Any}(nothing)
 function __init__()
     @eval Reactant.TracedUtils function __lookup_unique_name_in_module(mod, name)
+        if $_UNIQUE_NAME_MODULE[] !== mod
+            empty!($_UNIQUE_NAME_COUNTERS)
+            $_UNIQUE_NAME_MODULE[] = mod
+        end
         i = get($_UNIQUE_NAME_COUNTERS, name, 0)
         $_UNIQUE_NAME_COUNTERS[name] = i + 1
         return i == 0 ? name : name * "_" * string(i)
