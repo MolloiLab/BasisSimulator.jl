@@ -9,7 +9,7 @@ port; the legacy `apply_cong!` in `src/reconstruction/vmi/cong.jl` is a
 different (water-first univariate) estimator and is NOT what the published
 results use.
 
-Pure port: `src/functional/nchannel.jl`.  Oracle test:
+Pure port: `src/functional/reconstruction/vmi/nchannel.jl`.  Oracle test:
 `test/functional/test_nchannel.jl` (runs the ORIGINAL notebook cells, extracted
 verbatim by cell UUID with `include_string`, side by side).
 
@@ -154,7 +154,7 @@ Only in the TABLES, never in the algorithm:
   array parameters are unconstrained `<: AbstractArray` so
   `Reactant.to_rarray(plan)` can rebuild them with traced fields.
 
-## 7. API of `src/functional/nchannel.jl`
+## 7. API of `src/functional/reconstruction/vmi/nchannel.jl`
 
 | Function | Role |
 |---|---|

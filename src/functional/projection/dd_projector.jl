@@ -64,13 +64,7 @@ struct DDViewPlan{T <: AbstractFloat}
     KX::Int; KZ::Int; KXT::Int; KZT::Int
 end
 
-# -----------------------------------------------------------------------------
-# Index vectors.  Default: host constants.  A backend extension may override
-# `_iota(ref::TracedRArray, ...)` to emit an in-graph iota so that every
-# geometry array downstream is computed inside the compiled program rather than
-# embedded as a literal.
-# -----------------------------------------------------------------------------
-_iota(::AbstractArray, ::Type{T}, n::Integer) where {T} = collect(T, 1:n)
+# Index vectors come from `_iota` (core/device.jl): host constants, or an in-graph iota under Reactant.
 
 # -----------------------------------------------------------------------------
 # Per-view scalar constants in precision `S`, converted exactly as the legacy

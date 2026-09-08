@@ -1,35 +1,44 @@
 """
     BasisSimulator.Functional
 
-Pure, mutation-free, array-generic tensor-program core of BasisSimulator.
+Pure, mutation-free, array-generic tensor-program core of BasisSimulator, laid
+out along the imaging chain.  Every stage is a *function of tensors*: no in-place
+mutation, no scalar indexing in the per-view kernels, no data-dependent loops;
+index arithmetic is broadcast and memory access is a static-tap gather, so the
+same source runs on plain `Array`s and traces under `Reactant.@compile` into one
+XLA program that `Enzyme` differentiates end to end.  The legacy kernels in
+`src/projection/`, `src/reconstruction/`, … remain the numerical **oracle**:
+every stage ships with a parity test (`test/functional/`).
 
-Every stage in this module is a *function of tensors*: no in-place mutation of
-inputs, no scalar indexing inside the per-view kernels, no data-dependent loops.
-Index arithmetic is broadcast (`floor.`, `clamp.`, `ifelse.`) and memory access
-is a gather (`vec(A)[idx]`) with a *static* number of taps derived from the
-geometry on the host, so the same source runs on plain `Array`s, on GPU arrays
-via broadcasting, and — the point — traces under `Reactant.@compile` into one
-XLA program that `Enzyme` differentiates end to end.
+Layout (one folder per part of the chain; files are included in this order):
 
-The legacy AcceleratedKernels kernels in `src/projection/`, `src/reconstruction/`
-etc. remain the numerical **oracle**: each functional stage ships with a parity
-test against them (see `test/functional/`) so the physics is provably unchanged.
+    core/            loop.jl        compiled view loops (`_batched_loop`, `_dslice`, `_dupdate`, `_zeros`)
+                     resample.jl    overlap / gather / window helpers shared by the projector and FDK
+                     device.jl      backend hooks (`_iota`, `_on_device`, plan lifting)
+    source/          spectrum.jl    applied-spectrum tables of a plan (I0 · w(E) · η(E) · bowtie): the
+                                    per-channel Φ that the n-channel decomposition (reconstruction/vmi) consumes
+    projection/      dd_projector.jl  distance-driven forward projector + exact transpose (per view)
+                     dd_runs.jl       view runs: batched + compiled-loop projection, ordered subsets, HIR operators
+    detector/        eict.jl        energy-integrating chain (spectral sum, fill factor, scatter, noise,
+                                    air normalisation, −log, water BHC) + hand VJPs
+                     pcct.jl        photon-counting chain (spectral bins, DRM/LUT weights, Poisson counts and
+                                    surrogate, pile-up, bin combine) + hand VJPs
+    reconstruction/  fbp.jl         FDK (cosine weights, ramp filter, looped backprojection, FOV mask)
+                     hir.jl         OS-PWLS hybrid iterative reconstruction (operators passed in)
+                     denoising.jl   ACNR (Kalender), sinogram SVD-bilateral, median-z, SF-JSD
+                     vmi/           virtual monoenergetic imaging = material decomposition + synthesis
+                       nchannel.jl    THE decomposition path: the published n-channel profiled-likelihood
+                                      estimator, T-LBF, angular apodization, per-basis FDK, synthesis
+                       cong_cmv.jl    projection-domain two-material alternatives (Cong, CMV), for comparison
+    pipelines/       common.jl      fractions → path lengths, memory-budget batching, plan lifting
+                     eict.jl        `eict_pipeline` / `eict_forward`  (five structs → HU)
+                     pcct.jl        `pcct_pipeline` / `pcct_forward`  (five structs → per-channel μ)
+                     vmi.jl         `vmi_pipeline` / `vmi_forward`    (five structs, K protocols → VMI stack)
+                     api.jl         `pipeline(phantom, scanner, …)` / `forward(fractions, pipe)` dispatch
 
-Nothing is exported; call `BasisSimulator.Functional.f` (alias `BSF` in tests).
-
-Stages present (see design/reactant/README.md for the plan and status board):
-  * `dd_view_plan`, `dd_project_view`, `dd_transpose_view`, `dd_project`,
-    `dd_transpose` — distance-driven (DD3) mono forward projector and its exact
-    transpose as static-tap box-overlap resampling (`dd_projector.jl`).
-  * `fbp_plan`, `filter_views`, `backproject`, `fov_mask`, `fdk` — FBP/FDK (`fbp.jl`).
-  * `EICTPlan`/`eict_plan`, `poly_log_sinogram`, `eict_noise`, `bhc_apply`,
-    `eict_chain` (+ hand-derived VJPs) — energy-integrating detector chain (`eict.jl`).
-  * `PCCTPlan`/`pcct_plan`, `spectral_bin_intensities`, `pcct_chain` — photon-counting
-    chain (`pcct.jl`).
-  * `HIRPlan`/`hir_plan`, `huber_gradient`, `hir_reconstruct` — OS-PWLS hybrid IR (`hir.jl`).
-  * `sino_svd_denoise_bilateral`, `acnr_kalender`, `median_z`, `sfjsd_denoise` (`denoise.jl`).
-  * `cong_decompose`, `cmv_decompose`, `synth_vmi_2basis` — projection-domain VMI (`vmi.jl`).
-  * `nchannel_*` — the published n-channel profiled-likelihood estimator (`nchannel.jl`).
+Nothing is exported; call `BasisSimulator.Functional.f` (alias `BSF` in tests and
+notebooks).  Plan and status board: `design/reactant/README.md`; how to run:
+`design/reactant/HOWTO.md`.
 """
 module Functional
 
@@ -38,25 +47,23 @@ import ..BasisSimulator as BS
 using LinearAlgebra: LinearAlgebra
 using Random: Random
 
-# Operators
-include("loop.jl")
-include("resample.jl")
-include("dd_projector.jl")
-include("dd_run.jl")
-include("fbp.jl")
-# Detector physics chains (per-material path lengths → log sinograms)
-include("eict.jl")
-include("pcct.jl")
-# Reconstruction
-include("hir.jl")
-# Denoising / ACNR
-include("denoise.jl")
-# Projection-domain VMI (Cong, CMV, synthesis)
-include("vmi.jl")
-# The published n-channel profiled-likelihood VMI estimator (ported from the notebooks)
-include("nchannel.jl")
-# End-to-end pipelines behind the five-struct API
-include("pipeline.jl")
-include("vmi_pipeline.jl")
+include("core/loop.jl")
+include("core/resample.jl")
+include("core/device.jl")
+include("projection/dd_projector.jl")
+include("projection/dd_runs.jl")
+include("detector/eict.jl")
+include("detector/pcct.jl")
+include("source/spectrum.jl")
+include("reconstruction/fbp.jl")
+include("reconstruction/hir.jl")
+include("reconstruction/denoising.jl")
+include("reconstruction/vmi/cong_cmv.jl")
+include("reconstruction/vmi/nchannel.jl")
+include("pipelines/common.jl")
+include("pipelines/eict.jl")
+include("pipelines/pcct.jl")
+include("pipelines/vmi.jl")
+include("pipelines/api.jl")
 
 end # module Functional

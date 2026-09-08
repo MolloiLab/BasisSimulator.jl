@@ -2,7 +2,7 @@
 #
 #   julia --project=envs/reactant -t 2 test/functional/reactant/smoke_denoise.jl
 #
-# Compiles each denoiser in src/functional/denoise.jl on a toy size and gates:
+# Compiles each denoiser in src/functional/reconstruction/denoising.jl on a toy size and gates:
 #   • compiled == plain-Array to ≤ 1e-5 rel of max|ref| (Float32 for every
 #     stage; Float64 additionally for the SVD-bilateral stage);
 #   • `Enzyme.gradient(Reverse, …)` of a scalar loss of the SVD-bilateral

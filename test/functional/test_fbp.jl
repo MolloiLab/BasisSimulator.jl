@@ -18,7 +18,7 @@ if !(isdefined(BasisSimulator, :Functional) && isdefined(BasisSimulator.Function
     @eval module FStageFBP
         using BasisSimulator, LinearAlgebra, Statistics
         const BS = BasisSimulator
-        include(joinpath(@__DIR__, "..", "..", "src", "functional", "fbp.jl"))
+        include(joinpath(@__DIR__, "..", "..", "src", "functional", "reconstruction", "fbp.jl"))
     end
 end
 const F = (isdefined(BasisSimulator, :Functional) && isdefined(BasisSimulator.Functional, :fbp_plan)) ?

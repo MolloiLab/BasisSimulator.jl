@@ -1,5 +1,5 @@
 # =============================================================================
-# Oracle tests for the functional denoisers (src/functional/denoise.jl).
+# Oracle tests for the functional denoisers (src/functional/reconstruction/denoising.jl).
 #
 # Standalone:   julia --project=. -t 2 test/functional/test_denoise.jl
 # From runtests: the file is self-contained (it builds its own `FStage` module).
@@ -25,7 +25,7 @@ const BS = BasisSimulator
 module FStage
 using BasisSimulator, LinearAlgebra, Statistics, FFTW
 const BS = BasisSimulator
-include(joinpath(@__DIR__, "..", "..", "src", "functional", "denoise.jl"))
+include(joinpath(@__DIR__, "..", "..", "src", "functional", "reconstruction", "denoising.jl"))
 end
 
 # quiet the legacy @info chatter

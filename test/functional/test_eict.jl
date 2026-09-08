@@ -1,4 +1,4 @@
-# Standalone acceptance tests for src/functional/eict.jl (the pure EICT chain).
+# Standalone acceptance tests for src/functional/detector/eict.jl (the pure EICT chain).
 # Run:  julia --project=. -t 2 test/functional/test_eict.jl
 #
 # Oracles: BS.dd_fast_fused_poly_project! (spectral conversion),
@@ -11,7 +11,7 @@ const BS = BasisSimulator
 module FStage
     using BasisSimulator, LinearAlgebra, Statistics
     const BS = BasisSimulator
-    include(joinpath(@__DIR__, "..", "..", "src", "functional", "eict.jl"))
+    include(joinpath(@__DIR__, "..", "..", "src", "functional", "detector", "eict.jl"))
 end
 const F = FStage
 

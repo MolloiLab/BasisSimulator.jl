@@ -33,7 +33,7 @@ BSF._on_device(x::AbstractArray, ::Reactant.TracedRNumber) = Reactant.Ops.consta
 BSF._iota(::Reactant.TracedRArray, ::Type{T}, n::Integer) where {T} =
     Reactant.Ops.iota(T, [Int(n)]; iota_dimension = 1) .+ one(T)
 
-# Batched-loop hooks (see src/functional/loop.jl): a StableHLO while loop over view batches
+# Batched-loop hooks (see src/functional/core/loop.jl): a StableHLO while loop over view batches
 # with dynamic slices, so the compiled program does not grow with the number of views.
 # `track_numbers = false`: host integers in the body (batch sizes, static shapes) must stay
 # host integers; only the loop index is traced.
@@ -65,6 +65,7 @@ function BSF._dupdate(x::_AnyTraced, chunk, start, dim::Int)
 end
 BSF._zeros(::_AnyTraced, ::Type{T}, dims::Dims) where {T} =
     Reactant.Ops.fill(zero(T), collect(Int, dims))
+BSF._plain(x::_AnyTraced) = _mat(x)
 
 # Reactant 0.2.28x caps the number of same-named elementwise helper functions per module at
 # 10 000 (`__lookup_unique_name_in_module` probes name, name_1, … against a freshly built symbol

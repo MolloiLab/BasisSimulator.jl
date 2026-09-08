@@ -1,4 +1,4 @@
-# Standalone contract tests for the functional HIR stage (src/functional/hir.jl)
+# Standalone contract tests for the functional HIR stage (src/functional/reconstruction/hir.jl)
 # against the legacy `reconstruct!(::HIRReconWorkspace)` oracle.
 #
 #   julia --project=. -t 2 test/functional/test_hir.jl
@@ -15,7 +15,7 @@ const BS = BasisSimulator
 module FStage
     using BasisSimulator, LinearAlgebra, Statistics
     const BS = BasisSimulator
-    include(joinpath(@__DIR__, "..", "..", "src", "functional", "hir.jl"))
+    include(joinpath(@__DIR__, "..", "..", "src", "functional", "reconstruction", "hir.jl"))
 end
 
 const _T0 = time()
@@ -89,7 +89,7 @@ end
 
 relmax(a, b) = maximum(abs.(a .- b)) / max(maximum(abs.(b)), eps(eltype(b)))
 
-# The FUNCTIONAL projector pair (src/functional/dd_projector.jl) wrapped with
+# The FUNCTIONAL projector pair (src/functional/projection/dd_projector.jl) wrapped with
 # the same contract: per-view plans on `work_geom`, views concatenated along
 # dim 3, transpose summed over the subset's views and restricted to the
 # circular support with the arithmetic of `dd_backproject!(circular_support =

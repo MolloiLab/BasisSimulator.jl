@@ -54,14 +54,7 @@ function vmi_pipeline(
     geom = pipes[1].geom
     all(p -> p.geom.n_angles == geom.n_angles && p.eict.sino_shape == pipes[1].eict.sino_shape, pipes) ||
         throw(ArgumentError("vmi_pipeline: every channel must share the geometry (views, detector)"))
-    n_col, n_row, _ = pipes[1].eict.sino_shape
-    Φs = map(pipes) do p
-        e = p.eict
-        isempty(e.energies) && throw(ArgumentError("vmi_pipeline: the EICT plan carries no energy grid"))
-        w = reshape(Vector{T}(e.wη), 1, 1, :)
-        b = e.bt === nothing ? ones(T, n_col, n_row, 1) : Array{T, 3}(e.bt)
-        Array{T, 3}(T(e.I0) .* w .* b)                                    # (n_col, n_row, nE_k)
-    end
+    Φs = [applied_spectrum(p.eict; T) for p in pipes]                     # per-ray (n_col, n_row, nE_k)
     Ee, Φe = nchannel_merge_channels([p.eict.energies for p in pipes], Φs)
     I0 = cat((dropdims(sum(Φ; dims = 3); dims = 3) for Φ in Φs)...; dims = 3)   # (n_col, n_row, K)
     nplan = nchannel_plan(Φe, Ee, I0; T, nchannel_kwargs...)
@@ -90,7 +83,7 @@ function vmi_forward(fractions::AbstractArray{<:Any, 4}, vp::VMIPipeline{T}, noi
     vb_I = vp.pipes[1].unrolled ? 1 : vp.pipes[1].batching.fdk
     # rays whose estimate did not converge (non-finite) carry zero basis density into the FDK,
     # like the notebooks' quality-flagged rays; the FDK would otherwise spread one NaN everywhere
-    finite0(x) = ifelse.(isfinite.(x), x, zero(T))
+    finite0(x) = (y = _plain(x); ifelse.(isfinite.(y), y, zero(T)))
     fbp_iodine = s -> fdk(finite0(s), _fbp_on_device(vp.fbp_iodine, s); view_batch = vb_I)
     fbp_water = s -> fdk(finite0(s), _fbp_on_device(vp.fbp_water, s); view_batch = vb_I)
     acnr = vp.acnr === nothing ? nothing : ((W, I) -> (r = acnr_kalender(W, I, vp.acnr); (; water = r[1], iodine = r[2])))

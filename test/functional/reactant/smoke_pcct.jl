@@ -62,7 +62,7 @@ _ts("start")
 
         # Config tensors (plan, combine matrix, bowtie) become traced INPUTS of
         # the compiled program — no host Array may meet a traced array in `*`
-        # or a broadcast (see the Reactant note in src/functional/pcct.jl).
+        # or a broadcast (see the Reactant note in src/functional/detector/pcct.jl).
         f0(Px, pl, Gx, gx) = F.pcct_chain_combined(Px, pl, Gx, gx)                 # noise-free
         f1(Px, pl, Gx, gx, Nx) = F.pcct_chain_combined(Px, pl, Gx, gx, Nx)         # input counts
         f2(Px, pl, Gx, gx, btx) = F.pcct_chain_combined(Px, pl, Gx, gx; bt = btx)  # spectral bowtie

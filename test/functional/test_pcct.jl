@@ -15,7 +15,7 @@ const BS = BasisSimulator
 module FStage
     using BasisSimulator, LinearAlgebra, Statistics, Random
     const BS = BasisSimulator
-    include(joinpath(@__DIR__, "..", "..", "src", "functional", "pcct.jl"))
+    include(joinpath(@__DIR__, "..", "..", "src", "functional", "detector", "pcct.jl"))
 end
 const F = FStage
 
