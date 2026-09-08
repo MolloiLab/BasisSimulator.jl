@@ -26,7 +26,7 @@ _ts(msg) = println("[test_pcct] +", lpad(round(time() - _t0; digits = 1), 6), " 
 # Fixtures (test/projection.jl:246-268 — 64-col, 3-material, N_E = 8, K = 8)
 # -----------------------------------------------------------------------------
 function _toy_proj_geom(; n_cols = 16, n_rows = 4, n_angles = 4, fov_cm = 5.0)
-    scanner = BS.Scanner(
+    scanner = BS.EICTScanner(
         source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_rows = n_rows, detector_cols = n_cols,
         detector_row_size = 1.0, detector_col_size = 1.0,
@@ -143,24 +143,23 @@ _unstack(A::Array{T, 4}) where {T} = [copy(A[:, :, :, b]) for b in 1:size(A, 4)]
 _maxabs(a, b) = maximum(abs.(a .- b))
 _maxrel(a, b) = maximum(abs.(a .- b) ./ max.(abs.(b), eps(eltype(b))))
 
-# test/api.jl:302-341 toy PCCT setup (CPU; `use_pcct_scatter = false` is the
+# test/api.jl:302-341 toy PCCT setup (CPU; `use_scatter = false` is the
 # scope of the functional chain — the :pcct preset would otherwise inject
 # scatter through `config.scatter` even with `use_scatter = false`).
-function _toy_pcct_setup(; use_pcct_pileup = true, kwargs...)
-    scanner = BS.Scanner(
+function _toy_pcct_setup(; pileup = true, kwargs...)
+    scanner = BS.PCCTScanner(
         source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_rows = 8, detector_cols = 64,
         detector_row_size = 1.0, detector_col_size = 1.0,
-        detector_type = :photon_counting, detector_material = :CdTe,
+        detector_material = :CdTe,
         detector_depth = 1.6, n_energy_bins = 4,
         energy_thresholds = [20.0, 35.0, 55.0, 70.0], dead_time_ns = 25.0,
+        pileup = pileup,
     )
     protocol = BS.CTProtocol(mA = 2.5, kVp = 120.0, views = 16, rotation_time = 0.5)
     sim_opts = BS.SimOptions(;
-        fidelity = :pcct,
         use_noise = false, use_scatter = false, use_lag = false,
         use_focal_spot = false, use_optical_crosstalk = false,
-        use_pcct_pileup = use_pcct_pileup, use_pcct_scatter = false,
         kwargs...
     )
     recon_opts = BS.ReconOptions(matrix_size = (32, 32, 4), fov_cm = 20.0)
@@ -168,10 +167,7 @@ function _toy_pcct_setup(; use_pcct_pileup = true, kwargs...)
     ws = BS.create_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
     return (; scanner, protocol, sim_opts, recon_opts, phantom, ws)
 end
-_noise_opts(s) = BS.SimOptions(;
-    fidelity = :pcct, use_noise = true, use_scatter = false, use_lag = false,
-    use_focal_spot = false, use_optical_crosstalk = false,
-    use_pcct_pileup = s.sim_opts.use_pcct_pileup, use_pcct_scatter = false)
+_noise_opts(s) = BS.SimOptions(; use_noise = true, use_lag = false, use_focal_spot = false, use_optical_crosstalk = false, use_scatter = false)
 
 # =============================================================================
 @testset "Functional PCCT chain" begin
@@ -198,7 +194,7 @@ _noise_opts(s) = BS.SimOptions(;
     end
 
     @testset "spectral bins + spectral bowtie ≡ legacy (arc helical, test/projection.jl:340)" begin
-        scanner_h = BS.Scanner(
+        scanner_h = BS.EICTScanner(
             source_to_isocenter = 540.0, source_to_detector = 1080.0,
             detector_rows = 4, detector_cols = 32,
             detector_row_size = 1.0, detector_col_size = 1.0,
@@ -380,7 +376,7 @@ _noise_opts(s) = BS.SimOptions(;
         # (`compute_mc_pileup_matrix`, the workspace's own routine) into the
         # mutable workspace fields — parity of the driver algebra does not
         # depend on how many trials shaped S.
-        s = _toy_pcct_setup(use_pcct_pileup = false)
+        s = _toy_pcct_setup(pileup = false)
         _ts("toy workspace built")
         ws = s.ws
         n_mat = length(s.phantom.materials)
@@ -473,9 +469,9 @@ _noise_opts(s) = BS.SimOptions(;
         @test size(S) == (4, 4)
         @test all(S[i, j] == 0 for i in 1:4 for j in (i + 1):4)   # MC S is lower-triangular
         ws.pileup_S = S
-        ws.use_pcct_pileup = true
-        so_on = BS.SimOptions(; fidelity = :pcct, use_noise = false, use_scatter = false, use_lag = false,
-            use_focal_spot = false, use_optical_crosstalk = false, use_pcct_pileup = true, use_pcct_scatter = false)
+        ws.pileup = true
+        so_on = BS.SimOptions(; use_noise = false, use_lag = false,
+            use_focal_spot = false, use_optical_crosstalk = false, use_scatter = false)
         plan_on = F.pcct_plan(ws)
         @test plan_on.pileup_St == permutedims(Float32.(LinearAlgebra.tril(S)))
 
@@ -499,8 +495,8 @@ _noise_opts(s) = BS.SimOptions(;
         # (identical to the pile-up-off noise-free bins), THEN S mixes the
         # floored counts.  The legacy draws fed to the chain must reproduce the
         # legacy bins and recorded counts deterministically.
-        so_on_n = BS.SimOptions(; fidelity = :pcct, use_noise = true, use_scatter = false, use_lag = false,
-            use_focal_spot = false, use_optical_crosstalk = false, use_pcct_pileup = true, use_pcct_scatter = false)
+        so_on_n = BS.SimOptions(; use_noise = true, use_lag = false,
+            use_focal_spot = false, use_optical_crosstalk = false, use_scatter = false)
         res_on_n = BS.simulate!(ws, s.phantom, s.protocol, so_on_n)
         bins_leg_on_n = F.stack_bins(res_on_n.pcct_sino.bins)
         raw_leg_on_n = F.stack_bins(res_on_n.raw_counts)          # S × floored counts (fractional)

@@ -35,7 +35,7 @@ function water_cylinder(nx, ny, nz; μ = 0.2f0)
     vol
 end
 function toy_geom(; n_cols, n_rows, n_angles, fov_cm)
-    scanner = BS.Scanner(source_to_isocenter = 540.0, source_to_detector = 1080.0,
+    scanner = BS.EICTScanner(source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_rows = n_rows, detector_cols = n_cols, detector_row_size = 1.0, detector_col_size = 1.0)
     BS.CTGeometry(scanner; n_angles = n_angles, fov_cm = fov_cm, z_cm = 1.0)
 end

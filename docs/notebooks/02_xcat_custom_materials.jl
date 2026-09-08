@@ -315,7 +315,7 @@ views.  Recon: 512 × 512, 35 cm FOV, FBP `:standard` filter.
 """
 
 # ╔═╡ 07000002-0000-4000-8000-000000000001
-scanner = BS.Scanner(
+scanner = BS.EICTScanner(
     source_to_isocenter = 625.6,
     source_to_detector = 1100.0,
     detector_rows = 256,
@@ -360,7 +360,7 @@ protocol = BS.CTProtocol(
 # The BHC and Hybrid-IR cells below all read `sim_opts.projector`, so changing it
 # HERE updates the whole pipeline consistently — the recon must invert the operator
 # that generated the data, or the IR system matrix won't match and convergence suffers.
-sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234, projector = :dd_fast)
+sim_opts = BS.SimOptions(seed = 1234, projector = :dd_fast)
 
 # ╔═╡ 07000005-0000-4000-8000-000000000001
 recon_opts = BS.ReconOptions(

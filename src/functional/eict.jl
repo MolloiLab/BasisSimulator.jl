@@ -138,8 +138,8 @@ function poly_log_sinogram_looped(P::_A4, μ_tbl::AbstractMatrix, wη::AbstractV
     T = _scalar_type(P)
     n_col, n_row, n_view, _ = size(P)
     out = _zeros(P, T, (n_col, n_row, n_view))
-    chunk_fn = (start, len) -> poly_log_sinogram(_dslice(P, start, len, 3), μ_tbl, wη, bt)
-    return _loop_over_batches(chunk_fn, n_view, B, out, P)
+    chunk_fn = (start, len, P, μ_tbl, wη, bt) -> poly_log_sinogram(_dslice(P, start, len, 3), μ_tbl, wη, bt)
+    return _loop_over_batches(chunk_fn, n_view, B, out, (P, μ_tbl, wη, bt), P)
 end
 
 # Spectral weight matrix (n_cells, n_E) as used in the forward sum: wη ⊗ 1 or wη·bt.

@@ -23,6 +23,7 @@ const BS = BasisSimulator
     end
     @testset "geometry/" begin
         include("geometry.jl")
+    include("scanner_split.jl")
     end
     @testset "memory lifecycle/" begin
         include("memory_lifecycle.jl")

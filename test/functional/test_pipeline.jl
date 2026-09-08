@@ -9,7 +9,7 @@ const BS = BasisSimulator
 const BSF = BasisSimulator.Functional
 
 function _pipeline_fixture(; use_noise, n_voxels = 32, n_slices = 4, views = 16)
-    scanner = BS.Scanner(
+    scanner = BS.EICTScanner(
         source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_rows = 8, detector_cols = 64,
         detector_row_size = 1.0, detector_col_size = 1.0,
@@ -18,7 +18,7 @@ function _pipeline_fixture(; use_noise, n_voxels = 32, n_slices = 4, views = 16)
     )
     protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = views, rotation_time = 0.5)
     sim_opts = BS.SimOptions(;
-        fidelity = :eict, seed = 42,
+        seed = 42,
         use_noise = use_noise, use_scatter = false,
         use_lag = false, use_focal_spot = false, use_optical_crosstalk = false,
     )
@@ -86,11 +86,11 @@ end
 end # module
 
 @testset "Functional.pipeline — view_batch reproduces the per-view forward" begin
-    scanner = BS.Scanner(source_to_isocenter = 540.0, source_to_detector = 1080.0,
+    scanner = BS.EICTScanner(source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_rows = 4, detector_cols = 32, detector_row_size = 1.0, detector_col_size = 1.0,
         detector_material = :lumex, detector_depth = 3.0, electronic_noise = 5.0, detection_gain = 10.0)
     protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 12, rotation_time = 0.5)
-    sim_opts = BS.SimOptions(; fidelity = :eict, seed = 7, use_noise = false, use_scatter = false,
+    sim_opts = BS.SimOptions(; seed = 7, use_noise = false, use_scatter = false,
         use_lag = false, use_focal_spot = false, use_optical_crosstalk = false)
     recon_opts = BS.ReconOptions(matrix_size = (16, 16, 2), fov_cm = 20.0)
     phantom = BS.compact_materials(BS.create_gammex_472(n_voxels = 16, n_slices = 2, fov_cm = 20.0, z_cm = 1.0))
@@ -108,12 +108,11 @@ end # module
 end
 
 @testset "Functional.pcct_pipeline — five structs → bins → combine → FDK, batched" begin
-    scanner = BS.Scanner(source_to_isocenter = 540.0, source_to_detector = 1080.0, detector_rows = 8, detector_cols = 64,
-        detector_row_size = 1.0, detector_col_size = 1.0, detector_type = :photon_counting, detector_material = :CdTe,
-        detector_depth = 1.6, n_energy_bins = 4, energy_thresholds = [20.0, 35.0, 55.0, 70.0], dead_time_ns = 25.0)
+    scanner = BS.PCCTScanner(source_to_isocenter = 540.0, source_to_detector = 1080.0, detector_rows = 8, detector_cols = 64,
+        detector_row_size = 1.0, detector_col_size = 1.0, detector_material = :CdTe,
+        detector_depth = 1.6, n_energy_bins = 4, energy_thresholds = [20.0, 35.0, 55.0, 70.0], dead_time_ns = 25.0, pileup = false)
     protocol = BS.CTProtocol(mA = 2.5, kVp = 120.0, views = 16, rotation_time = 0.5)
-    sim_opts = BS.SimOptions(; fidelity = :pcct, use_noise = false, use_scatter = false, use_lag = false, use_focal_spot = false,
-        use_optical_crosstalk = false, use_pcct_pileup = false, use_pcct_scatter = false)
+    sim_opts = BS.SimOptions(; use_noise = false, use_scatter = false, use_lag = false, use_focal_spot = false, use_optical_crosstalk = false)
     recon_opts = BS.ReconOptions(matrix_size = (32, 32, 4), fov_cm = 20.0)
     phantom = BS.compact_materials(BS.create_gammex_472(n_voxels = 32, fov_cm = 20.0, z_cm = 2.0))
     p1 = BSF.pcct_pipeline(phantom, scanner, protocol, sim_opts, recon_opts; view_batch = 1)
@@ -132,7 +131,7 @@ end
     sino_leg = BSF.combine_bins(bins_leg, p1.G, p1.I0_groups, p1.pcct.eps)
     vol_leg = cat((BSF.fdk(sino_leg[:, :, :, g], p1.fbp) for g in 1:4)...; dims = 4)
     @test maximum(abs.(v1 .- vol_leg)) <= 1e-4
-    @test_throws ArgumentError BSF.pcct_pipeline(phantom, BS.Scanner(source_to_isocenter = 540.0, source_to_detector = 1080.0,
+    @test_throws MethodError BSF.pcct_pipeline(phantom, BS.EICTScanner(source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_rows = 8, detector_cols = 64, detector_row_size = 1.0, detector_col_size = 1.0), protocol,
-        BS.SimOptions(; fidelity = :eict, use_noise = false), recon_opts)
+        BS.SimOptions(; use_noise = false), recon_opts)
 end

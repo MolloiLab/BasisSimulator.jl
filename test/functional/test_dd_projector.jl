@@ -15,7 +15,7 @@
 const BSF = BasisSimulator.Functional
 
 _oracle_geom(shape) = begin
-    scanner = BS.Scanner(
+    scanner = BS.EICTScanner(
         source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_rows = 7, detector_cols = 24,
         detector_row_size = 0.8, detector_col_size = 0.8,
@@ -207,7 +207,7 @@ end
 end
 
 @testset "Functional.dd — helical arc geometry with volume_extent" begin
-    scanner_h = BS.Scanner(
+    scanner_h = BS.EICTScanner(
         source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_rows = 4, detector_cols = 32,
         detector_row_size = 1.0, detector_col_size = 1.0,

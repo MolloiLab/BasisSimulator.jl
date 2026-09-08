@@ -126,7 +126,7 @@ on the same physical scanner, so both 80 and 140 kVp share this `Scanner`.
 """
 
 # ╔═╡ 030c0003-0000-4000-8000-000000000010
-scanner = BS.Scanner(
+scanner = BS.EICTScanner(
     source_to_isocenter = 625.6,
     source_to_detector = 1100.0,
 
@@ -201,7 +201,6 @@ on a 512² × 8 grid.  The same options struct is reused for both kVps.
 
 # ╔═╡ 030c0005-0000-4000-8000-000000000010
 sim_opts = BS.SimOptions(
-    fidelity = :eict,
     seed = 1234,
 );
 

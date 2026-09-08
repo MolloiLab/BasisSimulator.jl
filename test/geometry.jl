@@ -8,24 +8,23 @@
 # Scanner struct + ctor
 # -----------------------------------------------------------------------------
 @testset "Scanner — defaults + kwarg propagation" begin
-    s = BS.Scanner()  # all defaults
+    s = BS.EICTScanner()  # all defaults
     # CatSim-style defaults.
     @test s.source_to_isocenter == 540.0
     @test s.source_to_detector == 950.0
     @test s.detector_rows == 64
     @test s.detector_cols == 900
-    @test s.detector_type === :energy_integrating
-    @test s.n_energy_bins == 1
-    @test isempty(s.energy_thresholds)
-    @test s.binning_factor == 1
-    # native dexel auto-derived = pixel * (SDD/SAD) / binning.
-    mag = s.source_to_detector / s.source_to_isocenter
-    @test s.native_dexel_col_mm ≈ s.detector_col_size * mag / s.binning_factor
-    @test s.native_dexel_row_mm ≈ s.detector_row_size * mag / s.binning_factor
+    @test s isa BS.EICTScanner
+    @test s.geometry isa BS.ScannerGeometry
+    # native dexel (PCCT) auto-derived = pixel * (SDD/SAD) / binning.
+    p = BS.PCCTScanner(energy_thresholds = [20.0, 50.0])
+    mag = p.source_to_detector / p.source_to_isocenter
+    @test p.native_dexel_col_mm ≈ p.detector_col_size * mag / p.binning_factor
+    @test p.native_dexel_row_mm ≈ p.detector_row_size * mag / p.binning_factor
 end
 
 @testset "Scanner — flat-panel-style geometry kwargs" begin
-    s = BS.Scanner(
+    s = BS.EICTScanner(
         detector_rows = 512, detector_cols = 512,
         detector_row_size = 0.15, detector_col_size = 0.15,
     )
@@ -34,8 +33,8 @@ end
 end
 
 @testset "Scanner — explicit native_dexel override wins over inference" begin
-    s = BS.Scanner(
-        detector_col_size = 1.0, detector_row_size = 1.0,
+    s = BS.PCCTScanner(
+        detector_col_size = 1.0, detector_row_size = 1.0, energy_thresholds = [20.0, 50.0],
         native_dexel_col_mm = 0.4, native_dexel_row_mm = 0.4,
     )
     @test s.native_dexel_col_mm == 0.4
@@ -47,7 +46,6 @@ end
 # -----------------------------------------------------------------------------
 @testset "Scanner — PCCT validation" begin
     pcct_kwargs = (;
-        detector_type = :photon_counting,
         n_energy_bins = 4,
         energy_thresholds = [20.0, 50.0, 80.0, 110.0],
         energy_resolution = 5.0,
@@ -57,41 +55,42 @@ end
     )
 
     @testset "valid PCCT scanner constructs" begin
-        s = BS.Scanner(; pcct_kwargs...)
-        @test s.detector_type === :photon_counting
+        s = BS.PCCTScanner(; pcct_kwargs...)
+        @test s isa BS.PCCTScanner
         @test s.energy_thresholds == [20.0, 50.0, 80.0, 110.0]
         @test s.energy_resolution == 5.0
     end
 
     @testset "empty energy_thresholds errors" begin
-        @test_throws ErrorException BS.Scanner(;
+        @test_throws ErrorException BS.PCCTScanner(;
             pcct_kwargs..., energy_thresholds = Float64[], n_energy_bins = 0,
         )
     end
 
     @testset "n_energy_bins ≠ length(energy_thresholds) errors" begin
-        @test_throws ErrorException BS.Scanner(;
+        @test_throws ErrorException BS.PCCTScanner(;
             pcct_kwargs..., n_energy_bins = 3,  # but 4 thresholds supplied
         )
     end
 
     @testset "unsorted energy_thresholds errors" begin
-        @test_throws ErrorException BS.Scanner(;
+        @test_throws ErrorException BS.PCCTScanner(;
             pcct_kwargs..., energy_thresholds = [50.0, 20.0, 80.0, 110.0],
         )
     end
 
     @testset "unknown pixel_mode errors" begin
-        @test_throws ErrorException BS.Scanner(; pcct_kwargs..., pixel_mode = :nonsense)
+        @test_throws ErrorException BS.PCCTScanner(; pcct_kwargs..., pixel_mode = :nonsense)
     end
 
-    @testset "unknown detector_type errors" begin
-        @test_throws ErrorException BS.Scanner(; detector_type = :nonsense)
+    @testset "family-specific keywords are rejected by the other family" begin
+        @test_throws ArgumentError BS.EICTScanner(; pcct_kwargs...)
+        @test_throws ArgumentError BS.PCCTScanner(; pcct_kwargs..., electronic_noise = 5.0)
     end
 
     @testset "binning_factor < 1 errors" begin
-        @test_throws ErrorException BS.Scanner(; binning_factor = 0)
-        @test_throws ErrorException BS.Scanner(; binning_factor = -1)
+        @test_throws ErrorException BS.PCCTScanner(; pcct_kwargs..., binning_factor = 0)
+        @test_throws ErrorException BS.PCCTScanner(; pcct_kwargs..., binning_factor = -1)
     end
 end
 
@@ -99,7 +98,7 @@ end
 # CTGeometry ctor — derivations + shape contracts.
 # -----------------------------------------------------------------------------
 @testset "CTGeometry — defaults + overrides" begin
-    s = BS.Scanner(
+    s = BS.EICTScanner(
         source_to_isocenter = 540.0,
         source_to_detector = 1080.0,
         detector_rows = 32, detector_cols = 256,
@@ -141,7 +140,7 @@ end
     end
 
     @testset "axial cone guards cover the full reconstruction cylinder" begin
-        pcct = BS.Scanner(
+        pcct = BS.EICTScanner(
             source_to_isocenter = 610.0, source_to_detector = 1113.0,
             detector_rows = 144, detector_cols = 1195,
             detector_row_size = 0.3529559748427673,
@@ -238,7 +237,6 @@ end
 # -----------------------------------------------------------------------------
 @testset "_build_pcct_detector" begin
     pcct_kwargs = (;
-        detector_type = :photon_counting,
         n_energy_bins = 4,
         energy_thresholds = [20.0, 50.0, 80.0, 110.0],
         energy_resolution = 5.0,
@@ -248,13 +246,12 @@ end
         binning_factor = 2,
     )
 
-    @testset "EID scanner triggers @assert" begin
-        eid = BS.Scanner()  # default :energy_integrating
-        @test_throws AssertionError BS._build_pcct_detector(eid)
+    @testset "EID scanner has no PCCT detector" begin
+        @test_throws MethodError BS._build_pcct_detector(BS.EICTScanner())
     end
 
     @testset "fields propagate to PhotonCountingDetector" begin
-        s = BS.Scanner(; detector_material = :cdte, pcct_kwargs...)
+        s = BS.PCCTScanner(; detector_material = :cdte, pcct_kwargs...)
         d = BS._build_pcct_detector(s)
         @test d.thickness_mm == s.detector_depth
         @test d.energy_thresholds_keV == s.energy_thresholds
@@ -270,7 +267,7 @@ end
     end
 
     @testset "zero charge_sharing_fwhm / dead_time_ns ⇒ effects disabled" begin
-        s = BS.Scanner(;
+        s = BS.PCCTScanner(;
             detector_material = :cdte,
             pcct_kwargs...,
             charge_sharing_fwhm = 0.0,
@@ -331,7 +328,7 @@ end
 end
 
 @testset "recon_to_world_affine" begin
-    s = BS.Scanner(detector_rows = 32, detector_cols = 256)
+    s = BS.EICTScanner(detector_rows = 32, detector_cols = 256)
     g = BS.CTGeometry(s; n_angles = 4, fov_cm = 16.0, z_cm = 4.0)
     matrix_size = (32, 32, 8)
     A = BS.recon_to_world_affine(g, matrix_size)
@@ -350,7 +347,7 @@ end
 @testset "resample_to_recon — identity grid" begin
     ph = _toy_phantom()
     # Build a geom whose recon grid matches the phantom dimensions + voxel size.
-    s = BS.Scanner()
+    s = BS.EICTScanner()
     nx, ny, nz = size(ph.mask)
     fov_xy = ph.voxel_size[1] * nx
     fov_z = ph.voxel_size[3] * nz
@@ -384,7 +381,7 @@ end
 @testset "resample_to_recon — out-of-bounds tolerated" begin
     # Recon grid larger than phantom → out-of-bounds voxels stay zero.
     ph = _toy_phantom()
-    s = BS.Scanner()
+    s = BS.EICTScanner()
     g = BS.CTGeometry(
         s;
         n_angles = 4, fov_cm = 10.0, z_cm = 5.0,
@@ -401,7 +398,7 @@ end
 # Helical trajectory (CTGeometry pitch/n_rotations) — geometry contract.
 # -----------------------------------------------------------------------------
 @testset "helical CTGeometry" begin
-    scanner = BS.Scanner(
+    scanner = BS.EICTScanner(
         source_to_isocenter = 540.0,
         source_to_detector = 1080.0,
         detector_rows = 32,
@@ -476,7 +473,7 @@ end
 # water cylinder — μ accuracy, z-uniformity (no banding), axial parity.
 # -----------------------------------------------------------------------------
 @testset "helical FDK round-trip (CPU)" begin
-    scanner = BS.Scanner(
+    scanner = BS.EICTScanner(
         source_to_isocenter = 540.0,
         source_to_detector = 1080.0,
         detector_rows = 16,
@@ -523,7 +520,7 @@ end
 # Arc detector — FDK round-trip (equiangular weighting) + helical WFBP on arc.
 # -----------------------------------------------------------------------------
 @testset "arc detector — reconstruction round-trips" begin
-    scanner = BS.Scanner(
+    scanner = BS.EICTScanner(
         source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_rows = 16, detector_cols = 128,
         detector_row_size = 1.0, detector_col_size = 1.0,

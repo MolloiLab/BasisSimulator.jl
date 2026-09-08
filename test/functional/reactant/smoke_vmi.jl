@@ -32,7 +32,7 @@ println("Reactant ", pkgversion(Reactant), "  Enzyme ", pkgversion(Enzyme), "  J
 μρ_I(E) = BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine, Float64(E))
 μρ_W(E) = BS.compute_mass_μ_at_energy(BS.XA.Materials.water, Float64(E))
 function fixture_basis()
-    scanner = BS.Scanner(source_to_isocenter = 625.6, source_to_detector = 1100.0,
+    scanner = BS.EICTScanner(source_to_isocenter = 625.6, source_to_detector = 1100.0,
         detector_rows = 4, detector_cols = 16, detector_row_size = 0.625, detector_col_size = 0.6,
         focal_spot_width = 1.0, focal_spot_length = 1.0, target_angle = 10.0,
         flat_filter_material = :aluminum, flat_filter_thickness = 2.5, bowtie_filter = :ge_revolution_large,
@@ -40,7 +40,7 @@ function fixture_basis()
         electronic_noise = 0, detection_gain = 10.0)
     prot(kVp) = BS.CTProtocol(kVp = kVp, mA = 400.0, views = 8, rotation_time = 0.5,
                               collimation_mm = 5.0, additional_filters = [("Al", 4.5)])
-    so = BS.SimOptions(fidelity = :eict, seed = 1234, projector = :dd_fast)
+    so = BS.SimOptions(seed = 1234, projector = :dd_fast)
     e_L, w_L = BS.resolve_source_spectrum_without_bowtie(so, prot(80);  scanner = scanner)
     e_H, w_H = BS.resolve_source_spectrum_without_bowtie(so, prot(140); scanner = scanner)
     (ŵ_L = Float32.(w_L ./ sum(w_L)), p_L = Float32[μρ_I(E) for E in e_L], q_L = Float32[μρ_W(E) for E in e_L],

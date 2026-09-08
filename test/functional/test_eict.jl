@@ -19,7 +19,7 @@ const F = FStage
 # helpers
 # ---------------------------------------------------------------------------
 function _toy_proj_geom(; n_cols = 16, n_rows = 4, n_angles = 4, fov_cm = 5.0)
-    scanner = BS.Scanner(
+    scanner = BS.EICTScanner(
         source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_rows = n_rows, detector_cols = n_cols,
         detector_row_size = 1.0, detector_col_size = 1.0,
@@ -112,7 +112,7 @@ _ts("spectral conversion vs dd_fast_fused_poly_project!")
     @test_throws ArgumentError F.poly_log_sinogram_chunked(P32, μ_table, wη, nothing, Val(3))
 
     @testset "helical arc geometry + spectral bowtie" begin
-        scanner_h = BS.Scanner(
+        scanner_h = BS.EICTScanner(
             source_to_isocenter = 540.0, source_to_detector = 1080.0,
             detector_rows = 4, detector_cols = 32,
             detector_row_size = 1.0, detector_col_size = 1.0,
@@ -185,7 +185,7 @@ end
 # ===========================================================================
 _ts("building toy EICT workspaces (scatter off / on)")
 function toy_setup(; use_scatter, use_noise, seed = 42)
-    scanner = BS.Scanner(
+    scanner = BS.EICTScanner(
         source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_rows = 8, detector_cols = 64,
         detector_row_size = 1.0, detector_col_size = 1.0,
@@ -193,7 +193,7 @@ function toy_setup(; use_scatter, use_noise, seed = 42)
         electronic_noise = 5.0, detection_gain = 10.0,
     )
     protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 16, rotation_time = 0.5)
-    sim_opts = BS.SimOptions(; fidelity = :eict, use_noise = use_noise, use_scatter = use_scatter,
+    sim_opts = BS.SimOptions(; use_noise = use_noise, use_scatter = use_scatter,
         use_lag = false, use_focal_spot = false, use_optical_crosstalk = false, seed = seed)
     recon_opts = BS.ReconOptions(matrix_size = (32, 32, 4), fov_cm = 20.0)
     phantom = BS.create_gammex_472(n_voxels = 32, fov_cm = 20.0, z_cm = 2.0)
@@ -229,7 +229,7 @@ _ts("path lengths done")
     end
 
     @testset "noise on (quantum + electronic), scatter off (≤1e-4)" begin
-        opts = BS.SimOptions(; fidelity = :eict, use_noise = true, use_scatter = false,
+        opts = BS.SimOptions(; use_noise = true, use_scatter = false,
             use_lag = false, use_focal_spot = false, use_optical_crosstalk = false, seed = 42)
         BS.simulate!(s_off.ws, s_off.phantom, s_off.protocol, opts)
         ref = copy(s_off.ws.sinogram)
@@ -264,7 +264,7 @@ _ts("path lengths done")
     end
 
     @testset "noise off, scatter on (noise-free scatter-subtraction branch)" begin
-        opts = BS.SimOptions(; fidelity = :eict, use_noise = false, use_scatter = true,
+        opts = BS.SimOptions(; use_noise = false, use_scatter = true,
             use_lag = false, use_focal_spot = false, use_optical_crosstalk = false, seed = 42)
         BS.simulate!(s_on.ws, s_on.phantom, s_on.protocol, opts)
         ref = copy(s_on.ws.sinogram)

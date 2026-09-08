@@ -29,11 +29,11 @@ smoke while `Pkg.test()` is running. `run_all.sh` takes `/tmp/bs_reactant.lock`;
 using BasisSimulator; const BS = BasisSimulator; const BSF = BS.Functional
 
 phantom  = BS.compact_materials(BS.create_gammex_472(n_voxels = 64, n_slices = 4, fov_cm = 20.0, z_cm = 2.0))
-scanner  = BS.Scanner(source_to_isocenter = 540.0, source_to_detector = 1080.0, detector_rows = 8,
+scanner  = BS.EICTScanner(source_to_isocenter = 540.0, source_to_detector = 1080.0, detector_rows = 8,
                       detector_cols = 128, detector_row_size = 1.0, detector_col_size = 1.0,
                       detector_material = :lumex, detector_depth = 3.0, electronic_noise = 5.0, detection_gain = 10.0)
 protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 32, rotation_time = 0.5)
-sim_opts = BS.SimOptions(fidelity = :eict, seed = 42, use_noise = true, use_scatter = false,
+sim_opts = BS.SimOptions(seed = 42, use_noise = true, use_scatter = false,
                          use_lag = false, use_focal_spot = false, use_optical_crosstalk = false)
 recon    = BS.ReconOptions(matrix_size = (64, 64, 4), fov_cm = 20.0)
 
@@ -97,3 +97,24 @@ pipe.batching                                  # (dd = …, spectral = …, fdk 
 fwd  = @compile sync = true BSF.eict_forward(fr_r, pipe)
 grad = @compile sync = true Enzyme.gradient(Reverse, loss, fr_r, Const(pipe), Const(target_r))
 ```
+
+## Scanner families (strict five-struct API)
+
+`Scanner{T}` is abstract; every consumer dispatches on it. The two concrete families carry only
+their own detector model over a shared `ScannerGeometry`:
+
+```julia
+eict = EICTScanner(source_to_isocenter = 625.6, source_to_detector = 1100.0, detector_rows = 256, detector_cols = 834,
+                   detector_row_size = 0.625, detector_col_size = 0.6, detector_material = :lumex, detector_depth = 3.0,
+                   detection_gain = 10.0, electronic_noise = 0.0)
+pcct = PCCTScanner(source_to_isocenter = 540.0, source_to_detector = 1080.0, detector_rows = 8, detector_cols = 64,
+                   detector_material = :CdTe, detector_depth = 1.6, energy_thresholds = [20.0, 35.0, 55.0, 70.0],
+                   dead_time_ns = 25.0, pileup = true, pileup_correction = false, scatter_correction = false, noise_reduction = 0.0)
+opts = SimOptions(use_noise = true, use_scatter = false)     # physics common to both families; no presets
+pipe = BSF.pipeline(phantom, eict, protocol, opts, recon_opts)   # → EICTPipeline; a PCCTScanner → PCCTPipeline
+img  = BSF.forward(fr, pipe)                                     # HU (EICT) or per-channel μ volumes (PCCT)
+```
+
+Geometry fields are reachable directly on the scanner (`scanner.detector_rows`); a family's
+constructor rejects the other family's keywords. Scintillator lag is EICT-only; pile-up, its
+correction, scatter correction and the count-noise blend are `PCCTScanner` fields.

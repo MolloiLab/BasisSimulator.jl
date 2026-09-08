@@ -554,11 +554,11 @@ behavior is consistent with Monte Carlo studies of scatter transport.
 # Example
 ```julia
 # Reference geometry scanner
-scanner_ref = Scanner()  # SID=540, SDD=950
+scanner_ref = EICTScanner()  # SID=540, SDD=950
 scale = compute_scatter_geometry_scale(scanner_ref)  # ≈ 1.0
 
 # GE Revolution (larger air gap)
-scanner_ge = Scanner(source_to_isocenter=626.0, source_to_detector=1097.0)
+scanner_ge = EICTScanner(source_to_isocenter=626.0, source_to_detector=1097.0)
 scale = compute_scatter_geometry_scale(scanner_ge)  # ≈ 0.76
 ```
 """
@@ -585,11 +585,11 @@ based on detector pitch.
 # Example
 ```julia
 # 1.0 mm pitch (reference)
-scanner = Scanner(detector_col_size=1.0)
+scanner = EICTScanner(detector_col_size=1.0)
 fwhm = compute_scatter_kernel_fwhm_pixels(scanner)  # = 50.0 pixels
 
 # 0.5 mm pitch (high resolution)
-scanner = Scanner(detector_col_size=0.5)
+scanner = EICTScanner(detector_col_size=0.5)
 fwhm = compute_scatter_kernel_fwhm_pixels(scanner)  # = 100.0 pixels
 ```
 """
@@ -617,12 +617,12 @@ returns per-energy Compton fractions. This separation enables pluggable energy m
 
 # Example
 ```julia
-scanner = Scanner()
+scanner = EICTScanner()
 model = geometry_aware_scatter_model(scanner)
 # model.scatter_coefficient ≈ 0.025 × geometry_scale × size_scale
 
 # GE Revolution + large patient
-scanner = Scanner(source_to_isocenter=626.0, source_to_detector=1097.0)
+scanner = EICTScanner(source_to_isocenter=626.0, source_to_detector=1097.0)
 model = geometry_aware_scatter_model(scanner; phantom_diameter_cm=40.0)
 # geometry_scale ≈ 0.76, size_scale ≈ 1.54
 # model.scatter_coefficient ≈ 0.025 * 0.76 * 1.54 ≈ 0.029

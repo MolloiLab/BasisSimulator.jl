@@ -575,7 +575,10 @@ end
 function _dd_forward_taps(Vs, KX::Int, KZ::Int, g, ::Type{T}) where {T}
     c = g.c
     n_t = Int32(c.n_t); nz = Int32(c.nz)
-    accs = Any[nothing for _ in Vs]
+    # Accumulators live in a TUPLE (type-stable): a `Vector{Any}` of traced arrays makes the
+    # final `sum(acc; dims = 3)` a dynamic call inside Reactant's interpreter, which then
+    # misses Reactant's `mapreduce` override and recurses through Base's `_mapreduce_dim`.
+    accs = nothing
     for dx in 0:(KX - 1)
         fi = g.i0f .+ T(dx)
         i = g.i0 .+ Int32(dx)
@@ -592,14 +595,12 @@ function _dd_forward_taps(Vs, KX::Int, KZ::Int, g, ::Type{T}) where {T}
             kc = clamp.(k, Int32(1), nz)
             L = ic .+ (kc .- Int32(1)) .* n_t .+ g.sofs                    # n_cols×n_rows×n_long×B
             w = ox .* oz
-            for (m, V) in enumerate(Vs)
-                term = w .* _gather(V, L)
-                accs[m] = accs[m] === nothing ? term : accs[m] .+ term
-            end
+            terms = map(V -> w .* _gather(V, L), Vs)
+            accs = accs === nothing ? terms : map((a, t) -> a .+ t, accs, terms)
         end
     end
     normB = dropdims(g.norm; dims = 3)                                     # n_cols×n_rows×B
-    return [dropdims(sum(acc; dims = 3); dims = 3) .* normB for acc in accs]
+    return map(acc -> dropdims(sum(acc; dims = 3); dims = 3) .* normB, accs)
 end
 
 # Transpose tap loop shared by the unrolled batch and the looped run: `sino` is a

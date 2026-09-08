@@ -43,7 +43,7 @@ relmax(a, b) = maximum(abs.(a .- b)) / max(maximum(abs.(b)), eps(eltype(b)))
 
 # ----------------------------------------------------------------------------- fixture
 function toy_geom(; shape = :arc)
-    scanner = BS.Scanner(
+    scanner = BS.EICTScanner(
         source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_rows = 8, detector_cols = 32,
         detector_row_size = 1.0, detector_col_size = 1.0,

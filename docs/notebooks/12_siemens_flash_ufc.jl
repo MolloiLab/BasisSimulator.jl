@@ -28,7 +28,7 @@ scanner's signature acquisition classes in one notebook:
 
 ```
 Flash UFC MC η(E) LUT  (Khodajou-Chokami MC, 2026-08-26, 1–140 keV)
-        │ via Scanner(detector_material = :ufc_flash)  (src MC-LUT pathway)
+        │ via EICTScanner(detector_material = :ufc_flash)  (src MC-LUT pathway)
         ▼
 ┌─ REGULAR (dual power): 120 kVp on BOTH tubes ──────────────────────────┐
 │  tube A + tube B (independent noise) → per-tube η-aware BHC → FDK → HU │
@@ -271,7 +271,7 @@ at 95°** in the same gantry.  Every value below is sourced in
 
 # ╔═╡ 12000004-0000-4000-8000-000000000010
 # Tube/detector A geometry — shared by both modeled tubes (see md above).
-scanner = BS.Scanner(
+scanner = BS.EICTScanner(
     source_to_isocenter = 595.0,
     source_to_detector = 1085.6,
 
@@ -371,7 +371,7 @@ md"""
 
 `use_detector_efficiency = true` (the `:eict` preset default) routes
 through the **src Flash UFC MC LUT**: `build_physics_config` sees
-`Scanner(detector_material = :ufc_flash)` and dispatches to
+`EICTScanner(detector_material = :ufc_flash)` and dispatches to
 `detector_efficiency_ufc_flash()`, so the EICT forward model weights every
 energy by `w(E) · η_Flash(E)` and the detected flux (and therefore the
 Poisson noise level) automatically reflects the Flash absorption.
@@ -387,7 +387,6 @@ row-direction effect; with 4.8 mm collimation at center it is negligible).
 
 # ╔═╡ 12000006-0000-4000-8000-000000000010
 sim_opts = BS.SimOptions(
-    fidelity = :eict,
     seed = 1234,               # tube A chain
     use_heel_effect = false,   # exact forward/inverse spectral match
     projector = :dd_fast,      # same DD physics, single-pass fused kernels.
@@ -398,7 +397,6 @@ sim_opts = BS.SimOptions(
 # Independent noise chain for tube B (spectra/geometry identical handling;
 # only the random stream differs).
 sim_opts_b = BS.SimOptions(
-    fidelity = :eict,
     seed = 4321,               # tube B chain — MUST differ from tube A
     use_heel_effect = false,
     projector = :dd_fast,
@@ -2271,7 +2269,7 @@ md"""
 
 ```
 Flash UFC MC η(E) LUT (Khodajou-Chokami, Gd₂O₂S, 1–140 keV, 2026-08-26)
-   → src pathway: Scanner(detector_material = :ufc_flash)
+   → src pathway: EICTScanner(detector_material = :ufc_flash)
                 → detector_efficiency_ufc_flash()
 REGULAR: 120 kVp × 2 tubes (independent seeds)
    → per-tube η-aware BHC → FDK → HU → (A+B)/2

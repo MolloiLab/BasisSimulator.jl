@@ -1,5 +1,5 @@
 # Reactant + Enzyme smoke for VIEW BATCHING (M5): the end-to-end pipeline compiled with a
-# looped `view_batch = 4` (StableHLO while loop over view batches in DD, spectral sum and FDK)
+# looped `view_batch = 2` (StableHLO while loop over view batches in DD, spectral sum and FDK)
 # must reproduce the per-view unrolled program (HU and gradient), and the IR must carry the loop.
 #
 #   until mkdir /tmp/bs_reactant.lock 2>/dev/null; do sleep 30; done; trap 'rmdir /tmp/bs_reactant.lock' EXIT
@@ -11,11 +11,11 @@ const BS = BasisSimulator
 const BSF = BasisSimulator.Functional
 
 function fixture(; view_batch)
-    scanner = BS.Scanner(source_to_isocenter = 540.0, source_to_detector = 1080.0,
+    scanner = BS.EICTScanner(source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_rows = 4, detector_cols = 32, detector_row_size = 1.0, detector_col_size = 1.0,
         detector_material = :lumex, detector_depth = 3.0, electronic_noise = 5.0, detection_gain = 10.0)
-    protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 8, rotation_time = 0.5)
-    sim_opts = BS.SimOptions(; fidelity = :eict, seed = 7, use_noise = false, use_scatter = false,
+    protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 16, rotation_time = 0.5)   # runs of 4 views → 2 loop iterations at view_batch = 2
+    sim_opts = BS.SimOptions(; seed = 7, use_noise = false, use_scatter = false,
         use_lag = false, use_focal_spot = false, use_optical_crosstalk = false)
     recon_opts = BS.ReconOptions(matrix_size = (16, 16, 2), fov_cm = 20.0)
     phantom = BS.compact_materials(BS.create_gammex_472(n_voxels = 16, n_slices = 2, fov_cm = 20.0, z_cm = 1.0))
@@ -26,17 +26,17 @@ loss(fr, pipe, target) = sum((BSF.eict_forward(fr, pipe) .- target) .^ 2)
 gradf(fr, pipe, target) = Enzyme.gradient(Reverse, loss, fr, Const(pipe), Const(target))
 
 @testset "view batching under Reactant/Enzyme" begin
-    p1, fr = fixture(; view_batch = 1); p4, _ = fixture(; view_batch = 4)
+    p1, fr = fixture(; view_batch = 1); p4, _ = fixture(; view_batch = 2)
     hu_host = BSF.eict_forward(fr, p1)
     fr_r = Reactant.to_rarray(fr); tgt = Reactant.to_rarray(hu_host .+ 5f0)
     t1 = @elapsed f1 = @compile sync = true BSF.eict_forward(fr_r, p1)
-    t4 = @elapsed f4 = @compile sync = true BSF.eict_forward(fr_r, p4)
+    t4 = @elapsed f4 = @compile sync = true BSF.eict_forward(fr_r, p4)   # looped
     h1 = Array(f1(fr_r, p1)); h4 = Array(f4(fr_r, p4))
     ir = sprint(show, @code_hlo optimize = false BSF.eict_forward(fr_r, p4))
     println(@sprintf("VIEWBATCH IR: %d while loops, %d chars (unrolled: %d chars)", count("stablehlo.while", ir), length(ir),
         length(sprint(show, @code_hlo optimize = false BSF.eict_forward(fr_r, p1)))))
     @test count("stablehlo.while", ir) >= 1
-    println(@sprintf("VIEWBATCH compile: per-view %.1f s, batched(4) %.1f s;  HU max|Δ| batched-vs-perview %.2e, perview-vs-host %.2e",
+    println(@sprintf("VIEWBATCH compile: per-view %.1f s, looped(2) %.1f s;  HU max|Δ| batched-vs-perview %.2e, perview-vs-host %.2e",
         t1, t4, maximum(abs.(h4 .- h1)), maximum(abs.(h1 .- hu_host))))
     @test maximum(abs.(h4 .- h1)) <= 5e-3
     g1c = @compile sync = true gradf(fr_r, p1, tgt); g4c = @compile sync = true gradf(fr_r, p4, tgt)

@@ -34,7 +34,7 @@ const _CATSIM_FIRST_ROW = Dict(
 # n_cols = 900, n_rows = 16, ~25° fan width — same regime where the bowtie
 # thickness variation across γ is physically meaningful.
 function _clinical_scanner_with_bowtie(bowtie::Symbol)
-    return BS.Scanner(
+    return BS.EICTScanner(
         source_to_isocenter = 540.0,
         source_to_detector = 1080.0,
         detector_rows = 16,

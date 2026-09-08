@@ -444,7 +444,7 @@ end
     # ── 6. End-to-end VMI with the legacy FBP / ACNR / synthesis ─────────────
     @testset "end-to-end VMI HU parity (legacy FBP + ACNR + synth)" begin
         nc, nr, nv = 64, 2, 48
-        scanner = BS.Scanner(
+        scanner = BS.EICTScanner(
             source_to_isocenter = 540.0, source_to_detector = 1080.0,
             detector_rows = nr, detector_cols = nc,
             detector_row_size = 1.0, detector_col_size = 1.0)

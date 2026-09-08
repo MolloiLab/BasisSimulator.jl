@@ -28,6 +28,7 @@ code, and the Reactant/Enzyme smoke tests runnable from `envs/reactant`.
 | Integrated CPU suite (`Pkg.test()`) | all eight stages + pipeline wired (`test/functional/`, ~1050 functional assertions); see the last commit message for the final count |
 | `design/reactant/HOWTO.md` — how to run tests/smokes and drive the pipeline + Reactant/Enzyme from a REPL | done |
 | **M5 view batching + compiled view loops** — `dd_run_plans`/`dd_project_run`/`dd_transpose_run`, `poly_log_sinogram_looped`, looped `backproject`: every view-dependent stage runs its batches inside ONE StableHLO `while` loop (hooks in `loop.jl`, traced versions in the extension); `eict_pipeline(…; view_batch = :auto, batch_budget_mb)` sizes the loops from a memory budget — five-struct API unchanged | **done (host).** forward bit-identical to per-view (all batch sizes, remainders, multi-channel), transpose ≤4e-16 (F64) / 3e-7 (F32), pipeline HU ≤2e-3; Enzyme reverse through the loop ≡ unrolled ≡ FD (probe); Reactant smoke + scaling numbers → `PROBES.md` §7 |
+| **API split** — `Scanner{T}` abstract; `EICTScanner` / `PCCTScanner` over `ScannerGeometry`; `SimOptions` = common physics only (no `fidelity`, PCCT toggles on the scanner); `Functional.pipeline` / `forward` dispatch on the family; no compatibility shims | **done.** every constructor site in src/tests/notebooks migrated; `pcct_pipeline` behind the five structs |
 | Driver switch (`simulate!`/`reconstruct!` → functional core) | not started (M6) |
 | CUDA validation | not started (needs a lab NVIDIA box) |
 
@@ -343,8 +344,8 @@ to be added when the first such path needs it.
   literal per view, so trace time scales with detector columns × slabs (>20 min for a 834-column
   arc; 0.6 s per view with the override); (j) Reactant 0.2.28x caps same-named elementwise helper
   functions at 10 000 per module (`__lookup_unique_name_in_module` probes `name_1, name_2, …`
-  with a fresh symbol table each call) — a graph with two full pipelines exceeds it;
-  `Functional.uncap_reactant_names!()` (opt-in, extension) swaps in a per-name counter.
+  with a fresh symbol table each call) — one looped pipeline exceeds it; the extension swaps in a
+  per-name counter at load time.
 - **Compile-time scaling of unrolled view loops** — solved (M5): view batches are a trailing
   tensor axis AND the batches run inside a compiled loop (`_batched_loop` → `@trace for` with
   `track_numbers = false`; per-batch constants by `Ops.dynamic_slice` of an in-graph table,

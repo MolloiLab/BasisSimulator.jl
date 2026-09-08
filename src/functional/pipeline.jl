@@ -59,7 +59,7 @@ views per loop iteration in all stages, and `1` selects the legacy per-view
 unrolled programs (bit-identical summation order; toy sizes only).
 """
 function eict_pipeline(
-        phantom::BS.Phantom, scanner, protocol, sim_opts, recon_opts;
+        phantom::BS.Phantom, scanner::BS.EICTScanner, protocol, sim_opts, recon_opts;
         bhc = :water,
         filter = BS.StandardFilter(),
         cutoff::Real = 1.0,
@@ -170,19 +170,17 @@ output channel (default: every bin its own channel).  Batching as in
 [`eict_pipeline`](@ref).
 """
 function pcct_pipeline(
-        phantom::BS.Phantom, scanner, protocol, sim_opts, recon_opts;
+        phantom::BS.Phantom, scanner::BS.PCCTScanner, protocol, sim_opts, recon_opts;
         groups::Union{Nothing, Vector{Vector{Int}}} = nothing,
         filter = BS.StandardFilter(),
         cutoff::Real = 1.0,
         T::Type{<:AbstractFloat} = Float32,
-        noise_reduction::Real = 0.0,
         view_batch::Union{Symbol, Integer} = :auto,
         batch_budget_mb::Real = 512,
     )
     (view_batch === :auto || (view_batch isa Integer && view_batch >= 1)) ||
         throw(ArgumentError("view_batch must be :auto or an integer ≥ 1, got $view_batch"))
     ws = BS.create_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
-    ws isa BS.PCCTWorkspace || throw(ArgumentError("pcct_pipeline: the scanner/options describe an energy-integrating system (got $(typeof(ws).name.name)); use eict_pipeline"))
     geom = ws.geom
     n_E = length(ws.energies)
     vol_shape = size(phantom.mask)
@@ -195,7 +193,7 @@ function pcct_pipeline(
         (dd = Int(view_batch), spectral = Int(view_batch), fdk = Int(view_batch))
     end
     unrolled = view_batch === 1
-    pplan = pcct_plan(ws; noise_reduction, view_batch = unrolled ? 0 : batching.spectral, T)
+    pplan = pcct_plan(ws; view_batch = unrolled ? 0 : batching.spectral, T)
     bt = nothing            # the PCCT workspace folds the centre-pixel bowtie into W (no per-pixel spectral bowtie)
     G, I0g = combine_matrix(Vector{Float64}(ws.I0_bins), groups, T)
     fplan = fbp_plan(geom, recon_opts.matrix_size; filter, cutoff, T)
@@ -270,7 +268,7 @@ function material_paths(fractions::AbstractArray{<:Any, 4}, pipe::Union{EICTPipe
     if !pipe.unrolled
         runs = dd_run_plans(geom, pipe.vol_shape; view_batch = pipe.batching.dd,
             volume_extent = pipe.volume_extent, eltype = T)
-        return cat((dd_project_run(fractions, r) for r in runs)...; dims = 3)
+        return reduce((a, b) -> cat(a, b; dims = 3), [dd_project_run(fractions, r) for r in runs])
     end
     plans = [dd_view_plan(geom, v, pipe.vol_shape; volume_extent = pipe.volume_extent, eltype = T)
              for v in 1:geom.n_angles]
@@ -295,17 +293,6 @@ fallback with one op per multiply-add).
 _on_device(x, ref) = x
 
 _on_device(::Nothing, ref) = nothing
-
-"""
-    uncap_reactant_names!()
-
-No-op without Reactant. With the Reactant extension loaded, replaces Reactant's per-module
-unique-name lookup (capped at 10 000 same-named elementwise helpers in 0.2.28x, which a graph
-holding two full pipelines exceeds) by a per-name counter. Opt-in because it redefines a
-Reactant internal; call once before `@compile`.
-"""
-const _UNCAP_REACTANT_HOOK = Ref{Any}(nothing)      # set by the Reactant extension in its __init__
-uncap_reactant_names!() = (h = _UNCAP_REACTANT_HOOK[]; h === nothing ? nothing : h())
 
 function _eict_on_device(p::EICTPlan{T}, ref) where {T}
     μ = _on_device(p.μ_tbl, ref); w = _on_device(p.wη, ref); b = _on_device(p.bt, ref)
@@ -372,3 +359,30 @@ function draw_eict_noise(pipe::EICTPipeline{T}; seed::Integer) where {T}
     ε_e = pipe.eict.use_enoise ? randn(rng, T, n) : nothing
     return ε, ε_e
 end
+
+# -----------------------------------------------------------------------------
+# One entry point behind the five structs: dispatch on the scanner family
+# -----------------------------------------------------------------------------
+
+"""
+    pipeline(phantom, scanner, protocol, sim_opts, recon_opts; kwargs...)
+
+The functional pipeline for the scanner family: [`eict_pipeline`](@ref) for an
+[`EICTScanner`](@ref), [`pcct_pipeline`](@ref) for a [`PCCTScanner`](@ref)
+(keyword arguments are forwarded).  Run it with [`forward`](@ref).
+"""
+pipeline(phantom::BS.Phantom, scanner::BS.EICTScanner, protocol, sim_opts, recon_opts; kwargs...) =
+    eict_pipeline(phantom, scanner, protocol, sim_opts, recon_opts; kwargs...)
+pipeline(phantom::BS.Phantom, scanner::BS.PCCTScanner, protocol, sim_opts, recon_opts; kwargs...) =
+    pcct_pipeline(phantom, scanner, protocol, sim_opts, recon_opts; kwargs...)
+
+"""
+    forward(fractions, pipe, noise...) 
+
+The pure forward model of the pipeline: HU image for an [`EICTPipeline`](@ref)
+([`eict_forward`](@ref)), per-channel μ volumes for a [`PCCTPipeline`](@ref)
+([`pcct_forward`](@ref)).  Compile with `Reactant.@compile`, differentiate with
+`Enzyme.gradient(Reverse, …)`.
+"""
+forward(fractions::AbstractArray{<:Any, 4}, pipe::EICTPipeline, ε = nothing, ε_e = nothing) = eict_forward(fractions, pipe, ε, ε_e)
+forward(fractions::AbstractArray{<:Any, 4}, pipe::PCCTPipeline, N_input = nothing) = pcct_forward(fractions, pipe, N_input)

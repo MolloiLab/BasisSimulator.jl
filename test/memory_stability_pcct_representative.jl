@@ -37,7 +37,7 @@ scanner = let
     pixel_col_iso = (native_col_mm * bf) / magnification
     pixel_row_iso = (native_row_mm * bf) / magnification
     n_cols = ceil(Int, 360.0 / pixel_col_iso)
-    BS.Scanner(
+    BS.PCCTScanner(
         source_to_isocenter = sid,
         source_to_detector = sdd,
         detector_rows = 144,
@@ -58,9 +58,6 @@ scanner = let
         detector_depth = 1.6,
         fill_factor_row = 0.95,
         fill_factor_col = 0.95,
-        detection_gain = 1.0,
-        electronic_noise = 0.0,
-        detector_type = :photon_counting,
         n_energy_bins = 4,
         energy_thresholds = [20.0, 35.0, 55.0, 70.0],
         energy_resolution = 10.0,
@@ -70,6 +67,7 @@ scanner = let
         native_dexel_col_mm = native_col_mm,
         native_dexel_row_mm = native_row_mm,
         binning_factor = bf,
+        pileup = true, pileup_correction = true, scatter_correction = true, noise_reduction = 0.0,
     )
 end
 
@@ -82,7 +80,6 @@ protocol = BS.CTProtocol(
     additional_filters = [("Ti", 0.9)],
 )
 sim_opts = BS.SimOptions(
-    fidelity = :pcct,
     seed = 1234,
     projector = :dd_fast,
     use_fill_factor = false,
@@ -91,13 +88,8 @@ sim_opts = BS.SimOptions(
     use_focal_spot = false,
     use_lag = false,
     use_heel_effect = false,
-    use_scatter = false,
     use_noise = true,
-    use_pcct_scatter = true,
-    use_pcct_scatter_correction = true,
-    use_pcct_pileup = true,
-    use_pcct_pileup_correction = true,
-    pcct_noise_reduction = 0.0,
+    use_scatter = true,
 )
 recon_opts = BS.ReconOptions(
     matrix_size = (512, 512, 12),

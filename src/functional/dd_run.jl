@@ -128,13 +128,15 @@ function dd_project_run(vol::AbstractArray{<:Any, 4}, p::DDRunPlan{T}) where {T 
     tab = _on_device(p.table, vol)
     nr = length(p.views)
     out = _zeros(vol, T, (p.n_cols, p.n_rows, nr, M))
-    chunk_fn = (start, len) -> begin
+    KX, KZ, n_cols, n_rows = p.KX, p.KZ, p.n_cols, p.n_rows
+    chunk_fn = (start, len, tab, Vs) -> begin                                # closes over host data only
         c = _consts_run(p, _dslice(tab, start, len, 2))
-        g = _forward_geometry_from(c, p.n_cols, p.n_rows, vol, T)
-        parts = _dd_forward_taps(Vs, p.KX, p.KZ, g, T)                     # M × (n_cols, n_rows, len)
-        return cat(map(x -> reshape(x, size(x)..., 1), parts)...; dims = 4)   # (n_cols, n_rows, len, M)
+        g = _forward_geometry_from(c, n_cols, n_rows, tab, T)
+        parts = _dd_forward_taps(Vs, KX, KZ, g, T)                         # M × (n_cols, n_rows, len)
+        # pairwise `cat` (a varargs splat of traced arrays can recurse in the tracer)
+        return reduce((a, b) -> cat(a, b; dims = 4), map(x -> reshape(x, size(x)..., 1), parts))   # (n_cols, n_rows, len, M)
     end
-    return _loop_over_batches(chunk_fn, nr, p.B, out, vol)
+    return _loop_over_batches(chunk_fn, nr, p.B, out, (tab, Vs), vol)
 end
 
 """
@@ -154,12 +156,13 @@ function dd_transpose_run(sino::AbstractArray{<:Any, 3}, p::DDRunPlan{T}, vol_sh
     tab = _on_device(p.table, sino)
     block = p.n_cols * p.n_rows
     acc0 = _zeros(sino, T, (n_t, p.nz, n_long))
-    chunk_fn = (start, len) -> begin
+    KXT, KZT = p.KXT, p.KZT
+    chunk_fn = (start, len, tab, sino) -> begin                              # closes over host data only
         c = _consts_run(p, _dslice(tab, start, len, 2))
         off = _on_device(reshape(Int32[(b - 1) * block for b in 1:len], 1, 1, 1, len), sino)
-        return _dd_transpose_taps(_dslice(sino, start, len, 3), c, p.KXT, p.KZT, off, sino, T)
+        return _dd_transpose_taps(_dslice(sino, start, len, 3), c, KXT, KZT, off, sino, T)
     end
-    acc = _sum_over_batches(chunk_fn, nr, p.B, acc0, sino)
+    acc = _sum_over_batches(chunk_fn, nr, p.B, acc0, (tab, sino), sino)
     return p.vertical ? permutedims(acc, (1, 3, 2)) : permutedims(acc, (3, 1, 2))
 end
 
@@ -169,7 +172,7 @@ function _dd_project_looped(vol::AbstractArray{<:Any, 3}, geom::CTGeometry, view
         volume_extent, ::Type{T}) where {T}
     runs = dd_run_plans(geom, size(vol); view_batch, volume_extent, eltype = T)
     vol4 = reshape(vol, size(vol)..., 1)
-    return cat((dd_project_run(vol4, r)[:, :, :, 1] for r in runs)...; dims = 3)
+    return reduce((a, b) -> cat(a, b; dims = 3), [dd_project_run(vol4, r)[:, :, :, 1] for r in runs])
 end
 function _dd_transpose_looped(sino::AbstractArray{<:Any, 3}, geom::CTGeometry, vol_shape::NTuple{3, Int},
         view_batch::Int, volume_extent, ::Type{T}) where {T}
@@ -192,7 +195,7 @@ in `views` order.
 function dd_project_views(vol::AbstractArray{<:Any, 4}, geom::CTGeometry, views::AbstractVector{<:Integer};
         view_batch::Int, volume_extent = nothing, eltype::Type{T}) where {T}
     runs = dd_run_plans(geom, size(vol)[1:3]; view_batch, views, volume_extent, eltype = T)
-    return cat((dd_project_run(vol, r) for r in runs)...; dims = 3)
+    return reduce((a, b) -> cat(a, b; dims = 3), [dd_project_run(vol, r) for r in runs])
 end
 function dd_transpose_views(sino::AbstractArray{<:Any, 3}, geom::CTGeometry, views::AbstractVector{<:Integer},
         vol_shape::NTuple{3, Int}; view_batch::Int, volume_extent = nothing, eltype::Type{T}) where {T}

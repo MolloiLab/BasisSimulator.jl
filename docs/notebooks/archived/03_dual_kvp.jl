@@ -116,7 +116,7 @@ md"""
 """
 
 # ╔═╡ 04000003-0000-4000-8000-000000000010
-scanner = BS.Scanner(
+scanner = BS.EICTScanner(
     source_to_isocenter = 625.6,
     source_to_detector = 1100.0,
 
@@ -180,7 +180,6 @@ md"""
 
 # ╔═╡ 04000005-0000-4000-8000-000000000010
 sim_opts = BS.SimOptions(
-    fidelity = :eict,
     seed = 1234,
 );
 

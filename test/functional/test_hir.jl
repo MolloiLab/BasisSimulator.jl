@@ -28,7 +28,7 @@ _ts(label) = (println(stderr, "[test_hir t=$(round(time() - _T0; digits = 1))s] 
 # Mirrors `_toy_hir_setup` in test/api.jl:1221-1232.
 function toy_setup(; matrix_size = (16, 16, 4), strength = 60, n_angles = 24,
                    T = Float32, projector = :dd_fast)
-    scanner = BS.Scanner(
+    scanner = BS.EICTScanner(
         source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_rows = 8, detector_cols = 32,
         detector_row_size = 1.0, detector_col_size = 1.0,
@@ -283,7 +283,7 @@ _ts("start")
 
     _ts("texture gate")
     @testset "HIR60 damps high-pass texture vs FDK (api.jl gate, reduced views)" begin
-        scanner = BS.Scanner(
+        scanner = BS.EICTScanner(
             source_to_isocenter = 610.0, source_to_detector = 1113.0,
             detector_rows = 24, detector_cols = 64,
             detector_row_size = 0.353, detector_col_size = 1.0,

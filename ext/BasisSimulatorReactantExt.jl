@@ -37,30 +37,42 @@ BSF._iota(::Reactant.TracedRArray, ::Type{T}, n::Integer) where {T} =
 # with dynamic slices, so the compiled program does not grow with the number of views.
 # `track_numbers = false`: host integers in the body (batch sizes, static shapes) must stay
 # host integers; only the loop index is traced.
-function BSF._batched_loop(body, n::Int, state, ::Reactant.TracedRArray)
+# Wrapper arrays over traced data (`reshape`, `dropdims`, views produce `ReshapedArray` /
+# `SubArray` of a TracedRArray) are materialized into plain traced arrays before the ops.
+_mat(x::Reactant.TracedRArray) = x
+_mat(x::AbstractArray) = Reactant.TracedUtils.materialize_traced_array(x)
+const _AnyTraced = Union{Reactant.TracedRArray, Base.ReshapedArray{<:Any, <:Any, <:Reactant.TracedRArray},
+    SubArray{<:Any, <:Any, <:Reactant.TracedRArray}}
+# `state`, `consts` and `b` are the loop arguments the tracer sees (they are named in the
+# loop body); traced arrays hidden inside closures are NOT, so `body` closes over host data only.
+function BSF._batched_loop(body, n::Int, state, consts::Tuple, ::_AnyTraced)
+    state = _mat(state)
     @trace track_numbers = false for b in 1:n
-        state = body(state, b)
+        state = _mat(body(state, b, consts))
     end
     return state
 end
-function BSF._dslice(x::Reactant.TracedRArray{<:Any, N}, start, len::Int, dim::Int) where {N}
+function BSF._dslice(x::_AnyTraced, start, len::Int, dim::Int)
+    xm = _mat(x); N = ndims(xm)
     starts = Any[d == dim ? start : 1 for d in 1:N]
-    sizes = Int[d == dim ? len : size(x, d) for d in 1:N]
-    return Reactant.Ops.dynamic_slice(x, starts, sizes)
+    sizes = Int[d == dim ? len : size(xm, d) for d in 1:N]
+    return Reactant.Ops.dynamic_slice(xm, starts, sizes)
 end
-function BSF._dupdate(x::Reactant.TracedRArray{<:Any, N}, chunk, start, dim::Int) where {N}
+function BSF._dupdate(x::_AnyTraced, chunk, start, dim::Int)
+    xm = _mat(x); N = ndims(xm)
     starts = Any[d == dim ? start : 1 for d in 1:N]
-    return Reactant.Ops.dynamic_update_slice(x, chunk, starts)
+    return Reactant.Ops.dynamic_update_slice(xm, _mat(chunk), starts)
 end
-BSF._zeros(::Reactant.TracedRArray, ::Type{T}, dims::Dims) where {T} =
+BSF._zeros(::_AnyTraced, ::Type{T}, dims::Dims) where {T} =
     Reactant.Ops.fill(zero(T), collect(Int, dims))
 
 # Reactant 0.2.28x caps the number of same-named elementwise helper functions per module at
 # 10 000 (`__lookup_unique_name_in_module` probes name, name_1, … against a freshly built symbol
-# table on every call). Two full pipelines in one graph exceed it. Opt-in override: a monotonic
-# per-name counter (no cap, O(1) per call). Names stay unique, so the emitted MLIR is unchanged.
+# table on every call). A single full pipeline exceeds it once every stage loops over views.
+# Replaced at load time by a monotonic per-name counter (no cap, O(1) per call); names stay
+# unique, so the emitted MLIR is unchanged.
 const _UNIQUE_NAME_COUNTERS = Dict{String, Int}()
-function _uncap_reactant_names!()
+function __init__()
     @eval Reactant.TracedUtils function __lookup_unique_name_in_module(mod, name)
         i = get($_UNIQUE_NAME_COUNTERS, name, 0)
         $_UNIQUE_NAME_COUNTERS[name] = i + 1
@@ -68,6 +80,5 @@ function _uncap_reactant_names!()
     end
     return nothing
 end
-__init__() = (BSF._UNCAP_REACTANT_HOOK[] = _uncap_reactant_names!; nothing)
 
 end # module

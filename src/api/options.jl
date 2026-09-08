@@ -1,7 +1,7 @@
 """
     Simulation/Options.jl
 
-High-level options for controlling simulation fidelity and reconstruction.
+Simulation and reconstruction options shared by every detector family.
 """
 
 export SimOptions, ReconOptions
@@ -10,10 +10,8 @@ export SimOptions, ReconOptions
     SimOptions
 
 Resolved boolean toggles + numeric knobs for one simulation run.  Each
-`use_*` field is `Bool` (`true` = effect ON, `false` = effect OFF) and is
-resolved from a `fidelity` preset (see ctor) plus optional per-effect kwarg
-overrides.  The `fidelity` symbol itself is consumed only inside the ctor
-for preset lookup — it is not stored on the struct.
+`use_*` field is `Bool` (`true` = effect ON, `false` = effect OFF); every field
+is set by the keyword constructor.
 
 # Fields
 - `use_fill_factor::Bool`: Enable detector fill factor.
@@ -26,20 +24,6 @@ for preset lookup — it is not stored on the struct.
   thresholds eliminate it).  EICT: Gaussian quantum + electronic noise on counts.
 - `use_lag::Bool`: Enable detector lag (afterglow).
 - `use_heel_effect::Bool`: Enable anode heel effect.
-- `use_pcct_pileup::Bool`: Apply MC pulse pileup at simulate-time (PCCT only).
-  Default `true` for `:pcct`, `false` for `:eict`.  When `false`, the workspace
-  skips the (expensive) MC pileup matrix calibration entirely and the simulator
-  produces noise-free count rates.  The MC-LUT detector response matrix is
-  always on; pileup is the only PCCT physics knob exposed here.
-- `use_pcct_pileup_correction::Bool`: invert the MC pileup matrix inside `simulate!()`
-  (model-based un-pileup) after the forward pileup pass.  Default `false`; enable to fold the
-  decoupled notebook-level `apply_pcct_pileup_correction!` into `simulate!()`.
-- `use_pcct_scatter::Bool`: PCCT-specific patient scatter injection, distinct from the
-  EICT `use_scatter`.  Default `true` for `:pcct`, `false` for `:eict`.
-- `use_pcct_scatter_correction::Bool`: model-based PCCT scatter correction applied inside
-  `simulate!()` after pileup (re-estimates the scatter field from the current bins and
-  subtracts it).  Default `false`; enable to fold the notebook-level correction into `simulate!()`.
-- `pcct_noise_reduction::Float64`: PCCT noise reduction factor (0.0–1.0).  Approximates clinical
   vendor reconstruction (e.g., Siemens QIR) by blending sampled Poisson counts toward their
   expectation.  0.0 = raw physics, exact integer Poisson counts (default); 0.7 = 70% noise
   reduction (~QIR-3).  ANY nonzero value leaves the strict Poisson count model (a scaled Poisson
@@ -64,7 +48,7 @@ for preset lookup — it is not stored on the struct.
   `create_hir_recon_workspace(; projector=…)` (both default `:dd_fast`).
 """
 struct SimOptions
-    # --- Physics Pipeline (7 effects) ---
+    # --- Physics pipeline ---
     use_fill_factor::Bool
     use_detector_efficiency::Bool
     use_scatter::Bool
@@ -72,133 +56,46 @@ struct SimOptions
     use_focal_spot::Bool
     use_noise::Bool
     use_lag::Bool
-
-    # --- Signal Chain ---
+    # --- Signal chain ---
     use_heel_effect::Bool
-
-    # --- PCCT physics ---
-    use_pcct_pileup::Bool
-    use_pcct_pileup_correction::Bool
-    use_pcct_scatter::Bool
-    use_pcct_scatter_correction::Bool
-    pcct_noise_reduction::Float64
-
     # --- General ---
     seed::Union{Int, Nothing}
     detector_efficiency_mode::Symbol   # :auto, :mc_lut, :beer_lambert
-    projector::Symbol                  # :dd_fast (default/fastest general path), :dd (DEPRECATED reference), :siddon (compatibility)
+    projector::Symbol                  # :dd_fast (default), :dd (DEPRECATED reference), :siddon (comparison)
 end
 
 """
     SimOptions(; kwargs...)
 
-Create simulation options with fidelity presets and per-effect overrides.
+Physics toggles common to every detector family (all `true` except
+`use_optical_crosstalk`), the noise `seed`, the detector-efficiency mode and the
+projector.  Detector-specific physics lives on the scanner: pile-up, pile-up
+correction, scatter correction and the count-noise blend are fields of
+[`PCCTScanner`](@ref); the scintillator lag model applies to [`EICTScanner`](@ref)
+only.
 
-# Presets (via `fidelity`)
-- `:eict`: All EICT effects ON (polychromatic, full physics).
-- `:pcct`: Same as :eict but with PCCT detector corrections enabled.
-
-# Keyword Overrides
-Pass `use_*=true/false` to override the fidelity preset for individual effects.
-- `nothing` (default) = use preset
-- `true` = force ON
-- `false` = force OFF
-
-# Examples
-```julia
-SimOptions(fidelity=:eict)                         # Full physics
-SimOptions(fidelity=:eict, use_scatter=false)       # Everything except scatter
-SimOptions(fidelity=:pcct)                          # PCCT mode
-```
+- `use_fill_factor`, `use_detector_efficiency`, `use_scatter`, `use_optical_crosstalk`,
+  `use_focal_spot`, `use_noise`, `use_lag`, `use_heel_effect::Bool`
+- `seed::Union{Int, Nothing} = 42` — noise RNG seed (`nothing` = unseeded)
+- `detector_efficiency_mode::Symbol = :auto` — `:auto`, `:mc_lut`, `:beer_lambert`
+- `projector::Symbol = :dd_fast` — `:dd_fast`, `:dd` (deprecated reference), `:siddon`
 """
 function SimOptions(;
-        fidelity::Symbol = :eict,
-        use_fill_factor::Union{Bool, Nothing} = nothing,
-        use_detector_efficiency::Union{Bool, Nothing} = nothing,
-        use_scatter::Union{Bool, Nothing} = nothing,
-        use_optical_crosstalk::Union{Bool, Nothing} = nothing,
-        use_focal_spot::Union{Bool, Nothing} = nothing,
-        use_noise::Union{Bool, Nothing} = nothing,
-        use_lag::Union{Bool, Nothing} = nothing,
-        use_heel_effect::Union{Bool, Nothing} = nothing,
-        use_pcct_pileup::Union{Bool, Nothing} = nothing,
-        use_pcct_pileup_correction::Union{Bool, Nothing} = nothing,
-        use_pcct_scatter::Union{Bool, Nothing} = nothing,
-        use_pcct_scatter_correction::Union{Bool, Nothing} = nothing,
-        pcct_noise_reduction::Float64 = 0.0,
+        use_fill_factor::Bool = true,
+        use_detector_efficiency::Bool = true,
+        use_scatter::Bool = true,
+        use_optical_crosstalk::Bool = false,
+        use_focal_spot::Bool = true,
+        use_noise::Bool = true,
+        use_lag::Bool = true,
+        use_heel_effect::Bool = true,
         seed::Union{Int, Nothing} = 42,
         detector_efficiency_mode::Symbol = :auto,
-        projector::Symbol = :dd_fast
+        projector::Symbol = :dd_fast,
     )
     _validate_projector(projector)
-    # Fidelity preset defaults
-    # :eict = all EICT effects ON; :pcct = :eict + MC pile-up degradation.
-    # Pile-up correction (the inverse) is decoupled — apply it post-simulate
-    # via `apply_pcct_pileup_correction!` if needed.
-    # Note: `optical_crosstalk` defaults to FALSE.  `apply_optical_crosstalk!`
-    # is a physically-accurate nonlinear `−log(K · exp(−x))` blur in intensity
-    # domain, but BS does not yet ship a numerically stable inverse for the
-    # deeply-attenuated pixels behind dense rods (Van Cittert deconvolution
-    # produces FBP streaks).  Users who want to *see* the un-corrected blur
-    # in diagnostic sinograms can opt in via `use_optical_crosstalk = true`;
-    # downstream basis-decomposition accuracy will degrade accordingly.
-    # :pcct preset notes:
-    # - `focal_spot = false`: the tube-side focal-spot blur IS wired into the
-    #   PCCT path (per-bin, before scatter/noise/pile-up) but ships disabled
-    #   by default in this release; opt in with `use_focal_spot = true`.
-    # - `lag = false`: the shipped lag model is scintillator (Gd₂O₂S)
-    #   afterglow, which direct-conversion PCCT detectors do not exhibit, so
-    #   lag is not applied on the PCCT path.
-    defaults = if fidelity == :pcct
-        (
-            fill_factor = true, detector_efficiency = true,
-            scatter = true, optical_crosstalk = false,
-            focal_spot = false, noise = true, lag = false,
-            heel_effect = true,
-            pcct_pileup = true, pcct_pileup_correction = false,
-            pcct_scatter = true, pcct_scatter_correction = false,
-        )
-    elseif fidelity == :eict
-        (
-            fill_factor = true, detector_efficiency = true,
-            scatter = true, optical_crosstalk = false,
-            focal_spot = true, noise = true, lag = true,
-            heel_effect = true,
-            pcct_pileup = false, pcct_pileup_correction = false,
-            pcct_scatter = false, pcct_scatter_correction = false,
-        )
-    else
-        error("Unknown fidelity preset: $fidelity. Use :eict or :pcct.")
-    end
-
-    # Resolve each toggle: user override wins, otherwise use preset default
-    _fill_factor = isnothing(use_fill_factor) ? defaults.fill_factor : use_fill_factor
-    _detector_efficiency = isnothing(use_detector_efficiency) ? defaults.detector_efficiency : use_detector_efficiency
-    _scatter = isnothing(use_scatter) ? defaults.scatter : use_scatter
-    _optical_crosstalk = isnothing(use_optical_crosstalk) ? defaults.optical_crosstalk : use_optical_crosstalk
-    _focal_spot = isnothing(use_focal_spot) ? defaults.focal_spot : use_focal_spot
-    _noise = isnothing(use_noise) ? defaults.noise : use_noise
-    _lag = isnothing(use_lag) ? defaults.lag : use_lag
-    _heel_effect = isnothing(use_heel_effect) ? defaults.heel_effect : use_heel_effect
-    _pcct_pileup = isnothing(use_pcct_pileup) ? defaults.pcct_pileup : use_pcct_pileup
-    _pcct_pileup_correction = isnothing(use_pcct_pileup_correction) ? defaults.pcct_pileup_correction : use_pcct_pileup_correction
-    _pcct_scatter = isnothing(use_pcct_scatter) ? defaults.pcct_scatter : use_pcct_scatter
-    _pcct_scatter_correction = isnothing(use_pcct_scatter_correction) ? defaults.pcct_scatter_correction : use_pcct_scatter_correction
-
-    return SimOptions(
-        _fill_factor, _detector_efficiency,
-        _scatter, _optical_crosstalk,
-        _focal_spot, _noise, _lag,
-        _heel_effect,
-        _pcct_pileup,
-        _pcct_pileup_correction,
-        _pcct_scatter,
-        _pcct_scatter_correction,
-        clamp(pcct_noise_reduction, 0.0, 1.0),
-        seed,
-        detector_efficiency_mode,
-        projector
-    )
+    return SimOptions(use_fill_factor, use_detector_efficiency, use_scatter, use_optical_crosstalk,
+        use_focal_spot, use_noise, use_lag, use_heel_effect, seed, detector_efficiency_mode, projector)
 end
 
 """

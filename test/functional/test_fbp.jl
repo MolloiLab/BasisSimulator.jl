@@ -42,7 +42,7 @@ fbp_record!(k, v) = (FBP_PARITY[k] = Float64(v); v)
 # contract tests, vacuous for parity.  `z_cm = 0.4` keeps every voxel in-bounds
 # and is used wherever a non-trivial reference is required.
 function fbp_toy_geom(; shape = :arc, z_cm = 5.0)
-    scanner = BS.Scanner(
+    scanner = BS.EICTScanner(
         source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_rows = 8, detector_cols = 32,
         detector_row_size = 1.0, detector_col_size = 1.0,
@@ -54,7 +54,7 @@ const FBP_TOY_ZCM = 0.4
 
 # test/geometry.jl:525-550 arc fixture (128 cols × 16 rows, 96 views)
 function fbp_arc128_scanner()
-    BS.Scanner(
+    BS.EICTScanner(
         source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_rows = 16, detector_cols = 128,
         detector_row_size = 1.0, detector_col_size = 1.0,

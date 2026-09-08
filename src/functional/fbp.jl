@@ -622,13 +622,13 @@ function backproject(filt::AbstractArray{<:Any, 3}, plan::FBPPlan{T};
         # one compiled loop over view batches (program size independent of n_view)
         G = _geom_table(plan.tensors)
         acc0 = _zeros(filt, T, (plan.nx, plan.ny, plan.nz, 1))
-        chunk_fn = (start, len) -> begin
+        chunk_fn = (start, len, G, filt, plan) -> begin                       # closes over host data only
             gt = _dslice(G, start, len, 2)
             fc = _dslice(filt, start, len, 3)
             off = _on_device(reshape(Int32[(k - 1) * block for k in 1:len], 1, 1, 1, len), filt)
             return _bp_chunk(vec(fc), plan, gt, off, weighted)
         end
-        acc = _sum_over_batches(chunk_fn, plan.n_view, view_batch, acc0, filt)
+        acc = _sum_over_batches(chunk_fn, plan.n_view, view_batch, acc0, (G, filt, plan), filt)
         out = reshape(acc, plan.nx, plan.ny, plan.nz)
         return weighted ? out .* plan.pi_over_angles : out
     end

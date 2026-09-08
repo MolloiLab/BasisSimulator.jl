@@ -40,7 +40,7 @@ _ts(label) = (println(stderr, "[smoke_hir t=$(round(time() - _T0; digits = 1))s]
 
 # ----------------------------------------------------------------------------- fixtures
 function toy_geom(; n_angles = 24)
-    scanner = BS.Scanner(
+    scanner = BS.EICTScanner(
         source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_rows = 8, detector_cols = 32,
         detector_row_size = 1.0, detector_col_size = 1.0,

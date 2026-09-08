@@ -102,7 +102,7 @@ config-only tensors / scalars (never data-dependent):
 - `pileup_St::Union{Nothing, Matrix{T}}` — `permutedims(tril(S))`, or `nothing` when pile-up is off.
 - `pileup_Sinv_t::Union{Nothing, Matrix{T}}` — `permutedims(inv(tril(S)))` for [`pileup_correct`](@ref).
 - `eps::T`              — count floor before the log (`1e-10` in every legacy site).
-- `noise_reduction::T`  — `sim_opts.pcct_noise_reduction` blend (0 = exact counts).
+- `noise_reduction::T`  — `PCCTScanner.noise_reduction` blend (0 = exact counts).
 - `view_chunks::Int`    — static number of view chunks for the energy-axis matmul.
 - `view_batch::Int`     — views per iteration of ONE compiled loop for the energy-axis matmul
   (0 = off, use `view_chunks`); program size then does not depend on the view count.
@@ -139,20 +139,19 @@ function PCCTPlan{T}(
 end
 
 """
-    pcct_plan(ws::BS.PCCTWorkspace; use_pileup = ws.use_pcct_pileup,
-              noise_reduction = 0.0, view_chunks = 1, T = eltype(ws.μ_table))
+    pcct_plan(ws::BS.PCCTWorkspace; use_pileup = ws.pileup,
+              noise_reduction = ws.noise_reduction, view_chunks = 1, T = eltype(ws.μ_table))
 
 Harvest a [`PCCTPlan`](@ref) from a legacy `PCCTWorkspace` (temporary bridge —
 the plan only needs `ws.μ_table`, `ws.W_matrix_gpu`, `ws.I0_bins` and
 `ws.pileup_S`, all config-only tensors the workspace precomputes on the host).
-`noise_reduction` mirrors `sim_opts.pcct_noise_reduction` (the workspace does
-not store it).  `view_chunks` must divide `size(P, 3)` or leave a static remainder
+`noise_reduction` defaults to the workspace's (the scanner's) blend.  `view_chunks` must divide `size(P, 3)` or leave a static remainder
 (both are host arithmetic on config).
 """
 function pcct_plan(
         ws;
-        use_pileup::Bool = ws.use_pcct_pileup,
-        noise_reduction::Real = 0.0,
+        use_pileup::Bool = ws.pileup,
+        noise_reduction::Real = ws.noise_reduction,
         view_chunks::Integer = 1,
         view_batch::Integer = 0,
         T::Type{<:AbstractFloat} = eltype(ws.μ_table),
@@ -312,8 +311,8 @@ function spectral_bin_intensities(
         # one compiled loop over batches of `view_batch` views (program size independent of n_view)
         T = _scalar_type(P)
         out = _zeros(P, T, (size(P, 1), size(P, 2), n_view, size(W, 2)))
-        chunk_fn = (start, len) -> _spectral_chunk(_dslice(P, start, len, 3), μ_table, W, bt)
-        return _loop_over_batches(chunk_fn, n_view, Int(view_batch), out, P)
+        chunk_fn = (start, len, P, μ_table, W, bt) -> _spectral_chunk(_dslice(P, start, len, 3), μ_table, W, bt)
+        return _loop_over_batches(chunk_fn, n_view, Int(view_batch), out, (P, μ_table, W, bt), P)
     end
     ranges = _view_chunk_ranges(n_view, Int(view_chunks))
     if length(ranges) == 1
@@ -640,7 +639,7 @@ _raw_counts(p::AbstractArray{<:Any, 4}, plan::PCCTPlan, raw, ::AbstractMatrix) =
     pcct_chain(P, plan, N_input = nothing; bt = nothing) -> (; bins, raw_counts)
 
 The `simulate!(::PCCTWorkspace)` chain for `binning_factor = 1`,
-`use_pcct_scatter = false`, focal spot off, pile-up correction off, in the
+`use_scatter = false`, focal spot off, pile-up correction off, in the
 legacy order:
 
 1. [`spectral_bin_intensities`](@ref) (fused spectral DD accumulation),

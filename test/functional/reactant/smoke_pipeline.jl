@@ -13,11 +13,11 @@ const BS = BasisSimulator
 const BSF = BasisSimulator.Functional
 
 function fixture(; use_noise, T)
-    scanner = BS.Scanner(source_to_isocenter = 540.0, source_to_detector = 1080.0,
+    scanner = BS.EICTScanner(source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_rows = 4, detector_cols = 32, detector_row_size = 1.0, detector_col_size = 1.0,
         detector_material = :lumex, detector_depth = 3.0, electronic_noise = 5.0, detection_gain = 10.0)
     protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 8, rotation_time = 0.5)
-    sim_opts = BS.SimOptions(; fidelity = :eict, seed = 7, use_noise, use_scatter = false,
+    sim_opts = BS.SimOptions(; seed = 7, use_noise, use_scatter = false,
         use_lag = false, use_focal_spot = false, use_optical_crosstalk = false)
     recon_opts = BS.ReconOptions(matrix_size = (16, 16, 2), fov_cm = 20.0)
     # compact_materials: keep only the materials present at this coarse grid — every material

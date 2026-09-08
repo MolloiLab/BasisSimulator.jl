@@ -20,7 +20,7 @@ const F = FStage
 # ────────────────────────────────────────────────────────────────────────
 
 function vmi_fixture_spectra()
-    scanner = BS.Scanner(
+    scanner = BS.EICTScanner(
         source_to_isocenter = 625.6, source_to_detector = 1100.0,
         detector_rows = 4, detector_cols = 16,
         detector_row_size = 0.625, detector_col_size = 0.6,
@@ -32,7 +32,7 @@ function vmi_fixture_spectra()
     )
     prot(kVp) = BS.CTProtocol(kVp = kVp, mA = 400.0, views = 8, rotation_time = 0.5,
                               collimation_mm = 5.0, additional_filters = [("Al", 4.5)])
-    sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234, projector = :dd_fast)
+    sim_opts = BS.SimOptions(seed = 1234, projector = :dd_fast)
     e_L, w_L = BS.resolve_source_spectrum_without_bowtie(sim_opts, prot(80);  scanner = scanner)
     e_H, w_H = BS.resolve_source_spectrum_without_bowtie(sim_opts, prot(140); scanner = scanner)
     (e_L = Float64.(e_L), w_L = Float64.(w_L), e_H = Float64.(e_H), w_H = Float64.(w_H))

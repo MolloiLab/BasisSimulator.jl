@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.2.3
+# v0.6.0
 
 using Markdown
 using InteractiveUtils
@@ -242,7 +242,7 @@ specs and clinical data.
 """
 
 # ╔═╡ 03000002-0000-4000-8000-000000000001
-scanner = BS.Scanner(
+scanner = BS.EICTScanner(
     # Geometry (mm)
     source_to_isocenter = 625.6,
     source_to_detector = 1100.0,
@@ -345,7 +345,6 @@ toggle it off below.
 
 # ╔═╡ 05000002-0000-4000-8000-000000000001
 sim_opts = BS.SimOptions(
-    fidelity = :eict,
     seed = 1234,
     projector = :dd_fast,   # same anti-aliased DD physics, single-pass fused kernels
 
@@ -360,13 +359,14 @@ sim_opts = BS.SimOptions(
 
 # ╔═╡ 05000003-0000-4000-8000-000000000001
 md"""
-!!! info "Two fidelity presets"
-    - **`:eict`** — energy-integrating CT (conventional). Beer-Lambert across
+!!! info "Two scanner families"
+    - **`EICTScanner`** — energy-integrating CT (conventional). Beer-Lambert across
       the full source spectrum, scintillator detection, full physics stack.
-    - **`:pcct`** — photon-counting CT. Adds CdTe charge transport,
+    - **`PCCTScanner`** — photon-counting CT. Adds CdTe charge transport,
       K-fluorescence, pulse pileup, and an MC-derived detector response
-      matrix. Pair with a photon-counting `Scanner`
-      (`detector_type = :photon_counting`).
+      matrix. `SimOptions` carries only the physics toggles common to both;
+      detector-specific physics (pile-up, its correction, scatter correction,
+      the count-noise blend) lives on the `PCCTScanner`.
 
 !!! info "Reproducibility"
     `seed = 1234` controls the Poisson + Gaussian noise RNGs. Same seed +

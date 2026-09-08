@@ -357,7 +357,7 @@ function apply_cong!(
         # integrals are legitimate zero-mean noise excursions; clamping them
         # to 0 creates a positive-mean bias that ramp-filtering spreads into
         # the body as a keV-dependent HU offset (previously masked by
-        # pcct_noise_reduction).  Clamp only at absurd magnitudes.
+        # noise_reduction).  Clamp only at absurd magnitudes.
         sino_y[idx] = clamp(y_opt, -5f0, 1f4)
         sino_c[idx] = clamp(c̄ + x_final, -5f0, 1f4)
     end

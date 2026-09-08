@@ -12,9 +12,9 @@ using BasisSimulator
 
 # Five-struct simulation setup (`:dd_fast` is the default projector)
 phantom = create_gammex_472(n_voxels=128, n_slices=8, fov_cm=35.0, z_cm=0.5)
-scanner = Scanner(detector_rows=8, detector_cols=256)
+scanner = EICTScanner(detector_rows=8, detector_cols=256)
 protocol = CTProtocol(kVp=120.0, mA=200.0, views=360)
-sim_opts = SimOptions(fidelity=:eict)
+sim_opts = SimOptions()
 recon_opts = ReconOptions(matrix_size=(256, 256, 8), fov_cm=35.0, z_cm=0.5)
 
 ws = create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
