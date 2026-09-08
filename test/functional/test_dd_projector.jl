@@ -239,3 +239,33 @@ end
         @test _check_transpose_windows(geom_h, size(vol); vext = vext, T = Float32)
     end
 end
+
+@testset "Functional.dd — view batching (M5): batched ≡ per-view, adjoint, legacy" begin
+    function _cyl(nx, ny, nz, ::Type{T}) where {T}
+        vol = zeros(T, nx, ny, nz); cx = (nx + 1) / 2; cy = (ny + 1) / 2; R = 0.6 * (nx / 2)
+        for k in 1:nz, j in 1:ny, i in 1:nx
+            (i - cx)^2 + (j - cy)^2 <= R^2 && (vol[i, j, k] = T(0.2) + T(0.01) * k)
+        end
+        return vol
+    end
+    for shape in (:flat, :arc), T in (Float64, Float32), vb in (2, 4, 9)
+        geom = _oracle_geom(shape); vol = _cyl(16, 16, 4, T)
+        P1 = BSF.dd_project(vol, geom; eltype = T)
+        Pb = BSF.dd_project(vol, geom; eltype = T, view_batch = vb)
+        @test size(Pb) == size(P1)
+        @test Pb == P1                                        # forward: identical per-element arithmetic and tap order
+        y = rand(MersenneTwister(1), T, size(P1)...)
+        B1 = BSF.dd_transpose(y, geom, size(vol); eltype = T)
+        Bb = BSF.dd_transpose(y, geom, size(vol); eltype = T, view_batch = vb)
+        @test maximum(abs.(Bb .- B1)) <= (T == Float64 ? 1e-12 : 2e-6) * maximum(abs.(B1))   # view reduction order
+        @test abs(dot(Pb, y) - dot(vol, Bb)) <= (T == Float64 ? 1e-11 : 1e-5) * abs(dot(Pb, y))
+        batches = BSF.dd_batch_plans(geom, size(vol); view_batch = vb, eltype = T)
+        @test vcat((bp.views for bp in batches)...) == collect(1:geom.n_angles)
+        @test all(length(bp.views) <= vb for bp in batches)
+        @test all(allunique([bp.vertical for bp in batches][i:i+1]) for i in 1:length(batches)-1 if length(batches[i].views) < vb)
+    end
+    geom = _oracle_geom(:arc); vol = _cyl(16, 16, 4, Float64)
+    Pl = BS.dd_forward_project(vol, geom)
+    @test maximum(abs.(BSF.dd_project(vol, geom; view_batch = 4) .- Pl)) <= 1e-12 * maximum(abs.(Pl))
+    @test_throws ArgumentError BSF.dd_batch_plans(geom, size(vol); view_batch = 0)
+end

@@ -84,3 +84,22 @@ end
 end
 
 end # module
+
+@testset "Functional.pipeline — view_batch reproduces the per-view forward" begin
+    scanner = BS.Scanner(source_to_isocenter = 540.0, source_to_detector = 1080.0,
+        detector_rows = 4, detector_cols = 32, detector_row_size = 1.0, detector_col_size = 1.0,
+        detector_material = :lumex, detector_depth = 3.0, electronic_noise = 5.0, detection_gain = 10.0)
+    protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 12, rotation_time = 0.5)
+    sim_opts = BS.SimOptions(; fidelity = :eict, seed = 7, use_noise = false, use_scatter = false,
+        use_lag = false, use_focal_spot = false, use_optical_crosstalk = false)
+    recon_opts = BS.ReconOptions(matrix_size = (16, 16, 2), fov_cm = 20.0)
+    phantom = BS.compact_materials(BS.create_gammex_472(n_voxels = 16, n_slices = 2, fov_cm = 20.0, z_cm = 1.0))
+    p1 = BSF.eict_pipeline(phantom, scanner, protocol, sim_opts, recon_opts)
+    p8 = BSF.eict_pipeline(phantom, scanner, protocol, sim_opts, recon_opts; view_batch = 8)
+    @test p1.view_batch == 1 && p8.view_batch == 8
+    fr = BSF.onehot_fractions(phantom.mask, p1.n_mat)
+    @test BSF.material_paths(fr, p8) == BSF.material_paths(fr, p1)
+    h1 = BSF.eict_forward(fr, p1); h8 = BSF.eict_forward(fr, p8)
+    @test maximum(abs.(h8 .- h1)) <= 5e-3                        # FDK view-batch reduction order only
+    @test_throws ArgumentError BSF.eict_pipeline(phantom, scanner, protocol, sim_opts, recon_opts; view_batch = 0)
+end

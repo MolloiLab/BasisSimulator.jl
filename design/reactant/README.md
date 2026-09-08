@@ -24,9 +24,10 @@ code, and the Reactant/Enzyme smoke tests runnable from `envs/reactant`.
 | **M4 VMI** — `cong_decompose` (fixed-iteration vectorized) + IFT VJP, `cmv_decompose`, `synth_vmi_2basis` | **done.** Cong 4.3e-5 (F32, shared ŵ) / 6.9e-5 (per-ray ŵ) vs `apply_cong!`, F64 residual 3e-16; CMV + synth bit-exact; Enzyme (unrolled) = IFT VJP to 6e-14 |
 | **M4 denoisers** — `acnr_kalender`, `sino_svd_denoise_bilateral`, `median_z`, `sfjsd_denoise` | **done.** ACNR bit-exact (nb03/nb04 kwargs), SVD-bilateral 4.6e-5, median-z exact (`:shrink`), SF-JSD 2e-6 with captured constants; compiled ≤2.2e-7; found a legacy SF-JSD thread race (§7) |
 | **M4 n-channel estimator** — `nchannel_estimate` (profiled Poisson quasi-likelihood, fixed outer/inner iterations), `nchannel_tlbf` (Lee-2025 joint filter), angular apodization; `nchannel_NOTES.md` maps the notebook | **done.** vs the verbatim nb04 cell code: basis sinograms ≤7e-6, Fisher terms ≤1.4e-6, quality flags / iteration counts identical, T-LBF and apodization ≤3e-7; IFT/FD smoothness 5e-8 (124 tests); compiled 2.7e-15 vs plain arrays, Enzyme gradient through the solver = FD to 1.7e-11 |
-| `ext/BasisSimulatorReactantExt.jl` (Reactant weakdep): lifts plan tensors to in-graph constants | done |
+| `ext/BasisSimulatorReactantExt.jl` (Reactant weakdep): lifts plan tensors to in-graph constants; in-graph `Ops.iota` for the projector index vectors | done |
 | Integrated CPU suite (`Pkg.test()`) | all eight stages + pipeline wired (`test/functional/`, ~1050 functional assertions); see the last commit message for the final count |
 | `design/reactant/HOWTO.md` — how to run tests/smokes and drive the pipeline + Reactant/Enzyme from a REPL | done |
+| **M5 view batching** — `dd_batch_plans` / `dd_project_batch` / `dd_transpose_batch` (views as a trailing tensor axis per `vertical` run), `eict_pipeline(…; view_batch)` → DD + FDK batched | **done (host).** forward bit-identical to per-view, transpose ≤3e-16 (F64) / 1.5e-7 (F32), legacy 5e-16, pipeline HU ≤1e-3; Reactant compile/scaling numbers → `PROBES.md` §7 |
 | Driver switch (`simulate!`/`reconstruct!` → functional core) | not started (M6) |
 | CUDA validation | not started (needs a lab NVIDIA box) |
 
@@ -337,8 +338,17 @@ to be added when the first such path needs it.
   host-side and move only their tensors with `to_rarray` so per-view index tensors are built
   in-graph (a host-constant plan bakes them in as literals); (h) nested fused broadcasts cost
   ~10 s of Julia compile each on 1.12 — a `@noinline` broadcast barrier halves it.
-- **Compile-time scaling of unrolled view loops** (HIR × functional DD > 20 min at 24 views;
-  FDK compiled only to 16 views so far) → `@trace for` over views / view chunks is the M5 task.
+  (i) the projector's index vectors must be in-graph (`_iota` → `Ops.iota` in the extension):
+  with the plain-array fallback every derived geometry tensor is host-evaluated and embedded as a
+  literal per view, so trace time scales with detector columns × slabs (>20 min for a 834-column
+  arc; 0.6 s per view with the override); (j) Reactant 0.2.28x caps same-named elementwise helper
+  functions at 10 000 per module (`__lookup_unique_name_in_module` probes `name_1, name_2, …`
+  with a fresh symbol table each call) — a graph with two full pipelines exceeds it;
+  `Functional.uncap_reactant_names!()` (opt-in, extension) swaps in a per-name counter.
+- **Compile-time scaling of unrolled view loops** — solved by view batching (M5): the DD
+  projector/transpose and the FDK take `view_batch` views per tensor program, so program size is
+  set by the number of batches; `@trace for` (Reactant while loops) was probed and rejected for
+  now (dynamic-index slicing inside the loop body hits Reactant's scalar-indexing guard).
 - **Test-suite runtime**: the functional testsets add ~4 min of mostly one-time Julia compile
   (`gram_eigen` 6 specializations, DD kernels 4); a PrecompileTools workload would remove it.
 - **Float32 vs Float64 drift** in denoisers/ACNR (legacy runs some FFTs in Float64): quantify, and

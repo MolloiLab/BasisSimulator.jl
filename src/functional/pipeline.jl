@@ -33,6 +33,7 @@ struct EICTPipeline{T <: AbstractFloat, EP, FP}
     fbp::FP
     μ_water::T
     recon_shape::NTuple{3, Int}
+    view_batch::Int
 end
 
 Base.eltype(::EICTPipeline{T}) where {T} = T
@@ -57,7 +58,9 @@ function eict_pipeline(
         cutoff::Real = 1.0,
         T::Type{<:AbstractFloat} = Float32,
         spectrum_override = nothing,
+        view_batch::Int = 1,
     )
+    view_batch >= 1 || throw(ArgumentError("view_batch must be ≥ 1, got $view_batch"))
     ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom; T, spectrum_override)
     geom = ws.geom
     model = bhc === :water ? BS.calibrate_bhc_water(sim_opts, protocol; scanner, geom) : bhc
@@ -66,7 +69,7 @@ function eict_pipeline(
     μw = model === nothing ? BS.get_reference_μ_water(70.0) : model.μ_water_ref
     n_mat = size(eplan.μ_tbl, 1)
     return EICTPipeline{T, typeof(eplan), typeof(fplan)}(
-        geom, size(phantom.mask), n_mat, phantom.extent, eplan, fplan, T(μw), recon_opts.matrix_size)
+        geom, size(phantom.mask), n_mat, phantom.extent, eplan, fplan, T(μw), recon_opts.matrix_size, view_batch)
 end
 
 """
@@ -99,6 +102,13 @@ material axis is the batch axis of the linear operator). Differentiable in
 """
 function material_paths(fractions::AbstractArray{<:Any, 4}, pipe::EICTPipeline{T}) where {T}
     geom = pipe.geom
+    if pipe.view_batch > 1
+        batches = dd_batch_plans(geom, pipe.vol_shape; view_batch = pipe.view_batch,
+            volume_extent = pipe.volume_extent, eltype = T)
+        per_mat = [cat((dd_project_batch(fractions[:, :, :, m], bp) for bp in batches)...; dims = 3)
+                   for m in 1:size(fractions, 4)]
+        return _cat_new_axis(per_mat)
+    end
     plans = [dd_view_plan(geom, v, pipe.vol_shape; volume_extent = pipe.volume_extent, eltype = T)
              for v in 1:geom.n_angles]
     per_mat = [_cat_new_axis([dd_project_view(fractions[:, :, :, m], p) for p in plans])
@@ -120,7 +130,19 @@ is a traced array (a host `Matrix * traced` otherwise degrades to a scalar
 fallback with one op per multiply-add).
 """
 _on_device(x, ref) = x
+
 _on_device(::Nothing, ref) = nothing
+
+"""
+    uncap_reactant_names!()
+
+No-op without Reactant. With the Reactant extension loaded, replaces Reactant's per-module
+unique-name lookup (capped at 10 000 same-named elementwise helpers in 0.2.28x, which a graph
+holding two full pipelines exceeds) by a per-name counter. Opt-in because it redefines a
+Reactant internal; call once before `@compile`.
+"""
+const _UNCAP_REACTANT_HOOK = Ref{Any}(nothing)      # set by the Reactant extension in its __init__
+uncap_reactant_names!() = (h = _UNCAP_REACTANT_HOOK[]; h === nothing ? nothing : h())
 
 function _eict_on_device(p::EICTPlan{T}, ref) where {T}
     μ = _on_device(p.μ_tbl, ref); w = _on_device(p.wη, ref); b = _on_device(p.bt, ref)
@@ -151,7 +173,8 @@ end
 
 Pure equivalent of `reconstruct!(create_fdk_recon_workspace(sino, geom, matrix))`.
 """
-reconstruct_μ(sino::AbstractArray{<:Any, 3}, pipe::EICTPipeline) = fdk(sino, _fbp_on_device(pipe.fbp, sino))
+reconstruct_μ(sino::AbstractArray{<:Any, 3}, pipe::EICTPipeline) =
+    fdk(sino, _fbp_on_device(pipe.fbp, sino); view_batch = pipe.view_batch)
 
 """
     to_hu(μ, pipe)

@@ -161,7 +161,7 @@ function _z_cells(rowf, scale_col, deltaT, detXstep, valid_x, c)
     detZstep = dZhi .- dZlo
     deltaZ = half .* (dZa .+ dZb) .- c.sz
     valid = valid_x .& (detZstep .> c.tiny)
-    invCos = sqrt.(c.s_long * c.s_long .+ deltaT .* deltaT .+ deltaZ .* deltaZ) ./ abs(c.s_long) .* c.v_long
+    invCos = sqrt.(c.s_long .* c.s_long .+ deltaT .* deltaT .+ deltaZ .* deltaZ) ./ abs.(c.s_long) .* c.v_long
     den = ifelse.(valid, detXstep .* detZstep, one(c.half))
     norm = ifelse.(valid, invCos ./ den, zero(c.half))
     return (dZlo, dZhi, detZstep, norm)
@@ -175,12 +175,12 @@ function _beta_of_x(X, c)
     Y = X .- c.s_tran
     if c.arc
         num = Y .* c.cin_long .+ c.s_long .* c.cin_tran
-        den = Y .* (c.Lsd * c.u_long) .+ c.s_long .* (c.Lsd * c.u_tran)
+        den = Y .* (c.Lsd .* c.u_long) .+ c.s_long .* (c.Lsd .* c.u_tran)
         γ = atan.(-num .* sign.(den), abs.(den))          # principal branch, |γ| < π/2
         return γ ./ c.dγ .+ c.cc
     else
-        num = Y .* (c.s_long - c.d_long) .- (c.d_tran - c.s_tran) * c.s_long
-        den = c.u_tran * c.s_long .+ Y .* c.u_long
+        num = Y .* (c.s_long .- c.d_long) .- (c.d_tran .- c.s_tran) .* c.s_long
+        den = c.u_tran .* c.s_long .+ Y .* c.u_long
         den = ifelse.(abs.(den) .< c.tiny, c.tiny, den)
         u = num ./ den
         return u ./ (c.ps * c.mag) .+ c.cc
@@ -198,8 +198,8 @@ function _col_start(tvlo, tvhi, c)
 end
 
 function _row_start(zvlo, zvhi, scale_col, c)
-    zden = c.prs * c.mag * c.vvz
-    zden = abs(zden) < c.tiny ? c.tiny : zden
+    zden = c.prs .* c.mag .* c.vvz
+    zden = ifelse.(abs.(zden) .< c.tiny, c.tiny, zden)
     sc = ifelse.(abs.(scale_col) .< c.tiny, c.tiny, scale_col)
     ρa = ((zvlo .- c.sz) ./ sc .+ c.sz .- c.dcz) ./ zden .+ c.rc
     ρb = ((zvhi .- c.sz) ./ sc .+ c.sz .- c.dcz) ./ zden .+ c.rc
@@ -221,8 +221,8 @@ function _forward_geometry(p::DDViewPlan{T}, ref::AbstractArray) where {T}
     lp = c.vmin_long .+ (ilf .- c.half) .* c.v_long
     mf = c.s_long ./ (c.s_long .- lp)                                   # 1×1×n_long
     inv_mf = one(T) ./ mf
-    cx_lo = ((dXlo .- c.s_tran) .* inv_mf .- (c.vmin_t - c.s_tran)) ./ c.v_t   # n_cols×1×n_long
-    cz_lo = ((dZlo .- c.sz) .* inv_mf .- (c.vmin_z - c.sz)) ./ c.vz            # n_cols×n_rows×n_long
+    cx_lo = ((dXlo .- c.s_tran) .* inv_mf .- (c.vmin_t .- c.s_tran)) ./ c.v_t   # n_cols×1×n_long
+    cz_lo = ((dZlo .- c.sz) .* inv_mf .- (c.vmin_z .- c.sz)) ./ c.vz            # n_cols×n_rows×n_long
     i0c = _clamp_start.(cx_lo, -T(2), T(c.n_t + 2))
     k0c = _clamp_start.(cz_lo, -T(2), T(c.nz + 2))
     i0f = floor.(i0c);  i0 = floor.(Int32, i0c)        # one voxel before the first overlap (see _tap_counts)
@@ -398,7 +398,11 @@ is the primitive scalar type used to build the plans; pass it explicitly (e.g.
 """
 function dd_project(vol::AbstractArray{<:Any, 3}, geom::CTGeometry;
         volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
-        eltype::Type{T} = Base.eltype(vol)) where {T <: AbstractFloat}
+        eltype::Type{T} = Base.eltype(vol), view_batch::Int = 1) where {T <: AbstractFloat}
+    if view_batch > 1
+        batches = dd_batch_plans(geom, size(vol); view_batch, volume_extent, eltype = T)
+        return cat((dd_project_batch(vol, bp) for bp in batches)...; dims = 3)
+    end
     views = [dd_project_view(vol, dd_view_plan(geom, v, size(vol); volume_extent, eltype = T))
              for v in 1:geom.n_angles]
     return stack(views)                                   # (n_cols, n_rows, n_views)
@@ -413,12 +417,238 @@ Numerically the legacy `dd_backproject!` (unweighted, full z, no support mask).
 """
 function dd_transpose(sino::AbstractArray{<:Any, 3}, geom::CTGeometry, vol_shape::NTuple{3, Int};
         volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
-        eltype::Type{T} = Base.eltype(sino)) where {T <: AbstractFloat}
+        eltype::Type{T} = Base.eltype(sino), view_batch::Int = 1) where {T <: AbstractFloat}
     acc = nothing
+    if view_batch > 1
+        for bp in dd_batch_plans(geom, vol_shape; view_batch, volume_extent, eltype = T)
+            term = dd_transpose_batch(sino[:, :, bp.views[1]:bp.views[end]], bp, vol_shape)
+            acc = acc === nothing ? term : acc .+ term
+        end
+        return acc
+    end
     for v in 1:geom.n_angles
         plan = dd_view_plan(geom, v, vol_shape; volume_extent, eltype = T)
         term = dd_transpose_view(sino[:, :, v], plan, vol_shape)
         acc = acc === nothing ? term : acc .+ term
     end
     return acc
+end
+
+# =============================================================================
+# View batching (M5): a batch of consecutive views with the same `vertical`
+# axis choice is ONE tensor program — every per-view scalar of `_consts`
+# becomes a `(1, 1, 1, B)` constant and the geometry/tap arrays gain a trailing
+# view axis.  Per-element arithmetic and tap order are exactly those of the
+# per-view functions (the batch tap counts are the maxima over the batch; the
+# extra taps carry zero overlap weight), so results agree with the per-view path
+# up to reduction order.  Program size is then set by the number of batches,
+# not by the number of views.
+# =============================================================================
+
+"""
+    DDBatchPlan{T}
+
+Host description of a batch of views (`views`, consecutive, same `vertical`)
+for [`dd_project_batch`](@ref) / [`dd_transpose_batch`](@ref); per-view source /
+detector quantities are vectors, tap counts are the batch maxima.  Build with
+[`dd_batch_plans`](@ref).
+"""
+struct DDBatchPlan{T <: AbstractFloat}
+    views::Vector{Int}
+    arc::Bool
+    vertical::Bool
+    sx::Vector{Float64}; sy::Vector{Float64}; sz::Vector{Float64}
+    dcx::Vector{Float64}; dcy::Vector{Float64}; dcz::Vector{Float64}
+    ux::Vector{Float64}; uy::Vector{Float64}; vvz::Vector{Float64}
+    n_cols::Int; n_rows::Int
+    SAD::Float64; SDD::Float64
+    pixel_size::Float64; pixel_row_size::Float64
+    nx::Int; ny::Int; nz::Int
+    bounds::NTuple{3, Float64}
+    KX::Int; KZ::Int; KXT::Int; KZT::Int
+end
+
+"""
+    dd_batch_plans(geom, vol_shape; view_batch = 32, volume_extent = nothing, eltype = Float64)
+
+Partition `1:geom.n_angles` into consecutive runs of equal `vertical`, each cut
+into chunks of at most `view_batch` views, in view order (so concatenating the
+batch results along the view axis reproduces the sinogram view order).
+"""
+function dd_batch_plans(geom::CTGeometry, vol_shape::NTuple{3, Int};
+        view_batch::Int = 32,
+        volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
+        eltype::Type{T} = Float64) where {T <: AbstractFloat}
+    view_batch >= 1 || throw(ArgumentError("view_batch must be ≥ 1, got $view_batch"))
+    plans = [dd_view_plan(geom, v, vol_shape; volume_extent, eltype = T) for v in 1:geom.n_angles]
+    out = DDBatchPlan{T}[]
+    v = 1
+    while v <= geom.n_angles
+        w = v
+        while w < geom.n_angles && plans[w + 1].vertical == plans[v].vertical && (w - v + 1) < view_batch
+            w += 1
+        end
+        ps = plans[v:w]; p1 = ps[1]
+        push!(out, DDBatchPlan{T}(collect(v:w), p1.arc, p1.vertical,
+            [p.sx for p in ps], [p.sy for p in ps], [p.sz for p in ps],
+            [p.dcx for p in ps], [p.dcy for p in ps], [p.dcz for p in ps],
+            [p.ux for p in ps], [p.uy for p in ps], [p.vvz for p in ps],
+            p1.n_cols, p1.n_rows, p1.SAD, p1.SDD, p1.pixel_size, p1.pixel_row_size,
+            p1.nx, p1.ny, p1.nz, p1.bounds,
+            maximum(p.KX for p in ps), maximum(p.KZ for p in ps), maximum(p.KXT for p in ps), maximum(p.KZT for p in ps)))
+        v = w + 1
+    end
+    return out
+end
+
+# `_consts` for a batch: view-independent scalars as in `_consts`, per-view
+# quantities converted to `S` per view exactly as `_consts` converts them and
+# lifted as (1,1,1,B) constants in the array world of `ref`.
+function _consts_batch(p::DDBatchPlan{T}, ref) where {T}
+    S = T; B = length(p.views)
+    b = p.bounds
+    nx, ny, nz = p.nx, p.ny, p.nz
+    vmin_x = S(-b[1] / 2); vmin_y = S(-b[2] / 2); vmin_z = S(-b[3] / 2)
+    vx = S(b[1]) / S(nx); vy = S(b[2]) / S(ny); vz = S(b[3]) / S(nz)
+    mag = S(p.SDD / p.SAD)
+    dγ = S(p.pixel_size / p.SAD)
+    ps = S(p.pixel_size); prs = S(p.pixel_row_size)
+    cc = (S(p.n_cols) + one(S)) / S(2)
+    rc = (S(p.n_rows) + one(S)) / S(2)
+    sx = S.(p.sx); sy = S.(p.sy); sz = S.(p.sz)
+    dcx = S.(p.dcx); dcy = S.(p.dcy); dcz = S.(p.dcz)
+    ux = S.(p.ux); uy = S.(p.uy); vvz = S.(p.vvz)
+    if p.vertical
+        s_long = sy; s_tran = sx
+        d_tran = dcx; d_long = dcy; u_tran = ux; u_long = uy
+        n_t = nx; v_t = vx; vmin_t = vmin_x
+        n_long = ny; v_long = vy; vmin_long = vmin_y
+    else
+        s_long = sx; s_tran = sy
+        d_tran = dcy; d_long = dcx; u_tran = uy; u_long = ux
+        n_t = ny; v_t = vy; vmin_t = vmin_y
+        n_long = nx; v_long = vx; vmin_long = vmin_x
+    end
+    cin_x = dcx .- sx; cin_y = dcy .- sy
+    Lsd = sqrt.(cin_x .* cin_x .+ cin_y .* cin_y)
+    cin_tran = p.vertical ? cin_x : cin_y
+    cin_long = p.vertical ? cin_y : cin_x
+    lift(v) = _on_device(reshape(v, 1, 1, 1, B), ref)
+    return (; arc = p.arc, half = S(0.5), tiny = S(1.0e-12), two = S(2),
+        n_cols_hi = S(p.n_cols + 2), n_rows_hi = S(p.n_rows + 2),
+        sx = lift(sx), sy = lift(sy), sz = lift(sz), dcx = lift(dcx), dcy = lift(dcy), dcz = lift(dcz),
+        ux = lift(ux), uy = lift(uy), vvz = lift(vvz), mag, dγ, ps, prs, cc, rc,
+        vmin_x, vmin_y, vmin_z, vx, vy, vz,
+        s_long = lift(s_long), s_tran = lift(s_tran), d_tran = lift(d_tran), d_long = lift(d_long),
+        u_tran = lift(u_tran), u_long = lift(u_long), Lsd = lift(Lsd), cin_tran = lift(cin_tran), cin_long = lift(cin_long),
+        n_t, v_t, vmin_t, n_long, v_long, vmin_long, nz,
+        n_cols = p.n_cols, n_rows = p.n_rows)
+end
+
+function _forward_geometry_batch(p::DDBatchPlan{T}, ref::AbstractArray) where {T}
+    c = _consts_batch(p, ref)
+    colf = reshape(_iota(ref, T, p.n_cols), :, 1, 1, 1)
+    rowf = reshape(_iota(ref, T, p.n_rows), 1, :, 1, 1)
+    ilf = reshape(_iota(ref, T, c.n_long), 1, 1, :, 1)
+    (dXlo, dXhi, detXstep, deltaT, scale_col, valid_x) = _x_cells(colf, c)                 # n_cols×1×1×B
+    (dZlo, dZhi, _, norm) = _z_cells(rowf, scale_col, deltaT, detXstep, valid_x, c)         # n_cols×n_rows×1×B
+    lp = c.vmin_long .+ (ilf .- c.half) .* c.v_long
+    mf = c.s_long ./ (c.s_long .- lp)                                                       # 1×1×n_long×B
+    inv_mf = one(T) ./ mf
+    cx_lo = ((dXlo .- c.s_tran) .* inv_mf .- (c.vmin_t .- c.s_tran)) ./ c.v_t                # n_cols×1×n_long×B
+    cz_lo = ((dZlo .- c.sz) .* inv_mf .- (c.vmin_z .- c.sz)) ./ c.vz                         # n_cols×n_rows×n_long×B
+    i0c = _clamp_start.(cx_lo, -T(2), T(c.n_t + 2))
+    k0c = _clamp_start.(cz_lo, -T(2), T(c.nz + 2))
+    i0f = floor.(i0c);  i0 = floor.(Int32, i0c)
+    k0f = floor.(k0c);  k0 = floor.(Int32, k0c)
+    sofs = (floor.(Int32, ilf) .- Int32(1)) .* Int32(c.n_t * c.nz)                          # 1×1×n_long×1
+    return (; c, dXlo, dXhi, dZlo, dZhi, norm, mf, i0f, i0, k0f, k0, sofs)
+end
+
+"""
+    dd_project_batch(vol, bp::DDBatchPlan) -> (n_cols, n_rows, B)
+
+[`dd_project_view`](@ref) for all views of the batch in one tensor program.
+"""
+function dd_project_batch(vol::AbstractArray{<:Any, 3}, p::DDBatchPlan{T}) where {T <: AbstractFloat}
+    size(vol) == (p.nx, p.ny, p.nz) ||
+        throw(DimensionMismatch("volume $(size(vol)) does not match plan $((p.nx, p.ny, p.nz))"))
+    V = p.vertical ? permutedims(vol, (1, 3, 2)) : permutedims(vol, (2, 3, 1))   # (n_t, nz, n_long)
+    g = _forward_geometry_batch(p, vol)
+    c = g.c
+    n_t = Int32(c.n_t); nz = Int32(c.nz)
+    acc = nothing
+    for dx in 0:(p.KX - 1)
+        fi = g.i0f .+ T(dx)
+        i = g.i0 .+ Int32(dx)
+        t0 = c.s_tran .+ (c.vmin_t .+ (fi .- one(T)) .* c.v_t .- c.s_tran) .* g.mf
+        t1 = c.s_tran .+ (c.vmin_t .+ fi .* c.v_t .- c.s_tran) .* g.mf
+        ox = ifelse.(_inrange.(i, n_t), _overlap.(g.dXlo, g.dXhi, min.(t0, t1), max.(t0, t1)), zero(T))
+        ic = clamp.(i, Int32(1), n_t)
+        for dz in 0:(p.KZ - 1)
+            fk = g.k0f .+ T(dz)
+            k = g.k0 .+ Int32(dz)
+            z0 = c.sz .+ (c.vmin_z .+ (fk .- one(T)) .* c.vz .- c.sz) .* g.mf
+            z1 = c.sz .+ (c.vmin_z .+ fk .* c.vz .- c.sz) .* g.mf
+            oz = ifelse.(_inrange.(k, nz), _overlap.(g.dZlo, g.dZhi, min.(z0, z1), max.(z0, z1)), zero(T))
+            kc = clamp.(k, Int32(1), nz)
+            L = ic .+ (kc .- Int32(1)) .* n_t .+ g.sofs                    # n_cols×n_rows×n_long×B
+            term = ox .* oz .* _gather(V, L)
+            acc = acc === nothing ? term : acc .+ term
+        end
+    end
+    P = dropdims(sum(acc; dims = 3); dims = 3)                              # n_cols×n_rows×B
+    return P .* dropdims(g.norm; dims = 3)
+end
+
+"""
+    dd_transpose_batch(sino_batch, bp::DDBatchPlan, vol_shape) -> (nx, ny, nz)
+
+Sum over the batch's views of [`dd_transpose_view`](@ref), in one tensor
+program; `sino_batch :: (n_cols, n_rows, B)` holds the batch's views in order.
+"""
+function dd_transpose_batch(sino::AbstractArray{<:Any, 3}, p::DDBatchPlan{T},
+        vol_shape::NTuple{3, Int}) where {T <: AbstractFloat}
+    B = length(p.views)
+    size(sino) == (p.n_cols, p.n_rows, B) ||
+        throw(DimensionMismatch("sinogram batch $(size(sino)) does not match plan $((p.n_cols, p.n_rows, B))"))
+    vol_shape == (p.nx, p.ny, p.nz) ||
+        throw(DimensionMismatch("vol_shape $(vol_shape) does not match plan $((p.nx, p.ny, p.nz))"))
+    c = _consts_batch(p, sino)
+    n_t, nz, n_long = c.n_t, c.nz, c.n_long
+    ncol = Int32(p.n_cols); nrow = Int32(p.n_rows)
+    itf = reshape(_iota(sino, T, n_t), :, 1, 1, 1)
+    ipf = reshape(_iota(sino, T, nz), 1, :, 1, 1)
+    ilf = reshape(_iota(sino, T, n_long), 1, 1, :, 1)
+    off = _on_device(reshape(Int32[(b - 1) * p.n_cols * p.n_rows for b in 1:B], 1, 1, 1, B), sino)
+    lp = c.vmin_long .+ (ilf .- c.half) .* c.v_long
+    mf = c.s_long ./ (c.s_long .- lp)                                         # 1×1×n_long×B
+    t0 = c.s_tran .+ (c.vmin_t .+ (itf .- one(T)) .* c.v_t .- c.s_tran) .* mf
+    t1 = c.s_tran .+ (c.vmin_t .+ itf .* c.v_t .- c.s_tran) .* mf
+    tvlo = min.(t0, t1); tvhi = max.(t0, t1)                                # n_t×1×n_long×B
+    z0 = c.sz .+ (c.vmin_z .+ (ipf .- one(T)) .* c.vz .- c.sz) .* mf
+    z1 = c.sz .+ (c.vmin_z .+ ipf .* c.vz .- c.sz) .* mf
+    zvlo = min.(z0, z1); zvhi = max.(z0, z1)                                # 1×nz×n_long×B
+    col0f, col0 = _col_start(tvlo, tvhi, c)
+    acc = nothing
+    for dc in 0:(p.KXT - 1)
+        colf = col0f .+ T(dc)
+        col = col0 .+ Int32(dc)
+        (dXlo, dXhi, detXstep, deltaT, scale_col, valid_x) = _x_cells(colf, c)
+        ox = ifelse.(_inrange.(col, ncol), _overlap.(dXlo, dXhi, tvlo, tvhi), zero(T))
+        colc = clamp.(col, Int32(1), ncol)
+        row0f, row0 = _row_start(zvlo, zvhi, scale_col, c)                   # n_t×nz×n_long×B
+        for dr in 0:(p.KZT - 1)
+            rowf = row0f .+ T(dr)
+            row = row0 .+ Int32(dr)
+            (dZlo, dZhi, _, norm) = _z_cells(rowf, scale_col, deltaT, detXstep, valid_x, c)
+            oz = ifelse.(_inrange.(row, nrow), _overlap.(dZlo, dZhi, zvlo, zvhi), zero(T))
+            rowc = clamp.(row, Int32(1), nrow)
+            L = colc .+ (rowc .- Int32(1)) .* ncol .+ off                    # n_t×nz×n_long×B
+            term = ox .* oz .* norm .* _gather(sino, L)
+            acc = acc === nothing ? term : acc .+ term
+        end
+    end
+    acc3 = dropdims(sum(acc; dims = 4); dims = 4)
+    return p.vertical ? permutedims(acc3, (1, 3, 2)) : permutedims(acc3, (3, 1, 2))
 end

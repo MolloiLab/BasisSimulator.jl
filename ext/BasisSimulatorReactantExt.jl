@@ -33,4 +33,19 @@ BSF._on_device(x::AbstractArray, ::Reactant.TracedRNumber) = Reactant.Ops.consta
 BSF._iota(::Reactant.TracedRArray, ::Type{T}, n::Integer) where {T} =
     Reactant.Ops.iota(T, [Int(n)]; iota_dimension = 1) .+ one(T)
 
+# Reactant 0.2.28x caps the number of same-named elementwise helper functions per module at
+# 10 000 (`__lookup_unique_name_in_module` probes name, name_1, … against a freshly built symbol
+# table on every call). Two full pipelines in one graph exceed it. Opt-in override: a monotonic
+# per-name counter (no cap, O(1) per call). Names stay unique, so the emitted MLIR is unchanged.
+const _UNIQUE_NAME_COUNTERS = Dict{String, Int}()
+function _uncap_reactant_names!()
+    @eval Reactant.TracedUtils function __lookup_unique_name_in_module(mod, name)
+        i = get($_UNIQUE_NAME_COUNTERS, name, 0)
+        $_UNIQUE_NAME_COUNTERS[name] = i + 1
+        return i == 0 ? name : name * "_" * string(i)
+    end
+    return nothing
+end
+__init__() = (BSF._UNCAP_REACTANT_HOOK[] = _uncap_reactant_names!; nothing)
+
 end # module
