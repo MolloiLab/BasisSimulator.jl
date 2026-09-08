@@ -398,8 +398,9 @@ is the primitive scalar type used to build the plans; pass it explicitly (e.g.
 """
 function dd_project(vol::AbstractArray{<:Any, 3}, geom::CTGeometry;
         volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
-        eltype::Type{T} = Base.eltype(vol), view_batch::Int = 1) where {T <: AbstractFloat}
+        eltype::Type{T} = Base.eltype(vol), view_batch::Int = 1, loop::Bool = true) where {T <: AbstractFloat}
     if view_batch > 1
+        loop && return _dd_project_looped(vol, geom, view_batch, volume_extent, T)
         batches = dd_batch_plans(geom, size(vol); view_batch, volume_extent, eltype = T)
         return cat((dd_project_batch(vol, bp) for bp in batches)...; dims = 3)
     end
@@ -417,9 +418,10 @@ Numerically the legacy `dd_backproject!` (unweighted, full z, no support mask).
 """
 function dd_transpose(sino::AbstractArray{<:Any, 3}, geom::CTGeometry, vol_shape::NTuple{3, Int};
         volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
-        eltype::Type{T} = Base.eltype(sino), view_batch::Int = 1) where {T <: AbstractFloat}
+        eltype::Type{T} = Base.eltype(sino), view_batch::Int = 1, loop::Bool = true) where {T <: AbstractFloat}
     acc = nothing
     if view_batch > 1
+        loop && return _dd_transpose_looped(sino, geom, vol_shape, view_batch, volume_extent, T)
         for bp in dd_batch_plans(geom, vol_shape; view_batch, volume_extent, eltype = T)
             term = dd_transpose_batch(sino[:, :, bp.views[1]:bp.views[end]], bp, vol_shape)
             acc = acc === nothing ? term : acc .+ term
@@ -545,10 +547,13 @@ function _consts_batch(p::DDBatchPlan{T}, ref) where {T}
         n_cols = p.n_cols, n_rows = p.n_rows)
 end
 
-function _forward_geometry_batch(p::DDBatchPlan{T}, ref::AbstractArray) where {T}
-    c = _consts_batch(p, ref)
-    colf = reshape(_iota(ref, T, p.n_cols), :, 1, 1, 1)
-    rowf = reshape(_iota(ref, T, p.n_rows), 1, :, 1, 1)
+_forward_geometry_batch(p::DDBatchPlan{T}, ref::AbstractArray) where {T} =
+    _forward_geometry_from(_consts_batch(p, ref), p.n_cols, p.n_rows, ref, T)
+
+# Forward geometry arrays from a per-batch consts NamedTuple `c` (per-view fields (1,1,1,B)).
+function _forward_geometry_from(c, n_cols::Int, n_rows::Int, ref::AbstractArray, ::Type{T}) where {T}
+    colf = reshape(_iota(ref, T, n_cols), :, 1, 1, 1)
+    rowf = reshape(_iota(ref, T, n_rows), 1, :, 1, 1)
     ilf = reshape(_iota(ref, T, c.n_long), 1, 1, :, 1)
     (dXlo, dXhi, detXstep, deltaT, scale_col, valid_x) = _x_cells(colf, c)                 # n_cols×1×1×B
     (dZlo, dZhi, _, norm) = _z_cells(rowf, scale_col, deltaT, detXstep, valid_x, c)         # n_cols×n_rows×1×B
@@ -565,6 +570,78 @@ function _forward_geometry_batch(p::DDBatchPlan{T}, ref::AbstractArray) where {T
     return (; c, dXlo, dXhi, dZlo, dZhi, norm, mf, i0f, i0, k0f, k0, sofs)
 end
 
+# Forward tap loop shared by the unrolled batch and the looped run: `Vs` are the view-local
+# volumes (n_t, nz, n_long) of each channel (material); returns one (n_cols, n_rows, B) per channel.
+function _dd_forward_taps(Vs, KX::Int, KZ::Int, g, ::Type{T}) where {T}
+    c = g.c
+    n_t = Int32(c.n_t); nz = Int32(c.nz)
+    accs = Any[nothing for _ in Vs]
+    for dx in 0:(KX - 1)
+        fi = g.i0f .+ T(dx)
+        i = g.i0 .+ Int32(dx)
+        t0 = c.s_tran .+ (c.vmin_t .+ (fi .- one(T)) .* c.v_t .- c.s_tran) .* g.mf
+        t1 = c.s_tran .+ (c.vmin_t .+ fi .* c.v_t .- c.s_tran) .* g.mf
+        ox = ifelse.(_inrange.(i, n_t), _overlap.(g.dXlo, g.dXhi, min.(t0, t1), max.(t0, t1)), zero(T))
+        ic = clamp.(i, Int32(1), n_t)
+        for dz in 0:(KZ - 1)
+            fk = g.k0f .+ T(dz)
+            k = g.k0 .+ Int32(dz)
+            z0 = c.sz .+ (c.vmin_z .+ (fk .- one(T)) .* c.vz .- c.sz) .* g.mf
+            z1 = c.sz .+ (c.vmin_z .+ fk .* c.vz .- c.sz) .* g.mf
+            oz = ifelse.(_inrange.(k, nz), _overlap.(g.dZlo, g.dZhi, min.(z0, z1), max.(z0, z1)), zero(T))
+            kc = clamp.(k, Int32(1), nz)
+            L = ic .+ (kc .- Int32(1)) .* n_t .+ g.sofs                    # n_cols×n_rows×n_long×B
+            w = ox .* oz
+            for (m, V) in enumerate(Vs)
+                term = w .* _gather(V, L)
+                accs[m] = accs[m] === nothing ? term : accs[m] .+ term
+            end
+        end
+    end
+    normB = dropdims(g.norm; dims = 3)                                     # n_cols×n_rows×B
+    return [dropdims(sum(acc; dims = 3); dims = 3) .* normB for acc in accs]
+end
+
+# Transpose tap loop shared by the unrolled batch and the looped run: `sino` is a
+# (n_cols, n_rows, B) chunk, `off` its per-view linear offsets (1,1,1,B); returns
+# the (n_t, nz, n_long) sum over the chunk's views.
+function _dd_transpose_taps(sino, c, KXT::Int, KZT::Int, off, ref, ::Type{T}) where {T}
+    n_t, nz, n_long = c.n_t, c.nz, c.n_long
+    ncol = Int32(c.n_cols); nrow = Int32(c.n_rows)
+    itf = reshape(_iota(ref, T, n_t), :, 1, 1, 1)
+    ipf = reshape(_iota(ref, T, nz), 1, :, 1, 1)
+    ilf = reshape(_iota(ref, T, n_long), 1, 1, :, 1)
+    lp = c.vmin_long .+ (ilf .- c.half) .* c.v_long
+    mf = c.s_long ./ (c.s_long .- lp)                                         # 1×1×n_long×B
+    t0 = c.s_tran .+ (c.vmin_t .+ (itf .- one(T)) .* c.v_t .- c.s_tran) .* mf
+    t1 = c.s_tran .+ (c.vmin_t .+ itf .* c.v_t .- c.s_tran) .* mf
+    tvlo = min.(t0, t1); tvhi = max.(t0, t1)                                # n_t×1×n_long×B
+    z0 = c.sz .+ (c.vmin_z .+ (ipf .- one(T)) .* c.vz .- c.sz) .* mf
+    z1 = c.sz .+ (c.vmin_z .+ ipf .* c.vz .- c.sz) .* mf
+    zvlo = min.(z0, z1); zvhi = max.(z0, z1)                                # 1×nz×n_long×B
+    col0f, col0 = _col_start(tvlo, tvhi, c)
+    acc = nothing
+    for dc in 0:(KXT - 1)
+        colf = col0f .+ T(dc)
+        col = col0 .+ Int32(dc)
+        (dXlo, dXhi, detXstep, deltaT, scale_col, valid_x) = _x_cells(colf, c)
+        ox = ifelse.(_inrange.(col, ncol), _overlap.(dXlo, dXhi, tvlo, tvhi), zero(T))
+        colc = clamp.(col, Int32(1), ncol)
+        row0f, row0 = _row_start(zvlo, zvhi, scale_col, c)                   # n_t×nz×n_long×B
+        for dr in 0:(KZT - 1)
+            rowf = row0f .+ T(dr)
+            row = row0 .+ Int32(dr)
+            (dZlo, dZhi, _, norm) = _z_cells(rowf, scale_col, deltaT, detXstep, valid_x, c)
+            oz = ifelse.(_inrange.(row, nrow), _overlap.(dZlo, dZhi, zvlo, zvhi), zero(T))
+            rowc = clamp.(row, Int32(1), nrow)
+            L = colc .+ (rowc .- Int32(1)) .* ncol .+ off                    # n_t×nz×n_long×B
+            term = ox .* oz .* norm .* _gather(sino, L)
+            acc = acc === nothing ? term : acc .+ term
+        end
+    end
+    return dropdims(sum(acc; dims = 4); dims = 4)
+end
+
 """
     dd_project_batch(vol, bp::DDBatchPlan) -> (n_cols, n_rows, B)
 
@@ -575,30 +652,7 @@ function dd_project_batch(vol::AbstractArray{<:Any, 3}, p::DDBatchPlan{T}) where
         throw(DimensionMismatch("volume $(size(vol)) does not match plan $((p.nx, p.ny, p.nz))"))
     V = p.vertical ? permutedims(vol, (1, 3, 2)) : permutedims(vol, (2, 3, 1))   # (n_t, nz, n_long)
     g = _forward_geometry_batch(p, vol)
-    c = g.c
-    n_t = Int32(c.n_t); nz = Int32(c.nz)
-    acc = nothing
-    for dx in 0:(p.KX - 1)
-        fi = g.i0f .+ T(dx)
-        i = g.i0 .+ Int32(dx)
-        t0 = c.s_tran .+ (c.vmin_t .+ (fi .- one(T)) .* c.v_t .- c.s_tran) .* g.mf
-        t1 = c.s_tran .+ (c.vmin_t .+ fi .* c.v_t .- c.s_tran) .* g.mf
-        ox = ifelse.(_inrange.(i, n_t), _overlap.(g.dXlo, g.dXhi, min.(t0, t1), max.(t0, t1)), zero(T))
-        ic = clamp.(i, Int32(1), n_t)
-        for dz in 0:(p.KZ - 1)
-            fk = g.k0f .+ T(dz)
-            k = g.k0 .+ Int32(dz)
-            z0 = c.sz .+ (c.vmin_z .+ (fk .- one(T)) .* c.vz .- c.sz) .* g.mf
-            z1 = c.sz .+ (c.vmin_z .+ fk .* c.vz .- c.sz) .* g.mf
-            oz = ifelse.(_inrange.(k, nz), _overlap.(g.dZlo, g.dZhi, min.(z0, z1), max.(z0, z1)), zero(T))
-            kc = clamp.(k, Int32(1), nz)
-            L = ic .+ (kc .- Int32(1)) .* n_t .+ g.sofs                    # n_cols×n_rows×n_long×B
-            term = ox .* oz .* _gather(V, L)
-            acc = acc === nothing ? term : acc .+ term
-        end
-    end
-    P = dropdims(sum(acc; dims = 3); dims = 3)                              # n_cols×n_rows×B
-    return P .* dropdims(g.norm; dims = 3)
+    return _dd_forward_taps((V,), p.KX, p.KZ, g, T)[1]
 end
 
 """
@@ -615,40 +669,7 @@ function dd_transpose_batch(sino::AbstractArray{<:Any, 3}, p::DDBatchPlan{T},
     vol_shape == (p.nx, p.ny, p.nz) ||
         throw(DimensionMismatch("vol_shape $(vol_shape) does not match plan $((p.nx, p.ny, p.nz))"))
     c = _consts_batch(p, sino)
-    n_t, nz, n_long = c.n_t, c.nz, c.n_long
-    ncol = Int32(p.n_cols); nrow = Int32(p.n_rows)
-    itf = reshape(_iota(sino, T, n_t), :, 1, 1, 1)
-    ipf = reshape(_iota(sino, T, nz), 1, :, 1, 1)
-    ilf = reshape(_iota(sino, T, n_long), 1, 1, :, 1)
     off = _on_device(reshape(Int32[(b - 1) * p.n_cols * p.n_rows for b in 1:B], 1, 1, 1, B), sino)
-    lp = c.vmin_long .+ (ilf .- c.half) .* c.v_long
-    mf = c.s_long ./ (c.s_long .- lp)                                         # 1×1×n_long×B
-    t0 = c.s_tran .+ (c.vmin_t .+ (itf .- one(T)) .* c.v_t .- c.s_tran) .* mf
-    t1 = c.s_tran .+ (c.vmin_t .+ itf .* c.v_t .- c.s_tran) .* mf
-    tvlo = min.(t0, t1); tvhi = max.(t0, t1)                                # n_t×1×n_long×B
-    z0 = c.sz .+ (c.vmin_z .+ (ipf .- one(T)) .* c.vz .- c.sz) .* mf
-    z1 = c.sz .+ (c.vmin_z .+ ipf .* c.vz .- c.sz) .* mf
-    zvlo = min.(z0, z1); zvhi = max.(z0, z1)                                # 1×nz×n_long×B
-    col0f, col0 = _col_start(tvlo, tvhi, c)
-    acc = nothing
-    for dc in 0:(p.KXT - 1)
-        colf = col0f .+ T(dc)
-        col = col0 .+ Int32(dc)
-        (dXlo, dXhi, detXstep, deltaT, scale_col, valid_x) = _x_cells(colf, c)
-        ox = ifelse.(_inrange.(col, ncol), _overlap.(dXlo, dXhi, tvlo, tvhi), zero(T))
-        colc = clamp.(col, Int32(1), ncol)
-        row0f, row0 = _row_start(zvlo, zvhi, scale_col, c)                   # n_t×nz×n_long×B
-        for dr in 0:(p.KZT - 1)
-            rowf = row0f .+ T(dr)
-            row = row0 .+ Int32(dr)
-            (dZlo, dZhi, _, norm) = _z_cells(rowf, scale_col, deltaT, detXstep, valid_x, c)
-            oz = ifelse.(_inrange.(row, nrow), _overlap.(dZlo, dZhi, zvlo, zvhi), zero(T))
-            rowc = clamp.(row, Int32(1), nrow)
-            L = colc .+ (rowc .- Int32(1)) .* ncol .+ off                    # n_t×nz×n_long×B
-            term = ox .* oz .* norm .* _gather(sino, L)
-            acc = acc === nothing ? term : acc .+ term
-        end
-    end
-    acc3 = dropdims(sum(acc; dims = 4); dims = 4)
+    acc3 = _dd_transpose_taps(sino, c, p.KXT, p.KZT, off, sino, T)
     return p.vertical ? permutedims(acc3, (1, 3, 2)) : permutedims(acc3, (3, 1, 2))
 end

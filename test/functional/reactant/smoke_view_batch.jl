@@ -1,6 +1,6 @@
-# Reactant + Enzyme smoke for VIEW BATCHING (M5): the end-to-end pipeline compiled with
-# `view_batch = 4` must reproduce the per-view compiled program (HU and gradient), with a
-# smaller graph and a shorter compile.
+# Reactant + Enzyme smoke for VIEW BATCHING (M5): the end-to-end pipeline compiled with a
+# looped `view_batch = 4` (StableHLO while loop over view batches in DD, spectral sum and FDK)
+# must reproduce the per-view unrolled program (HU and gradient), and the IR must carry the loop.
 #
 #   until mkdir /tmp/bs_reactant.lock 2>/dev/null; do sleep 30; done; trap 'rmdir /tmp/bs_reactant.lock' EXIT
 #   julia --project=envs/reactant -t 2 --heap-size-hint=3G test/functional/reactant/smoke_view_batch.jl
@@ -32,6 +32,10 @@ gradf(fr, pipe, target) = Enzyme.gradient(Reverse, loss, fr, Const(pipe), Const(
     t1 = @elapsed f1 = @compile sync = true BSF.eict_forward(fr_r, p1)
     t4 = @elapsed f4 = @compile sync = true BSF.eict_forward(fr_r, p4)
     h1 = Array(f1(fr_r, p1)); h4 = Array(f4(fr_r, p4))
+    ir = sprint(show, @code_hlo optimize = false BSF.eict_forward(fr_r, p4))
+    println(@sprintf("VIEWBATCH IR: %d while loops, %d chars (unrolled: %d chars)", count("stablehlo.while", ir), length(ir),
+        length(sprint(show, @code_hlo optimize = false BSF.eict_forward(fr_r, p1)))))
+    @test count("stablehlo.while", ir) >= 1
     println(@sprintf("VIEWBATCH compile: per-view %.1f s, batched(4) %.1f s;  HU max|Δ| batched-vs-perview %.2e, perview-vs-host %.2e",
         t1, t4, maximum(abs.(h4 .- h1)), maximum(abs.(h1 .- hu_host))))
     @test maximum(abs.(h4 .- h1)) <= 5e-3

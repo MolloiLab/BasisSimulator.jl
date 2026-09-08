@@ -33,7 +33,8 @@ struct EICTPipeline{T <: AbstractFloat, EP, FP}
     fbp::FP
     μ_water::T
     recon_shape::NTuple{3, Int}
-    view_batch::Int
+    batching::NamedTuple{(:dd, :spectral, :fdk), Tuple{Int, Int, Int}}   # views per compiled loop iteration, per stage
+    unrolled::Bool                                                       # true: legacy per-view unrolled programs (view_batch = 1)
 end
 
 Base.eltype(::EICTPipeline{T}) where {T} = T
@@ -50,6 +51,12 @@ table, bowtie×heel weights, air reference, η, I0, noise constants) and
 notebook-01 default; `nothing` disables BHC and uses NIST water at 70 keV as the
 HU reference; a `WaterBHC` may be passed directly). `filter`/`cutoff` mirror
 `create_fdk_recon_workspace` (default `StandardFilter()`).
+
+`view_batch = :auto` (default) sizes the compiled view loops of every stage from
+`batch_budget_mb` (see [`_auto_batching`](@ref)), so any number of views and any
+phantom grid compile to a program of bounded size; an integer forces that many
+views per loop iteration in all stages, and `1` selects the legacy per-view
+unrolled programs (bit-identical summation order; toy sizes only).
 """
 function eict_pipeline(
         phantom::BS.Phantom, scanner, protocol, sim_opts, recon_opts;
@@ -58,9 +65,12 @@ function eict_pipeline(
         cutoff::Real = 1.0,
         T::Type{<:AbstractFloat} = Float32,
         spectrum_override = nothing,
-        view_batch::Int = 1,
+        view_batch::Union{Symbol, Integer} = :auto,
+        batch_budget_mb::Real = 512,
     )
-    view_batch >= 1 || throw(ArgumentError("view_batch must be ≥ 1, got $view_batch"))
+    (view_batch === :auto || (view_batch isa Integer && view_batch >= 1)) ||
+        throw(ArgumentError("view_batch must be :auto or an integer ≥ 1, got $view_batch"))
+    batch_budget_mb > 0 || throw(ArgumentError("batch_budget_mb must be positive"))
     ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom; T, spectrum_override)
     geom = ws.geom
     model = bhc === :water ? BS.calibrate_bhc_water(sim_opts, protocol; scanner, geom) : bhc
@@ -68,8 +78,36 @@ function eict_pipeline(
     fplan = fbp_plan(geom, recon_opts.matrix_size; filter, cutoff, T)
     μw = model === nothing ? BS.get_reference_μ_water(70.0) : model.μ_water_ref
     n_mat = size(eplan.μ_tbl, 1)
+    vol_shape = size(phantom.mask)
+    batching = if view_batch === :auto
+        _auto_batching(eplan.sino_shape, vol_shape, length(eplan.wη), n_mat, recon_opts.matrix_size, batch_budget_mb)
+    else
+        (dd = Int(view_batch), spectral = Int(view_batch), fdk = Int(view_batch))
+    end
     return EICTPipeline{T, typeof(eplan), typeof(fplan)}(
-        geom, size(phantom.mask), n_mat, phantom.extent, eplan, fplan, T(μw), recon_opts.matrix_size, view_batch)
+        geom, vol_shape, n_mat, phantom.extent, eplan, fplan, T(μw), recon_opts.matrix_size,
+        batching, view_batch === 1)
+end
+
+"""
+    _auto_batching(sino_shape, vol_shape, n_E, n_mat, recon_shape, budget_mb) -> (dd, spectral, fdk)
+
+Views per compiled loop iteration for each stage so that the stage's per-batch
+transient stays within `budget_mb` (host estimate of the live Float32 tensors:
+DD gather chain `n_col·n_row·n_long·(6 + n_mat)`, spectral sum
+`n_col·n_row·n_E·3`, FDK `nx·ny·nz·10` per view).  The program size is then
+set by the budget, not by the scan (any number of views, any phantom grid).
+"""
+function _auto_batching(sino_shape::NTuple{3, Int}, vol_shape::NTuple{3, Int}, n_E::Int, n_mat::Int,
+        recon_shape::NTuple{3, Int}, budget_mb::Real)
+    n_col, n_row, n_view = sino_shape
+    n_long = max(vol_shape[1], vol_shape[2])
+    nx, ny, nz = recon_shape
+    bytes = budget_mb * 2^20
+    per_view(x) = Int(clamp(bytes ÷ (4 * x), 1, n_view))
+    return (dd = per_view(n_col * n_row * n_long * (6 + n_mat)),
+            spectral = per_view(n_col * n_row * n_E * 3),
+            fdk = per_view(nx * ny * nz * 10))
 end
 
 """
@@ -102,12 +140,10 @@ material axis is the batch axis of the linear operator). Differentiable in
 """
 function material_paths(fractions::AbstractArray{<:Any, 4}, pipe::EICTPipeline{T}) where {T}
     geom = pipe.geom
-    if pipe.view_batch > 1
-        batches = dd_batch_plans(geom, pipe.vol_shape; view_batch = pipe.view_batch,
+    if !pipe.unrolled
+        runs = dd_run_plans(geom, pipe.vol_shape; view_batch = pipe.batching.dd,
             volume_extent = pipe.volume_extent, eltype = T)
-        per_mat = [cat((dd_project_batch(fractions[:, :, :, m], bp) for bp in batches)...; dims = 3)
-                   for m in 1:size(fractions, 4)]
-        return _cat_new_axis(per_mat)
+        return cat((dd_project_run(fractions, r) for r in runs)...; dims = 3)
     end
     plans = [dd_view_plan(geom, v, pipe.vol_shape; volume_extent = pipe.volume_extent, eltype = T)
              for v in 1:geom.n_angles]
@@ -165,7 +201,7 @@ are the quantum / electronic N(0,1) noise tensors (flat or 3-D); see
 """
 function simulate_sino(fractions::AbstractArray{<:Any, 4}, pipe::EICTPipeline, ε = nothing, ε_e = nothing)
     P = material_paths(fractions, pipe)
-    return eict_chain(P, _eict_on_device(pipe.eict, P), ε, ε_e)
+    return eict_chain(P, _eict_on_device(pipe.eict, P), ε, ε_e; view_batch = pipe.unrolled ? 0 : pipe.batching.spectral)
 end
 
 """
@@ -174,7 +210,7 @@ end
 Pure equivalent of `reconstruct!(create_fdk_recon_workspace(sino, geom, matrix))`.
 """
 reconstruct_μ(sino::AbstractArray{<:Any, 3}, pipe::EICTPipeline) =
-    fdk(sino, _fbp_on_device(pipe.fbp, sino); view_batch = pipe.view_batch)
+    fdk(sino, _fbp_on_device(pipe.fbp, sino); view_batch = pipe.unrolled ? 1 : pipe.batching.fdk)
 
 """
     to_hu(μ, pipe)

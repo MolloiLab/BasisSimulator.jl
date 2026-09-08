@@ -125,6 +125,23 @@ function poly_log_sinogram_chunked(P::_A4, μ_tbl::AbstractMatrix, wη::Abstract
     return cat(parts...; dims = 3)
 end
 
+"""
+    poly_log_sinogram_looped(P, μ_tbl, wη, bt, B) -> sino
+
+Same result as [`poly_log_sinogram`](@ref) with the `n_cells × n_E` transient
+bounded to `B` views: the view axis is processed in batches of `B` inside one
+compiled loop (`_loop_over_batches`; a remainder batch runs once), so the
+program size does not depend on the number of views.
+"""
+function poly_log_sinogram_looped(P::_A4, μ_tbl::AbstractMatrix, wη::AbstractVector,
+        bt::Union{Nothing, _A3}, B::Int)
+    T = _scalar_type(P)
+    n_col, n_row, n_view, _ = size(P)
+    out = _zeros(P, T, (n_col, n_row, n_view))
+    chunk_fn = (start, len) -> poly_log_sinogram(_dslice(P, start, len, 3), μ_tbl, wη, bt)
+    return _loop_over_batches(chunk_fn, n_view, B, out, P)
+end
+
 # Spectral weight matrix (n_cells, n_E) as used in the forward sum: wη ⊗ 1 or wη·bt.
 _spectral_weights(wη::AbstractVector, ::Nothing, n_col, n_row, n_view) = reshape(wη, 1, :)
 function _spectral_weights(wη::AbstractVector, bt::_A3, n_col, n_row, n_view)
@@ -562,9 +579,12 @@ n_mat)` to the calibrated log line-integral sinogram, in exactly the legacy
 `ε`, `ε_e` are N(0,1) tensors with `prod(plan.sino_shape)` elements (any
 shape; reshaped on the host) — the exact draws of `ws.noise_rand_cpu` /
 `ws.enoise_rand_cpu` reproduce `simulate!` bit-for-bit up to float ordering.
+`view_batch > 0` bounds the spectral transient to that many views per compiled
+loop iteration ([`poly_log_sinogram_looped`](@ref)); `0` = all views at once.
 """
-function eict_chain(P::_A4, plan::EICTPlan{T}, ε = nothing, ε_e = nothing) where {T}
-    p = poly_log_sinogram(P, plan.μ_tbl, plan.wη, plan.bt)
+function eict_chain(P::_A4, plan::EICTPlan{T}, ε = nothing, ε_e = nothing; view_batch::Int = 0) where {T}
+    p = view_batch > 0 ? poly_log_sinogram_looped(P, plan.μ_tbl, plan.wη, plan.bt, view_batch) :
+                         poly_log_sinogram(P, plan.μ_tbl, plan.wη, plan.bt)
     p = fill_factor_inject(p, plan.ff_log)
     sf = scatter_estimate(p, plan.scatter_Hc, plan.scatter_Hr, plan.scatter_C)
     p = scatter_inject(p, sf, plan.scatter_sw)

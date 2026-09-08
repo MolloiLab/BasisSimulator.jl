@@ -94,12 +94,15 @@ end # module
         use_lag = false, use_focal_spot = false, use_optical_crosstalk = false)
     recon_opts = BS.ReconOptions(matrix_size = (16, 16, 2), fov_cm = 20.0)
     phantom = BS.compact_materials(BS.create_gammex_472(n_voxels = 16, n_slices = 2, fov_cm = 20.0, z_cm = 1.0))
-    p1 = BSF.eict_pipeline(phantom, scanner, protocol, sim_opts, recon_opts)
+    p1 = BSF.eict_pipeline(phantom, scanner, protocol, sim_opts, recon_opts; view_batch = 1)
     p8 = BSF.eict_pipeline(phantom, scanner, protocol, sim_opts, recon_opts; view_batch = 8)
-    @test p1.view_batch == 1 && p8.view_batch == 8
+    pa = BSF.eict_pipeline(phantom, scanner, protocol, sim_opts, recon_opts)              # :auto
+    @test !pa.unrolled && all(1 .<= values(pa.batching) .<= 12)
+    @test p1.unrolled && !p8.unrolled && p8.batching == (dd = 8, spectral = 8, fdk = 8)
     fr = BSF.onehot_fractions(phantom.mask, p1.n_mat)
     @test BSF.material_paths(fr, p8) == BSF.material_paths(fr, p1)
-    h1 = BSF.eict_forward(fr, p1); h8 = BSF.eict_forward(fr, p8)
-    @test maximum(abs.(h8 .- h1)) <= 5e-3                        # FDK view-batch reduction order only
+    h1 = BSF.eict_forward(fr, p1); h8 = BSF.eict_forward(fr, p8); ha = BSF.eict_forward(fr, pa)
+    @test maximum(abs.(h8 .- h1)) <= 5e-3                        # view-batch reduction order only
+    @test maximum(abs.(ha .- h1)) <= 5e-3
     @test_throws ArgumentError BSF.eict_pipeline(phantom, scanner, protocol, sim_opts, recon_opts; view_batch = 0)
 end

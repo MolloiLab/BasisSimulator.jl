@@ -491,18 +491,28 @@ Mirrors `backproject_voxel` (weighted) / `backproject_voxel_matched`
 in-bounds mask on the half-pixel-extended detector, bilinear gather with
 edge-clamped indices.  The π/n_view scaling is applied by the caller.
 """
+# Per-view geometry as one (12, n_view) table: rows = source (3), detector centre (3), u (3), v (3).
+_geom_table(tb) = vcat(tb.source_positions, tb.detector_centers, tb.detector_u, tb.detector_v)
+
 @noinline function _bp_views(filt_vec::AbstractVector, plan::FBPPlan{T, ARC},
         views::UnitRange{Int}, offsets::AbstractVector{Int32}, weighted::Bool) where {T, ARC}
-    B = length(views)
+    gt = _geom_table(plan.tensors)[:, views]
+    return _bp_chunk(filt_vec, plan, gt, reshape(offsets, 1, 1, 1, length(views)), weighted)
+end
+
+# Backprojection of one chunk of views: `gt :: (12, B)` geometry table slice (host or traced),
+# `off :: (1,1,1,B)` linear offsets of the chunk's views inside `filt_vec`.
+@noinline function _bp_chunk(filt_vec::AbstractVector, plan::FBPPlan{T, ARC},
+        gt::AbstractMatrix, off::AbstractArray{<:Integer, 4}, weighted::Bool) where {T, ARC}
+    B = size(gt, 2)
     tb = plan.tensors
-    r4(v) = reshape(v, 1, 1, 1, B)
+    r4(i) = reshape(gt[i:i, :], 1, 1, 1, B)
 
     # per-view geometry as (1,1,1,B) tensors
-    sx  = r4(tb.source_positions[1, views]); sy  = r4(tb.source_positions[2, views]); sz  = r4(tb.source_positions[3, views])
-    dcx = r4(tb.detector_centers[1, views]); dcy = r4(tb.detector_centers[2, views]); dcz = r4(tb.detector_centers[3, views])
-    dux = r4(tb.detector_u[1, views]);       duy = r4(tb.detector_u[2, views]);       duz = r4(tb.detector_u[3, views])
-    dvx = r4(tb.detector_v[1, views]);       dvy = r4(tb.detector_v[2, views]);       dvz = r4(tb.detector_v[3, views])
-    off = r4(offsets)
+    sx  = r4(1);  sy  = r4(2);  sz  = r4(3)
+    dcx = r4(4);  dcy = r4(5);  dcz = r4(6)
+    dux = r4(7);  duy = r4(8);  duz = r4(9)
+    dvx = r4(10); dvy = r4(11); dvz = r4(12)
     X, Y, Z = tb.X, tb.Y, tb.Z
 
     # host-resolved arc/flat dispatch (type parameter), host scalars
@@ -595,16 +605,33 @@ axial geometry.
 * `view_batch` — views processed per broadcast step (host config; every
   intermediate is `(nx, ny, nz, view_batch)`).  `1` reproduces the legacy
   sequential view summation order exactly; larger values shrink the graph.
+* `loop` — with `view_batch > 1`, run the batches inside one compiled loop
+  (`_sum_over_batches`; program size independent of `n_view`) instead of
+  unrolling them.
 
 Legacy `backproject_voxel` tracks `w_acc = Σ weight` but only uses it as a
 `w_acc > 0` guard (never as a divisor); since `acc == 0` whenever `w_acc == 0`
 the guard is the identity and is not reproduced here.
 """
 function backproject(filt::AbstractArray{<:Any, 3}, plan::FBPPlan{T};
-        weighted::Bool = true, view_batch::Int = 1) where {T}
+        weighted::Bool = true, view_batch::Int = 1, loop::Bool = true) where {T}
     _check_sino(filt, plan, "backproject")
     fv = vec(filt)
     block = plan.n_col * plan.n_row
+    if view_batch > 1 && loop
+        # one compiled loop over view batches (program size independent of n_view)
+        G = _geom_table(plan.tensors)
+        acc0 = _zeros(filt, T, (plan.nx, plan.ny, plan.nz, 1))
+        chunk_fn = (start, len) -> begin
+            gt = _dslice(G, start, len, 2)
+            fc = _dslice(filt, start, len, 3)
+            off = _on_device(reshape(Int32[(k - 1) * block for k in 1:len], 1, 1, 1, len), filt)
+            return _bp_chunk(vec(fc), plan, gt, off, weighted)
+        end
+        acc = _sum_over_batches(chunk_fn, plan.n_view, view_batch, acc0, filt)
+        out = reshape(acc, plan.nx, plan.ny, plan.nz)
+        return weighted ? out .* plan.pi_over_angles : out
+    end
     batches = _view_batches(plan.n_view, view_batch)
     offs(r) = Int32[(a - 1) * block for a in r]
     acc = _bp_views(fv, plan, batches[1], offs(batches[1]), weighted)

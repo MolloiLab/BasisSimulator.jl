@@ -33,7 +33,29 @@ BSF._on_device(x::AbstractArray, ::Reactant.TracedRNumber) = Reactant.Ops.consta
 BSF._iota(::Reactant.TracedRArray, ::Type{T}, n::Integer) where {T} =
     Reactant.Ops.iota(T, [Int(n)]; iota_dimension = 1) .+ one(T)
 
-# Reactant 0.2.28x caps the number of same-named elementwise helper functions per module at
+# Batched-loop hooks (see src/functional/loop.jl): a StableHLO while loop over view batches
+# with dynamic slices, so the compiled program does not grow with the number of views.
+# `track_numbers = false`: host integers in the body (batch sizes, static shapes) must stay
+# host integers; only the loop index is traced.
+function BSF._batched_loop(body, n::Int, state, ::Reactant.TracedRArray)
+    @trace track_numbers = false for b in 1:n
+        state = body(state, b)
+    end
+    return state
+end
+function BSF._dslice(x::Reactant.TracedRArray{<:Any, N}, start, len::Int, dim::Int) where {N}
+    starts = Any[d == dim ? start : 1 for d in 1:N]
+    sizes = Int[d == dim ? len : size(x, d) for d in 1:N]
+    return Reactant.Ops.dynamic_slice(x, starts, sizes)
+end
+function BSF._dupdate(x::Reactant.TracedRArray{<:Any, N}, chunk, start, dim::Int) where {N}
+    starts = Any[d == dim ? start : 1 for d in 1:N]
+    return Reactant.Ops.dynamic_update_slice(x, chunk, starts)
+end
+BSF._zeros(::Reactant.TracedRArray, ::Type{T}, dims::Dims) where {T} =
+    Reactant.Ops.fill(zero(T), collect(Int, dims))
+
+ elementwise helper functions per module at
 # 10 000 (`__lookup_unique_name_in_module` probes name, name_1, … against a freshly built symbol
 # table on every call). Two full pipelines in one graph exceed it. Opt-in override: a monotonic
 # per-name counter (no cap, O(1) per call). Names stay unique, so the emitted MLIR is unchanged.

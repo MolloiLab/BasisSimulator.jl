@@ -79,3 +79,21 @@ are what compile in a minute. The M5 tasks in `README.md` — `@trace for` over 
 per-view plans, and select-accumulate over the gathered material id — turn that into one loop body.
 Until then, use `compact_materials` and tens of views for compiled experiments; the plain-array path
 has no such limit.
+
+## View batching and program size (M5)
+
+`eict_pipeline(phantom, scanner, protocol, sim_opts, recon_opts)` sizes its compiled view loops
+automatically (`view_batch = :auto`, `batch_budget_mb = 512`): the DD projector, the spectral sum
+and the FDK backprojection each process `B` views per iteration of a StableHLO `while` loop, with
+`B` chosen so that the stage's transient stays inside the budget. The compiled program therefore
+has a bounded size for ANY number of views and ANY phantom grid; runtime scales with the work.
+Raise `batch_budget_mb` on a GPU with memory to spare (fewer, larger iterations); pass an integer
+`view_batch` to force a batch size; `view_batch = 1` selects the legacy per-view unrolled programs
+(bit-identical summation order; toy sizes only — program size then grows with the view count).
+
+```julia
+pipe = BSF.eict_pipeline(phantom, scanner, protocol, sim_opts, recon_opts)   # :auto
+pipe.batching                                  # (dd = …, spectral = …, fdk = …) views per iteration
+fwd  = @compile sync = true BSF.eict_forward(fr_r, pipe)
+grad = @compile sync = true Enzyme.gradient(Reverse, loss, fr_r, Const(pipe), Const(target_r))
+```

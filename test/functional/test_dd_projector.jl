@@ -251,9 +251,16 @@ end
     for shape in (:flat, :arc), T in (Float64, Float32), vb in (2, 4, 9)
         geom = _oracle_geom(shape); vol = _cyl(16, 16, 4, T)
         P1 = BSF.dd_project(vol, geom; eltype = T)
-        Pb = BSF.dd_project(vol, geom; eltype = T, view_batch = vb)
+        Pb = BSF.dd_project(vol, geom; eltype = T, view_batch = vb)               # compiled-loop path (runs, batches, remainders)
+        Pu = BSF.dd_project(vol, geom; eltype = T, view_batch = vb, loop = false) # unrolled batches
         @test size(Pb) == size(P1)
         @test Pb == P1                                        # forward: identical per-element arithmetic and tap order
+        @test Pu == P1
+        vol4 = cat(vol, 2 .* vol; dims = 4)                   # multi-channel run shares one index computation
+        runs = BSF.dd_run_plans(geom, size(vol); view_batch = vb, eltype = T)
+        @test vcat((collect(r.views) for r in runs)...) == collect(1:geom.n_angles)
+        P4 = cat((BSF.dd_project_run(vol4, r) for r in runs)...; dims = 3)
+        @test P4[:, :, :, 1] == P1 && P4[:, :, :, 2] == 2 .* P1
         y = rand(MersenneTwister(1), T, size(P1)...)
         B1 = BSF.dd_transpose(y, geom, size(vol); eltype = T)
         Bb = BSF.dd_transpose(y, geom, size(vol); eltype = T, view_batch = vb)

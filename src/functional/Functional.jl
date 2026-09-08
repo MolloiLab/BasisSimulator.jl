@@ -39,8 +39,10 @@ using LinearAlgebra: LinearAlgebra
 using Random: Random
 
 # Operators
+include("loop.jl")
 include("resample.jl")
 include("dd_projector.jl")
+include("dd_run.jl")
 include("fbp.jl")
 # Detector physics chains (per-material path lengths → log sinograms)
 include("eict.jl")

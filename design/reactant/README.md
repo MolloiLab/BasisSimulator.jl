@@ -27,7 +27,7 @@ code, and the Reactant/Enzyme smoke tests runnable from `envs/reactant`.
 | `ext/BasisSimulatorReactantExt.jl` (Reactant weakdep): lifts plan tensors to in-graph constants; in-graph `Ops.iota` for the projector index vectors | done |
 | Integrated CPU suite (`Pkg.test()`) | all eight stages + pipeline wired (`test/functional/`, ~1050 functional assertions); see the last commit message for the final count |
 | `design/reactant/HOWTO.md` — how to run tests/smokes and drive the pipeline + Reactant/Enzyme from a REPL | done |
-| **M5 view batching** — `dd_batch_plans` / `dd_project_batch` / `dd_transpose_batch` (views as a trailing tensor axis per `vertical` run), `eict_pipeline(…; view_batch)` → DD + FDK batched | **done (host).** forward bit-identical to per-view, transpose ≤3e-16 (F64) / 1.5e-7 (F32), legacy 5e-16, pipeline HU ≤1e-3; Reactant compile/scaling numbers → `PROBES.md` §7 |
+| **M5 view batching + compiled view loops** — `dd_run_plans`/`dd_project_run`/`dd_transpose_run`, `poly_log_sinogram_looped`, looped `backproject`: every view-dependent stage runs its batches inside ONE StableHLO `while` loop (hooks in `loop.jl`, traced versions in the extension); `eict_pipeline(…; view_batch = :auto, batch_budget_mb)` sizes the loops from a memory budget — five-struct API unchanged | **done (host).** forward bit-identical to per-view (all batch sizes, remainders, multi-channel), transpose ≤4e-16 (F64) / 3e-7 (F32), pipeline HU ≤2e-3; Enzyme reverse through the loop ≡ unrolled ≡ FD (probe); Reactant smoke + scaling numbers → `PROBES.md` §7 |
 | Driver switch (`simulate!`/`reconstruct!` → functional core) | not started (M6) |
 | CUDA validation | not started (needs a lab NVIDIA box) |
 
@@ -345,10 +345,15 @@ to be added when the first such path needs it.
   functions at 10 000 per module (`__lookup_unique_name_in_module` probes `name_1, name_2, …`
   with a fresh symbol table each call) — a graph with two full pipelines exceeds it;
   `Functional.uncap_reactant_names!()` (opt-in, extension) swaps in a per-name counter.
-- **Compile-time scaling of unrolled view loops** — solved by view batching (M5): the DD
-  projector/transpose and the FDK take `view_batch` views per tensor program, so program size is
-  set by the number of batches; `@trace for` (Reactant while loops) was probed and rejected for
-  now (dynamic-index slicing inside the loop body hits Reactant's scalar-indexing guard).
+- **Compile-time scaling of unrolled view loops** — solved (M5): view batches are a trailing
+  tensor axis AND the batches run inside a compiled loop (`_batched_loop` → `@trace for` with
+  `track_numbers = false`; per-batch constants by `Ops.dynamic_slice` of an in-graph table,
+  outputs by `Ops.dynamic_update_slice`). Program size is set by the memory budget, not by the
+  number of views or the phantom grid. Gotchas: (k) inside `@trace for`, host integers are
+  promoted to traced numbers unless `track_numbers = false` — static shapes then break
+  (`collect(Int, slice_sizes)` on traced ints); (l) never convert the traced loop index to `Int`
+  (`Int32(::TracedRNumber)` has no method) — keep chunk-relative offsets static and slice the data
+  tensor instead; (m) keep the loop-carried state ONE array.
 - **Test-suite runtime**: the functional testsets add ~4 min of mostly one-time Julia compile
   (`gram_eigen` 6 specializations, DD kernels 4); a PrecompileTools workload would remove it.
 - **Float32 vs Float64 drift** in denoisers/ACNR (legacy runs some FFTs in Float64): quantify, and
