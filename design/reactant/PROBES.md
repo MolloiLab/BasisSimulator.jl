@@ -86,3 +86,17 @@ Two lessons from getting this to run:
 2. **Every material costs `n_views` unrolled projection programs** (labeled masks are projected
    one-hot per material). The toy uses `compact_materials`; the M5 fix is select-accumulate over the
    gathered material id (one volume walk) and `@trace for` over views.
+
+## 6. Per-stage Reactant/Enzyme smokes (all pass; run `bash test/functional/reactant/run_all.sh`)
+
+| Stage | compiled vs plain arrays | Enzyme reverse vs reference |
+|---|---|---|
+| DD projector (`smoke_dd`) | 7.7e-7 fwd / 1.9e-5 transpose (F32) | gradient = gather transpose 7.8e-6; ⟨Av,s⟩ vs ⟨v,∇⟩ 3.1e-8 |
+| FBP/FDK (`smoke_fbp`) | 2.7e-14 (F64), ~1e-5 (F32, XLA atan2 sub-pixel) | 3.0e-13 vs FD |
+| EICT chain (`smoke_eict`) | 4.8e-16 (F64), 2.7e-7 (F32) | = hand VJP 5.9e-16, vs FD 2.8e-9 |
+| PCCT chain (`smoke_pcct`) | 2.7e-16 (F64), 7.3e-8 (F32) | vs FD 2.8e-10 (straight-through surrogate 2.4e-10) |
+| HIR (`smoke_hir`, dense operators) | 1.0e-15 | vs FD 1.2e-10 |
+| Denoisers (`smoke_denoise`) | ≤2.2e-7 | SVD-bilateral vs FD 1.3e-8 |
+| Cong VMI (`smoke_vmi`) | 1.2e-13 (F64) | unrolled solver = IFT VJP 6.1e-14, vs FD 2.3e-9 |
+| n-channel estimator (`smoke_nchannel`) | 2.7e-15 (F64), 1.3e-6 (F32) | vs FD 1.7e-11 directional, ≤3.6e-9 per entry |
+| End-to-end pipeline (`smoke_pipeline`) | 3.3e-6 (F32) | vs FD 1.6e-11 |
