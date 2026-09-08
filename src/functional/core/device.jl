@@ -99,3 +99,18 @@ function _bmm_cols(Wx::AbstractArray{<:Any, 4}, G::AbstractArray{<:Any, 4})
     end
     return V
 end
+
+"""
+    _bmm_tb(Wx, Vw) -> A
+
+Transverse contraction with a per-view window of the volume:
+`A[col, k, l, b] = Σ_t Wx[col, t, l, b] · Vw[t, k, l, b]`.
+"""
+function _bmm_tb(Wx::AbstractArray{<:Any, 4}, Vw::AbstractArray{<:Any, 4})
+    n_cols, w, n_long, B = size(Wx); K = size(Vw, 2)
+    A = similar(Wx, n_cols, K, n_long, B)
+    for b in 1:B, l in 1:n_long
+        A[:, :, l, b] = Wx[:, :, l, b] * Vw[:, :, l, b]
+    end
+    return A
+end

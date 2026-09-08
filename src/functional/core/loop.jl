@@ -94,3 +94,19 @@ function _sum_over_batches(chunk_fn, n::Int, B::Int, acc0, consts::Tuple, ref; u
     end
     return acc
 end
+
+"""
+    _dslice_at(x, starts::Tuple, sizes::Tuple)   /   _dupdate_at(x, chunk, starts::Tuple)
+
+Multi-axis twins of [`_dslice`](@ref) / [`_dupdate`](@ref): every axis gets a
+start (host `Int` or traced integer); `sizes` are static.
+"""
+function _dslice_at(x::AbstractArray{<:Any, N}, starts::Tuple, sizes::Tuple) where {N}
+    idx = ntuple(d -> starts[d]:(starts[d] + sizes[d] - 1), N)
+    return x[idx...]
+end
+function _dupdate_at(x::AbstractArray{<:Any, N}, chunk, starts::Tuple) where {N}
+    idx = ntuple(d -> starts[d]:(starts[d] + size(chunk, d) - 1), N)
+    x[idx...] = chunk
+    return x
+end

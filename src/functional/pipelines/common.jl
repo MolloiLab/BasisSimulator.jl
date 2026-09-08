@@ -46,7 +46,12 @@ function material_paths(fractions::AbstractArray{<:Any, 4}, pipe::AbstractPipeli
     if !pipe.unrolled && pipe.batching.dense
         runs = dd_run_plans(geom, pipe.vol_shape; view_batch = pipe.batching.dd,
             volume_extent = pipe.volume_extent, eltype = T)
-        return reduce((a, b) -> cat(a, b; dims = 3), [dd_project_dense_run(fractions, r; unroll = !pipe.loop) for r in runs])
+        cb, sb = pipe.batching.col_block, pipe.batching.slab_block
+        windowed = cb < geom.n_cols || sb < max(pipe.vol_shape[1], pipe.vol_shape[2])
+        proj = windowed ?
+            (r -> dd_project_dense_windowed_run(fractions, r, geom; col_block = cb, slab_block = sb, volume_extent = pipe.volume_extent, unroll = !pipe.loop)) :
+            (r -> dd_project_dense_run(fractions, r; unroll = !pipe.loop))
+        return reduce((a, b) -> cat(a, b; dims = 3), [proj(r) for r in runs])
     elseif !pipe.unrolled && pipe.loop
         runs = dd_run_plans(geom, pipe.vol_shape; view_batch = pipe.batching.dd,
             volume_extent = pipe.volume_extent, eltype = T)
@@ -77,21 +82,35 @@ DD gather chain `n_col·n_row·n_long·(6 + n_mat)`, spectral sum
 set by the budget, not by the scan (any number of views, any phantom grid).
 """
 function _auto_batching(sino_shape::NTuple{3, Int}, vol_shape::NTuple{3, Int}, n_E::Int, n_mat::Int,
-        recon_shape::NTuple{3, Int}, budget_mb::Real; projector::Symbol = :auto)
+        recon_shape::NTuple{3, Int}, budget_mb::Real; projector::Symbol = :dense, geom = nothing, volume_extent = nothing)
     n_col, n_row, n_view = sino_shape
     n_long = max(vol_shape[1], vol_shape[2]); n_t = n_long; nzv = vol_shape[3]
     nx, ny, nz = recon_shape
     bytes = budget_mb * 2^20
     per_view(x) = Int(clamp(bytes ÷ (4 * x), 1, n_view))
-    dense_bytes = dd_dense_view_bytes(n_col, n_row, n_t, nzv, n_long, n_mat)
     dense = projector !== :gather                      # the dense contractions ARE the projector; :gather is an explicit choice
-    if dense && dense_bytes > bytes
-        throw(ArgumentError("the dense projector needs $(round(Int, dense_bytes / 2^20)) MB per view " *
-            "(n_cols $n_col × n_t $n_t × n_long $n_long weights, $n_mat channels) but batch_budget_mb = $budget_mb; " *
-            "raise batch_budget_mb so that one view fits — there is no silent fallback"))
+    col_block, slab_block = n_col, n_long              # full dense = one block
+    view_bytes = dd_dense_view_bytes(n_col, n_row, n_t, nzv, n_long, n_mat)
+    if dense && view_bytes > bytes
+        # windowed dense: shrink the blocks (columns first, then slabs) until one view fits the budget
+        geom === nothing && throw(ArgumentError("_auto_batching: the geometry is needed to size the windowed projector"))
+        found = false
+        for sb in (n_long, 256, 128, 64, 32, 16, 8), cb in (n_col, 256, 128, 64, 32, 16)
+            (sb <= n_long && cb <= n_col) || continue
+            _, widths, _, _ = dd_windows(geom, vol_shape, 1:n_view, cb, sb; volume_extent, eltype = Float32)
+            vb = dd_dense_windowed_view_bytes(n_col, n_row, nzv, n_long, n_mat, widths, cb, sb)
+            if vb <= bytes
+                col_block, slab_block, view_bytes, found = cb, sb, vb, true
+                break
+            end
+        end
+        found || throw(ArgumentError("the dense projector needs $(round(Int, view_bytes / 2^20)) MB per view " *
+            "(n_cols $n_col × n_t $n_t × n_long $n_long weights, $n_mat channels) and even the narrowest windows " *
+            "(16 columns × 8 slabs) exceed batch_budget_mb = $budget_mb; raise batch_budget_mb — there is no silent fallback"))
     end
-    dd = dense ? Int(clamp(bytes ÷ dense_bytes, 1, n_view)) : per_view(n_col * n_row * n_long * (6 + n_mat))
-    return (dd = dd, spectral = per_view(n_col * n_row * n_E * 3), fdk = per_view(nx * ny * nz * 10), dense = dense)
+    dd = dense ? Int(clamp(bytes ÷ view_bytes, 1, n_view)) : per_view(n_col * n_row * n_long * (6 + n_mat))
+    return (dd = dd, spectral = per_view(n_col * n_row * n_E * 3), fdk = per_view(nx * ny * nz * 10), dense = dense,
+            col_block = col_block, slab_block = slab_block)
 end
 
 function _eict_on_device(p::EICTPlan{T}, ref) where {T}

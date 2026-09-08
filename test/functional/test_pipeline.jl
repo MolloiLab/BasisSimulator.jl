@@ -97,7 +97,7 @@ end # module
     p1 = BSF.eict_pipeline(phantom, scanner, protocol, sim_opts, recon_opts; view_batch = 1)
     p8 = BSF.eict_pipeline(phantom, scanner, protocol, sim_opts, recon_opts; view_batch = 8)
     pa = BSF.eict_pipeline(phantom, scanner, protocol, sim_opts, recon_opts)              # :auto
-    @test !pa.unrolled && all(1 .<= values(pa.batching) .<= 12)
+    @test !pa.unrolled && all(1 .<= (pa.batching.dd, pa.batching.spectral, pa.batching.fdk) .<= 12) && pa.batching.dense
     @test p1.unrolled && !p8.unrolled && p8.batching.dd == 8 && p8.batching.spectral == 8 && p8.batching.fdk == 8
     fr = BSF.onehot_fractions(phantom.mask, p1.n_mat)
     P8 = BSF.material_paths(fr, p8); P1 = BSF.material_paths(fr, p1)

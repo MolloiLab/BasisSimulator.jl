@@ -45,9 +45,12 @@ const _AnyTraced = Union{Reactant.TracedRArray, Base.ReshapedArray{<:Any, <:Any,
     SubArray{<:Any, <:Any, <:Reactant.TracedRArray}}
 # `state`, `consts` and `b` are the loop arguments the tracer sees (they are named in the
 # loop body); traced arrays hidden inside closures are NOT, so `body` closes over host data only.
+# `checkpointing = true`: reverse mode through the loop recomputes iterations instead of caching
+# every iteration's intermediates (the dense weights of a view batch are hundreds of MB; caching
+# all iterations killed a 256-grid / 984-view gradient with an out-of-memory).
 function BSF._batched_loop(body, n::Int, state, consts::Tuple, ::_AnyTraced)
     state = _mat(state)
-    @trace track_numbers = false for b in 1:n
+    @trace track_numbers = false checkpointing = true for b in 1:n
         state = _mat(body(state, b, consts))
     end
     return state
@@ -65,6 +68,10 @@ function BSF._dupdate(x::_AnyTraced, chunk, start, dim::Int)
 end
 BSF._zeros(::_AnyTraced, ::Type{T}, dims::Dims) where {T} =
     Reactant.Ops.fill(zero(T), collect(Int, dims))
+BSF._dslice_at(x::_AnyTraced, starts::Tuple, sizes::Tuple) =
+    Reactant.Ops.dynamic_slice(_mat(x), Any[starts...], Int[sizes...])
+BSF._dupdate_at(x::_AnyTraced, chunk, starts::Tuple) =
+    Reactant.Ops.dynamic_update_slice(_mat(x), _mat(chunk), Any[starts...])
 BSF._plain(x::_AnyTraced) = _mat(x)
 
 # Dense DD contractions as single XLA dot_general ops (result dims: batch…, lhs free…, rhs free…).
@@ -88,6 +95,12 @@ function BSF._bmm_cols(Wx::_AnyTraced, G::_AnyTraced)
     # r :: (n_long, n_t, nz) → (n_t, nz, n_long)
     return permutedims(r, (2, 3, 1))
 end
+function BSF._bmm_tb(Wx::_AnyTraced, Vw::_AnyTraced)
+    Wxm = _mat(Wx); Vm = _mat(Vw)
+    r = Reactant.Ops.dot_general(Wxm, Vm; contracting_dimensions = ([2], [1]), batching_dimensions = ([3, 4], [3, 4]))
+    return permutedims(r, (3, 4, 1, 2))                       # (n_long, B, n_cols, K) → (n_cols, K, n_long, B)
+end
+BSF._scalar_start(st::_AnyTraced, j::Int, b::Int) = _mat(st)[j, b]     # TracedRNumber{Int32}
 function BSF._bmm_zl(Wz::_AnyTraced, A::_AnyTraced)
     Wzm = _mat(Wz); Am = _mat(A)                             # (n_cols,n_rows,nz,n_long,B), (n_cols,nz,M,n_long,B)
     r = Reactant.Ops.dot_general(Wzm, Am; contracting_dimensions = ([3, 4], [2, 4]), batching_dimensions = ([1, 5], [1, 5]))

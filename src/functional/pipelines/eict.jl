@@ -20,7 +20,7 @@ struct EICTPipeline{T <: AbstractFloat, EP, FP} <: AbstractPipeline{T}
     fbp::FP
     μ_water::T
     recon_shape::NTuple{3, Int}
-    batching::NamedTuple{(:dd, :spectral, :fdk, :dense), Tuple{Int, Int, Int, Bool}}   # views per batch, per stage
+    batching::NamedTuple{(:dd, :spectral, :fdk, :dense, :col_block, :slab_block), Tuple{Int, Int, Int, Bool, Int, Int}}   # views per batch, per stage
     unrolled::Bool                                                       # true: legacy per-view unrolled programs (view_batch = 1)
     loop::Bool                                                           # true: batches run inside compiled while loops; false: batches unrolled
 end
@@ -72,9 +72,10 @@ function eict_pipeline(
     n_mat = size(eplan.μ_tbl, 1)
     vol_shape = size(phantom.mask)
     batching = if view_batch === :auto
-        _auto_batching(eplan.sino_shape, vol_shape, length(eplan.wη), n_mat, recon_opts.matrix_size, batch_budget_mb; projector)
+        _auto_batching(eplan.sino_shape, vol_shape, length(eplan.wη), n_mat, recon_opts.matrix_size, batch_budget_mb; projector, geom, volume_extent = phantom.extent)
     else
-        (dd = Int(view_batch), spectral = Int(view_batch), fdk = Int(view_batch), dense = projector === :dense)
+        (dd = Int(view_batch), spectral = Int(view_batch), fdk = Int(view_batch), dense = projector === :dense,
+         col_block = geom.n_cols, slab_block = max(vol_shape[1], vol_shape[2]))
     end
     return EICTPipeline{T, typeof(eplan), typeof(fplan)}(
         geom, vol_shape, n_mat, phantom.extent, eplan, fplan, T(μw), recon_opts.matrix_size,

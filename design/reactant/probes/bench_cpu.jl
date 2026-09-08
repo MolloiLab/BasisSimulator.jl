@@ -6,9 +6,9 @@
 using Reactant, Enzyme, BasisSimulator, Statistics, Printf
 const BS = BasisSimulator; const BSF = BS.Functional
 envi(k, d) = parse(Int, get(ENV, k, string(d)))
-NV = envi("NV", 64); VIEWS = envi("VIEWS", 100); RECON = envi("RECON", 64); VB = envi("VB", 25); GRAD = envi("GRAD", 1); UNROLLED = envi("UNROLLED", 1)
+NV = envi("NV", 64); VIEWS = envi("VIEWS", 100); RECON = envi("RECON", 64); VB = envi("VB", 25); GRAD = envi("GRAD", 1); UNROLLED = envi("UNROLLED", 1); BUDGET_MB = envi("BUDGET_MB", 512)
 T0 = time(); say(m) = (println(@sprintf("[%7.1f s] ", time() - T0), m); flush(stdout))
-say("config NV=$NV VIEWS=$VIEWS RECON=$RECON VB=$VB threads=$(Threads.nthreads())")
+say("config NV=$NV VIEWS=$VIEWS RECON=$RECON VB=$VB BUDGET_MB=$BUDGET_MB threads=$(Threads.nthreads())")
 scanner = BS.EICTScanner(source_to_isocenter = 625.6, source_to_detector = 1100.0, detector_rows = 256, detector_cols = 834,
     detector_row_size = 0.625, detector_col_size = 0.6, detector_shape = :arc, focal_spot_width = 1.0, focal_spot_length = 1.0,
     target_angle = 10.0, flat_filter_material = :aluminum, flat_filter_thickness = 2.5, bowtie_filter = :ge_revolution_large,
@@ -32,7 +32,8 @@ fr = BSF.onehot_fractions(phantom.mask, length(phantom.materials)); fr_r = React
 m = [hypot(i - (RECON + 1) / 2, j - (RECON + 1) / 2) < 0.47RECON for i in 1:RECON, j in 1:RECON, k in 1:2]
 results = Dict{String, Any}()
 for (name, loop) in (UNROLLED == 1 ? (("(b) unrolled batches", false), ("(c) while loops", true)) : (("(c) while loops", true),))
-    pipe = BSF.eict_pipeline(phantom, scanner, protocol, opts, recon_opts; view_batch = VB, loop)
+    pipe = BSF.eict_pipeline(phantom, scanner, protocol, opts, recon_opts; view_batch = VB > 0 ? VB : :auto, batch_budget_mb = BUDGET_MB, loop)
+    say("    batching " * string(pipe.batching))
     t_c = @elapsed fwd = @compile sync = true BSF.eict_forward(fr_r, pipe)
     hu = Array(fwd(fr_r, pipe)); t_f = @elapsed fwd(fr_r, pipe)
     say(@sprintf("%s: compile %.0f s, forward run %.2f s, vs legacy rms %.3f HU (max %.2f)", name, t_c, t_f,

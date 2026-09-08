@@ -26,7 +26,7 @@ struct PCCTPipeline{T <: AbstractFloat, PP, FP} <: AbstractPipeline{T}
     groups::Vector{Vector{Int}}
     fbp::FP
     recon_shape::NTuple{3, Int}
-    batching::NamedTuple{(:dd, :spectral, :fdk, :dense), Tuple{Int, Int, Int, Bool}}
+    batching::NamedTuple{(:dd, :spectral, :fdk, :dense, :col_block, :slab_block), Tuple{Int, Int, Int, Bool, Int, Int}}
     unrolled::Bool
     loop::Bool
 end
@@ -66,9 +66,10 @@ function pcct_pipeline(
     n_bins = length(ws.I0_bins)
     groups = groups === nothing ? [[b] for b in 1:n_bins] : groups
     batching = if view_batch === :auto
-        _auto_batching((geom.n_cols, geom.n_rows, n_view), vol_shape, n_E, size(ws.μ_table, 1), recon_opts.matrix_size, batch_budget_mb; projector)
+        _auto_batching((geom.n_cols, geom.n_rows, n_view), vol_shape, n_E, size(ws.μ_table, 1), recon_opts.matrix_size, batch_budget_mb; projector, geom, volume_extent = phantom.extent)
     else
-        (dd = Int(view_batch), spectral = Int(view_batch), fdk = Int(view_batch), dense = projector === :dense)
+        (dd = Int(view_batch), spectral = Int(view_batch), fdk = Int(view_batch), dense = projector === :dense,
+         col_block = geom.n_cols, slab_block = max(vol_shape[1], vol_shape[2]))
     end
     unrolled = view_batch === 1
     pplan = pcct_plan(ws; view_batch = (unrolled || !loop) ? 0 : batching.spectral, view_chunks = (unrolled || loop) ? 1 : cld(n_view, batching.spectral), T)
