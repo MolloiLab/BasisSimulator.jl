@@ -73,6 +73,8 @@ BSF._dslice_at(x::_AnyTraced, starts::Tuple, sizes::Tuple) =
 BSF._dupdate_at(x::_AnyTraced, chunk, starts::Tuple) =
     Reactant.Ops.dynamic_update_slice(_mat(x), _mat(chunk), Any[starts...])
 BSF._plain(x::_AnyTraced) = _mat(x)
+BSF._to_float(::Type{T}, x::_AnyTraced) where {T} =
+    Reactant.Ops.convert(Reactant.TracedRArray{T, ndims(x)}, _mat(x))
 
 # Dense DD contractions as single XLA dot_general ops (result dims: batch…, lhs free…, rhs free…).
 function BSF._bmm_t(Wx::_AnyTraced, V::_AnyTraced)

@@ -240,7 +240,7 @@ function dd_project_dense_windowed_run(vol::AbstractArray{<:Any, 4}, p::DDRunPla
                 row = (bi - 1) * ncb + bj                                              # row of (bj, bi) in tabI (column-major over (bj, bi))
                 s_j = reshape(_plain(_dslice(st, row, 1, 1)), 1, 1, 1, B)              # (1,1,1,B) Int32 window starts
                 mf_i = _dslice(mf, l0, blen, 3)                                        # (1,1,blen,B)
-                tf = T.(s_j) .+ reshape(_iota(tab, T, w), 1, :, 1, 1) .- one(T)       # (1,w,1,B) voxel index (1-based)
+                tf = _to_float(T, s_j) .+ reshape(_iota(tab, T, w), 1, :, 1, 1) .- one(T)   # (1,w,1,B) voxel index (1-based)
                 t0 = c.s_tran .+ (c.vmin_t .+ (tf .- one(T)) .* c.v_t .- c.s_tran) .* mf_i   # (1,w,blen,B)
                 t1 = c.s_tran .+ (c.vmin_t .+ tf .* c.v_t .- c.s_tran) .* mf_i
                 Wx = _overlap.(dXlo_j, dXhi_j, min.(t0, t1), max.(t0, t1))             # (bc,w,blen,B)

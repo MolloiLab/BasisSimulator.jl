@@ -114,3 +114,11 @@ function _bmm_tb(Wx::AbstractArray{<:Any, 4}, Vw::AbstractArray{<:Any, 4})
     end
     return A
 end
+
+"""
+    _to_float(T, x) -> x as an array of `T`
+
+Element type conversion (integer index arrays → the plan's float type) in the
+array world of `x`: `T.(x)` on the host, a StableHLO convert under Reactant.
+"""
+_to_float(::Type{T}, x::AbstractArray) where {T} = T.(x)
