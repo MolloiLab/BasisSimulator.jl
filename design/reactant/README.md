@@ -17,11 +17,9 @@ chain — the module docstring is the map), the Reactant extension, the five-str
 from a memory budget, the strict `EICTScanner` / `PCCTScanner` API, oracle tests
 (`test/functional/`, 1149 assertions) and Reactant smokes (`test/functional/reactant/`). Never
 merge to `main` without Dale. The material-decomposition work that USES this branch lives in the
-private repo `MolloiLab/basis-autodiff-mmd` (see its `HANDOFF.md`). Measured before handoff: at 256 grid / 984 views the looped EICT forward compiles in ~150 s but
-its RUN on XLA CPU exceeded 40 min (auto batching dd = 9 → ~110 while-loop iterations per view
-run) — XLA CPU executes the while-loop program far less efficiently than the unrolled one. First
-follow-up: expose `loop = false` (unrolled batches) in the pipelines for CPU development, and tune
-`_auto_batching` toward fewer, larger batches; at scale, run on the lab GPU. Open items: M6 driver switch
+private repo `MolloiLab/basis-autodiff-mmd` (see its `HANDOFF.md`). Performance (PROBES §8): the gather-based projector was the CPU bottleneck (XLA:CPU gathers); the
+dense-separable projector (`projection/dd_dense.jl`, the default) makes the compiled forward 5×
+faster than the legacy CPU kernels at 64/100 (0.27 s vs 1.46 s; gradient step 1.86 s). Open items: M6 driver switch
 (`simulate!`/`reconstruct!` on the functional core), CUDA validation on the lab box, the
 CT-realistic gallery numbers (`design/reactant/probes/gallery_parity.jl`) into PROBES §8.
 

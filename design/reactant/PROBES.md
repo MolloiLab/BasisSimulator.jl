@@ -122,3 +122,22 @@ arrays (`reshape`/`dropdims` of traced arrays) must be materialized before `dyna
 the tap accumulator must be a tuple (a `Vector{Any}` of traced arrays turns the final
 `sum(; dims)` into a dynamic call that recurses in `mapreducedim!`); a variable assigned inside
 the loop closure and elsewhere in the enclosing scope is boxed and hides the traced index.
+
+## 8. Where the CPU time goes, and the dense projector (`probes/bench_cpu.jl`, `probes/stage_times.jl`)
+
+64 grid / 100 views / 64 recon, GE Revolution arc, 16 materials, Apple M-series, 4 threads:
+
+| | forward | gradient step | compile |
+|---|---|---|---|
+| legacy kernels on CPU arrays | 1.46 s (simulate! 0.74 + recon 0.72) | — | — |
+| compiled, gather projector, unrolled batches | 18.1 s | 42.7 s | 180 s / 133 s |
+| compiled, gather projector, while loops | 14.9 s | 37.3 s | 34 s / 34 s |
+| compiled, **dense projector**, while loops | **0.27 s** | **1.86 s** | 30 s / 22 s |
+
+Stage times of the gather program: DD path lengths 15.6 s (1.06 s per material), spectral chain
+0.11 s, FDK ≈ 0 — the projector was everything; XLA:CPU executes gathers as scalar loops. The dense
+formulation (`projection/dd_dense.jl`: overlap weights for every voxel, two batched `dot_general`
+contractions per view batch, all channels in one matmul) is the same DD3 physics to 1e-11 (F64) /
+5e-6 (F32), 5× faster than the legacy CPU kernels and 55× faster than the gather program. The
+pipelines use it by default; a view whose dense weights do not fit `batch_budget_mb` raises an
+error with the numbers (no silent fallback).
