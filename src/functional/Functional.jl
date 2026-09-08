@@ -51,6 +51,8 @@ include("hir.jl")
 include("denoise.jl")
 # Projection-domain VMI (Cong, CMV, synthesis)
 include("vmi.jl")
+# The published n-channel profiled-likelihood VMI estimator (ported from the notebooks)
+include("nchannel.jl")
 # End-to-end pipelines behind the five-struct API
 include("pipeline.jl")
 

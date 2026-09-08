@@ -23,9 +23,10 @@ code, and the Reactant/Enzyme smoke tests runnable from `envs/reactant`.
 | **M3 HIR** — `hir_reconstruct` (OS-PWLS, Huber, padded equal subsets, operators passed in) | **done.** bit-identical to `reconstruct!` at strengths 0/60/100 (legacy operators), 4.4e-7 with the functional DD operators, `W_proj` 2e-6, Enzyme gradient 1.2e-10 vs FD |
 | **M4 VMI** — `cong_decompose` (fixed-iteration vectorized) + IFT VJP, `cmv_decompose`, `synth_vmi_2basis` | **done.** Cong 4.3e-5 (F32, shared ŵ) / 6.9e-5 (per-ray ŵ) vs `apply_cong!`, F64 residual 3e-16; CMV + synth bit-exact; Enzyme (unrolled) = IFT VJP to 6e-14 |
 | **M4 denoisers** — `acnr_kalender`, `sino_svd_denoise_bilateral`, `median_z`, `sfjsd_denoise` | **done.** ACNR bit-exact (nb03/nb04 kwargs), SVD-bilateral 4.6e-5, median-z exact (`:shrink`), SF-JSD 2e-6 with captured constants; compiled ≤2.2e-7; found a legacy SF-JSD thread race (§7) |
-| **M4 n-channel estimator** (notebook-only production VMI) | in progress — `src/functional/nchannel.jl` + NOTES |
+| **M4 n-channel estimator** — `nchannel_estimate` (profiled Poisson quasi-likelihood, fixed outer/inner iterations), `nchannel_tlbf` (Lee-2025 joint filter), angular apodization; `nchannel_NOTES.md` maps the notebook | **done.** vs the verbatim nb04 cell code: basis sinograms ≤7e-6, Fisher terms ≤1.4e-6, quality flags / iteration counts identical, T-LBF and apodization ≤3e-7; IFT/FD smoothness 5e-8 (124 tests) |
 | `ext/BasisSimulatorReactantExt.jl` (Reactant weakdep): lifts plan tensors to in-graph constants | done |
-| Integrated CPU suite (`Pkg.test()`) | 3826 pass with seven stages wired (`test/functional/`); final run with the pipeline + Logging fix pending |
+| Integrated CPU suite (`Pkg.test()`) | all eight stages + pipeline wired (`test/functional/`, ~1050 functional assertions); see the last commit message for the final count |
+| `design/reactant/HOWTO.md` — how to run tests/smokes and drive the pipeline + Reactant/Enzyme from a REPL | done |
 | Driver switch (`simulate!`/`reconstruct!` → functional core) | not started (M6) |
 | CUDA validation | not started (needs a lab NVIDIA box) |
 

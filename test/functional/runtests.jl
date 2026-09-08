@@ -25,3 +25,6 @@ end
 @testset "functional/pipeline" begin
     include("test_pipeline.jl")
 end
+@testset "functional/nchannel" begin
+    include("test_nchannel.jl")
+end
