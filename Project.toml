@@ -22,6 +22,10 @@ p7zip_jll = "3f19e933-33d8-53b3-aaab-bd5110c3b7a0"
 [weakdeps]
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 Metal = "dde4c033-4e86-420c-a63e-0dd931031962"
+Reactant = "3c362404-f566-11ee-1572-e11a4b42c853"
+
+[extensions]
+BasisSimulatorReactantExt = "Reactant"
 
 [compat]
 AcceleratedKernels = "0.4"
@@ -33,6 +37,7 @@ FFTW = "1"
 JSON = "0.21, 1"
 LinearAlgebra = "1"
 Metal = "1.9"
+Reactant = "0.2"
 Random = "1"
 SHA = "0.7, 1"
 Serialization = "1"

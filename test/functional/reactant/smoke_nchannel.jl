@@ -117,7 +117,7 @@ println("  converged flags (plain Float64): ", count(==(0.0), ref64.quality_flag
             t0 = time()
             grad_c = @compile Enzyme.gradient(Reverse, loss, rh, Const(rplan), Const(rwI), Const(rwW))
             println("  [$T] gradient compile time: $(round(time() - t0; digits = 1)) s")
-            g = Array(grad_c(loss, rh, Const(rplan), Const(rwI), Const(rwW))[1])
+            g = Array(grad_c(Reverse, loss, rh, Const(rplan), Const(rwI), Const(rwW))[1])
             @test size(g) == size(h64)
             @test all(isfinite, g)
 

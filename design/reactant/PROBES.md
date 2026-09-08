@@ -60,3 +60,29 @@ fused Metal kernel (2.4 s for the 234-bin polychromatic 720-view forward); CUDA 
 | `:siddon` tiled, 234 bins, 512 case | 10.6 s | — |
 
 These are not reproducible from any committed script; the benchmark harness (M5) rebuilds them.
+
+## 5. End-to-end pipeline under Reactant + Enzyme (`test/functional/reactant/smoke_pipeline.jl`, 2026-09-08)
+
+`Functional.eict_forward`: material fractions → static-tap DD (per material, per view) → EICT chain
+(spectral conversion, fill factor, reparameterized noise, air/log, water BHC) → FDK → HU, compiled as
+ONE XLA program. Toy: 16×16×2 phantom (compacted Gammex, 15 materials), 32×4×8 sinogram, 16×16×2 recon.
+
+| Quantity | Value |
+|---|---|
+| Float32 forward: compile | 59.8 s |
+| Float32 forward: run (XLA CPU) vs plain Julia | **1.0 ms vs 21.6 ms** |
+| Float32 forward parity vs plain arrays | 3.3e-6 |
+| Float64 `Enzyme.gradient(Reverse)` of a random HU loss w.r.t. the fractions: compile / run | 52.1 s / 4.4 ms |
+| ⟨∇, d⟩ AD vs central finite differences | −1946.95821065 vs −1946.95821068, **rel 1.6e-11** |
+| whole smoke wall time | 2 m 19 s |
+
+Two lessons from getting this to run:
+1. **Plan tensors must be lifted into the graph.** With the plans' host `Matrix` tables (μ table,
+   Toeplitz filter) used directly in `traced * host` products, Reactant fell back to the generic
+   scalar `Matrix{TracedRNumber}` product and traced for >20 min at 100 % CPU with no output.
+   `ext/BasisSimulatorReactantExt.jl` overrides `Functional._on_device(x, ::TracedRArray)` with
+   `Reactant.Ops.constant`, and the pipeline lifts every plan tensor through it. Large data tensors
+   should be thunk arguments, not constants.
+2. **Every material costs `n_views` unrolled projection programs** (labeled masks are projected
+   one-hot per material). The toy uses `compact_materials`; the M5 fix is select-accumulate over the
+   gathered material id (one volume walk) and `@trace for` over views.

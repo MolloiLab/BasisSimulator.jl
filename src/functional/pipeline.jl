@@ -106,6 +106,33 @@ function material_paths(fractions::AbstractArray{<:Any, 4}, pipe::EICTPipeline{T
     return _cat_new_axis(per_mat)
 end
 
+
+# -----------------------------------------------------------------------------
+# Device hooks (overridden by ext/BasisSimulatorReactantExt.jl inside a trace)
+# -----------------------------------------------------------------------------
+
+"""
+    _on_device(x, ref)
+
+Return `x` in the array world of `ref`. Identity for plain arrays; the Reactant
+extension lifts host plan tensors into the traced graph as constants when `ref`
+is a traced array (a host `Matrix * traced` otherwise degrades to a scalar
+fallback with one op per multiply-add).
+"""
+_on_device(x, ref) = x
+_on_device(::Nothing, ref) = nothing
+
+function _eict_on_device(p::EICTPlan{T}, ref) where {T}
+    μ = _on_device(p.μ_tbl, ref); w = _on_device(p.wη, ref); b = _on_device(p.bt, ref)
+    a = _on_device(p.air_ref, ref); hc = _on_device(p.scatter_Hc, ref); hr = _on_device(p.scatter_Hr, ref)
+    bc = _on_device(p.bhc_coeffs, ref)
+    return EICTPlan{T, typeof(μ), typeof(w), typeof(b), typeof(a), typeof(p.ff_log), typeof(hc), typeof(hr), typeof(bc)}(
+        μ, w, b, a, p.I0, p.σ_e, p.use_noise, p.use_enoise, p.ff_log, hc, hr, p.scatter_C, p.scatter_sw,
+        bc, p.eps, p.sino_shape)
+end
+
+_fbp_on_device(p::FBPPlan, ref) = FBPPlan(p; tensors = map(x -> _on_device(x, ref), p.tensors))
+
 """
     simulate_sino(fractions, pipe, ε = nothing, ε_e = nothing) -> (n_col, n_row, n_view)
 
@@ -115,7 +142,8 @@ are the quantum / electronic N(0,1) noise tensors (flat or 3-D); see
 [`draw_eict_noise`](@ref).
 """
 function simulate_sino(fractions::AbstractArray{<:Any, 4}, pipe::EICTPipeline, ε = nothing, ε_e = nothing)
-    return eict_chain(material_paths(fractions, pipe), pipe.eict, ε, ε_e)
+    P = material_paths(fractions, pipe)
+    return eict_chain(P, _eict_on_device(pipe.eict, P), ε, ε_e)
 end
 
 """
@@ -123,7 +151,7 @@ end
 
 Pure equivalent of `reconstruct!(create_fdk_recon_workspace(sino, geom, matrix))`.
 """
-reconstruct_μ(sino::AbstractArray{<:Any, 3}, pipe::EICTPipeline) = fdk(sino, pipe.fbp)
+reconstruct_μ(sino::AbstractArray{<:Any, 3}, pipe::EICTPipeline) = fdk(sino, _fbp_on_device(pipe.fbp, sino))
 
 """
     to_hu(μ, pipe)

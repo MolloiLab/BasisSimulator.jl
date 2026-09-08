@@ -93,7 +93,8 @@ end
                 # ~eps·λ₁/λ_k error (condition number squared); in Float32 that is
                 # ~1e-2 for λ₁/λ_k ~ 1e5.  The denoiser output is insensitive to it
                 # (those components re-enter scaled by σ_k) — see the 3-ch parity test.
-                tol_k = (T === Float32 && k >= 2) ? 2e-2 : tol_v
+                # (scaled by the observed condition number so the gate is not fixture-marginal)
+                tol_k = (T === Float32 && k >= 2) ? max(2e-2, 20 * eps(T) * (F.S[1] / max(F.S[k], eps(T)))^2) : tol_v
                 @test maximum(abs.(Vf[:, k] .- sgn .* F.V[:, k])) < tol_k
             end
             # orthonormality

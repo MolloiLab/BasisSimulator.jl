@@ -20,8 +20,12 @@ function fixture(; use_noise, T)
     sim_opts = BS.SimOptions(; fidelity = :eict, seed = 7, use_noise, use_scatter = false,
         use_lag = false, use_focal_spot = false, use_optical_crosstalk = false)
     recon_opts = BS.ReconOptions(matrix_size = (16, 16, 2), fov_cm = 20.0)
-    phantom = BS.create_gammex_472(n_voxels = 16, n_slices = 2, fov_cm = 20.0, z_cm = 1.0)
+    # compact_materials: keep only the materials present at this coarse grid — every material
+    # costs n_views unrolled projection programs in the traced graph (labeled-mask
+    # select-accumulate is the M5 fix), so the toy must stay at a handful of materials.
+    phantom = BS.compact_materials(BS.create_gammex_472(n_voxels = 16, n_slices = 2, fov_cm = 20.0, z_cm = 1.0))
     pipe = BSF.eict_pipeline(phantom, scanner, protocol, sim_opts, recon_opts; T)
+    println("PIPE  toy: mask $(size(phantom.mask)), n_mat = $(pipe.n_mat), sino $(pipe.eict.sino_shape), recon $(pipe.recon_shape)")
     fr = BSF.onehot_fractions(phantom.mask, pipe.n_mat; T)
     ε, ε_e = BSF.draw_eict_noise(pipe; seed = 7)
     return pipe, fr, ε, ε_e
