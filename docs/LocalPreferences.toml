@@ -1,0 +1,10 @@
+# Reseau ≤ 1.3.4 runs a TLS handshake against an embedded test certificate inside its
+# PrecompileTools workload. That certificate expired on 2026-08-06, so precompiling
+# Reseau (→ HTTP → Therapy) fails on every fresh depot, which is why the docs deploy
+# and Snapshot builds started failing on main (JuliaServices/Reseau.jl#139, fixed in
+# Reseau 1.3.5). Bumping Reseau in docs/Manifest.toml would change the fingerprint of
+# every committed notebook export and force a full Metal re-render, so until that
+# re-render happens we skip the workload instead — Reseau still compiles and works,
+# only its precompile-time warm-up is dropped.
+[Reseau]
+precompile_workload = false
