@@ -104,6 +104,8 @@ config-only tensors / scalars (never data-dependent):
 - `eps::T`              — count floor before the log (`1e-10` in every legacy site).
 - `noise_reduction::T`  — `sim_opts.pcct_noise_reduction` blend (0 = exact counts).
 - `view_chunks::Int`    — static number of view chunks for the energy-axis matmul.
+- `view_batch::Int`     — views per iteration of ONE compiled loop for the energy-axis matmul
+  (0 = off, use `view_chunks`); program size then does not depend on the view count.
 """
 struct PCCTPlan{
         T <: AbstractFloat,
@@ -119,6 +121,7 @@ struct PCCTPlan{
     eps::T
     noise_reduction::T
     view_chunks::Int
+    view_batch::Int
 end
 
 # Array fields are typed abstractly (not `Matrix{T}`) so `Reactant.to_rarray(plan)`
@@ -127,12 +130,12 @@ end
 # traced×traced — see the Reactant note in the header.
 function PCCTPlan{T}(
         μ_table::AbstractMatrix, W::AbstractMatrix, I0_bins::AbstractVector, I0_bins_f64::AbstractVector,
-        pileup_St, pileup_Sinv_t, eps::T, noise_reduction::T, view_chunks::Int,
+        pileup_St, pileup_Sinv_t, eps::T, noise_reduction::T, view_chunks::Int, view_batch::Int = 0,
     ) where {T <: AbstractFloat}
     return PCCTPlan{
         T, typeof(μ_table), typeof(W), typeof(I0_bins), typeof(I0_bins_f64),
         typeof(pileup_St), typeof(pileup_Sinv_t),
-    }(μ_table, W, I0_bins, I0_bins_f64, pileup_St, pileup_Sinv_t, eps, noise_reduction, view_chunks)
+    }(μ_table, W, I0_bins, I0_bins_f64, pileup_St, pileup_Sinv_t, eps, noise_reduction, view_chunks, view_batch)
 end
 
 """
@@ -151,6 +154,7 @@ function pcct_plan(
         use_pileup::Bool = ws.use_pcct_pileup,
         noise_reduction::Real = 0.0,
         view_chunks::Integer = 1,
+        view_batch::Integer = 0,
         T::Type{<:AbstractFloat} = eltype(ws.μ_table),
     )
     n_E = length(ws.energies)
@@ -158,7 +162,7 @@ function pcct_plan(
     W = Matrix{T}(Array(ws.W_matrix_gpu)[1:n_E, :])
     I0_f64 = Vector{Float64}(ws.I0_bins)
     S = (use_pileup && ws.pileup_S !== nothing) ? Matrix{Float64}(ws.pileup_S) : nothing
-    return pcct_plan(μ_table, W, I0_f64, S; noise_reduction, view_chunks, T)
+    return pcct_plan(μ_table, W, I0_f64, S; noise_reduction, view_chunks, view_batch, T)
 end
 
 """
@@ -173,6 +177,7 @@ function pcct_plan(
         S::Union{Nothing, AbstractMatrix};
         noise_reduction::Real = 0.0,
         view_chunks::Integer = 1,
+        view_batch::Integer = 0,
         T::Type{<:AbstractFloat} = eltype(W),
     )
     size(μ_table, 2) == size(W, 1) ||
@@ -193,7 +198,7 @@ function pcct_plan(
     return PCCTPlan{T}(
         Matrix{T}(μ_table), Matrix{T}(W),
         Vector{T}(T.(Vector{Float64}(I0_bins_f64))), Vector{Float64}(I0_bins_f64),
-        St, Sinv_t, T(1.0e-10), T(noise_reduction), Int(view_chunks),
+        St, Sinv_t, T(1.0e-10), T(noise_reduction), Int(view_chunks), Int(view_batch),
     )
 end
 
@@ -296,13 +301,21 @@ view axis).
 function spectral_bin_intensities(
         P::AbstractArray{<:Any, 4}, μ_table::AbstractMatrix, W::AbstractMatrix,
         bt::Union{Nothing, AbstractArray{<:Any, 3}} = nothing;
-        view_chunks::Integer = 1,
+        view_chunks::Integer = 1, view_batch::Integer = 0,
     )
     size(P, 4) == size(μ_table, 1) ||
         throw(DimensionMismatch("P has $(size(P, 4)) materials but μ_table has $(size(μ_table, 1)) rows"))
     size(μ_table, 2) == size(W, 1) ||
         throw(DimensionMismatch("μ_table has $(size(μ_table, 2)) energies but W has $(size(W, 1)) rows"))
-    ranges = _view_chunk_ranges(size(P, 3), Int(view_chunks))
+    n_view = size(P, 3)
+    if view_batch > 0
+        # one compiled loop over batches of `view_batch` views (program size independent of n_view)
+        T = _scalar_type(P)
+        out = _zeros(P, T, (size(P, 1), size(P, 2), n_view, size(W, 2)))
+        chunk_fn = (start, len) -> _spectral_chunk(_dslice(P, start, len, 3), μ_table, W, bt)
+        return _loop_over_batches(chunk_fn, n_view, Int(view_batch), out, P)
+    end
+    ranges = _view_chunk_ranges(n_view, Int(view_chunks))
     if length(ranges) == 1
         return _spectral_chunk(P, μ_table, W, bt)
     end
@@ -649,7 +662,7 @@ function pcct_chain(
         N_input::Union{Nothing, AbstractArray{<:Any, 4}} = nothing;
         bt::Union{Nothing, AbstractArray{<:Any, 3}} = nothing,
     ) where {T <: AbstractFloat}
-    I = spectral_bin_intensities(P, plan.μ_table, plan.W, bt; view_chunks = plan.view_chunks)
+    I = spectral_bin_intensities(P, plan.μ_table, plan.W, bt; view_chunks = plan.view_chunks, view_batch = plan.view_batch)
     p = bin_log_sinograms(I, plan.I0_bins, plan.eps)
     p, raw = _noise_stage(p, plan, N_input)
     p = _pileup_stage(p, plan, plan.pileup_St)
@@ -687,7 +700,7 @@ function pcct_chain_surrogate(
         P::AbstractArray{<:Any, 4}, plan::PCCTPlan{T}, ε::AbstractArray{<:Any, 4};
         bt::Union{Nothing, AbstractArray{<:Any, 3}} = nothing,
     ) where {T <: AbstractFloat}
-    I = spectral_bin_intensities(P, plan.μ_table, plan.W, bt; view_chunks = plan.view_chunks)
+    I = spectral_bin_intensities(P, plan.μ_table, plan.W, bt; view_chunks = plan.view_chunks, view_batch = plan.view_batch)
     p = bin_log_sinograms(I, plan.I0_bins, plan.eps)
     N = pcct_noise_surrogate(p, plan.I0_bins, ε)
     p, raw = pcct_counts_from_input(p, plan.I0_bins, N, plan.noise_reduction)

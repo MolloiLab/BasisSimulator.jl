@@ -55,7 +55,7 @@ end
 BSF._zeros(::Reactant.TracedRArray, ::Type{T}, dims::Dims) where {T} =
     Reactant.Ops.fill(zero(T), collect(Int, dims))
 
- elementwise helper functions per module at
+# Reactant 0.2.28x caps the number of same-named elementwise helper functions per module at
 # 10 000 (`__lookup_unique_name_in_module` probes name, name_1, … against a freshly built symbol
 # table on every call). Two full pipelines in one graph exceed it. Opt-in override: a monotonic
 # per-name counter (no cap, O(1) per call). Names stay unique, so the emitted MLIR is unchanged.

@@ -38,18 +38,24 @@ struct DDRunPlan{T <: AbstractFloat}
 end
 
 """
-    dd_run_plans(geom, vol_shape; view_batch, volume_extent = nothing, eltype = Float64) -> Vector{DDRunPlan}
+    dd_run_plans(geom, vol_shape; view_batch, views = 1:geom.n_angles, volume_extent = nothing, eltype = Float64)
 
-Runs of `1:geom.n_angles` (consecutive, equal `vertical`) in view order, each
-processed in batches of at most `view_batch` views.
+Runs of the view list `views` (consecutive entries with equal `vertical`) in
+list order, each processed in batches of at most `view_batch` views.  `views`
+may be any ordered subset (e.g. an ordered subset of an iterative
+reconstruction): the per-view constants are a table, so contiguity is not
+required; `run.views` then holds POSITIONS in the list (`1:n`), and the
+concatenated run outputs follow the list order.
 """
 function dd_run_plans(geom::CTGeometry, vol_shape::NTuple{3, Int};
         view_batch::Int,
+        views::AbstractVector{<:Integer} = 1:geom.n_angles,
         volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
         eltype::Type{T} = Float64) where {T <: AbstractFloat}
     view_batch >= 1 || throw(ArgumentError("view_batch must be ≥ 1, got $view_batch"))
-    n = geom.n_angles
-    plans = [dd_view_plan(geom, v, vol_shape; volume_extent, eltype = T) for v in 1:n]
+    all(1 .<= views .<= geom.n_angles) || throw(ArgumentError("views must lie in 1:$(geom.n_angles)"))
+    n = length(views)
+    plans = [dd_view_plan(geom, Int(views[i]), vol_shape; volume_extent, eltype = T) for i in 1:n]
     runs = DDRunPlan{T}[]
     v = 1
     while v <= n
@@ -169,6 +175,29 @@ function _dd_transpose_looped(sino::AbstractArray{<:Any, 3}, geom::CTGeometry, v
         view_batch::Int, volume_extent, ::Type{T}) where {T}
     acc = nothing
     for r in dd_run_plans(geom, vol_shape; view_batch, volume_extent, eltype = T)
+        term = dd_transpose_run(sino[:, :, r.views], r, vol_shape)
+        acc = acc === nothing ? term : acc .+ term
+    end
+    return acc
+end
+
+"""
+    dd_project_views(vol4, geom, views; view_batch, volume_extent = nothing, eltype) -> (n_cols, n_rows, length(views), n_channels)
+    dd_transpose_views(sino_sub, geom, views, vol_shape; view_batch, volume_extent = nothing, eltype) -> (nx, ny, nz)
+
+Looped projection / transpose over an ordered subset of views (the operators an
+ordered-subsets reconstruction passes in): `sino_sub` holds the subset's views
+in `views` order.
+"""
+function dd_project_views(vol::AbstractArray{<:Any, 4}, geom::CTGeometry, views::AbstractVector{<:Integer};
+        view_batch::Int, volume_extent = nothing, eltype::Type{T}) where {T}
+    runs = dd_run_plans(geom, size(vol)[1:3]; view_batch, views, volume_extent, eltype = T)
+    return cat((dd_project_run(vol, r) for r in runs)...; dims = 3)
+end
+function dd_transpose_views(sino::AbstractArray{<:Any, 3}, geom::CTGeometry, views::AbstractVector{<:Integer},
+        vol_shape::NTuple{3, Int}; view_batch::Int, volume_extent = nothing, eltype::Type{T}) where {T}
+    acc = nothing
+    for r in dd_run_plans(geom, vol_shape; view_batch, views, volume_extent, eltype = T)
         term = dd_transpose_run(sino[:, :, r.views], r, vol_shape)
         acc = acc === nothing ? term : acc .+ term
     end

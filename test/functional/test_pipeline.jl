@@ -106,3 +106,33 @@ end # module
     @test maximum(abs.(ha .- h1)) <= 5e-3
     @test_throws ArgumentError BSF.eict_pipeline(phantom, scanner, protocol, sim_opts, recon_opts; view_batch = 0)
 end
+
+@testset "Functional.pcct_pipeline — five structs → bins → combine → FDK, batched" begin
+    scanner = BS.Scanner(source_to_isocenter = 540.0, source_to_detector = 1080.0, detector_rows = 8, detector_cols = 64,
+        detector_row_size = 1.0, detector_col_size = 1.0, detector_type = :photon_counting, detector_material = :CdTe,
+        detector_depth = 1.6, n_energy_bins = 4, energy_thresholds = [20.0, 35.0, 55.0, 70.0], dead_time_ns = 25.0)
+    protocol = BS.CTProtocol(mA = 2.5, kVp = 120.0, views = 16, rotation_time = 0.5)
+    sim_opts = BS.SimOptions(; fidelity = :pcct, use_noise = false, use_scatter = false, use_lag = false, use_focal_spot = false,
+        use_optical_crosstalk = false, use_pcct_pileup = false, use_pcct_scatter = false)
+    recon_opts = BS.ReconOptions(matrix_size = (32, 32, 4), fov_cm = 20.0)
+    phantom = BS.compact_materials(BS.create_gammex_472(n_voxels = 32, fov_cm = 20.0, z_cm = 2.0))
+    p1 = BSF.pcct_pipeline(phantom, scanner, protocol, sim_opts, recon_opts; view_batch = 1)
+    pa = BSF.pcct_pipeline(phantom, scanner, protocol, sim_opts, recon_opts)
+    p3 = BSF.pcct_pipeline(phantom, scanner, protocol, sim_opts, recon_opts; view_batch = 3, groups = [[1, 2], [3, 4]])
+    @test p1.unrolled && !pa.unrolled && p3.groups == [[1, 2], [3, 4]]
+    fr = BSF.onehot_fractions(phantom.mask, p1.n_mat)
+    v1 = BSF.pcct_forward(fr, p1); va = BSF.pcct_forward(fr, pa); v3 = BSF.pcct_forward(fr, p3)
+    @test size(v1) == (32, 32, 4, 4) && size(v3) == (32, 32, 4, 2)
+    @test maximum(abs.(va .- v1)) <= 1e-5
+    ws = BS.create_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
+    res = BS.simulate!(ws, phantom, protocol, sim_opts)
+    bins_leg = BSF.stack_bins(res.pcct_sino.bins)
+    chain = BSF.pcct_chain(BSF.material_paths(fr, p1), p1.pcct)
+    @test maximum(abs.(chain.bins .- bins_leg)) <= 1e-4                        # ≡ simulate!(PCCTWorkspace)
+    sino_leg = BSF.combine_bins(bins_leg, p1.G, p1.I0_groups, p1.pcct.eps)
+    vol_leg = cat((BSF.fdk(sino_leg[:, :, :, g], p1.fbp) for g in 1:4)...; dims = 4)
+    @test maximum(abs.(v1 .- vol_leg)) <= 1e-4
+    @test_throws ArgumentError BSF.pcct_pipeline(phantom, BS.Scanner(source_to_isocenter = 540.0, source_to_detector = 1080.0,
+        detector_rows = 8, detector_cols = 64, detector_row_size = 1.0, detector_col_size = 1.0), protocol,
+        BS.SimOptions(; fidelity = :eict, use_noise = false), recon_opts)
+end
