@@ -142,6 +142,20 @@ function poly_log_sinogram_looped(P::_A4, μ_tbl::AbstractMatrix, wη::AbstractV
     return _loop_over_batches(chunk_fn, n_view, B, out, (P, μ_tbl, wη, bt), P)
 end
 
+"""
+    poly_log_sinogram_batched(P, μ_tbl, wη, bt, B) -> sino
+
+[`poly_log_sinogram`](@ref) over static view batches of `B` (last batch shorter),
+unrolled and concatenated pairwise — the unrolled twin of
+[`poly_log_sinogram_looped`](@ref).
+"""
+function poly_log_sinogram_batched(P::_A4, μ_tbl::AbstractMatrix, wη::AbstractVector,
+        bt::Union{Nothing, _A3}, B::Int)
+    n_view = size(P, 3)
+    parts = [poly_log_sinogram(P[:, :, lo:min(lo + B - 1, n_view), :], μ_tbl, wη, bt) for lo in 1:B:n_view]
+    return reduce((a, b) -> cat(a, b; dims = 3), parts)
+end
+
 # Spectral weight matrix (n_cells, n_E) as used in the forward sum: wη ⊗ 1 or wη·bt.
 _spectral_weights(wη::AbstractVector, ::Nothing, n_col, n_row, n_view) = reshape(wη, 1, :)
 function _spectral_weights(wη::AbstractVector, bt::_A3, n_col, n_row, n_view)
@@ -587,9 +601,15 @@ shape; reshaped on the host) — the exact draws of `ws.noise_rand_cpu` /
 `view_batch > 0` bounds the spectral transient to that many views per compiled
 loop iteration ([`poly_log_sinogram_looped`](@ref)); `0` = all views at once.
 """
-function eict_chain(P::_A4, plan::EICTPlan{T}, ε = nothing, ε_e = nothing; view_batch::Int = 0) where {T}
-    p = view_batch > 0 ? poly_log_sinogram_looped(P, plan.μ_tbl, plan.wη, plan.bt, view_batch) :
-                         poly_log_sinogram(P, plan.μ_tbl, plan.wη, plan.bt)
+function eict_chain(P::_A4, plan::EICTPlan{T}, ε = nothing, ε_e = nothing; view_batch::Int = 0, loop::Bool = true) where {T}
+    n_view = size(P, 3)
+    p = if view_batch <= 0 || view_batch >= n_view
+        poly_log_sinogram(P, plan.μ_tbl, plan.wη, plan.bt)
+    elseif loop
+        poly_log_sinogram_looped(P, plan.μ_tbl, plan.wη, plan.bt, view_batch)
+    else
+        poly_log_sinogram_batched(P, plan.μ_tbl, plan.wη, plan.bt, view_batch)
+    end
     p = fill_factor_inject(p, plan.ff_log)
     sf = scatter_estimate(p, plan.scatter_Hc, plan.scatter_Hr, plan.scatter_C)
     p = scatter_inject(p, sf, plan.scatter_sw)

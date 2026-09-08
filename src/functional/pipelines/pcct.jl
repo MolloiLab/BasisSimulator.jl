@@ -26,8 +26,9 @@ struct PCCTPipeline{T <: AbstractFloat, PP, FP} <: AbstractPipeline{T}
     groups::Vector{Vector{Int}}
     fbp::FP
     recon_shape::NTuple{3, Int}
-    batching::NamedTuple{(:dd, :spectral, :fdk), Tuple{Int, Int, Int}}
+    batching::NamedTuple{(:dd, :spectral, :fdk, :dense), Tuple{Int, Int, Int, Bool}}
     unrolled::Bool
+    loop::Bool
 end
 Base.eltype(::PCCTPipeline{T}) where {T} = T
 
@@ -51,7 +52,10 @@ function pcct_pipeline(
         T::Type{<:AbstractFloat} = Float32,
         view_batch::Union{Symbol, Integer} = :auto,
         batch_budget_mb::Real = 512,
+        loop::Bool = true,
+        projector::Symbol = :dense,      # :dense (batched contractions — THE projector) | :gather (static-tap gathers; oracle/tests only)
     )
+    projector in (:dense, :gather) || throw(ArgumentError("projector must be :dense or :gather"))
     (view_batch === :auto || (view_batch isa Integer && view_batch >= 1)) ||
         throw(ArgumentError("view_batch must be :auto or an integer ≥ 1, got $view_batch"))
     ws = BS.create_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
@@ -62,18 +66,18 @@ function pcct_pipeline(
     n_bins = length(ws.I0_bins)
     groups = groups === nothing ? [[b] for b in 1:n_bins] : groups
     batching = if view_batch === :auto
-        _auto_batching((geom.n_cols, geom.n_rows, n_view), vol_shape, n_E, size(ws.μ_table, 1), recon_opts.matrix_size, batch_budget_mb)
+        _auto_batching((geom.n_cols, geom.n_rows, n_view), vol_shape, n_E, size(ws.μ_table, 1), recon_opts.matrix_size, batch_budget_mb; projector)
     else
-        (dd = Int(view_batch), spectral = Int(view_batch), fdk = Int(view_batch))
+        (dd = Int(view_batch), spectral = Int(view_batch), fdk = Int(view_batch), dense = projector === :dense)
     end
     unrolled = view_batch === 1
-    pplan = pcct_plan(ws; view_batch = unrolled ? 0 : batching.spectral, T)
+    pplan = pcct_plan(ws; view_batch = (unrolled || !loop) ? 0 : batching.spectral, view_chunks = (unrolled || loop) ? 1 : cld(n_view, batching.spectral), T)
     bt = nothing            # the PCCT workspace folds the centre-pixel bowtie into W (no per-pixel spectral bowtie)
     G, I0g = combine_matrix(Vector{Float64}(ws.I0_bins), groups, T)
     fplan = fbp_plan(geom, recon_opts.matrix_size; filter, cutoff, T)
     return PCCTPipeline{T, typeof(pplan), typeof(fplan)}(
         geom, vol_shape, size(ws.μ_table, 1), phantom.extent, pplan, bt, G, I0g, groups, fplan,
-        recon_opts.matrix_size, batching, unrolled)
+        recon_opts.matrix_size, batching, unrolled, loop)
 end
 
 function _pcct_on_device(p::PCCTPlan{T}, ref) where {T}
@@ -118,7 +122,7 @@ end
 function _fdk_channels(sino::AbstractArray{<:Any, 4}, pipe::PCCTPipeline{T}) where {T}
     fplan = _fbp_on_device(pipe.fbp, sino)
     vb = pipe.unrolled ? 1 : pipe.batching.fdk
-    vols = [fdk(sino[:, :, :, g], fplan; view_batch = vb) for g in 1:size(sino, 4)]
+    vols = [fdk(sino[:, :, :, g], fplan; view_batch = vb, loop = pipe.loop) for g in 1:size(sino, 4)]
     return _cat_new_axis(vols)
 end
 

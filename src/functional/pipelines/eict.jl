@@ -20,8 +20,9 @@ struct EICTPipeline{T <: AbstractFloat, EP, FP} <: AbstractPipeline{T}
     fbp::FP
     μ_water::T
     recon_shape::NTuple{3, Int}
-    batching::NamedTuple{(:dd, :spectral, :fdk), Tuple{Int, Int, Int}}   # views per compiled loop iteration, per stage
+    batching::NamedTuple{(:dd, :spectral, :fdk, :dense), Tuple{Int, Int, Int, Bool}}   # views per batch, per stage
     unrolled::Bool                                                       # true: legacy per-view unrolled programs (view_batch = 1)
+    loop::Bool                                                           # true: batches run inside compiled while loops; false: batches unrolled
 end
 
 Base.eltype(::EICTPipeline{T}) where {T} = T
@@ -42,8 +43,9 @@ HU reference; a `WaterBHC` may be passed directly). `filter`/`cutoff` mirror
 `view_batch = :auto` (default) sizes the compiled view loops of every stage from
 `batch_budget_mb` (see [`_auto_batching`](@ref)), so any number of views and any
 phantom grid compile to a program of bounded size; an integer forces that many
-views per loop iteration in all stages, and `1` selects the legacy per-view
-unrolled programs (bit-identical summation order; toy sizes only).
+views per batch in all stages, and `1` selects the legacy per-view
+unrolled programs (bit-identical summation order; toy sizes only). `loop = false` unrolls the
+batches instead of looping (program size ∝ number of batches; the faster execution on XLA CPU).
 """
 function eict_pipeline(
         phantom::BS.Phantom, scanner::BS.EICTScanner, protocol, sim_opts, recon_opts;
@@ -54,7 +56,10 @@ function eict_pipeline(
         spectrum_override = nothing,
         view_batch::Union{Symbol, Integer} = :auto,
         batch_budget_mb::Real = 512,
+        loop::Bool = true,
+        projector::Symbol = :dense,      # :dense (batched contractions — THE projector) | :gather (static-tap gathers; oracle/tests only)
     )
+    projector in (:dense, :gather) || throw(ArgumentError("projector must be :dense or :gather"))
     (view_batch === :auto || (view_batch isa Integer && view_batch >= 1)) ||
         throw(ArgumentError("view_batch must be :auto or an integer ≥ 1, got $view_batch"))
     batch_budget_mb > 0 || throw(ArgumentError("batch_budget_mb must be positive"))
@@ -67,13 +72,13 @@ function eict_pipeline(
     n_mat = size(eplan.μ_tbl, 1)
     vol_shape = size(phantom.mask)
     batching = if view_batch === :auto
-        _auto_batching(eplan.sino_shape, vol_shape, length(eplan.wη), n_mat, recon_opts.matrix_size, batch_budget_mb)
+        _auto_batching(eplan.sino_shape, vol_shape, length(eplan.wη), n_mat, recon_opts.matrix_size, batch_budget_mb; projector)
     else
-        (dd = Int(view_batch), spectral = Int(view_batch), fdk = Int(view_batch))
+        (dd = Int(view_batch), spectral = Int(view_batch), fdk = Int(view_batch), dense = projector === :dense)
     end
     return EICTPipeline{T, typeof(eplan), typeof(fplan)}(
         geom, vol_shape, n_mat, phantom.extent, eplan, fplan, T(μw), recon_opts.matrix_size,
-        batching, view_batch === 1)
+        batching, view_batch === 1, loop)
 end
 
 """
@@ -86,7 +91,7 @@ are the quantum / electronic N(0,1) noise tensors (flat or 3-D); see
 """
 function simulate_sino(fractions::AbstractArray{<:Any, 4}, pipe::EICTPipeline, ε = nothing, ε_e = nothing)
     P = material_paths(fractions, pipe)
-    return eict_chain(P, _eict_on_device(pipe.eict, P), ε, ε_e; view_batch = pipe.unrolled ? 0 : pipe.batching.spectral)
+    return eict_chain(P, _eict_on_device(pipe.eict, P), ε, ε_e; view_batch = pipe.unrolled ? 0 : pipe.batching.spectral, loop = pipe.loop)
 end
 
 """
@@ -95,7 +100,7 @@ end
 Pure equivalent of `reconstruct!(create_fdk_recon_workspace(sino, geom, matrix))`.
 """
 reconstruct_μ(sino::AbstractArray{<:Any, 3}, pipe::EICTPipeline) =
-    fdk(sino, _fbp_on_device(pipe.fbp, sino); view_batch = pipe.unrolled ? 1 : pipe.batching.fdk)
+    fdk(sino, _fbp_on_device(pipe.fbp, sino); view_batch = pipe.unrolled ? 1 : pipe.batching.fdk, loop = pipe.loop)
 
 """
     to_hu(μ, pipe)

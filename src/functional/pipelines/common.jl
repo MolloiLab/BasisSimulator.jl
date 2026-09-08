@@ -43,10 +43,18 @@ material axis is the batch axis of the linear operator). Differentiable in
 """
 function material_paths(fractions::AbstractArray{<:Any, 4}, pipe::AbstractPipeline{T}) where {T}
     geom = pipe.geom
-    if !pipe.unrolled
+    if !pipe.unrolled && pipe.loop
         runs = dd_run_plans(geom, pipe.vol_shape; view_batch = pipe.batching.dd,
             volume_extent = pipe.volume_extent, eltype = T)
-        return reduce((a, b) -> cat(a, b; dims = 3), [dd_project_run(fractions, r) for r in runs])
+        proj = pipe.batching.dense ? dd_project_dense_run : dd_project_run
+        return reduce((a, b) -> cat(a, b; dims = 3), [proj(fractions, r) for r in runs])
+    elseif !pipe.unrolled
+        # unrolled batches: one static program per batch (compile ∝ number of batches)
+        batches = dd_batch_plans(geom, pipe.vol_shape; view_batch = pipe.batching.dd,
+            volume_extent = pipe.volume_extent, eltype = T)
+        per_mat = [reduce((a, b) -> cat(a, b; dims = 3), [dd_project_batch(fractions[:, :, :, m], bp) for bp in batches])
+                   for m in 1:size(fractions, 4)]
+        return _cat_new_axis(per_mat)
     end
     plans = [dd_view_plan(geom, v, pipe.vol_shape; volume_extent = pipe.volume_extent, eltype = T)
              for v in 1:geom.n_angles]
@@ -66,15 +74,21 @@ DD gather chain `n_col·n_row·n_long·(6 + n_mat)`, spectral sum
 set by the budget, not by the scan (any number of views, any phantom grid).
 """
 function _auto_batching(sino_shape::NTuple{3, Int}, vol_shape::NTuple{3, Int}, n_E::Int, n_mat::Int,
-        recon_shape::NTuple{3, Int}, budget_mb::Real)
+        recon_shape::NTuple{3, Int}, budget_mb::Real; projector::Symbol = :auto)
     n_col, n_row, n_view = sino_shape
-    n_long = max(vol_shape[1], vol_shape[2])
+    n_long = max(vol_shape[1], vol_shape[2]); n_t = n_long; nzv = vol_shape[3]
     nx, ny, nz = recon_shape
     bytes = budget_mb * 2^20
     per_view(x) = Int(clamp(bytes ÷ (4 * x), 1, n_view))
-    return (dd = per_view(n_col * n_row * n_long * (6 + n_mat)),
-            spectral = per_view(n_col * n_row * n_E * 3),
-            fdk = per_view(nx * ny * nz * 10))
+    dense_bytes = dd_dense_view_bytes(n_col, n_row, n_t, nzv, n_long, n_mat)
+    dense = projector !== :gather                      # the dense contractions ARE the projector; :gather is an explicit choice
+    if dense && dense_bytes > bytes
+        throw(ArgumentError("the dense projector needs $(round(Int, dense_bytes / 2^20)) MB per view " *
+            "(n_cols $n_col × n_t $n_t × n_long $n_long weights, $n_mat channels) but batch_budget_mb = $budget_mb; " *
+            "raise batch_budget_mb so that one view fits — there is no silent fallback"))
+    end
+    dd = dense ? Int(clamp(bytes ÷ dense_bytes, 1, n_view)) : per_view(n_col * n_row * n_long * (6 + n_mat))
+    return (dd = dd, spectral = per_view(n_col * n_row * n_E * 3), fdk = per_view(nx * ny * nz * 10), dense = dense)
 end
 
 function _eict_on_device(p::EICTPlan{T}, ref) where {T}

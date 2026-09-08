@@ -19,6 +19,7 @@ Layout (one folder per part of the chain; files are included in this order):
                                     per-channel Φ that the n-channel decomposition (reconstruction/vmi) consumes
     projection/      dd_projector.jl  distance-driven forward projector + exact transpose (per view)
                      dd_runs.jl       view runs: batched + compiled-loop projection, ordered subsets, HIR operators
+                     dd_dense.jl      the same DD physics as two batched contractions (the fast path on CPU and GPU)
     detector/        eict.jl        energy-integrating chain (spectral sum, fill factor, scatter, noise,
                                     air normalisation, −log, water BHC) + hand VJPs
                      pcct.jl        photon-counting chain (spectral bins, DRM/LUT weights, Poisson counts and
@@ -52,6 +53,7 @@ include("core/resample.jl")
 include("core/device.jl")
 include("projection/dd_projector.jl")
 include("projection/dd_runs.jl")
+include("projection/dd_dense.jl")
 include("detector/eict.jl")
 include("detector/pcct.jl")
 include("source/spectrum.jl")

@@ -679,8 +679,8 @@ counterpart of `reconstruct!(::FDKReconWorkspace, sino, geom)` /
 (`:flat` and `:arc`).
 """
 function fdk(sino::AbstractArray{<:Any, 3}, plan::FBPPlan{T};
-        view_batch::Int = 1, sentinel::Real = plan.sentinel) where {T}
+        view_batch::Int = 1, loop::Bool = true, sentinel::Real = plan.sentinel) where {T}
     filt = filter_views(sino, plan)
-    vol = backproject(filt, plan; weighted = true, view_batch = view_batch)
+    vol = backproject(filt, plan; weighted = true, view_batch = view_batch, loop = loop)
     return fov_mask(vol, plan; sentinel = sentinel)
 end

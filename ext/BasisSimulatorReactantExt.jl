@@ -67,6 +67,22 @@ BSF._zeros(::_AnyTraced, ::Type{T}, dims::Dims) where {T} =
     Reactant.Ops.fill(zero(T), collect(Int, dims))
 BSF._plain(x::_AnyTraced) = _mat(x)
 
+# Dense DD contractions as single XLA dot_general ops (result dims: batch…, lhs free…, rhs free…).
+function BSF._bmm_t(Wx::_AnyTraced, V::_AnyTraced)
+    Wxm = _mat(Wx); Vm = _mat(V)                             # (n_cols,n_t,n_long,B), (n_t,K,n_long)
+    n_cols, n_t, n_long, B = size(Wxm); K = size(Vm, 2)
+    Vb = Vm .* Reactant.Ops.fill(one(Reactant.unwrapped_eltype(Vm)), [1, 1, 1, B])   # (n_t,K,n_long,B)
+    r = Reactant.Ops.dot_general(Wxm, Vb; contracting_dimensions = ([2], [1]), batching_dimensions = ([3, 4], [3, 4]))
+    # r :: (n_long, B, n_cols, K) → (n_cols, K, n_long, B)
+    return permutedims(r, (3, 4, 1, 2))
+end
+function BSF._bmm_zl(Wz::_AnyTraced, A::_AnyTraced)
+    Wzm = _mat(Wz); Am = _mat(A)                             # (n_cols,n_rows,nz,n_long,B), (n_cols,nz,M,n_long,B)
+    r = Reactant.Ops.dot_general(Wzm, Am; contracting_dimensions = ([3, 4], [2, 4]), batching_dimensions = ([1, 5], [1, 5]))
+    # r :: (n_cols, B, n_rows, M) → (n_cols, n_rows, M, B)
+    return permutedims(r, (1, 3, 4, 2))
+end
+
 # Reactant 0.2.28x caps the number of same-named elementwise helper functions per module at
 # 10 000 (`__lookup_unique_name_in_module` probes name, name_1, … against a freshly built symbol
 # table on every call). A single full pipeline exceeds it once every stage loops over views.

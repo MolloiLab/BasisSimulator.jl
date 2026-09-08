@@ -46,11 +46,11 @@ function vmi_pipeline(
         iodine_filter = VMI_IODINE_FILTER, water_filter = VMI_WATER_FILTER,
         acnr = :default,
         T::Type{<:AbstractFloat} = Float32,
-        view_batch::Union{Symbol, Integer} = :auto, batch_budget_mb::Real = 512,
+        view_batch::Union{Symbol, Integer} = :auto, batch_budget_mb::Real = 512, loop::Bool = true,
         nchannel_kwargs...,
     )
     length(protocols) >= 2 || throw(ArgumentError("vmi_pipeline: at least two channels (protocols) are required"))
-    pipes = [eict_pipeline(phantom, scanner, pr, sim_opts, recon_opts; bhc = nothing, T, view_batch, batch_budget_mb) for pr in protocols]
+    pipes = [eict_pipeline(phantom, scanner, pr, sim_opts, recon_opts; bhc = nothing, T, view_batch, batch_budget_mb, loop) for pr in protocols]
     geom = pipes[1].geom
     all(p -> p.geom.n_angles == geom.n_angles && p.eict.sino_shape == pipes[1].eict.sino_shape, pipes) ||
         throw(ArgumentError("vmi_pipeline: every channel must share the geometry (views, detector)"))
@@ -84,8 +84,9 @@ function vmi_forward(fractions::AbstractArray{<:Any, 4}, vp::VMIPipeline{T}, noi
     # rays whose estimate did not converge (non-finite) carry zero basis density into the FDK,
     # like the notebooks' quality-flagged rays; the FDK would otherwise spread one NaN everywhere
     finite0(x) = (y = _plain(x); ifelse.(isfinite.(y), y, zero(T)))
-    fbp_iodine = s -> fdk(finite0(s), _fbp_on_device(vp.fbp_iodine, s); view_batch = vb_I)
-    fbp_water = s -> fdk(finite0(s), _fbp_on_device(vp.fbp_water, s); view_batch = vb_I)
+    lp = vp.pipes[1].loop
+    fbp_iodine = s -> fdk(finite0(s), _fbp_on_device(vp.fbp_iodine, s); view_batch = vb_I, loop = lp)
+    fbp_water = s -> fdk(finite0(s), _fbp_on_device(vp.fbp_water, s); view_batch = vb_I, loop = lp)
     acnr = vp.acnr === nothing ? nothing : ((W, I) -> (r = acnr_kalender(W, I, vp.acnr); (; water = r[1], iodine = r[2])))
     synth = (W, I, es) -> nchannel_synth_vmi(W, I, _on_device(vp.alphas, W), T)
     c = nchannel_vmi_chain(h, vp.nchannel; fbp_iodine, fbp_water, acnr, synth, energies = vp.energies)

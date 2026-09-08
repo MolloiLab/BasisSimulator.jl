@@ -98,9 +98,10 @@ end # module
     p8 = BSF.eict_pipeline(phantom, scanner, protocol, sim_opts, recon_opts; view_batch = 8)
     pa = BSF.eict_pipeline(phantom, scanner, protocol, sim_opts, recon_opts)              # :auto
     @test !pa.unrolled && all(1 .<= values(pa.batching) .<= 12)
-    @test p1.unrolled && !p8.unrolled && p8.batching == (dd = 8, spectral = 8, fdk = 8)
+    @test p1.unrolled && !p8.unrolled && p8.batching.dd == 8 && p8.batching.spectral == 8 && p8.batching.fdk == 8
     fr = BSF.onehot_fractions(phantom.mask, p1.n_mat)
-    @test BSF.material_paths(fr, p8) == BSF.material_paths(fr, p1)
+    P8 = BSF.material_paths(fr, p8); P1 = BSF.material_paths(fr, p1)
+    @test maximum(abs.(P8 .- P1)) <= 2e-5 * maximum(abs.(P1))            # dense contractions: same physics, matmul summation order
     h1 = BSF.eict_forward(fr, p1); h8 = BSF.eict_forward(fr, p8); ha = BSF.eict_forward(fr, pa)
     @test maximum(abs.(h8 .- h1)) <= 5e-3                        # view-batch reduction order only
     @test maximum(abs.(ha .- h1)) <= 5e-3
