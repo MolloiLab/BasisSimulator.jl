@@ -118,3 +118,14 @@ img  = BSF.forward(fr, pipe)                                     # HU (EICT) or 
 Geometry fields are reachable directly on the scanner (`scanner.detector_rows`); a family's
 constructor rejects the other family's keywords. Scintillator lag is EICT-only; pile-up, its
 correction, scatter correction and the count-noise blend are `PCCTScanner` fields.
+
+## The three pipelines behind the five structs
+
+```julia
+pipe = BSF.pipeline(phantom, EICTScanner(...), protocol, opts, recon)          # EICTPipeline → forward gives HU
+pipe = BSF.pipeline(phantom, PCCTScanner(...), protocol, opts, recon; groups)  # PCCTPipeline → forward gives per-channel μ
+vp   = BSF.vmi_pipeline(phantom, EICTScanner(...), [proto_80, proto_140], opts, recon; energies = [50, 70, 100, 140])
+out  = BSF.vmi_forward(fr, vp)     # (; vmis (nx,ny,nz,nE), vol_water, vol_iodine, sino_iodine, sino_water, h)
+```
+All three are pure programs over the material fractions: compile them with `@compile`, differentiate
+with `Enzyme.gradient`; `test/functional/reactant/smoke_pipelines_all.jl` does both for each.
