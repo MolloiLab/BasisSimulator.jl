@@ -144,7 +144,8 @@ function BSF.compile_pipeline(pipe::BSF.EICTPipeline{T}, x::Reactant.AbstractCon
     zg = Reactant.@compile sync = true (g -> g .* zero(T))(g0)
     tohu = Reactant.@compile sync = true BSF.eict_vol_to_hu(vol0, pipe)
     vb = (vol, hb) -> Enzyme.gradient(Enzyme.Reverse, (vol, hb) -> sum(hb .* BSF.eict_vol_to_hu(vol, pipe)), vol, Enzyme.Const(hb))[1]
-    vbar = Reactant.@compile sync = true vb(vol0, vol0)
+    hb0 = Reactant.to_rarray(zeros(T, nx, ny, nz))            # a DISTINCT array: the same array passed twice is one buffer to @compile
+    vbar = Reactant.@compile sync = true vb(vol0, hb0)
     F = valtype(fwd); V = valtype(vjp)
     return BSF.CompiledEICT{typeof(pipe), eltype(bs), eltype(data), F, V, Function, typeof(tohu), typeof(vbar)}(
         pipe, bs, data, fwd, vjp, () -> zv(vol0), () -> zg(g0), tohu, vbar)
