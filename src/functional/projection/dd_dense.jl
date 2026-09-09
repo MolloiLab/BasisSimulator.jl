@@ -23,7 +23,7 @@ Dense-separable forward projection of every channel of `vol4` over the run's
 views (batches of `run.B` inside one compiled loop, or unrolled with `unroll = true`); numerically the per-view
 [`dd_project_view`](@ref) up to summation order.
 """
-function dd_project_dense_run(vol::AbstractArray{<:Any, 4}, p::DDRunPlan{T}; unroll::Bool = false) where {T <: AbstractFloat}
+function dd_project_dense_run(vol::AbstractArray{<:Any, 4}, p::DDRunPlan{T}; unroll::Bool = false, table = nothing) where {T <: AbstractFloat}
     size(vol)[1:3] == (p.nx, p.ny, p.nz) ||
         throw(DimensionMismatch("volume $(size(vol)[1:3]) does not match plan $((p.nx, p.ny, p.nz))"))
     M = size(vol, 4)
@@ -31,7 +31,7 @@ function dd_project_dense_run(vol::AbstractArray{<:Any, 4}, p::DDRunPlan{T}; unr
     Vl = p.vertical ? permutedims(vol, (1, 3, 2, 4)) : permutedims(vol, (2, 3, 1, 4))
     n_t, nz, n_long = size(Vl, 1), size(Vl, 2), size(Vl, 3)
     V = reshape(permutedims(Vl, (1, 2, 4, 3)), n_t, nz * M, n_long)
-    tab = _on_device(p.table, vol)
+    tab = table === nothing ? _on_device(p.table, vol) : table              # `table`: the (18, n_run) view table as DATA (batch programs)
     nr = length(p.views)
     out = _zeros(vol, T, (p.n_cols, p.n_rows, nr, M))
     n_cols, n_rows = p.n_cols, p.n_rows
@@ -198,18 +198,20 @@ same contractions over only the transverse voxels each block of rays can touch.
 `col_block = n_cols, slab_block = n_long` is the full dense projector.
 """
 function dd_project_dense_windowed_run(vol::AbstractArray{<:Any, 4}, p::DDRunPlan{T}, geom::CTGeometry;
-        col_block::Int, slab_block::Int, volume_extent = nothing, unroll::Bool = false) where {T <: AbstractFloat}
+        col_block::Int, slab_block::Int, volume_extent = nothing, unroll::Bool = false, table = nothing, windows = nothing) where {T <: AbstractFloat}
     size(vol)[1:3] == (p.nx, p.ny, p.nz) ||
         throw(DimensionMismatch("volume $(size(vol)[1:3]) does not match plan $((p.nx, p.ny, p.nz))"))
     M = size(vol, 4)
     Vl = p.vertical ? permutedims(vol, (1, 3, 2, 4)) : permutedims(vol, (2, 3, 1, 4))
     n_t, nz, n_long = size(Vl, 1), size(Vl, 2), size(Vl, 3)
     V = reshape(permutedims(Vl, (1, 2, 4, 3)), n_t, nz * M, n_long)
-    starts_h, widths, col_blocks, slab_blocks = dd_windows(geom, (p.nx, p.ny, p.nz), collect(p.views), col_block, slab_block; volume_extent, eltype = T)
+    # `windows = (starts, widths, col_blocks, slab_blocks)`: precomputed (`dd_windows`), the starts as DATA — widths static
+    starts_h, widths, col_blocks, slab_blocks = windows === nothing ?
+        dd_windows(geom, (p.nx, p.ny, p.nz), collect(p.views), col_block, slab_block; volume_extent, eltype = T) : windows
     ncb, nsb = length(col_blocks), length(slab_blocks)
     bl = length(slab_blocks[1]); tail_l = length(slab_blocks[end]); nsb_full = tail_l == bl ? nsb : nsb - 1
-    tab = _on_device(p.table, vol)
-    tabI = _on_device(reshape(starts_h, ncb * nsb, :), vol)                             # (ncb·nsb, n_run) Int32
+    tab = table === nothing ? _on_device(p.table, vol) : table
+    tabI = windows === nothing ? _on_device(reshape(starts_h, ncb * nsb, :), vol) : reshape(starts_h, ncb * nsb, :)   # (ncb·nsb, n_run) Int32
     nr = length(p.views)
     out = _zeros(vol, T, (p.n_cols, p.n_rows, nr, M))
     n_cols, n_rows = p.n_cols, p.n_rows

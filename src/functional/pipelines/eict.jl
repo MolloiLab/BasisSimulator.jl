@@ -137,3 +137,117 @@ function draw_eict_noise(pipe::EICTPipeline{T}; seed::Integer) where {T}
     return ε, ε_e
 end
 
+
+# -----------------------------------------------------------------------------
+# View batches as DATA — the host-composed gradient
+# -----------------------------------------------------------------------------
+#
+# The reconstructed volume is a SUM over view batches of independent contributions
+# (DD → chain → ramp filter → weighted backprojection are all per view), so
+#
+#     vol = Σ_b eict_batch_vol(fractions, b)      and      ∂⟨v̄, vol⟩/∂fractions = Σ_b ∂⟨v̄, vol_b⟩/∂fractions.
+#
+# Each term is one FIXED-SIZE program without loops: compiled once per (orientation, batch length)
+# and called from the host for every batch — no while-loop reverse, no checkpoint recomputation,
+# the memory of one batch. A batch's per-view tables are passed as DATA (`batch_data`) so the
+# compiled program is reused across batches. Measured in PROBES §9.
+
+"""
+    EICTBatch — one view batch of an `EICTPipeline` (host description: the views, the DD run plan
+    built for them, the window blocks of the windowed projector). The per-view arrays live in
+    [`batch_data`](@ref).
+"""
+struct EICTBatch{R <: DDRunPlan}
+    views::UnitRange{Int}
+    run::R                                   # its `table` is not used by the batch program (data instead)
+    windowed::Bool
+    widths::Vector{Int}
+    col_blocks::Vector{UnitRange{Int}}
+    slab_blocks::Vector{UnitRange{Int}}
+    starts::Array{Int32, 3}                  # (n_col_blocks, n_slab_blocks, B) window starts (windowed only)
+end
+
+"""
+    eict_batches(pipe::EICTPipeline) -> Vector{EICTBatch}
+
+The pipeline's view batches (`batching.dd` views each, split at orientation changes of the DD
+runs; the windowed projector's block widths are shared across a run so its batches compile to
+the same program).
+"""
+function eict_batches(pipe::EICTPipeline{T}) where {T}
+    pipe.batching.dense || throw(ArgumentError("eict_batches: the batch programs use the dense projector (pipeline built with projector = :gather)"))
+    geom = pipe.geom
+    B = pipe.batching.dd
+    cb, sb = pipe.batching.col_block, pipe.batching.slab_block
+    windowed = cb < geom.n_cols || sb < max(pipe.vol_shape[1], pipe.vol_shape[2])
+    out = EICTBatch[]
+    for run in dd_run_plans(geom, pipe.vol_shape; view_batch = B, volume_extent = pipe.volume_extent, eltype = T)
+        starts_run, widths, col_blocks, slab_blocks = windowed ?
+            dd_windows(geom, pipe.vol_shape, collect(run.views), cb, sb; volume_extent = pipe.volume_extent, eltype = T) :
+            (zeros(Int32, 0, 0, 0), Int[], UnitRange{Int}[], UnitRange{Int}[])
+        for lo in first(run.views):B:last(run.views)
+            views = lo:min(lo + B - 1, last(run.views))
+            r = only(dd_run_plans(geom, pipe.vol_shape; view_batch = length(views), views, volume_extent = pipe.volume_extent, eltype = T))
+            loc = (first(views) - first(run.views) + 1):(last(views) - first(run.views) + 1)
+            push!(out, EICTBatch(views, r, windowed, widths, col_blocks, slab_blocks, windowed ? starts_run[:, :, loc] : starts_run))
+        end
+    end
+    return out
+end
+
+"""
+    batch_data(b::EICTBatch, pipe) -> NamedTuple (table, starts, gt, off)
+
+The batch's per-view arrays: the DD view table `(18, B)`, the window starts `(n_blocks, B)`
+Int32, the FDK geometry columns `(12, B)`, the view offsets `(1,1,1,B)` Int32. Host arrays;
+under Reactant pass `Reactant.to_rarray(batch_data(b, pipe))` to the compiled program.
+"""
+function batch_data(b::EICTBatch, pipe::EICTPipeline)
+    B = length(b.views)
+    block = pipe.fbp.n_col * pipe.fbp.n_row
+    return (table = b.run.table,
+            starts = b.windowed ? reshape(b.starts, :, B) : zeros(Int32, 0, B),
+            gt = _geom_table(pipe.fbp.tensors)[:, b.views],
+            off = reshape(Int32[(k - 1) * block for k in 1:B], 1, 1, 1, B))
+end
+
+"""
+    eict_batch_vol(fractions, pipe, b::EICTBatch, d, ε_b = nothing, ε_e_b = nothing) -> (nx, ny, nz)
+
+The contribution of view batch `b` (arrays `d = batch_data(b, pipe)`) to the backprojected μ
+volume before the FOV mask: DD → spectral chain (+BHC) → ramp filter → FDK-weighted
+backprojection, no loops. `ε_b`, `ε_e_b` are the batch's slices of the noise tensors.
+`Σ_b eict_batch_vol(...)` then [`eict_vol_to_hu`](@ref) reproduces [`eict_forward`](@ref).
+"""
+function eict_batch_vol(fractions::AbstractArray{<:Any, 4}, pipe::EICTPipeline{T}, b::EICTBatch, d, ε_b = nothing, ε_e_b = nothing) where {T}
+    P = b.windowed ?
+        dd_project_dense_windowed_run(fractions, b.run, pipe.geom; col_block = pipe.batching.col_block, slab_block = pipe.batching.slab_block,
+            volume_extent = pipe.volume_extent, unroll = true, table = d.table, windows = (d.starts, b.widths, b.col_blocks, b.slab_blocks)) :
+        dd_project_dense_run(fractions, b.run; unroll = true, table = d.table)
+    s = eict_chain(P, _eict_on_device(pipe.eict, P), ε_b, ε_e_b; view_batch = 0)
+    fplan = _fbp_on_device(pipe.fbp, s)
+    filt = filter_views(s, fplan)
+    vol = _bp_chunk(vec(filt), fplan, d.gt, d.off, true)                     # (nx, ny, nz, 1)
+    return dropdims(vol; dims = 4) .* fplan.pi_over_angles
+end
+
+"""
+    eict_vol_to_hu(vol, pipe) -> HU
+
+FOV mask (sentinel outside) and HU conversion of a summed batch volume.
+"""
+eict_vol_to_hu(vol::AbstractArray{<:Any, 3}, pipe::EICTPipeline) = to_hu(fov_mask(vol, _fbp_on_device(pipe.fbp, vol)), pipe)
+
+"""
+    eict_forward_batched(fractions, pipe, ε = nothing, ε_e = nothing) -> HU
+
+Host reference of the batch composition (`Σ_b eict_batch_vol` → `eict_vol_to_hu`); equals
+[`eict_forward`](@ref) up to summation order. Under Reactant compile `eict_batch_vol` once per
+(orientation, batch length) and loop on the host (see `design/reactant/probes/bench_host_grad.jl`).
+"""
+function eict_forward_batched(fractions::AbstractArray{<:Any, 4}, pipe::EICTPipeline{T}, ε = nothing, ε_e = nothing) where {T}
+    bs = eict_batches(pipe)
+    sl(x, v) = x === nothing ? nothing : reshape(x, pipe.eict.sino_shape)[:, :, v]      # noise tensors may be flat
+    vol = sum(eict_batch_vol(fractions, pipe, b, batch_data(b, pipe), sl(ε, b.views), sl(ε_e, b.views)) for b in bs)
+    return eict_vol_to_hu(vol, pipe)
+end

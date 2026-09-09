@@ -99,14 +99,14 @@ end
 # Σ_e wη[e]·exp(-L_e)  — no bowtie: a single matrix–vector product.
 _spectral_sum(E::AbstractMatrix, wη::AbstractVector, ::Nothing, n_col, n_row, n_view) = E * wη
 
-# Σ_e (wη[e]·bt[col,row,e])·exp(-L_e) — legacy product order `(wη*bt)*exp`; per detector pixel a
-# dot over the energies, i.e. a contraction batched over (col, row) (`_bmm_spectral`: the host keeps
-# the legacy broadcast-and-sum; the device hook is one `dot_general`, whose reverse is a contraction).
+# Σ_e (wη[e]·bt[col,row,e])·exp(-L_e) — legacy product order `(wη*bt)*exp`.  Measured (PROBES §9):
+# the same sum as a (col,row)-batched `dot_general` made the XLA:CPU forward 3× slower for a gradient
+# gain inside the noise, so the broadcast-and-reduce stays.
 function _spectral_sum(E::AbstractMatrix, wη::AbstractVector, bt::_A3, n_col, n_row, n_view)
     n_E = length(wη)
     E4 = reshape(E, n_col, n_row, n_view, n_E)
-    W3 = reshape(wη, 1, 1, n_E) .* bt                    # (n_col, n_row, n_E)
-    return vec(_bmm_spectral(E4, W3))
+    W = reshape(wη, 1, 1, 1, n_E) .* reshape(bt, n_col, n_row, 1, n_E)
+    return vec(sum(E4 .* W; dims = 4))
 end
 
 """

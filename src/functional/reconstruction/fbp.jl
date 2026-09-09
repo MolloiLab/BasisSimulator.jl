@@ -367,12 +367,14 @@ Pure equivalent of `filter_sinogram!(copy(sino), geom; filter, cutoff)`:
 `sino` is not modified.
 """
 function filter_views(sino::AbstractArray{<:Any, 3}, plan::FBPPlan{T}) where {T}
-    _check_sino(sino, plan, "filter_views")
+    (size(sino, 1), size(sino, 2)) == (plan.n_col, plan.n_row) || throw(DimensionMismatch(
+        "filter_views: expected (n_col, n_row) = $((plan.n_col, plan.n_row)), got $(size(sino)[1:2])"))
+    n_view = size(sino, 3)                                # per view: any number of views (a batch or the scan)
     w = reshape(plan.tensors.cos_weights, plan.n_col, plan.n_row, 1)
     weighted = sino .* w
-    rows = reshape(weighted, plan.n_col, plan.n_row * plan.n_view)
+    rows = reshape(weighted, plan.n_col, plan.n_row * n_view)
     filt = plan.tensors.H * rows
-    return reshape(filt, plan.n_col, plan.n_row, plan.n_view)
+    return reshape(filt, plan.n_col, plan.n_row, n_view)
 end
 
 # -----------------------------------------------------------------------------

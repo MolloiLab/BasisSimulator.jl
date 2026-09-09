@@ -5,7 +5,7 @@
 using Reactant, Enzyme, BasisSimulator, Printf
 const BS = BasisSimulator; const BSF = BS.Functional
 envi(k, d) = parse(Int, get(ENV, k, string(d)))
-NV = envi("NV", 64); VIEWS = envi("VIEWS", 100); VB = envi("VB", 25)
+NV = envi("NV", 64); VIEWS = envi("VIEWS", 100); VB = envi("VB", 25); BUDGET_MB = envi("BUDGET_MB", 512)   # VB=0 → :auto from the budget
 T0 = time(); say(m) = (println(@sprintf("[%7.1f s] ", time() - T0), m); flush(stdout))
 scanner = BS.EICTScanner(source_to_isocenter = 625.6, source_to_detector = 1100.0, detector_rows = 256, detector_cols = 834,
     detector_row_size = 0.625, detector_col_size = 0.6, detector_shape = :arc, focal_spot_width = 1.0, focal_spot_length = 1.0,
@@ -16,7 +16,7 @@ opts = BS.SimOptions(use_noise = false, use_scatter = false, use_focal_spot = fa
 recon_opts = BS.ReconOptions(matrix_size = (NV, NV, 2), fov_cm = 35.0, z_cm = 0.5)
 phantom = BS.compact_materials(BS.create_gammex_472(n_voxels = NV, n_slices = 2, fov_cm = 45.0, z_cm = 1.0))
 fr = BSF.onehot_fractions(phantom.mask, length(phantom.materials)); fr_r = Reactant.to_rarray(fr)
-pipe = BSF.eict_pipeline(phantom, scanner, protocol, opts, recon_opts; view_batch = VB)
+pipe = BSF.eict_pipeline(phantom, scanner, protocol, opts, recon_opts; view_batch = VB > 0 ? VB : :auto, batch_budget_mb = BUDGET_MB)
 b = pipe.batching
 say("batching: $(b)")
 paths(f) = BSF.material_paths(f, pipe)

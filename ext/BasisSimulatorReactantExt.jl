@@ -104,10 +104,6 @@ function BSF._bmm_tb(Wx::_AnyTraced, Vw::_AnyTraced)
 end
 # one element of a traced table as a TracedRNumber (a slice, not a host transfer; j may be traced)
 BSF._scalar_start(st::_AnyTraced, j, b::Int) = Reactant.@allowscalar _mat(BSF._dslice_at(st, (j, b), (1, 1)))[1, 1]
-function BSF._bmm_spectral(E4::_AnyTraced, W3::_AnyTraced)
-    r = Reactant.Ops.dot_general(_mat(E4), _mat(W3); contracting_dimensions = ([4], [3]), batching_dimensions = ([1, 2], [1, 2]))
-    return r                                                  # (n_col, n_row, n_view): batch dims first, then the free dim of E4
-end
 function BSF._bmm_zl(Wz::_AnyTraced, A::_AnyTraced)
     Wzm = _mat(Wz); Am = _mat(A)                             # (n_cols,n_rows,nz,n_long,B), (n_cols,nz,M,n_long,B)
     r = Reactant.Ops.dot_general(Wzm, Am; contracting_dimensions = ([3, 4], [2, 4]), batching_dimensions = ([1, 5], [1, 5]))

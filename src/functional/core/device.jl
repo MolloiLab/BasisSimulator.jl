@@ -122,12 +122,3 @@ Element type conversion (integer index arrays → the plan's float type) in the
 array world of `x`: `T.(x)` on the host, a StableHLO convert under Reactant.
 """
 _to_float(::Type{T}, x::AbstractArray) where {T} = T.(x)
-
-"""
-    _bmm_spectral(E4, W3) -> I
-
-Spectral sum batched over the detector pixels: `I[c, r, v] = Σ_e E4[c, r, v, e] · W3[c, r, e]`
-(host: the legacy broadcast-and-sum order).
-"""
-_bmm_spectral(E4::AbstractArray{<:Any, 4}, W3::AbstractArray{<:Any, 3}) =
-    dropdims(sum(E4 .* reshape(W3, size(W3, 1), size(W3, 2), 1, size(W3, 3)); dims = 4); dims = 4)
