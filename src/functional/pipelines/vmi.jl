@@ -74,7 +74,7 @@ BHC) → n-channel basis sinograms → per-basis FDK → ACNR → VMI HU stack
 `(nx, ny, nz, length(energies))`.  `noises`, when given, is a vector of
 `(ε, ε_e)` per channel (see [`draw_eict_noise`](@ref)).
 """
-function vmi_forward(fractions::AbstractArray{<:Any, 4}, vp::VMIPipeline{T}, noises = nothing) where {T}
+function vmi_forward(fractions::PipelineInput, vp::VMIPipeline{T}, noises = nothing) where {T}
     hs = map(enumerate(vp.pipes)) do (k, p)
         ε, ε_e = noises === nothing ? (nothing, nothing) : noises[k]
         simulate_sino(fractions, p, ε, ε_e)
@@ -85,9 +85,8 @@ function vmi_forward(fractions::AbstractArray{<:Any, 4}, vp::VMIPipeline{T}, noi
     # like the notebooks' quality-flagged rays; the FDK would otherwise spread one NaN everywhere
     finite0(x) = (y = _plain(x); ifelse.(isfinite.(y), y, zero(T)))
     lp = vp.pipes[1].loop
-    dn, tl = vp.pipes[1].batching.dense, vp.pipes[1].batching.tile
-    fbp_iodine = s -> fdk(finite0(s), _fbp_on_device(vp.fbp_iodine, s); view_batch = vb_I, loop = lp, dense = dn, tile = tl)
-    fbp_water = s -> fdk(finite0(s), _fbp_on_device(vp.fbp_water, s); view_batch = vb_I, loop = lp, dense = dn, tile = tl)
+    fbp_iodine = s -> fdk(finite0(s), _fbp_on_device(vp.fbp_iodine, s); view_batch = vb_I, loop = lp)
+    fbp_water = s -> fdk(finite0(s), _fbp_on_device(vp.fbp_water, s); view_batch = vb_I, loop = lp)
     acnr = vp.acnr === nothing ? nothing : ((W, I) -> (r = acnr_kalender(W, I, vp.acnr); (; water = r[1], iodine = r[2])))
     synth = (W, I, es) -> nchannel_synth_vmi(W, I, _on_device(vp.alphas, W), T)
     c = nchannel_vmi_chain(h, vp.nchannel; fbp_iodine, fbp_water, acnr, synth, energies = vp.energies)

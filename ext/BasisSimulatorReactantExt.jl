@@ -102,10 +102,11 @@ function BSF._bmm_tb(Wx::_AnyTraced, Vw::_AnyTraced)
     r = Reactant.Ops.dot_general(Wxm, Vm; contracting_dimensions = ([2], [1]), batching_dimensions = ([3, 4], [3, 4]))
     return permutedims(r, (3, 4, 1, 2))                       # (n_long, B, n_cols, K) → (n_cols, K, n_long, B)
 end
-BSF._scalar_start(st::_AnyTraced, j, b::Int) = _mat(BSF._dslice_at(st, (j, b), (1, 1)))[1, 1]     # TracedRNumber{Int32}; j may be traced
-function BSF._bmm_fdk(wr::_AnyTraced, fw::_AnyTraced)
-    r = Reactant.Ops.dot_general(_mat(wr), _mat(fw); contracting_dimensions = ([2], [2]), batching_dimensions = ([3], [3]))
-    return permutedims(r, (2, 3, 1))                          # (B, N, w) → (N, w, B)
+# one element of a traced table as a TracedRNumber (a slice, not a host transfer; j may be traced)
+BSF._scalar_start(st::_AnyTraced, j, b::Int) = Reactant.@allowscalar _mat(BSF._dslice_at(st, (j, b), (1, 1)))[1, 1]
+function BSF._bmm_spectral(E4::_AnyTraced, W3::_AnyTraced)
+    r = Reactant.Ops.dot_general(_mat(E4), _mat(W3); contracting_dimensions = ([4], [3]), batching_dimensions = ([1, 2], [1, 2]))
+    return r                                                  # (n_col, n_row, n_view): batch dims first, then the free dim of E4
 end
 function BSF._bmm_zl(Wz::_AnyTraced, A::_AnyTraced)
     Wzm = _mat(Wz); Am = _mat(A)                             # (n_cols,n_rows,nz,n_long,B), (n_cols,nz,M,n_long,B)

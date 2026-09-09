@@ -141,3 +141,26 @@ contractions per view batch, all channels in one matmul) is the same DD3 physics
 5e-6 (F32), 5× faster than the legacy CPU kernels and 55× faster than the gather program. The
 pipelines use it by default; a view whose dense weights do not fit `batch_budget_mb` raises an
 error with the numbers (no silent fallback).
+
+## 9. Where the GRADIENT time goes (`probes/bench_grad.jl`, `bench_grad_stages.jl`, `bench_fdk.jl`, `bench_ab_fdk.jl`)
+
+64 grid / 100 views / 64 recon, dense projector, while loops of 25 views, 4 threads. Cumulative
+stages (loss = Σ x², gradient w.r.t. the fractions), one compiled program per line:
+
+| program | forward | gradient | ratio |
+|---|---|---|---|
+| DD path lengths | 0.16 s | 0.26 s | 1.6 |
+| + spectral chain (bowtie, 234 energies) | 0.24 s | 1.31 s | 5.4 |
+| + ramp filter | 0.26 s | 0.66 s | 2.5 |
+| + gather FDK backprojection | 1.50 s | 7.11 s | 4.7 |
+| + dense tiled FDK backprojection (tile 16) | 0.54 s | 6.70 s | 12.5 |
+| HU pipeline (`eict_forward`, dense FDK) | 0.50 s | 7.75 s | 15.6 |
+
+The FDK stage on its own (a concrete sinogram in, `bench_fdk.jl`): gather 0.004 s forward /
+0.011 s gradient; dense tile 8 / 16 / 32: 0.10 / 0.09 / 0.12 s forward, 0.44 / 0.73 / 1.40 s
+gradient. So the dense FDK is 25× slower forward and 40–100× slower in reverse than the gather
+at this size — the "scatter adjoint" hypothesis that motivated it is wrong on XLA:CPU here —
+and the gather FDK that costs 4 ms alone costs ~1.2 s once it is composed after the chain in one
+program. The composition, not any single stage, is the cost; `bench_ab_fdk.jl` (same process,
+gather vs dense FDK, timed twice) settles the FDK choice and `bench_chain.jl` isolates the chain's
+reverse (loop / unrolled / one-shot, with and without the per-pixel bowtie).

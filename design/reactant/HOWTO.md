@@ -139,3 +139,5 @@ with `Enzyme.gradient`; `test/functional/reactant/smoke_pipelines_all.jl` does b
   unrolls the batches (compile ∝ number of batches; same runtime on CPU).
 - `projector` (default `:dense`): the dense-separable DD contractions (PROBES §8: 5× faster than the
   legacy CPU kernels at 64/100). `:gather` is the static-tap form kept for the oracle tests only.
+  The FDK backprojection stays a gather in both cases: a dense tiled FDK was built and measured
+  (PROBES §9) and lost to the gather on forward AND gradient, so it was removed.

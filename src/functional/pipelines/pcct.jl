@@ -26,7 +26,7 @@ struct PCCTPipeline{T <: AbstractFloat, PP, FP} <: AbstractPipeline{T}
     groups::Vector{Vector{Int}}
     fbp::FP
     recon_shape::NTuple{3, Int}
-    batching::NamedTuple{(:dd, :spectral, :fdk, :dense, :col_block, :slab_block, :tile), Tuple{Int, Int, Int, Bool, Int, Int, Int}}
+    batching::NamedTuple{(:dd, :spectral, :fdk, :dense, :col_block, :slab_block, :mat), Tuple{Int, Int, Int, Bool, Int, Int, Int}}
     unrolled::Bool
     loop::Bool
 end
@@ -64,14 +64,14 @@ function pcct_pipeline(
     vol_shape = size(phantom.mask)
     n_view = geom.n_angles
     n_bins = length(ws.I0_bins)
+    n_mat = size(ws.μ_table, 1)
     groups = groups === nothing ? [[b] for b in 1:n_bins] : groups
     fplan = fbp_plan(geom, recon_opts.matrix_size; filter, cutoff, T)
     batching = if view_batch === :auto
-        _auto_batching((geom.n_cols, geom.n_rows, n_view), vol_shape, n_E, size(ws.μ_table, 1), recon_opts.matrix_size, batch_budget_mb;
-            projector, geom, volume_extent = phantom.extent, fdk_window = fdk_tile_windows(fplan, 16)[2])
+        _auto_batching((geom.n_cols, geom.n_rows, n_view), vol_shape, n_E, size(ws.μ_table, 1), recon_opts.matrix_size, batch_budget_mb; projector, geom, volume_extent = phantom.extent)
     else
         (dd = Int(view_batch), spectral = Int(view_batch), fdk = Int(view_batch), dense = projector === :dense,
-         col_block = geom.n_cols, slab_block = max(vol_shape[1], vol_shape[2]), tile = 16)
+         col_block = geom.n_cols, slab_block = max(vol_shape[1], vol_shape[2]), mat = n_mat)
     end
     unrolled = view_batch === 1
     pplan = pcct_plan(ws; view_batch = (unrolled || !loop) ? 0 : batching.spectral, view_chunks = (unrolled || loop) ? 1 : cld(n_view, batching.spectral), T)
@@ -98,7 +98,7 @@ optionally supplies externally drawn per-bin counts ([`draw_pcct_counts`](@ref))
 for the exact-Poisson path; the surrogate path is [`pcct_forward_surrogate`](@ref).
 Convert to HU with `to_hu(μ, μ_water)` for the channel's reference water μ.
 """
-function pcct_forward(fractions::AbstractArray{<:Any, 4}, pipe::PCCTPipeline{T}, N_input = nothing) where {T}
+function pcct_forward(fractions::PipelineInput, pipe::PCCTPipeline{T}, N_input = nothing) where {T}
     P = material_paths(fractions, pipe)
     plan = _pcct_on_device(pipe.pcct, P)
     bt = _on_device(pipe.bt, P)
@@ -112,7 +112,7 @@ end
 [`pcct_forward`](@ref) with the differentiable Gaussian count surrogate driven
 by the N(0,1) input tensor `ε` (per-bin sinogram shape).
 """
-function pcct_forward_surrogate(fractions::AbstractArray{<:Any, 4}, pipe::PCCTPipeline{T}, ε) where {T}
+function pcct_forward_surrogate(fractions::PipelineInput, pipe::PCCTPipeline{T}, ε) where {T}
     P = material_paths(fractions, pipe)
     plan = _pcct_on_device(pipe.pcct, P)
     bt = _on_device(pipe.bt, P)
@@ -124,7 +124,7 @@ end
 function _fdk_channels(sino::AbstractArray{<:Any, 4}, pipe::PCCTPipeline{T}) where {T}
     fplan = _fbp_on_device(pipe.fbp, sino)
     vb = pipe.unrolled ? 1 : pipe.batching.fdk
-    vols = [fdk(sino[:, :, :, g], fplan; view_batch = vb, loop = pipe.loop, dense = pipe.batching.dense, tile = pipe.batching.tile) for g in 1:size(sino, 4)]
+    vols = [fdk(sino[:, :, :, g], fplan; view_batch = vb, loop = pipe.loop) for g in 1:size(sino, 4)]
     return _cat_new_axis(vols)
 end
 

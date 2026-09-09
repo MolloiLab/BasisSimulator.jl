@@ -22,5 +22,5 @@ The pure forward model of the pipeline: HU image for an [`EICTPipeline`](@ref)
 ([`pcct_forward`](@ref)).  Compile with `Reactant.@compile`, differentiate with
 `Enzyme.gradient(Reverse, …)`.
 """
-forward(fractions::AbstractArray{<:Any, 4}, pipe::EICTPipeline, ε = nothing, ε_e = nothing) = eict_forward(fractions, pipe, ε, ε_e)
-forward(fractions::AbstractArray{<:Any, 4}, pipe::PCCTPipeline, N_input = nothing) = pcct_forward(fractions, pipe, N_input)
+forward(input::PipelineInput, pipe::EICTPipeline, ε = nothing, ε_e = nothing) = eict_forward(input, pipe, ε, ε_e)
+forward(input::PipelineInput, pipe::PCCTPipeline, N_input = nothing) = pcct_forward(input, pipe, N_input)

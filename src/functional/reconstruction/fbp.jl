@@ -671,7 +671,7 @@ end
 # -----------------------------------------------------------------------------
 
 """
-    fdk(sino, plan; view_batch = 1, loop = true, sentinel = plan.sentinel, dense = true, tile = 16) -> (nx, ny, nz)
+    fdk(sino, plan; view_batch = 1, loop = true, sentinel = plan.sentinel) -> (nx, ny, nz)
 
 `fov_mask(backproject(filter_views(sino, plan), plan), plan)` — the pure
 counterpart of `reconstruct!(::FDKReconWorkspace, sino, geom)` /
@@ -679,10 +679,8 @@ counterpart of `reconstruct!(::FDKReconWorkspace, sino, geom)` /
 (`:flat` and `:arc`).
 """
 function fdk(sino::AbstractArray{<:Any, 3}, plan::FBPPlan{T};
-        view_batch::Int = 1, loop::Bool = true, sentinel::Real = plan.sentinel,
-        dense::Bool = true, tile::Int = 16) where {T}
+        view_batch::Int = 1, loop::Bool = true, sentinel::Real = plan.sentinel) where {T}
     filt = filter_views(sino, plan)
-    vol = dense ? backproject_dense(filt, plan; weighted = true, view_batch, tile, loop) :
-                  backproject(filt, plan; weighted = true, view_batch, loop)
+    vol = backproject(filt, plan; weighted = true, view_batch, loop)
     return fov_mask(vol, plan; sentinel = sentinel)
 end

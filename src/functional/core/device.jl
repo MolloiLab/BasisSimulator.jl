@@ -124,15 +124,10 @@ array world of `x`: `T.(x)` on the host, a StableHLO convert under Reactant.
 _to_float(::Type{T}, x::AbstractArray) where {T} = T.(x)
 
 """
-    _bmm_fdk(wr, fw) -> G
+    _bmm_spectral(E4, W3) -> I
 
-FDK row contraction: `G[vox, k, b] = Σ_row wr[vox, row, b] · fw[k, row, b]`.
+Spectral sum batched over the detector pixels: `I[c, r, v] = Σ_e E4[c, r, v, e] · W3[c, r, e]`
+(host: the legacy broadcast-and-sum order).
 """
-function _bmm_fdk(wr::AbstractArray{<:Any, 3}, fw::AbstractArray{<:Any, 3})
-    N, n_row, B = size(wr); w = size(fw, 1)
-    G = similar(wr, N, w, B)
-    for b in 1:B
-        G[:, :, b] = wr[:, :, b] * transpose(fw[:, :, b])
-    end
-    return G
-end
+_bmm_spectral(E4::AbstractArray{<:Any, 4}, W3::AbstractArray{<:Any, 3}) =
+    dropdims(sum(E4 .* reshape(W3, size(W3, 1), size(W3, 2), 1, size(W3, 3)); dims = 4); dims = 4)

@@ -20,7 +20,7 @@ struct EICTPipeline{T <: AbstractFloat, EP, FP} <: AbstractPipeline{T}
     fbp::FP
     μ_water::T
     recon_shape::NTuple{3, Int}
-    batching::NamedTuple{(:dd, :spectral, :fdk, :dense, :col_block, :slab_block, :tile), Tuple{Int, Int, Int, Bool, Int, Int, Int}}   # views per batch, per stage
+    batching::NamedTuple{(:dd, :spectral, :fdk, :dense, :col_block, :slab_block, :mat), Tuple{Int, Int, Int, Bool, Int, Int, Int}}   # views per batch, per stage
     unrolled::Bool                                                       # true: legacy per-view unrolled programs (view_batch = 1)
     loop::Bool                                                           # true: batches run inside compiled while loops; false: batches unrolled
 end
@@ -72,10 +72,10 @@ function eict_pipeline(
     n_mat = size(eplan.μ_tbl, 1)
     vol_shape = size(phantom.mask)
     batching = if view_batch === :auto
-        _auto_batching(eplan.sino_shape, vol_shape, length(eplan.wη), n_mat, recon_opts.matrix_size, batch_budget_mb; projector, geom, volume_extent = phantom.extent, fdk_window = fdk_tile_windows(fplan, 16)[2])
+        _auto_batching(eplan.sino_shape, vol_shape, length(eplan.wη), n_mat, recon_opts.matrix_size, batch_budget_mb; projector, geom, volume_extent = phantom.extent)
     else
         (dd = Int(view_batch), spectral = Int(view_batch), fdk = Int(view_batch), dense = projector === :dense,
-         col_block = geom.n_cols, slab_block = max(vol_shape[1], vol_shape[2]), tile = 16)
+         col_block = geom.n_cols, slab_block = max(vol_shape[1], vol_shape[2]), mat = n_mat)
     end
     return EICTPipeline{T, typeof(eplan), typeof(fplan)}(
         geom, vol_shape, n_mat, phantom.extent, eplan, fplan, T(μw), recon_opts.matrix_size,
@@ -90,7 +90,7 @@ Pure equivalent of `simulate!(EICTWorkspace)` followed by `apply_bhc_water`
 are the quantum / electronic N(0,1) noise tensors (flat or 3-D); see
 [`draw_eict_noise`](@ref).
 """
-function simulate_sino(fractions::AbstractArray{<:Any, 4}, pipe::EICTPipeline, ε = nothing, ε_e = nothing)
+function simulate_sino(fractions::PipelineInput, pipe::EICTPipeline, ε = nothing, ε_e = nothing)
     P = material_paths(fractions, pipe)
     return eict_chain(P, _eict_on_device(pipe.eict, P), ε, ε_e; view_batch = pipe.unrolled ? 0 : pipe.batching.spectral, loop = pipe.loop)
 end
@@ -101,8 +101,7 @@ end
 Pure equivalent of `reconstruct!(create_fdk_recon_workspace(sino, geom, matrix))`.
 """
 reconstruct_μ(sino::AbstractArray{<:Any, 3}, pipe::EICTPipeline) =
-    fdk(sino, _fbp_on_device(pipe.fbp, sino); view_batch = pipe.unrolled ? 1 : pipe.batching.fdk, loop = pipe.loop,
-        dense = pipe.batching.dense, tile = pipe.batching.tile)
+    fdk(sino, _fbp_on_device(pipe.fbp, sino); view_batch = pipe.unrolled ? 1 : pipe.batching.fdk, loop = pipe.loop)
 
 """
     to_hu(μ, pipe)
@@ -119,7 +118,7 @@ The complete pure forward model: fractions → path lengths → EICT chain (+BHC
 → FDK → HU. Compile with `Reactant.@compile`; differentiate with
 `Enzyme.gradient(Reverse, loss ∘ eict_forward, fractions)`.
 """
-function eict_forward(fractions::AbstractArray{<:Any, 4}, pipe::EICTPipeline, ε = nothing, ε_e = nothing)
+function eict_forward(fractions::PipelineInput, pipe::EICTPipeline, ε = nothing, ε_e = nothing)
     return to_hu(reconstruct_μ(simulate_sino(fractions, pipe, ε, ε_e), pipe), pipe)
 end
 

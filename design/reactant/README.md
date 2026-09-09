@@ -19,7 +19,18 @@ from a memory budget, the strict `EICTScanner` / `PCCTScanner` API, oracle tests
 merge to `main` without Dale. The material-decomposition work that USES this branch lives in the
 private repo `MolloiLab/basis-autodiff-mmd` (see its `HANDOFF.md`). Performance (PROBES §8): the gather-based projector was the CPU bottleneck (XLA:CPU gathers); the
 dense-separable projector (`projection/dd_dense.jl`, the default) makes the compiled forward 5×
-faster than the legacy CPU kernels at 64/100 (0.27 s vs 1.46 s; gradient step 1.86 s). Open items: M6 driver switch
+faster than the legacy CPU kernels at 64/100 (0.27–0.37 s vs 1.46 s). The GRADIENT is the open
+performance item (PROBES §9): 2.8–3.8 s per step at 64/100 (7–10× the forward; the unrolled
+program sits at 4×, the ideal one-shot at ≈2×), 392 s at 256/984. Established by measurement, not
+guesswork: the projector's reverse is cheap (1.6× its forward); the dense tiled FDK built against
+the "scatter adjoint" hypothesis LOST to the gather FDK on forward and gradient in a same-process
+A/B and was deleted; the checkpointed while-loop reverse costs ~2× the unrolled one; the per-pixel
+bowtie spectral sum's reverse was the worst single stage inside the loop (0.94 s vs 0.22 s without
+the bowtie) and is now one batched `dot_general` (`_bmm_spectral`, ext) — re-measure with
+`probes/bench_chain.jl`, then `bench_grad_stages.jl` at 256/984. Inputs: pipelines take either dense
+fractions `(nx,ny,nz,n_mat)` (differentiable) or the integer label volume, whose one-hot chunks are
+formed on device `batching.mat` materials at a time (large phantoms with many materials never
+materialize all fractions). Open items: the gradient at 256/984, M6 driver switch
 (`simulate!`/`reconstruct!` on the functional core), CUDA validation on the lab box, the
 CT-realistic gallery numbers (`design/reactant/probes/gallery_parity.jl`) into PROBES §8.
 

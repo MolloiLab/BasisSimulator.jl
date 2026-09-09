@@ -235,8 +235,9 @@ function dd_project_dense_windowed_run(vol::AbstractArray{<:Any, 4}, p::DDRunPla
         for (bj, cr) in enumerate(col_blocks)
             w = widths[bj]; c0 = first(cr); bc = length(cr)
             dXlo_j = dXlo[cr, :, :, :]; dXhi_j = dXhi[cr, :, :, :]                     # (bc,1,1,B)
-            # one slab block: window start per view from the table row (bj, bi)
-            block_fn = (A_in, bi, l0, blen) -> begin
+            # one slab block: window start per view from the table row (bj, bi).  Every traced value the
+            # block reads is an argument (loop operand), never a closure capture.
+            block_fn = (A_in, bi, l0, blen, st, mf, V, dXlo_j, dXhi_j, c, tab) -> begin
                 row = (bi - 1) * ncb + bj                                              # row of (bj, bi) in tabI (column-major over (bj, bi))
                 s_j = reshape(_plain(_dslice(st, row, 1, 1)), 1, 1, 1, B)              # (1,1,1,B) Int32 window starts
                 mf_i = _dslice(mf, l0, blen, 3)                                        # (1,1,blen,B)
@@ -248,12 +249,13 @@ function dd_project_dense_windowed_run(vol::AbstractArray{<:Any, 4}, p::DDRunPla
                 Aj = _bmm_tb(Wx, Vw)                                                    # (bc,K,blen,B)
                 return _dupdate_at(A_in, Aj, (c0, 1, l0, 1))
             end
+            ops = (st, mf, V, dXlo_j, dXhi_j, c, tab)
             if nsb_full >= 1
-                sb_body = (state, bi, cs) -> block_fn(state, bi, (bi - 1) * bl + 1, bl)
-                A = (unroll || nsb_full == 1) ? _unrolled_loop(sb_body, nsb_full, A, ()) : _batched_loop(sb_body, nsb_full, A, (), tab)
+                sb_body = (state, bi, cs) -> block_fn(state, bi, (bi - 1) * bl + 1, bl, cs...)
+                A = (unroll || nsb_full == 1) ? _unrolled_loop(sb_body, nsb_full, A, ops) : _batched_loop(sb_body, nsb_full, A, ops, tab)
             end
             if tail_l != bl
-                A = block_fn(A, nsb, nsb_full * bl + 1, tail_l)
+                A = block_fn(A, nsb, nsb_full * bl + 1, tail_l, ops...)
             end
         end
         P = _bmm_zl(Wz, reshape(A, n_cols, nz, M, n_long, B))                          # (n_cols, n_rows, M, B)

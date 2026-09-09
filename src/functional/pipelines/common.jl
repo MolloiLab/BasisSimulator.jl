@@ -21,6 +21,11 @@ tensor `(nx, ny, nz, n_mat)` with `fractions[:, :, :, m] = (mask .== m-1)`.
 This is the differentiable parameterization of the phantom (labeled phantoms are
 its one-hot special case; XCIST/XCAT volume-fraction phantoms map onto it directly).
 """
+# A pipeline input: dense per-material fractions (nx, ny, nz, n_mat) — the differentiable form, e.g. the
+# K basis materials of a decomposition — or the label volume itself (nx, ny, nz) Integer, whose one-hot
+# fractions are formed on device one material batch at a time (never all materials at once).
+const PipelineInput = Union{AbstractArray{<:Any, 4}, AbstractArray{<:Integer, 3}}
+
 function onehot_fractions(mask::AbstractArray{<:Integer, 3}, n_mat::Integer; T::Type{<:AbstractFloat} = Float32)
     mask_h = Array(mask)
     out = Array{T}(undef, size(mask_h)..., n_mat)
@@ -41,8 +46,19 @@ functional DD projector (one static-tap projection per material per view; the
 material axis is the batch axis of the linear operator). Differentiable in
 `fractions`.
 """
+function material_paths(labels::AbstractArray{<:Integer, 3}, pipe::AbstractPipeline{T}) where {T}
+    size(labels) == pipe.vol_shape || throw(DimensionMismatch("labels $(size(labels)) do not match the pipeline's phantom $(pipe.vol_shape)"))
+    n_mat, mb = pipe.n_mat, pipe.batching.mat
+    parts = map(1:mb:n_mat) do lo                                     # static material batches, one one-hot chunk on device at a time
+        ms = lo:min(lo + mb - 1, n_mat)
+        fr = _cat_new_axis([ifelse.(labels .== (m - 1), one(T), zero(T)) for m in ms])
+        material_paths(fr, pipe)
+    end
+    return reduce((a, b) -> cat(a, b; dims = 4), parts)
+end
+
 function material_paths(fractions::AbstractArray{<:Any, 4}, pipe::AbstractPipeline{T}) where {T}
-    geom = pipe.geom
+    geom = pipe.geom                                   # linear per material: any number of materials projects (the chain needs the plan's n_mat)
     if !pipe.unrolled && pipe.batching.dense
         runs = dd_run_plans(geom, pipe.vol_shape; view_batch = pipe.batching.dd,
             volume_extent = pipe.volume_extent, eltype = T)
@@ -73,7 +89,7 @@ end
 
 
 """
-    _auto_batching(sino_shape, vol_shape, n_E, n_mat, recon_shape, budget_mb) -> (dd, spectral, fdk)
+    _auto_batching(sino_shape, vol_shape, n_E, n_mat, recon_shape, budget_mb) -> (dd, spectral, fdk, dense, col_block, slab_block, mat)
 
 Views per compiled loop iteration for each stage so that the stage's per-batch
 transient stays within `budget_mb` (host estimate of the live Float32 tensors:
@@ -82,8 +98,7 @@ DD gather chain `n_col·n_row·n_long·(6 + n_mat)`, spectral sum
 set by the budget, not by the scan (any number of views, any phantom grid).
 """
 function _auto_batching(sino_shape::NTuple{3, Int}, vol_shape::NTuple{3, Int}, n_E::Int, n_mat::Int,
-        recon_shape::NTuple{3, Int}, budget_mb::Real; projector::Symbol = :dense, geom = nothing, volume_extent = nothing,
-        tile::Int = 16, fdk_window::Int = sino_shape[1])
+        recon_shape::NTuple{3, Int}, budget_mb::Real; projector::Symbol = :dense, geom = nothing, volume_extent = nothing)
     n_col, n_row, n_view = sino_shape
     n_long = max(vol_shape[1], vol_shape[2]); n_t = n_long; nzv = vol_shape[3]
     nx, ny, nz = recon_shape
@@ -110,10 +125,10 @@ function _auto_batching(sino_shape::NTuple{3, Int}, vol_shape::NTuple{3, Int}, n
             "(16 columns × 8 slabs) exceed batch_budget_mb = $budget_mb; raise batch_budget_mb — there is no silent fallback"))
     end
     dd = dense ? Int(clamp(bytes ÷ view_bytes, 1, n_view)) : per_view(n_col * n_row * n_long * (6 + n_mat))
-    # dense FDK: per view, one tile's (w + n_row) dense weights, the window contraction and ~16 geometry arrays
-    fdk_bytes = dense ? tile^2 * nz * (3 * fdk_window + n_row + 16) * 4 : nx * ny * nz * 10 * 4
-    return (dd = dd, spectral = per_view(n_col * n_row * n_E * 3), fdk = Int(clamp(bytes ÷ fdk_bytes, 1, n_view)), dense = dense,
-            col_block = col_block, slab_block = slab_block, tile = tile)
+    # label input: one-hot fractions of `mat` materials at a time (the volume itself, 4 B per voxel per material)
+    mat = Int(clamp(bytes ÷ (4 * prod(vol_shape)), 1, n_mat))
+    return (dd = dd, spectral = per_view(n_col * n_row * n_E * 3), fdk = per_view(nx * ny * nz * 10), dense = dense,
+            col_block = col_block, slab_block = slab_block, mat = mat)
 end
 
 function _eict_on_device(p::EICTPlan{T}, ref) where {T}
