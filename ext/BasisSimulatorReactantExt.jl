@@ -20,6 +20,7 @@ module BasisSimulatorReactantExt
 
 using BasisSimulator
 using Reactant
+using Reactant: Enzyme            # Reactant's own Enzyme (no extra weak dependency)
 
 const BSF = BasisSimulator.Functional
 
@@ -120,6 +121,35 @@ end
 # every compile keeps its plain name, exactly as Reactant's own symbol-table probe would give it.
 const _UNIQUE_NAME_COUNTERS = Dict{String, Int}()
 const _UNIQUE_NAME_MODULE = Ref{Any}(nothing)
+# -----------------------------------------------------------------------------
+# The compiled EICT driver: batch programs keyed by (orientation, length), accumulators in-program
+# -----------------------------------------------------------------------------
+function BSF.compile_pipeline(pipe::BSF.EICTPipeline{T}, x::Reactant.AbstractConcreteArray) where {T}
+    bs = BSF.eict_batches(pipe)
+    data = [Reactant.to_rarray(BSF.batch_data(b, pipe)) for b in bs]
+    nx, ny, nz = pipe.recon_shape
+    vol0 = Reactant.to_rarray(zeros(T, nx, ny, nz))
+    g0 = Reactant.to_rarray(zeros(T, size(x)))
+    fwd = Dict{Tuple{Bool, Int}, Any}(); vjp = Dict{Tuple{Bool, Int}, Any}()
+    for (b, d) in zip(bs, data)
+        k = BSF._batch_key(b)
+        haskey(fwd, k) && continue
+        f = (acc, x, d) -> acc .+ BSF.eict_batch_vol(x, pipe, b, d)
+        g = (acc, x, vbar, d) -> acc .+ Enzyme.gradient(Enzyme.Reverse, (x, vbar, d) -> sum(vbar .* BSF.eict_batch_vol(x, pipe, b, d)),
+                                                       x, Enzyme.Const(vbar), Enzyme.Const(d))[1]
+        fwd[k] = Reactant.@compile sync = true f(vol0, x, d)
+        vjp[k] = Reactant.@compile sync = true g(g0, x, vol0, d)
+    end
+    zv = Reactant.@compile sync = true (v -> v .* zero(T))(vol0)
+    zg = Reactant.@compile sync = true (g -> g .* zero(T))(g0)
+    tohu = Reactant.@compile sync = true BSF.eict_vol_to_hu(vol0, pipe)
+    vb = (vol, hb) -> Enzyme.gradient(Enzyme.Reverse, (vol, hb) -> sum(hb .* BSF.eict_vol_to_hu(vol, pipe)), vol, Enzyme.Const(hb))[1]
+    vbar = Reactant.@compile sync = true vb(vol0, vol0)
+    F = valtype(fwd); V = valtype(vjp)
+    return BSF.CompiledEICT{typeof(pipe), eltype(bs), eltype(data), F, V, Function, typeof(tohu), typeof(vbar)}(
+        pipe, bs, data, fwd, vjp, () -> zv(vol0), () -> zg(g0), tohu, vbar)
+end
+
 function __init__()
     @eval Reactant.TracedUtils function __lookup_unique_name_in_module(mod, name)
         if $_UNIQUE_NAME_MODULE[] !== mod

@@ -30,11 +30,13 @@ At 256/984 the while-loop program's gradient step is 819 s (forward 30 s, legacy
 the HOST-COMPOSED gradient (`eict_batches` / `batch_data` / `eict_batch_vol` / `eict_vol_to_hu`,
 commit 511a39e): one loop-free program per (orientation, batch length), reused across batches with
 the per-view tables as data, volume and gradient as sums over batches — 256/984 gradient step
-378 s, 64/100 3.2 s vs 5.2 s (`probes/bench_host_grad.jl`). The per-batch pullback is still ~8× a
-batch forward; `probes/bench_batch_stages.jl` locates the stage. Inputs: pipelines take either dense
+378 s → with the accumulator INSIDE each program (a `.+` on concrete arrays outside a program is
+element-wise host execution) **57 s**, forward **14 s** (legacy 33 s); 64/100 0.32 s / 1.26 s. This
+is the shipped driver: `compile_pipeline(pipe, x)` → `forward(cp, x)` / `pullback(cp, x)` (ext),
+smoke `test/functional/reactant/smoke_compiled.jl`. Inputs: pipelines take either dense
 fractions `(nx,ny,nz,n_mat)` (differentiable) or the integer label volume, whose one-hot chunks are
 formed on device `batching.mat` materials at a time (large phantoms with many materials never
-materialize all fractions). Open items: the gradient at 256/984, M6 driver switch
+materialize all fractions). Open items: the PCCT/VMI pipelines on the same batch driver, M6 driver switch
 (`simulate!`/`reconstruct!` on the functional core), CUDA validation on the lab box, the
 CT-realistic gallery numbers (`design/reactant/probes/gallery_parity.jl`) into PROBES §8.
 

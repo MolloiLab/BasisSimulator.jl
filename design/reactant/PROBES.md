@@ -185,4 +185,16 @@ The volume is a sum over view batches, so `∂⟨v̄, vol⟩/∂fractions = Σ_b
 `eict_batches` / `batch_data` / `eict_batch_vol` give one loop-free program per (orientation,
 batch length), reused across batches with the per-view tables as data. 64/100 (8 batches, 6
 distinct programs, compile 159 s): forward 0.68 s (8 calls; 0.05 HU vs host), gradient step
-3.23 s vs 5.15 s for the while-loop program in the same process. 256/984: see below.
+3.23 s vs 5.15 s for the while-loop program in the same process — with the accumulation `.+` on
+concrete arrays OUTSIDE the programs (element-wise host execution, 0.9 s per call at 256²). With
+the accumulator as an argument of each program (`acc .+ contribution`, the shipped
+`compile_pipeline` / `forward` / `pullback` driver):
+
+| | forward | gradient step | per batch call (fwd / pullback) | loop program gradient |
+|---|---|---|---|---|
+| 64 / 100 (8 batches) | 0.32 s | 1.26 s (3.9×) | 40 / 117 ms | 2.76 s |
+| 256 / 984 (330 batches of 3 views) | **14.0 s** (legacy 33 s) | **57 s** (4.1×) | 42 / 132 ms | 819 s |
+
+Host-composed vs loop-program gradient at 64/100: max |Δ| 83 of max |g| 1.7e5 (Float32
+summation order). A single batch program's stages are all at healthy reverse ratios (DD 1.9–2.1×,
++chain 2.8–3.0×, +filter 2.8×, +backprojection 2.6–2.9×; `bench_batch_stages.jl`).

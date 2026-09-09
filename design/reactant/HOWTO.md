@@ -50,26 +50,37 @@ Stage-level entry points (each with its own plan struct and oracle test): `dd_pr
 `fdk`, `eict_chain`, `pcct_chain`, `hir_reconstruct`, `acnr_kalender`, `sino_svd_denoise_bilateral`,
 `cong_decompose`, `synth_vmi_2basis`. Nothing is exported; see the docstrings in `src/functional/`.
 
-## 3. Compile it with Reactant and differentiate it with Enzyme
+## 3. Compile it with Reactant and differentiate it with Enzyme — the driver
 
 ```julia
-using Reactant, Enzyme                      # from envs/reactant; loads ext/BasisSimulatorReactantExt.jl
+using Reactant                              # from envs/reactant; loads ext/BasisSimulatorReactantExt.jl
 
-fr_r, ε_r, εe_r = Reactant.to_rarray.((fr, ε, ε_e))
-fwd   = (fr, ε, ε_e) -> BSF.eict_forward(fr, pipe, ε, ε_e)
-thunk = @compile sync = true fwd(fr_r, ε_r, εe_r)       # one XLA program: DD → EICT → BHC → FDK → HU
-hu_c  = Array(thunk(fr_r, ε_r, εe_r))
+fr_r = Reactant.to_rarray(fr)
+cp   = BSF.compile_pipeline(pipe, fr_r)     # one forward + one pullback program per (orientation, batch length)
+hu   = Array(BSF.forward(cp, fr_r))         # Σ over view batches on the device, then the HU map
 
-w      = randn(Float32, pipe.recon_shape)
-loss(fr) = sum(w .* BSF.eict_forward(fr, pipe))          # noise-free for a clean gradient
-grad   = @compile sync = true (fr -> Enzyme.gradient(Reverse, loss, fr)[1])(fr_r)
-∂hu_∂fr = Array(grad(fr_r))                              # (nx, ny, nz, n_mat): d loss / d material fraction
+hu_r, back = BSF.pullback(cp, fr_r)         # the forward and its pullback (the volume is reused)
+hu_bar = Reactant.to_rarray(2f0 .* (Array(hu_r) .- target))   # ∂loss/∂HU for loss = Σ (HU − target)²
+∂fr    = Array(back(hu_bar))                # (nx, ny, nz, n_mat): ∂loss/∂fractions
 ```
 
-`Enzyme.gradient` must be called with the mode first when you compile a wrapper of it. Keep plans
-host-side (they are); `eict_forward` lifts the plan tables into the graph as constants
-(`Functional._on_device`). Measured on the toy in `smoke_pipeline.jl`: compile ~60 s, 1.0 ms per
-forward (21.6 ms plain Julia), gradient = finite differences to 1.6e-11.
+Why a driver and not one `@compile` of `eict_forward`: the single program runs its view batches in
+StableHLO while loops whose Enzyme reverse recomputes every iteration (checkpointing) — 819 s per
+gradient step at 256/984. The volume is a sum over view batches, so the driver compiles ONE
+loop-free program per (orientation, batch length) — `eict_batch_vol` with the batch's per-view
+tables as data (`eict_batches` / `batch_data`) — and sums forward volumes and per-batch pullbacks
+on the host, the accumulator inside each program. Measured (PROBES §9, XLA:CPU): 256/984 forward
+14 s (legacy 33 s), gradient step 57 s; 64/100 0.32 s / 1.26 s. Noise: the driver is the
+noise-free chain (a decomposition's forward model); for a noisy simulated scan use the host
+pipeline or `@compile` of `eict_forward` with the noise tensors.
+
+The single-program route still works for small problems and is the oracle of the driver
+(`test/functional/reactant/smoke_compiled.jl`):
+
+```julia
+loss(fr, p, t) = sum((BSF.eict_forward(fr, p) .- t) .^ 2)
+g = @jit Enzyme.gradient(Reverse, loss, fr_r, Const(pipe), Const(tgt_r))   # mode first
+```
 
 ## 4. What is still unrolled (the M5 work)
 

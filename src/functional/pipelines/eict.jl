@@ -251,3 +251,77 @@ function eict_forward_batched(fractions::AbstractArray{<:Any, 4}, pipe::EICTPipe
     vol = sum(eict_batch_vol(fractions, pipe, b, batch_data(b, pipe), sl(ε, b.views), sl(ε_e, b.views)) for b in bs)
     return eict_vol_to_hu(vol, pipe)
 end
+
+# -----------------------------------------------------------------------------
+# The compiled driver (implemented by the Reactant extension)
+# -----------------------------------------------------------------------------
+#
+# One compiled forward and one compiled pullback program per (orientation, batch length), each
+# taking its ACCUMULATOR as an argument (a `.+` on concrete device arrays outside a program falls
+# to element-wise host execution), called from the host over the view batches. Measured on XLA:CPU
+# (PROBES §9): 256 grid / 984 views forward 14 s (legacy 33 s), gradient step 57 s.
+
+"""
+    CompiledEICT — an `EICTPipeline` compiled for a device (`compile_pipeline`): the batch
+    programs keyed by (orientation, batch length), the per-batch data on the device, the HU map
+    and its pullback.
+"""
+struct CompiledEICT{P <: EICTPipeline, B, D, F, V, Z, H, VB}
+    pipe::P
+    batches::Vector{B}
+    data::Vector{D}
+    fwd::Dict{Tuple{Bool, Int}, F}        # (acc, x, d) -> acc .+ eict_batch_vol(x, b, d)
+    vjp::Dict{Tuple{Bool, Int}, V}        # (acc, x, v̄, d) -> acc .+ ∂⟨v̄, vol_b⟩/∂x
+    zero_vol::Z                           # fresh device zeros for the volume / the gradient
+    zero_grad::Z
+    tohu::H                               # vol -> HU
+    vbar::VB                              # (vol, hū) -> ∂⟨hū, HU(vol)⟩/∂vol
+end
+
+"""
+    compile_pipeline(pipe::EICTPipeline, fractions) -> CompiledEICT
+
+Compile the pipeline's batch programs for the device of `fractions` (a `Reactant` array; the
+noise-free chain). Requires the Reactant extension.
+"""
+function compile_pipeline end
+
+"""
+    forward(cp::CompiledEICT, fractions) -> HU
+
+The compiled forward: `Σ_b` batch volumes on the device, then the HU map.
+"""
+function forward(cp::CompiledEICT, x)
+    vol = _batch_volume(cp, x)
+    return cp.tohu(vol, cp.pipe)
+end
+
+"""
+    pullback(cp::CompiledEICT, fractions) -> (HU, back)
+
+The compiled forward and its pullback: `back(hu_bar)` returns `∂⟨hu_bar, HU⟩/∂fractions` — the
+sum over view batches of the compiled per-batch pullbacks, reusing the forward's volume.
+"""
+function pullback(cp::CompiledEICT, x)
+    vol = _batch_volume(cp, x)
+    hu = cp.tohu(vol, cp.pipe)
+    back = hu_bar -> begin
+        vb = cp.vbar(vol, hu_bar)
+        g = cp.zero_grad()
+        for (b, d) in zip(cp.batches, cp.data)
+            g = cp.vjp[_batch_key(b)](g, x, vb, d)
+        end
+        g
+    end
+    return hu, back
+end
+
+_batch_key(b::EICTBatch) = (b.run.vertical, length(b.views))
+
+function _batch_volume(cp::CompiledEICT, x)
+    vol = cp.zero_vol()
+    for (b, d) in zip(cp.batches, cp.data)
+        vol = cp.fwd[_batch_key(b)](vol, x, d)
+    end
+    return vol
+end

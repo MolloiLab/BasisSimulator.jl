@@ -121,7 +121,8 @@ fbp_t_start = time()
         @test_throws ArgumentError F.fbp_plan(geom, (0, 16, 4))
         @test_throws ArgumentError F.fbp_plan(geom, FBP_TOY_VOL; cutoff = 0.0)
         # shape guards
-        @test_throws DimensionMismatch F.filter_views(zeros(Float32, 32, 8, 15), plan)
+        @test_throws DimensionMismatch F.filter_views(zeros(Float32, 31, 8, 16), plan)   # per view: any view count, the pixel grid must match
+        @test size(F.filter_views(zeros(Float32, 32, 8, 15), plan)) == (32, 8, 15)
         @test_throws DimensionMismatch F.backproject(zeros(Float32, 31, 8, 16), plan)
         @test_throws DimensionMismatch F.fov_mask(zeros(Float32, 16, 16, 5), plan)
     end
