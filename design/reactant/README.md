@@ -25,9 +25,13 @@ program sits at 4×, the ideal one-shot at ≈2×), 392 s at 256/984. Establishe
 guesswork: the projector's reverse is cheap (1.6× its forward); the dense tiled FDK built against
 the "scatter adjoint" hypothesis LOST to the gather FDK on forward and gradient in a same-process
 A/B and was deleted; the checkpointed while-loop reverse costs ~2× the unrolled one; the per-pixel
-bowtie spectral sum's reverse was the worst single stage inside the loop (0.94 s vs 0.22 s without
-the bowtie) and is now one batched `dot_general` (`_bmm_spectral`, ext) — re-measure with
-`probes/bench_chain.jl`, then `bench_grad_stages.jl` at 256/984. Inputs: pipelines take either dense
+bowtie spectral sum as a batched `dot_general` made the forward 3× slower for nothing (reverted).
+At 256/984 the while-loop program's gradient step is 819 s (forward 30 s, legacy 33 s). What helps:
+the HOST-COMPOSED gradient (`eict_batches` / `batch_data` / `eict_batch_vol` / `eict_vol_to_hu`,
+commit 511a39e): one loop-free program per (orientation, batch length), reused across batches with
+the per-view tables as data, volume and gradient as sums over batches — 256/984 gradient step
+378 s, 64/100 3.2 s vs 5.2 s (`probes/bench_host_grad.jl`). The per-batch pullback is still ~8× a
+batch forward; `probes/bench_batch_stages.jl` locates the stage. Inputs: pipelines take either dense
 fractions `(nx,ny,nz,n_mat)` (differentiable) or the integer label volume, whose one-hot chunks are
 formed on device `batching.mat` materials at a time (large phantoms with many materials never
 materialize all fractions). Open items: the gradient at 256/984, M6 driver switch
