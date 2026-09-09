@@ -164,3 +164,25 @@ and the gather FDK that costs 4 ms alone costs ~1.2 s once it is composed after 
 program. The composition, not any single stage, is the cost; `bench_ab_fdk.jl` (same process,
 gather vs dense FDK, timed twice) settles the FDK choice and `bench_chain.jl` isolates the chain's
 reverse (loop / unrolled / one-shot, with and without the per-pixel bowtie).
+
+**Same-process A/B (`bench_ab_fdk.jl`, since deleted with the dense FDK):** gather FDK forward
+0.37–0.38 s / gradient 2.8–3.8 s; dense FDK forward 0.56–0.72 s / gradient 4.7–5.1 s. Run-to-run
+noise at this size is ±30 %.
+
+**Chain alone (`bench_chain.jl`, 64/100):** one-shot 0.41 s / 0.64 s (1.6×), while loop 0.18 s /
+0.94 s (5.3×), unrolled 0.18 s / 0.48 s (2.7×), loop without the bowtie 0.30 s / 0.22 s. The
+loop's reverse (checkpoint recompute) costs ~2× the unrolled one. Rewriting the bowtie spectral
+sum as a (col,row)-batched `dot_general` cut the loop gradient ratio to 1.4 but made the forward
+3× slower (0.58 s) — reverted.
+
+**256/984 (`bench_cpu.jl`, budget 1024 MB → dd 3 / spectral 38 / fdk 204):** legacy 33 s
+(simulate! 27 + recon 6); compiled while-loop forward 30.1 s (0.005 HU rms vs legacy), gradient
+step **819 s** — 328 loop iterations, each recomputed in the reverse.
+
+### Host-composed gradient (`bench_host_grad.jl`, commit 511a39e)
+
+The volume is a sum over view batches, so `∂⟨v̄, vol⟩/∂fractions = Σ_b` per-batch pullbacks:
+`eict_batches` / `batch_data` / `eict_batch_vol` give one loop-free program per (orientation,
+batch length), reused across batches with the per-view tables as data. 64/100 (8 batches, 6
+distinct programs, compile 159 s): forward 0.68 s (8 calls; 0.05 HU vs host), gradient step
+3.23 s vs 5.15 s for the while-loop program in the same process. 256/984: see below.

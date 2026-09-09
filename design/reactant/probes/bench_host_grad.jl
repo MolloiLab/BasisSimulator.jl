@@ -44,8 +44,8 @@ function forward!(x)
     end
     return vol
 end
-vol = forward!(fr_r); hu = tohu(vol)
-tf = @elapsed (vol = forward!(fr_r); hu = tohu(vol))
+vol = forward!(fr_r); hu = tohu(vol, pipe)
+tf = @elapsed (vol = forward!(fr_r); hu = tohu(vol, pipe))
 err = maximum(abs.(Array(hu) .- ref_hu))
 say(@sprintf("host-composed forward: %.2f s (%d batch calls), max |Δ| vs host oracle %.2e HU", tf, length(bs), err))
 # --- gradient of Σ (HU − target)²: v̄ = ∂loss/∂vol through eict_vol_to_hu (compiled), then Σ_b pullbacks
@@ -63,18 +63,13 @@ function gradient!(x)
 end
 gh = gradient!(fr_r); tg = @elapsed gh = gradient!(fr_r)
 say(@sprintf("host-composed gradient step: %.2f s (forward + v̄ + %d pullback calls) → ratio %.1f", tg, length(bs), tg / tf))
-# --- finite-difference check on one voxel-material entry
-let m = findfirst(>(0), vec(fr)), e = 1f-2
-    x1 = copy(fr); x1[m] += e; x2 = copy(fr); x2[m] -= e
-    l(x) = sum((BSF.eict_forward(x, pipe) .- Array(tgt)) .^ 2)
-    fd = (l(x1) - l(x2)) / (2e)
-    say(@sprintf("FD check entry %d: analytic %.6e  finite-diff %.6e", m, Array(gh)[m], fd))
-end
 # --- the single-program while-loop gradient for comparison
 if LOOP == 1
     loss(f, p, t) = sum((BSF.eict_forward(f, p) .- t) .^ 2)
     g = (f, p, t) -> Enzyme.gradient(Reverse, loss, f, Const(p), Const(t))
-    tc = @elapsed cg = @compile sync = true g(fr_r, pipe, tgt); cg(fr_r, pipe, tgt); tl = @elapsed cg(fr_r, pipe, tgt)
-    say(@sprintf("while-loop program gradient step: %.2f s (compile %.0f s)", tl, tc))
+    tc = @elapsed cg = @compile sync = true g(fr_r, pipe, tgt); gl = cg(fr_r, pipe, tgt); tl = @elapsed cg(fr_r, pipe, tgt)
+    gla = Array(gl isa Tuple ? gl[1] : gl); gha = Array(gh)
+    say(@sprintf("while-loop program gradient step: %.2f s (compile %.0f s); host-composed vs loop gradient: max |Δ| %.2e (max |g| %.2e)",
+        tl, tc, maximum(abs.(gha .- gla)), maximum(abs.(gla))))
 end
 say("HOST_GRAD_DONE")
