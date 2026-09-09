@@ -505,7 +505,7 @@ end
 # Backprojection of one chunk of views: `gt :: (12, B)` geometry table slice (host or traced),
 # `off :: (1,1,1,B)` linear offsets of the chunk's views inside `filt_vec`.
 @noinline function _bp_chunk(filt_vec::AbstractVector, plan::FBPPlan{T, ARC},
-        gt::AbstractMatrix, off::AbstractArray{<:Integer, 4}, weighted::Bool) where {T, ARC}
+        gt::AbstractMatrix, off::AbstractArray{<:Any, 4}, weighted::Bool) where {T, ARC}   # off: Int32 (host or traced data)
     B = size(gt, 2)
     tb = plan.tensors
     r4(i) = reshape(gt[i:i, :], 1, 1, 1, B)
