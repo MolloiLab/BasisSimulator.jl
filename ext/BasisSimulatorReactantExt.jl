@@ -24,8 +24,43 @@ using Reactant: Enzyme            # Reactant's own Enzyme (no extra weak depende
 
 const BSF = BasisSimulator.Functional
 
-BSF._on_device(x::AbstractArray, ::Reactant.TracedRArray) = Reactant.Ops.constant(Array(x))
-BSF._on_device(x::AbstractArray, ::Reactant.TracedRNumber) = Reactant.Ops.constant(Array(x))
+# HARD RULE — no silent TF32. On any non-CPU XLA client, tracing a stage with dot_general precision
+# DEFAULT is an ERROR: on NVIDIA that is TF32, and it biases every reconstruction by ~-31 HU while
+# looking perfectly healthy. `compile_pipeline` traces at full precision itself; a direct
+# `Reactant.@compile` must sit inside `BSF.with_full_precision`. Every stage lifts at least one plan
+# tensor through `_on_device`, so this fires once per trace, before any program is built.
+# `ENV["BASISSIM_ALLOW_TF32"] = "1"` is the only escape, for measuring the TF32 error on purpose.
+const _XLA_PLATFORM = Ref{String}("")
+function _xla_platform()
+    isempty(_XLA_PLATFORM[]) || return _XLA_PLATFORM[]
+    _XLA_PLATFORM[] = try
+        lowercase(string(Reactant.XLA.platform_name(Reactant.XLA.client(first(Reactant.devices())))))
+    catch
+        "unknown"                                  # cannot tell → enforce (the safe side)
+    end
+    return _XLA_PLATFORM[]
+end
+function _assert_full_precision()
+    Reactant.DOT_GENERAL_PRECISION[] === Reactant.PrecisionConfig.DEFAULT || return nothing
+    get(ENV, "BASISSIM_ALLOW_TF32", "0") == "1" && return nothing
+    plat = _xla_platform(); plat == "cpu" && return nothing
+    throw(ArgumentError("BasisSimulator.Functional: tracing on the '$plat' XLA client with dot_general " *
+        "precision DEFAULT — on NVIDIA that is TF32, which biases the reconstruction by ~-31 HU. Compile " *
+        "through `compile_pipeline` (full precision by default) or wrap your `Reactant.@compile` in " *
+        "`BSF.with_full_precision`. To measure the TF32 error deliberately set ENV[\"BASISSIM_ALLOW_TF32\"] = \"1\"."))
+end
+BSF._on_device(x::AbstractArray, ::Reactant.TracedRArray) = (_assert_full_precision(); Reactant.Ops.constant(Array(x)))
+BSF._on_device(x::AbstractArray, ::Reactant.TracedRNumber) = (_assert_full_precision(); Reactant.Ops.constant(Array(x)))
+
+# HARD RULE — no uncompiled device execution. `eict_forward` on a CONCRETE Reactant array outside
+# `@compile` would run op-by-op through the scalar fallback: correct, ~100x slower, and easy to
+# mistake for the compiled twin. Under `@compile` the argument is a TracedRArray, so this never
+# fires on the real path.
+_no_uncompiled(f) = throw(ArgumentError("BasisSimulator.Functional: `$f` was called on a concrete device array " *
+    "OUTSIDE a compiled program — that is the uncompiled scalar fallback, not the twin. Use " *
+    "`compile_pipeline` + `forward` / `pullback`, or `Reactant.@compile` inside `BSF.with_full_precision`."))
+BSF.eict_forward(::Reactant.AbstractConcreteArray, ::BSF.EICTPipeline, args...) = _no_uncompiled("eict_forward")
+BSF.eict_forward_batched(::Reactant.AbstractConcreteArray, ::BSF.EICTPipeline, args...) = _no_uncompiled("eict_forward_batched")
 
 # In-graph index vectors for the projector: with the plain-array fallback (`collect(T, 1:n)`) every
 # geometry/index tensor derived from them is evaluated on the HOST and embedded in the module as a
@@ -137,8 +172,10 @@ const _UNIQUE_NAME_MODULE = Ref{Any}(nothing)
 # 512² recon. XLA:CPU has no TF32 path, which is why the CPU smokes never saw it.
 _precision(sym::Symbol) = sym === :highest ? Reactant.PrecisionConfig.HIGHEST :
                           sym === :high    ? Reactant.PrecisionConfig.HIGH :
-                          sym === :default ? Reactant.PrecisionConfig.DEFAULT :
-                          throw(ArgumentError("precision must be :highest, :high or :default, got $sym"))
+                          sym === :default ? (get(ENV, "BASISSIM_ALLOW_TF32", "0") == "1" ? Reactant.PrecisionConfig.DEFAULT :
+                              throw(ArgumentError("precision = :default is TF32 on GPU (a ~-31 HU bias) and is refused; " *
+                                  "set ENV[\"BASISSIM_ALLOW_TF32\"] = \"1\" only to measure that error on purpose"))) :
+                          throw(ArgumentError("precision must be :highest or :high, got $sym"))
 BSF.with_full_precision(f; precision::Symbol = :highest) =
     Reactant.with_config(f; dot_general_precision = _precision(precision), convolution_precision = _precision(precision))
 

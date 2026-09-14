@@ -24,7 +24,9 @@ dev = try string(Reactant.XLA.device_kind(first(Reactant.devices()))) catch; "?"
 say("backend device: $dev")
 ok = true
 for prec in (:highest, :default)
-    cp = BSF.compile_pipeline(pipe, fr_r; precision = prec)
+    cp = withenv("BASISSIM_ALLOW_TF32" => (prec === :default ? "1" : "0")) do   # :default is refused without this
+        BSF.compile_pipeline(pipe, fr_r; precision = prec)
+    end
     d = (Array(BSF.forward(cp, fr_r)) .- ref)[circ]
     m, mx = mean(d), maximum(abs.(d))
     pass = abs(m) < 0.1 && mx < 0.5          # bias is the TF32 signature (~-31 HU); max absorbs summation-order drift
