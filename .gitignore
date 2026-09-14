@@ -95,3 +95,6 @@ test/output/*.pdf
 design/reactant/probes/*.log
 design/reactant/probes/*.txt
 design/reactant/probes/*.done
+
+# NFS silly-rename leftovers (a deleted file still open by a running process)
+.nfs*

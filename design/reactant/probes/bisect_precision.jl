@@ -13,10 +13,7 @@ TAG = "$(BACK)/$(get(ENV,"PREC","DEFAULT"))$(haskey(ENV,"ALG") ? "+"*ENV["ALG"] 
 T0 = time(); say(m) = (@printf("[%s][%7.1f s] %s\n", TAG, time() - T0, m); flush(stdout))
 withprec(f) = ALG === missing ? Reactant.with_config(f; dot_general_precision = PREC, convolution_precision = PREC) :
                                 Reactant.with_config(f; dot_general_precision = PREC, convolution_precision = PREC, dot_general_algorithm = ALG)
-scanner = BS.EICTScanner(source_to_isocenter = 625.6, source_to_detector = 1100.0, detector_rows = 256, detector_cols = 834,
-    detector_row_size = 0.625, detector_col_size = 0.6, detector_shape = :arc, focal_spot_width = 1.0, focal_spot_length = 1.0,
-    target_angle = 10.0, flat_filter_material = :aluminum, flat_filter_thickness = 2.5, bowtie_filter = :ge_revolution_large,
-    detector_material = :lumex, detector_depth = 3.0, fill_factor_row = 0.9, fill_factor_col = 0.9, electronic_noise = 0, detection_gain = 10.0)
+include(joinpath(@__DIR__, "ge_revolution.jl"))          # the GE Revolution scanner (shared fixture)
 protocol = BS.CTProtocol(kVp = 120, mA = 200.0, views = VIEWS, rotation_time = 1.0, collimation_mm = 5.0, additional_filters = [("Al", 4.5)])
 opts = BS.SimOptions(use_noise = false, use_scatter = false, use_focal_spot = false, use_optical_crosstalk = false, use_lag = false, seed = 1234)
 recon = BS.ReconOptions(matrix_size = (R, R, NZ), fov_cm = 35.0, z_cm = 0.5)

@@ -18,12 +18,10 @@
 # =============================================================================
 using Reactant, Enzyme, BasisSimulator, LinearAlgebra, Statistics, Test
 const BS = BasisSimulator
-module FStage
-    using BasisSimulator, LinearAlgebra, Statistics
-    const BS = BasisSimulator
-    include(joinpath(@__DIR__, "..", "..", "..", "src", "functional", "reconstruction", "vmi", "cong_cmv.jl"))
-end
-const F = FStage
+# The stage is exercised through the library module itself (so the Reactant extension's overrides apply),
+# not through a private copy of the source file: those copies broke when src/functional was reorganized
+# and never saw `_batched_loop` / `_on_device` / precision handling anyway.
+const F = BasisSimulator.Functional
 
 println("Reactant ", pkgversion(Reactant), "  Enzyme ", pkgversion(Enzyme), "  Julia ", VERSION,
     "  threads=", Threads.nthreads(), "  device=", Reactant.devices()[1])

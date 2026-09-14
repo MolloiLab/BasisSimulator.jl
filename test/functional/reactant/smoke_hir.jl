@@ -27,13 +27,12 @@ using Test
 using Reactant, Enzyme
 using BasisSimulator, LinearAlgebra, Statistics, Random
 const BS = BasisSimulator
+# The stage is exercised through the library module itself (so the Reactant extension's overrides apply),
+# not through a private copy of the source file: those copies broke when src/functional was reorganized
+# and never saw `_batched_loop` / `_on_device` / precision handling anyway.
+const F = BasisSimulator.Functional
 const BSF = BasisSimulator.Functional
 
-module FStage
-    using BasisSimulator, LinearAlgebra, Statistics
-    const BS = BasisSimulator
-    include(joinpath(@__DIR__, "..", "..", "..", "src", "functional", "reconstruction", "hir.jl"))
-end
 
 const _T0 = time()
 _ts(label) = (println(stderr, "[smoke_hir t=$(round(time() - _T0; digits = 1))s] ", label); flush(stderr))
@@ -66,13 +65,13 @@ end
 
 one_epoch_plan(geom, sino_shape, vol_shape, T) = begin
     p = BS.get_hir_params(60)
-    FStage.hir_plan(geom, sino_shape, vol_shape,
+    F.hir_plan(geom, sino_shape, vol_shape,
         BS.HIRParams(60, p.lambda, 1, p.n_subsets, p.huber_delta, p.relaxation, p.target_noise_reduction); T)
 end
 
 # Dense legacy system matrix on the work grid: column j = vec(A e_j), rays
 # ordered (col, row, view) so `reshape(M, nc*nr, n_views, nvox)` splits views.
-function dense_system(plan::FStage.HIRPlan{T}) where {T}
+function dense_system(plan::F.HIRPlan{T}) where {T}
     wg = plan.work_geom
     nc, nr, nv = plan.sino_shape
     vshape = plan.work_shape
@@ -97,7 +96,7 @@ function dense_system(plan::FStage.HIRPlan{T}) where {T}
 end
 
 # Pure operators over a (possibly traced) M3 = (nc*nr, n_views, nvox) tensor.
-function dense_operators(M3, support, plan::FStage.HIRPlan{T}) where {T}
+function dense_operators(M3, support, plan::F.HIRPlan{T}) where {T}
     nc, nr, _ = plan.sino_shape
     vshape = plan.work_shape
     nvox = prod(vshape)
@@ -108,12 +107,12 @@ function dense_operators(M3, support, plan::FStage.HIRPlan{T}) where {T}
     At = function (sub, idx)
         Ms = reshape(M3[:, idx, :], nc * nr * length(idx), nvox)
         v = permutedims(Ms, (2, 1)) * reshape(sub, nc * nr * length(idx))
-        return FStage._where(support, reshape(v, vshape), zero(T))
+        return F._where(support, reshape(v, vshape), zero(T))
     end
     return A, At
 end
 
-function functional_operators(plan::FStage.HIRPlan{T}, support) where {T}
+function functional_operators(plan::F.HIRPlan{T}, support) where {T}
     wg = plan.work_geom
     vshape = plan.work_shape
     vplans = [BSF.dd_view_plan(wg, v, vshape; eltype = T) for v in 1:wg.n_angles]
@@ -124,7 +123,7 @@ function functional_operators(plan::FStage.HIRPlan{T}, support) where {T}
             term = BSF.dd_transpose_view(sub[:, :, k], vplans[v], vshape)
             acc = acc === nothing ? term : acc .+ term
         end
-        return FStage._where(support, acc, zero(T))
+        return F._where(support, acc, zero(T))
     end
     return A, At
 end
@@ -147,14 +146,14 @@ _ts("start")
         M3, support = dense_system(plan)
 
         A_h, At_h = dense_operators(M3, support, plan)
-        ref = FStage.hir_reconstruct(sino, init, plan, A_h, At_h)
+        ref = F.hir_reconstruct(sino, init, plan, A_h, At_h)
 
         # sanity: the dense operator reproduces the legacy loop
         ws = BS.create_hir_recon_workspace(Float32.(sino), GEOM, VOL; strength = 60)
         ws_params = plan.params
         println("  [$T] dense-operator plain-Array result finite: $(all(isfinite, ref)); max|ref| = $(maximum(abs, ref))")
 
-        run_hir(y, x0, m3) = FStage.hir_reconstruct(y, x0, plan, dense_operators(m3, support, plan)...)
+        run_hir(y, x0, m3) = F.hir_reconstruct(y, x0, plan, dense_operators(m3, support, plan)...)
 
         sino_r = Reactant.to_rarray(sino)
         init_r = Reactant.to_rarray(init)
@@ -180,7 +179,7 @@ _ts("start")
             @test size(g) == size(sino)
             @test all(isfinite, g)
             # plain-Array Float64 loss for finite differences
-            loss_h(y) = sum(w .* FStage.hir_reconstruct(y, init, plan, A_h, At_h))
+            loss_h(y) = sum(w .* F.hir_reconstruct(y, init, plan, A_h, At_h))
             d = randn(MersenneTwister(21), T, size(sino))
             h = 1e-5
             dd_fd = (loss_h(sino .+ h .* d) - loss_h(sino .- h .* d)) / (2h)
@@ -215,8 +214,8 @@ if get(ENV, "BS_HIR_SMOKE_FUNCTIONAL_DD", "0") == "1"
     init = fdk_init(sino, GEOM, VOL)
     _, support = dense_system(plan)
     Af, Atf = functional_operators(plan, support)
-    ref = FStage.hir_reconstruct(sino, init, plan, Af, Atf)
-    run_f(y, x0) = FStage.hir_reconstruct(y, x0, plan, Af, Atf)
+    ref = F.hir_reconstruct(sino, init, plan, Af, Atf)
+    run_f(y, x0) = F.hir_reconstruct(y, x0, plan, Af, Atf)
     sino_r = Reactant.to_rarray(sino); init_r = Reactant.to_rarray(init)
     ok = try
         _ts("functional DD: compile")

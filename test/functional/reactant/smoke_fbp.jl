@@ -30,12 +30,10 @@ using Reactant, Enzyme
 using BasisSimulator, LinearAlgebra, Statistics, Random
 const BS = BasisSimulator
 
-module FStage
-    using BasisSimulator, LinearAlgebra, Statistics   # fbp.jl needs no FFTW itself
-    const BS = BasisSimulator
-    include(joinpath(@__DIR__, "..", "..", "..", "src", "functional", "reconstruction", "fbp.jl"))
-end
-const F = FStage
+# The stage is exercised through the library module itself (so the Reactant extension's overrides apply),
+# not through a private copy of the source file: those copies broke when src/functional was reorganized
+# and never saw `_batched_loop` / `_on_device` / precision handling anyway.
+const F = BasisSimulator.Functional
 
 const _T0 = time()
 _ts(label) = (println(stderr, "[smoke_fbp t=$(round(time() - _T0; digits = 1))s] ", label); flush(stderr))
