@@ -23,6 +23,26 @@ Memory rule for this 16 GB machine: never run two Reactant compiles at once, nev
 smoke while `Pkg.test()` is running. `run_all.sh` takes `/tmp/bs_reactant.lock`; if a run is killed,
 `rmdir /tmp/bs_reactant.lock`.
 
+## 1a. On an NVIDIA machine (CUDA) — three rules, all measured on a 96 GiB RTX PRO 6000 Blackwell
+
+1. **Trace at full f32 precision.** XLA:GPU runs f32 `stablehlo.dot_general` at TF32 (10-bit
+   mantissa) when the op's precision_config is DEFAULT. Three stages of the chain are matmuls, and
+   the ramp filter's Toeplitz product turns that truncation into a **constant −31 HU bias** on every
+   reconstruction (host oracle vs legacy: 0.01 HU; TF32-compiled: −31 HU; full-f32-compiled:
+   −0.001 HU). `compile_pipeline` traces under `precision = :highest` itself. Any DIRECT
+   `Reactant.@compile` / `@jit` of `eict_forward` or a stage function must run inside
+   `BSF.with_full_precision`, which is what `run_all.sh` now does for every smoke via
+   `test/functional/reactant/run_full_precision.jl`. Cost: ~20 % on the forward (1.5 → 1.8 ms/view
+   at 512²; 21 ms/view forward, 42 ms/view pullback at the 1125²×16 UHR object). CPU has no TF32
+   path, so CPU smokes never see this — `smoke_gpu_parity.jl` is the test that does.
+2. **Size `batch_budget_mb` to the card, not to this Mac.** With ~71 GiB usable the 1125²×16 object
+   grid runs UNWINDOWED at 5–11 views per batch (`design/reactant/UHR_MEMORY.md`); 2048 MB forces
+   `dd = 1` and throws. One Reactant process per GPU: XLA's BFC allocator preallocates ~71 GiB per
+   process, and an open Pluto kernel holds the card until it is closed.
+3. **Keep XLA's persistent cache off NFS.** On a depot under NFS the autotune cache's temp-file
+   rename fails with `Device or resource busy` and kills every compile. `envs/reactant/LocalPreferences.toml`
+   (gitignored, per machine) sets `[Reactant] persistent_cache_directory = "/tmp/<user>_xla_cache"`.
+
 ## 2. The functional pipeline behind the five structs (REPL or notebook)
 
 ```julia

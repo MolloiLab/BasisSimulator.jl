@@ -33,7 +33,7 @@ const BS = BasisSimulator
 module FStage
     using BasisSimulator, LinearAlgebra, Statistics   # fbp.jl needs no FFTW itself
     const BS = BasisSimulator
-    include(joinpath(@__DIR__, "..", "..", "..", "src", "functional", "fbp.jl"))
+    include(joinpath(@__DIR__, "..", "..", "..", "src", "functional", "reconstruction", "fbp.jl"))
 end
 const F = FStage
 

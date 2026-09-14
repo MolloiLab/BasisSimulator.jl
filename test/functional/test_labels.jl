@@ -21,4 +21,16 @@
         @test maximum(abs.(hu_lb .- hu_fr)) ≤ 1e-2
     end
     @test_throws DimensionMismatch BSF.material_paths(phantom.mask[1:end-1, :, :], BSF.eict_pipeline(phantom, scanner, protocol, opts, recon; view_batch = 4))
+
+    # A 3-D FLOAT volume must be REJECTED, not read as labels.  `PipelineInput`'s 3-D branch is
+    # discriminated by ARITY (the old `<:Integer` bound made the label path unreachable under
+    # Reactant tracing, where a UInt8 volume has element type `TracedRNumber{UInt8}`), so the
+    # element-type check moved into `material_paths` and has to be tested here: read as 0-based
+    # labels, a float volume projects to something plausible and differentiates to exactly zero —
+    # a wrong answer with no error and no NaN.
+    let pipe = BSF.eict_pipeline(phantom, scanner, protocol, opts, recon; view_batch = 4)
+        @test_throws ArgumentError BSF.material_paths(rand(Float32, pipe.vol_shape...), pipe)
+        @test_throws ArgumentError BSF.eict_forward(rand(Float32, pipe.vol_shape...), pipe)
+        @test BSF.material_paths(phantom.mask, pipe) isa AbstractArray      # integer labels still accepted
+    end
 end

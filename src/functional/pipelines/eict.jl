@@ -199,17 +199,29 @@ end
     batch_data(b::EICTBatch, pipe) -> NamedTuple (table, starts, gt, off)
 
 The batch's per-view arrays: the DD view table `(18, B)`, the window starts `(n_blocks, B)`
-Int32, the FDK geometry columns `(12, B)`, the view offsets `(1,1,1,B)` Int32. Host arrays;
-under Reactant pass `Reactant.to_rarray(batch_data(b, pipe))` to the compiled program.
+Int32, the FDK geometry columns `(12, B)`, the view offsets `(1,1,1,B)` Int32, and — when `ε`
+(and optionally `ε_e`) are given — that batch's slices of the noise tensors as `eps` / `eps_e`.
+Host arrays; under Reactant pass `Reactant.to_rarray(batch_data(b, pipe, ε, ε_e))` to the
+compiled program.
 """
-function batch_data(b::EICTBatch, pipe::EICTPipeline)
+function batch_data(b::EICTBatch, pipe::EICTPipeline, ε = nothing, ε_e = nothing)
     B = length(b.views)
     block = pipe.fbp.n_col * pipe.fbp.n_row
-    return (table = b.run.table,
+    sl(x) = x === nothing ? nothing : Array(reshape(x, pipe.eict.sino_shape)[:, :, b.views])
+    base = (table = b.run.table,
             starts = b.windowed ? reshape(b.starts, :, B) : zeros(Int32, 0, B),
             gt = _geom_table(pipe.fbp.tensors)[:, b.views],
             off = reshape(Int32[(k - 1) * block for k in 1:B], 1, 1, 1, B))
+    # The noise realization travels WITH the batch, as ordinary Const data, so the batched driver
+    # reproduces a noisy acquisition without falling back to a single whole-scan program.
+    ε === nothing && return base
+    ε_e === nothing && return merge(base, (eps = sl(ε),))
+    return merge(base, (eps = sl(ε), eps_e = sl(ε_e)))
 end
+
+# The batch's noise slices if `batch_data` carried them, else `nothing` (noise-free chain).
+_batch_eps(d)   = hasproperty(d, :eps)   ? d.eps   : nothing
+_batch_eps_e(d) = hasproperty(d, :eps_e) ? d.eps_e : nothing
 
 """
     eict_batch_vol(fractions, pipe, b::EICTBatch, d, ε_b = nothing, ε_e_b = nothing) -> (nx, ny, nz)
@@ -270,8 +282,8 @@ struct CompiledEICT{P <: EICTPipeline, B, D, F, V, Z, H, VB}
     pipe::P
     batches::Vector{B}
     data::Vector{D}
-    fwd::Dict{Tuple{Bool, Int}, F}        # (acc, x, d) -> acc .+ eict_batch_vol(x, b, d)
-    vjp::Dict{Tuple{Bool, Int}, V}        # (acc, x, v̄, d) -> acc .+ ∂⟨v̄, vol_b⟩/∂x
+    fwd::Dict{Any, F}                     # (acc, x, d) -> acc .+ eict_batch_vol(x, b, d)
+    vjp::Dict{Any, V}                     # (acc, x, v̄, d) -> acc .+ ∂⟨v̄, vol_b⟩/∂x
     zero_vol::Z                           # fresh device zeros for the volume / the gradient
     zero_grad::Z
     tohu::H                               # vol -> HU
@@ -279,10 +291,26 @@ struct CompiledEICT{P <: EICTPipeline, B, D, F, V, Z, H, VB}
 end
 
 """
-    compile_pipeline(pipe::EICTPipeline, fractions) -> CompiledEICT
+    with_full_precision(f; precision = :highest)
 
-Compile the pipeline's batch programs for the device of `fractions` (a `Reactant` array; the
-noise-free chain). Requires the Reactant extension.
+Run `f` with Reactant's `dot_general` / `convolution` precision set to full f32 (`:highest`).
+**Required on GPU:** XLA:GPU runs f32 matmuls at TF32 by default, which biases the ramp filter
+and shifts the whole reconstruction by ~-31 HU (measured on a Blackwell). [`compile_pipeline`](@ref)
+applies this itself; wrap any DIRECT `Reactant.@compile eict_forward(...)` in it. Requires the
+Reactant extension.
+"""
+function with_full_precision end
+
+"""
+    compile_pipeline(pipe::EICTPipeline, fractions[, ε, ε_e]; precision = :highest) -> CompiledEICT
+
+Compile the pipeline's batch programs for the device of `fractions` (a `Reactant` array).
+Pass `ε` / `ε_e` from [`draw_eict_noise`](@ref) to compile the NOISY chain — the realization is
+baked into each batch's Const data, so a noisy acquisition uses the same memory-bounded batch
+driver instead of one whole-scan program. Every program is traced under
+[`with_full_precision`](@ref) (`precision = :highest`) — on GPU the default TF32 matmuls bias the
+reconstruction by ~-31 HU; `:default` reproduces that for measurement only. Requires the Reactant
+extension.
 """
 function compile_pipeline end
 
@@ -316,7 +344,12 @@ function pullback(cp::CompiledEICT, x)
     return hu, back
 end
 
-_batch_key(b::EICTBatch) = (b.run.vertical, length(b.views))
+# The key must carry EVERYTHING the batch bakes into its traced program as a STATIC shape.
+# `widths` is computed per RUN (eict_batches) and becomes the window extent inside
+# `dd_project_dense_windowed_run`, so two runs that share (vertical, n_views) but differ in
+# `widths` would otherwise reuse the first run's compiled program — in bounds, no error, wrong
+# answer. `windowed` likewise selects a different program entirely.
+_batch_key(b::EICTBatch) = (b.run.vertical, length(b.views), b.windowed, b.widths)
 
 function _batch_volume(cp::CompiledEICT, x)
     vol = cp.zero_vol()

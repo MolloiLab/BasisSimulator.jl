@@ -49,6 +49,10 @@ const _AnyTraced = Union{Reactant.TracedRArray, Base.ReshapedArray{<:Any, <:Any,
 # `checkpointing = true`: reverse mode through the loop recomputes iterations instead of caching
 # every iteration's intermediates (the dense weights of a view batch are hundreds of MB; caching
 # all iterations killed a 256-grid / 984-view gradient with an out-of-memory).
+# Under tracing the element type is a wrapper (`TracedRNumber{UInt8}`); unwrap to the scalar so
+# the label/fraction discrimination on the 3-D branch works inside `@compile` exactly as on host.
+BSF._unwrapped_eltype(x::_AnyTraced) = Reactant.unwrapped_eltype(x)
+
 function BSF._batched_loop(body, n::Int, state, consts::Tuple, ::_AnyTraced)
     state = _mat(state)
     @trace track_numbers = false checkpointing = true for b in 1:n
@@ -124,18 +128,38 @@ const _UNIQUE_NAME_MODULE = Ref{Any}(nothing)
 # -----------------------------------------------------------------------------
 # The compiled EICT driver: batch programs keyed by (orientation, length), accumulators in-program
 # -----------------------------------------------------------------------------
-function BSF.compile_pipeline(pipe::BSF.EICTPipeline{T}, x::Reactant.AbstractConcreteArray) where {T}
+# XLA:GPU executes f32 `stablehlo.dot_general` at TF32 (10-bit mantissa) when the op's
+# precision_config is DEFAULT. Three stages of the chain are matmuls (the DD projector, the spectral
+# sum, and the ramp filter's Toeplitz product), and the ramp filter's dynamic range turns that
+# truncation into a BIAS: measured on a Blackwell, a constant -31 HU across the whole FOV against
+# the host oracle (which matches the legacy kernels to 0.01 HU), at every grid and view count.
+# Tracing under HIGHEST restores f32 arithmetic: -0.001 HU at the same setups, at ~2 ms/view on a
+# 512² recon. XLA:CPU has no TF32 path, which is why the CPU smokes never saw it.
+_precision(sym::Symbol) = sym === :highest ? Reactant.PrecisionConfig.HIGHEST :
+                          sym === :high    ? Reactant.PrecisionConfig.HIGH :
+                          sym === :default ? Reactant.PrecisionConfig.DEFAULT :
+                          throw(ArgumentError("precision must be :highest, :high or :default, got $sym"))
+BSF.with_full_precision(f; precision::Symbol = :highest) =
+    Reactant.with_config(f; dot_general_precision = _precision(precision), convolution_precision = _precision(precision))
+
+BSF.compile_pipeline(pipe::BSF.EICTPipeline, x::Reactant.AbstractConcreteArray, ε = nothing, ε_e = nothing; precision::Symbol = :highest) =
+    BSF.with_full_precision(() -> _compile_pipeline_impl(pipe, x, ε, ε_e); precision)
+
+function _compile_pipeline_impl(pipe::BSF.EICTPipeline{T}, x::Reactant.AbstractConcreteArray, ε, ε_e) where {T}
     bs = BSF.eict_batches(pipe)
-    data = [Reactant.to_rarray(BSF.batch_data(b, pipe)) for b in bs]
+    # `ε`/`ε_e` ride along inside each batch's Const data (see `batch_data`), so the noisy chain
+    # compiles through the SAME memory-bounded per-batch programs as the noise-free one.
+    data = [Reactant.to_rarray(BSF.batch_data(b, pipe, ε, ε_e)) for b in bs]
     nx, ny, nz = pipe.recon_shape
     vol0 = Reactant.to_rarray(zeros(T, nx, ny, nz))
     g0 = Reactant.to_rarray(zeros(T, size(x)))
-    fwd = Dict{Tuple{Bool, Int}, Any}(); vjp = Dict{Tuple{Bool, Int}, Any}()
+    fwd = Dict{Any, Any}(); vjp = Dict{Any, Any}()   # key: _batch_key(b) — carries widths, so not a fixed tuple type
     for (b, d) in zip(bs, data)
         k = BSF._batch_key(b)
         haskey(fwd, k) && continue
-        f = (acc, x, d) -> acc .+ BSF.eict_batch_vol(x, pipe, b, d)
-        g = (acc, x, vbar, d) -> acc .+ Enzyme.gradient(Enzyme.Reverse, (x, vbar, d) -> sum(vbar .* BSF.eict_batch_vol(x, pipe, b, d)),
+        f = (acc, x, d) -> acc .+ BSF.eict_batch_vol(x, pipe, b, d, BSF._batch_eps(d), BSF._batch_eps_e(d))
+        g = (acc, x, vbar, d) -> acc .+ Enzyme.gradient(Enzyme.Reverse,
+                                                       (x, vbar, d) -> sum(vbar .* BSF.eict_batch_vol(x, pipe, b, d, BSF._batch_eps(d), BSF._batch_eps_e(d))),
                                                        x, Enzyme.Const(vbar), Enzyme.Const(d))[1]
         fwd[k] = Reactant.@compile sync = true f(vol0, x, d)
         vjp[k] = Reactant.@compile sync = true g(g0, x, vol0, d)

@@ -32,7 +32,7 @@ const BSF = BasisSimulator.Functional
 module FStage
     using BasisSimulator, LinearAlgebra, Statistics
     const BS = BasisSimulator
-    include(joinpath(@__DIR__, "..", "..", "..", "src", "functional", "hir.jl"))
+    include(joinpath(@__DIR__, "..", "..", "..", "src", "functional", "reconstruction", "hir.jl"))
 end
 
 const _T0 = time()

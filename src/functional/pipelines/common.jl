@@ -22,9 +22,18 @@ This is the differentiable parameterization of the phantom (labeled phantoms are
 its one-hot special case; XCIST/XCAT volume-fraction phantoms map onto it directly).
 """
 # A pipeline input: dense per-material fractions (nx, ny, nz, n_mat) — the differentiable form, e.g. the
-# K basis materials of a decomposition — or the label volume itself (nx, ny, nz) Integer, whose one-hot
+# K basis materials of a decomposition — or the label volume itself (nx, ny, nz), whose one-hot
 # fractions are formed on device one material batch at a time (never all materials at once).
-const PipelineInput = Union{AbstractArray{<:Any, 4}, AbstractArray{<:Integer, 3}}
+#
+# The 3-D branch is discriminated by ARITY, not by element type.  Under `@compile` a UInt8 label
+# volume becomes `TracedRArray{UInt8,3} <: AbstractArray{TracedRNumber{UInt8},3}`, and
+# `TracedRNumber{UInt8}` is not an `Integer` — so an `<:Integer` bound here made the label path
+# unreachable under tracing, which is exactly the configuration it was written for (a UHR phantom
+# at one byte per voxel instead of a dense `(nx,ny,nz,n_mat)` float tensor).
+#
+# Arity alone is not safe, so `material_paths` rejects a 3-D FLOAT volume explicitly: read as
+# 0-based labels it would project to something plausible and differentiate to exactly zero.
+const PipelineInput = Union{AbstractArray{<:Any, 4}, AbstractArray{<:Any, 3}}
 
 function onehot_fractions(mask::AbstractArray{<:Integer, 3}, n_mat::Integer; T::Type{<:AbstractFloat} = Float32)
     mask_h = Array(mask)
@@ -46,12 +55,20 @@ functional DD projector (one static-tap projection per material per view; the
 material axis is the batch axis of the linear operator). Differentiable in
 `fractions`.
 """
-function material_paths(labels::AbstractArray{<:Integer, 3}, pipe::AbstractPipeline{T}) where {T}
+function material_paths(labels::AbstractArray{<:Any, 3}, pipe::AbstractPipeline{T}) where {T}
+    L = _unwrapped_eltype(labels)
+    L <: Integer || throw(ArgumentError(
+        "material_paths: a 3-D input is a 0-based LABEL volume and must have an integer element type, " *
+        "got $(L). Pass dense per-material fractions as a 4-D array instead — a 3-D float volume read " *
+        "as labels projects to something plausible and differentiates to exactly zero, with no error."))
     size(labels) == pipe.vol_shape || throw(DimensionMismatch("labels $(size(labels)) do not match the pipeline's phantom $(pipe.vol_shape)"))
     n_mat, mb = pipe.n_mat, pipe.batching.mat
     parts = map(1:mb:n_mat) do lo                                     # static material batches, one one-hot chunk on device at a time
         ms = lo:min(lo + mb - 1, n_mat)
-        fr = _cat_new_axis([ifelse.(labels .== (m - 1), one(T), zero(T)) for m in ms])
+        # Compare IN THE LABEL'S OWN TYPE: `m - 1 :: Int` promotes the comparison, and under tracing
+        # that converts the WHOLE volume to i64 before comparing — 8 B per voxel on the tensor this
+        # path exists to keep at 1 B per voxel.
+        fr = _cat_new_axis([ifelse.(labels .== L(m - 1), one(T), zero(T)) for m in ms])
         material_paths(fr, pipe)
     end
     return reduce((a, b) -> cat(a, b; dims = 4), parts)
@@ -106,6 +123,10 @@ function _auto_batching(sino_shape::NTuple{3, Int}, vol_shape::NTuple{3, Int}, n
     per_view(x) = Int(clamp(bytes ÷ (4 * x), 1, n_view))
     dense = projector !== :gather                      # the dense contractions ARE the projector; :gather is an explicit choice
     col_block, slab_block = n_col, n_long              # full dense = one block
+    # The permuted volume is built ONCE, outside the view loop: charge it against the budget once,
+    # then size the view batch from what is left (charging it per view over-windows badly at UHR).
+    onetime = dense ? dd_dense_volume_bytes(n_t, nzv, n_long, n_mat) : 0
+    bytes = max(bytes - onetime, 0)
     view_bytes = dd_dense_view_bytes(n_col, n_row, n_t, nzv, n_long, n_mat)
     if dense && view_bytes > bytes
         # windowed dense: shrink the blocks (columns first, then slabs) until one view fits the budget
@@ -122,7 +143,10 @@ function _auto_batching(sino_shape::NTuple{3, Int}, vol_shape::NTuple{3, Int}, n
         end
         found || throw(ArgumentError("the dense projector needs $(round(Int, view_bytes / 2^20)) MB per view " *
             "(n_cols $n_col × n_t $n_t × n_long $n_long weights, $n_mat channels) and even the narrowest windows " *
-            "(16 columns × 8 slabs) exceed batch_budget_mb = $budget_mb; raise batch_budget_mb — there is no silent fallback"))
+            "(16 columns × 8 slabs) exceed the $(round(Int, bytes / 2^20)) MB left of batch_budget_mb = $budget_mb " *
+            "after the $(round(Int, onetime / 2^20)) MB one-time permuted volume; raise batch_budget_mb — there is no " *
+            "silent fallback. A UHR object grid is a supported input: size the budget to the device (a CUDA card here, " *
+            "not a laptop CPU) — see design/reactant/UHR_MEMORY.md"))
     end
     dd = dense ? Int(clamp(bytes ÷ view_bytes, 1, n_view)) : per_view(n_col * n_row * n_long * (6 + n_mat))
     # label input: one-hot fractions of `mat` materials at a time (the volume itself, 4 B per voxel per material)

@@ -29,7 +29,7 @@ const BS = BasisSimulator
 module FStage
     using BasisSimulator, LinearAlgebra, Statistics
     const BS = BasisSimulator
-    include(joinpath(@__DIR__, "..", "..", "..", "src", "functional", "eict.jl"))
+    include(joinpath(@__DIR__, "..", "..", "..", "src", "functional", "detector", "eict.jl"))
 end
 const F = FStage
 

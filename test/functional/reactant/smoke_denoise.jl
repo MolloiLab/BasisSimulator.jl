@@ -20,7 +20,7 @@ const BS = BasisSimulator
 module FStage
     using BasisSimulator, LinearAlgebra, Statistics
     const BS = BasisSimulator
-    include(joinpath(@__DIR__, "..", "..", "..", "src", "functional", "denoise.jl"))
+    include(joinpath(@__DIR__, "..", "..", "..", "src", "functional", "reconstruction", "denoising.jl"))
 end
 const F = FStage
 

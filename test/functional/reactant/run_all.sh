@@ -14,14 +14,14 @@ until mkdir "$LOCK" 2>/dev/null; do echo "waiting for $LOCK …"; sleep 30; done
 trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 names=("$@")
 if [ ${#names[@]} -eq 0 ]; then
-    names=(dd fbp eict pcct hir denoise vmi nchannel pipeline)
+    names=(dd fbp eict pcct hir denoise vmi nchannel pipeline windowed gpu_parity)
 fi
 status=0
 for n in "${names[@]}"; do
     f="test/functional/reactant/smoke_$n.jl"
     [ -f "$f" ] || { echo "skip $n (no $f)"; continue; }
     echo "════════ smoke_$n.jl ════════"
-    if julia --project=envs/reactant -t 2 --heap-size-hint=3G "$f"; then
+    if julia --project=envs/reactant -t 2 --heap-size-hint=3G test/functional/reactant/run_full_precision.jl "$f"; then
         echo "PASS smoke_$n"
     else
         echo "FAIL smoke_$n"; status=1

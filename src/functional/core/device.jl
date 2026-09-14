@@ -116,6 +116,18 @@ function _bmm_tb(Wx::AbstractArray{<:Any, 4}, Vw::AbstractArray{<:Any, 4})
 end
 
 """
+    _unwrapped_eltype(x) -> the SCALAR element type behind any tracer wrapper
+
+`eltype` on the host; under Reactant a `TracedRArray{UInt8,3}` has element type
+`TracedRNumber{UInt8}`, and this returns the `UInt8`.  Used to tell a label
+volume from a float volume on the 3-D branch of `PipelineInput`, which dispatch
+alone cannot do (`TracedRNumber{UInt8}` is not an `Integer`).  Note
+`_scalar_type` is NOT usable for this: it answers "which float does this array
+compute in" and returns `Float64` for an integer eltype.
+"""
+_unwrapped_eltype(x::AbstractArray) = eltype(x)
+
+"""
     _to_float(T, x) -> x as an array of `T`
 
 Element type conversion (integer index arrays → the plan's float type) in the

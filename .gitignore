@@ -90,3 +90,8 @@ test/output/*.pdf
 .claude/
 /CLAUDE.md
 /AGENTS.md
+
+# Reactant probe / smoke OUTPUT under design/reactant/probes (the .jl/.sh probes ARE tracked)
+design/reactant/probes/*.log
+design/reactant/probes/*.txt
+design/reactant/probes/*.done

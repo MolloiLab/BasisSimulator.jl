@@ -19,8 +19,11 @@ ok = true
 tc = @elapsed cp = BSF.compile_pipeline(pipe, fr_r)
 say(@sprintf("compile_pipeline: %d batches, %d forward + %d pullback programs, %.0f s", length(cp.batches), length(cp.fwd), length(cp.vjp), tc))
 ref = BSF.eict_forward(fr, pipe)
-hu = Array(BSF.forward(cp, fr_r)); e1 = maximum(abs.(hu .- ref)); global ok &= e1 < 0.1
-say(@sprintf("forward vs host oracle: max |Δ| %.2e HU %s", e1, e1 < 0.1 ? "ok" : "FAIL"))
+hu = Array(BSF.forward(cp, fr_r)); d1 = hu .- ref; e1 = maximum(abs.(d1)); b1 = sum(d1) / length(d1)
+# summation-order drift between XLA and the host oracle is ~0.05–0.2 HU max; a TF32 forward is a
+# ~-31 HU BIAS — gate on both, and make the bias the tight one.
+p1 = e1 < 0.5 && abs(b1) < 0.1; global ok &= p1
+say(@sprintf("forward vs host oracle: max |Δ| %.2e HU, mean %+.2e HU %s", e1, b1, p1 ? "ok" : "FAIL"))
 tgt = ref .+ 5f0; tgt_r = Reactant.to_rarray(tgt)
 hu2, back = BSF.pullback(cp, fr_r)
 hbar = Reactant.to_rarray(2f0 .* (Array(hu2) .- tgt))
@@ -39,4 +42,4 @@ let dir = randn(MersenneTwister(1), Float32, size(fr)); dir ./= maximum(abs.(dir
     e3 = abs(an - fd) / abs(fd); global ok &= e3 < 2e-2
     say(@sprintf("directional derivative: pullback %.6e  finite-diff (compiled forward) %.6e  rel %.2e %s", an, fd, e3, e3 < 2e-2 ? "ok" : "FAIL"))
 end
-say(ok ? "SMOKE_COMPILED_OK" : "SMOKE_COMPILED_FAIL")
+say(ok ? "SMOKE_COMPILED_OK" : "SMOKE_COMPILED_FAIL"); exit(ok ? 0 : 1)

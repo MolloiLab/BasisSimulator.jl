@@ -12,8 +12,11 @@
 # executes worst (measured: 12× slower than the legacy kernels); dense
 # contractions run near peak on CPU and GPU.  Cost per view: n_cols·n_t·n_long
 # weights and n_cols·n_t·n_long·nz·M MACs — the memory budget picks the view
-# batch, and `material_paths` falls back to the gather path when even one
-# view's weights exceed the budget (UHR grids).
+# batch.  There is NO automatic fallback: when even the narrowest windows
+# exceed `batch_budget_mb`, `_auto_batching` throws (pipelines/common.jl).  UHR
+# object grids must be made to FIT here — they are a supported input, not an
+# out-of-scope case — so raise the budget (a 96 GiB CUDA device is the target,
+# not the 2 GB of a laptop CPU run) and see design/reactant/UHR_MEMORY.md.
 # =============================================================================
 
 """
@@ -65,13 +68,28 @@ function dd_project_dense_run(vol::AbstractArray{<:Any, 4}, p::DDRunPlan{T}; unr
 end
 
 """
-    dd_dense_view_bytes(n_cols, n_rows, n_t, nz, n_long, n_channels) -> bytes per view
+    dd_dense_view_bytes(n_cols, n_rows, n_t, nz, n_long, n_channels) -> bytes PER VIEW
 
 Host estimate of the dense weights and intermediates one view needs
 (`Wx`, `Wz`, `A`, in Float32), used by the memory-budget batching.
+
+The permuted volume `V` is NOT counted here: it is built once per call, outside
+the view loop ([`dd_project_dense_run`](@ref)), so charging it per view scales a
+one-time tensor by the view batch and drives the planner to window far harder
+than the program needs.  It is charged separately by
+[`dd_dense_volume_bytes`](@ref).
 """
 dd_dense_view_bytes(n_cols, n_rows, n_t, nz, n_long, M) =
-    4 * (n_cols * n_t * n_long + n_cols * n_rows * nz * n_long + n_cols * nz * M * n_long + n_t * nz * M * n_long)
+    4 * (n_cols * n_t * n_long + n_cols * n_rows * nz * n_long + n_cols * nz * M * n_long)
+
+"""
+    dd_dense_volume_bytes(n_t, nz, n_long, n_channels) -> bytes ONCE
+
+The permuted volume `V` the dense projector builds once per call, outside the
+view loop.  A second copy (`Vl`) is live transiently while the permutation runs,
+so the true setup peak is ~2× this.
+"""
+dd_dense_volume_bytes(n_t, nz, n_long, M) = 4 * (n_t * nz * M * n_long)
 
 """
     dd_transpose_dense_run(sino_run, run::DDRunPlan, vol_shape) -> (nx, ny, nz)
@@ -186,7 +204,7 @@ Host estimate of the windowed dense weights and intermediates one view needs.
 """
 function dd_dense_windowed_view_bytes(n_cols, n_rows, nz, n_long, M, widths, col_block, slab_block)
     K = nz * M
-    wx = sum(min(col_block, n_cols) * w * min(slab_block, n_long) for w in widths)          # one (column block × slab block) at a time
+    wx = maximum(min(col_block, n_cols) * w * min(slab_block, n_long) for w in widths)      # one (column block × slab block) at a time — the LARGEST, not their sum
     return 4 * (wx + n_cols * n_rows * nz * n_long + n_cols * K * n_long + maximum(widths) * K * min(slab_block, n_long))
 end
 

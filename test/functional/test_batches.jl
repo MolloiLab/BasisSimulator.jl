@@ -8,7 +8,11 @@
     recon = BS.ReconOptions(matrix_size = (24, 24, 2), fov_cm = 20.0, z_cm = 0.4)
     phantom = BS.compact_materials(BS.create_gammex_472(n_voxels = 24, n_slices = 2, fov_cm = 20.0, z_cm = 0.4))
     fr = BSF.onehot_fractions(phantom.mask, length(phantom.materials))
-    for (noise, budget) in ((false, 512), (true, 512), (false, 0.3))        # 0.3 MB forces the windowed projector (a full view is ≈0.45 MB)
+    # 0.36 MB forces the windowed projector. Measured at this geometry: an unwindowed view is
+    # 0.3633 MB and the permuted volume another 0.0659 MB charged ONCE (not per view), so the
+    # budget left for a view is 0.2941 MB — under the 0.3633 a full view needs, and over the
+    # 0.2395 MB the narrowest (16 col x 8 slab) window needs. Anything in [0.306, 0.429) works.
+    for (noise, budget) in ((false, 512), (true, 512), (false, 0.36))
         opts = BS.SimOptions(use_noise = noise, use_scatter = false, use_focal_spot = false, use_optical_crosstalk = false, use_lag = false, seed = 7)
         pipe = BSF.eict_pipeline(phantom, scanner, protocol, opts, recon; view_batch = :auto, batch_budget_mb = budget)
         bs = BSF.eict_batches(pipe)
