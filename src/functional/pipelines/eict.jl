@@ -207,7 +207,9 @@ compiled program.
 function batch_data(b::EICTBatch, pipe::EICTPipeline, ε = nothing, ε_e = nothing)
     B = length(b.views)
     block = pipe.fbp.n_col * pipe.fbp.n_row
-    sl(x) = x === nothing ? nothing : Array(reshape(x, pipe.eict.sino_shape)[:, :, b.views])
+    # `Array(x)` first: the noise may arrive as a device (Reactant) array, whose host-side `[:, :, views]` is a
+    # scalar-indexing fallback. The slice is per-batch Const data, so it is formed on the host regardless.
+    sl(x) = x === nothing ? nothing : Array(reshape(Array(x), pipe.eict.sino_shape)[:, :, b.views])
     base = (table = b.run.table,
             starts = b.windowed ? reshape(b.starts, :, B) : zeros(Int32, 0, B),
             gt = _geom_table(pipe.fbp.tensors)[:, b.views],
