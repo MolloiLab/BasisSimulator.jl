@@ -338,8 +338,9 @@ function pullback(cp::CompiledEICT, x)
     back = hu_bar -> begin
         vb = cp.vbar(vol, hu_bar)
         g = cp.zero_grad()
-        for (b, d) in zip(cp.batches, cp.data)
+        for (i, (b, d)) in enumerate(zip(cp.batches, cp.data))
             g = cp.vjp[_batch_key(b)](g, x, vb, d)
+            i % 16 == 0 && GC.gc(false)      # same: the reverse working set per batch is ~3x the forward's
         end
         g
     end
@@ -355,8 +356,9 @@ _batch_key(b::EICTBatch) = (b.run.vertical, length(b.views), b.windowed, b.width
 
 function _batch_volume(cp::CompiledEICT, x)
     vol = cp.zero_vol()
-    for (b, d) in zip(cp.batches, cp.data)
+    for (i, (b, d)) in enumerate(zip(cp.batches, cp.data))
         vol = cp.fwd[_batch_key(b)](vol, x, d)
-    end
+        i % 16 == 0 && GC.gc(false)          # device buffers are released by finalizers; a host loop of
+    end                                       # hundreds of small batch calls never triggers GC by itself
     return vol
 end
