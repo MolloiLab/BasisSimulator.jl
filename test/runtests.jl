@@ -28,6 +28,9 @@ const BS = BasisSimulator
     @testset "memory lifecycle/" begin
         include("memory_lifecycle.jl")
     end
+    @testset "nchannel/" begin
+        include("nchannel.jl")
+    end
     @testset "object/" begin
         include("object.jl")
     end

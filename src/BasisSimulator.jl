@@ -327,6 +327,11 @@ include("denoising/sino_svd.jl")
 # auto-derived from the photon-count map.  Black (in prep.).
 include("denoising/sino_sfjsd.jl")
 
+# Total-likelihood bilateral filter (Lee 2025) on a projection-domain basis pair: neighbours
+# are weighted by how well they explain the centre ray's summed Poisson counts.
+# Photon-counting only.
+include("denoising/tlbf.jl")
+
 # Phantom-mask helpers — recon-space resample + FFT-Gaussian erosion.
 # Used by Mono+ phantom_mask kwarg + edge-mask post-processing.
 include("reconstruction/vmi/phantom_mask.jl")
@@ -339,5 +344,10 @@ include("reconstruction/vmi/image_domain_decomp.jl")
 # scanner Dicts of measured rod HUs at relevant kVp / VMI energies, plus
 # iodine_calibration_rods / calcium_calibration_rods helpers.
 include("reconstruction/vmi/clinical_calibrations.jl")
+
+# K-channel projection-domain profile-likelihood decomposition (iodine, water) and the VMI
+# chain built on it: count-domain row/channel reduction → decomposition → T-LBF → anti-aliased
+# FDK → Kalender ACNR → two-basis synthesis.  The published estimator of notebooks 03/04/12.
+include("reconstruction/vmi/nchannel.jl")
 
 end # module

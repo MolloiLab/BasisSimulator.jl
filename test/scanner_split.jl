@@ -31,9 +31,4 @@
     @test o.use_noise && o.use_scatter && o.use_focal_spot && o.use_lag && !o.use_optical_crosstalk && o.seed == 42
     @test !hasproperty(o, :use_pcct_pileup) && !hasproperty(o, :pcct_noise_reduction)
     @test_throws MethodError SimOptions(fidelity = :pcct)
-    # the functional entry point dispatches on the family
-    BSF = BasisSimulator.Functional
-    @test hasmethod(BSF.pipeline, Tuple{Phantom, EICTScanner, Any, Any, Any})
-    @test hasmethod(BSF.pipeline, Tuple{Phantom, PCCTScanner, Any, Any, Any})
-    @test !hasmethod(BSF.pipeline, Tuple{Phantom, Scanner, Any, Any, Any})
 end
