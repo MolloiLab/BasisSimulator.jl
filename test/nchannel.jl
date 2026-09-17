@@ -105,6 +105,19 @@ end
     @test out.quality.frac_bound_water == 1 && out.quality.frac_infeasible == 1
 
     @test_throws DimensionMismatch BS.decompose_nchannel(; channels = channels[1:3], basis)
+
+    # A real spectrum grid reaches down to a few keV, where the response is exactly zero and
+    # exp(+μ_water·2) overflows Float32. Zero-response energies must not turn into 0·Inf = NaN:
+    # that would flag every ray infeasible and silently skip the bisection start.
+    E_low = vcat([3.0, 4.0], toy.E)
+    Φ_low = cat(zeros(1, 1, 2, 4), toy.Φ; dims = 3)
+    @test exp(Float32(BS.compute_mass_μ_at_energy(BS.XA.Materials.water, 3.0)) * 2.0f0) == Inf32
+    low = BS.spectral_basis(energies = E_low, response = Φ_low, I0 = toy.I0)
+    truth_A, truth_C = fill(0.05, 2, 1, 2), fill(12.0, 2, 1, 2)
+    out = BS.decompose_nchannel(; channels = _toy_channels(low, truth_A, truth_C), basis = low)
+    @test out.quality.frac_infeasible == 0 && out.quality.frac_invalid == 0
+    @test maximum(abs.(out.sino_iodine .- truth_A)) < 2.0e-4
+    @test all(isfinite, BS.total_expected_counts(truth_A, fill(-2.0, 2, 1, 2), low.Φ, low.μρ_I, low.μρ_W))
     controls = BS.NChannelControls(outer_iterations = 1, inner_iterations = 1)
     @test controls.tile_views == 8 && controls.iodine_bounds == (-0.1f0, 0.4f0)
 end

@@ -69,7 +69,9 @@ function total_expected_counts(
             rΦ = size(Φ_dev, 2) == 1 ? 1 : row
             total = 0.0f0
             @inbounds for e in 1:n_energy
-                total += Φ_dev[cΦ, rΦ, e] * exp(-μI_dev[e] * I_dev[idx] - μW_dev[e] * W_dev[idx])
+                ϕ = Φ_dev[cΦ, rΦ, e]
+                ϕ > 0.0f0 || continue       # 0 · exp(overflow) would be NaN at a few keV
+                total += ϕ * exp(-μI_dev[e] * I_dev[idx] - μW_dev[e] * W_dev[idx])
             end
             out_dev[idx] = max(total, 1.0f-6)
         end

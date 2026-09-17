@@ -400,8 +400,14 @@ function nchannel_profile_tile!(
         croot_lo, croot_hi = C_lo, C_hi
         total_lo, total_hi = 0.0f0, 0.0f0
         attainable_max, attainable_min = 0.0f0, 0.0f0
+        # Energies the channel does not respond to are skipped, here and below. It is the same
+        # sum, but a spectrum grid reaches down to a few keV where Φ is exactly zero and
+        # exp(+μ·|C_lo|) overflows Float32: 0 · Inf = NaN would poison the bracketing test and
+        # the feasibility flag for every ray (the published notebook recomputes that flag on the
+        # host in Float64 for this reason).
         for k in 1:K, e in 1:nE
             ϕ = Φ[cΦ, rΦ, e, k]
+            ϕ > 0.0f0 || continue
             total_lo += ϕ * exp(-μρ_I[e] * A - μρ_W[e] * croot_lo)
             total_hi += ϕ * exp(-μρ_I[e] * A - μρ_W[e] * croot_hi)
             attainable_max += ϕ * exp(-μρ_I[e] * A_lo - μρ_W[e] * C_lo)
@@ -414,7 +420,9 @@ function nchannel_profile_tile!(
                 mid = (croot_lo + croot_hi) / 2.0f0
                 total_mid = 0.0f0
                 for k in 1:K, e in 1:nE
-                    total_mid += Φ[cΦ, rΦ, e, k] * exp(-μρ_I[e] * A - μρ_W[e] * mid)
+                    ϕ = Φ[cΦ, rΦ, e, k]
+                    ϕ > 0.0f0 || continue
+                    total_mid += ϕ * exp(-μρ_I[e] * A - μρ_W[e] * mid)
                 end
                 if total_mid > y_total
                     croot_lo = mid
@@ -437,7 +445,9 @@ function nchannel_profile_tile!(
                 for k in 1:K
                     λ, dC = 0.0f0, 0.0f0
                     @inbounds for e in 1:nE
-                        z = Φ[cΦ, rΦ, e, k] * exp(-μρ_I[e] * A - μρ_W[e] * C)
+                        ϕ = Φ[cΦ, rΦ, e, k]
+                        ϕ > 0.0f0 || continue
+                        z = ϕ * exp(-μρ_I[e] * A - μρ_W[e] * C)
                         λ += z
                         dC -= μρ_W[e] * z
                     end
@@ -458,7 +468,9 @@ function nchannel_profile_tile!(
             for k in 1:K
                 λ, dA, dC = 0.0f0, 0.0f0, 0.0f0
                 @inbounds for e in 1:nE
-                    z = Φ[cΦ, rΦ, e, k] * exp(-μρ_I[e] * A - μρ_W[e] * C)
+                    ϕ = Φ[cΦ, rΦ, e, k]
+                    ϕ > 0.0f0 || continue
+                    z = ϕ * exp(-μρ_I[e] * A - μρ_W[e] * C)
                     λ += z
                     dA -= μρ_I[e] * z
                     dC -= μρ_W[e] * z
@@ -485,7 +497,9 @@ function nchannel_profile_tile!(
             for k in 1:K
                 λ, dC = 0.0f0, 0.0f0
                 @inbounds for e in 1:nE
-                    z = Φ[cΦ, rΦ, e, k] * exp(-μρ_I[e] * A - μρ_W[e] * C)
+                    ϕ = Φ[cΦ, rΦ, e, k]
+                    ϕ > 0.0f0 || continue
+                    z = ϕ * exp(-μρ_I[e] * A - μρ_W[e] * C)
                     λ += z
                     dC -= μρ_W[e] * z
                 end
@@ -510,7 +524,9 @@ function nchannel_profile_tile!(
         for k in 1:K
             λ, dA, dC = 0.0f0, 0.0f0, 0.0f0
             @inbounds for e in 1:nE
-                z = Φ[cΦ, rΦ, e, k] * exp(-μρ_I[e] * A - μρ_W[e] * C)
+                ϕ = Φ[cΦ, rΦ, e, k]
+                ϕ > 0.0f0 || continue
+                z = ϕ * exp(-μρ_I[e] * A - μρ_W[e] * C)
                 λ += z
                 dA -= μρ_I[e] * z
                 dC -= μρ_W[e] * z
