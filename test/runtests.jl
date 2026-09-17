@@ -21,6 +21,9 @@ const BS = BasisSimulator
     @testset "detector/" begin
         include("detector.jl")
     end
+    @testset "dose/" begin
+        include("dose.jl")
+    end
     @testset "geometry/" begin
         include("geometry.jl")
     include("scanner_split.jl")

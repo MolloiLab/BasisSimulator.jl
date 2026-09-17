@@ -109,6 +109,7 @@ mutable struct PCCTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A1 <
     pcct_detector::PhotonCountingDetector{Float64}  # PCCT detector
     mats::Vector{XA.Material}                # resolved materials
     kVp::Float64                             # max energy (kVp)
+    dose_source::DoseSource                  # the beam, for `dose_report` / `result.dose`
 end
 
 """
@@ -411,7 +412,7 @@ function create_workspace(
         _μ_table_gpu, _W_matrix_gpu, _outputs_flat, _native_outputs_flat,
         _use_pileup, scanner.pileup_correction, scanner.scatter_correction, Float64(scanner.noise_reduction), _pileup_S,
         geom, energies, weights_vec, config, pcct_detector, mats,
-        kVp
+        kVp, dose_source(scanner, protocol)
     )
     catch
         release_backend!(owned_backend)
@@ -492,6 +493,8 @@ mutable struct EICTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A2 <
     # ─── Pre-computed noise constants (scanner + spectrum derived) ───
     η_eff::T          # sum(weights_norm .* η_vec) — spectrum-averaged detector efficiency
     σ_e_photon::T     # electronic_noise / (mean_E_keV * detection_gain) — DAS electronic σ
+
+    dose_source::DoseSource  # the beam, for `dose_report` / the `dose` of every `simulate!` result
 end
 
 """
@@ -762,7 +765,8 @@ function create_eict_workspace(
         weights_norm, μ_lut_cpu, μ_lut_gpu, μ_table, μ_table_gpu, η_vec, wη_gpu_buf,
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
         geom, energies, weights_vec, config, mats, rng,
-        η_eff_T, σ_e_photon
+        η_eff_T, σ_e_photon,
+        dose_source(scanner, protocol; spectrum = spectrum_override)
     )
 end
 

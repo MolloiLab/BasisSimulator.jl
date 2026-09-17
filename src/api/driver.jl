@@ -121,6 +121,7 @@ function simulate!(
         sim_opts::SimOptions = SimOptions(),
         ;
         capture_raw_counts::Bool = true,
+        report_dose::Bool = true,
     ) where {T}
     geom = ws.geom
     energies = ws.energies
@@ -394,10 +395,13 @@ function simulate!(
     # - `pileup_S`   : MC pile-up migration matrix (`nothing` when pile-up off).
     #                  Pass into `apply_pcct_pileup_correction!` to invert
     #                  the pile-up degradation in the sinogram domain.
+    # - `dose`       : `DoseReport` of this acquisition (CTDIvol, DLP, …) from the simulated
+    #                  beam; `nothing` with `report_dose = false`.
     result = (
         pcct_sino = pcct_sino,
         I0_bins = ws.I0_bins,
         pileup_S = ws.pileup_S,
+        dose = report_dose ? dose_report(ws, protocol) : nothing,
     )
     capture_raw_counts ? merge(result, (; raw_counts)) : result
 end
@@ -411,8 +415,9 @@ end
 
 Run EICT single-kVp simulation using pre-allocated workspace buffers.
 
-Mutates `ws.sinogram` in place (the final log line-integral sinogram).
-Returns `nothing` — read `ws.sinogram` (and `ws.geom`) off the workspace.
+Mutates `ws.sinogram` in place (the final log line-integral sinogram); read it (and `ws.geom`)
+off the workspace. Returns `(; dose)`, the [`DoseReport`](@ref) of this acquisition (CTDIvol, DLP,
+…) computed from the simulated beam, or `(; dose = nothing)` with `report_dose = false`.
 
 Create the workspace with `create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)`;
 scanner-derived noise constants (`η_eff`, `σ_e_photon`) are baked into `ws` at
@@ -424,7 +429,8 @@ function simulate!(
         ws::EICTWorkspace{T},
         phantom,
         protocol::CTProtocol,
-        sim_opts::SimOptions = SimOptions(),
+        sim_opts::SimOptions = SimOptions();
+        report_dose::Bool = true,
     ) where {T}
     geom = ws.geom
     energies = ws.energies
@@ -642,7 +648,7 @@ function simulate!(
     end
 
     # BHC is decoupled — applied at notebook level
-    return nothing
+    return (; dose = report_dose ? dose_report(ws, protocol) : nothing)
 end
 
 # =============================================================================

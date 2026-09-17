@@ -124,6 +124,10 @@ include("detector/detector_efficiency.jl")
 # Bowtie filter modeling
 include("source/bowtie_filter.jl")
 
+# CT dose from the simulated beam: CTDI100 / CTDIw / CTDIvol / DLP by Monte Carlo transport of
+# the absolute source spectrum through the bowtie into the PMMA CTDI phantoms.
+include("source/dose.jl")
+
 
 # Finite focal spot modeling
 include("source/focal_spot.jl")

@@ -1,26 +1,18 @@
 """
     src/source/protocol.jl
 
-CT scan protocol definitions + validation + dose helpers + protocol
+CT scan protocol definitions + validation + protocol
 transformers.
 
   * `CTProtocol` struct — kVp / mA(s) / views / rotation_time / etc.
     Used by every notebook simulation.
   * `validate_protocol` — sanity-checks a protocol against scanner
     physical limits (kVp range, mA range, collimation vs scanner max).
-  * Dose helpers — `compute_ctdi_vol`, `compute_dlp`, `dose_report`.
-    Implements CTDIvol and DLP per the IEC 60601-2-44 / AAPM TG-200
-    definitions, scaled by a generic-scanner calibration constant.
-    Not currently consumed by any notebook but kept as the standard
-    clinical dose-reporting surface for future protocol design.
   * Protocol transformers — `constant_dose_protocol`,
     `constant_noise_protocol` — for view-count sweeps where you want
     to hold either total dose or per-view noise fixed.
 
-BasisSim-original — no upstream port for the dose formulas (different
-scanners use different vendor-specific CTDI calibration tables; the
-generic `_CTDI_CAL_CONSTANT` here is a starting point, not a clinical
-ground truth).
+Dose (CTDI100 / CTDIw / CTDIvol / DLP) lives in `source/dose.jl`, computed from the simulated beam.
 """
 
 """
@@ -178,67 +170,9 @@ function validate_protocol(protocol::CTProtocol, scanner::Scanner)
     return valid, messages
 end
 
-# =============================================================================
-# Dose Estimation (CTDI / DLP)
-# =============================================================================
+# Dose (CTDI100, CTDIw, CTDIvol, DLP) is computed from the simulated beam in `source/dose.jl`.
 
-const _CTDI_CAL_CONSTANT = 0.05  # mGy/mAs at 120 kVp (generic scanner)
-
-"""
-    compute_ctdi_vol(protocol::CTProtocol; phantom_diameter::Real=320.0) -> Float64
-
-Estimate CTDIvol (Volume CT Dose Index) in mGy.
-"""
-function compute_ctdi_vol(protocol::CTProtocol; phantom_diameter::Real = 320.0)
-    mAs = protocol.mA * protocol.rotation_time
-    kvp_factor = (protocol.kVp / 120.0)^2.5
-    size_factor = (320.0 / phantom_diameter)^2
-    return _CTDI_CAL_CONSTANT * mAs * kvp_factor * size_factor
-end
-
-"""
-    compute_dlp(protocol::CTProtocol, scan_length_cm::Real; phantom_diameter::Real=320.0) -> Float64
-
-Compute Dose-Length Product (DLP) in mGy·cm.
-"""
-function compute_dlp(protocol::CTProtocol, scan_length_cm::Real; phantom_diameter::Real = 320.0)
-    ctdi = compute_ctdi_vol(protocol; phantom_diameter)
-    return ctdi * scan_length_cm * protocol.n_rotations
-end
-
-"""
-    dose_report(protocol::CTProtocol, geom::CTGeometry, spectrum_flux_sum::Float64; ...) -> NamedTuple
-
-Generate a dose report for the given protocol and geometry.
-"""
-function dose_report(
-        protocol::CTProtocol, geom::CTGeometry, spectrum_flux_sum::Float64;
-        phantom_diameter::Real = 320.0,
-        scan_length_cm::Union{Real, Nothing} = nothing
-    )
-    I0 = compute_detector_I0(geom, protocol, spectrum_flux_sum)
-    mAs = protocol.mA * protocol.rotation_time
-    ctdi = compute_ctdi_vol(protocol; phantom_diameter)
-    sl = scan_length_cm !== nothing ? Float64(scan_length_cm) : geom.fov[3]
-    dlp = compute_dlp(protocol, sl; phantom_diameter)
-    total_photons = I0 * geom.n_cols * geom.n_rows * protocol.views
-
-    println("="^50)
-    println("CT Dose Report")
-    println("="^50)
-    println("  kVp: $(protocol.kVp), mA: $(protocol.mA), mAs: $(round(mAs, digits = 1))")
-    println("  Views: $(protocol.views), Rotation: $(protocol.rotation_time) s")
-    println("  CTDIvol: $(round(ctdi, digits = 2)) mGy, DLP: $(round(dlp, digits = 2)) mGy·cm")
-    println("  I₀/pixel/view: $(round(I0, sigdigits = 4))")
-    println("="^50)
-
-    return (
-        ctdi_vol = ctdi, dlp = dlp, I0_per_view = I0, total_photons = total_photons,
-        mAs = mAs, kVp = protocol.kVp, views = protocol.views,
-    )
-end
-
-export validate_protocol, compute_ctdi_vol, compute_dlp, dose_report
+export validate_protocol
 
 # =============================================================================
 # Constant-Dose / Constant-Noise Protocol Helpers
