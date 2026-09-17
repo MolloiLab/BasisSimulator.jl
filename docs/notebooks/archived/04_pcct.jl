@@ -138,7 +138,7 @@ scanner = let
     pixel_row_iso = (native_row_mm * bf) / magnification
     n_cols = ceil(Int, 360.0 / pixel_col_iso)
 
-    BS.Scanner(
+    BS.PCCTScanner(
         source_to_isocenter = sid,
         source_to_detector = sdd,
 
@@ -168,7 +168,6 @@ scanner = let
         detection_gain = 1.0,
         electronic_noise = 0.0,
 
-        detector_type = :photon_counting,
         n_energy_bins = 4,
         energy_thresholds = [20.0, 35.0, 55.0, 70.0],
         energy_resolution = 10.0,
@@ -205,15 +204,15 @@ protocol = BS.CTProtocol(
 md"""
 ## 4. `SimOptions` and `ReconOptions`
 
-`fidelity = :pcct` switches the simulator into the photon-counting
+`use_focal_spot = false, use_lag = false` switches the simulator into the photon-counting
 path (per-bin sinograms + DRM + Compton scatter modeling).
 """
 
 # ╔═╡ 04000005-0000-4000-8000-000000000010
 sim_opts = BS.SimOptions(
-    fidelity = :pcct,
+    use_focal_spot = false, use_lag = false,
     seed = 1234,
-    pcct_noise_reduction = 0.3,
+    noise_reduction = 0.3,
 );
 
 # ╔═╡ 04000005-0000-4000-8000-000000000020

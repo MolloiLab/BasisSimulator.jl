@@ -417,7 +417,7 @@ scanner = let
     pixel_row_iso = (native_row_mm * bf) / magnification
     n_cols = ceil(Int, 360.0 / pixel_col_iso)
 
-    BS.Scanner(
+    BS.PCCTScanner(
         source_to_isocenter = sid,
         source_to_detector = sdd,
 
@@ -448,10 +448,7 @@ scanner = let
         detector_depth = 1.6,
         fill_factor_row = 0.95,
         fill_factor_col = 0.95,
-        detection_gain = 1.0,
-        electronic_noise = 0.0,
 
-        detector_type = :photon_counting,
         n_energy_bins = 4,
         energy_thresholds = [20.0, 35.0, 55.0, 70.0],
         energy_resolution = 10.0,
@@ -462,7 +459,13 @@ scanner = let
         native_dexel_col_mm = native_col_mm,
         native_dexel_row_mm = native_row_mm,
         binning_factor = bf,
-    )
+    
+        # detector-model physics (applied inside simulate!())
+        pileup = true,               # MC pile-up forward (spectral-migration matrix S)
+        pileup_correction = true,    # model-based inverse S on the recorded bins
+        scatter_correction = true,   # model-based scatter re-estimate-and-subtract on the bins
+        noise_reduction = 0.7,     # detector-level correction surrogate (see the notes above)
+)
 end;
 
 # ╔═╡ 08030002-0000-4000-8000-000000000001
@@ -492,38 +495,25 @@ protocol = BS.CTProtocol(
 md"""
 ### 04. `SimOptions` and `ReconOptions`
 
-`fidelity = :pcct` switches the simulator into the photon-counting path
-(per-bin sinograms + DRM + Compton scatter modeling + MC pile-up).
+A `PCCTScanner` selects the photon-counting path (per-bin sinograms + DRM + Compton
+scatter modeling + MC pile-up); the detector-model toggles (`pileup`, `pileup_correction`,
+`scatter_correction`, `noise_reduction`) live on the scanner, `SimOptions` carries only the
+physics common to both detector families.
 """
 
 # ╔═╡ 08030003-0000-4000-8000-000000000010
 sim_opts = BS.SimOptions(
-    fidelity = :pcct,
     seed = 1234,
     projector = :dd_fast,  # same anti-aliased DD physics, single-pass fused kernels (~47× faster poly)
-
-    # ─── Inert for PCCT (flag exists but does nothing) ───
+    use_noise = true,      # per-bin quantum noise inside simulate!()
+    use_scatter = true,    # Compton scatter injection inside simulate!()
+    # inert on the photon-counting path (scintillator-only effects) or off by design
     use_fill_factor = false,
     use_detector_efficiency = false,
     use_optical_crosstalk = false,
     use_focal_spot = false,
     use_lag = false,
     use_heel_effect = false,
-
-    # ─── Active for PCCT ───
-    use_scatter = false,                  # EICT scatter flag — OFF (PCCT uses use_pcct_scatter)
-    use_noise = true,                     # quantum noise inside simulate!()  (src :count, nr below)
-    use_pcct_scatter = true,              # ← PCCT scatter injection, inside simulate!()
-    use_pcct_scatter_correction = true,   # ← PCCT model-based scatter correction, inside simulate!()
-    use_pcct_pileup = true,               # ← PCCT pileup forward, inside simulate!()
-    use_pcct_pileup_correction = true,    # ← PCCT pileup correction (inverse S), inside simulate!()
-    # DETECTOR-LEVEL CORRECTION SURROGATE — NOT a recon-level (QIR) stand-in
-    # (chain is pure FBP; accuracy is independent of this knob).  Stands in
-    # for the vendor's detector-side algorithms (anti-coincidence /
-    # charge-sharing event reconstruction, count-rate linearization,
-    # threshold compensation) whose degradations we Monte-Carlo simulate
-    # but whose corrections we do not implement.
-    pcct_noise_reduction = 0.7,
 )
 
 # ╔═╡ 08030003-0000-4000-8000-000000000020
@@ -543,7 +533,7 @@ Run `BS.simulate!` once on the PCCT protocol.  The simulator returns
 `(pcct_sino, I0_bins, pileup_S)` — the 4 per-bin log-line-integral
 sinograms, their matching reference photon counts, and the MC-LUT
 pile-up migration matrix `S`.  Pile-up correction is applied directly
-on the GPU bins (no-op if `use_pcct_pileup = false`), then a model-
+on the GPU bins (no-op if `PCCTScanner.pileup = false`), then a model-
 based per-bin scatter correction strips the simulator-injected scatter
 field.
 
@@ -554,7 +544,7 @@ Inside `simulate!`:
   threshold comparison in a single Monte-Carlo-derived R(E,b).
 - Pulse pileup is the **MC-LUT spectral-migration matrix S**
   (`compute_mc_pileup_matrix`).  Toggle with
-  `SimOptions(use_pcct_pileup=…)`; default ON for `:pcct`.
+  `PCCTScanner(; pileup)`; default ON.
 """
 
 # ╔═╡ 08030004-0000-4000-8000-000000000010

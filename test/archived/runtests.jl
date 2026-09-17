@@ -247,7 +247,7 @@ include("vmi_brent_parity.jl")
     # -------------------------------------------------------------------------
     @testset "Generic Scanner API" begin
         # Test default construction
-        scanner = Scanner()
+        scanner = EICTScanner()
         @test scanner isa Scanner{Float64}
         @test scanner.source_to_isocenter ≈ 540.0
         @test scanner.source_to_detector ≈ 950.0
@@ -256,7 +256,7 @@ include("vmi_brent_parity.jl")
         @test scanner.detector_shape == CURVED_DETECTOR
 
         # Test custom construction with kwargs
-        custom_scanner = Scanner(
+        custom_scanner = EICTScanner(
             source_to_isocenter = 626.0,
             source_to_detector = 1097.0,
             detector_rows = 256,
@@ -270,7 +270,7 @@ include("vmi_brent_parity.jl")
         @test custom_scanner.target_angle ≈ 10.0
 
         # Test flat panel scanner
-        flat_scanner = Scanner(
+        flat_scanner = EICTScanner(
             detector_shape = FLAT_DETECTOR,
             detector_rows = 512,
             detector_cols = 512,
@@ -283,24 +283,24 @@ include("vmi_brent_parity.jl")
 
     @testset "Scanner Validation" begin
         # Valid scanner
-        valid_scanner = Scanner()
+        valid_scanner = EICTScanner()
         is_valid, msgs = validate_scanner(valid_scanner)
         @test is_valid == true
         @test any(m -> startswith(m, "INFO:"), msgs)  # Should have INFO message
 
         # Invalid: SDD <= SID
-        invalid_scanner = Scanner(source_to_detector = 500.0)  # Default SID is 540
+        invalid_scanner = EICTScanner(source_to_detector = 500.0)  # Default SID is 540
         is_valid, msgs = validate_scanner(invalid_scanner)
         @test is_valid == false
         @test any(m -> contains(m, "source_to_detector"), msgs)
 
         # Invalid: negative geometry
-        bad_scanner = Scanner(source_to_isocenter = -100.0)
+        bad_scanner = EICTScanner(source_to_isocenter = -100.0)
         is_valid, msgs = validate_scanner(bad_scanner)
         @test is_valid == false
 
         # Invalid: fill factor out of range
-        bad_ff_scanner = Scanner(fill_factor_row = 1.5)
+        bad_ff_scanner = EICTScanner(fill_factor_row = 1.5)
         is_valid, msgs = validate_scanner(bad_ff_scanner)
         @test is_valid == false
         @test any(m -> contains(m, "fill_factor_row"), msgs)
@@ -308,7 +308,7 @@ include("vmi_brent_parity.jl")
 
     @testset "Scanner to CTGeometry Conversion" begin
         # Create scanner
-        scanner = Scanner(
+        scanner = EICTScanner(
             source_to_isocenter = 540.0,  # mm
             source_to_detector = 950.0,    # mm
             detector_rows = 64,
@@ -333,7 +333,7 @@ include("vmi_brent_parity.jl")
     end
 
     @testset "Scanner Summary Print" begin
-        scanner = Scanner()
+        scanner = EICTScanner()
         # Just verify it doesn't error by calling the function
         # We can't easily capture output in all Julia versions, so just verify no throw
         @test begin
@@ -360,14 +360,14 @@ include("vmi_brent_parity.jl")
 
         @testset "Reference Geometry Scale = 1.0" begin
             # Default scanner (reference geometry) should give scale ≈ 1.0
-            scanner_ref = Scanner()  # SID=540, SDD=950
+            scanner_ref = EICTScanner()  # SID=540, SDD=950
             scale = compute_scatter_geometry_scale(scanner_ref)
             @test scale ≈ 1.0 atol=0.01
         end
 
         @testset "Larger Air Gap Reduces Scatter" begin
             # GE Revolution-like scanner (larger air gap → less scatter)
-            scanner_ge = Scanner(source_to_isocenter=626.0, source_to_detector=1097.0)
+            scanner_ge = EICTScanner(source_to_isocenter=626.0, source_to_detector=1097.0)
             air_gap_ge = scanner_ge.source_to_detector - scanner_ge.source_to_isocenter
             @test air_gap_ge ≈ 471.0
 
@@ -379,7 +379,7 @@ include("vmi_brent_parity.jl")
 
         @testset "Smaller Air Gap Increases Scatter" begin
             # Compact scanner (smaller air gap → more scatter)
-            scanner_compact = Scanner(
+            scanner_compact = EICTScanner(
                 source_to_isocenter=500.0,
                 source_to_detector=700.0  # Air gap = 200mm
             )
@@ -394,31 +394,31 @@ include("vmi_brent_parity.jl")
             default_mag = 950.0 / 540.0
 
             # 1.0 mm at isocenter → face = 1.0 * mag → fwhm = 50 / face
-            scanner_1mm = Scanner(detector_col_size=1.0)
+            scanner_1mm = EICTScanner(detector_col_size=1.0)
             fwhm_1mm = compute_scatter_kernel_fwhm_pixels(scanner_1mm)
             @test fwhm_1mm ≈ 50.0 / (1.0 * default_mag) atol=0.01
 
             # 0.5 mm at isocenter → double fwhm in pixels
-            scanner_05mm = Scanner(detector_col_size=0.5)
+            scanner_05mm = EICTScanner(detector_col_size=0.5)
             fwhm_05mm = compute_scatter_kernel_fwhm_pixels(scanner_05mm)
             @test fwhm_05mm ≈ 50.0 / (0.5 * default_mag) atol=0.01
 
             # 2.0 mm at isocenter → half fwhm in pixels
-            scanner_2mm = Scanner(detector_col_size=2.0)
+            scanner_2mm = EICTScanner(detector_col_size=2.0)
             fwhm_2mm = compute_scatter_kernel_fwhm_pixels(scanner_2mm)
             @test fwhm_2mm ≈ 50.0 / (2.0 * default_mag) atol=0.01
         end
 
         @testset "Geometry-Aware Scatter Model" begin
             # Reference geometry
-            scanner_ref = Scanner()
+            scanner_ref = EICTScanner()
             model_ref = geometry_aware_scatter_model(scanner_ref)
             @test model_ref.scatter_coefficient ≈ 0.025 atol=0.001
             @test model_ref.kernel_fwhm ≈ 50.0 / (950.0 / 540.0) atol=0.01
             @test model_ref.scale_factor ≈ 1.0
 
             # GE Revolution-like (larger air gap)
-            scanner_ge = Scanner(
+            scanner_ge = EICTScanner(
                 source_to_isocenter=626.0,
                 source_to_detector=1097.0,
                 detector_col_size=0.5
@@ -435,7 +435,7 @@ include("vmi_brent_parity.jl")
         end
 
         @testset "Geometry-Aware Scatter Correction" begin
-            scanner_ref = Scanner()
+            scanner_ref = EICTScanner()
             corr_ref = geometry_aware_scatter_correction(scanner_ref)
             # Uses SCATTER_REF_COEFFICIENT (0.025) to match scatter addition
             @test corr_ref.correction_coefficient ≈ SCATTER_REF_COEFFICIENT atol=0.001
@@ -444,7 +444,7 @@ include("vmi_brent_parity.jl")
             @test corr_ref.kernel_fwhm ≈ 50.0 / (950.0 / 540.0) atol=0.1
 
             # Larger air gap → less correction needed
-            scanner_ge = Scanner(source_to_isocenter=626.0, source_to_detector=1097.0)
+            scanner_ge = EICTScanner(source_to_isocenter=626.0, source_to_detector=1097.0)
             corr_ge = geometry_aware_scatter_correction(scanner_ge)
             @test corr_ge.correction_coefficient < SCATTER_REF_COEFFICIENT
         end
@@ -6138,7 +6138,7 @@ include("vmi_brent_parity.jl")
     @testset "PCCT Scanner Bridge" begin
 
         @testset "Default Scanner is EID" begin
-            scanner = Scanner()
+            scanner = EICTScanner()
             @test scanner.detector_type == :energy_integrating
             @test scanner.n_energy_bins == 1
             @test isempty(scanner.energy_thresholds)
@@ -6150,8 +6150,7 @@ include("vmi_brent_parity.jl")
         end
 
         @testset "PCCT Scanner Construction" begin
-            scanner = Scanner(
-                detector_type = :photon_counting,
+            scanner = PCCTScanner(
                 n_energy_bins = 4,
                 energy_thresholds = [20.0, 35.0, 55.0, 70.0],
                 energy_resolution = 10.0,
@@ -6171,46 +6170,41 @@ include("vmi_brent_parity.jl")
 
         @testset "PCCT Validation Errors" begin
             # Missing energy_thresholds
-            @test_throws ErrorException Scanner(
-                detector_type = :photon_counting,
+            @test_throws ErrorException PCCTScanner(
                 n_energy_bins = 4,
                 energy_thresholds = Float64[]
             )
 
             # n_energy_bins mismatch
-            @test_throws ErrorException Scanner(
-                detector_type = :photon_counting,
+            @test_throws ErrorException PCCTScanner(
                 n_energy_bins = 3,
                 energy_thresholds = [20.0, 35.0, 55.0, 70.0]
             )
 
             # Unsorted thresholds
-            @test_throws ErrorException Scanner(
-                detector_type = :photon_counting,
+            @test_throws ErrorException PCCTScanner(
                 n_energy_bins = 4,
                 energy_thresholds = [70.0, 55.0, 35.0, 20.0]
             )
 
             # Invalid pixel_mode
-            @test_throws ErrorException Scanner(
-                detector_type = :photon_counting,
+            @test_throws ErrorException PCCTScanner(
                 n_energy_bins = 4,
                 energy_thresholds = [20.0, 35.0, 55.0, 70.0],
                 pixel_mode = :invalid
             )
 
             # Invalid detector_type
-            @test_throws ErrorException Scanner(
+            @test_throws ErrorException EICTScanner(
                 detector_type = :invalid_type
             )
         end
 
         @testset "is_pcct helper" begin
-            eid_scanner = Scanner()
+            eid_scanner = EICTScanner()
             @test is_pcct(eid_scanner) == false
 
-            pcct_scanner = Scanner(
-                detector_type = :photon_counting,
+            pcct_scanner = PCCTScanner(
                 n_energy_bins = 2,
                 energy_thresholds = [20.0, 50.0]
             )
@@ -6276,7 +6270,7 @@ include("vmi_brent_parity.jl")
             @test detector.electronic_noise_keV ≈ 0.0
 
             # Non-PCCT scanner should assert
-            eid_scanner = Scanner()
+            eid_scanner = EICTScanner()
             @test_throws AssertionError BasisSimulator._build_pcct_detector(eid_scanner)
         end
         =#
@@ -6300,7 +6294,7 @@ include("vmi_brent_parity.jl")
         #=
         @testset "Backward Compatibility" begin
             # Existing Scanner construction without PCCT kwargs must work unchanged
-            scanner = Scanner(
+            scanner = EICTScanner(
                 source_to_isocenter = 626.0,
                 source_to_detector = 1097.0,
                 detector_rows = 256,
@@ -6328,7 +6322,7 @@ include("vmi_brent_parity.jl")
         @testset "PCCT Fields Ignored for EID" begin
             # When detector_type is :energy_integrating, PCCT fields should be set to defaults
             # but not cause any issues
-            scanner = Scanner(detector_type = :energy_integrating)
+            scanner = EICTScanner(detector_type = :energy_integrating)
             @test scanner.n_energy_bins == 1
             @test isempty(scanner.energy_thresholds)
             @test scanner.energy_resolution ≈ 0.0
@@ -6338,8 +6332,7 @@ include("vmi_brent_parity.jl")
 
         @testset "PCCT Scanner with CZT and Si" begin
             # CZT scanner
-            scanner_czt = Scanner(
-                detector_type = :photon_counting,
+            scanner_czt = PCCTScanner(
                 detector_material = :czt,
                 n_energy_bins = 4,
                 energy_thresholds = [20.0, 35.0, 55.0, 70.0]
@@ -6349,8 +6342,7 @@ include("vmi_brent_parity.jl")
             @test detector_czt.material == CZT_MATERIAL
 
             # Si scanner (deep-silicon, thick crystal needed)
-            scanner_si = Scanner(
-                detector_type = :photon_counting,
+            scanner_si = PCCTScanner(
                 detector_material = :Si,
                 detector_depth = 30.0,  # Si needs thick crystal
                 n_energy_bins = 8,
@@ -6372,7 +6364,7 @@ include("vmi_brent_parity.jl")
 
         # Small test phantom and geometry for all FP tests
         phantom = create_gammex_472(n_voxels=16, n_slices=4, fov_cm=20.0, z_cm=2.0)
-        scanner = Scanner(
+        scanner = EICTScanner(
             source_to_isocenter = 595.0,
             source_to_detector = 1085.5,
             detector_rows = 4,
@@ -6751,7 +6743,7 @@ include("vmi_brent_parity.jl")
 
         # Create test sinogram data for noise/decomp tests
         phantom = create_gammex_472(n_voxels=16, n_slices=4, fov_cm=20.0, z_cm=2.0)
-        scanner = Scanner(
+        scanner = EICTScanner(
             source_to_isocenter = 595.0,
             source_to_detector = 1085.5,
             detector_rows = 4,

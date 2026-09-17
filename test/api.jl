@@ -60,7 +60,7 @@ function _toy_scan(;
         rotation_time = 1.0,
         views = 1000,
     )
-    scanner = BS.Scanner(
+    scanner = BS.EICTScanner(
         source_to_isocenter = SAD_mm,
         source_to_detector = SDD_mm,
         detector_cols = n_cols,
@@ -89,53 +89,40 @@ end
 # -----------------------------------------------------------------------------
 _ts("entering SimOptions testset")
 @testset "SimOptions" begin
-    @testset "default fidelity = :eict; use_* presets" begin
+    @testset "defaults" begin
         opts = BS.SimOptions()
         @test opts.use_fill_factor === true
         @test opts.use_detector_efficiency === true
         @test opts.use_scatter === true
         # optical_crosstalk defaults to false because no stable post-hoc
-        # correction exists yet (see src/api/options.jl preset comment).
+        # correction exists yet (see src/api/options.jl).
         @test opts.use_optical_crosstalk === false
         @test opts.use_focal_spot === true
         @test opts.use_noise === true
         @test opts.use_lag === true
         @test opts.use_heel_effect === true
-        @test opts.use_pcct_pileup === false   # off in :eict preset
-        @test opts.pcct_noise_reduction == 0.0
         @test opts.seed == 42
         @test opts.detector_efficiency_mode == :auto
     end
 
-    @testset ":pcct preset enables use_pcct_pileup" begin
-        opts = BS.SimOptions(fidelity = :pcct)
-        @test opts.use_pcct_pileup === true
-        # Other physics still on
-        @test opts.use_noise === true
-        @test opts.use_scatter === true
-    end
-
-    @testset "per-effect kwarg overrides preset" begin
-        opts = BS.SimOptions(fidelity = :eict, use_scatter = false, use_noise = false)
+    @testset "per-effect kwargs" begin
+        opts = BS.SimOptions(use_scatter = false, use_noise = false)
         @test opts.use_scatter === false
         @test opts.use_noise === false
-        # Untouched toggles still follow the preset
         @test opts.use_fill_factor === true
-
-        opts2 = BS.SimOptions(fidelity = :pcct, use_pcct_pileup = false)
-        @test opts2.use_pcct_pileup === false
     end
 
-    @testset "fidelity field is NOT stored on the struct (kwarg-only)" begin
-        # Confirms the dead-field cleanup: fidelity drives presets in the
-        # ctor but is not retained as a runtime field anymore.
+    @testset "detector-specific physics is not a SimOptions concern" begin
         @test !(:fidelity in fieldnames(BS.SimOptions))
+        @test !any(f -> occursin("pcct", String(f)), fieldnames(BS.SimOptions))
+        @test_throws MethodError BS.SimOptions(; pileup = true)     # PCCTScanner's, not SimOptions'
     end
 
-    @testset "pcct_noise_reduction clamps to [0, 1]" begin
-        @test BS.SimOptions(pcct_noise_reduction = -0.5).pcct_noise_reduction == 0.0
-        @test BS.SimOptions(pcct_noise_reduction = 0.7).pcct_noise_reduction ≈ 0.7
-        @test BS.SimOptions(pcct_noise_reduction = 1.5).pcct_noise_reduction == 1.0
+    @testset "PCCTScanner noise_reduction is validated" begin
+        thr = [20.0, 50.0, 80.0, 110.0]
+        @test BS.PCCTScanner(energy_thresholds = thr, noise_reduction = 0.7).noise_reduction ≈ 0.7
+        @test_throws ErrorException BS.PCCTScanner(energy_thresholds = thr, noise_reduction = -0.5)
+        @test_throws ErrorException BS.PCCTScanner(energy_thresholds = thr, noise_reduction = 1.5)
     end
 
     @testset "seed accepts Int or nothing" begin
@@ -151,15 +138,12 @@ _ts("entering SimOptions testset")
 
     @testset "projector defaults to :dd_fast, accepts :dd/:siddon, validates" begin
         @test BS.SimOptions().projector == :dd_fast
-        @test BS.SimOptions(fidelity = :pcct).projector == :dd_fast
+        @test BS.SimOptions(use_focal_spot = false, use_lag = false).projector == :dd_fast
         @test BS.SimOptions(projector = :dd).projector == :dd            # deprecated, still accepted
         @test BS.SimOptions(projector = :siddon).projector == :siddon
         @test_throws ArgumentError BS.SimOptions(projector = :bogus)
     end
 
-    @testset "unknown fidelity errors with a clear message" begin
-        @test_throws ErrorException BS.SimOptions(fidelity = :totally_made_up)
-    end
 end
 
 # -----------------------------------------------------------------------------
@@ -295,33 +279,31 @@ end
 #   fallback — `pcct_forward_project` now hardcodes the MC DRM path.
 # - Always uses MC-LUT spectral-migration matrix S for pulse pileup
 #   (`compute_mc_pileup_matrix`) — no analytical Taguchi count factor.
-# - Pileup application is gated on `sim_opts.use_pcct_pileup` (default true).
+# - Pileup application is gated on `PCCTScanner.pileup` (default true).
 # - Returns `(pcct_sino, I0_bins)` — bin-combine + scatter correction live
 #   at the notebook level.
 # -----------------------------------------------------------------------------
-function _toy_pcct_setup(; use_pcct_pileup = true, kwargs...)
-    scanner = BS.Scanner(
+function _toy_pcct_setup(; pileup = true, kwargs...)
+    scanner = BS.PCCTScanner(
         source_to_isocenter = 540.0,
         source_to_detector = 1080.0,
         detector_rows = 8,
         detector_cols = 64,
         detector_row_size = 1.0,
         detector_col_size = 1.0,
-        detector_type = :photon_counting,
         detector_material = :CdTe,
         detector_depth = 1.6,
         n_energy_bins = 4,
         energy_thresholds = [20.0, 35.0, 55.0, 70.0],
         dead_time_ns = 25.0,
+        pileup = pileup,
     )
     # mAs-per-view kept near nb04 (~0.07 mAs/view) so the MC pile-up trial
     # samples a realistic number of photon arrivals (~1e7 per trial), not 1e11.
     protocol = BS.CTProtocol(mA = 2.5, kVp = 120.0, views = 16, rotation_time = 0.5)
     sim_opts = BS.SimOptions(;
-        fidelity = :pcct,
         use_noise = false, use_scatter = false, use_lag = false,
         use_focal_spot = false, use_optical_crosstalk = false,
-        use_pcct_pileup = use_pcct_pileup,
         kwargs...
     )
     recon_opts = BS.ReconOptions(matrix_size = (32, 32, 4), fov_cm = 20.0)
@@ -375,7 +357,7 @@ end
         _ts("  simulate! returned")
         # Return tuple — pcct_sino + I0_bins + pileup_S + raw_counts
         # (combine/scatter decoupled; raw counts captured by default).
-        # pileup_S is `nothing` when use_pcct_pileup=false.
+        # pileup_S is `nothing` when pileup=false.
         @test propertynames(res) == (:pcct_sino, :I0_bins, :pileup_S, :raw_counts)
         @test length(res.pcct_sino.bins) == 4
         @test length(res.I0_bins) == 4
@@ -409,7 +391,7 @@ end
         # are BIT-EXACT integer Poisson realizations captured at the
         # sampling site — true zeros preserved (the floor at 1 lives only
         # in the log-domain bins).
-        mm = _toy_pcct_setup(use_pcct_pileup = false, use_noise = true)
+        mm = _toy_pcct_setup(pileup = false, use_noise = true)
         res_mm = BS.simulate!(mm.ws, mm.phantom, mm.protocol, mm.sim_opts)
         for (b, raw) in enumerate(res_mm.raw_counts)
             arr = Float64.(Array(raw))
@@ -430,14 +412,14 @@ _ts("entering simulate!(PCCTWorkspace) — MC-LUT pileup wiring testset")
         @warn "Skipping PCCT integration test: no GPU backend."
     else
         _ts("  workspace ON")
-        on = _toy_pcct_setup(use_pcct_pileup = true)
+        on = _toy_pcct_setup(pileup = true)
         _ts("  workspace OFF")
-        off = _toy_pcct_setup(use_pcct_pileup = false)
+        off = _toy_pcct_setup(pileup = false)
         _ts("  workspaces built")
 
         # Workspace state reflects the toggle.
-        @test on.ws.use_pcct_pileup === true
-        @test off.ws.use_pcct_pileup === false
+        @test on.ws.pileup === true
+        @test off.ws.pileup === false
         @test on.ws.pileup_S isa Matrix{Float64}
         @test size(on.ws.pileup_S) == (4, 4)
         @test off.ws.pileup_S === nothing
@@ -580,7 +562,7 @@ end
 #   `sino_noisy_out` field.
 # -----------------------------------------------------------------------------
 function _toy_eict_setup(; use_noise = false, use_scatter = false, kwargs...)
-    scanner = BS.Scanner(
+    scanner = BS.EICTScanner(
         source_to_isocenter = 540.0,
         source_to_detector = 1080.0,
         detector_rows = 8,
@@ -594,7 +576,6 @@ function _toy_eict_setup(; use_noise = false, use_scatter = false, kwargs...)
     )
     protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 16, rotation_time = 0.5)
     sim_opts = BS.SimOptions(;
-        fidelity = :eict,
         use_noise = use_noise, use_scatter = use_scatter,
         use_lag = false, use_focal_spot = false, use_optical_crosstalk = false,
         kwargs...
@@ -742,7 +723,7 @@ end
 #   - `gecatsim/pyfiles/Resample_Spectrum_Bowtie_FlatFilter.py`     (spectrum × bowtie)
 # -----------------------------------------------------------------------------
 function _toy_eict_scanner_with_bowtie()
-    return BS.Scanner(
+    return BS.EICTScanner(
         source_to_isocenter = 540.0,
         source_to_detector = 1080.0,
         detector_rows = 4,
@@ -761,7 +742,7 @@ _ts("entering resolve_source_spectrum_without_bowtie testset")
 @testset "resolve_source_spectrum_without_bowtie" begin
     scanner = _toy_eict_scanner_with_bowtie()
     protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 16, rotation_time = 0.5)
-    sim_opts = BS.SimOptions(; fidelity = :eict)
+    sim_opts = BS.SimOptions(; )
 
     e, w = BS.resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner = scanner)
 
@@ -783,7 +764,7 @@ _ts("entering apply_bowtie_to_spectrum testset")
     scanner = _toy_eict_scanner_with_bowtie()
     protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 16, rotation_time = 0.5)
     geom = BS.CTGeometry(scanner; n_angles = protocol.views, fov_cm = 20.0, z_cm = 5.0)
-    sim_opts = BS.SimOptions(; fidelity = :eict)
+    sim_opts = BS.SimOptions(; )
 
     e, w_1d = BS.resolve_source_spectrum_without_bowtie(sim_opts, protocol; scanner = scanner)
     n_E = length(e)
@@ -803,7 +784,7 @@ _ts("entering apply_bowtie_to_spectrum testset")
     end
 
     @testset "scanner with no bowtie → 1D normalized spectrum (regardless of flag)" begin
-        no_bowtie = BS.Scanner(
+        no_bowtie = BS.EICTScanner(
             source_to_isocenter = 540.0,
             source_to_detector = 1080.0,
             detector_rows = 4,
@@ -852,7 +833,7 @@ _ts("entering apply_bowtie_to_spectrum testset")
         # the bowtie shape (cm-scale thickness vs. fan angle) to differ
         # measurably between center and edge.  Notebook scanners use ~800
         # columns at ~0.6 mm, ~25° fan.  Mirror that.
-        wide = BS.Scanner(
+        wide = BS.EICTScanner(
             source_to_isocenter = 540.0,
             source_to_detector = 1080.0,
             detector_rows = 4,
@@ -886,7 +867,7 @@ _ts("entering resolve_source_spectrum_with_bowtie testset")
     scanner = _toy_eict_scanner_with_bowtie()
     protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 16, rotation_time = 0.5)
     geom = BS.CTGeometry(scanner; n_angles = protocol.views, fov_cm = 20.0, z_cm = 5.0)
-    sim_opts = BS.SimOptions(; fidelity = :eict)
+    sim_opts = BS.SimOptions(; )
 
     @testset "composes _without_bowtie + apply_bowtie_to_spectrum" begin
         # The wrapper is just a composition — verify it produces the same
@@ -928,7 +909,7 @@ end
 _ts("entering build_physics_config testset")
 @testset "build_physics_config" begin
     function _scanner_with_full_hardware()
-        BS.Scanner(
+        BS.EICTScanner(
             source_to_isocenter = 540.0,
             source_to_detector = 1080.0,
             detector_rows = 4,
@@ -952,7 +933,6 @@ _ts("entering build_physics_config testset")
     @testset "all toggles off → all-nothing PhysicsConfig" begin
         sc = _scanner_with_full_hardware()
         opts = BS.SimOptions(;
-            fidelity = :eict,
             use_fill_factor = false, use_detector_efficiency = false,
             use_scatter = false, use_optical_crosstalk = false,
             use_focal_spot = false, use_noise = false, use_lag = false,
@@ -972,7 +952,7 @@ _ts("entering build_physics_config testset")
         sc = _scanner_with_full_hardware()
         # optical_crosstalk defaults to false in :eict preset, opt in explicitly
         # to exercise the type wiring for that field.
-        opts = BS.SimOptions(; fidelity = :eict, use_optical_crosstalk = true)
+        opts = BS.SimOptions(; use_optical_crosstalk = true)
         cfg = BS.build_physics_config(sc, opts, energies, weights)
         @test cfg.fill_factor isa BS.FillFactorModel
         @test cfg.detector_efficiency isa BS.DetectorEfficiency
@@ -989,7 +969,7 @@ _ts("entering build_physics_config testset")
         es = [40.0, 60.0, 100.0]
         ws = [1.0, 3.0, 1.0]
         expected_mean = sum(es .* ws) / sum(ws)
-        opts = BS.SimOptions(; fidelity = :eict, seed = 4242)
+        opts = BS.SimOptions(; seed = 4242)
         cfg = BS.build_physics_config(sc, opts, es, ws)
         @test cfg.energy_keV ≈ expected_mean
         @test cfg.noise_seed == 4242
@@ -997,21 +977,21 @@ _ts("entering build_physics_config testset")
 
     @testset "fill_factor: scanner fields used when both >0" begin
         sc = _scanner_with_full_hardware()    # 0.85 × 0.92
-        opts = BS.SimOptions(; fidelity = :eict)
+        opts = BS.SimOptions(; )
         cfg = BS.build_physics_config(sc, opts, energies, weights)
         @test cfg.fill_factor.row_fill ≈ 0.85
         @test cfg.fill_factor.col_fill ≈ 0.92
     end
 
     @testset "fill_factor: zero hardware → factory fallback" begin
-        sc = BS.Scanner(
+        sc = BS.EICTScanner(
             source_to_isocenter = 540.0, source_to_detector = 1080.0,
             detector_rows = 4, detector_cols = 32,
             detector_row_size = 1.0, detector_col_size = 1.0,
             detector_material = :lumex, detector_depth = 3.0,
             fill_factor_row = 0.0, fill_factor_col = 0.0,    # ← unset
         )
-        opts = BS.SimOptions(; fidelity = :eict)
+        opts = BS.SimOptions(; )
         cfg = BS.build_physics_config(sc, opts, energies, weights)
         @test cfg.fill_factor isa BS.FillFactorModel
         # Factory fill_factor_standard returns a populated model — non-zero.
@@ -1021,7 +1001,7 @@ _ts("entering build_physics_config testset")
 
     @testset "detector_efficiency: lumex → gemstone branch" begin
         sc = _scanner_with_full_hardware()    # :lumex, depth 3.0
-        opts = BS.SimOptions(; fidelity = :eict, detector_efficiency_mode = :auto)
+        opts = BS.SimOptions(; detector_efficiency_mode = :auto)
         cfg = BS.build_physics_config(sc, opts, energies, weights)
         # gemstone factory tags the material distinctly from a generic
         # `DetectorEfficiency(name, depth, 1.0)` direct ctor.  At minimum the
@@ -1030,28 +1010,27 @@ _ts("entering build_physics_config testset")
     end
 
     @testset "detector_efficiency: PCCT scanner skips EICT scintillator branch" begin
-        # PCCT scanners declare detector_material=:cdte and detector_type=:photon_counting.
+        # PCCT scanners are PCCTScanner(detector_material = :cdte, ...).
         # The EICT scintillator branch (which only supports :lumex) must NOT
         # fire for them — their detector physics lives in the MC DRM consumed
         # by `pcct_forward_project`, not in PhysicsConfig.detector_efficiency.
-        sc = BS.Scanner(
+        sc = BS.PCCTScanner(
             source_to_isocenter = 540.0, source_to_detector = 1080.0,
             detector_rows = 4, detector_cols = 32,
             detector_row_size = 0.5, detector_col_size = 0.5,
-            detector_type = :photon_counting,
             detector_material = :cdte,
             detector_depth = 1.6,
             n_energy_bins = 4,
             energy_thresholds = [20.0, 35.0, 55.0, 70.0],
         )
-        opts = BS.SimOptions(; fidelity = :pcct)
+        opts = BS.SimOptions(; use_focal_spot = false, use_lag = false)
         cfg = BS.build_physics_config(sc, opts, energies, weights)
         @test cfg.detector_efficiency === nothing   # skipped for PCCT
     end
 
     @testset "focal_spot: scanner fields used when both >0" begin
         sc = _scanner_with_full_hardware()
-        opts = BS.SimOptions(; fidelity = :eict)
+        opts = BS.SimOptions(; )
         cfg = BS.build_physics_config(sc, opts, energies, weights)
         @test cfg.focal_spot.width ≈ 1.2
         @test cfg.focal_spot.length ≈ 1.0
@@ -1059,7 +1038,7 @@ _ts("entering build_physics_config testset")
 
     @testset "heel_effect: target_angle pulled from scanner" begin
         sc = _scanner_with_full_hardware()    # 7.5°
-        opts = BS.SimOptions(; fidelity = :eict)
+        opts = BS.SimOptions(; )
         cfg = BS.build_physics_config(sc, opts, energies, weights)
         @test cfg.heel_effect isa BS.HeelEffect
         @test cfg.heel_effect.anode_angle_deg ≈ 7.5
@@ -1067,7 +1046,7 @@ _ts("entering build_physics_config testset")
 
     @testset "scatter: phantom-diameter scaling kicks in when phantom passed" begin
         sc = _scanner_with_full_hardware()
-        opts = BS.SimOptions(; fidelity = :eict)
+        opts = BS.SimOptions(; )
         # No phantom: scatter still built, just without size-aware scaling.
         cfg_nopath = BS.build_physics_config(sc, opts, energies, weights)
         @test cfg_nopath.scatter isa BS.ScatterModel
@@ -1096,7 +1075,7 @@ _ts("entering reconstruct!(FDKReconWorkspace) testset")
     # enough to exercise the pipeline; this isn't a quality test, it's a
     # contract test.
     function _toy_fdk_setup(; matrix_size = (16, 16, 4))
-        scanner = BS.Scanner(
+        scanner = BS.EICTScanner(
             source_to_isocenter = 540.0, source_to_detector = 1080.0,
             detector_rows = 8, detector_cols = 32,
             detector_row_size = 1.0, detector_col_size = 1.0,
@@ -1219,7 +1198,7 @@ end
 _ts("entering reconstruct!(HIRReconWorkspace) testset")
 @testset "reconstruct!(HIRReconWorkspace)" begin
     function _toy_hir_setup(; matrix_size = (16, 16, 4), strength = 60)
-        scanner = BS.Scanner(
+        scanner = BS.EICTScanner(
             source_to_isocenter = 540.0, source_to_detector = 1080.0,
             detector_rows = 8, detector_cols = 32,
             detector_row_size = 1.0, detector_col_size = 1.0,
@@ -1310,7 +1289,7 @@ _ts("entering reconstruct!(HIRReconWorkspace) testset")
         # reconstruction slab. Cone rays through the terminal output slices
         # therefore contain real attenuation outside the output ROI. HIR must
         # model that attenuation internally rather than assume exterior air.
-        scanner = BS.Scanner(
+        scanner = BS.EICTScanner(
             source_to_isocenter = 610.0, source_to_detector = 1113.0,
             detector_rows = 24, detector_cols = 64,
             detector_row_size = 0.353, detector_col_size = 1.0,
@@ -1398,7 +1377,7 @@ _ts("entering reconstruct!(HIRReconWorkspace) testset")
 
 
     @testset "helical HIR exact-DD smoke" begin
-        scanner = BS.Scanner(
+        scanner = BS.EICTScanner(
             source_to_isocenter = 540.0, source_to_detector = 1080.0,
             detector_rows = 8, detector_cols = 32,
             detector_row_size = 1.0, detector_col_size = 1.0,
@@ -1544,8 +1523,8 @@ _ts("entering Workspace ctors — PCCT field invariants testset")
         @test length(ws.thresholds_T) == s.scanner.n_energy_bins
         @test length(ws.η) == length(ws.energies)
 
-        # Pile-up wiring (matches sim_opts.use_pcct_pileup default = true for :pcct).
-        @test ws.use_pcct_pileup === true
+        # Pile-up wiring (PCCTScanner.pileup default = true).
+        @test ws.pileup === true
         @test ws.pileup_S isa Matrix{Float64}
         @test size(ws.pileup_S) == (s.scanner.n_energy_bins, s.scanner.n_energy_bins)
 
@@ -1564,12 +1543,12 @@ _ts("entering Workspace ctors — PCCT field invariants testset")
 end
 
 _ts("entering Workspace ctors — PCCT pile-up off testset")
-@testset "create_workspace (PCCT) — use_pcct_pileup=false skips pileup_S" begin
+@testset "create_workspace (PCCT) — pileup=false skips pileup_S" begin
     if !HAS_GPU
         @warn "Skipping PCCT workspace ctor test: no GPU backend."
     else
-        s = _toy_pcct_setup(use_pcct_pileup = false)
-        @test s.ws.use_pcct_pileup === false
+        s = _toy_pcct_setup(pileup = false)
+        @test s.ws.pileup === false
         @test s.ws.pileup_S === nothing
     end
 end
@@ -1610,7 +1589,7 @@ _ts("entering Workspace ctors — EICT spectrum_override testset")
         @warn "Skipping EICT workspace ctor test: no GPU backend."
     else
         # Inject a custom 1-bin monoenergetic spectrum at 70 keV.
-        scanner = BS.Scanner(
+        scanner = BS.EICTScanner(
             source_to_isocenter = 540.0, source_to_detector = 1080.0,
             detector_rows = 4, detector_cols = 32,
             detector_row_size = 1.0, detector_col_size = 1.0,
@@ -1618,7 +1597,7 @@ _ts("entering Workspace ctors — EICT spectrum_override testset")
             flat_filter_material = :aluminum, flat_filter_thickness = 2.5,
         )
         protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 16, rotation_time = 0.5)
-        sim_opts = BS.SimOptions(; fidelity = :eict)
+        sim_opts = BS.SimOptions(; )
         recon_opts = BS.ReconOptions(matrix_size = (32, 32, 4), fov_cm = 20.0)
         phantom_cpu = BS.create_gammex_472(n_voxels = 32, fov_cm = 20.0, z_cm = 2.0)
         phantom = BS.Phantom(
@@ -1645,7 +1624,7 @@ end
 
 _ts("entering Workspace ctors — FDKReconWorkspace field invariants testset")
 @testset "create_fdk_recon_workspace — field invariants" begin
-    scanner = BS.Scanner(
+    scanner = BS.EICTScanner(
         source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_rows = 8, detector_cols = 32,
         detector_row_size = 1.0, detector_col_size = 1.0
@@ -1700,7 +1679,7 @@ end
 
 _ts("entering Workspace ctors — HIRReconWorkspace field invariants testset")
 @testset "create_hir_recon_workspace — field invariants" begin
-    scanner = BS.Scanner(
+    scanner = BS.EICTScanner(
         source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_rows = 8, detector_cols = 32,
         detector_row_size = 1.0, detector_col_size = 1.0
@@ -1805,14 +1784,14 @@ _ts("entering PCCT focal-spot preset defaults testset")
     # Tube-side focal-spot blur is wired into the PCCT path but ships
     # disabled by default; lag is a scintillator (Gd2O2S) afterglow model
     # that direct-conversion PCCT detectors do not exhibit.
-    opts = BS.SimOptions(fidelity = :pcct)
+    opts = BS.SimOptions(use_focal_spot = false, use_lag = false)
     @test opts.use_focal_spot === false
     @test opts.use_lag === false
     # Opt-in must survive preset resolution.
-    opts_on = BS.SimOptions(fidelity = :pcct, use_focal_spot = true)
+    opts_on = BS.SimOptions( use_lag = false, use_focal_spot = true)
     @test opts_on.use_focal_spot === true
     # EICT preset unchanged.
-    eict = BS.SimOptions(fidelity = :eict)
+    eict = BS.SimOptions()
     @test eict.use_focal_spot === true
     @test eict.use_lag === true
 end
@@ -1823,14 +1802,14 @@ _ts("entering simulate!(PCCTWorkspace) — focal-spot blur on/off testset")
         @warn "Skipping PCCT focal-spot test: no GPU backend."
     else
         _ts("  focal spot OFF")
-        off = _toy_pcct_setup(use_pcct_pileup = false, use_pcct_scatter = false)
+        off = _toy_pcct_setup(pileup = false, use_scatter = false)
         @test off.ws.focal_spot_kernel === nothing
         res_off = BS.simulate!(off.ws, off.phantom, off.protocol, off.sim_opts)
         bins_off = [Array(b) for b in res_off.pcct_sino.bins]
 
         _ts("  focal spot ON")
         on = _toy_pcct_setup(
-            use_pcct_pileup = false, use_pcct_scatter = false,
+            pileup = false, use_scatter = false,
             use_focal_spot = true,
         )
         # Kernel is pre-computed at workspace creation (zero-alloc contract).
@@ -1863,7 +1842,7 @@ _ts("entering EICT quantum noise dose-sweep testset")
         # Poisson (Gaussian-approximated) with variance = expected count.
         # sigma_p ∝ 1/sqrt(I0) ∝ 1/sqrt(mA · t) at fixed views/rotation time.
         function _dose_setup(mA)
-            scanner = BS.Scanner(
+            scanner = BS.EICTScanner(
                 source_to_isocenter = 540.0,
                 source_to_detector = 1080.0,
                 detector_rows = 8,
@@ -1877,7 +1856,6 @@ _ts("entering EICT quantum noise dose-sweep testset")
             )
             protocol = BS.CTProtocol(mA = mA, kVp = 120.0, views = 16, rotation_time = 0.5)
             sim_opts = BS.SimOptions(;
-                fidelity = :eict,
                 use_noise = true, use_scatter = false,
                 use_lag = false, use_focal_spot = false,
                 use_optical_crosstalk = false,
@@ -1893,7 +1871,6 @@ _ts("entering EICT quantum noise dose-sweep testset")
                 phantom_cpu.extent,
             )
             clean_opts = BS.SimOptions(;
-                fidelity = :eict,
                 use_noise = false, use_scatter = false,
                 use_lag = false, use_focal_spot = false,
                 use_optical_crosstalk = false,

@@ -120,61 +120,175 @@ Scanner(;
 - CatSim scanner configuration: cfg/Scanner_Default.cfg
 - AAPM TG-233: CT Image Quality Standards
 """
-struct Scanner{T <: AbstractFloat}
-    # Geometry (required)
+abstract type Scanner{T <: AbstractFloat} end
+
+"""
+    ScannerGeometry{T}
+
+The detector-agnostic core shared by [`EICTScanner`](@ref) and
+[`PCCTScanner`](@ref): source/detector distances, detector array, focal spot,
+gantry, filtration and detector shape.  Built by the scanner constructors; its
+fields are reachable directly on the scanner (`scanner.source_to_isocenter`).
+"""
+struct ScannerGeometry{T <: AbstractFloat}
     source_to_isocenter::T      # mm (SID/SOD)
     source_to_detector::T       # mm (SDD)
-
-    # Detector array
-    detector_rows::Int          # number of rows
-    detector_cols::Int          # number of columns
+    detector_rows::Int
+    detector_cols::Int
     detector_row_size::T        # mm at isocenter
     detector_col_size::T        # mm at isocenter
     detector_row_offset::T      # rows
     detector_col_offset::T      # columns (quarter-detector offset)
-
-    # Source/focal spot
     focal_spot_width::T         # mm
     focal_spot_length::T        # mm
     target_angle::T             # degrees
-
-    # Gantry
     gantry_rotation_time::T     # seconds
-    scan_diameter::T             # mm
+    scan_diameter::T            # mm
     gantry_aperture::T          # mm
-
-    # Filters
     flat_filter_material::Symbol
     flat_filter_thickness::T    # mm
-    bowtie_filter::Symbol       # :large_body, :medium_body, :small_body, :head, :none, etc.
+    bowtie_filter::Symbol
+    detector_shape::Symbol      # :arc or :flat
+end
 
-    # Detection
-    detector_material::Symbol
+"""
+    EICTScanner{T} <: Scanner{T}
+
+An energy-integrating (scintillator) CT scanner: the shared [`ScannerGeometry`](@ref)
+plus the scintillator detection model (material, depth, fill factors, detection
+gain, electronic noise).  Construct with [`EICTScanner(; kwargs...)`](@ref).
+"""
+struct EICTScanner{T <: AbstractFloat} <: Scanner{T}
+    geometry::ScannerGeometry{T}
+    detector_material::Symbol   # scintillator (:lumex, :gos, …)
     detector_depth::T           # mm
     fill_factor_row::T          # 0-1
     fill_factor_col::T          # 0-1
     detection_gain::T           # electrons/keV
     electronic_noise::T         # electrons
+end
 
-    # === PCCT Fields (flat kwargs, defaults = conventional EID behavior) ===
-    # Ignored when detector_type == :energy_integrating
-    detector_type::Symbol       # :energy_integrating (default) or :photon_counting
-    n_energy_bins::Int          # 1 (EID) or 2-8 (PCCT)
-    energy_thresholds::Vector{T}  # Energy thresholds keV (empty for EID)
-    energy_resolution::T        # Detector FWHM keV (0.0 for EID)
-    charge_sharing_fwhm::T      # Charge cloud FWHM mm (0.0 for EID)
-    dead_time_ns::T             # Pulse dead time ns (0.0 for EID)
+"""
+    PCCTScanner{T} <: Scanner{T}
+
+A photon-counting CT scanner: the shared [`ScannerGeometry`](@ref) plus the
+direct-conversion detector model (sensor material and depth, fill factors,
+energy bins and thresholds, energy resolution, charge sharing, dead time, pixel
+mode, native dexel size and binning).  Construct with
+[`PCCTScanner(; kwargs...)`](@ref).
+"""
+struct PCCTScanner{T <: AbstractFloat} <: Scanner{T}
+    geometry::ScannerGeometry{T}
+    detector_material::Symbol   # sensor (:CdTe, :CZT, :Si)
+    detector_depth::T           # mm
+    fill_factor_row::T          # 0-1
+    fill_factor_col::T          # 0-1
+    n_energy_bins::Int
+    energy_thresholds::Vector{T}  # keV, ascending
+    energy_resolution::T        # detector FWHM keV
+    charge_sharing_fwhm::T      # charge cloud FWHM mm
+    dead_time_ns::T             # pulse dead time ns
     pixel_mode::Symbol          # :standard, :uhr, :macro
+    native_dexel_col_mm::T      # native dexel col size at the detector face (mm)
+    native_dexel_row_mm::T      # native dexel row size at the detector face (mm)
+    binning_factor::Int         # spatial binning (1 = unbinned)
+    # detector model toggles (simulation-side physics of THIS detector)
+    pileup::Bool                # MC pulse pile-up degradation (needs dead_time_ns > 0)
+    pileup_correction::Bool     # model-based un-pile-up of the recorded bins
+    scatter_correction::Bool    # model-based scatter re-estimate-and-subtract on the bins
+    noise_reduction::T          # count-noise blend, 0 = exact Poisson counts … 1 = expected counts
+end
 
-    # Native dexel parameters (PCCT only — EID ignores these)
-    native_dexel_col_mm::T      # native dexel col size at detector face (mm); 0 = infer
-    native_dexel_row_mm::T      # native dexel row size at detector face (mm); 0 = infer
-    binning_factor::Int         # spatial binning (1=unbinned, 2=2×2 standard)
+# Geometry fields are reachable directly on the scanner (`scanner.detector_rows`):
+# the geometry core is a composition detail, not part of the vocabulary.
+const _GEOMETRY_FIELDS = fieldnames(ScannerGeometry)
+function Base.getproperty(s::Scanner, name::Symbol)
+    name in _GEOMETRY_FIELDS && return getfield(getfield(s, :geometry), name)
+    return getfield(s, name)
+end
+Base.propertynames(s::Scanner) = (_GEOMETRY_FIELDS..., fieldnames(typeof(s))[2:end]...)
 
-    # Detector shape: :arc (equiangular cylindrical, source-centred — clinical
-    # third-gen MDCT) or :flat (planar).  Functional as of the arc-geometry
-    # work; consumed by CTGeometry and every projector/recon kernel.
-    detector_shape::Symbol
+function _scanner_geometry(T;
+        source_to_isocenter, source_to_detector, detector_rows, detector_cols, detector_row_size, detector_col_size,
+        detector_row_offset, detector_col_offset, focal_spot_width, focal_spot_length, target_angle,
+        gantry_rotation_time, scan_diameter, gantry_aperture, flat_filter_material, flat_filter_thickness,
+        bowtie_filter, detector_shape)
+    detector_shape in (:flat, :arc) || error("detector_shape must be :flat or :arc (got :$detector_shape)")
+    return ScannerGeometry{T}(T(source_to_isocenter), T(source_to_detector), detector_rows, detector_cols,
+        T(detector_row_size), T(detector_col_size), T(detector_row_offset), T(detector_col_offset),
+        T(focal_spot_width), T(focal_spot_length), T(target_angle), T(gantry_rotation_time), T(scan_diameter),
+        T(gantry_aperture), flat_filter_material, T(flat_filter_thickness), bowtie_filter, detector_shape)
+end
+
+# Geometry keyword defaults shared by every constructor (CatSim-like research scanner).
+const _GEOMETRY_DEFAULTS = (
+    source_to_isocenter = 540.0, source_to_detector = 950.0, detector_rows = 64, detector_cols = 900,
+    detector_row_size = 1.0, detector_col_size = 1.0, detector_row_offset = 0.0, detector_col_offset = 0.25,
+    focal_spot_width = 1.0, focal_spot_length = 1.0, target_angle = 7.0, gantry_rotation_time = 0.5,
+    scan_diameter = 500.0, gantry_aperture = 700.0, flat_filter_material = :aluminum, flat_filter_thickness = 2.0,
+    bowtie_filter = :large_body, detector_shape = :arc,
+)
+_split_geometry_kwargs(kw) = (; (k => v for (k, v) in pairs(merge(_GEOMETRY_DEFAULTS, (; (k => v for (k, v) in pairs(kw) if k in keys(_GEOMETRY_DEFAULTS))...))))...)
+_other_kwargs(kw) = (; (k => v for (k, v) in pairs(kw) if !(k in keys(_GEOMETRY_DEFAULTS)))...)
+
+"""
+    EICTScanner(; kwargs...)
+
+Energy-integrating scanner.  Geometry keywords as [`Scanner`](@ref) (distances in
+mm, detector array, focal spot, gantry, filtration, `detector_shape`) plus the
+scintillator model: `detector_material = :lumex`, `detector_depth = 3.0`,
+`fill_factor_row = 0.9`, `fill_factor_col = 0.9`, `detection_gain = 15.0`
+(electrons/keV), `electronic_noise = 5000.0` (electrons).
+"""
+function EICTScanner(; detector_material::Symbol = :lumex, detector_depth::Real = 3.0,
+        fill_factor_row::Real = 0.9, fill_factor_col::Real = 0.9, detection_gain::Real = 15.0,
+        electronic_noise::Real = 5000.0, kwargs...)
+    T = Float64
+    extra = _other_kwargs(kwargs)
+    isempty(extra) || throw(ArgumentError("EICTScanner: unknown keyword(s) $(collect(keys(extra))) — photon-counting parameters belong to PCCTScanner"))
+    geometry = _scanner_geometry(T; _split_geometry_kwargs(kwargs)...)
+    return EICTScanner{T}(geometry, detector_material, T(detector_depth), T(fill_factor_row), T(fill_factor_col),
+        T(detection_gain), T(electronic_noise))
+end
+
+"""
+    PCCTScanner(; energy_thresholds, kwargs...)
+
+Photon-counting scanner.  Geometry keywords as [`Scanner`](@ref) plus the
+direct-conversion detector model: `detector_material = :CdTe`, `detector_depth = 1.6`,
+`fill_factor_row = 0.9`, `fill_factor_col = 0.9`, `energy_thresholds` (keV,
+ascending; required), `n_energy_bins = length(energy_thresholds)`,
+`energy_resolution = 0.0`, `charge_sharing_fwhm = 0.0`, `dead_time_ns = 0.0`,
+`pixel_mode = :standard`, `native_dexel_col_mm = 0` / `native_dexel_row_mm = 0`
+(0 = infer from the binned pixel and magnification), `binning_factor = 1`; and the
+detector-model toggles `pileup = true`, `pileup_correction = false`,
+`scatter_correction = false`, `noise_reduction = 0.0`.
+"""
+function PCCTScanner(; detector_material::Symbol = :CdTe, detector_depth::Real = 1.6,
+        fill_factor_row::Real = 0.9, fill_factor_col::Real = 0.9,
+        energy_thresholds::AbstractVector{<:Real} = Float64[], n_energy_bins::Int = length(energy_thresholds),
+        energy_resolution::Real = 0.0, charge_sharing_fwhm::Real = 0.0, dead_time_ns::Real = 0.0,
+        pixel_mode::Symbol = :standard, native_dexel_col_mm::Real = 0.0, native_dexel_row_mm::Real = 0.0,
+        binning_factor::Int = 1, pileup::Bool = true, pileup_correction::Bool = false,
+        scatter_correction::Bool = false, noise_reduction::Real = 0.0, kwargs...)
+    T = Float64
+    0 <= noise_reduction <= 1 || error("noise_reduction must lie in [0, 1] (got $noise_reduction)")
+    extra = _other_kwargs(kwargs)
+    isempty(extra) || throw(ArgumentError("PCCTScanner: unknown keyword(s) $(collect(keys(extra))) — scintillator parameters belong to EICTScanner"))
+    isempty(energy_thresholds) && error("PCCT scanner requires energy_thresholds (got empty vector)")
+    n_energy_bins == length(energy_thresholds) ||
+        error("n_energy_bins ($n_energy_bins) must equal length(energy_thresholds) ($(length(energy_thresholds)))")
+    issorted(energy_thresholds) || error("energy_thresholds must be sorted ascending (got $energy_thresholds)")
+    pixel_mode in (:standard, :uhr, :macro) || error("pixel_mode must be :standard, :uhr, or :macro (got :$pixel_mode)")
+    binning_factor >= 1 || error("binning_factor must be >= 1 (got $binning_factor)")
+    geometry = _scanner_geometry(T; _split_geometry_kwargs(kwargs)...)
+    magnification_val = Float64(geometry.source_to_detector) / Float64(geometry.source_to_isocenter)
+    _native_col = native_dexel_col_mm > 0.0 ? native_dexel_col_mm : geometry.detector_col_size * magnification_val / binning_factor
+    _native_row = native_dexel_row_mm > 0.0 ? native_dexel_row_mm : geometry.detector_row_size * magnification_val / binning_factor
+    return PCCTScanner{T}(geometry, detector_material, T(detector_depth), T(fill_factor_row), T(fill_factor_col),
+        n_energy_bins, T.(collect(energy_thresholds)), T(energy_resolution), T(charge_sharing_fwhm), T(dead_time_ns),
+        pixel_mode, T(_native_col), T(_native_row), binning_factor,
+        pileup, pileup_correction, scatter_correction, T(noise_reduction))
 end
 
 """
@@ -234,142 +348,6 @@ scanner = Scanner(
 )
 ```
 """
-function Scanner(;
-        # Geometry (CatSim defaults)
-        source_to_isocenter::Real = 540.0,
-        source_to_detector::Real = 950.0,
-
-        # Detector array
-        detector_rows::Int = 64,
-        detector_cols::Int = 900,
-        detector_row_size::Real = 1.0,
-        detector_col_size::Real = 1.0,
-        detector_row_offset::Real = 0.0,
-        detector_col_offset::Real = 0.25,
-
-        # Source/focal spot
-        focal_spot_width::Real = 1.0,
-        focal_spot_length::Real = 1.0,
-        target_angle::Real = 7.0,
-
-        # Gantry
-        gantry_rotation_time::Real = 0.5,
-        scan_diameter::Real = 500.0,
-        gantry_aperture::Real = 700.0,
-
-        # Filters
-        flat_filter_material::Symbol = :aluminum,
-        flat_filter_thickness::Real = 2.0,
-        bowtie_filter::Symbol = :large_body,
-
-        # Detector shape (:arc = equiangular cylindrical, :flat = planar).
-        # DEFAULT :arc — clinical third-generation MDCT detectors are arcs
-        # centred on the focal spot.  Use :flat for planar-panel systems
-        # (C-arm CBCT) or for comparison studies.
-        detector_shape::Symbol = :arc,
-
-        # Detection
-        detector_material::Symbol = :lumex,
-        detector_depth::Real = 3.0,
-        fill_factor_row::Real = 0.9,
-        fill_factor_col::Real = 0.9,
-        detection_gain::Real = 15.0,
-        electronic_noise::Real = 5000.0,
-
-        # PCCT fields (flat kwargs — ignored when detector_type == :energy_integrating)
-        detector_type::Symbol = :energy_integrating,
-        n_energy_bins::Int = 1,
-        energy_thresholds::Vector{<:Real} = Float64[],
-        energy_resolution::Real = 0.0,
-        charge_sharing_fwhm::Real = 0.0,
-        dead_time_ns::Real = 0.0,
-        pixel_mode::Symbol = :standard,
-
-        # Native dexel parameters (PCCT only)
-        native_dexel_col_mm::Real = 0.0,
-        native_dexel_row_mm::Real = 0.0,
-        binning_factor::Int = 1
-    )
-    T = Float64
-
-    # PCCT validation
-    if detector_type == :photon_counting
-        if isempty(energy_thresholds)
-            error("PCCT scanner requires energy_thresholds (got empty vector)")
-        end
-        if n_energy_bins != length(energy_thresholds)
-            error("n_energy_bins ($n_energy_bins) must equal length(energy_thresholds) ($(length(energy_thresholds)))")
-        end
-        if !issorted(energy_thresholds)
-            error("energy_thresholds must be sorted ascending (got $energy_thresholds)")
-        end
-        if !(pixel_mode in (:standard, :uhr, :macro))
-            error("pixel_mode must be :standard, :uhr, or :macro (got :$pixel_mode)")
-        end
-    elseif detector_type != :energy_integrating
-        error("detector_type must be :energy_integrating or :photon_counting (got :$detector_type)")
-    end
-
-    # Binning factor validation
-    if binning_factor < 1
-        error("binning_factor must be >= 1 (got $binning_factor)")
-    end
-
-    if !(detector_shape in (:flat, :arc))
-        error("detector_shape must be :flat or :arc (got :$detector_shape)")
-    end
-
-    # Infer native dexel from binned pixel size × magnification when 0.0
-    magnification_val = Float64(source_to_detector) / Float64(source_to_isocenter)
-    _native_col = if native_dexel_col_mm > 0.0
-        native_dexel_col_mm
-    else
-        # Infer: binned pixel at iso × magnification / binning = native dexel at detector
-        detector_col_size * magnification_val / binning_factor
-    end
-    _native_row = if native_dexel_row_mm > 0.0
-        native_dexel_row_mm
-    else
-        detector_row_size * magnification_val / binning_factor
-    end
-
-    return Scanner{T}(
-        T(source_to_isocenter),
-        T(source_to_detector),
-        detector_rows,
-        detector_cols,
-        T(detector_row_size),
-        T(detector_col_size),
-        T(detector_row_offset),
-        T(detector_col_offset),
-        T(focal_spot_width),
-        T(focal_spot_length),
-        T(target_angle),
-        T(gantry_rotation_time),
-        T(scan_diameter),
-        T(gantry_aperture),
-        flat_filter_material,
-        T(flat_filter_thickness),
-        bowtie_filter,
-        detector_material,
-        T(detector_depth),
-        T(fill_factor_row),
-        T(fill_factor_col),
-        T(detection_gain),
-        T(electronic_noise),
-        detector_type,
-        n_energy_bins,
-        T.(energy_thresholds),
-        T(energy_resolution),
-        T(charge_sharing_fwhm),
-        T(dead_time_ns),
-        pixel_mode,
-        T(_native_col),
-        T(_native_row),
-        binning_factor,
-        detector_shape,
-    )
-end
 
 # =============================================================================
 # CTGeometry - Pre-computed Trajectory Positions
@@ -764,8 +742,7 @@ This bridges the user-facing flat kwargs API to the internal physics struct.
 Used by the simulation driver, nb04, and the PCCT calibration/basis helpers
 in `src/reconstruction/vmi/`.
 """
-function _build_pcct_detector(scanner::Scanner{T}) where {T}
-    @assert scanner.detector_type == :photon_counting "_build_pcct_detector called on non-PCCT scanner"
+function _build_pcct_detector(scanner::PCCTScanner{T}) where {T}
 
     # Map detector_material Symbol to DetectorMaterialPCCT enum
     material = _infer_pcct_material(scanner.detector_material)
@@ -811,7 +788,7 @@ end
 # =============================================================================
 
 # Scanner definition
-export Scanner
+export Scanner, EICTScanner, PCCTScanner, ScannerGeometry
 
 # CTGeometry (computed positions for simulation)
 export CTGeometry

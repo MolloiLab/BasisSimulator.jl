@@ -183,7 +183,7 @@ workflow.
 """
 
 # ╔═╡ 11000004-0000-4000-8000-000000000002
-scanner = BS.Scanner(
+scanner = BS.EICTScanner(
     source_to_isocenter = 541.0,
     source_to_detector = 949.0,
     detector_rows = 256,             # 256 × 0.625 mm = 16 cm wide-cone volume scanner
@@ -213,7 +213,7 @@ begin
     # the rows past every voxel, which needs the per-row water calibration real
     # scanners apply.  Until BasisSimulator ships per-row BHC, disable it here
     # so the comparison isolates GEOMETRY (same choice as notebook 09).
-    sim_opts = BS.SimOptions(fidelity = :eict, seed = 42, projector = :dd_fast,
+    sim_opts = BS.SimOptions(seed = 42, projector = :dd_fast,
         use_heel_effect = false)
     recon_opts = BS.ReconOptions(matrix_size = (160, 160, 150), fov_cm = 30.0, z_cm = 30.0)
     # A 16 cm *physical* detector cannot reconstruct a full 16 cm axial

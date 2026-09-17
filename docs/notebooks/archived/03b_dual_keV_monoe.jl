@@ -132,7 +132,7 @@ spectrum to make BHC / Ding decomp / VMI relevant.
 """
 
 # ╔═╡ 030b0003-0000-4000-8000-000000000010
-scanner = BS.Scanner(
+scanner = BS.EICTScanner(
     source_to_isocenter = 625.6,
     source_to_detector = 1100.0,
 
@@ -206,7 +206,6 @@ Identical to nb03 §4.
 
 # ╔═╡ 030b0005-0000-4000-8000-000000000010
 sim_opts = BS.SimOptions(
-    fidelity = :eict,
     seed = 1234,
 );
 

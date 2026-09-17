@@ -836,7 +836,7 @@ naturally excluded from the TDC because the mask is `false` there.
 """
 
 # ╔═╡ 08b00010-0000-4000-8000-000000000002
-scanner = BS.Scanner(
+scanner = BS.EICTScanner(
     source_to_isocenter = 625.6,
     source_to_detector = 1100.0,
     detector_rows = 256,
@@ -869,7 +869,7 @@ protocol = BS.CTProtocol(
 )
 
 # ╔═╡ 08b00010-0000-4000-8000-000000000004
-sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234)
+sim_opts = BS.SimOptions(seed = 1234)
 
 # ╔═╡ 08b00010-0000-4000-8000-000000000005
 recon_opts = BS.ReconOptions(

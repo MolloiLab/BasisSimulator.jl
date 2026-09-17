@@ -43,7 +43,7 @@ phantom = BS.Phantom(to_gpu(phantom_cpu.mask),
                      phantom_cpu.materials,
                      phantom_cpu.voxel_size)
 
-scanner = BS.Scanner(
+scanner = BS.EICTScanner(
     source_to_isocenter = 626.0,   # mm
     source_to_detector  = 1097.0,
     detector_rows       = 64,

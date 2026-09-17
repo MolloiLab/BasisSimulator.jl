@@ -9,31 +9,29 @@ using Metal
 
 const BS = BasisSimulator
 
-scanner = BS.Scanner(
+scanner = BS.PCCTScanner(
     source_to_isocenter = 540.0,
     source_to_detector = 1080.0,
     detector_rows = 8,
     detector_cols = 64,
     detector_row_size = 1.0,
     detector_col_size = 1.0,
-    detector_type = :photon_counting,
     detector_material = :CdTe,
     detector_depth = 1.6,
     n_energy_bins = 4,
     energy_thresholds = [20.0, 35.0, 55.0, 70.0],
     dead_time_ns = 25.0,
+    pileup = false,
 )
 protocol = BS.CTProtocol(
     mA = 2.5, kVp = 120.0, views = 16, rotation_time = 0.5,
 )
 sim_opts = BS.SimOptions(
-    fidelity = :pcct,
     use_noise = false,
     use_scatter = false,
     use_lag = false,
     use_focal_spot = false,
     use_optical_crosstalk = false,
-    use_pcct_pileup = false,
 )
 recon_opts = BS.ReconOptions(matrix_size = (32, 32, 4), fov_cm = 20.0)
 phantom_cpu = BS.create_gammex_472(

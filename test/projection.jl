@@ -17,7 +17,7 @@
 # Helper: tiny scanner + geometry for projection tests.
 # -----------------------------------------------------------------------------
 function _toy_proj_geom(; n_cols = 16, n_rows = 4, n_angles = 4, fov_cm = 5.0)
-    scanner = BS.Scanner(
+    scanner = BS.EICTScanner(
         source_to_isocenter = 540.0,
         source_to_detector = 1080.0,
         detector_rows = n_rows,
@@ -30,7 +30,7 @@ end
 
 @testset "distance-driven exact transpose" begin
     for shape in (:flat, :arc)
-        scanner = BS.Scanner(
+        scanner = BS.EICTScanner(
             source_to_isocenter = 540.0, source_to_detector = 1080.0,
             detector_rows = 7, detector_cols = 24,
             detector_row_size = 0.8, detector_col_size = 0.8,
@@ -337,7 +337,7 @@ end
     end
 
     @testset "helical arc geometry + spectral bowtie remain equivalent" begin
-        scanner_h = BS.Scanner(
+        scanner_h = BS.EICTScanner(
             source_to_isocenter = 540.0, source_to_detector = 1080.0,
             detector_rows = 4, detector_cols = 32,
             detector_row_size = 1.0, detector_col_size = 1.0,
@@ -472,12 +472,12 @@ end
 #    they do on the flat panel; dd_fast ≡ dd to float ordering.
 # -----------------------------------------------------------------------------
 @testset "arc detector — projectors" begin
-    scanner_flat = BS.Scanner(
+    scanner_flat = BS.EICTScanner(
         source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_rows = 8, detector_cols = 128,
         detector_row_size = 1.0, detector_col_size = 1.0,
         detector_shape = :flat)
-    scanner_arc = BS.Scanner(
+    scanner_arc = BS.EICTScanner(
         source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_rows = 8, detector_cols = 128,
         detector_row_size = 1.0, detector_col_size = 1.0,

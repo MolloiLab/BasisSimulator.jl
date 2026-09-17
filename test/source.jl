@@ -195,7 +195,7 @@ end
 end
 
 @testset "validate_protocol" begin
-    scanner = BS.Scanner(detector_rows = 64, detector_row_size = 1.0)
+    scanner = BS.EICTScanner(detector_rows = 64, detector_row_size = 1.0)
 
     @testset "valid protocol passes" begin
         p = BS.CTProtocol(; mA = 200.0, kVp = 120.0, views = 984, rotation_time = 0.5)
@@ -262,7 +262,7 @@ end
 end
 
 @testset "dose_report — NamedTuple shape + consistency" begin
-    s = BS.Scanner()
+    s = BS.EICTScanner()
     p = BS.CTProtocol(; mA = 200.0, kVp = 120.0, views = 100, rotation_time = 0.5)
     g = BS.CTGeometry(s; n_angles = 100, fov_cm = 35.0, z_cm = 5.0)
     report = BS.dose_report(p, g, 1.0e8; scan_length_cm = 30.0)
@@ -309,7 +309,7 @@ end
 end
 
 @testset "compute_focal_spot_blur_fwhm — geometric magnification" begin
-    s = BS.Scanner(
+    s = BS.EICTScanner(
         source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_col_size = 1.0, detector_row_size = 1.0
     )
@@ -385,7 +385,7 @@ end
 end
 
 @testset "apply_focal_spot_blur! — physical behavior" begin
-    s = BS.Scanner(
+    s = BS.EICTScanner(
         source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_cols = 64, detector_rows = 4
     )
@@ -417,7 +417,7 @@ end
 end
 
 @testset "apply_focal_spot_blur (allocating wrapper)" begin
-    s = BS.Scanner(detector_cols = 32, detector_rows = 4)
+    s = BS.EICTScanner(detector_cols = 32, detector_rows = 4)
     g = BS.CTGeometry(s; n_angles = 4, fov_cm = 20.0, z_cm = 1.0)
     sino = Float32.(rand(MersenneTwister(0), 32, 4, 4))
     sino_orig = copy(sino)
@@ -490,7 +490,7 @@ end
 end
 
 @testset "compute_heel_spectral — LIVE pipeline path" begin
-    s = BS.Scanner(
+    s = BS.EICTScanner(
         source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_cols = 64, detector_rows = 4
     )
@@ -534,7 +534,7 @@ end
 end
 
 @testset "apply_heel_effect! + apply_heel_effect" begin
-    s = BS.Scanner(detector_cols = 64, detector_rows = 4)
+    s = BS.EICTScanner(detector_cols = 64, detector_rows = 4)
     g = BS.CTGeometry(s; n_angles = 4, fov_cm = 35.0, z_cm = 1.0)
 
     @testset "disabled heel = identity" begin

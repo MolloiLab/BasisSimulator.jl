@@ -108,11 +108,11 @@ phantom = BS.Phantom(
 
 # ╔═╡ 040e1000-0000-4000-8000-000000000101
 md"""
-### 02. `Scanner()` Struct
+### 02. `EICTScanner()` Struct
 """
 
 # ╔═╡ 2c157064-8567-450b-bc08-c2606084a77f
-scanner = BS.Scanner(
+scanner = BS.EICTScanner(
     source_to_isocenter = 625.6,
     source_to_detector = 1100.0,
     detector_rows = 256,
@@ -165,7 +165,6 @@ md"""
 
 # ╔═╡ 2d65a0c0-b25d-41ad-9cd3-e7a2d08a2482
 sim_opts = BS.SimOptions(
-    fidelity = :eict,
     seed = 1234,
     projector = :dd_fast,
 )

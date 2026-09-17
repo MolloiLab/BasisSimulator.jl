@@ -91,7 +91,7 @@ detector model **always** applies the MC-LUT detector response matrix
 `pcct_forward_project` is deprecated and only reachable by callers that bypass
 this driver.
 
-Pulse pileup is on by default and toggleable via `sim_opts.use_pcct_pileup`.
+Pulse pileup is on by default and toggleable via `PCCTScanner(; pileup)`.
 Bin combination, scatter correction, and reconstruction are all decoupled —
 do them at the notebook level using the returned per-bin sinograms and the
 ground-truth `I0_bins`.
@@ -196,7 +196,7 @@ function simulate!(
     I0_total = T(sum(I0_bins))
     eps_combine = T(1.0e-10)
 
-    if config.scatter !== nothing && sim_opts.use_pcct_scatter
+    if config.scatter !== nothing && sim_opts.use_scatter
         # Step 1: Combine primary bins → combined_primary (for scatter spatial estimation)
         combined_primary = ws.combined
         fill!(combined_primary, zero(T))
@@ -240,7 +240,7 @@ function simulate!(
     # and the raw-count capture point, so the capture happens AT the sampling
     # site (`raw_out`) — the measured counts land in `raw_counts` verbatim,
     # before the log-domain floor at 1, with TRUE ZEROS preserved.
-    pileup_active = ws.use_pcct_pileup && ws.pileup_S !== nothing
+    pileup_active = ws.pileup && ws.pileup_S !== nothing
     raw_from_noise = capture_raw_counts && sim_opts.use_noise && !pileup_active ?
         [similar(bin) for bin in pcct_sino.bins] : nothing
     if sim_opts.use_noise
@@ -249,7 +249,7 @@ function simulate!(
             seed = sim_opts.seed,
             ws_noise_staging = ws.noise_staging,
             ws_rng = ws.rng,
-            noise_reduction = sim_opts.pcct_noise_reduction,
+            noise_reduction = ws.noise_reduction,
             raw_out = raw_from_noise,
         )
     end
@@ -281,7 +281,7 @@ function simulate!(
     # subtraction (`N_measured - N_scatter`) by mis-scaling per-bin I0
     # vs the I0_total used inside scatter — over-corrected bins 1–3,
     # under-corrected bin 4 → bin-2-only streaks.
-    if ws.use_pcct_pileup && ws.pileup_S !== nothing
+    if ws.pileup && ws.pileup_S !== nothing
         S = ws.pileup_S
         n_bins = length(pcct_sino.bins)
         n_bins == 4 || error("MC pile-up application is currently specialized to 4 bins; got $(n_bins).")
@@ -334,22 +334,22 @@ function simulate!(
         nothing
     end
 
-    # --- PCCT pileup correction (optional; use_pcct_pileup_correction) ---
+    # --- PCCT pileup correction (optional; pileup_correction) ---
     # Inverts the MC pileup matrix S applied above via apply_pcct_pileup_correction! —
     # the same model-based un-pileup a clinical recon performs before downstream
     # processing.  Logically identical to the validated nb08 inline sim_pileup cell.
     # Runs before scatter correction so the latter re-estimates from un-piled counts.
-    if ws.use_pcct_pileup && ws.pileup_S !== nothing && sim_opts.use_pcct_pileup_correction
+    if ws.pileup && ws.pileup_S !== nothing && ws.pileup_correction
         apply_pcct_pileup_correction!(pcct_sino.bins, ws.I0_bins, ws.pileup_S)
     end
 
-    # --- PCCT scatter correction (optional; use_pcct_scatter_correction) ---
+    # --- PCCT scatter correction (optional; scatter_correction) ---
     # Model-based re-estimate-and-subtract, logically identical to the validated
     # nb08 inline scatter-correction cell: re-combine the CURRENT bins (now
     # primary+scatter+noise+pileup), re-estimate the Ohnesorge field, and subtract
     # the per-bin scatter.  Scalar I0 here equals the per-pixel reference for a
     # bowtie-free scanner.  Runs after pileup so it sees the recorded counts.
-    if config.scatter !== nothing && sim_opts.use_pcct_scatter_correction
+    if config.scatter !== nothing && ws.scatter_correction
         combined_corr = ws.combined
         fill!(combined_corr, zero(T))
         for (b, bin_sino) in enumerate(pcct_sino.bins)
@@ -1101,7 +1101,7 @@ function build_physics_config(
     # (charge sharing, fluorescence escape, pileup) in the MC DRM — they
     # don't consume this `PhysicsConfig.detector_efficiency` field, so we
     # skip it.
-    if sim_opts.use_detector_efficiency && scanner.detector_type != :photon_counting
+    if sim_opts.use_detector_efficiency && scanner isa EICTScanner
         material = scanner.detector_material
         de_mode = sim_opts.detector_efficiency_mode   # :auto, :mc_lut, :beer_lambert
         eff_mode = de_mode == :beer_lambert ? :beer_lambert : :mc_lut
@@ -1137,14 +1137,14 @@ function build_physics_config(
 
     # Scatter: use geometry-aware model scaled for this scanner and phantom size
     # If phantom is provided, estimate diameter from mask for size-aware scatter scaling
-    phantom_diameter_cm = if phantom !== nothing && (sim_opts.use_scatter || sim_opts.use_pcct_scatter)
+    phantom_diameter_cm = if phantom !== nothing && sim_opts.use_scatter
         voxel_size_mm = phantom.voxel_size .* 10.0
         estimate_phantom_diameter_cm(phantom.mask, voxel_size_mm)
     else
         nothing
     end
 
-    if sim_opts.use_scatter || sim_opts.use_pcct_scatter
+    if sim_opts.use_scatter
         kwargs[:scatter] = geometry_aware_scatter_model(scanner; phantom_diameter_cm = phantom_diameter_cm)
     end
 

@@ -95,7 +95,10 @@ mutable struct PCCTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A1 <
     # `-log(recorded / I0_truth)` and the round-trip
     # `I0_b · exp(-bin) = recorded count` stays valid for downstream
     # count-domain math (scatter correction, bin combine, …).
-    use_pcct_pileup::Bool                              # toggle from sim_opts.use_pcct_pileup
+    pileup::Bool                              # PCCTScanner.pileup && dead_time_ns > 0
+    pileup_correction::Bool                            # PCCTScanner.pileup_correction
+    scatter_correction::Bool                           # PCCTScanner.scatter_correction
+    noise_reduction::Float64                           # PCCTScanner.noise_reduction
     pileup_S::Union{Nothing, Matrix{Float64}}          # (n_bins × n_bins), nothing when pileup off
 
     # ─── Pre-computed setup data (computed once, reused) ───
@@ -139,7 +142,7 @@ result2 = simulate!(ws, phantom, scanner, protocol, sim_opts, recon_opts)
 ```
 """
 function create_workspace(
-        scanner, protocol, sim_opts, recon_opts, phantom;
+        scanner::PCCTScanner, protocol, sim_opts, recon_opts, phantom;
         T::Type{<:AbstractFloat} = Float32,
         extended_collimation::Bool = false,
     )
@@ -357,7 +360,7 @@ function create_workspace(
     # Pileup is per native dexel (not per binned pixel).
     # I0 from compute_detector_I0 is per binned pixel per view.
     # Count rate per dexel = (I0 / bf²) / time_per_view  [photons/s]
-    _use_pileup = sim_opts.use_pcct_pileup &&
+    _use_pileup = scanner.pileup &&
         pcct_detector.dead_time_ns > 0
     _pileup_S = if _use_pileup
         _I0_physics_pileup = compute_detector_I0(geom, protocol, sum(weights_vec))
@@ -406,7 +409,7 @@ function create_workspace(
         _native_geom, _n_src, _n_det, _n_u, _n_v,
         tube_scratch, _pcct_focal_kernel,
         _μ_table_gpu, _W_matrix_gpu, _outputs_flat, _native_outputs_flat,
-        _use_pileup, _pileup_S,
+        _use_pileup, scanner.pileup_correction, scanner.scatter_correction, Float64(scanner.noise_reduction), _pileup_S,
         geom, energies, weights_vec, config, pcct_detector, mats,
         kVp
     )
@@ -523,7 +526,7 @@ Create a pre-allocated workspace for zero-allocation EICT single-kVp `simulate!(
   `docs/notebooks/03b_dual_keV_monoe.jl` for the complete monoenergetic example.
 """
 function create_eict_workspace(
-        scanner, protocol, sim_opts, recon_opts, phantom;
+        scanner::EICTScanner, protocol, sim_opts, recon_opts, phantom;
         T::Type{<:AbstractFloat} = Float32,
         spectrum_override::Union{
             Nothing,

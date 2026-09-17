@@ -536,7 +536,7 @@ function compute_polychromatic_μ_water(
         geom,
         water_path_cm::Real,
     )
-    scanner.detector_type === :photon_counting && throw(ArgumentError(
+    scanner isa PCCTScanner && throw(ArgumentError(
         "compute_polychromatic_μ_water is not valid for PCCT combined-bin data; " *
         "build the workspace with create_workspace and use calibrate_pcct_poly_bhc(ws), " *
         "apply_bhc_water, and the returned μ_water_ref"))

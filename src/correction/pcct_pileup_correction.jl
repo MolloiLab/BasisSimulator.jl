@@ -31,7 +31,7 @@
 # ## Why this is decoupled
 #
 # `simulate!` always applies the forward pile-up degradation when
-# `sim_opts.use_pcct_pileup = true` so its returned bins reflect what the
+# `PCCTScanner(; pileup = true)` so its returned bins reflect what the
 # detector actually records.  Pile-up correction lives **outside** the
 # simulator (mirroring how BHC, ACNR, and capping live outside) so a notebook
 # can choose:

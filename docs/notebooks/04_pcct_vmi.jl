@@ -109,7 +109,7 @@ phantom = BS.Phantom(
 
 # ╔═╡ 040e1000-0000-4000-8000-000000000101
 md"""
-### 02. `Scanner()` Struct
+### 02. `EICTScanner()` Struct
 """
 
 # ╔═╡ 2c157064-8567-450b-bc08-c2606084a77f
@@ -125,7 +125,7 @@ scanner = let
     pixel_row_iso = (native_row_mm * bf) / magnification
     n_cols = ceil(Int, 360.0 / pixel_col_iso)
 
-    BS.Scanner(
+    BS.PCCTScanner(
         source_to_isocenter = sid,
         source_to_detector = sdd,
 
@@ -151,10 +151,7 @@ scanner = let
         detector_depth = 1.6,
         fill_factor_row = 0.95,
         fill_factor_col = 0.95,
-        detection_gain = 1.0,
-        electronic_noise = 0.0,
 
-        detector_type = :photon_counting,
         n_energy_bins = 4,
         energy_thresholds = [20.0, 35.0, 55.0, 70.0],
         energy_resolution = 10.0,
@@ -165,7 +162,13 @@ scanner = let
         native_dexel_col_mm = native_col_mm,
         native_dexel_row_mm = native_row_mm,
         binning_factor = bf,
-    )
+    
+        # detector-model physics (applied inside simulate!())
+        pileup = true,               # MC pile-up forward (spectral-migration matrix S)
+        pileup_correction = true,    # model-based inverse S on the recorded bins
+        scatter_correction = true,   # model-based scatter re-estimate-and-subtract on the bins
+        noise_reduction = 0.0,
+)
 end
 
 # ╔═╡ 040e1000-0000-4000-8000-000000000102
@@ -190,27 +193,17 @@ md"""
 
 # ╔═╡ 2d65a0c0-b25d-41ad-9cd3-e7a2d08a2482
 sim_opts = BS.SimOptions(
-    fidelity = :pcct,
     seed = 1234,
     projector = :dd_fast,  # same anti-aliased DD physics, single-pass fused kernels (~47× faster poly)
-
-    # ─── Inert for PCCT (flag exists but does nothing) ───
+    use_noise = true,      # per-bin quantum noise inside simulate!()
+    use_scatter = true,    # Compton scatter injection inside simulate!()
+    # inert on the photon-counting path (scintillator-only effects) or off by design
     use_fill_factor = false,
     use_detector_efficiency = false,
     use_optical_crosstalk = false,
     use_focal_spot = false,
     use_lag = false,
     use_heel_effect = false,
-
-    # ─── Active for PCCT — all applied INSIDE simulate!() ───
-    use_scatter = false,                  # EICT scatter flag — OFF (PCCT uses use_pcct_scatter)
-    use_noise = true,                     # exact per-bin Poisson counts
-    use_pcct_scatter = true,              # PCCT scatter injection
-    use_pcct_scatter_correction = true,   # PCCT model-based scatter correction
-    use_pcct_pileup = true,               # PCCT MC pile-up forward
-    use_pcct_pileup_correction = true,    # PCCT pile-up correction (inverse S)
-    # No oracle/noise-reduction surrogate is used.
-    pcct_noise_reduction = 0.0,
 )
 
 # ╔═╡ 08cbc6fd-3c7c-432f-99e5-b220f8fe7fde
@@ -237,8 +230,8 @@ forward → scatter inject → Poisson noise → pile-up fwd →
 pile-up correction → scatter correction
 ```
 
-Scatter (`use_pcct_scatter` + `use_pcct_scatter_correction`) and pile-up
-(`use_pcct_pileup` + `use_pcct_pileup_correction`) now happen inside
+Scatter (`use_scatter` + `scatter_correction`) and pile-up
+(`pileup` + `pileup_correction`) now happen inside
 `simulate!()` — no decoupled notebook-level correction steps.  Bins are
 `-log(N_recorded / I0_truth[b])`; `I0_bins` is the truth per-bin air baseline.
 """
