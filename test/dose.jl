@@ -44,7 +44,7 @@ end
     spectrum_before = copy(src.phi_iso)
     body = BS.ctdi100(src; phantom = :body32, n_histories = 400_000)
     head = BS.ctdi100(src; phantom = :head16, n_histories = 400_000)
-    @test body === BS.ctdi100(src; phantom = :body32, n_histories = 400_000)      # cached
+    @test body == BS.ctdi100(src; phantom = :body32, n_histories = 400_000)
     # …and the cache key has to separate the questions that have different answers
     @test BS.ctdi100(src; phantom = :body32, beam_width_mm = 18.0, n_histories = 400_000).ctdi_w !=
         body.ctdi_w
@@ -67,6 +67,14 @@ end
     @test other.ctdi_w != body.ctdi_w
     @test other.ctdi_w ≈ body.ctdi_w rtol = 0.03
     @test_throws ArgumentError BS.ctdi100(src; phantom = :torso)
+
+    # Two beams alike in every field but the bowtie they actually transport through: the cache
+    # keys on the filter, not on its name, so the second is not answered with the first's dose.
+    bare = BS.DoseSource(
+        src.E, src.phi_iso, src.SAD_mm, src.bowtie_name, BS.resolve_bowtie_filter(:none),
+        src.nominal_collimation_mm, src.kVp, src.filters,
+    )
+    @test BS.ctdi100(bare; phantom = :body32, n_histories = 400_000).ctdi_w != body.ctdi_w
 end
 
 @testset "CTDIvol and DLP" begin
@@ -109,12 +117,85 @@ end
     @test BS.compute_dose(scanner, _dose_protocol(); dose_calibration = 0.9, n_histories = n).ctdi_vol_mGy ≈
         0.9 * axial.ctdi_vol_mGy
 
-    # N·T > 40 mm: the IEC reference-beam rule, so CTDIw per mAs equals the 20 mm value
+    # N·T > 40 mm: the IEC reference-beam rule scales the 20 mm measurement by the free-in-air
+    # ratio — and that ratio saturates, because the 100 mm pencil chamber stops collecting once
+    # the beam is wider than it. At 160 mm the factor is 100/160, not 1.
     wide = BS.compute_dose(scanner, _dose_protocol(collimation_mm = 160.0); n_histories = n)
     narrow = BS.compute_dose(scanner, _dose_protocol(collimation_mm = 20.0); n_histories = n)
     @test wide.wide_beam_reference_mm == 20.0 && narrow.wide_beam_reference_mm === nothing
-    @test wide.ctdi_w_mGy_per_100mAs ≈ narrow.ctdi_w_mGy_per_100mAs
+    @test wide.ctdi_w_mGy_per_100mAs ≈ narrow.ctdi_w_mGy_per_100mAs * (100 / 160)
+    # a beam still inside the chamber is scaled one-to-one
+    mid = BS.compute_dose(scanner, _dose_protocol(collimation_mm = 60.0); n_histories = n)
+    @test mid.ctdi_w_mGy_per_100mAs ≈ narrow.ctdi_w_mGy_per_100mAs
+    # and the saturation is monotone: a wider beam never reports more dose per mAs
+    @test wide.ctdi_w_mGy_per_100mAs < mid.ctdi_w_mGy_per_100mAs
+
+    # the report can be asked for the head phantom and for a second tube
+    head = BS.compute_dose(scanner, _dose_protocol(); phantom = :head16, n_histories = n)
+    @test 1.8 < head.ctdi_vol_mGy / axial.ctdi_vol_mGy < 2.3 && head.phantom === :head16
 
     @test_throws ArgumentError BS.compute_dose(scanner, _dose_protocol(); table_increment_mm = 0.0)
     @test occursin("CTDIvol", sprint(show, MIME("text/plain"), axial))
+end
+
+@testset "every simulate! result carries its dose" begin
+    # A tiny energy-integrating acquisition, on the CPU, end to end: the headline claim is that
+    # the dose comes back attached to the simulation, so test it there and not only in isolation.
+    scanner = _dose_scanner(detector_rows = 16, detector_cols = 64)
+    protocol = _dose_protocol(views = 12, collimation_mm = 2.5)
+    sim_opts = BS.SimOptions(seed = 7, use_scatter = false, use_focal_spot = false, use_lag = false)
+    recon_opts = BS.ReconOptions(matrix_size = (32, 32, 4), fov_cm = 20.0, z_cm = 0.25)
+    cpu = BS.create_gammex_472(n_voxels = 32, fov_cm = 20.0, z_cm = 1.0)
+    phantom = BS.Phantom(cpu.mask, cpu.materials, cpu.voxel_size, cpu.origin, cpu.extent)
+    ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
+
+    @test ws.dose_source isa BS.DoseSource
+    @test ws.dose_source.nominal_collimation_mm == 2.5
+
+    result = BS.simulate!(ws, phantom, protocol, sim_opts)
+    @test propertynames(result) == (:dose,)
+    @test result.dose isa BS.DoseReport
+    @test result.dose.kVp == 120 && result.dose.nominal_collimation_mm == 2.5
+    @test result.dose.ctdi_vol_mGy > 0 && result.dose.dlp_mGy_cm > 0
+    @test all(isfinite, Array(ws.sinogram))                    # the simulation still happened
+    # the same report the workspace can be asked for directly
+    @test BS.dose_report(ws, protocol).ctdi_vol_mGy == result.dose.ctdi_vol_mGy
+    # and it can be switched off for a loop over noise realisations
+    @test BS.simulate!(ws, phantom, protocol, sim_opts; report_dose = false).dose === nothing
+end
+
+@testset "a beam with no absolute units reports no dose" begin
+    # A spectrum override carries relative weights, so a dose computed from it would be wrong by
+    # orders of magnitude. Such a workspace reports nothing rather than a plausible-looking number.
+    scanner = _dose_scanner(detector_rows = 16, detector_cols = 64)
+    protocol = _dose_protocol(views = 12, collimation_mm = 2.5)
+    sim_opts = BS.SimOptions(seed = 7, use_scatter = false, use_focal_spot = false, use_lag = false)
+    recon_opts = BS.ReconOptions(matrix_size = (32, 32, 4), fov_cm = 20.0, z_cm = 0.25)
+    cpu = BS.create_gammex_472(n_voxels = 32, fov_cm = 20.0, z_cm = 1.0)
+    phantom = BS.Phantom(cpu.mask, cpu.materials, cpu.voxel_size, cpu.origin, cpu.extent)
+    mono = BS.create_eict_workspace(
+        scanner, protocol, sim_opts, recon_opts, phantom;
+        spectrum_override = ([70.0], [1.0]),
+    )
+    @test mono.dose_source === nothing
+    @test BS.dose_report(mono, protocol) === nothing
+    @test BS.simulate!(mono, phantom, protocol, sim_opts).dose === nothing
+end
+
+@testset "the memo caches can be cleared" begin
+    # The memo returns a NamedTuple of immutable values, so identity cannot tell a cache hit
+    # from a recomputation — the cost can. A cleared cache has to pay the transport again.
+    src = BS.dose_source(_dose_scanner(), _dose_protocol())
+    BS.empty_ctdi_cache!()
+    cold = @elapsed first_call = BS.ctdi100(src; n_histories = 400_000)
+    warm = @elapsed cached = BS.ctdi100(src; n_histories = 400_000)
+    @test cached == first_call
+    @test warm < cold / 10
+    BS.empty_ctdi_cache!()
+    recold = @elapsed recomputed = BS.ctdi100(src; n_histories = 400_000)
+    @test recomputed == first_call               # same seed, same answer
+    @test recold > 10 * warm                     # and it really was computed again
+    # the other two caches of the same shape
+    @test BS.empty_water_μ_cache!() === nothing
+    @test BS.empty_pileup_cache!() === nothing
 end

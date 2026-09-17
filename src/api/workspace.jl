@@ -126,7 +126,7 @@ spectral response matrices) so that `simulate!()` has zero allocations.
 # Arguments
 - `scanner`: Scanner specification (provides detector geometry)
 - `protocol`: CT protocol (provides number of views)
-- `sim_opts`: Simulation options (provides fidelity and effect toggles)
+- `sim_opts`: Simulation options (the common physics toggles)
 - `recon_opts`: Reconstruction options (provides fov_cm / z_cm for CTGeometry)
 - `phantom`: Phantom struct (provides mask for backend detection and volume shape)
 - `T`: Element type, default Float32
@@ -494,7 +494,9 @@ mutable struct EICTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A2 <
     η_eff::T          # sum(weights_norm .* η_vec) — spectrum-averaged detector efficiency
     σ_e_photon::T     # electronic_noise / (mean_E_keV * detection_gain) — DAS electronic σ
 
-    dose_source::DoseSource  # the beam, for `dose_report` / the `dose` of every `simulate!` result
+    # the beam, for `dose_report` / the `dose` of every `simulate!` result; `nothing` when
+    # the spectrum was overridden, because dose needs absolute units
+    dose_source::Union{Nothing, DoseSource}
 end
 
 """
@@ -766,7 +768,10 @@ function create_eict_workspace(
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
         geom, energies, weights_vec, config, mats, rng,
         η_eff_T, σ_e_photon,
-        dose_source(scanner, protocol; spectrum = spectrum_override)
+        # A spectrum override carries relative weights (its own docstring's example is
+        # `([E_mono], [sum(weights)])`), and dose needs absolute photons/mAs/mm². Reporting one
+        # anyway was wrong by seven orders of magnitude, so this workspace reports no dose.
+        spectrum_override === nothing ? dose_source(scanner, protocol) : nothing
     )
 end
 

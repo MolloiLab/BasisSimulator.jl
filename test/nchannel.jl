@@ -152,6 +152,21 @@ end
     two = BS.decompose_nchannel(channels = merged.channels, basis = merged.basis)
     @test maximum(abs.(two.sino_iodine .- 0.06)) < 2.0e-4
 
+    # The groups have to partition the channels. Overlapping ones would feed one physical
+    # measurement into the likelihood twice as though it were independent; missing ones would be
+    # dropped without a word.
+    @test_throws ArgumentError BS.merge_channels(; channels, basis, groups = [1:2, 2:3])
+    @test_throws ArgumentError BS.merge_channels(; channels, basis, groups = [1:2])
+    @test_throws ArgumentError BS.merge_channels(; channels, basis, groups = [1:3, 3:4])
+    @test_throws DimensionMismatch BS.merge_channels(;
+        channels = channels[1:3], basis, groups = [1:2, 3:4]
+    )
+    # and one channel cannot determine two materials
+    single = BS.merge_channels(; channels, basis, groups = [1:4])
+    @test_throws ArgumentError BS.decompose_nchannel(
+        channels = single.channels, basis = single.basis
+    )
+
     both = BS.prepare_channels(; channels, basis, merge_groups = [1:2, 3:4], reduce_rows = true)
     @test both.basis.n_channels == 2 && both.n_rows == 3 && size(both.channels[1]) == (2, 1, 2)
     untouched = BS.prepare_channels(; channels, basis)

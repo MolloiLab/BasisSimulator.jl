@@ -213,12 +213,16 @@ const _WATER_μ_LOCK = ReentrantLock()
 function _water_μ_table(energies::AbstractVector)
     key = hash(Float64.(energies))
     cached = lock(() -> get(_WATER_μ_CACHE, key, nothing), _WATER_μ_LOCK)
-    cached === nothing || return cached
+    # a copy, like every other memo in the package: a caller may keep or mutate what it gets
+    cached === nothing || return copy(cached)
     water = get_material(:water)
     table = [compute_μ_at_energy(water, Float64(e)) for e in energies]
-    lock(() -> (_WATER_μ_CACHE[key] = table), _WATER_μ_LOCK)
+    lock(() -> (_WATER_μ_CACHE[key] = copy(table)), _WATER_μ_LOCK)
     return table
 end
+
+"Forget the memoised water attenuation tables (see [`generate_water_calibration_curve`](@ref))."
+empty_water_μ_cache!() = lock(() -> (empty!(_WATER_μ_CACHE); nothing), _WATER_μ_LOCK)
 
 # =============================================================================
 # Polynomial Fitting (least-squares via normal equations)
@@ -809,3 +813,5 @@ function apply_bhc_two_material(
 
     return Array(sino_out)
 end
+
+export empty_water_μ_cache!

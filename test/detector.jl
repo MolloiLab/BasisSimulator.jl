@@ -933,4 +933,10 @@ end
     @test any(other_seed.bins[b] != threaded.bins[b] for b in 1:n_bins)
 
     @test_throws ArgumentError BS.apply_pcct_noise!(build(), I0; rng_mode = :parallel)
+
+    # `seed = nothing` means unseeded on both paths: the threaded draw must not quietly pin
+    # itself to a fixed stream just because it needs a number to derive its chunks from.
+    unseeded_a = build(); BS.apply_pcct_noise!(unseeded_a, I0; rng_mode = :threaded)
+    unseeded_b = build(); BS.apply_pcct_noise!(unseeded_b, I0; rng_mode = :threaded)
+    @test any(unseeded_a.bins[b] != unseeded_b.bins[b] for b in 1:n_bins)
 end

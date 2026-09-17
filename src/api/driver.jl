@@ -122,6 +122,7 @@ function simulate!(
         ;
         capture_raw_counts::Bool = true,
         report_dose::Bool = true,
+        dose_kwargs = (;),
         noise_rng::Symbol = :serial,
     ) where {T}
     geom = ws.geom
@@ -170,7 +171,10 @@ function simulate!(
     # (a detector-plane convolution of the log line integrals). Placed before
     # the rate-dependent pile-up step so blurred local count rates feed it.
     # Note the blur acts at binned (not native-dexel) resolution.
-    # Off by default for the :pcct fidelity preset — opt in with
+    # NOTE: `use_focal_spot` now defaults to TRUE for every scanner family. The deleted `:pcct`
+    # fidelity preset used to force it off here, so a photon-counting simulation that does not
+    # say otherwise now blurs by the focal spot. Pass `use_focal_spot = false` for the old
+    # behaviour.
     # `use_focal_spot = true`. Detector lag is intentionally NOT applied on
     # this path: the shipped lag model is scintillator (Gd₂O₂S) afterglow,
     # which direct-conversion PCCT detectors do not exhibit.
@@ -398,12 +402,22 @@ function simulate!(
     #                  Pass into `apply_pcct_pileup_correction!` to invert
     #                  the pile-up degradation in the sinogram domain.
     # - `dose`       : `DoseReport` of this acquisition (CTDIvol, DLP, …) from the simulated
-    #                  beam; `nothing` with `report_dose = false`.
+    #                  beam; `nothing` with `report_dose = false`.  Costs a cached Monte Carlo
+    #                  (about a second) the first time a given beam is seen, then nothing.
+    #
+    # `dose_kwargs` reaches `compute_dose`'s keywords: the defaults are one tube and the 32 cm
+    # body phantom, so a head protocol wants `(; phantom = :head16)` and a dual-source scanner
+    # `(; n_tubes = 2)`.
+    #
+    # `noise_rng = :threaded` draws the per-bin counts in fixed chunks with independent streams
+    # instead of one serial stream — 3-4x faster on the noise, a different realisation of the
+    # same distribution, and the same realisation for any thread count.  See
+    # [`apply_pcct_noise!`](@ref).
     result = (
         pcct_sino = pcct_sino,
         I0_bins = ws.I0_bins,
         pileup_S = ws.pileup_S,
-        dose = report_dose ? dose_report(ws, protocol) : nothing,
+        dose = report_dose ? dose_report(ws, protocol; dose_kwargs...) : nothing,
     )
     capture_raw_counts ? merge(result, (; raw_counts)) : result
 end
@@ -420,6 +434,13 @@ Run EICT single-kVp simulation using pre-allocated workspace buffers.
 Mutates `ws.sinogram` in place (the final log line-integral sinogram); read it (and `ws.geom`)
 off the workspace. Returns `(; dose)`, the [`DoseReport`](@ref) of this acquisition (CTDIvol, DLP,
 …) computed from the simulated beam, or `(; dose = nothing)` with `report_dose = false`.
+
+`report_dose` attaches this acquisition's [`DoseReport`](@ref); it costs a cached Monte Carlo
+(about a second) the first time a beam is seen and nothing afterwards, so set it to `false` in a
+tight loop over noise realisations if that second matters. `dose_kwargs` reaches the keywords of
+[`compute_dose`](@ref) — the defaults are one tube and the 32 cm body phantom, so a head
+protocol wants `dose_kwargs = (; phantom = :head16)` and a dual-source scanner
+`(; n_tubes = 2)`.
 
 Pass `paths` from [`material_paths`](@ref) to skip the volume walk. The walk depends on the
 geometry and the material map alone, so one cache serves every spectrum measured through that
@@ -438,6 +459,7 @@ function simulate!(
         protocol::CTProtocol,
         sim_opts::SimOptions = SimOptions();
         report_dose::Bool = true,
+        dose_kwargs = (;),
         paths = nothing,
     ) where {T}
     geom = ws.geom
@@ -657,7 +679,7 @@ function simulate!(
     end
 
     # BHC is decoupled — applied at notebook level
-    return (; dose = report_dose ? dose_report(ws, protocol) : nothing)
+    return (; dose = report_dose ? dose_report(ws, protocol; dose_kwargs...) : nothing)
 end
 
 # =============================================================================
@@ -1245,15 +1267,24 @@ to change them.
   sinogram, on the same backend as `ws` (CPU/Metal/CUDA/AMDGPU).
 - `geom::CTGeometry` — cone-beam geometry.
 
+`helical_q` and `coverage` reach the helical chain and are refused on an axial geometry; see
+[`wfbp_helical_reconstruct`](@ref). `coverage` must share the volume's element type and backend,
+and is masked outside the reconstruction circle along with the volume.
+
 # Returns
 The mutated `ws.volume` (same object — `===` to the workspace field).
 """
 function reconstruct!(
         ws::FDKReconWorkspace{T},
         sinogram::AbstractArray{T, 3},
-        geom::CTGeometry,
+        geom::CTGeometry;
+        helical_q::Real = 0.7,
+        coverage::Union{Nothing, AbstractArray{T, 3}} = nothing,
     ) where {T <: AbstractFloat}
 
+    if !is_helical(geom) && coverage !== nothing
+        throw(ArgumentError("coverage is only defined for a helical geometry; this one is axial"))
+    end
     if is_helical(geom)
         # Helical → rebinned WFBP chain (Stierstorfer family), reusing the
         # workspace buffers: ws.filtered holds the rebinned/filtered data.
@@ -1267,8 +1298,10 @@ function reconstruct!(
             apply_cosine = false, ray_spacing = Δt
         )
         fill!(ws.volume, zero(T))
-        _wfbp_backproject!(ws.volume, ws.filtered, geom, T(Δt))
+        _wfbp_backproject!(ws.volume, ws.filtered, geom, T(Δt); helical_q, coverage)
         apply_fov_mask!(ws.volume, geom)
+        # the mask is part of the answer, so a voxel it discards has no coverage either
+        coverage === nothing || apply_fov_mask!(coverage, geom; sentinel_μ = zero(T))
         return ws.volume
     end
 
@@ -1690,6 +1723,7 @@ function material_paths(ws::EICTWorkspace{T}, phantom; kwargs...) where {T}
     return material_paths!(paths, ws, phantom; kwargs...)
 end
 
+@doc (@doc material_paths)
 function material_paths!(
         paths::AbstractArray{T, 4}, ws::EICTWorkspace{T}, phantom;
         volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,

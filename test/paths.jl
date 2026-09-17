@@ -111,11 +111,18 @@ end
     sinogram = zeros(Float32, f.geom.n_cols, f.geom.n_rows, f.geom.n_angles)
     good = zeros(Float32, f.n_materials, f.geom.n_cols, f.geom.n_rows, f.geom.n_angles)
 
-    # the view count has to be the geometry's
-    @test_throws DimensionMismatch BS.dd_fast_material_paths!(
-        zeros(Float32, f.n_materials, f.geom.n_cols, f.geom.n_rows, 3), f.mask, f.geom;
-        volume_extent = f.extent,
-    )
+    # The detector shape has to be the geometry's, in all three axes: the walk takes its
+    # detector centre from `paths`, so a smaller cache would trace rays down the middle of the
+    # detector and look perfectly healthy.
+    for wrong in (
+            (f.n_materials, f.geom.n_cols, f.geom.n_rows, 3),
+            (f.n_materials, f.geom.n_cols ÷ 2, f.geom.n_rows, f.geom.n_angles),
+            (f.n_materials, f.geom.n_cols, f.geom.n_rows - 1, f.geom.n_angles),
+        )
+        @test_throws DimensionMismatch BS.dd_fast_material_paths!(
+            zeros(Float32, wrong...), f.mask, f.geom; volume_extent = f.extent,
+        )
+    end
     # more materials than the path-length kernel can hold in registers
     @test_throws ArgumentError BS.dd_fast_material_paths!(
         zeros(Float32, 65, f.geom.n_cols, f.geom.n_rows, f.geom.n_angles), f.mask, f.geom;

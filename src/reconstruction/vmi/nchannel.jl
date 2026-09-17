@@ -256,9 +256,24 @@ transmission does not, so merged `Φ` and `I0` are summed over the group and nev
 `groups = [1:2, 3:4]` collapses four photon-counting windows into a low and a high channel,
 which is how a two-measurement comparator is given the same acquisition.
 
+The groups must partition the channels, each appearing exactly once: a channel in two groups
+would enter the likelihood twice as though it were an independent measurement, and one in none
+would be discarded silently.
+
 Returns `(channels, basis, groups)`.
 """
 function merge_channels(; channels, basis, groups, floor_counts::Real = 1.0e-12)
+    K = length(channels)
+    K == basis.n_channels ||
+        throw(DimensionMismatch("channels ($(K)) ≠ basis channels ($(basis.n_channels))"))
+    # Every channel exactly once. An overlapping group would enter the likelihood twice as if it
+    # were an independent measurement; a missing one would be dropped without a word.
+    flat = reduce(vcat, [collect(g) for g in groups]; init = Int[])
+    sort(flat) == collect(1:K) || throw(
+        ArgumentError(
+            "groups must partition the $(K) channels, each exactly once; got $(groups)"
+        )
+    )
     Φ = Float64.(basis.Φ)
     I0 = Float64.(basis.I0)
     nc, nr = size(first(channels))[1:2]
@@ -615,6 +630,11 @@ function decompose_nchannel(;
     K = length(channels)
     K == basis.n_channels ||
         throw(DimensionMismatch("channels ($(K)) ≠ basis channels ($(basis.n_channels))"))
+    K >= 2 || throw(
+        ArgumentError(
+            "the estimator solves for two materials and needs at least two channels, got $(K)"
+        )
+    )
     shape = size(first(channels))
     all(size(h) == shape for h in channels) ||
         throw(DimensionMismatch("every channel must share one sinogram shape"))
@@ -749,16 +769,19 @@ function decompose_cong(;
     sino_y, sino_c = similar(low), similar(low)
     fill!(sino_y, 0.0f0)
     fill!(sino_c, 0.0f0)
+    cong_ws = nothing
     iodine, water, elapsed = try
-        ws = create_cong_workspace(low, material)
+        cong_ws = create_cong_workspace(low, material)
         t = @elapsed apply_cong!(
-            ws, sino_y, sino_c, low, high;
+            cong_ws, sino_y, sino_c, low, high;
             water_basis = (a = 0.0f0, c = 1.0f0),
             newton_max_iter, newton_tol, y_max_factor, y_max_cap,
         )
         Array(sino_y), Array(sino_c), t
     finally
+        # the Cong workspace uploads its own basis arrays, so it is released too
         release_backend!((low, high, sino_y, sino_c); collect = false)
+        cong_ws === nothing || release_backend!(cong_ws; collect = false)
     end
     return (
         sino_iodine = iodine, sino_water = water,
@@ -876,7 +899,9 @@ Stages, all optional:
 - `use_acnr = true`, `acnr_passes = 4`, `acnr_beta_max = 20`, `acnr_hp_sigma_px = 1.5`,
   `acnr_window = 4`.
 - `matrix_size = (512, 512, 1)`, `fbp_filter = SoftFilter()`, `antialias = true`,
-  `recon_rows = geom.n_rows`.
+  `recon_rows = geom.n_rows`. The default reconstruction grid is 512² by one slice whatever the
+  workspace's `ReconOptions` says — this function never sees them — so pass `matrix_size`
+  explicitly when they differ.
 - `vmi_energies = (40, 70, 100, 140)`.
 - `keep_sinograms`, `keep_diagnostics`.
 

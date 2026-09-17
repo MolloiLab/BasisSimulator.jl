@@ -9,7 +9,7 @@ export SimOptions, ReconOptions
 """
     SimOptions
 
-Resolved boolean toggles + numeric knobs for one simulation run.  Each
+Resolved boolean toggles for one simulation run.  Each
 `use_*` field is `Bool` (`true` = effect ON, `false` = effect OFF); every field
 is set by the keyword constructor.
 
@@ -24,12 +24,6 @@ is set by the keyword constructor.
   thresholds eliminate it).  EICT: Gaussian quantum + electronic noise on counts.
 - `use_lag::Bool`: Enable detector lag (afterglow).
 - `use_heel_effect::Bool`: Enable anode heel effect.
-  vendor reconstruction (e.g., Siemens QIR) by blending sampled Poisson counts toward their
-  expectation.  0.0 = raw physics, exact integer Poisson counts (default); 0.7 = 70% noise
-  reduction (~QIR-3).  ANY nonzero value leaves the strict Poisson count model (a scaled Poisson
-  deviate is not Poisson) — statistical-model validation must run at 0.0.  Only affects PCCT
-  sinogram noise; EICT noise is unaffected.  VALIDATION DOCTRINE: HU-accuracy claims must hold at
-  0.0.  Use nonzero only for noise-magnitude studies.
 - `seed::Union{Int, Nothing}`: Random seed for reproducibility.  Default 42.
 - `detector_efficiency_mode::Symbol`: Override detector efficiency calculation mode.
   `:auto` (default) = let driver decide; `:mc_lut` = force MC LUT; `:beer_lambert` = force analytical.
@@ -76,7 +70,9 @@ only.
 
 - `use_fill_factor`, `use_detector_efficiency`, `use_scatter`, `use_optical_crosstalk`,
   `use_focal_spot`, `use_noise`, `use_lag`, `use_heel_effect::Bool`
-- `seed::Union{Int, Nothing} = 42` — noise RNG seed (`nothing` = unseeded)
+- `seed::Union{Int, Nothing} = 42` — noise RNG seed. `nothing` leaves the energy-integrating
+  path unseeded; the photon-counting path seeds with 0, because its workspace always carries an
+  RNG to reseed (`apply_pcct_noise!`).
 - `detector_efficiency_mode::Symbol = :auto` — `:auto`, `:mc_lut`, `:beer_lambert`
 - `projector::Symbol = :dd_fast` — `:dd_fast`, `:dd` (deprecated reference), `:siddon`
 """

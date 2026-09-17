@@ -355,10 +355,13 @@ end
         _ts("  running simulate!")
         res = BS.simulate!(s.ws, s.phantom, s.protocol, s.sim_opts)
         _ts("  simulate! returned")
-        # Return tuple — pcct_sino + I0_bins + pileup_S + raw_counts
+        # Return tuple — pcct_sino + I0_bins + pileup_S + dose + raw_counts
         # (combine/scatter decoupled; raw counts captured by default).
-        # pileup_S is `nothing` when pileup=false.
-        @test propertynames(res) == (:pcct_sino, :I0_bins, :pileup_S, :raw_counts)
+        # pileup_S is `nothing` when pileup=false; dose is the acquisition's DoseReport.
+        @test propertynames(res) == (:pcct_sino, :I0_bins, :pileup_S, :dose, :raw_counts)
+        @test res.dose isa BS.DoseReport && res.dose.ctdi_vol_mGy > 0
+        @test BS.simulate!(s.ws, s.phantom, s.protocol, s.sim_opts; report_dose = false).dose ===
+            nothing
         @test length(res.pcct_sino.bins) == 4
         @test length(res.I0_bins) == 4
         @test all(>(0), res.I0_bins)
@@ -610,8 +613,11 @@ _ts("entering simulate!(EICTWorkspace) — return contract testset")
         _ts("  running simulate!")
         ret = BS.simulate!(s.ws, s.phantom, s.protocol, s.sim_opts)
         _ts("  simulate! returned")
-        # Contract: returns nothing; ws.sinogram populated and finite.
-        @test ret === nothing
+        # Contract: returns the acquisition's dose; ws.sinogram populated and finite.
+        @test propertynames(ret) == (:dose,)
+        @test ret.dose isa BS.DoseReport && ret.dose.ctdi_vol_mGy > 0
+        @test BS.simulate!(s.ws, s.phantom, s.protocol, s.sim_opts; report_dose = false).dose ===
+            nothing
         sino = Array(s.ws.sinogram)
         @test all(isfinite, sino)
         # Phantom is solid water+inserts → at least some non-trivial line integrals.

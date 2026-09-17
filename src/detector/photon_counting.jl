@@ -876,7 +876,9 @@ function apply_pcct_noise!(
             # on differently loaded machines agree exactly.
             n = length(cpu_buf)
             per_chunk = cld(n, _PCCT_NOISE_CHUNKS)
-            base = isnothing(seed) ? 0 : seed
+            # `nothing` means unseeded, so it has to stay unseeded here too: taking a fixed 0
+            # would make every "unseeded" threaded run produce the same counts.
+            base = isnothing(seed) ? rand(Random.default_rng(), UInt64) : UInt64(seed)
             Threads.@threads for chunk in 1:_PCCT_NOISE_CHUNKS
                 lo = (chunk - 1) * per_chunk + 1
                 lo > n && continue

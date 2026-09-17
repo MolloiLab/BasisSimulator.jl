@@ -5,8 +5,10 @@ CT scanner geometry definitions and pre-computed trajectory positions.
 
 This file provides two complementary abstractions:
 
-1. `Scanner{T}` — Generic scanner definition struct with all physical
-   parameters.  Accepts kwargs for flexible scanner configuration.
+1. `Scanner{T}` — the abstract dispatch root over the two detector families,
+   `EICTScanner` (scintillator) and `PCCTScanner` (direct conversion), which
+   share a `ScannerGeometry{T}` whose fields are reachable straight off the
+   scanner.  Each family's constructor takes kwargs and rejects the other's.
    Parameter naming and units follow CatSim/XCIST conventions (see the
    CatSim Parameter Mapping table in the `Scanner` docstring).
 
@@ -17,7 +19,7 @@ This file provides two complementary abstractions:
 # Workflow
 ```julia
 # Define a scanner with physical parameters
-scanner = Scanner(
+scanner = EICTScanner(
     source_to_isocenter = 541.0,  # mm
     source_to_detector = 949.0,   # mm
     detector_rows = 64,
@@ -36,11 +38,15 @@ geom = CTGeometry(scanner; n_angles = 360, fov_cm = 35.0)
 """
     Scanner{T<:AbstractFloat}
 
-Generic CT scanner definition with all physical parameters.
+Abstract root of the scanner families, and the type every consumer dispatches on. It is not
+constructible: build an [`EICTScanner`](@ref) (scintillator detector) or a
+[`PCCTScanner`](@ref) (direct-conversion detector). Both compose a shared
+[`ScannerGeometry`](@ref) whose fields are reachable straight off the scanner, so the geometry
+parameters below read the same on either family, while the detector parameters belong to one
+family each and the other rejects them.
 
-This struct defines the physical scanner configuration. Use `CTGeometry` for
-simulation with pre-computed trajectories. All distances in mm for consistency
-with CatSim and medical imaging conventions.
+Use `CTGeometry` for simulation with pre-computed trajectories. All distances in mm for
+consistency with CatSim and medical imaging conventions.
 
 # Geometry Parameters (Required)
 - `source_to_isocenter::T`: Source-to-isocenter distance (mm), aka SID/SOD
@@ -81,12 +87,12 @@ the bowtie model (whose thickness tables are natively fan-angle-parameterised).
 - `detector_depth::T`: Detector sensor depth (mm)
 - `fill_factor_row::T`: Active area fraction (row direction, 0-1)
 - `fill_factor_col::T`: Active area fraction (column direction, 0-1)
-- `detection_gain::T`: Conversion gain (electrons/keV)
-- `electronic_noise::T`: Electronic noise std dev (electrons)
+- `detection_gain::T`: Conversion gain (electrons/keV) — `EICTScanner` only
+- `electronic_noise::T`: Electronic noise std dev (electrons) — `EICTScanner` only
 
-# Constructor
+# Construction
 ```julia
-Scanner(;
+scanner = EICTScanner(
     source_to_isocenter = 540.0,
     source_to_detector = 950.0,
     detector_rows = 64,
@@ -291,64 +297,6 @@ function PCCTScanner(; detector_material::Symbol = :CdTe, detector_depth::Real =
         pileup, pileup_correction, scatter_correction, T(noise_reduction))
 end
 
-"""
-    Scanner(; kwargs...)
-
-Construct a Scanner with configurable parameters via kwargs.
-
-All distances are in mm. Default values match a generic research CT scanner
-(similar to CatSim defaults).
-
-# Keyword Arguments (with defaults)
-- `source_to_isocenter::Real = 540.0`: Source-to-isocenter distance (mm)
-- `source_to_detector::Real = 950.0`: Source-to-detector distance (mm)
-- `detector_rows::Int = 64`: Number of detector rows
-- `detector_cols::Int = 900`: Number of detector columns
-- `detector_row_size::Real = 1.0`: Detector row pitch (mm)
-- `detector_col_size::Real = 1.0`: Detector column pitch (mm)
-- `detector_row_offset::Real = 0.0`: Row offset (rows)
-- `detector_col_offset::Real = 0.25`: Column offset for quarter-detector shift
-- `focal_spot_width::Real = 1.0`: Focal spot width (mm)
-- `focal_spot_length::Real = 1.0`: Focal spot length (mm)
-- `target_angle::Real = 7.0`: Anode target angle (degrees)
-- `gantry_rotation_time::Real = 0.5`: Rotation time (seconds)
-- `scan_diameter::Real = 500.0`: Maximum scan diameter (mm)
-- `gantry_aperture::Real = 700.0`: Gantry bore diameter (mm)
-- `flat_filter_material::Symbol = :aluminum`: Flat filter material
-- `flat_filter_thickness::Real = 2.0`: Flat filter thickness (mm)
-- `bowtie_filter::Symbol = :large_body`: Bowtie filter (`:large_body`, `:medium_body`, `:small_body`, `:head`, `:none`)
-- `detector_material::Symbol = :lumex`: Detector scintillator
-- `detector_depth::Real = 3.0`: Detector depth (mm)
-- `fill_factor_row::Real = 0.9`: Row fill factor (0-1)
-- `fill_factor_col::Real = 0.9`: Column fill factor (0-1)
-- `detection_gain::Real = 15.0`: Detection gain (electrons/keV)
-- `electronic_noise::Real = 5000.0`: Electronic noise (electrons)
-
-# Example
-```julia
-# Generic research scanner (defaults)
-scanner = Scanner()
-
-# Custom scanner with specific geometry
-scanner = Scanner(
-    source_to_isocenter = 626.0,  # GE Revolution-like
-    source_to_detector = 1097.0,
-    detector_rows = 256,
-    detector_cols = 832,
-    detector_row_size = 0.625,
-    target_angle = 10.0
-)
-
-# Flat-panel-style scanner (the detector is always modeled as planar)
-scanner = Scanner(
-    detector_rows = 512,
-    detector_cols = 512,
-    detector_row_size = 0.15,
-    detector_col_size = 0.15
-)
-```
-"""
-
 # =============================================================================
 # CTGeometry - Pre-computed Trajectory Positions
 # =============================================================================
@@ -525,7 +473,7 @@ trajectory positions suitable for simulation.
 # Example
 ```julia
 # Create scanner and geometry
-scanner = Scanner(
+scanner = EICTScanner(
     source_to_isocenter = 541.0,
     source_to_detector = 949.0,
     detector_rows = 64,
@@ -734,7 +682,7 @@ end
 # =============================================================================
 
 """
-    _build_pcct_detector(scanner::Scanner) -> PhotonCountingDetector
+    _build_pcct_detector(scanner::PCCTScanner) -> PhotonCountingDetector
 
 Internal: construct a PhotonCountingDetector from Scanner's flat PCCT kwargs.
 

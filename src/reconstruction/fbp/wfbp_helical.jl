@@ -316,7 +316,7 @@ a mean of −49 HU over more than half the core, with no other sign of trouble).
 collimation width at each end of the helix never reaches coverage 1.
 
 `mask_fov` sets the voxels outside the reconstruction circle to the same sentinel the axial FDK
-uses, so the two paths return the same convention.
+uses, so the two paths return the same convention, and zeroes their `coverage` with them.
 """
 function wfbp_helical_reconstruct(
         sinogram::AbstractArray{T, 3},
@@ -329,15 +329,31 @@ function wfbp_helical_reconstruct(
         mask_fov::Bool = true,
     ) where {T <: AbstractFloat}
 
-    coverage === nothing || size(coverage) == volume_size || throw(
-        DimensionMismatch("coverage $(size(coverage)) must match the volume $(volume_size)")
-    )
+    if coverage !== nothing
+        size(coverage) == volume_size || throw(
+            DimensionMismatch("coverage $(size(coverage)) must match the volume $(volume_size)")
+        )
+        # Caught here rather than as a kernel-compilation failure deep in the backprojection.
+        eltype(coverage) === T || throw(
+            ArgumentError(
+                "coverage is $(eltype(coverage)); the sinogram is $(T), and they share a kernel"
+            )
+        )
+        typeof(similar(coverage, T, 1)).name === typeof(similar(sinogram, T, 1)).name || throw(
+            ArgumentError("coverage lives on a different backend from the sinogram")
+        )
+    end
     reb, Δt = _wfbp_rebin(sinogram, geom)
     filter_sinogram!(reb, geom; filter = filter, cutoff = cutoff,
         apply_cosine = false, ray_spacing = Δt)
     volume = similar(sinogram, T, volume_size...)
     fill!(volume, zero(T))
     _wfbp_backproject!(volume, reb, geom, Δt; helical_q = helical_q, coverage = coverage)
-    mask_fov && apply_fov_mask!(volume, geom)
+    if mask_fov
+        apply_fov_mask!(volume, geom)
+        # A voxel the mask discards is not reconstructed either, so it gets no coverage: a
+        # caller filtering on `coverage .== 1` must not keep the sentinel ring.
+        coverage === nothing || apply_fov_mask!(coverage, geom; sentinel_μ = zero(T))
+    end
     return volume
 end

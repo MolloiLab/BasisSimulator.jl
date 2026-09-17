@@ -332,6 +332,7 @@ function fdk_reconstruct(
     cutoff::Float64 = 1.0,
     helical_q::Real = 0.7,
     coverage::Union{Nothing, AbstractArray{T, 3}} = nothing,
+    mask_fov::Bool = true,
 ) where T <: AbstractFloat
 
     # Helical trajectories route to the rebinned WFBP chain (Stierstorfer
@@ -341,7 +342,8 @@ function fdk_reconstruct(
     # voxels the helix actually sampled.
     if is_helical(geom)
         return wfbp_helical_reconstruct(sinogram, geom, volume_size;
-            filter = filter, cutoff = cutoff, helical_q = helical_q, coverage = coverage)
+            filter = filter, cutoff = cutoff, helical_q = helical_q, coverage = coverage,
+            mask_fov = mask_fov)
     end
     coverage === nothing || throw(ArgumentError(
         "coverage is only defined for a helical geometry; this one is axial"
@@ -355,7 +357,7 @@ function fdk_reconstruct(
     volume = backproject(filtered, geom, volume_size)
 
     # Step 3: Mask outside FOV (clinical convention)
-    apply_fov_mask!(volume, geom)
+    mask_fov && apply_fov_mask!(volume, geom)
 
     return volume
 end

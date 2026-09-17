@@ -20,12 +20,6 @@ _helical_geom(; shape = :arc, pitch = 1.0, n_angles = 360, fov_cm = 20.0, z_cm =
 # coordinate the mapping sent it to.
 _row_ramp(geom) = Float32[Float32(r) for _ in 1:(geom.n_cols), r in 1:(geom.n_rows), _ in 1:(geom.n_angles)]
 
-function _backproject_rows(geom; volume_size = (16, 16, 8))
-    volume = zeros(Float32, volume_size)
-    BS._wfbp_backproject!(volume, _row_ramp(geom), geom, Float32(geom.pixel_size))
-    return volume
-end
-
 @testset "arc detectors get the cylindrical row mapping" begin
     arc = _helical_geom(shape = :arc)
     flat = _helical_geom(shape = :flat)

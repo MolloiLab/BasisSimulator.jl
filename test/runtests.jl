@@ -26,7 +26,6 @@ const BS = BasisSimulator
     end
     @testset "geometry/" begin
         include("geometry.jl")
-    include("scanner_split.jl")
     end
     @testset "helical/" begin
         include("helical.jl")
@@ -48,6 +47,9 @@ const BS = BasisSimulator
     end
     @testset "projection/" begin
         include("projection.jl")
+    end
+    @testset "scanner families/" begin
+        include("scanner_split.jl")
     end
     @testset "source/" begin
         include("source.jl")

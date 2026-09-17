@@ -30,6 +30,7 @@
 # CTDIvol; the uncalibrated beam quantities are reported alongside.
 
 const _KEV_PER_G_TO_MGY = 1.602176634e-10      # 1 keV/g = 1.602e-13 Gy
+const _CTDI_CHAMBER_MM = 100.0                 # the pencil ionisation chamber's active length
 const _ELECTRON_REST_KEV = 510.99895
 
 # NIST NISTIR-5632 (Hubbell & Seltzer) mass energy-absorption coefficient of dry air, cm²/g.
@@ -39,7 +40,11 @@ const _MUEN_AIR = [
     0.02325, 0.02496, 0.02672,
 ]
 
-"Mass energy-absorption coefficient of dry air (cm²/g) at `E` keV, log-log interpolated."
+"""
+Mass energy-absorption coefficient of dry air (cm²/g) at `E` keV, log-log interpolated on the
+NIST table. Outside it the value is extrapolated: below 5 keV as `E^-3`, above 200 keV as the
+last tabulated value. Neither matters for a diagnostic beam.
+"""
 function muen_rho_air(E::Real)
     xs, ys = _MUEN_AIR_E, _MUEN_AIR
     E <= xs[1] && return ys[1] * (xs[1] / E)^3
@@ -293,10 +298,14 @@ function ctdi100(
     )
     R = phantom === :body32 ? 16.0 : phantom === :head16 ? 8.0 :
         throw(ArgumentError("phantom must be :body32 or :head16, got :$(phantom)"))
+    # Keyed on everything the transport reads. The bowtie enters by its materials and
+    # thickness profile, not by its name: a DoseSource assembled by hand can carry one name and
+    # another filter, and answering that from the cache would be wrong by a factor of two.
     key = hash(
         (
-            src.E, src.phi_iso, src.SAD_mm, src.bowtie_name, R, Float64(beam_width_mm),
-            Float64(nominal_collimation_mm), Int(n_histories), Int(seed),
+            src.E, src.phi_iso, src.SAD_mm, src.bowtie.materials, src.bowtie.thickness,
+            src.bowtie_name, R, Float64(beam_width_mm), Float64(nominal_collimation_mm),
+            Int(n_histories), Int(seed),
         )
     )
     cached = lock(() -> get(_CTDI_CACHE, key, nothing), _CTDI_CACHE_LOCK)
@@ -349,6 +358,9 @@ function ctdi100(
     return result
 end
 
+"Forget every memoised CTDI100 result (see [`ctdi100`](@ref))."
+empty_ctdi_cache!() = lock(() -> (empty!(_CTDI_CACHE); nothing), _CTDI_CACHE_LOCK)
+
 # ─────────────────────────────────────────────────────────────────────────────────────────────
 # The report
 # ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -379,7 +391,7 @@ struct DoseReport
     filters::Vector{Tuple{String, Float64}}
     bowtie::Symbol
     dose_calibration::Float64
-    n_histories::Int
+    n_histories::Int                                 # as transported: rounded up to whole chunks
     rel_stat_uncertainty::Float64
 end
 
@@ -438,7 +450,11 @@ function compute_dose(
             src; phantom, beam_width_mm = wide_reference + overbeam_mm,
             nominal_collimation_mm = wide_reference, n_histories, seed,
         )
-        scale = (beam / NT) / ((wide_reference + overbeam_mm) / wide_reference)
+        # CTDI_free-air(N·T) = D₀ · min(N·T, 100) / (N·T): the pencil chamber is 100 mm long, so
+        # the free-in-air integral stops growing once the beam is wider than it. Using the
+        # unsaturated ratio over-reports a 160 mm beam by 1.6x.
+        scale = (min(beam, _CTDI_CHAMBER_MM) / NT) /
+            (min(wide_reference + overbeam_mm, _CTDI_CHAMBER_MM) / wide_reference)
         (;
             center = reference.center * scale, periphery = reference.periphery * scale,
             primary_center = reference.primary_center * scale,
@@ -461,7 +477,7 @@ function compute_dose(
         phantom, src.kVp, mAs, NT, beam,
         helical ? Float64(protocol.pitch) : nothing, increment, protocol.n_rotations, scan_length_cm,
         wide_reference, src.filters, src.bowtie_name, Float64(dose_calibration),
-        Int(n_histories), mc.rel_stat_uncertainty,
+        cld(Int(n_histories), _DOSE_N_CHUNKS) * _DOSE_N_CHUNKS, mc.rel_stat_uncertainty,
     )
 end
 
@@ -487,12 +503,19 @@ compute_dlp(scanner::Scanner, protocol::CTProtocol; kwargs...) =
     compute_dose(scanner, protocol; kwargs...).dlp_mGy_cm
 
 """
-    dose_report(ws, protocol; kwargs...) -> DoseReport
+    dose_report(ws, protocol; kwargs...) -> Union{DoseReport, Nothing}
 
-The dose of the acquisition a workspace simulates, from the beam stored in `ws.dose_source`.
-Every `simulate!` result carries this report as `result.dose`.
+The dose of the acquisition a workspace simulates, from the beam stored in `ws.dose_source`, or
+`nothing` when that workspace has no beam in absolute units (a monoenergetic or otherwise
+overridden spectrum). Every `simulate!` result carries this report as `result.dose`; pass
+`dose_kwargs` there to reach the keywords of [`compute_dose`](@ref), which this forwards —
+the defaults are a single tube and the 32 cm body phantom.
 """
-dose_report(ws, protocol::CTProtocol; kwargs...) = compute_dose(ws.dose_source, protocol; kwargs...)
+function dose_report(ws, protocol::CTProtocol; kwargs...)
+    ws.dose_source === nothing && return nothing
+    return compute_dose(ws.dose_source, protocol; kwargs...)
+end
 
 export DoseSource, DoseReport, dose_source, air_kerma_free_in_air, ctdi100
 export compute_dose, compute_ctdi_vol, compute_dlp, dose_report, muen_rho_air
+export empty_ctdi_cache!

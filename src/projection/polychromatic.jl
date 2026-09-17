@@ -464,6 +464,29 @@ function _forward_project_poly!(
 
     n_energies = length(energies)
 
+    # Validated here, before any of the branches below could quietly not use it: `paths` only
+    # means anything on the :dd_fast two-pass path, and being ignored would look like a
+    # speed-up that never happened.
+    if paths !== nothing
+        projector === :dd_fast || throw(
+            ArgumentError(
+                "paths= is the :dd_fast two-pass projection; got projector=:$(projector)"
+            )
+        )
+        (ws_μ_table_gpu !== nothing && ws_wη_gpu !== nothing) || throw(
+            ArgumentError(
+                "paths= needs the workspace's attenuation table and spectral weights"
+            )
+        )
+        size(ws_μ_table_gpu, 1) <= _PLEN_MAX_MATERIALS || throw(
+            ArgumentError(
+                "paths= needs at most $(_PLEN_MAX_MATERIALS) materials, the table has " *
+                    "$(size(ws_μ_table_gpu, 1)); call compact_materials(phantom) first"
+            )
+        )
+        fused && throw(ArgumentError("paths= and fused=true are two different projections"))
+    end
+
     # =========================================================================
     # FUSED PATH: single AK.foreachindex kernel, traces mask ONCE
     # =========================================================================
@@ -509,13 +532,6 @@ function _forward_project_poly!(
         # per-energy registers → K=16 required).
         # ---------------------------------------------------------------------
         if paths !== nothing
-            projector === :dd_fast || throw(ArgumentError(
-                "paths= is the :dd_fast two-pass projection; got projector=:$(projector)"
-            ))
-            size(ws_μ_table_gpu, 1) <= _PLEN_MAX_MATERIALS || throw(ArgumentError(
-                "paths= needs at most $(_PLEN_MAX_MATERIALS) materials, the table has " *
-                    "$(size(ws_μ_table_gpu, 1)); call compact_materials(phantom) first"
-            ))
             @info "TWO-PASS PATH (:dd_fast cached path lengths): n_energies=$n_energies, sino=$(size(sinogram))" maxlog = 1
             dd_fast_poly_from_paths!(
                 sinogram, paths, ws_μ_table_gpu, ws_wη_gpu;
