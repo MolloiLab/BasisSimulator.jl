@@ -17,10 +17,12 @@ Julia registry has accepted a registration request.
    anything that touches them yourself and report the numbers.
 
 3. **Write the changelog entry.** A new section at the top of `CHANGELOG.md`, dated, with the
-   version compared against the previous tag. Group by `Added` / `Changed` / `Fixed` /
-   `Performance` / `Breaking`. Say what a reader has to do differently, and give the measured
-   number for anything claimed to be faster or more accurate. One line per change is enough if
-   the line is specific; "various improvements" is not an entry.
+   version compared against the previous tag. Group by `Breaking` / `Added` / `Changed` /
+   `Fixed` / `Performance` / `Documented`, in that order, skipping the groups with nothing in
+   them. Say what a reader has to do differently, and give the measured number for anything
+   claimed to be faster or more accurate — and say what hardware measured it, because a CPU
+   test count and a GPU timing are not the same claim. One line per change is enough if the
+   line is specific; "various improvements" is not an entry.
 
 4. **Bump `version` in `Project.toml`** to match.
 

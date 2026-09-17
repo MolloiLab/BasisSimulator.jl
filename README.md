@@ -39,9 +39,11 @@ AT = GPUSelect.Storage()  # MtlArray / CuArray / ROCArray / oneArray / Array
 to_gpu(x) = AT(x)
 
 phantom_cpu = BS.create_gammex_472(n_voxels=256)
-phantom = BS.Phantom(to_gpu(phantom_cpu.mask),
+phantom = BS.Phantom(to_gpu(phantom_cpu.mask),     # mask on the device, materials stay on the host
                      phantom_cpu.materials,
-                     phantom_cpu.voxel_size)
+                     phantom_cpu.voxel_size,
+                     phantom_cpu.origin,
+                     phantom_cpu.extent)
 
 scanner = BS.EICTScanner(
     source_to_isocenter = 626.0,   # mm
@@ -72,20 +74,32 @@ Scanning one phantom at several tube voltages? The volume walk does not depend o
 so walk once and reuse it — bit-identically, and 2 to 3 times faster over four voltages:
 
 ```julia
-paths = BS.material_paths(ws, phantom)
-for (kvp, ws_kvp) in workspaces
-    BS.simulate!(ws_kvp, phantom, protocols[kvp], sim_opts; paths)
+paths = BS.material_paths(ws, phantom)          # one walk, reused by every voltage below
+for kvp in (80.0, 100.0, 120.0, 140.0)
+    protocol_kvp = BS.CTProtocol(kVp=kvp, mA=200.0, views=984)
+    ws_kvp = BS.create_eict_workspace(scanner, protocol_kvp, sim_opts, rec_opts, phantom)
+    BS.simulate!(ws_kvp, phantom, protocol_kvp, sim_opts; paths)
 end
 ```
 
 Photon-counting bins to virtual monoenergetic images, the estimator of notebooks 03/04/12:
 
 ```julia
+scanner_pcct = BS.PCCTScanner(
+    source_to_isocenter = 626.0, source_to_detector = 1097.0,
+    detector_rows       = 64,    detector_cols      = 832,
+    detector_row_size   = 0.625, detector_col_size  = 1.053,
+    energy_thresholds   = [20.0, 35.0, 55.0, 70.0],
+    dead_time_ns        = 5.0,                 # pile-up is modelled only once there is a dead time
+    pileup_correction   = true,                # the decomposition wants corrected counts
+)
+ws_pcct = BS.create_workspace(scanner_pcct, protocol, sim_opts, rec_opts, phantom)
 result = BS.simulate!(ws_pcct, phantom, protocol, sim_opts)
 basis = BS.spectral_basis(ws_pcct; I0_bins = result.I0_bins)
 vmi = BS.vmi_pipeline(;
     channels = [Array(b) for b in result.pcct_sino.bins], basis, geom = ws_pcct.geom,
     to_backend = to_gpu, reduce_rows = true, use_tlbf = true,
+    matrix_size = (512, 512, 1),           # it never sees rec_opts, so say the grid here
 )                      # vmi.vmis at 40/70/100/140 keV, in HU
 ```
 

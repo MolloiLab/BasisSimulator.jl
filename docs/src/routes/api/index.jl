@@ -22,6 +22,7 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
             ("geometry", "Geometry & coordinate mapping"),
             ("spectrum", "Spectrum & source"),
             ("forward", "Forward projection"),
+            ("dose", "Dose & CTDI"),
             ("reconstruction", "Reconstruction"),
             ("corrections", "Corrections & calibration"),
             ("detector", "Detector physics"),
@@ -62,11 +63,11 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                 ),
                 Pre(
                     :class => code_cls, Code(
-                        :class => "language-text", """Phantom  ─┐
-                        Scanner  ─┤
-                        Protocol ─┼─▶  create_workspace → simulate!  →  reconstruct!  →  to_hounsfield → recon (HU)
-                        SimOpts  ─┤
-                        ReconOpts─┘"""
+                        :class => "language-text", """Phantom   ─┐
+                        EICT/PCCTScanner ─┤
+                        Protocol  ─┼─▶  create_*_workspace → simulate!  →  reconstruct!  →  to_hounsfield → recon (HU)
+                        SimOpts   ─┤
+                        ReconOpts ─┘"""
                     )
                 ),
                 P(
@@ -87,8 +88,10 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                 P(
                     :class => prose_cls,
                     "These are the load-bearing types — every public entry point in the package ",
-                    "takes some combination of them.  Each one is a concrete struct with named ",
-                    "fields, no abstract type machinery.  Construct, pass, done."
+                    "takes some combination of them.  Four are concrete structs with named fields; ",
+                    "the scanner is the one abstraction, an abstract ", Code(:class => inline, "Scanner"),
+                    " with a concrete family per detector type, so that a photon-counting parameter ",
+                    "cannot be set on a scintillator and the other way round.  Construct, pass, done."
                 ),
 
                 # ── 2a. Phantom ──────────────────────────────────────────────
@@ -118,19 +121,21 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                             AT = GPUSelect.Storage()
                             to_gpu(x) = AT(x)
                             phantom_cpu = BS.create_gammex_472(n_voxels = 512)
-                            phantom = BS.Phantom(to_gpu(phantom_cpu.mask),
-                                                 phantom_cpu.materials,
-                                                 phantom_cpu.voxel_size)"""
+                            phantom = BS.Phantom(to_gpu(phantom_cpu.mask),   # mask on the device
+                                                 phantom_cpu.materials,     # materials on the host
+                                                 phantom_cpu.voxel_size,
+                                                 phantom_cpu.origin,
+                                                 phantom_cpu.extent)"""
                         )
                     ),
                     P(:class => note_cls, "see: notebooks 01, 02, 05"),
                 ),
 
                 # ── 2b. Scanner ──────────────────────────────────────────────
-                H3(:id => "scanner-struct", :class => h3_cls, "Scanner"),
+                H3(:id => "scanner-struct", :class => h3_cls, "EICTScanner / PCCTScanner"),
                 Div(
                     :class => card_cls,
-                    Div(:class => sig_cls, "Scanner(; source_to_isocenter, source_to_detector, detector_rows, ...)"),
+                    Div(:class => sig_cls, "EICTScanner(; source_to_isocenter, source_to_detector, detector_rows, ...)  |  PCCTScanner(; energy_thresholds, ...)"),
                     P(
                         :class => prose_cls,
                         "The hardware — geometry, source, detector, filtration.  All distances in mm; ",
@@ -141,16 +146,16 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                         :class => table_cls,
                         Tr(Th(:class => th_cls, "kwarg group"), Th(:class => th_cls, ""), Th(:class => th_cls, "")),
                         Tr(Td(:class => td_mono, "Geometry"), Td(:class => td_cls, ""), Td(:class => td_cls, "source_to_isocenter, source_to_detector (mm); scan_diameter; gantry_aperture")),
-                        Tr(Td(:class => td_mono, "Detector array"), Td(:class => td_cls, ""), Td(:class => td_cls, "detector_rows, detector_cols, detector_row_size, detector_col_size, detector_row_offset, detector_col_offset (flat/planar array; equiangular arc planned)")),
+                        Tr(Td(:class => td_mono, "Detector array"), Td(:class => td_cls, ""), Td(:class => td_cls, "detector_rows, detector_cols, detector_row_size, detector_col_size, detector_row_offset, detector_col_offset, detector_shape (:flat | :arc)")),
                         Tr(Td(:class => td_mono, "Source"), Td(:class => td_cls, ""), Td(:class => td_cls, "focal_spot_width, focal_spot_length, target_angle")),
                         Tr(Td(:class => td_mono, "Filtration"), Td(:class => td_cls, ""), Td(:class => td_cls, "flat_filter_material, flat_filter_thickness, bowtie_filter (Symbol or struct)")),
-                        Tr(Td(:class => td_mono, "Detector physics"), Td(:class => td_cls, ""), Td(:class => td_cls, "detector_material, detector_depth, fill_factor_row, fill_factor_col, detection_gain, electronic_noise")),
-                        Tr(Td(:class => td_mono, "PCCT"), Td(:class => td_cls, ""), Td(:class => td_cls, "detector_type (:eict | :photon_counting), n_energy_bins, energy_thresholds, energy_resolution, charge_sharing_fwhm, dead_time_ns, native_dexel_col_mm, native_dexel_row_mm, binning_factor")),
+                        Tr(Td(:class => td_mono, "EICTScanner"), Td(:class => td_cls, ""), Td(:class => td_cls, "detector_material, detector_depth, fill_factor_row, fill_factor_col, detection_gain, electronic_noise")),
+                        Tr(Td(:class => td_mono, "PCCTScanner"), Td(:class => td_cls, ""), Td(:class => td_cls, "n_energy_bins, energy_thresholds, energy_resolution, charge_sharing_fwhm, dead_time_ns, pixel_mode, native_dexel_col_mm, native_dexel_row_mm, binning_factor, pileup (modelled only when dead_time_ns > 0), pileup_correction, scatter_correction, noise_reduction")),
                     ),
                     Pre(
                         :class => code_cls, Code(
                             :class => "language-julia", """# GE Revolution Apex Elite (EICT, polychromatic)
-                            scanner = BS.Scanner(
+                            scanner = BS.EICTScanner(
                                 source_to_isocenter = 625.6,
                                 source_to_detector  = 1100.0,
                                 detector_rows       = 256,
@@ -196,35 +201,37 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                 H3(:id => "simoptions-struct", :class => h3_cls, "SimOptions"),
                 Div(
                     :class => card_cls,
-                    Div(:class => sig_cls, "SimOptions(; fidelity, seed, use_*..., pcct_noise_reduction, ...)"),
+                    Div(:class => sig_cls, "SimOptions(; seed, use_*..., detector_efficiency_mode, projector)"),
                     P(
                         :class => prose_cls,
-                        Code(:class => inline, "fidelity"), " is the master switch — ",
-                        Code(:class => inline, ":eict"), " for energy-integrating CT (single-kVp polychromatic), ",
-                        Code(:class => inline, ":pcct"), " for photon-counting CT (multi-bin spectral).  ",
-                        "Each fidelity preset turns on the appropriate physics; the per-effect ",
-                        Code(:class => inline, "use_*"), " toggles override the preset for A/B testing."
+                        "The physics common to both detector families, one toggle each.  What belongs to a ",
+                        "particular detector — pile-up, its correction, the scatter correction, the DAS noise ",
+                        "reduction — lives on ", Code(:class => inline, "PCCTScanner"), " instead, so a scan ",
+                        "cannot be configured with physics its detector does not have."
                     ),
                     Table(
                         :class => table_cls,
                         Tr(Th(:class => th_cls, "field"), Th(:class => th_cls, "default"), Th(:class => th_cls, "")),
-                        Tr(Td(:class => td_mono, "fidelity"), Td(:class => td_cls, ":eict"), Td(:class => td_cls, ":eict | :pcct")),
-                        Tr(Td(:class => td_mono, "seed"), Td(:class => td_cls, "1234"), Td(:class => td_cls, "Reproducibility for noise / scatter sampling.")),
+                        Tr(Td(:class => td_mono, "seed"), Td(:class => td_cls, "42"), Td(:class => td_cls, "Reproducibility for noise / scatter sampling.")),
                         Tr(Td(:class => td_mono, "use_noise"), Td(:class => td_cls, "true"), Td(:class => td_cls, "Quantum (Poisson) noise.")),
-                        Tr(Td(:class => td_mono, "use_scatter"), Td(:class => td_cls, "preset"), Td(:class => td_cls, "Ohnesorge spatial scatter model.")),
-                        Tr(Td(:class => td_mono, "use_focal_spot"), Td(:class => td_cls, "preset"), Td(:class => td_cls, "Focal-spot blur.")),
-                        Tr(Td(:class => td_mono, "use_heel_effect"), Td(:class => td_cls, "preset"), Td(:class => td_cls, "Anode heel-effect intensity gradient.")),
-                        Tr(Td(:class => td_mono, "use_lag"), Td(:class => td_cls, "preset"), Td(:class => td_cls, "Detector temporal lag.")),
-                        Tr(Td(:class => td_mono, "use_optical_crosstalk"), Td(:class => td_cls, "preset"), Td(:class => td_cls, "EICT scintillator pixel crosstalk.")),
-                        Tr(Td(:class => td_mono, "use_fill_factor"), Td(:class => td_cls, "preset"), Td(:class => td_cls, "Sub-pixel detector fill factor.")),
-                        Tr(Td(:class => td_mono, "use_detector_efficiency"), Td(:class => td_cls, "preset"), Td(:class => td_cls, "Energy-dependent quantum efficiency.")),
-                        Tr(Td(:class => td_mono, "pcct_noise_reduction"), Td(:class => td_cls, "0.0"), Td(:class => td_cls, "0–1 vendor-style DAS noise correction (PCCT only).")),
+                        Tr(Td(:class => td_mono, "use_scatter"), Td(:class => td_cls, "true"), Td(:class => td_cls, "Ohnesorge spatial scatter model.")),
+                        Tr(Td(:class => td_mono, "use_focal_spot"), Td(:class => td_cls, "true"), Td(:class => td_cls, "Focal-spot blur.")),
+                        Tr(Td(:class => td_mono, "use_heel_effect"), Td(:class => td_cls, "true"), Td(:class => td_cls, "Anode heel-effect intensity gradient.")),
+                        Tr(Td(:class => td_mono, "use_lag"), Td(:class => td_cls, "true"), Td(:class => td_cls, "Scintillator afterglow (EICT only).")),
+                        Tr(Td(:class => td_mono, "use_optical_crosstalk"), Td(:class => td_cls, "false"), Td(:class => td_cls, "EICT scintillator pixel crosstalk.")),
+                        Tr(Td(:class => td_mono, "use_fill_factor"), Td(:class => td_cls, "true"), Td(:class => td_cls, "Sub-pixel detector fill factor.")),
+                        Tr(Td(:class => td_mono, "use_detector_efficiency"), Td(:class => td_cls, "true"), Td(:class => td_cls, "Energy-dependent quantum efficiency.")),
+                        Tr(Td(:class => td_mono, "detector_efficiency_mode"), Td(:class => td_cls, ":auto"), Td(:class => td_cls, ":auto | :mc_lut | :beer_lambert")),
+                        Tr(Td(:class => td_mono, "projector"), Td(:class => td_cls, ":dd_fast"), Td(:class => td_cls, ":dd_fast | :dd | :siddon")),
                     ),
                     Pre(
                         :class => code_cls, Code(
-                            :class => "language-julia", """sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234)
-                            # or:
-                            sim_opts = BS.SimOptions(fidelity = :pcct, seed = 1234, pcct_noise_reduction = 0.3)"""
+                            :class => "language-julia", """sim_opts = BS.SimOptions(seed = 1234)
+                            # photon-counting detector physics belongs to the scanner:
+                            scanner = BS.PCCTScanner(energy_thresholds = [20.0, 35.0, 55.0, 70.0],
+                                                     dead_time_ns = 5.0,      # pile-up needs one
+                                                     pileup_correction = true,
+                                                     noise_reduction = 0.3)"""
                         )
                     ),
                 ),
@@ -544,7 +551,7 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                     ),
                     Pre(
                         :class => code_cls, Code(
-                            :class => "language-julia", """ws = sim_opts.fidelity == :pcct ?
+                            :class => "language-julia", """ws = scanner isa BS.PCCTScanner ?
                             BS.create_workspace(scanner, protocol, sim_opts, recon_opts, phantom) :
                             BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)"""
                         )
@@ -585,7 +592,119 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                         Code(:class => inline, "capture_raw_counts=false"),
                         " only when memory-constrained."
                     ),
+                    P(
+                        :class => prose_cls,
+                        "Both methods return a NamedTuple carrying ", Code(:class => inline, "dose"),
+                        " — a ", Code(:class => inline, "DoseReport"), " for the acquisition just simulated, or ",
+                        Code(:class => inline, "nothing"), " when the workspace was built with a ",
+                        Code(:class => inline, "spectrum_override"), " and so has no beam in absolute units.  ",
+                        "Pass ", Code(:class => inline, "report_dose = false"), " to skip the Monte Carlo, or ",
+                        Code(:class => inline, "dose_kwargs"), " to reach the keywords of ",
+                        Code(:class => inline, "compute_dose"), "."
+                    ),
                     P(:class => note_cls, "see notebooks 01–11 for canonical end-to-end call patterns"),
+                ),
+
+                # ── 6c. Cached per-material path lengths ─────────────────────
+                H3(:id => "paths-cache", :class => h3_cls, "Cached per-material path lengths"),
+                Div(
+                    :class => card_cls,
+                    Div(:class => sig_cls, "material_paths(ws, phantom) → Array   |   material_paths!(paths, ws, phantom)"),
+                    P(
+                        :class => prose_cls,
+                        "Walks the phantom once and returns the path length of every ray through every ",
+                        "material, in cm, shaped ", Code(:class => inline, "(n_materials, n_cols, n_rows, n_views)"),
+                        " on the phantom's backend.  The walk is about 95 % of a polychromatic forward ",
+                        "projection and depends only on the geometry and the material map — not on kVp, ",
+                        "filtration, bowtie or detector — so one cache serves every spectrum measured ",
+                        "through that geometry.  Pass it back as ", Code(:class => inline, "paths"),
+                        " and each further acquisition costs the spectral conversion alone, bit-identically."
+                    ),
+                    Pre(
+                        :class => code_cls, Code(
+                            :class => "language-julia", """paths = BS.material_paths(ws, phantom)              # one walk
+                            for kvp in (80.0, 100.0, 120.0, 140.0)
+                                protocol_kvp = BS.CTProtocol(kVp = kvp, mA = 200.0, views = 984)
+                                ws_kvp = BS.create_eict_workspace(scanner, protocol_kvp, sim_opts, rec_opts, phantom)
+                                BS.simulate!(ws_kvp, phantom, protocol_kvp, sim_opts; paths)
+                            end"""
+                        )
+                    ),
+                    P(
+                        :class => note_cls,
+                        "The cache belongs to the phantom and geometry it was walked for and nothing ",
+                        "downstream can tell that it does not; its size is the other cost (16 materials on an ",
+                        "834 × 34 × 1000 sinogram is 1.7 GiB), so run compact_materials(phantom) first."
+                    ),
+                ),
+
+                # ════════════════════════════════════════════════════════════════
+                # § 6½. Dose & CTDI
+                # ════════════════════════════════════════════════════════════════
+                H2(:id => "dose", :class => h2_cls, "Dose & CTDI"),
+                P(
+                    :class => prose_cls,
+                    "CTDI is measured the way IEC 60601-2-44 defines it: the beam is transported by ",
+                    "Monte Carlo through a PMMA cylinder — 32 cm body or 16 cm head — and the air kerma ",
+                    "is integrated over a 100 mm pencil chamber at the centre and at the four peripheral ",
+                    "holes.  Nothing about it is a lookup table, so it follows the spectrum, the flat ",
+                    "filter, the added filters and the bowtie of the scanner that is actually being simulated."
+                ),
+                Div(
+                    :class => card_cls,
+                    Div(:class => sig_cls, "compute_dose(scanner, protocol; phantom = :body32, overbeam_mm = 0.0, n_tubes = 1, dose_calibration = 1.0, n_histories = 1_000_000, seed = 1) → DoseReport"),
+                    P(
+                        :class => prose_cls,
+                        "CTDIvol and DLP of one acquisition.  Helical protocols divide CTDIw by the pitch ",
+                        "and take the scan length from it; axial ones use the table increment, which ",
+                        "defaults to a contiguous N·T step.  ",
+                        Code(:class => inline, "overbeam_mm"),
+                        " is how much wider than N·T the real collimator runs (the simulator's beam is ",
+                        "exactly the collimation, so it defaults to 0); ",
+                        Code(:class => inline, "dose_calibration"),
+                        " multiplies the result, to pin a scanner to a measured CTDIvol."
+                    ),
+                    Table(
+                        :class => table_cls,
+                        Tr(Th(:class => th_cls, "DoseReport field"), Th(:class => th_cls, "unit"), Th(:class => th_cls, "")),
+                        Tr(Td(:class => td_mono, "ctdi_vol_mGy"), Td(:class => td_cls, "mGy"), Td(:class => td_cls, "CTDIw scaled by mAs and pitch (or increment).")),
+                        Tr(Td(:class => td_mono, "dlp_mGy_cm"), Td(:class => td_cls, "mGy·cm"), Td(:class => td_cls, "CTDIvol × scan length.")),
+                        Tr(Td(:class => td_mono, "ctdi_w_mGy_per_100mAs"), Td(:class => td_cls, "mGy/100 mAs"), Td(:class => td_cls, "⅓ centre + ⅔ periphery, per 100 mAs.")),
+                        Tr(Td(:class => td_mono, "ctdi100_center_… / …_periphery_…"), Td(:class => td_cls, "mGy/100 mAs"), Td(:class => td_cls, "The two chamber integrals the weighting combines.")),
+                        Tr(Td(:class => td_mono, "air_kerma_free_in_air_…"), Td(:class => td_cls, "mGy/100 mAs"), Td(:class => td_cls, "Centre ray behind the bowtie, at isocentre.")),
+                        Tr(Td(:class => td_mono, "rel_stat_uncertainty"), Td(:class => td_cls, "—"), Td(:class => td_cls, "Statistical error of the Monte Carlo at the chosen n_histories.")),
+                        Tr(Td(:class => td_mono, "wide_beam_reference_mm"), Td(:class => td_cls, "mm"), Td(:class => td_cls, "Set when the IEC N·T > 40 mm reference-beam rule was applied.")),
+                    ),
+                    Pre(
+                        :class => code_cls, Code(
+                            :class => "language-julia", """report = BS.compute_dose(scanner, protocol)      # → DoseReport, prints a full summary
+                            report.ctdi_vol_mGy, report.dlp_mGy_cm
+
+                            # or straight off a simulation
+                            result = BS.simulate!(ws, phantom, protocol, sim_opts)
+                            result.dose.ctdi_vol_mGy"""
+                        )
+                    ),
+                ),
+                Div(
+                    :class => card_cls,
+                    Div(:class => sig_cls, "dose_source(scanner, protocol) → DoseSource   |   ctdi100(src; phantom, beam_width_mm, n_histories, seed)"),
+                    P(
+                        :class => prose_cls,
+                        "The pieces underneath, for when the beam is wanted without an acquisition around it.  ",
+                        Code(:class => inline, "DoseSource"),
+                        " is the absolute spectrum with its filtration and bowtie; ",
+                        Code(:class => inline, "ctdi100"),
+                        " returns the two chamber integrals per mAs and their weighted combination.  ",
+                        "Both results are deterministic for a given seed whatever the thread count, and ",
+                        Code(:class => inline, "ctdi100"),
+                        " is cached on the beam it was run for — clear it with ",
+                        Code(:class => inline, "empty_ctdi_cache!()"), "."
+                    ),
+                    P(
+                        :class => note_cls,
+                        "Also exported: air_kerma_free_in_air, compute_ctdi_vol, compute_dlp, dose_report, muen_rho_air."
+                    ),
                 ),
 
                 # ════════════════════════════════════════════════════════════════
@@ -594,9 +713,10 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                 H2(:id => "reconstruction", :class => h2_cls, "Reconstruction"),
                 P(
                     :class => prose_cls,
-                    "Three reconstruction algorithms ship with the package — analytic FDK, penalized ",
-                    "iterative HIR (Hybrid IR), and image-domain VMI with material decomposition.  ",
-                    "All three share a single ", Code(:class => inline, "reconstruct!"),
+                    "Analytic FDK for a circular orbit, weighted FBP for a helical one, penalized ",
+                    "iterative HIR (Hybrid IR), and two material-decomposition routes — K-channel in the ",
+                    "projection domain and Ding-calibrated in the image domain.  The volume reconstructors ",
+                    "share a single ", Code(:class => inline, "reconstruct!"),
                     " entry point that dispatches on workspace type."
                 ),
 
@@ -672,6 +792,38 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                     ),
                 ),
 
+                # ── 7a′. Helical WFBP ────────────────────────────────────────
+                H3(:id => "recon-helical", :class => h3_cls, "Helical WFBP"),
+                Div(
+                    :class => card_cls,
+                    Div(:class => sig_cls, "wfbp_helical_reconstruct(sino, geom, matrix_size; filter, helical_q = 0.7, coverage = nothing, mask_fov = true)"),
+                    P(
+                        :class => prose_cls,
+                        "Weighted filtered back-projection for a helical trajectory (Stierstorfer 2004).  ",
+                        "A geometry built with a ", Code(:class => inline, "pitch"), " is helical, and ",
+                        Code(:class => inline, "fdk_reconstruct"), " routes it here on its own — the entry ",
+                        "point is only needed to reach the helical keywords directly.  Arc detectors get the ",
+                        "cylindrical row mapping and flat ones the planar 1/cos γ form, so a panel's shape ",
+                        "is honoured rather than assumed."
+                    ),
+                    Table(
+                        :class => table_cls,
+                        Tr(Th(:class => th_cls, "keyword"), Th(:class => th_cls, "default"), Th(:class => th_cls, "")),
+                        Tr(Td(:class => td_mono, "helical_q"), Td(:class => td_cls, "0.7"), Td(:class => td_cls, "Width of the Stierstorfer view weighting, in half-turns.")),
+                        Tr(Td(:class => td_mono, "coverage"), Td(:class => td_cls, "nothing"), Td(:class => td_cls, "Pre-allocated volume filled with the fraction of conjugate families that found data, 0–1. A voxel below 1 was reconstructed from an incomplete helix.")),
+                        Tr(Td(:class => td_mono, "mask_fov"), Td(:class => td_cls, "true"), Td(:class => td_cls, "Replace voxels outside the inscribed circle with the air sentinel, as the axial path does.")),
+                    ),
+                    Pre(
+                        :class => code_cls, Code(
+                            :class => "language-julia", """geom = BS.CTGeometry(scanner; n_angles = 2000, fov_cm = 35.0, z_cm = 10.0, pitch = 1.0)
+                            cover = zeros(Float32, matrix_size)
+                            vol   = BS.fdk_reconstruct(sino, geom, matrix_size; coverage = cover)
+                            all(≈(1), cover) || @warn "the requested volume is longer than the helix covers""""
+                        )
+                    ),
+                    P(:class => note_cls, "An odd number of views per rotation misaligns the conjugate families and is warned about."),
+                ),
+
                 # ── 7b. Hybrid IR ────────────────────────────────────────────
                 H3(:id => "recon-hir", :class => h3_cls, "Hybrid IR — penalized iterative"),
                 Div(
@@ -704,7 +856,118 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                 ),
 
                 # ── 7c. VMI ──────────────────────────────────────────────────
-                H3(:id => "recon-vmi", :class => h3_cls, "VMI — virtual monoenergetic + material decomposition"),
+                H3(:id => "recon-nchannel", :class => h3_cls, "K-channel decomposition — projection domain"),
+                P(
+                    :class => prose_cls,
+                    "The projection-domain route: decompose the measured channels into iodine and water ",
+                    "line integrals (g/cm²) under the Poisson likelihood of the forward model that produced ",
+                    "them, then reconstruct those and synthesize monoenergetic images from the pair.  ",
+                    "Because the decomposition happens before reconstruction it is free of the beam ",
+                    "hardening the image-domain route has to calibrate around, and it takes any number of ",
+                    "channels — photon-counting bins, several kVp acquisitions, or both."
+                ),
+                Div(
+                    :class => card_cls,
+                    Div(:class => sig_cls, "vmi_pipeline(; channels, basis, geom, to_backend = identity, kwargs...)"),
+                    P(
+                        :class => prose_cls,
+                        "The whole chain, one call: ",
+                        Code(:class => inline, "merge_channels → reduce_detector_rows → decompose → tlbf_denoise → FBP → ACNR → VMI"),
+                        ".  Every stage's settings are keywords, so nothing is decided that the caller ",
+                        "cannot see and override — which is what makes it the inner call of an ablation sweep.  ",
+                        "Returns ", Code(:class => inline, "(vmis, energies, images = (water, iodine), quality, elapsed_s, settings)"), "."
+                    ),
+                    Table(
+                        :class => table_cls,
+                        Tr(Th(:class => th_cls, "stage"), Th(:class => th_cls, "keywords")),
+                        Tr(Td(:class => td_mono, "decomposition"), Td(:class => td_cls, "method (:nchannel | :cong), controls::NChannelControls, merge_groups, tile_views")),
+                        Tr(Td(:class => td_mono, "detector rows"), Td(:class => td_cls, "reduce_rows, rows — summed in counts, not in log space")),
+                        Tr(Td(:class => td_mono, "T-LBF"), Td(:class => td_cls, "use_tlbf, tlbf_alpha1, tlbf_alpha2, tlbf_radius")),
+                        Tr(Td(:class => td_mono, "ACNR"), Td(:class => td_cls, "use_acnr, acnr_passes, acnr_beta_max, acnr_hp_sigma_px, acnr_window")),
+                        Tr(Td(:class => td_mono, "reconstruction"), Td(:class => td_cls, "matrix_size, fbp_filter, antialias, recon_rows")),
+                        Tr(Td(:class => td_mono, "synthesis"), Td(:class => td_cls, "vmi_energies = (40, 70, 100, 140)")),
+                    ),
+                    Pre(
+                        :class => code_cls, Code(
+                            :class => "language-julia", """basis  = BS.spectral_basis(ws_pcct)                 # response and air counts, from the workspace
+                            result = BS.vmi_pipeline(;
+                                channels = bin_sinograms, basis, geom,
+                                to_backend = CuArray,
+                                reduce_rows = true, use_tlbf = true,          # the published PCCT configuration
+                                matrix_size = (512, 512, 1),
+                            )
+                            vmi_70 = result.vmis[:, :, 2]"""
+                        )
+                    ),
+                    P(
+                        :class => note_cls,
+                        "matrix_size defaults to 512² by one slice whatever the workspace's ReconOptions says — this function never sees them."
+                    ),
+                ),
+                Div(
+                    :class => card_cls,
+                    Div(:class => sig_cls, "spectral_basis(; energies, response, I0)   |   spectral_basis(ws::PCCTWorkspace)   |   spectral_basis_from_bins   |   spectral_basis_from_acquisitions"),
+                    P(
+                        :class => prose_cls,
+                        "The absolute per-channel response ", Code(:class => inline, "Φ(nc, nr, nE, K)"),
+                        " and air counts ", Code(:class => inline, "I0(nc, nr, K)"),
+                        " the estimator inverts, plus the iodine and water mass attenuations at those ",
+                        "energies.  The constructor checks that Φ sums to I0 and refuses a basis that does not.  ",
+                        "The ", Code(:class => inline, "PCCTWorkspace"),
+                        " method reads a simulated detector's own response; ",
+                        Code(:class => inline, "spectral_basis_from_acquisitions"),
+                        " stacks several kVp acquisitions onto one shared energy grid."
+                    ),
+                ),
+                Div(
+                    :class => card_cls,
+                    Div(:class => sig_cls, "decompose_nchannel(; channels, basis, controls, to_backend, tile_views, keep_diagnostics = false)"),
+                    P(
+                        :class => prose_cls,
+                        "The K-channel estimator over a full sinogram (K ≥ 2): a Newton solve per ray on the ",
+                        "Poisson log-likelihood, with the Fisher information kept for the quality map.  ",
+                        "Views are tiled so the backend never holds a whole sinogram of workspace.  ",
+                        Code(:class => inline, "decompose_cong"),
+                        " is the two-channel closed-form alternative, for comparison.  ",
+                        "The returned ", Code(:class => inline, "quality"),
+                        " names the fraction of rays that hit a bound, failed to converge, or were infeasible."
+                    ),
+                ),
+                Div(
+                    :class => card_cls,
+                    Div(:class => sig_cls, "tlbf_denoise(sino_iodine, sino_water, expected, measured; alpha1 = 0.9, alpha2 = 24.64, radius = 2)"),
+                    P(
+                        :class => prose_cls,
+                        "Lee (2025) total-likelihood bilateral filter on the decomposed pair.  Each ",
+                        "neighbour in the (column, view) window is weighted by how well it explains the ",
+                        "centre ray's summed measured counts under the Poisson model, and one shared, ",
+                        "normalised weight is applied to iodine and water alike, so the pair stays coherent.  ",
+                        "Feed it ", Code(:class => inline, "total_expected_counts"), " and ",
+                        Code(:class => inline, "total_measured_counts"),
+                        ".  It needs counts, so it is photon-counting only, and a single detector row — ",
+                        Code(:class => inline, "reduce_detector_rows"), " first."
+                    ),
+                    P(
+                        :class => note_cls,
+                        "alpha2 = Inf keeps the spatial weights alone and alpha2 ≤ 0 is the identity; both are the ablation endpoints."
+                    ),
+                ),
+                Div(
+                    :class => card_cls,
+                    Div(:class => sig_cls, "reconstruct_basis_slice(sino, geom, matrix_size; n_rows, antialias = true)   |   synthesize_vmi_stack(water, iodine, energies)"),
+                    P(
+                        :class => prose_cls,
+                        "The two ends of the chain on their own, for when the pipeline is being assembled ",
+                        "by hand.  ", Code(:class => inline, "antialias"),
+                        " applies the deterministic angular response (",
+                        Code(:class => inline, "angular_antialias_response"),
+                        ") that keeps a sparse-view basis sinogram from streaking; the synthesis is the ",
+                        "two-basis monoenergetic sum in HU."
+                    ),
+                ),
+
+                # ── 7d. Image-domain VMI ─────────────────────────────────────
+                H3(:id => "recon-vmi", :class => h3_cls, "VMI — virtual monoenergetic + material decomposition (image domain)"),
                 P(
                     :class => prose_cls,
                     "Image-domain dual-energy / spectral pipeline.  Pair of low/high reconstructed volumes → ",

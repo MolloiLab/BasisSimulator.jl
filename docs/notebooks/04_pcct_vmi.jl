@@ -109,7 +109,7 @@ phantom = BS.Phantom(
 
 # ╔═╡ 040e1000-0000-4000-8000-000000000101
 md"""
-### 02. `EICTScanner()` Struct
+### 02. `PCCTScanner()` Struct
 """
 
 # ╔═╡ 2c157064-8567-450b-bc08-c2606084a77f
@@ -162,7 +162,7 @@ scanner = let
         native_dexel_col_mm = native_col_mm,
         native_dexel_row_mm = native_row_mm,
         binning_factor = bf,
-    
+
         # detector-model physics (applied inside simulate!())
         pileup = true,               # MC pile-up forward (spectral-migration matrix S)
         pileup_correction = true,    # model-based inverse S on the recorded bins

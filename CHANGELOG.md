@@ -13,8 +13,8 @@ onward they are written by hand, and releases are cut by hand — see
 
 Audited the helical, dose and photon-counting paths against the package's own axial
 reconstruction and against the published worked examples, then fixed what the measurements
-showed and moved the estimator the notebooks use into the package. Every claim below was
-measured on one NVIDIA RTX PRO 6000; the test suite is 3359 passing.
+showed and moved the estimator the notebooks use into the package. The timings below were
+measured on one NVIDIA RTX PRO 6000; the test suite is 3394 passing on CPU.
 
 ### Breaking
 
@@ -23,6 +23,19 @@ measured on one NVIDIA RTX PRO 6000; the test suite is 3359 passing.
   (`pileup`, `pileup_correction`, `scatter_correction`, `noise_reduction`). `SimOptions` keeps
   the common physics only: its `fidelity` preset and `use_pcct_*` fields are removed. Each
   constructor rejects the other family's keywords.
+* **A photon-counting scan is blurred by the focal spot by default now.** The deleted `:pcct`
+  fidelity preset forced `use_focal_spot = false`; the surviving `SimOptions` default is `true`
+  for both families. Pass `use_focal_spot = false` for the old photon-counting output. (Detector
+  lag is still never applied on that path — the shipped model is scintillator afterglow, which a
+  direct-conversion detector does not have — so its default moving to `true` changes nothing
+  there.)
+* **`SimOptions()` no longer silently disables the photon-counting physics.** The old default
+  preset was `:eict`, whose `use_pcct_pileup` and `use_pcct_scatter` were `false`: a
+  `PCCTWorkspace` built with a bare `SimOptions()` ran with neither pile-up nor patient scatter,
+  and only `SimOptions(fidelity = :pcct)` turned them on. Pile-up is now `PCCTScanner.pileup`
+  (default `true`, and still modelled only once `dead_time_ns > 0`) and scatter is the shared
+  `use_scatter` (default `true`), so the plain call gets the physics.
+  `PCCTScanner(pileup = false)` and `SimOptions(use_scatter = false)` are the old behaviour.
 * `compute_ctdi_vol(protocol; phantom_diameter)`, `compute_dlp(protocol, length)` and
   `dose_report(protocol, geom, flux)` are replaced by `compute_dose` /`compute_ctdi_vol` /
   `compute_dlp(scanner, protocol)` and `dose_report(ws, protocol)`.
@@ -55,7 +68,11 @@ measured on one NVIDIA RTX PRO 6000; the test suite is 3359 passing.
   `simulate!(...; paths)` reuses it, so a several-kVp study of one phantom pays for the walk
   once. `dd_fast_material_paths!` and `dd_fast_poly_from_paths!` are the projector-level
   entry points.
-* `empty_pileup_cache!`, and `helical_q` reachable through `fdk_reconstruct`.
+* `empty_pileup_cache!`, `empty_water_μ_cache!` and `empty_ctdi_cache!` — one per memoised
+  table, because a process that has just changed what a cache is keyed on should be able to say
+  so. The two array caches hand back a copy, so a caller cannot mutate the stored entry.
+* `helical_q` and `mask_fov` reachable through `fdk_reconstruct`, and `simulate!` takes
+  `report_dose`, `dose_kwargs`, `paths` and `noise_rng`.
 
 ### Fixed
 
@@ -105,6 +122,10 @@ All bit-identical unless stated.
   collimations and 2.44 HU at 16 cm.
 * `src/source/dose.jl` states what the dose model does not include, in order of size, starting
   with the difference between the IPEM-78 tube output and a particular real tube.
+* The API page is on the current API — `EICTScanner` / `PCCTScanner` instead of `Scanner`, the
+  `SimOptions` table without the deleted `fidelity` preset and with `projector` and
+  `detector_efficiency_mode`, plus new sections for the path cache, dose and CTDI, helical WFBP
+  and the K-channel decomposition. The README's three snippets now run as written.
 
 ## [0.14.0](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.13.0...v0.14.0) (2026-08-26)
 

@@ -387,7 +387,7 @@ end
 
 # ╔═╡ 08030001-0000-4000-8000-000000000001
 md"""
-### 02. `Scanner`: Siemens Naeotom Alpha (PCCT, 4-threshold)
+### 02. `PCCTScanner`: Siemens Naeotom Alpha (4-threshold)
 
 CdTe direct-conversion detector with native dexels 0.275 × 0.322 mm at
 the detector face (2×2 binned in DAS).  Energy thresholds

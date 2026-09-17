@@ -607,7 +607,7 @@ hu_hir = sim === nothing ? nothing : let
         # (`apply_fov_mask!`); HIR doesn't, so the iterative refinement
         # leaves garbage in the corners.  Apply the same mask for parity.
         BS.apply_fov_mask!(recon_μ, sim.geom)
-    
+
         # 3. μ → HU using BHC's calibrated μ_water_ref
         hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc_calibration.μ_water))
 
