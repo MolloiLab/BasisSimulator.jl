@@ -891,3 +891,46 @@ end
         end
     end
 end
+
+# -----------------------------------------------------------------------------
+# apply_pcct_noise! — the threaded Poisson mode
+# -----------------------------------------------------------------------------
+@testset "apply_pcct_noise! rng_mode" begin
+    n_bins = 3
+    shape = (40, 4, 30)
+    I0 = Float64[2.0e4, 8.0e3, 1.5e3]
+    thresholds = Float32[20, 50, 80]
+    build() = BS.EnergyResolvedSinogram(
+        [fill(Float32(0.35 + 0.1b), shape) for b in 1:n_bins], thresholds
+    )
+
+    serial = build()
+    BS.apply_pcct_noise!(serial, I0; seed = 7)
+    again = build()
+    BS.apply_pcct_noise!(again, I0; seed = 7)
+    @test all(serial.bins[b] == again.bins[b] for b in 1:n_bins)      # a seed is a seed
+
+    threaded = build()
+    BS.apply_pcct_noise!(threaded, I0; seed = 7, rng_mode = :threaded)
+    # a different realisation, but of the same distribution
+    @test any(threaded.bins[b] != serial.bins[b] for b in 1:n_bins)
+    for b in 1:n_bins
+        λ = I0[b] * exp(-(0.35 + 0.1b))
+        counts(bin) = I0[b] .* exp.(-Float64.(bin))
+        for bin in (serial.bins[b], threaded.bins[b])
+            c = counts(bin)
+            @test mean(c) ≈ λ rtol = 0.02                  # unbiased
+            @test (std(c)^2) / λ ≈ 1 rtol = 0.15               # Fano ≈ 1
+        end
+    end
+    # the realisation is a property of the seed, not of the thread count: the chunking is fixed
+    @test BS._PCCT_NOISE_CHUNKS > 1
+    repeat_threaded = build()
+    BS.apply_pcct_noise!(repeat_threaded, I0; seed = 7, rng_mode = :threaded)
+    @test all(repeat_threaded.bins[b] == threaded.bins[b] for b in 1:n_bins)
+    other_seed = build()
+    BS.apply_pcct_noise!(other_seed, I0; seed = 8, rng_mode = :threaded)
+    @test any(other_seed.bins[b] != threaded.bins[b] for b in 1:n_bins)
+
+    @test_throws ArgumentError BS.apply_pcct_noise!(build(), I0; rng_mode = :parallel)
+end

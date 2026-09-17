@@ -122,6 +122,7 @@ function simulate!(
         ;
         capture_raw_counts::Bool = true,
         report_dose::Bool = true,
+        noise_rng::Symbol = :serial,
     ) where {T}
     geom = ws.geom
     energies = ws.energies
@@ -252,6 +253,7 @@ function simulate!(
             ws_rng = ws.rng,
             noise_reduction = ws.noise_reduction,
             raw_out = raw_from_noise,
+            rng_mode = noise_rng,
         )
     end
 
