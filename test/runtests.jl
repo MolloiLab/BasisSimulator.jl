@@ -40,6 +40,9 @@ const BS = BasisSimulator
     @testset "object/" begin
         include("object.jl")
     end
+    @testset "paths/" begin
+        include("paths.jl")
+    end
     @testset "phantoms/" begin
         include("phantoms.jl")
     end

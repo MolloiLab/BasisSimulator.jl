@@ -454,7 +454,12 @@ function _forward_project_poly!(
         # Tiled fusion (K=16) will replace this — see SPEED-BUILD-V2-002.
         fused::Bool = false,
         # Ray tracer: :dd_fast (default/fastest general path), :dd (DEPRECATED), or :siddon (compatibility, aliases).
-        projector::Symbol = :dd_fast
+        projector::Symbol = :dd_fast,
+        # Cached per-material path lengths from `material_paths` / `dd_fast_material_paths!`.
+        # When given, the volume walk is skipped and only the spectral conversion runs — the
+        # walk does not depend on the spectrum, so one cache serves every kVp through the same
+        # geometry. Bit-identical to walking again. :dd_fast only.
+        paths = nothing
     ) where {T <: AbstractFloat}
 
     n_energies = length(energies)
@@ -503,6 +508,22 @@ function _forward_project_poly!(
         # :dd and :siddon keep the tiled path below (their kernels hold
         # per-energy registers → K=16 required).
         # ---------------------------------------------------------------------
+        if paths !== nothing
+            projector === :dd_fast || throw(ArgumentError(
+                "paths= is the :dd_fast two-pass projection; got projector=:$(projector)"
+            ))
+            size(ws_μ_table_gpu, 1) <= _PLEN_MAX_MATERIALS || throw(ArgumentError(
+                "paths= needs at most $(_PLEN_MAX_MATERIALS) materials, the table has " *
+                    "$(size(ws_μ_table_gpu, 1)); call compact_materials(phantom) first"
+            ))
+            @info "TWO-PASS PATH (:dd_fast cached path lengths): n_energies=$n_energies, sino=$(size(sinogram))" maxlog = 1
+            dd_fast_poly_from_paths!(
+                sinogram, paths, ws_μ_table_gpu, ws_wη_gpu;
+                ws_bowtie_spectral = ws_bowtie_spectral
+            )
+            return sinogram
+        end
+
         if projector === :dd_fast && size(ws_μ_table_gpu, 1) <= _PLEN_MAX_MATERIALS
             @info "SINGLE-PASS PATH (:dd_fast path-length): n_energies=$n_energies, mask=$(size(mask)), sino=$(size(sinogram))" maxlog = 1
             dd_fast_fused_poly_project!(
