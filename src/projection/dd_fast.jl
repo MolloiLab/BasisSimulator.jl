@@ -81,8 +81,74 @@ function _warn_dd_fast_fallback(n_materials::Integer)
 end
 
 # =============================================================================
-# Kernel launches (internal)
+# Kernel launches (internal) — the walk, once, then what each caller does with it
 # =============================================================================
+
+# The distance-driven walk itself: one detector element's footprint stepped through the volume,
+# returning the path length (cm) it accumulates in each of the `M` materials.  It is ~95 % of the
+# cost of a polychromatic projection and the one thing the three `:dd_fast` kernels below must do
+# IDENTICALLY — the fused polychromatic kernel, the fused spectral kernel and the cached-paths
+# kernel differ only in what they do with the tuple that comes back.  Writing it once is not
+# tidiness: the helical backprojector's arc-mapping bug was two copies of a mapping drifting
+# apart, and three copies of forty lines of index arithmetic is the same bet.
+#
+# `@inline` because every caller is a GPU kernel body: this has to disappear into it, `plens`
+# staying in registers, or the single-pass design has no point.  Its scalars come from
+# `_dd_walk_setup` below, which is the other half of the same rule.
+@inline function _dd_plen_walk(
+        ::Val{M}, mask, col::Int32, row::Int32, angle::Int32,
+        sp, dc, du, dv,
+        vmx::T, vmy::T, vmz::T, vsx::T, vsy::T, vsz::T,
+        nx::Int32, ny::Int32, nz::Int32,
+        mag::T, ps::T, prs::T, cc::T, rc::T, arc_det::Bool, dγ::T,
+    ) where {M, T <: AbstractFloat}
+
+    sx = sp[1, angle]; sy = sp[2, angle]; sz = sp[3, angle]
+    dcx = dc[1, angle]; dcy = dc[2, angle]; dcz = dc[3, angle]
+    ux = du[1, angle]; uy = du[2, angle]; vvz = dv[3, angle]
+
+    (valid, vertical, s_long, s_tran, dXlo, dXhi, dZlo, dZhi, norm,
+        n_t, v_t, vmin_t, n_long, v_long, vmin_long) = _dd_cell_setup(
+        col, row, sx, sy, sz, dcx, dcy, dcz, ux, uy, vvz,
+        mag, ps, prs, cc, rc, nx, ny, vmx, vmy, vsx, vsy, arc_det, dγ)
+
+    plens = ntuple(_ -> zero(T), Val(M))
+    valid || return plens
+
+    il = Int32(1)
+    while il <= n_long
+        lp = vmin_long + (T(il) - T(0.5)) * v_long
+        mag_fac = s_long / (s_long - lp)
+        inv_mf = one(T) / mag_fac
+        (it_s, it_e) = _dd_bounds(dXlo, dXhi, s_tran, vmin_t, v_t, inv_mf, n_t)
+        (ip_s, ip_e) = _dd_bounds(dZlo, dZhi, sz, vmz, vsz, inv_mf, nz)
+        it = it_s
+        while it <= it_e
+            t0 = s_tran + (vmin_t + T(it - Int32(1)) * v_t - s_tran) * mag_fac
+            t1 = s_tran + (vmin_t + T(it) * v_t - s_tran) * mag_fac
+            ox = _dd_overlap(dXlo, dXhi, min(t0, t1), max(t0, t1))
+            if ox > zero(T)
+                ixv = vertical ? it : il
+                iyv = vertical ? il : it
+                ip = ip_s
+                while ip <= ip_e
+                    z0 = sz + (vmz + T(ip - Int32(1)) * vsz - sz) * mag_fac
+                    z1 = sz + (vmz + T(ip) * vsz - sz) * mag_fac
+                    oz = _dd_overlap(dZlo, dZhi, min(z0, z1), max(z0, z1))
+                    if oz > zero(T)
+                        mat = Int32(mask[ixv, iyv, ip]) + Int32(1)
+                        plens = _plen_accum(plens, mat, ox * oz * norm)
+                    end
+                    ip += Int32(1)
+                end
+            end
+            it += Int32(1)
+        end
+        il += Int32(1)
+    end
+    return plens
+end
+
 
 # =============================================================================
 # Fused polychromatic — mirror siddon_fused_poly_project!
@@ -116,49 +182,10 @@ function _dd_fused_poly_plen!(
             row = (idx_0 % nr) + Int32(1)
             angle = (idx_0 ÷ nr) + Int32(1)
 
-            sx = sp[1, angle]; sy = sp[2, angle]; sz = sp[3, angle]
-            dcx = dc[1, angle]; dcy = dc[2, angle]; dcz = dc[3, angle]
-            ux = du[1, angle]; uy = du[2, angle]; vvz = dv[3, angle]
-
-            (valid, vertical, s_long, s_tran, dXlo, dXhi, dZlo, dZhi, norm,
-                n_t, v_t, vmin_t, n_long, v_long, vmin_long) = _dd_cell_setup(
-                col, row, sx, sy, sz, dcx, dcy, dcz, ux, uy, vvz,
-                mag, ps, prs, cc, rc, nx, ny, vmx, vmy, vsx, vsy, arc_det, dγ)
-
-            plens = ntuple(_ -> zero(T), Val(M))
-            if valid
-                il = Int32(1)
-                while il <= n_long
-                    lp = vmin_long + (T(il) - T(0.5)) * v_long
-                    mag_fac = s_long / (s_long - lp)
-                    inv_mf = one(T) / mag_fac
-                    (it_s, it_e) = _dd_bounds(dXlo, dXhi, s_tran, vmin_t, v_t, inv_mf, n_t)
-                    (ip_s, ip_e) = _dd_bounds(dZlo, dZhi, sz, vmz, vsz, inv_mf, nz)
-                    it = it_s
-                    while it <= it_e
-                        t0 = s_tran + (vmin_t + T(it - Int32(1)) * v_t - s_tran) * mag_fac
-                        t1 = s_tran + (vmin_t + T(it) * v_t - s_tran) * mag_fac
-                        ox = _dd_overlap(dXlo, dXhi, min(t0, t1), max(t0, t1))
-                        if ox > zero(T)
-                            ixv = vertical ? it : il
-                            iyv = vertical ? il : it
-                            ip = ip_s
-                            while ip <= ip_e
-                                z0 = sz + (vmz + T(ip - Int32(1)) * vsz - sz) * mag_fac
-                                z1 = sz + (vmz + T(ip) * vsz - sz) * mag_fac
-                                oz = _dd_overlap(dZlo, dZhi, min(z0, z1), max(z0, z1))
-                                if oz > zero(T)
-                                    mat = Int32(mask[ixv, iyv, ip]) + Int32(1)
-                                    plens = _plen_accum(plens, mat, ox * oz * norm)
-                                end
-                                ip += Int32(1)
-                            end
-                        end
-                        it += Int32(1)
-                    end
-                    il += Int32(1)
-                end
-            end
+            plens = _dd_plen_walk(
+                Val(M), mask, col, row, angle, sp, dc, du, dv,
+                vmx, vmy, vmz, vsx, vsy, vsz, nx, ny, nz,
+                mag, ps, prs, cc, rc, arc_det, dγ)
 
             bt_base = Int32(col) + (Int32(row) - Int32(1)) * nc
             I_total = zero(T)
@@ -211,49 +238,10 @@ function _dd_fused_spectral_plen!(
             row = (idx_0 % nr) + Int32(1)
             angle = (idx_0 ÷ nr) + Int32(1)
 
-            sx = sp[1, angle]; sy = sp[2, angle]; sz = sp[3, angle]
-            dcx = dc[1, angle]; dcy = dc[2, angle]; dcz = dc[3, angle]
-            ux = du[1, angle]; uy = du[2, angle]; vvz = dv[3, angle]
-
-            (valid, vertical, s_long, s_tran, dXlo, dXhi, dZlo, dZhi, norm,
-                n_t, v_t, vmin_t, n_long, v_long, vmin_long) = _dd_cell_setup(
-                col, row, sx, sy, sz, dcx, dcy, dcz, ux, uy, vvz,
-                mag, ps, prs, cc, rc, nx, ny, vmx, vmy, vsx, vsy, arc_det, dγ)
-
-            plens = ntuple(_ -> zero(T), Val(M))
-            if valid
-                il = Int32(1)
-                while il <= n_long
-                    lp = vmin_long + (T(il) - T(0.5)) * v_long
-                    mag_fac = s_long / (s_long - lp)
-                    inv_mf = one(T) / mag_fac
-                    (it_s, it_e) = _dd_bounds(dXlo, dXhi, s_tran, vmin_t, v_t, inv_mf, n_t)
-                    (ip_s, ip_e) = _dd_bounds(dZlo, dZhi, sz, vmz, vsz, inv_mf, nz)
-                    it = it_s
-                    while it <= it_e
-                        t0 = s_tran + (vmin_t + T(it - Int32(1)) * v_t - s_tran) * mag_fac
-                        t1 = s_tran + (vmin_t + T(it) * v_t - s_tran) * mag_fac
-                        ox = _dd_overlap(dXlo, dXhi, min(t0, t1), max(t0, t1))
-                        if ox > zero(T)
-                            ixv = vertical ? it : il
-                            iyv = vertical ? il : it
-                            ip = ip_s
-                            while ip <= ip_e
-                                z0 = sz + (vmz + T(ip - Int32(1)) * vsz - sz) * mag_fac
-                                z1 = sz + (vmz + T(ip) * vsz - sz) * mag_fac
-                                oz = _dd_overlap(dZlo, dZhi, min(z0, z1), max(z0, z1))
-                                if oz > zero(T)
-                                    mat = Int32(mask[ixv, iyv, ip]) + Int32(1)
-                                    plens = _plen_accum(plens, mat, ox * oz * norm)
-                                end
-                                ip += Int32(1)
-                            end
-                        end
-                        it += Int32(1)
-                    end
-                    il += Int32(1)
-                end
-            end
+            plens = _dd_plen_walk(
+                Val(M), mask, col, row, angle, sp, dc, du, dv,
+                vmx, vmy, vmz, vsx, vsy, vsz, nx, ny, nz,
+                mag, ps, prs, cc, rc, arc_det, dγ)
 
             bt_base = Int32(col) + (Int32(row) - Int32(1)) * nc
             b = Int32(1)
@@ -351,8 +339,9 @@ function dd_fast_fused_poly_project!(
 end
 
 # Every distance-driven walk over this geometry needs the same scalars and the same four
-# geometry arrays. Derived once, here, so the single-pass and two-pass paths cannot drift
-# apart — the helical backprojector's arc-mapping bug was exactly that kind of divergence.
+# geometry arrays. Derived once, here, and stepped once, in `_dd_plen_walk`, so the single-pass
+# and two-pass paths cannot drift apart — the helical backprojector's arc-mapping bug was
+# exactly that kind of divergence.
 function _dd_walk_setup(
         ::Type{T}, mask_size, det_size, geom, volume_extent, like,
         ws_source_positions, ws_detector_centers, ws_detector_u, ws_detector_v,
@@ -424,28 +413,11 @@ function dd_fast_fused_spectral_project!(
             ws_bowtie_spectral = ws_bowtie_spectral)
     end
 
-    nx = Int32(size(mask, 1)); ny = Int32(size(mask, 2)); nz = Int32(size(mask, 3))
-    n_cols = Int32(size(pilot, 1)); n_rows = Int32(size(pilot, 2)); n_angles = Int32(size(pilot, 3))
-    n_elem = n_cols * n_rows * n_angles
-
-    vol_bounds = volume_extent !== nothing ? volume_extent : geom.fov
-    vmin_x = T(-vol_bounds[1] / 2); vmin_y = T(-vol_bounds[2] / 2); vmin_z = T(-vol_bounds[3] / 2)
-    vx = T(vol_bounds[1]) / T(nx); vy = T(vol_bounds[2]) / T(ny); vz = T(vol_bounds[3]) / T(nz)
-    _dd_check_isotropy(vx, vy)
-
-    mag = T(geom.SDD / geom.SAD)
-    arc_det = is_arc(geom)
-    dγ = T(geom.pixel_size / geom.SAD)
-    ps = T(geom.pixel_size); prs = T(geom.pixel_row_size)
-    col_center = (T(n_cols) + one(T)) / T(2)
-    row_center = (T(n_rows) + one(T)) / T(2)
-
-    sp = _dd_geom_array(ws_source_positions, mask, geom.source_positions, T)
-    dc = _dd_geom_array(ws_detector_centers, mask, geom.detector_centers, T)
-    du = _dd_geom_array(ws_detector_u, mask, geom.detector_u, T)
-    dv = _dd_geom_array(ws_detector_v, mask, geom.detector_v, T)
-
-    nc_nr = n_cols * n_rows
+    g = _dd_walk_setup(
+        T, size(mask), (size(pilot, 1), size(pilot, 2)), geom, volume_extent, mask,
+        ws_source_positions, ws_detector_centers, ws_detector_u, ws_detector_v,
+    )
+    n_elem = g.nc_nr * Int32(size(pilot, 3))
     has_src_spectral = ws_bowtie_spectral !== nothing
     _bt = has_src_spectral ? ws_bowtie_spectral : similar(μ_table_gpu, T, 1, 1, 1)
 
@@ -453,11 +425,11 @@ function dd_fast_fused_spectral_project!(
         Val(size(μ_table_gpu, 1)), Int32(K), tile_start,
         pilot, outputs_flat, n_bins,
         mask, μ_table_gpu, W_gpu, _bt, has_src_spectral,
-        sp, dc, du, dv,
-        vmin_x, vmin_y, vmin_z, vx, vy, vz,
-        nx, ny, nz, n_cols, n_rows, n_elem,
-        mag, ps, prs, col_center, row_center, nc_nr,
-        arc_det, dγ)
+        g.sp, g.dc, g.du, g.dv,
+        g.vmin_x, g.vmin_y, g.vmin_z, g.vx, g.vy, g.vz,
+        g.nx, g.ny, g.nz, g.n_cols, g.n_rows, n_elem,
+        g.mag, g.ps, g.prs, g.col_center, g.row_center, g.nc_nr,
+        g.arc_det, g.dγ)
 end
 
 # =============================================================================
@@ -506,49 +478,10 @@ function _dd_material_paths!(
             row = (idx_0 % nr) + Int32(1)
             angle = (idx_0 ÷ nr) + Int32(1)
 
-            sx = sp[1, angle]; sy = sp[2, angle]; sz = sp[3, angle]
-            dcx = dc[1, angle]; dcy = dc[2, angle]; dcz = dc[3, angle]
-            ux = du[1, angle]; uy = du[2, angle]; vvz = dv[3, angle]
-
-            (valid, vertical, s_long, s_tran, dXlo, dXhi, dZlo, dZhi, norm,
-                n_t, v_t, vmin_t, n_long, v_long, vmin_long) = _dd_cell_setup(
-                col, row, sx, sy, sz, dcx, dcy, dcz, ux, uy, vvz,
-                mag, ps, prs, cc, rc, nx, ny, vmx, vmy, vsx, vsy, arc_det, dγ)
-
-            plens = ntuple(_ -> zero(T), Val(M))
-            if valid
-                il = Int32(1)
-                while il <= n_long
-                    lp = vmin_long + (T(il) - T(0.5)) * v_long
-                    mag_fac = s_long / (s_long - lp)
-                    inv_mf = one(T) / mag_fac
-                    (it_s, it_e) = _dd_bounds(dXlo, dXhi, s_tran, vmin_t, v_t, inv_mf, n_t)
-                    (ip_s, ip_e) = _dd_bounds(dZlo, dZhi, sz, vmz, vsz, inv_mf, nz)
-                    it = it_s
-                    while it <= it_e
-                        t0 = s_tran + (vmin_t + T(it - Int32(1)) * v_t - s_tran) * mag_fac
-                        t1 = s_tran + (vmin_t + T(it) * v_t - s_tran) * mag_fac
-                        ox = _dd_overlap(dXlo, dXhi, min(t0, t1), max(t0, t1))
-                        if ox > zero(T)
-                            ixv = vertical ? it : il
-                            iyv = vertical ? il : it
-                            ip = ip_s
-                            while ip <= ip_e
-                                z0 = sz + (vmz + T(ip - Int32(1)) * vsz - sz) * mag_fac
-                                z1 = sz + (vmz + T(ip) * vsz - sz) * mag_fac
-                                oz = _dd_overlap(dZlo, dZhi, min(z0, z1), max(z0, z1))
-                                if oz > zero(T)
-                                    mat = Int32(mask[ixv, iyv, ip]) + Int32(1)
-                                    plens = _plen_accum(plens, mat, ox * oz * norm)
-                                end
-                                ip += Int32(1)
-                            end
-                        end
-                        it += Int32(1)
-                    end
-                    il += Int32(1)
-                end
-            end
+            plens = _dd_plen_walk(
+                Val(M), mask, col, row, angle, sp, dc, du, dv,
+                vmx, vmy, vmz, vsx, vsy, vsz, nx, ny, nz,
+                mag, ps, prs, cc, rc, arc_det, dγ)
 
             m = Int32(1)
             while m <= Int32(M)
@@ -631,9 +564,15 @@ function dd_fast_material_paths!(
         "dd_fast_material_paths!: $(n_materials) materials exceeds the path-length limit of " *
             "$(_PLEN_MAX_MATERIALS); call compact_materials(phantom) first"
     ))
-    size(paths, 4) == geom.n_angles || throw(DimensionMismatch(
-        "paths has $(size(paths, 4)) views, the geometry has $(geom.n_angles)"
-    ))
+    # The detector shape has to be the geometry's: `col_center`/`row_center` come from `paths`,
+    # so a smaller cache would silently trace rays through the middle of the detector.
+    (size(paths, 2), size(paths, 3), size(paths, 4)) ==
+        (geom.n_cols, geom.n_rows, geom.n_angles) || throw(
+        DimensionMismatch(
+            "paths is $(size(paths)[2:4]) (col, row, view); the geometry is " *
+                "$((geom.n_cols, geom.n_rows, geom.n_angles))"
+        )
+    )
 
     g = _dd_walk_setup(
         T, size(mask), (size(paths, 2), size(paths, 3)), geom, volume_extent, paths,
