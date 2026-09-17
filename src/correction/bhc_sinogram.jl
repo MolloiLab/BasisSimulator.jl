@@ -188,9 +188,10 @@ function generate_water_calibration_curve(
         n_points::Int = 100,
         reference_energy_keV::Real = 70.0,
     )
-    water = get_material(:water)
-    μ_water = [compute_μ_at_energy(water, Float64(e)) for e in energies]
-    μ_water_ref = compute_μ_at_energy(water, Float64(reference_energy_keV))
+    # The per-column calibration calls this once per detector column with the same energy grid;
+    # the water attenuation table (a Unitful / XCOM lookup per energy) is the same every time.
+    μ_water = _water_μ_table(energies)
+    μ_water_ref = compute_μ_at_energy(get_material(:water), Float64(reference_energy_keV))
 
     weights_norm = weights ./ sum(weights)
     paths = collect(range(0.0, Float64(max_path_cm), length = n_points))
@@ -203,6 +204,20 @@ function generate_water_calibration_curve(
         true_values[i] = μ_water_ref * path
     end
     return (paths, measured, true_values)
+end
+
+const _WATER_μ_CACHE = Dict{UInt64, Vector{Float64}}()
+const _WATER_μ_LOCK = ReentrantLock()
+
+# μ_water(E) in 1/cm on an energy grid, memoised by the grid's contents.
+function _water_μ_table(energies::AbstractVector)
+    key = hash(Float64.(energies))
+    cached = lock(() -> get(_WATER_μ_CACHE, key, nothing), _WATER_μ_LOCK)
+    cached === nothing || return cached
+    water = get_material(:water)
+    table = [compute_μ_at_energy(water, Float64(e)) for e in energies]
+    lock(() -> (_WATER_μ_CACHE[key] = table), _WATER_μ_LOCK)
+    return table
 end
 
 # =============================================================================

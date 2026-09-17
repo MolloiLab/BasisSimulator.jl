@@ -333,6 +333,17 @@ function compute_mc_pileup_matrix(
     model::Symbol=:seminonparalyzable,
     seed::Int=42
 )
+    # The matrix is a pure function of its arguments (the RNG is seeded), and the 5000-trial
+    # Monte Carlo behind it costs ~17 s — 93 % of building a photon-counting workspace. It is
+    # therefore memoised for the life of the process; callers get a copy they may mutate.
+    key = hash((
+        Float64.(thresholds_keV), Float64.(spectrum_weights), Float64.(energies),
+        Float64(count_rate), Float64(dead_time_ns), n_trials, Float64(observation_time_s),
+        model, seed,
+    ))
+    cached = lock(() -> get(_PILEUP_MATRIX_CACHE, key, nothing), _PILEUP_MATRIX_LOCK)
+    cached === nothing || return copy(cached)
+
     rng = MersenneTwister(seed)
     n_bins = length(thresholds_keV)
     thresh = Float64.(thresholds_keV)
@@ -403,11 +414,18 @@ function compute_mc_pileup_matrix(
             S[j, j] = 1.0  # No data for true bin j → fall back to identity column
         end
     end
+    lock(() -> (_PILEUP_MATRIX_CACHE[key] = copy(S)), _PILEUP_MATRIX_LOCK)
     return S
 end
+
+const _PILEUP_MATRIX_CACHE = Dict{UInt64, Matrix{Float64}}()
+const _PILEUP_MATRIX_LOCK = ReentrantLock()
+
+"Forget every memoised pile-up migration matrix (see [`compute_mc_pileup_matrix`](@ref))."
+empty_pileup_cache!() = lock(() -> (empty!(_PILEUP_MATRIX_CACHE); nothing), _PILEUP_MATRIX_LOCK)
 
 # =============================================================================
 # Exports
 # =============================================================================
 
-export PileupResult, simulate_pulse_train, compute_mc_pileup_matrix
+export PileupResult, simulate_pulse_train, compute_mc_pileup_matrix, empty_pileup_cache!
