@@ -353,5 +353,12 @@ end
     @test mean(cong.images.water[centre, centre, 1]) ≈ 1.0 rtol = 0.02
 
     @test_throws ArgumentError BS.vmi_pipeline(; channels, basis, geom, use_tlbf = true)
+    # …but an acquisition that already has one row needs no reduction to be filtered
+    single_row = [h[:, 1:1, :] for h in channels]
+    one_row = BS.vmi_pipeline(;
+        channels = single_row, basis, geom, use_tlbf = true, matrix_size = (32, 32, 1),
+        vmi_energies = (70,), use_acnr = false,
+    )
+    @test size(one_row.vmis) == (32, 32, 1) && one_row.settings.tlbf !== nothing
     @test_throws ArgumentError BS.vmi_pipeline(; channels, basis, geom, method = :bogus)
 end

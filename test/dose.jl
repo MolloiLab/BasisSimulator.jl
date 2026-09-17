@@ -41,9 +41,17 @@ end
 
 @testset "CTDI100 in the PMMA phantoms" begin
     src = BS.dose_source(_dose_scanner(), _dose_protocol())
+    spectrum_before = copy(src.phi_iso)
     body = BS.ctdi100(src; phantom = :body32, n_histories = 400_000)
     head = BS.ctdi100(src; phantom = :head16, n_histories = 400_000)
     @test body === BS.ctdi100(src; phantom = :body32, n_histories = 400_000)      # cached
+    # …and the cache key has to separate the questions that have different answers
+    @test BS.ctdi100(src; phantom = :body32, beam_width_mm = 18.0, n_histories = 400_000).ctdi_w !=
+        body.ctdi_w
+    @test BS.ctdi100(src; phantom = :body32, n_histories = 800_000).ctdi_w != body.ctdi_w
+    @test head.ctdi_w != body.ctdi_w
+    # the transport samples the spectrum, it does not consume it
+    @test spectrum_before == src.phi_iso
     @test 1.7 < body.periphery / body.center < 2.6
     @test 1.05 < head.periphery / head.center < 1.3
     @test 1.8 < head.ctdi_w / body.ctdi_w < 2.3

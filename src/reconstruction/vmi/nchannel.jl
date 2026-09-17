@@ -908,8 +908,13 @@ function vmi_pipeline(;
     )
     method in (:nchannel, :cong) ||
         throw(ArgumentError("method must be :nchannel or :cong, got $(method)"))
-    use_tlbf && !reduce_rows && throw(
-        ArgumentError("use_tlbf = true needs reduce_rows = true: T-LBF works on one detector row")
+    # T-LBF's neighbourhood is (column, view), so it needs a single detector row — which
+    # `reduce_rows` produces, unless the acquisition already has one.
+    use_tlbf && !reduce_rows && size(first(channels), 2) > 1 && throw(
+        ArgumentError(
+            "use_tlbf = true on a $(size(first(channels), 2))-row sinogram needs " *
+                "reduce_rows = true: T-LBF works on one detector row"
+        )
     )
 
     prepared = prepare_channels(; channels, basis, merge_groups, reduce_rows, rows)
