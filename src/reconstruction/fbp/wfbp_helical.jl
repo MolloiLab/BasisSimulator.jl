@@ -29,6 +29,29 @@
 # banding off-axis (measured ~10% on a 30 cm phantom at pitch 1).  Rebinning
 # is one extra resampling kernel and removes the artifact class — which is
 # exactly why the clinical algorithms rebin.
+#
+# MEASURED BEHAVIOUR AND KNOWN LIMITS (water cylinder r = 10 cm, 32 rows x
+# 0.625 mm, arc detector, noise and scatter off, against the axial FDK of the
+# same object as reference):
+#
+#   * Uniformity: centre -0.83 HU, peripheral ring -1.97 HU, slice-to-slice
+#     sd 0.000 HU, and no feed-periodic z modulation (0.016 HU at the rotation
+#     period, 0.004 HU at half of it) - i.e. no windmill in a uniform object.
+#   * Slice sensitivity profile from a thin disk: FWHM 0.79-0.85 mm at any
+#     radius out to 20 cm (the axial FDK gives 0.58-0.66 mm; a helical scan
+#     interpolates in z, so a broader profile is the algorithm, not a defect).
+#   * Sharp z edges (a 1500 HU puck): |error| up to 60-100 HU in the
+#     neighbouring water, comparable to the axial FDK of the same object
+#     (73 HU) and worst at pitch 1.
+#   * `coverage` (below) is the honest end-of-helix and data-insufficiency
+#     answer: at pitch 2 with 32 rows more than half the core voxels are not
+#     reconstructable, and the unflagged volume reads -49 HU mean in them.
+#
+# NOT modelled: a cos(cone angle) weight in the aperture normalisation. Its
+# absence is invisible at clinical collimations (16 rows: 0.04 HU; 32: 0.01;
+# 64: 0.10) and grows with the cone (128 rows / 8 cm: 0.57 HU; 256 rows /
+# 16 cm: 2.44 HU, tracking 1/cos(max cone angle) - 1 = 1.09 %). Treat a
+# collimation beyond about 8 cm as uncalibrated in this path.
 # =============================================================================
 
 import AcceleratedKernels as AK
@@ -136,6 +159,7 @@ function _wfbp_backproject!(
         geom::CTGeometry,
         Δt::T;
         helical_q::Real = 0.7,
+        coverage::Union{Nothing, AbstractArray{T, 3}} = nothing,
     ) where {T <: AbstractFloat}
 
     nx = Int32(size(volume, 1))
@@ -157,6 +181,25 @@ function _wfbp_backproject!(
     prm = T(geom.pixel_row_size) * (SDD / R)
     Δβ = T(geom.angles[2] - geom.angles[1])
     n_half = Int32(max(1, round(Int, π / Δβ)))
+    # The conjugate families are the view grid strided by a half turn, so a half turn has to
+    # be a whole number of views. With an odd number of views per rotation it is not, every
+    # family drifts, and the reconstruction picks up a global offset (measured on a water
+    # cylinder: 360 views/rotation -0.01 HU, 361 -2.71 HU, 359 +2.85 HU, 181 +5.69 HU).
+    if abs(π / Δβ - round(π / Δβ)) > 1.0e-6
+        @warn "Helical WFBP: $(round(2π / Δβ; digits = 3)) views per rotation is not an even " *
+            "integer, so a half turn is not a whole number of views and the conjugate-view " *
+            "families are misaligned; expect a global offset of a few HU. Use an even " *
+            "number of views per rotation." maxlog = 1
+    end
+    # Row coordinate of a voxel at height dz above the source plane, at in-plane
+    # source-to-voxel distance `denom`. An arc (cylindrical, third-generation) detector has
+    # every row at the same IN-PLANE distance SDD from the source, so dz scales by SDD/denom;
+    # a flat panel sits at PERPENDICULAR distance SDD, which adds 1/cos(fan angle). The axial
+    # backprojector already branches this way (`v_arc` in
+    # reconstruction/core/backprojection.jl); this path used the flat mapping for both, which
+    # stretched the off-centre slice profile of an arc scanner (thin-disk FWHM at 20 cm:
+    # 0.95-1.01 mm against 0.78-0.81 mm with the correct mapping, and asymmetric in x).
+    use_arc = is_arc(geom)
     feed = T(geom.table_feed)
     z_start = T(geom.source_positions[3, 1])     # source z at β = 0
     t_center = (T(n_cols) + one(T)) / T(2)
@@ -165,8 +208,12 @@ function _wfbp_backproject!(
     q_plat = T(helical_q)
     twoπ = T(2π)
     half = T(0.5)
+    # `coverage` is optional, but the kernel needs a concrete array to write to either way.
+    cover = coverage === nothing ? similar(volume, T, 1, 1, 1) : coverage
+    want_coverage = coverage !== nothing
+    inv_n_half = one(T) / T(n_half)
 
-    let reb = reb, volume = volume
+    let reb = reb, volume = volume, cover = cover
 
         AK.foreachindex(volume) do idx
             idx_0 = Int32(idx - 1)
@@ -180,6 +227,7 @@ function _wfbp_backproject!(
             z = vol_min_z + (T(iz) - half) * vsz
 
             acc = zero(T)
+            n_seen = Int32(0)
             fam = Int32(1)
             while fam <= n_half
                 sumW = zero(T)
@@ -202,7 +250,8 @@ function _wfbp_backproject!(
                         denom = l̂ + R * cosγ            # source→voxel in-plane distance
                         if denom > T(1e-3)
                             # wedge row coordinate: z magnified source→detector
-                            v = (z - z_s) * (SDD / cosγ) / denom / prm
+                            v = use_arc ? (z - z_s) * SDD / denom / prm :
+                                (z - z_s) * (SDD / cosγ) / denom / prm
                             q̂ = v / half_rows
                             Wq = _wq_aperture(q̂, q_plat)
                             if Wq > zero(T)
@@ -229,11 +278,15 @@ function _wfbp_backproject!(
 
                 if sumW > T(1e-8)
                     acc += sumWP / sumW
+                    n_seen += Int32(1)
                 end
                 fam += Int32(1)
             end
 
             volume[idx] = acc * Δβ
+            if want_coverage
+                cover[idx] = T(n_seen) * inv_n_half
+            end
         end
     end
     return volume
@@ -241,12 +294,29 @@ end
 
 """
     wfbp_helical_reconstruct(sinogram, geom, volume_size;
-                             filter=StandardFilter(), cutoff=1.0,
-                             helical_q=0.7) -> volume
+                             filter=StandardFilter(), cutoff=1.0, helical_q=0.7,
+                             coverage=nothing, mask_fov=true) -> volume
 
 Full helical WFBP chain: fan→parallel rebinning, parallel ramp filtering,
 aperture-weighted wedge backprojection.  Called automatically by
 [`fdk_reconstruct`](@ref) when `is_helical(geom)`.
+
+`helical_q` is the width of the flat top of the detector-row aperture weight, as a fraction of
+the half-collimation: 1 uses the whole row range with no roll-off, smaller values taper the rows
+nearest the edge of the cone.  Lower `q` costs dose efficiency and a little noise (measured on a
+water cylinder: in-ROI σ 3.03 HU at q = 0.3, 2.77 at 0.7, 2.63 at 1.0) and buys tolerance to the
+cone.
+
+**`coverage` is how you tell a reconstructed voxel from an unreconstructed one.** Pass an array
+shaped like the volume and it is filled with the fraction of half-turn conjugate families that
+found data for that voxel.  1 means fully sampled; anything less means the helix ended, or the
+pitch outran the cone, and the voxel is an extrapolation — it is NOT flagged in the volume
+itself, which simply reads whatever the surviving families gave (at pitch 2 with 32 rows that is
+a mean of −49 HU over more than half the core, with no other sign of trouble).  Roughly one
+collimation width at each end of the helix never reaches coverage 1.
+
+`mask_fov` sets the voxels outside the reconstruction circle to the same sentinel the axial FDK
+uses, so the two paths return the same convention.
 """
 function wfbp_helical_reconstruct(
         sinogram::AbstractArray{T, 3},
@@ -255,13 +325,19 @@ function wfbp_helical_reconstruct(
         filter::FilterType = StandardFilter(),
         cutoff::Float64 = 1.0,
         helical_q::Real = 0.7,
+        coverage::Union{Nothing, AbstractArray{T, 3}} = nothing,
+        mask_fov::Bool = true,
     ) where {T <: AbstractFloat}
 
+    coverage === nothing || size(coverage) == volume_size || throw(
+        DimensionMismatch("coverage $(size(coverage)) must match the volume $(volume_size)")
+    )
     reb, Δt = _wfbp_rebin(sinogram, geom)
     filter_sinogram!(reb, geom; filter = filter, cutoff = cutoff,
         apply_cosine = false, ray_spacing = Δt)
     volume = similar(sinogram, T, volume_size...)
     fill!(volume, zero(T))
-    _wfbp_backproject!(volume, reb, geom, Δt; helical_q = helical_q)
+    _wfbp_backproject!(volume, reb, geom, Δt; helical_q = helical_q, coverage = coverage)
+    mask_fov && apply_fov_mask!(volume, geom)
     return volume
 end

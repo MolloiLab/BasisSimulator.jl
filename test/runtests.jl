@@ -28,6 +28,9 @@ const BS = BasisSimulator
         include("geometry.jl")
     include("scanner_split.jl")
     end
+    @testset "helical/" begin
+        include("helical.jl")
+    end
     @testset "memory lifecycle/" begin
         include("memory_lifecycle.jl")
     end

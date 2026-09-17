@@ -329,16 +329,23 @@ function fdk_reconstruct(
     geom::CTGeometry,
     volume_size::NTuple{3, Int};
     filter::FilterType = StandardFilter(),
-    cutoff::Float64 = 1.0
+    cutoff::Float64 = 1.0,
+    helical_q::Real = 0.7,
+    coverage::Union{Nothing, AbstractArray{T, 3}} = nothing,
 ) where T <: AbstractFloat
 
     # Helical trajectories route to the rebinned WFBP chain (Stierstorfer
     # 2004 family) — the circular FDK weighting below assumes a full-orbit
-    # circular scan.
+    # circular scan.  `helical_q` and `coverage` are that path's knobs; see
+    # [`wfbp_helical_reconstruct`](@ref), and pass `coverage` to find out which
+    # voxels the helix actually sampled.
     if is_helical(geom)
         return wfbp_helical_reconstruct(sinogram, geom, volume_size;
-            filter = filter, cutoff = cutoff)
+            filter = filter, cutoff = cutoff, helical_q = helical_q, coverage = coverage)
     end
+    coverage === nothing || throw(ArgumentError(
+        "coverage is only defined for a helical geometry; this one is axial"
+    ))
 
     # Step 1: Filter sinogram (includes cosine weighting)
     # GPU-native spatial domain filtering - no CPU transfer needed
