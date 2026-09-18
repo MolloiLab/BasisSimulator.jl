@@ -821,17 +821,47 @@ end
 
 """
     reconstruct_basis_slice(sino, geom, matrix_size; to_backend = identity,
-                            filter = SoftFilter(), n_rows = geom.n_rows, antialias = true)
+                            filter = SoftFilter(), n_rows = geom.n_rows, antialias = true,
+                            method = :fbp, hir_strength = 60, projector = :dd_fast,
+                            hir_weights = :uniform, scale = 1)
 
-FDK of one sinogram, whether it carries a measured channel or an estimated basis material, so
-that both materials get the identical kernel and the identical angular response by construction.
-A single-row sinogram (what [`reduce_detector_rows`](@ref) leaves) is repeated to `n_rows`.
+Reconstruct one sinogram, whether it carries a measured channel or an estimated basis material.
+
+`method = :fbp` is FDK as basis-vmi does it: a single-row sinogram (what
+[`reduce_detector_rows`](@ref) leaves) is repeated to `n_rows` and backprojected onto the
+requested grid with `filter`.
+
+`method = :hir` is the penalized iterative reconstructor at `hir_strength` (0-100, see
+[`get_hir_params`](@ref)). Three things make it sound on a basis sinogram, none of which FDK
+needs:
+
+- **The weights.** HIR's default data weighting is `exp(-y)`, the Poisson heuristic for a
+  log-transmission. A basis sinogram is g/cm², not a transmission — through a body it reads 20 to
+  30 for water and a fraction of one for iodine — so that weighting would switch the data term
+  off inside the object for one material and leave it uniform for the other. `hir_weights` is
+  what is passed to `reconstruct!` instead: `:uniform`, or the per-ray inverse-variance map from
+  the decomposition's Fisher information (see [`vmi_pipeline`](@ref)).
+- **The units.** HIR's Huber threshold and regularisation strength were tuned on attenuation
+  images in cm⁻¹. `scale` multiplies the sinogram before reconstruction and divides the image
+  after, so with `scale = μ/ρ` of the material at a reference energy the reconstruction happens
+  in μ-equivalent units and the strength dial means what its table says. FDK is linear and needs
+  no such thing.
+- **The geometry.** A single-row sinogram is NOT repeated: it is reconstructed through a one-row
+  geometry with a volume one row thick. Repeating one row to `n_rows` asserts that every row saw
+  the same thing, which a one-slice forward model cannot reproduce at the outer rows; FDK
+  ignores the contradiction, PWLS would fit it.
+
+`hir_weights` and `scale` are ignored by `:fbp`.
 """
 function reconstruct_basis_slice(
         sino::AbstractArray{<:Real, 3}, geom, matrix_size;
         to_backend = identity, filter = SoftFilter(), n_rows::Integer = geom.n_rows,
-        antialias::Bool = true,
+        antialias::Bool = true, method::Symbol = :fbp, hir_strength::Integer = 60,
+        projector::Symbol = :dd_fast, hir_weights::Union{Symbol, AbstractArray} = :uniform,
+        scale::Real = 1,
     )
+    method in (:fbp, :hir) ||
+        throw(ArgumentError("method must be :fbp or :hir, got :$(method)"))
     n_views = size(sino, 3)
     working = Float32.(sino)
     if antialias
@@ -841,15 +871,66 @@ function reconstruct_basis_slice(
             working = Float32.(real.(FFTW.ifft(spectrum .* reshape(response, 1, 1, n_views), 3)))
         end
     end
-    repeated = size(working, 2) == n_rows ? working : repeat(working, 1, n_rows, 1)
-    sino_dev = to_backend(repeated)
-    ws = create_fdk_recon_workspace(sino_dev, geom, matrix_size; filter = filter)
+
+    if method === :fbp
+        repeated = size(working, 2) == n_rows ? working : repeat(working, 1, n_rows, 1)
+        sino_dev = to_backend(repeated)
+        ws = create_fdk_recon_workspace(sino_dev, geom, matrix_size; filter = filter)
+        try
+            return Float32.(Array(reconstruct!(ws, sino_dev, geom)))
+        finally
+            release_backend!(ws)
+            release_backend!(sino_dev)
+        end
+    end
+
+    single_row = size(working, 2) == 1 && geom.n_rows != 1
+    single_row && matrix_size[3] != 1 && throw(ArgumentError(
+        "a single-row sinogram reconstructs one slice; matrix_size has $(matrix_size[3])"))
+    recon_geom = single_row ? _single_row_geometry(geom) : geom
+    hir_weights isa AbstractArray && size(hir_weights) != size(working) && throw(DimensionMismatch(
+        "hir_weights has size $(size(hir_weights)); the sinogram is $(size(working))"))
+    s = Float32(scale)
+    sino_dev = to_backend(working .* s)
+    weights_dev = hir_weights isa AbstractArray ? to_backend(Float32.(hir_weights)) : hir_weights
+    ws = create_hir_recon_workspace(
+        sino_dev, recon_geom, matrix_size;
+        filter = filter, strength = hir_strength, projector = projector,
+    )
     try
-        return Float32.(Array(reconstruct!(ws, sino_dev, geom)))
+        image = reconstruct!(ws, sino_dev, recon_geom; weights = weights_dev)
+        return Float32.(Array(image)) ./ s
     finally
         release_backend!(ws)
         release_backend!(sino_dev)
+        weights_dev isa AbstractArray && release_backend!(weights_dev)
     end
+end
+
+# One detector row at the isocentre plane: the same trajectory, fan and pitch, a field of view
+# one row thick. What a reduced-row sinogram actually measured.
+function _single_row_geometry(geom::CTGeometry)
+    return CTGeometry(
+        geom.SAD, geom.SDD, geom.n_angles, 1, geom.n_cols,
+        geom.pixel_size, geom.pixel_row_size,
+        geom.angles, geom.source_positions, geom.detector_centers,
+        geom.detector_u, geom.detector_v, (geom.fov[1], geom.fov[2], geom.pixel_row_size),
+        geom.pitch, geom.table_feed, geom.detector_shape,
+    )
+end
+
+# Inverse-variance weights for the two basis sinograms from the K-channel Fisher information,
+# in the μ-equivalent units the reconstruction runs in. Σ = F⁻¹, so var(A) = F_CC/det and
+# var(C) = F_AA/det; scaling a sinogram by s scales its variance by s². Normalised so the
+# best-determined ray has weight 1 — the (0, 1] range HIR's strength table was calibrated on
+# with transmission weights. A ray the estimator could not determine (F singular) gets none.
+function _basis_weights(fisher, scale_iodine::Real, scale_water::Real)
+    AA, AC, CC = Float64.(fisher.AA), Float64.(fisher.AC), Float64.(fisher.CC)
+    det = @. AA * CC - AC * AC
+    w_I = @. ifelse(det > 0, det / max(CC, eps()) / scale_iodine^2, 0.0)
+    w_W = @. ifelse(det > 0, det / max(AA, eps()) / scale_water^2, 0.0)
+    normalise(w) = (m = maximum(w); m > 0 ? Float32.(w ./ m) : ones(Float32, size(w)))
+    return normalise(w_I), normalise(w_W)
 end
 
 """
@@ -902,8 +983,17 @@ Stages, all optional:
   `recon_rows = geom.n_rows`. The default reconstruction grid is 512² by one slice whatever the
   workspace's `ReconOptions` says — this function never sees them — so pass `matrix_size`
   explicitly when they differ.
+- `recon_method = :fbp` (the published chain) or `:hir`, with `hir_strength = 60`,
+  `recon_projector = :dd_fast` and `hir_reference_kev = 70`. `:hir` reconstructs the basis pair
+  with the penalized iterative reconstructor and nothing else changes: T-LBF, ACNR and the
+  synthesis run as before. Each material is reconstructed in μ-equivalent units at the reference
+  energy, weighted by its own inverse variance from the K-channel Fisher information (uniformly
+  for `:cong`, which has none), through a one-row geometry when the rows were reduced — see
+  [`reconstruct_basis_slice`](@ref) for why each of those is needed. Run once each way for the
+  analytic and iterative stacks of one acquisition.
 - `vmi_energies = (40, 70, 100, 140)`.
-- `keep_sinograms`, `keep_diagnostics`.
+- `keep_sinograms` adds the decomposed pair; `keep_diagnostics` adds the estimator's per-ray
+  maps (Fisher information, quality flags) for `:nchannel`.
 
 The published photon-counting configuration is
 `vmi_pipeline(; channels, basis, geom, to_backend, reduce_rows = true, use_tlbf = true)`.
@@ -926,6 +1016,10 @@ function vmi_pipeline(;
         fbp_filter = SoftFilter(),
         antialias::Bool = true,
         recon_rows::Integer = geom.n_rows,
+        recon_method::Symbol = :fbp,
+        hir_strength::Integer = 60,
+        recon_projector::Symbol = :dd_fast,
+        hir_reference_kev::Real = 70.0,
         vmi_energies = (40, 70, 100, 140),
         tile_views::Integer = controls.tile_views,
         keep_sinograms::Bool = false,
@@ -933,6 +1027,9 @@ function vmi_pipeline(;
     )
     method in (:nchannel, :cong) ||
         throw(ArgumentError("method must be :nchannel or :cong, got $(method)"))
+    recon_method in (:fbp, :hir) ||
+        throw(ArgumentError("recon_method must be :fbp or :hir, got $(recon_method)"))
+    hir = recon_method === :hir
     # T-LBF's neighbourhood is (column, view), so it needs a single detector row — which
     # `reduce_rows` produces, unless the acquisition already has one.
     use_tlbf && !reduce_rows && size(first(channels), 2) > 1 && throw(
@@ -949,7 +1046,8 @@ function vmi_pipeline(;
         decompose_nchannel(
             channels = working_channels, basis = working_basis, controls = controls,
             to_backend = to_backend, tile_views = tile_views,
-            keep_diagnostics = keep_diagnostics,
+            # the Fisher information is the variance HIR weights the basis pair by
+            keep_diagnostics = keep_diagnostics || hir,
         )
     else
         decompose_cong(channels = working_channels, basis = working_basis, to_backend = to_backend)
@@ -970,12 +1068,23 @@ function vmi_pipeline(;
         sino_iodine, sino_water = filtered.sino_iodine, filtered.sino_water
     end
 
-    reconstruct(one_sino) = reconstruct_basis_slice(
+    # HIR runs each material in μ-equivalent units at the reference energy, weighted by that
+    # material's inverse variance; FDK is linear and takes the sinograms as they are.
+    scale_water = hir ? compute_mass_μ_at_energy(XA.Materials.water, Float64(hir_reference_kev)) : 1.0
+    scale_iodine = hir ? compute_mass_μ_at_energy(XA.Elements.Iodine, Float64(hir_reference_kev)) : 1.0
+    weights_iodine, weights_water = if hir && method === :nchannel
+        _basis_weights(decomposition.diagnostics.fisher, scale_iodine, scale_water)
+    else
+        (:uniform, :uniform)
+    end
+    reconstruct(one_sino, weights, scale) = reconstruct_basis_slice(
         one_sino, geom, matrix_size;
         to_backend = to_backend, filter = fbp_filter, n_rows = recon_rows, antialias = antialias,
+        method = recon_method, hir_strength = hir_strength, projector = recon_projector,
+        hir_weights = weights, scale = scale,
     )
-    water_image = reconstruct(sino_water)
-    iodine_image = reconstruct(sino_iodine)
+    water_image = reconstruct(sino_water, weights_water, scale_water)
+    iodine_image = reconstruct(sino_iodine, weights_iodine, scale_iodine)
 
     acnr_settings = nothing
     if use_acnr && acnr_passes > 0
@@ -1002,12 +1111,21 @@ function vmi_pipeline(;
             tlbf = use_tlbf ?
                 (alpha1 = tlbf_alpha1, alpha2 = tlbf_alpha2, radius = tlbf_radius) : nothing,
             acnr = acnr_settings,
-            fbp = (; matrix_size, antialias, recon_rows),
+            recon = (;
+                method = recon_method, matrix_size, antialias, recon_rows, filter = fbp_filter,
+                hir = hir ? (;
+                    strength = hir_strength, projector = recon_projector,
+                    reference_kev = hir_reference_kev,
+                    weights = method === :nchannel ? :fisher : :uniform,
+                ) : nothing,
+            ),
             controls = controls,
         ),
     )
-    return keep_sinograms ?
-        merge(result, (sinograms = (iodine = sino_iodine, water = sino_water),)) : result
+    keep_sinograms && (result = merge(result, (sinograms = (iodine = sino_iodine, water = sino_water),)))
+    keep_diagnostics && method === :nchannel &&
+        (result = merge(result, (diagnostics = decomposition.diagnostics,)))
+    return result
 end
 
 export NChannelControls, spectral_basis, spectral_basis_from_bins, spectral_basis_from_acquisitions

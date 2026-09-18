@@ -450,11 +450,13 @@ function compute_dose(
             src; phantom, beam_width_mm = wide_reference + overbeam_mm,
             nominal_collimation_mm = wide_reference, n_histories, seed,
         )
-        # CTDI_free-air(N·T) = D₀ · min(N·T, 100) / (N·T): the pencil chamber is 100 mm long, so
-        # the free-in-air integral stops growing once the beam is wider than it. Using the
-        # unsaturated ratio over-reports a 160 mm beam by 1.6x.
-        scale = (min(beam, _CTDI_CHAMBER_MM) / NT) /
-            (min(wide_reference + overbeam_mm, _CTDI_CHAMBER_MM) / wide_reference)
+        # The free-in-air CTDI in the amendment is taken over the WHOLE beam profile (a long or
+        # stepped chamber, not the 100 mm pencil) — that is the point of the rule. For a uniform
+        # beam it is D₀ · beam / N·T on both sides, so the ratio does not saturate: with no
+        # over-beaming it is exactly 1, and dose per rotation scales with N·T as it must. Clamping
+        # either side at the pencil-chamber length (done once, 2026-09-17, and reverted) reported a
+        # 160 mm beam at 100/160 of its true value.
+        scale = (beam / NT) / ((wide_reference + overbeam_mm) / wide_reference)
         (;
             center = reference.center * scale, periphery = reference.periphery * scale,
             primary_center = reference.primary_center * scale,

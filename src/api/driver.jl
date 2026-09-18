@@ -1448,14 +1448,43 @@ workspace creation time — no runtime overrides on this hot path.
   reference values.  When provided, statistical weights are scaled by the
   air reference to account for position-dependent noise from the bowtie
   filter (edge pixels have fewer counts → more noise → lower weight).
+
+`weights` selects the statistical weighting of the data term, and the right choice depends on
+what the sinogram IS, not on which scanner made it. `:transmission` (default) is `exp(-y)`
+scaled by `air_reference` when given: right for any log-transmission sinogram — an
+energy-integrating acquisition, a photon-counting acquisition's summed bins, either tube voltage
+of a dual-energy pair — because a ray through more material carried fewer photons. `:uniform`
+weights every ray equally, leaving only the geometric ray-length normalisation. An array of the
+sinogram's shape is used as the per-ray statistical weight directly: for a material-basis
+sinogram from a projection-domain decomposition (photon-counting bins or a dual-kVp pair through
+[`decompose_nchannel`](@ref)), whose values are g/cm² and not log-transmissions, pass the
+decomposition's inverse-variance map (see [`vmi_pipeline`](@ref)) or `:uniform`; `exp(-y)` has
+no meaning for it.
 """
 function reconstruct!(
         ws::HIRReconWorkspace{T},
         sinogram::AbstractArray{T, 3},
         geom::CTGeometry;
         init_volume::Union{Nothing, AbstractArray{T, 3}} = nothing,
-        air_reference::Union{Nothing, AbstractArray} = nothing
+        air_reference::Union{Nothing, AbstractArray} = nothing,
+        weights::Union{Symbol, AbstractArray} = :transmission,
     ) where {T <: AbstractFloat}
+    # `weights` is how the data term knows what it is fitting. `:transmission` is the Poisson
+    # heuristic for a log-transmission sinogram, w = exp(-y): a ray through more material carried
+    # fewer photons and is trusted less. That is only right when `y` IS a log-transmission. A
+    # basis sinogram from a material decomposition is not — it is g/cm² of one material, can be
+    # negative, and its variance comes from the decomposition's Fisher information, not from
+    # exp(-y) — so for it the caller passes `:uniform` or the inverse-variance map itself.
+    weights isa Symbol && (weights in (:transmission, :uniform) || throw(
+        ArgumentError("weights must be :transmission, :uniform or an array; got :$(weights)")
+    ))
+    if weights isa AbstractArray
+        size(weights) == size(sinogram) || throw(DimensionMismatch(
+            "weights has size $(size(weights)); the sinogram is $(size(sinogram))"))
+        air_reference === nothing || throw(ArgumentError(
+            "air_reference is the transmission weighting's bowtie map; it has no meaning " *
+            "alongside explicit weights"))
+    end
 
     params = ws.params
     model_volume = ws.work_volume
@@ -1534,9 +1563,22 @@ function reconstruct!(
     # feed back through A*x and leaves a circular boundary ring.
     apply_fov_mask!(model_volume, model_geom; sentinel_μ = zero(T))
 
-    # Initialize statistical weights: w = air_ref(col,row) × exp(-y)
-    # air_ref accounts for bowtie-modulated I0 (edge pixels → fewer counts → lower weight)
-    if air_reference !== nothing
+    # Initialize statistical weights.
+    #   :transmission — w = air_ref(col,row) × exp(-y); air_ref accounts for bowtie-modulated I0
+    #                   (edge pixels → fewer counts → lower weight)
+    #   :uniform      — w = 1: the data term is the geometric ray-length normalisation alone
+    #   array         — the caller's statistical weights, used as given (floored at ε)
+    if weights isa AbstractArray
+        let sw = ws.data_weights, ε = T(1.0e-6)
+            copyto!(sw, weights)
+            AK.foreachindex(sw, backend) do idx
+                w = sw[idx]
+                sw[idx] = (isfinite(w) && w > zero(T)) ? w + ε : ε
+            end
+        end
+    elseif weights === :uniform
+        fill!(ws.data_weights, one(T))
+    elseif air_reference !== nothing
         let sw = ws.data_weights, ε = T(1.0e-6), aref = air_reference,
                 nc = Int32(size(sinogram, 1)), nr = Int32(size(sinogram, 2))
             AK.foreachindex(sw, backend) do idx

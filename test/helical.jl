@@ -44,6 +44,71 @@ _row_ramp(geom) = Float32[Float32(r) for _ in 1:(geom.n_cols), r in 1:(geom.n_ro
     @test all(isfinite, v_arc) && all(isfinite, v_flat)
 end
 
+@testset "the row mapping is the one the projector uses" begin
+    # The near/far test above only shows the two branches agree on-axis and diverge off-axis; a
+    # wrong formula (cos γ for 1/cos γ, say) passes it just the same. This pins the mapping: one
+    # voxel is forward-projected through the package's own projector, and per view the row
+    # centroid of its footprint is compared with BOTH candidate formulas. The error of the wrong
+    # one is antisymmetric over the views — it cancels in the mean — so the discriminator is the
+    # RMS: the right formula is within a tenth of a row, the wrong one off by most of a row at 20 cm.
+    function row_errors(shape, r_cm)
+        scanner = BS.EICTScanner(
+            source_to_isocenter = 541.0, source_to_detector = 949.0,
+            detector_rows = 32, detector_cols = 200, detector_row_size = 1.25,
+            detector_col_size = 2.4, detector_shape = shape,
+        )
+        geom = BS.CTGeometry(
+            scanner; n_angles = 90, fov_cm = 48.0, z_cm = 4.0, pitch = 1.0, n_rotations = 1
+        )
+        nx, nz = 64, 24
+        vsx, vsz = geom.fov[1] / nx, geom.fov[3] / nz
+        vol = zeros(Float32, nx, nx, nz)
+        ix = round(Int, r_cm / vsx + nx / 2 + 0.5)
+        iy, iz = nx ÷ 2 + 1, nz ÷ 2 + 4
+        vol[ix, iy, iz] = 1.0f0
+        x, y = (ix - 0.5 - nx / 2) * vsx, (iy - 0.5 - nx / 2) * vsx
+        z = (iz - 0.5 - nz / 2) * vsz
+        sino = BS.dd_forward_project(vol, geom; volume_extent = geom.fov)
+        SDD, prm = geom.SDD, geom.pixel_row_size * geom.SDD / geom.SAD
+        row_centre = (geom.n_rows + 1) / 2
+        err_arc, err_flat = Float64[], Float64[]
+        for j in 1:geom.n_angles
+            s = geom.source_positions[:, j]
+            c = geom.detector_centers[:, j]
+            sv = (x - s[1], y - s[2])
+            ctr = (c[1] - s[1], c[2] - s[2])
+            D = hypot(sv...)
+            cosγ = (sv[1] * ctr[1] + sv[2] * ctr[2]) / (D * hypot(ctr...))
+            dz = z - s[3]
+            slab = vec(sum(sino[:, :, j]; dims = 1))
+            total = sum(slab)
+            total > 1.0e-6 || continue
+            measured = sum((1:geom.n_rows) .* slab) / total
+            push!(err_arc, measured - (dz * SDD / D / prm + row_centre))
+            push!(err_flat, measured - (dz * (SDD / cosγ) / D / prm + row_centre))
+        end
+        rms(v) = sqrt(mean(abs2, v))
+        return (arc = rms(err_arc), flat = rms(err_flat), n = length(err_arc))
+    end
+
+    near_arc, far_arc = row_errors(:arc, 12.0), row_errors(:arc, 20.0)
+    near_flat, far_flat = row_errors(:flat, 12.0), row_errors(:flat, 20.0)
+    @test far_arc.n > 40 && far_flat.n > 40
+    # the matching formula is right to a fraction of a row on either detector, at any radius
+    @test near_arc.arc < 0.15 && far_arc.arc < 0.15
+    @test near_flat.flat < 0.15 && far_flat.flat < 0.15
+    # the other formula's error grows with radius (it is a 1/cos γ effect) …
+    @test far_arc.flat > near_arc.flat
+    @test far_flat.arc > near_flat.arc
+    # … and at 20 cm it is several times the matching formula's, on both detectors
+    @test far_arc.flat > 3 * far_arc.arc
+    @test far_flat.arc > 3 * far_flat.flat
+    # on the axis the two formulas coincide (cos γ = 1), which is why the earlier test cannot
+    # tell them apart there
+    axis = row_errors(:arc, 0.0)
+    @test axis.arc < 0.15 && axis.flat < 0.15
+end
+
 @testset "coverage says which voxels the helix sampled" begin
     # A short helix: the requested volume is longer in z than the trajectory can fully cover, so
     # the middle is complete and the ends are not.
