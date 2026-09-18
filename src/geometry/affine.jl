@@ -241,3 +241,85 @@ end
 # =============================================================================
 
 export phantom_to_world_affine, recon_to_world_affine, resample_to_recon
+
+# =============================================================================
+# Box-average a continuous field onto the reconstruction grid
+# =============================================================================
+
+"""
+    resample_field_to_recon(field, voxel_size, origin, geom, matrix_size; outside = 0) -> Array{Float32, 3}
+
+The exact box average of a continuous field — a material fraction, a density — onto the
+reconstruction grid: every output voxel is the mean of the field over that voxel's own footprint,
+from the axis-aligned overlap of the two grids. This is what a 0.2 mm truth has to become on
+0.625 mm slices for its partial volume to be the partial volume a reconstruction sees; point
+sampling ([`resample_to_recon`](@ref) with `:linear`) reads the field at the voxel centre and
+misses it.
+
+`field` is `(nx, ny, nz)` on a grid with `voxel_size` and `origin` in cm, in the
+[`Phantom`](@ref) convention (`origin` is the centre of voxel `(1, 1, 1)`); `geom` and
+`matrix_size` define the reconstruction grid as [`recon_to_world_affine`](@ref) does. Where an
+output voxel reaches beyond the field's grid the missing part is `outside` — `1` for an air
+fraction, `0` for everything else — so a set of fractions that sums to one still does.
+
+The overlap is separable, so it is three matrix products, not a voxel loop: a 1850 × 1350 × 75
+field onto 512 × 512 × 24 takes well under a second.
+"""
+function resample_field_to_recon(
+        field::AbstractArray{<:Real, 3}, voxel_size, origin, geom::CTGeometry, matrix_size;
+        outside::Real = 0.0,
+    )
+    length(voxel_size) == 3 && length(origin) == 3 || throw(ArgumentError(
+        "voxel_size and origin are 3-vectors in cm"))
+    nx, ny, nz = matrix_size
+    fov = geom.fov
+    dst = ntuple(3) do d
+        (n = matrix_size[d], step = fov[d] / matrix_size[d],
+            first = -fov[d] / 2 + fov[d] / matrix_size[d] / 2)
+    end
+    W = ntuple(3) do d
+        _overlap_weights(
+            size(field, d), Float64(voxel_size[d]), Float64(origin[d]),
+            dst[d].n, dst[d].step, dst[d].first,
+        )
+    end
+    # separable contraction, one axis at a time, in Float64
+    f = Float64.(field)
+    f = reshape(W[1] * reshape(f, size(f, 1), :), nx, size(f, 2), size(f, 3))
+    f = permutedims(reshape(W[2] * reshape(permutedims(f, (2, 1, 3)), size(f, 2), :), ny, nx, size(f, 3)), (2, 1, 3))
+    f = permutedims(reshape(W[3] * reshape(permutedims(f, (3, 1, 2)), size(f, 3), :), nz, nx, ny), (2, 3, 1))
+    if outside != 0
+        # the fraction of each output voxel that lay outside the field's grid
+        cover = ntuple(d -> vec(sum(W[d]; dims = 2)), 3)
+        c = [cover[1][i] * cover[2][j] * cover[3][k] for i in 1:nx, j in 1:ny, k in 1:nz]
+        f .+= Float64(outside) .* (1 .- c)
+    end
+    return Float32.(f)
+end
+
+# Rows: destination voxels; columns: source voxels. Entry = overlap length / destination pitch,
+# so a fully covered destination row sums to 1.
+function _overlap_weights(
+        n_src::Integer, d_src::Float64, first_src::Float64,
+        n_dst::Integer, d_dst::Float64, first_dst::Float64,
+    )
+    W = zeros(Float64, n_dst, n_src)
+    for j in 1:n_dst
+        lo_j = first_dst + (j - 1) * d_dst - d_dst / 2
+        hi_j = lo_j + d_dst
+        # the source voxels that can overlap
+        i_lo = max(1, floor(Int, (lo_j - (first_src - d_src / 2)) / d_src) + 1)
+        i_hi = min(n_src, ceil(Int, (hi_j - (first_src - d_src / 2)) / d_src))
+        for i in i_lo:i_hi
+            lo_i = first_src + (i - 1) * d_src - d_src / 2
+            hi_i = lo_i + d_src
+            overlap = min(hi_i, hi_j) - max(lo_i, lo_j)
+            # grids that share an edge meet there in exact arithmetic; rounding can leave a
+            # sliver of order eps, which is not a real overlap and must not leak a weight
+            overlap > 1.0e-9 * d_dst && (W[j, i] = overlap / d_dst)
+        end
+    end
+    return W
+end
+
+export resample_field_to_recon

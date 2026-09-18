@@ -46,6 +46,14 @@ implemented. One number was wrong and one design was unsound; both are fixed her
   materials.
 * `vmi_pipeline(...; keep_diagnostics = true)` now actually returns the estimator's per-ray maps
   (`diagnostics.fisher`, quality flags); the keyword was accepted and dropped before.
+* **`resample_field_to_recon(field, voxel_size, origin, geom, matrix_size; outside)`** — the exact
+  box average of a continuous field (a material fraction, a density) onto the reconstruction
+  grid, from the axis-aligned overlap of the two grids, as three separable matrix products. This
+  is how a fine truth becomes a label volume with the partial volume a reconstruction actually
+  sees; `resample_to_recon(…; method = :linear)` point-samples the mask at the voxel centre and
+  cannot do it, which the pre-package label notebooks worked around with integer-encoded
+  fractional fields and a denominator. `outside` fills the part of an output voxel that lies
+  beyond the field's grid (1 for an air fraction), so fractions that sum to one still do.
 
 ### Fixed
 

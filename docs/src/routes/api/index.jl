@@ -453,6 +453,22 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
 
                 # ════════════════════════════════════════════════════════════════
                 # § 5. Spectrum & source
+                Div(
+                    :class => card_cls,
+                    Div(:class => sig_cls, "resample_field_to_recon(field, voxel_size, origin, geom, matrix_size; outside = 0) → Array{Float32,3}"),
+                    P(
+                        :class => prose_cls,
+                        "The exact box average of a continuous field — a material fraction, a density — onto the ",
+                        "reconstruction grid, from the axis-aligned overlap of the two grids (three separable matrix ",
+                        "products, not a voxel loop).  Every output voxel is the mean of the field over its own footprint, ",
+                        "so a 0.2 mm truth on 0.625 mm slices carries the partial volume a reconstruction sees.  ",
+                        Code(:class => inline, "resample_to_recon(…; method = :linear)"),
+                        " point-samples at the voxel centre and does not.  ", Code(:class => inline, "outside"),
+                        " fills the part of a voxel beyond the field's grid — 1 for an air fraction — so fractions ",
+                        "that sum to one still do."
+                    ),
+                ),
+
                 # ════════════════════════════════════════════════════════════════
                 H2(:id => "spectrum", :class => h2_cls, "Spectrum & source"),
                 P(
