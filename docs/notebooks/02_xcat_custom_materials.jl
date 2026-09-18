@@ -315,7 +315,7 @@ views.  Recon: 512 × 512, 35 cm FOV, FBP `:standard` filter.
 """
 
 # ╔═╡ 07000002-0000-4000-8000-000000000001
-scanner = BS.Scanner(
+scanner = BS.EICTScanner(
     source_to_isocenter = 625.6,
     source_to_detector = 1100.0,
     detector_rows = 256,
@@ -360,7 +360,7 @@ protocol = BS.CTProtocol(
 # The BHC and Hybrid-IR cells below all read `sim_opts.projector`, so changing it
 # HERE updates the whole pipeline consistently — the recon must invert the operator
 # that generated the data, or the IR system matrix won't match and convergence suffers.
-sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234, projector = :dd_fast)
+sim_opts = BS.SimOptions(seed = 1234, projector = :dd_fast)
 
 # ╔═╡ 07000005-0000-4000-8000-000000000001
 recon_opts = BS.ReconOptions(
@@ -607,7 +607,7 @@ hu_hir = sim === nothing ? nothing : let
         # (`apply_fov_mask!`); HIR doesn't, so the iterative refinement
         # leaves garbage in the corners.  Apply the same mask for parity.
         BS.apply_fov_mask!(recon_μ, sim.geom)
-    
+
         # 3. μ → HU using BHC's calibrated μ_water_ref
         hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc_calibration.μ_water))
 

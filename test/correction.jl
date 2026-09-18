@@ -23,7 +23,7 @@
 # Helper: build a (Scanner, geom, protocol) matching the bowtie-aware
 # test_api.jl pattern — small but clinically-shaped enough for BHC realism.
 function _toy_bhc_scanner()
-    return BS.Scanner(
+    return BS.EICTScanner(
         source_to_isocenter = 540.0,
         source_to_detector = 1080.0,
         detector_rows = 4,
@@ -228,7 +228,7 @@ end
     scanner = _toy_bhc_scanner()
     protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 8, rotation_time = 0.5)
     geom = BS.CTGeometry(scanner; n_angles = protocol.views, fov_cm = 20.0, z_cm = 5.0)
-    sim_opts = BS.SimOptions(; fidelity = :eict)
+    sim_opts = BS.SimOptions(; )
     n_col = scanner.detector_cols
 
     bhc = BS.calibrate_bhc_two_material(
@@ -316,7 +316,7 @@ end
     scanner = _toy_bhc_scanner()
     protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 16, rotation_time = 0.5)
     geom = BS.CTGeometry(scanner; n_angles = protocol.views, fov_cm = 20.0, z_cm = 5.0)
-    sim_opts = BS.SimOptions(; fidelity = :eict)
+    sim_opts = BS.SimOptions(; )
 
     μ0 = BS.compute_polychromatic_μ_water(
         sim_opts, protocol;
@@ -342,13 +342,13 @@ end
     # decreases monotonically with E in this range, so μ_eff drops with path.
     @test μ0 > μ20 > μ50
 
-    pcct_scanner = BS.Scanner(
-        detector_type = :photon_counting, detector_material = :cdte,
+    pcct_scanner = BS.PCCTScanner(
+        detector_material = :cdte,
         n_energy_bins = 4, energy_thresholds = [20.0, 35.0, 55.0, 70.0],
     )
     pcct_geom = BS.CTGeometry(pcct_scanner; n_angles = 16)
     @test_throws ArgumentError BS.compute_polychromatic_μ_water(
-        BS.SimOptions(fidelity = :pcct), protocol;
+        BS.SimOptions(use_focal_spot = false, use_lag = false), protocol;
         scanner = pcct_scanner, geom = pcct_geom, water_path_cm = 20.0,
     )
 end
@@ -360,7 +360,7 @@ end
     scanner = _toy_bhc_scanner()
     protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 8, rotation_time = 0.5)
     geom = BS.CTGeometry(scanner; n_angles = protocol.views, fov_cm = 20.0, z_cm = 5.0)
-    sim_opts = BS.SimOptions(; fidelity = :eict)
+    sim_opts = BS.SimOptions(; )
 
     bhc = BS.calibrate_bhc_two_material(
         sim_opts, protocol;
@@ -406,7 +406,7 @@ end
         scanner = _toy_bhc_scanner()
         protocol = BS.CTProtocol(mA = 200.0, kVp = 120.0, views = 8, rotation_time = 0.5)
         geom = BS.CTGeometry(scanner; n_angles = protocol.views, fov_cm = 20.0, z_cm = 5.0)
-        sim_opts = BS.SimOptions(; fidelity = :eict)
+        sim_opts = BS.SimOptions(; )
 
         bhc = BS.calibrate_bhc_two_material(
             sim_opts, protocol;

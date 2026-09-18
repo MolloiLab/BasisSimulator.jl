@@ -126,7 +126,7 @@ function simulate_pulse_train(
 
     # Generate Poisson number of photons in observation window
     expected_count = rate * T_obs
-    n_photons = Poisson_approx(expected_count)
+    n_photons = Poisson_approx(rng, expected_count)
 
     if n_photons == 0
         return PileupResult(0, 0,
@@ -242,12 +242,15 @@ function _find_threshold_bin(E::Float64, thresholds::AbstractVector{<:Real})
 end
 
 """
-    Poisson_approx(λ) -> Int
+    Poisson_approx([rng], λ) -> Int
 
-Draw from Poisson distribution using inverse CDF method for small λ
-or Gaussian approximation for large λ.
+Draw from a Poisson distribution by inverse CDF for small λ, Gaussian approximation for large λ.
+
+`rng` must be passed by anything that promises reproducibility: without it this draws from the
+global stream, and `simulate_pulse_train` — which chooses its photon count here — would give a
+different pulse train on every call despite being handed a seeded generator.
 """
-function Poisson_approx(λ::Float64)
+function Poisson_approx(rng::AbstractRNG, λ::Float64)
     if λ <= 0.0
         return 0
     elseif λ < 30.0
@@ -257,16 +260,18 @@ function Poisson_approx(λ::Float64)
         p = 1.0
         while true
             k += 1
-            p *= rand()
+            p *= rand(rng)
             if p < L
                 return k - 1
             end
         end
     else
         # Gaussian approximation for large λ
-        return max(0, round(Int, λ + sqrt(λ) * randn()))
+        return max(0, round(Int, λ + sqrt(λ) * randn(rng)))
     end
 end
+
+Poisson_approx(λ::Float64) = Poisson_approx(Random.default_rng(), λ)
 
 """
     compute_mc_pileup_matrix(thresholds_keV, spectrum_weights, energies,
@@ -333,6 +338,19 @@ function compute_mc_pileup_matrix(
     model::Symbol=:seminonparalyzable,
     seed::Int=42
 )
+    # The matrix is a pure function of its arguments — every draw inside goes through the
+    # `MersenneTwister(seed)` below, including the per-trial photon count, which used to come
+    # from the global stream and made this irreproducible. The 5000-trial Monte Carlo costs
+    # ~17 s, 93 % of building a photon-counting workspace, so it is memoised for the life of the
+    # process; callers get a copy they may mutate.
+    key = hash((
+        Float64.(thresholds_keV), Float64.(spectrum_weights), Float64.(energies),
+        Float64(count_rate), Float64(dead_time_ns), n_trials, Float64(observation_time_s),
+        model, seed,
+    ))
+    cached = lock(() -> get(_PILEUP_MATRIX_CACHE, key, nothing), _PILEUP_MATRIX_LOCK)
+    cached === nothing || return copy(cached)
+
     rng = MersenneTwister(seed)
     n_bins = length(thresholds_keV)
     thresh = Float64.(thresholds_keV)
@@ -403,11 +421,18 @@ function compute_mc_pileup_matrix(
             S[j, j] = 1.0  # No data for true bin j → fall back to identity column
         end
     end
+    lock(() -> (_PILEUP_MATRIX_CACHE[key] = copy(S)), _PILEUP_MATRIX_LOCK)
     return S
 end
+
+const _PILEUP_MATRIX_CACHE = Dict{UInt64, Matrix{Float64}}()
+const _PILEUP_MATRIX_LOCK = ReentrantLock()
+
+"Forget every memoised pile-up migration matrix (see [`compute_mc_pileup_matrix`](@ref))."
+empty_pileup_cache!() = lock(() -> (empty!(_PILEUP_MATRIX_CACHE); nothing), _PILEUP_MATRIX_LOCK)
 
 # =============================================================================
 # Exports
 # =============================================================================
 
-export PileupResult, simulate_pulse_train, compute_mc_pileup_matrix
+export PileupResult, simulate_pulse_train, compute_mc_pileup_matrix, empty_pileup_cache!

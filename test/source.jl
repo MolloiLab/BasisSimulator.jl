@@ -195,7 +195,7 @@ end
 end
 
 @testset "validate_protocol" begin
-    scanner = BS.Scanner(detector_rows = 64, detector_row_size = 1.0)
+    scanner = BS.EICTScanner(detector_rows = 64, detector_row_size = 1.0)
 
     @testset "valid protocol passes" begin
         p = BS.CTProtocol(; mA = 200.0, kVp = 120.0, views = 984, rotation_time = 0.5)
@@ -231,49 +231,7 @@ end
     end
 end
 
-@testset "compute_ctdi_vol + compute_dlp" begin
-    p = BS.CTProtocol(; mA = 200.0, kVp = 120.0, rotation_time = 1.0)
-    base_ctdi = BS.compute_ctdi_vol(p)
-    @test base_ctdi > 0
-
-    @testset "linear in mAs" begin
-        p2 = BS.CTProtocol(; mA = 400.0, kVp = 120.0, rotation_time = 1.0)
-        @test BS.compute_ctdi_vol(p2) ≈ 2 * base_ctdi
-    end
-
-    @testset "kVp^2.5 scaling" begin
-        p3 = BS.CTProtocol(; mA = 200.0, kVp = 80.0, rotation_time = 1.0)
-        @test BS.compute_ctdi_vol(p3) ≈ base_ctdi * (80.0 / 120.0)^2.5
-    end
-
-    @testset "diameter^-2 scaling" begin
-        ctdi_160 = BS.compute_ctdi_vol(p; phantom_diameter = 160.0)
-        @test ctdi_160 ≈ base_ctdi * (320.0 / 160.0)^2
-    end
-
-    @testset "DLP = CTDI × length × n_rotations" begin
-        dlp = BS.compute_dlp(p, 30.0)
-        @test dlp ≈ base_ctdi * 30.0 * p.n_rotations
-        # n_rotations propagates.
-        p_helical = BS.CTProtocol(; mA = 200.0, n_rotations = 5.0)
-        @test BS.compute_dlp(p_helical, 30.0) ≈
-            BS.compute_ctdi_vol(p_helical) * 30.0 * 5.0
-    end
-end
-
-@testset "dose_report — NamedTuple shape + consistency" begin
-    s = BS.Scanner()
-    p = BS.CTProtocol(; mA = 200.0, kVp = 120.0, views = 100, rotation_time = 0.5)
-    g = BS.CTGeometry(s; n_angles = 100, fov_cm = 35.0, z_cm = 5.0)
-    report = BS.dose_report(p, g, 1.0e8; scan_length_cm = 30.0)
-    @test report.ctdi_vol == BS.compute_ctdi_vol(p)
-    @test report.dlp == BS.compute_dlp(p, 30.0)
-    @test report.mAs == p.mA * p.rotation_time
-    @test report.kVp == p.kVp
-    @test report.views == p.views
-    @test report.I0_per_view > 0
-    @test report.total_photons > 0
-end
+# CTDI / DLP tests live in test/dose.jl.
 
 @testset "constant_dose_protocol" begin
     base = BS.CTProtocol(; mA = 200.0, views = 1000)
@@ -309,7 +267,7 @@ end
 end
 
 @testset "compute_focal_spot_blur_fwhm — geometric magnification" begin
-    s = BS.Scanner(
+    s = BS.EICTScanner(
         source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_col_size = 1.0, detector_row_size = 1.0
     )
@@ -385,7 +343,7 @@ end
 end
 
 @testset "apply_focal_spot_blur! — physical behavior" begin
-    s = BS.Scanner(
+    s = BS.EICTScanner(
         source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_cols = 64, detector_rows = 4
     )
@@ -417,7 +375,7 @@ end
 end
 
 @testset "apply_focal_spot_blur (allocating wrapper)" begin
-    s = BS.Scanner(detector_cols = 32, detector_rows = 4)
+    s = BS.EICTScanner(detector_cols = 32, detector_rows = 4)
     g = BS.CTGeometry(s; n_angles = 4, fov_cm = 20.0, z_cm = 1.0)
     sino = Float32.(rand(MersenneTwister(0), 32, 4, 4))
     sino_orig = copy(sino)
@@ -490,7 +448,7 @@ end
 end
 
 @testset "compute_heel_spectral — LIVE pipeline path" begin
-    s = BS.Scanner(
+    s = BS.EICTScanner(
         source_to_isocenter = 540.0, source_to_detector = 1080.0,
         detector_cols = 64, detector_rows = 4
     )
@@ -534,7 +492,7 @@ end
 end
 
 @testset "apply_heel_effect! + apply_heel_effect" begin
-    s = BS.Scanner(detector_cols = 64, detector_rows = 4)
+    s = BS.EICTScanner(detector_cols = 64, detector_rows = 4)
     g = BS.CTGeometry(s; n_angles = 4, fov_cm = 35.0, z_cm = 1.0)
 
     @testset "disabled heel = identity" begin

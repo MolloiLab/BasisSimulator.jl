@@ -91,7 +91,7 @@ detector model **always** applies the MC-LUT detector response matrix
 `pcct_forward_project` is deprecated and only reachable by callers that bypass
 this driver.
 
-Pulse pileup is on by default and toggleable via `sim_opts.use_pcct_pileup`.
+Pulse pileup is on by default and toggleable via `PCCTScanner(; pileup)`.
 Bin combination, scatter correction, and reconstruction are all decoupled —
 do them at the notebook level using the returned per-bin sinograms and the
 ground-truth `I0_bins`.
@@ -121,6 +121,9 @@ function simulate!(
         sim_opts::SimOptions = SimOptions(),
         ;
         capture_raw_counts::Bool = true,
+        report_dose::Bool = true,
+        dose_kwargs = (;),
+        noise_rng::Symbol = :serial,
     ) where {T}
     geom = ws.geom
     energies = ws.energies
@@ -168,7 +171,10 @@ function simulate!(
     # (a detector-plane convolution of the log line integrals). Placed before
     # the rate-dependent pile-up step so blurred local count rates feed it.
     # Note the blur acts at binned (not native-dexel) resolution.
-    # Off by default for the :pcct fidelity preset — opt in with
+    # NOTE: `use_focal_spot` now defaults to TRUE for every scanner family. The deleted `:pcct`
+    # fidelity preset used to force it off here, so a photon-counting simulation that does not
+    # say otherwise now blurs by the focal spot. Pass `use_focal_spot = false` for the old
+    # behaviour.
     # `use_focal_spot = true`. Detector lag is intentionally NOT applied on
     # this path: the shipped lag model is scintillator (Gd₂O₂S) afterglow,
     # which direct-conversion PCCT detectors do not exhibit.
@@ -196,7 +202,7 @@ function simulate!(
     I0_total = T(sum(I0_bins))
     eps_combine = T(1.0e-10)
 
-    if config.scatter !== nothing && sim_opts.use_pcct_scatter
+    if config.scatter !== nothing && sim_opts.use_scatter
         # Step 1: Combine primary bins → combined_primary (for scatter spatial estimation)
         combined_primary = ws.combined
         fill!(combined_primary, zero(T))
@@ -240,7 +246,7 @@ function simulate!(
     # and the raw-count capture point, so the capture happens AT the sampling
     # site (`raw_out`) — the measured counts land in `raw_counts` verbatim,
     # before the log-domain floor at 1, with TRUE ZEROS preserved.
-    pileup_active = ws.use_pcct_pileup && ws.pileup_S !== nothing
+    pileup_active = ws.pileup && ws.pileup_S !== nothing
     raw_from_noise = capture_raw_counts && sim_opts.use_noise && !pileup_active ?
         [similar(bin) for bin in pcct_sino.bins] : nothing
     if sim_opts.use_noise
@@ -249,8 +255,9 @@ function simulate!(
             seed = sim_opts.seed,
             ws_noise_staging = ws.noise_staging,
             ws_rng = ws.rng,
-            noise_reduction = sim_opts.pcct_noise_reduction,
+            noise_reduction = ws.noise_reduction,
             raw_out = raw_from_noise,
+            rng_mode = noise_rng,
         )
     end
 
@@ -281,7 +288,7 @@ function simulate!(
     # subtraction (`N_measured - N_scatter`) by mis-scaling per-bin I0
     # vs the I0_total used inside scatter — over-corrected bins 1–3,
     # under-corrected bin 4 → bin-2-only streaks.
-    if ws.use_pcct_pileup && ws.pileup_S !== nothing
+    if ws.pileup && ws.pileup_S !== nothing
         S = ws.pileup_S
         n_bins = length(pcct_sino.bins)
         n_bins == 4 || error("MC pile-up application is currently specialized to 4 bins; got $(n_bins).")
@@ -334,22 +341,22 @@ function simulate!(
         nothing
     end
 
-    # --- PCCT pileup correction (optional; use_pcct_pileup_correction) ---
+    # --- PCCT pileup correction (optional; pileup_correction) ---
     # Inverts the MC pileup matrix S applied above via apply_pcct_pileup_correction! —
     # the same model-based un-pileup a clinical recon performs before downstream
     # processing.  Logically identical to the validated nb08 inline sim_pileup cell.
     # Runs before scatter correction so the latter re-estimates from un-piled counts.
-    if ws.use_pcct_pileup && ws.pileup_S !== nothing && sim_opts.use_pcct_pileup_correction
+    if ws.pileup && ws.pileup_S !== nothing && ws.pileup_correction
         apply_pcct_pileup_correction!(pcct_sino.bins, ws.I0_bins, ws.pileup_S)
     end
 
-    # --- PCCT scatter correction (optional; use_pcct_scatter_correction) ---
+    # --- PCCT scatter correction (optional; scatter_correction) ---
     # Model-based re-estimate-and-subtract, logically identical to the validated
     # nb08 inline scatter-correction cell: re-combine the CURRENT bins (now
     # primary+scatter+noise+pileup), re-estimate the Ohnesorge field, and subtract
     # the per-bin scatter.  Scalar I0 here equals the per-pixel reference for a
     # bowtie-free scanner.  Runs after pileup so it sees the recorded counts.
-    if config.scatter !== nothing && sim_opts.use_pcct_scatter_correction
+    if config.scatter !== nothing && ws.scatter_correction
         combined_corr = ws.combined
         fill!(combined_corr, zero(T))
         for (b, bin_sino) in enumerate(pcct_sino.bins)
@@ -394,10 +401,23 @@ function simulate!(
     # - `pileup_S`   : MC pile-up migration matrix (`nothing` when pile-up off).
     #                  Pass into `apply_pcct_pileup_correction!` to invert
     #                  the pile-up degradation in the sinogram domain.
+    # - `dose`       : `DoseReport` of this acquisition (CTDIvol, DLP, …) from the simulated
+    #                  beam; `nothing` with `report_dose = false`.  Costs a cached Monte Carlo
+    #                  (about a second) the first time a given beam is seen, then nothing.
+    #
+    # `dose_kwargs` reaches `compute_dose`'s keywords: the defaults are one tube and the 32 cm
+    # body phantom, so a head protocol wants `(; phantom = :head16)` and a dual-source scanner
+    # `(; n_tubes = 2)`.
+    #
+    # `noise_rng = :threaded` draws the per-bin counts in fixed chunks with independent streams
+    # instead of one serial stream — 3-4x faster on the noise, a different realisation of the
+    # same distribution, and the same realisation for any thread count.  See
+    # [`apply_pcct_noise!`](@ref).
     result = (
         pcct_sino = pcct_sino,
         I0_bins = ws.I0_bins,
         pileup_S = ws.pileup_S,
+        dose = report_dose ? dose_report(ws, protocol; dose_kwargs...) : nothing,
     )
     capture_raw_counts ? merge(result, (; raw_counts)) : result
 end
@@ -411,8 +431,21 @@ end
 
 Run EICT single-kVp simulation using pre-allocated workspace buffers.
 
-Mutates `ws.sinogram` in place (the final log line-integral sinogram).
-Returns `nothing` — read `ws.sinogram` (and `ws.geom`) off the workspace.
+Mutates `ws.sinogram` in place (the final log line-integral sinogram); read it (and `ws.geom`)
+off the workspace. Returns `(; dose)`, the [`DoseReport`](@ref) of this acquisition (CTDIvol, DLP,
+…) computed from the simulated beam, or `(; dose = nothing)` with `report_dose = false`.
+
+`report_dose` attaches this acquisition's [`DoseReport`](@ref); it costs a cached Monte Carlo
+(about a second) the first time a beam is seen and nothing afterwards, so set it to `false` in a
+tight loop over noise realisations if that second matters. `dose_kwargs` reaches the keywords of
+[`compute_dose`](@ref) — the defaults are one tube and the 32 cm body phantom, so a head
+protocol wants `dose_kwargs = (; phantom = :head16)` and a dual-source scanner
+`(; n_tubes = 2)`.
+
+Pass `paths` from [`material_paths`](@ref) to skip the volume walk. The walk depends on the
+geometry and the material map alone, so one cache serves every spectrum measured through that
+geometry, and a several-kVp study of one phantom stops paying for it repeatedly (four tube
+voltages of a 1024² × 60 phantom: 4.81 s of forward projection down to 2.16 s, bit-identical).
 
 Create the workspace with `create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)`;
 scanner-derived noise constants (`η_eff`, `σ_e_photon`) are baked into `ws` at
@@ -424,7 +457,10 @@ function simulate!(
         ws::EICTWorkspace{T},
         phantom,
         protocol::CTProtocol,
-        sim_opts::SimOptions = SimOptions(),
+        sim_opts::SimOptions = SimOptions();
+        report_dose::Bool = true,
+        dose_kwargs = (;),
+        paths = nothing,
     ) where {T}
     geom = ws.geom
     energies = ws.energies
@@ -451,6 +487,7 @@ function simulate!(
         ws_η = ws.η_vec,
         ws_bowtie_spectral = ws.bowtie_spectral,
         ws_wη_gpu = ws.wη_gpu,
+        paths = paths,
         projector = sim_opts.projector
     )
 
@@ -642,7 +679,7 @@ function simulate!(
     end
 
     # BHC is decoupled — applied at notebook level
-    return nothing
+    return (; dose = report_dose ? dose_report(ws, protocol; dose_kwargs...) : nothing)
 end
 
 # =============================================================================
@@ -1101,7 +1138,7 @@ function build_physics_config(
     # (charge sharing, fluorescence escape, pileup) in the MC DRM — they
     # don't consume this `PhysicsConfig.detector_efficiency` field, so we
     # skip it.
-    if sim_opts.use_detector_efficiency && scanner.detector_type != :photon_counting
+    if sim_opts.use_detector_efficiency && scanner isa EICTScanner
         material = scanner.detector_material
         de_mode = sim_opts.detector_efficiency_mode   # :auto, :mc_lut, :beer_lambert
         eff_mode = de_mode == :beer_lambert ? :beer_lambert : :mc_lut
@@ -1137,14 +1174,14 @@ function build_physics_config(
 
     # Scatter: use geometry-aware model scaled for this scanner and phantom size
     # If phantom is provided, estimate diameter from mask for size-aware scatter scaling
-    phantom_diameter_cm = if phantom !== nothing && (sim_opts.use_scatter || sim_opts.use_pcct_scatter)
+    phantom_diameter_cm = if phantom !== nothing && sim_opts.use_scatter
         voxel_size_mm = phantom.voxel_size .* 10.0
         estimate_phantom_diameter_cm(phantom.mask, voxel_size_mm)
     else
         nothing
     end
 
-    if sim_opts.use_scatter || sim_opts.use_pcct_scatter
+    if sim_opts.use_scatter
         kwargs[:scatter] = geometry_aware_scatter_model(scanner; phantom_diameter_cm = phantom_diameter_cm)
     end
 
@@ -1230,15 +1267,24 @@ to change them.
   sinogram, on the same backend as `ws` (CPU/Metal/CUDA/AMDGPU).
 - `geom::CTGeometry` — cone-beam geometry.
 
+`helical_q` and `coverage` reach the helical chain and are refused on an axial geometry; see
+[`wfbp_helical_reconstruct`](@ref). `coverage` must share the volume's element type and backend,
+and is masked outside the reconstruction circle along with the volume.
+
 # Returns
 The mutated `ws.volume` (same object — `===` to the workspace field).
 """
 function reconstruct!(
         ws::FDKReconWorkspace{T},
         sinogram::AbstractArray{T, 3},
-        geom::CTGeometry,
+        geom::CTGeometry;
+        helical_q::Real = 0.7,
+        coverage::Union{Nothing, AbstractArray{T, 3}} = nothing,
     ) where {T <: AbstractFloat}
 
+    if !is_helical(geom) && coverage !== nothing
+        throw(ArgumentError("coverage is only defined for a helical geometry; this one is axial"))
+    end
     if is_helical(geom)
         # Helical → rebinned WFBP chain (Stierstorfer family), reusing the
         # workspace buffers: ws.filtered holds the rebinned/filtered data.
@@ -1252,8 +1298,10 @@ function reconstruct!(
             apply_cosine = false, ray_spacing = Δt
         )
         fill!(ws.volume, zero(T))
-        _wfbp_backproject!(ws.volume, ws.filtered, geom, T(Δt))
+        _wfbp_backproject!(ws.volume, ws.filtered, geom, T(Δt); helical_q, coverage)
         apply_fov_mask!(ws.volume, geom)
+        # the mask is part of the answer, so a voxel it discards has no coverage either
+        coverage === nothing || apply_fov_mask!(coverage, geom; sentinel_μ = zero(T))
         return ws.volume
     end
 
@@ -1638,3 +1686,59 @@ function reconstruct!(
 
     return ws.volume
 end
+
+# =============================================================================
+# Cached per-material path lengths
+# =============================================================================
+
+"""
+    material_paths(ws::EICTWorkspace, phantom; volume_extent=nothing) -> Array
+    material_paths!(paths, ws::EICTWorkspace, phantom; volume_extent=nothing) -> paths
+
+Walk `phantom` once through the workspace's geometry and return the per-material path length of
+every detector element, in cm — `(n_materials, n_cols, n_rows, n_views)` on the phantom's
+backend.
+
+The walk is the expensive part of a polychromatic forward projection (about 95 % of it) and
+depends only on the geometry and the material map: not on the tube voltage, the filtration, the
+bowtie or the detector. So one cache serves every spectrum measured through that geometry — pass
+it to [`simulate!`](@ref) as `paths` and each further acquisition costs the spectral conversion
+alone, bit-identically.
+
+```julia
+paths = material_paths(ws_120, phantom)              # one walk
+for (kvp, ws) in workspaces                          # 80, 100, 120, 140 kVp
+    simulate!(ws, phantom, protocols[kvp], sim_opts; paths)
+end
+```
+
+!!! warning
+    The cache belongs to the phantom and geometry it was walked for, and nothing downstream can
+    tell that it does not: reusing it with a different phantom silently projects the old one.
+    Its size is also the cost — `n_materials × n_cols × n_rows × n_views` floats, 1.7 GiB for
+    16 materials on an 834 × 34 × 1000 sinogram — so `compact_materials(phantom)` first.
+"""
+function material_paths(ws::EICTWorkspace{T}, phantom; kwargs...) where {T}
+    paths = similar(ws.sinogram, T, size(ws.μ_table_gpu, 1), size(ws.sinogram)...)
+    return material_paths!(paths, ws, phantom; kwargs...)
+end
+
+@doc (@doc material_paths)
+function material_paths!(
+        paths::AbstractArray{T, 4}, ws::EICTWorkspace{T}, phantom;
+        volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
+    ) where {T}
+    extent = volume_extent !== nothing ? volume_extent :
+        (hasproperty(phantom, :extent) && phantom.extent !== nothing ?
+        Tuple(Float64.(phantom.extent)) : nothing)
+    return dd_fast_material_paths!(
+        paths, phantom.mask, ws.geom;
+        volume_extent = extent,
+        ws_source_positions = ws.geom_source_positions,
+        ws_detector_centers = ws.geom_detector_centers,
+        ws_detector_u = ws.geom_detector_u,
+        ws_detector_v = ws.geom_detector_v,
+    )
+end
+
+export material_paths, material_paths!

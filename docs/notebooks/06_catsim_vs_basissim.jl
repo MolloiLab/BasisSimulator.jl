@@ -303,7 +303,7 @@ magnification factor `SDD/SID`.
 """
 
 # ╔═╡ 06000002-0000-4000-8000-000000000010
-scanner = BS.Scanner(
+scanner = BS.EICTScanner(
     source_to_isocenter = 625.6,
     source_to_detector = 1100.0,
     detector_rows = 256,
@@ -347,7 +347,7 @@ protocol = BS.CTProtocol(
 
 # ╔═╡ 06000003-0000-4000-8000-000000000020
 sim_opts = BS.SimOptions(
-    fidelity = :eict, seed = 1234, projector = :dd_fast, use_noise = false,
+    seed = 1234, projector = :dd_fast, use_noise = false,
 );
 
 # ╔═╡ 06000003-0000-4000-8000-000000000030

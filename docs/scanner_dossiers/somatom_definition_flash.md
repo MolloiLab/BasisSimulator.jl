@@ -48,7 +48,7 @@ Three detectors currently carry Monte-Carlo-derived physics in this repo:
 
 Legacy reference in `SCANNERS.md`: Canon Aquilion ONE (geometry only, no MC).
 
-**Key consequence for the Flash: it uses the *same UFC Gd₂O₂S:Pr,Ce scintillator* as the Force.** ~~The existing `UFC_MC_EFFICIENCY_LUT` and the `Scanner(detector_material = :ufc)` dispatch in `src/api/driver.jl` apply verbatim. No new Monte Carlo is required — this is a geometry + source + filtration job only.~~ **← SUPERSEDED, see the 2026-08-26 addendum above: the Flash has its own MC LUT (`:ufc_flash`) with a −28% high-energy divergence from the Force.**
+**Key consequence for the Flash: it uses the *same UFC Gd₂O₂S:Pr,Ce scintillator* as the Force.** ~~The existing `UFC_MC_EFFICIENCY_LUT` and the `EICTScanner(detector_material = :ufc)` dispatch in `src/api/driver.jl` apply verbatim. No new Monte Carlo is required — this is a geometry + source + filtration job only.~~ **← SUPERSEDED, see the 2026-08-26 addendum above: the Flash has its own MC LUT (`:ufc_flash`) with a −28% high-energy divergence from the Force.**
 
 ---
 
@@ -77,9 +77,13 @@ Everything a `Scanner` needs, in three tiers.
 | `fill_factor_row` / `fill_factor_col` | 0–1 | cancels in air calibration |
 | `detection_gain` | e⁻/keV | |
 | `electronic_noise` | e⁻ | |
-| `detector_type` | `:energy_integrating` / `:photon_counting` | |
 
-PCCT-only extras: `n_energy_bins`, `energy_thresholds`, `energy_resolution`, `charge_sharing_fwhm`, `dead_time_ns`, `pixel_mode`, `native_dexel_col_mm`, `native_dexel_row_mm`, `binning_factor`.
+The detector family is the type, not a field: `EICTScanner` for an energy-integrating
+scintillator, `PCCTScanner` for direct conversion. `detector_material`, `detector_depth`,
+`detection_gain` and `electronic_noise` belong to the first; the second adds `n_energy_bins`,
+`energy_thresholds`, `energy_resolution`, `charge_sharing_fwhm`, `dead_time_ns`, `pixel_mode`,
+`native_dexel_col_mm`, `native_dexel_row_mm`, `binning_factor`, and the detector-side toggles
+`pileup`, `pileup_correction`, `scatter_correction` and `noise_reduction`.
 
 ### Tier B — protocol / source (`CTProtocol`, `src/source/protocol.jl` + `spectrum.jl`)
 kVp list · mA range and max · rotation time · views per rotation · collimation options · added filters per mode (e.g. tin) · pitch range.
@@ -215,7 +219,7 @@ Second-generation dual-source CT (2008/2009). Predecessor of the SOMATOM Force a
 
 ```julia
 # ── Siemens SOMATOM Definition Flash — tube/detector A ────────────────────
-scanner_A = BS.Scanner(
+scanner_A = BS.EICTScanner(
     source_to_isocenter = 595.0,      # mm — LDCT-PD / DICOM
     source_to_detector  = 1085.6,     # mm — LDCT-PD / DICOM
     detector_shape      = :arc,       # equiangular, focal-spot-concentric

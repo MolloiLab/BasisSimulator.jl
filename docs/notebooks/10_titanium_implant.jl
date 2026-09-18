@@ -153,7 +153,7 @@ produced.
 """
 
 # ╔═╡ 10000005-0000-4000-8000-000000000002
-scanner = BS.Scanner(
+scanner = BS.EICTScanner(
     source_to_isocenter = 540.0,
     source_to_detector = 950.0,
     detector_rows = 16,
@@ -168,7 +168,7 @@ scanner = BS.Scanner(
 protocol = BS.CTProtocol(kVp = 120.0, mA = 200.0, views = 360, rotation_time = 0.5);
 
 # ╔═╡ 10000005-0000-4000-8000-000000000004
-sim_opts = BS.SimOptions(fidelity = :eict, seed = 42, projector = :dd_fast);
+sim_opts = BS.SimOptions(seed = 42, projector = :dd_fast);
 
 # ╔═╡ 10000005-0000-4000-8000-000000000005
 recon_opts = BS.ReconOptions(matrix_size = (256, 256, 8), fov_cm = 30.0);

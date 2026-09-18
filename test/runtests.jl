@@ -21,20 +21,35 @@ const BS = BasisSimulator
     @testset "detector/" begin
         include("detector.jl")
     end
+    @testset "dose/" begin
+        include("dose.jl")
+    end
     @testset "geometry/" begin
         include("geometry.jl")
+    end
+    @testset "helical/" begin
+        include("helical.jl")
     end
     @testset "memory lifecycle/" begin
         include("memory_lifecycle.jl")
     end
+    @testset "nchannel/" begin
+        include("nchannel.jl")
+    end
     @testset "object/" begin
         include("object.jl")
+    end
+    @testset "paths/" begin
+        include("paths.jl")
     end
     @testset "phantoms/" begin
         include("phantoms.jl")
     end
     @testset "projection/" begin
         include("projection.jl")
+    end
+    @testset "scanner families/" begin
+        include("scanner_split.jl")
     end
     @testset "source/" begin
         include("source.jl")

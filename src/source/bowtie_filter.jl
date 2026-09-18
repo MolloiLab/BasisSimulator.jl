@@ -369,26 +369,38 @@ function compute_bowtie_attenuation_spectral(
     pixel_row_size_det = geom.pixel_row_size * (geom.SDD / geom.SAD)
     transmission = zeros(Float64, n_cols, n_rows, n_energies)
 
+    # The bowtie thickness depends on the fan angle only, so it is interpolated once per column
+    # rather than once per (column, row); and the per-energy sum is a scalar loop, not two
+    # temporary vectors per (column, row, energy) — 6.6 M pairs of allocations on a clinical
+    # detector. Same operations in the same order: the table is bit-identical.
+    thickness = Vector{Vector{Float64}}(undef, n_cols)
+    for col in 1:n_cols
+        # :arc — the column IS the fan angle (equiangular); :flat — planar atan
+        fan_angle = if is_arc(geom)
+            (col - (n_cols + 1) / 2) * (geom.pixel_size / geom.SAD)
+        else
+            u_offset = (col - (n_cols + 1) / 2) * pixel_size_det
+            atan(u_offset / geom.SDD)
+        end
+        thickness[col] = interpolate_thickness(filter, fan_angle)
+    end
+
+    thickness_corrected = zeros(Float64, n_materials)
     for row in 1:n_rows
         v_offset = (row - (n_rows + 1) / 2) * pixel_row_size_det
         cone_angle = atan(v_offset / geom.SDD)
         cos_alpha = cos(cone_angle)
 
         for col in 1:n_cols
-            # :arc — the column IS the fan angle (equiangular); :flat — planar atan
-            fan_angle = if is_arc(geom)
-                (col - (n_cols + 1) / 2) * (geom.pixel_size / geom.SAD)
-            else
-                u_offset = (col - (n_cols + 1) / 2) * pixel_size_det
-                atan(u_offset / geom.SDD)
+            thickness_vec = thickness[col]
+            for m in 1:n_materials
+                thickness_corrected[m] = thickness_vec[m] / cos_alpha
             end
-
-            thickness_vec = interpolate_thickness(filter, fan_angle)
-            thickness_corrected = thickness_vec ./ cos_alpha
-
-            # Compute transmission at each energy
             for k in 1:n_energies
-                μt_total = sum(μ_matrix[:, k] .* thickness_corrected)
+                μt_total = μ_matrix[1, k] * thickness_corrected[1]
+                for m in 2:n_materials
+                    μt_total += μ_matrix[m, k] * thickness_corrected[m]
+                end
                 transmission[col, row, k] = exp(-μt_total)
             end
         end

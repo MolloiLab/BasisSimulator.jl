@@ -12,9 +12,9 @@ using BasisSimulator
 
 # Five-struct simulation setup (`:dd_fast` is the default projector)
 phantom = create_gammex_472(n_voxels=128, n_slices=8, fov_cm=35.0, z_cm=0.5)
-scanner = Scanner(detector_rows=8, detector_cols=256)
+scanner = EICTScanner(detector_rows=8, detector_cols=256)
 protocol = CTProtocol(kVp=120.0, mA=200.0, views=360)
-sim_opts = SimOptions(fidelity=:eict)
+sim_opts = SimOptions()
 recon_opts = ReconOptions(matrix_size=(256, 256, 8), fov_cm=35.0, z_cm=0.5)
 
 ws = create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
@@ -123,6 +123,10 @@ include("detector/detector_efficiency.jl")
 
 # Bowtie filter modeling
 include("source/bowtie_filter.jl")
+
+# CT dose from the simulated beam: CTDI100 / CTDIw / CTDIvol / DLP by Monte Carlo transport of
+# the absolute source spectrum through the bowtie into the PMMA CTDI phantoms.
+include("source/dose.jl")
 
 
 # Finite focal spot modeling
@@ -327,6 +331,11 @@ include("denoising/sino_svd.jl")
 # auto-derived from the photon-count map.  Black (in prep.).
 include("denoising/sino_sfjsd.jl")
 
+# Total-likelihood bilateral filter (Lee 2025) on a projection-domain basis pair: neighbours
+# are weighted by how well they explain the centre ray's summed Poisson counts.
+# Photon-counting only.
+include("denoising/tlbf.jl")
+
 # Phantom-mask helpers — recon-space resample + FFT-Gaussian erosion.
 # Used by Mono+ phantom_mask kwarg + edge-mask post-processing.
 include("reconstruction/vmi/phantom_mask.jl")
@@ -339,5 +348,10 @@ include("reconstruction/vmi/image_domain_decomp.jl")
 # scanner Dicts of measured rod HUs at relevant kVp / VMI energies, plus
 # iodine_calibration_rods / calcium_calibration_rods helpers.
 include("reconstruction/vmi/clinical_calibrations.jl")
+
+# K-channel projection-domain profile-likelihood decomposition (iodine, water) and the VMI
+# chain built on it: count-domain row/channel reduction → decomposition → T-LBF → anti-aliased
+# FDK → Kalender ACNR → two-basis synthesis.  The published estimator of notebooks 03/04/12.
+include("reconstruction/vmi/nchannel.jl")
 
 end # module

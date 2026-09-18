@@ -1367,7 +1367,7 @@ the 256-slice axis lines up 1:1 with the Apex Elite detector at
 """
 
 # ╔═╡ 08000010-0000-4000-8000-000000000002
-scanner = BS.Scanner(
+scanner = BS.EICTScanner(
     source_to_isocenter = 625.6,
     source_to_detector = 1100.0,
     detector_rows = 256,
@@ -1400,7 +1400,7 @@ protocol = BS.CTProtocol(
 )
 
 # ╔═╡ 08000010-0000-4000-8000-000000000004
-sim_opts = BS.SimOptions(fidelity = :eict, seed = 1234)
+sim_opts = BS.SimOptions(seed = 1234)
 
 # ╔═╡ 08000010-0000-4000-8000-000000000005
 recon_opts = BS.ReconOptions(

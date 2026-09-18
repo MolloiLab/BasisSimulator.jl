@@ -31,7 +31,7 @@ results:
 
 ```
 UFC MC η(E) LUT  (Khodajou-Chokami MC, 1–140 keV)
-        │ via Scanner(detector_material = :ufc)  (src MC-LUT pathway)
+        │ via EICTScanner(detector_material = :ufc)  (src MC-LUT pathway)
         ▼
 Simulate 100 kVp (tube A) ──┬─→ POLY: per-tube η-aware BHC → FDK → HU
 Simulate Sn140 kVp (tube B)─┘         → Siemens-style mixed image M_w
@@ -56,7 +56,7 @@ Simulate Sn140 kVp (tube B)─┘         → Siemens-style mixed image M_w
     `get_ufc_mc_efficiency(E)`, and the `detector_efficiency_ufc()`
     factory; `build_physics_config` dispatches `detector_material = :ufc`
     to it (exactly as `:lumex` dispatches to Gemstone).  So this notebook
-    simply sets `Scanner(detector_material = :ufc)` +
+    simply sets `EICTScanner(detector_material = :ufc)` +
     `SimOptions(use_detector_efficiency = true)` and the EICT forward
     model weights every energy bin by `w(E) · η_UFC(E) · exp(-∫μ dl)`.
     The Cong basis and the BHC calibration resolve the *same* η-folded
@@ -248,7 +248,7 @@ the geometry was measured from an actual clinical Force by Wang et al.):
 
 # ╔═╡ 09000004-0000-4000-8000-000000000010
 # Tube/detector A geometry — shared by both modeled tubes (see md above).
-scanner = BS.Scanner(
+scanner = BS.EICTScanner(
     source_to_isocenter = 595.0,
     source_to_detector = 1085.6,
 
@@ -324,7 +324,7 @@ md"""
 
 `use_detector_efficiency = true` (the `:eict` preset default) routes
 through the **src UFC MC LUT**: `build_physics_config` sees
-`Scanner(detector_material = :ufc)` and dispatches to
+`EICTScanner(detector_material = :ufc)` and dispatches to
 `detector_efficiency_ufc()`, so the EICT forward model weights every
 energy by `w(E) · η_UFC(E)` and the detected flux (and therefore the
 Poisson noise level) automatically reflects the UFC absorption.
@@ -336,7 +336,6 @@ row-direction effect; with 4.8 mm collimation at center it is negligible).
 
 # ╔═╡ 09000006-0000-4000-8000-000000000010
 sim_opts = BS.SimOptions(
-    fidelity = :eict,
     seed = 1234,
     use_heel_effect = false,   # exact forward/inverse spectral match
     projector = :dd_fast,      # same DD physics, single-pass fused kernels.
@@ -1546,7 +1545,7 @@ md"""
 
 ```
 UFC MC η(E) LUT (Khodajou-Chokami, Gd₂O₂S, 1–140 keV)
-   → src pathway: Scanner(detector_material = :ufc) → detector_efficiency_ufc()
+   → src pathway: EICTScanner(detector_material = :ufc) → detector_efficiency_ufc()
 Simulate 100 kVp + Sn140 kVp   (one SOMATOM Force dual-source DE acquisition)
    ├─→ POLY: per-tube η-aware BHC → FDK → HU → mixed image M_w  (SW ≈ 0 HU ×3)
    └─→ VMI:  Cong Decomposition on raw sinograms  (iodine + water,
@@ -1573,7 +1572,7 @@ next to `GEMSTONE_MC_EFFICIENCY_LUT` (`UFC_MC_EFFICIENCY_LUT`,
 `get_ufc_mc_efficiency`, `detector_efficiency_ufc()`, `:ufc` branches in
 `compute_eid_efficiency_vector` + `build_physics_config`, covered by
 `test/detector.jl`).  This notebook consumes it directly via
-`Scanner(detector_material = :ufc)` — the original standalone
+`EICTScanner(detector_material = :ufc)` — the original standalone
 `spectrum_override` validation path is retired.
 """
 

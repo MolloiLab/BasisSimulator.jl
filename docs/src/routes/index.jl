@@ -166,12 +166,14 @@ to_gpu(x) = AT(x)
 phantom_cpu = BS.create_gammex_472(n_voxels=256)
 phantom = BS.Phantom(to_gpu(phantom_cpu.mask),
                      phantom_cpu.materials,
-                     phantom_cpu.voxel_size)
+                     phantom_cpu.voxel_size,
+                     phantom_cpu.origin,
+                     phantom_cpu.extent)
 
 # 2-5. Scanner / Protocol / SimOptions / ReconOptions
-scanner  = BS.Scanner(source_to_isocenter=626.0, source_to_detector=1097.0)
+scanner  = BS.EICTScanner(source_to_isocenter=626.0, source_to_detector=1097.0)   # or PCCTScanner
 protocol = BS.CTProtocol(kVp=120.0, mA=200.0, views=984)
-sim_opts = BS.SimOptions(fidelity=:eict)              # or :pcct
+sim_opts = BS.SimOptions()
 rec_opts = BS.ReconOptions(matrix_size=(512, 512, 64), fov_cm=35.0)
 
 # Allocate workspace once, reuse on subsequent calls (zero-alloc steady state)

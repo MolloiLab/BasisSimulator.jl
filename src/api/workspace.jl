@@ -95,7 +95,10 @@ mutable struct PCCTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A1 <
     # `-log(recorded / I0_truth)` and the round-trip
     # `I0_b · exp(-bin) = recorded count` stays valid for downstream
     # count-domain math (scatter correction, bin combine, …).
-    use_pcct_pileup::Bool                              # toggle from sim_opts.use_pcct_pileup
+    pileup::Bool                              # PCCTScanner.pileup && dead_time_ns > 0
+    pileup_correction::Bool                            # PCCTScanner.pileup_correction
+    scatter_correction::Bool                           # PCCTScanner.scatter_correction
+    noise_reduction::Float64                           # PCCTScanner.noise_reduction
     pileup_S::Union{Nothing, Matrix{Float64}}          # (n_bins × n_bins), nothing when pileup off
 
     # ─── Pre-computed setup data (computed once, reused) ───
@@ -106,6 +109,7 @@ mutable struct PCCTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A1 <
     pcct_detector::PhotonCountingDetector{Float64}  # PCCT detector
     mats::Vector{XA.Material}                # resolved materials
     kVp::Float64                             # max energy (kVp)
+    dose_source::DoseSource                  # the beam, for `dose_report` / `result.dose`
 end
 
 """
@@ -122,7 +126,7 @@ spectral response matrices) so that `simulate!()` has zero allocations.
 # Arguments
 - `scanner`: Scanner specification (provides detector geometry)
 - `protocol`: CT protocol (provides number of views)
-- `sim_opts`: Simulation options (provides fidelity and effect toggles)
+- `sim_opts`: Simulation options (the common physics toggles)
 - `recon_opts`: Reconstruction options (provides fov_cm / z_cm for CTGeometry)
 - `phantom`: Phantom struct (provides mask for backend detection and volume shape)
 - `T`: Element type, default Float32
@@ -139,7 +143,7 @@ result2 = simulate!(ws, phantom, scanner, protocol, sim_opts, recon_opts)
 ```
 """
 function create_workspace(
-        scanner, protocol, sim_opts, recon_opts, phantom;
+        scanner::PCCTScanner, protocol, sim_opts, recon_opts, phantom;
         T::Type{<:AbstractFloat} = Float32,
         extended_collimation::Bool = false,
     )
@@ -357,7 +361,7 @@ function create_workspace(
     # Pileup is per native dexel (not per binned pixel).
     # I0 from compute_detector_I0 is per binned pixel per view.
     # Count rate per dexel = (I0 / bf²) / time_per_view  [photons/s]
-    _use_pileup = sim_opts.use_pcct_pileup &&
+    _use_pileup = scanner.pileup &&
         pcct_detector.dead_time_ns > 0
     _pileup_S = if _use_pileup
         _I0_physics_pileup = compute_detector_I0(geom, protocol, sum(weights_vec))
@@ -406,9 +410,9 @@ function create_workspace(
         _native_geom, _n_src, _n_det, _n_u, _n_v,
         tube_scratch, _pcct_focal_kernel,
         _μ_table_gpu, _W_matrix_gpu, _outputs_flat, _native_outputs_flat,
-        _use_pileup, _pileup_S,
+        _use_pileup, scanner.pileup_correction, scanner.scatter_correction, Float64(scanner.noise_reduction), _pileup_S,
         geom, energies, weights_vec, config, pcct_detector, mats,
-        kVp
+        kVp, dose_source(scanner, protocol)
     )
     catch
         release_backend!(owned_backend)
@@ -489,6 +493,10 @@ mutable struct EICTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A2 <
     # ─── Pre-computed noise constants (scanner + spectrum derived) ───
     η_eff::T          # sum(weights_norm .* η_vec) — spectrum-averaged detector efficiency
     σ_e_photon::T     # electronic_noise / (mean_E_keV * detection_gain) — DAS electronic σ
+
+    # the beam, for `dose_report` / the `dose` of every `simulate!` result; `nothing` when
+    # the spectrum was overridden, because dose needs absolute units
+    dose_source::Union{Nothing, DoseSource}
 end
 
 """
@@ -523,7 +531,7 @@ Create a pre-allocated workspace for zero-allocation EICT single-kVp `simulate!(
   `docs/notebooks/03b_dual_keV_monoe.jl` for the complete monoenergetic example.
 """
 function create_eict_workspace(
-        scanner, protocol, sim_opts, recon_opts, phantom;
+        scanner::EICTScanner, protocol, sim_opts, recon_opts, phantom;
         T::Type{<:AbstractFloat} = Float32,
         spectrum_override::Union{
             Nothing,
@@ -759,7 +767,11 @@ function create_eict_workspace(
         weights_norm, μ_lut_cpu, μ_lut_gpu, μ_table, μ_table_gpu, η_vec, wη_gpu_buf,
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
         geom, energies, weights_vec, config, mats, rng,
-        η_eff_T, σ_e_photon
+        η_eff_T, σ_e_photon,
+        # A spectrum override carries relative weights (its own docstring's example is
+        # `([E_mono], [sum(weights)])`), and dose needs absolute photons/mAs/mm². Reporting one
+        # anyway was wrong by seven orders of magnitude, so this workspace reports no dose.
+        spectrum_override === nothing ? dose_source(scanner, protocol) : nothing
     )
 end
 

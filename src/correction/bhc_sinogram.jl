@@ -188,9 +188,10 @@ function generate_water_calibration_curve(
         n_points::Int = 100,
         reference_energy_keV::Real = 70.0,
     )
-    water = get_material(:water)
-    μ_water = [compute_μ_at_energy(water, Float64(e)) for e in energies]
-    μ_water_ref = compute_μ_at_energy(water, Float64(reference_energy_keV))
+    # The per-column calibration calls this once per detector column with the same energy grid;
+    # the water attenuation table (a Unitful / XCOM lookup per energy) is the same every time.
+    μ_water = _water_μ_table(energies)
+    μ_water_ref = compute_μ_at_energy(get_material(:water), Float64(reference_energy_keV))
 
     weights_norm = weights ./ sum(weights)
     paths = collect(range(0.0, Float64(max_path_cm), length = n_points))
@@ -204,6 +205,24 @@ function generate_water_calibration_curve(
     end
     return (paths, measured, true_values)
 end
+
+const _WATER_μ_CACHE = Dict{UInt64, Vector{Float64}}()
+const _WATER_μ_LOCK = ReentrantLock()
+
+# μ_water(E) in 1/cm on an energy grid, memoised by the grid's contents.
+function _water_μ_table(energies::AbstractVector)
+    key = hash(Float64.(energies))
+    cached = lock(() -> get(_WATER_μ_CACHE, key, nothing), _WATER_μ_LOCK)
+    # a copy, like every other memo in the package: a caller may keep or mutate what it gets
+    cached === nothing || return copy(cached)
+    water = get_material(:water)
+    table = [compute_μ_at_energy(water, Float64(e)) for e in energies]
+    lock(() -> (_WATER_μ_CACHE[key] = copy(table)), _WATER_μ_LOCK)
+    return table
+end
+
+"Forget the memoised water attenuation tables (see [`generate_water_calibration_curve`](@ref))."
+empty_water_μ_cache!() = lock(() -> (empty!(_WATER_μ_CACHE); nothing), _WATER_μ_LOCK)
 
 # =============================================================================
 # Polynomial Fitting (least-squares via normal equations)
@@ -536,7 +555,7 @@ function compute_polychromatic_μ_water(
         geom,
         water_path_cm::Real,
     )
-    scanner.detector_type === :photon_counting && throw(ArgumentError(
+    scanner isa PCCTScanner && throw(ArgumentError(
         "compute_polychromatic_μ_water is not valid for PCCT combined-bin data; " *
         "build the workspace with create_workspace and use calibrate_pcct_poly_bhc(ws), " *
         "apply_bhc_water, and the returned μ_water_ref"))
@@ -794,3 +813,5 @@ function apply_bhc_two_material(
 
     return Array(sino_out)
 end
+
+export empty_water_μ_cache!

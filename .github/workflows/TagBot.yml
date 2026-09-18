@@ -1,9 +1,7 @@
-# Standard Julia TagBot.  Kept alongside release-please as a fallback:
-# - release-please tags + creates the GitHub Release immediately when the
-#   release PR merges, which is the common path.
-# - TagBot still listens for `JuliaRegistrator` registrator-comment events
-#   on the registry side; if release-please ever fails to tag a release
-#   (e.g. action outage), TagBot will pick it up after the registry merges.
+# Standard Julia TagBot: it listens for the registry's comment after a
+# `@JuliaRegistrator register` request is merged, then creates the matching git
+# tag and GitHub Release.  Releases here are cut BY HAND — see RELEASING.md.
+# Nothing in this repository decides a version number on its own.
 
 name: TagBot
 

@@ -35,7 +35,7 @@ Pkg.add(\"oneAPI\")    # Intel""")
         H2(:id => "first-simulation", :class => "text-xl font-semibold text-warm-800 dark:text-warm-200",
             "First simulation"),
         P(:class => "text-warm-600 dark:text-warm-400",
-            "The five-struct API maps to the five things every CT simulation needs to specify: what to scan, the scanner, the acquisition, simulation fidelity, and the reconstruction output."),
+            "The five-struct API maps to the five things every CT simulation needs to specify: what to scan, the scanner, the acquisition, the physics, and the reconstruction output."),
         Pre(:class => code_block,
             Code(:class => "language-julia text-sm font-mono", """import BasisSimulator as BS
 import GPUSelect
@@ -47,10 +47,12 @@ to_gpu(x) = AT(x)
 phantom_cpu = BS.create_gammex_472(n_voxels=256)
 phantom = BS.Phantom(to_gpu(phantom_cpu.mask),
                      phantom_cpu.materials,
-                     phantom_cpu.voxel_size)
+                     phantom_cpu.voxel_size,
+                     phantom_cpu.origin,
+                     phantom_cpu.extent)
 
-# 2. Scanner — geometry, source, detector, filtration
-scanner = BS.Scanner(
+# 2. Scanner — geometry, source, detector, filtration (PCCTScanner for photon counting)
+scanner = BS.EICTScanner(
     source_to_isocenter = 626.0,
     source_to_detector  = 1097.0,
     detector_rows       = 64,
@@ -62,8 +64,8 @@ scanner = BS.Scanner(
 # 3. Protocol — kVp, mA, views, rotation time
 protocol = BS.CTProtocol(kVp=120.0, mA=200.0, views=984, rotation_time=0.5)
 
-# 4. SimOptions — physics fidelity preset (:eict | :pcct)
-sim_opts = BS.SimOptions(fidelity=:eict, seed=42)
+# 4. SimOptions — the physics common to both detector families
+sim_opts = BS.SimOptions(seed=42)
 
 # 5. ReconOptions — output matrix and physical grid extent
 rec_opts = BS.ReconOptions(matrix_size=(512, 512, 64), fov_cm=35.0)""")

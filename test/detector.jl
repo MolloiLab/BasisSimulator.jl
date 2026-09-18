@@ -47,7 +47,7 @@ import AcceleratedKernels  # workspace kernels are AK-based; loading here for pa
     @testset "default_physics_config — populated kwargs propagate" begin
         cfg = BS.default_physics_config(;
             fill_factor       = BS.fill_factor_standard(),
-            scatter           = BS.geometry_aware_scatter_model(BS.Scanner()),
+            scatter           = BS.geometry_aware_scatter_model(BS.EICTScanner()),
             optical_crosstalk = BS.optical_crosstalk_typical(),
             detector_efficiency = BS.detector_efficiency_gemstone(),
             lag               = BS.lag_gadox(),
@@ -69,7 +69,7 @@ end
 # -----------------------------------------------------------------------------
 @testset "ScatterModel + geometry_aware_scatter_model" begin
     @testset "geometry_aware_scatter_model scales with air gap" begin
-        ref = BS.Scanner(
+        ref = BS.EICTScanner(
             source_to_isocenter = BS.SCATTER_REF_SID_MM,
             source_to_detector  = BS.SCATTER_REF_SDD_MM,
         )
@@ -79,13 +79,13 @@ end
         @test ref_model.scatter_coefficient ≈ BS.SCATTER_REF_COEFFICIENT atol = 1.0e-12
 
         # GE Revolution has a larger air gap → less scatter
-        ge = BS.Scanner(source_to_isocenter = 626.0, source_to_detector = 1097.0)
+        ge = BS.EICTScanner(source_to_isocenter = 626.0, source_to_detector = 1097.0)
         ge_model = BS.geometry_aware_scatter_model(ge)
         @test ge_model.scatter_coefficient < ref_model.scatter_coefficient
     end
 
     @testset "phantom diameter scaling — bigger body, more scatter" begin
-        scanner = BS.Scanner()
+        scanner = BS.EICTScanner()
         small = BS.geometry_aware_scatter_model(scanner; phantom_diameter_cm = 20.0)
         large = BS.geometry_aware_scatter_model(scanner; phantom_diameter_cm = 40.0)
         @test large.scatter_coefficient > small.scatter_coefficient
@@ -93,7 +93,7 @@ end
 end
 
 @testset "scatter kernels (spatial + 1D Gaussian)" begin
-    model = BS.geometry_aware_scatter_model(BS.Scanner())
+    model = BS.geometry_aware_scatter_model(BS.EICTScanner())
 
     @testset "create_scatter_kernel_spatial — Gaussian normalized" begin
         K = BS.create_scatter_kernel_spatial(model)
@@ -113,7 +113,7 @@ end
 end
 
 @testset "estimate_scatter_field!  + inject_scatter!" begin
-    model = BS.geometry_aware_scatter_model(BS.Scanner())
+    model = BS.geometry_aware_scatter_model(BS.EICTScanner())
 
     # Make a smooth phantom-shaped sinogram (Gaussian projection profile)
     nc, nr, nv = 64, 4, 8
@@ -352,8 +352,8 @@ end
     end
 
     @testset "build_physics_config routes :ufc to the UFC factory" begin
-        scanner = BS.Scanner(detector_material = :ufc, detector_depth = 1.4)
-        sim_opts = BS.SimOptions(fidelity = :eict)
+        scanner = BS.EICTScanner(detector_material = :ufc, detector_depth = 1.4)
+        sim_opts = BS.SimOptions()
         e = collect(20.0:10.0:140.0)
         w = ones(length(e))
         config = BS.build_physics_config(scanner, sim_opts, e, w)
@@ -362,7 +362,7 @@ end
         @test config.detector_efficiency.mode == BS.MC_LUT
 
         # Unknown EICT material errors with a clear message
-        bad = BS.Scanner(detector_material = :unobtainium)
+        bad = BS.EICTScanner(detector_material = :unobtainium)
         @test_throws ErrorException BS.build_physics_config(bad, sim_opts, e, w)
     end
 end
@@ -442,8 +442,8 @@ end
     end
 
     @testset "build_physics_config routes :ufc_flash to the Flash factory" begin
-        scanner = BS.Scanner(detector_material = :ufc_flash, detector_depth = 1.0)
-        sim_opts = BS.SimOptions(fidelity = :eict)
+        scanner = BS.EICTScanner(detector_material = :ufc_flash, detector_depth = 1.0)
+        sim_opts = BS.SimOptions()
         e = collect(20.0:10.0:140.0)
         w = ones(length(e))
         config = BS.build_physics_config(scanner, sim_opts, e, w)
@@ -890,4 +890,53 @@ end
             end
         end
     end
+end
+
+# -----------------------------------------------------------------------------
+# apply_pcct_noise! — the threaded Poisson mode
+# -----------------------------------------------------------------------------
+@testset "apply_pcct_noise! rng_mode" begin
+    n_bins = 3
+    shape = (40, 4, 30)
+    I0 = Float64[2.0e4, 8.0e3, 1.5e3]
+    thresholds = Float32[20, 50, 80]
+    build() = BS.EnergyResolvedSinogram(
+        [fill(Float32(0.35 + 0.1b), shape) for b in 1:n_bins], thresholds
+    )
+
+    serial = build()
+    BS.apply_pcct_noise!(serial, I0; seed = 7)
+    again = build()
+    BS.apply_pcct_noise!(again, I0; seed = 7)
+    @test all(serial.bins[b] == again.bins[b] for b in 1:n_bins)      # a seed is a seed
+
+    threaded = build()
+    BS.apply_pcct_noise!(threaded, I0; seed = 7, rng_mode = :threaded)
+    # a different realisation, but of the same distribution
+    @test any(threaded.bins[b] != serial.bins[b] for b in 1:n_bins)
+    for b in 1:n_bins
+        λ = I0[b] * exp(-(0.35 + 0.1b))
+        counts(bin) = I0[b] .* exp.(-Float64.(bin))
+        for bin in (serial.bins[b], threaded.bins[b])
+            c = counts(bin)
+            @test mean(c) ≈ λ rtol = 0.02                  # unbiased
+            @test (std(c)^2) / λ ≈ 1 rtol = 0.15               # Fano ≈ 1
+        end
+    end
+    # the realisation is a property of the seed, not of the thread count: the chunking is fixed
+    @test BS._PCCT_NOISE_CHUNKS > 1
+    repeat_threaded = build()
+    BS.apply_pcct_noise!(repeat_threaded, I0; seed = 7, rng_mode = :threaded)
+    @test all(repeat_threaded.bins[b] == threaded.bins[b] for b in 1:n_bins)
+    other_seed = build()
+    BS.apply_pcct_noise!(other_seed, I0; seed = 8, rng_mode = :threaded)
+    @test any(other_seed.bins[b] != threaded.bins[b] for b in 1:n_bins)
+
+    @test_throws ArgumentError BS.apply_pcct_noise!(build(), I0; rng_mode = :parallel)
+
+    # `seed = nothing` means unseeded on both paths: the threaded draw must not quietly pin
+    # itself to a fixed stream just because it needs a number to derive its chunks from.
+    unseeded_a = build(); BS.apply_pcct_noise!(unseeded_a, I0; rng_mode = :threaded)
+    unseeded_b = build(); BS.apply_pcct_noise!(unseeded_b, I0; rng_mode = :threaded)
+    @test any(unseeded_a.bins[b] != unseeded_b.bins[b] for b in 1:n_bins)
 end
