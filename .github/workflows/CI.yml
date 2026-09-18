@@ -23,7 +23,9 @@ jobs:
         # A named version, not '1'. '1' tracks the newest stable, which became 1.13 on
         # 2026-09-17, and the dependency tree cannot resolve there: XrayAttenuation is
         # registered as `julia = "1.10 - 1.12"`, so buildpkg fails before a single test runs.
-        # `docs.yml` pins the same way. Raise this when that upper bound is lifted upstream.
+        # Below is closed too: the bundled `cdte_response_v4.jls` is in 1.12's serialization
+        # format, so 1.11 errors in every MC-response test. 1.12 is the whole supported window,
+        # which is what `Project.toml` now declares and what `docs.yml` pins.
         version:
           - '1.12'
         os:

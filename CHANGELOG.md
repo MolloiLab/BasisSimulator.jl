@@ -43,6 +43,13 @@ measured on one NVIDIA RTX PRO 6000; the test suite is 3394 passing on CPU.
   still where the sinogram is.
 * `wfbp_helical_reconstruct` masks outside the reconstruction circle by default, as the axial
   path always did. `mask_fov = false` restores the old output.
+* **Julia 1.12 is now the minimum**, up from the declared 1.11. The declaration was wrong, not
+  tightened: the bundled photon-counting response `src/detector/pcct/cdte_response_v4.jls` is
+  written in Julia 1.12's serialization format (data version 30), so on 1.11 every path through
+  `load_mc_response` — the MC DRM, the count moments, the survival bins — fails with
+  "Cannot read stream serialized with a newer version of Julia". Measured: 3350 pass and 5 error
+  on 1.11.7, against 3394 passing on 1.12.6. `XrayAttenuation` is separately registered as
+  `julia = "1.10 - 1.12"`, so 1.12 is the whole supported window today.
 * Releases are no longer automated; see [RELEASING.md](RELEASING.md).
 
 ### Added
