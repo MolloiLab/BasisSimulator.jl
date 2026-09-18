@@ -226,9 +226,21 @@ end
     blur = BS.tlbf_denoise(fill(0.0f0, n_col, 1, n_view), step_water, step_expected, step_expected; alpha2 = Inf)
     @test abs(edge.sino_water[12, 1, 4] - 10) < 1.0e-3 < abs(blur.sino_water[12, 1, 4] - 10)
 
-    @test_throws DimensionMismatch BS.tlbf_denoise(
-        repeat(iodine, 1, 2, 1), repeat(water, 1, 2, 1), repeat(expected, 1, 2, 1), repeat(measured, 1, 2, 1),
+    # Rows: the neighbourhood is (column, view) and never crosses rows, so a multi-row sinogram is
+    # the published single-row filter applied to each row — bit for bit, whatever the other rows hold.
+    rows3 = (
+        cat(iodine, 2 .* iodine, iodine .+ 0.01f0; dims = 2),
+        cat(water, water .+ 1, 0.5f0 .* water; dims = 2),
+        cat(expected, 1.1f0 .* expected, expected; dims = 2),
+        cat(measured, measured, 0.9f0 .* measured; dims = 2),
     )
+    together = BS.tlbf_denoise(rows3...)
+    for r in 1:3
+        alone = BS.tlbf_denoise((view(a, :, r:r, :) for a in rows3)...)
+        @test together.sino_iodine[:, r:r, :] == alone.sino_iodine
+        @test together.sino_water[:, r:r, :] == alone.sino_water
+    end
+    @test_throws DimensionMismatch BS.tlbf_denoise(rows3[1], rows3[2], rows3[3], measured)
 
     # the two count maps the filter is built from
     toy = _toy_response()
@@ -353,9 +365,9 @@ end
     for (i, E) in pairs(out.energies)
         α = BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine, Float64(E)) /
             BS.compute_mass_μ_at_energy(BS.XA.Materials.water, Float64(E))
-        @test mean(out.vmis[centre, centre, i]) ≈ 5α atol = 15
+        @test mean(out.vmis[centre, centre, 1, i]) ≈ 5α atol = 15
     end
-    @test size(out.vmis) == (64, 64, 3) && size(out.sinograms.iodine) == (geom.n_cols, 1, geom.n_angles)
+    @test size(out.vmis) == (64, 64, 1, 3) && size(out.sinograms.iodine) == (geom.n_cols, 1, geom.n_angles)
     @test out.settings.n_rows == geom.n_rows && out.settings.tlbf.radius == 2
     @test out.quality.frac_not_converged == 0
 
@@ -367,13 +379,183 @@ end
     @test cong.settings.method === :cong && cong.settings.n_channels == 2
     @test mean(cong.images.water[centre, centre, 1]) ≈ 1.0 rtol = 0.02
 
-    @test_throws ArgumentError BS.vmi_pipeline(; channels, basis, geom, use_tlbf = true)
-    # …but an acquisition that already has one row needs no reduction to be filtered
+    # Without reducing the rows, the whole chain runs on every row: T-LBF row by row, a
+    # reconstruction onto a multi-slice grid, ACNR slice by slice, a VMI per slice. The disk is
+    # z-invariant, so every slice must carry it.
+    stack = BS.vmi_pipeline(;
+        channels, basis, geom, use_tlbf = true, matrix_size = (64, 64, geom.n_rows),
+        vmi_energies = (40, 70), use_acnr = true,
+    )
+    @test size(stack.vmis) == (64, 64, geom.n_rows, 2)
+    @test size(stack.images.water) == (64, 64, geom.n_rows)
+    for k in 1:geom.n_rows
+        @test mean(stack.images.water[centre, centre, k]) ≈ 1.0 rtol = 0.03
+    end
+    @test stack.settings.n_rows === nothing && stack.settings.tlbf !== nothing
+    # `rows` picks what to sum; without summing it would be silently ignored, so it is refused
+    @test_throws ArgumentError BS.vmi_pipeline(;
+        channels, basis, geom, rows = 1:2, matrix_size = (64, 64, 1),
+    )
+    # a row count that is neither one nor the geometry's cannot be reconstructed
+    @test_throws DimensionMismatch BS.reconstruct_basis_slice(
+        stack.images.water[:, 1:2, 1:1], geom, (64, 64, 1)
+    )
+    # …and an acquisition that already has one row needs no reduction to be filtered
     single_row = [h[:, 1:1, :] for h in channels]
     one_row = BS.vmi_pipeline(;
         channels = single_row, basis, geom, use_tlbf = true, matrix_size = (32, 32, 1),
         vmi_energies = (70,), use_acnr = false,
     )
-    @test size(one_row.vmis) == (32, 32, 1) && one_row.settings.tlbf !== nothing
-    @test_throws ArgumentError BS.vmi_pipeline(; channels, basis, geom, method = :bogus)
+    @test size(one_row.vmis) == (32, 32, 1, 1) && one_row.settings.tlbf !== nothing
+    @test_throws ArgumentError BS.vmi_pipeline(; channels, basis, geom, method = :bogus, matrix_size = (32, 32, 1))
+    # the grid is the caller's to state
+    @test_throws UndefKeywordError BS.vmi_pipeline(; channels, basis, geom)
+end
+
+# Poisson counts on the toy channels: I0·exp(−h) drawn, then back to a log channel.
+function _noisy_channels(channels, basis; seed = 11)
+    rng = Random.MersenneTwister(seed)
+    return map(eachindex(channels)) do k
+        h = channels[k]
+        I0 = Float64(basis.I0[1, 1, k])
+        out = similar(h)
+        for idx in eachindex(h)
+            n = max(BS._poisson_sample(rng, I0 * exp(-Float64(h[idx]))), 1)
+            out[idx] = Float32(-log(n / I0))
+        end
+        out
+    end
+end
+
+@testset "HIR weights follow what the sinogram is" begin
+    # A log-transmission sinogram of a water disk, as any scanner family produces one. The
+    # default weighting is exp(−y); `:uniform` and an all-ones array must agree with each other
+    # and differ from it; the guards refuse what cannot be meant.
+    scanner = BS.EICTScanner(
+        source_to_isocenter = 540.0, source_to_detector = 1080.0, detector_rows = 4,
+        detector_cols = 128, detector_row_size = 1.0, detector_col_size = 1.5,
+    )
+    geom = BS.CTGeometry(scanner; n_angles = 120, fov_cm = 16.0, z_cm = 0.4)
+    μ = zeros(Float32, 48, 48, 1)
+    for j in 1:48, i in 1:48
+        hypot(i - 24.5, j - 24.5) < 12 && (μ[i, j, 1] = 0.19f0)
+    end
+    sino = BS.dd_forward_project(μ, geom; volume_extent = geom.fov)
+    recon(; kw...) = begin
+        ws = BS.create_hir_recon_workspace(sino, geom, (48, 48, 1); strength = 60)
+        copy(BS.reconstruct!(ws, sino, geom; kw...))
+    end
+    transmission = recon()
+    uniform = recon(weights = :uniform)
+    ones_map = recon(weights = ones(Float32, size(sino)))
+    @test uniform ≈ ones_map rtol = 1.0e-4          # the same weighting, spelled two ways
+    @test uniform != transmission                   # and not the Poisson heuristic
+    @test mean(uniform[19:30, 19:30, 1]) ≈ 0.19 rtol = 0.05
+    @test_throws ArgumentError recon(weights = :bogus)
+    @test_throws DimensionMismatch recon(weights = ones(Float32, 4, 4, 4))
+    @test_throws ArgumentError recon(
+        weights = ones(Float32, size(sino)), air_reference = ones(Float32, geom.n_cols, geom.n_rows)
+    )
+end
+
+@testset "the basis pair reconstructs iteratively, and soundly" begin
+    # The same 5 cm water disk with 5 mg/mL iodine as above, now with Poisson counts. HIR must
+    # return the same concentrations as FDK and be quieter in the flat interior for BOTH
+    # materials — which the exp(−y) weighting could not do, because on the water sinogram (~10 g/cm²
+    # here, 20-30 through a body) it switches the data term off and on the iodine one it is
+    # uniform, so the two materials would have met two different reconstructors.
+    scanner = BS.PCCTScanner(
+        source_to_isocenter = 540.0, source_to_detector = 1080.0, detector_rows = 4,
+        detector_cols = 128, detector_row_size = 1.0, detector_col_size = 1.5,
+        energy_thresholds = [20.0, 35.0, 55.0, 70.0],
+    )
+    geom = BS.CTGeometry(scanner; n_angles = 180, fov_cm = 16.0, z_cm = 0.4)
+    γ = ((1:geom.n_cols) .- (geom.n_cols + 1) / 2) .* geom.pixel_size ./ geom.SAD
+    chord = @. 2 * sqrt(max(5.0^2 - (geom.SAD * sin(γ))^2, 0.0))
+    spread(v) = repeat(reshape(v, :, 1, 1), 1, geom.n_rows, geom.n_angles)
+    toy = _toy_response(total = 2.0e5)
+    basis = BS.spectral_basis(energies = toy.E, response = toy.Φ, I0 = toy.I0)
+    channels = _noisy_channels(_toy_channels(basis, spread(0.005 .* chord), spread(chord)), basis)
+    centre = 28:37
+
+    common = (;
+        channels, basis, geom, reduce_rows = true, matrix_size = (64, 64, 1),
+        vmi_energies = (40, 70, 140), use_acnr = false, keep_diagnostics = true,
+        keep_sinograms = true,
+    )
+    fbp = BS.vmi_pipeline(; common...)
+    hir = BS.vmi_pipeline(; common..., recon_method = :hir, hir_strength = 60)
+
+    # what was done is recorded, and only the iterative run carries the dial
+    @test fbp.settings.recon.method === :fbp && fbp.settings.recon.hir === nothing
+    @test hir.settings.recon.method === :hir && hir.settings.recon.hir.strength == 60
+    @test hir.settings.recon.hir.weights === :fisher && hir.settings.recon.hir.reference_kev == 70.0
+    @test haskey(hir, :diagnostics) && all(>(0), hir.diagnostics.fisher.AA)
+
+    # same object in the same units on both arms: water ≈ 1 g/cm³, iodine ≈ 0.005 g/cm³
+    for out in (fbp, hir)
+        @test mean(out.images.water[centre, centre, 1]) ≈ 1.0 rtol = 0.05
+        @test mean(out.images.iodine[centre, centre, 1]) ≈ 0.005 rtol = 0.15
+    end
+    # and the iterative arm is quieter in the interior for BOTH materials — that is the whole
+    # point, and the one thing a mis-weighted reconstructor could not deliver for water
+    @test std(hir.images.water[centre, centre, 1]) < std(fbp.images.water[centre, centre, 1])
+    @test std(hir.images.iodine[centre, centre, 1]) < std(fbp.images.iodine[centre, centre, 1])
+    @test size(hir.vmis) == size(fbp.vmis) && all(isfinite, hir.vmis)
+
+    # strength 0 is FDK through the one-row geometry: the same slice the repeated-row FDK gives,
+    # to within the cone-angle difference between one row and four
+    plain = BS.vmi_pipeline(; common..., recon_method = :hir, hir_strength = 0)
+    @test mean(plain.images.water[centre, centre, 1]) ≈
+        mean(fbp.images.water[centre, centre, 1]) rtol = 0.03
+
+    # the two-measurement comparator has no Fisher information, so it is weighted uniformly
+    cong = BS.vmi_pipeline(;
+        common..., method = :cong, merge_groups = [1:2, 3:4], recon_method = :hir,
+        keep_diagnostics = false,
+    )
+    @test cong.settings.recon.hir.weights === :uniform
+    @test mean(cong.images.water[centre, centre, 1]) ≈ 1.0 rtol = 0.05
+
+    @test_throws ArgumentError BS.vmi_pipeline(; common..., recon_method = :bogus)
+    @test_throws ArgumentError BS.reconstruct_basis_slice(
+        fbp.images.water, geom, (64, 64, 1); method = :bogus
+    )
+    # a reduced-row sinogram reconstructs one slice
+    @test_throws ArgumentError BS.reconstruct_basis_slice(
+        hir.sinograms.water, geom, (64, 64, 2); method = :hir
+    )
+end
+
+@testset "the same iterative arm serves a dual-energy pair" begin
+    # Two acquisitions instead of four bins, no row reduction: the multi-row path through the
+    # original geometry, with the Fisher weights of a K = 2 decomposition. This is the DECT case;
+    # nothing in the reconstruction knows or cares which detector produced the channels.
+    scanner = BS.EICTScanner(
+        source_to_isocenter = 540.0, source_to_detector = 1080.0, detector_rows = 4,
+        detector_cols = 128, detector_row_size = 1.0, detector_col_size = 1.5,
+    )
+    geom = BS.CTGeometry(scanner; n_angles = 180, fov_cm = 16.0, z_cm = 0.4)
+    γ = ((1:geom.n_cols) .- (geom.n_cols + 1) / 2) .* geom.pixel_size ./ geom.SAD
+    chord = @. 2 * sqrt(max(5.0^2 - (geom.SAD * sin(γ))^2, 0.0))
+    spread(v) = repeat(reshape(v, :, 1, 1), 1, geom.n_rows, geom.n_angles)
+    toy = _toy_response(K = 2, total = 2.0e5)
+    acquisitions = [
+        (energies = toy.E, response = toy.Φ[:, :, :, k], I0_ray = toy.I0[:, :, k]) for k in 1:2
+    ]
+    basis = BS.spectral_basis_from_acquisitions(; acquisitions)
+    @test basis.n_channels == 2
+    channels = _noisy_channels(_toy_channels(basis, spread(0.005 .* chord), spread(chord)), basis)
+    centre = 28:37
+
+    common = (; channels, basis, geom, matrix_size = (64, 64, 1), vmi_energies = (70,), use_acnr = false)
+    fbp = BS.vmi_pipeline(; common...)
+    hir = BS.vmi_pipeline(; common..., recon_method = :hir)
+    # rows were not reduced, which `settings.n_rows` records as `nothing`
+    @test hir.settings.n_rows === nothing && hir.settings.recon.hir.weights === :fisher
+    for out in (fbp, hir)
+        @test mean(out.images.water[centre, centre, 1]) ≈ 1.0 rtol = 0.05
+        @test mean(out.images.iodine[centre, centre, 1]) ≈ 0.005 rtol = 0.2
+    end
+    @test std(hir.images.water[centre, centre, 1]) < std(fbp.images.water[centre, centre, 1])
 end

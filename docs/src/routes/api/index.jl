@@ -453,6 +453,22 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
 
                 # ════════════════════════════════════════════════════════════════
                 # § 5. Spectrum & source
+                Div(
+                    :class => card_cls,
+                    Div(:class => sig_cls, "resample_field_to_recon(field, voxel_size, origin, geom, matrix_size; outside = 0) → Array{Float32,3}"),
+                    P(
+                        :class => prose_cls,
+                        "The exact box average of a continuous field — a material fraction, a density — onto the ",
+                        "reconstruction grid, from the axis-aligned overlap of the two grids (three separable matrix ",
+                        "products, not a voxel loop).  Every output voxel is the mean of the field over its own footprint, ",
+                        "so a 0.2 mm truth on 0.625 mm slices carries the partial volume a reconstruction sees.  ",
+                        Code(:class => inline, "resample_to_recon(…; method = :linear)"),
+                        " point-samples at the voxel centre and does not.  ", Code(:class => inline, "outside"),
+                        " fills the part of a voxel beyond the field's grid — 1 for an air fraction — so fractions ",
+                        "that sum to one still do."
+                    ),
+                ),
+
                 # ════════════════════════════════════════════════════════════════
                 H2(:id => "spectrum", :class => h2_cls, "Spectrum & source"),
                 P(
@@ -840,11 +856,18 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                 ),
                 Div(
                     :class => card_cls,
-                    Div(:class => sig_cls, "reconstruct!(ws::HIRReconWorkspace, sino, geom; init_volume=nothing, air_reference=nothing) → ws.volume"),
+                    Div(:class => sig_cls, "reconstruct!(ws::HIRReconWorkspace, sino, geom; init_volume=nothing, air_reference=nothing, weights=:transmission) → ws.volume"),
                     P(
                         :class => prose_cls,
                         "Same dispatch shape as FDK.  Converges in 2–5 iterations on clinical data; ",
-                        "costs a few FDK passes — the workspace is built once and reused."
+                        "costs a few FDK passes — the workspace is built once and reused.  ",
+                        Code(:class => inline, "weights"), " says what the sinogram is: ",
+                        Code(:class => inline, ":transmission"), " (default) is the ", Code(:class => inline, "exp(−y)"),
+                        " Poisson heuristic, right for any log-transmission — energy-integrating, photon-counting summed ",
+                        "bins, either tube voltage of a dual-energy pair; ", Code(:class => inline, ":uniform"),
+                        " leaves only the geometric ray-length normalisation; an array is the caller's per-ray statistical ",
+                        "weight, which is what a material-basis sinogram needs (its inverse variance from the decomposition), ",
+                        "since g/cm² is not a transmission and exp(−y) of it means nothing."
                     ),
                     Pre(
                         :class => code_cls, Code(
@@ -881,10 +904,10 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                         :class => table_cls,
                         Tr(Th(:class => th_cls, "stage"), Th(:class => th_cls, "keywords")),
                         Tr(Td(:class => td_mono, "decomposition"), Td(:class => td_cls, "method (:nchannel | :cong), controls::NChannelControls, merge_groups, tile_views")),
-                        Tr(Td(:class => td_mono, "detector rows"), Td(:class => td_cls, "reduce_rows, rows — summed in counts, not in log space")),
+                        Tr(Td(:class => td_mono, "detector rows"), Td(:class => td_cls, "reduce_rows, rows — summed in counts for a z-invariant object; otherwise every row is kept and reconstructed slice by slice")),
                         Tr(Td(:class => td_mono, "T-LBF"), Td(:class => td_cls, "use_tlbf, tlbf_alpha1, tlbf_alpha2, tlbf_radius")),
                         Tr(Td(:class => td_mono, "ACNR"), Td(:class => td_cls, "use_acnr, acnr_passes, acnr_beta_max, acnr_hp_sigma_px, acnr_window")),
-                        Tr(Td(:class => td_mono, "reconstruction"), Td(:class => td_cls, "matrix_size, fbp_filter, antialias, recon_rows")),
+                        Tr(Td(:class => td_mono, "reconstruction"), Td(:class => td_cls, "matrix_size, fbp_filter, antialias, recon_rows, recon_method (:fbp | :hir), hir_strength, recon_projector, hir_reference_kev")),
                         Tr(Td(:class => td_mono, "synthesis"), Td(:class => td_cls, "vmi_energies = (40, 70, 100, 140)")),
                     ),
                     Pre(
@@ -896,7 +919,7 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                                 reduce_rows = true, use_tlbf = true,          # the published PCCT configuration
                                 matrix_size = (512, 512, 1),
                             )
-                            vmi_70 = result.vmis[:, :, 2]"""
+                            vmi_70 = result.vmis[:, :, 1, 2]              # (nx, ny, nz, energy)"""
                         )
                     ),
                     P(
@@ -954,7 +977,7 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                 ),
                 Div(
                     :class => card_cls,
-                    Div(:class => sig_cls, "reconstruct_basis_slice(sino, geom, matrix_size; n_rows, antialias = true)   |   synthesize_vmi_stack(water, iodine, energies)"),
+                    Div(:class => sig_cls, "reconstruct_basis_slice(sino, geom, matrix_size; n_rows, antialias = true, method = :fbp, hir_weights, scale)   |   synthesize_vmi_stack(water, iodine, energies)"),
                     P(
                         :class => prose_cls,
                         "The two ends of the chain on their own, for when the pipeline is being assembled ",
@@ -962,7 +985,18 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                         " applies the deterministic angular response (",
                         Code(:class => inline, "angular_antialias_response"),
                         ") that keeps a sparse-view basis sinogram from streaking; the synthesis is the ",
-                        "two-basis monoenergetic sum in HU."
+                        "two-basis monoenergetic sum in HU.  ",
+                        Code(:class => inline, "method = :hir"),
+                        " reconstructs the pair with the penalized iterative reconstructor instead.  Three things ",
+                        "make that sound on a basis sinogram: HIR's default ", Code(:class => inline, "exp(−y)"),
+                        " weighting assumes a log-transmission, so each material is weighted by its own ",
+                        "inverse variance from the decomposition's Fisher information (",
+                        Code(:class => inline, "reconstruct!(…; weights)"), "); each is reconstructed in ",
+                        "μ-equivalent units at ", Code(:class => inline, "hir_reference_kev"),
+                        " so the Huber threshold and strength dial mean what they were tuned to; and a ",
+                        "reduced-row sinogram goes through a one-row geometry rather than being repeated.  ",
+                        "The same arm serves a dual-kVp pair decomposed through ",
+                        Code(:class => inline, "spectral_basis_from_acquisitions"), "."
                     ),
                 ),
 

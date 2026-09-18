@@ -558,3 +558,47 @@ end
         @test (maximum(zmeans) - minimum(zmeans)) < 0.015   # no banding on arc
     end
 end
+
+@testset "resample_field_to_recon is a box average" begin
+    scanner = BS.EICTScanner(
+        source_to_isocenter = 540.0, source_to_detector = 1080.0, detector_rows = 4,
+        detector_cols = 64, detector_row_size = 1.0, detector_col_size = 1.5,
+    )
+    # recon grid: 8 cm over 40 voxels in-plane (2 mm), 0.4 cm over 2 slices
+    geom = BS.CTGeometry(scanner; n_angles = 8, fov_cm = 8.0, z_cm = 0.4)
+    matrix = (40, 40, 2)
+    # a finer field: 0.5 mm voxels over 10 cm × 6 cm × 1 cm, centred — a 4:1 ratio in x, in y the
+    # recon grid reaches past the field, in z the field reaches past the recon grid
+    vox = (0.05, 0.05, 0.05)
+    dims = (200, 120, 20)
+    origin = (-5.0 + 0.025, -3.0 + 0.025, -0.5 + 0.025)
+
+    # a constant averages to itself wherever the field covers the voxel
+    ones_field = ones(Float32, dims)
+    out = BS.resample_field_to_recon(ones_field, vox, origin, geom, matrix)
+    @test size(out) == matrix
+    @test all(≈(1.0f0), out[:, 6:35, :])          # y = ±3 cm covers recon voxels 6:35
+    @test all(==(0.0f0), out[:, 1:5, :])          # beyond the field, `outside` defaults to 0
+    # …and with `outside = 1` (an air fraction) the uncovered part is filled
+    air = BS.resample_field_to_recon(ones_field, vox, origin, geom, matrix; outside = 1.0)
+    @test all(≈(1.0f0), air)
+
+    # a step at x = 0.05 cm (between field columns 100 and 101 — off a recon voxel edge): the recon
+    # voxel straddling it gets exactly the area fraction of the step it contains
+    step = zeros(Float32, dims)
+    step[102:end, :, :] .= 1                      # field column 102 starts at x = +0.05 cm
+    out = BS.resample_field_to_recon(step, vox, origin, geom, matrix)
+    # recon voxel 21 spans x ∈ [0.0, 0.2) cm; the step covers [0.05, 0.2) of it = 0.75
+    @test out[21, 20, 1] ≈ 0.75f0 atol = 1.0e-5
+    @test out[20, 20, 1] == 0.0f0 && out[22, 20, 1] == 1.0f0
+    # mass is conserved: over the part of the field the recon grid covers (x within ±4 cm of a
+    # ±5 cm field), the step holds (4 − 0.05)/8 of it, and so must the output
+    @test mean(out[:, 6:35, :]) ≈ (4.0 - 0.05) / 8.0 rtol = 1.0e-5
+
+    # six fractions that sum to one keep summing to one, air taking the outside
+    frac = [rand(Float32, dims) for _ in 1:6]
+    total = sum(frac)
+    frac = [f ./ total for f in frac]
+    outs = [BS.resample_field_to_recon(frac[b], vox, origin, geom, matrix; outside = b == 1 ? 1.0 : 0.0) for b in 1:6]
+    @test all(≈(1.0f0, atol = 1.0e-4), sum(outs))
+end

@@ -99,8 +99,10 @@ are applied to iodine and water alike. Views wrap circularly; detector columns d
 `alpha2 = Inf` keeps the spatial weights only; `alpha2 ≤ 0` is the identity. Both are the
 ablation endpoints. The defaults are the fixed Lee-2025 configuration selected in notebook 04.
 
-The sinograms must hold a single detector row: the neighbourhood is (column, view), so a
-multi-row input would address the wrong rays. Call [`reduce_detector_rows`](@ref) first.
+The neighbourhood is (column, view) and never crosses detector rows, so a sinogram with any number
+of rows is filtered row by row, each in its own plane — on a single row (what
+[`reduce_detector_rows`](@ref) leaves) that is exactly the published filter, and on many it is that
+filter applied to each.
 """
 function tlbf_denoise(
         sino_iodine::AbstractArray{<:Real, 3}, sino_water::AbstractArray{<:Real, 3},
@@ -109,11 +111,6 @@ function tlbf_denoise(
         to_backend = identity,
     )
     n_col, n_row, n_view = size(sino_iodine)
-    n_row == 1 || throw(
-        DimensionMismatch(
-            "tlbf_denoise needs a single detector row, got $(n_row); call reduce_detector_rows first"
-        )
-    )
     size(sino_water) == size(sino_iodine) == size(expected) == size(measured) ||
         throw(DimensionMismatch("tlbf_denoise inputs must share one shape"))
 
@@ -129,7 +126,9 @@ function tlbf_denoise(
     try
         AK.foreachindex(out_I) do idx
             col = Int32(mod1(idx, n_col))
-            view = Int32(mod1(cld(idx, n_col), n_view))
+            row_view = Int32(cld(idx, n_col))        # rows vary fastest after columns
+            row = mod1(row_view, Int32(n_row))
+            view = cld(row_view, Int32(n_row))
             centre_expected = max(expected_dev[idx], 1.0f-6)
             Y = measured_dev[idx]
             centre_likelihood = -centre_expected + Y * log(centre_expected)
@@ -138,7 +137,8 @@ function tlbf_denoise(
                 neighbour_col = col + dc
                 (neighbour_col < Int32(1) || neighbour_col > Int32(n_col)) && continue
                 neighbour_view = mod1(view + dv, Int32(n_view))
-                neighbour_idx = Int(neighbour_col) + (Int(neighbour_view) - 1) * n_col
+                neighbour_idx = Int(neighbour_col) + (Int(row) - 1) * n_col +
+                    (Int(neighbour_view) - 1) * n_col * n_row
                 spatial = exp(-Float32(dc * dc + dv * dv) / (2.0f0 * a1 * a1))
                 likelihood_weight = if isinf(a2)
                     1.0f0

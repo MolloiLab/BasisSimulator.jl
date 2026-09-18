@@ -101,6 +101,14 @@ vmi = BS.vmi_pipeline(;
     to_backend = to_gpu, reduce_rows = true, use_tlbf = true,
     matrix_size = (512, 512, 1),           # it never sees rec_opts, so say the grid here
 )                      # vmi.vmis at 40/70/100/140 keV, in HU
+
+# the same acquisition through the iterative reconstructor: each basis material weighted by its
+# own inverse variance, in μ-equivalent units — T-LBF, ACNR and the synthesis unchanged
+vmi_hir = BS.vmi_pipeline(;
+    channels = [Array(b) for b in result.pcct_sino.bins], basis, geom = ws_pcct.geom,
+    to_backend = to_gpu, reduce_rows = true, use_tlbf = true,
+    matrix_size = (512, 512, 1), recon_method = :hir, hir_strength = 60,
+)
 ```
 
 ## Documentation

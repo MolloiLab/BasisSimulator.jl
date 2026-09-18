@@ -118,17 +118,25 @@ end
         0.9 * axial.ctdi_vol_mGy
 
     # N·T > 40 mm: the IEC reference-beam rule scales the 20 mm measurement by the free-in-air
-    # ratio — and that ratio saturates, because the 100 mm pencil chamber stops collecting once
-    # the beam is wider than it. At 160 mm the factor is 100/160, not 1.
+    # ratio, taken over the whole beam. For a uniform beam with no over-beaming that ratio is
+    # exactly 1 whatever N·T is — CTDIw per mAs does not depend on collimation, dose per rotation
+    # scales with it — so 60 mm and 160 mm must both report the 20 mm value.
     wide = BS.compute_dose(scanner, _dose_protocol(collimation_mm = 160.0); n_histories = n)
     narrow = BS.compute_dose(scanner, _dose_protocol(collimation_mm = 20.0); n_histories = n)
-    @test wide.wide_beam_reference_mm == 20.0 && narrow.wide_beam_reference_mm === nothing
-    @test wide.ctdi_w_mGy_per_100mAs ≈ narrow.ctdi_w_mGy_per_100mAs * (100 / 160)
-    # a beam still inside the chamber is scaled one-to-one
     mid = BS.compute_dose(scanner, _dose_protocol(collimation_mm = 60.0); n_histories = n)
+    @test wide.wide_beam_reference_mm == 20.0 && narrow.wide_beam_reference_mm === nothing
+    @test wide.ctdi_w_mGy_per_100mAs ≈ narrow.ctdi_w_mGy_per_100mAs
     @test mid.ctdi_w_mGy_per_100mAs ≈ narrow.ctdi_w_mGy_per_100mAs
-    # and the saturation is monotone: a wider beam never reports more dose per mAs
-    @test wide.ctdi_w_mGy_per_100mAs < mid.ctdi_w_mGy_per_100mAs
+    # with over-beaming the ratio is (N·T + ob)/N·T against (20 + ob)/20: at 160 mm and 3 mm,
+    # (163/160)/(23/20) — the wide beam wastes proportionally less of its penumbra
+    wide_ob = BS.compute_dose(
+        scanner, _dose_protocol(collimation_mm = 160.0); overbeam_mm = 3.0, n_histories = n
+    )
+    narrow_ob = BS.compute_dose(
+        scanner, _dose_protocol(collimation_mm = 20.0); overbeam_mm = 3.0, n_histories = n
+    )
+    @test wide_ob.ctdi_w_mGy_per_100mAs ≈
+        narrow_ob.ctdi_w_mGy_per_100mAs * (163 / 160) / (23 / 20)
 
     # the report can be asked for the head phantom and for a second tube
     head = BS.compute_dose(scanner, _dose_protocol(); phantom = :head16, n_histories = n)
