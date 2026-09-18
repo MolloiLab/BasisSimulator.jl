@@ -305,6 +305,8 @@ still equals that channel's `I0`. Returns `(channels, basis, n_rows)`.
 function prepare_channels(;
         channels, basis, merge_groups = nothing, reduce_rows::Bool = false, rows = (:),
     )
+    !reduce_rows && rows !== (:) && throw(ArgumentError(
+        "rows selects the detector rows to sum, and does nothing without reduce_rows = true"))
     working_channels, working_basis = channels, basis
     if merge_groups !== nothing
         merged = merge_channels(
@@ -862,6 +864,8 @@ function reconstruct_basis_slice(
     )
     method in (:fbp, :hir) ||
         throw(ArgumentError("method must be :fbp or :hir, got :$(method)"))
+    size(sino, 2) in (1, n_rows) || throw(DimensionMismatch(
+        "the sinogram has $(size(sino, 2)) rows; the geometry has $(n_rows) — pass every row, or one"))
     n_views = size(sino, 3)
     working = Float32.(sino)
     if antialias
@@ -934,20 +938,20 @@ function _basis_weights(fisher, scale_iodine::Real, scale_water::Real)
 end
 
 """
-    synthesize_vmi_stack(water, iodine, energies) -> Array{Float32,3}
+    synthesize_vmi_stack(water, iodine, energies) -> Array{Float32,4}
 
-Virtual monoenergetic images in HU from a reconstructed basis pair, one slice per energy.
-`water` is a density in g/mL and `iodine` a mass density in g/cm³; the latter is converted to
-mg/mL for [`synth_vmi_2basis`](@ref). Only the first z-slice of the pair is used.
+Virtual monoenergetic images in HU from a reconstructed basis pair: `(nx, ny, nz, n_energies)`,
+every slice of the pair at every energy. `water` is a density in g/mL and `iodine` a mass density
+in g/cm³; the latter is converted to mg/mL for [`synth_vmi_2basis`](@ref).
 """
 function synthesize_vmi_stack(water::AbstractArray{<:Real, 3}, iodine::AbstractArray{<:Real, 3}, energies)
-    nx, ny = size(water)[1:2]
-    stack = Array{Float32}(undef, nx, ny, length(energies))
+    size(water) == size(iodine) ||
+        throw(DimensionMismatch("water $(size(water)) and iodine $(size(iodine)) differ"))
+    stack = Array{Float32}(undef, size(water)..., length(energies))
     water32 = Float32.(water)
     iodine_mg_mL = Float32.(iodine) .* 1000.0f0
     for (index, energy) in pairs(collect(energies))
-        stack[:, :, index] .=
-            synth_vmi_2basis(water32, iodine_mg_mL; energy_keV = Float64(energy))[:, :, 1]
+        stack[:, :, :, index] .= synth_vmi_2basis(water32, iodine_mg_mL; energy_keV = Float64(energy))
     end
     return stack
 end
@@ -969,20 +973,22 @@ Every stage's settings are keywords, so the function makes no decision the calle
 and override, which is what makes it usable as the inner call of an ablation sweep.
 
 Required: `channels` (vector of `K` corrected log-transmission sinograms), `basis`
-([`spectral_basis`](@ref)), `geom` (the acquisition geometry).
+([`spectral_basis`](@ref)), `geom` (the acquisition geometry), `matrix_size`.
 
 Stages, all optional:
 
 - `method = :nchannel` or `:cong`; `controls = NChannelControls()`.
 - `merge_groups = nothing` — channel groups summed before decomposing, e.g. `[1:2, 3:4]`.
-- `reduce_rows = false`, `rows = :` — sum detector rows in counts. Required by T-LBF.
-- `use_tlbf = false`, `tlbf_alpha1`, `tlbf_alpha2`, `tlbf_radius` — photon-counting only.
+- `reduce_rows = false`, `rows = :` — sum detector rows in counts, for a z-invariant object whose
+  slices are all the same. Without it every row is kept and the volume is reconstructed slice by
+  slice onto `matrix_size`.
+- `use_tlbf = false`, `tlbf_alpha1`, `tlbf_alpha2`, `tlbf_radius` — photon-counting only; filters
+  each detector row in its own (column, view) plane.
 - `use_acnr = true`, `acnr_passes = 4`, `acnr_beta_max = 20`, `acnr_hp_sigma_px = 1.5`,
   `acnr_window = 4`.
-- `matrix_size = (512, 512, 1)`, `fbp_filter = SoftFilter()`, `antialias = true`,
-  `recon_rows = geom.n_rows`. The default reconstruction grid is 512² by one slice whatever the
-  workspace's `ReconOptions` says — this function never sees them — so pass `matrix_size`
-  explicitly when they differ.
+- `matrix_size` (required) — the reconstruction grid, `(nx, ny, nz)`; this function never sees a
+  workspace's `ReconOptions`, so the caller states the grid. One slice when the rows were reduced.
+  `fbp_filter = SoftFilter()`, `antialias = true`, `recon_rows = geom.n_rows`.
 - `recon_method = :fbp` (the published chain) or `:hir`, with `hir_strength = 60`,
   `recon_projector = :dd_fast` and `hir_reference_kev = 70`. `:hir` reconstructs the basis pair
   with the penalized iterative reconstructor and nothing else changes: T-LBF, ACNR and the
@@ -998,7 +1004,8 @@ Stages, all optional:
 The published photon-counting configuration is
 `vmi_pipeline(; channels, basis, geom, to_backend, reduce_rows = true, use_tlbf = true)`.
 
-Returns `(vmis, energies, images = (water, iodine), quality, elapsed_s, settings)`.
+Returns `(vmis, energies, images = (water, iodine), quality, elapsed_s, settings)`, with `vmis`
+`(nx, ny, nz, n_energies)` in HU.
 """
 function vmi_pipeline(;
         channels, basis, geom, to_backend = identity,
@@ -1012,7 +1019,7 @@ function vmi_pipeline(;
         use_acnr::Bool = true,
         acnr_passes::Integer = 4, acnr_beta_max::Real = 20.0,
         acnr_hp_sigma_px::Real = 1.5, acnr_window::Integer = 4,
-        matrix_size = (512, 512, 1),
+        matrix_size,
         fbp_filter = SoftFilter(),
         antialias::Bool = true,
         recon_rows::Integer = geom.n_rows,
@@ -1030,14 +1037,6 @@ function vmi_pipeline(;
     recon_method in (:fbp, :hir) ||
         throw(ArgumentError("recon_method must be :fbp or :hir, got $(recon_method)"))
     hir = recon_method === :hir
-    # T-LBF's neighbourhood is (column, view), so it needs a single detector row — which
-    # `reduce_rows` produces, unless the acquisition already has one.
-    use_tlbf && !reduce_rows && size(first(channels), 2) > 1 && throw(
-        ArgumentError(
-            "use_tlbf = true on a $(size(first(channels), 2))-row sinogram needs " *
-                "reduce_rows = true: T-LBF works on one detector row"
-        )
-    )
 
     prepared = prepare_channels(; channels, basis, merge_groups, reduce_rows, rows)
     working_channels, working_basis = prepared.channels, prepared.basis

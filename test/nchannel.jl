@@ -226,9 +226,21 @@ end
     blur = BS.tlbf_denoise(fill(0.0f0, n_col, 1, n_view), step_water, step_expected, step_expected; alpha2 = Inf)
     @test abs(edge.sino_water[12, 1, 4] - 10) < 1.0e-3 < abs(blur.sino_water[12, 1, 4] - 10)
 
-    @test_throws DimensionMismatch BS.tlbf_denoise(
-        repeat(iodine, 1, 2, 1), repeat(water, 1, 2, 1), repeat(expected, 1, 2, 1), repeat(measured, 1, 2, 1),
+    # Rows: the neighbourhood is (column, view) and never crosses rows, so a multi-row sinogram is
+    # the published single-row filter applied to each row — bit for bit, whatever the other rows hold.
+    rows3 = (
+        cat(iodine, 2 .* iodine, iodine .+ 0.01f0; dims = 2),
+        cat(water, water .+ 1, 0.5f0 .* water; dims = 2),
+        cat(expected, 1.1f0 .* expected, expected; dims = 2),
+        cat(measured, measured, 0.9f0 .* measured; dims = 2),
     )
+    together = BS.tlbf_denoise(rows3...)
+    for r in 1:3
+        alone = BS.tlbf_denoise((view(a, :, r:r, :) for a in rows3)...)
+        @test together.sino_iodine[:, r:r, :] == alone.sino_iodine
+        @test together.sino_water[:, r:r, :] == alone.sino_water
+    end
+    @test_throws DimensionMismatch BS.tlbf_denoise(rows3[1], rows3[2], rows3[3], measured)
 
     # the two count maps the filter is built from
     toy = _toy_response()
@@ -353,9 +365,9 @@ end
     for (i, E) in pairs(out.energies)
         α = BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine, Float64(E)) /
             BS.compute_mass_μ_at_energy(BS.XA.Materials.water, Float64(E))
-        @test mean(out.vmis[centre, centre, i]) ≈ 5α atol = 15
+        @test mean(out.vmis[centre, centre, 1, i]) ≈ 5α atol = 15
     end
-    @test size(out.vmis) == (64, 64, 3) && size(out.sinograms.iodine) == (geom.n_cols, 1, geom.n_angles)
+    @test size(out.vmis) == (64, 64, 1, 3) && size(out.sinograms.iodine) == (geom.n_cols, 1, geom.n_angles)
     @test out.settings.n_rows == geom.n_rows && out.settings.tlbf.radius == 2
     @test out.quality.frac_not_converged == 0
 
@@ -367,15 +379,37 @@ end
     @test cong.settings.method === :cong && cong.settings.n_channels == 2
     @test mean(cong.images.water[centre, centre, 1]) ≈ 1.0 rtol = 0.02
 
-    @test_throws ArgumentError BS.vmi_pipeline(; channels, basis, geom, use_tlbf = true)
-    # …but an acquisition that already has one row needs no reduction to be filtered
+    # Without reducing the rows, the whole chain runs on every row: T-LBF row by row, a
+    # reconstruction onto a multi-slice grid, ACNR slice by slice, a VMI per slice. The disk is
+    # z-invariant, so every slice must carry it.
+    stack = BS.vmi_pipeline(;
+        channels, basis, geom, use_tlbf = true, matrix_size = (64, 64, geom.n_rows),
+        vmi_energies = (40, 70), use_acnr = true,
+    )
+    @test size(stack.vmis) == (64, 64, geom.n_rows, 2)
+    @test size(stack.images.water) == (64, 64, geom.n_rows)
+    for k in 1:geom.n_rows
+        @test mean(stack.images.water[centre, centre, k]) ≈ 1.0 rtol = 0.03
+    end
+    @test stack.settings.n_rows === nothing && stack.settings.tlbf !== nothing
+    # `rows` picks what to sum; without summing it would be silently ignored, so it is refused
+    @test_throws ArgumentError BS.vmi_pipeline(;
+        channels, basis, geom, rows = 1:2, matrix_size = (64, 64, 1),
+    )
+    # a row count that is neither one nor the geometry's cannot be reconstructed
+    @test_throws DimensionMismatch BS.reconstruct_basis_slice(
+        stack.images.water[:, 1:2, 1:1], geom, (64, 64, 1)
+    )
+    # …and an acquisition that already has one row needs no reduction to be filtered
     single_row = [h[:, 1:1, :] for h in channels]
     one_row = BS.vmi_pipeline(;
         channels = single_row, basis, geom, use_tlbf = true, matrix_size = (32, 32, 1),
         vmi_energies = (70,), use_acnr = false,
     )
-    @test size(one_row.vmis) == (32, 32, 1) && one_row.settings.tlbf !== nothing
-    @test_throws ArgumentError BS.vmi_pipeline(; channels, basis, geom, method = :bogus)
+    @test size(one_row.vmis) == (32, 32, 1, 1) && one_row.settings.tlbf !== nothing
+    @test_throws ArgumentError BS.vmi_pipeline(; channels, basis, geom, method = :bogus, matrix_size = (32, 32, 1))
+    # the grid is the caller's to state
+    @test_throws UndefKeywordError BS.vmi_pipeline(; channels, basis, geom)
 end
 
 # Poisson counts on the toy channels: I0·exp(−h) drawn, then back to a log channel.

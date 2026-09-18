@@ -15,10 +15,22 @@ Everything 0.15.0 claimed was re-derived independently — the dose Monte Carlo 
 60601-2-44 and NIST, the helical row mapping against the package's own projector, the ported VMI
 chain function by function against the basis-vmi code it came from, the HIR objective as
 implemented. One number was wrong and one design was unsound; both are fixed here. Suite: 3394 →
-3418 passing on Julia 1.12.6.
+3455 passing on Julia 1.12.6.
 
 ### Breaking
 
+* **The VMI chain is no longer limited to one detector row and one slice.** Nothing in it ever had
+  to be: T-LBF's neighbourhood is (column, view) and never crosses rows, ACNR works slice by slice,
+  and the synthesis is per voxel. The limits came from porting the basis-vmi use case — a
+  z-invariant phantom whose rows are summed into one slice — and are gone:
+  `tlbf_denoise` filters each detector row in its own plane (bit-identical to the single-row filter
+  on each, tested), `vmi_pipeline` keeps every row unless `reduce_rows = true` and reconstructs onto
+  whatever grid it is given, and `synthesize_vmi_stack` returns `(nx, ny, nz, n_energies)`.
+  Consequences for callers: `vmis` is four-dimensional, so a single slice's energy `e` is
+  `vmis[:, :, 1, e]` — the three-index form is a `BoundsError` now, not a silent reinterpretation;
+  `matrix_size` is a required keyword of
+  `vmi_pipeline`, because the grid is the caller's to state and a `(512, 512, 1)` default silently
+  ignored every other one; `rows` without `reduce_rows = true` is refused rather than ignored.
 * `vmi_pipeline`'s returned `settings.fbp` is now `settings.recon`: it carries `method`,
   `matrix_size`, `antialias`, `recon_rows`, `filter`, and a `hir` NamedTuple (`strength`,
   `projector`, `reference_kev`, `weights`) when the method is `:hir`, `nothing` otherwise.

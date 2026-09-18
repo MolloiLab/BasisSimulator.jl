@@ -904,7 +904,7 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                         :class => table_cls,
                         Tr(Th(:class => th_cls, "stage"), Th(:class => th_cls, "keywords")),
                         Tr(Td(:class => td_mono, "decomposition"), Td(:class => td_cls, "method (:nchannel | :cong), controls::NChannelControls, merge_groups, tile_views")),
-                        Tr(Td(:class => td_mono, "detector rows"), Td(:class => td_cls, "reduce_rows, rows — summed in counts, not in log space")),
+                        Tr(Td(:class => td_mono, "detector rows"), Td(:class => td_cls, "reduce_rows, rows — summed in counts for a z-invariant object; otherwise every row is kept and reconstructed slice by slice")),
                         Tr(Td(:class => td_mono, "T-LBF"), Td(:class => td_cls, "use_tlbf, tlbf_alpha1, tlbf_alpha2, tlbf_radius")),
                         Tr(Td(:class => td_mono, "ACNR"), Td(:class => td_cls, "use_acnr, acnr_passes, acnr_beta_max, acnr_hp_sigma_px, acnr_window")),
                         Tr(Td(:class => td_mono, "reconstruction"), Td(:class => td_cls, "matrix_size, fbp_filter, antialias, recon_rows, recon_method (:fbp | :hir), hir_strength, recon_projector, hir_reference_kev")),
@@ -919,7 +919,7 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                                 reduce_rows = true, use_tlbf = true,          # the published PCCT configuration
                                 matrix_size = (512, 512, 1),
                             )
-                            vmi_70 = result.vmis[:, :, 2]"""
+                            vmi_70 = result.vmis[:, :, 1, 2]              # (nx, ny, nz, energy)"""
                         )
                     ),
                     P(
