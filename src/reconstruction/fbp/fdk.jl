@@ -351,7 +351,9 @@ function fdk_reconstruct(
 
     # Step 1: Filter sinogram (includes cosine weighting)
     # GPU-native spatial domain filtering - no CPU transfer needed
-    filtered = filter_sinogram(sinogram, geom; filter=filter, cutoff=cutoff)
+    filtered = filter_sinogram(
+        sinogram, geom; filter=filter, cutoff=cutoff, bandlimit=grid_bandlimit(geom, volume_size),
+    )
 
     # Step 2: Backproject
     volume = backproject(filtered, geom, volume_size)

@@ -840,7 +840,9 @@ function create_fdk_recon_workspace(
     n_cols = size(sinogram, 1)
     raw_size = max(Int(ceil(2 * n_cols * cutoff)), 64)
     kernel_size_int = min(raw_size + (1 - raw_size % 2), 2 * n_cols - 1)
-    kernel_cpu = create_spatial_kernel(kernel_size_int, filter, pixel_size)
+    kernel_cpu = create_spatial_kernel(
+        kernel_size_int, filter, pixel_size; bandlimit = grid_bandlimit(geom, volume_size),
+    )
     if is_arc(geom) && !is_helical(geom)
         # equiangular fan filter correction (helical WFBP filters rebinned
         # PARALLEL rows, which need the plain ramp)
@@ -1051,7 +1053,9 @@ function create_hir_recon_workspace(
     n_cols = size(sinogram, 1)
     raw_size = max(Int(ceil(2 * n_cols * cutoff)), 64)
     kernel_size_int = min(raw_size + (1 - raw_size % 2), 2 * n_cols - 1)
-    kernel_cpu = create_spatial_kernel(kernel_size_int, filter, pixel_size)
+    kernel_cpu = create_spatial_kernel(
+        kernel_size_int, filter, pixel_size; bandlimit = grid_bandlimit(geom, volume_size),
+    )
     if is_arc(geom) && !is_helical(geom)
         # equiangular fan filter correction (helical WFBP filters rebinned
         # PARALLEL rows, which need the plain ramp)

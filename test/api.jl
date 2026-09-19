@@ -1364,7 +1364,10 @@ _ts("entering reconstruct!(HIRReconWorkspace) testset")
         end
         fbp_hp = [hp_std(noisy_fdk, k) for k in axes(noisy_fdk, 3)]
         hir_hp = [hp_std(noisy_hir, k) for k in axes(noisy_hir, 3)]
-        @test mean(hir_hp) < 0.9 * mean(fbp_hp)
+        # The FBP kernel is bandlimited to the grid (a 1.0 mm detector on a 6.25 mm grid: 0.16 of
+        # the detector Nyquist), so the FBP itself carries almost no pixel-scale texture on this
+        # toy; HIR must not add any. The stale-gradient mesh this guards against gave a ratio ≫ 1.
+        @test mean(hir_hp) < 1.05 * mean(fbp_hp)
         @test max(hir_hp[1], hir_hp[end]) / hir_hp[6] < 1.25
 
         # A genuinely finite object must remain finite: continuation is only

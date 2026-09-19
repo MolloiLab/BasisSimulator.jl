@@ -362,10 +362,14 @@ end
     centre = 28:37
     @test mean(out.images.water[centre, centre, 1]) ≈ 1.0 rtol = 0.02
     @test mean(out.images.iodine[centre, centre, 1]) ≈ 0.005 rtol = 0.03
+    # The VMI inherits the basis images' errors: 2 % of water is 20 HU at every energy, and the
+    # iodine error adds 5α × 3 % on top (12 HU at 40 keV). On this toy — a 5 cm disk, a 1.5 mm
+    # detector read onto a 2.5 mm grid, so the FBP kernel is bandlimited to 0.6 of the detector
+    # Nyquist — the soft window's low-frequency slope sets both plateaus about 1.2 % low.
     for (i, E) in pairs(out.energies)
         α = BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine, Float64(E)) /
             BS.compute_mass_μ_at_energy(BS.XA.Materials.water, Float64(E))
-        @test mean(out.vmis[centre, centre, 1, i]) ≈ 5α atol = 15
+        @test mean(out.vmis[centre, centre, 1, i]) ≈ 5α atol = 20 + 0.03 * 5α
     end
     @test size(out.vmis) == (64, 64, 1, 3) && size(out.sinograms.iodine) == (geom.n_cols, 1, geom.n_angles)
     @test out.settings.n_rows == geom.n_rows && out.settings.tlbf.radius == 2

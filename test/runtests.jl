@@ -27,6 +27,9 @@ const BS = BasisSimulator
     @testset "geometry/" begin
         include("geometry.jl")
     end
+    @testset "filtering/" begin
+        include("filtering.jl")
+    end
     @testset "helical/" begin
         include("helical.jl")
     end
