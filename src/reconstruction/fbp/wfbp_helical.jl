@@ -345,7 +345,8 @@ function wfbp_helical_reconstruct(
     end
     reb, Δt = _wfbp_rebin(sinogram, geom)
     filter_sinogram!(reb, geom; filter = filter, cutoff = cutoff,
-        apply_cosine = false, ray_spacing = Δt)
+        apply_cosine = false, ray_spacing = Δt,
+        bandlimit = grid_bandlimit(geom, volume_size; ray_spacing = Δt))
     volume = similar(sinogram, T, volume_size...)
     fill!(volume, zero(T))
     _wfbp_backproject!(volume, reb, geom, Δt; helical_q = helical_q, coverage = coverage)

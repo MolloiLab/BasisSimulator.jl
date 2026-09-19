@@ -19,7 +19,7 @@ import AcceleratedKernels as AK
 export filter_sinogram!, filter_sinogram
 export FilterType, RampFilter, SheppLoganFilter, CosineFilter, HammingFilter, HannFilter
 export StandardFilter, SoftFilter, BoneFilter, CustomFilter
-export create_spatial_kernel
+export create_spatial_kernel, grid_bandlimit, frequency_window
 
 # =============================================================================
 # Filter Types
@@ -100,121 +100,78 @@ end
 # =============================================================================
 
 """
-    create_spatial_kernel(n, filter_type, pixel_size)
+    create_spatial_kernel(n, filter_type, pixel_size; bandlimit = 1.0)
 
-Create ramp filter kernel in spatial domain.
+The FBP convolution kernel in the spatial domain: the discrete Ram-Lak ramp at sample spacing
+`pixel_size` (Kak & Slaney — `h[0] = 1/(4Δ)`, `h[k] = -1/(π²k²Δ)` for odd `k`, zero for even `k`;
+the extra factor Δ matches the FFT-based normalisation), multiplied in the frequency domain by
+the apodization window of `filter_type` ([`frequency_window`](@ref)).
 
-The Ram-Lak (ramp) filter in spatial domain:
-- h[0] = 1/(4Δ²)
-- h[n] = 0 for even n ≠ 0
-- h[n] = -1/(π²n²Δ²) for odd n
-
-# Arguments
-- `n`: Kernel size (typically n_cols)
-- `filter_type`: Type of filter window
-- `pixel_size`: Detector pixel spacing
-
-# Returns
-Filter kernel array of length n (centered at n÷2+1)
+`bandlimit` is the fraction of the sampling Nyquist `1/(2Δ)` that the reconstruction can carry:
+`min(1, Δ / Δ_grid)` for an image grid of pixel `Δ_grid` at isocentre, which
+[`grid_bandlimit`](@ref) computes from a geometry and a volume size. The window is stretched over
+`[0, bandlimit]` of the sampling Nyquist and the response is zero above it. Two things follow: a
+named kernel means the same resolution on any detector, and no frequency the image grid cannot
+represent reaches the backprojector, where it would alias into the image as fine grain (a
+0.30 mm photon-counting column on a 0.68 mm grid passed 2.3× the grid's Nyquist before this).
+With `bandlimit = 1` — a detector no finer than the grid — the kernel is the classical one.
 """
-function create_spatial_kernel(n::Int, filter_type::FilterType, pixel_size::T) where T <: AbstractFloat
+function create_spatial_kernel(
+        n::Int, filter_type::FilterType, pixel_size::T; bandlimit::Real = 1.0,
+    ) where T <: AbstractFloat
+    0 < bandlimit <= 1 || throw(ArgumentError("bandlimit must be in (0, 1], got $(bandlimit)"))
     kernel = zeros(T, n)
     center = n ÷ 2 + 1
     Δ = pixel_size
-
-    # Ram-Lak (ramp) filter in spatial domain
-    # Reference: Kak & Slaney, "Principles of Computerized Tomographic Imaging"
-    #
-    # The discrete ramp filter kernel:
-    # h[0] = 1/(4Δ²)
-    # h[n] = 0 for even n ≠ 0
-    # h[n] = -1/(π²n²Δ²) for odd n
-    #
-    # Additional scaling by Δ to match FFT-based filter normalization
-    # (FFT version scales by 1/pixel_size, spatial version has 1/Δ² built in)
-
     for i in 1:n
-        k = i - center  # Distance from center
-
+        k = i - center
         if k == 0
-            # Central value: 1/(4Δ²) * Δ = 1/(4Δ)
             kernel[i] = one(T) / (T(4) * Δ)
         elseif k % 2 == 0
-            # Even indices (excluding center)
             kernel[i] = zero(T)
         else
-            # Odd indices: -1/(π²n²Δ²) * Δ = -1/(π²n²Δ)
             kernel[i] = -one(T) / (T(π)^2 * T(k)^2 * Δ)
         end
     end
-
-    # Apply window function
-    apply_spatial_window!(kernel, filter_type)
-
+    apply_frequency_window!(kernel, filter_type, T(bandlimit))
     return kernel
 end
 
-"""Apply windowing to spatial domain kernel"""
-function apply_spatial_window!(kernel::Vector{T}, ::RampFilter) where T
-    # No windowing for pure ramp
-    return kernel
+"""
+    grid_bandlimit(geom, volume_size; ray_spacing = geom.pixel_size) -> Float64
+
+The fraction of the ray sampling's Nyquist frequency that a reconstruction grid of
+`volume_size` over `geom.fov` can represent: `min(1, Δ_ray / Δ_grid)`, with `Δ_grid` the larger
+of the two in-plane pixels (cm, at isocentre) and `Δ_ray` the ray spacing at isocentre —
+`geom.pixel_size`, or the rebinned parallel spacing of a helical reconstruction. It is 1 for a
+detector no finer than the grid, and the `bandlimit` every reconstruction here passes to
+[`create_spatial_kernel`](@ref).
+"""
+function grid_bandlimit(
+        geom::CTGeometry, volume_size::NTuple{3, Int}; ray_spacing::Real = geom.pixel_size,
+    )
+    grid_pixel = max(geom.fov[1] / volume_size[1], geom.fov[2] / volume_size[2])
+    return min(1.0, Float64(ray_spacing) / grid_pixel)
 end
 
-function apply_spatial_window!(kernel::Vector{T}, ::SheppLoganFilter) where T
-    n = length(kernel)
-    center = n ÷ 2 + 1
-    for i in 1:n
-        k = i - center
-        if k != 0
-            # Shepp-Logan: multiply by sinc(k/n) in spatial domain
-            # This is approximate - exact would require convolution
-            x = T(k) / T(n)
-            kernel[i] *= sinc(x)
-        end
-    end
-    return kernel
-end
+"""
+    frequency_window(filter, f) -> window value at normalised frequency `f`
 
-function apply_spatial_window!(kernel::Vector{T}, ::CosineFilter) where T
-    n = length(kernel)
-    center = n ÷ 2 + 1
-    for i in 1:n
-        k = i - center
-        # Cosine window in spatial domain
-        x = T(k) / T(n)
-        kernel[i] *= cos(T(π) * x / T(2))^2
-    end
-    return kernel
-end
-
-function apply_spatial_window!(kernel::Vector{T}, ::HammingFilter) where T
-    n = length(kernel)
-    center = n ÷ 2 + 1
-    for i in 1:n
-        k = i - center
-        x = T(k) / T(n)
-        kernel[i] *= T(0.54) + T(0.46) * cos(T(π) * x)
-    end
-    return kernel
-end
-
-function apply_spatial_window!(kernel::Vector{T}, ::HannFilter) where T
-    n = length(kernel)
-    center = n ÷ 2 + 1
-    for i in 1:n
-        k = i - center
-        x = T(k) / T(n)
-        kernel[i] *= T(0.5) * (one(T) + cos(T(π) * x))
-    end
-    return kernel
-end
+The apodization window of `filter` against frequency normalised to its cutoff: `f = 0` is DC,
+`f = 1` the cutoff. Ram-Lak: 1. Shepp-Logan: `sinc(f/2) = sin(πf/2)/(πf/2)`. Cosine: `cos(πf/2)`.
+Hamming: `0.54 + 0.46·cos(πf)`. Hann: `½(1 + cos(πf))`. The CatSim kernels — standard, soft, bone
+and a `CustomFilter` — interpolate their control points (`createHSP.py`).
+"""
+frequency_window(::RampFilter, f::T) where T = one(T)
+frequency_window(::SheppLoganFilter, f::T) where T =
+    f == 0 ? one(T) : T(sin(π * f / 2) / (π * f / 2))
+frequency_window(::CosineFilter, f::T) where T = T(cos(π * f / 2))
+frequency_window(::HammingFilter, f::T) where T = T(0.54 + 0.46 * cos(π * f))
+frequency_window(::HannFilter, f::T) where T = T(0.5 * (1 + cos(π * f)))
 
 # ---------------------------------------------------------------------------
-# CatSim-compatible filters (Standard, Soft, Bone)
-#
-# These filters are defined in the frequency domain via control-point
-# apodization windows (quadratic interpolation), matching CatSim/XCIST's
-# `createHSP.py`.  We apply the window by: FFT → multiply → IFFT.
+# CatSim-compatible filters (Standard, Soft, Bone, Custom): control-point windows from
+# CatSim/XCIST's `createHSP.py`, piecewise-linearly interpolated.
 # ---------------------------------------------------------------------------
 
 """
@@ -242,77 +199,45 @@ function _catsim_apodization_window(f_norm::T, control_x, control_y) where T
     return T(control_y[end])
 end
 
-"""
-    _apply_catsim_freq_window!(kernel, control_x, control_y)
+const _CATSIM_CONTROL_X = (0.0, 0.25, 0.5, 0.75, 1.0)
+frequency_window(::StandardFilter, f::T) where T =
+    _catsim_apodization_window(f, _CATSIM_CONTROL_X, (1.0, 0.9338, 0.7441, 0.4425, 0.0531))
+frequency_window(::SoftFilter, f::T) where T =
+    _catsim_apodization_window(f, _CATSIM_CONTROL_X, (1.0, 0.815, 0.4564, 0.1636, 0.0))
+frequency_window(::BoneFilter, f::T) where T =
+    _catsim_apodization_window(f, _CATSIM_CONTROL_X, (1.0, 1.0485, 1.17, 1.2202, 0.9201))
+frequency_window(filt::CustomFilter, f::T) where T =
+    _catsim_apodization_window(f, filt.control_x, filt.control_y)
 
-Apply a CatSim-style frequency-domain apodization window to a spatial-domain
-kernel via FFT → multiply by window → IFFT.
-
-This matches the approach in CatSim's `createHSP.py` for the 'standard', 'soft',
-and 'bone' kernel types.
 """
-function _apply_catsim_freq_window!(kernel::Vector{T}, control_x, control_y) where T
+    apply_frequency_window!(kernel, filter, bandlimit) -> kernel
+
+Multiply the spatial kernel's spectrum by `frequency_window(filter, f / bandlimit)` for
+`f ≤ bandlimit` and by zero above, `f` being the frequency normalised to the sampling Nyquist:
+FFT → window → IFFT. One path for every filter type.
+"""
+function apply_frequency_window!(kernel::Vector{T}, filter::FilterType, bandlimit::T) where T
     n = length(kernel)
     center = n ÷ 2 + 1
-
-    # FFT the spatial kernel (shift to put DC at index 1 first)
+    # fftshift: the kernel's centre tap to index 1
     shifted = zeros(Complex{T}, n)
     for i in 1:n
-        # fftshift: move center to index 1
-        src = mod(i - center, n) + 1
-        shifted[src] = Complex{T}(kernel[i])
+        shifted[mod(i - center, n) + 1] = Complex{T}(kernel[i])
     end
-
     freq = fft(shifted)
-
-    # Apply window in frequency domain
-    # freq[k] corresponds to frequency k/n (k = 0..n-1)
-    # Nyquist is at k = n/2
     nyquist = n / 2
-    for k in 0:(n-1)
-        # Symmetric frequency: distance from DC
+    for k in 0:(n - 1)
         f_idx = k <= n ÷ 2 ? k : n - k
         f_norm = T(f_idx) / T(nyquist)
-        w = _catsim_apodization_window(f_norm, control_x, control_y)
-        freq[k+1] *= w
+        freq[k + 1] *= f_norm <= bandlimit ? frequency_window(filter, f_norm / bandlimit) : zero(T)
     end
-
-    # IFFT back to spatial domain
     spatial = ifft(freq)
-
-    # Shift back and store as real
     for i in 1:n
-        src = mod(i - center, n) + 1
-        kernel[i] = T(real(spatial[src]))
+        kernel[i] = T(real(spatial[mod(i - center, n) + 1]))
     end
-
     return kernel
 end
 
-function apply_spatial_window!(kernel::Vector{T}, ::StandardFilter) where T
-    # CatSim 'standard' kernel apodization (createHSP.py lines 51-61)
-    control_x = (0.0, 0.25, 0.5, 0.75, 1.0)
-    control_y = (1.0, 0.9338, 0.7441, 0.4425, 0.0531)
-    return _apply_catsim_freq_window!(kernel, control_x, control_y)
-end
-
-function apply_spatial_window!(kernel::Vector{T}, ::SoftFilter) where T
-    # CatSim 'soft' kernel apodization (createHSP.py lines 39-49)
-    control_x = (0.0, 0.25, 0.5, 0.75, 1.0)
-    control_y = (1.0, 0.815, 0.4564, 0.1636, 0.0)
-    return _apply_catsim_freq_window!(kernel, control_x, control_y)
-end
-
-function apply_spatial_window!(kernel::Vector{T}, ::BoneFilter) where T
-    # CatSim 'bone' kernel apodization (createHSP.py lines 63-73)
-    control_x = (0.0, 0.25, 0.5, 0.75, 1.0)
-    control_y = (1.0, 1.0485, 1.17, 1.2202, 0.9201)
-    return _apply_catsim_freq_window!(kernel, control_x, control_y)
-end
-
-function apply_spatial_window!(kernel::Vector{T}, f::CustomFilter) where T
-    return _apply_catsim_freq_window!(kernel, f.control_x, f.control_y)
-end
 
 # =============================================================================
 # Symbol-to-FilterType conversion
@@ -449,6 +374,8 @@ Steps:
 - `geom`: CTGeometry with scanner parameters
 - `filter`: Filter type (RampFilter, SheppLoganFilter, etc.)
 - `cutoff`: Frequency cutoff (0-1) - controls kernel truncation
+- `bandlimit`: fraction of the ray sampling's Nyquist the reconstruction grid can carry
+  ([`grid_bandlimit`](@ref)); the kernel's window is stretched to it and zero above. Default 1.
 
 # Returns
 The filtered sinogram (modified in place)
@@ -466,7 +393,8 @@ function filter_sinogram!(
     ws_conv_scratch = nothing,
     ws_filter_kernel = nothing,
     apply_cosine::Bool = true,
-    ray_spacing::Union{Nothing, Real} = nothing
+    ray_spacing::Union{Nothing, Real} = nothing,
+    bandlimit::Real = 1.0
 ) where T <: AbstractFloat
 
     n_cols = Int32(size(sinogram, 1))
@@ -492,7 +420,7 @@ function filter_sinogram!(
     kernel = if ws_filter_kernel !== nothing
         ws_filter_kernel
     else
-        kernel_cpu = create_spatial_kernel(kernel_size_int, filter, pixel_size)
+        kernel_cpu = create_spatial_kernel(kernel_size_int, filter, pixel_size; bandlimit)
         # equiangular fan filter correction (only for native arc fan data —
         # not for rebinned-parallel WFBP rows, which pass ray_spacing)
         if is_arc(geom) && ray_spacing === nothing
@@ -565,9 +493,10 @@ function filter_sinogram(
     sinogram::AbstractArray{T, 3},
     geom::CTGeometry;
     filter::FilterType = StandardFilter(),
-    cutoff::Float64 = 1.0
+    cutoff::Float64 = 1.0,
+    bandlimit::Real = 1.0
 ) where T <: AbstractFloat
 
     filtered = copy(sinogram)
-    return filter_sinogram!(filtered, geom; filter=filter, cutoff=cutoff)
+    return filter_sinogram!(filtered, geom; filter=filter, cutoff=cutoff, bandlimit=bandlimit)
 end
