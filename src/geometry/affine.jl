@@ -247,7 +247,7 @@ export phantom_to_world_affine, recon_to_world_affine, resample_to_recon
 # =============================================================================
 
 """
-    resample_field_to_recon(field, voxel_size, origin, geom, matrix_size; outside = 0) -> Array{Float32, 3}
+    resample_field_to_recon(field, voxel_size, origin, geom, matrix_size; outside = 0, to_backend = identity)
 
 The exact box average of a continuous field — a material fraction, a density — onto the
 reconstruction grid: every output voxel is the mean of the field over that voxel's own footprint,
@@ -264,10 +264,16 @@ fraction, `0` for everything else — so a set of fractions that sums to one sti
 
 The overlap is separable, so it is three matrix products, not a voxel loop: a 1850 × 1350 × 75
 field onto 512 × 512 × 24 takes well under a second.
+
+`to_backend` uploads the three overlap-weight matrices; with `field` already on a device (a
+`CuArray`, say) and `to_backend = CuArray`, the whole contraction runs there and the result comes
+back as an `Array{Float32, 3}`. The axes are contracted in order of decreasing reduction ratio, so
+the largest array is shrunk first: a 1600 × 1400 × 200 window onto 512 × 512 × 24 loses its z
+first and never holds more than the input's size in Float64.
 """
 function resample_field_to_recon(
         field::AbstractArray{<:Real, 3}, voxel_size, origin, geom::CTGeometry, matrix_size;
-        outside::Real = 0.0,
+        outside::Real = 0.0, to_backend = identity,
     )
     length(voxel_size) == 3 && length(origin) == 3 || throw(ArgumentError(
         "voxel_size and origin are 3-vectors in cm"))
@@ -283,18 +289,29 @@ function resample_field_to_recon(
             dst[d].n, dst[d].step, dst[d].first,
         )
     end
-    # separable contraction, one axis at a time, in Float64
+    # separable contraction in Float64, one axis at a time, the axis that shrinks most first
     f = Float64.(field)
-    f = reshape(W[1] * reshape(f, size(f, 1), :), nx, size(f, 2), size(f, 3))
-    f = permutedims(reshape(W[2] * reshape(permutedims(f, (2, 1, 3)), size(f, 2), :), ny, nx, size(f, 3)), (2, 1, 3))
-    f = permutedims(reshape(W[3] * reshape(permutedims(f, (3, 1, 2)), size(f, 3), :), nz, nx, ny), (2, 3, 1))
+    order = sortperm([size(field, d) / matrix_size[d] for d in 1:3]; rev = true)
+    for d in order
+        f = _contract_axis(f, to_backend(W[d]), d)
+    end
+    out = Array(f)
     if outside != 0
         # the fraction of each output voxel that lay outside the field's grid
         cover = ntuple(d -> vec(sum(W[d]; dims = 2)), 3)
         c = [cover[1][i] * cover[2][j] * cover[3][k] for i in 1:nx, j in 1:ny, k in 1:nz]
-        f .+= Float64(outside) .* (1 .- c)
+        out .+= Float64(outside) .* (1 .- c)
     end
-    return Float32.(f)
+    return Float32.(out)
+end
+
+# `W * f` along axis `d` of a 3-D array: bring that axis first, one matrix product, bring it back.
+function _contract_axis(f::AbstractArray{<:Real, 3}, W::AbstractMatrix, d::Integer)
+    d == 1 && return reshape(W * reshape(f, size(f, 1), :), size(W, 1), size(f, 2), size(f, 3))
+    perm = d == 2 ? (2, 1, 3) : (3, 1, 2)
+    g = permutedims(f, perm)
+    h = reshape(W * reshape(g, size(g, 1), :), size(W, 1), size(g, 2), size(g, 3))
+    return permutedims(h, invperm(perm))
 end
 
 # Rows: destination voxels; columns: source voxels. Entry = overlap length / destination pitch,
