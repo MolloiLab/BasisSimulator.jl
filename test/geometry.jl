@@ -581,6 +581,17 @@ end
     @test all(==(0.0f0), out[:, 1:5, :])          # beyond the field, `outside` defaults to 0
     # …and with `outside = 1` (an air fraction) the uncovered part is filled
     air = BS.resample_field_to_recon(ones_field, vox, origin, geom, matrix; outside = 1.0)
+    # the same contraction through `to_backend`, and with every axis order: a backend that only
+    # wraps the weights must not change a bit
+    wrapped = BS.resample_field_to_recon(ones_field, vox, origin, geom, matrix; to_backend = identity)
+    @test wrapped == out
+    tall = rand(Random.MersenneTwister(5), Float32, 9, 7, 40)   # z shrinks most: contracted first
+    ref = let f = Float64.(tall), W = ntuple(d -> BS._overlap_weights(size(tall, d), Float64(vox[d]), Float64(origin[d]), matrix[d], geom.fov[d] / matrix[d], -geom.fov[d] / 2 + geom.fov[d] / matrix[d] / 2), 3)
+        g = reshape(W[1] * reshape(f, size(f, 1), :), matrix[1], size(f, 2), size(f, 3))
+        g = permutedims(reshape(W[2] * reshape(permutedims(g, (2, 1, 3)), size(g, 2), :), matrix[2], matrix[1], size(g, 3)), (2, 1, 3))
+        Float32.(permutedims(reshape(W[3] * reshape(permutedims(g, (3, 1, 2)), size(g, 3), :), matrix[3], matrix[1], matrix[2]), (2, 3, 1)))
+    end
+    @test BS.resample_field_to_recon(tall, vox, origin, geom, matrix) ≈ ref rtol = 1e-6
     @test all(≈(1.0f0), air)
 
     # a step at x = 0.05 cm (between field columns 100 and 101 — off a recon voxel edge): the recon
