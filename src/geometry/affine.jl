@@ -265,9 +265,9 @@ fraction, `0` for everything else — so a set of fractions that sums to one sti
 The overlap is separable, so it is three matrix products, not a voxel loop: a 1850 × 1350 × 75
 field onto 512 × 512 × 24 takes well under a second.
 
-`to_backend` uploads the three overlap-weight matrices; with `field` already on a device (a
-`CuArray`, say) and `to_backend = CuArray`, the whole contraction runs there and the result comes
-back as an `Array{Float32, 3}`. The axes are contracted in order of decreasing reduction ratio, so
+`to_backend` uploads the banded overlap weights; with `field` already on a device (a `CuArray`,
+say) and `to_backend = CuArray`, the whole contraction runs there — as AcceleratedKernels kernels,
+no BLAS — and the result comes back as an `Array{Float32, 3}`. The axes are contracted in order of decreasing reduction ratio, so
 the largest array is shrunk first: a 1600 × 1400 × 200 window onto 512 × 512 × 24 loses its z
 first and never holds more than the input's size in Float64.
 """
@@ -293,7 +293,7 @@ function resample_field_to_recon(
     f = Float64.(field)
     order = sortperm([size(field, d) / matrix_size[d] for d in 1:3]; rev = true)
     for d in order
-        f = _contract_axis(f, to_backend(W[d]), d)
+        f = _contract_axis(f, W[d], d, to_backend)
     end
     out = Array(f)
     if outside != 0
@@ -305,13 +305,57 @@ function resample_field_to_recon(
     return Float32.(out)
 end
 
-# `W * f` along axis `d` of a 3-D array: bring that axis first, one matrix product, bring it back.
-function _contract_axis(f::AbstractArray{<:Real, 3}, W::AbstractMatrix, d::Integer)
-    d == 1 && return reshape(W * reshape(f, size(f, 1), :), size(W, 1), size(f, 2), size(f, 3))
-    perm = d == 2 ? (2, 1, 3) : (3, 1, 2)
-    g = permutedims(f, perm)
-    h = reshape(W * reshape(g, size(g, 1), :), size(W, 1), size(g, 2), size(g, 3))
-    return permutedims(h, invperm(perm))
+# The overlap-weight matrix of one axis is banded: an output voxel overlaps a few consecutive
+# source voxels. `_band` keeps, per output index, the first source index and the weights of that
+# run (zero-padded to the widest run), and `_contract_axis` applies it as one kernel over the
+# output array — on the host or the device, through AcceleratedKernels, with no BLAS: a dense
+# product would do ~n_src/width times the work, and cuBLAS cannot even be initialised in a
+# process that has loaded Reactant, which the notebooks that call this have.
+function _band(W::AbstractMatrix)
+    n_dst, n_src = size(W)
+    lo = ones(Int32, n_dst)
+    width = 1
+    for j in 1:n_dst
+        nz = findall(!iszero, view(W, j, :))
+        isempty(nz) && continue
+        lo[j] = Int32(first(nz))
+        width = max(width, last(nz) - first(nz) + 1)
+    end
+    band = zeros(Float64, n_dst, width)
+    for j in 1:n_dst, k in 1:width
+        i = lo[j] + k - 1
+        1 <= i <= n_src && (band[j, k] = W[j, i])
+    end
+    return lo, band
+end
+
+function _contract_axis(f::AbstractArray{<:Real, 3}, W::AbstractMatrix, d::Integer, to_backend)
+    lo_host, band_host = _band(W)
+    lo = to_backend(lo_host)
+    band = to_backend(band_host)
+    n_dst, width = size(band)
+    n_src = size(f, d)
+    sz = ntuple(k -> k == d ? n_dst : size(f, k), 3)
+    out = similar(f, Float64, sz)
+    n1, n2 = sz[1], sz[2]
+    AK.foreachindex(out) do idx
+        r = idx - 1
+        i1 = r % n1 + 1
+        r ÷= n1
+        i2 = r % n2 + 1
+        i3 = r ÷ n2 + 1
+        j = d == 1 ? i1 : (d == 2 ? i2 : i3)
+        acc = 0.0
+        start = Int(lo[j])
+        for k in 1:width
+            i = start + k - 1
+            i > n_src && break
+            v = d == 1 ? f[i, i2, i3] : (d == 2 ? f[i1, i, i3] : f[i1, i2, i])
+            acc += band[j, k] * Float64(v)
+        end
+        out[idx] = acc
+    end
+    return out
 end
 
 # Rows: destination voxels; columns: source voxels. Entry = overlap length / destination pitch,
