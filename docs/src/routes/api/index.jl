@@ -455,17 +455,22 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                 # § 5. Spectrum & source
                 Div(
                     :class => card_cls,
-                    Div(:class => sig_cls, "resample_field_to_recon(field, voxel_size, origin, geom, matrix_size; outside = 0) → Array{Float32,3}"),
+                    Div(:class => sig_cls, "resample_field_to_recon(field, voxel_size, origin, geom, matrix_size; outside = 0, to_backend = identity) → Array{Float32,3}"),
                     P(
                         :class => prose_cls,
                         "The exact box average of a continuous field — a material fraction, a density — onto the ",
-                        "reconstruction grid, from the axis-aligned overlap of the two grids (three separable matrix ",
-                        "products, not a voxel loop).  Every output voxel is the mean of the field over its own footprint, ",
+                        "reconstruction grid, from the axis-aligned overlap of the two grids: one banded kernel per axis ",
+                        "(an output voxel overlaps a few consecutive source voxels), the axis that shrinks most first.  ",
+                        "Every output voxel is the mean of the field over its own footprint, ",
                         "so a 0.2 mm truth on 0.625 mm slices carries the partial volume a reconstruction sees.  ",
                         Code(:class => inline, "resample_to_recon(…; method = :linear)"),
                         " point-samples at the voxel centre and does not.  ", Code(:class => inline, "outside"),
                         " fills the part of a voxel beyond the field's grid — 1 for an air fraction — so fractions ",
-                        "that sum to one still do."
+                        "that sum to one still do.  With a device array as ", Code(:class => inline, "field"),
+                        " and its constructor as ", Code(:class => inline, "to_backend"),
+                        " (a 1600 × 1400 × 200 anatomy window as a ", Code(:class => inline, "CuArray"),
+                        "), the average runs on the device — AcceleratedKernels, no BLAS — and only the result comes back: ",
+                        "0.13 s per field against 4.6 s on the host, bit-identical."
                     ),
                 ),
 
@@ -746,6 +751,26 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
                         "Pre-allocates the FBP-domain filter kernel + back-projection buffers.  ",
                         Code(:class => inline, "filter"),
                         " takes a Symbol from the preset table below or a ", Code(:class => inline, "CustomFilter"), "."
+                    ),
+                ),
+                Div(
+                    :class => card_cls,
+                    Div(:class => sig_cls, "grid_bandlimit(geom, matrix_size; ray_spacing = geom.pixel_size) → Float64   |   frequency_window(filter, f) → window at f ∈ [0, 1]"),
+                    P(
+                        :class => prose_cls,
+                        "Since 0.17 every FBP kernel is bandlimited to the reconstruction grid.  ",
+                        Code(:class => inline, "grid_bandlimit"), " is ", Code(:class => inline, "min(1, Δ_ray / Δ_grid)"),
+                        " — the fraction of the ray sampling's Nyquist that a grid of ", Code(:class => inline, "matrix_size"),
+                        " over the geometry's field of view can represent — and ", Code(:class => inline, "fdk_reconstruct"),
+                        ", the helical chain and both reconstruction workspaces derive it themselves.  The apodization ",
+                        "window (", Code(:class => inline, "frequency_window"),
+                        ": Ram-Lak, Shepp-Logan, cosine, Hamming, Hann, and the CatSim standard / soft / bone control points) ",
+                        "is stretched over that band and the response is zero above it, so a named kernel means the same ",
+                        "resolution on any detector, and a detector finer than the grid — a 0.30 mm photon-counting column on ",
+                        "a 0.68 mm grid passed 2.3× the grid's Nyquist before — no longer folds that band back into the image ",
+                        "as fine grain.  On a detector no finer than the grid nothing changes.  ",
+                        Code(:class => inline, "create_spatial_kernel(n, filter, Δ; bandlimit)"), " and ",
+                        Code(:class => inline, "filter_sinogram!(…; bandlimit)"), " take it explicitly for callers who build their own chain."
                     ),
                 ),
                 Div(
