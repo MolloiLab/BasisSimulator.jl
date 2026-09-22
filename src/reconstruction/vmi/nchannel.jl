@@ -154,8 +154,29 @@ and needs no calibration scan.
 """
 function spectral_basis(ws::PCCTWorkspace; I0 = ws.I0, tolerance::Real = 5.0e-5)
     energies = Float64.(ws.energies)
-    W_applied = Float64.(Array(ws.W_matrix_gpu))[1:length(energies), :]
-    return spectral_basis_from_bins(; energies, W_applied, I0, transmission = ws.bowtie_spectral, tolerance)
+    nE = length(energies)
+    W_applied = Float64.(Array(ws.W_matrix_gpu))[1:nE, :]
+    return spectral_basis_from_bins(; energies, W_applied, I0, transmission = _binned_transmission(ws, nE), tolerance)
+end
+
+# The source transmission each BINNED ray applied, summed over its native dexels: on the native
+# path (bf > 1) a binned pixel's counts are the sum of bf × bf dexels, so its response is the sum
+# of theirs — bf² times a single dexel's when the transmission is flat, and exactly the binned sum
+# of the native table when it is not. With no table and no binning, `nothing` (one response for
+# every ray).
+function _binned_transmission(ws::PCCTWorkspace, nE)
+    bf = ws.native_geom === nothing ? 1 : ws.native_geom.n_cols ÷ ws.geom.n_cols
+    if bf == 1
+        return ws.bowtie_spectral === nothing ? nothing : Array(ws.bowtie_spectral)[:, :, 1:nE]
+    end
+    nc, nr = ws.geom.n_cols, ws.geom.n_rows
+    native = ws.native_bowtie_spectral === nothing ? nothing : Array(ws.native_bowtie_spectral)
+    out = zeros(Float32, nc, nr, nE)
+    for e in 1:nE, r in 1:nr, c in 1:nc
+        out[c, r, e] = native === nothing ? Float32(bf * bf) :
+            sum(@view native[((c - 1) * bf + 1):(c * bf), ((r - 1) * bf + 1):(r * bf), e])
+    end
+    return out
 end
 
 """

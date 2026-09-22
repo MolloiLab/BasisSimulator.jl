@@ -151,3 +151,31 @@ end
         end
     end
 end
+
+@testset "binned detector (bf = 2): I0, basis and air agree per ray" begin
+    # the NAEOTOM-style native path: 2 × 2 dexels summed into each binned pixel
+    protocol = BS.CTProtocol(kVp = 140, mA = 100.0, views = 60, rotation_time = 0.5, collimation_mm = 4.8, additional_filters = [("Ti", 0.9)])
+    recon = BS.ReconOptions(matrix_size = (64, 64, 4), fov_cm = 30.0, z_cm = 0.16)
+    opts = BS.SimOptions(use_noise = false, use_focal_spot = false, use_scatter = false, use_heel_effect = false, seed = 1)
+    for bowtie in (:large_body, :none)
+        scanner = BS.PCCTScanner(
+            source_to_isocenter = 610.0, source_to_detector = 1113.0,
+            detector_rows = 12, detector_cols = 240, detector_row_size = 0.4, detector_col_size = 2.0,
+            detector_material = :cdte, detector_depth = 1.6, energy_thresholds = [20.0, 35.0, 55.0, 70.0],
+            pileup = false, pileup_correction = false, scatter_correction = false,
+            bowtie_filter = bowtie, detector_col_offset = 0.25, detector_shape = :arc,
+            native_dexel_col_mm = 2.0 * 1113.0 / 610.0 / 2, native_dexel_row_mm = 0.4 * 1113.0 / 610.0 / 2, binning_factor = 2,
+        )
+        ws = BS.create_workspace(scanner, protocol, opts, recon, _air())
+        @test ws.native_geom !== nothing && ws.I0_native !== nothing
+        # the basis the decomposition inverts is consistent with the air response it was built from
+        basis = BS.spectral_basis(ws)
+        @test basis.I0_relerr < 5e-5
+        @test basis.ray_resolved                      # binned: the per-ray bf² (× bowtie) response
+        res = BS.simulate!(ws, _air(), protocol, opts)
+        r = ws.geom.n_rows ÷ 2 + 1
+        for b in 1:4
+            @test maximum(abs, Array(res.pcct_sino.bins[b])[:, r, 1]) < 3e-3    # air, within the 8 cm of air
+        end
+    end
+end
