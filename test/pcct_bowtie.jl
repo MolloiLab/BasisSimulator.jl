@@ -176,7 +176,7 @@ end
         # the basis the decomposition inverts is consistent with the air response it was built from
         basis = BS.spectral_basis(ws)
         @test basis.I0_relerr < 5e-5
-        @test basis.ray_resolved                      # binned: the per-ray bf² (× bowtie) response
+        @test basis.ray_resolved == (bowtie !== :none)   # one response for every ray unless a bowtie varies it
         res = BS.simulate!(ws, _air(), protocol, opts)
         r = ws.geom.n_rows ÷ 2 + 1
         for b in 1:4
