@@ -324,7 +324,7 @@ function cosine_weight!(
     SDD_sq = SDD * SDD
 
     # Pre-compute center offsets for GPU
-    col_center = (T(n_cols) + one(T)) / T(2)
+    col_center = column_center(T, geom)
     row_center = (T(n_rows) + one(T)) / T(2)
     arc_det = is_arc(geom)
     dγ = T(geom.pixel_size / geom.SAD)

@@ -184,11 +184,11 @@ end
     bins_before = [fill(Float32(2.0), nc, nr, nv) for _ in 1:n_bins]
     bins = deepcopy(bins_before)
     sf   = fill(Float32(0.01), nc, nr, nv)
-    I0_bins  = [1.0e5, 1.0e5, 1.0e5, 1.0e5]
-    I0_total = sum(I0_bins)
+    I0  = fill(Float32(1.0e5), nc, nr, n_bins)           # per ray, per bin
+    I0_all = fill(Float32(4.0e5), nc, nr)                # per ray, all bins
     bw = [0.40, 0.30, 0.20, 0.10]
 
-    BS.inject_scatter_bins!(bins, sf, I0_bins, I0_total, bw)
+    BS.inject_scatter_bins!(bins, sf, I0, I0_all, bw)
     for b in 1:n_bins
         # Scatter adds to numerator counts → p_new ≤ p_old everywhere
         @test all(bins[b] .<= bins_before[b] .+ 1.0e-6)
@@ -788,17 +788,18 @@ end
 
 @testset "apply_pcct_noise! — Poisson counts in the air-cal basis" begin
     thresholds = Float32[20, 35, 55, 70]
-    I0_bins = Float64[40_000, 60_000, 30_000, 10_000]
+    I0_vec = Float64[40_000, 60_000, 30_000, 10_000]
+    I0_bins = reshape(repeat(I0_vec, inner = 32 * 4), 32, 4, 4)     # per ray, per bin
     # Uniform log line integral h = 2 → expected counts λ_b = I0_b·e⁻²
     make_sino() = BS.EnergyResolvedSinogram(
         [fill(Float32(2), 32, 4, 25) for _ in 1:4], thresholds)
 
     sino = BS.apply_pcct_noise!(make_sino(), I0_bins; seed = 11)
     for (b, bin) in enumerate(sino.bins)
-        counts = I0_bins[b] .* exp.(-Float64.(bin))
+        counts = I0_vec[b] .* exp.(-Float64.(bin))
         # Integer realizations survive the Float32 log round trip
         @test maximum(abs.(counts .- round.(counts))) < 0.1
-        λ = I0_bins[b] * exp(-2.0)
+        λ = I0_vec[b] * exp(-2.0)
         @test mean(counts) ≈ λ rtol = 0.01
         @test std(counts)^2 ≈ λ rtol = 0.15
     end
@@ -817,18 +818,18 @@ end
 
     # raw_out: measured counts captured verbatim at the sampling site —
     # TRUE ZEROS preserved; the floor at 1 lives only in the log bins
-    lo_I0 = Float64[2, 3, 2, 4]          # λ = I0·e⁻² ≈ 0.27–0.54 → many zeros
+    lo_I0 = reshape(repeat(Float64[2, 3, 2, 4], inner = 32 * 4), 32, 4, 4)   # λ = I0·e⁻² ≈ 0.27–0.54 → many zeros
     s5 = make_sino()
     raw5 = [similar(b) for b in s5.bins]
     BS.apply_pcct_noise!(s5, lo_I0; seed = 5, raw_out = raw5)
     @test sum(count(==(0f0), r) for r in raw5) > 0
     for (b, r) in enumerate(raw5)
         @test all(isinteger, r)
-        enc = lo_I0[b] .* exp.(-Float64.(s5.bins[b]))     # = max(N, 1)
+        enc = lo_I0[:, :, b] .* exp.(-Float64.(s5.bins[b]))     # = max(N, 1)
         @test all(abs.(enc .- max.(Float64.(r), 1.0)) .< 1e-4)
     end
 
-    @test_throws DimensionMismatch BS.apply_pcct_noise!(make_sino(), I0_bins[1:3])
+    @test_throws DimensionMismatch BS.apply_pcct_noise!(make_sino(), I0_bins[:, :, 1:3])
     @test_throws DimensionMismatch BS.apply_pcct_noise!(
         make_sino(), I0_bins; raw_out = [zeros(Float32, 32, 4, 25)])
 end
@@ -898,7 +899,7 @@ end
 @testset "apply_pcct_noise! rng_mode" begin
     n_bins = 3
     shape = (40, 4, 30)
-    I0 = Float64[2.0e4, 8.0e3, 1.5e3]
+    I0 = reshape(repeat(Float64[2.0e4, 8.0e3, 1.5e3], inner = 40 * 4), 40, 4, 3)   # per ray, per bin
     thresholds = Float32[20, 50, 80]
     build() = BS.EnergyResolvedSinogram(
         [fill(Float32(0.35 + 0.1b), shape) for b in 1:n_bins], thresholds
@@ -915,8 +916,8 @@ end
     # a different realisation, but of the same distribution
     @test any(threaded.bins[b] != serial.bins[b] for b in 1:n_bins)
     for b in 1:n_bins
-        λ = I0[b] * exp(-(0.35 + 0.1b))
-        counts(bin) = I0[b] .* exp.(-Float64.(bin))
+        λ = I0[1, 1, b] * exp(-(0.35 + 0.1b))        # I0 is flat across the fan in this test
+        counts(bin) = I0[:, :, b] .* exp.(-Float64.(bin))
         for bin in (serial.bins[b], threaded.bins[b])
             c = counts(bin)
             @test mean(c) ≈ λ rtol = 0.02                  # unbiased

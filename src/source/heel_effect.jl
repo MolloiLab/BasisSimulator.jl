@@ -72,15 +72,22 @@ Create heel effect model with specified parameters.
 # Default values for typical CT tube:
 - anode_angle: 7° (common for CT)
 - target: tungsten
-- effective_thickness: 0.01 mm (conservative, produces ~5-10% intensity variation)
+- effective_thickness: 0.001 mm — the mean x-ray production depth; gives ≈ 2 %/degree of cone
+  angle for a 7° tungsten anode, the order of the textbook heel effect (30–45 % across ±11°).
 
-Note: Real CT tubes have heel effects producing 10-30% intensity variation across the field.
-Use effective_thickness_mm=0.02-0.05 for stronger effects.
+The anode angle must exceed the half-cone angle of the collimation (a 160 mm cone at 610 mm is
+±7.5°, so a 7° anode cannot be used with it): rays that would leave below the target surface are
+an invalid geometry, not a clamp.
 """
 function default_heel_effect(;
         anode_angle_deg::Real = 7.0,
         target_material::Symbol = :tungsten,
-        effective_thickness_mm::Real = 0.01
+        # The mean depth in the target at which the x-rays are produced, the one free parameter
+        # of the model: 1 µm gives a 35 % anode-to-cathode fall across a ±7.5° cone (160 mm
+        # collimation) and 3 % across ±0.7° (15 mm) for a 7° anode, the order the literature
+        # reports for a 7–12° anode (30–45 % across ±11°). The former 0.01 mm gave 99 % and 28 %,
+        # which the old fan mapping hid behind its angle clamp.
+        effective_thickness_mm::Real = 0.001
     )
     return HeelEffect(
         Float64(anode_angle_deg),
@@ -171,8 +178,12 @@ function apply_heel_effect!(
     # CatSim-exact: cos(θ_target) factor for electron penetration geometry
     cos_θ_anode = cos(θ_anode)
 
-    # Fan angle range (assumes symmetric detector)
-    fan_angle_max = T(atan(geom.fov[1] / 2 / geom.SAD))
+    # The takeoff angle changes with the CONE angle of the row (the anode axis is z in a CT),
+    # not with the fan angle of the column; anode on the +z side, as in `compute_heel_spectral`.
+    row_center_T = (T(n_rows) + one(T)) / T(2)
+    row_pitch_det = T(geom.pixel_row_size * (geom.SDD / geom.SAD))
+    SDD_T = T(geom.SDD)
+    _heel_geometry_valid(Float64(θ_anode), atan((n_rows - Float64(row_center_T)) * Float64(row_pitch_det) / Float64(SDD_T)))
 
     # Precompute reference angle attenuation for normalization
     # We normalize to the central ray (θ = 0) so that center intensity = 1.0
@@ -192,17 +203,10 @@ function apply_heel_effect!(
         row = (idx_0 % Int32(n_rows)) + Int32(1)
         angle = (idx_0 ÷ Int32(n_rows)) + Int32(1)
 
-        # Fan angle for this column (negative = anode side, positive = cathode side)
-        # Convention: col=1 is anode side, col=n_cols is cathode side
-        n_cols_T = T(n_cols)
-        γ = (T(col) - n_cols_T / T(2) - T(0.5)) / (n_cols_T / T(2)) * fan_angle_max
-
-        # Effective angle through target material
-        # On anode side (negative γ), angle is smaller, more attenuation
-        θ_effective = θ_anode + γ
-
-        # Clamp to minimum angle (prevents extreme attenuation at anode edge)
-        θ_effective = max(θ_effective, θ_min)
+        # Cone angle of this row (positive towards +z, the anode side: smaller takeoff angle,
+        # more self-absorption)
+        α = atan((T(row) - row_center_T) * row_pitch_det / SDD_T)
+        θ_effective = max(θ_anode - α, θ_min)
 
         # CatSim-exact formula: exp(-μ × d × cos(θ_target) / sin(θ_target + θ))
         sin_effective = sin(θ_effective)
@@ -252,17 +256,26 @@ function get_target_attenuation(material::Symbol)
     return get(μ_values, material, 85.0)
 end
 
+"An anode-side ray that leaves below the target surface is not a tube geometry: the anode angle must exceed the half-cone."
+function _heel_geometry_valid(θ_anode, half_cone)
+    θ_anode > half_cone || throw(ArgumentError(
+        "heel effect: the anode angle ($(round(θ_anode * 180 / π; digits = 2))°) must exceed the half-cone angle " *
+        "($(round(half_cone * 180 / π; digits = 2))°) or anode-side rays would leave below the target surface — " *
+        "use a larger anode angle or a narrower collimation"))
+    return true
+end
+
 # =============================================================================
-# Spectral Heel Effect (energy-dependent, per-column transmission)
+# Spectral Heel Effect (energy-dependent, per-row transmission)
 # =============================================================================
 
 """
     compute_heel_spectral(heel, geom, energies_keV) -> Array{Float64, 3}
 
-Compute per-column, per-energy heel effect transmission: [n_cols, n_rows, n_energies].
+Compute the per-row, per-energy heel effect transmission: [n_cols, n_rows, n_energies] (flat along the fan).
 
 Models anode self-attenuation with energy-dependent tungsten μ(E):
-    T(col, E) = exp(-μ_W(E) × d × cos(θ_anode) / sin(θ_anode + γ(col)))
+    T(row, E) = exp(-μ_W(E) × d × cos(θ_anode) / sin(θ_anode − α(row)))
 normalized to central ray.
 
 This is the spectral-domain heel effect, analogous to bowtie spectral transmission.
@@ -284,8 +297,18 @@ function compute_heel_spectral(
     θ_anode = heel.anode_angle_deg * π / 180.0
     d_cm = heel.effective_thickness_mm / 10.0
     cos_θ = cos(θ_anode)
-    fan_max = atan(geom.fov[1] / 2 / geom.SAD)
     θ_min = θ_anode / 3.0
+
+    # The heel effect is a property of the anode's takeoff angle. In a third-generation CT the
+    # anode–cathode axis is parallel to z, so a ray's takeoff angle changes with its CONE angle —
+    # the detector row — and not with the fan angle of its column: the gradient runs along the
+    # rows and is flat along the fan. Convention here: the anode is on the +z side (the
+    # `detector_v` direction), so rays towards +z rows leave the target at a smaller angle,
+    # cross more of it and are attenuated more (the anode-side fall-off). Across the ±0.7° cone
+    # of a 15 mm collimation this is a few percent; across a 160 mm cone (±7.5°) tens of percent.
+    row_center = (n_rows + 1) / 2 + 0.0
+    cone(row) = atan((row - row_center) * geom.pixel_row_size * (geom.SDD / geom.SAD) / geom.SDD)
+    _heel_geometry_valid(θ_anode, cone(n_rows))
 
     # Get energy-dependent μ for target material
     target_mat = if heel.target_material == :tungsten
@@ -302,22 +325,18 @@ function compute_heel_spectral(
         # Energy-dependent linear attenuation of target material
         μ_E = compute_μ_at_energy(target_mat, E)
 
-        # Reference attenuation at central ray
+        # Reference attenuation at the central ray
         sin_ref = max(sin(θ_anode), 0.01)
         I_ref = exp(-μ_E * d_cm * cos_θ / sin_ref)
 
-        for col in 1:n_cols
-            γ = (col - n_cols / 2.0 - 0.5) / (n_cols / 2.0) * fan_max
-            θ_eff = max(θ_anode + γ, θ_min)
+        for row in 1:n_rows
+            θ_eff = max(θ_anode - cone(row), θ_min)
             sin_eff = max(sin(θ_eff), 0.01)
-            I_col = exp(clamp(-μ_E * d_cm * cos_θ / sin_eff, -700.0, 700.0))
-            # When I_ref is vanishingly small (e.g., < 1e-30 at very low energies),
-            # both I_col and I_ref are essentially zero — no photons survive at any
-            # angle. The ratio is numerically meaningless. Set to 1.0 (no modulation)
-            # since the spectral weight at these energies is also ~0.
-            ratio = I_ref > 1.0e-30 ? I_col / I_ref : 1.0
-
-            for row in 1:n_rows
+            I_row = exp(clamp(-μ_E * d_cm * cos_θ / sin_eff, -700.0, 700.0))
+            # When I_ref is vanishingly small (e.g., < 1e-30 at very low energies), no photons
+            # survive at any angle and the ratio is meaningless: no modulation.
+            ratio = I_ref > 1.0e-30 ? I_row / I_ref : 1.0
+            for col in 1:n_cols
                 transmission[col, row, e_idx] = ratio
             end
         end

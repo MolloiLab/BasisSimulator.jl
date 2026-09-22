@@ -497,7 +497,7 @@ function siddon_forward_project!(
     pixel_row_size = T(geom.pixel_row_size)
 
     # Pre-compute detector center offset for GPU
-    col_center = (T(n_cols) + one(T)) / T(2)
+    col_center = column_center(T, geom)
     row_center = (T(n_rows) + one(T)) / T(2)
 
     # Extract geometry and convert to same array type as volume (GPU compatibility)
@@ -825,7 +825,7 @@ function siddon_fused_poly_project!(
     arc_det = is_arc(geom)
     dγ = T(geom.pixel_size / geom.SAD)   # equiangular column pitch (rad)
     pixel_row_size = T(geom.pixel_row_size)
-    col_center = (T(n_cols) + one(T)) / T(2)
+    col_center = column_center(T, geom)
     row_center = (T(n_rows) + one(T)) / T(2)
 
     # Geometry arrays on GPU (use workspace or allocate)
@@ -1215,7 +1215,7 @@ function siddon_fused_spectral_project!(
     arc_det = is_arc(geom)
     dγ = T(geom.pixel_size / geom.SAD)   # equiangular column pitch (rad)
     pixel_row_size = T(geom.pixel_row_size)
-    col_center = (T(n_cols) + one(T)) / T(2)
+    col_center = column_center(T, geom)
     row_center = (T(n_rows) + one(T)) / T(2)
 
     # Geometry arrays on GPU (use workspace or allocate)

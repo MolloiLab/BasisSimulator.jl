@@ -418,8 +418,9 @@ sino_low_d, sino_high_d = out[1], out[2]
 
 # Example — PCCT bin-combined pair
 ```julia
-I0_lo = sum(Float64.(sim_bins.I0_bins[1:2]))     # bins 1+2 → low channel
-I0_hi = sum(Float64.(sim_bins.I0_bins[3:4]))     # bins 3+4 → high channel
+I0 = sim_bins.I0_bins                             # per ray, [n_cols, n_rows, 4]
+I0_lo = mean(sum(I0[:, :, 1:2]; dims = 3))        # bins 1+2 → low channel (fan mean; the denoiser takes one count per channel)
+I0_hi = mean(sum(I0[:, :, 3:4]; dims = 3))        # bins 3+4 → high channel
 out = BS.apply_sino_sfjsd_denoise(
     [Float32.(sino_lo_combined), Float32.(sino_hi_combined)],
     [I0_lo, I0_hi],

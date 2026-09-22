@@ -559,7 +559,7 @@ function backproject!(
     dγ = T(geom.pixel_size / geom.SAD)
 
     # Pre-compute constants
-    col_center = (T(n_cols) + one(T)) / T(2)
+    col_center = column_center(T, geom)
     row_center = (T(n_rows) + one(T)) / T(2)
     pi_over_angles = T(π) / T(n_angles)
 

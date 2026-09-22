@@ -377,9 +377,9 @@ function compute_bowtie_attenuation_spectral(
     for col in 1:n_cols
         # :arc — the column IS the fan angle (equiangular); :flat — planar atan
         fan_angle = if is_arc(geom)
-            (col - (n_cols + 1) / 2) * (geom.pixel_size / geom.SAD)
+            (col - column_center(Float64, geom)) * (geom.pixel_size / geom.SAD)
         else
-            u_offset = (col - (n_cols + 1) / 2) * pixel_size_det
+            u_offset = (col - column_center(Float64, geom)) * pixel_size_det
             atan(u_offset / geom.SDD)
         end
         thickness[col] = interpolate_thickness(filter, fan_angle)

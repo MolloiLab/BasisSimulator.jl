@@ -83,7 +83,7 @@ function _dd_backproject_arc_tile4!(
     mag = T(geom.SDD / geom.SAD)
     ps = T(geom.pixel_size); prs = T(geom.pixel_row_size)
     prm = prs * mag
-    cc = (T(nc) + one(T)) / T(2); rc = (T(nr) + one(T)) / T(2)
+    cc = column_center(T, geom); rc = (T(nr) + one(T)) / T(2)
     dγ = T(geom.pixel_size / geom.SAD)
     radius_sq = T(min(bounds[1], bounds[2]) / 2)^2
     # Only the shape is used for iteration.  `ntiles <= active_nz <= nz`.
@@ -307,7 +307,7 @@ function dd_backproject!(
     mag = T(geom.SDD / geom.SAD)
     ps = T(geom.pixel_size); prs = T(geom.pixel_row_size)
     pm = ps * mag; prm = prs * mag
-    cc = (T(nc) + one(T)) / T(2); rc = (T(nr) + one(T)) / T(2)
+    cc = column_center(T, geom); rc = (T(nr) + one(T)) / T(2)
     arc_det = is_arc(geom); dγ = T(geom.pixel_size / geom.SAD)
     z_first = active_z === nothing ? Int32(1) : Int32(first(active_z))
     z_last = active_z === nothing ? nz : Int32(last(active_z))

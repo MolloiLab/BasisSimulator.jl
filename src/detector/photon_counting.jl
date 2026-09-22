@@ -309,6 +309,40 @@ end
 # =============================================================================
 
 """
+    _normalize_bins_per_ray!(bins, I0, …; bf)
+
+`bins[b][col, row, view] = -log(N / I0[col, row, b])`: every bin becomes the log-transmission
+against its own ray's air response, so an air ray reads 0 in every column whatever the bowtie
+does across the fan.  `I0` is the workspace's `[n_cols, n_rows, n_bins]` table; without a
+workspace a flat one is built from `_compute_bin_I0` (scaled by `bf²` when the counts were
+binned from native dexels).
+"""
+function _normalize_bins_per_ray!(bins, I0, detector, energies, weights, η, thresholds, kVp, I0_phys, R, bf)
+    T = eltype(bins[1])
+    n_bins = length(bins)
+    nc = Int32(size(bins[1], 1)); nr = Int32(size(bins[1], 2)); ncnr = nc * nr
+    I0_use = if I0 !== nothing
+        I0
+    else
+        flat = similar(bins[1], T, Int(nc), Int(nr), n_bins)
+        for b in 1:n_bins
+            fill!(view(flat, :, :, b), T(_compute_bin_I0(detector, energies, weights, η, thresholds, b, Float64(kVp), Float64(I0_phys); R = R) * bf * bf))
+        end
+        flat
+    end
+    eps_val = T(1.0e-10)
+    for b in 1:n_bins
+        let ba = bins[b], i0 = I0_use, off = Int32(b - 1) * ncnr, eps = eps_val, m = ncnr
+            AK.foreachindex(ba) do idx
+                ray = (Int32(idx - 1) % m) + Int32(1)
+                ba[idx] = -log(max(ba[idx], eps) / i0[ray + off])
+            end
+        end
+    end
+    return bins
+end
+
+"""
     pcct_forward_project(mask, geom, detector; energies, weights, materials, kwargs...) -> EnergyResolvedSinogram
 
 Perform polychromatic photon-counting CT forward projection with MC DRM spectral response.
@@ -387,7 +421,7 @@ function pcct_forward_project(
     ws_η = nothing,           # quantum efficiency vector (n_energies)
     ws_R = nothing,           # spectral response matrix (n_energies × n_bins)
     ws_R_energies = nothing,  # energy grid for R
-    ws_I0_bins_norm = nothing, # per-bin I0 for normalization
+    ws_I0 = nothing,           # per-ray air response [n_cols, n_rows, n_bins] (binned resolution) for normalization
     # Pre-allocated μ lookup buffers for create_μ_volume!
     ws_μ_lut_cpu = nothing,   # Vector{T}(n_regions) CPU
     ws_μ_lut_gpu = nothing,   # similar(mask, T, n_regions) GPU-side
@@ -580,22 +614,9 @@ function pcct_forward_project(
             end
         end
 
-        # Convert from photon counts to line-integral domain: sino = -log(N / I₀_bin)
-        eps_val = T(1e-10)
-        I0_scale = use_native ? Float64(bf * bf) : 1.0
-        I0_bins_norm = if ws_I0_bins_norm !== nothing
-            ws_I0_bins_norm
-        else
-            [_compute_bin_I0(detector, energies, weights, η, thresholds, b,
-                              Float64(kVp), Float64(I0); R=R) for b in 1:n_bins]
-        end
-        for b in 1:n_bins
-            let I0_bin_T = T(I0_bins_norm[b] * I0_scale), ba = bins[b], eps = eps_val
-                AK.foreachindex(ba) do idx
-                    ba[idx] = -log(max(ba[idx], eps) / I0_bin_T)
-                end
-            end
-        end
+        # Convert from photon counts to line-integral domain against each ray's own air
+        # response: sino = -log(N / I₀[col, row, b])
+        _normalize_bins_per_ray!(bins, ws_I0, detector, energies, weights, η, thresholds, kVp, I0, R, use_native ? bf : 1)
 
         # Thresholds
         thresh_T = if ws_thresholds_T !== nothing
@@ -695,9 +716,20 @@ function pcct_forward_project(
             if R_val < T(1e-10)
                 continue
             end
-            let wt = I0_T * w_T * η_E * R_val, ba = accum_bins[b]
-                AK.foreachindex(sino_buf) do idx
-                    ba[idx] += wt * exp(-sino_buf[idx])
+            if ws_source_spectral === nothing
+                let wt = I0_T * w_T * η_E * R_val, ba = accum_bins[b]
+                    AK.foreachindex(sino_buf) do idx
+                        ba[idx] += wt * exp(-sino_buf[idx])
+                    end
+                end
+            else
+                # the source transmission at this ray and energy (bowtie × heel), as the fused path
+                let wt = I0_T * w_T * η_E * R_val, ba = accum_bins[b], bt = ws_source_spectral,
+                        m = Int32(size(sino_buf, 1) * size(sino_buf, 2)), off = Int32(e_idx - 1) * Int32(size(sino_buf, 1) * size(sino_buf, 2))
+                    AK.foreachindex(sino_buf) do idx
+                        ray = (Int32(idx - 1) % m) + Int32(1)
+                        ba[idx] += wt * bt[ray + off] * exp(-sino_buf[idx])
+                    end
                 end
             end
         end
@@ -710,23 +742,8 @@ function pcct_forward_project(
         end
     end
 
-    # Convert from photon counts to line-integral domain: sino = -log(N / I₀_bin)
-    # When binning, I0 scales by bf² (sum of bf² dexels)
-    eps_val = T(1e-10)
-    I0_scale = use_native ? Float64(bf * bf) : 1.0
-    I0_bins_norm = if ws_I0_bins_norm !== nothing
-        ws_I0_bins_norm
-    else
-        [_compute_bin_I0(detector, energies, weights, η, thresholds, b,
-                          Float64(kVp), Float64(I0); R=R) for b in 1:n_bins]
-    end
-    for b in 1:n_bins
-        let I0_bin_T = T(I0_bins_norm[b] * I0_scale), ba = bins[b], eps = eps_val
-            AK.foreachindex(ba) do idx
-                ba[idx] = -log(max(ba[idx], eps) / I0_bin_T)
-            end
-        end
-    end
+    # Convert from photon counts to line-integral domain against each ray's own air response
+    _normalize_bins_per_ray!(bins, ws_I0, detector, energies, weights, η, thresholds, kVp, I0, R, use_native ? bf : 1)
 
     # Use workspace thresholds if provided, otherwise allocate
     thresh_T = if ws_thresholds_T !== nothing
@@ -775,7 +792,7 @@ end
 # =============================================================================
 
 """
-    apply_pcct_noise!(sino::EnergyResolvedSinogram, I0_bins;
+    apply_pcct_noise!(sino::EnergyResolvedSinogram, I0;
                       seed=nothing, ws_noise_staging=nothing, ws_rng=nothing,
                       noise_reduction=0.0) -> EnergyResolvedSinogram
 
@@ -790,25 +807,25 @@ noise — eliminated by the counting thresholds, the fundamental PCCT
 advantage.
 
 `I0_bins` must be the SAME per-bin air calibration the sinograms are
-normalized against (`ws.I0_bins`), so a downstream `I0 · exp(-h)` recovers
+normalized against (`ws.I0`, per ray), so a downstream `I0 · exp(-h)` recovers
 the sampled integer counts exactly.
 
 For each bin `b` and ray:
-1. expected counts `λ = I0_bins[b] · exp(-h)`;
+1. expected counts `λ = I0[col, row, b] · exp(-h)`;
 2. `N ~ Poisson(λ)` — exact integer sampling at every λ (`_poisson_sample`);
 3. optional `noise_reduction` blend `λ + (1 - nr)·(N - λ)`; any nonzero value
    leaves the strict Poisson count model (vendor-denoising surrogate only);
 4. the measured count is written verbatim to `raw_out[b]` when provided
    (TRUE ZEROS preserved), then floored at 1 ONLY for the log-domain bins —
    a zero count has no finite log line integral — and stored back as
-   `h = -log(max(N, 1) / I0_bins[b])`.
+   `h = -log(max(N, 1) / I0[col, row, b])`.
 
 The simulator imposes no zero-count policy on the counts product: any
 epsilon/interpolation convention for zeros is a downstream (user) choice.
 
 # Arguments
 - `sino::EnergyResolvedSinogram`: per-bin log line integrals, mutated in place.
-- `I0_bins::AbstractVector`: per-bin air-calibration counts (one per bin).
+- `I0`: the air response per ray and bin, `[n_cols, n_rows, n_bins]` (the workspace's `I0_cpu`).
 
 # Keyword Arguments
 - `seed::Union{Nothing,Int}`: RNG seed for reproducibility.
@@ -829,7 +846,7 @@ epsilon/interpolation convention for zeros is a downstream (user) choice.
 """
 function apply_pcct_noise!(
     sino::EnergyResolvedSinogram{T,A},
-    I0_bins::AbstractVector;
+    I0::AbstractArray{<:Real, 3};
     seed::Union{Nothing,Int} = nothing,
     ws_noise_staging = nothing,
     ws_rng = nothing,
@@ -839,8 +856,11 @@ function apply_pcct_noise!(
 ) where {T, A}
     rng_mode in (:serial, :threaded) ||
         throw(ArgumentError("rng_mode must be :serial or :threaded, got :$(rng_mode)"))
-    length(sino.bins) == length(I0_bins) ||
-        throw(DimensionMismatch("one I0 value is required per PCCT bin"))
+    length(sino.bins) == size(I0, 3) ||
+        throw(DimensionMismatch("one I0 plane [n_cols, n_rows] is required per PCCT bin"))
+    size(I0, 1) == size(sino.bins[1], 1) && size(I0, 2) == size(sino.bins[1], 2) ||
+        throw(DimensionMismatch("I0 must be [n_cols, n_rows, n_bins] at the sinogram's resolution"))
+    n_rays = size(I0, 1) * size(I0, 2)
     raw_out === nothing || length(raw_out) == length(sino.bins) ||
         throw(DimensionMismatch("one raw_out array is required per PCCT bin"))
 
@@ -855,7 +875,7 @@ function apply_pcct_noise!(
     nr_scale = 1.0 - noise_reduction
 
     for (b, bin) in enumerate(sino.bins)
-        I0_bin = Float64(I0_bins[b])
+        I0_b = Float64.(vec(view(I0, :, :, b)))     # per ray, [n_cols·n_rows]
 
         # Bulk GPU→CPU transfer (reuses pre-allocated buffer)
         copyto!(cpu_buf, bin)
@@ -863,7 +883,7 @@ function apply_pcct_noise!(
         # Pass 1: measured counts (pre-floor; exact integers when nr = 0)
         if rng_mode === :serial
             @inbounds for idx in eachindex(cpu_buf)
-                λ = I0_bin * exp(-Float64(cpu_buf[idx]))
+                λ = I0_b[(idx - 1) % n_rays + 1] * exp(-Float64(cpu_buf[idx]))
                 N = Float64(_poisson_sample(rng, λ))
                 if nr_scale != 1.0
                     N = λ + nr_scale * (N - λ)
@@ -885,7 +905,7 @@ function apply_pcct_noise!(
                 hi = min(chunk * per_chunk, n)
                 rng_chunk = Random.Xoshiro(hash((base, b, chunk)))
                 @inbounds for idx in lo:hi
-                    λ = I0_bin * exp(-Float64(cpu_buf[idx]))
+                    λ = I0_b[(idx - 1) % n_rays + 1] * exp(-Float64(cpu_buf[idx]))
                     N = Float64(_poisson_sample(rng_chunk, λ))
                     if nr_scale != 1.0
                         N = λ + nr_scale * (N - λ)
@@ -898,7 +918,7 @@ function apply_pcct_noise!(
 
         # Pass 2: floor at 1 for the log domain only, convert back in place
         @inbounds for idx in eachindex(cpu_buf)
-            cpu_buf[idx] = T(-log(Float64(max(cpu_buf[idx], one(T))) / I0_bin))
+            cpu_buf[idx] = T(-log(Float64(max(cpu_buf[idx], one(T))) / I0_b[(idx - 1) % n_rays + 1]))
         end
 
         # Bulk CPU→GPU transfer

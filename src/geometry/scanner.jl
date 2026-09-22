@@ -348,7 +348,28 @@ struct CTGeometry
     table_feed::Float64      # table feed per rotation (cm); 0.0 = axial
     # ── Detector shape: :arc (equiangular cylindrical) or :flat (planar) ─────
     detector_shape::Symbol
+    # ── Where the central ray (source → isocentre) crosses the detector, in columns, relative
+    #    to the detector's geometric centre (n_cols + 1) / 2.  A clinical scanner sets a quarter
+    #    column so that the rays of opposing views interleave (twice the in-plane sampling);
+    #    every projector, weighting and backprojector reads it through `column_offset`. ─────
+    column_offset::Float64
 end
+
+"""
+    column_offset(geom::CTGeometry) -> Float64
+
+The fractional column by which the central ray is displaced from the detector's geometric
+centre: the central ray crosses column `(n_cols + 1) / 2 + column_offset(geom)`.  It comes from
+the scanner's `detector_col_offset` (columns) and is honoured identically by every forward
+projector, the fan weighting, every backprojector and the bowtie, so that a simulation and its
+reconstruction agree on where each ray is.  A quarter column is the clinical value.
+"""
+column_offset(geom::CTGeometry) = geom.column_offset
+
+"The fractional column index the central ray crosses — the detector's centre plus its offset."
+column_center(::Type{T}, geom::CTGeometry) where {T} = (T(geom.n_cols) + one(T)) / T(2) + T(geom.column_offset)
+
+export column_offset, column_center
 
 # Backward-compatible positional constructor: the pre-helical 14-field form
 # (subset extraction, FOV overrides, native-PCCT geometry) defaults to axial.
@@ -363,7 +384,7 @@ function CTGeometry(
     return CTGeometry(
         SAD, SDD, n_angles, n_rows, n_cols, pixel_size, pixel_row_size,
         angles, source_positions, detector_centers, detector_u, detector_v,
-        fov, 0.0, 0.0, :flat)
+        fov, 0.0, 0.0, :flat, 0.0)
 end
 
 # 16-field compat (helical metadata, pre-arc): defaults to a flat panel.
@@ -378,7 +399,23 @@ function CTGeometry(
     return CTGeometry(
         SAD, SDD, n_angles, n_rows, n_cols, pixel_size, pixel_row_size,
         angles, source_positions, detector_centers, detector_u, detector_v,
-        fov, pitch, table_feed, :flat)
+        fov, pitch, table_feed, :flat, 0.0)
+end
+
+# 17-field compat (pre-offset): a centred detector.
+function CTGeometry(
+        SAD::Float64, SDD::Float64, n_angles::Int, n_rows::Int, n_cols::Int,
+        pixel_size::Float64, pixel_row_size::Float64,
+        angles::Vector{Float64},
+        source_positions::Matrix{Float64}, detector_centers::Matrix{Float64},
+        detector_u::Matrix{Float64}, detector_v::Matrix{Float64},
+        fov::NTuple{3, Float64}, pitch::Float64, table_feed::Float64,
+        detector_shape::Symbol,
+    )
+    return CTGeometry(
+        SAD, SDD, n_angles, n_rows, n_cols, pixel_size, pixel_row_size,
+        angles, source_positions, detector_centers, detector_u, detector_v,
+        fov, pitch, table_feed, detector_shape, 0.0)
 end
 
 """
@@ -673,7 +710,7 @@ function CTGeometry(
         SAD, SDD, n_views_total, _n_rows, _n_cols, pixel_size, pixel_row_size,
         angles, source_positions, detector_centers, detector_u, detector_v,
         fov, helical ? Float64(pitch) : 0.0, table_feed,
-        scanner.detector_shape,
+        scanner.detector_shape, Float64(scanner.detector_col_offset),
     )
 end
 

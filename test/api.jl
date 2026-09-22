@@ -322,22 +322,26 @@ function _toy_pcct_setup(; pileup = true, kwargs...)
     return (; scanner, protocol, sim_opts, recon_opts, phantom, ws)
 end
 
+
+# per-ray I0 (the air response of every ray and bin, [n_cols, n_rows, n_bins]) from per-bin values
+_perray(I0::AbstractVector, nc, nr) = Float32.(reshape(repeat(Float32.(I0), inner = nc * nr), nc, nr, length(I0)))
+
 _ts("entering simulate!(PCCTWorkspace) — return contract testset")
 @testset "PCCT raw-count snapshot helper" begin
     logged = [fill(Float32(-log(0.25b)), 2, 3, 4) for b in 1:4]
-    I0 = Float64[100, 200, 300, 400]
+    I0 = _perray(Float64[100, 200, 300, 400], 2, 3)
     raw = BS._capture_pcct_raw_counts(logged, I0)
 
     @test length(raw) == 4
     @test all(raw[b] !== logged[b] for b in eachindex(raw))
     for b in eachindex(raw)
-        @test raw[b] ≈ I0[b] .* exp.(-logged[b]) rtol = 8eps(Float32)
+        @test raw[b] ≈ I0[:, :, b] .* exp.(-logged[b]) rtol = 8eps(Float32)
     end
 
     before = copy(raw[1])
     fill!(logged[1], 0f0)
     @test raw[1] == before
-    @test_throws DimensionMismatch BS._capture_pcct_raw_counts(logged, I0[1:3])
+    @test_throws DimensionMismatch BS._capture_pcct_raw_counts(logged, I0[:, :, 1:3])
 end
 
 @testset "simulate!(PCCTWorkspace) — return contract" begin
@@ -363,10 +367,10 @@ end
         @test BS.simulate!(s.ws, s.phantom, s.protocol, s.sim_opts; report_dose = false).dose ===
             nothing
         @test length(res.pcct_sino.bins) == 4
-        @test length(res.I0_bins) == 4
-        @test all(>(0), res.I0_bins)
-        @test res.pileup_S isa Matrix{Float64}
-        @test size(res.pileup_S) == (4, 4)
+        @test size(res.I0_bins, 3) == 4          # per ray: [n_cols, n_rows, n_bins]
+        @test all(>(0), Array(res.I0_bins))
+        @test res.pileup_S isa Array{Float64, 3}
+        @test size(res.pileup_S)[1:2] == (4, 4)
         for bin in res.pcct_sino.bins
             @test all(isfinite, Array(bin))
         end
@@ -377,7 +381,7 @@ end
         for b in eachindex(res.raw_counts)
             @test res.raw_counts[b] !== res.pcct_sino.bins[b]
             raw = Array(res.raw_counts[b])
-            encoded = res.I0_bins[b] .* exp.(-Array(res.pcct_sino.bins[b]))
+            encoded = Array(res.I0_bins)[:, :, b] .* exp.(-Array(res.pcct_sino.bins[b]))
             @test raw ≈ encoded rtol = 8eps(Float32) atol = 1.0e-6
             @test all(isfinite, raw)
             @test all(>=(0), raw)
@@ -401,7 +405,7 @@ end
             @test all(isinteger, arr)
             @test all(>=(0), arr)
             # Log bins encode max(N, 1): equal to raw wherever raw ≥ 1
-            enc = res_mm.I0_bins[b] .* exp.(-Float64.(Array(res_mm.pcct_sino.bins[b])))
+            enc = Float64.(Array(res_mm.I0_bins))[:, :, b] .* exp.(-Float64.(Array(res_mm.pcct_sino.bins[b])))
             mask = arr .>= 1
             @test maximum(abs.(enc[mask] .- arr[mask])) < 0.1
             @test all(x -> abs(x - 1) < 0.1, enc[.!mask])
@@ -423,7 +427,7 @@ _ts("entering simulate!(PCCTWorkspace) — MC-LUT pileup wiring testset")
         # Workspace state reflects the toggle.
         @test on.ws.pileup === true
         @test off.ws.pileup === false
-        @test on.ws.pileup_S isa Matrix{Float64}
+        @test on.ws.pileup_S isa Array{Float64, 3}
         @test size(on.ws.pileup_S) == (4, 4)
         @test off.ws.pileup_S === nothing
 
@@ -1527,14 +1531,14 @@ _ts("entering Workspace ctors — PCCT field invariants testset")
         @test size(ws.combined) == sino_shape
 
         # Spectral arrays sized to bin / energy counts.
-        @test length(ws.I0_bins) == s.scanner.n_energy_bins
-        @test length(ws.I0_bins_norm) == s.scanner.n_energy_bins
+        @test size(ws.I0, 3) == s.scanner.n_energy_bins
+        @test length(ws.I0) == s.scanner.n_energy_bins
         @test length(ws.thresholds_T) == s.scanner.n_energy_bins
         @test length(ws.η) == length(ws.energies)
 
         # Pile-up wiring (PCCTScanner.pileup default = true).
         @test ws.pileup === true
-        @test ws.pileup_S isa Matrix{Float64}
+        @test ws.pileup_S isa Array{Float64, 3}
         @test size(ws.pileup_S) == (s.scanner.n_energy_bins, s.scanner.n_energy_bins)
 
         # Native-res buffers are nothing when binning_factor == 1 (toy default).

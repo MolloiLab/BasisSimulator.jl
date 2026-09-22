@@ -113,34 +113,67 @@ function spectral_basis(; energies, response, I0, tolerance::Real = 5.0e-5)
 end
 
 """
-    spectral_basis_from_bins(; energies, W_applied, I0_bins, tolerance = 5e-5)
+    spectral_basis_from_bins(; energies, W_applied, I0, transmission = nothing, tolerance = 5e-5)
 
 Basis for the `K` energy windows of one photon-counting acquisition. `W_applied[e, k]` is the
-exact per-bin detected response the forward model applied and `I0_bins[k]` its air count. One
-response serves every ray, so the ray axes are singleton.
+detected response the forward model applied to the unattenuated central beam and
+`I0[col, row, k]` the air count of every ray and bin. With `transmission[col, row, e]` — the
+source transmission (bowtie × heel) the simulation applied per ray — the response is
+ray-resolved, `W_applied[e, k]·transmission[col, row, e]`, which is exactly what each ray saw;
+without it one response serves every ray and `I0` must then be constant across the fan.
 """
-function spectral_basis_from_bins(; energies, W_applied, I0_bins, tolerance::Real = 5.0e-5)
+function spectral_basis_from_bins(; energies, W_applied, I0, transmission = nothing, tolerance::Real = 5.0e-5)
     nE, K = size(W_applied)
-    return spectral_basis(
-        energies = energies,
-        response = reshape(Float32.(W_applied), 1, 1, nE, K),
-        I0 = reshape(Float32.(collect(I0_bins)), 1, 1, K),
-        tolerance = tolerance,
-    )
+    I0a = Float32.(Array(I0))
+    ndims(I0a) == 3 || throw(DimensionMismatch("I0 is per ray, [n_cols, n_rows, K]; got $(size(I0a))"))
+    response = if transmission === nothing
+        # one response for every ray: I0 must not vary across the fan
+        flat = maximum(I0a; dims = (1, 2)) .- minimum(I0a; dims = (1, 2))
+        all(flat .<= tolerance .* maximum(I0a; dims = (1, 2))) ||
+            error("I0 varies across the fan (a bowtie) but no per-ray transmission was given")
+        reshape(Float32.(W_applied), 1, 1, nE, K), reshape(I0a[1, 1, :], 1, 1, K)
+    else
+        tr = Float32.(Array(transmission))[:, :, 1:nE]
+        Φ = Array{Float32}(undef, size(tr, 1), size(tr, 2), nE, K)
+        for k in 1:K, e in 1:nE
+            @views Φ[:, :, e, k] .= Float32(W_applied[e, k]) .* tr[:, :, e]
+        end
+        Φ, I0a
+    end
+    return spectral_basis(energies = energies, response = response[1], I0 = response[2], tolerance = tolerance)
 end
 
 """
-    spectral_basis(ws::PCCTWorkspace; I0_bins = ws.I0_bins, tolerance = 5e-5)
+    spectral_basis(ws::PCCTWorkspace; I0 = ws.I0, tolerance = 5e-5)
 
 Basis straight from a photon-counting workspace: the response the simulation applied
-(`ws.W_matrix_gpu` on `ws.energies`) and its per-bin air counts. Pass the `I0_bins` of the
-simulation result when it differs from the workspace's. Because this is the model that generated
-the data, the decomposition inverts exactly what was simulated and needs no calibration scan.
+(`ws.W_matrix_gpu` on `ws.energies`, through the per-ray source transmission
+`ws.bowtie_spectral` when the scanner has a bowtie) and the air response of every ray. Because
+this is the model that generated the data, the decomposition inverts exactly what was simulated
+and needs no calibration scan.
 """
-function spectral_basis(ws::PCCTWorkspace; I0_bins = ws.I0_bins, tolerance::Real = 5.0e-5)
+function spectral_basis(ws::PCCTWorkspace; I0 = ws.I0, tolerance::Real = 5.0e-5)
     energies = Float64.(ws.energies)
-    W_applied = Float64.(Array(ws.W_matrix_gpu))[1:length(energies), :]
-    return spectral_basis_from_bins(; energies, W_applied, I0_bins, tolerance)
+    nE = length(energies)
+    bf = ws.native_geom === nothing ? 1 : ws.native_geom.n_cols ÷ ws.geom.n_cols
+    # the kernel's matrix is per native dexel on the binned path; the binned pixel's is bf² of it
+    W_applied = Float64.(Array(ws.W_matrix_gpu))[1:nE, :] .* (bf * bf)
+    return spectral_basis_from_bins(; energies, W_applied, I0, transmission = _binned_transmission(ws, nE, bf), tolerance)
+end
+
+# The source transmission each BINNED ray applied: the mean over its bf × bf native dexels (its
+# counts are their sum, each at the per-dexel response), exactly the binned native table when
+# there is one; `nothing` when there is no table (one response for every ray).
+function _binned_transmission(ws::PCCTWorkspace, nE, bf)
+    bf == 1 && return ws.bowtie_spectral === nothing ? nothing : Array(ws.bowtie_spectral)[:, :, 1:nE]
+    ws.native_bowtie_spectral === nothing && return nothing
+    nc, nr = ws.geom.n_cols, ws.geom.n_rows
+    native = Array(ws.native_bowtie_spectral)
+    out = zeros(Float32, nc, nr, nE)
+    for e in 1:nE, r in 1:nr, c in 1:nc
+        out[c, r, e] = sum(@view native[((c - 1) * bf + 1):(c * bf), ((r - 1) * bf + 1):(r * bf), e]) / (bf * bf)
+    end
+    return out
 end
 
 """
@@ -919,7 +952,7 @@ function _single_row_geometry(geom::CTGeometry)
         geom.pixel_size, geom.pixel_row_size,
         geom.angles, geom.source_positions, geom.detector_centers,
         geom.detector_u, geom.detector_v, (geom.fov[1], geom.fov[2], geom.pixel_row_size),
-        geom.pitch, geom.table_feed, geom.detector_shape,
+        geom.pitch, geom.table_feed, geom.detector_shape, geom.column_offset,
     )
 end
 

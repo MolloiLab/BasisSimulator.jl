@@ -83,6 +83,9 @@ end
             slab = vec(sum(sino[:, :, j]; dims = 1))
             total = sum(slab)
             total > 1.0e-6 || continue
+            # a footprint clipped by the first or last detector row has a biased centroid that
+            # says nothing about the mapping; which views clip depends on the column offset
+            (slab[1] > 0 || slab[end] > 0) && continue
             measured = sum((1:geom.n_rows) .* slab) / total
             push!(err_arc, measured - (dz * SDD / D / prm + row_centre))
             push!(err_flat, measured - (dz * (SDD / cosγ) / D / prm + row_centre))

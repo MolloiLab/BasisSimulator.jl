@@ -20,6 +20,7 @@ const BS = BasisSimulator
     end
     @testset "detector/" begin
         include("detector.jl")
+        include("detector_offset.jl")
     end
     @testset "dose/" begin
         include("dose.jl")
@@ -31,7 +32,9 @@ const BS = BasisSimulator
         include("filtering.jl")
     end
     @testset "helical/" begin
+        include("heel_axis.jl")
         include("helical.jl")
+        include("hir_support.jl")
     end
     @testset "memory lifecycle/" begin
         include("memory_lifecycle.jl")
@@ -44,6 +47,7 @@ const BS = BasisSimulator
     end
     @testset "paths/" begin
         include("paths.jl")
+        include("pcct_bowtie.jl")
     end
     @testset "phantoms/" begin
         include("phantoms.jl")

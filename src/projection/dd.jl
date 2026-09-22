@@ -418,7 +418,7 @@ function dd_forward_project!(
     arc_det = is_arc(geom)
     dγ = T(geom.pixel_size / geom.SAD)
     ps = T(geom.pixel_size); prs = T(geom.pixel_row_size)
-    col_center = (T(n_cols) + one(T)) / T(2)
+    col_center = column_center(T, geom)
     row_center = (T(n_rows) + one(T)) / T(2)
 
     sp = _dd_geom_array(ws_source_positions, volume, geom.source_positions, T)
@@ -466,7 +466,7 @@ function _dd_forward_project_arc_rowtile4!(
     _dd_check_isotropy(vsx, vsy)
     mag = T(geom.SDD / geom.SAD)
     ps = T(geom.pixel_size); prs = T(geom.pixel_row_size)
-    cc = (T(nc) + one(T)) / T(2); rc = (T(nr) + one(T)) / T(2)
+    cc = column_center(T, geom); rc = (T(nr) + one(T)) / T(2)
     dγ = T(geom.pixel_size / geom.SAD)
     sp = _dd_geom_array(ws_source_positions, volume, geom.source_positions, T)
     dc = _dd_geom_array(ws_detector_centers, volume, geom.detector_centers, T)
@@ -564,7 +564,7 @@ function dd_fused_poly_project!(
     arc_det = is_arc(geom)
     dγ = T(geom.pixel_size / geom.SAD)
     ps = T(geom.pixel_size); prs = T(geom.pixel_row_size)
-    col_center = (T(n_cols) + one(T)) / T(2)
+    col_center = column_center(T, geom)
     row_center = (T(n_rows) + one(T)) / T(2)
 
     sp = _dd_geom_array(ws_source_positions, sinogram, geom.source_positions, T)
@@ -690,7 +690,7 @@ function dd_fused_spectral_project!(
     arc_det = is_arc(geom)
     dγ = T(geom.pixel_size / geom.SAD)
     ps = T(geom.pixel_size); prs = T(geom.pixel_row_size)
-    col_center = (T(n_cols) + one(T)) / T(2)
+    col_center = column_center(T, geom)
     row_center = (T(n_rows) + one(T)) / T(2)
 
     sp = _dd_geom_array(ws_source_positions, mask, geom.source_positions, T)

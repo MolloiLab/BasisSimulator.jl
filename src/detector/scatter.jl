@@ -334,17 +334,16 @@ function inject_scatter!(
 end
 
 """
-    inject_scatter_bins!(bins, scatter_field, I0_bins, I0_total, bin_scatter_weights)
+    inject_scatter_bins!(bins, scatter_field, I0, I0_all, bin_scatter_weights; subtract = false)
 
-Add scatter to per-bin sinograms (PCCT path).
+Add (or with `subtract`, remove) scatter in the per-bin sinograms, per ray.
 
-For each bin `b`, adds `scatter_field × I0_total × bin_weight_b` scatter
-counts, where `bin_weight_b` is from `compute_scatter_bin_weights` (per-energy
-weights convolved through the DRM). This is the exact per-energy scatter model
-applied through the photon-counting detector response.
-
-Matches the physics of `inject_scatter!` (EICT) — same spatial field,
-same per-energy model — but distributed across energy bins via the DRM.
+`scatter_field` is the scatter-to-air fraction from the Ohnesorge convolution of the combined
+transmission; the scatter counts of a ray and bin are `scatter_field × I0_all[col, row] ×
+bin_weight_b` — scaled by that ray's own whole-spectrum air response, so the scatter behind a
+bowtie falls off across the fan with the primary — with `bin_weight_b` from
+`compute_scatter_bin_weights` (the per-energy scatter spectrum through the detector response).
+`I0[col, row, b]` is the per-ray, per-bin air response the bins are normalised against.
 
 # References
 - Ohnesorge B et al., Eur Radiol 1999 (convolution scatter model)
@@ -352,26 +351,28 @@ same per-energy model — but distributed across energy bins via the DRM.
 function inject_scatter_bins!(
     bins::Vector{<:AbstractArray{T,3}},
     scatter_field::AbstractArray{T,3},
-    I0_bins::Vector{<:Real},
-    I0_total::Real,
+    I0::AbstractArray{T,3},
+    I0_all::AbstractArray{T,2},
     bin_scatter_weights::Vector{Float64};
     subtract::Bool = false,
 ) where T
-    # DAS-honest floor: a real DAS records at minimum 1 count — with I0_bins
-    # now in PHYSICAL units this caps line integrals at the true information
-    # limit p = ln(I0_bin) (~10 at clinical PCCT technique) instead of a
-    # sub-count fantasy ceiling.  (Scatter SUBTRACTION drives starved rays
-    # ≤ 0 here; the old 1e-10 floor minted deterministic p ≈ 33 plateaus.)
+    # DAS-honest floor: a real DAS records at minimum 1 count — with I0 in physical units this
+    # caps line integrals at the true information limit p = ln(I0) instead of a sub-count
+    # ceiling.  (Scatter SUBTRACTION drives starved rays ≤ 0 here; a 1e-10 floor would mint
+    # deterministic p ≈ 33 plateaus.)
     eps = T(1)
     sgn = subtract ? -one(T) : one(T)   # +1 = inject (forward), -1 = correct
+    m = Int32(size(I0, 1) * size(I0, 2))
     for (b, bin_sino) in enumerate(bins)
-        let I0b = T(I0_bins[b]), frac = T(bin_scatter_weights[b]),
-            I0t = T(I0_total), bs = bin_sino, sf = scatter_field, s = sgn
+        let i0 = I0, off = Int32(b - 1) * m, m = m, frac = T(bin_scatter_weights[b]),
+            i0t = I0_all, bs = bin_sino, sf = scatter_field, s = sgn
             AK.foreachindex(bs) do idx
-                N_primary = I0b * exp(-bs[idx])
-                N_scatter = sf[idx] * I0t * frac
+                ray = (Int32(idx - 1) % m) + Int32(1)
+                i0b = i0[ray + off]
+                N_primary = i0b * exp(-bs[idx])
+                N_scatter = sf[idx] * i0t[ray] * frac
                 N_total = N_primary + s * max(N_scatter, zero(T))
-                bs[idx] = -log(max(N_total, eps) / I0b)
+                bs[idx] = -log(max(N_total, eps) / i0b)
             end
         end
     end

@@ -95,7 +95,7 @@ scanner_pcct = BS.PCCTScanner(
 )
 ws_pcct = BS.create_workspace(scanner_pcct, protocol, sim_opts, rec_opts, phantom)
 result = BS.simulate!(ws_pcct, phantom, protocol, sim_opts)
-basis = BS.spectral_basis(ws_pcct; I0_bins = result.I0_bins)
+basis = BS.spectral_basis(ws_pcct; I0 = result.I0_bins)     # I0 per ray: [n_cols, n_rows, n_bins]
 vmi = BS.vmi_pipeline(;
     channels = [Array(b) for b in result.pcct_sino.bins], basis, geom = ws_pcct.geom,
     to_backend = to_gpu, reduce_rows = true, use_tlbf = true,
