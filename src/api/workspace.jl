@@ -111,7 +111,7 @@ mutable struct PCCTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A1 <
     noise_reduction::Float64                           # PCCTScanner.noise_reduction
     pileup_S::Union{Nothing, Array{Float64, 3}}        # (n_bins × n_bins × n_rates), nothing when pileup off
     pileup_rates::Vector{Float64}                      # the count rates (photons / s / dexel) of pileup_S
-    pileup_rate_air::Float64                           # the central air count rate per dexel
+    pileup_rate_air::Float64                           # the brightest ray's incident count rate per dexel (the grid's top)
 
     # ─── Pre-computed setup data (computed once, reused) ───
     geom::CTGeometry                         # CT geometry (binned resolution)
@@ -324,9 +324,14 @@ function create_workspace(
             W_cpu[e_idx, b] = T(_I0 * w * η_vec[e_idx] * R_mat[r_idx, b])
         end
     end
+    # `W_cpu` is the detected response per BINNED pixel (the anchor is photons per binned pixel
+    # per view). On the native path the kernel deposits its matrix in every native dexel and the
+    # bf × bf dexels are then summed, so the kernel's matrix is W / bf²: the binned sum is then the
+    # physical count, and the noise, pile-up and scatter see physical photons.
+    W_kernel = bf > 1 ? W_cpu ./ T(bf * bf) : W_cpu
     _W_matrix_gpu = allocate_backend(n_energies_padded, n_bins)
 
-    copyto!(_W_matrix_gpu, W_cpu)
+    copyto!(_W_matrix_gpu, W_kernel)
 
     # ─── Source transmission per ray: bowtie × heel, [cols, rows, energies], as the EICT path ───
     # The bowtie's flux profile across the fan is its purpose (full beam at the centre, a small
@@ -356,7 +361,7 @@ function create_workspace(
     # does to the counts).
     _air_response(nc, nr, trans) = let out = zeros(Float64, nc, nr, n_bins)
         for b in 1:n_bins, e in 1:n_energies
-            w = Float64(W_cpu[e, b]); w == 0 && continue
+            w = Float64(W_kernel[e, b]); w == 0 && continue
             if trans === nothing
                 out[:, :, b] .+= w
             else
@@ -413,7 +418,18 @@ function create_workspace(
     # replaces; each matrix is memoised.
     _I0_physics_pileup = compute_detector_I0(geom, protocol, sum(weights_vec))
     _time_per_view_pileup = protocol.rotation_time / protocol.views
-    _count_rate_air = (_I0_physics_pileup / Float64(bf * bf)) / _time_per_view_pileup
+    # The incident rate per dexel of an unfiltered central ray, scaled to the ray with the
+    # highest air response (the brightest ray: the fan centre with a bowtie, a cathode-side row
+    # with the heel effect): that ray's incident rate is the top of the grid, and every ray's
+    # rate is the top scaled by its counts relative to that ray's. Spectrum-weighted source
+    # transmission of the brightest ray, from the same table the kernel applies.
+    _bright = argmax(dropdims(sum(I0_cpu; dims = 3); dims = 3))
+    _trans_bright = if _bt_binned === nothing
+        1.0
+    else
+        sum(Float64.(weights_vec) .* Float64.(_bt_binned[2][_bright, :])) / sum(Float64.(weights_vec))
+    end
+    _count_rate_air = (_I0_physics_pileup / Float64(bf * bf)) / _time_per_view_pileup * _trans_bright
     _pileup_rates = _use_pileup ? _count_rate_air .* [0.0, 0.25, 0.5, 0.75, 1.0] : Float64[]
     _pileup_S = if _use_pileup
         _τ_ns = Float64(pcct_detector.dead_time_ns)

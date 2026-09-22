@@ -324,10 +324,11 @@ nchannel_basis = let
     ]
 
     # The likelihood needs absolute responses, not independently normalized spectra.
+    # `I0_bins` is per ray ([n_cols, n_rows, n_bins]); this scanner has no bowtie, so every ray's
+    # air response is the same and its fan mean is the per-bin air count.
+    I0_vec = vec(mean(Float64.(Array(sim_bins.I0_bins)); dims = (1, 2)))
     I0_from_Φ = vec(sum(Float64.(Φ); dims = 1))
-    I0_relerr = maximum(abs.(
-        I0_from_Φ .- Float64.(sim_bins.I0_bins)
-    ) ./ max.(Float64.(sim_bins.I0_bins), eps(Float64)))
+    I0_relerr = maximum(abs.(I0_from_Φ .- I0_vec) ./ max.(I0_vec, eps(Float64)))
     I0_relerr < 5e-5 || error(
         "Applied response and I0 disagree (max relative error = $(I0_relerr))."
     )
@@ -343,7 +344,7 @@ nchannel_basis = let
 
     (
         E = E, Φ = Φ, μρ_I = μρ_I, μρ_W = μρ_W,
-        I0 = Float32.(sim_bins.I0_bins),
+        I0 = Float32.(I0_vec),
         μI_eff = μI_eff, μW_eff = μW_eff,
         normal_II = sum(abs2, μI_eff),
         normal_IW = sum(μI_eff .* μW_eff),

@@ -72,10 +72,12 @@ Create heel effect model with specified parameters.
 # Default values for typical CT tube:
 - anode_angle: 7° (common for CT)
 - target: tungsten
-- effective_thickness: 0.01 mm (conservative, produces ~5-10% intensity variation)
+- effective_thickness: 0.001 mm — the mean x-ray production depth; gives ≈ 2 %/degree of cone
+  angle for a 7° tungsten anode, the order of the textbook heel effect (30–45 % across ±11°).
 
-Note: Real CT tubes have heel effects producing 10-30% intensity variation across the field.
-Use effective_thickness_mm=0.02-0.05 for stronger effects.
+The anode angle must exceed the half-cone angle of the collimation (a 160 mm cone at 610 mm is
+±7.5°, so a 7° anode cannot be used with it): rays that would leave below the target surface are
+an invalid geometry, not a clamp.
 """
 function default_heel_effect(;
         anode_angle_deg::Real = 7.0,
@@ -181,6 +183,7 @@ function apply_heel_effect!(
     row_center_T = (T(n_rows) + one(T)) / T(2)
     row_pitch_det = T(geom.pixel_row_size * (geom.SDD / geom.SAD))
     SDD_T = T(geom.SDD)
+    _heel_geometry_valid(Float64(θ_anode), atan((n_rows - Float64(row_center_T)) * Float64(row_pitch_det) / Float64(SDD_T)))
 
     # Precompute reference angle attenuation for normalization
     # We normalize to the central ray (θ = 0) so that center intensity = 1.0
@@ -269,6 +272,15 @@ normalized to central ray.
 This is the spectral-domain heel effect, analogous to bowtie spectral transmission.
 Applied during forward projection by multiplying into the spectral weight matrix.
 """
+"An anode-side ray that leaves below the target surface is not a tube geometry: the anode angle must exceed the half-cone."
+function _heel_geometry_valid(θ_anode, half_cone)
+    θ_anode > half_cone || throw(ArgumentError(
+        "heel effect: the anode angle ($(round(θ_anode * 180 / π; digits = 2))°) must exceed the half-cone angle " *
+        "($(round(half_cone * 180 / π; digits = 2))°) or anode-side rays would leave below the target surface — " *
+        "use a larger anode angle or a narrower collimation"))
+    return true
+end
+
 function compute_heel_spectral(
         heel::HeelEffect,
         geom::CTGeometry,
@@ -296,6 +308,7 @@ function compute_heel_spectral(
     # of a 15 mm collimation this is a few percent; across a 160 mm cone (±7.5°) tens of percent.
     row_center = (n_rows + 1) / 2 + 0.0
     cone(row) = atan((row - row_center) * geom.pixel_row_size * (geom.SDD / geom.SAD) / geom.SDD)
+    _heel_geometry_valid(θ_anode, cone(n_rows))
 
     # Get energy-dependent μ for target material
     target_mat = if heel.target_material == :tungsten

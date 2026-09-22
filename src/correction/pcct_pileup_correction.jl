@@ -81,7 +81,7 @@ end
 
 Record the pile-up of every ray at that ray's own count rate: the truth counts
 `c_b = I0[col, row, b]·exp(-bin_b)` are mixed by the lower-triangular `S(rate)` of the ray's
-rate (`rate_air · Σ_b c_b / Σ_b I0_centre_b`), and the bins are rewritten as
+rate (`rate_air · Σ_b c_b / Σ_b I0_brightest_b`), and the bins are rewritten as
 `-log(recorded / I0[col, row, b])` so `I0 · exp(-bin) = recorded count` holds per ray.
 """
 function apply_pcct_pileup!(
@@ -94,7 +94,7 @@ function apply_pcct_pileup!(
     size(I0, 3) == 4 || error("apply_pcct_pileup!: I0 must have one [n_cols, n_rows] plane per bin (4), got $(size(I0, 3))")
     Sflat = similar(bins[1], T, length(S)); copyto!(Sflat, T.(vec(S)))
     nc = size(I0, 1); nr = size(I0, 2); m = Int32(nc * nr)
-    counts_air = T(sum(view(I0, (nc + 1) ÷ 2, (nr + 1) ÷ 2, :)))   # the central ray's air counts
+    counts_air = T(maximum(sum(Array(I0); dims = 3)))                # the brightest ray's air counts: the grid's top
     r_min = T(rates[1]); dr = T(rates[2] - rates[1]); K = Int32(length(rates))
     eps = T(1.0e-10)
     let b1 = bins[1], b2 = bins[2], b3 = bins[3], b4 = bins[4], i0 = I0, m = m, Sf = Sflat,
@@ -134,7 +134,7 @@ function apply_pcct_pileup_correction!(
     size(I0, 3) == 4 || error("apply_pcct_pileup_correction!: I0 must have one [n_cols, n_rows] plane per bin (4), got $(size(I0, 3))")
     Sflat = similar(bins[1], T, length(S)); copyto!(Sflat, T.(vec(S)))
     nc = size(I0, 1); nr = size(I0, 2); m = Int32(nc * nr)
-    counts_air = T(sum(view(I0, (nc + 1) ÷ 2, (nr + 1) ÷ 2, :)))
+    counts_air = T(maximum(sum(Array(I0); dims = 3)))                # the brightest ray's air counts: the grid's top
     r_min = T(rates[1]); dr = T(rates[2] - rates[1]); K = Int32(length(rates))
     eps = T(1.0e-10)
     let b1 = bins[1], b2 = bins[2], b3 = bins[3], b4 = bins[4], i0 = I0, m = m, Sf = Sflat,

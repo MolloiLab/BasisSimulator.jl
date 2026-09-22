@@ -1185,7 +1185,7 @@ function build_physics_config(
     if sim_opts.use_heel_effect
         angle = scanner.target_angle
         if angle > 0
-            kwargs[:heel_effect] = HeelEffect(angle, :tungsten, 0.01, true)
+            kwargs[:heel_effect] = default_heel_effect(anode_angle_deg = angle)
         else
             kwargs[:heel_effect] = default_heel_effect()
         end

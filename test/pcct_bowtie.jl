@@ -41,9 +41,7 @@ _air() = BS.Phantom(zeros(UInt8, 8, 8, 8), [BS.XA.Materials.air], (1.0, 1.0, 1.0
         geom = ws.geom
         n_cols = geom.n_cols; r = geom.n_rows ÷ 2 + 1
         # measured counts per ray: the bins are log-transmissions against the per-bin air response
-        counts = res.raw_counts === nothing ?
-            sum(res.I0_bins[:, b] .* exp.(-Array(res.pcct_sino.bins[b])[:, r, 1]) for b in 1:4) :
-            sum(Array(res.raw_counts[b])[:, r, 1] for b in 1:4)
+        counts = sum(Array(res.raw_counts[b])[:, r, 1] for b in 1:4)
         centre = counts[n_cols ÷ 2]
         profile = counts ./ centre
 

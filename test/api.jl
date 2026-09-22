@@ -369,8 +369,8 @@ end
         @test length(res.pcct_sino.bins) == 4
         @test size(res.I0_bins, 3) == 4          # per ray: [n_cols, n_rows, n_bins]
         @test all(>(0), Array(res.I0_bins))
-        @test res.pileup_S isa Matrix{Float64}
-        @test size(res.pileup_S) == (4, 4)
+        @test res.pileup_S isa Array{Float64, 3}
+        @test size(res.pileup_S)[1:2] == (4, 4)
         for bin in res.pcct_sino.bins
             @test all(isfinite, Array(bin))
         end
@@ -427,7 +427,7 @@ _ts("entering simulate!(PCCTWorkspace) — MC-LUT pileup wiring testset")
         # Workspace state reflects the toggle.
         @test on.ws.pileup === true
         @test off.ws.pileup === false
-        @test on.ws.pileup_S isa Matrix{Float64}
+        @test on.ws.pileup_S isa Array{Float64, 3}
         @test size(on.ws.pileup_S) == (4, 4)
         @test off.ws.pileup_S === nothing
 
@@ -1532,13 +1532,13 @@ _ts("entering Workspace ctors — PCCT field invariants testset")
 
         # Spectral arrays sized to bin / energy counts.
         @test size(ws.I0, 3) == s.scanner.n_energy_bins
-        @test length(ws.I0_bins_norm) == s.scanner.n_energy_bins
+        @test length(ws.I0) == s.scanner.n_energy_bins
         @test length(ws.thresholds_T) == s.scanner.n_energy_bins
         @test length(ws.η) == length(ws.energies)
 
         # Pile-up wiring (PCCTScanner.pileup default = true).
         @test ws.pileup === true
-        @test ws.pileup_S isa Matrix{Float64}
+        @test ws.pileup_S isa Array{Float64, 3}
         @test size(ws.pileup_S) == (s.scanner.n_energy_bins, s.scanner.n_energy_bins)
 
         # Native-res buffers are nothing when binning_factor == 1 (toy default).
