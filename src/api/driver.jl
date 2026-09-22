@@ -62,15 +62,16 @@ end
 
 function _capture_pcct_raw_counts(
         bins::Vector{<:AbstractArray{T, 3}},
-        I0_bins::AbstractVector,
+        I0::AbstractArray{T, 3},
     ) where {T<:AbstractFloat}
-    length(bins) == length(I0_bins) ||
-        throw(DimensionMismatch("one I0 value is required per PCCT bin"))
+    length(bins) == size(I0, 3) ||
+        throw(DimensionMismatch("one I0 plane is required per PCCT bin"))
     captured = [similar(bin) for bin in bins]
+    n_rays = Int32(size(I0, 1) * size(I0, 2))
     for (b, bin_sino) in enumerate(bins)
-        let out = captured[b], input = bin_sino, I0b = T(I0_bins[b])
+        let out = captured[b], input = bin_sino, i0 = I0, m = n_rays, off = Int32(b - 1) * n_rays
             AK.foreachindex(input) do idx
-                out[idx] = I0b * exp(-input[idx])
+                out[idx] = i0[(Int32(idx - 1) % m) + Int32(1) + off] * exp(-input[idx])
             end
         end
     end
@@ -141,7 +142,7 @@ function simulate!(
         ws_scratch = ws.scratch,
         ws_thresholds_T = ws.thresholds_T,
         ws_η = ws.η, ws_R = ws.R, ws_R_energies = ws.R_energies,
-        ws_I0_bins_norm = ws.I0_bins_norm,
+        ws_I0 = ws.I0,
         ws_μ_lut_cpu = ws.μ_lut_cpu, ws_μ_lut_gpu = ws.μ_lut_gpu,
         ws_μ_table = ws.μ_table,
         ws_source_positions = ws.geom_source_positions,
@@ -162,6 +163,8 @@ function simulate!(
         ws_W_matrix_gpu = ws.W_matrix_gpu,
         ws_outputs_flat = ws.outputs_flat,
         ws_native_outputs_flat = ws.native_outputs_flat,
+        # the source transmission per ray (bowtie × heel) at the projection's resolution
+        ws_source_spectral = ws.native_geom !== nothing ? ws.native_bowtie_spectral : ws.bowtie_spectral,
         projector = sim_opts.projector,
     )
 
@@ -198,24 +201,25 @@ function simulate!(
     # References:
     # - Ohnesorge B et al., Eur Radiol 1999 (spatial scatter model)
     # - NIST XCOM (per-energy Compton fractions)
-    I0_bins = ws.I0_bins
-    I0_total = T(sum(I0_bins))
+    I0 = ws.I0
+    n_rays = Int32(size(I0, 1) * size(I0, 2))
     eps_combine = T(1.0e-10)
+    I0_total = ws.I0_all           # [n_cols, n_rows]: Σ_b I0[col, row, b], the whole-spectrum air response per ray
 
     if config.scatter !== nothing && sim_opts.use_scatter
         # Step 1: Combine primary bins → combined_primary (for scatter spatial estimation)
         combined_primary = ws.combined
         fill!(combined_primary, zero(T))
         for (b, bin_sino) in enumerate(pcct_sino.bins)
-            let I0b = T(I0_bins[b]), bs = bin_sino, comb = combined_primary
+            let i0 = I0, m = n_rays, off = Int32(b - 1) * n_rays, bs = bin_sino, comb = combined_primary
                 AK.foreachindex(bs) do idx
-                    comb[idx] += I0b * exp(-bs[idx])
+                    comb[idx] += i0[(Int32(idx - 1) % m) + Int32(1) + off] * exp(-bs[idx])
                 end
             end
         end
-        let comb = combined_primary, I0t = I0_total, eps = eps_combine
+        let comb = combined_primary, i0t = I0_total, m = n_rays, eps = eps_combine
             AK.foreachindex(comb) do idx
-                comb[idx] = -log(max(comb[idx], eps) / I0t)
+                comb[idx] = -log(max(comb[idx], eps) / i0t[(Int32(idx - 1) % m) + Int32(1)])
             end
         end
 
@@ -234,7 +238,7 @@ function simulate!(
         )
 
         # Step 4: Inject scatter into each bin
-        inject_scatter_bins!(pcct_sino.bins, scatter_field, I0_bins, I0_total, bin_weights)
+        inject_scatter_bins!(pcct_sino.bins, scatter_field, I0, I0_total, bin_weights)
     end
 
     # ─── Noise (in-place on pcct_sino.bins — now includes scatter in counts) ───
@@ -251,7 +255,7 @@ function simulate!(
         [similar(bin) for bin in pcct_sino.bins] : nothing
     if sim_opts.use_noise
         apply_pcct_noise!(
-            pcct_sino, ws.I0_bins;
+            pcct_sino, ws.I0_cpu;
             seed = sim_opts.seed,
             ws_noise_staging = ws.noise_staging,
             ws_rng = ws.rng,
@@ -289,39 +293,8 @@ function simulate!(
     # vs the I0_total used inside scatter — over-corrected bins 1–3,
     # under-corrected bin 4 → bin-2-only streaks.
     if ws.pileup && ws.pileup_S !== nothing
-        S = ws.pileup_S
-        n_bins = length(pcct_sino.bins)
-        n_bins == 4 || error("MC pile-up application is currently specialized to 4 bins; got $(n_bins).")
-
-        eps_pileup = T(1.0e-10)
-        let b1 = pcct_sino.bins[1], b2 = pcct_sino.bins[2],
-                b3 = pcct_sino.bins[3], b4 = pcct_sino.bins[4],
-                I0_t1 = T(ws.I0_bins[1]), I0_t2 = T(ws.I0_bins[2]),
-                I0_t3 = T(ws.I0_bins[3]), I0_t4 = T(ws.I0_bins[4]),
-                S11 = T(S[1, 1]),
-                S21 = T(S[2, 1]), S22 = T(S[2, 2]),
-                S31 = T(S[3, 1]), S32 = T(S[3, 2]), S33 = T(S[3, 3]),
-                S41 = T(S[4, 1]), S42 = T(S[4, 2]), S43 = T(S[4, 3]), S44 = T(S[4, 4]),
-                eps = eps_pileup
-            AK.foreachindex(b1) do idx
-                # 1. truth counts per bin (Float32 registers, no scratch sinos)
-                c1 = I0_t1 * exp(-b1[idx])
-                c2 = I0_t2 * exp(-b2[idx])
-                c3 = I0_t3 * exp(-b3[idx])
-                c4 = I0_t4 * exp(-b4[idx])
-                # 2. recorded counts via lower-triangular S × counts
-                r1 = S11 * c1
-                r2 = S21 * c1 + S22 * c2
-                r3 = S31 * c1 + S32 * c2 + S33 * c3
-                r4 = S41 * c1 + S42 * c2 + S43 * c3 + S44 * c4
-                # 3. back to log-line-integral, normalized against TRUTH I0
-                #    so I0_b · exp(-bin) = recorded count for downstream math.
-                b1[idx] = -log(max(r1, eps) / I0_t1)
-                b2[idx] = -log(max(r2, eps) / I0_t2)
-                b3[idx] = -log(max(r3, eps) / I0_t3)
-                b4[idx] = -log(max(r4, eps) / I0_t4)
-            end
-        end
+        length(pcct_sino.bins) == 4 || error("MC pile-up application is currently specialized to 4 bins; got $(length(pcct_sino.bins)).")
+        apply_pcct_pileup!(pcct_sino.bins, ws.I0, ws.pileup_S, ws.pileup_rates, ws.pileup_rate_air)
     end
 
     # Snapshot the acquisition output before either correction mutates it.
@@ -336,7 +309,7 @@ function simulate!(
     elseif capture_raw_counts
         # Pile-up on (fractional recorded counts) or noise off (expected
         # counts λ): reconstruct the pre-correction count-domain state.
-        _capture_pcct_raw_counts(pcct_sino.bins, ws.I0_bins)
+        _capture_pcct_raw_counts(pcct_sino.bins, ws.I0)
     else
         nothing
     end
@@ -347,28 +320,28 @@ function simulate!(
     # processing.  Logically identical to the validated nb08 inline sim_pileup cell.
     # Runs before scatter correction so the latter re-estimates from un-piled counts.
     if ws.pileup && ws.pileup_S !== nothing && ws.pileup_correction
-        apply_pcct_pileup_correction!(pcct_sino.bins, ws.I0_bins, ws.pileup_S)
+        apply_pcct_pileup_correction!(pcct_sino.bins, ws.I0, ws.pileup_S, ws.pileup_rates, ws.pileup_rate_air)
     end
 
     # --- PCCT scatter correction (optional; scatter_correction) ---
     # Model-based re-estimate-and-subtract, logically identical to the validated
     # nb08 inline scatter-correction cell: re-combine the CURRENT bins (now
     # primary+scatter+noise+pileup), re-estimate the Ohnesorge field, and subtract
-    # the per-bin scatter.  Scalar I0 here equals the per-pixel reference for a
-    # bowtie-free scanner.  Runs after pileup so it sees the recorded counts.
+    # the per-bin scatter, per ray against each ray's own air response.  Runs after pileup so
+    # it sees the recorded counts.
     if config.scatter !== nothing && ws.scatter_correction
         combined_corr = ws.combined
         fill!(combined_corr, zero(T))
         for (b, bin_sino) in enumerate(pcct_sino.bins)
-            let I0b = T(I0_bins[b]), bs = bin_sino, comb = combined_corr
+            let i0 = I0, m = n_rays, off = Int32(b - 1) * n_rays, bs = bin_sino, comb = combined_corr
                 AK.foreachindex(bs) do idx
-                    comb[idx] += I0b * exp(-bs[idx])
+                    comb[idx] += i0[(Int32(idx - 1) % m) + Int32(1) + off] * exp(-bs[idx])
                 end
             end
         end
-        let comb = combined_corr, I0t = I0_total, eps = eps_combine
+        let comb = combined_corr, i0t = I0_total, m = n_rays, eps = eps_combine
             AK.foreachindex(comb) do idx
-                comb[idx] = -log(max(comb[idx], eps) / I0t)
+                comb[idx] = -log(max(comb[idx], eps) / i0t[(Int32(idx - 1) % m) + Int32(1)])
             end
         end
         scatter_field_corr = ws.tube_physics_scratch
@@ -382,7 +355,7 @@ function simulate!(
             ew_corr, Float64.(ws.η), ws.R, ws.kVp
         )
         inject_scatter_bins!(
-            pcct_sino.bins, scatter_field_corr, I0_bins, I0_total,
+            pcct_sino.bins, scatter_field_corr, I0, I0_total,
             bin_weights_corr; subtract = true
         )
     end
@@ -415,7 +388,7 @@ function simulate!(
     # [`apply_pcct_noise!`](@ref).
     result = (
         pcct_sino = pcct_sino,
-        I0_bins = ws.I0_bins,
+        I0_bins = ws.I0,            # per ray: [n_cols, n_rows, n_bins], the air response of each ray and bin
         pileup_S = ws.pileup_S,
         dose = report_dose ? dose_report(ws, protocol; dose_kwargs...) : nothing,
     )

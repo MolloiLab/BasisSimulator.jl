@@ -46,6 +46,7 @@ const BS = BasisSimulator
     end
     @testset "paths/" begin
         include("paths.jl")
+        include("pcct_bowtie.jl")
     end
     @testset "phantoms/" begin
         include("phantoms.jl")

@@ -48,8 +48,17 @@ mutable struct PCCTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A1 <
     η::Vector{Float64}          # quantum efficiency vector (n_energies)
     R::Matrix{Float64}          # spectral response matrix (n_energies × n_bins)
     R_energies::Vector{Float64} # energy grid for R matrix
-    I0_bins::Vector{Float64}    # per-bin I0 values for combine (n_bins)
-    I0_bins_norm::Vector{Float64} # per-bin I0 values for fwd proj normalization (n_bins)
+    # ─── Air response, per ray ───
+    # `I0[col, row, b]` is the forward kernel's own air output for that ray and bin — the source
+    # spectrum through the bowtie (and heel effect) at that ray, Σ_e W[e, b]·bt[col, row, e] — so
+    # every bin is a log-transmission against its own ray's air response and p_air ≡ 0 holds
+    # per ray, as a real scanner's air calibration makes it.  With no bowtie it is constant
+    # across the fan.  Every count-domain step (noise, pile-up, scatter, capture, combine)
+    # forms counts as `I0[col, row, b] · exp(-p)`.
+    I0::A3                      # [n_cols, n_rows, n_bins], binned resolution, backend
+    I0_all::A2                  # [n_cols, n_rows]: Σ_b I0, the whole-spectrum air response per ray
+    I0_cpu::Array{Float64, 3}   # the same on the host, for the CPU noise draw
+    I0_native::Union{Nothing, A3}  # [native cols, native rows, n_bins] when bf > 1
     thresholds_T::Vector{T}     # T-typed thresholds (n_bins)
 
     # ─── RNG state ───
@@ -82,24 +91,27 @@ mutable struct PCCTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A1 <
     # ─── Tiled spectral projection (fused PCCT forward projection) ───
     μ_table_gpu::A2                          # GPU copy of μ_table [n_regions, n_energies_padded]
     W_matrix_gpu::A2                         # spectral weight matrix [n_energies_padded, n_bins] on GPU
+    bowtie_spectral::Union{Nothing, A3}      # [n_cols, n_rows, n_energies_padded] source transmission per ray (bowtie × heel), nothing when flat
+    native_bowtie_spectral::Union{Nothing, A3}  # the same at native resolution when bf > 1
     outputs_flat::A1                         # flattened output buffer [n_elements * n_bins] on GPU
     native_outputs_flat::Union{Nothing, A1}  # native-res flattened output (nothing if bf==1)
 
-    # ─── Pulse pileup (full MC-LUT spectral migration) ───
-    # `pileup_S` is the MC-derived n_bins × n_bins matrix returned by
-    # `compute_mc_pileup_matrix`: S[i,j] = fraction of true-bin-j counts
-    # recorded in bin-i.  Column sums ≤ 1 — the deficit is the count loss
-    # from pileup, so a single S × counts multiply captures both spectral
-    # migration AND count loss.  `simulate!` applies S in count domain and
-    # re-normalizes against `I0_bins` (truth) so the returned bins remain
-    # `-log(recorded / I0_truth)` and the round-trip
-    # `I0_b · exp(-bin) = recorded count` stays valid for downstream
-    # count-domain math (scatter correction, bin combine, …).
+    # ─── Pulse pileup (MC-LUT spectral migration, per ray by count rate) ───
+    # Pile-up is a count-rate effect, so the migration matrix is a function of the rate: a ray
+    # through the patient at 1/1000 of the air flux piles up ~1/1000 as much, and with a bowtie
+    # the air rate itself falls across the fan.  `pileup_S[:, :, k]` is `compute_mc_pileup_matrix`
+    # at count rate `pileup_rates[k]` (log-spaced from a small fraction of the central air rate
+    # up to it): S[i, j] = fraction of true-bin-j counts recorded in bin i, column sums ≤ 1, the
+    # deficit being the count loss.  `simulate!` picks each ray's matrix from its own truth count
+    # rate (linear in log rate) and the correction inverts that same per-ray matrix, so the bins
+    # stay `-log(recorded / I0[col, row, b])` and `I0 · exp(-bin) = recorded count` holds per ray.
     pileup::Bool                              # PCCTScanner.pileup && dead_time_ns > 0
     pileup_correction::Bool                            # PCCTScanner.pileup_correction
     scatter_correction::Bool                           # PCCTScanner.scatter_correction
     noise_reduction::Float64                           # PCCTScanner.noise_reduction
-    pileup_S::Union{Nothing, Matrix{Float64}}          # (n_bins × n_bins), nothing when pileup off
+    pileup_S::Union{Nothing, Array{Float64, 3}}        # (n_bins × n_bins × n_rates), nothing when pileup off
+    pileup_rates::Vector{Float64}                      # the count rates (photons / s / dexel) of pileup_S
+    pileup_rate_air::Float64                           # the central air count rate per dexel
 
     # ─── Pre-computed setup data (computed once, reused) ───
     geom::CTGeometry                         # CT geometry (binned resolution)
@@ -210,8 +222,6 @@ function create_workspace(
     # measured air rays read p = 0.24/0.22/0.17/0.13 instead of 0, a
     # per-bin DC that biased every PCCT decomposition.)  Filled right after
     # W_cpu is built below.
-    I0_bins_norm_vec = Float64[]
-    I0_bins_combine = I0_bins_norm_vec === nothing ? Float64[] : Float64[]
 
     # Pre-compute T-typed thresholds
     thresholds_T_vec = T.(thresholds)
@@ -315,33 +325,62 @@ function create_workspace(
     end
     _W_matrix_gpu = allocate_backend(n_energies_padded, n_bins)
 
-    # Source spectral: fold center-pixel bowtie into W matrix
-    # The bowtie's dominant effect is spectral hardening (energy-dependent), which is
-    # nearly uniform across the detector. The per-pixel spatial variation (~5-10%) is
-    # secondary. By folding center-pixel bowtie into W, we capture the hardening
-    # without the GPU Float32 precision issues of the per-pixel spectral path.
-    bowtie_filter_pcct = resolve_bowtie_filter(scanner.bowtie_filter)
-    if bowtie_filter_pcct !== nothing && bowtie_filter_pcct.name != "none"
-        bt_cpu = compute_bowtie_attenuation_spectral(bowtie_filter_pcct, geom, Float64.(energies))
-        center_col = sino_shape[1] ÷ 2
-        center_row = sino_shape[2] ÷ 2
-        for e_idx in 1:n_energies
-            bt_center = Float64(bt_cpu[center_col, center_row, e_idx])
-            for b in 1:n_bins
-                W_cpu[e_idx, b] *= T(bt_center)
+    copyto!(_W_matrix_gpu, W_cpu)
+
+    # ─── Source transmission per ray: bowtie × heel, [cols, rows, energies], as the EICT path ───
+    # The bowtie's flux profile across the fan is its purpose (full beam at the centre, a small
+    # fraction at the edge); it enters the fused spectral kernel per ray, and the air response
+    # per ray below is what the bins are normalised against.
+    _bt_table(g) = let
+        bt = bowtie_filter !== nothing && bowtie_filter.name != "none" ?
+            compute_bowtie_attenuation_spectral(bowtie_filter, g, Float64.(energies)) : nothing
+        heel = config.heel_effect !== nothing ? compute_heel_spectral(config.heel_effect, g, Float64.(energies)) : nothing
+        trans = bt === nothing ? heel : (heel === nothing ? bt : bt .* heel)
+        trans === nothing && return nothing
+        padded = zeros(T, size(trans, 1), size(trans, 2), n_energies_padded)
+        padded[:, :, 1:n_energies] .= T.(trans)
+        out = allocate_backend(size(padded)...)
+        copyto!(out, padded)
+        (out, trans)
+    end
+    bowtie_filter = resolve_bowtie_filter(scanner.bowtie_filter)
+    _bt_binned = _bt_table(geom)
+    _bt_native = bf > 1 ? _bt_table(_native_geom) : nothing
+    _bowtie_spectral_gpu = _bt_binned === nothing ? nothing : _bt_binned[1]
+    _native_bowtie_spectral_gpu = _bt_native === nothing ? nothing : _bt_native[1]
+
+    # ─── Air response per ray: I0[col, row, b] = Σ_e W[e, b] · trans[col, row, e] ───
+    # exactly the fused kernel's output for a ray through nothing, so p_air ≡ 0 per ray. On the
+    # native path the binned response is the binned native response (the same sum the binning
+    # does to the counts).
+    _air_response(nc, nr, trans) = let out = zeros(Float64, nc, nr, n_bins)
+        for b in 1:n_bins, e in 1:n_energies
+            w = Float64(W_cpu[e, b]); w == 0 && continue
+            if trans === nothing
+                out[:, :, b] .+= w
+            else
+                @views out[:, :, b] .+= w .* Float64.(trans[:, :, e])
             end
         end
-        copyto!(_W_matrix_gpu, W_cpu)
+        out
     end
-
-    # AIR CALIBRATION — after ALL W shaping (η, DRM, bowtie-centre fold):
-    # the fused kernel's air output is exactly Σ_e W[e,b], so this
-    # normalization guarantees p_air ≡ 0 per bin by construction.  (The old
-    # _compute_bin_I0 normalization ignored the bowtie fold → air rays read
-    # p = 0.13–0.24 per bin, a DC on every ray.)
-    append!(I0_bins_norm_vec, [sum(Float64.(W_cpu[1:n_energies, b])) for b in 1:n_bins])
-    append!(I0_bins_combine, I0_bins_norm_vec)
-    copyto!(_W_matrix_gpu, W_cpu)
+    I0_cpu = if bf > 1
+        native = _air_response(_native_n_cols, _native_n_rows, _bt_native === nothing ? nothing : _bt_native[2])
+        binned = zeros(Float64, sino_shape[1], sino_shape[2], n_bins)
+        for b in 1:n_bins, r in 1:sino_shape[2], c in 1:sino_shape[1]
+            binned[c, r, b] = sum(@view native[((c - 1) * bf + 1):(c * bf), ((r - 1) * bf + 1):(r * bf), b])
+        end
+        _I0_native_gpu = allocate_backend(size(native)...)
+        copyto!(_I0_native_gpu, T.(native))
+        binned
+    else
+        _I0_native_gpu = nothing
+        _air_response(sino_shape[1], sino_shape[2], _bt_binned === nothing ? nothing : _bt_binned[2])
+    end
+    _I0_gpu = allocate_backend(size(I0_cpu)...)
+    copyto!(_I0_gpu, T.(I0_cpu))
+    _I0_all_gpu = allocate_backend(size(I0_cpu, 1), size(I0_cpu, 2))
+    copyto!(_I0_all_gpu, T.(dropdims(sum(I0_cpu; dims = 3); dims = 3)))
 
     # Flattened output buffer for spectral projection
     _outputs_flat = allocate_backend(n_elements * n_bins)
@@ -365,18 +404,23 @@ function create_workspace(
     # Count rate per dexel = (I0 / bf²) / time_per_view  [photons/s]
     _use_pileup = scanner.pileup &&
         pcct_detector.dead_time_ns > 0
+    # The central air count rate per dexel sets the top of the rate grid; the grid runs down to
+    # 1e-4 of it (a ray through 35 cm of tissue at 140 kVp), 16 points, log-spaced.
+    _I0_physics_pileup = compute_detector_I0(geom, protocol, sum(weights_vec))
+    _time_per_view_pileup = protocol.rotation_time / protocol.views
+    _count_rate_air = (_I0_physics_pileup / Float64(bf * bf)) / _time_per_view_pileup
+    _pileup_rates = _use_pileup ? [_count_rate_air * 10.0^x for x in range(-4, 0; length = 16)] : Float64[]
     _pileup_S = if _use_pileup
-        _I0_physics_pileup = compute_detector_I0(geom, protocol, sum(weights_vec))
-        _time_per_view_pileup = protocol.rotation_time / protocol.views
-        _count_rate_per_dexel = (_I0_physics_pileup / Float64(bf * bf)) / _time_per_view_pileup
         _τ_ns = Float64(pcct_detector.dead_time_ns)
         w_norm = Float64.(weights_vec) ./ sum(Float64.(weights_vec))
-        compute_mc_pileup_matrix(
-            pcct_detector.energy_thresholds_keV,
-            w_norm, Float64.(energies),
-            _count_rate_per_dexel, _τ_ns;
-            n_trials = 5000, seed = 42
-        )
+        S = zeros(Float64, n_bins, n_bins, length(_pileup_rates))
+        for (k, rate) in enumerate(_pileup_rates)
+            S[:, :, k] = compute_mc_pileup_matrix(
+                pcct_detector.energy_thresholds_keV, w_norm, Float64.(energies), rate, _τ_ns;
+                n_trials = 5000, seed = 42 + k,
+            )
+        end
+        S
     else
         nothing
     end
@@ -405,14 +449,15 @@ function create_workspace(
         bins, μ_volume, sino_buf, scratch,
         combined,
         noise_staging,
-        η_vec, R_mat, R_energies_vec, I0_bins_combine, I0_bins_norm_vec, thresholds_T_vec, rng,
+        η_vec, R_mat, R_energies_vec, _I0_gpu, _I0_all_gpu, I0_cpu, _I0_native_gpu, thresholds_T_vec, rng,
         μ_lut_cpu, μ_lut_gpu, μ_table,
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
         _native_bins, _native_sino_buf,
         _native_geom, _n_src, _n_det, _n_u, _n_v,
         tube_scratch, _pcct_focal_kernel,
-        _μ_table_gpu, _W_matrix_gpu, _outputs_flat, _native_outputs_flat,
+        _μ_table_gpu, _W_matrix_gpu, _bowtie_spectral_gpu, _native_bowtie_spectral_gpu, _outputs_flat, _native_outputs_flat,
         _use_pileup, scanner.pileup_correction, scanner.scatter_correction, Float64(scanner.noise_reduction), _pileup_S,
+        _pileup_rates, _count_rate_air,
         geom, energies, weights_vec, config, pcct_detector, mats,
         kVp, dose_source(scanner, protocol)
     )

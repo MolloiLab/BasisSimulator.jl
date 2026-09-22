@@ -88,13 +88,13 @@ function pcct_rwls_basis(
 end
 
 """
-    combine_pcct_bin_counts!(out_bins, raw_bins, I0_bins, bin_groups;
+    combine_pcct_bin_counts!(out_bins, raw_bins, I0, bin_groups;
                               chunk_size = nothing) -> I0::Vector{Float64}
 
 Streaming, in-place combine.  Writes into the **pre-allocated** `out_bins`
 on whatever backend they live on (CPU `Array`, Metal `MtlArray`, …):
 
-    out_bins[k][px] = Σ_{b ∈ bin_groups[k]} I0_bins[b] · exp(-raw_bins[b][px])
+    out_bins[k][col, row, v] = Σ_{b ∈ bin_groups[k]} I0[col, row, b] · exp(-raw_bins[b][col, row, v])
 
 The caller pre-allocates `out_bins[k]` with `similar(template, shape...)`,
 where `template` chooses the backend (e.g. an `MtlArray` for GPU).  This
@@ -125,17 +125,17 @@ staging buffer (~100 MB at `chunk_size = 100`) plus the GPU-resident
   same backend, or when raw bins are small).  Pass an explicit chunk
   (e.g. 100) for big sinograms with raw on CPU + out on GPU.
 
-Returns the per-group `I0` aggregate vector.
+Returns the per-group `I0` aggregate, per ray: a `[n_cols, n_rows]` matrix per group.
 """
 function combine_pcct_bin_counts!(
         out_bins::AbstractVector,
         raw_bins::AbstractVector,
-        I0_bins::AbstractVector{<:Real},
+        I0::AbstractArray{<:Real, 3},
         bin_groups::AbstractVector{<:AbstractVector{<:Integer}};
         chunk_size::Union{Nothing, Integer} = nothing,
     )
-    length(raw_bins) == length(I0_bins) ||
-        error("combine_pcct_bin_counts!: length(raw_bins) = $(length(raw_bins)) ≠ length(I0_bins) = $(length(I0_bins)).")
+    length(raw_bins) == size(I0, 3) ||
+        error("combine_pcct_bin_counts!: length(raw_bins) = $(length(raw_bins)) ≠ size(I0, 3) = $(size(I0, 3)); I0 is per ray, [n_cols, n_rows, n_bins].")
     length(out_bins) == length(bin_groups) ||
         error("combine_pcct_bin_counts!: length(out_bins) = $(length(out_bins)) ≠ length(bin_groups) = $(length(bin_groups)).")
     shape = size(first(raw_bins))
@@ -159,10 +159,12 @@ function combine_pcct_bin_counts!(
         out_k = out_bins[k]
         fill!(out_k, zero(eltype(out_k)))
         for b in grp
-            I0b   = eltype(out_k)(I0_bins[b])
+            # the air response of bin b, per ray, on the output backend, broadcast over views
+            I0b   = similar(out_k, eltype(out_k), shape[1], shape[2], 1)
+            copyto!(I0b, reshape(eltype(out_k).(Array(view(I0, :, :, b))), shape[1], shape[2], 1))
             raw_b = raw_bins[b]
             if same_backend
-                # Single fused kernel — out_k += I0b * exp(-raw_b).
+                # Single fused kernel — out_k += I0b * exp(-raw_b), I0b per ray.
                 @. out_k = out_k + I0b * exp(-raw_b)
             else
                 # Stream raw_b's chunks into the staging buffer, accumulate.
@@ -182,12 +184,13 @@ function combine_pcct_bin_counts!(
         end
     end
     staging = nothing
-    [Float64(sum(I0_bins[b] for b in grp)) for grp in bin_groups]
+    # the per-group air response, per ray: Σ_{b ∈ group} I0[col, row, b]
+    [Float64.(dropdims(sum(view(Array(I0), :, :, grp); dims = 3); dims = 3)) for grp in bin_groups]
 end
 
 """
-    combine_pcct_bin_counts(bins, I0_bins, bin_groups; T = Float32)
-        -> (counts::Vector{Array{T, 3}}, I0::Vector{Float64})
+    combine_pcct_bin_counts(bins, I0, bin_groups; T = Float32)
+        -> (counts::Vector{Array{T, 3}}, I0::Vector{Matrix{Float64}})
 
 Allocating CPU wrapper around `combine_pcct_bin_counts!` — kept for
 notebooks that don't care about peak memory.  Output `counts` are CPU
@@ -197,14 +200,14 @@ CPU+GPU duplicate.
 """
 function combine_pcct_bin_counts(
         bins::AbstractVector,
-        I0_bins::AbstractVector{<:Real},
+        I0::AbstractArray{<:Real, 3},
         bin_groups::AbstractVector{<:AbstractVector{<:Integer}};
         T::Type = Float32,
     )
     shape = size(first(bins))
     n_groups = length(bin_groups)
     counts = [zeros(T, shape) for _ in 1:n_groups]
-    I0 = combine_pcct_bin_counts!(counts, bins, I0_bins, bin_groups)
+    I0 = combine_pcct_bin_counts!(counts, bins, I0, bin_groups)
     (counts = counts, I0 = I0)
 end
 

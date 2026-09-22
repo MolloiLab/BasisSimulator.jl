@@ -60,3 +60,11 @@ noiseless counts per ray.
 5. Tests: `test/pcct_bowtie.jl` (flux profile, air ≡ 0, `:none` flat), noise ∝ 1/√I0(col),
    pile-up per rate, correction round trip, scatter conservation; `:none` + no pile-up must be
    bit-identical to main.
+
+**Found on the way (item 10): the heel effect is modelled along the fan.** `src/source/heel_effect.jl`
+sets the effective takeoff angle `θ_eff = θ_anode + γ` with `γ` the fan angle of the column, so the
+transmission falls 5× across a 48 cm fan (measured: air counts edge / centre 0.22 with no bowtie).
+In a third-generation CT the anode axis is parallel to z: the heel gradient runs along the detector
+rows (the cone), at a few tens of percent across a wide cone, and is flat along the fan. On by
+default in `SimOptions`; off in the semmd cohort. Fix: the heel table varies with the cone angle
+of the row, magnitude checked against the literature, with a failing test first.

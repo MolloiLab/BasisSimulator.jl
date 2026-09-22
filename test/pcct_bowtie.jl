@@ -29,7 +29,9 @@ _air() = BS.Phantom(zeros(UInt8, 8, 8, 8), [BS.XA.Materials.air], (1.0, 1.0, 1.0
 
 @testset "photon-counting bowtie across the fan" begin
     protocol = BS.CTProtocol(kVp = 140, mA = 100.0, views = 60, rotation_time = 0.5, collimation_mm = 4.8, additional_filters = [("Ti", 0.9)])
-    opts = BS.SimOptions(use_noise = false, use_focal_spot = false, use_scatter = false, seed = 1)
+    # the heel effect is a separate per-ray factor (and today on the wrong axis — see heel_effect.jl);
+    # this test isolates the bowtie
+    opts = BS.SimOptions(use_noise = false, use_focal_spot = false, use_scatter = false, use_heel_effect = false, seed = 1)
     recon = BS.ReconOptions(matrix_size = (64, 64, 4), fov_cm = 30.0, z_cm = 0.16)
 
     for bowtie in (:large_body, :none)
@@ -51,10 +53,15 @@ _air() = BS.Phantom(zeros(UInt8, 8, 8, 8), [BS.XA.Materials.air], (1.0, 1.0, 1.0
             if bowtie === :none
                 @test all(isapprox.(profile, 1.0; atol = 3e-3))
             else
+                # the detected profile: the applied response W[e, b] (spectrum × efficiency × bin
+                # response) through the bowtie's own transmission table — the beam hardens
+                # towards the edge, and the detector weights a harder spectrum differently, so
+                # the detected ratio is not the incident one
                 bt = BS.resolve_bowtie_filter(bowtie)
-                e, w = BS.resolve_source_spectrum_without_bowtie(opts, protocol; scanner)
-                B = BS.compute_bowtie_attenuation_spectral(bt, geom, Float64.(e))
-                expected(c) = sum(Float64.(w) .* Float64.(B[c, r, :])) / sum(Float64.(w) .* Float64.(B[n_cols ÷ 2, r, :]))
+                B = BS.compute_bowtie_attenuation_spectral(bt, geom, Float64.(ws.energies))
+                W = Float64.(Array(ws.W_matrix_gpu))[1:length(ws.energies), :]
+                detected(c) = sum(W[e, b] * Float64(B[c, r, e]) for e in axes(W, 1), b in axes(W, 2))
+                expected(c) = detected(c) / detected(n_cols ÷ 2)
                 for c in (1, round(Int, 0.15n_cols), round(Int, 0.3n_cols), n_cols ÷ 2)
                     @test isapprox(profile[c], expected(c); rtol = 0.03)
                 end
@@ -68,6 +75,74 @@ _air() = BS.Phantom(zeros(UInt8, 8, 8, 8), [BS.XA.Materials.air], (1.0, 1.0, 1.0
                 p = Array(res.pcct_sino.bins[b])[:, r, 1]
                 @test maximum(abs, p) < 3e-3
             end
+        end
+    end
+end
+
+@testset "per-ray counts: noise, pile-up, scatter with the bowtie" begin
+    protocol = BS.CTProtocol(kVp = 140, mA = 100.0, views = 60, rotation_time = 0.5, collimation_mm = 4.8, additional_filters = [("Ti", 0.9)])
+    recon = BS.ReconOptions(matrix_size = (64, 64, 4), fov_cm = 30.0, z_cm = 0.16)
+    r = 6
+
+    @testset "noise per ray follows the ray's own flux" begin
+        scanner = _pcct(; bowtie = :large_body)
+        opts = BS.SimOptions(use_noise = true, use_focal_spot = false, use_scatter = false, use_heel_effect = false, seed = 3)
+        ws = BS.create_workspace(scanner, protocol, opts, recon, _air())
+        res = BS.simulate!(ws, _air(), protocol, opts)
+        n_cols = ws.geom.n_cols
+        # relative noise of the total counts over the 60 views, centre vs edge: Poisson gives
+        # σ/μ = 1/√N, and the edge sees a tenth of the flux
+        tot(c) = [sum(Array(res.raw_counts[b])[c, r, v] for b in 1:4) for v in 1:60]
+        rel(c) = std(tot(c)) / mean(tot(c))
+        centre, edge = n_cols ÷ 2, 1
+        @test isapprox(rel(centre), 1 / sqrt(mean(tot(centre))); rtol = 0.35)
+        @test isapprox(rel(edge), 1 / sqrt(mean(tot(edge))); rtol = 0.35)
+        @test rel(edge) > 2 * rel(centre)
+    end
+
+    @testset "pile-up at each ray's own count rate, and its correction" begin
+        scanner = BS.PCCTScanner(
+            source_to_isocenter = 610.0, source_to_detector = 1113.0,
+            detector_rows = 12, detector_cols = 240, detector_row_size = 0.4, detector_col_size = 2.0,
+            detector_material = :cdte, detector_depth = 1.6, energy_thresholds = [20.0, 35.0, 55.0, 70.0],
+            pileup = true, dead_time_ns = 20.0, pileup_correction = false, scatter_correction = false,
+            bowtie_filter = :large_body, detector_col_offset = 0.0, detector_shape = :arc,
+        )
+        opts = BS.SimOptions(use_noise = false, use_focal_spot = false, use_scatter = false, use_heel_effect = false, seed = 1)
+        ws = BS.create_workspace(scanner, protocol, opts, recon, _air())
+        @test size(ws.pileup_S, 3) == length(ws.pileup_rates) >= 8
+        # loss grows with rate: column sums of S fall monotonically up the rate grid
+        loss(k) = 1 - sum(ws.pileup_S[:, 1, k])
+        @test loss(length(ws.pileup_rates)) > loss(1)
+        res = BS.simulate!(ws, _air(), protocol, opts)
+        n_cols = ws.geom.n_cols
+        recorded(c) = sum(Array(res.raw_counts[b])[c, r, 1] for b in 1:4)
+        truth(c) = sum(ws.I0_cpu[c, r, :])
+        # the fan centre piles up at the air rate; the fan edge, at a tenth of the flux, loses
+        # far less of its counts
+        loss_centre = 1 - recorded(n_cols ÷ 2) / truth(n_cols ÷ 2)
+        loss_edge = 1 - recorded(1) / truth(1)
+        @test loss_centre > 0.01
+        @test loss_edge < 0.5 * loss_centre
+        # the correction inverts it per ray
+        bins = [copy(b) for b in res.pcct_sino.bins]
+        BS.apply_pcct_pileup_correction!(bins, ws.I0, ws.pileup_S, ws.pileup_rates, ws.pileup_rate_air)
+        for b in 1:4
+            @test maximum(abs, Array(bins[b])[:, r, 1]) < 5e-3    # air again, within the air path
+        end
+    end
+
+    @testset "scatter is injected against each ray's own flux" begin
+        scanner = _pcct(; bowtie = :large_body)
+        opts = BS.SimOptions(use_noise = false, use_focal_spot = false, use_scatter = true, use_heel_effect = false, seed = 1)
+        ws = BS.create_workspace(scanner, protocol, opts, recon, _air())
+        res = BS.simulate!(ws, _air(), protocol, opts)
+        n_cols = ws.geom.n_cols
+        # in air the scatter field is small and the bins must stay near zero everywhere — a
+        # scatter term scaled by the central flux would show as a large negative p at the edge
+        for b in 1:4
+            p = Array(res.pcct_sino.bins[b])[:, r, 1]
+            @test p[1] > -0.05 && p[n_cols ÷ 2] > -0.05
         end
     end
 end
