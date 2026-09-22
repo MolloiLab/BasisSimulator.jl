@@ -100,10 +100,10 @@ mutable struct PCCTWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A1 <
     # Pile-up is a count-rate effect, so the migration matrix is a function of the rate: a ray
     # through the patient at 1/1000 of the air flux piles up ~1/1000 as much, and with a bowtie
     # the air rate itself falls across the fan.  `pileup_S[:, :, k]` is `compute_mc_pileup_matrix`
-    # at count rate `pileup_rates[k]` (log-spaced from a small fraction of the central air rate
+    # at count rate `pileup_rates[k]` (linear in rate from 0, where S = I, to the central air
     # up to it): S[i, j] = fraction of true-bin-j counts recorded in bin i, column sums ≤ 1, the
     # deficit being the count loss.  `simulate!` picks each ray's matrix from its own truth count
-    # rate (linear in log rate) and the correction inverts that same per-ray matrix, so the bins
+    # rate (linear in rate, as the loss is) and the correction inverts that same per-ray matrix, so the bins
     # stay `-log(recorded / I0[col, row, b])` and `I0 · exp(-bin) = recorded count` holds per ray.
     pileup::Bool                              # PCCTScanner.pileup && dead_time_ns > 0
     pileup_correction::Bool                            # PCCTScanner.pileup_correction
@@ -405,19 +405,24 @@ function create_workspace(
     # Count rate per dexel = (I0 / bf²) / time_per_view  [photons/s]
     _use_pileup = scanner.pileup &&
         pcct_detector.dead_time_ns > 0
-    # The central air count rate per dexel sets the top of the rate grid; the grid runs down to
-    # 1e-4 of it (a ray through 35 cm of tissue at 140 kVp), 16 points, log-spaced.
+    # The central air count rate per dexel is the top of the rate grid. Pile-up loss is linear
+    # in rate·τ (measured: 0.092 at 0.10, 0.052 at 0.054, 0.0025 at 0.0025), so the grid is
+    # LINEAR in rate — S(0) = I exactly, four Monte-Carlo points at ¼, ½, ¾ and 1 of the air rate —
+    # and a ray's matrix is the linear blend in rate. The Monte Carlo's cost scales with the rate
+    # (71 s at the air rate, 0.3 s at a hundredth), so this costs ~2.5× the single matrix it
+    # replaces; each matrix is memoised.
     _I0_physics_pileup = compute_detector_I0(geom, protocol, sum(weights_vec))
     _time_per_view_pileup = protocol.rotation_time / protocol.views
     _count_rate_air = (_I0_physics_pileup / Float64(bf * bf)) / _time_per_view_pileup
-    _pileup_rates = _use_pileup ? [_count_rate_air * 10.0^x for x in range(-4, 0; length = 16)] : Float64[]
+    _pileup_rates = _use_pileup ? _count_rate_air .* [0.0, 0.25, 0.5, 0.75, 1.0] : Float64[]
     _pileup_S = if _use_pileup
         _τ_ns = Float64(pcct_detector.dead_time_ns)
         w_norm = Float64.(weights_vec) ./ sum(Float64.(weights_vec))
         S = zeros(Float64, n_bins, n_bins, length(_pileup_rates))
-        for (k, rate) in enumerate(_pileup_rates)
+        S[:, :, 1] = Matrix{Float64}(I, n_bins, n_bins)
+        for k in 2:length(_pileup_rates)
             S[:, :, k] = compute_mc_pileup_matrix(
-                pcct_detector.energy_thresholds_keV, w_norm, Float64.(energies), rate, _τ_ns;
+                pcct_detector.energy_thresholds_keV, w_norm, Float64.(energies), _pileup_rates[k], _τ_ns;
                 n_trials = 5000, seed = 42 + k,
             )
         end

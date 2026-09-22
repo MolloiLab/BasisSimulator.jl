@@ -60,13 +60,13 @@
 # carry.
 
 # ─── Pile-up at each ray's own count rate ─────────────────────────────────────────────────────
-# `S[:, :, k]` is the MC migration matrix at count rate `rates[k]` (log-spaced, `rates[end]` the
-# central air rate).  A ray's rate is the air rate scaled by its truth counts relative to the
-# unattenuated central beam's, and its matrix is the linear blend of the two grid matrices
-# around that rate in log rate.  Below the grid the lowest matrix is used (pile-up is already
-# negligible there); above it (impossible: truth ≤ air) the highest.
-@inline function _pileup_blend(rate::T, log_min::T, dlog::T, K::Int32) where {T}
-    x = (log10(max(rate, T(1.0e-30))) - log_min) / dlog
+# `S[:, :, k]` is the MC migration matrix at count rate `rates[k]`, a grid LINEAR in rate from 0
+# (S = I) to the central air rate (pile-up loss is linear in rate·τ).  A ray's rate is the air
+# rate scaled by its truth counts relative to the unattenuated central beam's, and its matrix is
+# the linear blend of the two grid matrices around that rate.  Above the grid (impossible: truth
+# ≤ air) the top matrix is used.
+@inline function _pileup_blend(rate::T, r_min::T, dr::T, K::Int32) where {T}
+    x = (rate - r_min) / dr
     x = clamp(x, zero(T), T(K - 1))
     k = min(Int32(floor(x)), K - Int32(2))
     return k, x - T(k)            # lower index (0-based) and the weight of the upper matrix
@@ -91,13 +91,14 @@ function apply_pcct_pileup!(
     length(bins) == 4 || error("apply_pcct_pileup!: specialized to 4 bins, got $(length(bins))")
     size(S, 1) == 4 && size(S, 2) == 4 && size(S, 3) == length(rates) >= 2 ||
         error("apply_pcct_pileup!: S must be 4×4×n_rates with n_rates ≥ 2")
+    size(I0, 3) == 4 || error("apply_pcct_pileup!: I0 must have one [n_cols, n_rows] plane per bin (4), got $(size(I0, 3))")
     Sflat = similar(bins[1], T, length(S)); copyto!(Sflat, T.(vec(S)))
     nc = size(I0, 1); nr = size(I0, 2); m = Int32(nc * nr)
     counts_air = T(sum(view(I0, (nc + 1) ÷ 2, (nr + 1) ÷ 2, :)))   # the central ray's air counts
-    log_min = T(log10(rates[1])); dlog = T(log10(rates[2]) - log10(rates[1])); K = Int32(length(rates))
+    r_min = T(rates[1]); dr = T(rates[2] - rates[1]); K = Int32(length(rates))
     eps = T(1.0e-10)
     let b1 = bins[1], b2 = bins[2], b3 = bins[3], b4 = bins[4], i0 = I0, m = m, Sf = Sflat,
-            ra = T(rate_air), ca = counts_air, lm = log_min, dl = dlog, K = K, eps = eps
+            ra = T(rate_air), ca = counts_air, lm = r_min, dl = dr, K = K, eps = eps
         AK.foreachindex(b1) do idx
             ray = (Int32(idx - 1) % m) + Int32(1)
             i1 = i0[ray]; i2 = i0[ray + m]; i3 = i0[ray + 2m]; i4 = i0[ray + 3m]
@@ -130,13 +131,14 @@ function apply_pcct_pileup_correction!(
     length(bins) == 4 || error("apply_pcct_pileup_correction!: specialized to 4 bins, got $(length(bins))")
     size(S, 1) == 4 && size(S, 2) == 4 && size(S, 3) == length(rates) >= 2 ||
         error("apply_pcct_pileup_correction!: S must be 4×4×n_rates with n_rates ≥ 2")
+    size(I0, 3) == 4 || error("apply_pcct_pileup_correction!: I0 must have one [n_cols, n_rows] plane per bin (4), got $(size(I0, 3))")
     Sflat = similar(bins[1], T, length(S)); copyto!(Sflat, T.(vec(S)))
     nc = size(I0, 1); nr = size(I0, 2); m = Int32(nc * nr)
     counts_air = T(sum(view(I0, (nc + 1) ÷ 2, (nr + 1) ÷ 2, :)))
-    log_min = T(log10(rates[1])); dlog = T(log10(rates[2]) - log10(rates[1])); K = Int32(length(rates))
+    r_min = T(rates[1]); dr = T(rates[2] - rates[1]); K = Int32(length(rates))
     eps = T(1.0e-10)
     let b1 = bins[1], b2 = bins[2], b3 = bins[3], b4 = bins[4], i0 = I0, m = m, Sf = Sflat,
-            ra = T(rate_air), ca = counts_air, lm = log_min, dl = dlog, K = K, eps = eps
+            ra = T(rate_air), ca = counts_air, lm = r_min, dl = dr, K = K, eps = eps
         AK.foreachindex(b1) do idx
             ray = (Int32(idx - 1) % m) + Int32(1)
             i1 = i0[ray]; i2 = i0[ray + m]; i3 = i0[ray + 2m]; i4 = i0[ray + 3m]

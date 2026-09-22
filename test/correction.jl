@@ -100,7 +100,7 @@ end
     I0 = Float32.(reshape(repeat(Float32.(I0_bins), inner = n_col * n_row), n_col, n_row, 4))
     # the per-ray form takes S on a count-rate grid; two identical matrices make S(rate) ≡ S
     grid(M) = cat(M, M; dims = 3)
-    rates = [1.0e6, 1.0e7]; rate_air = 1.0e6
+    rates = [0.0, 1.0e6]; rate_air = 1.0e6      # a linear grid whose two matrices are the same S
 
     @testset "shape contract — 4-bin specialized" begin
         # 3-bin should error (only 4-bin is supported).
