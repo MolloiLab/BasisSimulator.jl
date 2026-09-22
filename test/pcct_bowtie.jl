@@ -78,7 +78,10 @@ _air() = BS.Phantom(zeros(UInt8, 8, 8, 8), [BS.XA.Materials.air], (1.0, 1.0, 1.0
 end
 
 @testset "per-ray counts: noise, pile-up, scatter with the bowtie" begin
-    protocol = BS.CTProtocol(kVp = 140, mA = 100.0, views = 60, rotation_time = 0.5, collimation_mm = 4.8, additional_filters = [("Ti", 0.9)])
+    # 1 mA: the pile-up Monte Carlo costs per photon (the rate·τ regime is set through τ below),
+    # and every assertion here is on a ratio; at 100 mA the two rate grids took 25 min and
+    # timed out CI
+    protocol = BS.CTProtocol(kVp = 140, mA = 1.0, views = 60, rotation_time = 0.5, collimation_mm = 4.8, additional_filters = [("Ti", 0.9)])
     recon = BS.ReconOptions(matrix_size = (64, 64, 4), fov_cm = 30.0, z_cm = 0.16)
     r = 6
 
