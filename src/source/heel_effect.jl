@@ -256,22 +256,6 @@ function get_target_attenuation(material::Symbol)
     return get(μ_values, material, 85.0)
 end
 
-# =============================================================================
-# Spectral Heel Effect (energy-dependent, per-row transmission)
-# =============================================================================
-
-"""
-    compute_heel_spectral(heel, geom, energies_keV) -> Array{Float64, 3}
-
-Compute per-column, per-energy heel effect transmission: [n_cols, n_rows, n_energies].
-
-Models anode self-attenuation with energy-dependent tungsten μ(E):
-    T(row, E) = exp(-μ_W(E) × d × cos(θ_anode) / sin(θ_anode − α(row)))
-normalized to central ray.
-
-This is the spectral-domain heel effect, analogous to bowtie spectral transmission.
-Applied during forward projection by multiplying into the spectral weight matrix.
-"""
 "An anode-side ray that leaves below the target surface is not a tube geometry: the anode angle must exceed the half-cone."
 function _heel_geometry_valid(θ_anode, half_cone)
     θ_anode > half_cone || throw(ArgumentError(
@@ -281,6 +265,22 @@ function _heel_geometry_valid(θ_anode, half_cone)
     return true
 end
 
+# =============================================================================
+# Spectral Heel Effect (energy-dependent, per-row transmission)
+# =============================================================================
+
+"""
+    compute_heel_spectral(heel, geom, energies_keV) -> Array{Float64, 3}
+
+Compute the per-row, per-energy heel effect transmission: [n_cols, n_rows, n_energies] (flat along the fan).
+
+Models anode self-attenuation with energy-dependent tungsten μ(E):
+    T(row, E) = exp(-μ_W(E) × d × cos(θ_anode) / sin(θ_anode − α(row)))
+normalized to central ray.
+
+This is the spectral-domain heel effect, analogous to bowtie spectral transmission.
+Applied during forward projection by multiplying into the spectral weight matrix.
+"""
 function compute_heel_spectral(
         heel::HeelEffect,
         geom::CTGeometry,
