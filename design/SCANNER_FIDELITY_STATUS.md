@@ -85,3 +85,24 @@ the vacuous resampler test and the loosened tolerances in test/api.jl, test/ncha
 CHANGELOG/API doc corrections; calibrate both scanner models to the Gammex scans (dose/mAs,
 effective energy 76.0 keV at 140 kVp, rod HU, noise-vs-dose, Alpha thresholds against the
 106 HU VMI/0 noise); then semmd scan.jl to the calibrated models, cohort remake, one registration.
+
+## Round-3 review (the real semmd chains on the new rod set vs the old chain, disk analysis)
+- As predicted: EICT 120 kVp water −0.1 HU, σ ratio 0.946 after dose scaling (periphery −8 %:
+  the old heel ran along the fan and starved edge columns); VMI CT numbers within 0.4 HU of the
+  old chain, noise +3–5 % overall, +6–19 % at the periphery (the bowtie per ray); edges ≤ 0.02 mm
+  different; centroid shifts image − label < 0.02 mm (no offset sign error); no NaN, no rings.
+- REGRESSION (fixed after the review's data were made): the PCCT poly image had a −80 HU dark rim
+  (radial +9 → −51 HU) because `calibrate_pcct_poly_bhc` used one spectrum for every column
+  while the bowtie now hardens each column; it is per column now (`W·bt[c, r_mid, e]`), test
+  "poly water calibration per column with the bowtie". Absent from every VMI.
+- HIR60 − FBP in the outer 1 cm where the 35 cm body touches the 35 cm circle: PCCT −2.7 HU at
+  70 keV / −7.5 at 40 keV (old +2.2 / −2.3); EICT unchanged. The complete-model answer with Huber
+  smoothing against air at the boundary; the old value was the truncation artefact. Recorded, not
+  changed.
+- Cost: PCCT stage before HIR (simulate + HYPR + ray-resolved basis + decomposition + FBP) 54 s →
+  163 s; HIR ≈ 1.7–2×. The ray-resolved basis (1659 × 44 responses) is the suspect for the
+  first; a per-column (not per-ray) response would be exact for a bowtie and 44× smaller — a
+  performance item for the XCAT cohort (460 slabs).
+- Pre-existing, noted: label-implied HU₇₀ for iodine rods is 3–13 HU below the material (the
+  label rule's projection); EICT image rotated 1.4 mrad relative to the labels (both chains);
+  outside-circle sentinel −1186…−4334 HU in all images.

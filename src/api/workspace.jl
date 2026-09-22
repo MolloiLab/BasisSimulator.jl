@@ -955,7 +955,17 @@ function calibrate_pcct_poly_bhc(
     W = Float64.(Array(ws.W_matrix_gpu))[1:n_E, :]
     w_detected = vec(sum(W; dims = 2))
     sum(w_detected) > 0 || error("PCCT detected spectrum has zero total weight")
+    # each column's own detected spectrum: the bowtie (and heel) harden the beam towards the
+    # fan edge, so the water polynomial is fitted per column on the spectrum that column saw
+    # (its central row), as the energy-integrating calibration does
     weights_per_col = repeat(reshape(w_detected, :, 1), 1, ws.geom.n_cols)
+    if ws.bowtie_spectral !== nothing
+        bt = Float64.(Array(ws.bowtie_spectral))
+        r_mid = (ws.geom.n_rows + 1) ÷ 2
+        for c in 1:ws.geom.n_cols
+            weights_per_col[:, c] .*= bt[c, r_mid, 1:n_E]
+        end
+    end
     reference_energy_keV = sum(energies .* w_detected) / sum(w_detected)
     return calibrate_bhc_water(
         energies, weights_per_col;

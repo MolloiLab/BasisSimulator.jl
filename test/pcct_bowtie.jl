@@ -184,3 +184,30 @@ end
         end
     end
 end
+
+@testset "poly water calibration per column with the bowtie" begin
+    # the summed-bin image of a water cylinder, beam-hardening corrected with the per-column
+    # calibration, must read water everywhere across the fan — the bowtie hardens the edge
+    protocol = BS.CTProtocol(kVp = 140, mA = 100.0, views = 120, rotation_time = 0.5, collimation_mm = 4.8, additional_filters = [("Ti", 0.9)])
+    recon = BS.ReconOptions(matrix_size = (96, 96, 4), fov_cm = 36.0, z_cm = 0.16)
+    opts = BS.SimOptions(use_noise = false, use_focal_spot = false, use_scatter = false, use_heel_effect = false, seed = 1)
+    scanner = _pcct(; bowtie = :large_body)
+    n = 160; px = 36.0 / n
+    mask = zeros(UInt8, n, n, 8)
+    for i in 1:n, j in 1:n
+        hypot((i - (n + 1) / 2) * px, (j - (n + 1) / 2) * px) <= 16.0 && (mask[i, j, :] .= 1)
+    end
+    water = BS.Phantom(mask, [BS.XA.Materials.air, BS.XA.Materials.water], (px, px, 0.1), (-18.0 + px / 2, -18.0 + px / 2, -0.35), (36.0, 36.0, 0.8))
+    ws = BS.create_workspace(scanner, protocol, opts, recon, water)
+    res = BS.simulate!(ws, water, protocol, opts)
+    ch = [Array(b) for b in res.pcct_sino.bins]; I0 = Float64.(Array(res.I0_bins))
+    poly = Float32.(-log.(sum(I0[:, :, k] .* exp.(-Float64.(ch[k])) for k in 1:4) ./ sum(I0; dims = 3)))
+    bhc = BS.calibrate_pcct_poly_bhc(ws)
+    sino = BS.apply_bhc_water(poly, bhc)
+    hu = BS.to_hounsfield(BS.fdk_reconstruct(sino, ws.geom, recon.matrix_size); μ_water = bhc.μ_water_ref)[:, :, 2]
+    xs = ((1:96) .- 48.5) * (36.0 / 96); r = [hypot(xs[i], xs[j]) for i in 1:96, j in 1:96]
+    centre = mean(hu[r .< 4]); edge = mean(hu[(r .> 11) .& (r .< 14.5)])
+    @test abs(centre) < 8
+    @test abs(edge) < 8
+    @test abs(edge - centre) < 6      # no cupping or capping across the fan
+end
