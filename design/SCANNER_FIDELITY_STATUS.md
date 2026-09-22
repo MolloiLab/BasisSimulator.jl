@@ -48,6 +48,30 @@ first for every item. Sister spec: `semmd-bayesian/docs/scanners/` (source-cited
   `test/hypr.jl`; Project/Manifest on the branch (0.18.0).
 - Full suite at 5beb27b+: 3580 pass, 9 test-side indexing mistakes fixed after.
 
+## Round-2 adversarial review (commits 54ebba2..76c0320) — findings and what was done
+- C1 **binned path: per-ray I0 was bf² × physical** (noise at 4× the photons on the NAEOTOM model).
+  Fixed: the kernel's matrix is per native dexel (`W / bf²`), the basis multiplies back and uses
+  the MEAN native transmission; test asserts the binned air count is below the incident photons
+  and equals the sum of its dexels. (My earlier "bf²" basis fix had hard-coded the defect.)
+- C2 `spectral_basis(ws)` threw for bf > 1 with a bowtie — fixed by the same change.
+- C3 the calibrated heel (1 µm) was unreachable: `simulate!` built `HeelEffect(angle, :tungsten,
+  0.01, true)` directly — now `default_heel_effect(anode_angle_deg = angle)`.
+- C4 GPU-gated api tests asserted the removed API — updated (pileup_S 3-D, `ws.I0`).
+- C5 CHANGELOG/README/docs notebooks stale — updated (linear 5-point grid, heel axis, physical
+  binned counts, `I0` keyword, per-ray `I0_bins` in notebooks 04/08).
+- C6 the pile-up grid's top was the unfiltered central rate; now the brightest ray's incident
+  rate (spectrum-weighted transmission from the same table), and every ray's rate is relative to
+  the brightest ray's air counts (so heel-bright cathode rows are not clamped).
+- C7 negative takeoff angles were clamped: an anode angle ≤ half-cone now throws
+  (`_heel_geometry_valid`); the 160 mm test uses a 12° anode.
+- Plausible, recorded in the CHANGELOG as known: scatter behind a bowtie scaled by the receiving
+  ray's flux; `estimate_pcct_workspace_bytes` omits the new tables; the pile-up test is slow
+  (two rate grids at the toy's high rate).
+- Sound (measured by the reviewer): air ≡ I0 on all five projection paths with bowtie + heel +
+  offset (≤ 8e-6); indexing column-major at all seven sites; S(0) = I continuous (2e-4 MC
+  floor), linear blend error ≤ 3.5e-4; correction residual < 5e-4; semmd `hypr_lr`/`scan_pcct`
+  correct.
+
 ## Found on the way, not yet started
 (both done above)
 
