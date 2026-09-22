@@ -166,6 +166,13 @@ end
         )
         ws = BS.create_workspace(scanner, protocol, opts, recon, _air())
         @test ws.native_geom !== nothing && ws.I0_native !== nothing
+        # the binned pixel's air count is PHYSICAL: no more than the photons it receives (the
+        # detected fraction is below 1), and the sum of its four dexels
+        incident = BS.compute_detector_I0(ws.geom, protocol, sum(ws.weights))
+        c = ws.geom.n_cols ÷ 2; rr = ws.geom.n_rows ÷ 2 + 1
+        @test sum(ws.I0_cpu[c, rr, :]) < incident
+        @test sum(ws.I0_cpu[c, rr, :]) > 0.3 * incident
+        @test isapprox(sum(ws.I0_cpu[c, rr, :]), sum(Array(ws.I0_native)[(2c - 1):(2c), (2rr - 1):(2rr), :]); rtol = 1e-5)
         # the basis the decomposition inverts is consistent with the air response it was built from
         basis = BS.spectral_basis(ws)
         @test basis.I0_relerr < 5e-5
