@@ -32,34 +32,24 @@ first for every item. Sister spec: `semmd-bayesian/docs/scanners/` (source-cited
   gain bug; nothing exercises the offset through siddon/dd_fast/rowtile4/subset geometries
   (the reviewer's adjoint.jl does — fold it into the tests).
 
-## In progress (UNCOMMITTED WIP in the working tree — commit as WIP at session end)
-Per-ray `I0` refactor (design/PCCT_BOWTIE_PER_RAY.md): workspace.jl (I0 [cols,rows,bins], I0_all,
-I0_cpu, I0_native, bowtie_spectral, native_bowtie_spectral, pileup_S on a 16-point log rate grid,
-pileup_rates, pileup_rate_air), photon_counting.jl (`_normalize_bins_per_ray!`, per-ray source
-transmission on the per-energy path, `apply_pcct_noise!(sino, I0)`), driver.jl (every count step
-per ray, `apply_pcct_pileup!`), pcct_pileup_correction.jl (`apply_pcct_pileup!`,
-`apply_pcct_pileup_correction!(bins, I0, S, rates, rate_air)`), scatter.jl
-(`inject_scatter_bins!(bins, field, I0, I0_all, w)`), pcct_basis.jl (`combine_pcct_bin_counts!`
-per ray, returns per-group matrices), nchannel.jl (`spectral_basis(ws)` ray-resolved through
-`ws.bowtie_spectral`).
-- `test/pcct_bowtie.jl` bowtie testset: 14/14 GREEN. Noise per ray: 3/3. Scatter: 4/4.
-- Pile-up testset FAILS on the TEST's regime: 100 mA / 60 views puts the centre at 99.5 % loss
-  (rate·τ ≈ 2.4), so both edge and centre saturate and the correction (near-singular S) blows up.
-  Fix the test: choose dead time so rate_air·τ ≈ 0.1 (build ws once with τ = 1 ns, read
-  `ws.pileup_rate_air`, rebuild with τ = 0.1 / rate_air). Then verify loss_edge ≈ 0.1× centre
-  and the correction round trip (< 5e-3).
-- Still to update for the new signatures: test/correction.jl (apply_pcct_pileup_correction!),
-  test/api.jl:326 (_capture_pcct_raw_counts), any test using `result.I0_bins[b]` or
-  `combine_pcct_bin_counts(…, I0_bins::Vector, …)`, docs notebooks 04/08; semmd `hypr_lr(channels,
-  I0_bins)` → per ray `I0[col,row,b]` (hypr.jl uses `I0_k·exp(-h_k)` per row: index per column
-  too) and `scan_pcct` (`Array(result.I0_bins)` is now 3-D), `spectral_basis(ws; I0_bins=…)` kw
-  renamed `I0`.
+## Done since (committed on the branch, 5211c7a … )
+- Per-ray `I0` refactor complete across the PCCT path; bowtie / noise / scatter / pile-up tests
+  green (`test/pcct_bowtie.jl`, 29 assertions). Pile-up grid LINEAR in rate (S(0) = I, MC at
+  ¼ ½ ¾ 1 × air rate): the measured loss is linear in rate·τ (0.092 at 0.10), log spacing was
+  wrong and 16× the cost.
+- Round-1 C1 (warm start seeds the whole support), C2 (offsets in columns in notebooks/test),
+  C3 (0.18.0 + CHANGELOG), P4 (`bf` rescale), P5 (flat scan circle), P6 (adjoint / point-object
+  tests through dd, ddᵀ, rowtile4, siddon at 4 offsets × 2 shapes; HIR reference at a request
+  larger than the scan circle so it pads nothing), P2 (single-slice request gets the in-plane
+  extension; helical still excluded and documented).
+- Heel effect on the row axis (item 10): `heel_effect.jl` both routines, anode on +z, test
+  `test/heel_axis.jl` (flat along the fan, monotonic along rows, few % at 15 mm, tens of % at 160 mm).
+- semmd: `scan.jl` offset 0.25 columns; `hypr_lr` / `spectral_basis` / poly image on per-ray I0;
+  `test/hypr.jl`; Project/Manifest on the branch (0.18.0).
+- Full suite at 5beb27b+: 3580 pass, 9 test-side indexing mistakes fixed after.
 
 ## Found on the way, not yet started
-- Item 10: heel effect modelled along the FAN (heel_effect.jl:310 `θ_eff = θ_anode + γ`), 5×
-  across 48 cm; in a CT the anode axis is z → gradient along rows, tens of percent across the
-  cone. On by default. Failing test first.
-- Pile-up was one S at the central air rate applied to every ray (now rate-grid per ray in WIP).
+(both done above)
 
 ## Remaining items of the PR (from the reviews and the scanner specs)
 FBP window: keep the grid cut (B) and calibrate per-scanner kernels to measured MTF (Br36f f50

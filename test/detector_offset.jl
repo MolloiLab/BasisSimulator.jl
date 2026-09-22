@@ -9,6 +9,7 @@
 
 using Test
 using Statistics
+using Random
 import BasisSimulator as BS
 
 function _offset_geom(offset; shape = :arc, n_cols = 96, n_angles = 48, fov_cm = 8.0)
@@ -135,5 +136,51 @@ end
         # and the label sits where the object is, independent of the detector offset
         @test isapprox(cl[1], 44.0 * dx; atol = 0.05px)
         @test isapprox(cl[2], -30.0 * dx; atol = 0.05px)
+    end
+end
+
+# The offset through every projector path: the exact adjoint pair (distance-driven forward and
+# transpose) must stay adjoint at any offset on both detector shapes, the row-tiled fast path
+# must equal the plain one, and the Siddon projector must put a point object in the column the
+# geometry predicts.  (From the round-1 adversarial review's experiment.)
+using LinearAlgebra
+@testset "offset through every projector path" begin
+    function analytic_col(g, p, k)
+        s = g.source_positions[:, k]; d = g.detector_centers[:, k]; u = g.detector_u[:, k]
+        ray = p .- s; cen = d .- s
+        if BS.is_arc(g)
+            γ = atan(dot(ray, u), dot(ray, cen) / norm(cen))
+            return BS.column_center(Float64, g) + γ / (g.pixel_size / g.SAD)
+        else
+            nrm = cen / norm(cen); t = dot(d .- s, nrm) / dot(ray, nrm)
+            hit = s .+ t .* ray
+            return BS.column_center(Float64, g) + dot(hit .- d, u) / (g.pixel_size * g.SDD / g.SAD)
+        end
+    end
+    for shape in (:arc, :flat), offset in (0.0, 0.25, -0.25, 3.7)
+        g = _offset_geom(offset; shape, n_cols = 64, n_angles = 36, fov_cm = 8.0)
+        rng = MersenneTwister(11)
+        x = rand(rng, 48, 48, 3); y = rand(rng, g.n_cols, g.n_rows, g.n_angles)
+        Ax = zeros(g.n_cols, g.n_rows, g.n_angles); BS.dd_forward_project!(Ax, x, g)
+        Aty = zeros(48, 48, 3); BS.dd_backproject!(Aty, y, g)
+        @test abs(dot(Ax, y) - dot(x, Aty)) / abs(dot(Ax, y)) < 1e-12
+        if shape === :arc
+            Ax2 = zeros(size(Ax)); BS._dd_forward_project_arc_rowtile4!(Ax2, x, g)
+            @test maximum(abs, Ax2 .- Ax) < 1e-12
+        end
+        # a point object lands in the predicted column for both projectors
+        gp = _offset_geom(offset; shape, n_cols = 96, n_angles = 24, fov_cm = 8.0)
+        nx = 64; px = 8.0 / nx; xp = zeros(nx, nx, 3); i0, j0 = 50, 21; xp[i0, j0, :] .= 1.0
+        p = [(i0 - (nx + 1) / 2) * px, (j0 - (nx + 1) / 2) * px, 0.0]
+        for f! in (BS.dd_forward_project!, BS.siddon_forward_project!)
+            s = zeros(gp.n_cols, gp.n_rows, gp.n_angles); f!(s, xp, gp)
+            errs = Float64[]
+            for k in 1:gp.n_angles
+                prof = s[:, 2, k]; sum(prof) > 0 || continue
+                push!(errs, sum(prof .* (1:gp.n_cols)) / sum(prof) - analytic_col(gp, p, k))
+            end
+            @test abs(mean(errs)) < 0.03
+            @test maximum(abs, errs) < 0.4          # one voxel's footprint spans a column or so
+        end
     end
 end

@@ -825,7 +825,7 @@ end
     @test sum(count(==(0f0), r) for r in raw5) > 0
     for (b, r) in enumerate(raw5)
         @test all(isinteger, r)
-        enc = lo_I0[b] .* exp.(-Float64.(s5.bins[b]))     # = max(N, 1)
+        enc = lo_I0[:, :, b] .* exp.(-Float64.(s5.bins[b]))     # = max(N, 1)
         @test all(abs.(enc .- max.(Float64.(r), 1.0)) .< 1e-4)
     end
 
@@ -916,8 +916,8 @@ end
     # a different realisation, but of the same distribution
     @test any(threaded.bins[b] != serial.bins[b] for b in 1:n_bins)
     for b in 1:n_bins
-        λ = I0[b] * exp(-(0.35 + 0.1b))
-        counts(bin) = I0[b] .* exp.(-Float64.(bin))
+        λ = I0[1, 1, b] * exp(-(0.35 + 0.1b))        # I0 is flat across the fan in this test
+        counts(bin) = I0[:, :, b] .* exp.(-Float64.(bin))
         for bin in (serial.bins[b], threaded.bins[b])
             c = counts(bin)
             @test mean(c) ≈ λ rtol = 0.02                  # unbiased

@@ -979,7 +979,10 @@ function _hir_support(
         geom::CTGeometry, volume_size::NTuple{3, Int}, enabled::Bool,
     )
     nx, ny, nz = volume_size
-    if !enabled || is_helical(geom) || nz == 1
+    # Helical HIR keeps its WFBP domain (the in-plane extension of a helical work grid is a
+    # separate change, recorded in the CHANGELOG as not yet done). A single-slice request gets
+    # the in-plane extension and no z halo.
+    if !enabled || is_helical(geom)
         return geom, volume_size, 1:nx, 1:ny, 1:nz
     end
 
@@ -996,7 +999,7 @@ function _hir_support(
         "HIR reconstruction radius $radius cm must be smaller than SAD $(geom.SAD) cm"))
     cone_ratio = (geom.SAD + radius) / (geom.SAD - radius)
     dz = geom.fov[3] / nz
-    work_nz = max(nz, ceil(Int, geom.fov[3] * cone_ratio / dz))
+    work_nz = nz == 1 ? 1 : max(nz, ceil(Int, geom.fov[3] * cone_ratio / dz))
     isodd(work_nz - nz) && (work_nz += 1)
     (work_nx, work_ny, work_nz) == volume_size && return geom, volume_size, 1:nx, 1:ny, 1:nz
 

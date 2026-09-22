@@ -42,11 +42,13 @@ end
     xs = ((1:n) .- (n + 1) / 2) * px
     r = [hypot(xs[i], xs[j]) for i in 1:n, j in 1:n]
     hu(v, m) = mean(v[:, :, 2][m]) / 0.2 * 1000 - 1000
-    # the complete-model reference: HIR asked for a grid that contains the whole body, read
-    # back on the 16 cm window (what a scanner's own IR does — reconstruct the scan field,
-    # display a part of it)
+    # the complete-model reference: HIR asked for a grid LARGER than the scan circle (so the
+    # support extension pads nothing and the two computations are genuinely different), read
+    # back on the 16 cm window — what a scanner's own IR does: reconstruct the scan field,
+    # display a part of it
     function reference(sino, nwide)
         gw = BS.CTGeometry(scanner; n_angles = 120, fov_cm = nwide * px, z_cm = 0.4)
+        nwide * px > BS.scan_circle_diameter(gw) || error("the reference must exceed the scan circle")
         w = _hir(sino, gw, (nwide, nwide, 4)); o = (nwide - n) ÷ 2
         return w[(o + 1):(o + n), (o + 1):(o + n), :]
     end
@@ -56,7 +58,7 @@ end
         sino = BS.dd_forward_project(wide, g_full)
         fbp = BS.fdk_reconstruct(sino, g, (n, n, 4))
         hir = _hir(sino, g, (n, n, 4))
-        ref = reference(sino, 256)                          # 32 cm contains the body
+        ref = reference(sino, 336)                          # 42 cm > the 39.3 cm scan circle: no padding
         inside = [(xs[i] / 14.0)^2 + (xs[j] / 6.0)^2 <= 0.9 for i in 1:n, j in 1:n]
         edge = inside .& (r .> 6.8) .& (r .< 7.9)
         interior = inside .& (r .< 5.0)
@@ -71,7 +73,7 @@ end
         small = _ellipse(2n, 32.0; a = 6.0, b = 5.0)          # fits in the 16 cm circle
         sino = BS.dd_forward_project(small, g_full)
         hir = _hir(sino, g, (n, n, 4))
-        ref = reference(sino, 256)
+        ref = reference(sino, 336)                          # 42 cm > the 39.3 cm scan circle
         inside = [(xs[i] / 6.0)^2 + (xs[j] / 5.0)^2 <= 0.9 for i in 1:n, j in 1:n]
         @test abs(hu(hir, inside) - hu(ref, inside)) < 2
         # pointwise too, inside the requested circle (outside it the request is masked)
@@ -88,6 +90,9 @@ end
         @test size(ws.work_volume, 1) * px < d + 2px
         @test ws.output_x == ws.output_y
         @test length(ws.output_x) == n
+        # a single-slice request still gets the in-plane extension, and no z halo
+        ws1 = BS.create_hir_recon_workspace(zeros(320, 4, 120), g, (n, n, 1); strength = 60)
+        @test size(ws1.work_volume, 1) == size(ws.work_volume, 1) && size(ws1.work_volume, 3) == 1
         # strength 0 is plain FBP and needs no support domain
         ws0 = BS.create_hir_recon_workspace(zeros(320, 4, 120), g, (n, n, 4); strength = 0)
         @test size(ws0.work_volume) == (n, n, 4)

@@ -32,6 +32,7 @@ const BS = BasisSimulator
         include("filtering.jl")
     end
     @testset "helical/" begin
+        include("heel_axis.jl")
         include("helical.jl")
         include("hir_support.jl")
     end

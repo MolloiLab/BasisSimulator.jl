@@ -335,7 +335,7 @@ _ts("entering simulate!(PCCTWorkspace) — return contract testset")
     @test length(raw) == 4
     @test all(raw[b] !== logged[b] for b in eachindex(raw))
     for b in eachindex(raw)
-        @test raw[b] ≈ I0[b] .* exp.(-logged[b]) rtol = 8eps(Float32)
+        @test raw[b] ≈ I0[:, :, b] .* exp.(-logged[b]) rtol = 8eps(Float32)
     end
 
     before = copy(raw[1])
