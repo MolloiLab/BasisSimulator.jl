@@ -430,7 +430,7 @@ end
         h = BS.default_heel_effect()
         @test h.anode_angle_deg == 7.0
         @test h.target_material === :tungsten
-        @test h.effective_thickness_mm == 0.01
+        @test h.effective_thickness_mm == 0.001        # the calibrated mean production depth (see default_heel_effect)
         @test h.enabled == true
     end
 
@@ -466,28 +466,25 @@ end
         T = BS.compute_heel_spectral(h, g, energies)
         @test size(T) == (g.n_cols, g.n_rows, length(energies))
         @test all(>(0), T)
-        # Heel is fan-only — values constant within a row.
-        for e in 1:length(energies), c in 1:g.n_cols
-            row1 = T[c, 1, e]
-            for r in 2:g.n_rows
-                @test T[c, r, e] == row1
-            end
+        # The heel effect runs along the anode axis — z, the rows — and is flat along the fan.
+        for e in 1:length(energies), r in 1:g.n_rows
+            col1 = T[1, r, e]
+            @test all(T[c, r, e] == col1 for c in 2:g.n_cols)
         end
     end
 
     @testset "enabled heel: anode side dimmer than cathode side" begin
         h = BS.default_heel_effect(effective_thickness_mm = 0.05)
         T = BS.compute_heel_spectral(h, g, [60.0])
-        mid_r = g.n_rows ÷ 2 + 1
-        # Convention: col=1 is anode side, col=n_cols is cathode side.
-        @test T[1, mid_r, 1] < T[g.n_cols, mid_r, 1]
+        # Convention: the anode is on the +z side, the last row.
+        @test T[1, g.n_rows, 1] < T[1, 1, 1]
     end
 
     @testset "enabled heel: lower-E photons more attenuated (energy-dependent μ_W)" begin
         h = BS.default_heel_effect(effective_thickness_mm = 0.05)
         T = BS.compute_heel_spectral(h, g, [40.0, 100.0])
-        # At the anode-side column, the low-E transmission ratio is smaller.
-        @test T[1, 1, 1] < T[1, 1, 2]
+        # On the anode side (last row) the low-energy transmission ratio is the smaller.
+        @test T[1, g.n_rows, 1] < T[1, g.n_rows, 2]
     end
 end
 
@@ -506,11 +503,11 @@ end
         h = BS.default_heel_effect(effective_thickness_mm = 0.05)
         intensity = fill(1.0f0, 64, 4, 4)
         BS.apply_heel_effect!(intensity, h, g)
-        # Heel normalization is at γ = 0 (the fan-angle origin) but for even
-        # n_cols no single column sits exactly there — adjacent ones straddle
-        # it.  What matters is the anode/cathode asymmetry across the fan.
-        @test intensity[1, 2, 2] < intensity[end, 2, 2]   # anode dimmer than cathode
-        @test intensity[10, 2, 2] < intensity[end - 10, 2, 2]  # holds away from edges too
+        # The gradient runs along the rows (the anode axis is z; anode on +z, the last row)
+        # and is flat along the fan.
+        @test intensity[1, end, 2] < intensity[1, 1, 2]     # anode dimmer than cathode
+        @test intensity[10, end, 2] < intensity[10, 1, 2]
+        @test intensity[1, 2, 2] == intensity[end, 2, 2]     # flat along the fan
         # Sanity bounds: every entry stays finite, non-negative.
         @test all(>(0), intensity)
         @test all(isfinite, intensity)

@@ -80,7 +80,12 @@ Use effective_thickness_mm=0.02-0.05 for stronger effects.
 function default_heel_effect(;
         anode_angle_deg::Real = 7.0,
         target_material::Symbol = :tungsten,
-        effective_thickness_mm::Real = 0.01
+        # The mean depth in the target at which the x-rays are produced, the one free parameter
+        # of the model: 1 µm gives a 35 % anode-to-cathode fall across a ±7.5° cone (160 mm
+        # collimation) and 3 % across ±0.7° (15 mm) for a 7° anode, the order the literature
+        # reports for a 7–12° anode (30–45 % across ±11°). The former 0.01 mm gave 99 % and 28 %,
+        # which the old fan mapping hid behind its angle clamp.
+        effective_thickness_mm::Real = 0.001
     )
     return HeelEffect(
         Float64(anode_angle_deg),

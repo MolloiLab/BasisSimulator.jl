@@ -4,7 +4,7 @@ using Statistics
 import BasisSimulator as BS
 
 @testset "heel effect varies along the rows, not the fan" begin
-    heel = BS.default_heel_effect(anode_angle_deg = 7.0, effective_thickness_mm = 0.01)
+    heel = BS.default_heel_effect(anode_angle_deg = 7.0)
     E = [40.0, 70.0, 100.0]
     # a wide fan (48 cm) and a wide cone (160 mm collimation): 256 rows × 0.625 mm
     wide = BS.EICTScanner(source_to_isocenter = 625.6, source_to_detector = 1100.0, detector_rows = 256, detector_cols = 400,
@@ -20,7 +20,7 @@ import BasisSimulator as BS
     @test profile[end] < profile[1]
     # tens of percent across a 160 mm cone; the central row is the reference (1)
     @test isapprox(profile[128], 1.0; atol = 0.02) || isapprox(profile[129], 1.0; atol = 0.02)
-    @test 0.02 < 1 - profile[end] / profile[1] < 0.6
+    @test 0.2 < 1 - profile[end] / profile[1] < 0.6           # the literature order: 30–45 % across ±11°
     # a few percent across a 15 mm collimation
     narrow = BS.CTGeometry(wide; n_angles = 4, fov_cm = 40.0, collimation_mm = 15.0)
     trn = BS.compute_heel_spectral(heel, narrow, E)
