@@ -46,17 +46,34 @@ Scanner fidelity, first part. Every simulation's numbers change; see each item.
   own flux. Air reads 0 in every column and bin.
 - **Pile-up at each ray's own count rate.** One MC migration matrix at the central air rate was
   applied to every ray, including rays through 35 cm of patient. `pileup_S` is now
-  `[n_bins, n_bins, n_rates]` on a 16-point log-spaced rate grid (`pileup_rates`, top =
-  `pileup_rate_air`); `apply_pcct_pileup!` picks each ray's matrix from its truth counts and
-  `apply_pcct_pileup_correction!(bins, I0, S, rates, rate_air)` inverts that same matrix.
+  `[n_bins, n_bins, n_rates]` on a grid LINEAR in rate — `S(0) = I` exactly and Monte-Carlo
+  matrices at ¼, ½, ¾ and 1 of the brightest ray's incident rate (`pileup_rates`,
+  `pileup_rate_air`; the measured loss is linear in rate·τ, 0.092 at 0.10); `apply_pcct_pileup!`
+  blends each ray's matrix from its truth counts relative to the brightest ray's air counts and
+  `apply_pcct_pileup_correction!(bins, I0, S, rates, rate_air)` inverts that same matrix (three
+  fixed-point rounds; residual < 5e-4 at rate·τ = 0.1).
+- **Binned detectors (`binning_factor > 1`): counts are physical.** The kernel's spectral matrix
+  is per native dexel (`W / bf²`) so the binned sum is the photons a binned pixel receives; the
+  noise, pile-up and scatter therefore see physical counts. (On the branch's first version the
+  per-ray `I0` was `bf²` × physical, which would have drawn the noise at 4× the photons.)
+- **The heel effect runs along the cone (rows), not the fan.** `heel_effect.jl` mapped the
+  takeoff angle to the fan angle of the column (5× across a 48 cm fan); the anode axis of a
+  third-generation CT is z, so the gradient is along the rows, flat along the fan, anode on the
+  `+z` side. The mean production depth is 1 µm (2 %/degree of cone angle, the textbook order;
+  the former 10 µm gave 20 %/degree and was hidden by the fan mapping's angle clamp), and
+  `simulate!`'s heel now uses it (it built a 10 µm model directly). An anode angle that does not
+  exceed the half-cone (a 7° anode on a 160 mm cone) is refused as an invalid tube geometry.
 ### Added
 - `column_offset`, `column_center`, `scan_circle_diameter`, `apply_pcct_pileup!`.
-- Tests: `detector_offset.jl` (offset physics; labels through the affine stay on the image to
-  0.1 px), `hir_support.jl`, `pcct_bowtie.jl`.
+- Tests: `detector_offset.jl` (offset physics through dd, ddᵀ, the row-tiled path and Siddon; labels
+  through the affine stay on the image to 0.1 px), `hir_support.jl`, `pcct_bowtie.jl` (incl. a
+  binned detector), `heel_axis.jl`.
 ### Known, documented, not yet changed on this branch
-- The heel-effect model varies along the fan (`heel_effect.jl`: `θ_eff = θ_anode + γ`), 5× across
-  a 48 cm fan; in a third-generation CT the anode axis is z. On by default in `SimOptions`.
-- `nz == 1` and helical HIR keep the requested circle as support.
+- Helical HIR keeps the requested circle as support (axial single-slice requests are extended).
+- Scatter behind a bowtie is scaled by the receiving ray's flux (a modelling choice shared with
+  the energy-integrating path): the scatter reaching a low-flux edge pixel from the high-flux
+  centre is under-estimated there.
+- `estimate_pcct_workspace_bytes` does not yet count the per-ray transmission tables and `I0`.
 - HIR's data step at strength 60 is small on the wide grid (≈0.6 % of the residual per
   sub-iteration): "HIR 60" is close to FDK plus Huber smoothing; the strength table's "PWLS"
   description overstates the data term.

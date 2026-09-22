@@ -667,11 +667,11 @@ begin
             BS.compute_mass_μ_at_energy(BS.XA.Materials.water, Float64(e))
             for e in E
         ]
+        # `I0_bins` is per ray ([n_cols, n_rows, n_bins]); this scanner has no bowtie, so the
+        # fan mean is the per-bin air count
+        I0_vec = vec(mean(Float64.(Array(sim_raw.I0_bins)); dims = (1, 2)))
         I0_from_Φ = vec(sum(Float64.(Φ); dims = 1))
-        I0_relerr = maximum(
-            abs.(I0_from_Φ .- Float64.(sim_raw.I0_bins)) ./
-            max.(Float64.(sim_raw.I0_bins), eps(Float64)),
-        )
+        I0_relerr = maximum(abs.(I0_from_Φ .- I0_vec) ./ max.(I0_vec, eps(Float64)))
         I0_relerr < 5e-5 || error(
             "Applied response and I0 disagree (max relative error = $(I0_relerr)).",
         )
@@ -686,7 +686,7 @@ begin
         ]
         (
             E = E, Φ = Φ, μρ_I = μρ_I, μρ_W = μρ_W,
-            I0 = Float32.(sim_raw.I0_bins),
+            I0 = Float32.(I0_vec),
             μI_eff = μI_eff, μW_eff = μW_eff,
             normal_II = sum(abs2, μI_eff),
             normal_IW = sum(μI_eff .* μW_eff),
