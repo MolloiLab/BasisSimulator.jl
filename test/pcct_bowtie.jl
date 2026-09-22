@@ -101,14 +101,18 @@ end
     end
 
     @testset "pile-up at each ray's own count rate, and its correction" begin
-        scanner = BS.PCCTScanner(
+        pileup_scanner(τ_ns) = BS.PCCTScanner(
             source_to_isocenter = 610.0, source_to_detector = 1113.0,
             detector_rows = 12, detector_cols = 240, detector_row_size = 0.4, detector_col_size = 2.0,
             detector_material = :cdte, detector_depth = 1.6, energy_thresholds = [20.0, 35.0, 55.0, 70.0],
-            pileup = true, dead_time_ns = 20.0, pileup_correction = false, scatter_correction = false,
+            pileup = true, dead_time_ns = τ_ns, pileup_correction = false, scatter_correction = false,
             bowtie_filter = :large_body, detector_col_offset = 0.0, detector_shape = :arc,
         )
         opts = BS.SimOptions(use_noise = false, use_focal_spot = false, use_scatter = false, use_heel_effect = false, seed = 1)
+        # a clinical regime: rate · τ ≈ 0.1 at the fan centre in air (the toy protocol's 60 views
+        # make its per-view counts, and so its rate, far higher than a scanner's)
+        rate_air = BS.create_workspace(pileup_scanner(1.0), protocol, opts, recon, _air()).pileup_rate_air
+        scanner = pileup_scanner(0.1 / rate_air * 1.0e9)
         ws = BS.create_workspace(scanner, protocol, opts, recon, _air())
         @test size(ws.pileup_S, 3) == length(ws.pileup_rates) >= 8
         # loss grows with rate: column sums of S fall monotonically up the rate grid
@@ -122,8 +126,8 @@ end
         # far less of its counts
         loss_centre = 1 - recorded(n_cols ÷ 2) / truth(n_cols ÷ 2)
         loss_edge = 1 - recorded(1) / truth(1)
-        @test loss_centre > 0.01
-        @test loss_edge < 0.5 * loss_centre
+        @test 0.03 < loss_centre < 0.3
+        @test loss_edge < 0.3 * loss_centre       # a tenth of the flux, well under a third of the loss
         # the correction inverts it per ray
         bins = [copy(b) for b in res.pcct_sino.bins]
         BS.apply_pcct_pileup_correction!(bins, ws.I0, ws.pileup_S, ws.pileup_rates, ws.pileup_rate_air)

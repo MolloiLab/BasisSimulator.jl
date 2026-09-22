@@ -426,7 +426,7 @@ scanner = let
         detector_row_size = pixel_row_iso,
         detector_col_size = pixel_col_iso,
         detector_row_offset = 0.0,
-        detector_col_offset = pixel_col_iso / 2,
+        detector_col_offset = 0.25,               # columns: the quarter-detector offset
 
         focal_spot_width = 0.4,
         focal_spot_length = 0.5,

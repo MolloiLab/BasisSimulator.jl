@@ -271,8 +271,9 @@ function create_workspace(
             geom.detector_u, geom.detector_v,
             geom.fov,  # same recon FOV
             geom.pitch, geom.table_feed, geom.detector_shape,
-            # the offset is in columns: the same physical displacement in native columns
-            geom.column_offset * geom.pixel_size / _native_pixel_size,
+            # the offset is in columns: `spatial_bin!` sums native columns (c-1)·bf+1 … c·bf, so
+            # the binned centre is the native centre and a δ-column binned offset is δ·bf native
+            geom.column_offset * bf,
         )
         native_sino_shape = (_native_geom.n_cols, _native_geom.n_rows, _native_geom.n_angles)
         _native_bins = [allocate_backend(native_sino_shape) for _ in 1:n_bins]
@@ -960,8 +961,13 @@ export calibrate_pcct_poly_bhc
 # requested grid sits inside it at `output_x/y/z`.  `ws.volume` remains the exact grid asked for.
 "The diameter of the circle at isocentre the detector's fan covers (cm)."
 function scan_circle_diameter(geom::CTGeometry)
-    half = geom.n_cols * geom.pixel_size / 2
-    return is_arc(geom) ? 2 * geom.SAD * sin(min(half / geom.SAD, π / 2)) : 2 * half
+    half = geom.n_cols * geom.pixel_size / 2          # half the fan at isocentre (arc length / planar)
+    if is_arc(geom)
+        return 2 * geom.SAD * sin(min(half / geom.SAD, π / 2))
+    else
+        # the extreme ray of a flat panel passes the isocentre at distance SAD·h/√(SAD² + h²)
+        return 2 * geom.SAD * half / hypot(geom.SAD, half)
+    end
 end
 
 function _hir_support(

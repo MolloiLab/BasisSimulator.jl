@@ -55,7 +55,7 @@ end
     )
 
     W = reshape(toy.Φ, length(toy.E), 4)
-    from_bins = BS.spectral_basis_from_bins(energies = toy.E, W_applied = W, I0_bins = vec(toy.I0))
+    from_bins = BS.spectral_basis_from_bins(energies = toy.E, W_applied = W, I0 = toy.I0)
     @test from_bins.Φ == basis.Φ && from_bins.I0 == basis.I0
 
     # two acquisitions on different grids merge onto their union, each scaled by its own air counts

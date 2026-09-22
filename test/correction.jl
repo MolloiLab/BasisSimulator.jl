@@ -95,8 +95,12 @@ end
         0.01  0.04  0.1  0.8
     ]
 
-    I0_bins = [1.0e6, 8.0e5, 5.0e5, 3.0e5]
     n_col, n_row, n_view = 8, 4, 6
+    I0_bins = [1.0e6, 8.0e5, 5.0e5, 3.0e5]
+    I0 = Float32.(reshape(repeat(Float32.(I0_bins), inner = n_col * n_row), n_col, n_row, 4))
+    # the per-ray form takes S on a count-rate grid; two identical matrices make S(rate) ≡ S
+    grid(M) = cat(M, M; dims = 3)
+    rates = [1.0e6, 1.0e7]; rate_air = 1.0e6
 
     @testset "shape contract — 4-bin specialized" begin
         # 3-bin should error (only 4-bin is supported).
@@ -104,16 +108,16 @@ end
         for b in bins3
             fill!(b, 0.1f0)
         end
-        @test_throws ErrorException BS.apply_pcct_pileup_correction!(bins3, I0_bins[1:3], S[1:3, 1:3])
+        @test_throws ErrorException BS.apply_pcct_pileup_correction!(bins3, I0[:, :, 1:3], grid(S[1:3, 1:3]), rates, rate_air)
 
         # S of wrong shape
         bins4 = [Array{Float32}(undef, n_col, n_row, n_view) for _ in 1:4]
         for b in bins4
             fill!(b, 0.1f0)
         end
-        @test_throws ErrorException BS.apply_pcct_pileup_correction!(bins4, I0_bins, S[1:3, 1:3])
+        @test_throws ErrorException BS.apply_pcct_pileup_correction!(bins4, I0, grid(S[1:3, 1:3]), rates, rate_air)
         # Wrong I0_bins length
-        @test_throws ErrorException BS.apply_pcct_pileup_correction!(bins4, I0_bins[1:3], S)
+        @test_throws ErrorException BS.apply_pcct_pileup_correction!(bins4, I0[:, :, 1:3], grid(S), rates, rate_air)
     end
 
     @testset "round-trip: build sino as -log(S·t / I0), correct → recover -log(t/I0)" begin
@@ -141,7 +145,7 @@ end
 
         # Correct in place — should undo the pile-up and return values close
         # to t_truth (within float roundoff).
-        BS.apply_pcct_pileup_correction!(bins, I0_bins, S)
+        BS.apply_pcct_pileup_correction!(bins, I0, grid(S), rates, rate_air)
 
         for b in 1:4
             @test maximum(abs.(bins[b] .- t_truth[b])) < 1.0e-3
@@ -153,7 +157,7 @@ end
         bins = [Float32.(0.1 .+ 0.5 .* rand(n_col, n_row, n_view)) for _ in 1:4]
         bins_in = [copy(b) for b in bins]
         I = Matrix{Float64}(LinearAlgebra.I, 4, 4)
-        BS.apply_pcct_pileup_correction!(bins, I0_bins, I)
+        BS.apply_pcct_pileup_correction!(bins, I0, grid(I), rates, rate_air)
         for b in 1:4
             @test maximum(abs.(bins[b] .- bins_in[b])) < 1.0e-5
         end

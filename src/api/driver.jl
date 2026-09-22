@@ -1443,10 +1443,10 @@ The filter kernel, kernel size, and output volume size are all locked at
 workspace creation time — no runtime overrides on this hot path.
 
 # Keyword Arguments
-- `init_volume`: Optional warm-start volume (skip FDK init step).  If
-  provided, must be the same shape as `ws.volume`. For axial HIR, its terminal
-  slices are replicated only into the private computational halo; the returned
-  grid and caller-owned input are unchanged.
+- `init_volume`: Optional warm-start volume on the requested grid (same shape as `ws.volume`).
+  It replaces the FDK seed inside the requested window only: the rest of HIR's support (the
+  patient outside the requested circle, the cone halo along z) is still seeded by FDK from the
+  sinogram, so the model holds everything the detector saw. The caller's array is unchanged.
 - `air_reference`: Optional 2D array `[n_cols, n_rows]` of bowtie air
   reference values.  When provided, statistical weights are scaled by the
   air reference to account for position-dependent noise from the bowtie
@@ -1532,6 +1532,29 @@ function reconstruct!(
     else
         size(init_volume) == size(ws.volume) || throw(DimensionMismatch(
             "init_volume has size $(size(init_volume)); expected $(size(ws.volume))"))
+        # The caller's volume is the requested grid; the support beyond it (the in-plane ring
+        # of patient outside the requested circle, the cone halo) must still hold the object,
+        # or the data term piles that attenuation onto the circle's edge exactly as a
+        # truncated model does — and a reused workspace would otherwise keep the previous
+        # object in the ring. Seed the whole support by FDK, then place the caller's volume
+        # in its window.
+        if size(model_volume) != size(ws.volume)
+            copyto!(ws.filtered, sinogram)
+            filter_sinogram!(
+                ws.filtered, geom;
+                ws_conv_scratch = ws.conv_scratch,
+                ws_filter_kernel = ws.filter_kernel
+            )
+            fill!(model_volume, zero(T))
+            backproject!(
+                model_volume, ws.filtered, model_geom;
+                weighted = true,
+                ws_source_positions = ws.geom_source_positions,
+                ws_detector_centers = ws.geom_detector_centers,
+                ws_detector_u = ws.geom_detector_u,
+                ws_detector_v = ws.geom_detector_v
+            )
+        end
         copyto!(ws.volume, init_volume)
         _hir_seed_work!(model_volume, ws.volume, ws.output_x, ws.output_y, ws.output_z)
     end
