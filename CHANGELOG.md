@@ -44,6 +44,10 @@ Scanner fidelity, first part. Every simulation's numbers change; see each item.
   `spectral_basis(ws)` (ray-resolved through `ws.bowtie_spectral`; the keyword is `I0`) and
   `spectral_basis_from_bins` (`I0`, `transmission`) take it. Scatter counts scale with the ray's
   own flux. Air reads 0 in every column and bin.
+- **`calibrate_pcct_poly_bhc` fits each column on the spectrum that column saw** (`W·bt[col, mid-row, e]`),
+  as the energy-integrating calibration does: with the bowtie per ray the summed-bin image of a
+  35 cm water body read +9 HU at the centre and −51 HU at the rim under the former single
+  spectrum; a water cylinder now reads water across the fan (test).
 - **Pile-up at each ray's own count rate.** One MC migration matrix at the central air rate was
   applied to every ray, including rays through 35 cm of patient. `pileup_S` is now
   `[n_bins, n_bins, n_rates]` on a grid LINEAR in rate — `S(0) = I` exactly and Monte-Carlo
