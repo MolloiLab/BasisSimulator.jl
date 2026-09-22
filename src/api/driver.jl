@@ -1338,36 +1338,66 @@ end
 # reconstruct!() — Zero-allocation Hybrid IR reconstruction hot path
 # =============================================================================
 
-function _hir_seed_work!(work::AbstractArray{T, 3}, init::AbstractArray{T, 3}, output_z) where {T}
-    work === init && return work
+"""
+    _hir_continue_z!(work, output_z)
+
+Fill the axial halo planes of `work` (those outside `output_z`) by continuation from the nearest
+plane inside it.  The halo is a boundary model for the cone, not a reconstruction: FBP would give
+it unsupported terminal estimates from the narrower acquisition, so it starts as the boundary
+and the exact iterative operator updates only what the detector observes there.
+"""
+function _hir_continue_z!(work::AbstractArray{T, 3}, output_z) where {T}
+    nz_work = size(work, 3)
+    length(output_z) == nz_work && return work
     nx = Int32(size(work, 1))
     ny = Int32(size(work, 2))
-    nz = Int32(size(init, 3))
-    z0 = Int32(first(output_z))
+    zlo = Int32(first(output_z))
+    zhi = Int32(last(output_z))
     backend = AK.get_backend(work)
     AK.foreachindex(work, backend) do idx
         idx0 = Int32(idx - 1)
         i = (idx0 % nx) + Int32(1)
         j = ((idx0 ÷ nx) % ny) + Int32(1)
         kw = (idx0 ÷ (nx * ny)) + Int32(1)
-        ko = clamp(kw - z0 + Int32(1), Int32(1), nz)
-        work[idx] = init[i, j, ko]
+        if kw < zlo
+            work[idx] = work[i, j, zlo]
+        elseif kw > zhi
+            work[idx] = work[i, j, zhi]
+        end
     end
     return work
 end
 
-function _hir_extract_output!(output::AbstractArray{T, 3}, work::AbstractArray{T, 3}, output_z) where {T}
+"Place a caller's initial volume (the requested grid) into its window of the work grid."
+function _hir_seed_work!(work::AbstractArray{T, 3}, init::AbstractArray{T, 3}, output_x, output_y, output_z) where {T}
+    work === init && return work
+    nx = Int32(size(init, 1))
+    ny = Int32(size(init, 2))
+    x0 = Int32(first(output_x)); y0 = Int32(first(output_y)); z0 = Int32(first(output_z))
+    backend = AK.get_backend(work)
+    AK.foreachindex(init, backend) do idx
+        idx0 = Int32(idx - 1)
+        i = (idx0 % nx) + Int32(1)
+        j = ((idx0 ÷ nx) % ny) + Int32(1)
+        k = (idx0 ÷ (nx * ny)) + Int32(1)
+        work[x0 + i - Int32(1), y0 + j - Int32(1), z0 + k - Int32(1)] = init[idx]
+    end
+    return _hir_continue_z!(work, output_z)
+end
+
+"The requested grid, read out of its window of the work grid."
+function _hir_extract_output!(output::AbstractArray{T, 3}, work::AbstractArray{T, 3}, output_x, output_y, output_z) where {T}
     output === work && return output
     nx = Int32(size(output, 1))
     ny = Int32(size(output, 2))
-    z0 = Int32(first(output_z))
+    x0 = Int32(first(output_x)); y0 = Int32(first(output_y)); z0 = Int32(first(output_z))
     backend = AK.get_backend(output)
     AK.foreachindex(output, backend) do idx
         idx0 = Int32(idx - 1)
         i = (idx0 % nx) + Int32(1)
         j = ((idx0 ÷ nx) % ny) + Int32(1)
         k = (idx0 ÷ (nx * ny)) + Int32(1)
-        output[idx] = work[i, j, z0 + k - Int32(1)]
+        output[idx] = work[x0 + i - Int32(1), y0 + j - Int32(1), z0 + k - Int32(1)]
     end
     return output
 end
@@ -1510,28 +1540,27 @@ function reconstruct!(
             ws_conv_scratch = ws.conv_scratch,
             ws_filter_kernel = ws.filter_kernel
         )
-        # Initialize only the caller-requested, data-supported grid.  The
-        # private axial halo is a nuisance-domain boundary model, not a saved
-        # reconstruction volume. Reconstructing it directly with FDK from the
-        # narrower acquisition creates unsupported terminal estimates; seed it
-        # by continuation, then let the exact iterative operator update only
-        # the detector-observable components (V_inv is zero on its nullspace).
-        fill!(ws.volume, zero(T))
+        # Seed the whole in-plane support by FDK — the fan covers the scan circle, so the
+        # data support it — and the axial halo by continuation: FDK from the narrower
+        # acquisition would give the halo unsupported terminal estimates, so it starts as
+        # the boundary and the exact iterative operator updates only the detector-observable
+        # components there (V_inv is zero on its nullspace).
+        fill!(model_volume, zero(T))
         backproject!(
-            ws.volume, ws.filtered, geom;
+            model_volume, ws.filtered, model_geom;
             weighted = true,
             ws_source_positions = ws.geom_source_positions,
             ws_detector_centers = ws.geom_detector_centers,
             ws_detector_u = ws.geom_detector_u,
             ws_detector_v = ws.geom_detector_v
         )
-        _hir_seed_work!(model_volume, ws.volume, ws.output_z)
+        _hir_continue_z!(model_volume, ws.output_z)
         end
     else
         size(init_volume) == size(ws.volume) || throw(DimensionMismatch(
             "init_volume has size $(size(init_volume)); expected $(size(ws.volume))"))
         copyto!(ws.volume, init_volume)
-        _hir_seed_work!(model_volume, ws.volume, ws.output_z)
+        _hir_seed_work!(model_volume, ws.volume, ws.output_x, ws.output_y, ws.output_z)
     end
 
     # ─── Step 2: OS-PWLS refinement with Huber regularization ───
@@ -1552,7 +1581,7 @@ function reconstruct!(
     # strength = 0 ⇒ no PWLS refinement at all: the FDK init IS the result.
     # Bail out before the weight kernels so a 0 % request costs a plain FBP.
     if nepochs == 0
-        _hir_extract_output!(ws.volume, model_volume, ws.output_z)
+        _hir_extract_output!(ws.volume, model_volume, ws.output_x, ws.output_y, ws.output_z)
         apply_fov_mask!(ws.volume, geom)
         return ws.volume
     end
@@ -1723,7 +1752,7 @@ function reconstruct!(
 
     # Audit A6: match the FDK path's clinical convention (outside-FOV corners
     # otherwise retain FDK-init ringing and skew volume statistics).
-    _hir_extract_output!(ws.volume, model_volume, ws.output_z)
+    _hir_extract_output!(ws.volume, model_volume, ws.output_x, ws.output_y, ws.output_z)
     apply_fov_mask!(ws.volume, geom)
 
     return ws.volume

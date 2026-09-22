@@ -361,7 +361,7 @@ function _dd_walk_setup(
         arc_det = is_arc(geom),
         dγ = T(geom.pixel_size / geom.SAD),
         ps = T(geom.pixel_size), prs = T(geom.pixel_row_size),
-        col_center = (T(n_cols) + one(T)) / T(2),
+        col_center = column_center(T, geom),
         row_center = (T(n_rows) + one(T)) / T(2),
         nc_nr = n_cols * n_rows,
         sp = _dd_geom_array(ws_source_positions, like, geom.source_positions, T),

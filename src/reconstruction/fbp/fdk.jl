@@ -448,7 +448,7 @@ function fdk_reconstruct(
         geom.angles, geom.source_positions, geom.detector_centers,
         geom.detector_u, geom.detector_v,
         fov,  # Use specified FOV
-        geom.pitch, geom.table_feed, geom.detector_shape
+        geom.pitch, geom.table_feed, geom.detector_shape, geom.column_offset,
     )
 
     return fdk_reconstruct(sinogram, geom_fov, volume_size; filter=filter, cutoff=cutoff)

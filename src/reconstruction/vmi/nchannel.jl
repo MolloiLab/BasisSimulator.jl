@@ -919,7 +919,7 @@ function _single_row_geometry(geom::CTGeometry)
         geom.pixel_size, geom.pixel_row_size,
         geom.angles, geom.source_positions, geom.detector_centers,
         geom.detector_u, geom.detector_v, (geom.fov[1], geom.fov[2], geom.pixel_row_size),
-        geom.pitch, geom.table_feed, geom.detector_shape,
+        geom.pitch, geom.table_feed, geom.detector_shape, geom.column_offset,
     )
 end
 

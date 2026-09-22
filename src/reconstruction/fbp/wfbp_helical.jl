@@ -97,8 +97,8 @@ function _wfbp_rebin!(
     # IS the iso column pitch.  (Using ps·R/SDD here would halve the t-grid
     # extent and truncate wide objects → interior-truncation DC bias.)
     Δt = T(geom.pixel_size)
-    t_center = (T(n_cols) + one(T)) / T(2)
-    col_center = (T(n_cols) + one(T)) / T(2)
+    t_center = (T(n_cols) + one(T)) / T(2)       # the rebinned parallel grid is centred on the central ray
+    col_center = column_center(T, geom)
     pixel_mag = T(geom.pixel_size) * (SDD / R)
     arc_det = is_arc(geom)
     dγ_arc = T(geom.pixel_size / geom.SAD)

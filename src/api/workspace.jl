@@ -260,7 +260,9 @@ function create_workspace(
             geom.source_positions, geom.detector_centers,
             geom.detector_u, geom.detector_v,
             geom.fov,  # same recon FOV
-            geom.pitch, geom.table_feed, geom.detector_shape
+            geom.pitch, geom.table_feed, geom.detector_shape,
+            # the offset is in columns: the same physical displacement in native columns
+            geom.column_offset * geom.pixel_size / _native_pixel_size,
         )
         native_sino_shape = (_native_geom.n_cols, _native_geom.n_rows, _native_geom.n_angles)
         _native_bins = [allocate_backend(native_sino_shape) for _ in 1:n_bins]
@@ -900,41 +902,60 @@ export calibrate_pcct_poly_bhc
 # HIRReconWorkspace — Pre-allocated workspace for zero-allocation Hybrid IR reconstruct!()
 # =============================================================================
 
-# Cone rays through a requested axial ROI continue through the object beyond
-# the ROI's terminal planes.  The iterative forward model must represent that
-# chord or it implicitly inserts air immediately outside the saved volume and
-# creates a systematic terminal residual.  Keep the requested voxel spacing
-# and expand symmetrically by the worst-case near-to-far cone magnification.
-# This is an internal computational domain; `ws.volume` remains the exact grid
-# requested by the caller.
-function _hir_axial_support(
+# HIR's internal support domain.  The iterative forward model must represent everything the
+# detector sees, or it implicitly inserts air there and creates a systematic residual:
+#   • along z, the cone rays through the requested slab continue into the object beyond its
+#     terminal planes (the axial halo);
+#   • in plane, a patient wider than the requested reconstruction circle is still measured —
+#     the rays through the shoulders exist — and a model with nowhere to put that attenuation
+#     piles it onto the circle's edge (the bright smear in the outermost centimetre that FBP,
+#     which has no model, does not show).
+# The work grid keeps the requested voxel spacing, extends in plane to the scan circle the fan
+# actually covers, and along z by the worst-case cone magnification at that wider radius; the
+# requested grid sits inside it at `output_x/y/z`.  `ws.volume` remains the exact grid asked for.
+"The diameter of the circle at isocentre the detector's fan covers (cm)."
+function scan_circle_diameter(geom::CTGeometry)
+    half = geom.n_cols * geom.pixel_size / 2
+    return is_arc(geom) ? 2 * geom.SAD * sin(min(half / geom.SAD, π / 2)) : 2 * half
+end
+
+function _hir_support(
         geom::CTGeometry, volume_size::NTuple{3, Int}, enabled::Bool,
     )
     nx, ny, nz = volume_size
     if !enabled || is_helical(geom) || nz == 1
-        return geom, volume_size, 1:nz
+        return geom, volume_size, 1:nx, 1:ny, 1:nz
     end
 
-    radius = min(geom.fov[1], geom.fov[2]) / 2
+    dx = geom.fov[1] / nx
+    dy = geom.fov[2] / ny
+    # in plane: at least the requested grid, at most the scan circle, an even number of extra
+    # pixels so the requested voxel centres are preserved
+    scan_d = scan_circle_diameter(geom)
+    pad(n, d) = (m = max(n, ceil(Int, scan_d / d)); isodd(m - n) ? m + 1 : m)
+    work_nx = pad(nx, dx)
+    work_ny = pad(ny, dy)
+    radius = min(work_nx * dx, work_ny * dy) / 2
     radius < geom.SAD || throw(ArgumentError(
         "HIR reconstruction radius $radius cm must be smaller than SAD $(geom.SAD) cm"))
     cone_ratio = (geom.SAD + radius) / (geom.SAD - radius)
     dz = geom.fov[3] / nz
     work_nz = max(nz, ceil(Int, geom.fov[3] * cone_ratio / dz))
-    # Equal halo on both sides preserves the requested voxel-center coordinates.
     isodd(work_nz - nz) && (work_nz += 1)
-    work_nz == nz && return geom, volume_size, 1:nz
+    (work_nx, work_ny, work_nz) == volume_size && return geom, volume_size, 1:nx, 1:ny, 1:nz
 
-    work_fov = (geom.fov[1], geom.fov[2], work_nz * dz)
+    work_fov = (work_nx * dx, work_ny * dy, work_nz * dz)
     work_geom = CTGeometry(
         geom.SAD, geom.SDD, geom.n_angles, geom.n_rows, geom.n_cols,
         geom.pixel_size, geom.pixel_row_size,
         geom.angles, geom.source_positions, geom.detector_centers,
         geom.detector_u, geom.detector_v, work_fov,
-        geom.pitch, geom.table_feed, geom.detector_shape,
+        geom.pitch, geom.table_feed, geom.detector_shape, geom.column_offset,
     )
+    x0 = (work_nx - nx) ÷ 2 + 1
+    y0 = (work_ny - ny) ÷ 2 + 1
     z0 = (work_nz - nz) ÷ 2 + 1
-    return work_geom, (nx, ny, work_nz), z0:(z0 + nz - 1)
+    return work_geom, (work_nx, work_ny, work_nz), x0:(x0 + nx - 1), y0:(y0 + ny - 1), z0:(z0 + nz - 1)
 end
 
 """
@@ -956,8 +977,10 @@ Create with [`create_hir_recon_workspace`](@ref).
 mutable struct HIRReconWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, A2 <: AbstractArray{T, 2}, A1 <: AbstractArray{T, 1}, AI <: AbstractVector{Int32}}
     # ─── Output / iterate ───
     volume::A3                # exact caller-requested output grid
-    work_volume::A3           # PWLS iterate with internal axial support halo
+    work_volume::A3           # PWLS iterate on the internal support domain (scan circle, cone halo)
     work_geom::CTGeometry
+    output_x::UnitRange{Int}  # where the requested grid sits inside the work grid
+    output_y::UnitRange{Int}
     output_z::UnitRange{Int}
 
     # ─── FDK filtering scratch ───
@@ -1034,7 +1057,7 @@ function create_hir_recon_workspace(
     # Strength zero is contractually plain FBP and needs no iterative support
     # domain.  Helical HIR retains its existing WFBP-domain behavior.
     params = get_hir_params(strength)
-    work_geom, work_size, output_z = _hir_axial_support(
+    work_geom, work_size, output_x, output_y, output_z = _hir_support(
         geom, volume_size, params.nepochs > 0)
 
     # Exact public output plus the internal iterative domain.  Alias them when
@@ -1136,7 +1159,7 @@ function create_hir_recon_workspace(
     subset_Ax_buf = similar(sinogram, T, sino_shape[1], sino_shape[2], max_subset_size)
 
     return HIRReconWorkspace{T, typeof(volume), typeof(geom_source_positions), typeof(filter_kernel), typeof(idx_proto)}(
-        volume, work_volume, work_geom, output_z,
+        volume, work_volume, work_geom, output_x, output_y, output_z,
         filtered, conv_scratch, filter_kernel,
         geom_source_positions, geom_detector_centers, geom_detector_u, geom_detector_v,
         W_proj, V_inv,
