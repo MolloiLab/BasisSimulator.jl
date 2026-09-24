@@ -998,9 +998,10 @@ end
 
 Measured channels to virtual monoenergetic images:
 
-    channels ─┬─ merge_channels ─┬─ reduce_detector_rows ─┬─ decompose_nchannel ─┐
-              └──────────────────┘                        └─ decompose_cong ─────┤
-        └─ tlbf_denoise ─ reconstruct_basis_slice ─ apply_acnr_kalender! ─ synthesize_vmi_stack
+    channels ─ hypr_lr ─┬─ merge_channels ─┬─ reduce_detector_rows ─┬─ decompose_nchannel ─┐
+                        └──────────────────┘                        └─ decompose_cong ─────┤
+        └─ tlbf_denoise ─ reconstruct_basis_slice ─┬─ apply_acnr_kalender! ─┬─ synthesize_vmi_stack
+                           image_hypr ─────────────┴────────────────────────┘
 
 Every stage's settings are keywords, so the function makes no decision the caller cannot see
 and override, which is what makes it usable as the inner call of an ablation sweep.
@@ -1010,6 +1011,10 @@ Required: `channels` (vector of `K` corrected log-transmission sinograms), `basi
 
 Stages, all optional:
 
+- `denoiser = nothing` or a [`SpectralHYPR`](@ref) — generalized HYPR-LR: its projection-domain
+  instance ([`hypr_lr`](@ref)) on the counts of each detector row before anything else, with the
+  dispersion measured from the acquisition's air rays by default, and its image-domain instance
+  ([`image_hypr`](@ref)) in place of the plain FDK of the basis pair. Either can be `nothing`.
 - `method = :nchannel` or `:cong`; `controls = NChannelControls()`.
 - `merge_groups = nothing` — channel groups summed before decomposing, e.g. `[1:2, 3:4]`.
 - `reduce_rows = false`, `rows = :` — sum detector rows in counts, for a z-invariant object whose
@@ -1017,7 +1022,7 @@ Stages, all optional:
   slice onto `matrix_size`.
 - `use_tlbf = false`, `tlbf_alpha1`, `tlbf_alpha2`, `tlbf_radius` — photon-counting only; filters
   each detector row in its own (column, view) plane.
-- `use_acnr = true`, `acnr_passes = 4`, `acnr_beta_max = 20`, `acnr_hp_sigma_px = 1.5`,
+- `use_acnr = (denoiser === nothing)`, `acnr_passes = 4`, `acnr_beta_max = 20`, `acnr_hp_sigma_px = 1.5`,
   `acnr_window = 4`.
 - `matrix_size` (required) — the reconstruction grid, `(nx, ny, nz)`; this function never sees a
   workspace's `ReconOptions`, so the caller states the grid. One slice when the rows were reduced.
@@ -1034,14 +1039,18 @@ Stages, all optional:
 - `keep_sinograms` adds the decomposed pair; `keep_diagnostics` adds the estimator's per-ray
   maps (Fisher information, quality flags) for `:nchannel`.
 
-The published photon-counting configuration is
-`vmi_pipeline(; channels, basis, geom, to_backend, reduce_rows = true, use_tlbf = true)`.
+The published photon-counting configuration of basis-vmi is
+`vmi_pipeline(; channels, basis, geom, to_backend, reduce_rows = true, use_tlbf = true)`. The
+generic chain of basis-spectral-denoising, the same for photon-counting, rapid kVp-switching and
+dual-source acquisitions and with every detector row kept, is
+`vmi_pipeline(; channels, basis, geom, to_backend, matrix_size, denoiser = SpectralHYPR())`.
 
 Returns `(vmis, energies, images = (water, iodine), quality, elapsed_s, settings)`, with `vmis`
 `(nx, ny, nz, n_energies)` in HU.
 """
 function vmi_pipeline(;
         channels, basis, geom, to_backend = identity,
+        denoiser::Union{Nothing, SpectralHYPR} = nothing,
         method::Symbol = :nchannel,
         controls::NChannelControls = NChannelControls(),
         merge_groups = nothing,
@@ -1049,7 +1058,7 @@ function vmi_pipeline(;
         use_tlbf::Bool = false,
         tlbf_alpha1::Real = 0.9, tlbf_alpha2::Real = 24.635648571666497,
         tlbf_radius::Integer = 2,
-        use_acnr::Bool = true,
+        use_acnr::Bool = denoiser === nothing,
         acnr_passes::Integer = 4, acnr_beta_max::Real = 20.0,
         acnr_hp_sigma_px::Real = 1.5, acnr_window::Integer = 4,
         matrix_size,
@@ -1070,6 +1079,19 @@ function vmi_pipeline(;
     recon_method in (:fbp, :hir) ||
         throw(ArgumentError("recon_method must be :fbp or :hir, got $(recon_method)"))
     hir = recon_method === :hir
+    projection_hypr = denoiser === nothing ? nothing : denoiser.projection
+    image_instance = denoiser === nothing ? nothing : denoiser.image
+    hir && image_instance !== nothing && throw(ArgumentError(
+        "the image-domain HYPR instance measures its noise from FDK of the half-view pair; " *
+        "use recon_method = :fbp or SpectralHYPR(image = nothing)"))
+
+    dispersion = nothing
+    if projection_hypr !== nothing
+        dispersion = projection_hypr.dispersion === :measured ?
+            estimate_dispersion(channels, basis.I0) : collect(Float64, projection_hypr.dispersion)
+        channels = hypr_lr(channels, basis.I0; kernel = projection_hypr.kernel,
+            dispersion = dispersion, to_backend = to_backend)
+    end
 
     prepared = prepare_channels(; channels, basis, merge_groups, reduce_rows, rows)
     working_channels, working_basis = prepared.channels, prepared.basis
@@ -1115,8 +1137,17 @@ function vmi_pipeline(;
         method = recon_method, hir_strength = hir_strength, projector = recon_projector,
         hir_weights = weights, scale = scale,
     )
-    water_image = reconstruct(sino_water, weights_water, scale_water)
-    iodine_image = reconstruct(sino_iodine, weights_iodine, scale_iodine)
+    image_settings = nothing
+    water_image, iodine_image = if image_instance === nothing
+        reconstruct(sino_water, weights_water, scale_water),
+        reconstruct(sino_iodine, weights_iodine, scale_iodine)
+    else
+        pooled = image_hypr(sino_water, sino_iodine, geom, matrix_size;
+            image = image_instance, filter = fbp_filter, antialias = antialias,
+            n_rows = recon_rows, to_backend = to_backend)
+        image_settings = (Estar = pooled.Estar, β = pooled.β, Σ = pooled.Σ, σM = pooled.σM)
+        pooled.water, pooled.iodine
+    end
 
     acnr_settings = nothing
     if use_acnr && acnr_passes > 0
@@ -1139,6 +1170,10 @@ function vmi_pipeline(;
         elapsed_s = decomposition.elapsed_s,
         settings = (
             method = method, n_channels = working_basis.n_channels,
+            denoiser = denoiser === nothing ? nothing : (;
+                projection = projection_hypr, dispersion = dispersion,
+                image = image_instance, image_estimates = image_settings,
+            ),
             merge_groups = merge_groups, reduce_rows = reduce_rows, n_rows = prepared.n_rows,
             tlbf = use_tlbf ?
                 (alpha1 = tlbf_alpha1, alpha2 = tlbf_alpha2, radius = tlbf_radius) : nothing,

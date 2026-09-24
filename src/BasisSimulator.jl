@@ -336,6 +336,12 @@ include("denoising/sino_sfjsd.jl")
 # Photon-counting only.
 include("denoising/tlbf.jl")
 
+# Generalized HYPR-LR (basis-spectral-denoising): count-domain HYPR-LR within each detector row
+# with total-count likelihood weights and a local linear split, and its image-domain instance on
+# the basis pair (minimum-noise VMI and its noise-independent complement). The chain's denoiser
+# for `vmi_pipeline(; denoiser = SpectralHYPR())`, for any spectral technology.
+include("denoising/hypr.jl")
+
 # Phantom-mask helpers — recon-space resample + FFT-Gaussian erosion.
 # Used by Mono+ phantom_mask kwarg + edge-mask post-processing.
 include("reconstruction/vmi/phantom_mask.jl")

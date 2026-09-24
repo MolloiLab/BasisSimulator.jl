@@ -41,6 +41,7 @@ const BS = BasisSimulator
     end
     @testset "nchannel/" begin
         include("nchannel.jl")
+        include("hypr.jl")
     end
     @testset "object/" begin
         include("object.jl")

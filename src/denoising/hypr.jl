@@ -1,0 +1,506 @@
+# Generalized HYPR-LR for spectral CT, in the projection and the image domain.
+#
+# HYPR-LR (Leng et al. 2011) estimates each energy image as a low-noise composite times the
+# locally pooled ratio of the image to the composite. Written as a local-likelihood estimate it
+# has four parts — the composite, the quantity pooled (its complement), the weights and the local
+# model — and here each follows from the measurement:
+#
+#   - projection domain: the composite is each ray's total count T_i, the complement its split
+#     p_ik across the K channels. For independent Poisson channels the likelihood factorizes
+#     exactly into Poisson(T) × Multinomial(split | T), so the totals are ancillary for the split
+#     and weights computed from them, exp(-(T_i - T_j)² / 2(T_i + T_j)), do not bias it. The split
+#     is fitted locally linear in (column, view) within each detector row — rows are never mixed —
+#     and each ray keeps its own total: ŷ_ik = T_i p̂_ik. Its job is the O(1/N) bias of the
+#     per-ray decomposition, which only the counts can reach.
+#   - image domain: on the reconstructed basis pair (a, c), the composite is the minimum-noise VMI
+#     M at E* = argmin gᵀΣg, Σ the pair's noise covariance measured from the odd/even half-view
+#     reconstructions; the complement I⊥ = a − βM is the iodine component whose noise is
+#     uncorrelated with M. Both are pooled with Gaussian likelihood weights on M, at M's measured
+#     noise, over adjacent voxels and slices, and the pair is recombined.
+#
+# Nothing in either instance is a smoothing parameter: the weights' scales are measured from the
+# acquisition. The window extents and spatial profiles are specified the way an FBP apodization
+# is — `HYPRKernel(window, profile)` with `BoxProfile`, `TriangleProfile` or
+# `CustomProfile(control_x, control_y)`, the counterpart of `CustomFilter`.
+#
+# The kernels are `AK.foreachindex` bodies, so the same code runs on CPU, CUDA, Metal, ROCm and
+# oneAPI arrays. Ported from MolloiLab/basis-spectral-denoising (`notebooks/denoising_results.jl`).
+
+# =============================================================================
+# Window profiles and kernels
+# =============================================================================
+
+"""
+Spatial profile of a HYPR-LR window: the weight a neighbour receives as a function of its
+distance from the centre, as a fraction `x ∈ [0, 1]` of one step past the window's half-width
+(so the outermost neighbours keep a nonzero weight). Separable along each window axis.
+"""
+abstract type HYPRProfile end
+
+"""Uniform weights — Leng's HYPR-LR."""
+struct BoxProfile <: HYPRProfile end
+
+"""Weights falling linearly to zero one step past the window's edge."""
+struct TriangleProfile <: HYPRProfile end
+
+"""
+    CustomProfile(control_x, control_y)
+
+Piecewise-linear window profile through control points, exactly as [`CustomFilter`](@ref)
+specifies an FBP apodization over frequency: `control_x` runs from 0 (the centre) to 1 (one step
+past the window's edge), `control_y` is the weight there.
+
+# Example
+```julia
+p = CustomProfile((0.0, 0.5, 1.0), (1.0, 0.8, 0.2))
+k = HYPRKernel((5, 5), p)
+```
+"""
+struct CustomProfile{N} <: HYPRProfile
+    control_x::NTuple{N, Float64}
+    control_y::NTuple{N, Float64}
+    function CustomProfile{N}(control_x::NTuple{N, Float64}, control_y::NTuple{N, Float64}) where {N}
+        N >= 1 || throw(ArgumentError("a profile needs at least one control point"))
+        issorted(control_x) || throw(ArgumentError("control_x must be increasing, got $(control_x)"))
+        all(>=(0), control_y) || throw(ArgumentError("control_y must be non-negative, got $(control_y)"))
+        new{N}(control_x, control_y)
+    end
+end
+CustomProfile(control_x::NTuple{N, Real}, control_y::NTuple{N, Real}) where {N} =
+    CustomProfile{N}(Float64.(control_x), Float64.(control_y))
+
+control_points(::BoxProfile) = ((0.0, 1.0), (1.0, 1.0))
+control_points(::TriangleProfile) = ((0.0, 1.0), (1.0, 0.0))
+control_points(p::CustomProfile) = (p.control_x, p.control_y)
+
+"""
+    profile_weight(profile, x) -> Float64
+
+The profile's weight at fractional distance `x ∈ [0, 1]`.
+"""
+function profile_weight(p::HYPRProfile, x::Real)
+    xs, ys = control_points(p)
+    x <= xs[1] && return ys[1]
+    for i in 1:(length(xs) - 1)
+        x <= xs[i + 1] && return ys[i] + (x - xs[i]) / (xs[i + 1] - xs[i]) * (ys[i + 1] - ys[i])
+    end
+    return ys[end]
+end
+
+"""
+    profile_weights(profile, n) -> Vector{Float64}
+
+The 1-D weights of a width-`n` (odd) window.
+"""
+function profile_weights(p::HYPRProfile, n::Integer)
+    h = n ÷ 2
+    return [profile_weight(p, abs(d) / (h + 1)) for d in -h:h]
+end
+
+"""
+    HYPRKernel(window, profile = BoxProfile(); guided = true, linear = true)
+
+A generalized HYPR-LR kernel: the window extent in odd widths — `(columns, views)` in the
+projection domain, `(x, y, slices)` in the image domain; its spatial profile ([`HYPRProfile`](@ref)),
+separable along each axis; whether each weight is also multiplied by the likelihood that the
+neighbour's composite shares the centre's (`guided`); and whether the complement is fitted locally
+linear (`linear`) or locally constant — HYPR-LR's pooled ratio. The local linear fit is available
+in the projection domain; image-domain kernels are locally constant.
+
+`HYPRKernel((7, 7); guided = false, linear = false)` is Leng's HYPR-LR in the counts.
+"""
+struct HYPRKernel{D, P <: HYPRProfile}
+    window::NTuple{D, Int}
+    profile::P
+    guided::Bool
+    linear::Bool
+end
+function HYPRKernel(window::NTuple{D, Integer}, profile::HYPRProfile = BoxProfile();
+        guided::Bool = true, linear::Bool = D == 2) where {D}
+    D in (2, 3) || throw(ArgumentError("a window has 2 (projection) or 3 (image) axes, got $(D)"))
+    all(w -> w >= 1 && isodd(w), window) ||
+        throw(ArgumentError("window widths must be odd and positive, got $(window)"))
+    D == 3 && linear &&
+        throw(ArgumentError("image-domain kernels are locally constant; pass linear = false"))
+    return HYPRKernel{D, typeof(profile)}(Int.(window), profile, guided, linear)
+end
+
+function Base.show(io::IO, k::HYPRKernel)
+    print(io, "HYPRKernel(", join(k.window, " × "))
+    k.profile isa BoxProfile || print(io, ", ", k.profile)
+    k.guided || print(io, ", unguided")
+    k.linear && print(io, ", local linear")
+    print(io, ")")
+end
+
+"Weight a projection-domain kernel gives a ray at its own centre (its likelihood factor is 1)."
+center_weight(k::HYPRKernel) = profile_weight(k.profile, 0.0)^length(k.window)
+
+# =============================================================================
+# The two instances and the chain's denoiser
+# =============================================================================
+
+"""
+    ProjectionHYPR(; kernel = HYPRKernel((3, 3)), dispersion = :measured)
+
+The projection-domain instance: count-domain generalized HYPR-LR within each detector row
+([`hypr_lr`](@ref)). `dispersion` is `:measured` — read off the acquisition's own air rays by
+[`estimate_dispersion`](@ref) — or a vector of `K` variance-to-mean ratios.
+"""
+struct ProjectionHYPR{Kr <: HYPRKernel{2}, Dp}
+    kernel::Kr
+    dispersion::Dp
+end
+function ProjectionHYPR(; kernel::HYPRKernel{2} = HYPRKernel((3, 3)), dispersion = :measured)
+    dispersion === :measured || dispersion isa AbstractVector{<:Real} ||
+        throw(ArgumentError("dispersion must be :measured or a vector, got $(dispersion)"))
+    return ProjectionHYPR(kernel, dispersion)
+end
+
+"""
+    ImageHYPR(; composite = HYPRKernel((3, 3, 7); linear = false),
+                complement = HYPRKernel((5, 5, 7); linear = false))
+
+The image-domain instance on the reconstructed basis pair ([`image_hypr`](@ref)): the windows over
+which the minimum-noise VMI (`composite`) and its noise-independent complement (`complement`) are
+pooled, `(x, y, slices)`.
+"""
+struct ImageHYPR{C <: HYPRKernel{3}, P <: HYPRKernel{3}}
+    composite::C
+    complement::P
+end
+ImageHYPR(; composite::HYPRKernel{3} = HYPRKernel((3, 3, 7); linear = false),
+            complement::HYPRKernel{3} = HYPRKernel((5, 5, 7); linear = false)) =
+    ImageHYPR(composite, complement)
+
+"""
+    SpectralHYPR(; projection = ProjectionHYPR(), image = ImageHYPR())
+
+The spectral chain's denoiser for [`vmi_pipeline`](@ref): the projection-domain instance on the
+counts before the decomposition, and the image-domain instance on the basis pair after FDK. Pass
+`nothing` for either to run the other alone.
+
+The published configuration is `vmi_pipeline(; …, denoiser = SpectralHYPR())`.
+"""
+struct SpectralHYPR{P <: Union{Nothing, ProjectionHYPR}, I <: Union{Nothing, ImageHYPR}}
+    projection::P
+    image::I
+end
+SpectralHYPR(; projection = ProjectionHYPR(), image = ImageHYPR()) = SpectralHYPR(projection, image)
+
+# =============================================================================
+# Projection domain
+# =============================================================================
+
+function _air_slab(I0, k, n_col, n_row, dispersion)
+    air = size(I0, 1) == 1 && size(I0, 2) == 1 ?
+        fill(Float32(I0[1, 1, k]), n_col, n_row) : Float32.(view(I0, :, :, k))
+    return reshape(air ./ Float32(dispersion[k]), n_col, n_row, 1)
+end
+
+"""
+    poisson_counts(channels, I0, dispersion) -> (N, T)
+
+Poisson-equivalent counts `N (n_col, n_row, n_view, K)` — `I0_k e^{-h_k} / D_k` — and their totals
+`T (n_col, n_row, n_view)`, in Float32.
+"""
+function poisson_counts(channels::AbstractVector, I0::AbstractArray{<:Real, 3}, dispersion)
+    length(channels) == size(I0, 3) == length(dispersion) || throw(DimensionMismatch(
+        "$(length(channels)) channels, $(size(I0, 3)) air channels, $(length(dispersion)) dispersions"))
+    n_col, n_row, n_view = size(first(channels))
+    K = length(channels)
+    N = Array{Float32, 4}(undef, n_col, n_row, n_view, K)
+    for k in 1:K
+        N[:, :, :, k] .= _air_slab(I0, k, n_col, n_row, dispersion) .* exp.(-Float32.(channels[k]))
+    end
+    return N, dropdims(sum(N; dims = 4); dims = 4)
+end
+
+"""
+    kernel_sums(N, T, kernel; power = 1, moments = false, to_backend = identity) -> S
+
+The `kernel`-weighted sums, within each detector row, about each ray — every weight raised to
+`power` (`power = 2` gives the sums the effective count needs). With `moments = false`,
+`S (…, K + 1)` holds each channel's counts and, last, the totals. With `moments = true` — what the
+local linear fit needs — `S (…, 6 + 3K)` holds the totals times `1, Δc, Δv, Δc², ΔcΔv, Δv²` and
+then each channel's counts times `1, Δc, Δv`, with `Δc, Δv` the column and view offsets from the
+ray. Columns are clamped at the detector edges; views wrap around a full rotation.
+"""
+function kernel_sums(N::AbstractArray{Float32, 4}, T::AbstractArray{Float32, 3}, kernel::HYPRKernel{2};
+        power::Integer = 1, moments::Bool = false, to_backend = identity)
+    power in (1, 2) || throw(ArgumentError("power must be 1 or 2, got $(power)"))
+    nc, nr, nv, K = size(N)
+    a = kernel.window[1] ÷ 2
+    b = min(kernel.window[2] ÷ 2, (nv - 1) ÷ 2)
+    wc = to_backend(Float32.(profile_weights(kernel.profile, 2a + 1)))
+    wv = to_backend(Float32.(profile_weights(kernel.profile, 2b + 1)))
+    Nd = to_backend(N)
+    Td = to_backend(T)
+    S = to_backend(zeros(Float32, nc, nr, nv, moments ? 6 + 3K : K + 1))
+    guided = kernel.guided
+    squared = power == 2
+    try
+        AK.foreachindex(S) do idx
+            i = (idx - 1) % nc + 1
+            r = ((idx - 1) ÷ nc) % nr + 1
+            j = ((idx - 1) ÷ (nc * nr)) % nv + 1
+            s = (idx - 1) ÷ (nc * nr * nv) + 1
+            Ti = Td[i, r, j]
+            acc = 0.0f0
+            for dj in -b:b
+                jj = mod(j - 1 + dj, nv) + 1
+                for ii in max(1, i - a):min(nc, i + a)
+                    Tj = Td[ii, r, jj]
+                    w = wc[ii - i + a + 1] * wv[dj + b + 1]
+                    if guided
+                        d = Ti - Tj
+                        w *= exp(-d * d / (2.0f0 * max(Ti + Tj, 1.0f0)))
+                    end
+                    squared && (w *= w)
+                    if !moments
+                        acc += w * (s <= K ? Nd[ii, r, jj, s] : Tj)
+                    else
+                        x = Float32(ii - i)
+                        y = Float32(dj)
+                        if s <= 6
+                            m = s == 1 ? 1.0f0 : s == 2 ? x : s == 3 ? y : s == 4 ? x * x : s == 5 ? x * y : y * y
+                            acc += w * Tj * m
+                        else
+                            q = (s - 7) % 3
+                            acc += w * Nd[ii, r, jj, (s - 7) ÷ 3 + 1] * (q == 0 ? 1.0f0 : q == 1 ? x : y)
+                        end
+                    end
+                end
+            end
+            S[idx] = acc
+        end
+        return Array(S)
+    finally
+        release_backend!((S, Nd, Td, wc, wv); collect = false)
+    end
+end
+
+"""
+    pooled_split(N, T, kernel; leave_out = false, to_backend = identity) -> p (n_col, n_row, n_view, K)
+
+Every ray's pooled split under `kernel`: the kernel-weighted pooled ratio (locally constant —
+HYPR-LR), or the intercept of the weighted least-squares fit of the neighbours' splits `y_jk / T_j`
+on `(1, Δc, Δv)` with weights `w_ij T_j` (locally linear, which removes the bias an asymmetric
+window would otherwise put into the pooled ratio). `leave_out` removes the ray's own counts from
+its fit, for leave-one-out scores. Fractions are floored at 1e-6 and renormalised to sum to one.
+"""
+function pooled_split(N::AbstractArray{Float32, 4}, T::AbstractArray{Float32, 3}, kernel::HYPRKernel{2};
+        leave_out::Bool = false, to_backend = identity)
+    nc, nr, nv, K = size(N)
+    n = nc * nr * nv
+    w0 = Float32(center_weight(kernel))
+    S = kernel_sums(N, T, kernel; moments = kernel.linear, to_backend = to_backend)
+    p = Array{Float32, 4}(undef, nc, nr, nv, K)
+    Threads.@threads for idx in 1:n
+        if kernel.linear
+            m00 = Float64(S[idx]); m10 = Float64(S[idx + n]); m01 = Float64(S[idx + 2n])
+            m20 = Float64(S[idx + 3n]); m11 = Float64(S[idx + 4n]); m02 = Float64(S[idx + 5n])
+            leave_out && (m00 -= w0 * T[idx])
+            # Cramer's rule on the 3 × 3 moment system; its intercept is the pooled split
+            c00 = m20 * m02 - m11^2
+            F = m00 * c00 - m10 * (m10 * m02 - m11 * m01) + m01 * (m10 * m11 - m20 * m01)
+            ok = abs(F) > 1.0e-9 * abs(m00 * m20 * m02) && m00 > 0
+            tot = 0.0
+            for k in 1:K
+                base = (6 + 3(k - 1)) * n
+                b0 = Float64(S[idx + base]); b1 = Float64(S[idx + base + n]); b2 = Float64(S[idx + base + 2n])
+                leave_out && (b0 -= w0 * N[idx + (k - 1) * n])
+                v = ok ? (b0 * c00 - m10 * (b1 * m02 - m11 * b2) + m01 * (b1 * m11 - m20 * b2)) / F :
+                    b0 / max(m00, 1.0e-30)
+                v = max(v, 1.0e-6)
+                p[idx + (k - 1) * n] = Float32(v)
+                tot += v
+            end
+            for k in 1:K
+                p[idx + (k - 1) * n] = Float32(p[idx + (k - 1) * n] / tot)
+            end
+        else
+            den = Float64(S[idx + K * n]) - (leave_out ? w0 * T[idx] : 0.0)
+            for k in 1:K
+                num = Float64(S[idx + (k - 1) * n]) - (leave_out ? w0 * N[idx + (k - 1) * n] : 0.0)
+                p[idx + (k - 1) * n] = Float32(max(num, 1.0e-6 * den) / max(den, 1.0e-30))
+            end
+        end
+    end
+    return p
+end
+
+"""
+    hypr_lr(channels, I0; kernel = HYPRKernel((3, 3)), dispersion = ones(K),
+            floor_counts = 1e-6, to_backend = identity) -> Vector{Array{Float32,3}}
+
+Count-domain generalized HYPR-LR within each detector row: each ray keeps its own total count,
+and its split across the `K` channels is the `kernel`'s pooled split of its neighbourhood
+([`pooled_split`](@ref)), `ŷ_ik = T_i p̂_ik`. Returns the `K` denoised log-transmission sinograms.
+Rows are never mixed.
+
+- `channels`: `K` corrected log-transmission sinograms `(n_col, n_row, n_view)`.
+- `I0`: `(nc, nr, K)` air counts; `nc`, `nr` may be 1 when every ray shares one value.
+- `dispersion`: each channel's variance-to-mean ratio ([`estimate_dispersion`](@ref)); 1 for
+  photon counting.
+"""
+function hypr_lr(channels::AbstractVector, I0::AbstractArray{<:Real, 3};
+        kernel::HYPRKernel{2} = HYPRKernel((3, 3)), dispersion = ones(length(channels)),
+        floor_counts::Real = 1.0e-6, to_backend = identity)
+    N, T = poisson_counts(channels, I0, dispersion)
+    p = pooled_split(N, T, kernel; to_backend = to_backend)
+    fl = Float32(floor_counts)
+    n_col, n_row = size(T, 1), size(T, 2)
+    return map(eachindex(channels)) do k
+        air = _air_slab(I0, k, n_col, n_row, dispersion)
+        Float32.(-log.(max.(view(p, :, :, :, k) .* T, fl) ./ air))
+    end
+end
+
+"""
+    estimate_dispersion(channels, I0) -> Vector{Float64}
+
+`D_k = var / mean` of each channel's photon-equivalent counts over the acquisition's air rays:
+the (column, row) positions whose attenuation, averaged over the rotation, is statistically
+indistinguishable from zero (within three standard errors). The variance is over views at a fixed
+ray, so object structure cannot enter. 1.0 when no air ray or no noise is present — a
+photon-counting acquisition should return values near one.
+"""
+function estimate_dispersion(channels::AbstractVector, I0::AbstractArray{<:Real, 3})
+    n_col, n_row, n_view = size(first(channels))
+    constant = size(I0, 1) == 1 && size(I0, 2) == 1
+    return map(eachindex(channels)) do k
+        num = 0.0
+        den = 0.0
+        for r in 1:n_row, i in 1:n_col
+            h = Float64.(view(channels[k], i, r, :))
+            m, s = mean(h), std(h)
+            (s > 0 && abs(m) < 3 * s / sqrt(n_view)) || continue
+            N = Float64(constant ? I0[1, 1, k] : I0[i, r, k]) .* exp.(-h)
+            num += var(N)
+            den += mean(N)
+        end
+        den > 0 && num > 0 ? num / den : 1.0
+    end
+end
+
+# =============================================================================
+# Image domain
+# =============================================================================
+
+"""
+    guided_pool(X, M, σ, kernel; to_backend = identity) -> Array{Float32,3}
+
+The image-domain local estimate of `X` at every voxel over `kernel`'s `(x, y, slices)` window:
+each neighbour weighted by the kernel's spatial profile and, if `kernel.guided`, by the Gaussian
+likelihood that its composite value equals the voxel's, `exp(-(M_i - M_j)² / 2(σ_i² + σ_j²))`,
+with `σ` the composite's noise per slice.
+"""
+function guided_pool(X::AbstractArray{<:Real, 3}, M::AbstractArray{<:Real, 3}, σ::AbstractVector,
+        kernel::HYPRKernel{3}; to_backend = identity)
+    size(X) == size(M) || throw(DimensionMismatch("X $(size(X)) and M $(size(M)) differ"))
+    nx, ny, nz = size(X)
+    length(σ) == nz || throw(DimensionMismatch("$(length(σ)) noise levels for $(nz) slices"))
+    a, b, c = kernel.window .÷ 2
+    wx = to_backend(Float32.(profile_weights(kernel.profile, 2a + 1)))
+    wy = to_backend(Float32.(profile_weights(kernel.profile, 2b + 1)))
+    wz = to_backend(Float32.(profile_weights(kernel.profile, 2c + 1)))
+    Xd = to_backend(Float32.(X))
+    Md = to_backend(Float32.(M))
+    σd = to_backend(Float32.(σ))
+    out = to_backend(zeros(Float32, nx, ny, nz))
+    guided = kernel.guided
+    try
+        AK.foreachindex(out) do idx
+            i = (idx - 1) % nx + 1
+            j = ((idx - 1) ÷ nx) % ny + 1
+            z = (idx - 1) ÷ (nx * ny) + 1
+            Mi = Md[i, j, z]
+            s = 0.0f0
+            sw = 0.0f0
+            for zz in max(1, z - c):min(nz, z + c), jj in max(1, j - b):min(ny, j + b),
+                    ii in max(1, i - a):min(nx, i + a)
+                w = wx[ii - i + a + 1] * wy[jj - j + b + 1] * wz[zz - z + c + 1]
+                if guided
+                    d = Mi - Md[ii, jj, zz]
+                    w *= exp(-d * d / (2.0f0 * max(σd[z]^2 + σd[zz]^2, 1.0f-30)))
+                end
+                s += w * Xd[ii, jj, zz]
+                sw += w
+            end
+            out[idx] = sw > 0 ? s / sw : Xd[idx]
+        end
+        return Array(out)
+    finally
+        release_backend!((Xd, Md, σd, out, wx, wy, wz); collect = false)
+    end
+end
+
+"""
+    view_subset(geom, idx) -> CTGeometry
+
+The geometry of the projection views `idx` of an acquisition.
+"""
+function view_subset(g::CTGeometry, idx::AbstractVector{<:Integer})
+    sub(M) = size(M, 1) == g.n_angles ? M[idx, :] : M[:, idx]
+    return CTGeometry(g.SAD, g.SDD, length(idx), g.n_rows, g.n_cols, g.pixel_size, g.pixel_row_size,
+        g.angles[idx], sub(g.source_positions), sub(g.detector_centers), sub(g.detector_u),
+        sub(g.detector_v), g.fov, g.pitch, g.table_feed, g.detector_shape, g.column_offset)
+end
+
+"""
+    image_hypr(sino_water, sino_iodine, geom, matrix_size; image = ImageHYPR(),
+               filter = SoftFilter(), antialias = true, n_rows = geom.n_rows,
+               to_backend = identity, energies = 40:140) -> NamedTuple
+
+The image-domain instance on a decomposed basis pair (g/cm², as [`vmi_pipeline`](@ref) returns
+them). FDK of the pair and of its odd- and even-view halves; the pair's noise covariance `Σ` from
+half the halves' difference inside the reconstruction circle; the minimum-noise energy
+`E* = argmin gᵀΣg` over `energies`, `g = (μ_I, μ_W) / μ_W`, and composite `M = μ_I a + μ_W c`; the
+complement `I⊥ = a − βM`, `β = (Σf*)₁ / f*ᵀΣf*`; `M` pooled with its own likelihood weights over
+`image.composite`, `I⊥` guided by `M` over `image.complement`, at the per-slice noise of `M` from
+the half-view difference; and the pair recombined.
+
+Returns `(water, iodine, Estar, β, Σ, σM)` with the images in the units of
+[`synthesize_vmi_stack`](@ref).
+"""
+function image_hypr(sino_water::AbstractArray{<:Real, 3}, sino_iodine::AbstractArray{<:Real, 3},
+        geom::CTGeometry, matrix_size; image::ImageHYPR = ImageHYPR(), filter = SoftFilter(),
+        antialias::Bool = true, n_rows::Integer = geom.n_rows, to_backend = identity,
+        energies = 40.0:1.0:140.0)
+    size(sino_water) == size(sino_iodine) ||
+        throw(DimensionMismatch("water $(size(sino_water)) and iodine $(size(sino_iodine)) differ"))
+    nv = size(sino_water, 3)
+    nv >= 4 || throw(ArgumentError("the half-view noise estimate needs at least 4 views, got $(nv)"))
+    rec(sino, g) = reconstruct_basis_slice(sino, g, matrix_size; to_backend = to_backend,
+        filter = filter, n_rows = n_rows, antialias = antialias)
+    W, I = rec(sino_water, geom), rec(sino_iodine, geom)
+    halves = (1:2:nv, 2:2:nv)
+    geoms = map(h -> view_subset(geom, collect(h)), halves)
+    Wh = [rec(sino_water[:, :, halves[h]], geoms[h]) for h in 1:2]
+    Ih = [rec(sino_iodine[:, :, halves[h]], geoms[h]) for h in 1:2]
+    nx, ny, nz = size(W)
+    circle = [hypot(i - (nx + 1) / 2, j - (ny + 1) / 2) < 0.45nx for i in 1:nx, j in 1:ny]
+    inside = repeat(circle, 1, 1, nz)
+    dI = vec(((Ih[1] .- Ih[2]) ./ 2)[inside])
+    dW = vec(((Wh[1] .- Wh[2]) ./ 2)[inside])
+    Σ = [var(dI) cov(dI, dW); cov(dI, dW) var(dW)]
+    μI(E) = compute_mass_μ_at_energy(XA.Elements.Iodine, Float64(E))
+    μW(E) = compute_mass_μ_at_energy(XA.Materials.water, Float64(E))
+    Estar = energies[argmin([let g = [μI(E), μW(E)] ./ μW(E); g' * Σ * g end for E in energies])]
+    f = [μI(Estar), μW(Estar)]
+    β = (Σ * f)[1] / (f' * Σ * f)
+    M = f[1] .* I .+ f[2] .* W
+    Iperp = I .- β .* M
+    dM = (f[1] .* (Ih[1] .- Ih[2]) .+ f[2] .* (Wh[1] .- Wh[2])) ./ 2
+    σM = [std(view(dM, :, :, z)[circle]) for z in 1:nz]
+    Ip = guided_pool(Iperp, M, σM, image.complement; to_backend = to_backend)
+    Mp = guided_pool(M, M, σM, image.composite; to_backend = to_backend)
+    iodine = Float32.(Ip .+ β .* Mp)
+    water = Float32.((Mp .- f[1] .* iodine) ./ f[2])
+    return (water = water, iodine = iodine, Estar = Float64(Estar), β = β, Σ = Σ, σM = σM)
+end
+
+export HYPRProfile, BoxProfile, TriangleProfile, CustomProfile, HYPRKernel
+export ProjectionHYPR, ImageHYPR, SpectralHYPR
+export hypr_lr, estimate_dispersion, guided_pool, image_hypr
