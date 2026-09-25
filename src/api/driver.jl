@@ -92,10 +92,12 @@ detector model **always** applies the MC-LUT detector response matrix
 (`compute_mc_drm`); `pcct_forward_project` builds it when no precomputed matrix
 is passed, and there is no ideal-binning path.
 
-Pulse pileup is on by default and toggleable via `PCCTScanner(; pileup)`.
-Bin combination, scatter correction, and reconstruction are all decoupled —
-do them at the notebook level using the returned per-bin sinograms and the
-ground-truth `I0_bins`.
+Pulse pileup is on by default and toggleable via `PCCTScanner(; pileup)`; its model-based
+correction (`PCCTScanner(; pileup_correction)`) and scatter correction
+(`PCCTScanner(; scatter_correction)`) run inside `simulate!` when enabled. Bin combination,
+water BHC and reconstruction are the caller's: the returned per-bin sinograms are
+log-transmissions against the per-ray air response `I0_bins` (`[n_cols, n_rows, n_bins]`), which
+is what [`spectral_basis`](@ref) and [`vmi_pipeline`](@ref) take.
 
 # Returns
 - `pcct_sino` — `EnergyResolvedSinogram` (per-bin log line integrals).
@@ -361,9 +363,8 @@ function simulate!(
         )
     end
 
-    # Bin-combine, scatter correction, BHC, and pile-up correction are all
-    # decoupled — done at the notebook level (see docs/notebooks/04_pcct_vmi.jl
-    # for the canonical combine + correct pattern).
+    # Bin combination, BHC and reconstruction are the caller's (spectral_basis / vmi_pipeline
+    # take the per-bin sinograms and the per-ray I0 returned here).
     #
     # Returned fields:
     # - `pcct_sino`  : per-bin log-line-integral sinograms.  When pile-up is
