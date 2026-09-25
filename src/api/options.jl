@@ -56,6 +56,9 @@ struct SimOptions
     seed::Union{Int, Nothing}
     detector_efficiency_mode::Symbol   # :auto, :mc_lut, :beer_lambert
     projector::Symbol                  # :dd_fast (default), :dd (DEPRECATED reference), :siddon (comparison)
+    # --- Acquisition ---
+    view_samples::Int                  # angular samples per view across its integration arc (1 = instantaneous)
+    view_arc::Float64                  # the arc a view integrates over, as a fraction of the view spacing
 end
 
 """
@@ -75,6 +78,15 @@ only.
   RNG to reseed (`apply_pcct_noise!`).
 - `detector_efficiency_mode::Symbol = :auto` — `:auto`, `:mc_lut`, `:beer_lambert`
 - `projector::Symbol = :dd_fast` — `:dd_fast`, `:dd` (deprecated reference), `:siddon`
+- `view_samples::Int = 1` — gantry rotation during a view: the detector integrates while the gantry
+  turns through the view's arc, so a view records the transmitted intensity averaged over that arc,
+  a blur of the object along the direction of rotation that grows with the distance from the
+  isocentre and that the noise, counted once per view, does not share. `view_samples` points across
+  the arc (the midpoint rule) sample the average; `1` is the instantaneous view (no rotation blur).
+  The blur is the projection of an arc of length `r · view_arc · Δθ` at radius `r`.
+- `view_arc::Real = 1.0` — the arc a view integrates over, as a fraction of the view spacing
+  `Δθ`: 1 for a detector that integrates for the whole view period, the duty cycle of one
+  energy for rapid kVp switching.
 """
 function SimOptions(;
         use_fill_factor::Bool = true,
@@ -88,10 +100,15 @@ function SimOptions(;
         seed::Union{Int, Nothing} = 42,
         detector_efficiency_mode::Symbol = :auto,
         projector::Symbol = :dd_fast,
+        view_samples::Integer = 1,
+        view_arc::Real = 1.0,
     )
     _validate_projector(projector)
+    view_samples >= 1 || throw(ArgumentError("view_samples must be at least 1, got $(view_samples)"))
+    0 < view_arc <= 1 || throw(ArgumentError("view_arc must be in (0, 1], got $(view_arc)"))
     return SimOptions(use_fill_factor, use_detector_efficiency, use_scatter, use_optical_crosstalk,
-        use_focal_spot, use_noise, use_lag, use_heel_effect, seed, detector_efficiency_mode, projector)
+        use_focal_spot, use_noise, use_lag, use_heel_effect, seed, detector_efficiency_mode, projector,
+        Int(view_samples), Float64(view_arc))
 end
 
 """

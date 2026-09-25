@@ -133,9 +133,23 @@ function simulate!(
     pcct_detector = ws.pcct_detector
     mats = ws.mats
 
-    # Forward projection with workspace buffers (including native-res path + tiled spectral)
-    pcct_sino = pcct_forward_project(
-        phantom.mask, geom, pcct_detector;
+    # Forward projection with workspace buffers (including native-res path + tiled spectral),
+    # integrated over each view's arc (`_integrate_views!`, the same pathway as the EICT chain)
+    function load_pcct!(g)
+        _load_view_geometry!(ws.geom_source_positions, ws.geom_detector_centers,
+            ws.geom_detector_u, ws.geom_detector_v, g)
+        ws.native_geom === nothing && return nothing
+        ng = g === geom ? ws.native_geom : rotate_geometry(ws.native_geom, g.angles[1] - geom.angles[1])
+        _load_view_geometry!(ws.native_geom_source_positions, ws.native_geom_detector_centers,
+            ws.native_geom_detector_u, ws.native_geom_detector_v, ng)
+        return nothing
+    end
+    projected = Ref{Any}(nothing)
+    _integrate_views!(geom, sim_opts, load_pcct!) do s_view, g_view
+    ng_view = ws.native_geom === nothing || g_view === geom ? ws.native_geom :
+        rotate_geometry(ws.native_geom, g_view.angles[1] - geom.angles[1])
+    projected[] = pcct_forward_project(
+        phantom.mask, g_view, pcct_detector;
         energies = energies, weights = weights,
         materials = mats,
         ws_bins = ws.bins, ws_μ_volume = ws.μ_volume, ws_sino_buf = ws.sino_buf,
@@ -151,7 +165,7 @@ function simulate!(
         ws_detector_v = ws.geom_detector_v,
         volume_extent = phantom.extent,
         # Native-resolution forward projection path (used when bf > 1)
-        native_geom = ws.native_geom,
+        native_geom = ng_view,
         ws_native_bins = ws.native_bins,
         ws_native_sino_buf = ws.native_sino_buf,
         ws_native_source_positions = ws.native_geom_source_positions,
@@ -167,6 +181,9 @@ function simulate!(
         ws_source_spectral = ws.native_geom !== nothing ? ws.native_bowtie_spectral : ws.bowtie_spectral,
         projector = sim_opts.projector,
     )
+    Tuple(projected[].bins)
+    end
+    pcct_sino = projected[]
 
     # ─── Tube-side focal-spot blur (per bin, BEFORE scatter/noise/pile-up) ───
     # The focal-spot penumbra is a tube-side effect common to both detector
@@ -415,7 +432,8 @@ tight loop over noise realisations if that second matters. `dose_kwargs` reaches
 protocol wants `dose_kwargs = (; phantom = :head16)` and a dual-source scanner
 `(; n_tubes = 2)`.
 
-Pass `paths` from [`material_paths`](@ref) to skip the volume walk. The walk depends on the
+Pass `paths` from [`material_paths`](@ref) to skip the volume walk (with `view_samples > 1`, a
+vector of one cache per sub-view). The walk depends on the
 geometry and the material map alone, so one cache serves every spectrum measured through that
 geometry, and a several-kVp study of one phantom stops paying for it repeatedly (four tube
 voltages of a 1024² × 60 phantom: 4.81 s of forward projection down to 2.16 s, bit-identical).
@@ -443,9 +461,13 @@ function simulate!(
     # ═══════════════════════════════════════════════════════════════════════
     # STEP 1: Polychromatic forward projection (Beer-Lambert)
     # ═══════════════════════════════════════════════════════════════════════
+    load_eict!(g) = _load_view_geometry!(ws.geom_source_positions, ws.geom_detector_centers,
+        ws.geom_detector_u, ws.geom_detector_v, g)
+    n_sub = length(view_sample_offsets(geom, sim_opts))
+    _integrate_views!(geom, sim_opts, load_eict!) do s_view, g_view
     fill!(ws.sinogram, zero(T))
     _forward_project_poly!(
-        ws.sinogram, phantom.mask, geom, energies, ws.weights, mats;
+        ws.sinogram, phantom.mask, g_view, energies, ws.weights, mats;
         ws_μ_volume = ws.μ_volume, ws_sino_mono = ws.sino_mono,
         ws_I_transmitted = ws.I_transmitted,
         ws_weights_norm = ws.weights_norm,
@@ -460,9 +482,11 @@ function simulate!(
         ws_η = ws.η_vec,
         ws_bowtie_spectral = ws.bowtie_spectral,
         ws_wη_gpu = ws.wη_gpu,
-        paths = paths,
+        paths = _view_paths(paths, s_view, n_sub),
         projector = sim_opts.projector
     )
+    (ws.sinogram,)
+    end
 
     # ═══════════════════════════════════════════════════════════════════════
     # STEP 2: Signal chain (always active)
@@ -1759,8 +1783,8 @@ end
 # =============================================================================
 
 """
-    material_paths(ws::EICTWorkspace, phantom; volume_extent=nothing) -> Array
-    material_paths!(paths, ws::EICTWorkspace, phantom; volume_extent=nothing) -> paths
+    material_paths(ws::EICTWorkspace, phantom; volume_extent=nothing, angle_offset=0) -> Array
+    material_paths!(paths, ws::EICTWorkspace, phantom; volume_extent=nothing, angle_offset=0) -> paths
 
 Walk `phantom` once through the workspace's geometry and return the per-material path length of
 every detector element, in cm — `(n_materials, n_cols, n_rows, n_views)` on the phantom's
@@ -1784,6 +1808,10 @@ end
     tell that it does not: reusing it with a different phantom silently projects the old one.
     Its size is also the cost — `n_materials × n_cols × n_rows × n_views` floats, 1.7 GiB for
     16 materials on an 834 × 34 × 1000 sinogram — so `compact_materials(phantom)` first.
+
+With view integration (`SimOptions(; view_samples > 1)`) each sub-view is its own geometry: walk
+one cache per offset of [`view_sample_offsets`](@ref), `angle_offset = δ`, and pass them to
+`simulate!` as a vector in that order.
 """
 function material_paths(ws::EICTWorkspace{T}, phantom; kwargs...) where {T}
     paths = similar(ws.sinogram, T, size(ws.μ_table_gpu, 1), size(ws.sinogram)...)
@@ -1794,18 +1822,27 @@ end
 function material_paths!(
         paths::AbstractArray{T, 4}, ws::EICTWorkspace{T}, phantom;
         volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
+        angle_offset::Real = 0.0,
     ) where {T}
     extent = volume_extent !== nothing ? volume_extent :
         (hasproperty(phantom, :extent) && phantom.extent !== nothing ?
         Tuple(Float64.(phantom.extent)) : nothing)
-    return dd_fast_material_paths!(
-        paths, phantom.mask, ws.geom;
-        volume_extent = extent,
-        ws_source_positions = ws.geom_source_positions,
-        ws_detector_centers = ws.geom_detector_centers,
-        ws_detector_u = ws.geom_detector_u,
-        ws_detector_v = ws.geom_detector_v,
-    )
+    g = angle_offset == 0 ? ws.geom : rotate_geometry(ws.geom, angle_offset)
+    angle_offset == 0 || _load_view_geometry!(ws.geom_source_positions, ws.geom_detector_centers,
+        ws.geom_detector_u, ws.geom_detector_v, g)
+    try
+        return dd_fast_material_paths!(
+            paths, phantom.mask, g;
+            volume_extent = extent,
+            ws_source_positions = ws.geom_source_positions,
+            ws_detector_centers = ws.geom_detector_centers,
+            ws_detector_u = ws.geom_detector_u,
+            ws_detector_v = ws.geom_detector_v,
+        )
+    finally
+        angle_offset == 0 || _load_view_geometry!(ws.geom_source_positions, ws.geom_detector_centers,
+            ws.geom_detector_u, ws.geom_detector_v, ws.geom)
+    end
 end
 
 export material_paths, material_paths!

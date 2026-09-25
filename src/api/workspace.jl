@@ -844,6 +844,15 @@ function create_eict_workspace(
     )
 end
 
+"""
+    create_workspace(scanner::EICTScanner, protocol, sim_opts, recon_opts, phantom; kwargs...)
+
+The energy-integrating workspace, [`create_eict_workspace`](@ref): one constructor for every
+detector family, so a caller builds and simulates any scanner the same way.
+"""
+create_workspace(scanner::EICTScanner, protocol, sim_opts, recon_opts, phantom; kwargs...) =
+    create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom; kwargs...)
+
 # =============================================================================
 # FDKReconWorkspace — Pre-allocated workspace for zero-allocation reconstruct!()
 # =============================================================================

@@ -48,6 +48,7 @@ const BS = BasisSimulator
     end
     @testset "paths/" begin
         include("paths.jl")
+        include("view_integration.jl")
         include("pcct_bowtie.jl")
     end
     @testset "phantoms/" begin
