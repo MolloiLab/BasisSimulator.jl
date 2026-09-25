@@ -264,9 +264,9 @@ end
     @test issorted(response[(pass + 1):601]; rev = true)
 end
 
-# The oracle is the published notebook itself: the estimator and T-LBF cells of
-# docs/notebooks/04_pcct_vmi.jl are extracted by cell UUID and evaluated unchanged in a scratch
-# module, then run side by side with the package code on the same inputs.
+# The oracle is the published estimator: the estimator and T-LBF cells of notebook 04 as it was
+# published, frozen verbatim in nchannel_nb04_reference.jl, evaluated unchanged in a scratch module
+# and run side by side with the package code on the same inputs.
 module NB04Oracle
     using BasisSimulator
     const BS = BasisSimulator
@@ -274,18 +274,7 @@ module NB04Oracle
 end
 
 @testset "parity with the published notebook cells" begin
-    notebook = joinpath(@__DIR__, "..", "docs", "notebooks", "04_pcct_vmi.jl")
-    function notebook_cell(uuid)
-        text = read(notebook, String)
-        marker = findfirst("# ╔═╡ $uuid", text)
-        marker === nothing && error("cell $uuid not found in $notebook")
-        start = last(marker) + 1
-        stop = findnext("# ╔═╡ ", text, start)
-        return stop === nothing ? text[start:end] : text[start:(first(stop) - 1)]
-    end
-    Base.include_string(NB04Oracle, notebook_cell("4985581f-616d-4bb7-ab9b-967d7250b28b"), "nb04_controls")
-    Base.include_string(NB04Oracle, notebook_cell("73371177-0498-4eda-897b-651c94f43e83"), "nb04_kernel")
-    Base.include_string(NB04Oracle, notebook_cell("f3de45a6-4818-4ee1-ad56-c65797119dee"), "nb04_tlbf")
+    Base.include(NB04Oracle, joinpath(@__DIR__, "nchannel_nb04_reference.jl"))
 
     toy = _toy_response()
     basis = BS.spectral_basis(energies = toy.E, response = toy.Φ, I0 = toy.I0)

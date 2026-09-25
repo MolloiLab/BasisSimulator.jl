@@ -354,6 +354,25 @@ Selector for how detector efficiency is computed.
     MC_LUT
 end
 
+@doc """
+    BEER_LAMBERT::DetectorEfficiencyMode
+
+Analytic scintillator absorption, `η(E) = 1 − exp(−μ(E)·d)`, with `μ(E)` from
+[`get_scintillator_mu`](@ref) and `d` the crystal thickness. It can't model the K-edge
+fluorescence escape that [`MC_LUT`](@ref) captures. Select it for an `EICTScanner` with
+`SimOptions(detector_efficiency_mode = :beer_lambert)`, e.g. to compare against the LUT.
+""" BEER_LAMBERT
+
+@doc """
+    MC_LUT::DetectorEfficiencyMode
+
+Monte Carlo–derived per-energy absorption efficiency: [`GEMSTONE_MC_EFFICIENCY_LUT`](@ref)
+(GE Gemstone / LUMEX), [`UFC_MC_EFFICIENCY_LUT`](@ref) (Siemens Force UFC) and
+[`UFC_FLASH_MC_EFFICIENCY_LUT`](@ref) (Siemens Definition Flash UFC). It captures the
+fluorescence escape at the scintillator's K-edges. For a scintillator without a LUT,
+[`compute_eid_efficiency_vector`](@ref) falls back to [`BEER_LAMBERT`](@ref).
+""" MC_LUT
+
 """
     DetectorEfficiency
 

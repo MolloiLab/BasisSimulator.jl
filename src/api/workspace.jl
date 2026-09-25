@@ -149,9 +149,9 @@ A `PCCTWorkspace{T, A3, A1}` with all buffers and setup data pre-computed.
 # Example
 ```julia
 ws = create_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
-result = simulate!(ws, phantom, scanner, protocol, sim_opts, recon_opts)
+result = simulate!(ws, phantom, protocol, sim_opts)
 # Second call: zero allocations
-result2 = simulate!(ws, phantom, scanner, protocol, sim_opts, recon_opts)
+result2 = simulate!(ws, phantom, protocol, sim_opts)
 ```
 """
 function create_workspace(
@@ -596,8 +596,7 @@ Create a pre-allocated workspace for zero-allocation EICT single-kVp `simulate!(
   ```
 
   Bowtie + heel + detector response evaluate at the override's actual energy
-  grid, so per-ray spectral physics still runs.  See
-  `docs/notebooks/03b_dual_keV_monoe.jl` for the complete monoenergetic example.
+  grid, so per-ray spectral physics still runs.
 """
 function create_eict_workspace(
         scanner::EICTScanner, protocol, sim_opts, recon_opts, phantom;
@@ -1105,7 +1104,7 @@ mutable struct HIRReconWorkspace{T <: AbstractFloat, A3 <: AbstractArray{T, 3}, 
     params::HIRParams
 
     # ─── Forward-projection ray tracer (must match the sim's projector) ───
-    projector::Symbol         # :dd_fast (default), :dd (DEPRECATED), or :siddon
+    projector::Symbol         # :dd_fast (default) or :siddon
 end
 
 """
@@ -1120,7 +1119,7 @@ strength → noise-reduction table.
 
 `filter` can be a `FilterType` struct or a `Symbol` (e.g., `:standard`).
 
-`projector` (`:dd_fast` default, `:dd` DEPRECATED, or `:siddon`) selects the forward ray tracer used
+`projector` (`:dd_fast` default, or `:siddon`) selects the forward ray tracer used
 for the IR system matrix (`A·x` and `W = 1/(A·1)`).  Set it to the SAME value
 as the simulation's `SimOptions(; projector=…)` so the recon inverts the
 operator that generated the data.

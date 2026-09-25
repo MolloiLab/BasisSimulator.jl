@@ -25,6 +25,17 @@ export create_spatial_kernel, grid_bandlimit, frequency_window
 # Filter Types
 # =============================================================================
 
+"""
+    FilterType
+
+Abstract supertype of the FBP reconstruction filters (the ramp times an apodization window):
+[`RampFilter`](@ref), [`SheppLoganFilter`](@ref), [`CosineFilter`](@ref),
+[`HammingFilter`](@ref), [`HannFilter`](@ref), the CatSim kernels [`StandardFilter`](@ref)
+(the default), [`SoftFilter`](@ref) and [`BoneFilter`](@ref), and [`CustomFilter`](@ref).
+Pass an instance as the `filter` keyword of [`fdk_reconstruct`](@ref),
+[`filter_sinogram!`](@ref) and the reconstruction workspaces. [`filter_from_symbol`](@ref)
+maps the `Symbol` form (`:standard`, `:soft`, …) to an instance.
+"""
 abstract type FilterType end
 
 """Ram-Lak (ramp) filter - standard FDK filter"""

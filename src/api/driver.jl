@@ -80,7 +80,8 @@ end
 
 """
     simulate!(ws::PCCTWorkspace, phantom, protocol, sim_opts;
-              capture_raw_counts=true)
+              capture_raw_counts=true, report_dose=true, dose_kwargs=(;),
+              noise_rng=:serial)
 
 Run PCCT simulation using pre-allocated workspace buffers for zero allocations
 on the second and later calls (the first call may JIT-allocate).
@@ -88,9 +89,8 @@ on the second and later calls (the first call may JIT-allocate).
 All setup data (geometry, spectrum, physics config, detector, spectral response,
 materials) is baked into the workspace at `create_workspace()` time.  The PCCT
 detector model **always** applies the MC-LUT detector response matrix
-(`compute_mc_drm`); the analytical / ideal-binning fallback inside
-`pcct_forward_project` is deprecated and only reachable by callers that bypass
-this driver.
+(`compute_mc_drm`); `pcct_forward_project` builds it when no precomputed matrix
+is passed, and there is no ideal-binning path.
 
 Pulse pileup is on by default and toggleable via `PCCTScanner(; pileup)`.
 Bin combination, scatter correction, and reconstruction are all decoupled —
@@ -99,8 +99,12 @@ ground-truth `I0_bins`.
 
 # Returns
 - `pcct_sino` — `EnergyResolvedSinogram` (per-bin log line integrals).
-- `I0_bins`   — per-bin reference photon count vector (for `-log(N/I0)` undo).
+- `I0_bins`   — the air response of every ray and bin, `[n_cols, n_rows, n_bins]` (per ray, not
+  a per-bin scalar); `I0_bins[:, :, b] .* exp.(-bin_b)` recovers the recorded counts.
 - `pileup_S`  — MC pulse-pileup migration matrix, or `nothing` when disabled.
+- `dose`      — the acquisition's [`DoseReport`](@ref), or `nothing` with `report_dose = false`
+  (`dose_kwargs` reaches [`compute_dose`](@ref); `noise_rng = :threaded` draws the counts in
+  independent per-chunk streams, see [`apply_pcct_noise!`](@ref)).
 - `raw_counts` — captured by default; independent per-bin arrays containing
   the detector counts immediately before pile-up correction and scatter
   correction.  With noise on and pile-up off they are captured verbatim at
@@ -173,12 +177,9 @@ function simulate!(
     # chains; here it mirrors the EICT placement in `_apply_physics_no_noise!`
     # (a detector-plane convolution of the log line integrals). Placed before
     # the rate-dependent pile-up step so blurred local count rates feed it.
-    # Note the blur acts at binned (not native-dexel) resolution.
-    # NOTE: `use_focal_spot` now defaults to TRUE for every scanner family. The deleted `:pcct`
-    # fidelity preset used to force it off here, so a photon-counting simulation that does not
-    # say otherwise now blurs by the focal spot. Pass `use_focal_spot = false` for the old
-    # behaviour.
-    # `use_focal_spot = true`. Detector lag is intentionally NOT applied on
+    # Note the blur acts at binned (not native-dexel) resolution. It runs when
+    # `use_focal_spot = true` (the `SimOptions` default); pass `use_focal_spot = false`
+    # to disable it. Detector lag is intentionally NOT applied on
     # this path: the shipped lag model is scintillator (Gd₂O₂S) afterglow,
     # which direct-conversion PCCT detectors do not exhibit.
     if config.focal_spot !== nothing

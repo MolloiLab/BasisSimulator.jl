@@ -287,8 +287,9 @@ FDK is an approximate algorithm for circular orbits. Be aware of:
 - **Practical limit**: Cone angle < 10° for diagnostic quality
 
 For wider cone angles or higher accuracy, consider:
-- `sirt_reconstruct` / `cgls_reconstruct`: Iterative methods (slower, fewer artifacts)
-- Helical acquisition with Katsevich algorithm (exact reconstruction)
+- [`create_hir_recon_workspace`](@ref) + [`reconstruct!`](@ref): penalized iterative
+  reconstruction (HIR; slower, fewer cone-beam artifacts)
+- A helical acquisition, which [`reconstruct!`](@ref) reconstructs with weighted FBP (WFBP)
 
 # Performance Notes
 
@@ -320,8 +321,7 @@ the filter kernel with lower-level functions in Filtering.jl.
 
 - [`filter_sinogram`](@ref): Apply FDK filtering separately
 - [`backproject`](@ref): Apply backprojection separately
-- [`sirt_reconstruct`](@ref): Iterative SIRT reconstruction
-- [`cgls_reconstruct`](@ref): Iterative CGLS reconstruction
+- [`create_hir_recon_workspace`](@ref): Iterative (HIR) reconstruction
 - [`siddon_forward_project`](@ref): Forward projection (inverse operation)
 """
 function fdk_reconstruct(

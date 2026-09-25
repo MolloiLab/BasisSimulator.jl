@@ -16,10 +16,10 @@
 #
 # so ONE volume walk accumulates per-MATERIAL path lengths P (n_mat ≤ 64
 # registers, energy-independent) and every energy converts once per detector
-# cell.  Results agree with legacy `:dd` to floating-point ordering.
+# cell.  Results agree with the per-energy `dd.jl` kernels to floating-point ordering.
 #
 # Measured (M4 Metal, 234-bin polychromatic forward, 512²×64 vol,
-# 736×16×720 sino): 113.8 s (:dd tiled hosts) → 2.4 s (:dd_fast single-pass),
+# 736×16×720 sino): 113.8 s (dd.jl tiled hosts) → 2.4 s (:dd_fast single-pass),
 # agreement mean_rel ≈ 5e-7 — and 4.4x faster than Siddon's tiled 234-bin
 # path.  UHR slab (1024²×32): 109.3 s → 5.3 s.
 #
@@ -74,8 +74,8 @@ function _warn_dd_fast_fallback(n_materials::Integer)
     @warn """
     DD_FAST SINGLE-PASS DISABLED: material table has $n_materials entries; the optimized limit is $(_PLEN_MAX_MATERIALS).
     Falling back to the legacy tiled distance-driven projector, which can be tens of times slower.
-    Call compact_materials(phantom) before GPU transfer to remove inactive materials, merge materials when physically appropriate,
-    or deliberately select projector=:dd. The requested :dd_fast path is NOT effective for this projection.
+    Call compact_materials(phantom) before GPU transfer to remove inactive materials, or merge materials when physically appropriate.
+    The requested :dd_fast path is NOT effective for this projection.
     """ maxlog = 1
     nothing
 end
@@ -276,11 +276,11 @@ end
 # and semantics as `dd_fused_poly_project!` / `dd_fused_spectral_project!`
 # (drop-in via the `:dd_fast` projector symbol), same DD3 footprint, bounds,
 # and overlap weights — only the accumulation is reassociated (per-material
-# path lengths instead of per-energy sums), so results agree with legacy `:dd`
+# path lengths instead of per-energy sums), so results agree with the dd.jl kernels
 # to floating-point ordering.  The payoff: no per-energy registers, so the
 # FULL spectrum runs in ONE volume walk (the hosts skip the K=16 energy tiling
 # that re-walks the volume n_tiles times).  Measured on M4 Metal, 234-bin
-# polychromatic forward (512²×64 vol, 736×16×720 sino): 113.8 s (:dd tiled)
+# polychromatic forward (512²×64 vol, 736×16×720 sino): 113.8 s (dd.jl tiled)
 # → 2.4 s (:dd_fast single-pass), agreement mean_rel ≈ 5e-7.
 #
 # Requires n_materials ≤ `_PLEN_MAX_MATERIALS` (= 64); larger tables warn and

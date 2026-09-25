@@ -29,13 +29,11 @@ is set by the keyword constructor.
   `:auto` (default) = let driver decide; `:mc_lut` = force MC LUT; `:beer_lambert` = force analytical.
 - `projector::Symbol`: Forward-projection ray tracer.  `:dd_fast` (default) = distance-driven,
   anti-aliased footprint integration with single-pass per-material path-length fused kernels —
-  the full spectrum runs in ONE volume walk (measured 47x faster than `:dd` on a 234-bin
-  polychromatic forward on M4 Metal), results agree with `:dd` to floating-point ordering;
-  supports ≤ 64 materials (emits a prominent warning and falls back to the `:dd` kernels above
-  that); call `compact_materials` to remove inactive table entries. Mono projection is
-  the `:dd` kernel unchanged.  `:dd` = the original per-energy distance-driven kernel —
-  **DEPRECATED** (kept as the numerical reference; emits a warning and may be removed in a
-  future release; use `:dd_fast`).  `:siddon` = exact point-sampled ray tracing retained for
+  the full spectrum runs in ONE volume walk (measured 47x faster than the per-energy tiled
+  distance-driven kernels on a 234-bin polychromatic forward on M4 Metal, agreeing with them
+  to floating-point ordering); supports ≤ 64 materials (emits a prominent warning and falls
+  back to the per-energy tiled kernels above that); call `compact_materials` to remove
+  inactive table entries.  `:siddon` = exact point-sampled ray tracing retained for
   comparison and compatibility; it is slower than `:dd_fast` for full polychromatic/spectral
   simulations and can ALIAS in severe beam-hardened regions.  NOTE: to keep
   the iterative-recon system matrix consistent with the data, pass the SAME projector to
@@ -55,7 +53,7 @@ struct SimOptions
     # --- General ---
     seed::Union{Int, Nothing}
     detector_efficiency_mode::Symbol   # :auto, :mc_lut, :beer_lambert
-    projector::Symbol                  # :dd_fast (default), :dd (DEPRECATED reference), :siddon (comparison)
+    projector::Symbol                  # :dd_fast (default), :siddon (comparison)
 end
 
 """
@@ -74,7 +72,7 @@ only.
   path unseeded; the photon-counting path seeds with 0, because its workspace always carries an
   RNG to reseed (`apply_pcct_noise!`).
 - `detector_efficiency_mode::Symbol = :auto` — `:auto`, `:mc_lut`, `:beer_lambert`
-- `projector::Symbol = :dd_fast` — `:dd_fast`, `:dd` (deprecated reference), `:siddon`
+- `projector::Symbol = :dd_fast` — `:dd_fast` or `:siddon`; anything else throws an `ArgumentError`
 """
 function SimOptions(;
         use_fill_factor::Bool = true,

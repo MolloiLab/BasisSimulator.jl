@@ -136,12 +136,15 @@ _ts("entering SimOptions testset")
         end
     end
 
-    @testset "projector defaults to :dd_fast, accepts :dd/:siddon, validates" begin
+    @testset "projector defaults to :dd_fast, accepts :siddon, validates" begin
         @test BS.SimOptions().projector == :dd_fast
         @test BS.SimOptions(use_focal_spot = false, use_lag = false).projector == :dd_fast
-        @test BS.SimOptions(projector = :dd).projector == :dd            # deprecated, still accepted
         @test BS.SimOptions(projector = :siddon).projector == :siddon
         @test_throws ArgumentError BS.SimOptions(projector = :bogus)
+        # the removed per-energy option fails loudly and names the valid projectors
+        err = try BS.SimOptions(projector = :dd); nothing catch e; e end
+        @test err isa ArgumentError
+        @test occursin(":dd_fast", err.msg) && occursin(":siddon", err.msg)
     end
 
 end

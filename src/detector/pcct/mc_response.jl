@@ -137,8 +137,7 @@ end
                     npz_path::String=default_mc_drm_path(),
                     n_energy_points::Int=200) -> Matrix{Float64}
 
-Compute a Detector Response Matrix from MC simulation data, compatible with
-`compute_unified_drm()` output.
+Compute a Detector Response Matrix from MC simulation data.
 
 Returns D[i, b] = probability that a photon of energy E_i registers in bin b.
 
@@ -159,9 +158,8 @@ Returns D[i, b] = probability that a photon of energy E_i registers in bin b.
 
 # Example
 ```julia
-det = naeotom_detector_standard()
+det = BasisSimulator._build_pcct_detector(PCCTScanner(energy_thresholds = [20.0, 35.0, 55.0, 70.0]))
 D = compute_mc_drm(det, 120.0)  # uses bundled response file
-# D has same format as compute_unified_drm() output
 ```
 """
 function compute_mc_drm(detector::PhotonCountingDetector, kVp::Real;
@@ -380,41 +378,10 @@ end
 
 export compute_mc_count_moments
 
-"""
-    mc_drm_summary(D::Matrix{Float64}, thresholds::AbstractVector, kVp::Real;
-                    n_energy_points::Int=200)
-
-Print a summary of the MC-based DRM for diagnostic purposes.
-"""
-function mc_drm_summary(D::Matrix{Float64}, thresholds::AbstractVector, kVp::Real;
-    n_energy_points::Int=200)
-    energies = drm_energy_grid(kVp; n_energy_points=size(D, 1))
-    n_E, n_bins = size(D)
-
-    println("MC DRM Summary: $(n_E) energies × $(n_bins) bins")
-    println("Energy range: $(energies[1])–$(energies[end]) keV")
-    println("Target thresholds: $(Float64.(thresholds)) keV")
-    println()
-
-    for E_test in [25.0, 30.0, 40.0, 50.0, 60.0, 80.0, 100.0, 120.0]
-        if E_test > kVp
-            continue
-        end
-        idx = clamp(round(Int, (E_test - 1.0) / (Float64(kVp) - 1.0) * (n_E - 1)) + 1, 1, n_E)
-        row = D[idx, :]
-        println("E=$(Int(E_test)) keV: bins=$(round.(row, digits=4)), sum=$(round(sum(row), digits=4))")
-    end
-
-    row_sums = [sum(D[i, :]) for i in 1:n_E]
-    println("\nRow sum stats: min=$(round(minimum(row_sums), digits=4)), " *
-            "max=$(round(maximum(row_sums), digits=4)), " *
-            "mean=$(round(sum(row_sums)/n_E, digits=4))")
-end
-
 # =============================================================================
 # Exports
 # =============================================================================
 
 export MCResponseData, load_mc_response
 export mc_cumulative_to_bins, compute_mc_drm
-export mc_drm_summary, default_mc_drm_path
+export default_mc_drm_path

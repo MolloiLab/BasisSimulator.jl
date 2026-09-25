@@ -237,9 +237,6 @@ const SCATTER_REF_SDD_MM = 950.0
 """Reference air gap (mm) = SDD - SID for scatter calibration."""
 const SCATTER_REF_AIR_GAP_MM = SCATTER_REF_SDD_MM - SCATTER_REF_SID_MM  # 410.0
 
-"""Reference detector pixel pitch (mm) for scatter calibration."""
-const SCATTER_REF_PIXEL_PITCH_MM = 1.0
-
 """Base scatter coefficient calibrated for reference geometry (~15% SPR)."""
 const SCATTER_REF_COEFFICIENT = 0.025
 
@@ -629,7 +626,7 @@ model = geometry_aware_scatter_model(scanner; phantom_diameter_cm=40.0)
 # model.scatter_coefficient ≈ 0.025 * 0.76 * 1.54 ≈ 0.029
 ```
 
-See also: [`default_scatter_model`](@ref), [`compute_scatter_energy_weights`](@ref)
+See also: [`ScatterModel`](@ref), [`compute_scatter_energy_weights`](@ref)
 """
 function geometry_aware_scatter_model(
     scanner::Scanner;

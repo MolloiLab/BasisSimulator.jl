@@ -39,7 +39,7 @@ All functions are GPU-native via AcceleratedKernels.jl:
 
 3. FDA 510(k) K201501 - Siemens NAEOTOM Alpha
 
-See also: [`compute_mc_drm`](@ref), [`mc_pileup_response`](@ref)
+See also: [`compute_mc_drm`](@ref), [`compute_mc_pileup_matrix`](@ref)
 """
 
 import AcceleratedKernels as AK
@@ -58,6 +58,21 @@ Semiconductor materials used in photon-counting detectors.
     CDTE_MATERIAL    # Cadmium Telluride (Siemens NAEOTOM)
     CZT_MATERIAL     # Cadmium Zinc Telluride
     SI_MATERIAL      # Silicon (lower Z, limited stopping power)
+end
+
+for (label, what, syms) in (
+        (:CDTE_MATERIAL, "cadmium telluride (CdTe, ρ = 5.85 g/cm³; the Siemens NAEOTOM Alpha sensor)", ":CdTe"),
+        (:CZT_MATERIAL, "cadmium zinc telluride (Cd₀.₉Zn₀.₁Te, ρ ≈ 5.78 g/cm³)", ":CZT"),
+        (:SI_MATERIAL, "silicon (ρ = 2.33 g/cm³; low Z, so limited stopping power at CT energies)", ":Si"),
+    )
+    local doc = """
+        $(label)::DetectorMaterialPCCT
+
+    Photon-counting sensor material: $(what). A [`PCCTScanner`](@ref) selects it with
+    `detector_material = $(syms)`. [`get_detector_material_properties`](@ref) returns its
+    physical constants, and [`quantum_efficiency`](@ref) gives its absorption.
+    """
+    @eval @doc $doc $label
 end
 
 """
@@ -108,7 +123,7 @@ detector = PhotonCountingDetector(
 )
 ```
 
-See also: [`_build_pcct_detector`](@ref), [`create_naeotom_alpha`](@ref)
+Built from a [`PCCTScanner`](@ref) by the internal `_build_pcct_detector(scanner)`.
 """
 struct PhotonCountingDetector{T<:AbstractFloat}
     # Material properties
@@ -169,8 +184,7 @@ Construct a PhotonCountingDetector with keyword arguments.
     sharing, K-escape, and electronic-noise smearing are all encoded in the
     Monte-Carlo-derived detector response matrix (`cdte_response_v4.jls`,
     see `mc_response.jl`), which is the single source of detector physics
-    on the forward path. These fields are used for display and for the
-    qualitative K-edge sensitivity rating in `pcct_spectral.jl`.
+    on the forward path. These fields are informational only.
 """
 function PhotonCountingDetector(;
     material::DetectorMaterialPCCT=CDTE_MATERIAL,
@@ -212,7 +226,7 @@ reconstruction at specific energies or with spectral weighting.
 
 # Fields
 - `bins::Vector{A}`: Vector of sinograms, one per energy bin
-- `thresholds_keV::Vector{T}`: Energy thresholds defining bins (N+1 values for N bins)
+- `thresholds_keV::Vector{T}`: Lower energy threshold of each bin (N values for N bins)
 - `n_cols::Int`: Number of detector columns
 - `n_rows::Int`: Number of detector rows
 - `n_angles::Int`: Number of projection angles
@@ -257,6 +271,11 @@ end
 
 Base.size(es::EnergyResolvedSinogram) = (es.n_cols, es.n_rows, es.n_angles)
 Base.eltype(::EnergyResolvedSinogram{T}) where T = T
+"""
+    n_energy_bins(sino::EnergyResolvedSinogram) -> Int
+
+Number of energy bins in `sino`, `length(sino.bins)`.
+"""
 n_energy_bins(es::EnergyResolvedSinogram) = length(es.bins)
 
 # =============================================================================
@@ -386,7 +405,7 @@ where:
 # Example
 
 ```julia
-detector = _build_pcct_detector(create_naeotom_alpha())
+detector = BasisSimulator._build_pcct_detector(PCCTScanner(energy_thresholds = [20.0, 35.0, 55.0, 70.0]))
 energies, weights = load_spectrum(120)
 materials = get_region_materials()
 
@@ -449,7 +468,7 @@ function pcct_forward_project(
     ws_outputs_flat = nothing,        # GPU [n_elements * n_bins]
     ws_native_outputs_flat = nothing, # GPU [native_n_elements * n_bins] (for bf>1)
     ws_source_spectral = nothing,    # GPU [n_cols, n_rows, n_energies_padded] heel × bowtie
-    # Ray tracer: :dd_fast (default/fastest general path), :dd (DEPRECATED), or :siddon (compatibility, aliases).
+    # Ray tracer: :dd_fast (default/fastest general path) or :siddon (compatibility, aliases).
     projector::Symbol = :dd_fast,
     # Ignored kwargs for backward compat with callers that still pass them
     kwargs...
@@ -990,67 +1009,6 @@ function _poisson_sample(rng, λ::Float64)
     end
 end
 
-# Note: synthesize_vmi and get_material_attenuation_pcct are defined in PCCTSpectral.jl
-# (requires PCCTMaterialMap which is defined there)
-
-# =============================================================================
-# Utility Functions
-# =============================================================================
-
-"""
-    get_pcct_detector_info(detector::PhotonCountingDetector) -> NamedTuple
-
-Get diagnostic information about PCCT detector configuration.
-"""
-function get_pcct_detector_info(detector::PhotonCountingDetector{T}) where T
-    n_bins = length(detector.energy_thresholds_keV)
-
-    return (
-        material = detector.material,
-        thickness_mm = detector.thickness_mm,
-        pixel_size_mm = detector.pixel_size_mm,
-        n_energy_bins = n_bins,
-        thresholds_keV = detector.energy_thresholds_keV,
-        energy_resolution_keV = detector.energy_resolution_keV,
-        charge_sharing_enabled = detector.enable_charge_sharing,
-        charge_sharing_fwhm_mm = detector.charge_sharing_fwhm_mm,
-        pile_up_enabled = detector.enable_pile_up,
-        dead_time_ns = detector.dead_time_ns,
-        anti_coincidence_enabled = detector.enable_anti_coincidence,
-        electronic_noise_keV = detector.electronic_noise_keV
-    )
-end
-
-"""
-    print_pcct_detector_info(detector::PhotonCountingDetector)
-
-Print formatted PCCT detector specification.
-"""
-function print_pcct_detector_info(detector::PhotonCountingDetector)
-    info = get_pcct_detector_info(detector)
-
-    println("=" ^ 60)
-    println("PHOTON-COUNTING DETECTOR SPECIFICATION")
-    println("=" ^ 60)
-    println("Material:           $(info.material)")
-    println("Thickness:          $(info.thickness_mm) mm")
-    println("Pixel Size:         $(info.pixel_size_mm[1]) × $(info.pixel_size_mm[2]) mm")
-    println()
-    println("ENERGY BINNING")
-    println("-" ^ 40)
-    println("Number of bins:     $(info.n_energy_bins)")
-    println("Thresholds (keV):   $(info.thresholds_keV)")
-    println("Energy resolution:  $(info.energy_resolution_keV) keV FWHM")
-    println()
-    println("DETECTOR EFFECTS (via MC DRM)")
-    println("-" ^ 40)
-    println("Charge sharing:     $(info.charge_sharing_enabled ? "ON" : "OFF") (FWHM=$(info.charge_sharing_fwhm_mm) mm)")
-    println("Pulse pile-up:      $(info.pile_up_enabled ? "ON" : "OFF") (τ=$(info.dead_time_ns) ns)")
-    println("Anti-coincidence:   $(info.anti_coincidence_enabled ? "ON" : "OFF")")
-    println("Electronic noise:   $(info.electronic_noise_keV) keV RMS")
-    println("=" ^ 60)
-end
-
 # =============================================================================
 # Material-Dependent Detector Physics (PCCT-MATERIAL-MODEL)
 # =============================================================================
@@ -1279,7 +1237,6 @@ export DetectorMaterialPCCT, CDTE_MATERIAL, CZT_MATERIAL, SI_MATERIAL
 export PhotonCountingDetector
 export EnergyResolvedSinogram, n_energy_bins
 export pcct_forward_project
-export get_pcct_detector_info, print_pcct_detector_info
 export get_detector_material_properties, get_detector_material_attenuation
 export quantum_efficiency, quantum_efficiency_vector
 export spatial_bin!

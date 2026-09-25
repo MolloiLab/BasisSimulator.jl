@@ -25,6 +25,8 @@ BasisSim-original — no upstream port.
 # =============================================================================
 
 """
+    @enum RegionLabel::UInt8
+
 Region labels for phantom masks.
 
 Each voxel in the mask is assigned a label indicating its material type.
@@ -55,27 +57,36 @@ All labels are prefixed with REGION_ to avoid conflicts with material exports.
     REGION_I_20_0 = 26
 end
 
-# Map from RegionLabel to material symbol
-const REGION_TO_MATERIAL = Dict{RegionLabel, Symbol}(
-    REGION_BACKGROUND => :air,
-    REGION_AIR => :air,
-    REGION_WATER => :water,
-    REGION_SOLID_WATER => :solid_water,
-    REGION_CA_50 => :Ca_50,
-    REGION_CA_100 => :Ca_100,
-    REGION_CA_200 => :Ca_200,
-    REGION_CA_300 => :Ca_300,
-    REGION_CA_400 => :Ca_400,
-    REGION_CA_500 => :Ca_500,
-    REGION_CA_600 => :Ca_600,
-    REGION_I_2_0 => :I_2_0,
-    REGION_I_2_5 => :I_2_5,
-    REGION_I_5_0 => :I_5_0,
-    REGION_I_7_5 => :I_7_5,
-    REGION_I_10_0 => :I_10_0,
-    REGION_I_15_0 => :I_15_0,
-    REGION_I_20_0 => :I_20_0,
-)
+# One docstring per label (each `const` gets its own, so `?REGION_CA_100` and the API page work).
+for (label, what) in (
+        (:REGION_BACKGROUND, "background outside the phantom body (air)"),
+        (:REGION_AIR, "air inside the field of view"),
+        (:REGION_WATER, "water"),
+        (:REGION_SOLID_WATER, "solid-water phantom body (the Gammex 472 cylinder; simulated as water)"),
+        (:REGION_CA_50, "Gammex 472 calcium insert, 50 mg/mL"),
+        (:REGION_CA_100, "Gammex 472 calcium insert, 100 mg/mL"),
+        (:REGION_CA_200, "Gammex 472 calcium insert, 200 mg/mL"),
+        (:REGION_CA_300, "Gammex 472 calcium insert, 300 mg/mL"),
+        (:REGION_CA_400, "Gammex 472 calcium insert, 400 mg/mL"),
+        (:REGION_CA_500, "Gammex 472 calcium insert, 500 mg/mL"),
+        (:REGION_CA_600, "Gammex 472 calcium insert, 600 mg/mL"),
+        (:REGION_I_2_0, "Gammex 472 iodine insert, 2.0 mg/mL"),
+        (:REGION_I_2_5, "Gammex 472 iodine insert, 2.5 mg/mL"),
+        (:REGION_I_5_0, "Gammex 472 iodine insert, 5.0 mg/mL"),
+        (:REGION_I_7_5, "Gammex 472 iodine insert, 7.5 mg/mL"),
+        (:REGION_I_10_0, "Gammex 472 iodine insert, 10 mg/mL"),
+        (:REGION_I_15_0, "Gammex 472 iodine insert, 15 mg/mL"),
+        (:REGION_I_20_0, "Gammex 472 iodine insert, 20 mg/mL"),
+    )
+    local v = Int(getfield(@__MODULE__, label))
+    local doc = """
+        $(label)::RegionLabel  # mask value $(v)
+
+    [`RegionLabel`](@ref) for the $(what). A phantom mask stores it as the integer $(v);
+    compare with `phantom.mask .== UInt8($(label))`, since an `Enum` never equals an integer.
+    """
+    @eval @doc $doc $label
+end
 
 # =============================================================================
 # Phantom Struct
@@ -86,7 +97,7 @@ const REGION_TO_MATERIAL = Dict{RegionLabel, Symbol}(
 
 Digital phantom with semantic mask and materials for polychromatic simulation.
 
-# Fields (v20.0-pivot: simplified, no μ field)
+# Fields
 - `mask::AbstractArray{<:Unsigned,3}`: Region labels (UInt8 for ≤255, UInt16 for >255)
 - `materials::Vector{XA.Material}`: Materials for each region (indexed by mask_value + 1)
 - `voxel_size::NTuple{3,Float64}`: Voxel dimensions (cm) as (dx, dy, dz)
@@ -99,12 +110,10 @@ Digital phantom with semantic mask and materials for polychromatic simulation.
 - Z: inferior-superior (increasing superior)
 - Origin at isocenter (0, 0, 0)
 
-# Design (v20.0-pivot)
-The μ field was removed because polychromatic simulation computes μ(E) on-demand
-at each spectrum energy via `create_μ_volume!()`. The pre-computed μ at arbitrary
-60 keV was redundant and confusing.
-
-Use `compute_μ(phantom, energy_keV)` to get attenuation coefficients at any energy.
+# Design
+A phantom stores no μ: polychromatic simulation computes μ(E) on demand at each
+spectrum energy. Use `compute_μ(phantom, energy_keV)` to get attenuation
+coefficients at any energy.
 
 # Usage
 ```julia
@@ -118,7 +127,7 @@ phantom = Phantom(labeled_array, materials_dict, (0.1, 0.1, 0.1))
 
 # Simulate via workspace API
 ws = create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
-simulate!(ws, phantom, scanner, protocol, sim_opts, recon_opts)
+simulate!(ws, phantom, protocol, sim_opts)
 
 # GPU workflow: mask on GPU, materials stay on CPU
 using Metal
@@ -184,7 +193,7 @@ function compute_μ(phantom::Phantom, energy_keV::Real)
 end
 
 # =============================================================================
-# Unified Phantom Constructor (v20.0)
+# Unified Phantom Constructor
 # =============================================================================
 
 """
@@ -195,8 +204,8 @@ Create a Phantom from a labeled array with materials stored internally.
 This is the **unified API**: the returned Phantom contains everything needed
 for polychromatic simulation via the workspace-based `simulate!()` pipeline.
 
-**No energy_keV parameter needed!** The μ field was removed in v20.0-pivot. Use
-`compute_μ(phantom, energy_keV)` to get attenuation coefficients at any energy.
+No energy is needed: a phantom stores no μ. Use `compute_μ(phantom, energy_keV)`
+to get attenuation coefficients at any energy.
 
 # Arguments
 - `labeled_array::AbstractArray{<:Integer, 3}`: Integer array where each voxel
@@ -227,7 +236,7 @@ import XrayAttenuation as XA
 materials_dict = Dict{Int, XA.Material}(
     0 => XA.Materials.air,
     1 => XA.Materials.water,
-    2 => XA.Materials.cortical_bone
+    2 => XA.Materials.corticalbone
 )
 
 # Create phantom (1mm voxels)
@@ -238,7 +247,7 @@ phantom = Phantom(labeled_array, materials_dict, (0.1, 0.1, 0.1))
 
 # Simulate via workspace API
 ws = create_eict_workspace(scanner, protocol, SimOptions(), ReconOptions(), phantom)
-simulate!(ws, phantom, scanner, protocol)
+simulate!(ws, phantom, protocol)
 ```
 
 See also: [`compute_μ`](@ref), [`create_phantom_from_mask`](@ref), [`create_gammex_472`](@ref)
@@ -332,8 +341,9 @@ phantom = create_gammex_472(n_voxels=128)
 μ_60 = compute_μ(phantom, 60.0)
 μ_120 = compute_μ(phantom, 120.0)
 
-# Forward project
-sino = forward_project(phantom.mask, geom; energies=energies, weights=weights, materials=phantom.materials)
+# Simulate via the workspace API
+ws = create_eict_workspace(scanner, protocol, SimOptions(), ReconOptions(), phantom)
+simulate!(ws, phantom, protocol)
 ```
 """
 function create_gammex_472(;
@@ -463,7 +473,7 @@ Create a Phantom from an arbitrary labeled array with custom material mapping.
 This function enables loading arbitrary phantoms (XCAT, custom segmentations, etc.)
 by providing a mapping from integer labels to materials.
 
-**Note (v20.0-pivot):** This function is now equivalent to the `Phantom()` constructor.
+**Note:** This function is equivalent to the `Phantom()` constructor.
 Consider using `Phantom(labeled_array, materials_dict, voxel_size)` directly.
 
 # Arguments
@@ -495,14 +505,14 @@ Use `compute_μ(phantom, energy_keV)` to get attenuation coefficients at any ene
 using BasisSimulator, XrayAttenuation
 import XrayAttenuation as XA
 
-# Load XCAT phantom (hypothetical)
-xcat_mask = load_phantom_bin("xcat.bin"; cols=400, rows=400, slices=200)
+# Any labeled integer volume, e.g. a segmentation read from disk
+xcat_mask = rand(UInt8(0):UInt8(3), 400, 400, 200)
 
 # Define materials for each label
 materials_dict = Dict{Int, XA.Material}(
     0 => XA.Materials.air,
     1 => XA.Materials.water,  # soft tissue approximation
-    2 => XA.Materials.cortical_bone,
+    2 => XA.Materials.corticalbone,
     3 => XA.Materials.lung,
 )
 
@@ -514,7 +524,7 @@ phantom = create_phantom_from_mask(xcat_mask, materials_dict, (0.1, 0.1, 0.1))
 
 # Simulate via workspace API
 ws = create_eict_workspace(scanner, protocol, SimOptions(), ReconOptions(), phantom)
-simulate!(ws, phantom, scanner, protocol)
+simulate!(ws, phantom, protocol)
 ```
 
 See also: [`Phantom`](@ref), [`compute_μ`](@ref), [`create_gammex_472`](@ref)
@@ -594,10 +604,6 @@ end
 # =============================================================================
 # Exports
 # =============================================================================
-#
-# `REGION_TO_MATERIAL` is kept module-internal (no export) — notebooks use
-# `get_material(:Ca_100)` directly instead of round-tripping through the
-# enum table.
 
 export RegionLabel
 export REGION_BACKGROUND, REGION_AIR, REGION_WATER, REGION_SOLID_WATER

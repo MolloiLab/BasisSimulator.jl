@@ -7,15 +7,14 @@
 # `projector::Symbol` knob can pick between them at every forward-projection
 # site without any other code change.
 #
-#   :dd      — reference distance-driven (DD3) implementation.  Anti-aliased
-#              footprint integration; deprecated in favor of `:dd_fast`.
-#   :dd_fast — DEFAULT.  Same DD3 model, single-pass per-material path-length fused
-#              kernels: identical footprint/overlap weights (results agree with
-#              :dd to float ordering), but the full spectrum is produced in ONE
-#              volume walk instead of the K=16 tiled re-walks.  Measured 47x
-#              faster on the 234-bin polychromatic forward path (M4 Metal).
-#              Mono projection is byte-identical to :dd (same kernel).
-#              Supports ≤ 64 materials; warns and falls back above that.
+#   :dd_fast — DEFAULT.  Distance-driven (DD3), anti-aliased footprint integration.
+#              Single-pass per-material path-length fused kernels: the full spectrum
+#              is produced in ONE volume walk instead of the K=16 tiled per-energy
+#              re-walks of the dd.jl kernels (same footprint/overlap weights; results
+#              agree to float ordering).  Measured 47x faster on the 234-bin
+#              polychromatic forward path (M4 Metal).  Mono projection and the
+#              transpose use the dd.jl kernels directly.  Supports ≤ 64 materials;
+#              warns and falls back to the dd.jl tiled kernels above that.
 #   :siddon  — Siddon exact ray tracing retained for comparison and
 #              compatibility. It point-samples one voxel per step, can ALIAS
 #              in severe beam-hardened regions, and is slower than :dd_fast
@@ -36,25 +35,20 @@
 """
     _validate_projector(p::Symbol) -> Symbol
 
-Throw an `ArgumentError` unless `p` is `:dd`, `:dd_fast`, or `:siddon`; return
-`p` unchanged.  Call at every public entry point that accepts a projector so an
-invalid symbol fails loudly instead of silently falling back to `:dd` in the
-shims below.
+Throw an `ArgumentError` unless `p` is `:dd_fast` or `:siddon`; return `p`
+unchanged.  Call at every public entry point that accepts a projector so an
+invalid symbol fails loudly instead of silently falling back to distance-driven
+in the shims below.  (`:dd`, the per-energy distance-driven option, was removed
+in 0.15.0; `:dd_fast` is the same model.)
 """
 function _validate_projector(p::Symbol)
-    (p === :dd || p === :dd_fast || p === :siddon) ||
-        throw(ArgumentError("projector must be :dd, :dd_fast, or :siddon, got :$p"))
-    p === :dd && @warn(
-        "projector = :dd is DEPRECATED; use :dd_fast (the new default) — same distance-driven " *
-        "physics, results agree to floating-point ordering, ~47× faster polychromatic forward. " *
-        ":dd remains as the reference kernel but may be removed in a future release.",
-        maxlog = 1,
-    )
+    (p === :dd_fast || p === :siddon) ||
+        throw(ArgumentError("projector must be :dd_fast or :siddon, got :$p"))
     return p
 end
 
 # In-place monochromatic forward projection.  :dd_fast has no mono variant —
-# mono has no energy loop, so it IS the :dd kernel.
+# mono has no energy loop, so it is the dd.jl kernel.
 @inline _project_mono!(proj::Symbol, args...; kw...) =
     proj === :siddon ? siddon_forward_project!(args...; kw...) :
                        dd_forward_project!(args...; kw...)
@@ -71,21 +65,20 @@ end
     proj === :siddon ? siddon_forward_project(args...; kw...) :
                        dd_forward_project(args...; kw...)
 
-# In-place algebraic transpose. :dd and :dd_fast share the same mono operator.
+# In-place algebraic transpose of the distance-driven mono operator (dd_transpose.jl).
 # Siddon retains the legacy voxel-driven approximation until its own exact
 # transpose is implemented.
 @inline _backproject_mono!(proj::Symbol, volume, sinogram, geom; kw...) =
     proj === :siddon ? backproject!(volume, sinogram, geom; weighted = false, kw...) :
                        dd_backproject!(volume, sinogram, geom; kw...)
 
-# Fused polychromatic (energy-integrating EI).
+# Fused polychromatic (energy-integrating EI).  dd_fast_fused_* fall back to the
+# dd.jl tiled kernels above 64 materials.
 @inline _project_fused_poly!(proj::Symbol, args...; kw...) =
-    proj === :siddon  ? siddon_fused_poly_project!(args...; kw...) :
-    proj === :dd_fast ? dd_fast_fused_poly_project!(args...; kw...) :
-                        dd_fused_poly_project!(args...; kw...)
+    proj === :siddon ? siddon_fused_poly_project!(args...; kw...) :
+                       dd_fast_fused_poly_project!(args...; kw...)
 
 # Fused spectral (photon-counting PCCT, tiled).
 @inline _project_fused_spectral!(proj::Symbol, args...; kw...) =
-    proj === :siddon  ? siddon_fused_spectral_project!(args...; kw...) :
-    proj === :dd_fast ? dd_fast_fused_spectral_project!(args...; kw...) :
-                        dd_fused_spectral_project!(args...; kw...)
+    proj === :siddon ? siddon_fused_spectral_project!(args...; kw...) :
+                       dd_fast_fused_spectral_project!(args...; kw...)

@@ -3,7 +3,7 @@
 # =============================================================================
 #
 # Shared components for iterative reconstruction algorithms (HIR, etc.):
-#   - Huber penalty (edge-preserving regularization)
+#   - Huber penalty gradient (edge-preserving regularization)
 #   - Projection/image domain weight computation
 #
 # GPU-native via AcceleratedKernels.jl.
@@ -11,44 +11,13 @@
 
 import AcceleratedKernels as AK
 
-export PenaltyType, HuberPenalty
-export compute_huber_penalty, compute_huber_gradient!
+export compute_huber_gradient!
 export compute_projection_weights, compute_image_weights
-export create_ordered_subsets, create_subset_geometry, extract_subset_sinogram
+export create_ordered_subsets, create_subset_geometry
 
 # =============================================================================
 # Huber Penalty
 # =============================================================================
-
-"""
-    PenaltyType
-
-Abstract type for regularization penalties.
-"""
-abstract type PenaltyType end
-
-"""
-    HuberPenalty <: PenaltyType
-
-Huber penalty: edge-preserving quadratic/linear hybrid.
-
-ψ(t) = t²/2           if |t| ≤ δ
-ψ(t) = δ|t| - δ²/2    if |t| > δ
-"""
-struct HuberPenalty <: PenaltyType
-    delta::Float32
-end
-
-HuberPenalty() = HuberPenalty(0.01f0)
-
-@inline function _huber(t::T, δ::T) where T
-    abs_t = abs(t)
-    if abs_t ≤ δ
-        return t * t / T(2)
-    else
-        return δ * abs_t - δ * δ / T(2)
-    end
-end
 
 @inline function _huber_deriv(t::T, δ::T) where T
     abs_t = abs(t)
@@ -57,48 +26,6 @@ end
     else
         return δ * sign(t)
     end
-end
-
-"""
-    compute_huber_penalty(x, delta)
-
-Compute Huber penalty value over 3D volume with 6-connected neighborhood.
-"""
-function compute_huber_penalty(
-    x::AbstractArray{T, 3},
-    delta::Real
-) where T <: AbstractFloat
-
-    δ = T(delta)
-    nx, ny, nz = size(x)
-    penalty_vals = similar(x)
-    backend = AK.get_backend(x)
-
-    AK.foreachindex(penalty_vals, backend) do linear_idx
-        i = mod1(linear_idx, nx)
-        j = mod1(div(linear_idx - 1, nx) + 1, ny)
-        k = div(linear_idx - 1, nx * ny) + 1
-
-        val = x[i, j, k]
-        penalty = zero(T)
-
-        if i < nx
-            diff = x[i+1, j, k] - val
-            penalty += _huber(diff, δ)
-        end
-        if j < ny
-            diff = x[i, j+1, k] - val
-            penalty += _huber(diff, δ)
-        end
-        if k < nz
-            diff = x[i, j, k+1] - val
-            penalty += _huber(diff, δ)
-        end
-
-        penalty_vals[linear_idx] = penalty
-    end
-
-    return AK.mapreduce(identity, +, penalty_vals; init=zero(T))
 end
 
 """
@@ -277,21 +204,4 @@ function create_subset_geometry(geom::CTGeometry, angle_indices::Vector{Int})
         geom.detector_v[:, angle_indices],
         geom.fov, geom.pitch, geom.table_feed, geom.detector_shape, geom.column_offset,
     )
-end
-
-"""
-    extract_subset_sinogram(sinogram, angle_indices) -> subset sinogram
-
-Extract sinogram views for given angle indices.
-"""
-function extract_subset_sinogram(
-    sinogram::AbstractArray{T, 3},
-    angle_indices::Vector{Int}
-) where T <: AbstractFloat
-    n_cols, n_rows, _ = size(sinogram)
-    subset = similar(sinogram, T, n_cols, n_rows, length(angle_indices))
-    for (i, idx) in enumerate(angle_indices)
-        subset[:, :, i] = sinogram[:, :, idx]
-    end
-    return subset
 end
