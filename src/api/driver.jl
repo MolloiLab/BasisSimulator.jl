@@ -125,6 +125,8 @@ function simulate!(
         report_dose::Bool = true,
         dose_kwargs = (;),
         noise_rng::Symbol = :serial,
+        projection = nothing,
+        keep_projection::Bool = false,
     ) where {T}
     geom = ws.geom
     energies = ws.energies
@@ -133,130 +135,140 @@ function simulate!(
     pcct_detector = ws.pcct_detector
     mats = ws.mats
 
-    # Forward projection with workspace buffers (including native-res path + tiled spectral),
-    # integrated over each view's arc (`_integrate_views!`, the same pathway as the EICT chain)
-    function load_pcct!(g)
-        _load_view_geometry!(ws.geom_source_positions, ws.geom_detector_centers,
-            ws.geom_detector_u, ws.geom_detector_v, g)
-        ws.native_geom === nothing && return nothing
-        ng = g === geom ? ws.native_geom : rotate_geometry(ws.native_geom, g.angles[1] - geom.angles[1])
-        _load_view_geometry!(ws.native_geom_source_positions, ws.native_geom_detector_centers,
-            ws.native_geom_detector_u, ws.native_geom_detector_v, ng)
-        return nothing
-    end
-    projected = Ref{Any}(nothing)
-    _integrate_views!(geom, sim_opts, load_pcct!) do s_view, g_view
-    ng_view = ws.native_geom === nothing || g_view === geom ? ws.native_geom :
-        rotate_geometry(ws.native_geom, g_view.angles[1] - geom.angles[1])
-    projected[] = pcct_forward_project(
-        phantom.mask, g_view, pcct_detector;
-        energies = energies, weights = weights,
-        materials = mats,
-        ws_bins = ws.bins, ws_μ_volume = ws.μ_volume, ws_sino_buf = ws.sino_buf,
-        ws_scratch = ws.scratch,
-        ws_thresholds_T = ws.thresholds_T,
-        ws_η = ws.η, ws_R = ws.R, ws_R_energies = ws.R_energies,
-        ws_I0 = ws.I0,
-        ws_μ_lut_cpu = ws.μ_lut_cpu, ws_μ_lut_gpu = ws.μ_lut_gpu,
-        ws_μ_table = ws.μ_table,
-        ws_source_positions = ws.geom_source_positions,
-        ws_detector_centers = ws.geom_detector_centers,
-        ws_detector_u = ws.geom_detector_u,
-        ws_detector_v = ws.geom_detector_v,
-        volume_extent = phantom.extent,
-        # Native-resolution forward projection path (used when bf > 1)
-        native_geom = ng_view,
-        ws_native_bins = ws.native_bins,
-        ws_native_sino_buf = ws.native_sino_buf,
-        ws_native_source_positions = ws.native_geom_source_positions,
-        ws_native_detector_centers = ws.native_geom_detector_centers,
-        ws_native_detector_u = ws.native_geom_detector_u,
-        ws_native_detector_v = ws.native_geom_detector_v,
-        # Tiled spectral projection buffers (fused PCCT path)
-        ws_μ_table_gpu = ws.μ_table_gpu,
-        ws_W_matrix_gpu = ws.W_matrix_gpu,
-        ws_outputs_flat = ws.outputs_flat,
-        ws_native_outputs_flat = ws.native_outputs_flat,
-        # the source transmission per ray (bowtie × heel) at the projection's resolution
-        ws_source_spectral = ws.native_geom !== nothing ? ws.native_bowtie_spectral : ws.bowtie_spectral,
-        projector = sim_opts.projector,
-    )
-    Tuple(projected[].bins)
-    end
-    pcct_sino = projected[]
-
-    # ─── Tube-side focal-spot blur (per bin, BEFORE scatter/noise/pile-up) ───
-    # The focal-spot penumbra is a tube-side effect common to both detector
-    # chains; here it mirrors the EICT placement in `_apply_physics_no_noise!`
-    # (a detector-plane convolution of the log line integrals). Placed before
-    # the rate-dependent pile-up step so blurred local count rates feed it.
-    # Note the blur acts at binned (not native-dexel) resolution.
-    # NOTE: `use_focal_spot` now defaults to TRUE for every scanner family. The deleted `:pcct`
-    # fidelity preset used to force it off here, so a photon-counting simulation that does not
-    # say otherwise now blurs by the focal spot. Pass `use_focal_spot = false` for the old
-    # behaviour.
-    # `use_focal_spot = true`. Detector lag is intentionally NOT applied on
-    # this path: the shipped lag model is scintillator (Gd₂O₂S) afterglow,
-    # which direct-conversion PCCT detectors do not exhibit.
-    if config.focal_spot !== nothing
-        for bin_sino in pcct_sino.bins
-            apply_focal_spot_blur!(
-                bin_sino, config.focal_spot, geom;
-                ws_output = ws.tube_physics_scratch,
-                ws_kernel = ws.focal_spot_kernel
-            )
-        end
-    end
-
-    # ─── Energy-resolved scatter injection (BEFORE noise) ───
-    # Unified per-energy scatter model (shared with EICT):
-    # 1. Spatial distribution: Ohnesorge convolution on combined sinogram
-    # 2. Per-energy weights: Compton fraction 1/(1+(20/E)³) (NIST XCOM)
-    # 3. Detector response: weights convolved through DRM → per-bin scatter
-    # Must be added before noise so Poisson statistics are on total counts.
-    #
-    # References:
-    # - Ohnesorge B et al., Eur Radiol 1999 (spatial scatter model)
-    # - NIST XCOM (per-energy Compton fractions)
     I0 = ws.I0
     n_rays = Int32(size(I0, 1) * size(I0, 2))
     eps_combine = T(1.0e-10)
     I0_total = ws.I0_all           # [n_cols, n_rows]: Σ_b I0[col, row, b], the whole-spectrum air response per ray
+    # Everything before the noise is deterministic (see the EICT `simulate!`): `keep_projection`
+    # returns it and `projection` re-uses it for another noise draw, bit-identically.
+    pcct_sino = nothing
+    if projection === nothing
+        # Forward projection with workspace buffers (including native-res path + tiled spectral),
+        # integrated over each view's arc (`_integrate_views!`, the same pathway as the EICT chain)
+        function load_pcct!(g)
+            _load_view_geometry!(ws.geom_source_positions, ws.geom_detector_centers,
+                ws.geom_detector_u, ws.geom_detector_v, g)
+            ws.native_geom === nothing && return nothing
+            ng = g === geom ? ws.native_geom : rotate_geometry(ws.native_geom, g.angles[1] - geom.angles[1])
+            _load_view_geometry!(ws.native_geom_source_positions, ws.native_geom_detector_centers,
+                ws.native_geom_detector_u, ws.native_geom_detector_v, ng)
+            return nothing
+        end
+        projected = Ref{Any}(nothing)
+        _integrate_views!(geom, sim_opts, load_pcct!) do s_view, g_view
+        ng_view = ws.native_geom === nothing || g_view === geom ? ws.native_geom :
+            rotate_geometry(ws.native_geom, g_view.angles[1] - geom.angles[1])
+        projected[] = pcct_forward_project(
+            phantom.mask, g_view, pcct_detector;
+            energies = energies, weights = weights,
+            materials = mats,
+            ws_bins = ws.bins, ws_μ_volume = ws.μ_volume, ws_sino_buf = ws.sino_buf,
+            ws_scratch = ws.scratch,
+            ws_thresholds_T = ws.thresholds_T,
+            ws_η = ws.η, ws_R = ws.R, ws_R_energies = ws.R_energies,
+            ws_I0 = ws.I0,
+            ws_μ_lut_cpu = ws.μ_lut_cpu, ws_μ_lut_gpu = ws.μ_lut_gpu,
+            ws_μ_table = ws.μ_table,
+            ws_source_positions = ws.geom_source_positions,
+            ws_detector_centers = ws.geom_detector_centers,
+            ws_detector_u = ws.geom_detector_u,
+            ws_detector_v = ws.geom_detector_v,
+            volume_extent = phantom.extent,
+            # Native-resolution forward projection path (used when bf > 1)
+            native_geom = ng_view,
+            ws_native_bins = ws.native_bins,
+            ws_native_sino_buf = ws.native_sino_buf,
+            ws_native_source_positions = ws.native_geom_source_positions,
+            ws_native_detector_centers = ws.native_geom_detector_centers,
+            ws_native_detector_u = ws.native_geom_detector_u,
+            ws_native_detector_v = ws.native_geom_detector_v,
+            # Tiled spectral projection buffers (fused PCCT path)
+            ws_μ_table_gpu = ws.μ_table_gpu,
+            ws_W_matrix_gpu = ws.W_matrix_gpu,
+            ws_outputs_flat = ws.outputs_flat,
+            ws_native_outputs_flat = ws.native_outputs_flat,
+            # the source transmission per ray (bowtie × heel) at the projection's resolution
+            ws_source_spectral = ws.native_geom !== nothing ? ws.native_bowtie_spectral : ws.bowtie_spectral,
+            projector = sim_opts.projector,
+        )
+        Tuple(projected[].bins)
+        end
+        pcct_sino = projected[]
 
-    if config.scatter !== nothing && sim_opts.use_scatter
-        # Step 1: Combine primary bins → combined_primary (for scatter spatial estimation)
-        combined_primary = ws.combined
-        fill!(combined_primary, zero(T))
-        for (b, bin_sino) in enumerate(pcct_sino.bins)
-            let i0 = I0, m = n_rays, off = Int32(b - 1) * n_rays, bs = bin_sino, comb = combined_primary
-                AK.foreachindex(bs) do idx
-                    comb[idx] += i0[(Int32(idx - 1) % m) + Int32(1) + off] * exp(-bs[idx])
+        # ─── Tube-side focal-spot blur (per bin, BEFORE scatter/noise/pile-up) ───
+        # The focal-spot penumbra is a tube-side effect common to both detector
+        # chains; here it mirrors the EICT placement in `_apply_physics_no_noise!`
+        # (a detector-plane convolution of the log line integrals). Placed before
+        # the rate-dependent pile-up step so blurred local count rates feed it.
+        # Note the blur acts at binned (not native-dexel) resolution.
+        # NOTE: `use_focal_spot` now defaults to TRUE for every scanner family. The deleted `:pcct`
+        # fidelity preset used to force it off here, so a photon-counting simulation that does not
+        # say otherwise now blurs by the focal spot. Pass `use_focal_spot = false` for the old
+        # behaviour.
+        # `use_focal_spot = true`. Detector lag is intentionally NOT applied on
+        # this path: the shipped lag model is scintillator (Gd₂O₂S) afterglow,
+        # which direct-conversion PCCT detectors do not exhibit.
+        if config.focal_spot !== nothing
+            for bin_sino in pcct_sino.bins
+                apply_focal_spot_blur!(
+                    bin_sino, config.focal_spot, geom;
+                    ws_output = ws.tube_physics_scratch,
+                    ws_kernel = ws.focal_spot_kernel
+                )
+            end
+        end
+
+        # ─── Energy-resolved scatter injection (BEFORE noise) ───
+        # Unified per-energy scatter model (shared with EICT):
+        # 1. Spatial distribution: Ohnesorge convolution on combined sinogram
+        # 2. Per-energy weights: Compton fraction 1/(1+(20/E)³) (NIST XCOM)
+        # 3. Detector response: weights convolved through DRM → per-bin scatter
+        # Must be added before noise so Poisson statistics are on total counts.
+        #
+        # References:
+        # - Ohnesorge B et al., Eur Radiol 1999 (spatial scatter model)
+        # - NIST XCOM (per-energy Compton fractions)
+
+        if config.scatter !== nothing && sim_opts.use_scatter
+            # Step 1: Combine primary bins → combined_primary (for scatter spatial estimation)
+            combined_primary = ws.combined
+            fill!(combined_primary, zero(T))
+            for (b, bin_sino) in enumerate(pcct_sino.bins)
+                let i0 = I0, m = n_rays, off = Int32(b - 1) * n_rays, bs = bin_sino, comb = combined_primary
+                    AK.foreachindex(bs) do idx
+                        comb[idx] += i0[(Int32(idx - 1) % m) + Int32(1) + off] * exp(-bs[idx])
+                    end
                 end
             end
-        end
-        let comb = combined_primary, i0t = I0_total, m = n_rays, eps = eps_combine
-            AK.foreachindex(comb) do idx
-                comb[idx] = -log(max(comb[idx], eps) / i0t[(Int32(idx - 1) % m) + Int32(1)])
+            let comb = combined_primary, i0t = I0_total, m = n_rays, eps = eps_combine
+                AK.foreachindex(comb) do idx
+                    comb[idx] = -log(max(comb[idx], eps) / i0t[(Int32(idx - 1) % m) + Int32(1)])
+                end
             end
+
+            # Step 2: Spatial scatter field (Ohnesorge convolution model)
+            scatter_field = ws.tube_physics_scratch
+            estimate_scatter_field!(
+                scatter_field, combined_primary, config.scatter;
+                ws_scatter_temp = ws.scratch
+            )
+
+            # Step 3: Per-energy scatter weights → per-bin via DRM
+            ew = compute_scatter_energy_weights(Float64.(energies))
+            bin_weights = compute_scatter_bin_weights(
+                Float64.(energies), Float64.(weights),
+                ew, Float64.(ws.η), ws.R, ws.kVp
+            )
+
+            # Step 4: Inject scatter into each bin
+            inject_scatter_bins!(pcct_sino.bins, scatter_field, I0, I0_total, bin_weights)
         end
-
-        # Step 2: Spatial scatter field (Ohnesorge convolution model)
-        scatter_field = ws.tube_physics_scratch
-        estimate_scatter_field!(
-            scatter_field, combined_primary, config.scatter;
-            ws_scatter_temp = ws.scratch
-        )
-
-        # Step 3: Per-energy scatter weights → per-bin via DRM
-        ew = compute_scatter_energy_weights(Float64.(energies))
-        bin_weights = compute_scatter_bin_weights(
-            Float64.(energies), Float64.(weights),
-            ew, Float64.(ws.η), ws.R, ws.kVp
-        )
-
-        # Step 4: Inject scatter into each bin
-        inject_scatter_bins!(pcct_sino.bins, scatter_field, I0, I0_total, bin_weights)
+    else
+        length(projection.bins) == length(ws.bins) && size(first(projection.bins)) == size(first(ws.bins)) ||
+            throw(DimensionMismatch("the projection does not match this workspace's bins"))
+        pcct_sino = EnergyResolvedSinogram([copy(b) for b in projection.bins], projection.thresholds_keV)
     end
+    kept = keep_projection ? (bins = [copy(b) for b in pcct_sino.bins], thresholds_keV = pcct_sino.thresholds_keV) : nothing
 
     # ─── Noise (in-place on pcct_sino.bins — now includes scatter in counts) ───
     # Exact integer Poisson counts, sampled in the SAME air-cal basis
@@ -409,7 +421,8 @@ function simulate!(
         pileup_S = ws.pileup_S,
         dose = report_dose ? dose_report(ws, protocol; dose_kwargs...) : nothing,
     )
-    capture_raw_counts ? merge(result, (; raw_counts)) : result
+    result = capture_raw_counts ? merge(result, (; raw_counts)) : result
+    return keep_projection ? merge(result, (; projection = kept)) : result
 end
 
 # =============================================================================
@@ -432,8 +445,12 @@ tight loop over noise realisations if that second matters. `dose_kwargs` reaches
 protocol wants `dose_kwargs = (; phantom = :head16)` and a dual-source scanner
 `(; n_tubes = 2)`.
 
-Pass `paths` from [`material_paths`](@ref) to skip the volume walk (with `view_samples > 1`, a
-vector of one cache per sub-view). The walk depends on the
+Pass `paths` from [`material_paths`](@ref) to skip the volume walk (point views only).
+
+`keep_projection = true` adds `projection` to the result: everything before the noise, which every
+noise draw of this phantom and protocol shares. Pass it back as `projection` — to a workspace of the
+same scanner, protocol and grid — to draw another realization without projecting again,
+bit-identically to a full simulation with that call's seed. The walk depends on the
 geometry and the material map alone, so one cache serves every spectrum measured through that
 geometry, and a several-kVp study of one phantom stops paying for it repeatedly (four tube
 voltages of a 1024² × 60 phantom: 4.81 s of forward projection down to 2.16 s, bit-identical).
@@ -452,83 +469,102 @@ function simulate!(
         report_dose::Bool = true,
         dose_kwargs = (;),
         paths = nothing,
+        projection = nothing,
+        keep_projection::Bool = false,
     ) where {T}
     geom = ws.geom
     energies = ws.energies
     mats = ws.mats
     config = ws.config
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # STEP 1: Polychromatic forward projection (Beer-Lambert)
-    # ═══════════════════════════════════════════════════════════════════════
-    load_eict!(g) = _load_view_geometry!(ws.geom_source_positions, ws.geom_detector_centers,
-        ws.geom_detector_u, ws.geom_detector_v, g)
-    n_sub = length(view_sample_offsets(geom, sim_opts))
-    _integrate_views!(geom, sim_opts, load_eict!) do s_view, g_view
-    fill!(ws.sinogram, zero(T))
-    _forward_project_poly!(
-        ws.sinogram, phantom.mask, g_view, energies, ws.weights, mats;
-        ws_μ_volume = ws.μ_volume, ws_sino_mono = ws.sino_mono,
-        ws_I_transmitted = ws.I_transmitted,
-        ws_weights_norm = ws.weights_norm,
-        ws_μ_lut_cpu = ws.μ_lut_cpu, ws_μ_lut_gpu = ws.μ_lut_gpu,
-        ws_μ_table = ws.μ_table,
-        ws_μ_table_gpu = ws.μ_table_gpu,
-        ws_source_positions = ws.geom_source_positions,
-        ws_detector_centers = ws.geom_detector_centers,
-        ws_detector_u = ws.geom_detector_u,
-        ws_detector_v = ws.geom_detector_v,
-        volume_extent = phantom.extent,
-        ws_η = ws.η_vec,
-        ws_bowtie_spectral = ws.bowtie_spectral,
-        ws_wη_gpu = ws.wη_gpu,
-        paths = _view_paths(paths, s_view, n_sub),
-        projector = sim_opts.projector
-    )
-    (ws.sinogram,)
-    end
-
-    # ═══════════════════════════════════════════════════════════════════════
-    # STEP 2: Signal chain (always active)
-    # ═══════════════════════════════════════════════════════════════════════
-
-    # Apply physics pipeline (sinogram domain, no noise, no scatter)
-    # Note: scatter is now applied separately below (unified per-energy model)
-    _apply_physics_no_noise!(
-        ws.sinogram, geom, config;
-        ws_output = ws.physics_output,
-        ws_scatter_kernel = ws.scatter_kernel,
-        ws_scatter_temp = ws.scatter_temp,
-        ws_scatter_kernel_1d = ws.scatter_kernel_1d,
-        ws_optical_crosstalk_kernel = ws.optical_crosstalk_kernel,
-        ws_focal_spot_kernel = ws.focal_spot_kernel,
-        ws_lag_output = ws.physics_output,
-        ws_lag_intensity = ws.lag_intensity,
-        ws_lag_coeffs = ws.lag_coeffs
-    )
-
-    # ─── Energy-resolved scatter injection (unified with PCCT) ───
-    # Same per-energy scatter model as PCCT, integrated over the full spectrum
-    # since an energy-integrating detector sums all energies.
-    # 1. Spatial field: Ohnesorge convolution (Ohnesorge et al., Eur Radiol 1999)
-    # 2. Per-energy weights: Compton fraction 1/(1+(20/E)³) (NIST XCOM)
-    # 3. Detector response: spectrum-weighted integration
+    # Everything before the noise is deterministic: the same for every noise draw of this phantom,
+    # protocol and workspace. `keep_projection` returns it (`projection`), and passing it back as
+    # `projection` skips the forward projection and the physics before the noise — bit-identical to
+    # simulating again, the noise drawn from this call's seed.
     has_scatter = config.scatter !== nothing
     scatter_total_weight = 0.0
     scatter_field_gpu = nothing  # set below if has_scatter; reused in step 3
-    if has_scatter
-        scatter_field_gpu = ws.physics_output  # GPU buffer; live until step 3
-        estimate_scatter_field!(
-            scatter_field_gpu, ws.sinogram, config.scatter;
-            ws_scatter_temp = ws.scatter_temp, ws_kernel_1d = ws.scatter_kernel_1d
+    if projection === nothing
+        # ═══════════════════════════════════════════════════════════════════════
+        # STEP 1: Polychromatic forward projection (Beer-Lambert)
+        # ═══════════════════════════════════════════════════════════════════════
+        load_eict!(g) = _load_view_geometry!(ws.geom_source_positions, ws.geom_detector_centers,
+            ws.geom_detector_u, ws.geom_detector_v, g)
+        n_sub = length(view_sample_offsets(geom, sim_opts))
+        _integrate_views!(geom, sim_opts, load_eict!) do s_view, g_view
+        fill!(ws.sinogram, zero(T))
+        _forward_project_poly!(
+            ws.sinogram, phantom.mask, g_view, energies, ws.weights, mats;
+            ws_μ_volume = ws.μ_volume, ws_sino_mono = ws.sino_mono,
+            ws_I_transmitted = ws.I_transmitted,
+            ws_weights_norm = ws.weights_norm,
+            ws_μ_lut_cpu = ws.μ_lut_cpu, ws_μ_lut_gpu = ws.μ_lut_gpu,
+            ws_μ_table = ws.μ_table,
+            ws_μ_table_gpu = ws.μ_table_gpu,
+            ws_source_positions = ws.geom_source_positions,
+            ws_detector_centers = ws.geom_detector_centers,
+            ws_detector_u = ws.geom_detector_u,
+            ws_detector_v = ws.geom_detector_v,
+            volume_extent = phantom.extent,
+            ws_η = ws.η_vec,
+            ws_bowtie_spectral = ws.bowtie_spectral,
+            ws_wη_gpu = ws.wη_gpu,
+            paths = _view_paths(paths, n_sub),
+            projector = sim_opts.projector
         )
-        ew = compute_scatter_energy_weights(Float64.(ws.energies))
-        wn = Float64.(ws.weights_norm)
-        η = ws.η_vec
-        scatter_total_weight = sum(wn[i] * ew[i] * η[i] for i in eachindex(wn)) /
-            max(sum(wn[i] * η[i] for i in eachindex(wn)), 1.0e-30)
-        inject_scatter!(ws.sinogram, scatter_field_gpu, scatter_total_weight)
+        (ws.sinogram,)
+        end
+
+        # ═══════════════════════════════════════════════════════════════════════
+        # STEP 2: Signal chain (always active)
+        # ═══════════════════════════════════════════════════════════════════════
+
+        # Apply physics pipeline (sinogram domain, no noise, no scatter)
+        # Note: scatter is now applied separately below (unified per-energy model)
+        _apply_physics_no_noise!(
+            ws.sinogram, geom, config;
+            ws_output = ws.physics_output,
+            ws_scatter_kernel = ws.scatter_kernel,
+            ws_scatter_temp = ws.scatter_temp,
+            ws_scatter_kernel_1d = ws.scatter_kernel_1d,
+            ws_optical_crosstalk_kernel = ws.optical_crosstalk_kernel,
+            ws_focal_spot_kernel = ws.focal_spot_kernel,
+            ws_lag_output = ws.physics_output,
+            ws_lag_intensity = ws.lag_intensity,
+            ws_lag_coeffs = ws.lag_coeffs
+        )
+
+        # ─── Energy-resolved scatter injection (unified with PCCT) ───
+        # Same per-energy scatter model as PCCT, integrated over the full spectrum
+        # since an energy-integrating detector sums all energies.
+        # 1. Spatial field: Ohnesorge convolution (Ohnesorge et al., Eur Radiol 1999)
+        # 2. Per-energy weights: Compton fraction 1/(1+(20/E)³) (NIST XCOM)
+        # 3. Detector response: spectrum-weighted integration
+        if has_scatter
+            scatter_field_gpu = ws.physics_output  # GPU buffer; live until step 3
+            estimate_scatter_field!(
+                scatter_field_gpu, ws.sinogram, config.scatter;
+                ws_scatter_temp = ws.scatter_temp, ws_kernel_1d = ws.scatter_kernel_1d
+            )
+            ew = compute_scatter_energy_weights(Float64.(ws.energies))
+            wn = Float64.(ws.weights_norm)
+            η = ws.η_vec
+            scatter_total_weight = sum(wn[i] * ew[i] * η[i] for i in eachindex(wn)) /
+                max(sum(wn[i] * η[i] for i in eachindex(wn)), 1.0e-30)
+            inject_scatter!(ws.sinogram, scatter_field_gpu, scatter_total_weight)
+        end
+    else
+        size(projection.sinogram) == size(ws.sinogram) || throw(DimensionMismatch(
+            "the projection is $(size(projection.sinogram)); this workspace's sinogram is $(size(ws.sinogram))"))
+        copyto!(ws.sinogram, projection.sinogram)
+        scatter_total_weight = projection.scatter_weight
+        if has_scatter
+            scatter_field_gpu = ws.physics_output
+            copyto!(scatter_field_gpu, projection.scatter_field)
+        end
     end
+    kept = keep_projection ? (sinogram = copy(ws.sinogram),
+        scatter_field = has_scatter ? copy(scatter_field_gpu) : nothing, scatter_weight = scatter_total_weight) : nothing
 
     # ═══════════════════════════════════════════════════════════════════════
     # STEP 3: Fused noise + scatter subtraction (counts domain)
@@ -676,7 +712,8 @@ function simulate!(
     end
 
     # BHC is decoupled — applied at notebook level
-    return (; dose = report_dose ? dose_report(ws, protocol; dose_kwargs...) : nothing)
+    dose = report_dose ? dose_report(ws, protocol; dose_kwargs...) : nothing
+    return keep_projection ? (; dose, projection = kept) : (; dose)
 end
 
 # =============================================================================
@@ -1783,8 +1820,8 @@ end
 # =============================================================================
 
 """
-    material_paths(ws::EICTWorkspace, phantom; volume_extent=nothing, angle_offset=0) -> Array
-    material_paths!(paths, ws::EICTWorkspace, phantom; volume_extent=nothing, angle_offset=0) -> paths
+    material_paths(ws::EICTWorkspace, phantom; volume_extent=nothing) -> Array
+    material_paths!(paths, ws::EICTWorkspace, phantom; volume_extent=nothing) -> paths
 
 Walk `phantom` once through the workspace's geometry and return the per-material path length of
 every detector element, in cm — `(n_materials, n_cols, n_rows, n_views)` on the phantom's
@@ -1809,9 +1846,9 @@ end
     Its size is also the cost — `n_materials × n_cols × n_rows × n_views` floats, 1.7 GiB for
     16 materials on an 834 × 34 × 1000 sinogram — so `compact_materials(phantom)` first.
 
-With view integration (`SimOptions(; view_samples > 1)`) each sub-view is its own geometry: walk
-one cache per offset of [`view_sample_offsets`](@ref), `angle_offset = δ`, and pass them to
-`simulate!` as a vector in that order.
+The cache is of point views: with view integration (`SimOptions(; view_samples > 1)`) every
+sub-view is a geometry of its own, and the noise draws of one acquisition share their projection
+instead (`keep_projection`, `projection`).
 """
 function material_paths(ws::EICTWorkspace{T}, phantom; kwargs...) where {T}
     paths = similar(ws.sinogram, T, size(ws.μ_table_gpu, 1), size(ws.sinogram)...)
@@ -1822,27 +1859,18 @@ end
 function material_paths!(
         paths::AbstractArray{T, 4}, ws::EICTWorkspace{T}, phantom;
         volume_extent::Union{Nothing, NTuple{3, Float64}} = nothing,
-        angle_offset::Real = 0.0,
     ) where {T}
     extent = volume_extent !== nothing ? volume_extent :
         (hasproperty(phantom, :extent) && phantom.extent !== nothing ?
         Tuple(Float64.(phantom.extent)) : nothing)
-    g = angle_offset == 0 ? ws.geom : rotate_geometry(ws.geom, angle_offset)
-    angle_offset == 0 || _load_view_geometry!(ws.geom_source_positions, ws.geom_detector_centers,
-        ws.geom_detector_u, ws.geom_detector_v, g)
-    try
-        return dd_fast_material_paths!(
-            paths, phantom.mask, g;
-            volume_extent = extent,
-            ws_source_positions = ws.geom_source_positions,
-            ws_detector_centers = ws.geom_detector_centers,
-            ws_detector_u = ws.geom_detector_u,
-            ws_detector_v = ws.geom_detector_v,
-        )
-    finally
-        angle_offset == 0 || _load_view_geometry!(ws.geom_source_positions, ws.geom_detector_centers,
-            ws.geom_detector_u, ws.geom_detector_v, ws.geom)
-    end
+    return dd_fast_material_paths!(
+        paths, phantom.mask, ws.geom;
+        volume_extent = extent,
+        ws_source_positions = ws.geom_source_positions,
+        ws_detector_centers = ws.geom_detector_centers,
+        ws_detector_u = ws.geom_detector_u,
+        ws_detector_v = ws.geom_detector_v,
+    )
 end
 
 export material_paths, material_paths!

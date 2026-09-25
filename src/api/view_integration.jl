@@ -33,16 +33,10 @@ function _load_view_geometry!(sp, dc, du, dv, g::CTGeometry)
     return nothing
 end
 
-# The path caches for sub-view `s` of `n`: `paths` itself for point views, element `s` of a vector.
-function _view_paths(paths, s::Integer, n::Integer)
-    paths === nothing && return nothing
-    if paths isa AbstractVector
-        length(paths) == n || throw(ArgumentError(
-            "paths holds $(length(paths)) caches for $(n) sub-views; walk one per offset of view_sample_offsets"))
-        return paths[s]
-    end
-    n == 1 || throw(ArgumentError(
-        "view_samples = $(n) needs one path cache per sub-view: pass material_paths(ws, phantom; angle_offset = δ) for each δ of view_sample_offsets"))
+# A path cache is of point views; sub-views are geometries of their own.
+function _view_paths(paths, n::Integer)
+    paths === nothing || n == 1 || throw(ArgumentError(
+        "a path cache is of point views; with view_samples = $(n) pass paths = nothing, and share a projection between noise draws instead (keep_projection, projection)"))
     return paths
 end
 

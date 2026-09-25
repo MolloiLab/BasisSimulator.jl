@@ -46,8 +46,8 @@ function _vi_setup(kind; views, kwargs...)
             detector_material = :CdTe, detector_depth = 1.6, n_energy_bins = 4,
             energy_thresholds = [20.0, 35.0, 55.0, 70.0], pileup = false)
     protocol = BS.CTProtocol(mA = 2.5, kVp = 120.0, views = views, rotation_time = 0.5)
-    sim_opts = BS.SimOptions(; use_noise = false, use_scatter = false, use_lag = false,
-        use_focal_spot = false, use_optical_crosstalk = false, kwargs...)
+    sim_opts = BS.SimOptions(; merge((use_noise = false, use_scatter = false, use_lag = false,
+        use_focal_spot = false, use_optical_crosstalk = false), kwargs)...)
     recon_opts = BS.ReconOptions(matrix_size = (32, 32, 2), fov_cm = 20.0)
     ph = BS.create_gammex_472(n_voxels = 64, fov_cm = 20.0, z_cm = 1.0)
     phantom = BS.Phantom(to_gpu(ph.mask), ph.materials, ph.voxel_size, ph.origin, ph.extent)
@@ -85,13 +85,25 @@ end
     @test all(t[:, :, offdiag] ≈ p[:, :, offdiag] for (t, p) in zip(tiny, point))
 end
 
-@testset "a path cache per sub-view" begin
+@testset "a projection shared by noise draws ($(kind))" for kind in (:eict, :pcct)
+    # everything before the noise is the same for every draw: re-using it is the full simulation
+    kw = (views = 24, view_samples = 3, use_scatter = true, use_focal_spot = true)
+    clean = _vi_setup(kind; kw..., use_noise = false)
+    r0 = BS.simulate!(clean.ws, clean.phantom, clean.protocol, clean.sim_opts; report_dose = false,
+        keep_projection = true)
+    for seed in (7, 8)
+        full = _vi_setup(kind; kw..., use_noise = true, seed = seed)
+        reuse = _vi_setup(kind; kw..., use_noise = true, seed = seed)
+        @test _vi_run(reuse; projection = r0.projection) == _vi_run(full)
+    end
+    # and the noise-free draw from it is the noise-free simulation
+    @test _vi_run(_vi_setup(kind; kw..., use_noise = false); projection = r0.projection) == _vi_run(clean)
+end
+
+@testset "a path cache is of point views" begin
+    point = _vi_setup(:eict; views = 24)
+    paths = BS.material_paths(point.ws, point.phantom)
+    @test only(_vi_run(point; paths = paths)) ≈ only(_vi_run(_vi_setup(:eict; views = 24))) rtol = 1.0e-5
     arc = _vi_setup(:eict; views = 24, view_samples = 3)
-    ref = _vi_run(arc)
-    offsets = BS.view_sample_offsets(arc.ws.geom, arc.sim_opts)
-    geom_before = Array(arc.ws.geom_source_positions)
-    paths = [BS.material_paths(arc.ws, arc.phantom; angle_offset = δ) for δ in offsets]
-    @test Array(arc.ws.geom_source_positions) == geom_before
-    @test only(_vi_run(arc; paths = paths)) ≈ only(ref) rtol = 1.0e-5
-    @test_throws ArgumentError _vi_run(arc; paths = first(paths))
+    @test_throws ArgumentError _vi_run(arc; paths = paths)
 end
