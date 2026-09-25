@@ -27,8 +27,8 @@ UFC detectors at 95°**, its published geometry/filtration, and the new
 scanner's signature acquisition classes in one notebook:
 
 ```
-Flash UFC MC η(E) LUT  (Khodajou-Chokami MC, 2026-08-26, 1–140 keV)
-        │ via EICTScanner(detector_material = :ufc_flash)  (src MC-LUT pathway)
+Flash UFC MC η(E) LUT  (BS.UFC_FLASH_MC_EFFICIENCY_LUT, 1–140 keV)
+        │ via EICTScanner(detector_material = :ufc_flash)
         ▼
 ┌─ REGULAR (dual power): 120 kVp on BOTH tubes ──────────────────────────┐
 │  tube A + tube B (independent noise) → per-tube η-aware BHC → FDK → HU │
@@ -36,9 +36,10 @@ Flash UFC MC η(E) LUT  (Khodajou-Chokami MC, 2026-08-26, 1–140 keV)
 └────────────────────────────────────────────────────────────────────────┘
 ┌─ DUAL ENERGY: 100 kVp (A) / Sn140 kVp (B, 0.4 mm Sn) ──────────────────┐
 │  POLY: per-tube η-aware BHC → FDK → HU → Siemens mixed image M_w  (§8) │
-│  VMI:  published n-channel profiled decomposition (K = 2)              │
-│        → per-basis FBP (soft iodine / sharp water) → ACNR 5×14         │
-│        → VMI 50/70/100/140 keV → per-rod regression         (§9–§11+)  │
+│  VMI:  BS.spectral_basis_from_acquisitions → BS.vmi_pipeline:          │
+│        projection HYPR → K = 2 n-channel decomposition                 │
+│        → image HYPR → ACNR → VMI 50/70/100/140 keV          (§9–§11)   │
+│        → per-rod regression                                            │
 └────────────────────────────────────────────────────────────────────────┘
         ▼
    Automated PASS/FAIL verification (water HU, √2 noise, monotonic
@@ -55,10 +56,10 @@ Flash UFC MC η(E) LUT  (Khodajou-Chokami MC, 2026-08-26, 1–140 keV)
     difference; `test/detector.jl` forbids aliasing the two LUTs.
 
 !!! note "Spec provenance"
-    Every published number below comes from the sourced dossier at
-    `docs/scanner_dossiers/somatom_definition_flash.md` (FDA 510(k)s,
-    Siemens Dec-2010 datasheet, AAPM LDCT-PD projection geometry, Primak
-    AJR 2010 for the 0.4 mm Sn Selective Photon Shield).  Unpublished
+    Every published number below comes from the sourced
+    [SOMATOM Definition Flash entry of the scanners page](SCANNERS_PAGE#somatom-definition-flash)
+    (FDA 510(k)s, Siemens Dec-2010 datasheet, AAPM LDCT-PD projection
+    geometry, Primak AJR 2010 for the 0.4 mm Sn Selective Photon Shield).  Unpublished
     items are declared as documented modeling assumptions in §3.
 """
 
@@ -105,13 +106,13 @@ Per-energy absorbed fraction η(E) for the **Definition Flash** UFC Gd₂O₂S
 scintillator, from a full Monte-Carlo transport simulation of the Flash
 detector.
 
-**Provenance**: Hamidreza Khodajou-Chokami, PhD (UC Irvine Medical Imaging
-Laboratory), `flash_efficiency_results.csv`, CRSP lab share, received
-2026-08-26.  The 140 values (1-keV grid, 1–140 keV) live verbatim in src as
-`BS.UFC_FLASH_MC_EFFICIENCY_LUT` (`src/detector/detector_efficiency.jl`),
-sister of the Force `BS.UFC_MC_EFFICIENCY_LUT`; an archival copy of the CSV
-is at `docs/notebooks/data/ufc_flash_mc_efficiency_v1.csv` (gitignored, with
-a PROVENANCE sidecar).
+**Provenance**: a Monte-Carlo transport simulation of the Definition Flash
+detector by Hamidreza Khodajou-Chokami, PhD (UC Irvine Medical Imaging
+Laboratory), `flash_efficiency_results.csv`, 2026-08-26.  The table ships in
+the package as `BS.UFC_FLASH_MC_EFFICIENCY_LUT`
+(`src/detector/detector_efficiency.jl`): 140 values on a 1-keV grid
+(1–140 keV), verbatim from that dataset, next to the Force
+`BS.UFC_MC_EFFICIENCY_LUT`.
 
 **Physics signatures** (MC-only features Beer-Lambert *cannot* model):
 
@@ -189,11 +190,11 @@ phantom = BS.Phantom(
 
 # ╔═╡ 12000004-0000-4000-8000-000000000001
 md"""
-## 3. `Scanner`: Siemens SOMATOM Definition Flash
+## 3. `EICTScanner`: Siemens SOMATOM Definition Flash
 
 Second-generation dual-source: **two STRATON MX P tubes + two UFC detectors
-at 95°** in the same gantry.  Every value below is sourced in
-`docs/scanner_dossiers/somatom_definition_flash.md`:
+at 95°** in the same gantry.  Every value below is sourced in the
+[SOMATOM Definition Flash entry of the scanners page](SCANNERS_PAGE#somatom-definition-flash):
 
 | Parameter | Value | Source |
 |-----------|-------|--------|
@@ -216,7 +217,7 @@ at 95°** in the same gantry.  Every value below is sourced in
     - **Anode angle in the spectrum model**: the Flash's anode is a
       *published* 7°, but the bundled IPEM spectra come only in 8°/10° →
       protocols use the closest available **8°** (`anode_angle = 8`);
-      `Scanner.target_angle` keeps the true 7.0° (heel-effect metadata,
+      the `EICTScanner`'s `target_angle` keeps the true 7.0° (heel-effect metadata,
       inert with `use_heel_effect = false`).
     - **Bowtie**: Siemens form-filter shape is unpublished → CatSim
       **large-body** profile as stand-in (same convention as nb04/nb08/nb09).
@@ -249,8 +250,8 @@ at 95°** in the same gantry.  Every value below is sourced in
 
 !!! info "Dual source → two co-registered scans (the accepted hack)"
     Exactly like nb03 models rapid-kVp switching and nb09 models the Force,
-    the Flash's two tubes are modeled as **two `Scanner` + `CTProtocol`
-    configs run back-to-back** — but with **two unique tube sources**: each
+    the Flash's two tubes are modeled as **two `CTProtocol`s run
+    back-to-back on one `EICTScanner`** — but with **two unique tube sources**: each
     tube gets its own protocol (kVp, mA, filtration) and its own
     **independent noise seed** (two physically separate tube/detector
     chains must not share a noise realization — critical for the §6
@@ -328,7 +329,8 @@ quality-reference 230/178 mAs at 0.5 s → 460/356 mA (≈1.29 : 1 A : B).
     1152-view rotation at Sn140: full angular sampling per energy is the
     defining advantage of dual-source DE over rapid-kVp *switching*,
     where a single tube alternates kV between views and each channel
-    really does get half the angular samples (the nb03 GE model).  The
+    really does get half the angular samples (nb03 approximates the GE
+    switching with two full-rotation acquisitions).  The
     2,304 readings/rotation figure is the z-FFS focal-spot doubling (not
     modeled → 1152), and cardiac quarter-rotation segments are a recon
     mode, not an acquisition split.
@@ -731,14 +733,14 @@ sim_low = let
     I0_scalar = BS.compute_detector_I0(ws.geom, protocol_low, sum(ws.weights)) * Float64(ws.η_eff)
     air_ref = ws.bowtie_air_reference === nothing ? ones(Float32, ws.geom.n_cols, ws.geom.n_rows) :
         Array(ws.bowtie_air_reference)
-    # Absolute per-ray spectral response for the n-channel estimator (§9):
+    # Per-ray detected spectrum for the spectral basis (§9):
     # source × flat filter × bowtie × Flash η(E), same model simulate! used.
     energies, response = BS.resolve_source_spectrum_full(
         sim_opts, protocol_low; scanner = scanner, geom = ws.geom,
     )
     result = (sino = Array(ws.sinogram), geom = ws.geom,
         I0_ray = Float32.(I0_scalar .* Float64.(air_ref)),
-        energies = Float32.(energies), response = Float32.(response))
+        energies = Float64.(energies), response = Float32.(response))
     ws = nothing; GC.gc(true)
     result
 end;
@@ -758,7 +760,7 @@ sim_high = let
     )
     result = (sino = Array(ws.sinogram), geom = ws.geom,
         I0_ray = Float32.(I0_scalar .* Float64.(air_ref)),
-        energies = Float32.(energies), response = Float32.(response))
+        energies = Float64.(energies), response = Float32.(response))
     ws = nothing; GC.gc(true)
     result
 end;
@@ -986,459 +988,108 @@ end
 
 # ╔═╡ 1200000a-0000-4000-8000-000000000001
 md"""
-## 9. Published n-Channel Profiled Decomposition (K = 2)
+## 9. Spectral Basis from the Two Tubes
 
-The **published estimator** (the n-channel VMI paper's production kernel —
-the same `nchannel_profile_tile!` that nb03 runs with K = 2 dual-kVp
-channels and nb04 runs on PCCT bins), replacing the legacy univariate Cong
-solve.  Per ray it maximizes the Poisson quasi-likelihood of the corrected
-**counts** `y_k = I0_k · exp(-h_k)` under the exact discrete polychromatic
-mean `λ_k(A, C) = Σ_E Φ_k(E) · exp(-μρ_I(E)·A - μρ_W(E)·C)`, via a nested
-profile: an inner scalar water solve `C*(A)` inside an outer iodine update
-with the Fisher Schur-complement profile curvature.  Per-ray Fisher
-elements, score norms, and quality flags are recorded — never silently
-converted into image regularization.
-
-The per-ray absolute response `Φ_k(E)` is
-**source × flat filter × bowtie × Flash UFC η(E)** scaled to the air
-counts — the identical model the forward projector applied, because it is
-resolved from the same `build_physics_config` (and therefore the same src
-Flash LUT) that `simulate!` used.  No projection-domain denoising and no
-first-order log debias: the estimator works in the count domain, where
-the quasi-likelihood already weights rays by their information.
+`spectral_basis_from_acquisitions` merges the two tubes' energy grids onto
+their union and scales each tube's per-ray detected spectrum by its own air
+counts, so the likelihood sees the absolute response ``\Phi_k(E)`` of every
+ray and channel: **source × flat filter × bowtie × Flash UFC η(E)**, the
+identical model the forward projector applied (it is resolved from the same
+`build_physics_config`, and therefore the same Flash table, that `simulate!`
+used).  No calibration scan is involved.
 """
-
-# ╔═╡ 1200000a-0000-4000-8000-000000000005
-nchannel_controls = (
-    iodine_bounds = (-0.10f0, 0.40f0), # g/cm²
-    water_bounds = (-2.0f0, 50.0f0),   # g/cm²
-    outer_iterations = 16,              # canonical converged control (nb03/nb04)
-    inner_iterations = 12,
-    max_iodine_step = 0.05f0,
-    max_water_step = 5.0f0,
-    parameter_tolerance = 5.0f-5,
-    fisher_condition_limit = 1.0f8,
-    air_gate = 0.0f0,
-    tile_views = 8,
-);
-
-# ╔═╡ 1200000a-0000-4000-8000-000000000008
-"""
-    nchannel_profile_tile!(...)
-
-Production K-channel profiled quasi-likelihood kernel — verbatim the
-published estimator from nb03 §03 / nb04 (the slow global-scan reference
-solvers that certify it live in those notebooks).
-"""
-function nchannel_profile_tile!(
-    sino_I, sino_W, fisher_AA, fisher_AC, fisher_CC,
-    quality_flag, score_norm, outer_count, inner_count,
-    hs::NTuple{K},
-    Φ, μρ_I, μρ_W, I0, μI_eff, μW_eff,
-    normal_II, normal_IW, normal_WW, controls,
-) where {K}
-    # Ray-dependent dual-kVp responses use detector-column initializer terms.
-    nE = length(μρ_I)
-    A_lo, A_hi = controls.iodine_bounds
-    C_lo, C_hi = controls.water_bounds
-    n_outer, n_inner = controls.outer_iterations, controls.inner_iterations
-    A_step, C_step = controls.max_iodine_step, controls.max_water_step
-    parameter_tolerance = controls.parameter_tolerance
-    fisher_condition_limit = controls.fisher_condition_limit
-    air_gate = controls.air_gate
-
-    BS.AK.foreachindex(sino_I) do idx
-        ncol=size(sino_I,1)
-        nrow=size(sino_I,2)
-        col=mod1(idx,ncol)
-        row=mod1(cld(idx,ncol),nrow)
-        max_abs_h = 0f0
-        for k in 1:K
-            max_abs_h = max(max_abs_h,abs(hs[k][idx]))
-        end
-        if max_abs_h < air_gate
-            sino_I[idx] = 0f0
-            sino_W[idx] = 0f0
-            fisher_AA[idx] = 0f0
-            fisher_AC[idx] = 0f0
-            fisher_CC[idx] = 0f0
-            quality_flag[idx] = UInt8(0)
-            score_norm[idx] = 0f0
-            outer_count[idx] = UInt8(0)
-            inner_count[idx] = UInt8(0)
-            return
-        end
-
-        # K-channel linear initializer; all iterations below are polychromatic.
-        rhs_I, rhs_W = 0f0, 0f0
-        for k in 1:K
-            rhs_I += μI_eff[col,row,k]*hs[k][idx]
-            rhs_W += μW_eff[col,row,k]*hs[k][idx]
-        end
-        nII=normal_II[col,row]
-        nIW=normal_IW[col,row]
-        nWW=normal_WW[col,row]
-        det0_raw = nII*nWW - nIW*nIW
-        initializer_valid = isfinite(det0_raw) && det0_raw > 1f-12
-        det0 = initializer_valid ? det0_raw : 1f0
-        A = initializer_valid ?
-            clamp((nWW*rhs_I-nIW*rhs_W)/det0,A_lo,A_hi) :
-            clamp(0f0,A_lo,A_hi)
-        C = initializer_valid ?
-            clamp((nII*rhs_W-nIW*rhs_I)/det0,C_lo,C_hi) :
-            clamp(20f0,C_lo,C_hi)
-
-        # Guaranteed monotone aggregate equation, used here only to stabilize
-        # the fast solver's initial water value at its current iodine value.
-        y_total=0f0
-        for k in 1:K
-            y_total += max(I0[col,row,k]*exp(-hs[k][idx]),1f-6)
-        end
-        croot_lo,croot_hi=C_lo,C_hi
-        total_lo,total_hi=0f0,0f0
-        for k in 1:K, e in 1:nE
-            total_lo += Φ[col,row,e,k]*exp(-μρ_I[e]*A-μρ_W[e]*croot_lo)
-            total_hi += Φ[col,row,e,k]*exp(-μρ_I[e]*A-μρ_W[e]*croot_hi)
-        end
-        aggregate_bracketed=total_lo≥y_total && total_hi≤y_total
-        attainable_max,attainable_min=0f0,0f0
-        for k in 1:K, e in 1:nE
-            attainable_max += Φ[col,row,e,k]*exp(
-                -μρ_I[e]*A_lo-μρ_W[e]*C_lo,
-            )
-            attainable_min += Φ[col,row,e,k]*exp(
-                -μρ_I[e]*A_hi-μρ_W[e]*C_hi,
-            )
-        end
-        aggregate_feasible =
-            attainable_max≥y_total && attainable_min≤y_total
-        if aggregate_bracketed
-            for _ in 1:28
-                mid=(croot_lo+croot_hi)/2f0
-                total_mid=0f0
-                for k in 1:K, e in 1:nE
-                    total_mid += Φ[col,row,e,k]*exp(-μρ_I[e]*A-μρ_W[e]*mid)
-                end
-                if total_mid>y_total
-                    croot_lo=mid
-                else
-                    croot_hi=mid
-                end
-            end
-            C=(croot_lo+croot_hi)/2f0
-        end
-
-        converged = false
-        used_outer=0
-        used_inner=0
-        for outer_iter in 1:n_outer
-            used_outer=outer_iter
-            # Inner scalar solve: C*(A) = argmin_C L(A,C).
-            for _ in 1:n_inner
-                used_inner+=1
-                gC, FCC = 0f0, 0f0
-                for k in 1:K
-                    λ, dC = 0f0, 0f0
-                    @inbounds for e in 1:nE
-                        z = Φ[col,row,e,k] * exp(-μρ_I[e]*A - μρ_W[e]*C)
-                        λ += z
-                        dC -= μρ_W[e] * z
-                    end
-                    λ = max(λ, 1f-6)
-                    # Corrected counts may be fractional after detector correction.
-                    y = max(I0[col,row,k]*exp(-hs[k][idx]),1f-6)
-                    gC += (1f0 - y/λ) * dC
-                    FCC += dC*dC / λ
-                end
-                raw_C_step = gC/max(FCC,1f-12)
-                C_new = clamp(
-                    C-clamp(raw_C_step,-C_step,C_step),C_lo,C_hi,
-                )
-                C_done = abs(C_new-C) <= parameter_tolerance*(1f0+abs(C))
-                C = C_new
-                C_done && break
-            end
-
-            # Envelope gradient and Fisher Schur-complement profile curvature.
-            gA, FAA, FAC, FCC = 0f0, 0f0, 0f0, 0f0
-            for k in 1:K
-                λ, dA, dC = 0f0, 0f0, 0f0
-                @inbounds for e in 1:nE
-                    z = Φ[col,row,e,k] * exp(-μρ_I[e]*A - μρ_W[e]*C)
-                    λ += z
-                    dA -= μρ_I[e] * z
-                    dC -= μρ_W[e] * z
-                end
-                λ = max(λ, 1f-6)
-                y = max(I0[col,row,k]*exp(-hs[k][idx]),1f-6)
-                gA += (1f0 - y/λ) * dA
-                FAA += dA*dA / λ
-                FAC += dA*dC / λ
-                FCC += dC*dC / λ
-            end
-            Hprof = max(FAA - FAC*FAC/max(FCC, 1f-12), 1f-12)
-            raw_A_step = gA/Hprof
-            A_new = clamp(
-                A-clamp(raw_A_step,-A_step,A_step),A_lo,A_hi,
-            )
-            converged = abs(A_new-A) <= parameter_tolerance*(1f0+abs(A))
-            A = A_new
-            converged && break
-        end
-
-        # Re-profile water at the final iodine iterate.
-        c_converged = false
-        for _ in 1:n_inner
-            used_inner+=1
-            gC, FCC = 0f0, 0f0
-            for k in 1:K
-                λ, dC = 0f0, 0f0
-                @inbounds for e in 1:nE
-                    z = Φ[col,row,e,k] * exp(-μρ_I[e]*A - μρ_W[e]*C)
-                    λ += z
-                    dC -= μρ_W[e] * z
-                end
-                λ = max(λ, 1f-6)
-                y = max(I0[col,row,k]*exp(-hs[k][idx]),1f-6)
-                gC += (1f0 - y/λ) * dC
-                FCC += dC*dC / λ
-            end
-            C_new = clamp(
-                C-clamp(gC/max(FCC,1f-12),-C_step,C_step),C_lo,C_hi,
-            )
-            C_done = abs(C_new-C) <= parameter_tolerance*(1f0+abs(C))
-            C = C_new
-            if C_done
-                c_converged = true
-                break
-            end
-        end
-        converged &= c_converged
-
-        # Final score and Fisher conditioning are recorded; they are not silently
-        # converted into image regularization.
-        gA, gC, FAA, FAC, FCC = 0f0, 0f0, 0f0, 0f0, 0f0
-        for k in 1:K
-            λ, dA, dC = 0f0, 0f0, 0f0
-            @inbounds for e in 1:nE
-                z = Φ[col,row,e,k] * exp(-μρ_I[e]*A - μρ_W[e]*C)
-                λ += z
-                dA -= μρ_I[e]*z
-                dC -= μρ_W[e]*z
-            end
-            λ = max(λ,1f-6)
-            y = max(I0[col,row,k]*exp(-hs[k][idx]),1f-6)
-            gA += (1f0-y/λ)*dA
-            gC += (1f0-y/λ)*dC
-            FAA += dA*dA/λ
-            FAC += dA*dC/λ
-            FCC += dC*dC/λ
-        end
-        score_norm[idx] = sqrt(gA*gA+gC*gC) /
-            sqrt(max(FAA+FCC,1f-12))
-        fisher_det = max(FAA*FCC-FAC*FAC,0f0)
-        fisher_trace = FAA+FCC
-        fisher_disc = sqrt(max(fisher_trace*fisher_trace-4f0*fisher_det,0f0))
-        eig_max_raw = max((fisher_trace+fisher_disc)/2f0,1f-12)
-        eig_min = max(fisher_det/eig_max_raw,1f-12)
-        eig_max = max(eig_max_raw,eig_min)
-        ill_conditioned = eig_max/eig_min > fisher_condition_limit
-
-        tol = 2f-4
-        hit_A = A <= A_lo + tol || A >= A_hi - tol
-        hit_C = C <= C_lo + tol || C >= C_hi - tol
-        invalid_model = !(
-            isfinite(A)&&isfinite(C)&&isfinite(score_norm[idx])&&
-            isfinite(FAA)&&isfinite(FAC)&&isfinite(FCC)
-        )
-        quality_flag[idx] =
-            UInt8(hit_A ? 1 : 0) |
-            UInt8(hit_C ? 2 : 0) |
-            UInt8(converged ? 0 : 4) |
-            UInt8(ill_conditioned || !initializer_valid ? 8 : 0) |
-            UInt8(aggregate_feasible ? 0 : 16) |
-            UInt8(invalid_model ? 32 : 0)
-        outer_count[idx]=UInt8(min(used_outer,255))
-        inner_count[idx]=UInt8(min(used_inner,255))
-        fisher_AA[idx],fisher_AC[idx],fisher_CC[idx] = FAA,FAC,FCC
-        sino_I[idx], sino_W[idx] = A, C
-    end
-    nothing
-end
 
 # ╔═╡ 1200000a-0000-4000-8000-000000000010
-begin
-    function build_nchannel_slab_counts(sim_data)
-        available_rows = size(sim_data.bins[1],2)
-        selected_rows = 1:available_rows
-        row_positions = (
-            collect(selected_rows) .- (available_rows+1)/2
-        ) .* sim_data.geom.pixel_row_size
-        cone_scales = sqrt.(1 .+ (row_positions ./ sim_data.geom.SAD).^2)
-        channel_data = map(eachindex(sim_data.bins)) do k
-            channel=sim_data.channels[k]
-            I0=Float64.(channel.I0_ray[:,selected_rows])
-            h=Float32.(channel.sino[:,selected_rows,:])
-            response=Float64.(channel.response[:,selected_rows,:])
-            response ./= max.(sum(response;dims=3),eps(Float64))
-            Φ=response.*reshape(I0,size(I0,1),size(I0,2),1)
-            (
-                bin=h,
-                I0=Float32.(I0),
-                energies=Float32.(channel.energies),
-                Φ=Float32.(Φ),
-            )
-        end
-        (
-            bins=getproperty.(channel_data,:bin),
-            I0=getproperty.(channel_data,:I0),
-            energies=getproperty.(channel_data,:energies),
-            Φ=getproperty.(channel_data,:Φ),
-            nrows=available_rows,selected_rows=selected_rows,
-            available_rows=available_rows,cone_scales=cone_scales,
-            max_cone_relerr=maximum(abs.(cone_scales .- 1)),
-        )
-    end
-
-    # Retain every native detector row; the estimator solves per physical ray.
-    nchannel_slab_counts = build_nchannel_slab_counts((
-        bins = [sim_low.sino, sim_high.sino],
-        channels = (sim_low, sim_high),
-        geom = sim_low.geom,
-        labels = ("100 kVp", "Sn140 kVp"),
-    ))
-end;
+basis = BS.spectral_basis_from_acquisitions(acquisitions = [
+    (energies = s.energies, response = s.response, I0_ray = s.I0_ray)
+    for s in (sim_low, sim_high)
+]);
 
 # ╔═╡ 1200000a-0000-4000-8000-000000000015
-begin
-    function build_nchannel_basis(slab_counts)
-        E=sort!(unique(vcat(slab_counts.energies...)))
-        ncol,nrow=size(first(slab_counts.Φ))[1:2]
-        K=length(slab_counts.Φ)
-        Φ=zeros(Float32,ncol,nrow,length(E),K)
-        for k in 1:K
-            lookup=Dict(e=>i for (i,e) in enumerate(E))
-            for (source_index,e) in enumerate(slab_counts.energies[k])
-                Φ[:,:,lookup[e],k].=slab_counts.Φ[k][:,:,source_index]
-            end
-        end
-        μρ_I = Float32[
-            BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine, Float64(e))
-            for e in E
-        ]
-        μρ_W = Float32[
-            BS.compute_mass_μ_at_energy(BS.XA.Materials.water, Float64(e))
-            for e in E
-        ]
+Markdown.parse("""
+The basis holds $(basis.n_channels) channels on a $(length(basis.E))-point
+energy grid for $(size(basis.Φ, 1)) × $(size(basis.Φ, 2)) rays; the response
+sums to the air counts to within $(round(basis.I0_relerr, sigdigits = 2))
+(relative).
+""")
 
-        I0=cat(slab_counts.I0...;dims=3)
-        I0_from_Φ=dropdims(sum(Float64.(Φ);dims=3);dims=3)
-        I0_relerr=maximum(abs.(
-            I0_from_Φ.-Float64.(I0)
-        )./max.(Float64.(I0),eps(Float64)))
-        I0_relerr < 5e-5 || error(
-            "Applied response and I0 disagree (max relative error = $(I0_relerr))."
-        )
+# ╔═╡ 1200000b-0000-4000-8000-000000000001
+md"""
+## 10. The VMI Chain: `vmi_pipeline`
 
-        Φsum=max.(I0,eps(Float32))
-        μI_eff=dropdims(sum(
-            Φ.*reshape(μρ_I,1,1,length(E),1);dims=3,
-        );dims=3)./Φsum
-        μW_eff=dropdims(sum(
-            Φ.*reshape(μρ_W,1,1,length(E),1);dims=3,
-        );dims=3)./Φsum
-        normal_II=dropdims(sum(abs2,μI_eff;dims=3);dims=3)
-        normal_IW=dropdims(sum(μI_eff.*μW_eff;dims=3);dims=3)
-        normal_WW=dropdims(sum(abs2,μW_eff;dims=3);dims=3)
+One package call from the two corrected sinograms to the VMI stack, the chain
+of the basis-vmi and basis-spectral-denoising papers:
 
-        (
-            E = E, Φ = Φ, μρ_I = μρ_I, μρ_W = μρ_W,
-            I0 = Float32.(I0),
-            μI_eff = μI_eff, μW_eff = μW_eff,
-            normal_II,normal_IW,normal_WW,
-            I0_relerr = I0_relerr,
-        )
-    end
+1. **Projection HYPR-LR** (`BS.SpectralHYPR`'s projection instance): a 3 × 3
+   (column × view) window on the counts of each detector row, with each
+   tube's dispersion measured from its own air rays.
+2. **K = 2 n-channel decomposition**: per ray, the Poisson maximum-likelihood
+   iodine + water pair under the exact polychromatic mean of both tubes,
+   in the count domain, with per-ray quality flags.
+3. **Image HYPR** on the FDK-reconstructed basis pair (a 3 × 3 × 7 composite
+   and a 15 × 15 × 7 complement window), then **Kalender ACNR**.
+4. **VMI synthesis** at 50 / 70 / 100 / 140 keV from the one basis pair.
 
-    # Absolute K=2 responses for every retained detector row.
-    nchannel_basis = build_nchannel_basis(nchannel_slab_counts)
-end;
+The FBP kernel is the notebook's soft-tissue kernel (a CatSim-style
+apodization halfway between the Standard and Soft windows); the grid is
+`recon_opts.matrix_size`, 5 × 0.6 mm, with every detector row kept.
+"""
 
-# ╔═╡ 1200000a-0000-4000-8000-000000000020
-sino_basis = let
-    function run_nchannel_profile(slab_counts,basis,geom)
-        shape = size(slab_counts.bins[1])
-        sino_I = Array{Float32}(undef,shape)
-        sino_W = Array{Float32}(undef,shape)
-        flags = Array{UInt8}(undef,shape)
-        score_norm = Array{Float32}(undef,shape)
-        fisher_AA = Array{Float32}(undef,shape)
-        fisher_AC = Array{Float32}(undef,shape)
-        fisher_CC = Array{Float32}(undef,shape)
-        outer_iterations = Array{UInt8}(undef,shape)
-        inner_iterations = Array{UInt8}(undef,shape)
-        Φ_gpu = to_gpu(basis.Φ)
-        μρ_I_gpu = to_gpu(basis.μρ_I)
-        μρ_W_gpu = to_gpu(basis.μρ_W)
-        I0_gpu = to_gpu(basis.I0)
-        μI_eff_gpu = to_gpu(basis.μI_eff)
-        μW_eff_gpu = to_gpu(basis.μW_eff)
-        normal_II_gpu = to_gpu(basis.normal_II)
-        normal_IW_gpu = to_gpu(basis.normal_IW)
-        normal_WW_gpu = to_gpu(basis.normal_WW)
-        elapsed = @elapsed for vrange in BS.tile_ranges(
-            shape[3],nchannel_controls.tile_views,
-        )
-            hs = [
-                to_gpu(Float32.(slab_counts.bins[k][:,:,vrange]))
-                for k in eachindex(slab_counts.bins)
-            ]
-            I_gpu,W_gpu = similar(hs[1]),similar(hs[1])
-            flag_gpu = similar(hs[1],UInt8)
-            score_gpu = similar(hs[1],Float32)
-            fisher_AA_gpu = similar(hs[1],Float32)
-            fisher_AC_gpu = similar(hs[1],Float32)
-            fisher_CC_gpu = similar(hs[1],Float32)
-            outer_gpu = similar(hs[1],UInt8)
-            inner_gpu = similar(hs[1],UInt8)
-            nchannel_profile_tile!(
-                I_gpu,W_gpu,fisher_AA_gpu,fisher_AC_gpu,fisher_CC_gpu,
-                flag_gpu,score_gpu,outer_gpu,inner_gpu,Tuple(hs),
-                Φ_gpu,μρ_I_gpu,μρ_W_gpu,I0_gpu,μI_eff_gpu,μW_eff_gpu,
-                normal_II_gpu,normal_IW_gpu,normal_WW_gpu,nchannel_controls,
-            )
-            sino_I[:,:,vrange] .= Array(I_gpu)
-            sino_W[:,:,vrange] .= Array(W_gpu)
-            flags[:,:,vrange] .= Array(flag_gpu)
-            score_norm[:,:,vrange] .= Array(score_gpu)
-            fisher_AA[:,:,vrange] .= Array(fisher_AA_gpu)
-            fisher_AC[:,:,vrange] .= Array(fisher_AC_gpu)
-            fisher_CC[:,:,vrange] .= Array(fisher_CC_gpu)
-            outer_iterations[:,:,vrange] .= Array(outer_gpu)
-            inner_iterations[:,:,vrange] .= Array(inner_gpu)
-        end
-        (
-            sino_iodine=sino_I,sino_water=sino_W,quality_flag=flags,
-            fisher=(AA=fisher_AA,AC=fisher_AC,CC=fisher_CC),
-            score_norm,outer_iterations,inner_iterations,
-            geom,elapsed_s=elapsed,
-        )
-    end
+# ╔═╡ 1200000b-0000-4000-8000-000000000005
+HYPR_CHAIN = BS.SpectralHYPR(
+    projection = BS.ProjectionHYPR(kernel = BS.HYPRKernel((3, 3), BS.BoxProfile())),
+    image = BS.ImageHYPR(
+        composite = BS.HYPRKernel((3, 3, 7), BS.BoxProfile(); linear = false),
+        complement = BS.HYPRKernel((15, 15, 7), BS.BoxProfile(); linear = false),
+    ),
+)
 
-    # Clean unregularized K=2 estimator on every native detector row.
-    result = run_nchannel_profile(
-        nchannel_slab_counts, nchannel_basis, sim_low.geom,
-    )
-    clean = count(==(UInt8(0)), result.quality_flag)
-    @info "[n-channel · Flash] decomposed $(length(result.quality_flag)) rays " *
-        "in $(round(result.elapsed_s, digits = 1)) s — clean-flag fraction " *
-        "$(round(100 * clean / length(result.quality_flag), digits = 2))%"
-    result
-end;
+# ╔═╡ 1200000b-0000-4000-8000-000000000006
+VMI_CHAIN = (method = :nchannel, controls = BS.NChannelControls(), use_tlbf = false, antialias = true);
+
+# ╔═╡ 1200000b-0000-4000-8000-000000000007
+# Halfway between CatSim Standard (1, .934, .744, .443, .053) and Soft.
+FLASH_KERNEL = BS.CustomFilter(
+    (0.0, 0.25, 0.5, 0.75, 1.0),
+    (1.0, 0.8744, 0.6003, 0.3031, 0.0266),
+);
+
+# ╔═╡ 1200000c-0000-4000-8000-000000000015
+de_vmi_energies = [50.0, 70.0, 100.0, 140.0];
+
+# ╔═╡ 1200000b-0000-4000-8000-000000000010
+de_vmi = BS.vmi_pipeline(;
+    channels = [sim_low.sino, sim_high.sino],
+    basis,
+    geom = sim_low.geom,
+    to_backend = to_gpu,
+    matrix_size = recon_opts.matrix_size,
+    vmi_energies = Tuple(de_vmi_energies),
+    fbp_filter = FLASH_KERNEL,
+    denoiser = HYPR_CHAIN,
+    use_acnr = true,
+    keep_sinograms = true,
+    VMI_CHAIN...,
+);
+
+# ╔═╡ 1200000b-0000-4000-8000-000000000015
+let
+    q = de_vmi.quality
+    d = de_vmi.settings.denoiser
+    pct(x) = round(100x, digits = 3)
+    Markdown.parse("""
+    The decomposition solved $(q.n_rays) rays in $(round(de_vmi.elapsed_s, digits = 1)) s
+    ($(round(q.outer_mean, digits = 1)) outer iterations on average); $(pct(q.frac_not_converged))% did not
+    converge and $(pct(q.frac_bound_iodine))% / $(pct(q.frac_bound_water))% touched the iodine / water bounds.
+    The projection HYPR measured dispersions (variance / mean of the counts on the air rays) of
+    $(join(round.(d.dispersion, digits = 2), " and ")) for tube A and tube B. The image HYPR's
+    minimum-noise composite energy is E* = $(round(Int, d.image_estimates.Estar)) keV.
+    """)
+end
 
 # ╔═╡ 1200000a-0000-4000-8000-000000000040
 let
-    n_row = size(sino_basis.sino_iodine, 2)
+    n_row = size(de_vmi.sinograms.iodine, 2)
     mid_r = n_row ÷ 2 + 1
 
     fig = Mke.Figure(size = (1400, 580))
@@ -1454,8 +1105,8 @@ let
         Float64(quantile(vec(arr), 0.99)),
     )
 
-    slice_iod = permutedims(sino_basis.sino_iodine[:, mid_r, :], (2, 1))
-    slice_wat = permutedims(sino_basis.sino_water[:, mid_r, :], (2, 1))
+    slice_iod = permutedims(de_vmi.sinograms.iodine[:, mid_r, :], (2, 1))
+    slice_wat = permutedims(de_vmi.sinograms.water[:, mid_r, :], (2, 1))
 
     panels = (
         (1, 1, 2, "Iodine Basis Sinogram", "g/cm²", slice_iod, _qrange(slice_iod)),
@@ -1473,111 +1124,20 @@ let
     fig
 end
 
-# ╔═╡ 1200000b-0000-4000-8000-000000000001
-md"""
-## 10. Per-Basis FBP + Kalender ACNR (5×14)
-
-The published post-decomposition chain (nb03 §04–05):
-
-- **Single-slice basis reconstruction** — the basis maps are FBP'd at
-  `(512, 512, 1)`, one slice spanning the 4.8 mm DE beam, exactly as
-  nb03 §04 presents its certified numbers (and matching clinical
-  DE-abdomen slice thickness).  This keeps nb12's σ values directly
-  comparable with nb03's; thin 0.6 mm slices would read ~√8 noisier
-  for identical physics.
-- **Original dual-kVp per-basis apodization** — a **soft iodine kernel**
-  (`:OriginalDualKvpSoft`) controls the low-energy-amplified streak mode,
-  while the halfway Standard/Soft **water kernel** (`:StandardSoftBlend`)
-  retains anatomical resolution and realistic high-energy noise.  Fixed
-  per-basis kernels applied once at the basis FBP; no energy-dependent
-  VMI filtering.
-- **Strengthened Kalender ACNR** — five passes, `beta_max = 14`
-  (implementation defaults are two passes, `beta_max = 8`), applied
-  jointly to the reconstructed water/iodine pair immediately before VMI
-  synthesis — the published nb03 §05 setting, unchanged.
-"""
-
-# ╔═╡ 1200000b-0000-4000-8000-000000000010
-basis_volumes = let
-    geom = sino_basis.geom
-
-    # Original dual-kVp per-basis kernels (nb03 §04).
-    nchannel_iodine_filter = BS.CustomFilter(
-        (0.0, 0.25, 0.5, 0.75, 1.0),
-        (1.0, 0.40, 0.12, 0.03, 0.001),
-    )
-    nchannel_water_filter = BS.CustomFilter(
-        (0.0, 0.25, 0.5, 0.75, 1.0),
-        (1.0, 0.8744, 0.6003, 0.3031, 0.0266),
-    )
-
-    # nb03 §04 presentation: ONE reconstructed slice over the 4.8 mm DE
-    # beam (512, 512, 1) — the certified cross-notebook comparison basis
-    # and the clinically realistic DE-abdomen slice thickness.  Thin
-    # 0.6 mm slices would inflate per-voxel σ by ~√(thickness ratio)
-    # without changing any physics.
-    basis_fbp_matrix_size = (512, 512, 1)
-
-    function _fbp(sino_cpu, filter)
-        # Every native detector row has its own estimator solution and is
-        # passed directly to FBP; no noisy-row replication is permitted.
-        sino_gpu = to_gpu(Float32.(sino_cpu))
-        ws = BS.create_fdk_recon_workspace(
-            sino_gpu, geom, basis_fbp_matrix_size; filter,
-        )
-        try
-            Float32.(Array(BS.reconstruct!(ws, sino_gpu, geom)))
-        finally
-            BS.release_backend!(ws)
-        end
-    end
-
-    result = (
-        vol_iodine_raw = _fbp(sino_basis.sino_iodine, nchannel_iodine_filter),
-        vol_water_raw = _fbp(sino_basis.sino_water, nchannel_water_filter),
-        geom = geom,
-        kernels = (water = :StandardSoftBlend, iodine = :OriginalDualKvpSoft),
-    )
-    GC.gc(true)
-    result
-end;
-
-# ╔═╡ 1200000b-0000-4000-8000-000000000020
-basis_acnr = let
-    W = copy(basis_volumes.vol_water_raw)
-    I = copy(basis_volumes.vol_iodine_raw)
-
-    # nb03 §05 strength (5 passes, beta_max = 14) with a WIDER high-pass band
-    # than nb03's hp_sigma_px = 1.5: the per-basis kernels put the two noise
-    # spectra in different bands (the soft iodine kernel crushes iodine HF
-    # noise), so on the Flash — whose noisy Sn140 channel (η = 0.588 at
-    # 140 keV, 0.4 mm Sn) stamps stronger basis anti-correlation — the
-    # residual anti-correlated noise lives BELOW a 1.5-px band edge, where
-    # the regression cannot see it and the VMI noise-vs-keV curve bends
-    # back up at 140 keV.  Widening the band to 4 px reaches it.
-    info = BS.apply_acnr_kalender!(
-        W, I;
-        hp_sigma_px = 4.0, window = 4, passes = 5, beta_max = 14.0,
-    )
-    @info "[ACNR · Kalender 5×14, hp 4 px] ρ_hp(W,I)=$(round(info.ρ_hp, digits = 3))"
-
-    (vol_iodine_raw = I, vol_water_raw = W, geom = basis_volumes.geom)
-end;
-
 # ╔═╡ 1200000b-0000-4000-8000-000000000040
 let
     fig = Mke.Figure(size = (1180, 580))
     axis_kwargs = (titlesize = 32, subtitlesize = 24)
 
-    mid = (size(basis_acnr.vol_iodine_raw, 3) + 1) ÷ 2
+    mid = (size(de_vmi.images.iodine, 3) + 1) ÷ 2
 
     _qrange(arr) = (
         Float64(quantile(vec(arr), 0.01)),
         Float64(quantile(vec(arr), 0.99)),
     )
 
-    slice_iod = basis_acnr.vol_iodine_raw[:, :, mid]
-    slice_wat = basis_acnr.vol_water_raw[:, :, mid]
+    slice_iod = de_vmi.images.iodine[:, :, mid]
+    slice_wat = de_vmi.images.water[:, :, mid]
 
     panels = (
         (1, 1, 2, "Iodine Basis", "g/cm³", slice_iod, _qrange(slice_iod)),
@@ -1601,17 +1161,18 @@ end
 
 # ╔═╡ 1200000c-0000-4000-8000-000000000001
 md"""
-## 11. VMI Synthesis
+## 11. VMIs
 
-Textbook 2-basis mix (McCollough 2015) at 50 / 70 / 100 / 140 keV:
+`vmi_pipeline` synthesizes each VMI from the basis pair (McCollough 2015):
 
 ```
 μ(E)  = c_water(r) · (μ/ρ)_water(E) + c_iodine(r) · (μ/ρ)_iodine(E)
 HU(E) = 1000 · (μ(E) − (μ/ρ)_water(E)) / (μ/ρ)_water(E)
 ```
 
-The `solid_water_basis` diagnostic logs the basis-decomp residual bias as
-a Δ% between the SW-ROI synth μ_water and the textbook mono divisor.
+The `solid_water_basis` diagnostic reports the basis pair in the eroded
+solid-water region: a perfect decomposition reads water density ≈ 1 g/cm³
+(solid water is not pure water, so a small offset is expected) and iodine ≈ 0.
 """
 
 # ╔═╡ 1200000c-0000-4000-8000-000000000010
@@ -1627,56 +1188,26 @@ solid_water_basis = let
         "solid_water_basis: deep erosion (σ = $(ERODE_PX) px) wiped out the SW " *
             "ROI (raw count = $(n_raw)).  Reduce erode_px or check phantom mask."
     )
-    @info "solid_water_basis: SW mid-slice voxel count $(n_raw) → $(n_eroded) " *
-        "after $(ERODE_PX)-px erosion"
 
     sw_idx = findall(sw_bool)
-    n_z = size(basis_acnr.vol_water_raw, 3)
-    function _mean(vol)
-        s = 0.0; n = 0
-        for z in 1:n_z, ci in sw_idx
-            s += vol[ci, z]; n += 1
-        end
-        return s / n
-    end
+    _mean(vol) = mean(vol[ci, z] for z in axes(vol, 3) for ci in sw_idx)
 
-    c_w = Float64(_mean(basis_acnr.vol_water_raw))
-    c_i = Float64(_mean(basis_acnr.vol_iodine_raw))
+    c_w = Float64(_mean(de_vmi.images.water))
+    c_i = Float64(_mean(de_vmi.images.iodine))
     @info "solid_water_basis: ⟨c_water⟩_SW = $(round(c_w, digits = 4)) g/cm³, " *
-        "⟨c_iodine⟩_SW = $(round(c_i, digits = 6)) g/cm³"
+        "⟨c_iodine⟩_SW = $(round(1000c_i, digits = 3)) mg/mL"
 
     (
-        c_water = c_w, c_iodine = c_i, n_voxels = length(sw_idx) * n_z,
+        c_water = c_w, c_iodine = c_i, n_voxels = length(sw_idx) * size(de_vmi.images.water, 3),
         mask_2d = collect(sw_bool),
     )
 end;
 
-# ╔═╡ 1200000c-0000-4000-8000-000000000015
-de_vmi_energies = [50.0, 70.0, 100.0, 140.0];
-
 # ╔═╡ 1200000c-0000-4000-8000-000000000020
-vmi_HU_final = let
-    # synth_vmi_2basis expects c_iodine in mg/mL; basis maps are g/cm³ (= g/mL)
-    c_iodine_mg_per_mL = basis_acnr.vol_iodine_raw .* 1000.0f0
-
-    out = Dict{Float64, Array{Float32, 3}}()
-    for E in de_vmi_energies
-        μρ_w = BS.compute_mass_μ_at_energy(BS.XA.Materials.water, E)
-        μρ_I = BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine, E)
-        μ_water_anchor = solid_water_basis.c_water * μρ_w +
-            solid_water_basis.c_iodine * μρ_I
-        Δ_pct = 100.0 * (μ_water_anchor - μρ_w) / μρ_w
-        @info "VMI synth @ $(Int(E)) keV: divisor = $(round(μρ_w, digits = 5)) cm⁻¹ " *
-            "(mono μρ_water);  SW-ROI anchor = " *
-            "$(round(μ_water_anchor, digits = 5)) → Δ = $(round(Δ_pct, digits = 2))%"
-
-        out[E] = BS.synth_vmi_2basis(
-            basis_acnr.vol_water_raw, c_iodine_mg_per_mL;
-            energy_keV = E,
-        )
-    end
-    out
-end;
+# The VMI stack as one volume per energy (keV → (nx, ny, nz) HU).
+vmi_HU_final = Dict(
+    Float64(E) => de_vmi.vmis[:, :, :, k] for (k, E) in pairs(de_vmi.energies)
+);
 
 # ╔═╡ 1200000c-0000-4000-8000-000000000040
 let
@@ -1899,11 +1430,10 @@ md"""
 ### Water-Region Noise
 
 Mean and σ are both measured on the **deeply eroded solid-water region**
-(the same 12-px-eroded mask as the accuracy ROI) — the certified nb03
-convention.  The large region (~25k px × z) makes the 50-keV mean and the
-per-keV σ estimates statistically stable; a small central circle is far
-too underpowered when FBP noise is spatially correlated (a 441-px ROI at
-σ ≈ 105 HU carries an effective ±10–15 HU standard error on its mean).
+(the same 12-px-eroded mask as the accuracy ROI, as in nb03).  The large
+region, over every slice, keeps the per-keV mean and σ statistically
+stable; a small central circle is underpowered when FBP noise is spatially
+correlated.
 """
 
 # ╔═╡ 1200000e-0000-4000-8000-000000000080
@@ -2160,8 +1690,8 @@ Automated PASS/FAIL gates over both acquisition classes (nb01 convention):
 5. **Monotonic VMI noise** — σ(50) > σ(70) > σ(100) > σ(140) (clinical
    truth; hard gate, no tolerance — the same standard every other VMI
    notebook meets).
-6. **Published per-basis FBP kernels** — water `:StandardSoftBlend`,
-   iodine `:OriginalDualKvpSoft` (the nb03 kernel gate).
+6. **The published chain ran** — both tubes in the likelihood, projection +
+   image HYPR and ACNR all applied (`de_vmi.settings`).
 7. **Per-rod regression** — measured-vs-theoretical slope ∈ [0.85, 1.15]
    and R² ≥ 0.99 at every keV, both rod groups.
 """
@@ -2211,11 +1741,14 @@ verification = let
         "σ = " * join([string(round(σ, digits = 1)) for σ in σs], " > "),
     ))
 
-    # 6. Published per-basis FBP kernels are in force (nb03 gate)
+    # 6. The published chain ran: K = 2, projection + image HYPR, ACNR
+    chain = de_vmi.settings
     push!(checks, (
-        "per-basis FBP kernels",
-        basis_volumes.kernels == (water = :StandardSoftBlend, iodine = :OriginalDualKvpSoft),
-        "$(basis_volumes.kernels)",
+        "VMI chain",
+        chain.n_channels == 2 && chain.denoiser !== nothing &&
+            chain.denoiser.projection !== nothing && chain.denoiser.image !== nothing &&
+            chain.acnr !== nothing,
+        "K = $(chain.n_channels), projection + image HYPR, ACNR $(chain.acnr)",
     ))
 
     # 7. Per-rod regression gates
@@ -2268,20 +1801,19 @@ md"""
 ## Summary
 
 ```
-Flash UFC MC η(E) LUT (Khodajou-Chokami, Gd₂O₂S, 1–140 keV, 2026-08-26)
-   → src pathway: EICTScanner(detector_material = :ufc_flash)
+Flash UFC MC η(E) LUT (BS.UFC_FLASH_MC_EFFICIENCY_LUT, Gd₂O₂S, 1–140 keV)
+   → EICTScanner(detector_material = :ufc_flash)
                 → detector_efficiency_ufc_flash()
 REGULAR: 120 kVp × 2 tubes (independent seeds)
    → per-tube η-aware BHC → FDK → HU → (A+B)/2
    → water ≈ 0 HU ×3, σ_combined ≈ σ_single/√2               (§6)
 DUAL ENERGY: 100 kVp (A) + Sn140 kVp (B, 0.4 mm Sn)
    ├─→ POLY: per-tube η-aware BHC → FDK → HU → mixed image M_w  (§8)
-   └─→ VMI:  published n-channel profiled decomposition (K = 2,
-             absolute Φ = bowtie + η_Flash per ray, count-domain
-             quasi-likelihood — the nb03/nb04 production kernel)
-             → per-basis FBP (soft iodine / sharp water) → ACNR 5×14
-             → VMI 50/70/100/140 keV
-             → per-rod measured vs theoretical regression   (§9–11+)
+   └─→ VMI:  BS.spectral_basis_from_acquisitions (bowtie + η_Flash per ray)
+             → BS.vmi_pipeline(; denoiser = HYPR_CHAIN, use_acnr = true):
+               projection HYPR → K = 2 n-channel decomposition
+               → image HYPR → ACNR → VMI 50/70/100/140 keV
+             → per-rod measured vs theoretical regression    (§9–11)
    → automated PASS/FAIL verification over both classes
 ```
 
@@ -2296,13 +1828,13 @@ DUAL ENERGY: 100 kVp (A) + Sn140 kVp (B, 0.4 mm Sn)
 2. **Both dual-source acquisition classes in one place**: the regular
    (dual-power) readout verifies accuracy + the √2 independence of the
    two tube chains; the DE readout verifies the poly/mixed chain and the
-   full VMI chain through the published n-channel estimator on two very different
+   full VMI chain (`vmi_pipeline`) on two very different
    detected spectra sitting on opposite sides of the Gd K-edge
    fluorescence-escape cliff.
 3. **Documented assumptions are explicit** (§3): bowtie profile, crystal
    depth, fill factor, electronic noise, tube-B z-offset, z-FFS — the
-   remaining gaps on the 1-1 parity checklist in
-   `docs/scanner_dossiers/somatom_definition_flash.md`.
+   remaining gaps on the parity checklist of the
+   [SOMATOM Definition Flash entry of the scanners page](SCANNERS_PAGE#somatom-definition-flash).
 
 **src status:** `UFC_FLASH_MC_EFFICIENCY_LUT`,
 `get_ufc_flash_mc_efficiency`, `detector_efficiency_ufc_flash()`, and the
@@ -2368,19 +1900,19 @@ never-alias-the-Force regression test).
 # ╟─12000009-0000-4000-8000-000000000050
 # ╟─12000009-0000-4000-8000-000000000060
 # ╟─1200000a-0000-4000-8000-000000000001
-# ╠═1200000a-0000-4000-8000-000000000005
-# ╠═1200000a-0000-4000-8000-000000000008
 # ╠═1200000a-0000-4000-8000-000000000010
-# ╠═1200000a-0000-4000-8000-000000000015
-# ╠═1200000a-0000-4000-8000-000000000020
-# ╟─1200000a-0000-4000-8000-000000000040
+# ╟─1200000a-0000-4000-8000-000000000015
 # ╟─1200000b-0000-4000-8000-000000000001
+# ╠═1200000b-0000-4000-8000-000000000005
+# ╠═1200000b-0000-4000-8000-000000000006
+# ╠═1200000b-0000-4000-8000-000000000007
+# ╠═1200000c-0000-4000-8000-000000000015
 # ╠═1200000b-0000-4000-8000-000000000010
-# ╠═1200000b-0000-4000-8000-000000000020
+# ╟─1200000b-0000-4000-8000-000000000015
+# ╟─1200000a-0000-4000-8000-000000000040
 # ╟─1200000b-0000-4000-8000-000000000040
 # ╟─1200000c-0000-4000-8000-000000000001
 # ╠═1200000c-0000-4000-8000-000000000010
-# ╠═1200000c-0000-4000-8000-000000000015
 # ╠═1200000c-0000-4000-8000-000000000020
 # ╟─1200000c-0000-4000-8000-000000000040
 # ╟─1200000e-0000-4000-8000-000000000001

@@ -20,26 +20,25 @@ using Statistics: mean, std, quantile
 md"""
 # 09 · Siemens SOMATOM Force · UFC MC LUT · Dual-Source VMI
 
-Standalone validation of a **new EICT Monte-Carlo detector-response LUT**
-for the Siemens **UFC (Ultra-Fast Ceramic, Gd₂O₂S:Pr,Ce)** scintillator on
-the **SOMATOM Force** third-generation dual-source scanner — *before* it is
-promoted into `src/` alongside the GE Gemstone MC LUT.
+The Siemens **SOMATOM Force** third-generation dual-source scanner with its
+**UFC (Ultra-Fast Ceramic, Gd₂O₂S:Pr,Ce)** scintillator, modelled through the
+package's Monte-Carlo detector-efficiency table `BS.UFC_MC_EFFICIENCY_LUT`.
 
-One dual-source DE acquisition feeds **both** outputs — exactly like a
-PCCT scan can be read out as a routine-looking image *or* as spectral
-results:
+One dual-source DE acquisition feeds **both** outputs, the routine-looking
+mixed image and the spectral results:
 
 ```
-UFC MC η(E) LUT  (Khodajou-Chokami MC, 1–140 keV)
-        │ via EICTScanner(detector_material = :ufc)  (src MC-LUT pathway)
+UFC MC η(E) LUT  (BS.UFC_MC_EFFICIENCY_LUT, 1–140 keV)
+        │ via EICTScanner(detector_material = :ufc)
         ▼
 Simulate 100 kVp (tube A) ──┬─→ POLY: per-tube η-aware BHC → FDK → HU
 Simulate Sn140 kVp (tube B)─┘         → Siemens-style mixed image M_w
         │                               (water-HU validation, §7)
         ▼
-   Cong Decomp (raw sinograms) → FBP × 2
-        → cov-ACNR → z-median → VMI 50/70/100/140 → Mono+
-        → Per-Rod Measured vs Theoretical Regression          (§8–11)
+   BS.spectral_basis_from_acquisitions                           (§8)
+   BS.vmi_pipeline: projection HYPR → K = 2 n-channel decomposition
+        → image HYPR → ACNR → VMI 50/70/100/140 keV              (§9–10)
+        → Per-Rod Measured vs Theoretical Regression
 ```
 
 !!! note "Single-energy vs dual-energy on the Force"
@@ -51,19 +50,17 @@ Simulate Sn140 kVp (tube B)─┘         → Siemens-style mixed image M_w
     low-kV and high-kV reconstructions.  This notebook models the DE
     acquisition and derives both readouts from it.
 
-!!! success "The UFC LUT is src-proper (sister pathway to Gemstone)"
+!!! info "How the UFC table enters the simulation"
     `src/detector/detector_efficiency.jl` ships `UFC_MC_EFFICIENCY_LUT`,
-    `get_ufc_mc_efficiency(E)`, and the `detector_efficiency_ufc()`
+    `get_ufc_mc_efficiency(E)` and the `detector_efficiency_ufc()`
     factory; `build_physics_config` dispatches `detector_material = :ufc`
-    to it (exactly as `:lumex` dispatches to Gemstone).  So this notebook
-    simply sets `EICTScanner(detector_material = :ufc)` +
-    `SimOptions(use_detector_efficiency = true)` and the EICT forward
-    model weights every energy bin by `w(E) · η_UFC(E) · exp(-∫μ dl)`.
-    The Cong basis and the BHC calibration resolve the *same* η-folded
-    spectrum via `resolve_source_spectrum_full`, so the forward and
-    inverse spectral models match exactly.  (This notebook originally
-    validated the LUT standalone via `spectrum_override` before the src
-    promotion — the two paths are algebraically identical.)
+    to it (as `:lumex` dispatches to the GE Gemstone table).  This notebook
+    sets `EICTScanner(detector_material = :ufc)` with the default
+    `use_detector_efficiency = true`, and the EICT forward model weights
+    every energy by `w(E) · η_UFC(E) · exp(-∫μ dl)`.  The spectral basis and
+    the BHC calibration resolve the *same* η-folded spectrum through
+    `resolve_source_spectrum_full`, so the forward and inverse spectral
+    models match exactly.
 """
 
 # ╔═╡ 09000001-0000-4000-8000-000000000020
@@ -109,12 +106,12 @@ Per-energy absorbed fraction η(E) for the Siemens UFC Gd₂O₂S scintillator,
 from a full Monte-Carlo transport simulation of the SOMATOM Force
 StellarInfinity detector.
 
-**Provenance**: Hamidreza Khodajou-Chokami, PhD (UC Irvine Medical Imaging
-Laboratory), `efficiency_results.csv`, received 2026-06-08.  The 140 values
-(1-keV grid, 1–140 keV) live verbatim in src as
-`BS.UFC_MC_EFFICIENCY_LUT` (`src/detector/detector_efficiency.jl`), the
-sister of `BS.GEMSTONE_MC_EFFICIENCY_LUT`; an archival copy of the CSV is
-at `docs/notebooks/data/ufc_mc_efficiency_v1.csv` (gitignored).
+**Provenance**: a Monte-Carlo transport simulation of the Force detector by
+Hamidreza Khodajou-Chokami, PhD (UC Irvine Medical Imaging Laboratory),
+`efficiency_results.csv`, 2026-06-08.  The table ships in the package as
+`BS.UFC_MC_EFFICIENCY_LUT` (`src/detector/detector_efficiency.jl`): 140 values
+on a 1-keV grid (1–140 keV), verbatim from that dataset, next to the GE
+`BS.GEMSTONE_MC_EFFICIENCY_LUT`.
 
 **Physics signatures** (same class of MC-only features the Gemstone LUT
 captures — Beer-Lambert *cannot* model these):
@@ -184,7 +181,7 @@ phantom = BS.Phantom(
 
 # ╔═╡ 09000004-0000-4000-8000-000000000001
 md"""
-## 3. `Scanner`: Siemens SOMATOM Force
+## 3. `EICTScanner`: Siemens SOMATOM Force
 
 Third-generation dual-source: **two Vectron tubes + two StellarInfinity
 UFC detectors at 95°** in the same gantry.  Spec sheet (sources below;
@@ -224,12 +221,13 @@ the geometry was measured from an actual clinical Force by Wang et al.):
 
 !!! info "Dual source → two co-registered scans"
     Exactly like nb03 models GE rapid-kVp switching as two sequential
-    scans, the Force's two tubes are modeled as **two `Scanner` +
-    `CTProtocol` configs run back-to-back** on identical detector geometry:
+    scans, the Force's two tubes are modeled as **two `CTProtocol`s run
+    back-to-back on one `EICTScanner`** (identical detector geometry), each
+    with its own noise seed:
 
     - **Detector arc**: tube B gets detector-A's 920-channel arc so the
-      (low, high) sinogram pair is per-ray co-registered for the Cong
-      solver — physically defensible because the 33 cm Gammex body fits
+      (low, high) sinogram pair is per-ray co-registered for the K = 2
+      decomposition — physically defensible because the 33 cm Gammex body fits
       inside detector B's real 35.5 cm FOV, so no ray we use would be
       missing on the real detector B.
     - **95° in-plane tube offset**: both modeled scans run a full axial
@@ -329,17 +327,30 @@ through the **src UFC MC LUT**: `build_physics_config` sees
 energy by `w(E) · η_UFC(E)` and the detected flux (and therefore the
 Poisson noise level) automatically reflects the UFC absorption.
 
+**Tube B gets its own seed** (`sim_opts_b`): the two tube/detector chains
+are physically independent, so their noise must be too.  Two acquisitions
+drawn from one seed carry the same noise pattern, correlated between the
+channels, which the decomposition would then amplify.
+
 `use_heel_effect = false` keeps the forward spectral model exactly equal
-to the η-folded basis the Cong inversion uses (heel is a small
+to the η-folded response the spectral basis uses (heel is a small
 row-direction effect; with 4.8 mm collimation at center it is negligible).
 """
 
 # ╔═╡ 09000006-0000-4000-8000-000000000010
 sim_opts = BS.SimOptions(
-    seed = 1234,
+    seed = 1234,               # tube A chain
     use_heel_effect = false,   # exact forward/inverse spectral match
     projector = :dd_fast,      # same DD physics, single-pass fused kernels.
-                               #  BHC (ufc_poly_recon) reads sim_opts.projector to match.
+);
+
+# ╔═╡ 09000006-0000-4000-8000-000000000012
+# Independent noise chain for tube B (identical physics; only the random
+# stream differs).
+sim_opts_b = BS.SimOptions(
+    seed = 4321,               # tube B chain — must differ from tube A
+    use_heel_effect = false,
+    projector = :dd_fast,
 );
 
 # ╔═╡ 09000006-0000-4000-8000-000000000020
@@ -408,9 +419,13 @@ end
 md"""
 ## 6. Forward Project (one DE acquisition = two tube scans)
 
-Each tube builds its own workspace (the UFC η enters via the src
-`detector_efficiency` pathway) and keeps only the noisy log-line-integral
-sinogram + geometry.
+Each tube builds its own workspace (the UFC η enters through the
+`detector_efficiency` pathway) and keeps what the spectral basis needs: the
+noisy corrected log sinogram, its per-ray air counts `I0_ray` (detector air
+count × bowtie air profile) and its per-ray detected spectrum from
+`resolve_source_spectrum_full` (source × filtration × bowtie × η_UFC), the
+same model the forward projector applied.  Tube B runs on its own noise
+chain (`sim_opts_b`).
 
 Tube B sees the phantom through a **−0.88 mm z-shifted origin** — the real
 detector-B z-offset (Wang et al. 2021).  For the z-invariant Gammex this
@@ -436,30 +451,42 @@ sim_low = let
     ws = BS.create_eict_workspace(
         scanner, protocol_low, sim_opts, recon_opts, phantom,
     )
-    BS.simulate!(ws, phantom, protocol_low, sim_opts)
-    I0_scalar = BS.compute_detector_I0(ws.geom, protocol_low, sum(ws.weights)) * Float64(ws.η_eff)
-    air_ref = ws.bowtie_air_reference === nothing ? ones(Float32, ws.geom.n_cols, ws.geom.n_rows) :
-        Array(ws.bowtie_air_reference)
-    result = (sino = Array(ws.sinogram), geom = ws.geom,
-        I0_ray = Float32.(I0_scalar .* Float64.(air_ref)))
-    ws = nothing; GC.gc(true)
-    result
+    try
+        BS.simulate!(ws, phantom, protocol_low, sim_opts)
+        I0_scalar = BS.compute_detector_I0(ws.geom, protocol_low, sum(ws.weights)) * Float64(ws.η_eff)
+        air_ref = ws.bowtie_air_reference === nothing ? ones(Float32, ws.geom.n_cols, ws.geom.n_rows) :
+            Array(ws.bowtie_air_reference)
+        energies, response = BS.resolve_source_spectrum_full(
+            sim_opts, protocol_low; scanner = scanner, geom = ws.geom,
+        )
+        (sino = Array(ws.sinogram), geom = ws.geom,
+            I0_ray = Float32.(I0_scalar .* Float64.(air_ref)),
+            energies = Float64.(energies), response = Float32.(response))
+    finally
+        BS.release_backend!(ws)
+    end
 end;
 
 # ╔═╡ 09000007-0000-4000-8000-000000000030
 sim_high = let
-    @info "Simulating: Sn140 kVp / $(round(protocol_high.mA, digits = 1)) mA (tube B, UFC η folded, z-offset −0.88 mm)…"
+    @info "Simulating: Sn140 kVp / $(round(protocol_high.mA, digits = 1)) mA (tube B, UFC η folded, z-offset −0.88 mm, own seed)…"
     ws = BS.create_eict_workspace(
-        scanner, protocol_high, sim_opts, recon_opts, phantom_b,
+        scanner, protocol_high, sim_opts_b, recon_opts, phantom_b,
     )
-    BS.simulate!(ws, phantom_b, protocol_high, sim_opts)
-    I0_scalar = BS.compute_detector_I0(ws.geom, protocol_high, sum(ws.weights)) * Float64(ws.η_eff)
-    air_ref = ws.bowtie_air_reference === nothing ? ones(Float32, ws.geom.n_cols, ws.geom.n_rows) :
-        Array(ws.bowtie_air_reference)
-    result = (sino = Array(ws.sinogram), geom = ws.geom,
-        I0_ray = Float32.(I0_scalar .* Float64.(air_ref)))
-    ws = nothing; GC.gc(true)
-    result
+    try
+        BS.simulate!(ws, phantom_b, protocol_high, sim_opts_b)
+        I0_scalar = BS.compute_detector_I0(ws.geom, protocol_high, sum(ws.weights)) * Float64(ws.η_eff)
+        air_ref = ws.bowtie_air_reference === nothing ? ones(Float32, ws.geom.n_cols, ws.geom.n_rows) :
+            Array(ws.bowtie_air_reference)
+        energies, response = BS.resolve_source_spectrum_full(
+            sim_opts_b, protocol_high; scanner = scanner, geom = ws.geom,
+        )
+        (sino = Array(ws.sinogram), geom = ws.geom,
+            I0_ray = Float32.(I0_scalar .* Float64.(air_ref)),
+            energies = Float64.(energies), response = Float32.(response))
+    finally
+        BS.release_backend!(ws)
+    end
 end;
 
 # ╔═╡ 09000007-0000-4000-8000-000000000040
@@ -637,7 +664,7 @@ end;
 # ╔═╡ 09000008-0000-4000-8000-000000000040
 let
     HU_window = (-200, 500)
-    mid = size(hu_mixed, 3) ÷ 2
+    mid = size(hu_mixed, 3) ÷ 2 + 1
 
     fig = Mke.Figure(size = (1400, 520))
     axis_kwargs = (titlesize = 32, subtitlesize = 24)
@@ -691,7 +718,7 @@ let
 
     # ─── Left panel — eroded SW ROI on the mixed image ──────────────────
     HU_window = (-200, 500)
-    mid = size(hu_mixed, 3) ÷ 2
+    mid = size(hu_mixed, 3) ÷ 2 + 1
     overlay = Float32[b ? 1.0f0 : NaN32 for b in poly_water_stats.mask_2d]
 
     ax1 = Mke.Axis(
@@ -748,84 +775,99 @@ end
 
 # ╔═╡ 0900000a-0000-4000-8000-000000000001
 md"""
-## 8. Projection-Domain Material Decomposition (Cong)
+## 8. Spectral Basis from the Two Tubes
 
-Per-ray Cong univariate solver on the polychromatic transmission integral,
-iodine + water material basis, running on the **raw noisy sinograms** (no
-projection-domain denoising — the anti-correlated basis noise is handled
-by cov-ACNR after FBP).  The per-ray spectral weights are
-**source × flat filters × bowtie × UFC η(E)** — the identical model the
-forward projector applied, because `resolve_source_spectrum_full` builds
-ŵ from the same `build_physics_config` (and therefore the same src UFC
-LUT) that `simulate!` used.
+`spectral_basis_from_acquisitions` merges the two tubes' energy grids onto
+their union and scales each tube's per-ray detected spectrum by its own air
+counts, so the likelihood sees the absolute response ``\Phi_k(E)`` of every
+ray and channel: **source × flat filters × bowtie × UFC η(E)**, the identical
+model the forward projector applied (`resolve_source_spectrum_full` builds it
+from the same `build_physics_config`, and therefore the same UFC table, that
+`simulate!` used).  No calibration scan is involved.
 """
 
 # ╔═╡ 0900000a-0000-4000-8000-000000000010
-material_basis = let
-    # Per-ray effective spectrum: source × filters × bowtie × src UFC η(E),
-    # normalized per ray (Σ_E ŵ = 1) — the nb07 pattern.
-    e_L, ŵ_L = BS.resolve_source_spectrum_full(
-        sim_opts, protocol_low; scanner = scanner, geom = sim_low.geom,
-        diagnostic = true, label = "low·UFC",
-    )
-    e_H, ŵ_H = BS.resolve_source_spectrum_full(
-        sim_opts, protocol_high; scanner = scanner, geom = sim_high.geom,
-        diagnostic = true, label = "high·UFC",
-    )
+basis = BS.spectral_basis_from_acquisitions(acquisitions = [
+    (energies = s.energies, response = s.response, I0_ray = s.I0_ray)
+    for s in (sim_low, sim_high)
+]);
 
-    iodine_mat = BS.XA.Elements.Iodine
-    water_mat = BS.XA.Materials.water
+# ╔═╡ 0900000a-0000-4000-8000-000000000015
+Markdown.parse("""
+The basis holds $(basis.n_channels) channels on a $(length(basis.E))-point
+energy grid for $(size(basis.Φ, 1)) × $(size(basis.Φ, 2)) rays; the response
+sums to the air counts to within $(round(basis.I0_relerr, sigdigits = 2))
+(relative).
+""")
 
-    p_L = Float32[Float32(BS.compute_mass_μ_at_energy(iodine_mat, Float64(E))) for E in e_L]
-    q_L = Float32[Float32(BS.compute_mass_μ_at_energy(water_mat, Float64(E))) for E in e_L]
-    p_H = Float32[Float32(BS.compute_mass_μ_at_energy(iodine_mat, Float64(E))) for E in e_H]
-    q_H = Float32[Float32(BS.compute_mass_μ_at_energy(water_mat, Float64(E))) for E in e_H]
+# ╔═╡ 0900000b-0000-4000-8000-000000000001
+md"""
+## 9. The VMI Chain: `vmi_pipeline`
 
-    (
-        ŵ_L = ŵ_L, p_L = p_L, q_L = q_L,
-        ŵ_H = ŵ_H, p_H = p_H, q_H = q_H,
-    )
-end;
+One package call from the two corrected sinograms to the VMI stack, the chain
+of the basis-vmi and basis-spectral-denoising papers:
 
-# ╔═╡ 0900000a-0000-4000-8000-000000000020
-sino_basis = let
-    # First-order log-Poisson DEBIAS (deterministic; matches nb03).
-    debias(p, I0_ray) = begin
-        out = Float32.(p)
-        nc, nr, nv = size(out)
-        for v in 1:nv, r in 1:nr, c in 1:nc
-            N = max(I0_ray[c, r] * exp(-out[c, r, v]), 1.0f0)
-            out[c, r, v] -= 1.0f0 / (2.0f0 * N)
-        end
-        out
-    end
-    sino_low_gpu = to_gpu(debias(sim_low.sino, sim_low.I0_ray))
-    sino_high_gpu = to_gpu(debias(sim_high.sino, sim_high.I0_ray))
+1. **Projection HYPR-LR** (`BS.SpectralHYPR`'s projection instance): a 3 × 3
+   (column × view) window on the counts of each detector row, with each
+   tube's dispersion measured from its own air rays.
+2. **K = 2 n-channel decomposition**: per ray, the Poisson maximum-likelihood
+   iodine + water pair under the exact polychromatic mean of both tubes.
+3. **Image HYPR** on the FDK-reconstructed basis pair (a 3 × 3 × 7 composite
+   and a 15 × 15 × 7 complement window), then **Kalender ACNR**.
+4. **VMI synthesis** at 50 / 70 / 100 / 140 keV from the one basis pair.
 
-    sino_y = similar(sino_low_gpu)   # iodine basis line integrals
-    sino_c = similar(sino_low_gpu)   # water  basis line integrals
-    fill!(sino_y, 0.0f0); fill!(sino_c, 0.0f0)
+The FBP kernel is the notebook's soft-tissue kernel, `BS.SoftFilter()`; the
+grid is `recon_opts.matrix_size` with every detector row kept.
+"""
 
-    cong_ws = BS.create_cong_workspace(sino_low_gpu, material_basis)
-    BS.apply_cong!(
-        cong_ws, sino_y, sino_c, sino_low_gpu, sino_high_gpu;
-        water_basis = (a = 0.0f0, c = 1.0f0),
-    )
+# ╔═╡ 0900000b-0000-4000-8000-000000000005
+HYPR_CHAIN = BS.SpectralHYPR(
+    projection = BS.ProjectionHYPR(kernel = BS.HYPRKernel((3, 3), BS.BoxProfile())),
+    image = BS.ImageHYPR(
+        composite = BS.HYPRKernel((3, 3, 7), BS.BoxProfile(); linear = false),
+        complement = BS.HYPRKernel((15, 15, 7), BS.BoxProfile(); linear = false),
+    ),
+)
 
-    result = (
-        sino_iodine = Array(sino_y),
-        sino_water = Array(sino_c),
-        geom = sim_low.geom,
-    )
-    sino_low_gpu = nothing; sino_high_gpu = nothing
-    sino_y = nothing; sino_c = nothing; cong_ws = nothing
-    GC.gc(true)
-    result
-end;
+# ╔═╡ 0900000b-0000-4000-8000-000000000006
+VMI_CHAIN = (method = :nchannel, controls = BS.NChannelControls(), use_tlbf = false, antialias = true);
+
+# ╔═╡ 0900000c-0000-4000-8000-000000000015
+de_vmi_energies = [50.0, 70.0, 100.0, 140.0];
+
+# ╔═╡ 0900000b-0000-4000-8000-000000000010
+de_vmi = BS.vmi_pipeline(;
+    channels = [sim_low.sino, sim_high.sino],
+    basis,
+    geom = sim_low.geom,
+    to_backend = to_gpu,
+    matrix_size = recon_opts.matrix_size,
+    vmi_energies = Tuple(de_vmi_energies),
+    fbp_filter = BS.SoftFilter(),
+    denoiser = HYPR_CHAIN,
+    use_acnr = true,
+    keep_sinograms = true,
+    VMI_CHAIN...,
+);
+
+# ╔═╡ 0900000b-0000-4000-8000-000000000015
+let
+    q = de_vmi.quality
+    d = de_vmi.settings.denoiser
+    pct(x) = round(100x, digits = 3)
+    Markdown.parse("""
+    The decomposition solved $(q.n_rays) rays in $(round(de_vmi.elapsed_s, digits = 1)) s
+    ($(round(q.outer_mean, digits = 1)) outer iterations on average); $(pct(q.frac_not_converged))% did not
+    converge and $(pct(q.frac_bound_iodine))% / $(pct(q.frac_bound_water))% touched the iodine / water bounds.
+    The projection HYPR measured dispersions (variance / mean of the counts on the air rays) of
+    $(join(round.(d.dispersion, digits = 2), " and ")) for tube A and tube B. The image HYPR's
+    minimum-noise composite energy is E* = $(round(Int, d.image_estimates.Estar)) keV.
+    """)
+end
 
 # ╔═╡ 0900000a-0000-4000-8000-000000000040
 let
-    n_row = size(sino_basis.sino_iodine, 2)
+    n_row = size(de_vmi.sinograms.iodine, 2)
     mid_r = n_row ÷ 2 + 1
 
     fig = Mke.Figure(size = (1400, 580))
@@ -841,8 +883,8 @@ let
         Float64(quantile(vec(arr), 0.99)),
     )
 
-    slice_iod = permutedims(sino_basis.sino_iodine[:, mid_r, :], (2, 1))
-    slice_wat = permutedims(sino_basis.sino_water[:, mid_r, :], (2, 1))
+    slice_iod = permutedims(de_vmi.sinograms.iodine[:, mid_r, :], (2, 1))
+    slice_wat = permutedims(de_vmi.sinograms.water[:, mid_r, :], (2, 1))
 
     panels = (
         (1, 1, 2, "Iodine Basis Sinogram", "g/cm²", slice_iod, _qrange(slice_iod)),
@@ -860,63 +902,20 @@ let
     fig
 end
 
-# ╔═╡ 0900000b-0000-4000-8000-000000000001
-md"""
-## 9. FBP × 2 + Kalender ACNR
-
-Identical post-decomposition chain to nb03: two FDK passes
-(`BS.SoftFilter()`) → image-domain data-adaptive cov-ACNR
-(`BS.apply_acnr_kalender!`, per-pixel regression, zero blur).
-"""
-
-# ╔═╡ 0900000b-0000-4000-8000-000000000010
-basis_volumes = let
-    matrix_size = recon_opts.matrix_size
-    geom = sino_basis.geom
-
-    function _fbp(sino_cpu)
-        sino_gpu = to_gpu(Float32.(sino_cpu))
-        ws = BS.create_fdk_recon_workspace(
-            sino_gpu, geom, matrix_size; filter = BS.SoftFilter(),
-        )
-        recon = Array(BS.reconstruct!(ws, sino_gpu, geom))
-        ws = nothing; sino_gpu = nothing
-        GC.gc(true)
-        return Float32.(recon)
-    end
-
-    (
-        vol_iodine_raw = _fbp(sino_basis.sino_iodine),
-        vol_water_raw = _fbp(sino_basis.sino_water),
-        geom = geom,
-    )
-end;
-
-# ╔═╡ 0900000b-0000-4000-8000-000000000020
-basis_acnr = let
-    W = copy(basis_volumes.vol_water_raw)
-    I = copy(basis_volumes.vol_iodine_raw)
-
-    info = BS.apply_acnr_kalender!(W, I)
-    @info "[ACNR · Kalender-1988 true ACNR] ρ_hp(W,I)=$(round(info.ρ_hp, digits = 3))"
-
-    (vol_iodine_raw = I, vol_water_raw = W, geom = basis_volumes.geom)
-end;
-
 # ╔═╡ 0900000b-0000-4000-8000-000000000040
 let
     fig = Mke.Figure(size = (1180, 580))
     axis_kwargs = (titlesize = 32, subtitlesize = 24)
 
-    mid = size(basis_acnr.vol_iodine_raw, 3) ÷ 2
+    mid = size(de_vmi.images.iodine, 3) ÷ 2 + 1
 
     _qrange(arr) = (
         Float64(quantile(vec(arr), 0.01)),
         Float64(quantile(vec(arr), 0.99)),
     )
 
-    slice_iod = basis_acnr.vol_iodine_raw[:, :, mid]
-    slice_wat = basis_acnr.vol_water_raw[:, :, mid]
+    slice_iod = de_vmi.images.iodine[:, :, mid]
+    slice_wat = de_vmi.images.water[:, :, mid]
 
     panels = (
         (1, 1, 2, "Iodine Basis", "g/cm³", slice_iod, _qrange(slice_iod)),
@@ -940,17 +939,18 @@ end
 
 # ╔═╡ 0900000c-0000-4000-8000-000000000001
 md"""
-## 10. VMI Synthesis
+## 10. VMIs
 
-Textbook 2-basis mix (McCollough 2015) at 50 / 70 / 100 / 140 keV:
+`vmi_pipeline` synthesizes each VMI from the basis pair (McCollough 2015):
 
 ```
 μ(E)  = c_water(r) · (μ/ρ)_water(E) + c_iodine(r) · (μ/ρ)_iodine(E)
 HU(E) = 1000 · (μ(E) − (μ/ρ)_water(E)) / (μ/ρ)_water(E)
 ```
 
-The `solid_water_basis` diagnostic logs the basis-decomp residual bias as
-a Δ% between the SW-ROI synth μ_water and the textbook mono divisor.
+The `solid_water_basis` diagnostic reports the basis pair in the eroded
+solid-water region: a perfect decomposition reads water density ≈ 1 g/cm³
+(solid water is not pure water, so a small offset is expected) and iodine ≈ 0.
 """
 
 # ╔═╡ 0900000c-0000-4000-8000-000000000010
@@ -966,56 +966,26 @@ solid_water_basis = let
         "solid_water_basis: deep erosion (σ = $(ERODE_PX) px) wiped out the SW " *
             "ROI (raw count = $(n_raw)).  Reduce erode_px or check phantom mask."
     )
-    @info "solid_water_basis: SW mid-slice voxel count $(n_raw) → $(n_eroded) " *
-        "after $(ERODE_PX)-px erosion"
 
     sw_idx = findall(sw_bool)
-    n_z = size(basis_acnr.vol_water_raw, 3)
-    function _mean(vol)
-        s = 0.0; n = 0
-        for z in 1:n_z, ci in sw_idx
-            s += vol[ci, z]; n += 1
-        end
-        return s / n
-    end
+    _mean(vol) = mean(vol[ci, z] for z in axes(vol, 3) for ci in sw_idx)
 
-    c_w = Float64(_mean(basis_acnr.vol_water_raw))
-    c_i = Float64(_mean(basis_acnr.vol_iodine_raw))
+    c_w = Float64(_mean(de_vmi.images.water))
+    c_i = Float64(_mean(de_vmi.images.iodine))
     @info "solid_water_basis: ⟨c_water⟩_SW = $(round(c_w, digits = 4)) g/cm³, " *
-        "⟨c_iodine⟩_SW = $(round(c_i, digits = 6)) g/cm³"
+        "⟨c_iodine⟩_SW = $(round(1000c_i, digits = 3)) mg/mL"
 
     (
-        c_water = c_w, c_iodine = c_i, n_voxels = length(sw_idx) * n_z,
+        c_water = c_w, c_iodine = c_i, n_voxels = length(sw_idx) * size(de_vmi.images.water, 3),
         mask_2d = collect(sw_bool),
     )
 end;
 
-# ╔═╡ 0900000c-0000-4000-8000-000000000015
-de_vmi_energies = [50.0, 70.0, 100.0, 140.0];
-
 # ╔═╡ 0900000c-0000-4000-8000-000000000020
-vmi_HU_final = let
-    # synth_vmi_2basis expects c_iodine in mg/mL; basis maps are g/cm³ (= g/mL)
-    c_iodine_mg_per_mL = basis_acnr.vol_iodine_raw .* 1000.0f0
-
-    out = Dict{Float64, Array{Float32, 3}}()
-    for E in de_vmi_energies
-        μρ_w = BS.compute_mass_μ_at_energy(BS.XA.Materials.water, E)
-        μρ_I = BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine, E)
-        μ_water_anchor = solid_water_basis.c_water * μρ_w +
-            solid_water_basis.c_iodine * μρ_I
-        Δ_pct = 100.0 * (μ_water_anchor - μρ_w) / μρ_w
-        @info "VMI synth @ $(Int(E)) keV: divisor = $(round(μρ_w, digits = 5)) cm⁻¹ " *
-            "(mono μρ_water);  SW-ROI anchor = " *
-            "$(round(μ_water_anchor, digits = 5)) → Δ = $(round(Δ_pct, digits = 2))%"
-
-        out[E] = BS.synth_vmi_2basis(
-            basis_acnr.vol_water_raw, c_iodine_mg_per_mL;
-            energy_keV = E,
-        )
-    end
-    out
-end;
+# The VMI stack as one volume per energy (keV → (nx, ny, nz) HU).
+vmi_HU_final = Dict(
+    Float64(E) => de_vmi.vmis[:, :, :, k] for (k, E) in pairs(de_vmi.energies)
+);
 
 # ╔═╡ 0900000c-0000-4000-8000-000000000040
 let
@@ -1024,8 +994,7 @@ let
     fig = Mke.Figure(size = (1180, 1180))
     axis_kwargs = (titlesize = 32, subtitlesize = 24)
 
-    sample = vmi_HU_final[50.0]
-    mid = size(sample, 3) ÷ 2
+    mid = size(de_vmi.vmis, 3) ÷ 2 + 1
 
     for (k, E) in enumerate(de_vmi_energies)
         r = ((k - 1) ÷ 2) + 1
@@ -1048,43 +1017,6 @@ let
 
     Mke.save(
         joinpath(@__DIR__, "..", "assets", "force_ufc_vmi_grid.png"),
-        fig; px_per_unit = 2,
-    )
-    fig
-end
-
-# ╔═╡ 0900000d-0000-4000-8000-000000000030
-let
-    HU_window = (-200, 500)
-
-    fig = Mke.Figure(size = (1180, 1180))
-    axis_kwargs = (titlesize = 32, subtitlesize = 24)
-
-    sample = vmi_HU_final[50.0]
-    mid = size(sample, 3) ÷ 2
-
-    for (k, E) in enumerate(de_vmi_energies)
-        r = ((k - 1) ÷ 2) + 1
-        c = ((k - 1) % 2) + 1
-        ax = Mke.Axis(
-            fig[r, c]; title = "$(Int(E)) keV VMI",
-            subtitle = "VMI",
-            aspect = Mke.DataAspect(), axis_kwargs...,
-        )
-        Mke.heatmap!(
-            ax, vmi_HU_final[E][:, :, mid];
-            colormap = :grays, colorrange = HU_window,
-        )
-        Mke.hidedecorations!(ax)
-    end
-    Mke.Colorbar(
-        fig[1:2, 3];
-        colormap = :grays, colorrange = HU_window,
-        label = "HU", width = 16, labelsize = 22, ticklabelsize = 18,
-    )
-
-    Mke.save(
-        joinpath(@__DIR__, "..", "assets", "force_ufc_vmi_monoplus.png"),
         fig; px_per_unit = 2,
     )
     fig
@@ -1200,7 +1132,7 @@ let
     fig = Mke.Figure(size = (1180, 580))
 
     HU_window = (-200, 500)
-    mid = size(vmi_HU_final[70.0], 3) ÷ 2
+    mid = size(vmi_HU_final[70.0], 3) ÷ 2 + 1
     bg = vmi_HU_final[70.0][:, :, mid]
 
     overlay = Float32[b ? 1.0f0 : NaN32 for b in solid_water_basis.mask_2d]
@@ -1280,7 +1212,7 @@ const WATER_NOISE_ROI_RADIUS_PX = 12;   # ≈8.2 mm at 0.683 mm/px
 
 # ╔═╡ 0900000e-0000-4000-8000-000000000070
 water_noise_roi = let
-    nx_r, ny_r, nz_r = size(basis_acnr.vol_water_raw)
+    nx_r, ny_r, nz_r = size(de_vmi.images.water)
     cx = nx_r ÷ 2 + 1
     cy = ny_r ÷ 2 + 1
 
@@ -1319,7 +1251,7 @@ end;
 # ╔═╡ 0900000e-0000-4000-8000-000000000090
 let
     HU_window = (-200, 500)
-    mid = size(vmi_HU_final[70.0], 3) ÷ 2
+    mid = size(vmi_HU_final[70.0], 3) ÷ 2 + 1
     bg = vmi_HU_final[70.0][:, :, mid]
 
     overlay = Float32[b ? 1.0f0 : NaN32 for b in water_noise_roi.mask_2d]
@@ -1544,36 +1476,29 @@ md"""
 ## Summary
 
 ```
-UFC MC η(E) LUT (Khodajou-Chokami, Gd₂O₂S, 1–140 keV)
-   → src pathway: EICTScanner(detector_material = :ufc) → detector_efficiency_ufc()
-Simulate 100 kVp + Sn140 kVp   (one SOMATOM Force dual-source DE acquisition)
-   ├─→ POLY: per-tube η-aware BHC → FDK → HU → mixed image M_w  (SW ≈ 0 HU ×3)
-   └─→ VMI:  Cong Decomposition on raw sinograms  (iodine + water,
-             bowtie + η_UFC per ray)
-             → FBP × 2 → cov-ACNR → z-median
-             → VMI 50/70/100/140 keV → Mono+
+UFC MC η(E) LUT (BS.UFC_MC_EFFICIENCY_LUT, Gd₂O₂S, 1–140 keV)
+   → EICTScanner(detector_material = :ufc) → detector_efficiency_ufc()
+Simulate 100 kVp + Sn140 kVp   (one SOMATOM Force dual-source DE acquisition,
+                                one noise seed per tube)
+   ├─→ POLY: per-tube η-aware BHC → FDK → HU → mixed image M_w     (§7)
+   └─→ VMI:  BS.spectral_basis_from_acquisitions (bowtie + η_UFC per ray)
+             → BS.vmi_pipeline(; denoiser = HYPR_CHAIN, use_acnr = true):
+               projection HYPR → K = 2 n-channel decomposition
+               → image HYPR → ACNR → VMI 50/70/100/140 keV      (§8–10)
              → Per-Rod Measured vs Theoretical Regression
 ```
 
-**What validates the UFC LUT here:**
+**What validates the UFC table here:**
 
-1. **§7 poly**: solid water ≈ 0 HU in the 100 kVp recon, the Sn140 recon,
-   and the Siemens-style mixed image, each under its own η-aware BHC —
-   the LUT's spectral shape is consistent with the detected sinogram on
-   both very different tube spectra independently.
-2. **§10–11 VMI**: water-ROI bars ≈ 0 HU at every keV and tight per-rod
-   measured-vs-theoretical overlays — the LUT survives the much harsher
-   test of per-ray spectral inversion across the two detected spectra
-   (100 kVp vs Sn140 kVp, separated by the 0.6 mm tin filter and sitting
-   on opposite sides of the Gd K-edge fluorescence-escape cliff).
-
-**src status:** the LUT lives in `src/detector/detector_efficiency.jl`
-next to `GEMSTONE_MC_EFFICIENCY_LUT` (`UFC_MC_EFFICIENCY_LUT`,
-`get_ufc_mc_efficiency`, `detector_efficiency_ufc()`, `:ufc` branches in
-`compute_eid_efficiency_vector` + `build_physics_config`, covered by
-`test/detector.jl`).  This notebook consumes it directly via
-`EICTScanner(detector_material = :ufc)` — the original standalone
-`spectrum_override` validation path is retired.
+1. **§7 poly**: solid water in the 100 kVp recon, the Sn140 recon and the
+   Siemens-style mixed image, each under its own η-aware BHC: the table's
+   spectral shape is consistent with the detected sinogram on two very
+   different tube spectra independently.
+2. **§8–10 VMI**: water-region HU at every keV and the per-rod
+   measured-vs-theoretical overlays: the table survives the harsher test of
+   per-ray spectral inversion across the two detected spectra (100 kVp vs
+   Sn140 kVp, separated by the 0.6 mm tin filter and sitting on opposite
+   sides of the Gd K-edge fluorescence-escape cliff).
 """
 
 # ╔═╡ Cell order:
@@ -1600,6 +1525,7 @@ next to `GEMSTONE_MC_EFFICIENCY_LUT` (`UFC_MC_EFFICIENCY_LUT`,
 # ╠═09000005-0000-4000-8000-000000000020
 # ╟─09000006-0000-4000-8000-000000000001
 # ╠═09000006-0000-4000-8000-000000000010
+# ╠═09000006-0000-4000-8000-000000000012
 # ╠═09000006-0000-4000-8000-000000000020
 # ╠═09000006-0000-4000-8000-000000000030
 # ╟─09000006-0000-4000-8000-000000000040
@@ -1623,18 +1549,19 @@ next to `GEMSTONE_MC_EFFICIENCY_LUT` (`UFC_MC_EFFICIENCY_LUT`,
 # ╟─09000008-0000-4000-8000-000000000060
 # ╟─0900000a-0000-4000-8000-000000000001
 # ╠═0900000a-0000-4000-8000-000000000010
-# ╠═0900000a-0000-4000-8000-000000000020
-# ╟─0900000a-0000-4000-8000-000000000040
+# ╟─0900000a-0000-4000-8000-000000000015
 # ╟─0900000b-0000-4000-8000-000000000001
+# ╠═0900000b-0000-4000-8000-000000000005
+# ╠═0900000b-0000-4000-8000-000000000006
+# ╠═0900000c-0000-4000-8000-000000000015
 # ╠═0900000b-0000-4000-8000-000000000010
-# ╠═0900000b-0000-4000-8000-000000000020
+# ╟─0900000b-0000-4000-8000-000000000015
+# ╟─0900000a-0000-4000-8000-000000000040
 # ╟─0900000b-0000-4000-8000-000000000040
 # ╟─0900000c-0000-4000-8000-000000000001
 # ╠═0900000c-0000-4000-8000-000000000010
-# ╠═0900000c-0000-4000-8000-000000000015
 # ╠═0900000c-0000-4000-8000-000000000020
 # ╟─0900000c-0000-4000-8000-000000000040
-# ╟─0900000d-0000-4000-8000-000000000030
 # ╟─0900000e-0000-4000-8000-000000000001
 # ╠═0900000e-0000-4000-8000-000000000010
 # ╠═0900000e-0000-4000-8000-000000000020

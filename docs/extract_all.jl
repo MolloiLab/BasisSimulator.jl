@@ -108,7 +108,6 @@ exports and does not need private/large rendering inputs."""
 function verify_local_data!()
     isfile(DATA_PROVENANCE) || error("missing committed data provenance: $(DATA_PROVENANCE)")
     configured_roots = Dict(
-        "qrm_thorax" => get(ENV, "BASISSIM_QRM_DIR", joinpath(DATA_DIR, "qrm_thorax")),
         "xcat" => get(ENV, "BASISSIM_XCAT_DIR", joinpath(DATA_DIR, "xcat")),
     )
     for raw_line in eachline(DATA_PROVENANCE)
