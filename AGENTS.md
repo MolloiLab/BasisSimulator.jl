@@ -79,7 +79,7 @@ A Therapy.jl static site: `docs/app.jl`, pages in `docs/src/routes/`, components
 - **Render the notebooks:** `docs/render_notebooks.sh` re-renders every stale export, one exporter
   per GPU (NVIDIA: one lane per `nvidia-smi` GPU, or `BASISSIM_GPUS="0 1"`; Mac/CPU: one lane),
   then runs `docs/verify_notebook_exports.py`. `docs/render_notebooks.sh 04_pcct_vmi` renders the
-  named ones. Logs: `docs/render-logs/`. On the lab's two-GPU node all 12 take about 25 minutes.
+  named ones. Logs: `docs/render-logs/`. On the lab's two-GPU node all 12 take about 17 minutes (about 15 per GPU).
 - **Why an export goes stale:** its fingerprint hashes the notebook, all of `src/`, `Project.toml`
   (not its `version` line), both docs lockfiles, `docs/extract_all.jl` and
   `docs/notebooks/DATA_PROVENANCE.sha256`. Any code change makes every export stale; that is by
