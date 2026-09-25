@@ -102,7 +102,7 @@ begin
     AT = GPUSelect.Storage()   # CuArray / MtlArray / ROCArray / oneArray, or Array on a CPU-only host
     to_gpu(x) = AT(x)
     GPU_BACKEND = (name = string(nameof(AT)),)
-end
+end;
 
 # ╔═╡ 01000007-0000-4000-8000-000000000001
 md"""
@@ -373,7 +373,7 @@ recon_opts = let
         fov_cm = 35.0,
         z_cm = protocol_standard.collimation_mm / 10,
     )
-end
+end;
 
 # ╔═╡ 07000000-0000-4000-8000-000000000000
 md"""
@@ -495,7 +495,7 @@ maps polychromatic water line integrals to monochromatic ones at the spectrum's 
 has no tunable parameters, and nothing in it is fitted to the data being corrected.
 `apply_bhc_water` applies it to a sinogram.
 
-The reference energy and μ_water that come with the correction are what `to_hounsfield` needs to
+The reference energy and the water attenuation μ at that energy, which come with the correction, are what `to_hounsfield` needs to
 put water at 0 HU. Both protocols share a beam, so one calibration serves both.
 """
 
@@ -505,7 +505,7 @@ bhc = BS.calibrate_bhc_water(sim_opts, protocol_standard; scanner, geom = sim_st
 # ╔═╡ 09000007-0000-4000-8000-000000000001
 Markdown.parse("""
 **Water BHC:** $(length(bhc.water_bhc_per_col)) per-column polynomials · reference energy
-$(round(bhc.reference_energy_keV; digits = 1)) keV · μ_water = $(round(bhc.μ_water_ref; digits = 5)) cm⁻¹
+$(round(bhc.reference_energy_keV; digits = 1)) keV · water μ = $(round(bhc.μ_water_ref; digits = 5)) cm⁻¹
 """)
 
 # ╔═╡ 09000001-0000-4000-8000-000000000001
@@ -548,7 +548,7 @@ function reconstruct_hu(sim, bhc; algorithm::Symbol = :fbp, strength::Integer = 
     ws = nothing; sino = nothing; μ = nothing
     GC.gc(true)
     return hu
-end
+end;
 
 # ╔═╡ 07000021-0000-4000-8000-000000000001
 hu_fbp_std = reconstruct_hu(sim_std, bhc; algorithm = :fbp);
@@ -677,6 +677,26 @@ let
     Measured at 50 mA: $(round(noise.fbp_low.σ; digits = 1)) HU.
     """)
 end
+
+# ╔═╡ 12000003-0000-4000-8000-000000000003
+# this protocol's scalars — tube current (mA), CTDIvol (mGy) and FBP water noise (HU) of the
+# standard scan — the inputs of the calculator below, which runs live in the browser
+dose_inputs = (Float64(protocol_standard.mA), Float64(sim_std.dose.ctdi_vol_mGy), Float64(noise.fbp_std.σ));
+
+# ╔═╡ 12000003-0000-4000-8000-000000000004
+@bind tube_mA PlutoUI.Slider(10:10:500; default = 200, show_value = true)
+
+# ╔═╡ 12000003-0000-4000-8000-000000000005
+# tube current, CTDIvol (mGy), expected FBP noise (HU), noise relative to the standard scan
+dose_plan = let r = tube_mA / dose_inputs[1]
+    (tube_mA, round(dose_inputs[2] * r; digits = 2), round(dose_inputs[3] / sqrt(r); digits = 1),
+     round(1 / sqrt(r); digits = 2))
+end;
+
+# ╔═╡ 12000003-0000-4000-8000-000000000006
+md"""
+**At $(dose_plan[1]) mA:** CTDIvol is $(dose_plan[2]) mGy and the expected quantum-limited FBP water noise is $(dose_plan[3]) HU, $(dose_plan[4]) times that of the 200 mA scan.
+"""
 
 # ╔═╡ 12000001-0000-4000-8000-000000000001
 md"""
@@ -812,7 +832,7 @@ md"""
 - **Every scan reports its dose.** CTDIvol and DLP come from a Monte Carlo of the simulated beam
   in the IEC body phantom, so they follow the scanner's spectrum, filtration and bowtie.
 - **The standard reconstruction chain** is `calibrate_bhc_water` → `apply_bhc_water` →
-  `reconstruct!` → `to_hounsfield` with the correction's own μ_water. Quantum and electronic
+  `reconstruct!` → `to_hounsfield` with the correction's own water μ. Quantum and electronic
   noise are already in the simulated counts, and `measure_radial_cupping` is a QA measurement,
   not a correction.
 - **Where it runs** is decided by the phantom mask's array type; this page was rendered on an
@@ -881,6 +901,10 @@ Every other notebook reuses this pattern: build the structs, create a workspace,
 # ╟─10000003-0000-4000-8000-000000000001
 # ╟─12000003-0000-4000-8000-000000000001
 # ╟─12000003-0000-4000-8000-000000000002
+# ╟─12000003-0000-4000-8000-000000000003
+# ╠═12000003-0000-4000-8000-000000000004
+# ╟─12000003-0000-4000-8000-000000000005
+# ╟─12000003-0000-4000-8000-000000000006
 # ╟─12000001-0000-4000-8000-000000000001
 # ╟─12000001-0000-4000-8000-000000000003
 # ╟─12000001-0000-4000-8000-000000000004

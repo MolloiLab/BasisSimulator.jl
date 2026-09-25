@@ -91,7 +91,7 @@ begin
     AT = GPUSelect.Storage()     # the backend array type, directly: MtlArray / CuArray / ROCArray
     to_gpu(x) = AT(x)
     GPU_BACKEND = (name = string(nameof(AT)),)
-end
+end;
 
 # ╔═╡ 09000001-0000-4000-8000-000000000050
 md"""
@@ -423,7 +423,7 @@ Each tube builds its own workspace (the UFC η enters through the
 `detector_efficiency` pathway) and keeps what the spectral basis needs: the
 noisy corrected log sinogram, its per-ray air counts `I0_ray` (detector air
 count × bowtie air profile) and its per-ray detected spectrum from
-`resolve_source_spectrum_full` (source × filtration × bowtie × η_UFC), the
+`resolve_source_spectrum_full` (source × filtration × bowtie × UFC η), the
 same model the forward projector applied.  Tube B runs on its own noise
 chain (`sim_opts_b`).
 
@@ -822,7 +822,7 @@ grid is `recon_opts.matrix_size` with every detector row kept.
 # ╔═╡ 0900000b-0000-4000-8000-000000000005
 # the published chain (basis-vmi / basis-spectral-denoising): a 3 × 3 (column × view) window on
 # the counts, and on the basis pair a 1 × 1 × 7 composite and a 15 × 15 × 7 complement window
-HYPR_CHAIN = BS.SpectralHYPR()
+HYPR_CHAIN = BS.SpectralHYPR();
 
 # ╔═╡ 0900000b-0000-4000-8000-000000000006
 VMI_CHAIN = (method = :nchannel, controls = BS.NChannelControls(), use_tlbf = false, antialias = true);
@@ -1289,9 +1289,12 @@ let
             ax2, E, σ;
             text = "σ=$(round(σ; digits = 1))\n⟨HU⟩=$(round(μ; digits = 1))",
             align = (:center, :bottom),
-            fontsize = 16, offset = (0, 8),
+            fontsize = 16, offset = (0, 12),
         )
     end
+    # room for the labels above the highest point and beside the end energies
+    Mke.xlims!(ax2, first(Es) - 15, last(Es) + 15)
+    Mke.ylims!(ax2, 0, 1.3 * maximum(σs))
 
     Mke.save(
         joinpath(@__DIR__, "..", "assets", "force_ufc_vmi_water_noise.png"),
@@ -1497,11 +1500,11 @@ Simulate 100 kVp + Sn140 kVp   (one SOMATOM Force dual-source DE acquisition,
 """
 
 # ╔═╡ Cell order:
-# ╠═09000001-0000-4000-8000-000000000001
-# ╠═09000001-0000-4000-8000-000000000002
-# ╠═09000001-0000-4000-8000-000000000003
 # ╟─09000001-0000-4000-8000-000000000010
 # ╟─09000001-0000-4000-8000-000000000020
+# ╟─09000001-0000-4000-8000-000000000001
+# ╟─09000001-0000-4000-8000-000000000002
+# ╟─09000001-0000-4000-8000-000000000003
 # ╠═09000001-0000-4000-8000-000000000030
 # ╠═09000001-0000-4000-8000-000000000031
 # ╠═09000001-0000-4000-8000-000000000032

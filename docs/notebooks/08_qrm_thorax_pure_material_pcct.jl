@@ -80,7 +80,7 @@ begin
     AT = GPUSelect.Storage()     # the backend array type, directly: MtlArray / CuArray / ROCArray
     to_gpu(x) = AT(x)
     GPU_BACKEND = (name = string(nameof(AT)),)
-end
+end;
 
 # ╔═╡ 08010003-0000-4000-8000-000000000050
 md"""
@@ -97,7 +97,7 @@ photon-counting scanner, the 140 kVp protocol, and the four-bin forward projecti
 
 # ╔═╡ 08020001-0000-4000-8000-000000000001
 md"""
-### 01. `Phantom`: QRM-Thorax with 4 Pure-Material Rods
+### 1. `Phantom`: QRM-Thorax with 4 Pure-Material Rods
 
 The QRM-Thorax phantom is built analytically, from 2-D shapes: a flat-fronted
 superellipse body, the two lungs, the cardiac insert and the mediastinum above it, a water
@@ -108,14 +108,14 @@ The slice is z-tiled to **1600 × 1100 × 20** at **0.2 mm isotropic** (320 × 2
 finer than the demagnified detector pitch, so the forward projector samples a
 high-resolution object.
 
-| Label | Material              |  | Label | Material               |
-|-------|-----------------------|--|-------|------------------------|
-| 1     | air                   |  | 7     | air rod                |
-| 2     | lung                  |  | 8     | (unused)               |
-| 3     | soft tissue           |  | **9** | rod → water            |
-| 4     | cortical bone         |  | **10**| rod → lipid            |
-| 5     | bone marrow           |  | **11**| rod → collagen         |
-| 6     | water rod (lung)      |  | **12**| rod → 5 mg/mL iodine   |
+| Label | Material         | Label  | Material             |
+|:------|:-----------------|:-------|:---------------------|
+| 1     | air              | 7      | air rod              |
+| 2     | lung             | 8      | (unused)             |
+| 3     | soft tissue      | **9**  | rod → water          |
+| 4     | cortical bone    | **10** | rod → lipid          |
+| 5     | bone marrow      | **11** | rod → collagen       |
+| 6     | water rod (lung) | **12** | rod → 5 mg/mL iodine |
 
 As in the reference slice, the cardiac insert is soft tissue (label 3, like the body) with
 the four pure-material rods 9–12 bored into it, so label 8 is unused. `qrm_thorax_slice`
@@ -227,7 +227,7 @@ begin
         end
         return img
     end
-end
+end;
 
 # ╔═╡ 08020001-0000-4000-8000-000000000013
 const QRM_NZ = 20;    # 20 × 0.2 mm = 4 mm: a short z-invariant phantom
@@ -363,7 +363,7 @@ end
 
 # ╔═╡ 08030001-0000-4000-8000-000000000001
 md"""
-### 02. `PCCTScanner`: Siemens Naeotom Alpha (4 thresholds)
+### 2. `PCCTScanner`: Siemens Naeotom Alpha (4 thresholds)
 
 CdTe direct-conversion detector with native dexels 0.275 × 0.322 mm at the detector face
 (2 × 2 binned). The thresholds `T = [20, 35, 55, 70] keV` define four bins:
@@ -442,7 +442,7 @@ end;
 
 # ╔═╡ 08030002-0000-4000-8000-000000000001
 md"""
-### 03. `CTProtocol`: 140 kVp / 174 mA / 5.0 mm collimation
+### 3. `CTProtocol`: 140 kVp / 174 mA / 5.0 mm collimation
 
 A clinical 140 kVp single-energy PCCT acquisition. `additional_filters = [("Ti", 0.9)]` is
 the Vectron tube's inherent 0.9 mm titanium window. The saved reconstruction is the same
@@ -462,7 +462,7 @@ protocol = BS.CTProtocol(
 
 # ╔═╡ 08030003-0000-4000-8000-000000000001
 md"""
-### 04. `SimOptions` and `ReconOptions`
+### 4. `SimOptions` and `ReconOptions`
 
 A `PCCTScanner` selects the photon-counting path (per-bin sinograms, the Monte Carlo
 detector response, Compton scatter, pile-up); the detector-model toggles (`pileup`,
@@ -483,7 +483,7 @@ sim_opts = BS.SimOptions(
     use_focal_spot = false,
     use_lag = false,
     use_heel_effect = false,
-)
+);
 
 # ╔═╡ 08030003-0000-4000-8000-000000000020
 # The saved recon grid of notebook 07: 512 × 512 at 0.625 mm isotropic, 3 slices.
@@ -495,7 +495,7 @@ recon_opts = BS.ReconOptions(
 
 # ╔═╡ 08030004-0000-4000-8000-000000000001
 md"""
-### 05. Forward Project: `simulate!` and `spectral_basis`
+### 5. Forward Project: `simulate!` and `spectral_basis`
 
 `simulate!` runs the whole photon-counting detector model on the GPU: polychromatic forward
 projection through the Monte Carlo detector response, scatter injection, Poisson counts in
@@ -581,7 +581,7 @@ end
 md"""
 ## VMI Pipeline
 
-### 01. The Chain's Settings
+### 1. The Chain's Settings
 
 The denoiser is generalized HYPR-LR in both domains, `BS.SpectralHYPR`: within each detector
 row, each ray's split of its total count across the four bins is pooled over its 3 × 3
@@ -594,7 +594,7 @@ is off; the view-direction antialias is on; the FBP kernel is `SoftFilter`; ACNR
 # ╔═╡ 08030007-0000-4000-8000-000000000012
 # the published chain (basis-vmi / basis-spectral-denoising): a 3 × 3 (column × view) window on
 # the counts, and on the basis pair a 1 × 1 × 7 composite and a 15 × 15 × 7 complement window
-HYPR_CHAIN = BS.SpectralHYPR()
+HYPR_CHAIN = BS.SpectralHYPR();
 
 # ╔═╡ 08030007-0000-4000-8000-000000000013
 VMI_CHAIN = (method = :nchannel, controls = BS.NChannelControls(), use_tlbf = false, antialias = true);
@@ -604,7 +604,7 @@ pcct_vmi_energies = [50.0, 70.0, 100.0, 140.0];
 
 # ╔═╡ 08030007-0000-4000-8000-000000000001
 md"""
-### 02. `vmi_pipeline`
+### 2. `vmi_pipeline`
 
 One call, from the four corrected bins to the VMI stack, reconstructed on the notebook's
 grid with every detector row kept. `keep_sinograms = true` also returns the decomposed
@@ -670,7 +670,7 @@ end
 
 # ╔═╡ 08030008-0000-4000-8000-000000000001
 md"""
-### 03. Basis Maps and VMIs
+### 3. Basis Maps and VMIs
 
 The water and iodine basis pair after image HYPR and ACNR (mid slice), and the VMIs
 synthesized from it: ``\mu(E) = c_\mathrm{water}\,(\mu/\rho)_\mathrm{water}(E) +
@@ -682,19 +682,21 @@ energy. Every VMI comes from the same basis pair.
 let
     fig = Mke.Figure(size = (1180, 580))
     mid = size(pcct_vmi.images.water, 3) ÷ 2 + 1
+    # iodine in mg/mL on a fixed window around the 5 mg/mL rod (a percentile window of the
+    # whole slice sits below the rod, which covers under 1 % of it); water on its percentiles
+    iodine_mg = 1000 .* pcct_vmi.images.iodine[:, :, mid]
+    water = pcct_vmi.images.water[:, :, mid]
     panels = (
-        ("Iodine Basis", pcct_vmi.images.iodine),
-        ("Water Basis", pcct_vmi.images.water),
+        ("Iodine Basis", iodine_mg, (-2.0, 8.0), "mg/mL"),
+        ("Water Basis", water, Tuple(Float64.(quantile(vec(water), (0.01, 0.99)))), "g/mL"),
     )
-    for (c, (ttl, volume)) in enumerate(panels)
-        slice = volume[:, :, mid]
-        range = Tuple(Float64.(quantile(vec(slice), (0.01, 0.99))))
+    for (c, (ttl, slice, range, unit)) in enumerate(panels)
         ax = Mke.Axis(fig[1, 2c - 1]; title = ttl, aspect = Mke.DataAspect(), titlesize = 32)
         Mke.heatmap!(ax, slice; colormap = :viridis, colorrange = range)
         Mke.hidedecorations!(ax)
         Mke.Colorbar(
             fig[1, 2c]; colormap = :viridis, colorrange = range,
-            label = "g/cm³", width = 16, labelsize = 22, ticklabelsize = 18,
+            label = unit, width = 16, labelsize = 22, ticklabelsize = 18,
         )
     end
     fig
@@ -996,7 +998,7 @@ let
         "| $(name) | $(round(BS.XA.val(mat.density), digits = 3)) | $(round(cw, digits = 3)) | $(round(ci, digits = 2)) |"
     end
     Markdown.parse("""
-    | rod | density (g/cm³) | c_water (g/mL) | c_iodine (mg/mL) |
+    | rod | density (g/cm³) | water (g/mL) | iodine (mg/mL) |
     |-----|------:|------:|------:|
     $(join(rows, "\n"))
     """)

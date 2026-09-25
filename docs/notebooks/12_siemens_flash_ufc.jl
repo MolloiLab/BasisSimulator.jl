@@ -91,7 +91,7 @@ begin
     AT = GPUSelect.Storage()     # the backend array type, directly: MtlArray / CuArray / ROCArray
     to_gpu(x) = AT(x)
     GPU_BACKEND = (name = string(nameof(AT)),)
-end
+end;
 
 # ╔═╡ 12000001-0000-4000-8000-000000000050
 md"""
@@ -151,10 +151,13 @@ let
 
     Mke.vlines!(ax, [50.24]; color = :crimson, linestyle = :dash, linewidth = 1.5)
     Mke.text!(ax, 50.24, 0.62; text = "Gd K-edge\n50.2 keV", fontsize = 16, align = (:left, :top), offset = (4, 0))
+    # the 140 keV values, marked on both curves and labelled in the free space below them
+    Mke.scatter!(ax, [140.0, 140.0], [η_flash[end], η_force[end]];
+        color = [:crimson, :gray35], markersize = 12)
     Mke.text!(
-        ax, 140.0, 0.60;
-        text = "Flash 0.588\nForce 0.816\n(−28%)", fontsize = 16,
-        align = (:right, :bottom), offset = (-6, 4), color = :crimson,
+        ax, 104.0, 0.52;
+        text = "140 keV: Flash $(round(η_flash[end]; digits = 3)), Force $(round(η_force[end]; digits = 3))\n($(round(Int, 100 * (η_flash[end] / η_force[end] - 1)))% for the Flash)",
+        fontsize = 16, align = (:left, :bottom), color = :crimson,
     )
 
     Mke.ylims!(ax, 0.5, 1.02)
@@ -633,7 +636,7 @@ let
     HU_window = (-200, 500)
     mid = size(hu_reg_combined, 3) ÷ 2
 
-    fig = Mke.Figure(size = (1400, 640))
+    fig = Mke.Figure(size = (1400, 1000))
     axis_kwargs = (titlesize = 32, subtitlesize = 24)
 
     panels = (
@@ -674,19 +677,18 @@ let
     )
     Mke.barplot!(ax2, 1:n, σs; color = bar_colors, strokecolor = :black, strokewidth = 1)
     σ_pred = 0.5 * (σs[1] + σs[2]) / sqrt(2.0)
-    Mke.hlines!(ax2, [σ_pred]; color = :black, linewidth = 2, linestyle = :dash)
+    Mke.hlines!(ax2, [σ_pred]; color = :black, linewidth = 2, linestyle = :dash,
+        label = "predicted single/√2 = $(round(σ_pred, digits = 2)) HU")
     for (k, σv) in enumerate(σs)
         Mke.text!(
             ax2, k, σv;
             text = "σ = $(round(σv, digits = 2)) HU",
-            align = (:center, :bottom), fontsize = 16, offset = (0, 4),
+            align = (:center, :bottom), fontsize = 18, offset = (0, 6),
         )
     end
-    Mke.text!(
-        ax2, n, σ_pred;
-        text = "predicted single/√2 = $(round(σ_pred, digits = 2))",
-        align = (:right, :top), fontsize = 16, offset = (0, -6),
-    )
+    Mke.ylims!(ax2, 0, 1.35 * maximum(σs))   # headroom for the bar labels and the legend
+    Mke.axislegend(ax2; position = :rt, framevisible = true, labelsize = 16)
+    Mke.rowsize!(fig.layout, 2, Mke.Relative(0.45))
 
     Mke.save(
         joinpath(@__DIR__, "..", "assets", "flash_ufc_dual_power.png"),
@@ -1037,7 +1039,7 @@ apodization halfway between the Standard and Soft windows); the grid is
 # ╔═╡ 1200000b-0000-4000-8000-000000000005
 # the published chain (basis-vmi / basis-spectral-denoising): a 3 × 3 (column × view) window on
 # the counts, and on the basis pair a 1 × 1 × 7 composite and a 15 × 15 × 7 complement window
-HYPR_CHAIN = BS.SpectralHYPR()
+HYPR_CHAIN = BS.SpectralHYPR();
 
 # ╔═╡ 1200000b-0000-4000-8000-000000000006
 VMI_CHAIN = (method = :nchannel, controls = BS.NChannelControls(), use_tlbf = false, antialias = true);
@@ -1494,9 +1496,12 @@ let
             ax2, E, σ;
             text = "σ=$(round(σ; digits = 1))\n⟨HU⟩=$(round(μ; digits = 1))",
             align = (:center, :bottom),
-            fontsize = 16, offset = (0, 8),
+            fontsize = 16, offset = (0, 12),
         )
     end
+    # room for the labels above the highest point and beside the end energies
+    Mke.xlims!(ax2, first(Es) - 15, last(Es) + 15)
+    Mke.ylims!(ax2, 0, 1.3 * maximum(σs))
 
     Mke.save(
         joinpath(@__DIR__, "..", "assets", "flash_ufc_vmi_water_noise.png"),
@@ -1678,7 +1683,7 @@ md"""
 Automated PASS/FAIL gates over both acquisition classes (notebook 01 convention):
 
 1. **Regular water accuracy** — |⟨HU⟩| ≤ 5 in tube A, tube B, combined.
-2. **Dual-power √2** — σ_combined / σ_single ∈ [0.62, 0.80]
+2. **Dual-power √2** — `σ_combined / σ_single` ∈ [0.62, 0.80]
    (ideal 0.707; fails if the tube seeds were ever shared).
 3. **DE poly water accuracy** — |⟨HU⟩| ≤ 5 in low, high, mixed.
 4. **VMI water accuracy** — |⟨HU⟩| ≤ 10 at every synthesized keV,
@@ -1708,7 +1713,7 @@ verification = let
     # 2. Dual-power √2 noise reduction
     push!(checks, (
         "dual-power σ ratio", 0.62 ≤ dp_stats.noise_ratio ≤ 0.80,
-        "σ_comb/σ_single = $(round(dp_stats.noise_ratio, digits = 3)) (ideal 0.707, gate [0.62, 0.80])",
+        "`σ_combined / σ_single` = $(round(dp_stats.noise_ratio, digits = 3)) (ideal 0.707, gate [0.62, 0.80])",
     ))
 
     # 3. DE poly water accuracy
@@ -1744,7 +1749,7 @@ verification = let
         chain.n_channels == 2 && chain.denoiser !== nothing &&
             chain.denoiser.projection !== nothing && chain.denoiser.image !== nothing &&
             chain.acnr !== nothing,
-        "K = $(chain.n_channels), projection + image HYPR, ACNR $(chain.acnr)",
+        "K = $(chain.n_channels), projection + image HYPR, ACNR `$(chain.acnr)`",
     ))
 
     # 7. Per-rod regression gates

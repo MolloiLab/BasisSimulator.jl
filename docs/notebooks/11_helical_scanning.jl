@@ -426,7 +426,7 @@ end
 md"""
 ## Results
 
-### 01. Water flatness and the coronal view
+### 1. Water flatness and the coronal view
 
 Mean HU in a fixed water ROI (clear of the rod and the cone), slice by slice, with the axial
 station boundaries marked, then coronal reformats of both volumes. The table under the plot

@@ -84,7 +84,7 @@ md"""
 
 # ╔═╡ 040e1000-0000-4000-8000-000000000100
 md"""
-### 01. `Phantom()` Struct
+### 1. `Phantom()` Struct
 
 The Gammex 472 multi-energy phantom: a solid-water body with seven calcium
 (50–600 mg/mL) and seven iodine (2–20 mg/mL) inserts, 1 cm thick and z-invariant.
@@ -109,7 +109,7 @@ phantom = BS.Phantom(
 
 # ╔═╡ 040e1000-0000-4000-8000-000000000101
 md"""
-### 02. `EICTScanner()` Struct
+### 2. `EICTScanner()` Struct
 
 The Apex Elite geometry (source–isocenter 625.6 mm, source–detector 1100 mm, 834 columns
 × 0.6 mm, 256 rows × 0.625 mm), its Gemstone scintillator (`:lumex`) and the GE large-body
@@ -144,7 +144,7 @@ scanner = BS.EICTScanner(
 
 # ╔═╡ 040e1000-0000-4000-8000-000000000102
 md"""
-### 03. `CTProtocol()` Struct
+### 3. `CTProtocol()` Struct
 
 One protocol per kVp: 984 views over a 0.5 s rotation, 5 mm collimation, 4.5 mm of added
 aluminium on both.
@@ -172,7 +172,7 @@ protocol_high = BS.CTProtocol(
 
 # ╔═╡ 040e1000-0000-4000-8000-000000000103
 md"""
-### 04. `SimOptions()` & `ReconOptions()`
+### 4. `SimOptions()` & `ReconOptions()`
 
 Each kVp gets its own noise seed: two acquisitions drawn from one seed would carry the same
 noise pattern, correlated between the channels, which a real scan never has. The
@@ -198,7 +198,7 @@ end;
 
 # ╔═╡ 5ecd97c6-ad47-4558-886d-22ed45eda97d
 md"""
-### 05. Forward Project: `simulate!`
+### 5. Forward Project: `simulate!`
 
 One workspace and one `simulate!` per kVp. Each acquisition keeps what the spectral basis
 needs: its corrected log sinogram, its per-ray air counts `I0_ray` (the detector's air count
@@ -237,7 +237,7 @@ end;
 md"""
 ## VMI Pipeline
 
-### 01. Spectral Basis from the Two Acquisitions
+### 1. Spectral Basis from the Two Acquisitions
 
 `spectral_basis_from_acquisitions` merges the two kVp energy grids onto their union and
 scales each acquisition's per-ray spectrum by its own air counts, so the likelihood sees the
@@ -283,7 +283,7 @@ within $(round(basis.I0_relerr, sigdigits = 2)) (relative).
 
 # ╔═╡ 03a10001-0000-4000-8000-000000000003
 md"""
-### 02. The Chain's Settings
+### 2. The Chain's Settings
 
 The denoiser is generalized HYPR-LR in both domains, `BS.SpectralHYPR`: a 3 × 3
 (column × view) window on the counts of each detector row before the decomposition, and on
@@ -312,7 +312,7 @@ GE_KERNEL = BS.CustomFilter(
 
 # ╔═╡ 040e1000-0000-4000-8000-000000000003
 md"""
-### 03. `vmi_pipeline`
+### 3. `vmi_pipeline`
 
 One call, from the two corrected sinograms to the VMI stack, reconstructed on the
 notebook's grid (`recon_opts.matrix_size`) with every detector row kept.
@@ -349,7 +349,7 @@ end
 
 # ╔═╡ 040e0002-0000-4000-8000-000000000003
 md"""
-### 04. Basis Maps and VMIs
+### 4. Basis Maps and VMIs
 
 The water and iodine basis pair after image HYPR and ACNR (mid slice), and the VMIs
 synthesized from it. Every VMI comes from the same basis pair.

@@ -35,7 +35,7 @@ begin
     AT = GPUSelect.Storage()     # the backend array type, directly: MtlArray / CuArray / ROCArray
     to_gpu(x) = AT(x)
     GPU_BACKEND = (name = string(nameof(AT)),)
-end
+end;
 
 # ╔═╡ 10000002-0000-4000-8000-000000000001
 md"""
@@ -98,7 +98,7 @@ titanium = BS.XA.Material(
     233.0u"eV",         # mean excitation energy
     4.54u"g/cm^3",      # bulk density
     Dict(22 => 1.0),    # elemental composition: pure Ti
-)
+);
 
 # ╔═╡ 10000004-0000-4000-8000-000000000001
 md"""
@@ -190,7 +190,7 @@ function scan_hu(phantom)
     ws = nothing; ws_fdk = nothing; sino = nothing; μ = nothing
     GC.gc(true)
     return out
-end
+end;
 
 # ╔═╡ 10000005-0000-4000-8000-000000000007
 scan_ti = scan_hu(phantom);
@@ -202,7 +202,7 @@ scan_ref = scan_hu(phantom_reference);
 md"""
 ## Results
 
-### 01. The artifacts
+### 1. The artifacts
 
 Top: the metal-free reference and the titanium scan in a soft-tissue window, and the titanium
 scan in a wide window that shows the rods themselves. Bottom: the difference titanium −

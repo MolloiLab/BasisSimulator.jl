@@ -85,7 +85,7 @@ begin
     AT = GPUSelect.Storage()     # the backend array type, directly: MtlArray / CuArray / ROCArray
     to_gpu(x) = AT(x)
     GPU_BACKEND = (name = string(nameof(AT)),)
-end
+end;
 
 # ╔═╡ 02000007-0000-4000-8000-000000000001
 Markdown.parse("""
@@ -99,16 +99,16 @@ md"""
 
 # ╔═╡ 03000001-0000-4000-8000-000000000001
 md"""
-### 01. Download the XCAT phantom
+### 1. Download the XCAT phantom
 
 No local files, no manual setup.  `BS.load_xcat_male_chest()` fetches the
 voxelized **XCAT adult-male 50th-percentile chest** phantom from the open
 [`xcist/phantoms-voxelized`](https://github.com/xcist/phantoms-voxelized)
-repository (BSD-3-Clause) into Julia\'s content-addressed artifact store: it downloads once,
+repository (BSD-3-Clause) into Julia's content-addressed artifact store: it downloads once,
 verifies the file's SHA-256 against the value pinned in the package, logs the Segars XCAT +
 XCIST citation, and reuses the cached copy on every later call.
 
-!!! info "Using `load_xcat_*`"
+!!! info "Using the XCAT loaders"
     Four phantoms ship — `:female_slab`, `:female_chest`, `:male_slab`,
     `:male_chest` (see `BS.xcat_phantoms()`).  Each `load_xcat_<name>()` returns
     the **labeled pieces**: `mask`, a `materials` dict (`label => XA.Material`),
@@ -128,7 +128,7 @@ XCIST citation, and reuses the cached copy on every later call.
 
 # ╔═╡ 05000001-0000-4000-8000-000000000001
 md"""
-### 02. Custom materials via `XrayAttenuation`
+### 2. Custom materials via `XrayAttenuation`
 
 The loader assigns every label a sensible default tissue, but the whole point of
 a digital phantom is that **you control the material physics**.  Each label maps
@@ -198,10 +198,10 @@ function build_iodine_blood(iodine_mg_per_mL::Real)
         density,
         comp,
     )
-end
+end;
 
 # ╔═╡ 05000003-0000-4000-8000-000000000004
-iodine_blood = build_iodine_blood(5.0)
+iodine_blood = build_iodine_blood(5.0);
 
 # ╔═╡ 05000004-0000-4000-8000-000000000001
 md"""
@@ -210,7 +210,7 @@ md"""
 The loader ships the canonical NCAT/XCAT mapping as `BS.xcat_default_materials()`
 — every XCIST material name → an `XrayAttenuation` material.  This is what
 replaces hand-parsing a per-organ spreadsheet: the compositions already live in
-XrayAttenuation\'s NCAT catalog.  Copy the dict, edit it by name, and hand it
+XrayAttenuation's NCAT catalog.  Copy the dict, edit it by name, and hand it
 back to the loader via `materials =` (§d).
 """
 
@@ -235,15 +235,15 @@ loader via `materials =` in §3.
 materials_map = let m = BS.xcat_default_materials()
     m["ncat_blood"] = iodine_blood        # dope the blood pool with 5 mg/mL iodine contrast
     m
-end
+end;
 
 # ╔═╡ 06000001-0000-4000-8000-000000000001
 md"""
-### 03. Build the `Phantom`
+### 3. Build the `Phantom`
 
 `load_xcat_male_slab` returns the labeled pieces; we assemble the `Phantom` from
 them.  For a GPU simulation the mask must live on the device — the workspace
-picks its compute backend from the mask\'s array type — so we `to_gpu` it first.
+picks its compute backend from the mask's array type — so we `to_gpu` it first.
 The slab is a single axial section at the phantom's full in-plane resolution: real anatomy at a
 docs-friendly compute cost, with no downsampling.
 """
@@ -257,14 +257,14 @@ catch err
 end;
 
 # ╔═╡ 06000000-0000-4000-8000-0000000000a1
-phantom_labeled = xcat === nothing ? nothing : xcat.mask
+phantom_labeled = xcat === nothing ? nothing : xcat.mask;
 
 # ╔═╡ 06000002-0000-4000-8000-000000000001
-VOXEL_SIZE_CM = xcat === nothing ? (0.15, 0.15, 0.15) : xcat.voxel_size_cm
+VOXEL_SIZE_CM = xcat === nothing ? (0.15, 0.15, 0.15) : xcat.voxel_size_cm;
 
 # ╔═╡ 06000003-0000-4000-8000-000000000001
 phantom = xcat === nothing ? nothing :
-    BS.Phantom(to_gpu(xcat.mask), xcat.materials, xcat.voxel_size_cm)
+    BS.Phantom(to_gpu(xcat.mask), xcat.materials, xcat.voxel_size_cm);
 
 # ╔═╡ 04000005-0000-4000-8000-000000000001
 let
@@ -306,7 +306,7 @@ md"""
 
 # ╔═╡ 07000001-0000-4000-8000-000000000001
 md"""
-### 01. Scanner, protocol, sim & recon options
+### 1. Scanner, protocol, sim & recon options
 
 The GE Revolution Apex Elite of notebook 01. The protocol is a body CTA: 120 kVp / 250 mA,
 5 mm collimation, 500 views in 1 s. Reconstruction: 512 × 512 over 35 cm, eight 0.625 mm slices.
@@ -334,7 +334,7 @@ scanner = BS.EICTScanner(
     # so it passes through the reconstruction and iterative reconstruction can act on it.
     electronic_noise = 3500.0,   # e⁻ rms
     detection_gain = 10.0,
-)
+);
 
 # ╔═╡ 07000003-0000-4000-8000-000000000001
 protocol = BS.CTProtocol(
@@ -344,25 +344,25 @@ protocol = BS.CTProtocol(
     rotation_time = 1.0,
     collimation_mm = 5.0,
     additional_filters = [("Al", 4.5)],
-)
+);
 
 # ╔═╡ 07000004-0000-4000-8000-000000000001
 # `projector` picks the forward ray tracer: :dd_fast (default) is distance-driven and
 # anti-aliased, and walks the volume once for the whole spectrum; :siddon point-samples
 # the volume and can alias in strongly beam-hardened regions. The Hybrid-IR cell reads
 # `sim_opts.projector`, so its system matrix always matches the operator that made the data.
-sim_opts = BS.SimOptions(seed = 1234, projector = :dd_fast)
+sim_opts = BS.SimOptions(seed = 1234, projector = :dd_fast);
 
 # ╔═╡ 07000005-0000-4000-8000-000000000001
 recon_opts = BS.ReconOptions(
     matrix_size = (512, 512, 8),
     fov_cm = 35.0,
     z_cm = 0.5,
-)
+);
 
 # ╔═╡ 08000001-0000-4000-8000-000000000001
 md"""
-### 02. Forward project
+### 2. Forward project
 
 The notebook 01 pattern: workspace, `simulate!`, copy the sinogram off the device, release the
 device buffers. `simulate!` returns the acquisition's dose report.
@@ -392,7 +392,7 @@ md"""
 
 # ╔═╡ 09000001-0000-4000-8000-000000000001
 md"""
-### 01. The reconstruction chain
+### 1. The reconstruction chain
 
 The chain of notebook 01, applied to both algorithms:
 
@@ -401,7 +401,7 @@ The chain of notebook 01, applied to both algorithms:
 | 1 | `calibrate_bhc_water` | per detector column, the polynomial mapping polychromatic water line integrals to monochromatic ones, from the full detected spectrum; no tunable parameters |
 | 2 | `apply_bhc_water` | applies it to the sinogram, before reconstruction |
 | 3 | `reconstruct!` | FBP (`create_fdk_recon_workspace`) or Hybrid IR (`create_hir_recon_workspace`) |
-| 4 | `to_hounsfield` | μ → HU with the correction's own μ_water at its reference energy |
+| 4 | `to_hounsfield` | μ → HU with the correction's own water μ at its reference energy |
 
 !!! info "Noise is already in the counts"
     Quantum noise and the electronic noise of `scanner.electronic_noise` are both added by
@@ -446,7 +446,7 @@ Markdown.parse("""
 
 # ╔═╡ 09000010-0000-4000-8000-000000000001
 md"""
-### 02. FBP
+### 2. FBP
 
 Water BHC → FDK with the `:standard` kernel → HU, releasing the device buffers at the end.
 """
@@ -464,7 +464,7 @@ end;
 
 # ╔═╡ 10000001-0000-4000-8000-000000000001
 md"""
-### 03. Hybrid IR
+### 3. Hybrid IR
 
 The same chain with `create_hir_recon_workspace(...; strength = 60)` in place of the FDK
 workspace.
@@ -475,7 +475,7 @@ workspace.
     (GE ASIR-V, Siemens SAFIRE, Philips iDose⁴, Canon AIDR 3D), whose noise-reduction range its
     strength table targets.
 
-!!! tip "One dial: `strength`"
+!!! tip "One dial: strength"
     A percentage in steps of 10, read like the GE ASIR-V dial: `0` is pure FBP (the iterative
     loop is skipped), `60` the standard clinical setting used here, `100` the maximum noise
     reduction. It moves the regularisation weight, the Huber threshold, the relaxation and the
@@ -602,8 +602,8 @@ Three ideas on top of the five-struct API of notebook 01:
 
 - **Voxel phantoms from an artifact.** `BS.load_xcat_male_slab()` (and the other
   `load_xcat_*` loaders) download a published XCAT phantom once, verify it, and return the
-  labeled mask, a material per label and the voxel size; `BS.Phantom(to_gpu(mask), materials,
-  voxel_size)` makes it simulatable. Any other labeled mask works the same way.
+  labeled mask, a material per label and the voxel size;
+  `BS.Phantom(to_gpu(mask), materials, voxel_size)` makes it simulatable. Any other labeled mask works the same way.
 - **Materials you define.** `XA.Materials.ncat_*` for the standard tissues, or
   `XA.Material(name, ZA, I, density, composition)` for a contrast bolus, a calibration solution
   or an alloy; the composition is a `Dict` of atomic number → mass fraction, and the loader's

@@ -30,7 +30,7 @@ BasisSimulator on the GPU.**
 
 This is a cross-validation of the forward model and the reconstruction against an independent
 implementation. Both simulators are configured to the same beam and the same physics, both apply
-a water beam-hardening correction referenced to the same monoenergetic μ_water, and both
+a water beam-hardening correction referenced to the same monoenergetic water μ, and both
 reconstruct with FDK and a `standard` kernel. The comparison therefore reads in HU: the
 per-rod table below puts CatSim, BasisSimulator and the XrayAttenuation theory side by side. The
 runtime of each pipeline comes after.
@@ -90,7 +90,7 @@ begin
     AT = GPUSelect.Storage()   # CuArray / MtlArray / ROCArray / oneArray, or Array on a CPU-only host
     to_gpu(x) = AT(x)
     GPU_BACKEND = (name = string(nameof(AT)),)
-end
+end;
 
 # ╔═╡ 06000001-0000-4000-8000-000000000050
 md"""
@@ -301,7 +301,7 @@ CatSim's configuration:
   target angle and focal spot, and no graphite detector prefilter (BasisSimulator models none).
 - **Preprocessing.** CatSim's own water BHC, `Prep_BHC_Accurate`: a degree-5 polynomial per
   detector cell fitted to air scans through 1–50 cm of water, mapped to the same monoenergetic
-  μ_water that BasisSimulator's `calibrate_bhc_water` uses. HU conversion uses that μ_water too.
+  water μ that BasisSimulator's `calibrate_bhc_water` uses. HU conversion uses that water μ too.
 """
 
 # ╔═╡ 06000004-0000-4000-8000-000000000010
@@ -318,7 +318,7 @@ function catsim_init()
         _catsim_state[:cfg] = joinpath(dirname(origin), "examples", "cfg")
     end
     return _catsim_state[:xc], _catsim_state[:recon], _catsim_state[:cfg]
-end
+end;
 
 # ╔═╡ 06000004-0000-4000-8000-000000000030
 function catsim_create_simulation()
@@ -328,7 +328,7 @@ function catsim_create_simulation()
         joinpath(cfg, "Scanner_Sample_generic.cfg"),
         joinpath(cfg, "Protocol_Sample_axial.cfg"),
     )
-end
+end;
 
 # ╔═╡ 06000004-0000-4000-8000-000000000040
 function catsim_configure_scanner!(ct, scanner, protocol)
@@ -357,7 +357,7 @@ function catsim_configure_scanner!(ct, scanner, protocol)
     ct.scanner.detectorRowFillFraction = scanner.fill_factor_row
     ct.scanner.detectorPrefilter = PC.pylist([])
     return ct
-end
+end;
 
 # ╔═╡ 06000004-0000-4000-8000-000000000050
 function catsim_configure_protocol!(ct, scanner, protocol; μ_water_cm)
@@ -385,7 +385,7 @@ function catsim_configure_protocol!(ct, scanner, protocol; μ_water_cm)
     ct.physics.BHC_max_length_mm = 500
     ct.physics.BHC_length_step_mm = 10
     return ct
-end
+end;
 
 # ╔═╡ 06000004-0000-4000-8000-000000000060
 function catsim_configure_recon!(ct, recon_opts; μ_water_cm)
@@ -402,7 +402,7 @@ function catsim_configure_recon!(ct, recon_opts; μ_water_cm)
     ct.recon.mu = μ_water_cm / 10.0           # cm⁻¹ → mm⁻¹
     ct.recon.huOffset = -1000
     return ct
-end
+end;
 
 # ╔═╡ 06000004-0000-4000-8000-000000000070
 function catsim_configure_phantom!(ct, json_path)
@@ -412,14 +412,14 @@ function catsim_configure_phantom!(ct, json_path)
     ct.phantom.scale = 1.0
     ct.phantom.centerOffset = PC.pylist([0.0, 0.0, 0.0])
     return ct
-end
+end;
 
 # ╔═╡ 06000004-0000-4000-8000-000000000080
 function catsim_forward_project(ct; results_name)
     ct.resultsName = results_name
     ct.run_all()
     return nothing
-end
+end;
 
 # ╔═╡ 06000004-0000-4000-8000-000000000090
 function catsim_reconstruct_fdk(ct; results_name)
@@ -433,7 +433,7 @@ function catsim_reconstruct_fdk(ct; results_name)
     file = "$(results_name)_$(n)x$(n)x$(nz).raw"
     isfile(file) || error("CatSim wrote no reconstruction")
     return copy(reshape(reinterpret(Float32, read(file)), (n, n, nz)))
-end
+end;
 
 # ╔═╡ 06000005-0000-4000-8000-000000000001
 md"""
@@ -488,7 +488,7 @@ function export_phantom_for_catsim(phantom, output_dir, name)
     path = joinpath(output_dir, "$(name).json")
     write(path, json)
     return path
-end
+end;
 
 # ╔═╡ 06000006-0000-4000-8000-000000000001
 md"""
@@ -521,7 +521,7 @@ md"""
 
 `calibrate_bhc_water` resolves BasisSimulator's detected spectrum per detector column and returns
 the per-column correction with its monoenergetic reference (the spectrum's mean energy). That
-reference μ_water is given to CatSim as the target of its own BHC fit and used for the HU
+reference water μ is given to CatSim as the target of its own BHC fit and used for the HU
 conversion of all three reconstructions.
 """
 
@@ -539,7 +539,7 @@ bhc = BS.calibrate_bhc_water(sim_opts, protocol; scanner, geom = geom_inspect);
 
 # ╔═╡ 06000007-0000-4000-8000-000000000030
 Markdown.parse("""
-**Water reference:** $(round(bhc.reference_energy_keV; digits = 1)) keV, μ_water = $(round(bhc.μ_water_ref; digits = 5)) cm⁻¹
+**Water reference:** $(round(bhc.reference_energy_keV; digits = 1)) keV, water μ = $(round(bhc.μ_water_ref; digits = 5)) cm⁻¹
 """)
 
 # ╔═╡ 060000f2-0000-4000-8000-000000000001
@@ -598,7 +598,7 @@ function basissim_pipeline(phantom)
     ws_fdk = BS.create_fdk_recon_workspace(sino, ws.geom, recon_opts.matrix_size; filter = :standard)
     μ = Array(BS.reconstruct!(ws_fdk, sino, ws.geom))
     return Float32.(BS.to_hounsfield(μ; μ_water = bhc.μ_water_ref))
-end
+end;
 
 # ╔═╡ 06000009-0000-4000-8000-000000000010
 basissim_cpu_result = let

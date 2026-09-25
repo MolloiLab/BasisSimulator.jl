@@ -83,7 +83,7 @@ begin
     AT = GPUSelect.Storage()     # the backend array type, directly: MtlArray / CuArray / ROCArray
     to_gpu(x) = AT(x)
     GPU_BACKEND = (name = string(nameof(AT)),)
-end
+end;
 
 # ╔═╡ 07010003-0000-4000-8000-000000000050
 md"""
@@ -101,7 +101,7 @@ sinograms.
 
 # ╔═╡ 07020001-0000-4000-8000-000000000001
 md"""
-### 01. `Phantom`: QRM-Thorax with 4 Pure-Material Rods
+### 1. `Phantom`: QRM-Thorax with 4 Pure-Material Rods
 
 The QRM-Thorax phantom is built analytically, from 2-D shapes: a flat-fronted
 superellipse body, the two lungs, the cardiac insert and the mediastinum above it, a water
@@ -112,14 +112,14 @@ The slice is z-tiled to **1600 × 1100 × 20** at **0.2 mm isotropic** (320 × 2
 finer than the demagnified detector pitch, so the forward projector samples a
 high-resolution object.
 
-| Label | Material              |  | Label | Material               |
-|-------|-----------------------|--|-------|------------------------|
-| 1     | air                   |  | 7     | air rod                |
-| 2     | lung                  |  | 8     | (unused)               |
-| 3     | soft tissue           |  | **9** | rod → water            |
-| 4     | cortical bone         |  | **10**| rod → lipid            |
-| 5     | bone marrow           |  | **11**| rod → collagen         |
-| 6     | water rod (lung)      |  | **12**| rod → 5 mg/mL iodine   |
+| Label | Material         | Label  | Material             |
+|:------|:-----------------|:-------|:---------------------|
+| 1     | air              | 7      | air rod              |
+| 2     | lung             | 8      | (unused)             |
+| 3     | soft tissue      | **9**  | rod → water          |
+| 4     | cortical bone    | **10** | rod → lipid          |
+| 5     | bone marrow      | **11** | rod → collagen       |
+| 6     | water rod (lung) | **12** | rod → 5 mg/mL iodine |
 
 As in the reference slice, the cardiac insert is soft tissue (label 3, like the body) with
 the four pure-material rods 9–12 bored into it, so label 8 is unused. `qrm_thorax_slice`
@@ -231,7 +231,7 @@ begin
         end
         return img
     end
-end
+end;
 
 # ╔═╡ 07020001-0000-4000-8000-000000000013
 const QRM_NZ = 20;    # 20 × 0.2 mm = 4 mm: a short z-invariant phantom
@@ -367,7 +367,7 @@ end
 
 # ╔═╡ 07030001-0000-4000-8000-000000000001
 md"""
-### 02. `EICTScanner`: GE Revolution Apex Elite
+### 2. `EICTScanner`: GE Revolution Apex Elite
 """
 
 # ╔═╡ 07030001-0000-4000-8000-000000000010
@@ -399,7 +399,7 @@ scanner = BS.EICTScanner(
 
 # ╔═╡ 07030002-0000-4000-8000-000000000001
 md"""
-### 03. Dual-kVp Protocols (Rapid kVp Switching)
+### 3. Dual-kVp Protocols (Rapid kVp Switching)
 
 | kVp | Instantaneous mA | Duty cycle | Effective mA |
 |-----|------------------|------------|--------------|
@@ -433,7 +433,7 @@ protocol_high = BS.CTProtocol(
 
 # ╔═╡ 07030003-0000-4000-8000-000000000001
 md"""
-### 04. `SimOptions` and `ReconOptions`
+### 4. `SimOptions` and `ReconOptions`
 
 Each kVp gets its own noise seed, so the two acquisitions carry independent quantum noise.
 The reconstruction grid is 512 × 512 × 3 at 0.625 mm, independent of the 0.2 mm phantom
@@ -455,7 +455,7 @@ recon_opts = BS.ReconOptions(
 
 # ╔═╡ 07030004-0000-4000-8000-000000000001
 md"""
-### 05. Forward Project: `simulate!`
+### 5. Forward Project: `simulate!`
 
 One workspace and one `simulate!` per kVp. Each acquisition keeps what the spectral basis
 needs: its corrected log sinogram, its per-ray air counts `I0_ray` (the detector's air
@@ -525,7 +525,7 @@ end
 md"""
 ## VMI Pipeline
 
-### 01. Spectral Basis from the Two Acquisitions
+### 1. Spectral Basis from the Two Acquisitions
 
 `spectral_basis_from_acquisitions` merges the two kVp energy grids onto their union and
 scales each acquisition's per-ray spectrum by its own air counts, so the likelihood sees the
@@ -539,16 +539,16 @@ basis = BS.spectral_basis_from_acquisitions(acquisitions = [
 ]);
 
 # ╔═╡ 07030006-0000-4000-8000-000000000011
-md"""
+Markdown.parse("""
 The basis holds $(basis.n_channels) channels on a $(length(basis.E))-point energy grid
-($(round(Int, minimum(basis.E)))–$(round(Int, maximum(basis.E))) keV) for
-$(size(basis.Φ, 1)) × $(size(basis.Φ, 2)) rays; the response sums to the air counts to
-within $(round(basis.I0_relerr, sigdigits = 2)) (relative).
-"""
+for $(size(basis.Φ, 1)) × $(size(basis.Φ, 2)) rays, spanning
+$(round(Int, minimum(basis.E))) to $(round(Int, maximum(basis.E))) keV; the response sums
+to the air counts to within $(round(basis.I0_relerr, sigdigits = 2)) (relative).
+""")
 
 # ╔═╡ 07030006-0000-4000-8000-000000000001
 md"""
-### 02. The Chain's Settings
+### 2. The Chain's Settings
 
 The denoiser is generalized HYPR-LR in both domains, `BS.SpectralHYPR`: a 3 × 3
 (column × view) window on the counts of each detector row before the decomposition, and on
@@ -563,7 +563,7 @@ halfway between the Standard and Soft windows.
 # ╔═╡ 07030006-0000-4000-8000-000000000012
 # the published chain (basis-vmi / basis-spectral-denoising): a 3 × 3 (column × view) window on
 # the counts, and on the basis pair a 1 × 1 × 7 composite and a 15 × 15 × 7 complement window
-HYPR_CHAIN = BS.SpectralHYPR()
+HYPR_CHAIN = BS.SpectralHYPR();
 
 # ╔═╡ 07030006-0000-4000-8000-000000000013
 VMI_CHAIN = (method = :nchannel, controls = BS.NChannelControls(), use_tlbf = false, antialias = true);
@@ -580,7 +580,7 @@ de_vmi_energies = [50.0, 70.0, 100.0, 140.0];
 
 # ╔═╡ 07030007-0000-4000-8000-000000000001
 md"""
-### 03. `vmi_pipeline`
+### 3. `vmi_pipeline`
 
 One call, from the two corrected sinograms to the VMI stack, reconstructed on the
 notebook's grid with every detector row kept. `keep_sinograms = true` also returns the
@@ -646,7 +646,7 @@ end
 
 # ╔═╡ 07030008-0000-4000-8000-000000000001
 md"""
-### 04. Basis Maps and VMIs
+### 4. Basis Maps and VMIs
 
 The water and iodine basis pair after image HYPR and ACNR (mid slice), and the VMIs
 synthesized from it: ``\mu(E) = c_\mathrm{water}\,(\mu/\rho)_\mathrm{water}(E) +
@@ -658,19 +658,21 @@ energy. Every VMI comes from the same basis pair.
 let
     fig = Mke.Figure(size = (1180, 580))
     mid = size(dual_vmi.images.water, 3) ÷ 2 + 1
+    # iodine in mg/mL on a fixed window around the 5 mg/mL rod (a percentile window of the
+    # whole slice sits below the rod, which covers under 1 % of it); water on its percentiles
+    iodine_mg = 1000 .* dual_vmi.images.iodine[:, :, mid]
+    water = dual_vmi.images.water[:, :, mid]
     panels = (
-        ("Iodine Basis", dual_vmi.images.iodine),
-        ("Water Basis", dual_vmi.images.water),
+        ("Iodine Basis", iodine_mg, (-2.0, 8.0), "mg/mL"),
+        ("Water Basis", water, Tuple(Float64.(quantile(vec(water), (0.01, 0.99)))), "g/mL"),
     )
-    for (c, (ttl, volume)) in enumerate(panels)
-        slice = volume[:, :, mid]
-        range = Tuple(Float64.(quantile(vec(slice), (0.01, 0.99))))
+    for (c, (ttl, slice, range, unit)) in enumerate(panels)
         ax = Mke.Axis(fig[1, 2c - 1]; title = ttl, aspect = Mke.DataAspect(), titlesize = 32)
         Mke.heatmap!(ax, slice; colormap = :viridis, colorrange = range)
         Mke.hidedecorations!(ax)
         Mke.Colorbar(
             fig[1, 2c]; colormap = :viridis, colorrange = range,
-            label = "g/cm³", width = 16, labelsize = 22, ticklabelsize = 18,
+            label = unit, width = 16, labelsize = 22, ticklabelsize = 18,
         )
     end
     fig
@@ -971,7 +973,7 @@ let
         "| $(name) | $(round(BS.XA.val(mat.density), digits = 3)) | $(round(cw, digits = 3)) | $(round(ci, digits = 2)) |"
     end
     Markdown.parse("""
-    | rod | density (g/cm³) | c_water (g/mL) | c_iodine (mg/mL) |
+    | rod | density (g/cm³) | water (g/mL) | iodine (mg/mL) |
     |-----|------:|------:|------:|
     $(join(rows, "\n"))
     """)
