@@ -215,7 +215,8 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
             P(:class => prose,
                 "The photon-counting system. Native CdTe dexels of 0.275 × 0.322 mm at the detector face are ",
                 "binned 2 × 2, which at the 1113/610 magnification gives 0.301 × 0.353 mm pixels at the ",
-                "isocentre, 1195 columns across a 36 cm field and 144 rows. Four thresholds at 20, 35, 55 and ",
+                "isocentre and 144 rows. Notebook 04 spans the 50 cm scan field (1659 columns), notebook 08 a ",
+                "36 cm field (1195 columns). Four thresholds at 20, 35, 55 and ",
                 "70 keV make the bins 20–35, 35–55, 55–70 and > 70 keV."),
             CodeBlock("""scanner = let native_col = 0.275, native_row = 0.322,   # mm at the detector face
                sid = 610.0, sdd = 1113.0, bf = 2
@@ -223,12 +224,12 @@ let BASE = get(ENV, "BASISSIM_BASE", "")
     row_iso = native_row * bf / (sdd / sid)                # 0.353 mm
     BS.PCCTScanner(
         source_to_isocenter = sid, source_to_detector = sdd,
-        detector_rows = 144, detector_cols = ceil(Int, 360.0 / col_iso),
+        detector_rows = 144, detector_cols = ceil(Int, 500.0 / col_iso),   # 50 cm field (notebook 08: 360)
         detector_row_size = row_iso, detector_col_size = col_iso,
         focal_spot_width = 0.4, focal_spot_length = 0.5, target_angle = 7.0,
-        gantry_rotation_time = 0.5, scan_diameter = 360.0, gantry_aperture = 820.0,
+        gantry_rotation_time = 0.5, scan_diameter = 500.0, gantry_aperture = 820.0,
         flat_filter_material = :aluminum, flat_filter_thickness = 3.0,
-        bowtie_filter = :none,                              # notebook 08; notebook 04 keeps the default
+        bowtie_filter = :large_body,                        # both notebooks
         detector_material = :cdte, detector_depth = 1.6,
         fill_factor_row = 0.95, fill_factor_col = 0.95,
         energy_thresholds = [20.0, 35.0, 55.0, 70.0],

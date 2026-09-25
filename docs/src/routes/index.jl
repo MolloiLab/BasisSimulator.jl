@@ -185,7 +185,7 @@ hu   = BS.to_hounsfield(Array(BS.reconstruct!(fdk, sino, ws.geom)); μ_water = b
                 figure("flash_ufc_vmi_grid.png", "Virtual monoenergetic images of Gammex 472 at 50, 70, 100 and 140 keV",
                     "Dual-source 100/Sn140 kV virtual monoenergetic images on the SOMATOM Definition Flash.", "12_siemens_flash_ufc"),
                 figure("helical_vs_stepshoot_coronal.png", "Coronal reformats of a helical scan and three volume-axial stations",
-                    "30 cm of coverage: a 20 mm helix at pitch 1.0 against three 16 cm axial stations.", "11_helical_scanning"),
+                    "30 cm of coverage: a 20 mm helix at pitch 1.0 against three 16 cm-beam axial stations 10 cm apart.", "11_helical_scanning"),
                 figure("flash_ufc_lut_comparison.png", "Monte Carlo detector efficiency of three scintillators",
                     "Monte Carlo detector efficiency: two UFC crystals and the Gemstone garnet.", "12_siemens_flash_ufc"),
                 figure("titanium_artifacts.png", "Titanium rods in water, soft-tissue and wide windows",

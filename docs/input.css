@@ -174,3 +174,12 @@ html {
   .suite-hl-special { color: #f78c6c; font-style: italic; }
   .suite-hl-operator { color: #89ddff; }
 }
+
+/* Notebook figures are white CairoMakie canvases; in dark mode dim them slightly and round them so
+   they sit on the dark card instead of glaring out of it. */
+@layer components {
+  .dark .snap-notebook img {
+    filter: brightness(0.88) contrast(1.05);
+    border-radius: 0.5rem;
+  }
+}

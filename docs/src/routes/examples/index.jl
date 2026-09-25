@@ -94,7 +94,7 @@ let BASE          = get(ENV, "BASISSIM_BASE", ""),
         "11_helical_scanning" => (
             title     = "Helical Scanning",
             summary   = "One keyword, pitch, turns an axial protocol into a spiral. A 30 cm slab from a 20 mm helix " *
-                        "at pitch 1.0 against three 16 cm volume-axial stations at matched beam-width × current: " *
+                        "at pitch 1.0 against three volume-axial stations (16 cm beam, 10 cm apart) at matched beam-width × current: " *
                         "rebinned WFBP, CTDIvol and DLP of each, coronal reformats and z-profiles.",
             thumbnail = "helical_vs_stepshoot_coronal.png",
             tags      = ["Helical", "WFBP", "Dose"],

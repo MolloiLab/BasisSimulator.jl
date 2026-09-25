@@ -64,7 +64,9 @@ function _api_style_html(html::AbstractString, onpage::Set{String})
     for t in ("p", "ul", "ol", "table", "th", "td", "blockquote")
         h = replace(h, "<$t>" => "<$t class=\"$(C[t])\">")
     end
-    replace(h, "<div class=\"admonition" => "<div class=\"$(C["admonition"]) admonition")
+    h = replace(h, "<div class=\"admonition" => "<div class=\"$(C["admonition"]) admonition")
+    # admonition titles are plain text in Julia Markdown: render their `code` words as code
+    replace(h, r"<p class=\"admonition-title\">(.*?)</p>" => t -> replace(t, r"`([^`]+)`" => s"<code>\1</code>"))
 end
 
 _api_md_html(md, onpage) = _api_style_html(Markdown.html(md), onpage)
@@ -86,7 +88,41 @@ function _api_kind(M::Module, n::Symbol)
     return "constant"
 end
 
-_api_parse(d) = d.object isa Markdown.MD ? d.object : Markdown.parse(join(string.(d.text)))
+# Julia Markdown reads an underscore inside a word (`large_body`, `μ_water`, `n_cols`) as the start of
+# emphasis, so docstring prose written without backticks would lose its underscores to italics.
+# Re-parse the raw text with every intra-word underscore escaped — outside fenced blocks, indented
+# code and inline code spans, which Markdown leaves alone anyway.
+function _api_escape_underscores(text::AbstractString)
+    out = IOBuffer(); fenced = false
+    for line in split(text, '\n'; keepempty = true)
+        if startswith(lstrip(line), "```")
+            fenced = !fenced; println(out, line); continue
+        end
+        if fenced || startswith(line, "    ") || startswith(line, "\t")
+            println(out, line); continue
+        end
+        # split into code spans and prose; escape only the prose
+        parts = split(line, r"(`+)"; keepempty = true)
+        ticks = [m.match for m in eachmatch(r"`+", line)]
+        incode = false; opener = ""
+        for (i, part) in enumerate(parts)
+            print(out, incode ? part : replace(part, r"(?<=[\p{L}\p{N}])_(?=[\p{L}\p{N}])" => "\\_"))
+            i <= length(ticks) || break
+            t = ticks[i]
+            if !incode
+                incode = true; opener = t
+            elseif t == opener
+                incode = false
+            end
+            print(out, t)
+        end
+        println(out)
+    end
+    return String(chomp(String(take!(out))))
+end
+
+_api_parse(d) = isempty(d.text) ? d.object :
+    Markdown.parse(_api_escape_underscores(join(string.(d.text))))
 
 # Flatten `MD(MD(...))` nesting to a block list.
 _api_blocks(md) = length(md.content) == 1 && md.content[1] isa Markdown.MD ? _api_blocks(md.content[1]) : md.content
