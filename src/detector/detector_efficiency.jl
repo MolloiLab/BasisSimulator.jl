@@ -270,11 +270,9 @@ Flash — the dual-source sister of [`UFC_MC_EFFICIENCY_LUT`] (SOMATOM Force).
 
 Computed from a full Monte-Carlo transport simulation of the Definition Flash
 detector by Hamidreza Khodajou-Chokami, PhD (UC Irvine Medical Imaging
-Laboratory), `flash_efficiency_results.csv`, 2026-08-26 (CRSP lab share;
-archived locally with provenance notes as
-`docs/notebooks/data/ufc_flash_mc_efficiency_v1.csv` — that directory is
-gitignored, so this LUT is the canonical tracked copy).  Values are verbatim
-from that dataset on a 1-keV grid (1–140 keV).
+Laboratory), `flash_efficiency_results.csv`, 2026-08-26 (CRSP lab share).  This
+LUT is the tracked copy; values are verbatim from that dataset on a 1-keV grid
+(1–140 keV).
 
 # Key features captured by MC (not in Beer-Lambert)
 
