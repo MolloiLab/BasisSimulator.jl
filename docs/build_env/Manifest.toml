@@ -5,9 +5,9 @@ manifest_format = "2.0"
 project_hash = "0484cca6df5b32abac0b1a7dce4196a130fadf6b"
 
 [[deps.AbstractPlutoDingetjes]]
-git-tree-sha1 = "6c3913f4e9bdf6ba3c08041a446fb1332716cbc2"
+git-tree-sha1 = "e71ee7b4aa06b045259a7d6101e1cb45ad140bce"
 uuid = "6e696c72-6542-2067-7265-42206c756150"
-version = "1.4.0"
+version = "1.4.1"
 
 [[deps.ArgTools]]
 uuid = "0dad84c5-d112-42e6-8d28-ef12dabb789f"
@@ -259,6 +259,12 @@ version = "1.2.1"
 uuid = "ca575930-c2e3-43a9-ace4-1e988b2c1908"
 version = "1.3.0"
 
+[[deps.NodeJS_24_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "61ae7c625c6db1a2a21aa48a9a4104b971643a70"
+uuid = "30a2228f-09fe-513d-9563-0d10bd40449a"
+version = "24.18.0+0"
+
 [[deps.OpenSSL]]
 deps = ["BitFlags", "Dates", "MozillaCACerts_jll", "NetworkOptions", "OpenSSL_jll", "Sockets"]
 git-tree-sha1 = "1d1aaa7d449b58415f97d2839c318b70ffb525a0"
@@ -366,12 +372,10 @@ uuid = "777ac1f9-54b0-4bf8-805c-2214025038e7"
 version = "1.2.0"
 
 [[deps.Snapshot]]
-deps = ["AbstractPlutoDingetjes", "Base64", "Dates", "InteractiveUtils", "JSON", "Markdown", "Pkg", "Pluto", "PlutoDependencyExplorer", "Random", "SHA", "UUIDs", "WasmTarget"]
-git-tree-sha1 = "8d6ee8bd4c682c7d86a5d222d83c7f27d90f404f"
-repo-rev = "f0932cb2cd23781fe6d63fa488b65a16fa968e2d"
-repo-url = "https://github.com/GroupTherapyOrg/Snapshot.jl"
+deps = ["AbstractPlutoDingetjes", "Base64", "Dates", "InteractiveUtils", "JSON", "Markdown", "NodeJS_24_jll", "Pkg", "Pluto", "PlutoDependencyExplorer", "Random", "SHA", "UUIDs", "WasmTarget"]
+git-tree-sha1 = "b19123852f531f5cd0bdd30b0dd2343585a42534"
 uuid = "1e64ef43-5f79-4f6b-8e97-159df4e27032"
-version = "0.1.0"
+version = "0.2.1"
 
 [[deps.Sockets]]
 uuid = "6462fe0b-24de-5631-8697-dd941f90decc"

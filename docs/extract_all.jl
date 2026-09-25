@@ -12,18 +12,22 @@
 # doesn't trigger spurious rebuilds). The fingerprint is embedded in both
 # exported forms; renderer/theme upgrades therefore invalidate cleanly.
 #
-# Workflow:
-#   1. Render locally on whatever GPU you have (Metal / CUDA / ROCm) —
-#      this populates docs/notebooks-static/<slug>.html with the fingerprint baked in.
-#   2. `git add docs/notebooks-static/*.html` and commit.
-#   3. CI inherits the rendered HTML, sees a fingerprint match, skips re-render,
-#      deploys what you committed.  Re-render only happens when somebody
-#      actually edits a .jl source.
+# Workflow (RELEASING.md, step 6):
+#   1. Render on a GPU machine: `docs/render_notebooks.sh` runs one of these processes per GPU,
+#      each taking notebooks from a shared queue. The notebooks pick the backend themselves
+#      (GPUSelect: Metal, CUDA, AMDGPU, or the CPU).
+#   2. `git add docs/notebooks-static/` and commit.
+#   3. CI re-computes the fingerprint (docs/verify_notebook_exports.py) and refuses stale exports;
+#      it never renders.
 #
-# Force a full rebuild with: BASISSIM_FORCE_NB_REBUILD=1 julia ...
+# Force a full rebuild with BASISSIM_FORCE_NB_REBUILD=1.
 #
 # Usage:
-#   julia --project=docs/build_env docs/extract_all.jl
+#   julia --project=docs/build_env docs/extract_all.jl                 # every stale notebook
+#   julia --project=docs/build_env docs/extract_all.jl 04_pcct_vmi     # these slugs (if stale)
+#   julia --project=docs/build_env docs/extract_all.jl --list-stale    # print the stale slugs
+#   julia --project=docs/build_env docs/extract_all.jl --queue DIR     # render DIR/<slug>.todo, one
+#                                                                      #   at a time, until none is left
 
 import Pkg
 let build_env = joinpath(@__DIR__, "build_env")
@@ -215,12 +219,17 @@ function skipped_slugs()
     Set(strip.(split(get(ENV, "BASISSIM_SKIP_NOTEBOOKS", ""), ","; keepempty = false)))
 end
 
-"""Walk every notebook, rendering only those whose export fingerprint doesn't
+"""Walk every notebook (or `only`), rendering only those whose export fingerprint doesn't
 match the cached fingerprint. Returns the full list of slugs (cached + freshly
 rendered) so callers can register routes for all of them."""
-function export_notebooks()
+function export_notebooks(only = nothing)
     verify_local_data!()
     slugs = notebook_slugs()
+    if only !== nothing
+        unknown = setdiff(only, slugs)
+        isempty(unknown) || error("no notebook named $(join(unknown, ", ")) in $(NOTEBOOKS_DIR)")
+        slugs = filter(in(only), slugs)
+    end
     skip = skipped_slugs()
     if !isempty(skip)
         kept = filter(s -> !(s in skip), slugs)
@@ -243,27 +252,60 @@ function export_notebooks()
     println("[notebooks] rendering $(length(to_render))/$(length(slugs)) " *
             (force ? "(forced)" : "(source changed)") * "…")
 
-    # disable_writing_notebook_files=true: keep Pluto from re-saving the
-    # source .jl during open() — that's the root of the "every run re-renders"
-    # loop (Pluto normalizes the source bytes between hash-pre-render and
-    # hash-post-render).  See render_notebook! for the second safeguard.
-    options = Pluto.Configuration.from_flat_kwargs(disable_writing_notebook_files = true)
-    session = Pluto.ServerSession(; options = options)
-    for slug in to_render
-        src  = joinpath(NOTEBOOKS_DIR, "$(slug).jl")
-        dst  = joinpath(STATIC_OUT,    "$(slug).html")
-        pre_hash = source_hash(slug)
-        println("  ▸ $(slug)  (hash $(first(pre_hash, 12))…)")
-        t0 = time()
-        post_hash = render_notebook!(session, src, dst)
-        if post_hash != pre_hash
-            println("    ⚠ Pluto normalized source: hash $(first(pre_hash, 12))… → $(first(post_hash, 12))… (embedding post-render hash so cache stays consistent)")
-        end
-        kb = round(filesize(dst) / 1024; digits = 1)
-        println("    ✓ $(round(time() - t0; digits = 1))s  →  $(kb) KB")
-    end
-
+    session = render_session()
+    foreach(slug -> render_slug!(session, slug), to_render)
     return slugs
+end
+
+# disable_writing_notebook_files=true: keep Pluto from re-saving the
+# source .jl during open() — that's the root of the "every run re-renders"
+# loop (Pluto normalizes the source bytes between hash-pre-render and
+# hash-post-render).  See render_notebook! for the second safeguard.
+render_session() = Pluto.ServerSession(;
+    options = Pluto.Configuration.from_flat_kwargs(disable_writing_notebook_files = true))
+
+function render_slug!(session, slug)
+    src  = joinpath(NOTEBOOKS_DIR, "$(slug).jl")
+    dst  = joinpath(STATIC_OUT,    "$(slug).html")
+    pre_hash = source_hash(slug)
+    println("  ▸ $(slug)  (hash $(first(pre_hash, 12))…)")
+    t0 = time()
+    post_hash = render_notebook!(session, src, dst)
+    if post_hash != pre_hash
+        println("    ⚠ Pluto normalized source: hash $(first(pre_hash, 12))… → $(first(post_hash, 12))… (embedding post-render hash so cache stays consistent)")
+    end
+    kb = round(filesize(dst) / 1024; digits = 1)
+    println("    ✓ $(round(time() - t0; digits = 1))s  →  $(kb) KB")
+    flush(stdout)
+end
+
+"""Render `<queue>/<slug>.todo` entries one at a time until none is left. A process claims an
+entry by renaming it (atomic on one filesystem), so several processes — one per GPU — share one
+queue without rendering a notebook twice; the claimed entry is removed once its export is written."""
+function render_queue(queue::AbstractString)
+    verify_local_data!()
+    isdir(STATIC_OUT) || mkpath(STATIC_OUT)
+    session = render_session()
+    while true
+        slug = claim_next(queue)
+        slug === nothing && return
+        render_slug!(session, slug)
+        rm(joinpath(queue, "$(slug).claimed.$(getpid())"))
+    end
+end
+
+function claim_next(queue::AbstractString)
+    for f in sort(readdir(queue))
+        endswith(f, ".todo") || continue
+        slug = f[1:(end - 5)]
+        try
+            mv(joinpath(queue, f), joinpath(queue, "$(slug).claimed.$(getpid())"))
+            return slug
+        catch
+            # another process claimed it first
+        end
+    end
+    return nothing
 end
 
 """Shrink the figures embedded in a rendered page: every `data:image/png` URI
@@ -295,5 +337,13 @@ print(f"png->webp: {saved[0]/1e6:.1f} MB -> {saved[1]/1e6:.1f} MB")
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
-    export_notebooks()
+    if isempty(ARGS)
+        export_notebooks()
+    elseif ARGS == ["--list-stale"]
+        foreach(println, filter(needs_rebuild, notebook_slugs()))
+    elseif length(ARGS) == 2 && ARGS[1] == "--queue"
+        render_queue(ARGS[2])
+    else
+        export_notebooks(ARGS)
+    end
 end
