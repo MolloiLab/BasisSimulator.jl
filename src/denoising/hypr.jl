@@ -568,14 +568,18 @@ even-view halves, whose difference measures the noise of everything downstream:
   `β = (Σf)₁ / fᵀΣf`, the iodine component whose noise is uncorrelated with `M`;
 - with a [`PairFilter`](@ref), `M` reconstructed from its own sinogram `f₁ p_a + f₂ p_c` with the
   composite's window and `I⊥` from `p_a − β(f₁ p_a + f₂ p_c)` with the complement's, and the pair
-  recovered, `a = I⊥ + βM`, `c = (M − f₁ a) / f₂`; with one window, FDK of each basis image.
+  recovered, `a = I⊥ + βM`, `c = (M − f₁ a) / f₂`; with one window, FDK of each basis image;
+- then the minimum-noise composite of the reconstructed pair itself, `E*`, `f` and `β` from the
+  noise of its halves: what ACNR and the image-domain instance act on.
 
-`basis = (Estar = …, β = …)` fixes the composite and complement instead of measuring them: a
-noise-free acquisition has no noise to measure them from, and is reconstructed exactly as its
-noisy counterpart.
+`basis = (Estar = …, β = …)` fixes the pair the windows act on instead of measuring it: a
+noise-free acquisition has no noise to measure it from, and is reconstructed exactly as its
+noisy counterpart. The composite of the result is still measured from the result (for a noise-free
+acquisition, from its aliasing alone, which nothing downstream uses).
 
-Returns `(water, iodine, halves, Estar, f, β, Σ)`, `halves` the `(water, iodine)` pairs of the odd
-and even views, reconstructed alike.
+Returns `(water, iodine, halves, Estar, f, β, Σ, basis)`: the reconstructed pair, the `(water,
+iodine)` pairs of the odd and even views reconstructed alike, the minimum-noise composite of the
+pair and its noise covariance `Σ`, and `basis`, the `(Estar, β)` the windows acted on.
 """
 function spectral_pair(sino_water::AbstractArray{<:Real, 3}, sino_iodine::AbstractArray{<:Real, 3},
         geom::CTGeometry, matrix_size; filter = SoftFilter(), basis = nothing,
@@ -623,7 +627,14 @@ function spectral_pair(sino_water::AbstractArray{<:Real, 3}, sino_iodine::Abstra
     end
     full = pair(sino_water, sino_iodine, geom, nothing, nothing)
     halves = [pair(sw_h[h], si_h[h], geoms[h], Wh[h], Ih[h]) for h in 1:2]
-    return (water = full.water, iodine = full.iodine, halves = halves, Estar = Estar, f = f, β = β, Σ = Σ)
+    # the composite of the pair as reconstructed: its own minimum-noise energy, from its halves
+    dI = vec(((halves[1].iodine .- halves[2].iodine) ./ 2)[inside])
+    dW = vec(((halves[1].water .- halves[2].water) ./ 2)[inside])
+    Σp = [var(dI) cov(dI, dW); cov(dI, dW) var(dW)]
+    Ep = Float64(energies[argmin([let g = [μI(E), μW(E)] ./ μW(E); g' * Σp * g end for E in energies])])
+    fp = [μI(Ep), μW(Ep)]
+    return (water = full.water, iodine = full.iodine, halves = halves, Estar = Ep, f = fp,
+        β = (Σp * fp)[1] / (fp' * Σp * fp), Σ = Σp, basis = (Estar = Estar, β = β))
 end
 
 """

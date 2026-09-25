@@ -209,7 +209,12 @@ end
     @test !(pf.iodine[circle] ≈ twice.iodine[circle])
     # a fixed basis is used as given
     fixed = sp(BS.PairFilter(BS.SoftFilter(), BS.BoneFilter()); basis = (Estar = 70.0, β = 0.0))
-    @test fixed.Estar == 70.0 && fixed.β == 0.0
+    @test fixed.basis == (Estar = 70.0, β = 0.0)
+    # the composite ACNR and the image-domain instance act on is the reconstructed pair's own
+    # minimum-noise VMI, so its noise is uncorrelated with the complement's
+    μ(E) = [BS.compute_mass_μ_at_energy(BS.XA.Elements.Iodine, E), BS.compute_mass_μ_at_energy(BS.XA.Materials.water, E)]
+    v(E) = let g = μ(E) ./ μ(E)[2]; g' * fixed.Σ * g end
+    @test 40 <= fixed.Estar <= 140 && v(fixed.Estar) <= min(v(40.0), v(140.0))
     # ACNR on the complement leaves the composite exactly where it was
     before = M(pf)
     BS.acnr_complement!(pf)

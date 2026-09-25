@@ -1154,7 +1154,7 @@ function vmi_pipeline(;
     water_image, iodine_image = if spectral
         pair = spectral_pair(sino_water, sino_iodine, geom, matrix_size; filter = fbp_filter,
             basis = pair_basis, antialias = antialias, n_rows = recon_rows, to_backend = to_backend)
-        pair_settings = (Estar = pair.Estar, β = pair.β, Σ = pair.Σ)
+        pair_settings = (Estar = pair.Estar, β = pair.β, Σ = pair.Σ, basis = pair.basis)
         if use_acnr && acnr_passes > 0
             acnr_complement!(pair; acnr_kwargs...)
             acnr_settings = (acnr_kwargs..., on = :complement)
