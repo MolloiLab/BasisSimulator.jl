@@ -55,6 +55,9 @@ relative to 0.14.0 where it says so.
   itself stays; `:dd_fast` uses it.
 - The package no longer declares CUDA and Metal as weak dependencies (it had no extensions); load
   either yourself, or use GPUSelect.
+- Also removed (not API): the XCIST converter scripts that produced the bundled spectrum tables
+  (`src/spectrum/convert.py`, `XCISTspectrum.m`; the tables stay), two Metal-only soak tests that
+  were not part of the suite, and figures of notebooks that no longer exist.
 
 #### Documented
 - The API reference is generated from the docstrings at build time, so it cannot fall out of step

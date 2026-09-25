@@ -473,6 +473,7 @@ function pcct_forward_project(
     # Ignored kwargs for backward compat with callers that still pass them
     kwargs...
 )
+    _validate_projector(projector)
     T = Float32  # Use Float32 for GPU efficiency
 
     n_cols = geom.n_cols

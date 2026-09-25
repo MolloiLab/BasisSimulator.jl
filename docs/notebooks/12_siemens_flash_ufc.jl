@@ -146,7 +146,7 @@ let
         xticklabelsize = 18, yticklabelsize = 16,
     )
     Mke.lines!(ax, Es, η_flash; color = :crimson, linewidth = 3, label = "Flash UFC (BS.UFC_FLASH_MC_EFFICIENCY_LUT)")
-    Mke.lines!(ax, Es, η_force; color = :gray35, linewidth = 2.5, linestyle = :dash, label = "Force UFC (nb09)")
+    Mke.lines!(ax, Es, η_force; color = :gray35, linewidth = 2.5, linestyle = :dash, label = "Force UFC (notebook 09)")
     Mke.lines!(ax, Es, η_gem; color = :steelblue, linewidth = 2.5, label = "Gemstone garnet (GE Apex)")
 
     Mke.vlines!(ax, [50.24]; color = :crimson, linestyle = :dash, linewidth = 1.5)
@@ -220,9 +220,9 @@ at 95°** in the same gantry.  Every value below is sourced in the
       the `EICTScanner`'s `target_angle` keeps the true 7.0° (heel-effect metadata,
       inert with `use_heel_effect = false`).
     - **Bowtie**: Siemens form-filter shape is unpublished → CatSim
-      **large-body** profile as stand-in (same convention as nb04/nb08/nb09).
+      **large-body** profile as stand-in (same convention as notebooks 04, 08 and 09).
     - **Flat-filter composition**: only the **Al equivalent** is published
-      (8.4 mm) → modeled as 8.4 mm of aluminum.  Unlike nb09's Force
+      (8.4 mm) → modeled as 8.4 mm of aluminum.  Unlike notebook 09's Force
       (assumed Al+Ti stack), this figure is a *measured* datasheet value.
     - **Scintillator thickness 1.0 mm / fill factor 0.9**: proprietary;
       thickness is inert here (η comes from the Flash MC LUT; the MC
@@ -234,7 +234,7 @@ at 95°** in the same gantry.  Every value below is sourced in the
       zero is *wrong* — the DAS floor enters the counts before the log
       transform and dominates in photon starvation (low dose, 80 kVp,
       dense anatomy), so `simulate!` must be allowed to propagate it
-      (see the `apply_noise_floor!` doctrine in `src/api/driver.jl`).
+      (see `add_system_noise_floor!` in `src/api/driver.jl`).
       The value is ~40% of the conventional-DAS class figure
       (≈3500 e⁻ at this gain — same class as the repo's GE Apex
       5000 e⁻ @ 15 e⁻/keV), reflecting TrueSignal's integrated-ASIC
@@ -249,7 +249,7 @@ at 95°** in the same gantry.  Every value below is sourced in the
       half of the 2304 FFS-interleaved readings).
 
 !!! info "Dual source → two co-registered scans (the accepted hack)"
-    Exactly like nb03 models rapid-kVp switching and nb09 models the Force,
+    Exactly like notebook 03 models rapid-kVp switching and notebook 09 models the Force,
     the Flash's two tubes are modeled as **two `CTProtocol`s run
     back-to-back on one `EICTScanner`** — but with **two unique tube sources**: each
     tube gets its own protocol (kVp, mA, filtration) and its own
@@ -264,10 +264,10 @@ at 95°** in the same gantry.  Every value below is sourced in the
       the Flash B-fan is the actual clinical DE-FOV limit).
     - **95° in-plane tube offset**: both modeled scans run a full axial
       rotation on the same angle grid — a constant angular offset has no
-      effect on a full-rotation axial scan (nb09 §3 argument).
+      effect on a full-rotation axial scan (notebook 09 §3 argument).
     - **DE-mode collimation**: the Flash reads 2 × 128 × 0.6 mm in DE mode;
       we use 4.8 mm (8 × 0.6 mm) — the thin-collimation equivalent that
-      fits the 1 cm Gammex z-extent, same convention as nb03/nb09.
+      fits the 1 cm Gammex z-extent, same convention as notebooks 03 and 09.
 """
 
 # ╔═╡ 12000004-0000-4000-8000-000000000010
@@ -329,7 +329,7 @@ quality-reference 230/178 mAs at 0.5 s → 460/356 mA (≈1.29 : 1 A : B).
     1152-view rotation at Sn140: full angular sampling per energy is the
     defining advantage of dual-source DE over rapid-kVp *switching*,
     where a single tube alternates kV between views and each channel
-    really does get half the angular samples (nb03 approximates the GE
+    really does get half the angular samples (notebook 03 approximates the GE
     switching with two full-rotation acquisitions).  The
     2,304 readings/rotation figure is the z-FFS focal-spot doubling (not
     modeled → 1152), and cardiac quarter-rotation segments are a recon
@@ -391,7 +391,7 @@ row-direction effect; with 4.8 mm collimation at center it is negligible).
 sim_opts = BS.SimOptions(
     seed = 1234,               # tube A chain
     use_heel_effect = false,   # exact forward/inverse spectral match
-    projector = :dd_fast,      # same DD physics, single-pass fused kernels.
+    projector = :dd_fast,      # distance-driven, single-pass fused kernels (the default)
                                #  BHC (flash_poly_recon) reads sim_opts.projector to match.
 );
 
@@ -482,7 +482,7 @@ acquisitions leaves accuracy untouched and cuts noise by **√2**:
 - `σ_combined ≈ σ_single / √2` (the two noise realizations are
   independent — this is exactly what `sim_opts_b`'s separate seed buys).
 
-Each tube runs the doctrine correction stack: knobless η-aware water
+Each tube runs the standard correction stack: parameter-free η-aware water
 sinogram BHC → FDK → HU.
 """
 
@@ -500,15 +500,14 @@ function flash_bhc_calibration(protocol, geom)
         sim_opts, protocol; scanner = scanner, geom = geom,
     )
     e2, w_col = BS.bhc_spectrum_per_column(e, ŵ)          # [n_E, n_col]
-    w_col_η = w_col
 
     # Single mono-equivalent target = mean energy of the η-folded mean spectrum
-    w_mean = vec(sum(w_col_η; dims = 2)) ./ size(w_col_η, 2)
+    w_mean = vec(sum(w_col; dims = 2)) ./ size(w_col, 2)
     ref_E = sum(e2 .* w_mean) / sum(w_mean)
 
-    # KNOBLESS water BHC from the per-column Flash-η spectrum.
+    # Parameter-free water BHC from the per-column Flash-η spectrum.
     model = BS.calibrate_bhc_water(
-        e2, w_col_η;
+        e2, w_col;
         reference_energy_keV = ref_E,
     )
     return (model = model, μ_water = model.μ_water_ref, ref_E_keV = model.reference_energy_keV)
@@ -705,7 +704,7 @@ Each tube builds its own workspace (the Flash UFC η enters via the src
 sinogram + geometry.  Tube B runs on its **independent noise chain**
 (`sim_opts_b`) and sees the phantom through the tube-B z-offset — which for
 the Flash is unpublished and set to **0.0 mm** (documented assumption; the
-mechanism mirrors nb09's Force −0.88 mm so a measured value can drop in).
+mechanism mirrors notebook 09's Force −0.88 mm so a measured value can drop in).
 """
 
 # ╔═╡ 12000008-0000-4000-8000-000000000005
@@ -813,7 +812,7 @@ reconstructions (Yu et al., *Med Phys* 2009: `M = w·I_low + (1−w)·I_high`;
 Eusemann et al., SPIE 2008).  On the Flash's 100/Sn140 pair the historical
 clinical default is w = 0.5 (later w ≈ 0.5–0.6).
 
-So the poly validation of the Flash LUT runs the doctrine correction stack
+So the poly validation of the Flash LUT runs the standard correction stack
 **per tube** — η-aware water sinogram BHC → FDK → HU — then blends.  If the
 η fold is right, solid water lands at ≈ 0 HU in *both* per-tube recons (and
 therefore in any blend).
@@ -1018,7 +1017,7 @@ md"""
 ## 10. The VMI Chain: `vmi_pipeline`
 
 One package call from the two corrected sinograms to the VMI stack, the chain
-of the basis-vmi and basis-spectral-denoising papers:
+of the basis-vmi paper (the n-channel decomposition, ACNR) with the basis-spectral-denoising paper's SpectralHYPR:
 
 1. **Projection HYPR-LR** (`BS.SpectralHYPR`'s projection instance): a 3 × 3
    (column × view) window on the counts of each detector row, with each
@@ -1044,7 +1043,8 @@ HYPR_CHAIN = BS.SpectralHYPR()
 VMI_CHAIN = (method = :nchannel, controls = BS.NChannelControls(), use_tlbf = false, antialias = true);
 
 # ╔═╡ 1200000b-0000-4000-8000-000000000007
-# Halfway between CatSim Standard (1, .934, .744, .443, .053) and Soft.
+# Halfway between CatSim Standard (1, .934, .744, .443, .053) and Soft: the same soft-tissue
+# kernel as notebook 03 (no measured Definition Flash kernel is published).
 FLASH_KERNEL = BS.CustomFilter(
     (0.0, 0.25, 0.5, 0.75, 1.0),
     (1.0, 0.8744, 0.6003, 0.3031, 0.0266),
@@ -1426,7 +1426,7 @@ md"""
 ### Water-Region Noise
 
 Mean and σ are both measured on the **deeply eroded solid-water region**
-(the same 12-px-eroded mask as the accuracy ROI, as in nb03).  The large
+(the same 12-px-eroded mask as the accuracy ROI, as in notebook 03).  The large
 region, over every slice, keeps the per-keV mean and σ statistically
 stable; a small central circle is underpowered when FBP noise is spatially
 correlated.
@@ -1675,14 +1675,14 @@ end
 md"""
 ## Verification
 
-Automated PASS/FAIL gates over both acquisition classes (nb01 convention):
+Automated PASS/FAIL gates over both acquisition classes (notebook 01 convention):
 
 1. **Regular water accuracy** — |⟨HU⟩| ≤ 5 in tube A, tube B, combined.
 2. **Dual-power √2** — σ_combined / σ_single ∈ [0.62, 0.80]
    (ideal 0.707; fails if the tube seeds were ever shared).
 3. **DE poly water accuracy** — |⟨HU⟩| ≤ 5 in low, high, mixed.
 4. **VMI water accuracy** — |⟨HU⟩| ≤ 10 at every synthesized keV,
-   measured on the deeply eroded solid-water region (nb03 convention).
+   measured on the deeply eroded solid-water region (notebook 03 convention).
 5. **Monotonic VMI noise** — σ(50) > σ(70) > σ(100) > σ(140) (clinical
    truth; hard gate, no tolerance — the same standard every other VMI
    notebook meets).

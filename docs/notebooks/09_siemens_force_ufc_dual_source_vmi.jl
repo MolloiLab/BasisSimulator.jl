@@ -208,9 +208,9 @@ the geometry was measured from an actual clinical Force by Wang et al.):
       (typical 7–9° CT anode).
     - **Flat filtration**: unpublished → **3.0 mm Al + 0.9 mm Ti**, the same
       Vectron-family stack this repo already uses for the Naeotom Alpha
-      (nb08).  The 0.6 mm Sn is added on tube B only.
+      (notebook 08).  The 0.6 mm Sn is added on tube B only.
     - **Bowtie**: Siemens body bowtie shape is unpublished → CatSim
-      **large-body** profile as stand-in (same convention as nb04/nb08).
+      **large-body** profile as stand-in (same convention as notebooks 04 and 08).
     - **Scintillator thickness 1.4 mm / fill factor 0.9**: proprietary;
       thickness is inert here (η comes from the MC LUT, and the
       Beer-Lambert fallback is not used), fill factor auto-cancels in the
@@ -220,7 +220,7 @@ the geometry was measured from an actual clinical Force by Wang et al.):
       negligible vs quantum noise" (Duan et al. AJR 2013).
 
 !!! info "Dual source → two co-registered scans"
-    Exactly like nb03 models GE rapid-kVp switching as two sequential
+    Exactly like notebook 03 models GE rapid-kVp switching as two sequential
     scans, the Force's two tubes are modeled as **two `CTProtocol`s run
     back-to-back on one `EICTScanner`** (identical detector geometry), each
     with its own noise seed:
@@ -241,7 +241,7 @@ the geometry was measured from an actual clinical Force by Wang et al.):
       z-varying phantoms (XCAT, QRM) inherit the real misalignment.
     - **DE-mode collimation**: the Force reads out 128 × 0.6 mm in DE mode;
       we use 4.8 mm (8 × 0.6 mm) — the thin-collimation equivalent that
-      fits the 1 cm Gammex z-extent, same convention as nb03's 5 mm.
+      fits the 1 cm Gammex z-extent, same convention as notebook 03's 5 mm.
 """
 
 # ╔═╡ 09000004-0000-4000-8000-000000000010
@@ -341,7 +341,7 @@ row-direction effect; with 4.8 mm collimation at center it is negligible).
 sim_opts = BS.SimOptions(
     seed = 1234,               # tube A chain
     use_heel_effect = false,   # exact forward/inverse spectral match
-    projector = :dd_fast,      # same DD physics, single-pass fused kernels.
+    projector = :dd_fast,      # distance-driven, single-pass fused kernels (the default)
 );
 
 # ╔═╡ 09000006-0000-4000-8000-000000000012
@@ -537,7 +537,7 @@ reconstructions (Yu et al., *Med Phys* 2009: `M = w·I_low + (1−w)·I_high`;
 Eusemann et al., SPIE 2008).  On Sn150-class pairs the clinical weight is
 w ≈ 0.5–0.6 (Lenga et al., *Br J Radiol* 2021).
 
-So the poly validation of the UFC LUT runs the current nb01 correction stack
+So the poly validation of the UFC LUT runs the current notebook 01 correction stack
 **per tube** — η-aware water sinogram BHC → FDK → HU, with residual
 cupping measured as QA — then blends. If the η fold is right, solid water
 lands at ≈ 0 HU in *both* per-tube recons (and therefore in any blend).
@@ -565,17 +565,16 @@ function ufc_bhc_calibration(protocol, geom)
         sim_opts, protocol; scanner = scanner, geom = geom,
     )
     e2, w_col = BS.bhc_spectrum_per_column(e, ŵ)          # [n_E, n_col]
-    w_col_η = w_col
 
     # Single mono-equivalent target = mean energy of the η-folded mean spectrum
-    w_mean = vec(sum(w_col_η; dims = 2)) ./ size(w_col_η, 2)
+    w_mean = vec(sum(w_col; dims = 2)) ./ size(w_col, 2)
     ref_E = sum(e2 .* w_mean) / sum(w_mean)
 
-    # KNOBLESS water BHC from the custom UFC-η per-column spectrum — zero
+    # Parameter-free water BHC from the custom UFC-η per-column spectrum — zero
     # segmentation thresholds (the two-material bone pass is deprecated:
     # its 450–600 HU window misclassified dense iodine as bone).
     model = BS.calibrate_bhc_water(
-        e2, w_col_η;
+        e2, w_col;
         reference_energy_keV = ref_E,
     )
     return (model = model, μ_water = model.μ_water_ref, ref_E_keV = model.reference_energy_keV)
@@ -805,7 +804,7 @@ md"""
 ## 9. The VMI Chain: `vmi_pipeline`
 
 One package call from the two corrected sinograms to the VMI stack, the chain
-of the basis-vmi and basis-spectral-denoising papers:
+of the basis-vmi paper (the n-channel decomposition, ACNR) with the basis-spectral-denoising paper's SpectralHYPR:
 
 1. **Projection HYPR-LR** (`BS.SpectralHYPR`'s projection instance): a 3 × 3
    (column × view) window on the counts of each detector row, with each

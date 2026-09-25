@@ -422,7 +422,7 @@ reconstructions below.
 
 # ╔═╡ 09000004-0000-4000-8000-000000000001
 bhc_calibration = sim === nothing ? nothing : let
-        # KNOBLESS water BHC — pure physics, zero tunables, zero thresholds:
+        # Parameter-free water BHC — physics only, no tunables, no thresholds:
         # per-column poly→mono polynomials from the FULL detected spectrum
         # (tube × filters × bowtie × heel × η(E) — whatever sim_opts enabled).
         model = BS.calibrate_bhc_water(

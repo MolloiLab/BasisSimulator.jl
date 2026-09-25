@@ -586,7 +586,7 @@ md"""
 The denoiser is generalized HYPR-LR in both domains, `BS.SpectralHYPR`: within each detector
 row, each ray's split of its total count across the four bins is pooled over its 3 × 3
 (column × view) neighbours; on the reconstructed basis pair, the minimum-noise VMI is pooled
-over 1 × 1 × 7 voxels (across slices only) and its complement over 15 × 15 × 7 (the published chain: `SpectralHYPR()`'s defaults). The decomposition is the
+over 1 × 1 × 7 voxels (across slices only) and its complement over 15 × 15 × 7 (the published chain: `SpectralHYPR()`'s defaults). On this three-slice grid the seven-slice windows span the whole slab. The decomposition is the
 K-channel maximum-likelihood estimator on all four bins with its published controls; T-LBF
 is off; the view-direction antialias is on; the FBP kernel is `SoftFilter`; ACNR runs last.
 """

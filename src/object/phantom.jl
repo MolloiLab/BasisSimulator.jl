@@ -62,7 +62,7 @@ for (label, what) in (
         (:REGION_BACKGROUND, "background outside the phantom body (air)"),
         (:REGION_AIR, "air inside the field of view"),
         (:REGION_WATER, "water"),
-        (:REGION_SOLID_WATER, "solid-water phantom body (the Gammex 472 cylinder; simulated as water)"),
+        (:REGION_SOLID_WATER, "solid-water phantom body (the Gammex 472 cylinder)"),
         (:REGION_CA_50, "Gammex 472 calcium insert, 50 mg/mL"),
         (:REGION_CA_100, "Gammex 472 calcium insert, 100 mg/mL"),
         (:REGION_CA_200, "Gammex 472 calcium insert, 200 mg/mL"),

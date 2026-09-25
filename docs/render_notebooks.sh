@@ -17,9 +17,11 @@ julia --project=build_env -e 'using Pkg; Pkg.instantiate()'
 julia --project=. -e 'using Pkg; Pkg.instantiate()'
 
 if [ "$#" -gt 0 ]; then
-    slugs=("$@")
+    slugs=("$@")                      # named notebooks render whether stale or not
 else
-    mapfile -t slugs < <(julia --project=build_env extract_all.jl --list-stale)
+    # every stale notebook (every notebook with BASISSIM_FORCE_NB_REBUILD=1); a failure here stops
+    stale="$(julia --project=build_env extract_all.jl --list-stale)"
+    mapfile -t slugs < <(printf '%s\n' "$stale" | sed '/^$/d')
 fi
 if [ "${#slugs[@]}" -eq 0 ]; then
     echo "every notebook export is current"
@@ -41,9 +43,6 @@ for slug in "${slugs[@]}"; do
     [ -f "notebooks/$slug.jl" ] || { echo "no notebook docs/notebooks/$slug.jl" >&2; exit 1; }
     touch "$queue/$slug.todo"
 done
-# a forced list of slugs renders even when current
-[ "$#" -gt 0 ] && export BASISSIM_FORCE_NB_REBUILD=1
-
 mkdir -p render-logs
 echo "rendering ${#slugs[@]} notebook(s) on ${#gpus[@]} lane(s): ${slugs[*]}"
 pids=()

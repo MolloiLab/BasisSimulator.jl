@@ -552,7 +552,7 @@ md"""
 
 The denoiser is generalized HYPR-LR in both domains, `BS.SpectralHYPR`: a 3 × 3
 (column × view) window on the counts of each detector row before the decomposition, and on
-the reconstructed basis pair a 1 × 1 × 7 composite (across slices only) and a 15 × 15 × 7 complement window (the published chain: `SpectralHYPR()`'s defaults). The
+the reconstructed basis pair a 1 × 1 × 7 composite (across slices only) and a 15 × 15 × 7 complement window (the published chain: `SpectralHYPR()`'s defaults). On this three-slice grid the seven-slice windows span the whole slab. The
 decomposition is the K-channel maximum-likelihood estimator with its published controls;
 T-LBF (a photon-counting filter) is off; the view-direction antialias is on; ACNR runs last.
 

@@ -12,7 +12,10 @@ import BasisSimulator
 
 include(joinpath(@__DIR__, "..", "..", "api_sections.jl"))
 
-const _API_GITHUB_SRC = "https://github.com/MolloiLab/BasisSimulator.jl/blob/main/src"
+# The site documents a release (it is built from the release tag), so source links point at that
+# tag's code; their line anchors stay right however far `main` moves on.
+const _API_GITHUB_SRC =
+    "https://github.com/MolloiLab/BasisSimulator.jl/blob/v$(pkgversion(BasisSimulator))/src"
 
 # ── classes ───────────────────────────────────────────────────────────────────────────────────
 # Written out in full here so Tailwind (which scans docs/src/**/*.jl) generates them.

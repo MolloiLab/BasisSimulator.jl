@@ -339,7 +339,8 @@ if abspath(PROGRAM_FILE) == @__FILE__
     if isempty(ARGS)
         export_notebooks()
     elseif ARGS == ["--list-stale"]
-        foreach(println, filter(needs_rebuild, notebook_slugs()))
+        force = haskey(ENV, "BASISSIM_FORCE_NB_REBUILD")
+        foreach(println, force ? notebook_slugs() : filter(needs_rebuild, notebook_slugs()))
     elseif length(ARGS) == 2 && ARGS[1] == "--queue"
         render_queue(ARGS[2])
     else

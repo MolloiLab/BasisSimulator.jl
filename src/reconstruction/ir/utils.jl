@@ -125,6 +125,7 @@ function compute_projection_weights(
     like::Union{Nothing, AbstractArray} = nothing,
     circular_support::Bool = false,
 ) where T <: AbstractFloat
+    _validate_projector(projector)
     ones_volume = _ones_like(like, T, volume_size...)
     circular_support && apply_fov_mask!(ones_volume, geom; sentinel_μ = zero(T))
     ray_sums = _project_mono(projector, ones_volume, geom)
@@ -152,6 +153,7 @@ function compute_image_weights(
     active_z::Union{Nothing, UnitRange{Int}} = nothing,
     circular_support::Bool = false,
 ) where T <: AbstractFloat
+    _validate_projector(projector)
     ones_sino = _ones_like(like, T, geom.n_cols, geom.n_rows, geom.n_angles)
     voxel_sums = similar(ones_sino, T, volume_size...)
     fill!(voxel_sums, zero(T))

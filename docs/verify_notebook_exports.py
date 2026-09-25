@@ -33,22 +33,14 @@ BAD_TEXT_PATTERNS = {
     "mounted volume path": re.compile(r"/Volumes/[^\s<\"']+", re.I),
 }
 BAD_REPORT_REASONS = ("failed to parse", "package ", "not found in current path")
+# The notebooks whose volume slider is forced to a static fallback (FORCE_FALLBACK_BONDS in
+# extract_all.jl): the bond, and the one fallback group its report must contain. The group's cells
+# must be cells of the notebook (checked against the source), so editing a notebook never needs
+# a cell id here.
 FORCED_FALLBACKS = {
-    "01_five_struct_api": (
-        "z_slice",
-        {"12000001-0000-4000-8000-000000000004"},
-    ),
-    "05_xcat_grid_to_recon": (
-        "z_helical",
-        {
-            "05000012-0000-4000-8000-000000000040",
-            "05000016-0000-4000-8000-000000000020",
-        },
-    ),
-    "11_helical_scanning": (
-        "z_idx",
-        {"11000007-0000-4000-8000-000000000003"},
-    ),
+    "01_five_struct_api": "z_slice",
+    "05_xcat_grid_to_recon": "z_helical",
+    "11_helical_scanning": "z_idx",
 }
 
 
@@ -163,7 +155,10 @@ def main() -> int:
                     f"{assets.relative_to(ROOT)}: unexpected island/fallback assets"
                 )
         else:
-            bond, expected_cells = expected_fallback
+            bond = expected_fallback
+            notebook_cells = set(
+                re.findall(r"^# ╔═╡ ([0-9a-f-]{36})\s*$", source.read_text(encoding="utf-8"), re.M)
+            )
             required = {
                 "report.json", "coverage.json", "islands.json", "shim.js"
             }
@@ -186,6 +181,7 @@ def main() -> int:
                         f"{assets.relative_to(ROOT)}: invalid configured-fallback JSON"
                     )
                 else:
+                    actual_cells = set()
                     if len(groups) != 1:
                         failures.append(
                             f"{assets.relative_to(ROOT)}/report.json: expected one group"
@@ -199,7 +195,8 @@ def main() -> int:
                             or group.get("judgement") != "fallback"
                             or group.get("fallback_kind") != "configured"
                             or group.get("reasons") != [reason]
-                            or actual_cells != expected_cells
+                            or not actual_cells
+                            or not actual_cells <= notebook_cells
                             or any(cell.get("ok") is not False for cell in cells)
                             or any(cell.get("reasons") != [reason] for cell in cells)
                         ):
@@ -220,7 +217,7 @@ def main() -> int:
                             f"{assets.relative_to(ROOT)}/islands.json: "
                             "runtime fallback index mismatch"
                         )
-                    count = len(expected_cells)
+                    count = len(actual_cells)
                     expected_coverage = {
                         "groups": {
                             "island": 0, "partial": 0, "fallback": 1, "total": 1

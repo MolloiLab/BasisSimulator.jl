@@ -41,8 +41,7 @@ md"""
      → VMI synthesis at 50 / 70 / 100 / 140 keV
 ```
 
-This is the chain of the basis-vmi and basis-spectral-denoising papers (projection HYPR +
-image HYPR + ACNR). Both kVp channels stay separate all the way into the likelihood; nothing
+This is the chain of the basis-vmi paper (the n-channel decomposition, ACNR) with the basis-spectral-denoising paper's SpectralHYPR (projection HYPR + image HYPR + ACNR). Both kVp channels stay separate all the way into the likelihood; nothing
 is rebinned into a single "effective" spectrum.
 """
 
