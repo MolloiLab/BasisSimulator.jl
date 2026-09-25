@@ -9,7 +9,7 @@
 # BASISSIM_GPUS="0 1" to choose them. Without nvidia-smi (a Mac with Metal, or the CPU) one
 # exporter renders everything. Logs land in docs/render-logs/ (git-ignored).
 #
-# Data: notebook 05 reads the XCAT phantom from BASISSIM_XCAT_DIR (AGENTS.md, "Docs").
+# Data: notebook 05 reads the XCAT phantom from BASISSIM_XCAT_DIR (AGENTS.md, "The documentation site").
 set -euo pipefail
 cd "$(dirname "$0")"
 

@@ -14,8 +14,8 @@ concurrency:
 
 jobs:
   # `version` in Project.toml must be the last version registered in General, or one the registry
-  # accepts next (next patch, next minor, next major). A feature pull request that bumps it, or a
-  # release that skips a number, fails here instead of at registration. See RELEASING.md.
+  # accepts next (next patch, next minor, next major), so a version that skips a number fails here
+  # instead of at registration. See RELEASING.md.
   version:
     runs-on: ubuntu-latest
     steps:

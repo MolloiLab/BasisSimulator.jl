@@ -39,7 +39,8 @@ docs/                   the documentation site (below)
 
 ## Working on the code
 
-- **Julia 1.12 only** (the dependency tree does not resolve elsewhere; `Project.toml` says so).
+- **Julia 1.12 only** (`julia = "~1.12"`: XrayAttenuation does not resolve on 1.13, and the bundled
+  MC response is in 1.12's serialization format).
   `julia --project=. -e 'using Pkg; Pkg.instantiate()'`.
 - **Tests:** `julia --project=. -t 8 -e 'using Pkg; Pkg.test()'` (about 6 minutes on 8 CPU threads).
   Tests that need a GPU skip without one ("Skipping … no GPU backend"); run the ones your change
@@ -101,8 +102,8 @@ A Therapy.jl static site: `docs/app.jl`, pages in `docs/src/routes/`, components
   numbers the notebook computes; pick the GPU with `GPUSelect.Storage()`.
 - **VMI in notebooks and examples** is `vmi_pipeline` as the sister repositories run it
   (`../basis-vmi`, `../basis-spectral-denoising`): the n-channel decomposition, `SpectralHYPR` in
-  the projection and image domains (their chain passes a 15 × 15 × 7 complement window; the package
-  default is 5 × 5 × 7), and ACNR.
+  the projection and image domains (`SpectralHYPR()`'s defaults are their published chain), and
+  ACNR (`use_acnr = true`).
 
 ## CI and deployment (`.github/workflows/`)
 

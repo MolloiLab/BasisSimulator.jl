@@ -75,7 +75,18 @@ relative to 0.14.0 where it says so.
 
 ### After stage 0.18.0
 
+#### Changed
+- **`ImageHYPR` defaults are the published chain's:** a 1 × 1 × 7 composite window (across slices
+  only, keeping the in-plane texture) and a 15 × 15 × 7 complement window (were 3 × 3 × 7 and
+  5 × 5 × 7), so `SpectralHYPR()` is the chain of basis-vmi and basis-spectral-denoising. The
+  complement is pooled with weights from the pooled composite at its measured noise (weights from
+  the unpooled composite printed the FBP streaks near an object's rim onto the complement);
+  `sigma_Mp` is returned and recorded in `vmi_pipeline`'s settings.
+
 #### Added
+- `image_hypr` / `vmi_pipeline` take one FDK window or a window per basis image,
+  `(water = …, iodine = …)`, through `basis_filter`: a VMI weights the two by energy, so their
+  windows set how its resolution changes with energy.
 - **`SpectralHYPR`, a generalized HYPR-LR denoiser for `vmi_pipeline`.** Count-domain HYPR-LR within
   each detector row (total-count likelihood weights, a local linear split, dispersion from the air
   rays), and its image-domain instance on the basis pair (the minimum-noise VMI and its
@@ -116,7 +127,8 @@ Scanner fidelity, first part. Every simulation's numbers change; see each item.
   transmission (as the EICT path does), and the air response is per ray and bin:
   `I0[col, row, b]`. `simulate!`'s `I0_bins` is that `[n_cols, n_rows, n_bins]` array;
   `apply_pcct_noise!`, `inject_scatter_bins!` (which takes the per-ray whole-spectrum air
-  response `I0_all`), `combine_pcct_bin_counts!` (returns per-group `[n_cols, n_rows]` matrices),
+  response `I0_all`), `combine_pcct_bin_counts!` (returns per-group `[n_cols, n_rows]` matrices; removed in the release
+  pull request, above),
   `spectral_basis(ws)` (ray-resolved through `ws.bowtie_spectral`; the keyword is `I0`) and
   `spectral_basis_from_bins` (`I0`, `transmission`) take it. Scatter counts scale with the ray's
   own flux. Air reads 0 in every column and bin.

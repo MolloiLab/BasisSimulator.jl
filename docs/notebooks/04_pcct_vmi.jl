@@ -332,23 +332,18 @@ The chain's denoiser is generalized HYPR-LR in both domains (`SpectralHYPR`):
   neighbour's total is under the ray's own; each ray keeps its own total count. The count
   dispersion of every bin is measured from the air rays.
 - **image domain**: the reconstructed basis pair is rewritten as the minimum-noise VMI and a
-  complement whose noise is uncorrelated with it; the first is pooled over 3 × 3 × 7 voxels, the
+  complement whose noise is uncorrelated with it; the first is pooled over 1 × 1 × 7 voxels (across slices only), the
   second over 15 × 15 × 7, both with likelihood weights, and the pair is recombined. The noise
   scales come from the odd/even half-view reconstructions.
 
 The window sizes are the only settings, and they are specified the way a reconstruction
-kernel is. The complement window here is the basis-spectral-denoising study's 15 × 15 × 7;
-`SpectralHYPR()` on its own uses 5 × 5 × 7.
+kernel is. These are `SpectralHYPR()`'s defaults, the published chain of basis-vmi and basis-spectral-denoising.
 """
 
 # ╔═╡ 04a20000-0000-4000-8000-000000000001
-HYPR_CHAIN = BS.SpectralHYPR(
-    projection = BS.ProjectionHYPR(kernel = BS.HYPRKernel((3, 3), BS.BoxProfile())),
-    image = BS.ImageHYPR(
-        composite = BS.HYPRKernel((3, 3, 7), BS.BoxProfile(); linear = false),
-        complement = BS.HYPRKernel((15, 15, 7), BS.BoxProfile(); linear = false),
-    ),
-)
+# the published chain (basis-vmi / basis-spectral-denoising): a 3 × 3 (column × view) window on
+# the counts, and on the basis pair a 1 × 1 × 7 composite and a 15 × 15 × 7 complement window
+HYPR_CHAIN = BS.SpectralHYPR()
 
 # ╔═╡ 04a20000-0000-4000-8000-000000000002
 VMI_ENERGIES = (40, 70, 100, 140);

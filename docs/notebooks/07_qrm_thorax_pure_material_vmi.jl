@@ -552,8 +552,7 @@ md"""
 
 The denoiser is generalized HYPR-LR in both domains, `BS.SpectralHYPR`: a 3 × 3
 (column × view) window on the counts of each detector row before the decomposition, and on
-the reconstructed basis pair a 3 × 3 × 7 composite and a 15 × 15 × 7 complement window (the
-basis-spectral-denoising study's chain; `SpectralHYPR()` on its own uses 5 × 5 × 7). The
+the reconstructed basis pair a 1 × 1 × 7 composite (across slices only) and a 15 × 15 × 7 complement window (the published chain: `SpectralHYPR()`'s defaults). The
 decomposition is the K-channel maximum-likelihood estimator with its published controls;
 T-LBF (a photon-counting filter) is off; the view-direction antialias is on; ACNR runs last.
 
@@ -562,13 +561,9 @@ halfway between the Standard and Soft windows.
 """
 
 # ╔═╡ 07030006-0000-4000-8000-000000000012
-HYPR_CHAIN = BS.SpectralHYPR(
-    projection = BS.ProjectionHYPR(kernel = BS.HYPRKernel((3, 3), BS.BoxProfile())),
-    image = BS.ImageHYPR(
-        composite = BS.HYPRKernel((3, 3, 7), BS.BoxProfile(); linear = false),
-        complement = BS.HYPRKernel((15, 15, 7), BS.BoxProfile(); linear = false),
-    ),
-)
+# the published chain (basis-vmi / basis-spectral-denoising): a 3 × 3 (column × view) window on
+# the counts, and on the basis pair a 1 × 1 × 7 composite and a 15 × 15 × 7 complement window
+HYPR_CHAIN = BS.SpectralHYPR()
 
 # ╔═╡ 07030006-0000-4000-8000-000000000013
 VMI_CHAIN = (method = :nchannel, controls = BS.NChannelControls(), use_tlbf = false, antialias = true);

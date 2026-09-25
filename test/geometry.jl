@@ -5,7 +5,7 @@
 #   affine.jl   : phantom_to_world_affine, recon_to_world_affine, resample_to_recon.
 
 # -----------------------------------------------------------------------------
-# Scanner struct + ctor
+# EICTScanner / PCCTScanner over ScannerGeometry: defaults + ctor
 # -----------------------------------------------------------------------------
 @testset "Scanner — defaults + kwarg propagation" begin
     s = BS.EICTScanner()  # all defaults

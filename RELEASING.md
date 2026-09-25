@@ -10,8 +10,9 @@ the General registry has accepted it.
   changes it.** A feature pull request never touches it. (0.15.0 exists because this rule was not
   kept: `main` walked from 0.14.0 to 0.18.0 without registering anything, and the registry only
   accepts the version that follows the last registered one.) The `version` job in
-  `.github/workflows/CI.yml` fails any commit whose `version` is neither the last registered
-  version nor a valid next one.
+  `.github/workflows/CI.yml` catches a skipped number: it fails any commit whose `version` is
+  neither the last registered version nor a valid next one. It cannot tell a release pull request
+  from a feature pull request; keeping feature pull requests off `version` is the reviewer's job.
 - **Every user-visible change adds a line under `## [Unreleased]` at the top of `CHANGELOG.md`**
   in the same pull request: what a reader has to do differently, with the measured number for
   anything claimed to be faster or more accurate (and the hardware it was measured on).
@@ -27,16 +28,17 @@ the General registry has accepted it.
    renames something exported, changes the meaning of an argument, or changes the numbers a
    caller gets back without asking for it. The `version` check accepts exactly the last
    registered version, its next patch, its next minor, and the next major.
-2. **Branch** `release/<version>` from `main`.
-3. **Bump `version`** in `Project.toml`.
+2. **Branch** `release/<version>` from an up-to-date `main` (`git fetch`; merge `origin/main` again
+   right before step 6 if it moved — a render against stale source is wasted).
+3. **Bump `version`** in `Project.toml` and `version:` in `CITATION.cff`.
 4. **Date the changelog.** Rename `## [Unreleased]` to
    `## [<version>](https://github.com/MolloiLab/BasisSimulator.jl/compare/v<previous>...v<version>) (<YYYY-MM-DD>)`
    and add a fresh, empty `## [Unreleased]` above it. Group the entries as `Breaking` / `Added` /
    `Changed` / `Fixed` / `Performance` / `Documented`, skipping empty groups.
-5. **Run the tests:** `julia --project=. -t 4 -e 'using Pkg; Pkg.test()'`. CI has no GPU, so run
+5. **Run the tests:** `julia --project=. -t 8 -e 'using Pkg; Pkg.test()'`. CI has no GPU, so run
    anything that touches a GPU path on one and say in the pull request what passed on what
    hardware.
-6. **Re-render the notebook exports** on a GPU machine (see `AGENTS.md`, "Docs"):
+6. **Re-render the notebook exports** on a GPU machine (see `AGENTS.md`, "The documentation site"):
    `docs/render_notebooks.sh` renders every stale notebook, split across the machine's GPUs, and
    `python3 docs/verify_notebook_exports.py` must end with `verified <n> notebook source/export
    pairs`. Commit `docs/notebooks-static/`. The export fingerprint covers all of `src/`,
@@ -45,15 +47,25 @@ the General registry has accepted it.
 7. **Check the site locally:** `docs/build.sh`, then serve `docs/dist/` (for example
    `python3 -m http.server -d docs/dist`) and open the landing page, the API reference and a
    notebook.
-8. **Open the pull request, merge it, then register** by commenting on the merge commit on GitHub:
+8. **Open the pull request, merge it, then register** by commenting on the merge commit on GitHub.
+   A breaking release (a minor bump below 1.0) must carry release notes that say so, or General's
+   AutoMerge blocks it:
 
    ```
    @JuliaRegistrator register
+
+   Release notes:
+
+   ## Breaking changes
+   - <the Breaking entries of the changelog section, one line each>
+
+   See CHANGELOG.md for the full entry.
    ```
 
    The registry opens a pull request against General (AutoMerge takes about 15 minutes when the
-   version and compat bounds are valid). When it merges, TagBot creates the `v<version>` tag and
-   the GitHub Release from the changelog section, and the docs workflows deploy that tag.
+   version and compat bounds are valid; it installs the package on the lowest and highest Julia the
+   `julia` compat allows). When it merges, TagBot creates the `v<version>` tag and a GitHub Release
+   from those release notes, and the docs workflows deploy that tag.
 
 ## If something goes wrong
 

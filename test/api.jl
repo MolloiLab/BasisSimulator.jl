@@ -85,7 +85,7 @@ _expected_I0(geom, protocol, flux_sum) = begin
 end
 
 # -----------------------------------------------------------------------------
-# SimOptions — fidelity preset resolution + per-toggle overrides + clamps.
+# SimOptions — defaults, per-toggle overrides, clamps.
 # -----------------------------------------------------------------------------
 _ts("entering SimOptions testset")
 @testset "SimOptions" begin

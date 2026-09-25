@@ -218,18 +218,16 @@ vmi_de = BS.vmi_pipeline(; channels = [low.sino, high.sino], basis = basis_de, g
             P(:class => prose,
                 c("SpectralHYPR"), " is a generalized HYPR-LR denoiser with two instances: one on the counts of ",
                 "each detector row before the decomposition, one on the reconstructed basis pair. Pass it as ",
-                c("denoiser"), " to either call above; this is the chain the basis-spectral-denoising study runs:"),
-            CodeBlock("""chain = BS.SpectralHYPR(
-    projection = BS.ProjectionHYPR(kernel = BS.HYPRKernel((3, 3), BS.BoxProfile())),
-    image = BS.ImageHYPR(composite  = BS.HYPRKernel((3, 3, 7), BS.BoxProfile(); linear = false),
-                         complement = BS.HYPRKernel((15, 15, 7), BS.BoxProfile(); linear = false)),
-)
-vmi_denoised = BS.vmi_pipeline(; channels, basis, geom = ws_pc.geom, to_backend = to_gpu,
+                c("denoiser"), " to either call above. Its defaults are the published chain of basis-vmi and ",
+                "basis-spectral-denoising: a 3 × 3 (column × view) window on the counts, and a 1 × 1 × 7 composite and ",
+                "a 15 × 15 × 7 complement window on the basis pair:"),
+            CodeBlock("""vmi_denoised = BS.vmi_pipeline(; channels, basis, geom = ws_pc.geom, to_backend = to_gpu,
                                matrix_size = rec_opts.matrix_size,
-                               denoiser = chain, use_acnr = true)"""),
+                               denoiser = BS.SpectralHYPR(), use_acnr = true)"""),
             P(:class => small,
-                c("BS.SpectralHYPR()"), " with no arguments uses the package defaults. ACNR (anti-correlated noise ",
-                "reduction) is on by default only when there is no denoiser, so ", c("use_acnr = true"), " asks for both."),
+                "Every window is a ", c("BS.HYPRKernel"), " you can set (", c("BS.ProjectionHYPR(; kernel)"), ", ",
+                c("BS.ImageHYPR(; composite, complement)"), "). ACNR (anti-correlated noise reduction) is on by ",
+                "default only when there is no denoiser, so ", c("use_acnr = true"), " asks for both."),
 
             # ── Next ───────────────────────────────────────────────────────────
             H2(:id => "whats-next", :class => h2_cls, "What's next"),

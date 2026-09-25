@@ -18,7 +18,7 @@ docs/package-lock.json
 docs/render-logs/
 docs/.CondaPkg/
 
-# Local datasets for the notebooks (AGENTS.md, "Docs"); never tracked
+# Local datasets for the notebooks (AGENTS.md, "The documentation site"); never tracked
 docs/notebooks/data/
 
 # Pluto / SpaceStation
@@ -31,3 +31,4 @@ docs/notebooks/data/
 
 # macOS
 .DS_Store
+__pycache__/

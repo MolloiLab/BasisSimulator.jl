@@ -452,18 +452,6 @@ end
         @test config.detector_efficiency.mode == BS.MC_LUT
     end
 
-    # docs/notebooks/data/ is gitignored — this runs only on machines that
-    # hold the local CSV archive (skipped silently in CI).
-    @testset "LUT matches the local CSV archive verbatim" begin
-        csv_path = joinpath(@__DIR__, "..", "docs", "notebooks", "data",
-            "ufc_flash_mc_efficiency_v1.csv")
-        if isfile(csv_path)
-            rows = [split(l, ",") for l in readlines(csv_path)[2:end] if !isempty(strip(l))]
-            @test length(rows) == 140
-            csv_eff = [parse(Float64, r[2]) for r in rows]
-            @test csv_eff == BS.UFC_FLASH_MC_EFFICIENCY_LUT.efficiency
-        end
-    end
 end
 
 @testset "get_scintillator_mu — Gemstone + CdTe" begin

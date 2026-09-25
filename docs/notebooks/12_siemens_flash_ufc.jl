@@ -1026,7 +1026,7 @@ of the basis-vmi and basis-spectral-denoising papers:
 2. **K = 2 n-channel decomposition**: per ray, the Poisson maximum-likelihood
    iodine + water pair under the exact polychromatic mean of both tubes,
    in the count domain, with per-ray quality flags.
-3. **Image HYPR** on the FDK-reconstructed basis pair (a 3 × 3 × 7 composite
+3. **Image HYPR** on the FDK-reconstructed basis pair (a 1 × 1 × 7 composite (across slices only)
    and a 15 × 15 × 7 complement window), then **Kalender ACNR**.
 4. **VMI synthesis** at 50 / 70 / 100 / 140 keV from the one basis pair.
 
@@ -1036,13 +1036,9 @@ apodization halfway between the Standard and Soft windows); the grid is
 """
 
 # ╔═╡ 1200000b-0000-4000-8000-000000000005
-HYPR_CHAIN = BS.SpectralHYPR(
-    projection = BS.ProjectionHYPR(kernel = BS.HYPRKernel((3, 3), BS.BoxProfile())),
-    image = BS.ImageHYPR(
-        composite = BS.HYPRKernel((3, 3, 7), BS.BoxProfile(); linear = false),
-        complement = BS.HYPRKernel((15, 15, 7), BS.BoxProfile(); linear = false),
-    ),
-)
+# the published chain (basis-vmi / basis-spectral-denoising): a 3 × 3 (column × view) window on
+# the counts, and on the basis pair a 1 × 1 × 7 composite and a 15 × 15 × 7 complement window
+HYPR_CHAIN = BS.SpectralHYPR()
 
 # ╔═╡ 1200000b-0000-4000-8000-000000000006
 VMI_CHAIN = (method = :nchannel, controls = BS.NChannelControls(), use_tlbf = false, antialias = true);
