@@ -10,11 +10,32 @@ onward they are written by hand, and releases are cut by hand — see
 [RELEASING.md](RELEASING.md).
 
 
-## [0.18.0] — unreleased (branch fix/scanner-fidelity)
+## [0.15.0] — unreleased
+
+Everything since 0.14.0, the last registered release. The work landed on `main` in stages whose
+headings below carry the version numbers `Project.toml` held at the time (0.15.0 to 0.18.0);
+none of those was registered or tagged, so they ship together as 0.15.0, the next version the
+General registry accepts after 0.14.0. The stages are newest first, and each one is breaking
+relative to 0.14.0 where it says so.
+
+### After stage 0.18.0
+
+#### Added
+- **`SpectralHYPR`, a generalized HYPR-LR denoiser for `vmi_pipeline`.** Count-domain HYPR-LR within
+  each detector row (total-count likelihood weights, a local linear split, dispersion from the air
+  rays), and its image-domain instance on the basis pair (the minimum-noise VMI and its
+  noise-independent complement, noise covariance from the odd/even half-view difference). Window
+  profiles are specified like FBP apodization: `BoxProfile`, `TriangleProfile`,
+  `CustomProfile(control_x, control_y)` in `HYPRKernel`. `vmi_pipeline(; denoiser = SpectralHYPR())`
+  runs the projection instance before the decomposition and the image instance in place of the
+  plain FDK; ACNR defaults off when a denoiser is given. Additive: every existing call is unchanged.
+  Ported bit-for-bit from basis-spectral-denoising. Test: `test/hypr.jl`.
+
+### Stage 0.18.0 (branch fix/scanner-fidelity, #72)
 
 Scanner fidelity, first part. Every simulation's numbers change; see each item.
 
-### Changed
+#### Changed
 - **The quarter-detector offset is honoured.** `Scanner.detector_col_offset` (columns) was stored
   and never read: every projector, the fan weighting, every backprojector and the bowtie assumed
   a centred detector. `CTGeometry` now carries `column_offset` (18th field; positional
@@ -67,12 +88,12 @@ Scanner fidelity, first part. Every simulation's numbers change; see each item.
   the former 10 µm gave 20 %/degree and was hidden by the fan mapping's angle clamp), and
   `simulate!`'s heel now uses it (it built a 10 µm model directly). An anode angle that does not
   exceed the half-cone (a 7° anode on a 160 mm cone) is refused as an invalid tube geometry.
-### Added
+#### Added
 - `column_offset`, `column_center`, `scan_circle_diameter`, `apply_pcct_pileup!`.
 - Tests: `detector_offset.jl` (offset physics through dd, ddᵀ, the row-tiled path and Siddon; labels
   through the affine stay on the image to 0.1 px), `hir_support.jl`, `pcct_bowtie.jl` (incl. a
   binned detector), `heel_axis.jl`.
-### Known, documented, not yet changed on this branch
+#### Known, documented, not yet changed on this branch
 - Helical HIR keeps the requested circle as support (axial single-slice requests are extended).
 - Scatter behind a bowtie is scaled by the receiving ray's flux (a modelling choice shared with
   the energy-integrating path): the scatter reaching a low-flux edge pixel from the high-flux
@@ -82,9 +103,9 @@ Scanner fidelity, first part. Every simulation's numbers change; see each item.
   sub-iteration): "HIR 60" is close to FDK plus Huber smoothing; the strength table's "PWLS"
   description overstates the data term.
 
-## [0.17.2](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.17.1...v0.17.2) (2026-09-19)
+### Stage 0.17.2 (2026-09-19)
 
-### Fixed
+#### Fixed
 
 * `resample_field_to_recon` contracts each axis with a banded AcceleratedKernels kernel instead of
   a dense matrix product. An output voxel overlaps a few consecutive source voxels, so the dense
@@ -92,9 +113,9 @@ Scanner fidelity, first part. Every simulation's numbers change; see each item.
   cannot be initialised in a process that has loaded Reactant (`CUBLAS_STATUS_NOT_INITIALIZED`),
   as every SEMMD notebook has. Same numbers to roundoff, on the host and on the device.
 
-## [0.17.1](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.17.0...v0.17.1) (2026-09-19)
+### Stage 0.17.1 (2026-09-19)
 
-### Changed
+#### Changed
 
 * `resample_field_to_recon` takes `to_backend`: with a device array as `field` and the matching
   constructor (`CuArray`) the exact box average runs on the device and only the result comes back.
@@ -103,9 +124,9 @@ Scanner fidelity, first part. Every simulation's numbers change; see each item.
   input's own size. Host results are unchanged; the labels of a 4 cm anatomy window take
   milliseconds instead of minutes.
 
-## [0.17.0](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.16.0...v0.17.0) (2026-09-18)
+### Stage 0.17.0 (2026-09-18)
 
-### Breaking
+#### Breaking
 
 * **The FBP kernel is bandlimited to the reconstruction grid.** Every apodization window —
   CatSim standard/soft/bone/custom and the classical Shepp-Logan, cosine, Hamming, Hann — was
@@ -130,11 +151,11 @@ Scanner fidelity, first part. Every simulation's numbers change; see each item.
   `0.54 + 0.46 cos(πf)`, `½(1 + cos(πf))` — so those four filters produce different (correct)
   kernels. `apply_spatial_window!` and `_apply_catsim_freq_window!` are gone.
 
-### Added
+#### Added
 
 * `grid_bandlimit`, `frequency_window`, `apply_frequency_window!`; `test/filtering.jl`.
 
-## [0.16.0](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.15.0...v0.16.0) (2026-09-18)
+### Stage 0.16.0 (2026-09-18)
 
 Everything 0.15.0 claimed was re-derived independently — the dose Monte Carlo against IEC
 60601-2-44 and NIST, the helical row mapping against the package's own projector, the ported VMI
@@ -142,7 +163,7 @@ chain function by function against the basis-vmi code it came from, the HIR obje
 implemented. One number was wrong and one design was unsound; both are fixed here. Suite: 3394 →
 3455 passing on Julia 1.12.6.
 
-### Breaking
+#### Breaking
 
 * **The VMI chain is no longer limited to one detector row and one slice.** Nothing in it ever had
   to be: T-LBF's neighbourhood is (column, view) and never crosses rows, ACNR works slice by slice,
@@ -160,7 +181,7 @@ implemented. One number was wrong and one design was unsound; both are fixed her
   `matrix_size`, `antialias`, `recon_rows`, `filter`, and a `hir` NamedTuple (`strength`,
   `projector`, `reference_kev`, `weights`) when the method is `:hir`, `nothing` otherwise.
 
-### Added
+#### Added
 
 * **The VMI chain reconstructs its basis pair iteratively as well as analytically** —
   `vmi_pipeline(...; recon_method = :hir, hir_strength = 60, recon_projector, hir_reference_kev = 70)`,
@@ -192,7 +213,7 @@ implemented. One number was wrong and one design was unsound; both are fixed her
   fractional fields and a denominator. `outside` fills the part of an output voxel that lies
   beyond the field's grid (1 for an air fraction), so fractions that sum to one still do.
 
-### Fixed
+#### Fixed
 
 * **The wide-beam CTDI rule (N·T > 40 mm) was clamped at the pencil-chamber length and reported
   a 160 mm beam at 100/160 of its value.** 0.15.0's first commit had the IEC Amd 1 expression
@@ -203,7 +224,7 @@ implemented. One number was wrong and one design was unsound; both are fixed her
   Measured on the GE-like body beam: 4.29 mGy/100 mAs at 160 mm against the correct 6.86. Reverted,
   tests rewritten. Collimations ≤ 40 mm were never affected.
 
-### Changed
+#### Changed
 
 * `test/helical.jl` pins the arc/flat row mapping directly: one voxel is forward-projected through
   the package's projector and the row centroid of its footprint is compared with both candidate
@@ -212,7 +233,7 @@ implemented. One number was wrong and one design was unsound; both are fixed her
   other is off by most of a row at 20 cm. The previous near/far test could not tell a `cos γ` from
   a `1/cos γ` error.
 
-### Corrected in the record
+#### Corrected in the record
 
 * 0.15.0's changelog gave thin-disk FWHM figures for the arc-mapping fix (0.95–1.01 vs
   0.78–0.81 mm at 20 cm) without the geometry they came from. On 32 × 0.625 mm rows at pitch 1
@@ -230,14 +251,14 @@ implemented. One number was wrong and one design was unsound; both are fixed her
   and the unmodelled heel effect account for the gap); head 13.37 (ratio 1.96); 80/100/140 kVp
   2.04/4.18/9.90. Warm cost 0.45 s on one thread at 10⁶ histories.
 
-## [0.15.0](https://github.com/MolloiLab/BasisSimulator.jl/compare/v0.14.0...v0.15.0) (2026-09-17)
+### Stage 0.15.0 (2026-09-17)
 
 Audited the helical, dose and photon-counting paths against the package's own axial
 reconstruction and against the published worked examples, then fixed what the measurements
 showed and moved the estimator the notebooks use into the package. The timings below were
 measured on one NVIDIA RTX PRO 6000; the test suite is 3394 passing on CPU.
 
-### Breaking
+#### Breaking
 
 * `Scanner(...)` is gone. `EICTScanner` carries the scintillator model and `PCCTScanner` the
   direct-conversion model plus the detector-side toggles that used to dangle in `SimOptions`
@@ -273,7 +294,7 @@ measured on one NVIDIA RTX PRO 6000; the test suite is 3394 passing on CPU.
   `julia = "1.10 - 1.12"`, so 1.12 is the whole supported window today.
 * Releases are no longer automated; see [RELEASING.md](RELEASING.md).
 
-### Added
+#### Added
 
 * **The K-channel decomposition and the VMI chain are package code.** The profile-likelihood
   estimator of worked examples 03, 04 and 12 lived only inside notebook cells:
@@ -302,7 +323,7 @@ measured on one NVIDIA RTX PRO 6000; the test suite is 3394 passing on CPU.
 * `helical_q` and `mask_fov` reachable through `fdk_reconstruct`, and `simulate!` takes
   `report_dose`, `dose_kwargs`, `paths` and `noise_rng`.
 
-### Fixed
+#### Fixed
 
 * **Arc detectors were given the flat panel's row mapping in the helical backprojector.** A
   cylindrical detector has every row at the same in-plane distance from the source, so a voxel's
@@ -323,7 +344,7 @@ measured on one NVIDIA RTX PRO 6000; the test suite is 3394 passing on CPU.
   in Float64.
 * `compute_dlp` multiplied the dose-length product by the rotation count a second time.
 
-### Performance
+#### Performance
 
 All bit-identical unless stated.
 
@@ -342,7 +363,7 @@ All bit-identical unless stated.
   a Fano factor of 1.000. Opt-in, because it is a different realisation of the same distribution;
   the realisation depends on the seed alone, not on the thread count.
 
-### Documented
+#### Documented
 
 * `src/reconstruction/fbp/wfbp_helical.jl` records what the helical audit measured — uniformity,
   slice sensitivity profile, z-edge error, pitch sweep — and what is not modelled: there is no
