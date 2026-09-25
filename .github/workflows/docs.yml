@@ -1,9 +1,20 @@
 name: Build and Deploy Docs
 
+# The site describes the latest release: it is built from the newest `v*` tag, after TagBot has
+# created it (or by hand from the Actions tab), never from `main`. The notebook pages are the
+# committed, GPU-rendered exports in docs/notebooks-static/, re-rendered in each release pull
+# request (RELEASING.md); `docs/build.sh` refuses a tag whose exports are stale.
+
 on:
-  push:
-    branches: [main]
+  workflow_run:
+    workflows: [TagBot]
+    types: [completed]
   workflow_dispatch:
+    inputs:
+      ref:
+        description: "Tag or commit to build (default: the newest v* tag)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -16,41 +27,41 @@ concurrency:
 
 jobs:
   build:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout BasisSimulator.jl
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Setup Julia
-        uses: julia-actions/setup-julia@v2
+      - name: Check out the release to document
+        run: |
+          ref="${{ github.event.inputs.ref }}"
+          [ -n "$ref" ] || ref="$(git tag --list 'v*' --sort=-v:refname | head -n 1)"
+          echo "Building the docs of $ref"
+          git checkout --quiet "$ref"
+
+      - uses: julia-actions/setup-julia@v2
         with:
           version: '1.12'
 
       - uses: julia-actions/cache@v2
 
       - name: Build docs
-        # `BASISSIM_SKIP_NB_EXPORT` short-circuits the Pluto notebook
-        # render in `docs/app.jl` — CI can't run our Metal/CUDA kernels
-        # so we never attempt re-rendering on the runner.  Notebooks are
-        # rendered locally (Apple Silicon Metal GPU), and the resulting
-        # HTML is committed under `docs/notebooks-static/` and tracked
-        # in the repo.  CI just mounts those HTML files into `dist/`.
         run: docs/build.sh
 
-      - name: Setup Pages
-        uses: actions/configure-pages@v4
+      - uses: actions/configure-pages@v4
 
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v3
         with:
           path: docs/dist
 
   deploy:
+    needs: build
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
-    needs: build
     steps:
       - name: Deploy to GitHub Pages
         id: deployment

@@ -1,15 +1,25 @@
 # Managed by Snapshot. Unknown edits are never overwritten automatically.
 # snapshot-workflow-version: snapshot-v0.2.1-node24
+#
+# LOCAL EDIT (BasisSimulator.jl): the site describes the latest release, as docs.yml does, so this
+# runs when TagBot completes (or by hand) and builds the newest `v*` tag instead of every push to
+# `main`; `discover` resolves the tag once (`ref`) and every checkout of the repo uses it. Keep this
+# edit when adopting a newer managed workflow. See RELEASING.md.
 name: Snapshot — build & publish
 on:
-  push:
-    branches: [main, master]
+  workflow_run:
+    workflows: [TagBot]
+    types: [completed]
   workflow_dispatch:
     inputs:
       force:
         description: "Re-export every notebook (ignore all export caches)"
         type: boolean
         default: false
+      ref:
+        description: "Tag or commit to publish (default: the newest v* tag)"
+        required: false
+        default: ""
 permissions:
   contents: read
   id-token: write
@@ -55,15 +65,24 @@ jobs:
       - run: echo "Snapshot workflow updated; project build intentionally deferred until the next source push."
 
   discover:
-    if: github.event_name != 'push' || !contains(github.event.head_commit.message, '[snapshot workflow update]')
+    if: (github.event_name != 'push' || !contains(github.event.head_commit.message, '[snapshot workflow update]')) && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     outputs:
       kind: ${{ steps.d.outputs.kind }}
       matrix: ${{ steps.d.outputs.matrix }}
       has_notebooks: ${{ steps.d.outputs.has_notebooks }}
+      ref: ${{ steps.ref.outputs.ref }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with: { path: repo }
+        with: { path: repo, fetch-depth: 0 }
+      - id: ref
+        name: Resolve the release to publish
+        run: |
+          ref="${{ github.event.inputs.ref }}"
+          [ -n "$ref" ] || ref="$(git -C repo tag --list 'v*' --sort=-v:refname | head -n 1)"
+          git -C repo checkout --quiet "$ref"
+          echo "ref=$(git -C repo rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "→ publishing $ref"
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with: { repository: GroupTherapyOrg/WasmTarget.jl, ref: "${{ env.SNAPSHOT_WT_REF }}", path: WasmTarget.jl }
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -102,7 +121,7 @@ jobs:
       matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with: { path: repo }
+        with: { path: repo, ref: "${{ needs.discover.outputs.ref }}" }
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with: { repository: GroupTherapyOrg/WasmTarget.jl, ref: "${{ env.SNAPSHOT_WT_REF }}", path: WasmTarget.jl }
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -193,7 +212,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with: { path: repo }
+        with: { path: repo, ref: "${{ needs.discover.outputs.ref }}" }
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with: { repository: GroupTherapyOrg/WasmTarget.jl, ref: "${{ env.SNAPSHOT_WT_REF }}", path: WasmTarget.jl }
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -255,7 +274,7 @@ jobs:
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with: { path: repo }
+        with: { path: repo, ref: "${{ needs.discover.outputs.ref }}" }
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with: { repository: GroupTherapyOrg/WasmTarget.jl, ref: "${{ env.SNAPSHOT_WT_REF }}", path: WasmTarget.jl }
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4

@@ -13,6 +13,39 @@ concurrency:
   cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
 
 jobs:
+  # `version` in Project.toml must be the last version registered in General, or one the registry
+  # accepts next (next patch, next minor, next major). A feature pull request that bumps it, or a
+  # release that skips a number, fails here instead of at registration. See RELEASING.md.
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.12'
+      - name: Check the version against the General registry
+        shell: julia --color=yes {0}
+        run: |
+          using Pkg, TOML
+          project = TOML.parsefile("Project.toml")
+          v = VersionNumber(project["version"])
+          Pkg.Registry.add("General"); Pkg.Registry.update("General")
+          uuid = Base.UUID(project["uuid"])
+          registered = VersionNumber[]
+          for reg in Pkg.Registry.reachable_registries()
+              reg.name == "General" && haskey(reg, uuid) || continue
+              append!(registered, keys(Pkg.Registry.registry_info(reg[uuid]).version_info))
+          end
+          if isempty(registered)
+              println("$(project["name"]) is not registered yet; version $(v) is the first release")
+              exit(0)
+          end
+          last = maximum(registered)
+          allowed = [last, VersionNumber(last.major, last.minor, last.patch + 1),
+                     VersionNumber(last.major, last.minor + 1, 0), VersionNumber(last.major + 1, 0, 0)]
+          println("Project.toml: $(v); last registered: $(last); allowed: $(join(allowed, ", "))")
+          v in allowed || error("version $(v) is not the last registered version or a valid next one; see RELEASING.md")
+
   test:
     name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
