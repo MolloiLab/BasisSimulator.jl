@@ -334,6 +334,42 @@ let
     """)
 end
 
+# ╔═╡ 1100000b-0000-4000-8000-000000000001
+md"""
+### Plan a helical scan
+
+The dose above is the pitch-1.0 scan. At a fixed tube current and rotation time, CTDIvol scales as
+1 / pitch, and the table feed per rotation is pitch × collimation, which sets how many rotations
+(and seconds) a range takes. Move the slider: the numbers below are computed live in your browser
+from this scan's measured CTDIvol and its 20 mm collimation.
+"""
+
+# ╔═╡ 1100000b-0000-4000-8000-000000000002
+# this scan's scalars — CTDIvol scaled to pitch 1, the collimation (mm), the rotation time (s) —
+# the inputs of the calculator below, which runs live in the browser
+helical_inputs = (
+    Float64(helical_result.dose.ctdi_vol_mGy * helical_result.dose.pitch),
+    Float64(helical_result.dose.nominal_collimation_mm),
+    Float64(protocol_helical.rotation_time),
+);
+
+# ╔═╡ 1100000b-0000-4000-8000-000000000003
+@bind pitch_x100 PlutoUI.Slider(50:5:150; default = 100, show_value = true)
+
+# ╔═╡ 1100000b-0000-4000-8000-000000000004
+# pitch, table feed (mm), CTDIvol (mGy), rotations and seconds for a 30 cm range
+helical_plan = let p = pitch_x100 / 100
+    feed = helical_inputs[2] * p
+    rotations = 300.0 / feed
+    (p, round(feed; digits = 1), round(helical_inputs[1] / p; digits = 2),
+     round(rotations; digits = 1), round(rotations * helical_inputs[3]; digits = 1))
+end;
+
+# ╔═╡ 1100000b-0000-4000-8000-000000000005
+md"""
+**Pitch $(helical_plan[1]):** the table moves $(helical_plan[2]) mm per rotation, CTDIvol is $(helical_plan[3]) mGy, and a 30 cm range takes $(helical_plan[4]) rotations, $(helical_plan[5]) s.
+"""
+
 # ╔═╡ 11000007-0000-4000-8000-000000000001
 md"""
 ## 5. Slide through ``z``: phantom truth vs both scans
@@ -526,6 +562,11 @@ md"""
 # ╠═11000006-0000-4000-8000-000000000002
 # ╠═11000006-0000-4000-8000-000000000003
 # ╟─11000006-0000-4000-8000-000000000004
+# ╟─1100000b-0000-4000-8000-000000000001
+# ╟─1100000b-0000-4000-8000-000000000002
+# ╠═1100000b-0000-4000-8000-000000000003
+# ╟─1100000b-0000-4000-8000-000000000004
+# ╟─1100000b-0000-4000-8000-000000000005
 # ╟─11000007-0000-4000-8000-000000000001
 # ╟─11000007-0000-4000-8000-000000000002
 # ╟─11000007-0000-4000-8000-000000000003

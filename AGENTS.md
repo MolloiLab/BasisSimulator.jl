@@ -91,12 +91,21 @@ A Therapy.jl static site: `docs/app.jl`, pages in `docs/src/routes/`, components
   of every file a render reads, and a render refuses a changed file: after an intended change to
   the data, update its line. Notebook 02 downloads its XCAT slab as a Julia artifact; every other
   notebook is self-contained (07/08 build the QRM-Thorax phantom analytically).
-- **Snapshot islands:** the exporter (Snapshot.jl, `docs/build_env/`) compiles `@bind` groups to
-  WebAssembly when the reactive path is plain Julia numerics over scalars — PlutoUI Int sliders,
-  no arrays or structs upstream, no CairoMakie. Sliders that drive GPU volumes are forced to an
-  honest static fallback (`FORCE_FALLBACK_BONDS` in `docs/extract_all.jl`, mirrored in
-  `docs/verify_notebook_exports.py`: 01 `z_slice`, 05 `z_helical`, 11 `z_idx`); renaming such a
-  bond means updating both lists.
+- **Snapshot islands:** the exporter (Snapshot.jl, `docs/build_env/`) compiles a `@bind` group to
+  WebAssembly when everything reactive downstream of the slider is plain Julia arithmetic over
+  scalars and tuples (upstream scalars are baked in as constants; arrays, structs, package calls and
+  CairoMakie are not compilable). The pattern that works (notebook 11's helical-scan calculator):
+  an Int `PlutoUI.Slider`; one hidden cell (ending in `;`) that returns a plain tuple; a `md"""…"""`
+  readout that only interpolates `$(t[1])`, `$(t[2])`, … in ASCII text. Sliders that drive GPU
+  volumes are forced to an honest static fallback (`FORCE_FALLBACK_BONDS` in `docs/extract_all.jl`,
+  mirrored in `docs/verify_notebook_exports.py`: 01 `z_slice`, 05 `z_helical`, 11 `z_idx`);
+  renaming such a bond means updating both lists. The verifier accepts compiled islands and exactly
+  those fallbacks; it rejects a partial island or any other fallback. Check a new island in a real
+  browser (`python3 -m http.server -d docs/dist`, move the slider).
+- **Julia Markdown trap:** a paragraph containing `($(` (an opening parenthesis right before an
+  interpolation) loses every interpolation in it — the `$` signs are read as LaTeX. Write
+  `, $(x) s` rather than `($(x) s)`. Likewise an underscore inside a word outside backticks
+  (`mu_water`) becomes italics: put identifiers in backticks.
 - **Notebook rules:** use the package, never a re-implementation of a package stage; keep seeds
   fixed; print no machine paths (the verifier rejects `/home/…`, `/Users/…`, `/tmp/…`); state only
   numbers the notebook computes; pick the GPU with `GPUSelect.Storage()`.
