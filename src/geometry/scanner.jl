@@ -166,7 +166,7 @@ gain, electronic noise).  Construct with [`EICTScanner(; kwargs...)`](@ref).
 """
 struct EICTScanner{T <: AbstractFloat} <: Scanner{T}
     geometry::ScannerGeometry{T}
-    detector_material::Symbol   # scintillator (:lumex, :gos, …)
+    detector_material::Symbol   # scintillator: :lumex (GE Gemstone), :ufc (Siemens Force), :ufc_flash (Siemens Flash)
     detector_depth::T           # mm
     fill_factor_row::T          # 0-1
     fill_factor_col::T          # 0-1

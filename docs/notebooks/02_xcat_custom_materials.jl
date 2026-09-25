@@ -41,19 +41,18 @@ on the same scan.
 
 | | |
 |---|---|
-| **Phantom** | XCAT adult-male 50th-percentile chest slab (1385 × 917 × 1, 0.25 mm in-plane, full resolution) |
-| **Materials** | Mix of `XA.Materials.ncat_*` prebuilt + a custom iodinated-blood material constructed inline |
-| **Scanner** | GE Revolution Apex Elite (same as notebook 01) |
-| **Recon** | FBP/FDK + Hybrid IR (`:asir`-style PWLS refinement) |
+| **Phantom** | XCAT adult-male 50th-percentile chest, one axial slab at full resolution (XCIST `phantoms-voxelized`, downloaded as a Julia artifact) |
+| **Materials** | `XA.Materials.ncat_*` tissues, plus a custom iodinated-blood material constructed inline |
+| **Scanner** | GE Revolution Apex Elite (as in notebook 01) |
+| **Reconstruction** | FBP and Hybrid IR at strength 60, both after the water beam-hardening correction |
 """
 
 # ╔═╡ 02000002-0000-4000-8000-000000000001
 md"""
 ## Notebook Setup
 
-Same shape as notebook 01 — activate `docs/Project.toml`, four discrete
-import cells, then probe for a GPU backend.  We add **Unitful** here for
-the `u"eV"` and `u"g/cm^3"` units used by the `XA.Material` constructor.
+As in notebook 01: the shared `docs/` environment, then the device. **Unitful** supplies the
+`u"eV"` and `u"g/cm^3"` units the `XA.Material` constructor takes.
 """
 
 # ╔═╡ 02000003-0000-4000-8000-000000000002
@@ -73,10 +72,11 @@ TableOfContents()
 
 # ╔═╡ 02000004-0000-4000-8000-000000000001
 md"""
-#### Backend-agnostic device transfer: `to_gpu()`
+#### Choosing the device
 
-Same probe-then-load pattern as notebook 01 — checks Metal → CUDA →
-AMDGPU via `Base.locate_package`, falls back to CPU `identity`.
+`GPUSelect.Storage()` returns the array type of the GPU it finds (`CuArray`, `MtlArray`,
+`ROCArray`, `oneArray`), or `Array` on a CPU-only host; moving the phantom mask to it decides
+where the pipeline runs.
 """
 
 # ╔═╡ 02000005-0000-4000-8000-000000000001
@@ -88,9 +88,9 @@ begin
 end
 
 # ╔═╡ 02000007-0000-4000-8000-000000000001
-md"""
+Markdown.parse("""
 **Backend detected:** $(GPU_BACKEND.name)
-"""
+""")
 
 # ╔═╡ 03000000-0000-4000-8000-000000000000
 md"""
@@ -104,9 +104,9 @@ md"""
 No local files, no manual setup.  `BS.load_xcat_male_chest()` fetches the
 voxelized **XCAT adult-male 50th-percentile chest** phantom from the open
 [`xcist/phantoms-voxelized`](https://github.com/xcist/phantoms-voxelized)
-repository (BSD-3-Clause) into Julia\'s standard artifact store
-(`~/.julia/artifacts/`): it downloads once (~65 MB, SHA-256-verified), logs the
-Segars XCAT + XCIST citation, and reuses the cached copy on every later call.
+repository (BSD-3-Clause) into Julia\'s content-addressed artifact store: it downloads once,
+verifies the file's SHA-256 against the value pinned in the package, logs the Segars XCAT +
+XCIST citation, and reuses the cached copy on every later call.
 
 !!! info "Using `load_xcat_*`"
     Four phantoms ship — `:female_slab`, `:female_chest`, `:male_slab`,
@@ -122,8 +122,7 @@ Segars XCAT + XCIST citation, and reuses the cached copy on every later call.
       treat it as a speed knob, not a lossless representation.
     - `materials = Dict("ncat_blood" => …)` — override the tissue → material map
       by XCIST name *before* assembly (see §2).
-    - `path = "/my/local/xcat"` — skip the download and read an already-extracted
-      copy from disk.
+    - `path = …` — skip the download and read an already-extracted copy from disk.
     - `quiet = true` — silence the citation + progress logging.
 """
 
@@ -151,7 +150,7 @@ md"""
 
 # ╔═╡ 05000002-0000-4000-8000-000000000002
 let m = BS.XA.Materials.ncat_blood
-    md"""
+    Markdown.parse("""
     **`XA.Materials.ncat_blood`**
 
     | Field         | Value                                    |
@@ -161,7 +160,7 @@ let m = BS.XA.Materials.ncat_blood
     | `I`           | $(m.I)                                   |
     | `density`     | $(m.density)                             |
     | `composition` | $(length(m.composition)) elements (Z = $(sort(collect(keys(m.composition))))) |
-    """
+    """)
 end
 
 # ╔═╡ 05000003-0000-4000-8000-000000000001
@@ -245,17 +244,17 @@ md"""
 `load_xcat_male_slab` returns the labeled pieces; we assemble the `Phantom` from
 them.  For a GPU simulation the mask must live on the device — the workspace
 picks its compute backend from the mask\'s array type — so we `to_gpu` it first.
-The slab is one 5 mm-thick axial section at full 0.25 mm in-plane resolution: real
-anatomy at a docs-friendly compute cost, no downsampling needed.
+The slab is a single axial section at the phantom's full in-plane resolution: real anatomy at a
+docs-friendly compute cost, with no downsampling.
 """
 
 # ╔═╡ 04000004-0000-4000-8000-000000000001
 xcat = try
     BS.load_xcat_male_slab(; materials = materials_map, quiet = true)   # full-resolution single slab
 catch err
-    @warn "XCAT download/load failed — compute cells will skip" err
+    @warn "XCAT download/load failed; the compute cells will skip" exception = err
     nothing
-end
+end;
 
 # ╔═╡ 06000000-0000-4000-8000-0000000000a1
 phantom_labeled = xcat === nothing ? nothing : xcat.mask
@@ -282,9 +281,9 @@ let
         ax = Mke.Axis(
             fig[1, 1];
             title = "XCAT male chest slab (full resolution)",
-            subtitle = "Slice $(mid) / $(size(phantom_labeled, 3))" *
-                " · $(size(phantom_labeled, 1))×$(size(phantom_labeled, 2))" *
-                " · $(n_lbl) unique labels",
+            subtitle = "$(size(phantom_labeled, 1)) × $(size(phantom_labeled, 2)) × $(size(phantom_labeled, 3))" *
+                " voxels of $(join(round.(VOXEL_SIZE_CM .* 10; digits = 3), " × ")) mm" *
+                " · $(n_lbl) labels (colour = label ID)",
             aspect = Mke.DataAspect(),
             titlesize = 28, subtitlesize = 20,
         )
@@ -309,9 +308,8 @@ md"""
 md"""
 ### 01. Scanner, protocol, sim & recon options
 
-Same GE Revolution Apex Elite hardware as notebook 01.  The protocol is a
-clinical body-CTA acquisition: 120 kVp / 250 mA, 5 mm collimation, 500
-views.  Recon: 512 × 512, 35 cm FOV, FBP `:standard` filter.
+The GE Revolution Apex Elite of notebook 01. The protocol is a body CTA: 120 kVp / 250 mA,
+5 mm collimation, 500 views in 1 s. Reconstruction: 512 × 512 over 35 cm, eight 0.625 mm slices.
 """
 
 # ╔═╡ 07000002-0000-4000-8000-000000000001
@@ -332,12 +330,9 @@ scanner = BS.EICTScanner(
     detector_depth = 3.0,
     fill_factor_row = 0.9,
     fill_factor_col = 0.9,
-    # DAS/electronic noise, in electrons.  This enters the COUNTS before the log
-    # transform (`λ_noisy += σ_e·randn()` in simulate!), which is where a real
-    # DAS contributes it — so it propagates through reconstruction and iterative
-    # recon can suppress it.  Adding an equivalent floor to the HU volume *after*
-    # reconstruction instead would make FBP and HIR look identical by fiat.
-    electronic_noise = 3500.0,   # e⁻ — clinical GE Apex Elite DAS readout noise
+    # Electronic noise, in electrons, enters the counts before the log, as a real DAS does,
+    # so it passes through the reconstruction and iterative reconstruction can act on it.
+    electronic_noise = 3500.0,   # e⁻ rms
     detection_gain = 10.0,
 )
 
@@ -353,13 +348,9 @@ protocol = BS.CTProtocol(
 
 # ╔═╡ 07000004-0000-4000-8000-000000000001
 # `projector` picks the forward ray tracer: :dd_fast (default) is distance-driven and
-# anti-aliased (robust in severe beam-hardened regions), fusing the whole spectrum into
-# one volume walk. :siddon point-samples one voxel per step and ALIASES in those regions —
-# use it only when speed outranks accuracy. (:dd is the older, slower reference kernel:
-# same physics as :dd_fast, now deprecated.)
-# The BHC and Hybrid-IR cells below all read `sim_opts.projector`, so changing it
-# HERE updates the whole pipeline consistently — the recon must invert the operator
-# that generated the data, or the IR system matrix won't match and convergence suffers.
+# anti-aliased, and walks the volume once for the whole spectrum; :siddon point-samples
+# the volume and can alias in strongly beam-hardened regions. The Hybrid-IR cell reads
+# `sim_opts.projector`, so its system matrix always matches the operator that made the data.
 sim_opts = BS.SimOptions(seed = 1234, projector = :dd_fast)
 
 # ╔═╡ 07000005-0000-4000-8000-000000000001
@@ -373,25 +364,26 @@ recon_opts = BS.ReconOptions(
 md"""
 ### 02. Forward project
 
-Same `let ... end` shape as notebook 01 — workspace, `simulate!`, copy off
-GPU, drop refs, force `GC.gc(true)`.  The XCAT phantom is ~3× the volume
-of the Gammex 472 demo (320×280×100 vs 512×512×16), so this step takes
-longer; on a CPU-only fallback it can be **several minutes**.
+The notebook 01 pattern: workspace, `simulate!`, copy the sinogram off the device, release the
+device buffers. `simulate!` returns the acquisition's dose report.
 """
 
 # ╔═╡ 08000002-0000-4000-8000-000000000001
 sim = phantom === nothing ? nothing : let
         @info "Simulating XCAT body CTA: 120 kVp / 250 mA…"
         ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
-        BS.simulate!(ws, phantom, protocol, sim_opts)
+        out = BS.simulate!(ws, phantom, protocol, sim_opts)
 
-        result = (sino = Array(ws.sinogram), geom = ws.geom)
+        result = (sino = Array(ws.sinogram), geom = ws.geom, dose = out.dose)
 
         ws = nothing
         GC.gc(true)
 
         result
 end;
+
+# ╔═╡ 08000003-0000-4000-8000-000000000001
+sim === nothing ? md"" : sim.dose
 
 # ╔═╡ 09000000-0000-4000-8000-000000000000
 md"""
@@ -400,46 +392,32 @@ md"""
 
 # ╔═╡ 09000001-0000-4000-8000-000000000001
 md"""
-### 01. Postprocessing (The Full Correction Pipeline)
+### 01. The reconstruction chain
 
-A raw FDK or HIR recon doesn't ship as a clinical image.  Real CT vendors
-apply a stack of corrections after the simulator's forward model:
+The chain of notebook 01, applied to both algorithms:
 
-| Stage | Function                              | What it does                                                                             |
-|-------|---------------------------------------|------------------------------------------------------------------------------------------|
-| 1.    | `calibrate_bhc_water`                 | Precomputes per-column water poly→mono polynomials from the FULL detected spectrum — pure physics, zero tunables |
-| 2.    | `apply_bhc_water`                     | Sinogram-domain water BHC — one polynomial pass *before* FDK/HIR                          |
-| 3.    | `reconstruct!` (FDK or Hybrid IR)     | Filtered back-projection / iterative reconstruction on the corrected sinogram            |
-| 5.    | `to_hounsfield` (with BHC μ_water)    | Convert μ → HU using the BHC model's calibrated reference (not the 70 keV NIST value)    |
-| 6.    | `measure_radial_cupping`              | QA metric (never applied): fitted residual cup + DC — both ≈ 0 after a correct BHC        |
+| step | function | what it does |
+|:--|:--|:--|
+| 1 | `calibrate_bhc_water` | per detector column, the polynomial mapping polychromatic water line integrals to monochromatic ones, from the full detected spectrum; no tunable parameters |
+| 2 | `apply_bhc_water` | applies it to the sinogram, before reconstruction |
+| 3 | `reconstruct!` | FBP (`create_fdk_recon_workspace`) or Hybrid IR (`create_hir_recon_workspace`) |
+| 4 | `to_hounsfield` | μ → HU with the correction's own μ_water at its reference energy |
 
-!!! warning "Where the DAS noise goes"
-    Quantum (Poisson) **and** DAS/electronic noise are both injected by
-    `simulate!` in the **counts domain**, before the log transform — electronic
-    noise via `scanner.electronic_noise` (electrons). That is where a real DAS
-    contributes it, and it means reconstruction sees it and can suppress it.
-
-    Do **not** substitute `add_system_noise_floor!` here. That helper adds white
-    Gaussian noise to the HU volume *after* reconstruction, so it is identical in
-    FBP and HIR by construction and makes iterative recon look useless — an
-    earlier version of this notebook set `electronic_noise = 0` and added a 28 HU
-    floor post-recon, which reported HIR at ~1.6 % noise reduction instead of the
-    ~26 % it actually delivers. Reserve that helper for effects that genuinely
-    survive reconstruction (calibration drift, ring-correction residuals).
-
-The same pipeline applies to both FBP and HIR — only the recon workspace
-inside the let block differs (`create_fdk_recon_workspace` vs
-`create_hir_recon_workspace`). See notebook 01 §9 for the same pattern on
-the Gammex 472 phantom.
+!!! info "Noise is already in the counts"
+    Quantum noise and the electronic noise of `scanner.electronic_noise` are both added by
+    `simulate!` to the detector counts, before the log, where a real detector adds them. The
+    reconstruction sees all of it, so iterative reconstruction can reduce all of it. Adding
+    noise to the HU volume after reconstruction would be identical for FBP and HIR by
+    construction.
 """
 
 # ╔═╡ 09000003-0000-4000-8000-000000000001
 md"""
-#### a. Calibrate the BHC model
+#### a. Calibrate the water BHC
 
-One-time spectrum fit at 120 kVp + 7 mm Al filtration. Returns a
-`TwoMaterialBHC` polynomial model + the calibrated `μ_water_ref` used by
-both FBP and HIR pipelines below for `to_hounsfield`.
+One calibration for the 120 kVp beam (2.5 mm flat filter + 4.5 mm Al + bowtie). It returns a
+`WaterBHC` with one polynomial per detector column and its reference `μ_water_ref`, used by both
+reconstructions below.
 """
 
 # ╔═╡ 09000004-0000-4000-8000-000000000001
@@ -460,164 +438,66 @@ bhc_calibration = sim === nothing ? nothing : let
 end;
 
 # ╔═╡ 09000005-0000-4000-8000-000000000001
-md"""
+Markdown.parse("""
 **Calibrated:**
 * ref energy = $(bhc_calibration === nothing ? "—" : round(bhc_calibration.ref_E_keV, digits = 1)) keV,
 * lac water = $(bhc_calibration === nothing ? "—" : round(bhc_calibration.μ_water, digits = 5)) cm⁻¹.
-"""
-
-# ╔═╡ 09000006-0000-4000-8000-000000000001
-md"""
-#### b. Polychromatic `μ_water` from the XCAT body — *informational*
-
-The BHC's `μ_water_ref` above (the monoenergetic μ_water at the
-spectrum-mean energy) is what §8 + §9 use as the HU divisor — that's
-the right reference *post-BHC*, where the recon reads as approximately
-monochromatic at `ref_E_keV`.
-
-For comparison, here's what the **polychromatic-effective** μ_water
-would be — the value an *uncorrected* polychromatic FBP would land on
-for solid water at this body chord.  Useful as a sanity check; not
-plumbed into `to_hounsfield`.
-
-[`BS.compute_polychromatic_μ_water`](@ref) does the spectrum + Beer-
-Lambert hardening analytically; [`BS.estimate_phantom_diameter_cm`](@ref)
-reads the body's chord length straight off the **XCAT mask**, so the
-calibration scales naturally if you swap phantoms (vmale_50 →
-vfemale_50, etc.) without hardcoding any cm.
-"""
-
-# ╔═╡ 09000006-0000-4000-8000-000000000010
-μ_water_poly_uncorrected = phantom === nothing ? nothing : let
-        voxel_size_mm = VOXEL_SIZE_CM .* 10.0
-        body_diameter_cm = BS.estimate_phantom_diameter_cm(
-            phantom_labeled, voxel_size_mm
-        )
-        BS.compute_polychromatic_μ_water(
-            sim_opts, protocol;
-            scanner = scanner,
-            geom = sim.geom,
-            water_path_cm = body_diameter_cm,
-        )
-end;
-
-# ╔═╡ 09000006-0000-4000-8000-000000000020
-md"""
-**Analytic poly μ_water** (XCAT body chord, no-BHC reference for comparison):
-
-* `μ_water_poly_uncorrected = ` $(μ_water_poly_uncorrected === nothing ? "—" : "$(round(μ_water_poly_uncorrected, digits = 5)) cm⁻¹")
-* `bhc_calibration.μ_water = ` $(bhc_calibration === nothing ? "—" : "$(round(bhc_calibration.μ_water, digits = 5)) cm⁻¹") *(used downstream)*
-"""
+""")
 
 # ╔═╡ 09000010-0000-4000-8000-000000000001
 md"""
-### 02. FBP with the full correction pipeline
+### 02. FBP
 
-Same `let ... end` shape as notebook 01 — detected-spectrum water BHC → FDK
-→ HU, with explicit GPU cleanup and non-mutating cupping QA at the end.
-HU conversion uses `bhc_calibration.μ_water` (the BHC's calibrated
-`μ_water_ref` at the spectrum-mean energy), since the post-BHC recon
-reads as approximately monochromatic at that reference.
+Water BHC → FDK with the `:standard` kernel → HU, releasing the device buffers at the end.
 """
 
 # ╔═╡ 09000002-0000-4000-8000-000000000001
 hu_fbp = sim === nothing ? nothing : let
-        matrix_size = recon_opts.matrix_size
-
-        # 1. Sinogram-domain BHC (returns a CPU array)
-        sino_gpu = to_gpu(sim.sino)
-        sino_bhc = BS.apply_bhc_water(sino_gpu, bhc_calibration.model)
-        sino_gpu = to_gpu(sino_bhc)
-
-        # 2. FDK on the corrected sinogram
-        ws_fdk = BS.create_fdk_recon_workspace(sino_gpu, sim.geom, matrix_size)
-        recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, sim.geom)
-
-    # (image-domain BHC removed — audit: scaled self-subtraction that
-    #  deflated dense-material HU; the knobless sinogram water BHC is the
-    #  whole correction)
-
-        # 4. μ → HU using BHC's calibrated μ_water_ref
-        hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc_calibration.μ_water))
-
-        # 5. DAS/electronic noise is injected in the counts domain by simulate!
-        # (scanner.electronic_noise), not bolted onto the HU volume here.
-
-        # 6. Residual radial cupping is measured as QA, never applied
-        # (cupping is QA-only now — measure_radial_cupping; never applied)
-
-        # GPU cleanup
-        ws_fdk = nothing
-        sino_gpu = nothing
-        recon_μ = nothing
-        GC.gc(true)
-
-        hu
+    sino_gpu = BS.apply_bhc_water(to_gpu(sim.sino), bhc_calibration.model)
+    ws_fdk = BS.create_fdk_recon_workspace(sino_gpu, sim.geom, recon_opts.matrix_size)
+    recon_μ = BS.reconstruct!(ws_fdk, sino_gpu, sim.geom)
+    hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc_calibration.μ_water))
+    ws_fdk = nothing; sino_gpu = nothing; recon_μ = nothing
+    GC.gc(true)
+    hu
 end;
 
 # ╔═╡ 10000001-0000-4000-8000-000000000001
 md"""
-### 03. Hybrid IR with the full correction pipeline
+### 03. Hybrid IR
 
-Identical pipeline to §8 — sino BHC → recon → image BHC → HU → noise
-floor → cupping — with `create_hir_recon_workspace(...; strength = 60)`
-swapped in for the FDK workspace.
+The same chain with `create_hir_recon_workspace(...; strength = 60)` in place of the FDK
+workspace.
 
-!!! info "What HIR adds over FBP"
-    Hybrid IR is the clinical workhorse: vendors call it ASIR, AIDR3D,
-    iDose⁴, SAFIRE depending on brand. All share the same architecture —
-    FDK init + iterative PWLS refinement with a Huber prior. It costs
-    a few FDK passes but returns ~30 % lower pixel σ at matched
-    resolution.
+!!! info "What Hybrid IR does"
+    An FBP start, then ordered-subsets penalised weighted least squares with an edge-preserving
+    Huber prior: the open-literature (Fessler) counterpart of the vendor hybrid IR algorithms
+    (GE ASIR-V, Siemens SAFIRE, Philips iDose⁴, Canon AIDR 3D), whose noise-reduction range its
+    strength table targets.
 
 !!! tip "One dial: `strength`"
-    `strength` is a percentage in 10 % steps, read exactly like the GE
-    ASIR-V dial: `0` is pure FBP (the PWLS loop is skipped entirely), `60`
-    is the standard clinical setting used here, `100` is maximum noise
-    reduction. It moves λ, the Huber edge threshold δ, the relaxation and
-    the epoch count together along one tuned trajectory — there is no
-    second knob to keep in sync.
+    A percentage in steps of 10, read like the GE ASIR-V dial: `0` is pure FBP (the iterative
+    loop is skipped), `60` the standard clinical setting used here, `100` the maximum noise
+    reduction. It moves the regularisation weight, the Huber threshold, the relaxation and the
+    number of epochs together along one calibrated trajectory.
 
-!!! warning "Projector consistency (IR only)"
-    Hybrid IR's data-fidelity term uses a forward projector `A`, so it
-    **must use the same projector that generated the sinogram**. We pass
-    `projector = sim_opts.projector` to `create_hir_recon_workspace`, so
-    flipping `sim_opts.projector` (e.g. to `:siddon`) automatically
-    keeps the recon consistent. FBP (§8) is immune — it has no forward `A`.
+!!! warning "Projector consistency"
+    Hybrid IR's data term uses a forward projector, which must be the one that generated the
+    sinogram. The cell passes `projector = sim_opts.projector`, so changing the simulation's
+    projector keeps the reconstruction consistent. FBP has no forward projector and is unaffected.
 """
 
 # ╔═╡ 10000002-0000-4000-8000-000000000001
 hu_hir = sim === nothing ? nothing : let
-        matrix_size = recon_opts.matrix_size
-
-        # 1. Sinogram-domain BHC
-        sino_gpu = to_gpu(sim.sino)
-        sino_bhc = BS.apply_bhc_water(sino_gpu, bhc_calibration.model)
-        sino_gpu = to_gpu(sino_bhc)
-
-        # 2. Hybrid IR (FBP init + PWLS refinement, strength = 60 %)
-        # projector MUST match the forward sim so the IR system matrix A inverts
-        # the operator that generated the data (read from sim_opts, single source).
-        ws_hir = BS.create_hir_recon_workspace(
-            sino_gpu, sim.geom, matrix_size; strength = 60, projector = sim_opts.projector,
-        )
-        recon_μ = BS.reconstruct!(ws_hir, sino_gpu, sim.geom)
-
-        # FBP's `reconstruct!` masks voxels outside the inscribed scan FOV
-        # (`apply_fov_mask!`); HIR doesn't, so the iterative refinement
-        # leaves garbage in the corners.  Apply the same mask for parity.
-        BS.apply_fov_mask!(recon_μ, sim.geom)
-
-        # 3. μ → HU using BHC's calibrated μ_water_ref
-        hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc_calibration.μ_water))
-
-        # GPU cleanup
-        ws_hir = nothing
-        sino_gpu = nothing
-        recon_μ = nothing
-        GC.gc(true)
-
-        hu
+    sino_gpu = BS.apply_bhc_water(to_gpu(sim.sino), bhc_calibration.model)
+    ws_hir = BS.create_hir_recon_workspace(
+        sino_gpu, sim.geom, recon_opts.matrix_size; strength = 60, projector = sim_opts.projector,
+    )
+    recon_μ = BS.reconstruct!(ws_hir, sino_gpu, sim.geom)
+    hu = Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc_calibration.μ_water))
+    ws_hir = nothing; sino_gpu = nothing; recon_μ = nothing
+    GC.gc(true)
+    hu
 end;
 
 # ╔═╡ 11000000-0000-4000-8000-000000000000
@@ -629,18 +509,15 @@ md"""
 md"""
 ### Compare FBP vs Hybrid IR
 
-Both reconstructions go through the identical correction pipeline
-(water sino-BHC + recon + HU; counts-domain noise; cupping QA). The soft-tissue window shows the
-iodine-enhanced blood pools (XCAT labels 19–22 = `bldplLV/RV/LA/RA`) and
-the texture / noise contrast between the two algorithms.
+Both reconstructions share the whole chain except the algorithm. The soft-tissue window shows the
+iodine-enhanced blood pools (the cardiac chambers) and the difference in noise texture between
+the two.
 
-!!! warning "Measure noise inside a material, not inside a box"
-    A fixed box near the image center spans −794 to +353 HU here — lung
-    through iodinated blood — so its σ (≈160 HU) is *anatomy*, not noise, and
-    HIR appears to do nothing. The cell below instead uses
-    `BS.resample_to_recon` to carry the phantom labels onto the recon grid,
-    then erodes the myocardium label so only voxels surrounded by
-    myocardium survive. That is the only place where σ means noise.
+!!! warning "Measure noise inside one material, not inside a box"
+    A box near the image centre spans lung to iodinated blood, so its standard deviation is
+    anatomy, not noise, and would hide what HIR does. The cell below carries the phantom labels
+    onto the reconstruction grid with `BS.resample_to_recon` and erodes the myocardium label, so
+    only voxels surrounded by myocardium are measured.
 """
 
 # ╔═╡ 11000002-0000-4000-8000-000000000001
@@ -655,7 +532,7 @@ let
         mid = size(hu_fbp, 3) ÷ 2
         img_fbp = hu_fbp[:, :, mid]
         img_hir = hu_hir[:, :, mid]
-        colorrng = (-300, 550)   # soft-tissue window: W=400, L=40
+        colorrng = (-300, 550)   # window W 850 / L 125: soft tissue and the iodinated blood pools
         title_kwargs = (titlesize = 28, subtitlesize = 20)
 
         ax_fbp = Mke.Axis(
@@ -693,43 +570,27 @@ let
     if hu_fbp === nothing || hu_hir === nothing
         md""
     else
-        # Measure σ inside ONE material, not inside a box.  A fixed box near the
-        # image center straddles the heart/lung boundary, so its σ is anatomy
-        # (≈160 HU) and HIR looks like it does nothing.  Instead, map the phantom
-        # labels onto the recon grid and keep only voxels deep inside the
-        # myocardium, where the sole remaining variation is noise.
         labels = BS.resample_to_recon(phantom, sim.geom, recon_opts.matrix_size)
         heart = first(k for (k, v) in xcat.label_names if v == "ncat_heart")
-
-        # Erode in-plane by r voxels: a recon voxel is "interior" only if every
-        # neighbour within r is the same label.  Boundary voxels are partial
-        # volumes of two tissues — their spread is the edge, not the noise.
+        # a voxel counts only if every in-plane neighbour within r is myocardium too:
+        # boundary voxels mix two tissues, and their spread is the edge, not the noise
         r = 2
         nx, ny, nz = size(labels)
-        roi = CartesianIndex{3}[]
-        @inbounds for k in 1:nz, j in (1 + r):(ny - r), i in (1 + r):(nx - r)
-            labels[i, j, k] == heart || continue
-            all(labels[i + di, j + dj, k] == heart for dj in -r:r, di in -r:r) &&
-                push!(roi, CartesianIndex(i, j, k))
-        end
+        roi = [CartesianIndex(i, j, k) for k in 1:nz, j in (1 + r):(ny - r), i in (1 + r):(nx - r)
+               if all(labels[i + di, j + dj, k] == heart for dj in -r:r, di in -r:r)]
+        σ_fbp = Float64(std(hu_fbp[roi])); σ_hir = Float64(std(hu_hir[roi]))
+        band = BS.get_hir_params(60).target_noise_reduction
+        Markdown.parse("""
+        **Noise inside the myocardium** ($(length(roi)) voxels, all slices)
 
-        σ_fbp = std(hu_fbp[roi])
-        σ_hir = std(hu_hir[roi])
+        | algorithm | mean (HU) | σ (HU) |
+        |:--|--:|--:|
+        | FBP | $(round(Float64(mean(hu_fbp[roi])); digits = 1)) | $(round(σ_fbp; digits = 1)) |
+        | Hybrid IR, strength 60 | $(round(Float64(mean(hu_hir[roi])); digits = 1)) | $(round(σ_hir; digits = 1)) |
 
-        md"""
-        **Noise (σ in HU, $(length(roi)) voxels deep inside the myocardium,
-        mean $(round(Float64(mean(hu_fbp[roi])), digits=1)) HU):**
-
-        | Algorithm  | σ (HU)                    |
-        |------------|---------------------------|
-        | FBP        | $(round(Float64(σ_fbp), digits=1)) |
-        | Hybrid IR  | $(round(Float64(σ_hir), digits=1)) |
-        | Reduction  | $(round(100 * (1 - Float64(σ_hir) / Float64(σ_fbp)); digits=1))% |
-
-        Compare against the `strength = 60` target band (25–35 %).  Both quantum
-        and DAS/electronic noise enter in the counts domain, so HIR acts on all
-        of it — no post-hoc correction needed to read this number.
-        """
+        Hybrid IR lowers the noise by **$(round(100 * (1 - σ_hir / σ_fbp); digits = 1)) %** and leaves the mean
+        where it was. The package's calibration band for strength 60 is $(band[1])–$(band[2]) %.
+        """)
     end
 end
 
@@ -737,39 +598,32 @@ end
 md"""
 ## Summary
 
-This notebook layered three new ideas on top of the five-struct API
-walked in notebook 01:
+Three ideas on top of the five-struct API of notebook 01:
 
-- **External voxel phantoms** — load any labeled `.bin` mask (XCAT, ICRP,
-  custom), then hand it to `BS.Phantom(...)` along with a materials Dict.
-  No internal preprocessing; whatever labeling you give, you get back.
-- **Custom materials via `XrayAttenuation`** — `XA.Materials.ncat_*` for
-  canonical tissues, plus `XA.Material(name, ZA, I, density, composition)`
-  built inline whenever you need a non-standard mixture (contrast bolus,
-  calibration solution, alloy).  Composition is just a `Dict{Int,Float64}`
-  of atomic-number → mass-fraction.
-- **Hybrid IR** — `BS.create_hir_recon_workspace(sino, geom, matrix; strength)`
-  swaps in for the FDK workspace and runs PWLS refinement after the FBP
-  init.  Same `reconstruct!` call site, lower pixel noise.
-
-Every other piece — the `let ... end` GPU pattern, μ → HU conversion, the
-correction pipeline from §9 of notebook 01 — carries over unchanged.
+- **Voxel phantoms from an artifact.** `BS.load_xcat_male_slab()` (and the other
+  `load_xcat_*` loaders) download a published XCAT phantom once, verify it, and return the
+  labeled mask, a material per label and the voxel size; `BS.Phantom(to_gpu(mask), materials,
+  voxel_size)` makes it simulatable. Any other labeled mask works the same way.
+- **Materials you define.** `XA.Materials.ncat_*` for the standard tissues, or
+  `XA.Material(name, ZA, I, density, composition)` for a contrast bolus, a calibration solution
+  or an alloy; the composition is a `Dict` of atomic number → mass fraction, and the loader's
+  `materials =` keyword swaps it in by XCIST name.
+- **Hybrid IR.** `create_hir_recon_workspace(sino, geom, matrix; strength)` in place of the FDK
+  workspace: the same `reconstruct!` call, lower noise at the same mean HU.
 """
-
-
 
 # ╔═╡ Cell order:
 # ╟─02000001-0000-4000-8000-000000000001
 # ╟─02000002-0000-4000-8000-000000000001
-# ╠═02000003-0000-4000-8000-000000000001
+# ╟─02000003-0000-4000-8000-000000000001
 # ╠═02000003-0000-4000-8000-000000000002
-# ╠═02000003-0000-4000-8000-000000000003
-# ╠═02000003-0000-4000-8000-000000000004
-# ╠═02000003-0000-4000-8000-000000000005
-# ╠═02000003-0000-4000-8000-000000000006
-# ╠═05000003-0000-4000-8000-000000000003
-# ╠═b0c50f56-f6fc-4589-b699-c25f51d6b247
-# ╠═1ab8176f-2b8e-4948-a332-f326aed838c9
+# ╟─02000003-0000-4000-8000-000000000003
+# ╟─02000003-0000-4000-8000-000000000004
+# ╟─02000003-0000-4000-8000-000000000005
+# ╟─02000003-0000-4000-8000-000000000006
+# ╟─05000003-0000-4000-8000-000000000003
+# ╟─b0c50f56-f6fc-4589-b699-c25f51d6b247
+# ╟─1ab8176f-2b8e-4948-a332-f326aed838c9
 # ╟─02000004-0000-4000-8000-000000000001
 # ╠═02000005-0000-4000-8000-000000000001
 # ╟─02000007-0000-4000-8000-000000000001
@@ -799,14 +653,12 @@ correction pipeline from §9 of notebook 01 — carries over unchanged.
 # ╠═07000005-0000-4000-8000-000000000001
 # ╟─08000001-0000-4000-8000-000000000001
 # ╠═08000002-0000-4000-8000-000000000001
+# ╠═08000003-0000-4000-8000-000000000001
 # ╟─09000000-0000-4000-8000-000000000000
 # ╟─09000001-0000-4000-8000-000000000001
 # ╟─09000003-0000-4000-8000-000000000001
 # ╠═09000004-0000-4000-8000-000000000001
 # ╟─09000005-0000-4000-8000-000000000001
-# ╟─09000006-0000-4000-8000-000000000001
-# ╠═09000006-0000-4000-8000-000000000010
-# ╟─09000006-0000-4000-8000-000000000020
 # ╟─09000010-0000-4000-8000-000000000001
 # ╠═09000002-0000-4000-8000-000000000001
 # ╟─10000001-0000-4000-8000-000000000001

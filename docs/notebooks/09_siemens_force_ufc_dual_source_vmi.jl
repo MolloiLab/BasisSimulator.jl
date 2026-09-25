@@ -320,7 +320,7 @@ protocol_high = BS.CTProtocol(
 md"""
 ## 5. `SimOptions` and `ReconOptions`
 
-`use_detector_efficiency = true` (the `:eict` preset default) routes
+`use_detector_efficiency = true` (the `SimOptions` default) routes
 through the **src UFC MC LUT**: `build_physics_config` sees
 `EICTScanner(detector_material = :ufc)` and dispatches to
 `detector_efficiency_ufc()`, so the EICT forward model weights every

@@ -57,7 +57,7 @@ Flash UFC MC η(E) LUT  (BS.UFC_FLASH_MC_EFFICIENCY_LUT, 1–140 keV)
 
 !!! note "Spec provenance"
     Every published number below comes from the sourced
-    [SOMATOM Definition Flash entry of the scanners page](SCANNERS_PAGE#somatom-definition-flash)
+    [SOMATOM Definition Flash entry of the scanners page](../../scanners/#somatom-definition-flash)
     (FDA 510(k)s, Siemens Dec-2010 datasheet, AAPM LDCT-PD projection
     geometry, Primak AJR 2010 for the 0.4 mm Sn Selective Photon Shield).  Unpublished
     items are declared as documented modeling assumptions in §3.
@@ -194,7 +194,7 @@ md"""
 
 Second-generation dual-source: **two STRATON MX P tubes + two UFC detectors
 at 95°** in the same gantry.  Every value below is sourced in the
-[SOMATOM Definition Flash entry of the scanners page](SCANNERS_PAGE#somatom-definition-flash):
+[SOMATOM Definition Flash entry of the scanners page](../../scanners/#somatom-definition-flash):
 
 | Parameter | Value | Source |
 |-----------|-------|--------|
@@ -371,7 +371,7 @@ protocol_high = BS.CTProtocol(
 md"""
 ## 5. `SimOptions` and `ReconOptions`
 
-`use_detector_efficiency = true` (the `:eict` preset default) routes
+`use_detector_efficiency = true` (the `SimOptions` default) routes
 through the **src Flash UFC MC LUT**: `build_physics_config` sees
 `EICTScanner(detector_material = :ufc_flash)` and dispatches to
 `detector_efficiency_ufc_flash()`, so the EICT forward model weights every
@@ -1834,7 +1834,7 @@ DUAL ENERGY: 100 kVp (A) + Sn140 kVp (B, 0.4 mm Sn)
 3. **Documented assumptions are explicit** (§3): bowtie profile, crystal
    depth, fill factor, electronic noise, tube-B z-offset, z-FFS — the
    remaining gaps on the parity checklist of the
-   [SOMATOM Definition Flash entry of the scanners page](SCANNERS_PAGE#somatom-definition-flash).
+   [SOMATOM Definition Flash entry of the scanners page](../../scanners/#somatom-definition-flash).
 
 **src status:** `UFC_FLASH_MC_EFFICIENCY_LUT`,
 `get_ufc_flash_mc_efficiency`, `detector_efficiency_ufc_flash()`, and the

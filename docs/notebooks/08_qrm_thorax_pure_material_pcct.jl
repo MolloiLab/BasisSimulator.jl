@@ -375,8 +375,9 @@ CdTe direct-conversion detector with native dexels 0.275 × 0.322 mm at the dete
 | 3   | 55 – 70     |
 | 4   | > 70        |
 
-No bowtie filter: the Vectron tube's inherent 0.9 mm titanium window sits on top of the
-3 mm Al flat filter.
+The large-body bowtie across the fan (as notebook 04 and the sister repositories' NAEOTOM Alpha
+model), on top of the Vectron tube's inherent 0.9 mm titanium window and the 3 mm Al flat filter;
+the air response is therefore per ray.
 """
 
 # ╔═╡ 08030001-0000-4000-8000-000000000010
@@ -413,7 +414,7 @@ scanner = let
 
         flat_filter_material = :aluminum,
         flat_filter_thickness = 3.0,
-        bowtie_filter = :none,                    # the physical Naeotom Alpha configuration
+        bowtie_filter = :large_body,              # as notebook 04 and the sister repositories
 
         detector_material = :cdte,
         detector_depth = 1.6,

@@ -126,7 +126,7 @@ The NAEOTOM Alpha geometry: 0.275 × 0.322 mm native CdTe dexels read out 2 × 2
 detector with the quarter-detector offset, a 50 cm scan field behind the large-body bowtie,
 and a 1.6 mm CdTe sensor with 10 keV energy resolution, charge sharing and 5 ns dead time.
 Pile-up is simulated and corrected, and so is scatter. See the
-[scanner notes](SCANNERS_PAGE) for where each value comes from.
+[scanners page](../../scanners/) for where each value comes from.
 """
 
 # ╔═╡ 2c157064-8567-450b-bc08-c2606084a77f

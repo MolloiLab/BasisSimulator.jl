@@ -1,5 +1,5 @@
 ### A Pluto.jl notebook ###
-# v0.2.3
+# v0.3.0
 
 using Markdown
 using InteractiveUtils
@@ -17,6 +17,7 @@ macro bind(def, element)
 end
 
 # ╔═╡ 05000001-0000-4000-8000-000000000001
+# ╠═╡ show_logs = false
 begin
     import Pkg
     Pkg.activate(joinpath(@__DIR__, ".."))
@@ -33,58 +34,45 @@ using Unitful: @u_str
 
 # ╔═╡ 05000001-0000-4000-8000-000000000010
 md"""
-# XCAT UHR → CT: Grid Mapping and the Recon-Affine Round-Trip
+# XCAT → CT: Phantom Grids and the Affine Round-Trip
 
-**Take a 0.4 mm UHR XCAT phantom, crop it down to a cardiac sub-region as
-the input to a clinical CT acquisition, and use the simulator's affine
-matrices to overlay the original ground truth on the reconstructed
-volume — pixel-perfect.**
+**Scan the heart of an ultra-high-resolution XCAT chest, then lay the ground-truth labels
+exactly onto the reconstructed image, axial and helical.**
 
-This notebook teaches one specific thing the API can be subtle about: how
-the **phantom voxel grid** (your input ground truth) and the
-**reconstruction voxel grid** (what the scanner outputs) relate.  In
-particular:
+A simulation has two voxel grids. The **phantom grid** is your ground truth: here an XCAT 3.0
+chest at 0.2 mm, read at 0.4 mm. The **reconstruction grid** is what the scanner outputs: a
+centred stack of axial slices at the pixel size you choose. Every quantitative use of a
+simulation (organ ROI statistics, segmentation scoring, partial-volume analysis) needs the map
+between the two. This notebook shows that map and proves that it is exact:
 
-1. The simulator's recon grid is **always centered at isocenter** — there
-   is no off-center FOV / scan-field placement parameter.
-2. So to "scan a sub-region of a body phantom" — the way a real scanner's
-   SFOV crops out everything outside the bore — you do it on the **input
-   phantom**, before forward projection.  Cropping the phantom early is
-   strictly more memory-efficient than cropping at the recon stage:
-   nothing outside the cropped extent ever gets ray-traced.
-3. `BS.phantom_to_world_affine` and `BS.recon_to_world_affine` give you
-   the two grids' relationships in 4×4 matrices.
-   `BS.resample_to_recon(phantom, geom, matrix_size; method = :nearest|:linear)`
-   round-trips the ground-truth labels onto the recon grid for ROI
-   extraction, segmentation evaluation, etc.
-
-Pipeline:
+1. The reconstruction grid is **always centred on the isocentre**; `ReconOptions` has no
+   off-centre FOV parameter. To scan a sub-region of a large phantom, crop the **phantom** so
+   the region sits at the isocentre. Only the cropped block is ray-traced.
+2. `BS.phantom_to_world_affine(phantom)` and `BS.recon_to_world_affine(geom, matrix_size)` are the
+   two grids' 4 × 4 voxel → world (cm) matrices.
+3. `BS.resample_to_recon(phantom, geom, matrix_size; method = :nearest | :linear)` carries the
+   ground truth onto the reconstruction grid.
 
 ```
-Full UHR XCAT (0.4 mm, ~32 × 28 × 10 cm)
-   → label-name match (heart / atrium / ventricle / coronary / aorta)
-   → cardiac voxel bbox + margin
-   → crop UHR mask to bbox            ←  the SFOV-equivalent step
-   → BS.Phantom(...)                  ←  origin auto-centers crop at iso
-   → GE Apex Elite scan + tight FOV recon (centered)
-   → BS.resample_to_recon(...; method = :nearest | :linear)
-   → overlay ground truth on the HU recon — same shape, same world coords.
+XCAT 3.0 chest export (0.2 mm) ─▶ read at 0.4 mm
+   ─▶ find the cardiac labels by name ─▶ bounding box + 1 cm
+   ─▶ crop the phantom to the box       (the block is centred on the isocentre)
+   ─▶ Scan A: axial, 14 cm FOV          ─▶ water BHC ─▶ FDK ─▶ HU
+   ─▶ Scan B: helical, 4 cm of z        ─▶ water BHC ─▶ WFBP ─▶ HU
+   ─▶ resample_to_recon ─▶ labels on the HU image, organ ROI statistics, exactness audit
 ```
 """
 
 # ╔═╡ 05000001-0000-4000-8000-000000000020
 md"""
-## Notebook Setup
-
-Same project + GPU detection idiom as notebooks 02 / 04.
+## Notebook setup
 """
 
 # ╔═╡ 05000001-0000-4000-8000-000000000030
 import BasisSimulator as BS
 
 # ╔═╡ 05000001-0000-4000-8000-000000000031
-# Use CairoMakie for faithful build-time rendering. Snapshot can still isolate
-# and compile independent browser-safe islands without hoisting this import.
+# ╠═╡ show_logs = false
 import CairoMakie as Mke
 
 # ╔═╡ 05000001-0000-4000-8000-000000000060
@@ -93,7 +81,7 @@ import PlutoUI
 # ╔═╡ 05000001-0000-4000-8000-000000000040
 begin
     import GPUSelect
-    AT = GPUSelect.Storage()     # the backend array type, directly: MtlArray / CuArray / ROCArray
+    AT = GPUSelect.Storage()   # CuArray / MtlArray / ROCArray / oneArray, or Array on a CPU-only host
     to_gpu(x) = AT(x)
     GPU_BACKEND = (name = string(nameof(AT)),)
 end
@@ -108,484 +96,382 @@ PlutoUI.TableOfContents()
 
 # ╔═╡ 05000002-0000-4000-8000-000000000000
 md"""
-## Load the XCAT Phantom
-
-Shared by both scans below: locate the bin, load the UHR mask, build the
-materials dict, and find the cardiac bounding box.
+## Load the XCAT phantom
 """
 
 # ╔═╡ 05000002-0000-4000-8000-000000000001
 md"""
-### 01. Locate the XCAT data
+### 1. Locate the export
 
-Same env-var pattern as notebook 02 — the bin lives outside the repo
-under `BASISSIM_XCAT_DIR` (default: `docs/notebooks/data/xcat/`).  All
-heavy compute is gated on `HAS_XCAT` so this notebook still renders
-cleanly when the bin isn't available.
+The phantom is an **XCAT 3.0 chest export** (adult male, 50th percentile, with coronary plaque):
+one 8-bit little-endian activity volume, `*_act_1.raw`, whose dimensions are in its file name,
+next to a `Material_Spreadsheets/` folder with one material table per contrast state. The data
+is licensed and not in the repository. The notebook looks in `BASISSIM_XCAT_DIR`, or in
+`docs/notebooks/data/xcat/` when that variable is unset, and expects exactly one `*act_1.raw`
+there. Without it, every compute cell skips and says so.
 """
 
 # ╔═╡ 05000002-0000-4000-8000-000000000010
-const XCAT_DIR = get(
-    ENV, "BASISSIM_XCAT_DIR",
-    joinpath(@__DIR__, "data", "xcat")
-);
+const XCAT_DIR = get(ENV, "BASISSIM_XCAT_DIR", joinpath(@__DIR__, "data", "xcat"));
+
+# ╔═╡ 05000002-0000-4000-8000-000000000014
+const CONTRAST_STATE = "high_contrast";   # the sheets: non_contrast, low_contrast, high_contrast
 
 # ╔═╡ 05000002-0000-4000-8000-000000000011
-const PHANTOM_PATH = joinpath(
-    XCAT_DIR,
-    "vmale_50_1600x1400x500_8bit_little_endian_act_1.bin"
-);
+"""
+    find_xcat_export(dir, state) -> NamedTuple or String
+
+The one `*act_1.raw` in `dir`, its dimensions read off its name (`…_1600x1400x867_…`), its
+anatomy (`vmale_50`) and the material sheet of contrast `state`, or a String saying what is
+missing.
+"""
+function find_xcat_export(dir, state)
+    isdir(dir) || return "no XCAT directory (set `BASISSIM_XCAT_DIR`)"
+    raws = filter(f -> endswith(f, "act_1.raw"), readdir(dir))
+    length(raws) == 1 || return "expected one *act_1.raw in the XCAT directory, found $(length(raws))"
+    name = only(raws)
+    m = match(r"(\d{3,4})[x_](\d{3,4})[x_](\d{3,4})", name)
+    a = match(r"^(v(?:fe)?male_\d+)", name)
+    (m === nothing || a === nothing) && return "cannot read the dimensions or anatomy from $(name)"
+    dims = Tuple(parse.(Int, m.captures))
+    raw = joinpath(dir, name)
+    filesize(raw) == prod(dims) || return "$(name) is not $(join(dims, " × ")) bytes"
+    sheet_name = "$(a.captures[1])_materials_heart_$(state).xlsx"
+    sheet = joinpath(dir, "Material_Spreadsheets", sheet_name)
+    isfile(sheet) || return "no Material_Spreadsheets/$(sheet_name)"
+    return (; raw, name, dims, anatomy = a.captures[1], sheet, sheet_name)
+end
 
 # ╔═╡ 05000002-0000-4000-8000-000000000012
-const HAS_XCAT = isfile(PHANTOM_PATH)
+xcat = find_xcat_export(XCAT_DIR, CONTRAST_STATE);
+
+# ╔═╡ 05000002-0000-4000-8000-000000000015
+const HAS_XCAT = xcat isa NamedTuple;
 
 # ╔═╡ 05000002-0000-4000-8000-000000000013
-HAS_XCAT ? md"""
-    **XCAT located:** `$(basename(PHANTOM_PATH))` ($(round(filesize(PHANTOM_PATH) / 1024^2; digits=1)) MB)
-    """ : md"""
-    !!! warning "XCAT bin not found"
-        The configured `$(basename(PHANTOM_PATH))` input is unavailable. All
-        compute cells below short-circuit to `nothing` and the comparison
-        panels show this notice. Set `BASISSIM_XCAT_DIR` to your local install
-        or drop the file into `docs/notebooks/data/xcat/` and re-run.
-    """
+HAS_XCAT ? Markdown.parse("""
+    **XCAT export:** `$(xcat.name)` ($(join(xcat.dims, " × ")) voxels,
+    $(round(prod(xcat.dims) / 1024^3; digits = 2)) GiB) · materials: `$(xcat.sheet_name)`
+    """) : Markdown.parse("""
+    !!! warning "XCAT export not found — compute cells skipped"
+        $(xcat). Set `BASISSIM_XCAT_DIR` to a folder holding one `*act_1.raw` and its
+        `Material_Spreadsheets/`, or place them in `docs/notebooks/data/xcat/`, and re-run.
+    """)
 
 # ╔═╡ 05000003-0000-4000-8000-000000000001
 md"""
-### 02. Load the UHR mask (DOWNSAMPLE_FACTOR = 2)
+### 2. Read the mask at 0.4 mm
 
-XCAT v_male_50 ships at 1600 × 1400 × 500 voxels @ 0.2 mm isotropic.
-Notebook 02 downsamples 5× for speed (1 mm voxels — clinical-typical).
-**Here we downsample only 2×** → 800 × 700 × 250 voxels @ 0.4 mm
-isotropic = roughly 32 × 28 × 10 cm physical, **140 MB as UInt8**.
-
-The point of going UHR is to make the phantom *finer* than the recon
-grid so the affine round-trip has something interesting to interpolate
-across.
+The export is 0.2 mm isotropic, label 0 is air, and the file runs anterior → posterior along its
+second axis. Reversing that axis makes `y` increase towards the patient's front, so every image
+drawn with `y` up shows the sternum at the top and the patient's left on the viewer's right.
+A label-preserving nearest-neighbour step of 2 then reads it at **0.4 mm**: still finer than the
+reconstruction pixels below, so the resampling has something to interpolate across.
 """
 
 # ╔═╡ 05000003-0000-4000-8000-000000000010
-function load_xcat_bin(
-        filepath::AbstractString;
-        cols::Int = 1600, rows::Int = 1400, slices::Int = 500,
-    )
-    expected = cols * rows * slices * sizeof(UInt8)
-    actual = filesize(filepath)
-    actual == expected ||
-        error("XCAT file size mismatch: expected $(expected) bytes, got $(actual)")
-
-    data = Vector{UInt8}(undef, cols * rows * slices)
-    open(filepath, "r") do io
-        read!(io, data)
-    end
-
-    phantom = reshape(data, (cols, rows, slices))
-    return reverse(phantom; dims = (2, 3))
-end
+"""The activity volume, `y` towards anterior (the file runs posterior along axis 2)."""
+read_xcat_mask(raw, dims) = reverse(read!(raw, Array{UInt8}(undef, dims...)); dims = 2)
 
 # ╔═╡ 05000003-0000-4000-8000-000000000011
-"""Nearest-neighbor 3D downsample by an integer factor — preserves labels."""
+"""Nearest-neighbour 3D downsample by an integer factor: keeps labels intact."""
 function downsample_labeled(phantom::AbstractArray{T, 3}, factor::Int) where {T}
     factor == 1 && return phantom
     nx, ny, nz = size(phantom) .÷ factor
     out = similar(phantom, (nx, ny, nz))
     @inbounds for k in 1:nz, j in 1:ny, i in 1:nx
-        ii = (i - 1) * factor + factor ÷ 2 + 1
-        jj = (j - 1) * factor + factor ÷ 2 + 1
-        kk = (k - 1) * factor + factor ÷ 2 + 1
-        out[i, j, k] = phantom[ii, jj, kk]
+        out[i, j, k] = phantom[(i - 1) * factor + factor ÷ 2 + 1,
+                               (j - 1) * factor + factor ÷ 2 + 1,
+                               (k - 1) * factor + factor ÷ 2 + 1]
     end
     return out
 end
 
 # ╔═╡ 05000003-0000-4000-8000-000000000020
-const DOWNSAMPLE_FACTOR = 2
+const DOWNSAMPLE_FACTOR = 2;
 
 # ╔═╡ 05000003-0000-4000-8000-000000000021
-const VOXEL_SIZE_CM = (
-    0.02 * DOWNSAMPLE_FACTOR,    # 0.4 mm at DS=2
-    0.02 * DOWNSAMPLE_FACTOR,
-    0.02 * DOWNSAMPLE_FACTOR,
-);
+const VOXEL_SIZE_CM = ntuple(_ -> 0.02 * DOWNSAMPLE_FACTOR, 3);   # 0.2 mm export × factor
 
 # ╔═╡ 05000003-0000-4000-8000-000000000030
 phantom_full_uhr = HAS_XCAT ?
-    downsample_labeled(load_xcat_bin(PHANTOM_PATH), DOWNSAMPLE_FACTOR) :
-    nothing;
+    downsample_labeled(read_xcat_mask(xcat.raw, xcat.dims), DOWNSAMPLE_FACTOR) : nothing;
 
 # ╔═╡ 05000003-0000-4000-8000-000000000040
-let
-    if phantom_full_uhr === nothing
-        md"""
-        !!! warning "Skipped — see §1 above"
-        """
-    else
-        nx, ny, nz = size(phantom_full_uhr)
-        ext_cm = (nx, ny, nz) .* VOXEL_SIZE_CM
-        n_lbl = length(unique(phantom_full_uhr))
-        md"""
-        **UHR phantom loaded:**
-        - shape = $(nx) × $(ny) × $(nz) (UInt8, $(round(sizeof(phantom_full_uhr)/1024^2, digits=1)) MB)
-        - voxel = $(round.(VOXEL_SIZE_CM .* 10, digits=2)) mm
-        - extent = $(round.(ext_cm, digits=2)) cm
-        - $(n_lbl) unique organ labels present
-        """
+if phantom_full_uhr === nothing
+    md"""!!! warning "Skipped: no XCAT export (see 1)" """
+else
+    let (nx, ny, nz) = size(phantom_full_uhr)
+        Markdown.parse("""
+        **Phantom read:** $(nx) × $(ny) × $(nz) voxels of $(round(VOXEL_SIZE_CM[1] * 10; digits = 2)) mm
+        ($(round(sizeof(phantom_full_uhr) / 1024^2; digits = 1)) MiB as UInt8),
+        $(join(round.((nx, ny, nz) .* VOXEL_SIZE_CM; digits = 1), " × ")) cm,
+        $(length(unique(phantom_full_uhr))) labels present.
+        """)
     end
 end
 
 # ╔═╡ 05000004-0000-4000-8000-000000000001
 md"""
-### 03. Custom materials from XCAT spreadsheet
+### 3. Materials from the XCAT sheet
 
-Same xlsx loader as notebook 02 — one row per organ in
-`vmale_50_materials_heart_high_contrast.xlsx` → 33 `XA.Material` entries
-keyed by integer organ label.  This loader is unchanged from nb02; only
-the phantom grid is different here.
+Each sheet row is one organ: a name, its elemental mass fractions (one column per atomic
+number), its density and its label (`Organ ID`). Every row becomes an `XrayAttenuation.Material`
+keyed by its label. Labels the sheet does not name stay **air**, which is what `Phantom` assigns
+to any label without a material. The `high_contrast` sheet puts iodinated blood in the cardiac
+chambers, the aorta and the coronaries.
 
-We need the materials dict before §4 because we'll use the materials'
-**names** to identify which integer labels correspond to "heart"-related
-anatomy for the bbox crop.
+We need the table before cropping: the organ **names** are how the cardiac labels are found.
 """
 
 # ╔═╡ 05000004-0000-4000-8000-000000000002
 import XLSX
 
-# ╔═╡ 05000004-0000-4000-8000-000000000003
-const MATERIAL_XLSX_PATH = joinpath(
-    XCAT_DIR, "Material_Spreadsheets",
-    "vmale_50_materials_heart_high_contrast.xlsx",
-);
-
 # ╔═╡ 05000004-0000-4000-8000-000000000004
 const _ATOMIC_MASSES = Dict(
     1 => 1.008, 6 => 12.011, 7 => 14.007, 8 => 15.999, 11 => 22.99, 12 => 24.305,
     15 => 30.974, 16 => 32.06, 17 => 35.45, 19 => 39.098, 20 => 40.078, 26 => 55.845, 53 => 126.904,
-)
+);
 
 # ╔═╡ 05000004-0000-4000-8000-000000000005
 const _I_VALUES_EV = Dict(
     1 => 19.2, 6 => 81.0, 7 => 82.0, 8 => 95.0, 11 => 149.0, 12 => 156.0,
     15 => 173.0, 16 => 180.0, 17 => 174.0, 19 => 190.0, 20 => 191.0, 26 => 286.0, 53 => 491.0,
-)
+);
 
 # ╔═╡ 05000004-0000-4000-8000-000000000006
-function compute_ZA_ratio(comp::Dict{Int, Float64})
-    Z_sum = sum(w * Z / get(_ATOMIC_MASSES, Z, Float64(Z) * 2) for (Z, w) in comp)
-    A_sum = sum(values(comp))
-    return Z_sum / A_sum
-end
+"""⟨Z/A⟩ of a composition (mass fractions)."""
+compute_ZA_ratio(comp::Dict{Int, Float64}) =
+    sum(w * Z / _ATOMIC_MASSES[Z] for (Z, w) in comp) / sum(values(comp))
 
 # ╔═╡ 05000004-0000-4000-8000-000000000007
+"""Bragg additivity for the mean excitation energy of a composition."""
 function compute_mean_excitation_energy(comp::Dict{Int, Float64})
-    log_I_sum = 0.0
-    Z_A_sum = 0.0
-    for (Z, w) in comp
-        A = get(_ATOMIC_MASSES, Z, Float64(Z) * 2)
-        I = get(_I_VALUES_EV, Z, 10.0 * Z)
-        Z_A = w * Z / A
-        log_I_sum += Z_A * log(I)
-        Z_A_sum += Z_A
-    end
-    return exp(log_I_sum / Z_A_sum) * u"eV"
+    num = sum(w * Z / _ATOMIC_MASSES[Z] * log(_I_VALUES_EV[Z]) for (Z, w) in comp)
+    den = sum(w * Z / _ATOMIC_MASSES[Z] for (Z, w) in comp)
+    return exp(num / den) * u"eV"
 end
 
 # ╔═╡ 05000004-0000-4000-8000-000000000008
-function load_materials_from_xlsx(xlsx_path::AbstractString)
-    sheet = XLSX.readxlsx(xlsx_path)["Sheet1"]
-    data = sheet["A2:P34"]
+"""
+    load_xcat_materials(sheet) -> Dict{Int, XA.Material}
+
+`Name | <Z> … | Density | Organ ID` → one material per label.
+"""
+function load_xcat_materials(sheet)
+    wb = XLSX.readxlsx(sheet)
+    data = wb[first(XLSX.sheetnames(wb))][:]
+    ncol = size(data, 2)
+    (string(data[1, ncol - 1]) == "Density" && string(data[1, ncol]) == "Organ ID") ||
+        error("unexpected sheet layout: $(join(string.(data[1, :]), " | "))")
+    zcols = [(c, parse(Int, string(data[1, c]))) for c in 2:(ncol - 2)]
     out = Dict{Int, BS.XA.Material}()
-
-    Z_cols = (1, 6, 7, 8, 11, 12, 15, 16, 17, 19, 20, 26, 53)
-
-    for r in 1:size(data, 1)
-        name = data[r, 1]
-        oid = data[r, 16]
-        ρ = data[r, 15]
-        (name === nothing || oid === nothing || ρ === nothing) && continue
-
-        comp = Dict{Int, Float64}()
-        for (k, Z) in enumerate(Z_cols)
-            v = data[r, k + 1]
-            v isa Number && v > 0 && (comp[Z] = Float64(v))
-        end
-        isempty(comp) && continue
-
-        out[Int(oid)] = BS.XA.Material(
-            String(name),
-            compute_ZA_ratio(comp),
-            compute_mean_excitation_energy(comp),
-            Float64(ρ) * u"g/cm^3",
-            comp,
+    for r in 2:size(data, 1)
+        data[r, ncol] isa Number || continue
+        comp = Dict{Int, Float64}(Z => Float64(data[r, c]) for (c, Z) in zcols
+                                  if data[r, c] isa Number && data[r, c] > 0)
+        isapprox(sum(values(comp)), 1; atol = 1.0e-3) || error("mass fractions of $(data[r, 1]) do not sum to 1")
+        out[Int(data[r, ncol])] = BS.XA.Material(
+            string(data[r, 1]), compute_ZA_ratio(comp), compute_mean_excitation_energy(comp),
+            Float64(data[r, ncol - 1]) * u"g/cm^3", comp,
         )
     end
     return out
 end
 
 # ╔═╡ 05000004-0000-4000-8000-000000000010
-materials_full = phantom_full_uhr === nothing ? nothing : let
-        base = load_materials_from_xlsx(MATERIAL_XLSX_PATH)
-        for l in unique(phantom_full_uhr)
-            haskey(base, Int(l)) || (base[Int(l)] = BS.XA.Materials.water)
+materials_full = HAS_XCAT ? load_xcat_materials(xcat.sheet) : nothing;
+
+# ╔═╡ 05000004-0000-4000-8000-000000000012
+const LABEL_RANGE = (0, materials_full === nothing ? 1 : maximum(keys(materials_full)));   # one colour per label ID in every map
+
+# ╔═╡ 05000004-0000-4000-8000-000000000011
+if materials_full === nothing || phantom_full_uhr === nothing
+    md"""!!! warning "Skipped: no XCAT export (see 1)" """
+else
+    let present = sort(Int.(unique(phantom_full_uhr)))
+        unnamed = [l for l in present if l != 0 && !haskey(materials_full, l)]
+        Markdown.parse("""
+        **$(length(materials_full)) materials** in `$(xcat.sheet_name)`; $(length(present)) labels
+        present in the volume; labels present but not named by the sheet (read as air):
+        $(isempty(unnamed) ? "none" : join(unnamed, ", ")).
+        """)
     end
-        base
-end;
+end
 
 # ╔═╡ 05000005-0000-4000-8000-000000000001
 md"""
-### 04. Cardiac bbox by label-name match
+### 4. The cardiac bounding box
 
-This is the **core idea** of the notebook.
+The heart is found by **name**: myocardium (`myo…`) and blood pools (`bldpl…`) of the four
+chambers, the pericardium, the coronary arteries and veins with their walls, and the coronary
+plaque components (`rca…`, `lcx…`, `lad…`). The aorta is left out: it runs the length of the
+chest and would stretch the box to the whole export. The bounding box of those labels, padded
+by 1 cm on every side, is the region we scan.
 
-A real CT scanner has a **scan field of view (SFOV)** — anything outside
-it isn't reconstructed.  This simulator's recon grid is hard-locked to
-**isocenter-centered**, so there's no `recon_offset_cm` knob.  The
-equivalent operation is to **crop the input phantom** to the region of
-interest before forward projection.  Done early it's also strictly more
-efficient: voxels outside the crop never get ray-traced and never enter
-the workspace's per-energy scratch buffers.
-
-We pick the cardiac region by filtering `materials_full` for organ names
-matching `/heart|atrium|ventric|coronary|aorta/i`, then computing the
-voxel bounding box of all matching labels and padding by ~1 cm.
-
-!!! info "Heuristic, not segmentation"
-    Name-match is a robust *heuristic* against XCAT's organ catalog.  If
-    you're working off a different phantom whose label names don't follow
-    the same conventions, replace the regex with an explicit list of
-    integer label IDs.
+!!! info "A heuristic over XCAT's naming"
+    For a phantom whose labels are named differently, replace the pattern with an explicit list
+    of label IDs.
 """
 
 # ╔═╡ 05000005-0000-4000-8000-000000000010
 heart_label_ids = materials_full === nothing ? nothing : let
-        pattern = r"heart|atrium|ventric|coronary|aorta"i
-        ids = sort(
-            UInt8[
-                UInt8(oid) for (oid, mat) in materials_full
-                if occursin(pattern, mat.name)
-            ]
-        )
-        @info "[cardiac bbox] $(length(ids)) organ labels match: $(ids)"
-        for oid in ids
-            @info "    label $(Int(oid)) → $(materials_full[Int(oid)].name)"
-    end
-        ids
+    pattern = r"^(myo|bldpl)|pericardium|coronary|^(rca|lcx|lad)\d"i
+    sort(UInt8[UInt8(id) for (id, mat) in materials_full if occursin(pattern, mat.name)])
 end;
+
+# ╔═╡ 05000005-0000-4000-8000-000000000011
+heart_label_ids === nothing ? md"" : Markdown.parse(
+    "**$(length(heart_label_ids)) cardiac labels:** " *
+    join(["$(Int(id)) `$(materials_full[Int(id)].name)`" for id in heart_label_ids], " · "))
 
 # ╔═╡ 05000005-0000-4000-8000-000000000020
 heart_bbox = (phantom_full_uhr === nothing || heart_label_ids === nothing) ? nothing : let
-        is_heart = falses(256)
-        for oid in heart_label_ids
-            is_heart[Int(oid) + 1] = true
+    is_heart = falses(256)
+    for id in heart_label_ids
+        is_heart[Int(id) + 1] = true
     end
-
-        nx, ny, nz = size(phantom_full_uhr)
-        i_lo, i_hi = nx + 1, 0
-        j_lo, j_hi = ny + 1, 0
-        k_lo, k_hi = nz + 1, 0
-        n_voxels = 0
-        @inbounds for k in 1:nz, j in 1:ny, i in 1:nx
-            if is_heart[Int(phantom_full_uhr[i, j, k]) + 1]
-                i < i_lo && (i_lo = i)
-                i > i_hi && (i_hi = i)
-                j < j_lo && (j_lo = j)
-                j > j_hi && (j_hi = j)
-                k < k_lo && (k_lo = k)
-                k > k_hi && (k_hi = k)
-                n_voxels += 1
+    nx, ny, nz = size(phantom_full_uhr)
+    lo, hi = [nx + 1, ny + 1, nz + 1], [0, 0, 0]
+    @inbounds for k in 1:nz, j in 1:ny, i in 1:nx
+        if is_heart[Int(phantom_full_uhr[i, j, k]) + 1]
+            lo .= min.(lo, (i, j, k)); hi .= max.(hi, (i, j, k))
         end
     end
-        n_voxels == 0 && error("[cardiac bbox] no heart-labeled voxels found in phantom")
-
-        # Pad ~1 cm in every direction.
-        pad_vox_x = round(Int, 1.0 / VOXEL_SIZE_CM[1])
-        pad_vox_y = round(Int, 1.0 / VOXEL_SIZE_CM[2])
-        pad_vox_z = round(Int, 1.0 / VOXEL_SIZE_CM[3])
-
-        i_lo = max(1, i_lo - pad_vox_x);  i_hi = min(nx, i_hi + pad_vox_x)
-        j_lo = max(1, j_lo - pad_vox_y);  j_hi = min(ny, j_hi + pad_vox_y)
-        k_lo = max(1, k_lo - pad_vox_z);  k_hi = min(nz, k_hi + pad_vox_z)
-
-        @info "[cardiac bbox] tight bbox + 1 cm pad:"
-        @info "  voxel range = ($(i_lo):$(i_hi), $(j_lo):$(j_hi), $(k_lo):$(k_hi))"
-        @info "  size  = $(i_hi - i_lo + 1) × $(j_hi - j_lo + 1) × $(k_hi - k_lo + 1) voxels"
-        @info "  extent = $(round.((i_hi - i_lo + 1, j_hi - j_lo + 1, k_hi - k_lo + 1) .* VOXEL_SIZE_CM, digits = 2)) cm"
-        @info "  cardiac voxels (pre-pad)  = $(n_voxels)"
-
-        (i_lo = i_lo, i_hi = i_hi, j_lo = j_lo, j_hi = j_hi, k_lo = k_lo, k_hi = k_hi)
+    hi[1] == 0 && error("no cardiac voxels in the phantom")
+    pad = round.(Int, 1.0 ./ VOXEL_SIZE_CM)                      # 1 cm
+    lo .= max.(1, lo .- pad); hi .= min.((nx, ny, nz), hi .+ pad)
+    (i_lo = lo[1], i_hi = hi[1], j_lo = lo[2], j_hi = hi[2], k_lo = lo[3], k_hi = hi[3])
 end;
 
 # ╔═╡ 05000006-0000-4000-8000-000000000000
 md"""
-## Scan A: Axial, Zoomed Cardiac FOV
-
-Crop the UHR phantom tight to the cardiac bbox (the SFOV-equivalent step),
-scan it with a single axial rotation and a tight centered FOV, then resample
-the ground truth back onto the recon grid and overlay it — pixel-perfect.
+## Scan A: axial, zoomed cardiac FOV
 """
 
 # ╔═╡ 05000006-0000-4000-8000-000000000001
 md"""
-### 01. Crop the phantom: the SFOV-equivalent step
+### 1. Crop the phantom
 
-Just an indexing op on the UHR mask.  This is the moment the simulator's
-"FOV cropping" actually happens: the cropped block is what gets handed
-to `simulate!`, so everything outside this bbox costs zero compute and
-zero memory in the forward projection.
+An index operation on the mask. The cropped block is what `simulate!` sees, so nothing outside it
+is ray-traced or held in device memory. It also changes the object: the rest of the chest is no
+longer in the beam, so this is a scan of the cardiac block, not of a chest with a small display
+field. For a chest scan with a small field, keep the whole phantom and set a small
+`ReconOptions(fov_cm = …)` instead.
 """
 
 # ╔═╡ 05000006-0000-4000-8000-000000000010
-phantom_cropped = (phantom_full_uhr === nothing || heart_bbox === nothing) ? nothing : let
-        b = heart_bbox
-        out = phantom_full_uhr[b.i_lo:b.i_hi, b.j_lo:b.j_hi, b.k_lo:b.k_hi]
-        full_voxels = length(phantom_full_uhr)
-        cropped_voxels = length(out)
-        @info "[crop] $(round(full_voxels / 1.0e6, digits = 1))M voxels → $(round(cropped_voxels / 1.0e6, digits = 1))M voxels  ($(round(100 * cropped_voxels / full_voxels, digits = 1))% kept)"
-        @info "[crop] memory: $(round(sizeof(phantom_full_uhr) / 1024^2, digits = 1)) MB → $(round(sizeof(out) / 1024^2, digits = 1)) MB"
-        @info "[crop] forward-projection ray count drops by the same ratio — $(round(full_voxels / cropped_voxels, digits = 1))× faster simulate!"
-        out
+phantom_cropped = heart_bbox === nothing ? nothing : let b = heart_bbox
+    phantom_full_uhr[b.i_lo:b.i_hi, b.j_lo:b.j_hi, b.k_lo:b.k_hi]
 end;
 
 # ╔═╡ 05000006-0000-4000-8000-000000000020
-materials_cropped = (phantom_cropped === nothing || materials_full === nothing) ? nothing : let
-        base = copy(materials_full)
-        for l in unique(phantom_cropped)
-            haskey(base, Int(l)) || (base[Int(l)] = BS.XA.Materials.water)
-    end
-        base
-end;
-
-# ╔═╡ 05000007-0000-4000-8000-000000000001
-md"""
-#### Visualize the crop
-
-Mid-z slice of the full UHR phantom with the bbox drawn over it (left)
-next to the cropped block (right).  This is the picture that justifies
-the technique — the SFOV is just a rectangle, applied at input time.
-"""
+phantom_cropped === nothing ? md"" : let
+    n_full, n_crop = length(phantom_full_uhr), length(phantom_cropped)
+    Markdown.parse("""
+    **Crop:** $(join(size(phantom_cropped), " × ")) voxels,
+    $(join(round.(size(phantom_cropped) .* VOXEL_SIZE_CM; digits = 1), " × ")) cm ·
+    $(round(100 * n_crop / n_full; digits = 1)) % of the $(round(n_full / 1.0e6; digits = 1)) M-voxel phantom
+    """)
+end
 
 # ╔═╡ 05000007-0000-4000-8000-000000000010
-let
-    if phantom_full_uhr === nothing || phantom_cropped === nothing
-        md"""!!! warning "Skipped — see §1 above" """
-    else
-        b = heart_bbox
-        nz = size(phantom_full_uhr, 3)
-        # Pick a z that's inside the bbox so both panels show something cardiac.
-        z_full = clamp((b.k_lo + b.k_hi) ÷ 2, 1, nz)
+if phantom_cropped === nothing
+    md"""!!! warning "Skipped: no XCAT export (see 1)" """
+else
+    let b = heart_bbox
+        z_full = (b.k_lo + b.k_hi) ÷ 2
         z_crop = z_full - b.k_lo + 1
+        vmm = round(VOXEL_SIZE_CM[1] * 10; digits = 2)
 
-        fig = Mke.Figure(size = (1200, 600))
-        title_kwargs = (titlesize = 28, subtitlesize = 20)
-
-        ax_l = Mke.Axis(
-            fig[1, 1];
-            title = "Full UHR phantom · z=$(z_full)",
-            subtitle = "$(size(phantom_full_uhr, 1))×$(size(phantom_full_uhr, 2)) @ $(round.(VOXEL_SIZE_CM .* 10, digits = 2)) mm",
-            aspect = Mke.DataAspect(),
-            yreversed = true,
-            title_kwargs...,
-        )
-        Mke.heatmap!(ax_l, Float32.(phantom_full_uhr[:, :, z_full]); colormap = :tab20)
-        # Bbox rectangle (note: x-axis is dim 1, y-axis is dim 2)
-        Mke.poly!(
-            ax_l,
-            Mke.Point2f[(b.i_lo, b.j_lo), (b.i_hi, b.j_lo), (b.i_hi, b.j_hi), (b.i_lo, b.j_hi)];
-            color = :transparent, strokecolor = :red, strokewidth = 3,
-        )
+        fig = Mke.Figure(size = (1300, 600))
+        ax_l = Mke.Axis(fig[1, 1]; title = "Full phantom · z = $(z_full)",
+            subtitle = "$(size(phantom_full_uhr, 1)) × $(size(phantom_full_uhr, 2)) @ $(vmm) mm · crop box in red",
+            aspect = Mke.DataAspect(), titlesize = 26, subtitlesize = 18)
+        Mke.heatmap!(ax_l, Float32.(phantom_full_uhr[:, :, z_full]); colormap = :tab20, colorrange = LABEL_RANGE)
+        Mke.poly!(ax_l, Mke.Point2f[(b.i_lo, b.j_lo), (b.i_hi, b.j_lo), (b.i_hi, b.j_hi), (b.i_lo, b.j_hi)];
+            color = :transparent, strokecolor = :red, strokewidth = 3)
         Mke.hidedecorations!(ax_l)
 
-        ax_r = Mke.Axis(
-            fig[1, 2];
-            title = "Cropped cardiac block · z=$(z_crop)",
-            subtitle = "$(size(phantom_cropped, 1))×$(size(phantom_cropped, 2)) (same voxel size — only the extent changed)",
-            aspect = Mke.DataAspect(),
-            yreversed = true,
-            title_kwargs...,
-        )
-        Mke.heatmap!(ax_r, Float32.(phantom_cropped[:, :, z_crop]); colormap = :tab20)
+        ax_r = Mke.Axis(fig[1, 2]; title = "Cropped cardiac block · z = $(z_crop)",
+            subtitle = "$(size(phantom_cropped, 1)) × $(size(phantom_cropped, 2)) @ $(vmm) mm (same voxels, smaller extent)",
+            aspect = Mke.DataAspect(), titlesize = 26, subtitlesize = 18)
+        Mke.heatmap!(ax_r, Float32.(phantom_cropped[:, :, z_crop]); colormap = :tab20, colorrange = LABEL_RANGE)
         Mke.hidedecorations!(ax_r)
-
-        Mke.save(
-            joinpath(@__DIR__, "..", "assets", "xcat_grid_crop.png"),
-            fig; px_per_unit = 2,
-        )
+        Mke.Label(fig[2, 1:2], "label maps, colour = label ID · anterior at the top, patient's left on the right";
+            fontsize = 16, tellwidth = false)
+        Mke.save(joinpath(@__DIR__, "..", "assets", "xcat_grid_crop.png"), fig; px_per_unit = 2)
         fig
     end
 end
 
 # ╔═╡ 05000008-0000-4000-8000-000000000001
-md"""
-### 02. Build the `Phantom` and its world affine
+Markdown.parse("""
+### 2. Build the `Phantom` and its world affine
 
-Default origin behavior: when you don't pass `origin = …` to `Phantom`,
-the constructor computes `origin = -extent/2 + voxel/2` — i.e. it
-**centers the phantom's physical extent at isocenter for free**.  Since
-we cropped before constructing, the cropped block lands centered at
-(0, 0, 0) — exactly where a centered recon FOV will pick it up.
-"""
+Without an `origin`, `Phantom` centres the block on the isocentre
+(`origin = -extent/2 + voxel/2`), which is exactly where the centred reconstruction grid will
+look.
 
-# ╔═╡ 05000008-0000-4000-8000-000000000010
-phantom = (phantom_cropped === nothing || materials_cropped === nothing) ? nothing :
-    BS.Phantom(to_gpu(phantom_cropped), materials_cropped, VOXEL_SIZE_CM);
+Two phantoms are built from the same crop. `phantom_cpu` keeps the XCAT labels, for the
+resampling. The simulation phantom is `compact_materials(phantom_cpu)` on the device: the same
+attenuation with the labels renumbered densely, because the single-pass `:dd_fast` projector
+handles at most 64 materials and the sheet's label IDs run to $(materials_full === nothing ? "—" : maximum(keys(materials_full))).
+""")
 
 # ╔═╡ 05000008-0000-4000-8000-000000000011
-phantom_cpu = (phantom_cropped === nothing || materials_cropped === nothing) ? nothing :
-    BS.Phantom(phantom_cropped, materials_cropped, VOXEL_SIZE_CM);
+phantom_cpu = phantom_cropped === nothing ? nothing :
+    BS.Phantom(phantom_cropped, materials_full, VOXEL_SIZE_CM);
+
+# ╔═╡ 05000008-0000-4000-8000-000000000010
+phantom = phantom_cpu === nothing ? nothing : let c = BS.compact_materials(phantom_cpu)
+    BS.Phantom(to_gpu(c.mask), c.materials, c.voxel_size, c.origin, c.extent)
+end;
 
 # ╔═╡ 05000009-0000-4000-8000-000000000001
 md"""
 #### `phantom_to_world_affine`
 
-The 4×4 matrix `A_phantom` maps a 0-indexed phantom voxel `(i, j, k)` to
-world coordinates `(x, y, z)` in cm:
+The 4 × 4 matrix maps a 0-indexed phantom voxel `(i, j, k)` to world coordinates `(x, y, z)` in cm:
 
 ```
-[ x ]     [ vx  0   0   ox ]   [ i ]
-[ y ]  =  [ 0   vy  0   oy ] · [ j ]
-[ z ]     [ 0   0   vz  oz ]   [ k ]
-[ 1 ]     [ 0   0   0    1 ]   [ 1 ]
+[ x ]   [ vx  0   0   ox ]   [ i ]
+[ y ] = [ 0   vy  0   oy ] · [ j ]
+[ z ]   [ 0   0   vz  oz ]   [ k ]
+[ 1 ]   [ 0   0   0   1  ]   [ 1 ]
 ```
 
-`(vx, vy, vz)` is the phantom's voxel size; `(ox, oy, oz)` is the world
-position of voxel `(0, 0, 0)`.  After the crop+default-origin trick, this
-matrix tells us exactly where in the bore each phantom voxel sits.
+`(vx, vy, vz)` is the voxel size and `(ox, oy, oz)` the world position of voxel `(0, 0, 0)`.
 """
 
 # ╔═╡ 05000009-0000-4000-8000-000000000010
-let
-    if phantom_cpu === nothing
-        md"""!!! warning "Skipped — see §1 above" """
-    else
-        A = BS.phantom_to_world_affine(phantom_cpu)
-        rows = [
-            "| $(round(A[i, 1], digits = 4)) | $(round(A[i, 2], digits = 4)) | $(round(A[i, 3], digits = 4)) | $(round(A[i, 4], digits = 4)) |"
-                for i in 1:4
-        ]
-        Markdown.parse(
-            """
-            **`A_phantom = phantom_to_world_affine(phantom)`** (cm)
+if phantom_cpu === nothing
+    md"""!!! warning "Skipped: no XCAT export (see 1)" """
+else
+    let A = BS.phantom_to_world_affine(phantom_cpu)
+        rows = ["| " * join(round.(A[i, :]; digits = 4), " | ") * " |" for i in 1:4]
+        centre = phantom_cpu.origin .+ phantom_cpu.extent ./ 2 .- phantom_cpu.voxel_size ./ 2
+        Markdown.parse("""
+        **`A_phantom = phantom_to_world_affine(phantom_cpu)`** (cm)
 
-            | col 1 | col 2 | col 3 | col 4 |
-            |---|---|---|---|
-            $(join(rows, "\n"))
+        | col 1 | col 2 | col 3 | col 4 |
+        |---|---|---|---|
+        $(join(rows, "\n"))
 
-            - voxel = $(round.(phantom_cpu.voxel_size .* 10, digits = 2)) mm
-            - origin = $(round.(phantom_cpu.origin, digits = 3)) cm  (world position of voxel `(0, 0, 0)`)
-            - extent = $(round.(phantom_cpu.extent, digits = 3)) cm
-            - **center of cropped block** ≈ $(round.(phantom_cpu.origin .+ phantom_cpu.extent ./ 2 .- phantom_cpu.voxel_size ./ 2, digits = 3)) cm  (should be ≈ isocenter)
-            """
-        )
+        - voxel = $(round.(phantom_cpu.voxel_size .* 10; digits = 2)) mm, extent = $(round.(phantom_cpu.extent; digits = 3)) cm
+        - origin (voxel `(0, 0, 0)`) = $(round.(phantom_cpu.origin; digits = 3)) cm
+        - centre of the block = $(round.(centre; digits = 6)) cm, the isocentre
+        """)
     end
 end
 
 # ╔═╡ 0500000a-0000-4000-8000-000000000001
 md"""
-### 03. Scanner, protocol, and tight-FOV recon
+### 3. Scanner, protocol and a tight reconstruction grid
 
-Same hardware as notebooks 01 / 02 / 03 — clinical 64-row CT, large
-bowtie, GE Revolution Apex Elite-class detector.  We're doing single-kVp
-EICT here; the affine machinery has nothing to do with spectral imaging,
-so any scanner works.
+The GE Revolution Apex Elite of notebook 01: 256 × 0.625 mm rows, a curved Lumex detector and
+the large-body bowtie. The grid mapping has nothing to do with the detector type, so any
+scanner would do.
 """
 
 # ╔═╡ 0500000a-0000-4000-8000-000000000010
@@ -606,20 +492,15 @@ scanner = BS.EICTScanner(
     detector_depth = 3.0,
     fill_factor_row = 0.9,
     fill_factor_col = 0.9,
-    # DAS/electronic noise enters the counts before the log transform, so it
-    # propagates through reconstruction (see `add_system_noise_floor!` docstring).
-    electronic_noise = 3500.0,   # e⁻ — clinical GE Apex Elite DAS readout noise
+    electronic_noise = 3500.0,   # e⁻ rms, added to the counts before the log
     detection_gain = 10.0,
 );
 
 # ╔═╡ 0500000a-0000-4000-8000-000000000020
 md"""
-#### `CTProtocol`: clinical cardiac CTA
+#### `CTProtocol`: an axial cardiac CTA
 
-120 kVp / 250 mA, 1 s rotation, 5 mm collimation, 500 views.  The recon
-slab will derive its z-extent from the protocol collimation, which is
-how this simulator decides how many detector rows are active (see
-`CTGeometry`).
+120 kVp / 250 mA, a 1 s rotation of 500 views, 5 mm of collimation.
 """
 
 # ╔═╡ 0500000a-0000-4000-8000-000000000030
@@ -637,40 +518,29 @@ sim_opts = BS.SimOptions(seed = 1234, projector = :dd_fast);
 
 # ╔═╡ 0500000b-0000-4000-8000-000000000001
 md"""
-#### `ReconOptions`: tight cardiac FOV
+#### `ReconOptions`: a 14 cm field
 
-The recon FOV is **always centered at isocenter** in this simulator.
-That's fine for us — we centered the cropped phantom at iso for free in
-§6.  We use a **14 cm × 14 cm** in-plane FOV (smaller than the cropped
-extent in xy by design: lets us see what happens when the recon FOV is
-*tighter* than the input).  The recon z-extent is derived from the
-protocol collimation.
-
-`matrix_size = (384, 384, n_z)` gives ~0.36 mm recon voxels — coarser
-than the 0.4 mm phantom voxels so the affine round-trip will downsample
-slightly.
+A **14 cm × 14 cm** field on a 384 × 384 grid (0.365 mm pixels), eight 0.625 mm slices over the
+5 mm beam. The field is centred on the isocentre, where the cropped block sits, and it is
+deliberately smaller than the block in-plane: the reconstruction grid does not have to contain
+the object.
 """
 
 # ╔═╡ 0500000b-0000-4000-8000-000000000010
-recon_opts = let
-    slice_thickness_mm = 0.625
-    n_z = max(1, round(Int, protocol.collimation_mm / slice_thickness_mm))
-    BS.ReconOptions(
-        matrix_size = (384, 384, n_z),
-        fov_cm = 14.0,
-        z_cm = protocol.collimation_mm / 10.0,
-    )
-end;
+recon_opts = BS.ReconOptions(
+    matrix_size = (384, 384, round(Int, protocol.collimation_mm / 0.625)),
+    fov_cm = 14.0,
+    z_cm = protocol.collimation_mm / 10,
+);
 
 # ╔═╡ 0500000b-0000-4000-8000-000000000020
 md"""
 #### `recon_to_world_affine`
 
-We can build the `CTGeometry` directly from `(scanner, protocol,
-recon_opts)` — no need to wait for `simulate!` to inspect the recon
-grid.  Same affine shape as `A_phantom`; the values reflect the recon
-voxel size (`fov / matrix_size`) and a **centered** origin
-(`-fov/2 + voxel/2`).
+The reconstruction grid can be inspected before anything is simulated: `CTGeometry` is built
+from the scanner, the protocol and the grid, exactly as the workspace builds it. The affine has
+the same form as the phantom's, with the reconstruction voxel size (`fov / matrix_size`) and a
+centred origin (`-fov/2 + voxel/2`).
 """
 
 # ╔═╡ 0500000b-0000-4000-8000-000000000030
@@ -683,887 +553,593 @@ geom_inspect = BS.CTGeometry(
 );
 
 # ╔═╡ 0500000b-0000-4000-8000-000000000040
-let
-    A = BS.recon_to_world_affine(geom_inspect, recon_opts.matrix_size)
-    rows = [
-        "| $(round(A[i, 1], digits = 4)) | $(round(A[i, 2], digits = 4)) | $(round(A[i, 3], digits = 4)) | $(round(A[i, 4], digits = 4)) |"
-            for i in 1:4
-    ]
-    nx, ny, nz = recon_opts.matrix_size
+let A = BS.recon_to_world_affine(geom_inspect, recon_opts.matrix_size)
+    rows = ["| " * join(round.(A[i, :]; digits = 4), " | ") * " |" for i in 1:4]
+    n = recon_opts.matrix_size
     fov = geom_inspect.fov
-    Markdown.parse(
-        """
-        **`A_recon = recon_to_world_affine(geom, matrix_size)`** (cm)
+    Markdown.parse("""
+    **`A_recon = recon_to_world_affine(geom, matrix_size)`** (cm)
 
-        | col 1 | col 2 | col 3 | col 4 |
-        |---|---|---|---|
-        $(join(rows, "\n"))
+    | col 1 | col 2 | col 3 | col 4 |
+    |---|---|---|---|
+    $(join(rows, "\n"))
 
-        - matrix size = $(nx) × $(ny) × $(nz) voxels
-        - voxel size = $(round.((fov[1] / nx, fov[2] / ny, fov[3] / nz) .* 10, digits = 3)) mm
-        - FOV = $(round.(fov, digits = 3)) cm
-        - origin = $(round(-fov[1] / 2 + (fov[1] / nx) / 2, digits = 3)),  $(round(-fov[2] / 2 + (fov[2] / ny) / 2, digits = 3)),  $(round(-fov[3] / 2 + (fov[3] / nz) / 2, digits = 3)) cm  (centered at iso)
-        """
-    )
+    - matrix = $(join(n, " × ")), voxel = $(join(round.(fov ./ n .* 10; digits = 3), " × ")) mm, FOV = $(join(round.(fov; digits = 3), " × ")) cm
+    - origin = $(join(round.(-1 .* fov ./ 2 .+ fov ./ n ./ 2; digits = 4), ", ")) cm: centred on the isocentre
+    """)
 end
 
-# ╔═╡ 0500000c-0000-4000-8000-000000000001
-md"""
-#### Side-by-side grid comparison
-
-The two grids share **world coordinates** (cm) but differ in voxel size,
-shape, and FOV.  `resample_to_recon` (and the affines under it) handle
-all of this for you.
-"""
-
 # ╔═╡ 0500000c-0000-4000-8000-000000000010
-let
-    if phantom_cpu === nothing
-        md"""!!! warning "Skipped — see §1 above" """
-    else
-        nx_p, ny_p, nz_p = size(phantom_cpu.mask)
-        nx_r, ny_r, nz_r = recon_opts.matrix_size
-        vp = round.(phantom_cpu.voxel_size .* 10, digits = 3)
-        vr = round.((geom_inspect.fov[1] / nx_r, geom_inspect.fov[2] / ny_r, geom_inspect.fov[3] / nz_r) .* 10, digits = 3)
-        ep = round.(phantom_cpu.extent, digits = 2)
-        er = round.(geom_inspect.fov, digits = 2)
-        op = round.(phantom_cpu.origin, digits = 3)
-        rox = -geom_inspect.fov[1] / 2 + (geom_inspect.fov[1] / nx_r) / 2
-        roy = -geom_inspect.fov[2] / 2 + (geom_inspect.fov[2] / ny_r) / 2
-        roz = -geom_inspect.fov[3] / 2 + (geom_inspect.fov[3] / nz_r) / 2
-        or = round.((rox, roy, roz), digits = 3)
-        Markdown.parse(
-            """
-            | property | phantom (cropped UHR) | recon (centered, tight FOV) |
-            |---|---|---|
-            | shape (voxels) | $(nx_p) × $(ny_p) × $(nz_p) | $(nx_r) × $(ny_r) × $(nz_r) |
-            | voxel size (mm) | $(vp[1]) × $(vp[2]) × $(vp[3]) | $(vr[1]) × $(vr[2]) × $(vr[3]) |
-            | extent (cm) | $(ep[1]) × $(ep[2]) × $(ep[3]) | $(er[1]) × $(er[2]) × $(er[3]) |
-            | origin (cm) | $(op) | $(or) |
-            | total voxels | $(nx_p * ny_p * nz_p) | $(nx_r * ny_r * nz_r) |
-            """
-        )
+if phantom_cpu === nothing
+    md"""!!! warning "Skipped: no XCAT export (see 1)" """
+else
+    let np = size(phantom_cpu.mask), nr = recon_opts.matrix_size, fov = geom_inspect.fov
+        vp = round.(phantom_cpu.voxel_size .* 10; digits = 3)
+        vr = round.(fov ./ nr .* 10; digits = 3)
+        Markdown.parse("""
+        The two grids share world coordinates but little else:
+
+        | | phantom (cropped) | reconstruction |
+        |---|---|---|
+        | voxels | $(join(np, " × ")) | $(join(nr, " × ")) |
+        | voxel size (mm) | $(join(vp, " × ")) | $(join(vr, " × ")) |
+        | extent (cm) | $(join(round.(phantom_cpu.extent; digits = 2), " × ")) | $(join(round.(fov; digits = 2), " × ")) |
+        | origin (cm) | $(join(round.(phantom_cpu.origin; digits = 3), ", ")) | $(join(round.(-1 .* fov ./ 2 .+ fov ./ nr ./ 2; digits = 3), ", ")) |
+        """)
     end
 end
 
 # ╔═╡ 0500000d-0000-4000-8000-000000000001
 md"""
-### 04. Forward project and reconstruct
+### 4. Simulate and reconstruct
 
-Standard EICT path.  We skip the BHC pipeline (see notebook 02 §7 for
-that) and use a quick analytic μ_water for HU conversion — the focus
-here is geometry, not HU accuracy.
+The chain of notebook 01: `create_eict_workspace` → `simulate!`, then the knobless water
+beam-hardening correction → FDK → HU with the correction's own μ_water.
 """
 
 # ╔═╡ 0500000d-0000-4000-8000-000000000010
 sim = phantom === nothing ? nothing : let
-        @info "Simulating cardiac CTA: 120 kVp / 250 mA / cropped UHR phantom…"
-        ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
-        BS.simulate!(ws, phantom, protocol, sim_opts)
-
-        result = (sino = Array(ws.sinogram), geom = ws.geom)
-        ws = nothing
-        GC.gc(true)
-        result
+    ws = BS.create_eict_workspace(scanner, protocol, sim_opts, recon_opts, phantom)
+    t = @elapsed result = BS.simulate!(ws, phantom, protocol, sim_opts)
+    out = (sino = Array(ws.sinogram), geom = ws.geom, dose = result.dose, t = t)
+    ws = nothing
+    GC.gc(true)
+    out
 end;
 
 # ╔═╡ 0500000d-0000-4000-8000-000000000020
-μ_water_120 = phantom_cpu === nothing ? nothing : let
-        # Phantom-aware water_path: pull the body chord straight off the
-        # cropped XCAT mask, so the calibration tracks any change to the
-        # crop bbox / DOWNSAMPLE_FACTOR without hardcoded cm.
-        body_diameter_cm = BS.estimate_phantom_diameter_cm(
-            phantom_cpu.mask, phantom_cpu.voxel_size .* 10.0,
-        )
-        μ = BS.compute_polychromatic_μ_water(
-            sim_opts, protocol;
-            scanner = scanner,
-            geom = geom_inspect,
-            water_path_cm = body_diameter_cm,
-        )
-        @info "[analytic μ_water]  120 kVp + 4.5 mm Al + $(round(body_diameter_cm, digits = 1)) cm body hardening: $(round(μ, digits = 5)) cm⁻¹"
-        μ
-end;
+bhc = sim === nothing ? nothing : BS.calibrate_bhc_water(sim_opts, protocol; scanner, geom = sim.geom);
 
 # ╔═╡ 0500000d-0000-4000-8000-000000000030
 recon_HU = sim === nothing ? nothing : let
-        sino_gpu = to_gpu(Float32.(sim.sino))
-        ws = BS.create_fdk_recon_workspace(sino_gpu, sim.geom, recon_opts.matrix_size; filter = :standard)
-        recon_μ = Array(BS.reconstruct!(ws, sino_gpu, sim.geom))
-        ws = nothing; sino_gpu = nothing; GC.gc(true)
-
-        # quantum + DAS noise already carried by the sinogram (counts domain)
-        HU = Float32.(BS.to_hounsfield(recon_μ; μ_water = μ_water_120))
-        HU
+    sino = BS.apply_bhc_water(to_gpu(sim.sino), bhc)
+    ws = BS.create_fdk_recon_workspace(sino, sim.geom, recon_opts.matrix_size; filter = :standard)
+    μ = Array(BS.reconstruct!(ws, sino, sim.geom))
+    ws = nothing; sino = nothing; GC.gc(true)
+    Float32.(BS.to_hounsfield(μ; μ_water = bhc.μ_water_ref))
 end;
+
+# ╔═╡ 0500000d-0000-4000-8000-000000000040
+sim === nothing ? md"" : Markdown.parse("""
+**Scan A:** $(join(size(sim.sino), " × ")) sinogram (columns × rows × views), simulated in
+$(round(sim.t; digits = 1)) s (first call, compilation included) · CTDIvol =
+$(round(sim.dose.ctdi_vol_mGy; digits = 2)) mGy · water BHC at
+$(round(bhc.reference_energy_keV; digits = 1)) keV
+""")
 
 # ╔═╡ 0500000e-0000-4000-8000-000000000001
 md"""
-### 05. Resample ground truth and overlay
+### 5. Resample the ground truth
 
-`BS.resample_to_recon` is the convenience wrapper.  It pulls the phantom
-mask to CPU, computes each recon voxel's world coordinate via
-`A_recon`, maps to the continuous phantom-voxel index via
-`inv(A_phantom)`, and samples.
+`resample_to_recon` takes each reconstruction voxel's world coordinate from `A_recon`, maps it to
+a continuous phantom index through `inv(A_phantom)`, and samples the phantom there:
 
-Two interpolation methods built in:
+| `method` | output | use it for |
+|---|---|---|
+| `:nearest` | `UInt8` labels | ROI extraction, segmentation scoring |
+| `:linear` | `Float32` (trilinear) | continuous fields, and the coverage fraction of one binary mask |
 
-| `method` | output type   | use when |
-|----------|---------------|----------|
-| `:nearest` | `UInt8` (label-preserving) | overlaying labels for ROI extraction / segmentation evaluation |
-| `:linear`  | `Float32` (trilinear)      | continuous fields (HU, density, fractional volume) |
+Trilinear interpolation of a *multi-label* mask averages label IDs, which means nothing. To get a
+partial-volume fraction, resample a 0/1 mask of the structure instead.
 """
 
 # ╔═╡ 0500000e-0000-4000-8000-000000000010
-gt_resampled_nn = (phantom_cpu === nothing || sim === nothing) ? nothing :
+gt_resampled_nn = sim === nothing ? nothing :
     BS.resample_to_recon(phantom_cpu, sim.geom, recon_opts.matrix_size; method = :nearest);
 
-# ╔═╡ 0500000e-0000-4000-8000-000000000011
-gt_resampled_lin = (phantom_cpu === nothing || sim === nothing) ? nothing :
-    BS.resample_to_recon(phantom_cpu, sim.geom, recon_opts.matrix_size; method = :linear);
-
 # ╔═╡ 0500000e-0000-4000-8000-000000000012
-# Fractional cardiac coverage: build a *binary* cardiac mask, then resample
-# `:linear`.  Trilinear on a multi-label integer mask (gt_resampled_lin
-# above) arithmetically-mixes label IDs and isn't physically meaningful;
-# trilinear on a 0/1 mask gives true partial-volume fractions ∈ [0, 1].
-cardiac_coverage_lin = (
-        phantom_cpu === nothing || sim === nothing ||
-        heart_label_ids === nothing
-    ) ? nothing : let
-        binary_mask = zeros(UInt8, size(phantom_cropped))
-        for oid in heart_label_ids
-            binary_mask[phantom_cropped .== oid] .= 0x01
+"""Fraction of each reconstruction voxel covered by the cardiac labels (trilinear on a 0/1 mask)."""
+function cardiac_coverage(mask, geom, matrix_size)
+    binary = zeros(UInt8, size(mask))
+    for id in heart_label_ids
+        binary[mask .== id] .= 0x01
     end
-        binary_phantom = BS.Phantom(
-            binary_mask,
-            Dict(0 => BS.XA.Materials.water, 1 => BS.XA.Materials.water),
-            VOXEL_SIZE_CM,
-        )
-        BS.resample_to_recon(binary_phantom, sim.geom, recon_opts.matrix_size; method = :linear)
-end;
+    ph = BS.Phantom(binary, Dict(0 => BS.XA.Materials.air, 1 => BS.XA.Materials.water), VOXEL_SIZE_CM)
+    return BS.resample_to_recon(ph, geom, matrix_size; method = :linear)
+end
+
+# ╔═╡ 0500000e-0000-4000-8000-000000000013
+cardiac_coverage_lin = sim === nothing ? nothing :
+    cardiac_coverage(phantom_cropped, sim.geom, recon_opts.matrix_size);
 
 # ╔═╡ 0500000e-0000-4000-8000-000000000020
-let
-    if gt_resampled_nn === nothing
-        md"""!!! warning "Skipped — see §1 above" """
-    else
-        md"""
-        - `gt_resampled_nn`  shape = $(size(gt_resampled_nn)) · eltype = $(eltype(gt_resampled_nn))
-        - `gt_resampled_lin` shape = $(size(gt_resampled_lin)) · eltype = $(eltype(gt_resampled_lin))
-        - `recon_HU`         shape = $(size(recon_HU)) · eltype = $(eltype(recon_HU))
-
-        All three live on the same world-coordinate grid — index `(i, j, k)` in any
-        of them corresponds to the same physical voxel inside the bore.
-        """
-    end
-end
+sim === nothing ? md"" : Markdown.parse("""
+`gt_resampled_nn` is $(eltype(gt_resampled_nn)) $(join(size(gt_resampled_nn), " × ")), `cardiac_coverage_lin`
+is $(eltype(cardiac_coverage_lin)) $(join(size(cardiac_coverage_lin), " × ")), `recon_HU` is
+$(eltype(recon_HU)) $(join(size(recon_HU), " × ")): index `(i, j, k)` is the same physical voxel in all three.
+""")
 
 # ╔═╡ 0500000f-0000-4000-8000-000000000001
 md"""
-#### Bring-your-own-interpolator pattern
+#### Bring your own interpolator
 
-When `:nearest` and `:linear` aren't enough — e.g. you want a B-spline,
-a sinc kernel, or some learned upsampling — the affines give you the
-recon-voxel → phantom-voxel map directly.  Compute
+For a B-spline, a sinc kernel or a learned upsampler, compose the two affines yourself:
+`M = inv(A_phantom) * A_recon` takes a 0-indexed reconstruction voxel `(i, j, k, 1)` to a
+**continuous** phantom index, which any interpolator (Interpolations.jl,
+ImageTransformations.jl, your own kernel) can sample:
 
 ```julia
-M = inv(A_phantom) * A_recon
+for k in 0:(nz - 1), j in 0:(ny - 1), i in 0:(nx - 1)
+    p = M * [i, j, k, 1.0]                      # continuous phantom index
+    out[i + 1, j + 1, k + 1] = my_interpolator(phantom.mask, p[1], p[2], p[3])
+end
 ```
-
-and you have a 4×4 that takes any `(i_recon, j_recon, k_recon, 1)` to
-the **continuous** phantom voxel index.  Hand that to your interpolator
-of choice (Interpolations.jl, ImageTransformations.jl, a custom kernel,
-PyTorch via PyCall, whatever) and you're done.
 """
 
 # ╔═╡ 0500000f-0000-4000-8000-000000000010
-let
-    if phantom_cpu === nothing
-        md"""!!! warning "Skipped — see §1 above" """
-    else
-        A_phantom = BS.phantom_to_world_affine(phantom_cpu)
-        A_recon = BS.recon_to_world_affine(geom_inspect, recon_opts.matrix_size)
-        M = inv(A_phantom) * A_recon
+if phantom_cpu === nothing
+    md"""!!! warning "Skipped: no XCAT export (see 1)" """
+else
+    let M = inv(BS.phantom_to_world_affine(phantom_cpu)) * BS.recon_to_world_affine(geom_inspect, recon_opts.matrix_size)
+        rows = ["| " * join(round.(M[i, :]; digits = 4), " | ") * " |" for i in 1:4]
+        n = recon_opts.matrix_size
+        vc = M * [(n[1] - 1) / 2, (n[2] - 1) / 2, (n[3] - 1) / 2, 1.0]
+        pc = (size(phantom_cpu.mask) .- 1) ./ 2
+        Markdown.parse("""
+        **`M = inv(A_phantom) * A_recon`**
 
-        rows = [
-            "| $(round(M[i, 1], digits = 4)) | $(round(M[i, 2], digits = 4)) | $(round(M[i, 3], digits = 4)) | $(round(M[i, 4], digits = 4)) |"
-                for i in 1:4
-        ]
+        | col 1 | col 2 | col 3 | col 4 |
+        |---|---|---|---|
+        $(join(rows, "\n"))
 
-        # Quick sanity demo: where does recon-voxel (0,0,0) sit in phantom-voxel space?
-        v0 = M * [0.0, 0.0, 0.0, 1.0]
-        # And the recon-volume center?
-        nx_r, ny_r, nz_r = recon_opts.matrix_size
-        vc = M * [(nx_r - 1) / 2, (ny_r - 1) / 2, (nz_r - 1) / 2, 1.0]
-
-        Markdown.parse(
-            """
-            **`M = inv(A_phantom) * A_recon`** — recon voxel → continuous phantom voxel
-
-            | col 1 | col 2 | col 3 | col 4 |
-            |---|---|---|---|
-            $(join(rows, "\n"))
-
-            Quick sanity:
-
-            - recon voxel `(0, 0, 0)` → phantom voxel  $(round.((v0[1], v0[2], v0[3]), digits = 2))
-            - recon volume center  → phantom voxel  $(round.((vc[1], vc[2], vc[3]), digits = 2))   (should be near the cropped phantom's center)
-
-            Pass `M` to the interpolator of your choice.  In pseudocode:
-
-            ```julia
-            for k in 0:(nz_r-1), j in 0:(ny_r-1), i in 0:(nx_r-1)
-                p = M * [i, j, k, 1.0]               # phantom voxel index (Float64)
-                out[i+1, j+1, k+1] = my_interpolator(phantom.mask, p[1], p[2], p[3])
-            end
-            ```
-            """
-        )
+        The centre of the reconstruction grid maps to phantom index $(round.((vc[1], vc[2], vc[3]); digits = 2)),
+        the centre of the cropped block ($(round.(pc; digits = 2))).
+        """)
     end
 end
 
 # ╔═╡ 05000010-0000-4000-8000-000000000001
 md"""
-#### The verification mosaic
+#### The overlay
 
-Four panels, all on the **recon grid** at the same mid-slice.  Top row
-shows the two raw inputs; bottom row overlays the masks on the HU recon
-to demonstrate alignment.
+Four views of the central slice, all on the reconstruction grid:
 
-| panel | what it shows |
-|-------|---------------|
-| (top-left) HU recon | what the scanner produced — clinical recon grid, isocenter-centered |
-| (top-right) all structures (`:nearest`, no overlay) | full multi-label resample on the recon grid — every organ, no masking |
-| (bottom-left) HU + cardiac labels | cardiac labels (NaN-masked) over the HU at α=0.6 — alignment check |
-| (bottom-right) HU + cardiac coverage (`:linear`, binary mask) | true partial-volume fraction ∈ [0, 1] over the HU, soft at boundaries |
+| panel | shows |
+|---|---|
+| top left | the HU reconstruction |
+| top right | every label, resampled with `:nearest` |
+| bottom left | the cardiac labels (`:nearest`) over the HU image |
+| bottom right | the cardiac coverage fraction (`:linear` on a 0/1 mask) over the HU image |
 """
 
 # ╔═╡ 05000010-0000-4000-8000-000000000010
-let
-    if recon_HU === nothing || gt_resampled_nn === nothing ||
-            cardiac_coverage_lin === nothing || heart_label_ids === nothing
-
-        md"""!!! warning "Skipped — see §1 above" """
-    else
-        # NaN-mask non-cardiac voxels so they render transparent over the HU base.
+if recon_HU === nothing
+    md"""!!! warning "Skipped: no XCAT export (see 1)" """
+else
+    let
         is_cardiac = falses(256)
-        for oid in heart_label_ids
-            is_cardiac[Int(oid) + 1] = true
+        for id in heart_label_ids
+            is_cardiac[Int(id) + 1] = true
         end
-
         z = size(recon_HU, 3) ÷ 2 + 1
-        hu_slice = recon_HU[:, :, z]
-
-        nn_overlay = let
-            slice = gt_resampled_nn[:, :, z]
-            out = fill(NaN32, size(slice))
-            @inbounds for idx in eachindex(slice)
-                if is_cardiac[Int(slice[idx]) + 1]
-                    out[idx] = Float32(slice[idx])
-                end
-            end
-            out
-        end
-
-        lin_overlay = let
-            slice = cardiac_coverage_lin[:, :, z]
-            out = Float32.(slice)
-            @inbounds for idx in eachindex(out)
-                if out[idx] < 0.05f0   # below 5% partial coverage → transparent
-                    out[idx] = NaN32
-                end
-            end
-            out
-        end
+        hu = recon_HU[:, :, z]
+        lab = gt_resampled_nn[:, :, z]
+        nn_overlay = [is_cardiac[Int(l) + 1] ? Float32(l) : NaN32 for l in lab]
+        cov = cardiac_coverage_lin[:, :, z]
+        lin_overlay = [c < 0.05f0 ? NaN32 : Float32(c) for c in cov]
 
         fig = Mke.Figure(size = (1400, 1320))
-        hu_kwargs = (colormap = :grays, colorrange = (-300, 700))
-        title_kwargs = (titlesize = 28, subtitlesize = 20)
+        hu_kw = (colormap = :grays, colorrange = (-300, 700))
+        tk = (titlesize = 26, subtitlesize = 18, aspect = Mke.DataAspect())
 
-        # Top-left: raw HU recon.
-        ax_tl = Mke.Axis(
-            fig[1, 1];
-            title = "HU recon",
-            subtitle = "z=$(z) of $(size(recon_HU, 3)) · centered FOV $(recon_opts.fov_cm) cm",
-            aspect = Mke.DataAspect(), yreversed = true,
-            title_kwargs...,
-        )
-        Mke.heatmap!(ax_tl, hu_slice; hu_kwargs...)
-        Mke.hidedecorations!(ax_tl)
+        ax = Mke.Axis(fig[1, 1]; title = "HU reconstruction",
+            subtitle = "slice $(z) of $(size(recon_HU, 3)) · FOV $(recon_opts.fov_cm) cm, centred", tk...)
+        hm = Mke.heatmap!(ax, hu; hu_kw...); Mke.hidedecorations!(ax)
+        Mke.Colorbar(fig[1, 3], hm; label = "HU", width = 14, labelsize = 18)
 
-        # Top-right: ALL structures — full multi-label resample, no masking.
-        ax_tr = Mke.Axis(
-            fig[1, 2];
-            title = "All structures (`:nearest`, no overlay)",
-            subtitle = "$(length(unique(gt_resampled_nn))) labels resampled onto recon grid",
-            aspect = Mke.DataAspect(), yreversed = true,
-            title_kwargs...,
-        )
-        Mke.heatmap!(
-            ax_tr, Float32.(gt_resampled_nn[:, :, z]);
-            colormap = :tab20,
-        )
-        Mke.hidedecorations!(ax_tr)
+        ax = Mke.Axis(fig[1, 2]; title = "All labels (:nearest)",
+            subtitle = "$(length(unique(gt_resampled_nn))) labels on the reconstruction grid", tk...)
+        Mke.heatmap!(ax, Float32.(lab); colormap = :tab20, colorrange = LABEL_RANGE); Mke.hidedecorations!(ax)
 
-        # Bottom-left: HU + cardiac labels overlay.
-        ax_bl = Mke.Axis(
-            fig[2, 1];
-            title = "HU + cardiac labels",
-            subtitle = "α=0.6 over HU — alignment check",
-            aspect = Mke.DataAspect(), yreversed = true,
-            title_kwargs...,
-        )
-        Mke.heatmap!(ax_bl, hu_slice; hu_kwargs...)
-        Mke.heatmap!(
-            ax_bl, nn_overlay;
-            colormap = :tab20, alpha = 0.6, nan_color = (:white, 0.0),
-        )
-        Mke.hidedecorations!(ax_bl)
+        ax = Mke.Axis(fig[2, 1]; title = "HU + cardiac labels", subtitle = ":nearest, α = 0.6", tk...)
+        Mke.heatmap!(ax, hu; hu_kw...)
+        Mke.heatmap!(ax, nn_overlay; colormap = :tab20, colorrange = LABEL_RANGE, alpha = 0.6, nan_color = (:white, 0.0))
+        Mke.hidedecorations!(ax)
 
-        # Bottom-right: HU + fractional cardiac coverage overlay.
-        ax_br = Mke.Axis(
-            fig[2, 2];
-            title = "HU + cardiac coverage (`:linear`, binary mask)",
-            subtitle = "fractional ∈ [0.05, 1] · α=0.7 over HU",
-            aspect = Mke.DataAspect(), yreversed = true,
-            title_kwargs...,
-        )
-        Mke.heatmap!(ax_br, hu_slice; hu_kwargs...)
-        hm_br = Mke.heatmap!(
-            ax_br, lin_overlay;
-            colormap = :viridis, colorrange = (0, 1),
-            alpha = 0.7, nan_color = (:white, 0.0),
-        )
-        Mke.hidedecorations!(ax_br)
-        Mke.Colorbar(fig[2, 3], hm_br; label = "cardiac fraction", width = 14, labelsize = 18)
-
-        Mke.save(
-            joinpath(@__DIR__, "..", "assets", "xcat_grid_overlay.png"),
-            fig; px_per_unit = 2,
-        )
+        ax = Mke.Axis(fig[2, 2]; title = "HU + cardiac coverage", subtitle = ":linear on a 0/1 mask, shown ≥ 0.05", tk...)
+        Mke.heatmap!(ax, hu; hu_kw...)
+        hc = Mke.heatmap!(ax, lin_overlay; colormap = :viridis, colorrange = (0, 1), alpha = 0.7,
+            nan_color = (:white, 0.0))
+        Mke.hidedecorations!(ax)
+        Mke.Colorbar(fig[2, 3], hc; label = "cardiac fraction", width = 14, labelsize = 18)
+        Mke.save(joinpath(@__DIR__, "..", "assets", "xcat_grid_overlay.png"), fig; px_per_unit = 2)
         fig
+    end
+end
+
+# ╔═╡ 05000018-0000-4000-8000-000000000001
+md"""
+#### Organ ROI statistics from the resampled labels
+
+With the labels on the reconstruction grid, an organ ROI is one comparison:
+`recon_HU[gt_resampled_nn .== label]`. Below, each label with enough voxels on the central slice is
+eroded in-plane by one voxel (to drop the partial-volume rim) and its mean HU is compared with the
+monoenergetic HU of its sheet material at the BHC reference energy. Expect soft tissue, fat, lung
+and blood within a few tens of HU. Bone reads low, the single-kVp beam-hardening residual that
+notebook 01 quantifies, and small or thin structures pick up partial volume from their
+neighbours across the 0.625 mm slice.
+"""
+
+# ╔═╡ 05000018-0000-4000-8000-000000000002
+if recon_HU === nothing
+    md"""!!! warning "Skipped: no XCAT export (see 1)" """
+else
+    let lab = gt_resampled_nn, k = size(recon_HU, 3) ÷ 2 + 1
+        nx, ny = size(lab, 1), size(lab, 2)
+        refE, μw = bhc.reference_energy_keV, bhc.μ_water_ref
+        # voxels inside the reconstruction circle only
+        inside(i, j) = (i - (nx + 1) / 2)^2 + (j - (ny + 1) / 2)^2 <= (min(nx, ny) / 2 - 2)^2
+        rows = String[]
+        for id in sort(unique(lab[:, :, k]))
+            haskey(materials_full, Int(id)) || continue
+            vox = [recon_HU[i, j, k] for j in 2:(ny - 1), i in 2:(nx - 1)
+                   if inside(i, j) && all(lab[i + di, j + dj, k] == id for di in -1:1, dj in -1:1)]
+            length(vox) < 200 && continue
+            mat = materials_full[Int(id)]
+            theory = 1000 * (BS.compute_μ_at_energy(mat, refE) - μw) / μw
+            push!(rows, "| $(Int(id)) | `$(mat.name)` | $(length(vox)) | $(round(mean(vox); digits = 1)) | " *
+                        "$(round(std(vox); digits = 1)) | $(round(theory; digits = 1)) | $(round(mean(vox) - theory; digits = 1)) |")
+        end
+        Markdown.parse("""
+        **Scan A, slice $(k): per-label ROI statistics** (theory = monoenergetic HU at $(round(refE; digits = 1)) keV)
+
+        | label | material | voxels | mean HU | σ (HU) | theory HU | mean − theory |
+        |--:|:--|--:|--:|--:|--:|--:|
+        $(join(rows, "\n"))
+        """)
     end
 end
 
 # ╔═╡ 05000012-0000-4000-8000-000000000000
 md"""
-## Scan B: Helical, Extended-Z FOV
+## Scan B: helical, extended z
 
-Same phantom, same affine machinery — but a **taller crop** scanned with a
-**helical** acquisition, reconstructed into a tall stack of axial slices you
-can **scroll through in z**.  The recon grid has its *own* recon→world affine
-(a bigger z extent than Scan A); `resample_to_recon` still lands the ground
-truth pixel-perfectly on every slice.
+The same phantom and the same three calls, now with a **taller crop** scanned by a **helical**
+acquisition and reconstructed into a stack of 64 axial slices to scroll through. The helical
+reconstruction grid has its own affine (a longer z extent than Scan A), and `resample_to_recon`
+lands the labels on every slice unchanged.
 """
 
 # ╔═╡ 05000013-0000-4000-8000-000000000001
 md"""
-### 01. Extended-z crop
+### 1. A taller crop
 
-Scan A cropped tight to the heart.  For the helical demo we keep the same
-in-plane (x, y) bbox but **extend the z range** (± a few cm beyond the cardiac
-extent) so there's a tall stack to scroll — the extra z is exactly what the
-helix sweeps through.
+The in-plane box of Scan A, extended 4 cm beyond the cardiac extent at each end in z (where the
+phantom allows), so the helix has anatomy to sweep through.
 """
 
 # ╔═╡ 05000013-0000-4000-8000-000000000010
-heart_bbox_tall = (phantom_full_uhr === nothing || heart_bbox === nothing) ? nothing : let
-    nz = size(phantom_full_uhr, 3)
-    extra_z = round(Int, 4.0 / VOXEL_SIZE_CM[3])   # +4 cm each side beyond the cardiac bbox
-    b = heart_bbox
-    tall = (i_lo = b.i_lo, i_hi = b.i_hi, j_lo = b.j_lo, j_hi = b.j_hi,
-            k_lo = max(1, b.k_lo - extra_z), k_hi = min(nz, b.k_hi + extra_z))
-    @info "[Scan B tall bbox] z range $(b.k_lo):$(b.k_hi) → $(tall.k_lo):$(tall.k_hi)  ($(round((tall.k_hi - tall.k_lo + 1) * VOXEL_SIZE_CM[3], digits = 1)) cm z extent)"
-    tall
+heart_bbox_tall = heart_bbox === nothing ? nothing : let b = heart_bbox
+    extra = round(Int, 4.0 / VOXEL_SIZE_CM[3])
+    merge(b, (k_lo = max(1, b.k_lo - extra), k_hi = min(size(phantom_full_uhr, 3), b.k_hi + extra)))
 end;
 
 # ╔═╡ 05000013-0000-4000-8000-000000000020
-phantom_cropped_tall = (phantom_full_uhr === nothing || heart_bbox_tall === nothing) ? nothing : let
-    b = heart_bbox_tall
+phantom_cropped_tall = heart_bbox_tall === nothing ? nothing : let b = heart_bbox_tall
     phantom_full_uhr[b.i_lo:b.i_hi, b.j_lo:b.j_hi, b.k_lo:b.k_hi]
 end;
 
-# ╔═╡ 05000013-0000-4000-8000-000000000025
-materials_tall = (phantom_cropped_tall === nothing || materials_full === nothing) ? nothing : let
-    base = copy(materials_full)
-    for l in unique(phantom_cropped_tall)
-        haskey(base, Int(l)) || (base[Int(l)] = BS.XA.Materials.water)
-    end
-    base
-end;
+# ╔═╡ 05000013-0000-4000-8000-000000000031
+phantom_helical_cpu = phantom_cropped_tall === nothing ? nothing :
+    BS.Phantom(phantom_cropped_tall, materials_full, VOXEL_SIZE_CM);
 
 # ╔═╡ 05000013-0000-4000-8000-000000000030
-phantom_helical = (phantom_cropped_tall === nothing || materials_tall === nothing) ? nothing :
-    BS.Phantom(to_gpu(phantom_cropped_tall), materials_tall, VOXEL_SIZE_CM);
-
-# ╔═╡ 05000013-0000-4000-8000-000000000031
-phantom_helical_cpu = (phantom_cropped_tall === nothing || materials_tall === nothing) ? nothing :
-    BS.Phantom(phantom_cropped_tall, materials_tall, VOXEL_SIZE_CM);
+phantom_helical = phantom_helical_cpu === nothing ? nothing : let c = BS.compact_materials(phantom_helical_cpu)
+    BS.Phantom(to_gpu(c.mask), c.materials, c.voxel_size, c.origin, c.extent)
+end;
 
 # ╔═╡ 05000013-0000-4000-8000-000000000040
-recon_opts_helical = let
-    slice_thickness_mm = 0.625
-    z_cm = 4.0                        # taller recon slab than Scan A — the helix supplies the z coverage
-    n_z = max(1, round(Int, z_cm * 10 / slice_thickness_mm))   # ~64 slices to scroll
-    BS.ReconOptions(matrix_size = (384, 384, n_z), fov_cm = 14.0, z_cm = z_cm)
-end;
+recon_opts_helical = BS.ReconOptions(
+    matrix_size = (384, 384, 64),   # 64 slices of 0.625 mm
+    fov_cm = 14.0,
+    z_cm = 4.0,
+);
 
 # ╔═╡ 05000012-0000-4000-8000-000000000001
 md"""
-### 02. Helical protocol and z-ramped acquisition
+### 2. The helical acquisition
 
-Everything above used an axial scan.  The affine machinery is
-trajectory-agnostic by design: a helical acquisition changes the SOURCE
-path (z ramps with view), but the RECON grid is still a stack of axial
-slices centred on the scanned range — so `recon_to_world_affine`, and
-therefore `resample_to_recon`, apply unchanged.  This section proves it
-end-to-end on the new spiral chain: `CTProtocol(pitch = …)` → z-ramped
-`CTGeometry` → `:dd_fast` forward on the (default) arc detector →
-rebinned-WFBP reconstruction → label overlay on the helical recon grid.
+`pitch` and `n_rotations` make the protocol helical: 10 mm of collimation at pitch 1.0 over 8
+rotations is 8 cm of table travel, centred on the isocentre. The geometry becomes a z-ramped
+trajectory, `:dd_fast` projects it unchanged, and `reconstruct!` recognises the helical geometry
+and runs rebinned weighted FBP. The reconstruction grid is still a centred stack of axial
+slices, so the affines apply as before.
 """
+
+# ╔═╡ 05000012-0000-4000-8000-000000000005
+protocol_helical = BS.CTProtocol(
+    kVp = 120, mA = 250.0, views = 500, rotation_time = 1.0,
+    collimation_mm = 10.0, additional_filters = [("Al", 4.5)],
+    pitch = 1.0, n_rotations = 8,
+);
 
 # ╔═╡ 05000012-0000-4000-8000-000000000010
 sim_helical = phantom_helical === nothing ? nothing : let
-    protocol_hel = BS.CTProtocol(
-        kVp = 120, mA = 250.0, views = 500, rotation_time = 1.0,
-        collimation_mm = 10.0, additional_filters = [("Al", 4.5)],
-        pitch = 1.0, n_rotations = 8.0,
-    )
-    @info "Simulating HELICAL cardiac CTA: pitch 1.0 × 8 rotations, 10 mm collimation…"
-    ws = BS.create_eict_workspace(scanner, protocol_hel, sim_opts, recon_opts_helical, phantom_helical)
-    BS.simulate!(ws, phantom_helical, protocol_hel, sim_opts)
-    result = (sino = Array(ws.sinogram), geom = ws.geom)
+    ws = BS.create_eict_workspace(scanner, protocol_helical, sim_opts, recon_opts_helical, phantom_helical)
+    t = @elapsed result = BS.simulate!(ws, phantom_helical, protocol_helical, sim_opts)
+    out = (sino = Array(ws.sinogram), geom = ws.geom, dose = result.dose, t = t)
     ws = nothing
     GC.gc(true)
-    result
+    out
 end;
-
-# ╔═╡ 05000014-0000-4000-8000-000000000001
-md"""
-### 03. WFBP reconstruct and its own recon affine
-
-`is_helical(geom)` routes `reconstruct!` to the rebinned-WFBP path.  The recon
-grid is a **taller** stack of axial slices than Scan A — its own
-`recon_to_world_affine`, with a bigger z extent — but still centered at
-isocenter, so the affine round-trip is unchanged.
-"""
 
 # ╔═╡ 05000012-0000-4000-8000-000000000020
 recon_HU_helical = sim_helical === nothing ? nothing : let
-    sino_gpu = to_gpu(Float32.(sim_helical.sino))
-    # is_helical(geom) routes reconstruct! to the rebinned-WFBP path
-    ws = BS.create_fdk_recon_workspace(sino_gpu, sim_helical.geom, recon_opts_helical.matrix_size; filter = :standard)
-    recon_μ = Array(BS.reconstruct!(ws, sino_gpu, sim_helical.geom))
-    ws = nothing; sino_gpu = nothing; GC.gc(true)
-    Float32.(BS.to_hounsfield(recon_μ; μ_water = μ_water_120))
+    bhc_h = BS.calibrate_bhc_water(sim_opts, protocol_helical; scanner, geom = sim_helical.geom)
+    sino = BS.apply_bhc_water(to_gpu(sim_helical.sino), bhc_h)
+    ws = BS.create_fdk_recon_workspace(sino, sim_helical.geom, recon_opts_helical.matrix_size; filter = :standard)
+    μ = Array(BS.reconstruct!(ws, sino, sim_helical.geom))   # helical geometry → rebinned WFBP
+    ws = nothing; sino = nothing; GC.gc(true)
+    Float32.(BS.to_hounsfield(μ; μ_water = bhc_h.μ_water_ref))
 end;
 
 # ╔═╡ 05000014-0000-4000-8000-000000000010
-let
-    if sim_helical === nothing
-        md"""!!! warning "Skipped — see §1 above" """
-    else
-        A = BS.recon_to_world_affine(sim_helical.geom, recon_opts_helical.matrix_size)
-        rows = [
-            "| $(round(A[i, 1], digits = 4)) | $(round(A[i, 2], digits = 4)) | $(round(A[i, 3], digits = 4)) | $(round(A[i, 4], digits = 4)) |"
-                for i in 1:4
-        ]
-        nx, ny, nz = recon_opts_helical.matrix_size
-        Markdown.parse(
-            """
-            **Helical `A_recon = recon_to_world_affine(helical geom, matrix_size)`** (cm)
+if sim_helical === nothing
+    md"""!!! warning "Skipped: no XCAT export (see 1)" """
+else
+    let A = BS.recon_to_world_affine(sim_helical.geom, recon_opts_helical.matrix_size)
+        rows = ["| " * join(round.(A[i, :]; digits = 4), " | ") * " |" for i in 1:4]
+        d = sim_helical.dose
+        Markdown.parse("""
+        **Scan B:** $(join(size(sim_helical.sino), " × ")) sinogram, simulated in
+        $(round(sim_helical.t; digits = 1)) s · CTDIvol = $(round(d.ctdi_vol_mGy; digits = 2)) mGy,
+        DLP = $(round(d.dlp_mGy_cm; digits = 1)) mGy·cm over $(round(d.scan_length_cm; digits = 1)) cm (pitch $(d.pitch))
 
-            | col 1 | col 2 | col 3 | col 4 |
-            |---|---|---|---|
-            $(join(rows, "\n"))
+        **`A_recon` of the helical grid** (cm)
 
-            - matrix size = $(nx) × $(ny) × $(nz) voxels  (**$(nz)** z slices vs Scan A's **$(recon_opts.matrix_size[3])**)
-            - z extent = $(round(recon_opts_helical.z_cm, digits = 2)) cm  (vs Scan A's $(round(recon_opts.z_cm, digits = 2)) cm)
-            - same centered, isocenter origin — only the z stack is taller.
-            """
-        )
+        | col 1 | col 2 | col 3 | col 4 |
+        |---|---|---|---|
+        $(join(rows, "\n"))
+
+        $(recon_opts_helical.matrix_size[3]) slices over $(recon_opts_helical.z_cm) cm, against Scan A's
+        $(recon_opts.matrix_size[3]) over $(recon_opts.z_cm) cm; the same centred origin rule.
+        """)
     end
 end
 
-# ╔═╡ 05000014-0000-4000-8000-000000000020
-md"""
-### 04. Resample ground truth onto the helical grid
-
-Same `resample_to_recon`, now against the taller helical recon grid — the
-ground-truth labels land on the exact voxels of the WFBP stack.
-"""
-
 # ╔═╡ 05000012-0000-4000-8000-000000000030
-gt_helical_nn = (phantom_helical_cpu === nothing || sim_helical === nothing) ? nothing :
+gt_helical_nn = sim_helical === nothing ? nothing :
     BS.resample_to_recon(phantom_helical_cpu, sim_helical.geom, recon_opts_helical.matrix_size; method = :nearest);
+
+# ╔═╡ 05000016-0000-4000-8000-000000000010
+cardiac_coverage_lin_helical = sim_helical === nothing ? nothing :
+    cardiac_coverage(phantom_cropped_tall, sim_helical.geom, recon_opts_helical.matrix_size);
 
 # ╔═╡ 05000015-0000-4000-8000-000000000001
 md"""
-### 05. Scroll through z: slider-driven overlay
+### 3. Scroll through z
 
-Drag the slider to scrub through the helical recon in z.  Left is the WFBP HU
-recon; right overlays the resampled cardiac labels (translucent fill) — they
-sit on the recon anatomy on **every** slice, so the affine holds across the
-full z stack, not just the mid-plane.
+Left: the WFBP reconstruction. Middle: the cardiac labels resampled with `:nearest`, which snap
+every reconstruction voxel to the single closest phantom voxel, so boundaries stair-step onto the
+coarser grid. Right: the cardiac coverage from `:linear` on the 0/1 mask, a fully 3D
+partial-volume fraction that also catches voxels straddling a surface in z.
+
+Trilinear sampling at the voxel centre equals the true covered fraction when the two grids are of
+similar resolution, as here (0.4 mm phantom, 0.365 mm × 0.625 mm reconstruction). For a phantom
+much finer than the reconstruction, a true volume fraction needs box averaging instead.
 """
 
 # ╔═╡ 05000015-0000-4000-8000-000000000010
 @bind z_helical PlutoUI.Slider(1:recon_opts_helical.matrix_size[3]; default = recon_opts_helical.matrix_size[3] ÷ 2, show_value = true)
 
-# ╔═╡ 05000012-0000-4000-8000-000000000040
-sim_helical === nothing ? md"_(XCAT not available — helical demo skipped)_" : let
-    nz = size(recon_HU_helical, 3)
-    z = clamp(z_helical, 1, nz)
-    recon = recon_HU_helical[:, :, z]
-
-    # Translucent cardiac-label fill (same style as Scan A's overlay, not a wiry
-    # edge): NaN-mask every non-cardiac voxel so it renders transparent, then
-    # lay the labels over the HU recon at α — you see the coloured structures
-    # sit exactly on the anatomy as you scroll z.
-    is_cardiac = falses(256)
-    if heart_label_ids !== nothing
-        for oid in heart_label_ids
-            is_cardiac[Int(oid) + 1] = true
-        end
-    end
-    labslice = gt_helical_nn[:, :, z]
-    nx, ny = size(labslice)
-    cx, cy = (nx + 1) / 2, (ny + 1) / 2
-    r2 = (min(nx, ny) / 2)^2                     # circular recon FOV = inscribed circle
-    lab_over = fill(NaN32, size(labslice))
-    @inbounds for j in 1:ny, i in 1:nx
-        ((i - cx)^2 + (j - cy)^2 <= r2) || continue    # keep the overlay INSIDE the FOV
-        is_cardiac[Int(labslice[i, j]) + 1] && (lab_over[i, j] = Float32(labslice[i, j]))
-    end
-
-    fig = Mke.Figure(size = (1180, 620))
-    hu_kwargs = (colormap = :grays, colorrange = (-200, 600))
-    ax1 = Mke.Axis(fig[1, 1]; title = "Helical WFBP recon · z=$(z)/$(nz)",
-        titlesize = 26, aspect = Mke.DataAspect(), yreversed = true)
-    hm = Mke.heatmap!(ax1, recon; hu_kwargs...)
-    Mke.hidedecorations!(ax1)
-
-    ax2 = Mke.Axis(fig[1, 2]; title = "HU + cardiac labels · z=$(z)",
-        subtitle = "resampled ground truth on the helical recon grid (α = 0.6)",
-        titlesize = 26, subtitlesize = 18, aspect = Mke.DataAspect(), yreversed = true)
-    Mke.heatmap!(ax2, recon; hu_kwargs...)
-    Mke.heatmap!(ax2, lab_over; colormap = :tab20, alpha = 0.6)
-    Mke.hidedecorations!(ax2)
-
-    Mke.Colorbar(fig[1, 3], hm; label = "HU", labelsize = 20, ticklabelsize = 14)
-    fig
-end
-
-# ╔═╡ 05000016-0000-4000-8000-000000000001
-md"""
-### 06. `:nearest` vs `:linear` at boundaries
-
-The affine mapping is exact (see the round-trip audit below), so any apparent
-"fuzziness" at a label edge is **resampling**, not misregistration.  With
-`:nearest`, every recon voxel snaps to the single closest UHR phantom voxel
-(nearest in **all three axes**, z included) — so label boundaries stair-step
-onto the coarse recon grid, a half-voxel quantization.  Resampling a *binary*
-cardiac mask with `:linear` instead gives a **fully 3D** partial-volume coverage
-∈ [0, 1] per recon voxel: the trilinear blend weights x, y **and z**, so a voxel
-straddling the cardiac surface *in z* (0.625 mm helical slices) picks up a
-fractional value too — not just in-plane.  It follows the sub-voxel boundary
-smoothly.  Same slice, same slider — scrub `z` and compare.
-
-Caveat on "partial volume": trilinear samples at each recon-voxel *centre* from
-the 8 bracketing phantom voxels — that equals the true occupied-volume fraction
-when the phantom and recon grids are comparable in resolution, as they are here
-(phantom 0.4 mm vs recon 0.37 mm in-plane / 0.625 mm in z).  If you push the
-phantom much finer than the recon (smaller `DOWNSAMPLE_FACTOR`), a recon voxel
-would enclose several phantom voxels that a centre-sample ignores, and a true
-volumetric coverage would need box-averaging / supersampling instead.
-"""
-
-# ╔═╡ 05000016-0000-4000-8000-000000000010
-# Fractional cardiac coverage on the HELICAL grid: binary mask → `:linear`
-# resample (the multi-label `:nearest` map mixes IDs under trilinear, so we
-# resample a 0/1 mask to get physical partial-volume fractions).
-cardiac_coverage_lin_helical = (
-        phantom_cropped_tall === nothing || sim_helical === nothing ||
-        heart_label_ids === nothing
-    ) ? nothing : let
-        binary_mask = zeros(UInt8, size(phantom_cropped_tall))
-        for oid in heart_label_ids
-            binary_mask[phantom_cropped_tall .== oid] .= 0x01
-        end
-        binary_phantom = BS.Phantom(
-            binary_mask,
-            Dict(0 => BS.XA.Materials.water, 1 => BS.XA.Materials.water),
-            VOXEL_SIZE_CM,
-        )
-        BS.resample_to_recon(binary_phantom, sim_helical.geom, recon_opts_helical.matrix_size; method = :linear)
-end;
-
 # ╔═╡ 05000016-0000-4000-8000-000000000020
-(sim_helical === nothing || cardiac_coverage_lin_helical === nothing) ?
-        md"_(XCAT not available — helical demo skipped)_" : let
-    nz = size(recon_HU_helical, 3)
-    z = clamp(z_helical, 1, nz)
-    recon = recon_HU_helical[:, :, z]
-    nnslice = gt_helical_nn[:, :, z]
-    covslice = cardiac_coverage_lin_helical[:, :, z]
+if sim_helical === nothing
+    md"""!!! warning "Skipped: no XCAT export (see 1)" """
+else
+    let nz = size(recon_HU_helical, 3)
+        z = clamp(z_helical, 1, nz)
+        recon = recon_HU_helical[:, :, z]
+        lab = gt_helical_nn[:, :, z]
+        cov = cardiac_coverage_lin_helical[:, :, z]
+        is_cardiac = falses(256)
+        for id in heart_label_ids
+            is_cardiac[Int(id) + 1] = true
+        end
+        nx, ny = size(lab)
+        inside(i, j) = (i - (nx + 1) / 2)^2 + (j - (ny + 1) / 2)^2 <= (min(nx, ny) / 2)^2
+        nn_over = [inside(i, j) && is_cardiac[Int(lab[i, j]) + 1] ? Float32(lab[i, j]) : NaN32 for i in 1:nx, j in 1:ny]
+        lin_over = [inside(i, j) && cov[i, j] > 0.01f0 ? Float32(cov[i, j]) : NaN32 for i in 1:nx, j in 1:ny]
+        z_mm = 10 * (-recon_opts_helical.z_cm / 2 + (z - 0.5) * recon_opts_helical.z_cm / nz)
 
-    is_cardiac = falses(256)
-    if heart_label_ids !== nothing
-        for oid in heart_label_ids; is_cardiac[Int(oid) + 1] = true; end
+        fig = Mke.Figure(size = (1500, 600))
+        Mke.Label(fig[0, 1:4], "helical WFBP · slice $(z) of $(nz) · z = $(round(z_mm; digits = 2)) mm";
+            fontsize = 24, font = :bold, tellwidth = false)
+        hu_kw = (colormap = :grays, colorrange = (-200, 600))
+        tk = (titlesize = 21, aspect = Mke.DataAspect())
+        ax1 = Mke.Axis(fig[1, 1]; title = "HU reconstruction", tk...)
+        hm = Mke.heatmap!(ax1, recon; hu_kw...); Mke.hidedecorations!(ax1)
+        ax2 = Mke.Axis(fig[1, 2]; title = ":nearest cardiac labels", tk...)
+        Mke.heatmap!(ax2, recon; hu_kw...)
+        Mke.heatmap!(ax2, nn_over; colormap = :tab20, colorrange = LABEL_RANGE, alpha = 0.65, nan_color = (:white, 0.0))
+        Mke.hidedecorations!(ax2)
+        ax3 = Mke.Axis(fig[1, 3]; title = ":linear cardiac coverage", tk...)
+        Mke.heatmap!(ax3, recon; hu_kw...)
+        hc = Mke.heatmap!(ax3, lin_over; colormap = :viridis, colorrange = (0, 1), alpha = 0.75,
+            nan_color = (:white, 0.0))
+        Mke.hidedecorations!(ax3)
+        Mke.Colorbar(fig[1, 4], hc; label = "cardiac fraction", labelsize = 16, ticklabelsize = 13)
+        fig
     end
-    nx, ny = size(nnslice)
-    cx, cy = (nx + 1) / 2, (ny + 1) / 2
-    r2 = (min(nx, ny) / 2)^2                          # circular recon FOV
-
-    nn_over = fill(NaN32, size(nnslice))              # :nearest cardiac labels
-    lin_over = fill(NaN32, size(covslice))            # :linear coverage ∈ [0,1]
-    @inbounds for j in 1:ny, i in 1:nx
-        ((i - cx)^2 + (j - cy)^2 <= r2) || continue
-        is_cardiac[Int(nnslice[i, j]) + 1] && (nn_over[i, j] = Float32(nnslice[i, j]))
-        covslice[i, j] > 0.01f0 && (lin_over[i, j] = covslice[i, j])
-    end
-
-    fig = Mke.Figure(size = (1500, 560))
-    hu_kwargs = (colormap = :grays, colorrange = (-200, 600))
-    ax1 = Mke.Axis(fig[1, 1]; title = "raw helical recon · z=$(z)/$(nz)",
-        titlesize = 22, aspect = Mke.DataAspect(), yreversed = true)
-    hm = Mke.heatmap!(ax1, recon; hu_kwargs...); Mke.hidedecorations!(ax1)
-
-    ax2 = Mke.Axis(fig[1, 2]; title = ":nearest labels — stair-stepped to recon grid",
-        titlesize = 22, aspect = Mke.DataAspect(), yreversed = true)
-    Mke.heatmap!(ax2, recon; hu_kwargs...)
-    Mke.heatmap!(ax2, nn_over; colormap = :tab20, alpha = 0.65); Mke.hidedecorations!(ax2)
-
-    ax3 = Mke.Axis(fig[1, 3]; title = ":linear coverage ∈ [0,1] — sub-voxel boundary",
-        titlesize = 22, aspect = Mke.DataAspect(), yreversed = true)
-    Mke.heatmap!(ax3, recon; hu_kwargs...)
-    hmc = Mke.heatmap!(ax3, lin_over; colormap = :viridis, colorrange = (0, 1), alpha = 0.75)
-    Mke.hidedecorations!(ax3)
-    Mke.Colorbar(fig[1, 4], hmc; label = "cardiac coverage", labelsize = 16, ticklabelsize = 13)
-    fig
 end
 
 # ╔═╡ 05000017-0000-4000-8000-000000000001
 md"""
-### 07. The affine round-trip is exact (1-to-1)
+### 4. The mapping is exact
 
-The overlays above are exact by construction — not "≥ 80 % aligned".  This
-proves it with numbers, for **both** the axial and the helical geometry.  Three
-independent checks:
+Three checks, for the axial and the helical geometry:
 
-1. **Affine ≡ reconstructor grid.**  The FDK and WFBP backprojectors both place
-   recon voxel `(i,j,k)` at world `-fov/2 + (idx − ½)·(fov/n)` (1-indexed) — the
-   *same* isocenter-centered rule `recon_to_world_affine` encodes.  So the grid
-   the reconstructor writes into is bit-for-bit the grid the resampler samples.
-2. **Round-trip identity.**  `A⁻¹ · A · v = v` — the map is a diagonal
-   scale + translate, algebraically invertible to floating-point roundoff.
-3. **Recon registered to the map.**  Checks 1–2 certify the *coordinate map*;
-   the last cell certifies the *image* — that the forward projector images the
-   phantom at the exact world position the backprojector reconstructs it (a
-   forward↔backprojector half-voxel / rebinning offset would displace the recon
-   and stay invisible to 1–2).  Best edge-alignment shift = **(0,0)** for both.
+1. **The affine is the reconstructor's grid.** The FDK and WFBP back-projectors place
+   reconstruction voxel `idx` (1-indexed) at world `-fov/2 + (idx − ½)·fov/n`, the rule
+   `recon_to_world_affine` encodes. The table measures the largest difference.
+2. **The round trip is the identity.** `A⁻¹ · A · v = v` to floating-point precision.
+3. **The image is registered to the map.** Checks 1 and 2 certify the coordinate map; this one
+   certifies the image. Edges of the reconstruction are correlated with the label boundaries
+   over integer in-plane shifts: the best shift should be `(0, 0)`. A half-voxel or rebinning
+   offset between the forward projector and the back-projector would show up here and nowhere
+   else.
 
-Helical carries no special-casing: `is_helical(geom)` only switches the
-*backprojection algorithm*, never the grid geometry — so the mapping is 1-to-1
-for the spiral scan exactly as it is for the axial one.  Any softness you see at
-a boundary when you zoom in is `:nearest` half-voxel quantization (§06) or the
-recon's point-spread blur — never the affine, and never a registration offset.
+`is_helical(geom)` switches the back-projection algorithm, never the grid, so the helical
+mapping is as exact as the axial one. Softness at a boundary is `:nearest` quantisation or the
+reconstruction's point-spread function, not the mapping.
 """
 
 # ╔═╡ 05000012-0000-4000-8000-000000000050
-let
-    # Audit: recon_to_world_affine vs the reconstructor's own voxel-centering
-    # rule, plus the A⁻¹·A round-trip — for both geoms.  Errors are in µm
-    # (1e-4 cm) so any nonzero digit is visible; both should read ~0.
-    affine_audit = function (geom, ms)
-        A = BS.recon_to_world_affine(geom, ms)
-        Ainv = inv(A)
-        fov = geom.fov
-        grid_err = 0.0     # affine world vs backprojector world (cm)
-        rt_err = 0.0       # A⁻¹·A·v − v  (voxel indices)
-        for ax in 1:3
-            vs = fov[ax] / ms[ax]
-            vmin = -fov[ax] / 2
-            for idx in (1, (ms[ax] + 1) ÷ 2, ms[ax])   # 1-indexed extremes + mid
-                k = idx - 1                              # 0-indexed for the affine
-                v = zeros(4); v[4] = 1.0; v[ax] = k
-                world_affine = (A * v)[ax]
-                world_bp = vmin + (idx - 0.5) * vs       # exact reconstructor rule
-                grid_err = max(grid_err, abs(world_affine - world_bp))
-                rt_err = max(rt_err, abs((Ainv * (A * v))[ax] - k))
+if sim === nothing
+    md"""!!! warning "Skipped: no XCAT export (see 1)" """
+else
+    let
+        # affine world vs the back-projector's voxel-centre rule, and A⁻¹·A·v − v
+        audit = function (geom, ms)
+            A = BS.recon_to_world_affine(geom, ms)
+            Ainv = inv(A)
+            grid_err = 0.0; rt_err = 0.0
+            for ax in 1:3, idx in (1, (ms[ax] + 1) ÷ 2, ms[ax])
+                v = zeros(4); v[4] = 1.0; v[ax] = idx - 1
+                world_bp = -geom.fov[ax] / 2 + (idx - 0.5) * geom.fov[ax] / ms[ax]
+                grid_err = max(grid_err, abs((A * v)[ax] - world_bp))
+                rt_err = max(rt_err, abs((Ainv * (A * v))[ax] - (idx - 1)))
             end
+            (grid_err * 1.0e4, rt_err)                       # µm, voxels
         end
-        (grid_err * 1e4, rt_err)                          # cm → µm for grid_err
-    end
-
-    ga, ra = affine_audit(sim.geom, recon_opts.matrix_size)
-    if sim_helical === nothing
+        rows = ["| axial | $(join(round.(audit(sim.geom, recon_opts.matrix_size); sigdigits = 2), " | ")) |"]
+        sim_helical === nothing ||
+            push!(rows, "| helical | $(join(round.(audit(sim_helical.geom, recon_opts_helical.matrix_size); sigdigits = 2), " | ")) |")
         Markdown.parse("""
-        | geometry | affine ≡ reconstructor grid | round-trip `A⁻¹·A·v = v` |
-        |---|---|---|
-        | axial | max Δ = $(round(ga, sigdigits = 2)) µm | max Δ = $(round(ra, sigdigits = 2)) voxel |
-
-        Both ~0 ⇒ the mapping is exactly 1-to-1.  _(helical skipped — see §1.)_
-        """)
-    else
-        gh, rh = affine_audit(sim_helical.geom, recon_opts_helical.matrix_size)
-        Markdown.parse("""
-        | geometry | affine ≡ reconstructor grid | round-trip `A⁻¹·A·v = v` |
-        |---|---|---|
-        | axial   | max Δ = $(round(ga, sigdigits = 2)) µm | max Δ = $(round(ra, sigdigits = 2)) voxel |
-        | helical | max Δ = $(round(gh, sigdigits = 2)) µm | max Δ = $(round(rh, sigdigits = 2)) voxel |
-
-        Both geometries: sub-µm grid agreement and machine-precision round-trip
-        ⇒ the UHR-phantom → recon mapping is exactly **1-to-1**, axial and
-        helical alike.  Any softness at boundaries is `:nearest` quantization
-        (§06) or recon PSF, never the affine.
+        | geometry | affine vs reconstructor grid (max, µm) | round trip `A⁻¹·A·v − v` (max, voxels) |
+        |---|--:|--:|
+        $(join(rows, "\n"))
         """)
     end
 end
 
 # ╔═╡ 05000099-0000-4000-8000-000000000001
-# The affine audit proves the MAP is exact; this proves the RECON is registered
-# TO that map — i.e. the forward projector images the phantom at the same world
-# position the backprojector reconstructs it (a half-voxel or rebinning-column
-# mismatch would displace the recon and stay invisible to the round-trip audit).
-# Correlate recon edge-magnitude against the label-boundary map over integer
-# (dx,dy) shifts; the peak shift is the real offset.  (0,0) = registered.
-# (Integer resolution: a systematic ≤½-voxel shift also reads (0,0) — but that is
-#  the same scale as :nearest quantization / recon PSF, not a registration bug.)
-let
-    reg_offset = function (recon, gt; R = 5)
-        mid = size(recon, 3) ÷ 2
-        hu = Float32.(recon[:, :, mid]); lab = gt[:, :, mid]
-        nx, ny = size(hu)
-        gr = zeros(Float32, nx, ny)          # recon edge strength
-        lb = zeros(Float32, nx, ny)          # gt label-boundary map
-        for j in 2:(ny - 1), i in 2:(nx - 1)
-            gx = hu[i + 1, j] - hu[i - 1, j]; gy = hu[i, j + 1] - hu[i, j - 1]
-            gr[i, j] = sqrt(gx * gx + gy * gy)
-            (lab[i, j] != lab[i + 1, j] || lab[i, j] != lab[i, j + 1]) && (lb[i, j] = 1f0)
-        end
-        best = (0, 0); bs = -Inf; sc = Dict{Tuple{Int,Int},Float64}()
-        for dx in -R:R, dy in -R:R
-            s = 0.0
-            for j in (1 + R):(ny - R), i in (1 + R):(nx - R)
-                s += gr[i, j] * lb[i + dx, j + dy]
+if sim === nothing
+    md"""!!! warning "Skipped: no XCAT export (see 1)" """
+else
+    let
+        # Correlate reconstruction edge strength with the label-boundary map over integer
+        # (dx, dy) shifts on the central slice; the best shift is the real in-plane offset.
+        # (Integer resolution: a systematic shift below half a voxel also reads (0, 0).)
+        reg_offset = function (recon, gt; R = 5)
+            mid = size(recon, 3) ÷ 2
+            hu = Float32.(recon[:, :, mid]); lab = gt[:, :, mid]
+            nx, ny = size(hu)
+            gr = zeros(Float32, nx, ny); lb = zeros(Float32, nx, ny)
+            for j in 2:(ny - 1), i in 2:(nx - 1)
+                gr[i, j] = hypot(hu[i + 1, j] - hu[i - 1, j], hu[i, j + 1] - hu[i, j - 1])
+                # symmetric boundary marker (both sides of an edge), so it carries no half-voxel bias
+                (lab[i, j] != lab[i + 1, j] || lab[i, j] != lab[i - 1, j] ||
+                 lab[i, j] != lab[i, j + 1] || lab[i, j] != lab[i, j - 1]) && (lb[i, j] = 1.0f0)
             end
-            sc[(dx, dy)] = s
-            s > bs && (bs = s; best = (dx, dy))
+            scores = Dict((dx, dy) => sum(gr[i, j] * lb[i + dx, j + dy]
+                                          for j in (1 + R):(ny - R), i in (1 + R):(nx - R))
+                          for dx in -R:R, dy in -R:R)
+            best = argmax(scores)
+            (best, scores[(0, 0)] / scores[best])
         end
-        (best, sc[(0, 0)] / bs)              # best shift + how good (0,0) is vs peak
+        a = reg_offset(recon_HU, gt_resampled_nn)
+        rows = ["| axial | $(a[1]) | $(round(a[2]; digits = 3)) |"]
+        if sim_helical !== nothing
+            h = reg_offset(recon_HU_helical, gt_helical_nn)
+            push!(rows, "| helical | $(h[1]) | $(round(h[2]; digits = 3)) |")
+        end
+        Markdown.parse("""
+        **Registration of the image to the labels** (central slice, shifts in voxels)
+
+        | geometry | best (dx, dy) | score at (0, 0) / best |
+        |---|---|--:|
+        $(join(rows, "\n"))
+        """)
     end
-    ax = (sim === nothing) ? "—" : reg_offset(recon_HU, gt_resampled_nn)
-    hx = (sim_helical === nothing) ? "—" : reg_offset(recon_HU_helical, gt_helical_nn)
-    Markdown.parse("""
-    **Registration offset (recon edges vs label boundaries, mid-slice):**
-
-    - axial   : best shift = $(ax isa String ? ax : ax[1]) voxels · (0,0) score = $(ax isa String ? ax : round(ax[2], digits = 3)) of peak
-    - helical : best shift = $(hx isa String ? hx : hx[1]) voxels · (0,0) score = $(hx isa String ? hx : round(hx[2], digits = 3)) of peak
-
-    `(0,0)` best shift ⇒ registered; a consistent nonzero shift ⇒ a real
-    forward↔backprojector offset.  Score near 1.0 ⇒ `(0,0)` is already the peak.
-    """)
 end
-
-# ╔═╡ 05000011-0000-4000-8000-000000000001
-md"""
-## Results and Interpretation
-
-### Why the Affine Round-Trip Matters
-
-Once you have ground truth on the recon grid, the rest is bookkeeping:
-
-- **Per-organ ROI HU stats.** `mean(recon_HU[gt_resampled_nn .== UInt8(label)])`
-  for any organ label.  No polar-coordinate ROI placement, no manual
-  segmentation, no resampling drift.
-- **Segmentation evaluation.** Train your segmenter on `recon_HU`,
-  evaluate against `gt_resampled_nn` — Dice / Hausdorff are well-defined
-  because the voxel grids agree.
-- **Partial-volume analysis.** Resample a *binary* mask of one organ
-  with `method = :linear` (see the `cardiac_coverage_lin` cell above)
-  to get true fractional coverage ∈ [0, 1] per recon voxel — useful for
-  boundary-aware metrics or partial-volume-corrected ROI stats.  Don't
-  resample the multi-label mask with `:linear` and expect meaningful
-  fractions: trilinear arithmetically mixes integer label IDs.
-- **Custom interpolation.** When `:nearest` / `:linear` aren't sharp
-  enough, the `M = inv(A_phantom) * A_recon` pattern from the bring-your-own-interpolator step lets you
-  drop in any third-party interpolator with three lines.
-- **SFOV-equivalent cropping is *physical*.** Because the crop happens
-  on the input phantom, it shows up in the forward-projection pass
-  itself — fewer rays hit anatomy, fewer voxels enter scratch buffers,
-  and the simulator runs faster.  Same observable behavior as a real
-  scanner's reduced SFOV; better memory characteristics than recon-side
-  cropping ever could be.
-"""
 
 # ╔═╡ 05000011-0000-4000-8000-000000000020
 md"""
 ## Summary
 
-Two acquisitions, one affine round-trip:
-
-- **Scan A (axial, zoomed FOV)** — crop the UHR phantom to the cardiac bbox
-  (the SFOV-equivalent step), reconstruct a tight centered FOV, and overlay the
-  resampled ground truth pixel-perfectly.
-- **Scan B (helical, extended z)** — a taller crop scanned with a spiral
-  trajectory, reconstructed via rebinned WFBP into a tall axial stack you can
-  scroll through; its recon grid has its own (taller) recon→world affine, and
-  `resample_to_recon` lands the ground truth on every slice unchanged.
-
-The takeaway: `phantom_to_world_affine` / `recon_to_world_affine` /
-`resample_to_recon` are **trajectory-agnostic** — axial or helical, tight or
-tall FOV, the ground-truth-to-recon mapping is the same three calls.
+- **Crop the phantom, not the reconstruction.** The reconstruction grid is always centred on the
+  isocentre; cropping the input brings the region of interest there, and only the cropped block
+  is ray-traced.
+- **Two affines and one resampler.** `phantom_to_world_affine` and `recon_to_world_affine` map
+  each grid's voxels to world centimetres; `resample_to_recon` composes them, with `:nearest`
+  for labels and `:linear` for continuous fields or the coverage of a binary mask, and
+  `inv(A_phantom) * A_recon` hands the map to any other interpolator.
+- **Exact, axial and helical.** The affine matches the back-projectors' voxel rule, the round
+  trip is the identity, and the reconstructed edges sit on the label boundaries with no shift.
+- **What it buys you.** Organ ROI statistics, segmentation scores and partial-volume fractions
+  are one indexing expression on the reconstruction grid, as the per-label table shows.
 """
 
 # ╔═╡ Cell order:
 # ╟─05000001-0000-4000-8000-000000000010
 # ╟─05000001-0000-4000-8000-000000000020
-# ╠═05000001-0000-4000-8000-000000000001
-# ╠═05000001-0000-4000-8000-000000000002
-# ╠═05000001-0000-4000-8000-000000000003
-# ╠═05000001-0000-4000-8000-000000000004
+# ╟─05000001-0000-4000-8000-000000000001
+# ╟─05000001-0000-4000-8000-000000000002
+# ╟─05000001-0000-4000-8000-000000000003
+# ╟─05000001-0000-4000-8000-000000000004
 # ╠═05000001-0000-4000-8000-000000000030
-# ╠═05000001-0000-4000-8000-000000000031
-# ╠═05000001-0000-4000-8000-000000000060
+# ╟─05000001-0000-4000-8000-000000000031
+# ╟─05000001-0000-4000-8000-000000000060
 # ╠═05000001-0000-4000-8000-000000000040
 # ╟─05000001-0000-4000-8000-000000000050
-# ╠═05000001-0000-4000-8000-000000000070
+# ╟─05000001-0000-4000-8000-000000000070
 # ╟─05000002-0000-4000-8000-000000000000
 # ╟─05000002-0000-4000-8000-000000000001
 # ╠═05000002-0000-4000-8000-000000000010
-# ╠═05000002-0000-4000-8000-000000000011
+# ╠═05000002-0000-4000-8000-000000000014
+# ╟─05000002-0000-4000-8000-000000000011
 # ╠═05000002-0000-4000-8000-000000000012
+# ╠═05000002-0000-4000-8000-000000000015
 # ╟─05000002-0000-4000-8000-000000000013
 # ╟─05000003-0000-4000-8000-000000000001
 # ╠═05000003-0000-4000-8000-000000000010
-# ╠═05000003-0000-4000-8000-000000000011
+# ╟─05000003-0000-4000-8000-000000000011
 # ╠═05000003-0000-4000-8000-000000000020
 # ╠═05000003-0000-4000-8000-000000000021
 # ╠═05000003-0000-4000-8000-000000000030
 # ╟─05000003-0000-4000-8000-000000000040
 # ╟─05000004-0000-4000-8000-000000000001
-# ╠═05000004-0000-4000-8000-000000000002
-# ╠═05000004-0000-4000-8000-000000000003
-# ╠═05000004-0000-4000-8000-000000000004
-# ╠═05000004-0000-4000-8000-000000000005
-# ╠═05000004-0000-4000-8000-000000000006
-# ╠═05000004-0000-4000-8000-000000000007
+# ╟─05000004-0000-4000-8000-000000000002
+# ╟─05000004-0000-4000-8000-000000000004
+# ╟─05000004-0000-4000-8000-000000000005
+# ╟─05000004-0000-4000-8000-000000000006
+# ╟─05000004-0000-4000-8000-000000000007
 # ╠═05000004-0000-4000-8000-000000000008
 # ╠═05000004-0000-4000-8000-000000000010
+# ╟─05000004-0000-4000-8000-000000000011
+# ╟─05000004-0000-4000-8000-000000000012
 # ╟─05000005-0000-4000-8000-000000000001
 # ╠═05000005-0000-4000-8000-000000000010
+# ╟─05000005-0000-4000-8000-000000000011
 # ╠═05000005-0000-4000-8000-000000000020
 # ╟─05000006-0000-4000-8000-000000000000
 # ╟─05000006-0000-4000-8000-000000000001
 # ╠═05000006-0000-4000-8000-000000000010
-# ╠═05000006-0000-4000-8000-000000000020
-# ╟─05000007-0000-4000-8000-000000000001
+# ╟─05000006-0000-4000-8000-000000000020
 # ╟─05000007-0000-4000-8000-000000000010
 # ╟─05000008-0000-4000-8000-000000000001
-# ╠═05000008-0000-4000-8000-000000000010
 # ╠═05000008-0000-4000-8000-000000000011
+# ╠═05000008-0000-4000-8000-000000000010
 # ╟─05000009-0000-4000-8000-000000000001
 # ╟─05000009-0000-4000-8000-000000000010
 # ╟─0500000a-0000-4000-8000-000000000001
@@ -1576,44 +1152,41 @@ tall FOV, the ground-truth-to-recon mapping is the same three calls.
 # ╟─0500000b-0000-4000-8000-000000000020
 # ╠═0500000b-0000-4000-8000-000000000030
 # ╟─0500000b-0000-4000-8000-000000000040
-# ╟─0500000c-0000-4000-8000-000000000001
 # ╟─0500000c-0000-4000-8000-000000000010
 # ╟─0500000d-0000-4000-8000-000000000001
 # ╠═0500000d-0000-4000-8000-000000000010
 # ╠═0500000d-0000-4000-8000-000000000020
 # ╠═0500000d-0000-4000-8000-000000000030
+# ╟─0500000d-0000-4000-8000-000000000040
 # ╟─0500000e-0000-4000-8000-000000000001
 # ╠═0500000e-0000-4000-8000-000000000010
-# ╠═0500000e-0000-4000-8000-000000000011
 # ╠═0500000e-0000-4000-8000-000000000012
+# ╠═0500000e-0000-4000-8000-000000000013
 # ╟─0500000e-0000-4000-8000-000000000020
 # ╟─0500000f-0000-4000-8000-000000000001
 # ╟─0500000f-0000-4000-8000-000000000010
 # ╟─05000010-0000-4000-8000-000000000001
 # ╟─05000010-0000-4000-8000-000000000010
+# ╟─05000018-0000-4000-8000-000000000001
+# ╟─05000018-0000-4000-8000-000000000002
 # ╟─05000012-0000-4000-8000-000000000000
 # ╟─05000013-0000-4000-8000-000000000001
 # ╠═05000013-0000-4000-8000-000000000010
 # ╠═05000013-0000-4000-8000-000000000020
-# ╠═05000013-0000-4000-8000-000000000025
-# ╠═05000013-0000-4000-8000-000000000030
 # ╠═05000013-0000-4000-8000-000000000031
+# ╠═05000013-0000-4000-8000-000000000030
 # ╠═05000013-0000-4000-8000-000000000040
 # ╟─05000012-0000-4000-8000-000000000001
+# ╠═05000012-0000-4000-8000-000000000005
 # ╠═05000012-0000-4000-8000-000000000010
-# ╟─05000014-0000-4000-8000-000000000001
 # ╠═05000012-0000-4000-8000-000000000020
 # ╟─05000014-0000-4000-8000-000000000010
-# ╟─05000014-0000-4000-8000-000000000020
 # ╠═05000012-0000-4000-8000-000000000030
+# ╠═05000016-0000-4000-8000-000000000010
 # ╟─05000015-0000-4000-8000-000000000001
 # ╟─05000015-0000-4000-8000-000000000010
-# ╟─05000012-0000-4000-8000-000000000040
-# ╟─05000016-0000-4000-8000-000000000001
-# ╠═05000016-0000-4000-8000-000000000010
 # ╟─05000016-0000-4000-8000-000000000020
 # ╟─05000017-0000-4000-8000-000000000001
 # ╟─05000012-0000-4000-8000-000000000050
-# ╠═05000099-0000-4000-8000-000000000001
-# ╟─05000011-0000-4000-8000-000000000001
+# ╟─05000099-0000-4000-8000-000000000001
 # ╟─05000011-0000-4000-8000-000000000020

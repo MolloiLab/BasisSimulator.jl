@@ -17,6 +17,7 @@ macro bind(def, element)
 end
 
 # ╔═╡ 11000001-0000-4000-8000-000000000001
+# ╠═╡ show_logs = false
 begin
     import Pkg
     Pkg.activate(joinpath(@__DIR__, ".."))
@@ -46,7 +47,7 @@ begin
 end
 
 # ╔═╡ 11000002-0000-4000-8000-000000000001
-md"""
+Markdown.parse("""
 # 11 · Helical Scanning · Narrow Collimation, Long Coverage
 
 **One new kwarg — `pitch` — turns any protocol into a spiral scan.**
@@ -59,9 +60,9 @@ and the stitched volume can introduce a discontinuity at a station boundary. A h
 scan instead sweeps the collimator *past* every slice continuously: each
 ``z`` position is, at some moment of the spiral, at the centre of the beam.
 
-This notebook covers a **30 cm** reconstructed z-slab both ways at matched
-beam-width–current product, on a
-wide-cone 256 × 0.625 mm (16 cm) volume scanner:
+This notebook covers a **30 cm** reconstructed z-slab both ways, on a wide-cone
+256 × 0.625 mm (16 cm) volume scanner, with the tube current chosen so that the two scans
+deliver the same total beam-width × current × time:
 
 |                | collimation | rotations | table          |
 |:---------------|:-----------|:----------|:---------------|
@@ -73,21 +74,20 @@ costs it nothing (the projectors consume per-view source/detector arrays; a
 helix is just a z-ramp in those arrays). Helical reconstruction is
 **rebinned WFBP** (Stierstorfer *et al.* 2004 — the production spiral
 algorithm family), dispatched automatically whenever the geometry is
-helical. Both pipelines use the current notebook-01 correction stack:
-detected-spectrum water BHC → recon → HU. Quantum and DAS noise are
-already generated in the counts domain by `simulate!`; radial cupping is
-measured as QA rather than applied as a correction.
+helical. Both pipelines use the reconstruction chain of notebook 01:
+detected-spectrum water BHC → reconstruction → HU, with quantum and electronic noise already in
+the simulated counts. Each `simulate!` also reports its dose, so the two acquisitions can be
+compared in CTDIvol and DLP as well as in image quality.
 
 **Backend detected:** $(GPU_BACKEND.name)
-"""
+""")
 
 # ╔═╡ 11000002-0000-4000-8000-000000000002
 md"""
 ## Notebook Setup
 
-Activate the shared docs environment, select Metal/CUDA/ROCm/CPU through
-`GPUSelect`, and expose the section hierarchy through Pluto's table of
-contents. No acquisition is executed until section 4.
+The shared docs environment, the device from `GPUSelect`, and a table of contents. Nothing is
+simulated until section 4.
 """
 
 # ╔═╡ 11000002-0000-4000-8000-000000000003
@@ -102,7 +102,7 @@ slice — useless for judging long-``z`` fidelity — so every slice must be
 different. Second, **no high-Z inserts**: beam hardening is its own topic
 (notebook 10); here it would only confound the geometry comparison.
 
-- **30 cm water body**, 36 cm long (coarse 2.3 mm in-plane / 2 mm z voxels);
+- a **24 cm water body**, 36 cm long (coarse 2.3 mm in-plane / 2 mm z voxels);
 - a **lung-density rod** (≈ −700 HU, radiologically *soft*) that **winds
   helically** around the body axis — one turn per 12 cm of ``z``, so its
   angular position tags every slice;
@@ -177,9 +177,8 @@ rotations, the table travels
              = 1.0 \times 20\,\text{mm} \times 16 = 32\,\text{cm}.
 ```
 
-Everything else — `Phantom`, `Scanner`, `SimOptions`, `ReconOptions`,
-`simulate!`, the corrections, the recon call — is untouched from an axial
-workflow.
+Everything else (`Phantom`, the scanner, `SimOptions`, `ReconOptions`, `simulate!`, the
+corrections, the reconstruction call) is the same as in an axial workflow.
 """
 
 # ╔═╡ 11000004-0000-4000-8000-000000000002
@@ -209,10 +208,10 @@ begin
         collimation_mm = 160.0,      # WIDE: the full 16 cm detector, volume mode
     )
     # use_heel_effect = false: the anode heel is a per-ROW spectral gradient.
-    # Axial scans absorb it (each slice keeps its rows); a helical scan sweeps
-    # the rows past every voxel, which needs the per-row water calibration real
-    # scanners apply.  Until BasisSimulator ships per-row BHC, disable it here
-    # so the comparison isolates GEOMETRY (same choice as notebook 09).
+    # An axial slice keeps its rows, but a helical scan sweeps every row past
+    # every voxel, which a real scanner handles with a per-row water
+    # calibration. `calibrate_bhc_water` is per column, so the heel is switched
+    # off here and the comparison isolates the geometry.
     sim_opts = BS.SimOptions(seed = 42, projector = :dd_fast,
         use_heel_effect = false)
     recon_opts = BS.ReconOptions(matrix_size = (160, 160, 150), fov_cm = 30.0, z_cm = 30.0)
@@ -224,62 +223,49 @@ end;
 
 # ╔═╡ 11000005-0000-4000-8000-000000000001
 md"""
-## 3. Corrections — the current notebook-01 stack
+## 3. The reconstruction chain
 
-One BHC model per protocol (the bowtie-hardened spectrum depends on the
-collimation), then the standard chain per reconstruction: sinogram-domain
-water BHC → recon → HU using the BHC-calibrated ``\mu_\text{water}``.
-The simulator already produces quantum and electronic/DAS noise in counts;
-no second HU-domain noise floor is added. Residual cupping is a non-mutating
-QA measurement, not a correction stage.
+One BHC model per protocol (calibrated on that acquisition's geometry), then per
+reconstruction: sinogram-domain water BHC → reconstruction → HU with the BHC's own
+``\mu_\text{water}``. `reconstruct!` recognises a helical geometry and runs rebinned WFBP; an
+axial one runs FDK.
 """
 
 # ╔═╡ 11000005-0000-4000-8000-000000000002
 """
     corrected_recon(sino_gpu, geom, matrix_size, bhc) -> Array{Float32,3} (HU)
 
-Notebook-01 correction chain around a single reconstruction (helical
-geometries dispatch to WFBP inside `reconstruct!` automatically). Noise is
-already present in the simulated counts; cupping is measured separately as QA.
+Water BHC → reconstruction → HU for one sinogram. A helical `geom` dispatches to WFBP inside
+`reconstruct!`.
 """
 function corrected_recon(sino_gpu, geom, matrix_size, bhc)
-    sino_bhc = BS.apply_bhc_water(sino_gpu, bhc.model)
-    sino_g = to_gpu(Float32.(sino_bhc))
-    ws_fdk = BS.create_fdk_recon_workspace(sino_g, geom, matrix_size)
-    recon_μ = BS.reconstruct!(ws_fdk, sino_g, geom)
-    # NOTE: no image-domain BHC — audit found it deflates dense-material HU
-    # (a scaled self-subtraction, not So et al.); the sinogram-domain BHC
-    # (calibrated on the full detected spectrum) is the whole correction.
-    return Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc.μ_water))
+    sino = BS.apply_bhc_water(sino_gpu, bhc)
+    ws_fdk = BS.create_fdk_recon_workspace(sino, geom, matrix_size)
+    recon_μ = BS.reconstruct!(ws_fdk, sino, geom)
+    return Float32.(BS.to_hounsfield(Array(recon_μ); μ_water = bhc.μ_water_ref))
 end;
 
 # ╔═╡ 11000006-0000-4000-8000-000000000001
 md"""
 ## 4. Run both acquisitions
 
-**Helical**: one `simulate!`, one reconstruction.  **Volume axial
-(step-and-shoot)**: three independent 10 cm reconstruction stations —
-for each, the table (here: the phantom window) moves so the station is
-centred at the isocentre — then the three slabs are stitched at ``z = ±5`` cm.
+**Helical**: one `simulate!`, one reconstruction. **Volume axial (step-and-shoot)**: three
+10 cm reconstruction stations. For each, the table (here, the phantom window) moves so that the
+station is centred on the isocentre; the three slabs are then stitched at ``z = ±5`` cm. The
+16 cm beams of neighbouring stations overlap by 6 cm, so each station's dose is reported with a
+10 cm table increment.
 """
 
 # ╔═╡ 11000006-0000-4000-8000-000000000002
 helical_result = let
     ws = BS.create_eict_workspace(scanner, protocol_helical, sim_opts, recon_opts, phantom)
-    t = @elapsed BS.simulate!(ws, phantom, protocol_helical, sim_opts)
-    bhc = let
-        model = BS.calibrate_bhc_water(sim_opts, protocol_helical;
-            scanner = scanner, geom = ws.geom,
-            )
-        (model = model, μ_water = model.μ_water_ref)
-    end
+    t = @elapsed (sim = BS.simulate!(ws, phantom, protocol_helical, sim_opts))
+    bhc = BS.calibrate_bhc_water(sim_opts, protocol_helical; scanner, geom = ws.geom)
     t += @elapsed (hu = corrected_recon(ws.sinogram, ws.geom, recon_opts.matrix_size, bhc))
+    n_views = ws.geom.n_angles
     ws = nothing
     GC.gc()
-    # quantum + DAS noise arrive in the counts domain from simulate!
-    # (scanner.electronic_noise); do not add an HU-domain floor on top.
-    # (cupping is QA-only now — measure_radial_cupping; never applied)
-    (hu = hu, t = t)
+    (hu = hu, t = t, dose = sim.dose, n_views = n_views)
 end;
 
 # ╔═╡ 11000006-0000-4000-8000-000000000003
@@ -289,6 +275,7 @@ sns_result = let
     hu = zeros(Float32, 160, 160, 150)
     t_total = 0.0
     bhc_ax = nothing
+    doses = BS.DoseReport[]
     for (s, z0) in enumerate(station_zs)
         # move the "table": phantom window (±10 cm) centred on this station
         k0 = round(Int, 90 + z0 / phantom_data.voxz)
@@ -308,12 +295,11 @@ sns_result = let
             (phantom_data.vox, phantom_data.vox, phantom_data.voxz),
         )
         ws = BS.create_eict_workspace(scanner, protocol_axial, sim_opts, recon_opts_station, ph_st)
-        t_total += @elapsed BS.simulate!(ws, ph_st, protocol_axial, sim_opts)
+        t_total += @elapsed (sim = BS.simulate!(ws, ph_st, protocol_axial, sim_opts;
+            dose_kwargs = (; table_increment_mm = 100.0)))
+        push!(doses, sim.dose)
         if bhc_ax === nothing
-            model = BS.calibrate_bhc_water(sim_opts, protocol_axial;
-                scanner = scanner, geom = ws.geom,
-                )
-            bhc_ax = (model = model, μ_water = model.μ_water_ref)
+            bhc_ax = BS.calibrate_bhc_water(sim_opts, protocol_axial; scanner, geom = ws.geom)
         end
         t_total += @elapsed (hu_st = corrected_recon(
             ws.sinogram, ws.geom, recon_opts_station.matrix_size, bhc_ax))
@@ -324,10 +310,29 @@ sns_result = let
         valid = max(k_lo, 1):min(k_lo + n_slab - 1, 150)
         hu[:, :, valid] .= hu_st[:, :, (first(valid) - k_lo + 1):(last(valid) - k_lo + 1)]
     end
-    # quantum + DAS noise arrive in the counts domain from simulate!
-    # (cupping is QA-only now — measure_radial_cupping; never applied)
-    (hu = hu, t = t_total)
+    (hu = hu, t = t_total, doses = doses)
 end;
+
+# ╔═╡ 11000006-0000-4000-8000-000000000004
+let
+    h = helical_result.dose
+    a = sns_result.doses
+    dlp_ax = sum(d.dlp_mGy_cm for d in a)
+    Markdown.parse("""
+    **Dose of each acquisition** (CTDI from a Monte Carlo of the simulated beam in the 32 cm body phantom)
+
+    | acquisition | N·T (mm) | mAs / rotation | rotations | CTDIvol (mGy) | DLP (mGy·cm) |
+    |:--|--:|--:|--:|--:|--:|
+    | helical, pitch $(h.pitch) | $(h.nominal_collimation_mm) | $(round(h.mAs_per_rotation; digits = 1)) | $(Int(h.n_rotations)) | $(round(h.ctdi_vol_mGy; digits = 2)) | $(round(h.dlp_mGy_cm; digits = 1)) |
+    | volume axial, 3 stations, 10 cm apart | $(a[1].nominal_collimation_mm) | $(round(a[1].mAs_per_rotation; digits = 1)) | 3 × 1 | $(round(a[1].ctdi_vol_mGy; digits = 2)) | $(round(dlp_ax; digits = 1)) |
+
+    The two DLPs are $(round(h.dlp_mGy_cm; digits = 1)) and $(round(dlp_ax; digits = 1)) mGy·cm:
+    matching beam width × current × time matches the total exposure. CTDIvol differs because that
+    exposure is spread over different lengths: $(round(h.scan_length_cm; digits = 1)) cm of helical
+    travel against three $(round(a[1].table_increment_mm / 10; digits = 1)) cm table increments for the
+    axial stations, whose overlapping $(a[1].nominal_collimation_mm) mm beams$(a[1].wide_beam_reference_mm === nothing ? "" : " are dosed with the IEC wide-beam rule (reference $(a[1].wide_beam_reference_mm) mm)").
+    """)
+end
 
 # ╔═╡ 11000007-0000-4000-8000-000000000001
 md"""
@@ -387,11 +392,9 @@ md"""
 
 ### 01. Water flatness and the coronal view
 
-Mean HU in a fixed water ROI (clear of rod and cone), slice by slice, together
-with coronal reformats. The marked axial station boundaries make this a direct
-inspection of longitudinal uniformity and possible boundary discontinuities;
-in this realization both water curves are nearly flat rather than demonstrating
-a large seam artifact.
+Mean HU in a fixed water ROI (clear of the rod and the cone), slice by slice, with the axial
+station boundaries marked, then coronal reformats of both volumes. The table under the plot
+reduces the profiles to numbers.
 """
 
 # ╔═╡ 11000008-0000-4000-8000-000000000002
@@ -417,6 +420,29 @@ z_profile_fig = let
     fig
 end
 
+# ╔═╡ 11000008-0000-4000-8000-000000000004
+let
+    xr, yr = 25:36, 73:88                        # the water ROI of the profile plot
+    zs = [-15.0 + (k - 0.5) * 0.2 for k in 1:150]
+    prof(v) = [mean(v[xr, yr, k]) for k in 1:150]
+    noise(v) = mean(std(v[xr, yr, k]) for k in 1:150)
+    step_at(p, z) = (k = searchsortedfirst(zs, z); p[k] - p[k - 1])
+    rows = String[]
+    for (name, r) in (("helical", helical_result), ("volume axial", sns_result))
+        p = prof(r.hu)
+        push!(rows, "| $(name) | $(round(mean(p); digits = 1)) | $(round(minimum(p); digits = 1)) … $(round(maximum(p); digits = 1)) | " *
+                    "$(round(std(p); digits = 1)) | $(round(step_at(p, -5.0); digits = 1)) / $(round(step_at(p, 5.0); digits = 1)) | $(round(noise(r.hu); digits = 1)) |")
+    end
+    Markdown.parse("""
+    | acquisition | mean water HU over z | range over z | σ over z | step at z = −5 / +5 cm | pixel noise σ (HU) |
+    |:--|--:|--:|--:|--:|--:|
+    $(join(rows, "\n"))
+
+    "Step" is the change in the ROI mean between the two slices either side of a station boundary;
+    "pixel noise" is the within-ROI standard deviation averaged over the slices.
+    """)
+end
+
 # ╔═╡ 11000008-0000-4000-8000-000000000003
 coronal_fig = let
     yc = 80
@@ -433,7 +459,7 @@ coronal_fig = let
 end
 
 # ╔═╡ 11000009-0000-4000-8000-000000000001
-md"""
+Markdown.parse("""
 ## Verification and Scope
 
 - **`:dd_fast` needed zero changes for helical.** The projectors consume
@@ -447,22 +473,20 @@ md"""
   production spiral-CT algorithm family (Siemens WFBP; UCLA FreeCT), and it
   is dispatched automatically by `reconstruct!`/`fdk_reconstruct` whenever
   `is_helical(geom)`.
-- **Both scans got identical corrections** (notebook 01 stack). Exposure is
-  matched by beam-width–current product: 16 × 20 mm × 200 mA versus
-  3 × 160 mm × 133⅓ mA (equal rotation time). This is an acquisition-integral
-  match, not a claim of equal CTDIvol, local dose, image noise, or per-slice mAs;
-  the axial beams overlap and only their central 10 cm slabs are reconstructed.
+- **Both scans got identical corrections.** Exposure is matched by beam width × current:
+  16 × 20 mm × 200 mA versus 3 × 160 mm × 133⅓ mA at equal rotation time. That is an
+  acquisition-integral match, not equal CTDIvol or equal noise per slice; the dose table in
+  section 4 gives both scans' CTDIvol and DLP.
 - Hybrid IR works on helical unchanged — matched forward/backprojection are
   geometry-general, subsets are angular-interleaved, and the HIR FDK
   initialisation routes through WFBP.
-- **Honest limits**: the current intended and tested simulator envelope is up
-  to roughly 128 active detector rows and pitch ≲ 1.5; this notebook is not a
-  clinical-validation study. Windmill artifacts around sharp
-  ``z``-edges at high pitch are physics (longitudinal Nyquist), not a bug.
-- Wall-clock on this machine: helical (5760 views, full EICT physics +
-  corrections) ≈ $(round(helical_result.t; digits = 1)) s; volume axial
-  (3 stations × 360 views) ≈ $(round(sns_result.t; digits = 1)) s.
-"""
+- Windmill artifacts around sharp ``z`` edges at high pitch are physics (longitudinal
+  sampling), not a defect of the reconstruction.
+- Wall-clock (this page was rendered on an NVIDIA RTX PRO 6000, CUDA): helical
+  ($(helical_result.n_views) views, simulation + corrections + WFBP)
+  $(round(helical_result.t; digits = 1)) s; volume axial (3 stations × $(protocol_axial.views) views)
+  $(round(sns_result.t; digits = 1)) s. Both include first-call compilation.
+""")
 
 # ╔═╡ 1100000a-0000-4000-8000-000000000001
 md"""
@@ -474,11 +498,9 @@ md"""
   default forward projector.
 - Helical geometries dispatch automatically to rebinned WFBP; axial stations
   retain the ordinary FDK path.
-- The native Pluto slice slider, water-HU profile, and coronal comparison jointly
-  inspect longitudinal coverage, possible station-boundary effects, and
-  z-dependent anatomy. The published Snapshot control is deliberately static.
-- Cached figures and reported wall times were regenerated after the source
-  audit across all eleven notebooks was completed.
+- The slice slider, the water-HU profile and the coronal reformats inspect longitudinal coverage,
+  station boundaries and the z-dependent anatomy; the dose table shows what each acquisition
+  costs.
 """
 
 # ╔═╡ Cell order:
@@ -503,11 +525,13 @@ md"""
 # ╟─11000006-0000-4000-8000-000000000001
 # ╠═11000006-0000-4000-8000-000000000002
 # ╠═11000006-0000-4000-8000-000000000003
+# ╟─11000006-0000-4000-8000-000000000004
 # ╟─11000007-0000-4000-8000-000000000001
 # ╟─11000007-0000-4000-8000-000000000002
 # ╟─11000007-0000-4000-8000-000000000003
 # ╟─11000008-0000-4000-8000-000000000001
 # ╟─11000008-0000-4000-8000-000000000002
+# ╟─11000008-0000-4000-8000-000000000004
 # ╟─11000008-0000-4000-8000-000000000003
 # ╟─11000009-0000-4000-8000-000000000001
 # ╟─1100000a-0000-4000-8000-000000000001
