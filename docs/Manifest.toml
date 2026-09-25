@@ -213,7 +213,6 @@ deps = ["AcceleratedKernels", "Artifacts", "DelimitedFiles", "Downloads", "FFTW"
 path = ".."
 uuid = "8f904dfe-b85e-4ff6-b463-dae2292396b9"
 version = "0.15.0"
-weakdeps = ["CUDA", "Metal"]
 
 [[deps.Binaryen_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]
