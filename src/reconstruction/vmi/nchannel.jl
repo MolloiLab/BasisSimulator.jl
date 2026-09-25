@@ -1025,7 +1025,8 @@ Stages, all optional:
   `acnr_window = 4`.
 - `matrix_size` (required) — the reconstruction grid, `(nx, ny, nz)`; this function never sees a
   workspace's `ReconOptions`, so the caller states the grid. One slice when the rows were reduced.
-  `fbp_filter = SoftFilter()`, `antialias = true`, `recon_rows = geom.n_rows`.
+  `fbp_filter = SoftFilter()` — one window, or `(water = …, iodine = …)` a window for each basis
+  image ([`basis_filter`](@ref)), `antialias = true`, `recon_rows = geom.n_rows`.
 - `recon_method = :fbp` (the published chain) or `:hir`, with `hir_strength = 60`,
   `recon_projector = :dd_fast` and `hir_reference_kev = 70`. `:hir` reconstructs the basis pair
   with the penalized iterative reconstructor and nothing else changes: T-LBF, ACNR and the
@@ -1130,21 +1131,22 @@ function vmi_pipeline(;
     else
         (:uniform, :uniform)
     end
-    reconstruct(one_sino, weights, scale) = reconstruct_basis_slice(
+    reconstruct(one_sino, weights, scale, material) = reconstruct_basis_slice(
         one_sino, geom, matrix_size;
-        to_backend = to_backend, filter = fbp_filter, n_rows = recon_rows, antialias = antialias,
+        to_backend = to_backend, filter = basis_filter(fbp_filter, material), n_rows = recon_rows,
+        antialias = antialias,
         method = recon_method, hir_strength = hir_strength, projector = recon_projector,
         hir_weights = weights, scale = scale,
     )
     image_settings = nothing
     water_image, iodine_image = if image_instance === nothing
-        reconstruct(sino_water, weights_water, scale_water),
-        reconstruct(sino_iodine, weights_iodine, scale_iodine)
+        reconstruct(sino_water, weights_water, scale_water, :water),
+        reconstruct(sino_iodine, weights_iodine, scale_iodine, :iodine)
     else
         pooled = image_hypr(sino_water, sino_iodine, geom, matrix_size;
             image = image_instance, filter = fbp_filter, antialias = antialias,
             n_rows = recon_rows, to_backend = to_backend)
-        image_settings = (Estar = pooled.Estar, β = pooled.β, Σ = pooled.Σ, σM = pooled.σM)
+        image_settings = (Estar = pooled.Estar, β = pooled.β, Σ = pooled.Σ, σM = pooled.σM, σMp = pooled.σMp)
         pooled.water, pooled.iodine
     end
 

@@ -158,19 +158,21 @@ function ProjectionHYPR(; kernel::HYPRKernel{2} = HYPRKernel((3, 3)), dispersion
 end
 
 """
-    ImageHYPR(; composite = HYPRKernel((3, 3, 7); linear = false),
-                complement = HYPRKernel((5, 5, 7); linear = false))
+    ImageHYPR(; composite = HYPRKernel((1, 1, 7); linear = false),
+                complement = HYPRKernel((15, 15, 7); linear = false))
 
 The image-domain instance on the reconstructed basis pair ([`image_hypr`](@ref)): the windows over
 which the minimum-noise VMI (`composite`) and its noise-independent complement (`complement`) are
-pooled, `(x, y, slices)`.
+pooled, `(x, y, slices)`. The defaults are the published chain's: the composite across adjacent slices
+only, which lowers its noise without changing its in-plane texture or sharpness; the complement, which
+carries only spectral information, over a wide window that removes its coarse noise as well as its fine.
 """
 struct ImageHYPR{C <: HYPRKernel{3}, P <: HYPRKernel{3}}
     composite::C
     complement::P
 end
-ImageHYPR(; composite::HYPRKernel{3} = HYPRKernel((3, 3, 7); linear = false),
-            complement::HYPRKernel{3} = HYPRKernel((5, 5, 7); linear = false)) =
+ImageHYPR(; composite::HYPRKernel{3} = HYPRKernel((1, 1, 7); linear = false),
+            complement::HYPRKernel{3} = HYPRKernel((15, 15, 7); linear = false)) =
     ImageHYPR(composite, complement)
 
 """
@@ -437,6 +439,14 @@ function guided_pool(X::AbstractArray{<:Real, 3}, M::AbstractArray{<:Real, 3}, �
 end
 
 """
+    basis_filter(filter, material) -> FilterType
+
+The FDK window of basis image `material` (`:water` or `:iodine`): `filter` itself when it is one
+window, or its `material` field when it is a `(water = …, iodine = …)` pair.
+"""
+basis_filter(filter, material::Symbol) = filter isa NamedTuple ? getfield(filter, material) : filter
+
+"""
     view_subset(geom, idx) -> CTGeometry
 
 The geometry of the projection views `idx` of an acquisition.
@@ -458,8 +468,13 @@ them). FDK of the pair and of its odd- and even-view halves; the pair's noise co
 half the halves' difference inside the reconstruction circle; the minimum-noise energy
 `E* = argmin gᵀΣg` over `energies`, `g = (μ_I, μ_W) / μ_W`, and composite `M = μ_I a + μ_W c`; the
 complement `I⊥ = a − βM`, `β = (Σf*)₁ / f*ᵀΣf*`; `M` pooled with its own likelihood weights over
-`image.composite`, `I⊥` guided by `M` over `image.complement`, at the per-slice noise of `M` from
-the half-view difference; and the pair recombined.
+`image.composite`, at the per-slice noise of `M` from the half-view difference; `I⊥` pooled over
+`image.complement` with weights from the pooled `M`, at its noise (the half-view difference pooled
+alike); and the pair recombined.
+
+`filter` is one FDK window for both basis images, or `(water = …, iodine = …)`, a window for each
+([`basis_filter`](@ref)): since a VMI weights the two by energy, their windows set how its resolution
+changes with energy.
 
 Returns `(water, iodine, Estar, β, Σ, σM)` with the images in the units of
 [`synthesize_vmi_stack`](@ref).
@@ -472,13 +487,13 @@ function image_hypr(sino_water::AbstractArray{<:Real, 3}, sino_iodine::AbstractA
         throw(DimensionMismatch("water $(size(sino_water)) and iodine $(size(sino_iodine)) differ"))
     nv = size(sino_water, 3)
     nv >= 4 || throw(ArgumentError("the half-view noise estimate needs at least 4 views, got $(nv)"))
-    rec(sino, g) = reconstruct_basis_slice(sino, g, matrix_size; to_backend = to_backend,
-        filter = filter, n_rows = n_rows, antialias = antialias)
-    W, I = rec(sino_water, geom), rec(sino_iodine, geom)
+    rec(sino, g, material) = reconstruct_basis_slice(sino, g, matrix_size; to_backend = to_backend,
+        filter = basis_filter(filter, material), n_rows = n_rows, antialias = antialias)
+    W, I = rec(sino_water, geom, :water), rec(sino_iodine, geom, :iodine)
     halves = (1:2:nv, 2:2:nv)
     geoms = map(h -> view_subset(geom, collect(h)), halves)
-    Wh = [rec(sino_water[:, :, halves[h]], geoms[h]) for h in 1:2]
-    Ih = [rec(sino_iodine[:, :, halves[h]], geoms[h]) for h in 1:2]
+    Wh = [rec(sino_water[:, :, halves[h]], geoms[h], :water) for h in 1:2]
+    Ih = [rec(sino_iodine[:, :, halves[h]], geoms[h], :iodine) for h in 1:2]
     nx, ny, nz = size(W)
     circle = [hypot(i - (nx + 1) / 2, j - (ny + 1) / 2) < 0.45nx for i in 1:nx, j in 1:ny]
     inside = repeat(circle, 1, 1, nz)
@@ -494,13 +509,20 @@ function image_hypr(sino_water::AbstractArray{<:Real, 3}, sino_iodine::AbstractA
     Iperp = I .- β .* M
     dM = (f[1] .* (Ih[1] .- Ih[2]) .+ f[2] .* (Wh[1] .- Wh[2])) ./ 2
     σM = [std(view(dM, :, :, z)[circle]) for z in 1:nz]
-    Ip = guided_pool(Iperp, M, σM, image.complement; to_backend = to_backend)
     Mp = guided_pool(M, M, σM, image.composite; to_backend = to_backend)
+    # The complement is pooled with weights from the pooled composite, the chain's better estimate of
+    # it, at that estimate's own noise: the half-view difference pooled with the same weights (pooling
+    # is linear in what it averages). Weights from the unpooled composite would follow its noise and
+    # print that noise's pattern — the streaks of filtered backprojection near an object's rim — onto
+    # the pooled complement.
+    dMp = guided_pool(dM, M, σM, image.composite; to_backend = to_backend)
+    σMp = [std(view(dMp, :, :, z)[circle]) for z in 1:nz]
+    Ip = guided_pool(Iperp, Mp, σMp, image.complement; to_backend = to_backend)
     iodine = Float32.(Ip .+ β .* Mp)
     water = Float32.((Mp .- f[1] .* iodine) ./ f[2])
-    return (water = water, iodine = iodine, Estar = Float64(Estar), β = β, Σ = Σ, σM = σM)
+    return (water = water, iodine = iodine, Estar = Float64(Estar), β = β, Σ = Σ, σM = σM, σMp = σMp)
 end
 
 export HYPRProfile, BoxProfile, TriangleProfile, CustomProfile, HYPRKernel
 export ProjectionHYPR, ImageHYPR, SpectralHYPR
-export hypr_lr, estimate_dispersion, guided_pool, image_hypr
+export hypr_lr, estimate_dispersion, guided_pool, image_hypr, basis_filter

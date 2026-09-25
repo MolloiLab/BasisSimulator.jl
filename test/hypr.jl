@@ -22,7 +22,7 @@ using Statistics: var
     @test BS.center_weight(BS.HYPRKernel((5, 5), p)) ≈ 1.0
     d = BS.SpectralHYPR()
     @test d.projection.kernel.window == (3, 3) && d.projection.dispersion === :measured
-    @test d.image.composite.window == (3, 3, 7) && d.image.complement.window == (5, 5, 7)
+    @test d.image.composite.window == (1, 1, 7) && d.image.complement.window == (15, 15, 7)
     @test BS.SpectralHYPR(image = nothing).image === nothing
     @test_throws ArgumentError BS.ProjectionHYPR(dispersion = :bogus)
     @test occursin("3 × 3", sprint(show, k)) || occursin("3 × 5", sprint(show, k))
@@ -135,6 +135,8 @@ end
     @test out.settings.denoiser.projection.kernel.window == (3, 3)
     @test all(d -> 0.8 < d < 1.25, out.settings.denoiser.dispersion)   # photon counting ≈ 1
     @test 40 <= out.settings.denoiser.image_estimates.Estar <= 140
+    # the pooled composite that weights the complement is less noisy than the composite, as measured
+    @test all(out.settings.denoiser.image_estimates.σMp .< out.settings.denoiser.image_estimates.σM)
     for k in 1:geom.n_rows
         @test mean(out.images.water[centre, centre, k]) ≈ mean(ref.images.water[centre, centre, k]) rtol = 0.02
     end
@@ -146,6 +148,20 @@ end
     @test proj.settings.denoiser.image === nothing && σ(proj) <= 1.05 * σ(plain)
     img = BS.vmi_pipeline(; channels = noisy, common..., denoiser = BS.SpectralHYPR(projection = nothing))
     @test img.settings.denoiser.dispersion === nothing && σ(img) < 0.7 * σ(plain)
+    # a window per basis image: the same window twice is the single window, and each basis image
+    # takes its own
+    same = BS.vmi_pipeline(; channels = noisy, common..., use_acnr = false,
+        fbp_filter = (water = BS.SoftFilter(), iodine = BS.SoftFilter()))
+    @test same.images.water == plain.images.water && same.images.iodine == plain.images.iodine
+    pair = BS.vmi_pipeline(; channels = noisy, common..., use_acnr = false,
+        fbp_filter = (water = BS.SoftFilter(), iodine = BS.BoneFilter()))
+    bone = BS.vmi_pipeline(; channels = noisy, common..., use_acnr = false, fbp_filter = BS.BoneFilter())
+    @test pair.images.water == plain.images.water && pair.images.iodine == bone.images.iodine
+    @test BS.basis_filter(BS.SoftFilter(), :water) isa BS.SoftFilter
+    @test BS.basis_filter((water = BS.SoftFilter(), iodine = BS.BoneFilter()), :iodine) isa BS.BoneFilter
+    hp = BS.vmi_pipeline(; channels = noisy, common...,
+        denoiser = BS.SpectralHYPR(), fbp_filter = (water = BS.SoftFilter(), iodine = BS.BoneFilter()))
+    @test size(hp.vmis) == size(out.vmis)
     # the image instance measures its noise from FDK halves, so HIR is refused
     @test_throws ArgumentError BS.vmi_pipeline(; channels = noisy, common...,
         denoiser = BS.SpectralHYPR(), recon_method = :hir)
