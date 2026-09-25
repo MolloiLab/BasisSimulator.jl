@@ -10,18 +10,18 @@
 Falls back to the raw slug if no override is registered."""
 function _notebook_display_title(slug::AbstractString)
     overrides = Dict(
-        "01_five_struct_api"        => "01 · The Five-Struct API",
-        "02_xcat_custom_materials"  => "02 · XCAT Phantom + Custom Materials",
-        "03_dual_kvp_switching_vmi" => "03 · Dual-kVp Switching VMI on Gammex 472",
-        "04_pcct_vmi"               => "04 · PCCT VMI on Gammex 472",
-        "05_xcat_grid_to_recon"     => "05 · XCAT UHR → CT Scan: Affine Round-Trip",
-        "06_catsim_vs_basissim"     => "06 · CatSim vs BasisSimulator (CPU + GPU)",
-        "07_qrm_thorax_pure_material_vmi"  => "07 · QRM Thorax Pure-Material VMI",
-        "08_qrm_thorax_pure_material_pcct" => "08 · QRM Thorax Pure-Material PCCT",
-        "09_siemens_force_ufc_dual_source_vmi" => "09 · Siemens Force UFC Dual-Source VMI",
-        "10_titanium_implant"       => "10 · Titanium Implant Artifacts",
-        "11_helical_scanning"       => "11 · Helical Scanning",
-        "12_siemens_flash_ufc"      => "12 · Siemens Definition Flash Dual-Source",
+        "01_five_struct_api"                   => "01 · The Five-Struct API",
+        "02_xcat_custom_materials"             => "02 · XCAT Anatomy + Custom Materials",
+        "03_dual_kvp_switching_vmi"            => "03 · Dual-kVp Switching VMI",
+        "04_pcct_vmi"                          => "04 · Photon-Counting VMI",
+        "05_xcat_grid_to_recon"                => "05 · XCAT Grids and the Affine Round-Trip",
+        "06_catsim_vs_basissim"                => "06 · CatSim vs BasisSimulator",
+        "07_qrm_thorax_pure_material_vmi"      => "07 · QRM Thorax: Dual-kVp VMI",
+        "08_qrm_thorax_pure_material_pcct"     => "08 · QRM Thorax: Photon-Counting VMI",
+        "09_siemens_force_ufc_dual_source_vmi" => "09 · Siemens SOMATOM Force",
+        "10_titanium_implant"                  => "10 · Titanium Implant Artifacts",
+        "11_helical_scanning"                  => "11 · Helical Scanning",
+        "12_siemens_flash_ufc"                 => "12 · Siemens SOMATOM Definition Flash",
     )
     get(overrides, slug, replace(slug, "_" => " "))
 end

@@ -2,6 +2,14 @@
 # Hrefs are built as `$(BASE)/path/` so the same Layout works in both modes.
 const BASE = get(ENV, "BASISSIM_BASE", "")
 
+# Primary navigation, in reading order: (path under BASE, label).
+const NAV_ITEMS = [
+    ("/getting-started/", "Getting Started"),
+    ("/examples/", "Examples"),
+    ("/scanners/", "Scanners"),
+    ("/api/", "API"),
+]
+
 """BasisSimulator.jl wordmark with colored .jl suffix"""
 function BasisSimulatorWordmark()
     NavLink("$(BASE)/",
@@ -24,42 +32,22 @@ function Layout(content)
                 BasisSimulatorWordmark(),
                 Nav(Symbol("aria-label") => "Primary navigation", :class => "flex items-center gap-3 sm:gap-6",
                     Div(:class => "hidden sm:flex items-center gap-6",
-                        NavLink("$(BASE)/getting-started/", "Getting Started";
+                        [NavLink("$(BASE)$(path)", label;
                             class = "text-sm transition-colors no-underline",
                             active_class = "text-accent-600 dark:text-accent-400 font-medium",
                             inactive_class = "text-warm-600 dark:text-warm-400 hover:text-accent-600 dark:hover:text-accent-400"
-                        ),
-                        NavLink("$(BASE)/api/", "API";
-                            class = "text-sm transition-colors no-underline",
-                            active_class = "text-accent-600 dark:text-accent-400 font-medium",
-                            inactive_class = "text-warm-600 dark:text-warm-400 hover:text-accent-600 dark:hover:text-accent-400"
-                        ),
-                        NavLink("$(BASE)/examples/", "Examples";
-                            class = "text-sm transition-colors no-underline",
-                            active_class = "text-accent-600 dark:text-accent-400 font-medium",
-                            inactive_class = "text-warm-600 dark:text-warm-400 hover:text-accent-600 dark:hover:text-accent-400"
-                        )
+                        ) for (path, label) in NAV_ITEMS]...
                     ),
                     Details(Symbol("data-mobile-nav") => "", :class => "relative sm:hidden",
                         Summary(Symbol("aria-label") => "Open navigation menu", :class => "mobile-nav-trigger text-warm-600 dark:text-warm-400 hover:text-warm-700 dark:hover:text-warm-300 transition-colors cursor-pointer rounded-md p-1",
                             RawHtml("""<svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>""")
                         ),
                         Div(:class => "absolute right-0 top-full mt-3 w-44 overflow-hidden rounded-lg border border-warm-300 dark:border-warm-700 bg-warm-50 dark:bg-warm-900 shadow-lg p-1.5",
-                            NavLink("$(BASE)/getting-started/", "Getting Started";
+                            [NavLink("$(BASE)$(path)", label;
                                 class = "block rounded-md px-3 py-2 text-sm transition-colors no-underline",
                                 active_class = "bg-accent-100 dark:bg-accent-900/50 text-accent-700 dark:text-accent-300 font-medium",
                                 inactive_class = "text-warm-700 dark:text-warm-300 hover:bg-warm-200/60 dark:hover:bg-warm-800"
-                            ),
-                            NavLink("$(BASE)/api/", "API";
-                                class = "block rounded-md px-3 py-2 text-sm transition-colors no-underline",
-                                active_class = "bg-accent-100 dark:bg-accent-900/50 text-accent-700 dark:text-accent-300 font-medium",
-                                inactive_class = "text-warm-700 dark:text-warm-300 hover:bg-warm-200/60 dark:hover:bg-warm-800"
-                            ),
-                            NavLink("$(BASE)/examples/", "Examples";
-                                class = "block rounded-md px-3 py-2 text-sm transition-colors no-underline",
-                                active_class = "bg-accent-100 dark:bg-accent-900/50 text-accent-700 dark:text-accent-300 font-medium",
-                                inactive_class = "text-warm-700 dark:text-warm-300 hover:bg-warm-200/60 dark:hover:bg-warm-800"
-                            )
+                            ) for (path, label) in NAV_ITEMS]...
                         )
                     ),
                     A(:href => "https://github.com/MolloiLab/BasisSimulator.jl", :target => "_blank",
